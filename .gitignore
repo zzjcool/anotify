@@ -20,3 +20,4 @@ dist/
 web/dist/
 anotify
 *.test
+.env.local
