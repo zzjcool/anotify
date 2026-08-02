@@ -108,7 +108,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	})
 
 	// --- 静态资源（CDN 缓存分级）---
-	mux.Handle("/", staticHandler(cfg.StaticDir))
+	mux.Handle("/", resolveStatic(cfg))
 
 	return &App{Handler: mux, Broker: bk, DB: db, AuthSvc: authSvc}
 }

@@ -26,7 +26,9 @@ func FromEnv() Config {
 		Addr:        get("ANOTIFY_ADDR", ":8080"),
 		DBPath:      get("ANOTIFY_DB", "./anotify.db"),
 		CDNPrefix:   get("ANOTIFY_CDN_PREFIX", ""),
-		StaticDir:   get("ANOTIFY_STATIC", "./dist"),
+		// 默认空 → 使用 embed 内嵌前端（生产单二进制）；
+		// 开发期显式设 ANOTIFY_STATIC=./web 走本地目录。
+		StaticDir:   get("ANOTIFY_STATIC", ""),
 		VAPIDPublic: get("ANOTIFY_VAPID_PUBLIC", ""),
 		VAPIDPriv:   get("ANOTIFY_VAPID_PRIVATE", ""),
 		VAPIDSub:    get("ANOTIFY_VAPID_SUB", "mailto:notify@example.com"),

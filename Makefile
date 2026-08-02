@@ -11,10 +11,12 @@ PORT ?= 8080
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-fe: ## 前端指纹：web/ → dist/（content-hash + 引用改写）
-	node scripts/hash.mjs web dist
+fe: ## 前端指纹：web/ → internal/server/dist/（content-hash + 引用改写，供 embed）
+	node scripts/hash.mjs web internal/server/dist
 
-build: fe ## 构建单二进制（含指纹后的前端）
+dist: fe ## 同 fe（生成 embed 产物）
+
+build: fe ## 构建单二进制（内嵌指纹后的前端）
 	go build -trimpath -ldflags="-s -w" -o anotify ./cmd/server
 
 test: ## 运行全部单元测试
@@ -24,7 +26,7 @@ run: build ## 本地运行（需先设置 ANOTIFY_VAPID_* 环境变量）
 	./anotify
 
 dev: ## 开发模式：直接用 web/ 作为静态目录（不指纹）
-	go run ./cmd/server
+	ANOTIFY_STATIC=./web go run ./cmd/server
 
 integration: ## 集成测试（需服务已在 PORT 运行）
 	BASE=http://localhost:$(PORT) ./scripts/integration.sh
@@ -47,4 +49,4 @@ keys: ## 生成 VAPID 密钥对
 	go run ./scripts/genkeys.go
 
 clean: ## 清理构建产物
-	rm -rf dist anotify
+	rm -rf dist anotify internal/server/dist

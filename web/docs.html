@@ -13,70 +13,10 @@
     />
     <link rel="stylesheet" href="fonts/fonts.css" />
     <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="ui.css" />
     <style>
-      :root {
-        --panel: rgba(255, 255, 255, 0.03);
-      }
-      * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-      body {
-        font-family: "Inter", system-ui, sans-serif;
-        background: var(--bg);
-        color: var(--text);
-        font-feature-settings: "ss01", "cv11", "liga";
-      }
-      .font-script { font-family: "Sacramento", "Great Vibes", cursive; }
-      .font-display { font-family: "Fraunces", Georgia, serif; }
-      ::selection { background: rgba(139, 139, 253, 0.35); color: #fff; }
-      ::-webkit-scrollbar { width: 8px; height: 8px; }
-      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 8px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      .card {
-        background: rgba(255, 255, 255, 0.02);
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        transition: border-color 0.3s ease;
-      }
-      .card:hover { border-color: var(--line-strong); }
-      .side-link {
-        display: flex; align-items: center; gap: 0.7rem;
-        padding: 0.55rem 0.8rem; border-radius: 10px;
-        font-size: 0.875rem; color: var(--muted);
-        border: 1px solid transparent; transition: all 0.2s ease;
-      }
-      .side-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
-      .side-link.active {
-        color: var(--text);
-        background: rgba(139, 139, 253, 0.1);
-        border-color: rgba(139, 139, 253, 0.25);
-      }
-      .side-link.active svg { color: var(--accent); }
-      .side-label {
-        font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase;
-        color: var(--faint); padding: 0 0.8rem; margin-top: 1.4rem;
-        margin-bottom: 0.5rem; font-weight: 500;
-      }
-      .dot { width: 8px; height: 8px; border-radius: 9999px; flex-shrink: 0; }
-      .dot-success { background: var(--success); box-shadow: 0 0 8px color-mix(in srgb, var(--success) 60%, transparent); }
-      .btn-ghost {
-        border: 1px solid var(--line-strong); color: var(--muted);
-        transition: all 0.25s ease;
-      }
-      .btn-ghost:hover {
-        border-color: rgba(255, 255, 255, 0.35); color: var(--text);
-        background: rgba(255, 255, 255, 0.03);
-      }
-      .badge-dot { animation: pulse 2.2s ease-in-out infinite; }
-      @keyframes pulse {
-        0%, 100% { box-shadow: 0 0 0 0 var(--success-soft); }
-        50% { box-shadow: 0 0 0 5px transparent; }
-      }
+      /* 本页特有样式（共享样式见 ui.css / tokens.css） */
       .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; }
-      .sidebar-overlay { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px); }
-      .reveal {
-        opacity: 0; transform: translateY(20px);
-        transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
-      }
-      .reveal.visible { opacity: 1; transform: none; }
 
       /* 方法徽章 */
       .method {
@@ -166,9 +106,30 @@
     </style>
   </head>
   <body class="min-h-screen antialiased overflow-x-hidden">
-    <div class="flex min-h-screen" id="layout-root"></div>
+    <!-- 主内容（partials.js 会把它装进「侧栏 + 顶栏」布局） -->
+    <div id="page-main">
+      <div class="mx-auto max-w-6xl">
+        <div class="flex gap-10">
+          <!-- 正文 -->
+          <div class="min-w-0 flex-1" id="docs-content"></div>
 
-    <script src="layout.js"></script>
+          <!-- 右侧目录（xl 起显示） -->
+          <nav class="sticky top-24 hidden h-fit w-52 shrink-0 self-start xl:block">
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">本页目录</div>
+            <div class="mt-3 space-y-0.5">
+              <a href="#agent" class="toc-link">接入 Agent</a>
+              <a href="#api" class="toc-link">API 概览</a>
+              <a href="#auth" class="toc-link">认证方式</a>
+              <a href="#notify" class="toc-link">POST /v1/notify</a>
+              <a href="#webpush" class="toc-link">Web Push 订阅</a>
+              <a href="#stream" class="toc-link">WebSocket 接收</a>
+            </div>
+          </nav>
+        </div>
+      </div>
+    </div>
+
+    <script src="partials.js"></script>
     <script>
       function copyBlock(btn) {
         const body = btn.closest(".code-block").querySelector(".code-body");
@@ -179,16 +140,9 @@
         });
       }
 
-      document.getElementById("layout-root").innerHTML = AnotifyLayout.render({
-        active: "docs",
-        title: "接入文档",
-        subtitle: "Agent 上报 · Web Push · WebSocket",
-        actions: "",
-        content: `
-        <div class="flex gap-10">
-          <!-- 正文 -->
-          <div class="min-w-0 flex-1">
-
+      // 页面组装：布局交给 partials.js，正文注入 #docs-content
+      Anotify.mountLayout({ active: "api", title: "接入文档", subtitle: "Agent 上报 · Web Push · WebSocket" });
+      document.getElementById("docs-content").innerHTML = `
           <!-- ===== 接入 Agent ===== -->
           <section id="agent" class="doc-anchor reveal visible">
             <h2 class="font-display text-3xl text-white">接入 Agent</h2>
@@ -536,24 +490,7 @@ tagMatch：
               </p>
             </div>
           </section>
-
-          </div>
-
-          <!-- 右侧目录（xl 起显示） -->
-          <nav class="sticky top-24 hidden h-fit w-52 shrink-0 self-start xl:block">
-            <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">本页目录</div>
-            <div class="mt-3 space-y-0.5">
-              <a href="#agent" class="toc-link">接入 Agent</a>
-              <a href="#api" class="toc-link">API 概览</a>
-              <a href="#auth" class="toc-link">认证方式</a>
-              <a href="#notify" class="toc-link">POST /v1/notify</a>
-              <a href="#webpush" class="toc-link">Web Push 订阅</a>
-              <a href="#stream" class="toc-link">WebSocket 接收</a>
-            </div>
-          </nav>
-        </div>`,
-      });
-      AnotifyLayout.mount();
+      `;
 
       // 目录高亮（滚动跟随）
       const tocLinks = Array.from(document.querySelectorAll(".toc-link"));
