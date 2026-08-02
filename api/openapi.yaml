@@ -1,0 +1,248 @@
+openapi: 3.0.3
+info:
+  title: Anotify API
+  version: "0.1.0"
+  description: |
+    Anotify 后端 API。静态资源走 /static/*（CDN），动态 API 走 /v1/*（no-store）。
+    鉴权两种方式：
+      - 会话 Cookie（Passkey 登录后的工作台浏览）
+      - Bearer API Key（Agent 上报 / 接收端长连接），Key 仅存哈希，带 scope
+servers:
+  - url: /v1
+tags: [auth, keys, devices, notify, notifications, stream]
+
+paths:
+  /auth/register/options:
+    post:
+      tags: [auth]
+      summary: 开始 Passkey 注册（返回 WebAuthn challenge）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username: {type: string}
+                displayName: {type: string}
+      responses:
+        "200": {description: WebAuthn creation options}
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: 完成 Passkey 注册（校验 attestation，建用户+会话）
+      responses:
+        "200": {description: 注册成功，Set-Cookie 会话}
+        "400": {$ref: "#/components/responses/Error"}
+  /auth/login/options:
+    post:
+      tags: [auth]
+      summary: 开始 Passkey 登录
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: {type: string}
+      responses:
+        "200": {description: WebAuthn request options}
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: 完成 Passkey 登录（建会话）
+      responses:
+        "200": {description: 登录成功，Set-Cookie 会话}
+        "401": {$ref: "#/components/responses/Error"}
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出（吊销会话）
+      responses:
+        "200": {description: 已登出}
+  /auth/sessions:
+    get:
+      tags: [auth]
+      summary: 列出当前用户的登录会话
+      responses:
+        "200": {description: 会话列表}
+
+  /keys:
+    get:
+      tags: [keys]
+      summary: 列出 API Keys（不含明文/哈希）
+      responses:
+        "200": {description: Key 列表}
+    post:
+      tags: [keys]
+      summary: 新建 API Key（仅此处返回一次明文）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name: {type: string}
+                scopes:
+                  type: array
+                  items: {type: string, enum: [notify:send, notify:receive, devices:read]}
+      responses:
+        "200": {description: 创建的 Key（含明文，仅此一次）}
+  /keys/{id}/revoke:
+    post:
+      tags: [keys]
+      summary: 停用 API Key
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: 已停用}
+
+  /devices:
+    get:
+      tags: [devices]
+      summary: 列出接收设备
+      responses:
+        "200": {description: 设备列表}
+    post:
+      tags: [devices]
+      summary: 注册/更新推送订阅设备（前端订阅后上报）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/DeviceUpsert"}
+      responses:
+        "200": {description: 已保存}
+  /devices/{id}:
+    patch:
+      tags: [devices]
+      summary: 更新设备（重命名/开关/status 过滤/标签）
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string}
+                enabled: {type: boolean}
+                statusFilter: {type: string, enum: [all, error, success]}
+                tags: {type: array, items: {type: string}}
+      responses:
+        "200": {description: 已更新}
+    delete:
+      tags: [devices]
+      summary: 解绑设备
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: 已删除}
+
+  /vapid-public-key:
+    get:
+      tags: [devices]
+      summary: 返回 VAPID 公钥（前端订阅用）
+      responses:
+        "200": {description: 公钥}
+
+  /notify:
+    post:
+      tags: [notify]
+      summary: Agent 上报一条通知（Bearer Key，scope=notify:send）
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NotifyRequest"}
+      responses:
+        "200":
+          description: 投递结果（含每台设备状态）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  matched: {type: integer}
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        device: {type: string}
+                        status: {type: string}
+                        error: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: 通知历史（分页）
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+        - {name: before, in: query, schema: {type: string}, description: 游标(message id)}
+      responses:
+        "200": {description: 历史列表}
+
+  /stream:
+    get:
+      tags: [stream]
+      summary: WebSocket 长连接接收通知（Bearer Key，scope=notify:receive）
+      description: |
+        升级为 WebSocket。帧协议（JSON）：
+          服务端→客户端: hello / notification / replay_end / pong / subscribed / error / bye
+          客户端→服务端: subscribe / unsubscribe / ack / ping / resume
+        断线重连用 Last-Event-Id 头或 resume 帧携带 resume_token。
+      security: [{bearerAuth: []}]
+      responses:
+        "101": {description: Switching Protocols}
+
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: APIKey}
+  schemas:
+    DeviceUpsert:
+      type: object
+      required: [endpoint, keys]
+      properties:
+        name: {type: string}
+        platform: {type: string, enum: [ios, mac, win, android, other]}
+        tags: {type: array, items: {type: string}}
+        endpoint: {type: string}
+        keys:
+          type: object
+          required: [p256dh, auth]
+          properties:
+            p256dh: {type: string}
+            auth: {type: string}
+        userAgent: {type: string}
+    NotifyRequest:
+      type: object
+      required: [status, title]
+      properties:
+        agentId: {type: string}
+        sessionId: {type: string}
+        cwd: {type: string}
+        status: {type: string, enum: [success, error, interrupted, info, warning]}
+        durationMs: {type: integer}
+        title: {type: string}
+        body: {type: string}
+        model: {type: string}
+        link: {type: string}
+        deviceTags: {type: array, items: {type: string}, description: 路由键；空=广播}
+        priority: {type: string, default: normal}
+        ttl: {type: integer, default: 86400}
+  responses:
+    Error:
+      description: 错误
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: {type: string}

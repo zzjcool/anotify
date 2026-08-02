@@ -8,3 +8,15 @@ subscriptions.json
 # 日志
 *.log
 /tmp/
+# 运行时敏感文件
+vapid.json
+subscriptions.json
+*.db
+*.db-wal
+*.db-shm
+# 编排与构建
+.pi-orchestrator/worktrees/
+dist/
+web/dist/
+anotify
+*.test

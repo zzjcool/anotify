@@ -1,0 +1,158 @@
+# Anotify · 实施任务台账（唯一事实源）
+
+> 协调者：主 Agent（pi）。规则：子 Agent 报完成 ≠ 完成；**只有我独立验证通过才把任务标 ✅**。
+> 状态：⬜待办 🟦进行中 ✅已完成 ❌返工
+
+## 环境约定（所有子 Agent 必读）
+
+- Go 拉依赖：`GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto`（直连、官方校验、自动补 go1.25）
+- 项目非 git 时由协调者统一 git init；各子 Agent 在自己的 worktree 工作，提交到各自分支
+- 完成后上报格式：`DONE <任务ID> | 产出文件清单 | 自测命令与结果`
+
+---
+
+## 阶段 0 · 地基（串行）
+
+### [T01] 仓库骨架 + Go module + Makefile
+
+- 状态：✅（git init 已做）
+- 依赖：无
+- 产出：go.mod / 目录骨架 / Makefile / AGENTS.md
+- 验收：`go build ./...` 通过
+
+### [T02] SQLite schema + migration
+
+- 状态：⬜
+- 依赖：T01
+- 产出：`internal/store/schema.sql` + migration 逻辑
+- 表：messages / consumer_offsets / deliveries / users / devices / api_keys / sessions / passkeys
+- 验收：migration 单测通过
+
+### [T03] Broker 接口定义（不含实现）
+
+- 状态：⬜
+- 依赖：T01
+- 产出：`internal/broker/broker.go`（Message 结构体 + Broker 接口）
+- 验收：编译通过
+
+### [T04] API 契约 OpenAPI 草稿
+
+- 状态：⬜
+- 依赖：T01
+- 产出：`api/openapi.yaml`（/v1/notify、auth/*、devices、keys、notifications、stream）
+- 验收：契约评审通过
+
+### [T05] 前端公共层约定
+
+- 状态：⬜
+- 依赖：T01
+- 产出：`web/` 布局壳约定 + tokens.css 引用规范 + 路由约定文档
+- 验收：—
+
+### [T06] 指纹脚本（content-hash + 引用改写 + manifest）
+
+- 状态：⬜
+- 依赖：T01
+- 产出：`scripts/hash.mjs`（扫描 web 资源→hash 改名→改写 HTML 引用→生成 manifest.json）
+- 验收：对样例文件产出哈希改名正确
+
+---
+
+## 阶段 1 · 并行盖楼（worktree 隔离）
+
+### [T10] SQLiteBroker 实现
+
+- 状态：⬜
+- 依赖：T02 T03
+- worktree：wt-store
+- 产出：`internal/store/*` `internal/broker/sqlite.go`（Publish/Subscribe/Ack/Replay + 进程内广播 + DB 回放 + 过期清理）
+- 验收：`go test ./internal/...` 全绿
+
+### [T11] Passkey 认证 + API Key 中间件
+
+- 状态：⬜
+- 依赖：T02 T04
+- worktree：wt-auth
+- 产出：`internal/auth/*`（WebAuthn 注册/登录、会话；API Key 签发/argon2 校验/scope）
+- 验收：auth 单测 + 契约测试
+
+### [T12] /v1/notify 上报 + 路由 + 双派发器
+
+- 状态：⬜
+- 依赖：T02 T03 T04
+- worktree：wt-notify
+- 产出：`internal/api/notify.go` `internal/ws/*` `internal/push/*`（标签路由规则 + status 过滤 + WS 派发 + WebPush 派发）
+- 验收：notify 单测 + 两消费者路由测试
+
+### [T13] 前端核心页：login + 总览 + 通知接收(Receivers 双 tab)
+
+- 状态：⬜
+- 依赖：T05
+- worktree：wt-fecore
+- 产出：`web/login.html` `web/index.html` `web/receivers.html`
+- 验收：web_verify 逐页通过
+
+### [T14] 前端管理页：API Keys + 安全与登录(Security) + 接入文档
+
+- 状态：⬜
+- 依赖：T05
+- worktree：wt-feadmin
+- 产出：`web/keys.html` `web/security.html` `web/docs.html`
+- 验收：web_verify 逐页通过
+
+---
+
+## 阶段 2 · 集成（串行）
+
+### [T20] 合并 5 个 worktree + 前后端连调
+
+- 状态：⬜
+- 依赖：T10-T14 全 ✅
+- 验收：合并后 `go build ./...` + 前端引用正确
+
+### [T21] 指纹 + go:embed + 单二进制冒烟
+
+- 状态：⬜
+- 依赖：T20 T06
+- 验收：`./anotify` 起服务，首页可开
+
+---
+
+## 阶段 3 · 并行验证
+
+### [T30] 单元测试全量 `go test ./...`
+
+- 状态：⬜ 依赖：T21
+
+### [T31] 集成测试：注册→订阅→POST /v1/notify→断言 WS 帧 + delivery
+
+- 状态：⬜ 依赖：T21
+
+### [T32] API 契约矩阵（Key/scope/错误码/标签路由/status 过滤）
+
+- 状态：⬜ 依赖：T21
+
+### [T33] 前端渲染 web_verify（console/JS错误/溢出/截图）
+
+- 状态：⬜ 依赖：T21
+
+### [T34] CDN 缓存头验证（哈希 immutable / index ETag / v1 no-store）
+
+- 状态：⬜ 依赖：T21
+
+### [T35] Docker build 单二进制镜像 + run 起服务跑集成脚本
+
+- 状态：⬜ 依赖：T21
+
+### [T36] 桌面 Chrome Web Push 端到端
+
+- 状态：⬜ 依赖：T21
+
+---
+
+## 阶段 4 · 真机（交给用户）
+
+### [T40] iOS Safari 添加到主屏幕全链路
+
+- 状态：⬜ 依赖：T21 + Cloudflare Tunnel 临时域名
+- 交付：操作清单 + 公网地址
