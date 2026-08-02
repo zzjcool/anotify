@@ -16,80 +16,172 @@
     <link rel="stylesheet" href="ui.css" />
     <style>
       /* 本页特有样式（共享样式见 ui.css / tokens.css） */
-      .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+      .mono {
+        font-family:
+          "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+      }
 
       /* 方法徽章 */
       .method {
-        display: inline-flex; align-items: center; justify-content: center;
-        font-family: "JetBrains Mono", monospace; font-size: 0.68rem;
-        font-weight: 600; letter-spacing: 0.03em;
-        padding: 0.2rem 0.55rem; border-radius: 6px; min-width: 52px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        padding: 0.2rem 0.55rem;
+        border-radius: 6px;
+        min-width: 52px;
       }
-      .m-get { background: var(--success-soft); color: var(--success); }
-      .m-post { background: var(--accent-soft); color: var(--accent-strong); }
-      .m-patch { background: var(--warn-soft); color: var(--warn); }
-      .m-delete { background: var(--error-soft); color: var(--error); }
-      .m-ws { background: var(--accent-soft); color: var(--accent); }
+      .m-get {
+        background: var(--success-soft);
+        color: var(--success);
+      }
+      .m-post {
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+      }
+      .m-patch {
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+      .m-delete {
+        background: var(--error-soft);
+        color: var(--error);
+      }
+      .m-ws {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
 
       /* 代码块 */
       .code-block {
-        background: var(--code-bg); border: 1px solid rgba(255, 255, 255, 0.07);
-        border-radius: 12px; overflow: hidden;
+        background: var(--code-bg);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 12px;
+        overflow: hidden;
       }
       .code-head {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 0.55rem 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-        font-size: 0.7rem; color: var(--faint);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.55rem 1rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 0.7rem;
+        color: var(--faint);
       }
       .copy-btn {
-        border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;
-        padding: 0.15rem 0.5rem; font-size: 0.68rem; color: var(--muted);
-        transition: all 0.2s; cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        padding: 0.15rem 0.5rem;
+        font-size: 0.68rem;
+        color: var(--muted);
+        transition: all 0.2s;
+        cursor: pointer;
       }
-      .copy-btn:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.25); }
+      .copy-btn:hover {
+        color: var(--text);
+        border-color: rgba(255, 255, 255, 0.25);
+      }
       .code-body {
-        padding: 1rem; font-family: "JetBrains Mono", monospace;
-        font-size: 0.78rem; line-height: 1.65; overflow-x: auto;
-        color: var(--code-text); white-space: pre;
+        padding: 1rem;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.78rem;
+        line-height: 1.65;
+        overflow-x: auto;
+        color: var(--code-text);
+        white-space: pre;
       }
-      .tk-key { color: var(--accent-strong); }
-      .tk-str { color: var(--success); }
-      .tk-num { color: var(--warn); }
-      .tk-punct { color: var(--muted); }
-      .tk-comment { color: var(--faint); font-style: italic; }
+      .tk-key {
+        color: var(--accent-strong);
+      }
+      .tk-str {
+        color: var(--success);
+      }
+      .tk-num {
+        color: var(--warn);
+      }
+      .tk-punct {
+        color: var(--muted);
+      }
+      .tk-comment {
+        color: var(--faint);
+        font-style: italic;
+      }
 
       /* 参数表 */
-      .param-table { width: 100%; border-collapse: collapse; }
+      .param-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
       .param-table th {
-        text-align: left; font-size: 0.68rem; letter-spacing: 0.1em;
-        text-transform: uppercase; color: var(--faint); font-weight: 600;
-        padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line);
+        text-align: left;
+        font-size: 0.68rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--faint);
+        font-weight: 600;
+        padding: 0.6rem 0.9rem;
+        border-bottom: 1px solid var(--line);
       }
       .param-table td {
-        padding: 0.7rem 0.9rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-        vertical-align: top; font-size: 0.82rem;
+        padding: 0.7rem 0.9rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        vertical-align: top;
+        font-size: 0.82rem;
       }
       .param-name {
-        font-family: "JetBrains Mono", monospace; color: var(--accent-strong);
-        font-size: 0.8rem; white-space: nowrap;
+        font-family: "JetBrains Mono", monospace;
+        color: var(--accent-strong);
+        font-size: 0.8rem;
+        white-space: nowrap;
+      }
+      /* 移动端：长参数名允许换行，避免撑破参数表 */
+      @media (max-width: 640px) {
+        .param-name {
+          white-space: normal;
+          word-break: break-word;
+        }
       }
       .param-type {
-        font-family: "JetBrains Mono", monospace; color: var(--faint); font-size: 0.72rem;
+        font-family: "JetBrains Mono", monospace;
+        color: var(--faint);
+        font-size: 0.72rem;
       }
       .req {
-        font-size: 0.62rem; font-weight: 600; padding: 0.1rem 0.4rem;
-        border-radius: 4px; background: var(--error-soft);
-        color: var(--error); margin-left: 0.4rem;
+        font-size: 0.62rem;
+        font-weight: 600;
+        padding: 0.1rem 0.4rem;
+        border-radius: 4px;
+        background: var(--error-soft);
+        color: var(--error);
+        margin-left: 0.4rem;
       }
-      .opt { font-size: 0.62rem; font-weight: 500; color: var(--faint); margin-left: 0.4rem; }
-      .param-desc { color: var(--muted); line-height: 1.55; }
+      .opt {
+        font-size: 0.62rem;
+        font-weight: 500;
+        color: var(--faint);
+        margin-left: 0.4rem;
+      }
+      .param-desc {
+        color: var(--muted);
+        line-height: 1.55;
+      }
       .param-desc code {
-        font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
-        background: rgba(255, 255, 255, 0.05); padding: 0.05rem 0.35rem;
-        border-radius: 4px; color: var(--code-text);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.75rem;
+        background: rgba(255, 255, 255, 0.05);
+        padding: 0.05rem 0.35rem;
+        border-radius: 4px;
+        color: var(--code-text);
       }
       /* 网格/卡片子元素最小宽度归零，防长内容撑破容器（flex/grid min-width:auto 陷阱） */
-      .grid > *, .card, .code-block { min-width: 0; }
+      .grid > *,
+      .card,
+      .code-block {
+        min-width: 0;
+      }
       /* 移动端：卡片内横滚容器收缩到视口内，内容在其内部滚动 */
       @media (max-width: 640px) {
         .overflow-x-auto {
@@ -97,12 +189,21 @@
           contain: inline-size;
         }
       }
-      .doc-anchor { scroll-margin-top: 5rem; }
-      .toc-link {
-        display: block; padding: 0.3rem 0.8rem; border-radius: 8px;
-        font-size: 0.78rem; color: var(--muted); transition: all 0.15s ease;
+      .doc-anchor {
+        scroll-margin-top: 5rem;
       }
-      .toc-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+      .toc-link {
+        display: block;
+        padding: 0.3rem 0.8rem;
+        border-radius: 8px;
+        font-size: 0.78rem;
+        color: var(--muted);
+        transition: all 0.15s ease;
+      }
+      .toc-link:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+      }
     </style>
   </head>
   <body class="min-h-screen antialiased overflow-x-hidden">
@@ -114,8 +215,14 @@
           <div class="min-w-0 flex-1" id="docs-content"></div>
 
           <!-- 右侧目录（xl 起显示） -->
-          <nav class="sticky top-24 hidden h-fit w-52 shrink-0 self-start xl:block">
-            <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">本页目录</div>
+          <nav
+            class="sticky top-24 hidden h-fit w-52 shrink-0 self-start xl:block"
+          >
+            <div
+              class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500"
+            >
+              本页目录
+            </div>
             <div class="mt-3 space-y-0.5">
               <a href="#agent" class="toc-link">接入 Agent</a>
               <a href="#api" class="toc-link">API 概览</a>
@@ -141,7 +248,11 @@
       }
 
       // 页面组装：布局交给 partials.js，正文注入 #docs-content
-      Anotify.mountLayout({ active: "api", title: "接入文档", subtitle: "Agent 上报 · Web Push · WebSocket" });
+      Anotify.mountLayout({
+        active: "api",
+        title: "接入文档",
+        subtitle: "Agent 上报 · Web Push · WebSocket",
+      });
       document.getElementById("docs-content").innerHTML = `
           <!-- ===== 接入 Agent ===== -->
           <section id="agent" class="doc-anchor reveal visible">
@@ -281,6 +392,7 @@
 
             <div class="card mt-5 overflow-hidden">
               <div class="border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs font-semibold text-zinc-300">请求体参数</div>
+              <div class="overflow-x-auto">
               <table class="param-table">
                 <tbody>
                   <tr>
@@ -313,6 +425,7 @@
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
 
             <div class="code-block mt-5">

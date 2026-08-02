@@ -1,0 +1,15 @@
+.git
+.pi-orchestrator/worktrees
+.pi-subagents
+node_modules
+*.db
+*.db-wal
+*.db-shm
+anotify
+dist
+.env.local
+vapid.json
+subscriptions.json
+.pi
+design
+public/design
