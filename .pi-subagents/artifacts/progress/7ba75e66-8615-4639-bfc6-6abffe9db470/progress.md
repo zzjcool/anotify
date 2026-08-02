@@ -1,12 +1,18 @@
-# T13 进度 · 前端核心页（login + 总览 + 通知接收）
+# T10 · SQLiteBroker 实现 — 进度
 
-worktree: wt-fecore
+## 状态：已完成 ✅
 
-- [x] 读任务卡 / AGENTS.md / tokens.css / mockup-passkey / mockup / mockup-devices / openapi 契约
-- [ ] web/partials.js（共享侧栏 + el() + api() + ui.css）
-- [ ] web/login.html（Passkey 登录/注册 + WebAuthn + iOS 提示）
-- [ ] web/index.html（总览仪表盘 + /v1/notifications + 降级演示数据）
-- [ ] web/receivers.html（双 tab + 设备管理 + Web Push 订阅 + WS 占位）
-- [ ] web/sw.js + manifest.webmanifest（Web Push 前提）
-- [ ] 验证：起静态服务，Chrome 无头检查三页 console/溢出
-- [ ] commit + DONE 上报
+- [x] 读任务卡 t10-store.md + AGENTS.md + 契约（broker.go / store.go / ids.go / schema.sql）
+- [x] 实现 internal/broker/sqlite.go（Broker 接口）
+- [x] 实现 internal/broker/sqlite_test.go（7 个测试全过）
+- [x] go build / go vet / gofmt 全绿
+- [x] worktree 内 git commit（ed071a2）
+
+## 产出
+
+- internal/broker/sqlite.go
+- internal/broker/sqlite_test.go
+
+## 自测
+
+- `go test ./internal/broker/... -v -count=1` → PASS (7 tests)

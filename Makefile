@@ -1,41 +1,50 @@
-# ==============================================================
-# 本地端口通过 Cloudflare Tunnel 暴露到公网
-# ==============================================================
-# 常用命令：
-#   make start    一键启动本地服务 + 隧道（推荐）
-#   make serve    仅启动本地 HTTP 服务
-#   make tunnel   仅启动 Cloudflare 隧道
-#   make url      显示当前公网地址
-#   make stop     停止所有相关进程
-#   make clean    停止进程并清理日志
-#
-# 常用变量覆盖（示例）：
-#   make start PORT=8000 DIR=./public
-# ==============================================================
+# Anotify · 构建 / 测试 / 运行
+# Go 依赖直连（不使用镜像代理）
+export GOPROXY    := direct
+export GOSUMDB    := sum.golang.org
+export GOTOOLCHAIN := auto
 
-PORT ?= 5699          # 本地服务端口
-DIR  ?= .             # 本地服务的根目录
-SCRIPT := ./tunnel.sh # 管理脚本
+PORT ?= 8080
 
-.PHONY: help start serve tunnel url stop clean
+.PHONY: help build fe test run dev docker docker-run integration tunnel keys clean
 
-help:
-	@$(SCRIPT) help
+help: ## 显示帮助
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-start:
-	@$(SCRIPT) start $(PORT) $(DIR)
+fe: ## 前端指纹：web/ → dist/（content-hash + 引用改写）
+	node scripts/hash.mjs web dist
 
-serve:
-	@$(SCRIPT) serve $(PORT) $(DIR)
+build: fe ## 构建单二进制（含指纹后的前端）
+	go build -trimpath -ldflags="-s -w" -o anotify ./cmd/server
 
-tunnel:
-	@$(SCRIPT) tunnel $(PORT)
+test: ## 运行全部单元测试
+	go test ./... -count=1
 
-url:
-	@$(SCRIPT) url
+run: build ## 本地运行（需先设置 ANOTIFY_VAPID_* 环境变量）
+	./anotify
 
-stop:
-	@$(SCRIPT) stop $(PORT)
+dev: ## 开发模式：直接用 web/ 作为静态目录（不指纹）
+	go run ./cmd/server
 
-clean:
-	@$(SCRIPT) clean $(PORT)
+integration: ## 集成测试（需服务已在 PORT 运行）
+	BASE=http://localhost:$(PORT) ./scripts/integration.sh
+
+docker: ## 构建 Docker 镜像
+	docker build -t anotify .
+
+docker-run: ## 运行 Docker 容器（需传入 VAPID 环境变量）
+	docker run --rm -p $(PORT):8080 \
+	  -e ANOTIFY_VAPID_PUBLIC=$$ANOTIFY_VAPID_PUBLIC \
+	  -e ANOTIFY_VAPID_PRIVATE=$$ANOTIFY_VAPID_PRIVATE \
+	  -e ANOTIFY_RP_ID=$$ANOTIFY_RP_ID \
+	  -e ANOTIFY_RP_ORIGIN=$$ANOTIFY_RP_ORIGIN \
+	  anotify
+
+tunnel: ## Cloudflare 临时域名隧道（暴露到公网，供 iOS 验证）
+	cloudflared tunnel --url http://localhost:$(PORT)
+
+keys: ## 生成 VAPID 密钥对
+	go run ./scripts/genkeys.go
+
+clean: ## 清理构建产物
+	rm -rf dist anotify
