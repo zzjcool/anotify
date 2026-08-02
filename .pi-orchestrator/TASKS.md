@@ -107,13 +107,13 @@
 
 ### [T20] 合并 5 个 worktree + 前后端连调
 
-- 状态：⬜
+- 状态：✅（4 后端 worktree 干净合并；解 import 循环/store MessageRow 重构/契约适配；全量 go test 通过）
 - 依赖：T10-T14 全 ✅
 - 验收：合并后 `go build ./...` + 前端引用正确
 
 ### [T21] 指纹 + go:embed + 单二进制冒烟
 
-- 状态：⬜
+- 状态：✅（make build 指纹+embed；单二进制起服务，embed 首页 200，缓存分级正确）
 - 依赖：T20 T06
 - 验收：`./anotify` 起服务，首页可开
 
@@ -123,31 +123,31 @@
 
 ### [T30] 单元测试全量 `go test ./...`
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（api/auth/broker/push/server/store/ws 全部 ok）
 
 ### [T31] 集成测试：注册→订阅→POST /v1/notify→断言 WS 帧 + delivery
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（播种用户+Key+设备；上报→matched=1+投递预览；WS hello→notification→ack 全过；Replay 持久化+断线续传正确）
 
 ### [T32] API 契约矩阵（Key/scope/错误码/标签路由/status 过滤）
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（无 Key 401/错误 Key 401/scope 不足 403/deviceTags 路由/catch-all 全验证）
 
 ### [T33] 前端渲染 web_verify（console/JS错误/溢出/截图）
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（六页 web_verify 全过：无 JS 错误/溢出/失败请求，侧栏视觉统一）
 
 ### [T34] CDN 缓存头验证（哈希 immutable / index ETag / v1 no-store）
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（classify 单测 + 实服务 index max-age=60 / v1 no-store 验证）
 
 ### [T35] Docker build 单二进制镜像 + run 起服务跑集成脚本
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（镜像 20.5MB；容器起服务 embed 前端/缓存分级/鉴权全正常）
 
 ### [T36] 桌面 Chrome Web Push 端到端
 
-- 状态：⬜ 依赖：T21
+- 状态：🟦（脚本已备 scripts/push_e2e.mjs；需 HTTPS 隧道 + 真实 VAPID 跑订阅，进行中）
 
 ---
 

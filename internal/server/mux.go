@@ -54,11 +54,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	// 4. Web Push 派发器（后台 goroutine，动态按需为每个用户启动消费）
 	var dm *dispatchManager
-	if vapidCfg, err := push.LoadVAPID(); err == nil {
+	vapidCfg, vapidErr := push.LoadVAPID()
+	if vapidErr == nil {
 		d := &push.Dispatcher{Broker: bk, Store: db, Sender: push.NewVAPIDSender(vapidCfg)}
 		dm = newDispatchManager(ctx, d, db)
 	} else {
-		log.Printf("[warn] VAPID 未配置，Web Push 派发器未启动: %v", err)
+		log.Printf("[warn] VAPID 未配置，Web Push 派发器未启动: %v", vapidErr)
 	}
 
 	// 5. HTTP 处理器
@@ -89,9 +90,13 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/notify", noStore(notifyH))
 	// WS 长连接（Bearer Key，内部自校验）
 	mux.Handle("/v1/stream", noStore(streamH))
-	// VAPID 公钥（前端订阅用，无需登录也可读）
+	// VAPID 公钥（前端订阅用，无需登录也可读；单一事实源 = push.LoadVAPID）
 	mux.Handle("/v1/vapid-public-key", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]string{"publicKey": cfg.VAPIDPublic})
+		pub := ""
+		if vapidCfg != nil {
+			pub = vapidCfg.PublicKey
+		}
+		writeJSON(w, 200, map[string]string{"publicKey": pub})
 	})))
 	// 以下需登录会话（Cookie）
 	mux.Handle("/v1/devices", noStore(sessMW(devicesH)))
