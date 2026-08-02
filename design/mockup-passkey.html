@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 登录</title>
+    <link rel="icon" type="image/svg+xml" href="../public/favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <!-- 自托管手写字体（私有化部署不依赖 Google CDN） -->
+    <link rel="stylesheet" href="../public/fonts/fonts.css" />
+    <style>
+      :root {
+        --bg: #050508;
+        --panel: rgba(255, 255, 255, 0.03);
+        --line: rgba(255, 255, 255, 0.08);
+        --line-strong: rgba(255, 255, 255, 0.14);
+        --text: #ececf1;
+        --muted: rgba(236, 236, 241, 0.55);
+        --faint: rgba(236, 236, 241, 0.32);
+        --accent: #8b8bfd;
+        --accent-soft: rgba(139, 139, 253, 0.12);
+      }
+      * {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-feature-settings: "ss01", "cv11", "liga";
+      }
+      .font-script {
+        font-family: "Sacramento", "Great Vibes", cursive;
+      }
+      .font-display {
+        font-family: "Fraunces", Georgia, serif;
+      }
+      ::selection {
+        background: rgba(139, 139, 253, 0.35);
+        color: #fff;
+      }
+      #particles {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
+        pointer-events: none;
+      }
+      .grid-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+          linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.022) 1px,
+            transparent 1px
+          );
+        background-size: 72px 72px;
+        mask-image: radial-gradient(
+          ellipse 90% 70% at 50% 45%,
+          black 30%,
+          transparent 75%
+        );
+        -webkit-mask-image: radial-gradient(
+          ellipse 90% 70% at 50% 45%,
+          black 30%,
+          transparent 75%
+        );
+      }
+      .glass {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--line);
+        backdrop-filter: blur(20px);
+      }
+      .btn-primary {
+        position: relative;
+        background: #fff;
+        color: #0a0a10;
+        transition: all 0.25s ease;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.9),
+          0 8px 30px -6px rgba(255, 255, 255, 0.25);
+        overflow: hidden;
+      }
+      .btn-primary::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          115deg,
+          transparent 35%,
+          rgba(139, 139, 253, 0.28) 50%,
+          transparent 65%
+        );
+        transform: translateX(-110%);
+        transition: transform 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .btn-primary:hover::after {
+        transform: translateX(110%);
+      }
+      .btn-primary:hover {
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 1),
+          0 14px 44px -6px rgba(139, 139, 253, 0.5);
+      }
+      .btn-ghost {
+        border: 1px solid var(--line-strong);
+        color: var(--muted);
+        transition: all 0.25s ease;
+      }
+      .btn-ghost:hover {
+        border-color: rgba(255, 255, 255, 0.35);
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .input {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        color: var(--text);
+        font-size: 0.9rem;
+        padding: 0.75rem 1rem;
+        transition: all 0.2s ease;
+        outline: none;
+        width: 100%;
+      }
+      .input:focus {
+        border-color: rgba(139, 139, 253, 0.5);
+        box-shadow: 0 0 0 3px rgba(139, 139, 253, 0.12);
+      }
+      .input::placeholder {
+        color: var(--faint);
+      }
+      .badge-dot {
+        animation: pulse 2.2s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5);
+        }
+        50% {
+          box-shadow: 0 0 0 5px rgba(52, 211, 153, 0);
+        }
+      }
+      /* Tab 切换 */
+      .tab-btn {
+        flex: 1;
+        padding: 0.5rem 0;
+        border-radius: 10px;
+        font-size: 0.85rem;
+        color: var(--muted);
+        transition: all 0.25s ease;
+      }
+      .tab-btn.active {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+      }
+      .mono {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      .reveal {
+        opacity: 0;
+        transform: translateY(24px);
+        transition:
+          opacity 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+          transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .reveal.visible {
+        opacity: 1;
+        transform: none;
+      }
+      /* Passkey 指纹动画 */
+      .fingerprint-ring {
+        animation: fpPulse 2s ease-in-out infinite;
+      }
+      @keyframes fpPulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(139, 139, 253, 0.3);
+        }
+        50% {
+          box-shadow: 0 0 0 8px rgba(139, 139, 253, 0);
+        }
+      }
+    </style>
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden flex flex-col">
+    <!-- 背景 -->
+    <canvas id="particles"></canvas>
+    <div class="grid-overlay"></div>
+
+    <!-- 顶栏 -->
+    <header class="relative z-20 w-full">
+      <div
+        class="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8"
+      >
+        <a href="mockup-home.html" class="flex items-center gap-3 group">
+          <div class="relative">
+            <div
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-black ring-1 ring-white/15 transition-transform duration-300 group-hover:scale-105"
+            >
+              <span class="font-script text-xl leading-none text-white"
+                >An</span
+              >
+            </div>
+            <span
+              class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center"
+            >
+              <span class="absolute h-3.5 w-3.5 rounded-full bg-red-500"></span>
+              <span
+                class="absolute h-3.5 w-3.5 animate-ping rounded-full bg-red-500/70"
+              ></span>
+            </span>
+          </div>
+          <span class="font-script text-2xl leading-none text-white"
+            >Anotify</span
+          >
+        </a>
+        <a
+          href="mockup-home.html"
+          class="text-sm text-zinc-400 hover:text-white transition-colors"
+          >返回首页</a
+        >
+      </div>
+    </header>
+
+    <!-- 登录卡片 -->
+    <main
+      class="relative z-10 mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center px-5 pb-16 pt-10"
+    >
+      <!-- 品牌语 -->
+      <div class="mb-8 text-center reveal visible">
+        <h1 class="font-display text-3xl text-white">
+          欢迎回到 <em>Anotify</em>
+        </h1>
+        <p class="mt-2 text-sm text-zinc-400">无需密码 · 用 Passkey 一键登录</p>
+      </div>
+
+      <div
+        class="glass w-full rounded-3xl p-8 reveal visible"
+        style="transition-delay: 100ms"
+      >
+        <!-- 指纹图标 -->
+        <div class="flex justify-center">
+          <div
+            class="fingerprint-ring flex h-16 w-16 items-center justify-center rounded-2xl"
+            style="background: var(--accent-soft)"
+          >
+            <svg
+              class="h-8 w-8"
+              style="color: var(--accent)"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0 0 15.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 0 0 8 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"
+              />
+            </svg>
+          </div>
+        </div>
+
+        <!-- 登录/注册切换 -->
+        <div class="mt-6 flex rounded-xl bg-white/[0.04] p-1">
+          <button
+            class="tab-btn active"
+            id="tab-login"
+            onclick="switchTab('login')"
+          >
+            登录
+          </button>
+          <button class="tab-btn" id="tab-signup" onclick="switchTab('signup')">
+            注册
+          </button>
+        </div>
+
+        <!-- 登录面板 -->
+        <div id="login-panel" class="mt-6">
+          <label class="text-xs font-medium text-zinc-400">用户名</label>
+          <input
+            id="username"
+            class="input mt-2"
+            placeholder="输入你的用户名"
+            autocomplete="username webauthn"
+          />
+          <button
+            onclick="doLogin()"
+            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+          >
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M12 11c0 3.517-1.009 6.799-2.753 9.571M8 21l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3"
+              />
+            </svg>
+            用 Passkey 登录
+          </button>
+          <div
+            class="mt-4 flex items-center justify-center gap-2 text-[11px] text-zinc-500"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            指纹 / Face ID / 设备密钥 · 抗钓鱼
+          </div>
+        </div>
+
+        <!-- 注册面板 -->
+        <div id="signup-panel" class="mt-6 hidden">
+          <label class="text-xs font-medium text-zinc-400">选择用户名</label>
+          <input
+            id="new-username"
+            class="input mt-2"
+            placeholder="给自己起个名字"
+            autocomplete="username webauthn"
+          />
+          <button
+            onclick="doSignup()"
+            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+          >
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            创建 Passkey 并注册
+          </button>
+          <div
+            class="mt-4 flex items-start gap-2.5 rounded-xl bg-white/[0.03] px-4 py-3 ring-1 ring-white/[0.06]"
+          >
+            <svg
+              class="mt-0.5 h-4 w-4 shrink-0 text-zinc-500"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 16v-4M12 8h.01" />
+            </svg>
+            <p class="text-[11px] leading-relaxed text-zinc-500">
+              注册后会生成一组<b class="text-zinc-300">一次性恢复码</b>——
+              当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。
+            </p>
+          </div>
+        </div>
+
+        <!-- 恢复码登录入口 -->
+        <div class="mt-6 border-t border-white/[0.06] pt-5 text-center">
+          <button
+            onclick="
+              alert(
+                '演示：用 用户名 + 一次性恢复码 登录（跨设备找回账号的兜底方案）',
+              )
+            "
+            class="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            无法使用 Passkey？用恢复码登录 →
+          </button>
+        </div>
+      </div>
+
+      <!-- 底部说明 -->
+      <div
+        class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-zinc-600 reveal visible"
+        style="transition-delay: 200ms"
+      >
+        <span class="flex items-center gap-1.5">
+          <span
+            class="badge-dot h-1.5 w-1.5 rounded-full bg-emerald-400"
+          ></span>
+          数据仅存于你的服务器
+        </span>
+        <span>·</span>
+        <span>WebAuthn 标准</span>
+        <span>·</span>
+        <span>无第三方账号</span>
+      </div>
+    </main>
+
+    <!-- 页脚 -->
+    <footer class="relative z-10 py-6 text-center text-[11px] text-zinc-600">
+      © 2026 Anotify · MIT License · Passkey 免密
+    </footer>
+
+    <script>
+      // ===== 背景：信号流场（与首页一致，更克制）=====
+      (function () {
+        const canvas = document.getElementById("particles");
+        const ctx = canvas.getContext("2d");
+        let w,
+          h,
+          dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const mouse = { x: -9999, y: -9999, px: -9999, py: -9999 };
+        let ripples = [];
+        let time = 0;
+        const maxRipples = 12;
+        const PALETTE = [
+          "139, 139, 253",
+          "129, 140, 248",
+          "99, 102, 241",
+          "148, 163, 255",
+          "110, 120, 250",
+        ];
+        const rand = (n) => {
+          const s = Math.sin(n) * 43758.5453123;
+          return s - Math.floor(s);
+        };
+        const noise = (x, y) => {
+          const i = Math.floor(x),
+            j = Math.floor(y),
+            f = x - i,
+            g = y - j;
+          const u = f * f * (3 - 2 * f),
+            v = g * g * (3 - 2 * g);
+          const a = rand(i + j * 157.0),
+            b = rand(i + 1 + j * 157.0),
+            c = rand(i + (j + 1) * 157.0),
+            d = rand(i + 1 + (j + 1) * 157.0);
+          return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+        };
+        let points = [];
+        const count = 100;
+        function resize() {
+          w = canvas.width = window.innerWidth * dpr;
+          h = canvas.height = window.innerHeight * dpr;
+          canvas.style.width = window.innerWidth + "px";
+          canvas.style.height = window.innerHeight + "px";
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          init();
+        }
+        function init() {
+          points = [];
+          const cw = window.innerWidth,
+            ch = window.innerHeight;
+          for (let i = 0; i < count; i++) {
+            points.push({
+              x: Math.random() * cw,
+              y: Math.random() * ch,
+              speed: 0.25 + Math.random() * 0.6,
+              size: Math.random() * 1.6 + 0.6,
+              hue: Math.random(),
+              life: Math.random() * 100,
+            });
+          }
+        }
+        function addRipple(x, y) {
+          ripples.push({ x, y, r: 0, max: 140 + Math.random() * 60, a: 0.4 });
+          if (ripples.length > maxRipples) ripples.shift();
+        }
+        function draw() {
+          ctx.clearRect(0, 0, w, h);
+          time += 0.0012;
+          const cw = window.innerWidth,
+            ch = window.innerHeight;
+          const mouseMoved =
+            Math.hypot(mouse.x - mouse.px, mouse.y - mouse.py) > 4;
+          for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            const n =
+              noise(p.x * 0.0016 + time * 5, p.y * 0.0016 + time * 3.5) *
+              Math.PI *
+              2;
+            let vx = Math.cos(n) * p.speed,
+              vy = Math.sin(n) * p.speed;
+            const dxm = mouse.x - p.x,
+              dym = mouse.y - p.y,
+              dm = Math.hypot(dxm, dym);
+            if (dm < 130 && mouseMoved) {
+              const pull = (1 - dm / 130) * 0.8;
+              vx += (dxm / (dm || 1)) * pull;
+              vy += (dym / (dm || 1)) * pull;
+            }
+            p.x += vx;
+            p.y += vy;
+            if (p.x < -20) p.x = cw + 20;
+            if (p.x > cw + 20) p.x = -20;
+            if (p.y < -20) p.y = ch + 20;
+            if (p.y > ch + 20) p.y = -20;
+            const tail = Math.cos(p.life) * 0.5 + 0.5;
+            const endX = p.x - vx * 5 * (0.5 + tail),
+              endY = p.y - vy * 5 * (0.5 + tail);
+            const grad = ctx.createLinearGradient(p.x, p.y, endX, endY);
+            const col = PALETTE[Math.floor(p.hue * PALETTE.length)];
+            grad.addColorStop(0, `rgba(${col},${0.18 + tail * 0.32})`);
+            grad.addColorStop(1, `rgba(${col},0)`);
+            ctx.strokeStyle = grad;
+            ctx.lineWidth = p.size * 0.55;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(endX, endY);
+            ctx.lineTo(p.x, p.y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size * 0.45, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${col},${0.28 + tail * 0.38})`;
+            ctx.fill();
+            p.life += 0.035;
+          }
+          for (let i = ripples.length - 1; i >= 0; i--) {
+            const r = ripples[i];
+            r.r += 3;
+            r.a *= 0.96;
+            if (r.r > r.max || r.a < 0.01) {
+              ripples.splice(i, 1);
+              continue;
+            }
+            ctx.beginPath();
+            ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(139,139,253,${r.a * 0.5})`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+          if (mouseMoved) {
+            const g = ctx.createRadialGradient(
+              mouse.x,
+              mouse.y,
+              0,
+              mouse.x,
+              mouse.y,
+              55,
+            );
+            g.addColorStop(0, "rgba(139,139,253,0.15)");
+            g.addColorStop(1, "rgba(139,139,253,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(mouse.x, mouse.y, 55, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          requestAnimationFrame(draw);
+        }
+        window.addEventListener("pointermove", (e) => {
+          mouse.px = mouse.x;
+          mouse.py = mouse.y;
+          mouse.x = e.clientX;
+          mouse.y = e.clientY;
+          if (Math.hypot(mouse.x - mouse.px, mouse.y - mouse.py) > 32)
+            addRipple(mouse.x, mouse.y);
+        });
+        window.addEventListener("pointerdown", (e) => {
+          for (let i = 0; i < 3; i++) {
+            setTimeout(
+              () =>
+                ripples.push({
+                  x: e.clientX,
+                  y: e.clientY,
+                  r: 0,
+                  max: 200,
+                  a: 0.7,
+                }),
+              i * 90,
+            );
+          }
+          if (ripples.length > maxRipples) ripples.shift();
+        });
+        resize();
+        draw();
+        window.addEventListener("resize", resize);
+      })();
+
+      // ===== Tab 切换 =====
+      function switchTab(tab) {
+        const loginTab = document.getElementById("tab-login");
+        const signupTab = document.getElementById("tab-signup");
+        const loginPanel = document.getElementById("login-panel");
+        const signupPanel = document.getElementById("signup-panel");
+        if (tab === "login") {
+          loginTab.classList.add("active");
+          signupTab.classList.remove("active");
+          loginPanel.classList.remove("hidden");
+          signupPanel.classList.add("hidden");
+        } else {
+          signupTab.classList.add("active");
+          loginTab.classList.remove("active");
+          signupPanel.classList.remove("hidden");
+          loginPanel.classList.add("hidden");
+        }
+      }
+
+      // ===== 模拟登录/注册 =====
+      function doLogin() {
+        const u = document.getElementById("username").value.trim() || "zheng";
+        // 演示：直接进入工作台
+        window.location.href = "mockup.html";
+      }
+      function doSignup() {
+        const u = document.getElementById("new-username").value.trim();
+        if (!u) {
+          document.getElementById("new-username").focus();
+          return;
+        }
+        window.location.href = "mockup.html";
+      }
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const signupVisible = !document
+            .getElementById("signup-panel")
+            .classList.contains("hidden");
+          if (signupVisible) doSignup();
+          else doLogin();
+        }
+      });
+    </script>
+  </body>
+</html>

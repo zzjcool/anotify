@@ -1,0 +1,12 @@
+{
+  "name": "web-verify",
+  "version": "1.0.0",
+  "description": "前端自我验证扩展：用 Playwright 打开 HTML/URL 检查渲染、错误、滚动与溢出",
+  "private": true,
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "playwright-core": "^1.47.0"
+  }
+}

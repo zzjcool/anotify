@@ -1,0 +1,16 @@
+{
+  "name": "anotify",
+  "version": "1.0.0",
+  "description": "用于在**公网（HTTPS）**环境下验证 iOS Safari 网页端通知机制的若干关键点。 通过 Cloudflare Tunnel（见根目录 `Makefile` / `tunnel.sh`）把本地静态页面暴露到公网。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright-core": "^1.62.1",
+    "web-push": "^3.6.7"
+  }
+}

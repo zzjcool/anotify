@@ -1,0 +1,10 @@
+# dependencies
+node_modules/
+
+# Web Push 密钥与订阅数据（含私钥，勿提交）
+vapid.json
+subscriptions.json
+
+# 日志
+*.log
+/tmp/

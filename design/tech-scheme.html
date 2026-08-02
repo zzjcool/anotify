@@ -1,0 +1,1684 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 技术方案 · 前后端路径分离 + CDN 加速</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+      }
+      code {
+        @apply rounded bg-zinc-100 px-1.5 py-0.5 text-[0.8em] font-mono text-zinc-800;
+      }
+      pre {
+        @apply rounded-xl bg-zinc-900 p-4 text-xs text-zinc-100 overflow-x-auto;
+      }
+      pre code {
+        @apply bg-transparent p-0 text-zinc-100;
+      }
+      .tag {
+        @apply inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold;
+      }
+      .tag-green {
+        @apply bg-emerald-50 text-emerald-700;
+      }
+      .tag-blue {
+        @apply bg-sky-50 text-sky-700;
+      }
+      .tag-amber {
+        @apply bg-amber-50 text-amber-700;
+      }
+      .tag-zinc {
+        @apply bg-zinc-100 text-zinc-600;
+      }
+      .box {
+        @apply rounded-xl border border-zinc-200 bg-white p-5;
+      }
+    </style>
+  </head>
+  <body class="bg-zinc-50 text-zinc-900 antialiased">
+    <!-- Header -->
+    <header
+      class="sticky top-0 z-40 w-full border-b border-zinc-200 bg-white/80 backdrop-blur"
+    >
+      <div
+        class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6"
+      >
+        <div class="flex items-center gap-2">
+          <div
+            class="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-white"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+              <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+            </svg>
+          </div>
+          <span class="text-base font-semibold tracking-tight">Anotify</span>
+          <span
+            class="hidden sm:inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500"
+            >技术方案 · v0.1</span
+          >
+        </div>
+        <nav
+          class="hidden md:flex items-center gap-1 text-sm font-medium text-zinc-600"
+        >
+          <a href="#product" class="rounded-md px-3 py-1.5 hover:bg-zinc-100"
+            >产品设计</a
+          >
+          <a href="#mq" class="rounded-md px-3 py-1.5 hover:bg-zinc-100"
+            >消息队列</a
+          >
+          <a href="#overview" class="rounded-md px-3 py-1.5 hover:bg-zinc-100"
+            >架构</a
+          >
+          <a href="#path" class="rounded-md px-3 py-1.5 hover:bg-zinc-100"
+            >路径分离</a
+          >
+          <a href="#cache" class="rounded-md px-3 py-1.5 hover:bg-zinc-100"
+            >CDN 缓存</a
+          >
+          <a href="#api" class="rounded-md px-3 py-1.5 hover:bg-zinc-100"
+            >API</a
+          >
+          <a href="#deploy" class="rounded-md px-3 py-1.5 hover:bg-zinc-100"
+            >部署</a
+          >
+        </nav>
+        <button
+          class="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700"
+        >
+          方案文档
+        </button>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-6xl px-4 py-8 sm:px-6 space-y-8">
+      <!-- 产品设计 -->
+      <section id="product" class="box">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="tag tag-blue">产品</span>
+          <h1 class="text-xl font-bold tracking-tight">Anotify · 产品设计</h1>
+        </div>
+        <p class="text-sm text-zinc-500 mt-1">
+          Agent
+          完成任务后，把通知自动送到你的所有设备。以下是产品定位、目标用户、核心功能与使用流程。
+        </p>
+
+        <!-- 产品定位 -->
+        <div class="mt-5 grid gap-4 md:grid-cols-3">
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-2xl">🎯</div>
+            <b class="mt-2 block text-sm">产品定位</b>
+            <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+              一个「完成即通知」的 Agent 通知平台。Agent 结束工作后通过事件 Hook
+              自动上报， 后端用 Web Push 把结果推送到用户的手机 / 桌面 /
+              网页，让用户无需盯着终端就能知道任务是否完成。
+            </p>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-2xl">👤</div>
+            <b class="mt-2 block text-sm">目标用户</b>
+            <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+              使用 AI 编码助手（pi、Claude Code 等）、CI
+              流水线、后台任务的开发者。 希望任务在后台跑时能及时收到完成 /
+              失败通知，而不是频繁刷新。
+            </p>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-2xl">💎</div>
+            <b class="mt-2 block text-sm">核心价值</b>
+            <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+              无需密码（Passkey）；无需轮询；支持 iOS / Mac / PC / Android
+              全端； 单二进制易部署；提供工作台管理通知与上报 Key。
+            </p>
+          </div>
+        </div>
+
+        <!-- 核心功能 -->
+        <div class="mt-6">
+          <div class="text-sm font-semibold mb-3">核心功能</div>
+          <div class="grid gap-3 md:grid-cols-2">
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <div class="flex items-center gap-2 text-sm">
+                <b>Agent 完成通知</b><span class="tag tag-green">核心</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500">
+                监听 Agent 结束事件，自动上报并推送完成 / 失败 / 中断状态。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <div class="flex items-center gap-2 text-sm">
+                <b>Passkey 无密码登录</b><span class="tag tag-blue">鉴权</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500">
+                输入用户名 + 生物识别 / 设备密钥一键登录，无需密码。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <div class="flex items-center gap-2 text-sm">
+                <b>API Key 上报</b><span class="tag tag-blue">接入</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500">
+                每个工作台生成一个 Key，Agent / 脚本用它 POST 上报通知。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <div class="flex items-center gap-2 text-sm">
+                <b>多端订阅推送</b><span class="tag tag-green">送达</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500">
+                iOS Safari（已验证）、Mac、PC、Android
+                均可订阅，一次推送全端到达。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 设备端管理 -->
+        <div class="mt-6">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="tag tag-green">多端管理</span>
+            <h2 class="text-base font-bold">设备端管理 · 按设备控制通知接收</h2>
+          </div>
+          <p class="text-sm text-zinc-500 mb-4">
+            每个用户可以查看并管理自己的所有设备，<b class="text-zinc-700"
+              >按设备粒度决定「哪些设备接收通知」</b
+            >。 服务端推送时只发给「已启用接收」的设备，实现精确的通知路由。
+          </p>
+
+          <div class="grid gap-4 md:grid-cols-2">
+            <!-- 设备管理功能列表 -->
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="text-sm font-semibold mb-3">设备管理能力</div>
+              <ul class="space-y-2 text-xs text-zinc-600">
+                <li class="flex gap-2">
+                  <span class="text-emerald-600">✓</span
+                  ><b>设备列表</b>：展示所有已订阅设备（平台 / 名称 / 最后活跃 /
+                  最后送达）
+                </li>
+                <li class="flex gap-2">
+                  <span class="text-emerald-600">✓</span
+                  ><b>接收开关</b>：每台设备一个开关，单独<b>启用 / 暂停</b
+                  >通知接收
+                </li>
+                <li class="flex gap-2">
+                  <span class="text-emerald-600">✓</span
+                  ><b>通知偏好</b>：按设备设置过滤级别（全量 / 仅错误 / 仅成功）
+                </li>
+                <li class="flex gap-2">
+                  <span class="text-emerald-600">✓</span
+                  ><b>重命名</b>：自定义设备名（如「办公室 Mac」「主力手机」）
+                </li>
+                <li class="flex gap-2">
+                  <span class="text-emerald-600">✓</span
+                  ><b>解绑 / 移除</b>：删除设备订阅，彻底停止接收
+                </li>
+              </ul>
+            </div>
+
+            <!-- 设备卡片示例 -->
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="text-sm font-semibold mb-3">设备管理界面（示例）</div>
+              <div class="space-y-2">
+                <div
+                  class="flex items-center justify-between rounded-lg border border-zinc-100 p-2"
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="text-lg">📱</span>
+                    <div>
+                      <div class="text-xs font-medium">
+                        主力手机 · iPhone 15
+                      </div>
+                      <div class="text-[10px] text-zinc-400">
+                        iOS Safari · 最近送达 2 分钟前
+                      </div>
+                    </div>
+                  </div>
+                  <span
+                    class="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-600"
+                    >接收中</span
+                  >
+                </div>
+                <div
+                  class="flex items-center justify-between rounded-lg border border-zinc-100 p-2"
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="text-lg">💻</span>
+                    <div>
+                      <div class="text-xs font-medium">
+                        办公室 Mac · MacBook Pro
+                      </div>
+                      <div class="text-[10px] text-zinc-400">
+                        macOS Safari · 最近送达 18 分钟前
+                      </div>
+                    </div>
+                  </div>
+                  <span
+                    class="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-600"
+                    >接收中</span
+                  >
+                </div>
+                <div
+                  class="flex items-center justify-between rounded-lg border border-zinc-100 p-2"
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="text-lg">🖥️</span>
+                    <div>
+                      <div class="text-xs font-medium">
+                        旧台式机 · Windows PC
+                      </div>
+                      <div class="text-[10px] text-zinc-400">
+                        Chrome · 已暂停
+                      </div>
+                    </div>
+                  </div>
+                  <span
+                    class="inline-flex rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-500"
+                    >已暂停</span
+                  >
+                </div>
+              </div>
+              <p class="mt-2 text-[10px] text-zinc-400">
+                每台设备右侧开关可切换接收状态；「已暂停」设备不再收到推送。
+              </p>
+            </div>
+          </div>
+
+          <!-- 推送路由逻辑 -->
+          <div class="mt-4 rounded-xl bg-zinc-50 p-4">
+            <div class="text-xs font-semibold text-zinc-700 mb-2">
+              服务端推送路由逻辑（按设备接收开关过滤）
+            </div>
+            <pre><code>收到上报 → 校验 Key → 定位用户
+        → 查询该用户所有已启用接收且匹配通知偏好的设备
+        → 逐设备 Web Push 推送（iOS→Apple / Android→FCM）
+        → 记录每台设备的送达 / 失败状态</code></pre>
+          </div>
+
+          <!-- 设备数据模型 -->
+          <div class="mt-4 rounded-xl border border-zinc-100 p-4">
+            <div class="text-xs font-semibold text-zinc-700 mb-2">
+              设备数据模型
+            </div>
+            <pre><code>Device {
+  id:         "dev_9f3a2c",
+  userId:     "usr_1",            <span class="text-zinc-400">// 所属用户</span>
+  name:       "主力手机",          <span class="text-zinc-400">// 用户自定义</span>
+  platform:   "ios" | "mac" | "win" | "android",
+  enabled:    true,               <span class="text-zinc-400">// 接收开关</span>
+  filter:     "all" | "error" | "success",   <span class="text-zinc-400">// 通知偏好</span>
+  push:       { endpoint, p256dh, auth },    <span class="text-zinc-400">// 订阅信息</span>
+  lastActive: "2026-08-01T08:00Z",
+  lastDelivered: "2026-08-01T08:12Z",
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- 用户流程 -->
+        <div class="mt-6 grid gap-4 md:grid-cols-2">
+          <div class="rounded-lg bg-zinc-50 p-4">
+            <div class="text-sm font-semibold mb-3">用户注册 · 登录流程</div>
+            <ol
+              class="relative space-y-3 border-l border-zinc-200 pl-4 text-xs text-zinc-600"
+            >
+              <li class="relative">
+                <span
+                  class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-zinc-900 text-[9px] text-white"
+                  >1</span
+                ><b>输入用户名</b> → 创建 Passkey
+              </li>
+              <li class="relative">
+                <span
+                  class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-zinc-900 text-[9px] text-white"
+                  >2</span
+                ><b>生物识别 / 设备密钥</b> 一键登录
+              </li>
+              <li class="relative">
+                <span
+                  class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-zinc-900 text-[9px] text-white"
+                  >3</span
+                >进入<b>工作台</b>，创建订阅 & 生成上报 Key
+              </li>
+            </ol>
+          </div>
+          <div class="rounded-lg bg-zinc-50 p-4">
+            <div class="text-sm font-semibold mb-3">Agent 上报 · 通知流程</div>
+            <ol
+              class="relative space-y-3 border-l border-zinc-200 pl-4 text-xs text-zinc-600"
+            >
+              <li class="relative">
+                <span
+                  class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] text-white"
+                  >1</span
+                >Agent 结束 → 事件 Hook 触发
+              </li>
+              <li class="relative">
+                <span
+                  class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] text-white"
+                  >2</span
+                >携带 Key <code>POST /v1/notify</code> 上报
+              </li>
+              <li class="relative">
+                <span
+                  class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] text-white"
+                  >3</span
+                >校验鉴权 → 分发到该用户所有设备 → Web Push 送达
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <!-- Passkey 跨设备登录 -->
+        <div class="mt-8">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="tag tag-blue">鉴权 · 多设备</span>
+            <h2 class="text-base font-bold">Passkey 跨设备登录怎么处理？</h2>
+          </div>
+          <p class="text-sm text-zinc-500 mb-4">
+            用户在电脑创建 Passkey，想在<b class="text-zinc-700">手机</b
+            >上登录时，手机不一定认得出电脑的 Passkey。 关键在于
+            <b class="text-zinc-700">Passkey 是否「同步」</b>。Anotify
+            同时支持以下三层方案，保证任何情况都能登录。
+          </p>
+
+          <!-- 三层方案 -->
+          <div class="space-y-3">
+            <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="tag tag-green">方案 A · 平台同步（首选）</span
+                ><b>依赖系统 Passkey 同步</b>
+              </div>
+              <p class="mt-1 text-xs text-zinc-600 leading-relaxed">
+                Passkey 若由<b>平台同步器</b>管理——Apple iCloud 钥匙串、Google
+                密码管理器、Microsoft
+                账户——会被自动同步到该用户<b>同一生态的所有设备</b>。 电脑创建的
+                Passkey 会出现在手机 / iPad 上（同一 Apple ID 或 Google
+                账户），用户<b>无需任何额外操作</b>，直接识别登录。
+                <span class="text-zinc-400">（多数用户的默认场景）</span>
+              </p>
+            </div>
+
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="tag tag-blue"
+                  >方案 B · 一次性连接引导新设备（推荐）</span
+                ><b>先临时获得登录态，再绑定新 Passkey</b>
+              </div>
+              <p class="mt-1 text-xs text-zinc-600 leading-relaxed">
+                当新设备无法识别已有 Passkey（跨生态或不同步）时，Anotify
+                提供「添加新设备」引导：用户在<b>已登录的电脑</b>上点「添加新设备」，
+                系统生成一个<b>一次性连接</b>（带短时效的临时登录 token）。
+                手机打开这个连接 → <b>临时获得登录态</b> → 引导为这台手机<b
+                  >创建一个绑定当前账号的新 Passkey</b
+                >。 绑定成功后手机即可独立免密登录，临时连接随之作废。
+              </p>
+            </div>
+
+            <div class="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="tag tag-amber">方案 C · 恢复码（终极兜底）</span
+                ><b>一次性恢复码备用登录</b>
+              </div>
+              <p class="mt-1 text-xs text-zinc-600 leading-relaxed">
+                注册成功后，Anotify 生成一组<b>一次性恢复码</b>（类似 2FA
+                备用码），用户妥善保存。 若用户丢失所有设备、无法用 Passkey
+                登录，可用<b>用户名 + 恢复码</b>登录，再为新设备注册新 Passkey。
+                <span class="text-zinc-400"
+                  >（恢复码一次性使用，用后作废，可重新生成）</span
+                >
+              </p>
+            </div>
+          </div>
+
+          <!-- 决策流程 -->
+          <div class="mt-4 rounded-xl bg-zinc-50 p-4">
+            <div class="text-xs font-semibold text-zinc-700 mb-2">
+              登录时服务端的处理逻辑
+            </div>
+            <pre><code>用户输入用户名
+  → 用条件中介(conditional)查找该设备是否有匹配的同步 Passkey
+     ├─ 有  → 直接通过（方案 A：平台已同步）
+     └─ 无  →
+        ├─ 若该用户还有其它凭证可用 → 提示用恢复码 / 已有方式登录
+        └─ 首次新设备 → 引导「为这台设备创建新的 Passkey」（方案 B）
+                  → 或使用恢复码（方案 C）登录后补建 Passkey</code></pre>
+          </div>
+
+          <!-- 一次性连接引导新设备：时序 -->
+          <div
+            class="mt-4 rounded-xl bg-zinc-900 p-5 text-[11px] leading-relaxed"
+          >
+            <div class="text-zinc-400 font-mono mb-1">
+              // 方案 B · 电脑引导手机绑定新 Passkey（一次性连接）
+            </div>
+            <pre
+              class="text-zinc-100"
+            ><code> 电脑（已登录）        Anotify 后端            手机（新设备）
+    │                    │                        │
+    │ ① 点「添加新设备」   │                        │
+    │────── POST /v1/devices/pair-link ────▶        │
+    │                    │ ② 生成一次性临时 token   │
+    │                    │    短时效 + 仅一次       │
+    │◀────── 返回链接（可扫二维码）───────        │
+    │                    │                        │
+    │                    │       ③ 打开一次性链接    │
+    │                    │◀────────────────────────│
+    │                    │ ④ 校验 token，授予临时登录态 │
+    │                    │ ⑤ 引导创建新 Passkey     │
+    │                    │◀───── credentials.create ──│
+    │                    │ ⑥ 绑定到当前账号，token 作废 │
+    │                    │                        │
+    │                    │ ⑦ 手机此后可独立免密登录 ◀─│
+</code></pre>
+          </div>
+
+          <!-- 一次性链接要点 -->
+          <div class="mt-4 grid gap-3 md:grid-cols-3 text-xs">
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">⏱️ 时效</b>
+              <span class="text-zinc-500"
+                >临时 token 短时效（如 5
+                分钟）且只能使用一次，防止长期有效被滥用。</span
+              >
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">🔗 传递方式</b>
+              <span class="text-zinc-500"
+                >电脑端展示二维码 /
+                链接，手机扫码或手动打开；手机获得登录态后即可补建
+                Passkey。</span
+              >
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">🔐 安全</b>
+              <span class="text-zinc-500"
+                >token 仅用于「一次临时登录」，绑定 Passkey
+                后即作废；可用于中途传输加密。</span
+              >
+            </div>
+          </div>
+        </div>
+
+        <!-- 页面结构 -->
+        <div class="mt-6">
+          <div class="text-sm font-semibold mb-3">工作台页面结构</div>
+          <div class="grid gap-3 md:grid-cols-3 text-xs text-zinc-500">
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">📊 仪表盘</b
+              >通知统计、送达率、趋势图、最近通知列表
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">🔑 API Keys</b>查看 / 新建 /
+              停用上报 Key，归属工作台
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">📱 通知目标</b
+              >已订阅设备列表、订阅二维码 / 链接、解绑
+            </div>
+          </div>
+        </div>
+
+        <!-- 通知完成机制 -->
+        <div class="mt-8">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="tag tag-green">核心机制</span>
+            <h2 class="text-base font-bold">通知是如何完成的？</h2>
+          </div>
+          <p class="text-sm text-zinc-500 mb-4">
+            从 Agent 结束工作到设备弹出通知，一条通知经过
+            <b class="text-zinc-700"
+              >事件触发 → 上报 → 鉴权 → 路由 → Web Push → Service Worker →
+              显示</b
+            >
+            六个环节。下面分别说明每个环节。
+          </p>
+
+          <!-- 六环节 overview -->
+          <div class="grid gap-2 md:grid-cols-6 text-center text-xs">
+            <div class="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <div class="text-lg">1️⃣</div>
+              <b class="text-zinc-700">事件触发</b>
+              <div class="text-zinc-400">Agent 端</div>
+            </div>
+            <div class="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <div class="text-lg">2️⃣</div>
+              <b class="text-zinc-700">上报</b>
+              <div class="text-zinc-400">POST /v1/notify</div>
+            </div>
+            <div class="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <div class="text-lg">3️⃣</div>
+              <b class="text-zinc-700">鉴权</b>
+              <div class="text-zinc-400">校验 API Key</div>
+            </div>
+            <div class="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <div class="text-lg">4️⃣</div>
+              <b class="text-zinc-700">路由</b>
+              <div class="text-zinc-400">定位设备</div>
+            </div>
+            <div class="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <div class="text-lg">5️⃣</div>
+              <b class="text-zinc-700">Web Push</b>
+              <div class="text-zinc-400">服务端推送</div>
+            </div>
+            <div class="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <div class="text-lg">6️⃣</div>
+              <b class="text-zinc-700">显示</b>
+              <div class="text-zinc-400">设备弹通知</div>
+            </div>
+          </div>
+
+          <!-- 时序图 -->
+          <div
+            class="mt-5 rounded-xl bg-zinc-900 p-5 text-[11px] leading-relaxed"
+          >
+            <div class="text-zinc-400 font-mono">// 通知完成时序</div>
+            <pre
+              class="mt-2 text-zinc-100"
+            ><code> Agent(pi)              Anotify 后端(Go)          WebPush 服务(Apple)          设备(iOS/Mac)
+    │                         │                          │                            │
+    │ ① 监听 agent_settled     │                          │                            │
+    │ 事件 Hook 自动触发       │                          │                            │
+    │    │                     │                          │                            │
+    │ ② POST /v1/notify ─────▶│                          │                            │
+    │    { key, agentId, status… }                         │                            │
+    │                         │ ③ 校验 API Key            │                            │
+    │                         │ ④ 查该用户所有设备订阅     │                            │
+    │                         │ ⑤ 加密载荷 + VAPID 签名   │                            │
+    │                         │──────── ⑥ 推送请求 ──────▶│                            │
+    │                         │       (endpoint)          │──────── ⑦ APNs 下发 ──────▶│
+    │                         │                          │          (iOS / Mac)         │
+    │                         │                          │                            │
+    │                         │                          │ ⑧ Service Worker 收到 push   │
+    │                         │                          │    showNotification()        │
+    │                         │                          │                            │
+    │                         │                          │ ⑨ 系统弹出通知横幅  ◀───────│
+</code></pre>
+          </div>
+
+          <!-- 分环节详解 -->
+          <div class="mt-5 space-y-3">
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="font-bold">① 事件触发（Agent 端 · pi 扩展）</span
+                ><span class="tag tag-blue">Hook</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+                用户在 pi 安装 Anotify 扩展，扩展监听
+                <code>agent_settled</code> 事件——该事件在 Agent
+                真正结束（无重试、无后续任务）后触发。 扩展自动收集
+                <code>agentId / cwd / status / durationMs / model</code>
+                等上下文。 也可以显式调用自定义工具
+                <code>notify</code> 上报更丰富的内容（中间进度、自定义标题）。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="font-bold">② 上报（HTTP 契约）</span
+                ><span class="tag tag-green">接口</span>
+              </div>
+              <pre class="mt-2"><code>POST https://api.anotify.dev/v1/notify
+Authorization: Bearer ant_live_xxx
+Content-Type: application/json
+
+{ "agentId": "build-01", "sessionId": "sess_8f3a", "cwd": "/repo",
+  "status": "success", "durationMs": 24000, "title": "部署完成",
+  "body": "构建成功", "model": "claude-4", "link": "pi://sess_8f3a" }</code></pre>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="font-bold">③ 鉴权 + ④ 路由（服务端）</span
+                ><span class="tag tag-amber">后端</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+                Go 后端用 API Key 的 <b>哈希</b> 在数据库查找对应工作台 →
+                定位所属用户。 然后查询该用户所有<b>已订阅设备</b>（iOS / Mac /
+                PC / Android 的 push endpoint 与密钥）。 若无已订阅设备，则返回
+                400 提示先订阅。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="font-bold"
+                  >⑤⑥⑦ Web Push 推送（服务端 → Apple 服务）</span
+                ><span class="tag tag-green">推送</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+                服务端用 <code>web-push</code> 对通知载荷做
+                <b>端到端加密</b>（用订阅的 p256dh / auth 密钥）， 用 VAPID
+                私钥签名，POST 到设备的 <code>endpoint</code>。 对 iOS / Mac 是
+                Apple 的 <code>web.push.apple.com</code>，对 PC / Android 是 FCM
+                或各浏览器服务。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="font-bold">⑧⑨ 接收与显示（设备端）</span
+                ><span class="tag tag-blue">前端</span>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+                设备浏览器已注册 Service Worker（<code>sw.js</code>）并订阅。
+                Apple 服务通过 APNs 下发 → 浏览器唤醒 Service Worker → 触发
+                <code>push</code> 事件 → 调用
+                <code>showNotification()</code> 展示通知横幅。
+                <b>即使 App 已切后台或被关闭也能收到</b>——这是 Web Push
+                的核心价值。
+              </p>
+            </div>
+          </div>
+
+          <!-- 关键前提卡片 -->
+          <div class="mt-5 grid gap-3 md:grid-cols-3 text-xs">
+            <div class="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <b class="text-amber-700 block">⚠️ iOS 前提</b>
+              <span class="text-amber-600"
+                >必须先把站点「添加到主屏幕」standalone 运行，否则 Safari 不提供
+                Notification / Push API。</span
+              >
+            </div>
+            <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <b class="text-emerald-700 block">✅ 已验证</b>
+              <span class="text-emerald-600"
+                >本仓库已完成 iOS Safari 的订阅 +
+                服务端推送全链路实测，后台状态也能送达。</span
+              >
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">🔒 安全</b>
+              <span class="text-zinc-500"
+                >载荷端到端加密，API Key 仅存哈希，VAPID 私钥只在服务端。</span
+              >
+            </div>
+          </div>
+
+          <!-- 安卓平台专项 -->
+          <div class="mt-8">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="tag tag-blue">多端 · 安卓</span>
+              <h2 class="text-base font-bold">安卓（Android）的通知机制</h2>
+            </div>
+            <p class="text-sm text-zinc-500 mb-4">
+              安卓的 Web Push 与 iOS 机制不同：走
+              <b class="text-zinc-700">FCM</b> 而非 Apple 服务， 而且<b
+                class="text-zinc-700"
+                >不需要「添加到主屏幕」</b
+              >——这是安卓相对 iOS 的一大便利。
+            </p>
+
+            <div class="grid gap-4 md:grid-cols-2">
+              <!-- 安卓 vs iOS 对比 -->
+              <div class="rounded-xl border border-zinc-100 overflow-hidden">
+                <div
+                  class="px-4 py-2 bg-zinc-50 border-b border-zinc-100 text-sm font-semibold"
+                >
+                  iOS vs Android 差异
+                </div>
+                <table class="w-full text-xs">
+                  <thead>
+                    <tr class="border-b border-zinc-100 text-zinc-500">
+                      <th class="px-3 py-2 text-left font-medium">维度</th>
+                      <th class="px-3 py-2 text-left font-medium">
+                        iOS Safari
+                      </th>
+                      <th class="px-3 py-2 text-left font-medium">
+                        Android Chrome
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-zinc-50 text-zinc-600">
+                    <tr>
+                      <td class="px-3 py-2">推送服务</td>
+                      <td class="px-3 py-2">Apple APNs</td>
+                      <td class="px-3 py-2">FCM (Firebase)</td>
+                    </tr>
+                    <tr>
+                      <td class="px-3 py-2">需添加到主屏幕</td>
+                      <td class="px-3 py-2">
+                        <span class="text-amber-600">✅ 必须</span>
+                      </td>
+                      <td class="px-3 py-2">
+                        <span class="text-emerald-600">❌ 不需要</span>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td class="px-3 py-2">权限请求</td>
+                      <td class="px-3 py-2">仅 standalone 可用</td>
+                      <td class="px-3 py-2">普通标签页即可</td>
+                    </tr>
+                    <tr>
+                      <td class="px-3 py-2">支持起始</td>
+                      <td class="px-3 py-2">iOS 16.4+</td>
+                      <td class="px-3 py-2">Chrome 2017+</td>
+                    </tr>
+                    <tr>
+                      <td class="px-3 py-2">后台送达</td>
+                      <td class="px-3 py-2">支持</td>
+                      <td class="px-3 py-2">支持</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- 安卓订阅流程 -->
+              <div class="rounded-xl border border-zinc-100 p-4">
+                <div class="text-sm font-semibold mb-3">
+                  安卓订阅流程（无需安装）
+                </div>
+                <ol
+                  class="relative space-y-3 border-l border-zinc-200 pl-4 text-xs text-zinc-600"
+                >
+                  <li class="relative">
+                    <span
+                      class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] text-white"
+                      >1</span
+                    >在 <b>Chrome / Edge</b> 打开 Anotify 工作台「通知目标」页
+                  </li>
+                  <li class="relative">
+                    <span
+                      class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] text-white"
+                      >2</span
+                    >点击「订阅」→ 浏览器直接弹权限请求（无需主屏幕）
+                  </li>
+                  <li class="relative">
+                    <span
+                      class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] text-white"
+                      >3</span
+                    >允许后自动注册 Service Worker + PushManager 订阅
+                  </li>
+                  <li class="relative">
+                    <span
+                      class="absolute -left-[17px] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] text-white"
+                      >4</span
+                    >订阅信息上报后端 → 服务端即可向该设备 FCM endpoint 推送
+                  </li>
+                </ol>
+              </div>
+            </div>
+
+            <!-- 推送链路：安卓走 FCM -->
+            <div
+              class="mt-4 rounded-xl bg-zinc-900 p-5 text-[11px] leading-relaxed"
+            >
+              <div class="text-zinc-400 font-mono">
+                // 安卓推送链路（走 FCM）
+              </div>
+              <pre
+                class="mt-2 text-zinc-100"
+              ><code> Anotify 后端(Go)              FCM (Firebase)              Android 设备
+    │                              │                            │
+    │ ① 加密载荷 + VAPID 签名      │                            │
+    │ ② POST 到订阅的 endpoint ───▶│   (https://fcm.googleapis.com/…)   │
+    │                              │ ③ FCM 下发到设备             │
+    │                              │────────────▶│ 设备弹出通知
+    │                              │            │ (无需安装 / 无需主屏幕)
+</code></pre>
+            </div>
+
+            <!-- 兼容性说明 -->
+            <div class="mt-4 grid gap-3 md:grid-cols-2 text-xs">
+              <div class="rounded-lg border border-zinc-100 p-3">
+                <b class="text-zinc-700 block">⚠️ 浏览器兼容性</b>
+                <span class="text-zinc-500"
+                  >安卓 Web Push 依赖浏览器实现。<b>Chrome、Edge、Firefox</b>
+                  支持；微信内置浏览器、部分国产自带浏览器不支持。</span
+                >
+              </div>
+              <div class="rounded-lg border border-zinc-100 p-3">
+                <b class="text-zinc-700 block">✅ 统一方案</b>
+                <span class="text-zinc-500"
+                  >Anotify 后端对多端统一走标准 Web Push（web-push 库），按
+                  endpoint 自动路由：iOS/Mac 到 Apple，Android/PC 到
+                  FCM，无需区分平台。</span
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 消息队列抽象 -->
+      <section id="mq" class="box">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="tag tag-green">架构 · 核心决策</span>
+          <h1 class="text-xl font-bold tracking-tight">
+            消息队列抽象 · 数据库先行，预留 MQ 演进
+          </h1>
+        </div>
+        <p class="text-sm text-zinc-500 mt-1">
+          Anotify 的通知推送本质是一套
+          <b class="text-zinc-700">pub/sub 消息队列</b>。
+          为兼顾「单二进制易自托管」与「未来可扩展」，我们把队列抽象成接口：
+          <b class="text-zinc-700"
+            >前期用 SQLite 实现，后期可平滑替换为 NATS / Redis Streams /
+            Kafka</b
+          >，业务代码零改动。
+        </p>
+
+        <!-- MQ 概念映射 -->
+        <div class="mt-5">
+          <div class="text-sm font-semibold mb-3">
+            它和 MQ 是一回事 · 概念映射
+          </div>
+          <div class="rounded-xl border border-zinc-100 overflow-hidden">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="border-b border-zinc-100 bg-zinc-50 text-zinc-500">
+                  <th class="px-3 py-2 text-left font-medium">MQ 概念</th>
+                  <th class="px-3 py-2 text-left font-medium">Anotify 对应</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-zinc-50 text-zinc-600">
+                <tr>
+                  <td class="px-3 py-2">Producer 生产者</td>
+                  <td class="px-3 py-2">
+                    Agent（<code>POST /v1/notify</code> 上报）
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Message 消息</td>
+                  <td class="px-3 py-2">
+                    Notification（title/status/body/deviceTags…）
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Topic / Routing key</td>
+                  <td class="px-3 py-2"><code>deviceTags</code> 标签路由键</td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Broker / Exchange</td>
+                  <td class="px-3 py-2">后端路由分发器</td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Consumer 消费者</td>
+                  <td class="px-3 py-2">
+                    WebSocket 长连接 + Web Push 订阅（两类消费端）
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Consumer group</td>
+                  <td class="px-3 py-2">一个用户的所有接收设备</td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Offset 位移</td>
+                  <td class="px-3 py-2">
+                    <code>Last-Event-Id</code> / <code>resume_token</code>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Ack 确认</td>
+                  <td class="px-3 py-2">WebSocket 的 <code>ack</code> 帧</td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2">Retention / TTL</td>
+                  <td class="px-3 py-2">
+                    24h 重放缓冲 · 通知 <code>ttl</code>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Broker 接口 -->
+        <div class="mt-6">
+          <div class="text-sm font-semibold mb-2">Broker 抽象接口（Go）</div>
+          <p class="text-xs text-zinc-500 mb-3">
+            抽象边界划在 <code>Publish / Subscribe / Ack / Replay</code> 上，<b
+              class="text-zinc-700"
+              >不在</b
+            >
+            HTTP 或 WS 处理器上——这样两条接收通道都只是 Broker 的消费者。
+          </p>
+          <pre><code>type Message struct {
+    ID         string    // 消息 ID
+    UserID     string    // 所属用户
+    Title      string    // 标题
+    Status     string    // success|error|interrupted|info|warning
+    Body       string    // 正文
+    Link       string    // 深链
+    DeviceTags []string  // 路由键（= topic）
+    Priority   string    // 优先级
+    TTLSeconds int       // 有效期
+    CreatedAt  time.Time
+}
+
+type Broker interface {
+    // 生产：Agent 上报 → 入队
+    Publish(ctx context.Context, msg *Message) error
+
+    // 消费：订阅某用户的通知流；tags 为空 = 全订阅
+    Subscribe(ctx context.Context, userID string, tags []string) (Subscription, error)
+
+    // 确认：标记消息已被某消费者处理（at-least-once）
+    Ack(ctx context.Context, msgID, consumerID string) error
+
+    // 重放：断线续传，返回 sinceID 之后未确认的消息
+    Replay(ctx context.Context, userID, sinceID string, limit int) ([]*Message, error)
+
+    Close() error
+}</code></pre>
+        </div>
+
+        <!-- 两条通道都是消费者 -->
+        <div class="mt-6">
+          <div class="text-sm font-semibold mb-2">
+            两条接收通道都是 Broker 的消费者
+          </div>
+          <div class="rounded-xl bg-zinc-900 p-5 text-[11px] leading-relaxed">
+            <pre
+              class="text-zinc-100"
+            ><code> Agent ─POST→ /v1/notify ─→ broker.Publish(msg)
+                                          │
+                              ┌───────────┴───────────┐
+                              ▼                       ▼
+                      WS 派发器 (消费者1)        Push 派发器 (消费者2)
+                      Subscribe(userID, tags)   Subscribe(userID, nil)
+                              │                       │
+                      写 WebSocket 帧            逐设备 Web Push 发送</code></pre>
+          </div>
+          <div class="mt-3 grid gap-3 md:grid-cols-2 text-xs">
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">标签路由 → Broker 侧</b>
+              <span class="text-zinc-500"
+                >订阅时按 <code>deviceTags</code> 过滤，相当于 topic
+                subscription，只把匹配的消息推给该消费者。</span
+              >
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-700 block">状态过滤 → 消费者侧</b>
+              <span class="text-zinc-500"
+                >all/error/success
+                是每台设备的偏好，由派发器在发送前逐设备判断，与标签路由相互独立。</span
+              >
+            </div>
+          </div>
+        </div>
+
+        <!-- 演进路径 -->
+        <div class="mt-6">
+          <div class="text-sm font-semibold mb-3">
+            演进路径 · 数据库先行，按需接 MQ
+          </div>
+          <div class="grid gap-3 md:grid-cols-3">
+            <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <div class="flex items-center gap-2">
+                <span class="tag tag-green">现在</span
+                ><b class="text-sm">SQLiteBroker</b>
+              </div>
+              <p class="mt-1.5 text-xs text-zinc-600 leading-relaxed">
+                单机自托管默认。单二进制零依赖：<code>messages</code>
+                表即队列，进程内派发 +
+                定时清理过期消息。个人/小团队通知量完全够用。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2">
+                <span class="tag tag-blue">中期</span
+                ><b class="text-sm">NATS / Redis Streams</b>
+              </div>
+              <p class="mt-1.5 text-xs text-zinc-500 leading-relaxed">
+                多副本部署、接收插件变多时接入。轻量级持久订阅，运维成本低，适合大多数规模。
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-4">
+              <div class="flex items-center gap-2">
+                <span class="tag tag-amber">远期</span
+                ><b class="text-sm">Kafka / RabbitMQ</b>
+              </div>
+              <p class="mt-1.5 text-xs text-zinc-500 leading-relaxed">
+                大规模、多团队、高吞吐场景。生态最全，但自托管较重，作为可选而非默认。
+              </p>
+            </div>
+          </div>
+          <div
+            class="mt-4 rounded-xl bg-zinc-50 p-4 text-xs text-zinc-600 leading-relaxed"
+          >
+            <b class="text-zinc-800">为什么数据库先行是对的：</b>
+            Anotify 的核心价值是「单二进制易自托管」。若一开始强依赖
+            Kafka/NATS，会劝退绝大多数自托管用户。
+            接口抽象让早期用户不被锁死——规模上去后改配置注入 MQ
+            实现即可，HTTP/WS 处理器与业务逻辑零改动。 这也是
+            Gitea（进程内→Redis 队列）、n8n（内存→Bull/Redis queue
+            mode）验证过的成熟路径。
+          </div>
+        </div>
+      </section>
+
+      <!-- SQLiteBroker 实现 -->
+      <section id="mq-sqlite" class="box">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="tag tag-green">落地 · 表结构</span>
+          <h2 class="text-xl font-bold tracking-tight">
+            SQLiteBroker 实现 · 表结构 / 索引 / 过期清理
+          </h2>
+        </div>
+        <p class="text-sm text-zinc-500 mt-1">
+          Phase 1 单机部署时，WS 连接与 notify 处理器在<b class="text-zinc-700"
+            >同一进程</b
+          >，因此队列是「两条路径」的合体：
+          <b class="text-zinc-700">进程内广播</b>负责实时（快），<b
+            class="text-zinc-700"
+            >DB 表</b
+          >负责回放 / 历史 / 崩溃恢复（稳）。 Broker 接口隐藏这个二分，换 MQ
+          时由 MQ 同时接管两条路径。
+        </p>
+
+        <!-- PRAGMA + messages -->
+        <div class="mt-5">
+          <div class="text-sm font-semibold mb-2">① 初始化与消息表</div>
+          <pre><code><span class="text-zinc-500">-- 连接初始化 PRAGMA</span>
+PRAGMA journal_mode = WAL;      <span class="text-zinc-500">-- 单写多读：notify 写入时，WS 派发器可读</span>
+PRAGMA synchronous  = NORMAL;   <span class="text-zinc-500">-- 持久性/性能平衡</span>
+PRAGMA busy_timeout = 5000;     <span class="text-zinc-500">-- 写锁等待 5s</span>
+PRAGMA foreign_keys = ON;       <span class="text-zinc-500">-- deliveries 级联删除</span>
+
+<span class="text-zinc-500">-- messages：消息日志（队列 + 历史，单一事实源）</span>
+CREATE TABLE messages (
+    id           TEXT PRIMARY KEY,             <span class="text-zinc-500">-- KSUID，如 "ntf_01J8XA…"（全局唯一、时间有序）</span>
+    user_id      TEXT NOT NULL,                <span class="text-zinc-500">-- 分区键：按用户隔离</span>
+    seq          INTEGER NOT NULL,             <span class="text-zinc-500">-- 每用户单调递增序号（= replay 的 offset）</span>
+    title        TEXT NOT NULL,
+    status       TEXT NOT NULL,                <span class="text-zinc-500">-- success|error|interrupted|info|warning</span>
+    body         TEXT NOT NULL DEFAULT '',
+    link         TEXT NOT NULL DEFAULT '',
+    device_tags  TEXT NOT NULL DEFAULT '[]',   <span class="text-zinc-500">-- JSON 数组（路由键，broker 侧过滤）</span>
+    priority     TEXT NOT NULL DEFAULT 'normal',
+    ttl_seconds  INTEGER NOT NULL DEFAULT 86400,
+    payload      TEXT NOT NULL,                <span class="text-zinc-500">-- 完整 JSON（含 metadata/agentId 等未规范化字段）</span>
+    created_at   INTEGER NOT NULL,             <span class="text-zinc-500">-- unixepoch 秒</span>
+    expires_at   INTEGER NOT NULL,             <span class="text-zinc-500">-- created_at + ttl（可投递截止）</span>
+    UNIQUE (user_id, seq)
+);</code></pre>
+        </div>
+
+        <!-- consumer_offsets + deliveries -->
+        <div class="mt-5 grid gap-4 md:grid-cols-2">
+          <div>
+            <div class="text-sm font-semibold mb-2">② 持久消费者位移</div>
+            <pre><code><span class="text-zinc-500">-- durable consumer（给稳定插件用）</span>
+CREATE TABLE consumer_offsets (
+    consumer_id  TEXT NOT NULL,             <span class="text-zinc-500">-- 如 "home-bridge"</span>
+    user_id      TEXT NOT NULL,
+    last_seq     INTEGER NOT NULL DEFAULT 0,<span class="text-zinc-500">-- high-water mark</span>
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (consumer_id, user_id)
+);</code></pre>
+          </div>
+          <div>
+            <div class="text-sm font-semibold mb-2">③ 投递记录（观测性）</div>
+            <pre><code><span class="text-zinc-500">-- 仪表盘 "3/4 设备已送达" 的数据源</span>
+CREATE TABLE deliveries (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id   TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    consumer_id  TEXT NOT NULL,             <span class="text-zinc-500">-- 设备 / 连接</span>
+    channel      TEXT NOT NULL,             <span class="text-zinc-500">-- webpush | websocket</span>
+    status       TEXT NOT NULL,             <span class="text-zinc-500">-- pending|sent|delivered|acked|failed</span>
+    error        TEXT NOT NULL DEFAULT '',  <span class="text-zinc-500">-- 失败原因（如 410 Gone）</span>
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);</code></pre>
+          </div>
+        </div>
+
+        <!-- 索引 -->
+        <div class="mt-5">
+          <div class="text-sm font-semibold mb-2">
+            索引（就 3 个，各有明确用途）
+          </div>
+          <pre><code>CREATE UNIQUE INDEX idx_messages_user_seq     ON messages(user_id, seq);       <span class="text-zinc-500">-- 回放/按用户读取的核心</span>
+CREATE        INDEX idx_messages_user_created ON messages(user_id, created_at); <span class="text-zinc-500">-- 历史列表 + 统计 + 保留清理</span>
+CREATE        INDEX idx_messages_expires      ON messages(expires_at);          <span class="text-zinc-500">-- 可投递性检查</span>
+CREATE        INDEX idx_deliveries_msg        ON deliveries(message_id);
+CREATE        INDEX idx_deliveries_consumer   ON deliveries(consumer_id, updated_at);</code></pre>
+          <p class="mt-2 text-xs text-zinc-500">
+            <code>device_tags</code> 是 JSON 数组，<b class="text-zinc-700"
+              >不走 SQL 索引</b
+            >——标签过滤在派发器进程内做（个人量级足够）。 将来若需在 SQL
+            层按标签查，再拆
+            <code>message_tags(message_id, tag)</code>
+            关联表（现在属过度设计）。
+          </p>
+        </div>
+
+        <!-- 核心流程 SQL -->
+        <div class="mt-5">
+          <div class="text-sm font-semibold mb-2">三个核心流程</div>
+          <div class="grid gap-4 md:grid-cols-3">
+            <div>
+              <div class="text-xs font-medium text-zinc-700 mb-1.5">
+                Publish（seq 事务内生）
+              </div>
+              <pre><code>BEGIN IMMEDIATE;
+SELECT COALESCE(MAX(seq),0)+1
+  FROM messages WHERE user_id=?;
+INSERT INTO messages (...) VALUES (...);
+COMMIT;</code></pre>
+            </div>
+            <div>
+              <div class="text-xs font-medium text-zinc-700 mb-1.5">
+                Replay（断线续传）
+              </div>
+              <pre><code>SELECT * FROM messages
+WHERE user_id=? AND seq>?
+ORDER BY seq ASC LIMIT ?;
+<span class="text-zinc-500">-- ? = Last-Event-Id 或 durable offset</span></code></pre>
+            </div>
+            <div>
+              <div class="text-xs font-medium text-zinc-700 mb-1.5">
+                Ack（high-water 只前进）
+              </div>
+              <pre><code>INSERT INTO consumer_offsets
+VALUES (?,?,?,?)
+ON CONFLICT(consumer_id,user_id)
+DO UPDATE SET
+  last_seq=MAX(last_seq, excluded.last_seq);</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- 过期清理 -->
+        <div class="mt-5">
+          <div class="text-sm font-semibold mb-2">
+            过期清理 · 分清两种「保留」
+          </div>
+          <div class="rounded-xl border border-zinc-100 overflow-hidden">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="border-b border-zinc-100 bg-zinc-50 text-zinc-500">
+                  <th class="px-3 py-2 text-left font-medium"></th>
+                  <th class="px-3 py-2 text-left font-medium">回放（queue）</th>
+                  <th class="px-3 py-2 text-left font-medium">
+                    历史（dashboard）
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-zinc-50 text-zinc-600">
+                <tr>
+                  <td class="px-3 py-2 font-medium">用途</td>
+                  <td class="px-3 py-2">WS 断线补漏</td>
+                  <td class="px-3 py-2">「最近通知」列表 / 统计</td>
+                </tr>
+                <tr>
+                  <td class="px-3 py-2 font-medium">保留</td>
+                  <td class="px-3 py-2">短（逻辑窗口 ~24h）</td>
+                  <td class="px-3 py-2">长（如 90 天，可配）</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <pre
+            class="mt-3"
+          ><code><span class="text-zinc-500">-- 只用一张 messages 表，不拆两个表：</span>
+<span class="text-zinc-500">-- expires_at 只控制「还可不可投递」（投递器发送前判断，不删历史）</span>
+<span class="text-zinc-500">-- 历史保留单独清，deliveries 级联删</span>
+DELETE FROM messages WHERE created_at < unixepoch() - ?;  <span class="text-zinc-500">-- retention_seconds（默认 90 天）</span></code></pre>
+        </div>
+      </section>
+
+      <!-- Overview -->
+      <section id="overview" class="box">
+        <div class="flex items-center gap-2">
+          <span class="tag tag-blue">核心</span>
+          <h1 class="text-xl font-bold tracking-tight">
+            前后端路径分离 · 为 CDN 缓存加速设计
+          </h1>
+        </div>
+        <p class="mt-2 text-sm text-zinc-500 leading-relaxed">
+          Anotify 采用
+          <b class="text-zinc-700">静态资源与 API 路径彻底分离</b>
+          的架构：前端产物部署到独立静态路径， 可整体交给 CDN 做长缓存；后端 API
+          走独立路径，响应不被缓存、保证实时性。 这样既能利用 CDN
+          全球加速大幅降低静态资源加载耗时，又不会破坏通知/订阅等动态接口的时效性。
+        </p>
+
+        <!-- Key design decisions -->
+        <div class="mt-5 grid gap-3 md:grid-cols-2">
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-lg">🛣️</span
+              ><b class="text-sm">静态 / 动态 分域名</b>
+            </div>
+            <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+              前端静态资源挂在 <code>cdn.anotify.dev</code>（走
+              CDN，长缓存），API 走
+              <code>api.anotify.dev</code>（不缓存）。同一份 Go
+              二进制，路由按路径 / Host 分发。
+            </p>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-lg">🗃️</span
+              ><b class="text-sm">embed.FS 内嵌前端</b>
+            </div>
+            <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+              构建期把前端 <code>dist/</code> 用
+              <code>go:embed</code> 打进二进制，单文件分发；运行时按需开启 CDN
+              前缀重写，开发/生产零切换成本。
+            </p>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-lg">🖼️</span
+              ><b class="text-sm">Content-Hash 指纹</b>
+            </div>
+            <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+              打包工具给 JS/CSS
+              文件名加内容哈希（<code>app.a1b2c3.js</code>），CDN 可
+              <b>无限期缓存</b>（immutable），发版只换文件名。
+            </p>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-lg">🧭</span><b class="text-sm">API 版本化</b>
+            </div>
+            <p class="mt-1 text-xs text-zinc-500 leading-relaxed">
+              所有动态接口带
+              <code>/v1</code>
+              前缀（<code>/v1/notify</code>），与静态资源路径不冲突，便于未来升级与缓存策略按前缀区分。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Architecture diagram -->
+      <section class="box">
+        <div class="flex items-center justify-between mb-3">
+          <span class="tag tag-zinc">架构</span>
+          <h2 class="text-base font-semibold">部署与请求拓扑</h2>
+        </div>
+        <div class="rounded-xl bg-zinc-50 p-4">
+          <!-- Diagram: static path -->
+          <div class="text-xs text-zinc-500 mb-1">静态资源链路（CDN 缓存）</div>
+          <div class="flex items-center gap-1 text-xs">
+            <span
+              class="rounded-lg bg-white border border-zinc-200 px-2 py-1.5 shrink-0"
+              >浏览器 / Agent</span
+            >
+            <span class="text-zinc-400">→</span>
+            <span
+              class="rounded-lg bg-sky-50 border border-sky-200 px-2 py-1.5 text-sky-700 shrink-0"
+              >CDN<br /><span class="text-[10px]">cdn.anotify.dev</span></span
+            >
+            <span class="text-zinc-400">→</span>
+            <span
+              class="rounded-lg bg-white border border-zinc-200 px-2 py-1.5 shrink-0"
+              >Origin<br /><span class="text-[10px] text-zinc-400"
+                >/static/*</span
+              ></span
+            >
+            <span class="ml-auto text-[10px] text-zinc-400">命中缓存 90%+</span>
+          </div>
+          <div class="my-3 border-t border-dashed border-zinc-200"></div>
+          <!-- Diagram: API path -->
+          <div class="text-xs text-zinc-500 mb-1">
+            动态接口链路（不缓存 / 仅边缘）
+          </div>
+          <div class="flex items-center gap-1 text-xs">
+            <span
+              class="rounded-lg bg-white border border-zinc-200 px-2 py-1.5 shrink-0"
+              >Agent / 前端</span
+            >
+            <span class="text-zinc-400">→</span>
+            <span
+              class="rounded-lg bg-amber-50 border border-amber-200 px-2 py-1.5 text-amber-700 shrink-0"
+              >网关 / LB<br /><span class="text-[10px]"
+                >api.anotify.dev</span
+              ></span
+            >
+            <span class="text-zinc-400">→</span>
+            <span
+              class="rounded-lg bg-emerald-50 border border-emerald-200 px-2 py-1.5 text-emerald-700 shrink-0 font-mono"
+              >Go API<br /><span class="text-[10px]">/v1/*</span></span
+            >
+            <span class="text-zinc-400">→</span>
+            <span
+              class="rounded-lg bg-white border border-zinc-200 px-2 py-1.5 shrink-0"
+              >SQLite</span
+            >
+            <span class="ml-auto text-[10px] text-zinc-400">实时 · 无缓存</span>
+          </div>
+        </div>
+
+        <!-- Benefits chart -->
+        <div class="mt-5 grid gap-4 md:grid-cols-2 items-center">
+          <div>
+            <div class="text-sm font-medium mb-2">
+              CDN 带来的性能收益（估算）
+            </div>
+            <div class="relative h-44">
+              <canvas id="perfChart"></canvas>
+            </div>
+          </div>
+          <div class="text-sm space-y-2 text-zinc-600">
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-800">首屏加载</b>：静态资源走
+              CDN，全球边缘节点就近返回，<span
+                class="text-emerald-600 font-medium"
+                >减少 60~80% 加载耗时</span
+              >
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-800">Origin 压力</b>：静态请求命中缓存，<span
+                class="text-emerald-600 font-medium"
+                >回源率 &lt; 10%</span
+              >，Go 服务只处理 API
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              <b class="text-zinc-800">发版平滑</b>：哈希文件名 +
+              immutable，旧缓存自动失效，<span
+                class="text-emerald-600 font-medium"
+                >无缓存穿透风暴</span
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Path separation -->
+      <section id="path" class="box">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="tag tag-green">路径分离</span>
+          <h2 class="text-base font-semibold">路径约定与路由分发</h2>
+        </div>
+
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <div class="text-sm font-medium mb-2">
+              静态资源路径 <span class="tag tag-zinc">cdn</span>
+            </div>
+            <pre><code>/static/
+├── index.html
+├── assets/
+│   ├── app.a1b2c3.js      <span class="text-zinc-500"># 内容哈希</span>
+│   ├── app.f4e5d6.css
+│   └── logo.7a8b9c.svg
+└── sw.js</code></pre>
+            <div class="mt-2 text-xs text-zinc-500">
+              可整体上 CDN，配置
+              <code>Cache-Control: public, max-age=31536000, immutable</code
+              >（哈希文件）。<code>index.html</code> 短缓存 + 协商，SW
+              注册路径固定。
+            </div>
+          </div>
+          <div>
+            <div class="text-sm font-medium mb-2">
+              API 路径 <span class="tag tag-amber">api</span>
+            </div>
+            <pre><code>/v1
+├── auth/register      <span class="text-zinc-500">POST · Passkey 注册</span>
+├── auth/login         <span class="text-zinc-500">POST · Passkey 登录</span>
+├── workspaces         <span class="text-zinc-500">GET/POST</span>
+├── workspaces/:id/key <span class="text-zinc-500">GET · 生成上报 Key</span>
+├── devices            <span class="text-zinc-500">GET/POST · 订阅管理</span>
+├── notify             <span class="text-zinc-500">POST · Agent 上报</span>
+└── notifications      <span class="text-zinc-500">GET · 历史记录</span></code></pre>
+            <div class="mt-2 text-xs text-zinc-500">
+              设置
+              <code>Cache-Control: no-store</code
+              >，保证通知实时、权限即时校验。与静态路径完全隔离，互不干扰缓存策略。
+            </div>
+          </div>
+        </div>
+
+        <!-- Routing decision -->
+        <div class="mt-5 rounded-lg bg-zinc-50 p-4">
+          <div class="text-sm font-medium mb-2">
+            Go 服务端如何分发（单二进制内）
+          </div>
+          <pre><code>func main() {
+    mux := http.NewServeMux()
+    mux.Handle("/v1/", authMiddleware(apiHandler())) // 动态 API
+    mux.Handle("/static/", cacheMiddleware(staticHandler())) // 静态资源
+
+    // 访问静态资源时，按配置重写 CDN 前缀
+    //   dev:   /static/...  → 本地 embed.FS
+    //   prod:  /static/...  → cdn.anotify.dev/static/...（CDN 优先回源）
+    http.ListenAndServe(":8080", mux)
+}</code></pre>
+          <div class="mt-2 text-xs text-zinc-500">
+            开发环境直接本地服务 embed 资源；生产环境把 <code>static</code> 交
+            CDN，API 原样走 Go。同一份代码，通过环境变量切换 CDN
+            前缀，无需改业务逻辑。
+          </div>
+        </div>
+      </section>
+
+      <!-- Cache strategy -->
+      <section id="cache" class="box">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="tag tag-blue">缓存策略</span>
+          <h2 class="text-base font-semibold">CDN 缓存分级</h2>
+        </div>
+
+        <div class="grid gap-3 md:grid-cols-3">
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-sm font-medium">不可变资源</div>
+            <div class="mt-1 text-xs text-zinc-500 font-mono">
+              /static/assets/*.js|css|img
+            </div>
+            <div class="mt-2">
+              <span class="tag tag-green">immutable</span>
+              <span class="tag tag-green">max-age=31536000</span>
+            </div>
+            <p class="mt-2 text-xs text-zinc-500">
+              内容哈希命名，CDN 缓存 1 年，命中即返回，永不回源。发版 =
+              换新文件名。
+            </p>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-sm font-medium">入口文档</div>
+            <div class="mt-1 text-xs text-zinc-500 font-mono">
+              /static/index.html
+            </div>
+            <div class="mt-2">
+              <span class="tag tag-amber">max-age=60</span>
+              <span class="tag tag-zinc">etag 协商</span>
+            </div>
+            <p class="mt-2 text-xs text-zinc-500">
+              短缓存 +
+              ETag，保证新版本资源引用能尽快被拿到，又不至于每次全量回源。
+            </p>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-sm font-medium">动态 API</div>
+            <div class="mt-1 text-xs text-zinc-500 font-mono">/v1/*</div>
+            <div class="mt-2"><span class="tag tag-amber">no-store</span></div>
+            <p class="mt-2 text-xs text-zinc-500">
+              完全禁止缓存，保证通知、鉴权、订阅的实时与一致。可加边缘 WAF /
+              限流。
+            </p>
+          </div>
+        </div>
+
+        <!-- cache hit chart -->
+        <div class="mt-5 grid gap-4 md:grid-cols-2 items-center">
+          <div>
+            <div class="text-sm font-medium mb-2">
+              回源率对比：路径分离 vs 未分离
+            </div>
+            <div class="relative h-44">
+              <canvas id="cacheChart"></canvas>
+            </div>
+          </div>
+          <div class="text-sm text-zinc-600 space-y-2">
+            <div class="rounded-lg border border-zinc-100 p-3">
+              ✅ 分离后：静态回源率
+              <span class="font-medium text-zinc-800">&lt; 10%</span>，API
+              全实时，互不干扰
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              ❌ 未分离：静态被长缓存会误伤 API，或 API 不缓存拖累静态，两难
+            </div>
+            <div class="rounded-lg border border-zinc-100 p-3">
+              📌 结论：<b class="text-zinc-800"
+                >路径/域名分离是 CDN 加速的前置条件</b
+              >，一次设计，长期受益
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- API contract -->
+      <section id="api" class="box">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="tag tag-green">接口</span>
+          <h2 class="text-base font-semibold">关键 API 契约（Agent 上报）</h2>
+        </div>
+        <div class="rounded-lg border border-zinc-100 p-3 mb-3 text-sm">
+          <span class="tag tag-amber">POST</span>
+          <code class="text-zinc-700">https://api.anotify.dev/v1/notify</code>
+          <span class="text-xs text-zinc-400 ml-2"
+            >Header: <code>Authorization: Bearer ant_live_…</code></span
+          >
+        </div>
+        <pre><code>{
+  "agentId":   "build-agent-01",
+  "sessionId": "sess_8f3a2c",     <span class="text-zinc-500">// 会话 / section 标识</span>
+  "cwd":       "/repo/prod-backend",
+  "status":    "success",          <span class="text-zinc-500">// success | error | interrupted</span>
+  "durationMs": 24000,
+  "title":     "部署完成",
+  "body":      "构建成功，已发布到 prod",
+  "model":     "anthropic/claude-4",
+  "link":      "pi://session/sess_8f3a2c"
+}</code></pre>
+        <div class="mt-3 grid gap-3 md:grid-cols-3 text-xs text-zinc-500">
+          <div class="rounded-lg bg-zinc-50 p-3">
+            <b class="text-zinc-700">鉴权</b><br />Passkey 登录用户的工作台 API
+            Key，服务端仅存哈希，Agent 用明文 Key 上报。
+          </div>
+          <div class="rounded-lg bg-zinc-50 p-3">
+            <b class="text-zinc-700">校验</b><br />校验 Key →
+            关联用户所有已订阅设备 → 逐端 Web Push 推送。
+          </div>
+          <div class="rounded-lg bg-zinc-50 p-3">
+            <b class="text-zinc-700">记录</b><br />写入 SQLite
+            通知历史，供工作台图表统计与回查。
+          </div>
+        </div>
+      </section>
+
+      <!-- Deploy -->
+      <section id="deploy" class="box">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="tag tag-zinc">部署</span>
+          <h2 class="text-base font-semibold">部署形态</h2>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-sm font-medium">生产（CDN 加速）</div>
+            <ul class="mt-2 space-y-1.5 text-xs text-zinc-500">
+              <li>
+                · 前端 <code>dist/</code> 上传至对象存储 / CDN（如 Cloudflare R2
+                + CDN）
+              </li>
+              <li>· <code>api.anotify.dev</code> 指向 Go 服务，仅处理 API</li>
+              <li>· CDN 回源或直接托管静态，长缓存 immutable</li>
+              <li>· 单二进制 + SQLite 文件，轻量部署</li>
+            </ul>
+          </div>
+          <div class="rounded-lg border border-zinc-100 p-4">
+            <div class="text-sm font-medium">开发 / 单机</div>
+            <ul class="mt-2 space-y-1.5 text-xs text-zinc-500">
+              <li>
+                · 直接用 <code>go:embed</code> 内嵌前端，本地
+                <code>static</code> 即服务
+              </li>
+              <li>· 环境变量 <code>ANOTIFY_CDN_PREFIX</code> 控制是否走 CDN</li>
+              <li>
+                · 可与 Cloudflare Tunnel 组合暴露公网（沿用现有
+                <code>tunnel.sh</code>）
+              </li>
+              <li>· 一份代码，两种形态，零侵入切换</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer
+      class="border-t border-zinc-200 py-6 text-center text-xs text-zinc-400"
+    >
+      Anotify · 技术方案 · 前后端路径分离 + CDN 缓存加速 · 设计原型见
+      <a class="text-zinc-500 underline" href="mockup.html">mockup.html</a>
+    </footer>
+
+    <script>
+      Chart.defaults.font.family = "'Inter', sans-serif";
+      Chart.defaults.color = "#71717a";
+      Chart.defaults.borderColor = "#f4f4f5";
+
+      // Perf chart: load time before/after CDN
+      new Chart(document.getElementById("perfChart"), {
+        type: "bar",
+        data: {
+          labels: ["静态加载", "首屏总耗时"],
+          datasets: [
+            {
+              label: "未走 CDN",
+              data: [280, 420],
+              backgroundColor: "#d4d4d8",
+              borderRadius: 6,
+            },
+            {
+              label: "走 CDN",
+              data: [80, 160],
+              backgroundColor: "#18181b",
+              borderRadius: 6,
+            },
+          ],
+        },
+        options: {
+          indexAxis: "y",
+          maintainAspectRatio: false,
+          plugins: { legend: { position: "bottom" } },
+          scales: {
+            x: {
+              grid: { display: false },
+              title: { display: true, text: "毫秒" },
+            },
+            y: { grid: { display: false } },
+          },
+        },
+      });
+
+      // Cache hit: origin fetch rate
+      new Chart(document.getElementById("cacheChart"), {
+        type: "doughnut",
+        data: {
+          labels: ["CDN 命中", "回源"],
+          datasets: [
+            {
+              data: [92, 8],
+              backgroundColor: ["#18181b", "#e4e4e7"],
+              borderWidth: 2,
+              borderColor: "#ffffff",
+            },
+          ],
+        },
+        options: {
+          cutout: "68%",
+          maintainAspectRatio: false,
+          plugins: { legend: { position: "bottom" } },
+        },
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1390 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 工作台</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <!-- 自托管手写字体（私有化部署不依赖 Google CDN） -->
+    <link rel="stylesheet" href="../fonts/fonts.css" />
+    <!-- 全站统一配色令牌（唯一色彩来源） -->
+    <link rel="stylesheet" href="tokens.css" />
+    <style>
+      /* 语义色 / 数据可视化 / 中性色 全部来自 tokens.css，此处不再硬编码 */
+      * {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-feature-settings: "ss01", "cv11", "liga";
+      }
+      .font-script {
+        font-family: "Sacramento", "Great Vibes", cursive;
+      }
+      .font-display {
+        font-family: "Fraunces", Georgia, serif;
+      }
+      ::selection {
+        background: rgba(139, 139, 253, 0.35);
+        color: #fff;
+      }
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .glass {
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        backdrop-filter: blur(14px);
+      }
+      .card {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        transition: border-color 0.3s ease;
+      }
+      .card:hover {
+        border-color: var(--line-strong);
+      }
+
+      /* 侧边栏 */
+      .side-link {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        padding: 0.55rem 0.8rem;
+        border-radius: 10px;
+        font-size: 0.875rem;
+        color: var(--muted);
+        border: 1px solid transparent;
+        transition: all 0.2s ease;
+      }
+      .side-link:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .side-link.active {
+        color: var(--text);
+        background: var(--accent-soft);
+        border-color: rgba(139, 139, 253, 0.25);
+      }
+      .side-link.active svg {
+        color: var(--accent);
+      }
+      .side-label {
+        font-size: 0.68rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--faint);
+        padding: 0 0.8rem;
+        margin-top: 1.4rem;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+      }
+
+      /* 状态点 */
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 9999px;
+        flex-shrink: 0;
+      }
+      .dot-success {
+        background: var(--success);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--success) 60%, transparent);
+      }
+      .dot-error {
+        background: var(--error);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--error) 60%, transparent);
+      }
+      .dot-warn {
+        background: var(--warn);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 60%, transparent);
+      }
+
+      .kbd {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 0.66rem;
+        border: 1px solid var(--line-strong);
+        border-bottom-width: 2px;
+        border-radius: 5px;
+        padding: 0.05rem 0.35rem;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .btn-primary {
+        position: relative;
+        background: #fff;
+        color: #0a0a10;
+        transition: all 0.25s ease;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.9),
+          0 8px 30px -6px rgba(255, 255, 255, 0.2);
+        overflow: hidden;
+      }
+      .btn-primary:hover {
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 1),
+          0 12px 40px -6px rgba(139, 139, 253, 0.45);
+      }
+      .btn-ghost {
+        border: 1px solid var(--line-strong);
+        color: var(--muted);
+        transition: all 0.25s ease;
+      }
+      .btn-ghost:hover {
+        border-color: rgba(255, 255, 255, 0.35);
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .badge-dot {
+        animation: pulse 2.2s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 var(--success-soft);
+        }
+        50% {
+          box-shadow: 0 0 0 5px transparent;
+        }
+      }
+
+      /* 通知行 hover */
+      .notif-row {
+        transition: background 0.2s ease;
+        border-left: 2px solid transparent;
+      }
+      .notif-row:hover {
+        background: rgba(255, 255, 255, 0.025);
+      }
+
+      /* 状态徽章 */
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.7rem;
+        font-weight: 500;
+        padding: 0.15rem 0.6rem;
+        border-radius: 9999px;
+      }
+      .status-success {
+        background: var(--success-soft);
+        color: #6ee7b7;
+      }
+      .status-error {
+        background: var(--error-soft);
+        color: #fda4af;
+      }
+      .status-warn {
+        background: var(--warn-soft);
+        color: #fcd34d;
+      }
+
+      /* 筛选 tab */
+      .filter-tab {
+        padding: 0.3rem 0.85rem;
+        border-radius: 8px;
+        font-size: 0.8rem;
+        color: var(--muted);
+        transition: all 0.2s ease;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      .filter-tab:hover {
+        color: var(--text);
+      }
+      .filter-tab.active {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.05);
+        border-color: var(--line);
+      }
+
+      .mono {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(20px);
+        transition:
+          opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+          transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .reveal.visible {
+        opacity: 1;
+        transform: none;
+      }
+
+      /* 移动端侧边栏遮罩 */
+      .sidebar-overlay {
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(4px);
+      }
+
+      /* ===== 通知活动热力图（流式自适应，填充宽度、行列对齐） ===== */
+      .hm {
+        display: grid;
+        grid-template-columns: 14px repeat(53, minmax(0, 1fr));
+        gap: 3px;
+        min-width: 640px;
+      }
+      .hm-month {
+        grid-row: 1;
+        font-size: 9px;
+        line-height: 1;
+        color: var(--faint);
+        white-space: nowrap;
+        align-self: end;
+        padding-bottom: 2px;
+      }
+      .hm-day {
+        grid-column: 1;
+        font-size: 9px;
+        line-height: 1;
+        color: var(--faint);
+        align-self: center;
+      }
+      .hm-cell {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        border-radius: 2.5px;
+        background: rgba(255, 255, 255, 0.05);
+        transition:
+          transform 0.12s ease,
+          outline 0.12s ease;
+      }
+      .hm-cell[data-future="1"] {
+        background: transparent;
+      }
+      .hm-cell:not([data-future="1"]):hover {
+        transform: scale(1.3);
+        outline: 1px solid rgba(255, 255, 255, 0.4);
+      }
+      .hm-today {
+        box-shadow: 0 0 0 1.5px var(--accent);
+      }
+      .hm-legend-cell {
+        width: 10px;
+        height: 10px;
+        border-radius: 2.5px;
+        display: inline-block;
+      }
+      .hm-tip {
+        position: fixed;
+        z-index: 70;
+        pointer-events: none;
+        background: #16161f;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--text);
+        white-space: nowrap;
+        transform: translate(-50%, calc(-100% - 8px));
+        opacity: 0;
+        transition: opacity 0.12s ease;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      }
+    </style>
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden">
+    <div class="flex min-h-screen">
+      <!-- ============ 侧边栏 ============ -->
+      <aside
+        id="sidebar"
+        class="fixed inset-y-0 left-0 z-40 w-60 shrink-0 -translate-x-full transform border-r border-white/[0.06] bg-[#08080d] transition-transform duration-300 lg:static lg:translate-x-0"
+      >
+        <div class="flex h-full flex-col">
+          <!-- Logo -->
+          <div
+            class="flex h-16 items-center gap-3 border-b border-white/[0.05] px-5"
+          >
+            <a href="mockup-home.html" class="flex items-center gap-2.5 group">
+              <div class="relative">
+                <div
+                  class="flex h-9 w-9 items-center justify-center rounded-lg bg-black ring-1 ring-white/15"
+                >
+                  <span class="font-script text-lg leading-none text-white"
+                    >An</span
+                  >
+                </div>
+                <span
+                  class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center"
+                >
+                  <span class="absolute h-3 w-3 rounded-full bg-red-500"></span>
+                  <span
+                    class="absolute h-3 w-3 animate-ping rounded-full bg-red-500/70"
+                  ></span>
+                </span>
+              </div>
+              <span class="font-script text-xl leading-none text-white"
+                >Anotify</span
+              >
+            </a>
+          </div>
+
+          <!-- 导航 -->
+          <nav class="flex-1 overflow-y-auto px-3 py-4">
+            <div class="space-y-1">
+              <a href="mockup.html" class="side-link active">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="3" width="7" height="9" rx="1" />
+                  <rect x="14" y="3" width="7" height="5" rx="1" />
+                  <rect x="14" y="12" width="7" height="9" rx="1" />
+                  <rect x="3" y="16" width="7" height="5" rx="1" />
+                </svg>
+                总览
+              </a>
+              <a href="mockup-devices.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                通知接收
+                <span
+                  class="ml-auto rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500"
+                  >3</span
+                >
+              </a>
+              <a href="mockup-keys.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"
+                  />
+                </svg>
+                API Keys
+              </a>
+            </div>
+
+            <div class="side-label">集成</div>
+            <div class="space-y-1">
+              <a href="mockup.html#quickstart" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="4 17 10 11 4 5" />
+                  <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+                接入 Agent
+              </a>
+              <a href="mockup-api.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="16 18 22 12 16 6" />
+                  <polyline points="8 6 2 12 8 18" />
+                </svg>
+                API 文档
+              </a>
+              <a href="tech-scheme.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path
+                    d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+                  />
+                </svg>
+                技术方案
+              </a>
+            </div>
+
+            <div class="side-label">账户</div>
+            <div class="space-y-1">
+              <a href="mockup-security.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="11" width="18" height="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                安全与登录
+              </a>
+              <a href="mockup-home.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                </svg>
+                返回首页
+              </a>
+            </div>
+          </nav>
+
+          <!-- 底部用户卡 -->
+          <div class="border-t border-white/[0.05] p-3">
+            <div class="flex items-center gap-3 rounded-xl px-2 py-2">
+              <div
+                class="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/30 to-violet-500/30 ring-1 ring-white/15 text-sm font-medium"
+              >
+                Z
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-sm text-zinc-200">zheng</div>
+                <div class="truncate text-[11px] text-zinc-500">
+                  私有化部署 · 主工作台
+                </div>
+              </div>
+              <span class="badge-dot dot dot-success"></span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 移动端遮罩 -->
+      <div
+        id="sidebar-overlay"
+        class="sidebar-overlay fixed inset-0 z-30 hidden lg:hidden"
+      ></div>
+
+      <!-- ============ 主内容区 ============ -->
+      <div class="flex min-w-0 flex-1 flex-col">
+        <!-- 顶栏 -->
+        <header
+          class="sticky top-0 z-20 flex h-16 items-center justify-between gap-4 border-b border-white/[0.06] bg-[#050508]/80 px-5 backdrop-blur-md sm:px-8"
+        >
+          <div class="flex items-center gap-3">
+            <button
+              id="menu-btn"
+              class="btn-ghost rounded-lg p-2 lg:hidden"
+              aria-label="菜单"
+            >
+              <svg
+                class="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+            <div>
+              <h1 class="text-base font-semibold text-white">总览</h1>
+              <p class="text-[11px] text-zinc-500">你的通知一览</p>
+            </div>
+          </div>
+
+          <!-- 搜索 + 通知铃 + 头像 -->
+          <div class="flex items-center gap-3">
+            <div
+              class="hidden items-center gap-2 rounded-lg glass px-3 py-1.5 text-sm text-zinc-500 sm:flex"
+            >
+              <svg
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <span>搜索通知…</span>
+              <span class="kbd ml-4">⌘K</span>
+            </div>
+            <button
+              class="relative rounded-lg p-2 text-zinc-400 hover:bg-white/5 hover:text-white transition-colors"
+              aria-label="通知"
+            >
+              <svg
+                class="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+              <span
+                class="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500"
+              ></span>
+            </button>
+            <div
+              class="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/40 to-violet-500/40 ring-1 ring-white/15 text-xs font-medium"
+            >
+              Z
+            </div>
+          </div>
+        </header>
+
+        <!-- 内容 -->
+        <main class="flex-1 px-5 py-8 sm:px-8">
+          <div class="mx-auto max-w-6xl space-y-8">
+            <!-- ===== 欢迎 + 状态摘要 ===== -->
+            <div class="reveal visible">
+              <div class="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h2 class="font-display text-3xl text-white">
+                    晚上好，<em>zheng</em>
+                  </h2>
+                  <p class="mt-1.5 text-sm text-zinc-400">
+                    你的 Agent 今天已完成
+                    <span class="font-medium text-white">12</span> 个任务，
+                    通知全部送达。
+                  </p>
+                </div>
+                <a
+                  href="#quickstart"
+                  class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
+                  >接入新 Agent</a
+                >
+              </div>
+            </div>
+
+            <!-- ===== KPI 卡片 ===== -->
+            <section class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <div class="card reveal visible p-5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-zinc-500"
+                    >通知总数</span
+                  >
+                  <span class="status-badge status-success">↑ 12.4%</span>
+                </div>
+                <div class="font-display mt-3 text-4xl text-white">1,284</div>
+                <div class="mt-1.5 text-[11px] text-zinc-500">
+                  较上周 · 近 30 天
+                </div>
+              </div>
+              <div
+                class="card reveal visible p-5"
+                style="transition-delay: 60ms"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-zinc-500">送达率</span>
+                  <span class="dot dot-success"></span>
+                </div>
+                <div class="font-display mt-3 text-4xl text-white">
+                  99.2<span class="text-2xl text-zinc-500">%</span>
+                </div>
+                <div class="mt-1.5 text-[11px] text-zinc-500">
+                  4 台设备 · 端到端加密
+                </div>
+              </div>
+              <div
+                class="card reveal visible p-5"
+                style="transition-delay: 120ms"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-zinc-500"
+                    >平均延迟</span
+                  >
+                  <span class="dot dot-success"></span>
+                </div>
+                <div class="font-display mt-3 text-4xl text-white">
+                  86<span class="text-2xl text-zinc-500">ms</span>
+                </div>
+                <div class="mt-1.5 text-[11px] text-zinc-500">
+                  上报 → 送达 · P95 210ms
+                </div>
+              </div>
+              <div
+                class="card reveal visible p-5"
+                style="transition-delay: 180ms"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-zinc-500"
+                    >活跃 Agent</span
+                  >
+                  <span
+                    class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-400"
+                    >本周</span
+                  >
+                </div>
+                <div class="font-display mt-3 text-4xl text-white">6</div>
+                <div class="mt-1.5 text-[11px] text-zinc-500">
+                  pi · Claude Code · CI
+                </div>
+              </div>
+            </section>
+
+            <!-- ===== 通知活动热力图（GitHub 风格 · 流式自适应） ===== -->
+            <section class="card reveal visible p-5">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div class="text-sm font-medium text-white">通知活动</div>
+                  <div class="text-[11px] text-zinc-500">
+                    近一年 · 每天的收发量
+                  </div>
+                </div>
+                <div
+                  class="flex items-center gap-1.5 text-[10px] text-zinc-500"
+                >
+                  <span class="mr-0.5">少</span>
+                  <span class="hm-legend-cell" style="background: rgba(255,255,255,0.05)"></span>
+                  <span class="hm-legend-cell" style="background: var(--accent-1)"></span>
+                  <span class="hm-legend-cell" style="background: var(--accent-2)"></span>
+                  <span class="hm-legend-cell" style="background: var(--accent-3)"></span>
+                  <span class="hm-legend-cell" style="background: var(--accent-4)"></span>
+                  <span class="ml-0.5">多</span>
+                </div>
+              </div>
+              <div class="mt-4 overflow-x-auto pb-1">
+                <div class="hm" id="hm"></div>
+              </div>
+            </section>
+
+            <!-- ===== 快速接入（CLI） ===== -->
+            <section
+              id="quickstart"
+              class="card reveal visible overflow-hidden"
+            >
+              <div
+                class="flex items-center justify-between border-b border-white/[0.06] px-6 py-4"
+              >
+                <div>
+                  <div class="text-sm font-medium text-white">
+                    接入你的 Agent
+                  </div>
+                  <div class="text-[11px] text-zinc-500">
+                    让 Agent 在任务完成时自动通知你
+                  </div>
+                </div>
+                <span
+                  class="status-badge"
+                  style="background: var(--accent-soft); color: var(--accent)"
+                  >推荐方式</span
+                >
+              </div>
+              <div class="grid gap-6 p-6 lg:grid-cols-2">
+                <!-- 方式一：一句话指令 -->
+                <div>
+                  <div
+                    class="mb-3 flex items-center gap-2 text-xs text-zinc-400"
+                  >
+                    <span
+                      class="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 font-mono text-[10px]"
+                      >A</span
+                    >
+                    一句话让 Agent 自己装好
+                  </div>
+                  <div
+                    class="rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden"
+                  >
+                    <div
+                      class="flex items-center justify-between border-b border-white/10 px-4 py-2.5"
+                    >
+                      <div class="flex items-center gap-1.5">
+                        <span
+                          class="h-2.5 w-2.5 rounded-full bg-red-500/70"
+                        ></span>
+                        <span
+                          class="h-2.5 w-2.5 rounded-full bg-yellow-500/70"
+                        ></span>
+                        <span
+                          class="h-2.5 w-2.5 rounded-full bg-green-500/70"
+                        ></span>
+                      </div>
+                      <button
+                        onclick="copyText(this, '#cmd-a')"
+                        class="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors"
+                      >
+                        复制
+                      </button>
+                    </div>
+                    <div
+                      class="px-4 py-4 font-mono text-[12.5px] leading-relaxed"
+                    >
+                      <p class="text-zinc-600"># 发给你的 Agent 的一句话</p>
+                      <p class="mt-1.5 text-zinc-200" id="cmd-a">
+                        参照
+                        <span class="text-indigo-300"
+                          >anotify.dev/docs/skill</span
+                        >
+                        为我安装通知上报：监听
+                        agent_settled，任务结束自动推送到我的设备。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <!-- 方式二：curl 手动上报 -->
+                <div>
+                  <div
+                    class="mb-3 flex items-center gap-2 text-xs text-zinc-400"
+                  >
+                    <span
+                      class="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 font-mono text-[10px]"
+                      >B</span
+                    >
+                    或脚本 / CI 直接上报
+                  </div>
+                  <div
+                    class="rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden"
+                  >
+                    <div
+                      class="flex items-center justify-between border-b border-white/10 px-4 py-2.5"
+                    >
+                      <span class="text-[11px] text-zinc-500 mono">curl</span>
+                      <button
+                        onclick="copyText(this, '#cmd-b')"
+                        class="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors"
+                      >
+                        复制
+                      </button>
+                    </div>
+                    <div
+                      class="px-4 py-4 font-mono text-[12px] leading-relaxed"
+                      id="cmd-b"
+                    >
+                      <p>
+                        <span class="text-zinc-600">$</span> curl -X POST
+                        https://api.anotify.dev/v1/notify \
+                      </p>
+                      <p class="pl-4 text-zinc-300">
+                        -H
+                        <span class="text-emerald-300"
+                          >"Authorization: Bearer ant_live_…"</span
+                        >
+                        \
+                      </p>
+                      <p class="pl-4 text-zinc-300">
+                        -d '{"title":"部署完成","status":"success"}'
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- ===== 最近通知 ===== -->
+            <section class="card reveal visible overflow-hidden">
+              <div
+                class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4"
+              >
+                <div>
+                  <div class="text-sm font-medium text-white">最近通知</div>
+                  <div class="text-[11px] text-zinc-500">
+                    实时更新 · 点击行查看详情
+                  </div>
+                </div>
+                <!-- 状态筛选 -->
+                <div
+                  class="flex items-center gap-1 rounded-lg bg-white/[0.03] p-1"
+                >
+                  <button class="filter-tab active" data-filter="all">
+                    全部
+                  </button>
+                  <button class="filter-tab" data-filter="success">成功</button>
+                  <button class="filter-tab" data-filter="error">失败</button>
+                  <button class="filter-tab" data-filter="interrupted">
+                    中断
+                  </button>
+                </div>
+              </div>
+              <div id="notif-list" class="divide-y divide-white/[0.04]">
+                <!-- 通知行由 JS 渲染 -->
+              </div>
+              <div
+                class="flex items-center justify-between border-t border-white/[0.06] px-6 py-3 text-xs text-zinc-500"
+              >
+                <span id="notif-count">显示 8 条</span>
+                <a
+                  href="#"
+                  class="text-zinc-400 hover:text-white transition-colors"
+                  >查看全部通知 →</a
+                >
+              </div>
+            </section>
+          </div>
+        </main>
+
+        <!-- 页脚 -->
+        <footer
+          class="border-t border-white/[0.04] px-5 py-5 text-center text-[11px] text-zinc-600 sm:px-8"
+        >
+          Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器
+        </footer>
+      </div>
+    </div>
+
+    <!-- 通知详情弹层 -->
+    <div
+      id="detail-modal"
+      class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+    >
+      <div
+        class="sidebar-overlay absolute inset-0"
+        onclick="closeDetail()"
+      ></div>
+      <div
+        class="card relative z-10 w-full max-w-lg !bg-[#0b0b12] p-6 shadow-2xl"
+      >
+        <div class="flex items-start justify-between">
+          <div class="flex items-center gap-3" id="detail-head"></div>
+          <button
+            onclick="closeDetail()"
+            class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
+          >
+            <svg
+              class="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div id="detail-body" class="mt-5 space-y-4"></div>
+      </div>
+    </div>
+
+    <script>
+      // ===== 模拟数据（基于真实通知数据模型）=====
+      const NOTIFICATIONS = [
+        {
+          id: 1,
+          status: "success",
+          title: "部署完成",
+          agent: "deploy-bot",
+          project: "prod-backend",
+          duration: 24,
+          model: "claude-4",
+          time: "2 分钟前",
+          body: "构建成功，已发布到生产环境。共 47 个文件变更。",
+          link: "pi://session/sess_8f3a",
+          sessionId: "sess_8f3a2c",
+          delivered: 4,
+          total: 4,
+        },
+        {
+          id: 2,
+          status: "error",
+          title: "构建失败",
+          agent: "lint-check",
+          project: "web-client",
+          duration: 132,
+          model: "claude-4",
+          time: "18 分钟前",
+          body: "3 个测试用例未通过。已附上完整日志，点击查看排查建议。",
+          link: "pi://session/sess_2b1d",
+          sessionId: "sess_2b1d8e",
+          delivered: 4,
+          total: 4,
+        },
+        {
+          id: 3,
+          status: "interrupted",
+          title: "任务被中断",
+          agent: "refactor",
+          project: "api-server",
+          duration: 305,
+          model: "claude-4",
+          time: "1 小时前",
+          body: "任务被手动停止。当前进度 62%，已保留现场，可继续。",
+          link: "pi://session/sess_9c4f",
+          sessionId: "sess_9c4f11",
+          delivered: 3,
+          total: 4,
+        },
+        {
+          id: 4,
+          status: "success",
+          title: "文档更新完成",
+          agent: "docs-gen",
+          project: "anotify",
+          duration: 58,
+          model: "claude-4",
+          time: "3 小时前",
+          body: "生成 3 个页面：README、API 参考、部署指南。",
+          link: "pi://session/sess_77aa",
+          sessionId: "sess_77aa09",
+          delivered: 4,
+          total: 4,
+        },
+        {
+          id: 5,
+          status: "success",
+          title: "代码审查完成",
+          agent: "reviewer",
+          project: "auth-module",
+          duration: 91,
+          model: "claude-4",
+          time: "5 小时前",
+          body: "审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。",
+          link: "pi://session/sess_31de",
+          sessionId: "sess_31de4b",
+          delivered: 4,
+          total: 4,
+        },
+        {
+          id: 6,
+          status: "error",
+          title: "数据库迁移失败",
+          agent: "db-migrate",
+          project: "core-db",
+          duration: 47,
+          model: "claude-4",
+          time: "昨天 23:41",
+          body: "迁移脚本 0042 执行超时。已自动回滚，数据未受影响。",
+          link: "pi://session/sess_5f2c",
+          sessionId: "sess_5f2c88",
+          delivered: 4,
+          total: 4,
+        },
+        {
+          id: 7,
+          status: "success",
+          title: "依赖升级完成",
+          agent: "deps-bot",
+          project: "web-client",
+          duration: 76,
+          model: "claude-4",
+          time: "昨天 18:20",
+          body: "升级 8 个依赖至最新稳定版，无破坏性变更。",
+          link: "pi://session/sess_a012",
+          sessionId: "sess_a0123f",
+          delivered: 4,
+          total: 4,
+        },
+        {
+          id: 8,
+          status: "success",
+          title: "备份任务完成",
+          agent: "backup",
+          project: "core-db",
+          duration: 210,
+          model: "claude-4",
+          time: "昨天 12:05",
+          body: "数据库快照已生成并上传至对象存储，大小 1.2 GB。",
+          link: "pi://session/sess_d9e7",
+          sessionId: "sess_d9e71c",
+          delivered: 4,
+          total: 4,
+        },
+      ];
+
+      const STATUS_META = {
+        success: { dot: "dot-success", badge: "status-success", label: "成功" },
+        error: { dot: "dot-error", badge: "status-error", label: "失败" },
+        interrupted: { dot: "dot-warn", badge: "status-warn", label: "中断" },
+      };
+
+      // ===== 安全 DOM 构建工具（避免 innerHTML，防 XSS）=====
+      function el(tag, attrs = {}, ...children) {
+        const node = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs)) {
+          if (k === "class") node.className = v;
+          else if (k === "text") node.textContent = v;
+          else if (k.startsWith("on"))
+            node.addEventListener(k.slice(2).toLowerCase(), v);
+          else node.setAttribute(k, v);
+        }
+        for (const c of children) {
+          if (c == null) continue;
+          node.append(c.nodeType ? c : document.createTextNode(c));
+        }
+        return node;
+      }
+
+      // ===== 渲染通知列表（DOM API，无 innerHTML）=====
+      function renderNotifs(filter = "all") {
+        const list = document.getElementById("notif-list");
+        const rows = NOTIFICATIONS.filter(
+          (n) => filter === "all" || n.status === filter,
+        );
+        list.replaceChildren(
+          ...rows.map((n) => {
+            const meta = STATUS_META[n.status];
+            const btn = el(
+              "button",
+              {
+                class:
+                  "notif-row flex w-full items-center gap-4 px-6 py-4 text-left",
+                onclick: () => openDetail(n.id),
+              },
+              el("span", { class: `dot ${meta.dot}` }),
+              el(
+                "div",
+                { class: "min-w-0 flex-1" },
+                el(
+                  "div",
+                  { class: "flex items-center gap-2" },
+                  el("span", {
+                    class: "truncate text-sm font-medium text-white",
+                    text: n.title,
+                  }),
+                  el("span", {
+                    class: `status-badge ${meta.badge}`,
+                    text: meta.label,
+                  }),
+                ),
+                el(
+                  "div",
+                  {
+                    class:
+                      "mt-0.5 flex items-center gap-2 text-xs text-zinc-500",
+                  },
+                  el("span", { class: "mono", text: n.agent }),
+                  el("span", { class: "text-zinc-700", text: "·" }),
+                  el("span", { class: "truncate", text: n.project }),
+                  el("span", { class: "text-zinc-700", text: "·" }),
+                  el("span", { text: `${n.duration}s` }),
+                ),
+              ),
+              el(
+                "div",
+                { class: "flex shrink-0 flex-col items-end gap-1" },
+                el("span", { class: "text-xs text-zinc-500", text: n.time }),
+                el("span", {
+                  class: "text-[10px] text-zinc-600",
+                  text: `${n.delivered}/${n.total} 设备已送达`,
+                }),
+              ),
+            );
+            return btn;
+          }),
+        );
+        document.getElementById("notif-count").textContent =
+          `显示 ${rows.length} 条`;
+      }
+
+      // ===== 筛选 =====
+      document.querySelectorAll(".filter-tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          document
+            .querySelectorAll(".filter-tab")
+            .forEach((t) => t.classList.remove("active"));
+          tab.classList.add("active");
+          renderNotifs(tab.dataset.filter);
+        });
+      });
+      renderNotifs();
+
+      // ===== 通知详情（DOM API，无 innerHTML）=====
+      function openDetail(id) {
+        const n = NOTIFICATIONS.find((x) => x.id === id);
+        const meta = STATUS_META[n.status];
+
+        const head = document.getElementById("detail-head");
+        head.replaceChildren(
+          el("span", { class: `dot ${meta.dot}` }),
+          el(
+            "div",
+            {},
+            el("div", {
+              class: "text-base font-medium text-white",
+              text: n.title,
+            }),
+            el("div", {
+              class: "text-xs text-zinc-500",
+              text: `${n.project} · ${n.time}`,
+            }),
+          ),
+        );
+
+        const fields = [
+          ["Agent", n.agent],
+          ["会话", n.sessionId],
+          ["模型", n.model],
+          ["耗时", n.duration + "s"],
+          ["状态", meta.label],
+          ["送达", `${n.delivered}/${n.total} 设备`],
+        ];
+        const grid = el(
+          "div",
+          { class: "grid grid-cols-2 gap-3" },
+          ...fields.map(([k, v]) =>
+            el(
+              "div",
+              {
+                class:
+                  "rounded-lg bg-white/[0.03] px-3 py-2.5 ring-1 ring-white/[0.06]",
+              },
+              el("div", {
+                class: "text-[10px] uppercase tracking-wide text-zinc-500",
+                text: k,
+              }),
+              el("div", {
+                class: "mono mt-0.5 text-[12px] text-zinc-200",
+                text: v,
+              }),
+            ),
+          ),
+        );
+
+        const linkIcon = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "svg",
+        );
+        linkIcon.setAttribute("class", "h-4 w-4");
+        linkIcon.setAttribute("viewBox", "0 0 24 24");
+        linkIcon.setAttribute("fill", "none");
+        linkIcon.setAttribute("stroke", "currentColor");
+        linkIcon.setAttribute("stroke-width", "2");
+        const linkPath = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "path",
+        );
+        linkPath.setAttribute("d", "M7 17L17 7M7 7h10v10");
+        linkIcon.appendChild(linkPath);
+
+        const linkBtn = el(
+          "a",
+          {
+            href: n.link,
+            class:
+              "btn-primary flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium",
+          },
+          "打开 Agent 会话",
+          linkIcon,
+        );
+
+        document.getElementById("detail-body").replaceChildren(
+          el("p", {
+            class: "text-sm leading-relaxed text-zinc-300",
+            text: n.body,
+          }),
+          grid,
+          linkBtn,
+        );
+        document
+          .getElementById("detail-modal")
+          .classList.replace("hidden", "flex");
+        document.body.style.overflow = "hidden";
+      }
+      function closeDetail() {
+        document
+          .getElementById("detail-modal")
+          .classList.replace("flex", "hidden");
+        document.body.style.overflow = "";
+      }
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeDetail();
+      });
+
+      // ===== 复制 =====
+      function copyText(btn, sel) {
+        const text = document.querySelector(sel).innerText;
+        navigator.clipboard.writeText(text).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = "已复制 ✓";
+          setTimeout(() => (btn.textContent = orig), 1500);
+        });
+      }
+
+      // ===== 侧边栏（移动端）=====
+      const sidebar = document.getElementById("sidebar");
+      const overlay = document.getElementById("sidebar-overlay");
+      document.getElementById("menu-btn").addEventListener("click", () => {
+        sidebar.classList.remove("-translate-x-full");
+        overlay.classList.remove("hidden");
+      });
+      overlay.addEventListener("click", () => {
+        sidebar.classList.add("-translate-x-full");
+        overlay.classList.add("hidden");
+      });
+
+      // ===== 通知活动热力图（流式自适应，填充宽度、行列对齐）=====
+      (function () {
+        const hm = document.getElementById("hm");
+        if (!hm) return;
+        const LEVELS = [
+          "rgba(255,255,255,0.05)",
+          "var(--accent-1)",
+          "var(--accent-2)",
+          "var(--accent-3)",
+          "var(--accent-4)",
+        ];
+        const WEEK_CN = ["日", "一", "二", "三", "四", "五", "六"];
+        const WEEKS = 53;
+
+        function seeded(str) {
+          let h = 2166136261;
+          for (let i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = Math.imul(h, 16777619);
+          }
+          return function () {
+            h ^= h << 13;
+            h ^= h >>> 17;
+            h ^= h << 5;
+            return (h >>> 0) / 4294967296;
+          };
+        }
+        function dayCount(date) {
+          const r = seeded(date.toDateString());
+          const dow = date.getDay();
+          const weekend = dow === 0 || dow === 6;
+          if (r() < (weekend ? 0.52 : 0.12)) return 0;
+          const v = r();
+          return Math.round((weekend ? 0.4 : 1) * (2 + v * v * 26));
+        }
+        function levelOf(c) {
+          if (!c) return 0;
+          if (c < 5) return 1;
+          if (c < 10) return 2;
+          if (c < 18) return 3;
+          return 4;
+        }
+
+        const tip = document.createElement("div");
+        tip.className = "hm-tip";
+        document.body.append(tip);
+        function showTip(cell, date, count) {
+          const t1 = document.createElement("div");
+          t1.className = "font-medium text-white";
+          t1.textContent = count > 0 ? `${count} 条通知` : "无通知";
+          const t2 = document.createElement("div");
+          t2.className = "text-zinc-500";
+          t2.textContent = `${date.getMonth() + 1}月${date.getDate()}日 周${WEEK_CN[date.getDay()]}`;
+          tip.replaceChildren(t1, t2);
+          const rect = cell.getBoundingClientRect();
+          tip.style.left = rect.left + rect.width / 2 + "px";
+          tip.style.top = rect.top + "px";
+          tip.style.opacity = "1";
+        }
+        const hideTip = () => (tip.style.opacity = "0");
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const dow = (today.getDay() + 6) % 7;
+        const endMonday = new Date(today);
+        endMonday.setDate(today.getDate() - dow);
+        const startMonday = new Date(endMonday);
+        startMonday.setDate(endMonday.getDate() - (WEEKS - 1) * 7);
+
+        const DAY_LABELS = { 0: "一", 2: "三", 4: "五" };
+        const frag = document.createDocumentFragment();
+        for (let d = 0; d < 7; d++) {
+          const s = document.createElement("span");
+          s.className = "hm-day";
+          s.style.gridRow = d + 2;
+          s.textContent = DAY_LABELS[d] || "";
+          frag.append(s);
+        }
+
+        let prevMonth = -1;
+        for (let w = 0; w < WEEKS; w++) {
+          const monday = new Date(startMonday);
+          monday.setDate(startMonday.getDate() + w * 7);
+          const m = monday.getMonth();
+          if (m !== prevMonth) {
+            const label = document.createElement("span");
+            label.className = "hm-month";
+            label.style.gridColumn = w + 2;
+            label.textContent = `${m + 1}月`;
+            frag.append(label);
+            prevMonth = m;
+          }
+          for (let d = 0; d < 7; d++) {
+            const date = new Date(monday);
+            date.setDate(monday.getDate() + d);
+            const future = date > today;
+            const count = future ? 0 : dayCount(date);
+            const cell = document.createElement("span");
+            cell.className = "hm-cell";
+            cell.style.gridColumn = w + 2;
+            cell.style.gridRow = d + 2;
+            if (future) {
+              cell.dataset.future = "1";
+            } else {
+              cell.style.background = LEVELS[levelOf(count)];
+              if (date.getTime() === today.getTime())
+                cell.classList.add("hm-today");
+              cell.addEventListener("mouseenter", () =>
+                showTip(cell, date, count),
+              );
+              cell.addEventListener("mouseleave", hideTip);
+            }
+            frag.append(cell);
+          }
+        }
+        hm.append(frag);
+      })();
+
+      // ===== 滚动渐入 =====
+      const io = new IntersectionObserver(
+        (entries) =>
+          entries.forEach(
+            (e) => e.isIntersecting && e.target.classList.add("visible"),
+          ),
+        { threshold: 0.08 },
+      );
+      document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+    </script>
+  </body>
+</html>

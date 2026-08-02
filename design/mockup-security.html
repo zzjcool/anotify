@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 安全与登录</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <!-- 自托管手写字体（私有化部署不依赖 Google CDN） -->
+    <link rel="stylesheet" href="../public/fonts/fonts.css" />
+    <link rel="icon" type="image/svg+xml" href="../public/favicon.svg" />
+    <style>
+      :root {
+        --bg: #050508;
+        --panel: rgba(255, 255, 255, 0.03);
+        --line: rgba(255, 255, 255, 0.08);
+        --line-strong: rgba(255, 255, 255, 0.14);
+        --text: #ececf1;
+        --muted: rgba(236, 236, 241, 0.55);
+        --faint: rgba(236, 236, 241, 0.32);
+        --accent: #8b8bfd;
+        --accent-soft: rgba(139, 139, 253, 0.12);
+      }
+      * {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-feature-settings: "ss01", "cv11", "liga";
+      }
+      .font-script {
+        font-family: "Sacramento", "Great Vibes", cursive;
+      }
+      .font-display {
+        font-family: "Fraunces", Georgia, serif;
+      }
+      ::selection {
+        background: rgba(139, 139, 253, 0.35);
+        color: #fff;
+      }
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .card {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        transition: border-color 0.3s ease;
+      }
+      .card:hover {
+        border-color: var(--line-strong);
+      }
+      .side-link {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        padding: 0.55rem 0.8rem;
+        border-radius: 10px;
+        font-size: 0.875rem;
+        color: var(--muted);
+        border: 1px solid transparent;
+        transition: all 0.2s ease;
+      }
+      .side-link:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .side-link.active {
+        color: var(--text);
+        background: rgba(139, 139, 253, 0.1);
+        border-color: rgba(139, 139, 253, 0.25);
+      }
+      .side-link.active svg {
+        color: var(--accent);
+      }
+      .side-label {
+        font-size: 0.68rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--faint);
+        padding: 0 0.8rem;
+        margin-top: 1.4rem;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 9999px;
+        flex-shrink: 0;
+      }
+      .dot-success {
+        background: #34d399;
+        box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+      }
+      .btn-primary {
+        position: relative;
+        background: #fff;
+        color: #0a0a10;
+        transition: all 0.25s ease;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.9),
+          0 8px 30px -6px rgba(255, 255, 255, 0.2);
+        overflow: hidden;
+      }
+      .btn-primary:hover {
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 1),
+          0 12px 40px -6px rgba(139, 139, 253, 0.45);
+      }
+      .btn-ghost {
+        border: 1px solid var(--line-strong);
+        color: var(--muted);
+        transition: all 0.25s ease;
+      }
+      .btn-ghost:hover {
+        border-color: rgba(255, 255, 255, 0.35);
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .btn-danger {
+        border: 1px solid rgba(251, 113, 133, 0.3);
+        color: #fda4af;
+        transition: all 0.25s ease;
+      }
+      .btn-danger:hover {
+        background: rgba(251, 113, 133, 0.1);
+        border-color: rgba(251, 113, 133, 0.5);
+      }
+      .badge-dot {
+        animation: pulse 2.2s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5);
+        }
+        50% {
+          box-shadow: 0 0 0 5px rgba(52, 211, 153, 0);
+        }
+      }
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.7rem;
+        font-weight: 500;
+        padding: 0.15rem 0.6rem;
+        border-radius: 9999px;
+      }
+      .status-on {
+        background: rgba(52, 211, 153, 0.12);
+        color: #6ee7b7;
+      }
+      .status-off {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+      }
+      .plat-icon {
+        display: flex;
+        height: 40px;
+        width: 40px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 12px;
+        font-size: 1.25rem;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        flex-shrink: 0;
+      }
+      .mono {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      .reveal {
+        opacity: 0;
+        transform: translateY(20px);
+        transition:
+          opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+          transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .reveal.visible {
+        opacity: 1;
+        transform: none;
+      }
+      .sidebar-overlay {
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(4px);
+      }
+      /* 恢复码 */
+      .recovery-code {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 0.78rem;
+        letter-spacing: 0.05em;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.45rem 0.7rem;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden">
+    <div class="flex min-h-screen">
+      <!-- ============ 侧边栏 ============ -->
+      <aside
+        id="sidebar"
+        class="fixed inset-y-0 left-0 z-40 w-60 shrink-0 -translate-x-full transform border-r border-white/[0.06] bg-[#08080d] transition-transform duration-300 lg:static lg:translate-x-0"
+      >
+        <div class="flex h-full flex-col">
+          <div
+            class="flex h-16 items-center gap-3 border-b border-white/[0.05] px-5"
+          >
+            <a href="mockup-home.html" class="flex items-center gap-2.5">
+              <div class="relative">
+                <div
+                  class="flex h-9 w-9 items-center justify-center rounded-lg bg-black ring-1 ring-white/15"
+                >
+                  <span class="font-script text-lg leading-none text-white"
+                    >An</span
+                  >
+                </div>
+                <span
+                  class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center"
+                >
+                  <span class="absolute h-3 w-3 rounded-full bg-red-500"></span>
+                  <span
+                    class="absolute h-3 w-3 animate-ping rounded-full bg-red-500/70"
+                  ></span>
+                </span>
+              </div>
+              <span class="font-script text-xl leading-none text-white"
+                >Anotify</span
+              >
+            </a>
+          </div>
+
+          <nav class="flex-1 overflow-y-auto px-3 py-4">
+            <div class="space-y-1">
+              <a href="mockup.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="3" width="7" height="9" rx="1" />
+                  <rect x="14" y="3" width="7" height="5" rx="1" />
+                  <rect x="14" y="12" width="7" height="9" rx="1" />
+                  <rect x="3" y="16" width="7" height="5" rx="1" />
+                </svg>
+                总览
+              </a>
+              <a href="mockup-devices.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                通知接收
+                <span
+                  class="ml-auto rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500"
+                  >3</span
+                >
+              </a>
+              <a href="mockup-keys.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"
+                  />
+                </svg>
+                API Keys
+              </a>
+            </div>
+            <div class="side-label">集成</div>
+            <div class="space-y-1">
+              <a href="mockup.html#quickstart" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="4 17 10 11 4 5" />
+                  <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+                接入 Agent
+              </a>
+              <a href="mockup-api.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="16 18 22 12 16 6" />
+                  <polyline points="8 6 2 12 8 18" />
+                </svg>
+                API 文档
+              </a>
+              <a href="tech-scheme.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path
+                    d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+                  />
+                </svg>
+                技术方案
+              </a>
+            </div>
+            <div class="side-label">账户</div>
+            <div class="space-y-1">
+              <a href="mockup-security.html" class="side-link active">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="11" width="18" height="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                安全与登录
+              </a>
+              <a href="mockup-home.html" class="side-link">
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                </svg>
+                返回首页
+              </a>
+            </div>
+          </nav>
+
+          <div class="border-t border-white/[0.05] p-3">
+            <div class="flex items-center gap-3 rounded-xl px-2 py-2">
+              <div
+                class="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/30 to-violet-500/30 ring-1 ring-white/15 text-sm font-medium"
+              >
+                Z
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-sm text-zinc-200">zheng</div>
+                <div class="truncate text-[11px] text-zinc-500">
+                  私有化部署 · 主工作台
+                </div>
+              </div>
+              <span class="badge-dot dot dot-success"></span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <div
+        id="sidebar-overlay"
+        class="sidebar-overlay fixed inset-0 z-30 hidden lg:hidden"
+      ></div>
+
+      <!-- ============ 主内容区 ============ -->
+      <div class="flex min-w-0 flex-1 flex-col">
+        <header
+          class="sticky top-0 z-20 flex h-16 items-center justify-between gap-4 border-b border-white/[0.06] bg-[#050508]/80 px-5 backdrop-blur-md sm:px-8"
+        >
+          <div class="flex items-center gap-3">
+            <button
+              id="menu-btn"
+              class="btn-ghost rounded-lg p-2 lg:hidden"
+              aria-label="菜单"
+            >
+              <svg
+                class="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+            <div>
+              <h1 class="text-base font-semibold text-white">安全与登录</h1>
+              <p class="text-[11px] text-zinc-500">Passkey · 会话 · 恢复码</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <button
+              onclick="
+                alert('演示：调起系统 WebAuthn，为当前设备创建一个新 Passkey')
+              "
+              class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+            >
+              + 添加 Passkey
+            </button>
+            <div
+              class="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/40 to-violet-500/40 ring-1 ring-white/15 text-xs font-medium"
+            >
+              Z
+            </div>
+          </div>
+        </header>
+
+        <main class="flex-1 px-5 py-8 sm:px-8">
+          <div class="mx-auto max-w-6xl space-y-8">
+            <!-- ===== 页头 ===== -->
+            <div class="reveal visible">
+              <h2 class="font-display text-3xl text-white">安全与登录</h2>
+              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+                这里管理「你是谁」的一切：Passkey 凭证、登录会话、恢复码。
+                它们与「通知发到哪」（接收设备）是两条独立的轴。
+              </p>
+            </div>
+
+            <!-- ===== ① Passkey 凭证 ===== -->
+            <section class="reveal visible">
+              <div class="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h3 class="text-lg font-medium text-white">Passkey 凭证</h3>
+                  <p class="mt-1 text-[13px] text-zinc-500">
+                    你的免密登录凭证。一个账号可挂多个
+                    Passkey，可经系统同步到同生态设备
+                  </p>
+                </div>
+                <span class="text-[12px] text-zinc-500"
+                  ><span class="font-medium text-white" id="pk-count">3</span>
+                  个凭证</span
+                >
+              </div>
+              <div class="mt-4 space-y-4" id="passkey-list">
+                <!-- 由 JS 渲染 -->
+              </div>
+            </section>
+
+            <!-- ===== ② 登录会话 ===== -->
+            <section class="reveal visible">
+              <div class="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h3 class="text-lg font-medium text-white">登录会话</h3>
+                  <p class="mt-1 text-[13px] text-zinc-500">
+                    你的账号当前在哪些设备上处于登录态。一个 Passkey
+                    可多端同时在线，会话各自独立、可单独吊销
+                  </p>
+                </div>
+                <span class="text-[12px] text-zinc-500"
+                  ><span class="font-medium text-white" id="session-count"
+                    >5</span
+                  >
+                  个活跃会话</span
+                >
+              </div>
+              <div
+                class="card mt-4 divide-y divide-white/[0.04]"
+                id="session-list"
+              >
+                <!-- 由 JS 渲染 -->
+              </div>
+            </section>
+
+            <!-- ===== ③ 恢复码 ===== -->
+            <section class="card reveal visible p-6">
+              <div class="flex flex-wrap items-start justify-between gap-4">
+                <div class="flex items-start gap-4">
+                  <div
+                    class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10"
+                  >
+                    <svg
+                      class="h-5 w-5 text-amber-300"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path
+                        d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                      />
+                      <line x1="12" y1="9" x2="12" y2="13" />
+                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 class="text-base font-medium text-white">恢复码</h3>
+                    <p
+                      class="mt-1 max-w-xl text-[13px] leading-relaxed text-zinc-500"
+                    >
+                      当你丢失所有设备、无法用 Passkey 登录时的<b
+                        class="text-zinc-300"
+                        >终极兜底</b
+                      >。 用「用户名 + 恢复码」登录后可为新设备补建
+                      Passkey。每个码只能用一次。
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onclick="regenCodes()"
+                  class="btn-ghost rounded-xl px-4 py-2 text-sm"
+                >
+                  重新生成
+                </button>
+              </div>
+              <div
+                class="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4"
+                id="recovery-codes"
+              >
+                <!-- 由 JS 渲染 -->
+              </div>
+              <p class="mt-3 text-[11px] text-zinc-600">
+                剩余 <span id="codes-left" class="text-zinc-400">8</span> 个 ·
+                请立即保存到密码管理器，此处不再明文展示
+              </p>
+            </section>
+
+            <!-- ===== 概念说明 ===== -->
+            <section class="card reveal visible p-6">
+              <div class="text-sm font-medium text-white">两条独立的轴</div>
+              <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                <div
+                  class="rounded-xl bg-white/[0.02] p-4 ring-1 ring-white/[0.06]"
+                >
+                  <div
+                    class="flex items-center gap-2 text-[13px] font-medium text-zinc-200"
+                  >
+                    <span
+                      class="flex h-6 w-6 items-center justify-center rounded-md bg-blue-400/10 text-blue-300"
+                    >
+                      <svg
+                        class="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <rect x="3" y="11" width="18" height="11" rx="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                    </span>
+                    认证轴 · 决定「你是谁」（本页）
+                  </div>
+                  <ul
+                    class="mt-3 space-y-1.5 text-[12px] leading-relaxed text-zinc-500"
+                  >
+                    <li>· Passkey 凭证：一个账号可挂多个</li>
+                    <li>· 登录会话：多端并存、可单独吊销</li>
+                    <li>· 恢复码：丢失全部设备时的兜底</li>
+                  </ul>
+                </div>
+                <div
+                  class="rounded-xl bg-white/[0.02] p-4 ring-1 ring-white/[0.06]"
+                >
+                  <div
+                    class="flex items-center gap-2 text-[13px] font-medium text-zinc-200"
+                  >
+                    <span
+                      class="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-400/10 text-emerald-300"
+                    >
+                      <svg
+                        class="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                      </svg>
+                    </span>
+                    投递轴 · 决定「发到哪」
+                  </div>
+                  <ul
+                    class="mt-3 space-y-1.5 text-[12px] leading-relaxed text-zinc-500"
+                  >
+                    <li>· 在「通知接收」页管理，与本页无关</li>
+                    <li>· 浏览器推送订阅 + WebSocket 长连接</li>
+                    <li>· 退出登录后仍会收到，直到取消订阅</li>
+                  </ul>
+                </div>
+              </div>
+            </section>
+          </div>
+        </main>
+
+        <footer
+          class="border-t border-white/[0.04] px-5 py-5 text-center text-[11px] text-zinc-600 sm:px-8"
+        >
+          Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器
+        </footer>
+      </div>
+    </div>
+
+    <script>
+      // ===== Passkey 凭证 =====
+      let PASSKEYS = [
+        {
+          id: 1,
+          name: "iCloud 钥匙串",
+          type: "平台同步",
+          icon: "🔑",
+          devices: "iPhone · iPad · Mac（同一 Apple ID 自动同步）",
+          created: "2026-06-12",
+          lastUsed: "当前",
+          current: true,
+        },
+        {
+          id: 2,
+          name: "会议室 PC · Windows Hello",
+          type: "本机凭证",
+          icon: "🖥️",
+          devices: "仅这台 Windows PC",
+          created: "2026-07-03",
+          lastUsed: "5 天前",
+          current: false,
+        },
+        {
+          id: 3,
+          name: "YubiKey 硬件密钥",
+          type: "硬件密钥",
+          icon: "🛡️",
+          devices: "USB / NFC，跨任意设备使用",
+          created: "2026-07-20",
+          lastUsed: "2 周前",
+          current: false,
+        },
+      ];
+
+      let SESSIONS = [
+        {
+          id: 1,
+          device: 'MacBook Pro 16"',
+          browser: "Chrome · macOS",
+          icon: "💻",
+          passkey: "iCloud 钥匙串（已同步）",
+          location: "上海",
+          current: true,
+          lastActive: "当前会话",
+          hasPush: true,
+        },
+        {
+          id: 2,
+          device: "iPhone 15",
+          browser: "Safari · iOS",
+          icon: "📱",
+          passkey: "iCloud 钥匙串（已同步）",
+          location: "上海",
+          current: false,
+          lastActive: "2 小时前",
+          hasPush: true,
+        },
+        {
+          id: 3,
+          device: "iPad Air",
+          browser: "Safari · iPadOS",
+          icon: "📱",
+          passkey: "iCloud 钥匙串（已同步）",
+          location: "上海",
+          current: false,
+          lastActive: "昨天 21:40",
+          hasPush: false,
+        },
+        {
+          id: 4,
+          device: "家里的 iMac",
+          browser: "Safari · macOS",
+          icon: "🖥️",
+          passkey: "iCloud 钥匙串（已同步）",
+          location: "上海",
+          current: false,
+          lastActive: "3 天前",
+          hasPush: false,
+        },
+        {
+          id: 5,
+          device: "会议室 PC",
+          browser: "Edge · Windows",
+          icon: "🖥️",
+          passkey: "本机 Passkey",
+          location: "公司",
+          current: false,
+          lastActive: "5 天前",
+          hasPush: false,
+        },
+      ];
+
+      let RECOVERY = [
+        "7f3k-9d2x-qw8e",
+        "m4p1-zt6v-bn3y",
+        "h8q2-xc5j-rl9d",
+        "k2w7-fg4m-ps6t",
+        "n9v3-jh8q-wx2k",
+        "b5t8-zm1p-df7h",
+        "q6w2-kn9v-cx4j",
+        "r3y7-pt5b-hg9m",
+      ];
+
+      function el(tag, attrs = {}, ...children) {
+        const node = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs)) {
+          if (k === "class") node.className = v;
+          else if (k === "text") node.textContent = v;
+          else if (k.startsWith("on"))
+            node.addEventListener(k.slice(2).toLowerCase(), v);
+          else node.setAttribute(k, v);
+        }
+        for (const c of children) {
+          if (c == null) continue;
+          node.append(c.nodeType ? c : document.createTextNode(c));
+        }
+        return node;
+      }
+
+      // ===== 渲染 Passkey =====
+      function renderPasskeys() {
+        const list = document.getElementById("passkey-list");
+        document.getElementById("pk-count").textContent = PASSKEYS.length;
+        list.replaceChildren(
+          ...PASSKEYS.map((p) => {
+            const removeBtn = el(
+              "button",
+              {
+                class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
+                onclick: () => {
+                  if (
+                    confirm(
+                      `确定删除 Passkey「${p.name}」吗？\n用它的设备将无法再登录（可用恢复码兜底）。`,
+                    )
+                  ) {
+                    PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
+                    renderPasskeys();
+                  }
+                },
+              },
+              "删除",
+            );
+            return el(
+              "div",
+              { class: "card reveal visible p-5" },
+              el(
+                "div",
+                { class: "flex flex-wrap items-center gap-4" },
+                el("div", { class: "plat-icon", text: p.icon }),
+                el(
+                  "div",
+                  { class: "min-w-0 flex-1" },
+                  el(
+                    "div",
+                    { class: "flex flex-wrap items-center gap-2" },
+                    el("span", {
+                      class: "text-sm font-medium text-white",
+                      text: p.name,
+                    }),
+                    el("span", {
+                      class: "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                      style:
+                        "background: rgba(139,139,253,0.12); color: var(--accent)",
+                      text: p.type,
+                    }),
+                    p.current
+                      ? el("span", {
+                          class: "status-badge status-on",
+                          text: "本机在用",
+                        })
+                      : null,
+                  ),
+                  el("div", {
+                    class: "mt-1 text-xs text-zinc-500",
+                    text: p.devices,
+                  }),
+                ),
+                el(
+                  "div",
+                  { class: "flex flex-col items-end gap-1.5" },
+                  el("div", {
+                    class: "text-[11px] text-zinc-500",
+                    text: `最近使用 ${p.lastUsed}`,
+                  }),
+                  el("div", {
+                    class: "text-[10px] text-zinc-600",
+                    text: `创建于 ${p.created}`,
+                  }),
+                ),
+              ),
+              el(
+                "div",
+                {
+                  class:
+                    "mt-4 flex items-center justify-end gap-2 border-t border-white/[0.05] pt-4",
+                },
+                p.current
+                  ? el("span", {
+                      class: "text-[11px] text-zinc-600",
+                      text: "当前设备的凭证，不可删除",
+                    })
+                  : removeBtn,
+              ),
+            );
+          }),
+        );
+      }
+      renderPasskeys();
+
+      // ===== 渲染会话 =====
+      function renderSessions() {
+        const list = document.getElementById("session-list");
+        document.getElementById("session-count").textContent = SESSIONS.length;
+        list.replaceChildren(
+          ...SESSIONS.map((s) =>
+            el(
+              "div",
+              { class: "flex flex-wrap items-center gap-4 px-5 py-4" },
+              el("div", {
+                class: "plat-icon !h-10 !w-10 text-xl",
+                text: s.icon,
+              }),
+              el(
+                "div",
+                { class: "min-w-0 flex-1" },
+                el(
+                  "div",
+                  { class: "flex flex-wrap items-center gap-2" },
+                  el("span", {
+                    class: "text-sm font-medium text-white",
+                    text: s.device,
+                  }),
+                  s.current
+                    ? el("span", {
+                        class: "status-badge status-on",
+                        text: "当前会话",
+                      })
+                    : null,
+                  s.hasPush
+                    ? el(
+                        "span",
+                        {
+                          class:
+                            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                          style:
+                            "background: rgba(52,211,153,0.1); color:#6ee7b7",
+                          title: "这台设备已开启推送",
+                        },
+                        "🔔 接收通知",
+                      )
+                    : null,
+                ),
+                el(
+                  "div",
+                  {
+                    class:
+                      "mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500",
+                  },
+                  el("span", { text: s.browser }),
+                  el("span", { class: "text-zinc-700", text: "·" }),
+                  el("span", { text: s.location }),
+                  el("span", { class: "text-zinc-700", text: "·" }),
+                  el("span", {
+                    text: s.current ? s.lastActive : `最后活跃 ${s.lastActive}`,
+                  }),
+                ),
+              ),
+              el(
+                "div",
+                { class: "flex items-center gap-3" },
+                el("span", {
+                  class: "hidden text-[11px] text-zinc-600 sm:block",
+                  text: s.passkey,
+                }),
+                s.current
+                  ? el("span", {
+                      class: "text-[11px] text-zinc-600",
+                      text: "—",
+                    })
+                  : el(
+                      "button",
+                      {
+                        class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
+                        onclick: () => {
+                          if (
+                            confirm(
+                              `吊销「${s.device}」的登录会话？该设备将需要重新登录。`,
+                            )
+                          ) {
+                            SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
+                            renderSessions();
+                          }
+                        },
+                      },
+                      "吊销",
+                    ),
+              ),
+            ),
+          ),
+        );
+      }
+      renderSessions();
+
+      // ===== 恢复码 =====
+      function mask(code) {
+        return code.slice(0, 4) + "••••-••••";
+      }
+      function renderCodes() {
+        const grid = document.getElementById("recovery-codes");
+        grid.replaceChildren(
+          ...RECOVERY.map((c) =>
+            el("div", { class: "recovery-code", text: mask(c) }),
+          ),
+        );
+        document.getElementById("codes-left").textContent = RECOVERY.length;
+      }
+      renderCodes();
+      function regenCodes() {
+        if (!confirm("重新生成会让旧恢复码全部失效，确定吗？")) return;
+        const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+        const gen = () =>
+          Array.from({ length: 3 }, () =>
+            Array.from(
+              { length: 4 },
+              () => chars[Math.floor(Math.random() * chars.length)],
+            ).join(""),
+          ).join("-");
+        RECOVERY = Array.from({ length: 8 }, gen);
+        renderCodes();
+        alert("已生成 8 个新恢复码（演示）。请立即保存。");
+      }
+
+      // 侧边栏（移动端）
+      const sidebar = document.getElementById("sidebar");
+      const overlay = document.getElementById("sidebar-overlay");
+      document.getElementById("menu-btn").addEventListener("click", () => {
+        sidebar.classList.remove("-translate-x-full");
+        overlay.classList.remove("hidden");
+      });
+      overlay.addEventListener("click", () => {
+        sidebar.classList.add("-translate-x-full");
+        overlay.classList.add("hidden");
+      });
+
+      // 滚动渐入
+      const io = new IntersectionObserver(
+        (entries) =>
+          entries.forEach(
+            (e) => e.isIntersecting && e.target.classList.add("visible"),
+          ),
+        { threshold: 0.08 },
+      );
+      document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+    </script>
+  </body>
+</html>
