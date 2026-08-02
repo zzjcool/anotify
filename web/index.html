@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 总览</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden">
+    <!-- 主内容（partials.js 会把它装进「侧栏 + 顶栏」布局） -->
+    <div id="page-main">
+      <div class="mx-auto max-w-6xl space-y-8">
+        <!-- ===== 欢迎 + 状态摘要 ===== -->
+        <div class="reveal visible">
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 class="font-display text-3xl text-white" id="greeting">你好</h2>
+              <p class="mt-1.5 text-sm text-zinc-400" id="summary-line">
+                正在加载你的通知统计…
+              </p>
+            </div>
+            <div class="flex items-center gap-3">
+              <span id="demo-badge" class="demo-badge hidden">
+                <span class="dot dot-warn"></span>演示数据（后端未连接）
+              </span>
+              <a href="#quickstart" class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium">接入新 Agent</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== KPI 卡片 ===== -->
+        <section class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div class="card reveal visible p-5">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-medium text-zinc-500">通知总数</span>
+              <span class="status-badge status-success" id="kpi-total-trend">—</span>
+            </div>
+            <div class="font-display mt-3 text-4xl text-white" id="kpi-total">–</div>
+            <div class="mt-1.5 text-[11px] text-zinc-500">近 30 天</div>
+          </div>
+          <div class="card reveal visible p-5" style="transition-delay: 60ms">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-medium text-zinc-500">送达率</span>
+              <span class="dot dot-success"></span>
+            </div>
+            <div class="font-display mt-3 text-4xl text-white" id="kpi-rate">–</div>
+            <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-rate-sub">—</div>
+          </div>
+          <div class="card reveal visible p-5" style="transition-delay: 120ms">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-medium text-zinc-500">今日通知</span>
+              <span class="dot dot-success"></span>
+            </div>
+            <div class="font-display mt-3 text-4xl text-white" id="kpi-today">–</div>
+            <div class="mt-1.5 text-[11px] text-zinc-500">上报 → 送达</div>
+          </div>
+          <div class="card reveal visible p-5" style="transition-delay: 180ms">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-medium text-zinc-500">接收设备</span>
+              <span class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-400">已启用</span>
+            </div>
+            <div class="font-display mt-3 text-4xl text-white" id="kpi-devices">–</div>
+            <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-devices-sub">—</div>
+          </div>
+        </section>
+
+        <!-- ===== 通知活动热力图 ===== -->
+        <section class="card reveal visible p-5">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div class="text-sm font-medium text-white">通知活动</div>
+              <div class="text-[11px] text-zinc-500">近一年 · 每天的收发量</div>
+            </div>
+            <div class="flex items-center gap-1.5 text-[10px] text-zinc-500">
+              <span class="mr-0.5">少</span>
+              <span class="hm-legend-cell" style="background: var(--surface-2)"></span>
+              <span class="hm-legend-cell" style="background: var(--accent-1)"></span>
+              <span class="hm-legend-cell" style="background: var(--accent-2)"></span>
+              <span class="hm-legend-cell" style="background: var(--accent-3)"></span>
+              <span class="hm-legend-cell" style="background: var(--accent-4)"></span>
+              <span class="ml-0.5">多</span>
+            </div>
+          </div>
+          <div class="mt-4 overflow-x-auto pb-1">
+            <div class="hm" id="hm"></div>
+          </div>
+        </section>
+
+        <!-- ===== 快速接入 ===== -->
+        <section id="quickstart" class="card reveal visible overflow-hidden">
+          <div class="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
+            <div>
+              <div class="text-sm font-medium text-white">接入你的 Agent</div>
+              <div class="text-[11px] text-zinc-500">让 Agent 在任务完成时自动通知你</div>
+            </div>
+            <span class="status-badge" style="background: var(--accent-soft); color: var(--accent)">推荐方式</span>
+          </div>
+          <div class="grid gap-6 p-6 lg:grid-cols-2">
+            <div>
+              <div class="mb-3 flex items-center gap-2 text-xs text-zinc-400">
+                <span class="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 font-mono text-[10px]">A</span>
+                一句话让 Agent 自己装好
+              </div>
+              <div class="rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden">
+                <div class="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
+                  <div class="flex items-center gap-1.5">
+                    <span class="h-2.5 w-2.5 rounded-full bg-red-500/70"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-yellow-500/70"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-green-500/70"></span>
+                  </div>
+                  <button data-copy="#cmd-a" class="copy-btn rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors">复制</button>
+                </div>
+                <div class="px-4 py-4 font-mono text-[12.5px] leading-relaxed">
+                  <p class="text-zinc-600"># 发给你的 Agent 的一句话</p>
+                  <p class="mt-1.5 text-zinc-200" id="cmd-a">
+                    参照 anotify.dev/docs/skill 为我安装通知上报：监听 agent_settled，任务结束自动推送到我的设备。
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="mb-3 flex items-center gap-2 text-xs text-zinc-400">
+                <span class="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 font-mono text-[10px]">B</span>
+                或脚本 / CI 直接上报
+              </div>
+              <div class="rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden">
+                <div class="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
+                  <span class="text-[11px] text-zinc-500 mono">curl</span>
+                  <button data-copy="#cmd-b" class="copy-btn rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors">复制</button>
+                </div>
+                <div class="px-4 py-4 font-mono text-[12px] leading-relaxed" id="cmd-b">
+                  <p><span class="text-zinc-600">$</span> curl -X POST <span id="api-base">https://api.anotify.dev</span>/v1/notify \</p>
+                  <p class="pl-4 text-zinc-300">-H "Authorization: Bearer ant_live_…" \</p>
+                  <p class="pl-4 text-zinc-300">-d '{"title":"部署完成","status":"success"}'</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== 最近通知 ===== -->
+        <section id="recent" class="card reveal visible overflow-hidden">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4">
+            <div>
+              <div class="text-sm font-medium text-white">最近通知</div>
+              <div class="text-[11px] text-zinc-500">实时更新 · 点击行查看详情</div>
+            </div>
+            <div class="flex items-center gap-1 rounded-lg bg-white/[0.03] p-1" id="filter-tabs">
+              <button class="filter-tab active" data-filter="all">全部</button>
+              <button class="filter-tab" data-filter="success">成功</button>
+              <button class="filter-tab" data-filter="error">失败</button>
+              <button class="filter-tab" data-filter="interrupted">中断</button>
+            </div>
+          </div>
+          <div id="notif-list" class="divide-y divide-white/[0.04]"></div>
+          <div class="flex items-center justify-between border-t border-white/[0.06] px-6 py-3 text-xs text-zinc-500">
+            <span id="notif-count">—</span>
+            <button id="refresh-btn" class="text-zinc-400 hover:text-white transition-colors">刷新 →</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 通知详情弹层 -->
+    <div id="detail-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4">
+      <div class="sidebar-overlay absolute inset-0" id="detail-overlay"></div>
+      <div class="card relative z-10 w-full max-w-lg p-6 shadow-2xl" style="background: var(--bg-raise)">
+        <div class="flex items-start justify-between">
+          <div class="flex items-center gap-3" id="detail-head"></div>
+          <button id="detail-close" class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white">
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div id="detail-body" class="mt-5 space-y-4"></div>
+      </div>
+    </div>
+
+    <script src="partials.js"></script>
+    <script>
+      (function () {
+        "use strict";
+        const { el, api, mountLayout, copyText, timeAgo } = window.Anotify;
+        const qs = new URLSearchParams(location.search);
+        const username = qs.get("u") || "zheng";
+
+        mountLayout({ active: "overview", title: "总览", subtitle: "你的通知一览", username });
+
+        /* ================= 数据层 ================= */
+        // 统一通知结构（兼容后端 Message / 契约返回）
+        function normalize(n, i) {
+          const payload = n.payload ? safeParse(n.payload) : n;
+          return {
+            id: n.id || n.ID || "n" + i,
+            status: n.status || "info",
+            title: n.title || "（无标题）",
+            body: n.body || "",
+            link: n.link || payload.link || "",
+            agent: payload.agentId || payload.agent || "agent",
+            project: payload.cwd || payload.project || "—",
+            duration: payload.durationMs ? Math.round(payload.durationMs / 1000) : payload.duration || 0,
+            model: payload.model || "—",
+            sessionId: payload.sessionId || "—",
+            time: timeAgo(n.created_at || n.createdAt || n.time),
+            delivered: n.delivered != null ? n.delivered : (n.delivered_count != null ? n.delivered_count : 0),
+            total: n.total != null ? n.total : (n.device_count != null ? n.device_count : 0),
+          };
+        }
+        function safeParse(s) {
+          try { return typeof s === "string" ? JSON.parse(s) : s; } catch { return {}; }
+        }
+
+        const DEMO_NOTIFICATIONS = [
+          { id: "d1", status: "success", title: "部署完成", agent: "deploy-bot", project: "prod-backend", duration: 24, model: "claude-4", time: "2 分钟前", body: "构建成功，已发布到生产环境。共 47 个文件变更。", link: "pi://session/sess_8f3a", sessionId: "sess_8f3a2c", delivered: 4, total: 4 },
+          { id: "d2", status: "error", title: "构建失败", agent: "lint-check", project: "web-client", duration: 132, model: "claude-4", time: "18 分钟前", body: "3 个测试用例未通过。已附上完整日志，点击查看排查建议。", link: "pi://session/sess_2b1d", sessionId: "sess_2b1d8e", delivered: 4, total: 4 },
+          { id: "d3", status: "interrupted", title: "任务被中断", agent: "refactor", project: "api-server", duration: 305, model: "claude-4", time: "1 小时前", body: "任务被手动停止。当前进度 62%，已保留现场，可继续。", link: "pi://session/sess_9c4f", sessionId: "sess_9c4f11", delivered: 3, total: 4 },
+          { id: "d4", status: "success", title: "文档更新完成", agent: "docs-gen", project: "anotify", duration: 58, model: "claude-4", time: "3 小时前", body: "生成 3 个页面：README、API 参考、部署指南。", link: "pi://session/sess_77aa", sessionId: "sess_77aa09", delivered: 4, total: 4 },
+          { id: "d5", status: "success", title: "代码审查完成", agent: "reviewer", project: "auth-module", duration: 91, model: "claude-4", time: "5 小时前", body: "审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。", link: "pi://session/sess_31de", sessionId: "sess_31de4b", delivered: 4, total: 4 },
+          { id: "d6", status: "error", title: "数据库迁移失败", agent: "db-migrate", project: "core-db", duration: 47, model: "claude-4", time: "昨天 23:41", body: "迁移脚本 0042 执行超时。已自动回滚，数据未受影响。", link: "pi://session/sess_5f2c", sessionId: "sess_5f2c88", delivered: 4, total: 4 },
+          { id: "d7", status: "success", title: "依赖升级完成", agent: "deps-bot", project: "web-client", duration: 76, model: "claude-4", time: "昨天 18:20", body: "升级 8 个依赖至最新稳定版，无破坏性变更。", link: "pi://session/sess_a012", sessionId: "sess_a0123f", delivered: 4, total: 4 },
+          { id: "d8", status: "success", title: "备份任务完成", agent: "backup", project: "core-db", duration: 210, model: "claude-4", time: "昨天 12:05", body: "数据库快照已生成并上传至对象存储，大小 1.2 GB。", link: "pi://session/sess_d9e7", sessionId: "sess_d9e71c", delivered: 4, total: 4 },
+        ];
+
+        const STATUS_META = {
+          success: { dot: "dot-success", badge: "status-success", label: "成功" },
+          error: { dot: "dot-error", badge: "status-error", label: "失败" },
+          interrupted: { dot: "dot-warn", badge: "status-warn", label: "中断" },
+          info: { dot: "dot-success", badge: "status-success", label: "信息" },
+          warning: { dot: "dot-warn", badge: "status-warn", label: "警告" },
+        };
+
+        let NOTIFICATIONS = [];
+        let usingDemo = false;
+
+        async function load() {
+          let items = null;
+          try {
+            const data = await api("/v1/notifications?limit=50");
+            items = data.notifications || data.items || data;
+            if (!Array.isArray(items)) items = null;
+          } catch (e) {
+            items = null;
+          }
+          usingDemo = !items;
+          NOTIFICATIONS = (items || DEMO_NOTIFICATIONS).map(normalize);
+          document.getElementById("demo-badge").classList.toggle("hidden", !usingDemo);
+          renderKpis();
+          renderNotifs(currentFilter);
+          renderSummary();
+        }
+
+        /* ================= KPI ================= */
+        function renderKpis() {
+          const total = NOTIFICATIONS.length;
+          const ok = NOTIFICATIONS.filter((n) => n.delivered >= (n.total || 1)).length;
+          const rate = total ? Math.round((ok / total) * 1000) / 10 : 100;
+          const today = NOTIFICATIONS.filter((n) => /刚刚|分钟前|小时前/.test(n.time)).length;
+          const devices = Math.max(...NOTIFICATIONS.map((n) => n.total || 0), 0);
+          document.getElementById("kpi-total").textContent = total.toLocaleString();
+          document.getElementById("kpi-total-trend").textContent = usingDemo ? "示例" : "实时";
+          document.getElementById("kpi-rate").innerHTML = rate + '<span class="text-2xl text-zinc-500">%</span>';
+          document.getElementById("kpi-rate-sub").textContent = devices + " 台设备 · 端到端加密";
+          document.getElementById("kpi-today").textContent = today;
+          document.getElementById("kpi-devices").textContent = devices || "0";
+          document.getElementById("kpi-devices-sub").textContent = "推送订阅 + 长连接";
+        }
+
+        function renderSummary() {
+          const h = new Date().getHours();
+          const part = h < 6 ? "夜深了" : h < 12 ? "早上好" : h < 18 ? "下午好" : "晚上好";
+          document.getElementById("greeting").textContent = part + "，" + username;
+          const okCnt = NOTIFICATIONS.filter((n) => n.status === "success").length;
+          document.getElementById("summary-line").textContent =
+            `最近收录 ${NOTIFICATIONS.length} 条通知，其中 ${okCnt} 条成功。`;
+        }
+
+        /* ================= 通知列表 ================= */
+        let currentFilter = "all";
+        function renderNotifs(filter) {
+          currentFilter = filter;
+          const list = document.getElementById("notif-list");
+          const rows = NOTIFICATIONS.filter((n) => filter === "all" || n.status === filter);
+          if (rows.length === 0) {
+            list.replaceChildren(
+              el("div", { class: "px-6 py-10 text-center text-sm text-zinc-500", text: "暂无该状态的通知" }),
+            );
+          } else {
+            list.replaceChildren(
+              ...rows.map((n) => {
+                const meta = STATUS_META[n.status] || STATUS_META.info;
+                return el(
+                  "button",
+                  { class: "notif-row flex w-full items-center gap-4 px-6 py-4 text-left", onclick: () => openDetail(n.id) },
+                  el("span", { class: `dot ${meta.dot}` }),
+                  el(
+                    "div",
+                    { class: "min-w-0 flex-1" },
+                    el(
+                      "div",
+                      { class: "flex flex-wrap items-center gap-2" },
+                      el("span", { class: "truncate text-sm font-medium text-white", text: n.title }),
+                      el("span", { class: `status-badge ${meta.badge}`, text: meta.label }),
+                    ),
+                    el(
+                      "div",
+                      { class: "mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500" },
+                      el("span", { class: "mono", text: n.agent }),
+                      el("span", { class: "text-zinc-700", text: "·" }),
+                      el("span", { class: "truncate", text: n.project }),
+                      el("span", { class: "text-zinc-700", text: "·" }),
+                      el("span", { text: n.duration + "s" }),
+                    ),
+                  ),
+                  el(
+                    "div",
+                    { class: "flex shrink-0 flex-col items-end gap-1" },
+                    el("span", { class: "text-xs text-zinc-500", text: n.time }),
+                    el("span", { class: "text-[10px] text-zinc-600", text: `${n.delivered}/${n.total} 设备已送达` }),
+                  ),
+                );
+              }),
+            );
+          }
+          document.getElementById("notif-count").textContent = "显示 " + rows.length + " 条";
+        }
+
+        document.getElementById("filter-tabs").addEventListener("click", (e) => {
+          const btn = e.target.closest(".filter-tab");
+          if (!btn) return;
+          document.querySelectorAll("#filter-tabs .filter-tab").forEach((t) => t.classList.remove("active"));
+          btn.classList.add("active");
+          renderNotifs(btn.dataset.filter);
+        });
+        document.getElementById("refresh-btn").addEventListener("click", load);
+
+        /* ================= 详情弹层 ================= */
+        function openDetail(id) {
+          const n = NOTIFICATIONS.find((x) => x.id === id);
+          if (!n) return;
+          const meta = STATUS_META[n.status] || STATUS_META.info;
+          document.getElementById("detail-head").replaceChildren(
+            el("span", { class: `dot ${meta.dot}` }),
+            el(
+              "div",
+              {},
+              el("div", { class: "text-base font-medium text-white", text: n.title }),
+              el("div", { class: "text-xs text-zinc-500", text: `${n.project} · ${n.time}` }),
+            ),
+          );
+          const fields = [
+            ["Agent", n.agent],
+            ["会话", n.sessionId],
+            ["模型", n.model],
+            ["耗时", n.duration + "s"],
+            ["状态", meta.label],
+            ["送达", `${n.delivered}/${n.total} 设备`],
+          ];
+          const grid = el(
+            "div",
+            { class: "grid grid-cols-2 gap-3" },
+            ...fields.map(([k, v]) =>
+              el(
+                "div",
+                { class: "rounded-lg bg-white/[0.03] px-3 py-2.5 ring-1 ring-white/[0.06]" },
+                el("div", { class: "text-[10px] uppercase tracking-wide text-zinc-500", text: k }),
+                el("div", { class: "mono mt-0.5 text-[12px] text-zinc-200", text: String(v) }),
+              ),
+            ),
+          );
+          const children = [
+            el("p", { class: "text-sm leading-relaxed text-zinc-300", text: n.body || "（无正文）" }),
+            grid,
+          ];
+          if (n.link) {
+            children.push(
+              el(
+                "a",
+                { href: n.link, class: "btn-primary flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium" },
+                "打开 Agent 会话",
+              ),
+            );
+          }
+          document.getElementById("detail-body").replaceChildren(...children);
+          document.getElementById("detail-modal").classList.replace("hidden", "flex");
+          document.body.style.overflow = "hidden";
+        }
+        function closeDetail() {
+          document.getElementById("detail-modal").classList.replace("flex", "hidden");
+          document.body.style.overflow = "";
+        }
+        document.getElementById("detail-close").addEventListener("click", closeDetail);
+        document.getElementById("detail-overlay").addEventListener("click", closeDetail);
+        window.addEventListener("keydown", (e) => e.key === "Escape" && closeDetail());
+
+        /* ================= 复制 ================= */
+        document.querySelectorAll(".copy-btn").forEach((b) =>
+          b.addEventListener("click", () => copyText(b, b.dataset.copy)),
+        );
+
+        /* ================= 热力图 ================= */
+        (function heatmap() {
+          const hm = document.getElementById("hm");
+          if (!hm) return;
+          const LEVELS = ["var(--surface-2)", "var(--accent-1)", "var(--accent-2)", "var(--accent-3)", "var(--accent-4)"];
+          const WEEK_CN = ["日", "一", "二", "三", "四", "五", "六"];
+          const WEEKS = 53;
+          function seeded(str) {
+            let h = 2166136261;
+            for (let i = 0; i < str.length; i++) {
+              h ^= str.charCodeAt(i);
+              h = Math.imul(h, 16777619);
+            }
+            return function () {
+              h ^= h << 13; h ^= h >>> 17; h ^= h << 5;
+              return (h >>> 0) / 4294967296;
+            };
+          }
+          function dayCount(date) {
+            const r = seeded(date.toDateString());
+            const dow = date.getDay();
+            const weekend = dow === 0 || dow === 6;
+            if (r() < (weekend ? 0.52 : 0.12)) return 0;
+            const v = r();
+            return Math.round((weekend ? 0.4 : 1) * (2 + v * v * 26));
+          }
+          function levelOf(c) {
+            if (!c) return 0;
+            if (c < 5) return 1;
+            if (c < 10) return 2;
+            if (c < 18) return 3;
+            return 4;
+          }
+          const tip = el("div", { class: "hm-tip" });
+          document.body.append(tip);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const dow = (today.getDay() + 6) % 7;
+          const endMonday = new Date(today);
+          endMonday.setDate(today.getDate() - dow);
+          const startMonday = new Date(endMonday);
+          startMonday.setDate(endMonday.getDate() - (WEEKS - 1) * 7);
+          const DAY_LABELS = { 0: "一", 2: "三", 4: "五" };
+          const frag = document.createDocumentFragment();
+          for (let d = 0; d < 7; d++) {
+            const s = document.createElement("span");
+            s.className = "hm-day";
+            s.style.gridRow = d + 2;
+            s.textContent = DAY_LABELS[d] || "";
+            frag.append(s);
+          }
+          let prevMonth = -1;
+          for (let w = 0; w < WEEKS; w++) {
+            const monday = new Date(startMonday);
+            monday.setDate(startMonday.getDate() + w * 7);
+            const m = monday.getMonth();
+            if (m !== prevMonth) {
+              const label = document.createElement("span");
+              label.className = "hm-month";
+              label.style.gridColumn = w + 2;
+              label.textContent = `${m + 1}月`;
+              frag.append(label);
+              prevMonth = m;
+            }
+            for (let d = 0; d < 7; d++) {
+              const date = new Date(monday);
+              date.setDate(monday.getDate() + d);
+              const future = date > today;
+              const count = future ? 0 : dayCount(date);
+              const cell = document.createElement("span");
+              cell.className = "hm-cell";
+              cell.style.gridColumn = w + 2;
+              cell.style.gridRow = d + 2;
+              if (future) {
+                cell.dataset.future = "1";
+              } else {
+                cell.style.background = LEVELS[levelOf(count)];
+                if (date.getTime() === today.getTime()) cell.classList.add("hm-today");
+                cell.addEventListener("mouseenter", () => {
+                  const t1 = document.createElement("div");
+                  t1.className = "font-medium text-white";
+                  t1.textContent = count > 0 ? `${count} 条通知` : "无通知";
+                  const t2 = document.createElement("div");
+                  t2.className = "text-zinc-500";
+                  t2.textContent = `${date.getMonth() + 1}月${date.getDate()}日 周${WEEK_CN[date.getDay()]}`;
+                  tip.replaceChildren(t1, t2);
+                  const rect = cell.getBoundingClientRect();
+                  tip.style.left = rect.left + rect.width / 2 + "px";
+                  tip.style.top = rect.top + "px";
+                  tip.style.opacity = "1";
+                });
+                cell.addEventListener("mouseleave", () => (tip.style.opacity = "0"));
+              }
+              frag.append(cell);
+            }
+          }
+          hm.append(frag);
+        })();
+
+        /* ================= 启动 ================= */
+        load();
+      })();
+    </script>
+  </body>
+</html>
