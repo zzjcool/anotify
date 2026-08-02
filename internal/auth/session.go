@@ -68,6 +68,11 @@ func (m *SessionManager) Create(userID string) (*store.Session, error) {
 	return s, nil
 }
 
+// ListByUser 列出某用户的全部会话。
+func (m *SessionManager) ListByUser(userID string) ([]*store.Session, error) {
+	return m.db.ListSessionsByUser(userID)
+}
+
 // Validate 校验会话 ID，返回会话（过期视为无效）。
 func (m *SessionManager) Validate(sessionID string) (*store.Session, error) {
 	s, err := m.db.GetSession(sessionID)

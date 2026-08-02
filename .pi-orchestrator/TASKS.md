@@ -94,7 +94,8 @@
 
 ### [T14] 前端管理页：API Keys + 安全与登录(Security) + 接入文档
 
-- 状态：❌ 返工（协调者 web_verify 发现：① 字体引用 `../public/fonts/fonts.css` 404；② 缺 tokens.css、硬编码 hex 色值违反令牌规则）
+- 状态：✅（返工后协调者复验：三页无裸 hex、字体引用正确、无 404 失败请求、无 JS 错误/溢出）
+- 遗留：docs.html 移动端参数表轻微溢出（基线遗留问题）→ 转入 T22 移动端适配任务统一处理
 - 依赖：T05
 - worktree：wt-feadmin
 - 产出：`web/keys.html` `web/security.html` `web/docs.html`

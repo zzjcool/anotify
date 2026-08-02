@@ -18,3 +18,21 @@ func (d *DB) InsertUser(ctx context.Context, id, username, displayName string) (
 	}
 	return id, nil
 }
+
+// ListAllUserIDs 返回全部用户 ID（用于为每个用户启动 push 派发消费者）。
+func (d *DB) ListAllUserIDs(ctx context.Context) ([]string, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id FROM users`)
+	if err != nil {
+		return nil, fmt.Errorf("list user ids: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan user id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

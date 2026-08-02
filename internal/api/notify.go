@@ -20,6 +20,10 @@ type NotifyHandler struct {
 	Broker broker.Broker
 	Keys   authn.KeyValidator
 	Store  *store.DB
+
+	// OnPublished 在消息成功入队后调用（参数为 userID），用于按需启动该用户的
+	// push 派发消费者（覆盖运行期新注册用户）。可为 nil。
+	OnPublished func(userID string)
 }
 
 // NotifyRequest 是 POST /v1/notify 的请求体（见 api/openapi.yaml）。
@@ -178,6 +182,9 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := h.Broker.Publish(r.Context(), msg); err != nil {
 		writeError(w, http.StatusInternalServerError, "publish: "+err.Error())
 		return
+	}
+	if h.OnPublished != nil {
+		h.OnPublished(userID)
 	}
 
 	// 计算投递预览：该用户的 enabled 设备中，按路由规则命中的设备。
