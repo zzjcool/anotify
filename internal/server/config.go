@@ -23,9 +23,9 @@ type Config struct {
 // FromEnv 从环境变量加载配置。
 func FromEnv() Config {
 	return Config{
-		Addr:        get("ANOTIFY_ADDR", ":8080"),
-		DBPath:      get("ANOTIFY_DB", "./anotify.db"),
-		CDNPrefix:   get("ANOTIFY_CDN_PREFIX", ""),
+		Addr:      get("ANOTIFY_ADDR", ":8080"),
+		DBPath:    get("ANOTIFY_DB", "./anotify.db"),
+		CDNPrefix: get("ANOTIFY_CDN_PREFIX", ""),
 		// 默认空 → 使用 embed 内嵌前端（生产单二进制）；
 		// 开发期显式设 ANOTIFY_STATIC=./web 走本地目录。
 		StaticDir:   get("ANOTIFY_STATIC", ""),

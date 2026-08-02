@@ -147,7 +147,7 @@
 
 ### [T36] 桌面 Chrome Web Push 端到端
 
-- 状态：🟦（脚本已备 scripts/push_e2e.mjs；需 HTTPS 隧道 + 真实 VAPID 跑订阅，进行中）
+- 状态：✅（本地持久化 Chrome 跑通：真实 FCM endpoint 订阅 → 设备上报 → notify matched=1 → deliveries status=sent。注：trycloudflare 被公司 DNS 污染，桌面用 localhost 安全上下文验证；iOS 真机不受影响走 T40）
 
 ---
 
