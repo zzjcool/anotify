@@ -273,7 +273,6 @@
             const assertion = await navigator.credentials.get({ publicKey });
             // 3. 完成登录
             const payload = {
-              username,
               id: assertion.id,
               rawId: bufToB64url(assertion.rawId),
               type: assertion.type,
@@ -286,7 +285,8 @@
                   : null,
               },
             };
-            await postJSON("/v1/auth/login", payload);
+            // 后端从 query 取 username（body 是 WebAuthn 断言）
+            await postJSON("/v1/auth/login?username=" + encodeURIComponent(username), payload);
             showStatus("登录成功，正在进入工作台…", "success");
             setTimeout(() => (location.href = "index.html"), 500);
           } catch (e) {
@@ -335,7 +335,6 @@
             }
             const cred = await navigator.credentials.create({ publicKey });
             const payload = {
-              username,
               id: cred.id,
               rawId: bufToB64url(cred.rawId),
               type: cred.type,
@@ -344,7 +343,8 @@
                 attestationObject: bufToB64url(cred.response.attestationObject),
               },
             };
-            await postJSON("/v1/auth/register", payload);
+            // 后端从 query 取 username（body 是 WebAuthn 断言）
+            await postJSON("/v1/auth/register?username=" + encodeURIComponent(username), payload);
             showStatus("注册成功！正在进入工作台…", "success");
             setTimeout(() => (location.href = "index.html"), 600);
           } catch (e) {
