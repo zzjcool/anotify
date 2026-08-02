@@ -1,18 +1,11 @@
-# T10 · SQLiteBroker 实现 — 进度
+# T14 进度 · wt-feadmin —— 已完成 ✅
 
-## 状态：已完成 ✅
+- [x] 读取任务卡 + 设计稿（mockup-keys / mockup-security / mockup-api / tech-scheme）
+- [x] web/layout.js —— 共享布局片段（侧边栏/顶栏/移动抽屉/el 工具）
+- [x] web/keys.html —— API Keys（列表 /v1/keys、新建 scope 多选、明文一次性展示、revoke、演示降级）
+- [x] web/security.html —— Passkey（重命名/删除/添加）、会话（吊销）、恢复码占位、两轴说明
+- [x] web/docs.html —— 接入指引 + API 地图 + 认证 + notify 契约 + WebPush + WS 协议 + 目录跟随
+- [x] web_verify 三页自测全通过：JS错误 0、滚动到底 OK、桌面溢出 0px、移动溢出 0px
+- [x] git commit c4104fa 到分支 wt-feadmin
 
-- [x] 读任务卡 t10-store.md + AGENTS.md + 契约（broker.go / store.go / ids.go / schema.sql）
-- [x] 实现 internal/broker/sqlite.go（Broker 接口）
-- [x] 实现 internal/broker/sqlite_test.go（7 个测试全过）
-- [x] go build / go vet / gofmt 全绿
-- [x] worktree 内 git commit（ed071a2）
-
-## 产出
-
-- internal/broker/sqlite.go
-- internal/broker/sqlite_test.go
-
-## 自测
-
-- `go test ./internal/broker/... -v -count=1` → PASS (7 tests)
+DONE T14

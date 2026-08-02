@@ -62,7 +62,7 @@
 
 ### [T10] SQLiteBroker 实现
 
-- 状态：⬜
+- 状态：✅（协调者独立验证：go vet 净 / broker 7 tests PASS）
 - 依赖：T02 T03
 - worktree：wt-store
 - 产出：`internal/store/*` `internal/broker/sqlite.go`（Publish/Subscribe/Ack/Replay + 进程内广播 + DB 回放 + 过期清理）
@@ -70,7 +70,7 @@
 
 ### [T11] Passkey 认证 + API Key 中间件
 
-- 状态：⬜
+- 状态：✅（协调者独立验证：go vet 净 / auth+store 22 tests PASS，-race 通过）
 - 依赖：T02 T04
 - worktree：wt-auth
 - 产出：`internal/auth/*`（WebAuthn 注册/登录、会话；API Key 签发/argon2 校验/scope）
@@ -78,7 +78,7 @@
 
 ### [T12] /v1/notify 上报 + 路由 + 双派发器
 
-- 状态：⬜
+- 状态：✅（协调者独立验证：go vet 净 / api+push+ws 全 PASS）
 - 依赖：T02 T03 T04
 - worktree：wt-notify
 - 产出：`internal/api/notify.go` `internal/ws/*` `internal/push/*`（标签路由规则 + status 过滤 + WS 派发 + WebPush 派发）
@@ -86,7 +86,7 @@
 
 ### [T13] 前端核心页：login + 总览 + 通知接收(Receivers 双 tab)
 
-- 状态：⬜
+- 状态：✅（协调者 web_verify 三页：无 JS 错误/溢出，后端 404 降级正确，视觉还原到位）
 - 依赖：T05
 - worktree：wt-fecore
 - 产出：`web/login.html` `web/index.html` `web/receivers.html`
@@ -94,7 +94,7 @@
 
 ### [T14] 前端管理页：API Keys + 安全与登录(Security) + 接入文档
 
-- 状态：⬜
+- 状态：❌ 返工（协调者 web_verify 发现：① 字体引用 `../public/fonts/fonts.css` 404；② 缺 tokens.css、硬编码 hex 色值违反令牌规则）
 - 依赖：T05
 - worktree：wt-feadmin
 - 产出：`web/keys.html` `web/security.html` `web/docs.html`

@@ -3,11 +3,18 @@
 # 用法：BASE=http://localhost:8080 ./scripts/integration.sh
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
-PASS=0; FAIL=0
-ok()   { PASS=$((PASS+1)); echo "  ✅ $1"; }
-bad()  { FAIL=$((FAIL+1)); echo "  ❌ $1"; }
-check(){ # check <描述> <期望> <实际>
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (期望=$2 实际=$3)"; fi
+PASS=0
+FAIL=0
+ok() {
+	PASS=$((PASS + 1))
+	echo "  ✅ $1"
+}
+bad() {
+	FAIL=$((FAIL + 1))
+	echo "  ❌ $1"
+}
+check() { # check <描述> <期望> <实际>
+	if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (期望=$2 实际=$3)"; fi
 }
 
 echo "=== 1. 健康检查 ==="

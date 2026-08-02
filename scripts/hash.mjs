@@ -24,8 +24,17 @@ if (!srcDir || !outDir) {
 }
 
 const FINGERPRINT_EXT = new Set([
-	".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico",
-	".woff", ".woff2", ".ttf", ".webmanifest",
+	".js",
+	".css",
+	".png",
+	".jpg",
+	".jpeg",
+	".svg",
+	".ico",
+	".woff",
+	".woff2",
+	".ttf",
+	".webmanifest",
 ]);
 const HTML_EXT = new Set([".html"]);
 const SKIP = new Set(["manifest.json"]);
@@ -66,7 +75,9 @@ async function main() {
 			const target = path.join(out, hashedRel);
 			await fs.mkdir(path.dirname(target), { recursive: true });
 			await fs.writeFile(target, buf);
-			manifest[rel.split(path.sep).join("/")] = hashedRel.split(path.sep).join("/");
+			manifest[rel.split(path.sep).join("/")] = hashedRel
+				.split(path.sep)
+				.join("/");
 		} else if (HTML_EXT.has(ext)) {
 			htmlFiles.push({ file, rel });
 		} else {
@@ -83,16 +94,26 @@ async function main() {
 		for (const [orig, hashed] of Object.entries(manifest)) {
 			// 匹配 src/href="...orig"（支持相对路径），替换为哈希名
 			const esc = orig.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			html = html.replace(new RegExp(`(src|href)=("')([^"']*?)${esc}\\2`, "g"),
-				(_, attr, q, prefix) => `${attr}=${q}${prefix}${hashed}${q}`);
+			html = html.replace(
+				new RegExp(`(src|href)=("')([^"']*?)${esc}\\2`, "g"),
+				(_, attr, q, prefix) => `${attr}=${q}${prefix}${hashed}${q}`,
+			);
 		}
 		const target = path.join(out, rel);
 		await fs.mkdir(path.dirname(target), { recursive: true });
 		await fs.writeFile(target, html);
 	}
 
-	await fs.writeFile(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2));
-	console.log(`✅ 指纹完成：${Object.keys(manifest).length} 个资源，${htmlFiles.length} 个 HTML → ${out}`);
+	await fs.writeFile(
+		path.join(out, "manifest.json"),
+		JSON.stringify(manifest, null, 2),
+	);
+	console.log(
+		`✅ 指纹完成：${Object.keys(manifest).length} 个资源，${htmlFiles.length} 个 HTML → ${out}`,
+	);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+	console.error(e);
+	process.exit(1);
+});
