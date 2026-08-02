@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 接入文档</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="tokens.css" />
+    <style>
+      :root {
+        --panel: rgba(255, 255, 255, 0.03);
+      }
+      * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-feature-settings: "ss01", "cv11", "liga";
+      }
+      .font-script { font-family: "Sacramento", "Great Vibes", cursive; }
+      .font-display { font-family: "Fraunces", Georgia, serif; }
+      ::selection { background: rgba(139, 139, 253, 0.35); color: #fff; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      .card {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        transition: border-color 0.3s ease;
+      }
+      .card:hover { border-color: var(--line-strong); }
+      .side-link {
+        display: flex; align-items: center; gap: 0.7rem;
+        padding: 0.55rem 0.8rem; border-radius: 10px;
+        font-size: 0.875rem; color: var(--muted);
+        border: 1px solid transparent; transition: all 0.2s ease;
+      }
+      .side-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+      .side-link.active {
+        color: var(--text);
+        background: rgba(139, 139, 253, 0.1);
+        border-color: rgba(139, 139, 253, 0.25);
+      }
+      .side-link.active svg { color: var(--accent); }
+      .side-label {
+        font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--faint); padding: 0 0.8rem; margin-top: 1.4rem;
+        margin-bottom: 0.5rem; font-weight: 500;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 9999px; flex-shrink: 0; }
+      .dot-success { background: var(--success); box-shadow: 0 0 8px color-mix(in srgb, var(--success) 60%, transparent); }
+      .btn-ghost {
+        border: 1px solid var(--line-strong); color: var(--muted);
+        transition: all 0.25s ease;
+      }
+      .btn-ghost:hover {
+        border-color: rgba(255, 255, 255, 0.35); color: var(--text);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .badge-dot { animation: pulse 2.2s ease-in-out infinite; }
+      @keyframes pulse {
+        0%, 100% { box-shadow: 0 0 0 0 var(--success-soft); }
+        50% { box-shadow: 0 0 0 5px transparent; }
+      }
+      .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+      .sidebar-overlay { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px); }
+      .reveal {
+        opacity: 0; transform: translateY(20px);
+        transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .reveal.visible { opacity: 1; transform: none; }
+
+      /* 方法徽章 */
+      .method {
+        display: inline-flex; align-items: center; justify-content: center;
+        font-family: "JetBrains Mono", monospace; font-size: 0.68rem;
+        font-weight: 600; letter-spacing: 0.03em;
+        padding: 0.2rem 0.55rem; border-radius: 6px; min-width: 52px;
+      }
+      .m-get { background: var(--success-soft); color: var(--success); }
+      .m-post { background: var(--accent-soft); color: var(--accent-strong); }
+      .m-patch { background: var(--warn-soft); color: var(--warn); }
+      .m-delete { background: var(--error-soft); color: var(--error); }
+      .m-ws { background: var(--accent-soft); color: var(--accent); }
+
+      /* 代码块 */
+      .code-block {
+        background: var(--code-bg); border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 12px; overflow: hidden;
+      }
+      .code-head {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0.55rem 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 0.7rem; color: var(--faint);
+      }
+      .copy-btn {
+        border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;
+        padding: 0.15rem 0.5rem; font-size: 0.68rem; color: var(--muted);
+        transition: all 0.2s; cursor: pointer;
+      }
+      .copy-btn:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.25); }
+      .code-body {
+        padding: 1rem; font-family: "JetBrains Mono", monospace;
+        font-size: 0.78rem; line-height: 1.65; overflow-x: auto;
+        color: var(--code-text); white-space: pre;
+      }
+      .tk-key { color: var(--accent-strong); }
+      .tk-str { color: var(--success); }
+      .tk-num { color: var(--warn); }
+      .tk-punct { color: var(--muted); }
+      .tk-comment { color: var(--faint); font-style: italic; }
+
+      /* 参数表 */
+      .param-table { width: 100%; border-collapse: collapse; }
+      .param-table th {
+        text-align: left; font-size: 0.68rem; letter-spacing: 0.1em;
+        text-transform: uppercase; color: var(--faint); font-weight: 600;
+        padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line);
+      }
+      .param-table td {
+        padding: 0.7rem 0.9rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        vertical-align: top; font-size: 0.82rem;
+      }
+      .param-name {
+        font-family: "JetBrains Mono", monospace; color: var(--accent-strong);
+        font-size: 0.8rem; white-space: nowrap;
+      }
+      .param-type {
+        font-family: "JetBrains Mono", monospace; color: var(--faint); font-size: 0.72rem;
+      }
+      .req {
+        font-size: 0.62rem; font-weight: 600; padding: 0.1rem 0.4rem;
+        border-radius: 4px; background: var(--error-soft);
+        color: var(--error); margin-left: 0.4rem;
+      }
+      .opt { font-size: 0.62rem; font-weight: 500; color: var(--faint); margin-left: 0.4rem; }
+      .param-desc { color: var(--muted); line-height: 1.55; }
+      .param-desc code {
+        font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
+        background: rgba(255, 255, 255, 0.05); padding: 0.05rem 0.35rem;
+        border-radius: 4px; color: var(--code-text);
+      }
+      /* 网格/卡片子元素最小宽度归零，防长内容撑破容器（flex/grid min-width:auto 陷阱） */
+      .grid > *, .card, .code-block { min-width: 0; }
+      /* 移动端：卡片内横滚容器收缩到视口内，内容在其内部滚动 */
+      @media (max-width: 640px) {
+        .overflow-x-auto {
+          max-width: calc(100vw - 5rem);
+          contain: inline-size;
+        }
+      }
+      .doc-anchor { scroll-margin-top: 5rem; }
+      .toc-link {
+        display: block; padding: 0.3rem 0.8rem; border-radius: 8px;
+        font-size: 0.78rem; color: var(--muted); transition: all 0.15s ease;
+      }
+      .toc-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+    </style>
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden">
+    <div class="flex min-h-screen" id="layout-root"></div>
+
+    <script src="layout.js"></script>
+    <script>
+      function copyBlock(btn) {
+        const body = btn.closest(".code-block").querySelector(".code-body");
+        navigator.clipboard.writeText(body.innerText).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = "已复制 ✓";
+          setTimeout(() => (btn.textContent = orig), 1500);
+        });
+      }
+
+      document.getElementById("layout-root").innerHTML = AnotifyLayout.render({
+        active: "docs",
+        title: "接入文档",
+        subtitle: "Agent 上报 · Web Push · WebSocket",
+        actions: "",
+        content: `
+        <div class="flex gap-10">
+          <!-- 正文 -->
+          <div class="min-w-0 flex-1">
+
+          <!-- ===== 接入 Agent ===== -->
+          <section id="agent" class="doc-anchor reveal visible">
+            <h2 class="font-display text-3xl text-white">接入 Agent</h2>
+            <p class="mt-4 text-[15px] leading-relaxed text-zinc-400">
+              Anotify 的核心场景：<b class="text-zinc-200">Agent 完成任务后，把通知自动送到你的所有设备</b>。
+              接入只需两步——创建一个上报 Key，然后在任务结束时发一个 POST 请求。
+            </p>
+
+            <div class="mt-6 grid gap-4 md:grid-cols-2">
+              <div class="card p-5">
+                <div class="flex items-center gap-2.5">
+                  <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-400/10 text-sm text-indigo-300">1</span>
+                  <b class="text-sm text-white">创建上报 Key</b>
+                </div>
+                <p class="mt-2.5 text-[13px] leading-relaxed text-zinc-500">
+                  到 <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> 页新建一个
+                  <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> 权限的 Key（前缀
+                  <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>），立即保存。
+                </p>
+              </div>
+              <div class="card p-5">
+                <div class="flex items-center gap-2.5">
+                  <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-400/10 text-sm text-indigo-300">2</span>
+                  <b class="text-sm text-white">任务结束时上报</b>
+                </div>
+                <p class="mt-2.5 text-[13px] leading-relaxed text-zinc-500">
+                  在 Agent 结束事件（如 pi 的
+                  <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>）或脚本末尾，
+                  携带 Key <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>。
+                </p>
+              </div>
+            </div>
+
+            <div class="code-block mt-6">
+              <div class="code-head"><span>最小接入 · 一行 curl 让通知送到所有设备</span><button class="copy-btn" onclick="copyBlock(this)">复制</button></div>
+              <div class="code-body">curl -X POST https://你的域名/v1/notify \\
+  -H <span class="tk-str">"Authorization: Bearer ant_live_9f3a2c8e…"</span> \\
+  -H <span class="tk-str">"Content-Type: application/json"</span> \\
+  -d <span class="tk-str">'{"title":"部署完成","status":"success","body":"已发布到 prod"}'</span></div>
+            </div>
+
+            <div class="card mt-6 p-5">
+              <div class="text-xs font-medium text-zinc-500">一条通知的旅程</div>
+              <pre class="mono mt-3 overflow-x-auto text-[11.5px] leading-relaxed text-zinc-400"> Agent(pi)              Anotify 后端             WebPush 服务              设备(iOS/Mac)
+    │                        │                        │                        │
+    │ ① agent_settled 事件    │                        │                        │
+    │ ② POST /v1/notify ────▶│ ③ 校验 Key → 定位用户    │                        │
+    │                        │ ④ 按标签/级别过滤设备     │                        │
+    │                        │──────── ⑤ 加密推送 ────▶│── ⑥ APNs/FCM 下发 ────▶│
+    │                        │                        │     ⑦ SW showNotification
+    │                        │                        │     ⑧ 系统弹出通知横幅     │</pre>
+            </div>
+          </section>
+
+          <!-- ===== API 概览 ===== -->
+          <section id="api" class="doc-anchor mt-16 reveal visible">
+            <h2 class="font-display text-2xl text-white">API 概览</h2>
+            <div class="mt-5 grid gap-3 sm:grid-cols-2">
+              <div class="card p-4">
+                <div class="text-[11px] uppercase tracking-wide text-zinc-500">Base URL</div>
+                <code class="mono mt-1.5 block text-[13px] text-zinc-200">https://你的域名</code>
+                <div class="mt-1 text-[11px] text-zinc-600">私有化部署时为你的域名或 Tunnel 临时域名</div>
+              </div>
+              <div class="card p-4">
+                <div class="text-[11px] uppercase tracking-wide text-zinc-500">API 版本</div>
+                <code class="mono mt-1.5 block text-[13px] text-zinc-200">/v1</code>
+                <div class="mt-1 text-[11px] text-zinc-600">所有动态接口带版本前缀，静态资源走 /static/*</div>
+              </div>
+            </div>
+
+            <div class="card mt-5 overflow-hidden">
+              <div class="border-b border-white/[0.06] px-5 py-3 text-sm font-medium text-white">接口地图</div>
+              <div class="overflow-x-auto">
+                <table class="w-full min-w-[520px] text-[12.5px]">
+                  <tbody class="divide-y divide-white/[0.04]">
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-post">POST</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/notify</td><td class="px-5 py-2.5 text-zinc-500">Agent 上报通知（核心）</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-get">GET</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/notifications</td><td class="px-5 py-2.5 text-zinc-500">通知历史列表</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-get">GET</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/devices</td><td class="px-5 py-2.5 text-zinc-500">设备列表</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-post">POST</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/devices</td><td class="px-5 py-2.5 text-zinc-500">订阅（注册）设备</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-patch">PATCH</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/devices/:id</td><td class="px-5 py-2.5 text-zinc-500">更新设备（开关/过滤/标签）</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-delete">DEL</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/devices/:id</td><td class="px-5 py-2.5 text-zinc-500">解绑设备</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-ws">WS</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/stream</td><td class="px-5 py-2.5 text-zinc-500">WebSocket 长连接接收</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-get">GET</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/keys</td><td class="px-5 py-2.5 text-zinc-500">API Key 列表</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-post">POST</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/keys</td><td class="px-5 py-2.5 text-zinc-500">新建 API Key</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-post">POST</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/auth/register · login</td><td class="px-5 py-2.5 text-zinc-500">Passkey 注册 / 登录</td></tr>
+                    <tr class="hover:bg-white/[0.02]"><td class="px-5 py-2.5"><span class="method m-get">GET</span></td><td class="px-2 py-2.5 mono text-zinc-300">/v1/vapid-public-key</td><td class="px-5 py-2.5 text-zinc-500">VAPID 公钥（订阅用）</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ===== 认证方式 ===== -->
+          <section id="auth" class="doc-anchor mt-16 reveal visible">
+            <h2 class="font-display text-2xl text-white">认证方式</h2>
+            <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
+              两种凭证，对应两类调用方。<b class="text-zinc-200">权限最小化</b>：上报与接收分开，泄露一个 Key 不会波及另一头。
+            </p>
+            <div class="mt-5 grid gap-4 md:grid-cols-2">
+              <div class="card p-5">
+                <div class="flex items-center gap-2 text-sm font-medium text-white">
+                  <span class="method m-post">KEY</span> API Key（Bearer）
+                </div>
+                <ul class="mt-3 space-y-1.5 text-[13px] leading-relaxed text-zinc-500">
+                  <li>· 用于 Agent 上报 / 接收端长连接</li>
+                  <li>· Header：<code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code></li>
+                  <li>· scope：<code class="mono text-[12px] text-blue-300">notify:send</code> 上报 · <code class="mono text-[12px] text-emerald-300">notify:receive</code> 接收 · <code class="mono text-[12px] text-amber-300">devices:read</code> 只读</li>
+                  <li>· 服务端只存 argon2id 哈希，明文仅创建时展示一次</li>
+                </ul>
+              </div>
+              <div class="card p-5">
+                <div class="flex items-center gap-2 text-sm font-medium text-white">
+                  <span class="method m-ws">PASSKEY</span> 会话 Cookie
+                </div>
+                <ul class="mt-3 space-y-1.5 text-[13px] leading-relaxed text-zinc-500">
+                  <li>· 用于工作台浏览器访问（总览 / 设备 / Keys 管理）</li>
+                  <li>· WebAuthn 无密码登录，生物识别或设备密钥</li>
+                  <li>· httpOnly Cookie，多端会话独立、可单独吊销</li>
+                  <li>· 跨设备：平台同步 / 一次性连接引导 / 恢复码兜底</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <!-- ===== POST /v1/notify ===== -->
+          <section id="notify" class="doc-anchor mt-16 reveal visible">
+            <div class="flex items-center gap-3">
+              <span class="method m-post">POST</span>
+              <code class="mono text-lg text-white">/v1/notify</code>
+              <span class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style="background: var(--accent-soft); color: var(--accent)">核心</span>
+            </div>
+            <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
+              Agent 在任务结束后调用本接口上报一条通知。服务端校验 API Key，定位所属用户，
+              把通知<b class="text-zinc-200">端到端加密</b>推送到该用户所有「已启用且级别/标签匹配」的设备。
+            </p>
+
+            <div class="card mt-5 overflow-hidden">
+              <div class="border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs font-semibold text-zinc-300">请求体参数</div>
+              <table class="param-table">
+                <tbody>
+                  <tr>
+                    <td><span class="param-name">title</span><span class="req">必填</span><div class="param-type mt-1">string ≤ 120</div></td>
+                    <td class="param-desc">通知标题，如 <code>"部署完成"</code>，作为系统通知主标题。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="param-name">status</span><span class="req">必填</span><div class="param-type mt-1">enum</div></td>
+                    <td class="param-desc">任务结果：<code>success</code> 成功 · <code>error</code> 失败 · <code>interrupted</code> 中断 · <code>info</code> 信息 · <code>warning</code> 警告。决定图标颜色与设备过滤。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="param-name">body</span><span class="opt">可选</span><div class="param-type mt-1">string ≤ 500</div></td>
+                    <td class="param-desc">通知正文，补充说明。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="param-name">deviceTags</span><span class="opt">可选</span><div class="param-type mt-1">string[]</div></td>
+                    <td class="param-desc">路由标签。空 = 广播到所有已启用设备；非空时只投给「有共同标签」或「无标签(catch-all)」的设备。≤10 个，每个 ≤32 字符。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="param-name">link</span><span class="opt">可选</span><div class="param-type mt-1">string (uri)</div></td>
+                    <td class="param-desc">点击通知后打开的深链，如 <code>pi://session/sess_8f3a2c</code>。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="param-name">agentId / sessionId / cwd / model / durationMs</span><span class="opt">可选</span></td>
+                    <td class="param-desc">上下文元数据，用于回溯与统计，存入通知历史。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="param-name">ttl / priority</span><span class="opt">可选</span></td>
+                    <td class="param-desc"><code>ttl</code> 有效期秒数（默认 86400）；<code>priority</code> 优先级（默认 normal）。</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="code-block mt-5">
+              <div class="code-head"><span>cURL · 完整请求</span><button class="copy-btn" onclick="copyBlock(this)">复制</button></div>
+              <div class="code-body">curl -X POST https://你的域名/v1/notify \\
+  -H <span class="tk-str">"Authorization: Bearer ant_live_9f3a2c8e…"</span> \\
+  -H <span class="tk-str">"Content-Type: application/json"</span> \\
+  -d <span class="tk-str">'{
+    "title": "部署完成",
+    "status": "success",
+    "body": "构建成功，已发布到生产环境",
+    "link": "pi://session/sess_8f3a2c",
+    "agentId": "deploy-bot",
+    "sessionId": "sess_8f3a2c",
+    "cwd": "/repo/prod-backend",
+    "durationMs": 24000,
+    "model": "anthropic/claude-4",
+    "deviceTags": ["工作"]
+  }'</span></div>
+            </div>
+
+            <div class="mt-5 grid gap-4 lg:grid-cols-2">
+              <div>
+                <div class="mb-2 flex items-center gap-2 text-xs text-zinc-500"><span class="method m-get">200</span> 已接收并分发</div>
+                <div class="code-block">
+                  <div class="code-body"><span class="tk-punct">{</span>
+  <span class="tk-key">"id"</span><span class="tk-punct">:</span> <span class="tk-str">"ntf_01J8XA…"</span><span class="tk-punct">,</span>
+  <span class="tk-key">"matched"</span><span class="tk-punct">:</span> <span class="tk-num">2</span><span class="tk-punct">,</span>
+  <span class="tk-key">"results"</span><span class="tk-punct">:</span> <span class="tk-punct">[</span>
+    <span class="tk-punct">{</span> <span class="tk-key">"device"</span><span class="tk-punct">:</span> <span class="tk-str">"主力手机"</span><span class="tk-punct">,</span> <span class="tk-key">"status"</span><span class="tk-punct">:</span> <span class="tk-str">"sent"</span> <span class="tk-punct">},</span>
+    <span class="tk-punct">{</span> <span class="tk-key">"device"</span><span class="tk-punct">:</span> <span class="tk-str">"办公室 Mac"</span><span class="tk-punct">,</span> <span class="tk-key">"status"</span><span class="tk-punct">:</span> <span class="tk-str">"sent"</span> <span class="tk-punct">}</span>
+  <span class="tk-punct">]</span>
+<span class="tk-punct">}</span></div>
+                </div>
+              </div>
+              <div>
+                <div class="mb-2 flex items-center gap-2 text-xs text-zinc-500"><span class="method m-patch">400</span> 无匹配设备 / 参数错误</div>
+                <div class="code-block">
+                  <div class="code-body"><span class="tk-punct">{</span> <span class="tk-key">"error"</span><span class="tk-punct">:</span> <span class="tk-str">"没有已订阅的设备，请先在工作台订阅"</span> <span class="tk-punct">}</span>
+
+<span class="tk-comment">// 401 · Key 缺失或无效（scope 不足时 403）</span>
+<span class="tk-punct">{</span> <span class="tk-key">"error"</span><span class="tk-punct">:</span> <span class="tk-str">"invalid api key"</span> <span class="tk-punct">}</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card mt-5 p-5">
+              <div class="text-xs font-medium text-zinc-500">投递规则（标签路由 + 级别过滤）</div>
+              <pre class="mono mt-3 overflow-x-auto text-[11.5px] leading-relaxed text-zinc-400">投递 ⟺ 设备 enabled AND statusMatch AND tagMatch
+
+statusMatch：设备过滤 all=全收 · error=仅失败 · success=仅成功
+tagMatch：
+  · 通知无 deviceTags  → 广播到所有 enabled 设备
+  · 设备无 tags        → 接收一切（catch-all）
+  · 双方都有 tags      → 有 ≥1 个共同标签才投递（ANY）</pre>
+            </div>
+          </section>
+
+          <!-- ===== Web Push 订阅 ===== -->
+          <section id="webpush" class="doc-anchor mt-16 reveal visible">
+            <h2 class="font-display text-2xl text-white">Web Push 订阅（浏览器接收）</h2>
+            <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
+              浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。
+              <b class="text-zinc-200">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。
+            </p>
+
+            <ol class="mt-5 space-y-3 border-l border-white/10 pl-5 text-[13px] text-zinc-400">
+              <li><b class="text-zinc-200">① 取 VAPID 公钥</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code></li>
+              <li><b class="text-zinc-200">② 注册 Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code></li>
+              <li><b class="text-zinc-200">③ 请求权限并订阅</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code></li>
+              <li><b class="text-zinc-200">④ 上报订阅</b> · 把 endpoint + keys <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code></li>
+            </ol>
+
+            <div class="code-block mt-5">
+              <div class="code-head"><span>前端订阅 · 核心代码</span><button class="copy-btn" onclick="copyBlock(this)">复制</button></div>
+              <div class="code-body"><span class="tk-comment">// 1. 注册 SW + 取 VAPID 公钥</span>
+<span class="tk-key">const</span> reg = <span class="tk-key">await</span> navigator.serviceWorker.register(<span class="tk-str">"/sw.js"</span>);
+<span class="tk-key">const</span> { publicKey } = <span class="tk-key">await</span> fetch(<span class="tk-str">"/v1/vapid-public-key"</span>).then(r =&gt; r.json());
+
+<span class="tk-comment">// 2. 订阅（需用户已授权通知权限）</span>
+<span class="tk-key">const</span> sub = <span class="tk-key">await</span> reg.pushManager.subscribe({
+  userVisibleOnly: <span class="tk-num">true</span>,
+  applicationServerKey: urlBase64ToUint8Array(publicKey),
+});
+
+<span class="tk-comment">// 3. 上报后端（会话 Cookie 鉴权）</span>
+<span class="tk-key">await</span> fetch(<span class="tk-str">"/v1/devices"</span>, {
+  method: <span class="tk-str">"POST"</span>,
+  headers: { <span class="tk-str">"Content-Type"</span>: <span class="tk-str">"application/json"</span> },
+  body: JSON.stringify({
+    endpoint: sub.endpoint,
+    keys: sub.toJSON().keys,   <span class="tk-comment">// { p256dh, auth }</span>
+    platform: <span class="tk-str">"ios"</span>,      <span class="tk-comment">// ios|mac|win|android|other</span>
+    userAgent: navigator.userAgent,
+  }),
+});</div>
+            </div>
+
+            <div class="mt-5 grid gap-3 md:grid-cols-3 text-xs">
+              <div class="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-3">
+                <b class="text-amber-300 block">⚠️ iOS 前提</b>
+                <span class="text-amber-200/70">必须先「添加到主屏幕」standalone 运行，否则 Safari 不提供 Notification / Push API。</span>
+              </div>
+              <div class="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] p-3">
+                <b class="text-emerald-300 block">✅ Android 更省事</b>
+                <span class="text-emerald-200/70">Chrome/Edge 普通标签页即可订阅，走 FCM，无需添加到主屏幕。</span>
+              </div>
+              <div class="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <b class="text-zinc-300 block">🔒 端到端加密</b>
+                <span class="text-zinc-500">载荷用订阅的 p256dh/auth 密钥加密，推送服务无法读取内容。</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- ===== WebSocket 接收 ===== -->
+          <section id="stream" class="doc-anchor mt-16 reveal visible">
+            <div class="flex items-center gap-3">
+              <span class="method m-ws">WS</span>
+              <code class="mono text-lg text-white">/v1/stream</code>
+              <span class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style="background: var(--success-soft); color: var(--success)">notify:receive</span>
+              <span class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style="background: var(--accent-soft); color: var(--accent)">第二条接收通道</span>
+            </div>
+            <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
+              除浏览器推送外，任意设备 / 插件可用
+              <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> 权限的 Key 建立
+              WebSocket 长连接实时接收。适合做桌面插件、CLI 守护进程、智能家居桥接，与浏览器推送并行。
+            </p>
+
+            <div class="code-block mt-5">
+              <div class="code-head"><span>建立连接</span><button class="copy-btn" onclick="copyBlock(this)">复制</button></div>
+              <div class="code-body">GET wss://你的域名/v1/stream
+<span class="tk-key">Authorization:</span> Bearer ant_recv_9f3a…   <span class="tk-comment"># 需 notify:receive 权限</span>
+<span class="tk-key">Last-Event-Id:</span> evt_01J8X3A1          <span class="tk-comment"># 可选，断线续传</span></div>
+            </div>
+
+            <div class="mt-5 grid gap-4 lg:grid-cols-2">
+              <div class="code-block">
+                <div class="code-head"><span>服务端 → 客户端</span><button class="copy-btn" onclick="copyBlock(this)">复制</button></div>
+                <div class="code-body"><span class="tk-comment">// 连接成功后第一条</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"hello"</span><span class="tk-punct">,</span> <span class="tk-key">"conn_id"</span><span class="tk-punct">:</span> <span class="tk-str">"c_9f2"</span><span class="tk-punct">,</span>
+  <span class="tk-key">"heartbeat_sec"</span><span class="tk-punct">:</span> <span class="tk-num">30</span><span class="tk-punct">,</span> <span class="tk-key">"resume_token"</span><span class="tk-punct">:</span> <span class="tk-str">"evt_01J8X2"</span> <span class="tk-punct">}</span>
+
+<span class="tk-comment">// 收到新通知</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"notification"</span><span class="tk-punct">,</span> <span class="tk-key">"event_id"</span><span class="tk-punct">:</span> <span class="tk-str">"evt_01J8X3A1"</span><span class="tk-punct">,</span>
+  <span class="tk-key">"title"</span><span class="tk-punct">:</span> <span class="tk-str">"部署完成"</span><span class="tk-punct">,</span> <span class="tk-key">"status"</span><span class="tk-punct">:</span> <span class="tk-str">"success"</span><span class="tk-punct">,</span>
+  <span class="tk-key">"body"</span><span class="tk-punct">:</span> <span class="tk-str">"已发布到 prod"</span><span class="tk-punct">,</span> <span class="tk-key">"deviceTags"</span><span class="tk-punct">:</span> <span class="tk-punct">[</span><span class="tk-str">"工作"</span><span class="tk-punct">]</span> <span class="tk-punct">}</span>
+
+<span class="tk-comment">// 断线补漏结束 / 心跳 / 错误</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"replay_end"</span> <span class="tk-punct">}</span>  <span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"pong"</span> <span class="tk-punct">}</span>  <span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"error"</span><span class="tk-punct">,</span> <span class="tk-key">"code"</span><span class="tk-punct">:</span> <span class="tk-str">"resume_expired"</span> <span class="tk-punct">}</span></div>
+              </div>
+              <div class="code-block">
+                <div class="code-head"><span>客户端 → 服务端</span><button class="copy-btn" onclick="copyBlock(this)">复制</button></div>
+                <div class="code-body"><span class="tk-comment">// 订阅 / 退订标签（空 = 全订阅）</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"subscribe"</span><span class="tk-punct">,</span> <span class="tk-key">"tags"</span><span class="tk-punct">:</span> <span class="tk-punct">[</span><span class="tk-str">"ops"</span><span class="tk-punct">,</span> <span class="tk-str">"builds"</span><span class="tk-punct">]</span> <span class="tk-punct">}</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"unsubscribe"</span><span class="tk-punct">,</span> <span class="tk-key">"tags"</span><span class="tk-punct">:</span> <span class="tk-punct">[</span><span class="tk-str">"ops"</span><span class="tk-punct">]</span> <span class="tk-punct">}</span>
+
+<span class="tk-comment">// 确认已处理（at-least-once）</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"ack"</span><span class="tk-punct">,</span> <span class="tk-key">"event_ids"</span><span class="tk-punct">:</span> <span class="tk-punct">[</span><span class="tk-str">"evt_01J8X3A1"</span><span class="tk-punct">]</span> <span class="tk-punct">}</span>
+
+<span class="tk-comment">// 心跳（每 heartbeat_sec 一次，2 次未收则断连）</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"ping"</span> <span class="tk-punct">}</span>
+
+<span class="tk-comment">// 断线重连后用 resume 帧续传（替代 Last-Event-Id 头）</span>
+<span class="tk-punct">{</span> <span class="tk-key">"type"</span><span class="tk-punct">:</span> <span class="tk-str">"resume"</span><span class="tk-punct">,</span> <span class="tk-key">"resume_token"</span><span class="tk-punct">:</span> <span class="tk-str">"evt_01J8X2"</span> <span class="tk-punct">}</span></div>
+              </div>
+            </div>
+
+            <div class="card mt-5 p-5">
+              <div class="text-xs font-medium text-zinc-500">重连与续传</div>
+              <p class="mt-2 text-[13px] leading-relaxed text-zinc-400">
+                断线后重连时携带 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> 头（或首帧发
+                <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>），服务端会重放该位置之后
+                24h 内未确认的通知（回放窗口），随后进入实时流。超出保留窗口则返回
+                <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> 错误，客户端应拉取全量历史。
+              </p>
+            </div>
+          </section>
+
+          </div>
+
+          <!-- 右侧目录（xl 起显示） -->
+          <nav class="sticky top-24 hidden h-fit w-52 shrink-0 self-start xl:block">
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">本页目录</div>
+            <div class="mt-3 space-y-0.5">
+              <a href="#agent" class="toc-link">接入 Agent</a>
+              <a href="#api" class="toc-link">API 概览</a>
+              <a href="#auth" class="toc-link">认证方式</a>
+              <a href="#notify" class="toc-link">POST /v1/notify</a>
+              <a href="#webpush" class="toc-link">Web Push 订阅</a>
+              <a href="#stream" class="toc-link">WebSocket 接收</a>
+            </div>
+          </nav>
+        </div>`,
+      });
+      AnotifyLayout.mount();
+
+      // 目录高亮（滚动跟随）
+      const tocLinks = Array.from(document.querySelectorAll(".toc-link"));
+      const sections = tocLinks
+        .map((a) => document.querySelector(a.getAttribute("href")))
+        .filter(Boolean);
+      const spy = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((e) => {
+            if (e.isIntersecting) {
+              tocLinks.forEach((a) => {
+                const on = a.getAttribute("href") === "#" + e.target.id;
+                a.style.color = on ? "var(--text)" : "";
+                a.style.background = on ? "rgba(139,139,253,0.1)" : "";
+              });
+            }
+          });
+        },
+        { rootMargin: "-20% 0px -70% 0px" },
+      );
+      sections.forEach((s) => spy.observe(s));
+    </script>
+  </body>
+</html>

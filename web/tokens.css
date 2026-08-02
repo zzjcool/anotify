@@ -45,4 +45,16 @@
 	--success-soft: rgba(52, 211, 153, 0.12);
 	--error-soft: rgba(251, 113, 133, 0.12);
 	--warn-soft: rgba(251, 191, 36, 0.12);
+
+	/* 语义色亮色阶（徽章文字 / 语法高亮的小面积亮色文字用）*/
+	--success-300: #6ee7b7;
+	--error-300: #fda4af;
+	--warn-300: #fcd34d;
+
+	/* 功能面板色（非彩色）：弹层/代码块/深色按钮上的文字 */
+	--panel-overlay: #12121c; /* 弹层/Toast 底 */
+	--panel-modal: #0b0b12; /* 模态底 */
+	--code-bg: #0a0a11; /* 代码块底 */
+	--code-text: #d6d3e0; /* 代码正文 */
+	--on-solid: #0a0a10; /* 白色实心按钮上的文字 */
 }

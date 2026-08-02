@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 安全与登录</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="tokens.css" />
+    <style>
+      :root {
+        --panel: rgba(255, 255, 255, 0.03);
+      }
+      * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-feature-settings: "ss01", "cv11", "liga";
+      }
+      .font-script { font-family: "Sacramento", "Great Vibes", cursive; }
+      .font-display { font-family: "Fraunces", Georgia, serif; }
+      ::selection { background: rgba(139, 139, 253, 0.35); color: #fff; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      .card {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        transition: border-color 0.3s ease;
+      }
+      .card:hover { border-color: var(--line-strong); }
+      .side-link {
+        display: flex; align-items: center; gap: 0.7rem;
+        padding: 0.55rem 0.8rem; border-radius: 10px;
+        font-size: 0.875rem; color: var(--muted);
+        border: 1px solid transparent; transition: all 0.2s ease;
+      }
+      .side-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+      .side-link.active {
+        color: var(--text);
+        background: rgba(139, 139, 253, 0.1);
+        border-color: rgba(139, 139, 253, 0.25);
+      }
+      .side-link.active svg { color: var(--accent); }
+      .side-label {
+        font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--faint); padding: 0 0.8rem; margin-top: 1.4rem;
+        margin-bottom: 0.5rem; font-weight: 500;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 9999px; flex-shrink: 0; }
+      .dot-success { background: var(--success); box-shadow: 0 0 8px color-mix(in srgb, var(--success) 60%, transparent); }
+      .btn-primary {
+        position: relative; background: #fff; color: var(--on-solid);
+        transition: all 0.25s ease;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 8px 30px -6px rgba(255, 255, 255, 0.2);
+        overflow: hidden;
+      }
+      .btn-primary:hover {
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 1), 0 12px 40px -6px rgba(139, 139, 253, 0.45);
+      }
+      .btn-ghost {
+        border: 1px solid var(--line-strong); color: var(--muted);
+        transition: all 0.25s ease;
+      }
+      .btn-ghost:hover {
+        border-color: rgba(255, 255, 255, 0.35); color: var(--text);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .btn-danger {
+        border: 1px solid color-mix(in srgb, var(--error) 30%, transparent); color: var(--error-300);
+        transition: all 0.25s ease;
+      }
+      .btn-danger:hover { background: color-mix(in srgb, var(--error) 10%, transparent); border-color: color-mix(in srgb, var(--error) 50%, transparent); }
+      .badge-dot { animation: pulse 2.2s ease-in-out infinite; }
+      @keyframes pulse {
+        0%, 100% { box-shadow: 0 0 0 0 var(--success-soft); }
+        50% { box-shadow: 0 0 0 5px transparent; }
+      }
+      .status-badge {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        font-size: 0.7rem; font-weight: 500; padding: 0.15rem 0.6rem;
+        border-radius: 9999px;
+      }
+      .status-on { background: var(--success-soft); color: var(--success-300); }
+      .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+      .plat-icon {
+        display: flex; height: 40px; width: 40px;
+        align-items: center; justify-content: center;
+        border-radius: 12px; font-size: 1.25rem;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line); flex-shrink: 0;
+      }
+      .recovery-code {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 0.78rem; letter-spacing: 0.05em;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line); border-radius: 8px;
+        padding: 0.45rem 0.7rem; color: var(--muted);
+      }
+      .sidebar-overlay { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px); }
+      .reveal {
+        opacity: 0; transform: translateY(20px);
+        transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .reveal.visible { opacity: 1; transform: none; }
+      .toast {
+        position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%) translateY(20px);
+        background: var(--panel-overlay); border: 1px solid var(--line-strong);
+        color: var(--text); font-size: 0.82rem; padding: 0.6rem 1rem;
+        border-radius: 10px; opacity: 0; pointer-events: none;
+        transition: all 0.3s ease; z-index: 100;
+      }
+      .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    </style>
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden">
+    <div class="flex min-h-screen" id="layout-root"></div>
+    <div class="toast" id="toast"></div>
+
+    <script src="layout.js"></script>
+    <script>
+      // ==================== 数据层 ====================
+      const API = "/v1";
+
+      const DEMO_PASSKEYS = [
+        { id: "pk_1", name: "iCloud 钥匙串", type: "平台同步", icon: "🔑", devices: "iPhone · iPad · Mac（同一 Apple ID 自动同步）", created: "2026-06-12", lastUsed: "当前", current: true },
+        { id: "pk_2", name: "会议室 PC · Windows Hello", type: "本机凭证", icon: "🖥️", devices: "仅这台 Windows PC", created: "2026-07-03", lastUsed: "5 天前", current: false },
+        { id: "pk_3", name: "YubiKey 硬件密钥", type: "硬件密钥", icon: "🛡️", devices: "USB / NFC，跨任意设备使用", created: "2026-07-20", lastUsed: "2 周前", current: false },
+      ];
+      const DEMO_SESSIONS = [
+        { id: "s_1", device: 'MacBook Pro 16"', browser: "Chrome · macOS", icon: "💻", passkey: "iCloud 钥匙串（已同步）", location: "上海", current: true, lastActive: "当前会话" },
+        { id: "s_2", device: "iPhone 15", browser: "Safari · iOS", icon: "📱", passkey: "iCloud 钥匙串（已同步）", location: "上海", current: false, lastActive: "2 小时前" },
+        { id: "s_3", device: "iPad Air", browser: "Safari · iPadOS", icon: "📱", passkey: "iCloud 钥匙串（已同步）", location: "上海", current: false, lastActive: "昨天 21:40" },
+        { id: "s_4", device: "会议室 PC", browser: "Edge · Windows", icon: "🖥️", passkey: "本机 Passkey", location: "公司", current: false, lastActive: "5 天前" },
+      ];
+
+      let PASSKEYS = [];
+      let SESSIONS = [];
+      let demoMode = { passkeys: false, sessions: false };
+
+      function toast(msg) {
+        const t = document.getElementById("toast");
+        t.textContent = msg;
+        t.classList.add("show");
+        clearTimeout(t._timer);
+        t._timer = setTimeout(() => t.classList.remove("show"), 2400);
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return "—";
+        const d = new Date(typeof ts === "number" ? ts * 1000 : ts);
+        if (isNaN(d.getTime())) return String(ts);
+        const diff = Date.now() - d.getTime();
+        if (diff < 60e3) return "刚刚";
+        if (diff < 3600e3) return Math.floor(diff / 60e3) + " 分钟前";
+        if (diff < 86400e3) return Math.floor(diff / 3600e3) + " 小时前";
+        return d.toISOString().slice(0, 10);
+      }
+
+      function platformIcon(ua) {
+        ua = (ua || "").toLowerCase();
+        if (ua.includes("iphone") || ua.includes("ipad")) return "📱";
+        if (ua.includes("mac")) return "💻";
+        if (ua.includes("windows")) return "🖥️";
+        if (ua.includes("android")) return "📱";
+        return "🖥️";
+      }
+
+      // 后端未就绪时静默降级到演示数据（不抛 console 错误）
+      async function fetchApi(path, options) {
+        try {
+          const res = await fetch(path, options);
+          if (!res.ok) return null;
+          return await res.json();
+        } catch (e) {
+          return null;
+        }
+      }
+
+      async function loadPasskeys() {
+        const data = await fetchApi(API + "/auth/passkeys", { credentials: "same-origin" });
+        if (data) {
+          PASSKEYS = (data.passkeys || data || []).map((p, i) => ({
+            id: p.id || String(i),
+            name: p.name || "未命名 Passkey",
+            type: p.type || "凭证",
+            icon: platformIcon(p.devices || p.name),
+            devices: p.devices || "",
+            created: p.createdAt ? new Date(p.createdAt * 1000).toISOString().slice(0, 10) : "",
+            lastUsed: fmtTime(p.lastUsedAt),
+            current: !!p.current,
+          }));
+          demoMode.passkeys = false;
+        } else {
+          PASSKEYS = DEMO_PASSKEYS.slice();
+          demoMode.passkeys = true;
+        }
+        renderPasskeys();
+      }
+
+      async function loadSessions() {
+        const data = await fetchApi(API + "/auth/sessions", { credentials: "same-origin" });
+        if (data) {
+          SESSIONS = (data.sessions || data || []).map((s, i) => ({
+            id: s.id || String(i),
+            device: s.device || s.userAgent || "未知设备",
+            browser: s.browser || "",
+            icon: platformIcon(s.userAgent || s.device),
+            passkey: s.passkey || "",
+            location: s.location || "",
+            current: !!s.current,
+            lastActive: s.current ? "当前会话" : fmtTime(s.lastSeen || s.lastActive),
+          }));
+          demoMode.sessions = false;
+        } else {
+          SESSIONS = DEMO_SESSIONS.slice();
+          demoMode.sessions = true;
+        }
+        renderSessions();
+      }
+
+      // ==================== 渲染 Passkey ====================
+      function renderPasskeys() {
+        const el = AnotifyLayout.el;
+        const list = document.getElementById("passkey-list");
+        document.getElementById("pk-count").textContent = PASSKEYS.length;
+
+        if (PASSKEYS.length === 0) {
+          list.replaceChildren(
+            el("div", { class: "card p-6 text-center text-sm text-zinc-500" },
+              "还没有 Passkey。点右上角「+ 添加 Passkey」为这台设备创建一个。"),
+          );
+          return;
+        }
+
+        list.replaceChildren(
+          ...PASSKEYS.map((p) =>
+            el("div", { class: "card reveal visible p-5" },
+              el("div", { class: "flex flex-wrap items-center gap-4" },
+                el("div", { class: "plat-icon", text: p.icon }),
+                el("div", { class: "min-w-0 flex-1" },
+                  el("div", { class: "flex flex-wrap items-center gap-2" },
+                    el("span", { class: "text-sm font-medium text-white", text: p.name }),
+                    el("span", {
+                      class: "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                      style: "background: rgba(139,139,253,0.12); color: var(--accent)",
+                      text: p.type,
+                    }),
+                    p.current ? el("span", { class: "status-badge status-on", text: "本机在用" }) : null),
+                  p.devices ? el("div", { class: "mt-1 text-xs text-zinc-500", text: p.devices }) : null),
+                el("div", { class: "flex flex-col items-end gap-1.5" },
+                  el("div", { class: "text-[11px] text-zinc-500", text: "最近使用 " + p.lastUsed }),
+                  p.created ? el("div", { class: "text-[10px] text-zinc-600", text: "创建于 " + p.created }) : null)),
+              el("div", { class: "mt-4 flex items-center justify-end gap-2 border-t border-white/[0.05] pt-4" },
+                el("button", {
+                  class: "btn-ghost rounded-lg px-3 py-1.5 text-xs",
+                  onclick: () => renamePasskey(p),
+                }, "重命名"),
+                p.current
+                  ? el("span", { class: "text-[11px] text-zinc-600", text: "当前设备的凭证，不可删除" })
+                  : el("button", {
+                      class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
+                      onclick: () => deletePasskey(p),
+                    }, "删除")))),
+        );
+      }
+
+      async function renamePasskey(p) {
+        const name = prompt("给这个 Passkey 起个新名字：", p.name);
+        if (!name || !name.trim() || name.trim() === p.name) return;
+        const newName = name.trim();
+        if (demoMode.passkeys) {
+          p.name = newName;
+          renderPasskeys();
+          toast("已重命名（演示模式，仅本地生效）");
+          return;
+        }
+        try {
+          const res = await fetch(API + "/auth/passkeys/" + encodeURIComponent(p.id), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ name: newName }),
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          p.name = newName;
+          renderPasskeys();
+          toast("已重命名");
+        } catch (e) {
+          toast("重命名失败：" + e.message);
+        }
+      }
+
+      async function deletePasskey(p) {
+        if (!confirm("确定删除 Passkey「" + p.name + "」吗？\n用它的设备将无法再登录（可用恢复码兜底）。")) return;
+        if (demoMode.passkeys) {
+          PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
+          renderPasskeys();
+          toast("已删除（演示模式，仅本地生效）");
+          return;
+        }
+        try {
+          const res = await fetch(API + "/auth/passkeys/" + encodeURIComponent(p.id), {
+            method: "DELETE", credentials: "same-origin",
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
+          renderPasskeys();
+          toast("已删除「" + p.name + "」");
+        } catch (e) {
+          toast("删除失败：" + e.message);
+        }
+      }
+
+      async function addPasskey() {
+        // WebAuthn 注册需要 HTTPS + 真实后端。后端未就绪时友好提示。
+        if (demoMode.passkeys || !window.PublicKeyCredential) {
+          alert("添加 Passkey 需要：\n1. 后端已启动并处于 HTTPS 环境\n2. 浏览器支持 WebAuthn\n\n当前为演示模式，后端就绪后此处将调起系统生物识别。");
+          return;
+        }
+        try {
+          const optRes = await fetch(API + "/auth/register/options", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({}), // 已登录用户补建凭证
+          });
+          if (!optRes.ok) throw new Error("HTTP " + optRes.status);
+          const options = await optRes.json();
+          const cred = await navigator.credentials.create({ publicKey: options.publicKey || options });
+          const regRes = await fetch(API + "/auth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify(cred),
+          });
+          if (!regRes.ok) throw new Error("HTTP " + regRes.status);
+          toast("Passkey 添加成功");
+          loadPasskeys();
+        } catch (e) {
+          if (e.name === "NotAllowedError") return; // 用户取消
+          toast("添加失败：" + e.message);
+        }
+      }
+
+      // ==================== 渲染会话 ====================
+      function renderSessions() {
+        const el = AnotifyLayout.el;
+        const list = document.getElementById("session-list");
+        document.getElementById("session-count").textContent = SESSIONS.length;
+
+        if (SESSIONS.length === 0) {
+          list.replaceChildren(
+            el("div", { class: "px-5 py-8 text-center text-sm text-zinc-500" }, "当前没有活跃会话。"),
+          );
+          return;
+        }
+
+        list.replaceChildren(
+          ...SESSIONS.map((s) =>
+            el("div", { class: "flex flex-wrap items-center gap-4 px-5 py-4" },
+              el("div", { class: "plat-icon !h-10 !w-10 text-xl", text: s.icon }),
+              el("div", { class: "min-w-0 flex-1" },
+                el("div", { class: "flex flex-wrap items-center gap-2" },
+                  el("span", { class: "text-sm font-medium text-white", text: s.device }),
+                  s.current ? el("span", { class: "status-badge status-on", text: "当前会话" }) : null),
+                el("div", { class: "mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500" },
+                  el("span", { text: s.browser }),
+                  s.location ? el("span", { class: "text-zinc-700", text: "·" }) : null,
+                  s.location ? el("span", { text: s.location }) : null,
+                  el("span", { class: "text-zinc-700", text: "·" }),
+                  el("span", { text: s.current ? s.lastActive : "最后活跃 " + s.lastActive }))),
+              el("div", { class: "flex items-center gap-3" },
+                s.passkey ? el("span", { class: "hidden text-[11px] text-zinc-600 sm:block", text: s.passkey }) : null,
+                s.current
+                  ? el("span", { class: "text-[11px] text-zinc-600", text: "—" })
+                  : el("button", {
+                      class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
+                      onclick: () => revokeSession(s),
+                    }, "吊销")))),
+        );
+      }
+
+      async function revokeSession(s) {
+        if (!confirm("吊销「" + s.device + "」的登录会话？该设备将需要重新登录。")) return;
+        if (demoMode.sessions) {
+          SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
+          renderSessions();
+          toast("已吊销（演示模式，仅本地生效）");
+          return;
+        }
+        try {
+          const res = await fetch(API + "/auth/sessions/" + encodeURIComponent(s.id), {
+            method: "DELETE", credentials: "same-origin",
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
+          renderSessions();
+          toast("已吊销「" + s.device + "」的会话");
+        } catch (e) {
+          toast("吊销失败：" + e.message);
+        }
+      }
+
+      // ==================== 页面组装 ====================
+      document.getElementById("layout-root").innerHTML = AnotifyLayout.render({
+        active: "security",
+        title: "安全与登录",
+        subtitle: "Passkey · 会话 · 恢复码",
+        actions: '<button onclick="addPasskey()" class="btn-primary rounded-xl px-4 py-2 text-sm font-medium">+ 添加 Passkey</button>',
+        content: `
+          <div class="reveal visible">
+            <h2 class="font-display text-3xl text-white">安全与登录</h2>
+            <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+              这里管理「你是谁」的一切：Passkey 凭证、登录会话、恢复码。
+              它们与「通知发到哪」（接收设备）是两条独立的轴。
+            </p>
+          </div>
+
+          <!-- ① Passkey 凭证 -->
+          <section class="reveal visible">
+            <div class="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 class="text-lg font-medium text-white">Passkey 凭证</h3>
+                <p class="mt-1 text-[13px] text-zinc-500">
+                  你的免密登录凭证。一个账号可挂多个 Passkey，可经系统同步到同生态设备
+                </p>
+              </div>
+              <span class="text-[12px] text-zinc-500"><span class="font-medium text-white" id="pk-count">0</span> 个凭证</span>
+            </div>
+            <div class="mt-4 space-y-4" id="passkey-list"></div>
+          </section>
+
+          <!-- ② 登录会话 -->
+          <section class="reveal visible">
+            <div class="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 class="text-lg font-medium text-white">登录会话</h3>
+                <p class="mt-1 text-[13px] text-zinc-500">
+                  你的账号当前在哪些设备上处于登录态。会话各自独立、可单独吊销
+                </p>
+              </div>
+              <span class="text-[12px] text-zinc-500"><span class="font-medium text-white" id="session-count">0</span> 个活跃会话</span>
+            </div>
+            <div class="card mt-4 divide-y divide-white/[0.04]" id="session-list"></div>
+          </section>
+
+          <!-- ③ 恢复码（占位） -->
+          <section class="card reveal visible p-6">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div class="flex items-start gap-4">
+                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10">
+                  <svg class="h-5 w-5 text-amber-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                </div>
+                <div>
+                  <h3 class="text-base font-medium text-white">恢复码</h3>
+                  <p class="mt-1 max-w-xl text-[13px] leading-relaxed text-zinc-500">
+                    当你丢失所有设备、无法用 Passkey 登录时的<b class="text-zinc-300">终极兜底</b>。
+                    用「用户名 + 恢复码」登录后可为新设备补建 Passkey。每个码只能用一次。
+                  </p>
+                </div>
+              </div>
+              <button onclick="alert('恢复码功能即将上线：注册成功后服务端会生成一组一次性恢复码，此处可查看剩余数量并重新生成。')" class="btn-ghost rounded-xl px-4 py-2 text-sm">重新生成</button>
+            </div>
+            <div class="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+              <div class="recovery-code">••••-••••-••••</div>
+              <div class="recovery-code">••••-••••-••••</div>
+              <div class="recovery-code">••••-••••-••••</div>
+              <div class="recovery-code">••••-••••-••••</div>
+              <div class="recovery-code">••••-••••-••••</div>
+              <div class="recovery-code">••••-••••-••••</div>
+              <div class="recovery-code">••••-••••-••••</div>
+              <div class="recovery-code">••••-••••-••••</div>
+            </div>
+            <p class="mt-3 text-[11px] text-zinc-600">
+              功能即将上线 · 注册成功后将生成 8 个一次性恢复码，请保存到密码管理器
+            </p>
+          </section>
+
+          <!-- 概念说明 -->
+          <section class="card reveal visible p-6">
+            <div class="text-sm font-medium text-white">两条独立的轴</div>
+            <div class="mt-4 grid gap-4 sm:grid-cols-2">
+              <div class="rounded-xl bg-white/[0.02] p-4 ring-1 ring-white/[0.06]">
+                <div class="flex items-center gap-2 text-[13px] font-medium text-zinc-200">
+                  <span class="flex h-6 w-6 items-center justify-center rounded-md bg-blue-400/10 text-blue-300">
+                    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  </span>
+                  认证轴 · 决定「你是谁」（本页）
+                </div>
+                <ul class="mt-3 space-y-1.5 text-[12px] leading-relaxed text-zinc-500">
+                  <li>· Passkey 凭证：一个账号可挂多个</li>
+                  <li>· 登录会话：多端并存、可单独吊销</li>
+                  <li>· 恢复码：丢失全部设备时的兜底</li>
+                </ul>
+              </div>
+              <div class="rounded-xl bg-white/[0.02] p-4 ring-1 ring-white/[0.06]">
+                <div class="flex items-center gap-2 text-[13px] font-medium text-zinc-200">
+                  <span class="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-400/10 text-emerald-300">
+                    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                  </span>
+                  投递轴 · 决定「发到哪」
+                </div>
+                <ul class="mt-3 space-y-1.5 text-[12px] leading-relaxed text-zinc-500">
+                  <li>· 在「通知接收」页管理，与本页无关</li>
+                  <li>· 浏览器推送订阅 + WebSocket 长连接</li>
+                  <li>· 退出登录后仍会收到，直到取消订阅</li>
+                </ul>
+              </div>
+            </div>
+          </section>`,
+      });
+      AnotifyLayout.mount();
+      loadPasskeys();
+      loadSessions();
+    </script>
+  </body>
+</html>
