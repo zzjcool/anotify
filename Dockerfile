@@ -12,7 +12,9 @@ RUN node scripts/hash.mjs web internal/server/dist
 # ---- Go 构建（单二进制，CGO 关闭，纯 Go sqlite）----
 FROM golang:1.25-alpine AS build
 WORKDIR /app
-ENV GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto CGO_ENABLED=0
+# 容器内用官方模块代理（proxy.golang.org，非第三方镜像）：
+# GOPROXY=direct 会让 Go 用 git 克隆，而 alpine 无 git；代理 HTTPS 下载更可靠。
+ENV GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto CGO_ENABLED=0
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
