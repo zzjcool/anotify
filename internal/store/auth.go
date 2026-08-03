@@ -12,10 +12,10 @@ var ErrNotFound = errors.New("store: record not found")
 
 // User 是 users 表的一行。
 type User struct {
-	ID          string
-	Username    string
-	DisplayName string
-	CreatedAt   int64
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	CreatedAt   int64  `json:"createdAt"`
 }
 
 // Passkey 是 passkeys 表的一行（public_key 为原始字节）。
@@ -32,11 +32,11 @@ type Passkey struct {
 
 // Session 是 sessions 表的一行。
 type Session struct {
-	ID        string
-	UserID    string
-	CreatedAt int64
-	ExpiresAt int64
-	LastSeen  int64
+	ID        string `json:"id"`
+	UserID    string `json:"userId"`
+	CreatedAt int64  `json:"createdAt"`
+	ExpiresAt int64  `json:"expiresAt"`
+	LastSeen  int64  `json:"lastSeen"`
 }
 
 // APIKey 是 api_keys 表的一行（不含明文）。

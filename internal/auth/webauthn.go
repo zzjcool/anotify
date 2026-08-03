@@ -89,6 +89,9 @@ func (s *Service) Sessions() *SessionManager { return s.sess }
 // Keys 暴露 API Key 管理器。
 func (s *Service) Keys() *KeyManager { return s.keys }
 
+// GetUser 按 ID 取用户（/v1/auth/me 用）。
+func (s *Service) GetUser(id string) (*store.User, error) { return s.db.GetUserByID(id) }
+
 // storeChallenge 暂存 challenge。
 func (s *Service) storeChallenge(key string, data webauthn.SessionData) {
 	s.mu.Lock()

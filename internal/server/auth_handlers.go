@@ -35,6 +35,8 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logout(w, r)
 	case "sessions":
 		h.sessions(w, r)
+	case "me":
+		h.me(w, r)
 	default:
 		writeErr(w, 404, "unknown auth endpoint: "+sub)
 	}
@@ -135,6 +137,27 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	h.svc.Sessions().ClearCookie(w)
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// me 返回当前登录用户（前端侧栏/顶栏显示真实用户名用）。
+func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	uid := auth.UserIDFromContext(r.Context())
+	if uid == "" {
+		writeErr(w, 401, "未登录")
+		return
+	}
+	u, err := h.svc.GetUser(uid)
+	if err != nil {
+		writeErr(w, 404, "用户不存在")
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"id": u.ID, "username": u.Username, "displayName": u.DisplayName, "createdAt": u.CreatedAt,
+	})
 }
 
 func (h *authHandler) sessions(w http.ResponseWriter, r *http.Request) {

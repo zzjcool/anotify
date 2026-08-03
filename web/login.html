@@ -142,17 +142,11 @@
           <button class="tab-btn" id="tab-signup">注册</button>
         </div>
 
-        <!-- 登录面板 -->
+        <!-- 登录面板（仅 Passkey，无需输入用户名） -->
         <div id="login-panel" class="mt-6">
-          <label class="text-xs font-medium text-zinc-400" for="username"
-            >用户名</label
-          >
-          <input
-            id="username"
-            class="input mt-2"
-            placeholder="输入你的用户名"
-            autocomplete="username webauthn"
-          />
+          <p class="text-xs leading-relaxed text-zinc-400">
+            点击下方按钮，用本机的 Passkey（Face ID / 指纹 / 设备密钥）直接登录，无需输入用户名。
+          </p>
           <button
             id="login-btn"
             class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
@@ -380,8 +374,9 @@
 
         /* ---------- 登录 ---------- */
         const loginBtn = document.getElementById("login-btn");
+        // 仅 Passkey 登录（discoverable / 无需输入用户名）：
+        // 不传 username → 后端走 discoverable login，认证器自动选择本机已注册的 Passkey。
         async function doLogin() {
-          const username = document.getElementById("username").value.trim();
           hideStatus();
           if (!webauthnOK) {
             showStatus(
@@ -392,8 +387,8 @@
           }
           loginBtn.disabled = true;
           try {
-            // 1. 取登录 challenge
-            const opts = await postJSON("/v1/auth/login/options", { username });
+            // 1. 取登录 challenge（不传 username → discoverable）
+            const opts = await postJSON("/v1/auth/login/options", {});
             const publicKey = opts.publicKey || opts;
             publicKey.challenge = b64urlToBuf(publicKey.challenge);
             if (publicKey.allowCredentials) {
@@ -404,9 +399,9 @@
                 }),
               );
             }
-            // 2. 调起认证器
+            // 2. 调起认证器（系统自动弹出本机可用的 Passkey）
             const assertion = await navigator.credentials.get({ publicKey });
-            // 3. 完成登录
+            // 3. 完成登录（discoverable：后端按 userHandle 定位用户）
             const payload = {
               id: assertion.id,
               rawId: bufToB64url(assertion.rawId),
@@ -422,21 +417,19 @@
                   : null,
               },
             };
-            // 后端从 query 取 username（body 是 WebAuthn 断言）
-            await postJSON(
-              "/v1/auth/login?username=" + encodeURIComponent(username),
-              payload,
-            );
+            await postJSON("/v1/auth/login", payload);
             showStatus("登录成功，正在进入工作台…", "success");
             setTimeout(() => (location.href = nextTarget()), 500);
           } catch (e) {
-            if (
-              String(e).includes("HTTP") ||
+            if (e && e.name === "NotAllowedError") {
+              showStatus(
+                "已取消，或本机没有可用的 Passkey——请先「注册」一个。",
+                "warn",
+              );
+            } else if (
               String(e).includes("Failed to fetch")
             ) {
-              demoEnter(username || "zheng");
-            } else if (e && e.name === "NotAllowedError") {
-              showStatus("已取消或超时——请重试并允许使用 Passkey。", "warn");
+              demoEnter("zheng");
             } else {
               showStatus("登录失败：" + (e.message || e), "error");
             }

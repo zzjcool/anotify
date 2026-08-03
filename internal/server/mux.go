@@ -73,6 +73,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	devicesH := &devicesHandler{db: db}
 	keysH := &keysHandler{keys: authSvc.Keys(), db: db}
 	notifsH := &notificationsHandler{bk: bk}
+	statsH := &statsHandler{db: db}
 
 	sessMW := authSvc.Sessions().Middleware
 
@@ -84,7 +85,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux := http.NewServeMux()
 
 	// --- 动态 API（no-store）---
-	// 认证端点（部分无需登录：register/login）
+	// 认证端点：register/login/logout 无需登录；me/sessions 需登录会话。
+	// 注意 Go 1.22+ ServeMux 最长模式优先，/v1/auth/me 与 /v1/auth/sessions 会优先于 /v1/auth/。
+	mux.Handle("/v1/auth/me", noStore(sessMW(http.HandlerFunc(authH.me))))
+	mux.Handle("/v1/auth/sessions", noStore(sessMW(http.HandlerFunc(authH.sessions))))
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
 	// Agent 上报（Bearer Key，内部自校验）
 	mux.Handle("/v1/notify", noStore(notifyH))
@@ -104,6 +108,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/keys", noStore(sessMW(keysH)))
 	mux.Handle("/v1/keys/", noStore(sessMW(keysH)))
 	mux.Handle("/v1/notifications", noStore(sessMW(notifsH)))
+	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
 
 	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

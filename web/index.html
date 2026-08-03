@@ -501,6 +501,7 @@
 
         let NOTIFICATIONS = [];
         let usingDemo = false;
+        let STATS = null; // /v1/stats 真实统计（热力图 + KPI）
 
         async function load() {
           let items = null;
@@ -519,36 +520,56 @@
             connected = false; // 401 已由 api() 跳登录；这里是真·网络/服务未连接
           }
           usingDemo = !connected;
-          NOTIFICATIONS = (connected ? items : DEMO_NOTIFICATIONS).map(normalize);
+          NOTIFICATIONS = (connected ? items : DEMO_NOTIFICATIONS).map(
+            normalize,
+          );
+          // 拉真实统计（KPI + 热力图）；失败则 STATS 保持 null 用通知估算
+          try {
+            STATS = await api("/v1/stats");
+          } catch {
+            STATS = null;
+          }
           document
             .getElementById("demo-badge")
             .classList.toggle("hidden", !usingDemo);
           renderKpis();
           renderNotifs(currentFilter);
           renderSummary();
+          renderHeatmap();
         }
 
         /* ================= KPI ================= */
         function renderKpis() {
-          const total = NOTIFICATIONS.length;
-          const ok = NOTIFICATIONS.filter(
-            (n) => n.delivered >= (n.total || 1),
-          ).length;
-          const rate = total ? Math.round((ok / total) * 1000) / 10 : 100;
-          const today = NOTIFICATIONS.filter((n) =>
-            /刚刚|分钟前|小时前/.test(n.time),
-          ).length;
-          const devices = Math.max(
-            ...NOTIFICATIONS.map((n) => n.total || 0),
-            0,
-          );
+          // 优先用 /v1/stats 的真实统计；STATS 不可用时回退到通知列表估算
+          let total, rate, today, devices;
+          if (STATS && !usingDemo) {
+            total = STATS.total ?? 0;
+            today = STATS.today ?? 0;
+            devices = STATS.deviceCount ?? 0;
+            const dt = STATS.deliveryTotal ?? 0;
+            rate = dt > 0 ? Math.round(((STATS.delivered ?? 0) / dt) * 1000) / 10 : 100;
+          } else {
+            total = NOTIFICATIONS.length;
+            const ok = NOTIFICATIONS.filter(
+              (n) => n.delivered >= (n.total || 1),
+            ).length;
+            rate = total ? Math.round((ok / total) * 1000) / 10 : 100;
+            today = NOTIFICATIONS.filter((n) =>
+              /刚刚|分钟前|小时前/.test(n.time),
+            ).length;
+            devices = Math.max(...NOTIFICATIONS.map((n) => n.total || 0), 0);
+          }
           document.getElementById("kpi-total").textContent =
             total.toLocaleString();
           document.getElementById("kpi-total-trend").textContent = usingDemo
             ? "示例"
             : "实时";
-          document.getElementById("kpi-rate").innerHTML =
-            rate + '<span class="text-2xl text-zinc-500">%</span>';
+          // 用 textContent 避免 innerHTML（% 单独一个 span）
+          const rateEl = document.getElementById("kpi-rate");
+          rateEl.replaceChildren(
+            document.createTextNode(rate),
+            el("span", { class: "text-2xl text-zinc-500", text: "%" }),
+          );
           document.getElementById("kpi-rate-sub").textContent =
             devices + " 台设备 · 端到端加密";
           document.getElementById("kpi-today").textContent = today;
@@ -663,23 +684,21 @@
           const n = NOTIFICATIONS.find((x) => x.id === id);
           if (!n) return;
           const meta = STATUS_META[n.status] || STATUS_META.info;
-          document
-            .getElementById("detail-head")
-            .replaceChildren(
-              el("span", { class: `dot ${meta.dot}` }),
-              el(
-                "div",
-                {},
-                el("div", {
-                  class: "text-base font-medium text-white",
-                  text: n.title,
-                }),
-                el("div", {
-                  class: "text-xs text-zinc-500",
-                  text: `${n.project} · ${n.time}`,
-                }),
-              ),
-            );
+          document.getElementById("detail-head").replaceChildren(
+            el("span", { class: `dot ${meta.dot}` }),
+            el(
+              "div",
+              {},
+              el("div", {
+                class: "text-base font-medium text-white",
+                text: n.title,
+              }),
+              el("div", {
+                class: "text-xs text-zinc-500",
+                text: `${n.project} · ${n.time}`,
+              }),
+            ),
+          );
           const fields = [
             ["Agent", n.agent],
             ["会话", n.sessionId],
@@ -760,9 +779,10 @@
           );
 
         /* ================= 热力图 ================= */
-        (function heatmap() {
+        function renderHeatmap() {
           const hm = document.getElementById("hm");
           if (!hm) return;
+          hm.replaceChildren(); // 重渲染前清空
           const LEVELS = [
             "var(--surface-2)",
             "var(--accent-1)",
@@ -772,26 +792,19 @@
           ];
           const WEEK_CN = ["日", "一", "二", "三", "四", "五", "六"];
           const WEEKS = 53;
-          function seeded(str) {
-            let h = 2166136261;
-            for (let i = 0; i < str.length; i++) {
-              h ^= str.charCodeAt(i);
-              h = Math.imul(h, 16777619);
-            }
-            return function () {
-              h ^= h << 13;
-              h ^= h >>> 17;
-              h ^= h << 5;
-              return (h >>> 0) / 4294967296;
-            };
+          // 真实数据：STATS.daily = [{day:"YYYY-MM-DD",count}] → Map 便于查
+          const countByDay = new Map();
+          if (STATS && Array.isArray(STATS.daily)) {
+            for (const d of STATS.daily) countByDay.set(d.day, d.count);
+          }
+          function dayKey(date) {
+            const m = String(date.getMonth() + 1).padStart(2, "0");
+            const dd = String(date.getDate()).padStart(2, "0");
+            return `${date.getFullYear()}-${m}-${dd}`;
           }
           function dayCount(date) {
-            const r = seeded(date.toDateString());
-            const dow = date.getDay();
-            const weekend = dow === 0 || dow === 6;
-            if (r() < (weekend ? 0.52 : 0.12)) return 0;
-            const v = r();
-            return Math.round((weekend ? 0.4 : 1) * (2 + v * v * 26));
+            // 有真实数据用真实；STATS 不可用（演示模式）则全 0
+            return countByDay.get(dayKey(date)) || 0;
           }
           function levelOf(c) {
             if (!c) return 0;
@@ -868,7 +881,7 @@
             }
           }
           hm.append(frag);
-        })();
+        }
 
         /* ================= 启动 ================= */
         load();

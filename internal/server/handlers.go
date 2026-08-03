@@ -289,6 +289,28 @@ func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) 
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// ---------- Stats ----------
+
+type statsHandler struct {
+	db *store.DB
+}
+
+func (h *statsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	uid := auth.UserIDFromContext(r.Context())
+	if uid == "" {
+		writeErr(w, 401, "未登录")
+		return
+	}
+	// 热力图取近 371 天（53 周）
+	since := store.Now() - 371*86400
+	s, err := h.db.MessageStats(r.Context(), uid, since)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, s)
+}
+
 // ---------- Notifications ----------
 
 type notificationsHandler struct {

@@ -113,7 +113,7 @@
 					href: "security.html",
 					icon: "security",
 				},
-				{ id: "home", label: "返回首页", href: "login.html", icon: "home" },
+				{ id: "logout", label: "退出登录", href: "#logout", icon: "home" },
 			],
 		},
 	];
@@ -227,14 +227,16 @@
 						el("div", {
 							class:
 								"flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/30 to-violet-500/30 ring-1 ring-white/15 text-sm font-medium",
-							text: (o.username[0] || "A").toUpperCase(),
+							id: "sidebar-avatar",
+							text: (o.username[0] || "…").toUpperCase(),
 						}),
 						el(
 							"div",
 							{ class: "min-w-0 flex-1" },
 							el("div", {
 								class: "truncate text-sm text-zinc-200",
-								text: o.username,
+								id: "sidebar-username",
+								text: o.username || "…",
 							}),
 							el("div", {
 								class: "truncate text-[11px] text-zinc-500",
@@ -313,7 +315,8 @@
 				el("div", {
 					class:
 						"flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/40 to-violet-500/40 ring-1 ring-white/15 text-xs font-medium",
-					text: (o.username[0] || "A").toUpperCase(),
+					id: "topbar-avatar",
+					text: (o.username[0] || "…").toUpperCase(),
 				}),
 			),
 		);
@@ -348,6 +351,27 @@
 			{ threshold: 0.08 },
 		);
 		document.querySelectorAll(".reveal").forEach((n) => io.observe(n));
+
+		/* 退出登录：拦截 NAV 里的 logout 链接 */
+		document.querySelectorAll('a[href="#logout"]').forEach((a) =>
+			a.addEventListener("click", (e) => {
+				e.preventDefault();
+				logout();
+			}),
+		);
+
+		/* 异步填充真实用户名（覆盖占位） */
+		loadMe().then((me) => {
+			if (!me) return;
+			const name = me.displayName || me.username || "";
+			const initial = (name[0] || "A").toUpperCase();
+			const su = document.getElementById("sidebar-username");
+			const sa = document.getElementById("sidebar-avatar");
+			const ta = document.getElementById("topbar-avatar");
+			if (su) su.textContent = name;
+			if (sa) sa.textContent = initial;
+			if (ta) ta.textContent = initial;
+		});
 	}
 
 	/* ---------- API 封装：失败时回退到 demo ---------- */
@@ -378,6 +402,26 @@
 			if (demo !== undefined) return demo;
 			throw e;
 		}
+	}
+
+	/* ---------- 当前用户 / 登出 ---------- */
+	// loadMe 获取当前登录用户（/v1/auth/me）；未登录返回 null（api 会在 401 跳登录）。
+	async function loadMe() {
+		try {
+			return await api("/v1/auth/me");
+		} catch {
+			return null;
+		}
+	}
+
+	// logout 调后端吊销会话并跳回登录页。
+	async function logout() {
+		try {
+			await fetch("/v1/auth/logout", { method: "POST", credentials: "include" });
+		} catch {
+			/* 忽略网络错误，仍跳登录页 */
+		}
+		location.href = "login.html";
 	}
 
 	/* ---------- 小工具 ---------- */
@@ -481,5 +525,7 @@
 		PLATFORM_META,
 		detectPlatform,
 		timeAgo,
+		loadMe,
+		logout,
 	};
 })();
