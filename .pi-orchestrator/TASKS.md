@@ -151,6 +151,22 @@
 
 ---
 
+## 阶段 3.5 · 固化 E2E 测试体系（用户要求：测试不推给人工）
+
+### [T50] E2E 测试体系（make e2e 固化门禁）
+
+- 状态：✅（9 套件 224 断言 + Go 单测全绿，连跑 2 次稳定）
+- 关键突破：Playwright CDP 虚拟认证器 → Passkey 全流程无头自动化（无需真人）
+- 套件：api_contract(48)/auth_flow(15)/ws_protocol(31)/routing(23)/persistence(15)/security(22)/edge_cases(18)/frontend(45)/push_e2e(7)
+- 唯一人工：iOS 真机 APNs（T40）
+
+### [T51] 测试体系抓到的真实 bug（已全部修复）
+
+- ✅ PATCH /v1/devices 不落库（store.UpdateDevice）——路由功能生产失效
+- ✅ /v1/notifications 返回 PascalCase（broker.Message json tag）——契约不一致
+- ✅ keys/security 路由守卫失效（fetchApi 无 401 处理）
+- ✅ index.html normalize 字段不匹配
+
 ## 阶段 4 · 真机（交给用户）
 
 ### [T40] iOS Safari 添加到主屏幕全链路
