@@ -504,15 +504,22 @@
 
         async function load() {
           let items = null;
+          let connected = false;
           try {
             const data = await api("/v1/notifications?limit=50");
-            items = data.notifications || data.items || data;
-            if (!Array.isArray(items)) items = null;
+            // 连接成功：notifications 是数组（可能为空 []）即真实数据，哪怕 0 条
+            if (data && Array.isArray(data.notifications)) {
+              items = data.notifications;
+              connected = true;
+            } else if (Array.isArray(data)) {
+              items = data;
+              connected = true;
+            }
           } catch (e) {
-            items = null;
+            connected = false; // 401 已由 api() 跳登录；这里是真·网络/服务未连接
           }
-          usingDemo = !items;
-          NOTIFICATIONS = (items || DEMO_NOTIFICATIONS).map(normalize);
+          usingDemo = !connected;
+          NOTIFICATIONS = (connected ? items : DEMO_NOTIFICATIONS).map(normalize);
           document
             .getElementById("demo-badge")
             .classList.toggle("hidden", !usingDemo);

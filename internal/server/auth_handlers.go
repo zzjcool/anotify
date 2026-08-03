@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/anotify/anotify/internal/auth"
+	"github.com/anotify/anotify/internal/store"
 )
 
 // authHandler 包装 auth.Service，提供 /v1/auth/* HTTP 端点。
@@ -150,6 +151,9 @@ func (h *authHandler) sessions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if list == nil {
+		list = []*store.Session{}
 	}
 	writeJSON(w, 200, map[string]any{"sessions": list, "count": len(list)})
 }

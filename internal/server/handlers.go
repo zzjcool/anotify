@@ -54,6 +54,9 @@ func (h *devicesHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if devs == nil {
+		devs = []*store.Device{}
+	}
 	writeJSON(w, 200, map[string]any{"devices": devs, "count": len(devs)})
 }
 
@@ -222,6 +225,28 @@ func (h *keysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// keyPublic 是 API Key 的安全公开视图：绝不含 key_hash（密钥材料不外泄），字段 camelCase。
+type keyPublic struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Prefix     string   `json:"prefix"`
+	Scopes     []string `json:"scopes"`
+	Enabled    bool     `json:"enabled"`
+	CreatedAt  int64    `json:"createdAt"`
+	LastUsedAt *int64   `json:"lastUsedAt,omitempty"`
+}
+
+func toKeyPublic(k *store.APIKey) keyPublic {
+	var last *int64
+	if k.LastUsedAt.Valid {
+		last = &k.LastUsedAt.Int64
+	}
+	return keyPublic{
+		ID: k.ID, Name: k.Name, Prefix: k.Prefix, Scopes: k.Scopes,
+		Enabled: k.Enabled, CreatedAt: k.CreatedAt, LastUsedAt: last,
+	}
+}
+
 func (h *keysHandler) list(w http.ResponseWriter, r *http.Request) {
 	uid := auth.UserIDFromContext(r.Context())
 	recs, err := h.db.ListAPIKeysByUser(uid)
@@ -229,7 +254,11 @@ func (h *keysHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"keys": recs, "count": len(recs)})
+	out := make([]keyPublic, 0, len(recs))
+	for _, k := range recs {
+		out = append(out, toKeyPublic(k))
+	}
+	writeJSON(w, 200, map[string]any{"keys": out, "count": len(out)})
 }
 
 func (h *keysHandler) create(w http.ResponseWriter, r *http.Request) {
@@ -248,8 +277,8 @@ func (h *keysHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// 明文仅此一次返回
-	writeJSON(w, 200, map[string]any{"ok": true, "key": plaintext, "record": rec})
+	// 明文仅此一次返回；record 用安全公开视图（不含哈希）
+	writeJSON(w, 200, map[string]any{"ok": true, "key": plaintext, "record": toKeyPublic(rec)})
 }
 
 func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) {
@@ -284,6 +313,10 @@ func (h *notificationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	// 保证空结果序列化为 [] 而非 null（前端据 Array.isArray 判断连接成功）
+	if msgs == nil {
+		msgs = []*broker.Message{}
 	}
 	writeJSON(w, 200, map[string]any{"notifications": msgs, "count": len(msgs)})
 }
