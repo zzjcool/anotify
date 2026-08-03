@@ -52,11 +52,35 @@ docker info  # 确认 daemon 在跑
 
 ## 4. 开发流程
 
+### 前端站点生成（sitegen · 构建期）
+
+前端已框架化为「构建期 Go template 静态站点生成」（借鉴 rssyes 布局/i18n 与 Hugo 思想），**产物仍是纯静态 + embed + 指纹**，未引入任何运行时模板引擎。
+
+- **唯一的页面源**：`web-src/`（人工只编辑这里）
+  - `layouts/base.html`：公共外壳（`<head>` 图标/字体/css + `#page-main` 骨架 + partials.js/i18n.js 引入）
+  - `layouts/login.html`：login 独立布局（无 sidebar）
+  - `pages/*.html`：每页 `{{define "content"}}` / `{{define "title"}}` / 可选 `style`/`script`/`fonts-extra`。首行 `<!-- layout: login -->` 指定非默认布局
+  - `locales/{zh-CN,en}.yaml`：i18n 翻译（嵌套 YAML，扁平化为 `page.key`）
+- **生成产物（勿手改，已 gitignore）**：`web/*.html`（zh 根路径）、`web/en/*.html`、`web/i18n.{lang}.js`
+- **静态资源（保持跟踪）**：`web/ui.css` `tokens.css` `partials.js` `fonts/` `assets/` `sw.js` `manifest.webmanifest`
+
+```bash
+make sitegen  # go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
+make fe       # sitegen + hash（指纹化到 internal/server/dist）
+```
+
+**改页面/i18n 后**：编辑 `web-src/`，跑 `make build`（自动 sitegen+hash+go build）。
+
+**i18n 两类文案**：
+
+- HTML 静态文本 → 构建期 `{{t "page.key"}}`（在 pages/layouts 里用，locales 填值）
+- JS 字符串 → 运行时 `Anotify.t('key', '默认中文')`（locales 生成 `i18n.{lang}.js`，partials.js 导航/页脚已接入）
+
 ### 本地开发
 
 ```bash
-make dev    # 前端用 web/ 本地目录（改完即生效），服务在 :8080
-make build  # 产出单二进制 anotify（含指纹后的前端 embed）
+make dev    # 先跑 sitegen 生成 web/*.html，再用 web/ 本地目录起服务（改完即生效），:8080
+make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 ```
 
 ### 指纹脚本（content-hash + CDN 缓存）
@@ -122,7 +146,9 @@ iOS 真机 APNs 推送（需真实 iPhone，见 `IOS_TESTING.md`）。其余全�
 ```
 cmd/server/        单二进制入口
 cmd/devseed/       测试播种工具（建用户+Key+会话，绕过 WebAuthn）
+cmd/sitegen/       前端站点生成器 CLI（web-src → web 静态 HTML）
 internal/
+  sitegen/         站点生成核心（模板缓存/layout+content/i18n 合成）
   store/           SQLite 数据访问 + schema.sql + 幂等列迁移
   broker/          消息队列抽象 + SQLiteBroker
   auth/            Passkey(WebAuthn) + API Key(argon2id) + 会话
@@ -132,9 +158,11 @@ internal/
   push/            Web Push 派发器（消费者2，VAPID）
   route/           标签/status 投递过滤（共享纯逻辑）
   server/          路由装配 + 静态资源(CDN缓存) + embed
-web/               前端（纯静态，无构建框架）
+web-src/           前端页面源（layouts/pages/locales，人工编辑处）
+web/               前端产物（*.html 由 sitegen 生成已 gitignore；css/js/fonts/assets 静态资源保留）
 scripts/
-  hash.mjs         指纹脚本
+  hash.mjs         指纹脚本（支持根绝对路径指纹化）
+  gen-icons.mjs    图标生成器（Sacramento 字体 → 各尺寸 PNG）
   genkeys.go       VAPID 密钥生成
   e2e/             E2E 测试体系（run_all.sh + lib/ + suites/）
 design/            设计稿 + 技术方案（参考用）

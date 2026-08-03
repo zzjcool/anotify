@@ -29,6 +29,17 @@
 		return node;
 	}
 
+	/* ---------- i18n 运行时 ---------- */
+	// t 查 window.AnotifyI18n[key]，缺失时返回 fallback（默认 key 本身）。
+	// 处理 AnotifyI18n 未加载（如 file:// 直开）：fallback 生效、不报错。
+	function t(key, fallback) {
+		const dict = window.AnotifyI18n;
+		if (dict && Object.hasOwn(dict, key)) {
+			return dict[key];
+		}
+		return fallback !== undefined ? fallback : key;
+	}
+
 	/* ---------- SVG 图标 ---------- */
 	const SVG_NS = "http://www.w3.org/2000/svg";
 	function icon(paths, cls) {
@@ -72,48 +83,80 @@
 		home: ["M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
 	};
 
-	/* ---------- 侧栏导航结构（IA：工作台 / 集成 / 账户） ---------- */
+	/* ---------- 侧栏导航结构（IA：工作台 / 集成 / 账户） ----------
+	 * labelKey / groupLabelKey 指向 i18n key；渲染时用 t() 取值。
+	 * 无 i18n.js 时 fallback 到中文原文，保持向后兼容。 */
 	const NAV = [
 		{
 			items: [
-				{ id: "overview", label: "总览", href: "index.html", icon: "overview" },
+				{
+					id: "overview",
+					labelKey: "common.nav.overview",
+					fallback: "总览",
+					href: "index.html",
+					icon: "overview",
+				},
 				{
 					id: "receivers",
-					label: "通知接收",
+					labelKey: "common.nav.receivers",
+					fallback: "通知接收",
 					href: "receivers.html",
 					icon: "receivers",
 				},
-				{ id: "keys", label: "API Keys", href: "keys.html", icon: "keys" },
+				{
+					id: "keys",
+					labelKey: "common.nav.keys",
+					fallback: "API Keys",
+					href: "keys.html",
+					icon: "keys",
+				},
 			],
 		},
 		{
-			label: "集成",
+			groupLabelKey: "common.nav.integration",
+			groupFallback: "集成",
 			items: [
 				{
 					id: "agent",
-					label: "接入 Agent",
+					labelKey: "common.nav.agent",
+					fallback: "接入 Agent",
 					href: "index.html#quickstart",
 					icon: "agent",
 				},
-				{ id: "api", label: "API 文档", href: "docs.html", icon: "api" },
+				{
+					id: "api",
+					labelKey: "common.nav.api",
+					fallback: "API 文档",
+					href: "docs.html",
+					icon: "api",
+				},
 				{
 					id: "scheme",
-					label: "技术方案",
+					labelKey: "common.nav.scheme",
+					fallback: "技术方案",
 					href: "docs.html#scheme",
 					icon: "scheme",
 				},
 			],
 		},
 		{
-			label: "账户",
+			groupLabelKey: "common.nav.account",
+			groupFallback: "账户",
 			items: [
 				{
 					id: "security",
-					label: "安全与登录",
+					labelKey: "common.nav.security",
+					fallback: "安全与登录",
 					href: "security.html",
 					icon: "security",
 				},
-				{ id: "logout", label: "退出登录", href: "#logout", icon: "home" },
+				{
+					id: "logout",
+					labelKey: "common.nav.logout",
+					fallback: "退出登录",
+					href: "#logout",
+					icon: "home",
+				},
 			],
 		},
 	];
@@ -171,15 +214,20 @@
 		/* ----- 侧栏 ----- */
 		const nav = el("nav", { class: "flex-1 overflow-y-auto px-3 py-4" });
 		for (const group of NAV) {
-			if (group.label)
-				nav.append(el("div", { class: "side-label", text: group.label }));
+			if (group.groupLabelKey)
+				nav.append(
+					el("div", {
+						class: "side-label",
+						text: t(group.groupLabelKey, group.groupFallback),
+					}),
+				);
 			const box = el("div", { class: "space-y-1" });
 			for (const item of group.items) {
 				const a = el("a", {
 					href: item.href,
 					class: `side-link ${item.id === o.active ? "active" : ""}`,
 				});
-				a.append(icon(ICONS[item.icon]), item.label);
+				a.append(icon(ICONS[item.icon]), t(item.labelKey, item.fallback));
 				box.append(a);
 			}
 			nav.append(box);
@@ -240,7 +288,7 @@
 							}),
 							el("div", {
 								class: "truncate text-[11px] text-zinc-500",
-								text: "私有化部署 · 主工作台",
+								text: t("common.sidebar.deployment", "私有化部署 · 主工作台"),
 							}),
 						),
 						el("span", { class: "badge-dot dot dot-success" }),
@@ -261,7 +309,7 @@
 			{
 				id: "menu-btn",
 				class: "btn-ghost rounded-lg p-2 lg:hidden",
-				"aria-label": "菜单",
+				"aria-label": t("common.nav.menu", "菜单"),
 				onclick: () => {
 					sidebar.classList.remove("-translate-x-full");
 					overlay.classList.remove("hidden");
@@ -298,7 +346,7 @@
 					{
 						class:
 							"relative rounded-lg p-2 text-zinc-400 hover:bg-white/5 hover:text-white transition-colors",
-						"aria-label": "通知",
+						"aria-label": t("common.nav.notification", "通知"),
 						onclick: () => (location.href = "index.html#recent"),
 					},
 					icon(
@@ -326,7 +374,10 @@
 		const footer = el("footer", {
 			class:
 				"border-t border-white/[0.04] px-5 py-5 text-center text-[11px] text-zinc-600 sm:px-8",
-			text: "Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器",
+			text: t(
+				"common.footer.copyright",
+				"Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器",
+			),
 		});
 		pageMain.parentNode && pageMain.parentNode.removeChild(pageMain);
 		const main = el("main", { class: "flex-1 px-5 py-8 sm:px-8" });
@@ -523,6 +574,7 @@
 		api,
 		copyText,
 		toast,
+		t,
 		b64urlToBuf,
 		bufToB64url,
 		PLATFORM_META,

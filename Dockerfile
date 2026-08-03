@@ -2,11 +2,15 @@
 # 构建：docker build -t anotify .
 # 运行：docker run -p 8080:8080 -e ANOTIFY_VAPID_PUBLIC_KEY=... -e ANOTIFY_VAPID_PRIVATE_KEY=... anotify
 
+# ---- 前端生成（web-src → web/*.html）----
+# sitegen 是 Go 程序，用 build 阶段（含 Go + 全源码）生成 web/*.html，
+# 供 fe 阶段指纹、embed 阶段内嵌。
+
 # ---- 前端指纹（web/ → internal/server/dist，供 go:embed）----
 FROM node:22-alpine AS fe
 WORKDIR /app
 COPY scripts/hash.mjs ./scripts/hash.mjs
-COPY web ./web
+COPY --from=build /app/web ./web
 RUN node scripts/hash.mjs web internal/server/dist
 
 # ---- Go 构建（单二进制，CGO 关闭，纯 Go sqlite）----
@@ -18,6 +22,8 @@ ENV GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org GOTOOLCHAIN=a
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# 先运行 sitegen 生成 web/*.html（构建期 i18n/布局合成）
+RUN go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
 # 用指纹产物覆盖（go:embed 在编译期读取 internal/server/dist）
 COPY --from=fe /app/internal/server/dist ./internal/server/dist
 RUN go build -trimpath -ldflags="-s -w" -o /anotify ./cmd/server

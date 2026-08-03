@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="{{.Lang}}">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · {{block "title" .}}{{end}}</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#050508" />
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400{{block "fonts-extra" .}}{{end}}&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <link rel="stylesheet" href="/tokens.css" />
+    <link rel="stylesheet" href="/ui.css" />
+    {{block "style" .}}{{end}}
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden">
+    <!-- 主内容（partials.js 会把它装进「侧栏 + 顶栏」布局） -->
+    <!-- 页面 content block 含 <div id="page-main"> 及页级弹层等外部内容 -->
+{{block "content" .}}{{end}}
+    <script src="/i18n.{{.Lang}}.js"></script>
+    <script src="/partials.js"></script>
+    {{block "script" .}}{{end}}
+  </body>
+</html>
