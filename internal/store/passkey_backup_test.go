@@ -17,7 +17,7 @@ func TestPasskey_BackupEligibleRoundtrip(t *testing.T) {
 			t.Fatalf("create user: %v", err)
 		}
 		p := &Passkey{
-			ID:     "cred-be-" + map[bool]string{false: "f", true: "t"}[want],
+			ID: "cred-be-" + map[bool]string{false: "f", true: "t"}[want],
 			UserID: u.ID, PublicKey: []byte{1}, Name: "测", Transports: []string{"internal"},
 			BackupEligible: want, CreatedAt: Now(),
 		}
