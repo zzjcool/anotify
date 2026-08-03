@@ -57,13 +57,13 @@ async function main() {
 		H.eq("重启前创建 Key → 200", keyResp.status, 200);
 		const extraKey = keyResp.json?.key;
 
-		// 记录重启前 seq（注：broker.Message 无 JSON tag，字段为 PascalCase）
+		// 记录重启前 seq（注：broker.Message 契约已统一 camelCase）
 		const beforeList = await H.req(server.base, "/v1/notifications?limit=50", {
 			session,
 		});
 		H.eq("重启前消息数=3", beforeList.json?.count, 3);
 		const maxSeqBefore = Math.max(
-			...beforeList.json.notifications.map((m) => m.Seq),
+			...beforeList.json.notifications.map((m) => m.seq),
 		);
 
 		// 停服（kill 进程，不删 DB）——直接再 startServer 前先 stop 旧进程但保留文件
@@ -78,7 +78,7 @@ async function main() {
 			session,
 		});
 		H.eq("重启后消息仍在（count=3）", afterList.json?.count, 3);
-		const titles = afterList.json.notifications.map((m) => m.Title).sort();
+		const titles = afterList.json.notifications.map((m) => m.title).sort();
 		H.eq("重启后消息内容一致", titles, [
 			"持久化消息1",
 			"持久化消息2",
@@ -103,10 +103,10 @@ async function main() {
 			session,
 		});
 		const newMsg = finalList.json.notifications.find(
-			(m) => m.Title === "重启后上报",
+			(m) => m.title === "重启后上报",
 		);
 		H.check("重启后新消息存在", !!newMsg);
-		H.eq("seq 连续（接续不重置）", newMsg?.Seq, maxSeqBefore + 1);
+		H.eq("seq 连续（接续不重置）", newMsg?.seq, maxSeqBefore + 1);
 
 		// 6. 会话仍有效
 		H.eq(

@@ -47,7 +47,7 @@ async function main() {
 	});
 	// 注意：/v1/notifications 直接序列化 broker.Message（Go 默认 PascalCase 字段名，无 json tag）
 	const seqs = (list.json?.notifications || [])
-		.map((m) => m.Seq)
+		.map((m) => m.seq)
 		.sort((a, b) => a - b);
 	const expected = Array.from({ length: N }, (_, i) => i + 1);
 	H.eq("并发后 seq 为 1..N 无重复无缺口", seqs, expected);
@@ -66,12 +66,12 @@ async function main() {
 	const u2 = await H.req(server.base, "/v1/notifications?limit=50", {
 		session,
 	});
-	const found = (u2.json?.notifications || []).find((m) => m.ID === u.json?.id);
+	const found = (u2.json?.notifications || []).find((m) => m.id === u.json?.id);
 	H.check(
 		"Unicode 内容 Replay 一致",
-		!!found && found.Title === unicodeTitle && found.Body === unicodeBody,
+		!!found && found.title === unicodeTitle && found.body === unicodeBody,
 		found
-			? `title=${JSON.stringify(found.Title).slice(0, 60)}`
+			? `title=${JSON.stringify(found.title).slice(0, 60)}`
 			: "未找到该消息",
 	);
 
