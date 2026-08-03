@@ -146,6 +146,23 @@ async function main() {
 		await fs.writeFile(cssPath, css);
 	}
 
+	// 改写 dist 内 manifest.webmanifest 的 icons[].src 为哈希名。
+	// manifest.webmanifest 自身不指纹（被 HTML 固定引用），但其引用的图标会被指纹，
+	// 不改写会导致 Android PWA 图标 404。
+	const webmanifestPath = path.join(out, "manifest.webmanifest");
+	try {
+		const wm = JSON.parse(await fs.readFile(webmanifestPath, "utf8"));
+		if (Array.isArray(wm.icons)) {
+			for (const icon of wm.icons) {
+				const hashed = manifest[icon.src];
+				if (hashed) icon.src = hashed;
+			}
+			await fs.writeFile(webmanifestPath, JSON.stringify(wm, null, 2));
+		}
+	} catch {
+		/* 无 manifest.webmanifest 时忽略 */
+	}
+
 	await fs.writeFile(
 		path.join(out, "manifest.json"),
 		JSON.stringify(manifest, null, 2),
