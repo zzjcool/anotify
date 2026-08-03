@@ -20,21 +20,47 @@
     <div id="page-main">
       <div class="mx-auto max-w-6xl space-y-8">
         <!-- ===== 通道 Tab ===== -->
-        <div class="reveal visible flex items-center gap-2 rounded-xl bg-white/[0.03] p-1.5 w-fit">
+        <div
+          class="reveal visible flex items-center gap-2 rounded-xl bg-white/[0.03] p-1.5 w-fit"
+        >
           <button class="channel-tab active" data-channel="push">
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
               <path d="M13.73 21a2 2 0 0 1-3.46 0" />
             </svg>
             推送订阅
-            <span class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500" id="push-count">0</span>
+            <span
+              class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500"
+              id="push-count"
+              >0</span
+            >
           </button>
           <button class="channel-tab" data-channel="ws">
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
             </svg>
             WebSocket 长连接
-            <span class="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] text-emerald-300" id="ws-count">0</span>
+            <span
+              class="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] text-emerald-300"
+              id="ws-count"
+              >0</span
+            >
           </button>
           <span id="demo-badge" class="demo-badge hidden ml-2">
             <span class="dot dot-warn"></span>演示数据
@@ -50,10 +76,17 @@
               <div>
                 <h3 class="text-lg font-medium text-white">浏览器推送订阅</h3>
                 <p class="mt-1 text-[13px] text-zinc-500">
-                  通过系统 Push 服务（APNs / FCM）送达，<b class="text-zinc-300">浏览器关闭也能收到</b>
+                  通过系统 Push 服务（APNs / FCM）送达，<b class="text-zinc-300"
+                    >浏览器关闭也能收到</b
+                  >
                 </p>
               </div>
-              <button id="add-device-btn" class="btn-primary rounded-xl px-4 py-2 text-sm font-medium">+ 添加此设备</button>
+              <button
+                id="add-device-btn"
+                class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+              >
+                + 添加此设备
+              </button>
             </div>
             <div class="mt-4 space-y-4" id="device-list"></div>
           </section>
@@ -63,28 +96,70 @@
         <div id="channel-ws" class="hidden">
           <section class="card reveal visible p-5">
             <div class="flex items-start gap-4">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style="background: var(--accent-soft)">
-                <svg class="h-5 w-5" style="color: var(--accent)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <div
+                class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+                style="background: var(--accent-soft)"
+              >
+                <svg
+                  class="h-5 w-5"
+                  style="color: var(--accent)"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
               </div>
               <div class="text-sm leading-relaxed text-zinc-400">
-                <p class="font-medium text-white">长连接接收 · 为插件与任意设备而生</p>
+                <p class="font-medium text-white">
+                  长连接接收 · 为插件与任意设备而生
+                </p>
                 <p class="mt-1">
                   任何设备 / 插件用
-                  <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code>
-                  权限的 API Key 建立 WebSocket 长连接，服务端实时推送通知。适合做桌面插件、CLI 守护进程、智能家居桥接等。与浏览器推送并行存在。
+                  <code
+                    class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300"
+                    >notify:receive</code
+                  >
+                  权限的 API Key 建立 WebSocket
+                  长连接，服务端实时推送通知。适合做桌面插件、CLI
+                  守护进程、智能家居桥接等。与浏览器推送并行存在。
                 </p>
               </div>
             </div>
-            <div class="mt-4 rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden">
-              <div class="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
+            <div
+              class="mt-4 rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden"
+            >
+              <div
+                class="flex items-center justify-between border-b border-white/10 px-4 py-2.5"
+              >
                 <span class="text-[11px] text-zinc-500 mono">连接方式</span>
-                <button id="ws-copy" class="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors">复制</button>
+                <button
+                  id="ws-copy"
+                  class="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors"
+                >
+                  复制
+                </button>
               </div>
-              <div class="px-4 py-3.5 font-mono text-[12px] leading-relaxed" id="ws-cmd">
-                <p><span class="text-zinc-600">$</span> wscat -c <span class="text-emerald-300" id="ws-url">wss://api.anotify.dev/v1/stream</span> \</p>
-                <p class="pl-4 text-zinc-300">-H <span class="text-emerald-300">"Authorization: Bearer ant_recv_…"</span></p>
+              <div
+                class="px-4 py-3.5 font-mono text-[12px] leading-relaxed"
+                id="ws-cmd"
+              >
+                <p>
+                  <span class="text-zinc-600">$</span> wscat -c
+                  <span class="text-emerald-300" id="ws-url"
+                    >wss://api.anotify.dev/v1/stream</span
+                  >
+                  \
+                </p>
+                <p class="pl-4 text-zinc-300">
+                  -H
+                  <span class="text-emerald-300"
+                    >"Authorization: Bearer ant_recv_…"</span
+                  >
+                </p>
               </div>
             </div>
           </section>
@@ -93,16 +168,21 @@
             <div class="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h3 class="text-lg font-medium text-white">活跃连接</h3>
-                <p class="mt-1 text-[13px] text-zinc-500">当前建立的 WebSocket 长连接</p>
+                <p class="mt-1 text-[13px] text-zinc-500">
+                  当前建立的 WebSocket 长连接
+                </p>
               </div>
-              <span class="flex items-center gap-2 text-[12px] text-emerald-300">
+              <span
+                class="flex items-center gap-2 text-[12px] text-emerald-300"
+              >
                 <span class="ws-live dot dot-success"></span>
                 <span id="ws-live-count">0</span> 个在线
               </span>
             </div>
             <div class="mt-4 space-y-4" id="ws-list">
               <div class="card p-6 text-center text-sm text-zinc-500">
-                后端接入后，这里会显示实时长连接（连接名 / Key 前缀 / 在线时长 / 标签 / 最近消息）。
+                后端接入后，这里会显示实时长连接（连接名 / Key 前缀 / 在线时长 /
+                标签 / 最近消息）。
               </div>
             </div>
           </section>
@@ -111,17 +191,38 @@
         <!-- ===== 标签路由说明 ===== -->
         <section class="card reveal visible p-6">
           <div class="flex items-start gap-4">
-            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style="background: var(--accent-soft)">
-              <svg class="h-5 w-5" style="color: var(--accent)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+            <div
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+              style="background: var(--accent-soft)"
+            >
+              <svg
+                class="h-5 w-5"
+                style="color: var(--accent)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"
+                />
                 <line x1="7" y1="7" x2="7.01" y2="7" />
               </svg>
             </div>
             <div class="text-sm leading-relaxed text-zinc-400">
-              <p class="font-medium text-white">标签路由 · 决定「哪台设备收哪类通知」</p>
+              <p class="font-medium text-white">
+                标签路由 · 决定「哪台设备收哪类通知」
+              </p>
               <p class="mt-1">
-                上报通知时带上 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">deviceTags</code>，
-                只有「标签有交集」或「无标签（全收）」的设备会收到。通知不带标签 = 广播到所有已启用设备；设备不带标签 = 接收一切。
+                上报通知时带上
+                <code
+                  class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300"
+                  >deviceTags</code
+                >，
+                只有「标签有交集」或「无标签（全收）」的设备会收到。通知不带标签
+                = 广播到所有已启用设备；设备不带标签 = 接收一切。
               </p>
             </div>
           </div>
@@ -130,16 +231,33 @@
     </div>
 
     <!-- 添加设备弹层 -->
-    <div id="pair-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4">
+    <div
+      id="pair-modal"
+      class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+    >
       <div class="sidebar-overlay absolute inset-0" id="pair-overlay"></div>
-      <div class="card relative z-10 w-full max-w-md p-6 shadow-2xl" style="background: var(--bg-raise)">
+      <div
+        class="card relative z-10 w-full max-w-md p-6 shadow-2xl"
+        style="background: var(--bg-raise)"
+      >
         <div class="flex items-start justify-between">
           <div>
             <div class="text-base font-medium text-white">添加此设备</div>
-            <div class="mt-0.5 text-xs text-zinc-500">订阅后，这台设备的浏览器将接收推送</div>
+            <div class="mt-0.5 text-xs text-zinc-500">
+              订阅后，这台设备的浏览器将接收推送
+            </div>
           </div>
-          <button id="pair-close" class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white">
-            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <button
+            id="pair-close"
+            class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
+          >
+            <svg
+              class="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -147,15 +265,28 @@
         </div>
         <div class="mt-5 space-y-4">
           <div>
-            <label class="text-xs font-medium text-zinc-400" for="pair-name">设备名称</label>
-            <input id="pair-name" class="input mt-2" placeholder="如：主力手机 / 办公室 Mac" />
+            <label class="text-xs font-medium text-zinc-400" for="pair-name"
+              >设备名称</label
+            >
+            <input
+              id="pair-name"
+              class="input mt-2"
+              placeholder="如：主力手机 / 办公室 Mac"
+            />
           </div>
-          <div id="pair-status" class="hidden rounded-xl px-4 py-3 text-[13px] leading-relaxed"></div>
-          <button id="pair-submit" class="btn-primary flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium">
+          <div
+            id="pair-status"
+            class="hidden rounded-xl px-4 py-3 text-[13px] leading-relaxed"
+          ></div>
+          <button
+            id="pair-submit"
+            class="btn-primary flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+          >
             请求权限并订阅推送
           </button>
           <p class="text-[11px] leading-relaxed text-zinc-500">
-            浏览器会弹出通知权限请求。iOS 需要先把本站「添加到主屏幕」，再以独立 App 方式打开。
+            浏览器会弹出通知权限请求。iOS 需要先把本站「添加到主屏幕」，再以独立
+            App 方式打开。
           </p>
         </div>
       </div>
@@ -165,14 +296,32 @@
     <script>
       (function () {
         "use strict";
-        const { el, api, mountLayout, toast, PLATFORM_META, detectPlatform, timeAgo, copyText } = window.Anotify;
+        const {
+          el,
+          api,
+          mountLayout,
+          toast,
+          PLATFORM_META,
+          detectPlatform,
+          timeAgo,
+          copyText,
+        } = window.Anotify;
         const qs = new URLSearchParams(location.search);
         const username = qs.get("u") || "zheng";
 
-        mountLayout({ active: "receivers", title: "通知接收", subtitle: "按设备控制通知接收", username });
+        mountLayout({
+          active: "receivers",
+          title: "通知接收",
+          subtitle: "按设备控制通知接收",
+          username,
+        });
 
         /* ================= 数据 ================= */
-        const FILTER_LABEL = { all: "全部通知", error: "仅失败", success: "仅成功" };
+        const FILTER_LABEL = {
+          all: "全部通知",
+          error: "仅失败",
+          success: "仅成功",
+        };
         let DEVICES = [];
         let usingDemo = false;
 
@@ -205,9 +354,36 @@
         };
 
         const DEMO_DEVICES = [
-          { id: "dev_demo1", name: "主力手机", platform: "ios", enabled: true, statusFilter: "all", tags: ["手机"], lastDelivered: "2 分钟前", browser: "iOS Safari" },
-          { id: "dev_demo2", name: "办公室 Mac", platform: "mac", enabled: true, statusFilter: "all", tags: ["工作"], lastDelivered: "18 分钟前", browser: "macOS Safari" },
-          { id: "dev_demo3", name: "旧台式机", platform: "win", enabled: false, statusFilter: "error", tags: [], lastDelivered: "3 天前", browser: "Chrome" },
+          {
+            id: "dev_demo1",
+            name: "主力手机",
+            platform: "ios",
+            enabled: true,
+            statusFilter: "all",
+            tags: ["手机"],
+            lastDelivered: "2 分钟前",
+            browser: "iOS Safari",
+          },
+          {
+            id: "dev_demo2",
+            name: "办公室 Mac",
+            platform: "mac",
+            enabled: true,
+            statusFilter: "all",
+            tags: ["工作"],
+            lastDelivered: "18 分钟前",
+            browser: "macOS Safari",
+          },
+          {
+            id: "dev_demo3",
+            name: "旧台式机",
+            platform: "win",
+            enabled: false,
+            statusFilter: "error",
+            tags: [],
+            lastDelivered: "3 天前",
+            browser: "Chrome",
+          },
         ];
 
         function normalizeDevice(d) {
@@ -219,18 +395,30 @@
             enabled: d.enabled !== false && d.enabled !== 0,
             statusFilter: d.statusFilter || d.status_filter || "all",
             tags: Array.isArray(d.tags) ? d.tags : safeParseArr(d.tags),
-            lastDelivered: d.lastDelivered || timeAgo(d.last_delivered || d.lastDeliveredAt) || "—",
-            browser: d.userAgent ? shortenUA(d.userAgent) : d.browser || meta.label,
+            lastDelivered:
+              d.lastDelivered ||
+              timeAgo(d.last_delivered || d.lastDeliveredAt) ||
+              "—",
+            browser: d.userAgent
+              ? shortenUA(d.userAgent)
+              : d.browser || meta.label,
             endpoint: d.endpoint,
           };
         }
         function safeParseArr(s) {
-          try { const v = typeof s === "string" ? JSON.parse(s) : s; return Array.isArray(v) ? v : []; } catch { return []; }
+          try {
+            const v = typeof s === "string" ? JSON.parse(s) : s;
+            return Array.isArray(v) ? v : [];
+          } catch {
+            return [];
+          }
         }
         function shortenUA(ua) {
           if (/iPhone|iPad/.test(ua)) return "iOS Safari";
-          if (/Mac OS X/.test(ua) && /Safari/.test(ua) && !/Chrome/.test(ua)) return "macOS Safari";
-          if (/Chrome/.test(ua) && /Windows/.test(ua)) return "Chrome · Windows";
+          if (/Mac OS X/.test(ua) && /Safari/.test(ua) && !/Chrome/.test(ua))
+            return "macOS Safari";
+          if (/Chrome/.test(ua) && /Windows/.test(ua))
+            return "Chrome · Windows";
           if (/Android/.test(ua)) return "Android Chrome";
           return "浏览器";
         }
@@ -246,7 +434,25 @@
           }
           usingDemo = !items;
           DEVICES = (items || DEMO_DEVICES).map(normalizeDevice);
-          document.getElementById("demo-badge").classList.toggle("hidden", !usingDemo);
+          // 查本机当前浏览器的 push 订阅，把 endpoint 匹配的设备标为「本机」。
+          // 这样状态卡/设备列表能正确识别本机设备（而非永远显示“未开启”）。
+          try {
+            if ("serviceWorker" in navigator) {
+              const reg = await navigator.serviceWorker.getRegistration();
+              const sub = reg && (await reg.pushManager.getSubscription());
+              if (sub && sub.endpoint) {
+                const ep = sub.endpoint;
+                DEVICES.forEach((d) => {
+                  if (d.endpoint === ep) d.isCurrent = true;
+                });
+              }
+            }
+          } catch {
+            /* SW 未就绪或无订阅，忽略 */
+          }
+          document
+            .getElementById("demo-badge")
+            .classList.toggle("hidden", !usingDemo);
           renderDevices();
           renderCurrentDevice();
         }
@@ -254,15 +460,25 @@
         /* ================= 通道切换 ================= */
         document.querySelectorAll(".channel-tab").forEach((t) =>
           t.addEventListener("click", () => {
-            document.querySelectorAll(".channel-tab").forEach((x) => x.classList.toggle("active", x === t));
+            document
+              .querySelectorAll(".channel-tab")
+              .forEach((x) => x.classList.toggle("active", x === t));
             const ch = t.dataset.channel;
-            document.getElementById("channel-push").classList.toggle("hidden", ch !== "push");
-            document.getElementById("channel-ws").classList.toggle("hidden", ch !== "ws");
+            document
+              .getElementById("channel-push")
+              .classList.toggle("hidden", ch !== "push");
+            document
+              .getElementById("channel-ws")
+              .classList.toggle("hidden", ch !== "ws");
           }),
         );
         document.getElementById("ws-count").textContent = "0";
         document.getElementById("ws-live-count").textContent = "0";
-        document.getElementById("ws-copy").addEventListener("click", (e) => copyText(e.currentTarget, "#ws-cmd"));
+        document
+          .getElementById("ws-copy")
+          .addEventListener("click", (e) =>
+            copyText(e.currentTarget, "#ws-cmd"),
+          );
 
         /* ================= 本机状态卡 ================= */
         function renderCurrentDevice() {
@@ -270,8 +486,10 @@
           const platform = detectPlatform();
           const meta = PLATFORM_META[platform];
           const cur = DEVICES.find((d) => d.isCurrent) || null;
-          const supported = "serviceWorker" in navigator && "PushManager" in window;
-          const perm = "Notification" in window ? Notification.permission : "default";
+          const supported =
+            "serviceWorker" in navigator && "PushManager" in window;
+          const perm =
+            "Notification" in window ? Notification.permission : "default";
           const subscribed = !!(cur && cur.enabled);
           const card = el(
             "div",
@@ -286,7 +504,9 @@
               { class: "flex flex-wrap items-center gap-4" },
               el(
                 "div",
-                { class: `flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${subscribed ? "bg-emerald-400/15" : "bg-amber-400/15"}` },
+                {
+                  class: `flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${subscribed ? "bg-emerald-400/15" : "bg-amber-400/15"}`,
+                },
                 el("span", { class: "text-2xl", text: meta.icon }),
               ),
               el(
@@ -295,10 +515,15 @@
                 el(
                   "div",
                   { class: "flex flex-wrap items-center gap-2" },
-                  el("span", { class: "text-[15px] font-medium text-white", text: subscribed ? "本机已开启通知" : "本机未开启通知" }),
+                  el("span", {
+                    class: "text-[15px] font-medium text-white",
+                    text: subscribed ? "本机已开启通知" : "本机未开启通知",
+                  }),
                   el("span", {
                     class: "status-badge",
-                    style: subscribed ? "background: var(--success-soft); color: #6ee7b7" : "background: var(--warn-soft); color: #fcd34d",
+                    style: subscribed
+                      ? "background: var(--success-soft); color: #6ee7b7"
+                      : "background: var(--warn-soft); color: #fcd34d",
                     text: subscribed ? "收得到" : "收不到",
                   }),
                 ),
@@ -316,7 +541,8 @@
               el("button", {
                 class: `${subscribed ? "btn-ghost" : "btn-primary"} rounded-xl px-4 py-2 text-sm font-medium`,
                 text: subscribed ? "关闭本机通知" : "开启本机通知",
-                onclick: () => (subscribed ? unsubscribeCurrent(cur) : openPair()),
+                onclick: () =>
+                  subscribed ? unsubscribeCurrent(cur) : openPair(),
               }),
             ),
           );
@@ -328,11 +554,18 @@
         //   - 本机设备：实时检测 Notification.permission / SW 状态
         //   - 所有设备：按平台显示检查清单
         function makeTroubleshoot(d) {
-          const tips = PLATFORM_TROUBLESHOOT[d.platform] || PLATFORM_TROUBLESHOOT.other;
+          const tips =
+            PLATFORM_TROUBLESHOOT[d.platform] || PLATFORM_TROUBLESHOOT.other;
           const panel = el(
             "div",
-            { class: "mt-3 hidden rounded-xl border border-white/[0.06] bg-black/20 p-4 text-xs leading-relaxed text-zinc-400" },
-            el("div", { class: "mb-2 font-medium text-zinc-300", text: "按设备检查清单" }),
+            {
+              class:
+                "mt-3 hidden rounded-xl border border-white/[0.06] bg-black/20 p-4 text-xs leading-relaxed text-zinc-400",
+            },
+            el("div", {
+              class: "mb-2 font-medium text-zinc-300",
+              text: "按设备检查清单",
+            }),
             ...tips.map((t, i) =>
               el(
                 "div",
@@ -374,10 +607,13 @@
             el(
               "button",
               {
-                class: "flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors",
+                class:
+                  "flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors",
                 onclick: (e) => {
                   const hidden = panel.classList.toggle("hidden");
-                  e.currentTarget.querySelector(".ts-icon").textContent = hidden ? "▸" : "▾";
+                  e.currentTarget.querySelector(".ts-icon").textContent = hidden
+                    ? "▸"
+                    : "▾";
                 },
               },
               el("span", { class: "ts-icon", text: "▸" }),
@@ -392,7 +628,10 @@
           document.getElementById("push-count").textContent = DEVICES.length;
           if (DEVICES.length === 0) {
             list.replaceChildren(
-              el("div", { class: "card p-8 text-center text-sm text-zinc-500", text: "还没有接收设备，点右上角「添加此设备」开始。" }),
+              el("div", {
+                class: "card p-8 text-center text-sm text-zinc-500",
+                text: "还没有接收设备，点右上角「添加此设备」开始。",
+              }),
             );
             return;
           }
@@ -408,16 +647,26 @@
                 "select",
                 {
                   class: "select",
-                  onchange: (e) => updateDevice(d, { statusFilter: e.target.value }),
+                  onchange: (e) =>
+                    updateDevice(d, { statusFilter: e.target.value }),
                 },
                 ...Object.entries(FILTER_LABEL).map(([val, label]) =>
-                  el("option", Object.assign({ value: val, text: label }, d.statusFilter === val ? { selected: "" } : {})),
+                  el(
+                    "option",
+                    Object.assign(
+                      { value: val, text: label },
+                      d.statusFilter === val ? { selected: "" } : {},
+                    ),
+                  ),
                 ),
               );
               const tagWrap = el(
                 "div",
                 { class: "mt-2.5 flex flex-wrap items-center gap-1.5" },
-                el("span", { class: "text-[10px] text-zinc-600", text: "标签" }),
+                el("span", {
+                  class: "text-[10px] text-zinc-600",
+                  text: "标签",
+                }),
                 ...d.tags.map((t) =>
                   el(
                     "span",
@@ -426,7 +675,10 @@
                     el("span", {
                       class: "tag-x",
                       text: "×",
-                      onclick: () => updateDevice(d, { tags: d.tags.filter((x) => x !== t) }),
+                      onclick: () =>
+                        updateDevice(d, {
+                          tags: d.tags.filter((x) => x !== t),
+                        }),
                     }),
                   ),
                 ),
@@ -444,7 +696,9 @@
 
               return el(
                 "div",
-                { class: `card reveal visible p-5 ${d.enabled ? "" : "opacity-60"}` },
+                {
+                  class: `card reveal visible p-5 ${d.enabled ? "" : "opacity-60"}`,
+                },
                 el(
                   "div",
                   { class: "flex flex-wrap items-center gap-4" },
@@ -455,11 +709,16 @@
                     el(
                       "div",
                       { class: "flex flex-wrap items-center gap-2" },
-                      el("span", { class: "text-sm font-medium text-white", text: d.name }),
+                      el("span", {
+                        class: "text-sm font-medium text-white",
+                        text: d.name,
+                      }),
                       d.isCurrent
                         ? el("span", {
-                            class: "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                            style: "background: var(--accent-soft); color: var(--accent)",
+                            class:
+                              "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                            style:
+                              "background: var(--accent-soft); color: var(--accent)",
                             text: "本机",
                           })
                         : null,
@@ -470,7 +729,10 @@
                     ),
                     el(
                       "div",
-                      { class: "mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500" },
+                      {
+                        class:
+                          "mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500",
+                      },
                       el("span", { text: meta.label }),
                       el("span", { class: "text-zinc-700", text: "·" }),
                       el("span", { text: d.browser }),
@@ -482,7 +744,10 @@
                   el(
                     "div",
                     { class: "flex flex-wrap items-center gap-2.5" },
-                    el("span", { class: "text-[11px] text-zinc-500", text: "通知级别" }),
+                    el("span", {
+                      class: "text-[11px] text-zinc-500",
+                      text: "通知级别",
+                    }),
                     select,
                     sw,
                   ),
@@ -491,20 +756,27 @@
                 makeTroubleshoot(d),
                 el(
                   "div",
-                  { class: "mt-4 flex items-center justify-end gap-2 border-t border-white/[0.05] pt-4" },
+                  {
+                    class:
+                      "mt-4 flex items-center justify-end gap-2 border-t border-white/[0.05] pt-4",
+                  },
                   el("button", {
                     class: "btn-ghost rounded-lg px-3 py-1.5 text-xs",
                     text: "重命名",
                     onclick: () => {
                       const name = prompt("设备名称", d.name);
-                      if (name && name.trim()) updateDevice(d, { name: name.trim() });
+                      if (name && name.trim())
+                        updateDevice(d, { name: name.trim() });
                     },
                   }),
                   el("button", {
                     class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
                     text: "解绑",
                     onclick: () => {
-                      if (confirm(`确定解绑「${d.name}」吗？它将不再接收通知。`)) removeDevice(d);
+                      if (
+                        confirm(`确定解绑「${d.name}」吗？它将不再接收通知。`)
+                      )
+                        removeDevice(d);
                     },
                   }),
                 ),
@@ -538,7 +810,9 @@
           renderCurrentDevice();
           if (usingDemo) return;
           try {
-            await api(`/v1/devices/${encodeURIComponent(d.id)}`, { method: "DELETE" });
+            await api(`/v1/devices/${encodeURIComponent(d.id)}`, {
+              method: "DELETE",
+            });
             toast("已解绑", "success");
           } catch (e) {
             toast("解绑失败：" + (e.message || e), "error");
@@ -550,7 +824,8 @@
         const pairModal = document.getElementById("pair-modal");
         const pairStatus = document.getElementById("pair-status");
         function openPair() {
-          document.getElementById("pair-name").value = PLATFORM_META[detectPlatform()].label;
+          document.getElementById("pair-name").value =
+            PLATFORM_META[detectPlatform()].label;
           pairStatus.classList.add("hidden");
           pairModal.classList.replace("hidden", "flex");
           document.body.style.overflow = "hidden";
@@ -559,14 +834,28 @@
           pairModal.classList.replace("flex", "hidden");
           document.body.style.overflow = "";
         }
-        document.getElementById("add-device-btn").addEventListener("click", openPair);
-        document.getElementById("pair-close").addEventListener("click", closePair);
-        document.getElementById("pair-overlay").addEventListener("click", closePair);
-        window.addEventListener("keydown", (e) => e.key === "Escape" && closePair());
+        document
+          .getElementById("add-device-btn")
+          .addEventListener("click", openPair);
+        document
+          .getElementById("pair-close")
+          .addEventListener("click", closePair);
+        document
+          .getElementById("pair-overlay")
+          .addEventListener("click", closePair);
+        window.addEventListener(
+          "keydown",
+          (e) => e.key === "Escape" && closePair(),
+        );
 
         function pairMsg(msg, kind) {
           pairStatus.classList.remove("hidden");
-          const map = { info: ["var(--accent-soft)", "#b8b8ff"], error: ["var(--error-soft)", "#fda4af"], success: ["var(--success-soft)", "#6ee7b7"], warn: ["var(--warn-soft)", "#fcd34d"] };
+          const map = {
+            info: ["var(--accent-soft)", "#b8b8ff"],
+            error: ["var(--error-soft)", "#fda4af"],
+            success: ["var(--success-soft)", "#6ee7b7"],
+            warn: ["var(--warn-soft)", "#fcd34d"],
+          };
           const [bg, fg] = map[kind] || map.info;
           pairStatus.style.background = bg;
           pairStatus.style.color = fg;
@@ -574,9 +863,14 @@
         }
 
         async function subscribeCurrent() {
-          const name = document.getElementById("pair-name").value.trim() || PLATFORM_META[detectPlatform()].label;
+          const name =
+            document.getElementById("pair-name").value.trim() ||
+            PLATFORM_META[detectPlatform()].label;
           if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-            pairMsg("当前环境不支持 Web Push。iOS 请先把本站「添加到主屏幕」再打开。", "error");
+            pairMsg(
+              "当前环境不支持 Web Push。iOS 请先把本站「添加到主屏幕」再打开。",
+              "error",
+            );
             return;
           }
           const btn = document.getElementById("pair-submit");
@@ -585,7 +879,10 @@
             pairMsg("正在请求通知权限…", "info");
             const perm = await Notification.requestPermission();
             if (perm !== "granted") {
-              pairMsg("通知权限未授予（" + perm + "）。请在浏览器设置里允许后重试。", "warn");
+              pairMsg(
+                "通知权限未授予（" + perm + "）。请在浏览器设置里允许后重试。",
+                "warn",
+              );
               return;
             }
             pairMsg("正在注册 Service Worker…", "info");
@@ -596,11 +893,20 @@
               const data = await api("/v1/vapid-public-key");
               publicKey = data.publicKey || data.key;
             } catch (e) {
-              pairMsg("后端未连接，无法获取 VAPID 公钥（演示模式仅登记设备，不真正订阅）。", "warn");
+              pairMsg(
+                "后端未连接，无法获取 VAPID 公钥（演示模式仅登记设备，不真正订阅）。",
+                "warn",
+              );
               DEVICES.push({
                 id: "dev_" + Math.random().toString(36).slice(2, 8),
-                name, platform: detectPlatform(), enabled: true, statusFilter: "all",
-                tags: [], lastDelivered: "—", browser: PLATFORM_META[detectPlatform()].label, isCurrent: true,
+                name,
+                platform: detectPlatform(),
+                enabled: true,
+                statusFilter: "all",
+                tags: [],
+                lastDelivered: "—",
+                browser: PLATFORM_META[detectPlatform()].label,
+                isCurrent: true,
               });
               renderDevices();
               renderCurrentDevice();
@@ -648,7 +954,9 @@
               const sub = reg && (await reg.pushManager.getSubscription());
               if (sub) await sub.unsubscribe();
             }
-          } catch (e) { /* 忽略 */ }
+          } catch (e) {
+            /* 忽略 */
+          }
           if (cur) removeDevice(cur);
           else {
             toast("本机通知已关闭", "success");
@@ -656,7 +964,9 @@
           }
         }
 
-        document.getElementById("pair-submit").addEventListener("click", subscribeCurrent);
+        document
+          .getElementById("pair-submit")
+          .addEventListener("click", subscribeCurrent);
 
         /* ================= 启动 ================= */
         load();
