@@ -6,6 +6,16 @@ Passkey 无密码登录、无需轮询、单二进制易自托管。
 > 本仓库由原型（iOS Web Push 机制验证）演进为完整实现。
 > 设计稿见 `design/`，技术方案见 `design/tech-scheme.html`。
 
+## 📚 文档导航
+
+| 文档 | 读者 | 内容 |
+| --- | --- | --- |
+| **[DEVELOPMENT.md](DEVELOPMENT.md)** | 开发者 / Agent | 架构决策、开发流程、测试体系、踩坑记录（上手必读） |
+| **[AGENTS.md](AGENTS.md)** | 子 Agent | 工作约定、规范、陷阱 |
+| **[E2E_TESTING.md](E2E_TESTING.md)** | 开发者 | 端到端测试体系（`make e2e` 固化门禁） |
+| **[IOS_TESTING.md](IOS_TESTING.md)** | 验证者 | iOS 真机推送验证清单（唯一人工环节） |
+| `.pi-orchestrator/TASKS.md` | 协调者 | 实施任务台账（历史记录） |
+
 ## 架构
 
 ```
