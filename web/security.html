@@ -353,9 +353,15 @@
       }
 
       // 后端未就绪时静默降级到演示数据（不抛 console 错误）
+      // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；其他非 200 才降级演示数据。
       async function fetchApi(path, options) {
         try {
-          const res = await fetch(path, options);
+          const res = await fetch(
+            path,
+            Object.assign({ credentials: "include" }, options),
+          );
+          if (res.status === 401)
+            return Anotify.api(path, options).catch(() => null);
           if (!res.ok) return null;
           return await res.json();
         } catch (e) {

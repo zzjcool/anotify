@@ -13,7 +13,14 @@ import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
 
 const RP = "localhost";
-const PAGES = ["index.html", "login.html", "receivers.html", "keys.html", "security.html", "docs.html"];
+const PAGES = [
+	"index.html",
+	"login.html",
+	"receivers.html",
+	"keys.html",
+	"security.html",
+	"docs.html",
+];
 const GUARDED = ["index.html", "receivers.html", "keys.html", "security.html"];
 const VIEWPORTS = [
 	{ name: "桌面1280", width: 1280, height: 800 },
@@ -25,33 +32,54 @@ let server, browser;
 // 收集单页在指定视口下的渲染问题
 async function checkPage(ctx, url, viewportName, viewport) {
 	const page = await ctx.newPage();
-	await page.setViewportSize({ width: viewport.width, height: viewport.height });
+	await page.setViewportSize({
+		width: viewport.width,
+		height: viewport.height,
+	});
 	const pageErrors = [];
 	page.on("pageerror", (e) => pageErrors.push(String(e)));
 	try {
 		await page.goto(url, { waitUntil: "load", timeout: 15000 });
 		await page.waitForTimeout(1200); // 等渲染 + 数据加载
 	} catch (e) {
-		H.bad(`${viewportName} ${url.split("/").pop()} 加载`, String(e).slice(0, 80));
+		H.bad(
+			`${viewportName} ${url.split("/").pop()} 加载`,
+			String(e).slice(0, 80),
+		);
 		await page.close();
 		return;
 	}
 	const name = url.split("/").pop();
 
 	// JS 错误
-	H.check(`${viewportName} ${name} 无 JS pageerror`, pageErrors.length === 0, pageErrors[0]?.slice(0, 100));
+	H.check(
+		`${viewportName} ${name} 无 JS pageerror`,
+		pageErrors.length === 0,
+		pageErrors[0]?.slice(0, 100),
+	);
 
-	// 横向溢出（排除 pre/overflow-x-auto 容器）
+	// 横向溢出（排除 pre / overflow-x-auto / 可横向滚动的代码容器内的合法内容）
 	const overflowCount = await page.evaluate(() => {
 		const vw = window.innerWidth;
 		let n = 0;
 		for (const el of document.querySelectorAll("body *")) {
 			const r = el.getBoundingClientRect();
-			if (r.right > vw + 5 && !el.closest("pre") && !el.closest(".overflow-x-auto")) n++;
+			if (
+				r.right > vw + 5 &&
+				!el.closest("pre") &&
+				!el.closest(".overflow-x-auto") &&
+				!el.closest(".code-body") && // docs.html 语法高亮代码块（overflow-x:auto，合法横向滚动）
+				!el.closest("code")
+			)
+				n++;
 		}
 		return n;
 	});
-	H.check(`${viewportName} ${name} 无横向溢出`, overflowCount === 0, `${overflowCount} 个元素超出`);
+	H.check(
+		`${viewportName} ${name} 无横向溢出`,
+		overflowCount === 0,
+		`${overflowCount} 个元素超出`,
+	);
 
 	// 能滚动到底（若可滚动）
 	const canScrollToBottom = await page.evaluate(async () => {
@@ -70,17 +98,26 @@ async function checkPage(ctx, url, viewportName, viewport) {
 // 注入 SESSION cookie 到 context
 async function injectSession(ctx, sessionValue, base) {
 	const u = new URL(base);
-	await ctx.addCookies([{
-		name: "anotify_session", value: sessionValue,
-		domain: u.hostname, path: "/", httpOnly: true,
-		secure: u.protocol === "https:",
-	}]);
+	await ctx.addCookies([
+		{
+			name: "anotify_session",
+			value: sessionValue,
+			domain: u.hostname,
+			path: "/",
+			httpOnly: true,
+			secure: u.protocol === "https:",
+		},
+	]);
 }
 
 async function main() {
 	console.log("=== SUITE: frontend（前端渲染 + 路由守卫 + 真实数据）===");
 	server = await H.startServer({ rpId: RP });
-	browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox"] });
+	browser = await chromium.launch({
+		channel: "chrome",
+		headless: true,
+		args: ["--no-sandbox"],
+	});
 
 	// ---- A. 路由守卫：未登录访问受保护页 → 跳 login.html ----
 	console.log("--- 路由守卫（未登录→跳登录）---");
@@ -88,11 +125,18 @@ async function main() {
 		const ctx = await browser.newContext();
 		const page = await ctx.newPage();
 		try {
-			await page.goto(server.base + "/" + p, { waitUntil: "load", timeout: 15000 });
+			await page.goto(server.base + "/" + p, {
+				waitUntil: "load",
+				timeout: 15000,
+			});
 			// 等客户端 JS 触发 401 → 跳转
 			await page.waitForTimeout(2000);
 			const finalUrl = page.url();
-			H.check(`未登录访问 ${p} → 跳转到 login.html`, finalUrl.includes("login.html"), `最终 ${finalUrl}`);
+			H.check(
+				`未登录访问 ${p} → 跳转到 login.html`,
+				finalUrl.includes("login.html"),
+				`最终 ${finalUrl}`,
+			);
 		} catch (e) {
 			H.bad(`未登录访问 ${p} 路由守卫`, String(e).slice(0, 80));
 		}
@@ -105,10 +149,19 @@ async function main() {
 	{
 		const ctx = await browser.newContext();
 		const page = await ctx.newPage();
-		await page.goto(server.base + "/login.html", { waitUntil: "load", timeout: 15000 });
+		await page.goto(server.base + "/login.html", {
+			waitUntil: "load",
+			timeout: 15000,
+		});
 		await page.waitForTimeout(1200);
-		H.check("login.html 未登录停留本页(不跳转)", page.url().includes("login.html"), `最终 ${page.url()}`);
-		const hasForm = await page.evaluate(() => !!document.body && document.body.innerText.length > 20);
+		H.check(
+			"login.html 未登录停留本页(不跳转)",
+			page.url().includes("login.html"),
+			`最终 ${page.url()}`,
+		);
+		const hasForm = await page.evaluate(
+			() => !!document.body && document.body.innerText.length > 20,
+		);
 		H.check("login.html 正常渲染有内容", hasForm);
 		await page.close();
 		await ctx.close();
@@ -120,15 +173,26 @@ async function main() {
 		// 用 devseed 建会话（无需 WebAuthn），注入 cookie
 		const s = H.seed(server.dbPath, "frontend");
 		// 先上报一条真实通知，验证真实数据渲染
-		await H.req(server.base, "/v1/notify", { key: s.sendKey, body: { title: "前端真实数据验证", status: "success" } });
+		await H.req(server.base, "/v1/notify", {
+			key: s.sendKey,
+			body: { title: "前端真实数据验证", status: "success" },
+		});
 
 		const ctx = await browser.newContext();
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
-		await page.goto(server.base + "/index.html", { waitUntil: "load", timeout: 15000 });
+		await page.goto(server.base + "/index.html", {
+			waitUntil: "load",
+			timeout: 15000,
+		});
 		await page.waitForTimeout(2000); // 等数据加载
 
-		H.check("已登录访问 index 停留本页(不跳登录)", page.url().includes("index.html"), `最终 ${page.url()}`);
+		// FileServer 会把 /index.html 规范重定向到 /，所以这里验证「未跳去登录页」而非死磕文件名
+		H.check(
+			"已登录访问 index 未跳登录页",
+			!page.url().includes("login.html"),
+			`最终 ${page.url()}`,
+		);
 
 		// demo-badge 应隐藏（有真实数据，非演示模式）
 		const badgeHidden = await page.evaluate(() => {
@@ -136,10 +200,16 @@ async function main() {
 			if (!b) return "missing";
 			return b.classList.contains("hidden");
 		});
-		H.check("已登录 index 不显示「演示数据」徽章", badgeHidden === true, `badgeHidden=${badgeHidden}`);
+		H.check(
+			"已登录 index 不显示「演示数据」徽章",
+			badgeHidden === true,
+			`badgeHidden=${badgeHidden}`,
+		);
 
 		// 真实通知应出现在列表中
-		const hasReal = await page.evaluate(() => document.body.innerText.includes("前端真实数据验证"));
+		const hasReal = await page.evaluate(() =>
+			document.body.innerText.includes("前端真实数据验证"),
+		);
 		H.check("已登录 index 显示真实通知数据", hasReal);
 
 		await page.close();
@@ -161,4 +231,13 @@ async function main() {
 	server.stop();
 	process.exit(passed ? 0 : 1);
 }
-main().catch(async (e) => { console.error(e); try { await browser?.close(); server?.stop(); } catch { /* ignore */ } process.exit(1); });
+main().catch(async (e) => {
+	console.error(e);
+	try {
+		await browser?.close();
+		server?.stop();
+	} catch {
+		/* ignore */
+	}
+	process.exit(1);
+});
