@@ -547,7 +547,10 @@
             today = STATS.today ?? 0;
             devices = STATS.deviceCount ?? 0;
             const dt = STATS.deliveryTotal ?? 0;
-            rate = dt > 0 ? Math.round(((STATS.delivered ?? 0) / dt) * 1000) / 10 : 100;
+            rate =
+              dt > 0
+                ? Math.round(((STATS.delivered ?? 0) / dt) * 1000) / 10
+                : 100;
           } else {
             total = NOTIFICATIONS.length;
             const ok = NOTIFICATIONS.filter(

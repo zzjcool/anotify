@@ -165,7 +165,14 @@ func (s *Service) BeginRegister(username, displayName string) (*protocol.Credent
 	// 用一个临时 user（尚未入库）生成 options；WebAuthnID 用即将创建的用户 ID。
 	tmp := &store.User{ID: store.NewUserID(), Username: username, DisplayName: displayName}
 	waUser := &webAuthnUser{user: tmp, credentials: nil}
-	creation, session, err := s.wa.BeginRegistration(waUser)
+	// 强制 resident key（可发现凭据）：免用户名登录（discoverable login）依赖它——
+	// 认证器里存有 resident 凭据，登录时才能不输入用户名直接选择。
+	creation, session, err := s.wa.BeginRegistration(waUser, webauthn.WithAuthenticatorSelection(
+		protocol.AuthenticatorSelection{
+			ResidentKey:      protocol.ResidentKeyRequirementRequired,
+			UserVerification: protocol.VerificationPreferred,
+		},
+	))
 	if err != nil {
 		return nil, fmt.Errorf("begin registration: %w", err)
 	}

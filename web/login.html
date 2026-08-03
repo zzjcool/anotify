@@ -145,7 +145,8 @@
         <!-- 登录面板（仅 Passkey，无需输入用户名） -->
         <div id="login-panel" class="mt-6">
           <p class="text-xs leading-relaxed text-zinc-400">
-            点击下方按钮，用本机的 Passkey（Face ID / 指纹 / 设备密钥）直接登录，无需输入用户名。
+            点击下方按钮，用本机的 Passkey（Face ID / 指纹 /
+            设备密钥）直接登录，无需输入用户名。
           </p>
           <button
             id="login-btn"
@@ -426,9 +427,7 @@
                 "已取消，或本机没有可用的 Passkey——请先「注册」一个。",
                 "warn",
               );
-            } else if (
-              String(e).includes("Failed to fetch")
-            ) {
+            } else if (String(e).includes("Failed to fetch")) {
               demoEnter("zheng");
             } else {
               showStatus("登录失败：" + (e.message || e), "error");

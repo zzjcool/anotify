@@ -417,7 +417,10 @@
 	// logout 调后端吊销会话并跳回登录页。
 	async function logout() {
 		try {
-			await fetch("/v1/auth/logout", { method: "POST", credentials: "include" });
+			await fetch("/v1/auth/logout", {
+				method: "POST",
+				credentials: "include",
+			});
 		} catch {
 			/* 忽略网络错误，仍跳登录页 */
 		}
