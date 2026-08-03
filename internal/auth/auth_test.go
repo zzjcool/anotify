@@ -110,8 +110,13 @@ func TestAPIKey_WrongKeyRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
-	// 篡改最后一位。
-	tampered := plaintext[:len(plaintext)-1] + "X"
+	// 篡改最后一位（确保与原值不同，避免 1/64 概率 flake）。
+	last := plaintext[len(plaintext)-1]
+	replacement := byte('X')
+	if last == 'X' {
+		replacement = 'Y'
+	}
+	tampered := plaintext[:len(plaintext)-1] + string(replacement)
 	if _, _, err := svc.Keys().ValidateKey(tampered); err == nil {
 		t.Errorf("篡改的 Key 应被拒绝")
 	}
