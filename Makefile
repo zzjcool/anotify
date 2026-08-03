@@ -31,6 +31,12 @@ dev: ## 开发模式：直接用 web/ 作为静态目录（不指纹）
 integration: ## 集成测试（需服务已在 PORT 运行）
 	BASE=http://localhost:$(PORT) ./scripts/integration.sh
 
+e2e: ## 【固化门禁】全量端到端测试（每次开发完必跑，全绿才算完成）
+	./scripts/e2e/run_all.sh
+
+e2e-one: ## 只跑某个 E2E 套件：make e2e-one S=auth_flow
+	./scripts/e2e/run_all.sh $(S)
+
 docker: ## 构建 Docker 镜像
 	docker build -t anotify .
 
