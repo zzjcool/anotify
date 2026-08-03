@@ -9,8 +9,6 @@
  * 颜色一律来自 tokens.css 变量，不硬编码色值。
  */
 (() => {
-	
-
 	/* ---------- 安全 DOM 构建工具（避免 innerHTML，防 XSS） ---------- */
 	function el(tag, attrs, ...children) {
 		const node = document.createElement(tag);
@@ -57,13 +55,19 @@
 			"M14 12h7v9h-7z",
 			"M3 16h7v5H3z",
 		],
-		receivers: ["M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9", "M13.73 21a2 2 0 0 1-3.46 0"],
+		receivers: [
+			"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9",
+			"M13.73 21a2 2 0 0 1-3.46 0",
+		],
 		keys: [
 			"M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4",
 		],
 		agent: ["M4 17l6-6-6-6", "M12 19h8"],
 		api: ["M16 18l6-6-6-6", "M8 6l-6 6 6 6"],
-		scheme: ["M4 19.5A2.5 2.5 0 0 1 6.5 17H20", "M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"],
+		scheme: [
+			"M4 19.5A2.5 2.5 0 0 1 6.5 17H20",
+			"M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
+		],
 		security: ["M3 11h18v11H3z", "M7 11V7a5 5 0 0 1 10 0v4"],
 		home: ["M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
 	};
@@ -73,22 +77,42 @@
 		{
 			items: [
 				{ id: "overview", label: "总览", href: "index.html", icon: "overview" },
-				{ id: "receivers", label: "通知接收", href: "receivers.html", icon: "receivers" },
+				{
+					id: "receivers",
+					label: "通知接收",
+					href: "receivers.html",
+					icon: "receivers",
+				},
 				{ id: "keys", label: "API Keys", href: "keys.html", icon: "keys" },
 			],
 		},
 		{
 			label: "集成",
 			items: [
-				{ id: "agent", label: "接入 Agent", href: "index.html#quickstart", icon: "agent" },
+				{
+					id: "agent",
+					label: "接入 Agent",
+					href: "index.html#quickstart",
+					icon: "agent",
+				},
 				{ id: "api", label: "API 文档", href: "docs.html", icon: "api" },
-				{ id: "scheme", label: "技术方案", href: "docs.html#scheme", icon: "scheme" },
+				{
+					id: "scheme",
+					label: "技术方案",
+					href: "docs.html#scheme",
+					icon: "scheme",
+				},
 			],
 		},
 		{
 			label: "账户",
 			items: [
-				{ id: "security", label: "安全与登录", href: "security.html", icon: "security" },
+				{
+					id: "security",
+					label: "安全与登录",
+					href: "security.html",
+					icon: "security",
+				},
 				{ id: "home", label: "返回首页", href: "login.html", icon: "home" },
 			],
 		},
@@ -111,7 +135,8 @@
 			el(
 				"span",
 				{
-					class: "absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center",
+					class:
+						"absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center",
 				},
 				el("span", { class: "absolute h-3 w-3 rounded-full bg-red-500" }),
 				el("span", {
@@ -139,7 +164,7 @@
 		);
 		const pageMain = document.getElementById("page-main");
 		if (!pageMain) {
-			console.error("[partials] 需要 <div id=\"page-main\"> 包裹主内容");
+			console.error('[partials] 需要 <div id="page-main"> 包裹主内容');
 			return;
 		}
 
@@ -275,7 +300,10 @@
 						onclick: () => (location.href = "index.html#recent"),
 					},
 					icon(
-						["M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9", "M13.73 21a2 2 0 0 1-3.46 0"],
+						[
+							"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9",
+							"M13.73 21a2 2 0 0 1-3.46 0",
+						],
 						"h-5 w-5",
 					),
 					el("span", {
@@ -292,20 +320,23 @@
 
 		/* ----- 重组 DOM ----- */
 		const rightCol = el("div", { class: "flex min-w-0 flex-1 flex-col" });
-		const footer = el(
-			"footer",
-			{
-				class:
-					"border-t border-white/[0.04] px-5 py-5 text-center text-[11px] text-zinc-600 sm:px-8",
-				text: "Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器",
-			},
-		);
+		const footer = el("footer", {
+			class:
+				"border-t border-white/[0.04] px-5 py-5 text-center text-[11px] text-zinc-600 sm:px-8",
+			text: "Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器",
+		});
 		pageMain.parentNode && pageMain.parentNode.removeChild(pageMain);
 		const main = el("main", { class: "flex-1 px-5 py-8 sm:px-8" });
 		main.appendChild(pageMain);
 		rightCol.append(header, main, footer);
 
-		const root = el("div", { class: "flex min-h-screen" }, sidebar, overlay, rightCol);
+		const root = el(
+			"div",
+			{ class: "flex min-h-screen" },
+			sidebar,
+			overlay,
+			rightCol,
+		);
 		document.body.prepend(root);
 
 		/* 滚动渐入 */
@@ -326,11 +357,16 @@
 	async function api(path, opts, demo) {
 		const o = opts || {};
 		try {
-			const res = await fetch(path, Object.assign({ credentials: "include" }, o));
+			const res = await fetch(
+				path,
+				Object.assign({ credentials: "include" }, o),
+			);
 			// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”，不进入演示模式）
 			if (res.status === 401) {
 				if (isAuthedPage) {
-					const back = encodeURIComponent(location.pathname.split("/").pop() || "index.html");
+					const back = encodeURIComponent(
+						location.pathname.split("/").pop() || "index.html",
+					);
 					location.href = "login.html?next=" + back;
 				}
 				throw new Error("HTTP 401");
@@ -346,7 +382,10 @@
 
 	/* ---------- 小工具 ---------- */
 	function copyText(btn, getText) {
-		const text = typeof getText === "function" ? getText() : document.querySelector(getText).innerText;
+		const text =
+			typeof getText === "function"
+				? getText()
+				: document.querySelector(getText).innerText;
 		navigator.clipboard.writeText(text).then(() => {
 			const orig = btn.textContent;
 			btn.textContent = "已复制 ✓";
@@ -364,11 +403,16 @@
 			document.body.append(host);
 		}
 		const color =
-			kind === "error" ? "var(--error)" : kind === "warn" ? "var(--warn)" : "var(--success)";
+			kind === "error"
+				? "var(--error)"
+				: kind === "warn"
+					? "var(--warn)"
+					: "var(--success)";
 		const t = el(
 			"div",
 			{
-				class: "card flex items-center gap-2.5 px-4 py-3 text-sm text-zinc-200 shadow-2xl",
+				class:
+					"card flex items-center gap-2.5 px-4 py-3 text-sm text-zinc-200 shadow-2xl",
 				style: "background: var(--bg-raise)",
 			},
 			el("span", { class: "dot", style: `background: ${color}` }),
@@ -413,7 +457,8 @@
 
 	function timeAgo(isoOrSec) {
 		if (!isoOrSec) return "—";
-		const t = typeof isoOrSec === "number" ? isoOrSec * 1000 : Date.parse(isoOrSec);
+		const t =
+			typeof isoOrSec === "number" ? isoOrSec * 1000 : Date.parse(isoOrSec);
 		if (Number.isNaN(t)) return "—";
 		const diff = Date.now() - t;
 		if (diff < 60e3) return "刚刚";
