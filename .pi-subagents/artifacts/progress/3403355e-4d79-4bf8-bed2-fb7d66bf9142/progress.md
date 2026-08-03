@@ -1,13 +1,13 @@
-# routing.mjs 进度
+# routing.mjs 进度 — 完成
 
 - [x] 读公共约定 + 任务卡 + harness + 产品代码（route/handlers/store）
-- [x] 编写 scripts/e2e/suites/routing.mjs（设备拓扑 A/B/C/D + 8 大路由 case + 配置生效预检）
-- [x] 自测跑通（exit 1）——**正确暴露产品 bug：PATCH /v1/devices/:id 无效**
-- [ ] 等待协调者修复 store.UpdateDevice + patch()（方案 A，协调者亲自修）
-- [ ] 修复后重跑至 exit 0
+- [x] 编写 scripts/e2e/suites/routing.mjs（设备拓扑 A/B/C/D + 配置生效预检 + 8 大路由 case）
+- [x] 首次自测：exit 1（1/22）——正确暴露产品 bug（PATCH /v1/devices 不落库）
+- [x] 协调者修复（store.UpdateDevice + patch() 改用，commit d9ad55d）+ 重建 .e2e-bin
+- [x] 重跑至 exit 0（23/23 全过）
 
-## 当前状态
+## 最终状态
 
-套件已写好且行为正确：1 通过 / 22 失败，全部失败指向同一根因（PATCH 不落库，
-设备全部停在默认 tags=[]/filter=all/enabled=true → 所有消息广播到全部 4 台）。
-待产品修复后重跑。
+DONE。routing.mjs 23 断言全过，exit 0。
+发现的 blocked 产品 bug 已由协调者修复（含 TestUpdateDevice 单测，PASS）。
+工作区干净：仅新增 scripts/e2e/suites/routing.mjs（未 track），无 staged 文件，未动产品代码。

@@ -200,20 +200,22 @@
 
         /* ================= 数据层 ================= */
         // 统一通知结构（兼容后端 Message / 契约返回）
+        // 注意：/v1/notifications 直接序列化 broker.Message（Go 无 json tag → PascalCase 字段），
+        //       故每个字段都要兼容 PascalCase（真实 API）与 camelCase（演示数据/契约）。
         function normalize(n, i) {
-          const payload = n.payload ? safeParse(n.payload) : n;
+          const payload = n.Payload ? safeParse(n.Payload) : n.payload ? safeParse(n.payload) : n;
           return {
             id: n.id || n.ID || "n" + i,
-            status: n.status || "info",
-            title: n.title || "（无标题）",
-            body: n.body || "",
-            link: n.link || payload.link || "",
+            status: n.status || n.Status || "info",
+            title: n.title || n.Title || "（无标题）",
+            body: n.body || n.Body || "",
+            link: n.link || n.Link || payload.link || "",
             agent: payload.agentId || payload.agent || "agent",
             project: payload.cwd || payload.project || "—",
             duration: payload.durationMs ? Math.round(payload.durationMs / 1000) : payload.duration || 0,
             model: payload.model || "—",
             sessionId: payload.sessionId || "—",
-            time: timeAgo(n.created_at || n.createdAt || n.time),
+            time: timeAgo(n.created_at || n.createdAt || n.CreatedAt || n.time),
             delivered: n.delivered != null ? n.delivered : (n.delivered_count != null ? n.delivered_count : 0),
             total: n.total != null ? n.total : (n.device_count != null ? n.device_count : 0),
           };
