@@ -1,0 +1,289 @@
+# Anotify English translations
+# Mirror of zh-CN.yaml; keys must match exactly.
+
+common:
+  brand:
+    name: "Anotify"
+    tagline: "Get notified when your agents finish"
+  nav:
+    overview: "Overview"
+    receivers: "Receivers"
+    keys: "API Keys"
+    integration: "Integrations"
+    agent: "Connect Agent"
+    api: "API Docs"
+    scheme: "Tech Spec"
+    account: "Account"
+    security: "Security & Login"
+    logout: "Log out"
+    menu: "Menu"
+    notification: "Notifications"
+  sidebar:
+    deployment: "Self-hosted · Main workspace"
+  footer:
+    copyright: >-
+      Anotify · MIT License · Self-hosted ·
+      Your data stays on your server
+    login_copyright: "© 2026 Anotify · MIT License · Passkey-only"
+
+index:
+  title: "Overview"
+  subtitle: "Your notifications at a glance"
+  greeting: "Hello"
+  loading: "Loading your notification stats…"
+  demo_badge: "Demo data (backend not connected)"
+  kpi:
+    total: "Total notifications"
+    last_30d: "Last 30 days"
+    rate: "Delivery rate"
+    today: "Today"
+    today_sub: "Sent → Delivered"
+    devices: "Receiving devices"
+    devices_enabled: "Enabled"
+  heatmap:
+    title: "Notification activity"
+    subtitle: "Past year · daily volume"
+    less: "Less"
+    more: "More"
+  quickstart:
+    cta: "Connect a new Agent"
+    title: "Connect your Agent"
+    subtitle: "Get notified automatically when your agent finishes"
+    recommended: "Recommended"
+    option_a: "One line to set up your Agent"
+    option_b: "Or report from a script / CI"
+    copy: "Copy"
+    cmd_a_comment: "# Send this one-liner to your Agent"
+    curl_example_title: "Deploy done"
+    cmd_a: >-
+      Follow anotify.dev/docs/skill to install notification reporting
+      for me: listen for agent_settled, auto-push to my devices when
+      tasks end.
+  recent:
+    title: "Recent notifications"
+    subtitle: "Live updates · click a row for details"
+    filter_all: "All"
+    filter_success: "Success"
+    filter_error: "Error"
+    filter_interrupted: "Interrupted"
+    refresh: "Refresh →"
+
+login:
+  title: "Sign in"
+  welcome: "Welcome back to"
+  subtitle: "No passwords · One-tap Passkey sign-in"
+  tab:
+    login: "Sign in"
+    signup: "Sign up"
+  login:
+    hint: >-
+      Tap the button below to sign in with a Passkey
+      (Face ID / fingerprint / device key) on this device.
+      No username required.
+    button: "Sign in with Passkey"
+    security_note: "Fingerprint / Face ID / device key · Phishing-resistant"
+  signup:
+    username_label: "Choose a username"
+    username_placeholder: "Pick a name for yourself"
+    button: "Create Passkey & sign up"
+    recovery_hint_prefix: "Signing up generates a set of "
+    recovery_code: "one-time recovery codes"
+    recovery_hint_suffix: >-
+      — use them to regain access if you switch devices or lose
+      all Passkeys. Store them safely.
+    recovery_hint: >-
+      Signing up generates a set of one-time recovery codes —
+      use them to regain access if you switch devices or lose
+      all Passkeys. Store them safely.
+  ios_tip_label: "iOS users: "
+  ios_tip: >-
+    to receive push notifications, first open this site
+    in Safari, tap Share → Add to Home Screen, then launch from the
+    home screen icon and sign in.
+  recovery_link: "Can't use Passkey? Sign in with a recovery code →"
+  trust:
+    data_local: "Your data stays on your server"
+    webauthn: "WebAuthn standard"
+    no_third_party: "No third-party accounts"
+  status:
+    demo: >-
+      Backend not connected — entered demo mode (sample data).
+    login_success: "Signed in — entering workspace…"
+    signup_success: "Account created — entering workspace…"
+    unsupported: >-
+      This browser doesn't support Passkey (WebAuthn).
+      Please use the latest Safari / Chrome.
+    cancelled_login: >-
+      Cancelled, or no Passkey available on this device —
+      please sign up first.
+    cancelled_signup: >-
+      Cancelled or timed out — please retry and allow Passkey creation.
+    need_username: "Please pick a username first."
+    login_failed: "Sign-in failed: "
+    signup_failed: "Sign-up failed: "
+  recovery_toast: >-
+    Recovery-code sign-in will be available once the backend is connected
+    (username + one-time recovery code)
+
+receivers:
+  title: "Receivers"
+  demo_badge: "Demo data"
+  channel:
+    push: "Push subscriptions"
+    ws: "WebSocket connections"
+  push:
+    title: "Browser push subscriptions"
+    subtitle_prefix: "Delivered via system Push services (APNs / FCM). "
+    subtitle_highlight: "Receives even when the browser is closed."
+    subtitle_suffix: ""
+    add_device: "Add this device"
+  ws:
+    title: "Long-poll receiving · for plugins and any device"
+    desc: >-
+      Any device / plugin with a notify:receive API Key can establish
+      a WebSocket long-poll for real-time push. Great for desktop
+      widgets, CLI daemons, smart-home bridges. Runs alongside browser
+      push.
+    connection_method: "Connection"
+    copy: "Copy"
+    active_title: "Active connections"
+    active_subtitle: "Currently established WebSocket connections"
+    online: " online"
+    empty_hint: >-
+      Once the backend is connected, live connections will appear here
+      (name / Key prefix / uptime / tags / last message).
+  tags:
+    title: "Tag routing · which device gets which notification"
+    desc: >-
+      Include deviceTags when reporting. Only devices with overlapping
+      tags (or no tags = catch-all) will receive it. No tags on the
+      notification = broadcast to all enabled devices; no tags on a
+      device = receives everything.
+  pair:
+    title: "Add this device"
+    subtitle: "After subscribing, this browser will receive push notifications"
+    device_name: "Device name"
+    device_placeholder: "e.g. Primary phone / Office Mac"
+    submit: "Request permission and subscribe"
+    hint: >-
+      The browser will ask for notification permission. iOS requires
+      adding this site to the Home Screen first, then opening it as a
+      standalone app.
+
+keys:
+  title: "API Keys"
+  subtitle: "Agents use them to report notifications"
+  desc_prefix: "Agents carry a Key to call"
+  desc_suffix: >-
+    to report notifications. The Key is shown in full only once at
+    creation; the server stores only a hash — save it immediately.
+  create_button: "New Key"
+  api_endpoint: "Reporting endpoint"
+  view_docs: "View full API docs"
+  header_label: "Header"
+  my_keys: "My Keys"
+  col:
+    name: "Name"
+    prefix: "Key prefix"
+    scope: "Scopes"
+    last_used: "Last used"
+    status: "Status"
+    actions: "Actions"
+  security:
+    title: "Key security best practices"
+    point1_prefix: "Key plaintext is "
+    point1_highlight: "shown only once at creation"
+    point1_suffix: "; it cannot be viewed again, only regenerated"
+    point2_prefix: "Server stores only "
+    point2_highlight: "argon2id hash"
+    point2_suffix: "; even a DB leak cannot recover the Key"
+    point3_prefix: "Use "
+    point3_highlight: "one Key per Agent / environment"
+    point3_suffix: "; revoke only the affected one on leak"
+    point4: >-
+      Never commit Keys to version control; inject via env vars or
+      a secrets manager
+  create:
+    title: "New API Key"
+    subtitle: "Give it a name and choose its scopes"
+    name_label: "Name"
+    name_placeholder: "e.g. Local dev / CI pipeline / Production Agent"
+    scope_label: "Scopes (multi-select, least-privilege)"
+    scope_send_label: "Send"
+    scope_send_desc: "For Agents / CI to POST notifications. Prefix ant_live_"
+    scope_receive_label: "Receive"
+    scope_receive_desc: >-
+      For plugins / devices to establish WebSocket connections.
+      Prefix ant_recv_
+    scope_read_label: "Device read"
+    scope_read_desc: "Read-only device listing for script inspection"
+    scope_hint: >-
+      Least privilege: send and receive are separate, so a leaked
+      Key only affects one side.
+    cancel: "Cancel"
+    generate: "Generate Key"
+  save:
+    title: "Save your Key"
+    subtitle_prefix: "This is its "
+    subtitle_highlight: "only full display"
+    copy: "Copy"
+    warning: >-
+      Once closed, the full Key cannot be viewed again. Save it to a
+      password manager or secure location immediately.
+    done: "I've saved it"
+
+security:
+  title: "Security & Login"
+  subtitle: "Passkey · Sessions · Recovery codes"
+  intro: >-
+    Manage everything about who you are: Passkey credentials,
+    login sessions, and recovery codes. These are separate from
+    where notifications go (receiving devices).
+  add_passkey: "Add Passkey"
+  passkey:
+    title: "Passkey credentials"
+    subtitle: >-
+      Your passwordless login credentials. One account can hold
+      multiple Passkeys, synced across devices in the same ecosystem.
+    count: " credentials"
+  session:
+    title: "Login sessions"
+    subtitle: >-
+      Which devices are currently logged into your account. Sessions
+      are independent and can be revoked individually.
+    count: " active sessions"
+  recovery:
+    title: "Recovery codes"
+    desc_prefix: "The ultimate fallback when you lose all devices and "
+    desc_highlight: "cannot sign in with Passkey"
+    desc_suffix: >-
+      . Sign in with username + recovery code, then add a new Passkey.
+      Each code is single-use.
+    regenerate: "Regenerate"
+    hint: >-
+      Feature coming soon · after sign-up, 8 one-time recovery codes
+      will be generated. Save them to a password manager.
+  concept:
+    title: "Two independent axes"
+    auth_label: "Auth axis"
+    auth_axis: "who you are (this page)"
+    auth_p1: "· Passkey credentials: one account can hold multiple"
+    auth_p2: "· Login sessions: multi-device, individually revocable"
+    auth_p3: "· Recovery codes: fallback when all devices are lost"
+    delivery_label: "Delivery axis"
+    delivery_axis: "where notifications go"
+    delivery_p1: "· Managed on the Receivers page, separate from this page"
+    delivery_p2: "· Browser push subscriptions + WebSocket connections"
+    delivery_p3: "· Still received after logout, until unsubscribed"
+
+docs:
+  title: "Integration docs"
+  subtitle: "Agent reporting · Web Push · WebSocket"
+  toc_heading: "On this page"
+  toc:
+    agent: "Connect Agent"
+    api: "API overview"
+    auth: "Authentication"
+    notify: "POST /v1/notify"
+    webpush: "Web Push subscription"
+    stream: "WebSocket receiving"

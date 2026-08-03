@@ -17,6 +17,11 @@ web/dist/
 internal/server/dist/
 .e2e-bin/
 
+# === 前端生成产物（源在 web-src/，sitegen 生成）===
+web/*.html
+web/en/
+web/i18n.*.js
+
 # === 编排/调试临时产物（开发过程用，不入库）===
 .pi-orchestrator/worktrees/
 .pi-orchestrator/tasks/

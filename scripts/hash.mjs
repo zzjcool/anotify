@@ -109,8 +109,14 @@ async function main() {
 		html = html.replace(
 			/(src|href)=("|')([^"']+)\2/g,
 			(match, attr, q, value) => {
-				const hashed = manifest[value];
-				return hashed ? `${attr}=${q}${hashed}${q}` : match;
+				// 精确匹配原始相对路径（manifest key 无前导 /）
+				if (manifest[value]) return `${attr}=${q}${manifest[value]}${q}`;
+				// 根绝对路径（/assets/x.css）：strip 前导 / 查 manifest，保留 / 输出
+				if (value.startsWith("/")) {
+					const hashed = manifest[value.slice(1)];
+					if (hashed) return `${attr}=${q}/${hashed}${q}`;
+				}
+				return match;
 			},
 		);
 		const target = path.join(out, rel);

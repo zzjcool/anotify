@@ -1,25 +1,7 @@
-<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Anotify · 通知接收</title>
-    <link rel="manifest" href="manifest.webmanifest" />
-    <meta name="theme-color" content="#050508" />
-    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
-    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="fonts/fonts.css" />
-    <link rel="stylesheet" href="tokens.css" />
-    <link rel="stylesheet" href="ui.css" />
-  </head>
-  <body class="min-h-screen antialiased overflow-x-hidden">
-    <div id="page-main">
+{{define "title"}}{{t "receivers.title"}}{{end}}
+
+{{define "content"}}
+<div id="page-main">
       <div class="mx-auto max-w-6xl space-y-8">
         <!-- ===== 通道 Tab ===== -->
         <div
@@ -38,7 +20,7 @@
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
               <path d="M13.73 21a2 2 0 0 1-3.46 0" />
             </svg>
-            推送订阅
+            {{t "receivers.channel.push"}}
             <span
               class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500"
               id="push-count"
@@ -57,7 +39,7 @@
             >
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
             </svg>
-            WebSocket 长连接
+            {{t "receivers.channel.ws"}}
             <span
               class="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] text-emerald-300"
               id="ws-count"
@@ -65,7 +47,7 @@
             >
           </button>
           <span id="demo-badge" class="demo-badge hidden ml-2">
-            <span class="dot dot-warn"></span>演示数据
+            <span class="dot dot-warn"></span>{{t "receivers.demo_badge"}}
           </span>
         </div>
 
@@ -76,18 +58,18 @@
           <section class="reveal visible mt-8">
             <div class="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h3 class="text-lg font-medium text-white">浏览器推送订阅</h3>
+                <h3 class="text-lg font-medium text-white">{{t "receivers.push.title"}}</h3>
                 <p class="mt-1 text-[13px] text-zinc-500">
-                  通过系统 Push 服务（APNs / FCM）送达，<b class="text-zinc-300"
-                    >浏览器关闭也能收到</b
-                  >
+                  {{t "receivers.push.subtitle_prefix"}}<b class="text-zinc-300"
+                    >{{t "receivers.push.subtitle_highlight"}}</b
+                  >{{t "receivers.push.subtitle_suffix"}}
                 </p>
               </div>
               <button
                 id="add-device-btn"
                 class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
               >
-                + 添加此设备
+                + {{t "receivers.push.add_device"}}
               </button>
             </div>
             <div class="mt-4 space-y-4" id="device-list"></div>
@@ -117,17 +99,10 @@
               </div>
               <div class="text-sm leading-relaxed text-zinc-400">
                 <p class="font-medium text-white">
-                  长连接接收 · 为插件与任意设备而生
+                  {{t "receivers.ws.title"}}
                 </p>
                 <p class="mt-1">
-                  任何设备 / 插件用
-                  <code
-                    class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300"
-                    >notify:receive</code
-                  >
-                  权限的 API Key 建立 WebSocket
-                  长连接，服务端实时推送通知。适合做桌面插件、CLI
-                  守护进程、智能家居桥接等。与浏览器推送并行存在。
+                  {{t "receivers.ws.desc"}}
                 </p>
               </div>
             </div>
@@ -137,12 +112,12 @@
               <div
                 class="flex items-center justify-between border-b border-white/10 px-4 py-2.5"
               >
-                <span class="text-[11px] text-zinc-500 mono">连接方式</span>
+                <span class="text-[11px] text-zinc-500 mono">{{t "receivers.ws.connection_method"}}</span>
                 <button
                   id="ws-copy"
                   class="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors"
                 >
-                  复制
+                  {{t "receivers.ws.copy"}}
                 </button>
               </div>
               <div
@@ -169,22 +144,21 @@
           <section class="reveal visible mt-8">
             <div class="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h3 class="text-lg font-medium text-white">活跃连接</h3>
+                <h3 class="text-lg font-medium text-white">{{t "receivers.ws.active_title"}}</h3>
                 <p class="mt-1 text-[13px] text-zinc-500">
-                  当前建立的 WebSocket 长连接
+                  {{t "receivers.ws.active_subtitle"}}
                 </p>
               </div>
               <span
                 class="flex items-center gap-2 text-[12px] text-emerald-300"
               >
                 <span class="ws-live dot dot-success"></span>
-                <span id="ws-live-count">0</span> 个在线
+                <span id="ws-live-count">0</span> {{t "receivers.ws.online"}}
               </span>
             </div>
             <div class="mt-4 space-y-4" id="ws-list">
               <div class="card p-6 text-center text-sm text-zinc-500">
-                后端接入后，这里会显示实时长连接（连接名 / Key 前缀 / 在线时长 /
-                标签 / 最近消息）。
+                {{t "receivers.ws.empty_hint"}}
               </div>
             </div>
           </section>
@@ -215,16 +189,10 @@
             </div>
             <div class="text-sm leading-relaxed text-zinc-400">
               <p class="font-medium text-white">
-                标签路由 · 决定「哪台设备收哪类通知」
+                {{t "receivers.tags.title"}}
               </p>
               <p class="mt-1">
-                上报通知时带上
-                <code
-                  class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300"
-                  >deviceTags</code
-                >，
-                只有「标签有交集」或「无标签（全收）」的设备会收到。通知不带标签
-                = 广播到所有已启用设备；设备不带标签 = 接收一切。
+                {{t "receivers.tags.desc"}}
               </p>
             </div>
           </div>
@@ -244,9 +212,9 @@
       >
         <div class="flex items-start justify-between">
           <div>
-            <div class="text-base font-medium text-white">添加此设备</div>
+            <div class="text-base font-medium text-white">{{t "receivers.pair.title"}}</div>
             <div class="mt-0.5 text-xs text-zinc-500">
-              订阅后，这台设备的浏览器将接收推送
+              {{t "receivers.pair.subtitle"}}
             </div>
           </div>
           <button
@@ -268,12 +236,12 @@
         <div class="mt-5 space-y-4">
           <div>
             <label class="text-xs font-medium text-zinc-400" for="pair-name"
-              >设备名称</label
+              >{{t "receivers.pair.device_name"}}</label
             >
             <input
               id="pair-name"
               class="input mt-2"
-              placeholder="如：主力手机 / 办公室 Mac"
+              placeholder="{{t "receivers.pair.device_placeholder"}}"
             />
           </div>
           <div
@@ -284,17 +252,20 @@
             id="pair-submit"
             class="btn-primary flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
           >
-            请求权限并订阅推送
+            {{t "receivers.pair.submit"}}
           </button>
           <p class="text-[11px] leading-relaxed text-zinc-500">
-            浏览器会弹出通知权限请求。iOS 需要先把本站「添加到主屏幕」，再以独立
-            App 方式打开。
+            {{t "receivers.pair.hint"}}
           </p>
         </div>
       </div>
     </div>
 
-    <script src="partials.js"></script>
+    
+{{end}}
+
+{{define "script"}}
+    
     <script>
       (function () {
         "use strict";
@@ -974,5 +945,5 @@
         load();
       })();
     </script>
-  </body>
-</html>
+{{end}}
+

@@ -1,22 +1,6 @@
-<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Anotify · API Keys</title>
-    <link rel="manifest" href="manifest.webmanifest" />
-    <meta name="theme-color" content="#050508" />
-    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
-    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="fonts/fonts.css" />
-    <link rel="stylesheet" href="tokens.css" />
-    <link rel="stylesheet" href="ui.css" />
+{{define "title"}}{{t "keys.title"}}{{end}}
+
+{{define "style"}}
     <style>
       /* 本页特有样式（共享样式见 ui.css / tokens.css） */
       .key-mask {
@@ -43,42 +27,40 @@
         transform: translateX(-50%) translateY(0);
       }
     </style>
-  </head>
-  <body class="min-h-screen antialiased overflow-x-hidden">
-    <!-- 主内容（partials.js 会把它装进「侧栏 + 顶栏」布局） -->
-    <div id="page-main">
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
       <div class="mx-auto max-w-6xl space-y-8">
         <div class="reveal visible">
           <div class="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <h2 class="font-display text-3xl text-white">API Keys</h2>
+              <h2 class="font-display text-3xl text-white">{{t "keys.title"}}</h2>
               <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-                Agent 携带 Key 调用
-                <code
+                {{t "keys.desc_prefix"}}<code
                   class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300"
                   >POST /v1/notify</code
                 >
-                上报通知。 Key
-                仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存。
+                {{t "keys.desc_suffix"}}
               </p>
             </div>
             <button
               onclick="openCreate()"
               class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
             >
-              + 新建 Key
+              + {{t "keys.create_button"}}
             </button>
           </div>
         </div>
 
         <section class="card reveal visible p-5">
           <div class="flex items-center justify-between">
-            <div class="text-xs font-medium text-zinc-500">上报接口</div>
+            <div class="text-xs font-medium text-zinc-500">{{t "keys.api_endpoint"}}</div>
             <a
               href="docs.html#notify"
               class="flex items-center gap-1 text-xs text-zinc-400 transition-colors hover:text-white"
             >
-              查看完整接口文档
+              {{t "keys.view_docs"}}
               <svg
                 class="h-3.5 w-3.5"
                 viewBox="0 0 24 24"
@@ -95,7 +77,7 @@
               class="mono rounded-lg bg-black/50 px-3.5 py-2 text-[12.5px] text-zinc-200 ring-1 ring-white/10"
               >POST /v1/notify</code
             >
-            <span class="text-xs text-zinc-500">Header:</span>
+            <span class="text-xs text-zinc-500">{{t "keys.header_label"}}:</span>
             <code
               class="mono rounded-lg bg-white/[0.04] px-3 py-2 text-[12px] text-zinc-300 ring-1 ring-white/10"
               >Authorization: Bearer ant_live_…</code
@@ -107,7 +89,7 @@
           <div
             class="flex items-center justify-between border-b border-white/[0.06] px-6 py-4"
           >
-            <div class="text-sm font-medium text-white">我的 Keys</div>
+            <div class="text-sm font-medium text-white">{{t "keys.my_keys"}}</div>
             <span class="text-xs text-zinc-500" id="keys-summary"></span>
           </div>
           <div class="overflow-x-auto">
@@ -116,12 +98,12 @@
                 <tr
                   class="border-b border-white/[0.05] text-left text-xs text-zinc-500"
                 >
-                  <th class="px-6 py-3.5 font-medium">名称</th>
-                  <th class="px-6 py-3.5 font-medium">Key 前缀</th>
-                  <th class="px-6 py-3.5 font-medium">权限</th>
-                  <th class="px-6 py-3.5 font-medium">最近使用</th>
-                  <th class="px-6 py-3.5 font-medium">状态</th>
-                  <th class="px-6 py-3.5 font-medium text-right">操作</th>
+                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.name"}}</th>
+                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.prefix"}}</th>
+                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.scope"}}</th>
+                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.last_used"}}</th>
+                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.status"}}</th>
+                  <th class="px-6 py-3.5 font-medium text-right">{{t "keys.col.actions"}}</th>
                 </tr>
               </thead>
               <tbody
@@ -154,22 +136,21 @@
               </svg>
             </div>
             <div class="text-sm leading-relaxed text-zinc-400">
-              <p class="font-medium text-white">Key 的安全实践</p>
+              <p class="font-medium text-white">{{t "keys.security.title"}}</p>
               <ul class="mt-1.5 space-y-1 text-zinc-400">
                 <li>
-                  · Key 明文<b class="text-zinc-200">只在创建时展示一次</b
-                  >，之后无法再次查看，只能重新生成
+                  · {{t "keys.security.point1_prefix"}}<b class="text-zinc-200">{{t "keys.security.point1_highlight"}}</b
+                  >{{t "keys.security.point1_suffix"}}
                 </li>
                 <li>
-                  · 服务端仅存
-                  <b class="text-zinc-200">argon2id 哈希</b
-                  >，即使数据库泄露也无法还原 Key
+                  · {{t "keys.security.point2_prefix"}}<b class="text-zinc-200">{{t "keys.security.point2_highlight"}}</b
+                  >{{t "keys.security.point2_suffix"}}
                 </li>
                 <li>
-                  · 建议<b class="text-zinc-200">每个 Agent / 环境一个 Key</b
-                  >，泄露时只停用受影响的那一个
+                  · {{t "keys.security.point3_prefix"}}<b class="text-zinc-200">{{t "keys.security.point3_highlight"}}</b
+                  >{{t "keys.security.point3_suffix"}}
                 </li>
-                <li>· 不要把 Key 提交进代码仓库；用环境变量或密钥管理器注入</li>
+                <li>· {{t "keys.security.point4"}}</li>
               </ul>
             </div>
           </div>
@@ -195,9 +176,9 @@
         <div id="create-step-1">
           <div class="flex items-start justify-between">
             <div>
-              <h3 class="text-lg font-medium text-white">新建 API Key</h3>
+              <h3 class="text-lg font-medium text-white">{{t "keys.create.title"}}</h3>
               <p class="mt-1 text-sm text-zinc-400">
-                给它起个名字，并选择权限范围
+                {{t "keys.create.subtitle"}}
               </p>
             </div>
             <button
@@ -218,17 +199,17 @@
           </div>
           <div class="mt-5">
             <label class="text-xs font-medium text-zinc-400" for="new-key-name"
-              >名称</label
+              >{{t "keys.create.name_label"}}</label
             >
             <input
               id="new-key-name"
               class="input mt-2"
-              placeholder="例如：本地开发 / CI 流水线 / 生产 Agent"
+              placeholder="{{t "keys.create.name_placeholder"}}"
             />
           </div>
           <div class="mt-4">
             <span class="text-xs font-medium text-zinc-400"
-              >权限范围（可多选，最小化原则）</span
+              >{{t "keys.create.scope_label"}}</span
             >
             <div class="mt-2 space-y-2">
               <label
@@ -243,13 +224,13 @@
                 />
                 <span>
                   <span class="block text-sm text-zinc-200"
-                    >上报
+                    >{{t "keys.create.scope_send_label"}}
                     <code class="mono text-[11px] text-zinc-500"
                       >notify:send</code
                     ></span
                   >
                   <span class="mt-0.5 block text-[11px] text-zinc-500"
-                    >Agent / CI 用来 POST 通知。前缀 ant_live_</span
+                    >{{t "keys.create.scope_send_desc"}}</span
                   >
                 </span>
               </label>
@@ -264,14 +245,13 @@
                 />
                 <span>
                   <span class="block text-sm text-zinc-200"
-                    >接收
+                    >{{t "keys.create.scope_receive_label"}}
                     <code class="mono text-[11px] text-zinc-500"
                       >notify:receive</code
                     ></span
                   >
                   <span class="mt-0.5 block text-[11px] text-zinc-500"
-                    >插件 / 设备用来建立 WebSocket 长连接接收。前缀
-                    ant_recv_</span
+                    >{{t "keys.create.scope_receive_desc"}}</span
                   >
                 </span>
               </label>
@@ -286,19 +266,19 @@
                 />
                 <span>
                   <span class="block text-sm text-zinc-200"
-                    >设备查询
+                    >{{t "keys.create.scope_read_label"}}
                     <code class="mono text-[11px] text-zinc-500"
                       >devices:read</code
                     ></span
                   >
                   <span class="mt-0.5 block text-[11px] text-zinc-500"
-                    >只读查看设备列表，用于脚本巡检</span
+                    >{{t "keys.create.scope_read_desc"}}</span
                   >
                 </span>
               </label>
             </div>
             <p class="mt-2.5 text-[11px] leading-relaxed text-zinc-600">
-              权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。
+              {{t "keys.create.scope_hint"}}
             </p>
             <p id="create-error" class="mt-2 hidden text-xs text-rose-300"></p>
           </div>
@@ -307,13 +287,13 @@
               onclick="closeCreate()"
               class="btn-ghost rounded-xl px-4 py-2 text-sm"
             >
-              取消
+              {{t "keys.create.cancel"}}
             </button>
             <button
               onclick="generateKey()"
               class="btn-primary rounded-xl px-5 py-2 text-sm font-medium"
             >
-              生成 Key
+              {{t "keys.create.generate"}}
             </button>
           </div>
         </div>
@@ -322,9 +302,9 @@
         <div id="create-step-2" class="hidden">
           <div class="flex items-start justify-between">
             <div>
-              <h3 class="text-lg font-medium text-white">保存你的 Key</h3>
+              <h3 class="text-lg font-medium text-white">{{t "keys.save.title"}}</h3>
               <p class="mt-1 text-sm text-zinc-400">
-                这是它<b class="text-amber-300">唯一一次完整展示</b>
+                {{t "keys.save.subtitle_prefix"}}<b class="text-amber-300">{{t "keys.save.subtitle_highlight"}}</b>
               </p>
             </div>
             <button
@@ -354,7 +334,7 @@
               onclick="copyNewKey(this)"
               class="shrink-0 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10 transition-colors"
             >
-              复制
+              {{t "keys.save.copy"}}
             </button>
           </div>
           <div
@@ -374,7 +354,7 @@
               <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
             <p class="text-xs leading-relaxed text-amber-200/80">
-              关闭后将无法再次查看完整 Key。请立即保存到密码管理器或安全的地方。
+              {{t "keys.save.warning"}}
             </p>
           </div>
           <div class="mt-6 flex justify-end">
@@ -382,14 +362,18 @@
               onclick="finishCreate()"
               class="btn-primary rounded-xl px-5 py-2 text-sm font-medium"
             >
-              我已保存
+              {{t "keys.save.done"}}
             </button>
           </div>
         </div>
       </div>
     </div>
 
-    <script src="partials.js"></script>
+    
+{{end}}
+
+{{define "script"}}
+    
     <script>
       // ==================== 数据层 ====================
       const API = "/v1";
@@ -790,5 +774,5 @@
       });
       loadKeys();
     </script>
-  </body>
-</html>
+{{end}}
+

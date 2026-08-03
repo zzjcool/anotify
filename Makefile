@@ -6,12 +6,15 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
-.PHONY: help build fe test run dev docker docker-run integration tunnel keys clean
+.PHONY: help build fe sitegen test run dev docker docker-run integration tunnel keys clean
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-fe: ## 前端指纹：web/ → internal/server/dist/（content-hash + 引用改写，供 embed）
+sitegen: ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
+	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
+
+fe: sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
 
 dist: fe ## 同 fe（生成 embed 产物）
@@ -25,7 +28,7 @@ test: ## 运行全部单元测试
 run: build ## 本地运行（需先设置 ANOTIFY_VAPID_* 环境变量）
 	./anotify
 
-dev: ## 开发模式：直接用 web/ 作为静态目录（不指纹）
+dev: sitegen ## 开发模式：先生成 web/*.html，再直接用 web/ 作为静态目录（不指纹）
 	ANOTIFY_STATIC=./web go run ./cmd/server
 
 integration: ## 集成测试（需服务已在 PORT 运行）
