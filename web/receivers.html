@@ -176,6 +176,34 @@
         let DEVICES = [];
         let usingDemo = false;
 
+        // 各平台「收不到通知」的检查清单（按设备平台显示，帮用户自查）
+        const PLATFORM_TROUBLESHOOT = {
+          ios: [
+            "必须从「主屏幕图标」打开（standalone），普通 Safari 标签页不支持通知",
+            "iOS 设置 → 通知 → Safari/PWA → 允许通知",
+            "订阅后未收到：关闭勿扰模式，确认站点通知权限为「允许」",
+          ],
+          mac: [
+            "macOS 系统设置 → 通知 → 找到对应浏览器（如 Google Chrome）→ 允许通知",
+            "浏览器地址栏锁图标 → 通知 → 设为「允许」（不是默认/阻止）",
+            "推送需浏览器进程运行且标签页打开本站；关掉浏览器则收不到实时推送",
+            "前台标签页可能静默处理推送——切到后台或最小化再测",
+          ],
+          win: [
+            "Windows 设置 → 系统 → 通知 → 确认浏览器已开通知",
+            "浏览器地址栏锁图标 → 通知 → 设为「允许」",
+            "焦点助手（勿扰）开启时会静默通知",
+          ],
+          android: [
+            "Android 设置 → 应用 → 浏览器 → 通知 → 允许",
+            "微信内置浏览器/部分国产浏览器不支持 Web Push，请用 Chrome",
+          ],
+          other: [
+            "确认浏览器通知权限为「允许」（地址栏锁图标）",
+            "确认浏览器进程在运行",
+          ],
+        };
+
         const DEMO_DEVICES = [
           { id: "dev_demo1", name: "主力手机", platform: "ios", enabled: true, statusFilter: "all", tags: ["手机"], lastDelivered: "2 分钟前", browser: "iOS Safari" },
           { id: "dev_demo2", name: "办公室 Mac", platform: "mac", enabled: true, statusFilter: "all", tags: ["工作"], lastDelivered: "18 分钟前", browser: "macOS Safari" },
@@ -296,6 +324,69 @@
         }
 
         /* ================= 设备列表 ================= */
+        // makeTroubleshoot 生成「收不到通知？」折叠面板：
+        //   - 本机设备：实时检测 Notification.permission / SW 状态
+        //   - 所有设备：按平台显示检查清单
+        function makeTroubleshoot(d) {
+          const tips = PLATFORM_TROUBLESHOOT[d.platform] || PLATFORM_TROUBLESHOOT.other;
+          const panel = el(
+            "div",
+            { class: "mt-3 hidden rounded-xl border border-white/[0.06] bg-black/20 p-4 text-xs leading-relaxed text-zinc-400" },
+            el("div", { class: "mb-2 font-medium text-zinc-300", text: "按设备检查清单" }),
+            ...tips.map((t, i) =>
+              el(
+                "div",
+                { class: "flex gap-2 py-0.5" },
+                el("span", { class: "text-zinc-600", text: `${i + 1}.` }),
+                el("span", { text: t }),
+              ),
+            ),
+          );
+          // 本机设备做实时权限检测，在面板顶部显示状态
+          if (d.isCurrent && "Notification" in window) {
+            const perm = Notification.permission;
+            const permText =
+              perm === "granted"
+                ? "通知权限：已授权 ✓"
+                : perm === "denied"
+                  ? "通知权限：被拒绝 ✗（请在浏览器设置里重置后重新订阅）"
+                  : "通知权限：未授权（点「添加此设备」时申请）";
+            panel.insertBefore(
+              el(
+                "div",
+                {
+                  class: `mb-2 rounded-lg px-2.5 py-1.5 text-[11px] ${perm === "granted" ? "text-emerald-300" : "text-amber-300"}`,
+                  style:
+                    perm === "granted"
+                      ? "background: var(--success-soft)"
+                      : "background: var(--warn-soft)",
+                },
+                el("span", { class: "font-medium", text: "本机检测" }),
+                el("span", { class: "text-zinc-500", text: " · " }),
+                el("span", { text: permText }),
+              ),
+              panel.firstChild,
+            );
+          }
+          return el(
+            "div",
+            { class: "mt-4" },
+            el(
+              "button",
+              {
+                class: "flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors",
+                onclick: (e) => {
+                  const hidden = panel.classList.toggle("hidden");
+                  e.currentTarget.querySelector(".ts-icon").textContent = hidden ? "▸" : "▾";
+                },
+              },
+              el("span", { class: "ts-icon", text: "▸" }),
+              el("span", { text: "收不到通知？检查这些 →" }),
+            ),
+            panel,
+          );
+        }
+
         function renderDevices() {
           const list = document.getElementById("device-list");
           document.getElementById("push-count").textContent = DEVICES.length;
@@ -396,6 +487,8 @@
                     sw,
                   ),
                 ),
+                // 「收不到通知？」折叠提示（按平台显示检查清单）
+                makeTroubleshoot(d),
                 el(
                   "div",
                   { class: "mt-4 flex items-center justify-end gap-2 border-t border-white/[0.05] pt-4" },
