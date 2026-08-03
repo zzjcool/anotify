@@ -8,8 +8,8 @@
  *
  * 颜色一律来自 tokens.css 变量，不硬编码色值。
  */
-(function () {
-	"use strict";
+(() => {
+	
 
 	/* ---------- 安全 DOM 构建工具（避免 innerHTML，防 XSS） ---------- */
 	function el(tag, attrs, ...children) {
@@ -320,10 +320,21 @@
 	}
 
 	/* ---------- API 封装：失败时回退到 demo ---------- */
+	// 需登录的页面（工作台各页）；login.html 等公开页不设此标记
+	const isAuthedPage = !/login\.html$/.test(location.pathname);
+
 	async function api(path, opts, demo) {
 		const o = opts || {};
 		try {
 			const res = await fetch(path, Object.assign({ credentials: "include" }, o));
+			// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”，不进入演示模式）
+			if (res.status === 401) {
+				if (isAuthedPage) {
+					const back = encodeURIComponent(location.pathname.split("/").pop() || "index.html");
+					location.href = "login.html?next=" + back;
+				}
+				throw new Error("HTTP 401");
+			}
 			if (!res.ok) throw new Error("HTTP " + res.status);
 			return await res.json();
 		} catch (e) {
@@ -402,7 +413,7 @@
 
 	function timeAgo(isoOrSec) {
 		if (!isoOrSec) return "—";
-		let t = typeof isoOrSec === "number" ? isoOrSec * 1000 : Date.parse(isoOrSec);
+		const t = typeof isoOrSec === "number" ? isoOrSec * 1000 : Date.parse(isoOrSec);
 		if (Number.isNaN(t)) return "—";
 		const diff = Date.now() - t;
 		if (diff < 60e3) return "刚刚";

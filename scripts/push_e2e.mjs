@@ -19,9 +19,16 @@ const BASE = process.env.BASE || "http://localhost:8080";
 const API_KEY = process.env.API_KEY || ""; // notify:send key（触发推送用）
 const SESSION = process.env.SESSION || ""; // 会话 Cookie（POST /v1/devices 用）
 
-let passed = 0, failed = 0;
-const ok = (m) => { passed++; console.log("  ✅ " + m); };
-const bad = (m) => { failed++; console.log("  ❌ " + m); };
+let passed = 0,
+	failed = 0;
+const ok = (m) => {
+	passed++;
+	console.log("  ✅ " + m);
+};
+const bad = (m) => {
+	failed++;
+	console.log("  ❌ " + m);
+};
 
 async function main() {
 	console.log("=== 桌面 Chrome Web Push E2E ===");
@@ -30,12 +37,15 @@ async function main() {
 	// 桌面 Web Push 需要真实浏览器通道：headless 的 incognito 模式不支持 Push API
 	// （Chromium 限制 crbug.com/41124656）。改用持久化上下文的 headed Chrome。
 	const headless = process.env.HEADLESS !== "0";
-	const ctx = await chromium.launchPersistentContext("/tmp/anotify-chrome-profile", {
-		channel: "chrome",
-		headless,
-		args: ["--no-sandbox"],
-		permissions: ["notifications"],
-	});
+	const ctx = await chromium.launchPersistentContext(
+		"/tmp/anotify-chrome-profile",
+		{
+			channel: "chrome",
+			headless,
+			args: ["--no-sandbox"],
+			permissions: ["notifications"],
+		},
+	);
 	const browser = null; // persistent context 无独立 browser 对象
 	// 注入会话 Cookie（POST /v1/devices 需登录）
 	if (SESSION) {
@@ -46,11 +56,16 @@ async function main() {
 			console.error("BASE 非法 URL:", BASE);
 			process.exit(2);
 		}
-		await ctx.addCookies([{
-			name: "anotify_session", value: SESSION,
-			domain: u.hostname, path: "/",
-			secure: u.protocol === "https:", httpOnly: true,
-		}]);
+		await ctx.addCookies([
+			{
+				name: "anotify_session",
+				value: SESSION,
+				domain: u.hostname,
+				path: "/",
+				secure: u.protocol === "https:",
+				httpOnly: true,
+			},
+		]);
 	}
 	const page = await ctx.newPage();
 
@@ -68,7 +83,8 @@ async function main() {
 		secure: window.isSecureContext,
 	}));
 	console.log("  环境:", JSON.stringify(support));
-	if (!support.sw || !support.push) bad("当前环境不支持 SW/Push（可能非 HTTPS）");
+	if (!support.sw || !support.push)
+		bad("当前环境不支持 SW/Push（可能非 HTTPS）");
 	else ok("SW + PushManager 可用");
 
 	// 注册 SW + 订阅
@@ -103,41 +119,62 @@ async function main() {
 	// 上报设备到服务端（需登录会话）
 	const up = await page.evaluate(async (sub) => {
 		const r = await fetch("/v1/devices", {
-			method: "POST", headers: { "Content-Type": "application/json" },
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				name: "桌面 Chrome E2E", platform: "mac",
-				endpoint: sub.endpoint, keys: sub.keys, userAgent: navigator.userAgent,
+				name: "桌面 Chrome E2E",
+				platform: "mac",
+				endpoint: sub.endpoint,
+				keys: sub.keys,
+				userAgent: navigator.userAgent,
 			}),
 		});
 		return { status: r.status, body: await r.text() };
 	}, subResult);
-	if (up.status === 200) ok("设备已上报服务端"); else bad(`设备上报 ${up.status}: ${up.body.slice(0,80)}`);
+	if (up.status === 200) ok("设备已上报服务端");
+	else bad(`设备上报 ${up.status}: ${up.body.slice(0, 80)}`);
 
 	// 服务端触发推送（notify:send key）
 	if (API_KEY) {
 		console.log("=== 触发服务端推送 ===");
 		const nr = await fetch(BASE + "/v1/notify", {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
-			body: JSON.stringify({ status: "success", title: "桌面推送 E2E", body: "来自 push_e2e 的真实推送" }),
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${API_KEY}`,
+			},
+			body: JSON.stringify({
+				status: "success",
+				title: "桌面推送 E2E",
+				body: "来自 push_e2e 的真实推送",
+			}),
 		});
 		const nj = await nr.json().catch(() => ({}));
-		if (nr.ok) ok(`notify 上报 ${nr.status}，matched=${nj.matched}`); else bad(`notify 上报 ${nr.status}`);
+		if (nr.ok) ok(`notify 上报 ${nr.status}，matched=${nj.matched}`);
+		else bad(`notify 上报 ${nr.status}`);
 		// 给 FCM/APNs 投递留时间，观察 SW 是否收到 push（页面监听）
 		await page.evaluate(() => {
 			window.__pushReceived = false;
 			navigator.serviceWorker.addEventListener("message", (e) => {
-				if (e.data && e.data.type === "push-received") window.__pushReceived = true;
+				if (e.data && e.data.type === "push-received")
+					window.__pushReceived = true;
 			});
 		});
 		await page.waitForTimeout(4000);
-		console.log("  （SW push 事件需真机/系统通道，桌面无头可能不弹通知；投递记录以服务端 deliveries 为准）");
+		console.log(
+			"  （SW push 事件需真机/系统通道，桌面无头可能不弹通知；投递记录以服务端 deliveries 为准）",
+		);
 	}
 
 	await ctx.close();
 	console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
-	console.log("（注：真实 APNs 推送链路需 iOS 真机 T40 验证；本脚本验证到订阅为止）");
+	console.log(
+		"（注：真实 APNs 推送链路需 iOS 真机 T40 验证；本脚本验证到订阅为止）",
+	);
 	process.exit(failed === 0 ? 0 : 1);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+	console.error(e);
+	process.exit(1);
+});

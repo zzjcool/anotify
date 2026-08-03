@@ -41,7 +41,11 @@ const HTML_EXT = new Set([".html"]);
 //  - manifest.json：指纹脚本自身产物
 //  - sw.js：Service Worker 注册路径必须固定（/sw.js），不能哈希
 //  - manifest.webmanifest：PWA 清单路径被 HTML 固定引用
-const NO_FINGERPRINT = new Set(["manifest.json", "sw.js", "manifest.webmanifest"]);
+const NO_FINGERPRINT = new Set([
+	"manifest.json",
+	"sw.js",
+	"manifest.webmanifest",
+]);
 
 async function* walk(dir) {
 	for (const e of await fs.readdir(dir, { withFileTypes: true })) {
@@ -129,7 +133,10 @@ async function main() {
 		css = css.replace(/url\(("|')?([^"')]+)\1?\)/g, (match, q, value) => {
 			// 该 CSS 同目录下的相对引用 → 拼出 manifest 键再查哈希名
 			if (/^(https?:|data:|\/)/.test(value)) return match;
-			const key = path.normalize(path.join(cssDir, value)).split(path.sep).join("/");
+			const key = path
+				.normalize(path.join(cssDir, value))
+				.split(path.sep)
+				.join("/");
 			const hashedVal = manifest[key];
 			if (!hashedVal) return match;
 			// 引用转为「同目录哈希文件名」（CSS 与字体同目录时直接用 basename）
