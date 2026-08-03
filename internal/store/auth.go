@@ -20,14 +20,14 @@ type User struct {
 
 // Passkey 是 passkeys 表的一行（public_key 为原始字节）。
 type Passkey struct {
-	ID             string `json:"id"`
-	UserID         string `json:"userId"`
-	PublicKey      []byte `json:"-"`
-	SignCount      int64  `json:"signCount"`
-	Name           string `json:"name"`
-	Transports     []string `json:"transports"`
-	BackupEligible bool   `json:"backupEligible"`
-	CreatedAt      int64  `json:"createdAt"`
+	ID             string        `json:"id"`
+	UserID         string        `json:"userId"`
+	PublicKey      []byte        `json:"-"`
+	SignCount      int64         `json:"signCount"`
+	Name           string        `json:"name"`
+	Transports     []string      `json:"transports"`
+	BackupEligible bool          `json:"backupEligible"`
+	CreatedAt      int64         `json:"createdAt"`
 	LastUsedAt     sql.NullInt64 `json:"-"`
 }
 

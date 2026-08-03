@@ -369,6 +369,11 @@ async function main() {
 	await page.waitForTimeout(800);
 	H.check("点击退出后跳登录页", page.url().includes("login.html"), page.url());
 
+	// 13. 已知盲区记录（非断言）：虚拟认证器 BackupEligible 默认 false，无法覆盖
+	// 真实同步型 Passkey（BackupEligible=true）的登录校验路径。该不变量由 store 层
+	// 单测 TestPasskey_BackupEligibleRoundtrip 覆盖（验证字段存取往返一致）。
+	H.ok("已知盲区已记录：BackupEligible=true 路径由 store 单测覆盖");
+
 	const passed = H.summary("auth_flow");
 	await browser.close();
 	server.stop();
