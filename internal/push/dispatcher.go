@@ -1,11 +1,14 @@
 package push
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"os/exec"
+	"strings"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -50,7 +53,24 @@ func NewVAPIDSender(cfg *VAPIDConfig) Sender {
 	return &webpushSender{cfg: cfg}
 }
 
+// Send 实现 Sender。
+// 注意：webpush-go v1.4.0 对 Apple web.push.apple.com endpoint 有兼容性 bug
+// （返回 403 BadJwtToken），因此对 Apple endpoint 改用 Node web-push 子进程发送
+// （原型已验证 iOS 全链路可用）。FCM 等其他 endpoint 用 Go webpush-go。
 func (s *webpushSender) Send(ctx context.Context, dev *store.Device, payload []byte, ttl int, urgency webpush.Urgency) (int, error) {
+	if isAppleEndpoint(dev.Endpoint) {
+		return s.sendViaNode(ctx, dev, payload)
+	}
+	return s.sendViaGo(ctx, dev, payload, ttl, urgency)
+}
+
+// isAppleEndpoint 判断是否为 Apple web push endpoint。
+func isAppleEndpoint(endpoint string) bool {
+	return strings.HasPrefix(endpoint, "https://web.push.apple.com/")
+}
+
+// sendViaGo 用 webpush-go 发送（FCM 等非 Apple endpoint）。
+func (s *webpushSender) sendViaGo(ctx context.Context, dev *store.Device, payload []byte, ttl int, urgency webpush.Urgency) (int, error) {
 	sub := &webpush.Subscription{
 		Endpoint: dev.Endpoint,
 		Keys: webpush.Keys{
@@ -69,6 +89,43 @@ func (s *webpushSender) Send(ctx context.Context, dev *store.Device, payload []b
 		return resp.StatusCode, fmt.Errorf("webpush status %d: %s", resp.StatusCode, string(body))
 	}
 	return resp.StatusCode, nil
+}
+
+// sendViaNode 用 Node web-push 库发送（Apple endpoint 专用）。
+// webpush-go v1.4.0 对 Apple 有 BadJwtToken bug，Node web-push 库原型已验证可用。
+// 调用 scripts/webpush-send.mjs（stdin 传 JSON，stdout 取状态码）。
+func (s *webpushSender) sendViaNode(ctx context.Context, dev *store.Device, payload []byte) (int, error) {
+	req := map[string]any{
+		"endpoint": dev.Endpoint,
+		"p256dh":   dev.P256dh,
+		"auth":     dev.Auth,
+		"payload":  string(payload),
+		"vapid": map[string]string{
+			"publicKey":  s.cfg.PublicKey,
+			"privateKey": s.cfg.PrivateKey,
+			"subject":    s.cfg.Subscriber,
+		},
+	}
+	reqBytes, _ := json.Marshal(req)
+	cmd := exec.CommandContext(ctx, "node", "scripts/webpush-send.mjs")
+	cmd.Stdin = bytes.NewReader(reqBytes)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("node webpush: %w: %s", err, errBuf.String())
+	}
+	var resp struct {
+		Status int    `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		return 0, fmt.Errorf("node webpush parse: %w: %s", err, out.String())
+	}
+	if resp.Status >= 400 {
+		return resp.Status, fmt.Errorf("node webpush status %d: %s", resp.Status, resp.Error)
+	}
+	return resp.Status, nil
 }
 
 // urgencyFor 按消息优先级映射 Web Push urgency。
