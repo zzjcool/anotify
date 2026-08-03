@@ -52,6 +52,8 @@ for s in "${SUITES[@]}"; do
     TOTAL_FAIL=$((TOTAL_FAIL+1)); FAILED_SUITES+=("$s")
     echo "  ❌ 套件 $s 失败"
   fi
+  # 套件间隔：等上一套件的服务进程完全释放端口/资源，避免干扰
+  sleep 1.5
   echo ""
 done
 
