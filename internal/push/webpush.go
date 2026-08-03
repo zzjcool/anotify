@@ -70,9 +70,14 @@ func loadVAPIDFile(path string) (*VAPIDConfig, error) {
 }
 
 // options 把 VAPIDConfig 转成 webpush.Options（带 TTL 与 urgency）。
+// 注意：webpush-go 会自动给非 https 的 subscriber 加 "mailto:" 前缀，
+// 因此这里若 subject 已带 mailto: 要先去掉，避免 "mailto:mailto:" 双重前缀
+// （Apple web.push 会返回 BadJwtToken）。
 func (c *VAPIDConfig) options(ttl int, urgency webpush.Urgency) *webpush.Options {
+	sub := c.Subscriber
+	sub = strings.TrimPrefix(sub, "mailto:")
 	return &webpush.Options{
-		Subscriber:      c.Subscriber,
+		Subscriber:      sub,
 		VAPIDPublicKey:  c.PublicKey,
 		VAPIDPrivateKey: c.PrivateKey,
 		TTL:             ttl,
