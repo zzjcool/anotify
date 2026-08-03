@@ -134,6 +134,31 @@ func (d *DB) UpsertDevice(ctx context.Context, dev *Device) error {
 }
 
 // DisableDevice 将一台设备标记为失效（如 Web Push 返回 410 Gone）。
+// UpdateDevice 按 id 全字段更新设备的可变配置（name/platform/enabled/status_filter/tags）。
+// 与 UpsertDevice 区分：Upsert 是「订阅刷新」（同 endpoint 只更新密钥），
+// Update 是「用户改配置」（重命名/开关/过滤/标签）。p256dh/auth/endpoint 不可变。
+func (d *DB) UpdateDevice(ctx context.Context, dev *Device) error {
+	tagsJSON, err := json.Marshal(dev.Tags)
+	if err != nil {
+		return fmt.Errorf("marshal tags: %w", err)
+	}
+	enabled := 0
+	if dev.Enabled {
+		enabled = 1
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE devices SET name=?, platform=?, enabled=?, status_filter=?, tags=?, last_active=?
+		 WHERE id=?`,
+		dev.Name, dev.Platform, enabled, dev.StatusFilter, string(tagsJSON), Now(), dev.ID)
+	if err != nil {
+		return fmt.Errorf("update device: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (d *DB) DisableDevice(ctx context.Context, deviceID string) error {
 	res, err := d.ExecContext(ctx,
 		`UPDATE devices SET enabled = 0 WHERE id = ?`, deviceID)

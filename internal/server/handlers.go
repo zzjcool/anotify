@@ -144,7 +144,9 @@ func (h *devicesHandler) patch(w http.ResponseWriter, r *http.Request, id string
 	if req.Tags != nil {
 		dev.Tags = req.Tags
 	}
-	if err := h.db.UpsertDevice(r.Context(), dev); err != nil {
+	// 用 UpdateDevice（按 id 全字段更新 name/enabled/status_filter/tags），
+	// 而非 UpsertDevice（那是订阅刷新，只更新密钥，会丢配置）。
+	if err := h.db.UpdateDevice(r.Context(), dev); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
