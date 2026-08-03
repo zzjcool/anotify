@@ -21,20 +21,21 @@ const (
 )
 
 // Message 是一条通知消息。
+// JSON tag 统一 camelCase，与 api/openapi.yaml 契约一致（/v1/notifications、WS notification 帧）。
 type Message struct {
-	ID         string    // 消息 ID（KSUID，如 "ntf_01J8XA…"）
-	UserID     string    // 所属用户（分区键）
-	Seq        int64     // 每用户单调递增序号（= replay 的 offset）
-	Title      string    // 标题
-	Status     string    // success|error|interrupted|info|warning
-	Body       string    // 正文
-	Link       string    // 深链
-	DeviceTags []string  // 路由键（= topic）；空 = 广播
-	Priority   string    // 优先级
-	TTLSeconds int       // 有效期（秒）
-	Payload    []byte    // 完整 JSON（含 agentId/sessionId/model 等未规范化字段）
-	CreatedAt  time.Time // 创建时间
-	ExpiresAt  time.Time // 可投递截止
+	ID         string    `json:"id"`         // 消息 ID（KSUID，如 "ntf_01J8XA…"）
+	UserID     string    `json:"userId"`     // 所属用户（分区键）
+	Seq        int64     `json:"seq"`        // 每用户单调递增序号（= replay 的 offset）
+	Title      string    `json:"title"`      // 标题
+	Status     string    `json:"status"`     // success|error|interrupted|info|warning
+	Body       string    `json:"body"`       // 正文
+	Link       string    `json:"link"`       // 深链
+	DeviceTags []string  `json:"deviceTags"` // 路由键（= topic）；空 = 广播
+	Priority   string    `json:"priority"`   // 优先级
+	TTLSeconds int       `json:"ttlSeconds"` // 有效期（秒）
+	Payload    []byte    `json:"payload"`    // 完整 JSON（含 agentId/sessionId/model 等未规范化字段）
+	CreatedAt  time.Time `json:"createdAt"`  // 创建时间
+	ExpiresAt  time.Time `json:"expiresAt"`  // 可投递截止
 }
 
 // Subscription 是 Subscribe 返回的句柄，用于接收某用户的实时消息流。

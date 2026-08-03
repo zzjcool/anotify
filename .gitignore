@@ -20,3 +20,5 @@ dist/
 web/dist/
 anotify
 *.test
+.env.local
+internal/server/dist/

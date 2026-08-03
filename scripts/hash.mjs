@@ -24,11 +24,28 @@ if (!srcDir || !outDir) {
 }
 
 const FINGERPRINT_EXT = new Set([
-	".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico",
-	".woff", ".woff2", ".ttf", ".webmanifest",
+	".js",
+	".css",
+	".png",
+	".jpg",
+	".jpeg",
+	".svg",
+	".ico",
+	".woff",
+	".woff2",
+	".ttf",
+	".webmanifest",
 ]);
 const HTML_EXT = new Set([".html"]);
-const SKIP = new Set(["manifest.json"]);
+// 不指纹的文件：
+//  - manifest.json：指纹脚本自身产物
+//  - sw.js：Service Worker 注册路径必须固定（/sw.js），不能哈希
+//  - manifest.webmanifest：PWA 清单路径被 HTML 固定引用
+const NO_FINGERPRINT = new Set([
+	"manifest.json",
+	"sw.js",
+	"manifest.webmanifest",
+]);
 
 async function* walk(dir) {
 	for (const e of await fs.readdir(dir, { withFileTypes: true })) {
@@ -55,7 +72,13 @@ async function main() {
 		const rel = path.relative(src, file);
 		const ext = path.extname(file).toLowerCase();
 		const base = path.basename(file);
-		if (SKIP.has(base)) continue;
+		if (NO_FINGERPRINT.has(base)) {
+			// 原样复制（不指纹）
+			const target = path.join(out, rel);
+			await fs.mkdir(path.dirname(target), { recursive: true });
+			await fs.copyFile(file, target);
+			continue;
+		}
 
 		if (FINGERPRINT_EXT.has(ext)) {
 			const buf = await fs.readFile(file);
@@ -66,7 +89,9 @@ async function main() {
 			const target = path.join(out, hashedRel);
 			await fs.mkdir(path.dirname(target), { recursive: true });
 			await fs.writeFile(target, buf);
-			manifest[rel.split(path.sep).join("/")] = hashedRel.split(path.sep).join("/");
+			manifest[rel.split(path.sep).join("/")] = hashedRel
+				.split(path.sep)
+				.join("/");
 		} else if (HTML_EXT.has(ext)) {
 			htmlFiles.push({ file, rel });
 		} else {
@@ -77,22 +102,60 @@ async function main() {
 		}
 	}
 
-	// 改写 HTML 中的引用
+	// 改写 HTML 中的引用：捕获 src/href 的完整值，按 manifest 精确映射为哈希名。
+	// （之前的「前缀+orig+\\2 同引号」正则在值紧邻引号时失配，如 href="ui.css" 仅 8 字符）
 	for (const { file, rel } of htmlFiles) {
 		let html = await fs.readFile(file, "utf8");
-		for (const [orig, hashed] of Object.entries(manifest)) {
-			// 匹配 src/href="...orig"（支持相对路径），替换为哈希名
-			const esc = orig.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			html = html.replace(new RegExp(`(src|href)=("')([^"']*?)${esc}\\2`, "g"),
-				(_, attr, q, prefix) => `${attr}=${q}${prefix}${hashed}${q}`);
-		}
+		html = html.replace(
+			/(src|href)=("|')([^"']+)\2/g,
+			(match, attr, q, value) => {
+				const hashed = manifest[value];
+				return hashed ? `${attr}=${q}${hashed}${q}` : match;
+			},
+		);
 		const target = path.join(out, rel);
 		await fs.mkdir(path.dirname(target), { recursive: true });
 		await fs.writeFile(target, html);
 	}
 
-	await fs.writeFile(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2));
-	console.log(`✅ 指纹完成：${Object.keys(manifest).length} 个资源，${htmlFiles.length} 个 HTML → ${out}`);
+	// 改写 CSS 内的 url(...) 引用（如 fonts.css 引用同目录 .woff2）。
+	// CSS 也被指纹，但其内容的引用要指向哈希后的字体文件名。
+	for (const [orig, hashed] of Object.entries(manifest)) {
+		if (!orig.toLowerCase().endsWith(".css")) continue;
+		const cssPath = path.join(out, hashed);
+		let css;
+		try {
+			css = await fs.readFile(cssPath, "utf8");
+		} catch {
+			continue;
+		}
+		const cssDir = path.dirname(orig);
+		css = css.replace(/url\(("|')?([^"')]+)\1?\)/g, (match, q, value) => {
+			// 该 CSS 同目录下的相对引用 → 拼出 manifest 键再查哈希名
+			if (/^(https?:|data:|\/)/.test(value)) return match;
+			const key = path
+				.normalize(path.join(cssDir, value))
+				.split(path.sep)
+				.join("/");
+			const hashedVal = manifest[key];
+			if (!hashedVal) return match;
+			// 引用转为「同目录哈希文件名」（CSS 与字体同目录时直接用 basename）
+			const base = path.basename(hashedVal);
+			return `url(${q || ""}${base}${q || ""})`;
+		});
+		await fs.writeFile(cssPath, css);
+	}
+
+	await fs.writeFile(
+		path.join(out, "manifest.json"),
+		JSON.stringify(manifest, null, 2),
+	);
+	console.log(
+		`✅ 指纹完成：${Object.keys(manifest).length} 个资源，${htmlFiles.length} 个 HTML → ${out}`,
+	);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+	console.error(e);
+	process.exit(1);
+});

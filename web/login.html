@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · 登录</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="ui.css" />
+    <style>
+      .grid-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+          linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.022) 1px,
+            transparent 1px
+          );
+        background-size: 72px 72px;
+        mask-image: radial-gradient(
+          ellipse 90% 70% at 50% 45%,
+          black 30%,
+          transparent 75%
+        );
+        -webkit-mask-image: radial-gradient(
+          ellipse 90% 70% at 50% 45%,
+          black 30%,
+          transparent 75%
+        );
+      }
+      .tab-btn {
+        flex: 1;
+        padding: 0.5rem 0;
+        border-radius: 10px;
+        font-size: 0.85rem;
+        color: var(--muted);
+        transition: all 0.25s ease;
+        cursor: pointer;
+      }
+      .tab-btn.active {
+        background: var(--surface-2);
+        color: var(--text);
+      }
+      .fingerprint-ring {
+        animation: fpPulse 2s ease-in-out infinite;
+      }
+      @keyframes fpPulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(139, 139, 253, 0.3);
+        }
+        50% {
+          box-shadow: 0 0 0 8px rgba(139, 139, 253, 0);
+        }
+      }
+    </style>
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden flex flex-col">
+    <div class="grid-overlay"></div>
+
+    <!-- 顶栏 -->
+    <header class="relative z-20 w-full">
+      <div
+        class="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8"
+      >
+        <a href="login.html" class="flex items-center gap-3 group">
+          <div class="relative">
+            <div
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-black ring-1 ring-white/15 transition-transform duration-300 group-hover:scale-105"
+            >
+              <span class="font-script text-xl leading-none text-white"
+                >An</span
+              >
+            </div>
+            <span
+              class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center"
+            >
+              <span class="absolute h-3.5 w-3.5 rounded-full bg-red-500"></span>
+              <span
+                class="absolute h-3.5 w-3.5 animate-ping rounded-full bg-red-500/70"
+              ></span>
+            </span>
+          </div>
+          <span class="font-script text-2xl leading-none text-white"
+            >Anotify</span
+          >
+        </a>
+        <span class="text-sm text-zinc-500">Agent 完成即通知</span>
+      </div>
+    </header>
+
+    <!-- 登录卡片 -->
+    <main
+      class="relative z-10 mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center px-5 pb-16 pt-10"
+    >
+      <div class="mb-8 text-center">
+        <h1 class="font-display text-3xl text-white">
+          欢迎回到 <em>Anotify</em>
+        </h1>
+        <p class="mt-2 text-sm text-zinc-400">无需密码 · 用 Passkey 一键登录</p>
+      </div>
+
+      <div class="glass w-full rounded-3xl p-8">
+        <!-- 指纹图标 -->
+        <div class="flex justify-center">
+          <div
+            class="fingerprint-ring flex h-16 w-16 items-center justify-center rounded-2xl"
+            style="background: var(--accent-soft)"
+          >
+            <svg
+              class="h-8 w-8"
+              style="color: var(--accent)"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0 0 15.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 0 0 8 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"
+              />
+            </svg>
+          </div>
+        </div>
+
+        <!-- 登录/注册切换 -->
+        <div class="mt-6 flex rounded-xl bg-white/[0.04] p-1">
+          <button class="tab-btn active" id="tab-login">登录</button>
+          <button class="tab-btn" id="tab-signup">注册</button>
+        </div>
+
+        <!-- 登录面板（仅 Passkey，无需输入用户名） -->
+        <div id="login-panel" class="mt-6">
+          <p class="text-xs leading-relaxed text-zinc-400">
+            点击下方按钮，用本机的 Passkey（Face ID / 指纹 /
+            设备密钥）直接登录，无需输入用户名。
+          </p>
+          <button
+            id="login-btn"
+            type="button"
+            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+          >
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M12 11c0 3.517-1.009 6.799-2.753 9.571M8 21l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3"
+              />
+            </svg>
+            用 Passkey 登录
+          </button>
+          <div
+            class="mt-4 flex items-center justify-center gap-2 text-[11px] text-zinc-500"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            指纹 / Face ID / 设备密钥 · 抗钓鱼
+          </div>
+        </div>
+
+        <!-- 注册面板 -->
+        <div id="signup-panel" class="mt-6 hidden">
+          <label class="text-xs font-medium text-zinc-400" for="new-username"
+            >选择用户名</label
+          >
+          <input
+            id="new-username"
+            type="text"
+            name="new-username"
+            class="input mt-2"
+            placeholder="给自己起个名字"
+            autocomplete="username webauthn"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+          />
+          <button
+            id="signup-btn"
+            type="button"
+            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+          >
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            创建 Passkey 并注册
+          </button>
+          <div
+            class="mt-4 flex items-start gap-2.5 rounded-xl bg-white/[0.03] px-4 py-3 ring-1 ring-white/[0.06]"
+          >
+            <svg
+              class="mt-0.5 h-4 w-4 shrink-0 text-zinc-500"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 16v-4M12 8h.01" />
+            </svg>
+            <p class="text-[11px] leading-relaxed text-zinc-500">
+              注册后会生成一组<b class="text-zinc-300">一次性恢复码</b
+              >——当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。
+            </p>
+          </div>
+        </div>
+
+        <!-- 状态提示 -->
+        <div
+          id="status-box"
+          class="mt-4 hidden rounded-xl px-4 py-3 text-[13px] leading-relaxed"
+        ></div>
+
+        <!-- iOS 提示 -->
+        <div
+          id="ios-tip"
+          class="mt-6 hidden rounded-xl px-4 py-3 ring-1"
+          style="
+            background: var(--warn-soft);
+            --tw-ring-color: rgba(251, 191, 36, 0.2);
+          "
+        >
+          <p class="text-[12px] leading-relaxed" style="color: #fcd34d">
+            <b>iOS 用户：</b>要接收推送通知，请先用 Safari 打开本站，点「共享 →
+            添加到主屏幕」，再从主屏幕图标打开并登录。
+          </p>
+        </div>
+
+        <!-- 恢复码登录入口 -->
+        <div class="mt-6 border-t border-white/[0.06] pt-5 text-center">
+          <button
+            id="recovery-btn"
+            class="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            无法使用 Passkey？用恢复码登录 →
+          </button>
+        </div>
+      </div>
+
+      <!-- 底部说明 -->
+      <div
+        class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-zinc-600"
+      >
+        <span class="flex items-center gap-1.5">
+          <span
+            class="badge-dot h-1.5 w-1.5 rounded-full bg-emerald-400"
+          ></span>
+          数据仅存于你的服务器
+        </span>
+        <span>·</span>
+        <span>WebAuthn 标准</span>
+        <span>·</span>
+        <span>无第三方账号</span>
+      </div>
+    </main>
+
+    <footer class="relative z-10 py-6 text-center text-[11px] text-zinc-600">
+      © 2026 Anotify · MIT License · Passkey 免密
+    </footer>
+
+    <script src="partials.js"></script>
+    <script>
+      (function () {
+        "use strict";
+        const { el, toast, b64urlToBuf, bufToB64url } = window.Anotify;
+
+        /* ---------- Tab 切换 ---------- */
+        const tabLogin = document.getElementById("tab-login");
+        const tabSignup = document.getElementById("tab-signup");
+        const loginPanel = document.getElementById("login-panel");
+        const signupPanel = document.getElementById("signup-panel");
+        function switchTab(tab) {
+          const isLogin = tab === "login";
+          tabLogin.classList.toggle("active", isLogin);
+          tabSignup.classList.toggle("active", !isLogin);
+          loginPanel.classList.toggle("hidden", !isLogin);
+          signupPanel.classList.toggle("hidden", isLogin);
+        }
+        tabLogin.addEventListener("click", () => switchTab("login"));
+        tabSignup.addEventListener("click", () => switchTab("signup"));
+
+        /* ---------- 状态提示 ---------- */
+        const statusBox = document.getElementById("status-box");
+        function showStatus(msg, kind) {
+          statusBox.classList.remove("hidden");
+          const map = {
+            info: ["var(--accent-soft)", "#b8b8ff"],
+            error: ["var(--error-soft)", "#fda4af"],
+            success: ["var(--success-soft)", "#6ee7b7"],
+            warn: ["var(--warn-soft)", "#fcd34d"],
+          };
+          const [bg, fg] = map[kind] || map.info;
+          statusBox.style.background = bg;
+          statusBox.style.color = fg;
+          statusBox.textContent = msg;
+        }
+        function hideStatus() {
+          statusBox.classList.add("hidden");
+        }
+
+        /* ---------- iOS 提示 ---------- */
+        const ua = navigator.userAgent || "";
+        const isIOS = /iPhone|iPad|iPod/.test(ua);
+        const isStandalone =
+          window.matchMedia("(display-mode: standalone)").matches ||
+          window.navigator.standalone === true;
+        if (isIOS && !isStandalone) {
+          document.getElementById("ios-tip").classList.remove("hidden");
+        }
+
+        /* ---------- WebAuthn 支持检测 ---------- */
+        const webauthnOK =
+          window.PublicKeyCredential &&
+          navigator.credentials &&
+          navigator.credentials.create;
+
+        /* ---------- 后端可用性：失败时进入演示模式 ---------- */
+        async function postJSON(url, body) {
+          const res = await fetch(url, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body || {}),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || "HTTP " + res.status);
+          }
+          return res.json();
+        }
+
+        // 登录成功后跳回来源页（?next=xxx）。白名单硬编码映射，不接受任意 URL，防 open redirect。
+        const NEXT_MAP = {
+          "index.html": "index.html",
+          "receivers.html": "receivers.html",
+          "keys.html": "keys.html",
+          "security.html": "security.html",
+          "docs.html": "docs.html",
+        };
+        function nextTarget() {
+          const n = new URLSearchParams(location.search).get("next");
+          return NEXT_MAP[n] || "index.html"; // 未知/缺失一律回首页，绝不跳转外部
+        }
+
+        function demoEnter(name) {
+          showStatus("后端未连接，已进入演示模式（数据为示例）。", "warn");
+          setTimeout(() => {
+            location.href =
+              "index.html?demo=1&u=" + encodeURIComponent(name || "zheng");
+          }, 700);
+        }
+
+        /* ---------- 登录 ---------- */
+        const loginBtn = document.getElementById("login-btn");
+        // 仅 Passkey 登录（discoverable / 无需输入用户名）：
+        // 不传 username → 后端走 discoverable login，认证器自动选择本机已注册的 Passkey。
+        async function doLogin() {
+          hideStatus();
+          if (!webauthnOK) {
+            showStatus(
+              "当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。",
+              "error",
+            );
+            return;
+          }
+          loginBtn.disabled = true;
+          try {
+            // 1. 取登录 challenge（不传 username → discoverable）
+            const opts = await postJSON("/v1/auth/login/options", {});
+            const publicKey = opts.publicKey || opts;
+            publicKey.challenge = b64urlToBuf(publicKey.challenge);
+            if (publicKey.allowCredentials) {
+              publicKey.allowCredentials = publicKey.allowCredentials.map(
+                (c) => ({
+                  ...c,
+                  id: b64urlToBuf(c.id),
+                }),
+              );
+            }
+            // 2. 调起认证器（系统自动弹出本机可用的 Passkey）
+            const assertion = await navigator.credentials.get({ publicKey });
+            // 3. 完成登录（discoverable：后端按 userHandle 定位用户）
+            const payload = {
+              id: assertion.id,
+              rawId: bufToB64url(assertion.rawId),
+              type: assertion.type,
+              response: {
+                clientDataJSON: bufToB64url(assertion.response.clientDataJSON),
+                authenticatorData: bufToB64url(
+                  assertion.response.authenticatorData,
+                ),
+                signature: bufToB64url(assertion.response.signature),
+                userHandle: assertion.response.userHandle
+                  ? bufToB64url(assertion.response.userHandle)
+                  : null,
+              },
+            };
+            await postJSON("/v1/auth/login", payload);
+            showStatus("登录成功，正在进入工作台…", "success");
+            setTimeout(() => (location.href = nextTarget()), 500);
+          } catch (e) {
+            if (e && e.name === "NotAllowedError") {
+              showStatus(
+                "已取消，或本机没有可用的 Passkey——请先「注册」一个。",
+                "warn",
+              );
+            } else if (String(e).includes("Failed to fetch")) {
+              demoEnter("zheng");
+            } else {
+              showStatus("登录失败：" + (e.message || e), "error");
+            }
+          } finally {
+            loginBtn.disabled = false;
+          }
+        }
+        loginBtn.addEventListener("click", doLogin);
+
+        /* ---------- 注册 ---------- */
+        const signupBtn = document.getElementById("signup-btn");
+        let signupBusy = false;
+        async function doSignup() {
+          if (signupBusy) return;
+          signupBusy = true;
+          try {
+            await _doSignup();
+          } finally {
+            signupBusy = false;
+          }
+        }
+        async function _doSignup() {
+          const username = document.getElementById("new-username").value.trim();
+          hideStatus();
+          if (!username) {
+            document.getElementById("new-username").focus();
+            showStatus("先给自己起个用户名。", "warn");
+            return;
+          }
+          if (!webauthnOK) {
+            showStatus(
+              "当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。",
+              "error",
+            );
+            return;
+          }
+          signupBtn.disabled = true;
+          try {
+            const opts = await postJSON("/v1/auth/register/options", {
+              username,
+              displayName: username,
+            });
+            const publicKey = opts.publicKey || opts;
+            publicKey.challenge = b64urlToBuf(publicKey.challenge);
+            if (publicKey.user && publicKey.user.id)
+              publicKey.user.id = b64urlToBuf(publicKey.user.id);
+            if (publicKey.excludeCredentials) {
+              publicKey.excludeCredentials = publicKey.excludeCredentials.map(
+                (c) => ({
+                  ...c,
+                  id: b64urlToBuf(c.id),
+                }),
+              );
+            }
+            const cred = await navigator.credentials.create({ publicKey });
+            const payload = {
+              id: cred.id,
+              rawId: bufToB64url(cred.rawId),
+              type: cred.type,
+              response: {
+                clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+                attestationObject: bufToB64url(cred.response.attestationObject),
+              },
+            };
+            // 后端从 query 取 username（body 是 WebAuthn 断言）
+            await postJSON(
+              "/v1/auth/register?username=" + encodeURIComponent(username),
+              payload,
+            );
+            showStatus("注册成功！正在进入工作台…", "success");
+            setTimeout(() => (location.href = nextTarget()), 600);
+          } catch (e) {
+            if (
+              String(e).includes("HTTP") ||
+              String(e).includes("Failed to fetch")
+            ) {
+              demoEnter(username);
+            } else if (e && e.name === "NotAllowedError") {
+              showStatus("已取消或超时——请重试并允许创建 Passkey。", "warn");
+            } else {
+              showStatus("注册失败：" + (e.message || e), "error");
+            }
+          } finally {
+            signupBtn.disabled = false;
+          }
+        }
+        signupBtn.addEventListener("click", doSignup);
+
+        /* ---------- 恢复码入口 ---------- */
+        document
+          .getElementById("recovery-btn")
+          .addEventListener("click", () => {
+            toast(
+              "恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）",
+              "warn",
+            );
+          });
+
+        /* ---------- 回车提交 ---------- */
+        // 注意：中文输入法选词时按 Enter 确认候选词，e.key 也可能是 "Enter"，
+        // 必须忽略 isComposing / keyCode 229（输入法组合中），否则候选词确认被误判为提交。
+        window.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter") return;
+          if (e.isComposing || e.keyCode === 229) return; // 输入法组合中，忽略
+          if (!signupPanel.classList.contains("hidden")) doSignup();
+          else doLogin();
+        });
+      })();
+    </script>
+  </body>
+</html>

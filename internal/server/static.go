@@ -1,7 +1,9 @@
 package server
 
 import (
+	"log"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 )
@@ -44,7 +46,12 @@ func isHex(s string) bool {
 // staticHandler 返回带 CDN 缓存分级的静态资源处理器。
 // root 为本地静态目录（指纹脚本产物 dist/）。
 func staticHandler(root string) http.Handler {
-	fs := http.FileServer(http.Dir(root))
+	return staticFS(http.Dir(root))
+}
+
+// staticFS 用指定的文件系统返回带 CDN 缓存分级的静态处理器（供 embed.FS 或本地目录）。
+func staticFS(fsys http.FileSystem) http.Handler {
+	fs := http.FileServer(fsys)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch classify(r.URL.Path) {
 		case cacheImmutable:
@@ -54,6 +61,29 @@ func staticHandler(root string) http.Handler {
 		}
 		fs.ServeHTTP(w, r)
 	})
+}
+
+// resolveStatic 按配置解析静态资源源：
+//   - StaticDir 非空 → 本地目录（开发）
+//   - 否则 → embed 内嵌（生产单二进制）
+//
+// CDN 前缀重写（CDNPrefix）在反向代理/CDN 层做，源站始终服务同一 dist。
+func resolveStatic(cfg Config) http.Handler {
+	if cfg.StaticDir != "" {
+		if _, err := os.Stat(cfg.StaticDir); err == nil {
+			return staticHandler(cfg.StaticDir)
+		}
+		log.Printf("[static] 目录 %s 不存在，回退 embed", cfg.StaticDir)
+	}
+	efs, err := embeddedStatic()
+	if err != nil {
+		log.Printf("[static] embed 不可用: %v，返回 503", err)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "static assets unavailable", http.StatusServiceUnavailable)
+		})
+	}
+	log.Printf("[static] 使用 embed 内嵌前端")
+	return staticFS(efs)
 }
 
 // noStore 中间件：动态 API 禁止缓存。

@@ -62,7 +62,7 @@
 
 ### [T10] SQLiteBroker 实现
 
-- 状态：⬜
+- 状态：✅（协调者独立验证：go vet 净 / broker 7 tests PASS）
 - 依赖：T02 T03
 - worktree：wt-store
 - 产出：`internal/store/*` `internal/broker/sqlite.go`（Publish/Subscribe/Ack/Replay + 进程内广播 + DB 回放 + 过期清理）
@@ -70,7 +70,7 @@
 
 ### [T11] Passkey 认证 + API Key 中间件
 
-- 状态：⬜
+- 状态：✅（协调者独立验证：go vet 净 / auth+store 22 tests PASS，-race 通过）
 - 依赖：T02 T04
 - worktree：wt-auth
 - 产出：`internal/auth/*`（WebAuthn 注册/登录、会话；API Key 签发/argon2 校验/scope）
@@ -78,7 +78,7 @@
 
 ### [T12] /v1/notify 上报 + 路由 + 双派发器
 
-- 状态：⬜
+- 状态：✅（协调者独立验证：go vet 净 / api+push+ws 全 PASS）
 - 依赖：T02 T03 T04
 - worktree：wt-notify
 - 产出：`internal/api/notify.go` `internal/ws/*` `internal/push/*`（标签路由规则 + status 过滤 + WS 派发 + WebPush 派发）
@@ -86,7 +86,7 @@
 
 ### [T13] 前端核心页：login + 总览 + 通知接收(Receivers 双 tab)
 
-- 状态：⬜
+- 状态：✅（协调者 web_verify 三页：无 JS 错误/溢出，后端 404 降级正确，视觉还原到位）
 - 依赖：T05
 - worktree：wt-fecore
 - 产出：`web/login.html` `web/index.html` `web/receivers.html`
@@ -94,7 +94,8 @@
 
 ### [T14] 前端管理页：API Keys + 安全与登录(Security) + 接入文档
 
-- 状态：⬜
+- 状态：✅（返工后协调者复验：三页无裸 hex、字体引用正确、无 404 失败请求、无 JS 错误/溢出）
+- 遗留：docs.html 移动端参数表轻微溢出（基线遗留问题）→ 转入 T22 移动端适配任务统一处理
 - 依赖：T05
 - worktree：wt-feadmin
 - 产出：`web/keys.html` `web/security.html` `web/docs.html`
@@ -106,13 +107,13 @@
 
 ### [T20] 合并 5 个 worktree + 前后端连调
 
-- 状态：⬜
+- 状态：✅（4 后端 worktree 干净合并；解 import 循环/store MessageRow 重构/契约适配；全量 go test 通过）
 - 依赖：T10-T14 全 ✅
 - 验收：合并后 `go build ./...` + 前端引用正确
 
 ### [T21] 指纹 + go:embed + 单二进制冒烟
 
-- 状态：⬜
+- 状态：✅（make build 指纹+embed；单二进制起服务，embed 首页 200，缓存分级正确）
 - 依赖：T20 T06
 - 验收：`./anotify` 起服务，首页可开
 
@@ -122,33 +123,49 @@
 
 ### [T30] 单元测试全量 `go test ./...`
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（api/auth/broker/push/server/store/ws 全部 ok）
 
 ### [T31] 集成测试：注册→订阅→POST /v1/notify→断言 WS 帧 + delivery
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（播种用户+Key+设备；上报→matched=1+投递预览；WS hello→notification→ack 全过；Replay 持久化+断线续传正确）
 
 ### [T32] API 契约矩阵（Key/scope/错误码/标签路由/status 过滤）
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（无 Key 401/错误 Key 401/scope 不足 403/deviceTags 路由/catch-all 全验证）
 
 ### [T33] 前端渲染 web_verify（console/JS错误/溢出/截图）
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（六页 web_verify 全过：无 JS 错误/溢出/失败请求，侧栏视觉统一）
 
 ### [T34] CDN 缓存头验证（哈希 immutable / index ETag / v1 no-store）
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（classify 单测 + 实服务 index max-age=60 / v1 no-store 验证）
 
 ### [T35] Docker build 单二进制镜像 + run 起服务跑集成脚本
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（镜像 20.5MB；容器起服务 embed 前端/缓存分级/鉴权全正常）
 
 ### [T36] 桌面 Chrome Web Push 端到端
 
-- 状态：⬜ 依赖：T21
+- 状态：✅（本地持久化 Chrome 跑通：真实 FCM endpoint 订阅 → 设备上报 → notify matched=1 → deliveries status=sent。注：trycloudflare 被公司 DNS 污染，桌面用 localhost 安全上下文验证；iOS 真机不受影响走 T40）
 
 ---
+
+## 阶段 3.5 · 固化 E2E 测试体系（用户要求：测试不推给人工）
+
+### [T50] E2E 测试体系（make e2e 固化门禁）
+
+- 状态：✅（9 套件 224 断言 + Go 单测全绿，连跑 2 次稳定）
+- 关键突破：Playwright CDP 虚拟认证器 → Passkey 全流程无头自动化（无需真人）
+- 套件：api_contract(48)/auth_flow(15)/ws_protocol(31)/routing(23)/persistence(15)/security(22)/edge_cases(18)/frontend(45)/push_e2e(7)
+- 唯一人工：iOS 真机 APNs（T40）
+
+### [T51] 测试体系抓到的真实 bug（已全部修复）
+
+- ✅ PATCH /v1/devices 不落库（store.UpdateDevice）——路由功能生产失效
+- ✅ /v1/notifications 返回 PascalCase（broker.Message json tag）——契约不一致
+- ✅ keys/security 路由守卫失效（fetchApi 无 401 处理）
+- ✅ index.html normalize 字段不匹配
 
 ## 阶段 4 · 真机（交给用户）
 

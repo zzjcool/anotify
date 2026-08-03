@@ -1,97 +1,129 @@
-# iOS Safari 通知机制原型实验
+# Anotify · Agent 完成即通知平台
 
-用于在**公网（HTTPS）**环境下验证 iOS Safari 网页端通知机制，并测试**服务端主动推送**。
-通过 Cloudflare Tunnel（见根目录 `Makefile` / `tunnel.sh`）把本地 Node 服务暴露到公网。
+Agent 完成任务后，把通知自动推送到你的所有设备（iOS / Mac / PC / Android）。
+Passkey 无密码登录、无需轮询、单二进制易自托管。
 
-## 验证的核心机制
+> 本仓库由原型（iOS Web Push 机制验证）演进为完整实现。
+> 设计稿见 `design/`，技术方案见 `design/tech-scheme.html`。
 
-| 机制 | iOS Safari 关键限制 |
-| ------ | --------------------- |
-| **Notification API** | iOS 16.4+ 才支持；**必须先把站点「添加到主屏幕」以 standalone 方式运行**，普通标签页无法请求权限 |
-| **Web Push (PushManager)** | 依赖 Service Worker + HTTPS + 已授予权限；同样要求 standalone 环境 |
-| **Service Worker** | 要求 HTTPS（Secure Context）；注册于 `sw.js` |
-| **服务端主动推送** | 用 VAPID 私钥向订阅 endpoint 发送加密消息 → SW 触发 `showNotification` |
-| **Vibration API** | iOS Safari **不支持** `navigator.vibrate` |
+## 架构
 
-## 页面功能
+```
+Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS 派发器(消费者1) ─▶ WebSocket 客户端
+ (ant_send Key)        单二进制      队列+历史       └─▶ Push 派发器(消费者2) ─▶ Web Push(APNs/FCM)
+```
 
-- 环境检测：运行模式、iOS 版本、Secure Context、各 API 可用性
-- 通知权限 `Notification.requestPermission()`
-- Service Worker 注册
-- 本地测试通知
-- Web Push 订阅（自动使用服务端 VAPID 公钥，订阅后自动上报服务端）
-- 后台可见性 / 定时器节流观察
+- **单二进制**：Go + `go:embed` 内嵌前端 + SQLite（纯 Go，无 CGO）
+- **Broker 抽象**：消息队列接口（Publish/Subscribe/Ack/Replay），前期 SQLite 实现，未来可换 NATS/Redis/Kafka 零业务改动
+- **两条接收通道 = 两个消费者**：WebSocket 长连接 + Web Push
+- **路径分离**：`/v1/*` 动态 API（no-store），静态资源走 CDN 缓存分级（哈希文件 immutable）
 
-## 测试「服务端推送」的完整流程
+## 快速开始
 
 ```bash
-# 1. 安装依赖并生成 VAPID 密钥（首次）
-npm install
-node genkeys.js          # 生成 vapid.json（含公私钥）
+# 1. 生成 VAPID 密钥（首次）
+make keys        # 输出 ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY
 
-# 2. 启动本地 Node 服务 + Cloudflare 隧道（公网）
-make start PORT=5699 DIR=./public   # 或分别启动
-make serve PORT=5699
-make tunnel PORT=5699
-make url                             # 查看公网地址
+# 2. 构建单二进制（含前端指纹 + embed）
+make build
+
+# 3. 配置环境并运行
+export ANOTIFY_VAPID_PUBLIC_KEY=... ANOTIFY_VAPID_PRIVATE_KEY=...
+./anotify        # 默认 :8080，embed 前端
+
+# 开发模式（前端改不动二进制）
+make dev         # 用 web/ 本地目录，不指纹
 ```
 
-```text
-# 3. 手机上操作（关键）
-a. iOS Safari 打开公网地址
-b. 「共享 → 添加到主屏幕」→ 从主屏幕以独立 App 打开
-c. 授权通知权限
-d. 点击「请求 Push 订阅」
-e. 订阅成功后，页面日志显示「✅ 订阅已上报服务端」
-```
+## Docker
 
 ```bash
-# 4. 服务端推送（任意一种方式）
-node send.js "你好，这是一条测试推送"                  # 命令行
-curl -X POST https://<公网域名>/send \
-     -H "Content-Type: application/json" \
-     -d '{"title":"测试","message":"来自服务端的推送"}'
+make docker                              # 构建镜像（~20MB）
+docker run -p 8080:8080 \
+  -e ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY \
+  -e ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY \
+  -e ANOTIFY_RP_ID=你的域名 \
+  -e ANOTIFY_RP_ORIGIN=https://你的域名 \
+  anotify
 ```
 
-手机屏幕应弹出通知横幅（即使 App 在后台/关闭也能收到）。
+## 公网暴露（Cloudflare 临时隧道，供 iOS/真机验证）
 
-## 常用命令
+```bash
+# 服务在 :8080 运行后，用隧道域名作为 RP_ID 重启（Passkey 需要域名匹配）
+cloudflared tunnel --url http://localhost:8080
+# → 得到 https://xxx.trycloudflare.com，用它作为 ANOTIFY_RP_ID / ANOTIFY_RP_ORIGIN 重启服务
+```
 
-| 命令 | 作用 |
-| ------ | ------ |
-| `node genkeys.js` | 生成 VAPID 密钥对 |
-| `node server.js [PORT]` | 启动 Node 服务端（静态 + 订阅 + 推送 API） |
-| `node send.js "消息"` | 向所有已订阅设备推送 |
-| `make start/serve/tunnel/url` | 管理本地服务与公网隧道 |
-| `make stop` | 停止服务 |
-| `make clean` | 停止并清理 |
+## 测试
 
-## 服务端 API
+```bash
+make test                # 全部单元测试
+make integration         # 集成测试（健康/缓存分级/鉴权矩阵）
+node scripts/ws_test.mjs # WS 接收端（需 RECV_KEY/SEND_KEY）
+node scripts/push_e2e.mjs# 桌面 Chrome 推送 E2E（需 SESSION/API_KEY）
+go run ./cmd/devseed     # 播种测试用户 + Key + 会话
+```
 
-- `GET /vapid-public-key` — 返回 VAPID 公钥（前端订阅用）
-- `POST /subscribe` — 接收并保存订阅（前端订阅后自动调用）
-- `GET /subscriptions` — 查看已保存订阅
-- `POST /send` — 向所有订阅推送（body: `{title, message}`）
-- `GET /health` — 健康检查
+## API（/v1，详见 api/openapi.yaml）
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /v1/auth/register[/options]` | Passkey 注册 |
+| `POST /v1/auth/login[/options]` | Passkey 登录 |
+| `POST /v1/notify` | **Agent 上报**（Bearer Key，scope=notify:send） |
+| `GET /v1/stream` | WebSocket 接收（Bearer Key，scope=notify:receive） |
+| `GET/POST /v1/devices` | 推送订阅设备管理 |
+| `GET/POST /v1/keys` | API Key 管理 |
+| `GET /v1/notifications` | 通知历史 |
+| `GET /v1/vapid-public-key` | VAPID 公钥（前端订阅用） |
+
+### Agent 上报示例
+
+```bash
+curl -X POST https://你的域名/v1/notify \
+  -H "Authorization: Bearer ant_send_..." \
+  -H "Content-Type: application/json" \
+  -d '{"title":"部署完成","status":"success","body":"构建成功","deviceTags":["运维"]}'
+```
+
+投递规则：设备 enabled ∧ status 过滤通过 ∧ 标签匹配（无 tag 消息=广播；无 tag 设备=catch-all；否则取交集）。
+
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ANOTIFY_ADDR` | `:8080` | 监听地址 |
+| `ANOTIFY_DB` | `./anotify.db` | SQLite 路径 |
+| `ANOTIFY_STATIC` | 空(embed) | 本地静态目录（开发用 `./web`） |
+| `ANOTIFY_VAPID_PUBLIC_KEY/PRIVATE_KEY` | — | VAPID 密钥（推送必需） |
+| `ANOTIFY_RP_ID` | `localhost` | WebAuthn RP 域名（=访问域名） |
+| `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin（含协议） |
+| `ANOTIFY_CDN_PREFIX` | 空 | CDN 前缀（生产静态加速） |
 
 ## 文件结构
 
-```text
-server.js             # Node 服务端（静态 + 订阅 + 推送 API）
-send.js               # 命令行推送工具
-genkeys.js            # 生成 VAPID 密钥
-vapid.json            # VAPID 公私钥（已 gitignore，勿提交）
-subscriptions.json    # 已订阅设备（已 gitignore，运行时生成）
-public/
-  index.html          # 实验页面
-  app.js              # 前端检测与订阅逻辑
-  sw.js               # Service Worker（处理 push / 通知点击）
-  manifest.webmanifest
-  icon.png / icon-512.png
+```
+cmd/server/         单二进制入口
+cmd/devseed/        测试播种工具
+internal/
+  store/            SQLite 数据访问 + schema
+  broker/           消息队列抽象 + SQLiteBroker
+  auth/             Passkey(WebAuthn) + API Key(argon2id) + 会话
+  api/              /v1/notify 上报
+  ws/               WebSocket 派发器
+  push/             Web Push 派发器(VAPID)
+  route/            标签/status 投递过滤（共享纯逻辑）
+  server/           路由装配 + 静态资源(CDN 缓存分级) + embed
+web/                前端（纯静态 HTML+Tailwind CDN+tokens.css）
+scripts/hash.mjs    指纹脚本（content-hash + 引用改写 + manifest）
+scripts/integration.sh / ws_test.mjs / push_e2e.mjs   测试脚本
+design/             设计稿 + 技术方案
 ```
 
-## 注意事项
+## 安全
 
-- **VAPID 私钥在 `vapid.json`，切勿提交或泄露**；更换密钥后需重新在手机上订阅。
-- 手机与开发机需能访问同一公网地址；本机 DNS 可能被公司网络过滤（返回 `198.20.0.x`），属开发环境问题，不影响真机。
-- 内置占位 VAPID key 已废弃，现在全部使用服务端真实密钥。
+- API Key **只存 argon2id 哈希**，明文仅创建时显示一次，带 scope（notify:send / notify:receive / devices:read）
+- Passkey(WebAuthn) 无密码；会话 httpOnly Cookie
+- 推送载荷端到端加密（p256dh/auth），VAPID 私钥只在服务端
+- `vapid.json` / `*.db` / `.env.local` 已 gitignore，勿提交
