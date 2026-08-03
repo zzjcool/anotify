@@ -1,24 +1,32 @@
-# dependencies
-node_modules/
-
-# Web Push 密钥与订阅数据（含私钥，勿提交）
-vapid.json
-subscriptions.json
-
-# 日志
-*.log
-/tmp/
-# 运行时敏感文件
+# === 敏感数据（含私钥，绝勿提交）===
 vapid.json
 subscriptions.json
 *.db
 *.db-wal
 *.db-shm
-# 编排与构建
-.pi-orchestrator/worktrees/
+.env.local
+.env
+
+# === 依赖 ===
+node_modules/
+
+# === 构建产物 ===
+anotify
 dist/
 web/dist/
-anotify
-*.test
-.env.local
 internal/server/dist/
+.e2e-bin/
+
+# === 编排/调试临时产物（开发过程用，不入库）===
+.pi-orchestrator/worktrees/
+.pi-orchestrator/tasks/
+.pi-orchestrator/out/
+.pi-subagents/
+.pi/web-verify-shots/
+*.log
+
+# === 编辑器/系统 ===
+.DS_Store
+*.swp
+.idea/
+.vscode/
