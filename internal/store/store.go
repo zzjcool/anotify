@@ -38,7 +38,19 @@ func Open(path string) (*DB, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// 幂等列迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表加新列，
+	// 需在此显式补（SQLite ALTER TABLE ADD COLUMN 幂等性靠 try/ignore）。
+	if err := migrateColumns(db); err != nil {
+		return nil, fmt.Errorf("migrate columns: %w", err)
+	}
 	return &DB{db}, nil
+}
+
+// migrateColumns 幂等补充新列（老库升级用）。重复执行不报错。
+func migrateColumns(db *sql.DB) error {
+	// passkeys.backup_eligible（BackupEligible flag 持久化）
+	_, _ = db.Exec(`ALTER TABLE passkeys ADD COLUMN backup_eligible INTEGER NOT NULL DEFAULT 0`)
+	return nil
 }
 
 // Now 返回当前 unixepoch 秒（供各写入点统一使用）。
