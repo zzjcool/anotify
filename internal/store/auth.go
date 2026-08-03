@@ -20,14 +20,15 @@ type User struct {
 
 // Passkey 是 passkeys 表的一行（public_key 为原始字节）。
 type Passkey struct {
-	ID         string // credential id（base64url 字符串，作表主键）
-	UserID     string
-	PublicKey  []byte
-	SignCount  int64
-	Name       string
-	Transports []string
-	CreatedAt  int64
-	LastUsedAt sql.NullInt64
+	ID             string `json:"id"`
+	UserID         string `json:"userId"`
+	PublicKey      []byte `json:"-"`
+	SignCount      int64  `json:"signCount"`
+	Name           string `json:"name"`
+	Transports     []string `json:"transports"`
+	BackupEligible bool   `json:"backupEligible"`
+	CreatedAt      int64  `json:"createdAt"`
+	LastUsedAt     sql.NullInt64 `json:"-"`
 }
 
 // Session 是 sessions 表的一行。
@@ -104,10 +105,14 @@ func (d *DB) CreatePasskey(p *Passkey) error {
 	if err != nil {
 		return fmt.Errorf("marshal transports: %w", err)
 	}
+	be := 0
+	if p.BackupEligible {
+		be = 1
+	}
 	_, err = d.Exec(
-		`INSERT INTO passkeys (id, user_id, public_key, sign_count, name, transports, created_at, last_used_at)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		p.ID, p.UserID, p.PublicKey, p.SignCount, p.Name, string(tr), p.CreatedAt, nullableInt64(p.LastUsedAt),
+		`INSERT INTO passkeys (id, user_id, public_key, sign_count, name, transports, backup_eligible, created_at, last_used_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.UserID, p.PublicKey, p.SignCount, p.Name, string(tr), be, p.CreatedAt, nullableInt64(p.LastUsedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("create passkey: %w", err)
@@ -118,7 +123,7 @@ func (d *DB) CreatePasskey(p *Passkey) error {
 // ListPasskeysByUser 列出某用户的所有凭证。
 func (d *DB) ListPasskeysByUser(userID string) ([]*Passkey, error) {
 	rows, err := d.Query(
-		`SELECT id, user_id, public_key, sign_count, name, transports, created_at, last_used_at
+		`SELECT id, user_id, public_key, sign_count, name, transports, backup_eligible, created_at, last_used_at
 		 FROM passkeys WHERE user_id = ? ORDER BY created_at ASC`, userID,
 	)
 	if err != nil {
@@ -129,12 +134,14 @@ func (d *DB) ListPasskeysByUser(userID string) ([]*Passkey, error) {
 	for rows.Next() {
 		var p Passkey
 		var tr string
-		if err := rows.Scan(&p.ID, &p.UserID, &p.PublicKey, &p.SignCount, &p.Name, &tr, &p.CreatedAt, &p.LastUsedAt); err != nil {
+		var be int
+		if err := rows.Scan(&p.ID, &p.UserID, &p.PublicKey, &p.SignCount, &p.Name, &tr, &be, &p.CreatedAt, &p.LastUsedAt); err != nil {
 			return nil, fmt.Errorf("scan passkey: %w", err)
 		}
 		if err := json.Unmarshal([]byte(tr), &p.Transports); err != nil {
 			p.Transports = []string{}
 		}
+		p.BackupEligible = be != 0
 		out = append(out, &p)
 	}
 	return out, rows.Err()
@@ -144,10 +151,11 @@ func (d *DB) ListPasskeysByUser(userID string) ([]*Passkey, error) {
 func (d *DB) GetPasskeyByID(id string) (*Passkey, error) {
 	var p Passkey
 	var tr string
+	var be int
 	err := d.QueryRow(
-		`SELECT id, user_id, public_key, sign_count, name, transports, created_at, last_used_at
+		`SELECT id, user_id, public_key, sign_count, name, transports, backup_eligible, created_at, last_used_at
 		 FROM passkeys WHERE id = ?`, id,
-	).Scan(&p.ID, &p.UserID, &p.PublicKey, &p.SignCount, &p.Name, &tr, &p.CreatedAt, &p.LastUsedAt)
+	).Scan(&p.ID, &p.UserID, &p.PublicKey, &p.SignCount, &p.Name, &tr, &be, &p.CreatedAt, &p.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -157,6 +165,7 @@ func (d *DB) GetPasskeyByID(id string) (*Passkey, error) {
 	if err := json.Unmarshal([]byte(tr), &p.Transports); err != nil {
 		p.Transports = []string{}
 	}
+	p.BackupEligible = be != 0
 	return &p, nil
 }
 

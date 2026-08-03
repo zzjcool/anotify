@@ -146,6 +146,7 @@ func credentialFromStore(p *store.Passkey) (webauthn.Credential, error) {
 		ID:        idBytes,
 		PublicKey: p.PublicKey,
 		Transport: transports,
+		Flags:     webauthn.CredentialFlags{BackupEligible: p.BackupEligible},
 		Authenticator: webauthn.Authenticator{
 			SignCount: uint32(p.SignCount),
 		},
@@ -307,13 +308,14 @@ func (s *Service) saveCredential(userID string, cred *webauthn.Credential, name 
 		transports = append(transports, string(t))
 	}
 	p := &store.Passkey{
-		ID:         encodeCredID(cred.ID),
-		UserID:     userID,
-		PublicKey:  cred.PublicKey,
-		SignCount:  int64(cred.Authenticator.SignCount),
-		Name:       name,
-		Transports: transports,
-		CreatedAt:  store.Now(),
+		ID:             encodeCredID(cred.ID),
+		UserID:         userID,
+		PublicKey:      cred.PublicKey,
+		SignCount:      int64(cred.Authenticator.SignCount),
+		Name:           name,
+		Transports:     transports,
+		BackupEligible: cred.Flags.BackupEligible,
+		CreatedAt:      store.Now(),
 	}
 	if err := s.db.CreatePasskey(p); err != nil {
 		return fmt.Errorf("save credential: %w", err)

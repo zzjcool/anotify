@@ -12,14 +12,15 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Passkey 凭证（一个用户可有多个）
 CREATE TABLE IF NOT EXISTS passkeys (
-    id           TEXT PRIMARY KEY,           -- credential id (base64url)
-    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    public_key   BLOB NOT NULL,
-    sign_count   INTEGER NOT NULL DEFAULT 0,
-    name         TEXT NOT NULL DEFAULT '',   -- 设备名，如「主力手机」
-    transports   TEXT NOT NULL DEFAULT '[]', -- JSON 数组
-    created_at   INTEGER NOT NULL,
-    last_used_at INTEGER
+    id              TEXT PRIMARY KEY,           -- credential id (base64url)
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    public_key      BLOB NOT NULL,
+    sign_count      INTEGER NOT NULL DEFAULT 0,
+    name            TEXT NOT NULL DEFAULT '',   -- 设备名，如「主力手机」
+    transports      TEXT NOT NULL DEFAULT '[]', -- JSON 数组
+    backup_eligible INTEGER NOT NULL DEFAULT 0, -- BackupEligible flag（登录校验需一致）
+    created_at      INTEGER NOT NULL,
+    last_used_at    INTEGER
 );
 
 -- 登录会话

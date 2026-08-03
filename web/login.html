@@ -150,6 +150,7 @@
           </p>
           <button
             id="login-btn"
+            type="button"
             class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
           >
             <svg
@@ -189,12 +190,18 @@
           >
           <input
             id="new-username"
+            type="text"
+            name="new-username"
             class="input mt-2"
             placeholder="给自己起个名字"
             autocomplete="username webauthn"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
           />
           <button
             id="signup-btn"
+            type="button"
             class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
           >
             <svg
@@ -440,7 +447,17 @@
 
         /* ---------- 注册 ---------- */
         const signupBtn = document.getElementById("signup-btn");
+        let signupBusy = false;
         async function doSignup() {
+          if (signupBusy) return;
+          signupBusy = true;
+          try {
+            await _doSignup();
+          } finally {
+            signupBusy = false;
+          }
+        }
+        async function _doSignup() {
           const username = document.getElementById("new-username").value.trim();
           hideStatus();
           if (!username) {
@@ -518,8 +535,11 @@
           });
 
         /* ---------- 回车提交 ---------- */
+        // 注意：中文输入法选词时按 Enter 确认候选词，e.key 也可能是 "Enter"，
+        // 必须忽略 isComposing / keyCode 229（输入法组合中），否则候选词确认被误判为提交。
         window.addEventListener("keydown", (e) => {
           if (e.key !== "Enter") return;
+          if (e.isComposing || e.keyCode === 229) return; // 输入法组合中，忽略
           if (!signupPanel.classList.contains("hidden")) doSignup();
           else doLogin();
         });

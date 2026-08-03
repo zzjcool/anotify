@@ -139,15 +139,58 @@ async function cookieVal() {
 
 // webauthnDiscoverableLogin：免用户名登录（不传 username，靠 resident key）
 async function webauthnDiscoverableLogin() {
-	return page.evaluate(async ({ base }) => {
-		const b64 = (s) => { s = s.replace(/-/g, "+").replace(/_/g, "/"); const b = atob(s + "=".repeat((4 - s.length % 4) % 4)); return Uint8Array.from(b, (c) => c.charCodeAt(0)).buffer; };
-		const b64u = (buf) => { const a = new Uint8Array(buf); let s = ""; for (const c of a) s += String.fromCharCode(c); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
-		const o = await (await fetch(base + "/v1/auth/login/options", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })).json();
-		const pk = o.publicKey || o; pk.challenge = b64(pk.challenge); if (pk.allowCredentials) pk.allowCredentials = pk.allowCredentials.map((c) => ({ ...c, id: b64(c.id) }));
-		const as = await navigator.credentials.get({ publicKey: pk });
-		const r = await fetch(base + "/v1/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: as.id, rawId: b64u(as.rawId), type: as.type, response: { clientDataJSON: b64u(as.response.clientDataJSON), authenticatorData: b64u(as.response.authenticatorData), signature: b64u(as.response.signature), userHandle: as.response.userHandle ? b64u(as.response.userHandle) : null } }) });
-		return r.status;
-	}, { base: server.base });
+	return page.evaluate(
+		async ({ base }) => {
+			const b64 = (s) => {
+				s = s.replace(/-/g, "+").replace(/_/g, "/");
+				const b = atob(s + "=".repeat((4 - (s.length % 4)) % 4));
+				return Uint8Array.from(b, (c) => c.charCodeAt(0)).buffer;
+			};
+			const b64u = (buf) => {
+				const a = new Uint8Array(buf);
+				let s = "";
+				for (const c of a) s += String.fromCharCode(c);
+				return btoa(s)
+					.replace(/\+/g, "-")
+					.replace(/\//g, "_")
+					.replace(/=+$/, "");
+			};
+			const o = await (
+				await fetch(base + "/v1/auth/login/options", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				})
+			).json();
+			const pk = o.publicKey || o;
+			pk.challenge = b64(pk.challenge);
+			if (pk.allowCredentials)
+				pk.allowCredentials = pk.allowCredentials.map((c) => ({
+					...c,
+					id: b64(c.id),
+				}));
+			const as = await navigator.credentials.get({ publicKey: pk });
+			const r = await fetch(base + "/v1/auth/login", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					id: as.id,
+					rawId: b64u(as.rawId),
+					type: as.type,
+					response: {
+						clientDataJSON: b64u(as.response.clientDataJSON),
+						authenticatorData: b64u(as.response.authenticatorData),
+						signature: b64u(as.response.signature),
+						userHandle: as.response.userHandle
+							? b64u(as.response.userHandle)
+							: null,
+					},
+				}),
+			});
+			return r.status;
+		},
+		{ base: server.base },
+	);
 }
 
 async function main() {
@@ -276,31 +319,53 @@ async function main() {
 	const me = await H.req(server.base, "/v1/auth/me", { session: sess });
 	H.eq("GET /v1/auth/me → 200", me.status, 200);
 	H.eq("me 返回真实 username", me.json?.username, username);
-	H.check("me 不泄露敏感字段", me.json && !me.json.keyHash && !me.json.password);
+	H.check(
+		"me 不泄露敏感字段",
+		me.json && !me.json.keyHash && !me.json.password,
+	);
 
 	// 10. 免用户名 Passkey 登录（discoverable，靠 resident key）
-	await H.req(server.base, "/v1/auth/logout", { session: sess, method: "POST" });
+	await H.req(server.base, "/v1/auth/logout", {
+		session: sess,
+		method: "POST",
+	});
 	const discLogin = await webauthnDiscoverableLogin();
 	H.eq("免用户名 Passkey 登录 → 200", discLogin, 200);
 	sess = await cookieVal();
 	H.check("免用户名登录后会话建立", !!sess);
 
 	// 11. /v1/stats 真实统计
-	await H.req(server.base, "/v1/notify", { key: sendKey, body: { title: "统计测试", status: "success" } });
+	await H.req(server.base, "/v1/notify", {
+		key: sendKey,
+		body: { title: "统计测试", status: "success" },
+	});
 	const stats = await H.req(server.base, "/v1/stats", { session: sess });
 	H.eq("GET /v1/stats → 200", stats.status, 200);
-	H.check("stats.total ≥ 1", stats.json?.total >= 1, `total=${stats.json?.total}`);
+	H.check(
+		"stats.total ≥ 1",
+		stats.json?.total >= 1,
+		`total=${stats.json?.total}`,
+	);
 	H.check("stats.daily 是数组", Array.isArray(stats.json?.daily));
-	H.check("stats.deviceCount 是数字", typeof stats.json?.deviceCount === "number");
+	H.check(
+		"stats.deviceCount 是数字",
+		typeof stats.json?.deviceCount === "number",
+	);
 
 	// 12. 前端侧栏真实用户名 + 退出按钮 + 退出跳登录
 	await page.goto(server.base + "/index.html", { waitUntil: "load" });
 	await page.waitForTimeout(1500);
-	const sidebarUser = await page.evaluate(() => document.getElementById("sidebar-username")?.textContent || "");
+	const sidebarUser = await page.evaluate(
+		() => document.getElementById("sidebar-username")?.textContent || "",
+	);
 	H.eq("侧栏显示真实用户名", sidebarUser.trim(), username);
-	const hasLogout = await page.evaluate(() => !!document.querySelector('a[href="#logout"]'));
+	const hasLogout = await page.evaluate(
+		() => !!document.querySelector('a[href="#logout"]'),
+	);
 	H.check("侧栏有「退出登录」按钮", hasLogout);
-	await page.evaluate(() => document.querySelector('a[href="#logout"]')?.click());
+	await page.evaluate(() =>
+		document.querySelector('a[href="#logout"]')?.click(),
+	);
 	await page.waitForTimeout(800);
 	H.check("点击退出后跳登录页", page.url().includes("login.html"), page.url());
 
