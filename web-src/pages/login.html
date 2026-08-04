@@ -150,7 +150,11 @@
             autocapitalize="none"
             autocorrect="off"
             spellcheck="false"
+            maxlength="32"
+            pattern="[A-Za-z0-9]([A-Za-z0-9._-]{0,30}[A-Za-z0-9])?"
+            title="{{t "login.signup.username_hint"}}"
           />
+          <p class="mt-1.5 text-xs text-zinc-500">{{t "login.signup.username_hint"}}</p>
           <button
             id="signup-btn"
             type="button"

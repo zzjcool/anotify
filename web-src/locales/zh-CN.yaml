@@ -79,6 +79,7 @@ login:
   signup:
     username_label: "选择用户名"
     username_placeholder: "给自己起个名字"
+    username_hint: "2–32 位，字母 / 数字 / _ / - / .，且不能以符号开头结尾"
     button: "创建 Passkey 并注册"
     recovery_hint_prefix: "注册后会生成一组"
     recovery_code: "一次性恢复码"

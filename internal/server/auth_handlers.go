@@ -52,6 +52,10 @@ func (h *authHandler) registerOptions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "缺少 username")
 		return
 	}
+	if err := auth.ValidateUsername(req.Username); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	opts, err := h.svc.BeginRegister(req.Username, req.DisplayName)
 	if err != nil {
 		writeErr(w, 400, err.Error())
@@ -92,6 +96,10 @@ func (h *authHandler) loginOptions(w http.ResponseWriter, r *http.Request) {
 		err  error
 	)
 	if req.Username != "" {
+		if verr := auth.ValidateUsername(req.Username); verr != nil {
+			writeErr(w, 400, verr.Error())
+			return
+		}
 		opts, err = h.svc.BeginLogin(req.Username)
 	} else {
 		opts, err = h.svc.BeginDiscoverableLogin(req.Token)

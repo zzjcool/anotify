@@ -186,6 +186,30 @@ async function main() {
 		401,
 	);
 
+	// ---- 7b. 用户名规则校验 ----
+	// 合法字符（字母数字 _ - .）可过；非法字符/长度/首尾的 → 400
+	for (const [name, why] of [
+		["a", "太短"],
+		["-abc", "- 开头"],
+		["abc-", "- 结尾"],
+		["a b", "含空格"],
+		["a/b", "含斜杠"],
+		["a@b", "含 @"],
+		["中文", "非 ASCII"],
+	]) {
+		const r = await H.req(server.base, "/v1/auth/register/options", {
+			body: { username: name, displayName: "x" },
+		});
+		H.eq(`非法用户名(${why}) → 400`, r.status, 400);
+	}
+	// 合法用户名（不触发完整注册，只要 options 不 400 即过规则）
+	{
+		const ok = await H.req(server.base, "/v1/auth/register/options", {
+			body: { username: "valid_user-1.2", displayName: "x" },
+		});
+		H.check("合法用户名过规则(非 400)", ok.status !== 400, `got ${ok.status}`);
+	}
+
 	// ---- 6. 会话 Cookie HttpOnly（放最后，logout 会吊销会话）----
 	const logoutResp = await fetch(server.base + "/v1/auth/logout", {
 		method: "POST",
