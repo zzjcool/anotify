@@ -200,8 +200,7 @@ async function main() {
 		await page.waitForTimeout(2000);
 		// 最新通知置顶：id2（后上报）应在列表第一行
 		const firstRow = await page.evaluate(
-			() =>
-				document.querySelector("#notif-list .notif-row")?.innerText || "",
+			() => document.querySelector("#notif-list .notif-row")?.innerText || "",
 		);
 		H.check(
 			"最新通知置顶（第一行 = 后上报的 id2）",

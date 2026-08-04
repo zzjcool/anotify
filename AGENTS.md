@@ -3,6 +3,31 @@
 > 你是 Anotify 实施团队的一个子 Agent，在协调者（主 pi Agent）编排下工作。
 > **开工前必读 `DEVELOPMENT.md`（开发总纲）+ 本文件 + 相关包的 `*_test.go`。**
 
+## 0. 编排架构（默认流程）
+
+所有**非琐碎**改动都走三层编排流程，由协调者（主 Agent）编排、各专路子 Agent 执行：
+
+```
+【定义层 · 该做什么】(kimi-k3)
+  anotify-pm        产品：需求/价值/边界/验收标准 → requirements.md
+  anotify-designer  设计：信息架构/视觉方案/交互规格 → design.md
+【侦察/规划层】
+  anotify-scout     侦察现状 → context.md        (deepseek-v4-flash)
+  (内置 planner)   拆任务 → plan.md              (kimi-k3)
+【实现层 · 怎么做】(glm-5.2)
+  anotify-worker    后端实施
+  anotify-frontend  前端实现（照 designer 的稿）
+  anotify-tester    测试把关（发现产品 bug 上报，不改断言）
+【终审层】(kimi-k3)
+  anotify-reviewer  对照需求&设计稿终审 → APPROVE / REQUEST_CHANGES
+```
+
+**何时必须编排**：改动 >3 个文件、或涉及 ≥2 个独立模块（broker/server/store/push/ws/前端）、或新增页面/契约。琐碎单点修复（改个文案/小 bug）协调者可直接做，不必兴师动众。
+
+**分层原则**：定义层（pm/designer）与实现层（worker/frontend/tester）严格分离——定义层不写实现代码，实现层不擅自改需求/设计；tester 与 worker 分离（写码的不自测自夸）；reviewer 独立于所有实现者做终审。
+
+**模型分级**：kimi-k3 守定义层与终审（重推理/决策），glm-5.2 执实现层主力（长上下文执行），deepseek-v4-flash 跑侦察（快/省）。
+
 ## 1. 环境与工具链
 
 - Go 拉依赖统一用：`GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto`
@@ -15,6 +40,7 @@
 - 你在协调者分配的 **git worktree**（如 `wt-store`）里工作，对应独立分支
 - **不要**改动你任务范围之外的文件；不要动别人的 worktree
 - 代码遵循各包契约（见 `internal/broker/broker.go`、`api/openapi.yaml`）
+- 各专路 Agent 的详细职责/红线见 `.pi/agents/anotify-*.md`（那里是事实源）；本文件是跨角色的公共约定
 
 ## 3. 代码规范
 
