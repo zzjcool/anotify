@@ -73,7 +73,7 @@ func (d *DB) InsertMessage(ctx context.Context, msg *MessageRow) error {
 }
 
 // GetMessage 按 ID 取一条消息（仅限属主 userID，防越权读他人消息）。
-// 未命中返回 (nil, nil)，由调用方翻译成 404。
+// 未命中返回 (nil, nil)（注意：非错误——错误以 (nil, error) 形式返回），由调用方翻译成 404。
 func (d *DB) GetMessage(ctx context.Context, userID, messageID string) (*MessageRow, error) {
 	var m MessageRow
 	var tags, payload string

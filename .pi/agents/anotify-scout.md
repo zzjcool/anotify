@@ -2,7 +2,6 @@
 name: anotify-scout
 description: Anotify 代码侦察 —— 快速摸清分层结构与相关代码，返回压缩上下文供下游 agent 使用
 package: anotify
-model: codebuddy/deepseek-v4-flash
 thinking: low
 systemPromptMode: replace
 inheritProjectContext: true

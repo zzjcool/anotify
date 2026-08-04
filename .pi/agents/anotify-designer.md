@@ -2,7 +2,6 @@
 name: anotify-designer
 description: Anotify 视觉/交互设计师 —— 出信息架构、视觉方案与设计规格（定义层，产出设计稿而非最终代码）
 package: anotify
-model: codebuddy/kimi-k3
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

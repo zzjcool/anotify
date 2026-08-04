@@ -2,7 +2,6 @@
 name: anotify-pm
 description: Anotify 产品经理 —— 定义需求、用户价值、功能边界与验收标准（定义层，不写实现代码）
 package: anotify
-model: codebuddy/kimi-k3
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

@@ -2,7 +2,6 @@
 name: anotify-reviewer
 description: Anotify 终审工程师 —— 对照需求与设计稿审代码质量、架构一致性、契约与隐患（强推理最后一道闸）
 package: anotify
-model: codebuddy/kimi-k3
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

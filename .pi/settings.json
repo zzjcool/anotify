@@ -1,0 +1,15 @@
+{
+	"subagents": {
+		"defaultModel": "codebuddy/glm-5.2",
+		"defaultThinking": "high",
+		"agentOverrides": {
+			"anotify.anotify-pm": { "model": "codebuddy/kimi-k3" },
+			"anotify.anotify-designer": { "model": "codebuddy/kimi-k3" },
+			"anotify.anotify-reviewer": { "model": "codebuddy/kimi-k3" },
+			"anotify.anotify-scout": {
+				"model": "codebuddy/deepseek-v4-flash",
+				"thinking": "low"
+			}
+		}
+	}
+}

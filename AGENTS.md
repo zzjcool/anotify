@@ -28,6 +28,10 @@
 
 **模型分级**：kimi-k3 守定义层与终审（重推理/决策），glm-5.2 执实现层主力（长上下文执行），deepseek-v4-flash 跑侦察（快/省）。
 
+**模型与职责解耦**：agent 文件（`.pi/agents/anotify-*.md`）只写**角色职责**（入仓库），不写死模型；**模型映射集中在 `.pi/settings.json`** 的 `agentOverrides`（也入仓库，团队统一）。想换模型/模型升级过时，只改 settings 一处；个人想本地用别的模型，在 `~/.pi/agent/settings.json` 覆盖同名 agent 即可（用户级优先于项目级）。
+
+**自我升级**：每次完成非琐碎任务或踩坑后，协调者必须按 `.pi-orchestrator/EVOLUTION.md` 做回顾（三问），把教训沉淀到四层落点（记忆/提示词/配置/流程）。写型 agent（worker/frontend/tester）带 `memory` 持久记忆，可自我沉淀经验。
+
 ## 1. 环境与工具链
 
 - Go 拉依赖统一用：`GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto`

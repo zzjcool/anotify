@@ -28,6 +28,7 @@ web/i18n.*.js
 .pi-orchestrator/out/
 .pi-subagents/
 .pi/web-verify-shots/
+.pi/agent-memory/
 *.log
 
 # === 编辑器/系统 ===
