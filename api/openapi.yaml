@@ -198,6 +198,19 @@ paths:
       responses:
         "200": { description: 历史列表 }
 
+  /notifications/{id}:
+    get:
+      tags: [notifications]
+      summary: 单条通知详情（完整消息 + 真实投递记录）
+      description: |
+        返回消息的完整字段（broker.Message，camelCase）加 deliveries 数组
+        （每台设备/通道的投递状态明细）。仅限消息属主（会话 Cookie）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 消息详情 + deliveries 投递记录 }
+        "404": { $ref: "#/components/responses/Error" }
+
   /stream:
     get:
       tags: [stream]

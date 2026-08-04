@@ -68,6 +68,14 @@ index:
     filter_interrupted: "Interrupted"
     refresh: "Refresh →"
 
+message:
+  title: "Notification detail"
+  loading: "Loading…"
+  body_label: "Body"
+  open_link: "Open Agent session"
+  fields_title: "All fields"
+  deliveries_title: "Deliveries"
+
 login:
   title: "Sign in"
   welcome: "Welcome back to"
@@ -85,7 +93,7 @@ login:
   signup:
     username_label: "Choose a username"
     username_placeholder: "Pick a name for yourself"
-    username_hint: "2–32 chars: letters, digits, _ - . (no leading/trailing symbol)"
+    username_hint: "2–32 chars: letters, digits, _ -. (no edge symbols)"
     button: "Create Passkey & sign up"
     recovery_hint_prefix: "Signing up generates a set of "
     recovery_code: "one-time recovery codes"

@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -124,6 +125,30 @@ func TestDispatchSendsToMatchedDevices(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("deliveries rows=%d, want 2", n)
+	}
+}
+
+// TestPushPayloadDeepLink 推送载荷的点击跳转 URL 必须是控制台消息详情深链
+// （index.html?msg=<id>）；消息自带 link 仅作 link 字段透传，由详情页承接。
+func TestPushPayloadDeepLink(t *testing.T) {
+	msg := &broker.Message{
+		ID:    "ntf_01J8XA",
+		Title: "构建完成",
+		Body:  "共 47 个文件变更",
+		Link:  "pi://session/sess_8f3a",
+	}
+	var p map[string]string
+	if err := json.Unmarshal(pushPayload(msg), &p); err != nil {
+		t.Fatalf("payload 非 JSON: %v", err)
+	}
+	if want := "message.html?id=ntf_01J8XA"; p["url"] != want {
+		t.Fatalf("url=%q, want %q（点击应跳控制台消息详情页）", p["url"], want)
+	}
+	if p["link"] != msg.Link {
+		t.Fatalf("link=%q, want %q（外部深链透传）", p["link"], msg.Link)
+	}
+	if p["id"] != msg.ID || p["tag"] != msg.ID {
+		t.Fatalf("id/tag 应等于消息 ID: id=%q tag=%q", p["id"], p["tag"])
 	}
 }
 

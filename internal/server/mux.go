@@ -72,7 +72,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	authH := &authHandler{svc: authSvc}
 	devicesH := &devicesHandler{db: db}
 	keysH := &keysHandler{keys: authSvc.Keys(), db: db}
-	notifsH := &notificationsHandler{bk: bk}
+	notifsH := &notificationsHandler{bk: bk, db: db}
 	statsH := &statsHandler{db: db}
 
 	sessMW := authSvc.Sessions().Middleware
@@ -108,6 +108,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/keys", noStore(sessMW(keysH)))
 	mux.Handle("/v1/keys/", noStore(sessMW(keysH)))
 	mux.Handle("/v1/notifications", noStore(sessMW(notifsH)))
+	mux.Handle("/v1/notifications/", noStore(sessMW(notifsH)))
 	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
 
 	// 健康检查

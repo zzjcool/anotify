@@ -1,0 +1,8 @@
+# Anotify yamllint 配置
+# OpenAPI / 各 YAML 文件统一采用 flow-brace 带空格风格（{ a: b }），
+# 与 OpenAPI 生态惯例一致；故放宽 braces 的空格检查。
+extends: default
+rules:
+  braces:
+    max-spaces-inside: 1
+    min-spaces-inside: 0

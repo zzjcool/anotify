@@ -439,9 +439,22 @@
 			// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”，不进入演示模式）
 			if (res.status === 401) {
 				if (isAuthedPage) {
-					const back = encodeURIComponent(
-						location.pathname.split("/").pop() || "index.html",
-					);
+					// 保留查询串（如推送深链 ?msg=<id>），登录后仍能跳到目标消息。
+					// 页名走白名单、查询串只允许安全字符，防 open redirect。
+					const PAGES = [
+						"index.html",
+						"message.html",
+						"receivers.html",
+						"keys.html",
+						"security.html",
+						"docs.html",
+					];
+					const name = location.pathname.split("/").pop();
+					const page = PAGES.includes(name) ? name : "index.html";
+					const qs = /^[?][\w\-=&%.]*$/.test(location.search)
+						? location.search
+						: "";
+					const back = encodeURIComponent(page + qs);
 					location.href = "login.html?next=" + back;
 				}
 				throw new Error("HTTP 401");

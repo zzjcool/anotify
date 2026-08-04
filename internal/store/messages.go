@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -69,6 +70,34 @@ func (d *DB) InsertMessage(ctx context.Context, msg *MessageRow) error {
 		return fmt.Errorf("insert message: %w", err)
 	}
 	return nil
+}
+
+// GetMessage 按 ID 取一条消息（仅限属主 userID，防越权读他人消息）。
+// 未命中返回 (nil, nil)，由调用方翻译成 404。
+func (d *DB) GetMessage(ctx context.Context, userID, messageID string) (*MessageRow, error) {
+	var m MessageRow
+	var tags, payload string
+	var createdAt, expiresAt int64
+	err := d.QueryRowContext(ctx, `
+		SELECT id, user_id, seq, title, status, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
+		FROM messages
+		WHERE id=? AND user_id=?`, messageID, userID).Scan(
+		&m.ID, &m.UserID, &m.Seq, &m.Title, &m.Status, &m.Body, &m.Link,
+		&tags, &m.Priority, &m.TTLSeconds, &payload, &createdAt, &expiresAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get message: %w", err)
+	}
+	if err := json.Unmarshal([]byte(tags), &m.DeviceTags); err != nil {
+		return nil, fmt.Errorf("get message: 解析 device_tags: %w", err)
+	}
+	m.Payload = []byte(payload)
+	m.CreatedAt = time.Unix(createdAt, 0)
+	m.ExpiresAt = time.Unix(expiresAt, 0)
+	return &m, nil
 }
 
 // InsertTestMessage 是 InsertMessage 的便捷包装：给定 id/userID/seq/status，

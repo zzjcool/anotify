@@ -20,8 +20,15 @@ const PAGES = [
 	"keys.html",
 	"security.html",
 	"docs.html",
+	"message.html",
 ];
-const GUARDED = ["index.html", "receivers.html", "keys.html", "security.html"];
+const GUARDED = [
+	"index.html",
+	"receivers.html",
+	"keys.html",
+	"security.html",
+	"message.html",
+];
 const VIEWPORTS = [
 	{ name: "桌面1280", width: 1280, height: 800 },
 	{ name: "移动390", width: 390, height: 844 },
@@ -97,7 +104,12 @@ async function checkPage(ctx, url, viewportName, viewport) {
 
 // 注入 SESSION cookie 到 context
 async function injectSession(ctx, sessionValue, base) {
-	const u = new URL(base);
+	let u;
+	try {
+		u = new URL(base);
+	} catch {
+		throw new Error("server.base 非法: " + base);
+	}
 	await ctx.addCookies([
 		{
 			name: "anotify_session",

@@ -315,14 +315,21 @@
         // 登录成功后跳回来源页（?next=xxx）。白名单硬编码映射，不接受任意 URL，防 open redirect。
         const NEXT_MAP = {
           "index.html": "index.html",
+          "message.html": "message.html",
           "receivers.html": "receivers.html",
           "keys.html": "keys.html",
           "security.html": "security.html",
           "docs.html": "docs.html",
         };
         function nextTarget() {
-          const n = new URLSearchParams(location.search).get("next");
-          return NEXT_MAP[n] || "index.html"; // 未知/缺失一律回首页，绝不跳转外部
+          const n = new URLSearchParams(location.search).get("next") || "";
+          // next 形如 "index.html?msg=ntf_xx"：页名走白名单，查询串只允许安全字符
+          // （保留推送深链 ?msg=<id>），其余一律回首页，绝不跳转外部。
+          const q = n.indexOf("?");
+          const page = q >= 0 ? n.slice(0, q) : n;
+          const qs = q >= 0 ? n.slice(q) : "";
+          const target = NEXT_MAP[page] || "index.html";
+          return /^[?][\w\-=&%.]*$/.test(qs) ? target + qs : target;
         }
 
         function demoEnter(name) {

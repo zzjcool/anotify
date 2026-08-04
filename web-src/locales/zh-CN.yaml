@@ -65,6 +65,14 @@ index:
     filter_interrupted: "中断"
     refresh: "刷新 →"
 
+message:
+  title: "通知详情"
+  loading: "正在加载…"
+  body_label: "正文"
+  open_link: "打开 Agent 会话"
+  fields_title: "全部字段"
+  deliveries_title: "投递记录"
+
 login:
   title: "登录"
   welcome: "欢迎回到"

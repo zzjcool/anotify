@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -158,13 +159,16 @@ func (d *Dispatcher) recordResult(ctx context.Context, msg *broker.Message, dev 
 }
 
 // pushPayload 构造发给设备的 JSON 载荷（Service Worker showNotification 用）。
+// url 固定指向控制台消息详情页（message.html?id=<id>）：点击通知 → 展示该消息全部信息；
+// 消息自带的外部 link 仅作 link 字段透传，由详情页内「打开 Agent 会话」按钮承接。
 func pushPayload(msg *broker.Message) []byte {
 	p := map[string]any{
 		"id":    msg.ID,
 		"title": msg.Title,
 		"body":  msg.Body,
 		"tag":   msg.ID,
-		"url":   msg.Link,
+		"url":   "message.html?id=" + url.QueryEscape(msg.ID),
+		"link":  msg.Link,
 	}
 	raw, err := json.Marshal(p)
 	if err != nil {

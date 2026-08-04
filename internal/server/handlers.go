@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anotify/anotify/internal/auth"
 	"github.com/anotify/anotify/internal/broker"
@@ -315,9 +316,57 @@ func (h *statsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type notificationsHandler struct {
 	bk broker.Broker
+	db *store.DB
+}
+
+// messageView 是 broker.Message 的 JSON 视图。
+// broker.Message.Payload 是 []byte，默认会被序列化成 base64 字符串，
+// 前端无法直接读 agentId/model 等字段；这里转成 json.RawMessage 嵌入为 JSON 对象。
+type messageView struct {
+	ID         string          `json:"id"`
+	UserID     string          `json:"userId"`
+	Seq        int64           `json:"seq"`
+	Title      string          `json:"title"`
+	Status     string          `json:"status"`
+	Body       string          `json:"body"`
+	Link       string          `json:"link"`
+	DeviceTags []string        `json:"deviceTags"`
+	Priority   string          `json:"priority"`
+	TTLSeconds int             `json:"ttlSeconds"`
+	Payload    json.RawMessage `json:"payload"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	ExpiresAt  time.Time       `json:"expiresAt"`
+}
+
+// toMessageView 把一条消息转成 JSON 视图；空/非法 payload 兜底为 {}。
+func toMessageView(m *broker.Message) *messageView {
+	payload := m.Payload
+	if len(payload) == 0 || !json.Valid(payload) {
+		payload = []byte("{}")
+	}
+	tags := m.DeviceTags
+	if tags == nil {
+		tags = []string{}
+	}
+	return &messageView{
+		ID: m.ID, UserID: m.UserID, Seq: m.Seq, Title: m.Title, Status: m.Status,
+		Body: m.Body, Link: m.Link, DeviceTags: tags, Priority: m.Priority,
+		TTLSeconds: m.TTLSeconds, Payload: payload, CreatedAt: m.CreatedAt, ExpiresAt: m.ExpiresAt,
+	}
+}
+
+// notificationDetail 是单条消息详情视图：完整消息 + 真实投递记录。
+type notificationDetail struct {
+	*messageView
+	Deliveries []*store.DeliveryRow `json:"deliveries"`
 }
 
 func (h *notificationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// /v1/notifications/{id} → 单条消息详情
+	if rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/notifications"), "/"); rest != "" {
+		h.getOne(w, r, rest)
+		return
+	}
 	uid := auth.UserIDFromContext(r.Context())
 	limit := 50
 	if q := r.URL.Query().Get("limit"); q != "" {
@@ -336,9 +385,45 @@ func (h *notificationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeErr(w, 500, err.Error())
 		return
 	}
-	// 保证空结果序列化为 [] 而非 null（前端据 Array.isArray 判断连接成功）
-	if msgs == nil {
-		msgs = []*broker.Message{}
+	// 转成 JSON 视图（payload 解码为对象），并保证空结果序列化为 [] 而非 null
+	out := make([]*messageView, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, toMessageView(m))
 	}
-	writeJSON(w, 200, map[string]any{"notifications": msgs, "count": len(msgs)})
+	writeJSON(w, 200, map[string]any{"notifications": out, "count": len(out)})
+}
+
+// getOne 返回单条消息详情（仅限属主；含真实投递记录，供 message.html 详情页）。
+func (h *notificationsHandler) getOne(w http.ResponseWriter, r *http.Request, id string) {
+	uid := auth.UserIDFromContext(r.Context())
+	row, err := h.db.GetMessage(r.Context(), uid, id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if row == nil {
+		writeErr(w, 404, "消息不存在")
+		return
+	}
+	deliveries, err := h.db.ListDeliveriesByMessage(r.Context(), id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	msg := toMessageView(&broker.Message{
+		ID:         row.ID,
+		UserID:     row.UserID,
+		Seq:        row.Seq,
+		Title:      row.Title,
+		Status:     row.Status,
+		Body:       row.Body,
+		Link:       row.Link,
+		DeviceTags: row.DeviceTags,
+		Priority:   row.Priority,
+		TTLSeconds: row.TTLSeconds,
+		Payload:    row.Payload,
+		CreatedAt:  row.CreatedAt,
+		ExpiresAt:  row.ExpiresAt,
+	})
+	writeJSON(w, 200, &notificationDetail{messageView: msg, Deliveries: deliveries})
 }
