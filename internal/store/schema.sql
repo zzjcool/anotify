@@ -103,6 +103,23 @@ CREATE TABLE IF NOT EXISTS deliveries (
     updated_at  INTEGER NOT NULL
 );
 
+-- CLI 设备授权会话（device authorization flow）
+-- 一次性会话：pending → approved → consumed；旁路终态 denied / expired
+CREATE TABLE IF NOT EXISTS cli_auth_sessions (
+    id               TEXT PRIMARY KEY,            -- cas_xxx
+    secret_hash      TEXT NOT NULL,               -- sha256 hex（secret 仅建会话时返回一次，不落明文）
+    user_code        TEXT NOT NULL UNIQUE,        -- 8 字符大写无连字符（去歧义字符集）
+    device_name      TEXT NOT NULL,               -- ≤64 字符（脚本上报 hostname）
+    scopes_requested TEXT NOT NULL,               -- JSON 数组
+    scopes_granted   TEXT,                        -- JSON 数组，批准前 NULL
+    status           TEXT NOT NULL,               -- pending/approved/consumed/denied/expired
+    user_id          TEXT,                        -- 批准前 NULL
+    key_id           TEXT,                        -- 领证前 NULL
+    created_at       INTEGER NOT NULL,
+    expires_at       INTEGER NOT NULL,            -- created_at + 600（TTL 10 分钟）
+    consumed_at      INTEGER
+);
+
 -- 索引
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_user_seq     ON messages(user_id, seq);
 CREATE        INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at);
@@ -112,3 +129,4 @@ CREATE        INDEX IF NOT EXISTS idx_deliveries_consumer   ON deliveries(consum
 CREATE        INDEX IF NOT EXISTS idx_devices_user          ON devices(user_id);
 CREATE        INDEX IF NOT EXISTS idx_sessions_user         ON sessions(user_id);
 CREATE        INDEX IF NOT EXISTS idx_apikeys_user          ON api_keys(user_id);
+CREATE        INDEX IF NOT EXISTS idx_cli_auth_expires      ON cli_auth_sessions(expires_at);
