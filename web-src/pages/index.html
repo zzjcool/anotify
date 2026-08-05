@@ -6,7 +6,7 @@
       <div class="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 class="font-display text-3xl text-white" id="greeting">
-            {{t "index.greeting"}}
+            {{t "index.greeting.default"}}
           </h2>
           <p class="mt-1.5 text-sm text-zinc-400" id="summary-line">
             {{t "index.loading"}}
@@ -310,14 +310,14 @@
 <script>
   (function () {
     "use strict";
-    const { el, api, mountLayout, copyText, timeAgo } = window.Anotify;
+    const { el, api, mountLayout, copyText, timeAgo, t } = window.Anotify;
     const qs = new URLSearchParams(location.search);
     const username = qs.get("u") || "zheng";
 
     mountLayout({
       active: "overview",
-      title: "总览",
-      subtitle: "你的通知一览",
+      title: t("index.title", "总览"),
+      subtitle: t("index.subtitle", "你的通知一览"),
       username,
     });
 
@@ -335,7 +335,7 @@
         id: n.id || n.ID || "n" + i,
         seq: n.seq != null ? n.seq : n.Seq,
         status: n.status || n.Status || "info",
-        title: n.title || n.Title || "（无标题）",
+        title: n.title || n.Title || t("common.placeholder.no_title", "（无标题）"),
         body: n.body || n.Body || "",
         link: n.link || n.Link || payload.link || "",
         agent: payload.agentId || payload.agent || "agent",
@@ -349,6 +349,14 @@
         priority: n.priority || n.Priority || "normal",
         ttlSeconds: n.ttlSeconds || n.TTLSeconds || 0,
         time: timeAgo(n.created_at || n.createdAt || n.CreatedAt || n.time),
+        isToday: (() => {
+          const ts = n.created_at || n.createdAt || n.CreatedAt;
+          if (!ts) return false;
+          const d = new Date(ts);
+          if (Number.isNaN(d.getTime())) return false;
+          const now = new Date();
+          return d.toDateString() === now.toDateString();
+        })(),
         delivered:
           n.delivered != null
             ? n.delivered
@@ -382,13 +390,13 @@
       {
         id: "d1",
         status: "success",
-        title: "部署完成",
+        title: t("index.demo.n1_title", "部署完成"),
         agent: "deploy-bot",
         project: "prod-backend",
         duration: 24,
         model: "claude-4",
-        time: "2 分钟前",
-        body: "构建成功，已发布到生产环境。共 47 个文件变更。",
+        createdAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+        body: t("index.demo.n1_body", "构建成功，已发布到生产环境。共 47 个文件变更。"),
         link: "pi://session/sess_8f3a",
         sessionId: "sess_8f3a2c",
         delivered: 4,
@@ -397,13 +405,13 @@
       {
         id: "d2",
         status: "error",
-        title: "构建失败",
+        title: t("index.demo.n2_title", "构建失败"),
         agent: "lint-check",
         project: "web-client",
         duration: 132,
         model: "claude-4",
-        time: "18 分钟前",
-        body: "3 个测试用例未通过。已附上完整日志，点击查看排查建议。",
+        createdAt: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
+        body: t("index.demo.n2_body", "3 个测试用例未通过。已附上完整日志，点击查看排查建议。"),
         link: "pi://session/sess_2b1d",
         sessionId: "sess_2b1d8e",
         delivered: 4,
@@ -412,13 +420,13 @@
       {
         id: "d3",
         status: "interrupted",
-        title: "任务被中断",
+        title: t("index.demo.n3_title", "任务被中断"),
         agent: "refactor",
         project: "api-server",
         duration: 305,
         model: "claude-4",
-        time: "1 小时前",
-        body: "任务被手动停止。当前进度 62%，已保留现场，可继续。",
+        createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        body: t("index.demo.n3_body", "任务被手动停止。当前进度 62%，已保留现场，可继续。"),
         link: "pi://session/sess_9c4f",
         sessionId: "sess_9c4f11",
         delivered: 3,
@@ -427,13 +435,13 @@
       {
         id: "d4",
         status: "success",
-        title: "文档更新完成",
+        title: t("index.demo.n4_title", "文档更新完成"),
         agent: "docs-gen",
         project: "anotify",
         duration: 58,
         model: "claude-4",
-        time: "3 小时前",
-        body: "生成 3 个页面：README、API 参考、部署指南。",
+        createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+        body: t("index.demo.n4_body", "生成 3 个页面：README、API 参考、部署指南。"),
         link: "pi://session/sess_77aa",
         sessionId: "sess_77aa09",
         delivered: 4,
@@ -442,13 +450,13 @@
       {
         id: "d5",
         status: "success",
-        title: "代码审查完成",
+        title: t("index.demo.n5_title", "代码审查完成"),
         agent: "reviewer",
         project: "auth-module",
         duration: 91,
         model: "claude-4",
-        time: "5 小时前",
-        body: "审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。",
+        createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+        body: t("index.demo.n5_body", "审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。"),
         link: "pi://session/sess_31de",
         sessionId: "sess_31de4b",
         delivered: 4,
@@ -457,13 +465,13 @@
       {
         id: "d6",
         status: "error",
-        title: "数据库迁移失败",
+        title: t("index.demo.n6_title", "数据库迁移失败"),
         agent: "db-migrate",
         project: "core-db",
         duration: 47,
         model: "claude-4",
-        time: "昨天 23:41",
-        body: "迁移脚本 0042 执行超时。已自动回滚，数据未受影响。",
+        createdAt: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+        body: t("index.demo.n6_body", "迁移脚本 0042 执行超时。已自动回滚，数据未受影响。"),
         link: "pi://session/sess_5f2c",
         sessionId: "sess_5f2c88",
         delivered: 4,
@@ -472,13 +480,13 @@
       {
         id: "d7",
         status: "success",
-        title: "依赖升级完成",
+        title: t("index.demo.n7_title", "依赖升级完成"),
         agent: "deps-bot",
         project: "web-client",
         duration: 76,
         model: "claude-4",
-        time: "昨天 18:20",
-        body: "升级 8 个依赖至最新稳定版，无破坏性变更。",
+        createdAt: new Date(Date.now() - 31 * 60 * 60 * 1000).toISOString(),
+        body: t("index.demo.n7_body", "升级 8 个依赖至最新稳定版，无破坏性变更。"),
         link: "pi://session/sess_a012",
         sessionId: "sess_a0123f",
         delivered: 4,
@@ -487,13 +495,13 @@
       {
         id: "d8",
         status: "success",
-        title: "备份任务完成",
+        title: t("index.demo.n8_title", "备份任务完成"),
         agent: "backup",
         project: "core-db",
         duration: 210,
         model: "claude-4",
-        time: "昨天 12:05",
-        body: "数据库快照已生成并上传至对象存储，大小 1.2 GB。",
+        createdAt: new Date(Date.now() - 37 * 60 * 60 * 1000).toISOString(),
+        body: t("index.demo.n8_body", "数据库快照已生成并上传至对象存储，大小 1.2 GB。"),
         link: "pi://session/sess_d9e7",
         sessionId: "sess_d9e71c",
         delivered: 4,
@@ -505,12 +513,33 @@
       success: {
         dot: "dot-success",
         badge: "status-success",
-        label: "成功",
+        labelKey: "common.status.success",
+        fallback: "成功",
       },
-      error: { dot: "dot-error", badge: "status-error", label: "失败" },
-      interrupted: { dot: "dot-warn", badge: "status-warn", label: "中断" },
-      info: { dot: "dot-success", badge: "status-success", label: "信息" },
-      warning: { dot: "dot-warn", badge: "status-warn", label: "警告" },
+      error: {
+        dot: "dot-error",
+        badge: "status-error",
+        labelKey: "common.status.error",
+        fallback: "失败",
+      },
+      interrupted: {
+        dot: "dot-warn",
+        badge: "status-warn",
+        labelKey: "common.status.interrupted",
+        fallback: "中断",
+      },
+      info: {
+        dot: "dot-success",
+        badge: "status-success",
+        labelKey: "common.status.info",
+        fallback: "信息",
+      },
+      warning: {
+        dot: "dot-warn",
+        badge: "status-warn",
+        labelKey: "common.status.warning",
+        fallback: "警告",
+      },
     };
 
     let NOTIFICATIONS = [];
@@ -569,37 +598,60 @@
           (n) => n.delivered >= (n.total || 1),
         ).length;
         rate = total ? Math.round((ok / total) * 1000) / 10 : 100;
-        today = NOTIFICATIONS.filter((n) =>
-          /刚刚|分钟前|小时前/.test(n.time),
-        ).length;
+        today = NOTIFICATIONS.filter((n) => n.isToday).length;
         devices = Math.max(...NOTIFICATIONS.map((n) => n.total || 0), 0);
       }
       document.getElementById("kpi-total").textContent = total.toLocaleString();
       document.getElementById("kpi-total-trend").textContent = usingDemo
-        ? "示例"
-        : "实时";
-      // 用 textContent 避免 innerHTML（% 单独一个 span）
+        ? t("index.kpi.trend_demo", "示例")
+        : t("index.kpi.trend_live", "实时");
+      // Use textContent to avoid innerHTML (% is a separate span)
       const rateEl = document.getElementById("kpi-rate");
       rateEl.replaceChildren(
         document.createTextNode(rate),
         el("span", { class: "text-2xl text-zinc-500", text: "%" }),
       );
-      document.getElementById("kpi-rate-sub").textContent =
-        devices + " 台设备 · 端到端加密";
+      document.getElementById("kpi-rate-sub").textContent = t(
+        "index.kpi.devices_sub",
+        "{n} 台设备 · 端到端加密",
+      ).replace("{n}", devices);
       document.getElementById("kpi-today").textContent = today;
       document.getElementById("kpi-devices").textContent = devices || "0";
-      document.getElementById("kpi-devices-sub").textContent =
-        "推送订阅 + 长连接";
+      document.getElementById("kpi-devices-sub").textContent = t(
+        "index.kpi.devices_sub2",
+        "推送订阅 + 长连接",
+      );
     }
 
     function renderSummary() {
       const h = new Date().getHours();
-      const part =
-        h < 6 ? "夜深了" : h < 12 ? "早上好" : h < 18 ? "下午好" : "晚上好";
-      document.getElementById("greeting").textContent = part + "，" + username;
+      let partKey, partFallback;
+      if (h < 6) {
+        partKey = "index.greeting.late_night";
+        partFallback = "夜深了";
+      } else if (h < 12) {
+        partKey = "index.greeting.morning";
+        partFallback = "早上好";
+      } else if (h < 18) {
+        partKey = "index.greeting.afternoon";
+        partFallback = "下午好";
+      } else {
+        partKey = "index.greeting.evening";
+        partFallback = "晚上好";
+      }
+      document.getElementById("greeting").textContent = t(
+        "index.greeting.with_name",
+        "{greeting}，{name}",
+      )
+        .replace("{greeting}", t(partKey, partFallback))
+        .replace("{name}", username);
       const okCnt = NOTIFICATIONS.filter((n) => n.status === "success").length;
-      document.getElementById("summary-line").textContent =
-        `最近收录 ${NOTIFICATIONS.length} 条通知，其中 ${okCnt} 条成功。`;
+      document.getElementById("summary-line").textContent = t(
+        "index.recent_summary",
+        "最近收录 {total} 条通知，其中 {ok} 条成功。",
+      )
+        .replace("{total}", NOTIFICATIONS.length)
+        .replace("{ok}", okCnt);
     }
 
     /* ================= 通知列表 ================= */
@@ -614,7 +666,7 @@
         list.replaceChildren(
           el("div", {
             class: "px-6 py-10 text-center text-sm text-zinc-500",
-            text: "暂无该状态的通知",
+            text: t("index.notif.empty", "暂无该状态的通知"),
           }),
         );
       } else {
@@ -641,7 +693,7 @@
                   }),
                   el("span", {
                     class: `status-badge ${meta.badge}`,
-                    text: meta.label,
+                    text: t(meta.labelKey, meta.fallback),
                   }),
                 ),
                 el(
@@ -666,15 +718,19 @@
                 }),
                 el("span", {
                   class: "text-[10px] text-zinc-600",
-                  text: `${n.delivered}/${n.total} 设备已送达`,
+                  text: t("index.notif.delivered", "{d}/{t} 设备已送达")
+                    .replace("{d}", n.delivered)
+                    .replace("{t}", n.total),
                 }),
               ),
             );
           }),
         );
       }
-      document.getElementById("notif-count").textContent =
-        "显示 " + rows.length + " 条";
+      document.getElementById("notif-count").textContent = t(
+        "index.notif.count",
+        "显示 {n} 条",
+      ).replace("{n}", rows.length);
     }
 
     document.getElementById("filter-tabs").addEventListener("click", (e) => {
@@ -697,14 +753,25 @@
       const s = p.toString();
       history.replaceState(null, "", location.pathname + (s ? "?" + s : ""));
     }
-    // 与 message.html 详情页一致的展示辅助
-    const PRIORITY_LABEL = { high: "高", normal: "普通", low: "低" };
+    // Detail modal display helpers (consistent with message.html)
+    function priorityLabel(p) {
+      const map = {
+        high: { key: "common.priority.high", fb: "高" },
+        normal: { key: "common.priority.normal", fb: "普通" },
+        low: { key: "common.priority.low", fb: "低" },
+      };
+      const m = map[p];
+      return m ? t(m.key, m.fb) : p || "—";
+    }
     function fmtTTL(sec) {
       if (!sec || sec <= 0) return "—";
-      if (sec % 86400 === 0) return sec / 86400 + " 天";
-      if (sec % 3600 === 0) return sec / 3600 + " 小时";
-      if (sec % 60 === 0) return sec / 60 + " 分钟";
-      return sec + " 秒";
+      if (sec % 86400 === 0)
+        return t("common.ttl.day", "{n} 天").replace("{n}", sec / 86400);
+      if (sec % 3600 === 0)
+        return t("common.ttl.hour", "{n} 小时").replace("{n}", sec / 3600);
+      if (sec % 60 === 0)
+        return t("common.ttl.minute", "{n} 分钟").replace("{n}", sec / 60);
+      return t("common.ttl.second", "{n} 秒").replace("{n}", sec);
     }
     function openDetail(id) {
       const n = NOTIFICATIONS.find((x) => x.id === id);
@@ -728,16 +795,16 @@
       );
       const tags = Array.isArray(n.deviceTags) ? n.deviceTags : [];
       const fields = [
-        ["消息 ID", n.id],
-        ["Agent", n.agent],
-        ["会话", n.sessionId],
-        ["模型", n.model],
-        ["耗时", n.duration + "s"],
-        ["状态", `${meta.label}（${n.status}）`],
-        ["优先级", PRIORITY_LABEL[n.priority] || n.priority || "—"],
-        ["路由标签", tags.length ? tags.join("、") : "（广播）"],
-        ["TTL", fmtTTL(n.ttlSeconds)],
-        ["创建时间", n.time],
+        [t("common.field.msg_id", "消息 ID"), n.id],
+        [t("common.field.agent", "Agent"), n.agent],
+        [t("common.field.session", "会话"), n.sessionId],
+        [t("common.field.model", "模型"), n.model],
+        [t("common.field.duration", "耗时"), n.duration + "s"],
+        [t("common.field.status", "状态"), `${t(meta.labelKey, meta.fallback)}（${n.status}）`],
+        [t("common.field.priority", "优先级"), priorityLabel(n.priority)],
+        [t("common.field.device_tags", "路由标签"), tags.length ? tags.join("、") : t("common.placeholder.broadcast", "（广播）")],
+        [t("common.field.ttl", "TTL"), fmtTTL(n.ttlSeconds)],
+        [t("common.field.created_at", "创建时间"), n.time],
       ];
       const grid = el(
         "div",
@@ -763,7 +830,7 @@
       const children = [
         el("p", {
           class: "text-sm leading-relaxed text-zinc-300",
-          text: n.body || "（无正文）",
+          text: n.body || t("common.placeholder.no_body", "（无正文）"),
         }),
         grid,
       ];
@@ -776,11 +843,11 @@
               class:
                 "btn-primary flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium",
             },
-            "打开 Agent 会话",
+            t("index.detail.open_session", "打开 Agent 会话"),
           ),
         );
       }
-      // 完整信息（含投递记录）在独立详情页
+      // Full details (including deliveries) on the standalone detail page
       children.push(
         el(
           "a",
@@ -789,7 +856,7 @@
             class:
               "flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs text-zinc-400 ring-1 ring-white/10 transition-colors hover:bg-white/5 hover:text-white",
           },
-          "查看完整页面（全部字段 + 投递记录）→",
+          t("index.detail.view_full", "查看完整页面（全部字段 + 投递记录）→"),
         ),
       );
       document.getElementById("detail-body").replaceChildren(...children);
@@ -835,7 +902,15 @@
         "var(--accent-3)",
         "var(--accent-4)",
       ];
-      const WEEK_CN = ["日", "一", "二", "三", "四", "五", "六"];
+      const WEEK_LABELS = [
+        t("index.heatmap.week.sun", "日"),
+        t("index.heatmap.week.mon", "一"),
+        t("index.heatmap.week.tue", "二"),
+        t("index.heatmap.week.wed", "三"),
+        t("index.heatmap.week.thu", "四"),
+        t("index.heatmap.week.fri", "五"),
+        t("index.heatmap.week.sat", "六"),
+      ];
       const WEEKS = 53;
       // 真实数据：STATS.daily = [{day:"YYYY-MM-DD",count}] → Map 便于查
       const countByDay = new Map();
@@ -867,7 +942,11 @@
       endMonday.setDate(today.getDate() - dow);
       const startMonday = new Date(endMonday);
       startMonday.setDate(endMonday.getDate() - (WEEKS - 1) * 7);
-      const DAY_LABELS = { 0: "一", 2: "三", 4: "五" };
+      const DAY_LABELS = {
+        0: t("index.heatmap.week.mon", "一"),
+        2: t("index.heatmap.week.wed", "三"),
+        4: t("index.heatmap.week.fri", "五"),
+      };
       const frag = document.createDocumentFragment();
       for (let d = 0; d < 7; d++) {
         const s = document.createElement("span");
@@ -885,7 +964,7 @@
           const label = document.createElement("span");
           label.className = "hm-month";
           label.style.gridColumn = w + 2;
-          label.textContent = `${m + 1}月`;
+          label.textContent = t("index.heatmap.month", "{n}月").replace("{n}", m + 1);
           frag.append(label);
           prevMonth = m;
         }
@@ -907,10 +986,16 @@
             cell.addEventListener("mouseenter", () => {
               const t1 = document.createElement("div");
               t1.className = "font-medium text-white";
-              t1.textContent = count > 0 ? `${count} 条通知` : "无通知";
+              t1.textContent =
+                count > 0
+                  ? t("index.heatmap.tip.count", "{n} 条通知").replace("{n}", count)
+                  : t("index.heatmap.tip.none", "无通知");
               const t2 = document.createElement("div");
               t2.className = "text-zinc-500";
-              t2.textContent = `${date.getMonth() + 1}月${date.getDate()}日 周${WEEK_CN[date.getDay()]}`;
+              t2.textContent = t("index.heatmap.tip.date", "{m}月{d}日 周{w}")
+                .replace("{m}", date.getMonth() + 1)
+                .replace("{d}", date.getDate())
+                .replace("{w}", WEEK_LABELS[date.getDay()]);
               tip.replaceChildren(t1, t2);
               const rect = cell.getBoundingClientRect();
               tip.style.left = rect.left + rect.width / 2 + "px";

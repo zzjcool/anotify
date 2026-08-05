@@ -760,7 +760,7 @@
 				: document.querySelector(getText).innerText;
 		navigator.clipboard.writeText(text).then(() => {
 			const orig = btn.textContent;
-			btn.textContent = "已复制 ✓";
+			btn.textContent = t("common.copy.copied", "已复制 ✓");
 			setTimeout(() => (btn.textContent = orig), 1500);
 		});
 	}
@@ -815,7 +815,7 @@
 		mac: { icon: "💻", label: "macOS" },
 		win: { icon: "🖥️", label: "Windows" },
 		android: { icon: "🤖", label: "Android" },
-		other: { icon: "🌐", label: "浏览器" },
+		other: { icon: "🌐", label: t("common.platform.browser", "浏览器") },
 	};
 
 	function detectPlatform() {
@@ -829,14 +829,26 @@
 
 	function timeAgo(isoOrSec) {
 		if (!isoOrSec) return "—";
-		const t =
+		/* NOTE: local must not be named `t` — it would shadow the i18n t(). */
+		const ts =
 			typeof isoOrSec === "number" ? isoOrSec * 1000 : Date.parse(isoOrSec);
-		if (Number.isNaN(t)) return "—";
-		const diff = Date.now() - t;
-		if (diff < 60e3) return "刚刚";
-		if (diff < 3600e3) return Math.floor(diff / 60e3) + " 分钟前";
-		if (diff < 86400e3) return Math.floor(diff / 3600e3) + " 小时前";
-		return Math.floor(diff / 86400e3) + " 天前";
+		if (Number.isNaN(ts)) return "—";
+		const diff = Date.now() - ts;
+		if (diff < 60e3) return t("common.time.just_now", "刚刚");
+		if (diff < 3600e3)
+			return t("common.time.minutes_ago", "{n} 分钟前").replace(
+				"{n}",
+				Math.floor(diff / 60e3),
+			);
+		if (diff < 86400e3)
+			return t("common.time.hours_ago", "{n} 小时前").replace(
+				"{n}",
+				Math.floor(diff / 3600e3),
+			);
+		return t("common.time.days_ago", "{n} 天前").replace(
+			"{n}",
+			Math.floor(diff / 86400e3),
+		);
 	}
 
 	/* ---------- 导出 ---------- */
@@ -937,7 +949,8 @@
 				break; /* first resolvable preference decides, for better or worse */
 			}
 		}
-		if (!target) return; /* preferred language is current page, or none supported */
+		if (!target)
+			return; /* preferred language is current page, or none supported */
 
 		/* 4) Validate i18n strings resolved (prevent bare-key banner, §6.4) */
 		const textKey = "common.lang.hint.text." + target.code;

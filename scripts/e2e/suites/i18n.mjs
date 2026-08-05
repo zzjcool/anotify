@@ -189,13 +189,20 @@ async function main() {
 		/\bmessage\.(body|deliveries|fields|loading|open|title)\w*/g,
 		/\bdocs\.(title|subtitle|toc)\w*/g,
 	];
-	for (const lang of LANGS) {
-		for (const page of PAGES) {
-			const { path } = servedPath(lang, page);
-			const r = await H.req(server.base, path);
-			/* Remove href/src attributes to avoid matching file paths in URLs */
-			const stripped = r.text.replace(/(href|src)="[^"]*"/g, '$1=""');
-			const leaked = [];
+		for (const lang of LANGS) {
+			for (const page of PAGES) {
+				const { path } = servedPath(lang, page);
+				const r = await H.req(server.base, path);
+				/* Remove href/src attributes to avoid matching file paths in URLs */
+				let stripped = r.text.replace(/(href|src)="[^"]*"/g, '$1=""');
+				/* Remove <script> blocks: JS source legitimately contains i18n key
+				 * string literals (e.g. t("index.title", ...)) that are not
+				 * user-visible rendered text. Only scan visible HTML. */
+				stripped = stripped.replace(
+					/<script\b[\s\S]*?<\/script>/gi,
+					"",
+				);
+				const leaked = [];
 			for (const re of i18nKeyPatterns) {
 				const matches = stripped.match(re);
 				if (matches) leaked.push(...matches);

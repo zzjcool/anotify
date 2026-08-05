@@ -1,291 +1,357 @@
-# Anotify 日本語翻訳
-# zh-CN.yaml と完全に同じキーセット。キーの過不足不可。
-
 common:
   brand:
-    name: "Anotify"
-    tagline: "エージェント完了通知"
+    name: Anotify
+    tagline: エージェント完了通知
   nav:
-    overview: "概要"
-    receivers: "通知先"
-    keys: "API Keys"
-    integration: "連携"
-    agent: "Agent 連携"
-    api: "API ドキュメント"
-    scheme: "技術資料"
-    account: "アカウント"
-    security: "セキュリティとログイン"
-    logout: "ログアウト"
-    menu: "メニュー"
-    notification: "通知"
+    overview: 概要
+    receivers: 通知先
+    keys: API Keys
+    integration: 連携
+    agent: Agent 連携
+    api: API ドキュメント
+    scheme: 技術資料
+    account: アカウント
+    security: セキュリティとログイン
+    logout: ログアウト
+    menu: メニュー
+    notification: 通知
   lang:
-    label: "言語"
-    switcher_label: "言語を切り替え"
-    switcher_aria: "言語選択"
-    current: "現在の言語"
-    # Language hint banner — values are in the TARGET language,
-    # identical across all locale files so the banner is readable by
-    # the target user regardless of which language page they're on.
+    label: 言語
+    switcher_label: 言語を切り替え
+    switcher_aria: 言語選択
+    current: 現在の言語
     hint:
       text:
-        "zh-CN": "本网站提供简体中文版本"
-        en: "This site is also available in English"
-        ja: "このサイトは日本語でもご利用いただけます"
-        es: "Este sitio también está disponible en español"
+        zh-CN: 本网站提供简体中文版本
+        en: This site is also available in English
+        ja: このサイトは日本語でもご利用いただけます
+        es: Este sitio también está disponible en español
       action:
-        "zh-CN": "切换到简体中文"
-        en: "Switch to English"
-        ja: "日本語に切り替える"
-        es: "Cambiar a español"
+        zh-CN: 切换到简体中文
+        en: Switch to English
+        ja: 日本語に切り替える
+        es: Cambiar a español
       dismiss:
-        "zh-CN": "关闭语言提示"
-        en: "Dismiss language hint"
-        ja: "言語のヒントを閉じる"
-        es: "Cerrar el aviso de idioma"
+        zh-CN: 关闭语言提示
+        en: Dismiss language hint
+        ja: 言語のヒントを閉じる
+        es: Cerrar el aviso de idioma
   sidebar:
-    deployment: "セルフホスト · メインワークスペース"
+    deployment: セルフホスト · メインワークスペース
   footer:
-    copyright: "Anotify · MIT License · セルフホスト · データはあなたのサーバーにのみ保存"
-    login_copyright: "© 2026 Anotify · MIT License · Passkey のみ"
-
-index:
-  title: "概要"
-  subtitle: "通知の概要"
-  greeting: "こんにちは"
-  loading: "通知の統計を読み込み中…"
-  demo_badge: "デモデータ（バックエンド未接続）"
-  kpi:
-    total: "通知合計"
-    last_30d: "過去30日"
-    rate: "配信率"
-    today: "今日の通知"
-    today_sub: "送信 → 配信"
-    devices: "受信デバイス"
-    devices_enabled: "有効"
-  heatmap:
-    title: "通知アクティビティ"
-    subtitle: "過去1年 · 1日あたりの件数"
-    less: "少"
-    more: "多"
-  quickstart:
-    cta: "新しい Agent を連携"
-    title: "Agent を連携"
-    subtitle: "Agent のタスク完了を自動で通知"
-    recommended: "おすすめ"
-    option_a: "一言で Agent にセットアップ"
-    option_b: "またはスクリプト / CI から送信"
-    copy: "コピー"
-    curl_example_title: "デプロイ完了"
-    cmd_a_comment: "# Agent に送る一言"
-    cmd_a: >-
-      anotify.dev/docs/skill を参照して通知報告をインストール：
-      agent_settled を監視し、タスク終了時に自動でデバイスへプッシュ。
-  recent:
-    title: "最近の通知"
-    subtitle: "リアルタイム更新 · 行をクリックで詳細"
-    filter_all: "すべて"
-    filter_success: "成功"
-    filter_error: "失敗"
-    filter_interrupted: "中断"
-    refresh: "更新 →"
-
-message:
-  title: "通知の詳細"
-  loading: "読み込み中…"
-  body_label: "本文"
-  open_link: "Agent セッションを開く"
-  fields_title: "すべてのフィールド"
-  deliveries_title: "配信記録"
-
-login:
-  title: "ログイン"
-  welcome: "おかえりなさい"
-  subtitle: "パスワード不要 · Passkey でワンタップログイン"
-  tab:
-    login: "ログイン"
-    signup: "登録"
-  login:
-    hint: "下のボタンをタップし、この端末の Passkey（Face ID / 指紋 / デバイスキー）でログイン。ユーザー名は不要です。"
-    button: "Passkey でログイン"
-    security_note: "指紋 / Face ID / デバイスキー · フィッシング耐性"
-  signup:
-    username_label: "ユーザー名を選択"
-    username_placeholder: "名前を決める"
-    username_hint: "2〜32文字 · 英字 / 数字 / _ / - / .（記号で始まらない・終わらない）"
-    button: "Passkey を作成して登録"
-    recovery_hint_prefix: "登録すると一组の"
-    recovery_code: "ワンタイムリカバリーコード"
-    recovery_hint_suffix: >-
-      が生成されます。デバイス交換やすべての Passkey を紛失した際に
-      アカウントを復旧できます。安全に保管してください。
-    recovery_hint: >-
-      登録すると一组のワンタイムリカバリーコードが生成されます。
-      デバイス交換やすべての Passkey を紛失した際にアカウントを
-      復旧できます。安全に保管してください。
-  ios_tip_label: "iOS ユーザー："
-  ios_tip: >-
-    プッシュ通知を受信するには、まず Safari で本サイトを開き、
-    「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから
-    起動してログインしてください。
-  recovery_link: "Passkey が使えない？リカバリーコードでログイン →"
-  trust:
-    data_local: "データはあなたのサーバーにのみ保存"
-    webauthn: "WebAuthn 標準"
-    no_third_party: "サードパーティアカウント不要"
+    copyright: Anotify · MIT License · セルフホスト · データはあなたのサーバーにのみ保存
+    login_copyright: © 2026 Anotify · MIT License · Passkey のみ
+  time:
+    just_now: たった今
+    minutes_ago: '{n} 分前'
+    hours_ago: '{n} 時間前'
+    days_ago: '{n} 日前'
+    never: 未使用
+  ttl:
+    day: '{n} 日'
+    hour: '{n} 時間'
+    minute: '{n} 分'
+    second: '{n} 秒'
   status:
-    demo: "バックエンド未接続 — デモモードに入りました（サンプルデータ）。"
-    login_success: "ログイン成功 — ワークスペースに入ります…"
-    signup_success: "登録完了 — ワークスペースに入ります…"
-    unsupported: >-
-      このブラウザは Passkey（WebAuthn）に対応していません。
-      最新の Safari / Chrome をお使いください。
-    cancelled_login: "キャンセルされました、またはこの端末に利用可能な Passkey がありません — まず「登録」してください。"
-    cancelled_signup: "キャンセルまたはタイムアウト — 再試行して Passkey の作成を許可してください。"
-    need_username: "まずユーザー名を決めてください。"
-    login_failed: "ログイン失敗："
-    signup_failed: "登録失敗："
-  recovery_toast: "リカバリーコードログインはバックエンド接続後に利用可能になります（ユーザー名 + ワンタイムリカバリーコード）"
-
+    success: 成功
+    error: 失敗
+    interrupted: 中断
+    info: 情報
+    warning: 警告
+  priority:
+    high: 高
+    normal: 通常
+    low: 低
+  delivery:
+    pending: 配信待ち
+    sent: 送信済み
+    delivered: 配信済み
+    acked: 確認済み
+    failed: 失敗
+  placeholder:
+    no_title: （タイトルなし）
+    no_body: （本文なし）
+    broadcast: （ブロードキャスト）
+  copy:
+    copied: コピー済み ✓
+    failed: コピー失敗 — 手動で選択してコピーしてください
+  platform:
+    browser: ブラウザ
+  field:
+    msg_id: メッセージ ID
+    agent: Agent
+    session: セッション
+    model: モデル
+    duration: 所要時間
+    status: ステータス
+    priority: 優先度
+    device_tags: デバイスタグ
+    ttl: TTL
+    created_at: 作成日時
+    seq: Seq
+    expires_at: 有効期限
+    external_link: 外部リンク
+    cwd: プロジェクト CWD
+index:
+  title: 概要
+  subtitle: 通知の概要
+  greeting:
+    default: こんにちは
+    late_night: 夜遅くまでお疲れさまです
+    morning: おはようございます
+    afternoon: こんにちは
+    evening: こんばんは
+    with_name: "{greeting}、{name}"
+  loading: 通知の統計を読み込み中…
+  demo_badge: デモデータ（バックエンド未接続）
+  kpi:
+    total: 通知合計
+    last_30d: 過去30日
+    rate: 配信率
+    today: 今日の通知
+    today_sub: 送信 → 配信
+    devices: 受信デバイス
+    devices_enabled: 有効
+    devices_sub: '{n} 台 · エンドツーエンド暗号化'
+    devices_sub2: プッシュ購読 + WebSocket
+    trend_demo: デモ
+    trend_live: ライブ
+  heatmap:
+    title: 通知アクティビティ
+    subtitle: 過去1年 · 1日あたりの件数
+    less: 少
+    more: 多
+    week:
+      sun: 日
+      mon: 月
+      tue: 火
+      wed: 水
+      thu: 木
+      fri: 金
+      sat: 土
+    month: '{n}月'
+    tip:
+      count: '{n} 件の通知'
+      none: 通知なし
+      date: '{m}月{d}日 {w}曜日'
+  quickstart:
+    cta: 新しい Agent を連携
+    title: Agent を連携
+    subtitle: Agent のタスク完了を自動で通知
+    recommended: おすすめ
+    option_a: 一言で Agent にセットアップ
+    option_b: またはスクリプト / CI から送信
+    copy: コピー
+    curl_example_title: デプロイ完了
+    cmd_a_comment: '# Agent に送る一言'
+    cmd_a: anotify.dev/docs/skill を参照して通知報告をインストール： agent_settled を監視し、タスク終了時に自動でデバイスへプッシュ。
+  recent:
+    title: 最近の通知
+    subtitle: リアルタイム更新 · 行をクリックで詳細
+    filter_all: すべて
+    filter_success: 成功
+    filter_error: 失敗
+    filter_interrupted: 中断
+    refresh: 更新 →
+  recent_summary: 直近 {total} 件の通知、うち {ok} 件が成功。
+  notif:
+    empty: このステータスの通知はありません
+    delivered: '{d}/{t} 台に配信済み'
+    count: '{n} 件表示'
+  detail:
+    open_session: Agent セッションを開く
+    view_full: 完全ページを表示（全フィールド + 配信記録）→
+  demo:
+    n1_title: デプロイ完了
+    n1_body: ビルド成功、本番環境にデプロイ済み。47 ファイル変更。
+    n2_title: ビルド失敗
+    n2_body: 3 件のテストが失敗。完全なログ添付 — トラブルシューティングはこちら。
+    n3_title: タスク中断
+    n3_body: タスクが手動で停止されました。進捗 62%、状態は保存済み、再開可能。
+    n4_title: ドキュメント更新完了
+    n4_body: 3 ページ生成：README、API リファレンス、デプロイガイド。
+    n5_title: コードレビュー完了
+    n5_body: 12 ファイルをレビュー、2 件の潜在的ヌルポインタを発見、修正案を生成。
+    n6_title: DB マイグレーション失敗
+    n6_body: マイグレーションスクリプト 0042 がタイムアウト。自動ロールバック済み、データ影響なし。
+    n7_title: 依存関係アップグレード完了
+    n7_body: 8 件の依存関係を最新安定版にアップグレード、破壊的変更なし。
+    n8_title: バックアップ完了
+    n8_body: DB スナップショットを生成しオブジェクトストレージにアップロード、1.2 GB。
+message:
+  title: 通知の詳細
+  loading: 読み込み中…
+  body_label: 本文
+  open_link: Agent セッションを開く
+  fields_title: すべてのフィールド
+  deliveries_title: 配信記録
+  delivery:
+    delivered_count: '{ok}/{n} 配信済み'
+    empty: 配信記録なし（有効なデバイスが見つかりません）
+    attempt_info: '{channel} · {n} 回試行 · {time}'
+  error:
+    missing_id: メッセージ ID がありません（URL に ?id=ntf_… が必要）
+    not_found: メッセージが見つからないか削除されました
+login:
+  title: ログイン
+  welcome: おかえりなさい
+  subtitle: パスワード不要 · Passkey でワンタップログイン
+  tab:
+    login: ログイン
+    signup: 登録
+  login:
+    hint: 下のボタンをタップし、この端末の Passkey（Face ID / 指紋 / デバイスキー）でログイン。ユーザー名は不要です。
+    button: Passkey でログイン
+    security_note: 指紋 / Face ID / デバイスキー · フィッシング耐性
+  signup:
+    username_label: ユーザー名を選択
+    username_placeholder: 名前を決める
+    username_hint: 2〜32文字 · 英字 / 数字 / _ / - / .（記号で始まらない・終わらない）
+    button: Passkey を作成して登録
+    recovery_hint_prefix: 登録すると一组の
+    recovery_code: ワンタイムリカバリーコード
+    recovery_hint_suffix: が生成されます。デバイス交換やすべての Passkey を紛失した際に アカウントを復旧できます。安全に保管してください。
+    recovery_hint: 登録すると一组のワンタイムリカバリーコードが生成されます。 デバイス交換やすべての Passkey を紛失した際にアカウントを 復旧できます。安全に保管してください。
+  ios_tip_label: iOS ユーザー：
+  ios_tip: プッシュ通知を受信するには、まず Safari で本サイトを開き、 「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから 起動してログインしてください。
+  recovery_link: Passkey が使えない？リカバリーコードでログイン →
+  trust:
+    data_local: データはあなたのサーバーにのみ保存
+    webauthn: WebAuthn 標準
+    no_third_party: サードパーティアカウント不要
+  status:
+    demo: バックエンド未接続 — デモモードに入りました（サンプルデータ）。
+    login_success: ログイン成功 — ワークスペースに入ります…
+    signup_success: 登録完了 — ワークスペースに入ります…
+    unsupported: このブラウザは Passkey（WebAuthn）に対応していません。 最新の Safari / Chrome をお使いください。
+    cancelled_login: キャンセルされました、またはこの端末に利用可能な Passkey がありません — まず「登録」してください。
+    cancelled_signup: キャンセルまたはタイムアウト — 再試行して Passkey の作成を許可してください。
+    need_username: まずユーザー名を決めてください。
+    login_failed: ログイン失敗：
+    signup_failed: 登録失敗：
+  recovery_toast: リカバリーコードログインはバックエンド接続後に利用可能になります（ユーザー名 + ワンタイムリカバリーコード）
 receivers:
-  title: "通知先"
-  demo_badge: "デモデータ"
+  title: 通知先
+  demo_badge: デモデータ
   channel:
-    push: "プッシュ購読"
-    ws: "WebSocket 接続"
+    push: プッシュ購読
+    ws: WebSocket 接続
   push:
-    title: "ブラウザプッシュ購読"
-    subtitle_prefix: "システム Push サービス（APNs / FCM）で配信。"
-    subtitle_highlight: "ブラウザを閉じていても受信"
-    subtitle_suffix: ""
-    add_device: "このデバイスを追加"
+    title: ブラウザプッシュ購読
+    subtitle_prefix: システム Push サービス（APNs / FCM）で配信。
+    subtitle_highlight: ブラウザを閉じていても受信
+    subtitle_suffix: ''
+    add_device: このデバイスを追加
   ws:
-    title: "長接続受信 · プラグインと任意デバイスのために"
-    desc: >-
-      notify:receive 権限の API Key を持つ任意のデバイス / プラグインが
-      WebSocket 長接続を確立し、サーバーからリアルタイムに通知を受信。
-      デスクトップウィジェット、CLI デーモン、スマートホームブリッジなどに最適。
-      ブラウザプッシュと並行して動作します。
-    connection_method: "接続方法"
-    copy: "コピー"
-    active_title: "アクティブな接続"
-    active_subtitle: "現在確立している WebSocket 接続"
-    online: " 件オンライン"
-    empty_hint: >-
-      バックエンド接続後、ここにリアルタイム接続が表示されます
-      （接続名 / Key プレフィックス / 稼働時間 / タグ / 最新メッセージ）。
+    title: 長接続受信 · プラグインと任意デバイスのために
+    desc: notify:receive 権限の API Key を持つ任意のデバイス / プラグインが WebSocket 長接続を確立し、サーバーからリアルタイムに通知を受信。 デスクトップウィジェット、CLI デーモン、スマートホームブリッジなどに最適。 ブラウザプッシュと並行して動作します。
+    connection_method: 接続方法
+    copy: コピー
+    active_title: アクティブな接続
+    active_subtitle: 現在確立している WebSocket 接続
+    online: ' 件オンライン'
+    empty_hint: バックエンド接続後、ここにリアルタイム接続が表示されます （接続名 / Key プレフィックス / 稼働時間 / タグ / 最新メッセージ）。
   tags:
-    title: "タグルーティング · どのデバイスがどの通知を受け取るか"
-    desc: >-
-      通知報告時に deviceTags を付与します。「タグの積集合がある」または
-      「タグなし（全受信）」のデバイスのみが受信します。通知にタグなし =
-      すべての有効なデバイスへブロードキャスト、デバイスにタグなし =
-      すべてを受信。
+    title: タグルーティング · どのデバイスがどの通知を受け取るか
+    desc: 通知報告時に deviceTags を付与します。「タグの積集合がある」または 「タグなし（全受信）」のデバイスのみが受信します。通知にタグなし = すべての有効なデバイスへブロードキャスト、デバイスにタグなし = すべてを受信。
   pair:
-    title: "このデバイスを追加"
-    subtitle: "購読後、このブラウザがプッシュ通知を受信します"
-    device_name: "デバイス名"
-    device_placeholder: "例：メインスマホ / オフィスの Mac"
-    submit: "権限を要求して購読"
-    hint: "ブラウザが通知権限を要求します。iOS ではまず本サイトを「ホーム画面に追加」し、スタンドアロンアプリとして開く必要があります。"
-
+    title: このデバイスを追加
+    subtitle: 購読後、このブラウザがプッシュ通知を受信します
+    device_name: デバイス名
+    device_placeholder: 例：メインスマホ / オフィスの Mac
+    submit: 権限を要求して購読
+    hint: ブラウザが通知権限を要求します。iOS ではまず本サイトを「ホーム画面に追加」し、スタンドアロンアプリとして開く必要があります。
 keys:
-  title: "API Keys"
-  subtitle: "Agent が通知報告に使用する Key"
-  desc_prefix: "Agent が Key を携えて呼び出す"
-  desc_suffix: "で通知を報告。Key は作成時に一度だけ完全表示され、サーバーにはハッシュのみ保存 — すぐに保管してください。"
-  create_button: "Key を作成"
-  api_endpoint: "報告エンドポイント"
-  view_docs: "完全な API ドキュメントを表示"
-  header_label: "Header"
-  my_keys: "マイ Keys"
+  title: API Keys
+  subtitle: Agent が通知報告に使用する Key
+  desc_prefix: Agent が Key を携えて呼び出す
+  desc_suffix: で通知を報告。Key は作成時に一度だけ完全表示され、サーバーにはハッシュのみ保存 — すぐに保管してください。
+  create_button: Key を作成
+  api_endpoint: 報告エンドポイント
+  view_docs: 完全な API ドキュメントを表示
+  header_label: Header
+  my_keys: マイ Keys
   col:
-    name: "名前"
-    prefix: "Key プレフィックス"
-    scope: "スコープ"
-    last_used: "最終使用"
-    status: "ステータス"
-    actions: "操作"
+    name: 名前
+    prefix: Key プレフィックス
+    scope: スコープ
+    last_used: 最終使用
+    status: ステータス
+    actions: 操作
   security:
-    title: "Key のセキュリティベストプラクティス"
-    point1_prefix: "Key 平文は"
-    point1_highlight: "作成時に一度だけ表示"
-    point1_suffix: "され、その後は再表示できず、再生成のみ可能"
-    point2_prefix: "サーバーには"
-    point2_highlight: "argon2id ハッシュ"
-    point2_suffix: "のみ保存され、DB 漏洩でも Key を復元できません"
-    point3_prefix: "推奨："
-    point3_highlight: "Agent / 環境ごとに1つの Key"
-    point3_suffix: "。漏洩時は該当するものだけを失効"
-    point4: "Key をバージョン管理にコミットしないでください。環境変数やシークレットマネージャーで注入してください"
+    title: Key のセキュリティベストプラクティス
+    point1_prefix: Key 平文は
+    point1_highlight: 作成時に一度だけ表示
+    point1_suffix: され、その後は再表示できず、再生成のみ可能
+    point2_prefix: サーバーには
+    point2_highlight: argon2id ハッシュ
+    point2_suffix: のみ保存され、DB 漏洩でも Key を復元できません
+    point3_prefix: 推奨：
+    point3_highlight: Agent / 環境ごとに1つの Key
+    point3_suffix: 。漏洩時は該当するものだけを失効
+    point4: Key をバージョン管理にコミットしないでください。環境変数やシークレットマネージャーで注入してください
   create:
-    title: "新しい API Key"
-    subtitle: "名前を付けてスコープを選択"
-    name_label: "名前"
-    name_placeholder: "例：ローカル開発 / CI パイプライン / 本番 Agent"
-    scope_label: "スコープ（複数選択可、最小権限）"
-    scope_send_label: "送信"
-    scope_send_desc: "Agent / CI が POST 通知に使用。プレフィックス ant_live_"
-    scope_receive_label: "受信"
-    scope_receive_desc: "プラグイン / デバイスが WebSocket 接続を確立するために使用。プレフィックス ant_recv_"
-    scope_read_label: "デバイス参照"
-    scope_read_desc: "スクリプト点検用の読み取り専用デバイス一覧"
-    scope_hint: "最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。"
-    cancel: "キャンセル"
-    generate: "Key を生成"
+    title: 新しい API Key
+    subtitle: 名前を付けてスコープを選択
+    name_label: 名前
+    name_placeholder: 例：ローカル開発 / CI パイプライン / 本番 Agent
+    scope_label: スコープ（複数選択可、最小権限）
+    scope_send_label: 送信
+    scope_send_desc: Agent / CI が POST 通知に使用。プレフィックス ant_live_
+    scope_receive_label: 受信
+    scope_receive_desc: プラグイン / デバイスが WebSocket 接続を確立するために使用。プレフィックス ant_recv_
+    scope_read_label: デバイス参照
+    scope_read_desc: スクリプト点検用の読み取り専用デバイス一覧
+    scope_hint: 最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。
+    cancel: キャンセル
+    generate: Key を生成
   save:
-    title: "Key を保存"
-    subtitle_prefix: "これは"
-    subtitle_highlight: "唯一の完全表示"
-    copy: "コピー"
-    warning: "閉じると完全な Key は二度と表示できません。今すぐパスワードマネージャーや安全な場所に保存してください。"
-    done: "保存しました"
-
+    title: Key を保存
+    subtitle_prefix: これは
+    subtitle_highlight: 唯一の完全表示
+    copy: コピー
+    warning: 閉じると完全な Key は二度と表示できません。今すぐパスワードマネージャーや安全な場所に保存してください。
+    done: 保存しました
 security:
-  title: "セキュリティとログイン"
-  subtitle: "Passkey · セッション · リカバリーコード"
-  intro: >-
-    「あなたは誰か」をすべて管理：Passkey 認証情報、ログインセッション、
-    リカバリーコード。これらは「通知をどこへ送るか」（受信デバイス）と
-    は独立した軸です。
-  add_passkey: "Passkey を追加"
+  title: セキュリティとログイン
+  subtitle: Passkey · セッション · リカバリーコード
+  intro: 「あなたは誰か」をすべて管理：Passkey 認証情報、ログインセッション、 リカバリーコード。これらは「通知をどこへ送るか」（受信デバイス）と は独立した軸です。
+  add_passkey: Passkey を追加
   passkey:
-    title: "Passkey 認証情報"
-    subtitle: "パスワード不要のログイン認証情報。1アカウントで複数の Passkey を保持でき、同じエコシステム内のデバイス間で同期できます"
-    count: "件の認証情報"
+    title: Passkey 認証情報
+    subtitle: パスワード不要のログイン認証情報。1アカウントで複数の Passkey を保持でき、同じエコシステム内のデバイス間で同期できます
+    count: 件の認証情報
   session:
-    title: "ログインセッション"
-    subtitle: "あなたのアカウントが現在どのデバイスでログイン中か。セッションは独立しており、個別に失効できます"
-    count: "件のアクティブなセッション"
+    title: ログインセッション
+    subtitle: あなたのアカウントが現在どのデバイスでログイン中か。セッションは独立しており、個別に失効できます
+    count: 件のアクティブなセッション
   recovery:
-    title: "リカバリーコード"
-    desc_prefix: "すべてのデバイスを紛失し、Passkey で"
-    desc_highlight: "ログインできない"
-    desc_suffix: >-
-      場合の最終手段。ユーザー名 + リカバリーコードでログイン後、
-      新しい Passkey を追加できます。各コードは1回限り有効。
-    regenerate: "再生成"
-    hint: "機能は近日公開 · 登録成功後、8個のワンタイムリカバリーコードが生成されます。パスワードマネージャーに保存してください"
+    title: リカバリーコード
+    desc_prefix: すべてのデバイスを紛失し、Passkey で
+    desc_highlight: ログインできない
+    desc_suffix: 場合の最終手段。ユーザー名 + リカバリーコードでログイン後、 新しい Passkey を追加できます。各コードは1回限り有効。
+    regenerate: 再生成
+    hint: 機能は近日公開 · 登録成功後、8個のワンタイムリカバリーコードが生成されます。パスワードマネージャーに保存してください
   concept:
-    title: "2つの独立した軸"
-    auth_label: "認証軸"
-    auth_axis: "「あなたは誰か」を決定（このページ）"
-    auth_p1: "· Passkey 認証情報：1アカウントで複数保持可"
-    auth_p2: "· ログインセッション：複数端末で並存、個別失効可"
-    auth_p3: "· リカバリーコード：全デバイス紛失時のフォールバック"
-    delivery_label: "配信軸"
-    delivery_axis: "「どこへ送るか」を決定"
-    delivery_p1: "· 通知先ページで管理、このページとは無関係"
-    delivery_p2: "· ブラウザプッシュ購読 + WebSocket 接続"
-    delivery_p3: "· ログアウト後も購読を解除するまで受信"
-
+    title: 2つの独立した軸
+    auth_label: 認証軸
+    auth_axis: 「あなたは誰か」を決定（このページ）
+    auth_p1: · Passkey 認証情報：1アカウントで複数保持可
+    auth_p2: · ログインセッション：複数端末で並存、個別失効可
+    auth_p3: · リカバリーコード：全デバイス紛失時のフォールバック
+    delivery_label: 配信軸
+    delivery_axis: 「どこへ送るか」を決定
+    delivery_p1: · 通知先ページで管理、このページとは無関係
+    delivery_p2: · ブラウザプッシュ購読 + WebSocket 接続
+    delivery_p3: · ログアウト後も購読を解除するまで受信
 docs:
-  title: "連携ドキュメント"
-  subtitle: "Agent 報告 · Web Push · WebSocket"
-  toc_heading: "このページの目次"
+  title: 連携ドキュメント
+  subtitle: Agent 報告 · Web Push · WebSocket
+  toc_heading: このページの目次
   toc:
-    agent: "Agent 連携"
-    api: "API 概要"
-    auth: "認証方式"
-    notify: "POST /v1/notify"
-    webpush: "Web Push 購読"
-    stream: "WebSocket 受信"
+    agent: Agent 連携
+    api: API 概要
+    auth: 認証方式
+    notify: POST /v1/notify
+    webpush: Web Push 購読
+    stream: WebSocket 受信

@@ -1,272 +1,357 @@
-# Anotify 中文翻译（默认语言）
-# key 命名：common.*（共享）/ 页面名.*
-# 扁平化后供模板 {{t}} 和运行时 Anotify.t 使用。
-# 扁平化后供模板 {{t "key"}} 和运行时 Anotify.t("key") 使用。
-
 common:
   brand:
-    name: "Anotify"
-    tagline: "Agent 完成即通知"
+    name: Anotify
+    tagline: Agent 完成即通知
   nav:
-    overview: "总览"
-    receivers: "通知接收"
-    keys: "API Keys"
-    integration: "集成"
-    agent: "接入 Agent"
-    api: "API 文档"
-    scheme: "技术方案"
-    account: "账户"
-    security: "安全与登录"
-    logout: "退出登录"
-    menu: "菜单"
-    notification: "通知"
+    overview: 总览
+    receivers: 通知接收
+    keys: API Keys
+    integration: 集成
+    agent: 接入 Agent
+    api: API 文档
+    scheme: 技术方案
+    account: 账户
+    security: 安全与登录
+    logout: 退出登录
+    menu: 菜单
+    notification: 通知
   lang:
-    label: "语言"
-    switcher_label: "切换语言"
-    switcher_aria: "语言选择"
-    current: "当前语言"
-    # Language hint banner — values are in the TARGET language,
-    # identical across all locale files so the banner is readable by
-    # the target user regardless of which language page they're on.
+    label: 语言
+    switcher_label: 切换语言
+    switcher_aria: 语言选择
+    current: 当前语言
     hint:
       text:
-        "zh-CN": "本网站提供简体中文版本"
-        en: "This site is also available in English"
-        ja: "このサイトは日本語でもご利用いただけます"
-        es: "Este sitio también está disponible en español"
+        zh-CN: 本网站提供简体中文版本
+        en: This site is also available in English
+        ja: このサイトは日本語でもご利用いただけます
+        es: Este sitio también está disponible en español
       action:
-        "zh-CN": "切换到简体中文"
-        en: "Switch to English"
-        ja: "日本語に切り替える"
-        es: "Cambiar a español"
+        zh-CN: 切换到简体中文
+        en: Switch to English
+        ja: 日本語に切り替える
+        es: Cambiar a español
       dismiss:
-        "zh-CN": "关闭语言提示"
-        en: "Dismiss language hint"
-        ja: "言語のヒントを閉じる"
-        es: "Cerrar el aviso de idioma"
+        zh-CN: 关闭语言提示
+        en: Dismiss language hint
+        ja: 言語のヒントを閉じる
+        es: Cerrar el aviso de idioma
   sidebar:
-    deployment: "私有化部署 · 主工作台"
+    deployment: 私有化部署 · 主工作台
   footer:
-    copyright: "Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器"
-    login_copyright: "© 2026 Anotify · MIT License · Passkey 免密"
-
-index:
-  title: "总览"
-  subtitle: "你的通知一览"
-  greeting: "你好"
-  loading: "正在加载你的通知统计…"
-  demo_badge: "演示数据（后端未连接）"
-  kpi:
-    total: "通知总数"
-    last_30d: "近 30 天"
-    rate: "送达率"
-    today: "今日通知"
-    today_sub: "上报 → 送达"
-    devices: "接收设备"
-    devices_enabled: "已启用"
-  heatmap:
-    title: "通知活动"
-    subtitle: "近一年 · 每天的收发量"
-    less: "少"
-    more: "多"
-  quickstart:
-    cta: "接入新 Agent"
-    title: "接入你的 Agent"
-    subtitle: "让 Agent 在任务完成时自动通知你"
-    recommended: "推荐方式"
-    option_a: "一句话让 Agent 自己装好"
-    option_b: "或脚本 / CI 直接上报"
-    copy: "复制"
-    curl_example_title: "部署完成"
-    cmd_a_comment: "# 发给你的 Agent 的一句话"
-    cmd_a: "参照 anotify.dev/docs/skill 为我安装通知上报：监听 agent_settled，任务结束自动推送到我的设备。"
-  recent:
-    title: "最近通知"
-    subtitle: "实时更新 · 点击行查看详情"
-    filter_all: "全部"
-    filter_success: "成功"
-    filter_error: "失败"
-    filter_interrupted: "中断"
-    refresh: "刷新 →"
-
-message:
-  title: "通知详情"
-  loading: "正在加载…"
-  body_label: "正文"
-  open_link: "打开 Agent 会话"
-  fields_title: "全部字段"
-  deliveries_title: "投递记录"
-
-login:
-  title: "登录"
-  welcome: "欢迎回到"
-  subtitle: "无需密码 · 用 Passkey 一键登录"
-  tab:
-    login: "登录"
-    signup: "注册"
-  login:
-    hint: "点击下方按钮，用本机的 Passkey（Face ID / 指纹 / 设备密钥）直接登录，无需输入用户名。"
-    button: "用 Passkey 登录"
-    security_note: "指纹 / Face ID / 设备密钥 · 抗钓鱼"
-  signup:
-    username_label: "选择用户名"
-    username_placeholder: "给自己起个名字"
-    username_hint: "2–32 位，字母 / 数字 / _ / - / .，且不能以符号开头结尾"
-    button: "创建 Passkey 并注册"
-    recovery_hint_prefix: "注册后会生成一组"
-    recovery_code: "一次性恢复码"
-    recovery_hint_suffix: "——当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。"
-    recovery_hint: "注册后会生成一组一次性恢复码——当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。"
-  ios_tip_label: "iOS 用户："
-  ios_tip: "要接收推送通知，请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。"
-  recovery_link: "无法使用 Passkey？用恢复码登录 →"
-  trust:
-    data_local: "数据仅存于你的服务器"
-    webauthn: "WebAuthn 标准"
-    no_third_party: "无第三方账号"
+    copyright: Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器
+    login_copyright: © 2026 Anotify · MIT License · Passkey 免密
+  time:
+    just_now: 刚刚
+    minutes_ago: '{n} 分钟前'
+    hours_ago: '{n} 小时前'
+    days_ago: '{n} 天前'
+    never: 从未使用
+  ttl:
+    day: '{n} 天'
+    hour: '{n} 小时'
+    minute: '{n} 分钟'
+    second: '{n} 秒'
   status:
-    demo: "后端未连接，已进入演示模式（数据为示例）。"
-    login_success: "登录成功，正在进入工作台…"
-    signup_success: "注册成功！正在进入工作台…"
-    unsupported: "当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。"
-    cancelled_login: "已取消，或本机没有可用的 Passkey——请先「注册」一个。"
-    cancelled_signup: "已取消或超时——请重试并允许创建 Passkey。"
-    need_username: "先给自己起个用户名。"
-    login_failed: "登录失败："
-    signup_failed: "注册失败："
-  recovery_toast: "恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）"
-
+    success: 成功
+    error: 失败
+    interrupted: 中断
+    info: 信息
+    warning: 警告
+  priority:
+    high: 高
+    normal: 普通
+    low: 低
+  delivery:
+    pending: 待投递
+    sent: 已发送
+    delivered: 已送达
+    acked: 已确认
+    failed: 失败
+  placeholder:
+    no_title: （无标题）
+    no_body: （无正文）
+    broadcast: （广播）
+  copy:
+    copied: 已复制 ✓
+    failed: 复制失败，请手动选择复制
+  platform:
+    browser: 浏览器
+  field:
+    msg_id: 消息 ID
+    agent: Agent
+    session: 会话
+    model: 模型
+    duration: 耗时
+    status: 状态
+    priority: 优先级
+    device_tags: 路由标签
+    ttl: TTL
+    created_at: 创建时间
+    seq: 序号 Seq
+    expires_at: 过期时间
+    external_link: 外部链接
+    cwd: 项目 CWD
+index:
+  title: 总览
+  subtitle: 你的通知一览
+  greeting:
+    default: 你好
+    late_night: 夜深了
+    morning: 早上好
+    afternoon: 下午好
+    evening: 晚上好
+    with_name: "{greeting}，{name}"
+  loading: 正在加载你的通知统计…
+  demo_badge: 演示数据（后端未连接）
+  kpi:
+    total: 通知总数
+    last_30d: 近 30 天
+    rate: 送达率
+    today: 今日通知
+    today_sub: 上报 → 送达
+    devices: 接收设备
+    devices_enabled: 已启用
+    devices_sub: '{n} 台设备 · 端到端加密'
+    devices_sub2: 推送订阅 + 长连接
+    trend_demo: 示例
+    trend_live: 实时
+  heatmap:
+    title: 通知活动
+    subtitle: 近一年 · 每天的收发量
+    less: 少
+    more: 多
+    week:
+      sun: 日
+      mon: 一
+      tue: 二
+      wed: 三
+      thu: 四
+      fri: 五
+      sat: 六
+    month: '{n}月'
+    tip:
+      count: '{n} 条通知'
+      none: 无通知
+      date: '{m}月{d}日 周{w}'
+  quickstart:
+    cta: 接入新 Agent
+    title: 接入你的 Agent
+    subtitle: 让 Agent 在任务完成时自动通知你
+    recommended: 推荐方式
+    option_a: 一句话让 Agent 自己装好
+    option_b: 或脚本 / CI 直接上报
+    copy: 复制
+    curl_example_title: 部署完成
+    cmd_a_comment: '# 发给你的 Agent 的一句话'
+    cmd_a: 参照 anotify.dev/docs/skill 为我安装通知上报：监听 agent_settled，任务结束自动推送到我的设备。
+  recent:
+    title: 最近通知
+    subtitle: 实时更新 · 点击行查看详情
+    filter_all: 全部
+    filter_success: 成功
+    filter_error: 失败
+    filter_interrupted: 中断
+    refresh: 刷新 →
+  recent_summary: 最近收录 {total} 条通知，其中 {ok} 条成功。
+  notif:
+    empty: 暂无该状态的通知
+    delivered: '{d}/{t} 设备已送达'
+    count: 显示 {n} 条
+  detail:
+    open_session: 打开 Agent 会话
+    view_full: 查看完整页面（全部字段 + 投递记录）→
+  demo:
+    n1_title: 部署完成
+    n1_body: 构建成功，已发布到生产环境。共 47 个文件变更。
+    n2_title: 构建失败
+    n2_body: 3 个测试用例未通过。已附上完整日志，点击查看排查建议。
+    n3_title: 任务被中断
+    n3_body: 任务被手动停止。当前进度 62%，已保留现场，可继续。
+    n4_title: 文档更新完成
+    n4_body: 生成 3 个页面：README、API 参考、部署指南。
+    n5_title: 代码审查完成
+    n5_body: 审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。
+    n6_title: 数据库迁移失败
+    n6_body: 迁移脚本 0042 执行超时。已自动回滚，数据未受影响。
+    n7_title: 依赖升级完成
+    n7_body: 升级 8 个依赖至最新稳定版，无破坏性变更。
+    n8_title: 备份任务完成
+    n8_body: 数据库快照已生成并上传至对象存储，大小 1.2 GB。
+message:
+  title: 通知详情
+  loading: 正在加载…
+  body_label: 正文
+  open_link: 打开 Agent 会话
+  fields_title: 全部字段
+  deliveries_title: 投递记录
+  delivery:
+    delivered_count: '{ok}/{n} 已送达'
+    empty: 暂无投递记录（未匹配到启用设备）
+    attempt_info: '{channel} · 尝试 {n} 次 · {time}'
+  error:
+    missing_id: 缺少消息 ID（URL 应有 ?id=ntf_…）
+    not_found: 消息不存在或已被清理
+login:
+  title: 登录
+  welcome: 欢迎回到
+  subtitle: 无需密码 · 用 Passkey 一键登录
+  tab:
+    login: 登录
+    signup: 注册
+  login:
+    hint: 点击下方按钮，用本机的 Passkey（Face ID / 指纹 / 设备密钥）直接登录，无需输入用户名。
+    button: 用 Passkey 登录
+    security_note: 指纹 / Face ID / 设备密钥 · 抗钓鱼
+  signup:
+    username_label: 选择用户名
+    username_placeholder: 给自己起个名字
+    username_hint: 2–32 位，字母 / 数字 / _ / - / .，且不能以符号开头结尾
+    button: 创建 Passkey 并注册
+    recovery_hint_prefix: 注册后会生成一组
+    recovery_code: 一次性恢复码
+    recovery_hint_suffix: ——当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。
+    recovery_hint: 注册后会生成一组一次性恢复码——当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。
+  ios_tip_label: iOS 用户：
+  ios_tip: 要接收推送通知，请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。
+  recovery_link: 无法使用 Passkey？用恢复码登录 →
+  trust:
+    data_local: 数据仅存于你的服务器
+    webauthn: WebAuthn 标准
+    no_third_party: 无第三方账号
+  status:
+    demo: 后端未连接，已进入演示模式（数据为示例）。
+    login_success: 登录成功，正在进入工作台…
+    signup_success: 注册成功！正在进入工作台…
+    unsupported: 当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。
+    cancelled_login: 已取消，或本机没有可用的 Passkey——请先「注册」一个。
+    cancelled_signup: 已取消或超时——请重试并允许创建 Passkey。
+    need_username: 先给自己起个用户名。
+    login_failed: 登录失败：
+    signup_failed: 注册失败：
+  recovery_toast: 恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）
 receivers:
-  title: "通知接收"
-  demo_badge: "演示数据"
+  title: 通知接收
+  demo_badge: 演示数据
   channel:
-    push: "推送订阅"
-    ws: "WebSocket 长连接"
+    push: 推送订阅
+    ws: WebSocket 长连接
   push:
-    title: "浏览器推送订阅"
-    subtitle_prefix: "通过系统 Push 服务（APNs / FCM）送达，"
-    subtitle_highlight: "浏览器关闭也能收到"
-    subtitle_suffix: ""
-    add_device: "添加此设备"
+    title: 浏览器推送订阅
+    subtitle_prefix: 通过系统 Push 服务（APNs / FCM）送达，
+    subtitle_highlight: 浏览器关闭也能收到
+    subtitle_suffix: ''
+    add_device: 添加此设备
   ws:
-    title: "长连接接收 · 为插件与任意设备而生"
-    desc: >-
-      任何设备 / 插件用 notify:receive 权限的 API Key
-      建立 WebSocket 长连接，服务端实时推送通知。适合做桌面插件、
-      CLI 守护进程、智能家居桥接等。与浏览器推送并行存在。
-    connection_method: "连接方式"
-    copy: "复制"
-    active_title: "活跃连接"
-    active_subtitle: "当前建立的 WebSocket 长连接"
-    online: "个在线"
-    empty_hint: "后端接入后，这里会显示实时长连接（连接名 / Key 前缀 / 在线时长 / 标签 / 最近消息）。"
+    title: 长连接接收 · 为插件与任意设备而生
+    desc: 任何设备 / 插件用 notify:receive 权限的 API Key 建立 WebSocket 长连接，服务端实时推送通知。适合做桌面插件、 CLI 守护进程、智能家居桥接等。与浏览器推送并行存在。
+    connection_method: 连接方式
+    copy: 复制
+    active_title: 活跃连接
+    active_subtitle: 当前建立的 WebSocket 长连接
+    online: 个在线
+    empty_hint: 后端接入后，这里会显示实时长连接（连接名 / Key 前缀 / 在线时长 / 标签 / 最近消息）。
   tags:
-    title: "标签路由 · 决定「哪台设备收哪类通知」"
-    desc: >-
-      上报通知时带上 deviceTags，只有「标签有交集」或
-      「无标签（全收）」的设备会收到。通知不带标签 = 广播到所有
-      已启用设备；设备不带标签 = 接收一切。
+    title: 标签路由 · 决定「哪台设备收哪类通知」
+    desc: 上报通知时带上 deviceTags，只有「标签有交集」或 「无标签（全收）」的设备会收到。通知不带标签 = 广播到所有 已启用设备；设备不带标签 = 接收一切。
   pair:
-    title: "添加此设备"
-    subtitle: "订阅后，这台设备的浏览器将接收推送"
-    device_name: "设备名称"
-    device_placeholder: "如：主力手机 / 办公室 Mac"
-    submit: "请求权限并订阅推送"
-    hint: "浏览器会弹出通知权限请求。iOS 需要先把本站「添加到主屏幕」，再以独立 App 方式打开。"
-
+    title: 添加此设备
+    subtitle: 订阅后，这台设备的浏览器将接收推送
+    device_name: 设备名称
+    device_placeholder: 如：主力手机 / 办公室 Mac
+    submit: 请求权限并订阅推送
+    hint: 浏览器会弹出通知权限请求。iOS 需要先把本站「添加到主屏幕」，再以独立 App 方式打开。
 keys:
-  title: "API Keys"
-  subtitle: "Agent 用它上报通知"
-  desc_prefix: "Agent 携带 Key 调用"
-  desc_suffix: "上报通知。 Key 仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存。"
-  create_button: "新建 Key"
-  api_endpoint: "上报接口"
-  view_docs: "查看完整接口文档"
-  header_label: "Header"
-  my_keys: "我的 Keys"
+  title: API Keys
+  subtitle: Agent 用它上报通知
+  desc_prefix: Agent 携带 Key 调用
+  desc_suffix: 上报通知。 Key 仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存。
+  create_button: 新建 Key
+  api_endpoint: 上报接口
+  view_docs: 查看完整接口文档
+  header_label: Header
+  my_keys: 我的 Keys
   col:
-    name: "名称"
-    prefix: "Key 前缀"
-    scope: "权限"
-    last_used: "最近使用"
-    status: "状态"
-    actions: "操作"
+    name: 名称
+    prefix: Key 前缀
+    scope: 权限
+    last_used: 最近使用
+    status: 状态
+    actions: 操作
   security:
-    title: "Key 的安全实践"
-    point1_prefix: "Key 明文"
-    point1_highlight: "只在创建时展示一次"
-    point1_suffix: "，之后无法再次查看，只能重新生成"
-    point2_prefix: "服务端仅存"
-    point2_highlight: "argon2id 哈希"
-    point2_suffix: "，即使数据库泄露也无法还原 Key"
-    point3_prefix: "建议"
-    point3_highlight: "每个 Agent / 环境一个 Key"
-    point3_suffix: "，泄露时只停用受影响的那一个"
-    point4: "不要把 Key 提交进代码仓库；用环境变量或密钥管理器注入"
+    title: Key 的安全实践
+    point1_prefix: Key 明文
+    point1_highlight: 只在创建时展示一次
+    point1_suffix: ，之后无法再次查看，只能重新生成
+    point2_prefix: 服务端仅存
+    point2_highlight: argon2id 哈希
+    point2_suffix: ，即使数据库泄露也无法还原 Key
+    point3_prefix: 建议
+    point3_highlight: 每个 Agent / 环境一个 Key
+    point3_suffix: ，泄露时只停用受影响的那一个
+    point4: 不要把 Key 提交进代码仓库；用环境变量或密钥管理器注入
   create:
-    title: "新建 API Key"
-    subtitle: "给它起个名字，并选择权限范围"
-    name_label: "名称"
-    name_placeholder: "例如：本地开发 / CI 流水线 / 生产 Agent"
-    scope_label: "权限范围（可多选，最小化原则）"
-    scope_send_label: "上报"
-    scope_send_desc: "Agent / CI 用来 POST 通知。前缀 ant_live_"
-    scope_receive_label: "接收"
-    scope_receive_desc: "插件 / 设备用来建立 WebSocket 长连接接收。前缀 ant_recv_"
-    scope_read_label: "设备查询"
-    scope_read_desc: "只读查看设备列表，用于脚本巡检"
-    scope_hint: "权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。"
-    cancel: "取消"
-    generate: "生成 Key"
+    title: 新建 API Key
+    subtitle: 给它起个名字，并选择权限范围
+    name_label: 名称
+    name_placeholder: 例如：本地开发 / CI 流水线 / 生产 Agent
+    scope_label: 权限范围（可多选，最小化原则）
+    scope_send_label: 上报
+    scope_send_desc: Agent / CI 用来 POST 通知。前缀 ant_live_
+    scope_receive_label: 接收
+    scope_receive_desc: 插件 / 设备用来建立 WebSocket 长连接接收。前缀 ant_recv_
+    scope_read_label: 设备查询
+    scope_read_desc: 只读查看设备列表，用于脚本巡检
+    scope_hint: 权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。
+    cancel: 取消
+    generate: 生成 Key
   save:
-    title: "保存你的 Key"
-    subtitle_prefix: "这是它"
-    subtitle_highlight: "唯一一次完整展示"
-    copy: "复制"
-    warning: "关闭后将无法再次查看完整 Key。请立即保存到密码管理器或安全的地方。"
-    done: "我已保存"
-
+    title: 保存你的 Key
+    subtitle_prefix: 这是它
+    subtitle_highlight: 唯一一次完整展示
+    copy: 复制
+    warning: 关闭后将无法再次查看完整 Key。请立即保存到密码管理器或安全的地方。
+    done: 我已保存
 security:
-  title: "安全与登录"
-  subtitle: "Passkey · 会话 · 恢复码"
-  intro: "这里管理「你是谁」的一切：Passkey 凭证、登录会话、恢复码。它们与「通知发到哪」（接收设备）是两条独立的轴。"
-  add_passkey: "添加 Passkey"
+  title: 安全与登录
+  subtitle: Passkey · 会话 · 恢复码
+  intro: 这里管理「你是谁」的一切：Passkey 凭证、登录会话、恢复码。它们与「通知发到哪」（接收设备）是两条独立的轴。
+  add_passkey: 添加 Passkey
   passkey:
-    title: "Passkey 凭证"
-    subtitle: "你的免密登录凭证。一个账号可挂多个 Passkey，可经系统同步到同生态设备"
-    count: "个凭证"
+    title: Passkey 凭证
+    subtitle: 你的免密登录凭证。一个账号可挂多个 Passkey，可经系统同步到同生态设备
+    count: 个凭证
   session:
-    title: "登录会话"
-    subtitle: "你的账号当前在哪些设备上处于登录态。会话各自独立、可单独吊销"
-    count: "个活跃会话"
+    title: 登录会话
+    subtitle: 你的账号当前在哪些设备上处于登录态。会话各自独立、可单独吊销
+    count: 个活跃会话
   recovery:
-    title: "恢复码"
-    desc_prefix: "当你丢失所有设备、无法用 Passkey 登录时的"
-    desc_highlight: "终极兜底"
-    desc_suffix: "。用「用户名 + 恢复码」登录后可为新设备补建 Passkey。每个码只能用一次。"
-    regenerate: "重新生成"
-    hint: "功能即将上线 · 注册成功后将生成 8 个一次性恢复码，请保存到密码管理器"
+    title: 恢复码
+    desc_prefix: 当你丢失所有设备、无法用 Passkey 登录时的
+    desc_highlight: 终极兜底
+    desc_suffix: 。用「用户名 + 恢复码」登录后可为新设备补建 Passkey。每个码只能用一次。
+    regenerate: 重新生成
+    hint: 功能即将上线 · 注册成功后将生成 8 个一次性恢复码，请保存到密码管理器
   concept:
-    title: "两条独立的轴"
-    auth_label: "认证轴"
-    auth_axis: "决定「你是谁」（本页）"
-    auth_p1: "· Passkey 凭证：一个账号可挂多个"
-    auth_p2: "· 登录会话：多端并存、可单独吊销"
-    auth_p3: "· 恢复码：所有设备丢失时的兜底"
-    delivery_label: "投递轴"
-    delivery_axis: "决定「发到哪」"
-    delivery_p1: "· 在「通知接收」页管理，与本页无关"
-    delivery_p2: "· 浏览器推送订阅 + WebSocket 长连接"
-    delivery_p3: "· 退出登录后仍会收到，直到取消订阅"
-
+    title: 两条独立的轴
+    auth_label: 认证轴
+    auth_axis: 决定「你是谁」（本页）
+    auth_p1: · Passkey 凭证：一个账号可挂多个
+    auth_p2: · 登录会话：多端并存、可单独吊销
+    auth_p3: · 恢复码：所有设备丢失时的兜底
+    delivery_label: 投递轴
+    delivery_axis: 决定「发到哪」
+    delivery_p1: · 在「通知接收」页管理，与本页无关
+    delivery_p2: · 浏览器推送订阅 + WebSocket 长连接
+    delivery_p3: · 退出登录后仍会收到，直到取消订阅
 docs:
-  title: "接入文档"
-  subtitle: "Agent 上报 · Web Push · WebSocket"
-  toc_heading: "本页目录"
+  title: 接入文档
+  subtitle: Agent 上报 · Web Push · WebSocket
+  toc_heading: 本页目录
   toc:
-    agent: "接入 Agent"
-    api: "API 概览"
-    auth: "认证方式"
-    notify: "POST /v1/notify"
-    webpush: "Web Push 订阅"
-    stream: "WebSocket 接收"
+    agent: 接入 Agent
+    api: API 概览
+    auth: 认证方式
+    notify: POST /v1/notify
+    webpush: Web Push 订阅
+    stream: WebSocket 接收

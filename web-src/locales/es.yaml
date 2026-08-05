@@ -1,338 +1,359 @@
-# Anotify Español — traducciones
-# Mismo conjunto de claves que zh-CN.yaml (sin claves de más ni de menos).
-
 common:
   brand:
-    name: "Anotify"
-    tagline: "Notifica cuando tu agente termina"
+    name: Anotify
+    tagline: Notifica cuando tu agente termina
   nav:
-    overview: "Resumen"
-    receivers: "Destinatarios"
-    keys: "API Keys"
-    integration: "Integraciones"
-    agent: "Conectar Agent"
-    api: "Docs API"
-    scheme: "Especificación"
-    account: "Cuenta"
-    security: "Seguridad y acceso"
-    logout: "Cerrar sesión"
-    menu: "Menú"
-    notification: "Notificaciones"
+    overview: Resumen
+    receivers: Destinatarios
+    keys: API Keys
+    integration: Integraciones
+    agent: Conectar Agent
+    api: Docs API
+    scheme: Especificación
+    account: Cuenta
+    security: Seguridad y acceso
+    logout: Cerrar sesión
+    menu: Menú
+    notification: Notificaciones
   lang:
-    label: "Idioma"
-    switcher_label: "Cambiar idioma"
-    switcher_aria: "Selección de idioma"
-    current: "Idioma actual"
-    # Language hint banner — values are in the TARGET language,
-    # identical across all locale files so the banner is readable by
-    # the target user regardless of which language page they're on.
+    label: Idioma
+    switcher_label: Cambiar idioma
+    switcher_aria: Selección de idioma
+    current: Idioma actual
     hint:
       text:
-        "zh-CN": "本网站提供简体中文版本"
-        en: "This site is also available in English"
-        ja: "このサイトは日本語でもご利用いただけます"
-        es: "Este sitio también está disponible en español"
+        zh-CN: 本网站提供简体中文版本
+        en: This site is also available in English
+        ja: このサイトは日本語でもご利用いただけます
+        es: Este sitio también está disponible en español
       action:
-        "zh-CN": "切换到简体中文"
-        en: "Switch to English"
-        ja: "日本語に切り替える"
-        es: "Cambiar a español"
+        zh-CN: 切换到简体中文
+        en: Switch to English
+        ja: 日本語に切り替える
+        es: Cambiar a español
       dismiss:
-        "zh-CN": "关闭语言提示"
-        en: "Dismiss language hint"
-        ja: "言語のヒントを閉じる"
-        es: "Cerrar el aviso de idioma"
+        zh-CN: 关闭语言提示
+        en: Dismiss language hint
+        ja: 言語のヒントを閉じる
+        es: Cerrar el aviso de idioma
   sidebar:
-    deployment: "Self-hosted · Espacio principal"
+    deployment: Self-hosted · Espacio principal
   footer:
-    copyright: >-
-      Anotify · Licencia MIT · Self-hosted ·
-      Tus datos solo en tu servidor
-    login_copyright: "© 2026 Anotify · Licencia MIT · Solo Passkey"
-
-index:
-  title: "Resumen"
-  subtitle: "Tus notificaciones de un vistazo"
-  greeting: "Hola"
-  loading: "Cargando tus estadísticas…"
-  demo_badge: "Datos demo (backend no conectado)"
-  kpi:
-    total: "Notificaciones totales"
-    last_30d: "Últimos 30 días"
-    rate: "Tasa de entrega"
-    today: "Hoy"
-    today_sub: "Enviado → Entregado"
-    devices: "Dispositivos receptores"
-    devices_enabled: "Activos"
-  heatmap:
-    title: "Actividad de notificaciones"
-    subtitle: "Último año · volumen diario"
-    less: "Menos"
-    more: "Más"
-  quickstart:
-    cta: "Conectar nuevo Agent"
-    title: "Conecta tu Agent"
-    subtitle: "Recibe avisos automáticos al terminar tu agente"
-    recommended: "Recomendado"
-    option_a: "Configura tu Agent con una línea"
-    option_b: "O reporta desde un script / CI"
-    copy: "Copiar"
-    curl_example_title: "Despliegue listo"
-    cmd_a_comment: "# Envía esta línea a tu Agent"
-    cmd_a: >-
-      Sigue anotify.dev/docs/skill para instalar el reporte de
-      notificaciones: escucha agent_settled y envía a mis
-      dispositivos al terminar las tareas.
-  recent:
-    title: "Notificaciones recientes"
-    subtitle: "Actualización en vivo · clic en una fila para detalles"
-    filter_all: "Todas"
-    filter_success: "Éxito"
-    filter_error: "Error"
-    filter_interrupted: "Interrumpido"
-    refresh: "Actualizar →"
-
-message:
-  title: "Detalle de notificación"
-  loading: "Cargando…"
-  body_label: "Cuerpo"
-  open_link: "Abrir sesión del Agent"
-  fields_title: "Todos los campos"
-  deliveries_title: "Entregas"
-
-login:
-  title: "Iniciar sesión"
-  welcome: "Bienvenido de nuevo a"
-  subtitle: "Sin contraseñas · Acceso con Passkey en un toque"
-  tab:
-    login: "Entrar"
-    signup: "Registrarse"
-  login:
-    hint: >-
-      Toca el botón para entrar con un Passkey
-      (Face ID / huella / llave de dispositivo) en este equipo.
-      No necesitas nombre de usuario.
-    button: "Entrar con Passkey"
-    security_note: "Huella / Face ID / llave · Resistente a phishing"
-  signup:
-    username_label: "Elige un nombre de usuario"
-    username_placeholder: "Ponte un nombre"
-    username_hint: >-
-      2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los
-      extremos)
-    button: "Crear Passkey y registrarse"
-    recovery_hint_prefix: "Al registrarte se genera un conjunto de "
-    recovery_code: "códigos de recuperación de un solo uso"
-    recovery_hint_suffix: >-
-      — úsalos para recuperar el acceso si cambias de dispositivo o
-      pierdes todos los Passkeys. Guárdalos a salvo.
-    recovery_hint: >-
-      Al registrarte se genera un conjunto de códigos de recuperación
-      de un solo uso — úsalos para recuperar el acceso si cambias de
-      dispositivo o pierdes todos los Passkeys. Guárdalos a salvo.
-  ios_tip_label: "Usuarios de iOS: "
-  ios_tip: >-
-    para recibir notificaciones push, abre primero este sitio en
-    Safari, toca Compartir → Añadir a pantalla de inicio y luego
-    ábrelo desde el icono e inicia sesión.
-  recovery_link: >-
-    ¿No puedes usar Passkey? Entra con un código de recuperación →
-  trust:
-    data_local: "Tus datos solo en tu servidor"
-    webauthn: "Estándar WebAuthn"
-    no_third_party: "Sin cuentas de terceros"
+    copyright: Anotify · Licencia MIT · Self-hosted · Tus datos solo en tu servidor
+    login_copyright: © 2026 Anotify · Licencia MIT · Solo Passkey
+  time:
+    just_now: ahora mismo
+    minutes_ago: hace {n} min
+    hours_ago: hace {n} h
+    days_ago: hace {n} d
+    never: Nunca usado
+  ttl:
+    day: '{n} d'
+    hour: '{n} h'
+    minute: '{n} min'
+    second: '{n} s'
   status:
-    demo: >-
-      Backend no conectado — modo demo activado (datos de ejemplo).
-    login_success: "Sesión iniciada — entrando al espacio…"
-    signup_success: "Cuenta creada — entrando al espacio…"
-    unsupported: >-
-      Este navegador no soporta Passkey (WebAuthn).
-      Usa la versión más reciente de Safari / Chrome.
-    cancelled_login: >-
-      Cancelado, o no hay Passkey disponible en este dispositivo —
-      regístrate primero.
-    cancelled_signup: >-
-      Cancelado o expiró el tiempo — reintenta y permite crear el
-      Passkey.
-    need_username: "Primero elige un nombre de usuario."
-    login_failed: "Error al iniciar sesión: "
-    signup_failed: "Error al registrarse: "
-  recovery_toast: >-
-    El acceso con código de recuperación estará disponible al conectar
-    el backend (usuario + código de un solo uso)
-
+    success: Éxito
+    error: Error
+    interrupted: Interrumpido
+    info: Información
+    warning: Advertencia
+  priority:
+    high: Alta
+    normal: Normal
+    low: Baja
+  delivery:
+    pending: Pendiente
+    sent: Enviado
+    delivered: Entregado
+    acked: Confirmado
+    failed: Fallido
+  placeholder:
+    no_title: (sin título)
+    no_body: (sin contenido)
+    broadcast: (difusión)
+  copy:
+    copied: Copiado ✓
+    failed: Copia fallida — seleccione y copie manualmente
+  platform:
+    browser: Navegador
+  field:
+    msg_id: ID de mensaje
+    agent: Agent
+    session: Sesión
+    model: Modelo
+    duration: Duración
+    status: Estado
+    priority: Prioridad
+    device_tags: Etiquetas de dispositivo
+    ttl: TTL
+    created_at: Creado
+    seq: Seq
+    expires_at: Expira
+    external_link: Enlace externo
+    cwd: Proyecto CWD
+index:
+  title: Resumen
+  subtitle: Tus notificaciones de un vistazo
+  greeting:
+    default: Hola
+    late_night: Trabajando tarde
+    morning: Buenos días
+    afternoon: Buenas tardes
+    evening: Buenas noches
+    with_name: "{greeting}, {name}"
+  loading: Cargando tus estadísticas…
+  demo_badge: Datos demo (backend no conectado)
+  kpi:
+    total: Notificaciones totales
+    last_30d: Últimos 30 días
+    rate: Tasa de entrega
+    today: Hoy
+    today_sub: Enviado → Entregado
+    devices: Dispositivos receptores
+    devices_enabled: Activos
+    devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
+    devices_sub2: Suscripciones push + WebSocket
+    trend_demo: Demo
+    trend_live: En vivo
+  heatmap:
+    title: Actividad de notificaciones
+    subtitle: Último año · volumen diario
+    less: Menos
+    more: Más
+    week:
+      sun: D
+      mon: L
+      tue: M
+      wed: X
+      thu: J
+      fri: V
+      sat: S
+    month: Mes {n}
+    tip:
+      count: '{n} notificaciones'
+      none: Sin notificaciones
+      date: '{d}/{m} {w}'
+  quickstart:
+    cta: Conectar nuevo Agent
+    title: Conecta tu Agent
+    subtitle: Recibe avisos automáticos al terminar tu agente
+    recommended: Recomendado
+    option_a: Configura tu Agent con una línea
+    option_b: O reporta desde un script / CI
+    copy: Copiar
+    curl_example_title: Despliegue listo
+    cmd_a_comment: '# Envía esta línea a tu Agent'
+    cmd_a: 'Sigue anotify.dev/docs/skill para instalar el reporte de notificaciones: escucha agent_settled y envía a mis dispositivos al terminar las tareas.'
+  recent:
+    title: Notificaciones recientes
+    subtitle: Actualización en vivo · clic en una fila para detalles
+    filter_all: Todas
+    filter_success: Éxito
+    filter_error: Error
+    filter_interrupted: Interrumpido
+    refresh: Actualizar →
+  recent_summary: Recibidas {total} notificaciones, {ok} exitosas.
+  notif:
+    empty: No hay notificaciones con este estado
+    delivered: '{d}/{t} dispositivos entregados'
+    count: Mostrando {n}
+  detail:
+    open_session: Abrir sesión de Agent
+    view_full: Ver página completa (todos los campos + entregas) →
+  demo:
+    n1_title: Despliegue completado
+    n1_body: Build exitoso, desplegado a producción. 47 archivos modificados.
+    n2_title: Build fallido
+    n2_body: 3 casos de prueba fallaron. Log completo adjunto — clic para ver soluciones.
+    n3_title: Tarea interrumpida
+    n3_body: La tarea fue detenida manualmente. Progreso al 62%, estado preservado, puede reanudar.
+    n4_title: Documentación actualizada
+    n4_body: 'Generadas 3 páginas: README, referencia API, guía de despliegue.'
+    n5_title: Revisión de código completada
+    n5_body: Revisados 12 archivos, encontrados 2 punteros nulos potenciales, sugerencias generadas.
+    n6_title: Migración de BD fallida
+    n6_body: Script de migración 0042 agotó el tiempo. Rollback automático, sin afectación de datos.
+    n7_title: Actualización de dependencias completada
+    n7_body: 8 dependencias actualizadas a la última versión estable, sin cambios disruptivos.
+    n8_title: Backup completado
+    n8_body: Snapshot de BD generado y subido a almacenamiento de objetos, 1.2 GB.
+message:
+  title: Detalle de notificación
+  loading: Cargando…
+  body_label: Cuerpo
+  open_link: Abrir sesión del Agent
+  fields_title: Todos los campos
+  deliveries_title: Entregas
+  delivery:
+    delivered_count: '{ok}/{n} entregados'
+    empty: Sin registros de entrega (sin dispositivos habilitados coincidentes)
+    attempt_info: '{channel} · {n} intentos · {time}'
+  error:
+    missing_id: Falta el ID de mensaje (URL debe tener ?id=ntf_…)
+    not_found: Mensaje no encontrado o ha sido eliminado
+login:
+  title: Iniciar sesión
+  welcome: Bienvenido de nuevo a
+  subtitle: Sin contraseñas · Acceso con Passkey en un toque
+  tab:
+    login: Entrar
+    signup: Registrarse
+  login:
+    hint: Toca el botón para entrar con un Passkey (Face ID / huella / llave de dispositivo) en este equipo. No necesitas nombre de usuario.
+    button: Entrar con Passkey
+    security_note: Huella / Face ID / llave · Resistente a phishing
+  signup:
+    username_label: Elige un nombre de usuario
+    username_placeholder: Ponte un nombre
+    username_hint: '2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los extremos)'
+    button: Crear Passkey y registrarse
+    recovery_hint_prefix: 'Al registrarte se genera un conjunto de '
+    recovery_code: códigos de recuperación de un solo uso
+    recovery_hint_suffix: — úsalos para recuperar el acceso si cambias de dispositivo o pierdes todos los Passkeys. Guárdalos a salvo.
+    recovery_hint: Al registrarte se genera un conjunto de códigos de recuperación de un solo uso — úsalos para recuperar el acceso si cambias de dispositivo o pierdes todos los Passkeys. Guárdalos a salvo.
+  ios_tip_label: 'Usuarios de iOS: '
+  ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
+  recovery_link: ¿No puedes usar Passkey? Entra con un código de recuperación →
+  trust:
+    data_local: Tus datos solo en tu servidor
+    webauthn: Estándar WebAuthn
+    no_third_party: Sin cuentas de terceros
+  status:
+    demo: Backend no conectado — modo demo activado (datos de ejemplo).
+    login_success: Sesión iniciada — entrando al espacio…
+    signup_success: Cuenta creada — entrando al espacio…
+    unsupported: Este navegador no soporta Passkey (WebAuthn). Usa la versión más reciente de Safari / Chrome.
+    cancelled_login: Cancelado, o no hay Passkey disponible en este dispositivo — regístrate primero.
+    cancelled_signup: Cancelado o expiró el tiempo — reintenta y permite crear el Passkey.
+    need_username: Primero elige un nombre de usuario.
+    login_failed: 'Error al iniciar sesión: '
+    signup_failed: 'Error al registrarse: '
+  recovery_toast: El acceso con código de recuperación estará disponible al conectar el backend (usuario + código de un solo uso)
 receivers:
-  title: "Destinatarios"
-  demo_badge: "Datos demo"
+  title: Destinatarios
+  demo_badge: Datos demo
   channel:
-    push: "Suscripciones push"
-    ws: "Conexiones WebSocket"
+    push: Suscripciones push
+    ws: Conexiones WebSocket
   push:
-    title: "Suscripciones push del navegador"
-    subtitle_prefix: "Entregado vía servicios Push del sistema (APNs / FCM). "
-    subtitle_highlight: "Recibe aunque el navegador esté cerrado."
-    subtitle_suffix: ""
-    add_device: "Añadir este dispositivo"
+    title: Suscripciones push del navegador
+    subtitle_prefix: 'Entregado vía servicios Push del sistema (APNs / FCM). '
+    subtitle_highlight: Recibe aunque el navegador esté cerrado.
+    subtitle_suffix: ''
+    add_device: Añadir este dispositivo
   ws:
-    title: "Recepción por conexión larga · para plugins y cualquier dispositivo"
-    desc: >-
-      Cualquier dispositivo / plugin con una API Key de permiso
-      notify:receive puede abrir una conexión WebSocket larga para
-      push en tiempo real. Ideal para widgets de escritorio, daemons
-      CLI, puentes de domótica. Funciona junto al push del navegador.
-    connection_method: "Conexión"
-    copy: "Copiar"
-    active_title: "Conexiones activas"
-    active_subtitle: "Conexiones WebSocket establecidas actualmente"
-    online: " en línea"
-    empty_hint: >-
-      Al conectar el backend, aparecerán aquí las conexiones en vivo
-      (nombre / prefijo de Key / tiempo activo / etiquetas / último
-      mensaje).
+    title: Recepción por conexión larga · para plugins y cualquier dispositivo
+    desc: Cualquier dispositivo / plugin con una API Key de permiso notify:receive puede abrir una conexión WebSocket larga para push en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes
+      de domótica. Funciona junto al push del navegador.
+    connection_method: Conexión
+    copy: Copiar
+    active_title: Conexiones activas
+    active_subtitle: Conexiones WebSocket establecidas actualmente
+    online: ' en línea'
+    empty_hint: Al conectar el backend, aparecerán aquí las conexiones en vivo (nombre / prefijo de Key / tiempo activo / etiquetas / último mensaje).
   tags:
-    title: "Enrutado por etiquetas · qué dispositivo recibe qué notificación"
-    desc: >-
-      Incluye deviceTags al reportar. Solo los dispositivos con
-      etiquetas en común (o sin etiquetas = receptores totales) la
-      recibirán. Sin etiqueta en la notificación = difusión a todos
-      los dispositivos activos; sin etiqueta en el dispositivo = recibe
-      todo.
+    title: Enrutado por etiquetas · qué dispositivo recibe qué notificación
+    desc: Incluye deviceTags al reportar. Solo los dispositivos con etiquetas en común (o sin etiquetas = receptores totales) la recibirán. Sin etiqueta en la notificación = difusión a todos los dispositivos
+      activos; sin etiqueta en el dispositivo = recibe todo.
   pair:
-    title: "Añadir este dispositivo"
-    subtitle: "Tras suscribirse, este navegador recibirá notificaciones push"
-    device_name: "Nombre del dispositivo"
-    device_placeholder: "ej. Móvil principal / Mac de la oficina"
-    submit: "Solicitar permiso y suscribir"
-    hint: >-
-      El navegador pedirá permiso de notificaciones. iOS requiere
-      añadir este sitio a la pantalla de inicio primero y luego
-      abrirlo como app independiente.
-
+    title: Añadir este dispositivo
+    subtitle: Tras suscribirse, este navegador recibirá notificaciones push
+    device_name: Nombre del dispositivo
+    device_placeholder: ej. Móvil principal / Mac de la oficina
+    submit: Solicitar permiso y suscribir
+    hint: El navegador pedirá permiso de notificaciones. iOS requiere añadir este sitio a la pantalla de inicio primero y luego abrirlo como app independiente.
 keys:
-  title: "API Keys"
-  subtitle: "Los agentes las usan para reportar notificaciones"
-  desc_prefix: "Los agentes llevan una Key para llamar a"
-  desc_suffix: >-
-    y reportar notificaciones. La Key se muestra completa una sola vez
-    al crearla; el servidor solo guarda un hash — guárdala de inmediato.
-  create_button: "Nueva Key"
-  api_endpoint: "Endpoint de reporte"
-  view_docs: "Ver docs completas de la API"
-  header_label: "Header"
-  my_keys: "Mis Keys"
+  title: API Keys
+  subtitle: Los agentes las usan para reportar notificaciones
+  desc_prefix: Los agentes llevan una Key para llamar a
+  desc_suffix: y reportar notificaciones. La Key se muestra completa una sola vez al crearla; el servidor solo guarda un hash — guárdala de inmediato.
+  create_button: Nueva Key
+  api_endpoint: Endpoint de reporte
+  view_docs: Ver docs completas de la API
+  header_label: Header
+  my_keys: Mis Keys
   col:
-    name: "Nombre"
-    prefix: "Prefijo de Key"
-    scope: "Permisos"
-    last_used: "Último uso"
-    status: "Estado"
-    actions: "Acciones"
+    name: Nombre
+    prefix: Prefijo de Key
+    scope: Permisos
+    last_used: Último uso
+    status: Estado
+    actions: Acciones
   security:
-    title: "Buenas prácticas de seguridad de la Key"
-    point1_prefix: "El texto plano de la Key "
-    point1_highlight: "se muestra una sola vez al crearla"
-    point1_suffix: "; no puede volver a verse, solo regenerarse"
-    point2_prefix: "El servidor solo guarda el "
-    point2_highlight: "hash argon2id"
-    point2_suffix: "; ni una fuga de DB puede recuperar la Key"
-    point3_prefix: "Usa "
-    point3_highlight: "una Key por Agent / entorno"
-    point3_suffix: "; revoca solo la afectada si hay fuga"
-    point4: >-
-      Nunca subas Keys al control de versiones; inyéctalas con vars de
-      entorno o un gestor de secretos
+    title: Buenas prácticas de seguridad de la Key
+    point1_prefix: 'El texto plano de la Key '
+    point1_highlight: se muestra una sola vez al crearla
+    point1_suffix: ; no puede volver a verse, solo regenerarse
+    point2_prefix: 'El servidor solo guarda el '
+    point2_highlight: hash argon2id
+    point2_suffix: ; ni una fuga de DB puede recuperar la Key
+    point3_prefix: 'Usa '
+    point3_highlight: una Key por Agent / entorno
+    point3_suffix: ; revoca solo la afectada si hay fuga
+    point4: Nunca subas Keys al control de versiones; inyéctalas con vars de entorno o un gestor de secretos
   create:
-    title: "Nueva API Key"
-    subtitle: "Ponle un nombre y elige sus permisos"
-    name_label: "Nombre"
-    name_placeholder: "ej. Dev local / pipeline CI / Agent producción"
-    scope_label: "Permisos (selección múltiple, mínimo privilegio)"
-    scope_send_label: "Enviar"
-    scope_send_desc: >-
-      Para que Agents / CI hagan POST de notificaciones.
-      Prefijo ant_live_
-    scope_receive_label: "Recibir"
-    scope_receive_desc: >-
-      Para que plugins / dispositivos abran conexiones WebSocket.
-      Prefijo ant_recv_
-    scope_read_label: "Leer dispositivos"
-    scope_read_desc: "Listado de solo lectura para inspección con scripts"
-    scope_hint: >-
-      Mínimo privilegio: enviar y recibir van separados, así una Key
-      filtrada solo compromete un lado.
-    cancel: "Cancelar"
-    generate: "Generar Key"
+    title: Nueva API Key
+    subtitle: Ponle un nombre y elige sus permisos
+    name_label: Nombre
+    name_placeholder: ej. Dev local / pipeline CI / Agent producción
+    scope_label: Permisos (selección múltiple, mínimo privilegio)
+    scope_send_label: Enviar
+    scope_send_desc: Para que Agents / CI hagan POST de notificaciones. Prefijo ant_live_
+    scope_receive_label: Recibir
+    scope_receive_desc: Para que plugins / dispositivos abran conexiones WebSocket. Prefijo ant_recv_
+    scope_read_label: Leer dispositivos
+    scope_read_desc: Listado de solo lectura para inspección con scripts
+    scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
+    cancel: Cancelar
+    generate: Generar Key
   save:
-    title: "Guarda tu Key"
-    subtitle_prefix: "Esta es su "
-    subtitle_highlight: "única muestra completa"
-    copy: "Copiar"
-    warning: >-
-      Al cerrar, la Key completa no podrá volver a verse. Guárdala en
-      un gestor de contraseñas o lugar seguro de inmediato.
-    done: "La he guardado"
-
+    title: Guarda tu Key
+    subtitle_prefix: 'Esta es su '
+    subtitle_highlight: única muestra completa
+    copy: Copiar
+    warning: Al cerrar, la Key completa no podrá volver a verse. Guárdala en un gestor de contraseñas o lugar seguro de inmediato.
+    done: La he guardado
 security:
-  title: "Seguridad y acceso"
-  subtitle: "Passkey · Sesiones · Códigos de recuperación"
-  intro: >-
-    Gestiona todo sobre quién eres: credenciales Passkey, sesiones de
-    acceso y códigos de recuperación. Son independientes de a dónde van
-    las notificaciones (dispositivos receptores).
-  add_passkey: "Añadir Passkey"
+  title: Seguridad y acceso
+  subtitle: Passkey · Sesiones · Códigos de recuperación
+  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores).'
+  add_passkey: Añadir Passkey
   passkey:
-    title: "Credenciales Passkey"
-    subtitle: >-
-      Tus credenciales de acceso sin contraseña. Una cuenta puede tener
-      varios Passkeys, sincronizados entre dispositivos del mismo
-      ecosistema.
-    count: " credenciales"
+    title: Credenciales Passkey
+    subtitle: Tus credenciales de acceso sin contraseña. Una cuenta puede tener varios Passkeys, sincronizados entre dispositivos del mismo ecosistema.
+    count: ' credenciales'
   session:
-    title: "Sesiones de acceso"
-    subtitle: >-
-      En qué dispositivos está tu cuenta iniciada ahora. Las sesiones
-      son independientes y se pueden revocar individualmente.
-    count: " sesiones activas"
+    title: Sesiones de acceso
+    subtitle: En qué dispositivos está tu cuenta iniciada ahora. Las sesiones son independientes y se pueden revocar individualmente.
+    count: ' sesiones activas'
   recovery:
-    title: "Códigos de recuperación"
-    desc_prefix: "El respaldo final cuando pierdes todos los dispositivos y "
-    desc_highlight: "no puedes entrar con Passkey"
-    desc_suffix: >-
-      . Entra con usuario + código de recuperación y luego añade un
-      nuevo Passkey. Cada código sirve una sola vez.
-    regenerate: "Regenerar"
-    hint: >-
-      Función próximamente · tras registrarse se generarán 8 códigos de
-      recuperación de un solo uso. Guárdalos en un gestor de
-      contraseñas.
+    title: Códigos de recuperación
+    desc_prefix: 'El respaldo final cuando pierdes todos los dispositivos y '
+    desc_highlight: no puedes entrar con Passkey
+    desc_suffix: . Entra con usuario + código de recuperación y luego añade un nuevo Passkey. Cada código sirve una sola vez.
+    regenerate: Regenerar
+    hint: Función próximamente · tras registrarse se generarán 8 códigos de recuperación de un solo uso. Guárdalos en un gestor de contraseñas.
   concept:
-    title: "Dos ejes independientes"
-    auth_label: "Eje de autenticación"
-    auth_axis: "quién eres (esta página)"
-    auth_p1: "· Credenciales Passkey: una cuenta puede tener varias"
-    auth_p2: >-
-      · Sesiones de acceso: multidispositivo, revocables
-      individualmente
-    auth_p3: >-
-      · Códigos de recuperación: respaldo si se pierden todos los
-      dispositivos
-    delivery_label: "Eje de entrega"
-    delivery_axis: "a dónde van las notificaciones"
-    delivery_p1: "· Se gestiona en la página Destinatarios, aparte de esta"
-    delivery_p2: "· Suscripciones push del navegador + conexiones WebSocket"
-    delivery_p3: >-
-      · Se siguen recibiendo tras cerrar sesión, hasta cancelar la
-      suscripción
-
+    title: Dos ejes independientes
+    auth_label: Eje de autenticación
+    auth_axis: quién eres (esta página)
+    auth_p1: '· Credenciales Passkey: una cuenta puede tener varias'
+    auth_p2: '· Sesiones de acceso: multidispositivo, revocables individualmente'
+    auth_p3: '· Códigos de recuperación: respaldo si se pierden todos los dispositivos'
+    delivery_label: Eje de entrega
+    delivery_axis: a dónde van las notificaciones
+    delivery_p1: · Se gestiona en la página Destinatarios, aparte de esta
+    delivery_p2: · Suscripciones push del navegador + conexiones WebSocket
+    delivery_p3: · Se siguen recibiendo tras cerrar sesión, hasta cancelar la suscripción
 docs:
-  title: "Docs de integración"
-  subtitle: "Reporte de Agent · Web Push · WebSocket"
-  toc_heading: "En esta página"
+  title: Docs de integración
+  subtitle: Reporte de Agent · Web Push · WebSocket
+  toc_heading: En esta página
   toc:
-    agent: "Conectar Agent"
-    api: "Vista general de la API"
-    auth: "Autenticación"
-    notify: "POST /v1/notify"
-    webpush: "Suscripción Web Push"
-    stream: "Recepción por WebSocket"
+    agent: Conectar Agent
+    api: Vista general de la API
+    auth: Autenticación
+    notify: POST /v1/notify
+    webpush: Suscripción Web Push
+    stream: Recepción por WebSocket
