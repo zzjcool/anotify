@@ -521,13 +521,136 @@ security:
     location_office: Oficina
     current: Actual
 docs:
-  title: Docs de integración
-  subtitle: Reporte de Agent · Web Push · WebSocket
+  title: Documentación de integración
+  subtitle: "Reportes de Agent · Web Push · WebSocket"
   toc_heading: En esta página
   toc:
     agent: Conectar Agent
-    api: Vista general de la API
+    api: Resumen de API
     auth: Autenticación
     notify: POST /v1/notify
     webpush: Suscripción Web Push
-    stream: Recepción por WebSocket
+    stream: Recepción WebSocket
+  copy: Copiar
+  your_domain: su-dominio
+  agent:
+    title: Conectar Agent
+    intro: "El escenario principal de Anotify: <b class=\"text-zinc-200\">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea."
+    step1:
+      title: Crear una Key de reporte
+      desc: "Vaya a la página <a href=\"keys.html\" class=\"text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200\">API Keys</a> y cree una Key con permiso <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:send</code> (prefijo <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">ant_live_</code>). Guárdela inmediatamente."
+    step2:
+      title: Reportar al terminar la tarea
+      desc: "En un evento de finalización del Agent (p. ej. <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/notify</code>."
+    curl:
+      title: "Configuración mínima · un curl para enviar a todos los dispositivos"
+    journey:
+      title: El viaje de una notificación
+  api:
+    title: Resumen de API
+    base_url: Base URL
+    base_url_desc: Su dominio en despliegue propio, o un dominio de Tunnel
+    version: Versión de API
+    version_desc: Todos los endpoints dinámicos llevan prefijo de versión; los estáticos van a /static/*
+    map:
+      title: Mapa de endpoints
+      notify: El Agent reporta una notificación (núcleo)
+      notifications: Lista del historial de notificaciones
+      devices_list: Lista de dispositivos
+      devices_sub: Suscribir (registrar) un dispositivo
+      devices_update: Actualizar dispositivo (interruptor / filtro / tags)
+      devices_delete: Desvincular dispositivo
+      stream: Recepción por WebSocket long-poll
+      keys_list: Lista de API Keys
+      keys_create: Crear API Key
+      passkey: Registro / login con Passkey
+      vapid: Clave pública VAPID (para suscripción)
+  auth:
+    title: Autenticación
+    intro: "Dos tipos de credenciales, para dos tipos de llamadores. <b class=\"text-zinc-200\">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado."
+    key:
+      title: API Key (Bearer)
+      li1: "· Para reportes del Agent / conexiones long-poll del receptor"
+      li2: "· Header: <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Authorization: Bearer ant_…</code>"
+      li3: "· scope: <code class=\"mono text-[12px] text-blue-300\">notify:send</code> reportar · <code class=\"mono text-[12px] text-emerald-300\">notify:receive</code> recibir · <code class=\"mono text-[12px] text-amber-300\">devices:read</code> solo lectura"
+      li4: "· El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear"
+    passkey:
+      title: Cookie de sesión
+      li1: "· Para acceso al workspace desde el navegador (Resumen / Dispositivos / Keys)"
+      li2: "· Login sin contraseña con WebAuthn, biometría o clave de dispositivo"
+      li3: "· Cookie httpOnly; las sesiones multi-dispositivo son independientes y revocables individualmente"
+      li4: "· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación"
+  notify:
+    core: Núcleo
+    intro: "Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class=\"text-zinc-200\">cifrada de extremo a extremo</b> a todos los dispositivos \"habilitados y que coincidan en nivel/tag\"."
+    params:
+      title: Parámetros del cuerpo de la petición
+      title_desc: "Título de la notificación, p. ej. <code>\"Despliegue completado\"</code>, se muestra como título principal de la notificación del sistema."
+      status_desc: "Resultado de la tarea: <code>success</code> · <code>error</code> · <code>interrupted</code> · <code>info</code> · <code>warning</code>. Determina el color del icono y el filtrado de dispositivos."
+      body_desc: "Cuerpo de la notificación, detalle complementario."
+      tags_desc: "Tags de enrutamiento. Vacío = difundir a todos los dispositivos habilitados; no vacío = solo se entrega a dispositivos con tag en común o sin tags (catch-all). ≤10 tags, cada uno ≤32 caracteres."
+      link_desc: "Deep link que se abre al tocar la notificación, p. ej. <code>pi://session/sess_8f3a2c</code>."
+      meta_desc: "Metadatos de contexto para trazabilidad y estadísticas, almacenados en el historial."
+      ttl_desc: "<code>ttl</code> validez en segundos (por defecto 86400); <code>priority</code> prioridad (por defecto normal)."
+    required: Obligatorio
+    optional: Opcional
+    curl:
+      title: "cURL · petición completa"
+      title_val: "Despliegue completado"
+      body_val: "Build exitoso, desplegado a producción"
+      tag_val: "trabajo"
+    resp200: Aceptado y enviado
+    resp200_dev1: Teléfono principal
+    resp200_dev2: Mac de oficina
+    resp400: Sin dispositivo coincidente / error de parámetros
+    resp400_err: "No hay dispositivos suscritos; suscríbase primero en el workspace"
+    resp400_comment: "// 401 · Key ausente o inválida (403 si scope insuficiente)"
+    rules:
+      title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
+  webpush:
+    title: Suscripción Web Push (recepción en navegador)
+    intro: "El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class=\"text-zinc-200\">Se recibe incluso con la página cerrada.</b> iOS requiere \"Añadir a pantalla de inicio\" y modo standalone (iOS 16.4+)."
+    step1: "<b class=\"text-zinc-200\">① Obtener clave pública VAPID</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">GET /v1/vapid-public-key</code>"
+    step2: "<b class=\"text-zinc-200\">② Registrar Service Worker</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">navigator.serviceWorker.register('/sw.js')</code>"
+    step3: "<b class=\"text-zinc-200\">③ Solicitar permiso y suscribir</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>"
+    step4: "<b class=\"text-zinc-200\">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/devices</code>"
+    code:
+      title: "Suscripción frontend · código central"
+      comment1: "// 1. Registrar SW + obtener clave pública VAPID"
+      comment2: "// 2. Suscribir (requiere permiso de notificaciones)"
+      comment3: "// 3. Reportar al backend (auth por Cookie de sesión)"
+      comment_p256dh: "// { p256dh, auth }"
+      comment_platform: "// ios|mac|win|android|other"
+    ios:
+      title: ⚠️ Requisito de iOS
+      desc: "Debe \"Añadir a pantalla de inicio\" y ejecutar en modo standalone, de lo contrario Safari no proporciona Notification / Push API."
+    android:
+      title: ✅ Android es más fácil
+      desc: "Chrome/Edge puede suscribirse desde una pestaña normal vía FCM; no necesita añadir a pantalla de inicio."
+    e2e:
+      title: 🔒 Cifrado de extremo a extremo
+      desc: "El payload se cifra con las claves p256dh/auth de la suscripción; el servicio de push no puede leer el contenido."
+  ws:
+    channel2: Segundo canal de recepción
+    intro: "Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador."
+    connect:
+      title: "Establecer conexión"
+      comment: "# requiere permiso notify:receive"
+      comment2: "# opcional, para reanudar tras reconectar"
+    s2c:
+      title: "Servidor → Cliente"
+      comment1: "// primer frame tras conectar"
+      comment2: "// nueva notificación recibida"
+      title_val: "Despliegue completado"
+      body_val: "Desplegado a prod"
+      tag_val: "trabajo"
+      comment3: "// fin de replay / heartbeat / error"
+    c2s:
+      title: "Cliente → Servidor"
+      comment1: "// suscribir / cancelar tags (vacío = todos)"
+      comment2: "// confirmar procesado (at-least-once)"
+      comment3: "// heartbeat (cada heartbeat_sec; 2 perdidos = desconectar)"
+      comment4: "// tras reconectar, usar frame resume (reemplaza header Last-Event-Id)"
+    reconnect:
+      title: Reconectar y reanudar
+      desc: "Al reconectar, envíe el header <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Last-Event-Id</code> (o un primer frame <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume_expired</code>; el cliente debe obtener el historial completo."

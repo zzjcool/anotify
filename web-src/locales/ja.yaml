@@ -522,12 +522,135 @@ security:
     current: 現在
 docs:
   title: 連携ドキュメント
-  subtitle: Agent 報告 · Web Push · WebSocket
+  subtitle: "Agent 上報 · Web Push · WebSocket"
   toc_heading: このページの目次
   toc:
     agent: Agent 連携
     api: API 概要
-    auth: 認証方式
+    auth: 認証方法
     notify: POST /v1/notify
     webpush: Web Push 購読
     stream: WebSocket 受信
+  copy: コピー
+  your_domain: あなたのドメイン
+  agent:
+    title: Agent 連携
+    intro: "Anotify の中核シナリオ：<b class=\"text-zinc-200\">Agent がタスクを完了すると、通知がすべてのデバイスに自動的にプッシュされます</b>。連携は 2 ステップ — 上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。"
+    step1:
+      title: 上報用 Key を作成
+      desc: "<a href=\"keys.html\" class=\"text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200\">API Keys</a> ページで <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">ant_live_</code>）。作成後すぐに保存してください。"
+    step2:
+      title: タスク終了時に上報
+      desc: "Agent の終了イベント（例：pi の <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/notify</code> を送信します。"
+    curl:
+      title: "最小構成 · curl 一行で全デバイスに通知"
+    journey:
+      title: 通知の旅
+  api:
+    title: API 概要
+    base_url: Base URL
+    base_url_desc: セルフホスト時はあなたのドメインまたは Tunnel ドメイン
+    version: API バージョン
+    version_desc: すべての動的 API にバージョンプレフィックス付き。静的アセットは /static/*
+    map:
+      title: エンドポイントマップ
+      notify: Agent による通知上報（中核）
+      notifications: 通知履歴一覧
+      devices_list: デバイス一覧
+      devices_sub: デバイス購読（登録）
+      devices_update: デバイス更新（オンオフ / フィルタ / タグ）
+      devices_delete: デバイス解除
+      stream: WebSocket ロングポール受信
+      keys_list: API Key 一覧
+      keys_create: API Key 新規作成
+      passkey: Passkey 登録 / ログイン
+      vapid: VAPID 公開鍵（購読用）
+  auth:
+    title: 認証方法
+    intro: "2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class=\"text-zinc-200\">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。"
+    key:
+      title: API Key（Bearer）
+      li1: "· Agent 上報 / 受信側ロングポール接続に使用"
+      li2: "· Header：<code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Authorization: Bearer ant_…</code>"
+      li3: "· scope：<code class=\"mono text-[12px] text-blue-300\">notify:send</code> 上報 · <code class=\"mono text-[12px] text-emerald-300\">notify:receive</code> 受信 · <code class=\"mono text-[12px] text-amber-300\">devices:read</code> 読み取り専用"
+      li4: "· サーバーは argon2id ハッシュのみ保存、平文は作成時のみ表示"
+    passkey:
+      title: セッション Cookie
+      li1: "· ワークスペースのブラウザアクセスに使用（概要 / デバイス / Keys 管理）"
+      li2: "· WebAuthn パスワードレスログイン、生体認証またはデバイスキー"
+      li3: "· httpOnly Cookie、マルチデバイスセッションは独立して個別に取り消し可能"
+      li4: "· クロスデバイス：プラットフォーム同期 / 一時接続ガイド / リカバリーコード"
+  notify:
+    core: 中核
+    intro: "Agent がタスク終了後にこのエンドポイントを呼び出して通知を上報します。サーバーは API Key を検証し、所有者を特定し、通知を<b class=\"text-zinc-200\">エンドツーエンド暗号化</b>で「有効かつレベル / タグが一致する」すべてのデバイスにプッシュします。"
+    params:
+      title: リクエストボディ パラメータ
+      title_desc: "通知タイトル。例：<code>\"デプロイ完了\"</code>。システム通知のメインタイトルになります。"
+      status_desc: "タスク結果：<code>success</code> 成功 · <code>error</code> 失敗 · <code>interrupted</code> 中断 · <code>info</code> 情報 · <code>warning</code> 警告。アイコン色とデバイスフィルタを決定します。"
+      body_desc: "通知本文。補足説明です。"
+      tags_desc: "ルーティングタグ。空 = すべての有効デバイスにブロードキャスト。非空 = 「共通タグがある」または「タグなし（catch-all）」のデバイスのみに配信。≤10 個、各 ≤32 文字。"
+      link_desc: "通知タップ時に開くディープリンク。例：<code>pi://session/sess_8f3a2c</code>。"
+      meta_desc: "コンテキストメタデータ。追跡と統計に使用され、通知履歴に保存されます。"
+      ttl_desc: "<code>ttl</code> 有効期限（秒）（デフォルト 86400）；<code>priority</code> 優先度（デフォルト normal）。"
+    required: 必須
+    optional: 任意
+    curl:
+      title: "cURL · 完全なリクエスト"
+      title_val: "デプロイ完了"
+      body_val: "ビルド成功、本番環境にデプロイ済み"
+      tag_val: "仕事"
+    resp200: 受領・配信完了
+    resp200_dev1: メインスマホ
+    resp200_dev2: オフィス Mac
+    resp400: 一致するデバイスなし / パラメータエラー
+    resp400_err: "購読済みデバイスがありません。先にワークスペースで購読してください"
+    resp400_comment: "// 401 · Key がないまたは無効（scope 不足時は 403）"
+    rules:
+      title: 配信ルール（タグルーティング + レベルフィルタ）
+  webpush:
+    title: Web Push 購読（ブラウザ受信）
+    intro: "ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class=\"text-zinc-200\">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。"
+    step1: "<b class=\"text-zinc-200\">① VAPID 公開鍵を取得</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">GET /v1/vapid-public-key</code>"
+    step2: "<b class=\"text-zinc-200\">② Service Worker を登録</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">navigator.serviceWorker.register('/sw.js')</code>"
+    step3: "<b class=\"text-zinc-200\">③ 権限を要求して購読</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>"
+    step4: "<b class=\"text-zinc-200\">④ 購読を上報</b> · endpoint + keys を <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/devices</code> で送信"
+    code:
+      title: "フロントエンド購読 · コアコード"
+      comment1: "// 1. SW 登録 + VAPID 公開鍵を取得"
+      comment2: "// 2. 購読（通知権限の許可が必要）"
+      comment3: "// 3. バックエンドに報告（セッション Cookie 認証）"
+      comment_p256dh: "// { p256dh, auth }"
+      comment_platform: "// ios|mac|win|android|other"
+    ios:
+      title: ⚠️ iOS の前提条件
+      desc: "「ホーム画面に追加」してスタンドアローンモードで実行する必要があります。そうしないと Safari は Notification / Push API を提供しません。"
+    android:
+      title: ✅ Android はもっと簡単
+      desc: "Chrome/Edge は通常のタブから購読でき、FCM 経由です。ホーム画面に追加する必要はありません。"
+    e2e:
+      title: 🔒 エンドツーエンド暗号化
+      desc: "ペイロードは購読の p256dh/auth 鍵で暗号化され、プッシュサービスは内容を読めません。"
+  ws:
+    channel2: 2 つ目の受信チャネル
+    intro: "ブラウザプッシュに加え、任意のデバイス / プラグインが <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:receive</code> 権限の Key で WebSocket ロングポールを確立し、リアルタイム受信できます。デスクトップウィジェット、CLI デーモン、スマートホームブリッジに最適。ブラウザプッシュと並行稼働します。"
+    connect:
+      title: "接続の確立"
+      comment: "# notify:receive 権限が必要"
+      comment2: "# 任意、再接続時のレジュム用"
+    s2c:
+      title: "サーバー → クライアント"
+      comment1: "// 接続成功後の最初のフレーム"
+      comment2: "// 新しい通知を受信"
+      title_val: "デプロイ完了"
+      body_val: "本番にデプロイ済み"
+      tag_val: "仕事"
+      comment3: "// リプレイ終了 / ハートビート / エラー"
+    c2s:
+      title: "クライアント → サーバー"
+      comment1: "// タグの購読 / 購読解除（空 = 全て）"
+      comment2: "// 処理済みを確認（at-least-once）"
+      comment3: "// ハートビート（heartbeat_sec ごと、2 回連続未受信で切断）"
+      comment4: "// 再接続後、resume フレームでレジュム（Last-Event-Id ヘッダの代替）"
+    reconnect:
+      title: 再接続とレジュム
+      desc: "再接続時に <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。"

@@ -522,7 +522,7 @@ security:
     current: 当前
 docs:
   title: 接入文档
-  subtitle: Agent 上报 · Web Push · WebSocket
+  subtitle: "Agent 上报 · Web Push · WebSocket"
   toc_heading: 本页目录
   toc:
     agent: 接入 Agent
@@ -531,3 +531,126 @@ docs:
     notify: POST /v1/notify
     webpush: Web Push 订阅
     stream: WebSocket 接收
+  copy: 复制
+  your_domain: 你的域名
+  agent:
+    title: 接入 Agent
+    intro: "Anotify 的核心场景：<b class=\"text-zinc-200\">Agent 完成任务后，把通知自动送到你的所有设备</b>。接入只需两步——创建一个上报 Key，然后在任务结束时发一个 POST 请求。"
+    step1:
+      title: 创建上报 Key
+      desc: "到 <a href=\"keys.html\" class=\"text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200\">API Keys</a> 页新建一个 <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:send</code> 权限的 Key（前缀 <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">ant_live_</code>），立即保存。"
+    step2:
+      title: 任务结束时上报
+      desc: "在 Agent 结束事件（如 pi 的 <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">agent_settled</code>）或脚本末尾，携带 Key <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/notify</code>。"
+    curl:
+      title: "最小接入 · 一行 curl 让通知送到所有设备"
+    journey:
+      title: 一条通知的旅程
+  api:
+    title: API 概览
+    base_url: Base URL
+    base_url_desc: 私有化部署时为你的域名或 Tunnel 临时域名
+    version: API 版本
+    version_desc: 所有动态接口带版本前缀，静态资源走 /static/*
+    map:
+      title: 接口地图
+      notify: Agent 上报通知（核心）
+      notifications: 通知历史列表
+      devices_list: 设备列表
+      devices_sub: 订阅（注册）设备
+      devices_update: 更新设备（开关/过滤/标签）
+      devices_delete: 解绑设备
+      stream: WebSocket 长连接接收
+      keys_list: API Key 列表
+      keys_create: 新建 API Key
+      passkey: Passkey 注册 / 登录
+      vapid: VAPID 公钥（订阅用）
+  auth:
+    title: 认证方式
+    intro: "两种凭证，对应两类调用方。<b class=\"text-zinc-200\">权限最小化</b>：上报与接收分开，泄露一个 Key 不会波及另一头。"
+    key:
+      title: API Key（Bearer）
+      li1: "· 用于 Agent 上报 / 接收端长连接"
+      li2: "· Header：<code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Authorization: Bearer ant_…</code>"
+      li3: "· scope：<code class=\"mono text-[12px] text-blue-300\">notify:send</code> 上报 · <code class=\"mono text-[12px] text-emerald-300\">notify:receive</code> 接收 · <code class=\"mono text-[12px] text-amber-300\">devices:read</code> 只读"
+      li4: "· 服务端只存 argon2id 哈希，明文仅创建时展示一次"
+    passkey:
+      title: 会话 Cookie
+      li1: "· 用于工作台浏览器访问（总览 / 设备 / Keys 管理）"
+      li2: "· WebAuthn 无密码登录，生物识别或设备密钥"
+      li3: "· httpOnly Cookie，多端会话独立、可单独吊销"
+      li4: "· 跨设备：平台同步 / 一次性连接引导 / 恢复码兜底"
+  notify:
+    core: 核心
+    intro: "Agent 在任务结束后调用本接口上报一条通知。服务端校验 API Key，定位所属用户，把通知<b class=\"text-zinc-200\">端到端加密</b>推送到该用户所有「已启用且级别/标签匹配」的设备。"
+    params:
+      title: 请求体参数
+      title_desc: "通知标题，如 <code>\"部署完成\"</code>，作为系统通知主标题。"
+      status_desc: "任务结果：<code>success</code> 成功 · <code>error</code> 失败 · <code>interrupted</code> 中断 · <code>info</code> 信息 · <code>warning</code> 警告。决定图标颜色与设备过滤。"
+      body_desc: "通知正文，补充说明。"
+      tags_desc: "路由标签。空 = 广播到所有已启用设备；非空时只投给「有共同标签」或「无标签(catch-all)」的设备。≤10 个，每个 ≤32 字符。"
+      link_desc: "点击通知后打开的深链，如 <code>pi://session/sess_8f3a2c</code>。"
+      meta_desc: "上下文元数据，用于回溯与统计，存入通知历史。"
+      ttl_desc: "<code>ttl</code> 有效期秒数（默认 86400）；<code>priority</code> 优先级（默认 normal）。"
+    required: 必填
+    optional: 可选
+    curl:
+      title: "cURL · 完整请求"
+      title_val: "部署完成"
+      body_val: "构建成功，已发布到生产环境"
+      tag_val: "工作"
+    resp200: 已接收并分发
+    resp200_dev1: 主力手机
+    resp200_dev2: 办公室 Mac
+    resp400: 无匹配设备 / 参数错误
+    resp400_err: "没有已订阅的设备，请先在工作台订阅"
+    resp400_comment: "// 401 · Key 缺失或无效（scope 不足时 403）"
+    rules:
+      title: 投递规则（标签路由 + 级别过滤）
+  webpush:
+    title: Web Push 订阅（浏览器接收）
+    intro: "浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。<b class=\"text-zinc-200\">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。"
+    step1: "<b class=\"text-zinc-200\">① 取 VAPID 公钥</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">GET /v1/vapid-public-key</code>"
+    step2: "<b class=\"text-zinc-200\">② 注册 Service Worker</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">navigator.serviceWorker.register('/sw.js')</code>"
+    step3: "<b class=\"text-zinc-200\">③ 请求权限并订阅</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>"
+    step4: "<b class=\"text-zinc-200\">④ 上报订阅</b> · 把 endpoint + keys <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/devices</code>"
+    code:
+      title: "前端订阅 · 核心代码"
+      comment1: "// 1. 注册 SW + 取 VAPID 公钥"
+      comment2: "// 2. 订阅（需用户已授权通知权限）"
+      comment3: "// 3. 上报后端（会话 Cookie 鉴权）"
+      comment_p256dh: "// { p256dh, auth }"
+      comment_platform: "// ios|mac|win|android|other"
+    ios:
+      title: ⚠️ iOS 前提
+      desc: "必须先「添加到主屏幕」standalone 运行，否则 Safari 不提供 Notification / Push API。"
+    android:
+      title: ✅ Android 更省事
+      desc: "Chrome/Edge 普通标签页即可订阅，走 FCM，无需添加到主屏幕。"
+    e2e:
+      title: 🔒 端到端加密
+      desc: "载荷用订阅的 p256dh/auth 密钥加密，推送服务无法读取内容。"
+  ws:
+    channel2: 第二条接收通道
+    intro: "除浏览器推送外，任意设备 / 插件可用 <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:receive</code> 权限的 Key 建立 WebSocket 长连接实时接收。适合做桌面插件、CLI 守护进程、智能家居桥接，与浏览器推送并行。"
+    connect:
+      title: "建立连接"
+      comment: "# 需 notify:receive 权限"
+      comment2: "# 可选，断线续传"
+    s2c:
+      title: "服务端 → 客户端"
+      comment1: "// 连接成功后第一条"
+      comment2: "// 收到新通知"
+      title_val: "部署完成"
+      body_val: "已发布到 prod"
+      tag_val: "工作"
+      comment3: "// 断线补漏结束 / 心跳 / 错误"
+    c2s:
+      title: "客户端 → 服务端"
+      comment1: "// 订阅 / 退订标签（空 = 全订阅）"
+      comment2: "// 确认已处理（at-least-once）"
+      comment3: "// 心跳（每 heartbeat_sec 一次，2 次未收则断连）"
+      comment4: "// 断线重连后用 resume 帧续传（替代 Last-Event-Id 头）"
+    reconnect:
+      title: 重连与续传
+      desc: "断线后重连时携带 <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Last-Event-Id</code> 头（或首帧发 <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume</code>），服务端会重放该位置之后 24h 内未确认的通知（回放窗口），随后进入实时流。超出保留窗口则返回 <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume_expired</code> 错误，客户端应拉取全量历史。"

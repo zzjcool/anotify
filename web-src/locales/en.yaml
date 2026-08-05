@@ -521,8 +521,8 @@ security:
     location_office: Office
     current: Current
 docs:
-  title: Integration docs
-  subtitle: Agent reporting · Web Push · WebSocket
+  title: Integration Docs
+  subtitle: "Agent reporting · Web Push · WebSocket"
   toc_heading: On this page
   toc:
     agent: Connect Agent
@@ -531,3 +531,126 @@ docs:
     notify: POST /v1/notify
     webpush: Web Push subscription
     stream: WebSocket receiving
+  copy: Copy
+  your_domain: your-domain
+  agent:
+    title: Connect Agent
+    intro: "Anotify's core scenario: <b class=\"text-zinc-200\">when an Agent finishes a task, the notification is automatically pushed to all your devices</b>. Setup is two steps — create a reporting Key, then send a POST request when the task ends."
+    step1:
+      title: Create a reporting Key
+      desc: "Go to the <a href=\"keys.html\" class=\"text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200\">API Keys</a> page and create a Key with <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:send</code> scope (prefix <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">ant_live_</code>). Save it immediately."
+    step2:
+      title: Report when the task ends
+      desc: "On an Agent completion event (e.g. pi's <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">agent_settled</code>) or at the end of a script, include the Key and <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/notify</code>."
+    curl:
+      title: "Minimal setup · one curl to push to all devices"
+    journey:
+      title: A notification's journey
+  api:
+    title: API overview
+    base_url: Base URL
+    base_url_desc: Your domain when self-hosting, or a Tunnel domain
+    version: API version
+    version_desc: All dynamic endpoints are version-prefixed; static assets go to /static/*
+    map:
+      title: Endpoint map
+      notify: Agent reports a notification (core)
+      notifications: Notification history list
+      devices_list: Device list
+      devices_sub: Subscribe (register) a device
+      devices_update: Update device (toggle / filter / tags)
+      devices_delete: Unbind device
+      stream: WebSocket long-poll receiving
+      keys_list: API Key list
+      keys_create: Create API Key
+      passkey: Passkey register / login
+      vapid: VAPID public key (for subscription)
+  auth:
+    title: Authentication
+    intro: "Two credential types, for two kinds of callers. <b class=\"text-zinc-200\">Least privilege</b>: send and receive are separate, so a leaked Key only affects one side."
+    key:
+      title: API Key (Bearer)
+      li1: "· For Agent reporting / receiver long-poll connections"
+      li2: "· Header: <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Authorization: Bearer ant_…</code>"
+      li3: "· scope: <code class=\"mono text-[12px] text-blue-300\">notify:send</code> report · <code class=\"mono text-[12px] text-emerald-300\">notify:receive</code> receive · <code class=\"mono text-[12px] text-amber-300\">devices:read</code> read-only"
+      li4: "· Server stores only an argon2id hash; plaintext is shown once at creation"
+    passkey:
+      title: Session Cookie
+      li1: "· For workspace browser access (Overview / Devices / Keys management)"
+      li2: "· WebAuthn passwordless login, biometric or device key"
+      li3: "· httpOnly Cookie; multi-device sessions are independent and individually revocable"
+      li4: "· Cross-device: platform sync / one-time connection guide / recovery code fallback"
+  notify:
+    core: Core
+    intro: "An Agent calls this endpoint to report a notification after a task ends. The server validates the API Key, locates the owner, and pushes the notification <b class=\"text-zinc-200\">end-to-end encrypted</b> to all of that user's \"enabled and level/tag-matched\" devices."
+    params:
+      title: Request body parameters
+      title_desc: "Notification title, e.g. <code>\"Deploy done\"</code>, shown as the system notification's main title."
+      status_desc: "Task result: <code>success</code> · <code>error</code> · <code>interrupted</code> · <code>info</code> · <code>warning</code>. Determines icon color and device filtering."
+      body_desc: "Notification body, supplementary detail."
+      tags_desc: "Routing tags. Empty = broadcast to all enabled devices; non-empty = only delivered to devices with a matching tag or no tags (catch-all). ≤10 tags, each ≤32 chars."
+      link_desc: "Deep link opened when the notification is tapped, e.g. <code>pi://session/sess_8f3a2c</code>."
+      meta_desc: "Context metadata for traceability and statistics, stored in notification history."
+      ttl_desc: "<code>ttl</code> validity in seconds (default 86400); <code>priority</code> (default normal)."
+    required: Required
+    optional: Optional
+    curl:
+      title: "cURL · full request"
+      title_val: "Deploy done"
+      body_val: "Build succeeded, deployed to production"
+      tag_val: "work"
+    resp200: Accepted and dispatched
+    resp200_dev1: Primary phone
+    resp200_dev2: Office Mac
+    resp400: No matching device / bad request
+    resp400_err: "No subscribed devices; please subscribe in the workspace first"
+    resp400_comment: "// 401 · Key missing or invalid (403 if scope insufficient)"
+    rules:
+      title: Delivery rules (tag routing + level filtering)
+  webpush:
+    title: Web Push subscription (browser receiving)
+    intro: "The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class=\"text-zinc-200\">Receives even when the page is closed.</b> iOS requires \"Add to Home Screen\" and standalone mode (iOS 16.4+)."
+    step1: "<b class=\"text-zinc-200\">① Get VAPID public key</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">GET /v1/vapid-public-key</code>"
+    step2: "<b class=\"text-zinc-200\">② Register Service Worker</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">navigator.serviceWorker.register('/sw.js')</code>"
+    step3: "<b class=\"text-zinc-200\">③ Request permission and subscribe</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>"
+    step4: "<b class=\"text-zinc-200\">④ Report subscription</b> · send endpoint + keys via <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/devices</code>"
+    code:
+      title: "Frontend subscription · core code"
+      comment1: "// 1. Register SW + get VAPID public key"
+      comment2: "// 2. Subscribe (requires notification permission)"
+      comment3: "// 3. Report to backend (session Cookie auth)"
+      comment_p256dh: "// { p256dh, auth }"
+      comment_platform: "// ios|mac|win|android|other"
+    ios:
+      title: ⚠️ iOS prerequisite
+      desc: "Must \"Add to Home Screen\" and run in standalone mode, otherwise Safari does not provide Notification / Push API."
+    android:
+      title: ✅ Android is easier
+      desc: "Chrome/Edge can subscribe from a normal tab via FCM — no need to add to Home Screen."
+    e2e:
+      title: 🔒 End-to-end encrypted
+      desc: "Payload encrypted with the subscription's p256dh/auth keys; the push service cannot read the content."
+  ws:
+    channel2: Second receive channel
+    intro: "Besides browser push, any device / plugin can use a <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push."
+    connect:
+      title: "Establishing a connection"
+      comment: "# requires notify:receive scope"
+      comment2: "# optional, for resume after reconnect"
+    s2c:
+      title: "Server → Client"
+      comment1: "// first frame after connection"
+      comment2: "// new notification received"
+      title_val: "Deploy done"
+      body_val: "Deployed to prod"
+      tag_val: "work"
+      comment3: "// replay end / heartbeat / error"
+    c2s:
+      title: "Client → Server"
+      comment1: "// subscribe / unsubscribe tags (empty = all)"
+      comment2: "// acknowledge processed (at-least-once)"
+      comment3: "// heartbeat (every heartbeat_sec; 2 missed = disconnect)"
+      comment4: "// after reconnect, use resume frame (replaces Last-Event-Id header)"
+    reconnect:
+      title: Reconnect and resume
+      desc: "On reconnect, send the <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Last-Event-Id</code> header (or a <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume_expired</code> error; the client should fetch full history."
