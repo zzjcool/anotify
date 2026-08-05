@@ -23,7 +23,10 @@
     <link rel="alternate" hreflang="x-default" href="/{{$.Page}}" />
     {{end}}
   </head>
-  <body class="min-h-screen antialiased overflow-x-hidden flex flex-col">
+  <body
+    class="min-h-screen antialiased overflow-x-hidden flex flex-col"
+    data-page="{{.Page}}"
+  >
     <div class="grid-overlay"></div>
 
     <!-- 顶栏 -->

@@ -680,6 +680,10 @@
 			if (sa) sa.textContent = initial;
 			if (ta) ta.textContent = initial;
 		});
+
+		/* Language hint banner: must run after body.prepend(root) above
+		 * so the banner lands as body's first child (above the layout root). */
+		mountLangHint();
 	}
 
 	/* ---------- API 封装：失败时回退到 demo ---------- */
@@ -853,8 +857,199 @@
 		loadMe,
 		logout,
 		mountLoginLangSwitcher,
+		mountLangHint,
 	};
 
 	/* Auto-mount login page language switcher on load. */
 	mountLoginLangSwitcher();
+
+	/* ---------- Language hint banner (progressive enhancement) ----------
+	 * Shows a dismissible top banner when the visitor's browser language
+	 * differs from the current page language AND the site has that language.
+	 * Pure client-side: no redirect, no storage, no build-time DOM.
+	 * Must run AFTER mountLayout (which prepends the layout root) so the
+	 * banner lands as body's first child. */
+	function mountLangHint() {
+		/* Only on index/login pages */
+		const page = document.body.getAttribute("data-page") || "";
+		if (page !== "index.html" && page !== "login.html") return;
+
+		/* Idempotent: don't double-insert */
+		if (document.querySelector(".lang-hint")) return;
+
+		/* 1) Build available-languages map from <link rel=alternate> (exclude x-default).
+		   Keys are canonical-case (e.g. "zh-CN") for i18n key lookup and
+		   hreflang/lang attributes. A lowercase→canonical map is used for
+		   case-insensitive matching against navigator.languages. */
+		const alternates = {}; /* canonical code → href */
+		const lowerToCanon = {}; /* lowercased code → canonical code */
+		const links = document.head.querySelectorAll(
+			'link[rel="alternate"][hreflang]',
+		);
+		for (const l of links) {
+			const code = l.getAttribute("hreflang") || "";
+			const lower = code.toLowerCase();
+			if (!lower || lower === "x-default") continue;
+			alternates[code] = l.getAttribute("href") || "";
+			lowerToCanon[lower] = code;
+		}
+		if (Object.keys(alternates).length === 0) return; /* single-lang build */
+
+		const currentLower = (document.documentElement.lang || "").toLowerCase();
+
+		/* 2) User language preferences (lowercased for matching) */
+		const prefs = (navigator.languages || [navigator.language] || [])
+			.map((p) => (p || "").toLowerCase())
+			.filter(Boolean);
+		if (prefs.length === 0) return;
+
+		/* 3) Match: exact first, then primary-subtag prefix. First hit wins.
+		   Comparison is case-insensitive (both sides lowercased); the
+		   resolved target.code is canonical-case for correct i18n lookup. */
+		let target = null;
+		for (const pref of prefs) {
+			/* exact match */
+			for (const lower of Object.keys(lowerToCanon)) {
+				if (lower === pref && lower !== currentLower) {
+					const code = lowerToCanon[lower];
+					target = { code, href: alternates[code] };
+					break;
+				}
+			}
+			if (target) break;
+			/* primary-subtag prefix match */
+			const primary = pref.split("-")[0];
+			for (const lower of Object.keys(lowerToCanon)) {
+				if (lower.split("-")[0] === primary && lower !== currentLower) {
+					const code = lowerToCanon[lower];
+					target = { code, href: alternates[code] };
+					break;
+				}
+			}
+			if (target) break;
+		}
+		if (!target) return; /* no match or only matched current */
+
+		/* 4) Validate i18n strings resolved (prevent bare-key banner, §6.4) */
+		const textKey = "common.lang.hint.text." + target.code;
+		const actionKey = "common.lang.hint.action." + target.code;
+		const dismissKey = "common.lang.hint.dismiss." + target.code;
+		const text = t(textKey);
+		const action = t(actionKey);
+		const dismiss = t(dismissKey);
+		if (text === textKey || action === actionKey || dismiss === dismissKey)
+			return; /* i18n not loaded (file://) — silent */
+
+		/* 5) Build DOM (el(), no innerHTML) */
+		const reduced =
+			window.matchMedia &&
+			window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+		const globe = icon(
+			[
+				"M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z",
+				"M2 12h20",
+				"M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z",
+			],
+			"lang-hint-icon h-4 w-4 shrink-0",
+		);
+
+		const actionHref =
+			target.href + (location.search || "") + (location.hash || "");
+
+		const actionEl = el(
+			"a",
+			{
+				class:
+					"lang-hint-action shrink-0 ml-auto rounded-full px-3 py-1 text-[13px] font-medium",
+				href: actionHref,
+				hreflang: target.code,
+				lang: target.code,
+			},
+			document.createTextNode(action),
+		);
+
+		const closeBtn = el(
+			"button",
+			{
+				class: "lang-hint-close shrink-0 rounded-md p-1.5",
+				type: "button",
+				"aria-label": dismiss,
+			},
+			icon(["M18 6L6 18", "M6 6l12 12"], "h-4 w-4"),
+		);
+
+		const inner = el(
+			"div",
+			{
+				class:
+					"lang-hint-inner mx-auto flex max-w-6xl items-center gap-3 px-5 py-2 sm:px-8",
+				lang: target.code,
+			},
+			globe,
+			el(
+				"p",
+				{ class: "lang-hint-text text-[13px]" },
+				document.createTextNode(text),
+			),
+			actionEl,
+			closeBtn,
+		);
+
+		const regionLabel = t("common.lang.label", "Language");
+		const banner = el(
+			"div",
+			{
+				class: "lang-hint",
+				role: "region",
+				"aria-label": regionLabel,
+			},
+			inner,
+		);
+
+		document.body.prepend(banner);
+
+		/* 6) Animate open (reduced-motion = instant) */
+		if (reduced) {
+			banner.classList.add("lang-hint--open");
+		} else {
+			requestAnimationFrame(() =>
+				requestAnimationFrame(() => banner.classList.add("lang-hint--open")),
+			);
+		}
+
+		/* 7) Close: animate out then remove; move focus to first focusable in header/main */
+		function closeHint() {
+			if (reduced) {
+				banner.remove();
+			} else {
+				banner.classList.remove("lang-hint--open");
+				const cleanup = () => banner.remove();
+				banner.addEventListener("transitionend", cleanup, { once: true });
+				setTimeout(cleanup, 250); /* fallback */
+			}
+			/* Move focus to first focusable in header or main */
+			const target =
+				document.querySelector(
+					"header a, header button, main a, main button",
+				) || null;
+			if (target) target.focus();
+		}
+
+		closeBtn.addEventListener("click", closeHint);
+
+		/* Esc closes when focus is within the banner */
+		banner.addEventListener("keydown", (e) => {
+			if (e.key === "Escape") {
+				e.preventDefault();
+				closeHint();
+			}
+		});
+	}
+
+	/* Run lang-hint on login page (no mountLayout there).
+	 * Workspace pages get mountLangHint() called at the end of mountLayout(). */
+	if (/login\.html$/.test(location.pathname)) {
+		mountLangHint();
+	}
 })();
