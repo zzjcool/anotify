@@ -903,32 +903,41 @@
 			.filter(Boolean);
 		if (prefs.length === 0) return;
 
-		/* 3) Match: exact first, then primary-subtag prefix. First hit wins.
-		   Comparison is case-insensitive (both sides lowercased); the
-		   resolved target.code is canonical-case for correct i18n lookup. */
+		/* 3) Resolve the browser's FIRST supported preference (exact match
+		   first, then primary-subtag prefix). That first resolvable entry is
+		   the user's preferred site language: if it equals the current page
+		   language, the visitor is already where they want to be — no banner.
+		   Never skip a matching-current entry to suggest a lower-priority
+		   language (e.g. prefs ["zh-CN","en"] on a zh-CN page must NOT
+		   produce an English hint). */
 		let target = null;
 		for (const pref of prefs) {
+			let resolved = null;
 			/* exact match */
 			for (const lower of Object.keys(lowerToCanon)) {
-				if (lower === pref && lower !== currentLower) {
-					const code = lowerToCanon[lower];
-					target = { code, href: alternates[code] };
+				if (lower === pref) {
+					resolved = lowerToCanon[lower];
 					break;
 				}
 			}
-			if (target) break;
 			/* primary-subtag prefix match */
-			const primary = pref.split("-")[0];
-			for (const lower of Object.keys(lowerToCanon)) {
-				if (lower.split("-")[0] === primary && lower !== currentLower) {
-					const code = lowerToCanon[lower];
-					target = { code, href: alternates[code] };
-					break;
+			if (!resolved) {
+				const primary = pref.split("-")[0];
+				for (const lower of Object.keys(lowerToCanon)) {
+					if (lower.split("-")[0] === primary) {
+						resolved = lowerToCanon[lower];
+						break;
+					}
 				}
 			}
-			if (target) break;
+			if (resolved) {
+				if (resolved.toLowerCase() !== currentLower) {
+					target = { code: resolved, href: alternates[resolved] };
+				}
+				break; /* first resolvable preference decides, for better or worse */
+			}
 		}
-		if (!target) return; /* no match or only matched current */
+		if (!target) return; /* preferred language is current page, or none supported */
 
 		/* 4) Validate i18n strings resolved (prevent bare-key banner, §6.4) */
 		const textKey = "common.lang.hint.text." + target.code;

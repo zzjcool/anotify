@@ -717,6 +717,89 @@ async function main() {
 	}
 
 	/* =========================================================
+	 * AC-10 (regression, user-reported): multi-entry language list
+	 * must NOT skip the current-page match to suggest a lower-
+	 * priority language. Real browsers send e.g. ["zh-CN","en"] —
+	 * the FIRST resolvable preference decides.
+	 * ========================================================= */
+	console.log("--- AC-10: multi-entry navigator.languages regression ---");
+	{
+		/* AC-10.1: prefs [zh-CN, en] on the zh-CN page → no banner
+		 * (previously: zh-CN was skipped as "matches current" and en was
+		 * suggested — the exact false-positive the user reported). */
+		const ctx1 = await browser.newContext({ locale: "zh-CN" });
+		await ctx1.addInitScript(() => {
+			Object.defineProperty(navigator, "languages", {
+				get: () => ["zh-CN", "zh", "en"],
+			});
+		});
+		const pg1 = await ctx1.newPage();
+		await pg1.goto(server.base + "/login.html", { waitUntil: "load" });
+		await pg1.waitForTimeout(400);
+		const banner1 = await getBanner(pg1);
+		H.check(
+			"AC-10.1 prefs [zh-CN,zh,en] on /login.html → no banner",
+			!banner1,
+			banner1 ? "banner shown (false positive regression)" : "",
+		);
+		await ctx1.close();
+
+		/* AC-10.2: prefs [zh-CN, en] on the ENGLISH page → Chinese banner
+		 * (first preference zh-CN ≠ current en → hint is correct). */
+		const ctx2 = await browser.newContext({ locale: "zh-CN" });
+		await ctx2.addInitScript(() => {
+			Object.defineProperty(navigator, "languages", {
+				get: () => ["zh-CN", "zh", "en"],
+			});
+		});
+		const pg2 = await ctx2.newPage();
+		await pg2.goto(server.base + "/en/login.html", { waitUntil: "load" });
+		await pg2.waitForTimeout(400);
+		const banner2 = await getBanner(pg2);
+		H.check(
+			"AC-10.2 prefs [zh-CN,zh,en] on /en/login.html → Chinese banner",
+			!!banner2,
+			"no banner (expected Chinese hint)",
+		);
+		if (banner2) {
+			const text = (await pg2.textContent(".lang-hint-text")) || "";
+			H.check(
+				"AC-10.2 banner text is Chinese",
+				text.includes(BANNER_TEXT["zh-CN"]),
+				`got "${text.trim()}"`,
+			);
+		}
+		await ctx2.close();
+
+		/* AC-10.3: prefs [fr, ja] on the zh-CN page → Japanese banner
+		 * (first UNSUPPORTED entry is skipped; first SUPPORTED wins). */
+		const ctx3 = await browser.newContext({ locale: "fr-FR" });
+		await ctx3.addInitScript(() => {
+			Object.defineProperty(navigator, "languages", {
+				get: () => ["fr-FR", "fr", "ja"],
+			});
+		});
+		const pg3 = await ctx3.newPage();
+		await pg3.goto(server.base + "/login.html", { waitUntil: "load" });
+		await pg3.waitForTimeout(400);
+		const banner3 = await getBanner(pg3);
+		H.check(
+			"AC-10.3 prefs [fr,ja] on /login.html → Japanese banner (skip unsupported)",
+			!!banner3,
+			"no banner (expected Japanese hint)",
+		);
+		if (banner3) {
+			const text = (await pg3.textContent(".lang-hint-text")) || "";
+			H.check(
+				"AC-10.3 banner text is Japanese",
+				text.includes(BANNER_TEXT.ja),
+				`got "${text.trim()}"`,
+			);
+		}
+		await ctx3.close();
+	}
+
+	/* =========================================================
 	 * Cleanup
 	 * ========================================================= */
 	await browser.close();
