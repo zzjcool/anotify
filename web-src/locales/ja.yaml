@@ -47,6 +47,7 @@ common:
     hours_ago: '{n} 時間前'
     days_ago: '{n} 日前'
     never: 未使用
+    weeks_ago: '{n} 週間前'
   ttl:
     day: '{n} 日'
     hour: '{n} 時間'
@@ -101,7 +102,7 @@ index:
     morning: おはようございます
     afternoon: こんにちは
     evening: こんばんは
-    with_name: "{greeting}、{name}"
+    with_name: '{greeting}、{name}'
   loading: 通知の統計を読み込み中…
   demo_badge: デモデータ（バックエンド未接続）
   kpi:
@@ -229,7 +230,12 @@ login:
     need_username: まずユーザー名を決めてください。
     login_failed: ログイン失敗：
     signup_failed: 登録失敗：
+    demo_enter: バックエンド未接続 — デモモードに入りました（サンプルデータ）。
+    login_success_short: ログイン成功、ワークスペースに移動中…
+    signup_success_short: 登録成功！ワークスペースに移動中…
+    need_username_short: まずユーザー名を決めてください。
   recovery_toast: リカバリーコードログインはバックエンド接続後に利用可能になります（ユーザー名 + ワンタイムリカバリーコード）
+  recovery_toast_msg: 復旧コードログインはバックエンド接続後に利用可能になります（ユーザー名 + 一回限りの復旧コード）
 receivers:
   title: 通知先
   demo_badge: デモデータ
@@ -261,6 +267,86 @@ receivers:
     device_placeholder: 例：メインスマホ / オフィスの Mac
     submit: 権限を要求して購読
     hint: ブラウザが通知権限を要求します。iOS ではまず本サイトを「ホーム画面に追加」し、スタンドアロンアプリとして開く必要があります。
+    unsupported: この環境は Web Push に対応していません。iOS はホーム画面に追加してから開いてください。
+    requesting_perm: 通知権限を要求中…
+    perm_denied: 通知権限が付与されませんでした（{perm}）。ブラウザ設定で許可して再試行してください。
+    registering_sw: Service Worker を登録中…
+    getting_vapid: VAPID 公開鍵を取得中…
+    no_backend: バックエンド未接続 — VAPID 鍵を取得できません（デモモードではデバイスを登録のみ行い、実際の購読はしません）。
+    empty_vapid: VAPID 公開鍵が空です
+    subscribing: プッシュを購読中…
+    reporting: 購読を報告中…
+    success: 購読成功！このデバイスはプッシュ通知を受信します。
+    failed: 購読に失敗：{msg}
+  filter:
+    all: すべて
+    error: エラーのみ
+    success: 成功のみ
+  local:
+    enabled: この端末は通知が有効です
+    disabled: この端末は通知が無効です
+    receiving: 受信中
+    not_receiving: 受信不可
+    unsupported: このブラウザは Web Push に対応していません（iOS はホーム画面に追加が必要です）。
+    subscribed: このブラウザ（{browser}）はプッシュ通知を購読中で、通知を受信できます。
+    permission_denied: 通知権限が拒否されました — ブラウザの設定で再度許可してください。
+    not_subscribed: このブラウザ（{browser}）はプッシュ通知を購読していません — この端末は通知を受信できません。
+    turn_off: 通知をオフにする
+    turn_on: 通知をオンにする
+  troubleshoot:
+    title: デバイス別チェックリスト
+    local_check: ローカル確認
+    perm_granted: 通知権限：許可済み ✓
+    perm_denied: 通知権限：拒否 ✗（ブラウザ設定でリセットして再購読してください）
+    perm_default: 通知権限：未設定（「このデバイスを追加」を押した際に要求します）
+    expand: 受信できない？これらを確認 →
+  empty: まだ受信デバイスがありません。右上の「このデバイスを追加」で始めましょう。
+  device:
+    switch_aria: 受信スイッチ
+    tags: タグ
+    add_tag: + タグ
+    this_device: この端末
+    receiving: 受信中
+    paused: 一時停止
+    last_delivered: 最終配信 {time}
+    level: 通知レベル
+    rename: 名前変更
+    unbind: 解除
+  prompt:
+    tag: タグを追加（例：スマホ / 仕事 / アラート）
+    rename: デバイス名
+  confirm:
+    unbind: 「{name}」を解除しますか？通知を受信できなくなります。
+  toast:
+    saved: 保存しました
+    save_failed: 保存に失敗：{msg}
+    unbound: 解除しました
+    unbind_failed: 解除に失敗：{msg}
+    local_off: この端末の通知をオフにしました
+    added_demo: 登録しました（デモ）
+    added: デバイスを追加しました
+  checklist:
+    ios_1: ホーム画面のアイコンから開く必要があります（standalone）。通常の Safari タブは通知に対応していません
+    ios_2: iOS 設定 → 通知 → Safari/PWA → 通知を許可
+    ios_3: 購読後に受信できない：集中モードをオフにし、サイトの通知権限が「許可」か確認
+    mac_1: macOS システム設定 → 通知 → 該当ブラウザ（例：Google Chrome）→ 通知を許可
+    mac_2: ブラウザのアドレスバーの鍵アイコン → 通知 → 「許可」に設定（デフォルト/ブロック以外）
+    mac_3: プッシュにはブラウザプロセスの実行と当サイトのタブが開いている必要があります。ブラウザを閉じるとリアルタイムプッシュは受信できません
+    mac_4: フォアグラウンドタブはプッシュをサイレント処理することがあります — バックグラウンドに切り替えるか最小化してテスト
+    win_1: Windows 設定 → システム → 通知 → ブラウザの通知がオンか確認
+    win_2: ブラウザのアドレスバーの鍵アイコン → 通知 → 「許可」に設定
+    win_3: 集中アシスト（おやすみモード）がオンだと通知がサイレントになります
+    android_1: Android 設定 → アプリ → ブラウザ → 通知 → 許可
+    android_2: WeChat の内蔵ブラウザや一部の中国製ブラウザは Web Push に対応していません。Chrome をご使用ください
+    other_1: ブラウザの通知権限が「許可」か確認（アドレスバーの鍵アイコン）
+    other_2: ブラウザプロセスが実行中か確認
+  demo:
+    device1: メインスマホ
+    device2: オフィスの Mac
+    device3: 旧デスクトップ
+    tag_phone: スマホ
+    tag_work: 仕事
+  subtitle: デバイスごとに通知受信を制御
 keys:
   title: API Keys
   subtitle: Agent が通知報告に使用する Key
@@ -312,6 +398,39 @@ keys:
     copy: コピー
     warning: 閉じると完全な Key は二度と表示できません。今すぐパスワードマネージャーや安全な場所に保存してください。
     done: 保存しました
+  scope:
+    send: 送信
+    receive: 受信
+    read: デバイス参照
+  unnamed: 名前なし
+  unnamed_key: 名前なし Key
+  summary: '{total} 個の Key · {active} 有効{demo}'
+  summary_demo: ' · デモデータ'
+  empty: まだ Key がありません。右上の「+ 新規 Key」をクリックして作成し、Agent の報告を始めましょう。
+  created_at: 作成日 {date}
+  status:
+    enabled: 有効
+    disabled: 無効
+  action:
+    revoke: 無効化
+  confirm:
+    revoke: 「{name}」を無効化しますか？この Key を使う Agent は報告できなくなります。
+  toast:
+    revoked_demo: 無効化しました（デモモード、ローカルのみ）
+    revoked: 「{name}」を無効化しました
+    revoke_failed: 無効化に失敗：{msg}
+    copied: コピーしました ✓
+    copy_failed: コピーに失敗しました。手動で選択してコピーしてください
+    created: Key を作成しました
+  error:
+    no_scope: 少なくとも1つのスコープを選択してください
+    no_plaintext: サーバーが Key の平文を返しませんでした
+    create_failed: 作成に失敗：{msg}（バックエンド未準備時はデモモードで体験できます）
+  demo:
+    name1: ローカル開発
+    name2: CI パイプライン
+    name3: デスクトップウィジェット（受信）
+    name4: 旧テスト Key
 security:
   title: セキュリティとログイン
   subtitle: Passkey · セッション · リカバリーコード
@@ -344,6 +463,63 @@ security:
     delivery_p1: · 通知先ページで管理、このページとは無関係
     delivery_p2: · ブラウザプッシュ購読 + WebSocket 接続
     delivery_p3: · ログアウト後も購読を解除するまで受信
+  unnamed_passkey: 名前なし Passkey
+  unknown_device: 不明なデバイス
+  credential: 資格情報
+  current_session: 現在のセッション
+  empty_passkeys: まだ Passkey がありません。右上の「+ Passkey 追加」でこのデバイスに作成できます。
+  empty_sessions: アクティブなセッションはありません。
+  in_use: 使用中
+  last_used: 最終使用 {time}
+  created_at: 作成日 {date}
+  current_credential_no_delete: このデバイスの資格情報、削除不可
+  rename: 名前変更
+  delete: 削除
+  revoke: 取り消し
+  last_active: 最終アクティブ {time}
+  prompt:
+    rename: この Passkey に新しい名前を付けてください：
+  confirm:
+    delete: 'Passkey「{name}」を削除しますか？
+
+      この Passkey を使うデバイスはログインできなくなります（復旧コードで対応可能）。'
+    revoke: 「{name}」のログインセッションを取り消しますか？そのデバイスは再ログインが必要になります。
+  alert:
+    add_requirement: 'Passkey の追加に必要な条件：
+
+      1. バックエンドが HTTPS 環境で起動済み
+
+      2. ブラウザが WebAuthn に対応
+
+
+      現在はデモモードです。バックエンド準備後に生体認証が起動します。'
+  toast:
+    renamed_demo: 名前を変更しました（デモモード、ローカルのみ）
+    renamed: 名前を変更しました
+    rename_failed: 名前変更に失敗：{msg}
+    deleted_demo: 削除しました（デモモード、ローカルのみ）
+    deleted: 「{name}」を削除しました
+    delete_failed: 削除に失敗：{msg}
+    add_success: Passkey を追加しました
+    add_failed: 追加に失敗：{msg}
+    revoked_demo: 取り消しました（デモモード、ローカルのみ）
+    revoked: 「{name}」のセッションを取り消しました
+    revoke_failed: 取り消しに失敗：{msg}
+  demo:
+    pk1_name: iCloud キーチェーン
+    pk1_type: プラットフォーム同期
+    pk1_devices: iPhone · iPad · Mac（同一 Apple ID で自動同期）
+    pk2_name: 会議室 PC · Windows Hello
+    pk2_type: ローカル資格情報
+    pk2_devices: この Windows PC のみ
+    pk3_name: YubiKey ハードウェアキー
+    pk3_type: ハードウェアキー
+    pk3_devices: USB / NFC、任意のデバイスで使用可能
+    s4_passkey: ローカル Passkey
+    s1_passkey: iCloud キーチェーン（同期済み）
+    location_shanghai: 上海
+    location_office: 会社
+    current: 現在
 docs:
   title: 連携ドキュメント
   subtitle: Agent 報告 · Web Push · WebSocket

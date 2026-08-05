@@ -278,83 +278,84 @@
           detectPlatform,
           timeAgo,
           copyText,
+          t,
         } = window.Anotify;
         const qs = new URLSearchParams(location.search);
         const username = qs.get("u") || "zheng";
 
         mountLayout({
           active: "receivers",
-          title: "通知接收",
-          subtitle: "按设备控制通知接收",
+          title: t("receivers.title", "通知接收"),
+          subtitle: t("receivers.subtitle", "按设备控制通知接收"),
           username,
         });
 
-        /* ================= 数据 ================= */
+        /* ================= Data ================= */
         const FILTER_LABEL = {
-          all: "全部通知",
-          error: "仅失败",
-          success: "仅成功",
+          all: t("receivers.filter.all", "全部通知"),
+          error: t("receivers.filter.error", "仅失败"),
+          success: t("receivers.filter.success", "仅成功"),
         };
         let DEVICES = [];
         let usingDemo = false;
 
-        // 各平台「收不到通知」的检查清单（按设备平台显示，帮用户自查）
+        // Per-platform "not receiving?" checklist (shown by device platform for self-help)
         const PLATFORM_TROUBLESHOOT = {
           ios: [
-            "必须从「主屏幕图标」打开（standalone），普通 Safari 标签页不支持通知",
-            "iOS 设置 → 通知 → Safari/PWA → 允许通知",
-            "订阅后未收到：关闭勿扰模式，确认站点通知权限为「允许」",
+            t("receivers.checklist.ios_1", "必须从「主屏幕图标」打开（standalone），普通 Safari 标签页不支持通知"),
+            t("receivers.checklist.ios_2", "iOS 设置 → 通知 → Safari/PWA → 允许通知"),
+            t("receivers.checklist.ios_3", "订阅后未收到：关闭勿扰模式，确认站点通知权限为「允许」"),
           ],
           mac: [
-            "macOS 系统设置 → 通知 → 找到对应浏览器（如 Google Chrome）→ 允许通知",
-            "浏览器地址栏锁图标 → 通知 → 设为「允许」（不是默认/阻止）",
-            "推送需浏览器进程运行且标签页打开本站；关掉浏览器则收不到实时推送",
-            "前台标签页可能静默处理推送——切到后台或最小化再测",
+            t("receivers.checklist.mac_1", "macOS 系统设置 → 通知 → 找到对应浏览器（如 Google Chrome）→ 允许通知"),
+            t("receivers.checklist.mac_2", "浏览器地址栏锁图标 → 通知 → 设为「允许」（不是默认/阻止）"),
+            t("receivers.checklist.mac_3", "推送需浏览器进程运行且标签页打开本站；关掉浏览器则收不到实时推送"),
+            t("receivers.checklist.mac_4", "前台标签页可能静默处理推送——切到后台或最小化再测"),
           ],
           win: [
-            "Windows 设置 → 系统 → 通知 → 确认浏览器已开通知",
-            "浏览器地址栏锁图标 → 通知 → 设为「允许」",
-            "焦点助手（勿扰）开启时会静默通知",
+            t("receivers.checklist.win_1", "Windows 设置 → 系统 → 通知 → 确认浏览器已开通知"),
+            t("receivers.checklist.win_2", "浏览器地址栏锁图标 → 通知 → 设为「允许」"),
+            t("receivers.checklist.win_3", "焦点助手（勿扰）开启时会静默通知"),
           ],
           android: [
-            "Android 设置 → 应用 → 浏览器 → 通知 → 允许",
-            "微信内置浏览器/部分国产浏览器不支持 Web Push，请用 Chrome",
+            t("receivers.checklist.android_1", "Android 设置 → 应用 → 浏览器 → 通知 → 允许"),
+            t("receivers.checklist.android_2", "微信内置浏览器/部分国产浏览器不支持 Web Push，请用 Chrome"),
           ],
           other: [
-            "确认浏览器通知权限为「允许」（地址栏锁图标）",
-            "确认浏览器进程在运行",
+            t("receivers.checklist.other_1", "确认浏览器通知权限为「允许」（地址栏锁图标）"),
+            t("receivers.checklist.other_2", "确认浏览器进程在运行"),
           ],
         };
 
         const DEMO_DEVICES = [
           {
             id: "dev_demo1",
-            name: "主力手机",
+            nameKey: "receivers.demo.device1",
             platform: "ios",
             enabled: true,
             statusFilter: "all",
-            tags: ["手机"],
-            lastDelivered: "2 分钟前",
+            tags: [t("receivers.demo.tag_phone", "手机")],
+            lastDelivered: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 2),
             browser: "iOS Safari",
           },
           {
             id: "dev_demo2",
-            name: "办公室 Mac",
+            nameKey: "receivers.demo.device2",
             platform: "mac",
             enabled: true,
             statusFilter: "all",
-            tags: ["工作"],
-            lastDelivered: "18 分钟前",
+            tags: [t("receivers.demo.tag_work", "工作")],
+            lastDelivered: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 18),
             browser: "macOS Safari",
           },
           {
             id: "dev_demo3",
-            name: "旧台式机",
+            nameKey: "receivers.demo.device3",
             platform: "win",
             enabled: false,
             statusFilter: "error",
             tags: [],
-            lastDelivered: "3 天前",
+            lastDelivered: t("common.time.days_ago", "{n} 天前").replace("{n}", 3),
             browser: "Chrome",
           },
         ];
@@ -363,7 +364,9 @@
           const meta = PLATFORM_META[d.platform] || PLATFORM_META.other;
           return {
             id: d.id || d.ID || "dev_" + Math.random().toString(36).slice(2, 8),
-            name: d.name || meta.label,
+            name: d.nameKey
+              ? t(d.nameKey, d.name || "")
+              : d.name || meta.label,
             platform: d.platform || "other",
             enabled: d.enabled !== false && d.enabled !== 0,
             statusFilter: d.statusFilter || d.status_filter || "all",
@@ -393,7 +396,7 @@
           if (/Chrome/.test(ua) && /Windows/.test(ua))
             return "Chrome · Windows";
           if (/Android/.test(ua)) return "Android Chrome";
-          return "浏览器";
+          return t("common.platform.browser", "浏览器");
         }
 
         async function load() {
@@ -430,13 +433,13 @@
           renderCurrentDevice();
         }
 
-        /* ================= 通道切换 ================= */
-        document.querySelectorAll(".channel-tab").forEach((t) =>
-          t.addEventListener("click", () => {
+        /* ================= Channel switch ================= */
+        document.querySelectorAll(".channel-tab").forEach((tab) =>
+          tab.addEventListener("click", () => {
             document
               .querySelectorAll(".channel-tab")
-              .forEach((x) => x.classList.toggle("active", x === t));
-            const ch = t.dataset.channel;
+              .forEach((x) => x.classList.toggle("active", x === tab));
+            const ch = tab.dataset.channel;
             document
               .getElementById("channel-push")
               .classList.toggle("hidden", ch !== "push");
@@ -453,7 +456,7 @@
             copyText(e.currentTarget, "#ws-cmd"),
           );
 
-        /* ================= 本机状态卡 ================= */
+        /* ================= Local device status card ================= */
         function renderCurrentDevice() {
           const container = document.getElementById("current-device-card");
           const platform = detectPlatform();
@@ -490,30 +493,48 @@
                   { class: "flex flex-wrap items-center gap-2" },
                   el("span", {
                     class: "text-[15px] font-medium text-white",
-                    text: subscribed ? "本机已开启通知" : "本机未开启通知",
+                    text: subscribed
+                      ? t("receivers.local.enabled", "本机已开启通知")
+                      : t("receivers.local.disabled", "本机未开启通知"),
                   }),
                   el("span", {
                     class: "status-badge",
                     style: subscribed
                       ? "background: var(--success-soft); color: #6ee7b7"
                       : "background: var(--warn-soft); color: #fcd34d",
-                    text: subscribed ? "收得到" : "收不到",
+                    text: subscribed
+                      ? t("receivers.local.receiving", "收得到")
+                      : t("receivers.local.not_receiving", "收不到"),
                   }),
                 ),
                 el("p", {
                   class: "mt-1 text-[13px] leading-relaxed text-zinc-400",
                   text: !supported
-                    ? "当前浏览器不支持 Web Push（iOS 需先添加到主屏幕）。"
+                    ? t(
+                        "receivers.local.unsupported",
+                        "当前浏览器不支持 Web Push（iOS 需先添加到主屏幕）。",
+                      )
                     : subscribed
-                      ? `当前浏览器（${meta.label}）已订阅推送，这台设备能收到通知。`
+                      ? t(
+                          "receivers.local.subscribed",
+                          "当前浏览器（{browser}）已订阅推送，这台设备能收到通知。",
+                        ).replace("{browser}", meta.label)
                       : perm === "denied"
-                        ? "通知权限已被拒绝——请在浏览器设置里重新允许。"
-                        : `当前浏览器（${meta.label}）还没开推送订阅——这台设备收不到通知。`,
+                        ? t(
+                            "receivers.local.permission_denied",
+                            "通知权限已被拒绝——请在浏览器设置里重新允许。",
+                          )
+                        : t(
+                            "receivers.local.not_subscribed",
+                            "当前浏览器（{browser}）还没开推送订阅——这台设备收不到通知。",
+                          ).replace("{browser}", meta.label),
                 }),
               ),
               el("button", {
                 class: `${subscribed ? "btn-ghost" : "btn-primary"} rounded-xl px-4 py-2 text-sm font-medium`,
-                text: subscribed ? "关闭本机通知" : "开启本机通知",
+                text: subscribed
+                  ? t("receivers.local.turn_off", "关闭本机通知")
+                  : t("receivers.local.turn_on", "开启本机通知"),
                 onclick: () =>
                   subscribed ? unsubscribeCurrent(cur) : openPair(),
               }),
@@ -522,10 +543,10 @@
           container.replaceChildren(card);
         }
 
-        /* ================= 设备列表 ================= */
-        // makeTroubleshoot 生成「收不到通知？」折叠面板：
-        //   - 本机设备：实时检测 Notification.permission / SW 状态
-        //   - 所有设备：按平台显示检查清单
+        /* ================= Device list ================= */
+        // makeTroubleshoot generates the "not receiving?" collapsible panel:
+        //   - local device: real-time Notification.permission / SW status check
+        //   - all devices: platform-specific checklist
         function makeTroubleshoot(d) {
           const tips =
             PLATFORM_TROUBLESHOOT[d.platform] || PLATFORM_TROUBLESHOOT.other;
@@ -537,26 +558,26 @@
             },
             el("div", {
               class: "mb-2 font-medium text-zinc-300",
-              text: "按设备检查清单",
+              text: t("receivers.troubleshoot.title", "按设备检查清单"),
             }),
-            ...tips.map((t, i) =>
+            ...tips.map((tip, i) =>
               el(
                 "div",
                 { class: "flex gap-2 py-0.5" },
                 el("span", { class: "text-zinc-600", text: `${i + 1}.` }),
-                el("span", { text: t }),
+                el("span", { text: tip }),
               ),
             ),
           );
-          // 本机设备做实时权限检测，在面板顶部显示状态
+          // Local device: real-time permission check shown at panel top
           if (d.isCurrent && "Notification" in window) {
             const perm = Notification.permission;
             const permText =
               perm === "granted"
-                ? "通知权限：已授权 ✓"
+                ? t("receivers.troubleshoot.perm_granted", "通知权限：已授权 ✓")
                 : perm === "denied"
-                  ? "通知权限：被拒绝 ✗（请在浏览器设置里重置后重新订阅）"
-                  : "通知权限：未授权（点「添加此设备」时申请）";
+                  ? t("receivers.troubleshoot.perm_denied", "通知权限：被拒绝 ✗（请在浏览器设置里重置后重新订阅）")
+                  : t("receivers.troubleshoot.perm_default", "通知权限：未授权（点「添加此设备」时申请）");
             panel.insertBefore(
               el(
                 "div",
@@ -567,7 +588,7 @@
                       ? "background: var(--success-soft)"
                       : "background: var(--warn-soft)",
                 },
-                el("span", { class: "font-medium", text: "本机检测" }),
+                el("span", { class: "font-medium", text: t("receivers.troubleshoot.local_check", "本机检测") }),
                 el("span", { class: "text-zinc-500", text: " · " }),
                 el("span", { text: permText }),
               ),
@@ -590,7 +611,7 @@
                 },
               },
               el("span", { class: "ts-icon", text: "▸" }),
-              el("span", { text: "收不到通知？检查这些 →" }),
+              el("span", { text: t("receivers.troubleshoot.expand", "收不到通知？检查这些 →") }),
             ),
             panel,
           );
@@ -603,7 +624,10 @@
             list.replaceChildren(
               el("div", {
                 class: "card p-8 text-center text-sm text-zinc-500",
-                text: "还没有接收设备，点右上角「添加此设备」开始。",
+                text: t(
+                  "receivers.empty",
+                  "还没有接收设备，点右上角「添加此设备」开始。",
+                ),
               }),
             );
             return;
@@ -613,7 +637,7 @@
               const meta = PLATFORM_META[d.platform] || PLATFORM_META.other;
               const sw = el("button", {
                 class: `switch ${d.enabled ? "on" : ""}`,
-                "aria-label": "接收开关",
+                "aria-label": t("receivers.device.switch_aria", "接收开关"),
                 onclick: () => updateDevice(d, { enabled: !d.enabled }),
               });
               const select = el(
@@ -638,30 +662,30 @@
                 { class: "mt-2.5 flex flex-wrap items-center gap-1.5" },
                 el("span", {
                   class: "text-[10px] text-zinc-600",
-                  text: "标签",
+                  text: t("receivers.device.tags", "标签"),
                 }),
-                ...d.tags.map((t) =>
+                ...d.tags.map((tag) =>
                   el(
                     "span",
                     { class: "tag-chip" },
-                    t,
+                    tag,
                     el("span", {
                       class: "tag-x",
                       text: "×",
                       onclick: () =>
                         updateDevice(d, {
-                          tags: d.tags.filter((x) => x !== t),
+                          tags: d.tags.filter((x) => x !== tag),
                         }),
                     }),
                   ),
                 ),
                 el("button", {
                   class: "tag-add",
-                  text: "+ 标签",
+                  text: t("receivers.device.add_tag", "+ 标签"),
                   onclick: () => {
-                    const t = prompt("添加标签（如：手机 / 工作 / 告警）");
-                    if (t && t.trim() && !d.tags.includes(t.trim())) {
-                      updateDevice(d, { tags: d.tags.concat(t.trim()) });
+                    const val = prompt(t("receivers.prompt.tag", "添加标签（如：手机 / 工作 / 告警）"));
+                    if (val && val.trim() && !d.tags.includes(val.trim())) {
+                      updateDevice(d, { tags: d.tags.concat(val.trim()) });
                     }
                   },
                 }),
@@ -692,12 +716,14 @@
                               "rounded-full px-2 py-0.5 text-[10px] font-semibold",
                             style:
                               "background: var(--accent-soft); color: var(--accent)",
-                            text: "本机",
+                            text: t("receivers.device.this_device", "本机"),
                           })
                         : null,
                       el("span", {
                         class: `status-badge ${d.enabled ? "status-on" : "status-off"}`,
-                        text: d.enabled ? "接收中" : "已暂停",
+                        text: d.enabled
+                          ? t("receivers.device.receiving", "接收中")
+                          : t("receivers.device.paused", "已暂停"),
                       }),
                     ),
                     el(
@@ -710,7 +736,12 @@
                       el("span", { class: "text-zinc-700", text: "·" }),
                       el("span", { text: d.browser }),
                       el("span", { class: "text-zinc-700", text: "·" }),
-                      el("span", { text: `最近送达 ${d.lastDelivered}` }),
+                      el("span", {
+                        text: t(
+                          "receivers.device.last_delivered",
+                          "最近送达 {time}",
+                        ).replace("{time}", d.lastDelivered),
+                      }),
                     ),
                     tagWrap,
                   ),
@@ -719,7 +750,7 @@
                     { class: "flex flex-wrap items-center gap-2.5" },
                     el("span", {
                       class: "text-[11px] text-zinc-500",
-                      text: "通知级别",
+                      text: t("receivers.device.level", "通知级别"),
                     }),
                     select,
                     sw,
@@ -735,19 +766,27 @@
                   },
                   el("button", {
                     class: "btn-ghost rounded-lg px-3 py-1.5 text-xs",
-                    text: "重命名",
+                    text: t("receivers.device.rename", "重命名"),
                     onclick: () => {
-                      const name = prompt("设备名称", d.name);
+                      const name = prompt(
+                        t("receivers.prompt.rename", "设备名称"),
+                        d.name,
+                      );
                       if (name && name.trim())
                         updateDevice(d, { name: name.trim() });
                     },
                   }),
                   el("button", {
                     class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
-                    text: "解绑",
+                    text: t("receivers.device.unbind", "解绑"),
                     onclick: () => {
                       if (
-                        confirm(`确定解绑「${d.name}」吗？它将不再接收通知。`)
+                        confirm(
+                          t(
+                            "receivers.confirm.unbind",
+                            "确定解绑「{name}」吗？它将不再接收通知。",
+                          ).replace("{name}", d.name),
+                        )
                       )
                         removeDevice(d);
                     },
@@ -758,7 +797,7 @@
           );
         }
 
-        /* ================= 设备操作（API + 本地回退） ================= */
+        /* ================= Device operations (API + local fallback) ================= */
         async function updateDevice(d, patch) {
           Object.assign(d, patch);
           renderDevices();
@@ -770,9 +809,15 @@
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(patch),
             });
-            toast("已保存", "success");
+            toast(t("receivers.toast.saved", "已保存"), "success");
           } catch (e) {
-            toast("保存失败：" + (e.message || e), "error");
+            toast(
+              t("receivers.toast.save_failed", "保存失败：{msg}").replace(
+                "{msg}",
+                e.message || e,
+              ),
+              "error",
+            );
             load();
           }
         }
@@ -786,14 +831,20 @@
             await api(`/v1/devices/${encodeURIComponent(d.id)}`, {
               method: "DELETE",
             });
-            toast("已解绑", "success");
+            toast(t("receivers.toast.unbound", "已解绑"), "success");
           } catch (e) {
-            toast("解绑失败：" + (e.message || e), "error");
+            toast(
+              t("receivers.toast.unbind_failed", "解绑失败：{msg}").replace(
+                "{msg}",
+                e.message || e,
+              ),
+              "error",
+            );
             load();
           }
         }
 
-        /* ================= 添加设备（Web Push 订阅） ================= */
+        /* ================= Add device (Web Push subscription) ================= */
         const pairModal = document.getElementById("pair-modal");
         const pairStatus = document.getElementById("pair-status");
         function openPair() {
@@ -841,7 +892,10 @@
             PLATFORM_META[detectPlatform()].label;
           if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
             pairMsg(
-              "当前环境不支持 Web Push。iOS 请先把本站「添加到主屏幕」再打开。",
+              t(
+                "receivers.pair.unsupported",
+                "当前环境不支持 Web Push。iOS 请先把本站「添加到主屏幕」再打开。",
+              ),
               "error",
             );
             return;
@@ -849,25 +903,31 @@
           const btn = document.getElementById("pair-submit");
           btn.disabled = true;
           try {
-            pairMsg("正在请求通知权限…", "info");
+            pairMsg(t("receivers.pair.requesting_perm", "正在请求通知权限…"), "info");
             const perm = await Notification.requestPermission();
             if (perm !== "granted") {
               pairMsg(
-                "通知权限未授予（" + perm + "）。请在浏览器设置里允许后重试。",
+                t(
+                  "receivers.pair.perm_denied",
+                  "通知权限未授予（{perm}）。请在浏览器设置里允许后重试。",
+                ).replace("{perm}", perm),
                 "warn",
               );
               return;
             }
-            pairMsg("正在注册 Service Worker…", "info");
+            pairMsg(t("receivers.pair.registering_sw", "正在注册 Service Worker…"), "info");
             const reg = await navigator.serviceWorker.register("sw.js");
-            pairMsg("正在获取 VAPID 公钥…", "info");
+            pairMsg(t("receivers.pair.getting_vapid", "正在获取 VAPID 公钥…"), "info");
             let publicKey;
             try {
               const data = await api("/v1/vapid-public-key");
               publicKey = data.publicKey || data.key;
             } catch (e) {
               pairMsg(
-                "后端未连接，无法获取 VAPID 公钥（演示模式仅登记设备，不真正订阅）。",
+                t(
+                  "receivers.pair.no_backend",
+                  "后端未连接，无法获取 VAPID 公钥（演示模式仅登记设备，不真正订阅）。",
+                ),
                 "warn",
               );
               DEVICES.push({
@@ -884,17 +944,17 @@
               renderDevices();
               renderCurrentDevice();
               closePair();
-              toast("已登记（演示）", "warn");
+              toast(t("receivers.toast.added_demo", "已登记（演示）"), "warn");
               return;
             }
-            if (!publicKey) throw new Error("VAPID 公钥为空");
-            pairMsg("正在订阅推送…", "info");
+            if (!publicKey) throw new Error(t("receivers.pair.empty_vapid", "VAPID 公钥为空"));
+            pairMsg(t("receivers.pair.subscribing", "正在订阅推送…"), "info");
             const sub = await reg.pushManager.subscribe({
               userVisibleOnly: true,
               applicationServerKey: window.Anotify.b64urlToBuf(publicKey),
             });
             const json = sub.toJSON();
-            pairMsg("正在上报订阅…", "info");
+            pairMsg(t("receivers.pair.reporting", "正在上报订阅…"), "info");
             await api("/v1/devices", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -907,14 +967,26 @@
                 userAgent: navigator.userAgent,
               }),
             });
-            pairMsg("订阅成功！这台设备将收到推送。", "success");
-            toast("已添加设备", "success");
+            pairMsg(
+              t(
+                "receivers.pair.success",
+                "订阅成功！这台设备将收到推送。",
+              ),
+              "success",
+            );
+            toast(t("receivers.toast.added", "已添加设备"), "success");
             setTimeout(() => {
               closePair();
               load();
             }, 800);
           } catch (e) {
-            pairMsg("订阅失败：" + (e.message || e), "error");
+            pairMsg(
+              t("receivers.pair.failed", "订阅失败：{msg}").replace(
+                "{msg}",
+                e.message || e,
+              ),
+              "error",
+            );
           } finally {
             btn.disabled = false;
           }
@@ -932,7 +1004,7 @@
           }
           if (cur) removeDevice(cur);
           else {
-            toast("本机通知已关闭", "success");
+            toast(t("receivers.toast.local_off", "本机通知已关闭"), "success");
             renderCurrentDevice();
           }
         }

@@ -47,6 +47,7 @@ common:
     hours_ago: hace {n} h
     days_ago: hace {n} d
     never: Nunca usado
+    weeks_ago: hace {n} sem
   ttl:
     day: '{n} d'
     hour: '{n} h'
@@ -101,7 +102,7 @@ index:
     morning: Buenos días
     afternoon: Buenas tardes
     evening: Buenas noches
-    with_name: "{greeting}, {name}"
+    with_name: '{greeting}, {name}'
   loading: Cargando tus estadísticas…
   demo_badge: Datos demo (backend no conectado)
   kpi:
@@ -229,7 +230,12 @@ login:
     need_username: Primero elige un nombre de usuario.
     login_failed: 'Error al iniciar sesión: '
     signup_failed: 'Error al registrarse: '
+    demo_enter: Backend no conectado — modo demo activado (datos de ejemplo).
+    login_success_short: Sesión iniciada — entrando al workspace…
+    signup_success_short: ¡Cuenta creada! — entrando al workspace…
+    need_username_short: Por favor elige un usuario primero.
   recovery_toast: El acceso con código de recuperación estará disponible al conectar el backend (usuario + código de un solo uso)
+  recovery_toast_msg: El inicio de sesión con código de recuperación estará disponible cuando el backend esté conectado (usuario + código de recuperación de un solo uso)
 receivers:
   title: Destinatarios
   demo_badge: Datos demo
@@ -244,8 +250,7 @@ receivers:
     add_device: Añadir este dispositivo
   ws:
     title: Recepción por conexión larga · para plugins y cualquier dispositivo
-    desc: Cualquier dispositivo / plugin con una API Key de permiso notify:receive puede abrir una conexión WebSocket larga para push en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes
-      de domótica. Funciona junto al push del navegador.
+    desc: Cualquier dispositivo / plugin con una API Key de permiso notify:receive puede abrir una conexión WebSocket larga para push en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
     connection_method: Conexión
     copy: Copiar
     active_title: Conexiones activas
@@ -254,8 +259,7 @@ receivers:
     empty_hint: Al conectar el backend, aparecerán aquí las conexiones en vivo (nombre / prefijo de Key / tiempo activo / etiquetas / último mensaje).
   tags:
     title: Enrutado por etiquetas · qué dispositivo recibe qué notificación
-    desc: Incluye deviceTags al reportar. Solo los dispositivos con etiquetas en común (o sin etiquetas = receptores totales) la recibirán. Sin etiqueta en la notificación = difusión a todos los dispositivos
-      activos; sin etiqueta en el dispositivo = recibe todo.
+    desc: Incluye deviceTags al reportar. Solo los dispositivos con etiquetas en común (o sin etiquetas = receptores totales) la recibirán. Sin etiqueta en la notificación = difusión a todos los dispositivos activos; sin etiqueta en el dispositivo = recibe todo.
   pair:
     title: Añadir este dispositivo
     subtitle: Tras suscribirse, este navegador recibirá notificaciones push
@@ -263,6 +267,86 @@ receivers:
     device_placeholder: ej. Móvil principal / Mac de la oficina
     submit: Solicitar permiso y suscribir
     hint: El navegador pedirá permiso de notificaciones. iOS requiere añadir este sitio a la pantalla de inicio primero y luego abrirlo como app independiente.
+    unsupported: Este entorno no soporta Web Push. En iOS, añade este sitio a la pantalla de inicio primero.
+    requesting_perm: Solicitando permiso de notificaciones…
+    perm_denied: Permiso de notificaciones no concedido ({perm}). Permite en la configuración del navegador y reintenta.
+    registering_sw: Registrando Service Worker…
+    getting_vapid: Obteniendo clave pública VAPID…
+    no_backend: Backend no conectado — no se puede obtener la clave VAPID (el modo demo registra el dispositivo sin suscribirse).
+    empty_vapid: La clave pública VAPID está vacía
+    subscribing: Suscribiendo a push…
+    reporting: Reportando suscripción…
+    success: ¡Suscrito! Este dispositivo recibirá notificaciones push.
+    failed: 'Error de suscripción: {msg}'
+  filter:
+    all: Todas
+    error: Solo errores
+    success: Solo éxitos
+  local:
+    enabled: Notificaciones activadas en este dispositivo
+    disabled: Notificaciones no activadas en este dispositivo
+    receiving: Recibiendo
+    not_receiving: No recibe
+    unsupported: Este navegador no soporta Web Push (iOS requiere añadir a la pantalla de inicio).
+    subscribed: Este navegador ({browser}) está suscrito a push y puede recibir notificaciones.
+    permission_denied: El permiso de notificaciones fue denegado — vuelve a permitirlo en la configuración del navegador.
+    not_subscribed: Este navegador ({browser}) no se ha suscrito a push — este dispositivo no recibirá notificaciones.
+    turn_off: Desactivar notificaciones
+    turn_on: Activar notificaciones
+  troubleshoot:
+    title: Lista de verificación por dispositivo
+    local_check: Verificación local
+    perm_granted: 'Permiso de notificaciones: Concedido ✓'
+    perm_denied: 'Permiso de notificaciones: Denegado ✗ (reinicia en la configuración y vuelve a suscribirte)'
+    perm_default: 'Permiso de notificaciones: Sin solicitar (se pide al hacer clic en "Añadir dispositivo")'
+    expand: ¿No recibes? Revisa esto →
+  empty: Aún no hay dispositivos receptores. Haz clic en "Añadir dispositivo" arriba a la derecha para empezar.
+  device:
+    switch_aria: Interruptor de recepción
+    tags: Etiquetas
+    add_tag: + Etiqueta
+    this_device: Este dispositivo
+    receiving: Recibiendo
+    paused: Pausado
+    last_delivered: Última entrega {time}
+    level: Nivel de notificación
+    rename: Renombrar
+    unbind: Desvincular
+  prompt:
+    tag: 'Añadir etiqueta (ej: móvil / trabajo / alerta)'
+    rename: Nombre del dispositivo
+  confirm:
+    unbind: ¿Desvincular "{name}"? Ya no recibirá notificaciones.
+  toast:
+    saved: Guardado
+    save_failed: 'Error al guardar: {msg}'
+    unbound: Desvinculado
+    unbind_failed: 'Error al desvincular: {msg}'
+    local_off: Notificaciones locales desactivadas
+    added_demo: Registrado (demo)
+    added: Dispositivo añadido
+  checklist:
+    ios_1: Debe abrirse desde el icono de la pantalla de inicio (standalone) — las pestañas normales de Safari no soportan notificaciones
+    ios_2: Ajustes de iOS → Notificaciones → Safari/PWA → Permitir notificaciones
+    ios_3: 'No recibe tras suscribirse: desactiva el modo No Molestar, confirma que el permiso del sitio sea «Permitir»'
+    mac_1: Ajustes del sistema macOS → Notificaciones → busca tu navegador (ej. Google Chrome) → Permitir
+    mac_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir» (no por defecto/bloquear)
+    mac_3: Push requiere el proceso del navegador activo con la pestaña de este sitio abierta; cerrar el navegador detiene el push en tiempo real
+    mac_4: Las pestañas en primer plano pueden procesar push silenciosamente — cambia a segundo plano o minimiza para probar
+    win_1: Ajustes de Windows → Sistema → Notificaciones → confirma que el navegador tiene notificaciones activadas
+    win_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir»
+    win_3: El Asistente de concentración (No Molestar) silencia las notificaciones cuando está activo
+    android_1: Ajustes de Android → Aplicaciones → Navegador → Notificaciones → Permitir
+    android_2: El navegador integrado de WeChat y algunos navegadores chinos no soportan Web Push — usa Chrome
+    other_1: Confirma que el permiso de notificaciones del navegador sea «Permitir» (icono de candado en la barra)
+    other_2: Confirma que el proceso del navegador está activo
+  demo:
+    device1: Teléfono principal
+    device2: Mac de la oficina
+    device3: PC antiguo
+    tag_phone: móvil
+    tag_work: trabajo
+  subtitle: Controla notificaciones por dispositivo
 keys:
   title: API Keys
   subtitle: Los agentes las usan para reportar notificaciones
@@ -314,6 +398,39 @@ keys:
     copy: Copiar
     warning: Al cerrar, la Key completa no podrá volver a verse. Guárdala en un gestor de contraseñas o lugar seguro de inmediato.
     done: La he guardado
+  scope:
+    send: Enviar
+    receive: Recibir
+    read: Lectura de dispositivos
+  unnamed: Sin nombre
+  unnamed_key: Key sin nombre
+  summary: '{total} Keys · {active} activos{demo}'
+  summary_demo: ' · datos demo'
+  empty: Aún no hay Keys. Haz clic en "+ Nuevo Key" arriba a la derecha para crear uno y que los Agents empiecen a reportar.
+  created_at: Creado {date}
+  status:
+    enabled: Activado
+    disabled: Desactivado
+  action:
+    revoke: Revocar
+  confirm:
+    revoke: ¿Revocar "{name}"? Los Agents que lo usen ya no podrán reportar.
+  toast:
+    revoked_demo: Revocado (modo demo, solo local)
+    revoked: Revocado "{name}"
+    revoke_failed: 'Error al revocar: {msg}'
+    copied: Copiado ✓
+    copy_failed: Error al copiar, selecciona y copia manualmente
+    created: Key creado
+  error:
+    no_scope: Selecciona al menos un ámbito
+    no_plaintext: El servidor no devolvió el texto plano del Key
+    create_failed: 'Error al crear: {msg} (prueba el modo demo si el backend no está listo)'
+  demo:
+    name1: Desarrollo local
+    name2: Pipeline CI
+    name3: Widget de escritorio (recepción)
+    name4: Key de prueba antiguo
 security:
   title: Seguridad y acceso
   subtitle: Passkey · Sesiones · Códigos de recuperación
@@ -346,6 +463,63 @@ security:
     delivery_p1: · Se gestiona en la página Destinatarios, aparte de esta
     delivery_p2: · Suscripciones push del navegador + conexiones WebSocket
     delivery_p3: · Se siguen recibiendo tras cerrar sesión, hasta cancelar la suscripción
+  unnamed_passkey: Passkey sin nombre
+  unknown_device: Dispositivo desconocido
+  credential: Credencial
+  current_session: Sesión actual
+  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir Passkey" arriba a la derecha para crear uno para este dispositivo.
+  empty_sessions: No hay sesiones activas.
+  in_use: En uso
+  last_used: Último uso {time}
+  created_at: Creado {date}
+  current_credential_no_delete: Credencial de este dispositivo, no se puede eliminar
+  rename: Renombrar
+  delete: Eliminar
+  revoke: Revocar
+  last_active: Última actividad {time}
+  prompt:
+    rename: 'Introduce un nuevo nombre para este Passkey:'
+  confirm:
+    delete: '¿Eliminar Passkey "{name}"?
+
+      Los dispositivos que lo usen ya no podrán iniciar sesión (códigos de recuperación como respaldo).'
+    revoke: ¿Revocar la sesión de "{name}"? Ese dispositivo tendrá que iniciar sesión de nuevo.
+  alert:
+    add_requirement: 'Para añadir un Passkey se necesita:
+
+      1. Backend funcionando con HTTPS
+
+      2. Navegador con soporte WebAuthn
+
+
+      Actualmente en modo demo. Cuando el backend esté listo, se activará la biometría del sistema.'
+  toast:
+    renamed_demo: Renombrado (modo demo, solo local)
+    renamed: Renombrado
+    rename_failed: 'Error al renombrar: {msg}'
+    deleted_demo: Eliminado (modo demo, solo local)
+    deleted: Eliminado "{name}"
+    delete_failed: 'Error al eliminar: {msg}'
+    add_success: Passkey añadido correctamente
+    add_failed: 'Error al añadir: {msg}'
+    revoked_demo: Revocado (modo demo, solo local)
+    revoked: Sesión revocada para "{name}"
+    revoke_failed: 'Error al revocar: {msg}'
+  demo:
+    pk1_name: iCloud Llavero
+    pk1_type: Sincronización de plataforma
+    pk1_devices: iPhone · iPad · Mac (sincronización automática con el mismo Apple ID)
+    pk2_name: PC de sala de reuniones · Windows Hello
+    pk2_type: Credencial local
+    pk2_devices: Solo este PC con Windows
+    pk3_name: Llave hardware YubiKey
+    pk3_type: Llave hardware
+    pk3_devices: USB / NFC, funciona en cualquier dispositivo
+    s4_passkey: Passkey local
+    s1_passkey: iCloud Llavero (sincronizado)
+    location_shanghai: Shanghái
+    location_office: Oficina
+    current: Actual
 docs:
   title: Docs de integración
   subtitle: Reporte de Agent · Web Push · WebSocket

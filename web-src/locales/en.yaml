@@ -47,6 +47,7 @@ common:
     hours_ago: '{n} h ago'
     days_ago: '{n} d ago'
     never: Never used
+    weeks_ago: '{n} w ago'
   ttl:
     day: '{n} d'
     hour: '{n} h'
@@ -101,7 +102,7 @@ index:
     morning: Good morning
     afternoon: Good afternoon
     evening: Good evening
-    with_name: "{greeting}, {name}"
+    with_name: '{greeting}, {name}'
   loading: Loading your notification stats…
   demo_badge: Demo data (backend not connected)
   kpi:
@@ -229,7 +230,12 @@ login:
     need_username: Please pick a username first.
     login_failed: 'Sign-in failed: '
     signup_failed: 'Sign-up failed: '
+    demo_enter: Backend not connected — entered demo mode (sample data).
+    login_success_short: Signed in — entering workspace…
+    signup_success_short: Account created — entering workspace…
+    need_username_short: Please pick a username first.
   recovery_toast: Recovery-code sign-in will be available once the backend is connected (username + one-time recovery code)
+  recovery_toast_msg: Recovery-code sign-in will be available once the backend is connected (username + one-time recovery code)
 receivers:
   title: Receivers
   demo_badge: Demo data
@@ -253,8 +259,7 @@ receivers:
     empty_hint: Once the backend is connected, live connections will appear here (name / Key prefix / uptime / tags / last message).
   tags:
     title: Tag routing · which device gets which notification
-    desc: Include deviceTags when reporting. Only devices with overlapping tags (or no tags = catch-all) will receive it. No tags on the notification = broadcast to all enabled devices; no tags on a device
-      = receives everything.
+    desc: Include deviceTags when reporting. Only devices with overlapping tags (or no tags = catch-all) will receive it. No tags on the notification = broadcast to all enabled devices; no tags on a device = receives everything.
   pair:
     title: Add this device
     subtitle: After subscribing, this browser will receive push notifications
@@ -262,6 +267,86 @@ receivers:
     device_placeholder: e.g. Primary phone / Office Mac
     submit: Request permission and subscribe
     hint: The browser will ask for notification permission. iOS requires adding this site to the Home Screen first, then opening it as a standalone app.
+    unsupported: This environment doesn't support Web Push. On iOS, add this site to the Home Screen first.
+    requesting_perm: Requesting notification permission…
+    perm_denied: Notification permission not granted ({perm}). Please allow in browser settings and retry.
+    registering_sw: Registering Service Worker…
+    getting_vapid: Getting VAPID public key…
+    no_backend: Backend not connected — can't get VAPID key (demo mode registers the device without subscribing).
+    empty_vapid: VAPID public key is empty
+    subscribing: Subscribing to push…
+    reporting: Reporting subscription…
+    success: Subscribed! This device will receive push notifications.
+    failed: 'Subscription failed: {msg}'
+  filter:
+    all: All
+    error: Errors only
+    success: Success only
+  local:
+    enabled: Notifications enabled on this device
+    disabled: Notifications not enabled on this device
+    receiving: Receiving
+    not_receiving: Not receiving
+    unsupported: This browser doesn't support Web Push (iOS requires Add to Home Screen first).
+    subscribed: This browser ({browser}) is subscribed to push and can receive notifications.
+    permission_denied: Notification permission was denied — please re-enable in browser settings.
+    not_subscribed: This browser ({browser}) hasn't subscribed to push — this device won't receive notifications.
+    turn_off: Turn off notifications
+    turn_on: Turn on notifications
+  troubleshoot:
+    title: Device checklist
+    local_check: Local check
+    perm_granted: 'Notification permission: Granted ✓'
+    perm_denied: 'Notification permission: Denied ✗ (reset in browser settings and re-subscribe)'
+    perm_default: 'Notification permission: Not asked (requested when you click "Add this device")'
+    expand: Not receiving? Check these →
+  empty: No receiving devices yet. Click "Add this device" in the top right to start.
+  device:
+    switch_aria: Receive toggle
+    tags: Tags
+    add_tag: + Tag
+    this_device: This device
+    receiving: Receiving
+    paused: Paused
+    last_delivered: Last delivered {time}
+    level: Notification level
+    rename: Rename
+    unbind: Unbind
+  prompt:
+    tag: Add a tag (e.g. phone / work / alert)
+    rename: Device name
+  confirm:
+    unbind: Unbind "{name}"? It will no longer receive notifications.
+  toast:
+    saved: Saved
+    save_failed: 'Save failed: {msg}'
+    unbound: Unbound
+    unbind_failed: 'Unbind failed: {msg}'
+    local_off: Local notifications turned off
+    added_demo: Registered (demo)
+    added: Device added
+  checklist:
+    ios_1: Must open from the Home Screen icon (standalone mode) — regular Safari tabs don't support notifications
+    ios_2: iOS Settings → Notifications → Safari/PWA → Allow Notifications
+    ios_3: 'Not receiving after subscribing: turn off Focus/DND, confirm site notification permission is "Allow"'
+    mac_1: macOS System Settings → Notifications → find your browser (e.g. Google Chrome) → Allow
+    mac_2: Browser address bar lock icon → Notifications → set to "Allow" (not default/block)
+    mac_3: Push requires the browser process running with this site's tab open; closing the browser stops real-time push
+    mac_4: Foreground tabs may silently handle push — switch to background or minimize to test
+    win_1: Windows Settings → System → Notifications → confirm browser has notifications enabled
+    win_2: Browser address bar lock icon → Notifications → set to "Allow"
+    win_3: Focus Assist (Do Not Disturb) silences notifications when on
+    android_1: Android Settings → Apps → Browser → Notifications → Allow
+    android_2: WeChat's built-in browser and some Chinese browsers don't support Web Push — use Chrome
+    other_1: Confirm browser notification permission is "Allow" (address bar lock icon)
+    other_2: Confirm the browser process is running
+  demo:
+    device1: Primary phone
+    device2: Office Mac
+    device3: Old desktop
+    tag_phone: phone
+    tag_work: work
+  subtitle: Control notifications per device
 keys:
   title: API Keys
   subtitle: Agents use them to report notifications
@@ -313,6 +398,39 @@ keys:
     copy: Copy
     warning: Once closed, the full Key cannot be viewed again. Save it to a password manager or secure location immediately.
     done: I've saved it
+  scope:
+    send: Send
+    receive: Receive
+    read: Device read
+  unnamed: Unnamed
+  unnamed_key: Unnamed Key
+  summary: '{total} Keys · {active} active{demo}'
+  summary_demo: ' · demo data'
+  empty: No Keys yet. Click "+ New Key" in the top right to create one and let Agents start reporting.
+  created_at: Created {date}
+  status:
+    enabled: Enabled
+    disabled: Disabled
+  action:
+    revoke: Revoke
+  confirm:
+    revoke: Revoke "{name}"? Agents using it will no longer be able to report.
+  toast:
+    revoked_demo: Revoked (demo mode, local only)
+    revoked: Revoked "{name}"
+    revoke_failed: 'Revoke failed: {msg}'
+    copied: Copied ✓
+    copy_failed: Copy failed, please select and copy manually
+    created: Key created
+  error:
+    no_scope: Please select at least one scope
+    no_plaintext: Server did not return the Key plaintext
+    create_failed: 'Create failed: {msg} (try demo mode if backend isn''t ready)'
+  demo:
+    name1: Local dev
+    name2: CI pipeline
+    name3: Desktop widget (receive)
+    name4: Old test Key
 security:
   title: Security & Login
   subtitle: Passkey · Sessions · Recovery codes
@@ -345,6 +463,63 @@ security:
     delivery_p1: · Managed on the Receivers page, separate from this page
     delivery_p2: · Browser push subscriptions + WebSocket connections
     delivery_p3: · Still received after logout, until unsubscribed
+  unnamed_passkey: Unnamed Passkey
+  unknown_device: Unknown device
+  credential: Credential
+  current_session: Current session
+  empty_passkeys: No Passkeys yet. Click "+ Add Passkey" in the top right to create one for this device.
+  empty_sessions: No active sessions.
+  in_use: In use
+  last_used: Last used {time}
+  created_at: Created {date}
+  current_credential_no_delete: This device's credential, cannot be deleted
+  rename: Rename
+  delete: Delete
+  revoke: Revoke
+  last_active: Last active {time}
+  prompt:
+    rename: 'Enter a new name for this Passkey:'
+  confirm:
+    delete: 'Delete Passkey "{name}"?
+
+      Devices using it will no longer be able to sign in (recovery codes can be used as fallback).'
+    revoke: Revoke the session for "{name}"? That device will need to sign in again.
+  alert:
+    add_requirement: 'Adding a Passkey requires:
+
+      1. Backend running with HTTPS
+
+      2. Browser supporting WebAuthn
+
+
+      Currently in demo mode. Once the backend is ready, this will trigger system biometrics.'
+  toast:
+    renamed_demo: Renamed (demo mode, local only)
+    renamed: Renamed
+    rename_failed: 'Rename failed: {msg}'
+    deleted_demo: Deleted (demo mode, local only)
+    deleted: Deleted "{name}"
+    delete_failed: 'Delete failed: {msg}'
+    add_success: Passkey added successfully
+    add_failed: 'Add failed: {msg}'
+    revoked_demo: Revoked (demo mode, local only)
+    revoked: Revoked session for "{name}"
+    revoke_failed: 'Revoke failed: {msg}'
+  demo:
+    pk1_name: iCloud Keychain
+    pk1_type: Platform sync
+    pk1_devices: iPhone · iPad · Mac (auto-synced with same Apple ID)
+    pk2_name: Meeting room PC · Windows Hello
+    pk2_type: Local credential
+    pk2_devices: This Windows PC only
+    pk3_name: YubiKey hardware key
+    pk3_type: Hardware key
+    pk3_devices: USB / NFC, works across any device
+    s4_passkey: Local Passkey
+    s1_passkey: iCloud Keychain (synced)
+    location_shanghai: Shanghai
+    location_office: Office
+    current: Current
 docs:
   title: Integration docs
   subtitle: Agent reporting · Web Push · WebSocket

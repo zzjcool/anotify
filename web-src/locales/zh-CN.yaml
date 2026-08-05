@@ -47,6 +47,7 @@ common:
     hours_ago: '{n} 小时前'
     days_ago: '{n} 天前'
     never: 从未使用
+    weeks_ago: '{n} 周前'
   ttl:
     day: '{n} 天'
     hour: '{n} 小时'
@@ -101,7 +102,7 @@ index:
     morning: 早上好
     afternoon: 下午好
     evening: 晚上好
-    with_name: "{greeting}，{name}"
+    with_name: '{greeting}，{name}'
   loading: 正在加载你的通知统计…
   demo_badge: 演示数据（后端未连接）
   kpi:
@@ -229,7 +230,12 @@ login:
     need_username: 先给自己起个用户名。
     login_failed: 登录失败：
     signup_failed: 注册失败：
+    demo_enter: 后端未连接，已进入演示模式（数据为示例）。
+    login_success_short: 登录成功，正在进入工作台…
+    signup_success_short: 注册成功！正在进入工作台…
+    need_username_short: 先给自己起个用户名。
   recovery_toast: 恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）
+  recovery_toast_msg: 恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）
 receivers:
   title: 通知接收
   demo_badge: 演示数据
@@ -261,6 +267,86 @@ receivers:
     device_placeholder: 如：主力手机 / 办公室 Mac
     submit: 请求权限并订阅推送
     hint: 浏览器会弹出通知权限请求。iOS 需要先把本站「添加到主屏幕」，再以独立 App 方式打开。
+    unsupported: 当前环境不支持 Web Push。iOS 请先把本站「添加到主屏幕」再打开。
+    requesting_perm: 正在请求通知权限…
+    perm_denied: 通知权限未授予（{perm}）。请在浏览器设置里允许后重试。
+    registering_sw: 正在注册 Service Worker…
+    getting_vapid: 正在获取 VAPID 公钥…
+    no_backend: 后端未连接，无法获取 VAPID 公钥（演示模式仅登记设备，不真正订阅）。
+    empty_vapid: VAPID 公钥为空
+    subscribing: 正在订阅推送…
+    reporting: 正在上报订阅…
+    success: 订阅成功！这台设备将收到推送。
+    failed: 订阅失败：{msg}
+  filter:
+    all: 全部通知
+    error: 仅失败
+    success: 仅成功
+  local:
+    enabled: 本机已开启通知
+    disabled: 本机未开启通知
+    receiving: 收得到
+    not_receiving: 收不到
+    unsupported: 当前浏览器不支持 Web Push（iOS 需先添加到主屏幕）。
+    subscribed: 当前浏览器（{browser}）已订阅推送，这台设备能收到通知。
+    permission_denied: 通知权限已被拒绝——请在浏览器设置里重新允许。
+    not_subscribed: 当前浏览器（{browser}）还没开推送订阅——这台设备收不到通知。
+    turn_off: 关闭本机通知
+    turn_on: 开启本机通知
+  troubleshoot:
+    title: 按设备检查清单
+    local_check: 本机检测
+    perm_granted: 通知权限：已授权 ✓
+    perm_denied: 通知权限：被拒绝 ✗（请在浏览器设置里重置后重新订阅）
+    perm_default: 通知权限：未授权（点「添加此设备」时申请）
+    expand: 收不到通知？检查这些 →
+  empty: 还没有接收设备，点右上角「添加此设备」开始。
+  device:
+    switch_aria: 接收开关
+    tags: 标签
+    add_tag: + 标签
+    this_device: 本机
+    receiving: 接收中
+    paused: 已暂停
+    last_delivered: 最近送达 {time}
+    level: 通知级别
+    rename: 重命名
+    unbind: 解绑
+  prompt:
+    tag: 添加标签（如：手机 / 工作 / 告警）
+    rename: 设备名称
+  confirm:
+    unbind: 确定解绑「{name}」吗？它将不再接收通知。
+  toast:
+    saved: 已保存
+    save_failed: 保存失败：{msg}
+    unbound: 已解绑
+    unbind_failed: 解绑失败：{msg}
+    local_off: 本机通知已关闭
+    added_demo: 已登记（演示）
+    added: 已添加设备
+  checklist:
+    ios_1: 必须从「主屏幕图标」打开（standalone），普通 Safari 标签页不支持通知
+    ios_2: iOS 设置 → 通知 → Safari/PWA → 允许通知
+    ios_3: 订阅后未收到：关闭勿扰模式，确认站点通知权限为「允许」
+    mac_1: macOS 系统设置 → 通知 → 找到对应浏览器（如 Google Chrome）→ 允许通知
+    mac_2: 浏览器地址栏锁图标 → 通知 → 设为「允许」（不是默认/阻止）
+    mac_3: 推送需浏览器进程运行且标签页打开本站；关掉浏览器则收不到实时推送
+    mac_4: 前台标签页可能静默处理推送——切到后台或最小化再测
+    win_1: Windows 设置 → 系统 → 通知 → 确认浏览器已开通知
+    win_2: 浏览器地址栏锁图标 → 通知 → 设为「允许」
+    win_3: 焦点助手（勿扰）开启时会静默通知
+    android_1: Android 设置 → 应用 → 浏览器 → 通知 → 允许
+    android_2: 微信内置浏览器/部分国产浏览器不支持 Web Push，请用 Chrome
+    other_1: 确认浏览器通知权限为「允许」（地址栏锁图标）
+    other_2: 确认浏览器进程在运行
+  demo:
+    device1: 主力手机
+    device2: 办公室 Mac
+    device3: 旧台式机
+    tag_phone: 手机
+    tag_work: 工作
+  subtitle: 按设备控制通知接收
 keys:
   title: API Keys
   subtitle: Agent 用它上报通知
@@ -312,6 +398,39 @@ keys:
     copy: 复制
     warning: 关闭后将无法再次查看完整 Key。请立即保存到密码管理器或安全的地方。
     done: 我已保存
+  scope:
+    send: 上报
+    receive: 接收
+    read: 设备查询
+  unnamed: 未命名
+  unnamed_key: 未命名 Key
+  summary: '{total} 个 Key · {active} 启用{demo}'
+  summary_demo: ' · 演示数据'
+  empty: 还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。
+  created_at: 创建于 {date}
+  status:
+    enabled: 启用
+    disabled: 已停用
+  action:
+    revoke: 停用
+  confirm:
+    revoke: 确定停用「{name}」吗？使用它的 Agent 将无法上报。
+  toast:
+    revoked_demo: 已停用（演示模式，仅本地生效）
+    revoked: 已停用「{name}」
+    revoke_failed: 停用失败：{msg}
+    copied: 已复制 ✓
+    copy_failed: 复制失败，请手动选择复制
+    created: Key 已创建
+  error:
+    no_scope: 请至少选择一个权限范围
+    no_plaintext: 服务端未返回 Key 明文
+    create_failed: 创建失败：{msg}（后端未就绪时可先体验演示模式）
+  demo:
+    name1: 本地开发
+    name2: CI 流水线
+    name3: 桌面插件（接收）
+    name4: 旧测试 Key
 security:
   title: 安全与登录
   subtitle: Passkey · 会话 · 恢复码
@@ -344,6 +463,63 @@ security:
     delivery_p1: · 在「通知接收」页管理，与本页无关
     delivery_p2: · 浏览器推送订阅 + WebSocket 长连接
     delivery_p3: · 退出登录后仍会收到，直到取消订阅
+  unnamed_passkey: 未命名 Passkey
+  unknown_device: 未知设备
+  credential: 凭证
+  current_session: 当前会话
+  empty_passkeys: 还没有 Passkey。点右上角「+ 添加 Passkey」为这台设备创建一个。
+  empty_sessions: 当前没有活跃会话。
+  in_use: 本机在用
+  last_used: 最近使用 {time}
+  created_at: 创建于 {date}
+  current_credential_no_delete: 当前设备的凭证，不可删除
+  rename: 重命名
+  delete: 删除
+  revoke: 吊销
+  last_active: 最后活跃 {time}
+  prompt:
+    rename: 给这个 Passkey 起个新名字：
+  confirm:
+    delete: '确定删除 Passkey「{name}」吗？
+
+      用它的设备将无法再登录（可用恢复码兜底）。'
+    revoke: 吊销「{name}」的登录会话？该设备将需要重新登录。
+  alert:
+    add_requirement: '添加 Passkey 需要：
+
+      1. 后端已启动并处于 HTTPS 环境
+
+      2. 浏览器支持 WebAuthn
+
+
+      当前为演示模式，后端就绪后此处将调起系统生物识别。'
+  toast:
+    renamed_demo: 已重命名（演示模式，仅本地生效）
+    renamed: 已重命名
+    rename_failed: 重命名失败：{msg}
+    deleted_demo: 已删除（演示模式，仅本地生效）
+    deleted: 已删除「{name}」
+    delete_failed: 删除失败：{msg}
+    add_success: Passkey 添加成功
+    add_failed: 添加失败：{msg}
+    revoked_demo: 已吊销（演示模式，仅本地生效）
+    revoked: 已吊销「{name}」的会话
+    revoke_failed: 吊销失败：{msg}
+  demo:
+    pk1_name: iCloud 钥匙串
+    pk1_type: 平台同步
+    pk1_devices: iPhone · iPad · Mac（同一 Apple ID 自动同步）
+    pk2_name: 会议室 PC · Windows Hello
+    pk2_type: 本机凭证
+    pk2_devices: 仅这台 Windows PC
+    pk3_name: YubiKey 硬件密钥
+    pk3_type: 硬件密钥
+    pk3_devices: USB / NFC，跨任意设备使用
+    s4_passkey: 本机 Passkey
+    s1_passkey: iCloud 钥匙串（已同步）
+    location_shanghai: 上海
+    location_office: 公司
+    current: 当前
 docs:
   title: 接入文档
   subtitle: Agent 上报 · Web Push · WebSocket

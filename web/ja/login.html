@@ -374,7 +374,7 @@
     <script>
       (function () {
         "use strict";
-        const { el, toast, b64urlToBuf, bufToB64url } = window.Anotify;
+        const { el, toast, b64urlToBuf, bufToB64url, t } = window.Anotify;
 
          
         const tabLogin = document.getElementById("tab-login");
@@ -462,7 +462,10 @@
         }
 
         function demoEnter(name) {
-          showStatus("后端未连接，已进入演示模式（数据为示例）。", "warn");
+          showStatus(
+            t("login.status.demo_enter", "后端未连接，已进入演示模式（数据为示例）。"),
+            "warn",
+          );
           setTimeout(() => {
             location.href =
               "index.html?demo=1&u=" + encodeURIComponent(name || "zheng");
@@ -515,18 +518,30 @@
               },
             };
             await postJSON("/v1/auth/login", payload);
-            showStatus("登录成功，正在进入工作台…", "success");
+            showStatus(
+              t("login.status.login_success", "登录成功，正在进入工作台…"),
+              "success",
+            );
             setTimeout(() => (location.href = nextTarget()), 500);
           } catch (e) {
             if (e && e.name === "NotAllowedError") {
               showStatus(
-                "已取消，或本机没有可用的 Passkey——请先「注册」一个。",
+                t(
+                  "login.status.cancelled_login",
+                  "已取消，或本机没有可用的 Passkey——请先「注册」一个。",
+                ),
                 "warn",
               );
             } else if (String(e).includes("Failed to fetch")) {
               demoEnter("zheng");
             } else {
-              showStatus("登录失败：" + (e.message || e), "error");
+              showStatus(
+                t("login.status.login_failed", "登录失败：").replace(
+                  "{msg}",
+                  e.message || e,
+                ),
+                "error",
+              );
             }
           } finally {
             loginBtn.disabled = false;
@@ -551,12 +566,18 @@
           hideStatus();
           if (!username) {
             document.getElementById("new-username").focus();
-            showStatus("先给自己起个用户名。", "warn");
+            showStatus(
+              t("login.status.need_username", "先给自己起个用户名。"),
+              "warn",
+            );
             return;
           }
           if (!webauthnOK) {
             showStatus(
-              "当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。",
+              t(
+                "login.status.unsupported",
+                "当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。",
+              ),
               "error",
             );
             return;
@@ -594,7 +615,10 @@
               "/v1/auth/register?username=" + encodeURIComponent(username),
               payload,
             );
-            showStatus("注册成功！正在进入工作台…", "success");
+            showStatus(
+              t("login.status.signup_success", "注册成功！正在进入工作台…"),
+              "success",
+            );
             setTimeout(() => (location.href = nextTarget()), 600);
           } catch (e) {
             if (
@@ -603,9 +627,21 @@
             ) {
               demoEnter(username);
             } else if (e && e.name === "NotAllowedError") {
-              showStatus("已取消或超时——请重试并允许创建 Passkey。", "warn");
+              showStatus(
+                t(
+                  "login.status.cancelled_signup",
+                  "已取消或超时——请重试并允许创建 Passkey。",
+                ),
+                "warn",
+              );
             } else {
-              showStatus("注册失败：" + (e.message || e), "error");
+              showStatus(
+                t("login.status.signup_failed", "注册失败：").replace(
+                  "{msg}",
+                  e.message || e,
+                ),
+                "error",
+              );
             }
           } finally {
             signupBtn.disabled = false;
@@ -618,7 +654,10 @@
           .getElementById("recovery-btn")
           .addEventListener("click", () => {
             toast(
-              "恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）",
+              t(
+                "login.recovery_toast_msg",
+                "恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）",
+              ),
               "warn",
             );
           });
