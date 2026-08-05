@@ -71,12 +71,32 @@
                 で通知を報告。Key は作成時に一度だけ完全表示され、サーバーにはハッシュのみ保存 — すぐに保管してください。
               </p>
             </div>
-            <button
-              onclick="openCreate()"
-              class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-            >
-              + Key を作成
-            </button>
+            <div class="flex flex-wrap items-center gap-3">
+              <a
+                href="cli-auth.html"
+                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
+              >
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M4 17l6-6-6-6" />
+                  <path d="M12 19h8" />
+                </svg>
+                CLI デバイス認証
+              </a>
+              <button
+                onclick="openCreate()"
+                class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+              >
+                + Key を作成
+              </button>
+            </div>
           </div>
         </div>
 
