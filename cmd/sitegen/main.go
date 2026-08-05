@@ -1,14 +1,15 @@
-// Command sitegen 是 Anotify 构建期静态站点生成器。
+// Command sitegen is the Anotify build-time static site generator.
 //
-// 把 web-src/ 下的 layouts（布局）+ pages（页面内容块）+ locales（i18n 翻译）
-// 合成为最终静态 HTML，输出到 web/。
+// It combines layouts + pages + locales under web-src/ into final static
+// HTML, written to web/.
 //
-// 用法：
+// Usage:
 //
-//	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
+//	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es
 //
-// 默认语言（列表第一个）输出到根路径，其余语言输出到 /{lang}/ 子目录。
-// 额外生成 web/i18n.{lang}.js 供运行时 JS 文案使用。
+// The first language in the list (the default) is output to the root path;
+// the rest go to /{lang}/ subdirectories. Additionally, web/i18n.{lang}.js
+// files are generated for runtime JS strings.
 package main
 
 import (
@@ -22,16 +23,16 @@ import (
 )
 
 func main() {
-	srcDir := flag.String("src", "web-src", "页面源目录（layouts/pages/locales）")
-	outDir := flag.String("out", "web", "输出目录")
-	langsFlag := flag.String("langs", "zh-CN,en", "支持的语言列表（逗号分隔，第一个为默认）")
+	srcDir := flag.String("src", "web-src", "page source directory (layouts/pages/locales)")
+	outDir := flag.String("out", "web", "output directory")
+	langsFlag := flag.String("langs", "zh-CN,en,ja,es", "supported languages (comma-separated, first is default)")
 	flag.Parse()
 
 	langs := strings.Split(*langsFlag, ",")
 	for i := range langs {
 		langs[i] = strings.TrimSpace(langs[i])
 	}
-	// 去空
+	// Drop empties.
 	filtered := langs[:0]
 	for _, l := range langs {
 		if l != "" {
@@ -40,19 +41,19 @@ func main() {
 	}
 	langs = filtered
 	if len(langs) == 0 {
-		fmt.Fprintln(os.Stderr, "错误：至少需要一种语言")
+		fmt.Fprintln(os.Stderr, "error: at least one language is required")
 		os.Exit(1)
 	}
 
 	gen, err := sitegen.New(*srcDir, *outDir, langs)
 	if err != nil {
-		log.Fatalf("初始化失败: %v", err)
+		log.Fatalf("init failed: %v", err)
 	}
 
 	if err := gen.Generate(); err != nil {
-		log.Fatalf("生成失败: %v", err)
+		log.Fatalf("generation failed: %v", err)
 	}
 
 	pages, _ := gen.PageCount()
-	fmt.Printf("✅ sitegen 完成: %d 语言 × %d 页面 → %s\n", len(langs), pages, *outDir)
+	fmt.Printf("✅ sitegen done: %d languages × %d pages → %s\n", len(langs), pages, *outDir)
 }

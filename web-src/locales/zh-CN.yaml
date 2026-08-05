@@ -20,6 +20,11 @@ common:
     logout: "退出登录"
     menu: "菜单"
     notification: "通知"
+  lang:
+    label: "语言"
+    switcher_label: "切换语言"
+    switcher_aria: "语言选择"
+    current: "当前语言"
   sidebar:
     deployment: "私有化部署 · 主工作台"
   footer:
@@ -228,6 +233,7 @@ security:
     auth_axis: "决定「你是谁」（本页）"
     auth_p1: "· Passkey 凭证：一个账号可挂多个"
     auth_p2: "· 登录会话：多端并存、可单独吊销"
+    auth_p3: "· 恢复码：所有设备丢失时的兜底"
     delivery_label: "投递轴"
     delivery_axis: "决定「发到哪」"
     delivery_p1: "· 在「通知接收」页管理，与本页无关"

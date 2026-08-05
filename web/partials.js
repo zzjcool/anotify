@@ -197,6 +197,258 @@
 		if (ov) ov.classList.add("hidden");
 	}
 
+	/* ---------- Language switcher dropdown (shared builder) ----------
+	 * Creates a trigger button + popup menu from language data.
+	 * Used by both the sidebar switcher (JS-built) and the login page
+	 * switcher (template-rendered flat links enhanced by JS).
+	 *
+	 * @param {Object}   cfg
+	 * @param {Array}    cfg.items       - [{code, label, href, isCurrent}]
+	 * @param {string}   cfg.direction   - "up" (sidebar) or "down" (login)
+	 * @param {string}   cfg.width        - "full" (sidebar) or "auto" (login)
+	 * @param {string}   cfg.align        - "left" or "right" (menu horizontal alignment)
+	 * @returns {{host: HTMLElement, open: Function, close: Function}}
+	 */
+	function createLangDropdown(cfg) {
+		const { items, direction, width, align } = cfg;
+
+		/* Trigger button: globe icon + current language name + chevron */
+		const triggerClass =
+			"lang-trigger flex " +
+			(width === "full" ? "w-full " : "") +
+			"items-center gap-2.5 rounded-lg px-3 py-2 text-sm";
+		const trigger = el(
+			"button",
+			{
+				class: triggerClass,
+				"aria-haspopup": "true",
+				"aria-expanded": "false",
+				"aria-label": t(
+					"common.lang.switcher_label",
+					"\u5207\u6362\u8bed\u8a00",
+				),
+			},
+			icon(
+				[
+					"M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z",
+					"M2 12h20",
+					"M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z",
+				],
+				"h-4 w-4",
+			),
+			el("span", {
+				class: "text-sm",
+				style: "color: var(--muted)",
+				text: items.find((i) => i.isCurrent)?.label || items[0]?.label || "",
+			}),
+			icon(
+				["M6 9l6 6 6-6"],
+				"h-3.5 w-3.5 " +
+					(width === "full" ? "ml-auto" : "ml-1") +
+					" lang-chevron",
+			),
+		);
+
+		/* Menu positioning: sidebar = up (bottom-full), login = down (top-full) */
+		const menuPosClass =
+			direction === "up"
+				? "absolute bottom-full left-0 right-0 mb-2"
+				: "absolute top-full " +
+					(align === "right" ? "right-0" : "left-0") +
+					" mt-2";
+		const menu = el("div", {
+			class: "lang-menu hidden z-50 p-1.5 " + menuPosClass + " min-w-[160px]",
+			role: "menu",
+			"aria-orientation": "vertical",
+			style: "max-height: 60vh; overflow-y: auto",
+		});
+
+		const menuItems = [];
+		for (const item of items) {
+			const checkSlot = el("span", {
+				class: "w-3.5 flex-shrink-0 text-center",
+				style: "color: var(--accent); font-size: 0.75rem",
+			});
+			if (item.isCurrent) checkSlot.textContent = "\u2713";
+			const a = el(
+				"a",
+				{
+					href: item.href,
+					hreflang: item.code,
+					lang: item.code,
+					class:
+						"lang-menu-item flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm",
+					role: "menuitem",
+					style: item.isCurrent
+						? "color: var(--text); background: var(--accent-soft)"
+						: "color: var(--muted)",
+				},
+				checkSlot,
+				el("span", { text: item.label }),
+			);
+			if (item.isCurrent) a.setAttribute("aria-current", "true");
+			menuItems.push(a);
+			menu.append(a);
+		}
+
+		const host = el("div", { class: "relative" }, trigger, menu);
+
+		/* --- Toggle / keyboard / outside-click --- */
+		function openMenu() {
+			menu.classList.remove("hidden");
+			trigger.setAttribute("aria-expanded", "true");
+			const current = menuItems.find(
+				(m) => m.getAttribute("aria-current") === "true",
+			);
+			if (current) current.focus();
+		}
+		function closeMenu() {
+			menu.classList.add("hidden");
+			trigger.setAttribute("aria-expanded", "false");
+		}
+		function toggleMenu() {
+			if (menu.classList.contains("hidden")) openMenu();
+			else closeMenu();
+		}
+
+		trigger.addEventListener("click", toggleMenu);
+
+		/* keyboard nav inside menu */
+		menu.addEventListener("keydown", (e) => {
+			const idx = menuItems.indexOf(document.activeElement);
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				menuItems[(idx + 1) % menuItems.length].focus();
+			} else if (e.key === "ArrowUp") {
+				e.preventDefault();
+				menuItems[(idx - 1 + menuItems.length) % menuItems.length].focus();
+			} else if (e.key === "Home") {
+				e.preventDefault();
+				menuItems[0].focus();
+			} else if (e.key === "End") {
+				e.preventDefault();
+				menuItems[menuItems.length - 1].focus();
+			} else if (e.key === "Escape") {
+				e.preventDefault();
+				closeMenu();
+				trigger.focus();
+			} else if (e.key === "Tab") {
+				closeMenu();
+			}
+		});
+
+		/* trigger keyboard: Enter/Space/ArrowDown to open */
+		trigger.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
+				e.preventDefault();
+				openMenu();
+			}
+		});
+
+		/* outside click closes */
+		document.addEventListener("click", (e) => {
+			if (!host.contains(e.target)) closeMenu();
+		});
+
+		return { host, open: openMenu, close: closeMenu };
+	}
+
+	/* ---------- Language switcher (sidebar) ----------
+	 * Reads the template-rendered language link list (#lang-switcher-data)
+	 * and enhances it into a trigger button + dropdown menu.
+	 * The template renders <a> links at build time with correct hrefs and
+	 * language metadata (from sitegen .Langs — single source of truth).
+	 * This function appends query/hash, builds the dropdown, and removes
+	 * the data block from the DOM after consuming it.
+	 * Progressive enhancement: if the data block is missing (single-lang
+	 * build or template error), returns null (no switcher rendered).
+	 */
+	function buildLangSwitcher() {
+		const dataEl = document.getElementById("lang-switcher-data");
+		if (!dataEl) return null; /* not rendered (single-lang build) */
+
+		const linkEls = dataEl.querySelectorAll("a[hreflang]");
+		if (linkEls.length <= 1) return null; /* single-language, no switcher */
+
+		const qs = location.search || "";
+		const hash = location.hash || "";
+
+		const items = [];
+		for (const a of linkEls) {
+			const code = a.getAttribute("hreflang") || "";
+			const label = a.textContent || code;
+			let href = a.getAttribute("href") || "";
+			/* Append query + hash if not already present (preserve deep links) */
+			if (qs && !href.includes("?")) href += qs;
+			if (hash && !href.includes("#")) href += hash;
+			items.push({
+				code,
+				label,
+				href,
+				isCurrent: a.getAttribute("aria-current") === "true",
+			});
+		}
+
+		/* Remove the data block from DOM (consumed) */
+		dataEl.remove();
+
+		const { host } = createLangDropdown({
+			items,
+			direction: "up",
+			width: "full",
+			align: "left",
+		});
+		host.id = "lang-switcher";
+		return host;
+	}
+
+	/* ---------- Language switcher (login page) ----------
+	 * Enhances the template-rendered flat link list (#lang-switcher-login)
+	 * into a trigger button + dropdown menu.
+	 * The template renders <a> links at build time with correct hrefs;
+	 * this function reads them, appends query/hash, and builds the dropdown.
+	 * Progressive enhancement: without JS, the flat links are still usable.
+	 */
+	function mountLoginLangSwitcher() {
+		const hostEl = document.getElementById("lang-switcher-login");
+		if (!hostEl) return; /* not on login page or single-lang build */
+
+		const linkEls = hostEl.querySelectorAll("[data-lang-list] a[hreflang]");
+		if (linkEls.length <= 1) return; /* single-language, no switcher */
+
+		const qs = location.search || "";
+		const hash = location.hash || "";
+
+		const items = [];
+		for (const a of linkEls) {
+			const code = a.getAttribute("hreflang") || "";
+			const label =
+				a.querySelector("span:not(.lang-check):not(.sr-only)")?.textContent ||
+				code;
+			let href = a.getAttribute("href") || "";
+			/* Append query + hash if not already present (preserve deep links) */
+			if (qs && !href.includes("?")) href += qs;
+			if (hash && !href.includes("#")) href += hash;
+			items.push({
+				code,
+				label,
+				href,
+				isCurrent: a.getAttribute("aria-current") === "true",
+			});
+		}
+
+		const { host: dropdown } = createLangDropdown({
+			items,
+			direction: "down",
+			width: "auto",
+			align: "right",
+		});
+
+		/* Replace the flat list with the dropdown (clear via DOM, not innerHTML) */
+		while (hostEl.firstChild) hostEl.removeChild(hostEl.firstChild);
+		hostEl.append(dropdown);
+	}
+
 	/* ---------- 布局挂载：在 body 开头注入「侧栏 + 主栏容器」 ----------
 	 * 页面把主内容放在 <div id="page-main"></div> 里，本函数把它包进布局。
 	 */
@@ -266,6 +518,11 @@
 					})(),
 				),
 				nav,
+				el(
+					"div",
+					{ class: "border-t border-white/[0.05] px-3 pt-3" },
+					buildLangSwitcher(),
+				),
 				el(
 					"div",
 					{ class: "border-t border-white/[0.05] p-3" },
@@ -595,5 +852,9 @@
 		timeAgo,
 		loadMe,
 		logout,
+		mountLoginLangSwitcher,
 	};
+
+	/* Auto-mount login page language switcher on load. */
+	mountLoginLangSwitcher();
 })();

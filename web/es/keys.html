@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anotify · API Keys</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#050508" />
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <link rel="stylesheet" href="/tokens.css" />
+    <link rel="stylesheet" href="/ui.css" />
+    
+    <style>
+       
+      .key-mask {
+        letter-spacing: 0.05em;
+      }
+      .toast {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 50%;
+        transform: translateX(-50%) translateY(20px);
+        background: var(--panel-overlay);
+        border: 1px solid var(--line-strong);  
+        color: var(--text);
+        font-size: 0.82rem;
+        padding: 0.6rem 1rem;
+        border-radius: 10px;
+        opacity: 0;
+        pointer-events: none;
+        transition: all 0.3s ease;
+        z-index: 100;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+    </style>
+
+    
+    <link rel="alternate" hreflang="zh-CN" href="/keys.html" />
+    <link rel="alternate" hreflang="en" href="/en/keys.html" />
+    <link rel="alternate" hreflang="ja" href="/ja/keys.html" />
+    <link rel="alternate" hreflang="es" href="/es/keys.html" />
+    <link rel="alternate" hreflang="x-default" href="/keys.html" />
+    
+  </head>
+  <body class="min-h-screen antialiased overflow-x-hidden">
+    
+    
+
+<div id="page-main">
+      <div class="mx-auto max-w-6xl space-y-8">
+        <div class="reveal visible">
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 class="font-display text-3xl text-white">API Keys</h2>
+              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+                Los agentes llevan una Key para llamar a<code
+                  class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300"
+                  >POST /v1/notify</code
+                >
+                y reportar notificaciones. La Key se muestra completa una sola vez al crearla; el servidor solo guarda un hash — guárdala de inmediato.
+              </p>
+            </div>
+            <button
+              onclick="openCreate()"
+              class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+            >
+              + Nueva Key
+            </button>
+          </div>
+        </div>
+
+        <section class="card reveal visible p-5">
+          <div class="flex items-center justify-between">
+            <div class="text-xs font-medium text-zinc-500">Endpoint de reporte</div>
+            <a
+              href="docs.html#notify"
+              class="flex items-center gap-1 text-xs text-zinc-400 transition-colors hover:text-white"
+            >
+              Ver docs completas de la API
+              <svg
+                class="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </a>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <code
+              class="mono rounded-lg bg-black/50 px-3.5 py-2 text-[12.5px] text-zinc-200 ring-1 ring-white/10"
+              >POST /v1/notify</code
+            >
+            <span class="text-xs text-zinc-500">Header:</span>
+            <code
+              class="mono rounded-lg bg-white/[0.04] px-3 py-2 text-[12px] text-zinc-300 ring-1 ring-white/10"
+              >Authorization: Bearer ant_live_…</code
+            >
+          </div>
+        </section>
+
+        <section class="card reveal visible overflow-hidden">
+          <div
+            class="flex items-center justify-between border-b border-white/[0.06] px-6 py-4"
+          >
+            <div class="text-sm font-medium text-white">Mis Keys</div>
+            <span class="text-xs text-zinc-500" id="keys-summary"></span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr
+                  class="border-b border-white/[0.05] text-left text-xs text-zinc-500"
+                >
+                  <th class="px-6 py-3.5 font-medium">Nombre</th>
+                  <th class="px-6 py-3.5 font-medium">Prefijo de Key</th>
+                  <th class="px-6 py-3.5 font-medium">Permisos</th>
+                  <th class="px-6 py-3.5 font-medium">Último uso</th>
+                  <th class="px-6 py-3.5 font-medium">Estado</th>
+                  <th class="px-6 py-3.5 font-medium text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody
+                id="keys-body"
+                class="divide-y divide-white/[0.04]"
+              ></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card reveal visible p-6">
+          <div class="flex items-start gap-4">
+            <div
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10"
+            >
+              <svg
+                class="h-5 w-5 text-amber-300"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            </div>
+            <div class="text-sm leading-relaxed text-zinc-400">
+              <p class="font-medium text-white">Buenas prácticas de seguridad de la Key</p>
+              <ul class="mt-1.5 space-y-1 text-zinc-400">
+                <li>
+                  · El texto plano de la Key <b class="text-zinc-200">se muestra una sola vez al crearla</b
+                  >; no puede volver a verse, solo regenerarse
+                </li>
+                <li>
+                  · El servidor solo guarda el <b class="text-zinc-200">hash argon2id</b
+                  >; ni una fuga de DB puede recuperar la Key
+                </li>
+                <li>
+                  · Usa <b class="text-zinc-200">una Key por Agent / entorno</b
+                  >; revoca solo la afectada si hay fuga
+                </li>
+                <li>· Nunca subas Keys al control de versiones; inyéctalas con vars de entorno o un gestor de secretos</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+
+    
+    <div
+      id="create-modal"
+      class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+    >
+      <div
+        class="sidebar-overlay absolute inset-0"
+        onclick="closeCreate()"
+      ></div>
+      <div
+        class="card relative z-10 w-full max-w-md !bg-[var(--panel-modal)] p-6 shadow-2xl"
+      >
+        
+        
+        <div id="create-step-1">
+          <div class="flex items-start justify-between">
+            <div>
+              <h3 class="text-lg font-medium text-white">Nueva API Key</h3>
+              <p class="mt-1 text-sm text-zinc-400">
+                Ponle un nombre y elige sus permisos
+              </p>
+            </div>
+            <button
+              onclick="closeCreate()"
+              class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
+            >
+              <svg
+                class="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <div class="mt-5">
+            <label class="text-xs font-medium text-zinc-400" for="new-key-name"
+              >Nombre</label
+            >
+            <input
+              id="new-key-name"
+              class="input mt-2"
+              placeholder="ej. Dev local / pipeline CI / Agent producción"
+            />
+          </div>
+          <div class="mt-4">
+            <span class="text-xs font-medium text-zinc-400"
+              >Permisos (selección múltiple, mínimo privilegio)</span
+            >
+            <div class="mt-2 space-y-2">
+              <label
+                class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-indigo-400/50 has-[:checked]:bg-indigo-400/5"
+              >
+                <input
+                  type="checkbox"
+                  name="key-scope"
+                  value="notify:send"
+                  class="mt-0.5"
+                  checked
+                />
+                <span>
+                  <span class="block text-sm text-zinc-200"
+                    >Enviar
+                    <code class="mono text-[11px] text-zinc-500"
+                      >notify:send</code
+                    ></span
+                  >
+                  <span class="mt-0.5 block text-[11px] text-zinc-500"
+                    >Para que Agents / CI hagan POST de notificaciones. Prefijo ant_live_</span
+                  >
+                </span>
+              </label>
+              <label
+                class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-emerald-400/50 has-[:checked]:bg-emerald-400/5"
+              >
+                <input
+                  type="checkbox"
+                  name="key-scope"
+                  value="notify:receive"
+                  class="mt-0.5"
+                />
+                <span>
+                  <span class="block text-sm text-zinc-200"
+                    >Recibir
+                    <code class="mono text-[11px] text-zinc-500"
+                      >notify:receive</code
+                    ></span
+                  >
+                  <span class="mt-0.5 block text-[11px] text-zinc-500"
+                    >Para que plugins / dispositivos abran conexiones WebSocket. Prefijo ant_recv_</span
+                  >
+                </span>
+              </label>
+              <label
+                class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-amber-400/50 has-[:checked]:bg-amber-400/5"
+              >
+                <input
+                  type="checkbox"
+                  name="key-scope"
+                  value="devices:read"
+                  class="mt-0.5"
+                />
+                <span>
+                  <span class="block text-sm text-zinc-200"
+                    >Leer dispositivos
+                    <code class="mono text-[11px] text-zinc-500"
+                      >devices:read</code
+                    ></span
+                  >
+                  <span class="mt-0.5 block text-[11px] text-zinc-500"
+                    >Listado de solo lectura para inspección con scripts</span
+                  >
+                </span>
+              </label>
+            </div>
+            <p class="mt-2.5 text-[11px] leading-relaxed text-zinc-600">
+              Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.
+            </p>
+            <p id="create-error" class="mt-2 hidden text-xs text-rose-300"></p>
+          </div>
+          <div class="mt-6 flex justify-end gap-3">
+            <button
+              onclick="closeCreate()"
+              class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            >
+              Cancelar
+            </button>
+            <button
+              onclick="generateKey()"
+              class="btn-primary rounded-xl px-5 py-2 text-sm font-medium"
+            >
+              Generar Key
+            </button>
+          </div>
+        </div>
+
+        
+        <div id="create-step-2" class="hidden">
+          <div class="flex items-start justify-between">
+            <div>
+              <h3 class="text-lg font-medium text-white">Guarda tu Key</h3>
+              <p class="mt-1 text-sm text-zinc-400">
+                Esta es su <b class="text-amber-300">única muestra completa</b>
+              </p>
+            </div>
+            <button
+              onclick="closeCreate()"
+              class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
+            >
+              <svg
+                class="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <div
+            class="mt-5 flex items-center justify-between gap-2 rounded-xl bg-black/50 px-4 py-3.5 ring-1 ring-white/10"
+          >
+            <code
+              id="new-key-value"
+              class="mono key-mask break-all text-[13px] text-emerald-300"
+            ></code>
+            <button
+              onclick="copyNewKey(this)"
+              class="shrink-0 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10 transition-colors"
+            >
+              Copiar
+            </button>
+          </div>
+          <div
+            class="mt-4 flex items-start gap-2.5 rounded-xl bg-amber-400/[0.07] px-4 py-3 ring-1 ring-amber-400/20"
+          >
+            <svg
+              class="mt-0.5 h-4 w-4 shrink-0 text-amber-300"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+              />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <p class="text-xs leading-relaxed text-amber-200/80">
+              Al cerrar, la Key completa no podrá volver a verse. Guárdala en un gestor de contraseñas o lugar seguro de inmediato.
+            </p>
+          </div>
+          <div class="mt-6 flex justify-end">
+            <button
+              onclick="finishCreate()"
+              class="btn-primary rounded-xl px-5 py-2 text-sm font-medium"
+            >
+              La he guardado
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    
+
+    
+    
+    <div id="lang-switcher-data" hidden aria-hidden="true">
+      <a href="/keys.html" hreflang="zh-CN" lang="zh-CN">中文</a>
+      <a href="/en/keys.html" hreflang="en" lang="en">English</a>
+      <a href="/ja/keys.html" hreflang="ja" lang="ja">日本語</a>
+      <a href="/es/keys.html" hreflang="es" lang="es" aria-current="true">Español</a>
+      
+    </div>
+    
+    <script src="/i18n.es.js"></script>
+    <script src="/partials.js"></script>
+    
+    
+    <script>
+      
+      const API = "/v1";
+      const SCOPE_META = {
+        "notify:send": {
+          label: "上报",
+          color: "background:var(--accent-soft);color:var(--accent-strong)",
+        },
+        "notify:receive": {
+          label: "接收",
+          color: "background:var(--success-soft);color:var(--success)",
+        },
+        "devices:read": {
+          label: "设备查询",
+          color: "background:var(--warn-soft);color:var(--warn)",
+        },
+      };
+
+      
+      const DEMO_KEYS = [
+        {
+          id: "k_demo1",
+          name: "本地开发",
+          prefix: "ant_live_9f3a",
+          scopes: ["notify:send"],
+          lastUsed: "2 分钟前",
+          enabled: true,
+          created: "2026-06-12",
+        },
+        {
+          id: "k_demo2",
+          name: "CI 流水线",
+          prefix: "ant_live_2b1d",
+          scopes: ["notify:send"],
+          lastUsed: "1 小时前",
+          enabled: true,
+          created: "2026-06-28",
+        },
+        {
+          id: "k_demo3",
+          name: "桌面插件（接收）",
+          prefix: "ant_recv_9f3a",
+          scopes: ["notify:receive"],
+          lastUsed: "刚刚",
+          enabled: true,
+          created: "2026-07-15",
+        },
+        {
+          id: "k_demo4",
+          name: "旧测试 Key",
+          prefix: "ant_live_x8q2",
+          scopes: ["notify:send"],
+          lastUsed: "3 周前",
+          enabled: false,
+          created: "2026-05-30",
+        },
+      ];
+
+      let KEYS = [];
+      let demoMode = false;
+      let newKeyPlain = "";
+      let pendingKey = null;
+
+      function toast(msg) {
+        const t = document.getElementById("toast");
+        t.textContent = msg;
+        t.classList.add("show");
+        clearTimeout(t._timer);
+        t._timer = setTimeout(() => t.classList.remove("show"), 2400);
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return "从未使用";
+        const d = new Date(ts * 1000 || ts);
+        if (isNaN(d.getTime())) return String(ts);
+        const diff = Date.now() - d.getTime();
+        if (diff < 60e3) return "刚刚";
+        if (diff < 3600e3) return Math.floor(diff / 60e3) + " 分钟前";
+        if (diff < 86400e3) return Math.floor(diff / 3600e3) + " 小时前";
+        return d.toISOString().slice(0, 10);
+      }
+
+      
+      
+      async function fetchApi(path, options) {
+        try {
+          const res = await fetch(
+            path,
+            Object.assign({ credentials: "include" }, options),
+          );
+          if (res.status === 401)
+            return Anotify.api(path, options).catch(() => null);
+          if (!res.ok) return null;
+          return await res.json();
+        } catch (e) {
+          return null;
+        }
+      }
+
+      async function loadKeys() {
+        const data = await fetchApi(API + "/keys", {
+          credentials: "same-origin",
+        });
+        if (data) {
+          KEYS = (data.keys || data || []).map((k) => ({
+            id: k.id,
+            name: k.name || "未命名",
+            prefix: k.prefix || "ant_????",
+            scopes: k.scopes || [],
+            lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
+            enabled: k.enabled !== false && k.enabled !== 0,
+            created:
+              k.createdAt || k.created_at
+                ? new Date(
+                    (k.createdAt || k.created_at) *
+                      (typeof (k.createdAt || k.created_at) === "number"
+                        ? 1000
+                        : 1),
+                  )
+                    .toISOString()
+                    .slice(0, 10)
+                : "",
+          }));
+          demoMode = false;
+        } else {
+          KEYS = DEMO_KEYS.slice();
+          demoMode = true;
+        }
+        renderKeys();
+      }
+
+      
+      function renderKeys() {
+        const el = Anotify.el;
+        const body = document.getElementById("keys-body");
+        const activeCount = KEYS.filter((k) => k.enabled).length;
+        document.getElementById("keys-summary").textContent =
+          KEYS.length +
+          " 个 Key · " +
+          activeCount +
+          " 启用" +
+          (demoMode ? " · 演示数据" : "");
+
+        if (KEYS.length === 0) {
+          body.replaceChildren(
+            el(
+              "tr",
+              {},
+              el(
+                "td",
+                {
+                  class: "px-6 py-10 text-center text-sm text-zinc-500",
+                  colspan: "6",
+                },
+                "还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。",
+              ),
+            ),
+          );
+          return;
+        }
+
+        body.replaceChildren(
+          ...KEYS.map((k) =>
+            el(
+              "tr",
+              { class: "transition-colors hover:bg-white/[0.02]" },
+              el(
+                "td",
+                { class: "px-6 py-4" },
+                el("div", {
+                  class: "text-sm font-medium text-white",
+                  text: k.name,
+                }),
+                el("div", {
+                  class: "text-[11px] text-zinc-500",
+                  text: k.created ? "创建于 " + k.created : "",
+                }),
+              ),
+              el(
+                "td",
+                { class: "px-6 py-4" },
+                el("code", {
+                  class: "mono key-mask text-[12px] text-zinc-400",
+                  text: k.prefix + "••••••••",
+                }),
+              ),
+              el(
+                "td",
+                { class: "px-6 py-4" },
+                el(
+                  "div",
+                  { class: "flex flex-wrap gap-1.5" },
+                  ...k.scopes.map((s) =>
+                    el("span", {
+                      class: "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                      style: SCOPE_META[s]
+                        ? SCOPE_META[s].color
+                        : "background:rgba(255,255,255,0.06);color:var(--muted)",
+                      text: SCOPE_META[s] ? SCOPE_META[s].label : s,
+                    }),
+                  ),
+                ),
+              ),
+              el("td", {
+                class: "px-6 py-4 text-xs text-zinc-500",
+                text: k.lastUsed,
+              }),
+              el(
+                "td",
+                { class: "px-6 py-4" },
+                el("span", {
+                  class:
+                    "status-badge " + (k.enabled ? "status-on" : "status-off"),
+                  text: k.enabled ? "启用" : "已停用",
+                }),
+              ),
+              el(
+                "td",
+                { class: "px-6 py-4 text-right" },
+                el(
+                  "div",
+                  { class: "inline-flex items-center gap-2" },
+                  el(
+                    "button",
+                    {
+                      class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
+                      onclick: () => revokeKey(k),
+                    },
+                    "停用",
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+
+      async function revokeKey(k) {
+        if (
+          !confirm("确定停用「" + k.name + "」吗？使用它的 Agent 将无法上报。")
+        )
+          return;
+        if (demoMode) {
+          k.enabled = false;
+          renderKeys();
+          toast("已停用（演示模式，仅本地生效）");
+          return;
+        }
+        try {
+          const res = await fetch(
+            API + "/keys/" + encodeURIComponent(k.id) + "/revoke",
+            {
+              method: "POST",
+              credentials: "same-origin",
+            },
+          );
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          k.enabled = false;
+          renderKeys();
+          toast("已停用「" + k.name + "」");
+        } catch (e) {
+          toast("停用失败：" + e.message);
+        }
+      }
+
+      
+      function openCreate() {
+        document.getElementById("create-step-1").classList.remove("hidden");
+        document.getElementById("create-step-2").classList.add("hidden");
+        document.getElementById("create-error").classList.add("hidden");
+        document.getElementById("new-key-name").value = "";
+        document
+          .querySelectorAll('input[name="key-scope"]')
+          .forEach((c, i) => (c.checked = i === 0));
+        document
+          .getElementById("create-modal")
+          .classList.replace("hidden", "flex");
+        document.body.style.overflow = "hidden";
+        setTimeout(() => document.getElementById("new-key-name").focus(), 100);
+      }
+      function closeCreate() {
+        document
+          .getElementById("create-modal")
+          .classList.replace("flex", "hidden");
+        document.body.style.overflow = "";
+      }
+
+      function selectedScopes() {
+        return Array.from(
+          document.querySelectorAll('input[name="key-scope"]:checked'),
+        ).map((c) => c.value);
+      }
+
+      function demoKeyFor(scopes) {
+        const rand = () => Math.random().toString(36).slice(2, 10);
+        const prefix =
+          scopes.includes("notify:receive") && !scopes.includes("notify:send")
+            ? "ant_recv_"
+            : "ant_live_";
+        return (prefix + rand() + rand()).slice(0, 28);
+      }
+
+      async function generateKey() {
+        const name =
+          document.getElementById("new-key-name").value.trim() || "未命名 Key";
+        const scopes = selectedScopes();
+        const errEl = document.getElementById("create-error");
+        if (scopes.length === 0) {
+          errEl.textContent = "请至少选择一个权限范围";
+          errEl.classList.remove("hidden");
+          return;
+        }
+        errEl.classList.add("hidden");
+
+        if (demoMode) {
+          newKeyPlain = demoKeyFor(scopes);
+          pendingKey = {
+            id: "k_" + Date.now(),
+            name: name,
+            prefix: newKeyPlain.slice(0, 13),
+            scopes: scopes,
+            lastUsed: "从未使用",
+            enabled: true,
+            created: new Date().toISOString().slice(0, 10),
+          };
+          showStep2();
+          return;
+        }
+
+        try {
+          const res = await fetch(API + "/keys", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ name: name, scopes: scopes }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || "HTTP " + res.status);
+          }
+          const data = await res.json();
+          newKeyPlain = data.key || data.plaintext || "";
+          if (!newKeyPlain) throw new Error("服务端未返回 Key 明文");
+          pendingKey = {
+            id: data.id || "k_" + Date.now(),
+            name: data.name || name,
+            prefix: data.prefix || newKeyPlain.slice(0, 13),
+            scopes: data.scopes || scopes,
+            lastUsed: "从未使用",
+            enabled: true,
+            created: new Date().toISOString().slice(0, 10),
+          };
+          showStep2();
+        } catch (e) {
+          errEl.textContent =
+            "创建失败：" + e.message + "（后端未就绪时可先体验演示模式）";
+          errEl.classList.remove("hidden");
+        }
+      }
+
+      function showStep2() {
+        document.getElementById("new-key-value").textContent = newKeyPlain;
+        document.getElementById("create-step-1").classList.add("hidden");
+        document.getElementById("create-step-2").classList.remove("hidden");
+      }
+
+      function copyNewKey(btn) {
+        navigator.clipboard
+          .writeText(newKeyPlain)
+          .then(() => {
+            const orig = btn.textContent;
+            btn.textContent = "已复制 ✓";
+            setTimeout(() => (btn.textContent = orig), 1500);
+          })
+          .catch(() => toast("复制失败，请手动选择复制"));
+      }
+
+      function finishCreate() {
+        if (pendingKey) {
+          KEYS.unshift(pendingKey);
+          renderKeys();
+        }
+        pendingKey = null;
+        newKeyPlain = "";
+        closeCreate();
+        toast("Key 已创建");
+      }
+
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeCreate();
+      });
+
+      
+      Anotify.mountLayout({
+        active: "keys",
+        title: "API Keys",
+        subtitle: "Agent 用它上报通知",
+      });
+      loadKeys();
+    </script>
+
+  </body>
+</html>
