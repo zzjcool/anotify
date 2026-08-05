@@ -63,12 +63,29 @@ func staticFS(fsys http.FileSystem) http.Handler {
 	})
 }
 
-// resolveStatic 按配置解析静态资源源：
-//   - StaticDir 非空 → 本地目录（开发）
-//   - 否则 → embed 内嵌（生产单二进制）
-//
-// CDN 前缀重写（CDNPrefix）在反向代理/CDN 层做，源站始终服务同一 dist。
+// resolveStaticFS 返回静态资源文件系统（供 /agent-login.sh 等显式路由读取）。
+func resolveStaticFS(cfg Config) http.FileSystem {
+	if cfg.StaticDir != "" {
+		if _, err := os.Stat(cfg.StaticDir); err == nil {
+			return http.Dir(cfg.StaticDir)
+		}
+		log.Printf("[static] 目录 %s 不存在，回退 embed", cfg.StaticDir)
+	}
+	return embeddedStaticMust()
+}
+
+// embeddedStaticMust 返回 embed 文件系统，失败时返回空 FS（避免 panic）。
+func embeddedStaticMust() http.FileSystem {
+	fs, err := embeddedStatic()
+	if err != nil {
+		log.Printf("[static] embed 不可用: %v", err)
+		return http.Dir("") // 空，Open 必失败 → 404
+	}
+	return fs
+}
 func resolveStatic(cfg Config) http.Handler {
+	// StaticDir 非空 → 本地目录（开发）；否则 → embed 内嵌（生产单二进制）。
+	// CDN 前缀重写（CDNPrefix）在反向代理/CDN 层做，源站始终服务同一 dist。
 	if cfg.StaticDir != "" {
 		if _, err := os.Stat(cfg.StaticDir); err == nil {
 			return staticHandler(cfg.StaticDir)
