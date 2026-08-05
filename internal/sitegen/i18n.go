@@ -11,38 +11,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LoadTranslations 从 localesDir 加载指定语言的翻译文件。
-// 文件名为 {lang}.yaml（如 zh-CN.yaml），内容为嵌套 YAML，
-// 加载后扁平化为 "section.subsection.key" → "value" 的 map。
+// LoadTranslations loads the translation file for the given language from localesDir.
+// The file is named {lang}.yaml (e.g. zh-CN.yaml) and contains nested YAML,
+// which is flattened into a "section.subsection.key" → "value" map.
 //
-// 例 YAML:
+// Example YAML:
 //
 //	nav:
-//	  home: "首页"
-//	  login: "登录"
+//	  home: "Home"
+//	  login: "Sign in"
 //
-// 扁平化后 → nav.home="首页", nav.login="登录"
+// Flattened → nav.home="Home", nav.login="Sign in"
 func LoadTranslations(localesDir, lang string) (map[string]string, error) {
 	yamlPath := filepath.Join(localesDir, lang+".yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
-		return nil, fmt.Errorf("读取翻译文件 %s: %w", yamlPath, err)
+		return nil, fmt.Errorf("read translation file %s: %w", yamlPath, err)
 	}
 
-	// 先解析为通用 nested 结构（map[string]interface{}）
+	// Parse into a generic nested structure (map[string]interface{}).
 	var nested map[string]interface{}
 	if err := yaml.Unmarshal(data, &nested); err != nil {
-		return nil, fmt.Errorf("解析 YAML %s: %w", yamlPath, err)
+		return nil, fmt.Errorf("parse YAML %s: %w", yamlPath, err)
 	}
 
-	// 扁平化
+	// Flatten.
 	flat := make(map[string]string)
 	flatten("", nested, flat)
 
 	return flat, nil
 }
 
-// flatten 递归把嵌套 map 扁平化为 dot-separated keys。
+// flatten recursively flattens a nested map into dot-separated keys.
 func flatten(prefix string, in map[string]interface{}, out map[string]string) {
 	for k, v := range in {
 		key := k
@@ -53,7 +53,7 @@ func flatten(prefix string, in map[string]interface{}, out map[string]string) {
 		case map[string]interface{}:
 			flatten(key, val, out)
 		case map[interface{}]interface{}:
-			// yaml.v3 对非顶层嵌套有时返回此类型，兼容处理
+			// yaml.v3 sometimes returns this type for non-top-level nests; handle it.
 			converted := make(map[string]interface{})
 			for mk, mv := range val {
 				if sk, ok := mk.(string); ok {
@@ -75,9 +75,9 @@ func flatten(prefix string, in map[string]interface{}, out map[string]string) {
 	}
 }
 
-// GenerateI18nJS 把每语言翻译序列化为 {outDir}/i18n.{lang}.js。
-// 格式：window.AnotifyI18n = {...};
-// 供运行时 JS 文案用（partials.js / 各页 JS 通过 window.AnotifyI18n 查翻译）。
+// GenerateI18nJS serializes each language's translations into {outDir}/i18n.{lang}.js.
+// Format: window.AnotifyI18n = {...};
+// Used by runtime JS strings (partials.js / per-page JS look up window.AnotifyI18n).
 func (g *Generator) GenerateI18nJS(outDir string) error {
 	for _, lang := range g.langs {
 		vals, ok := g.translations[lang]
@@ -85,14 +85,14 @@ func (g *Generator) GenerateI18nJS(outDir string) error {
 			continue
 		}
 
-		// 排序 key 保证输出稳定（可复现构建）
+		// Sort keys for stable, reproducible output.
 		keys := make([]string, 0, len(vals))
 		for k := range vals {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 
-		// 构建 JSON 对象
+		// Build the JSON object.
 		obj := make(map[string]string, len(vals))
 		for _, k := range keys {
 			obj[k] = vals[k]
@@ -100,7 +100,7 @@ func (g *Generator) GenerateI18nJS(outDir string) error {
 
 		jsonBytes, err := json.Marshal(obj)
 		if err != nil {
-			return fmt.Errorf("序列化 i18n JSON [%s]: %w", lang, err)
+			return fmt.Errorf("serialize i18n JSON [%s]: %w", lang, err)
 		}
 
 		var sb strings.Builder
@@ -111,7 +111,7 @@ func (g *Generator) GenerateI18nJS(outDir string) error {
 
 		outPath := filepath.Join(outDir, "i18n."+lang+".js")
 		if err := os.WriteFile(outPath, []byte(sb.String()), 0o644); err != nil {
-			return fmt.Errorf("写入 %s: %w", outPath, err)
+			return fmt.Errorf("write %s: %w", outPath, err)
 		}
 	}
 	return nil

@@ -18,6 +18,11 @@ common:
     logout: "Log out"
     menu: "Menu"
     notification: "Notifications"
+  lang:
+    label: "Language"
+    switcher_label: "Switch language"
+    switcher_aria: "Language selection"
+    current: "current language"
   sidebar:
     deployment: "Self-hosted · Main workspace"
   footer:

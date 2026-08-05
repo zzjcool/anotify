@@ -18,11 +18,25 @@
     <link rel="stylesheet" href="/tokens.css" />
     <link rel="stylesheet" href="/ui.css" />
     {{block "style" .}}{{end}}
+    {{if gt (len .Langs) 1}}
+    {{range .Langs}}<link rel="alternate" hreflang="{{.Code}}" href="{{.Prefix}}/{{$.Page}}" />
+    {{end}}<link rel="alternate" hreflang="x-default" href="/{{$.Page}}" />
+    {{end}}
   </head>
   <body class="min-h-screen antialiased overflow-x-hidden">
     <!-- 主内容（partials.js 会把它装进「侧栏 + 顶栏」布局） -->
     <!-- 页面 content block 含 <div id="page-main"> 及页级弹层等外部内容 -->
 {{block "content" .}}{{end}}
+    {{if gt (len .Langs) 1}}
+    <!-- Language switcher data (sidebar): build-time flat link list.
+         mountLayout() reads this to build the sidebar dropdown.
+         Single source of truth: sitegen .Langs (no hardcoded list in JS).
+         Removed from DOM after mountLayout consumes it. -->
+    <div id="lang-switcher-data" hidden aria-hidden="true">
+      {{range .Langs}}<a href="{{.Prefix}}/{{$.Page}}" hreflang="{{.Code}}" lang="{{.Code}}"{{if eq .Code $.Lang}} aria-current="true"{{end}}>{{.NativeName}}</a>
+      {{end}}
+    </div>
+    {{end}}
     <script src="/i18n.{{.Lang}}.js"></script>
     <script src="/partials.js"></script>
     {{block "script" .}}{{end}}

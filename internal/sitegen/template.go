@@ -8,80 +8,93 @@ import (
 	"path/filepath"
 )
 
-// PageData 是注入模板的数据。
-type PageData struct {
-	Lang       string // 当前语言代码（如 "zh-CN" / "en"）
-	LangPrefix string // 语言 URL 前缀（默认语言为 ""，其余为 "/{lang}"）
+// LangInfo describes a single supported language for template rendering.
+// It is injected into PageData.Langs so templates can render a language
+// switcher and hreflang alternate links.
+type LangInfo struct {
+	Code       string // BCP-47 language code, e.g. "zh-CN", "en"
+	Prefix     string // URL prefix: "" for the default language, "/{lang}" otherwise
+	NativeName string // display name in the language's own script, e.g. "中文", "English"
+	ShortName  string // compact label for space-constrained UI, e.g. "EN", "ES"
 }
 
-// templateTree 封装一个已解析的 html/template 模板树，
-// 及按当前语言渲染的能力。t 函数在每次渲染时动态绑定。
+// PageData is the data injected into templates during rendering.
+type PageData struct {
+	Lang       string     // current language code (e.g. "zh-CN" / "en")
+	LangPrefix string     // language URL prefix ("" for default lang, "/{lang}" otherwise)
+	Page       string     // current page file name, e.g. "keys.html" (for cross-language same-page links)
+	Langs      []LangInfo // full list of supported languages (for language switcher + hreflang)
+}
+
+// templateTree wraps a parsed html/template tree and the ability to render
+// it for a given language. The t function is bound dynamically per render.
 type templateTree struct {
 	tmpl     *template.Template
-	execName string // 执行时用哪个模板名（布局唯一名，如 "__layout__"）
+	execName string // which template name to execute (the layout's unique name, e.g. "__layout__")
 }
 
-// parseTemplateTree 解析布局模板和页面模板，组合为一棵模板树。
-// 布局文件定义骨架（含 {{block "content" .}} 等），
-// 页面文件定义 {{define "content"}} 等块来覆盖布局中的 block。
+// parseTemplateTree parses the layout and page templates into a single tree.
+// The layout defines the skeleton (with {{block "content" .}} etc.),
+// and the page defines {{define "content"}} blocks to override them.
 //
-// 关键挑战：Go html/template 的 ParseFiles 按文件 basename 命名模板，
-// 若布局和页面同名（如 layouts/login.html 和 pages/login.html），
-// 后解析的会覆盖前者。解决：用 Parse（而非 ParseFiles）直接指定
-// 模板名，避免 basename 冲突。
+// Key challenge: Go html/template ParseFiles names templates by file basename,
+// so if layout and page share a name (layouts/login.html and pages/login.html)
+// the later-parsed one overwrites the earlier. Solution: use Parse (not
+// ParseFiles) with explicit unique template names to avoid basename clashes.
 func parseTemplateTree(layoutPath, pagePath string) (*templateTree, error) {
-	// 创建时声明 t 函数（占位），使解析时模板中的 {{t "key"}} 能通过校验。
-	// 真正的翻译逻辑在 execute 时通过 Clone + Funcs 注入（绑定当前语言）。
+	// Declare a placeholder t func at creation so {{t "key"}} in templates
+	// passes validation during parsing. The real translation logic is injected
+	// at execute time via Clone + Funcs (bound to the current language).
 	root := template.New("__root__").Funcs(template.FuncMap{
 		"t": func(string) string { return "" },
 	})
 
-	// 先解析布局——用 Parse 指定唯一名 __layout__，避免与页面文件 basename 冲突。
+	// Parse the layout first under the unique name __layout__ to avoid
+	// basename collisions with page files.
 	layoutContent, err := os.ReadFile(layoutPath)
 	if err != nil {
-		return nil, fmt.Errorf("读取布局 %s: %w", layoutPath, err)
+		return nil, fmt.Errorf("read layout %s: %w", layoutPath, err)
 	}
-	// 先定义 __layout__ 模板名，再 Parse 内容到该模板。
 	layoutTmpl := root.New("__layout__")
 	_, err = layoutTmpl.Parse(string(layoutContent))
 	if err != nil {
-		return nil, fmt.Errorf("解析布局 %s: %w", filepath.Base(layoutPath), err)
+		return nil, fmt.Errorf("parse layout %s: %w", filepath.Base(layoutPath), err)
 	}
 
-	// 再解析页面——页面中的 {{define}} 注册到同一模板树，
-	// 覆盖布局中 {{block}} 的默认实现。
-	// 页面内容可能有顶层文本（如 <!-- layout --> 注释），
-	// 用唯一名 __page__ 避免覆盖 __layout__。
+	// Parse the page next: its {{define}} blocks register into the same tree,
+	// overriding the layout's {{block}} defaults. Page content may have
+	// top-level text (e.g. a <!-- layout --> comment), so use the unique name
+	// __page__ to avoid overwriting __layout__.
 	pageContent, err := os.ReadFile(pagePath)
 	if err != nil {
-		return nil, fmt.Errorf("读取页面 %s: %w", pagePath, err)
+		return nil, fmt.Errorf("read page %s: %w", pagePath, err)
 	}
 	pageTmpl := root.New("__page__")
 	_, err = pageTmpl.Parse(string(pageContent))
 	if err != nil {
-		return nil, fmt.Errorf("解析页面 %s: %w", filepath.Base(pagePath), err)
+		return nil, fmt.Errorf("parse page %s: %w", filepath.Base(pagePath), err)
 	}
 
-	// 执行时按 __layout__ 名执行，其 {{block}} 被页面 {{define}} 覆盖。
+	// Execute by the __layout__ name; its {{block}} slots are overridden by the page's {{define}}.
 	return &templateTree{tmpl: root, execName: "__layout__"}, nil
 }
 
-// execute 用给定数据和翻译函数执行模板树。
-// 每次 execute 都 Clone 模板并注入当前语言的 t 函数，
-// 这样同一棵模板树可被多语言复用（缓存的价值）。
+// execute renders the template tree with the given data and translation func.
+// Each execute Clones the template and injects the current language's t func,
+// so one parsed tree can be reused across languages (the value of caching).
 func (tt *templateTree) execute(w io.Writer, data PageData, tFunc func(string) string) error {
-	// Clone 继承已解析的模板树，允许追加 Funcs
+	// Clone inherits the parsed tree and allows adding Funcs.
 	clone, err := tt.tmpl.Clone()
 	if err != nil {
-		return fmt.Errorf("clone 模板: %w", err)
+		return fmt.Errorf("clone template: %w", err)
 	}
 
-	// 注入 t 函数（绑定当前语言）
+	// Inject the t func bound to the current language.
 	clone = clone.Funcs(template.FuncMap{
 		"t": tFunc,
 	})
 
-	// 按 __layout__ 名执行（触发 {{block}} → 被页面 {{define}} 覆盖）
+	// Execute by the __layout__ name (triggers {{block}} → overridden by page {{define}}).
 	if err := clone.ExecuteTemplate(w, tt.execName, data); err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}

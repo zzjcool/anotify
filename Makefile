@@ -12,7 +12,7 @@ help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 sitegen: ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
-	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
+	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es
 
 fe: sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist

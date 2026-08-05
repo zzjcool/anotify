@@ -1,5 +1,7 @@
 # Anotify · Agent 完成即通知平台
 
+**[中文](README.md)** | [English](README.en.md)
+
 Agent 完成任务后，把通知自动推送到你的所有设备（iOS / Mac / PC / Android）。
 Passkey 无密码登录、无需轮询、单二进制易自托管。
 

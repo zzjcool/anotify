@@ -17,7 +17,11 @@
     <link rel="stylesheet" href="/fonts/fonts.css" />
     <link rel="stylesheet" href="/tokens.css" />
     <link rel="stylesheet" href="/ui.css" />
-    {{block "style" .}}{{end}}
+    {{block "style" .}}{{end}} {{if gt (len .Langs) 1}} {{range .Langs}}
+    <link rel="alternate" hreflang="{{.Code}}" href="{{.Prefix}}/{{$.Page}}" />
+    {{end}}
+    <link rel="alternate" hreflang="x-default" href="/{{$.Page}}" />
+    {{end}}
   </head>
   <body class="min-h-screen antialiased overflow-x-hidden flex flex-col">
     <div class="grid-overlay"></div>
@@ -49,7 +53,36 @@
             >Anotify</span
           >
         </a>
-        <span class="text-sm text-zinc-500">{{t "common.brand.tagline"}}</span>
+        <div class="flex items-center gap-3">
+          {{if gt (len .Langs) 1}}
+          <!-- Language switcher (login page): build-time flat list (no-JS fallback), JS enhances to dropdown -->
+          <div id="lang-switcher-login" class="relative flex items-center">
+            <div class="space-y-0.5" data-lang-list>
+              {{range .Langs}}<a
+                href="{{.Prefix}}/{{$.Page}}"
+                hreflang="{{.Code}}"
+                lang="{{.Code}}"
+                class="lang-link flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm {{if eq .Code $.Lang}}lang-current{{end}}"
+                {{if
+                eq
+                .Code
+                $.Lang}}aria-current="true"
+                {{end}}
+                ><span class="lang-check w-3.5"
+                  >{{if eq .Code $.Lang}}✓{{end}}</span
+                ><span>{{.NativeName}}</span>{{if eq .Code $.Lang}}<span
+                  class="sr-only"
+                  >{{t "common.lang.current"}}</span
+                >{{end}}</a
+              >
+              {{end}}
+            </div>
+          </div>
+          {{end}}
+          <span class="hidden text-sm text-zinc-500 sm:block"
+            >{{t "common.brand.tagline"}}</span
+          >
+        </div>
       </div>
     </header>
 

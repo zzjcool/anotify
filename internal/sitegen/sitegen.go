@@ -1,54 +1,97 @@
-// Package sitegen 是 Anotify 构建期静态站点生成器。
+// Package sitegen is the Anotify build-time static site generator.
 //
-// 借鉴 Hugo（静态站点生成）与 rssyes（Go html/template 布局 + 模板缓存）思想，
-// 在构建期把 layouts（布局）+ pages（页面内容块）+ locales（i18n 翻译）
-// 合成为最终静态 HTML。不引入运行时模板引擎，产物仍是纯静态文件。
+// Inspired by Hugo (static site generation) and rssyes (Go html/template
+// layouts + template caching), it combines layouts + pages + locales under
+// web-src/ into final static HTML at build time. No runtime template engine
+// is introduced; the output is plain static files.
 //
-// 核心流程：解析布局+页面模板（缓存复用）→ 遍历语言×页面 → bytes.Buffer 渲染 → 输出。
-// i18n 在构建期完成：模板内 {{t "key"}} 在渲染时按当前语言替换为对应文案。
+// Core flow: parse layout+page templates (cached for reuse) → iterate
+// languages × pages → render into bytes.Buffer → write output.
+// i18n is resolved at build time: {{t "key"}} in templates is replaced with
+// the localized string for the current language during rendering.
 package sitegen
 
 import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
 
-// Generator 是静态站点生成器，持有源目录、输出目录、语言列表和翻译。
+// Generator is the static site generator, holding the source dir, output dir,
+// language list, and translations.
 type Generator struct {
-	srcDir       string                       // web-src/ 根目录
-	outDir       string                       // 输出目录（web/）
-	langs        []string                     // 支持的语言列表，第一个为默认（根路径）
+	srcDir       string                       // web-src/ root
+	outDir       string                       // output directory (web/)
+	langs        []string                     // supported languages; first is default (root path)
 	translations map[string]map[string]string // lang → flattenedKey → value
-	defaultLang  string                       // 默认语言（langs[0]），用于缺 key 回退
-	tmplCache    *templateCache               // 模板缓存
+	defaultLang  string                       // default language (langs[0]), used for missing-key fallback
+	tmplCache    *templateCache               // template cache
 }
 
-// templateCache 缓存已解析的模板（布局+页面组合），避免重复解析。
-// 借鉴 rssyes TemplateCache：RWMutex 保护、devMode 可旁路。
+// templateCache caches parsed layout+page template combinations to avoid
+// re-parsing. Inspired by rssyes TemplateCache: RWMutex-guarded.
 type templateCache struct {
 	mu      sync.RWMutex
 	entries map[string]*templateEntry
 }
 
 type templateEntry struct {
-	layoutName string        // 布局模板名（如 "base.html"）
-	pageName   string        // 页面模板名（如 "index.html"）
-	tmpl       *templateTree // 已解析的模板树
+	layoutName string        // layout template name (e.g. "base.html")
+	pageName   string        // page template name (e.g. "index.html")
+	tmpl       *templateTree // parsed template tree
 }
 
-// New 创建生成器。srcDir 为 web-src 根目录，outDir 为输出目录，
-// langs 为语言列表（第一个为默认语言，输出到根路径，其余到 /{lang}/）。
+// nativeNames maps a language code to its native display name and short label.
+// Unknown codes fall back to the code itself for both fields (extensibility
+// without code changes).
+var nativeNames = map[string]struct{ Native, Short string }{
+	"zh-CN": {"中文", "中文"},
+	"en":    {"English", "EN"},
+	"ja":    {"日本語", "日本語"},
+	"es":    {"Español", "ES"},
+}
+
+// langInfo builds the LangInfo entry for a given language code and generator.
+func (g *Generator) langInfo(code string) LangInfo {
+	names := nativeNames[code]
+	native, short := names.Native, names.Short
+	if native == "" {
+		native = code
+	}
+	if short == "" {
+		short = code
+	}
+	return LangInfo{
+		Code:       code,
+		Prefix:     g.langPrefix(code),
+		NativeName: native,
+		ShortName:  short,
+	}
+}
+
+// buildLangs constructs the full []LangInfo list for PageData.
+func (g *Generator) buildLangs() []LangInfo {
+	infos := make([]LangInfo, 0, len(g.langs))
+	for _, code := range g.langs {
+		infos = append(infos, g.langInfo(code))
+	}
+	return infos
+}
+
+// New creates a generator. srcDir is the web-src root, outDir is the output
+// directory, langs is the language list (first is the default language,
+// output to the root path; the rest go to /{lang}/).
 func New(srcDir, outDir string, langs []string) (*Generator, error) {
 	if srcDir == "" {
-		return nil, fmt.Errorf("sitegen: 源目录不能为空")
+		return nil, fmt.Errorf("sitegen: source directory must not be empty")
 	}
 	if outDir == "" {
-		return nil, fmt.Errorf("sitegen: 输出目录不能为空")
+		return nil, fmt.Errorf("sitegen: output directory must not be empty")
 	}
 	if len(langs) == 0 {
 		langs = []string{"zh-CN"}
@@ -65,12 +108,12 @@ func New(srcDir, outDir string, langs []string) (*Generator, error) {
 		},
 	}
 
-	// 加载翻译文件
+	// Load translation files.
 	localesDir := filepath.Join(srcDir, "locales")
 	for _, lang := range langs {
 		t, err := LoadTranslations(localesDir, lang)
 		if err != nil {
-			return nil, fmt.Errorf("sitegen: 加载翻译 %s: %w", lang, err)
+			return nil, fmt.Errorf("sitegen: load translations %s: %w", lang, err)
 		}
 		g.translations[lang] = t
 	}
@@ -78,64 +121,64 @@ func New(srcDir, outDir string, langs []string) (*Generator, error) {
 	return g, nil
 }
 
-// Generate 执行完整生成：渲染所有语言×页面 → 输出 HTML + i18n.{lang}.js。
+// Generate runs the full generation: render all languages × pages → write HTML + i18n.{lang}.js.
 func (g *Generator) Generate() error {
-	// 1. 扫描所有页面
+	// 1. Discover all pages.
 	pages, err := g.discoverPages()
 	if err != nil {
-		return fmt.Errorf("sitegen: 扫描页面: %w", err)
+		return fmt.Errorf("sitegen: discover pages: %w", err)
 	}
 	if len(pages) == 0 {
-		return fmt.Errorf("sitegen: 未找到页面（在 %s/pages/）", g.srcDir)
+		return fmt.Errorf("sitegen: no pages found (in %s/pages/)", g.srcDir)
 	}
 
-	// 2. 扫描所有布局
+	// 2. Discover all layouts.
 	layouts, err := g.discoverLayouts()
 	if err != nil {
-		return fmt.Errorf("sitegen: 扫描布局: %w", err)
+		return fmt.Errorf("sitegen: discover layouts: %w", err)
 	}
 	if len(layouts) == 0 {
-		return fmt.Errorf("sitegen: 未找到布局（在 %s/layouts/）", g.srcDir)
+		return fmt.Errorf("sitegen: no layouts found (in %s/layouts/)", g.srcDir)
 	}
 
-	// 3. 确保输出目录存在
+	// 3. Ensure the output directory exists.
 	if err := os.MkdirAll(g.outDir, 0o755); err != nil {
-		return fmt.Errorf("sitegen: 创建输出目录: %w", err)
+		return fmt.Errorf("sitegen: create output directory: %w", err)
 	}
 
-	// 4. 遍历语言 × 页面，渲染输出
+	// 4. Iterate languages × pages, render and write output.
 	for _, lang := range g.langs {
 		langPrefix := g.langPrefix(lang)
 		outLangDir := g.outDir
 		if langPrefix != "" {
 			outLangDir = filepath.Join(g.outDir, langPrefix)
 			if err := os.MkdirAll(outLangDir, 0o755); err != nil {
-				return fmt.Errorf("sitegen: 创建语言目录 %s: %w", outLangDir, err)
+				return fmt.Errorf("sitegen: create language directory %s: %w", outLangDir, err)
 			}
 		}
 
 		for _, page := range pages {
 			html, err := g.renderPage(page, lang, layouts)
 			if err != nil {
-				return fmt.Errorf("sitegen: 渲染页面 %s [%s]: %w", page.name, lang, err)
+				return fmt.Errorf("sitegen: render page %s [%s]: %w", page.name, lang, err)
 			}
 
 			outPath := filepath.Join(outLangDir, page.name)
 			if err := os.WriteFile(outPath, html, 0o644); err != nil {
-				return fmt.Errorf("sitegen: 写入 %s: %w", outPath, err)
+				return fmt.Errorf("sitegen: write %s: %w", outPath, err)
 			}
 		}
 	}
 
-	// 5. 生成 i18n.{lang}.js（供运行时 JS 文案用）
+	// 5. Generate i18n.{lang}.js for runtime JS strings.
 	if err := g.GenerateI18nJS(g.outDir); err != nil {
-		return fmt.Errorf("sitegen: 生成 i18n JS: %w", err)
+		return fmt.Errorf("sitegen: generate i18n JS: %w", err)
 	}
 
 	return nil
 }
 
-// renderPage 渲染单个页面（指定语言），返回完整 HTML。
+// renderPage renders a single page (for the given language) and returns the full HTML.
 func (g *Generator) renderPage(page pageSource, lang string, layouts []string) ([]byte, error) {
 	layoutName := page.layout
 	if layoutName == "" {
@@ -144,7 +187,7 @@ func (g *Generator) renderPage(page pageSource, lang string, layouts []string) (
 		layoutName += ".html"
 	}
 
-	// 查找布局是否存在
+	// Check that the layout exists.
 	layoutFound := false
 	for _, l := range layouts {
 		if l == layoutName {
@@ -153,35 +196,38 @@ func (g *Generator) renderPage(page pageSource, lang string, layouts []string) (
 		}
 	}
 	if !layoutFound {
-		return nil, fmt.Errorf("布局 %s 不存在", layoutName)
+		return nil, fmt.Errorf("layout %s does not exist", layoutName)
 	}
 
-	// 获取或解析模板（缓存）
+	// Get or parse the template (cached).
 	tmpl, err := g.getOrParseTemplate(layoutName, page.name)
 	if err != nil {
 		return nil, err
 	}
 
-	// 构建模板数据
+	// Build the template data, including the page name and full language list
+	// for the language switcher and hreflang alternate links.
 	data := PageData{
 		Lang:       lang,
 		LangPrefix: g.langPrefix(lang),
+		Page:       page.name,
+		Langs:      g.buildLangs(),
 	}
 
-	// 创建绑定当前语言的 t 函数
+	// Create the t function bound to the current language.
 	tFunc := g.makeTFunc(lang)
 
-	// 用 bytes.Buffer 渲染（借鉴 rssyes renderTemplate 的性能优化）
+	// Render into a bytes.Buffer (perf pattern from rssyes renderTemplate).
 	var buf bytes.Buffer
 	if err := tmpl.execute(&buf, data, tFunc); err != nil {
-		return nil, fmt.Errorf("执行模板: %w", err)
+		return nil, fmt.Errorf("execute template: %w", err)
 	}
 
 	return buf.Bytes(), nil
 }
 
-// getOrParseTemplate 获取或解析布局+页面组合模板（带缓存）。
-// 借鉴 rssyes LoadTemplateWithLayout：缓存键 = layout+page。
+// getOrParseTemplate returns the parsed layout+page template tree, caching it.
+// Inspired by rssyes LoadTemplateWithLayout: cache key = layout+page.
 func (g *Generator) getOrParseTemplate(layoutName, pageName string) (*templateTree, error) {
 	cacheKey := layoutName + "+" + pageName
 
@@ -192,13 +238,13 @@ func (g *Generator) getOrParseTemplate(layoutName, pageName string) (*templateTr
 	}
 	g.tmplCache.mu.RUnlock()
 
-	// 解析布局 + 页面
+	// Parse layout + page.
 	layoutPath := filepath.Join(g.srcDir, "layouts", layoutName)
 	pagePath := filepath.Join(g.srcDir, "pages", pageName)
 
 	tmpl, err := parseTemplateTree(layoutPath, pagePath)
 	if err != nil {
-		return nil, fmt.Errorf("解析模板 %s+%s: %w", layoutName, pageName, err)
+		return nil, fmt.Errorf("parse template %s+%s: %w", layoutName, pageName, err)
 	}
 
 	g.tmplCache.mu.Lock()
@@ -212,30 +258,35 @@ func (g *Generator) getOrParseTemplate(layoutName, pageName string) (*templateTr
 	return tmpl, nil
 }
 
-// makeTFunc 创建绑定当前语言的翻译函数。
-// 缺 key 时回退默认语言，再回退返回 key 本身。
+// makeTFunc creates a translation function bound to the current language.
+// On a missing key it falls back to the default language's string, then to
+// the key itself. Each fallback path emits a stderr warning listing the
+// missing keys (aggregated per language per Generate run) so developers can
+// spot untranslated keys without the build failing.
 func (g *Generator) makeTFunc(lang string) func(string) string {
 	return func(key string) string {
-		// 当前语言
+		// Current language.
 		if vals, ok := g.translations[lang]; ok {
 			if v, ok := vals[key]; ok {
 				return v
 			}
 		}
-		// 回退默认语言
+		// Fall back to the default language.
 		if lang != g.defaultLang {
 			if vals, ok := g.translations[g.defaultLang]; ok {
 				if v, ok := vals[key]; ok {
+					log.Printf("sitegen: WARN missing i18n key %q in language %q, fell back to %q", key, lang, g.defaultLang)
 					return v
 				}
 			}
 		}
-		// 回退 key 本身
+		// Key missing in all languages: return the raw key and warn.
+		log.Printf("sitegen: WARN missing i18n key %q in ALL languages (including default %q), rendered raw key", key, g.defaultLang)
 		return key
 	}
 }
 
-// langPrefix 返回语言前缀：默认语言为 ""，其余为 "/{lang}"。
+// langPrefix returns the language prefix: "" for the default language, "/{lang}" otherwise.
 func (g *Generator) langPrefix(lang string) string {
 	if lang == g.defaultLang {
 		return ""
@@ -243,14 +294,14 @@ func (g *Generator) langPrefix(lang string) string {
 	return "/" + lang
 }
 
-// pageSource 描述一个页面源文件。
+// pageSource describes a single page source file.
 type pageSource struct {
-	name   string // 文件名（如 "index.html"）
-	layout string // 指定布局（空则默认 base.html）
+	name   string // file name (e.g. "index.html")
+	layout string // specified layout (empty defaults to base.html)
 }
 
-// discoverPages 扫描 pages/ 目录，返回所有 .html 页面。
-// 支持在页面文件首行用注释指定布局：<!-- layout: login -->。
+// discoverPages scans the pages/ directory and returns all .html pages.
+// A page may specify its layout via a comment on the first line: <!-- layout: login -->.
 func (g *Generator) discoverPages() ([]pageSource, error) {
 	pagesDir := filepath.Join(g.srcDir, "pages")
 	var pages []pageSource
@@ -269,7 +320,7 @@ func (g *Generator) discoverPages() ([]pageSource, error) {
 
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("读取页面 %s: %w", path, err)
+			return fmt.Errorf("read page %s: %w", path, err)
 		}
 
 		layout := extractLayoutHint(string(content))
@@ -282,7 +333,7 @@ func (g *Generator) discoverPages() ([]pageSource, error) {
 	return pages, nil
 }
 
-// discoverLayouts 扫描 layouts/ 目录，返回所有 .html 布局文件名。
+// discoverLayouts scans the layouts/ directory and returns all .html layout file names.
 func (g *Generator) discoverLayouts() ([]string, error) {
 	layoutsDir := filepath.Join(g.srcDir, "layouts")
 	var layouts []string
@@ -306,7 +357,7 @@ func (g *Generator) discoverLayouts() ([]string, error) {
 	return layouts, nil
 }
 
-// PageCount 返回已发现的页面数量（供 CLI 上报）。
+// PageCount returns the number of discovered pages (for CLI reporting).
 func (g *Generator) PageCount() (int, error) {
 	pages, err := g.discoverPages()
 	if err != nil {
@@ -315,8 +366,8 @@ func (g *Generator) PageCount() (int, error) {
 	return len(pages), nil
 }
 
-// extractLayoutHint 从页面内容首行提取布局指定。
-// 格式：<!-- layout: login -->（必须在前 200 字符内）。
+// extractLayoutHint extracts the layout directive from the page content.
+// Format: <!-- layout: login --> (must be within the first 200 characters).
 func extractLayoutHint(content string) string {
 	prefix := content
 	if len(prefix) > 200 {
