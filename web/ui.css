@@ -542,3 +542,67 @@ body {
 	text-align: center;
 	flex-shrink: 0;
 }
+
+/* ---- Language hint banner (client-side progressive enhancement) ----
+ * Inserted by mountLangHint() when browser language differs from the
+ * current page language and a matching site language exists.
+ * Pushes content down (in-flow, not overlay); no z-index competition.
+ * All colors from tokens — no hardcoded hex. */
+.lang-hint {
+	background: var(--bg-raise);
+	border-bottom: 1px solid var(--line);
+	overflow: hidden;
+	max-height: 0;
+	opacity: 0;
+	transition:
+		max-height 0.3s ease-out,
+		opacity 0.3s ease-out;
+	print-color-adjust: exact;
+}
+.lang-hint.lang-hint--open {
+	max-height: 4rem;
+	opacity: 1;
+}
+@media print {
+	.lang-hint {
+		display: none !important;
+	}
+}
+.lang-hint-icon {
+	color: var(--accent);
+}
+.lang-hint-text {
+	color: var(--text);
+}
+.lang-hint-action {
+	background: var(--accent-soft);
+	color: var(--accent-strong);
+	transition:
+		filter 0.15s ease,
+		background 0.15s ease;
+}
+.lang-hint-action:hover {
+	filter: brightness(1.15);
+	background: var(--accent-soft);
+}
+.lang-hint-action:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+.lang-hint-close {
+	color: var(--muted);
+	cursor: pointer;
+	transition: color 0.15s ease;
+}
+.lang-hint-close:hover {
+	color: var(--text);
+}
+.lang-hint-close:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+	.lang-hint {
+		transition: none;
+	}
+}

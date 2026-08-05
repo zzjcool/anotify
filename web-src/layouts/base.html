@@ -23,7 +23,7 @@
     {{end}}<link rel="alternate" hreflang="x-default" href="/{{$.Page}}" />
     {{end}}
   </head>
-  <body class="min-h-screen antialiased overflow-x-hidden">
+  <body class="min-h-screen antialiased overflow-x-hidden" data-page="{{.Page}}">
     <!-- 主内容（partials.js 会把它装进「侧栏 + 顶栏」布局） -->
     <!-- 页面 content block 含 <div id="page-main"> 及页级弹层等外部内容 -->
 {{block "content" .}}{{end}}

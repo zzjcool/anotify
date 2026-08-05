@@ -25,6 +25,25 @@ common:
     switcher_label: "切换语言"
     switcher_aria: "语言选择"
     current: "当前语言"
+    # Language hint banner — values are in the TARGET language,
+    # identical across all locale files so the banner is readable by
+    # the target user regardless of which language page they're on.
+    hint:
+      text:
+        "zh-CN": "本网站提供简体中文版本"
+        en: "This site is also available in English"
+        ja: "このサイトは日本語でもご利用いただけます"
+        es: "Este sitio también está disponible en español"
+      action:
+        "zh-CN": "切换到简体中文"
+        en: "Switch to English"
+        ja: "日本語に切り替える"
+        es: "Cambiar a español"
+      dismiss:
+        "zh-CN": "关闭语言提示"
+        en: "Dismiss language hint"
+        ja: "言語のヒントを閉じる"
+        es: "Cerrar el aviso de idioma"
   sidebar:
     deployment: "私有化部署 · 主工作台"
   footer:
