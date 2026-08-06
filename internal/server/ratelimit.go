@@ -106,13 +106,20 @@ func (g *pollGuard) allow(sessionID string) bool {
 	return true
 }
 
-// clientIP 从请求提取客户端 IP（优先 X-Forwarded-For 第一段，否则 RemoteAddr 主机部分）。
+// trustProxyHeaders 控制是否信任 X-Forwarded-For。默认 false（直连源站不可信），
+// 由 NewApp 根据 Config.TrustProxy 设置。仅在反代（cloudflared/nginx）后开启。
+var trustProxyHeaders bool
+
+// clientIP 从请求提取客户端 IP。
+// 默认用 RemoteAddr（去端口）；仅当 trustProxyHeaders=true 时取 X-Forwarded-For 第一段。
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+	if trustProxyHeaders {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if i := strings.Index(xff, ","); i >= 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return strings.TrimSpace(xff)
 		}
-		return strings.TrimSpace(xff)
 	}
 	host := r.RemoteAddr
 	if i := strings.LastIndex(host, ":"); i >= 0 {

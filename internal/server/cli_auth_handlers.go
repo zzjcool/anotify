@@ -150,7 +150,7 @@ func (h *cliAuthHandler) approve(w http.ResponseWriter, r *http.Request, id stri
 	}
 	err := h.mgr.Approve(id, uid, req.Scopes)
 	if err != nil {
-		writeApproveErr(w, err)
+		h.writeApproveErr(w, r, id, err)
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthApproved})
@@ -160,7 +160,7 @@ func (h *cliAuthHandler) approve(w http.ResponseWriter, r *http.Request, id stri
 func (h *cliAuthHandler) deny(w http.ResponseWriter, r *http.Request, id string) {
 	err := h.mgr.Deny(id)
 	if err != nil {
-		writeApproveErr(w, err)
+		h.writeApproveErr(w, r, id, err)
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthDenied})
@@ -295,14 +295,19 @@ func toSessionView(s *store.CliAuthSession) sessionView {
 	}
 }
 
-func writeApproveErr(w http.ResponseWriter, err error) {
+func (h *cliAuthHandler) writeApproveErr(w http.ResponseWriter, r *http.Request, id string, err error) {
 	if errors.Is(err, auth.ErrInvalidParam) {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	if errors.Is(err, auth.ErrAlreadyTerminal) {
-		// 终态冲突：返回当前状态
-		writeJSON(w, 409, map[string]string{"status": "terminal"})
+		// 终态冲突：重新查询当前状态并返回真实 status（而非写死 "terminal"）。
+		s, fetchErr := h.mgr.GetByID(id)
+		if fetchErr != nil {
+			writeErr(w, 404, "授权会话不存在或已过期")
+			return
+		}
+		writeJSON(w, 409, map[string]string{"status": s.Status})
 		return
 	}
 	writeErr(w, 500, err.Error())

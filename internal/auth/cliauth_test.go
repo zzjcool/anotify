@@ -405,3 +405,75 @@ func TestFormatUserCode(t *testing.T) {
 		t.Errorf("FormatUserCode lowercase got %q want K7QX-3F9M", got)
 	}
 }
+
+// TestCliAuth_UserCodeUniqueRetry 验证短码 UNIQUE 冲突时重试成功。
+// 通过注入 codeGen 让前两次返回已占用的码，第三次返回新码，验证重试逻辑生效。
+func TestCliAuth_UserCodeUniqueRetry(t *testing.T) {
+	db, _ := newCliAuthTestDB(t)
+	clock := &fakeClock{t: time.Now()}
+	m := newCliAuthManagerWithClock(db, clock)
+
+	// 先插入一个会话占据码 "COLLIDE1"
+	pre := &store.CliAuthSession{
+		ID:              "cas_preexist",
+		SecretHash:      "hash",
+		UserCode:        "COLLIDE1",
+		DeviceName:      "pre",
+		ScopesRequested: []string{ScopeNotifySend},
+		Status:          store.CliAuthPending,
+		CreatedAt:       1000,
+		ExpiresAt:       1600,
+	}
+	if err := db.CreateCliAuthSession(pre); err != nil {
+		t.Fatalf("seed pre-existing session: %v", err)
+	}
+
+	// 注入 codeGen：前两次返回已占用的码，第三次返回唯一码
+	calls := 0
+	m.SetCodeGenerator(func() (string, error) {
+		calls++
+		if calls <= 2 {
+			return "COLLIDE1", nil // 已被占用
+		}
+		return "UNIQUE000", nil
+	})
+
+	created, err := m.CreateSession("retry-test", []string{ScopeNotifySend})
+	if err != nil {
+		t.Fatalf("CreateSession with collision retry: %v", err)
+	}
+	if created.UserCode != "UNIQUE000" {
+		t.Errorf("UserCode got %q want UNIQUE000（第三次重试成功）", created.UserCode)
+	}
+	if calls != 3 {
+		t.Errorf("codeGen 调用次数 got %d want 3（前两次冲突，第三次成功）", calls)
+	}
+}
+
+// TestCliAuth_UserCodeRetryExhausted 验证连续 5 次冲突后报错。
+func TestCliAuth_UserCodeRetryExhausted(t *testing.T) {
+	db, _ := newCliAuthTestDB(t)
+	clock := &fakeClock{t: time.Now()}
+	m := newCliAuthManagerWithClock(db, clock)
+
+	// 注入永远冲突的 codeGen
+	m.SetCodeGenerator(func() (string, error) {
+		return "ALWAYSDUP", nil
+	})
+
+	// 先插入一个占据 ALWAYSDUP 的会话
+	pre := &store.CliAuthSession{
+		ID: "cas_block", SecretHash: "h", UserCode: "ALWAYSDUP",
+		DeviceName: "block", ScopesRequested: []string{ScopeNotifySend},
+		Status: store.CliAuthPending, CreatedAt: 1000, ExpiresAt: 1600,
+	}
+	db.CreateCliAuthSession(pre)
+
+	_, err := m.CreateSession("exhaust-test", []string{ScopeNotifySend})
+	if err == nil {
+		t.Fatal("连续冲突应报错，但 CreateSession 成功了")
+	}
+	if !strings.Contains(err.Error(), "冲突超过重试上限") {
+		t.Errorf("错误信息应含「冲突超过重试上限」, got %v", err)
+	}
+}

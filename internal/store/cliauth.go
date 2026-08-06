@@ -5,7 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
+
+// ErrDuplicateUserCode 表示插入授权会话时短码 UNIQUE 约束冲突。
+// 调用方应据此重试生成新短码，而非向用户报错。
+var ErrDuplicateUserCode = errors.New("store: user_code 唯一冲突")
+
+// isUniqueConstraintError 判断底层驱动错误是否为 UNIQUE 约束冲突。
+// modernc.org/sqlite 的错误信息含 "UNIQUE constraint failed"。
+func isUniqueConstraintError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
 
 // CLI 授权会话状态常量。
 const (
@@ -63,6 +74,9 @@ func (d *DB) CreateCliAuthSession(s *CliAuthSession) error {
 		s.Status, userID, keyID, s.CreatedAt, s.ExpiresAt, s.ConsumedAt,
 	)
 	if err != nil {
+		if isUniqueConstraintError(err) {
+			return ErrDuplicateUserCode
+		}
 		return fmt.Errorf("create cli_auth_session: %w", err)
 	}
 	return nil

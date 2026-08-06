@@ -82,7 +82,7 @@
 1. **授权会话生命周期 API**
    - `POST` 建会话：脚本携带设备名（hostname）、申请 scope 列表 → 返回 `sessionId` / `secret` / `userCode` / `authUrl` / `pollInterval` / `expiresAt`（TTL 10 分钟）
    - `GET .../qr.txt`：返回 ASCII 文本二维码（内容 = `authUrl`），供脚本直接打印到终端
-   - `POST` 轮询：脚本带 `sessionId` + `secret` 轮询；状态机：`pending` → `approved` →（首次有效 poll 时事务内建 Key、明文一次性下发）→ `consumed`；另有 `denied` / `expired`
+   - `GET` 轮询：脚本带 `sessionId` + `secret`（query 参数）轮询；状态机：`pending` → `approved` →（首次有效 poll 时事务内建 Key、明文一次性下发）→ `consumed`；另有 `denied` / `expired`
    - 确认页相关端点：按 sessionId 或 userCode 查询会话详情（设备名、申请 scope）供确认页渲染；批准 / 拒绝端点（需登录会话）
 2. **授权确认页**（新前端页面，走现有 sitegen 体系：web-src/pages + locales 双语）
    - 三条入口汇入同一个确认页（见 3.1-B）

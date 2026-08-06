@@ -90,6 +90,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	sessMW := authSvc.Sessions().Middleware
 
+	// 限速器信任代理头开关（仅在反代后开启）
+	trustProxyHeaders = cfg.TrustProxy
+
 	// 启动时已存在的用户先各起一个 push 消费者
 	if dm != nil {
 		dm.StartExisting()

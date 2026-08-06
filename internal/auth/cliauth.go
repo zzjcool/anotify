@@ -51,7 +51,8 @@ type CreatedCliAuthSession struct {
 type CliAuthManager struct {
 	db      *store.DB
 	ttl     time.Duration
-	timeNow func() time.Time // 可注入时钟，便于测试 TTL 边界
+	timeNow func() time.Time       // 可注入时钟，便于测试 TTL 边界
+	codeGen func() (string, error) // 可注入短码生成器，便于测试重试
 }
 
 // NewCliAuthManager 构造 CliAuthManager。ttl≤0 时用默认 10 分钟。
@@ -59,12 +60,17 @@ func NewCliAuthManager(db *store.DB, ttl time.Duration) *CliAuthManager {
 	if ttl <= 0 {
 		ttl = cliAuthTTL
 	}
-	return &CliAuthManager{db: db, ttl: ttl, timeNow: time.Now}
+	return &CliAuthManager{db: db, ttl: ttl, timeNow: time.Now, codeGen: generateUserCode}
 }
 
 // SetClock 注入时钟函数（测试用）。
 func (m *CliAuthManager) SetClock(f func() time.Time) {
 	m.timeNow = f
+}
+
+// SetCodeGenerator 注入短码生成器（测试用，用于模拟 UNIQUE 冲突重试）。
+func (m *CliAuthManager) SetCodeGenerator(f func() (string, error)) {
+	m.codeGen = f
 }
 
 // CreateSession 建立一个授权会话。
@@ -89,26 +95,37 @@ func (m *CliAuthManager) CreateSession(deviceName string, scopes []string) (*Cre
 		return nil, err
 	}
 
-	// 生成 userCode（UNIQUE 冲突重试 ≤5 次）。
-	userCode, err := m.generateUniqueUserCode()
-	if err != nil {
-		return nil, err
-	}
-
 	sessionID := store.NewCliAuthID()
 
-	sess := &store.CliAuthSession{
-		ID:              sessionID,
-		SecretHash:      secretHash,
-		UserCode:        userCode,
-		DeviceName:      deviceName,
-		ScopesRequested: scopes,
-		Status:          store.CliAuthPending,
-		CreatedAt:       nowUnix,
-		ExpiresAt:       expiresAt,
-	}
-	if err := m.db.CreateCliAuthSession(sess); err != nil {
+	// 生成 userCode 并插入（遇 UNIQUE 冲突重试 ≤5 次，采用插入时捕获冲突而非先查后插，消除 TOCTOU）。
+	var userCode string
+	for attempt := 0; attempt < 5; attempt++ {
+		code, err := m.codeGen()
+		if err != nil {
+			return nil, err
+		}
+		sess := &store.CliAuthSession{
+			ID:              sessionID,
+			SecretHash:      secretHash,
+			UserCode:        code,
+			DeviceName:      deviceName,
+			ScopesRequested: scopes,
+			Status:          store.CliAuthPending,
+			CreatedAt:       nowUnix,
+			ExpiresAt:       expiresAt,
+		}
+		err = m.db.CreateCliAuthSession(sess)
+		if err == nil {
+			userCode = code
+			break
+		}
+		if errors.Is(err, store.ErrDuplicateUserCode) {
+			continue // 短码冲突，重新生成
+		}
 		return nil, fmt.Errorf("auth: 建会话失败: %w", err)
+	}
+	if userCode == "" {
+		return nil, errors.New("auth: userCode 生成冲突超过重试上限")
 	}
 
 	// 惰性清理过期会话（删除 1 小时前过期的记录）。
@@ -348,26 +365,6 @@ func generateUserCode() (string, error) {
 		out[i] = userCodeCharset[int(b)%len(userCodeCharset)]
 	}
 	return string(out), nil
-}
-
-// generateUniqueUserCode 生成短码，遇 UNIQUE 冲突重试。
-func (m *CliAuthManager) generateUniqueUserCode() (string, error) {
-	for i := 0; i < 5; i++ {
-		code, err := generateUserCode()
-		if err != nil {
-			return "", err
-		}
-		// 检查是否已存在。
-		_, err = m.db.GetCliAuthSessionByCode(code)
-		if errors.Is(err, store.ErrNotFound) {
-			return code, nil // 唯一
-		}
-		if err != nil {
-			return "", err
-		}
-		// 冲突，重试。
-	}
-	return "", errors.New("auth: userCode 生成冲突超过重试上限")
 }
 
 // verifySecret 常量时间校验 secret（sha256 后比对 hex）。

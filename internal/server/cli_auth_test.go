@@ -263,11 +263,19 @@ func TestCliAuthApproveSubset(t *testing.T) {
 		t.Errorf("status=%v want approved", m["status"])
 	}
 
-	// 重复批准（已 approved）→ 409
+	// 重复批准（已 approved）→ 409，响应体含真实 status
 	rr4 := doReq(t, env, "POST", "/v1/cli-auth/sessions/"+created.sessionID+"/approve",
 		map[string]any{"scopes": []string{"notify:send"}}, true)
 	if rr4.Code != 409 {
 		t.Errorf("重复批准应 409, got %d", rr4.Code)
+	}
+	m4 := decodeBody(t, rr4)
+	// 409 响应体 status 应为真实状态（approved），而非写死的 "terminal"
+	if m4["status"] == "terminal" {
+		t.Errorf("409 status 不应为写死的 \"terminal\"，应返回真实状态")
+	}
+	if m4["status"] != store.CliAuthApproved {
+		t.Errorf("409 status=%v want %q（真实状态）", m4["status"], store.CliAuthApproved)
 	}
 }
 
@@ -487,6 +495,65 @@ func TestPollRateLimit(t *testing.T) {
 	rr2 := doReq(t, env, "GET", "/v1/cli-auth/sessions/"+created.sessionID+"/poll?secret="+created.secret, nil, false)
 	if rr2.Code != 429 {
 		t.Errorf("过快 poll 应 429, got %d (第一次=%d)", rr2.Code, rr1.Code)
+	}
+}
+
+// TestCliAuthApprove409RealStatus 终态冲突的 409 响应体携带真实当前状态。
+// deny 一个已 consumed 的会话 → 409 body.status == "consumed"。
+func TestCliAuthApprove409RealStatus(t *testing.T) {
+	env := newCliAuthTestEnv(t)
+	created := createSessionHelper(t, env)
+
+	// 批准 → poll 领证（会话变 consumed）
+	_ = doReq(t, env, "POST", "/v1/cli-auth/sessions/"+created.sessionID+"/approve",
+		map[string]any{"scopes": []string{"notify:send"}}, true)
+	time.Sleep(2200 * time.Millisecond)
+	_ = doReq(t, env, "GET", "/v1/cli-auth/sessions/"+created.sessionID+"/poll?secret="+created.secret, nil, false)
+
+	// consumed 后 deny → 409 body.status == "consumed"
+	time.Sleep(2200 * time.Millisecond)
+	rr := doReq(t, env, "POST", "/v1/cli-auth/sessions/"+created.sessionID+"/deny", nil, true)
+	if rr.Code != 409 {
+		t.Fatalf("consumed 后 deny 应 409, got %d", rr.Code)
+	}
+	m := decodeBody(t, rr)
+	if m["status"] == "terminal" {
+		t.Errorf("409 status 不应为写死的 \"terminal\"")
+	}
+	if m["status"] != store.CliAuthConsumed {
+		t.Errorf("409 status=%v want %q（真实 consumed 状态）", m["status"], store.CliAuthConsumed)
+	}
+}
+
+// TestClientIPTrustProxy 验证 XFF 信任开关：默认关闭用 RemoteAddr，开启后用 XFF。
+func TestClientIPTrustProxy(t *testing.T) {
+	// 保存并恢复全局状态
+	old := trustProxyHeaders
+	t.Cleanup(func() { trustProxyHeaders = old })
+
+	// 默认关闭：伪造 XFF 不生效，用 RemoteAddr
+	trustProxyHeaders = false
+	r := httptest.NewRequest("POST", "/", nil)
+	r.RemoteAddr = "203.0.113.1:54321"
+	r.Header.Set("X-Forwarded-For", "198.51.100.99")
+	if got := clientIP(r); got != "203.0.113.1" {
+		t.Errorf("trustProxy=false 时应用 RemoteAddr, got %q want 203.0.113.1", got)
+	}
+
+	// 开启：XFF 生效
+	trustProxyHeaders = true
+	r2 := httptest.NewRequest("POST", "/", nil)
+	r2.RemoteAddr = "203.0.113.1:54321"
+	r2.Header.Set("X-Forwarded-For", "198.51.100.99, 10.0.0.1")
+	if got := clientIP(r2); got != "198.51.100.99" {
+		t.Errorf("trustProxy=true 时应用 XFF 第一段, got %q want 198.51.100.99", got)
+	}
+
+	// 开启但无 XFF → 回退 RemoteAddr
+	r3 := httptest.NewRequest("POST", "/", nil)
+	r3.RemoteAddr = "203.0.113.2:9999"
+	if got := clientIP(r3); got != "203.0.113.2" {
+		t.Errorf("trustProxy=true 但无 XFF 应回退 RemoteAddr, got %q want 203.0.113.2", got)
 	}
 }
 

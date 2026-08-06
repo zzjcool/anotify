@@ -55,7 +55,7 @@ async function pollSafe(server, sid, secret, extraMs = 300) {
 
 async function main() {
 	console.log("=== SUITE: cli_auth（CLI 设备授权全链路）===");
-	const server = await H.startServer({ rpId: "localhost" });
+	const server = await H.startServer({ rpId: "localhost", extraEnv: { ANOTIFY_TRUST_PROXY: "1" } });
 	const seedData = H.seed(server.dbPath, "cliuser");
 	const { session } = seedData;
 
@@ -226,18 +226,22 @@ async function main() {
 		H.check("AC-15 denied 不发 Key", !p.json.apiKey, `got apiKey=${p.json.apiKey}`);
 	}
 
-	// AC-16 重复 approve/deny 幂等（终态 409）
+	// AC-16 重复 approve/deny 幂等（终态 409，body.status 为真实状态）
 	{
-		// sess1 已 consumed → approve/deny 应 409
-		const ap = await approve(server, session, sess1.json.sessionId, ["notify:send"]);
-		H.eq("AC-16 consumed 后 approve → 409", ap.status, 409);
-		const d = await H.req(server.base, `/v1/cli-auth/sessions/${sess1.json.sessionId}/deny`, { method: "POST", session });
-		H.eq("AC-16 consumed 后 deny → 409", d.status, 409);
-		// denied 会话再 approve → 409
+		// sess1 已 consumed → approve/deny 应 409，body.status == consumed
+		const ap1 = await approve(server, session, sess1.json.sessionId, ["notify:send"]);
+		H.eq("AC-16 consumed 后 approve → 409", ap1.status, 409);
+		H.check("AC-16 409 body.status 为真实状态（非 terminal）", ap1.json.status !== "terminal", `status=${ap1.json.status}`);
+		H.eq("AC-16 409 body.status == consumed", ap1.json.status, "consumed");
+		const d1 = await H.req(server.base, `/v1/cli-auth/sessions/${sess1.json.sessionId}/deny`, { method: "POST", session });
+		H.eq("AC-16 consumed 后 deny → 409", d1.status, 409);
+		H.eq("AC-16 deny 409 body.status == consumed", d1.json.status, "consumed");
+		// denied 会话再 approve → 409，body.status == denied
 		const s16 = await createSession(server, { deviceName: "idem", scopes: ["notify:send"] });
 		await H.req(server.base, `/v1/cli-auth/sessions/${s16.json.sessionId}/deny`, { method: "POST", session });
 		const ap2 = await approve(server, session, s16.json.sessionId, ["notify:send"]);
 		H.eq("AC-16 denied 后 approve → 409", ap2.status, 409);
+		H.eq("AC-16 409 body.status == denied", ap2.json.status, "denied");
 	}
 
 	// ============================================================

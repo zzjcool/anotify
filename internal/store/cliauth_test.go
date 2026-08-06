@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 )
 
@@ -262,14 +263,18 @@ func TestCliAuthSession_UserCodeUnique(t *testing.T) {
 		t.Fatalf("create s1: %v", err)
 	}
 
-	// 重复 userCode 应报错
+	// 重复 userCode 应返回 ErrDuplicateUserCode（可判别的 typed error）
 	s2 := &CliAuthSession{
 		ID: "cas_dup2", SecretHash: "h", UserCode: "UNIQ0001",
 		DeviceName: "dev2", ScopesRequested: []string{"notify:send"},
 		Status: CliAuthPending, CreatedAt: 1000, ExpiresAt: 1600,
 	}
-	if err := db.CreateCliAuthSession(s2); err == nil {
+	err := db.CreateCliAuthSession(s2)
+	if err == nil {
 		t.Errorf("重复 userCode 应报 UNIQUE 约束错误")
+	}
+	if !errors.Is(err, ErrDuplicateUserCode) {
+		t.Errorf("重复 userCode 应返回 ErrDuplicateUserCode, got %v", err)
 	}
 }
 
