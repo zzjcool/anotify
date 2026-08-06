@@ -18,6 +18,7 @@ type Config struct {
 	RPDisplay   string // WebAuthn Relying Party 显示名
 	RPID        string // WebAuthn RP ID（域名）
 	RPOrigin    string // WebAuthn Origin（含协议）
+	TrustProxy  bool   // 信任 X-Forwarded-For（仅在反代 cloudflared/nginx 后开启）
 }
 
 // FromEnv 从环境变量加载配置。
@@ -35,6 +36,7 @@ func FromEnv() Config {
 		RPDisplay:   get("ANOTIFY_RP_DISPLAY", "Anotify"),
 		RPID:        get("ANOTIFY_RP_ID", "localhost"),
 		RPOrigin:    get("ANOTIFY_RP_ORIGIN", "http://localhost:8080"),
+		TrustProxy:  get("ANOTIFY_TRUST_PROXY", "") != "",
 	}
 }
 

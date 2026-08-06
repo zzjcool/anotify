@@ -44,12 +44,32 @@
                 {{t "keys.desc_suffix"}}
               </p>
             </div>
-            <button
-              onclick="openCreate()"
-              class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-            >
-              + {{t "keys.create_button"}}
-            </button>
+            <div class="flex flex-wrap items-center gap-3">
+              <a
+                href="cli-auth.html"
+                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
+              >
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M4 17l6-6-6-6" />
+                  <path d="M12 19h8" />
+                </svg>
+                {{t "keys.cli_auth_entry"}}
+              </a>
+              <button
+                onclick="openCreate()"
+                class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+              >
+                + {{t "keys.create_button"}}
+              </button>
+            </div>
           </div>
         </div>
 

@@ -66,19 +66,34 @@ func scopeLabel(scopes []string) string {
 	}
 }
 
+// validScope 判断是否为已知合法 scope。
+func validScope(s string) bool {
+	switch s {
+	case ScopeNotifySend, ScopeNotifyReceive, ScopeDevicesRead:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateScopes 校验 scope 列表非空且全部合法，返回错误描述具体问题。
+func validateScopes(scopes []string) error {
+	if len(scopes) == 0 {
+		return errors.New("auth: 至少需要一个 scope")
+	}
+	for _, s := range scopes {
+		if !validScope(s) {
+			return fmt.Errorf("auth: 未知 scope %q", s)
+		}
+	}
+	return nil
+}
+
 // CreateKey 签发一个 API Key。
 // 返回完整明文 Key（仅此一次，调用方负责一次性展示）与持久化记录（不含明文）。
 func (m *KeyManager) CreateKey(userID, name string, scopes []string) (plaintext string, record *store.APIKey, err error) {
-	if len(scopes) == 0 {
-		return "", nil, errors.New("auth: 至少需要一个 scope")
-	}
-	// 校验 scope 合法。
-	for _, s := range scopes {
-		switch s {
-		case ScopeNotifySend, ScopeNotifyReceive, ScopeDevicesRead:
-		default:
-			return "", nil, fmt.Errorf("auth: 未知 scope %q", s)
-		}
+	if err := validateScopes(scopes); err != nil {
+		return "", nil, err
 	}
 	raw := make([]byte, keyRandomLen)
 	if _, err := rand.Read(raw); err != nil {

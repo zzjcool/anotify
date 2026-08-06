@@ -34,3 +34,4 @@ func NewMessageID() string { return newID("ntf") }
 func NewDeviceID() string  { return newID("dev") }
 func NewSessionID() string { return newID("sess") }
 func NewEventID() string   { return newID("evt") }
+func NewCliAuthID() string { return newID("cas") }

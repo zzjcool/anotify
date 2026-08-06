@@ -52,6 +52,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 	keyValidator := asKeyValidator(authSvc.Keys())
 
+	// 3.5 CLI 设备授权管理器
+	cliAuthMgr := auth.NewCliAuthManager(db, 0)
+
 	// 4. Web Push 派发器（后台 goroutine，动态按需为每个用户启动消费）
 	var dm *dispatchManager
 	vapidCfg, vapidErr := push.LoadVAPID()
@@ -75,7 +78,20 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	notifsH := &notificationsHandler{bk: bk, db: db}
 	statsH := &statsHandler{db: db}
 
+	// 静态文件系统（供 /agent-login.sh 分发；dev 模式用本地目录，否则 embed）
+	cliAuthStaticFS := resolveStaticFS(cfg)
+	cliAuthH := &cliAuthHandler{
+		mgr:      cliAuthMgr,
+		keys:     authSvc.Keys(),
+		keysV:    keyValidator,
+		db:       db,
+		staticFS: cliAuthStaticFS,
+	}
+
 	sessMW := authSvc.Sessions().Middleware
+
+	// 限速器信任代理头开关（仅在反代后开启）
+	trustProxyHeaders = cfg.TrustProxy
 
 	// 启动时已存在的用户先各起一个 push 消费者
 	if dm != nil {
@@ -110,6 +126,31 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/notifications", noStore(sessMW(notifsH)))
 	mux.Handle("/v1/notifications/", noStore(sessMW(notifsH)))
 	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
+
+	// --- CLI 设备授权 ---
+	// 匿名端点（无鉴权）
+	mux.Handle("POST /v1/cli-auth/sessions", noStore(http.HandlerFunc(cliAuthH.create)))
+	mux.Handle("GET /v1/cli-auth/sessions/{id}/poll", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cliAuthH.poll(w, r, r.PathValue("id"))
+	})))
+	mux.Handle("GET /v1/cli-auth/sessions/{id}/qr.txt", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cliAuthH.qr(w, r, r.PathValue("id"))
+	})))
+	// 需登录会话（Cookie）
+	mux.Handle("GET /v1/cli-auth/sessions/by-code", noStore(sessMW(http.HandlerFunc(cliAuthH.byCode))))
+	mux.Handle("GET /v1/cli-auth/sessions/{id}", noStore(sessMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cliAuthH.get(w, r, r.PathValue("id"))
+	}))))
+	mux.Handle("POST /v1/cli-auth/sessions/{id}/approve", noStore(sessMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cliAuthH.approve(w, r, r.PathValue("id"))
+	}))))
+	mux.Handle("POST /v1/cli-auth/sessions/{id}/deny", noStore(sessMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cliAuthH.deny(w, r, r.PathValue("id"))
+	}))))
+	// Key 自检（Bearer）
+	mux.Handle("GET /v1/keys/self", noStore(http.HandlerFunc(cliAuthH.keysSelf)))
+	// 登录脚本分发（匿名）
+	mux.Handle("GET /agent-login.sh", http.HandlerFunc(cliAuthH.agentLoginScript))
 
 	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

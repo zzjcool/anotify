@@ -9,7 +9,7 @@ info:
       - Bearer API Key（Agent 上报 / 接收端长连接），Key 仅存哈希，带 scope
 servers:
   - url: /v1
-tags: [auth, keys, devices, notify, notifications, stream]
+tags: [auth, keys, devices, notify, notifications, stream, cli-auth]
 
 paths:
   /auth/register/options:
@@ -224,9 +224,223 @@ paths:
       responses:
         "101": { description: Switching Protocols }
 
+  /cli-auth/sessions:
+    post:
+      tags: [cli-auth]
+      summary: 创建 CLI 设备授权会话（匿名，IP 限速 10/min）
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceName, scopes]
+              properties:
+                deviceName:
+                  { type: string, description: 设备名（hostname），≤64 字符 }
+                scopes:
+                  { type: array, items: { type: string }, description: 请求的 scope 列表 }
+      responses:
+        "200":
+          description: 会话创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string }
+                  secret: { type: string, description: 轮询凭证（仅此一次返回，不进 URL） }
+                  userCode: { type: string, description: 8 位短码 XXXX-XXXX }
+                  authUrl: { type: string, description: 授权链接 }
+                  pollInterval: { type: integer, default: 2 }
+                  expiresAt: { type: integer }
+                  scopes: { type: array, items: { type: string } }
+        "400":
+          $ref: '#/components/responses/Error'
+        "429":
+          description: 限速
+
+  /cli-auth/sessions/{id}:
+    get:
+      tags: [cli-auth]
+      summary: 查询授权会话信息（需登录 Cookie）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 会话信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string }
+                  deviceName: { type: string }
+                  requestedScopes: { type: array, items: { type: string } }
+                  status:
+                    { type: string, enum: [pending, approved, consumed, denied, expired] }
+                  createdAt: { type: integer }
+                  expiresAt: { type: integer }
+        "404":
+          description: 会话不存在或已过期
+
+  /cli-auth/sessions/by-code:
+    get:
+      tags: [cli-auth]
+      summary: 按短码查询会话（需登录 Cookie，按用户限速 20/min）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, description: 8 位短码，大小写不敏感、容忍连字符 }
+      responses:
+        "200":
+          description: 会话信息（同 /cli-auth/sessions/{id}）
+        "404":
+          description: 会话不存在或已过期
+        "429":
+          description: 限速
+
+  /cli-auth/sessions/{id}/approve:
+    post:
+      tags: [cli-auth]
+      summary: 批准授权（需登录 Cookie）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopes]
+              properties:
+                scopes:
+                  { type: array, items: { type: string }, description: 授予的 scope（必须 ⊆ requestedScopes） }
+      responses:
+        "200":
+          description: 批准成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: approved }
+        "400":
+          $ref: '#/components/responses/Error'
+        "409":
+          description: 终态冲突（会话不在 pending 状态）
+
+  /cli-auth/sessions/{id}/deny:
+    post:
+      tags: [cli-auth]
+      summary: 拒绝授权（需登录 Cookie）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 拒绝成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: denied }
+        "409":
+          description: 终态冲突
+
+  /cli-auth/sessions/{id}/poll:
+    get:
+      tags: [cli-auth]
+      summary: 轮询会话状态（匿名，secret 门控）
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: secret
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 轮询结果（status 可为 pending/approved/denied/expired/consumed）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    { type: string, enum: [pending, approved, denied, expired, consumed] }
+                  apiKey:
+                    { type: string, description: 仅 approved 时一次性返回明文 Key }
+                  keyId: { type: string }
+                  name: { type: string }
+                  scopes: { type: array, items: { type: string } }
+        "401":
+          description: secret 无效
+        "404":
+          description: 会话不存在
+        "429":
+          description: 轮询过快
+
+  /cli-auth/sessions/{id}/qr.txt:
+    get:
+      tags: [cli-auth]
+      summary: 获取 ASCII 二维码（匿名，IP 限速 30/min）
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ASCII 半块字符二维码（内容=authUrl）
+          content:
+            text/plain:
+              schema: { type: string }
+        "404":
+          description: 会话不存在
+
+  /keys/self:
+    get:
+      tags: [keys]
+      summary: Key 自检（Bearer，任何有效 Key）
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Key 信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  prefix: { type: string }
+                  scopes: { type: array, items: { type: string } }
+        "401":
+          $ref: '#/components/responses/Error'
+
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: APIKey }
+    cookieAuth: { type: apiKey, in: cookie, name: anotify_session }
   schemas:
     DeviceUpsert:
       type: object
