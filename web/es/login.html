@@ -480,7 +480,10 @@
           hideStatus();
           if (!webauthnOK) {
             showStatus(
-              "当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。",
+              t(
+                "login.status.unsupported",
+                "当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。",
+              ),
               "error",
             );
             return;
