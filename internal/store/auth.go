@@ -144,7 +144,14 @@ func (d *DB) ListPasskeysByUser(userID string) ([]*Passkey, error) {
 		p.BackupEligible = be != 0
 		out = append(out, &p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 空列表返回空切片而非 nil，避免前端误判「未连接」进 demo 模式（AGENTS.md 第 3 节）。
+	if out == nil {
+		out = []*Passkey{}
+	}
+	return out, nil
 }
 
 // GetPasskeyByID 按 credential id 查凭证。
@@ -167,6 +174,34 @@ func (d *DB) GetPasskeyByID(id string) (*Passkey, error) {
 	}
 	p.BackupEligible = be != 0
 	return &p, nil
+}
+
+// RenamePasskey 重命名凭证（仅改 name，不动 sign_count/transports/backup 等）。
+// 不存在的凭证返回 ErrNotFound，由上层转 404。
+func (d *DB) RenamePasskey(id string, name string) error {
+	res, err := d.Exec(`UPDATE passkeys SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return fmt.Errorf("rename passkey: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeletePasskey 删除一个凭证。
+// 不存在的凭证返回 ErrNotFound，由上层转 404（也可由上层幂等忽略）。
+func (d *DB) DeletePasskey(id string) error {
+	res, err := d.Exec(`DELETE FROM passkeys WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete passkey: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UpdatePasskeySignCount 更新签名计数与最近使用时间（防重放）。

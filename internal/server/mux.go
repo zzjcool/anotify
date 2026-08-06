@@ -105,6 +105,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 注意 Go 1.22+ ServeMux 最长模式优先，/v1/auth/me 与 /v1/auth/sessions 会优先于 /v1/auth/。
 	mux.Handle("/v1/auth/me", noStore(sessMW(http.HandlerFunc(authH.me))))
 	mux.Handle("/v1/auth/sessions", noStore(sessMW(http.HandlerFunc(authH.sessions))))
+	// Passkey 管理端点（需登录会话）：列表 / 补建凭证 / 重命名 / 删除。
+	// 独立于 /v1/auth/ 兜底注册，确保走 sessMW 鉴权（否则返回 401 而非 404）。
+	mux.Handle("/v1/auth/passkeys", noStore(sessMW(http.HandlerFunc(authH.passkeysRoot))))
+	mux.Handle("/v1/auth/passkeys/", noStore(sessMW(http.HandlerFunc(authH.passkeysItem))))
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
 	// Agent 上报（Bearer Key，内部自校验）
 	mux.Handle("/v1/notify", noStore(notifyH))

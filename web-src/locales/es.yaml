@@ -49,10 +49,10 @@ common:
     never: Nunca usado
     weeks_ago: hace {n} sem
   ttl:
-    day: '{n} d'
-    hour: '{n} h'
-    minute: '{n} min'
-    second: '{n} s'
+    day: "{n} d"
+    hour: "{n} h"
+    minute: "{n} min"
+    second: "{n} s"
   status:
     success: Éxito
     error: Error
@@ -102,7 +102,7 @@ index:
     morning: Buenos días
     afternoon: Buenas tardes
     evening: Buenas noches
-    with_name: '{greeting}, {name}'
+    with_name: "{greeting}, {name}"
   loading: Cargando tus estadísticas…
   demo_badge: Datos demo (backend no conectado)
   kpi:
@@ -113,7 +113,7 @@ index:
     today_sub: Enviado → Entregado
     devices: Dispositivos receptores
     devices_enabled: Activos
-    devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
+    devices_sub: "{n} dispositivos · cifrado de extremo a extremo"
     devices_sub2: Suscripciones push + WebSocket
     trend_demo: Demo
     trend_live: En vivo
@@ -132,9 +132,9 @@ index:
       sat: S
     month: Mes {n}
     tip:
-      count: '{n} notificaciones'
+      count: "{n} notificaciones"
       none: Sin notificaciones
-      date: '{d}/{m} {w}'
+      date: "{d}/{m} {w}"
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
@@ -144,8 +144,8 @@ index:
     option_b: O reporta desde un script / CI
     copy: Copiar
     curl_example_title: Despliegue listo
-    cmd_a_comment: '# Envía esta línea a tu Agent'
-    cmd_a: 'Sigue anotify.dev/docs/skill para instalar el reporte de notificaciones: escucha agent_settled y envía a mis dispositivos al terminar las tareas.'
+    cmd_a_comment: "# Envía esta línea a tu Agent"
+    cmd_a: "Sigue anotify.dev/docs/skill para instalar el reporte de notificaciones: escucha agent_settled y envía a mis dispositivos al terminar las tareas."
   recent:
     title: Notificaciones recientes
     subtitle: Actualización en vivo · clic en una fila para detalles
@@ -157,7 +157,7 @@ index:
   recent_summary: Recibidas {total} notificaciones, {ok} exitosas.
   notif:
     empty: No hay notificaciones con este estado
-    delivered: '{d}/{t} dispositivos entregados'
+    delivered: "{d}/{t} dispositivos entregados"
     count: Mostrando {n}
   detail:
     open_session: Abrir sesión de Agent
@@ -170,7 +170,7 @@ index:
     n3_title: Tarea interrumpida
     n3_body: La tarea fue detenida manualmente. Progreso al 62%, estado preservado, puede reanudar.
     n4_title: Documentación actualizada
-    n4_body: 'Generadas 3 páginas: README, referencia API, guía de despliegue.'
+    n4_body: "Generadas 3 páginas: README, referencia API, guía de despliegue."
     n5_title: Revisión de código completada
     n5_body: Revisados 12 archivos, encontrados 2 punteros nulos potenciales, sugerencias generadas.
     n6_title: Migración de BD fallida
@@ -187,9 +187,9 @@ message:
   fields_title: Todos los campos
   deliveries_title: Entregas
   delivery:
-    delivered_count: '{ok}/{n} entregados'
+    delivered_count: "{ok}/{n} entregados"
     empty: Sin registros de entrega (sin dispositivos habilitados coincidentes)
-    attempt_info: '{channel} · {n} intentos · {time}'
+    attempt_info: "{channel} · {n} intentos · {time}"
   error:
     missing_id: Falta el ID de mensaje (URL debe tener ?id=ntf_…)
     not_found: Mensaje no encontrado o ha sido eliminado
@@ -207,13 +207,13 @@ login:
   signup:
     username_label: Elige un nombre de usuario
     username_placeholder: Ponte un nombre
-    username_hint: '2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los extremos)'
+    username_hint: "2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los extremos)"
     button: Crear Passkey y registrarse
-    recovery_hint_prefix: 'Al registrarte se genera un conjunto de '
+    recovery_hint_prefix: "Al registrarte se genera un conjunto de "
     recovery_code: códigos de recuperación de un solo uso
     recovery_hint_suffix: — úsalos para recuperar el acceso si cambias de dispositivo o pierdes todos los Passkeys. Guárdalos a salvo.
     recovery_hint: Al registrarte se genera un conjunto de códigos de recuperación de un solo uso — úsalos para recuperar el acceso si cambias de dispositivo o pierdes todos los Passkeys. Guárdalos a salvo.
-  ios_tip_label: 'Usuarios de iOS: '
+  ios_tip_label: "Usuarios de iOS: "
   ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
   recovery_link: ¿No puedes usar Passkey? Entra con un código de recuperación →
   trust:
@@ -228,8 +228,8 @@ login:
     cancelled_login: Cancelado, o no hay Passkey disponible en este dispositivo — regístrate primero.
     cancelled_signup: Cancelado o expiró el tiempo — reintenta y permite crear el Passkey.
     need_username: Primero elige un nombre de usuario.
-    login_failed: 'Error al iniciar sesión: {msg}'
-    signup_failed: 'Error al registrarse: {msg}'
+    login_failed: "Error al iniciar sesión: {msg}"
+    signup_failed: "Error al registrarse: {msg}"
     demo_enter: Backend no conectado — modo demo activado (datos de ejemplo).
     login_success_short: Sesión iniciada — entrando al workspace…
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
@@ -244,9 +244,9 @@ receivers:
     ws: Conexiones WebSocket
   push:
     title: Suscripciones push del navegador
-    subtitle_prefix: 'Entregado vía servicios Push del sistema (APNs / FCM). '
+    subtitle_prefix: "Entregado vía servicios Push del sistema (APNs / FCM). "
     subtitle_highlight: Recibe aunque el navegador esté cerrado.
-    subtitle_suffix: ''
+    subtitle_suffix: ""
     add_device: Añadir este dispositivo
   ws:
     title: Recepción por conexión larga · para plugins y cualquier dispositivo
@@ -255,7 +255,7 @@ receivers:
     copy: Copiar
     active_title: Conexiones activas
     active_subtitle: Conexiones WebSocket establecidas actualmente
-    online: ' en línea'
+    online: " en línea"
     empty_hint: Al conectar el backend, aparecerán aquí las conexiones en vivo (nombre / prefijo de Key / tiempo activo / etiquetas / último mensaje).
   tags:
     title: Enrutado por etiquetas · qué dispositivo recibe qué notificación
@@ -277,7 +277,7 @@ receivers:
     subscribing: Suscribiendo a push…
     reporting: Reportando suscripción…
     success: ¡Suscrito! Este dispositivo recibirá notificaciones push.
-    failed: 'Error de suscripción: {msg}'
+    failed: "Error de suscripción: {msg}"
   filter:
     all: Todas
     error: Solo errores
@@ -296,8 +296,8 @@ receivers:
   troubleshoot:
     title: Lista de verificación por dispositivo
     local_check: Verificación local
-    perm_granted: 'Permiso de notificaciones: Concedido ✓'
-    perm_denied: 'Permiso de notificaciones: Denegado ✗ (reinicia en la configuración y vuelve a suscribirte)'
+    perm_granted: "Permiso de notificaciones: Concedido ✓"
+    perm_denied: "Permiso de notificaciones: Denegado ✗ (reinicia en la configuración y vuelve a suscribirte)"
     perm_default: 'Permiso de notificaciones: Sin solicitar (se pide al hacer clic en "Añadir dispositivo")'
     expand: ¿No recibes? Revisa esto →
   empty: Aún no hay dispositivos receptores. Haz clic en "Añadir dispositivo" arriba a la derecha para empezar.
@@ -313,22 +313,22 @@ receivers:
     rename: Renombrar
     unbind: Desvincular
   prompt:
-    tag: 'Añadir etiqueta (ej: móvil / trabajo / alerta)'
+    tag: "Añadir etiqueta (ej: móvil / trabajo / alerta)"
     rename: Nombre del dispositivo
   confirm:
     unbind: ¿Desvincular "{name}"? Ya no recibirá notificaciones.
   toast:
     saved: Guardado
-    save_failed: 'Error al guardar: {msg}'
+    save_failed: "Error al guardar: {msg}"
     unbound: Desvinculado
-    unbind_failed: 'Error al desvincular: {msg}'
+    unbind_failed: "Error al desvincular: {msg}"
     local_off: Notificaciones locales desactivadas
     added_demo: Registrado (demo)
     added: Dispositivo añadido
   checklist:
     ios_1: Debe abrirse desde el icono de la pantalla de inicio (standalone) — las pestañas normales de Safari no soportan notificaciones
     ios_2: Ajustes de iOS → Notificaciones → Safari/PWA → Permitir notificaciones
-    ios_3: 'No recibe tras suscribirse: desactiva el modo No Molestar, confirma que el permiso del sitio sea «Permitir»'
+    ios_3: "No recibe tras suscribirse: desactiva el modo No Molestar, confirma que el permiso del sitio sea «Permitir»"
     mac_1: Ajustes del sistema macOS → Notificaciones → busca tu navegador (ej. Google Chrome) → Permitir
     mac_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir» (no por defecto/bloquear)
     mac_3: Push requiere el proceso del navegador activo con la pestaña de este sitio abierta; cerrar el navegador detiene el push en tiempo real
@@ -367,13 +367,13 @@ keys:
     actions: Acciones
   security:
     title: Buenas prácticas de seguridad de la Key
-    point1_prefix: 'El texto plano de la Key '
+    point1_prefix: "El texto plano de la Key "
     point1_highlight: se muestra una sola vez al crearla
     point1_suffix: ; no puede volver a verse, solo regenerarse
-    point2_prefix: 'El servidor solo guarda el '
+    point2_prefix: "El servidor solo guarda el "
     point2_highlight: hash argon2id
     point2_suffix: ; ni una fuga de DB puede recuperar la Key
-    point3_prefix: 'Usa '
+    point3_prefix: "Usa "
     point3_highlight: una Key por Agent / entorno
     point3_suffix: ; revoca solo la afectada si hay fuga
     point4: Nunca subas Keys al control de versiones; inyéctalas con vars de entorno o un gestor de secretos
@@ -389,12 +389,12 @@ keys:
     scope_receive_desc: Para que plugins / dispositivos abran conexiones WebSocket. Prefijo ant_recv_
     scope_read_label: Leer dispositivos
     scope_read_desc: Listado de solo lectura para inspección con scripts
-    scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
+    scope_hint: "Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado."
     cancel: Cancelar
     generate: Generar Key
   save:
     title: Guarda tu Key
-    subtitle_prefix: 'Esta es su '
+    subtitle_prefix: "Esta es su "
     subtitle_highlight: única muestra completa
     copy: Copiar
     warning: Al cerrar, la Key completa no podrá volver a verse. Guárdala en un gestor de contraseñas o lugar seguro de inmediato.
@@ -405,8 +405,8 @@ keys:
     read: Lectura de dispositivos
   unnamed: Sin nombre
   unnamed_key: Key sin nombre
-  summary: '{total} Keys · {active} activos{demo}'
-  summary_demo: ' · datos demo'
+  summary: "{total} Keys · {active} activos{demo}"
+  summary_demo: " · datos demo"
   empty: Aún no hay Keys. Haz clic en "+ Nuevo Key" arriba a la derecha para crear uno y que los Agents empiecen a reportar.
   created_at: Creado {date}
   status:
@@ -419,14 +419,14 @@ keys:
   toast:
     revoked_demo: Revocado (modo demo, solo local)
     revoked: Revocado "{name}"
-    revoke_failed: 'Error al revocar: {msg}'
+    revoke_failed: "Error al revocar: {msg}"
     copied: Copiado ✓
     copy_failed: Error al copiar, selecciona y copia manualmente
     created: Key creado
   error:
     no_scope: Selecciona al menos un ámbito
     no_plaintext: El servidor no devolvió el texto plano del Key
-    create_failed: 'Error al crear: {msg} (prueba el modo demo si el backend no está listo)'
+    create_failed: "Error al crear: {msg} (prueba el modo demo si el backend no está listo)"
   demo:
     name1: Desarrollo local
     name2: Pipeline CI
@@ -435,19 +435,19 @@ keys:
 security:
   title: Seguridad y acceso
   subtitle: Passkey · Sesiones · Códigos de recuperación
-  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores).'
+  intro: "Gestiona todo sobre quién eres: credenciales Passkey, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores)."
   add_passkey: Añadir Passkey
   passkey:
     title: Credenciales Passkey
     subtitle: Tus credenciales de acceso sin contraseña. Una cuenta puede tener varios Passkeys, sincronizados entre dispositivos del mismo ecosistema.
-    count: ' credenciales'
+    count: " credenciales"
   session:
     title: Sesiones de acceso
     subtitle: En qué dispositivos está tu cuenta iniciada ahora. Las sesiones son independientes y se pueden revocar individualmente.
-    count: ' sesiones activas'
+    count: " sesiones activas"
   recovery:
     title: Códigos de recuperación
-    desc_prefix: 'El respaldo final cuando pierdes todos los dispositivos y '
+    desc_prefix: "El respaldo final cuando pierdes todos los dispositivos y "
     desc_highlight: no puedes entrar con Passkey
     desc_suffix: . Entra con usuario + código de recuperación y luego añade un nuevo Passkey. Cada código sirve una sola vez.
     regenerate: Regenerar
@@ -456,9 +456,9 @@ security:
     title: Dos ejes independientes
     auth_label: Eje de autenticación
     auth_axis: quién eres (esta página)
-    auth_p1: '· Credenciales Passkey: una cuenta puede tener varias'
-    auth_p2: '· Sesiones de acceso: multidispositivo, revocables individualmente'
-    auth_p3: '· Códigos de recuperación: respaldo si se pierden todos los dispositivos'
+    auth_p1: "· Credenciales Passkey: una cuenta puede tener varias"
+    auth_p2: "· Sesiones de acceso: multidispositivo, revocables individualmente"
+    auth_p3: "· Códigos de recuperación: respaldo si se pierden todos los dispositivos"
     delivery_label: Eje de entrega
     delivery_axis: a dónde van las notificaciones
     delivery_p1: · Se gestiona en la página Destinatarios, aparte de esta
@@ -479,33 +479,33 @@ security:
   revoke: Revocar
   last_active: Última actividad {time}
   prompt:
-    rename: 'Introduce un nuevo nombre para este Passkey:'
+    rename: "Introduce un nuevo nombre para este Passkey:"
   confirm:
     delete: '¿Eliminar Passkey "{name}"?
 
       Los dispositivos que lo usen ya no podrán iniciar sesión (códigos de recuperación como respaldo).'
     revoke: ¿Revocar la sesión de "{name}"? Ese dispositivo tendrá que iniciar sesión de nuevo.
   alert:
-    add_requirement: 'Para añadir un Passkey se necesita:
+    add_requirement: "Para añadir un Passkey se necesita:
 
       1. Backend funcionando con HTTPS
 
       2. Navegador con soporte WebAuthn
 
 
-      Actualmente en modo demo. Cuando el backend esté listo, se activará la biometría del sistema.'
+      Actualmente en modo demo. Cuando el backend esté listo, se activará la biometría del sistema."
   toast:
     renamed_demo: Renombrado (modo demo, solo local)
     renamed: Renombrado
-    rename_failed: 'Error al renombrar: {msg}'
+    rename_failed: "Error al renombrar: {msg}"
     deleted_demo: Eliminado (modo demo, solo local)
     deleted: Eliminado "{name}"
-    delete_failed: 'Error al eliminar: {msg}'
+    delete_failed: "Error al eliminar: {msg}"
     add_success: Passkey añadido correctamente
-    add_failed: 'Error al añadir: {msg}'
+    add_failed: "Error al añadir: {msg}"
     revoked_demo: Revocado (modo demo, solo local)
     revoked: Sesión revocada para "{name}"
-    revoke_failed: 'Error al revocar: {msg}'
+    revoke_failed: "Error al revocar: {msg}"
   demo:
     pk1_name: iCloud Llavero
     pk1_type: Sincronización de plataforma
@@ -536,13 +536,13 @@ docs:
   your_domain: su-dominio
   agent:
     title: Conectar Agent
-    intro: "El escenario principal de Anotify: <b class=\"text-zinc-200\">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea."
+    intro: 'El escenario principal de Anotify: <b class="text-zinc-200">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea.'
     step1:
       title: Crear una Key de reporte
-      desc: "Vaya a la página <a href=\"keys.html\" class=\"text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200\">API Keys</a> y cree una Key con permiso <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:send</code> (prefijo <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">ant_live_</code>). Guárdela inmediatamente."
+      desc: 'Vaya a la página <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> y cree una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> (prefijo <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>). Guárdela inmediatamente.'
     step2:
       title: Reportar al terminar la tarea
-      desc: "En un evento de finalización del Agent (p. ej. <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/notify</code>."
+      desc: 'En un evento de finalización del Agent (p. ej. <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>.'
     curl:
       title: "Configuración mínima · un curl para enviar a todos los dispositivos"
     journey:
@@ -568,12 +568,12 @@ docs:
       vapid: Clave pública VAPID (para suscripción)
   auth:
     title: Autenticación
-    intro: "Dos tipos de credenciales, para dos tipos de llamadores. <b class=\"text-zinc-200\">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado."
+    intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="text-zinc-200">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado.'
     key:
       title: API Key (Bearer)
       li1: "· Para reportes del Agent / conexiones long-poll del receptor"
-      li2: "· Header: <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Authorization: Bearer ant_…</code>"
-      li3: "· scope: <code class=\"mono text-[12px] text-blue-300\">notify:send</code> reportar · <code class=\"mono text-[12px] text-emerald-300\">notify:receive</code> recibir · <code class=\"mono text-[12px] text-amber-300\">devices:read</code> solo lectura"
+      li2: '· Header: <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
+      li3: '· scope: <code class="mono text-[12px] text-blue-300">notify:send</code> reportar · <code class="mono text-[12px] text-emerald-300">notify:receive</code> recibir · <code class="mono text-[12px] text-amber-300">devices:read</code> solo lectura'
       li4: "· El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear"
     passkey:
       title: Cookie de sesión
@@ -583,10 +583,10 @@ docs:
       li4: "· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación"
   notify:
     core: Núcleo
-    intro: "Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class=\"text-zinc-200\">cifrada de extremo a extremo</b> a todos los dispositivos \"habilitados y que coincidan en nivel/tag\"."
+    intro: 'Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class="text-zinc-200">cifrada de extremo a extremo</b> a todos los dispositivos "habilitados y que coincidan en nivel/tag".'
     params:
       title: Parámetros del cuerpo de la petición
-      title_desc: "Título de la notificación, p. ej. <code>\"Despliegue completado\"</code>, se muestra como título principal de la notificación del sistema."
+      title_desc: 'Título de la notificación, p. ej. <code>"Despliegue completado"</code>, se muestra como título principal de la notificación del sistema.'
       status_desc: "Resultado de la tarea: <code>success</code> · <code>error</code> · <code>interrupted</code> · <code>info</code> · <code>warning</code>. Determina el color del icono y el filtrado de dispositivos."
       body_desc: "Cuerpo de la notificación, detalle complementario."
       tags_desc: "Tags de enrutamiento. Vacío = difundir a todos los dispositivos habilitados; no vacío = solo se entrega a dispositivos con tag en común o sin tags (catch-all). ≤10 tags, cada uno ≤32 caracteres."
@@ -610,11 +610,11 @@ docs:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
   webpush:
     title: Suscripción Web Push (recepción en navegador)
-    intro: "El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class=\"text-zinc-200\">Se recibe incluso con la página cerrada.</b> iOS requiere \"Añadir a pantalla de inicio\" y modo standalone (iOS 16.4+)."
-    step1: "<b class=\"text-zinc-200\">① Obtener clave pública VAPID</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">GET /v1/vapid-public-key</code>"
-    step2: "<b class=\"text-zinc-200\">② Registrar Service Worker</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">navigator.serviceWorker.register('/sw.js')</code>"
-    step3: "<b class=\"text-zinc-200\">③ Solicitar permiso y suscribir</b> · <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>"
-    step4: "<b class=\"text-zinc-200\">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">POST /v1/devices</code>"
+    intro: 'El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="text-zinc-200">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).'
+    step1: '<b class="text-zinc-200">① Obtener clave pública VAPID</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>'
+    step2: '<b class="text-zinc-200">② Registrar Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register(''/sw.js'')</code>'
+    step3: '<b class="text-zinc-200">③ Solicitar permiso y suscribir</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>'
+    step4: '<b class="text-zinc-200">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>'
     code:
       title: "Suscripción frontend · código central"
       comment1: "// 1. Registrar SW + obtener clave pública VAPID"
@@ -624,7 +624,7 @@ docs:
       comment_platform: "// ios|mac|win|android|other"
     ios:
       title: ⚠️ Requisito de iOS
-      desc: "Debe \"Añadir a pantalla de inicio\" y ejecutar en modo standalone, de lo contrario Safari no proporciona Notification / Push API."
+      desc: 'Debe "Añadir a pantalla de inicio" y ejecutar en modo standalone, de lo contrario Safari no proporciona Notification / Push API.'
     android:
       title: ✅ Android es más fácil
       desc: "Chrome/Edge puede suscribirse desde una pestaña normal vía FCM; no necesita añadir a pantalla de inicio."
@@ -633,7 +633,7 @@ docs:
       desc: "El payload se cifra con las claves p256dh/auth de la suscripción; el servicio de push no puede leer el contenido."
   ws:
     channel2: Segundo canal de recepción
-    intro: "Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador."
+    intro: 'Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.'
     connect:
       title: "Establecer conexión"
       comment: "# requiere permiso notify:receive"
@@ -654,7 +654,7 @@ docs:
       comment4: "// tras reconectar, usar frame resume (reemplaza header Last-Event-Id)"
     reconnect:
       title: Reconectar y reanudar
-      desc: "Al reconectar, envíe el header <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">Last-Event-Id</code> (o un primer frame <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class=\"mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300\">resume_expired</code>; el cliente debe obtener el historial completo."
+      desc: 'Al reconectar, envíe el header <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> (o un primer frame <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code>; el cliente debe obtener el historial completo.'
 
 cliauth:
   title: "Autorización de dispositivo CLI"

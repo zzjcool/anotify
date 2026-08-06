@@ -219,6 +219,60 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 	return sess.ID, nil
 }
 
+// ---------- 已登录用户补建凭证 ----------
+
+// addCredKey 是「已登录用户补建凭证」的 challenge 暂存 key 命名空间，
+// 与 reg:/login:/disc: 隔离，避免与注册新用户流程混淆。
+func addCredKey(userID string) string { return "addcred:" + userID }
+
+// BeginAddCredential 已登录用户补建一个 Passkey（不创建新用户，不新建会话）。
+// userID 取自会话上下文。返回 creation options（直接 JSON 给前端）。
+func (s *Service) BeginAddCredential(userID string) (*protocol.CredentialCreation, error) {
+	user, err := s.db.GetUserByID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("auth: 用户不存在: %w", err)
+	}
+	waUser, err := s.loadWebAuthnUser(user)
+	if err != nil {
+		return nil, err
+	}
+	creation, session, err := s.wa.BeginRegistration(waUser, webauthn.WithAuthenticatorSelection(
+		protocol.AuthenticatorSelection{
+			ResidentKey:      protocol.ResidentKeyRequirementRequired,
+			UserVerification: protocol.VerificationPreferred,
+		},
+	))
+	if err != nil {
+		return nil, fmt.Errorf("begin add credential: %w", err)
+	}
+	s.storeChallenge(addCredKey(userID), *session)
+	return creation, nil
+}
+
+// FinishAddCredential 完成补建凭证：校验 attestation → 存凭证。不建会话（已登录）。
+func (s *Service) FinishAddCredential(userID, name string, r *http.Request) error {
+	session, err := s.takeChallenge(addCredKey(userID))
+	if err != nil {
+		return err
+	}
+	user, err := s.db.GetUserByID(userID)
+	if err != nil {
+		return fmt.Errorf("auth: 用户不存在: %w", err)
+	}
+	waUser, err := s.loadWebAuthnUser(user)
+	if err != nil {
+		return err
+	}
+	cred, err := s.wa.FinishRegistration(waUser, session, r)
+	if err != nil {
+		return fmt.Errorf("finish add credential: %w", err)
+	}
+	if name == "" {
+		name = "新设备"
+	}
+	return s.saveCredential(userID, cred, name)
+}
+
 // ---------- 登录 ----------
 
 // BeginLogin 开始 Passkey 登录（指定用户名）。返回 assertion options。
@@ -299,6 +353,28 @@ func (s *Service) FinishDiscoverableLogin(token string, r *http.Request) (sessio
 		return "", err
 	}
 	return sess.ID, nil
+}
+
+// ---------- Passkey 管理（已登录用户） ----------
+
+// ListPasskeys 列出某用户的所有凭证。
+func (s *Service) ListPasskeys(userID string) ([]*store.Passkey, error) {
+	return s.db.ListPasskeysByUser(userID)
+}
+
+// GetPasskey 按 credential id 查凭证。
+func (s *Service) GetPasskey(id string) (*store.Passkey, error) {
+	return s.db.GetPasskeyByID(id)
+}
+
+// RenamePasskey 重命名凭证。
+func (s *Service) RenamePasskey(id, name string) error {
+	return s.db.RenamePasskey(id, name)
+}
+
+// DeletePasskey 删除凭证。
+func (s *Service) DeletePasskey(id string) error {
+	return s.db.DeletePasskey(id)
 }
 
 // saveCredential 持久化一个 webauthn.Credential。

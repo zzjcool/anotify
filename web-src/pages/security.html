@@ -20,16 +20,49 @@
     border: 1px solid var(--line-strong);
     color: var(--text);
     font-size: 0.82rem;
-    padding: 0.6rem 1rem;
+    padding: 0.6rem 0.75rem 0.6rem 1rem;
     border-radius: 10px;
     opacity: 0;
-    pointer-events: none;
+    /* 允许选中复制：不再 pointer-events:none。hover 时暂停自动隐藏由 JS 处理。 */
+    user-select: text;
+    -webkit-user-select: text;
+    max-width: 90vw;
+    word-break: break-word;
     transition: all 0.3s ease;
     z-index: 100;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
   }
   .toast.show {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+  .toast.error {
+    border-color: var(--danger, #ef4444);
+    background: color-mix(
+      in srgb,
+      var(--danger, #ef4444) 18%,
+      var(--panel-overlay)
+    );
+  }
+  .toast-msg {
+    flex: 1;
+    min-width: 0;
+  }
+  .toast-copy {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--line-strong, #444);
+    color: var(--text);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  .toast-copy:hover {
+    background: var(--panel-hover, rgba(255, 255, 255, 0.08));
   }
 </style>
 {{end}} {{define "content"}}
@@ -224,12 +257,29 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<script>
+  // toast hover 暂停自动隐藏（方便选中复制错误信息）
+  document.addEventListener("DOMContentLoaded", () => {
+    const el = document.getElementById("toast");
+    if (!el) return;
+    el.addEventListener("mouseenter", () => clearTimeout(el._timer));
+    el.addEventListener("mouseleave", () => {
+      const err = el.classList.contains("error");
+      el._timer = setTimeout(
+        () => el.classList.remove("show"),
+        err ? 4000 : 1500,
+      );
+    });
+    // 点击 toast 立即关闭
+    el.addEventListener("click", () => el.classList.remove("show"));
+  });
+</script>
 
 {{end}} {{define "script"}}
 
 <script>
   // ==================== Data layer ====================
-  const { el, t } = window.Anotify;
+  const { el, t, b64urlToBuf, bufToB64url } = window.Anotify;
   const API = "/v1";
 
   const DEMO_PASSKEYS = [
@@ -311,12 +361,46 @@
   let SESSIONS = [];
   let demoMode = { passkeys: false, sessions: false };
 
-  function toast(msg) {
-    const t = document.getElementById("toast");
-    t.textContent = msg;
-    t.classList.add("show");
-    clearTimeout(t._timer);
-    t._timer = setTimeout(() => t.classList.remove("show"), 2400);
+  // toast 显示消息。err=true 时按错误处理：同时打 console.error、停留更久、显示复制按钮。
+  function toast(msg, err = false) {
+    if (err) console.error("[toast]", msg);
+    const el = document.getElementById("toast");
+    // 消息区 + 复制按钮（仅错误时显示复制按钮）。用 replaceChildren 清空，避免 innerHTML。
+    el.replaceChildren();
+    const msgEl = document.createElement("span");
+    msgEl.className = "toast-msg";
+    msgEl.textContent = msg;
+    el.appendChild(msgEl);
+    if (err) {
+      const btn = document.createElement("button");
+      btn.className = "toast-copy";
+      btn.type = "button";
+      btn.textContent = t("common.copy", "复制");
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const text = msg;
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(text).then(
+            () => {
+              btn.textContent = t("common.copied", "已复制");
+              setTimeout(
+                () => (btn.textContent = t("common.copy", "复制")),
+                1500,
+              );
+            },
+            () => alert(text),
+          );
+        } else {
+          alert(text); // 兜底：老浏览器
+        }
+      };
+      el.appendChild(btn);
+    }
+    el.classList.toggle("error", err);
+    el.classList.add("show");
+    clearTimeout(el._timer);
+    const ttl = err ? 12000 : 2400;
+    el._timer = setTimeout(() => el.classList.remove("show"), ttl);
   }
 
   function fmtTime(ts) {
@@ -574,6 +658,7 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }
@@ -602,7 +687,17 @@
           credentials: "same-origin",
         },
       );
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        // 后端可能返回 409（至少保留一个）等业务错误，优先展示其 message
+        let msg = "HTTP " + res.status;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {
+          /* 非 JSON，用默认 msg */
+        }
+        throw new Error(msg);
+      }
       PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
       renderPasskeys();
       toast(
@@ -617,40 +712,94 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }
 
   async function addPasskey() {
-    // WebAuthn registration requires HTTPS + real backend. Show a hint when backend isn't ready.
-    if (demoMode.passkeys || !window.PublicKeyCredential) {
+    // 情况 1：浏览器不支持 WebAuthn —— 硬件限制，无法绕过。
+    if (!window.PublicKeyCredential || !navigator.credentials?.create) {
       alert(
         t(
-          "security.alert.add_requirement",
-          "添加 Passkey 需要：\n1. 后端已启动并处于 HTTPS 环境\n2. 浏览器支持 WebAuthn\n\n当前为演示模式，后端就绪后此处将调起系统生物识别。",
+          "security.alert.no_webauthn",
+          "当前浏览器不支持 WebAuthn，无法添加 Passkey。\n请使用现代浏览器（Chrome/Safari/Firefox 最新版）。",
         ),
       );
       return;
     }
+    // 情况 2：后端未连接（fetchApi 拿到 null 进了 demo 模式）——
+    // 这才是「演示模式」的真正含义：不是 HTTPS/生物识别的问题，是后端没起来。
+    if (demoMode.passkeys) {
+      alert(
+        t(
+          "security.alert.backend_down",
+          "无法连接后端（当前为演示模式）。\n请确认后端服务已启动且通过 HTTPS 访问，再尝试添加 Passkey。",
+        ),
+      );
+      return;
+    }
+    // 让用户给新凭证起个名字
+    const name = prompt(
+      t(
+        "security.prompt.new_name",
+        "给这个 Passkey 起个名字（如「主力手机」）：",
+      ),
+      t("security.default_new_name", "新设备"),
+    );
+    if (name === null) return; // 用户取消
     try {
-      const optRes = await fetch(API + "/auth/register/options", {
+      // 已登录用户补建凭证（走 /auth/passkeys/register*，区别于注册新用户）
+      const optRes = await fetch(API + "/auth/passkeys/register/options", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({}), // 已登录用户补建凭证
+        body: JSON.stringify({}),
       });
       if (!optRes.ok) throw new Error("HTTP " + optRes.status);
       const options = await optRes.json();
-      const cred = await navigator.credentials.create({
-        publicKey: options.publicKey || options,
-      });
-      const regRes = await fetch(API + "/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify(cred),
-      });
-      if (!regRes.ok) throw new Error("HTTP " + regRes.status);
+      // WebAuthn 要求 challenge/user.id/excludeCredentials[].id 为 ArrayBuffer，
+      // 后端返回的是 base64url 字符串，需解码（与 login.html 注册流程一致）。
+      const publicKey = options.publicKey || options;
+      publicKey.challenge = b64urlToBuf(publicKey.challenge);
+      if (publicKey.user && publicKey.user.id)
+        publicKey.user.id = b64urlToBuf(publicKey.user.id);
+      if (publicKey.excludeCredentials) {
+        publicKey.excludeCredentials = publicKey.excludeCredentials.map(
+          (c) => ({ ...c, id: b64urlToBuf(c.id) }),
+        );
+      }
+      const cred = await navigator.credentials.create({ publicKey });
+      // 把 ArrayBuffer 字段编码回 base64url，供后端 go-webauthn 解析
+      const credential = {
+        id: cred.id,
+        rawId: bufToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+          attestationObject: bufToB64url(cred.response.attestationObject),
+        },
+      };
+      const regRes = await fetch(
+        API + "/auth/passkeys/register?name=" + encodeURIComponent(name || ""),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          // body 为裸 WebAuthn attestation JSON，后端 go-webauthn 直接从 body 解析
+          body: JSON.stringify(credential),
+        },
+      );
+      if (!regRes.ok) {
+        let msg = "HTTP " + regRes.status;
+        try {
+          const body = await regRes.json();
+          if (body?.error) msg = body.error;
+        } catch {
+          /* 非 JSON */
+        }
+        throw new Error(msg);
+      }
       toast(t("security.toast.add_success", "Passkey 添加成功"));
       loadPasskeys();
     } catch (e) {
@@ -660,6 +809,7 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }
@@ -795,6 +945,7 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }

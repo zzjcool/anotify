@@ -39,16 +39,49 @@
     border: 1px solid var(--line-strong);
     color: var(--text);
     font-size: 0.82rem;
-    padding: 0.6rem 1rem;
+    padding: 0.6rem 0.75rem 0.6rem 1rem;
     border-radius: 10px;
     opacity: 0;
-    pointer-events: none;
+     
+    user-select: text;
+    -webkit-user-select: text;
+    max-width: 90vw;
+    word-break: break-word;
     transition: all 0.3s ease;
     z-index: 100;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
   }
   .toast.show {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+  .toast.error {
+    border-color: var(--danger, #ef4444);
+    background: color-mix(
+      in srgb,
+      var(--danger, #ef4444) 18%,
+      var(--panel-overlay)
+    );
+  }
+  .toast-msg {
+    flex: 1;
+    min-width: 0;
+  }
+  .toast-copy {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--line-strong, #444);
+    color: var(--text);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  .toast-copy:hover {
+    background: var(--panel-hover, rgba(255, 255, 255, 0.08));
   }
 </style>
 
@@ -251,6 +284,23 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<script>
+  
+  document.addEventListener("DOMContentLoaded", () => {
+    const el = document.getElementById("toast");
+    if (!el) return;
+    el.addEventListener("mouseenter", () => clearTimeout(el._timer));
+    el.addEventListener("mouseleave", () => {
+      const err = el.classList.contains("error");
+      el._timer = setTimeout(
+        () => el.classList.remove("show"),
+        err ? 4000 : 1500,
+      );
+    });
+    
+    el.addEventListener("click", () => el.classList.remove("show"));
+  });
+</script>
 
 
     
@@ -269,7 +319,7 @@
 
 <script>
   
-  const { el, t } = window.Anotify;
+  const { el, t, b64urlToBuf, bufToB64url } = window.Anotify;
   const API = "/v1";
 
   const DEMO_PASSKEYS = [
@@ -351,12 +401,46 @@
   let SESSIONS = [];
   let demoMode = { passkeys: false, sessions: false };
 
-  function toast(msg) {
-    const t = document.getElementById("toast");
-    t.textContent = msg;
-    t.classList.add("show");
-    clearTimeout(t._timer);
-    t._timer = setTimeout(() => t.classList.remove("show"), 2400);
+  
+  function toast(msg, err = false) {
+    if (err) console.error("[toast]", msg);
+    const el = document.getElementById("toast");
+    
+    el.replaceChildren();
+    const msgEl = document.createElement("span");
+    msgEl.className = "toast-msg";
+    msgEl.textContent = msg;
+    el.appendChild(msgEl);
+    if (err) {
+      const btn = document.createElement("button");
+      btn.className = "toast-copy";
+      btn.type = "button";
+      btn.textContent = t("common.copy", "复制");
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const text = msg;
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(text).then(
+            () => {
+              btn.textContent = t("common.copied", "已复制");
+              setTimeout(
+                () => (btn.textContent = t("common.copy", "复制")),
+                1500,
+              );
+            },
+            () => alert(text),
+          );
+        } else {
+          alert(text); 
+        }
+      };
+      el.appendChild(btn);
+    }
+    el.classList.toggle("error", err);
+    el.classList.add("show");
+    clearTimeout(el._timer);
+    const ttl = err ? 12000 : 2400;
+    el._timer = setTimeout(() => el.classList.remove("show"), ttl);
   }
 
   function fmtTime(ts) {
@@ -614,6 +698,7 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }
@@ -642,7 +727,17 @@
           credentials: "same-origin",
         },
       );
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        
+        let msg = "HTTP " + res.status;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {
+           
+        }
+        throw new Error(msg);
+      }
       PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
       renderPasskeys();
       toast(
@@ -657,40 +752,96 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }
 
   async function addPasskey() {
     
-    if (demoMode.passkeys || !window.PublicKeyCredential) {
+    if (!window.PublicKeyCredential || !navigator.credentials?.create) {
       alert(
         t(
-          "security.alert.add_requirement",
-          "添加 Passkey 需要：\n1. 后端已启动并处于 HTTPS 环境\n2. 浏览器支持 WebAuthn\n\n当前为演示模式，后端就绪后此处将调起系统生物识别。",
+          "security.alert.no_webauthn",
+          "当前浏览器不支持 WebAuthn，无法添加 Passkey。\n请使用现代浏览器（Chrome/Safari/Firefox 最新版）。",
         ),
       );
       return;
     }
+    
+    
+    if (demoMode.passkeys) {
+      alert(
+        t(
+          "security.alert.backend_down",
+          "无法连接后端（当前为演示模式）。\n请确认后端服务已启动且通过 HTTPS 访问，再尝试添加 Passkey。",
+        ),
+      );
+      return;
+    }
+    
+    const name = prompt(
+      t(
+        "security.prompt.new_name",
+        "给这个 Passkey 起个名字（如「主力手机」）：",
+      ),
+      t("security.default_new_name", "新设备"),
+    );
+    if (name === null) return; 
     try {
-      const optRes = await fetch(API + "/auth/register/options", {
+      
+      const optRes = await fetch(API + "/auth/passkeys/register/options", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({}), 
+        body: JSON.stringify({}),
       });
       if (!optRes.ok) throw new Error("HTTP " + optRes.status);
       const options = await optRes.json();
-      const cred = await navigator.credentials.create({
-        publicKey: options.publicKey || options,
-      });
-      const regRes = await fetch(API + "/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify(cred),
-      });
-      if (!regRes.ok) throw new Error("HTTP " + regRes.status);
+      
+      
+      const publicKey = options.publicKey || options;
+      publicKey.challenge = b64urlToBuf(publicKey.challenge);
+      if (publicKey.user && publicKey.user.id)
+        publicKey.user.id = b64urlToBuf(publicKey.user.id);
+      if (publicKey.excludeCredentials) {
+        publicKey.excludeCredentials = publicKey.excludeCredentials.map(
+          (c) => ({ ...c, id: b64urlToBuf(c.id) }),
+        );
+      }
+      const cred = await navigator.credentials.create({ publicKey });
+      
+      const credential = {
+        id: cred.id,
+        rawId: bufToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+          attestationObject: bufToB64url(cred.response.attestationObject),
+        },
+      };
+      const regRes = await fetch(
+        API +
+          "/auth/passkeys/register?name=" +
+          encodeURIComponent(name || ""),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          
+          body: JSON.stringify(credential),
+        },
+      );
+      if (!regRes.ok) {
+        let msg = "HTTP " + regRes.status;
+        try {
+          const body = await regRes.json();
+          if (body?.error) msg = body.error;
+        } catch {
+           
+        }
+        throw new Error(msg);
+      }
       toast(t("security.toast.add_success", "Passkey 添加成功"));
       loadPasskeys();
     } catch (e) {
@@ -700,6 +851,7 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }
@@ -835,6 +987,7 @@
           "{msg}",
           e.message,
         ),
+        true,
       );
     }
   }
