@@ -44,6 +44,11 @@
 2. **后台任务不许点火就跑**：凡起后台进程（e2e、服务、隧道、子 agent），结束回合前必须要么等它出结果（前台跑/subagent_wait/轮询日志），要么明确交付「它在跑、我何时如何验收」。无人等待的后台任务 = 丢了。
 3. **原子交付**：一个环境/服务类任务（如「起测试环境」= 隧道+服务+健康验证+可用 URL）必须整体验证可用后才交付，半成品（只起了隧道没起服务）不许交付。
 4. **子 agent 被截断 ≠ 完成**：subagent 超时/截断后，协调者必须核实其产物落盘情况，补齐未完成部分或重派，不得当作已交付。
+5. **多窗口并发隔离**（2026-08-06 固化）：用户开多个 pi 窗口同时跑任务时，pi-subagents 的进程/通信/artifacts 是 session 隔离的（supervisor 消息按 session id 隔离、artifacts 文件名带 runId 前缀不碰、`resume` 有跨进程 session lease），但**文件系统层共享**——同一 git 工作区、同一 `anotify.db`、同一 `internal/server/dist/` 构建产物、同一 `.pi-orchestrator/TASKS.md` 任务板。协调者派任务时必须：
+   - **写代码类任务必须各走独立 git worktree**（`worktree: true` 或 `cwd` 指向 `.pi-orchestrator/worktrees/wt-<任务名>`，从 main 切独立分支），不得在主工作区并发改同一批文件；
+   - **跑服务/e2e 类任务必须用各自独立的 DB 与端口**（`-db` 指向各自临时文件、端口不撞），否则两个 `make e2e` 会互相冲 WAL/端口；
+   - **改 `TASKS.md`/`EVOLUTION.md` 等共享编排文档要串行**——两窗口同时改同一 md 会后写覆盖先写；需要登记进展时先 `git pull`/重读再写，或约定只有一个窗口维护任务板；
+   - **构建产物 `internal/server/dist/`、`web/*.html` 是共享的**：两窗口同时 `make build`/`make fe` 会互相覆盖指纹文件，并发构建类任务要错开或各自 worktree。
 
 ## 1. 环境与工具链
 
