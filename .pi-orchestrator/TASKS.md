@@ -29,13 +29,33 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 ---
 
+## ✅ i18n 覆盖补全（feat/i18n-coverage，2026-08-07 合并入 main，commit fb61add）
+
+> 分支 `feat/i18n-coverage`（off main 870bcfa）。非中文语言（en/ja/es）下用户可见文案 **0 条中文残留**（演示数据亦翻译）。
+>
+> 三批顺序执行（规格见 `.pi-orchestrator/archive/i18n-coverage-spec.md`）：
+>
+> - 批1：partials.js + index.html + message.html 运行时文案 i18n（commit 8f9def9）
+> - 批2：keys/receivers/security/login 运行时文案 i18n（commit 6e2734d）
+> - 批3：docs.html 整页 `{{t}}` 化 + 4 语言全译，约 120 个 docs.* key（commit e689f31）
+> - 收尾：补 login.html 遗漏的 unsupported 文案 t() 化 + 新增 `i18n_coverage` 回归守卫套件（61 断言，防中文残留回归）（commit 28d00d1）
+>
+> **合并**：feat/i18n-coverage 与 main（含 CLI 设备授权任务）在 870bcfa 后分叉，合并时 4 个 locale yaml + run_all.sh 有冲突（main 加了 `cliauth` 文案 + cli_auth 套件，feat 加了 docs 整页翻译 + i18n_coverage 套件），逐文件合并：保留 main 的 cliauth 区块（移到顶层 key，不嵌进 docs）、feat 的 docs 正文翻译、两边的 e2e 套件都注册。
+>
+> **门禁**：`make e2e` 14/14 套件全绿（699 断言），含 i18n_coverage 61 通过/0 失败、cli_auth 132 通过/0 失败。sitegen 4 语言×8 页面无 WARN（key 对齐校验通过）。
+>
+> **遗留**：合并暴露并修复了 1 个 feat 分支批3 的潜在结构问题——cliauth 文案原本会被错误嵌进 docs 下（YAML 缩进），已修正为顶层 key。
+
+---
+
 ## ✅ CLI 设备授权登录（feat/cli-device-login，2026-08-06 完成）
 
-> worktree：`.pi-orchestrator/worktrees/wt-cli-auth`，分支 `feat/cli-device-login`（off main 870bcfa），**未合并**——等 i18n 分支落地后由用户拍板合并，避免影响并行工作的 agent。
+> worktree：`.pi-orchestrator/worktrees/wt-cli-auth`，分支 `feat/cli-device-login`（off main 870bcfa），**已合并入 main**（2026-08-07，随 i18n 覆盖补全 merge 一起落地）。
 
 **目标**：替代「手动建 Key + 复制粘贴」，让 Agent 跑一条脚本完成授权取 Key，Key 全程不进对话上下文/剪贴板。
 
 **交付**：
+
 - 服务端：授权会话生命周期 9 端点（建会话/ASCII 二维码/短码 lookup/批准/拒绝/轮询领证/keys-self/脚本分发）、内存限速器、`cli_auth_sessions` 表、go-qrcode 依赖
 - 确认页 `cli-auth.html`：双模式（`?s=` 直达 + 无参输码）、五终态+网络错误态、scope 勾选（默认 send）、四语言、focus 布局
 - 登录脚本 `web/agent-login.sh`（POSIX sh+curl 零依赖）：三入口同屏输出、0600 原子落盘、stdout 永不打印 Key
@@ -43,7 +63,7 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 **编排记录**：pm ∥ designer → worker(T1 store/auth) ∥ frontend(T2 页) → worker(T3 server) → worker(T4 脚本) → tester(T5 e2e) → reviewer(T6 终审 APPROVE) → worker(T7 返工 3 条🟡) → 协调者验收+实机演示
 
-**门禁**：`go test ./...` 全绿；`make e2e` 13/13 套件绿（新套件 cli_auth 132 断言）；web_verify 四语言×双视口无 JS 错误/无溢出；协调者实机演示全链路（起服务→跑脚本→短码批准→领证→Key 发通知成功→幂等重跑）。
+**门禁**：`go test ./...` 全绿；`make e2e` 14/14 套件绿（含 cli_auth 132 断言 + i18n_coverage 61 断言）；web_verify 四语言×双视口无 JS 错误/无溢出；协调者实机演示全链路（起服务→跑脚本→短码批准→领证→Key 发通知成功→幂等重跑）。
 
 **回顾**（对照 EVOLUTION.md 三问）：
 
