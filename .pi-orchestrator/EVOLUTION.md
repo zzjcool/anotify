@@ -43,6 +43,35 @@
 ## 六、当前已知待进化点（持续维护）
 
 - [x] 协调者「回合结束/后台任务/原子交付」纪律 → 已固化到 AGENTS.md §0.1（2026-08-05 i18n 任务回顾）
+- [x] **子 agent 被硬超时/EOF 杀掉丢产出**（根因级修复，2026-08-06 诊断）：见下方「子 agent 派发契约」专节。此前只归因为「tester 跑 e2e 超时」，漏掉了更普遍的诱因——provider 网络抖动（503/unexpected EOF/rate limit）会随时杀死普通前台子 agent，且 `partialOutputPath: null` 导致产出全丢。
 - [ ] tester 跑全量 e2e 易超时：后续给 tester 派任务时要求「先写套件+单跑新套件自验，全量 e2e 放最后且留足预算」，或考虑拆分「写套件」与「跑门禁」两阶段（观察 1-2 次再定是否入 prompt）
 - [ ] reviewer 终审被 turn 预算截断过一次：派终审任务时明确「先落报告（结论+分级问题清单）再深挖细节」，保证截断也有可用产出（观察再定）
 - [ ] 用户实测反馈会穿透 designer 的原设计（如平铺→统一下拉）：设计稿应预留「实测后快速迭代」环节，designer 对「用户直接反馈」的响应流程已验证可行（v1.0→v1.1）
+
+---
+
+## 七、子 agent 派发契约（2026-08-06 固化，防「执行到一半不执行」）
+
+### 根因复盘
+
+排查 `~/.pi/agent/run-history.jsonl` + `.pi-subagents/artifacts/*_meta.json` + 主 session 日志，发现子 agent「执行到一半不执行」有两类诱因，**同一套机制**：
+
+1. **长任务撞 30min 默认前台硬超时**：worker/frontend/tester 跑全量 e2e 时，默认前台 30min wall-clock 到点 SIGKILL，`partialOutputPath: null`，产出全丢。meta 直接写 `"error": "Subagent timed out after 1800000ms."`。
+2. **普通任务被 provider 网络抖动杀死**：codebuddy provider（copilot.tencent.com）频繁返回 503 / unexpected EOF / rate limit，命中前台阻塞子 agent 时进程异常退出（exit=1），同样 `partialOutputPath: null`。session 日志实锤：`Post "https://copilot.tencent.com/v2/chat/completions": unexpected EOF — cut off early (only got to reading files)`。
+
+**共同根因**：前台阻塞 + 默认 30min 硬墙 + 无产出落盘 + 无重试。普通任务遇抖动「突然消失」，长任务遇超时「做到一半被杀」，两者都因无落盘而让协调者感觉「什么都没留下」。
+
+### 固化契约（已写入 worker/frontend/tester/reviewer 的 agent md frontmatter）
+
+协调者派**实现层 + 终审层**子 agent 时必须：
+
+1. **`async: true`** —— 不走前台阻塞默认 30min 硬墙（async 默认无超时）。
+2. **显式 `timeoutMs`** —— worker/frontend/reviewer ≥ 3600000（1h）；tester 跑全量 e2e ≥ 3600000 且任务里指示「先写套件+单跑自验，全量放最后」。
+3. **`output` 落盘到指定文件** —— 被截断/失败时 `partialOutputPath` 有值，协调者先读 output 抢救已完成部分再决定重派，而非从头重跑。
+4. **协调者用 `subagent_wait` / `nonBlocking` 订阅收尾**，不干等一个突然的 timeout。
+5. **provider 抖动重试**：收到 `unexpected EOF` / 503 / rate limit 导致的 error 时，直接重派（产线已落盘则只重派未完成部分），不要当成「任务完成」。
+
+### 上下文瘦身（同步执行）
+
+- **scout 关 `inheritProjectContext`**：scout 是 deepseek-flash + thinking:low 的纯侦察角色，吃 19KB 的 AGENTS+DEVELOPMENT 是浪费 token。
+- **`.pi-orchestrator/archive/` 归档历史任务产物**：i18n/lang-hint 等 ~100KB 已完成任务文档移入 archive，避免被新任务的 defaultReads 误扫，膨胀子 agent 上下文、挤占有效预算。

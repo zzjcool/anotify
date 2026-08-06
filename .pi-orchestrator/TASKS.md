@@ -96,7 +96,7 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 ## 历史归档：前端框架化改造（已完成 2026-08-04）
 
 把 6 个手写 HTML 重构为「构建期 Go template 合成 + 布局复用 + i18n」静态站点。
-保持 纯静态 + embed + hash.mjs 指纹 架构。详见 `.pi-orchestrator/ARCHITECTURE.md`。
+保持 纯静态 + embed + hash.mjs 指纹 架构。详见 `.pi-orchestrator/archive/ARCHITECTURE.md`。
 
 - [x] T1–T7 全部完成（调研/布局/sitegen/i18n/页面迁移/构建集成/验证），e2e 9/9 全绿
 

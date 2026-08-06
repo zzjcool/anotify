@@ -269,37 +269,38 @@
 
 <script>
   
+  const { el, t } = window.Anotify;
   const API = "/v1";
 
   const DEMO_PASSKEYS = [
     {
       id: "pk_1",
-      name: "iCloud 钥匙串",
-      type: "平台同步",
+      nameKey: "security.demo.pk1_name",
+      typeKey: "security.demo.pk1_type",
       icon: "🔑",
-      devices: "iPhone · iPad · Mac（同一 Apple ID 自动同步）",
+      devicesKey: "security.demo.pk1_devices",
       created: "2026-06-12",
-      lastUsed: "当前",
+      lastUsed: t("security.demo.current", "当前"),
       current: true,
     },
     {
       id: "pk_2",
-      name: "会议室 PC · Windows Hello",
-      type: "本机凭证",
+      nameKey: "security.demo.pk2_name",
+      typeKey: "security.demo.pk2_type",
       icon: "🖥️",
-      devices: "仅这台 Windows PC",
+      devicesKey: "security.demo.pk2_devices",
       created: "2026-07-03",
-      lastUsed: "5 天前",
+      lastUsed: t("common.time.days_ago", "{n} 天前").replace("{n}", 5),
       current: false,
     },
     {
       id: "pk_3",
-      name: "YubiKey 硬件密钥",
-      type: "硬件密钥",
+      nameKey: "security.demo.pk3_name",
+      typeKey: "security.demo.pk3_type",
       icon: "🛡️",
-      devices: "USB / NFC，跨任意设备使用",
+      devicesKey: "security.demo.pk3_devices",
       created: "2026-07-20",
-      lastUsed: "2 周前",
+      lastUsed: t("common.time.weeks_ago", "{n} 周前").replace("{n}", 2),
       current: false,
     },
   ];
@@ -309,40 +310,40 @@
       device: 'MacBook Pro 16"',
       browser: "Chrome · macOS",
       icon: "💻",
-      passkey: "iCloud 钥匙串（已同步）",
-      location: "上海",
+      passkeyKey: "security.demo.s1_passkey",
+      locationKey: "security.demo.location_shanghai",
       current: true,
-      lastActive: "当前会话",
+      lastActive: t("security.current_session", "当前会话"),
     },
     {
       id: "s_2",
       device: "iPhone 15",
       browser: "Safari · iOS",
       icon: "📱",
-      passkey: "iCloud 钥匙串（已同步）",
-      location: "上海",
+      passkeyKey: "security.demo.s1_passkey",
+      locationKey: "security.demo.location_shanghai",
       current: false,
-      lastActive: "2 小时前",
+      lastActive: t("common.time.hours_ago", "{n} 小时前").replace("{n}", 2),
     },
     {
       id: "s_3",
       device: "iPad Air",
       browser: "Safari · iPadOS",
       icon: "📱",
-      passkey: "iCloud 钥匙串（已同步）",
-      location: "上海",
+      passkeyKey: "security.demo.s1_passkey",
+      locationKey: "security.demo.location_shanghai",
       current: false,
-      lastActive: "昨天 21:40",
+      lastActive: "昨日 21:40",
     },
     {
       id: "s_4",
       device: "会议室 PC",
       browser: "Edge · Windows",
       icon: "🖥️",
-      passkey: "本机 Passkey",
-      location: "公司",
+      passkeyKey: "security.demo.s4_passkey",
+      locationKey: "security.demo.location_office",
       current: false,
-      lastActive: "5 天前",
+      lastActive: t("common.time.days_ago", "{n} 天前").replace("{n}", 5),
     },
   ];
 
@@ -363,9 +364,17 @@
     const d = new Date(typeof ts === "number" ? ts * 1000 : ts);
     if (isNaN(d.getTime())) return String(ts);
     const diff = Date.now() - d.getTime();
-    if (diff < 60e3) return "刚刚";
-    if (diff < 3600e3) return Math.floor(diff / 60e3) + " 分钟前";
-    if (diff < 86400e3) return Math.floor(diff / 3600e3) + " 小时前";
+    if (diff < 60e3) return t("common.time.just_now", "刚刚");
+    if (diff < 3600e3)
+      return t("common.time.minutes_ago", "{n} 分钟前").replace(
+        "{n}",
+        Math.floor(diff / 60e3),
+      );
+    if (diff < 86400e3)
+      return t("common.time.hours_ago", "{n} 小时前").replace(
+        "{n}",
+        Math.floor(diff / 3600e3),
+      );
     return d.toISOString().slice(0, 10);
   }
 
@@ -402,8 +411,8 @@
     if (data) {
       PASSKEYS = (data.passkeys || data || []).map((p, i) => ({
         id: p.id || String(i),
-        name: p.name || "未命名 Passkey",
-        type: p.type || "凭证",
+        name: p.name || t("security.unnamed_passkey", "未命名 Passkey"),
+        type: p.type || t("security.credential", "凭证"),
         icon: platformIcon(p.devices || p.name),
         devices: p.devices || "",
         created: p.createdAt
@@ -415,6 +424,11 @@
       demoMode.passkeys = false;
     } else {
       PASSKEYS = DEMO_PASSKEYS.slice();
+      PASSKEYS.forEach((p) => {
+        if (p.nameKey) p.name = t(p.nameKey, p.name || "");
+        if (p.typeKey) p.type = t(p.typeKey, p.type || "");
+        if (p.devicesKey) p.devices = t(p.devicesKey, p.devices || "");
+      });
       demoMode.passkeys = true;
     }
     renderPasskeys();
@@ -427,19 +441,24 @@
     if (data) {
       SESSIONS = (data.sessions || data || []).map((s, i) => ({
         id: s.id || String(i),
-        device: s.device || s.userAgent || "未知设备",
+        device:
+          s.device || s.userAgent || t("security.unknown_device", "未知设备"),
         browser: s.browser || "",
         icon: platformIcon(s.userAgent || s.device),
         passkey: s.passkey || "",
         location: s.location || "",
         current: !!s.current,
         lastActive: s.current
-          ? "当前会话"
+          ? t("security.current_session", "当前会话")
           : fmtTime(s.lastSeen || s.lastActive),
       }));
       demoMode.sessions = false;
     } else {
       SESSIONS = DEMO_SESSIONS.slice();
+      SESSIONS.forEach((s) => {
+        if (s.passkeyKey) s.passkey = t(s.passkeyKey, s.passkey || "");
+        if (s.locationKey) s.location = t(s.locationKey, s.location || "");
+      });
       demoMode.sessions = true;
     }
     renderSessions();
@@ -447,7 +466,6 @@
 
   
   function renderPasskeys() {
-    const el = Anotify.el;
     const list = document.getElementById("passkey-list");
     document.getElementById("pk-count").textContent = PASSKEYS.length;
 
@@ -456,7 +474,10 @@
         el(
           "div",
           { class: "card p-6 text-center text-sm text-zinc-500" },
-          "还没有 Passkey。点右上角「+ 添加 Passkey」为这台设备创建一个。",
+          t(
+            "security.empty_passkeys",
+            "还没有 Passkey。点右上角「+ 添加 Passkey」为这台设备创建一个。",
+          ),
         ),
       );
       return;
@@ -490,7 +511,7 @@
                 p.current
                   ? el("span", {
                       class: "status-badge status-on",
-                      text: "本机在用",
+                      text: t("security.in_use", "本机在用"),
                     })
                   : null,
               ),
@@ -506,12 +527,18 @@
               { class: "flex flex-col items-end gap-1.5" },
               el("div", {
                 class: "text-[11px] text-zinc-500",
-                text: "最近使用 " + p.lastUsed,
+                text: t("security.last_used", "最近使用 {time}").replace(
+                  "{time}",
+                  p.lastUsed,
+                ),
               }),
               p.created
                 ? el("div", {
                     class: "text-[10px] text-zinc-600",
-                    text: "创建于 " + p.created,
+                    text: t("security.created_at", "创建于 {date}").replace(
+                      "{date}",
+                      p.created,
+                    ),
                   })
                 : null,
             ),
@@ -528,12 +555,15 @@
                 class: "btn-ghost rounded-lg px-3 py-1.5 text-xs",
                 onclick: () => renamePasskey(p),
               },
-              "重命名",
+              t("security.rename", "重命名"),
             ),
             p.current
               ? el("span", {
                   class: "text-[11px] text-zinc-600",
-                  text: "当前设备的凭证，不可删除",
+                  text: t(
+                    "security.current_credential_no_delete",
+                    "当前设备的凭证，不可删除",
+                  ),
                 })
               : el(
                   "button",
@@ -541,7 +571,7 @@
                     class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
                     onclick: () => deletePasskey(p),
                   },
-                  "删除",
+                  t("security.delete", "删除"),
                 ),
           ),
         ),
@@ -550,13 +580,18 @@
   }
 
   async function renamePasskey(p) {
-    const name = prompt("给这个 Passkey 起个新名字：", p.name);
+    const name = prompt(
+      t("security.prompt.rename", "给这个 Passkey 起个新名字："),
+      p.name,
+    );
     if (!name || !name.trim() || name.trim() === p.name) return;
     const newName = name.trim();
     if (demoMode.passkeys) {
       p.name = newName;
       renderPasskeys();
-      toast("已重命名（演示模式，仅本地生效）");
+      toast(
+        t("security.toast.renamed_demo", "已重命名（演示模式，仅本地生效）"),
+      );
       return;
     }
     try {
@@ -572,25 +607,31 @@
       if (!res.ok) throw new Error("HTTP " + res.status);
       p.name = newName;
       renderPasskeys();
-      toast("已重命名");
+      toast(t("security.toast.renamed", "已重命名"));
     } catch (e) {
-      toast("重命名失败：" + e.message);
+      toast(
+        t("security.toast.rename_failed", "重命名失败：{msg}").replace(
+          "{msg}",
+          e.message,
+        ),
+      );
     }
   }
 
   async function deletePasskey(p) {
     if (
       !confirm(
-        "确定删除 Passkey「" +
-          p.name +
-          "」吗？\n用它的设备将无法再登录（可用恢复码兜底）。",
+        t(
+          "security.confirm.delete",
+          "确定删除 Passkey「{name}」吗？\n用它的设备将无法再登录（可用恢复码兜底）。",
+        ).replace("{name}", p.name),
       )
     )
       return;
     if (demoMode.passkeys) {
       PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
       renderPasskeys();
-      toast("已删除（演示模式，仅本地生效）");
+      toast(t("security.toast.deleted_demo", "已删除（演示模式，仅本地生效）"));
       return;
     }
     try {
@@ -604,9 +645,19 @@
       if (!res.ok) throw new Error("HTTP " + res.status);
       PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
       renderPasskeys();
-      toast("已删除「" + p.name + "」");
+      toast(
+        t("security.toast.deleted", "已删除「{name}」").replace(
+          "{name}",
+          p.name,
+        ),
+      );
     } catch (e) {
-      toast("删除失败：" + e.message);
+      toast(
+        t("security.toast.delete_failed", "删除失败：{msg}").replace(
+          "{msg}",
+          e.message,
+        ),
+      );
     }
   }
 
@@ -614,7 +665,10 @@
     
     if (demoMode.passkeys || !window.PublicKeyCredential) {
       alert(
-        "添加 Passkey 需要：\n1. 后端已启动并处于 HTTPS 环境\n2. 浏览器支持 WebAuthn\n\n当前为演示模式，后端就绪后此处将调起系统生物识别。",
+        t(
+          "security.alert.add_requirement",
+          "添加 Passkey 需要：\n1. 后端已启动并处于 HTTPS 环境\n2. 浏览器支持 WebAuthn\n\n当前为演示模式，后端就绪后此处将调起系统生物识别。",
+        ),
       );
       return;
     }
@@ -637,17 +691,21 @@
         body: JSON.stringify(cred),
       });
       if (!regRes.ok) throw new Error("HTTP " + regRes.status);
-      toast("Passkey 添加成功");
+      toast(t("security.toast.add_success", "Passkey 添加成功"));
       loadPasskeys();
     } catch (e) {
       if (e.name === "NotAllowedError") return; 
-      toast("添加失败：" + e.message);
+      toast(
+        t("security.toast.add_failed", "添加失败：{msg}").replace(
+          "{msg}",
+          e.message,
+        ),
+      );
     }
   }
 
   
   function renderSessions() {
-    const el = Anotify.el;
     const list = document.getElementById("session-list");
     document.getElementById("session-count").textContent = SESSIONS.length;
 
@@ -656,7 +714,7 @@
         el(
           "div",
           { class: "px-5 py-8 text-center text-sm text-zinc-500" },
-          "当前没有活跃会话。",
+          t("security.empty_sessions", "当前没有活跃会话。"),
         ),
       );
       return;
@@ -684,7 +742,7 @@
               s.current
                 ? el("span", {
                     class: "status-badge status-on",
-                    text: "当前会话",
+                    text: t("security.current_session", "当前会话"),
                   })
                 : null,
             ),
@@ -701,7 +759,12 @@
               s.location ? el("span", { text: s.location }) : null,
               el("span", { class: "text-zinc-700", text: "·" }),
               el("span", {
-                text: s.current ? s.lastActive : "最后活跃 " + s.lastActive,
+                text: s.current
+                  ? s.lastActive
+                  : t("security.last_active", "最后活跃 {time}").replace(
+                      "{time}",
+                      s.lastActive,
+                    ),
               }),
             ),
           ),
@@ -725,7 +788,7 @@
                     class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
                     onclick: () => revokeSession(s),
                   },
-                  "吊销",
+                  t("security.revoke", "吊销"),
                 ),
           ),
         ),
@@ -734,12 +797,19 @@
   }
 
   async function revokeSession(s) {
-    if (!confirm("吊销「" + s.device + "」的登录会话？该设备将需要重新登录。"))
+    if (
+      !confirm(
+        t(
+          "security.confirm.revoke",
+          "吊销「{name}」的登录会话？该设备将需要重新登录。",
+        ).replace("{name}", s.device),
+      )
+    )
       return;
     if (demoMode.sessions) {
       SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
       renderSessions();
-      toast("已吊销（演示模式，仅本地生效）");
+      toast(t("security.toast.revoked_demo", "已吊销（演示模式，仅本地生效）"));
       return;
     }
     try {
@@ -753,17 +823,27 @@
       if (!res.ok) throw new Error("HTTP " + res.status);
       SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
       renderSessions();
-      toast("已吊销「" + s.device + "」的会话");
+      toast(
+        t("security.toast.revoked", "已吊销「{name}」的会话").replace(
+          "{name}",
+          s.device,
+        ),
+      );
     } catch (e) {
-      toast("吊销失败：" + e.message);
+      toast(
+        t("security.toast.revoke_failed", "吊销失败：{msg}").replace(
+          "{msg}",
+          e.message,
+        ),
+      );
     }
   }
 
   
   Anotify.mountLayout({
     active: "security",
-    title: "安全与登录",
-    subtitle: "Passkey · 会话 · 恢复码",
+    title: t("security.title", "安全与登录"),
+    subtitle: t("security.subtitle", "Passkey · 会话 · 恢复码"),
   });
   loadPasskeys();
   loadSessions();

@@ -67,27 +67,35 @@
 <script>
   (function () {
     "use strict";
-    const { el, api, mountLayout, timeAgo } = window.Anotify;
+    const { el, api, mountLayout, timeAgo, t } = window.Anotify;
     const qs = new URLSearchParams(location.search);
     const msgId = qs.get("id") || "";
 
-    mountLayout({ active: "overview", title: "通知详情" });
+    mountLayout({ active: "overview", title: t("message.title", "通知详情") });
 
     const STATUS_META = {
-      success: { dot: "dot-success", badge: "status-success", label: "成功" },
-      error: { dot: "dot-error", badge: "status-error", label: "失败" },
-      interrupted: { dot: "dot-warn", badge: "status-warn", label: "中断" },
-      info: { dot: "dot-success", badge: "status-success", label: "信息" },
-      warning: { dot: "dot-warn", badge: "status-warn", label: "警告" },
+      success: { dot: "dot-success", badge: "status-success", labelKey: "common.status.success", fb: "成功" },
+      error: { dot: "dot-error", badge: "status-error", labelKey: "common.status.error", fb: "失败" },
+      interrupted: { dot: "dot-warn", badge: "status-warn", labelKey: "common.status.interrupted", fb: "中断" },
+      info: { dot: "dot-success", badge: "status-success", labelKey: "common.status.info", fb: "信息" },
+      warning: { dot: "dot-warn", badge: "status-warn", labelKey: "common.status.warning", fb: "警告" },
     };
-    const PRIORITY_LABEL = { high: "高", normal: "普通", low: "低" };
+    function priorityLabel(p) {
+      const map = {
+        high: { key: "common.priority.high", fb: "高" },
+        normal: { key: "common.priority.normal", fb: "普通" },
+        low: { key: "common.priority.low", fb: "低" },
+      };
+      const m = map[p];
+      return m ? t(m.key, m.fb) : p || "—";
+    }
     const CHANNEL_LABEL = { webpush: "Web Push", websocket: "WebSocket" };
     const DSTATUS_META = {
-      pending: { cls: "status-warn", label: "待投递" },
-      sent: { cls: "status-success", label: "已发送" },
-      delivered: { cls: "status-success", label: "已送达" },
-      acked: { cls: "status-success", label: "已确认" },
-      failed: { cls: "status-error", label: "失败" },
+      pending: { cls: "status-warn", labelKey: "common.delivery.pending", fb: "待投递" },
+      sent: { cls: "status-success", labelKey: "common.delivery.sent", fb: "已发送" },
+      delivered: { cls: "status-success", labelKey: "common.delivery.delivered", fb: "已送达" },
+      acked: { cls: "status-success", labelKey: "common.delivery.acked", fb: "已确认" },
+      failed: { cls: "status-error", labelKey: "common.delivery.failed", fb: "失败" },
     };
 
     function safeParse(s) {
@@ -107,10 +115,13 @@
     }
     function fmtTTL(sec) {
       if (!sec || sec <= 0) return "—";
-      if (sec % 86400 === 0) return sec / 86400 + " 天";
-      if (sec % 3600 === 0) return sec / 3600 + " 小时";
-      if (sec % 60 === 0) return sec / 60 + " 分钟";
-      return sec + " 秒";
+      if (sec % 86400 === 0)
+        return t("common.ttl.day", "{n} 天").replace("{n}", sec / 86400);
+      if (sec % 3600 === 0)
+        return t("common.ttl.hour", "{n} 小时").replace("{n}", sec / 3600);
+      if (sec % 60 === 0)
+        return t("common.ttl.minute", "{n} 分钟").replace("{n}", sec / 60);
+      return t("common.ttl.second", "{n} 秒").replace("{n}", sec);
     }
 
     function field(k, v, mono) {
@@ -147,7 +158,7 @@
       document.getElementById("msg-dot").className =
         "dot " + meta.dot + " mt-2";
       document.getElementById("msg-title").textContent =
-        m.title || "（无标题）";
+        m.title || t("common.placeholder.no_title", "（无标题）");
       document.getElementById("msg-subtitle").textContent =
         (payload.cwd || payload.project || "—") +
         " · " +
@@ -156,9 +167,9 @@
         m.id;
       const badge = document.getElementById("msg-status-badge");
       badge.className = "status-badge shrink-0 " + meta.badge;
-      badge.textContent = meta.label;
+      badge.textContent = t(meta.labelKey, meta.fb);
 
-      document.getElementById("msg-body").textContent = m.body || "（无正文）";
+      document.getElementById("msg-body").textContent = m.body || t("common.placeholder.no_body", "（无正文）");
       const linkBtn = document.getElementById("msg-link-btn");
       if (m.link) {
         linkBtn.href = m.link;
@@ -174,20 +185,20 @@
       document
         .getElementById("msg-fields")
         .replaceChildren(
-          field("消息 ID", m.id),
-          field("序号 Seq", m.seq),
-          field("状态", `${meta.label}（${m.status}）`, false),
-          field("Agent", payload.agentId || payload.agent),
-          field("会话 Session", payload.sessionId),
-          field("项目 CWD", payload.cwd || payload.project),
-          field("模型 Model", payload.model),
-          field("耗时", duration),
-          field("优先级", PRIORITY_LABEL[m.priority] || m.priority, false),
-          field("路由标签", tags.length ? tags.join("、") : "（广播）", false),
-          field("TTL", fmtTTL(m.ttlSeconds)),
-          field("创建时间", fmtTime(m.createdAt)),
-          field("过期时间", fmtTime(m.expiresAt)),
-          field("外部链接", m.link || "—"),
+          field(t("common.field.msg_id", "消息 ID"), m.id),
+          field(t("common.field.seq", "序号 Seq"), m.seq),
+          field(t("common.field.status", "状态"), `${t(meta.labelKey, meta.fb)}（${m.status}）`, false),
+          field(t("common.field.agent", "Agent"), payload.agentId || payload.agent),
+          field(t("common.field.session", "会话 Session"), payload.sessionId),
+          field(t("common.field.cwd", "项目 CWD"), payload.cwd || payload.project),
+          field(t("common.field.model", "模型 Model"), payload.model),
+          field(t("common.field.duration", "耗时"), duration),
+          field(t("common.field.priority", "优先级"), priorityLabel(m.priority), false),
+          field(t("common.field.device_tags", "路由标签"), tags.length ? tags.join("、") : t("common.placeholder.broadcast", "（广播）"), false),
+          field(t("common.field.ttl", "TTL"), fmtTTL(m.ttlSeconds)),
+          field(t("common.field.created_at", "创建时间"), fmtTime(m.createdAt)),
+          field(t("common.field.expires_at", "过期时间"), fmtTime(m.expiresAt)),
+          field(t("common.field.external_link", "外部链接"), m.link || "—"),
         );
     }
 
@@ -195,14 +206,18 @@
       const okCount = list.filter((d) =>
         ["sent", "delivered", "acked"].includes(d.status),
       ).length;
-      document.getElementById("delivery-count").textContent =
-        `${okCount}/${list.length} 已送达`;
+      document.getElementById("delivery-count").textContent = t(
+        "message.delivery.delivered_count",
+        "{ok}/{n} 已送达",
+      )
+        .replace("{ok}", okCount)
+        .replace("{n}", list.length);
       const box = document.getElementById("delivery-list");
       if (list.length === 0) {
         box.replaceChildren(
           el("div", {
             class: "py-6 text-center text-sm text-zinc-500",
-            text: "暂无投递记录（未匹配到启用设备）",
+            text: t("message.delivery.empty", "暂无投递记录（未匹配到启用设备）"),
           }),
         );
         return;
@@ -225,17 +240,16 @@
                 }),
                 el("span", {
                   class: `status-badge ${dm.cls}`,
-                  text: dm.label,
+                  text: t(dm.labelKey, dm.fb),
                 }),
               ),
               el(
                 "div",
                 { class: "mt-0.5 text-[11px] text-zinc-500" },
-                (CHANNEL_LABEL[d.channel] || d.channel) +
-                  " · 尝试 " +
-                  d.attempts +
-                  " 次 · " +
-                  timeAgo(d.updatedAt) +
+                t("message.delivery.attempt_info", "{channel} · 尝试 {n} 次 · {time}")
+                  .replace("{channel}", CHANNEL_LABEL[d.channel] || d.channel)
+                  .replace("{n}", d.attempts)
+                  .replace("{time}", timeAgo(d.updatedAt)) +
                   (d.error ? " · " + d.error : ""),
               ),
             ),
@@ -247,18 +261,18 @@
     /* ================= 加载 ================= */
     async function load() {
       if (!msgId) {
-        renderError("缺少消息 ID（URL 应有 ?id=ntf_…）");
+        renderError(t("message.error.missing_id", "缺少消息 ID（URL 应有 ?id=ntf_…）"));
         return;
       }
       let m;
       try {
         m = await api("/v1/notifications/" + encodeURIComponent(msgId));
       } catch (e) {
-        renderError("消息不存在或已被清理");
+        renderError(t("message.error.not_found", "消息不存在或已被清理"));
         return;
       }
       if (!m || !m.id) {
-        renderError("消息不存在或已被清理");
+        renderError(t("message.error.not_found", "消息不存在或已被清理"));
         return;
       }
       render(m);

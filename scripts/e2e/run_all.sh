@@ -45,7 +45,7 @@ else
 fi
 
 # 3. 逐套件运行
-SUITES=(api_contract auth_flow ws_protocol routing persistence security edge_cases frontend deeplink push_e2e i18n lang_hint cli_auth)
+SUITES=(api_contract auth_flow ws_protocol routing persistence security edge_cases frontend deeplink push_e2e i18n lang_hint cli_auth i18n_coverage)
 ONLY="${1:-}"
 TOTAL_PASS=0
 TOTAL_FAIL=0

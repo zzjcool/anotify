@@ -395,19 +395,20 @@
 {{define "script"}}
     
     <script>
-      // ==================== 数据层 ====================
+      // ==================== Data layer ====================
+      const { el, t } = window.Anotify;
       const API = "/v1";
       const SCOPE_META = {
         "notify:send": {
-          label: "上报",
+          labelKey: "keys.scope.send",
           color: "background:var(--accent-soft);color:var(--accent-strong)",
         },
         "notify:receive": {
-          label: "接收",
+          labelKey: "keys.scope.receive",
           color: "background:var(--success-soft);color:var(--success)",
         },
         "devices:read": {
-          label: "设备查询",
+          labelKey: "keys.scope.read",
           color: "background:var(--warn-soft);color:var(--warn)",
         },
       };
@@ -416,37 +417,37 @@
       const DEMO_KEYS = [
         {
           id: "k_demo1",
-          name: "本地开发",
+          nameKey: "keys.demo.name1",
           prefix: "ant_live_9f3a",
           scopes: ["notify:send"],
-          lastUsed: "2 分钟前",
+          lastUsed: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 2),
           enabled: true,
           created: "2026-06-12",
         },
         {
           id: "k_demo2",
-          name: "CI 流水线",
+          nameKey: "keys.demo.name2",
           prefix: "ant_live_2b1d",
           scopes: ["notify:send"],
-          lastUsed: "1 小时前",
+          lastUsed: t("common.time.hours_ago", "{n} 小时前").replace("{n}", 1),
           enabled: true,
           created: "2026-06-28",
         },
         {
           id: "k_demo3",
-          name: "桌面插件（接收）",
+          nameKey: "keys.demo.name3",
           prefix: "ant_recv_9f3a",
           scopes: ["notify:receive"],
-          lastUsed: "刚刚",
+          lastUsed: t("common.time.just_now", "刚刚"),
           enabled: true,
           created: "2026-07-15",
         },
         {
           id: "k_demo4",
-          name: "旧测试 Key",
+          nameKey: "keys.demo.name4",
           prefix: "ant_live_x8q2",
           scopes: ["notify:send"],
-          lastUsed: "3 周前",
+          lastUsed: t("common.time.weeks_ago", "{n} 周前").replace("{n}", 3),
           enabled: false,
           created: "2026-05-30",
         },
@@ -466,13 +467,21 @@
       }
 
       function fmtTime(ts) {
-        if (!ts) return "从未使用";
+        if (!ts) return t("common.time.never", "从未使用");
         const d = new Date(ts * 1000 || ts);
         if (isNaN(d.getTime())) return String(ts);
         const diff = Date.now() - d.getTime();
-        if (diff < 60e3) return "刚刚";
-        if (diff < 3600e3) return Math.floor(diff / 60e3) + " 分钟前";
-        if (diff < 86400e3) return Math.floor(diff / 3600e3) + " 小时前";
+        if (diff < 60e3) return t("common.time.just_now", "刚刚");
+        if (diff < 3600e3)
+          return t("common.time.minutes_ago", "{n} 分钟前").replace(
+            "{n}",
+            Math.floor(diff / 60e3),
+          );
+        if (diff < 86400e3)
+          return t("common.time.hours_ago", "{n} 小时前").replace(
+            "{n}",
+            Math.floor(diff / 3600e3),
+          );
         return d.toISOString().slice(0, 10);
       }
 
@@ -500,7 +509,8 @@
         if (data) {
           KEYS = (data.keys || data || []).map((k) => ({
             id: k.id,
-            name: k.name || "未命名",
+            name: k.name || t("keys.unnamed", "未命名"),
+            nameKey: k.nameKey || null,
             prefix: k.prefix || "ant_????",
             scopes: k.scopes || [],
             lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
@@ -520,6 +530,9 @@
           demoMode = false;
         } else {
           KEYS = DEMO_KEYS.slice();
+          KEYS.forEach((k) => {
+            if (k.nameKey) k.name = t(k.nameKey, k.name || "");
+          });
           demoMode = true;
         }
         renderKeys();
@@ -527,15 +540,18 @@
 
       // ==================== 渲染 ====================
       function renderKeys() {
-        const el = Anotify.el;
         const body = document.getElementById("keys-body");
         const activeCount = KEYS.filter((k) => k.enabled).length;
-        document.getElementById("keys-summary").textContent =
-          KEYS.length +
-          " 个 Key · " +
-          activeCount +
-          " 启用" +
-          (demoMode ? " · 演示数据" : "");
+        document.getElementById("keys-summary").textContent = t(
+          "keys.summary",
+          "{total} 个 Key · {active} 启用{demo}",
+        )
+          .replace("{total}", KEYS.length)
+          .replace("{active}", activeCount)
+          .replace(
+            "{demo}",
+            demoMode ? t("keys.summary_demo", " · 演示数据") : "",
+          );
 
         if (KEYS.length === 0) {
           body.replaceChildren(
@@ -548,7 +564,10 @@
                   class: "px-6 py-10 text-center text-sm text-zinc-500",
                   colspan: "6",
                 },
-                "还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。",
+                t(
+                  "keys.empty",
+                  "还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。",
+                ),
               ),
             ),
           );
@@ -569,7 +588,12 @@
                 }),
                 el("div", {
                   class: "text-[11px] text-zinc-500",
-                  text: k.created ? "创建于 " + k.created : "",
+                  text: k.created
+                    ? t("keys.created_at", "创建于 {date}").replace(
+                        "{date}",
+                        k.created,
+                      )
+                    : "",
                 }),
               ),
               el(
@@ -592,7 +616,9 @@
                       style: SCOPE_META[s]
                         ? SCOPE_META[s].color
                         : "background:rgba(255,255,255,0.06);color:var(--muted)",
-                      text: SCOPE_META[s] ? SCOPE_META[s].label : s,
+                      text: SCOPE_META[s]
+                        ? t(SCOPE_META[s].labelKey, SCOPE_META[s].label)
+                        : s,
                     }),
                   ),
                 ),
@@ -607,7 +633,9 @@
                 el("span", {
                   class:
                     "status-badge " + (k.enabled ? "status-on" : "status-off"),
-                  text: k.enabled ? "启用" : "已停用",
+                  text: k.enabled
+                    ? t("keys.status.enabled", "启用")
+                    : t("keys.status.disabled", "已停用"),
                 }),
               ),
               el(
@@ -622,7 +650,7 @@
                       class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
                       onclick: () => revokeKey(k),
                     },
-                    "停用",
+                    t("keys.action.revoke", "停用"),
                   ),
                 ),
               ),
@@ -633,13 +661,18 @@
 
       async function revokeKey(k) {
         if (
-          !confirm("确定停用「" + k.name + "」吗？使用它的 Agent 将无法上报。")
+          !confirm(
+            t(
+              "keys.confirm.revoke",
+              "确定停用「{name}」吗？使用它的 Agent 将无法上报。",
+            ).replace("{name}", k.name),
+          )
         )
           return;
         if (demoMode) {
           k.enabled = false;
           renderKeys();
-          toast("已停用（演示模式，仅本地生效）");
+          toast(t("keys.toast.revoked_demo", "已停用（演示模式，仅本地生效）"));
           return;
         }
         try {
@@ -653,9 +686,19 @@
           if (!res.ok) throw new Error("HTTP " + res.status);
           k.enabled = false;
           renderKeys();
-          toast("已停用「" + k.name + "」");
+          toast(
+            t("keys.toast.revoked", "已停用「{name}」").replace(
+              "{name}",
+              k.name,
+            ),
+          );
         } catch (e) {
-          toast("停用失败：" + e.message);
+          toast(
+            t("keys.toast.revoke_failed", "停用失败：{msg}").replace(
+              "{msg}",
+              e.message,
+            ),
+          );
         }
       }
 
@@ -698,11 +741,15 @@
 
       async function generateKey() {
         const name =
-          document.getElementById("new-key-name").value.trim() || "未命名 Key";
+          document.getElementById("new-key-name").value.trim() ||
+          t("keys.unnamed_key", "未命名 Key");
         const scopes = selectedScopes();
         const errEl = document.getElementById("create-error");
         if (scopes.length === 0) {
-          errEl.textContent = "请至少选择一个权限范围";
+          errEl.textContent = t(
+            "keys.error.no_scope",
+            "请至少选择一个权限范围",
+          );
           errEl.classList.remove("hidden");
           return;
         }
@@ -715,7 +762,7 @@
             name: name,
             prefix: newKeyPlain.slice(0, 13),
             scopes: scopes,
-            lastUsed: "从未使用",
+            lastUsed: t("common.time.never", "从未使用"),
             enabled: true,
             created: new Date().toISOString().slice(0, 10),
           };
@@ -736,20 +783,22 @@
           }
           const data = await res.json();
           newKeyPlain = data.key || data.plaintext || "";
-          if (!newKeyPlain) throw new Error("服务端未返回 Key 明文");
+          if (!newKeyPlain) throw new Error(t("keys.error.no_plaintext", "服务端未返回 Key 明文"));
           pendingKey = {
             id: data.id || "k_" + Date.now(),
             name: data.name || name,
             prefix: data.prefix || newKeyPlain.slice(0, 13),
             scopes: data.scopes || scopes,
-            lastUsed: "从未使用",
+            lastUsed: t("common.time.never", "从未使用"),
             enabled: true,
             created: new Date().toISOString().slice(0, 10),
           };
           showStep2();
         } catch (e) {
-          errEl.textContent =
-            "创建失败：" + e.message + "（后端未就绪时可先体验演示模式）";
+          errEl.textContent = t(
+            "keys.error.create_failed",
+            "创建失败：{msg}（后端未就绪时可先体验演示模式）",
+          ).replace("{msg}", e.message);
           errEl.classList.remove("hidden");
         }
       }
@@ -765,10 +814,12 @@
           .writeText(newKeyPlain)
           .then(() => {
             const orig = btn.textContent;
-            btn.textContent = "已复制 ✓";
+            btn.textContent = t("keys.toast.copied", "已复制 ✓");
             setTimeout(() => (btn.textContent = orig), 1500);
           })
-          .catch(() => toast("复制失败，请手动选择复制"));
+          .catch(() =>
+            toast(t("keys.toast.copy_failed", "复制失败，请手动选择复制")),
+          );
       }
 
       function finishCreate() {
@@ -779,7 +830,7 @@
         pendingKey = null;
         newKeyPlain = "";
         closeCreate();
-        toast("Key 已创建");
+        toast(t("keys.toast.created", "Key 已创建"));
       }
 
       window.addEventListener("keydown", (e) => {
@@ -789,8 +840,8 @@
       // ==================== 页面组装 ====================
       Anotify.mountLayout({
         active: "keys",
-        title: "API Keys",
-        subtitle: "Agent 用它上报通知",
+        title: t("keys.title", "API Keys"),
+        subtitle: t("keys.subtitle", "Agent 用它上报通知"),
       });
       loadKeys();
     </script>

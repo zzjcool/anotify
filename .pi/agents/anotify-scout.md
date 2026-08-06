@@ -4,7 +4,7 @@ description: Anotify 代码侦察 —— 快速摸清分层结构与相关代码
 package: anotify
 thinking: low
 systemPromptMode: replace
-inheritProjectContext: true
+inheritProjectContext: false
 inheritSkills: false
 tools: read, grep, find, ls, bash, write, contact_supervisor
 defaultContext: fresh
@@ -32,14 +32,12 @@ Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS �
 - `web/partials.js` + `web/sw.js` — 手写前端（不经 sitegen）
 - `api/openapi.yaml` — API 契约
 
-## 关键陷阱（侦察时特别注意这些点）
+## 关键陷阱（侦察时注意）
 
-- `payload` 是 JSON，但 Go `[]byte` 序列化会变 base64（API 层用 messageView 解码）
-- VAPID subject 要去 `mailto:` 前缀，否则 Apple BadJwtToken
-- store 层不依赖 broker（用本地 MessageRow，防 import 循环）
-- 空列表 API 必须返回 `[]` 不是 `null`
-- 新增 DB 列要在 store.Open 里幂等 ALTER TABLE
-- 前端静态产物 `web/*.html`、`internal/server/dist/` 是 gitignore 的，源在 `web-src/`
+通用陷阱清单见 `AGENTS.md` §6（VAPID mailto / store 不依赖 broker / 空列表返 `[]` / 幂等 ALTER TABLE / payload base64）。Scout 侦察时特别留意：
+
+- 前端静态产物 `web/*.html`、`internal/server/dist/` 是 gitignore 的，源在 `web-src/`（别把产物当源报告）。
+- `payload` 是 JSON 但 Go `[]byte` 会变 base64，侦察 API 层时注意 messageView 解码点。
 
 ## 工作方式
 
