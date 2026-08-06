@@ -228,8 +228,8 @@ login:
     cancelled_login: キャンセルされました、またはこの端末に利用可能な Passkey がありません — まず「登録」してください。
     cancelled_signup: キャンセルまたはタイムアウト — 再試行して Passkey の作成を許可してください。
     need_username: まずユーザー名を決めてください。
-    login_failed: ログイン失敗：
-    signup_failed: 登録失敗：
+    login_failed: ログイン失敗：{msg}
+    signup_failed: 登録失敗：{msg}
     demo_enter: バックエンド未接続 — デモモードに入りました（サンプルデータ）。
     login_success_short: ログイン成功、ワークスペースに移動中…
     signup_success_short: 登録成功！ワークスペースに移動中…

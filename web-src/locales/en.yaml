@@ -228,8 +228,8 @@ login:
     cancelled_login: Cancelled, or no Passkey available on this device — please sign up first.
     cancelled_signup: Cancelled or timed out — please retry and allow Passkey creation.
     need_username: Please pick a username first.
-    login_failed: 'Sign-in failed: '
-    signup_failed: 'Sign-up failed: '
+    login_failed: 'Sign-in failed: {msg}'
+    signup_failed: 'Sign-up failed: {msg}'
     demo_enter: Backend not connected — entered demo mode (sample data).
     login_success_short: Signed in — entering workspace…
     signup_success_short: Account created — entering workspace…

@@ -228,8 +228,8 @@ login:
     cancelled_login: 已取消，或本机没有可用的 Passkey——请先「注册」一个。
     cancelled_signup: 已取消或超时——请重试并允许创建 Passkey。
     need_username: 先给自己起个用户名。
-    login_failed: 登录失败：
-    signup_failed: 注册失败：
+    login_failed: 登录失败：{msg}
+    signup_failed: 注册失败：{msg}
     demo_enter: 后端未连接，已进入演示模式（数据为示例）。
     login_success_short: 登录成功，正在进入工作台…
     signup_success_short: 注册成功！正在进入工作台…

@@ -228,8 +228,8 @@ login:
     cancelled_login: Cancelado, o no hay Passkey disponible en este dispositivo — regístrate primero.
     cancelled_signup: Cancelado o expiró el tiempo — reintenta y permite crear el Passkey.
     need_username: Primero elige un nombre de usuario.
-    login_failed: 'Error al iniciar sesión: '
-    signup_failed: 'Error al registrarse: '
+    login_failed: 'Error al iniciar sesión: {msg}'
+    signup_failed: 'Error al registrarse: {msg}'
     demo_enter: Backend no conectado — modo demo activado (datos de ejemplo).
     login_success_short: Sesión iniciada — entrando al workspace…
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
