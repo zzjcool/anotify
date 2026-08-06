@@ -51,8 +51,11 @@ docker-run: ## 运行 Docker 容器（需传入 VAPID 环境变量）
 	  -e ANOTIFY_RP_ORIGIN=$$ANOTIFY_RP_ORIGIN \
 	  anotify
 
-tunnel: ## Cloudflare 临时域名隧道（暴露到公网，供 iOS 验证）
-	cloudflared tunnel --url http://localhost:$(PORT)
+tunnel: ## Cloudflare 命名隧道（固定域名 dev.openaaas.org）
+	cloudflared tunnel run anotify
+
+tunnel-url: ## 读取隧道公网地址（固定 dev.openaaas.org）
+	@echo https://dev.openaaas.org
 
 keys: ## 生成 VAPID 密钥对
 	go run ./scripts/genkeys.go
