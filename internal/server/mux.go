@@ -91,7 +91,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		staticFS: cliAuthStaticFS,
 	}
 
-	enrollH := &passkeyEnrollHandler{mgr: enrollMgr}
+	enrollH := &passkeyEnrollHandler{mgr: enrollMgr, db: db}
 
 	sessMW := authSvc.Sessions().Middleware
 

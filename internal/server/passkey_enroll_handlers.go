@@ -12,6 +12,7 @@ import (
 // passkeyEnrollHandler 处理 /v1/passkey-enroll/sessions/* 端点族。
 type passkeyEnrollHandler struct {
 	mgr *auth.PasskeyEnrollManager
+	db  *store.DB
 }
 
 // ---------- DTO ----------
@@ -110,7 +111,7 @@ func (h *passkeyEnrollHandler) lookup(w http.ResponseWriter, r *http.Request, id
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}
-	writeJSON(w, 200, toEnrollAnonView(s))
+	writeJSON(w, 200, h.toEnrollAnonView(s))
 }
 
 // byCode 匿名按短码查会话（IP 限速 10/min）。
@@ -133,7 +134,7 @@ func (h *passkeyEnrollHandler) byCode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "授权码无效或已过期")
 		return
 	}
-	writeJSON(w, 200, toEnrollAnonView(s))
+	writeJSON(w, 200, h.toEnrollAnonView(s))
 }
 
 // knock 新设备敲门（匿名，IP 限速）：pending→requested，返回 secret。
@@ -325,7 +326,7 @@ func (h *passkeyEnrollHandler) qr(w http.ResponseWriter, r *http.Request, id str
 
 // ---------- 辅助 ----------
 
-func toEnrollAnonView(s *store.CliAuthSession) enrollAnonView {
+func (h *passkeyEnrollHandler) toEnrollAnonView(s *store.CliAuthSession) enrollAnonView {
 	v := enrollAnonView{
 		SessionID: s.ID,
 		Status:    s.Status,
@@ -335,11 +336,27 @@ func toEnrollAnonView(s *store.CliAuthSession) enrollAnonView {
 	if s.Status == store.CliAuthRequested || s.Status == store.CliAuthApproved || s.Status == store.CliAuthConsumed {
 		v.DeviceHint = s.DeviceHint
 	}
-	// approved 后才有 initiatorName（匿名视图不返回 user_id，只返回 displayName）
+	// approved 后才有 initiatorName（匿名视图不返回 user_id，只返回批准者 displayName/username 供新设备核对账号身份）
 	if s.Status == store.CliAuthApproved || s.Status == store.CliAuthConsumed {
-		v.InitiatorName = s.DeviceName // 发起设备名（旧设备名），供新设备核对
+		v.InitiatorName = h.initiatorName(s)
 	}
 	return v
+}
+
+// initiatorName 查批准者显示名（approve 后 s.UserID 已回填）。
+// 匿名视图不返回 user_id，仅返回 displayName/username 供新设备核对「给哪个账号加 Passkey」。
+func (h *passkeyEnrollHandler) initiatorName(s *store.CliAuthSession) string {
+	if s.UserID == "" {
+		return ""
+	}
+	u, err := h.db.GetUserByID(s.UserID)
+	if err != nil {
+		return ""
+	}
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	return u.Username
 }
 
 func (h *passkeyEnrollHandler) writeEnrollErr(w http.ResponseWriter, r *http.Request, id string, err error) {

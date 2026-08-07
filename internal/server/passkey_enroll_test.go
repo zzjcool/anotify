@@ -60,7 +60,7 @@ func newEnrollTestEnv(t *testing.T) *enrollTestEnv {
 	}
 	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
 
-	enrollH := &passkeyEnrollHandler{mgr: mgr}
+	enrollH := &passkeyEnrollHandler{mgr: mgr, db: db}
 	sessMW := svc.Sessions().Middleware
 
 	mux := http.NewServeMux()
