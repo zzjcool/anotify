@@ -2,8 +2,9 @@ package server
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -33,8 +34,17 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 1. 存储
 	db, err := store.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatalf("[server] 打开数据库失败: %v", err)
+		slog.Error("database open failed",
+			"event", "server.fatal",
+			"component", "store",
+			"error", err.Error(),
+		)
+		os.Exit(1)
 	}
+	slog.Info("database opened",
+		"event", "server.db.opened",
+		"path", cfg.DBPath,
+	)
 
 	// 2. Broker
 	bk := broker.NewSQLite(db)
@@ -48,7 +58,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		SecureCookie:  cfg.RPOrigin != "" && len(cfg.RPOrigin) > 8 && cfg.RPOrigin[:5] == "https",
 	})
 	if err != nil {
-		log.Fatalf("[server] 初始化认证失败: %v", err)
+		slog.Error("auth service init failed",
+			"event", "server.fatal",
+			"component", "auth",
+			"error", err.Error(),
+		)
+		os.Exit(1)
 	}
 	keyValidator := asKeyValidator(authSvc.Keys())
 
@@ -65,7 +80,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		d := &push.Dispatcher{Broker: bk, Store: db, Sender: push.NewVAPIDSender(vapidCfg)}
 		dm = newDispatchManager(ctx, d, db)
 	} else {
-		log.Printf("[warn] VAPID 未配置，Web Push 派发器未启动: %v", vapidErr)
+		slog.Warn("VAPID not configured, push disabled",
+			"event", "push.vapid.missing",
+			"error", vapidErr.Error(),
+		)
 	}
 
 	// 5. HTTP 处理器
@@ -104,7 +122,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 
 	mux := http.NewServeMux()
-
 	// --- 动态 API（no-store）---
 	// 认证端点：register/login/logout 无需登录；me/sessions 需登录会话。
 	// 注意 Go 1.22+ ServeMux 最长模式优先，/v1/auth/me 与 /v1/auth/sessions 会优先于 /v1/auth/。
@@ -205,7 +222,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// --- 静态资源（CDN 缓存分级）---
 	mux.Handle("/", resolveStatic(cfg))
 
-	return &App{Handler: mux, Broker: bk, DB: db, AuthSvc: authSvc}
+	return &App{Handler: accessLog(mux), Broker: bk, DB: db, AuthSvc: authSvc}
 }
 
 // dispatchManager 动态管理 per-user push 消费者：上报/启动时按需为每个用户
@@ -235,7 +252,11 @@ func (m *dispatchManager) Ensure(userID string) {
 	m.run[userID] = struct{}{}
 	go func() {
 		if err := m.d.Run(m.ctx, userID); err != nil && err != context.Canceled {
-			log.Printf("[push] 用户 %s 派发器退出: %v", userID, err)
+			slog.Error("push consumer exited",
+				"event", "push.consumer.exit",
+				"user_id", userID,
+				"error", err.Error(),
+			)
 		}
 	}()
 }
@@ -244,11 +265,21 @@ func (m *dispatchManager) Ensure(userID string) {
 func (m *dispatchManager) StartExisting() {
 	users, err := m.db.ListAllUserIDs(m.ctx)
 	if err != nil {
-		log.Printf("[push] 列出用户失败: %v", err)
+		slog.Error("failed to list users for push consumers",
+			"event", "push.consumer.list_failed",
+			"error", err.Error(),
+		)
 		return
 	}
 	for _, uid := range users {
+		slog.Info("push consumer started",
+			"event", "push.consumer.start",
+			"user_id", uid,
+		)
 		m.Ensure(uid)
 	}
-	log.Printf("[push] 已为 %d 个用户启动 push 消费者", len(users))
+	slog.Info("push consumers started",
+		"event", "push.consumer.start",
+		"count", len(users),
+	)
 }

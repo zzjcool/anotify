@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -122,8 +123,16 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, authn.ErrForbidden):
+			slog.Warn("notify auth forbidden",
+				"event", "notify.auth.forbidden",
+				"ip", r.RemoteAddr,
+			)
 			writeError(w, http.StatusForbidden, err.Error())
 		default:
+			slog.Warn("notify auth failed",
+				"event", "notify.auth.failed",
+				"ip", r.RemoteAddr,
+			)
 			writeError(w, http.StatusUnauthorized, "invalid or missing API key")
 		}
 		return
@@ -205,4 +214,11 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+	slog.Info("notify published",
+		"event", "notify.published",
+		"message_id", msg.ID,
+		"user_id", userID,
+		"matched", resp.Matched,
+		"status", req.Status,
+	)
 }

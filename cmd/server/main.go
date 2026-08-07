@@ -7,23 +7,43 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 
+	"github.com/anotify/anotify/internal/logging"
 	"github.com/anotify/anotify/internal/server"
 )
 
 func main() {
 	cfg := server.FromEnv()
+
+	// 初始化结构化日志（在所有其他操作之前）
+	logging.Init(cfg.LogLevel, cfg.LogFormat)
+
 	if err := cfg.Validate(); err != nil {
-		log.Printf("[warn] %v（推送功能将不可用，其余可运行）", err)
+		slog.Warn("VAPID 未配置，Web Push 不可用（其余可运行）",
+			"event", "push.vapid.missing",
+			"error", err.Error(),
+		)
 	}
 
 	mux := server.NewMux(cfg)
 
-	log.Printf("✅ Anotify 启动 %s", cfg.Addr)
-	log.Printf("   静态目录: %s  CDN前缀: %q", cfg.StaticDir, cfg.CDNPrefix)
+	slog.Info("server started",
+		"event", "server.start",
+		"addr", cfg.Addr,
+		"static_dir", cfg.StaticDir,
+		"cdn_prefix", cfg.CDNPrefix,
+		"log_level", cfg.LogLevel,
+		"log_format", cfg.LogFormat,
+		"vapid_configured", cfg.VAPIDPublic != "",
+	)
 	if err := http.ListenAndServe(cfg.Addr, mux); err != nil {
-		log.Fatal(err)
+		slog.Error("server listen failed",
+			"event", "server.fatal",
+			"error", err.Error(),
+		)
+		os.Exit(1)
 	}
 }

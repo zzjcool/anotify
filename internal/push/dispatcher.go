@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/url"
 	"time"
 
@@ -104,7 +104,12 @@ func (d *Dispatcher) Run(ctx context.Context, userID string) error {
 				return nil
 			}
 			if err := d.Dispatch(ctx, msg); err != nil {
-				log.Printf("[push] dispatch message %s: %v", msg.ID, err)
+				slog.Error("push dispatch failed",
+					"event", "push.dispatch.fail",
+					"message_id", msg.ID,
+					"user_id", msg.UserID,
+					"error", err.Error(),
+				)
 			}
 		}
 	}
@@ -142,14 +147,35 @@ func (d *Dispatcher) recordResult(ctx context.Context, msg *broker.Message, dev 
 	if sendErr == nil {
 		_ = d.Store.RecordDelivery(ctx, msg.ID, dev.ID, store.ChannelWebPush, store.DeliverySent, "")
 		_ = d.Store.TouchDelivered(ctx, dev.ID, now)
+		slog.Info("push dispatched",
+			"event", "push.dispatch.sent",
+			"message_id", msg.ID,
+			"device_id", dev.ID,
+			"user_id", msg.UserID,
+			"status", statusCode,
+		)
 		return
 	}
 
 	errMsg := sendErr.Error()
 	_ = d.Store.RecordDelivery(ctx, msg.ID, dev.ID, store.ChannelWebPush, store.DeliveryFailed, errMsg)
+	slog.Error("push dispatch failed",
+		"event", "push.dispatch.fail",
+		"message_id", msg.ID,
+		"device_id", dev.ID,
+		"user_id", msg.UserID,
+		"status", statusCode,
+		"error", errMsg,
+	)
 
 	// 404 Not Found / 410 Gone → endpoint 失效，禁用设备
 	if statusCode == 404 || statusCode == 410 {
+		slog.Warn("push device gone",
+			"event", "push.device.gone",
+			"device_id", dev.ID,
+			"user_id", msg.UserID,
+			"message_id", msg.ID,
+		)
 		if d.OnGone != nil {
 			d.OnGone(ctx, dev.ID)
 		} else {

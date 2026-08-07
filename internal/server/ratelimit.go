@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -144,6 +145,10 @@ func clientIP(r *http.Request) string {
 // rateLimited 检查限速，超限则写 429 并返回 false。
 func rateLimited(w http.ResponseWriter, rl *fixedWindow, key string) bool {
 	if !rl.allow(key) {
+		slog.Warn("rate limited",
+			"event", "ratelimit.hit",
+			"key", key,
+		)
 		w.Header().Set("Retry-After", strconv.Itoa(60))
 		writeErr(w, 429, "请求过于频繁，请稍后再试")
 		return true

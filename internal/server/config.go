@@ -19,6 +19,8 @@ type Config struct {
 	RPID        string // WebAuthn RP ID（域名）
 	RPOrigin    string // WebAuthn Origin（含协议）
 	TrustProxy  bool   // 信任 X-Forwarded-For（仅在反代 cloudflared/nginx 后开启）
+	LogLevel    string // 日志级别：debug/info/warn/error，默认 info
+	LogFormat   string // 日志格式：json/text，默认 json
 }
 
 // FromEnv 从环境变量加载配置。
@@ -37,6 +39,8 @@ func FromEnv() Config {
 		RPID:        get("ANOTIFY_RP_ID", "localhost"),
 		RPOrigin:    get("ANOTIFY_RP_ORIGIN", "http://localhost:8080"),
 		TrustProxy:  get("ANOTIFY_TRUST_PROXY", "") != "",
+		LogLevel:    get("ANOTIFY_LOG_LEVEL", "info"),
+		LogFormat:   get("ANOTIFY_LOG_FORMAT", "json"),
 	}
 }
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -94,6 +95,11 @@ func (h *passkeyEnrollHandler) create(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    created.ExpiresAt,
 		Kind:         store.CliAuthKindPasskey,
 	})
+	slog.Info("enroll session created",
+		"event", "enroll.session.created",
+		"session_id", created.SessionID,
+		"user_id", auth.UserIDFromContext(r.Context()),
+	)
 }
 
 // lookup 匿名按 ID 查会话（IP 限速）。
@@ -152,6 +158,12 @@ func (h *passkeyEnrollHandler) knock(w http.ResponseWriter, r *http.Request, id 
 		h.writeEnrollErr(w, r, id, err)
 		return
 	}
+	slog.Info("enroll session requested",
+		"event", "enroll.session.requested",
+		"session_id", id,
+		"ip", clientIP(r),
+		"device_hint", req.DeviceHint,
+	)
 	writeJSON(w, 200, enrollRequestResp{Secret: secret})
 }
 
@@ -190,6 +202,11 @@ func (h *passkeyEnrollHandler) poll(w http.ResponseWriter, r *http.Request, id s
 	res, err := h.mgr.Poll(id, secret)
 	if err != nil {
 		if errors.Is(err, auth.ErrUnauthorized) {
+			slog.Warn("enroll poll secret invalid",
+				"event", "enroll.poll.unauthorized",
+				"session_id", id,
+				"ip", clientIP(r),
+			)
 			writeErr(w, 401, "secret 无效")
 			return
 		}
@@ -222,6 +239,11 @@ func (h *passkeyEnrollHandler) approve(w http.ResponseWriter, r *http.Request, i
 		h.writeEnrollErr(w, r, id, err)
 		return
 	}
+	slog.Info("enroll session approved",
+		"event", "enroll.session.approved",
+		"session_id", id,
+		"user_id", uid,
+	)
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthApproved})
 }
 
@@ -232,6 +254,11 @@ func (h *passkeyEnrollHandler) deny(w http.ResponseWriter, r *http.Request, id s
 		h.writeEnrollErr(w, r, id, err)
 		return
 	}
+	slog.Info("enroll session denied",
+		"event", "enroll.session.denied",
+		"session_id", id,
+		"user_id", auth.UserIDFromContext(r.Context()),
+	)
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthDenied})
 }
 
@@ -255,6 +282,12 @@ func (h *passkeyEnrollHandler) complete(w http.ResponseWriter, r *http.Request, 
 	result, err := h.mgr.Complete(id, regToken, name, r)
 	if err != nil {
 		if errors.Is(err, auth.ErrUnauthorized) {
+			slog.Warn("enroll complete token invalid",
+				"event", "enroll.complete.fail",
+				"session_id", id,
+				"ip", clientIP(r),
+				"reason", "registrationToken invalid",
+			)
 			writeErr(w, 401, "registrationToken 无效")
 			return
 		}
@@ -268,9 +301,20 @@ func (h *passkeyEnrollHandler) complete(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		// FinishEnrollCredential 失败（attestation 无效/无法解析）→ 400
+		slog.Warn("enroll complete failed",
+			"event", "enroll.complete.fail",
+			"session_id", id,
+			"ip", clientIP(r),
+			"error", err.Error(),
+		)
 		writeErr(w, 400, "凭证创建失败："+err.Error())
 		return
 	}
+	slog.Info("enroll session consumed",
+		"event", "enroll.session.consumed",
+		"session_id", id,
+		"passkey_id", result.PasskeyID,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true, "passkeyId": result.PasskeyID})
 }
 
@@ -295,6 +339,11 @@ func (h *passkeyEnrollHandler) cancel(w http.ResponseWriter, r *http.Request, id
 		writeErr(w, 500, err.Error())
 		return
 	}
+	slog.Info("enroll session cancelled",
+		"event", "enroll.session.cancelled",
+		"session_id", id,
+		"user_id", uid,
+	)
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 

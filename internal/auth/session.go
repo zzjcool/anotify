@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -121,11 +122,21 @@ func (m *SessionManager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(SessionCookieName)
 		if err != nil || c.Value == "" {
+			slog.Warn("session cookie missing",
+				"event", "auth.session.invalid",
+				"reason", "missing_cookie",
+				"path", r.URL.Path,
+			)
 			http.Error(w, `{"error":"未登录"}`, http.StatusUnauthorized)
 			return
 		}
 		sess, err := m.Validate(c.Value)
 		if err != nil {
+			slog.Warn("session invalid",
+				"event", "auth.session.invalid",
+				"reason", err.Error(),
+				"path", r.URL.Path,
+			)
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusUnauthorized)
 			return
 		}

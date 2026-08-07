@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -105,6 +106,12 @@ func (h *cliAuthHandler) create(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    created.ExpiresAt,
 		Scopes:       scopes,
 	})
+	slog.Info("cli auth session created",
+		"event", "cliauth.session.created",
+		"session_id", created.SessionID,
+		"ip", clientIP(r),
+		"device_name", req.DeviceName,
+	)
 }
 
 // get 按 ID 查会话（需登录）。
@@ -150,19 +157,43 @@ func (h *cliAuthHandler) approve(w http.ResponseWriter, r *http.Request, id stri
 	}
 	err := h.mgr.Approve(id, uid, req.Scopes)
 	if err != nil {
+		slog.Warn("cli auth approve conflict",
+			"event", "cliauth.approve.conflict",
+			"session_id", id,
+			"user_id", uid,
+			"error", err.Error(),
+		)
 		h.writeApproveErr(w, r, id, err)
 		return
 	}
+	slog.Info("cli auth session approved",
+		"event", "cliauth.session.approved",
+		"session_id", id,
+		"user_id", uid,
+		"scopes", req.Scopes,
+	)
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthApproved})
 }
 
 // deny 拒绝（需登录）。
 func (h *cliAuthHandler) deny(w http.ResponseWriter, r *http.Request, id string) {
+	uid := auth.UserIDFromContext(r.Context())
 	err := h.mgr.Deny(id)
 	if err != nil {
+		slog.Warn("cli auth deny conflict",
+			"event", "cliauth.approve.conflict",
+			"session_id", id,
+			"user_id", uid,
+			"error", err.Error(),
+		)
 		h.writeApproveErr(w, r, id, err)
 		return
 	}
+	slog.Info("cli auth session denied",
+		"event", "cliauth.session.denied",
+		"session_id", id,
+		"user_id", uid,
+	)
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthDenied})
 }
 
@@ -177,6 +208,11 @@ func (h *cliAuthHandler) poll(w http.ResponseWriter, r *http.Request, id string)
 	res, err := h.mgr.Poll(id, secret)
 	if err != nil {
 		if errors.Is(err, auth.ErrUnauthorized) {
+			slog.Warn("cli auth poll secret invalid",
+				"event", "cliauth.poll.unauthorized",
+				"session_id", id,
+				"ip", clientIP(r),
+			)
 			writeErr(w, 401, "secret 无效")
 			return
 		}
@@ -202,6 +238,11 @@ func (h *cliAuthHandler) poll(w http.ResponseWriter, r *http.Request, id string)
 			scopes = []string{}
 		}
 		resp.Scopes = scopes
+		slog.Info("cli auth session consumed",
+			"event", "cliauth.session.consumed",
+			"session_id", id,
+			"key_id", res.KeyID,
+		)
 	}
 	writeJSON(w, 200, resp)
 }

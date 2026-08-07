@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -97,6 +98,12 @@ func (h *devicesHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	slog.Info("device upserted",
+		"event", "device.upserted",
+		"user_id", uid,
+		"device_id", dev.ID,
+		"platform", platform,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true, "device": dev})
 }
 
@@ -154,6 +161,11 @@ func (h *devicesHandler) patch(w http.ResponseWriter, r *http.Request, id string
 		writeErr(w, 500, err.Error())
 		return
 	}
+	slog.Info("device updated",
+		"event", "device.updated",
+		"user_id", uid,
+		"device_id", dev.ID,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true, "device": dev})
 }
 
@@ -163,6 +175,10 @@ func (h *devicesHandler) remove(w http.ResponseWriter, r *http.Request, id strin
 		writeErr(w, 500, err.Error())
 		return
 	}
+	slog.Info("device disabled",
+		"event", "device.disabled",
+		"device_id", id,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -280,6 +296,12 @@ func (h *keysHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	// 明文仅此一次返回；record 用安全公开视图（不含哈希）
 	writeJSON(w, 200, map[string]any{"ok": true, "key": plaintext, "record": toKeyPublic(rec)})
+	slog.Info("key created",
+		"event", "key.created",
+		"user_id", uid,
+		"key_id", rec.ID,
+		"scopes", req.Scopes,
+	)
 }
 
 func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) {
@@ -287,6 +309,10 @@ func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) 
 		writeErr(w, 500, err.Error())
 		return
 	}
+	slog.Info("key revoked",
+		"event", "key.revoked",
+		"key_id", id,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 

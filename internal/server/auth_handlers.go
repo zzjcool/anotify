@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -77,10 +78,19 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	sessID, err := h.svc.FinishRegister(username, r)
 	if err != nil {
+		slog.Warn("register failed",
+			"event", "auth.register.fail",
+			"ip", clientIP(r),
+			"error", err.Error(),
+		)
 		writeErr(w, 400, err.Error())
 		return
 	}
 	h.svc.Sessions().SetCookie(w, sessID)
+	slog.Info("register success",
+		"event", "auth.register.success",
+		"ip", clientIP(r),
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -128,10 +138,19 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		sessID, err = h.svc.FinishDiscoverableLogin(token, r)
 	}
 	if err != nil {
+		slog.Warn("login failed",
+			"event", "auth.login.fail",
+			"ip", clientIP(r),
+			"error", err.Error(),
+		)
 		writeErr(w, 401, err.Error())
 		return
 	}
 	h.svc.Sessions().SetCookie(w, sessID)
+	slog.Info("login success",
+		"event", "auth.login.success",
+		"ip", clientIP(r),
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -144,6 +163,9 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 		_ = h.svc.Sessions().Revoke(c.Value)
 	}
 	h.svc.Sessions().ClearCookie(w)
+	slog.Info("logout",
+		"event", "auth.logout",
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -317,9 +339,18 @@ func (h *authHandler) addPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		name = "新设备"
 	}
 	if err := h.svc.FinishAddCredential(uid, name, r); err != nil {
+		slog.Warn("passkey add failed",
+			"event", "auth.passkey.add_fail",
+			"user_id", uid,
+			"error", err.Error(),
+		)
 		writeErr(w, 400, err.Error())
 		return
 	}
+	slog.Info("passkey created",
+		"event", "auth.passkey.created",
+		"user_id", uid,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -352,6 +383,11 @@ func (h *authHandler) renamePasskey(w http.ResponseWriter, r *http.Request, id s
 		writeErr(w, 500, err.Error())
 		return
 	}
+	slog.Info("passkey renamed",
+		"event", "auth.passkey.renamed",
+		"user_id", uid,
+		"passkey_id", id,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -380,6 +416,11 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	if len(list) <= 1 {
+		slog.Warn("passkey delete blocked: last credential",
+			"event", "auth.passkey.delete_last_blocked",
+			"user_id", uid,
+			"passkey_id", id,
+		)
 		writeErr(w, 409, "至少保留一个 Passkey，删除后你将无法登录。请先添加新的 Passkey 再删除此凭证。")
 		return
 	}
@@ -387,5 +428,10 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 		writeErr(w, 500, err.Error())
 		return
 	}
+	slog.Info("passkey deleted",
+		"event", "auth.passkey.deleted",
+		"user_id", uid,
+		"passkey_id", id,
+	)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,6 +62,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, authn.ErrForbidden) {
 			code = http.StatusForbidden
 		}
+		slog.Warn("ws auth failed",
+			"event", "ws.auth.failed",
+			"ip", r.RemoteAddr,
+			"status", code,
+		)
 		http.Error(w, `{"error":"`+err.Error()+`"}`, code)
 		return
 	}

@@ -1,7 +1,7 @@
 package server
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -69,7 +69,10 @@ func resolveStaticFS(cfg Config) http.FileSystem {
 		if _, err := os.Stat(cfg.StaticDir); err == nil {
 			return http.Dir(cfg.StaticDir)
 		}
-		log.Printf("[static] 目录 %s 不存在，回退 embed", cfg.StaticDir)
+		slog.Warn("static dir not found, falling back to embed",
+			"event", "static.fallback",
+			"dir", cfg.StaticDir,
+		)
 	}
 	return embeddedStaticMust()
 }
@@ -78,7 +81,10 @@ func resolveStaticFS(cfg Config) http.FileSystem {
 func embeddedStaticMust() http.FileSystem {
 	fs, err := embeddedStatic()
 	if err != nil {
-		log.Printf("[static] embed 不可用: %v", err)
+		slog.Warn("embed static unavailable",
+			"event", "static.embed_missing",
+			"error", err.Error(),
+		)
 		return http.Dir("") // 空，Open 必失败 → 404
 	}
 	return fs
@@ -90,16 +96,24 @@ func resolveStatic(cfg Config) http.Handler {
 		if _, err := os.Stat(cfg.StaticDir); err == nil {
 			return staticHandler(cfg.StaticDir)
 		}
-		log.Printf("[static] 目录 %s 不存在，回退 embed", cfg.StaticDir)
+		slog.Warn("static dir not found, falling back to embed",
+			"event", "static.fallback",
+			"dir", cfg.StaticDir,
+		)
 	}
 	efs, err := embeddedStatic()
 	if err != nil {
-		log.Printf("[static] embed 不可用: %v，返回 503", err)
+		slog.Error("embed static unavailable, returning 503",
+			"event", "static.embed_missing",
+			"error", err.Error(),
+		)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "static assets unavailable", http.StatusServiceUnavailable)
 		})
 	}
-	log.Printf("[static] 使用 embed 内嵌前端")
+	slog.Info("using embedded static assets",
+		"event", "static.embed_ready",
+	)
 	return staticFS(efs)
 }
 
