@@ -268,6 +268,11 @@ func (m *CliAuthManager) Poll(id, secret string) (*PollResult, error) {
 		// 已消费，返回终态但不附带明文 Key。
 		return &PollResult{Status: store.CliAuthConsumed, Scopes: s.ScopesGranted}, nil
 	case store.CliAuthApproved:
+		// kind guard（D-C-6）：apikey poll 端点只消费 apikey-kind 会话。
+		// passkey-kind 会话必须走 /v1/passkey-enroll/ 端点族，不得在此签发 API Key。
+		if s.Kind != store.CliAuthKindAPIKey {
+			return nil, ErrInvalidParam
+		}
 		return m.consumeAndMintKey(s)
 	default:
 		return nil, fmt.Errorf("auth: 未知会话状态 %q", s.Status)

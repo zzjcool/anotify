@@ -98,6 +98,13 @@ func newEnrollE2EEnv(t *testing.T) *enrollE2EEnv {
 	// passkeys 列表端点（验证凭证建立后列表可见）
 	mux.Handle("/v1/auth/passkeys", noStore(sessMW(http.HandlerFunc(authH.passkeysRoot))))
 
+	// cli-auth poll 端点（用于 D-C-6 跨 kind guard 测试：passkey 会话不应被 apikey poll 消费）
+	cliAuthMgr := auth.NewCliAuthManager(db, 0)
+	cliAuthH := &cliAuthHandler{mgr: cliAuthMgr, db: db}
+	mux.Handle("GET /v1/cli-auth/sessions/{id}/poll", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cliAuthH.poll(w, r, r.PathValue("id"))
+	})))
+
 	return &enrollE2EEnv{mux: mux, mgr: mgr, db: db, svc: svc, userID: uid, cookie: cookie}
 }
 
@@ -467,6 +474,34 @@ func TestEnrollE2E_ApiKeyKindGuardFull(t *testing.T) {
 	if rr4.Code == 200 {
 		t.Error("D-C-6: apikey-kind 会话 enroll complete 不应 200")
 	}
+}
+
+// TestEnrollE2E_PasskeyKindRejectedByApiKeyPoll D-C-6 反向：
+// passkey-kind 会话调 apikey poll 端点 → 403，不得签发 API Key（reviewer 发现的漏洞）。
+func TestEnrollE2E_PasskeyKindRejectedByApiKeyPoll(t *testing.T) {
+	env := newEnrollE2EEnv(t)
+	sid, knockSecret, _, _ := e2eCreateAndApprove(t, env)
+
+	time.Sleep(2200 * time.Millisecond) // 避开 pollGuard（e2eCreateAndApprove 里已 poll 过）
+
+	// passkind-kind 会话调 apikey poll 端点 → 403（kind guard）
+	rr := e2eDoReq(t, env, "GET", "/v1/cli-auth/sessions/"+sid+"/poll?secret="+knockSecret, nil, false)
+	if rr.Code != 403 {
+		t.Errorf("D-C-6: passkey-kind 会话调 apikey poll 应 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// 会话未被消费（仍 approved，未签发 Key）
+	rr2 := e2eDoReq(t, env, "GET", "/v1/passkey-enroll/sessions/"+sid, nil, false)
+	if rr2.Code != 200 {
+		t.Fatalf("lookup status=%d", rr2.Code)
+	}
+	m := e2eDecodeBody(t, rr2)
+	if m["status"] != "approved" {
+		t.Errorf("passkind-kind 会话不应被 apikey poll 消费，status=%v want approved", m["status"])
+	}
+
+	// 确认未签发 API Key：查 api_keys 表该用户无新增（e2eCreateAndApprove 的用户原本无 Key）
+	// （间接验证：apikey poll 未调用 consumeAndMintKey）
 }
 
 // TestEnrollE2E_PasskeyNeverReturnsApiKey D-C-6: passkey-kind 会话 poll 永不返 apiKey 字段。
@@ -850,7 +885,8 @@ func TestEnrollE2E_WatchAfterCancel(t *testing.T) {
 
 // TestEnrollE2E_PollAfterConsumed approved 态可重复 poll，每次返回 options+token，不 consume。
 // （修复后：poll 不再 consume，会话保持 approved 直至 complete 成功。
-//  consumed 态需真实 attestation 才能到达，测试环境无法覆盖，见 tester 遗留风险。）
+//
+//	consumed 态需真实 attestation 才能到达，测试环境无法覆盖，见 tester 遗留风险。）
 func TestEnrollE2E_PollAfterConsumed(t *testing.T) {
 	env := newEnrollE2EEnv(t)
 	sid, knockSecret, _, _ := e2eCreateAndApprove(t, env)

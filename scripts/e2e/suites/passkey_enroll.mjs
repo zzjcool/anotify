@@ -309,7 +309,11 @@ async function main() {
 			`/v1/passkey-enroll/sessions/${mainSession.sessionId}`,
 			{ method: "GET" },
 		);
-		H.eq("D-C-4 失败后会话仍 approved（可重试）", recheck.json.status, "approved");
+		H.eq(
+			"D-C-4 失败后会话仍 approved（可重试）",
+			recheck.json.status,
+			"approved",
+		);
 	}
 
 	// ============================================================

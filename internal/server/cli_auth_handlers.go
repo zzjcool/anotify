@@ -180,6 +180,11 @@ func (h *cliAuthHandler) poll(w http.ResponseWriter, r *http.Request, id string)
 			writeErr(w, 401, "secret 无效")
 			return
 		}
+		if errors.Is(err, auth.ErrInvalidParam) {
+			// kind guard：passkey-kind 会话不得走 apikey poll
+			writeErr(w, 403, "会话类型不匹配")
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, 404, "授权会话不存在或已过期")
 			return

@@ -267,6 +267,11 @@ func (m *PasskeyEnrollManager) Poll(id, secret string) (*EnrollPollResult, error
 	case store.CliAuthConsumed:
 		return &EnrollPollResult{Status: store.CliAuthConsumed}, nil
 	case store.CliAuthApproved:
+		// kind guard（D-C-6）：passkey poll 端点只服务 passkey-kind 会话。
+		// apikey-kind 会话不得走 enroll 路径。
+		if s.Kind != store.CliAuthKindPasskey {
+			return nil, ErrInvalidParam
+		}
 		return m.generateAttestation(s)
 	default:
 		return nil, fmt.Errorf("auth: 未知会话状态 %q", s.Status)
