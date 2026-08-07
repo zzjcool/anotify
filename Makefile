@@ -6,7 +6,7 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
-.PHONY: help build fe sitegen test run dev docker docker-run integration tunnel keys clean
+.PHONY: help build fe sitegen test bench run dev docker docker-run integration tunnel keys clean
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -24,6 +24,13 @@ build: fe ## 构建单二进制（内嵌指纹后的前端）
 
 test: ## 运行全部单元测试
 	go test ./... -count=1
+
+bench: ## 运行全部基准测试（吞吐/分配热点；仅基准不跑单测）
+	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s
+
+bench-report: ## 运行基准并输出到 bench.txt（留存对比基线）
+	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s > bench.txt 2>&1
+	@echo "基准结果已写入 bench.txt"
 
 run: build ## 本地运行（需先设置 ANOTIFY_VAPID_* 环境变量）
 	./anotify

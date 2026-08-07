@@ -39,7 +39,7 @@ func (s *fakeSub) C() <-chan *broker.Message { return s.ch }
 func (s *fakeSub) Close() error              { return nil }
 
 // setupStore 建一个内存库。
-func setupStore(t *testing.T) *store.DB {
+func setupStore(t testing.TB) *store.DB {
 	t.Helper()
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -53,7 +53,7 @@ func setupStore(t *testing.T) *store.DB {
 	return db
 }
 
-func insertDevice(t *testing.T, db *store.DB, id, userID string, enabled bool, filter string, tags ...string) {
+func insertDevice(t testing.TB, db *store.DB, id, userID string, enabled bool, filter string, tags ...string) {
 	t.Helper()
 	dev := &store.Device{
 		ID:           id,
@@ -181,7 +181,28 @@ func TestDispatchExpiredMessageSkipped(t *testing.T) {
 	}
 }
 
-// TestDispatchGoneDeviceDisabled 410 Gone → 设备被禁用。
+// TestUrgencyFor 覆盖优先级 → Web Push urgency 映射全部分支。
+func TestUrgencyFor(t *testing.T) {
+	cases := []struct {
+		priority string
+		want     webpush.Urgency
+	}{
+		{"high", webpush.UrgencyHigh},
+		{"normal", webpush.UrgencyNormal},
+		{"low", webpush.UrgencyLow},
+		{"veryLow", webpush.UrgencyVeryLow},
+		{"", webpush.UrgencyNormal},        // 空 = 默认
+		{"unknown", webpush.UrgencyNormal}, // 未知 = 兜底默认
+	}
+	for _, c := range cases {
+		t.Run("priority="+c.priority, func(t *testing.T) {
+			if got := urgencyFor(c.priority); got != c.want {
+				t.Fatalf("urgencyFor(%q)=%v, want %v", c.priority, got, c.want)
+			}
+		})
+	}
+}
+
 func TestDispatchGoneDeviceDisabled(t *testing.T) {
 	db := setupStore(t)
 	ctx := context.Background()

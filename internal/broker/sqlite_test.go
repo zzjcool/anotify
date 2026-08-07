@@ -9,7 +9,8 @@ import (
 )
 
 // newTestBroker 用 :memory: 打开一个测试 broker。
-func newTestBroker(t *testing.T) *SQLiteBroker {
+// 接受 testing.TB，使单测（*testing.T）与基准（*testing.B）共用同一构造器。
+func newTestBroker(t testing.TB) *SQLiteBroker {
 	t.Helper()
 	db, err := store.Open(":memory:")
 	if err != nil {
