@@ -468,7 +468,7 @@ security:
   unknown_device: 未知设备
   credential: 凭证
   current_session: 当前会话
-  empty_passkeys: 还没有 Passkey。点右上角「+ 添加 Passkey」为这台设备创建一个。
+  empty_passkeys: 还没有 Passkey。点右上角「+ 在新设备添加」为这台设备创建一个。
   empty_sessions: 当前没有活跃会话。
   in_use: 本机在用
   last_used: 最近使用 {time}
@@ -712,3 +712,89 @@ cliauth:
     local: "授权仅在你的服务器上生效"
     ttl: "短码 10 分钟过期"
     revoke: "Key 可随时在 API Keys 页停用"
+
+passkeyenroll:
+  title: "在新设备添加 Passkey"
+  entry_button: "在新设备添加"
+  local_button: "本机添加"
+  panel:
+    title: "在新设备添加 Passkey"
+    sub: "用新设备任选一种方式打开，然后在下方批准"
+    tab_qr: "二维码"
+    tab_url: "链接"
+    tab_code: "短码"
+    qr_hint: "用新设备的相机扫码打开"
+    url_hint: "把链接发到新设备打开"
+    code_hint: "在新设备的添加页面输入此短码"
+    waiting: "等待新设备接入…"
+    expires_in: "剩余有效期"
+    confirm_title: "批准这台新设备？"
+    confirm_sub: "批准后，新设备将弹出系统生物识别来创建 Passkey"
+    confirm_warn: "不是你正在操作？点拒绝。二维码 / 短码只应出现在你手里的新设备上。"
+    approve: "批准并继续"
+    approved_waiting: "已批准，等待新设备完成生物识别…"
+    cancel_confirm: "取消本次添加？新设备上的链接与短码将立即失效。"
+    success_title: "新设备已添加成功"
+    success_desc: "「{name}」的 Passkey 已创建，下次可用它直接登录。"
+    done: "完成"
+    restart: "重新发起"
+    error_backend_desc: "无法连接后端（当前为演示模式）。请确认后端已启动且通过 HTTPS 访问。"
+    denied_title: "已拒绝本次添加"
+    denied_desc: "凭证未创建。如果这不是你的操作，请检查是否有人正尝试登录你的账号。"
+    expired_title: "会话已过期"
+    expired_desc: "授权会话 10 分钟内有效。重新发起会生成新的二维码与短码。"
+    error_title: "无法连接服务器"
+    error_desc: "请检查网络连接后重试。"
+    via_qr: "扫码接入"
+    via_url: "链接接入"
+    via_code: "短码接入"
+  trust:
+    approve_only: "旧设备批准后才会创建凭证"
+  entry:
+    heading: "输入添加短码"
+    sub: "在已登录设备的「安全与登录」页发起添加后，输入其显示的 8 位短码"
+    continue: "继续"
+    busy: "正在查找会话…"
+    not_found: "未找到该短码对应的会话，请核对后重试"
+  overview:
+    heading: "在这台设备上添加 Passkey"
+    session_line: "由「{name}」发起的添加请求"
+    desc: "点继续后，你已登录的设备会收到批准请求；批准后本机将弹出系统生物识别完成创建。"
+    step1: "本设备发出请求"
+    step2: "在已登录设备上批准"
+    step3: "本机完成生物识别"
+    ttl_hint: "会话 10 分钟内有效"
+    continue: "继续，请求批准"
+    not_mine: "不是我发起的？直接关闭本页即可"
+  wait:
+    heading: "请在已登录的设备上批准"
+    desc: "「{name}」的批准面板正在等待你确认"
+    status: "等待批准中…"
+    code_label: "本次短码"
+    cancel: "取消并返回"
+  creating:
+    heading: "正在创建 Passkey…"
+    desc: "请在系统弹窗中完成指纹 / 面容 / 设备密码验证"
+    name_label: "给这个 Passkey 起个名字"
+    name_placeholder: "如「主力手机」"
+    busy: "等待系统验证…"
+    retry: "重试"
+    cancelled: "你已取消系统验证，Passkey 尚未创建，可重试。"
+    failed_desc: "本机无法完成创建（浏览器或设备不支持）。"
+  success:
+    heading: "Passkey 已添加"
+    desc: "下次在这台设备登录，直接使用生物识别即可。"
+    login_now: "立即登录"
+  failed:
+    denied_title: "添加已被拒绝"
+    denied_desc: "已登录设备拒绝了本次请求，凭证未创建。"
+    expired_title: "会话已过期"
+    expired_desc: "会话 10 分钟内有效。请回到已登录设备重新发起，获取新的二维码或短码。"
+    expired_action: "输入新短码"
+    notfound_title: "会话不存在或已失效"
+    notfound_desc: "链接或短码可能已过期、已使用或被取消。请重新发起或核对短码。"
+    notfound_action: "重新输入"
+    error_title: "出错了"
+    error_desc: "请检查网络连接后重试。"
+    no_webauthn_desc: "当前浏览器或环境不支持 Passkey（需 HTTPS + 现代浏览器）。请换用最新版 Chrome / Safari。"
+    consumed_desc: "该会话已完成，不能重复使用。如需再次添加请重新发起。"

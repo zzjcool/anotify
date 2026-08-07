@@ -468,7 +468,7 @@ security:
   unknown_device: Dispositivo desconocido
   credential: Credencial
   current_session: Sesión actual
-  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir Passkey" arriba a la derecha para crear uno para este dispositivo.
+  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir en dispositivo nuevo" arriba a la derecha para crear una.
   empty_sessions: No hay sesiones activas.
   in_use: En uso
   last_used: Último uso {time}
@@ -712,3 +712,89 @@ cliauth:
     local: "La autorización solo tiene efecto en tu servidor"
     ttl: "Los códigos caducan en 10 minutos"
     revoke: "Las claves se pueden desactivar en cualquier momento en API Keys"
+
+passkeyenroll:
+  title: "Añadir una passkey en un dispositivo nuevo"
+  entry_button: "Añadir en un dispositivo nuevo"
+  local_button: "Añadir en este dispositivo"
+  panel:
+    title: "Añadir una passkey en un dispositivo nuevo"
+    sub: "Ábrelo en el dispositivo nuevo con cualquiera de estos métodos y aprueba aquí."
+    tab_qr: "Código QR"
+    tab_url: "Enlace"
+    tab_code: "Código"
+    qr_hint: "Escanéalo con la cámara del dispositivo nuevo"
+    url_hint: "Envía este enlace al dispositivo nuevo"
+    code_hint: "Introduce este código en el dispositivo nuevo"
+    waiting: "Esperando al dispositivo nuevo…"
+    expires_in: "Caduca en"
+    confirm_title: "¿Aprobar este dispositivo nuevo?"
+    confirm_sub: "Al aprobar, el dispositivo nuevo pedirá biometría para crear la passkey."
+    confirm_warn: "¿No eres tú? Recházalo. El QR / código solo debería aparecer en un dispositivo que tengas en la mano."
+    approve: "Aprobar"
+    approved_waiting: "Aprobado. Esperando a que el dispositivo nuevo complete la biometría…"
+    cancel_confirm: "¿Cancelar este registro? El enlace y el código del dispositivo nuevo dejarán de funcionar al instante."
+    success_title: "Dispositivo nuevo añadido"
+    success_desc: "Se creó la passkey para «{name}». La próxima vez podrá iniciar sesión directamente."
+    done: "Listo"
+    restart: "Empezar de nuevo"
+    error_backend_desc: "No se puede conectar con el backend (modo demo). Comprueba que el servidor esté activo y servido por HTTPS."
+    denied_title: "Registro rechazado"
+    denied_desc: "No se creó ninguna credencial. Si no has sido tú, comprueba si alguien intenta acceder a tu cuenta."
+    expired_title: "La sesión ha caducado"
+    expired_desc: "Las sesiones son válidas 10 minutos. Al empezar de nuevo se generan un QR y un código nuevos."
+    error_title: "No se puede conectar con el servidor"
+    error_desc: "Comprueba tu conexión e inténtalo de nuevo."
+    via_qr: "por QR"
+    via_url: "por enlace"
+    via_code: "por código"
+  trust:
+    approve_only: "La credencial solo se crea tras aprobar en el dispositivo con sesión iniciada"
+  entry:
+    heading: "Introduce el código de registro"
+    sub: "Tras iniciar el registro en «Seguridad e inicio de sesión» en un dispositivo con sesión iniciada, introduce el código de 8 caracteres que allí aparece."
+    continue: "Continuar"
+    busy: "Buscando la sesión…"
+    not_found: "No hay ninguna sesión para este código. Compruébalo e inténtalo de nuevo."
+  overview:
+    heading: "Añadir una passkey en este dispositivo"
+    session_line: "Registro solicitado por «{name}»"
+    desc: "Al continuar, tu dispositivo con sesión iniciada recibirá una solicitud de aprobación. Tras aprobar, este dispositivo pedirá biometría."
+    step1: "Este dispositivo solicita"
+    step2: "Aprueba en el dispositivo con sesión"
+    step3: "Completa la biometría aquí"
+    ttl_hint: "Sesión válida durante 10 minutos"
+    continue: "Continuar y solicitar aprobación"
+    not_mine: "¿No lo has solicitado tú? Simplemente cierra esta página."
+  wait:
+    heading: "Aprueba en tu dispositivo con sesión iniciada"
+    desc: "El panel de aprobación en «{name}» espera tu confirmación."
+    status: "Esperando aprobación…"
+    code_label: "Código"
+    cancel: "Cancelar y volver"
+  creating:
+    heading: "Creando passkey…"
+    desc: "Completa huella / cara / PIN del dispositivo en el diálogo del sistema."
+    name_label: "Ponle un nombre a esta passkey"
+    name_placeholder: "p. ej. «Móvil principal»"
+    busy: "Esperando la verificación del sistema…"
+    retry: "Reintentar"
+    cancelled: "Se canceló la verificación del sistema. Aún no hay passkey; puedes reintentar."
+    failed_desc: "Este dispositivo no pudo completar la creación (navegador o dispositivo no compatible)."
+  success:
+    heading: "Passkey añadida"
+    desc: "La próxima vez en este dispositivo, inicia sesión solo con biometría."
+    login_now: "Iniciar sesión ahora"
+  failed:
+    denied_title: "Registro rechazado"
+    denied_desc: "El dispositivo con sesión iniciada rechazó esta solicitud. No se creó ninguna credencial."
+    expired_title: "La sesión ha caducado"
+    expired_desc: "Las sesiones son válidas 10 minutos. Empieza de nuevo en el dispositivo con sesión para obtener un nuevo QR o código."
+    expired_action: "Introducir un código nuevo"
+    notfound_title: "Sesión no encontrada"
+    notfound_desc: "El enlace o código puede haber caducado, haberse usado o haberse cancelado. Empieza de nuevo o comprueba el código."
+    notfound_action: "Volver a introducir"
+    error_title: "Algo salió mal"
+    error_desc: "Comprueba tu conexión e inténtalo de nuevo."
+    no_webauthn_desc: "Este navegador o entorno no admite passkeys (requiere HTTPS y un navegador moderno). Prueba con la última versión de Chrome o Safari."
+    consumed_desc: "Esta sesión ya está completada y no puede reutilizarse. Empieza de nuevo."

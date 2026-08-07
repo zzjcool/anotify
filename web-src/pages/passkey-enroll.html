@@ -1,0 +1,1196 @@
+<!-- layout: focus -->
+
+{{define "title"}}{{t "passkeyenroll.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      .grid-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+          linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.022) 1px,
+            transparent 1px
+          );
+        background-size: 72px 72px;
+        mask-image: radial-gradient(
+          ellipse 90% 70% at 50% 45%,
+          black 30%,
+          transparent 75%
+        );
+        -webkit-mask-image: radial-gradient(
+          ellipse 90% 70% at 50% 45%,
+          black 30%,
+          transparent 75%
+        );
+      }
+      .fingerprint-ring {
+        animation: fpPulse 2s ease-in-out infinite;
+      }
+      @keyframes fpPulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(139, 139, 253, 0.3);
+        }
+        50% {
+          box-shadow: 0 0 0 8px rgba(139, 139, 253, 0);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .fingerprint-ring {
+          animation: none;
+        }
+      }
+      .state-title {
+        outline: none;
+      }
+      .countdown-bar {
+        transition: width 1s linear;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .countdown-bar {
+          transition: none;
+        }
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+
+      <!-- ========== 状态区：所有 section 预渲染，JS 只切 hidden ========== -->
+      <div id="state-stack" class="w-full">
+
+        <!-- ===== entry 短码输入态 ===== -->
+        <section
+          id="state-entry"
+          class="state-section flex flex-col items-center text-center"
+        >
+          <div class="flex justify-center">
+            <div
+              class="flex h-16 w-16 items-center justify-center rounded-2xl"
+              style="background: var(--accent-soft)"
+            >
+              <svg
+                class="h-8 w-8"
+                style="color: var(--accent)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="3" y="11" width="18" height="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </div>
+          </div>
+          <h1
+            class="state-title mt-6 font-display text-3xl text-white"
+            tabindex="-1"
+          >
+            {{t "passkeyenroll.entry.heading"}}
+          </h1>
+          <p class="mt-2 text-sm text-zinc-400">{{t "passkeyenroll.entry.sub"}}</p>
+
+          <div class="glass mt-6 w-full rounded-3xl p-8 text-left">
+            <input
+              id="code-input"
+              type="text"
+              class="input mono w-full text-center"
+              maxlength="9"
+              placeholder="{{t "cliauth.entry.placeholder"}}"
+              autocomplete="off"
+              autocapitalize="characters"
+              autocorrect="off"
+              spellcheck="false"
+              inputmode="text"
+              style="font-size: 1.5rem; letter-spacing: 0.2em"
+            />
+            <p
+              id="entry-error"
+              class="mt-2 hidden text-xs text-rose-300"
+            >{{t "passkeyenroll.entry.not_found"}}</p>
+            <button
+              id="entry-continue"
+              type="button"
+              class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+            >
+              <span id="entry-continue-label">{{t "passkeyenroll.entry.continue"}}</span>
+              <span id="entry-continue-busy" class="hidden"
+                >{{t "passkeyenroll.entry.busy"}}</span
+              >
+            </button>
+            <div
+              class="mt-4 flex items-center justify-center gap-2 text-[11px] text-zinc-500"
+            >
+              <svg
+                class="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 16v-4M12 8h.01" />
+              </svg>
+              <span>{{t "cliauth.entry.hint"}}</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== overview 会话预览态 ===== -->
+        <section
+          id="state-overview"
+          class="state-section hidden flex-col items-center text-center"
+        >
+          <div class="flex justify-center">
+            <div
+              class="flex h-16 w-16 items-center justify-center rounded-2xl"
+              style="background: var(--accent-soft)"
+            >
+              <svg
+                class="h-8 w-8"
+                style="color: var(--accent)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="3" y="11" width="18" height="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </div>
+          </div>
+          <h1
+            class="state-title mt-6 font-display text-3xl text-white"
+            tabindex="-1"
+          >
+            {{t "passkeyenroll.overview.heading"}}
+          </h1>
+
+          <div class="glass mt-6 w-full rounded-3xl p-6 text-left">
+            <div
+              class="flex items-center gap-2.5 rounded-xl px-4 py-3 ring-1 ring-white/10"
+              style="background: var(--surface-2)"
+            >
+              <span class="dot dot-warn badge-dot"></span>
+              <span
+                id="overview-session-line"
+                class="text-sm text-zinc-300"
+              ></span>
+            </div>
+
+            <p class="mt-4 text-[13px] leading-relaxed text-zinc-400">
+              {{t "passkeyenroll.overview.desc"}}
+            </p>
+
+            <div class="mt-4 space-y-2">
+              <div class="flex items-center gap-2.5 text-[13px] text-zinc-400">
+                <span
+                  class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium mono"
+                  style="background: var(--accent-soft); color: var(--accent)"
+                >1</span>
+                {{t "passkeyenroll.overview.step1"}}
+              </div>
+              <div class="flex items-center gap-2.5 text-[13px] text-zinc-400">
+                <span
+                  class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium mono"
+                  style="background: var(--accent-soft); color: var(--accent)"
+                >2</span>
+                {{t "passkeyenroll.overview.step2"}}
+              </div>
+              <div class="flex items-center gap-2.5 text-[13px] text-zinc-400">
+                <span
+                  class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium mono"
+                  style="background: var(--accent-soft); color: var(--accent)"
+                >3</span>
+                {{t "passkeyenroll.overview.step3"}}
+              </div>
+            </div>
+
+            <div
+              class="mt-4 flex items-center gap-2 text-[11px] text-zinc-500"
+            >
+              <svg
+                class="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 6v6l4 2" />
+              </svg>
+              <span>{{t "passkeyenroll.overview.ttl_hint"}}</span>
+            </div>
+          </div>
+
+          <button
+            id="overview-continue"
+            type="button"
+            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+          >
+            <span id="overview-continue-label">{{t "passkeyenroll.overview.continue"}}</span>
+            <span id="overview-continue-busy" class="hidden"
+              >{{t "passkeyenroll.entry.busy"}}</span
+            >
+          </button>
+          <a
+            href="index.html"
+            class="mt-3 text-[12px] text-zinc-500 transition-colors hover:text-zinc-300"
+            >{{t "passkeyenroll.overview.not_mine"}}</a
+          >
+        </section>
+
+        <!-- ===== confirm-wait 等待旧设备批准态 ===== -->
+        <section
+          id="state-confirm-wait"
+          class="state-section hidden flex-col items-center text-center"
+        >
+          <div class="flex justify-center">
+            <div
+              class="fingerprint-ring flex h-16 w-16 items-center justify-center rounded-2xl"
+              style="background: var(--accent-soft)"
+            >
+              <svg
+                class="h-8 w-8"
+                style="color: var(--accent)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 11c0 .667-.333 1-1 1" />
+                <path d="M12 7a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0v-4a3 3 0 0 0-3-3z" />
+                <path d="M12 3a8 8 0 0 0-8 8v1" />
+                <path d="M12 3a8 8 0 0 1 8 8v1" />
+              </svg>
+            </div>
+          </div>
+          <h1
+            class="state-title mt-6 font-display text-3xl text-white"
+            tabindex="-1"
+          >
+            {{t "passkeyenroll.wait.heading"}}
+          </h1>
+          <p id="wait-desc" class="mt-2 text-sm text-zinc-400"></p>
+
+          <div class="glass mt-6 w-full rounded-3xl p-6 text-left">
+            <div class="flex items-center gap-2.5">
+              <span class="dot dot-warn badge-dot"></span>
+              <span class="text-sm text-zinc-300">{{t "passkeyenroll.wait.status"}}</span>
+            </div>
+
+            <!-- 倒计时条 -->
+            <div class="mt-4">
+              <div
+                class="flex items-center justify-between text-[11px] text-zinc-500"
+              >
+                <span>{{t "cliauth.entry.hint"}}</span>
+                <span id="wait-countdown" class="mono"></span>
+              </div>
+              <div
+                class="mt-1.5 h-1 rounded-full"
+                style="background: var(--surface-2)"
+              >
+                <div
+                  id="wait-countdown-bar"
+                  class="countdown-bar h-full rounded-full"
+                  style="background: var(--accent); width: 100%"
+                ></div>
+              </div>
+            </div>
+
+            <!-- 短码复述 -->
+            <div
+              class="mt-4 flex items-center gap-2 text-[11px] text-zinc-500"
+            >
+              <span>{{t "passkeyenroll.wait.code_label"}}</span>
+              <span id="wait-code" class="mono text-white"></span>
+            </div>
+          </div>
+
+          <a
+            href="index.html"
+            class="mt-3 text-[12px] text-zinc-500 transition-colors hover:text-zinc-300"
+            >{{t "passkeyenroll.wait.cancel"}}</a
+          >
+        </section>
+
+        <!-- ===== creating 创建中态 ===== -->
+        <section
+          id="state-creating"
+          class="state-section hidden flex-col items-center text-center"
+        >
+          <div class="flex justify-center">
+            <div
+              class="flex h-16 w-16 items-center justify-center rounded-2xl"
+              style="background: var(--accent-soft)"
+            >
+              <svg
+                class="h-8 w-8"
+                style="color: var(--accent)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 11c0 .667-.333 1-1 1" />
+                <path d="M12 7a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0v-4a3 3 0 0 0-3-3z" />
+                <path d="M12 3a8 8 0 0 0-8 8v1" />
+                <path d="M12 3a8 8 0 0 1 8 8v1" />
+              </svg>
+            </div>
+          </div>
+          <h1
+            class="state-title mt-6 font-display text-3xl text-white"
+            tabindex="-1"
+          >
+            {{t "passkeyenroll.creating.heading"}}
+          </h1>
+          <p class="mt-2 text-sm text-zinc-400">{{t "passkeyenroll.creating.desc"}}</p>
+
+          <div class="glass mt-6 w-full rounded-3xl p-6 text-left">
+            <div class="flex items-center gap-2.5">
+              <span id="creating-busy-dot" class="dot dot-warn badge-dot"></span>
+              <span class="text-sm text-zinc-300">{{t "passkeyenroll.creating.busy"}}</span>
+            </div>
+
+            <div class="mt-5">
+              <label
+                class="text-xs font-medium text-zinc-400"
+                for="creating-name"
+                >{{t "passkeyenroll.creating.name_label"}}</label
+              >
+              <input
+                id="creating-name"
+                class="input mt-2"
+                placeholder="{{t "passkeyenroll.creating.name_placeholder"}}"
+              />
+            </div>
+
+            <!-- 取消/失败后显示的警告行 + 重试按钮 -->
+            <div
+              id="creating-warning"
+              class="mt-4 hidden items-center gap-2 rounded-lg px-3 py-2.5 text-xs"
+              style="background: var(--warn-soft); color: var(--warn-300)"
+            >
+              <span id="creating-warning-text"></span>
+            </div>
+
+            <button
+              id="creating-retry"
+              type="button"
+              class="btn-primary mt-3 hidden w-full rounded-xl px-4 py-2.5 text-sm font-medium"
+            >
+              {{t "passkeyenroll.creating.retry"}}
+            </button>
+          </div>
+        </section>
+
+        <!-- ===== success 成功态 ===== -->
+        <section
+          id="state-success"
+          class="state-section hidden flex-col items-center text-center"
+        >
+          <div class="flex justify-center">
+            <div
+              class="flex h-16 w-16 items-center justify-center rounded-2xl"
+              style="background: var(--success-soft)"
+            >
+              <svg
+                class="h-8 w-8"
+                style="color: var(--success)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                <path d="M22 4L12 14.01l-3-3" />
+              </svg>
+            </div>
+          </div>
+          <span
+            class="status-badge status-success mt-5"
+            >{{t "passkeyenroll.success.heading"}}</span
+          >
+          <h2
+            class="state-title mt-3 text-lg font-medium text-white"
+            tabindex="-1"
+          >
+            {{t "passkeyenroll.success.heading"}}
+          </h2>
+          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
+            {{t "passkeyenroll.success.desc"}}
+          </p>
+          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
+            <a
+              href="login.html"
+              class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
+              >{{t "passkeyenroll.success.login_now"}}</a
+            >
+            <a
+              href="index.html"
+              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+              >{{t "cliauth.back_home"}}</a
+            >
+          </div>
+        </section>
+
+        <!-- ===== failed 共骨架四子态 ===== -->
+        <section
+          id="state-failed"
+          class="state-section hidden flex-col items-center text-center"
+        >
+          <div class="flex justify-center">
+            <div
+              id="failed-icon-box"
+              class="flex h-16 w-16 items-center justify-center rounded-2xl"
+              style="background: var(--warn-soft)"
+            >
+              <svg
+                id="failed-icon-warn"
+                class="h-8 w-8"
+                style="color: var(--warn)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                <path d="M4 4l16 16" />
+              </svg>
+              <svg
+                id="failed-icon-error"
+                class="h-8 w-8 hidden"
+                style="color: var(--error)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M15 9l-6 6M9 9l6 6" />
+              </svg>
+            </div>
+          </div>
+          <span
+            id="failed-badge"
+            class="status-badge status-warn mt-5"
+          ></span>
+          <h2
+            id="failed-title"
+            class="state-title mt-3 text-lg font-medium text-white"
+            tabindex="-1"
+          ></h2>
+          <p id="failed-desc" class="mt-2 text-sm leading-relaxed text-zinc-400"></p>
+          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
+            <button
+              id="failed-action-btn"
+              type="button"
+              class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            ></button>
+            <a
+              href="index.html"
+              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+              >{{t "cliauth.back_home"}}</a
+            >
+          </div>
+        </section>
+
+      </div>
+
+      <!-- 信任脚注 -->
+      <div
+        class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-zinc-600"
+      >
+        <span class="flex items-center gap-1.5">
+          <span class="badge-dot h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+          {{t "passkeyenroll.trust.approve_only"}}
+        </span>
+        <span>·</span>
+        <span>{{t "cliauth.trust.ttl"}}</span>
+      </div>
+
+{{end}}
+
+{{define "script"}}
+    <script>
+      (function () {
+        "use strict";
+        /* 防护：partials.js 未加载时降级 */
+        const A = window.Anotify || {};
+        const api = A.api || (async () => { throw new Error("HTTP 0"); });
+        const toast = A.toast || function () {};
+        const b64urlToBuf = A.b64urlToBuf || (() => new ArrayBuffer(0));
+        const bufToB64url = A.bufToB64url || (() => "");
+        const t = A.t || function (k, fb) { return fb || k; };
+
+        /* ---------- 常量 ---------- */
+        const API = "/v1/passkey-enroll/sessions";
+        const CODE_CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+        const STATES = [
+          "entry",
+          "overview",
+          "confirm-wait",
+          "creating",
+          "success",
+          "failed",
+        ];
+
+        /* ---------- 运行时状态 ---------- */
+        let currentSessionId = null;
+        let currentSecret = null;
+        let currentExpiresAt = null;
+        let currentInitiatorName = null;
+        let currentUserCode = null;
+        let attestationOptions = null;
+        let registrationToken = null;
+        let lastAction = null;
+        let entryAutoTimer = null;
+        let pollTimer = null;
+        let countdownTimer = null;
+        let pollErrorCount = 0;
+        let visibilityHandler = null;
+
+        /* ---------- 状态切换 ---------- */
+        function showState(name) {
+          const target = "state-" + name;
+          for (const s of STATES) {
+            const el = document.getElementById("state-" + s);
+            if (!el) continue;
+            if (s === name) {
+              el.classList.remove("hidden");
+              el.classList.add("flex");
+            } else {
+              el.classList.add("hidden");
+              el.classList.remove("flex");
+            }
+          }
+          const focusEl = document.querySelector("#" + target + " .state-title");
+          if (focusEl) focusEl.focus({ preventScroll: true });
+        }
+
+        /* ---------- 短码输入格式化（与 cli-auth 完全一致） ---------- */
+        function formatCode(raw) {
+          let up = (raw || "").toUpperCase();
+          let kept = "";
+          for (const ch of up) {
+            if (CODE_CHARSET.indexOf(ch) >= 0) kept += ch;
+          }
+          if (kept.length > 4) {
+            kept = kept.slice(0, 4) + "-" + kept.slice(4, 8);
+          }
+          return kept.slice(0, 9);
+        }
+
+        function codeWithoutDash() {
+          return (document.getElementById("code-input").value || "")
+            .replace(/-/g, "")
+            .toUpperCase();
+        }
+
+        function setBusy(btnId, labelId, busyId, busy) {
+          const btn = document.getElementById(btnId);
+          if (!btn) return;
+          const label = labelId ? document.getElementById(labelId) : null;
+          const busySpan = busyId ? document.getElementById(busyId) : null;
+          btn.disabled = busy;
+          if (label) label.classList.toggle("hidden", busy);
+          if (busySpan) busySpan.classList.toggle("hidden", !busy);
+        }
+
+        /* ---------- 倒计时 ---------- */
+        function startCountdown(expiresAt, displayId, barId) {
+          stopCountdown();
+          currentExpiresAt = expiresAt;
+          function tick() {
+            const now = Date.now();
+            const exp = expiresAt * 1000;
+            let remaining = Math.max(0, Math.floor((exp - now) / 1000));
+            const mins = Math.floor(remaining / 60);
+            const secs = remaining % 60;
+            const display = document.getElementById(displayId);
+            const bar = document.getElementById(barId);
+            if (display) {
+              display.textContent = mins + ":" + String(secs).padStart(2, "0");
+              /* 最后 60 秒变 warn 色 */
+              if (remaining <= 60) {
+                display.style.color = "var(--warn-300)";
+              } else {
+                display.style.color = "";
+              }
+            }
+            if (bar) {
+              const totalTtl = 600; /* 10 min */
+              const pct = Math.max(0, (remaining / totalTtl) * 100);
+              bar.style.width = pct + "%";
+              if (remaining <= 60) {
+                bar.style.background = "var(--warn)";
+              } else {
+                bar.style.background = "var(--accent)";
+              }
+            }
+            if (remaining <= 0) {
+              stopCountdown();
+              stopPoll();
+              showFailedState("expired");
+              return;
+            }
+          }
+          tick();
+          countdownTimer = setInterval(tick, 1000);
+        }
+
+        function stopCountdown() {
+          if (countdownTimer) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+          }
+        }
+
+        /* ---------- 轮询（新设备） ---------- */
+        function startPoll() {
+          stopPoll();
+          pollErrorCount = 0;
+          schedulePoll(1000); /* 首次快速 */
+        }
+
+        function stopPoll() {
+          if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+          }
+        }
+
+        function schedulePoll(delay) {
+          if (pollTimer) clearTimeout(pollTimer);
+          pollTimer = setTimeout(doPoll, delay);
+        }
+
+        async function doPoll() {
+          if (!currentSessionId || !currentSecret) return;
+          try {
+            const data = await api(
+              API +
+                "/" +
+                encodeURIComponent(currentSessionId) +
+                "/poll?secret=" +
+                encodeURIComponent(currentSecret),
+            );
+            pollErrorCount = 0;
+            handlePollResult(data);
+          } catch (e) {
+            pollErrorCount++;
+            if (String(e).includes("HTTP 404")) {
+              stopPoll();
+              stopCountdown();
+              showFailedState("notfound");
+              return;
+            }
+            if (pollErrorCount >= 3) {
+              stopPoll();
+              stopCountdown();
+              lastAction = () => { startPoll(); };
+              showFailedState("error");
+              return;
+            }
+            schedulePoll(3000);
+          }
+        }
+
+        function handlePollResult(data) {
+          if (!data) return;
+          const status = data.status;
+          if (status === "approved" && data.registrationToken) {
+            /* 拿到 attestationOptions + registrationToken → 切 creating */
+            attestationOptions = data.attestationOptions;
+            registrationToken = data.registrationToken;
+            stopPoll();
+            stopCountdown();
+            showState("creating");
+            /* 自动触发 WebAuthn create */
+            triggerCreate();
+            return;
+          }
+          if (status === "denied") {
+            stopPoll();
+            stopCountdown();
+            showFailedState("denied");
+            return;
+          }
+          if (status === "expired") {
+            stopPoll();
+            stopCountdown();
+            showFailedState("expired");
+            return;
+          }
+          if (status === "consumed") {
+            stopPoll();
+            stopCountdown();
+            showFailedState("error");
+            return;
+          }
+          /* pending/requested → 继续轮询 */
+          schedulePoll(2000);
+        }
+
+        /* ---------- 页面不可见降频 ---------- */
+        function setupVisibilityHandler() {
+          if (visibilityHandler) return;
+          visibilityHandler = () => {
+            if (document.hidden) {
+              stopPoll();
+            } else {
+              if (currentSessionId && currentSecret) {
+                doPoll();
+              }
+            }
+          };
+          document.addEventListener("visibilitychange", visibilityHandler);
+        }
+
+        /* ---------- lookup ---------- */
+        async function lookupById(id) {
+          lastAction = () => lookupById(id);
+          let data;
+          try {
+            data = await api(API + "/" + encodeURIComponent(id));
+          } catch (e) {
+            if (String(e).includes("HTTP 404")) {
+              showFailedState("notfound");
+              return;
+            }
+            showFailedState("error");
+            return;
+          }
+          handleLookup(data);
+        }
+
+        async function lookupByCode(code) {
+          lastAction = () => lookupByCode(code);
+          let data;
+          try {
+            data = await api(
+              API + "/by-code?code=" + encodeURIComponent(code),
+            );
+          } catch (e) {
+            if (String(e).includes("HTTP 404")) {
+              const err = document.getElementById("entry-error");
+              err.classList.remove("hidden");
+              const input = document.getElementById("code-input");
+              input.select();
+              return;
+            }
+            showFailedState("error");
+            return;
+          }
+          if (data && data.sessionId) {
+            history.replaceState(
+              null,
+              "",
+              "passkey-enroll.html?s=" + encodeURIComponent(data.sessionId),
+            );
+          }
+          handleLookup(data);
+        }
+
+        function handleLookup(data) {
+          if (!data || !data.sessionId) {
+            showFailedState("notfound");
+            return;
+          }
+          currentSessionId = data.sessionId;
+          currentInitiatorName = data.initiatorName || "";
+          const status = data.status;
+
+          if (status === "pending") {
+            renderOverview(data);
+            showState("overview");
+          } else if (status === "requested") {
+            /* 刷新场景：已敲门，等批准 */
+            renderWait(data);
+            showState("confirm-wait");
+            startPoll();
+            startCountdown(data.expiresAt, "wait-countdown", "wait-countdown-bar");
+          } else if (status === "approved") {
+            /* 刷新场景：已批准但还没 complete（不应该有 token）→ 继续等 */
+            renderWait(data);
+            showState("confirm-wait");
+            startPoll();
+            startCountdown(data.expiresAt, "wait-countdown", "wait-countdown-bar");
+          } else if (status === "consumed") {
+            showFailedState("error");
+          } else if (status === "denied") {
+            showFailedState("denied");
+          } else if (status === "expired") {
+            showFailedState("expired");
+          } else {
+            showFailedState("notfound");
+          }
+        }
+
+        /* ---------- 渲染 overview ---------- */
+        function renderOverview(data) {
+          const name = data.initiatorName || "—";
+          const el = document.getElementById("overview-session-line");
+          el.textContent = t(
+            "passkeyenroll.overview.session_line",
+            '由「{name}」发起的添加请求',
+          ).replace("{name}", name);
+        }
+
+        /* ---------- 渲染 confirm-wait ---------- */
+        function renderWait(data) {
+          const name = data.initiatorName || currentInitiatorName || "—";
+          const descEl = document.getElementById("wait-desc");
+          descEl.textContent = t(
+            "passkeyenroll.wait.desc",
+            "「{name}」的批准面板正在等待你确认",
+          ).replace("{name}", name);
+          /* 短码复述 */
+          const codeEl = document.getElementById("wait-code");
+          if (currentUserCode) {
+            codeEl.textContent = currentUserCode;
+          }
+        }
+
+        /* ---------- 敲门（overview → confirm-wait） ---------- */
+        async function doKnock() {
+          /* 降级：非 HTTPS / 无 WebAuthn → 失败 */
+          if (!window.isSecureContext || !window.PublicKeyCredential || !navigator.credentials?.create) {
+            showFailedState("error", t(
+              "passkeyenroll.failed.no_webauthn_desc",
+              "当前浏览器或环境不支持 Passkey（需 HTTPS + 现代浏览器）。请换用最新版 Chrome / Safari。",
+            ));
+            return;
+          }
+
+          setBusy("overview-continue", "overview-continue-label", "overview-continue-busy", true);
+          try {
+            const deviceHint = detectDeviceHint();
+            const data = await api(API + "/" + encodeURIComponent(currentSessionId) + "/request", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ deviceHint: deviceHint }),
+            });
+            if (data && data.secret) {
+              currentSecret = data.secret;
+              renderWait({ initiatorName: currentInitiatorName });
+              showState("confirm-wait");
+              startPoll();
+              startCountdown(currentExpiresAt, "wait-countdown", "wait-countdown-bar");
+            }
+          } catch (e) {
+            if (String(e).includes("HTTP 409")) {
+              /* 终态冲突 → 重新 lookup */
+              lookupById(currentSessionId);
+            } else {
+              lastAction = doKnock;
+              showFailedState("error");
+            }
+          } finally {
+            setBusy("overview-continue", "overview-continue-label", "overview-continue-busy", false);
+          }
+        }
+
+        /* ---------- 设备名推断 ---------- */
+        function detectDeviceHint() {
+          const ua = navigator.userAgent;
+          let browser = "Browser";
+          let os = "OS";
+          if (ua.includes("Edg/")) browser = "Edge";
+          else if (ua.includes("Chrome/")) browser = "Chrome";
+          else if (ua.includes("Firefox/")) browser = "Firefox";
+          else if (ua.includes("Safari/")) browser = "Safari";
+          if (ua.includes("iPhone") || ua.includes("iPad")) os = "iOS";
+          else if (ua.includes("Mac OS")) os = "macOS";
+          else if (ua.includes("Android")) os = "Android";
+          else if (ua.includes("Windows")) os = "Windows";
+          else if (ua.includes("Linux")) os = "Linux";
+          return browser + " · " + os;
+        }
+
+        function defaultDeviceName() {
+          const ua = navigator.userAgent;
+          if (ua.includes("iPhone")) return "iPhone";
+          if (ua.includes("iPad")) return "iPad";
+          if (ua.includes("Android")) return "Android";
+          if (ua.includes("Mac OS")) return "Mac";
+          if (ua.includes("Windows")) return "PC";
+          return "New Device";
+        }
+
+        /* ---------- WebAuthn create ---------- */
+        async function triggerCreate() {
+          if (!attestationOptions || !registrationToken) {
+            showFailedState("error");
+            return;
+          }
+
+          /* 填默认设备名 */
+          const nameInput = document.getElementById("creating-name");
+          if (nameInput && !nameInput.value) {
+            nameInput.value = defaultDeviceName();
+          }
+
+          try {
+            const publicKey = attestationOptions.publicKey || attestationOptions;
+            /* base64url → ArrayBuffer */
+            publicKey.challenge = b64urlToBuf(publicKey.challenge);
+            if (publicKey.user && publicKey.user.id) {
+              publicKey.user.id = b64urlToBuf(publicKey.user.id);
+            }
+            if (publicKey.excludeCredentials) {
+              publicKey.excludeCredentials = publicKey.excludeCredentials.map(
+                (c) => ({ ...c, id: b64urlToBuf(c.id) }),
+              );
+            }
+
+            const cred = await navigator.credentials.create({ publicKey });
+
+            const attestation = {
+              id: cred.id,
+              rawId: bufToB64url(cred.rawId),
+              type: cred.type,
+              response: {
+                clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+                attestationObject: bufToB64url(cred.response.attestationObject),
+              },
+            };
+
+            const name = (nameInput && nameInput.value) || "新设备";
+            const res = await api(
+              API +
+                "/" +
+                encodeURIComponent(currentSessionId) +
+                "/complete?registrationToken=" +
+                encodeURIComponent(registrationToken) +
+                "&name=" +
+                encodeURIComponent(name),
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(attestation),
+              },
+            );
+
+            if (res && res.ok) {
+              showState("success");
+            } else {
+              showFailedState("error");
+            }
+          } catch (e) {
+            if (e.name === "NotAllowedError") {
+              /* 用户取消系统弹窗 → 不落终态，显示重试 */
+              const warn = document.getElementById("creating-warning");
+              const warnText = document.getElementById("creating-warning-text");
+              const retryBtn = document.getElementById("creating-retry");
+              warnText.textContent = t(
+                "passkeyenroll.creating.cancelled",
+                "你已取消系统验证，Passkey 尚未创建，可重试。",
+              );
+              warn.classList.remove("hidden");
+              warn.classList.add("flex");
+              retryBtn.classList.remove("hidden");
+              return;
+            }
+            if (String(e).includes("HTTP 409")) {
+              /* registrationToken 过期或会话已完成 */
+              showFailedState("expired");
+              return;
+            }
+            if (String(e).includes("HTTP 401")) {
+              showFailedState("error", t(
+                "passkeyenroll.creating.failed_desc",
+                "本机无法完成创建（浏览器或设备不支持）。",
+              ));
+              return;
+            }
+            /* 其他 WebAuthn 错误 → failed-error */
+            showFailedState("error", t(
+              "passkeyenroll.creating.failed_desc",
+              "本机无法完成创建（浏览器或设备不支持）。",
+            ));
+          }
+        }
+
+        /* ---------- failed 子态渲染 ---------- */
+        function showFailedState(subtype, customDesc) {
+          stopPoll();
+          stopCountdown();
+
+          const iconBox = document.getElementById("failed-icon-box");
+          const iconWarn = document.getElementById("failed-icon-warn");
+          const iconError = document.getElementById("failed-icon-error");
+          const badge = document.getElementById("failed-badge");
+          const title = document.getElementById("failed-title");
+          const desc = document.getElementById("failed-desc");
+          const actionBtn = document.getElementById("failed-action-btn");
+
+          /* 恢复 actionBtn 显示 */
+          actionBtn.classList.remove("hidden");
+
+          if (subtype === "denied") {
+            iconBox.style.background = "var(--warn-soft)";
+            iconWarn.classList.remove("hidden");
+            iconError.classList.add("hidden");
+            badge.className = "status-badge status-warn mt-5";
+            badge.textContent = t("passkeyenroll.failed.denied_title", "添加已被拒绝");
+            title.textContent = t("passkeyenroll.failed.denied_title", "添加已被拒绝");
+            desc.textContent = customDesc || t("passkeyenroll.failed.denied_desc", "已登录设备拒绝了本次请求，凭证未创建。");
+            actionBtn.textContent = t("passkeyenroll.entry.continue", "继续");
+            actionBtn.onclick = () => resetEntry();
+          } else if (subtype === "expired") {
+            iconBox.style.background = "var(--warn-soft)";
+            iconWarn.classList.remove("hidden");
+            iconError.classList.add("hidden");
+            badge.className = "status-badge status-warn mt-5";
+            badge.textContent = t("passkeyenroll.failed.expired_title", "会话已过期");
+            title.textContent = t("passkeyenroll.failed.expired_title", "会话已过期");
+            desc.textContent = customDesc || t("passkeyenroll.failed.expired_desc", "会话 10 分钟内有效。请回到已登录设备重新发起。");
+            actionBtn.textContent = t("passkeyenroll.failed.expired_action", "输入新短码");
+            actionBtn.onclick = () => resetEntry();
+          } else if (subtype === "notfound") {
+            iconBox.style.background = "var(--error-soft)";
+            iconWarn.classList.add("hidden");
+            iconError.classList.remove("hidden");
+            badge.className = "status-badge status-error mt-5";
+            badge.textContent = t("passkeyenroll.failed.notfound_title", "会话不存在或已失效");
+            title.textContent = t("passkeyenroll.failed.notfound_title", "会话不存在或已失效");
+            desc.textContent = customDesc || t("passkeyenroll.failed.notfound_desc", "链接或短码可能已过期、已使用或被取消。");
+            actionBtn.textContent = t("passkeyenroll.failed.notfound_action", "重新输入");
+            actionBtn.onclick = () => resetEntry();
+          } else {
+            /* error */
+            iconBox.style.background = "var(--error-soft)";
+            iconWarn.classList.add("hidden");
+            iconError.classList.remove("hidden");
+            badge.className = "status-badge status-error mt-5";
+            badge.textContent = t("passkeyenroll.failed.error_title", "出错了");
+            title.textContent = t("passkeyenroll.failed.error_title", "出错了");
+            desc.textContent = customDesc || t("passkeyenroll.failed.error_desc", "请检查网络连接后重试。");
+            actionBtn.textContent = t("cliauth.done.retry", "重试");
+            actionBtn.onclick = () => {
+              if (lastAction) lastAction();
+              else resetEntry();
+            };
+          }
+
+          showState("failed");
+        }
+
+        /* ---------- 重置回 entry ---------- */
+        function resetEntry() {
+          history.replaceState(null, "", "passkey-enroll.html");
+          currentSessionId = null;
+          currentSecret = null;
+          currentInitiatorName = null;
+          currentUserCode = null;
+          attestationOptions = null;
+          registrationToken = null;
+          lastAction = null;
+          stopPoll();
+          stopCountdown();
+          const input = document.getElementById("code-input");
+          input.value = "";
+          document.getElementById("entry-error").classList.add("hidden");
+          setBusy("entry-continue", "entry-continue-label", "entry-continue-busy", false);
+          showState("entry");
+          input.focus();
+        }
+        window.Anotify = window.Anotify || {};
+        window.Anotify._enrollResetEntry = resetEntry;
+
+        /* ---------- 入口绑定 ---------- */
+        function init() {
+          setupVisibilityHandler();
+
+          const input = document.getElementById("code-input");
+          const continueBtn = document.getElementById("entry-continue");
+
+          /* 输入格式化 */
+          input.addEventListener("input", () => {
+            document.getElementById("entry-error").classList.add("hidden");
+            const formatted = formatCode(input.value);
+            if (formatted !== input.value) input.value = formatted;
+            const code = codeWithoutDash();
+            if (code.length === 8) {
+              clearTimeout(entryAutoTimer);
+              entryAutoTimer = setTimeout(() => submitCode(), 300);
+            } else {
+              clearTimeout(entryAutoTimer);
+            }
+          });
+
+          input.addEventListener("keydown", (e) => {
+            if (e.key !== "Enter") return;
+            if (e.isComposing || e.keyCode === 229) return;
+            e.preventDefault();
+            submitCode();
+          });
+
+          continueBtn.addEventListener("click", submitCode);
+
+          async function submitCode() {
+            const code = codeWithoutDash();
+            if (code.length !== 8) {
+              input.focus();
+              return;
+            }
+            setBusy("entry-continue", "entry-continue-label", "entry-continue-busy", true);
+            await lookupByCode(code);
+            const entryEl = document.getElementById("state-entry");
+            if (!entryEl.classList.contains("hidden")) {
+              setBusy("entry-continue", "entry-continue-label", "entry-continue-busy", false);
+            }
+          }
+
+          /* overview 继续 → 敲门 */
+          document.getElementById("overview-continue").addEventListener("click", doKnock);
+
+          /* creating 重试 */
+          document.getElementById("creating-retry").addEventListener("click", () => {
+            document.getElementById("creating-warning").classList.add("hidden");
+            document.getElementById("creating-warning").classList.remove("flex");
+            document.getElementById("creating-retry").classList.add("hidden");
+            triggerCreate();
+          });
+
+          /* 启动：模式 A 优先，否则 entry */
+          const params = new URLSearchParams(location.search);
+          const s = params.get("s");
+          if (s) {
+            lookupById(s);
+          } else {
+            showState("entry");
+            input.focus();
+          }
+        }
+
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", init);
+        } else {
+          init();
+        }
+      })();
+    </script>
+{{end}}

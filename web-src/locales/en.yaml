@@ -468,7 +468,7 @@ security:
   unknown_device: Unknown device
   credential: Credential
   current_session: Current session
-  empty_passkeys: No Passkeys yet. Click "+ Add Passkey" in the top right to create one for this device.
+  empty_passkeys: No Passkeys yet. Click "+ Add on a new device" in the top right to create one.
   empty_sessions: No active sessions.
   in_use: In use
   last_used: Last used {time}
@@ -712,3 +712,89 @@ cliauth:
     local: "Authorization only takes effect on your server"
     ttl: "Codes expire in 10 minutes"
     revoke: "Keys can be revoked anytime in API Keys"
+
+passkeyenroll:
+  title: "Add a Passkey on a new device"
+  entry_button: "Add on a new device"
+  local_button: "Add on this device"
+  panel:
+    title: "Add a Passkey on a new device"
+    sub: "Open on the new device with any method below, then approve here."
+    tab_qr: "QR code"
+    tab_url: "Link"
+    tab_code: "Code"
+    qr_hint: "Scan with the new device's camera"
+    url_hint: "Send this link to the new device"
+    code_hint: "Enter this code on the new device"
+    waiting: "Waiting for the new device…"
+    expires_in: "Expires in"
+    confirm_title: "Approve this new device?"
+    confirm_sub: "Once approved, the new device will prompt for biometrics to create the passkey."
+    confirm_warn: "Not you? Deny. The QR code / short code should only appear on a device in your hands."
+    approve: "Approve"
+    approved_waiting: "Approved. Waiting for the new device to finish biometrics…"
+    cancel_confirm: "Cancel this enrollment? The link and code on the new device will stop working immediately."
+    success_title: "New device added"
+    success_desc: 'A passkey for "{name}" was created. It can sign in directly next time.'
+    done: "Done"
+    restart: "Start over"
+    error_backend_desc: "Cannot reach the backend (demo mode). Make sure the server is running and served over HTTPS."
+    denied_title: "Enrollment denied"
+    denied_desc: "No credential was created. If this wasn't you, check whether someone is trying to sign in to your account."
+    expired_title: "Session expired"
+    expired_desc: "Enrollment sessions are valid for 10 minutes. Starting over generates a new QR code and code."
+    error_title: "Cannot reach the server"
+    error_desc: "Check your connection and try again."
+    via_qr: "via QR code"
+    via_url: "via link"
+    via_code: "via code"
+  trust:
+    approve_only: "A credential is created only after approval on the signed-in device"
+  entry:
+    heading: "Enter enrollment code"
+    sub: "After starting enrollment in Security & Login on a signed-in device, enter the 8-character code shown there."
+    continue: "Continue"
+    busy: "Looking up session…"
+    not_found: "No session matches this code. Check it and try again."
+  overview:
+    heading: "Add a passkey on this device"
+    session_line: 'Enrollment requested by "{name}"'
+    desc: "After you continue, your signed-in device gets an approval request. Once approved, this device prompts for biometrics."
+    step1: "This device requests"
+    step2: "Approve on the signed-in device"
+    step3: "Finish biometrics here"
+    ttl_hint: "Session valid for 10 minutes"
+    continue: "Continue and request approval"
+    not_mine: "Didn't request this? Just close this page."
+  wait:
+    heading: "Approve on your signed-in device"
+    desc: 'The approval panel on "{name}" is waiting for you.'
+    status: "Waiting for approval…"
+    code_label: "Code"
+    cancel: "Cancel and go back"
+  creating:
+    heading: "Creating passkey…"
+    desc: "Finish fingerprint / face / device PIN in the system prompt."
+    name_label: "Name this passkey"
+    name_placeholder: 'e.g. "Daily phone"'
+    busy: "Waiting for system verification…"
+    retry: "Try again"
+    cancelled: "System verification was cancelled. No passkey yet — you can retry."
+    failed_desc: "This device couldn't complete creation (unsupported browser or device)."
+  success:
+    heading: "Passkey added"
+    desc: "Next time on this device, sign in with biometrics directly."
+    login_now: "Sign in now"
+  failed:
+    denied_title: "Enrollment denied"
+    denied_desc: "The signed-in device denied this request. No credential was created."
+    expired_title: "Session expired"
+    expired_desc: "Sessions are valid for 10 minutes. Start over on the signed-in device for a new QR code or code."
+    expired_action: "Enter a new code"
+    notfound_title: "Session not found"
+    notfound_desc: "The link or code may have expired, been used, or been cancelled. Start over or check the code."
+    notfound_action: "Re-enter code"
+    error_title: "Something went wrong"
+    error_desc: "Check your connection and try again."
+    no_webauthn_desc: "This browser or environment doesn't support passkeys (HTTPS + a modern browser required). Try the latest Chrome or Safari."
+    consumed_desc: "This session is already complete and can't be reused. Start over for a new one."

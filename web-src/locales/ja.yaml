@@ -468,7 +468,7 @@ security:
   unknown_device: 不明なデバイス
   credential: 資格情報
   current_session: 現在のセッション
-  empty_passkeys: まだ Passkey がありません。右上の「+ Passkey 追加」でこのデバイスに作成できます。
+  empty_passkeys: まだ Passkey がありません。右上の「+ 新しいデバイスで追加」でこのデバイスに作成できます。
   empty_sessions: アクティブなセッションはありません。
   in_use: 使用中
   last_used: 最終使用 {time}
@@ -712,3 +712,89 @@ cliauth:
     local: "承認はあなたのサーバー上でのみ有効です"
     ttl: "コードは 10 分で失効します"
     revoke: "キーは API Keys ページでいつでも無効化できます"
+
+passkeyenroll:
+  title: "新しいデバイスでパスキーを追加"
+  entry_button: "新しいデバイスで追加"
+  local_button: "このデバイスで追加"
+  panel:
+    title: "新しいデバイスでパスキーを追加"
+    sub: "新しいデバイスでいずれかの方法で開き、ここで承認してください"
+    tab_qr: "QRコード"
+    tab_url: "リンク"
+    tab_code: "コード"
+    qr_hint: "新しいデバイスのカメラでスキャン"
+    url_hint: "このリンクを新しいデバイスに送る"
+    code_hint: "新しいデバイスの追加ページでこのコードを入力"
+    waiting: "新しいデバイスを待っています…"
+    expires_in: "有効期限"
+    confirm_title: "この新しいデバイスを承認しますか？"
+    confirm_sub: "承認すると、新しいデバイスで生体認証が起動しパスキーが作成されます"
+    confirm_warn: "自分の操作ではありませんか？拒否してください。QRコード・コードは手元の新しいデバイスにだけ表示されているはずです。"
+    approve: "承認する"
+    approved_waiting: "承認しました。新しいデバイスの生体認証を待っています…"
+    cancel_confirm: "この追加をキャンセルしますか？新しいデバイス側のリンクとコードは直ちに無効になります。"
+    success_title: "新しいデバイスを追加しました"
+    success_desc: "「{name}」のパスキーが作成されました。次回からそのままログインできます。"
+    done: "完了"
+    restart: "やり直す"
+    error_backend_desc: "バックエンドに接続できません（デモモード）。サーバーが HTTPS で起動しているか確認してください。"
+    denied_title: "追加を拒否しました"
+    denied_desc: "認証情報は作成されていません。心当たりがない場合は、第三者がログインを試みていないか確認してください。"
+    expired_title: "セッションの有効期限が切れました"
+    expired_desc: "セッションは 10 分間有効です。やり直すと新しい QRコードとコードが発行されます。"
+    error_title: "サーバーに接続できません"
+    error_desc: "ネットワークを確認して再試行してください。"
+    via_qr: "QRコードで接続"
+    via_url: "リンクで接続"
+    via_code: "コードで接続"
+  trust:
+    approve_only: "ログイン済みデバイスでの承認後にのみ作成されます"
+  entry:
+    heading: "追加コードを入力"
+    sub: "ログイン済みデバイスの「安全とログイン」で追加を開始後、表示された 8 文字のコードを入力してください"
+    continue: "続ける"
+    busy: "セッションを検索中…"
+    not_found: "このコードに対応するセッションが見つかりません。確認して再入力してください"
+  overview:
+    heading: "このデバイスにパスキーを追加"
+    session_line: "「{name}」からの追加リクエスト"
+    desc: "続けると、ログイン済みデバイスに承認リクエストが届きます。承認後、このデバイスで生体認証が起動します。"
+    step1: "このデバイスがリクエスト"
+    step2: "ログイン済みデバイスで承認"
+    step3: "このデバイスで生体認証"
+    ttl_hint: "セッションは 10 分間有効"
+    continue: "続けて承認をリクエスト"
+    not_mine: "自分のリクエストではありませんか？このページを閉じてください"
+  wait:
+    heading: "ログイン済みデバイスで承認してください"
+    desc: "「{name}」の承認パネルがあなたの確認を待っています"
+    status: "承認待ち…"
+    code_label: "コード"
+    cancel: "キャンセルして戻る"
+  creating:
+    heading: "パスキーを作成中…"
+    desc: "システムのダイアログで指紋 / 顔 / デバイスパスコードを完了してください"
+    name_label: "このパスキーに名前を付ける"
+    name_placeholder: "例：「メインのスマホ」"
+    busy: "システム認証を待っています…"
+    retry: "再試行"
+    cancelled: "システム認証がキャンセルされました。まだ作成されていません。再試行できます。"
+    failed_desc: "このデバイスでは作成を完了できませんでした（ブラウザまたはデバイス非対応）。"
+  success:
+    heading: "パスキーを追加しました"
+    desc: "次回からこのデバイスでは生体認証だけでログインできます。"
+    login_now: "今すぐログイン"
+  failed:
+    denied_title: "追加が拒否されました"
+    denied_desc: "ログイン済みデバイスがこのリクエストを拒否しました。認証情報は作成されていません。"
+    expired_title: "セッションの有効期限が切れました"
+    expired_desc: "セッションは 10 分間有効です。ログイン済みデバイスでやり直し、新しい QRコードまたはコードを取得してください。"
+    expired_action: "新しいコードを入力"
+    notfound_title: "セッションが見つかりません"
+    notfound_desc: "リンクまたはコードは期限切れ・使用済み・キャンセルされた可能性があります。やり直すかコードを確認してください。"
+    notfound_action: "再入力"
+    error_title: "エラーが発生しました"
+    error_desc: "ネットワークを確認して再試行してください。"
+    no_webauthn_desc: "このブラウザまたは環境はパスキーに対応していません（HTTPS + 最新ブラウザが必要）。最新の Chrome / Safari をお試しください。"
+    consumed_desc: "このセッションは完了済みで再利用できません。やり直してください。"

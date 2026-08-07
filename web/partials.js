@@ -710,6 +710,7 @@
 						"security.html",
 						"docs.html",
 						"cli-auth.html",
+						"passkey-enroll.html",
 					];
 					const name = location.pathname.split("/").pop();
 					const page = PAGES.includes(name) ? name : "index.html";

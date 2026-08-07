@@ -78,12 +78,20 @@
             {{t "security.intro"}}
           </p>
         </div>
-        <button
-          onclick="addPasskey()"
-          class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-        >
-          + {{t "security.add_passkey"}}
-        </button>
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            onclick="addPasskey()"
+            class="btn-ghost rounded-xl px-4 py-2 text-sm font-medium"
+          >
+            + {{t "passkeyenroll.local_button"}}
+          </button>
+          <button
+            onclick="openEnrollModal()"
+            class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+          >
+            ⇄ {{t "passkeyenroll.entry_button"}}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -256,6 +264,388 @@
     </section>
   </div>
 </div>
+
+<!-- ===== Passkey 新设备授权弹层 ===== -->
+<div
+  id="enroll-modal"
+  class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+>
+  <div
+    class="sidebar-overlay absolute inset-0"
+    onclick="closeEnrollModal()"
+  ></div>
+  <div
+    class="card relative z-10 w-full max-w-md !bg-[var(--panel-modal)] p-6 shadow-2xl"
+  >
+    <!-- 头部 -->
+    <div class="flex items-start justify-between">
+      <div class="flex items-center gap-3">
+        <div
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+          style="background: var(--accent-soft)"
+        >
+          <svg
+            class="h-5 w-5"
+            style="color: var(--accent)"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-base font-medium text-white">
+            {{t "passkeyenroll.panel.title"}}
+          </h3>
+          <p class="mt-0.5 text-[13px] text-zinc-500">
+            {{t "passkeyenroll.panel.sub"}}
+          </p>
+        </div>
+      </div>
+      <button
+        onclick="closeEnrollModal()"
+        class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
+      >
+        <svg
+          class="h-5 w-5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- ===== 状态: waiting 等待接入 ===== -->
+    <div id="enroll-state-waiting" class="mt-5">
+      <!-- 倒计时条 -->
+      <div class="flex items-center justify-between text-[11px] text-zinc-500">
+        <span class="flex items-center gap-1.5">
+          <span class="dot dot-warn badge-dot"></span>
+          {{t "passkeyenroll.panel.expires_in"}}
+        </span>
+        <span id="enroll-countdown" class="mono"></span>
+      </div>
+      <div class="mt-1.5 h-1 rounded-full" style="background: var(--surface-2)">
+        <div
+          id="enroll-countdown-bar"
+          class="h-full rounded-full"
+          style="
+            background: var(--accent);
+            width: 100%;
+            transition: width 1s linear;
+          "
+        ></div>
+      </div>
+
+      <!-- Tab 接入方式 -->
+      <div
+        class="mt-4 flex gap-1 rounded-xl p-1 ring-1"
+        style="background: var(--surface-1); --tw-ring-color: var(--line)"
+      >
+        <button
+          type="button"
+          class="enroll-tab filter-tab active flex-1 rounded-lg px-3 py-1.5 text-xs text-center"
+          data-tab="qr"
+          onclick="switchEnrollTab('qr')"
+        >
+          {{t "passkeyenroll.panel.tab_qr"}}
+        </button>
+        <button
+          type="button"
+          class="enroll-tab filter-tab flex-1 rounded-lg px-3 py-1.5 text-xs text-center"
+          data-tab="url"
+          onclick="switchEnrollTab('url')"
+        >
+          {{t "passkeyenroll.panel.tab_url"}}
+        </button>
+        <button
+          type="button"
+          class="enroll-tab filter-tab flex-1 rounded-lg px-3 py-1.5 text-xs text-center"
+          data-tab="code"
+          onclick="switchEnrollTab('code')"
+        >
+          {{t "passkeyenroll.panel.tab_code"}}
+        </button>
+      </div>
+
+      <!-- Tab 内容区 -->
+      <div class="mt-3 min-h-[220px]">
+        <!-- QR -->
+        <div id="enroll-tab-qr" class="flex flex-col items-center">
+          <pre
+            id="enroll-qr-ascii"
+            class="mono select-all rounded-xl px-3 py-3 text-[7px] leading-[7px] overflow-hidden"
+            style="background: #0a0a11; color: var(--text); max-width: 100%"
+          ></pre>
+          <p class="mt-3 text-[11px] text-zinc-500">
+            {{t "passkeyenroll.panel.qr_hint"}}
+          </p>
+        </div>
+
+        <!-- URL -->
+        <div id="enroll-tab-url" class="hidden">
+          <div
+            class="flex items-center gap-2 rounded-lg px-3 py-2.5 ring-1"
+            style="background: var(--code-bg); --tw-ring-color: var(--line)"
+          >
+            <span
+              id="enroll-url-text"
+              class="mono truncate text-xs text-zinc-300"
+            ></span>
+          </div>
+          <button
+            type="button"
+            id="enroll-copy-url"
+            onclick="copyEnrollUrl()"
+            class="btn-ghost mt-2 flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" />
+              <path
+                d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+              />
+            </svg>
+            <span id="enroll-copy-label">{{t "keys.save.copy"}}</span>
+          </button>
+          <p class="mt-2 text-[11px] text-zinc-500">
+            {{t "passkeyenroll.panel.url_hint"}}
+          </p>
+        </div>
+
+        <!-- Code -->
+        <div id="enroll-tab-code" class="hidden flex-col items-center">
+          <div
+            class="mono text-white"
+            style="font-size: 1.875rem; letter-spacing: 0.25em"
+            id="enroll-shortcode"
+          >
+            XXXX-XXXX
+          </div>
+          <p class="mt-3 text-[11px] text-zinc-500">
+            {{t "passkeyenroll.panel.code_hint"}}
+          </p>
+          <p class="mt-1 text-[11px] text-zinc-600">
+            {{t "cliauth.entry.hint"}}
+          </p>
+        </div>
+      </div>
+
+      <!-- 状态行 -->
+      <div class="mt-3 flex items-center gap-2 text-[11px] text-zinc-500">
+        <span class="dot dot-warn badge-dot"></span>
+        <span>{{t "passkeyenroll.panel.waiting"}}</span>
+      </div>
+    </div>
+
+    <!-- ===== 状态: confirm 新设备敲门 ===== -->
+    <div id="enroll-state-confirm" class="mt-5 hidden">
+      <!-- 倒计时条 -->
+      <div class="flex items-center justify-between text-[11px] text-zinc-500">
+        <span class="flex items-center gap-1.5">
+          <span class="dot dot-warn badge-dot"></span>
+          {{t "passkeyenroll.panel.expires_in"}}
+        </span>
+        <span id="enroll-countdown-confirm" class="mono"></span>
+      </div>
+      <div class="mt-1.5 h-1 rounded-full" style="background: var(--surface-2)">
+        <div
+          id="enroll-countdown-bar-confirm"
+          class="h-full rounded-full"
+          style="
+            background: var(--accent);
+            width: 100%;
+            transition: width 1s linear;
+          "
+        ></div>
+      </div>
+
+      <!-- 新设备信息卡 -->
+      <div
+        class="mt-4 flex items-center gap-3 rounded-xl px-4 py-3.5 ring-1 ring-white/10"
+        style="background: var(--surface-2)"
+      >
+        <div
+          class="plat-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg"
+          style="background: var(--accent-soft)"
+          id="enroll-device-icon"
+        >
+          🖥️
+        </div>
+        <div class="min-w-0">
+          <div
+            id="enroll-device-hint"
+            class="truncate text-sm font-medium text-white"
+          >
+            —
+          </div>
+          <div class="mt-0.5 text-[11px] text-zinc-500">
+            <span id="enroll-via-badge"
+              >{{t "passkeyenroll.panel.via_qr"}}</span
+            >
+            · <span>刚刚</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 安全提示 -->
+      <div
+        class="mt-3 rounded-xl px-4 py-3 text-[12px] leading-relaxed ring-1"
+        style="
+          background: var(--warn-soft);
+          color: var(--warn-300);
+          --tw-ring-color: rgba(251, 191, 36, 0.2);
+        "
+      >
+        {{t "passkeyenroll.panel.confirm_warn"}}
+      </div>
+
+      <!-- 按钮区 / approved_waiting -->
+      <div id="enroll-confirm-buttons" class="mt-5 flex gap-3">
+        <button
+          type="button"
+          id="enroll-deny-btn"
+          onclick="enrollDeny()"
+          class="btn-ghost rounded-xl px-4 py-2.5 text-sm"
+        >
+          {{t "cliauth.confirm.deny"}}
+        </button>
+        <button
+          type="button"
+          id="enroll-approve-btn"
+          onclick="enrollApprove()"
+          class="btn-primary flex-1 rounded-xl px-4 py-2.5 text-sm font-medium"
+        >
+          <span id="enroll-approve-label"
+            >{{t "passkeyenroll.panel.approve"}}</span
+          >
+          <span id="enroll-approve-busy" class="hidden">…</span>
+        </button>
+      </div>
+      <div
+        id="enroll-approved-waiting"
+        class="mt-5 hidden items-center gap-2 text-[12px] text-zinc-400"
+      >
+        <span class="dot dot-warn badge-dot"></span>
+        <span>{{t "passkeyenroll.panel.approved_waiting"}}</span>
+      </div>
+    </div>
+
+    <!-- ===== 状态: success ===== -->
+    <div id="enroll-state-success" class="mt-5 hidden">
+      <div class="flex flex-col items-center text-center">
+        <div
+          class="flex h-12 w-12 items-center justify-center rounded-2xl"
+          style="background: var(--success-soft)"
+        >
+          <svg
+            class="h-6 w-6"
+            style="color: var(--success)"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+            <path d="M22 4L12 14.01l-3-3" />
+          </svg>
+        </div>
+        <span class="status-badge status-success mt-4"
+          >{{t "passkeyenroll.panel.success_title"}}</span
+        >
+        <p
+          id="enroll-success-desc"
+          class="mt-2 text-sm leading-relaxed text-zinc-400"
+        ></p>
+        <button
+          type="button"
+          onclick="finishEnroll()"
+          class="btn-primary mt-5 w-full rounded-xl px-4 py-2.5 text-sm font-medium"
+        >
+          {{t "passkeyenroll.panel.done"}}
+        </button>
+      </div>
+    </div>
+
+    <!-- ===== 状态: failed ===== -->
+    <div id="enroll-state-failed" class="mt-5 hidden">
+      <div class="flex flex-col items-center text-center">
+        <div
+          id="enroll-failed-icon-box"
+          class="flex h-12 w-12 items-center justify-center rounded-2xl"
+          style="background: var(--warn-soft)"
+        >
+          <svg
+            class="h-6 w-6"
+            style="color: var(--warn)"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 6v6l4 2" />
+          </svg>
+        </div>
+        <span
+          id="enroll-failed-badge"
+          class="status-badge status-warn mt-4"
+        ></span>
+        <h4
+          id="enroll-failed-title"
+          class="mt-2 text-base font-medium text-white"
+        ></h4>
+        <p
+          id="enroll-failed-desc"
+          class="mt-1.5 text-[13px] leading-relaxed text-zinc-500"
+        ></p>
+        <div class="mt-5 flex w-full gap-3">
+          <button
+            type="button"
+            id="enroll-failed-action"
+            class="btn-primary flex-1 rounded-xl px-4 py-2.5 text-sm font-medium"
+          ></button>
+          <button
+            type="button"
+            onclick="closeEnrollModal()"
+            class="btn-ghost rounded-xl px-4 py-2.5 text-sm"
+          >
+            {{t "passkeyenroll.panel.done"}}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 信任脚注 -->
+    <div
+      class="mt-5 border-t pt-4 text-[11px] text-zinc-600"
+      style="border-color: var(--line)"
+    >
+      <span>{{t "passkeyenroll.trust.approve_only"}}</span>
+      <span class="mx-1.5">·</span>
+      <span>{{t "cliauth.trust.ttl"}}</span>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script>
   // toast hover 暂停自动隐藏（方便选中复制错误信息）
@@ -958,5 +1348,565 @@
   });
   loadPasskeys();
   loadSessions();
+
+  // ==================== Passkey 新设备授权弹层 ====================
+  let enrollSession = null;
+  let enrollWatchTimer = null;
+  let enrollCountdownTimer = null;
+  let enrollErrorCount = 0;
+
+  function showEnrollState(name) {
+    const states = ["waiting", "confirm", "success", "failed"];
+    for (const s of states) {
+      const el = document.getElementById("enroll-state-" + s);
+      if (!el) continue;
+      if (s === name) {
+        el.classList.remove("hidden");
+      } else {
+        el.classList.add("hidden");
+      }
+    }
+  }
+
+  async function openEnrollModal() {
+    // demo 模式拦截
+    if (demoMode.passkeys) {
+      showEnrollState("failed");
+      const box = document.getElementById("enroll-failed-icon-box");
+      box.style.background = "var(--error-soft)";
+      document.getElementById("enroll-failed-badge").className =
+        "status-badge status-error mt-4";
+      document.getElementById("enroll-failed-badge").textContent = t(
+        "passkeyenroll.panel.error_title",
+        "无法连接服务器",
+      );
+      document.getElementById("enroll-failed-title").textContent = t(
+        "passkeyenroll.panel.error_title",
+        "无法连接服务器",
+      );
+      document.getElementById("enroll-failed-desc").textContent = t(
+        "passkeyenroll.panel.error_backend_desc",
+        "无法连接后端（当前为演示模式）。",
+      );
+      document.getElementById("enroll-failed-action").textContent = t(
+        "passkeyenroll.panel.done",
+        "完成",
+      );
+      document.getElementById("enroll-failed-action").onclick =
+        closeEnrollModal;
+      document.getElementById("enroll-modal").classList.remove("hidden");
+      document.getElementById("enroll-modal").classList.add("flex");
+      return;
+    }
+
+    // 清理旧会话
+    if (enrollSession) {
+      stopEnrollWatch();
+      stopEnrollCountdown();
+      try {
+        await fetch(
+          API +
+            "/passkey-enroll/sessions/" +
+            encodeURIComponent(enrollSession.sessionId),
+          {
+            method: "DELETE",
+            credentials: "same-origin",
+          },
+        );
+      } catch (_) {}
+    }
+
+    enrollSession = null;
+    enrollErrorCount = 0;
+    showEnrollState("waiting");
+
+    // 发起会话
+    try {
+      const deviceName = await getDeviceName();
+      const res = await fetch(API + "/passkey-enroll/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ deviceName: deviceName }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      enrollSession = {
+        sessionId: data.sessionId,
+        secret: data.secret,
+        userCode: data.userCode,
+        authUrl: data.authUrl,
+        expiresAt: data.expiresAt,
+      };
+
+      // 填充 UI
+      document.getElementById("enroll-shortcode").textContent =
+        data.userCode || "XXXX-XXXX";
+      document.getElementById("enroll-url-text").textContent =
+        data.authUrl || "";
+      // 默认 QR tab
+      switchEnrollTab("qr");
+      // 加载 ASCII 二维码
+      loadEnrollQR(data.sessionId);
+      // 启动倒计时 + 轮询
+      startEnrollCountdown(data.expiresAt);
+      startEnrollWatch();
+    } catch (e) {
+      showEnrollState("failed");
+      const box = document.getElementById("enroll-failed-icon-box");
+      box.style.background = "var(--error-soft)";
+      document.getElementById("enroll-failed-badge").className =
+        "status-badge status-error mt-4";
+      document.getElementById("enroll-failed-badge").textContent = t(
+        "passkeyenroll.panel.error_title",
+        "无法连接服务器",
+      );
+      document.getElementById("enroll-failed-title").textContent = t(
+        "passkeyenroll.panel.error_title",
+        "无法连接服务器",
+      );
+      document.getElementById("enroll-failed-desc").textContent = t(
+        "passkeyenroll.panel.error_desc",
+        "请检查网络连接后重试。",
+      );
+      document.getElementById("enroll-failed-action").textContent = t(
+        "passkeyenroll.panel.done",
+        "完成",
+      );
+      document.getElementById("enroll-failed-action").onclick =
+        closeEnrollModal;
+    }
+
+    document.getElementById("enroll-modal").classList.remove("hidden");
+    document.getElementById("enroll-modal").classList.add("flex");
+  }
+
+  function closeEnrollModal() {
+    // 如果还在进行中，弹确认
+    if (enrollSession) {
+      const waitingEl = document.getElementById("enroll-state-waiting");
+      const confirmEl = document.getElementById("enroll-state-confirm");
+      if (
+        !waitingEl.classList.contains("hidden") ||
+        !confirmEl.classList.contains("hidden")
+      ) {
+        if (
+          !confirm(
+            t(
+              "passkeyenroll.panel.cancel_confirm",
+              "取消本次添加？新设备上的链接与短码将立即失效。",
+            ),
+          )
+        ) {
+          return;
+        }
+        // DELETE 会话
+        stopEnrollWatch();
+        stopEnrollCountdown();
+        fetch(
+          API +
+            "/passkey-enroll/sessions/" +
+            encodeURIComponent(enrollSession.sessionId),
+          {
+            method: "DELETE",
+            credentials: "same-origin",
+          },
+        ).catch(() => {});
+      }
+    }
+    stopEnrollWatch();
+    stopEnrollCountdown();
+    enrollSession = null;
+    document.getElementById("enroll-modal").classList.add("hidden");
+    document.getElementById("enroll-modal").classList.remove("flex");
+  }
+
+  async function getDeviceName() {
+    const me = await Anotify.loadMe();
+    const name = (me && (me.displayName || me.username)) || "";
+    const ua = navigator.userAgent;
+    let dev = "Device";
+    if (ua.includes("iPhone")) dev = "iPhone";
+    else if (ua.includes("Mac OS")) dev = "Mac";
+    else if (ua.includes("Windows")) dev = "PC";
+    else if (ua.includes("Android")) dev = "Android";
+    return name ? name + " · " + dev : dev;
+  }
+
+  function switchEnrollTab(tab) {
+    ["qr", "url", "code"].forEach((t) => {
+      const content = document.getElementById("enroll-tab-" + t);
+      const btn = document.querySelector('.enroll-tab[data-tab="' + t + '"]');
+      if (t === tab) {
+        if (content) {
+          content.classList.remove("hidden");
+          content.classList.add("flex");
+        }
+        if (btn) btn.classList.add("active");
+      } else {
+        if (content) {
+          content.classList.add("hidden");
+          content.classList.remove("flex");
+        }
+        if (btn) btn.classList.remove("active");
+      }
+    });
+  }
+
+  async function loadEnrollQR(sessionId) {
+    try {
+      const res = await fetch(
+        API +
+          "/passkey-enroll/sessions/" +
+          encodeURIComponent(sessionId) +
+          "/qr.txt",
+      );
+      if (!res.ok) return;
+      const ascii = await res.text();
+      document.getElementById("enroll-qr-ascii").textContent = ascii;
+    } catch (_) {}
+  }
+
+  function copyEnrollUrl() {
+    if (!enrollSession) return;
+    const url = enrollSession.authUrl || "";
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(() => {
+        const label = document.getElementById("enroll-copy-label");
+        label.textContent = t("common.copy.copied", "已复制");
+        setTimeout(() => {
+          label.textContent = t("keys.save.copy", "复制");
+        }, 1500);
+      });
+    } else {
+      // 降级
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      const label = document.getElementById("enroll-copy-label");
+      label.textContent = t("common.copy.copied", "已复制");
+      setTimeout(() => {
+        label.textContent = t("keys.save.copy", "复制");
+      }, 1500);
+    }
+  }
+
+  // ---------- 倒计时 ----------
+  function startEnrollCountdown(expiresAt) {
+    stopEnrollCountdown();
+    function tick() {
+      const now = Date.now();
+      const exp = expiresAt * 1000;
+      let remaining = Math.max(0, Math.floor((exp - now) / 1000));
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      const timeStr = mins + ":" + String(secs).padStart(2, "0");
+
+      // 更新 waiting 和 confirm 的倒计时
+      for (const id of ["enroll-countdown", "enroll-countdown-confirm"]) {
+        const display = document.getElementById(id);
+        if (display) {
+          display.textContent = timeStr;
+          display.style.color = remaining <= 60 ? "var(--warn-300)" : "";
+        }
+      }
+      for (const id of [
+        "enroll-countdown-bar",
+        "enroll-countdown-bar-confirm",
+      ]) {
+        const bar = document.getElementById(id);
+        if (bar) {
+          const pct = Math.max(0, (remaining / 600) * 100);
+          bar.style.width = pct + "%";
+          bar.style.background =
+            remaining <= 60 ? "var(--warn)" : "var(--accent)";
+        }
+      }
+
+      if (remaining <= 0) {
+        stopEnrollCountdown();
+        stopEnrollWatch();
+        showEnrollFailed("expired");
+        return;
+      }
+    }
+    tick();
+    enrollCountdownTimer = setInterval(tick, 1000);
+  }
+
+  function stopEnrollCountdown() {
+    if (enrollCountdownTimer) {
+      clearInterval(enrollCountdownTimer);
+      enrollCountdownTimer = null;
+    }
+  }
+
+  // ---------- 旧设备轮询 watch ----------
+  function startEnrollWatch() {
+    stopEnrollWatch();
+    enrollErrorCount = 0;
+    scheduleEnrollWatch(2000);
+  }
+
+  function stopEnrollWatch() {
+    if (enrollWatchTimer) {
+      clearTimeout(enrollWatchTimer);
+      enrollWatchTimer = null;
+    }
+  }
+
+  function scheduleEnrollWatch(delay) {
+    if (enrollWatchTimer) clearTimeout(enrollWatchTimer);
+    enrollWatchTimer = setTimeout(doEnrollWatch, delay);
+  }
+
+  async function doEnrollWatch() {
+    if (!enrollSession) return;
+    try {
+      const res = await fetch(
+        API +
+          "/passkey-enroll/sessions/" +
+          encodeURIComponent(enrollSession.sessionId) +
+          "/watch",
+        { credentials: "same-origin" },
+      );
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      enrollErrorCount = 0;
+      handleEnrollWatch(data);
+    } catch (e) {
+      enrollErrorCount++;
+      if (enrollErrorCount >= 3) {
+        stopEnrollWatch();
+        stopEnrollCountdown();
+        showEnrollFailed("error");
+        return;
+      }
+      scheduleEnrollWatch(3000);
+    }
+  }
+
+  function handleEnrollWatch(data) {
+    if (!data) return;
+    const status = data.status;
+
+    if (status === "requested") {
+      // 新设备敲门 → 切 confirm
+      showEnrollState("confirm");
+      // 填充设备信息
+      const hint = data.deviceHint || "—";
+      document.getElementById("enroll-device-hint").textContent = hint;
+      // 平台图标
+      const ua = hint.toLowerCase();
+      let icon = "🖥️";
+      if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios"))
+        icon = "📱";
+      else if (ua.includes("android")) icon = "📱";
+      else if (ua.includes("mac")) icon = "💻";
+      document.getElementById("enroll-device-icon").textContent = icon;
+      // toast 提示
+      toast(t("passkeyenroll.panel.confirm_title", "批准这台新设备？"));
+      scheduleEnrollWatch(2000);
+      return;
+    }
+
+    if (status === "approved") {
+      // 已批准，等新设备完成（approved_waiting 变体）
+      const btnArea = document.getElementById("enroll-confirm-buttons");
+      const waitingArea = document.getElementById("enroll-approved-waiting");
+      if (!btnArea.classList.contains("hidden")) {
+        btnArea.classList.add("hidden");
+        waitingArea.classList.remove("hidden");
+        waitingArea.classList.add("flex");
+      }
+      scheduleEnrollWatch(2000);
+      return;
+    }
+
+    if (status === "consumed") {
+      // 成功！
+      stopEnrollWatch();
+      stopEnrollCountdown();
+      showEnrollState("success");
+      const deviceHint =
+        document.getElementById("enroll-device-hint").textContent || "—";
+      document.getElementById("enroll-success-desc").textContent = t(
+        "passkeyenroll.panel.success_desc",
+        "「{name}」的 Passkey 已创建，下次可用它直接登录。",
+      ).replace("{name}", deviceHint);
+      return;
+    }
+
+    if (status === "denied") {
+      stopEnrollWatch();
+      stopEnrollCountdown();
+      showEnrollFailed("denied");
+      return;
+    }
+
+    if (status === "expired") {
+      stopEnrollWatch();
+      stopEnrollCountdown();
+      showEnrollFailed("expired");
+      return;
+    }
+
+    // pending → 继续轮询
+    scheduleEnrollWatch(2000);
+  }
+
+  // ---------- approve / deny ----------
+  async function enrollApprove() {
+    if (!enrollSession) return;
+    const btn = document.getElementById("enroll-approve-btn");
+    const label = document.getElementById("enroll-approve-label");
+    const busy = document.getElementById("enroll-approve-busy");
+    btn.disabled = true;
+    label.classList.add("hidden");
+    busy.classList.remove("hidden");
+    document.getElementById("enroll-deny-btn").disabled = true;
+
+    try {
+      const res = await fetch(
+        API +
+          "/passkey-enroll/sessions/" +
+          encodeURIComponent(enrollSession.sessionId) +
+          "/approve",
+        { method: "POST", credentials: "same-origin" },
+      );
+      if (res.status === 409) {
+        // 终态冲突 → 重新查
+        doEnrollWatch();
+        return;
+      }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      // approved → 切 approved_waiting 变体
+      const btnArea = document.getElementById("enroll-confirm-buttons");
+      const waitingArea = document.getElementById("enroll-approved-waiting");
+      btnArea.classList.add("hidden");
+      waitingArea.classList.remove("hidden");
+      waitingArea.classList.add("flex");
+    } catch (e) {
+      toast(
+        t("passkeyenroll.panel.error_desc", "请检查网络连接后重试。"),
+        true,
+      );
+      btn.disabled = false;
+      label.classList.remove("hidden");
+      busy.classList.add("hidden");
+      document.getElementById("enroll-deny-btn").disabled = false;
+    }
+  }
+
+  async function enrollDeny() {
+    if (!enrollSession) return;
+    document.getElementById("enroll-approve-btn").disabled = true;
+    document.getElementById("enroll-deny-btn").disabled = true;
+    try {
+      const res = await fetch(
+        API +
+          "/passkey-enroll/sessions/" +
+          encodeURIComponent(enrollSession.sessionId) +
+          "/deny",
+        { method: "POST", credentials: "same-origin" },
+      );
+      if (res.status === 409) {
+        doEnrollWatch();
+        return;
+      }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      stopEnrollWatch();
+      stopEnrollCountdown();
+      showEnrollFailed("denied");
+    } catch (e) {
+      toast(
+        t("passkeyenroll.panel.error_desc", "请检查网络连接后重试。"),
+        true,
+      );
+      document.getElementById("enroll-approve-btn").disabled = false;
+      document.getElementById("enroll-deny-btn").disabled = false;
+    }
+  }
+
+  function showEnrollFailed(subtype) {
+    showEnrollState("failed");
+    const box = document.getElementById("enroll-failed-icon-box");
+    const badge = document.getElementById("enroll-failed-badge");
+    const title = document.getElementById("enroll-failed-title");
+    const desc = document.getElementById("enroll-failed-desc");
+    const action = document.getElementById("enroll-failed-action");
+
+    if (subtype === "denied") {
+      box.style.background = "var(--warn-soft)";
+      badge.className = "status-badge status-warn mt-4";
+      badge.textContent = t(
+        "passkeyenroll.panel.denied_title",
+        "已拒绝本次添加",
+      );
+      title.textContent = t(
+        "passkeyenroll.panel.denied_title",
+        "已拒绝本次添加",
+      );
+      desc.textContent = t(
+        "passkeyenroll.panel.denied_desc",
+        "凭证未创建。如果这不是你的操作，请检查是否有人正尝试登录你的账号。",
+      );
+      action.textContent = t("passkeyenroll.panel.done", "完成");
+      action.onclick = closeEnrollModal;
+    } else if (subtype === "expired") {
+      box.style.background = "var(--warn-soft)";
+      badge.className = "status-badge status-warn mt-4";
+      badge.textContent = t("passkeyenroll.panel.expired_title", "会话已过期");
+      title.textContent = t("passkeyenroll.panel.expired_title", "会话已过期");
+      desc.textContent = t(
+        "passkeyenroll.panel.expired_desc",
+        "授权会话 10 分钟内有效。重新发起会生成新的二维码与短码。",
+      );
+      action.textContent = t("passkeyenroll.panel.restart", "重新发起");
+      action.onclick = async () => {
+        // 清理旧会话
+        if (enrollSession) {
+          enrollSession = null;
+        }
+        stopEnrollWatch();
+        stopEnrollCountdown();
+        openEnrollModal();
+      };
+    } else {
+      // error
+      box.style.background = "var(--error-soft)";
+      badge.className = "status-badge status-error mt-4";
+      badge.textContent = t(
+        "passkeyenroll.panel.error_title",
+        "无法连接服务器",
+      );
+      title.textContent = t(
+        "passkeyenroll.panel.error_title",
+        "无法连接服务器",
+      );
+      desc.textContent = t(
+        "passkeyenroll.panel.error_desc",
+        "请检查网络连接后重试。",
+      );
+      action.textContent = t("passkeyenroll.panel.done", "完成");
+      action.onclick = closeEnrollModal;
+    }
+  }
+
+  function finishEnroll() {
+    closeEnrollModal();
+    loadPasskeys();
+  }
+
+  // Esc 关闭
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const modal = document.getElementById("enroll-modal");
+    if (modal.classList.contains("hidden")) return;
+    closeEnrollModal();
+  });
 </script>
 {{end}}
