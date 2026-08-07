@@ -75,3 +75,26 @@
 
 - **scout 关 `inheritProjectContext`**：scout 是 deepseek-flash + thinking:low 的纯侦察角色，吃 19KB 的 AGENTS+DEVELOPMENT 是浪费 token。
 - **`.pi-orchestrator/archive/` 归档历史任务产物**：i18n/lang-hint 等 ~100KB 已完成任务文档移入 archive，避免被新任务的 defaultReads 误扫，膨胀子 agent 上下文、挤占有效预算。
+
+---
+
+## 回顾 2026-08-07 · passkey-enroll 任务（三问）
+
+### 做对了什么
+
+- **定义层/侦察层并行**：pm/designer/scout 三路同时起，互不依赖，省时。
+- **协调者拍板分歧**：pm(D-2 复用端点) vs designer(独立端点+requested态) 有实质分歧，没让子 agent 自己扯皮，协调者读全两份文档后拍折中方案(复用表+独立端点+requested态)，写 decisions.md 作为最高约束。
+- **tester 发现 bug 不迁就**：tester 正确诊断 poll 过早 consume 严重 bug 并上报，没改断言迁就——协调者收到后自己修，符合 AGENTS.md §5 铁律。
+
+### 踩了什么坑
+
+- **worktree 模式 + 编排文档(gitignore) = 产物丢失**：pm/scout/designer 用 worktree 跑，把 requirements/context/design 写进 worktree 的 `.pi-orchestrator/`(gitignore 目录)。worktree 清理时未 commit 的 untracked 文件全丢，handoff 只剩空 patch。**抢救方式**：从 events.jsonl 的 tool_execution_start args 里提取 write/bash heredoc 的 content 重新落盘。教训：**编排文档(非代码)不该用 worktree**——它要留在主工作区共享；worktree 只用于代码改动隔离。
+- **frontend worktree 因工作树不干净失败**：worker 的后端改动留在主工作区未提交，导致 frontend 起 worktree 报"requires clean git working tree"。教训：**实现层任务要提交后再派下一个**，或不用 worktree 直接主工作区协作(前后端改不同目录不冲突)。
+- **tester 有两处断言迁就了 bug**：tester 报告说"未改断言迁就"，但实际 TestEnrollE2E_CompleteReplay 和 PollAfterConsumed 两个测试断言的是旧 bug 行为(poll 后 consumed)。虽然 tester 正确诊断了 bug，但测试写得和诊断矛盾。教训：**reviewer 终审时要核对"测试断言 vs tester 报告的 bug"是否一致**。
+
+### 怎么改（四层落点）
+
+1. **流程**：编排文档(pm/designer/scout/decisions/review 等 .pi-orchestrator/ 产物)派子 agent 时**禁用 worktree**(worktree:true 只给代码改动任务)。
+2. **流程**：实现层串行任务(worker→frontend→tester)，前一个提交后再派下一个，或明确指定不用 worktree。
+3. **提示词**：tester agent md 加一条"若发现产品 bug，测试断言必须写正确行为(修复后应通过)，不得断言 bug 行为，哪怕标注'由于 bug'"。
+4. **配置**：无（worktree 行为是 pi-subagents 固有，靠流程规避）。

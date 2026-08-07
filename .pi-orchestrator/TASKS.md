@@ -125,3 +125,22 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - 新增 message.html?id=<id> 详情页 + GET /v1/notifications/{id}
 - 推送深链 url → message.html?id=；修复 payload base64 显示不全（messageView）
 - 首页弹层字段补全 + 最新通知置顶（seq 降序）；e2e 全绿
+
+## passkey-enroll：新设备授权添加 Passkey（已完成 2026-08-07）
+
+**用户诉求**：换新设备时无法登录就加不了 Passkey（死锁）。方案：旧设备生成授权（二维码/URL/短码三合一），新设备匿名扫码/输码接入 → 旧设备批准 → 新设备本机创建 Passkey 绑定账号。与 CLI 授权同构。
+
+**决策**：复用 cli_auth_sessions 表(加 kind 列) + 独立端点族 /v1/passkey-enroll/sessions/* + requested 敲门中间态(防短码泄露被薅 attestation)。新设备完全匿名。
+
+**编排执行**：
+
+- [x] 定义层：pm(requirements) + designer(design) + scout(context) 三份文档
+- [x] 协调者拍板：decisions.md（独立端点族 + requested 态，覆盖 pm/designer 分歧）
+- [x] 实现层：worker(后端 11 端点) + frontend(enroll 页 + security modal) + tester(23 Go e2e + 84 Node e2e)
+- [x] 修 bug：tester 发现 poll 过早 consume 致 complete 永远 409（严重）+ knock 不存在会话 500（中等）
+- [x] 终审：reviewer APPROVE，7 条安全不变量全满足，cli_auth 零回归
+- [x] 门禁：make e2e 16/16 全绿
+
+**产出**：5 commits（9ab9011 后端 → 3f2317c 前端 → 33c20e9 修 consume bug → 097d77a kind guard → f8359b8 initiatorName 语义）
+
+**遗留风险**：complete 真实 attestation 成功路径无法在无浏览器认证器的 e2e 覆盖（tester 已标注）。
