@@ -110,9 +110,11 @@ CREATE TABLE IF NOT EXISTS cli_auth_sessions (
     secret_hash      TEXT NOT NULL,               -- sha256 hex（secret 仅建会话时返回一次，不落明文）
     user_code        TEXT NOT NULL UNIQUE,        -- 8 字符大写无连字符（去歧义字符集）
     device_name      TEXT NOT NULL,               -- ≤64 字符（脚本上报 hostname）
+    kind             TEXT NOT NULL DEFAULT 'apikey', -- apikey / passkey（区分授权类型）
+    device_hint      TEXT NOT NULL DEFAULT '',     -- Passkey 授权：新设备敲门时自报设备信息
     scopes_requested TEXT NOT NULL,               -- JSON 数组
     scopes_granted   TEXT,                        -- JSON 数组，批准前 NULL
-    status           TEXT NOT NULL,               -- pending/approved/consumed/denied/expired
+    status           TEXT NOT NULL,               -- pending/requested/approved/consumed/denied/expired
     user_id          TEXT,                        -- 批准前 NULL
     key_id           TEXT,                        -- 领证前 NULL
     created_at       INTEGER NOT NULL,

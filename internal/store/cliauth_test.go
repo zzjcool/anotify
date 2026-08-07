@@ -14,6 +14,8 @@ func TestCliAuthSession_RoundTrip(t *testing.T) {
 		SecretHash:      "abc123hash",
 		UserCode:        "ABCD1234",
 		DeviceName:      "my-macbook",
+		Kind:            CliAuthKindAPIKey,
+		DeviceHint:      "",
 		ScopesRequested: []string{"notify:send", "notify:receive"},
 		Status:          CliAuthPending,
 		CreatedAt:       1000,
@@ -294,6 +296,7 @@ func assertCliAuthSession(t *testing.T, got, want *CliAuthSession) {
 	t.Helper()
 	if got.ID != want.ID || got.SecretHash != want.SecretHash ||
 		got.UserCode != want.UserCode || got.DeviceName != want.DeviceName ||
+		got.Kind != want.Kind || got.DeviceHint != want.DeviceHint ||
 		got.Status != want.Status || got.CreatedAt != want.CreatedAt ||
 		got.ExpiresAt != want.ExpiresAt {
 		t.Errorf("字段不匹配:\n got  %+v\n want %+v", got, want)
@@ -311,3 +314,104 @@ func assertCliAuthSession(t *testing.T, got, want *CliAuthSession) {
 
 // 确保 consumed_at NULL 往返不 panic。
 var _ = sql.NullInt64{}
+
+// TestCliAuthSession_PasskeyEnroll_RoundTrip 验证 passkey-kind 会话 + 新 store 方法往返一致性。
+func TestCliAuthSession_PasskeyEnroll_RoundTrip(t *testing.T) {
+	db := newTestDB(t)
+
+	s := &CliAuthSession{
+		ID:         "cas_enroll1",
+		SecretHash: "enrollhash",
+		UserCode:   "ENRL0001",
+		DeviceName: "old-macbook",
+		Kind:       CliAuthKindPasskey,
+		Status:     CliAuthPending,
+		CreatedAt:  1000,
+		ExpiresAt:  1600,
+	}
+	if err := db.CreateCliAuthSession(s); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Get → kind=passkey
+	got, err := db.GetCliAuthSession("cas_enroll1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Kind != CliAuthKindPasskey {
+		t.Errorf("kind got %q want %q", got.Kind, CliAuthKindPasskey)
+	}
+
+	// RequestKnock: pending→requested + device_hint + 新 secret_hash
+	ok, err := db.UpdateCliAuthSessionRequestedWithSecret("cas_enroll1", "Chrome · macOS", "newhash")
+	if err != nil || !ok {
+		t.Fatalf("requested: ok=%v err=%v", ok, err)
+	}
+	got, _ = db.GetCliAuthSession("cas_enroll1")
+	if got.Status != CliAuthRequested {
+		t.Errorf("status got %q want %q", got.Status, CliAuthRequested)
+	}
+	if got.DeviceHint != "Chrome · macOS" {
+		t.Errorf("deviceHint got %q want %q", got.DeviceHint, "Chrome · macOS")
+	}
+	if got.SecretHash != "newhash" {
+		t.Errorf("secretHash got %q want newhash", got.SecretHash)
+	}
+
+	// Approve: requested→approved + user_id
+	ok, err = db.UpdateCliAuthSessionApprovedFromRequested("cas_enroll1", "usr_test", 1100)
+	if err != nil || !ok {
+		t.Fatalf("approved from requested: ok=%v err=%v", ok, err)
+	}
+	got, _ = db.GetCliAuthSession("cas_enroll1")
+	if got.Status != CliAuthApproved {
+		t.Errorf("status got %q want %q", got.Status, CliAuthApproved)
+	}
+	if got.UserID != "usr_test" {
+		t.Errorf("userID got %q want usr_test", got.UserID)
+	}
+
+	// ConsumePasskey: approved→consumed
+	already, err := db.ConsumeCliAuthSessionPasskey("cas_enroll1", 1200)
+	if err != nil || already {
+		t.Fatalf("consume: already=%v err=%v", already, err)
+	}
+	got, _ = db.GetCliAuthSession("cas_enroll1")
+	if got.Status != CliAuthConsumed {
+		t.Errorf("status got %q want %q", got.Status, CliAuthConsumed)
+	}
+
+	// 重复 consume → alreadyConsumed=true
+	already2, err := db.ConsumeCliAuthSessionPasskey("cas_enroll1", 1300)
+	if err != nil {
+		t.Fatalf("second consume err: %v", err)
+	}
+	if !already2 {
+		t.Error("重复 consume 应返回 alreadyConsumed=true")
+	}
+
+	// Deny from requested
+	s2 := &CliAuthSession{
+		ID: "cas_enroll2", SecretHash: "h", UserCode: "ENRL0002",
+		DeviceName: "dev", Kind: CliAuthKindPasskey,
+		Status: CliAuthPending, CreatedAt: 1000, ExpiresAt: 1600,
+	}
+	db.CreateCliAuthSession(s2)
+	db.UpdateCliAuthSessionRequestedWithSecret("cas_enroll2", "hint", "hash")
+	ok, err = db.UpdateCliAuthSessionDeniedFromRequested("cas_enroll2")
+	if err != nil || !ok {
+		t.Fatalf("deny from requested: ok=%v err=%v", ok, err)
+	}
+	got2, _ := db.GetCliAuthSession("cas_enroll2")
+	if got2.Status != CliAuthDenied {
+		t.Errorf("status got %q want %q", got2.Status, CliAuthDenied)
+	}
+
+	// Delete
+	if err := db.DeleteCliAuthSession("cas_enroll2"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := db.GetCliAuthSession("cas_enroll2"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("delete 后应返回 ErrNotFound, got %v", err)
+	}
+}

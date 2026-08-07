@@ -3,6 +3,9 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -355,6 +358,63 @@ func (s *Service) FinishDiscoverableLogin(token string, r *http.Request) (sessio
 	return sess.ID, nil
 }
 
+// ---------- Passkey 设备授权补建凭证（匿名） ----------
+
+// enrollCredKey 是「Passkey 设备授权补建凭证」的 challenge 暂存 key 命名空间，
+// 以 sessionId 为维度（不撞 addcred:<userID>），支持同一 user 并发 enroll。
+func enrollCredKey(sessionID string) string { return "enroll:" + sessionID }
+
+// BeginEnrollCredential 为已批准的 passkey-enroll 会话生成 WebAuthn creation options。
+// target userID 取自 session.user_id（approve 时回填）。challenge key 绑 sessionId。
+// 调用方负责校验 session 状态为 approved 且 kind=passkey。
+func (s *Service) BeginEnrollCredential(sessionID, userID string) (*protocol.CredentialCreation, error) {
+	user, err := s.db.GetUserByID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("auth: 用户不存在: %w", err)
+	}
+	waUser, err := s.loadWebAuthnUser(user)
+	if err != nil {
+		return nil, err
+	}
+	creation, session, err := s.wa.BeginRegistration(waUser, webauthn.WithAuthenticatorSelection(
+		protocol.AuthenticatorSelection{
+			ResidentKey:      protocol.ResidentKeyRequirementRequired,
+			UserVerification: protocol.VerificationPreferred,
+		},
+	))
+	if err != nil {
+		return nil, fmt.Errorf("begin enroll credential: %w", err)
+	}
+	s.storeChallenge(enrollCredKey(sessionID), *session)
+	return creation, nil
+}
+
+// FinishEnrollCredential 完成 Passkey 设备授权补建凭证：校验 attestation → 存凭证。
+// challenge 从 enrollCredKey(sessionID) 取（一次性）。不建会话（匿名流程）。
+// 调用方负责校验 registrationToken 并执行原子 consume。
+func (s *Service) FinishEnrollCredential(sessionID, userID, name string, r *http.Request) error {
+	session, err := s.takeChallenge(enrollCredKey(sessionID))
+	if err != nil {
+		return err
+	}
+	user, err := s.db.GetUserByID(userID)
+	if err != nil {
+		return fmt.Errorf("auth: 用户不存在: %w", err)
+	}
+	waUser, err := s.loadWebAuthnUser(user)
+	if err != nil {
+		return err
+	}
+	cred, err := s.wa.FinishRegistration(waUser, session, r)
+	if err != nil {
+		return fmt.Errorf("finish enroll credential: %w", err)
+	}
+	if name == "" {
+		name = "新设备"
+	}
+	return s.saveCredential(userID, cred, name)
+}
+
 // ---------- Passkey 管理（已登录用户） ----------
 
 // ListPasskeys 列出某用户的所有凭证。
@@ -403,3 +463,40 @@ func (s *Service) saveCredential(userID string, cred *webauthn.Credential, name 
 func regKey(username string) string   { return "reg:" + username }
 func loginKey(username string) string { return "login:" + username }
 func discKey(token string) string     { return "disc:" + token }
+
+// ---------- Passkey 设备授权 registrationToken 暂存 ----------
+//
+// registrationToken 是 complete 端点的凭证（替代登录 Cookie）。
+// poll 在 approved 首次返回时生成，存储其 sha256 hash（明文不落库）。
+// complete 时常量时间校验后删除（一次性）。
+
+// storeEnrollToken 暂存 registrationToken 的 hash（key=sessionId）。
+func (s *Service) storeEnrollToken(sessionID, tokenHash string) {
+	s.storeChallenge("enrolltoken:"+sessionID, webauthn.SessionData{
+		Challenge: tokenHash,
+	})
+}
+
+// verifyEnrollToken 常量时间校验 registrationToken。校验后不删除（complete 成功时调 deleteEnrollToken）。
+func (s *Service) verifyEnrollToken(sessionID, token string) bool {
+	sess, err := s.takeChallenge("enrolltoken:" + sessionID)
+	if err != nil {
+		return false
+	}
+	// takeChallenge 已删除 entry，需重新存入供 complete 重试（registrationToken 在 complete 成功前可多次用）
+	s.storeChallenge("enrolltoken:"+sessionID, sess)
+	return subtle.ConstantTimeCompare([]byte(sess.Challenge), []byte(sha256Hex(token))) == 1
+}
+
+// deleteEnrollToken 删除 registrationToken（complete 成功后调用）。
+func (s *Service) deleteEnrollToken(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.challenges, "enrolltoken:"+sessionID)
+}
+
+// sha256Hex 计算字符串的 sha256 hex 摘要。
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}

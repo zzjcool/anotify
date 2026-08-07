@@ -9,7 +9,8 @@ info:
       - Bearer API Key（Agent 上报 / 接收端长连接），Key 仅存哈希，带 scope
 servers:
   - url: /v1
-tags: [auth, keys, devices, notify, notifications, stream, cli-auth]
+tags:
+  [auth, keys, devices, notify, notifications, stream, cli-auth, passkey-enroll]
 
 paths:
   /auth/register/options:
@@ -240,7 +241,11 @@ paths:
                 deviceName:
                   { type: string, description: 设备名（hostname），≤64 字符 }
                 scopes:
-                  { type: array, items: { type: string }, description: 请求的 scope 列表 }
+                  {
+                    type: array,
+                    items: { type: string },
+                    description: 请求的 scope 列表,
+                  }
       responses:
         "200":
           description: 会话创建成功
@@ -250,14 +255,18 @@ paths:
                 type: object
                 properties:
                   sessionId: { type: string }
-                  secret: { type: string, description: 轮询凭证（仅此一次返回，不进 URL） }
+                  secret:
+                    {
+                      type: string,
+                      description: 轮询凭证（仅此一次返回，不进 URL）,
+                    }
                   userCode: { type: string, description: 8 位短码 XXXX-XXXX }
                   authUrl: { type: string, description: 授权链接 }
                   pollInterval: { type: integer, default: 2 }
                   expiresAt: { type: integer }
                   scopes: { type: array, items: { type: string } }
         "400":
-          $ref: '#/components/responses/Error'
+          $ref: "#/components/responses/Error"
         "429":
           description: 限速
 
@@ -283,7 +292,10 @@ paths:
                   deviceName: { type: string }
                   requestedScopes: { type: array, items: { type: string } }
                   status:
-                    { type: string, enum: [pending, approved, consumed, denied, expired] }
+                    {
+                      type: string,
+                      enum: [pending, approved, consumed, denied, expired],
+                    }
                   createdAt: { type: integer }
                   expiresAt: { type: integer }
         "404":
@@ -298,7 +310,8 @@ paths:
         - name: code
           in: query
           required: true
-          schema: { type: string, description: 8 位短码，大小写不敏感、容忍连字符 }
+          schema:
+            { type: string, description: 8 位短码，大小写不敏感、容忍连字符 }
       responses:
         "200":
           description: 会话信息（同 /cli-auth/sessions/{id}）
@@ -326,7 +339,11 @@ paths:
               required: [scopes]
               properties:
                 scopes:
-                  { type: array, items: { type: string }, description: 授予的 scope（必须 ⊆ requestedScopes） }
+                  {
+                    type: array,
+                    items: { type: string },
+                    description: 授予的 scope（必须 ⊆ requestedScopes）,
+                  }
       responses:
         "200":
           description: 批准成功
@@ -337,7 +354,7 @@ paths:
                 properties:
                   status: { type: string, example: approved }
         "400":
-          $ref: '#/components/responses/Error'
+          $ref: "#/components/responses/Error"
         "409":
           description: 终态冲突（会话不在 pending 状态）
 
@@ -386,9 +403,15 @@ paths:
                 type: object
                 properties:
                   status:
-                    { type: string, enum: [pending, approved, denied, expired, consumed] }
+                    {
+                      type: string,
+                      enum: [pending, approved, denied, expired, consumed],
+                    }
                   apiKey:
-                    { type: string, description: 仅 approved 时一次性返回明文 Key }
+                    {
+                      type: string,
+                      description: 仅 approved 时一次性返回明文 Key,
+                    }
                   keyId: { type: string }
                   name: { type: string }
                   scopes: { type: array, items: { type: string } }
@@ -418,6 +441,348 @@ paths:
         "404":
           description: 会话不存在
 
+  # --- Passkey 设备授权 ---
+  /passkey-enroll/sessions:
+    post:
+      tags: [passkey-enroll]
+      summary: 创建 Passkey 设备授权会话（需登录 Cookie）
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceName]
+              properties:
+                deviceName: { type: string, description: 发起设备名，≤64 字符 }
+      responses:
+        "200":
+          description: 会话创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string }
+                  secret:
+                    { type: string, description: 旧设备持有，不进二维码/链接 }
+                  userCode: { type: string, description: 8 位短码 XXXX-XXXX }
+                  authUrl: { type: string, description: 新设备接入链接 }
+                  pollInterval: { type: integer, default: 2 }
+                  expiresAt: { type: integer }
+                  kind: { type: string, example: passkey }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /passkey-enroll/sessions/{id}:
+    get:
+      tags: [passkey-enroll]
+      summary: 匿名查询会话（IP 限速）
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 会话信息（最小视图，不含密钥）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string }
+                  status:
+                    {
+                      type: string,
+                      enum:
+                        [
+                          pending,
+                          requested,
+                          approved,
+                          consumed,
+                          denied,
+                          expired,
+                        ],
+                    }
+                  initiatorName: { type: string, description: 批准后才有值 }
+                  deviceHint: { type: string, description: requested 后才有值 }
+                  expiresAt: { type: integer }
+        "404":
+          description: 会话不存在或已过期
+        "429":
+          description: 限速
+    delete:
+      tags: [passkey-enroll]
+      summary: 旧设备取消会话（需登录 Cookie）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 取消成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: deleted }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          description: 会话不存在
+
+  /passkey-enroll/sessions/by-code:
+    get:
+      tags: [passkey-enroll]
+      summary: 匿名按短码查询会话（IP 限速 10/min）
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 会话信息（同 /passkey-enroll/sessions/{id}）
+        "404":
+          description: 授权码无效或已过期
+        "429":
+          description: 限速
+
+  /passkey-enroll/sessions/{id}/request:
+    post:
+      tags: [passkey-enroll]
+      summary: 新设备敲门（匿名，IP 限速）
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceHint: { type: string, description: 新设备自报设备信息 }
+      responses:
+        "200":
+          description: 敲门成功，返回 secret
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string, description: 新设备轮询凭证 }
+        "409":
+          description: 非 pending 状态
+        "429":
+          description: 限速
+
+  /passkey-enroll/sessions/{id}/watch:
+    get:
+      tags: [passkey-enroll]
+      summary: 旧设备轮询会话状态（需登录 Cookie）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 会话状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    {
+                      type: string,
+                      enum:
+                        [
+                          pending,
+                          requested,
+                          approved,
+                          consumed,
+                          denied,
+                          expired,
+                        ],
+                    }
+                  deviceHint: { type: string }
+                  expiresAt: { type: integer }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          description: 会话不存在
+
+  /passkey-enroll/sessions/{id}/poll:
+    get:
+      tags: [passkey-enroll]
+      summary: 新设备轮询（匿名，secret 门控）
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: secret
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 轮询结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    {
+                      type: string,
+                      enum:
+                        [
+                          pending,
+                          requested,
+                          approved,
+                          consumed,
+                          denied,
+                          expired,
+                        ],
+                    }
+                  attestationOptions:
+                    { type: object, description: 仅 approved 时一次性返回 }
+                  registrationToken:
+                    { type: string, description: 仅 approved 时一次性返回 }
+                  initiatorName: { type: string }
+        "401":
+          description: secret 无效
+        "404":
+          description: 会话不存在
+        "429":
+          description: 轮询过快
+
+  /passkey-enroll/sessions/{id}/approve:
+    post:
+      tags: [passkey-enroll]
+      summary: 旧设备批准（需登录 Cookie，requested→approved）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 批准成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: approved }
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: 非 requested 状态
+
+  /passkey-enroll/sessions/{id}/deny:
+    post:
+      tags: [passkey-enroll]
+      summary: 旧设备拒绝（需登录 Cookie，requested→denied）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 拒绝成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: denied }
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: 非 requested 状态
+
+  /passkey-enroll/sessions/{id}/complete:
+    post:
+      tags: [passkey-enroll]
+      summary: 新设备提交 attestation（匿名，registrationToken 门控）
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: registrationToken
+          in: query
+          required: true
+          schema: { type: string }
+        - name: name
+          in: query
+          required: false
+          schema: { type: string, default: 新设备 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 裸 WebAuthn attestation JSON
+      responses:
+        "200":
+          description: 凭证创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  passkeyId: { type: string }
+        "401":
+          description: registrationToken 无效
+        "409":
+          description: 会话已完成或非 approved 状态
+        "429":
+          description: 限速
+
+  /passkey-enroll/sessions/{id}/qr.txt:
+    get:
+      tags: [passkey-enroll]
+      summary: 获取 ASCII 二维码（匿名，IP 限速）
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ASCII 二维码（内容=authUrl）
+          content:
+            text/plain:
+              schema: { type: string }
+        "404":
+          description: 会话不存在
+
   /keys/self:
     get:
       tags: [keys]
@@ -435,7 +800,7 @@ paths:
                   prefix: { type: string }
                   scopes: { type: array, items: { type: string } }
         "401":
-          $ref: '#/components/responses/Error'
+          $ref: "#/components/responses/Error"
 
 components:
   securitySchemes:

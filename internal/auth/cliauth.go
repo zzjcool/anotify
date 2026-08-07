@@ -331,7 +331,7 @@ func (m *CliAuthManager) consumeAndMintKey(s *store.CliAuthSession) (*PollResult
 // lazyExpire 检查会话是否已过期，若是则惰性迁移到 expired 并返回 true。
 // 已是终态（consumed/denied/expired）的不动。
 func (m *CliAuthManager) lazyExpire(s *store.CliAuthSession) bool {
-	if s.Status != store.CliAuthPending && s.Status != store.CliAuthApproved {
+	if s.Status != store.CliAuthPending && s.Status != store.CliAuthRequested && s.Status != store.CliAuthApproved {
 		return false
 	}
 	if m.timeNow().Unix() <= s.ExpiresAt {

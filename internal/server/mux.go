@@ -55,6 +55,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 3.5 CLI 设备授权管理器
 	cliAuthMgr := auth.NewCliAuthManager(db, 0)
 
+	// 3.6 Passkey 设备授权管理器（复用 cli_auth_sessions 表，kind=passkey）
+	enrollMgr := auth.NewPasskeyEnrollManager(db, authSvc, 0)
+
 	// 4. Web Push 派发器（后台 goroutine，动态按需为每个用户启动消费）
 	var dm *dispatchManager
 	vapidCfg, vapidErr := push.LoadVAPID()
@@ -87,6 +90,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		db:       db,
 		staticFS: cliAuthStaticFS,
 	}
+
+	enrollH := &passkeyEnrollHandler{mgr: enrollMgr}
 
 	sessMW := authSvc.Sessions().Middleware
 
@@ -155,6 +160,40 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/keys/self", noStore(http.HandlerFunc(cliAuthH.keysSelf)))
 	// 登录脚本分发（匿名）
 	mux.Handle("GET /agent-login.sh", http.HandlerFunc(cliAuthH.agentLoginScript))
+
+	// --- Passkey 设备授权（/v1/passkey-enroll/sessions/*） ---
+	// 旧设备发起（需登录 Cookie）
+	mux.Handle("POST /v1/passkey-enroll/sessions", noStore(sessMW(http.HandlerFunc(enrollH.create))))
+	// 匿名端点（新设备用）
+	mux.Handle("GET /v1/passkey-enroll/sessions/by-code", noStore(http.HandlerFunc(enrollH.byCode)))
+	mux.Handle("GET /v1/passkey-enroll/sessions/{id}", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.lookup(w, r, r.PathValue("id"))
+	})))
+	mux.Handle("POST /v1/passkey-enroll/sessions/{id}/request", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.knock(w, r, r.PathValue("id"))
+	})))
+	mux.Handle("GET /v1/passkey-enroll/sessions/{id}/poll", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.poll(w, r, r.PathValue("id"))
+	})))
+	mux.Handle("POST /v1/passkey-enroll/sessions/{id}/complete", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.complete(w, r, r.PathValue("id"))
+	})))
+	mux.Handle("GET /v1/passkey-enroll/sessions/{id}/qr.txt", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.qr(w, r, r.PathValue("id"))
+	})))
+	// 需登录 Cookie（旧设备用）
+	mux.Handle("GET /v1/passkey-enroll/sessions/{id}/watch", noStore(sessMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.watch(w, r, r.PathValue("id"))
+	}))))
+	mux.Handle("POST /v1/passkey-enroll/sessions/{id}/approve", noStore(sessMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.approve(w, r, r.PathValue("id"))
+	}))))
+	mux.Handle("POST /v1/passkey-enroll/sessions/{id}/deny", noStore(sessMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.deny(w, r, r.PathValue("id"))
+	}))))
+	mux.Handle("DELETE /v1/passkey-enroll/sessions/{id}", noStore(sessMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollH.cancel(w, r, r.PathValue("id"))
+	}))))
 
 	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

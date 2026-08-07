@@ -50,6 +50,10 @@ func Open(path string) (*DB, error) {
 func migrateColumns(db *sql.DB) error {
 	// passkeys.backup_eligible（BackupEligible flag 持久化）
 	_, _ = db.Exec(`ALTER TABLE passkeys ADD COLUMN backup_eligible INTEGER NOT NULL DEFAULT 0`)
+	// cli_auth_sessions.kind：区分 apikey / passkey 授权类型（老行默认 apikey）
+	_, _ = db.Exec(`ALTER TABLE cli_auth_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'apikey'`)
+	// cli_auth_sessions.device_hint：Passkey 授权时新设备敲门自报的设备信息（apikey 流程不用）
+	_, _ = db.Exec(`ALTER TABLE cli_auth_sessions ADD COLUMN device_hint TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 

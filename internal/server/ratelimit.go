@@ -8,7 +8,20 @@ import (
 	"time"
 )
 
-// 限速阈值常量（见 cli-auth-plan §0）。
+// 限速阈值常量（passkey-enroll 匿名端点）。
+const (
+	rlEnrollLookupPerMin   = 10 // 匿名 lookup/by-code：10/min/IP
+	rlEnrollKnockPerMin    = 10 // 匿名敲门：10/min/IP
+	rlEnrollCompletePerMin = 10 // 匿名 complete：10/min/IP
+)
+
+var (
+	rlEnrollLookup   = newFixedWindow(rlEnrollLookupPerMin, time.Minute)
+	rlEnrollKnock    = newFixedWindow(rlEnrollKnockPerMin, time.Minute)
+	rlEnrollComplete = newFixedWindow(rlEnrollCompletePerMin, time.Minute)
+)
+
+// 限速阈值常量（见 cli-auth-plan §0）.
 const (
 	rlCreatePerMin = 10 // 建会话：10/min/IP
 	rlByCodePerMin = 20 // by-code lookup：20/min/user
