@@ -256,7 +256,13 @@ func (h *passkeyEnrollHandler) complete(w http.ResponseWriter, r *http.Request, 
 			writeErr(w, 409, "会话已完成，不可重复提交")
 			return
 		}
-		h.writeEnrollErr(w, r, id, err)
+		if errors.Is(err, auth.ErrAlreadyTerminal) {
+			// 状态不对（expired/denied 等）→ 409 带当前 status
+			h.writeEnrollErr(w, r, id, err)
+			return
+		}
+		// FinishEnrollCredential 失败（attestation 无效/无法解析）→ 400
+		writeErr(w, 400, "凭证创建失败："+err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "passkeyId": result.PasskeyID})
@@ -332,6 +338,10 @@ func toEnrollAnonView(s *store.CliAuthSession) enrollAnonView {
 }
 
 func (h *passkeyEnrollHandler) writeEnrollErr(w http.ResponseWriter, r *http.Request, id string, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, 404, "授权会话不存在或已过期")
+		return
+	}
 	if errors.Is(err, auth.ErrInvalidParam) {
 		writeErr(w, 400, err.Error())
 		return

@@ -267,25 +267,17 @@ func (m *PasskeyEnrollManager) Poll(id, secret string) (*EnrollPollResult, error
 	case store.CliAuthConsumed:
 		return &EnrollPollResult{Status: store.CliAuthConsumed}, nil
 	case store.CliAuthApproved:
-		return m.consumeAndGenerateAttestation(s)
+		return m.generateAttestation(s)
 	default:
 		return nil, fmt.Errorf("auth: 未知会话状态 %q", s.Status)
 	}
 }
 
-// consumeAndGenerateAttestation 在 approved 态首次 poll 时：
-// 生成 attestationOptions + registrationToken，置 consumed。
-// 二次 poll 返回 consumed（无 options/token）。
-func (m *PasskeyEnrollManager) consumeAndGenerateAttestation(s *store.CliAuthSession) (*EnrollPollResult, error) {
-	// 原子迁移 approved→consumed（防并发重放）
-	alreadyConsumed, err := m.db.ConsumeCliAuthSessionPasskey(s.ID, m.timeNow().Unix())
-	if err != nil {
-		return nil, err
-	}
-	if alreadyConsumed {
-		return &EnrollPollResult{Status: store.CliAuthConsumed}, nil
-	}
-
+// generateAttestation 在 approved 态首次 poll 时：
+// 生成 attestationOptions + registrationToken。**不 consume 会话**——consume 留给 Complete 做
+// （approved→consumed + 建凭证，见 D-C-4 防重放）。二次 poll 重新生成 token（覆盖旧 token hash）。
+// 会话状态保持 approved，直至 Complete 成功迁移到 consumed。
+func (m *PasskeyEnrollManager) generateAttestation(s *store.CliAuthSession) (*EnrollPollResult, error) {
 	// 生成 attestationOptions（WebAuthn creation options）
 	creation, err := m.svc.BeginEnrollCredential(s.ID, s.UserID)
 	if err != nil {
@@ -355,8 +347,17 @@ func (m *PasskeyEnrollManager) Complete(sessionID, registrationToken, name strin
 		return nil, fmt.Errorf("%w: 当前状态 %s 不可完成", ErrAlreadyTerminal, s.Status)
 	}
 
-	// 完成 WebAuthn 凭证创建（challenge 从 enrollCredKey(sessionID) 取）
+	// 先完成 WebAuthn 凭证创建（challenge 从 enrollCredKey(sessionID) 取）。
+	// challenge 是一次性的（takeChallenge 取走即删）：并发场景下第二个 complete 会因
+	// challenge 缺失而失败，自然防重放。attestation 无效时返回错误，会话保持 approved 可重试。
 	if err := m.svc.FinishEnrollCredential(sessionID, s.UserID, name, r); err != nil {
+		return nil, err
+	}
+
+	// 凭证建立成功后，原子迁移 approved→consumed（防重放，D-C-4）。
+	// 若 consume 失败（并发下已被抢用）凭证已建但会话状态不一致——可接受（凭证无害，会话终态）。
+	_, err = m.db.ConsumeCliAuthSessionPasskey(s.ID, m.timeNow().Unix())
+	if err != nil {
 		return nil, err
 	}
 
