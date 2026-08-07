@@ -47,7 +47,7 @@ func newCliAuthTestEnv(t *testing.T) *cliAuthTestEnv {
 	mgr := auth.NewCliAuthManager(db, 0)
 	km := auth.NewKeyManager(db)
 	sm := auth.NewSessionManager(db, 0, false)
-	sess, err := sm.Create(uid)
+	sess, err := sm.Create(uid, "Test · CLI")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}

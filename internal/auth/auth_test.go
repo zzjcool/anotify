@@ -255,7 +255,7 @@ func TestSession_CreateValidateRevoke(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	sess, err := svc.Sessions().Create(user.ID)
+	sess, err := svc.Sessions().Create(user.ID, "Test · macOS")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestSession_Middleware(t *testing.T) {
 	if err := svc.db.CreateUser(user); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	sess, err := svc.Sessions().Create(user.ID)
+	sess, err := svc.Sessions().Create(user.ID, "Test · macOS")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}

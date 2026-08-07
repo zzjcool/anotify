@@ -54,6 +54,8 @@ func migrateColumns(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE cli_auth_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'apikey'`)
 	// cli_auth_sessions.device_hint：Passkey 授权时新设备敲门自报的设备信息（apikey 流程不用）
 	_, _ = db.Exec(`ALTER TABLE cli_auth_sessions ADD COLUMN device_hint TEXT NOT NULL DEFAULT ''`)
+	// sessions.device_name：登录设备名（UA 推断，如「Chrome · macOS」）
+	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 

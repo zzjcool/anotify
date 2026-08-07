@@ -48,7 +48,7 @@ func newPasskeysTestEnv(t *testing.T) *passkeysTestEnv {
 	if err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
-	sess, err := svc.Sessions().Create(uid)
+	sess, err := svc.Sessions().Create(uid, "Test · macOS")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}

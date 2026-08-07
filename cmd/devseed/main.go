@@ -52,7 +52,7 @@ func main() {
 	}
 
 	sm := auth.NewSessionManager(db, 0, false)
-	sess, err := sm.Create(uid)
+	sess, err := sm.Create(uid, "devseed · CLI")
 	if err != nil {
 		log.Fatal(err)
 	}

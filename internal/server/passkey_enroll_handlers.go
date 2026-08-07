@@ -77,7 +77,8 @@ func (h *passkeyEnrollHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求体解析失败")
 		return
 	}
-	created, err := h.mgr.CreateSession(req.DeviceName)
+	uid := auth.UserIDFromContext(r.Context())
+	created, err := h.mgr.CreateSession(uid, req.DeviceName)
 	if err != nil {
 		if errors.Is(err, auth.ErrInvalidParam) {
 			writeErr(w, 400, err.Error())
@@ -375,19 +376,19 @@ func (h *passkeyEnrollHandler) qr(w http.ResponseWriter, r *http.Request, id str
 
 // ---------- 辅助 ----------
 
+// toEnrollAnonView 构造匿名视图（不含密钥、user_id）。
+// initiatorName 在所有状态都返回（建会话时已存 user_id），
+// 使新设备在 pending 态就能看到「给哪个账号加设备」。
 func (h *passkeyEnrollHandler) toEnrollAnonView(s *store.CliAuthSession) enrollAnonView {
 	v := enrollAnonView{
-		SessionID: s.ID,
-		Status:    s.Status,
-		ExpiresAt: s.ExpiresAt,
+		SessionID:     s.ID,
+		Status:        s.Status,
+		ExpiresAt:     s.ExpiresAt,
+		InitiatorName: h.initiatorName(s),
 	}
 	// requested 后才有 deviceHint
 	if s.Status == store.CliAuthRequested || s.Status == store.CliAuthApproved || s.Status == store.CliAuthConsumed {
 		v.DeviceHint = s.DeviceHint
-	}
-	// approved 后才有 initiatorName（匿名视图不返回 user_id，只返回批准者 displayName/username 供新设备核对账号身份）
-	if s.Status == store.CliAuthApproved || s.Status == store.CliAuthConsumed {
-		v.InitiatorName = h.initiatorName(s)
 	}
 	return v
 }

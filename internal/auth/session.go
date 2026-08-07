@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/anotify/anotify/internal/store"
@@ -49,19 +50,20 @@ func NewSessionManager(db *store.DB, ttl time.Duration, secure bool) *SessionMan
 	return &SessionManager{db: db, ttl: ttl, secure: secure}
 }
 
-// Create 为某用户签发一个新会话。
-func (m *SessionManager) Create(userID string) (*store.Session, error) {
+// Create 为某用户签发一个新会话。deviceName 从 UA 推断（如「Chrome · macOS」）。
+func (m *SessionManager) Create(userID, deviceName string) (*store.Session, error) {
 	tok, err := randomToken(32)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	s := &store.Session{
-		ID:        store.NewSessionID() + "." + tok, // 加随机后缀，避免 ID 可枚举
-		UserID:    userID,
-		CreatedAt: now.Unix(),
-		ExpiresAt: now.Add(m.ttl).Unix(),
-		LastSeen:  now.Unix(),
+		ID:         store.NewSessionID() + "." + tok, // 加随机后缀，避免 ID 可枚举
+		UserID:     userID,
+		DeviceName: deviceName,
+		CreatedAt:  now.Unix(),
+		ExpiresAt:  now.Add(m.ttl).Unix(),
+		LastSeen:   now.Unix(),
 	}
 	if err := m.db.CreateSession(s); err != nil {
 		return nil, err
@@ -153,4 +155,40 @@ func randomToken(n int) (string, error) {
 		return "", errors.New("auth: 随机数生成失败")
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// DeviceNameFromUA 从 User-Agent 推断设备名（如「Chrome · macOS」）。
+// 用于登录会话、Passkey 凭证命名等，统一设备名格式。
+func DeviceNameFromUA(ua string) string {
+	ua = strings.ToLower(ua)
+
+	// 浏览器
+	browser := "Browser"
+	switch {
+	case strings.Contains(ua, "edg/"):
+		browser = "Edge"
+	case strings.Contains(ua, "chrome/") || strings.Contains(ua, "crios"):
+		browser = "Chrome"
+	case strings.Contains(ua, "firefox/") || strings.Contains(ua, "fxios"):
+		browser = "Firefox"
+	case strings.Contains(ua, "safari/") && !strings.Contains(ua, "chrome"):
+		browser = "Safari"
+	}
+
+	// 操作系统
+	osName := "Unknown OS"
+	switch {
+	case strings.Contains(ua, "iphone") || strings.Contains(ua, "ipad"):
+		osName = "iOS"
+	case strings.Contains(ua, "mac os") || strings.Contains(ua, "macintosh"):
+		osName = "macOS"
+	case strings.Contains(ua, "windows"):
+		osName = "Windows"
+	case strings.Contains(ua, "android"):
+		osName = "Android"
+	case strings.Contains(ua, "linux"):
+		osName = "Linux"
+	}
+
+	return browser + " · " + osName
 }

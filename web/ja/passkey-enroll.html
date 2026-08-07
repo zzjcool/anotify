@@ -949,6 +949,7 @@
           }
           currentSessionId = data.sessionId;
           currentInitiatorName = data.initiatorName || "";
+          currentExpiresAt = data.expiresAt;
           const status = data.status;
 
           if (status === "pending") {
@@ -1203,10 +1204,10 @@
             iconWarn.classList.add("hidden");
             iconError.classList.remove("hidden");
             badge.className = "status-badge status-error mt-5";
-            badge.textContent = t("passkeyenroll.failed.notfound_title", "会话不存在或已失效");
-            title.textContent = t("passkeyenroll.failed.notfound_title", "会话不存在或已失效");
-            desc.textContent = customDesc || t("passkeyenroll.failed.notfound_desc", "链接或短码可能已过期、已使用或被取消。");
-            actionBtn.textContent = t("passkeyenroll.failed.notfound_action", "重新输入");
+            badge.textContent = t("passkeyenroll.failed.notfound_title", "授权已取消或失效");
+            title.textContent = t("passkeyenroll.failed.notfound_title", "授权已取消或失效");
+            desc.textContent = customDesc || t("passkeyenroll.failed.notfound_desc", "发起设备已取消授权，或会话已失效。请回到发起设备重新发起。");
+            actionBtn.textContent = t("passkeyenroll.failed.notfound_action", "输入新短码");
             actionBtn.onclick = () => resetEntry();
           } else {
              
@@ -1214,9 +1215,9 @@
             iconWarn.classList.add("hidden");
             iconError.classList.remove("hidden");
             badge.className = "status-badge status-error mt-5";
-            badge.textContent = t("passkeyenroll.failed.error_title", "出错了");
-            title.textContent = t("passkeyenroll.failed.error_title", "出错了");
-            desc.textContent = customDesc || t("passkeyenroll.failed.error_desc", "请检查网络连接后重试。");
+            badge.textContent = t("passkeyenroll.failed.error_title", "无法连接服务器");
+            title.textContent = t("passkeyenroll.failed.error_title", "无法连接服务器");
+            desc.textContent = customDesc || t("passkeyenroll.failed.error_desc", "多次请求失败，可能是网络中断或服务器未运行。请检查网络连接后重试。");
             actionBtn.textContent = t("cliauth.done.retry", "重试");
             actionBtn.onclick = () => {
               if (lastAction) lastAction();

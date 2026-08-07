@@ -39,11 +39,11 @@ func newEnrollMgrWithClock(db *store.DB, svc *Service, clock *fakeClock) *Passke
 
 // TestEnroll_CreateSession_Success 建会话成功。
 func TestEnroll_CreateSession_Success(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Unix(1000000, 0)}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, err := m.CreateSession("my-iphone")
+	created, err := m.CreateSession(uid, "my-iphone")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -80,7 +80,7 @@ func startsWith(s, prefix string) bool {
 
 // TestEnroll_CreateSession_InvalidParams 参数校验。
 func TestEnroll_CreateSession_InvalidParams(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
@@ -92,7 +92,7 @@ func TestEnroll_CreateSession_InvalidParams(t *testing.T) {
 		{"超长设备名", string(make([]byte, 65))},
 	}
 	for _, c := range cases {
-		_, err := m.CreateSession(c.deviceName)
+		_, err := m.CreateSession(uid, c.deviceName)
 		if err == nil {
 			t.Errorf("%s: 应报错", c.name)
 		}
@@ -101,11 +101,11 @@ func TestEnroll_CreateSession_InvalidParams(t *testing.T) {
 
 // TestEnroll_RequestKnock_Success 敲门 pending→requested。
 func TestEnroll_RequestKnock_Success(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 
 	secret, err := m.RequestKnock(created.SessionID, "Chrome · macOS")
 	if err != nil {
@@ -131,11 +131,11 @@ func TestEnroll_RequestKnock_Success(t *testing.T) {
 
 // TestEnroll_RequestKnock_WrongState 非 pending 态敲门失败。
 func TestEnroll_RequestKnock_WrongState(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 	// 先敲门
 	_, _ = m.RequestKnock(created.SessionID, "Chrome")
 	// 再敲门 → 应失败
@@ -151,7 +151,7 @@ func TestEnroll_Approve_Success(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 	_, _ = m.RequestKnock(created.SessionID, "Chrome")
 
 	err := m.Approve(created.SessionID, uid)
@@ -174,7 +174,7 @@ func TestEnroll_Approve_WrongState(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 	// 未敲门直接批准 → 应失败
 	err := m.Approve(created.SessionID, uid)
 	if err == nil {
@@ -184,11 +184,11 @@ func TestEnroll_Approve_WrongState(t *testing.T) {
 
 // TestEnroll_Deny_Success 拒绝 requested→denied。
 func TestEnroll_Deny_Success(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 	_, _ = m.RequestKnock(created.SessionID, "Chrome")
 
 	err := m.Deny(created.SessionID)
@@ -204,11 +204,11 @@ func TestEnroll_Deny_Success(t *testing.T) {
 
 // TestEnroll_Poll_StatusFlow 轮询状态流转。
 func TestEnroll_Poll_StatusFlow(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 
 	// 敲门前 poll → 用建会话的 secret（敲门前 secret_hash 还是建会话时的）
 	// 注意：敲门前 poll 用的是建会话时返回的 secret
@@ -233,11 +233,11 @@ func TestEnroll_Poll_StatusFlow(t *testing.T) {
 
 // TestEnroll_Poll_WrongSecret 错 secret → 401。
 func TestEnroll_Poll_WrongSecret(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 
 	_, err := m.Poll(created.SessionID, "wrong-secret")
 	if err != ErrUnauthorized {
@@ -247,11 +247,11 @@ func TestEnroll_Poll_WrongSecret(t *testing.T) {
 
 // TestEnroll_Expired 过期迁移。
 func TestEnroll_Expired(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Unix(1000000, 0)}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 	// 推进时间超过 TTL
 	clock.advance(11 * time.Minute)
 
@@ -295,11 +295,11 @@ func TestEnroll_KindGuard(t *testing.T) {
 
 // TestEnroll_Delete 删除会话。
 func TestEnroll_Delete(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 	if err := m.Delete(created.SessionID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -313,11 +313,11 @@ func TestEnroll_Delete(t *testing.T) {
 
 // TestEnroll_Poll_DeniedStatus 拒绝后 poll 返回 denied。
 func TestEnroll_Poll_DeniedStatus(t *testing.T) {
-	db, svc, _ := newEnrollTestDB(t)
+	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
-	created, _ := m.CreateSession("old-mac")
+	created, _ := m.CreateSession(uid, "old-mac")
 	knockSecret, _ := m.RequestKnock(created.SessionID, "Chrome")
 	_ = m.Deny(created.SessionID)
 

@@ -58,12 +58,17 @@ type CreatedEnrollSession struct {
 }
 
 // CreateSession 建立一个 Passkey 设备授权会话（旧设备发起，需登录）。
+// userID 为发起者（已登录用户）的 ID，建会话时即存入 user_id，
+// 使新设备在 pending 态就能看到「给哪个账号加设备」。
 // deviceName 非空且 ≤64 字符。不需要 scopes（Passkey 授权无 scope 概念）。
 // 返回的 Secret 仅此一次可见，由调用方传递给新设备。
-func (m *PasskeyEnrollManager) CreateSession(deviceName string) (*CreatedEnrollSession, error) {
+func (m *PasskeyEnrollManager) CreateSession(userID, deviceName string) (*CreatedEnrollSession, error) {
 	deviceName = strings.TrimSpace(deviceName)
 	if deviceName == "" || len(deviceName) > deviceNameMaxLen {
 		return nil, fmt.Errorf("%w: deviceName 必须非空且不超过 %d 字符", ErrInvalidParam, deviceNameMaxLen)
+	}
+	if userID == "" {
+		return nil, fmt.Errorf("%w: userID 不能为空", ErrInvalidParam)
 	}
 
 	now := m.timeNow()
@@ -91,6 +96,7 @@ func (m *PasskeyEnrollManager) CreateSession(deviceName string) (*CreatedEnrollS
 			UserCode:   code,
 			DeviceName: deviceName,
 			Kind:       store.CliAuthKindPasskey,
+			UserID:     userID, // 发起者 user_id，建会话时即存入
 			Status:     store.CliAuthPending,
 			CreatedAt:  nowUnix,
 			ExpiresAt:  expiresAt,

@@ -25,11 +25,12 @@ CREATE TABLE IF NOT EXISTS passkeys (
 
 -- 登录会话
 CREATE TABLE IF NOT EXISTS sessions (
-    id         TEXT PRIMARY KEY,             -- sess_xxx token
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL,
-    last_seen  INTEGER NOT NULL
+    id          TEXT PRIMARY KEY,             -- sess_xxx token
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_name TEXT NOT NULL DEFAULT '',    -- 登录设备名（UA 推断，如「Chrome · macOS」）
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    last_seen   INTEGER NOT NULL
 );
 
 -- API Key（仅存哈希；scope 控制 notify:send / notify:receive / devices:read）

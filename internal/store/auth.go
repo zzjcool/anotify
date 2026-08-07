@@ -33,11 +33,12 @@ type Passkey struct {
 
 // Session 是 sessions 表的一行。
 type Session struct {
-	ID        string `json:"id"`
-	UserID    string `json:"userId"`
-	CreatedAt int64  `json:"createdAt"`
-	ExpiresAt int64  `json:"expiresAt"`
-	LastSeen  int64  `json:"lastSeen"`
+	ID         string `json:"id"`
+	UserID     string `json:"userId"`
+	DeviceName string `json:"deviceName"` // 登录设备名（UA 推断）
+	CreatedAt  int64  `json:"createdAt"`
+	ExpiresAt  int64  `json:"expiresAt"`
+	LastSeen   int64  `json:"lastSeen"`
 }
 
 // APIKey 是 api_keys 表的一行（不含明文）。
@@ -221,8 +222,8 @@ func (d *DB) UpdatePasskeySignCount(id string, signCount int64, lastUsedAt int64
 // CreateSession 插入一个会话。
 func (d *DB) CreateSession(s *Session) error {
 	_, err := d.Exec(
-		`INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen) VALUES (?,?,?,?,?)`,
-		s.ID, s.UserID, s.CreatedAt, s.ExpiresAt, s.LastSeen,
+		`INSERT INTO sessions (id, user_id, device_name, created_at, expires_at, last_seen) VALUES (?,?,?,?,?,?)`,
+		s.ID, s.UserID, s.DeviceName, s.CreatedAt, s.ExpiresAt, s.LastSeen,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -234,8 +235,8 @@ func (d *DB) CreateSession(s *Session) error {
 func (d *DB) GetSession(id string) (*Session, error) {
 	var s Session
 	err := d.QueryRow(
-		`SELECT id, user_id, created_at, expires_at, last_seen FROM sessions WHERE id = ?`, id,
-	).Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen)
+		`SELECT id, user_id, device_name, created_at, expires_at, last_seen FROM sessions WHERE id = ?`, id,
+	).Scan(&s.ID, &s.UserID, &s.DeviceName, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -266,7 +267,7 @@ func (d *DB) DeleteSession(id string) error {
 // ListSessionsByUser 列出某用户的所有会话。
 func (d *DB) ListSessionsByUser(userID string) ([]*Session, error) {
 	rows, err := d.Query(
-		`SELECT id, user_id, created_at, expires_at, last_seen FROM sessions WHERE user_id = ? ORDER BY created_at DESC`, userID,
+		`SELECT id, user_id, device_name, created_at, expires_at, last_seen FROM sessions WHERE user_id = ? ORDER BY created_at DESC`, userID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
@@ -275,7 +276,7 @@ func (d *DB) ListSessionsByUser(userID string) ([]*Session, error) {
 	var out []*Session
 	for rows.Next() {
 		var s Session
-		if err := rows.Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.DeviceName, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		out = append(out, &s)

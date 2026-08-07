@@ -211,11 +211,11 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 		return "", err
 	}
 	// 存凭证。
-	if err := s.saveCredential(user.ID, cred, "默认设备"); err != nil {
+	if err := s.saveCredential(user.ID, cred, "新设备"); err != nil {
 		return "", err
 	}
 	// 建会话。
-	sess, err := s.sess.Create(user.ID)
+	sess, err := s.sess.Create(user.ID, DeviceNameFromUA(r.UserAgent()))
 	if err != nil {
 		return "", err
 	}
@@ -316,7 +316,7 @@ func (s *Service) FinishLogin(username string, r *http.Request) (sessionID strin
 	}
 	// 更新签名计数（防重放）。
 	_ = s.db.UpdatePasskeySignCount(encodeCredID(cred.ID), int64(cred.Authenticator.SignCount), store.Now())
-	sess, err := s.sess.Create(user.ID)
+	sess, err := s.sess.Create(user.ID, DeviceNameFromUA(r.UserAgent()))
 	if err != nil {
 		return "", err
 	}
@@ -351,7 +351,7 @@ func (s *Service) FinishDiscoverableLogin(token string, r *http.Request) (sessio
 		return "", fmt.Errorf("finish discoverable login: %w", err)
 	}
 	_ = s.db.UpdatePasskeySignCount(encodeCredID(cred.ID), int64(cred.Authenticator.SignCount), store.Now())
-	sess, err := s.sess.Create(string(waUser.WebAuthnID()))
+	sess, err := s.sess.Create(string(waUser.WebAuthnID()), DeviceNameFromUA(r.UserAgent()))
 	if err != nil {
 		return "", err
 	}

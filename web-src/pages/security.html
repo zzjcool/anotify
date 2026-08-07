@@ -828,6 +828,19 @@
     return "🖥️";
   }
 
+  // platformIconFromName 从格式化的设备名（如 "Chrome · macOS"）推断图标。
+  // 后端 deviceName 是 UA 解析后的 "Browser · OS" 格式，非原始 UA。
+  function platformIconFromName(name) {
+    const n = (name || "").toLowerCase();
+    if (n.includes("ios") || n.includes("iphone") || n.includes("ipad"))
+      return "📱";
+    if (n.includes("macos") || n.includes("mac")) return "💻";
+    if (n.includes("windows")) return "🖥️";
+    if (n.includes("android")) return "📱";
+    if (n.includes("linux")) return "🖥️";
+    return "🖥️";
+  }
+
   // 后端未就绪时静默降级到演示数据（不抛 console 错误）
   // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；其他非 200 才降级演示数据。
   async function fetchApi(path, options) {
@@ -880,19 +893,25 @@
       credentials: "same-origin",
     });
     if (data) {
-      SESSIONS = (data.sessions || data || []).map((s, i) => ({
-        id: s.id || String(i),
-        device:
-          s.device || s.userAgent || t("security.unknown_device", "未知设备"),
-        browser: s.browser || "",
-        icon: platformIcon(s.userAgent || s.device),
-        passkey: s.passkey || "",
-        location: s.location || "",
-        current: !!s.current,
-        lastActive: s.current
-          ? t("security.current_session", "当前会话")
-          : fmtTime(s.lastSeen || s.lastActive),
-      }));
+      SESSIONS = (data.sessions || data || []).map((s, i) => {
+        const deviceName =
+          s.deviceName ||
+          s.device ||
+          s.userAgent ||
+          t("security.unknown_device", "未知设备");
+        return {
+          id: s.id || String(i),
+          device: deviceName,
+          browser: "",
+          icon: platformIconFromName(deviceName),
+          passkey: s.passkey || "",
+          location: s.location || "",
+          current: !!s.current,
+          lastActive: s.current
+            ? t("security.current_session", "当前会话")
+            : fmtTime(s.lastSeen || s.lastActive),
+        };
+      });
       demoMode.sessions = false;
     } else {
       SESSIONS = DEMO_SESSIONS.slice();
@@ -1259,12 +1278,14 @@
                 class:
                   "mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500",
               },
-              el("span", { text: s.browser }),
-              s.location
+              s.browser ? el("span", { text: s.browser }) : null,
+              s.browser && s.location
                 ? el("span", { class: "text-zinc-700", text: "·" })
                 : null,
               s.location ? el("span", { text: s.location }) : null,
-              el("span", { class: "text-zinc-700", text: "·" }),
+              s.browser || s.location
+                ? el("span", { class: "text-zinc-700", text: "·" })
+                : null,
               el("span", {
                 text: s.current
                   ? s.lastActive

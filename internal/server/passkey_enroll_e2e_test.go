@@ -54,7 +54,7 @@ func newEnrollE2EEnv(t *testing.T) *enrollE2EEnv {
 	}
 
 	mgr := auth.NewPasskeyEnrollManager(db, svc, 0)
-	sess, err := svc.Sessions().Create(uid)
+	sess, err := svc.Sessions().Create(uid, "Test · macOS")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
