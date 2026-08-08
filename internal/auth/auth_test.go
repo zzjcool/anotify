@@ -422,8 +422,12 @@ func TestBeginRegister_ReturnsOptions(t *testing.T) {
 
 func TestBeginLogin_UnknownUser(t *testing.T) {
 	svc := newTestService(t)
-	if _, err := svc.BeginLogin("ghost"); err == nil {
-		t.Errorf("不存在的用户登录应失败")
+	_, err := svc.BeginLogin("ghost")
+	if err == nil {
+		t.Fatalf("不存在的用户登录应失败")
+	}
+	if !strings.Contains(err.Error(), "用户不存在") {
+		t.Errorf("未注册用户应提示「用户不存在」, got %q", err.Error())
 	}
 }
 
@@ -458,5 +462,74 @@ func fakeSessionData(userID string) webauthn.SessionData {
 		Challenge: "test-challenge-" + userID,
 		UserID:    []byte(userID),
 		Expires:   time.Now().Add(5 * time.Minute),
+	}
+}
+
+// ---------- 可发现登录 userHandle 失配（孤儿 Passkey）----------
+
+// TestLookupUserByHandle_StaleUserHandle 模拟认证器残留过期 Passkey：
+// userHandle 指向一个已不存在的用户（被删/重建后 user ID 变了）。
+// 应返回中性文案（「未关联到任何账户」），不报「用户不存在」。
+func TestLookupUserByHandle_StaleUserHandle(t *testing.T) {
+	svc := newTestService(t)
+
+	// 用一个库里不存在的 userHandle（模拟孤儿凭证）
+	staleHandle := []byte("deleted-user-id-12345")
+	_, err := svc.lookupUserByHandle(staleHandle)
+	if err == nil {
+		t.Fatalf("孤儿 userHandle 应返回错误")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "未关联到任何账户") {
+		t.Errorf("应提示「未关联到任何账户」, got %q", msg)
+	}
+	if strings.Contains(msg, "用户不存在") {
+		t.Errorf("不应提示「用户不存在」（会误导用户），got %q", msg)
+	}
+}
+
+// TestLookupUserByHandle_ValidUser 正常 userHandle 应返回非 nil 的 webauthn.User。
+func TestLookupUserByHandle_ValidUser(t *testing.T) {
+	svc := newTestService(t)
+	user := &store.User{ID: store.NewUserID(), Username: "alice", CreatedAt: store.Now()}
+	if err := svc.db.CreateUser(user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	waUser, err := svc.lookupUserByHandle([]byte(user.ID))
+	if err != nil {
+		t.Fatalf("正常 userHandle 不应报错: %v", err)
+	}
+	if waUser == nil {
+		t.Errorf("应返回非 nil 的 webauthn.User")
+	}
+	if string(waUser.WebAuthnID()) != user.ID {
+		t.Errorf("WebAuthnID 不匹配: got %q want %q", waUser.WebAuthnID(), user.ID)
+	}
+}
+
+// ---------- userHandlePrefix ----------
+
+func TestUserHandlePrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{"empty", nil, ""},
+		{"short", []byte{0xab}, "ab"},                          // 1 byte = 2 hex chars < 8
+		{"exact4", []byte{0xde, 0xad, 0xbe, 0xef}, "deadbeef"}, // 4 bytes = 8 hex
+		{"long", []byte("abcdefghij"), "61626364"},             // first 4 bytes hex
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := userHandlePrefix(tt.in)
+			if got != tt.want {
+				t.Errorf("userHandlePrefix(%v) = %q, want %q", tt.in, got, tt.want)
+			}
+			if len(got) > 8 {
+				t.Errorf("前缀不应超过 8 字符, got %d", len(got))
+			}
+		})
 	}
 }
