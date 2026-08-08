@@ -29,6 +29,35 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 ---
 
+## ✅ Passkey 登录失败文案修复（fix/passkey-login-error-message，2026-08-08 合并入 main，commit 00e3ff9）
+
+> 分支 `fix/passkey-login-error-message`（off main cb7ae34）。worktree `.pi-orchestrator/worktrees/wt-passkey-errmsg`。
+> 编排文档：需求 `passkey-errmsg-requirements.md`、计划 `passkey-errmsg-plan.md`（均在仓库根，随 commit 入库）。
+
+**问题**：可发现登录（discoverable login）按 userHandle（内部 user ID）查用户。用户被删/重建后 username 相同但 user ID 变了，认证器里残留的旧 Passkey 带回旧 userHandle → `GetUserByID` 查不到 → 误报「用户不存在」。文案掩盖了真正失败原因（凭证孤儿），误导用户以为是「没注册过」。
+
+**修复**（worker 实现，reviewer APPROVE）：
+
+- `internal/auth/webauthn.go`：三处登录失败用 `errors.Is(err, store.ErrNotFound)` 区分「用户名从未注册」（保留「用户不存在」真实反馈）vs「其他 DB 错误」（→「登录失败，请稍后重试」）。
+- 抽 `lookupUserByHandle` 方法：userHandle 失配时打诊断日志 `event=auth.login.stale_user_handle`（仅前 8 字符 hex，**不泄露**完整 handle / username）+ 返回中性文案「该 Passkey 未关联到任何账户，可能已失效，请尝试其他 Passkey 或重新注册」。
+- 新增 `userHandlePrefix` helper（hex 前 8 字符截断）。
+- `internal/auth/auth_test.go`：补 `TestBeginLogin_UnknownUser` 文案断言 + 新增 `TestLookupUserByHandle_StaleUserHandle`（双向断言：含中性文案 + 不含「用户不存在」）/ `ValidUser` + `TestUserHandlePrefix`（4 子用例）。
+
+**降级决策**（plan 已说明，需求 §5 预留）：
+
+- 不引入错误码体系——前端纯透传 `data.error` 不判类型（scout 确认），最小改动。
+- 不做 begin 阶段防枚举（假 challenge）——scout 证实前端无指定用户名登录 UI，`BeginLogin` 仅 e2e/API 可达，收益低复杂度高，留后续。
+
+**门禁**：`go test ./internal/auth/...` 全绿；e2e 关键三套件 `auth_flow` 28/0、`i18n_coverage` 61/0、`cli_auth` 132/0 全绿；前端零改动，`web_verify` 四语言登录页 8/8 通过。reviewer 独立复核 build/gofmt/vet clean。
+
+**遗留**：
+
+- 防枚举降级（见上）。
+- 「认证器里残留过期 Passkey」的清理仍需用户手动在系统删；本次仅在登录失败时给更有用的提示。后续可单独立项做「检测/提示孤儿凭证」功能。
+- tester 跑 e2e 时发现 worktree 缺 `vapid.json`（该文件在 `.gitignore` 不随 worktree 带过来），致 api_contract 初跑失败——环境问题非回归，复制 vapid.json 后 48/0 通过。**此为 worktree 编排通病**，后续建 worktree 跑 e2e 需手动拷 vapid.json，或让 run_all.sh 检测并提示。
+
+---
+
 ## ✅ i18n 覆盖补全（feat/i18n-coverage，2026-08-07 合并入 main，commit fb61add）
 
 > 分支 `feat/i18n-coverage`（off main 870bcfa）。非中文语言（en/ja/es）下用户可见文案 **0 条中文残留**（演示数据亦翻译）。
