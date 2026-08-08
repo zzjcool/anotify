@@ -15,6 +15,8 @@ common:
     logout: ログアウト
     menu: メニュー
     notification: 通知
+    admin_section: 管理
+    admin: 管理コンソール
   lang:
     label: 言語
     switcher_label: 言語を切り替え
@@ -798,3 +800,76 @@ passkeyenroll:
     error_desc: "複数のリクエストが失敗しました。ネットワーク障害またはサーバー停止の可能性があります。ネットワークを確認して再試行してください。"
     no_webauthn_desc: "このブラウザまたは環境はパスキーに対応していません（HTTPS + 最新ブラウザが必要）。最新の Chrome / Safari をお試しください。"
     consumed_desc: "このセッションは完了済みで再利用できません。やり直してください。"
+
+# ===== 管理コンソール =====
+admin:
+  title: 管理コンソール
+  subtitle: システム概要とユーザー管理
+  loading: 読み込み中…
+  top_users: アクティブユーザー Top
+  success: 完了
+  kpi:
+    users: ユーザー総数
+    users_sub: "{n} 管理者"
+    active: "7日間 {n} アクティブ"
+    messages: メッセージ総数
+    today: "今日 {n}"
+    devices: デバイス
+    enabled: "{n} 有効"
+    keys: "{n} Keys"
+    delivery_rate: 配信成功率
+  tab:
+    users: ユーザー
+    messages: メッセージ
+    sessions: セッション
+  users:
+    user: ユーザー
+    role: ロール
+    status: 状態
+    messages: メッセージ
+    devices: デバイス
+    keys: Keys
+    created: 登録日時
+    actions: 操作
+    active: 有効
+    disabled: 無効
+    you: あなた
+    promote: 管理者に昇格
+    demote: メンバーに降格
+    enable: 有効化
+    disable: 無効化
+    empty: ユーザーなし
+  messages:
+    title: タイトル
+    user: ユーザー
+    status: ステータス
+    time: 時刻
+    empty: メッセージなし
+  sessions:
+    user: ユーザー
+    device: デバイス
+    last_seen: 最終アクティブ
+    expires: 有効期限
+    empty: アクティブセッションなし
+  top:
+    messages: メッセージ
+    devices: "{n} デバイス"
+  confirm:
+    title: 確認
+    cancel: キャンセル
+    ok: 確認
+    promote_title: 管理者に昇格
+    promote_body: "{name} をスーパー管理者に昇格しますか？"
+    demote_title: メンバーに降格
+    demote_body: "{name} をメンバーに降格しますか？"
+    disable_title: ユーザーを無効化
+    disable_body: "{name} を無効化しますか？直ちにログアウトされます。"
+    enable_title: ユーザーを有効化
+    enable_body: "{name} を有効化しますか？"
+  error:
+    load_stats: 統計の読み込みに失敗
+    load_users: ユーザーの読み込みに失敗
+    load_messages: メッセージの読み込みに失敗
+    load_sessions: セッションの読み込みに失敗
+    action: 操作に失敗
+    network: ネットワークエラー

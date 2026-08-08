@@ -56,6 +56,12 @@ func migrateColumns(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE cli_auth_sessions ADD COLUMN device_hint TEXT NOT NULL DEFAULT ''`)
 	// sessions.device_name：登录设备名（UA 推断，如「Chrome · macOS」）
 	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`)
+	// users.role：角色 admin | member（首个注册用户自动 admin）
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`)
+	// users.disabled：超管禁用某用户（1=禁用，禁止登录）
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`)
+	// idx_users_role：必须在 ALTER 加 role 列之后创建（老库迁移顺序），幂等。
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)`)
 	return nil
 }
 

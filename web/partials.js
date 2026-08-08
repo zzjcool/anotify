@@ -464,6 +464,10 @@
 		}
 
 		/* ----- 侧栏 ----- */
+		const adminNav = el("div", {
+			id: "admin-nav-section",
+			class: "hidden px-3 pt-4",
+		});
 		const nav = el("nav", { class: "flex-1 overflow-y-auto px-3 py-4" });
 		for (const group of NAV) {
 			if (group.groupLabelKey)
@@ -517,6 +521,7 @@
 						return a;
 					})(),
 				),
+				adminNav,
 				nav,
 				el(
 					"div",
@@ -679,6 +684,30 @@
 			if (su) su.textContent = name;
 			if (sa) sa.textContent = initial;
 			if (ta) ta.textContent = initial;
+
+			/* 超管：在侧栏注入「管理后台」入口 */
+			if (me.role === "admin") {
+				const section = document.getElementById("admin-nav-section");
+				if (section && !section.dataset.mounted) {
+					section.dataset.mounted = "1";
+					section.classList.remove("hidden");
+					section.append(
+						el("div", {
+							class: "side-label",
+							text: t("common.nav.admin_section", "管理"),
+						}),
+					);
+					const a = el("a", {
+						href: "admin.html",
+						class: `side-link ${o.active === "admin" ? "active" : ""}`,
+					});
+					a.append(
+						icon(["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"]),
+						t("common.nav.admin", "管理后台"),
+					);
+					section.append(a);
+				}
+			}
 		});
 
 		/* Language hint banner: must run after body.prepend(root) above
@@ -708,6 +737,7 @@
 						"receivers.html",
 						"keys.html",
 						"security.html",
+						"admin.html",
 						"docs.html",
 						"cli-auth.html",
 						"passkey-enroll.html",

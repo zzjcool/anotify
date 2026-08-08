@@ -15,6 +15,8 @@ common:
     logout: Cerrar sesión
     menu: Menú
     notification: Notificaciones
+    admin_section: Admin
+    admin: Consola Admin
   lang:
     label: Idioma
     switcher_label: Cambiar idioma
@@ -798,3 +800,76 @@ passkeyenroll:
     error_desc: "Varias solicitudes han fallado. Puede deberse a una interrupción de red o a que el servidor no está en ejecución. Comprueba tu conexión e inténtalo de nuevo."
     no_webauthn_desc: "Este navegador o entorno no admite passkeys (requiere HTTPS y un navegador moderno). Prueba con la última versión de Chrome o Safari."
     consumed_desc: "Esta sesión ya está completada y no puede reutilizarse. Empieza de nuevo."
+
+# ===== Consola Admin =====
+admin:
+  title: Consola Admin
+  subtitle: Resumen del sistema y gestión de usuarios
+  loading: Cargando…
+  top_users: Usuarios más activos
+  success: Hecho
+  kpi:
+    users: Usuarios totales
+    users_sub: "{n} admins"
+    active: "{n} activos (7d)"
+    messages: Mensajes totales
+    today: "Hoy {n}"
+    devices: Dispositivos
+    enabled: "{n} habilitados"
+    keys: "{n} keys"
+    delivery_rate: Tasa de entrega
+  tab:
+    users: Usuarios
+    messages: Mensajes
+    sessions: Sesiones
+  users:
+    user: Usuario
+    role: Rol
+    status: Estado
+    messages: Msgs
+    devices: Dispositivos
+    keys: Keys
+    created: Creado
+    actions: Acciones
+    active: Activo
+    disabled: Deshabilitado
+    you: tú
+    promote: Hacer admin
+    demote: Hacer miembro
+    enable: Habilitar
+    disable: Deshabilitar
+    empty: Sin usuarios
+  messages:
+    title: Título
+    user: Usuario
+    status: Estado
+    time: Hora
+    empty: Sin mensajes
+  sessions:
+    user: Usuario
+    device: Dispositivo
+    last_seen: Última actividad
+    expires: Expira
+    empty: Sin sesiones activas
+  top:
+    messages: mensajes
+    devices: "{n} dispositivos"
+  confirm:
+    title: Confirmar
+    cancel: Cancelar
+    ok: Confirmar
+    promote_title: Hacer admin
+    promote_body: "¿Promover a {name} como super admin?"
+    demote_title: Hacer miembro
+    demote_body: "¿Degradar a {name} a miembro?"
+    disable_title: Deshabilitar usuario
+    disable_body: "¿Deshabilitar a {name}? Se cerrará su sesión al instante."
+    enable_title: Habilitar usuario
+    enable_body: "¿Habilitar a {name}?"
+  error:
+    load_stats: Error al cargar estadísticas
+    load_users: Error al cargar usuarios
+    load_messages: Error al cargar mensajes
+    load_sessions: Error al cargar sesiones
+    action: Acción fallida
+    network: Error de red

@@ -15,6 +15,8 @@ common:
     logout: Log out
     menu: Menu
     notification: Notifications
+    admin_section: Admin
+    admin: Admin Console
   lang:
     label: Language
     switcher_label: Switch language
@@ -798,3 +800,76 @@ passkeyenroll:
     error_desc: "Multiple requests failed. This may be due to a network outage or the server not running. Please check your connection and try again."
     no_webauthn_desc: "This browser or environment doesn't support passkeys (HTTPS + a modern browser required). Try the latest Chrome or Safari."
     consumed_desc: "This session is already complete and can't be reused. Start over for a new one."
+
+# ===== Admin Console =====
+admin:
+  title: Admin Console
+  subtitle: System overview & user management
+  loading: Loading…
+  top_users: Top active users
+  success: Done
+  kpi:
+    users: Total users
+    users_sub: "{n} admins"
+    active: "{n} active (7d)"
+    messages: Total messages
+    today: "Today {n}"
+    devices: Devices
+    enabled: "{n} enabled"
+    keys: "{n} keys"
+    delivery_rate: Delivery rate
+  tab:
+    users: Users
+    messages: Messages
+    sessions: Sessions
+  users:
+    user: User
+    role: Role
+    status: Status
+    messages: Msgs
+    devices: Devices
+    keys: Keys
+    created: Created
+    actions: Actions
+    active: Active
+    disabled: Disabled
+    you: you
+    promote: Make admin
+    demote: Make member
+    enable: Enable
+    disable: Disable
+    empty: No users
+  messages:
+    title: Title
+    user: User
+    status: Status
+    time: Time
+    empty: No messages
+  sessions:
+    user: User
+    device: Device
+    last_seen: Last seen
+    expires: Expires
+    empty: No active sessions
+  top:
+    messages: messages
+    devices: "{n} devices"
+  confirm:
+    title: Confirm
+    cancel: Cancel
+    ok: Confirm
+    promote_title: Make admin
+    promote_body: "Promote {name} to super admin?"
+    demote_title: Make member
+    demote_body: "Demote {name} to member?"
+    disable_title: Disable user
+    disable_body: "Disable {name}? They will be signed out immediately."
+    enable_title: Enable user
+    enable_body: "Enable {name}?"
+  error:
+    load_stats: Failed to load stats
+    load_users: Failed to load users
+    load_messages: Failed to load messages
+    load_sessions: Failed to load sessions
+    action: Action failed
+    network: Network error

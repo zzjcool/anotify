@@ -186,7 +186,8 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{
-		"id": u.ID, "username": u.Username, "displayName": u.DisplayName, "createdAt": u.CreatedAt,
+		"id": u.ID, "username": u.Username, "displayName": u.DisplayName,
+		"role": u.Role, "disabled": u.Disabled, "createdAt": u.CreatedAt,
 	})
 }
 

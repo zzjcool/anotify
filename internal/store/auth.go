@@ -11,10 +11,18 @@ import (
 var ErrNotFound = errors.New("store: record not found")
 
 // User 是 users 表的一行。
+// Role: admin | member；Disabled: 超管禁用某用户（禁止登录）。
+const (
+	RoleAdmin  = "admin"
+	RoleMember = "member"
+)
+
 type User struct {
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+	Disabled    bool   `json:"disabled"`
 	CreatedAt   int64  `json:"createdAt"`
 }
 
@@ -58,9 +66,17 @@ type APIKey struct {
 
 // CreateUser 插入一个用户。
 func (d *DB) CreateUser(u *User) error {
+	role := u.Role
+	if role == "" {
+		role = RoleMember
+	}
+	disabled := 0
+	if u.Disabled {
+		disabled = 1
+	}
 	_, err := d.Exec(
-		`INSERT INTO users (id, username, display_name, created_at) VALUES (?,?,?,?)`,
-		u.ID, u.Username, u.DisplayName, u.CreatedAt,
+		`INSERT INTO users (id, username, display_name, role, disabled, created_at) VALUES (?,?,?,?,?,?)`,
+		u.ID, u.Username, u.DisplayName, role, disabled, u.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
@@ -71,30 +87,34 @@ func (d *DB) CreateUser(u *User) error {
 // GetUserByUsername 按用户名查用户。
 func (d *DB) GetUserByUsername(username string) (*User, error) {
 	var u User
+	var disabled int
 	err := d.QueryRow(
-		`SELECT id, username, display_name, created_at FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.CreatedAt)
+		`SELECT id, username, display_name, role, disabled, created_at FROM users WHERE username = ?`, username,
+	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user by username: %w", err)
 	}
+	u.Disabled = disabled != 0
 	return &u, nil
 }
 
 // GetUserByID 按 ID 查用户。
 func (d *DB) GetUserByID(id string) (*User, error) {
 	var u User
+	var disabled int
 	err := d.QueryRow(
-		`SELECT id, username, display_name, created_at FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.CreatedAt)
+		`SELECT id, username, display_name, role, disabled, created_at FROM users WHERE id = ?`, id,
+	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user by id: %w", err)
 	}
+	u.Disabled = disabled != 0
 	return &u, nil
 }
 

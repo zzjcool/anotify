@@ -1,0 +1,721 @@
+{{define "title"}}{{t "admin.title"}}{{end}} {{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-7xl space-y-8">
+    <!-- ===== 标题 ===== -->
+    <div class="reveal visible">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 class="font-display text-3xl text-white">
+            {{t "admin.title"}}
+            <span class="badge-dot dot dot-success ml-2 align-middle"></span>
+          </h2>
+          <p class="mt-1.5 text-sm text-zinc-400" id="admin-subtitle">
+            {{t "admin.subtitle"}}
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="status-badge status-success" id="admin-role-badge"
+            >admin</span
+          >
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 系统总览 KPI ===== -->
+    <section class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div class="card reveal visible p-5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-zinc-500"
+            >{{t "admin.kpi.users"}}</span
+          >
+          <span class="dot dot-success"></span>
+        </div>
+        <div class="font-display mt-3 text-4xl text-white" id="kpi-users">
+          –
+        </div>
+        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-users-sub">—</div>
+      </div>
+      <div class="card reveal visible p-5" style="transition-delay: 60ms">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-zinc-500"
+            >{{t "admin.kpi.messages"}}</span
+          >
+          <span class="dot dot-info"></span>
+        </div>
+        <div class="font-display mt-3 text-4xl text-white" id="kpi-messages">
+          –
+        </div>
+        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-messages-sub">
+          —
+        </div>
+      </div>
+      <div class="card reveal visible p-5" style="transition-delay: 120ms">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-zinc-500"
+            >{{t "admin.kpi.devices"}}</span
+          >
+          <span class="dot dot-warn"></span>
+        </div>
+        <div class="font-display mt-3 text-4xl text-white" id="kpi-devices">
+          –
+        </div>
+        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-devices-sub">
+          —
+        </div>
+      </div>
+      <div class="card reveal visible p-5" style="transition-delay: 180ms">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-zinc-500"
+            >{{t "admin.kpi.delivery_rate"}}</span
+          >
+          <span class="dot dot-success"></span>
+        </div>
+        <div class="font-display mt-3 text-4xl text-white" id="kpi-rate">–</div>
+        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-rate-sub">—</div>
+      </div>
+    </section>
+
+    <!-- ===== Tab 切换 ===== -->
+    <div
+      class="flex flex-wrap gap-2 border-b border-white/[0.06]"
+      role="tablist"
+    >
+      <button class="admin-tab active" data-tab="users" role="tab">
+        {{t "admin.tab.users"}}
+      </button>
+      <button class="admin-tab" data-tab="messages" role="tab">
+        {{t "admin.tab.messages"}}
+      </button>
+      <button class="admin-tab" data-tab="sessions" role="tab">
+        {{t "admin.tab.sessions"}}
+      </button>
+    </div>
+
+    <!-- ===== 用户管理 ===== -->
+    <section id="tab-users" class="admin-panel">
+      <div class="card overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr
+                class="border-b border-white/[0.06] text-left text-xs text-zinc-500"
+              >
+                <th class="px-4 py-3 font-medium">{{t "admin.users.user"}}</th>
+                <th class="px-4 py-3 font-medium">{{t "admin.users.role"}}</th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.users.status"}}
+                </th>
+                <th class="px-4 py-3 font-medium text-right">
+                  {{t "admin.users.messages"}}
+                </th>
+                <th class="px-4 py-3 font-medium text-right">
+                  {{t "admin.users.devices"}}
+                </th>
+                <th class="px-4 py-3 font-medium text-right">
+                  {{t "admin.users.keys"}}
+                </th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.users.created"}}
+                </th>
+                <th class="px-4 py-3 font-medium text-right">
+                  {{t "admin.users.actions"}}
+                </th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 全局消息流 ===== -->
+    <section id="tab-messages" class="admin-panel hidden">
+      <div class="card overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr
+                class="border-b border-white/[0.06] text-left text-xs text-zinc-500"
+              >
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.messages.title"}}
+                </th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.messages.user"}}
+                </th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.messages.status"}}
+                </th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.messages.time"}}
+                </th>
+              </tr>
+            </thead>
+            <tbody id="messages-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 活跃会话 ===== -->
+    <section id="tab-sessions" class="admin-panel hidden">
+      <div class="card overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr
+                class="border-b border-white/[0.06] text-left text-xs text-zinc-500"
+              >
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.sessions.user"}}
+                </th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.sessions.device"}}
+                </th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.sessions.last_seen"}}
+                </th>
+                <th class="px-4 py-3 font-medium">
+                  {{t "admin.sessions.expires"}}
+                </th>
+              </tr>
+            </thead>
+            <tbody id="sessions-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Top 活跃用户 ===== -->
+    <section id="admin-top-users" class="hidden">
+      <h3 class="mb-3 font-display text-lg text-white">
+        {{t "admin.top_users"}}
+      </h3>
+      <div
+        id="top-users-list"
+        class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+      ></div>
+    </section>
+  </div>
+</div>
+
+<!-- 操作确认弹层 -->
+<div
+  id="confirm-modal"
+  class="fixed inset-0 z-[70] hidden items-center justify-center bg-black/60 p-4"
+>
+  <div class="card max-w-md p-6">
+    <h3 class="font-display text-lg text-white" id="confirm-title">
+      {{t "admin.confirm.title"}}
+    </h3>
+    <p class="mt-2 text-sm text-zinc-400" id="confirm-body"></p>
+    <div class="mt-5 flex justify-end gap-3">
+      <button
+        class="btn-ghost rounded-lg px-4 py-2 text-sm"
+        id="confirm-cancel"
+      >
+        {{t "admin.confirm.cancel"}}
+      </button>
+      <button class="btn-primary rounded-lg px-4 py-2 text-sm" id="confirm-ok">
+        {{t "admin.confirm.ok"}}
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div
+  id="anotify-toast-host"
+  class="fixed bottom-5 right-5 z-[80] space-y-2"
+></div>
+{{end}} {{define "script"}}
+<style>
+  .admin-tab {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+  .admin-tab.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+</style>
+<script>
+  (() => {
+    Anotify.mountLayout({
+      active: "admin",
+      title: Anotify.t("admin.title", "管理后台"),
+      subtitle: Anotify.t("admin.subtitle", "系统总览与用户管理"),
+    });
+
+    const { api, t, el } = Anotify;
+    const fmtNum = (n) => (n == null ? "–" : Number(n).toLocaleString());
+
+    function fmtTime(unix) {
+      if (!unix) return "—";
+      return Anotify.timeAgo(new Date(unix * 1000));
+    }
+
+    function statusBadgeEl(status) {
+      const map = {
+        success: "status-success",
+        error: "status-error",
+        interrupted: "status-warn",
+        info: "status-info",
+        warning: "status-warn",
+      };
+      const span = el("span", {
+        class: `status-badge ${map[status] || "status-info"}`,
+      });
+      span.textContent = status;
+      return span;
+    }
+
+    function roleBadgeEl(role) {
+      const cls = role === "admin" ? "status-success" : "status-info";
+      const span = el("span", { class: `status-badge ${cls}` });
+      span.textContent = role;
+      return span;
+    }
+
+    function emptyRow(colspan, msg) {
+      const tr = el("tr");
+      const td = el(
+        "td",
+        { colspan, class: "px-4 py-8 text-center text-zinc-500" },
+        msg,
+      );
+      tr.append(td);
+      return tr;
+    }
+
+    function errRow(colspan, msg) {
+      const tr = el("tr");
+      const td = el(
+        "td",
+        { colspan, class: "px-4 py-8 text-center text-red-400" },
+        msg,
+      );
+      tr.append(td);
+      return tr;
+    }
+
+    function toast(msg, kind) {
+      Anotify.toast(msg, kind === "error" ? "error" : "info");
+    }
+
+    /* ================= 系统总览 ================= */
+    async function loadStats() {
+      try {
+        const s = await api("/v1/admin/stats");
+        document.getElementById("kpi-users").textContent = fmtNum(s.userCount);
+        document.getElementById("kpi-users-sub").textContent =
+          t("admin.kpi.users_sub", "{n} 超管").replace("{n}", s.adminCount) +
+          " · " +
+          t("admin.kpi.active", "{n} 7天活跃").replace(
+            "{n}",
+            s.activeUserCount,
+          );
+        document.getElementById("kpi-messages").textContent = fmtNum(
+          s.messageCount,
+        );
+        document.getElementById("kpi-messages-sub").textContent = t(
+          "admin.kpi.today",
+          "今日 {n}",
+        ).replace("{n}", s.todayMessages);
+        document.getElementById("kpi-devices").textContent = fmtNum(
+          s.deviceCount,
+        );
+        document.getElementById("kpi-devices-sub").textContent =
+          t("admin.kpi.enabled", "{n} 启用").replace("{n}", s.enabledDevices) +
+          " · " +
+          t("admin.kpi.keys", "{n} Keys").replace("{n}", s.keyCount);
+        const rate =
+          s.deliveryTotal > 0
+            ? Math.round((s.deliveredCount / s.deliveryTotal) * 100)
+            : 0;
+        document.getElementById("kpi-rate").textContent = rate + "%";
+        document.getElementById("kpi-rate-sub").textContent =
+          fmtNum(s.deliveredCount) + " / " + fmtNum(s.deliveryTotal);
+
+        /* Top 用户 */
+        if (s.topUsers && s.topUsers.length) {
+          const sec = document.getElementById("admin-top-users");
+          const list = document.getElementById("top-users-list");
+          sec.classList.remove("hidden");
+          list.replaceChildren(
+            ...s.topUsers.map((u) => {
+              const name = u.displayName || u.username || "—";
+              return el(
+                "div",
+                { class: "card p-4" },
+                el("div", {
+                  class: "truncate text-sm text-zinc-200",
+                  text: name,
+                }),
+                el(
+                  "div",
+                  { class: "mt-2 flex items-baseline gap-3" },
+                  el("span", {
+                    class: "font-display text-2xl text-white",
+                    text: fmtNum(u.messageCount),
+                  }),
+                  el("span", {
+                    class: "text-xs text-zinc-500",
+                    text: t("admin.top.messages", "消息"),
+                  }),
+                ),
+                el("div", {
+                  class: "mt-1 text-[11px] text-zinc-500",
+                  text: t("admin.top.devices", "{n} 设备").replace(
+                    "{n}",
+                    u.deviceCount,
+                  ),
+                }),
+              );
+            }),
+          );
+        }
+      } catch (e) {
+        toast(t("admin.error.load_stats", "加载统计失败"), "error");
+      }
+    }
+
+    /* ================= 用户管理 ================= */
+    let currentUserId = "";
+
+    async function loadUsers() {
+      const tbody = document.getElementById("users-tbody");
+      tbody.replaceChildren(emptyRow(8, t("admin.loading", "加载中…")));
+      try {
+        const data = await api("/v1/admin/users");
+        const users = data.users || [];
+        if (!users.length) {
+          tbody.replaceChildren(
+            emptyRow(8, t("admin.users.empty", "暂无用户")),
+          );
+          return;
+        }
+        tbody.replaceChildren(...users.map((u) => buildUserRow(u)));
+        tbody.querySelectorAll(".admin-act").forEach((btn) => {
+          btn.addEventListener("click", () => handleUserAction(btn));
+        });
+      } catch (e) {
+        tbody.replaceChildren(
+          errRow(8, t("admin.error.load_users", "加载用户失败")),
+        );
+      }
+    }
+
+    function buildUserRow(u) {
+      const name = u.displayName || u.username;
+      const isSelf = u.id === currentUserId;
+
+      const roleCell = el("td", { class: "px-4 py-3" }, roleBadgeEl(u.role));
+
+      const statusSpan = el("span", {
+        class: u.disabled
+          ? "status-badge status-error"
+          : "status-badge status-success",
+        text: u.disabled
+          ? t("admin.users.disabled", "已禁用")
+          : t("admin.users.active", "正常"),
+      });
+      const statusCell = el("td", { class: "px-4 py-3" }, statusSpan);
+
+      const actionsCell = el("td", {
+        class: "px-4 py-3 text-right whitespace-nowrap",
+      });
+      if (isSelf) {
+        actionsCell.append(
+          el("span", {
+            class: "text-[11px] text-zinc-600",
+            text: t("admin.users.you", "你"),
+          }),
+        );
+      } else {
+        const roleBtn = el("button", {
+          class: "admin-act text-xs text-zinc-400 hover:text-white",
+          "data-action": u.role === "admin" ? "demote" : "promote",
+          "data-id": u.id,
+          "data-name": name,
+          text:
+            u.role === "admin"
+              ? t("admin.users.demote", "降为成员")
+              : t("admin.users.promote", "提为超管"),
+        });
+        const disableBtn = el("button", {
+          class: u.disabled
+            ? "admin-act text-xs text-emerald-400 hover:text-emerald-300"
+            : "admin-act text-xs text-red-400 hover:text-red-300",
+          "data-action": u.disabled ? "enable" : "disable",
+          "data-id": u.id,
+          "data-name": name,
+          text: u.disabled
+            ? t("admin.users.enable", "启用")
+            : t("admin.users.disable", "禁用"),
+        });
+        actionsCell.append(
+          roleBtn,
+          el("span", { class: "mx-2 text-zinc-700", text: "·" }),
+          disableBtn,
+        );
+      }
+
+      const nameCell = el(
+        "td",
+        { class: "px-4 py-3" },
+        el("div", { class: "text-zinc-200", text: u.username }),
+      );
+      if (u.displayName) {
+        nameCell.append(
+          el("div", {
+            class: "text-[11px] text-zinc-500",
+            text: u.displayName,
+          }),
+        );
+      }
+
+      return el(
+        "tr",
+        { class: "border-b border-white/[0.04] hover:bg-white/[0.02]" },
+        nameCell,
+        roleCell,
+        statusCell,
+        el("td", {
+          class: "px-4 py-3 text-right text-zinc-300",
+          text: fmtNum(u.messageCount),
+        }),
+        el("td", {
+          class: "px-4 py-3 text-right text-zinc-300",
+          text: fmtNum(u.deviceCount),
+        }),
+        el("td", {
+          class: "px-4 py-3 text-right text-zinc-300",
+          text: fmtNum(u.keyCount),
+        }),
+        el("td", {
+          class: "px-4 py-3 text-zinc-400",
+          text: fmtTime(u.createdAt),
+        }),
+        actionsCell,
+      );
+    }
+
+    /* ================= 用户操作（提权/降权/禁用/启用）================= */
+    async function handleUserAction(btn) {
+      const action = btn.dataset.action;
+      const id = btn.dataset.id;
+      const name = btn.dataset.name;
+      const messages = {
+        promote: {
+          title: t("admin.confirm.promote_title", "提为超管"),
+          body: t(
+            "admin.confirm.promote_body",
+            "确认将 {name} 提升为超级管理员？",
+          ).replace("{name}", name),
+        },
+        demote: {
+          title: t("admin.confirm.demote_title", "降为成员"),
+          body: t(
+            "admin.confirm.demote_body",
+            "确认将 {name} 降为普通成员？",
+          ).replace("{name}", name),
+        },
+        disable: {
+          title: t("admin.confirm.disable_title", "禁用用户"),
+          body: t(
+            "admin.confirm.disable_body",
+            "确认禁用 {name}？该用户将立即无法登录。",
+          ).replace("{name}", name),
+        },
+        enable: {
+          title: t("admin.confirm.enable_title", "启用用户"),
+          body: t("admin.confirm.enable_body", "确认启用 {name}？").replace(
+            "{name}",
+            name,
+          ),
+        },
+      };
+      const m = messages[action];
+      if (!m) return;
+      const ok = await showConfirm(m.title, m.body);
+      if (!ok) return;
+      try {
+        let res;
+        if (action === "promote" || action === "demote") {
+          res = await fetch(`/v1/admin/users/${encodeURIComponent(id)}/role`, {
+            method: "PATCH",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              role: action === "promote" ? "admin" : "member",
+            }),
+          });
+        } else {
+          res = await fetch(
+            `/v1/admin/users/${encodeURIComponent(id)}/${action}`,
+            {
+              method: "POST",
+              credentials: "include",
+            },
+          );
+        }
+        if (res.ok) {
+          toast(t("admin.success", "操作成功"));
+          loadUsers();
+          loadStats();
+        } else {
+          const data = await res.json().catch(() => ({}));
+          toast(data.error || t("admin.error.action", "操作失败"), "error");
+        }
+      } catch (e) {
+        toast(t("admin.error.network", "网络错误"), "error");
+      }
+    }
+
+    /* ================= 确认弹层 ================= */
+    function showConfirm(title, body) {
+      return new Promise((resolve) => {
+        const modal = document.getElementById("confirm-modal");
+        document.getElementById("confirm-title").textContent = title;
+        document.getElementById("confirm-body").textContent = body || "";
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+        const ok = document.getElementById("confirm-ok");
+        const cancel = document.getElementById("confirm-cancel");
+        const cleanup = () => {
+          modal.classList.add("hidden");
+          modal.classList.remove("flex");
+          ok.onclick = null;
+          cancel.onclick = null;
+        };
+        ok.onclick = () => {
+          cleanup();
+          resolve(true);
+        };
+        cancel.onclick = () => {
+          cleanup();
+          resolve(false);
+        };
+      });
+    }
+
+    /* ================= 全局消息流 ================= */
+    async function loadMessages() {
+      const tbody = document.getElementById("messages-tbody");
+      tbody.replaceChildren(emptyRow(4, t("admin.loading", "加载中…")));
+      try {
+        const data = await api("/v1/admin/messages?limit=100");
+        const msgs = data.messages || [];
+        if (!msgs.length) {
+          tbody.replaceChildren(
+            emptyRow(4, t("admin.messages.empty", "暂无消息")),
+          );
+          return;
+        }
+        tbody.replaceChildren(
+          ...msgs.map((m) =>
+            el(
+              "tr",
+              { class: "border-b border-white/[0.04] hover:bg-white/[0.02]" },
+              el("td", { class: "px-4 py-3 text-zinc-200", text: m.title }),
+              el("td", {
+                class: "px-4 py-3 text-zinc-400",
+                text: m.username || "—",
+              }),
+              el("td", { class: "px-4 py-3" }, statusBadgeEl(m.status)),
+              el("td", {
+                class: "px-4 py-3 text-zinc-400",
+                text: fmtTime(m.createdAt),
+              }),
+            ),
+          ),
+        );
+      } catch (e) {
+        tbody.replaceChildren(
+          errRow(4, t("admin.error.load_messages", "加载消息失败")),
+        );
+      }
+    }
+
+    /* ================= 活跃会话 ================= */
+    async function loadSessions() {
+      const tbody = document.getElementById("sessions-tbody");
+      tbody.replaceChildren(emptyRow(4, t("admin.loading", "加载中…")));
+      try {
+        const data = await api("/v1/admin/sessions");
+        const sessions = data.sessions || [];
+        if (!sessions.length) {
+          tbody.replaceChildren(
+            emptyRow(4, t("admin.sessions.empty", "暂无活跃会话")),
+          );
+          return;
+        }
+        tbody.replaceChildren(
+          ...sessions.map((s) =>
+            el(
+              "tr",
+              { class: "border-b border-white/[0.04] hover:bg-white/[0.02]" },
+              el("td", {
+                class: "px-4 py-3 text-zinc-200",
+                text: s.username || "—",
+              }),
+              el("td", {
+                class: "px-4 py-3 text-zinc-400",
+                text: s.deviceName || "—",
+              }),
+              el("td", {
+                class: "px-4 py-3 text-zinc-400",
+                text: fmtTime(s.lastSeen),
+              }),
+              el("td", {
+                class: "px-4 py-3 text-zinc-400",
+                text: fmtTime(s.expiresAt),
+              }),
+            ),
+          ),
+        );
+      } catch (e) {
+        tbody.replaceChildren(
+          errRow(4, t("admin.error.load_sessions", "加载会话失败")),
+        );
+      }
+    }
+
+    /* ================= Tab 切换 ================= */
+    document.querySelectorAll(".admin-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document
+          .querySelectorAll(".admin-tab")
+          .forEach((x) => x.classList.remove("active"));
+        tab.classList.add("active");
+        document
+          .querySelectorAll(".admin-panel")
+          .forEach((p) => p.classList.add("hidden"));
+        const target = document.getElementById("tab-" + tab.dataset.tab);
+        if (target) target.classList.remove("hidden");
+      });
+    });
+
+    /* ================= 启动：先取当前用户 ID（标记自己），再并行加载 ================= */
+    (async () => {
+      try {
+        const me = await api("/v1/auth/me");
+        currentUserId = me.id;
+        if (me.role === "admin") {
+          document.getElementById("admin-role-badge").textContent = me.role;
+        }
+      } catch {
+        /* 401 会自动跳登录 */
+      }
+      loadStats();
+      loadUsers();
+      loadMessages();
+      loadSessions();
+    })();
+  })();
+</script>
+{{end}}

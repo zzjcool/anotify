@@ -15,6 +15,8 @@ common:
     logout: 退出登录
     menu: 菜单
     notification: 通知
+    admin_section: 管理
+    admin: 管理后台
   lang:
     label: 语言
     switcher_label: 切换语言
@@ -798,3 +800,76 @@ passkeyenroll:
     error_desc: "多次请求失败，可能是网络中断或服务器未运行。请检查网络连接后重试。"
     no_webauthn_desc: "当前浏览器或环境不支持 Passkey（需 HTTPS + 现代浏览器）。请换用最新版 Chrome / Safari。"
     consumed_desc: "该会话已完成，不能重复使用。如需再次添加请重新发起。"
+
+# ===== 管理后台 =====
+admin:
+  title: 管理后台
+  subtitle: 系统总览与用户管理
+  loading: 加载中…
+  top_users: Top 活跃用户
+  success: 操作成功
+  kpi:
+    users: 用户总数
+    users_sub: "{n} 超管"
+    active: "{n} 7天活跃"
+    messages: 消息总数
+    today: "今日 {n}"
+    devices: 接收设备
+    enabled: "{n} 启用"
+    keys: "{n} Keys"
+    delivery_rate: 投递成功率
+  tab:
+    users: 用户管理
+    messages: 全局消息
+    sessions: 活跃会话
+  users:
+    user: 用户
+    role: 角色
+    status: 状态
+    messages: 消息
+    devices: 设备
+    keys: Keys
+    created: 注册时间
+    actions: 操作
+    active: 正常
+    disabled: 已禁用
+    you: 你
+    promote: 提为超管
+    demote: 降为成员
+    enable: 启用
+    disable: 禁用
+    empty: 暂无用户
+  messages:
+    title: 标题
+    user: 用户
+    status: 状态
+    time: 时间
+    empty: 暂无消息
+  sessions:
+    user: 用户
+    device: 设备
+    last_seen: 最近活跃
+    expires: 过期时间
+    empty: 暂无活跃会话
+  top:
+    messages: 消息
+    devices: "{n} 设备"
+  confirm:
+    title: 确认操作
+    cancel: 取消
+    ok: 确认
+    promote_title: 提为超管
+    promote_body: "确认将 {name} 提升为超级管理员？"
+    demote_title: 降为成员
+    demote_body: "确认将 {name} 降为普通成员？"
+    disable_title: 禁用用户
+    disable_body: "确认禁用 {name}？该用户将立即无法登录。"
+    enable_title: 启用用户
+    enable_body: "确认启用 {name}？"
+  error:
+    load_stats: 加载统计失败
+    load_users: 加载用户失败
+    load_messages: 加载消息失败
+    load_sessions: 加载会话失败
+    action: 操作失败
+    network: 网络错误

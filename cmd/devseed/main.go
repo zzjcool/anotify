@@ -21,6 +21,7 @@ import (
 func main() {
 	dbPath := flag.String("db", "./anotify.db", "SQLite 路径")
 	username := flag.String("username", "demo", "用户名")
+	admin := flag.Bool("admin", false, "设为超管角色")
 	flag.Parse()
 
 	db, err := store.Open(*dbPath)
@@ -29,16 +30,27 @@ func main() {
 	}
 	ctx := context.Background()
 
-	// 幂等：用户名已存在则复用
+	// 幂等：用户名已存在则复用（并按 -admin 提权）
 	var uid string
 	if u, err := db.GetUserByUsername(*username); err == nil && u != nil {
 		uid = u.ID
 		log.Printf("用户 %s 已存在: %s", *username, uid)
+		if *admin && u.Role != store.RoleAdmin {
+			if _, err := db.UpdateUserRole(ctx, uid, store.RoleAdmin); err != nil {
+				log.Fatal(err)
+			}
+			log.Printf("用户 %s 已提权为 admin", *username)
+		}
 	} else {
-		uid, err = db.InsertUser(ctx, "", *username, *username)
-		if err != nil {
+		role := store.RoleMember
+		if *admin {
+			role = store.RoleAdmin
+		}
+		u := &store.User{ID: store.NewUserID(), Username: *username, DisplayName: *username, Role: role, CreatedAt: store.Now()}
+		if err := db.CreateUser(u); err != nil {
 			log.Fatal(err)
 		}
+		uid = u.ID
 	}
 
 	km := auth.NewKeyManager(db)
@@ -61,4 +73,7 @@ func main() {
 	fmt.Printf("SEND_KEY=%s\n", sendPlain)
 	fmt.Printf("RECV_KEY=%s\n", recvPlain)
 	fmt.Printf("SESSION=%s\n", sess.ID)
+	if u, err := db.GetUserByID(uid); err == nil {
+		fmt.Printf("ROLE=%s\n", u.Role)
+	}
 }

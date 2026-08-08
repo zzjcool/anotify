@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -204,8 +205,23 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 	if errors.Is(err, store.ErrNotFound) {
 		user = tmp
 		user.CreatedAt = store.Now()
+		// 首个注册的用户自动成为超级管理员：建用户前查 count，为 0 则 role=admin。
+		// 注意：SQLite 单写（SetMaxOpenConns(1)）使该查询与随后的 INSERT 串行化，
+		// 不会出现两个并发注册都看到 count=0 的情况。
+		if n, cerr := s.db.UserCount(r.Context()); cerr == nil && n == 0 {
+			user.Role = store.RoleAdmin
+		} else if cerr != nil {
+			return "", fmt.Errorf("auth: 首用户判定失败: %w", cerr)
+		}
 		if err := s.db.CreateUser(user); err != nil {
 			return "", err
+		}
+		if user.Role == store.RoleAdmin {
+			slog.Info("first user promoted to admin",
+				"event", "auth.register.first_admin",
+				"user_id", user.ID,
+				"username", user.Username,
+			)
 		}
 	} else if err != nil {
 		return "", err
@@ -283,6 +299,9 @@ func (s *Service) BeginLogin(username string) (*protocol.CredentialAssertion, er
 	user, err := s.db.GetUserByUsername(username)
 	if err != nil {
 		return nil, errors.New("auth: 用户不存在")
+	}
+	if user.Disabled {
+		return nil, errors.New("auth: 账户已被禁用")
 	}
 	waUser, err := s.loadWebAuthnUser(user)
 	if err != nil {

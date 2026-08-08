@@ -802,6 +802,199 @@ paths:
         "401":
           $ref: "#/components/responses/Error"
 
+  # ===== 管理后台（需登录会话 + 超管权限） =====
+  /admin/stats:
+    get:
+      tags: [admin]
+      summary: 系统总览统计（超管）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 系统级总览统计
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStats"
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /admin/users:
+    get:
+      tags: [admin]
+      summary: 用户列表（含各用户实体计数，超管）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 用户列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminUser" }
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /admin/users/{id}:
+    get:
+      tags: [admin]
+      summary: 单用户详情（超管）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 用户详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUser" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [admin]
+      summary: 改用户角色/禁用状态（超管，不能改自己）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [admin, member] }
+                disabled: { type: boolean }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { ok: { type: boolean } }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /admin/users/{id}/role:
+    patch:
+      tags: [admin]
+      summary: 改用户角色（超管，不能改自己，不能降权最后一个 admin）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [admin, member] }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { ok: { type: boolean } }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /admin/users/{id}/disable:
+    post:
+      tags: [admin]
+      summary: 禁用用户（超管，不能禁自己，不能禁最后一个 admin）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { ok: { type: boolean } }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /admin/users/{id}/enable:
+    post:
+      tags: [admin]
+      summary: 启用用户（超管）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { ok: { type: boolean } }
+
+  /admin/messages:
+    get:
+      tags: [admin]
+      summary: 全局消息流（跨用户，超管）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 500 }
+      responses:
+        "200":
+          description: 全局消息列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminGlobalMessage" }
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /admin/sessions:
+    get:
+      tags: [admin]
+      summary: 全站活跃会话总览（超管）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 活跃会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminSessionRow" }
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: APIKey }
@@ -840,6 +1033,74 @@ components:
           { type: array, items: { type: string }, description: 路由键；空=广播 }
         priority: { type: string, default: normal }
         ttl: { type: integer, default: 86400 }
+    SystemStats:
+      type: object
+      description: 管理后台系统总览统计
+      properties:
+        userCount: { type: integer }
+        adminCount: { type: integer }
+        activeUserCount:
+          { type: integer, description: 近 7 天有消息上报的用户数 }
+        messageCount: { type: integer }
+        todayMessages: { type: integer }
+        deviceCount: { type: integer }
+        enabledDevices: { type: integer }
+        keyCount: { type: integer }
+        sessionCount: { type: integer, description: 活跃会话数 }
+        deliveredCount: { type: integer }
+        deliveryTotal: { type: integer }
+        daily:
+          type: array
+          items:
+            type: object
+            properties:
+              day: { type: string }
+              count: { type: integer }
+        topUsers:
+          type: array
+          items: { $ref: "#/components/schemas/UserMetric" }
+    UserMetric:
+      type: object
+      properties:
+        userId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        messageCount: { type: integer }
+        deviceCount: { type: integer }
+    AdminUser:
+      type: object
+      description: 管理后台用户视图（含各用户实体计数）
+      properties:
+        id: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [admin, member] }
+        disabled: { type: boolean }
+        createdAt: { type: integer }
+        messageCount: { type: integer }
+        deviceCount: { type: integer }
+        keyCount: { type: integer }
+        sessionCount: { type: integer }
+    AdminGlobalMessage:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        username: { type: string }
+        seq: { type: integer }
+        title: { type: string }
+        status: { type: string }
+        createdAt: { type: integer }
+    AdminSessionRow:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        username: { type: string }
+        deviceName: { type: string }
+        createdAt: { type: integer }
+        expiresAt: { type: integer }
+        lastSeen: { type: integer }
   responses:
     Error:
       description: 错误

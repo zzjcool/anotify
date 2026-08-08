@@ -142,6 +142,17 @@ func (m *SessionManager) Middleware(next http.Handler) http.Handler {
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusUnauthorized)
 			return
 		}
+		// 校验用户是否被禁用（超管后台禁用某用户后立即生效，所有端点拒绝）。
+		if u, err := m.db.GetUserByID(sess.UserID); err == nil && u.Disabled {
+			slog.Warn("session user disabled",
+				"event", "auth.session.disabled",
+				"user_id", sess.UserID,
+				"path", r.URL.Path,
+			)
+			m.ClearCookie(w)
+			http.Error(w, `{"error":"账户已被禁用"}`, http.StatusUnauthorized)
+			return
+		}
 		// 异步刷新活跃时间（忽略错误）。
 		_ = m.db.TouchSession(sess.ID, time.Now().Unix())
 		next.ServeHTTP(w, r.WithContext(withUserID(r.Context(), sess.UserID)))

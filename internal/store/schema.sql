@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
     id          TEXT PRIMARY KEY,            -- usr_xxx (KSUID)
     username    TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL DEFAULT '',
+    role        TEXT NOT NULL DEFAULT 'member',  -- admin | member（首个注册用户自动 admin）
+    disabled    INTEGER NOT NULL DEFAULT 0,      -- 超管禁用某用户（1=禁用，禁止登录）
     created_at  INTEGER NOT NULL             -- unixepoch 秒
 );
 
@@ -133,3 +135,4 @@ CREATE        INDEX IF NOT EXISTS idx_devices_user          ON devices(user_id);
 CREATE        INDEX IF NOT EXISTS idx_sessions_user         ON sessions(user_id);
 CREATE        INDEX IF NOT EXISTS idx_apikeys_user          ON api_keys(user_id);
 CREATE        INDEX IF NOT EXISTS idx_cli_auth_expires      ON cli_auth_sessions(expires_at);
+-- idx_users_role 在 store.migrateColumns 中创建（老库 users.role 列经 ALTER 补上后才能建索引）
