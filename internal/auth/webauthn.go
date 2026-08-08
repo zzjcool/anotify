@@ -298,7 +298,10 @@ func (s *Service) FinishAddCredential(userID, name string, r *http.Request) erro
 func (s *Service) BeginLogin(username string) (*protocol.CredentialAssertion, error) {
 	user, err := s.db.GetUserByUsername(username)
 	if err != nil {
-		return nil, errors.New("auth: 用户不存在")
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errors.New("auth: 用户不存在")
+		}
+		return nil, fmt.Errorf("auth: 登录失败，请稍后重试: %w", err)
 	}
 	if user.Disabled {
 		return nil, errors.New("auth: 账户已被禁用")
@@ -319,7 +322,10 @@ func (s *Service) BeginLogin(username string) (*protocol.CredentialAssertion, er
 func (s *Service) FinishLogin(username string, r *http.Request) (sessionID string, err error) {
 	user, err := s.db.GetUserByUsername(username)
 	if err != nil {
-		return "", errors.New("auth: 用户不存在")
+		if errors.Is(err, store.ErrNotFound) {
+			return "", errors.New("auth: 用户不存在")
+		}
+		return "", fmt.Errorf("auth: 登录失败，请稍后重试: %w", err)
 	}
 	session, err := s.takeChallenge(loginKey(username))
 	if err != nil {
@@ -352,6 +358,21 @@ func (s *Service) BeginDiscoverableLogin(token string) (*protocol.CredentialAsse
 	return assertion, nil
 }
 
+// lookupUserByHandle 是 FinishDiscoverableLogin 的 userHandle 定位逻辑，
+// 抽出为独立方法以便单测（构造真实 WebAuthn assertion 成本高）。
+// userHandle 失配（=认证器里残留过期/孤儿 Passkey）时打诊断日志并返回中性文案。
+func (s *Service) lookupUserByHandle(userHandle []byte) (webauthn.User, error) {
+	user, err := s.db.GetUserByID(string(userHandle))
+	if err != nil {
+		slog.Warn("discoverable login: stale user handle (orphan passkey)",
+			"event", "auth.login.stale_user_handle",
+			"user_handle_prefix", userHandlePrefix(userHandle),
+		)
+		return nil, errors.New("auth: 该 Passkey 未关联到任何账户，可能已失效，请尝试其他 Passkey 或重新注册")
+	}
+	return s.loadWebAuthnUser(user)
+}
+
 // FinishDiscoverableLogin 完成可发现登录：按 userHandle 定位用户并校验。
 func (s *Service) FinishDiscoverableLogin(token string, r *http.Request) (sessionID string, err error) {
 	session, err := s.takeChallenge(discKey(token))
@@ -359,11 +380,7 @@ func (s *Service) FinishDiscoverableLogin(token string, r *http.Request) (sessio
 		return "", err
 	}
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
-		user, err := s.db.GetUserByID(string(userHandle))
-		if err != nil {
-			return nil, errors.New("auth: 用户不存在")
-		}
-		return s.loadWebAuthnUser(user)
+		return s.lookupUserByHandle(userHandle)
 	}
 	waUser, cred, err := s.wa.FinishPasskeyLogin(handler, session, r)
 	if err != nil {
@@ -518,4 +535,18 @@ func (s *Service) deleteEnrollToken(sessionID string) {
 func sha256Hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
+}
+
+// userHandlePrefix 返回 userHandle 的 hex 前 8 字符，用于诊断日志。
+// 仅含前缀（不含完整 handle、不含 username），避免日志泄露用户标识。
+// 空输入返回空串。
+func userHandlePrefix(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	full := hex.EncodeToString(b)
+	if len(full) <= 8 {
+		return full
+	}
+	return full[:8]
 }
