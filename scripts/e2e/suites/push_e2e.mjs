@@ -13,6 +13,7 @@ import * as H from "../lib/harness.mjs";
 
 let server, ctx;
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: push_e2e（桌面推送 · 真实 FCM）===");
 	if (!process.env.ANOTIFY_VAPID_PUBLIC_KEY) {
 		console.log(
@@ -20,7 +21,7 @@ async function main() {
 		);
 		process.exit(0);
 	}
-	server = await H.startServer({ rpId: "localhost" });
+	server = await H.startServer({ suiteName: "push_e2e", rpId: "localhost" });
 	const { session, sendKey } = H.seed(server.dbPath, "push_e2e");
 
 	ctx = await chromium.launchPersistentContext(
@@ -125,9 +126,28 @@ async function main() {
 		`matched=${nr.json?.matched}`,
 	);
 
-	// 等 push dispatcher 异步发送（真实 FCM 投递结果写入 deliveries，由 Go 单测覆盖细节）
-	await new Promise((r) => setTimeout(r, 3000));
-	H.ok("push dispatcher 已异步处理（deliveries 落库细节见 Go 单测）");
+	// 等 push dispatcher 异步发送：轮询 /v1/notifications/{id} 直到 deliveries 非空
+	// （上限 10s，间隔 500ms；超时仍空也接受，deliveries 落库细节由 Go 单测覆盖）
+	const notifyId = nr.json?.id || "";
+	if (notifyId) {
+		const pollDeadline = Date.now() + 10000;
+		let deliveriesReady = false;
+		while (Date.now() < pollDeadline) {
+			const nd = await H.req(server.base, "/v1/notifications/" + notifyId, { session });
+			if (nd.status === 200 && Array.isArray(nd.json?.deliveries) && nd.json.deliveries.length > 0) {
+				deliveriesReady = true;
+				break;
+			}
+			await new Promise((r) => setTimeout(r, 500));
+		}
+		if (deliveriesReady) {
+			H.ok("push dispatcher deliveries 已落库");
+		} else {
+			H.ok("push dispatcher 已异步处理（deliveries 未在 10s 内落库，Go 单测覆盖细节）");
+		}
+	} else {
+		H.ok("push dispatcher 已异步处理（deliveries 落库细节见 Go 单测）");
+	}
 
 	await finish(true);
 

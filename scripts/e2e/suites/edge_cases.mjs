@@ -22,7 +22,7 @@ async function notify(body, key = sendKey) {
 
 async function main() {
 	console.log("=== SUITE: edge_cases（边界/并发/Unicode）===");
-	server = await H.startServer({ rpId: "localhost" });
+	server = await H.startServer({ suiteName: "edge_cases", rpId: "localhost" });
 	const s = H.seed(server.dbPath, "edge");
 	sendKey = s.sendKey;
 	session = s.session;

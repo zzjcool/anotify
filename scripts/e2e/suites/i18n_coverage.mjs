@@ -71,13 +71,16 @@ async function injectSession(ctx, sessionValue, base) {
 	]);
 }
 
-/* Open a page, wait for render, return the page handle + collected errors */
-async function openPage(ctx, url) {
+/* Open a page, wait for render, return the page handle + collected errors.
+ * pageType: "workspace" | "login" | "none" (skip waitForAppReady, page load 已足够) */
+async function openPage(ctx, url, pageType) {
 	const page = await ctx.newPage();
 	const errors = [];
 	page.on("pageerror", (e) => errors.push(String(e)));
 	await page.goto(url, { waitUntil: "load", timeout: 15000 });
-	await page.waitForTimeout(1500); // let JS render + data load
+	if (pageType && pageType !== "none") {
+		await H.waitForAppReady(page, pageType);
+	}
 	return { page, errors };
 }
 
@@ -106,10 +109,11 @@ function findCjk(text) {
 }
 
 async function main() {
+	H.startTimer();
 	console.log(
 		"=== SUITE: i18n_coverage (rendered-DOM Chinese-residue gate) ===",
 	);
-	server = await H.startServer({ rpId: RP });
+	server = await H.startServer({ suiteName: "i18n_coverage", rpId: RP });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
@@ -135,10 +139,11 @@ async function main() {
 	 * ========================================================= */
 	console.log("--- A: en/es demo-mode pages — no CJK residue ---");
 	for (const lang of ["en", "es"]) {
+		const ctx = await browser.newContext();
 		for (const pageName of PAGES) {
-			const ctx = await browser.newContext();
+			const pageType = pageName === "login.html" ? "login" : "none";
 			const path = `/${lang}/${pageName}?demo=1`;
-			const { page, errors } = await openPage(ctx, server.base + path);
+			const { page, errors } = await openPage(ctx, server.base + path, pageType);
 			const text = await getScannedText(page);
 			const cjkLines = findCjk(text);
 			H.check(
@@ -151,8 +156,9 @@ async function main() {
 				errors.length === 0,
 				errors[0]?.slice(0, 100),
 			);
-			await ctx.close();
+			await page.close();
 		}
+		await ctx.close();
 	}
 
 	/* message.html with real ID (demo mode) */
@@ -166,6 +172,7 @@ async function main() {
 		const { page, errors } = await openPage(
 			ctx,
 			server.base + `/${lang}/message.html?id=${realMsgId}&demo=1`,
+			"none",
 		);
 		const text = await getScannedText(page);
 		const cjkLines = findCjk(text);
@@ -179,6 +186,7 @@ async function main() {
 			errors.length === 0,
 			errors[0]?.slice(0, 100),
 		);
+		await page.close();
 		await ctx.close();
 	}
 
@@ -193,12 +201,13 @@ async function main() {
 		"security.html",
 	];
 	for (const lang of ["en", "es"]) {
+		const ctx = await browser.newContext();
+		await injectSession(ctx, seedData.session, server.base);
 		for (const pageName of realPages) {
-			const ctx = await browser.newContext();
-			await injectSession(ctx, seedData.session, server.base);
 			const { page, errors } = await openPage(
 				ctx,
 				server.base + `/${lang}/${pageName}`,
+				"workspace",
 			);
 			const text = await getScannedText(page);
 			const cjkLines = findCjk(text);
@@ -212,8 +221,9 @@ async function main() {
 				errors.length === 0,
 				errors[0]?.slice(0, 100),
 			);
-			await ctx.close();
+			await page.close();
 		}
+		await ctx.close();
 	}
 
 	/* =========================================================
@@ -227,12 +237,13 @@ async function main() {
 		"security.html",
 		"docs.html",
 	];
+	const ctx = await browser.newContext();
+	await injectSession(ctx, seedData.session, server.base);
 	for (const pageName of jaPages) {
-		const ctx = await browser.newContext();
-		await injectSession(ctx, seedData.session, server.base);
 		const { page, errors } = await openPage(
 			ctx,
 			server.base + `/ja/${pageName}`,
+			"workspace",
 		);
 		const text = await getScannedText(page);
 
@@ -257,8 +268,9 @@ async function main() {
 			errors.length === 0,
 			errors[0]?.slice(0, 100),
 		);
-		await ctx.close();
+		await page.close();
 	}
+	await ctx.close();
 
 	/* =========================================================
 	 * D. Interaction text spot-checks
@@ -283,7 +295,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(1500);
+		await H.waitForAppReady(page, "workspace");
 		/* Find a disable button (aria-label or text containing "Disable") */
 		const clicked = await page.evaluate(() => {
 			const btns = [...document.querySelectorAll("button")];
@@ -299,7 +311,7 @@ async function main() {
 			return false;
 		});
 		if (clicked) {
-			await page.waitForTimeout(500);
+			/* confirm() 同步触发，evaluate 返回后 confirmMsg 已赋值 */
 			H.check(
 				"D1 en/keys disable confirm is English",
 				!/[\u4e00-\u9fff]/.test(confirmMsg) && confirmMsg.length > 0,
@@ -326,7 +338,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(1500);
+		await H.waitForAppReady(page, "workspace");
 		const text = await getScannedText(page);
 		/* Japanese device UI should contain at least one of these ja terms */
 		const jaTerms = ["受信中", "一時停止", "追加", "デバイス", "通知"];

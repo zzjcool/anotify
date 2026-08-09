@@ -67,7 +67,7 @@ function expectHits(caseName, { matched, hitIds }, expectIds) {
 
 async function main() {
 	console.log("=== SUITE: routing（投递路由矩阵）===");
-	server = await H.startServer({ rpId: "localhost" });
+	server = await H.startServer({ suiteName: "routing", rpId: "localhost" });
 	const s = H.seed(server.dbPath, "route_user");
 	sendKey = s.sendKey;
 	session = s.session;

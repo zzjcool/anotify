@@ -35,8 +35,9 @@ async function injectSession(ctx, sessionValue, base) {
 }
 
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: deeplink（推送点击 → 消息详情页 message.html）===");
-	server = await H.startServer({ rpId: "localhost" });
+	server = await H.startServer({ suiteName: "deeplink", rpId: "localhost" });
 	const s = H.seed(server.dbPath, "deeplink");
 
 	// 上报一条带全部字段 + link 的消息
@@ -127,7 +128,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(1500);
+		await H.waitForAppReady(page, "workspace", { dataAnchor: "#delivery-count" });
 		const txt = await page.evaluate(() => document.body.innerText);
 
 		H.check("详情页标题", txt.includes("深链验证-构建完成"));
@@ -173,7 +174,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(1500);
+		await H.waitForAppReady(page, "workspace");
 		const txt = await page.evaluate(() => document.body.innerText);
 		H.check("未命中显示「消息不存在」", txt.includes("消息不存在"));
 		H.check(
@@ -197,7 +198,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(2000);
+		await H.waitForAppReady(page, "workspace", { dataAnchor: "#notif-list .notif-row" });
 		// 最新通知置顶：id2（后上报）应在列表第一行
 		const firstRow = await page.evaluate(
 			() => document.querySelector("#notif-list .notif-row")?.innerText || "",
@@ -242,7 +243,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(2000);
+		await page.waitForURL("**/login.html*", { timeout: 8000 });
 		const u = page.url();
 		H.check("未登录点深链 → 跳登录页", u.includes("login.html"), u);
 		let next = "";

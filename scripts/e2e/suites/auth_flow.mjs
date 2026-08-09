@@ -194,8 +194,9 @@ async function webauthnDiscoverableLogin() {
 }
 
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: auth_flow（Passkey 全流程 · 虚拟认证器）===");
-	server = await H.startServer({ rpId: RP });
+	server = await H.startServer({ suiteName: "auth_flow", rpId: RP });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
@@ -354,7 +355,7 @@ async function main() {
 
 	// 12. 前端侧栏真实用户名 + 退出按钮 + 退出跳登录
 	await page.goto(server.base + "/index.html", { waitUntil: "load" });
-	await page.waitForTimeout(1500);
+	await H.waitForAppReady(page, "workspace", { dataAnchor: "#sidebar-username" });
 	const sidebarUser = await page.evaluate(
 		() => document.getElementById("sidebar-username")?.textContent || "",
 	);
@@ -366,7 +367,7 @@ async function main() {
 	await page.evaluate(() =>
 		document.querySelector('a[href="#logout"]')?.click(),
 	);
-	await page.waitForTimeout(800);
+	await page.waitForURL("**/login.html*", { timeout: 8000 });
 	H.check("点击退出后跳登录页", page.url().includes("login.html"), page.url());
 
 	// 13. 已知盲区记录（非断言）：虚拟认证器 BackupEligible 默认 false，无法覆盖

@@ -65,16 +65,18 @@ async function openWithLocale(browser, base, path, locale) {
 	const errors = [];
 	pg.on("pageerror", (e) => errors.push(String(e)));
 	await pg.goto(base + path, { waitUntil: "load" });
-	/* Give the banner a moment to mount (rAF animation) */
-	await pg.waitForTimeout(300);
+	/* Wait for JS mount (including mountLangHint) to complete */
+	const pageType = /login\.html/.test(path) ? "login" : "workspace";
+	await H.waitForAppReady(pg, pageType);
 	return { ctx, pg, errors };
 }
 
 let server, browser;
 
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: lang_hint (language hint banner) ===");
-	server = await H.startServer({ rpId: RP });
+	server = await H.startServer({ suiteName: "lang_hint", rpId: RP });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
@@ -529,8 +531,8 @@ async function main() {
 			H.check("AC-6.1 close button exists", !!closeBtn, "no close button");
 			if (closeBtn) {
 				await closeBtn.click();
-				/* Wait for close animation + removal */
-				await pg.waitForTimeout(350);
+				/* Wait for close animation + DOM removal */
+				await pg.waitForSelector(".lang-hint", { state: "detached", timeout: 5000 }).catch(() => {});
 				banner = await getBanner(pg);
 				H.check(
 					"AC-6.1 banner gone after close",
@@ -553,11 +555,11 @@ async function main() {
 		const closeBtn = await pg.$(".lang-hint-close");
 		if (closeBtn) {
 			await closeBtn.click();
-			await pg.waitForTimeout(350);
+			await pg.waitForSelector(".lang-hint", { state: "detached", timeout: 5000 }).catch(() => {});
 		}
 		/* Reload */
 		await pg.reload({ waitUntil: "load" });
-		await pg.waitForTimeout(300);
+		await H.waitForAppReady(pg, "login");
 		const banner = await getBanner(pg);
 		H.check(
 			"AC-6.2 banner reappears after refresh (no storage)",
@@ -614,7 +616,7 @@ async function main() {
 		});
 		const pg = await ctx.newPage();
 		await pg.goto(server.base + "/login.html", { waitUntil: "load" });
-		await pg.waitForTimeout(400);
+		await H.waitForAppReady(pg, "login");
 		const overflow = await pg.evaluate(() => {
 			return (
 				document.documentElement.scrollWidth -
@@ -669,7 +671,7 @@ async function main() {
 		]);
 		const pg = await ctx.newPage();
 		await pg.goto(server.base + "/keys.html", { waitUntil: "load" });
-		await pg.waitForTimeout(400);
+		await H.waitForAppReady(pg, "workspace");
 		const banner = await getBanner(pg);
 		H.check(
 			"scope keys.html (en-US browser) → no banner",
@@ -698,7 +700,7 @@ async function main() {
 		]);
 		const pg = await ctx.newPage();
 		await pg.goto(server.base + "/", { waitUntil: "load" });
-		await pg.waitForTimeout(500);
+		await H.waitForAppReady(pg, "workspace");
 		const banner = await getBanner(pg);
 		H.check(
 			"index.html ja-JP browser → banner shown",
@@ -735,7 +737,7 @@ async function main() {
 		});
 		const pg1 = await ctx1.newPage();
 		await pg1.goto(server.base + "/login.html", { waitUntil: "load" });
-		await pg1.waitForTimeout(400);
+		await H.waitForAppReady(pg1, "login");
 		const banner1 = await getBanner(pg1);
 		H.check(
 			"AC-10.1 prefs [zh-CN,zh,en] on /login.html → no banner",
@@ -754,7 +756,7 @@ async function main() {
 		});
 		const pg2 = await ctx2.newPage();
 		await pg2.goto(server.base + "/en/login.html", { waitUntil: "load" });
-		await pg2.waitForTimeout(400);
+		await H.waitForAppReady(pg2, "login");
 		const banner2 = await getBanner(pg2);
 		H.check(
 			"AC-10.2 prefs [zh-CN,zh,en] on /en/login.html → Chinese banner",
@@ -781,7 +783,7 @@ async function main() {
 		});
 		const pg3 = await ctx3.newPage();
 		await pg3.goto(server.base + "/login.html", { waitUntil: "load" });
-		await pg3.waitForTimeout(400);
+		await H.waitForAppReady(pg3, "login");
 		const banner3 = await getBanner(pg3);
 		H.check(
 			"AC-10.3 prefs [fr,ja] on /login.html → Japanese banner (skip unsupported)",

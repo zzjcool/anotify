@@ -80,8 +80,9 @@ async function cookieVal() {
 }
 
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: admin_flow（管理后台 · 首用户自动 admin）===");
-	server = await H.startServer({ rpId: RP });
+	server = await H.startServer({ suiteName: "admin_flow", rpId: RP });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
@@ -383,7 +384,7 @@ async function main() {
 
 	// ---------- 13. 前端：admin.html 渲染 + 侧栏 admin 入口 ----------
 	await page.goto(server.base + "/admin.html", { waitUntil: "load" });
-	await page.waitForTimeout(1500);
+	await H.waitForAppReady(page, "workspace", { dataAnchor: "#kpi-users" });
 	// 注入 admin session cookie（页面已加载，但 401 已跳登录——重新带 cookie 打开）
 	await ctx.addCookies([
 		{
@@ -395,7 +396,7 @@ async function main() {
 		},
 	]);
 	await page.goto(server.base + "/admin.html", { waitUntil: "networkidle" });
-	await page.waitForTimeout(1500);
+	await H.waitForAppReady(page, "workspace", { dataAnchor: "#users-tbody tr" });
 	const pageTitle = await page.title();
 	H.check(
 		"admin.html 标题含「管理后台」",
@@ -445,7 +446,7 @@ async function main() {
 		},
 	]);
 	await page.goto(server.base + "/index.html", { waitUntil: "networkidle" });
-	await page.waitForTimeout(1500);
+	await H.waitForAppReady(page, "workspace");
 	const adminNavForMember = await page
 		.$eval("#admin-nav-section a", (a) => a.textContent)
 		.catch(() => null);

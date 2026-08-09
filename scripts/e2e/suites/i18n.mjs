@@ -87,8 +87,9 @@ function servedPath(lang, page) {
 let server, browser;
 
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: i18n (multi-language internationalization) ===");
-	server = await H.startServer({ rpId: RP });
+	server = await H.startServer({ suiteName: "i18n", rpId: RP });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
@@ -100,8 +101,26 @@ async function main() {
 
 	/* =========================================================
 	 * AC-1.1 / AC-1.3: 4 langs × 7 pages accessible, html lang correct
+	 * AC-1.2: no raw dotted-keys in rendered HTML
+	 * （合并：一次 HTTP fetch 同时做 AC-1.1 + AC-1.3 + AC-1.2）
 	 * ========================================================= */
 	console.log("--- AC-1.1/1.3: page accessibility + html lang ---");
+	console.log("--- AC-1.2: no raw dotted-keys leaked ---");
+	/* Patterns: match known i18n key prefixes as standalone text (not in URLs) */
+	const i18nKeyPatterns = [
+		/\bcommon\.nav\.\w+\b/g,
+		/\bcommon\.lang\.\w+\b/g,
+		/\bcommon\.brand\.\w+\b/g,
+		/\bcommon\.footer\.\w+\b/g,
+		/\bcommon\.sidebar\.\w+\b/g,
+		/\bindex\.(greeting|title|subtitle|loading|demo_badge|heatmap|kpi|quickstart|recent)\w*/g,
+		/\bkeys\.(create|save|security|col|desc|header|my|title|subtitle|view|api)\w*/g,
+		/\blogin\.(login|signup|status|tab|title|subtitle|trust|welcome|ios|recovery)\w*/g,
+		/\breceivers\.(pair|push|ws|channel|demo|tags|title)\w*/g,
+		/\bsecurity\.(add|concept|intro|passkey|recovery|session|title|subtitle)\w*/g,
+		/\bmessage\.(body|deliveries|fields|loading|open|title)\w*/g,
+		/\bdocs\.(title|subtitle|toc)\w*/g,
+	];
 	for (const lang of LANGS) {
 		for (const page of PAGES) {
 			const { path } = servedPath(lang, page);
@@ -118,6 +137,22 @@ async function main() {
 				`AC-1.3 ${lang}/${page} html lang="${expectedLang}"`,
 				m && m[1] === expectedLang,
 				`got "${m?.[1]}"`,
+			);
+			/* AC-1.2: no raw dotted-keys（复用同一个 r.text） */
+			let stripped = r.text.replace(/(href|src)="[^"]*"/g, '$1=""');
+			stripped = stripped.replace(
+				/<script\b[\s\S]*?<\/script>/gi,
+				"",
+			);
+			const leaked = [];
+			for (const re of i18nKeyPatterns) {
+				const matches = stripped.match(re);
+				if (matches) leaked.push(...matches);
+			}
+			H.check(
+				`AC-1.2 ${lang}/${page} no raw dotted-keys`,
+				leaked.length === 0,
+				leaked.slice(0, 3).join(", "),
 			);
 		}
 	}
@@ -162,55 +197,6 @@ async function main() {
 						}
 					})(),
 				m ? "parse failed" : "no match",
-			);
-		}
-	}
-
-	/* =========================================================
-	 * AC-1.2: no raw dotted-keys in rendered HTML
-	 * The regex must match actual i18n keys (like "common.nav.overview")
-	 * but NOT file names (like "keys.html") or JS properties (like "keys.p256dh").
-	 * We use word boundaries and require the key to NOT be followed by a
-	 * file extension or appear in a URL/href context.
-	 * ========================================================= */
-	console.log("--- AC-1.2: no raw dotted-keys leaked ---");
-	/* Patterns: match known i18n key prefixes as standalone text (not in URLs) */
-	const i18nKeyPatterns = [
-		/\bcommon\.nav\.\w+\b/g,
-		/\bcommon\.lang\.\w+\b/g,
-		/\bcommon\.brand\.\w+\b/g,
-		/\bcommon\.footer\.\w+\b/g,
-		/\bcommon\.sidebar\.\w+\b/g,
-		/\bindex\.(greeting|title|subtitle|loading|demo_badge|heatmap|kpi|quickstart|recent)\w*/g,
-		/\bkeys\.(create|save|security|col|desc|header|my|title|subtitle|view|api)\w*/g,
-		/\blogin\.(login|signup|status|tab|title|subtitle|trust|welcome|ios|recovery)\w*/g,
-		/\breceivers\.(pair|push|ws|channel|demo|tags|title)\w*/g,
-		/\bsecurity\.(add|concept|intro|passkey|recovery|session|title|subtitle)\w*/g,
-		/\bmessage\.(body|deliveries|fields|loading|open|title)\w*/g,
-		/\bdocs\.(title|subtitle|toc)\w*/g,
-	];
-		for (const lang of LANGS) {
-			for (const page of PAGES) {
-				const { path } = servedPath(lang, page);
-				const r = await H.req(server.base, path);
-				/* Remove href/src attributes to avoid matching file paths in URLs */
-				let stripped = r.text.replace(/(href|src)="[^"]*"/g, '$1=""');
-				/* Remove <script> blocks: JS source legitimately contains i18n key
-				 * string literals (e.g. t("index.title", ...)) that are not
-				 * user-visible rendered text. Only scan visible HTML. */
-				stripped = stripped.replace(
-					/<script\b[\s\S]*?<\/script>/gi,
-					"",
-				);
-				const leaked = [];
-			for (const re of i18nKeyPatterns) {
-				const matches = stripped.match(re);
-				if (matches) leaked.push(...matches);
-			}
-			H.check(
-				`AC-1.2 ${lang}/${page} no raw dotted-keys`,
-				leaked.length === 0,
-				leaked.slice(0, 3).join(", "),
 			);
 		}
 	}
@@ -290,24 +276,27 @@ async function main() {
 
 	/* =========================================================
 	 * AC-3.1/3.2: switcher exists + current lang selected state
-	 * (28 pages: check both sidebar and login switcher types)
+	 * AC-7.3: no JS errors + no horizontal overflow (desktop 1280)
+	 * （合并：28 页只遍历 1 遍，每 lang 1 ctx，内层 page 复用）
 	 * ========================================================= */
 	console.log("--- AC-3.1/3.2: switcher presence + selected state ---");
+	console.log("--- AC-7.3: 28 pages desktop overflow check (merged) ---");
 	for (const lang of LANGS) {
+		const ctx = await browser.newContext();
+		/* Inject session for guarded pages so they don't redirect to login */
+		await injectSession(ctx, seedData.session, server.base);
+		const pg = await ctx.newPage();
+		await pg.setViewportSize({ width: 1280, height: 800 });
 		for (const page of PAGES) {
-			const ctx = await browser.newContext();
-			/* Inject session for guarded pages so they don't redirect to login */
-			if (GUARDED.includes(page)) {
-				await injectSession(ctx, seedData.session, server.base);
-			}
-			const pg = await ctx.newPage();
 			const pageErrors = [];
+			pg.removeAllListeners("pageerror");
 			pg.on("pageerror", (e) => pageErrors.push(String(e)));
 			await pg.goto(server.base + pagePath(lang, page), {
 				waitUntil: "load",
 				timeout: 15000,
 			});
-			await pg.waitForTimeout(1500); /* wait for JS mount */
+			const pageType = page === "login.html" ? "login" : "workspace";
+			await H.waitForAppReady(pg, pageType);
 
 			/* AC-3.1: switcher exists with 4 language options.
 			 * Sidebar pages: switcher built by JS (buildLangSwitcher → #lang-switcher).
@@ -352,16 +341,38 @@ async function main() {
 				"no aria-current=true",
 			);
 
-			/* AC-7.3 (partial): no JS errors on each page */
+			/* AC-7.3: no JS errors on each page */
 			H.check(
 				`AC-7.3 ${lang}/${page} no console JS errors`,
 				pageErrors.length === 0,
 				pageErrors[0]?.slice(0, 100),
 			);
 
-			await pg.close();
-			await ctx.close();
+			/* AC-7.3: no horizontal overflow (desktop 1280) */
+			const overflowCount = await pg.evaluate(() => {
+				const vw = window.innerWidth;
+				let n = 0;
+				for (const el of document.querySelectorAll("body *")) {
+					const r = el.getBoundingClientRect();
+					if (
+						r.right > vw + 5 &&
+						!el.closest("pre") &&
+						!el.closest(".overflow-x-auto") &&
+						!el.closest(".code-body") &&
+						!el.closest("code")
+					)
+					n++;
+				}
+				return n;
+			});
+			H.check(
+				`AC-7.3 desktop ${lang}/${page} no horizontal overflow`,
+				overflowCount === 0,
+				`${overflowCount} elements overflow`,
+			);
 		}
+		await pg.close();
+		await ctx.close();
 	}
 
 	/* =========================================================
@@ -380,7 +391,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForTimeout(1500);
+		await H.waitForAppReady(pg, "workspace");
 		/* Open the sidebar dropdown */
 		const trigger = await pg.$("#lang-switcher button");
 		H.check(
@@ -390,7 +401,7 @@ async function main() {
 		);
 		if (trigger) {
 			await trigger.click();
-			await pg.waitForTimeout(500);
+			await pg.waitForSelector('#lang-switcher a[hreflang="ja"]', { state: "visible", timeout: 5000 });
 		}
 		/* Find the ja link in the now-open dropdown */
 		const jaLink = await pg.$('#lang-switcher a[hreflang="ja"]');
@@ -401,7 +412,7 @@ async function main() {
 		);
 		if (jaLink) {
 			await jaLink.click();
-			await pg.waitForTimeout(2000);
+			await pg.waitForURL("**/ja/keys.html", { timeout: 8000 });
 			const finalUrl = pg.url();
 			H.check(
 				"AC-3.3 en/keys → ja lands on /ja/keys.html",
@@ -415,20 +426,20 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForTimeout(1500);
+		await H.waitForAppReady(pg, "login");
 		/* Login page switcher is now a dropdown (v1.1); open it first */
 		const loginTrigger = await pg.$(
 			"#lang-switcher-login button[aria-haspopup]",
 		);
 		if (loginTrigger) {
 			await loginTrigger.click();
-			await pg.waitForTimeout(500);
+			await pg.waitForSelector('#lang-switcher-login a[hreflang="zh-CN"]', { state: "visible", timeout: 5000 });
 		}
 		const zhLink = await pg.$('#lang-switcher-login a[hreflang="zh-CN"]');
 		H.check("AC-3.3 ja/login → zh link exists", !!zhLink, "no zh link");
 		if (zhLink) {
 			await zhLink.click();
-			await pg.waitForTimeout(2000);
+			await pg.waitForURL("**/login.html*", { timeout: 8000 });
 			const finalUrl = pg.url();
 			/* Should be /login.html (default lang = root, no prefix) */
 			H.check(
@@ -457,12 +468,12 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForTimeout(1500);
+		await H.waitForAppReady(pg, "workspace");
 		/* Open dropdown and click ES */
 		const trigger = await pg.$("#lang-switcher button");
 		if (trigger) {
 			await trigger.click();
-			await pg.waitForTimeout(500);
+			await pg.waitForSelector('#lang-switcher a[hreflang="es"]', { state: "visible", timeout: 5000 });
 		}
 		const esLink = await pg.$('#lang-switcher a[hreflang="es"]');
 		H.check(
@@ -472,7 +483,7 @@ async function main() {
 		);
 		if (esLink) {
 			await esLink.click();
-			await pg.waitForTimeout(2000);
+			await pg.waitForURL("**/es/receivers.html*", { timeout: 8000 });
 			const finalUrl = pg.url();
 			H.check(
 				"AC-3.4 switch to es preserves ?msg=ntf_test1",
@@ -501,7 +512,7 @@ async function main() {
 				waitUntil: "load",
 				timeout: 15000,
 			});
-			await pg.waitForTimeout(1500);
+			await H.waitForAppReady(pg, "workspace");
 			/* Get all sidebar nav item texts, excluding the language switcher.
 			 * The nav items are .side-link elements inside #sidebar nav. */
 			const navText = await pg.evaluate(() => {
@@ -560,7 +571,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForTimeout(1500);
+		await H.waitForAppReady(pg, "workspace");
 
 		/* On mobile the sidebar is hidden behind a hamburger menu.
 		 * Open the menu first, then the lang switcher. */
@@ -570,7 +581,7 @@ async function main() {
 		if (menuBtn) {
 			try {
 				await menuBtn.click();
-				await pg.waitForTimeout(500);
+				await pg.waitForSelector('#sidebar nav a.side-link, #lang-switcher', { timeout: 5000 });
 			} catch {
 				/* menu may already be open */
 			}
@@ -580,7 +591,7 @@ async function main() {
 		const trigger = await pg.$("#lang-switcher button");
 		if (trigger) {
 			await trigger.click();
-			await pg.waitForTimeout(500);
+			await pg.waitForSelector('#lang-switcher a[hreflang="ja"]', { state: "visible", timeout: 5000 });
 		}
 		/* Check a language link is clickable */
 		const jaLink = await pg.$('#lang-switcher a[hreflang="ja"]');
@@ -663,7 +674,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForTimeout(2000);
+		await pg.waitForURL("**/en/login.html*", { timeout: 8000 });
 		const finalUrl = pg.url();
 		H.check(
 			"AC-4.1 /en/index.html (guarded) → redirects to /en/login.html",
@@ -676,7 +687,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForTimeout(2000);
+		await pg.waitForURL("**/ja/login.html*", { timeout: 8000 });
 		const finalUrlJa = pg.url();
 		H.check(
 			"AC-4.1 /ja/index.html (guarded) → redirects to /ja/login.html",
@@ -734,52 +745,9 @@ async function main() {
 			);
 		}
 	}
-
-	/* =========================================================
-	 * AC-7.3: 28 pages desktop 1280 — no overflow
-	 * (JS errors already checked in AC-3.1 loop; here add overflow check)
-	 * ========================================================= */
-	console.log("--- AC-7.3: 28 pages desktop overflow check ---");
-	for (const lang of LANGS) {
-		const ctx = await browser.newContext();
-		/* Inject session for guarded pages */
-		await injectSession(ctx, seedData.session, server.base);
-		const pg = await ctx.newPage();
-		await pg.setViewportSize({ width: 1280, height: 800 });
-		for (const page of PAGES) {
-			await pg.goto(server.base + pagePath(lang, page), {
-				waitUntil: "load",
-				timeout: 15000,
-			});
-			await pg.waitForTimeout(1200);
-			const overflowCount = await pg.evaluate(() => {
-				const vw = window.innerWidth;
-				let n = 0;
-				for (const el of document.querySelectorAll("body *")) {
-					const r = el.getBoundingClientRect();
-					if (
-						r.right > vw + 5 &&
-						!el.closest("pre") &&
-						!el.closest(".overflow-x-auto") &&
-						!el.closest(".code-body") &&
-						!el.closest("code")
-					)
-						n++;
-				}
-				return n;
-			});
-			H.check(
-				`AC-7.3 desktop ${lang}/${page} no horizontal overflow`,
-				overflowCount === 0,
-				`${overflowCount} elements overflow`,
-			);
-		}
-		await pg.close();
-		await ctx.close();
-	}
+	/* AC-7.3 overflow check 已合并到 AC-3.1/3.2 循环中（同一页面遍历一次完成） */
 
 	const passed = H.summary("i18n");
-	await browser.close();
 	server.stop();
 	process.exit(passed ? 0 : 1);
 }

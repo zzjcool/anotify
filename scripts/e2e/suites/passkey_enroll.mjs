@@ -60,8 +60,11 @@ async function approve(server, sid, session) {
 }
 
 // pollSafe：带 pollGuard 最小间隔（2s + buffer）
+// 注意：这里的 setTimeout 是后端 pollGuard 强制最小间隔（防暴力轮询），
+// 不是前端页面挂载等待，无法用事件替代。
 async function pollSafe(server, sid, secret) {
 	const r = await poll(server, sid, secret);
+	// setTimeout 保留：后端 pollGuard 最小间隔（2s + buffer）
 	await new Promise((r) => setTimeout(r, 2300));
 	return r;
 }
@@ -184,7 +187,9 @@ async function setupApprovedSession(server, session) {
 
 async function main() {
 	console.log("=== SUITE: passkey_enroll（Passkey 新设备授权添加全链路）===");
+	H.startTimer();
 	const server = await H.startServer({
+		suiteName: "passkey_enroll",
 		rpId: "localhost",
 		extraEnv: { ANOTIFY_TRUST_PROXY: "1" },
 	});
@@ -247,7 +252,7 @@ async function main() {
 		const s = await createEnrollSession(server, session, "test2");
 		await knock(server, s.json.sessionId, "Chrome");
 		await approve(server, s.json.sessionId, session);
-		// poll 拿 token（会话保持 approved，poll 不 consume）
+		// setTimeout 保留：后端 pollGuard 最小间隔（2s + buffer）
 		await new Promise((r) => setTimeout(r, 2300));
 		await poll(
 			server,
@@ -522,7 +527,7 @@ async function main() {
 		);
 		H.eq("D-C-7 cli-auth approve 200", ap.status, 200);
 
-		// poll → 领证
+		// setTimeout 保留：后端 pollGuard 最小间隔（2s + buffer）
 		await new Promise((r) => setTimeout(r, 2300));
 		const p = await H.req(
 			server.base,
@@ -622,7 +627,7 @@ async function webVerify(server) {
 					waitUntil: "load",
 					timeout: 15000,
 				});
-				await page.waitForTimeout(1200);
+				await H.waitForAppReady(page, "login");
 			} catch (e) {
 				H.bad(`${vp.name} ${l.label} 加载`, String(e).slice(0, 80));
 				await page.close();
@@ -696,7 +701,7 @@ async function securityPageVerify(server, seedSession) {
 		waitUntil: "load",
 		timeout: 15000,
 	});
-	await page.waitForTimeout(2000);
+	await H.waitForAppReady(page, "workspace");
 	H.check(
 		"security.html 无 JS pageerror",
 		errs.length === 0,

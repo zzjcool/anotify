@@ -22,7 +22,7 @@ import * as H from "../lib/harness.mjs";
 
 async function main() {
 	console.log("=== SUITE: api_contract（API 契约矩阵）===");
-	const server = await H.startServer({ rpId: "localhost" });
+	const server = await H.startServer({ suiteName: "api_contract", rpId: "localhost" });
 	const B = server.base;
 	const { sendKey, recvKey, session } = H.seed(server.dbPath, "api");
 

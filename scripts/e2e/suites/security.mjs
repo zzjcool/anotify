@@ -18,7 +18,7 @@ import * as H from "../lib/harness.mjs";
 
 async function main() {
 	console.log("=== SUITE: security（安全矩阵）===");
-	const server = await H.startServer({ rpId: "localhost" });
+	const server = await H.startServer({ suiteName: "security", rpId: "localhost" });
 	const { sendKey, recvKey, session } = H.seed(server.dbPath, "sectest");
 
 	// ---- 1. scope 越权 ----

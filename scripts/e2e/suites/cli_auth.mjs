@@ -47,15 +47,19 @@ async function poll(server, sid, secret) {
 }
 
 // 辅助：带最小间隔的 poll（避开 pollG）
+// 注意：setTimeout 保留——后端 pollGuard 强制最小间隔（防暴力轮询），
+// 不是前端页面挂载等待，无法用事件替代。
 async function pollSafe(server, sid, secret, extraMs = 300) {
 	const r = await poll(server, sid, secret);
+	// setTimeout 保留：后端 pollGuard 最小间隔
 	await new Promise((r) => setTimeout(r, 2000 + extraMs));
 	return r;
 }
 
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: cli_auth（CLI 设备授权全链路）===");
-	const server = await H.startServer({ rpId: "localhost", extraEnv: { ANOTIFY_TRUST_PROXY: "1" } });
+	const server = await H.startServer({ suiteName: "cli_auth", rpId: "localhost", extraEnv: { ANOTIFY_TRUST_PROXY: "1" } });
 	const seedData = H.seed(server.dbPath, "cliuser");
 	const { session } = seedData;
 
@@ -259,11 +263,12 @@ async function main() {
 	{
 		const s19 = await createSession(server, { deviceName: "wrong-sec", scopes: ["notify:send"] });
 		await approve(server, session, s19.json.sessionId, ["notify:send"]);
-		await new Promise((r) => setTimeout(r, 1700)); // 等 pollG 窗口（不同会话，不冲突，但稳妥）
+		// setTimeout 保留：等 pollG 窗口（后端限速，非前端等待）
+		await new Promise((r) => setTimeout(r, 1700));
 		const wrong = await poll(server, s19.json.sessionId, "totally-wrong-secret-xxx");
 		H.eq("AC-19 错 secret → 401", wrong.status, 401);
 		H.check("AC-19 错 secret 不发 Key", !wrong.json.apiKey, "发了 key");
-		// 正确 secret 仍能领
+		// setTimeout 保留：等 pollG 窗口（后端限速，非前端等待）
 		await new Promise((r) => setTimeout(r, 2000));
 		const ok = await poll(server, s19.json.sessionId, s19.json.secret);
 		H.eq("AC-19 正确 secret 仍可领 → 200", ok.status, 200);
@@ -453,7 +458,7 @@ async function webVerify(server, seedSession) {
 		page.on("pageerror", (e) => errs.push(String(e)));
 		try {
 			await page.goto(url, { waitUntil: "load", timeout: 15000 });
-			await page.waitForTimeout(1200);
+			await H.waitForAppReady(page, "login");
 		} catch (e) {
 			H.bad(`${vpName} ${url.split("/").pop()} 加载`, String(e).slice(0, 80));
 			await page.close();
@@ -479,7 +484,7 @@ async function webVerify(server, seedSession) {
 		const ctx = await browser.newContext();
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/cli-auth.html?s=cas_test_unauth", { waitUntil: "load", timeout: 15000 });
-		await page.waitForTimeout(2500);
+		await page.waitForURL("**/login.html*", { timeout: 8000 });
 		H.check("AC-09 未登录 cli-auth.html?s= → 跳 login", page.url().includes("login.html"), `最终 ${page.url()}`);
 		await page.close();
 		await ctx.close();
@@ -505,14 +510,14 @@ async function webVerify(server, seedSession) {
 		const errs = [];
 		page.on("pageerror", (e) => errs.push(String(e)));
 		await page.goto(server.base + "/cli-auth.html?s=" + s.json.sessionId, { waitUntil: "load", timeout: 15000 });
-		await page.waitForTimeout(2000);
+		await H.waitForAppReady(page, "login");
 		H.check("AC-05/35 已登录 confirm 态无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 100));
 		const bodyText = await page.evaluate(() => document.body.innerText);
 		H.check("AC-05 confirm 态显示设备名", bodyText.includes("verify-host"), `body 未含 verify-host`);
 		H.check("AC-05 confirm 态显示 notify:send 勾选项", /notify:send|发送/i.test(bodyText), `body 未含 send scope`);
 		// 移动视口也无溢出
 		await page.setViewportSize({ width: 390, height: 844 });
-		await page.waitForTimeout(500);
+		await page.waitForSelector("#lang-switcher-login button[aria-haspopup]", { timeout: 5000 });
 		const overflow = await page.evaluate(() => {
 			const vw = window.innerWidth;
 			let n = 0;
@@ -579,6 +584,7 @@ async function scriptE2E(server, seedSession) {
 	}
 
 	// 等脚本退出（领证后应退出 0）
+	// setTimeout 保留：等外部进程退出的超时保护，非页面等待
 	const exitCode = await new Promise((resolve) => {
 		const to = setTimeout(() => {
 			proc.kill("SIGKILL");
@@ -625,6 +631,7 @@ async function scriptE2E(server, seedSession) {
 	const proc2 = spawn("sh", [scriptPath], { env, stdio: ["ignore", "pipe", "pipe"] });
 	let out2 = "";
 	proc2.stdout.on("data", (d) => { out2 += d; });
+	// setTimeout 保留：等外部进程退出的超时保护，非页面等待
 	const exit2 = await new Promise((resolve) => {
 		const to = setTimeout(() => { proc2.kill("SIGKILL"); resolve(-1); }, 10000);
 		proc2.on("exit", (c) => { clearTimeout(to); resolve(c); });

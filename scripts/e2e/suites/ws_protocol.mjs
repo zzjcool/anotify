@@ -85,7 +85,7 @@ function waitSettled(state, timeout = 4000) {
 
 async function main() {
 	console.log("=== SUITE: ws_protocol（WebSocket 帧协议）===");
-	const server = await H.startServer({ rpId: "localhost" });
+	const server = await H.startServer({ suiteName: "ws_protocol", rpId: "localhost" });
 	const { sendKey, recvKey } = H.seed(server.dbPath, "e2e");
 
 	// ---- 1. 无 Key 连接 → 拒绝 ----
