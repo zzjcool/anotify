@@ -29,6 +29,41 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 ---
 
+## ✅ e2e 测试体系性能与架构重构（refactor/e2e-perf，2026-08-09 合并入 main，commit ab17bcd）
+
+> 分支 `refactor/e2e-perf`（off main 269981a）。worktree 已清理。编排文档：需求 `e2e-perf-requirements.md`、设计 `design.md`（在 subagent artifacts）、侦察 `scout-context.md`。
+
+**问题**：全量 `make e2e` 实测 491 秒（8 分钟），远超 subagent bash 120s 超时，tester subagent 必然超时。用户要求「长期彻底方案，打好基础」。
+
+**根因**（scout 全面侦察）：① 9 套件 55 处 `waitForTimeout` 固定 sleep（62s）；② i18n 28 页遍历 3 遍 + 每页 newContext；③ 无并行（纯串行 for + sleep 1.5）；④ 构建缺口（run_all.sh 不生成 dist，干净仓库编译失败）；⑤ go test 50s 被算进 e2e；⑥ 无结构化结果；⑦ 端口随机分配并行撞车。
+
+**修复**（pm 定义 + designer 设计 + worker/frontend 实现 + tester/reviewer 终审 + 协调者独立验证修复 3 个 worker 遗漏的 bug）：
+
+- **harness 增强**：`waitForAppReady(page, pageType)` 按页面类型给锚点（workspace→#sidebar、login→#lang-switcher-login、data-page→额外 dataAnchor）；结构化 JSON 结果（`.e2e-bin/results/<suite>.json`）；`startTimer/stopTimer`。
+- **套件改造**：17 套件全部 sleep→事件等待；i18n 28页遍历3遍→1遍、28ctx→4ctx；i18n_coverage ~29ctx→~9。
+- **并行执行器** `parallel_runner.mjs`：HTTP 类全并行 + Chrome 类信号量控制（默认 4，`E2E_CONCURRENCY` 可配）；per-suite 120s 超时（Node 原生，替代 macOS 缺失的 `timeout` 命令）；JSON 结果聚合。
+- **run_all.sh 重构**：前置检测 dist/web 不完整则 `git checkout HEAD -- web` 恢复追踪源文件 + `make fe`；go test 拆出独立 `make test`。
+- **端口分配**：确定性端口段（每套件 50 端口，SUITE_PORTS 映射）；startServer 直接 spawn + health 失败换端口重试（**不用 findFreePort 预探测**——其 listen-then-close 留下 TIME_WAIT 致 anotify bind 失败，这是 ws_protocol 稳定 crash 的真因）。
+- **parallel_runner 误标失败修复**：JSON `failed` 数为权威（非 exit code），断言全过但清理阶段抛错→pass-warning 不算失败。
+
+**协调者独立验证修复的 3 个 worker 遗漏 bug**：
+
+1. passkey_enroll 92.9s 真因是 pageType 用错（passkey-enroll.html 是公开页应用 "login" 锚点非 "workspace"，8 次 10s 超时=80s 浪费）→ 改 "login" 后 14.5s。
+2. 7 个 HTTP 套件（api_contract/edge_cases/passkeys/persistence/security/ws_protocol/routing）没传 `suiteName` 仍用随机端口→补上。
+3. `findFreePort` 的 listen-then-close 留 TIME_WAIT 致 ws_protocol 稳定 crash→改 startServer 直接 spawn+重试。
+
+**门禁**：全量 `make e2e` **57s**（从 491s 降 88%），968 断言全绿；单套件全部 ≤40s（最慢 lang_hint 40s）；`waitForTimeout` 零残留；干净仓库（删 dist+web/）可跑；**5 次并行连跑零 flaky**；macOS 无 timeout 依赖。
+
+**套件耗时对比**：i18n 174s→22s、i18n_coverage 89s→16s、passkey_enroll 93s→15s、frontend 62s→23s、lang_hint 55s→40s、cli_auth 40s→25s。
+
+**遗留**：
+
+- 无 CI（本次先打牢本地基础，结果格式已为 CI 友好预留 JSON）。后续可加 GitHub Actions。
+- Go 单测里 13×`time.Sleep(2200ms)`=28.6s 固定 sleep 未优化（已从 e2e 摘出到 `make test`，单测 sleep 优化另立任务）。
+- `findFreePort` 函数保留导出（向后兼容）但 startServer 不再调用它。
+
+---
+
 ## ✅ Passkey 登录失败文案修复（fix/passkey-login-error-message，2026-08-08 合并入 main，commit 00e3ff9）
 
 > 分支 `fix/passkey-login-error-message`（off main cb7ae34）。worktree `.pi-orchestrator/worktrees/wt-passkey-errmsg`。
