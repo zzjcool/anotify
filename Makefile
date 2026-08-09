@@ -35,8 +35,11 @@ bench-report: ## 运行基准并输出到 bench.txt（留存对比基线）
 run: build ## 本地运行（需先设置 ANOTIFY_VAPID_* 环境变量）
 	./anotify
 
-dev: sitegen ## 开发模式：先生成 web/*.html，再直接用 web/ 作为静态目录（不指纹）
-	ANOTIFY_STATIC=./web go run ./cmd/server
+dev: sitegen ## 开发模式：起 server + cloudflared tunnel（读 .env.local，固定 dev.openaaas.org）
+	./scripts/dev.sh
+
+dev-local: sitegen ## 开发模式：只起 server，不起 tunnel（本地 localhost）
+	NO_TUNNEL=1 ./scripts/dev.sh
 
 integration: ## 集成测试（需服务已在 PORT 运行）
 	BASE=http://localhost:$(PORT) ./scripts/integration.sh
