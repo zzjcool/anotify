@@ -27,7 +27,7 @@ async function main() {
 	let passed = false;
 	try {
 		// ---- 第一次启动：造数据 ----
-		let server = await H.startServer({ rpId: "localhost", extraEnv });
+		let server = await H.startServer({ suiteName: "persistence", portOffset: 0, rpId: "localhost", extraEnv });
 		const { sendKey, session } = H.seed(dbPath, "persist");
 
 		// 上报 3 条通知
@@ -71,7 +71,7 @@ async function main() {
 		server.stop();
 
 		// ---- 第二次启动：同一 DB ----
-		server = await H.startServer({ rpId: "localhost", extraEnv });
+		server = await H.startServer({ suiteName: "persistence", portOffset: 1, rpId: "localhost", extraEnv });
 
 		// 2. 消息仍在
 		const afterList = await H.req(server.base, "/v1/notifications?limit=50", {

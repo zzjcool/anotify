@@ -47,7 +47,12 @@ async function checkPage(ctx, url, viewportName, viewport) {
 	page.on("pageerror", (e) => pageErrors.push(String(e)));
 	try {
 		await page.goto(url, { waitUntil: "load", timeout: 15000 });
-		await page.waitForTimeout(1200); // 等渲染 + 数据加载
+		// 等渲染稳定：受保护页未登录会跳转 login，所以可能停在 workspace 也可能停在 login。
+		// 用 Promise.race 竞争等待两个锚点之一出现（3s 超时，足够覆盖跳转+渲染）。
+		await Promise.race([
+			page.waitForSelector("#sidebar", { timeout: 3000 }).catch(() => {}),
+			page.waitForSelector("#lang-switcher-login button[aria-haspopup]", { timeout: 3000 }).catch(() => {}),
+		]);
 	} catch (e) {
 		H.bad(
 			`${viewportName} ${url.split("/").pop()} 加载`,
@@ -123,8 +128,9 @@ async function injectSession(ctx, sessionValue, base) {
 }
 
 async function main() {
+	H.startTimer();
 	console.log("=== SUITE: frontend（前端渲染 + 路由守卫 + 真实数据）===");
-	server = await H.startServer({ rpId: RP });
+	server = await H.startServer({ suiteName: "frontend", rpId: RP });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
@@ -141,8 +147,8 @@ async function main() {
 				waitUntil: "load",
 				timeout: 15000,
 			});
-			// 等客户端 JS 触发 401 → 跳转
-			await page.waitForTimeout(2000);
+			// 等客户端 JS 触发 401 → 跳转 login.html
+			await page.waitForURL("**/login.html*", { timeout: 8000 }).catch(() => {});
 			const finalUrl = page.url();
 			H.check(
 				`未登录访问 ${p} → 跳转到 login.html`,
@@ -165,7 +171,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(1200);
+		await H.waitForAppReady(page, "login");
 		H.check(
 			"login.html 未登录停留本页(不跳转)",
 			page.url().includes("login.html"),
@@ -197,7 +203,10 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForTimeout(2000); // 等数据加载
+		// 等数据加载（真实通知行渲染完成）
+		await H.waitForAppReady(page, "workspace", {
+			dataAnchor: "#notif-list .notif-row",
+		});
 
 		// FileServer 会把 /index.html 规范重定向到 /，所以这里验证「未跳去登录页」而非死磕文件名
 		H.check(

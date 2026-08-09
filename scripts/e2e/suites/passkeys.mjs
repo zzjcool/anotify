@@ -18,7 +18,7 @@ import * as H from "../lib/harness.mjs";
 
 async function main() {
 	console.log("=== SUITE: passkeys（Passkey 管理端点）===");
-	const server = await H.startServer({ rpId: "localhost" });
+	const server = await H.startServer({ suiteName: "passkeys", rpId: "localhost" });
 	const { session } = H.seed(server.dbPath, "pkuser");
 
 	// ---- 1. 复现：GET /v1/auth/passkeys 当前 404（修复后应 200 + 空列表）----
