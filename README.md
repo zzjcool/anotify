@@ -32,20 +32,85 @@ Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS �
 
 ## 快速开始
 
+### 首次准备（每台机器一次）
+
 ```bash
-# 1. 生成 VAPID 密钥（首次）
-make keys        # 输出 ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY
+# 1. 安装依赖（Go ≥1.25、Node 22、cloudflared、Chrome）
+brew install go node@22 cloudflared
 
-# 2. 构建单二进制（含前端指纹 + embed）
-make build
+# 2. 克隆
+git clone git@github.com:zzjcool/anotify.git && cd anotify
 
-# 3. 配置环境并运行
-export ANOTIFY_VAPID_PUBLIC_KEY=... ANOTIFY_VAPID_PRIVATE_KEY=...
-./anotify        # 默认 :8080，embed 前端
-
-# 开发模式（前端改不动二进制）
-make dev         # 用 web/ 本地目录，不指纹
+# 3. 配置本地环境（.env.local 不入库，含密钥）
+cp .env.example .env.local
+make keys                                   # 生成 VAPID 密钥对
+# 把输出的 public/private key 填进 .env.local 的 ANOTIFY_VAPID_PUBLIC_KEY / _PRIVATE_KEY
 ```
+
+`.env.local` 关键字段（已预配 dev.openaaas.org）：
+
+```
+ANOTIFY_ADDR=:8080
+ANOTIFY_STATIC=./web
+ANOTIFY_RP_ID=dev.openaaas.org
+ANOTIFY_RP_ORIGIN=https://dev.openaaas.org
+ANOTIFY_VAPID_PUBLIC_KEY=<make keys 生成>
+ANOTIFY_VAPID_PRIVATE_KEY=<make keys 生成>
+```
+
+### Cloudflare 命名隧道（dev.openaaas.org，可选但推荐）
+
+用固定域名（而非临时 trycloudflare URL）作 WebAuthn RP_ID，Passkey 可重复使用。
+
+```bash
+cloudflared tunnel login                       # 浏览器授权（生成 ~/.cloudflared/cert.pem）
+cloudflared tunnel create anotify              # 记住返回的 UUID
+```
+
+创建 `~/.cloudflared/config.yml`（替换 `<UUID>`）：
+
+```yaml
+tunnel: <UUID>
+credentials-file: /Users/<你>/.cloudflared/<UUID>.json
+
+ingress:
+  - hostname: dev.openaaas.org
+    service: http://localhost:8080
+  - service: http_status:404
+```
+
+绑定 DNS：
+
+```bash
+cloudflared tunnel route dns anotify dev.openaaas.org
+```
+
+> 不用隧道？跳过本节，`make dev-local` 只起本地 server（RP_ID 默认 localhost）。
+
+### 日常启动
+
+```bash
+make dev          # 起 server + cloudflared tunnel，Ctrl-C 一起停
+```
+
+这一条命令做了：读 `.env.local` → 确保 `web/*.html` → 检查端口 → 后台起 tunnel → 前台起 `go run ./cmd/server`（用 `web/` 源文件，改前端即时生效）。
+
+启动后：
+
+- **公网**：<https://dev.openaaas.org>
+- **本地**：<http://localhost:8080>
+- 首页跳登录页 → 注册首个 Passkey（首个用户自动成管理员）
+- server 日志：`tail -f /tmp/anotify-dev.log`；tunnel 日志：`tail -f /tmp/anotify-tunnel.log`
+
+| 命令 | 用途 |
+| --- | --- |
+| `make dev` | 开发：server + tunnel（dev.openaaas.org） |
+| `make dev-local` | 开发：只起本地，不起 tunnel |
+| `make build` | 构建单二进制（内嵌指纹前端，生产用） |
+| `make test` | Go 单元测试 |
+| `make e2e` | 全量端到端测试（~57s，968 断言） |
+| `make e2e-one S=auth_flow` | 只跑某个套件 |
+| `make keys` | 生成 VAPID 密钥对 |
 
 ## Docker
 
@@ -59,23 +124,23 @@ docker run -p 8080:8080 \
   anotify
 ```
 
-## 公网暴露（Cloudflare 临时隧道，供 iOS/真机验证）
+## 公网暴露
 
-```bash
-# 服务在 :8080 运行后，用隧道域名作为 RP_ID 重启（Passkey 需要域名匹配）
-cloudflared tunnel --url http://localhost:8080
-# → 得到 https://xxx.trycloudflare.com，用它作为 ANOTIFY_RP_ID / ANOTIFY_RP_ORIGIN 重启服务
-```
+见上方「快速开始 → Cloudflare 命名隧道」一节：`make dev` 已内置起 `cloudflared tunnel run anotify`（固定 dev.openaaas.org → localhost:8080）。临时隧道（`cloudflared tunnel --url`）仅用于一次性真机验证，不建议作日常开发（URL 每次变，Passkey 失效）。
 
 ## 测试
 
 ```bash
-make test                # 全部单元测试
+make test                # Go 单元测试（独立于 e2e）
+make e2e                 # 全量端到端测试（~57s，并行，968 断言）
+make e2e-one S=auth_flow # 只跑某个套件
 make integration         # 集成测试（健康/缓存分级/鉴权矩阵）
 node scripts/ws_test.mjs # WS 接收端（需 RECV_KEY/SEND_KEY）
 node scripts/push_e2e.mjs# 桌面 Chrome 推送 E2E（需 SESSION/API_KEY）
 go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 ```
+
+> e2e 体系详见 `E2E_TESTING.md`（17 套件、并行执行器、结构化 JSON 结果）。
 
 ## API（/v1，详见 api/openapi.yaml）
 

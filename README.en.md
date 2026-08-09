@@ -36,20 +36,85 @@ Agent ─POST /v1/notify─▶ Go backend ─▶ Broker(SQLite) ─┬─▶ WS 
 
 ## Quick Start
 
+### First-time setup (once per machine)
+
 ```bash
-# 1. Generate VAPID keys (first time)
-make keys        # outputs ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY
+# 1. Install deps (Go ≥1.25, Node 22, cloudflared, Chrome)
+brew install go node@22 cloudflared
 
-# 2. Build single binary (includes frontend fingerprint + embed)
-make build
+# 2. Clone
+git clone git@github.com:zzjcool/anotify.git && cd anotify
 
-# 3. Set environment and run
-export ANOTIFY_VAPID_PUBLIC_KEY=... ANOTIFY_VAPID_PRIVATE_KEY=...
-./anotify        # default :8080, embeds frontend
-
-# Dev mode (frontend changes don't rebuild binary)
-make dev         # uses web/ local directory, no fingerprinting
+# 3. Configure local env (.env.local is gitignored, holds secrets)
+cp .env.example .env.local
+make keys                                   # generate VAPID keypair
+# fill the public/private keys into .env.local (ANOTIFY_VAPID_PUBLIC_KEY / _PRIVATE_KEY)
 ```
+
+Key fields in `.env.local` (pre-configured for dev.openaaas.org):
+
+```
+ANOTIFY_ADDR=:8080
+ANOTIFY_STATIC=./web
+ANOTIFY_RP_ID=dev.openaaas.org
+ANOTIFY_RP_ORIGIN=https://dev.openaaas.org
+ANOTIFY_VAPID_PUBLIC_KEY=<from make keys>
+ANOTIFY_VAPID_PRIVATE_KEY=<from make keys>
+```
+
+### Cloudflare named tunnel (dev.openaaas.org, optional but recommended)
+
+A fixed domain (instead of a temporary trycloudflare URL) as WebAuthn RP_ID makes Passkeys reusable across restarts.
+
+```bash
+cloudflared tunnel login                       # browser auth (creates ~/.cloudflared/cert.pem)
+cloudflared tunnel create anotify              # note the returned UUID
+```
+
+Create `~/.cloudflared/config.yml` (replace `<UUID>`):
+
+```yaml
+tunnel: <UUID>
+credentials-file: /Users/<you>/.cloudflared/<UUID>.json
+
+ingress:
+  - hostname: dev.openaaas.org
+    service: http://localhost:8080
+  - service: http_status:404
+```
+
+Bind DNS:
+
+```bash
+cloudflared tunnel route dns anotify dev.openaaas.org
+```
+
+> Skip this if you don't need a tunnel — `make dev-local` starts only the local server (RP_ID defaults to localhost).
+
+### Daily start
+
+```bash
+make dev          # starts server + cloudflared tunnel; Ctrl-C stops both
+```
+
+This single command: reads `.env.local` → ensures `web/*.html` → checks port → starts tunnel in background → runs `go run ./cmd/server` in foreground (uses `web/` source, frontend changes are live).
+
+After start:
+
+- **Public**: <https://dev.openaaas.org>
+- **Local**: <http://localhost:8080>
+- Homepage redirects to login → register your first Passkey (first user auto-admin)
+- server log: `tail -f /tmp/anotify-dev.log`; tunnel log: `tail -f /tmp/anotify-tunnel.log`
+
+| Command | Purpose |
+| --- | --- |
+| `make dev` | dev: server + tunnel (dev.openaaas.org) |
+| `make dev-local` | dev: local server only, no tunnel |
+| `make build` | build single binary (embeds fingerprinted frontend, for prod) |
+| `make test` | Go unit tests |
+| `make e2e` | full end-to-end tests (~57s, 968 assertions) |
+| `make e2e-one S=auth_flow` | run a single suite |
+| `make keys` | generate VAPID keypair |
 
 ## Docker
 
@@ -63,24 +128,23 @@ docker run -p 8080:8080 \
   anotify
 ```
 
-## Public Exposure (Cloudflare tunnel, for iOS / real-device testing)
+## Public Exposure
 
-```bash
-# After the server is running on :8080, use a tunnel domain as RP_ID and restart
-# (Passkey requires domain matching)
-cloudflared tunnel --url http://localhost:8080
-# → Get https://xxx.trycloudflare.com, use it as ANOTIFY_RP_ID / ANOTIFY_RP_ORIGIN
-```
+See "Quick Start → Cloudflare named tunnel" above: `make dev` already starts `cloudflared tunnel run anotify` (fixed dev.openaaas.org → localhost:8080). Temporary tunnels (`cloudflared tunnel --url`) are for one-off real-device testing only — not recommended for daily dev (URL changes each time, invalidating Passkeys).
 
 ## Testing
 
 ```bash
-make test                # all unit tests
+make test                # Go unit tests (independent of e2e)
+make e2e                 # full end-to-end tests (~57s, parallel, 968 assertions)
+make e2e-one S=auth_flow # run a single suite
 make integration         # integration tests (health / cache tiers / auth matrix)
 node scripts/ws_test.mjs # WS receiver (needs RECV_KEY/SEND_KEY)
 node scripts/push_e2e.mjs# Desktop Chrome push E2E (needs SESSION/API_KEY)
 go run ./cmd/devseed     # seed test user + keys + sessions
 ```
+
+> See `E2E_TESTING.md` for the e2e suite system (17 suites, parallel runner, structured JSON results).
 
 ## API (/v1, see api/openapi.yaml)
 
