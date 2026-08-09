@@ -44,7 +44,8 @@
 
 - [x] 协调者「回合结束/后台任务/原子交付」纪律 → 已固化到 AGENTS.md §0.1（2026-08-05 i18n 任务回顾）
 - [x] **子 agent 被硬超时/EOF 杀掉丢产出**（根因级修复，2026-08-06 诊断）：见下方「子 agent 派发契约」专节。此前只归因为「tester 跑 e2e 超时」，漏掉了更普遍的诱因——provider 网络抖动（503/unexpected EOF/rate limit）会随时杀死普通前台子 agent，且 `partialOutputPath: null` 导致产出全丢。
-- [ ] tester 跑全量 e2e 易超时：后续给 tester 派任务时要求「先写套件+单跑新套件自验，全量 e2e 放最后且留足预算」，或考虑拆分「写套件」与「跑门禁」两阶段（观察 1-2 次再定是否入 prompt）
+- [x] tester 跑全量 e2e 易超时：e2e 重构后全量从 491s 降至 ~57s（2026-08-09），tester 不再撞 120s bash 超时。并行执行器 + 结构化 JSON 结果已落地，tester 可直接跑全量。遗留：单套件 >60s 时仍可能超，但本次后最慊套件 lang_hint ~40s，安全。
+- [x] **worker 自测「全绿」不可信**（2026-08-09 e2e 重构回顾）：worker 漏了 3 个实质 bug（pageType 用错致 80s 白等、7 套件漏传 suiteName、findFreePort TIME_WAIT 陷阱），都是单套件串行自测不暴露、并行才显形。已给 worker agent 加「自测红线」（并行验证 + warn 零容忍 + 耗时分解 + 全量 grep 核对），给 tester 加「flaky 诊断红线」（区分确定性 vs 随机失败），给 reviewer 加「flaky 独立复现定位根因」约束。
 - [ ] reviewer 终审被 turn 预算截断过一次：派终审任务时明确「先落报告（结论+分级问题清单）再深挖细节」，保证截断也有可用产出（观察再定）
 - [ ] 用户实测反馈会穿透 designer 的原设计（如平铺→统一下拉）：设计稿应预留「实测后快速迭代」环节，designer 对「用户直接反馈」的响应流程已验证可行（v1.0→v1.1）
 
@@ -98,3 +99,23 @@
 2. **流程**：实现层串行任务(worker→frontend→tester)，前一个提交后再派下一个，或明确指定不用 worktree。
 3. **提示词**：tester agent md 加一条"若发现产品 bug，测试断言必须写正确行为(修复后应通过)，不得断言 bug 行为，哪怕标注'由于 bug'"。
 4. **配置**：无（worktree 行为是 pi-subagents 固有，靠流程规避）。
+
+## 回顾 2026-08-09 · e2e 测试体系重构（三问）
+
+### 做对了什么
+
+- **scout 全面侦察打牢基础**：deepseek-v4-flash 把 17 套件逐一摸清（Playwright 用法/waitForTimeout 统计/循环结构/端口隔离），后续 pm/designer/worker 全程不需回头补侦察。
+- **designer 产出精确到行号**：每套件每个 sleep 的替换映射、pageType 锚点表，worker 拿着就能干。
+- **协调者独立验证抓 3 个真 bug**：worker 报 DONE 但 passkey_enroll 92.9s（pageType 用错）、7 HTTP 套件漏 suiteName、findFreePort TIME_WAIT 致 ws_protocol crash——三个都是单套件串行不暴露、并行才显形，靠协调者亲自 profile 才挖出。
+
+### 踩了什么坑
+
+- **worker「自测全绿」是必要不充分**：单套件串行过 ≠ 并行过 ≠ 性能达标 ≠ 无 warn。worker 把 passkey_enroll 92.9s 归因为「pollGuard 不可优化」搪塞，实际是 pageType 用错致 8 次 10s 超时白等（80s 浪费）。
+- **tester/reviewer flaky 诊断不够深**：都停在「Chrome 资源争用 + exit code 误判」表象，建议「默认串行」，没挖到 findFreePort TIME_WAIT 根因。是协调者自己 profile 才定位确定性失败。
+- **read 工具缓存误导**：多次拿到旧版本内容（报 190 行实际 314 行），一度误判 worker 没改 startServer。靠 grep/awk 交叉验证才纠正。
+
+### 怎么改（四层落点）
+
+1. **L2 提示词**：worker 加自测红线（并行验证 + warn 零容忍 + 耗时分解证据 + 全量 grep 核对）；tester 加 flaky 诊断红线（区分确定性 vs 随机，禁止「默认串行」搪塞）；reviewer 加 flaky 独立复现约束。
+2. **L1 记忆**：worker MEMORY 记 pageType 按登录态选、findFreePort TIME_WAIT 陷阱、全量 grep 核对、自测并行跑。
+3. **L4 流程**：协调者派性能重构类任务时，验证清单显式包含「并行 N 次」「warn 零残留」「干净仓库」「单套件性能数字」，不能只说「全绿」。

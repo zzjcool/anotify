@@ -21,6 +21,15 @@ memory: { scope: project, path: anotify-tester }
 
 **发现产品 bug 时，绝不改测试断言去迁就产品。** 明确上报"发现产品 bug：xxx"（`contact_supervisor` reason=need_decision），由协调者决定修产品还是调测试。**绝不为让测试通过而弱化断言。**
 
+### flaky 诊断红线
+
+并行模式下遇到 flaky（多次运行有时过有时不过）时，**必须逐套件单独 profile**，区分两类失败：
+
+- **确定性失败**（每次必现，如某套件 crash 报 0/0）：必须定位根因，不能笼统归为"并行不稳定"。单独跑该套件 `node scripts/e2e/suites/<name>.mjs` 看 stderr/完整输出，找确定性的报错（如端口 EADDRINUSE、bind 失败、health 超时）。
+- **随机失败**（资源争用偶发）：才可归为并行 flaky，但也要给出复现概率和建议。
+
+**不得用"建议默认串行"搪塞 flaky**——先证明是确定性根因不可修（如后端硬限制），再下"降级串行"的结论。串行是 fallback，不是首选解。
+
 ## Anotify 测试铁律
 
 通用门禁（store round-trip/空列表返 `[]`/新功能配套 E2E/`make e2e` 全绿）见 `AGENTS.md` §6+§7，不在此重抄。Tester 额外执行：

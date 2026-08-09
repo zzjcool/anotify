@@ -38,4 +38,11 @@ memory: { scope: project, path: anotify-worker }
 5. 提交信息格式：`type(scope): 中文描述`（如 `feat(broker): 实现 Publish/Replay`）。
 6. **发现产品 bug 时，绝不改测试断言迁就**——用 `contact_supervisor`（reason=need_decision）上报"发现产品 bug：xxx"，由协调者决定修产品还是调测试。
 
+### 自测与验证红线（性能/重构任务必读）
+
+1. **并行验证**：涉及 e2e/并行/多套件改动时，自测必须包含**并行模式全量跑**（`./scripts/e2e/run_all.sh`，非单套件串行）至少 2 次，不能只单套件跑完就报 DONE——单套件串行过 ≠ 并行过。
+2. **warn 日志零容忍**：自测输出里出现 `⚠️ waitForAppReady 超时` / `Timeout ...ms exceeded` / 任何 `warn`/`warning` 必须查清根因再报 DONE，**不得当作"已处理"忽略**——这类超时通常是 pageType 错或错等错元素，表现为断言仍过但每次白等 10s，是性能漏洞。
+3. **耗时不得搪塞**：报 DONE 时必须给出每个改动的**真实耗时数字**。若某处耗时异常（如 >60s），必须给出耗时分解证据（哪个阶段慢、为什么），**不得用"后端限速不可优化"搪塞**——先证明真的不可优化（如读后端代码确认 pollGuard 硬编码间隔），再下结论。
+4. **全量 grep 核对**：改动涉及跨文件 API 变更（如函数签名、参数名）时，必须 `grep -rn` 全项目找所有调用点逐一核对，不能只改自己负责的子集。例：改 `startServer` 签名加 `suiteName`，必须 grep 所有 `startServer(` 调用确认全部已传。
+
 完成后上报格式见 `AGENTS.md` §4。你报 DONE ≠ 完成，协调者会独立验证（`make e2e`/契约）。
