@@ -21,8 +21,8 @@
     
     <link rel="alternate" hreflang="zh-CN" href="/index.html" />
     <link rel="alternate" hreflang="en" href="/en/index.html" />
-    <link rel="alternate" hreflang="ja" href="/ja/index.html" />
     <link rel="alternate" hreflang="es" href="/es/index.html" />
+    <link rel="alternate" hreflang="ja" href="/ja/index.html" />
     <link rel="alternate" hreflang="x-default" href="/index.html" />
     
   </head>
@@ -178,6 +178,113 @@
     </section>
 
     
+    <section id="test-notify" class="card reveal visible overflow-hidden">
+      <div
+        class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4"
+      >
+        <div>
+          <div class="text-sm font-medium text-white">
+            Enviar notificación de prueba
+          </div>
+          <div class="text-[11px] text-zinc-500">
+            Envía una notificación a todos tus dispositivos desde la web
+          </div>
+        </div>
+        <button
+          id="tn-toggle"
+          class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+        >
+          Enviar notificación de prueba
+        </button>
+      </div>
+      <div id="tn-form" class="hidden space-y-4 p-6">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span
+              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+              >Título</span
+            >
+            <input
+              id="tn-title"
+              type="text"
+              maxlength="120"
+              class="input-field"
+              placeholder="Notificación de prueba"
+            />
+          </label>
+          <label class="block">
+            <span
+              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+              >Estado</span
+            >
+            <select id="tn-status" class="input-field">
+              <option value="info">Información</option>
+              <option value="success">Éxito</option>
+              <option value="error">Error</option>
+              <option value="warning">Advertencia</option>
+              <option value="interrupted">
+                Interrumpido
+              </option>
+            </select>
+          </label>
+        </div>
+        <label class="block">
+          <span
+            class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+            >Cuerpo</span
+          >
+          <textarea
+            id="tn-body"
+            rows="2"
+            maxlength="500"
+            class="input-field resize-none"
+            placeholder="Esta es una notificación de prueba desde el panel"
+          ></textarea>
+        </label>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span
+              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+              >Etiquetas de enrutado</span
+            >
+            <input
+              id="tn-tags"
+              type="text"
+              class="input-field"
+              placeholder="Opcional, separado por comas, ej. móvil,trabajo"
+            />
+          </label>
+          <label class="block">
+            <span
+              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+              >Prioridad</span
+            >
+            <select id="tn-priority" class="input-field">
+              <option value="normal">Normal</option>
+              <option value="high">Alta</option>
+              <option value="low">Baja</option>
+            </select>
+          </label>
+        </div>
+        <div class="flex items-center gap-3">
+          <button
+            id="tn-send"
+            class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
+          >
+            Enviar
+          </button>
+          <button
+            id="tn-cancel"
+            class="rounded-xl px-4 py-2.5 text-sm text-zinc-400 ring-1 ring-white/10 transition-colors hover:bg-white/5 hover:text-white"
+          >
+            Cancelar
+          </button>
+          <span id="tn-status-msg" class="text-xs text-zinc-500"></span>
+        </div>
+      </div>
+    </section>
+
+    
     <section id="recent" class="card reveal visible overflow-hidden">
       <div
         class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4"
@@ -262,8 +369,8 @@
     <div id="lang-switcher-data" hidden aria-hidden="true">
       <a href="/index.html" hreflang="zh-CN" lang="zh-CN">中文</a>
       <a href="/en/index.html" hreflang="en" lang="en">English</a>
-      <a href="/ja/index.html" hreflang="ja" lang="ja">日本語</a>
       <a href="/es/index.html" hreflang="es" lang="es" aria-current="true">Español</a>
+      <a href="/ja/index.html" hreflang="ja" lang="ja">日本語</a>
       
     </div>
     
@@ -732,6 +839,82 @@
       renderNotifs(btn.dataset.filter);
     });
     document.getElementById("refresh-btn").addEventListener("click", load);
+
+     
+    let tnSending = false;
+    const tnToggle = document.getElementById("tn-toggle");
+    const tnForm = document.getElementById("tn-form");
+    const tnSend = document.getElementById("tn-send");
+    const tnCancel = document.getElementById("tn-cancel");
+    const tnStatusMsg = document.getElementById("tn-status-msg");
+
+    function tnSetStatus(msg, isError) {
+      tnStatusMsg.textContent = msg || "";
+      tnStatusMsg.className =
+        "text-xs " + (isError ? "text-red-400" : "text-zinc-400");
+    }
+
+    tnToggle.addEventListener("click", () => {
+      
+      if (usingDemo) {
+        tnSetStatus(t("index.test_notify.demo_disabled", "后端未连接，无法发送测试通知"), true);
+        return;
+      }
+      tnForm.classList.toggle("hidden");
+      if (!tnForm.classList.contains("hidden")) {
+        const titleInput = document.getElementById("tn-title");
+        if (!titleInput.value) titleInput.value = t("index.test_notify.title_placeholder", "测试通知");
+        titleInput.focus();
+      }
+    });
+
+    tnCancel.addEventListener("click", () => {
+      tnForm.classList.add("hidden");
+      tnSetStatus("");
+    });
+
+    tnSend.addEventListener("click", async () => {
+      if (tnSending) return;
+      tnSending = true;
+      const originalText = tnSend.textContent;
+      tnSend.textContent = t("index.test_notify.sending", "发送中…");
+      tnSend.disabled = true;
+      tnSetStatus("");
+      const body = {
+        title: document.getElementById("tn-title").value.trim(),
+        body: document.getElementById("tn-body").value,
+        status: document.getElementById("tn-status").value,
+        priority: document.getElementById("tn-priority").value,
+      };
+      const tagsRaw = document.getElementById("tn-tags").value.trim();
+      if (tagsRaw) {
+        body.deviceTags = tagsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+      try {
+        const resp = await api("/v1/test-notify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (resp && resp.matched > 0) {
+          tnSetStatus(
+            t("index.test_notify.success", "已发送，命中 {n} 台设备").replace("{n}", resp.matched),
+            false,
+          );
+        } else {
+          tnSetStatus(t("index.test_notify.no_device", "已发送，但当前没有匹配的接收设备"), false);
+        }
+        
+        await load();
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        tnSetStatus(t("index.test_notify.failed", "发送失败：{msg}").replace("{msg}", msg), true);
+      } finally {
+        tnSending = false;
+        tnSend.textContent = originalText;
+        tnSend.disabled = false;
+      }
+    });
 
      
     
