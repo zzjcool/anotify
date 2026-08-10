@@ -49,7 +49,10 @@ export ANOTIFY_ADDR ANOTIFY_STATIC
 # ---------- 2. 确保 web/*.html 存在 ----------
 if [ ! -f "web/index.html" ] || [ ! -f "web/login.html" ]; then
 	echo "▶ web/*.html 不存在，生成中…"
-	make sitegen || { echo "❌ make sitegen 失败"; exit 1; }
+	make sitegen || {
+		echo "❌ make sitegen 失败"
+		exit 1
+	}
 fi
 
 # ---------- 3. 端口检查 ----------
@@ -82,7 +85,7 @@ else
 		echo "⚠️  cloudflared 未安装，跳过 tunnel（brew install cloudflared）"
 	else
 		echo "▶ 启动 cloudflared tunnel（dev.openaaas.org → localhost:${PORT_NUM}）…"
-		cloudflared tunnel run anotify > /tmp/anotify-tunnel.log 2>&1 &
+		cloudflared tunnel run anotify >/tmp/anotify-tunnel.log 2>&1 &
 		TUNNEL_PID=$!
 		# 等 tunnel 就绪（日志出现 "Registered tunnel connection"）
 		for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
