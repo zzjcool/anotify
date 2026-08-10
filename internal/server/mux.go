@@ -137,6 +137,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
 	// Agent 上报（Bearer Key，内部自校验）
 	mux.Handle("/v1/notify", noStore(notifyH))
+	// 工作台测试上报（会话 Cookie 鉴权）：已登录用户在网页直接发测试通知到自己设备
+	mux.Handle("/v1/test-notify", noStore(sessMW(http.HandlerFunc(notifyH.ServeTestNotify))))
 	// WS 长连接（Bearer Key，内部自校验）
 	mux.Handle("/v1/stream", noStore(streamH))
 	// VAPID 公钥（前端订阅用，无需登录也可读；单一事实源 = push.LoadVAPID）

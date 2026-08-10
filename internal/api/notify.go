@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anotify/anotify/internal/auth"
 	"github.com/anotify/anotify/internal/authn"
 	"github.com/anotify/anotify/internal/broker"
 	"github.com/anotify/anotify/internal/route"
@@ -220,5 +221,124 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"user_id", userID,
 		"matched", resp.Matched,
 		"status", req.Status,
+	)
+}
+
+// TestNotifyRequest 是 POST /v1/test-notify 的请求体。
+// 字段比 NotifyRequest 精简：网页测试通知无需 agentId/sessionId/cwd/model/durationMs
+// 等运行时上下文，服务端会填入测试占位值。
+type TestNotifyRequest struct {
+	Title      string   `json:"title"`
+	Body       string   `json:"body"`
+	Status     string   `json:"status"`
+	Link       string   `json:"link"`
+	DeviceTags []string `json:"deviceTags"`
+	Priority   string   `json:"priority"`
+}
+
+// ServeTestNotify 处理 POST /v1/test-notify（会话 Cookie 鉴权）。
+//
+// 与 ServeHTTP（Agent Bearer Key 上报）不同：本方法供已登录的工作台用户
+// 在网页上直接发一条测试通知到自己所有设备，无需持有 send Key。
+// userID 由上层 sessMW 中间件从会话注入 context。
+func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	user := auth.UserIDFromContext(r.Context())
+	if user == "" {
+		writeError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+
+	var req TestNotifyRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		title = "测试通知"
+	}
+	status := strings.TrimSpace(req.Status)
+	if status == "" {
+		status = broker.StatusInfo
+	}
+	if !validStatuses[status] {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("status must be one of success|error|interrupted|info|warning, got %q", status))
+		return
+	}
+	priority := strings.TrimSpace(req.Priority)
+	if priority == "" {
+		priority = "normal"
+	}
+	ttl := 86400
+
+	now := time.Now().UTC()
+	// 完整 payload：测试请求体 + 来源标记，便于在通知历史里区分测试消息。
+	payload, err := json.Marshal(map[string]any{
+		"title":      title,
+		"body":       req.Body,
+		"status":     status,
+		"link":       req.Link,
+		"deviceTags": normalizeTags(req.DeviceTags),
+		"priority":   priority,
+		"source":     "test-notify",
+		"agentId":    "test-notify",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "marshal payload: "+err.Error())
+		return
+	}
+
+	msg := &broker.Message{
+		ID:         store.NewMessageID(),
+		UserID:     user,
+		Title:      title,
+		Status:     status,
+		Body:       req.Body,
+		Link:       req.Link,
+		DeviceTags: normalizeTags(req.DeviceTags),
+		Priority:   priority,
+		TTLSeconds: ttl,
+		Payload:    payload,
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(time.Duration(ttl) * time.Second),
+	}
+
+	if err := h.Broker.Publish(r.Context(), msg); err != nil {
+		writeError(w, http.StatusInternalServerError, "publish: "+err.Error())
+		return
+	}
+	if h.OnPublished != nil {
+		h.OnPublished(user)
+	}
+
+	resp := NotifyResponse{ID: msg.ID, Matched: 0, Results: []DeliveryResult{}}
+	if h.Store != nil {
+		devices, derr := h.Store.ListEnabledDevices(r.Context(), user)
+		if derr == nil {
+			matched := route.FilterDevices(devices, msg)
+			resp.Matched = len(matched)
+			for _, dev := range matched {
+				resp.Results = append(resp.Results, DeliveryResult{
+					Device: dev.ID,
+					Status: store.DeliveryPending,
+				})
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+	slog.Info("test notify published",
+		"event", "notify.test_published",
+		"message_id", msg.ID,
+		"user_id", user,
+		"matched", resp.Matched,
+		"status", status,
 	)
 }

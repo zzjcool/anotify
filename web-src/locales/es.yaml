@@ -157,6 +157,25 @@ index:
     filter_interrupted: Interrumpido
     refresh: Actualizar →
   recent_summary: Recibidas {total} notificaciones, {ok} exitosas.
+  test_notify:
+    title: Enviar notificación de prueba
+    desc: Envía una notificación a todos tus dispositivos desde la web
+    button: Enviar notificación de prueba
+    title_label: Título
+    title_placeholder: Notificación de prueba
+    body_label: Cuerpo
+    body_placeholder: Esta es una notificación de prueba desde el panel
+    status_label: Estado
+    tags_label: Etiquetas de enrutado
+    tags_placeholder: Opcional, separado por comas, ej. móvil,trabajo
+    priority_label: Prioridad
+    send: Enviar
+    sending: Enviando…
+    success: Enviado, coincide con {n} dispositivo(s)
+    no_device: Enviado, pero ningún dispositivo coincidente está suscrito
+    failed: "Error al enviar: {msg}"
+    demo_disabled: Backend no conectado, no se puede enviar la notificación
+    cancel: Cancelar
   notif:
     empty: No hay notificaciones con este estado
     delivered: "{d}/{t} dispositivos entregados"

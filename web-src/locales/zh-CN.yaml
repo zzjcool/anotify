@@ -157,6 +157,25 @@ index:
     filter_interrupted: 中断
     refresh: 刷新 →
   recent_summary: 最近收录 {total} 条通知，其中 {ok} 条成功。
+  test_notify:
+    title: 发送测试通知
+    desc: 直接从网页发一条通知到你的所有设备
+    button: 发送测试通知
+    title_label: 标题
+    title_placeholder: 测试通知
+    body_label: 正文
+    body_placeholder: 这是一条来自工作台的测试通知
+    status_label: 状态
+    tags_label: 路由标签
+    tags_placeholder: 可选，逗号分隔，如 手机,工作
+    priority_label: 优先级
+    send: 发送
+    sending: 发送中…
+    success: 已发送，命中 {n} 台设备
+    no_device: 已发送，但当前没有匹配的接收设备
+    failed: 发送失败：{msg}
+    demo_disabled: 后端未连接，无法发送测试通知
+    cancel: 取消
   notif:
     empty: 暂无该状态的通知
     delivered: "{d}/{t} 设备已送达"

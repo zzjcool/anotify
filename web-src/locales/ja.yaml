@@ -157,6 +157,25 @@ index:
     filter_interrupted: 中断
     refresh: 更新 →
   recent_summary: 直近 {total} 件の通知、うち {ok} 件が成功。
+  test_notify:
+    title: テスト通知を送信
+    desc: Web から直接すべてのデバイスに通知を送信
+    button: テスト通知を送信
+    title_label: タイトル
+    title_placeholder: テスト通知
+    body_label: 本文
+    body_placeholder: これはダッシュボードからのテスト通知です
+    status_label: ステータス
+    tags_label: ルーティングタグ
+    tags_placeholder: "任意、カンマ区切り、例: スマホ,仕事"
+    priority_label: 優先度
+    send: 送信
+    sending: 送信中…
+    success: 送信済み、{n} 台のデバイスにマッチ
+    no_device: 送信済み、ただし現在マッチする受信デバイスがありません
+    failed: "送信失敗: {msg}"
+    demo_disabled: バックエンド未接続、テスト通知を送信できません
+    cancel: キャンセル
   notif:
     empty: このステータスの通知はありません
     delivered: "{d}/{t} 台に配信済み"

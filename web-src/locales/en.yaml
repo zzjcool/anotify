@@ -157,6 +157,25 @@ index:
     filter_interrupted: Interrupted
     refresh: Refresh →
   recent_summary: Received {total} notifications, {ok} successful.
+  test_notify:
+    title: Send test notification
+    desc: Send a notification to all your devices right from the web
+    button: Send test notification
+    title_label: Title
+    title_placeholder: Test notification
+    body_label: Body
+    body_placeholder: This is a test notification from the dashboard
+    status_label: Status
+    tags_label: Routing tags
+    tags_placeholder: Optional, comma-separated, e.g. phone,work
+    priority_label: Priority
+    send: Send
+    sending: Sending…
+    success: Sent, matched {n} device(s)
+    no_device: Sent, but no matching device is currently subscribed
+    failed: "Send failed: {msg}"
+    demo_disabled: Backend not connected, cannot send test notification
+    cancel: Cancel
   notif:
     empty: No notifications with this status
     delivered: "{d}/{t} devices delivered"

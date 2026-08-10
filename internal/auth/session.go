@@ -30,6 +30,12 @@ func UserIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// WithUserID 把 userID 注入 context 并返回新 context。
+// 供会话中间件注入登录身份；也可在测试中直接构造已鉴权 context。
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return withUserID(ctx, userID)
+}
+
 // withUserID 把 userID 注入 context。
 func withUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, ctxUserID, userID)

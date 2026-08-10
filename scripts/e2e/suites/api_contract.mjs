@@ -158,6 +158,35 @@ async function main() {
 		!!vapidResp.json?.publicKey && vapidResp.json.publicKey.length > 0,
 	);
 
+	// ---------- test-notify（会话鉴权）----------
+	H.eq(
+		"test-notify 无 session → 401",
+		(await H.req(B, "/v1/test-notify", { body: { title: "t", status: "info" } }))
+			.status,
+		401,
+	);
+	const tnResp = await H.req(B, "/v1/test-notify", {
+		session,
+		body: { title: "测试通知", status: "info", body: "hi" },
+	});
+	H.eq("test-notify 有 session + 合法体 → 200", tnResp.status, 200);
+	H.check("test-notify 返回 id", !!tnResp.json?.id);
+	H.check(
+		"test-notify 返回 matched 为数字",
+		typeof tnResp.json?.matched === "number",
+	);
+	H.eq(
+		"test-notify 缺 title → 仍 200（默认标题）",
+		(await H.req(B, "/v1/test-notify", { session, body: {} })).status,
+		200,
+	);
+	H.eq(
+		"test-notify 坏 status → 400",
+		(await H.req(B, "/v1/test-notify", { session, body: { status: "bogus" } }))
+			.status,
+		400,
+	);
+
 	// ---------- devices ----------
 	H.eq("devices 无 session → 401", (await H.req(B, "/v1/devices")).status, 401);
 	H.eq(
