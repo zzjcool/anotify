@@ -31,8 +31,8 @@ const CHROME =
 const RATIO = {
 	fontSize: 0.39, // "An" 字号 / size
 	radius: 0.1875, // 圆角 / size（rounded-lg ≈ 18.75%）
-	dotD: 0.094, // 红点直径 / size（dashboard 12px/36px≈0.33→ 视觉按 0.094 更稳）
-	dotOffset: 0.07, // 红点距右上 / size
+	dotD: 0.17, // 红点直径 / size（对齐 favicon.svg 的 11/64≈0.172）
+	dotOffset: 0.06, // 红点距右上 / size（预留让红点完整在画布内，不被边缘裁剪）
 	padTop: 0.06, // 视觉垂直居中微调 / size
 };
 
