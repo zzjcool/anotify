@@ -1,10 +1,8 @@
 {{define "title"}}{{t "docs.title"}}{{end}} {{define
 "fonts-extra"}}&family=JetBrains+Mono:wght@400;500;600{{end}} {{define "style"}}
 <style>
-  /* 本页特有样式（共享样式见 ui.css / tokens.css） */
-  .mono {
-    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  }
+  /* 本页特有样式（共享样式见 ui.css / tokens.css）
+     code-block / copy-btn / tk-* / mono 等已抽入 ui.css 共享 */
 
   /* 方法徽章 */
   .method {
@@ -38,61 +36,6 @@
   .m-ws {
     background: var(--accent-soft);
     color: var(--accent);
-  }
-
-  /* 代码块 */
-  .code-block {
-    background: var(--code-bg);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-  .code-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.55rem 1rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    font-size: 0.7rem;
-    color: var(--faint);
-  }
-  .copy-btn {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 0.15rem 0.5rem;
-    font-size: 0.68rem;
-    color: var(--muted);
-    transition: all 0.2s;
-    cursor: pointer;
-  }
-  .copy-btn:hover {
-    color: var(--text);
-    border-color: rgba(255, 255, 255, 0.25);
-  }
-  .code-body {
-    padding: 1rem;
-    font-family: "JetBrains Mono", monospace;
-    font-size: 0.78rem;
-    line-height: 1.65;
-    overflow-x: auto;
-    color: var(--code-text);
-    white-space: pre;
-  }
-  .tk-key {
-    color: var(--accent-strong);
-  }
-  .tk-str {
-    color: var(--success);
-  }
-  .tk-num {
-    color: var(--warn);
-  }
-  .tk-punct {
-    color: var(--muted);
-  }
-  .tk-comment {
-    color: var(--faint);
-    font-style: italic;
   }
 
   /* 参数表 */
@@ -160,19 +103,6 @@
     padding: 0.05rem 0.35rem;
     border-radius: 4px;
     color: var(--code-text);
-  }
-  /* 网格/卡片子元素最小宽度归零，防长内容撑破容器（flex/grid min-width:auto 陷阱） */
-  .grid > *,
-  .card,
-  .code-block {
-    min-width: 0;
-  }
-  /* 移动端：卡片内横滚容器收缩到视口内，内容在其内部滚动 */
-  @media (max-width: 640px) {
-    .overflow-x-auto {
-      max-width: calc(100vw - 5rem);
-      contain: inline-size;
-    }
   }
   .doc-anchor {
     scroll-margin-top: 5rem;

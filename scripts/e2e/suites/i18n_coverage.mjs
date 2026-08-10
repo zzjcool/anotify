@@ -33,6 +33,7 @@ const PAGES = [
 	"security.html",
 	"docs.html",
 	"login.html",
+	"connect.html",
 ];
 
 /* CJK Unicode ranges: CJK Unified Ideographs + Extension A */
@@ -143,7 +144,11 @@ async function main() {
 		for (const pageName of PAGES) {
 			const pageType = pageName === "login.html" ? "login" : "none";
 			const path = `/${lang}/${pageName}?demo=1`;
-			const { page, errors } = await openPage(ctx, server.base + path, pageType);
+			const { page, errors } = await openPage(
+				ctx,
+				server.base + path,
+				pageType,
+			);
 			const text = await getScannedText(page);
 			const cjkLines = findCjk(text);
 			H.check(

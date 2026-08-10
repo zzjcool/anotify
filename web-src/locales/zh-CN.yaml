@@ -181,6 +181,40 @@ index:
     n7_body: 升级 8 个依赖至最新稳定版，无破坏性变更。
     n8_title: 备份任务完成
     n8_body: 数据库快照已生成并上传至对象存储，大小 1.2 GB。
+connect:
+  title: 接入 Agent
+  subtitle: 为你的 Agent 安装通知插件。装好后插件会引导完成登录授权，任务结束时自动把通知送到你的设备。
+  subtitle_short: 为你的 Agent 安装通知插件
+  plugins:
+    title: 插件目录
+    subtitle: 选择你使用的 Agent，安装对应插件
+    available: 可安装
+    coming_soon: 即将支持
+    install: 安装
+    copy: 复制
+    pi:
+      tagline: pi-coding-agent
+      desc: 监听 agent_settled 事件，任务结束时自动推送通知到你的所有设备。通过 skill 安装，装好后插件引导完成登录授权。
+      install_hint: 在终端运行，安装 pi 通知 skill
+      after_install: 装好后运行任意 pi 任务，插件自动引导完成登录授权，无需手动配置 Key。
+    claude_code:
+      tagline: Anthropic Claude Code
+      desc: 为 Claude Code 提供任务完成通知能力，授权后自动上报。插件开发中。
+    codex:
+      tagline: OpenAI Codex
+      desc: 为 Codex 提供任务完成通知能力，授权后自动上报。插件开发中。
+    opencode:
+      tagline: OpenCode
+      desc: 为 OpenCode 提供任务完成通知能力，授权后自动上报。插件开发中。
+  journey:
+    title: 一条通知的旅程
+    more: 想深入？看 API 文档 →
+  help:
+    title: 还有问题？
+    docs: API 文档 →
+    keys: 管理 Keys →
+    receivers: 通知接收 →
+
 message:
   title: 通知详情
   loading: 正在加载…

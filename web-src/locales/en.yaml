@@ -181,6 +181,39 @@ index:
     n7_body: Upgraded 8 dependencies to latest stable, no breaking changes.
     n8_title: Backup complete
     n8_body: Database snapshot generated and uploaded to object storage, 1.2 GB.
+connect:
+  title: Connect Agent
+  subtitle: Install a notification plugin for your Agent. After install, the plugin guides you through login authorization, then automatically delivers notifications to your devices when tasks finish.
+  subtitle_short: Install a notification plugin for your Agent
+  plugins:
+    title: Plugin directory
+    subtitle: Pick the Agent you use and install its plugin
+    available: Available
+    coming_soon: Coming soon
+    install: Install
+    copy: Copy
+    pi:
+      tagline: pi-coding-agent
+      desc: Listens for the agent_settled event and pushes notifications to all your devices when a task finishes. Install via skill; the plugin then guides you through login authorization.
+      install_hint: Run in your terminal to install the pi notification skill
+      after_install: After install, run any pi task — the plugin automatically guides you through login authorization, no manual Key setup needed.
+    claude_code:
+      tagline: Anthropic Claude Code
+      desc: Adds task-completion notifications to Claude Code, auto-reporting after authorization. Plugin in development.
+    codex:
+      tagline: OpenAI Codex
+      desc: Adds task-completion notifications to Codex, auto-reporting after authorization. Plugin in development.
+    opencode:
+      tagline: OpenCode
+      desc: Adds task-completion notifications to OpenCode, auto-reporting after authorization. Plugin in development.
+  journey:
+    title: A notification's journey
+    more: Want to go deeper? See API docs →
+  help:
+    title: Still have questions?
+    docs: API docs →
+    keys: Manage Keys →
+    receivers: Notification receiving →
 message:
   title: Notification detail
   loading: Loading…

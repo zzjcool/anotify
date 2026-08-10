@@ -120,7 +120,7 @@
 					id: "agent",
 					labelKey: "common.nav.agent",
 					fallback: "接入 Agent",
-					href: "index.html#quickstart",
+					href: "connect.html",
 					icon: "agent",
 				},
 				{
@@ -741,6 +741,7 @@
 						"docs.html",
 						"cli-auth.html",
 						"passkey-enroll.html",
+						"connect.html",
 					];
 					const name = location.pathname.split("/").pop();
 					const page = PAGES.includes(name) ? name : "index.html";

@@ -25,7 +25,21 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 ## 当前任务
 
-（空 —— 等待协调者下达下一个编排任务）
+### connect-agent-page：接入 Agent 独立页（feat/connect-agent-page，2026-08-10 完成）
+
+**用户诉求**：现在侧边栏「接入 Agent」点击后是跳到首页 `#quickstart` 锚点卡片，体验割裂。要为「接入新 Agent」单开一个独立页面，侧边栏导航直达该页；整套交互逻辑重新设计，完整交付。
+
+**编排流程**：pm（需求）→ designer（设计）→ worker/frontend（实施）→ tester（门禁）→ reviewer（终审）。
+
+- [x] 定义层：designer design.md（pm 因模型截断未落盘，协调者亲自拍板 3 个待决策点写进 plan.md）
+- [x] 实现层：worker 改 NAV+抽 code-block 样式+4 语言 i18n+首页精简；frontend 造 connect.html（6 区块工作流页）
+- [x] 测试层：tester E2E 覆盖新页 + 导航高亮 + 演示态
+- [x] 终审：reviewer 首轮 REQUEST_CHANGES（发现演示态 MAJOR bug）→ frontend 修复 → tester 补后端宕机 e2e → reviewer 复审 APPROVE
+- [x] 门禁：make e2e 17/17 全绿，1020 断言通过（53.3s）；协调者独立 web_verify 实测真实数据态 7 card + active 高亮 + 无溢出 + 0 JS 错误
+
+**产出**：新建 connect.html（6 区块三步工作流页）、NAV 直达、code-block 样式抽 ui.css 共享、首页 quickstart 降级为 CTA、4 语言 connect.* 命名空间、3 套 e2e 加覆盖
+
+**关键经验**：reviewer 用 Playwright 实证抓出演示态 bug（tester 全在真实后端跑，有后端宕机盲区）——证明 reviewer 独立于 tester 的价值；修复后 tester 补 route.abort() 后端宕机用例堵住盲区
 
 ---
 

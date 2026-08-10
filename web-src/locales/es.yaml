@@ -181,6 +181,39 @@ index:
     n7_body: 8 dependencias actualizadas a la última versión estable, sin cambios disruptivos.
     n8_title: Backup completado
     n8_body: Snapshot de BD generado y subido a almacenamiento de objetos, 1.2 GB.
+connect:
+  title: Conectar Agent
+  subtitle: Instala un plugin de notificación para tu Agent. Tras la instalación, el plugin te guía por la autorización de inicio de sesión y entrega notificaciones a tus dispositivos al terminar las tareas.
+  subtitle_short: Instala un plugin de notificación para tu Agent
+  plugins:
+    title: Directorio de plugins
+    subtitle: Elige el Agent que usas e instala su plugin
+    available: Disponible
+    coming_soon: Próximamente
+    install: Instalar
+    copy: Copiar
+    pi:
+      tagline: pi-coding-agent
+      desc: Escucha el evento agent_settled y envía notificaciones a todos tus dispositivos al terminar una tarea. Se instala vía skill y el plugin te guía por la autorización de inicio de sesión.
+      install_hint: Ejecuta en tu terminal para instalar el skill de notificación de pi
+      after_install: "Tras instalar, ejecuta cualquier tarea de pi: el plugin te guía por la autorización, sin configurar Key manualmente."
+    claude_code:
+      tagline: Anthropic Claude Code
+      desc: Añade notificaciones de fin de tarea a Claude Code, con reporte automático tras la autorización. Plugin en desarrollo.
+    codex:
+      tagline: OpenAI Codex
+      desc: Añade notificaciones de fin de tarea a Codex, con reporte automático tras la autorización. Plugin en desarrollo.
+    opencode:
+      tagline: OpenCode
+      desc: Añade notificaciones de fin de tarea a OpenCode, con reporte automático tras la autorización. Plugin en desarrollo.
+  journey:
+    title: El viaje de una notificación
+    more: "¿Quieres profundizar? Ver docs de la API →"
+  help:
+    title: "¿Tienes más preguntas?"
+    docs: Docs de la API →
+    keys: Gestionar Keys →
+    receivers: Recepción de notificaciones →
 message:
   title: Detalle de notificación
   loading: Cargando…

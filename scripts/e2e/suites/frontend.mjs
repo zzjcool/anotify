@@ -2,12 +2,14 @@
 /* SUITE: frontend — 前端渲染 + 路由守卫 + 真实数据
  *
  * 覆盖 case：
- *  A. 路由守卫：未登录访问 index/receivers/keys/security → 自动跳 login.html
+ *  A. 路由守卫：未登录访问 index/receivers/keys/security/message/connect → 自动跳 login.html
  *  B. 已登录访问 index → 不显示「演示数据」徽章（demo-badge 隐藏），渲染真实数据（哪怕空）
  *  C. login.html 是公开页：未登录正常渲染、不跳转
- *  D. 全部 6 页（index/login/receivers/keys/security/docs）在 桌面1280 + 移动390 两视口：
+ *  D. 全部页面（index/login/receivers/keys/security/docs/message/connect）在 桌面1280 + 移动390 两视口：
  *     无 JS pageerror、无横向溢出、能滚动到底
  *     （/v1/* 的 401/404 是预期降级，不算失败；demo-badge 显示是后端未连接的预期行为）
+ *  E. connect.html 独立页：侧栏导航直连 + active 高亮 + 6 区块 + 无裸 i18n key
+ *  F. connect.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证 demo 徽章亮 + 三灯显「—」
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
@@ -21,6 +23,7 @@ const PAGES = [
 	"security.html",
 	"docs.html",
 	"message.html",
+	"connect.html",
 ];
 const GUARDED = [
 	"index.html",
@@ -28,6 +31,7 @@ const GUARDED = [
 	"keys.html",
 	"security.html",
 	"message.html",
+	"connect.html",
 ];
 const VIEWPORTS = [
 	{ name: "桌面1280", width: 1280, height: 800 },
@@ -51,7 +55,11 @@ async function checkPage(ctx, url, viewportName, viewport) {
 		// 用 Promise.race 竞争等待两个锚点之一出现（3s 超时，足够覆盖跳转+渲染）。
 		await Promise.race([
 			page.waitForSelector("#sidebar", { timeout: 3000 }).catch(() => {}),
-			page.waitForSelector("#lang-switcher-login button[aria-haspopup]", { timeout: 3000 }).catch(() => {}),
+			page
+				.waitForSelector("#lang-switcher-login button[aria-haspopup]", {
+					timeout: 3000,
+				})
+				.catch(() => {}),
 		]);
 	} catch (e) {
 		H.bad(
@@ -148,7 +156,9 @@ async function main() {
 				timeout: 15000,
 			});
 			// 等客户端 JS 触发 401 → 跳转 login.html
-			await page.waitForURL("**/login.html*", { timeout: 8000 }).catch(() => {});
+			await page
+				.waitForURL("**/login.html*", { timeout: 8000 })
+				.catch(() => {});
 			const finalUrl = page.url();
 			H.check(
 				`未登录访问 ${p} → 跳转到 login.html`,
@@ -237,7 +247,91 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- D. 全部 6 页 × 2 视口渲染检查（未登录态，验证纯渲染；受保护页会跳 login，跳后渲染 login 也算无 JS 错误）----
+	// ---- E. connect.html 独立页：侧栏导航 + active 高亮 + 6 区块 ----
+	console.log("--- connect.html 独立页导航 ---");
+	{
+		const s = H.seed(server.dbPath, "connect_test");
+		const ctx = await browser.newContext();
+		await injectSession(ctx, s.session, server.base);
+		const page = await ctx.newPage();
+		await page.goto(server.base + "/connect.html", {
+			waitUntil: "load",
+			timeout: 15000,
+		});
+		await H.waitForAppReady(page, "workspace");
+
+		// E-1: 侧栏「接入 Agent」链接 href = connect.html（非锚点）
+		const agentNavHref = await page.evaluate(() => {
+			const links = document.querySelectorAll("#sidebar .side-link");
+			for (const a of links) {
+				if (
+					a.textContent.includes("Agent") ||
+					a.textContent.includes("接入") ||
+					a.textContent.includes("連携") ||
+					a.textContent.includes("Conectar")
+				)
+					return a.getAttribute("href");
+			}
+			return null;
+		});
+		H.check(
+			"侧栏接入 Agent 链接指向 connect.html",
+			agentNavHref === "connect.html",
+			agentNavHref,
+		);
+
+		// E-2: connect.html 侧栏 active 高亮 = agent 项
+		const activeNav = await page.evaluate(() => {
+			const active = document.querySelector("#sidebar .side-link.active");
+			if (!active) return null;
+			return active.getAttribute("href");
+		});
+		H.check(
+			"connect.html 侧栏 active 项指向 connect.html",
+			activeNav === "connect.html",
+			activeNav,
+		);
+
+		// E-3: 插件目录 — 4 个插件卡片（pi 可安装 + 3 个占位），且含 pi 安装命令
+		const pluginInfo = await page.evaluate(() => {
+			const cards = document.querySelectorAll(".grid .card");
+			const txt = document.body.innerText;
+			return {
+				count: cards.length,
+				hasPiInstall: txt.includes("pi skill install anotify"),
+				comingSoon: (
+					txt.match(/即将支持|Coming soon|近日対応|Próximamente/g) || []
+				).length,
+			};
+		});
+		H.check(
+			"connect.html 插件目录 4 个卡片",
+			pluginInfo.count === 4,
+			`cards=${pluginInfo.count}`,
+		);
+		H.check("connect.html 含 pi 安装命令", pluginInfo.hasPiInstall);
+		H.check(
+			"connect.html 3 个占位插件标「即将支持」",
+			pluginInfo.comingSoon === 3,
+			`comingSoon=${pluginInfo.comingSoon}`,
+		);
+
+		// E-4: 无裸 i18n key 泄漏（页面文本不含 connect.* 或 docs.* 键）
+		const hasRawKey = await page.evaluate(() => {
+			const txt = document.body.innerText;
+			return /\bconnect\.\w+\b/.test(txt) || /\bcommon\.nav\.\w+\b/.test(txt);
+		});
+		H.check(
+			"connect.html 无裸 i18n key 泄漏",
+			!hasRawKey,
+			hasRawKey ? "发现裸 key" : "",
+		);
+
+		await page.close();
+		await ctx.close();
+	}
+
+	// ---- D. 全部页面 × 2 视口渲染检查（未登录态，验证纯渲染；受保护页会跳 login，跳后渲染 login 也算无 JS 错误）----
 	console.log("--- 全页面 × 双视口渲染 ---");
 	for (const vp of VIEWPORTS) {
 		const ctx = await browser.newContext();

@@ -48,7 +48,7 @@
             <span class="dot dot-warn"></span>Datos demo (backend no conectado)
           </span>
           <a
-            href="#quickstart"
+            href="connect.html"
             class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
             >Conectar nuevo Agent</a
           >
@@ -160,99 +160,20 @@
 
     
     <section id="quickstart" class="card reveal visible overflow-hidden">
-      <div
-        class="flex items-center justify-between border-b border-white/[0.06] px-6 py-4"
-      >
+      <div class="flex flex-wrap items-center justify-between gap-4 p-6">
         <div>
           <div class="text-sm font-medium text-white">
             Conecta tu Agent
           </div>
-          <div class="text-[11px] text-zinc-500">
-            Recibe avisos automáticos al terminar tu agente
+          <div class="mt-0.5 text-[11px] text-zinc-500">
+            Instala un plugin de notificación para tu Agent
           </div>
         </div>
-        <span
-          class="status-badge"
-          style="background: var(--accent-soft); color: var(--accent)"
-          >Recomendado</span
+        <a
+          href="connect.html"
+          class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
+          >Conectar nuevo Agent</a
         >
-      </div>
-      <div class="grid gap-6 p-6 lg:grid-cols-2">
-        <div>
-          <div class="mb-3 flex items-center gap-2 text-xs text-zinc-400">
-            <span
-              class="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 font-mono text-[10px]"
-              >A</span
-            >
-            Configura tu Agent con una línea
-          </div>
-          <div
-            class="rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden"
-          >
-            <div
-              class="flex items-center justify-between border-b border-white/10 px-4 py-2.5"
-            >
-              <div class="flex items-center gap-1.5">
-                <span class="h-2.5 w-2.5 rounded-full bg-red-500/70"></span>
-                <span class="h-2.5 w-2.5 rounded-full bg-yellow-500/70"></span>
-                <span class="h-2.5 w-2.5 rounded-full bg-green-500/70"></span>
-              </div>
-              <button
-                data-copy="#cmd-a"
-                class="copy-btn rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors"
-              >
-                Copiar
-              </button>
-            </div>
-            <div class="px-4 py-4 font-mono text-[12.5px] leading-relaxed">
-              <p class="text-zinc-600">
-                # Envía esta línea a tu Agent
-              </p>
-              <p class="mt-1.5 text-zinc-200" id="cmd-a">
-                Sigue anotify.dev/docs/skill para instalar el reporte de notificaciones: escucha agent_settled y envía a mis dispositivos al terminar las tareas.
-              </p>
-            </div>
-          </div>
-        </div>
-        <div>
-          <div class="mb-3 flex items-center gap-2 text-xs text-zinc-400">
-            <span
-              class="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 font-mono text-[10px]"
-              >B</span
-            >
-            O reporta desde un script / CI
-          </div>
-          <div
-            class="rounded-xl bg-black/50 ring-1 ring-white/10 overflow-hidden"
-          >
-            <div
-              class="flex items-center justify-between border-b border-white/10 px-4 py-2.5"
-            >
-              <span class="text-[11px] text-zinc-500 mono">curl</span>
-              <button
-                data-copy="#cmd-b"
-                class="copy-btn rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 transition-colors"
-              >
-                Copiar
-              </button>
-            </div>
-            <div
-              class="px-4 py-4 font-mono text-[12px] leading-relaxed"
-              id="cmd-b"
-            >
-              <p>
-                <span class="text-zinc-600">$</span> curl -X POST
-                <span id="api-base">https://api.anotify.dev</span>/v1/notify \
-              </p>
-              <p class="pl-4 text-zinc-300">
-                -H "Authorization: Bearer ant_live_…" \
-              </p>
-              <p class="pl-4 text-zinc-300">
-                -d '{"title":"Despliegue listo","status":"success"}'
-              </p>
-            </div>
-          </div>
-        </div>
       </div>
     </section>
 
@@ -378,7 +299,8 @@
         id: n.id || n.ID || "n" + i,
         seq: n.seq != null ? n.seq : n.Seq,
         status: n.status || n.Status || "info",
-        title: n.title || n.Title || t("common.placeholder.no_title", "（无标题）"),
+        title:
+          n.title || n.Title || t("common.placeholder.no_title", "（无标题）"),
         body: n.body || n.Body || "",
         link: n.link || n.Link || payload.link || "",
         agent: payload.agentId || payload.agent || "agent",
@@ -439,7 +361,10 @@
         duration: 24,
         model: "claude-4",
         createdAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
-        body: t("index.demo.n1_body", "构建成功，已发布到生产环境。共 47 个文件变更。"),
+        body: t(
+          "index.demo.n1_body",
+          "构建成功，已发布到生产环境。共 47 个文件变更。",
+        ),
         link: "pi://session/sess_8f3a",
         sessionId: "sess_8f3a2c",
         delivered: 4,
@@ -454,7 +379,10 @@
         duration: 132,
         model: "claude-4",
         createdAt: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
-        body: t("index.demo.n2_body", "3 个测试用例未通过。已附上完整日志，点击查看排查建议。"),
+        body: t(
+          "index.demo.n2_body",
+          "3 个测试用例未通过。已附上完整日志，点击查看排查建议。",
+        ),
         link: "pi://session/sess_2b1d",
         sessionId: "sess_2b1d8e",
         delivered: 4,
@@ -469,7 +397,10 @@
         duration: 305,
         model: "claude-4",
         createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-        body: t("index.demo.n3_body", "任务被手动停止。当前进度 62%，已保留现场，可继续。"),
+        body: t(
+          "index.demo.n3_body",
+          "任务被手动停止。当前进度 62%，已保留现场，可继续。",
+        ),
         link: "pi://session/sess_9c4f",
         sessionId: "sess_9c4f11",
         delivered: 3,
@@ -484,7 +415,10 @@
         duration: 58,
         model: "claude-4",
         createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-        body: t("index.demo.n4_body", "生成 3 个页面：README、API 参考、部署指南。"),
+        body: t(
+          "index.demo.n4_body",
+          "生成 3 个页面：README、API 参考、部署指南。",
+        ),
         link: "pi://session/sess_77aa",
         sessionId: "sess_77aa09",
         delivered: 4,
@@ -499,7 +433,10 @@
         duration: 91,
         model: "claude-4",
         createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-        body: t("index.demo.n5_body", "审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。"),
+        body: t(
+          "index.demo.n5_body",
+          "审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。",
+        ),
         link: "pi://session/sess_31de",
         sessionId: "sess_31de4b",
         delivered: 4,
@@ -514,7 +451,10 @@
         duration: 47,
         model: "claude-4",
         createdAt: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
-        body: t("index.demo.n6_body", "迁移脚本 0042 执行超时。已自动回滚，数据未受影响。"),
+        body: t(
+          "index.demo.n6_body",
+          "迁移脚本 0042 执行超时。已自动回滚，数据未受影响。",
+        ),
         link: "pi://session/sess_5f2c",
         sessionId: "sess_5f2c88",
         delivered: 4,
@@ -529,7 +469,10 @@
         duration: 76,
         model: "claude-4",
         createdAt: new Date(Date.now() - 31 * 60 * 60 * 1000).toISOString(),
-        body: t("index.demo.n7_body", "升级 8 个依赖至最新稳定版，无破坏性变更。"),
+        body: t(
+          "index.demo.n7_body",
+          "升级 8 个依赖至最新稳定版，无破坏性变更。",
+        ),
         link: "pi://session/sess_a012",
         sessionId: "sess_a0123f",
         delivered: 4,
@@ -544,7 +487,10 @@
         duration: 210,
         model: "claude-4",
         createdAt: new Date(Date.now() - 37 * 60 * 60 * 1000).toISOString(),
-        body: t("index.demo.n8_body", "数据库快照已生成并上传至对象存储，大小 1.2 GB。"),
+        body: t(
+          "index.demo.n8_body",
+          "数据库快照已生成并上传至对象存储，大小 1.2 GB。",
+        ),
         link: "pi://session/sess_d9e7",
         sessionId: "sess_d9e71c",
         delivered: 4,
@@ -843,9 +789,17 @@
         [t("common.field.session", "会话"), n.sessionId],
         [t("common.field.model", "模型"), n.model],
         [t("common.field.duration", "耗时"), n.duration + "s"],
-        [t("common.field.status", "状态"), `${t(meta.labelKey, meta.fallback)}（${n.status}）`],
+        [
+          t("common.field.status", "状态"),
+          `${t(meta.labelKey, meta.fallback)}（${n.status}）`,
+        ],
         [t("common.field.priority", "优先级"), priorityLabel(n.priority)],
-        [t("common.field.device_tags", "路由标签"), tags.length ? tags.join("、") : t("common.placeholder.broadcast", "（广播）")],
+        [
+          t("common.field.device_tags", "路由标签"),
+          tags.length
+            ? tags.join("、")
+            : t("common.placeholder.broadcast", "（广播）"),
+        ],
         [t("common.field.ttl", "TTL"), fmtTTL(n.ttlSeconds)],
         [t("common.field.created_at", "创建时间"), n.time],
       ];
@@ -1007,7 +961,10 @@
           const label = document.createElement("span");
           label.className = "hm-month";
           label.style.gridColumn = w + 2;
-          label.textContent = t("index.heatmap.month", "{n}月").replace("{n}", m + 1);
+          label.textContent = t("index.heatmap.month", "{n}月").replace(
+            "{n}",
+            m + 1,
+          );
           frag.append(label);
           prevMonth = m;
         }
@@ -1031,7 +988,10 @@
               t1.className = "font-medium text-white";
               t1.textContent =
                 count > 0
-                  ? t("index.heatmap.tip.count", "{n} 条通知").replace("{n}", count)
+                  ? t("index.heatmap.tip.count", "{n} 条通知").replace(
+                      "{n}",
+                      count,
+                    )
                   : t("index.heatmap.tip.none", "无通知");
               const t2 = document.createElement("div");
               t2.className = "text-zinc-500";

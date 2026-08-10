@@ -1,0 +1,216 @@
+{{define "title"}}{{t "connect.title"}}{{end}} {{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-6xl space-y-8">
+    <!-- ===== A. 页头 Hero ===== -->
+    <div class="reveal visible">
+      <div>
+        <h2 class="font-display text-3xl text-white">{{t "connect.title"}}</h2>
+        <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+          {{t "connect.subtitle"}}
+        </p>
+      </div>
+    </div>
+
+    <!-- ===== B. 插件目录 ===== -->
+    <section class="reveal visible">
+      <div class="mb-4 flex items-center justify-between">
+        <div>
+          <div class="text-sm font-medium text-white">
+            {{t "connect.plugins.title"}}
+          </div>
+          <div class="text-[11px] text-zinc-500">
+            {{t "connect.plugins.subtitle"}}
+          </div>
+        </div>
+      </div>
+      <div class="grid gap-5 md:grid-cols-2" style="min-width: 0">
+        <!-- pi · 可安装 -->
+        <div class="card p-5" style="min-width: 0">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <span
+                class="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-400/10 text-base font-medium text-indigo-300"
+                >π</span
+              >
+              <div>
+                <div class="text-sm font-medium text-white">pi</div>
+                <div class="text-[11px] text-zinc-500">
+                  {{t "connect.plugins.pi.tagline"}}
+                </div>
+              </div>
+            </div>
+            <span class="status-badge status-on shrink-0"
+              >{{t "connect.plugins.available"}}</span
+            >
+          </div>
+          <p class="mt-3 text-[13px] leading-relaxed text-zinc-500">
+            {{t "connect.plugins.pi.desc"}}
+          </p>
+          <div class="mt-4 code-block" style="min-width: 0">
+            <div class="code-head">
+              <span class="mono">{{t "connect.plugins.install"}}</span>
+              <button
+                class="copy-btn"
+                data-copy-text="pi skill install anotify"
+              >
+                {{t "connect.plugins.copy"}}
+              </button>
+            </div>
+            <div class="code-body">
+              <span class="tk-comment"
+                ># {{t "connect.plugins.pi.install_hint"}}</span
+              >
+              <br />pi skill install anotify
+            </div>
+          </div>
+          <p class="mt-3 text-[11px] leading-relaxed text-zinc-600">
+            {{t "connect.plugins.pi.after_install"}}
+          </p>
+        </div>
+
+        <!-- Claude Code · 占位 -->
+        <div class="card p-5 opacity-60" style="min-width: 0">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <span
+                class="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 text-base font-medium text-zinc-400"
+                >C</span
+              >
+              <div>
+                <div class="text-sm font-medium text-zinc-300">Claude Code</div>
+                <div class="text-[11px] text-zinc-500">
+                  {{t "connect.plugins.claude_code.tagline"}}
+                </div>
+              </div>
+            </div>
+            <span
+              class="status-badge shrink-0"
+              style="background: var(--surface-2); color: var(--text)"
+              >{{t "connect.plugins.coming_soon"}}</span
+            >
+          </div>
+          <p class="mt-3 text-[13px] leading-relaxed text-zinc-500">
+            {{t "connect.plugins.claude_code.desc"}}
+          </p>
+        </div>
+
+        <!-- Codex · 占位 -->
+        <div class="card p-5 opacity-60" style="min-width: 0">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <span
+                class="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 text-base font-medium text-zinc-400"
+                >Cx</span
+              >
+              <div>
+                <div class="text-sm font-medium text-zinc-300">Codex</div>
+                <div class="text-[11px] text-zinc-500">
+                  {{t "connect.plugins.codex.tagline"}}
+                </div>
+              </div>
+            </div>
+            <span
+              class="status-badge shrink-0"
+              style="background: var(--surface-2); color: var(--text)"
+              >{{t "connect.plugins.coming_soon"}}</span
+            >
+          </div>
+          <p class="mt-3 text-[13px] leading-relaxed text-zinc-500">
+            {{t "connect.plugins.codex.desc"}}
+          </p>
+        </div>
+
+        <!-- OpenCode · 占位 -->
+        <div class="card p-5 opacity-60" style="min-width: 0">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <span
+                class="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 text-base font-medium text-zinc-400"
+                >Oc</span
+              >
+              <div>
+                <div class="text-sm font-medium text-zinc-300">OpenCode</div>
+                <div class="text-[11px] text-zinc-500">
+                  {{t "connect.plugins.opencode.tagline"}}
+                </div>
+              </div>
+            </div>
+            <span
+              class="status-badge shrink-0"
+              style="background: var(--surface-2); color: var(--text)"
+              >{{t "connect.plugins.coming_soon"}}</span
+            >
+          </div>
+          <p class="mt-3 text-[13px] leading-relaxed text-zinc-500">
+            {{t "connect.plugins.opencode.desc"}}
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== C. 一条通知的旅程 ===== -->
+    <section class="card reveal visible p-5">
+      <div class="text-xs font-medium text-zinc-500">
+        {{t "connect.journey.title"}}
+      </div>
+      <pre
+        class="mono mt-3 overflow-x-auto text-[11.5px] leading-relaxed text-zinc-400"
+        style="min-width: 0"
+      >
+ Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
+    │                        │                        │                        │
+    │ ① agent_settled        │                        │                        │
+    │ ② POST /v1/notify ────▶│ ③ verify Key → locate user                        │
+    │                        │ ④ filter by tag/level   │                        │
+    │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
+    │                        │                        │     ⑦ SW showNotification
+    │                        │                        │     ⑧ system banner       │</pre>
+      <div class="mt-2 text-[11px] text-zinc-600">
+        <a href="docs.html#agent" class="transition-colors hover:text-zinc-400"
+          >{{t "connect.journey.more"}}</a
+        >
+      </div>
+    </section>
+
+    <!-- ===== D. 页尾帮助条 ===== -->
+    <section class="card reveal visible p-5">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="text-sm text-zinc-400">{{t "connect.help.title"}}</div>
+        <div class="flex flex-wrap items-center gap-2">
+          <a href="docs.html" class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            >{{t "connect.help.docs"}}</a
+          >
+          <a href="keys.html" class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            >{{t "connect.help.keys"}}</a
+          >
+          <a
+            href="receivers.html"
+            class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            >{{t "connect.help.receivers"}}</a
+          >
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+{{end}} {{define "script"}}
+<script>
+  (function () {
+    const { t, mountLayout, copyText } = window.Anotify;
+
+    /* ---------- 复制按钮 ---------- */
+    document.querySelectorAll(".copy-btn[data-copy-text]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        copyText(btn, () => btn.dataset.copyText);
+      });
+    });
+
+    /* ---------- 页面组装 ---------- */
+    mountLayout({
+      active: "agent",
+      title: t("connect.title", "接入 Agent"),
+      subtitle: t("connect.subtitle_short", "为你的 Agent 安装通知插件"),
+    });
+  })();
+</script>
+{{end}}

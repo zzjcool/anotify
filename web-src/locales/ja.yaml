@@ -181,6 +181,39 @@ index:
     n7_body: 8 件の依存関係を最新安定版にアップグレード、破壊的変更なし。
     n8_title: バックアップ完了
     n8_body: DB スナップショットを生成しオブジェクトストレージにアップロード、1.2 GB。
+connect:
+  title: Agent 連携
+  subtitle: お使いの Agent に通知プラグインをインストールします。インストール後、プラグインがログイン認可まで案内し、タスク完了時に通知をデバイスへ自動配信します。
+  subtitle_short: お使いの Agent 用の通知プラグインをインストール
+  plugins:
+    title: プラグインディレクトリ
+    subtitle: 使っている Agent を選んでプラグインをインストール
+    available: インストール可能
+    coming_soon: 近日対応
+    install: インストール
+    copy: コピー
+    pi:
+      tagline: pi-coding-agent
+      desc: agent_settled イベントを監視し、タスク完了時にすべてのデバイスへ通知を自動プッシュします。skill でインストールし、プラグインがログイン認可まで案内します。
+      install_hint: ターミナルで実行して pi 通知 skill をインストール
+      after_install: インストール後、任意の pi タスクを実行するとプラグインが自動的にログイン認可を案内します。Key の手動設定は不要です。
+    claude_code:
+      tagline: Anthropic Claude Code
+      desc: Claude Code にタスク完了通知機能を追加し、認可後に自動報告します。プラグインは開発中です。
+    codex:
+      tagline: OpenAI Codex
+      desc: Codex にタスク完了通知機能を追加し、認可後に自動報告します。プラグインは開発中です。
+    opencode:
+      tagline: OpenCode
+      desc: OpenCode にタスク完了通知機能を追加し、認可後に自動報告します。プラグインは開発中です。
+  journey:
+    title: 通知の旅
+    more: さらに詳しく？ API ドキュメント →
+  help:
+    title: まだ疑問がありますか？
+    docs: API ドキュメント →
+    keys: Key を管理 →
+    receivers: 通知受信 →
 message:
   title: 通知の詳細
   loading: 読み込み中…

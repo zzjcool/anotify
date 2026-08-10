@@ -36,6 +36,7 @@ const PAGES = [
 	"security.html",
 	"docs.html",
 	"message.html",
+	"connect.html",
 ];
 /* Pages that require authentication (will redirect to login without session) */
 const GUARDED = [
@@ -44,6 +45,7 @@ const GUARDED = [
 	"keys.html",
 	"security.html",
 	"message.html",
+	"connect.html",
 ];
 
 /* Map lang → URL prefix. Default lang = "" (root). */
@@ -120,6 +122,7 @@ async function main() {
 		/\bsecurity\.(add|concept|intro|passkey|recovery|session|title|subtitle)\w*/g,
 		/\bmessage\.(body|deliveries|fields|loading|open|title)\w*/g,
 		/\bdocs\.(title|subtitle|toc)\w*/g,
+		/\bconnect\.(title|subtitle|status|health|step|step1|step2|step3|alt|journey|help)\w*/g,
 	];
 	for (const lang of LANGS) {
 		for (const page of PAGES) {
@@ -140,10 +143,7 @@ async function main() {
 			);
 			/* AC-1.2: no raw dotted-keys（复用同一个 r.text） */
 			let stripped = r.text.replace(/(href|src)="[^"]*"/g, '$1=""');
-			stripped = stripped.replace(
-				/<script\b[\s\S]*?<\/script>/gi,
-				"",
-			);
+			stripped = stripped.replace(/<script\b[\s\S]*?<\/script>/gi, "");
 			const leaked = [];
 			for (const re of i18nKeyPatterns) {
 				const matches = stripped.match(re);
@@ -361,7 +361,7 @@ async function main() {
 						!el.closest(".code-body") &&
 						!el.closest("code")
 					)
-					n++;
+						n++;
 				}
 				return n;
 			});
@@ -401,7 +401,10 @@ async function main() {
 		);
 		if (trigger) {
 			await trigger.click();
-			await pg.waitForSelector('#lang-switcher a[hreflang="ja"]', { state: "visible", timeout: 5000 });
+			await pg.waitForSelector('#lang-switcher a[hreflang="ja"]', {
+				state: "visible",
+				timeout: 5000,
+			});
 		}
 		/* Find the ja link in the now-open dropdown */
 		const jaLink = await pg.$('#lang-switcher a[hreflang="ja"]');
@@ -433,7 +436,10 @@ async function main() {
 		);
 		if (loginTrigger) {
 			await loginTrigger.click();
-			await pg.waitForSelector('#lang-switcher-login a[hreflang="zh-CN"]', { state: "visible", timeout: 5000 });
+			await pg.waitForSelector('#lang-switcher-login a[hreflang="zh-CN"]', {
+				state: "visible",
+				timeout: 5000,
+			});
 		}
 		const zhLink = await pg.$('#lang-switcher-login a[hreflang="zh-CN"]');
 		H.check("AC-3.3 ja/login → zh link exists", !!zhLink, "no zh link");
@@ -473,7 +479,10 @@ async function main() {
 		const trigger = await pg.$("#lang-switcher button");
 		if (trigger) {
 			await trigger.click();
-			await pg.waitForSelector('#lang-switcher a[hreflang="es"]', { state: "visible", timeout: 5000 });
+			await pg.waitForSelector('#lang-switcher a[hreflang="es"]', {
+				state: "visible",
+				timeout: 5000,
+			});
 		}
 		const esLink = await pg.$('#lang-switcher a[hreflang="es"]');
 		H.check(
@@ -581,7 +590,9 @@ async function main() {
 		if (menuBtn) {
 			try {
 				await menuBtn.click();
-				await pg.waitForSelector('#sidebar nav a.side-link, #lang-switcher', { timeout: 5000 });
+				await pg.waitForSelector("#sidebar nav a.side-link, #lang-switcher", {
+					timeout: 5000,
+				});
 			} catch {
 				/* menu may already be open */
 			}
@@ -591,7 +602,10 @@ async function main() {
 		const trigger = await pg.$("#lang-switcher button");
 		if (trigger) {
 			await trigger.click();
-			await pg.waitForSelector('#lang-switcher a[hreflang="ja"]', { state: "visible", timeout: 5000 });
+			await pg.waitForSelector('#lang-switcher a[hreflang="ja"]', {
+				state: "visible",
+				timeout: 5000,
+			});
 		}
 		/* Check a language link is clickable */
 		const jaLink = await pg.$('#lang-switcher a[hreflang="ja"]');
