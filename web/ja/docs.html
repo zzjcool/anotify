@@ -20,9 +20,6 @@
     
 <style>
    
-  .mono {
-    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  }
 
    
   .method {
@@ -56,61 +53,6 @@
   .m-ws {
     background: var(--accent-soft);
     color: var(--accent);
-  }
-
-   
-  .code-block {
-    background: var(--code-bg);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-  .code-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.55rem 1rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    font-size: 0.7rem;
-    color: var(--faint);
-  }
-  .copy-btn {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 0.15rem 0.5rem;
-    font-size: 0.68rem;
-    color: var(--muted);
-    transition: all 0.2s;
-    cursor: pointer;
-  }
-  .copy-btn:hover {
-    color: var(--text);
-    border-color: rgba(255, 255, 255, 0.25);
-  }
-  .code-body {
-    padding: 1rem;
-    font-family: "JetBrains Mono", monospace;
-    font-size: 0.78rem;
-    line-height: 1.65;
-    overflow-x: auto;
-    color: var(--code-text);
-    white-space: pre;
-  }
-  .tk-key {
-    color: var(--accent-strong);
-  }
-  .tk-str {
-    color: var(--success);
-  }
-  .tk-num {
-    color: var(--warn);
-  }
-  .tk-punct {
-    color: var(--muted);
-  }
-  .tk-comment {
-    color: var(--faint);
-    font-style: italic;
   }
 
    
@@ -179,19 +121,6 @@
     border-radius: 4px;
     color: var(--code-text);
   }
-   
-  .grid > *,
-  .card,
-  .code-block {
-    min-width: 0;
-  }
-   
-  @media (max-width: 640px) {
-    .overflow-x-auto {
-      max-width: calc(100vw - 5rem);
-      contain: inline-size;
-    }
-  }
   .doc-anchor {
     scroll-margin-top: 5rem;
   }
@@ -212,8 +141,8 @@
     
     <link rel="alternate" hreflang="zh-CN" href="/docs.html" />
     <link rel="alternate" hreflang="en" href="/en/docs.html" />
-    <link rel="alternate" hreflang="ja" href="/ja/docs.html" />
     <link rel="alternate" hreflang="es" href="/es/docs.html" />
+    <link rel="alternate" hreflang="ja" href="/ja/docs.html" />
     <link rel="alternate" hreflang="x-default" href="/docs.html" />
     
   </head>
@@ -996,8 +925,8 @@ tagMatch:
     <div id="lang-switcher-data" hidden aria-hidden="true">
       <a href="/docs.html" hreflang="zh-CN" lang="zh-CN">中文</a>
       <a href="/en/docs.html" hreflang="en" lang="en">English</a>
-      <a href="/ja/docs.html" hreflang="ja" lang="ja" aria-current="true">日本語</a>
       <a href="/es/docs.html" hreflang="es" lang="es">Español</a>
+      <a href="/ja/docs.html" hreflang="ja" lang="ja" aria-current="true">日本語</a>
       
     </div>
     
