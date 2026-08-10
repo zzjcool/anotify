@@ -18,8 +18,11 @@ internal/server/dist/
 .e2e-bin/
 
 # === 前端生成产物（源在 web-src/，sitegen 生成）===
+# 顶层 *.html、i18n js、各语言子目录全部由 sitegen 从 web-src 生成，不入库
 web/*.html
 web/en/
+web/es/
+web/ja/
 web/i18n.*.js
 
 # === 编排/调试临时产物（开发过程用，不入库）===

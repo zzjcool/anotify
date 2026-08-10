@@ -6,15 +6,18 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
-.PHONY: help build fe sitegen test bench run dev docker docker-run integration tunnel keys clean
+.PHONY: help build fe sitegen test bench run dev docker docker-run integration tunnel keys clean check-classes
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-sitegen: ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
+sitegen: check-classes ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
 	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es
 
-fe: sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
+check-classes: ## 前端死类守卫：校验 web-src 里每个 class 都落在设计系统 / Tailwind 工具类内（防自造未定义类）
+	node scripts/check-classes.mjs
+
+fe: check-classes sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
 
 dist: fe ## 同 fe（生成 embed 产物）
@@ -35,10 +38,10 @@ bench-report: ## 运行基准并输出到 bench.txt（留存对比基线）
 run: build ## 本地运行（需先设置 ANOTIFY_VAPID_* 环境变量）
 	./anotify
 
-dev: sitegen ## 开发模式：起 server + cloudflared tunnel（读 .env.local，固定 dev.openaaas.org）
+dev: check-classes sitegen ## 开发模式：起 server + cloudflared tunnel（读 .env.local，固定 dev.openaaas.org）
 	./scripts/dev.sh
 
-dev-local: sitegen ## 开发模式：只起 server，不起 tunnel（本地 localhost）
+dev-local: check-classes sitegen ## 开发模式：只起 server，不起 tunnel（本地 localhost）
 	NO_TUNNEL=1 ./scripts/dev.sh
 
 integration: ## 集成测试（需服务已在 PORT 运行）
