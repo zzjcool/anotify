@@ -22,7 +22,10 @@ import * as H from "../lib/harness.mjs";
 
 async function main() {
 	console.log("=== SUITE: api_contract（API 契约矩阵）===");
-	const server = await H.startServer({ suiteName: "api_contract", rpId: "localhost" });
+	const server = await H.startServer({
+		suiteName: "api_contract",
+		rpId: "localhost",
+	});
 	const B = server.base;
 	const { sendKey, recvKey, session } = H.seed(server.dbPath, "api");
 
@@ -161,8 +164,11 @@ async function main() {
 	// ---------- test-notify（会话鉴权）----------
 	H.eq(
 		"test-notify 无 session → 401",
-		(await H.req(B, "/v1/test-notify", { body: { title: "t", status: "info" } }))
-			.status,
+		(
+			await H.req(B, "/v1/test-notify", {
+				body: { title: "t", status: "info" },
+			})
+		).status,
 		401,
 	);
 	const tnResp = await H.req(B, "/v1/test-notify", {
