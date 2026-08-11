@@ -762,6 +762,7 @@ cliauth:
     consumed_desc: "Key 已下发过，不能重复授权。如需新的 Key，请回到终端重新运行登录脚本。"
     error_title: "无法连接服务器"
     error_desc: "请检查网络连接后重试。"
+    rejected_desc: "授权请求被拒绝，请确认所选权限范围后重试。"
     retry: "重试"
   trust:
     local: "授权仅在你的服务器上生效"

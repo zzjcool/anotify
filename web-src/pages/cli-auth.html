@@ -813,10 +813,21 @@
             name[0] || "?"
           ).toUpperCase();
 
-          /* scope 预勾选：默认勾 requestedScopes 里的项 */
+          /* scope 预勾选 + 禁用未申请项：
+             批准的 scope 必须是申请 scope 的子集（server 强校验），
+             所以未在 requestedScopes 里的项直接置灰禁用，避免用户勾了被 400 拒绝。 */
           const requested = data.requestedScopes || ["notify:send"];
           document.querySelectorAll(".scope-cb").forEach((cb) => {
-            cb.checked = requested.indexOf(cb.value) >= 0;
+            const isRequested = requested.indexOf(cb.value) >= 0;
+            cb.checked = isRequested;
+            cb.disabled = !isRequested;
+            /* 置灰禁用项的 label：去掉手型光标 + 降透明度 */
+            const label = cb.closest("label");
+            if (label) {
+              label.classList.toggle("opacity-40", !isRequested);
+              label.classList.toggle("cursor-not-allowed", !isRequested);
+              label.classList.toggle("cursor-pointer", isRequested);
+            }
           });
           document.getElementById("scope-error").classList.add("hidden");
         }
@@ -868,7 +879,10 @@
               /* 409 带状态：落对应终态。data 在错误里拿不到，重新 lookup */
               lookupById(currentSessionId);
             } else {
-              toast(window.Anotify && Anotify.t ? Anotify.t("cliauth.done.error_desc") : "", "error");
+              /* 4xx = 请求被拒（如 scope 不匹配，禁用后正常不再发生）；5xx/网络 = 连接问题 */
+              const isClient = /^HTTP 4\d\d$/.test(String(e));
+              const key = isClient ? "cliauth.done.rejected_desc" : "cliauth.done.error_desc";
+              toast(window.Anotify && Anotify.t ? Anotify.t(key) : "", "error");
               /* 留在确认态，恢复按钮 */
               setBusy("approve-btn", "approve-label", "approve-busy", false);
               document.getElementById("deny-btn").disabled = false;

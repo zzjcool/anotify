@@ -761,6 +761,7 @@ cliauth:
     consumed_desc: "Ya se emitió una clave para esta sesión. Vuelve a ejecutar el script en tu terminal si necesitas una nueva."
     error_title: "No se puede conectar con el servidor"
     error_desc: "Comprueba tu conexión e inténtalo de nuevo."
+    rejected_desc: "La solicitud de autorización fue rechazada. Verifica los permisos seleccionados e inténtalo de nuevo."
     retry: "Reintentar"
   trust:
     local: "La autorización solo tiene efecto en tu servidor"

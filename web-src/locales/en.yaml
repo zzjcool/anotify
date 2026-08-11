@@ -761,6 +761,7 @@ cliauth:
     consumed_desc: "A key was already issued for this session. Run the login script again in your terminal to create a new one."
     error_title: "Cannot reach the server"
     error_desc: "Check your connection and try again."
+    rejected_desc: "The authorization request was rejected. Please verify the selected scopes and try again."
     retry: "Retry"
   trust:
     local: "Authorization only takes effect on your server"
