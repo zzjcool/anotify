@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 func main() {

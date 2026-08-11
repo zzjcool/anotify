@@ -1,4 +1,4 @@
-module github.com/anotify/anotify
+module github.com/zzjcool/anotify
 
 go 1.25.0
 

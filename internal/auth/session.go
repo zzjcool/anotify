@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // SessionCookieName 是会话 Cookie 名。

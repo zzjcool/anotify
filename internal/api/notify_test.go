@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/authn"
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // fakeBroker 捕获 Publish 的消息。

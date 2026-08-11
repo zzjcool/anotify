@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/logging"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/logging"
 )
 
 // statusWriter 包装 http.ResponseWriter 捕获 status code。

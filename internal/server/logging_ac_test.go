@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // TestAC3_SecretNotInLogs 验证 AC-3 安全红线：

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // adminHandler 包装管理后台的 /v1/admin/* HTTP 端点。

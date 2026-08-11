@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/anotify/anotify/internal/logging"
-	"github.com/anotify/anotify/internal/server"
+	"github.com/zzjcool/anotify/internal/logging"
+	"github.com/zzjcool/anotify/internal/server"
 )
 
 func main() {

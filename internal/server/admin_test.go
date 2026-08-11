@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // adminTestEnv 装配管理后台测试环境：内存 DB + admin/member 两个用户 + 各自会话 cookie。

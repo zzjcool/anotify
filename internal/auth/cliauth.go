@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // CLI 授权会话相关常量。

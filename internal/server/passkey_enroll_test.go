@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // enrollTestEnv 装配一个 Passkey 设备授权测试环境。

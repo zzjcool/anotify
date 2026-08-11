@@ -16,7 +16,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // challengeTTL 是 WebAuthn challenge 的有效期。

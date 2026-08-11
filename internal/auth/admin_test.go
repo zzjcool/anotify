@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // TestAdminMiddleware 验证超管中间件的三条路径：

@@ -7,8 +7,8 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // BenchmarkDispatch 度量一条消息完整派发管线的成本：

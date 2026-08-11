@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // newEnrollTestDB 打开内存 DB 并建用户。

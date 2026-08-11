@@ -9,7 +9,7 @@
 // 服务端 broker.Replay 补漏 → replay_end → 进入实时流。
 package ws
 
-import "github.com/anotify/anotify/internal/broker"
+import "github.com/zzjcool/anotify/internal/broker"
 
 // 帧类型。
 const (

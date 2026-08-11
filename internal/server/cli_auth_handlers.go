@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/authn"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // cliAuthHandler 处理 CLI 设备授权端点。

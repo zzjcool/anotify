@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // newTestBroker 用 :memory: 打开一个测试 broker。

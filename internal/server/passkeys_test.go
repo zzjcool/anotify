@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // passkeysTestEnv 装配一个最小的 /v1/auth/* 测试环境（带登录会话）。

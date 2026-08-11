@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // SQLiteBroker 是 Broker 的 SQLite 实现。

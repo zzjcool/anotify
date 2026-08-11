@@ -3,9 +3,9 @@ package push
 import (
 	"testing"
 
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/route"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // dev 构造一台测试设备。

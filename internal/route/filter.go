@@ -13,8 +13,8 @@ package route
 import (
 	"strings"
 
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // StatusMatch 判定设备的状态过滤是否放行该消息状态。

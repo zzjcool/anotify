@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // enrollE2EEnv 是完整用户旅程测试环境，比 enrollTestEnv 多带 passkeys 列表端点。

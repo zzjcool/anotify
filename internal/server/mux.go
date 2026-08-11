@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anotify/anotify/internal/api"
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/push"
-	"github.com/anotify/anotify/internal/store"
-	"github.com/anotify/anotify/internal/ws"
+	"github.com/zzjcool/anotify/internal/api"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/push"
+	"github.com/zzjcool/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/ws"
 )
 
 // App 是装配好的应用（持有需要关闭的资源）。

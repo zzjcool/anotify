@@ -19,7 +19,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anotify/anotify/internal/sitegen"
+	"github.com/zzjcool/anotify/internal/sitegen"
 )
 
 func main() {

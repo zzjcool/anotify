@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/authn"
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/route"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // NotifyHandler 处理 POST /v1/notify（Agent 上报）。

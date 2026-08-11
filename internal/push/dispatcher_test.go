@@ -9,8 +9,8 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // fakeBroker 是一个内存 Broker，只为满足 Dispatcher 测试。

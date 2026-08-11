@@ -3,8 +3,8 @@ package server
 import (
 	"context"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/authn"
 )
 
 // keyValidatorAdapter 把 auth.KeyManager（ValidateKey(plaintext) 无 ctx）

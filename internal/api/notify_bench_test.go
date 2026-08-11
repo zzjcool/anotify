@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anotify/anotify/internal/authn"
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // BenchmarkNormalizeTags 度量 deviceTags 归一化（trim + 去重 + 限量限长）成本。

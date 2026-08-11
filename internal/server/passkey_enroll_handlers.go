@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/anotify/anotify/internal/auth"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // passkeyEnrollHandler 处理 /v1/passkey-enroll/sessions/* 端点族。

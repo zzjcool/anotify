@@ -12,8 +12,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/anotify/anotify/internal/authn"
-	"github.com/anotify/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/broker"
 )
 
 // TestMatchTags 覆盖 WS 订阅过滤。

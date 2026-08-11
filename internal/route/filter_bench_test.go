@@ -3,8 +3,8 @@ package route
 import (
 	"testing"
 
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // benchDev 构造一台带给定标签的测试设备。

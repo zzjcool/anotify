@@ -11,9 +11,9 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
-	"github.com/anotify/anotify/internal/broker"
-	"github.com/anotify/anotify/internal/route"
-	"github.com/anotify/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // Sender 抽象一次 Web Push 发送，便于测试注入。
