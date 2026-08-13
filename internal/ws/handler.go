@@ -91,6 +91,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		connID:   store.NewEventID(),
 		sinceSeq: sinceSeq,
 		tags:     nil, // nil = 全订阅
+		eventScope: "all", // WS 默认收全生命周期
 	}
 	sess.run(r.Context())
 }
@@ -119,8 +120,9 @@ type session struct {
 	connID   string
 	sinceSeq int64
 
-	mu     sync.Mutex // 保护 tags
+	mu     sync.Mutex // 保护 tags + eventScope
 	tags   []string   // 订阅标签；nil/空 = 全订阅
+	eventScope string // 订阅范围 all|final；默认 all
 	lastID string     // 最近下发的消息 id（resume token）
 
 	writeMu sync.Mutex // 串行化写帧
@@ -153,6 +155,18 @@ func (s *session) getTags() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tags
+}
+
+func (s *session) setEventScope(scope string) {
+	s.mu.Lock()
+	s.eventScope = scope
+	s.mu.Unlock()
+}
+
+func (s *session) getEventScope() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.eventScope
 }
 
 // writeJSON 写一条下行帧。
@@ -245,6 +259,10 @@ func (s *session) run(ctx context.Context) {
 			if !matchTags(s.getTags(), msg.DeviceTags) {
 				continue
 			}
+			// 按订阅范围过滤（final 只放行终态）
+			if !matchScope(s.getEventScope(), msg.AgentState) {
+				continue
+			}
 			if err := s.writeJSON(ctx, notificationFrame(msg)); err != nil {
 				return
 			}
@@ -277,9 +295,15 @@ func (s *session) handleFrame(ctx context.Context, f *Frame) {
 		_ = s.writeJSON(ctx, &Frame{Type: FramePong})
 	case FrameSubscribe:
 		s.setTags(normalizeTags(f.Tags))
+		scope := f.EventScope
+		if scope == "" {
+			scope = "all"
+		}
+		s.setEventScope(scope)
 		_ = s.writeJSON(ctx, &Frame{
 			Type:           FrameSubscribed,
 			SubscribedTags: s.getTags(),
+			EventScope:     s.getEventScope(),
 			ResumeToken:    resumeTokenPrefix + strconv.FormatInt(s.lastSeq(), 10),
 		})
 	case FrameUnsubscribe:
@@ -303,6 +327,14 @@ func (s *session) handleFrame(ctx context.Context, f *Frame) {
 }
 
 func (s *session) lastSeq() int64 { return s.sinceSeq }
+
+// matchScope WS 侧订阅范围过滤：all（或空）= 全放行；final = 仅终态放行。
+func matchScope(scope, agentState string) bool {
+	if scope == "" || scope == "all" {
+		return true
+	}
+	return broker.IsTerminal(agentState) // "final"
+}
 
 // matchTags WS 侧订阅过滤：sub（客户端订阅标签）为空 = 全订阅；
 // 否则消息 DeviceTags 与 sub 有交集才下发。

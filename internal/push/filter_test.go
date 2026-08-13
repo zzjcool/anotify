@@ -9,51 +9,49 @@ import (
 )
 
 // dev 构造一台测试设备。
-func dev(enabled bool, statusFilter string, tags ...string) *store.Device {
+func dev(enabled bool, eventScope string, tags ...string) *store.Device {
 	return &store.Device{
-		ID:           "dev_test",
-		Enabled:      enabled,
-		StatusFilter: statusFilter,
-		Tags:         tags,
+		ID:          "dev_test",
+		Enabled:     enabled,
+		EventScope:  eventScope,
+		Tags:        tags,
 	}
 }
 
-func msg(status string, tags ...string) *broker.Message {
-	return &broker.Message{ID: "ntf_test", Status: status, DeviceTags: tags}
+func msg(agentState string, tags ...string) *broker.Message {
+	return &broker.Message{ID: "ntf_test", AgentState: agentState, DeviceTags: tags}
 }
 
-// TestStatusMatch 覆盖 statusMatch 全部分支。
-func TestStatusMatch(t *testing.T) {
+// TestScopeMatch 覆盖 scopeMatch 全部分支。
+func TestScopeMatch(t *testing.T) {
 	cases := []struct {
-		name      string
-		filter    string
-		msgStatus string
-		want      bool
+		name       string
+		filter     string
+		agentState string
+		want       bool
 	}{
-		{"all 放行 success", "all", broker.StatusSuccess, true},
-		{"all 放行 error", "all", broker.StatusError, true},
-		{"all 放行 interrupted", "all", broker.StatusInterrupted, true},
-		{"all 放行 info", "all", broker.StatusInfo, true},
-		{"all 放行 warning", "all", broker.StatusWarning, true},
-		{"空 filter 视为 all", "", broker.StatusSuccess, true},
+		// all 档：全放行
+		{"all 放行 done", "all", broker.AgentStateDone, true},
+		{"all 放行 error", "all", broker.AgentStateError, true},
+		{"all 放行 interrupted", "all", broker.AgentStateInterrupted, true},
+		{"all 放行 working", "all", broker.AgentStateWorking, true},
+		{"all 放行 blocked", "all", broker.AgentStateBlocked, true},
+		{"空 filter 视为 all", "", broker.AgentStateDone, true},
 
-		{"error 过滤放行 error", "error", broker.StatusError, true},
-		{"error 过滤拒绝 success", "error", broker.StatusSuccess, false},
-		{"error 过滤拒绝 interrupted", "error", broker.StatusInterrupted, false},
-		{"error 过滤拒绝 info", "error", broker.StatusInfo, false},
-		{"error 过滤拒绝 warning", "error", broker.StatusWarning, false},
+		// final 档：仅终态放行
+		{"final 放行 done（终态）", "final", broker.AgentStateDone, true},
+		{"final 放行 error（终态）", "final", broker.AgentStateError, true},
+		{"final 放行 interrupted（终态）", "final", broker.AgentStateInterrupted, true},
+		{"final 拒绝 working（非终态）", "final", broker.AgentStateWorking, false},
+		{"final 拒绝 blocked（非终态）", "final", broker.AgentStateBlocked, false},
 
-		{"success 过滤放行 success", "success", broker.StatusSuccess, true},
-		{"success 过滤拒绝 error", "success", broker.StatusError, false},
-		{"success 过滤拒绝 interrupted", "success", broker.StatusInterrupted, false},
-		{"success 过滤拒绝 info", "success", broker.StatusInfo, false},
-
-		{"未知 filter 拒绝一切", "bogus", broker.StatusSuccess, false},
+		// 未知 filter 拒绝一切
+		{"未知 filter 拒绝一切", "bogus", broker.AgentStateDone, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := route.StatusMatch(c.filter, c.msgStatus); got != c.want {
-				t.Fatalf("StatusMatch(%q,%q)=%v, want %v", c.filter, c.msgStatus, got, c.want)
+			if got := route.ScopeMatch(c.filter, c.agentState); got != c.want {
+				t.Fatalf("ScopeMatch(%q,%q)=%v, want %v", c.filter, c.agentState, got, c.want)
 			}
 		})
 	}
@@ -85,7 +83,7 @@ func TestTagMatch(t *testing.T) {
 	}
 }
 
-// TestShouldDeliver 覆盖三元判定：enabled AND statusMatch AND tagMatch。
+// TestShouldDeliver 覆盖三元判定：enabled AND scopeMatch AND tagMatch。
 func TestShouldDeliver(t *testing.T) {
 	cases := []struct {
 		name string
@@ -93,15 +91,15 @@ func TestShouldDeliver(t *testing.T) {
 		msg  *broker.Message
 		want bool
 	}{
-		{"禁用设备一律不投递", dev(false, "all", "手机"), msg("success"), false},
-		{"广播消息+enabled+all", dev(true, "all"), msg("success"), true},
-		{"广播消息+error过滤+success消息", dev(true, "error"), msg("success"), false},
-		{"广播消息+error过滤+error消息", dev(true, "error"), msg("error"), true},
-		{"定向消息命中设备tag", dev(true, "all", "手机"), msg("success", "手机"), true},
-		{"定向消息未命中设备tag", dev(true, "all", "手机"), msg("success", "工作"), false},
-		{"定向消息+catch-all设备", dev(true, "all"), msg("success", "工作"), true},
-		{"定向命中但status过滤拒绝", dev(true, "error", "手机"), msg("success", "手机"), false},
-		{"status与tag都满足", dev(true, "error", "手机"), msg("error", "手机"), true},
+		{"禁用设备一律不投递", dev(false, "all", "手机"), msg("done"), false},
+		{"广播消息+enabled+all", dev(true, "all"), msg("done"), true},
+		{"广播终态+final设备→放行", dev(true, "final"), msg("done"), true},
+		{"广播非终态+final设备→拒绝", dev(true, "final"), msg("working"), false},
+		{"定向消息命中设备tag", dev(true, "all", "手机"), msg("done", "手机"), true},
+		{"定向消息未命中设备tag", dev(true, "all", "手机"), msg("done", "工作"), false},
+		{"定向消息+catch-all设备", dev(true, "all"), msg("done", "工作"), true},
+		{"定向命中但scope过滤拒绝（非终态+final）", dev(true, "final", "手机"), msg("working", "手机"), false},
+		{"scope与tag都满足（终态+final+tag命中）", dev(true, "final", "手机"), msg("done", "手机"), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -115,18 +113,23 @@ func TestShouldDeliver(t *testing.T) {
 // TestFilterDevices 验证从候选集中筛出命中设备。
 func TestFilterDevices(t *testing.T) {
 	devices := []*store.Device{
-		{ID: "a", Enabled: true, StatusFilter: "all", Tags: []string{"手机"}},
-		{ID: "b", Enabled: true, StatusFilter: "error", Tags: []string{"工作"}},
-		{ID: "c", Enabled: true, StatusFilter: "all", Tags: nil}, // catch-all
-		{ID: "d", Enabled: false, StatusFilter: "all", Tags: nil},
+		{ID: "a", Enabled: true, EventScope: "all", Tags: []string{"手机"}},
+		{ID: "b", Enabled: true, EventScope: "final", Tags: []string{"工作"}},
+		{ID: "c", Enabled: true, EventScope: "all", Tags: nil}, // catch-all
+		{ID: "d", Enabled: false, EventScope: "all", Tags: nil},
 	}
 
-	// 广播 success：a✓ b✗(status) c✓ d✗(disabled)
-	got := route.FilterDevices(devices, msg("success"))
-	wantIDs := map[string]bool{"a": true, "c": true}
+	// 广播 done（终态）：a✓ b✓(终态+final) c✓ d✗(disabled)
+	got := route.FilterDevices(devices, msg("done"))
+	wantIDs := map[string]bool{"a": true, "b": true, "c": true}
 	assertIDs(t, got, wantIDs)
 
-	// 定向 error 到 工作：b✓(tag+status) c✓(catch-all) a✗(tag不命中)
+	// 广播 working（非终态）：a✓ b✗(final拒绝非终态) c✓ d✗(disabled)
+	got = route.FilterDevices(devices, msg("working"))
+	wantIDs = map[string]bool{"a": true, "c": true}
+	assertIDs(t, got, wantIDs)
+
+	// 定向 error 到 工作：b✓(tag+终态+final) c✓(catch-all) a✗(tag不命中)
 	got = route.FilterDevices(devices, msg("error", "工作"))
 	wantIDs = map[string]bool{"b": true, "c": true}
 	assertIDs(t, got, wantIDs)

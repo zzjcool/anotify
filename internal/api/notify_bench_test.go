@@ -42,7 +42,7 @@ func BenchmarkNotifyServeHTTP(b *testing.B) {
 	for i := 0; i < 20; i++ {
 		dev := &store.Device{
 			ID: "dev_bench" + string(rune('a'+i)), UserID: "usr_bench",
-			Enabled: true, StatusFilter: "all",
+			Enabled: true, EventScope: "all",
 			Endpoint: "https://push.example.com/" + string(rune('a'+i)),
 			P256dh:   "p", Auth: "a",
 		}
@@ -57,7 +57,7 @@ func BenchmarkNotifyServeHTTP(b *testing.B) {
 	broker := newNotifyBenchBroker()
 	h := newNotifyHandler(broker, kv, db)
 
-	body := `{"title":"构建完成","status":"success","body":"47 个文件","deviceTags":["ops","build"]}`
+	body := `{"title":"构建完成","agentState":"done","body":"47 个文件","deviceTags":["ops","build"]}`
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

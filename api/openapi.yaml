@@ -134,7 +134,7 @@ paths:
               properties:
                 name: { type: string }
                 enabled: { type: boolean }
-                statusFilter: { type: string, enum: [all, error, success] }
+                eventScope: { type: string, enum: [final, all] }
                 tags: { type: array, items: { type: string } }
       responses:
         "200": { description: 已更新 }
@@ -1052,13 +1052,19 @@ components:
         userAgent: { type: string }
     NotifyRequest:
       type: object
-      required: [status, title]
+      required: [agentState, title]
       properties:
         agentId: { type: string }
         sessionId: { type: string }
         cwd: { type: string }
-        status:
-          { type: string, enum: [success, error, interrupted, info, warning] }
+        agentState:
+          { type: string, enum: [working, blocked, done, interrupted, error] }
+        severity:
+          { type: string, enum: [info, warning, error], description: 呈现语气；缺省由 agentState 派生 }
+        kind:
+          { type: string, enum: [task], default: task, description: 阶段二将扩 reply|steer }
+        replyTo:
+          { type: string, description: kind=reply 时指目标消息 id（阶段二） }
         durationMs: { type: integer }
         title: { type: string }
         body: { type: string }
@@ -1074,10 +1080,12 @@ components:
       properties:
         title: { type: string, default: 测试通知 }
         body: { type: string }
-        status:
+        agentState:
           type: string
-          enum: [success, error, interrupted, info, warning]
-          default: info
+          enum: [working, blocked, done, interrupted, error]
+          default: done
+        severity:
+          { type: string, enum: [info, warning, error] }
         link: { type: string }
         deviceTags: { type: array, items: { type: string } }
         priority: { type: string, default: normal }
@@ -1137,7 +1145,7 @@ components:
         username: { type: string }
         seq: { type: integer }
         title: { type: string }
-        status: { type: string }
+        agentState: { type: string }
         createdAt: { type: integer }
     AdminSessionRow:
       type: object

@@ -25,7 +25,7 @@ func msg(userID, title string, tags []string) *Message {
 	return &Message{
 		UserID:     userID,
 		Title:      title,
-		Status:     StatusSuccess,
+		AgentState: AgentStateDone,
 		Body:       "body of " + title,
 		DeviceTags: tags,
 		TTLSeconds: 86400,
@@ -266,7 +266,7 @@ func TestPublishRoundTripFields(t *testing.T) {
 	uid := "usr_1"
 
 	m := msg(uid, "round", []string{"ops", "手机"})
-	m.Status = StatusError
+	m.AgentState = AgentStateError
 	m.Link = "pi://session/abc"
 	m.Payload = []byte(`{"agentId":"a1","sessionId":"s1"}`)
 	m.TTLSeconds = 3600
@@ -286,7 +286,7 @@ func TestPublishRoundTripFields(t *testing.T) {
 		t.Fatalf("期望 1 条，实际 %d", len(got))
 	}
 	g := got[0]
-	if g.Status != StatusError || g.Link != "pi://session/abc" {
+	if g.AgentState != AgentStateError || g.Link != "pi://session/abc" {
 		t.Fatalf("status/link 往返错误: %+v", g)
 	}
 	if string(g.Payload) != `{"agentId":"a1","sessionId":"s1"}` {

@@ -8,12 +8,12 @@ import (
 )
 
 // benchDev 构造一台带给定标签的测试设备。
-func benchDev(enabled bool, statusFilter string, tags []string) *store.Device {
+func benchDev(enabled bool, eventScope string, tags []string) *store.Device {
 	return &store.Device{
-		ID:           "dev_bench",
-		Enabled:      enabled,
-		StatusFilter: statusFilter,
-		Tags:         tags,
+		ID:          "dev_bench",
+		Enabled:     enabled,
+		EventScope:  eventScope,
+		Tags:        tags,
 	}
 }
 
@@ -36,8 +36,8 @@ func BenchmarkFilterDevices(b *testing.B) {
 	msg := &broker.Message{
 		ID:         "ntf_bench",
 		UserID:     "usr_bench",
-		Status:     broker.StatusSuccess,
-		DeviceTags: []string{"ops", "build"},
+		AgentState:  broker.AgentStateDone,
+		DeviceTags:  []string{"ops", "build"},
 	}
 	devices := benchmarkDevices(100, []string{"ops", "build"})
 
@@ -54,7 +54,7 @@ func BenchmarkFilterDevices(b *testing.B) {
 // BenchmarkFilterDevicesBroadcast 度量广播消息（无 deviceTags）命中大量设备的场景。
 // 广播走最热路径：所有 enabled+status 匹配设备都命中。
 func BenchmarkFilterDevicesBroadcast(b *testing.B) {
-	msg := &broker.Message{ID: "ntf_bench", UserID: "usr", Status: broker.StatusSuccess}
+	msg := &broker.Message{ID: "ntf_bench", UserID: "usr", AgentState: broker.AgentStateDone}
 	devices := make([]*store.Device, 100)
 	for i := range devices {
 		devices[i] = benchDev(true, "all", nil)
@@ -86,8 +86,8 @@ func BenchmarkTagMatch(b *testing.B) {
 
 // BenchmarkShouldDeliver 度量综合判定（enabled + status + tag）的单设备成本。
 func BenchmarkShouldDeliver(b *testing.B) {
-	dev := benchDev(true, "error", []string{"ops"})
-	msg := &broker.Message{ID: "ntf", Status: broker.StatusError, DeviceTags: []string{"ops"}}
+	dev := benchDev(true, "final", []string{"ops"})
+	msg := &broker.Message{ID: "ntf", AgentState: broker.AgentStateError, DeviceTags: []string{"ops"}}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -98,13 +98,13 @@ func BenchmarkShouldDeliver(b *testing.B) {
 	}
 }
 
-// BenchmarkStatusMatch 度量状态过滤分支成本。
-func BenchmarkStatusMatch(b *testing.B) {
+// BenchmarkScopeMatch 度量状态过滤分支成本。
+func BenchmarkScopeMatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if !StatusMatch("error", broker.StatusError) {
-			b.Fatal("StatusMatch 应命中")
+		if !ScopeMatch("final", broker.AgentStateError) {
+			b.Fatal("ScopeMatch 应命中")
 		}
 	}
 }

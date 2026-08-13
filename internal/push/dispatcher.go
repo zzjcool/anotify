@@ -189,12 +189,14 @@ func (d *Dispatcher) recordResult(ctx context.Context, msg *broker.Message, dev 
 // 消息自带的外部 link 仅作 link 字段透传，由详情页内「打开 Agent 会话」按钮承接。
 func pushPayload(msg *broker.Message) []byte {
 	p := map[string]any{
-		"id":    msg.ID,
-		"title": msg.Title,
-		"body":  msg.Body,
-		"tag":   msg.ID,
-		"url":   "message.html?id=" + url.QueryEscape(msg.ID),
-		"link":  msg.Link,
+		"id":         msg.ID,
+		"title":      msg.Title,
+		"body":       msg.Body,
+		"tag":        msg.ID,
+		"url":        "message.html?id=" + url.QueryEscape(msg.ID),
+		"link":       msg.Link,
+		"agentState": msg.AgentState,
+		"severity":   msg.Severity,
 	}
 	raw, err := json.Marshal(p)
 	if err != nil {

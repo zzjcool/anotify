@@ -21,7 +21,7 @@ func TestGetMessageRoundTrip(t *testing.T) {
 		UserID:     uid,
 		Seq:        7,
 		Title:      "构建完成",
-		Status:     "success",
+		AgentState: "done",
 		Body:       "共 47 个文件变更",
 		Link:       "pi://session/s1",
 		DeviceTags: []string{"手机", "工作"},
@@ -44,7 +44,7 @@ func TestGetMessageRoundTrip(t *testing.T) {
 	}
 	if got.ID != in.ID || got.Title != in.Title || got.Body != in.Body ||
 		got.Link != in.Link || got.Priority != "high" || got.TTLSeconds != 3600 ||
-		got.Seq != 7 || got.Status != "success" {
+		got.Seq != 7 || got.AgentState != "done" {
 		t.Fatalf("字段不一致: %+v", got)
 	}
 	if len(got.DeviceTags) != 2 || got.DeviceTags[0] != "手机" || got.DeviceTags[1] != "工作" {

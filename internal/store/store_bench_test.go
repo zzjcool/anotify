@@ -31,7 +31,7 @@ func BenchmarkListEnabledDevices(b *testing.B) {
 			ID:           fmt.Sprintf("dev_bench_%03d", i),
 			UserID:       "usr_bench",
 			Enabled:      i%2 == 0,
-			StatusFilter: "all",
+			EventScope: "all",
 			Endpoint:     fmt.Sprintf("https://push.example.com/%d", i),
 			P256dh:       "p", Auth: "a",
 			Tags: []string{"ops"},

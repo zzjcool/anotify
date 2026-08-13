@@ -174,7 +174,7 @@ func TestStreamHandshakeAndLive(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		b.Publish(context.Background(), &broker.Message{
 			ID: "ntf_live", UserID: "usr_1", Title: "构建完成",
-			Status: broker.StatusSuccess, TTLSeconds: 60,
+			AgentState: broker.AgentStateDone, TTLSeconds: 60,
 		})
 	}()
 	n := readFrame(t, ctx, c)
@@ -198,7 +198,7 @@ func TestStreamReplay(t *testing.T) {
 	// 预置 3 条历史
 	for _, id := range []string{"ntf_1", "ntf_2", "ntf_3"} {
 		b.Publish(context.Background(), &broker.Message{
-			ID: id, UserID: "usr_1", Title: id, Status: broker.StatusInfo,
+			ID: id, UserID: "usr_1", Title: id, AgentState: broker.AgentStateWorking,
 		})
 	}
 
@@ -290,9 +290,9 @@ func TestStreamSubscribeFilter(t *testing.T) {
 	}
 
 	// 发布 builds 消息（不命中）和 ops 消息（命中）
-	b.Publish(context.Background(), &broker.Message{ID: "ntf_builds", UserID: "usr_1", Title: "b", Status: "info", DeviceTags: []string{"builds"}})
+	b.Publish(context.Background(), &broker.Message{ID: "ntf_builds", UserID: "usr_1", Title: "b", AgentState: "working", DeviceTags: []string{"builds"}})
 	time.Sleep(20 * time.Millisecond)
-	b.Publish(context.Background(), &broker.Message{ID: "ntf_ops", UserID: "usr_1", Title: "o", Status: "info", DeviceTags: []string{"ops"}})
+	b.Publish(context.Background(), &broker.Message{ID: "ntf_ops", UserID: "usr_1", Title: "o", AgentState: "working", DeviceTags: []string{"ops"}})
 
 	// 下一条应是 ops（builds 被过滤）
 	n := readFrame(t, ctx, c)

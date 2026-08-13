@@ -209,7 +209,7 @@ type AdminGlobalMessage struct {
 	Username  string `json:"username"`
 	Seq       int64  `json:"seq"`
 	Title     string `json:"title"`
-	Status    string `json:"status"`
+	AgentState string `json:"agentState"`
 	CreatedAt int64  `json:"createdAt"`
 }
 
@@ -219,7 +219,7 @@ func (d *DB) ListGlobalMessages(ctx context.Context, limit int) ([]*AdminGlobalM
 		limit = 50
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT m.id, m.user_id, u.username, m.seq, m.title, m.status, m.created_at
+		`SELECT m.id, m.user_id, u.username, m.seq, m.title, m.agent_state, m.created_at
 		 FROM messages m
 		 LEFT JOIN users u ON u.id = m.user_id
 		 ORDER BY m.created_at DESC
@@ -231,7 +231,7 @@ func (d *DB) ListGlobalMessages(ctx context.Context, limit int) ([]*AdminGlobalM
 	var out []*AdminGlobalMessage
 	for rows.Next() {
 		var m AdminGlobalMessage
-		if err := rows.Scan(&m.ID, &m.UserID, &m.Username, &m.Seq, &m.Title, &m.Status, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.UserID, &m.Username, &m.Seq, &m.Title, &m.AgentState, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan global message: %w", err)
 		}
 		out = append(out, &m)

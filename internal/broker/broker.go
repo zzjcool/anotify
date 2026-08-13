@@ -11,14 +11,20 @@ import (
 	"time"
 )
 
-// 消息状态（投递给设备时按设备 status_filter 过滤）
+// Agent 生命周期状态（投递给设备时按设备 event_scope 过滤）
 const (
-	StatusSuccess     = "success"
-	StatusError       = "error"
-	StatusInterrupted = "interrupted"
-	StatusInfo        = "info"
-	StatusWarning     = "warning"
+	AgentStateWorking     = "working"
+	AgentStateBlocked     = "blocked"
+	AgentStateDone        = "done"
+	AgentStateInterrupted = "interrupted"
+	AgentStateError       = "error"
 )
+
+// IsTerminal 判定某 agentState 是否为终态（done/interrupted/error）。
+// 终态事件会被 event_scope=final 的接收端放行；非终态只被 all 放行。
+func IsTerminal(state string) bool {
+	return state == AgentStateDone || state == AgentStateInterrupted || state == AgentStateError
+}
 
 // Message 是一条通知消息。
 // JSON tag 统一 camelCase，与 api/openapi.yaml 契约一致（/v1/notifications、WS notification 帧）。
@@ -27,7 +33,10 @@ type Message struct {
 	UserID     string    `json:"userId"`     // 所属用户（分区键）
 	Seq        int64     `json:"seq"`        // 每用户单调递增序号（= replay 的 offset）
 	Title      string    `json:"title"`      // 标题
-	Status     string    `json:"status"`     // success|error|interrupted|info|warning
+	AgentState string    `json:"agentState"` // working|blocked|done|interrupted|error
+	Severity   string    `json:"severity,omitempty"`  // 呈现语气 info|warning|error（缺省由 agentState 派生）
+	Kind       string    `json:"kind,omitempty"`      // task|reply|steer（阶段二用，默认 task）
+	ReplyTo    string    `json:"replyTo,omitempty"`   // kind=reply 时指目标消息 id
 	Body       string    `json:"body"`       // 正文
 	Link       string    `json:"link"`       // 深链
 	DeviceTags []string  `json:"deviceTags"` // 路由键（= topic）；空 = 广播

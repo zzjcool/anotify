@@ -50,8 +50,8 @@ func (b *SQLiteBroker) Publish(ctx context.Context, msg *Message) error {
 	if msg.Title == "" {
 		return fmt.Errorf("publish: title 不能为空")
 	}
-	if msg.Status == "" {
-		msg.Status = StatusInfo
+	if msg.AgentState == "" {
+		msg.AgentState = AgentStateWorking
 	}
 	if msg.Priority == "" {
 		msg.Priority = "normal"
@@ -91,9 +91,9 @@ func (b *SQLiteBroker) Publish(ctx context.Context, msg *Message) error {
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO messages
-		  (id, user_id, seq, title, status, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		msg.ID, msg.UserID, msg.Seq, msg.Title, msg.Status, msg.Body, msg.Link,
+		  (id, user_id, seq, title, agent_state, severity, kind, reply_to, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		msg.ID, msg.UserID, msg.Seq, msg.Title, msg.AgentState, msg.Severity, msg.Kind, msg.ReplyTo, msg.Body, msg.Link,
 		string(tagsJSON), msg.Priority, msg.TTLSeconds, string(payload),
 		msg.CreatedAt.Unix(), msg.ExpiresAt.Unix(),
 	)
@@ -176,7 +176,7 @@ func (b *SQLiteBroker) Replay(ctx context.Context, userID string, sinceSeq int64
 		limit = 100
 	}
 	rows, err := b.db.QueryContext(ctx, `
-		SELECT id, user_id, seq, title, status, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
+		SELECT id, user_id, seq, title, agent_state, severity, kind, reply_to, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
 		FROM messages
 		WHERE user_id=? AND seq>?
 		ORDER BY seq ASC LIMIT ?`, userID, sinceSeq, limit)
@@ -322,7 +322,7 @@ func scanMessage(rows *sql.Rows) (*Message, error) {
 	var payload string
 	var createdAt, expiresAt int64
 	err := rows.Scan(
-		&m.ID, &m.UserID, &m.Seq, &m.Title, &m.Status, &m.Body, &m.Link,
+		&m.ID, &m.UserID, &m.Seq, &m.Title, &m.AgentState, &m.Severity, &m.Kind, &m.ReplyTo, &m.Body, &m.Link,
 		&tags, &m.Priority, &m.TTLSeconds, &payload, &createdAt, &expiresAt,
 	)
 	if err != nil {

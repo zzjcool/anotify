@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS devices (
     name         TEXT NOT NULL DEFAULT '',
     platform     TEXT NOT NULL DEFAULT '',   -- ios|mac|win|android|other
     enabled      INTEGER NOT NULL DEFAULT 1,
-    status_filter TEXT NOT NULL DEFAULT 'all', -- all|error|success
+    event_scope TEXT NOT NULL DEFAULT 'final', -- final|all（push 设备默认 final，只收终态）
     tags         TEXT NOT NULL DEFAULT '[]', -- JSON 数组（设备标签，路由用）
     endpoint     TEXT NOT NULL UNIQUE,       -- push endpoint
     p256dh       TEXT NOT NULL,
@@ -72,7 +72,10 @@ CREATE TABLE IF NOT EXISTS messages (
     user_id     TEXT NOT NULL,
     seq         INTEGER NOT NULL,            -- 每用户单调递增（replay offset）
     title       TEXT NOT NULL,
-    status      TEXT NOT NULL,               -- success|error|interrupted|info|warning
+    agent_state TEXT NOT NULL DEFAULT 'working', -- working|blocked|done|interrupted|error
+    severity   TEXT NOT NULL DEFAULT '',          -- info|warning|error（呈现语气，缺省由 agentState 派生）
+    kind       TEXT NOT NULL DEFAULT 'task',      -- task|reply|steer（阶段二用）
+    reply_to   TEXT NOT NULL DEFAULT '',          -- kind=reply 时指目标消息 id
     body        TEXT NOT NULL DEFAULT '',
     link        TEXT NOT NULL DEFAULT '',
     device_tags TEXT NOT NULL DEFAULT '[]',  -- JSON 数组（路由键，broker 侧过滤）

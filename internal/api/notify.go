@@ -33,7 +33,10 @@ type NotifyRequest struct {
 	AgentID    string   `json:"agentId"`
 	SessionID  string   `json:"sessionId"`
 	Cwd        string   `json:"cwd"`
-	Status     string   `json:"status"`
+	AgentState string   `json:"agentState"`
+	Severity   string   `json:"severity"`
+	Kind       string   `json:"kind"`
+	ReplyTo    string   `json:"replyTo"`
 	DurationMs int64    `json:"durationMs"`
 	Title      string   `json:"title"`
 	Body       string   `json:"body"`
@@ -58,12 +61,27 @@ type NotifyResponse struct {
 	Results []DeliveryResult `json:"results"`
 }
 
-var validStatuses = map[string]bool{
-	broker.StatusSuccess:     true,
-	broker.StatusError:       true,
-	broker.StatusInterrupted: true,
-	broker.StatusInfo:        true,
-	broker.StatusWarning:     true,
+var validAgentStates = map[string]bool{
+broker.AgentStateWorking:     true,
+broker.AgentStateBlocked:     true,
+broker.AgentStateDone:        true,
+broker.AgentStateInterrupted: true,
+broker.AgentStateError:       true,
+}
+
+// deriveSeverity 从 agentState 派生默认呈现语气。若请求已显式指定 severity 则直接用。
+func deriveSeverity(agentState, explicit string) string {
+if explicit != "" {
+return explicit
+}
+switch agentState {
+case broker.AgentStateError:
+return "error"
+case broker.AgentStateBlocked, broker.AgentStateInterrupted:
+return "warning"
+default:
+return "info"
+}
 }
 
 // maxDeviceTags / maxTagLen 是 deviceTags 归一化约束。
@@ -151,9 +169,9 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
-	if !validStatuses[req.Status] {
+	if !validAgentStates[req.AgentState] {
 		writeError(w, http.StatusBadRequest,
-			fmt.Sprintf("status must be one of success|error|interrupted|info|warning, got %q", req.Status))
+			fmt.Sprintf("agentState must be one of working|blocked|done|interrupted|error, got %q", req.AgentState))
 		return
 	}
 
@@ -174,11 +192,19 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	kind := req.Kind
+	if kind == "" {
+		kind = "task"
+	}
+
 	msg := &broker.Message{
 		ID:         store.NewMessageID(),
 		UserID:     userID,
 		Title:      req.Title,
-		Status:     req.Status,
+		AgentState: req.AgentState,
+		Severity:   deriveSeverity(req.AgentState, req.Severity),
+		Kind:       kind,
+		ReplyTo:    req.ReplyTo,
 		Body:       req.Body,
 		Link:       req.Link,
 		DeviceTags: normalizeTags(req.DeviceTags),
@@ -220,7 +246,7 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"message_id", msg.ID,
 		"user_id", userID,
 		"matched", resp.Matched,
-		"status", req.Status,
+		"agentState", req.AgentState,
 	)
 }
 
@@ -230,7 +256,8 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type TestNotifyRequest struct {
 	Title      string   `json:"title"`
 	Body       string   `json:"body"`
-	Status     string   `json:"status"`
+	AgentState string   `json:"agentState"`
+	Severity   string   `json:"severity"`
 	Link       string   `json:"link"`
 	DeviceTags []string `json:"deviceTags"`
 	Priority   string   `json:"priority"`
@@ -263,15 +290,16 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 	if title == "" {
 		title = "测试通知"
 	}
-	status := strings.TrimSpace(req.Status)
-	if status == "" {
-		status = broker.StatusInfo
+	agentState := strings.TrimSpace(req.AgentState)
+	if agentState == "" {
+		agentState = broker.AgentStateDone
 	}
-	if !validStatuses[status] {
+	if !validAgentStates[agentState] {
 		writeError(w, http.StatusBadRequest,
-			fmt.Sprintf("status must be one of success|error|interrupted|info|warning, got %q", status))
+			fmt.Sprintf("agentState must be one of working|blocked|done|interrupted|error, got %q", agentState))
 		return
 	}
+	severity := deriveSeverity(agentState, req.Severity)
 	priority := strings.TrimSpace(req.Priority)
 	if priority == "" {
 		priority = "normal"
@@ -283,7 +311,8 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 	payload, err := json.Marshal(map[string]any{
 		"title":      title,
 		"body":       req.Body,
-		"status":     status,
+		"agentState": agentState,
+		"severity":  severity,
 		"link":       req.Link,
 		"deviceTags": normalizeTags(req.DeviceTags),
 		"priority":   priority,
@@ -299,7 +328,8 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 		ID:         store.NewMessageID(),
 		UserID:     user,
 		Title:      title,
-		Status:     status,
+		AgentState: agentState,
+		Severity:   severity,
 		Body:       req.Body,
 		Link:       req.Link,
 		DeviceTags: normalizeTags(req.DeviceTags),
@@ -339,6 +369,6 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 		"message_id", msg.ID,
 		"user_id", user,
 		"matched", resp.Matched,
-		"status", status,
+		"agentState", agentState,
 	)
 }

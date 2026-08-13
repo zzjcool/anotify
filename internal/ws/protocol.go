@@ -42,18 +42,21 @@ type Frame struct {
 	SubscribedTags []string `json:"subscribed_tags,omitempty"`
 
 	// notification
-	EventID string   `json:"event_id,omitempty"`
-	Seq     int64    `json:"seq,omitempty"`
-	Title   string   `json:"title,omitempty"`
-	Body    string   `json:"body,omitempty"`
-	Status  string   `json:"status,omitempty"`
-	URL     string   `json:"url,omitempty"`
-	Tags    []string `json:"tags,omitempty"`
-	SentAt  string   `json:"sent_at,omitempty"`
-	TTLSec  int      `json:"ttl_sec,omitempty"`
+	EventID    string   `json:"event_id,omitempty"`
+	Seq        int64    `json:"seq,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Body       string   `json:"body,omitempty"`
+	AgentState string   `json:"agentState,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
+	Kind       string   `json:"kind,omitempty"`
+	URL        string   `json:"url,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	SentAt     string   `json:"sent_at,omitempty"`
+	TTLSec     int      `json:"ttl_sec,omitempty"`
 
 	// subscribe / unsubscribe / ack / resume
-	EventIDs []string `json:"event_ids,omitempty"`
+	EventIDs   []string `json:"event_ids,omitempty"`
+	EventScope string   `json:"event_scope,omitempty"` // subscribe 帧携带；subscribed 帧回显
 
 	// error
 	Code    string `json:"code,omitempty"`
@@ -71,8 +74,10 @@ func notificationFrame(msg *broker.Message) *Frame {
 		Seq:     msg.Seq,
 		Title:   msg.Title,
 		Body:    msg.Body,
-		Status:  msg.Status,
-		URL:     msg.Link,
+		AgentState: msg.AgentState,
+		Severity:   msg.Severity,
+		Kind:       msg.Kind,
+		URL:        msg.Link,
 		Tags:    msg.DeviceTags,
 		SentAt:  msg.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		TTLSec:  msg.TTLSeconds,

@@ -284,7 +284,7 @@ func TestAdmin_MessagesAndSessions(t *testing.T) {
 
 	// 建一条消息 + 一条投递
 	env.db.InsertMessage(ctx, &store.MessageRow{
-		ID: store.NewMessageID(), UserID: env.adminID, Seq: 1, Title: "hello", Status: "success",
+		ID: store.NewMessageID(), UserID: env.adminID, Seq: 1, Title: "hello", AgentState: "done",
 		Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	})
 

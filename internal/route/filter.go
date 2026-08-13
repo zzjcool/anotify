@@ -1,8 +1,12 @@
 // Package route 实现通知到设备的投递路由判定。
 //
-// 设计决策（来自技术方案讨论，必须严格实现）：
+// 设计决策（来自接收端能力模型设计，必须严格实现）：
 //
-//	消息投递给设备 ⟺ 设备 enabled AND statusMatch(device.status_filter, msg.status) AND tagMatch
+//	消息投递给设备 ⟺ 设备 enabled AND scopeMatch(device.event_scope, msg.agentState) AND tagMatch
+//
+// scopeMatch 规则：
+//   - eventScope=all → 全部通过（收全生命周期）
+//   - eventScope=final → 仅终态通过（done/interrupted/error）
 //
 // tagMatch 规则：
 //   - 消息无 deviceTags → 广播到所有 enabled 设备
@@ -17,19 +21,15 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// StatusMatch 判定设备的状态过滤是否放行该消息状态。
-//   - filter=all → 全部通过
-//   - filter=error → 仅 msg.Status=error
-//   - filter=success → 仅 msg.Status=success
-//   - interrupted/info/warning 仅在 filter=all 时通过
-func StatusMatch(filter, msgStatus string) bool {
+// ScopeMatch 判定设备的订阅范围是否放行该消息的 agentState。
+//   - filter=all（或空）→ 全部通过（收全生命周期事件）
+//   - filter=final → 仅终态通过（done/interrupted/error）
+func ScopeMatch(filter, agentState string) bool {
 	switch filter {
 	case "", "all":
 		return true
-	case "error":
-		return msgStatus == broker.StatusError
-	case "success":
-		return msgStatus == broker.StatusSuccess
+	case "final":
+		return broker.IsTerminal(agentState)
 	default:
 		return false
 	}
@@ -63,7 +63,7 @@ func ShouldDeliver(dev *store.Device, msg *broker.Message) bool {
 	if !dev.Enabled {
 		return false
 	}
-	if !StatusMatch(dev.StatusFilter, msg.Status) {
+	if !ScopeMatch(dev.EventScope, msg.AgentState) {
 		return false
 	}
 	return TagMatch(dev.Tags, msg.DeviceTags)

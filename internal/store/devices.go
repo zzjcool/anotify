@@ -14,7 +14,7 @@ type Device struct {
 	Name          string   `json:"name"`
 	Platform      string   `json:"platform"`
 	Enabled       bool     `json:"enabled"`
-	StatusFilter  string   `json:"statusFilter"` // all|error|success
+	EventScope   string   `json:"eventScope"` // final|all（push 默认 final）
 	Tags          []string `json:"tags"`         // 设备标签（路由用）
 	Endpoint      string   `json:"endpoint"`
 	P256dh        string   `json:"p256dh"`
@@ -28,7 +28,7 @@ type Device struct {
 // ListDevices 返回某用户的全部设备（不限 enabled）。
 func (d *DB) ListDevices(ctx context.Context, userID string) ([]*Device, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, user_id, name, platform, enabled, status_filter, tags,
+		`SELECT id, user_id, name, platform, enabled, event_scope, tags,
 		        endpoint, p256dh, auth, user_agent, created_at, last_active, last_delivered
 		   FROM devices WHERE user_id = ? ORDER BY created_at ASC`, userID)
 	if err != nil {
@@ -50,7 +50,7 @@ func (d *DB) ListDevices(ctx context.Context, userID string) ([]*Device, error) 
 // ListEnabledDevices 返回某用户所有 enabled 的设备（投递候选集）。
 func (d *DB) ListEnabledDevices(ctx context.Context, userID string) ([]*Device, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, user_id, name, platform, enabled, status_filter, tags,
+		`SELECT id, user_id, name, platform, enabled, event_scope, tags,
 		        endpoint, p256dh, auth, user_agent, created_at, last_active, last_delivered
 		   FROM devices WHERE user_id = ? AND enabled = 1 ORDER BY created_at ASC`, userID)
 	if err != nil {
@@ -79,7 +79,7 @@ func scanDevice(row scanner) (*Device, error) {
 	var tagsJSON string
 	var lastActive, lastDelivered sql.NullInt64
 	if err := row.Scan(
-		&dev.ID, &dev.UserID, &dev.Name, &dev.Platform, &enabled, &dev.StatusFilter,
+		&dev.ID, &dev.UserID, &dev.Name, &dev.Platform, &enabled, &dev.EventScope,
 		&tagsJSON, &dev.Endpoint, &dev.P256dh, &dev.Auth, &dev.UserAgent,
 		&dev.CreatedAt, &lastActive, &lastDelivered,
 	); err != nil {
@@ -120,12 +120,12 @@ func (d *DB) UpsertDevice(ctx context.Context, dev *Device) error {
 	}
 	_, err = d.ExecContext(ctx,
 		`INSERT INTO devices
-		   (id, user_id, name, platform, enabled, status_filter, tags, endpoint, p256dh, auth, user_agent, created_at, last_active)
+		   (id, user_id, name, platform, enabled, event_scope, tags, endpoint, p256dh, auth, user_agent, created_at, last_active)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(endpoint) DO UPDATE SET
 		   p256dh=excluded.p256dh, auth=excluded.auth,
 		   user_agent=excluded.user_agent, last_active=excluded.last_active`,
-		dev.ID, dev.UserID, dev.Name, dev.Platform, enabled, dev.StatusFilter,
+		dev.ID, dev.UserID, dev.Name, dev.Platform, enabled, dev.EventScope,
 		string(tagsJSON), dev.Endpoint, dev.P256dh, dev.Auth, dev.UserAgent, now, now)
 	if err != nil {
 		return fmt.Errorf("upsert device: %w", err)
@@ -147,9 +147,9 @@ func (d *DB) UpdateDevice(ctx context.Context, dev *Device) error {
 		enabled = 1
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE devices SET name=?, platform=?, enabled=?, status_filter=?, tags=?, last_active=?
+		`UPDATE devices SET name=?, platform=?, enabled=?, event_scope=?, tags=?, last_active=?
 		 WHERE id=?`,
-		dev.Name, dev.Platform, enabled, dev.StatusFilter, string(tagsJSON), Now(), dev.ID)
+		dev.Name, dev.Platform, enabled, dev.EventScope, string(tagsJSON), Now(), dev.ID)
 	if err != nil {
 		return fmt.Errorf("update device: %w", err)
 	}

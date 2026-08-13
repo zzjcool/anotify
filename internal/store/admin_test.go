@@ -131,8 +131,8 @@ func TestListUsersWithStats(t *testing.T) {
 
 	// 给 alice 建 2 条消息
 	now := time.Now()
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "m1", Status: "success", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 2, Title: "m2", Status: "success", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "m1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 2, Title: "m2", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 
 	users, err := db.ListUsersWithStats(ctx)
 	if err != nil {
@@ -168,10 +168,10 @@ func TestSystemStats(t *testing.T) {
 
 	// 各 2 条消息
 	now := time.Now()
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "a1", Status: "success", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 2, Title: "a2", Status: "error", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u2.ID, Seq: 1, Title: "b1", Status: "success", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u2.ID, Seq: 2, Title: "b2", Status: "success", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "a1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 2, Title: "a2", AgentState: "error", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u2.ID, Seq: 1, Title: "b1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u2.ID, Seq: 2, Title: "b2", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 
 	s, err := db.SystemStats(ctx, Now()-86400)
 	if err != nil {
@@ -207,7 +207,7 @@ func TestListGlobalMessages(t *testing.T) {
 	db.CreateUser(u1)
 
 	now := time.Now()
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "m1", Status: "success", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "m1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 
 	msgs, err := db.ListGlobalMessages(ctx, 50)
 	if err != nil {

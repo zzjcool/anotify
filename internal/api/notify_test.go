@@ -86,7 +86,7 @@ func TestNotifySuccess(t *testing.T) {
 		t.Fatalf("insert user: %v", err)
 	}
 	dev := &store.Device{
-		ID: "d1", UserID: "usr_1", Enabled: true, StatusFilter: "all",
+		ID: "d1", UserID: "usr_1", Enabled: true, EventScope: "all",
 		Endpoint: "https://push.example.com/d1", P256dh: "p", Auth: "a",
 	}
 	if err := db.UpsertDevice(context.Background(), dev); err != nil {
@@ -101,7 +101,7 @@ func TestNotifySuccess(t *testing.T) {
 	fb := &fakeBroker{}
 	h := newNotifyHandler(fb, kv, db)
 
-	body := `{"title":"部署完成","status":"success","body":"构建成功","deviceTags":[" 手机 ","手机","工作"]}`
+	body := `{"title":"部署完成","agentState":"done","body":"构建成功","deviceTags":[" 手机 ","手机","工作"]}`
 	rr := post(t, h, body, "Bearer ant_live_good")
 
 	if rr.Code != http.StatusOK {
@@ -123,7 +123,7 @@ func TestNotifySuccess(t *testing.T) {
 		t.Fatalf("published %d messages, want 1", len(fb.published))
 	}
 	msg := fb.published[0]
-	if msg.UserID != "usr_1" || msg.Status != broker.StatusSuccess || msg.Title != "部署完成" {
+	if msg.UserID != "usr_1" || msg.AgentState != broker.AgentStateDone || msg.Title != "部署完成" {
 		t.Fatalf("unexpected message: %+v", msg)
 	}
 	// deviceTags 归一化：trim + 去重（" 手机 "/"手机" → 1 个）
@@ -138,7 +138,7 @@ func TestNotifyInvalidKey(t *testing.T) {
 	fb := &fakeBroker{}
 	h := newNotifyHandler(fb, kv, nil)
 
-	rr := post(t, h, `{"title":"x","status":"success"}`, "Bearer ant_live_bad")
+	rr := post(t, h, `{"title":"x","agentState":"done"}`, "Bearer ant_live_bad")
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d, want 401", rr.Code)
 	}
@@ -151,7 +151,7 @@ func TestNotifyInvalidKey(t *testing.T) {
 func TestNotifyMissingKey(t *testing.T) {
 	kv := keyValidatorStub(nil)
 	h := newNotifyHandler(&fakeBroker{}, kv, nil)
-	rr := post(t, h, `{"title":"x","status":"success"}`, "")
+	rr := post(t, h, `{"title":"x","agentState":"done"}`, "")
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d, want 401", rr.Code)
 	}
@@ -165,7 +165,7 @@ func TestNotifyInsufficientScope(t *testing.T) {
 	}{"ant_recv_only": {"usr_1", []string{authn.ScopeNotifyReceive}}})
 	h := newNotifyHandler(&fakeBroker{}, kv, nil)
 
-	rr := post(t, h, `{"title":"x","status":"success"}`, "Bearer ant_recv_only")
+	rr := post(t, h, `{"title":"x","agentState":"done"}`, "Bearer ant_recv_only")
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status=%d, want 403", rr.Code)
 	}
@@ -184,8 +184,8 @@ func TestNotifyBadRequests(t *testing.T) {
 		body string
 	}{
 		{"非法 JSON", `{not json`},
-		{"缺 title", `{"status":"success"}`},
-		{"非法 status", `{"title":"x","status":"bogus"}`},
+		{"缺 title", `{"agentState":"done"}`},
+		{"非法 status", `{"title":"x","agentState":"bogus"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -213,7 +213,7 @@ func TestNotifyZeroDevices(t *testing.T) {
 	})
 
 	h := newNotifyHandler(&fakeBroker{}, kv, db)
-	rr := post(t, h, `{"title":"x","status":"success"}`, "Bearer k")
+	rr := post(t, h, `{"title":"x","agentState":"done"}`, "Bearer k")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200, body=%s", rr.Code, rr.Body)
 	}
@@ -277,7 +277,7 @@ func TestServeTestNotifySuccess(t *testing.T) {
 		t.Fatalf("insert user: %v", err)
 	}
 	dev := &store.Device{
-		ID: "d1", UserID: "usr_1", Enabled: true, StatusFilter: "all",
+		ID: "d1", UserID: "usr_1", Enabled: true, EventScope: "all",
 		Endpoint: "https://push.example.com/d1", P256dh: "p", Auth: "a",
 	}
 	if err := db.UpsertDevice(context.Background(), dev); err != nil {
@@ -287,7 +287,7 @@ func TestServeTestNotifySuccess(t *testing.T) {
 	fb := &fakeBroker{}
 	h := newNotifyHandler(fb, nil, db)
 
-	body := `{"title":"测试通知","status":"success","body":"hi"}`
+	body := `{"title":"测试通知","agentState":"done","body":"hi"}`
 	rr := postTest(t, h, "usr_1", body)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200, body=%s", rr.Code, rr.Body)
@@ -335,8 +335,8 @@ func TestServeTestNotifyDefaults(t *testing.T) {
 	if m.Title != "测试通知" {
 		t.Fatalf("default title=%q, want 测试通知", m.Title)
 	}
-	if m.Status != broker.StatusInfo {
-		t.Fatalf("default status=%q, want %s", m.Status, broker.StatusInfo)
+	if m.AgentState != broker.AgentStateDone {
+		t.Fatalf("default agentState=%q, want %s", m.AgentState, broker.AgentStateDone)
 	}
 }
 
@@ -365,7 +365,7 @@ func TestServeTestNotifyBadStatus(t *testing.T) {
 		t.Fatalf("insert user: %v", err)
 	}
 	h := newNotifyHandler(&fakeBroker{}, nil, db)
-	rr := postTest(t, h, "usr_3", `{"status":"bogus"}`)
+	rr := postTest(t, h, "usr_3", `{"agentState":"bogus"}`)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d, want 400, body=%s", rr.Code, rr.Body)
 	}

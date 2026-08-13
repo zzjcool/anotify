@@ -59,7 +59,7 @@ func insertDevice(t testing.TB, db *store.DB, id, userID string, enabled bool, f
 		ID:           id,
 		UserID:       userID,
 		Enabled:      enabled,
-		StatusFilter: filter,
+		EventScope: filter,
 		Tags:         tags,
 		Endpoint:     "https://push.example.com/" + id,
 		P256dh:       "p256dh-" + id,
@@ -80,7 +80,7 @@ func TestDispatchSendsToMatchedDevices(t *testing.T) {
 	db := setupStore(t)
 	ctx := context.Background()
 	insertDevice(t, db, "d_phone", "usr_1", true, "all", "手机")
-	insertDevice(t, db, "d_work", "usr_1", true, "error", "工作")
+	insertDevice(t, db, "d_work", "usr_1", true, "final", "工作")
 	insertDevice(t, db, "d_all", "usr_1", true, "all") // catch-all
 
 	var sent []sentRecord
@@ -93,17 +93,17 @@ func TestDispatchSendsToMatchedDevices(t *testing.T) {
 		}),
 	}
 
-	// 广播 success：d_phone✓ d_work✗(status) d_all✓
+	// 广播 done（终态）：d_phone✓ d_work✓(final 放行终态) d_all✓
 	msg := &broker.Message{
 		ID:         "ntf_1",
 		UserID:     "usr_1",
 		Title:      "构建完成",
-		Status:     broker.StatusSuccess,
+		AgentState: broker.AgentStateDone,
 		TTLSeconds: 3600,
 		ExpiresAt:  time.Now().Add(time.Hour),
 	}
 	// deliveries 外键父行（生产中由 broker.Publish 持久化）
-	if err := db.InsertTestMessage(ctx, "ntf_1", "usr_1", 1, broker.StatusSuccess); err != nil {
+	if err := db.InsertTestMessage(ctx, "ntf_1", "usr_1", 1, broker.AgentStateDone); err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
 	if err := d.Dispatch(ctx, msg); err != nil {
@@ -114,8 +114,8 @@ func TestDispatchSendsToMatchedDevices(t *testing.T) {
 	for _, s := range sent {
 		got[s.deviceID] = true
 	}
-	if len(sent) != 2 || !got["d_phone"] || !got["d_all"] {
-		t.Fatalf("sent to %v, want d_phone+d_all", got)
+	if len(sent) != 3 || !got["d_phone"] || !got["d_work"] || !got["d_all"] {
+		t.Fatalf("sent to %v, want d_phone+d_work+d_all", got)
 	}
 
 	// 校验投递记录写库
@@ -123,8 +123,8 @@ func TestDispatchSendsToMatchedDevices(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE message_id='ntf_1' AND channel='webpush' AND status='sent'`).Scan(&n); err != nil {
 		t.Fatalf("count deliveries: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("deliveries rows=%d, want 2", n)
+	if n != 3 {
+		t.Fatalf("deliveries rows=%d, want 3", n)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestDispatchExpiredMessageSkipped(t *testing.T) {
 		ID:        "ntf_exp",
 		UserID:    "usr_1",
 		Title:     "过期",
-		Status:    broker.StatusInfo,
+		AgentState: broker.AgentStateWorking,
 		ExpiresAt: time.Now().Add(-time.Hour), // 已过期
 	}
 	if err := d.Dispatch(context.Background(), msg); err != nil {
@@ -219,10 +219,10 @@ func TestDispatchGoneDeviceDisabled(t *testing.T) {
 		ID:        "ntf_gone",
 		UserID:    "usr_1",
 		Title:     "测试",
-		Status:    broker.StatusSuccess,
+		AgentState: broker.AgentStateDone,
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
-	if err := db.InsertTestMessage(ctx, "ntf_gone", "usr_1", 1, broker.StatusSuccess); err != nil {
+	if err := db.InsertTestMessage(ctx, "ntf_gone", "usr_1", 1, broker.AgentStateDone); err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
 	if err := d.Dispatch(ctx, msg); err != nil {

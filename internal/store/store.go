@@ -62,6 +62,13 @@ func migrateColumns(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`)
 	// idx_users_role：必须在 ALTER 加 role 列之后创建（老库迁移顺序），幂等。
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)`)
+	// messages 新列：agent_state/severity/kind/reply_to（接收端能力模型改造）
+	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN agent_state TEXT NOT NULL DEFAULT 'working'`)
+	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN severity TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'`)
+	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN reply_to TEXT NOT NULL DEFAULT ''`)
+	// devices 新列：event_scope 替代旧 status_filter（push 设备默认 final）
+	_, _ = db.Exec(`ALTER TABLE devices ADD COLUMN event_scope TEXT NOT NULL DEFAULT 'final'`)
 	return nil
 }
 

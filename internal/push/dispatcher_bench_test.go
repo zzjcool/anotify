@@ -37,13 +37,13 @@ func BenchmarkDispatch(b *testing.B) {
 		ID:         "ntf_bench",
 		UserID:     "usr_1",
 		Title:      "构建完成",
-		Status:     broker.StatusSuccess,
+		AgentState: broker.AgentStateDone,
 		Priority:   "normal",
 		TTLSeconds: 3600,
 		ExpiresAt:  time.Now().Add(time.Hour),
 		Payload:    []byte(`{"agentId":"a1"}`),
 	}
-	if err := db.InsertTestMessage(ctx, msg.ID, msg.UserID, 1, broker.StatusSuccess); err != nil {
+	if err := db.InsertTestMessage(ctx, msg.ID, msg.UserID, 1, broker.AgentStateDone); err != nil {
 		b.Fatalf("insert message: %v", err)
 	}
 

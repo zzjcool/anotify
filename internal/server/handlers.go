@@ -83,7 +83,7 @@ func (h *devicesHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		Name:         req.Name,
 		Platform:     platform,
 		Enabled:      true,
-		StatusFilter: "all",
+		EventScope:   "final",
 		Tags:         req.Tags,
 		Endpoint:     req.Endpoint,
 		P256dh:       req.Keys.P256dh,
@@ -108,10 +108,10 @@ func (h *devicesHandler) upsert(w http.ResponseWriter, r *http.Request) {
 }
 
 type devicePatchReq struct {
-	Name         *string  `json:"name"`
-	Enabled      *bool    `json:"enabled"`
-	StatusFilter *string  `json:"statusFilter"`
-	Tags         []string `json:"tags"`
+	Name       *string  `json:"name"`
+	Enabled    *bool    `json:"enabled"`
+	EventScope *string  `json:"eventScope"`
+	Tags       []string `json:"tags"`
 }
 
 func (h *devicesHandler) patch(w http.ResponseWriter, r *http.Request, id string) {
@@ -143,19 +143,19 @@ func (h *devicesHandler) patch(w http.ResponseWriter, r *http.Request, id string
 	if req.Enabled != nil {
 		dev.Enabled = *req.Enabled
 	}
-	if req.StatusFilter != nil {
-		switch *req.StatusFilter {
-		case "all", "error", "success":
-			dev.StatusFilter = *req.StatusFilter
+	if req.EventScope != nil {
+		switch *req.EventScope {
+		case "final", "all":
+			dev.EventScope = *req.EventScope
 		default:
-			writeErr(w, 400, "statusFilter 仅支持 all|error|success")
+			writeErr(w, 400, "eventScope 仅支持 final|all")
 			return
 		}
 	}
 	if req.Tags != nil {
 		dev.Tags = req.Tags
 	}
-	// 用 UpdateDevice（按 id 全字段更新 name/enabled/status_filter/tags），
+	// 用 UpdateDevice（按 id 全字段更新 name/enabled/event_scope/tags），
 	// 而非 UpsertDevice（那是订阅刷新，只更新密钥，会丢配置）。
 	if err := h.db.UpdateDevice(r.Context(), dev); err != nil {
 		writeErr(w, 500, err.Error())
@@ -353,7 +353,10 @@ type messageView struct {
 	UserID     string          `json:"userId"`
 	Seq        int64           `json:"seq"`
 	Title      string          `json:"title"`
-	Status     string          `json:"status"`
+	AgentState string          `json:"agentState"`
+	Severity   string          `json:"severity,omitempty"`
+	Kind       string          `json:"kind,omitempty"`
+	ReplyTo    string          `json:"replyTo,omitempty"`
 	Body       string          `json:"body"`
 	Link       string          `json:"link"`
 	DeviceTags []string        `json:"deviceTags"`
@@ -375,7 +378,8 @@ func toMessageView(m *broker.Message) *messageView {
 		tags = []string{}
 	}
 	return &messageView{
-		ID: m.ID, UserID: m.UserID, Seq: m.Seq, Title: m.Title, Status: m.Status,
+		ID: m.ID, UserID: m.UserID, Seq: m.Seq, Title: m.Title,
+		AgentState: m.AgentState, Severity: m.Severity, Kind: m.Kind, ReplyTo: m.ReplyTo,
 		Body: m.Body, Link: m.Link, DeviceTags: tags, Priority: m.Priority,
 		TTLSeconds: m.TTLSeconds, Payload: payload, CreatedAt: m.CreatedAt, ExpiresAt: m.ExpiresAt,
 	}
@@ -441,7 +445,10 @@ func (h *notificationsHandler) getOne(w http.ResponseWriter, r *http.Request, id
 		UserID:     row.UserID,
 		Seq:        row.Seq,
 		Title:      row.Title,
-		Status:     row.Status,
+		AgentState: row.AgentState,
+		Severity:   row.Severity,
+		Kind:       row.Kind,
+		ReplyTo:    row.ReplyTo,
 		Body:       row.Body,
 		Link:       row.Link,
 		DeviceTags: row.DeviceTags,
