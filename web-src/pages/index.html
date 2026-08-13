@@ -362,6 +362,7 @@
         id: n.id || n.ID || "n" + i,
         seq: n.seq != null ? n.seq : n.Seq,
         agentState: n.agentState || n.AgentState || "working",
+        kind: n.kind || n.Kind || "task",
         title:
           n.title || n.Title || t("common.placeholder.no_title", "（无标题）"),
         body: n.body || n.Body || "",
@@ -728,11 +729,13 @@
         list.replaceChildren(
           ...rows.map((n) => {
             const meta = AGENT_STATE_META[n.agentState] || AGENT_STATE_META.working;
+            const isReply = n.kind === "reply";
             return el(
               "button",
               {
                 class:
-                  "notif-row flex w-full items-center gap-4 px-6 py-4 text-left",
+                  "notif-row flex w-full items-center gap-4 px-6 py-4 text-left" +
+                  (isReply ? " pl-10" : ""),
                 onclick: () => openDetail(n.id),
               },
               el("span", { class: `dot ${meta.dot}` }),
@@ -750,6 +753,12 @@
                     class: `status-badge ${meta.badge}`,
                     text: t(meta.labelKey, meta.fallback),
                   }),
+                  isReply
+                    ? el("span", {
+                        class: "status-badge status-info",
+                        text: t("reply.badge", "回复"),
+                      })
+                    : null,
                 ),
                 el(
                   "div",

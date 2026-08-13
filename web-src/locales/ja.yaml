@@ -252,6 +252,14 @@ message:
   error:
     missing_id: メッセージ ID がありません（URL に ?id=ntf_… が必要）
     not_found: メッセージが見つからないか削除されました
+reply:
+  title: 返信
+  placeholder: 返信内容を入力…
+  send: 返信を送信
+  sending: 送信中…
+  success: 返信を送信しました
+  failed: "返信失敗：{msg}"
+  badge: 返信
 login:
   title: ログイン
   welcome: おかえりなさい

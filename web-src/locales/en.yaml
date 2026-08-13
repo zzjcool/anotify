@@ -252,6 +252,14 @@ message:
   error:
     missing_id: Missing message ID (URL should have ?id=ntf_…)
     not_found: Message not found or has been cleaned up
+reply:
+  title: Reply
+  placeholder: Type a reply…
+  send: Send Reply
+  sending: Sending…
+  success: Reply sent
+  failed: "Reply failed: {msg}"
+  badge: Reply
 login:
   title: Sign in
   welcome: Welcome back to

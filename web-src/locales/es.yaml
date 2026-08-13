@@ -252,6 +252,14 @@ message:
   error:
     missing_id: Falta el ID de mensaje (URL debe tener ?id=ntf_…)
     not_found: Mensaje no encontrado o ha sido eliminado
+reply:
+  title: Responder
+  placeholder: Escribe una respuesta…
+  send: Enviar respuesta
+  sending: Enviando…
+  success: Respuesta enviada
+  failed: "Error de respuesta: {msg}"
+  badge: Respuesta
 login:
   title: Iniciar sesión
   welcome: Bienvenido de nuevo a
