@@ -17,6 +17,9 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
+// maxReplyBodyLen 限制回复正文长度。
+const maxReplyBodyLen = 2000
+
 // NotifyHandler 处理 POST /v1/notify（Agent 上报）。
 type NotifyHandler struct {
 	Broker broker.Broker
@@ -26,6 +29,15 @@ type NotifyHandler struct {
 	// OnPublished 在消息成功入队后调用（参数为 userID），用于按需启动该用户的
 	// push 派发消费者（覆盖运行期新注册用户）。可为 nil。
 	OnPublished func(userID string)
+
+	// ReplyRateLimiter 可选的回复限流器（按 userID）。
+	// 由 server 包注入；若为 nil 则不限流。
+	ReplyRateLimiter RateLimiter
+}
+
+// RateLimiter 是限流器的最小接口（由 server.fixedWindow 实现）。
+type RateLimiter interface {
+	Allow(key string) bool
 }
 
 // NotifyRequest 是 POST /v1/notify 的请求体（见 api/openapi.yaml）。
@@ -254,6 +266,148 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"user_id", userID,
 		"matched", resp.Matched,
 		"agentState", req.AgentState,
+	)
+}
+
+// ReplyRequest 是 POST /v1/reply 的请求体。
+type ReplyRequest struct {
+	ReplyTo string `json:"replyTo"`
+	Body    string `json:"body"`
+}
+
+// ReplyResponse 是 POST /v1/reply 的响应体。
+type ReplyResponse struct {
+	ID         string `json:"id"`
+	Routed     bool   `json:"routed"`
+	AgentRoute string `json:"agentRoute"`
+}
+
+func (h *NotifyHandler) ServeReply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	user := auth.UserIDFromContext(r.Context())
+	if user == "" {
+		writeError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+
+	var req ReplyRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+
+	req.ReplyTo = strings.TrimSpace(req.ReplyTo)
+	req.Body = strings.TrimSpace(req.Body)
+	if req.ReplyTo == "" {
+		writeError(w, http.StatusBadRequest, "replyTo is required")
+		return
+	}
+	if req.Body == "" {
+		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	if len(req.Body) > maxReplyBodyLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body exceeds %d characters", maxReplyBodyLen))
+		return
+	}
+
+	// 限流：按 userID 20/min
+	if h.ReplyRateLimiter != nil && !h.ReplyRateLimiter.Allow(user) {
+		slog.Warn("reply rate limited",
+			"event", "reply.ratelimited",
+			"user_id", user,
+		)
+		w.Header().Set("Retry-After", "60")
+		writeError(w, 429, "回复过于频繁，请稍后再试")
+		return
+	}
+
+	// 反查原消息（含 payload，含 agentId/sessionId）
+	orig, err := h.Store.GetMessage(r.Context(), user, req.ReplyTo)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get original message: "+err.Error())
+		return
+	}
+	if orig == nil {
+		writeError(w, http.StatusNotFound, "原消息不存在")
+		return
+	}
+
+	// 从原消息 payload 取 agentId/sessionId（payload 是原始 NotifyRequest 的 JSON）
+	var origPayload NotifyRequest
+	if err := json.Unmarshal(orig.Payload, &origPayload); err != nil {
+		writeError(w, http.StatusInternalServerError, "unmarshal original payload: "+err.Error())
+		return
+	}
+
+	// 构造路由键：用原消息的 agentId 拼 agent:<id> 键
+	// 若原消息无 agentId（如 test-notify），无法路由 → 422
+	agentID := origPayload.AgentID
+	if agentID == "" {
+		writeError(w, http.StatusUnprocessableEntity, "原消息无 agent 标识，无法路由回复")
+		return
+	}
+	agentRoute := "agent:" + agentID
+
+	// 构造 reply 消息
+	now := time.Now().UTC()
+	title := req.Body
+	if len(title) > 60 {
+		title = title[:60] + "…"
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"replyTo":   req.ReplyTo,
+		"body":      req.Body,
+		"agentId":   agentID,
+		"sessionId": origPayload.SessionID,
+		"source":    "reply",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "marshal payload: "+err.Error())
+		return
+	}
+
+	msg := &broker.Message{
+		ID:         store.NewMessageID(),
+		UserID:     user,
+		Title:      title,
+		AgentState: broker.AgentStateWorking,
+		Severity:   deriveSeverity(broker.AgentStateWorking, ""),
+		Kind:       "reply",
+		ReplyTo:    req.ReplyTo,
+		Body:       req.Body,
+		DeviceTags: []string{agentRoute},
+		Priority:   "normal",
+		TTLSeconds: 86400,
+		Payload:    payload,
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(24 * time.Hour),
+	}
+
+	if err := h.Broker.Publish(r.Context(), msg); err != nil {
+		writeError(w, http.StatusInternalServerError, "publish: "+err.Error())
+		return
+	}
+	if h.OnPublished != nil {
+		h.OnPublished(user)
+	}
+
+	writeJSON(w, http.StatusOK, ReplyResponse{
+		ID:         msg.ID,
+		Routed:     true,
+		AgentRoute: agentRoute,
+	})
+	slog.Info("reply published",
+		"event", "reply.published",
+		"message_id", msg.ID,
+		"reply_to", req.ReplyTo,
+		"user_id", user,
+		"agent_route", agentRoute,
 	)
 }
 

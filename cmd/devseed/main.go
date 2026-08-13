@@ -62,6 +62,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	replyPlain, _, err := km.CreateKey(uid, "dev-reply", []string{auth.ScopeNotifyReply})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	sm := auth.NewSessionManager(db, 0, false)
 	sess, err := sm.Create(uid, "devseed · CLI")
@@ -72,6 +76,7 @@ func main() {
 	fmt.Printf("UID=%s\n", uid)
 	fmt.Printf("SEND_KEY=%s\n", sendPlain)
 	fmt.Printf("RECV_KEY=%s\n", recvPlain)
+	fmt.Printf("REPLY_KEY=%s\n", replyPlain)
 	fmt.Printf("SESSION=%s\n", sess.ID)
 	if u, err := db.GetUserByID(uid); err == nil {
 		fmt.Printf("ROLE=%s\n", u.Role)

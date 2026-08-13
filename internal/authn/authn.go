@@ -16,6 +16,7 @@ import (
 const (
 	ScopeNotifySend    = "notify:send"
 	ScopeNotifyReceive = "notify:receive"
+	ScopeNotifyReply   = "notify:reply"
 	ScopeDevicesRead   = "devices:read"
 )
 

@@ -87,7 +87,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 
 	// 5. HTTP 处理器
-	notifyH := &api.NotifyHandler{Broker: bk, Keys: keyValidator, Store: db}
+	notifyH := &api.NotifyHandler{Broker: bk, Keys: keyValidator, Store: db, ReplyRateLimiter: rlReply}
 	// 上报成功后确保该用户的 push 消费者已启动（覆盖运行期新注册用户）
 	if dm != nil {
 		notifyH.OnPublished = dm.Ensure
@@ -139,6 +139,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/notify", noStore(notifyH))
 	// 工作台测试上报（会话 Cookie 鉴权）：已登录用户在网页直接发测试通知到自己设备
 	mux.Handle("/v1/test-notify", noStore(sessMW(http.HandlerFunc(notifyH.ServeTestNotify))))
+	// 回复（会话 Cookie 鉴权）：已登录用户对某条通知回复指令，注入回 agent
+	mux.Handle("/v1/reply", noStore(sessMW(http.HandlerFunc(notifyH.ServeReply))))
 	// WS 长连接（Bearer Key，内部自校验）
 	mux.Handle("/v1/stream", noStore(streamH))
 	// VAPID 公钥（前端订阅用，无需登录也可读；单一事实源 = push.LoadVAPID）
