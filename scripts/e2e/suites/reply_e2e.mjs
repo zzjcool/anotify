@@ -91,9 +91,9 @@ async function main() {
 	H.check("reply 返回 id", !!replyResp.json?.id);
 	H.eq("reply routed=true", replyResp.json?.routed, true);
 	H.eq(
-		"reply agentRoute 正确",
+		"reply agentRoute 正确（用 sessionId 路由）",
 		replyResp.json?.agentRoute,
-		"agent:" + agentId,
+		"agent:" + sessionId,
 	);
 
 	const replyMsgId = replyResp.json?.id;
@@ -101,16 +101,15 @@ async function main() {
 
 	// ---- 3. WS 收到 reply 消息帧 ----
 	// 先连 WS（recv Key），订阅 agent 路由键
-	// 注：reply 消息的 deviceTags=[agent:pi@replye2e:r2d2]，
-	// WS 客户端需要 subscribe(tags=[agent:pi@replye2e:r2d2]) 才能收到。
-	// 但 WS 是 push 模型——先连接订阅，再发 reply。
+	// 注：reply 消息的 deviceTags=[agent:sess_reply_e2e_001]（后端从原消息 sessionId 构造路由键），
+	// WS 客户端需要 subscribe(tags=[agent:sess_reply_e2e_001]) 才能收到。
 	{
 		const s = connect(server.base, { key: recvKey });
 		await waitSettled(s);
 		await s.waitFrame((f) => f.type === "hello");
 
-		// 订阅 agent 路由键
-		const agentRoute = "agent:" + agentId;
+		// 订阅 agent 路由键（用 sessionId，与后端构造逻辑一致）
+		const agentRoute = "agent:" + sessionId;
 		s.send({ type: "subscribe", tags: [agentRoute] });
 		const subed = await s.waitFrame((f) => f.type === "subscribed", 2000);
 		H.check("WS subscribe agent 路由键 → subscribed", !!subed);

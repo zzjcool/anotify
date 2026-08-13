@@ -242,9 +242,10 @@ async function main() {
 		await waitSettled(s);
 		await s.waitFrame((f) => f.type === "hello");
 
-		// 订阅 agent 路由键
+		// 订阅 agent 路由键（后端从原消息 sessionId 构造路由键，故 subscribe 用 agent:<sessionId>）
 		const REPLY_AGENT = "pi@ws-reply-test";
-		const REPLY_ROUTE = "agent:" + REPLY_AGENT;
+		const REPLY_SESS = "ws-reply-sess";
+		const REPLY_ROUTE = "agent:" + REPLY_SESS;
 		s.send({ type: "subscribe", tags: [REPLY_ROUTE] });
 		const subed = await s.waitFrame((f) => f.type === "subscribed", 2000);
 		H.check("reply 帧测试：subscribe → subscribed", !!subed);
@@ -256,7 +257,7 @@ async function main() {
 				title: "ws-reply-task",
 				agentState: "done",
 				agentId: REPLY_AGENT,
-				sessionId: "ws-reply-sess",
+				sessionId: REPLY_SESS,
 				deviceTags: [REPLY_ROUTE],
 			},
 		});

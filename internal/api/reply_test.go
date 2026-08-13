@@ -76,7 +76,7 @@ func publishOriginalMessage(t *testing.T, h *NotifyHandler, uid string) string {
 		Severity:   "info",
 		Kind:       "task",
 		Body:       "completed",
-		DeviceTags: []string{"agent:pi@testhost:a1b2"},
+		DeviceTags: []string{"agent:sess_test_123"},
 		Priority:   "normal",
 		TTLSeconds: 86400,
 		Payload:    payload,
@@ -111,8 +111,8 @@ func TestReply_Success(t *testing.T) {
 	if !resp.Routed {
 		t.Error("expected routed=true")
 	}
-	if resp.AgentRoute != "agent:pi@testhost:a1b2" {
-		t.Errorf("expected agent route agent:pi@testhost:a1b2, got %s", resp.AgentRoute)
+	if resp.AgentRoute != "agent:sess_test_123" {
+		t.Errorf("expected agent route agent:sess_test_123, got %s", resp.AgentRoute)
 	}
 	if resp.ID == "" {
 		t.Error("expected non-empty message ID")

@@ -344,14 +344,17 @@ func (h *NotifyHandler) ServeReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 构造路由键：用原消息的 agentId 拼 agent:<id> 键
-	// 若原消息无 agentId（如 test-notify），无法路由 → 422
-	agentID := origPayload.AgentID
-	if agentID == "" {
+	// 构造路由键：优先用原消息的 sessionId（pi 扩展的进程级唯一 id 放这里），
+	// 降级用 agentId（兼容旧上报/非 pi 上报）。若两者都空 → 422。
+	routeKey := origPayload.SessionID
+	if routeKey == "" {
+		routeKey = origPayload.AgentID
+	}
+	if routeKey == "" {
 		writeError(w, http.StatusUnprocessableEntity, "原消息无 agent 标识，无法路由回复")
 		return
 	}
-	agentRoute := "agent:" + agentID
+	agentRoute := "agent:" + routeKey
 
 	// 构造 reply 消息
 	now := time.Now().UTC()
@@ -363,7 +366,7 @@ func (h *NotifyHandler) ServeReply(w http.ResponseWriter, r *http.Request) {
 	payload, err := json.Marshal(map[string]any{
 		"replyTo":   req.ReplyTo,
 		"body":      req.Body,
-		"agentId":   agentID,
+		"agentId":   origPayload.AgentID,
 		"sessionId": origPayload.SessionID,
 		"source":    "reply",
 	})
