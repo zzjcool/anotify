@@ -122,6 +122,7 @@ const TAILWIND_COMPLETE = new Set([
 	"overflow-y-auto",
 	"overscroll-x-none",
 	"overscroll-y-none",
+	"overscroll-contain",
 	"truncate",
 	"whitespace-nowrap",
 	"whitespace-pre",

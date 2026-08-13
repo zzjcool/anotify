@@ -307,7 +307,7 @@
 >
   <div class="sidebar-overlay absolute inset-0" id="detail-overlay"></div>
   <div
-    class="card relative z-10 w-full max-w-lg p-6 shadow-2xl"
+    class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden p-6 shadow-2xl"
     style="background: var(--bg-raise)"
   >
     <div class="flex items-start justify-between">
@@ -328,7 +328,7 @@
         </svg>
       </button>
     </div>
-    <div id="detail-body" class="mt-5 space-y-4"></div>
+    <div id="detail-body" class="mt-5 space-y-4 overflow-y-auto overscroll-contain"></div>
   </div>
 </div>
 
@@ -1002,13 +1002,14 @@
       document
         .getElementById("detail-modal")
         .classList.replace("hidden", "flex");
-      document.body.style.overflow = "hidden";
+      // 注意：不设 body overflow=hidden。iOS Safari 下 body overflow:hidden
+      // 不但不能锁背景滚动，反而会冻结整个页面（触摸事件被吞、无法滚动），
+      // 弹层 fixed inset-0 遮罩已挡住背景，无需额外锁 body。
     }
     function closeDetail() {
       const modal = document.getElementById("detail-modal");
       if (modal.classList.contains("hidden")) return; // 未打开时不动 URL
       modal.classList.replace("flex", "hidden");
-      document.body.style.overflow = "";
       syncMsgParam(null);
     }
     document
