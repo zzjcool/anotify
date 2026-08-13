@@ -648,7 +648,7 @@
 
 		const root = el(
 			"div",
-			{ class: "flex min-h-screen" },
+			{ class: "flex min-h-dvh" },
 			sidebar,
 			overlay,
 			rightCol,

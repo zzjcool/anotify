@@ -91,7 +91,7 @@
 </div>
 
 {{end}} {{define "script"}}
-<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js" defer></script>
+<script src="/vendor/marked.min.js" defer></script>
 <script>
   (function () {
     "use strict";
@@ -324,17 +324,17 @@
       }
       render(m);
       renderDeliveries(Array.isArray(m.deliveries) ? m.deliveries : []);
-      // marked CDN 可能晚于 render 就绪：未就绪时 renderBody 走了纯文本 fallback，
-      // marked 加载完后重渲染一次 body 为 Markdown。
+      // marked（defer 加载，本地打包）通常已就绪；极端情况下晚于 render 时
+      // 走了纯文本 fallback，这里轻轮询等其就绪后重渲染一次 body 为 Markdown。
       if (!(window.marked && window.marked.parse)) {
         const tryRerender = () => {
           if (window.marked && window.marked.parse) {
             renderBody(document.getElementById("msg-body"), m.body);
           } else {
-            setTimeout(tryRerender, 200);
+            setTimeout(tryRerender, 50);
           }
         };
-        setTimeout(tryRerender, 200);
+        setTimeout(tryRerender, 50);
       }
     }
     load();
