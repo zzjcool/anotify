@@ -402,21 +402,32 @@ func (h *notificationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			limit = n
 		}
 	}
-	since := int64(0)
-	if q := r.URL.Query().Get("sinceSeq"); q != "" {
-		if n, err := strconv.ParseInt(q, 10, 64); err == nil {
-			since = n
-		}
-	}
-	msgs, err := h.bk.Replay(r.Context(), uid, since, limit)
+	// 工作台「最近通知」需要最新 N 条（seq 降序），与 broker.Replay（升序回放
+	// 历史，供 WS 补帧）语义相反，用 store 层 ListRecentMessages。
+	rows, err := h.db.ListRecentMessages(r.Context(), uid, limit)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	// 转成 JSON 视图（payload 解码为对象），并保证空结果序列化为 [] 而非 null
-	out := make([]*messageView, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, toMessageView(m))
+	out := make([]*messageView, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toMessageView(&broker.Message{
+			ID:         row.ID,
+			UserID:     row.UserID,
+			Seq:        row.Seq,
+			Title:      row.Title,
+			AgentState: row.AgentState,
+			Severity:   row.Severity,
+			Body:       row.Body,
+			Link:       row.Link,
+			DeviceTags: row.DeviceTags,
+			Priority:   row.Priority,
+			TTLSeconds: row.TTLSeconds,
+			Payload:    row.Payload,
+			CreatedAt:  row.CreatedAt,
+			ExpiresAt:  row.ExpiresAt,
+		}))
 	}
 	writeJSON(w, 200, map[string]any{"notifications": out, "count": len(out)})
 }

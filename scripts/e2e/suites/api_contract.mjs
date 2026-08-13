@@ -341,15 +341,19 @@ async function main() {
 	const maxSeq = Math.max(
 		...(notifAll.json?.notifications || []).map((m) => m.Seq ?? m.seq ?? 0),
 	);
-	const notifSince = await H.req(
-		B,
-		`/v1/notifications?sinceSeq=${maxSeq - 1}`,
-		{ session },
-	);
+	// 列表返回最新 N 条（seq 降序，最新在前），与 broker.Replay（升序回放）语义相反
+	const notifOrder = await H.req(B, "/v1/notifications?limit=10", { session });
+	const seqs = (notifOrder.json?.notifications || []).map((m) => m.Seq ?? m.seq ?? 0);
 	H.check(
-		"notifications sinceSeq 分页返回更少",
-		(notifSince.json?.count ?? 0) < (notifAll.json?.count ?? 0),
-		`since=${notifSince.json?.count} all=${notifAll.json?.count}`,
+		"notifications 返回最新消息（seq 降序）",
+		seqs.length > 0 && seqs[0] === Math.max(...seqs) && seqs[seqs.length - 1] === Math.min(...seqs),
+		`seqs=${JSON.stringify(seqs)}`,
+	);
+	// 首条应等于全局最大 seq（刚才上报的 n1/n2 是最新的）
+	H.check(
+		"notifications 首条是最新消息",
+		seqs[0] >= maxSeq,
+		`first=${seqs[0]} max=${maxSeq}`,
 	);
 
 	// ---------- 静态/缓存 ----------

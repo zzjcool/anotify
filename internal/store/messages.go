@@ -101,6 +101,48 @@ func (d *DB) GetMessage(ctx context.Context, userID, messageID string) (*Message
 	return &m, nil
 }
 
+// ListRecentMessages 返回某用户最新的 N 条消息（按 seq 降序，最新在前）。
+// 与 broker.Replay（按 seq 升序回放历史，供 WS 补帧）不同，本方法面向
+// 工作台「最近通知」列表——需要最新 N 条而非最老 N 条。
+func (d *DB) ListRecentMessages(ctx context.Context, userID string, limit int) ([]*MessageRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.QueryContext(ctx, `
+		SELECT id, user_id, seq, title, agent_state, severity, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
+		FROM messages
+		WHERE user_id=?
+		ORDER BY seq DESC LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent messages: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*MessageRow
+	for rows.Next() {
+		var m MessageRow
+		var tags, payload string
+		var createdAt, expiresAt int64
+		if err := rows.Scan(
+			&m.ID, &m.UserID, &m.Seq, &m.Title, &m.AgentState, &m.Severity, &m.Body, &m.Link,
+			&tags, &m.Priority, &m.TTLSeconds, &payload, &createdAt, &expiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("list recent messages: 扫描行: %w", err)
+		}
+		if err := json.Unmarshal([]byte(tags), &m.DeviceTags); err != nil {
+			return nil, fmt.Errorf("list recent messages: 解析 device_tags: %w", err)
+		}
+		m.Payload = []byte(payload)
+		m.CreatedAt = time.Unix(createdAt, 0)
+		m.ExpiresAt = time.Unix(expiresAt, 0)
+		out = append(out, &m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list recent messages: 遍历结果: %w", err)
+	}
+	return out, nil
+}
+
 // InsertTestMessage 是 InsertMessage 的便捷包装：给定 id/userID/seq/agentState，
 // 其余字段填合理默认，仅供测试为 deliveries 提供外键父行。
 func (d *DB) InsertTestMessage(ctx context.Context, id, userID string, seq int64, agentState string) error {
