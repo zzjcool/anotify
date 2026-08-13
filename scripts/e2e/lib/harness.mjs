@@ -172,6 +172,7 @@ export const SUITE_PORTS = {
 	passkeys: 6600,
 	passkey_enroll: 6650,
 	admin_flow: 6700,
+	reply_e2e: 6750,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。
@@ -302,6 +303,7 @@ export function seed(dbPath, username = "e2e") {
 		uid: get("UID"),
 		sendKey: get("SEND_KEY"),
 		recvKey: get("RECV_KEY"),
+		replyKey: get("REPLY_KEY"),
 		session: get("SESSION"),
 	};
 }

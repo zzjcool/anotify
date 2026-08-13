@@ -352,6 +352,158 @@ async function main() {
 		`since=${notifSince.json?.count} all=${notifAll.json?.count}`,
 	);
 
+	// ---------- reply 端点（Cookie 鉴权）----------
+	H.eq(
+		"reply 无 session → 401",
+		(await H.req(B, "/v1/reply", { body: { replyTo: "x", body: "hi" } })).status,
+		401,
+	);
+	H.eq(
+		"reply 缺 replyTo → 400",
+		(await H.req(B, "/v1/reply", { session, body: { body: "hi" } })).status,
+		400,
+	);
+	H.eq(
+		"reply 缺 body → 400",
+		(await H.req(B, "/v1/reply", { session, body: { replyTo: "ntf_x" } })).status,
+		400,
+	);
+	H.eq(
+		"reply body 超 2000 字 → 400",
+		(
+			await H.req(B, "/v1/reply", {
+				session,
+				body: { replyTo: "ntf_x", body: "x".repeat(2001) },
+			})
+		).status,
+		400,
+	);
+	H.eq(
+		"reply 指向不存在消息 → 404",
+		(
+			await H.req(B, "/v1/reply", {
+				session,
+				body: { replyTo: "ntf_nonexistent_999", body: "hi" },
+			})
+		).status,
+		404,
+	);
+	// 上报一条带 agentId 的 task 消息，用于合法 reply
+	const replyTargetResp = await H.req(B, "/v1/notify", {
+		key: sendKey,
+		body: {
+			title: "reply 目标",
+			agentState: "done",
+			agentId: "pi@e2e-test",
+			sessionId: "sess-reply-test",
+		},
+	});
+	const replyTargetId = replyTargetResp.json?.id;
+	H.check("上报 reply 目标消息成功", !!replyTargetId);
+	if (replyTargetId) {
+		const replyResp = await H.req(B, "/v1/reply", {
+			session,
+			body: { replyTo: replyTargetId, body: "继续改下样式" },
+		});
+		H.eq("reply 合法 → 200", replyResp.status, 200);
+		H.check("reply 返回 id", !!replyResp.json?.id);
+		H.eq("reply routed=true", replyResp.json?.routed, true);
+		H.check(
+			"reply agentRoute=agent:pi@e2e-test",
+			replyResp.json?.agentRoute === "agent:pi@e2e-test",
+			`got ${replyResp.json?.agentRoute}`,
+		);
+		// reply 消息出现在通知列表（kind=reply）
+		const replyNotifList = await H.req(B, "/v1/notifications?limit=50", { session });
+		const replyMsg = (replyNotifList.json?.notifications || []).find(
+			(n) => n.ID === replyResp.json?.id || n.id === replyResp.json?.id,
+		);
+		H.check(
+			"reply 消息出现在通知列表",
+			!!replyMsg,
+			"未在列表中找到 reply 消息",
+		);
+		if (replyMsg) {
+			H.eq(
+				"reply 消息 kind=reply",
+				replyMsg.Kind ?? replyMsg.kind,
+				"reply",
+			);
+		}
+		// 无 agentId 的消息（不带 agentId 的 notify 上报）→ 422
+		const noAgentResp = await H.req(B, "/v1/notify", {
+			key: sendKey,
+			body: { title: "无agentId", agentState: "done" },
+		});
+		const noAgentId = noAgentResp.json?.id;
+		if (noAgentId) {
+			H.eq(
+				"reply 无 agentId 消息 → 422",
+				(
+					await H.req(B, "/v1/reply", {
+						session,
+						body: { replyTo: noAgentId, body: "hi" },
+					})
+				).status,
+				422,
+			);
+		} else {
+			H.bad("上报无 agentId 消息失败，无法测试 422");
+		}
+	}
+
+	// ---------- reply 端点 ----------
+	H.eq(
+		"reply 无 session → 401",
+		(await H.req(B, "/v1/reply", { body: { replyTo: "ntf_x", body: "hi" } })).status,
+		401,
+	);
+	H.eq(
+		"reply 缺 replyTo → 400",
+		(await H.req(B, "/v1/reply", { session, body: { body: "hi" } })).status,
+		400,
+	);
+	H.eq(
+		"reply 缺 body → 400",
+		(await H.req(B, "/v1/reply", { session, body: { replyTo: "ntf_x" } })).status,
+		400,
+	);
+	H.eq(
+		"reply 不存在消息 → 404",
+		(await H.req(B, "/v1/reply", { session, body: { replyTo: "ntf_nonexistent", body: "hi" } })).status,
+		404,
+	);
+	// 上报一条带 agentId 的 task 消息，用于 reply 测试
+	const taskResp = await H.req(B, "/v1/notify", {
+		key: sendKey,
+		body: { title: "reply-test-task", agentState: "done", agentId: "pi@e2e:a1b2", sessionId: "sess_e2e_1" },
+	});
+	H.eq("reply 测试: 上报 task → 200", taskResp.status, 200);
+	const taskId = taskResp.json?.id;
+	H.check("reply 测试: task 返回 id", !!taskId);
+	if (taskId) {
+		const replyResp = await H.req(B, "/v1/reply", {
+			session,
+			body: { replyTo: taskId, body: "继续改下样式" },
+		});
+		H.eq("reply 合法 → 200", replyResp.status, 200);
+		H.check("reply 返回 id", !!replyResp.json?.id);
+		H.check("reply routed=true", replyResp.json?.routed === true);
+		H.check(
+			"reply agentRoute 含 agent:",
+			(replyResp.json?.agentRoute || "").startsWith("agent:"),
+			replyResp.json?.agentRoute,
+		);
+		// reply 后 notifications 列表含 reply 消息（kind=reply）
+		const notifAfter = await H.req(B, "/v1/notifications?limit=50", { session });
+		const replyMsg = (notifAfter.json?.notifications || []).find(
+			(m) => m.kind === "reply" && m.replyTo === taskId,
+		);
+		H.check("reply 后通知列表含 kind=reply 消息", !!replyMsg, "未找到 kind=reply 消息");
+	}
+	// test-notify 消息有 agentId="test-notify"，reply 可路由（非 422）
+	// 422 场景由 Go 单测 TestReply_NoAgentIdentifier 覆盖（直接插入无 agentId 的 payload）
+
 	// ---------- 静态/缓存 ----------
 	H.eq("/ → 200", (await H.req(B, "/")).status, 200);
 	const idxHeaders = (await H.req(B, "/index.html")).headers;
