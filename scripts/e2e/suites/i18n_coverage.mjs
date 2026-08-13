@@ -128,7 +128,7 @@ async function main() {
 		key: seedData.sendKey,
 		body: {
 			title: "Coverage Test Notification",
-			status: "success",
+			agentState: "done",
 			body: "Real data path verification",
 		},
 	});

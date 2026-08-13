@@ -4,14 +4,14 @@
  * 覆盖 case：
  *  notify：
  *    无 Key→401；错误 Key→401；recv scope Key→403
- *    缺 title→400；空 title(空格)→400；坏 status→400
- *    五种合法 status(success/error/interrupted/info/warning)→各 200
+ *    缺 title→400；空 title(空格)→400；坏 agentState→400
+ *    五种合法 agentState(working/blocked/done/interrupted/error)→各 200
  *    畸形 JSON→400；超大体(>1MB)→400
  *    deviceTags 归一化（重复/超限/超长）不报错→200
  *    无设备用户上报→200 且 matched=0
  *  vapid-public-key：GET→200 且 publicKey 非空
  *  devices：无 session→401；POST 缺 keys→400；POST 合法→200；GET 含该设备；
- *           PATCH 重命名/statusFilter/enabled→200；PATCH 坏 statusFilter→400；
+ *           PATCH 重命名/eventScope/enabled→200；PATCH 坏 eventScope→400；
  *           DELETE→200 且 DELETE 后 enabled=false 或消失
  *  keys：无 session→401；POST→200 且 ant_ 前缀；POST 无 scopes→400；
  *        GET 不含明文；revoke→200 且被 revoke Key 上报→401
@@ -32,7 +32,7 @@ async function main() {
 	// ---------- notify 鉴权 ----------
 	H.eq(
 		"notify 无 Key → 401",
-		(await H.req(B, "/v1/notify", { body: { title: "t", status: "success" } }))
+		(await H.req(B, "/v1/notify", { body: { title: "t", agentState: "done" } }))
 			.status,
 		401,
 	);
@@ -41,7 +41,7 @@ async function main() {
 		(
 			await H.req(B, "/v1/notify", {
 				key: "ant_send_wrong_wrong",
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		401,
@@ -51,7 +51,7 @@ async function main() {
 		(
 			await H.req(B, "/v1/notify", {
 				key: recvKey,
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		403,
@@ -63,7 +63,7 @@ async function main() {
 		(
 			await H.req(B, "/v1/notify", {
 				key: sendKey,
-				body: { status: "success" },
+				body: { agentState: "done" },
 			})
 		).status,
 		400,
@@ -73,28 +73,28 @@ async function main() {
 		(
 			await H.req(B, "/v1/notify", {
 				key: sendKey,
-				body: { title: "   ", status: "success" },
+				body: { title: "   ", agentState: "done" },
 			})
 		).status,
 		400,
 	);
 	H.eq(
-		"notify 坏 status → 400",
+		"notify 坏 agentState → 400",
 		(
 			await H.req(B, "/v1/notify", {
 				key: sendKey,
-				body: { title: "t", status: "bogus" },
+				body: { title: "t", agentState: "bogus" },
 			})
 		).status,
 		400,
 	);
-	for (const st of ["success", "error", "interrupted", "info", "warning"]) {
+	for (const st of ["working", "blocked", "done", "interrupted", "error"]) {
 		H.eq(
-			`notify status=${st} → 200`,
+			`notify agentState=${st} → 200`,
 			(
 				await H.req(B, "/v1/notify", {
 					key: sendKey,
-					body: { title: "t", status: st },
+					body: { title: "t", agentState: st },
 				})
 			).status,
 			200,
@@ -113,7 +113,7 @@ async function main() {
 	);
 	const bigBody = JSON.stringify({
 		title: "t",
-		status: "success",
+		agentState: "done",
 		body: "x".repeat(2 * 1024 * 1024),
 	});
 	const bigResp = await H.req(B, "/v1/notify", {
@@ -133,7 +133,7 @@ async function main() {
 				key: sendKey,
 				body: {
 					title: "t",
-					status: "success",
+					agentState: "done",
 					deviceTags: [
 						"a",
 						"a",
@@ -148,7 +148,7 @@ async function main() {
 	);
 	const noDevResp = await H.req(B, "/v1/notify", {
 		key: sendKey,
-		body: { title: "t", status: "success" },
+		body: { title: "t", agentState: "done" },
 	});
 	H.eq("无设备用户上报 → 200", noDevResp.status, 200);
 	H.eq("无设备用户上报 matched=0", noDevResp.json?.matched, 0);
@@ -166,14 +166,14 @@ async function main() {
 		"test-notify 无 session → 401",
 		(
 			await H.req(B, "/v1/test-notify", {
-				body: { title: "t", status: "info" },
+				body: { title: "t", agentState: "working" },
 			})
 		).status,
 		401,
 	);
 	const tnResp = await H.req(B, "/v1/test-notify", {
 		session,
-		body: { title: "测试通知", status: "info", body: "hi" },
+		body: { title: "测试通知", agentState: "working", body: "hi" },
 	});
 	H.eq("test-notify 有 session + 合法体 → 200", tnResp.status, 200);
 	H.check("test-notify 返回 id", !!tnResp.json?.id);
@@ -187,8 +187,8 @@ async function main() {
 		200,
 	);
 	H.eq(
-		"test-notify 坏 status → 400",
-		(await H.req(B, "/v1/test-notify", { session, body: { status: "bogus" } }))
+		"test-notify 坏 agentState → 400",
+		(await H.req(B, "/v1/test-notify", { session, body: { agentState: "bogus" } }))
 			.status,
 		400,
 	);
@@ -229,23 +229,23 @@ async function main() {
 		200,
 	);
 	H.eq(
-		"devices PATCH statusFilter=error → 200",
+		"devices PATCH eventScope=final → 200",
 		(
 			await H.req(B, `/v1/devices/${devId}`, {
 				session,
 				method: "PATCH",
-				body: { statusFilter: "error" },
+				body: { eventScope: "final" },
 			})
 		).status,
 		200,
 	);
 	H.eq(
-		"devices PATCH 坏 statusFilter → 400",
+		"devices PATCH 坏 eventScope → 400",
 		(
 			await H.req(B, `/v1/devices/${devId}`, {
 				session,
 				method: "PATCH",
-				body: { statusFilter: "bogus" },
+				body: { eventScope: "bogus" },
 			})
 		).status,
 		400,
@@ -309,7 +309,7 @@ async function main() {
 		(
 			await H.req(B, "/v1/notify", {
 				key: keyPost.json.key,
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		401,
@@ -323,11 +323,11 @@ async function main() {
 	);
 	await H.req(B, "/v1/notify", {
 		key: sendKey,
-		body: { title: "n1", status: "success" },
+		body: { title: "n1", agentState: "done" },
 	});
 	await H.req(B, "/v1/notify", {
 		key: sendKey,
-		body: { title: "n2", status: "error" },
+		body: { title: "n2", agentState: "error" },
 	});
 	const notifAll = await H.req(B, "/v1/notifications?limit=50", { session });
 	H.eq("notifications GET → 200", notifAll.status, 200);

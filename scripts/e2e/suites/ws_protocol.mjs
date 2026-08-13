@@ -10,7 +10,7 @@
  *  2. send scope Key（无 receive）连接 → 拒绝（403）
  *  3. recv Key 连接 → 收到 hello 帧（含 protocol/conn_id/heartbeat_sec/resume_token）
  *  4. 发 {"type":"ping"} → 收到 {"type":"pong"}
- *  5. POST /v1/notify 后发一条 → WS 收到 notification 帧（event_id/title/seq/tags 字段正确）
+ *  5. POST /v1/notify 后发一条 → WS 收到 notification 帧（event_id/title/seq/agentState 字段正确）
  *  6. 收 notification 后发 ack（resume_token 编码的 event_id）→ 无 error 帧
  *  7. 标签过滤：subscribe ["ops"] → subscribed；deviceTags=["ops"]→收到；deviceTags=["other"]→不收；无 tags 广播→收到
  *  8. 断线续传：发 2 条→断开→带 Last-Event-Id=seq1 重连→replay 收到第 2 条 + replay_end
@@ -152,7 +152,7 @@ async function main() {
 		const before = s.frames.length;
 		const nr = await H.req(server.base, "/v1/notify", {
 			key: sendKey,
-			body: { title: "ws协议-实时", status: "success", body: "实时帧测试" },
+			body: { title: "ws协议-实时", agentState: "done", body: "实时帧测试" },
 		});
 		H.eq("notify 上报 200", nr.status, 200);
 		const notif = await s.waitFrame(
@@ -170,7 +170,7 @@ async function main() {
 				typeof notif.seq === "number" && notif.seq > 0,
 			);
 			H.eq("notification.title 正确", notif.title, "ws协议-实时");
-			H.eq("notification.status 正确", notif.status, "success");
+			H.eq("notification.agentState 正确", notif.agentState, "done");
 			seq1 = notif.seq;
 		}
 
@@ -203,7 +203,7 @@ async function main() {
 		// 匹配标签 → 收到
 		await H.req(server.base, "/v1/notify", {
 			key: sendKey,
-			body: { title: "ws-ops", status: "info", deviceTags: ["ops"] },
+			body: { title: "ws-ops", agentState: "working", deviceTags: ["ops"] },
 		});
 		const got = await s.waitFrame(
 			(f) => f.type === "notification" && f.title === "ws-ops",
@@ -214,7 +214,7 @@ async function main() {
 		// 不匹配标签 → 不收（等超时确认未到）
 		await H.req(server.base, "/v1/notify", {
 			key: sendKey,
-			body: { title: "ws-other", status: "info", deviceTags: ["other"] },
+			body: { title: "ws-other", agentState: "working", deviceTags: ["other"] },
 		});
 		const notGot = await s.waitFrame(
 			(f) => f.type === "notification" && f.title === "ws-other",
@@ -225,13 +225,51 @@ async function main() {
 		// 广播（无 tags）→ 仍收到（广播发给所有订阅者）
 		await H.req(server.base, "/v1/notify", {
 			key: sendKey,
-			body: { title: "ws-bcast", status: "warning" },
+			body: { title: "ws-bcast", agentState: "blocked" },
 		});
 		const bcast = await s.waitFrame(
 			(f) => f.type === "notification" && f.title === "ws-bcast",
 			2500,
 		);
 		H.check("无 tags 广播 → 仍收到", !!bcast);
+		s.ws.close();
+		await T(300);
+	}
+
+	// ---- 7b. eventScope 订阅范围过滤 ----
+	{
+		const s = connect(server.base, { key: recvKey });
+		await waitSettled(s);
+		await s.waitFrame((f) => f.type === "hello");
+
+		// 订阅 final（只收终态）
+		s.send({ type: "subscribe", event_scope: "final" });
+		const subed = await s.waitFrame((f) => f.type === "subscribed", 2000);
+		H.check("subscribe event_scope=final → 收到 subscribed", !!subed);
+		if (subed) H.eq("subscribed.event_scope=final", subed.event_scope, "final");
+
+		// 非终态 working → 不收到（final 过滤）
+		await H.req(server.base, "/v1/notify", {
+			key: sendKey,
+			body: { title: "ws-final-working", agentState: "working" },
+		});
+		const gotWorking = await s.waitFrame(
+			(f) => f.type === "notification" && f.title === "ws-final-working",
+			1500,
+		);
+		H.check("eventScope=final 过滤 working（非终态）→ 不收到", !gotWorking);
+
+		// 终态 done → 收到
+		await H.req(server.base, "/v1/notify", {
+			key: sendKey,
+			body: { title: "ws-final-done", agentState: "done" },
+		});
+		const gotDone = await s.waitFrame(
+			(f) => f.type === "notification" && f.title === "ws-final-done",
+			2500,
+		);
+		H.check("eventScope=final 放行 done（终态）→ 收到", !!gotDone);
+
 		s.ws.close();
 		await T(300);
 	}
@@ -244,11 +282,11 @@ async function main() {
 		await s1.waitFrame((f) => f.type === "hello");
 		const n1 = await H.req(server.base, "/v1/notify", {
 			key: sendKey,
-			body: { title: "ws-续传-1", status: "success" },
+			body: { title: "ws-续传-1", agentState: "done" },
 		});
 		const n2 = await H.req(server.base, "/v1/notify", {
 			key: sendKey,
-			body: { title: "ws-续传-2", status: "error" },
+			body: { title: "ws-续传-2", agentState: "error" },
 		});
 		// 等第一条实时到达，取它的 seq 作为 Last-Event-Id
 		const first = await s1.waitFrame(

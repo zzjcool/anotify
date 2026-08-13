@@ -170,7 +170,7 @@ async function main() {
 		// 该 Key 调 /v1/notify 成功
 		const notify = await H.req(server.base, "/v1/notify", {
 			key: p.json.apiKey,
-			body: { title: "cli-auth ok", status: "success" },
+			body: { title: "cli-auth ok", agentState: "done" },
 		});
 		H.eq("AC-11 Key 调 /v1/notify → 200", notify.status, 200);
 		// 该 Key 调 /v1/stream → 403（无 receive scope）
@@ -193,7 +193,7 @@ async function main() {
 		// notify 仍可用
 		const notify = await H.req(server.base, "/v1/notify", {
 			key: p.json.apiKey,
-			body: { title: "scope reduce", status: "success" },
+			body: { title: "scope reduce", agentState: "done" },
 		});
 		H.eq("AC-12 减量 Key 调 /v1/notify → 200", notify.status, 200);
 	}
@@ -374,7 +374,7 @@ async function main() {
 			H.eq("AC-32 停用 Key → 200", rev.status, 200);
 			const notify = await H.req(server.base, "/v1/notify", {
 				key: sess1._key,
-				body: { title: "after revoke", status: "success" },
+				body: { title: "after revoke", agentState: "done" },
 			});
 			H.eq("AC-32 停用后 /v1/notify → 401", notify.status, 401);
 		} else {
@@ -611,7 +611,7 @@ async function scriptE2E(server, seedSession) {
 		// 该 Key 可用
 		const notify = await H.req(server.base, "/v1/notify", {
 			key: cred.apiKey,
-			body: { title: "script e2e", status: "success" },
+			body: { title: "script e2e", agentState: "done" },
 		});
 		H.eq("AC-21 脚本领到的 Key 可用 → 200", notify.status, 200);
 	}

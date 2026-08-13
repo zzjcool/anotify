@@ -32,7 +32,7 @@ async function main() {
 	const N = 10;
 	const results = await Promise.all(
 		Array.from({ length: N }, (_, i) =>
-			notify({ title: `并发-${i}`, status: "success" }),
+			notify({ title: `并发-${i}`, agentState: "done" }),
 		),
 	);
 	const allOk = results.every((r) => r.status === 200);
@@ -60,7 +60,7 @@ async function main() {
 	const u = await notify({
 		title: unicodeTitle,
 		body: unicodeBody,
-		status: "success",
+		agentState: "done",
 	});
 	H.eq("Unicode/Emoji/特殊字符上报 → 200", u.status, 200);
 	const u2 = await H.req(server.base, "/v1/notifications?limit=50", {
@@ -79,7 +79,7 @@ async function main() {
 	console.log("--- 超长字段 ---");
 	const longTitle = await notify({
 		title: "T".repeat(5000),
-		status: "success",
+		agentState: "done",
 	});
 	H.check(
 		"超长 title(5000) 不 500",
@@ -89,7 +89,7 @@ async function main() {
 	const longBody = await notify({
 		title: "正常",
 		body: "B".repeat(50000),
-		status: "success",
+		agentState: "done",
 	});
 	H.check(
 		"超长 body(50000) 不 500",
@@ -106,10 +106,10 @@ async function main() {
 	});
 	H.eq("创建 catch-all 设备 → 200", dev.status, 200);
 
-	const noTags = await notify({ title: "省略tags", status: "success" });
+	const noTags = await notify({ title: "省略tags", agentState: "done" });
 	const emptyTags = await notify({
 		title: "空tags",
-		status: "success",
+		agentState: "done",
 		deviceTags: [],
 	});
 	H.eq("省略 deviceTags 是广播", noTags.json?.matched, 1);
@@ -121,7 +121,7 @@ async function main() {
 
 	const blankTags = await notify({
 		title: "空白tags",
-		status: "success",
+		agentState: "done",
 		deviceTags: ["", "   ", "\t"],
 	});
 	H.check(

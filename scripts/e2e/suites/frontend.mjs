@@ -203,7 +203,7 @@ async function main() {
 		// 先上报一条真实通知，验证真实数据渲染
 		await H.req(server.base, "/v1/notify", {
 			key: s.sendKey,
-			body: { title: "前端真实数据验证", status: "success" },
+			body: { title: "前端真实数据验证", agentState: "done" },
 		});
 
 		const ctx = await browser.newContext();

@@ -45,7 +45,7 @@ async function main() {
 		key: s.sendKey,
 		body: {
 			title: "深链验证-构建完成",
-			status: "success",
+			agentState: "done",
 			body: "共 47 个文件变更，已发布到生产环境。",
 			link: "pi://session/sess_deeplink1",
 			agentId: "deploy-bot",
@@ -67,7 +67,7 @@ async function main() {
 		key: s.sendKey,
 		body: {
 			title: "深链验证-无外链",
-			status: "error",
+			agentState: "error",
 			body: "3 个测试用例未通过。",
 		},
 	});

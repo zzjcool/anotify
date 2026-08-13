@@ -117,7 +117,7 @@ async function main() {
 	// 触发推送
 	const nr = await H.req(server.base, "/v1/notify", {
 		key: sendKey,
-		body: { title: "桌面推送 E2E", status: "success", body: "真实 FCM 推送" },
+		body: { title: "桌面推送 E2E", agentState: "done", body: "真实 FCM 推送" },
 	});
 	H.eq("notify 上报 → 200", nr.status, 200);
 	H.check(

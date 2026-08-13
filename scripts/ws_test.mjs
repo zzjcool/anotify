@@ -86,7 +86,7 @@ async function main() {
 			Authorization: `Bearer ${SEND_KEY}`,
 		},
 		body: JSON.stringify({
-			status: "success",
+			agentState: "done",
 			title: "ws-集成测试",
 			body: "来自 WS 集成测试",
 		}),

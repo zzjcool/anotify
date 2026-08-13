@@ -27,7 +27,7 @@ async function main() {
 		(
 			await H.req(server.base, "/v1/notify", {
 				key: recvKey,
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		403,
@@ -91,7 +91,7 @@ async function main() {
 		(
 			await H.req(server.base, "/v1/notify", {
 				key: tampered,
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		401,
@@ -102,7 +102,7 @@ async function main() {
 		(
 			await H.req(server.base, "/v1/notify", {
 				key: prefixChanged,
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		401,
@@ -113,7 +113,7 @@ async function main() {
 		"无 Authorization 头 → 401",
 		(
 			await H.req(server.base, "/v1/notify", {
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		401,
@@ -123,7 +123,7 @@ async function main() {
 		(
 			await H.req(server.base, "/v1/notify", {
 				headers: { Authorization: "Basic " + sendKey },
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		401,
@@ -168,7 +168,7 @@ async function main() {
 	);
 	const inj2 = await H.req(server.base, "/v1/notify", {
 		key: sendKey,
-		body: { title: "'; DROP TABLE users;--", status: "success" },
+		body: { title: "'; DROP TABLE users;--", agentState: "done" },
 	});
 	H.eq("SQL注入串作为 title 上报仍正常", inj2.status, 200);
 	H.eq(

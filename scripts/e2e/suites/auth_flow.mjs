@@ -258,7 +258,7 @@ async function main() {
 		(
 			await H.req(server.base, "/v1/notify", {
 				key: sendKey,
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		200,
@@ -268,7 +268,7 @@ async function main() {
 		(
 			await H.req(server.base, "/v1/notify", {
 				key: recvKey,
-				body: { title: "t", status: "success" },
+				body: { title: "t", agentState: "done" },
 			})
 		).status,
 		403,
@@ -338,7 +338,7 @@ async function main() {
 	// 11. /v1/stats 真实统计
 	await H.req(server.base, "/v1/notify", {
 		key: sendKey,
-		body: { title: "统计测试", status: "success" },
+		body: { title: "统计测试", agentState: "done" },
 	});
 	const stats = await H.req(server.base, "/v1/stats", { session: sess });
 	H.eq("GET /v1/stats → 200", stats.status, 200);

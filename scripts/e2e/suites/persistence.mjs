@@ -34,7 +34,7 @@ async function main() {
 		for (let i = 1; i <= 3; i++) {
 			const r = await H.req(server.base, "/v1/notify", {
 				key: sendKey,
-				body: { title: `持久化消息${i}`, status: "success", body: `body-${i}` },
+				body: { title: `持久化消息${i}`, agentState: "done", body: `body-${i}` },
 			});
 			H.eq(`重启前上报第${i}条 → 200`, r.status, 200);
 		}
@@ -94,7 +94,7 @@ async function main() {
 		// 4. Key 仍可用
 		const reuse = await H.req(server.base, "/v1/notify", {
 			key: extraKey,
-			body: { title: "重启后上报", status: "success" },
+			body: { title: "重启后上报", agentState: "done" },
 		});
 		H.eq("重启后旧 Key 上报 → 200", reuse.status, 200);
 

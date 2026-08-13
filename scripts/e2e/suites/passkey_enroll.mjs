@@ -554,7 +554,7 @@ async function main() {
 		// Key 可用
 		const notify = await H.req(server.base, "/v1/notify", {
 			key: p.json.apiKey,
-			body: { title: "regression ok", status: "success" },
+			body: { title: "regression ok", agentState: "done" },
 		});
 		H.eq("D-C-7 cli-auth Key 可用 → 200", notify.status, 200);
 	}
