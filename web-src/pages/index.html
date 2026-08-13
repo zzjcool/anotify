@@ -333,6 +333,7 @@
 </div>
 
 {{end}} {{define "script"}}
+<script src="/vendor/marked.min.js" defer></script>
 
 <script>
   (function () {
@@ -894,6 +895,25 @@
       const m = map[p];
       return m ? t(m.key, m.fb) : p || "—";
     }
+    // Markdown → HTML（与 message.html 详情页同一实现）。marked 本地打包（/vendor），
+    // 默认转义 HTML 防注入；未就绪时退回纯文本。
+    function renderMD(parent, body) {
+      const raw = body || t("common.placeholder.no_body", "（无正文）");
+      const marked = window.marked;
+      parent.className = "md-body text-sm leading-relaxed text-zinc-300";
+      if (marked && typeof marked.parse === "function") {
+        try {
+          if (typeof marked.setOptions === "function") {
+            marked.setOptions({ mangle: false, headerIds: false });
+          }
+          parent.innerHTML = marked.parse(raw);
+          return;
+        } catch (e) {
+          /* fallthrough 纯文本 */
+        }
+      }
+      parent.textContent = raw;
+    }
     function fmtTTL(sec) {
       if (!sec || sec <= 0) return "—";
       if (sec % 86400 === 0)
@@ -966,11 +986,10 @@
           ),
         ),
       );
+      const bodyEl = el("div", {});
+      renderMD(bodyEl, n.body);
       const children = [
-        el("p", {
-          class: "text-sm leading-relaxed text-zinc-300",
-          text: n.body || t("common.placeholder.no_body", "（无正文）"),
-        }),
+        bodyEl,
         grid,
       ];
       if (n.link) {
