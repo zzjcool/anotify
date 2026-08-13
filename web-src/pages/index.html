@@ -184,15 +184,15 @@
           <label class="block">
             <span
               class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
-              >{{t "index.test_notify.status_label"}}</span
+              >{{t "index.test_notify.agent_state_label"}}</span
             >
-            <select id="tn-status" class="select w-full">
-              <option value="info">{{t "common.status.info"}}</option>
-              <option value="success">{{t "common.status.success"}}</option>
-              <option value="error">{{t "common.status.error"}}</option>
-              <option value="warning">{{t "common.status.warning"}}</option>
+            <select id="tn-agent-state" class="select w-full">
+              <option value="working">{{t "common.agentState.working"}}</option>
+              <option value="blocked">{{t "common.agentState.blocked"}}</option>
+              <option value="done" selected>{{t "common.agentState.done"}}</option>
+              <option value="error">{{t "common.agentState.error"}}</option>
               <option value="interrupted">
-                {{t "common.status.interrupted"}}
+                {{t "common.agentState.interrupted"}}
               </option>
             </select>
           </label>
@@ -248,7 +248,7 @@
           >
             {{t "index.test_notify.cancel"}}
           </button>
-          <span id="tn-status-msg" class="text-xs text-zinc-500"></span>
+          <span id="tn-agent-state-msg" class="text-xs text-zinc-500"></span>
         </div>
       </div>
     </section>
@@ -273,14 +273,14 @@
           <button class="filter-tab active" data-filter="all">
             {{t "index.recent.filter_all"}}
           </button>
-          <button class="filter-tab" data-filter="success">
-            {{t "index.recent.filter_success"}}
+          <button class="filter-tab" data-filter="terminal">
+            {{t "index.recent.filter_terminal"}}
+          </button>
+          <button class="filter-tab" data-filter="working">
+            {{t "index.recent.filter_working"}}
           </button>
           <button class="filter-tab" data-filter="error">
             {{t "index.recent.filter_error"}}
-          </button>
-          <button class="filter-tab" data-filter="interrupted">
-            {{t "index.recent.filter_interrupted"}}
           </button>
         </div>
       </div>
@@ -361,7 +361,7 @@
       return {
         id: n.id || n.ID || "n" + i,
         seq: n.seq != null ? n.seq : n.Seq,
-        status: n.status || n.Status || "info",
+        agentState: n.agentState || n.AgentState || "working",
         title:
           n.title || n.Title || t("common.placeholder.no_title", "（无标题）"),
         body: n.body || n.Body || "",
@@ -561,36 +561,36 @@
       },
     ];
 
-    const STATUS_META = {
-      success: {
+    const AGENT_STATE_META = {
+      working: {
+        dot: "dot-info",
+        badge: "status-info",
+        labelKey: "common.agentState.working",
+        fallback: "运行中",
+      },
+      blocked: {
+        dot: "dot-warn",
+        badge: "status-warn",
+        labelKey: "common.agentState.blocked",
+        fallback: "等待中",
+      },
+      done: {
         dot: "dot-success",
         badge: "status-success",
-        labelKey: "common.status.success",
-        fallback: "成功",
-      },
-      error: {
-        dot: "dot-error",
-        badge: "status-error",
-        labelKey: "common.status.error",
-        fallback: "失败",
+        labelKey: "common.agentState.done",
+        fallback: "完成",
       },
       interrupted: {
         dot: "dot-warn",
         badge: "status-warn",
-        labelKey: "common.status.interrupted",
+        labelKey: "common.agentState.interrupted",
         fallback: "中断",
       },
-      info: {
-        dot: "dot-success",
-        badge: "status-success",
-        labelKey: "common.status.info",
-        fallback: "信息",
-      },
-      warning: {
-        dot: "dot-warn",
-        badge: "status-warn",
-        labelKey: "common.status.warning",
-        fallback: "警告",
+      error: {
+        dot: "dot-error",
+        badge: "status-error",
+        labelKey: "common.agentState.error",
+        fallback: "失败",
       },
     };
 
@@ -697,7 +697,7 @@
       )
         .replace("{greeting}", t(partKey, partFallback))
         .replace("{name}", username);
-      const okCnt = NOTIFICATIONS.filter((n) => n.status === "success").length;
+      const okCnt = NOTIFICATIONS.filter((n) => n.agentState === "done").length;
       document.getElementById("summary-line").textContent = t(
         "index.recent_summary",
         "最近收录 {total} 条通知，其中 {ok} 条成功。",
@@ -712,7 +712,10 @@
       currentFilter = filter;
       const list = document.getElementById("notif-list");
       const rows = NOTIFICATIONS.filter(
-        (n) => filter === "all" || n.status === filter,
+        (n) => filter === "all" ||
+          (filter === "terminal" && ["done", "interrupted", "error"].includes(n.agentState)) ||
+          (filter === "working" && n.agentState === "working") ||
+          n.agentState === filter,
       );
       if (rows.length === 0) {
         list.replaceChildren(
@@ -724,7 +727,7 @@
       } else {
         list.replaceChildren(
           ...rows.map((n) => {
-            const meta = STATUS_META[n.status] || STATUS_META.info;
+            const meta = AGENT_STATE_META[n.agentState] || AGENT_STATE_META.working;
             return el(
               "button",
               {
@@ -802,7 +805,7 @@
     const tnForm = document.getElementById("tn-form");
     const tnSend = document.getElementById("tn-send");
     const tnCancel = document.getElementById("tn-cancel");
-    const tnStatusMsg = document.getElementById("tn-status-msg");
+    const tnStatusMsg = document.getElementById("tn-agent-state-msg");
 
     function tnSetStatus(msg, isError) {
       tnStatusMsg.textContent = msg || "";
@@ -839,7 +842,7 @@
       const body = {
         title: document.getElementById("tn-title").value.trim(),
         body: document.getElementById("tn-body").value,
-        status: document.getElementById("tn-status").value,
+        agentState: document.getElementById("tn-agent-state").value,
         priority: document.getElementById("tn-priority").value,
       };
       const tagsRaw = document.getElementById("tn-tags").value.trim();
@@ -905,7 +908,7 @@
       const n = NOTIFICATIONS.find((x) => x.id === id);
       if (!n) return;
       syncMsgParam(id);
-      const meta = STATUS_META[n.status] || STATUS_META.info;
+      const meta = AGENT_STATE_META[n.agentState] || AGENT_STATE_META.working;
       document.getElementById("detail-head").replaceChildren(
         el("span", { class: `dot ${meta.dot}` }),
         el(
@@ -929,8 +932,8 @@
         [t("common.field.model", "模型"), n.model],
         [t("common.field.duration", "耗时"), n.duration + "s"],
         [
-          t("common.field.status", "状态"),
-          `${t(meta.labelKey, meta.fallback)}（${n.status}）`,
+          t("common.field.agent_state", "运行状态"),
+          `${t(meta.labelKey, meta.fallback)}（${n.agentState}）`,
         ],
         [t("common.field.priority", "优先级"), priorityLabel(n.priority)],
         [

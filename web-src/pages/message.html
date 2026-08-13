@@ -73,12 +73,12 @@
 
     mountLayout({ active: "overview", title: t("message.title", "通知详情") });
 
-    const STATUS_META = {
-      success: { dot: "dot-success", badge: "status-success", labelKey: "common.status.success", fb: "成功" },
-      error: { dot: "dot-error", badge: "status-error", labelKey: "common.status.error", fb: "失败" },
-      interrupted: { dot: "dot-warn", badge: "status-warn", labelKey: "common.status.interrupted", fb: "中断" },
-      info: { dot: "dot-success", badge: "status-success", labelKey: "common.status.info", fb: "信息" },
-      warning: { dot: "dot-warn", badge: "status-warn", labelKey: "common.status.warning", fb: "警告" },
+    const AGENT_STATE_META = {
+      working: { dot: "dot-info", badge: "status-info", labelKey: "common.agentState.working", fb: "运行中" },
+      blocked: { dot: "dot-warn", badge: "status-warn", labelKey: "common.agentState.blocked", fb: "等待中" },
+      done: { dot: "dot-success", badge: "status-success", labelKey: "common.agentState.done", fb: "完成" },
+      interrupted: { dot: "dot-warn", badge: "status-warn", labelKey: "common.agentState.interrupted", fb: "中断" },
+      error: { dot: "dot-error", badge: "status-error", labelKey: "common.agentState.error", fb: "失败" },
     };
     function priorityLabel(p) {
       const map = {
@@ -153,7 +153,7 @@
 
     function render(m) {
       const payload = safeParse(m.payload);
-      const meta = STATUS_META[m.status] || STATUS_META.info;
+      const meta = AGENT_STATE_META[m.agentState] || AGENT_STATE_META.working;
 
       document.getElementById("msg-dot").className =
         "dot " + meta.dot + " mt-2";
@@ -187,7 +187,7 @@
         .replaceChildren(
           field(t("common.field.msg_id", "消息 ID"), m.id),
           field(t("common.field.seq", "序号 Seq"), m.seq),
-          field(t("common.field.status", "状态"), `${t(meta.labelKey, meta.fb)}（${m.status}）`, false),
+          field(t("common.field.agent_state", "运行状态"), `${t(meta.labelKey, meta.fb)}（${m.agentState}）`, false),
           field(t("common.field.agent", "Agent"), payload.agentId || payload.agent),
           field(t("common.field.session", "会话 Session"), payload.sessionId),
           field(t("common.field.cwd", "项目 CWD"), payload.cwd || payload.project),

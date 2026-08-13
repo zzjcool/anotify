@@ -55,12 +55,16 @@ common:
     hour: "{n} 小时"
     minute: "{n} 分钟"
     second: "{n} 秒"
-  status:
-    success: 成功
-    error: 失败
+  agentState:
+    working: 运行中
+    blocked: 等待中
+    done: 完成
     interrupted: 中断
+    error: 失败
+  severity:
     info: 信息
     warning: 警告
+    error: 错误
   priority:
     high: 高
     normal: 普通
@@ -86,7 +90,8 @@ common:
     session: 会话
     model: 模型
     duration: 耗时
-    status: 状态
+    agent_state: 运行状态
+    severity: 语气
     priority: 优先级
     device_tags: 路由标签
     ttl: TTL
@@ -152,11 +157,11 @@ index:
     title: 最近通知
     subtitle: 实时更新 · 点击行查看详情
     filter_all: 全部
-    filter_success: 成功
+    filter_terminal: 终态
+    filter_working: 进行中
     filter_error: 失败
-    filter_interrupted: 中断
     refresh: 刷新 →
-  recent_summary: 最近收录 {total} 条通知，其中 {ok} 条成功。
+  recent_summary: 最近收录 {total} 条通知，其中 {ok} 条已完成。
   test_notify:
     title: 发送测试通知
     desc: 直接从网页发一条通知到你的所有设备
@@ -165,7 +170,7 @@ index:
     title_placeholder: 测试通知
     body_label: 正文
     body_placeholder: 这是一条来自工作台的测试通知
-    status_label: 状态
+    agent_state_label: 运行状态
     tags_label: 路由标签
     tags_placeholder: 可选，逗号分隔，如 手机,工作
     priority_label: 优先级
@@ -333,10 +338,9 @@ receivers:
     reporting: 正在上报订阅…
     success: 订阅成功！这台设备将收到推送。
     failed: 订阅失败：{msg}
-  filter:
-    all: 全部通知
-    error: 仅失败
-    success: 仅成功
+  scope:
+    all: 接收全流程
+    final: 只收最终结果
   local:
     enabled: 本机已开启通知
     disabled: 本机未开启通知
@@ -642,7 +646,7 @@ docs:
     params:
       title: 请求体参数
       title_desc: '通知标题，如 <code>"部署完成"</code>，作为系统通知主标题。'
-      status_desc: "任务结果：<code>success</code> 成功 · <code>error</code> 失败 · <code>interrupted</code> 中断 · <code>info</code> 信息 · <code>warning</code> 警告。决定图标颜色与设备过滤。"
+      agent_state_desc: "Agent 运行态：<code>working</code> 运行中 · <code>blocked</code> 等待中 · <code>done</code> 完成 · <code>interrupted</code> 中断 · <code>error</code> 失败。决定图标颜色与设备过滤。"
       body_desc: "通知正文，补充说明。"
       tags_desc: "路由标签。空 = 广播到所有已启用设备；非空时只投给「有共同标签」或「无标签(catch-all)」的设备。≤10 个，每个 ≤32 字符。"
       link_desc: "点击通知后打开的深链，如 <code>pi://session/sess_8f3a2c</code>。"
@@ -896,7 +900,7 @@ admin:
   messages:
     title: 标题
     user: 用户
-    status: 状态
+    agent_state: 运行状态
     time: 时间
     empty: 暂无消息
   sessions:

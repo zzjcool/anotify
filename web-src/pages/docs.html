@@ -178,7 +178,7 @@
               <span class="tk-str">"Content-Type: application/json"</span> \ -d
               <span class="tk-str"
                 >'{"title":"{{t
-                "docs.notify.curl.title_val"}}","status":"success","body":"{{t
+                "docs.notify.curl.title_val"}}","agentState":"done","body":"{{t
                 "docs.notify.curl.body_val"}}"}'</span
               >
             </div>
@@ -436,12 +436,12 @@
                   </tr>
                   <tr>
                     <td>
-                      <span class="param-name">status</span
+                      <span class="param-name">agentState</span
                       ><span class="req">{{t "docs.notify.required"}}</span>
                       <div class="param-type mt-1">enum</div>
                     </td>
                     <td class="param-desc">
-                      {{t "docs.notify.params.status_desc"}}
+                      {{t "docs.notify.params.agent_state_desc"}}
                     </td>
                   </tr>
                   <tr>
@@ -513,8 +513,8 @@
               \ -H
               <span class="tk-str">"Content-Type: application/json"</span> \ -d
               <span class="tk-str"
-                >'{ "title": "{{t "docs.notify.curl.title_val"}}", "status":
-                "success", "body": "{{t "docs.notify.curl.body_val"}}", "link":
+                >'{ "title": "{{t "docs.notify.curl.title_val"}}", "agentState":
+                "done", "body": "{{t "docs.notify.curl.body_val"}}", "link":
                 "pi://session/sess_8f3a2c", "agentId": "deploy-bot",
                 "sessionId": "sess_8f3a2c", "cwd": "/repo/prod-backend",
                 "durationMs": 24000, "model": "anthropic/claude-4",
@@ -598,9 +598,9 @@
             <pre
               class="mono mt-3 overflow-x-auto text-[11.5px] leading-relaxed text-zinc-400"
             >
-deliver ⟺ device.enabled AND statusMatch AND tagMatch
+deliver ⟺ device.enabled AND scopeMatch AND tagMatch
 
-statusMatch: device filter all=catch-all · error=errors-only · success=success-only
+scopeMatch: device eventScope all=catch-all · final=terminal-only (done|interrupted|error)
 tagMatch:
   · no deviceTags on notification → broadcast to all enabled devices
   · no tags on device            → receives everything (catch-all)
@@ -771,9 +771,9 @@ tagMatch:
                 ><span class="tk-punct">:</span>
                 <span class="tk-str">"{{t "docs.ws.s2c.title_val"}}"</span
                 ><span class="tk-punct">,</span>
-                <span class="tk-key">"status"</span
+                <span class="tk-key">"agentState"</span
                 ><span class="tk-punct">:</span>
-                <span class="tk-str">"success"</span
+                <span class="tk-str">"done"</span
                 ><span class="tk-punct">,</span>
                 <span class="tk-key">"body"</span
                 ><span class="tk-punct">:</span>

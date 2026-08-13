@@ -144,7 +144,7 @@
                   {{t "admin.messages.user"}}
                 </th>
                 <th class="px-4 py-3 font-medium">
-                  {{t "admin.messages.status"}}
+                  {{t "admin.messages.agent_state"}}
                 </th>
                 <th class="px-4 py-3 font-medium">
                   {{t "admin.messages.time"}}
@@ -258,18 +258,18 @@
       return Anotify.timeAgo(new Date(unix * 1000));
     }
 
-    function statusBadgeEl(status) {
+    function statusBadgeEl(agentState) {
       const map = {
-        success: "status-success",
-        error: "status-error",
+        working: "status-info",
+        blocked: "status-warn",
+        done: "status-success",
         interrupted: "status-warn",
-        info: "status-info",
-        warning: "status-warn",
+        error: "status-error",
       };
       const span = el("span", {
-        class: `status-badge ${map[status] || "status-info"}`,
+        class: `status-badge ${map[agentState] || "status-info"}`,
       });
-      span.textContent = status;
+      span.textContent = agentState;
       return span;
     }
 
@@ -626,7 +626,7 @@
                 class: "px-4 py-3 text-zinc-400",
                 text: m.username || "—",
               }),
-              el("td", { class: "px-4 py-3" }, statusBadgeEl(m.status)),
+              el("td", { class: "px-4 py-3" }, statusBadgeEl(m.agentState)),
               el("td", {
                 class: "px-4 py-3 text-zinc-400",
                 text: fmtTime(m.createdAt),

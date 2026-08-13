@@ -55,12 +55,16 @@ common:
     hour: "{n} h"
     minute: "{n} min"
     second: "{n} s"
-  status:
-    success: Success
-    error: Error
+  agentState:
+    working: Running
+    blocked: Waiting
+    done: Done
     interrupted: Interrupted
+    error: Failed
+  severity:
     info: Info
     warning: Warning
+    error: Error
   priority:
     high: High
     normal: Normal
@@ -86,7 +90,8 @@ common:
     session: Session
     model: Model
     duration: Duration
-    status: Status
+    agent_state: Agent State
+    severity: Severity
     priority: Priority
     device_tags: Device tags
     ttl: TTL
@@ -152,9 +157,9 @@ index:
     title: Recent notifications
     subtitle: Live updates · click a row for details
     filter_all: All
-    filter_success: Success
-    filter_error: Error
-    filter_interrupted: Interrupted
+    filter_terminal: Terminal
+    filter_working: Working
+    filter_error: Failed
     refresh: Refresh →
   recent_summary: Received {total} notifications, {ok} successful.
   test_notify:
@@ -165,7 +170,7 @@ index:
     title_placeholder: Test notification
     body_label: Body
     body_placeholder: This is a test notification from the dashboard
-    status_label: Status
+    agent_state_label: Agent State
     tags_label: Routing tags
     tags_placeholder: Optional, comma-separated, e.g. phone,work
     priority_label: Priority
@@ -332,10 +337,9 @@ receivers:
     reporting: Reporting subscription…
     success: Subscribed! This device will receive push notifications.
     failed: "Subscription failed: {msg}"
-  filter:
-    all: All
-    error: Errors only
-    success: Success only
+  scope:
+    all: Full lifecycle
+    final: Final results only
   local:
     enabled: Notifications enabled on this device
     disabled: Notifications not enabled on this device
@@ -641,7 +645,7 @@ docs:
     params:
       title: Request body parameters
       title_desc: 'Notification title, e.g. <code>"Deploy done"</code>, shown as the system notification''s main title.'
-      status_desc: "Task result: <code>success</code> · <code>error</code> · <code>interrupted</code> · <code>info</code> · <code>warning</code>. Determines icon color and device filtering."
+      agent_state_desc: "Agent state: <code>working</code> running · <code>blocked</code> waiting · <code>done</code> completed · <code>interrupted</code> interrupted · <code>error</code> failed. Determines icon color and device filtering."
       body_desc: "Notification body, supplementary detail."
       tags_desc: "Routing tags. Empty = broadcast to all enabled devices; non-empty = only delivered to devices with a matching tag or no tags (catch-all). ≤10 tags, each ≤32 chars."
       link_desc: "Deep link opened when the notification is tapped, e.g. <code>pi://session/sess_8f3a2c</code>."
@@ -895,7 +899,7 @@ admin:
   messages:
     title: Title
     user: User
-    status: Status
+    agent_state: Agent State
     time: Time
     empty: No messages
   sessions:

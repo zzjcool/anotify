@@ -55,12 +55,16 @@ common:
     hour: "{n} 時間"
     minute: "{n} 分"
     second: "{n} 秒"
-  status:
-    success: 成功
-    error: 失敗
+  agentState:
+    working: 実行中
+    blocked: 待機中
+    done: 完了
     interrupted: 中断
+    error: 失敗
+  severity:
     info: 情報
     warning: 警告
+    error: エラー
   priority:
     high: 高
     normal: 通常
@@ -86,7 +90,8 @@ common:
     session: セッション
     model: モデル
     duration: 所要時間
-    status: ステータス
+    agent_state: エージェント状態
+    severity: 重要度
     priority: 優先度
     device_tags: デバイスタグ
     ttl: TTL
@@ -151,10 +156,10 @@ index:
   recent:
     title: 最近の通知
     subtitle: リアルタイム更新 · 行をクリックで詳細
-    filter_all: すべて
-    filter_success: 成功
+    filter_all: 全て
+    filter_terminal: 終了状態
+    filter_working: 実行中
     filter_error: 失敗
-    filter_interrupted: 中断
     refresh: 更新 →
   recent_summary: 直近 {total} 件の通知、うち {ok} 件が成功。
   test_notify:
@@ -165,7 +170,7 @@ index:
     title_placeholder: テスト通知
     body_label: 本文
     body_placeholder: これはダッシュボードからのテスト通知です
-    status_label: ステータス
+    agent_state_label: エージェント状態
     tags_label: ルーティングタグ
     tags_placeholder: "任意、カンマ区切り、例: スマホ,仕事"
     priority_label: 優先度
@@ -332,10 +337,9 @@ receivers:
     reporting: 購読を報告中…
     success: 購読成功！このデバイスはプッシュ通知を受信します。
     failed: 購読に失敗：{msg}
-  filter:
-    all: すべて
-    error: エラーのみ
-    success: 成功のみ
+  scope:
+    all: 全ライフサイクル
+    final: 最終結果のみ
   local:
     enabled: この端末は通知が有効です
     disabled: この端末は通知が無効です
@@ -641,7 +645,7 @@ docs:
     params:
       title: リクエストボディ パラメータ
       title_desc: '通知タイトル。例：<code>"デプロイ完了"</code>。システム通知のメインタイトルになります。'
-      status_desc: "タスク結果：<code>success</code> 成功 · <code>error</code> 失敗 · <code>interrupted</code> 中断 · <code>info</code> 情報 · <code>warning</code> 警告。アイコン色とデバイスフィルタを決定します。"
+      agent_state_desc: "エージェント状態：<code>working</code> 実行中 · <code>blocked</code> 待機中 · <code>done</code> 完了 · <code>interrupted</code> 中断 · <code>error</code> 失敗。アイコン色とデバイスフィルタを決定します。"
       body_desc: "通知本文。補足説明です。"
       tags_desc: "ルーティングタグ。空 = すべての有効デバイスにブロードキャスト。非空 = 「共通タグがある」または「タグなし（catch-all）」のデバイスのみに配信。≤10 個、各 ≤32 文字。"
       link_desc: "通知タップ時に開くディープリンク。例：<code>pi://session/sess_8f3a2c</code>。"
@@ -895,7 +899,7 @@ admin:
   messages:
     title: タイトル
     user: ユーザー
-    status: ステータス
+    agent_state: エージェント状態
     time: 時刻
     empty: メッセージなし
   sessions:

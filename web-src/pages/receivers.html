@@ -291,10 +291,10 @@
         });
 
         /* ================= Data ================= */
-        const FILTER_LABEL = {
-          all: t("receivers.filter.all", "全部通知"),
-          error: t("receivers.filter.error", "仅失败"),
-          success: t("receivers.filter.success", "仅成功"),
+        const SCOPE_LABEL = {
+          all: t("receivers.scope.all", "接收全流程"),
+          error: t("receivers.scope.final", "只收最终结果"),
+          success: t("receivers.scope.all", "接收全流程"),
         };
         let DEVICES = [];
         let usingDemo = false;
@@ -333,7 +333,7 @@
             nameKey: "receivers.demo.device1",
             platform: "ios",
             enabled: true,
-            statusFilter: "all",
+            eventScope: "all",
             tags: [t("receivers.demo.tag_phone", "手机")],
             lastDelivered: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 2),
             browser: "iOS Safari",
@@ -343,7 +343,7 @@
             nameKey: "receivers.demo.device2",
             platform: "mac",
             enabled: true,
-            statusFilter: "all",
+            eventScope: "all",
             tags: [t("receivers.demo.tag_work", "工作")],
             lastDelivered: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 18),
             browser: "macOS Safari",
@@ -353,7 +353,7 @@
             nameKey: "receivers.demo.device3",
             platform: "win",
             enabled: false,
-            statusFilter: "error",
+            eventScope: "final",
             tags: [],
             lastDelivered: t("common.time.days_ago", "{n} 天前").replace("{n}", 3),
             browser: "Chrome",
@@ -369,7 +369,7 @@
               : d.name || meta.label,
             platform: d.platform || "other",
             enabled: d.enabled !== false && d.enabled !== 0,
-            statusFilter: d.statusFilter || d.status_filter || "all",
+            eventScope: d.eventScope || "final",
             tags: Array.isArray(d.tags) ? d.tags : safeParseArr(d.tags),
             lastDelivered:
               d.lastDelivered ||
@@ -645,14 +645,14 @@
                 {
                   class: "select",
                   onchange: (e) =>
-                    updateDevice(d, { statusFilter: e.target.value }),
+                    updateDevice(d, { eventScope: e.target.value }),
                 },
-                ...Object.entries(FILTER_LABEL).map(([val, label]) =>
+                ...Object.entries(SCOPE_LABEL).map(([val, label]) =>
                   el(
                     "option",
                     Object.assign(
                       { value: val, text: label },
-                      d.statusFilter === val ? { selected: "" } : {},
+                      d.eventScope === val ? { selected: "" } : {},
                     ),
                   ),
                 ),
@@ -935,7 +935,7 @@
                 name,
                 platform: detectPlatform(),
                 enabled: true,
-                statusFilter: "all",
+                eventScope: "final",
                 tags: [],
                 lastDelivered: "—",
                 browser: PLATFORM_META[detectPlatform()].label,

@@ -55,12 +55,16 @@ common:
     hour: "{n} h"
     minute: "{n} min"
     second: "{n} s"
-  status:
-    success: Éxito
-    error: Error
+  agentState:
+    working: En ejecución
+    blocked: En espera
+    done: Completado
     interrupted: Interrumpido
+    error: Fallido
+  severity:
     info: Información
     warning: Advertencia
+    error: Error
   priority:
     high: Alta
     normal: Normal
@@ -86,7 +90,8 @@ common:
     session: Sesión
     model: Modelo
     duration: Duración
-    status: Estado
+    agent_state: Estado del Agente
+    severity: Severidad
     priority: Prioridad
     device_tags: Etiquetas de dispositivo
     ttl: TTL
@@ -151,10 +156,10 @@ index:
   recent:
     title: Notificaciones recientes
     subtitle: Actualización en vivo · clic en una fila para detalles
-    filter_all: Todas
-    filter_success: Éxito
-    filter_error: Error
-    filter_interrupted: Interrumpido
+    filter_all: Todos
+    filter_terminal: Terminal
+    filter_working: En progreso
+    filter_error: Fallido
     refresh: Actualizar →
   recent_summary: Recibidas {total} notificaciones, {ok} exitosas.
   test_notify:
@@ -165,7 +170,7 @@ index:
     title_placeholder: Notificación de prueba
     body_label: Cuerpo
     body_placeholder: Esta es una notificación de prueba desde el panel
-    status_label: Estado
+    agent_state_label: Estado del Agente
     tags_label: Etiquetas de enrutado
     tags_placeholder: Opcional, separado por comas, ej. móvil,trabajo
     priority_label: Prioridad
@@ -332,10 +337,9 @@ receivers:
     reporting: Reportando suscripción…
     success: ¡Suscrito! Este dispositivo recibirá notificaciones push.
     failed: "Error de suscripción: {msg}"
-  filter:
-    all: Todas
-    error: Solo errores
-    success: Solo éxitos
+  scope:
+    all: Ciclo de vida completo
+    final: Solo resultados finales
   local:
     enabled: Notificaciones activadas en este dispositivo
     disabled: Notificaciones no activadas en este dispositivo
@@ -641,7 +645,7 @@ docs:
     params:
       title: Parámetros del cuerpo de la petición
       title_desc: 'Título de la notificación, p. ej. <code>"Despliegue completado"</code>, se muestra como título principal de la notificación del sistema.'
-      status_desc: "Resultado de la tarea: <code>success</code> · <code>error</code> · <code>interrupted</code> · <code>info</code> · <code>warning</code>. Determina el color del icono y el filtrado de dispositivos."
+      agent_state_desc: "Estado del agente: <code>working</code> en ejecución · <code>blocked</code> en espera · <code>done</code> completado · <code>interrupted</code> interrumpido · <code>error</code> fallido. Determina el color del icono y el filtrado de dispositivos."
       body_desc: "Cuerpo de la notificación, detalle complementario."
       tags_desc: "Tags de enrutamiento. Vacío = difundir a todos los dispositivos habilitados; no vacío = solo se entrega a dispositivos con tag en común o sin tags (catch-all). ≤10 tags, cada uno ≤32 caracteres."
       link_desc: "Deep link que se abre al tocar la notificación, p. ej. <code>pi://session/sess_8f3a2c</code>."
@@ -895,7 +899,7 @@ admin:
   messages:
     title: Título
     user: Usuario
-    status: Estado
+    agent_state: Estado del Agente
     time: Hora
     empty: Sin mensajes
   sessions:
