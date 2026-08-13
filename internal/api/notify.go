@@ -62,26 +62,33 @@ type NotifyResponse struct {
 }
 
 var validAgentStates = map[string]bool{
-broker.AgentStateWorking:     true,
-broker.AgentStateBlocked:     true,
-broker.AgentStateDone:        true,
-broker.AgentStateInterrupted: true,
-broker.AgentStateError:       true,
+	broker.AgentStateWorking:     true,
+	broker.AgentStateBlocked:     true,
+	broker.AgentStateDone:        true,
+	broker.AgentStateInterrupted: true,
+	broker.AgentStateError:       true,
 }
 
-// deriveSeverity 从 agentState 派生默认呈现语气。若请求已显式指定 severity 则直接用。
+var validSeverities = map[string]bool{
+	"info":    true,
+	"warning": true,
+	"error":   true,
+}
+
+// deriveSeverity 从 agentState 派生默认呈现语气。若请求已显式指定 severity 则校验后用；
+// 非法 severity 回退为派生值（severity 纯展示用，不参与过滤/投递，不报 400）。
 func deriveSeverity(agentState, explicit string) string {
-if explicit != "" {
-return explicit
-}
-switch agentState {
-case broker.AgentStateError:
-return "error"
-case broker.AgentStateBlocked, broker.AgentStateInterrupted:
-return "warning"
-default:
-return "info"
-}
+	if explicit != "" && validSeverities[explicit] {
+		return explicit
+	}
+	switch agentState {
+	case broker.AgentStateError:
+		return "error"
+	case broker.AgentStateBlocked, broker.AgentStateInterrupted:
+		return "warning"
+	default:
+		return "info"
+	}
 }
 
 // maxDeviceTags / maxTagLen 是 deviceTags 归一化约束。
@@ -312,7 +319,7 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 		"title":      title,
 		"body":       req.Body,
 		"agentState": agentState,
-		"severity":  severity,
+		"severity":   severity,
 		"link":       req.Link,
 		"deviceTags": normalizeTags(req.DeviceTags),
 		"priority":   priority,

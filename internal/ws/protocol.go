@@ -69,18 +69,18 @@ type Frame struct {
 // notificationFrame 把一条 broker.Message 转成下行 notification 帧。
 func notificationFrame(msg *broker.Message) *Frame {
 	return &Frame{
-		Type:    FrameNotification,
-		EventID: msg.ID,
-		Seq:     msg.Seq,
-		Title:   msg.Title,
-		Body:    msg.Body,
+		Type:       FrameNotification,
+		EventID:    msg.ID,
+		Seq:        msg.Seq,
+		Title:      msg.Title,
+		Body:       msg.Body,
 		AgentState: msg.AgentState,
 		Severity:   msg.Severity,
 		Kind:       msg.Kind,
 		URL:        msg.Link,
-		Tags:    msg.DeviceTags,
-		SentAt:  msg.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		TTLSec:  msg.TTLSeconds,
+		Tags:       msg.DeviceTags,
+		SentAt:     msg.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		TTLSec:     msg.TTLSeconds,
 	}
 }
 

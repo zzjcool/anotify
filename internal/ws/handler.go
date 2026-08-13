@@ -85,12 +85,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sinceSeq := parseResumeSeq(r.Header.Get("Last-Event-Id"))
 
 	sess := &session{
-		handler:  h,
-		conn:     conn,
-		userID:   userID,
-		connID:   store.NewEventID(),
-		sinceSeq: sinceSeq,
-		tags:     nil, // nil = 全订阅
+		handler:    h,
+		conn:       conn,
+		userID:     userID,
+		connID:     store.NewEventID(),
+		sinceSeq:   sinceSeq,
+		tags:       nil,   // nil = 全订阅
 		eventScope: "all", // WS 默认收全生命周期
 	}
 	sess.run(r.Context())
@@ -120,10 +120,10 @@ type session struct {
 	connID   string
 	sinceSeq int64
 
-	mu     sync.Mutex // 保护 tags + eventScope
-	tags   []string   // 订阅标签；nil/空 = 全订阅
-	eventScope string // 订阅范围 all|final；默认 all
-	lastID string     // 最近下发的消息 id（resume token）
+	mu         sync.Mutex // 保护 tags + eventScope
+	tags       []string   // 订阅标签；nil/空 = 全订阅
+	eventScope string     // 订阅范围 all|final；默认 all
+	lastID     string     // 最近下发的消息 id（resume token）
 
 	writeMu sync.Mutex // 串行化写帧
 

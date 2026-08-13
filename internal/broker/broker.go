@@ -29,22 +29,22 @@ func IsTerminal(state string) bool {
 // Message 是一条通知消息。
 // JSON tag 统一 camelCase，与 api/openapi.yaml 契约一致（/v1/notifications、WS notification 帧）。
 type Message struct {
-	ID         string    `json:"id"`         // 消息 ID（KSUID，如 "ntf_01J8XA…"）
-	UserID     string    `json:"userId"`     // 所属用户（分区键）
-	Seq        int64     `json:"seq"`        // 每用户单调递增序号（= replay 的 offset）
-	Title      string    `json:"title"`      // 标题
-	AgentState string    `json:"agentState"` // working|blocked|done|interrupted|error
-	Severity   string    `json:"severity,omitempty"`  // 呈现语气 info|warning|error（缺省由 agentState 派生）
-	Kind       string    `json:"kind,omitempty"`      // task|reply|steer（阶段二用，默认 task）
-	ReplyTo    string    `json:"replyTo,omitempty"`   // kind=reply 时指目标消息 id
-	Body       string    `json:"body"`       // 正文
-	Link       string    `json:"link"`       // 深链
-	DeviceTags []string  `json:"deviceTags"` // 路由键（= topic）；空 = 广播
-	Priority   string    `json:"priority"`   // 优先级
-	TTLSeconds int       `json:"ttlSeconds"` // 有效期（秒）
-	Payload    []byte    `json:"payload"`    // 完整 JSON（含 agentId/sessionId/model 等未规范化字段）
-	CreatedAt  time.Time `json:"createdAt"`  // 创建时间
-	ExpiresAt  time.Time `json:"expiresAt"`  // 可投递截止
+	ID         string    `json:"id"`                 // 消息 ID（KSUID，如 "ntf_01J8XA…"）
+	UserID     string    `json:"userId"`             // 所属用户（分区键）
+	Seq        int64     `json:"seq"`                // 每用户单调递增序号（= replay 的 offset）
+	Title      string    `json:"title"`              // 标题
+	AgentState string    `json:"agentState"`         // working|blocked|done|interrupted|error
+	Severity   string    `json:"severity,omitempty"` // 呈现语气 info|warning|error（缺省由 agentState 派生）
+	Kind       string    `json:"kind,omitempty"`     // task|reply|steer（阶段二用，默认 task）
+	ReplyTo    string    `json:"replyTo,omitempty"`  // kind=reply 时指目标消息 id
+	Body       string    `json:"body"`               // 正文
+	Link       string    `json:"link"`               // 深链
+	DeviceTags []string  `json:"deviceTags"`         // 路由键（= topic）；空 = 广播
+	Priority   string    `json:"priority"`           // 优先级
+	TTLSeconds int       `json:"ttlSeconds"`         // 有效期（秒）
+	Payload    []byte    `json:"payload"`            // 完整 JSON（含 agentId/sessionId/model 等未规范化字段）
+	CreatedAt  time.Time `json:"createdAt"`          // 创建时间
+	ExpiresAt  time.Time `json:"expiresAt"`          // 可投递截止
 }
 
 // Subscription 是 Subscribe 返回的句柄，用于接收某用户的实时消息流。
