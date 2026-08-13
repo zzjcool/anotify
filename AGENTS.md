@@ -1,54 +1,10 @@
-# AGENTS.md · Anotify 子 Agent 统一约定（必读）
+# AGENTS.md · Anotify 子 Agent 专属约定（必读）
 
 > 你是 Anotify 实施团队的一个子 Agent，在协调者（主 pi Agent）编排下工作。
-> **开工前必读 `DEVELOPMENT.md`（开发总纲）+ 本文件 + 相关包的 `*_test.go`。**
-
-## 0. 编排架构（默认流程）
-
-所有**非琐碎**改动都走三层编排流程，由协调者（主 Agent）编排、各专路子 Agent 执行：
-
-```
-【定义层 · 该做什么】(kimi-k3)
-  anotify-pm        产品：需求/价值/边界/验收标准 → requirements.md
-  anotify-designer  设计：信息架构/视觉方案/交互规格 → design.md
-【侦察/规划层】
-  anotify-scout     侦察现状 → context.md        (deepseek-v4-flash)
-  (内置 planner)   拆任务 → plan.md              (kimi-k3)
-【实现层 · 怎么做】(glm-5.2)
-  anotify-worker    后端实施
-  anotify-frontend  前端实现（照 designer 的稿）
-  anotify-tester    测试把关（发现产品 bug 上报，不改断言）
-【终审层】(kimi-k3)
-  anotify-reviewer  对照需求&设计稿终审 → APPROVE / REQUEST_CHANGES
-```
-
-**何时必须编排**：改动 >3 个文件、或涉及 ≥2 个独立模块（broker/server/store/push/ws/前端）、或新增页面/契约。琐碎单点修复（改个文案/小 bug）协调者可直接做，不必兴师动众。
-
-**分层原则**：定义层（pm/designer）与实现层（worker/frontend/tester）严格分离——定义层不写实现代码，实现层不擅自改需求/设计；tester 与 worker 分离（写码的不自测自夸）；reviewer 独立于所有实现者做终审。
-
-**模型分级**：kimi-k3 守定义层与终审（重推理/决策），glm-5.2 执实现层主力（长上下文执行），deepseek-v4-flash 跑侦察（快/省）。
-
-**模型与职责解耦**：agent 文件（`.pi/agents/anotify-*.md`）只写**角色职责**（入仓库），不写死模型；**模型映射集中在 `.pi/settings.json`** 的 `agentOverrides`（也入仓库，团队统一）。想换模型/模型升级过时，只改 settings 一处；个人想本地用别的模型，在 `~/.pi/agent/settings.json` 覆盖同名 agent 即可（用户级优先于项目级）。
-
-**自我升级**：每次完成非琐碎任务或踩坑后，协调者必须按 `.pi-orchestrator/EVOLUTION.md` 做回顾（三问），把教训沉淀到四层落点（记忆/提示词/配置/流程）。写型 agent（worker/frontend/tester）带 `memory` 持久记忆，可自我沉淀经验。
-
-### 0.1 协调者纪律（踩坑换来的铁规，2026-08-05 i18n 任务后固化）
-
-用户只认「跑完的结果」，不认「说了要做」。协调者必须遵守：
-
-1. **回合结束三条件**（满足其一才可结束回合，否则继续干）：
-   - 任务完成（门禁绿、产物交付、验证过）；或
-   - 真正阻塞在用户才能拍的板上（且必须明确说清等什么）；或
-   - 真正阻塞在外部事件上（且该事件有显式的等待/检查安排，见第 2 条）。
-   - 「汇报一下进度」**不是**结束回合的理由。用户已委派的任务，不要停下来等确认。
-2. **后台任务不许点火就跑**：凡起后台进程（e2e、服务、隧道、子 agent），结束回合前必须要么等它出结果（前台跑/subagent_wait/轮询日志），要么明确交付「它在跑、我何时如何验收」。无人等待的后台任务 = 丢了。
-3. **原子交付**：一个环境/服务类任务（如「起测试环境」= 隧道+服务+健康验证+可用 URL）必须整体验证可用后才交付，半成品（只起了隧道没起服务）不许交付。
-4. **子 agent 被截断 ≠ 完成**：subagent 超时/截断后，协调者必须核实其产物落盘情况，补齐未完成部分或重派，不得当作已交付。
-5. **多窗口并发隔离**（2026-08-06 固化）：用户开多个 pi 窗口同时跑任务时，pi-subagents 的进程/通信/artifacts 是 session 隔离的（supervisor 消息按 session id 隔离、artifacts 文件名带 runId 前缀不碰、`resume` 有跨进程 session lease），但**文件系统层共享**——同一 git 工作区、同一 `anotify.db`、同一 `internal/server/dist/` 构建产物、同一 `.pi-orchestrator/TASKS.md` 任务板。协调者派任务时必须：
-   - **写代码类任务必须各走独立 git worktree**（`worktree: true` 或 `cwd` 指向 `.pi-orchestrator/worktrees/wt-<任务名>`，从 main 切独立分支），不得在主工作区并发改同一批文件；
-   - **跑服务/e2e 类任务必须用各自独立的 DB 与端口**（`-db` 指向各自临时文件、端口不撞），否则两个 `make e2e` 会互相冲 WAL/端口；
-   - **改 `TASKS.md`/`EVOLUTION.md` 等共享编排文档要串行**——两窗口同时改同一 md 会后写覆盖先写；需要登记进展时先 `git pull`/重读再写，或约定只有一个窗口维护任务板；
-   - **构建产物 `internal/server/dist/`、`web/*.html` 是共享的**：两窗口同时 `make build`/`make fe` 会互相覆盖指纹文件，并发构建类任务要错开或各自 worktree。
+> **通用编排流程（三层架构/7 个专路 agent/协调者纪律/自我升级）在 workspace `AGENTS.md` §3**，本文件只写 **anotify 仓库专属**的约定。
+> 开工前必读：workspace `AGENTS.md`（生态全貌 + 通用编排）+ 本文件 + `DEVELOPMENT.md`（开发总纲）+ 相关包的 `*_test.go`。
+>
+> 专路 agent（pm/designer/scout/worker/frontend/tester/reviewer）定义在 workspace `.pi/agents/`，你通过 `inheritProjectContext` 继承本文件拿到 anotify 专属上下文。本文件不再重复 agent 职责定义。
 
 ## 1. 环境与工具链
 
@@ -62,7 +18,7 @@
 - 你在协调者分配的 **git worktree**（如 `wt-store`）里工作，对应独立分支
 - **不要**改动你任务范围之外的文件；不要动别人的 worktree
 - 代码遵循各包契约（见 `internal/broker/broker.go`、`api/openapi.yaml`）
-- 各专路 Agent 的详细职责/红线见 `.pi/agents/anotify-*.md`（那里是事实源）；本文件是跨角色的公共约定
+- 各专路 Agent 的详细职责/红线见 workspace `.pi/agents/*.md`（通用，事实源）；本文件是 anotify 仓库的专属技术约定
 
 ## 3. 代码规范
 

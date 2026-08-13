@@ -1,20 +1,22 @@
-# Anotify 编排任务板
+# Anotify 编排任务板（项目级）
 
-> 协调者（主 pi Agent）在此跟踪编排任务的进展。专路 Agent 定义见 `.pi/agents/anotify-*.md`，
-> 编排架构与分层原则见 `AGENTS.md` 第 0 节。
+> 协调者（主 pi Agent）在此跟踪 **anotify 项目级**编排任务的进展。
+> 通用编排流程（三层架构/7 个专路 agent/协调者纪律）在 workspace `AGENTS.md` §3；专路 Agent 定义在 workspace `.pi/agents/`（pm/designer/scout/worker/frontend/tester/reviewer，去 anotify 前缀）。自我升级机制在 workspace `.pi-orchestrator/EVOLUTION.md`。本文件只跟踪 anotify 自己的任务。
 
-## 编排团队（6 专路 + 内置）
+## 编排团队
 
 | Agent | 层 | 模型 | 职责 |
 | --- | --- | --- | --- |
-| anotify.anotify-pm | 定义 | kimi-k3 | 需求/价值/边界/验收标准 |
-| anotify.anotify-designer | 定义 | kimi-k3 | 信息架构/视觉方案/交互规格 |
-| anotify.anotify-scout | 侦察 | deepseek-v4-flash | 摸代码现状 → context.md |
+| pm | 定义 | kimi-k3 | 需求/价值/边界/验收标准 |
+| designer | 定义 | kimi-k3 | 信息架构/视觉方案/交互规格 |
+| scout | 侦察 | deepseek-v4-flash | 摸代码现状 → context.md |
 | (内置 planner) | 规划 | kimi-k3 | 拆任务 → plan.md |
-| anotify.anotify-worker | 实现 | glm-5.2 | 后端实施 |
-| anotify.anotify-frontend | 实现 | glm-5.2 | 前端照稿实现 |
-| anotify.anotify-tester | 实现 | glm-5.2 | 测试把关/门禁 |
-| anotify.anotify-reviewer | 终审 | kimi-k3 | 对照需求&设计终审 |
+| worker | 实现 | glm-5.2 | 后端实施 |
+| frontend | 实现 | glm-5.2 | 前端照稿实现 |
+| tester | 实现 | glm-5.2 | 测试把关/门禁 |
+| reviewer | 终审 | kimi-k3 | 对照需求&设计终审 |
+
+> 模型映射在 workspace `.pi/settings.json` 的 agentOverrides。anotify 专属上下文（技术栈/架构地图/门禁/踩坑）在 `AGENTS.md` + `DEVELOPMENT.md`，agent 通过 inheritProjectContext 继承。
 
 ## 标准流程
 
