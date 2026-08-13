@@ -48,8 +48,6 @@ type Frame struct {
 	Body       string   `json:"body,omitempty"`
 	AgentState string   `json:"agentState,omitempty"`
 	Severity   string   `json:"severity,omitempty"`
-	Kind       string   `json:"kind,omitempty"`
-	ReplyTo    string   `json:"replyTo,omitempty"`
 	URL        string   `json:"url,omitempty"`
 	Tags       []string `json:"tags,omitempty"`
 	SentAt     string   `json:"sent_at,omitempty"`
@@ -77,8 +75,6 @@ func notificationFrame(msg *broker.Message) *Frame {
 		Body:       msg.Body,
 		AgentState: msg.AgentState,
 		Severity:   msg.Severity,
-		Kind:       msg.Kind,
-		ReplyTo:    msg.ReplyTo,
 		URL:        msg.Link,
 		Tags:       msg.DeviceTags,
 		SentAt:     msg.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),

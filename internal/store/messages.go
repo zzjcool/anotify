@@ -18,8 +18,6 @@ type MessageRow struct {
 	Title      string
 	AgentState string
 	Severity   string
-	Kind       string
-	ReplyTo    string
 	Body       string
 	Link       string
 	DeviceTags []string
@@ -66,9 +64,9 @@ func (d *DB) InsertMessage(ctx context.Context, msg *MessageRow) error {
 	}
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO messages
-		   (id, user_id, seq, title, agent_state, severity, kind, reply_to, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, msg.UserID, msg.Seq, msg.Title, msg.AgentState, msg.Severity, msg.Kind, msg.ReplyTo, msg.Body, msg.Link,
+		   (id, user_id, seq, title, agent_state, severity, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, msg.UserID, msg.Seq, msg.Title, msg.AgentState, msg.Severity, msg.Body, msg.Link,
 		string(tags), priority, ttl, string(payload), created, expires); err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
@@ -82,10 +80,10 @@ func (d *DB) GetMessage(ctx context.Context, userID, messageID string) (*Message
 	var tags, payload string
 	var createdAt, expiresAt int64
 	err := d.QueryRowContext(ctx, `
-		SELECT id, user_id, seq, title, agent_state, severity, kind, reply_to, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
+		SELECT id, user_id, seq, title, agent_state, severity, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
 		FROM messages
 		WHERE id=? AND user_id=?`, messageID, userID).Scan(
-		&m.ID, &m.UserID, &m.Seq, &m.Title, &m.AgentState, &m.Severity, &m.Kind, &m.ReplyTo, &m.Body, &m.Link,
+		&m.ID, &m.UserID, &m.Seq, &m.Title, &m.AgentState, &m.Severity, &m.Body, &m.Link,
 		&tags, &m.Priority, &m.TTLSeconds, &payload, &createdAt, &expiresAt,
 	)
 	if err == sql.ErrNoRows {

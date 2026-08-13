@@ -89,16 +89,6 @@ var (
 	rlQR     = newFixedWindow(rlQRPerMin, time.Minute)
 )
 
-// 限速阈值常量（reply 端点）。
-const rlReplyPerMin = 20 // 回复：20/min/user
-
-var rlReply = newFixedWindow(rlReplyPerMin, time.Minute)
-
-// allow wraps fixedWindow.allow to satisfy api.RateLimiter interface.
-func (rl *fixedWindow) Allow(key string) bool {
-	return rl.allow(key)
-}
-
 // pollGuard 按 sessionId 记录上次 poll 时间，保证最小间隔。
 type pollGuard struct {
 	mu   sync.Mutex

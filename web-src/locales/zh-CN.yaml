@@ -253,14 +253,6 @@ message:
   error:
     missing_id: 缺少消息 ID（URL 应有 ?id=ntf_…）
     not_found: 消息不存在或已被清理
-reply:
-  title: 回复
-  placeholder: 输入回复内容…
-  send: 发送回复
-  sending: 发送中…
-  success: 回复已发送
-  failed: "回复失败：{msg}"
-  badge: 回复
 login:
   title: 登录
   welcome: 欢迎回到

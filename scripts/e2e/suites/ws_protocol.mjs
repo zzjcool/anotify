@@ -236,61 +236,6 @@ async function main() {
 		await T(300);
 	}
 
-	// ---- 7a. reply 帧透传（kind=reply）----
-	{
-		const s = connect(server.base, { key: recvKey });
-		await waitSettled(s);
-		await s.waitFrame((f) => f.type === "hello");
-
-		// 订阅 agent 路由键（后端从原消息 sessionId 构造路由键，故 subscribe 用 agent:<sessionId>）
-		const REPLY_AGENT = "pi@ws-reply-test";
-		const REPLY_SESS = "ws-reply-sess";
-		const REPLY_ROUTE = "agent:" + REPLY_SESS;
-		s.send({ type: "subscribe", tags: [REPLY_ROUTE] });
-		const subed = await s.waitFrame((f) => f.type === "subscribed", 2000);
-		H.check("reply 帧测试：subscribe → subscribed", !!subed);
-
-		// 上报一条 task 消息（带 agentId + deviceTags=[agent:route]）
-		const taskResp = await H.req(server.base, "/v1/notify", {
-			key: sendKey,
-			body: {
-				title: "ws-reply-task",
-				agentState: "done",
-				agentId: REPLY_AGENT,
-				sessionId: REPLY_SESS,
-				deviceTags: [REPLY_ROUTE],
-			},
-		});
-		const taskId = taskResp.json?.id;
-		H.check("reply 帧测试：task 消息上报成功", !!taskId);
-
-		// 用 session Cookie 回复
-		const replyResp = await H.req(server.base, "/v1/reply", {
-			session,
-			body: { replyTo: taskId, body: "WS 回复测试" },
-		});
-		H.eq("reply 帧测试：reply → 200", replyResp.status, 200);
-
-		// WS 应收到 kind=reply 的 notification 帧
-		const replyFrame = await s.waitFrame(
-			(f) => f.type === "notification" && f.kind === "reply",
-			3000,
-		);
-		H.check("WS 收到 kind=reply 的 notification 帧", !!replyFrame);
-		if (replyFrame) {
-			H.eq("reply 帧 replyTo=原消息 id", replyFrame.replyTo, taskId);
-			H.eq("reply 帧 agentState=working", replyFrame.agentState, "working");
-			H.check(
-				"reply 帧 tags 含 agent 路由键",
-				Array.isArray(replyFrame.tags) &&
-					replyFrame.tags.includes(REPLY_ROUTE),
-				`tags=${JSON.stringify(replyFrame.tags)}`,
-			);
-		}
-		s.ws.close();
-		await T(300);
-	}
-
 	// ---- 7b. eventScope 订阅范围过滤 ----
 	{
 		const s = connect(server.base, { key: recvKey });

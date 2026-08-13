@@ -35,8 +35,6 @@ type Message struct {
 	Title      string    `json:"title"`              // 标题
 	AgentState string    `json:"agentState"`         // working|blocked|done|interrupted|error
 	Severity   string    `json:"severity,omitempty"` // 呈现语气 info|warning|error（缺省由 agentState 派生）
-	Kind       string    `json:"kind,omitempty"`     // task|reply|steer（阶段二用，默认 task）
-	ReplyTo    string    `json:"replyTo,omitempty"`  // kind=reply 时指目标消息 id
 	Body       string    `json:"body"`               // 正文
 	Link       string    `json:"link"`               // 深链
 	DeviceTags []string  `json:"deviceTags"`         // 路由键（= topic）；空 = 广播

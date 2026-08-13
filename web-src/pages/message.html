@@ -39,29 +39,6 @@
       >
     </section>
 
-    <!-- ===== 回复 ===== -->
-    <section class="card reveal visible p-5" id="reply-section" style="display:none">
-      <div class="text-sm font-medium text-white">
-        {{t "reply.title"}}
-      </div>
-      <textarea
-        id="reply-input"
-        rows="2"
-        maxlength="2000"
-        class="input mt-3 resize-none"
-        placeholder="{{t "reply.placeholder"}}"
-      ></textarea>
-      <div class="mt-3 flex items-center gap-3">
-        <button
-          id="reply-send"
-          class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-        >
-          {{t "reply.send"}}
-        </button>
-        <span id="reply-status" class="text-xs text-zinc-500"></span>
-      </div>
-    </section>
-
     <!-- ===== 全部字段 ===== -->
     <section class="card reveal visible p-5">
       <div class="text-sm font-medium text-white">
@@ -300,89 +277,6 @@
       }
       render(m);
       renderDeliveries(Array.isArray(m.deliveries) ? m.deliveries : []);
-      initReply(m);
-    }
-
-    /* ================= 回复 ================= */
-    let replySending = false;
-    function initReply(m) {
-      const section = document.getElementById("reply-section");
-      const kind = m.kind || "task";
-      // 只有 kind=task 的消息才显示回复框（kind=reply 不显示，避免对回复再回复）
-      if (kind !== "task") {
-        section.style.display = "none";
-        return;
-      }
-      section.style.display = "";
-      const input = document.getElementById("reply-input");
-      const btn = document.getElementById("reply-send");
-      const status = document.getElementById("reply-status");
-      input.value = "";
-      status.textContent = "";
-      btn.disabled = false;
-
-      // 移除旧 listener（避免重复绑定）
-      const newBtn = btn.cloneNode(true);
-      btn.parentNode.replaceChild(newBtn, btn);
-      newBtn.addEventListener("click", async () => {
-        if (replySending) return;
-        const body = input.value.trim();
-        if (!body) {
-          status.textContent = t("reply.placeholder", "输入回复内容…");
-          status.className = "text-xs text-zinc-500";
-          return;
-        }
-        replySending = true;
-        const originalText = newBtn.textContent;
-        newBtn.textContent = t("reply.sending", "发送中…");
-        newBtn.disabled = true;
-        status.textContent = "";
-        try {
-          const resp = await api("/v1/reply", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ replyTo: m.id, body: body }),
-          });
-          status.textContent = t("reply.success", "回复已发送");
-          status.className = "text-xs text-zinc-400";
-          input.value = "";
-          // 追加 reply 气泡到正文区域
-          appendReplyBubble(body, resp);
-        } catch (e) {
-          const msg = (e && e.message) || String(e);
-          status.textContent = t("reply.failed", "回复失败：{msg}").replace("{msg}", msg);
-          status.className = "text-xs text-red-400";
-        } finally {
-          replySending = false;
-          newBtn.textContent = originalText;
-          newBtn.disabled = false;
-        }
-      });
-    }
-
-    function appendReplyBubble(body, resp) {
-      // 在正文 section 下方追加一个 reply 气泡
-      const bodySection = document.querySelector("#reply-section").previousElementSibling;
-      const bubble = el(
-        "div",
-        {
-          class:
-            "mt-3 rounded-lg bg-white/[0.04] px-4 py-3 ring-1 ring-white/[0.06]",
-        },
-        el(
-          "div",
-          { class: "flex items-center gap-2" },
-          el("span", {
-            class: "status-badge status-info",
-            text: t("reply.badge", "回复"),
-          }),
-        ),
-        el("p", {
-          class: "mt-2 whitespace-pre-wrap break-words text-sm text-zinc-200",
-          text: body,
-        }),
-      );
-      bodySection.appendChild(bubble);
     }
     load();
   })();

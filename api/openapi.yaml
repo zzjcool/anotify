@@ -91,7 +91,7 @@ paths:
                   items:
                     {
                       type: string,
-                      enum: [notify:send, notify:receive, notify:reply, devices:read],
+                      enum: [notify:send, notify:receive, devices:read],
                     }
       responses:
         "200": { description: 创建的 Key（含明文，仅此一次） }
@@ -218,34 +218,6 @@ paths:
                         error: { type: string }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-
-  /reply:
-    post:
-      tags: [notify]
-      summary: 回复一条通知（会话 Cookie 鉴权，注入回 agent）
-      description: |
-        已登录用户对某条 agent 通知回复一条指令。后端反查原消息的 agentId 构造路由键，
-        生成 kind=reply 消息经 broker 精确推给那个 pi 进程。pi 扩展收到后（需显式开启
-        allowRemoteSteer）通过 sendUserMessage 注入 agent 触发新一轮。
-        回复消息 agentState=working（final 设备收不到），deviceTags 带 agent 路由键
-        （普通 push 设备收不到）。
-      security: [{ cookieAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ReplyRequest" }
-      responses:
-        "200":
-          description: 回复已路由
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ReplyResponse" }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "404": { description: 原消息不存在 }
-        "422": { description: 原消息无 agent 标识，无法路由 }
-        "429": { description: 超限速 }
 
   /notifications:
     get:
@@ -1089,10 +1061,6 @@ components:
           { type: string, enum: [working, blocked, done, interrupted, error] }
         severity:
           { type: string, enum: [info, warning, error], description: 呈现语气；缺省由 agentState 派生 }
-        kind:
-          { type: string, enum: [task], default: task, description: 阶段二将扩 reply|steer }
-        replyTo:
-          { type: string, description: kind=reply 时指目标消息 id（阶段二） }
         durationMs: { type: integer }
         title: { type: string }
         body: { type: string }
@@ -1117,20 +1085,6 @@ components:
         link: { type: string }
         deviceTags: { type: array, items: { type: string } }
         priority: { type: string, default: normal }
-    ReplyRequest:
-      type: object
-      required: [replyTo, body]
-      properties:
-        replyTo:
-          { type: string, description: 目标消息 id }
-        body:
-          { type: string, description: 回复正文（≤2000字符） }
-    ReplyResponse:
-      type: object
-      properties:
-        id: { type: string, description: 新 reply 消息 id }
-        routed: { type: boolean, description: 是否成功反查并路由到 agent }
-        agentRoute: { type: string, description: 实际投递的路由键 }
     SystemStats:
       type: object
       description: 管理后台系统总览统计

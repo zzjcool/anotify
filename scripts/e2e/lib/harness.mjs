@@ -303,7 +303,6 @@ export function seed(dbPath, username = "e2e") {
 		uid: get("UID"),
 		sendKey: get("SEND_KEY"),
 		recvKey: get("RECV_KEY"),
-		replyKey: get("REPLY_KEY"),
 		session: get("SESSION"),
 	};
 }

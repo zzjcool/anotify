@@ -355,8 +355,6 @@ type messageView struct {
 	Title      string          `json:"title"`
 	AgentState string          `json:"agentState"`
 	Severity   string          `json:"severity,omitempty"`
-	Kind       string          `json:"kind,omitempty"`
-	ReplyTo    string          `json:"replyTo,omitempty"`
 	Body       string          `json:"body"`
 	Link       string          `json:"link"`
 	DeviceTags []string        `json:"deviceTags"`
@@ -379,7 +377,7 @@ func toMessageView(m *broker.Message) *messageView {
 	}
 	return &messageView{
 		ID: m.ID, UserID: m.UserID, Seq: m.Seq, Title: m.Title,
-		AgentState: m.AgentState, Severity: m.Severity, Kind: m.Kind, ReplyTo: m.ReplyTo,
+		AgentState: m.AgentState, Severity: m.Severity,
 		Body: m.Body, Link: m.Link, DeviceTags: tags, Priority: m.Priority,
 		TTLSeconds: m.TTLSeconds, Payload: payload, CreatedAt: m.CreatedAt, ExpiresAt: m.ExpiresAt,
 	}
@@ -447,8 +445,6 @@ func (h *notificationsHandler) getOne(w http.ResponseWriter, r *http.Request, id
 		Title:      row.Title,
 		AgentState: row.AgentState,
 		Severity:   row.Severity,
-		Kind:       row.Kind,
-		ReplyTo:    row.ReplyTo,
 		Body:       row.Body,
 		Link:       row.Link,
 		DeviceTags: row.DeviceTags,

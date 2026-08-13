@@ -83,44 +83,6 @@ async function main() {
 		);
 	}
 
-	// ---- 1b. reply 端点越权（属主校验）----
-	// reply 用 Cookie 会话鉴权；回复别人的消息应 404（不区分不存在/越权）
-	{
-		// 用当前用户上报一条带 agentId 的消息
-		const ownTask = await H.req(server.base, "/v1/notify", {
-			key: sendKey,
-			body: { title: "own-task", agentState: "done", agentId: "pi@sec:o1" },
-		});
-		const ownId = ownTask.json?.id;
-		if (ownId) {
-			H.eq(
-				"reply 自己的消息 → 200",
-				(await H.req(server.base, "/v1/reply", {
-					session,
-					body: { replyTo: ownId, body: "合法回复" },
-				})).status,
-				200,
-			);
-		}
-		// 用另一个用户上报消息
-		const otherSeed = H.seed(server.dbPath, "sec-other");
-		const otherTask = await H.req(server.base, "/v1/notify", {
-			key: otherSeed.sendKey,
-			body: { title: "other-task", agentState: "done", agentId: "pi@sec:o2" },
-		});
-		const otherId = otherTask.json?.id;
-		if (otherId) {
-			H.check(
-				"reply 别人的消息 → 404（越权不泄露存在性）",
-					(await H.req(server.base, "/v1/reply", {
-						session,
-						body: { replyTo: otherId, body: "越权回复" },
-					})).status === 404,
-					`expected 404`,
-			);
-		}
-	}
-
 	// ---- 2. Key 篡改 ----
 	const tampered =
 		sendKey.slice(0, -4) + (sendKey.endsWith("aaaa") ? "bbbb" : "aaaa");

@@ -38,7 +38,6 @@ const HTTP_SUITES = [
 	"security",
 	"edge_cases",
 	"passkeys",
-	"reply_e2e",
 ];
 const CHROME_SUITES = [
 	"i18n",

@@ -27,7 +27,6 @@ const (
 const (
 	ScopeNotifySend    = "notify:send"
 	ScopeNotifyReceive = "notify:receive"
-	ScopeNotifyReply   = "notify:reply"
 	ScopeDevicesRead   = "devices:read"
 )
 
@@ -62,8 +61,6 @@ func scopeLabel(scopes []string) string {
 		return "send"
 	case recv:
 		return "recv"
-	case has(ScopeNotifyReply):
-		return "reply"
 	default:
 		return "key"
 	}
@@ -72,7 +69,7 @@ func scopeLabel(scopes []string) string {
 // validScope 判断是否为已知合法 scope。
 func validScope(s string) bool {
 	switch s {
-	case ScopeNotifySend, ScopeNotifyReceive, ScopeNotifyReply, ScopeDevicesRead:
+	case ScopeNotifySend, ScopeNotifyReceive, ScopeDevicesRead:
 		return true
 	default:
 		return false
