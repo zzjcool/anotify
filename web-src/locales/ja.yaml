@@ -161,6 +161,10 @@ index:
     filter_working: 実行中
     filter_error: 失敗
     refresh: 更新 →
+    pull_hint: 引っ張って更新
+    pull_ready: 離して更新
+    pull_loading: 更新中…
+    pull_done: 更新しました
   recent_summary: 直近 {total} 件の通知、うち {ok} 件が成功。
   test_notify:
     title: テスト通知を送信

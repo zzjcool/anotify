@@ -161,6 +161,10 @@ index:
     filter_working: Working
     filter_error: Failed
     refresh: Refresh →
+    pull_hint: Pull to refresh
+    pull_ready: Release to refresh
+    pull_loading: Refreshing…
+    pull_done: Updated
   recent_summary: Received {total} notifications, {ok} successful.
   test_notify:
     title: Send test notification

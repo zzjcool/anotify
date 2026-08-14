@@ -161,6 +161,10 @@ index:
     filter_working: En progreso
     filter_error: Fallido
     refresh: Actualizar →
+    pull_hint: Desliza para actualizar
+    pull_ready: Suelta para actualizar
+    pull_loading: Actualizando…
+    pull_done: Actualizado
   recent_summary: Recibidas {total} notificaciones, {ok} exitosas.
   test_notify:
     title: Enviar notificación de prueba

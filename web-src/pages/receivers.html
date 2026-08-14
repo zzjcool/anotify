@@ -273,6 +273,7 @@
           el,
           api,
           mountLayout,
+          mountPullRefresh,
           toast,
           PLATFORM_META,
           detectPlatform,
@@ -1014,6 +1015,8 @@
 
         /* ================= 启动 ================= */
         load();
+        /* 下拉刷新：重新拉取设备列表 */
+        mountPullRefresh(load);
       })();
     </script>
 {{end}}

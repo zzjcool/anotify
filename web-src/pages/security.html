@@ -676,7 +676,7 @@
 
 <script>
   // ==================== Data layer ====================
-  const { el, t, b64urlToBuf, bufToB64url } = window.Anotify;
+  const { el, t, mountPullRefresh, b64urlToBuf, bufToB64url } = window.Anotify;
   const API = "/v1";
 
   const DEMO_PASSKEYS = [
@@ -1376,6 +1376,10 @@
   });
   loadPasskeys();
   loadSessions();
+  /* 下拉刷新：重新拉取 Passkey 与会话列表 */
+  mountPullRefresh(async () => {
+    await Promise.all([loadPasskeys(), loadSessions()]);
+  });
 
   // ==================== Passkey 新设备授权弹层 ====================
   let enrollSession = null;

@@ -884,11 +884,168 @@
 		);
 	}
 
+	/* ---------- 下拉刷新（触屏 / standalone PWA 公共能力） ----------
+	 * 各列表/详情页一行启用：mountPullRefresh(onRefresh)
+	 * 仅在触屏设备或 display-mode: standalone 时激活，桌面浏览器不启用。
+	 * 指示器 DOM 由本函数自建，调用页无需改 HTML；文案走 i18n
+	 * index.recent.pull_hint / pull_ready / pull_loading / pull_done。
+	 */
+	function mountPullRefresh(onRefresh, opts) {
+		if (typeof onRefresh !== "function") return;
+		const isTouch =
+			"ontouchstart" in window ||
+			window.matchMedia("(pointer: coarse)").matches ||
+			window.matchMedia("(display-mode: standalone)").matches ||
+			window.navigator.standalone === true;
+		if (!isTouch) return;
+
+		const THRESHOLD = (opts && opts.threshold) || 70;
+		const MAX = (opts && opts.max) || 110;
+
+		/* 指示器 DOM（fixed 顶部，初始上移隐藏在视口外） */
+		const spinner = icon(
+			["M21 12a9 9 0 1 1-6.219-8.56"],
+			"h-4 w-4 text-zinc-400 transition-transform duration-200",
+		);
+		spinner.id = "pull-spinner";
+		const textEl = el("span", {
+			id: "pull-text",
+			text: t("index.recent.pull_hint", "下拉刷新"),
+		});
+		const pill = el(
+			"div",
+			{
+				class:
+					"flex items-center gap-2 rounded-full bg-white/5 px-4 py-2 text-xs text-zinc-300 backdrop-blur-sm",
+			},
+			spinner,
+			textEl,
+		);
+		const indicator = el(
+			"div",
+			{
+				id: "pull-indicator",
+				/* 不用 -translate-y-full class：inline transform 会覆盖 class，
+				   回弹要靠 inline 设回 -100% 才能隐藏 */
+				class:
+					"pointer-events-none fixed inset-x-0 top-0 z-[60] flex items-center justify-center transition-transform duration-200 ease-out",
+				style: "transform: translateY(-100%)",
+				"aria-hidden": "true",
+			},
+			pill,
+		);
+		document.body.append(indicator);
+
+		/* spin 动画 */
+		const style = document.createElement("style");
+		style.textContent =
+			"@keyframes anotify-spin { to { transform: rotate(360deg); } }";
+		document.head.append(style);
+
+		let state = "idle"; /* idle | pulling | ready | loading */
+		let startY = 0;
+		let delta = 0;
+
+		function setState(s) {
+			state = s;
+			const labels = {
+				idle: t("index.recent.pull_hint", "下拉刷新"),
+				pulling: t("index.recent.pull_hint", "下拉刷新"),
+				ready: t("index.recent.pull_ready", "松开刷新"),
+				loading: t("index.recent.pull_loading", "正在刷新…"),
+				done: t("index.recent.pull_done", "已刷新"),
+			};
+			textEl.textContent = labels[s] || labels.idle;
+			spinner.style.animation =
+				s === "loading" ? "anotify-spin 0.8s linear infinite" : "";
+		}
+
+		function applyOffset(offset) {
+			/* offset<=0 → 隐藏在视口外（-100%）；否则跟手下移 */
+			indicator.style.transform =
+				offset <= 0
+					? "translateY(-100%)"
+					: `translateY(${Math.max(0, offset)}px)`;
+			if (state === "pulling" || state === "ready") {
+				const ratio = Math.min(offset / THRESHOLD, 1);
+				spinner.style.transform = `rotate(${ratio * 180}deg)`;
+			}
+		}
+
+		async function trigger() {
+			if (state === "loading") return;
+			setState("loading");
+			applyOffset(THRESHOLD);
+			try {
+				await onRefresh();
+				setState("done");
+			} catch {
+				setState("done");
+			} finally {
+				setTimeout(() => {
+					applyOffset(0);
+					spinner.style.transform = "";
+					setTimeout(() => setState("idle"), 200);
+				}, 400);
+			}
+		}
+
+		document.addEventListener(
+			"touchstart",
+			(e) => {
+				if (state === "loading") return;
+				if (window.scrollY > 0) return;
+				startY = e.touches[0].clientY;
+				delta = 0;
+				setState("pulling");
+			},
+			{ passive: true },
+		);
+
+		document.addEventListener(
+			"touchmove",
+			(e) => {
+				if (state !== "pulling" && state !== "ready") return;
+			delta = e.touches[0].clientY - startY;
+				if (delta <= 0) {
+					applyOffset(0);
+					return;
+			}
+				if (e.cancelable) e.preventDefault();
+				const damped =
+					delta < MAX ? delta : MAX + (delta - MAX) * 0.3;
+				applyOffset(Math.min(damped, MAX + 20));
+				if (damped >= THRESHOLD) {
+					if (state !== "ready") {
+						setState("ready");
+						if (navigator.vibrate) navigator.vibrate(10);
+					}
+				} else if (state === "ready") {
+					setState("pulling");
+				}
+			},
+			{ passive: false },
+		);
+
+		document.addEventListener("touchend", () => {
+			if (state === "ready") {
+				trigger();
+			} else if (state === "pulling") {
+				applyOffset(0);
+				spinner.style.transform = "";
+				setTimeout(() => setState("idle"), 200);
+			}
+		});
+
+		return { trigger };
+	}
+
 	/* ---------- 导出 ---------- */
 	window.Anotify = {
 		el,
 		icon,
 		mountLayout,
+		mountPullRefresh,
 		closeSidebar,
 		api,
 		copyText,

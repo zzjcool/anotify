@@ -715,6 +715,11 @@
       loadUsers();
       loadMessages();
       loadSessions();
+
+      /* 下拉刷新：管理后台四个面板全部重拉 */
+      Anotify.mountPullRefresh(async () => {
+        await Promise.all([loadStats(), loadUsers(), loadMessages(), loadSessions()]);
+      });
     })();
   })();
 </script>

@@ -338,7 +338,8 @@
 <script>
   (function () {
     "use strict";
-    const { el, api, mountLayout, copyText, timeAgo, t } = window.Anotify;
+    const { el, api, mountLayout, mountPullRefresh, copyText, timeAgo, t } =
+      window.Anotify;
     const qs = new URLSearchParams(location.search);
     const username = qs.get("u") || "zheng";
 
@@ -798,7 +799,26 @@
       btn.classList.add("active");
       renderNotifs(btn.dataset.filter);
     });
-    document.getElementById("refresh-btn").addEventListener("click", load);
+    document.getElementById("refresh-btn").addEventListener("click", refresh);
+
+    /* ================= 下拉刷新（公共能力） =================
+     * 触屏 / standalone PWA 下拉刷新。指示器 DOM 与手势逻辑由 partials.js
+     * 的 mountPullRefresh() 提供，这里只传刷新回调。文案复用
+     * index.recent.pull_* 四语言键。
+     */
+    async function refresh() {
+      const btn = document.getElementById("refresh-btn");
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.classList.add("opacity-50", "pointer-events-none");
+      try {
+        await load();
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove("opacity-50", "pointer-events-none");
+      }
+    }
+    mountPullRefresh(refresh);
 
     /* ================= 发送测试通知 ================= */
     let tnSending = false;

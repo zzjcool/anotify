@@ -396,7 +396,7 @@
     
     <script>
       // ==================== Data layer ====================
-      const { el, t } = window.Anotify;
+      const { el, t, mountPullRefresh } = window.Anotify;
       const API = "/v1";
       const SCOPE_META = {
         "notify:send": {
@@ -844,6 +844,8 @@
         subtitle: t("keys.subtitle", "Agent 用它上报通知"),
       });
       loadKeys();
+      /* 下拉刷新：重新拉取 Key 列表 */
+      mountPullRefresh(loadKeys);
     </script>
 {{end}}
 

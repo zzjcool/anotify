@@ -161,6 +161,10 @@ index:
     filter_working: 进行中
     filter_error: 失败
     refresh: 刷新 →
+    pull_hint: 下拉刷新
+    pull_ready: 松开刷新
+    pull_loading: 正在刷新…
+    pull_done: 已刷新
   recent_summary: 最近收录 {total} 条通知，其中 {ok} 条已完成。
   test_notify:
     title: 发送测试通知

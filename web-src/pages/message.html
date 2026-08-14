@@ -68,7 +68,8 @@
 <script>
   (function () {
     "use strict";
-    const { el, api, mountLayout, timeAgo, t } = window.Anotify;
+    const { el, api, mountLayout, mountPullRefresh, timeAgo, t } =
+      window.Anotify;
     const qs = new URLSearchParams(location.search);
     const msgId = qs.get("id") || "";
 
@@ -311,6 +312,8 @@
       }
     }
     load();
+    /* 下拉刷新：消息详情页下拉重新拉取该消息（投递状态可能变化） */
+    mountPullRefresh(load);
   })();
 </script>
 {{end}}
