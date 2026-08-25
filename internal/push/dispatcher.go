@@ -196,7 +196,6 @@ func pushPayload(msg *broker.Message) []byte {
 		"url":        "message.html?id=" + url.QueryEscape(msg.ID),
 		"link":       msg.Link,
 		"agentState": msg.AgentState,
-		"severity":   msg.Severity,
 	}
 	raw, err := json.Marshal(p)
 	if err != nil {

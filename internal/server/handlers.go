@@ -78,18 +78,18 @@ func (h *devicesHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		platform = "other"
 	}
 	dev := &store.Device{
-		ID:           store.NewDeviceID(),
-		UserID:       uid,
-		Name:         req.Name,
-		Platform:     platform,
-		Enabled:      true,
-		EventScope:   "final",
-		Tags:         req.Tags,
-		Endpoint:     req.Endpoint,
-		P256dh:       req.Keys.P256dh,
-		Auth:         req.Keys.Auth,
-		UserAgent:    req.UserAgent,
-		CreatedAt:    store.Now(),
+		ID:         store.NewDeviceID(),
+		UserID:     uid,
+		Name:       req.Name,
+		Platform:   platform,
+		Enabled:    true,
+		EventScope: "final",
+		Tags:       req.Tags,
+		Endpoint:   req.Endpoint,
+		P256dh:     req.Keys.P256dh,
+		Auth:       req.Keys.Auth,
+		UserAgent:  req.UserAgent,
+		CreatedAt:  store.Now(),
 	}
 	if dev.Tags == nil {
 		dev.Tags = []string{}
@@ -354,7 +354,6 @@ type messageView struct {
 	Seq        int64           `json:"seq"`
 	Title      string          `json:"title"`
 	AgentState string          `json:"agentState"`
-	Severity   string          `json:"severity,omitempty"`
 	Body       string          `json:"body"`
 	Link       string          `json:"link"`
 	DeviceTags []string        `json:"deviceTags"`
@@ -377,8 +376,8 @@ func toMessageView(m *broker.Message) *messageView {
 	}
 	return &messageView{
 		ID: m.ID, UserID: m.UserID, Seq: m.Seq, Title: m.Title,
-		AgentState: m.AgentState, Severity: m.Severity,
-		Body: m.Body, Link: m.Link, DeviceTags: tags, Priority: m.Priority,
+		AgentState: m.AgentState,
+		Body:       m.Body, Link: m.Link, DeviceTags: tags, Priority: m.Priority,
 		TTLSeconds: m.TTLSeconds, Payload: payload, CreatedAt: m.CreatedAt, ExpiresAt: m.ExpiresAt,
 	}
 }
@@ -418,7 +417,6 @@ func (h *notificationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Seq:        row.Seq,
 			Title:      row.Title,
 			AgentState: row.AgentState,
-			Severity:   row.Severity,
 			Body:       row.Body,
 			Link:       row.Link,
 			DeviceTags: row.DeviceTags,
@@ -455,7 +453,6 @@ func (h *notificationsHandler) getOne(w http.ResponseWriter, r *http.Request, id
 		Seq:        row.Seq,
 		Title:      row.Title,
 		AgentState: row.AgentState,
-		Severity:   row.Severity,
 		Body:       row.Body,
 		Link:       row.Link,
 		DeviceTags: row.DeviceTags,

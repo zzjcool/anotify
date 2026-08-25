@@ -34,7 +34,6 @@ type NotifyRequest struct {
 	SessionID  string   `json:"sessionId"`
 	Cwd        string   `json:"cwd"`
 	AgentState string   `json:"agentState"`
-	Severity   string   `json:"severity"`
 	DurationMs int64    `json:"durationMs"`
 	Title      string   `json:"title"`
 	Body       string   `json:"body"`
@@ -65,28 +64,6 @@ var validAgentStates = map[string]bool{
 	broker.AgentStateDone:        true,
 	broker.AgentStateInterrupted: true,
 	broker.AgentStateError:       true,
-}
-
-var validSeverities = map[string]bool{
-	"info":    true,
-	"warning": true,
-	"error":   true,
-}
-
-// deriveSeverity 从 agentState 派生默认呈现语气。若请求已显式指定 severity 则校验后用；
-// 非法 severity 回退为派生值（severity 纯展示用，不参与过滤/投递，不报 400）。
-func deriveSeverity(agentState, explicit string) string {
-	if explicit != "" && validSeverities[explicit] {
-		return explicit
-	}
-	switch agentState {
-	case broker.AgentStateError:
-		return "error"
-	case broker.AgentStateBlocked, broker.AgentStateInterrupted:
-		return "warning"
-	default:
-		return "info"
-	}
 }
 
 // maxDeviceTags / maxTagLen 是 deviceTags 归一化约束。
@@ -202,7 +179,6 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserID:     userID,
 		Title:      req.Title,
 		AgentState: req.AgentState,
-		Severity:   deriveSeverity(req.AgentState, req.Severity),
 		Body:       req.Body,
 		Link:       req.Link,
 		DeviceTags: normalizeTags(req.DeviceTags),
@@ -255,7 +231,6 @@ type TestNotifyRequest struct {
 	Title      string   `json:"title"`
 	Body       string   `json:"body"`
 	AgentState string   `json:"agentState"`
-	Severity   string   `json:"severity"`
 	Link       string   `json:"link"`
 	DeviceTags []string `json:"deviceTags"`
 	Priority   string   `json:"priority"`
@@ -297,7 +272,6 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 			fmt.Sprintf("agentState must be one of working|blocked|done|interrupted|error, got %q", agentState))
 		return
 	}
-	severity := deriveSeverity(agentState, req.Severity)
 	priority := strings.TrimSpace(req.Priority)
 	if priority == "" {
 		priority = "normal"
@@ -310,7 +284,6 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 		"title":      title,
 		"body":       req.Body,
 		"agentState": agentState,
-		"severity":   severity,
 		"link":       req.Link,
 		"deviceTags": normalizeTags(req.DeviceTags),
 		"priority":   priority,
@@ -327,7 +300,6 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 		UserID:     user,
 		Title:      title,
 		AgentState: agentState,
-		Severity:   severity,
 		Body:       req.Body,
 		Link:       req.Link,
 		DeviceTags: normalizeTags(req.DeviceTags),

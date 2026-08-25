@@ -62,9 +62,8 @@ func migrateColumns(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`)
 	// idx_users_role：必须在 ALTER 加 role 列之后创建（老库迁移顺序），幂等。
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)`)
-	// messages 新列：agent_state/severity（接收端能力模型改造）
+	// messages 新列：agent_state（接收端能力模型改造）
 	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN agent_state TEXT NOT NULL DEFAULT 'working'`)
-	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN severity TEXT NOT NULL DEFAULT ''`)
 	// devices 新列：event_scope 替代旧 status_filter（push 设备默认 final）
 	_, _ = db.Exec(`ALTER TABLE devices ADD COLUMN event_scope TEXT NOT NULL DEFAULT 'final'`)
 
@@ -129,7 +128,6 @@ func migrateMessagesDropKindReply(db *sql.DB) error {
 		seq         INTEGER NOT NULL,
 		title       TEXT NOT NULL,
 		agent_state TEXT NOT NULL DEFAULT 'working',
-		severity    TEXT NOT NULL DEFAULT '',
 		body        TEXT NOT NULL DEFAULT '',
 		link        TEXT NOT NULL DEFAULT '',
 		device_tags TEXT NOT NULL DEFAULT '[]',
@@ -145,8 +143,8 @@ func migrateMessagesDropKindReply(db *sql.DB) error {
 
 	// 复制数据（丢弃 kind/reply_to 列）
 	if _, err := tx.Exec(`INSERT INTO messages_new
-		(id, user_id, seq, title, agent_state, severity, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at)
-		SELECT id, user_id, seq, title, agent_state, severity, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
+		(id, user_id, seq, title, agent_state, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at)
+		SELECT id, user_id, seq, title, agent_state, body, link, device_tags, priority, ttl_seconds, payload, created_at, expires_at
 		FROM messages`); err != nil {
 		return fmt.Errorf("copy messages data: %w", err)
 	}

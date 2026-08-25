@@ -1059,8 +1059,6 @@ components:
         cwd: { type: string }
         agentState:
           { type: string, enum: [working, blocked, done, interrupted, error] }
-        severity:
-          { type: string, enum: [info, warning, error], description: 呈现语气；缺省由 agentState 派生 }
         durationMs: { type: integer }
         title: { type: string }
         body: { type: string }
@@ -1080,8 +1078,6 @@ components:
           type: string
           enum: [working, blocked, done, interrupted, error]
           default: done
-        severity:
-          { type: string, enum: [info, warning, error] }
         link: { type: string }
         deviceTags: { type: array, items: { type: string } }
         priority: { type: string, default: normal }

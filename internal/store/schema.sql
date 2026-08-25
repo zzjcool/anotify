@@ -73,7 +73,6 @@ CREATE TABLE IF NOT EXISTS messages (
     seq         INTEGER NOT NULL,            -- 每用户单调递增（replay offset）
     title       TEXT NOT NULL,
     agent_state TEXT NOT NULL DEFAULT 'working', -- working|blocked|done|interrupted|error
-    severity   TEXT NOT NULL DEFAULT '',          -- info|warning|error（呈现语气，缺省由 agentState 派生）
     body        TEXT NOT NULL DEFAULT '',
     link        TEXT NOT NULL DEFAULT '',
     device_tags TEXT NOT NULL DEFAULT '[]',  -- JSON 数组（路由键，broker 侧过滤）

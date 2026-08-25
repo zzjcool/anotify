@@ -61,10 +61,6 @@ common:
     done: Completado
     interrupted: Interrumpido
     error: Fallido
-  severity:
-    info: Información
-    warning: Advertencia
-    error: Error
   priority:
     high: Alta
     normal: Normal
@@ -91,7 +87,6 @@ common:
     model: Modelo
     duration: Duración
     agent_state: Estado del Agente
-    severity: Severidad
     priority: Prioridad
     device_tags: Etiquetas de dispositivo
     ttl: TTL

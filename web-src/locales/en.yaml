@@ -61,10 +61,6 @@ common:
     done: Done
     interrupted: Interrupted
     error: Failed
-  severity:
-    info: Info
-    warning: Warning
-    error: Error
   priority:
     high: High
     normal: Normal
@@ -91,7 +87,6 @@ common:
     model: Model
     duration: Duration
     agent_state: Agent State
-    severity: Severity
     priority: Priority
     device_tags: Device tags
     ttl: TTL

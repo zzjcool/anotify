@@ -61,10 +61,6 @@ common:
     done: 完成
     interrupted: 中断
     error: 失败
-  severity:
-    info: 信息
-    warning: 警告
-    error: 错误
   priority:
     high: 高
     normal: 普通
@@ -91,7 +87,6 @@ common:
     model: 模型
     duration: 耗时
     agent_state: 运行状态
-    severity: 语气
     priority: 优先级
     device_tags: 路由标签
     ttl: TTL

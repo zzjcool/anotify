@@ -61,10 +61,6 @@ common:
     done: 完了
     interrupted: 中断
     error: 失敗
-  severity:
-    info: 情報
-    warning: 警告
-    error: エラー
   priority:
     high: 高
     normal: 通常
@@ -91,7 +87,6 @@ common:
     model: モデル
     duration: 所要時間
     agent_state: エージェント状態
-    severity: 重要度
     priority: 優先度
     device_tags: デバイスタグ
     ttl: TTL
