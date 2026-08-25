@@ -103,7 +103,7 @@ if [ -f "$CRED" ]; then
 				echo "• 无法连接服务器 $EXISTING_SRV 验证旧凭证，继续发起新授权…" >&2
 				;;
 			*)
-				echo "• 旧凭证自检异常（HTTP $self_code），继续发起新授权…" >&2
+				echo "• 旧凭证自检异常（HTTP ${self_code}），继续发起新授权…" >&2
 				;;
 		esac
 	fi
@@ -269,7 +269,7 @@ while :; do
 				expired|consumed)
 					# consumed 理论上不该发生在首次成功领证前；按过期处理
 					echo ""
-					echo "✗ 授权会话已失效（$STATUS）" >&2
+					echo "✗ 授权会话已失效（${STATUS}）" >&2
 					exit 3
 					;;
 				*)
@@ -309,7 +309,7 @@ while :; do
 			net_err=$((net_err + 1))
 			if [ "$net_err" -ge 5 ]; then
 				echo ""
-				echo "✗ 轮询异常（HTTP $poll_http），放弃" >&2
+				echo "✗ 轮询异常（HTTP ${poll_http}），放弃" >&2
 				exit 4
 			fi
 			;;
