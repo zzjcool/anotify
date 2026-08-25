@@ -161,10 +161,10 @@ go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 curl -X POST https://你的域名/v1/notify \
   -H "Authorization: Bearer ant_send_..." \
   -H "Content-Type: application/json" \
-  -d '{"title":"部署完成","status":"success","body":"构建成功","deviceTags":["运维"]}'
+  -d '{"title":"部署完成","agentState":"done","body":"构建成功","deviceTags":["运维"]}'
 ```
 
-投递规则：设备 enabled ∧ status 过滤通过 ∧ 标签匹配（无 tag 消息=广播；无 tag 设备=catch-all；否则取交集）。
+投递规则：设备 enabled ∧ event_scope 过滤通过（final=仅终态 done/interrupted/error；all=全生命周期）∧ 标签匹配（无 tag 消息=广播；无 tag 设备=catch-all；否则取交集）。
 
 ## 环境变量
 

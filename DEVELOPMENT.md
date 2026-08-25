@@ -31,7 +31,7 @@ Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS �
 ### 投递规则（投递给设备 ⟺ 三条件全满足）
 
 1. `device.enabled = true`
-2. `statusMatch(device.statusFilter, msg.status)`：all 全过；error 仅 error；success 仅 success；interrupted/info/warning 仅 all 时过
+2. `scopeMatch(device.event_scope, msg.agentState)`：all 全过；final 仅终态（done/interrupted/error）
 3. `tagMatch`：消息无 deviceTags → 广播到所有 enabled 设备；设备无 tags → catch-all 收一切；双方都有 tags → 交集 ≥1（ANY，非 ALL）
 
 ## 3. 环境准备

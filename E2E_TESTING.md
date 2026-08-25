@@ -11,7 +11,7 @@
 | API 契约 | Node fetch（`scripts/e2e/suites/api_contract.mjs`） | 全端点的状态码/鉴权/参数校验 |
 | **Passkey 认证** | **Playwright CDP 虚拟认证器** | 真实 WebAuthn 注册/登录/登出/会话（无头，无需真人） |
 | WS 协议 | Node WebSocket 客户端 | hello/subscribe/ack/resume/heartbeat/标签过滤 |
-| 路由过滤 | Node fetch | 标签路由 + status 过滤全矩阵（notify.matched 断言） |
+| 路由过滤 | Node fetch | 标签路由 + event_scope 过滤全矩阵（notify.matched 断言） |
 | 桌面推送 | Playwright 持久化 Chrome | 真实 FCM 订阅 → 投递记录 |
 | 持久化 | 重启服务验证 | 消息/设备/Key 重启后仍在 |
 | 安全 | Node fetch + DB 检查 | scope 越权/Key 篡改/哈希格式/会话属性 |

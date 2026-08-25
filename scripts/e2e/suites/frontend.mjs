@@ -9,7 +9,9 @@
  *     无 JS pageerror、无横向溢出、能滚动到底
  *     （/v1/* 的 401/404 是预期降级，不算失败；demo-badge 显示是后端未连接的预期行为）
  *  E. connect.html 独立页：侧栏导航直连 + active 高亮 + 6 区块 + 无裸 i18n key
- *  F. connect.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证 demo 徽章亮 + 三灯显「—」
+ *  F. connect.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证 demo 徽章亮 + 三灯显「—」（尚未实现）
+ *  G. index.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证演示数据状态徽章按真实 agentState 渲染
+ *     （回归防护：旧协议字段 status 残留曾致 normalize 全部降级 working）
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
@@ -242,6 +244,84 @@ async function main() {
 			document.body.innerText.includes("前端真实数据验证"),
 		);
 		H.check("已登录 index 显示真实通知数据", hasReal);
+
+		await page.close();
+		await ctx.close();
+	}
+
+	// ---- G. index.html 演示态：后端宕机 → 演示数据状态正确（回归：旧字段 status 曾致全部降级 working）----
+	console.log("--- index 演示态（后端宕机）---");
+	{
+		const s = H.seed(server.dbPath, "demo_test");
+		const ctx = await browser.newContext();
+		await injectSession(ctx, s.session, server.base);
+		// 拦截 /v1/* 模拟后端宕机：api() 网络错误（非 401）→ 不跳登录，回退演示数据
+		await ctx.route("**/v1/**", (route) => route.abort());
+		const page = await ctx.newPage();
+		await page.goto(server.base + "/index.html", {
+			waitUntil: "load",
+			timeout: 15000,
+		});
+		await H.waitForAppReady(page, "workspace", {
+			dataAnchor: "#notif-list .notif-row",
+		});
+
+		// 演示徽章亮
+		const demoBadgeVisible = await page.evaluate(() => {
+			const b = document.getElementById("demo-badge");
+			return !!b && !b.classList.contains("hidden");
+		});
+		H.check("index 演示态显示「演示数据」徽章", demoBadgeVisible);
+
+		// 演示数据 8 条：done×5 / error×2 / interrupted×1 / working×0
+		// （旧残留：demo 数据用旧协议字段 status，normalize 只读 agentState，全部降级 working）
+		const badgeCounts = await page.evaluate(() => ({
+			success: document.querySelectorAll(
+				"#notif-list .notif-row .status-badge.status-success",
+			).length,
+			error: document.querySelectorAll(
+				"#notif-list .notif-row .status-badge.status-error",
+			).length,
+			warn: document.querySelectorAll(
+				"#notif-list .notif-row .status-badge.status-warn",
+			).length,
+			info: document.querySelectorAll(
+				"#notif-list .notif-row .status-badge.status-info",
+			).length,
+		}));
+		H.check(
+			"演示态徽章 done×5",
+			badgeCounts.success === 5,
+			JSON.stringify(badgeCounts),
+		);
+		H.check(
+			"演示态徽章 error×2",
+			badgeCounts.error === 2,
+			JSON.stringify(badgeCounts),
+		);
+		H.check(
+			"演示态徽章 interrupted×1（warn）",
+			badgeCounts.warn === 1,
+			JSON.stringify(badgeCounts),
+		);
+		H.check(
+			"演示态无 working 降级（info×0）",
+			badgeCounts.info === 0,
+			JSON.stringify(badgeCounts),
+		);
+
+		// 汇总行 okCnt 按真实状态统计（旧 bug：全部 working → 0 条成功）
+		const summaryOk = await page.evaluate(() => {
+			const m = document
+				.getElementById("summary-line")
+				?.textContent.match(/(\d+)/g);
+			return m ? m.map(Number) : null;
+		});
+		H.check(
+			"演示态汇总行「8 条通知，5 条成功」",
+			!!summaryOk && summaryOk[0] === 8 && summaryOk[1] === 5,
+			JSON.stringify(summaryOk),
+		);
 
 		await page.close();
 		await ctx.close();

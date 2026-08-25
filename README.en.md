@@ -165,10 +165,10 @@ go run ./cmd/devseed     # seed test user + keys + sessions
 curl -X POST https://your-domain/v1/notify \
   -H "Authorization: Bearer ant_send_..." \
   -H "Content-Type: application/json" \
-  -d '{"title":"Deploy done","status":"success","body":"Build succeeded","deviceTags":["ops"]}'
+  -d '{"title":"Deploy done","agentState":"done","body":"Build succeeded","deviceTags":["ops"]}'
 ```
 
-Delivery rules: device enabled ∧ status filter passes ∧ tags match
+Delivery rules: device enabled ∧ event_scope filter passes (final = terminal states done/interrupted/error only; all = full lifecycle) ∧ tags match
 (no-tag message = broadcast; no-tag device = catch-all; otherwise intersection).
 
 ## Environment Variables

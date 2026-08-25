@@ -419,7 +419,7 @@
     const DEMO_NOTIFICATIONS = [
       {
         id: "d1",
-        status: "success",
+        agentState: "done",
         title: t("index.demo.n1_title", "部署完成"),
         agent: "deploy-bot",
         project: "prod-backend",
@@ -437,7 +437,7 @@
       },
       {
         id: "d2",
-        status: "error",
+        agentState: "error",
         title: t("index.demo.n2_title", "构建失败"),
         agent: "lint-check",
         project: "web-client",
@@ -455,7 +455,7 @@
       },
       {
         id: "d3",
-        status: "interrupted",
+        agentState: "interrupted",
         title: t("index.demo.n3_title", "任务被中断"),
         agent: "refactor",
         project: "api-server",
@@ -473,7 +473,7 @@
       },
       {
         id: "d4",
-        status: "success",
+        agentState: "done",
         title: t("index.demo.n4_title", "文档更新完成"),
         agent: "docs-gen",
         project: "anotify",
@@ -491,7 +491,7 @@
       },
       {
         id: "d5",
-        status: "success",
+        agentState: "done",
         title: t("index.demo.n5_title", "代码审查完成"),
         agent: "reviewer",
         project: "auth-module",
@@ -509,7 +509,7 @@
       },
       {
         id: "d6",
-        status: "error",
+        agentState: "error",
         title: t("index.demo.n6_title", "数据库迁移失败"),
         agent: "db-migrate",
         project: "core-db",
@@ -527,7 +527,7 @@
       },
       {
         id: "d7",
-        status: "success",
+        agentState: "done",
         title: t("index.demo.n7_title", "依赖升级完成"),
         agent: "deps-bot",
         project: "web-client",
@@ -545,7 +545,7 @@
       },
       {
         id: "d8",
-        status: "success",
+        agentState: "done",
         title: t("index.demo.n8_title", "备份任务完成"),
         agent: "backup",
         project: "core-db",
