@@ -114,6 +114,18 @@ make dev          # 起 server + cloudflared tunnel，Ctrl-C 一起停
 
 ## Docker
 
+方式一：docker compose（推荐，首次配置好后后续一条命令部署）：
+
+```bash
+cp .env.compose.example .env   # 填入 make keys 生成的 VAPID 密钥 + 访问域名
+make up                        # = docker compose up -d（从 GHCR 拉官方镜像）
+make down                      # 停止并移除容器（SQLite 数据卷保留）
+```
+
+镜像托管在 GHCR：`ghcr.io/zzjcool/anotify`。推送 main 自动构建 `latest` + `sha-<短hash>`，打 `v*` tag 额外出版本号 tag（CI 见 `.github/workflows/docker.yml`）。本地源码构建部署可用 `make push`（多架构推 GHCR）或把 compose 里的 `image:` 换回 `build: .`。
+
+方式二：直接 docker run：
+
 ```bash
 make docker                              # 构建镜像（~20MB）
 docker run -p 8080:8080 \

@@ -6,13 +6,20 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
-.PHONY: help build fe sitegen test bench run dev docker docker-run integration tunnel keys clean check-classes
+# 构建版本号：git short sha + UTC 时间（+dirty 标记），注入到前端 footer 便于排查。
+# 空仓 / 非 git 目录下回退为空（sitegen 传空则不渲染版本行）。
+GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null)
+GIT_DIRTY := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo -dirty)
+BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
+VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
+
+.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 sitegen: check-classes ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
-	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es
+	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es $(if $(VERSION),-version '$(VERSION)',)
 
 check-classes: ## 前端死类守卫：校验 web-src 里每个 class 都落在设计系统 / Tailwind 工具类内（防自造未定义类）
 	node scripts/check-classes.mjs
@@ -69,6 +76,17 @@ docker-run: ## 运行 Docker 容器（需传入 VAPID 环境变量）
 	  -e ANOTIFY_RP_ID=$$ANOTIFY_RP_ID \
 	  -e ANOTIFY_RP_ORIGIN=$$ANOTIFY_RP_ORIGIN \
 	  anotify
+
+up: ## compose 部署（需先 cp .env.compose.example .env 并填好）
+	docker compose up -d
+
+down: ## compose 停止并移除容器（数据卷保留）
+	docker compose down
+
+push: ## 构建并推送镜像到 GHCR（ghcr.io/zzjcool/anotify）
+	docker buildx build --platform linux/amd64,linux/arm64 \
+	  -t ghcr.io/zzjcool/anotify:latest \
+	  --push .
 
 tunnel: ## Cloudflare 命名隧道（固定域名 dev.openaaas.org）
 	cloudflared tunnel run anotify

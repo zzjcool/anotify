@@ -1,0 +1,39 @@
+# Anotify · docker-compose 部署
+#
+# 用法：
+#   1. cp .env.compose.example .env      # 填入 VAPID 密钥和域名
+#   2. docker compose up -d --build
+#
+# 密钥生成：make keys（在仓库根目录跑，把输出填进 .env）
+
+services:
+  anotify:
+    # 默认从 GHCR 拉官方镜像；本地开发想用源码构建可改为 build: .
+    image: ghcr.io/zzjcool/anotify:latest
+    container_name: anotify
+    restart: unless-stopped
+    ports:
+      - "${ANOTIFY_PORT:-8080}:8080"
+    environment:
+      # --- VAPID（Web Push，必填，make keys 生成）---
+      ANOTIFY_VAPID_PUBLIC_KEY: ${ANOTIFY_VAPID_PUBLIC_KEY:?请在 .env 中设置}
+      ANOTIFY_VAPID_PRIVATE_KEY: ${ANOTIFY_VAPID_PRIVATE_KEY:?请在 .env 中设置}
+      ANOTIFY_VAPID_SUBJECT: ${ANOTIFY_VAPID_SUBJECT:-mailto:you@example.com}
+      # --- WebAuthn RP（必须与访问域名一致，否则 Passkey 注册/登录失败）---
+      ANOTIFY_RP_ID: ${ANOTIFY_RP_ID:?请在 .env 中设置}
+      ANOTIFY_RP_ORIGIN: ${ANOTIFY_RP_ORIGIN:?请在 .env 中设置}
+      ANOTIFY_RP_DISPLAY: ${ANOTIFY_RP_DISPLAY:-Anotify}
+      # --- 其他 ---
+      ANOTIFY_ADDR: :8080
+      # ANOTIFY_STATIC 留空 = 使用二进制内嵌前端（生产模式）
+    volumes:
+      - anotify-data:/home/anotify
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  anotify-data:

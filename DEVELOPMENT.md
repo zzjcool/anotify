@@ -202,6 +202,10 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 `CREATE TABLE IF NOT EXISTS` 不给已存在的表加新列。新增字段（如 `passkeys.backup_eligible`）要在 `store.Open` 里显式 `ALTER TABLE ADD COLUMN`（幂等，重复执行不报错）。
 
+### 改了 web/ 源码后跑 make e2e 用的是旧产物（run_all.sh 脏检测）
+
+`scripts/e2e/run_all.sh` 只在 `internal/server/dist` 不存在或 `web/partials.js` 缺失时才跑 `make fe`，否则直接用现有 dist 编译二进制。改了 `web/`（partials.js/sw.js/tokens.css 等）或 `web-src/`（layouts/pages/locales，sitegen 会重新渲染进 `web/*.html` + i18n JS）后直接 `make e2e`，跑的是陈旧 embed，表现为“改的逻辑像没生效、新断言莫名挂、旧行为还在”。修复：跑门禁前先 `rm -rf internal/server/dist`（让 run_all.sh 强制重建），或先 `make fe` 再 `make e2e`。验证产物链路是否新：`grep -c <新特征字符串> internal/server/dist/*` 应 >0。**教训**：改任何会被 embed 的前端源后，跑门禁前必须确认 dist 产物是新的，别信 run_all.sh 的“已存在就跳过”；这是源→指纹→embed 三段链路里最易断的一环。
+
 ## 9. 常用命令速查
 
 ```bash
@@ -211,6 +215,8 @@ make test            # Go 单测
 make e2e             # 全量端到端（固化门禁）
 make e2e-one S=routing  # 单套件
 make docker          # 构建 Docker 镜像
+make up              # compose 部署（先 cp .env.compose.example .env 填好密钥/域名）
+make down            # compose 停止（数据卷保留）
 make keys            # 生成 VAPID 密钥
 make tunnel          # Cloudflare 临时隧道（公网暴露，iOS 验证用）
 
