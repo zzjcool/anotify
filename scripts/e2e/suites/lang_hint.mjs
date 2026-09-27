@@ -61,6 +61,7 @@ async function getBanner(page) {
  * locale sets navigator.language / navigator.languages in Chromium. */
 async function openWithLocale(browser, base, path, locale) {
 	const ctx = await browser.newContext({ locale });
+	await H.mockExternalCdn(ctx);
 	const pg = await ctx.newPage();
 	const errors = [];
 	pg.on("pageerror", (e) => errors.push(String(e)));
@@ -614,6 +615,7 @@ async function main() {
 			locale: "en-US",
 			viewport: { width: 390, height: 844 },
 		});
+		await H.mockExternalCdn(ctx);
 		const pg = await ctx.newPage();
 		await pg.goto(server.base + "/login.html", { waitUntil: "load" });
 		await H.waitForAppReady(pg, "login");
@@ -659,6 +661,7 @@ async function main() {
 	{
 		/* keys.html requires auth — inject session */
 		const ctx = await browser.newContext({ locale: "en-US" });
+		await H.mockExternalCdn(ctx);
 		const u = new URL(server.base);
 		await ctx.addCookies([
 			{
@@ -688,6 +691,7 @@ async function main() {
 	console.log("--- index.html banner for mismatched locale ---");
 	{
 		const ctx = await browser.newContext({ locale: "ja-JP" });
+		await H.mockExternalCdn(ctx);
 		const u = new URL(server.base);
 		await ctx.addCookies([
 			{
@@ -730,6 +734,7 @@ async function main() {
 		 * (previously: zh-CN was skipped as "matches current" and en was
 		 * suggested — the exact false-positive the user reported). */
 		const ctx1 = await browser.newContext({ locale: "zh-CN" });
+		await H.mockExternalCdn(ctx1);
 		await ctx1.addInitScript(() => {
 			Object.defineProperty(navigator, "languages", {
 				get: () => ["zh-CN", "zh", "en"],
@@ -749,6 +754,7 @@ async function main() {
 		/* AC-10.2: prefs [zh-CN, en] on the ENGLISH page → Chinese banner
 		 * (first preference zh-CN ≠ current en → hint is correct). */
 		const ctx2 = await browser.newContext({ locale: "zh-CN" });
+		await H.mockExternalCdn(ctx2);
 		await ctx2.addInitScript(() => {
 			Object.defineProperty(navigator, "languages", {
 				get: () => ["zh-CN", "zh", "en"],
@@ -776,6 +782,7 @@ async function main() {
 		/* AC-10.3: prefs [fr, ja] on the zh-CN page → Japanese banner
 		 * (first UNSUPPORTED entry is skipped; first SUPPORTED wins). */
 		const ctx3 = await browser.newContext({ locale: "fr-FR" });
+		await H.mockExternalCdn(ctx3);
 		await ctx3.addInitScript(() => {
 			Object.defineProperty(navigator, "languages", {
 				get: () => ["fr-FR", "fr", "ja"],

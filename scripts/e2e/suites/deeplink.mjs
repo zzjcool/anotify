@@ -119,6 +119,7 @@ async function main() {
 	console.log("--- message.html 完整字段展示 ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
 		const errs = [];
@@ -166,6 +167,7 @@ async function main() {
 	console.log("--- 未命中 id 降级 ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
 		const errs = [];
@@ -190,6 +192,7 @@ async function main() {
 	console.log("--- 首页弹层字段补全 ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
 		const errs = [];
@@ -238,6 +241,7 @@ async function main() {
 	console.log("--- 未登录深链 → next 保留 ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/message.html?id=" + id1, {
 			waitUntil: "load",

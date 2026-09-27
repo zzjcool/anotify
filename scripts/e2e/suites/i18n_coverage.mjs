@@ -141,6 +141,7 @@ async function main() {
 	console.log("--- A: en/es demo-mode pages — no CJK residue ---");
 	for (const lang of ["en", "es"]) {
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		for (const pageName of PAGES) {
 			const pageType = pageName === "login.html" ? "login" : "none";
 			const path = `/${lang}/${pageName}?demo=1`;
@@ -174,6 +175,7 @@ async function main() {
 			continue;
 		}
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		const { page, errors } = await openPage(
 			ctx,
 			server.base + `/${lang}/message.html?id=${realMsgId}&demo=1`,
@@ -207,6 +209,7 @@ async function main() {
 	];
 	for (const lang of ["en", "es"]) {
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		for (const pageName of realPages) {
 			const { page, errors } = await openPage(
@@ -243,6 +246,7 @@ async function main() {
 		"docs.html",
 	];
 	const ctx = await browser.newContext();
+	await H.mockExternalCdn(ctx);
 	await injectSession(ctx, seedData.session, server.base);
 	for (const pageName of jaPages) {
 		const { page, errors } = await openPage(
@@ -286,6 +290,7 @@ async function main() {
 	 * We intercept the native confirm() and capture its message. */
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		const page = await ctx.newPage();
 		let confirmMsg = "";
@@ -337,6 +342,7 @@ async function main() {
 	 * Check for Japanese status text (受信中 / 一時停止 / 追加 etc.) */
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/ja/receivers.html?demo=1", {

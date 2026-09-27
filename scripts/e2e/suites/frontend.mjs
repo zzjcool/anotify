@@ -147,10 +147,18 @@ async function main() {
 		args: ["--no-sandbox"],
 	});
 
+	// 外部 CDN mock：见 harness.mockExternalCdn（离线门禁保障，固件为本地
+	// @tailwindcss/browser v4）。所有 context 走 newCtx 建立并挂拦截。
+	const newCtx = async () => {
+		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
+		return ctx;
+	};
+
 	// ---- A. 路由守卫：未登录访问受保护页 → 跳 login.html ----
 	console.log("--- 路由守卫（未登录→跳登录）---");
 	for (const p of GUARDED) {
-		const ctx = await browser.newContext();
+		const ctx = await newCtx();
 		const page = await ctx.newPage();
 		try {
 			await page.goto(server.base + "/" + p, {
@@ -177,7 +185,7 @@ async function main() {
 	// ---- C. login.html 公开页：未登录正常渲染不跳 ----
 	console.log("--- login 公开页 ---");
 	{
-		const ctx = await browser.newContext();
+		const ctx = await newCtx();
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/login.html", {
 			waitUntil: "load",
@@ -208,7 +216,7 @@ async function main() {
 			body: { title: "前端真实数据验证", agentState: "done" },
 		});
 
-		const ctx = await browser.newContext();
+		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/index.html", {
@@ -253,7 +261,7 @@ async function main() {
 	console.log("--- index 演示态（后端宕机）---");
 	{
 		const s = H.seed(server.dbPath, "demo_test");
-		const ctx = await browser.newContext();
+		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
 		// 拦截 /v1/* 模拟后端宕机：api() 网络错误（非 401）→ 不跳登录，回退演示数据
 		await ctx.route("**/v1/**", (route) => route.abort());
@@ -331,7 +339,7 @@ async function main() {
 	console.log("--- connect.html 独立页导航 ---");
 	{
 		const s = H.seed(server.dbPath, "connect_test");
-		const ctx = await browser.newContext();
+		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/connect.html", {
@@ -378,7 +386,7 @@ async function main() {
 			const txt = document.body.innerText;
 			return {
 				count: cards.length,
-				hasPiInstall: txt.includes("pi skill install anotify"),
+				hasPiInstall: txt.includes("pi install npm:pi-anotify"),
 				comingSoon: (
 					txt.match(/即将支持|Coming soon|近日対応|Próximamente/g) || []
 				).length,
@@ -414,7 +422,7 @@ async function main() {
 	// ---- D. 全部页面 × 2 视口渲染检查（未登录态，验证纯渲染；受保护页会跳 login，跳后渲染 login 也算无 JS 错误）----
 	console.log("--- 全页面 × 双视口渲染 ---");
 	for (const vp of VIEWPORTS) {
-		const ctx = await browser.newContext();
+		const ctx = await newCtx();
 		for (const p of PAGES) {
 			await checkPage(ctx, server.base + "/" + p, vp.name, vp);
 		}

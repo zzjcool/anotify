@@ -146,8 +146,12 @@ index:
     option_b: 或脚本 / CI 直接上报
     copy: 复制
     curl_example_title: 部署完成
-    cmd_a_comment: "# 发给你的 Agent 的一句话"
-    cmd_a: 参照 anotify.dev/docs/skill 为我安装通知上报：监听 agent_settled，任务结束自动推送到我的设备。
+    cmd_a_comment: "# 复制这段话，发给你的 pi"
+    cmd_a: |
+      请为我安装 anotify 通知插件：
+      1. 运行 pi install npm:pi-anotify
+      2. 运行 sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+      3. 把终端里显示的授权链接或验证码告诉我，我在浏览器批准后告诉你结果
   recent:
     title: 最近通知
     subtitle: 实时更新 · 点击行查看详情
@@ -213,13 +217,18 @@ connect:
     subtitle: 选择你使用的 Agent，安装对应插件
     available: 可安装
     coming_soon: 即将支持
-    install: 安装
     copy: 复制
     pi:
       tagline: pi-coding-agent
-      desc: 监听 agent_settled 事件，任务结束时自动推送通知到你的所有设备。通过 skill 安装，装好后插件引导完成登录授权。
-      install_hint: 在终端运行，安装 pi 通知 skill
-      after_install: 装好后运行任意 pi 任务，插件自动引导完成登录授权，无需手动配置 Key。
+      desc: 监听 agent_settled 事件，任务结束时自动推送通知到你的所有设备。
+      prompt_title: 发给你的 pi
+      prompt: |
+        请为我安装 anotify 通知插件：
+        1. 运行 pi install npm:pi-anotify
+        2. 运行 sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+        3. 把终端里显示的授权链接或验证码告诉我，我在浏览器批准后告诉你结果
+      prompt_hint: 粘贴后 pi 会自动完成安装与授权引导；批准动作需在已登录 Anotify 的设备上进行（手机扫终端里的二维码即可）。
+      self_hosted: 自部署用户：见 API 文档把接入地址换成你的域名。
     claude_code:
       tagline: Anthropic Claude Code
       desc: 为 Claude Code 提供任务完成通知能力，授权后自动上报。插件开发中。

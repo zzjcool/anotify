@@ -33,6 +33,7 @@ async function main() {
 			permissions: ["notifications"],
 		},
 	);
+	await H.mockExternalCdn(ctx);
 	let hostname;
 	try {
 		hostname = new URL(server.base).hostname;

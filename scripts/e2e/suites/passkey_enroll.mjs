@@ -617,6 +617,7 @@ async function webVerify(server) {
 
 	for (const vp of VIEWPORTS) {
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		for (const l of LANGS) {
 			const page = await ctx.newPage();
 			await page.setViewportSize({ width: vp.width, height: vp.height });
@@ -682,6 +683,7 @@ async function securityPageVerify(server, seedSession) {
 		args: ["--no-sandbox"],
 	});
 	const ctx = await browser.newContext();
+	await H.mockExternalCdn(ctx);
 	const u = new URL(server.base);
 	await ctx.addCookies([
 		{

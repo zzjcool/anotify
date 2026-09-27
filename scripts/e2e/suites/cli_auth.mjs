@@ -482,6 +482,7 @@ async function webVerify(server, seedSession) {
 	// 未登录：cli-auth.html?s=<sid> 应跳 login（会话查询 401 → 客户端守卫跳转，AC-09）
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/cli-auth.html?s=cas_test_unauth", { waitUntil: "load", timeout: 15000 });
 		await page.waitForURL("**/login.html*", { timeout: 8000 });
@@ -493,6 +494,7 @@ async function webVerify(server, seedSession) {
 	// 未登录纯渲染检查（跳转后 login 也无 JS 错误）：四语言 × 双视口
 	for (const vp of VIEWPORTS) {
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		for (const l of LANGS) {
 			await checkPage(ctx, server.base + "/" + l.path, vp.name, vp);
 		}
@@ -503,6 +505,7 @@ async function webVerify(server, seedSession) {
 	{
 		const s = await createSession(server, { deviceName: "verify-host", scopes: ["notify:send"] });
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		const u = new URL(server.base);
 		await ctx.addCookies([{ name: "anotify_session", value: seedSession, domain: u.hostname, path: "/", httpOnly: true }]);
 		const page = await ctx.newPage();

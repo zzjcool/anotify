@@ -7,7 +7,7 @@
  * - startTimer/stopTimer/writeResults: 结构化 JSON 结果输出
  * 断言器 API（ok/bad/check/eq/summary）签名不变，向后兼容。 */
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import net from "node:net";
 import path from "node:path";
@@ -93,6 +93,37 @@ export function writeResults(suiteName, durationMs) {
 // ---------- 事件等待（替代固定 sleep） ----------
 // waitForAppReady 按 pageType 等待 JS 挂载完成的稳定锚点。
 // 超时后 console.warn 但不抛（降级，让后续断言自己判）。
+
+// ---------- 外部 CDN mock（离线门禁保障） ----------
+// 页面引 cdn.tailwindcss.com（Play CDN）与 Google Fonts：外网抖动/被墙时
+// page.goto(load) 全量超时，门禁不可复现。每个 context 建立后调本函数：
+//   - tailwind Play CDN → 本地 fixtures/tailwind-cdn.js（npm 拉取的官方
+//     @tailwindcss/browser v4，类名兼容 v3 语法，无内联 config 依赖）
+//   - 其余外域（fonts 等）→ 200 空响应（不阻塞 load，不影响断言）
+// 固件更新：npm pack @tailwindcss/browser 后取 package/dist/index.global.js。
+const _TW_FIXTURE = (() => {
+	try {
+		return readFileSync(
+			path.join(ROOT_DIR, "scripts/e2e/fixtures/tailwind-cdn.js"),
+			"utf8",
+		);
+	} catch {
+		return ""; // 固件缺失时退化为空 mock（样式断言会失败，提示补固件）
+	}
+})();
+export async function mockExternalCdn(ctx) {
+	await ctx.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, (route) => {
+		if (route.request().url().includes("cdn.tailwindcss.com")) {
+			return route.fulfill({
+				status: 200,
+				contentType: "text/javascript",
+				body: _TW_FIXTURE,
+			});
+		}
+		return route.fulfill({ status: 200, contentType: "text/plain", body: "" });
+	});
+}
+
 export async function waitForAppReady(page, pageType, opts = {}) {
 	const timeout = 10000;
 	try {

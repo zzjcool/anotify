@@ -146,8 +146,12 @@ index:
     option_b: またはスクリプト / CI から送信
     copy: コピー
     curl_example_title: デプロイ完了
-    cmd_a_comment: "# Agent に送る一言"
-    cmd_a: anotify.dev/docs/skill を参照して通知報告をインストール： agent_settled を監視し、タスク終了時に自動でデバイスへプッシュ。
+    cmd_a_comment: "# コピーしてあなたの pi に送る"
+    cmd_a: |
+      anotify 通知プラグインをインストールしてください：
+      1. pi install npm:pi-anotify を実行
+      2. sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh を実行
+      3. ターミナルに表示された認可リンクまたはコードを教えてください。ブラウザで承認して結果を伝えます
   recent:
     title: 最近の通知
     subtitle: リアルタイム更新 · 行をクリックで詳細
@@ -213,13 +217,18 @@ connect:
     subtitle: 使っている Agent を選んでプラグインをインストール
     available: インストール可能
     coming_soon: 近日対応
-    install: インストール
     copy: コピー
     pi:
       tagline: pi-coding-agent
-      desc: agent_settled イベントを監視し、タスク完了時にすべてのデバイスへ通知を自動プッシュします。skill でインストールし、プラグインがログイン認可まで案内します。
-      install_hint: ターミナルで実行して pi 通知 skill をインストール
-      after_install: インストール後、任意の pi タスクを実行するとプラグインが自動的にログイン認可を案内します。Key の手動設定は不要です。
+      desc: agent_settled イベントを監視し、タスク完了時にすべてのデバイスへ通知を自動プッシュします。
+      prompt_title: あなたの pi に送る
+      prompt: |
+        anotify 通知プラグインをインストールしてください：
+        1. pi install npm:pi-anotify を実行
+        2. sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh を実行
+        3. ターミナルに表示された認可リンクまたはコードを教えてください。ブラウザで承認して結果を伝えます
+      prompt_hint: 貼り付ければ pi がインストールと認可を自動で進めます。承認は Anotify にサインイン済みのデバイスで行ってください（ターミナルの QR コードをスマホで読み取るだけ）。
+      self_hosted: セルフホストの場合：API ドキュメントを参照して接続先を自分のドメインに変更してください。
     claude_code:
       tagline: Anthropic Claude Code
       desc: Claude Code にタスク完了通知機能を追加し、認可後に自動報告します。プラグインは開発中です。

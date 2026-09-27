@@ -283,6 +283,7 @@ async function main() {
 	console.log("--- AC-7.3: 28 pages desktop overflow check (merged) ---");
 	for (const lang of LANGS) {
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		/* Inject session for guarded pages so they don't redirect to login */
 		await injectSession(ctx, seedData.session, server.base);
 		const pg = await ctx.newPage();
@@ -382,6 +383,7 @@ async function main() {
 	console.log("--- AC-3.3: cross-language URL derivation ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		const pg = await ctx.newPage();
 		await pg.setViewportSize({ width: 1280, height: 800 });
@@ -468,6 +470,7 @@ async function main() {
 	console.log("--- AC-3.4: query string preserved ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		const pg = await ctx.newPage();
 		await pg.goto(server.base + "/en/receivers.html?msg=ntf_test1", {
@@ -513,6 +516,7 @@ async function main() {
 	console.log("--- AC-3.5: text changes per language ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		const pg = await ctx.newPage();
 		const navTexts = {};
@@ -573,6 +577,7 @@ async function main() {
 	console.log("--- AC-3.6: mobile viewport (390) ---");
 	{
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		const pg = await ctx.newPage();
 		await pg.setViewportSize({ width: 390, height: 844 });
@@ -683,6 +688,7 @@ async function main() {
 		/* (c) Actual redirect test: navigate to /en/index.html (guarded),
 		 * verify it redirects to /en/login.html (language preserved) */
 		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
 		const pg = await ctx.newPage();
 		await pg.goto(server.base + "/en/index.html", {
 			waitUntil: "load",

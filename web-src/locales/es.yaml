@@ -146,8 +146,12 @@ index:
     option_b: O reporta desde un script / CI
     copy: Copiar
     curl_example_title: Despliegue listo
-    cmd_a_comment: "# Envía esta línea a tu Agent"
-    cmd_a: "Sigue anotify.dev/docs/skill para instalar el reporte de notificaciones: escucha agent_settled y envía a mis dispositivos al terminar las tareas."
+    cmd_a_comment: "# Copia esto y envíaloelo a tu pi"
+    cmd_a: |
+      Instálame el plugin de notificaciones de anotify:
+      1. Ejecuta pi install npm:pi-anotify
+      2. Ejecuta sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+      3. Muéstrame el enlace o código de autorización del terminal — lo apruebo en el navegador y te digo el resultado
   recent:
     title: Notificaciones recientes
     subtitle: Actualización en vivo · clic en una fila para detalles
@@ -213,13 +217,18 @@ connect:
     subtitle: Elige el Agent que usas e instala su plugin
     available: Disponible
     coming_soon: Próximamente
-    install: Instalar
     copy: Copiar
     pi:
       tagline: pi-coding-agent
-      desc: Escucha el evento agent_settled y envía notificaciones a todos tus dispositivos al terminar una tarea. Se instala vía skill y el plugin te guía por la autorización de inicio de sesión.
-      install_hint: Ejecuta en tu terminal para instalar el skill de notificación de pi
-      after_install: "Tras instalar, ejecuta cualquier tarea de pi: el plugin te guía por la autorización, sin configurar Key manualmente."
+      desc: Escucha el evento agent_settled y envía notificaciones a todos tus dispositivos al terminar una tarea.
+      prompt_title: Envíale esto a tu pi
+      prompt: |
+        Instálame el plugin de notificaciones de anotify:
+        1. Ejecuta pi install npm:pi-anotify
+        2. Ejecuta sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+        3. Muéstrame el enlace o código de autorización del terminal — lo apruebo en el navegador y te digo el resultado
+      prompt_hint: Al pegarlo, pi completa la instalación y la autorización automáticamente. Aprueba desde un dispositivo con sesión iniciada en Anotify (escanea el código QR del terminal con el móvil).
+      self_hosted: ¿Autoalojado? Consulta la documentación de la API para usar tu propio dominio.
     claude_code:
       tagline: Anthropic Claude Code
       desc: Añade notificaciones de fin de tarea a Claude Code, con reporte automático tras la autorización. Plugin en desarrollo.

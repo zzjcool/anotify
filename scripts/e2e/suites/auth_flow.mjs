@@ -203,6 +203,7 @@ async function main() {
 		args: ["--no-sandbox"],
 	});
 	ctx = await browser.newContext();
+	await H.mockExternalCdn(ctx);
 	page = await ctx.newPage();
 	await page.goto(server.base + "/login.html", { waitUntil: "load" });
 	cdp = await ctx.newCDPSession(page);

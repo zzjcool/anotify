@@ -127,20 +127,34 @@
       </div>
     </section>
 
-    <!-- ===== 快速接入（精简 CTA） ===== -->
+    <!-- ===== 快速接入（粘给 Agent 的引导文本 + CTA） ===== -->
     <section id="quickstart" class="card reveal visible overflow-hidden">
-      <div class="flex flex-wrap items-center justify-between gap-4 p-6">
-        <div>
+      <div class="flex flex-wrap items-start justify-between gap-4 p-6">
+        <div class="min-w-0 flex-1" style="flex: 1 1 16rem">
           <div class="text-sm font-medium text-white">
             {{t "index.quickstart.title"}}
           </div>
           <div class="mt-0.5 text-[11px] text-zinc-500">
-            {{t "connect.subtitle_short"}}
+            {{t "index.quickstart.option_a"}}
+          </div>
+          <div class="mt-3 code-block" style="min-width: 0">
+            <div class="code-head">
+              <span class="mono">{{t "index.quickstart.cmd_a_comment"}}</span>
+              <button
+                class="copy-btn"
+                data-copy-text="{{t "index.quickstart.cmd_a"}}"
+              >
+                {{t "index.quickstart.copy"}}
+              </button>
+            </div>
+            <div class="code-body">
+              <span class="tk-comment">{{t "index.quickstart.cmd_a"}}</span>
+            </div>
           </div>
         </div>
         <a
           href="connect.html"
-          class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
+          class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium shrink-0"
           >{{t "index.quickstart.cta"}}</a
         >
       </div>
