@@ -87,10 +87,10 @@
         flex-shrink: 0;
       }
       .rule-do {
-        color: #6ee7b7;
+        color: var(--success-300);
       }
       .rule-dont {
-        color: #fda4af;
+        color: var(--error-300);
       }
     </style>
   </head>
@@ -236,6 +236,18 @@
         ></div>
       </section>
 
+      <!-- ===== 面板 / 提亮 ===== -->
+      <section class="mt-12 reveal visible">
+        <h2 class="font-display text-2xl text-white">面板色 · 功能底</h2>
+        <p class="mt-1 text-[13px] text-zinc-500">
+          与 web/tokens.css 对齐的 panel / on-solid（#12）。
+        </p>
+        <div
+          class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+          id="panel-swatches"
+        ></div>
+      </section>
+
       <!-- ===== 使用规则 ===== -->
       <section class="mt-12 reveal visible">
         <h2 class="font-display text-2xl text-white">使用规则</h2>
@@ -318,19 +330,19 @@
         <div class="card mt-6 flex flex-wrap items-center gap-4 p-6">
           <span
             class="chip"
-            style="background: var(--success-soft); color: #6ee7b7"
+            style="background: var(--success-soft); color: var(--success-300)"
             ><span class="dot" style="background: var(--success)"></span
             >成功</span
           >
           <span
             class="chip"
-            style="background: var(--error-soft); color: #fda4af"
+            style="background: var(--error-soft); color: var(--error-300)"
             ><span class="dot" style="background: var(--error)"></span
             >失败</span
           >
           <span
             class="chip"
-            style="background: var(--warn-soft); color: #fcd34d"
+            style="background: var(--warn-soft); color: var(--warn-300)"
             ><span class="dot" style="background: var(--warn)"></span>中断</span
           >
           <span
@@ -418,6 +430,16 @@
         ["失败", "--error", "#fb7185", "仅状态"],
         ["中断/警告", "--warn", "#fbbf24", "仅状态"],
         ["信息", "--info", "= accent", "复用品牌色"],
+        ["成功提亮", "--success-300", "#6ee7b7", "徽章字"],
+        ["失败提亮", "--error-300", "#fda4af", "徽章字"],
+        ["警告提亮", "--warn-300", "#fcd34d", "徽章字"],
+      ];
+      const PANEL = [
+        ["弹层底", "--panel-overlay", "#12121c", "Toast"],
+        ["模态底", "--panel-modal", "#0b0b12", "Modal"],
+        ["代码底", "--code-bg", "#0a0a11", "Code"],
+        ["代码字", "--code-text", "#d6d3e0", "Code"],
+        ["实心上字", "--on-solid", "#0a0a10", "白按钮"],
       ];
 
       const fill = (id, arr) => {
@@ -427,6 +449,7 @@
       fill("neutral-swatches", NEUTRAL);
       fill("accent-swatches", ACCENT);
       fill("semantic-swatches", SEMANTIC);
+      fill("panel-swatches", PANEL);
 
       const io = new IntersectionObserver(
         (entries) =>
