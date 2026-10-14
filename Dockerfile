@@ -35,7 +35,7 @@ COPY . .
 # 用指纹产物覆盖（go:embed 在编译期读取 internal/server/dist；
 # web/*.html 已由源码 COPY 进来，但 fe 阶段才是权威产物，故用 fe 覆盖）
 COPY --from=fe /app/internal/server/dist ./internal/server/dist
-RUN go build -trimpath -ldflags="-s -w" -o /anotify ./cmd/server
+RUN go build -trimpath -ldflags="-s -w" -tags embeddist -o /anotify ./cmd/server
 
 # ---- 运行 ----
 FROM alpine:3.20

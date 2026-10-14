@@ -45,7 +45,7 @@ fi
 # 2. 构建测试二进制
 echo "▶ 构建二进制…"
 mkdir -p .e2e-bin
-go build -o .e2e-bin/anotify ./cmd/server || {
+go build -tags embeddist -o .e2e-bin/anotify ./cmd/server || {
 	echo "❌ server 构建失败"
 	exit 1
 }

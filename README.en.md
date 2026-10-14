@@ -137,7 +137,7 @@ See "Quick Start → Cloudflare named tunnel" above: `make dev` already starts `
 
 ```bash
 make ci                  # same as CI: gofmt + embed frontend + vet + build + unit tests
-make test                # Go unit tests (independent of e2e; `make fe` first so server embed compiles)
+make test                # Go unit tests (independent of e2e; default build does not embed dist)
 make e2e                 # full end-to-end tests (~57s, parallel, 968 assertions)
 make e2e-one S=auth_flow # run a single suite
 make integration         # integration tests (health / cache tiers / auth matrix)

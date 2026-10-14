@@ -1,25 +1,19 @@
+//go:build !embeddist
+
 package server
 
 import (
-	"embed"
-	"io/fs"
+	"fmt"
 	"net/http"
 )
 
-// distFS 内嵌前端产物。构建单二进制前由指纹脚本生成：
-//
-//	node scripts/hash.mjs web internal/server/dist
-//
-// dist 为构建产物（gitignore），开发期用 StaticDir 走本地目录即可编译。
+// embedDist 为 false：默认构建不内嵌前端。
+// //go:embed 在编译期就要求 dist 存在，而 dist 是 gitignore 的指纹产物。
+// 开发期用 ANOTIFY_STATIC（如 ./web）走本地目录，因此 go run / go test 不必先 make fe。
+// 生产单二进制使用 go build -tags embeddist（make build、Docker、e2e、make ci）。
+const embedDist = false
 
-//go:embed all:dist
-var distFS embed.FS
-
-// embeddedStatic 返回内嵌的 dist 静态文件系统。
+// embeddedStatic 在默认构建中没有内嵌资源。调用方应改走 StaticDir。
 func embeddedStatic() (http.FileSystem, error) {
-	sub, err := fs.Sub(distFS, "dist")
-	if err != nil {
-		return nil, err
-	}
-	return http.FS(sub), nil
+	return nil, fmt.Errorf("此构建未内嵌前端（设置 ANOTIFY_STATIC，或用 -tags embeddist 重新构建）")
 }

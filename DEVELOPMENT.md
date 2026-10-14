@@ -126,9 +126,9 @@ make ci
 门禁内容：
 
 1. `gofmt -l`：有未格式化的 `.go` 文件即失败（跳过 `vendor/`）
-2. `make fe`：sitegen + 指纹。`internal/server` 有 `//go:embed all:dist`，`dist/` 被 gitignore，不先生成则 `go build` / `go test` 编不过
+2. `make fe`：sitegen + 指纹，供下一步 `-tags embeddist` 内嵌。默认 `go build` / `go test` / `go run` 不嵌入 dist（开发期设 `ANOTIFY_STATIC` 即可编译）
 3. `go vet ./...`
-4. `go build ./...`
+4. `go build ./...`，以及 `go build -tags embeddist`（生产单二进制；dist 由第 2 步生成）
 5. `go test ./... -count=1`（与 `make test` 相同）
 
 不跑 `make e2e`、`make integration`、`scripts/e2e/`（要浏览器或已启动的服务）。`make e2e` 仍是合并前的固化门禁；这条 CI 只守构建、格式和包内单测。名为 `*_e2e_test.go` 的 Go 测试走 `httptest`，不连外部服务，留在 `go test` 里。
@@ -230,7 +230,7 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 ```bash
 make build           # 构建单二进制（指纹 + embed）
 make dev             # 开发模式（web/ 本地目录）
-make test            # Go 单测（go test ./...；需已有 internal/server/dist，否则先 make fe）
+make test            # Go 单测（go test ./...；默认不嵌入 dist）
 make ci              # PR 门禁：gofmt + fe + vet + build + 单测（不含 e2e）
 make e2e             # 全量端到端（固化门禁）
 make e2e-one S=routing  # 单套件

@@ -30,8 +30,10 @@ fe: check-classes sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal
 
 dist: fe ## 同 fe（生成 embed 产物）
 
+# 默认 go build / go run 不嵌入 dist（开发期 ANOTIFY_STATIC 即可编译）。
+# 生产单二进制加 -tags embeddist，且依赖本目标先跑的 fe。
 build: fe ## 构建单二进制（内嵌指纹后的前端）
-	go build -trimpath -ldflags="-s -w" -o anotify ./cmd/server
+	go build -trimpath -ldflags="-s -w" -tags embeddist -o anotify ./cmd/server
 
 test: ## 运行全部单元测试（不含 make e2e / make integration）
 	go test ./... -count=1
@@ -45,6 +47,7 @@ ci: ## PR 门禁：gofmt、前端 embed 产物、vet、build、单元测试（�
 	$(MAKE) fe
 	go vet ./...
 	go build ./...
+	go build -trimpath -ldflags="-s -w" -tags embeddist -o anotify ./cmd/server
 	$(MAKE) test
 
 bench: ## 运行全部基准测试（吞吐/分配热点；仅基准不跑单测）
