@@ -401,3 +401,112 @@ func nullableInt64(v sql.NullInt64) any {
 	}
 	return nil
 }
+
+// ---------- Recovery Code ----------
+
+// RecoveryCode 是 recovery_codes 表的一行（不含明文）。
+type RecoveryCode struct {
+	ID        string
+	UserID    string
+	CodeHash  string
+	Prefix    string
+	CreatedAt int64
+	UsedAt    sql.NullInt64
+}
+
+// CreateRecoveryCode 插入一条恢复码（仅存哈希）。
+func (d *DB) CreateRecoveryCode(c *RecoveryCode) error {
+	_, err := d.Exec(
+		`INSERT INTO recovery_codes (id, user_id, code_hash, prefix, created_at, used_at)
+		 VALUES (?,?,?,?,?,?)`,
+		c.ID, c.UserID, c.CodeHash, c.Prefix, c.CreatedAt, nullableInt64(c.UsedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("create recovery code: %w", err)
+	}
+	return nil
+}
+
+// ListUnusedRecoveryCodesByUser 列出某用户未使用的恢复码。
+func (d *DB) ListUnusedRecoveryCodesByUser(userID string) ([]*RecoveryCode, error) {
+	rows, err := d.Query(
+		`SELECT id, user_id, code_hash, prefix, created_at, used_at
+		 FROM recovery_codes WHERE user_id = ? AND used_at IS NULL ORDER BY created_at ASC`, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list unused recovery codes: %w", err)
+	}
+	defer rows.Close()
+	var out []*RecoveryCode
+	for rows.Next() {
+		var c RecoveryCode
+		if err := rows.Scan(&c.ID, &c.UserID, &c.CodeHash, &c.Prefix, &c.CreatedAt, &c.UsedAt); err != nil {
+			return nil, fmt.Errorf("scan recovery code: %w", err)
+		}
+		out = append(out, &c)
+	}
+	if out == nil {
+		out = []*RecoveryCode{}
+	}
+	return out, rows.Err()
+}
+
+// ListUnusedRecoveryCodesByPrefix 按前缀列出未使用的恢复码（跨用户；校验时再比对哈希）。
+func (d *DB) ListUnusedRecoveryCodesByPrefix(prefix string) ([]*RecoveryCode, error) {
+	rows, err := d.Query(
+		`SELECT id, user_id, code_hash, prefix, created_at, used_at
+		 FROM recovery_codes WHERE prefix = ? AND used_at IS NULL`, prefix,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recovery codes by prefix: %w", err)
+	}
+	defer rows.Close()
+	var out []*RecoveryCode
+	for rows.Next() {
+		var c RecoveryCode
+		if err := rows.Scan(&c.ID, &c.UserID, &c.CodeHash, &c.Prefix, &c.CreatedAt, &c.UsedAt); err != nil {
+			return nil, fmt.Errorf("scan recovery code: %w", err)
+		}
+		out = append(out, &c)
+	}
+	if out == nil {
+		out = []*RecoveryCode{}
+	}
+	return out, rows.Err()
+}
+
+// MarkRecoveryCodeUsed 将恢复码标记为已使用（一次性兑换）。
+// 仅当 used_at IS NULL 时更新；返回是否实际作废了一条。
+func (d *DB) MarkRecoveryCodeUsed(id string, usedAt int64) (bool, error) {
+	res, err := d.Exec(
+		`UPDATE recovery_codes SET used_at = ? WHERE id = ? AND used_at IS NULL`,
+		usedAt, id,
+	)
+	if err != nil {
+		return false, fmt.Errorf("mark recovery code used: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteUnusedRecoveryCodesByUser 删除某用户全部未使用的恢复码（重新生成前作废旧集合）。
+func (d *DB) DeleteUnusedRecoveryCodesByUser(userID string) (int64, error) {
+	res, err := d.Exec(`DELETE FROM recovery_codes WHERE user_id = ? AND used_at IS NULL`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete unused recovery codes: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// CountUnusedRecoveryCodes 返回某用户未使用恢复码数量。
+func (d *DB) CountUnusedRecoveryCodes(userID string) (int, error) {
+	var n int
+	err := d.QueryRow(
+		`SELECT COUNT(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL`, userID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count unused recovery codes: %w", err)
+	}
+	return n, nil
+}

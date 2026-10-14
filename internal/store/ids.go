@@ -29,9 +29,10 @@ func base62Encode(data []byte) string {
 }
 
 // NewUserID / NewMessageID / NewDeviceID / NewSessionID / NewKeyID 生成各实体 ID。
-func NewUserID() string    { return newID("usr") }
-func NewMessageID() string { return newID("ntf") }
-func NewDeviceID() string  { return newID("dev") }
-func NewSessionID() string { return newID("sess") }
-func NewEventID() string   { return newID("evt") }
-func NewCliAuthID() string { return newID("cas") }
+func NewUserID() string         { return newID("usr") }
+func NewMessageID() string      { return newID("ntf") }
+func NewDeviceID() string       { return newID("dev") }
+func NewSessionID() string      { return newID("sess") }
+func NewEventID() string        { return newID("evt") }
+func NewCliAuthID() string      { return newID("cas") }
+func NewRecoveryCodeID() string { return newID("rc") }

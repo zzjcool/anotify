@@ -136,3 +136,16 @@ CREATE        INDEX IF NOT EXISTS idx_sessions_user         ON sessions(user_id)
 CREATE        INDEX IF NOT EXISTS idx_apikeys_user          ON api_keys(user_id);
 CREATE        INDEX IF NOT EXISTS idx_cli_auth_expires      ON cli_auth_sessions(expires_at);
 -- idx_users_role 在 store.migrateColumns 中创建（老库 users.role 列经 ALTER 补上后才能建索引）
+
+-- 恢复码（仅存哈希；明文只在签发时返回一次）
+-- 格式：XXXX-XXXX-XXXX-XXXX（去歧义字符集），一批 8 个；兑换单个后作废该码。
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    id          TEXT PRIMARY KEY,            -- rc_xxx
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash   TEXT NOT NULL,               -- argon2id PHC
+    prefix      TEXT NOT NULL,               -- 规范化明文前缀（便于定位候选）
+    created_at  INTEGER NOT NULL,
+    used_at     INTEGER                      -- NULL = 未使用
+);
+CREATE        INDEX IF NOT EXISTS idx_recovery_codes_user   ON recovery_codes(user_id);
+CREATE        INDEX IF NOT EXISTS idx_recovery_codes_prefix ON recovery_codes(prefix);
