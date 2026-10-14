@@ -13,18 +13,9 @@
     />
     <!-- 自托管手写字体（私有化部署不依赖 Google CDN） -->
     <link rel="stylesheet" href="../public/fonts/fonts.css" />
+    <link rel="stylesheet" href="tokens.css" />
     <style>
-      :root {
-        --bg: #050508;
-        --panel: rgba(255, 255, 255, 0.03);
-        --line: rgba(255, 255, 255, 0.08);
-        --line-strong: rgba(255, 255, 255, 0.14);
-        --text: #ececf1;
-        --muted: rgba(236, 236, 241, 0.55);
-        --faint: rgba(236, 236, 241, 0.32);
-        --accent: #8b8bfd;
-        --accent-soft: rgba(139, 139, 253, 0.12);
-      }
+      /* 颜色来自 tokens.css；此处仅布局/动效 */
       * {
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
@@ -85,7 +76,7 @@
       .btn-primary {
         position: relative;
         background: #fff;
-        color: #0a0a10;
+        color: var(--on-solid);
         transition: all 0.25s ease;
         box-shadow:
           0 0 0 1px rgba(255, 255, 255, 0.9),
@@ -288,15 +279,11 @@
           </button>
         </div>
 
-        <!-- 登录面板 -->
+        <!-- 登录面板：与产品一致 — Passkey discoverable，无用户名框 -->
         <div id="login-panel" class="mt-6">
-          <label class="text-xs font-medium text-zinc-400">用户名</label>
-          <input
-            id="username"
-            class="input mt-2"
-            placeholder="输入你的用户名"
-            autocomplete="username webauthn"
-          />
+          <p class="text-xs leading-relaxed text-zinc-400">
+            本机已有 Passkey 时可一键登录，无需再输入用户名。
+          </p>
           <button
             onclick="doLogin()"
             class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
@@ -339,7 +326,22 @@
             class="input mt-2"
             placeholder="给自己起个名字"
             autocomplete="username webauthn"
+            maxlength="32"
           />
+          <p class="mt-1.5 text-xs text-zinc-500">
+            2–32 位；字母数字开头结尾，可含 . _ -
+          </p>
+          <p
+            id="username-error"
+            class="mt-1.5 hidden text-xs"
+            style="color: var(--error-300)"
+          >
+            用户名不符合规则，请按上方说明修改。
+          </p>
+          <div
+            id="status-box"
+            class="mt-4 hidden rounded-xl px-4 py-3 text-[13px] leading-relaxed"
+          ></div>
           <button
             onclick="doSignup()"
             class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
@@ -375,18 +377,21 @@
           </div>
         </div>
 
-        <!-- 恢复码登录入口 -->
+        <!-- 恢复码：即将推出（禁用，非死胡同 toast）· 完整表单见 mockup-login-states.html -->
         <div class="mt-6 border-t border-white/[0.06] pt-5 text-center">
           <button
-            onclick="
-              alert(
-                '演示：用 用户名 + 一次性恢复码 登录（跨设备找回账号的兜底方案）',
-              )
-            "
-            class="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+            type="button"
+            disabled
+            aria-disabled="true"
+            title="恢复码登录即将推出"
+            class="cursor-not-allowed text-xs text-zinc-600 opacity-60"
           >
-            无法使用 Passkey？用恢复码登录 →
+            无法使用 Passkey？用恢复码登录（即将推出）
           </button>
+          <p class="mt-2 text-[10px] text-zinc-600">
+            设计态示意 · 产品文案走 i18n（web-src）·
+            <a href="mockup-login-states.html" class="text-zinc-500 underline hover:text-zinc-300">查看 UX 态</a>
+          </p>
         </div>
       </div>
 
@@ -588,12 +593,36 @@
         window.addEventListener("resize", resize);
       })();
 
-      // ===== Tab 切换 =====
+      // ===== Tab 切换：见下方 switchTab（切 tab 清错误）=====
+
+      // ===== 模拟登录/注册 =====
+      function showStatus(msg, kind) {
+        const box = document.getElementById("status-box");
+        if (!box) return;
+        const map = {
+          info: ["var(--accent-soft)", "var(--accent-strong)"],
+          error: ["var(--error-soft)", "var(--error-300)"],
+          success: ["var(--success-soft)", "var(--success-300)"],
+          warn: ["var(--warn-soft)", "var(--warn-300)"],
+        };
+        const [bg, fg] = map[kind] || map.info;
+        box.classList.remove("hidden");
+        box.style.background = bg;
+        box.style.color = fg;
+        box.textContent = msg;
+      }
+      function hideStatus() {
+        const box = document.getElementById("status-box");
+        if (box) box.classList.add("hidden");
+        const err = document.getElementById("username-error");
+        if (err) err.classList.add("hidden");
+      }
       function switchTab(tab) {
         const loginTab = document.getElementById("tab-login");
         const signupTab = document.getElementById("tab-signup");
         const loginPanel = document.getElementById("login-panel");
         const signupPanel = document.getElementById("signup-panel");
+        hideStatus();
         if (tab === "login") {
           loginTab.classList.add("active");
           signupTab.classList.remove("active");
@@ -606,17 +635,18 @@
           loginPanel.classList.add("hidden");
         }
       }
-
-      // ===== 模拟登录/注册 =====
       function doLogin() {
-        const u = document.getElementById("username").value.trim() || "zheng";
-        // 演示：直接进入工作台
+        // 演示：discoverable Passkey → 工作台
         window.location.href = "mockup.html";
       }
       function doSignup() {
         const u = document.getElementById("new-username").value.trim();
-        if (!u) {
+        const err = document.getElementById("username-error");
+        hideStatus();
+        const re = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,30}[A-Za-z0-9])?$/;
+        if (!u || !re.test(u) || u.length < 2) {
           document.getElementById("new-username").focus();
+          if (err) err.classList.remove("hidden");
           return;
         }
         window.location.href = "mockup.html";
