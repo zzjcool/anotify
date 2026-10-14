@@ -145,7 +145,7 @@ docker run -p 8080:8080 \
 
 ```bash
 make ci                  # 与 CI 相同：gofmt + 前端 embed 产物 + vet + build + 单元测试
-make test                # Go 单元测试（独立于 e2e；编译 server 包前需 make fe 生成 dist）
+make test                # Go 单元测试（独立于 e2e；默认不嵌入 dist）
 make e2e                 # 全量端到端测试（~57s，并行，968 断言）
 make e2e-one S=auth_flow # 只跑某个套件
 make integration         # 集成测试（健康/缓存分级/鉴权矩阵）

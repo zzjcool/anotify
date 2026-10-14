@@ -26,7 +26,7 @@ jobs:
           go-version-file: go.mod
 
       # make fe（check-classes + sitegen + hash）只用 Node 标准库，不装 npm 依赖。
-      # 先生成 internal/server/dist，否则 //go:embed all:dist 让 go build / go test 失败。
+      # make ci 会用 -tags embeddist 编译内嵌前端；默认 go build / go test 不嵌入 dist。
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
