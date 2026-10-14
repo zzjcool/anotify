@@ -1,6 +1,6 @@
 // Anotify VAPID 密钥生成工具（替代原型 genkeys.js）。
 // 用法：go run ./scripts/genkeys.go
-// 输出：打印 ANOTIFY_VAPID_PUBLIC / ANOTIFY_VAPID_PRIVATE 环境变量
+// 输出：打印 ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY 环境变量
 package main
 
 import (
@@ -24,6 +24,6 @@ func main() {
 	copy(privBytes[32-len(d):], d)
 
 	fmt.Println("# 将以下两行加入环境（或 .env）")
-	fmt.Printf("ANOTIFY_VAPID_PUBLIC=%s\n", base64.RawURLEncoding.EncodeToString(pub))
-	fmt.Printf("ANOTIFY_VAPID_PRIVATE=%s\n", base64.RawURLEncoding.EncodeToString(privBytes))
+	fmt.Printf("ANOTIFY_VAPID_PUBLIC_KEY=%s\n", base64.RawURLEncoding.EncodeToString(pub))
+	fmt.Printf("ANOTIFY_VAPID_PRIVATE_KEY=%s\n", base64.RawURLEncoding.EncodeToString(privBytes))
 }
