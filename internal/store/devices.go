@@ -14,8 +14,8 @@ type Device struct {
 	Name          string   `json:"name"`
 	Platform      string   `json:"platform"`
 	Enabled       bool     `json:"enabled"`
-	EventScope   string   `json:"eventScope"` // final|all（push 默认 final）
-	Tags          []string `json:"tags"`         // 设备标签（路由用）
+	EventScope    string   `json:"eventScope"` // final|all（push 默认 final）
+	Tags          []string `json:"tags"`       // 设备标签（路由用）
 	Endpoint      string   `json:"endpoint"`
 	P256dh        string   `json:"p256dh"`
 	Auth          string   `json:"auth"`

@@ -11,10 +11,10 @@ import (
 // dev 构造一台测试设备。
 func dev(enabled bool, eventScope string, tags ...string) *store.Device {
 	return &store.Device{
-		ID:          "dev_test",
-		Enabled:     enabled,
-		EventScope:  eventScope,
-		Tags:        tags,
+		ID:         "dev_test",
+		Enabled:    enabled,
+		EventScope: eventScope,
+		Tags:       tags,
 	}
 }
 

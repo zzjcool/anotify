@@ -108,6 +108,7 @@ make dev          # 起 server + cloudflared tunnel，Ctrl-C 一起停
 | `make dev-local` | 开发：只起本地，不起 tunnel |
 | `make build` | 构建单二进制（内嵌指纹前端，生产用） |
 | `make test` | Go 单元测试 |
+| `make ci` | PR 门禁：gofmt / vet / build / 单元测试（与 GitHub Actions 相同，不含 e2e） |
 | `make e2e` | 全量端到端测试（~57s，968 断言） |
 | `make e2e-one S=auth_flow` | 只跑某个套件 |
 | `make keys` | 生成 VAPID 密钥对 |
@@ -143,7 +144,8 @@ docker run -p 8080:8080 \
 ## 测试
 
 ```bash
-make test                # Go 单元测试（独立于 e2e）
+make ci                  # 与 CI 相同：gofmt + 前端 embed 产物 + vet + build + 单元测试
+make test                # Go 单元测试（独立于 e2e；编译 server 包前需 make fe 生成 dist）
 make e2e                 # 全量端到端测试（~57s，并行，968 断言）
 make e2e-one S=auth_flow # 只跑某个套件
 make integration         # 集成测试（健康/缓存分级/鉴权矩阵）
