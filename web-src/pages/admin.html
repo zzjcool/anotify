@@ -701,15 +701,45 @@
     });
 
     /* ================= 启动：先取当前用户 ID（标记自己），再并行加载 ================= */
+    function showForbidden() {
+      const main = document.getElementById("page-main");
+      if (!main) return;
+      main.replaceChildren(
+        el(
+          "div",
+          { class: "mx-auto max-w-lg space-y-4 py-16 text-center" },
+          el("h2", {
+            class: "font-display text-2xl text-white",
+            text: t("admin.forbidden.title", "无权访问管理后台"),
+          }),
+          el("p", {
+            class: "text-sm leading-relaxed text-zinc-400",
+            text: t(
+              "admin.forbidden.body",
+              "当前账号不是管理员。如需管理权限，请联系已有超管提升角色。",
+            ),
+          }),
+          el("a", {
+            href: "index.html",
+            class: "btn-primary inline-flex rounded-xl px-4 py-2 text-sm font-medium",
+            text: t("admin.forbidden.back", "返回总览"),
+          }),
+        ),
+      );
+    }
+
     (async () => {
       try {
         const me = await api("/v1/auth/me");
         currentUserId = me.id;
-        if (me.role === "admin") {
-          document.getElementById("admin-role-badge").textContent = me.role;
+        if (me.role !== "admin") {
+          showForbidden();
+          return;
         }
+        document.getElementById("admin-role-badge").textContent = me.role;
       } catch {
         /* 401 会自动跳登录 */
+        return;
       }
       loadStats();
       loadUsers();

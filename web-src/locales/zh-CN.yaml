@@ -99,6 +99,7 @@ index:
   title: 总览
   subtitle: 你的通知一览
   greeting:
+    fallback_name: 你
     default: 你好
     late_night: 夜深了
     morning: 早上好
@@ -117,6 +118,7 @@ index:
     devices_enabled: 已启用
     devices_sub: "{n} 台设备 · 端到端加密"
     devices_sub2: 推送订阅 + 长连接
+    rate_na: 暂无接收设备，送达率不可用
     trend_demo: 示例
     trend_live: 实时
   heatmap:
@@ -183,6 +185,7 @@ index:
     no_device: 已发送，但当前没有匹配的接收设备
     failed: 发送失败：{msg}
     demo_disabled: 后端未连接，无法发送测试通知
+    no_devices_block: 当前没有接收设备。请先在「通知接收」开启本机通知或添加设备后再试。
     cancel: 取消
   notif:
     empty: 暂无该状态的通知
@@ -369,6 +372,8 @@ receivers:
     not_subscribed: 当前浏览器（{browser}）还没开推送订阅——这台设备收不到通知。
     turn_off: 关闭本机通知
     turn_on: 开启本机通知
+    view_settings: 查看如何开启
+    perm_denied_toast: 通知权限未授予（denied）。请在浏览器设置里允许本站通知后重试。
   troubleshoot:
     title: 按设备检查清单
     local_check: 本机检测
@@ -544,7 +549,7 @@ security:
   unknown_device: 未知设备
   credential: 凭证
   current_session: 当前会话
-  empty_passkeys: 还没有 Passkey。点右上角「+ 在新设备添加」为这台设备创建一个。
+  empty_passkeys: 还没有 Passkey。点右上角「+ 本机添加」为这台设备创建一个。
   empty_sessions: 当前没有活跃会话。
   in_use: 本机在用
   last_used: 最近使用 {time}
@@ -879,6 +884,10 @@ passkeyenroll:
 # ===== 管理后台 =====
 admin:
   title: 管理后台
+  forbidden:
+    title: 无权访问管理后台
+    body: 当前账号不是管理员。如需管理权限，请联系已有超管提升角色。
+    back: 返回总览
   subtitle: 系统总览与用户管理
   loading: 加载中…
   top_users: Top 活跃用户

@@ -355,13 +355,14 @@
     const { el, api, mountLayout, mountPullRefresh, copyText, timeAgo, t } =
       window.Anotify;
     const qs = new URLSearchParams(location.search);
-    const username = qs.get("u") || "zheng";
+    // 占位；load() 里用 /v1/auth/me 覆盖，避免硬编码名字与侧栏不一致（#21）
+    let username = qs.get("u") || "";
 
     mountLayout({
       active: "overview",
       title: t("index.title", "总览"),
       subtitle: t("index.subtitle", "你的通知一览"),
-      username,
+      username: username || "…",
     });
 
     /* ================= 数据层 ================= */
@@ -643,6 +644,16 @@
       document
         .getElementById("demo-badge")
         .classList.toggle("hidden", !usingDemo);
+      // 问候语跟当前登录用户对齐（#21）；qs ?u= 仅作兜底
+      try {
+        const me = await window.Anotify.loadMe();
+        if (me) {
+          username = me.displayName || me.username || username || "";
+        }
+      } catch {
+        /* 忽略，保留已有 username */
+      }
+      if (!username) username = t("index.greeting.fallback_name", "你");
       renderKpis();
       renderNotifs(currentFilter);
       renderSummary();
@@ -658,16 +669,22 @@
         today = STATS.today ?? 0;
         devices = STATS.deviceCount ?? 0;
         const dt = STATS.deliveryTotal ?? 0;
+        // 0 设备或尚无投递样本时不展示误导性 100%（#23）
         rate =
-          dt > 0 ? Math.round(((STATS.delivered ?? 0) / dt) * 1000) / 10 : 100;
+          devices > 0 && dt > 0
+            ? Math.round(((STATS.delivered ?? 0) / dt) * 1000) / 10
+            : null;
       } else {
         total = NOTIFICATIONS.length;
         const ok = NOTIFICATIONS.filter(
           (n) => n.delivered >= (n.total || 1),
         ).length;
-        rate = total ? Math.round((ok / total) * 1000) / 10 : 100;
-        today = NOTIFICATIONS.filter((n) => n.isToday).length;
         devices = Math.max(...NOTIFICATIONS.map((n) => n.total || 0), 0);
+        rate =
+          devices > 0 && total
+            ? Math.round((ok / total) * 1000) / 10
+            : null;
+        today = NOTIFICATIONS.filter((n) => n.isToday).length;
       }
       document.getElementById("kpi-total").textContent = total.toLocaleString();
       document.getElementById("kpi-total-trend").textContent = usingDemo
@@ -675,14 +692,21 @@
         : t("index.kpi.trend_live", "实时");
       // Use textContent to avoid innerHTML (% is a separate span)
       const rateEl = document.getElementById("kpi-rate");
-      rateEl.replaceChildren(
-        document.createTextNode(rate),
-        el("span", { class: "text-2xl text-zinc-500", text: "%" }),
-      );
-      document.getElementById("kpi-rate-sub").textContent = t(
-        "index.kpi.devices_sub",
-        "{n} 台设备 · 端到端加密",
-      ).replace("{n}", devices);
+      if (rate == null) {
+        rateEl.replaceChildren(document.createTextNode("–"));
+      } else {
+        rateEl.replaceChildren(
+          document.createTextNode(rate),
+          el("span", { class: "text-2xl text-zinc-500", text: "%" }),
+        );
+      }
+      document.getElementById("kpi-rate-sub").textContent =
+        devices > 0
+          ? t("index.kpi.devices_sub", "{n} 台设备 · 端到端加密").replace(
+              "{n}",
+              devices,
+            )
+          : t("index.kpi.rate_na", "暂无接收设备，送达率不可用");
       document.getElementById("kpi-today").textContent = today;
       document.getElementById("kpi-devices").textContent = devices || "0";
       document.getElementById("kpi-devices-sub").textContent = t(
@@ -848,10 +872,29 @@
         "text-xs " + (isError ? "text-red-400" : "text-zinc-400");
     }
 
+    function currentDeviceCount() {
+      if (STATS && !usingDemo && STATS.deviceCount != null) {
+        return STATS.deviceCount;
+      }
+      return 0;
+    }
+
     tnToggle.addEventListener("click", () => {
       // 演示模式（后端未连接）：提示无法发送
       if (usingDemo) {
         tnSetStatus(t("index.test_notify.demo_disabled", "后端未连接，无法发送测试通知"), true);
+        return;
+      }
+      // 0 台接收设备：阻止打开发送表单，避免产生「完成 / 0/0」假成功（#23）
+      if (currentDeviceCount() <= 0) {
+        tnSetStatus(
+          t(
+            "index.test_notify.no_devices_block",
+            "当前没有接收设备。请先在「通知接收」开启本机通知或添加设备后再试。",
+          ),
+          true,
+        );
+        tnForm.classList.add("hidden");
         return;
       }
       tnForm.classList.toggle("hidden");
@@ -869,6 +912,17 @@
 
     tnSend.addEventListener("click", async () => {
       if (tnSending) return;
+      if (currentDeviceCount() <= 0) {
+        tnSetStatus(
+          t(
+            "index.test_notify.no_devices_block",
+            "当前没有接收设备。请先在「通知接收」开启本机通知或添加设备后再试。",
+          ),
+          true,
+        );
+        tnForm.classList.add("hidden");
+        return;
+      }
       tnSending = true;
       const originalText = tnSend.textContent;
       tnSend.textContent = t("index.test_notify.sending", "发送中…");
@@ -895,8 +949,14 @@
             t("index.test_notify.success", "已发送，命中 {n} 台设备").replace("{n}", resp.matched),
             false,
           );
+          tnForm.classList.add("hidden");
         } else {
-          tnSetStatus(t("index.test_notify.no_device", "已发送，但当前没有匹配的接收设备"), false);
+          // 标签过滤导致 0 命中：警告态，关闭表单，不宣称成功
+          tnSetStatus(
+            t("index.test_notify.no_device", "已发送，但当前没有匹配的接收设备"),
+            true,
+          );
+          tnForm.classList.add("hidden");
         }
         // 刷新最近通知列表，让新消息出现
         await load();
