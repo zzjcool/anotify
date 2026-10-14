@@ -99,6 +99,7 @@ index:
   title: 概要
   subtitle: 通知の概要
   greeting:
+    fallback_name: あなた
     default: こんにちは
     late_night: 夜遅くまでお疲れさまです
     morning: おはようございます
@@ -117,6 +118,7 @@ index:
     devices_enabled: 有効
     devices_sub: "{n} 台 · エンドツーエンド暗号化"
     devices_sub2: プッシュ購読 + WebSocket
+    rate_na: 受信デバイスがまだないため、配信率は表示できません
     trend_demo: デモ
     trend_live: ライブ
   heatmap:
@@ -183,6 +185,7 @@ index:
     no_device: 送信済み、ただし現在マッチする受信デバイスがありません
     failed: "送信失敗: {msg}"
     demo_disabled: バックエンド未接続、テスト通知を送信できません
+    no_devices_block: 受信デバイスがありません。先に「通知受信」で本機通知をオンにするかデバイスを追加してください。
     cancel: キャンセル
   notif:
     empty: このステータスの通知はありません
@@ -368,6 +371,8 @@ receivers:
     not_subscribed: このブラウザ（{browser}）はプッシュ通知を購読していません — この端末は通知を受信できません。
     turn_off: 通知をオフにする
     turn_on: 通知をオンにする
+    view_settings: 有効化の方法を見る
+    perm_denied_toast: 通知権限が拒否されています（denied）。ブラウザの設定でこのサイトを許可してから再試行してください。
   troubleshoot:
     title: デバイス別チェックリスト
     local_check: ローカル確認
@@ -543,7 +548,7 @@ security:
   unknown_device: 不明なデバイス
   credential: 資格情報
   current_session: 現在のセッション
-  empty_passkeys: まだ Passkey がありません。右上の「+ 新しいデバイスで追加」でこのデバイスに作成できます。
+  empty_passkeys: まだ Passkey がありません。右上の「+ このデバイスで追加」でこのデバイスに作成できます。
   empty_sessions: アクティブなセッションはありません。
   in_use: 使用中
   last_used: 最終使用 {time}
@@ -878,6 +883,10 @@ passkeyenroll:
 # ===== 管理コンソール =====
 admin:
   title: 管理コンソール
+  forbidden:
+    title: 管理画面へのアクセス権がありません
+    body: このアカウントは管理者ではありません。権限が必要な場合は既存のスーパー管理者に昇格を依頼してください。
+    back: 概要に戻る
   subtitle: システム概要とユーザー管理
   loading: 読み込み中…
   top_users: アクティブユーザー Top

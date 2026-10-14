@@ -99,6 +99,7 @@ index:
   title: Overview
   subtitle: Your notifications at a glance
   greeting:
+    fallback_name: there
     default: Hello
     late_night: Working late?
     morning: Good morning
@@ -117,6 +118,7 @@ index:
     devices_enabled: Enabled
     devices_sub: "{n} devices · end-to-end encrypted"
     devices_sub2: Push subscriptions + WebSocket
+    rate_na: No receivers yet — delivery rate unavailable
     trend_demo: Demo
     trend_live: Live
   heatmap:
@@ -183,6 +185,7 @@ index:
     no_device: Sent, but no matching device is currently subscribed
     failed: "Send failed: {msg}"
     demo_disabled: Backend not connected, cannot send test notification
+    no_devices_block: No receivers yet. Turn on notifications or add a device under Receivers first.
     cancel: Cancel
   notif:
     empty: No notifications with this status
@@ -368,6 +371,8 @@ receivers:
     not_subscribed: This browser ({browser}) hasn't subscribed to push — this device won't receive notifications.
     turn_off: Turn off notifications
     turn_on: Turn on notifications
+    view_settings: How to enable
+    perm_denied_toast: Notification permission is denied. Allow this site in your browser settings, then try again.
   troubleshoot:
     title: Device checklist
     local_check: Local check
@@ -543,7 +548,7 @@ security:
   unknown_device: Unknown device
   credential: Credential
   current_session: Current session
-  empty_passkeys: No Passkeys yet. Click "+ Add on a new device" in the top right to create one.
+  empty_passkeys: No Passkeys yet. Click "+ Add on this device" in the top right to create one for this machine.
   empty_sessions: No active sessions.
   in_use: In use
   last_used: Last used {time}
@@ -878,6 +883,10 @@ passkeyenroll:
 # ===== Admin Console =====
 admin:
   title: Admin Console
+  forbidden:
+    title: Admin access denied
+    body: Your account is not an admin. Ask an existing super-admin to promote you if you need access.
+    back: Back to overview
   subtitle: System overview & user management
   loading: Loading…
   top_users: Top active users

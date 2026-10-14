@@ -534,9 +534,26 @@
                 class: `${subscribed ? "btn-ghost" : "btn-primary"} rounded-xl px-4 py-2 text-sm font-medium`,
                 text: subscribed
                   ? t("receivers.local.turn_off", "关闭本机通知")
-                  : t("receivers.local.turn_on", "开启本机通知"),
-                onclick: () =>
-                  subscribed ? unsubscribeCurrent(cur) : openPair(),
+                  : perm === "denied"
+                    ? t("receivers.local.fix_settings", "查看如何开启")
+                    : t("receivers.local.turn_on", "开启本机通知"),
+                onclick: () => {
+                  if (subscribed) {
+                    unsubscribeCurrent(cur);
+                    return;
+                  }
+                  if (perm === "denied") {
+                    toast(
+                      t(
+                        "receivers.local.perm_denied_toast",
+                        "通知权限未授予（denied）。请在浏览器设置里允许本站通知后重试。",
+                      ),
+                      "warn",
+                    );
+                    return;
+                  }
+                  openPair();
+                },
               }),
             ),
           );

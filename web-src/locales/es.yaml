@@ -99,6 +99,7 @@ index:
   title: Resumen
   subtitle: Tus notificaciones de un vistazo
   greeting:
+    fallback_name: tú
     default: Hola
     late_night: Trabajando tarde
     morning: Buenos días
@@ -117,6 +118,7 @@ index:
     devices_enabled: Activos
     devices_sub: "{n} dispositivos · cifrado de extremo a extremo"
     devices_sub2: Suscripciones push + WebSocket
+    rate_na: Sin receptores — tasa de entrega no disponible
     trend_demo: Demo
     trend_live: En vivo
   heatmap:
@@ -183,6 +185,7 @@ index:
     no_device: Enviado, pero ningún dispositivo coincidente está suscrito
     failed: "Error al enviar: {msg}"
     demo_disabled: Backend no conectado, no se puede enviar la notificación
+    no_devices_block: No hay receptores. Activa notificaciones o añade un dispositivo en Receptores primero.
     cancel: Cancelar
   notif:
     empty: No hay notificaciones con este estado
@@ -368,6 +371,8 @@ receivers:
     not_subscribed: Este navegador ({browser}) no se ha suscrito a push — este dispositivo no recibirá notificaciones.
     turn_off: Desactivar notificaciones
     turn_on: Activar notificaciones
+    view_settings: Cómo activarlas
+    perm_denied_toast: El permiso de notificaciones está denegado. Permite este sitio en la configuración del navegador e inténtalo de nuevo.
   troubleshoot:
     title: Lista de verificación por dispositivo
     local_check: Verificación local
@@ -543,7 +548,7 @@ security:
   unknown_device: Dispositivo desconocido
   credential: Credencial
   current_session: Sesión actual
-  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir en dispositivo nuevo" arriba a la derecha para crear una.
+  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir en este dispositivo" arriba a la derecha para crear una en este equipo.
   empty_sessions: No hay sesiones activas.
   in_use: En uso
   last_used: Último uso {time}
@@ -878,6 +883,10 @@ passkeyenroll:
 # ===== Consola Admin =====
 admin:
   title: Consola Admin
+  forbidden:
+    title: Sin acceso de administrador
+    body: Tu cuenta no es administrador. Pide a un superadmin existente que te ascienda si lo necesitas.
+    back: Volver al resumen
   subtitle: Resumen del sistema y gestión de usuarios
   loading: Cargando…
   top_users: Usuarios más activos
