@@ -23,6 +23,7 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SRC = path.resolve(
 	process.argv.find((a) => a.startsWith("--src="))?.split("=")[1] ?? "web-src",
@@ -527,7 +528,7 @@ const TAILWIND_PREFIX = [
 const TAILWIND_VARIANT =
 	/^((sm|md|lg|xl|2xl|min-sm|min-md|min-lg|min-xl|min-2xl|max-sm|max-md|max-lg|max-xl|max-2xl|dark|motion-safe|motion-reduce|forced-colors|print|portrait|landscape|rtl|ltr|supports-\[\w+\]|aria-\[\w+=?\\?\w*\]|group|peer|group-hover|group-focus|group-active|group-\[.*\]|peer-hover|has-\[[^\]]+\]|first|last|odd|even|only|first-of-type|last-of-type|visited|target|open|checked|indeterminate|default|required|valid|invalid|in-range|out-of-range|placeholder-shown|autofill|read-only|disabled|enabled|hover|focus|focus-visible|focus-within|active|link|any-hover|any-pointer):)+/;
 
-function isTailwind(cls) {
+export function isTailwind(cls) {
 	// 重要修饰符 ! 前缀（如 !bg-[var(--panel-modal)]）
 	if (cls.startsWith("!")) cls = cls.slice(1);
 	if (TAILWIND_COMPLETE.has(cls)) return true;
@@ -616,7 +617,12 @@ async function main() {
 	process.exit(1);
 }
 
-main().catch((e) => {
-	console.error(e);
-	process.exit(1);
-});
+const isDirectRun =
+	process.argv[1] &&
+	path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isDirectRun) {
+	main().catch((e) => {
+		console.error(e);
+		process.exit(1);
+	});
+}

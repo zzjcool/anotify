@@ -62,7 +62,22 @@ docker info  # 确认 daemon 在跑
   - `pages/*.html`：每页 `{{define "content"}}` / `{{define "title"}}` / 可选 `style`/`script`/`fonts-extra`。首行 `<!-- layout: login -->` 指定非默认布局
   - `locales/{zh-CN,en}.yaml`：i18n 翻译（嵌套 YAML，扁平化为 `page.key`）
 - **生成产物（勿手改，已 gitignore）**：`web/*.html`（zh 根路径）、`web/en/*.html`、`web/i18n.{lang}.js`
-- **静态资源（保持跟踪）**：`web/ui.css` `tokens.css` `partials.js` `fonts/` `assets/` `sw.js` `manifest.webmanifest`
+- **静态资源（保持跟踪）**：`web/ui.css` `tokens.css` `tailwind.css` `partials.js` `fonts/` `assets/` `sw.js` `manifest.webmanifest`
+
+### Tailwind（构建期 CSS，不用 Play CDN）
+
+线上和 embed 的页面（`web-src/layouts/`）引用 `/tailwind.css`，即提交在仓库里的 `web/tailwind.css`。**不要**在这些页面加载 `cdn.tailwindcss.com`：Play CDN 会在控制台打出 “should not be used in production”。
+
+`design/*.html` 设计稿仍引用 Play CDN，只给本地对照，不进 sitegen，也不进 embed。
+
+改了 `web-src/` 或 `web/partials.js` 里的 Tailwind 工具类之后：
+
+```bash
+npm install          # 首次需要 devDependency tailwindcss
+npm run tailwind     # 或 node scripts/build-tailwind.mjs，重写 web/tailwind.css
+```
+
+`make fe` / `make ci` **不**安装 npm 依赖、也不跑 Tailwind CLI。它们只跑 `scripts/check-tailwind-css.mjs`：源码里的工具类必须已经出现在提交的 `web/tailwind.css` 里。
 
 ```bash
 make sitegen  # go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en

@@ -205,6 +205,231 @@ async function main() {
 		await ctx.close();
 	}
 
+	// ---- login UX：#6 恢复码不是假按钮，#7 用户名错误可见，#8 切 tab 清错误，
+	//      #9 不加载 Play CDN，#10 无认证器时不说「请允许」 ----
+	console.log("--- login UX ---");
+	{
+		const ctx = await newCtx();
+		const page = await ctx.newPage();
+		const consoleNotes = [];
+		const cdnHits = [];
+		page.on("console", (msg) => {
+			const kind = msg.type();
+			if (kind === "warning" || kind === "error") consoleNotes.push(msg.text());
+		});
+		page.on("request", (req) => {
+			if (req.url().includes("cdn.tailwindcss.com")) cdnHits.push(req.url());
+		});
+		await page.goto(server.base + "/login.html", {
+			waitUntil: "load",
+			timeout: 15000,
+		});
+		await H.waitForAppReady(page, "login");
+
+		const usesCdnScript = await page.evaluate(() =>
+			[...document.scripts].some((s) =>
+				(s.src || "").includes("cdn.tailwindcss.com"),
+			),
+		);
+		H.check(
+			"login 不加载 Tailwind Play CDN",
+			!usesCdnScript && cdnHits.length === 0,
+			cdnHits[0] || "",
+		);
+		H.check(
+			"login 控制台无 Tailwind 生产警告",
+			!consoleNotes.some((m) => m.includes("should not be used in production")),
+			consoleNotes.join(" | ").slice(0, 180),
+		);
+		H.check(
+			"用户名 pattern 不是非法正则",
+			!consoleNotes.some((m) => /not a valid regular expression/i.test(m)),
+			consoleNotes.join(" | ").slice(0, 220),
+		);
+		const layoutOk = await page.evaluate(() => {
+			const main = document.querySelector("main");
+			return !!main && getComputedStyle(main).display === "flex";
+		});
+		H.check("login 本地 tailwind.css 生效（main 为 flex）", layoutOk === true);
+
+		const recovery = await page.evaluate(() => {
+			const note = document.getElementById("recovery-note");
+			return {
+				hasNote: !!note,
+				text: note ? note.textContent : "",
+				hasBtn: !!document.getElementById("recovery-btn"),
+			};
+		});
+		H.check(
+			"恢复码入口不是可点击按钮",
+			recovery.hasNote && !recovery.hasBtn,
+			JSON.stringify(recovery),
+		);
+		H.check(
+			"恢复码文案标明即将推出且当前不可用",
+			/即将推出/.test(recovery.text) && /不能/.test(recovery.text),
+			recovery.text,
+		);
+
+		await page.click("#tab-signup");
+		const hint = await page.locator("#signup-panel").innerText();
+		H.check(
+			"注册说明不再承诺立即发放恢复码",
+			!hint.includes("注册后会生成") && hint.includes("尚未开放"),
+			hint.slice(0, 180),
+		);
+		const cases = [
+			["x", "至少 2"],
+			["has space", "只能包含"],
+			["-bad-", "只能包含"],
+		];
+		for (const [value, snippet] of cases) {
+			await page.fill("#new-username", value);
+			const state = await page.evaluate(() => {
+				const err = document.getElementById("username-error");
+				const btn = document.getElementById("signup-btn");
+				return {
+					hidden: err.classList.contains("hidden"),
+					text: err.textContent,
+					disabled: btn.disabled,
+				};
+			});
+			H.check(
+				`非法用户名 ${JSON.stringify(value)} 有 inline 错误且按钮禁用`,
+				!state.hidden && state.disabled && state.text.includes(snippet),
+				JSON.stringify(state),
+			);
+		}
+		await page.fill("#new-username", "ivy-dogfood");
+		const okState = await page.evaluate(() => {
+			const err = document.getElementById("username-error");
+			const btn = document.getElementById("signup-btn");
+			return {
+				hidden: err.classList.contains("hidden"),
+				disabled: btn.disabled,
+			};
+		});
+		H.check(
+			"合法用户名不报错且按钮可点",
+			okState.hidden && !okState.disabled,
+			JSON.stringify(okState),
+		);
+		const nativePattern = await page.evaluate(() => {
+			const el = document.getElementById("new-username");
+			const samples = ["x", "has space", "-bad-", "ab", "ivy-dogfood"];
+			const out = {};
+			for (const s of samples) {
+				el.value = s;
+				out[s] = el.validity.valid;
+			}
+			el.value = "ivy-dogfood";
+			return out;
+		});
+		H.check(
+			"浏览器 pattern 拒绝过短、空格、符号开头",
+			nativePattern.x === false &&
+				nativePattern["has space"] === false &&
+				nativePattern["-bad-"] === false &&
+				nativePattern.ab === true &&
+				nativePattern["ivy-dogfood"] === true,
+			JSON.stringify(nativePattern),
+		);
+		H.check(
+			"调用 pattern 校验后控制台仍无非法正则",
+			!consoleNotes.some((m) => /not a valid regular expression/i.test(m)),
+			consoleNotes.join(" | ").slice(0, 220),
+		);
+
+		await page.evaluate(() => {
+			const box = document.getElementById("status-box");
+			box.classList.remove("hidden");
+			box.textContent = "注册失败探针";
+		});
+		await page.click("#tab-login");
+		const cleared = await page.evaluate(() => {
+			const box = document.getElementById("status-box");
+			return {
+				loginShown: !document
+					.getElementById("login-panel")
+					.classList.contains("hidden"),
+				statusHidden: box.classList.contains("hidden"),
+				text: box.textContent,
+			};
+		});
+		H.check(
+			"切到登录 tab 后状态条被清空",
+			cleared.loginShown && cleared.statusHidden && cleared.text === "",
+			JSON.stringify(cleared),
+		);
+
+		// 无虚拟认证器：打开 WebAuthn API，但不添加认证器。页面在点击时再探测。
+		// 把超时压到 1.5s，避免等服务端默认的几十秒。
+		const cdp = await ctx.newCDPSession(page);
+		await cdp.send("WebAuthn.enable");
+		const platform = await page.evaluate(async () => {
+			try {
+				if (!window.PublicKeyCredential) return false;
+				return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+			} catch {
+				return false;
+			}
+		});
+		if (platform) {
+			H.check("本环境有平台认证器，跳过无提示文案断言", true);
+		} else {
+			await page.route("**/v1/auth/register/options", async (route) => {
+				const resp = await route.fetch();
+				const json = await resp.json();
+				const pk = json.publicKey || json;
+				pk.timeout = 1500;
+				await route.fulfill({
+					status: resp.status(),
+					contentType: "application/json",
+					body: JSON.stringify(json),
+				});
+			});
+			await page.click("#tab-signup");
+			await page.fill("#new-username", "ivy-dogfood");
+			await page.click("#signup-btn");
+			try {
+				await page.waitForFunction(
+					() => {
+						const box = document.getElementById("status-box");
+						return (
+							box &&
+							!box.classList.contains("hidden") &&
+							(box.textContent || "").length > 0
+						);
+					},
+					{ timeout: 12000 },
+				);
+			} catch (e) {
+				H.bad("无认证器注册应出现状态文案", String(e).slice(0, 80));
+			}
+			const msg = await page.locator("#status-box").innerText();
+			H.check(
+				"无认证器时不说「请允许创建 Passkey」",
+				!msg.includes("请允许") &&
+					(msg.includes("没有弹出") || msg.includes("没有可用")),
+				msg,
+			);
+			H.check(
+				"无认证器文案不把恢复码当成可用退路",
+				msg.includes("尚未开放"),
+				msg,
+			);
+			await page.click("#tab-login");
+			const leaked = await page.evaluate(() => {
+				const box = document.getElementById("status-box");
+				return box.classList.contains("hidden");
+			});
+			H.check("注册失败后切到登录 tab，错误不再显示", leaked === true);
+		}
+
+		await page.close();
+		await ctx.close();
+	}
+
 	// ---- B. 已登录访问 index → 不显示演示徽章（真实数据）----
 	console.log("--- 已登录真实数据 ---");
 	{

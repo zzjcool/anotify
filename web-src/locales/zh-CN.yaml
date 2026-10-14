@@ -277,13 +277,17 @@ login:
     username_placeholder: 给自己起个名字
     username_hint: 2–32 位，字母 / 数字 / _ / - / .，且不能以符号开头结尾
     button: 创建 Passkey 并注册
-    recovery_hint_prefix: 注册后会生成一组
+    recovery_hint_prefix: ""
     recovery_code: 一次性恢复码
-    recovery_hint_suffix: ——当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。
-    recovery_hint: 注册后会生成一组一次性恢复码——当你更换设备或丢失所有 Passkey 时，可用它找回账号。请妥善保存。
+    recovery_hint_suffix: 尚未开放。请保管好已注册 Passkey 的设备；在它上线前，丢失全部设备将无法登录。
+    recovery_hint: 一次性恢复码尚未开放。请保管好已注册 Passkey 的设备；在它上线前，丢失全部设备将无法登录。
+    err_empty: 先给自己起个用户名。
+    err_short: 用户名至少 2 个字符。
+    err_long: 用户名最多 32 个字符。
+    err_chars: 只能包含字母、数字、_、-、.，且不能以 _ - . 开头或结尾。
   ios_tip_label: iOS 用户：
   ios_tip: 要接收推送通知，请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。
-  recovery_link: 无法使用 Passkey？用恢复码登录 →
+  recovery_soon: 恢复码登录即将推出，目前还不能使用。请改用已注册 Passkey 的设备登录。
   trust:
     data_local: 数据仅存于你的服务器
     webauthn: WebAuthn 标准
@@ -293,8 +297,15 @@ login:
     login_success: 登录成功，正在进入工作台…
     signup_success: 注册成功！正在进入工作台…
     unsupported: 当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。
-    cancelled_login: 已取消，或本机没有可用的 Passkey——请先「注册」一个。
-    cancelled_signup: 已取消或超时——请重试并允许创建 Passkey。
+    cancelled_login: 已取消。请重试，并在系统提示里选择本机 Passkey；若本机还没有，请先注册。
+    cancelled_signup: 已取消。请重试，并在弹出的提示中允许创建 Passkey。
+    timeout_login: 登录超时，提示已关闭。请重试；如果一直没有提示，说明当前环境没有可用的认证器。
+    timeout_signup: 创建 Passkey 超时，提示已关闭。请重试；如果一直没有系统提示，请换一台已设置指纹、Face ID 或 Windows Hello 的设备。恢复码登录尚未开放。
+    no_authenticator_login: 当前环境没有可用的平台认证器，浏览器没有弹出 Passkey 提示。请换用已经注册过 Passkey 的设备，或检查浏览器的安全密钥设置。恢复码登录尚未开放。
+    no_authenticator_signup: 当前环境没有可用的平台认证器，浏览器没有弹出可操作的创建提示。请换用已设置指纹、Face ID 或 Windows Hello 的设备，或在浏览器设置中允许安全密钥。恢复码登录尚未开放。
+    uncertain_login: 未能完成 Passkey 登录。如果没有看到系统提示，请换用已注册 Passkey 的设备，或检查浏览器的安全密钥设置。如果刚才取消了提示，请重试并在提示中选择 Passkey。恢复码登录尚未开放。
+    uncertain_signup: 未能创建 Passkey。如果没有看到系统提示，请换一台已设置指纹、Face ID 或 Windows Hello 的设备，或检查浏览器的安全密钥设置。如果刚才取消了提示，请重试并在提示中允许创建。恢复码登录尚未开放。
+    security: 浏览器阻止了 Passkey（页面不是安全来源，或域名与站点配置不一致）。请用 https 或 localhost 打开。
     need_username: 先给自己起个用户名。
     login_failed: 登录失败：{msg}
     signup_failed: 注册失败：{msg}
@@ -302,8 +313,6 @@ login:
     login_success_short: 登录成功，正在进入工作台…
     signup_success_short: 注册成功！正在进入工作台…
     need_username_short: 先给自己起个用户名。
-  recovery_toast: 恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）
-  recovery_toast_msg: 恢复码登录将在后端接入后开放（用户名 + 一次性恢复码）
 receivers:
   title: 通知接收
   demo_badge: 演示数据

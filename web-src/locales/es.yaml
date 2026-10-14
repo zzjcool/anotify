@@ -276,13 +276,17 @@ login:
     username_placeholder: Ponte un nombre
     username_hint: "2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los extremos)"
     button: Crear Passkey y registrarse
-    recovery_hint_prefix: "Al registrarte se genera un conjunto de "
-    recovery_code: códigos de recuperación de un solo uso
-    recovery_hint_suffix: — úsalos para recuperar el acceso si cambias de dispositivo o pierdes todos los Passkeys. Guárdalos a salvo.
-    recovery_hint: Al registrarte se genera un conjunto de códigos de recuperación de un solo uso — úsalos para recuperar el acceso si cambias de dispositivo o pierdes todos los Passkeys. Guárdalos a salvo.
+    recovery_hint_prefix: ""
+    recovery_code: Los códigos de recuperación de un solo uso
+    recovery_hint_suffix: " aún no están disponibles. Conserva un dispositivo que ya tenga tu Passkey; hasta que existan, perder todos los dispositivos impide iniciar sesión."
+    recovery_hint: Los códigos de recuperación de un solo uso aún no están disponibles. Conserva un dispositivo que ya tenga tu Passkey; hasta que existan, perder todos los dispositivos impide iniciar sesión.
+    err_empty: Primero elige un nombre de usuario.
+    err_short: El nombre de usuario necesita al menos 2 caracteres.
+    err_long: El nombre de usuario puede tener como máximo 32 caracteres.
+    err_chars: "Usa solo letras, dígitos, _, - y . — y no empieces ni termines con _ - ."
   ios_tip_label: "Usuarios de iOS: "
   ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
-  recovery_link: ¿No puedes usar Passkey? Entra con un código de recuperación →
+  recovery_soon: El acceso con código de recuperación llegará pronto y todavía no se puede usar. Entra desde un dispositivo que ya tenga tu Passkey.
   trust:
     data_local: Tus datos solo en tu servidor
     webauthn: Estándar WebAuthn
@@ -292,8 +296,15 @@ login:
     login_success: Sesión iniciada — entrando al espacio…
     signup_success: Cuenta creada — entrando al espacio…
     unsupported: Este navegador no soporta Passkey (WebAuthn). Usa la versión más reciente de Safari / Chrome.
-    cancelled_login: Cancelado, o no hay Passkey disponible en este dispositivo — regístrate primero.
-    cancelled_signup: Cancelado o expiró el tiempo — reintenta y permite crear el Passkey.
+    cancelled_login: Cancelado. Reintenta y elige el Passkey de este dispositivo en el aviso del sistema, o regístrate si todavía no tiene uno.
+    cancelled_signup: Cancelado. Reintenta y permite crear el Passkey en el aviso que apareció.
+    timeout_login: El inicio de sesión expiró y el aviso se cerró. Reintenta. Si nunca aparece un aviso, este entorno no tiene un autenticador usable.
+    timeout_signup: La creación del Passkey expiró y el aviso se cerró. Reintenta. Si nunca aparece un aviso del sistema, usa un dispositivo con huella, Face ID o Windows Hello. El acceso con código de recuperación aún no está disponible.
+    no_authenticator_login: Este entorno no tiene un autenticador de plataforma, así que el navegador no mostró un aviso de Passkey. Usa un dispositivo que ya tenga tu Passkey, o revisa los ajustes de llaves de seguridad del navegador. El acceso con código de recuperación aún no está disponible.
+    no_authenticator_signup: Este entorno no tiene un autenticador de plataforma, así que el navegador no mostró un aviso que pudieras permitir. Usa un dispositivo con huella, Face ID o Windows Hello, o permite las llaves de seguridad en el navegador. El acceso con código de recuperación aún no está disponible.
+    uncertain_login: El inicio con Passkey no terminó. Si no viste ningún aviso, usa un dispositivo que ya tenga tu Passkey o revisa las llaves de seguridad. Si cerraste un aviso, reintenta y elige el Passkey. El acceso con código de recuperación aún no está disponible.
+    uncertain_signup: No se pudo crear el Passkey. Si no viste ningún aviso, usa un dispositivo con huella, Face ID o Windows Hello, o revisa las llaves de seguridad. Si cerraste un aviso, reintenta y permite la creación ahí. El acceso con código de recuperación aún no está disponible.
+    security: El navegador bloqueó Passkey (la página no es un origen seguro, o el dominio no coincide con la configuración del sitio). Ábrela con https o localhost.
     need_username: Primero elige un nombre de usuario.
     login_failed: "Error al iniciar sesión: {msg}"
     signup_failed: "Error al registrarse: {msg}"
@@ -301,8 +312,6 @@ login:
     login_success_short: Sesión iniciada — entrando al workspace…
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
-  recovery_toast: El acceso con código de recuperación estará disponible al conectar el backend (usuario + código de un solo uso)
-  recovery_toast_msg: El inicio de sesión con código de recuperación estará disponible cuando el backend esté conectado (usuario + código de recuperación de un solo uso)
 receivers:
   title: Destinatarios
   demo_badge: Datos demo
