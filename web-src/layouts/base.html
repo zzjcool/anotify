@@ -8,7 +8,9 @@
     <meta name="theme-color" content="#050508" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 生产/嵌入页用构建期 Tailwind（/tailwind.css）。
+         design/ 设计稿才用 Tailwind Play CDN，仅本地对照，不进 embed。 -->
+    <link rel="stylesheet" href="/tailwind.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400{{block "fonts-extra" .}}{{end}}&display=swap"

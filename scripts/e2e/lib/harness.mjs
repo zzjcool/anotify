@@ -95,8 +95,9 @@ export function writeResults(suiteName, durationMs) {
 // 超时后 console.warn 但不抛（降级，让后续断言自己判）。
 
 // ---------- 外部 CDN mock（离线门禁保障） ----------
-// 页面引 cdn.tailwindcss.com（Play CDN）与 Google Fonts：外网抖动/被墙时
-// page.goto(load) 全量超时，门禁不可复现。每个 context 建立后调本函数：
+// 线上页面已改用构建期 web/tailwind.css，不再请求 Play CDN。
+// 这里仍拦截外域，避免回归（有人把 cdn.tailwindcss.com 加回来）或 Google Fonts
+// 在外网抖动时把 page.goto(load) 拖到超时：
 //   - tailwind Play CDN → 本地 fixtures/tailwind-cdn.js（npm 拉取的官方
 //     @tailwindcss/browser v4，类名兼容 v3 语法，无内联 config 依赖）
 //   - 其余外域（fonts 等）→ 200 空响应（不阻塞 load，不影响断言）

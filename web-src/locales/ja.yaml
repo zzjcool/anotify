@@ -276,13 +276,17 @@ login:
     username_placeholder: 名前を決める
     username_hint: 2〜32文字 · 英字 / 数字 / _ / - / .（記号で始まらない・終わらない）
     button: Passkey を作成して登録
-    recovery_hint_prefix: 登録すると一组の
+    recovery_hint_prefix: ""
     recovery_code: ワンタイムリカバリーコード
-    recovery_hint_suffix: が生成されます。デバイス交換やすべての Passkey を紛失した際に アカウントを復旧できます。安全に保管してください。
-    recovery_hint: 登録すると一组のワンタイムリカバリーコードが生成されます。 デバイス交換やすべての Passkey を紛失した際にアカウントを 復旧できます。安全に保管してください。
+    recovery_hint_suffix: はまだ利用できません。登録済みの Passkey がある端末を保管してください。提供前にすべての端末を失うとログインできません。
+    recovery_hint: ワンタイムリカバリーコードはまだ利用できません。登録済みの Passkey がある端末を保管してください。提供前にすべての端末を失うとログインできません。
+    err_empty: まずユーザー名を決めてください。
+    err_short: ユーザー名は 2 文字以上にしてください。
+    err_long: ユーザー名は 32 文字以内にしてください。
+    err_chars: 使える文字は英字、数字、_、-、. のみです。_ - . で始めたり終わったりできません。
   ios_tip_label: iOS ユーザー：
   ios_tip: プッシュ通知を受信するには、まず Safari で本サイトを開き、 「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから 起動してログインしてください。
-  recovery_link: Passkey が使えない？リカバリーコードでログイン →
+  recovery_soon: リカバリーコードでのログインは近日対応予定で、いまは使えません。登録済みの Passkey がある端末でログインしてください。
   trust:
     data_local: データはあなたのサーバーにのみ保存
     webauthn: WebAuthn 標準
@@ -292,8 +296,15 @@ login:
     login_success: ログイン成功 — ワークスペースに入ります…
     signup_success: 登録完了 — ワークスペースに入ります…
     unsupported: このブラウザは Passkey（WebAuthn）に対応していません。 最新の Safari / Chrome をお使いください。
-    cancelled_login: キャンセルされました、またはこの端末に利用可能な Passkey がありません — まず「登録」してください。
-    cancelled_signup: キャンセルまたはタイムアウト — 再試行して Passkey の作成を許可してください。
+    cancelled_login: キャンセルしました。もう一度試し、システム表示でこの端末の Passkey を選んでください。まだ無い場合は先に登録してください。
+    cancelled_signup: キャンセルしました。もう一度試し、表示された案内で Passkey の作成を許可してください。
+    timeout_login: ログインがタイムアウトし、案内は閉じました。再試行してください。案内が一度も出ない場合、この環境には使える認証器がありません。
+    timeout_signup: Passkey の作成がタイムアウトし、案内は閉じました。再試行してください。システム表示が一度も出ない場合は、指紋 / Face ID / Windows Hello のある端末に替えてください。リカバリーコードログインはまだ使えません。
+    no_authenticator_login: この環境にはプラットフォーム認証器がなく、ブラウザは Passkey の案内を出していません。登録済みの Passkey がある端末を使うか、ブラウザのセキュリティキー設定を確認してください。リカバリーコードログインはまだ使えません。
+    no_authenticator_signup: この環境にはプラットフォーム認証器がなく、許可できる作成案内は出ていません。指紋 / Face ID / Windows Hello のある端末を使うか、ブラウザでセキュリティキーを許可してください。リカバリーコードログインはまだ使えません。
+    uncertain_login: Passkey ログインを完了できませんでした。システム表示が出なかった場合は、登録済みの端末を使うかセキュリティキー設定を確認してください。案内を閉じた場合は、再試行して Passkey を選んでください。リカバリーコードログインはまだ使えません。
+    uncertain_signup: Passkey を作成できませんでした。システム表示が出なかった場合は、指紋 / Face ID / Windows Hello のある端末を使うか、セキュリティキー設定を確認してください。案内を閉じた場合は、再試行して作成を許可してください。リカバリーコードログインはまだ使えません。
+    security: ブラウザが Passkey を拒否しました（安全な接続ではないか、ドメインがサイト設定と一致しません）。https または localhost で開いてください。
     need_username: まずユーザー名を決めてください。
     login_failed: ログイン失敗：{msg}
     signup_failed: 登録失敗：{msg}
@@ -301,8 +312,6 @@ login:
     login_success_short: ログイン成功、ワークスペースに移動中…
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
-  recovery_toast: リカバリーコードログインはバックエンド接続後に利用可能になります（ユーザー名 + ワンタイムリカバリーコード）
-  recovery_toast_msg: 復旧コードログインはバックエンド接続後に利用可能になります（ユーザー名 + 一回限りの復旧コード）
 receivers:
   title: 通知先
   demo_badge: デモデータ

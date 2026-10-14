@@ -14,16 +14,22 @@ GIT_DIRTY := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo -d
 BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
 VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
 
-.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes ci
+.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes check-tailwind tailwind ci
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-sitegen: check-classes ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
+sitegen: check-classes check-tailwind ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
 	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es $(if $(VERSION),-version '$(VERSION)',)
 
 check-classes: ## 前端死类守卫：校验 web-src 里每个 class 都落在设计系统 / Tailwind 工具类内（防自造未定义类）
 	node scripts/check-classes.mjs
+
+check-tailwind: ## 核对已提交的 web/tailwind.css 覆盖源码工具类（stdlib，不跑 Tailwind CLI）
+	node scripts/check-tailwind-css.mjs
+
+tailwind: ## 重新生成 web/tailwind.css（改了工具类后执行；需要 npm install）
+	node scripts/build-tailwind.mjs
 
 fe: check-classes sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist

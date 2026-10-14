@@ -1,0 +1,6 @@
+/* Anotify · Tailwind 入口。勿手改产物 web/tailwind.css。
+   重新生成：node scripts/build-tailwind.mjs
+   design/*.html 仍可引用 Play CDN，仅本地设计对照，不进 sitegen / embed。 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
