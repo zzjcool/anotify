@@ -13,18 +13,9 @@
     />
     <!-- 自托管手写字体（私有化部署不依赖 Google CDN） -->
     <link rel="stylesheet" href="../public/fonts/fonts.css" />
+    <link rel="stylesheet" href="tokens.css" />
     <style>
-      :root {
-        --bg: #050508;
-        --panel: rgba(255, 255, 255, 0.03);
-        --line: rgba(255, 255, 255, 0.08);
-        --line-strong: rgba(255, 255, 255, 0.14);
-        --text: #ececf1;
-        --muted: rgba(236, 236, 241, 0.55);
-        --faint: rgba(236, 236, 241, 0.32);
-        --accent: #8b8bfd;
-        --accent-soft: rgba(139, 139, 253, 0.12);
-      }
+      /* 颜色来自 tokens.css；此处仅布局/动效 */
       * {
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
@@ -57,7 +48,7 @@
         background: transparent;
       }
       .glass {
-        background: var(--panel);
+        background: rgba(255, 255, 255, 0.03);
         border: 1px solid var(--line);
         backdrop-filter: blur(14px);
       }
