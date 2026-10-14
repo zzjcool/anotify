@@ -31,5 +31,14 @@ function tokens() {
 		successSoft: v("--success-soft"),
 		errorSoft: v("--error-soft"),
 		warnSoft: v("--warn-soft"),
+		// 语义亮色阶 / 面板（与 tokens.css 对齐）
+		success300: v("--success-300"),
+		error300: v("--error-300"),
+		warn300: v("--warn-300"),
+		panelOverlay: v("--panel-overlay"),
+		panelModal: v("--panel-modal"),
+		codeBg: v("--code-bg"),
+		codeText: v("--code-text"),
+		onSolid: v("--on-solid"),
 	};
 }
