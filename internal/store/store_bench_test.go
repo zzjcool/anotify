@@ -28,12 +28,12 @@ func BenchmarkListEnabledDevices(b *testing.B) {
 	// 预置 200 台设备（一半 enabled），贴近真实规模。
 	for i := 0; i < 200; i++ {
 		dev := &Device{
-			ID:           fmt.Sprintf("dev_bench_%03d", i),
-			UserID:       "usr_bench",
-			Enabled:      i%2 == 0,
+			ID:         fmt.Sprintf("dev_bench_%03d", i),
+			UserID:     "usr_bench",
+			Enabled:    i%2 == 0,
 			EventScope: "all",
-			Endpoint:     fmt.Sprintf("https://push.example.com/%d", i),
-			P256dh:       "p", Auth: "a",
+			Endpoint:   fmt.Sprintf("https://push.example.com/%d", i),
+			P256dh:     "p", Auth: "a",
 			Tags: []string{"ops"},
 		}
 		if err := db.UpsertDevice(ctx, dev); err != nil {

@@ -26,6 +26,9 @@ func main() {
 	srcDir := flag.String("src", "web-src", "page source directory (layouts/pages/locales)")
 	outDir := flag.String("out", "web", "output directory")
 	langsFlag := flag.String("langs", "zh-CN,en,ja,es", "supported languages (comma-separated, first is default)")
+	// Makefile 在 git 检出时传入构建版本号。页面 footer 尚未消费该值，
+	// 这里接受并打印，避免未定义 flag 让 make fe / make build / make ci 直接失败。
+	version := flag.String("version", "", "build version label (printed; not yet rendered into HTML)")
 	flag.Parse()
 
 	langs := strings.Split(*langsFlag, ",")
@@ -55,5 +58,9 @@ func main() {
 	}
 
 	pages, _ := gen.PageCount()
+	if *version != "" {
+		fmt.Printf("✅ sitegen done: %d languages × %d pages → %s (version %s)\n", len(langs), pages, *outDir, *version)
+		return
+	}
 	fmt.Printf("✅ sitegen done: %d languages × %d pages → %s\n", len(langs), pages, *outDir)
 }

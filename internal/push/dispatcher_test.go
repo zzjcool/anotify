@@ -56,14 +56,14 @@ func setupStore(t testing.TB) *store.DB {
 func insertDevice(t testing.TB, db *store.DB, id, userID string, enabled bool, filter string, tags ...string) {
 	t.Helper()
 	dev := &store.Device{
-		ID:           id,
-		UserID:       userID,
-		Enabled:      enabled,
+		ID:         id,
+		UserID:     userID,
+		Enabled:    enabled,
 		EventScope: filter,
-		Tags:         tags,
-		Endpoint:     "https://push.example.com/" + id,
-		P256dh:       "p256dh-" + id,
-		Auth:         "auth-" + id,
+		Tags:       tags,
+		Endpoint:   "https://push.example.com/" + id,
+		P256dh:     "p256dh-" + id,
+		Auth:       "auth-" + id,
 	}
 	if err := db.UpsertDevice(context.Background(), dev); err != nil {
 		t.Fatalf("upsert device %s: %v", id, err)
@@ -167,11 +167,11 @@ func TestDispatchExpiredMessageSkipped(t *testing.T) {
 		}),
 	}
 	msg := &broker.Message{
-		ID:        "ntf_exp",
-		UserID:    "usr_1",
-		Title:     "过期",
+		ID:         "ntf_exp",
+		UserID:     "usr_1",
+		Title:      "过期",
 		AgentState: broker.AgentStateWorking,
-		ExpiresAt: time.Now().Add(-time.Hour), // 已过期
+		ExpiresAt:  time.Now().Add(-time.Hour), // 已过期
 	}
 	if err := d.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -216,11 +216,11 @@ func TestDispatchGoneDeviceDisabled(t *testing.T) {
 		}),
 	}
 	msg := &broker.Message{
-		ID:        "ntf_gone",
-		UserID:    "usr_1",
-		Title:     "测试",
+		ID:         "ntf_gone",
+		UserID:     "usr_1",
+		Title:      "测试",
 		AgentState: broker.AgentStateDone,
-		ExpiresAt: time.Now().Add(time.Hour),
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}
 	if err := db.InsertTestMessage(ctx, "ntf_gone", "usr_1", 1, broker.AgentStateDone); err != nil {
 		t.Fatalf("insert message: %v", err)

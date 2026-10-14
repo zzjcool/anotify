@@ -6,14 +6,15 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
-# 构建版本号：git short sha + UTC 时间（+dirty 标记），注入到前端 footer 便于排查。
-# 空仓 / 非 git 目录下回退为空（sitegen 传空则不渲染版本行）。
+# 构建版本号：git short sha + UTC 时间（+dirty 标记）。
+# 空仓 / 非 git 目录下回退为空，sitegen 不传 -version。
+# sitegen 目前只接受并打印该值，尚未写入 HTML footer。
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null)
 GIT_DIRTY := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo -dirty)
 BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
 VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
 
-.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes
+.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes ci
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -32,8 +33,19 @@ dist: fe ## 同 fe（生成 embed 产物）
 build: fe ## 构建单二进制（内嵌指纹后的前端）
 	go build -trimpath -ldflags="-s -w" -o anotify ./cmd/server
 
-test: ## 运行全部单元测试
+test: ## 运行全部单元测试（不含 make e2e / make integration）
 	go test ./... -count=1
+
+ci: ## PR 门禁：gofmt、前端 embed 产物、vet、build、单元测试（不含 e2e / integration）
+	@unformatted=$$(find . -name '*.go' ! -path './vendor/*' -exec gofmt -l {} +); \
+	if [ -n "$$unformatted" ]; then \
+		printf '%s\n' "未通过 gofmt，请执行 gofmt -w：" "$$unformatted"; \
+		exit 1; \
+	fi
+	$(MAKE) fe
+	go vet ./...
+	go build ./...
+	$(MAKE) test
 
 bench: ## 运行全部基准测试（吞吐/分配热点；仅基准不跑单测）
 	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s

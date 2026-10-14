@@ -204,13 +204,13 @@ func (d *DB) UpdateUserDisabled(ctx context.Context, id string, disabled bool) (
 
 // AdminGlobalMessages 是管理后台全局消息流的一行（跨用户）。
 type AdminGlobalMessage struct {
-	ID        string `json:"id"`
-	UserID    string `json:"userId"`
-	Username  string `json:"username"`
-	Seq       int64  `json:"seq"`
-	Title     string `json:"title"`
+	ID         string `json:"id"`
+	UserID     string `json:"userId"`
+	Username   string `json:"username"`
+	Seq        int64  `json:"seq"`
+	Title      string `json:"title"`
 	AgentState string `json:"agentState"`
-	CreatedAt int64  `json:"createdAt"`
+	CreatedAt  int64  `json:"createdAt"`
 }
 
 // ListGlobalMessages 列出全站最近消息（跨用户，按 created_at DESC）。limit 上限 500。

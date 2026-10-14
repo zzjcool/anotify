@@ -112,6 +112,7 @@ After start:
 | `make dev-local` | dev: local server only, no tunnel |
 | `make build` | build single binary (embeds fingerprinted frontend, for prod) |
 | `make test` | Go unit tests |
+| `make ci` | PR gate: gofmt / vet / build / unit tests (same as GitHub Actions; no e2e) |
 | `make e2e` | full end-to-end tests (~57s, 968 assertions) |
 | `make e2e-one S=auth_flow` | run a single suite |
 | `make keys` | generate VAPID keypair |
@@ -135,7 +136,8 @@ See "Quick Start → Cloudflare named tunnel" above: `make dev` already starts `
 ## Testing
 
 ```bash
-make test                # Go unit tests (independent of e2e)
+make ci                  # same as CI: gofmt + embed frontend + vet + build + unit tests
+make test                # Go unit tests (independent of e2e; `make fe` first so server embed compiles)
 make e2e                 # full end-to-end tests (~57s, parallel, 968 assertions)
 make e2e-one S=auth_flow # run a single suite
 make integration         # integration tests (health / cache tiers / auth matrix)

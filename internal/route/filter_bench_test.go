@@ -10,10 +10,10 @@ import (
 // benchDev 构造一台带给定标签的测试设备。
 func benchDev(enabled bool, eventScope string, tags []string) *store.Device {
 	return &store.Device{
-		ID:          "dev_bench",
-		Enabled:     enabled,
-		EventScope:  eventScope,
-		Tags:        tags,
+		ID:         "dev_bench",
+		Enabled:    enabled,
+		EventScope: eventScope,
+		Tags:       tags,
 	}
 }
 
@@ -36,8 +36,8 @@ func BenchmarkFilterDevices(b *testing.B) {
 	msg := &broker.Message{
 		ID:         "ntf_bench",
 		UserID:     "usr_bench",
-		AgentState:  broker.AgentStateDone,
-		DeviceTags:  []string{"ops", "build"},
+		AgentState: broker.AgentStateDone,
+		DeviceTags: []string{"ops", "build"},
 	}
 	devices := benchmarkDevices(100, []string{"ops", "build"})
 

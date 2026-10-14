@@ -1,0 +1,36 @@
+# PR / main 门禁：gofmt、vet、build、单元测试。
+# 与本地 `make ci` 同一条命令。不跑 make e2e / make integration
+# （那些需要浏览器或已经启动的服务）。
+# 合并前的全量端到端仍是 make e2e，不在这个 workflow 里。
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # make fe（check-classes + sitegen + hash）只用 Node 标准库，不装 npm 依赖。
+      # 先生成 internal/server/dist，否则 //go:embed all:dist 让 go build / go test 失败。
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: PR gate
+        run: make ci

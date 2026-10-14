@@ -83,16 +83,16 @@ func Now() int64 { return time.Now().Unix() }
 // 旧库 messages 表有 kind/reply_to 列（回复能力用），删除回复能力后不再需要。
 // SQLite 不支持 ALTER TABLE DROP COLUMN，需用标准重建表法：
 //
-//	1. 检测 messages 表是否有 reply_to 列（无则 no-op）
-//	2. PRAGMA foreign_keys=OFF（事务外执行，防止 DROP TABLE 触发级联删 deliveries）
-//	3. BEGIN TRANSACTION
-//	4. CREATE TABLE messages_new （按 schema.sql 定义，无 kind/reply_to）
-//	5. INSERT INTO messages_new SELECT ... FROM messages（复制数据，丢弃 kind/reply_to）
-//	6. DROP TABLE messages
-//	7. ALTER TABLE messages_new RENAME TO messages
-//	8. 重建索引
-//	9. COMMIT
-//	10. PRAGMA foreign_keys=ON（恢复）
+//  1. 检测 messages 表是否有 reply_to 列（无则 no-op）
+//  2. PRAGMA foreign_keys=OFF（事务外执行，防止 DROP TABLE 触发级联删 deliveries）
+//  3. BEGIN TRANSACTION
+//  4. CREATE TABLE messages_new （按 schema.sql 定义，无 kind/reply_to）
+//  5. INSERT INTO messages_new SELECT ... FROM messages（复制数据，丢弃 kind/reply_to）
+//  6. DROP TABLE messages
+//  7. ALTER TABLE messages_new RENAME TO messages
+//  8. 重建索引
+//  9. COMMIT
+//  10. PRAGMA foreign_keys=ON（恢复）
 func migrateMessagesDropKindReply(db *sql.DB) error {
 	// 检测 messages 表是否有 reply_to 列（kind 和 reply_to 总是一起加的，检测一个即可）
 	var colCount int
