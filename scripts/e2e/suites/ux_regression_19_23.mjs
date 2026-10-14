@@ -34,15 +34,23 @@ async function newCtx() {
 	return ctx;
 }
 
-async function denyNotifications(ctx, origin) {
-	const page = await ctx.newPage();
-	const cdp = await ctx.newCDPSession(page);
-	await cdp.send("Browser.setPermission", {
-		origin,
-		permission: { name: "notifications" },
-		setting: "denied",
+async function denyNotifications(ctx) {
+	// Headless Chrome（尤其 Docker）常忽略 CDP Browser.setPermission(denied)，
+	// permission 仍停在 default。用 addInitScript 直接 stub，页面读到 denied。
+	await ctx.addInitScript(() => {
+		Object.defineProperty(window, "Notification", {
+			configurable: true,
+			writable: true,
+			value: class Notification {
+				static get permission() {
+					return "denied";
+				}
+				static requestPermission() {
+					return Promise.resolve("denied");
+				}
+			},
+		});
 	});
-	await page.close();
 }
 
 async function main() {
@@ -135,7 +143,7 @@ async function main() {
 		const user = H.seed(server.dbPath, "ux20_recv_" + Date.now());
 		const ctx = await newCtx();
 		await injectSession(ctx, user.session, server.base);
-		await denyNotifications(ctx, server.base);
+		await denyNotifications(ctx);
 
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/receivers.html", {
