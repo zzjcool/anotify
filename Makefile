@@ -6,8 +6,9 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
-# 构建版本号：git short sha + UTC 时间（+dirty 标记），注入到前端 footer 便于排查。
-# 空仓 / 非 git 目录下回退为空（sitegen 传空则不渲染版本行）。
+# 构建版本号：git short sha + UTC 时间（+dirty 标记）。
+# 空仓 / 非 git 目录下回退为空，sitegen 不传 -version。
+# sitegen 目前只接受并打印该值，尚未写入 HTML footer。
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null)
 GIT_DIRTY := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo -dirty)
 BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
