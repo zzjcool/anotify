@@ -279,17 +279,37 @@ login:
     username_placeholder: 名前を決める
     username_hint: 2〜32文字 · 英字 / 数字 / _ / - / .（記号で始まらない・終わらない）
     button: Passkey を作成して登録
-    recovery_hint_prefix: ""
+    recovery_hint_prefix: 登録成功後、
     recovery_code: ワンタイムリカバリーコード
-    recovery_hint_suffix: はまだ利用できません。登録済みの Passkey がある端末を保管してください。提供前にすべての端末を失うとログインできません。
-    recovery_hint: ワンタイムリカバリーコードはまだ利用できません。登録済みの Passkey がある端末を保管してください。提供前にすべての端末を失うとログインできません。
+    recovery_hint_suffix: を一度だけ表示します。すぐパスワードマネージャーに保存してください。すべての端末を失ったときは「ユーザー名 + リカバリーコード」でログインできます。
+    recovery_hint: 登録成功後、ワンタイムリカバリーコードを一度だけ表示します。すぐパスワードマネージャーに保存してください。すべての端末を失ったときは「ユーザー名 + リカバリーコード」でログインできます。
     err_empty: まずユーザー名を決めてください。
     err_short: ユーザー名は 2 文字以上にしてください。
     err_long: ユーザー名は 32 文字以内にしてください。
     err_chars: 使える文字は英字、数字、_、-、. のみです。_ - . で始めたり終わったりできません。
   ios_tip_label: iOS ユーザー：
   ios_tip: プッシュ通知を受信するには、まず Safari で本サイトを開き、 「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから 起動してログインしてください。
-  recovery_soon: リカバリーコードでのログインは近日対応予定で、いまは使えません。登録済みの Passkey がある端末でログインしてください。
+  recovery_soon: ""
+  recovery:
+    toggle: Passkey が使えない？リカバリーコードでログイン
+    toggle_hide: リカバリーコードログインを閉じる
+    username_label: ユーザー名
+    username_placeholder: your-name
+    code_label: ワンタイムリカバリーコード
+    code_placeholder: XXXX-XXXX-XXXX-XXXX
+    button: リカバリーコードでログイン
+    busy: ログイン中…
+    err_empty: ユーザー名とリカバリーコードを入力してください。
+    err_failed: リカバリーコードログインに失敗：{msg}
+    success: ログイン成功。この端末に Passkey を追加してください…
+  codes:
+    title: リカバリーコードを保存してください
+    subtitle: 各コードは1回限り。この画面を離れると平文は再表示されません。コピーしてパスワードマネージャーへ。
+    copy_all: すべてコピー
+    copy: コピー
+    copied: コピー済み
+    continue: 保存した · ワークスペースへ
+    warn: 表示は今回限りです。コードがなく、すべての Passkey 端末を失うとログインできません。
   trust:
     data_local: データはあなたのサーバーにのみ保存
     webauthn: WebAuthn 標準
@@ -302,11 +322,11 @@ login:
     cancelled_login: キャンセルしました。もう一度試し、システム表示でこの端末の Passkey を選んでください。まだ無い場合は先に登録してください。
     cancelled_signup: キャンセルしました。もう一度試し、表示された案内で Passkey の作成を許可してください。
     timeout_login: ログインがタイムアウトし、案内は閉じました。再試行してください。案内が一度も出ない場合、この環境には使える認証器がありません。
-    timeout_signup: Passkey の作成がタイムアウトし、案内は閉じました。再試行してください。システム表示が一度も出ない場合は、指紋 / Face ID / Windows Hello のある端末に替えてください。リカバリーコードログインはまだ使えません。
-    no_authenticator_login: この環境にはプラットフォーム認証器がなく、ブラウザは Passkey の案内を出していません。登録済みの Passkey がある端末を使うか、ブラウザのセキュリティキー設定を確認してください。リカバリーコードログインはまだ使えません。
-    no_authenticator_signup: この環境にはプラットフォーム認証器がなく、許可できる作成案内は出ていません。指紋 / Face ID / Windows Hello のある端末を使うか、ブラウザでセキュリティキーを許可してください。リカバリーコードログインはまだ使えません。
-    uncertain_login: Passkey ログインを完了できませんでした。システム表示が出なかった場合は、登録済みの端末を使うかセキュリティキー設定を確認してください。案内を閉じた場合は、再試行して Passkey を選んでください。リカバリーコードログインはまだ使えません。
-    uncertain_signup: Passkey を作成できませんでした。システム表示が出なかった場合は、指紋 / Face ID / Windows Hello のある端末を使うか、セキュリティキー設定を確認してください。案内を閉じた場合は、再試行して作成を許可してください。リカバリーコードログインはまだ使えません。
+    timeout_signup: Passkey の作成がタイムアウトし、案内は閉じました。再試行してください。システム表示が一度も出ない場合は、指紋 / Face ID / Windows Hello のある端末に替えてください。下のリカバリーコードログインも使えます。
+    no_authenticator_login: この環境にはプラットフォーム認証器がなく、ブラウザは Passkey の案内を出していません。登録済みの Passkey がある端末を使うか、下のリカバリーコードでログインしてください。
+    no_authenticator_signup: この環境にはプラットフォーム認証器がなく、許可できる作成案内は出ていません。指紋 / Face ID / Windows Hello のある端末を使ってください。既にアカウントがある場合は、下のリカバリーコードでもログインできます。
+    uncertain_login: Passkey ログインを完了できませんでした。システム表示が出なかった場合は、登録済みの端末を使うか、下のリカバリーコードでログインしてください。案内を閉じた場合は、再試行して Passkey を選んでください。
+    uncertain_signup: Passkey を作成できませんでした。システム表示が出なかった場合は、指紋 / Face ID / Windows Hello のある端末を使ってください。案内を閉じた場合は、再試行して作成を許可してください。
     security: ブラウザが Passkey を拒否しました（安全な接続ではないか、ドメインがサイト設定と一致しません）。https または localhost で開いてください。
     need_username: まずユーザー名を決めてください。
     login_failed: ログイン失敗：{msg}
@@ -531,7 +551,22 @@ security:
     desc_highlight: ログインできない
     desc_suffix: 場合の最終手段。ユーザー名 + リカバリーコードでログイン後、 新しい Passkey を追加できます。各コードは1回限り有効。
     regenerate: 再生成
-    hint: 機能は近日公開 · 登録成功後、8個のワンタイムリカバリーコードが生成されます。パスワードマネージャーに保存してください
+    regenerating: 生成中…
+    hint: 未使用 {n} 個 · 平文は生成時のみ表示。パスワードマネージャーに保存してください
+    hint_none: 利用可能なリカバリーコードがありません。「再生成」で新しいセットを発行できます。
+    hint_plaintext: 今すぐコピーして保存 · 離れるか再読み込みすると残数のみ表示されます
+    confirm_regen: 再生成すると古いリカバリーコードはすべて直ちに無効になります。続行しますか？
+    toast_regen: 新しいリカバリーコードを生成しました。今すぐ保存してください
+    toast_regen_failed: 再生成に失敗：{msg}
+    toast_status_failed: リカバリーコードの状態を読み込めません
+    copy_all: すべてコピー
+    copy: コピー
+    copied: コピー済み
+    status_loading: 読み込み中…
+    nudge_title: リカバリーコードでログインしました
+    nudge_body: この端末に Passkey を追加して、リカバリーコードに頼り続けないようにしてください。
+    nudge_action: この端末で Passkey を追加
+    nudge_dismiss: 了解
   concept:
     title: 2つの独立した軸
     auth_label: 認証軸

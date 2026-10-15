@@ -279,17 +279,37 @@ login:
     username_placeholder: Pick a name for yourself
     username_hint: "2–32 chars: letters, digits, _ -. (no edge symbols)"
     button: Create Passkey & sign up
-    recovery_hint_prefix: ""
-    recovery_code: One-time recovery codes
-    recovery_hint_suffix: " are not available yet. Keep a device that already has your Passkey; until they ship, losing every device means you cannot sign in."
-    recovery_hint: One-time recovery codes are not available yet. Keep a device that already has your Passkey; until they ship, losing every device means you cannot sign in.
+    recovery_hint_prefix: "After sign-up you will see "
+    recovery_code: one-time recovery codes
+    recovery_hint_suffix: " once — save them to a password manager. If you lose every device, sign in with username + recovery code."
+    recovery_hint: After sign-up you will see one-time recovery codes once — save them to a password manager. If you lose every device, sign in with username + recovery code.
     err_empty: Please pick a username first.
     err_short: Usernames need at least 2 characters.
     err_long: Usernames can be at most 32 characters.
     err_chars: "Use only letters, digits, _, -, and . — and don't start or end with _ - ."
   ios_tip_label: "iOS users: "
   ios_tip: to receive push notifications, first open this site in Safari, tap Share → Add to Home Screen, then launch from the home screen icon and sign in.
-  recovery_soon: Recovery-code sign-in is coming soon and cannot be used yet. Sign in from a device that already has your Passkey.
+  recovery_soon: ""
+  recovery:
+    toggle: Can't use Passkey? Sign in with a recovery code
+    toggle_hide: Hide recovery-code sign-in
+    username_label: Username
+    username_placeholder: your-name
+    code_label: One-time recovery code
+    code_placeholder: XXXX-XXXX-XXXX-XXXX
+    button: Sign in with recovery code
+    busy: Signing in…
+    err_empty: Enter both username and recovery code.
+    err_failed: "Recovery sign-in failed: {msg}"
+    success: Signed in — please add a Passkey on this device soon…
+  codes:
+    title: Save your recovery codes
+    subtitle: Each code works once. You will not see the plaintext again after leaving this screen. Copy and store them in a password manager.
+    copy_all: Copy all
+    copy: Copy
+    copied: Copied
+    continue: Saved — enter workspace
+    warn: This is the only time these codes are shown. Without them, losing every Passkey device means you cannot sign in.
   trust:
     data_local: Your data stays on your server
     webauthn: WebAuthn standard
@@ -302,11 +322,11 @@ login:
     cancelled_login: Cancelled. Try again and pick this device's Passkey in the system prompt, or sign up if this device doesn't have one yet.
     cancelled_signup: Cancelled. Try again and allow Passkey creation in the prompt that appeared.
     timeout_login: Sign-in timed out and the prompt closed. Try again. If no prompt ever appears, this environment has no usable authenticator.
-    timeout_signup: Passkey creation timed out and the prompt closed. Try again. If no system prompt appears, use a device with fingerprint, Face ID, or Windows Hello. Recovery-code sign-in is not available yet.
-    no_authenticator_login: This environment has no platform authenticator, so the browser never showed a Passkey prompt. Use a device that already has your Passkey, or check the browser's security-key settings. Recovery-code sign-in is not available yet.
-    no_authenticator_signup: This environment has no platform authenticator, so the browser never showed a prompt you could allow. Use a device with fingerprint, Face ID, or Windows Hello, or allow security keys in the browser settings. Recovery-code sign-in is not available yet.
-    uncertain_login: Passkey sign-in didn't finish. If you never saw a system prompt, use a device that already has your Passkey or check the browser's security-key settings. If you dismissed a prompt, try again and pick the Passkey. Recovery-code sign-in is not available yet.
-    uncertain_signup: Passkey creation didn't finish. If you never saw a system prompt, use a device with fingerprint, Face ID, or Windows Hello, or check the browser's security-key settings. If you dismissed a prompt, try again and allow creation there. Recovery-code sign-in is not available yet.
+    timeout_signup: Passkey creation timed out and the prompt closed. Try again. If no system prompt appears, use a device with fingerprint, Face ID, or Windows Hello. You can also sign in with a recovery code below.
+    no_authenticator_login: This environment has no platform authenticator, so the browser never showed a Passkey prompt. Use a device that already has your Passkey, or sign in with a recovery code below.
+    no_authenticator_signup: This environment has no platform authenticator, so the browser never showed a prompt you could allow. Use a device with fingerprint, Face ID, or Windows Hello. If you already have an account, you can also sign in with a recovery code below.
+    uncertain_login: Passkey sign-in didn't finish. If you never saw a system prompt, use a device that already has your Passkey, or sign in with a recovery code below. If you dismissed a prompt, try again and pick the Passkey.
+    uncertain_signup: Passkey creation didn't finish. If you never saw a system prompt, use a device with fingerprint, Face ID, or Windows Hello. If you dismissed a prompt, try again and allow creation there.
     security: The browser blocked Passkey (the page is not a secure origin, or the domain doesn't match the site configuration). Open it over https or localhost.
     need_username: Please pick a username first.
     login_failed: "Sign-in failed: {msg}"
@@ -531,7 +551,22 @@ security:
     desc_highlight: cannot sign in with Passkey
     desc_suffix: . Sign in with username + recovery code, then add a new Passkey. Each code is single-use.
     regenerate: Regenerate
-    hint: Feature coming soon · after sign-up, 8 one-time recovery codes will be generated. Save them to a password manager.
+    regenerating: Generating…
+    hint: "{n} unused · plaintext is shown only when codes are generated — save them to a password manager"
+    hint_none: No recovery codes yet. Tap Regenerate to issue a new set.
+    hint_plaintext: Copy and save now · after you leave or refresh, only the remaining count is shown
+    confirm_regen: Regenerating voids all old recovery codes immediately. Continue?
+    toast_regen: New recovery codes generated — save them now
+    toast_regen_failed: "Regenerate failed: {msg}"
+    toast_status_failed: Could not load recovery-code status
+    copy_all: Copy all
+    copy: Copy
+    copied: Copied
+    status_loading: Loading…
+    nudge_title: You just signed in with a recovery code
+    nudge_body: Add a Passkey on this device soon so you are not stuck depending on recovery codes.
+    nudge_action: Add Passkey on this device
+    nudge_dismiss: Got it
   concept:
     title: Two independent axes
     auth_label: Auth axis
