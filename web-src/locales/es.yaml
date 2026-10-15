@@ -279,17 +279,37 @@ login:
     username_placeholder: Ponte un nombre
     username_hint: "2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los extremos)"
     button: Crear Passkey y registrarse
-    recovery_hint_prefix: ""
-    recovery_code: Los códigos de recuperación de un solo uso
-    recovery_hint_suffix: " aún no están disponibles. Conserva un dispositivo que ya tenga tu Passkey; hasta que existan, perder todos los dispositivos impide iniciar sesión."
-    recovery_hint: Los códigos de recuperación de un solo uso aún no están disponibles. Conserva un dispositivo que ya tenga tu Passkey; hasta que existan, perder todos los dispositivos impide iniciar sesión.
+    recovery_hint_prefix: "Tras registrarte verás "
+    recovery_code: códigos de recuperación de un solo uso
+    recovery_hint_suffix: " una vez: guárdalos en un gestor de contraseñas. Si pierdes todos los dispositivos, entra con usuario + código de recuperación."
+    recovery_hint: "Tras registrarte verás códigos de recuperación de un solo uso una vez: guárdalos en un gestor de contraseñas. Si pierdes todos los dispositivos, entra con usuario + código de recuperación."
     err_empty: Primero elige un nombre de usuario.
     err_short: El nombre de usuario necesita al menos 2 caracteres.
     err_long: El nombre de usuario puede tener como máximo 32 caracteres.
     err_chars: "Usa solo letras, dígitos, _, - y . — y no empieces ni termines con _ - ."
   ios_tip_label: "Usuarios de iOS: "
   ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
-  recovery_soon: El acceso con código de recuperación llegará pronto y todavía no se puede usar. Entra desde un dispositivo que ya tenga tu Passkey.
+  recovery_soon: ""
+  recovery:
+    toggle: "¿No puedes usar Passkey? Entra con un código de recuperación"
+    toggle_hide: Ocultar acceso con código
+    username_label: Nombre de usuario
+    username_placeholder: your-name
+    code_label: Código de recuperación de un solo uso
+    code_placeholder: XXXX-XXXX-XXXX-XXXX
+    button: Entrar con código de recuperación
+    busy: Entrando…
+    err_empty: "Introduce el usuario y el código de recuperación."
+    err_failed: "Error al entrar con código: {msg}"
+    success: "Sesión iniciada — añade un Passkey en este dispositivo pronto…"
+  codes:
+    title: Guarda tus códigos de recuperación
+    subtitle: "Cada código sirve una sola vez. No volverás a ver el texto en claro al salir. Cópialos a un gestor de contraseñas."
+    copy_all: Copiar todos
+    copy: Copiar
+    copied: Copiado
+    continue: "Guardados — entrar al espacio de trabajo"
+    warn: "Es la única vez que se muestran. Sin ellos, si pierdes todos los dispositivos con Passkey no podrás entrar."
   trust:
     data_local: Tus datos solo en tu servidor
     webauthn: Estándar WebAuthn
@@ -302,11 +322,11 @@ login:
     cancelled_login: Cancelado. Reintenta y elige el Passkey de este dispositivo en el aviso del sistema, o regístrate si todavía no tiene uno.
     cancelled_signup: Cancelado. Reintenta y permite crear el Passkey en el aviso que apareció.
     timeout_login: El inicio de sesión expiró y el aviso se cerró. Reintenta. Si nunca aparece un aviso, este entorno no tiene un autenticador usable.
-    timeout_signup: La creación del Passkey expiró y el aviso se cerró. Reintenta. Si nunca aparece un aviso del sistema, usa un dispositivo con huella, Face ID o Windows Hello. El acceso con código de recuperación aún no está disponible.
-    no_authenticator_login: Este entorno no tiene un autenticador de plataforma, así que el navegador no mostró un aviso de Passkey. Usa un dispositivo que ya tenga tu Passkey, o revisa los ajustes de llaves de seguridad del navegador. El acceso con código de recuperación aún no está disponible.
-    no_authenticator_signup: Este entorno no tiene un autenticador de plataforma, así que el navegador no mostró un aviso que pudieras permitir. Usa un dispositivo con huella, Face ID o Windows Hello, o permite las llaves de seguridad en el navegador. El acceso con código de recuperación aún no está disponible.
-    uncertain_login: El inicio con Passkey no terminó. Si no viste ningún aviso, usa un dispositivo que ya tenga tu Passkey o revisa las llaves de seguridad. Si cerraste un aviso, reintenta y elige el Passkey. El acceso con código de recuperación aún no está disponible.
-    uncertain_signup: No se pudo crear el Passkey. Si no viste ningún aviso, usa un dispositivo con huella, Face ID o Windows Hello, o revisa las llaves de seguridad. Si cerraste un aviso, reintenta y permite la creación ahí. El acceso con código de recuperación aún no está disponible.
+    timeout_signup: La creación del Passkey expiró y el aviso se cerró. Reintenta. Si nunca aparece un aviso del sistema, usa un dispositivo con huella, Face ID o Windows Hello. También puedes entrar con un código de recuperación abajo.
+    no_authenticator_login: Este entorno no tiene un autenticador de plataforma, así que el navegador no mostró un aviso de Passkey. Usa un dispositivo que ya tenga tu Passkey, o entra con un código de recuperación abajo.
+    no_authenticator_signup: Este entorno no tiene un autenticador de plataforma, así que el navegador no mostró un aviso que pudieras permitir. Usa un dispositivo con huella, Face ID o Windows Hello. Si ya tienes cuenta, también puedes entrar con un código de recuperación abajo.
+    uncertain_login: El inicio con Passkey no terminó. Si no viste ningún aviso, usa un dispositivo que ya tenga tu Passkey, o entra con un código de recuperación abajo. Si cerraste un aviso, reintenta y elige el Passkey.
+    uncertain_signup: No se pudo crear el Passkey. Si no viste ningún aviso, usa un dispositivo con huella, Face ID o Windows Hello. Si cerraste un aviso, reintenta y permite la creación ahí.
     security: El navegador bloqueó Passkey (la página no es un origen seguro, o el dominio no coincide con la configuración del sitio). Ábrela con https o localhost.
     need_username: Primero elige un nombre de usuario.
     login_failed: "Error al iniciar sesión: {msg}"
@@ -531,7 +551,22 @@ security:
     desc_highlight: no puedes entrar con Passkey
     desc_suffix: . Entra con usuario + código de recuperación y luego añade un nuevo Passkey. Cada código sirve una sola vez.
     regenerate: Regenerar
-    hint: Función próximamente · tras registrarse se generarán 8 códigos de recuperación de un solo uso. Guárdalos en un gestor de contraseñas.
+    regenerating: Generando…
+    hint: "{n} sin usar · el texto en claro solo se muestra al generar — guárdalos en un gestor de contraseñas"
+    hint_none: "Aún no hay códigos. Pulsa Regenerar para emitir un juego nuevo."
+    hint_plaintext: "Copia y guarda ahora · al salir o actualizar solo verás la cantidad restante"
+    confirm_regen: "Regenerar anula de inmediato todos los códigos antiguos. ¿Continuar?"
+    toast_regen: "Nuevos códigos generados — guárdalos ahora"
+    toast_regen_failed: "Error al regenerar: {msg}"
+    toast_status_failed: No se pudo cargar el estado de los códigos
+    copy_all: Copiar todos
+    copy: Copiar
+    copied: Copiado
+    status_loading: Cargando…
+    nudge_title: "Acabas de entrar con un código de recuperación"
+    nudge_body: "Añade pronto un Passkey en este dispositivo para no depender de los códigos."
+    nudge_action: "Añadir Passkey en este dispositivo"
+    nudge_dismiss: Entendido
   concept:
     title: Dos ejes independientes
     auth_label: Eje de autenticación

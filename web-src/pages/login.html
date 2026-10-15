@@ -225,11 +225,140 @@
           </p>
         </div>
 
-        <!-- 恢复码登录尚未接入后端，不做可点击的假入口 -->
-        <div class="mt-6 border-t border-white/[0.06] pt-5 text-center">
-          <p id="recovery-note" class="text-xs leading-relaxed text-zinc-500">
-            {{t "login.recovery_soon"}}
-          </p>
+        <!-- 恢复码登录（#29 · 接 #24 后端） -->
+        <div class="mt-6 border-t border-white/[0.06] pt-5">
+          <button
+            type="button"
+            id="recovery-toggle"
+            class="mx-auto flex items-center gap-1.5 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            <span id="recovery-toggle-label">{{t "login.recovery.toggle"}}</span>
+          </button>
+          <div id="recovery-panel" class="mt-4 hidden">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label
+                  class="text-xs font-medium text-zinc-400"
+                  for="recovery-username"
+                  >{{t "login.recovery.username_label"}}</label
+                >
+                <input
+                  id="recovery-username"
+                  type="text"
+                  class="input mt-2"
+                  placeholder="{{t "login.recovery.username_placeholder"}}"
+                  autocomplete="username"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck="false"
+                  maxlength="32"
+                />
+              </div>
+              <div>
+                <label
+                  class="text-xs font-medium text-zinc-400"
+                  for="recovery-code"
+                  >{{t "login.recovery.code_label"}}</label
+                >
+                <input
+                  id="recovery-code"
+                  type="text"
+                  class="input mt-2 mono"
+                  placeholder="{{t "login.recovery.code_placeholder"}}"
+                  autocomplete="one-time-code"
+                  autocapitalize="characters"
+                  autocorrect="off"
+                  spellcheck="false"
+                  maxlength="24"
+                />
+              </div>
+            </div>
+            <button
+              id="recovery-btn"
+              type="button"
+              class="btn-primary mt-4 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium sm:w-auto sm:px-8"
+            >
+              {{t "login.recovery.button"}}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 注册成功：一次性展示恢复码 -->
+      <div
+        id="codes-modal"
+        class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+      >
+        <div class="sidebar-overlay absolute inset-0"></div>
+        <div
+          class="card relative z-10 w-full max-w-md max-w-[calc(100vw-2rem)] !bg-[var(--panel-modal)] p-5 sm:p-6 shadow-2xl"
+        >
+          <div class="flex items-start gap-3">
+            <div
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10"
+            >
+              <svg
+                class="h-5 w-5 text-amber-300"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            </div>
+            <div class="min-w-0">
+              <h3 class="text-base font-medium text-white">
+                {{t "login.codes.title"}}
+              </h3>
+              <p class="mt-1 text-[13px] leading-relaxed text-zinc-500">
+                {{t "login.codes.subtitle"}}
+              </p>
+            </div>
+          </div>
+          <div
+            id="codes-grid"
+            class="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2"
+          ></div>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              id="codes-copy-all"
+              class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            >
+              {{t "login.codes.copy_all"}}
+            </button>
+          </div>
+          <div
+            class="mt-4 flex items-start gap-2.5 rounded-xl bg-amber-400/[0.07] px-4 py-3 ring-1 ring-amber-400/20"
+          >
+            <p class="text-xs leading-relaxed text-amber-200/80">
+              {{t "login.codes.warn"}}
+            </p>
+          </div>
+          <button
+            type="button"
+            id="codes-continue"
+            class="btn-primary mt-5 w-full rounded-xl px-4 py-2.5 text-sm font-medium"
+          >
+            {{t "login.codes.continue"}}
+          </button>
         </div>
       </div>
 
@@ -417,11 +546,11 @@
             ],
             no_authenticator: [
               "login.status.no_authenticator_login",
-              "当前环境没有可用的平台认证器，浏览器没有弹出 Passkey 提示。请换用已经注册过 Passkey 的设备，或检查浏览器的安全密钥设置。恢复码登录尚未开放。",
+              "当前环境没有可用的平台认证器，浏览器没有弹出 Passkey 提示。请换用已经注册过 Passkey 的设备，或检查浏览器的安全密钥设置。也可点击下方用恢复码登录。",
             ],
             uncertain: [
               "login.status.uncertain_login",
-              "未能完成 Passkey 登录。如果没有看到系统提示，请换用已注册 Passkey 的设备，或检查浏览器的安全密钥设置。如果刚才取消了提示，请重试并在提示中选择 Passkey。恢复码登录尚未开放。",
+              "未能完成 Passkey 登录。如果没有看到系统提示，请换用已注册 Passkey 的设备，或检查浏览器的安全密钥设置。如果刚才取消了提示，请重试并在提示中选择 Passkey。也可点击下方用恢复码登录。",
             ],
             security: [
               "login.status.security",
@@ -435,15 +564,15 @@
             ],
             timeout: [
               "login.status.timeout_signup",
-              "创建 Passkey 超时，提示已关闭。请重试；如果一直没有系统提示，请换一台已设置指纹、Face ID 或 Windows Hello 的设备。恢复码登录尚未开放。",
+              "创建 Passkey 超时，提示已关闭。请重试；如果一直没有系统提示，请换一台已设置指纹、Face ID 或 Windows Hello 的设备。也可点击下方用恢复码登录。",
             ],
             no_authenticator: [
               "login.status.no_authenticator_signup",
-              "当前环境没有可用的平台认证器，浏览器没有弹出可操作的创建提示。请换用已设置指纹、Face ID 或 Windows Hello 的设备，或在浏览器设置中允许安全密钥。恢复码登录尚未开放。",
+              "当前环境没有可用的平台认证器，浏览器没有弹出可操作的创建提示。请换用已设置指纹、Face ID 或 Windows Hello 的设备，或在浏览器设置中允许安全密钥。也可点击下方用恢复码登录。",
             ],
             uncertain: [
               "login.status.uncertain_signup",
-              "未能创建 Passkey。如果没有看到系统提示，请换一台已设置指纹、Face ID 或 Windows Hello 的设备，或检查浏览器的安全密钥设置。如果刚才取消了提示，请重试并在提示中允许创建。恢复码登录尚未开放。",
+              "未能创建 Passkey。如果没有看到系统提示，请换一台已设置指纹、Face ID 或 Windows Hello 的设备，或检查浏览器的安全密钥设置。如果刚才取消了提示，请重试并在提示中允许创建。也可点击下方用恢复码登录。",
             ],
             security: [
               "login.status.security",
@@ -681,15 +810,24 @@
               },
             };
             // 后端从 query 取 username（body 是 WebAuthn 断言）
-            await postJSON(
+            const reg = await postJSON(
               "/v1/auth/register?username=" + encodeURIComponent(username),
               payload,
             );
-            showStatus(
-              t("login.status.signup_success", "注册成功！正在进入工作台…"),
-              "success",
-            );
-            setTimeout(() => (location.href = nextTarget()), 600);
+            const codes = Array.isArray(reg && reg.recoveryCodes)
+              ? reg.recoveryCodes.filter(Boolean)
+              : [];
+            if (codes.length) {
+              showCodesPanel(codes, () => {
+                location.href = nextTarget();
+              });
+            } else {
+              showStatus(
+                t("login.status.signup_success", "注册成功！正在进入工作台…"),
+                "success",
+              );
+              setTimeout(() => (location.href = nextTarget()), 600);
+            }
           } catch (e) {
             const env = await currentAuthEnv();
             const elapsed = ceremony ? performance.now() - ceremony.started : -1;
@@ -732,9 +870,131 @@
         window.addEventListener("keydown", (e) => {
           if (e.key !== "Enter") return;
           if (e.isComposing || e.keyCode === 229) return; // 输入法组合中，忽略
+          const rp = document.getElementById("recovery-panel");
+          if (rp && !rp.classList.contains("hidden")) {
+            doRecoveryLogin();
+            return;
+          }
           if (!signupPanel.classList.contains("hidden")) doSignup();
           else doLogin();
         });
+
+        /* ---------- 恢复码登录 ---------- */
+        const recoveryToggle = document.getElementById("recovery-toggle");
+        const recoveryPanel = document.getElementById("recovery-panel");
+        const recoveryToggleLabel = document.getElementById(
+          "recovery-toggle-label",
+        );
+        const recoveryBtn = document.getElementById("recovery-btn");
+        recoveryToggle.addEventListener("click", () => {
+          recoveryPanel.classList.toggle("hidden");
+          const isOpen = !recoveryPanel.classList.contains("hidden");
+          recoveryToggleLabel.textContent = isOpen
+            ? t("login.recovery.toggle_hide", "收起恢复码登录")
+            : t("login.recovery.toggle", "无法使用 Passkey？用恢复码登录");
+          if (isOpen) {
+            hideStatus();
+            document.getElementById("recovery-username").focus();
+          }
+        });
+
+        async function doRecoveryLogin() {
+          hideStatus();
+          const username = document
+            .getElementById("recovery-username")
+            .value.trim();
+          const code = document.getElementById("recovery-code").value.trim();
+          if (!username || !code) {
+            showStatus(
+              t("login.recovery.err_empty", "请填写用户名和恢复码。"),
+              "error",
+            );
+            return;
+          }
+          recoveryBtn.disabled = true;
+          const prevLabel = recoveryBtn.textContent;
+          recoveryBtn.textContent = t("login.recovery.busy", "正在登录…");
+          try {
+            await postJSON("/v1/auth/recovery/login", { username, code });
+            showStatus(
+              t(
+                "login.recovery.success",
+                "登录成功，请尽快为本机补建 Passkey…",
+              ),
+              "success",
+            );
+            // 恢复码登录后引导去安全页补建 Passkey（保留 ?next= 白名单目标作备选）
+            const dest = "security.html?from=recovery";
+            setTimeout(() => (location.href = dest), 500);
+          } catch (e) {
+            if (String(e).includes("Failed to fetch")) {
+              demoEnter(username);
+            } else {
+              showStatus(
+                t(
+                  "login.recovery.err_failed",
+                  "恢复码登录失败：{msg}",
+                ).replace("{msg}", e.message || e),
+                "error",
+              );
+            }
+          } finally {
+            recoveryBtn.disabled = false;
+            recoveryBtn.textContent = prevLabel;
+          }
+        }
+        recoveryBtn.addEventListener("click", doRecoveryLogin);
+
+        /* ---------- 注册成功：一次性展示恢复码 ---------- */
+        function copyText(text, btn) {
+          const done = () => {
+            if (!btn) return;
+            const prev = btn.textContent;
+            btn.textContent = t("login.codes.copied", "已复制");
+            setTimeout(() => (btn.textContent = prev), 1500);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, () => {
+              window.prompt(t("login.codes.copy_all", "复制全部"), text);
+            });
+          } else {
+            window.prompt(t("login.codes.copy_all", "复制全部"), text);
+            done();
+          }
+        }
+
+        function showCodesPanel(codes, onContinue) {
+          const modal = document.getElementById("codes-modal");
+          const grid = document.getElementById("codes-grid");
+          grid.replaceChildren();
+          codes.forEach((c) => {
+            const row = document.createElement("div");
+            row.className =
+              "flex items-center justify-between gap-2 rounded-lg bg-black/40 px-3 py-2 ring-1 ring-white/10";
+            const codeEl = document.createElement("code");
+            codeEl.className = "mono select-all text-[12px] text-emerald-300";
+            codeEl.textContent = c;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className =
+              "shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10";
+            btn.textContent = t("login.codes.copy", "复制");
+            btn.addEventListener("click", () => copyText(c, btn));
+            row.appendChild(codeEl);
+            row.appendChild(btn);
+            grid.appendChild(row);
+          });
+          const copyAll = document.getElementById("codes-copy-all");
+          copyAll.onclick = () => copyText(codes.join("\n"), copyAll);
+          const cont = document.getElementById("codes-continue");
+          cont.onclick = () => {
+            modal.classList.add("hidden");
+            modal.classList.remove("flex");
+            if (typeof onContinue === "function") onContinue();
+          };
+          modal.classList.remove("hidden");
+          modal.classList.add("flex");
+        }
       })();
     </script>
 {{end}}

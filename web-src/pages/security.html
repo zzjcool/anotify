@@ -136,7 +136,43 @@
       ></div>
     </section>
 
-    <!-- ③ 恢复码（占位） -->
+    <!-- ③ 恢复码（#29 · 接 #24 后端） -->
+    <div
+      id="recovery-nudge"
+      class="reveal visible hidden rounded-xl px-4 py-3 ring-1"
+      style="
+        background: var(--warn-soft);
+        --tw-ring-color: rgba(251, 191, 36, 0.2);
+      "
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium" style="color: #fcd34d">
+            {{t "security.recovery.nudge_title"}}
+          </div>
+          <p class="mt-1 text-[13px] leading-relaxed" style="color: #fcd34d">
+            {{t "security.recovery.nudge_body"}}
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onclick="addPasskey()"
+            class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+          >
+            {{t "security.recovery.nudge_action"}}
+          </button>
+          <button
+            type="button"
+            id="recovery-nudge-dismiss"
+            class="btn-ghost rounded-xl px-4 py-2 text-sm"
+          >
+            {{t "security.recovery.nudge_dismiss"}}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <section class="card reveal visible p-6">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div class="flex items-start gap-4">
@@ -171,29 +207,30 @@
           </div>
         </div>
         <button
-          onclick="
-            alert(
-              '恢复码功能即将上线：注册成功后服务端会生成一组一次性恢复码，此处可查看剩余数量并重新生成。',
-            )
-          "
+          type="button"
+          id="recovery-regen-btn"
+          onclick="regenRecoveryCodes()"
           class="btn-ghost rounded-xl px-4 py-2 text-sm"
         >
           {{t "security.recovery.regenerate"}}
         </button>
       </div>
-      <div class="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <div class="recovery-code">••••-••••-••••</div>
-        <div class="recovery-code">••••-••••-••••</div>
-        <div class="recovery-code">••••-••••-••••</div>
-        <div class="recovery-code">••••-••••-••••</div>
-        <div class="recovery-code">••••-••••-••••</div>
-        <div class="recovery-code">••••-••••-••••</div>
-        <div class="recovery-code">••••-••••-••••</div>
-        <div class="recovery-code">••••-••••-••••</div>
+      <div
+        id="recovery-codes"
+        class="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
+      ></div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          id="recovery-copy-all"
+          class="hidden btn-ghost rounded-lg px-3 py-1.5 text-xs"
+        >
+          {{t "security.recovery.copy_all"}}
+        </button>
+        <p id="recovery-hint" class="text-[11px] text-zinc-600">
+          {{t "security.recovery.status_loading"}}
+        </p>
       </div>
-      <p class="mt-3 text-[11px] text-zinc-600">
-        {{t "security.recovery.hint"}}
-      </p>
     </section>
 
     <!-- 概念说明 -->
@@ -1368,6 +1405,212 @@
     }
   }
 
+  // ==================== 恢复码 ====================
+  let recoveryPlaintext = null; // 仅 regenerate / 本页会话内保留
+  let recoveryStatus = { unusedCount: 0, hasCodes: false };
+  let recoveryDemo = false;
+
+  function copyRecoveryText(text, btn) {
+    const labelKey = "security.recovery.copy";
+    const doneKey = "security.recovery.copied";
+    const done = () => {
+      if (!btn) return;
+      const prev = btn.textContent;
+      btn.textContent = t(doneKey, "已复制");
+      setTimeout(() => {
+        btn.textContent = prev || t(labelKey, "复制");
+      }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => {
+        window.prompt(t("security.recovery.copy_all", "复制全部"), text);
+      });
+    } else {
+      window.prompt(t("security.recovery.copy_all", "复制全部"), text);
+      done();
+    }
+  }
+
+  function renderRecovery() {
+    const grid = document.getElementById("recovery-codes");
+    const hint = document.getElementById("recovery-hint");
+    const copyAll = document.getElementById("recovery-copy-all");
+    if (!grid || !hint) return;
+
+    if (recoveryPlaintext && recoveryPlaintext.length) {
+      grid.replaceChildren(
+        ...recoveryPlaintext.map((c) => {
+          const row = el(
+            "div",
+            {
+              class:
+                "flex items-center justify-between gap-2 rounded-lg bg-black/40 px-3 py-2 ring-1 ring-white/10",
+            },
+            el("code", {
+              class: "mono select-all text-[12px] text-emerald-300",
+              text: c,
+            }),
+            el(
+              "button",
+              {
+                type: "button",
+                class:
+                  "shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10",
+                onclick: (ev) => copyRecoveryText(c, ev.currentTarget),
+              },
+              t("security.recovery.copy", "复制"),
+            ),
+          );
+          return row;
+        }),
+      );
+      copyAll.classList.remove("hidden");
+      copyAll.onclick = () =>
+        copyRecoveryText(recoveryPlaintext.join("\n"), copyAll);
+      hint.textContent = t(
+        "security.recovery.hint_plaintext",
+        "请立即复制保存 · 离开或刷新后将只显示剩余数量",
+      );
+      return;
+    }
+
+    copyAll.classList.add("hidden");
+    grid.replaceChildren();
+    if (recoveryDemo) {
+      hint.textContent = t(
+        "security.recovery.toast_status_failed",
+        "无法加载恢复码状态",
+      );
+      return;
+    }
+    if (recoveryStatus.hasCodes) {
+      hint.textContent = t(
+        "security.recovery.hint",
+        "剩余 {n} 个未使用 · 明文仅在生成时显示一次，请保存到密码管理器",
+      ).replace("{n}", String(recoveryStatus.unusedCount));
+    } else {
+      hint.textContent = t(
+        "security.recovery.hint_none",
+        "暂无可用恢复码。点「重新生成」签发一组新码。",
+      );
+    }
+  }
+
+  async function loadRecoveryStatus() {
+    const data = await fetchApi(API + "/auth/recovery/status", {
+      credentials: "same-origin",
+    });
+    if (data && typeof data.unusedCount === "number") {
+      recoveryStatus = {
+        unusedCount: data.unusedCount,
+        hasCodes: !!data.hasCodes,
+      };
+      recoveryDemo = false;
+      // 刷新后不再保留明文
+      if (!recoveryPlaintext) recoveryPlaintext = null;
+    } else {
+      recoveryDemo = true;
+      recoveryStatus = { unusedCount: 0, hasCodes: false };
+    }
+    renderRecovery();
+  }
+
+  async function regenRecoveryCodes() {
+    if (
+      !confirm(
+        t(
+          "security.recovery.confirm_regen",
+          "重新生成会让旧恢复码全部立即失效。确定继续？",
+        ),
+      )
+    ) {
+      return;
+    }
+    const btn = document.getElementById("recovery-regen-btn");
+    const prev = btn ? btn.textContent : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = t("security.recovery.regenerating", "生成中…");
+    }
+    try {
+      if (recoveryDemo) {
+        // 演示：本地假码
+        recoveryPlaintext = Array.from({ length: 8 }, (_, i) => {
+          const raw = ("DEMO" + (i + 1) + "CODEXXXXXXXX").slice(0, 16);
+          return (
+            raw.slice(0, 4) +
+            "-" +
+            raw.slice(4, 8) +
+            "-" +
+            raw.slice(8, 12) +
+            "-" +
+            raw.slice(12, 16)
+          ).toUpperCase();
+        });
+        recoveryStatus = { unusedCount: 8, hasCodes: true };
+        renderRecovery();
+        toast(t("security.recovery.toast_regen", "已生成新恢复码，请立即保存"));
+        return;
+      }
+      const res = await fetch(API + "/auth/recovery/regenerate", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok) {
+        let msg = "HTTP " + res.status;
+        try {
+          const body = await res.json();
+          if (body && body.error) msg = body.error;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      const codes = Array.isArray(data.recoveryCodes)
+        ? data.recoveryCodes.filter(Boolean)
+        : [];
+      recoveryPlaintext = codes;
+      recoveryStatus = {
+        unusedCount: codes.length,
+        hasCodes: codes.length > 0,
+      };
+      renderRecovery();
+      toast(t("security.recovery.toast_regen", "已生成新恢复码，请立即保存"));
+    } catch (e) {
+      toast(
+        t("security.recovery.toast_regen_failed", "重新生成失败：{msg}").replace(
+          "{msg}",
+          e.message || e,
+        ),
+        true,
+      );
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = prev || t("security.recovery.regenerate", "重新生成");
+      }
+    }
+  }
+
+  function maybeShowRecoveryNudge() {
+    const params = new URLSearchParams(location.search);
+    if (params.get("from") !== "recovery") return;
+    const nudge = document.getElementById("recovery-nudge");
+    if (!nudge) return;
+    nudge.classList.remove("hidden");
+    const dismiss = document.getElementById("recovery-nudge-dismiss");
+    if (dismiss) {
+      dismiss.onclick = () => nudge.classList.add("hidden");
+    }
+    // 清掉 query，避免刷新反复弹出（不改 path）
+    try {
+      const url = new URL(location.href);
+      url.searchParams.delete("from");
+      history.replaceState({}, "", url.pathname + url.search + url.hash);
+    } catch (_) {}
+  }
+
   // ==================== 页面组装 ====================
   Anotify.mountLayout({
     active: "security",
@@ -1376,9 +1619,12 @@
   });
   loadPasskeys();
   loadSessions();
-  /* 下拉刷新：重新拉取 Passkey 与会话列表 */
+  loadRecoveryStatus();
+  maybeShowRecoveryNudge();
+  /* 下拉刷新：重新拉取 Passkey、会话与恢复码状态 */
   mountPullRefresh(async () => {
-    await Promise.all([loadPasskeys(), loadSessions()]);
+    recoveryPlaintext = null;
+    await Promise.all([loadPasskeys(), loadSessions(), loadRecoveryStatus()]);
   });
 
   // ==================== Passkey 新设备授权弹层 ====================
