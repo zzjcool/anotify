@@ -51,6 +51,7 @@ const CHROME_SUITES = [
 	"auth_flow",
 	"push_e2e",
 	"ux_regression_19_23",
+	"recovery_next",
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 
