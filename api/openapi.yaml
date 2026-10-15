@@ -79,6 +79,7 @@ paths:
         body: `{username, code}`。成功后该恢复码一次性作废；会话模型与 Passkey 登录相同，
         随后可走 `/auth/passkeys/register*` 补建 Passkey。
         码格式：`XXXX-XXXX-XXXX-XXXX`（去歧义字符集，大小写不敏感，连字符可选）。
+        限速：10/min/IP + 10/min/username（小写）；超限返回 429，带 `Retry-After: 60`。
       requestBody:
         required: true
         content:
@@ -93,6 +94,8 @@ paths:
         "200": { description: 登录成功，Set-Cookie 会话 }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "429":
+          description: 限速（IP 或 username）；响应头 Retry-After: 60
 
   /auth/recovery/regenerate:
     post:

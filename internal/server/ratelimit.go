@@ -14,12 +14,19 @@ const (
 	rlEnrollLookupPerMin   = 10 // 匿名 lookup/by-code：10/min/IP
 	rlEnrollKnockPerMin    = 10 // 匿名敲门：10/min/IP
 	rlEnrollCompletePerMin = 10 // 匿名 complete：10/min/IP
+
+	// recovery-code 登录：高价值密钥，双维度限速（对齐 CLI create / enroll 量级）。
+	rlRecoveryLoginIPPerMin   = 10 // 10/min/IP
+	rlRecoveryLoginUserPerMin = 10 // 10/min/username（小写）
 )
 
 var (
 	rlEnrollLookup   = newFixedWindow(rlEnrollLookupPerMin, time.Minute)
 	rlEnrollKnock    = newFixedWindow(rlEnrollKnockPerMin, time.Minute)
 	rlEnrollComplete = newFixedWindow(rlEnrollCompletePerMin, time.Minute)
+
+	rlRecoveryLoginIP   = newFixedWindow(rlRecoveryLoginIPPerMin, time.Minute)
+	rlRecoveryLoginUser = newFixedWindow(rlRecoveryLoginUserPerMin, time.Minute)
 )
 
 // 限速阈值常量（见 cli-auth-plan §0）.

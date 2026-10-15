@@ -446,9 +446,14 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 // ---------- 恢复码 ----------
 
 // recoveryLogin POST /v1/auth/recovery/login —— username + code → 会话 Cookie；成功后该码作废。
+// 限速：10/min/IP + 10/min/username（小写）；超限 429 + Retry-After: 60（见 ratelimit.go）。
 func (h *authHandler) recoveryLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, 405, "method not allowed")
+		return
+	}
+	// IP 限速先于读 body，挡住空请求洪泛。
+	if rateLimited(w, rlRecoveryLoginIP, clientIP(r)) {
 		return
 	}
 	var req struct {
@@ -457,6 +462,10 @@ func (h *authHandler) recoveryLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(r, &req); err != nil || req.Username == "" || req.Code == "" {
 		writeErr(w, 400, "缺少 username 或 code")
+		return
+	}
+	// per-username 防分布式撞库；key 小写，避免大小写变体绕过。
+	if rateLimited(w, rlRecoveryLoginUser, strings.ToLower(req.Username)) {
 		return
 	}
 	sessID, err := h.svc.LoginWithRecoveryCode(req.Username, req.Code, auth.DeviceNameFromUA(r.UserAgent()))
