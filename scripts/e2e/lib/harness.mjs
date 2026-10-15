@@ -206,6 +206,7 @@ export const SUITE_PORTS = {
 	admin_flow: 6700,
 	reply_e2e: 6750,
 	ux_regression_19_23: 6800,
+	recovery_next: 6850,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。
