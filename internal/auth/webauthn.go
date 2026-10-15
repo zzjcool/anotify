@@ -186,19 +186,19 @@ func (s *Service) BeginRegister(username, displayName string) (*protocol.Credent
 	return creation, nil
 }
 
-// FinishRegister 完成注册：校验 attestation → 建 user + passkey + 会话。
-// 返回新会话 ID（调用方负责种 Cookie）。
-func (s *Service) FinishRegister(username string, r *http.Request) (sessionID string, err error) {
+// FinishRegister 完成注册：校验 attestation → 建 user + passkey + 会话 + 恢复码。
+// 返回新会话 ID 与明文恢复码（仅此一次；调用方负责种 Cookie 并展示 codes）。
+func (s *Service) FinishRegister(username string, r *http.Request) (sessionID string, recoveryCodes []string, err error) {
 	session, err := s.takeChallenge(regKey(username))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	// 重建与 BeginRegister 一致的临时 user（ID 取自 session.UserID）。
 	tmp := &store.User{ID: string(session.UserID), Username: username}
 	waUser := &webAuthnUser{user: tmp, credentials: nil}
 	cred, err := s.wa.FinishRegistration(waUser, session, r)
 	if err != nil {
-		return "", fmt.Errorf("finish registration: %w", err)
+		return "", nil, fmt.Errorf("finish registration: %w", err)
 	}
 	// 建用户（若并发下已被创建则复用）。
 	user, err := s.db.GetUserByID(tmp.ID)
@@ -211,10 +211,10 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 		if n, cerr := s.db.UserCount(r.Context()); cerr == nil && n == 0 {
 			user.Role = store.RoleAdmin
 		} else if cerr != nil {
-			return "", fmt.Errorf("auth: 首用户判定失败: %w", cerr)
+			return "", nil, fmt.Errorf("auth: 首用户判定失败: %w", cerr)
 		}
 		if err := s.db.CreateUser(user); err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if user.Role == store.RoleAdmin {
 			slog.Info("first user promoted to admin",
@@ -224,18 +224,23 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 			)
 		}
 	} else if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	// 存凭证。
 	if err := s.saveCredential(user.ID, cred, "新设备"); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	// 建会话。
 	sess, err := s.sess.Create(user.ID, DeviceNameFromUA(r.UserAgent()))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return sess.ID, nil
+	// 签发恢复码（明文仅此一次返回）。
+	codes, err := s.IssueRecoveryCodes(user.ID)
+	if err != nil {
+		return "", nil, fmt.Errorf("auth: 签发恢复码失败: %w", err)
+	}
+	return sess.ID, codes, nil
 }
 
 // ---------- 已登录用户补建凭证 ----------

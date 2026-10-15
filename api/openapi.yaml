@@ -32,9 +32,11 @@ paths:
   /auth/register:
     post:
       tags: [auth]
-      summary: 完成 Passkey 注册（校验 attestation，建用户+会话）
+      summary: 完成 Passkey 注册（校验 attestation，建用户+会话+恢复码）
       responses:
-        "200": { description: 注册成功，Set-Cookie 会话 }
+        "200":
+          description: |
+            注册成功，Set-Cookie 会话。响应含可选字段 `recoveryCodes`（明文仅此一次）。
         "400": { $ref: "#/components/responses/Error" }
   /auth/login/options:
     post:
@@ -68,6 +70,65 @@ paths:
       summary: 列出当前用户的登录会话
       responses:
         "200": { description: 会话列表 }
+
+  /auth/recovery/login:
+    post:
+      tags: [auth]
+      summary: 用恢复码登录（校验哈希 → 作废该码 → 建会话 Cookie）
+      description: |
+        body: `{username, code}`。成功后该恢复码一次性作废；会话模型与 Passkey 登录相同，
+        随后可走 `/auth/passkeys/register*` 补建 Passkey。
+        码格式：`XXXX-XXXX-XXXX-XXXX`（去歧义字符集，大小写不敏感，连字符可选）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, code]
+              properties:
+                username: { type: string }
+                code: { type: string, description: "恢复码明文" }
+      responses:
+        "200": { description: 登录成功，Set-Cookie 会话 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /auth/recovery/regenerate:
+    post:
+      tags: [auth]
+      summary: 重新生成恢复码（需登录；作废全部未用旧码）
+      description: |
+        作废当前用户全部未使用恢复码，签发新一批（默认 8 个），明文仅在本响应返回一次。
+      responses:
+        "200":
+          description: 新恢复码明文（仅此一次）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  recoveryCodes:
+                    type: array
+                    items: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /auth/recovery/status:
+    get:
+      tags: [auth]
+      summary: 恢复码状态（需登录；不含明文）
+      responses:
+        "200":
+          description: 未用码数量
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unusedCount: { type: integer }
+                  hasCodes: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
 
   /keys:
     get:

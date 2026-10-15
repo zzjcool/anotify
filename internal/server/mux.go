@@ -134,6 +134,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 独立于 /v1/auth/ 兜底注册，确保走 sessMW 鉴权（否则返回 401 而非 404）。
 	mux.Handle("/v1/auth/passkeys", noStore(sessMW(http.HandlerFunc(authH.passkeysRoot))))
 	mux.Handle("/v1/auth/passkeys/", noStore(sessMW(http.HandlerFunc(authH.passkeysItem))))
+	// 恢复码：regenerate/status 需登录；login 走 /v1/auth/ 兜底（匿名）。
+	mux.Handle("/v1/auth/recovery/regenerate", noStore(sessMW(http.HandlerFunc(authH.recoveryRegenerate))))
+	mux.Handle("/v1/auth/recovery/status", noStore(sessMW(http.HandlerFunc(authH.recoveryStatus))))
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
 	// Agent 上报（Bearer Key，内部自校验）
 	mux.Handle("/v1/notify", noStore(notifyH))

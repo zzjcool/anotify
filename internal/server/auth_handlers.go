@@ -38,6 +38,8 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.sessions(w, r)
 	case "me":
 		h.me(w, r)
+	case "recovery/login":
+		h.recoveryLogin(w, r)
 	default:
 		writeErr(w, 404, "unknown auth endpoint: "+sub)
 	}
@@ -76,7 +78,7 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "缺少 username（query）")
 		return
 	}
-	sessID, err := h.svc.FinishRegister(username, r)
+	sessID, codes, err := h.svc.FinishRegister(username, r)
 	if err != nil {
 		slog.Warn("register failed",
 			"event", "auth.register.fail",
@@ -91,7 +93,11 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		"event", "auth.register.success",
 		"ip", clientIP(r),
 	)
-	writeJSON(w, 200, map[string]any{"ok": true})
+	// recoveryCodes 为可选兼容字段：明文仅此一次；前端未接时忽略即可。
+	if codes == nil {
+		codes = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "recoveryCodes": codes})
 }
 
 func (h *authHandler) loginOptions(w http.ResponseWriter, r *http.Request) {
@@ -435,4 +441,80 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 		"passkey_id", id,
 	)
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// ---------- 恢复码 ----------
+
+// recoveryLogin POST /v1/auth/recovery/login —— username + code → 会话 Cookie；成功后该码作废。
+func (h *authHandler) recoveryLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	var req struct {
+		Username string `json:"username"`
+		Code     string `json:"code"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Username == "" || req.Code == "" {
+		writeErr(w, 400, "缺少 username 或 code")
+		return
+	}
+	sessID, err := h.svc.LoginWithRecoveryCode(req.Username, req.Code, auth.DeviceNameFromUA(r.UserAgent()))
+	if err != nil {
+		slog.Warn("recovery login failed",
+			"event", "auth.recovery.login_fail",
+			"ip", clientIP(r),
+			"error", err.Error(),
+		)
+		// 账户禁用用 401；其余统一 401（不区分用户/码错误）。
+		writeErr(w, 401, err.Error())
+		return
+	}
+	h.svc.Sessions().SetCookie(w, sessID)
+	slog.Info("recovery login success",
+		"event", "auth.recovery.login_success",
+		"ip", clientIP(r),
+	)
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// recoveryRegenerate POST /v1/auth/recovery/regenerate —— 需登录；作废旧码、签发新集合，明文仅返回一次。
+func (h *authHandler) recoveryRegenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	uid := auth.UserIDFromContext(r.Context())
+	if uid == "" {
+		writeErr(w, 401, "未登录")
+		return
+	}
+	codes, err := h.svc.RegenerateRecoveryCodes(uid)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if codes == nil {
+		codes = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "recoveryCodes": codes})
+}
+
+// recoveryStatus GET /v1/auth/recovery/status —— 需登录；返回未用码数量（不含明文）。
+func (h *authHandler) recoveryStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	uid := auth.UserIDFromContext(r.Context())
+	if uid == "" {
+		writeErr(w, 401, "未登录")
+		return
+	}
+	n, err := h.svc.RecoveryStatus(uid)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"unusedCount": n, "hasCodes": n > 0})
 }
