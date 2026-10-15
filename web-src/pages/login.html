@@ -923,8 +923,13 @@
               ),
               "success",
             );
-            // 恢复码登录后引导去安全页补建 Passkey（保留 ?next= 白名单目标作备选）
-            const dest = "security.html?from=recovery";
+            // 有 ?next= 时与 Passkey 一致走白名单；无 next 时引导去安全页补建 Passkey
+            const hasNext = !!(
+              new URLSearchParams(location.search).get("next") || ""
+            );
+            const dest = hasNext
+              ? nextTarget()
+              : "security.html?from=recovery";
             setTimeout(() => (location.href = dest), 500);
           } catch (e) {
             if (String(e).includes("Failed to fetch")) {
