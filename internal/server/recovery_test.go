@@ -24,6 +24,10 @@ type recoveryTestEnv struct {
 
 func newRecoveryTestEnv(t *testing.T) *recoveryTestEnv {
 	t.Helper()
+	// 重置全局限速器（防止跨用例污染）
+	rlRecoveryLoginIP = newFixedWindow(rlRecoveryLoginIPPerMin, time.Minute)
+	rlRecoveryLoginUser = newFixedWindow(rlRecoveryLoginUserPerMin, time.Minute)
+
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -169,5 +173,55 @@ func TestRecovery_HTTP_BadLogin(t *testing.T) {
 	}, false)
 	if rr.Code != 400 {
 		t.Fatalf("missing fields: %d", rr.Code)
+	}
+}
+
+// TestRecovery_HTTP_LoginRateLimitIP 同一 IP 超限 → 429。
+func TestRecovery_HTTP_LoginRateLimitIP(t *testing.T) {
+	env := newRecoveryTestEnv(t)
+	rlRecoveryLoginIP = newFixedWindow(3, time.Minute)
+	rlRecoveryLoginUser = newFixedWindow(100, time.Minute) // 放宽 user 维，只测 IP
+
+	body := map[string]string{"username": env.username, "code": "AAAA-BBBB-CCCC-DDDD"}
+	for i := 0; i < 3; i++ {
+		rr := recReq(t, env, "POST", "/v1/auth/recovery/login", body, false)
+		if rr.Code == 429 {
+			t.Fatalf("attempt %d should not be rate-limited yet, got 429", i+1)
+		}
+		if rr.Code != 401 {
+			t.Fatalf("attempt %d: want 401 (bad code), got %d %s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := recReq(t, env, "POST", "/v1/auth/recovery/login", body, false)
+	if rr.Code != 429 {
+		t.Fatalf("4th attempt should 429, got %d %s", rr.Code, rr.Body.String())
+	}
+	if ra := rr.Header().Get("Retry-After"); ra != "60" {
+		t.Errorf("Retry-After=%q want 60", ra)
+	}
+}
+
+// TestRecovery_HTTP_LoginRateLimitUser 同一 username（大小写不敏感）超限 → 429。
+func TestRecovery_HTTP_LoginRateLimitUser(t *testing.T) {
+	env := newRecoveryTestEnv(t)
+	rlRecoveryLoginIP = newFixedWindow(100, time.Minute) // 放宽 IP
+	rlRecoveryLoginUser = newFixedWindow(3, time.Minute)
+
+	for i, user := range []string{env.username, "RecUser", "RECUSER"} {
+		rr := recReq(t, env, "POST", "/v1/auth/recovery/login", map[string]string{
+			"username": user, "code": "AAAA-BBBB-CCCC-DDDD",
+		}, false)
+		if rr.Code == 429 {
+			t.Fatalf("attempt %d (%q) should not be rate-limited yet, got 429", i+1, user)
+		}
+		if rr.Code != 401 {
+			t.Fatalf("attempt %d: want 401, got %d %s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := recReq(t, env, "POST", "/v1/auth/recovery/login", map[string]string{
+		"username": env.username, "code": "AAAA-BBBB-CCCC-DDDD",
+	}, false)
+	if rr.Code != 429 {
+		t.Fatalf("4th attempt should 429, got %d %s", rr.Code, rr.Body.String())
 	}
 }
