@@ -79,7 +79,7 @@
             先把词定住。后面所有页面都只用这三个词描述结构。
           </p>
 
-          <div class="defs">
+          <dl class="defs">
             <div class="def">
               <dt>节点 <code>node</code></dt>
               <dd>参与流转的一个实体。可以是一台机器、一个 webhook、一个收通知的手机。</dd>
@@ -92,7 +92,7 @@
               <dt>出口 <code>output</code></dt>
               <dd>能力的命名出口。跑完之后节点选择走哪个出口。出口是字符串，不是条件。</dd>
             </div>
-          </div>
+          </dl>
 
           <h2>三种节点，按端口形状分</h2>
           <p class="prose">
@@ -361,7 +361,7 @@ capabilities:
             </div>
           </div>
 
-          <div class="defs">
+          <dl class="defs">
             <div class="def">
               <dt>行程 <code>path</code></dt>
               <dd><b>从根到本任务这条具体路径</b>的能力名序列，不是整个 trace 见过的集合。两条分支的 path 互不影响。</dd>
@@ -374,7 +374,7 @@ capabilities:
               <dt>为什么必然终止</dt>
               <dd>path 去重保证路径最长 = 图里的能力数。<code>max_hops</code> 只是这个上界的外显配置，不是唯一防线。</dd>
             </div>
-          </div>
+          </dl>
 
           <nav class="pager">
             <a href="03-flow.html">

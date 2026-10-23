@@ -261,7 +261,7 @@
 
           <p class="prose">借的理由只有两条，但都硬：</p>
 
-          <div class="defs">
+          <dl class="defs">
             <div class="def">
               <dt>语义已经被推演完整</dt>
               <dd>
@@ -274,7 +274,7 @@
                 命名对齐以后，要把 trace 吐给任何一个吃 OTel 的后端都不用重新建模；反过来，读过 OTel 的人不用再学一套私有词汇。
               </dd>
             </div>
-          </div>
+          </dl>
 
           <p class="prose">
             借的是模型和字段名，不是整套 SDK 与 collector 运行时。落到实现上就是几张表加几个字段——这也是「能解释」的前提：字段在库里才查得出来；只活在进程内存里的 trace，事后什么问题都回答不了。

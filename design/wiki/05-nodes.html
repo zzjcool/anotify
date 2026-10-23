@@ -611,7 +611,7 @@
             缺失、迟到、或格式不对时，中枢一律按「未回报」处理（<b>保守</b>，不收敛）——
             宁可晚收敛，也不提前误报。代价是可能永远不收敛，所以要有三道兜底：
           </p>
-          <div class="defs">
+          <dl class="defs">
             <div class="def">
               <dt>租约兜底</dt>
               <dd>任务最终都会被租约重置到一个终态（含 <code>abandoned</code>），不会永远挂着。</dd>
@@ -624,7 +624,7 @@
               <dt>超时收敛</dt>
               <dd><code>max_duration</code> 耗尽时强制收敛，并标注「有 N 个任务未申报出口」——不静默。</dd>
             </div>
-          </div>
+          </dl>
 
           <div class="note warn">
             <b>本期 human sink 一律 <code>out: null</code>。</b>推送没有下游、不需要接续，天然到头。
