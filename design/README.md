@@ -23,13 +23,14 @@ Anotify 视觉事实源：mockup HTML + `tokens.css`。
 | [02 核心概念](./wiki/02-concepts.html) | Node / Capability / Output / Task / Trace、三类节点、两类 sink |
 | [03 一条事件的旅程](./wiki/03-flow.html) | 十步时序、租约心跳、失败分支 |
 | [04 能力与出口](./wiki/04-edges.html) | 三种节点、能力与出口、edges 表查表派发、成环与剪枝 |
-| [05 节点与执行](./wiki/05-nodes.html) | 命令注册表、状态机、节点池、粘性路由、下线分级 |
+| [05 节点与执行](./wiki/05-nodes.html) | 三类节点、能力注册表、状态机、节点池、粘性路由、下线分级 |
 | [06 可观测与版本](./wiki/06-trace.html) | OTel 对齐、为什么没触发、图版本钉住 |
-| [07 安全边界](./wiki/07-safety.html) | 中枢永不下发命令、六道闸、三层可配 |
+| [07 安全边界](./wiki/07-safety.html) | 中枢永不下发命令、六道闸、删掉规则引擎的安全收益 |
 | [08 本期范围](./wiki/08-scope.html) | 做/不做、预留扩展点 |
 | [09 术语表](./wiki/09-glossary.html) | 全部名词速查 |
 
 样式：`wiki/assets/wiki.css`（依赖 `tokens.css`，无 Tailwind、无内联色值）。
+维护约定：`wiki/_meta/README.md`（硬约束、已废弃术语、交付前自查清单）。
 
 ### 历史稿（已归档，不维护）
 

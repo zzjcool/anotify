@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PAGE_TITLE · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">PAGE_TITLE</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 XX 页 · 分组</div>
+          <h1>PAGE_TITLE</h1>
+          <p class="lead">一句话说清这页解决什么问题。</p>
+
+          <h2>第一节</h2>
+          <p class="prose">正文。</p>
+
+          <nav class="pager">
+            <a href="PREV.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">PREV_TITLE</div>
+            </a>
+            <a href="NEXT.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">NEXT_TITLE</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
