@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>节点与执行 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="05-nodes.html" class="active"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">节点与执行</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 05 页 · 运行时</div>
+          <h1>节点与执行</h1>
+          <p class="lead">
+            任务落到哪台机器、怎么跑、中途掉线归谁。这页讲四件事：中枢与节点的分工边界、租约与状态机、节点池怎么选人、下线时任务怎么收场。
+          </p>
+
+          <h2>中枢不知道节点上有什么命令</h2>
+          <p class="prose">
+            节点在自己机器上维护一份命令表（命令名 → <code>argv</code>），<strong>永不上传</strong>。中枢只知道「这个节点声明了哪些名字」，
+            不知道名字背后是什么程序、带什么参数、在不在。
+          </p>
+
+          <pre class="code"><span class="c"># 节点本地 ~/.anotifyd/config.yaml —— 这份文件从不离开本机</span>
+<span class="k">node</span>:
+  <span class="k">command_timeout_sec</span>: 900
+
+<span class="k">commands</span>:
+  - <span class="k">name</span>: git.fetch          <span class="c"># 中枢只认这个名字</span>
+    <span class="k">argv</span>: [<span class="s">"git"</span>, <span class="s">"fetch"</span>, <span class="s">"--prune"</span>, <span class="s">"origin"</span>]
+    <span class="k">retries</span>: 2                <span class="c"># 节点内部重试，不消耗中枢 attempts</span>
+    <span class="k">idempotent</span>: true          <span class="c"># 只读，重跑无副作用</span>
+    <span class="k">concurrency</span>: 2            <span class="c"># 命令级并发上限</span>
+
+  - <span class="k">name</span>: test.unit
+    <span class="k">argv</span>: [<span class="s">"make"</span>, <span class="s">"test"</span>]
+    <span class="k">retries</span>: 0
+    <span class="k">idempotent</span>: false         <span class="c"># 默认值：有副作用</span>
+    <span class="k">resumable</span>: false
+    <span class="k">concurrency</span>: 1</pre>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box">中枢<span class="sub">{kind, name, params}</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box">agent 出站长连接<span class="sub">WebSocket · 不开放入站端口</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box">节点查自己的表<span class="sub">name → argv</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box">execve(argv[])<span class="sub">不经过 shell</span></span>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>线上只跑这三个字段。</b>节点收到 <code>{kind, name, params}</code>，拿 <code>name</code> 查本地表得到 <code>argv</code>，直接
+              <code>execve(argv[])</code>；查不到就回 <code>unknown_action</code>。中枢不改写命令、不猜参数、不拼命令行。
+            </div>
+          </div>
+
+          <div class="note">
+            <strong>DB 里没有 argv 字段，也没有 shell 字符串字段。</strong>执行一律 <code>execve(argv[])</code>，禁止
+            <code>/bin/sh -c</code>：参数不会被二次解析，也就没有注入面。中枢整个被拿走，也拼不出一条真实命令。
+          </div>
+
+          <h2>凭据与标签</h2>
+          <p class="prose">
+            节点身份由中枢发放，不由节点自述。标签挂在身份上，所以「谁是不是 review 节点」是中枢侧的事实，不是节点说了算。
+          </p>
+
+          <dl class="defs">
+            <div class="def">
+              <dt><code>node_id</code></dt>
+              <dd>注册时由中枢生成并写进凭据。节点拿到的是哪个就是哪个，不接受自报、不接受改名。</dd>
+            </div>
+            <div class="def">
+              <dt>token</dt>
+              <dd>节点唯一凭据，一一对应一个 <code>node_id</code>。可撤销后重发；撤销即该节点全部标签一起失效。</dd>
+            </div>
+            <div class="def">
+              <dt>标签 labels</dt>
+              <dd>绑在 <code>node_id</code> 上，<strong>中枢赋值</strong>。规则按标签挑节点，不写机器名、不写 IP。</dd>
+            </div>
+            <div class="def">
+              <dt>泄漏的代价</dt>
+              <dd>
+                token 泄漏 = 继承该节点的全部标签。这是必然代价，不做过度防御——不搞短时令牌轮换、不搞节点内二次鉴权。
+                想缩小爆炸半径，就少给标签、多拆节点。
+              </dd>
+            </div>
+          </dl>
+
+          <h2>状态机与租约</h2>
+          <p class="prose">
+            中枢不知道任务在这台机器上跑到哪一步，它只知道租约还在不在。状态推进全部由节点上报事件驱动，中枢只做两件事：续租、超时回收。
+          </p>
+
+          <div class="fig">
+            <div class="lane-label">主路径</div>
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box sm">pending</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">assigned</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">acked</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">running</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box ok">succeeded</span>
+              </div>
+            </div>
+
+            <div class="lane-label" style="margin-top: 20px">终态 · acked / running 都可能落到</div>
+            <div class="fanout">
+              <span class="box sm">acked / running</span>
+              <span class="bracket"></span>
+              <div class="fanout-col">
+                <span class="box sm">failed · 重试耗尽</span>
+                <span class="box sm">canceled · 人取消 / 规则撤销</span>
+                <span class="box sm">abandoned · 节点下线 / 硬过期</span>
+              </div>
+            </div>
+
+            <div class="lane-label" style="margin-top: 20px">租约失效 · 中间态，不是终态</div>
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box sm">assigned / acked / running</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">lease_expired</span>
+              </div>
+            </div>
+            <div class="fanout" style="margin-top: 12px">
+              <span class="bracket"></span>
+              <div class="fanout-col">
+                <span class="box sm">attempts 未用尽 · 回 pending，重派</span>
+                <span class="box sm dashed">attempts 用尽 · abandoned</span>
+              </div>
+            </div>
+
+            <div class="fig-cap">
+              <b><code>ack</code> = 接单确认，不是完成。</b>节点说「这单我接了」，租约才开始正式计时；任务真正结束只看
+              <code>result</code> 事件。把 ack 当完成，所有长任务都会在超时后被判重跑。
+            </div>
+          </div>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box sm">assign</span>
+                <span class="arr"><span>20s</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">ack</span>
+                <span class="arr"><span>10s</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">心跳 · 每次续租</span>
+                <span class="arr"><span>…</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">result</span>
+              </div>
+            </div>
+            <div class="fanout" style="margin-top: 18px">
+              <span class="box sm">租约 TTL 30s</span>
+              <span class="box sm">max_attempts 3</span>
+              <span class="box sm">退避 10s / 60s / 300s</span>
+            </div>
+            <div class="fig-cap">
+              派发后 20s 内没等到 <code>ack</code> 就直接 <code>lease_expired</code>。之后每 10s 一次心跳把过期时间推到
+              <code>now + 30s</code>，心跳停了就是节点失联，剩下的 TTL 里仍无上报即回收。每次回收算一次 attempt。
+            </div>
+          </div>
+
+          <h2>节点内部重试 vs 中枢重派</h2>
+          <p class="prose">
+            两套重试解决两类问题，不能互相替代。节点内部重试是「这台机器上再试一次」，中枢重派是「换一台机器再来」。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>维度</th>
+                  <th>节点内部重试</th>
+                  <th>中枢重派</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>谁定义次数</td>
+                  <td>节点 <code>manifest.commands[].retries</code></td>
+                  <td>规则 <code>lifecycle.maxAttempts</code></td>
+                </tr>
+                <tr>
+                  <td>是否消耗中枢 attempts</td>
+                  <td>否。中枢只看到一次调用</td>
+                  <td>是。每重派一次 attempt + 1</td>
+                </tr>
+                <tr>
+                  <td>触发条件</td>
+                  <td>命令非零退出、网络抖动</td>
+                  <td>租约过期、节点下线、节点上报可重试错误</td>
+                </tr>
+                <tr>
+                  <td>退避</td>
+                  <td>节点自己定</td>
+                  <td>10s → 60s → 300s</td>
+                </tr>
+                <tr>
+                  <td>审计影响</td>
+                  <td>记在节点侧；trace 上是同一个 span</td>
+                  <td>每个 attempt 一个 span，换节点就换 <code>node_id</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>节点池：两级模型</h2>
+          <p class="prose">
+            一个节点 = 一份身份 + 若干执行器。身份（<code>nodes</code>）管脑、标签、配额；执行器（<code>node_instances</code>）管手、并发、存活。
+            一台机器可以起多个实例，但只有一份身份。
+          </p>
+
+          <div class="fig">
+            <div class="card">
+              <div class="box">nodes<span class="sub">身份 / 脑 · labels · max_concurrency 8 · max_instances 20</span></div>
+              <div class="fanout" style="margin-top: 16px">
+                <span class="bracket"></span>
+                <div class="fanout-col">
+                  <span class="box sm">node_instances #1<span class="sub">concurrency 4 · inflight 2 · alive</span></span>
+                  <span class="box sm">node_instances #2<span class="sub">concurrency 4 · inflight 4 · alive</span></span>
+                  <span class="box sm">node_instances #3<span class="sub">concurrency 4 · inflight 0 · draining</span></span>
+                </div>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>身份一份，手可以多只。</b>实例掉线只影响自己名下的任务；所有实例都掉线，才算这个节点下线（见下文下线分级）。
+              <code>max_instances = 20</code> 是硬顶，防止一份 token 复制出一片执行器。
+            </div>
+          </div>
+
+          <div class="fig">
+            <div class="fanout">
+              <div class="fanout-col">
+                <span class="box sm">实例申报 · node_instances.concurrency</span>
+                <span class="box sm">命令级 · commands[].concurrency</span>
+                <span class="box sm">节点级 · nodes.max_concurrency</span>
+              </div>
+              <span class="bracket"></span>
+              <span class="box">实际并发 = min(三者)<span class="sub">谁申报得小听谁的</span></span>
+            </div>
+            <div class="fig-cap">
+              三个上限同时生效。一个命令不许同时跑 5 份，就不会跑 5 份，哪怕整套池子还空着。
+              <b>派发策略只有一条：最少负载优先</b>——在标签命中的节点里比 <code>inflight / concurrency</code>，取最小的；全满就排队，不溢出到标签不匹配的节点。
+            </div>
+          </div>
+
+          <h2>粘性路由</h2>
+          <p class="prose">
+            同一件事的连续任务最好落在同一台机器上——本地缓存、工作目录、刚编译出来的产物都在那儿。粘性不靠节点自报亲缘，靠中枢侧一张表。
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box">sticky_key<span class="sub">sha256(trace_id ∥ rule_id ∥ selector)</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box">查 node_pins</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <span class="box sm">命中 → 粘住原 node_id</span>
+            </div>
+            <div class="flow" style="margin-top: 16px">
+              <div class="flow-item">
+                <span class="box dashed">未命中</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">按负载选一个节点</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box sm">写 pin，之后一律查表</span>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>pin 一旦写就不再重算。</b><code>rebalance</code> 只处理失效 pin（节点下线、实例全满），不重排全局——
+              每次全局重排都会让一半任务的中间产物白跑。
+            </div>
+          </div>
+
+          <pre class="code"><span class="k">CREATE TABLE</span> node_pins (
+  <span class="k">sticky_key</span>   TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- sha256(trace_id ∥ rule_id ∥ selector)</span>
+  <span class="k">node_id</span>      TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 选中就钉死，不随负载漂移</span>
+  <span class="k">selector</span>     TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 当时命中的标签，失效判断用</span>
+  <span class="k">created_at</span>   INTEGER <span class="k">NOT NULL</span>,
+  <span class="k">last_used_at</span> INTEGER <span class="k">NOT NULL</span>,
+  <span class="k">FOREIGN KEY</span> (node_id) <span class="k">REFERENCES</span> nodes(node_id)
+);
+
+<span class="c">-- 写 pin 与建任务在同一个事务里：任务在，pin 一定在。</span>
+<span class="c">-- rebalance 只扫 node_id 已下线 / 实例全满的 pin，重新选节点并改写 node_id。</span></pre>
+
+          <h2>节点下线分级</h2>
+          <p class="prose">
+            节点掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由命令自己的声明决定，不让中枢猜。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>命令声明</th>
+                  <th>这类命令</th>
+                  <th>下线时任务处理</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>idempotent: true</code></td>
+                  <td>只读：git fetch、构建、查询</td>
+                  <td><code>abandoned</code>，不重派；下一次事件自然再来一次</td>
+                </tr>
+                <tr>
+                  <td><code>idempotent: false</code>（默认）</td>
+                  <td>有副作用：写库、发版、通知</td>
+                  <td><code>abandoned</code> + 告警 + 人工确认，绝不自动重跑</td>
+                </tr>
+                <tr>
+                  <td><code>resumable: true</code></td>
+                  <td>可断点续传的批处理</td>
+                  <td>重派到新节点，从中断点继续</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="note warn">
+            <strong>abandoned ≠ 成功，也 ≠ 静默丢弃。</strong>它和 <code>failed</code> 的区别是：不重试、但<strong>默认通知</strong>。
+            默认值是有副作用的 <code>idempotent: false</code>，所以「拿不准要不要重跑」时，结论永远是「不跑，叫人看」。
+          </div>
+
+          <h2>任务生命周期属性</h2>
+          <p class="prose">规则可以声明一个任务能活多久、能不能重来、结果留多久。四项，都在 <code>lifecycle</code> 下。</p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>属性</th>
+                  <th>含义</th>
+                  <th>到点 / 触发后</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>lifecycle.expiresInSec</code></td>
+                  <td>硬过期时间</td>
+                  <td>到点直接 <code>abandoned</code>，<strong>绝不重派</strong></td>
+                </tr>
+                <tr>
+                  <td><code>lifecycle.retryable</code></td>
+                  <td>是否允许中枢重派</td>
+                  <td><code>false</code> = 一次性；命令 <code>idempotent: false</code> 时被强制为 <code>false</code></td>
+                </tr>
+                <tr>
+                  <td><code>lifecycle.maxAttempts</code></td>
+                  <td>中枢重派次数上限</td>
+                  <td>用完即 <code>failed</code> / <code>abandoned</code></td>
+                </tr>
+                <tr>
+                  <td><code>lifecycle.resultTtlSec</code></td>
+                  <td>结果保留时长</td>
+                  <td>到期只清 <code>result</code>，不清任务行（审计还在）</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <strong><code>retryable</code> 是中枢的意愿，<code>idempotent</code> 是命令的事实。</strong>
+            中枢可以决定「想不想重派」，但碰上 <code>idempotent: false</code> 的命令，意愿无效——重跑一个已经发过版的任务，代价比失败更大。
+            接力与链路的次数上限见 <a href="04-rules.html">04 规则与扇出</a>。
+          </p>
+
+          <nav class="pager">
+            <a href="04-rules.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">规则与扇出</div>
+            </a>
+            <a href="06-trace.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">可观测与版本</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
