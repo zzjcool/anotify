@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>总览 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html" class="active"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">总览</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 00 页 · 开始</div>
+          <h1>总览</h1>
+          <p class="lead">
+            这页先给结论：Anotify 现在是什么、由哪几层组成、和 workflow 引擎差在哪、剩下九页各讲什么。看完再挑感兴趣的进。
+          </p>
+
+          <div class="card" style="margin: 0 0 34px">
+            <h4>一句话</h4>
+            <p class="prose" style="margin: 0; max-width: 62ch; color: var(--text)">
+              Anotify 从一个「Agent 完成通知终端」，升级为<strong>事件中心 + 执行节点</strong>：触发源产生的事件都进同一本事件日志，可解释的规则决定它引起几件事，最后落成机器上的一个任务，或者你手机上的一次震动。
+            </p>
+          </div>
+
+          <h2>五层结构</h2>
+          <p class="prose">
+            整条管道只有五层，每层职责单一：触发源不管规则，规则不管执行，任务不管命令长什么样。通知和 trace 不是层，是挂在旁边的两条出路。
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="box sm">触发源<span class="sub">cron · webhook · watch</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box sm accent">事件日志<span class="sub">source · type · payload</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box sm">规则<span class="sub">match + action</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box sm">任务<span class="sub">租约 · 重试 · 状态机</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box sm">节点<span class="sub">node agent 执行 argv</span></div>
+            </div>
+
+            <h4 style="margin: 22px 0 8px">旁挂（不是层，是两条出路）</h4>
+
+            <div class="flow" style="gap: 10px; justify-content: flex-start">
+              <div class="box sm dashed">通知 · human sink<span class="sub">推手机 · 尽力而为 · 不回报</span></div>
+              <div class="box sm dashed">trace · 可观测<span class="sub">为什么触发 · 走了哪条路</span></div>
+            </div>
+
+            <div class="fig-cap">
+              <b>两类 sink 永不混用</b>：human sink 是可丢的通知，machine sink 是必须回报结果的节点任务。同一条规则可以同时指向两者，它们各自记账。
+            </div>
+          </div>
+
+          <h2>一次事件如何变成手机震动</h2>
+          <p class="prose">
+            最短的一条路只有四步，中间不经过任何用户脚本：事件进来、进日志、规则命中、推送出去。
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="box sm">PR 合并 → webhook<span class="sub">source: github</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box sm">写入事件日志<span class="sub">type: pr.merged</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box sm">规则命中<span class="sub">action: 推手机</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box sm ok">手机震动<span class="sub">human sink</span></div>
+            </div>
+            <div class="fig-cap">
+              把第三条规则的 <code>action</code> 换成「派任务」，第三个盒子就变成「任务下发」，最后一个盒子换成 node agent 执行后结果回流成新事件。两条路共用同一个事件日志、同一个 trace。
+            </div>
+          </div>
+
+          <h2>为什么不是 workflow 引擎</h2>
+          <p class="prose">
+            它借用了 workflow 引擎的几个名字（触发、条件、动作），但要你写的只有「命中什么、做什么」。整条链路的形状不由画布规定，执行细节留在节点自己的进程里。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>维度</th>
+                  <th>本设计</th>
+                  <th>n8n / Temporal 类</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>编排从哪来</td>
+                  <td>规则是数据：<code>match</code> + <code>action</code> 存在库里，可版本化、可解释</td>
+                  <td>画布上的 DAG，或代码里的 workflow 定义</td>
+                </tr>
+                <tr>
+                  <td>执行与凭据</td>
+                  <td>命令注册在你机器上，凭据永不出本机；中枢只发 <code>{kind, name, params}</code></td>
+                  <td>执行在平台 worker 或你部署的集群；集成凭据常存在平台侧</td>
+                </tr>
+                <tr>
+                  <td>时间尺度</td>
+                  <td>没有 workflow 运行时长上限，靠租约 + <code>max_duration</code> 收口</td>
+                  <td>受运行期上限与执行历史大小的约束</td>
+                </tr>
+                <tr>
+                  <td>失败长什么样</td>
+                  <td>trace 上逐条件可见：哪条规则剪了、<code>path</code> 为什么断、卡在哪一步</td>
+                  <td>翻 workflow history 或执行日志，人肉还原</td>
+                </tr>
+                <tr>
+                  <td>本期边界</td>
+                  <td>不做拖拽画布、任意代码节点、DAG 校验、join 收集</td>
+                  <td>这些正是它们的主场</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="note">
+            <strong>不比拼集成数量。</strong>定位是可解释的自动化——事件为什么触发、走了哪条路、卡在哪一步。拖拽画布、任意代码节点、中枢存密钥、几十个现成集成，这些不做，避免变成 n8n 的劣化版。
+          </div>
+
+          <h2>从哪读起</h2>
+          <p class="prose">
+            九页，按顺序读最好。前三页给概念，中间三页讲运行时，后三页是保障与参考；只想看边界的话直接跳到 07 和 08。
+          </p>
+
+          <div class="toc-grid">
+            <a class="toc-card" href="01-why.html">
+              <div class="num">01</div>
+              <div class="ttl">为什么</div>
+              <div class="dsc">现有 agent 通知断在哪、事件中心要解决的三个问题、我们不是什么。</div>
+            </a>
+            <a class="toc-card" href="02-concepts.html">
+              <div class="num">02</div>
+              <div class="ttl">核心概念</div>
+              <div class="dsc">Event / Rule / Task / Node / Trace 五个名词，外加关系图和一次旅程。</div>
+            </a>
+            <a class="toc-card" href="03-flow.html">
+              <div class="num">03</div>
+              <div class="ttl">一条事件的旅程</div>
+              <div class="dsc">从 webhook 进来到手机震动的完整时序，每个环节的落库与失败分支。</div>
+            </a>
+            <a class="toc-card" href="04-rules.html">
+              <div class="num">04</div>
+              <div class="ttl">规则与扇出</div>
+              <div class="dsc">规则长什么样、多条命中全部下发、接力与成环、path 剪枝。</div>
+            </a>
+            <a class="toc-card" href="05-nodes.html">
+              <div class="num">05</div>
+              <div class="ttl">节点与执行</div>
+              <div class="dsc">命名命令注册表、凭据与标签、租约与 ack、节点池、粘性路由、下线分级。</div>
+            </a>
+            <a class="toc-card" href="06-trace.html">
+              <div class="num">06</div>
+              <div class="ttl">可观测与版本</div>
+              <div class="dsc">OTel 模型对齐、trace/span、版本钉住三对象、叠加图，以及怎么解释「没触发」。</div>
+            </a>
+            <a class="toc-card" href="07-safety.html">
+              <div class="num">07</div>
+              <div class="ttl">安全边界</div>
+              <div class="dsc">中枢永不下发命令、execve argv、六道闸、三层可配的硬顶。</div>
+            </a>
+            <a class="toc-card" href="08-scope.html">
+              <div class="num">08</div>
+              <div class="ttl">本期范围</div>
+              <div class="dsc">做什么、不做什么（收集、画布、任意代码节点），以及预留的扩展点。</div>
+            </a>
+            <a class="toc-card" href="09-glossary.html">
+              <div class="num">09</div>
+              <div class="ttl">术语表</div>
+              <div class="dsc">全部名词与字段名速查，写代码时对照用。</div>
+            </a>
+          </div>
+
+          <p class="fig-cap" style="margin: 30px 0 0">
+            <b>设计状态</b> · 本期范围：扇出做，收集不做。
+          </p>
+
+          <nav class="pager">
+            <div class="spacer"></div>
+            <a href="01-why.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">为什么</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
