@@ -69,12 +69,12 @@
           <div class="crumb">第 07 页 · 保障</div>
           <h1>安全边界</h1>
           <p class="lead">
-            中枢手上没有任何一条命令。这页讲这条边界怎么落到 DB 字段、协议载荷和 execve 上，为了保住它设了哪六道闸，以及我们因此接受了什么代价。
+            中枢手上没有任何一条命令。这页讲这条边界怎么落到 DB 字段、协议载荷和 execve 上，为了保住它设了哪六道闸，为什么删掉规则引擎本身也是一道安全收益，以及我们因此接受了什么代价。
           </p>
 
           <h2>根本原则：中枢永不下发命令</h2>
           <p class="prose">
-            中枢只做三件事：记事件、查出口表、派任务。它不知道目标机器上装着什么程序，也不知道某个名字背后对应哪条 argv。任务载荷里只有 <code>{kind, name, params}</code> —— 一个名字，加上给这个命令的参数。
+            中枢只做三件事：记事件、查出口表、派任务。它不知道目标机器上装着什么程序，也不知道某个名字背后对应哪条 argv。任务载荷里只有 <code>{kind, name, params}</code> —— 一个能力名，加上给这个能力的参数。
           </p>
 
           <div class="fig">
@@ -82,7 +82,7 @@
               <div class="card-2">
                 <div class="lane-label">中枢 · 不掌握执行</div>
                 <p style="margin: 0 0 9px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                  DB 里只有事实与引用：<code>events</code> / <code>rules</code> / <code>tasks</code> / <code>node_pins</code>。<strong style="color: var(--text)">没有 argv，没有 shell 字符串，没有脚本文本。</strong>
+                  DB 里只有事实与引用：<code>events</code> / <code>edges</code> / <code>tasks</code> / <code>node_pins</code>。<strong style="color: var(--text)">没有 argv，没有 shell 字符串，没有脚本文本。</strong>
                 </p>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px">
                   <div class="box sm dashed">argv<span class="sub">不存在</span></div>
@@ -100,38 +100,40 @@
               <div class="card-2">
                 <div class="lane-label">节点 · 本地决定能执行什么</div>
                 <p style="margin: 0 0 9px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                  本地 <code>config.yaml</code> 把 <code>name</code> 映射到 <code>argv[]</code>，命中就 <code>execve(argv[0], argv, envp)</code> 起进程。这个名字存在过，中枢才知道它存在。
+                  本地 <code>config.yaml</code> 把 <code>capabilities[].name</code> 映射到 <code>argv[]</code>，命中就 <code>execve(argv[0], argv, envp)</code> 起进程。这个名字存在过，中枢才知道它存在。
                 </p>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px">
                   <div class="box sm">review-pr</div>
                   <div class="box sm">deploy-preview</div>
-                  <div class="box sm dashed">未注册 → unknown_capability</div>
+                  <div class="box sm dashed">未申报 → unknown_capability</div>
                 </div>
               </div>
             </div>
             <div class="fig-cap">
-              <b>边界画在「名字」上。</b>中枢能说的最多是「review-pr 这个命令，参数是这些」；这串东西能不能变成进程，由节点本地的 config.yaml 和节点进程的 OS 权限决定。
+              <b>边界画在「名字」上。</b>中枢能说的最多是「review-pr 这个能力，参数是这些」；这串东西能不能变成进程，由节点本地的 config.yaml 和节点进程的 OS 权限决定。
             </div>
           </div>
 
           <p class="prose">节点侧的真东西长这样，留在本地，永不上传：</p>
 
           <pre class="code"><span class="c"># ~/.anotifyd/config.yaml —— 只在本机，中枢读不到</span>
-commands:
+<span class="k">capabilities</span>:
   - name: review-pr
-    argv: ["/usr/local/bin/review", "--pr", "{pr}", "--json"]
+    argv: [<span class="s">"/usr/local/bin/review"</span>, <span class="s">"--pr"</span>, <span class="s">"{pr}"</span>, <span class="s">"--json"</span>]
+    outputs: [fix, done]        <span class="c"># 我会用到这两个出口名，不是目的地</span>
     idempotent: true
     retries: 1
   - name: deploy-preview
-    argv: ["/opt/deploy/bin/deploy", "--sha", "{sha}"]
+    argv: [<span class="s">"/opt/deploy/bin/deploy"</span>, <span class="s">"--sha"</span>, <span class="s">"{sha}"</span>]
+    outputs: []                 <span class="c"># 没有出口，干完就结束</span>
     idempotent: false</pre>
 
           <p class="prose">
-            节点收到任务后自己查表：<code>name</code> 命中本地注册表就取 <code>argv[]</code>，把 <code>params</code> 逐个填进占位符，然后 <code>execve</code> 直接起进程。<strong>不经过 shell</strong> —— 没有引号拼接、没有变量展开、没有通配符、没有管道。
+            节点收到任务后自己查表：<code>name</code> 命中本地申报的能力表就取 <code>argv[]</code>，把 <code>params</code> 逐个填进占位符，然后 <code>execve</code> 直接起进程。<strong>不经过 shell</strong> —— 没有引号拼接、没有变量展开、没有通配符、没有管道。
           </p>
           <div class="prose">
             <ul>
-              <li>未注册的 <code>name</code> → <code>unknown_capability</code>。不回退到默认命令，不做模糊匹配。</li>
+              <li>未申报的 <code>name</code> → <code>unknown_capability</code>。不回退到默认能力，不做模糊匹配。</li>
               <li><code>params</code> 的值只做占位替换，替换结果作为一个完整的 argv 元素传入，不再做二次字符串拼接。</li>
               <li><code>env</code> 由节点本地决定，中枢不提供环境变量。</li>
             </ul>
@@ -159,12 +161,12 @@ commands:
                 <tr>
                   <td>中枢存不存「要跑什么」</td>
                   <td>存。流程节点的命令、脚本、镜像都在中枢 DB 里</td>
-                  <td>不存。只有节点声明过的 <code>name</code></td>
+                  <td>不存。只有节点申报过的能力名 <code>name</code></td>
                 </tr>
                 <tr>
-                  <td>命令从哪来</td>
+                  <td>能力从哪来</td>
                   <td>中枢随任务下发，节点照着执行</td>
-                  <td>节点本地 <code>config.yaml</code>，中枢永远读不到</td>
+                  <td>节点本地 <code>config.yaml</code> 申报，中枢永远读不到 argv</td>
                 </tr>
                 <tr>
                   <td>怎么起进程</td>
@@ -174,7 +176,7 @@ commands:
                 <tr>
                   <td>中枢被打穿之后</td>
                   <td>攻击者拿到全部执行能力，可下发任意命令</td>
-                  <td>攻击者只能重复点名已注册的命令</td>
+                  <td>攻击者只能重复点名已申报的能力</td>
                 </tr>
               </tbody>
             </table>
@@ -182,7 +184,7 @@ commands:
 
           <h2>六道闸</h2>
           <p class="prose">
-            扇出、接力、成环都是真实需求，所以不能靠「不允许多发」来防死循环。改成一组数值闸：默认收紧，配置者可以在硬顶以内放松，越界在配置校验期直接拒绝，而不是运行时静默截断。
+            扇出、接力、成环都是真实需求，所以不能靠「不允许多发」来防死循环。改成一组数值闸：默认收紧，配置作者可以在硬顶以内放松，越界在配置校验期直接拒绝，而不是运行时静默截断。最后一列分两段写：第一段是它一直防的东西，第二段是它<b>在新模型下</b>防的东西。
           </p>
 
           <div class="tbl-wrap">
@@ -191,65 +193,65 @@ commands:
                 <tr>
                   <th>闸</th>
                   <th>内容</th>
-                  <th>默认</th>
-                  <th>硬顶</th>
+                  <th style="min-width: 76px">默认 / 硬顶</th>
                   <th>防什么</th>
+                  <th>在新模型下防什么</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
                   <td>G1 <code>allow_chain</code></td>
                   <td>不显式开启就不允许接力派生</td>
-                  <td>关</td>
-                  <td>不可配</td>
+                  <td>关 / 不可配</td>
                   <td>防「顺手」接力：一次事件不会靠自己长出第二条链</td>
+                  <td>表里查得到一行，不等于允许走。G1 独立于 <code>edges</code>：它管「允不允许派生」，跟图宽不宽无关。</td>
                 </tr>
                 <tr>
                   <td>G2 <code>max_hops</code></td>
                   <td>一条链上允许的最大跳数</td>
-                  <td>10</td>
-                  <td>32</td>
-                  <td>防能力互相触发把链路无限拉长</td>
+                  <td>10 / 32</td>
+                  <td>防链路无限拉长</td>
+                  <td>扇出由表决定，一跳可以同时走多条边；<code>max_hops</code> 管的是<b>深度</b>，不管宽度。</td>
                 </tr>
                 <tr>
                   <td>G3 环检测</td>
                   <td><code>path</code> 里能力名去重，重复即静默剪枝</td>
-                  <td>隐含</td>
-                  <td>不可配</td>
+                  <td>隐含 / 不可配</td>
                   <td>防 A→B→A 转圈；剪枝必须在 trace 上可见</td>
+                  <td><b>环在配置期就看得见</b>：<code>edges</code> 是显式声明的，画得出也查得出。运行期仍靠 <code>path</code> 去重剪枝 —— 看得见不等于不会走到。</td>
                 </tr>
                 <tr>
                   <td>G4 <code>max_tasks</code></td>
                   <td>单个事件最多扇出多少个任务</td>
-                  <td>100</td>
-                  <td>1000</td>
+                  <td>100 / 1000</td>
                   <td>防一条 webhook 把节点池一次打满</td>
+                  <td>一次查表返回 N 行就建 N 个任务，<b>表写多宽直接决定分发面</b>，所以这里必须封顶。</td>
                 </tr>
                 <tr>
                   <td>G6 <code>max_duration</code></td>
                   <td>一条链从根任务算起的总时长</td>
-                  <td>24h</td>
-                  <td>7d</td>
+                  <td>24h / 7d</td>
                   <td>防慢速循环长期占着租约和预算</td>
+                  <td>环虽然配置期可见，心跳、等待与重试照样能拖很久；总时长兜住慢速循环。</td>
                 </tr>
                 <tr>
                   <td>G5 <span style="color: var(--faint)">已废弃</span></td>
                   <td>付费任务数</td>
-                  <td>—</td>
-                  <td>—</td>
+                  <td>— / —</td>
                   <td>计费口径没定，先留一个空位比留一个错的闸好</td>
+                  <td>无。不参与路由，也不参与收敛判定。</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p class="prose">
-            注意分工：G3 保证终止，G2 只是兜住异常。<code>path</code> 去重之后，一条链最长不可能超过能力总数，<code>max_hops</code> 管的是「作者期望的深度」而不是「系统的安全上限」。两者都留着，因为前者防转圈，后者防人类配置失误。
+            注意分工：G3 保证终止，G2 只是兜住异常。<code>path</code> 去重之后，一条链最长不可能超过图里的能力数，<code>max_hops</code> 管的是「作者期望的深度」而不是「系统的安全上限」。两者都留着，因为前者防转圈，后者防人类配置失误。
           </p>
 
           <h2>三层可配，硬顶只能改代码</h2>
           <p class="prose">
-            同一个限额有三个来源，优先级从下往上：全局 env 给默认值，单个能力可以覆盖，代码里的常量是天花板。配置里写超过硬顶的数字，校验期直接报错，不悄悄收窄 —— 作者必须知道他写的东西没有生效。
+            同一个限额有三个来源，优先级从下往上：全局 env 给默认值，单版本（图配置）可以覆盖，代码里的常量是天花板。配置里写超过硬顶的数字，校验期直接报错，不悄悄收窄 —— 作者必须知道他写的东西没有生效。
           </p>
 
           <div class="fig">
@@ -257,13 +259,13 @@ commands:
               <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline">
                 <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">1 全局 env</span>
                 <code>ANOTIFY_MAX_HOPS=10</code>
-                <span style="font-size: 12px; color: var(--muted)">部署时定，所有能力的默认值</span>
+                <span style="font-size: 12px; color: var(--muted)">部署时定，所有版本的默认值</span>
               </div>
-              <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 单个能力可覆盖</div>
+              <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 单版本可覆盖</div>
               <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline">
-                <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">2 单个能力</span>
+                <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">2 单版本</span>
                 <code>limits.max_hops: 24</code>
-                <span style="font-size: 12px; color: var(--muted)">配置者填，越界即拒</span>
+                <span style="font-size: 12px; color: var(--muted)">图配置作者填，越界即拒</span>
               </div>
               <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 但不可越过</div>
               <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; border-style: dashed">
@@ -277,6 +279,43 @@ commands:
             </div>
           </div>
 
+          <h2>为什么删掉规则引擎是一道安全收益</h2>
+          <p class="prose">
+            旧模型里，「下一步派给谁」由规则里的 <code>match</code> 表达式决定。要让它能跑，中枢里就必须有一个<b>表达式求值器</b>：一个真正的解释器，要支持字段路径、比较、布尔组合、函数调用，还得维护一套自己的 DSL 语法和文档。这个求值器会成为整个中枢最危险的代码。
+          </p>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">旧模型 · 规则引擎</div>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                收到事件 → 解 payload → <b>求值表达式</b>（大量运算）→ 排序优先级 → 选一个 action。求值器要处理任意嵌套的输入结构，输入又来自外部 webhook。
+              </p>
+            </div>
+            <div class="card">
+              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">新模型 · 出口表</div>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                收到回报 <code>{capability, out}</code> → <b>一次索引查询</b> <code>edges</code> → 拿到 N 行 → 全部下发。没有求值，没有表达式，没有优先级。
+              </p>
+            </div>
+          </div>
+
+          <p class="prose" style="margin-top: 18px">
+            换成查表之后，中枢里<b>没有表达式求值，也没有 DSL 解析器</b>。这不是重构的副产品，是直接少掉的攻击面：
+          </p>
+
+          <div class="prose">
+            <ul>
+              <li><b>没有求值器可以注入。</b>表达式求值器天然要面对任意深度、任意类型的输入；现成的求值库历史上反复出过沙箱逃逸、原型链污染、正则灾难回溯。现在中枢只把 <code>capability</code> 和 <code>out</code> 当两个字符串拿去匹配索引，不把它当代码。</li>
+              <li><b>没有 DSL 要维护。</b>自己发明的表达式语法就是自己发明的解析器——解析器是 fuzzing 的经典目标，还得同时维护语法文档、错误信息、兼容性。删掉整套 DSL，就删掉了这一整类缺陷。</li>
+              <li><b>配置期的检查变强了。</b>表达式能不能写错要到求值（甚至到真跑）才知道；<code>edges</code> 是静态数据，可以在配置期把每条边的两端能力都校验一遍——指向不存在能力的行，根本进不了表。</li>
+              <li><b>路由不再依赖 payload。</b>旧模型里，payload 的任何一个字段都可能改变路由结果；现在 payload 只被当作 <code>params</code> 传给节点，<b>完全不参与中枢的路由决策</b>。伪造 payload 也就伪造不出路由。</li>
+            </ul>
+          </div>
+
+          <p class="prose">
+            一句话：安全边界不只是「中枢不掌握命令」，还包括「<b>中枢不解释任何用户提供的逻辑</b>」。求值器、优先级排序、择一——这三样一起去掉，中枢的路由部分就退化成一张固定的表和一个索引查询。
+          </p>
+
           <h2>信任边界与代价</h2>
           <p class="prose">
             这套边界不是免费的。把代价写清楚，比再堆一层防御更像一个工程决策。
@@ -286,13 +325,13 @@ commands:
             <div class="def">
               <dt>token 泄露 = 继承该节点全部标签</dt>
               <dd>
-                拿到节点 token 的人可以冒充这个节点接单，也就继承了它能跑的全部命名命令，以及它所属节点池的派发面。这是「中枢不掌握命令」的必然代价：中枢不知道命令是什么，就无法按命令粒度再授权。
+                拿到节点 token 的人可以冒充这个节点接单，也就继承了它能跑的全部已申报能力，以及它所属节点池的派发面。这是「中枢不掌握 argv」的必然代价：中枢不知道能力背后是什么程序，就无法按能力粒度再授权。
               </dd>
             </div>
             <div class="def">
               <dt>不做过度防御</dt>
               <dd>
-                不搞 per-command ACL，不搞短时二次签名，不做「中枢签名后节点验签再执行」的链式校验 —— 这些机制都要求中枢理解命令，正好把丢掉的东西请回来。要缩小半径就缩小节点：给高风险命令单独注册节点，用 <code>max_instances</code> 限制扩散面。
+                不搞 per-capability ACL，不搞短时二次签名，不做「中枢签名后节点验签再执行」的链式校验 —— 这些机制都要求中枢理解能力背后是什么，正好把丢掉的东西请回来。要缩小半径就缩小节点：给高风险能力单独注册节点，用 <code>max_instances</code> 限制扩散面。
               </dd>
             </div>
             <div class="def">
@@ -304,13 +343,13 @@ commands:
             <div class="def">
               <dt>最坏情况是什么</dt>
               <dd>
-                中枢完全被打穿：攻击者能读事件与结果、能反复点名已注册的命令、能伪造 <code>params</code>。但不能新增命令、不能改 argv、不能拿到节点上的凭据。伤害上限被钉在「这些命令被以奇怪的参数跑了很多次」。
+                中枢完全被打穿：攻击者能读事件与结果、能反复点名已申报的能力、能伪造 <code>params</code>。但不能新增能力、不能改 argv、不能拿到节点上的凭据。伤害上限被钉在「这些能力被以奇怪的参数跑了很多次」。
               </dd>
             </div>
           </dl>
 
           <div class="note warn">
-            知道代价，就别假装能消掉它。我们选择用「节点本地定义命令 + 中枢只认名字」换掉一大类远程执行风险，剩下的风险通过缩小节点权限面来管理，而不是通过更多协议层。
+            知道代价，就别假装能消掉它。我们选择用「节点本地定义能力 + 中枢只认名字 + 中枢不解释任何表达式」换掉一大类远程执行风险，剩下的风险通过缩小节点权限面来管理，而不是通过更多协议层。
           </div>
 
           <nav class="pager">
