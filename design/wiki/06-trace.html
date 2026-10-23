@@ -70,7 +70,7 @@
       }
       .wf-bar,
       .wf-dot,
-      .wf-rule,
+      .wf-look,
       .wf-prune,
       .wf-skip { position: absolute; }
       .wf-bar {
@@ -88,7 +88,7 @@
         border-radius: 999px;
         background: var(--accent);
       }
-      .wf-rule {
+      .wf-look {
         top: 8px;
         width: 2px;
         height: 17px;
@@ -126,6 +126,33 @@
         border-radius: 3px;
         background: var(--error-soft);
       }
+      /* 三种未触发原因的并列小示意：三行等宽，窄屏纵向堆叠 */
+      .why { display: flex; flex-wrap: wrap; gap: 10px; }
+      .why-cell {
+        flex: 1 1 200px;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        padding: 11px 12px;
+        background: var(--surface-2);
+      }
+      .why-t {
+        font-size: 11.5px;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 4px;
+        line-height: 1.4;
+      }
+      .why-d {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        line-height: 1.75;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .why-d .miss { color: var(--error-300); }
+      .why-d .hit { color: var(--success-300); }
+      .why-d .nil { color: var(--faint); }
       @media (max-width: 720px) {
         .wf { grid-template-columns: 12px 96px minmax(0, 1fr); column-gap: 7px; }
         .wf-n { font-size: 9.5px; }
@@ -185,7 +212,7 @@
           <div class="crumb">第 06 页 · 保障</div>
           <h1>可观测与版本</h1>
           <p class="lead">
-            事件系统上线后只有两个问题会被反复问：这件事到底走没走、为什么没走。前者靠 trace，后者靠逐条件求值加版本钉住。这一页讲这两样怎么变成默认能力，而不是出事以后再补日志。
+            事件系统上线后只有两个问题会被反复问：这件事到底走没走、为什么没走。前者靠 trace，后者靠查表和版本钉住。这一页讲这两样怎么变成默认能力，而不是出事以后再补日志。
           </p>
 
           <h2>对齐 OTel，不自己发明一套</h2>
@@ -255,7 +282,7 @@
 
           <h2>一条 trace 长什么样</h2>
           <p class="prose">
-            一个 <code>pull_request.opened</code> 事件进来，四条边被查、三条命中，各自派任务；任务的结果再产生新事件，接力往下走。每个条形是一个 span，长度就是它的时长。
+            一个 <code>pull_request.opened</code> 事件进来，用 <code>(source:github, pull_request.opened)</code> 查一次 <code>edges</code>，拿到三条边，各派一个任务；任务回报的 <code>out</code> 再查表，接力往下走。每个条形是一个 span，长度就是它的时长。
           </p>
 
           <div class="fig">
@@ -281,76 +308,76 @@
 
               <div class="wf-mark">A</div>
               <div class="wf-lbl">
-                <div class="wf-n">rule pr-review</div>
-                <div class="wf-s">4/4 passed</div>
+                <div class="wf-n">查表 → review</div>
+                <div class="wf-s">edges 1 行</div>
               </div>
-              <div class="wf-lane"><div class="wf-rule" style="left: 0.2%"></div></div>
+              <div class="wf-lane"><div class="wf-look" style="left: 0.2%"></div></div>
 
               <div class="wf-mark">A</div>
               <div class="wf-lbl">
-                <div class="wf-n">审查</div>
-                <div class="wf-s">0.1 → 41.2s</div>
+                <div class="wf-n">review</div>
+                <div class="wf-s">0.1 → 41.2s · out=fix</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 0.1%; width: 41.1%"></div></div>
 
               <div class="wf-mark">A</div>
               <div class="wf-lbl">
-                <div class="wf-n">复审</div>
-                <div class="wf-s">41.5 → 96.0s</div>
+                <div class="wf-n">implement</div>
+                <div class="wf-s">41.5 → 96.0s · out=fix</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 41.5%; width: 54.5%"></div></div>
 
               <div class="wf-mark">A</div>
               <div class="wf-lbl">
-                <div class="wf-n" style="color: var(--muted)">pruned · cycle</div>
+                <div class="wf-n" style="color: var(--muted)">pruned · path</div>
                 <div class="wf-s">t+96.2 未执行</div>
               </div>
               <div class="wf-lane"><div class="wf-prune" style="left: 96.2%"></div></div>
 
               <div class="wf-mark">B</div>
               <div class="wf-lbl">
-                <div class="wf-n">rule pr-lint</div>
-                <div class="wf-s">3/3 passed</div>
+                <div class="wf-n">查表 → lint</div>
+                <div class="wf-s">edges 1 行</div>
               </div>
-              <div class="wf-lane"><div class="wf-rule" style="left: 0.2%"></div></div>
+              <div class="wf-lane"><div class="wf-look" style="left: 0.2%"></div></div>
               <div class="wf-mark">B</div>
               <div class="wf-lbl">
                 <div class="wf-n">lint</div>
-                <div class="wf-s">0.1 → 12.4s</div>
+                <div class="wf-s">0.1 → 12.4s · out=autofix</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 0.1%; width: 12.3%"></div></div>
 
               <div class="wf-mark">B</div>
               <div class="wf-lbl">
-                <div class="wf-n">自动修复</div>
-                <div class="wf-s">12.6 → 38.0s</div>
+                <div class="wf-n">autofix</div>
+                <div class="wf-s">12.6 → 38.0s · out=null</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 12.6%; width: 25.4%"></div></div>
 
               <div class="wf-mark">C</div>
               <div class="wf-lbl">
-                <div class="wf-n">rule pr-notify</div>
-                <div class="wf-s">2/2 passed</div>
+                <div class="wf-n">查表 → notify.phone</div>
+                <div class="wf-s">edges 1 行</div>
               </div>
-              <div class="wf-lane"><div class="wf-rule" style="left: 0.2%"></div></div>
+              <div class="wf-lane"><div class="wf-look" style="left: 0.2%"></div></div>
 
               <div class="wf-mark">C</div>
               <div class="wf-lbl">
-                <div class="wf-n">推手机</div>
+                <div class="wf-n">notify.phone</div>
                 <div class="wf-s">0.1 → 0.9s</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 0.1%; width: 0.8%"></div></div>
 
               <div class="wf-mark">—</div>
               <div class="wf-lbl">
-                <div class="wf-n" style="color: var(--faint)">rule pr-release</div>
-                <div class="wf-s">3/4 passed 未命中</div>
+                <div class="wf-n" style="color: var(--faint)">边 (review, done)</div>
+                <div class="wf-s">在表里，这次没走</div>
               </div>
               <div class="wf-lane"><div class="wf-skip" style="left: 0.2%"></div></div>
             </div>
 
             <div class="fig-cap">
-              <b>横轴是时间，条的长度就是 span 的时长。</b>左侧字母是分支：A 审查链、B lint 链、C 通知链，都由 <code>t+0.00</code> 的同一个根事件扇出，互不等待、互不汇聚。查表是一瞬间，画成细竖线；被 G3 剪掉的那次没有时长，画成红虚框，位置就是它被拒的那一刻。最下面那行灰虚线是配了但没走成的边。不足一个像素的短 span 保底 3px 才看得见。
+              <b>横轴是时间，条的长度就是 span 的时长。</b>左侧字母是分支：A 审查链、B lint 链、C 通知链，都由 <code>t+0.00</code> 的同一个根事件扇出，互不等待、互不汇聚。查表是一瞬间，画成细竖线；被 <code>path</code> 剪掉的那次没有时长，画成红虚框，位置就是它被拒的那一刻。最下面那行灰虚线是表里有、但这次没被走到的边。不足一个像素的短 span 保底 3px 才看得见。
             </div>
           </div>
 
@@ -371,10 +398,84 @@
 
           <h2>「为什么没触发」</h2>
           <p class="prose">
-            这是事件中心最常被问到的一句话。多数自动化工具在这一步只能回「条件不满足」，剩下的靠人去翻配置。我们把求值过程本身变成可查询的数据——这是本产品的第一卖点：能当场回答「为什么没发生」。
+            这是事件中心最常被问到的一句话。<b>新模型下它变简单了</b>：路由只是查表，所以「为什么没走这条边」只有三种可能，而且每一种都是<b>图 + 回报</b>的直接对照，不需要把任何求值过程重放一遍。
           </p>
 
-          <h3>用户问句，系统回答</h3>
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>原因</th>
+                  <th>判据（一眼可查）</th>
+                  <th>trace 上的样子</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>表里没有这条边</td>
+                  <td>
+                    拿 <code>(from_capability, from_port)</code> 查 <code>edges</code>，返回 0 行。图是显式声明的，所以这一条<b>不跑也能知道</b>：把图投影出来就能看见缺口。
+                  </td>
+                  <td>事件 span 上记 <code>pruned / reason=no_edge</code>，附上查表的两个键；没有 task span。</td>
+                </tr>
+                <tr>
+                  <td>上游没回报这个出口</td>
+                  <td>
+                    上游任务的 <code>result.out</code> 是 <code>null</code> 或别的出口名。既然没有从这个出口出去，就压根没查过表。
+                  </td>
+                  <td>上游 span 上标着 <code>out=null</code> 或 <code>out=&lt;其它&gt;</code>，下游没有 span、也没有 <code>pruned</code> 记录。</td>
+                </tr>
+                <tr>
+                  <td>被 path 剪枝</td>
+                  <td>
+                    边查到了，但要去的那个能力已经在 <code>path</code> 里（从根到本任务这条路径的能力名序列）。静默剪枝：不报错、不暂停。
+                  </td>
+                  <td>红虚框加 <code>pruned / reason=path</code>，指出重复的是哪个能力名。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>三种原因长什么样</h3>
+          <div class="fig">
+            <div class="why">
+              <div class="why-cell">
+                <div class="why-t">① 表里没有这条边</div>
+                <div class="why-d">
+                  review --(fix)--&gt; ?<br />
+                  edges(review, fix)<br />
+                  <span class="miss">→ ∅ 0 行</span><br />
+                  记 pruned / no_edge
+                </div>
+              </div>
+              <div class="why-cell">
+                <div class="why-t">② 上游没回报这个出口</div>
+                <div class="why-d">
+                  review result.out<br />
+                  <span class="nil">→ null</span><br />
+                  <span class="nil">不查表</span><br />
+                  到此为止，非剪枝
+                </div>
+              </div>
+              <div class="why-cell">
+                <div class="why-t">③ 被 path 剪枝</div>
+                <div class="why-d">
+                  edges(implement, fix)<br />
+                  <span class="hit">→ review 1 行</span><br />
+                  path 里已有 review<br />
+                  <span class="miss">→ pruned / path</span>
+                </div>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>三者互斥，顺序也是固定的。</b>先看上游有没有回报这个出口（②），再看表里有没有这一行（①），最后看 path 里是不是已经有它（③）。三种判断都是常量时间，都只读一行数据。
+            </div>
+          </div>
+
+          <p class="prose">
+            这就是新模型最大的收益：<b>「为什么没触发」从一个推理问题变成了一个查表问题。</b>以前的逐条件求值要跑过才知道答案，现在连线上的证据都不需要——图是静态的，<code>path</code> 和 <code>out</code> 是落库的字段，两条一对照，答案是确定的。
+          </p>
+
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
@@ -389,124 +490,44 @@
                   <td>收到了。根 span 在 <code>t+0.00</code> 落库，原始 payload 挂在事件行上。</td>
                 </tr>
                 <tr>
-                  <td>有几条边看过它</td>
+                  <td>有几条边查到了</td>
                   <td>
-                    四条。每条一行求值记录：<code>pr-review</code>、<code>pr-lint</code>、<code>pr-notify</code>
-                    命中，<code>pr-release</code> 差一个条件。
+                    三条：<code>(source:github, pull_request.opened) → review / lint / notify.phone</code>，每条对应一个 task span。
                   </td>
                 </tr>
                 <tr>
-                  <td>哪一条差点命中</td>
+                  <td>为什么 review 没有往下走 done 那条边</td>
                   <td>
-                    <code>pr-release</code>：4 个条件 3 passed / 1 failed，失败的是
-                    <code>branch == main</code>，实际值 <code>feat/trace-ui</code>。
+                    review 回报的是 <code>out=fix</code>；<code>edges(review, done)</code> 确实在表里，但这次没被走到——图中灰虚线那一行。
+                  </td>
+                </tr>
+                <tr>
+                  <td>为什么 implement 之后的 review 没跑</td>
+                  <td>
+                    被 path 剪枝：<code>path = [review, implement]</code> 里已经有 <code>review</code>。红虚框加 <code>pruned / path</code>。
                   </td>
                 </tr>
                 <tr>
                   <td>是不是被限额剪掉了</td>
                   <td>
-                    不是。G1 放行、G2 未到顶（hop 1 / 10）、G4 未超（3 / 100）、G6 未超，四道闸当时的计数值都记着。
+                    不是。G1 放行、G2 未到顶（hop 1 / 10）、G4 未超（3 / 100）、G6 未超，闸的当时的计数值都记着。
                   </td>
                 </tr>
                 <tr>
-                  <td>被剪枝的那一次有痕迹吗</td>
-                  <td>有。红虚框加 <code>prune=cycle</code>，并指出重复的是哪个 <code>rule_id</code>。</td>
-                </tr>
-                <tr>
-                  <td>当时用的是哪个版本的图</td>
-                  <td>trace 上钉着 <code>rule_20261024T090402Z_5e7c1b0f</code>，点开就是当时的快照。</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <h3>逐条件求值</h3>
-          <p class="prose">
-            图 <code>match</code> 里的每个条件单独记一行：哪条条件、实际值多少、passed 还是 failed。不是只留一个总的「未命中」。
-          </p>
-
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead>
-                <tr>
-                  <th>rule <code>pr-release</code> 的条件</th>
-                  <th>实际值</th>
-                  <th>结果</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>event.type == pull_request.opened</code></td>
-                  <td><code>pull_request.opened</code></td>
-                  <td>passed</td>
-                </tr>
-                <tr>
-                  <td><code>repo == anotify/api</code></td>
-                  <td><code>anotify/api</code></td>
-                  <td>passed</td>
-                </tr>
-                <tr>
-                  <td><code>branch == main</code></td>
-                  <td><code>feat/trace-ui</code></td>
-                  <td>failed</td>
-                </tr>
-                <tr>
-                  <td><code>author.team == platform</code></td>
-                  <td><code>platform</code></td>
-                  <td>passed</td>
+                  <td>当时用的是哪张图</td>
+                  <td>trace 上钉着 <code>grf_20261024T090402Z_5e7c1b0f</code>，点开就是当时的 edges + capabilities 快照。</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p class="prose">
-            要逐条记录就不能短路：四个条件全部求完再下结论。少了短路这个优化，换来的是「差一点命中」能被看见——如果第三个条件失败就停下，用户永远不知道第四个条件满不满足。
-          </p>
-
-          <h3>三种未触发原因，同一套痕迹</h3>
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead>
-                <tr>
-                  <th>原因</th>
-                  <th>系统做了什么</th>
-                  <th>trace 上的样子</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>表里没有这条边</td>
-                  <td>条件求值完，没有一条边成立，不建任务。</td>
-                  <td>
-                    事件 span 上一条求值记录：<code>pruned / reason=no_match</code>，附逐条件明细；没有 task span。
-                  </td>
-                </tr>
-                <tr>
-                  <td>被闸剪枝</td>
-                  <td>
-                    查到了边，但被 G1 <code>allow_chain</code>、G2 <code>max_hops</code>、G4
-                    <code>max_tasks</code> 或 G6 <code>max_duration</code> 拦下。不建任务。
-                  </td>
-                  <td>红虚框加 <code>gate=G2 max_hops=10 hop=10</code>，带上撞线那一刻的计数值。</td>
-                </tr>
-                <tr>
-                  <td>被 path 环检测剪枝</td>
-                  <td>
-                    <code>rule_id</code> 已经在本任务的 <code>path</code> 里（G3，不可配），静默剪枝：不报错、不暂停、不告警。不建任务。
-                  </td>
-                  <td>红虚框加 <code>prune=cycle rule_id=pr-review</code>，指出是哪一条重复了。</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <p class="prose">
-            三种原因在界面上共用一个视觉语言（红虚框），区别只在 reason 字段和随附的证据。排障时只需认一种标记，要精确判断再读 reason。剪枝是静默的，但一定留痕——静默指的是不打断业务，不是不记录。
+            三种原因在界面上共用一个视觉语言（红虚框），区别只在 reason 字段和随附的证据：<code>no_edge</code> 附查表的两个键，<code>path</code> 附重复的能力名，而「上游没回报这个出口」根本不算剪枝——它是一个正常结束的分支，只在 span 上标 <code>out</code>。剪枝是静默的，但一定留痕——静默指的是不打断业务，不是不记录。
           </p>
 
           <h2>版本钉住</h2>
           <p class="prose">
-            复盘要能回答「当时那张表长什么样」。所以图（edges + capabilities）、节点 manifest、中枢侧能力注册表都按内容存快照，每次变更追加一行。
+            复盘要能回答「当时那张图长什么样」。所以出口图、节点 manifest、中枢侧能力注册表都按内容存快照，每次变更追加一行。
           </p>
 
           <div class="tbl-wrap">
@@ -521,17 +542,19 @@
               <tbody>
                 <tr>
                   <td><code>graph_versions</code></td>
-                  <td>一张图的完整快照：<code>match</code>、<code>action</code>、<code>max_hops</code> 等限额、生命周期配置。</td>
-                  <td>图被保存时。</td>
+                  <td>
+                    整张出口图的快照：<code>edges</code> 的全部行，加上各节点申报的 <code>capabilities[].outputs</code>。图是一份整体，拆开钉就没法回答「当时有没有这条边」。
+                  </td>
+                  <td>图被保存时（增删一条边、或某个能力的出口集变了）。</td>
                 </tr>
                 <tr>
                   <td><code>node_manifest_versions</code></td>
-                  <td>节点上报的 manifest 内容快照：命令名、标签声明、<code>idempotent</code> / <code>resumable</code>。</td>
+                  <td>节点上报的 manifest 内容快照：能力名、标签声明、<code>outputs</code>、<code>sticky</code>、<code>idempotent</code> / <code>resumable</code>。</td>
                   <td>节点上报的内容变了。</td>
                 </tr>
                 <tr>
                   <td><code>registry_versions</code></td>
-                  <td>中枢侧命令注册表的快照。</td>
+                  <td>中枢侧能力注册表的快照。</td>
                   <td>注册表变了。</td>
                 </tr>
               </tbody>
@@ -545,7 +568,7 @@
           <p class="prose">每行的标识是 <code>&lt;prefix&gt;_&lt;UTC时间&gt;_&lt;content_hash前8&gt;</code>：</p>
 
           <pre class="code">reg_20261023T101500Z_a1b2c3d4   <span class="c"># registry_versions</span>
-rule_20261024T090402Z_5e7c1b0f  <span class="c"># graph_versions</span>
+grf_20261024T090402Z_5e7c1b0f   <span class="c"># graph_versions</span>
 man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span></pre>
 
           <h3>钉 hash，不钉时间</h3>
@@ -553,7 +576,7 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
             trace 上记的是不可变的版本 id（那串 hash），不是「按时间反查当时生效的版本」这种结果。差别全在补录上。
           </p>
           <p class="prose">
-            假设有人在十月导入了一张八月的图历史版本。任何按「<code>created_at</code> 早于 span 时间且取最新一条」实现的解析，都会让八月的旧 trace 突然指向另一张表——旧结论当场变形，而没人动过那条 trace。钉死 hash 的话，补录只能新增一行，旧 trace 的指向一个字节都不会变。
+            假设有人在十月导入了一张八月的图版本。任何按「<code>created_at</code> 早于 span 时间且取最新一条」实现的解析，都会让八月的旧 trace 突然指向另一张图——旧结论当场变形，而没人动过那条 trace。钉死 hash 的话，补录只能新增一行，旧 trace 的指向一个字节都不会变。
           </p>
 
           <div class="note">
@@ -562,27 +585,27 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
 
           <h3>节点不上报版本号</h3>
           <p class="prose">
-            节点只上报 manifest 内容，不报自己算的版本号。版本号是节点自己起的名字，中枢无从校验，节点一改编号图历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
+            节点只上报 manifest 内容，不报自己算的版本号。版本号是节点自己起的名字，中枢无从校验，节点一改编号方式历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
           </p>
 
           <h2>叠回去看</h2>
           <p class="prose">
-            复盘时取 trace 上钉住的版本 id，读出当时的快照，再把快照里的每个分支与 trace 上真实出现的 span 对齐：出现了的画亮实线，配了但这次没走到的画灰虚线，被剪掉的画红虚框。
+            复盘时取 trace 上钉住的版本 id，读出当时的图快照，再把图里的每条边与 trace 上真实出现的 span 对齐：出现了的画亮实线，图里有但这次没走到的画灰虚线，被剪掉的画红虚框。
           </p>
 
           <div class="fig">
             <div style="display: flex; flex-wrap: wrap; gap: 10px">
               <div class="box sm"><span class="sw solid"></span>亮实线 · 走过</div>
-              <div class="box sm"><span class="sw dashed"></span>灰虚线 · 配了没走</div>
+              <div class="box sm"><span class="sw dashed"></span>灰虚线 · 有边没走</div>
               <div class="box sm"><span class="sw boxed"></span>红虚框 · 剪枝</div>
             </div>
             <div class="fig-cap">
-              <b>三层叠加的读法。</b>亮实线是这次真实执行的路径；灰虚线是当时的配置里存在、这次却没走到的分支，回答「本来还会发生什么」；红虚框是被剪枝挡住的那一步，回答「差一点就发生了」。
+              <b>三层叠加的读法。</b>亮实线是这次真实执行的路径；灰虚线是当时的图里存在、这次却没走到的边，回答「本来还会发生什么」；红虚框是被剪枝挡住的那一步，回答「差一点就发生了」。
             </div>
           </div>
 
           <p class="prose">
-            三种标记都来自同一份 trace 加同一份版本快照，不用再查别的地方。这也是不做拖拽画布的原因之一：能解释的东西不靠画出来，靠记下来。
+            三种标记都来自同一份 trace 加同一份图快照，不用再查别的地方。这也是不做拖拽画布的原因之一：能解释的东西不靠画出来，靠记下来。
           </p>
 
           <nav class="pager">
