@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html" class="active"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -85,7 +85,7 @@
               <div class="arr"><span>→</span></div>
               <div class="box">node<span class="sub">execve(argv[])</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box">手机<span class="sub">human sink</span></div>
+              <div class="box">手机<span class="sub">end · 推手机</span></div>
             </div>
             <div class="fig-cap">
               <b>六跳一条线。</b>真正落库的只有两处：<code>events</code> 与 <code>tasks</code>，其余都是状态迁移。中间的 <code>edges</code> 不是一张运行时写进去的表，而是配置期就画好的出口图——跑起来只是读它。
@@ -115,12 +115,12 @@
               <div class="step-title">查出口表</div>
               <div class="step-body">
                 取事件的 <code>(source, type)</code> 作为起点，去 <code>edges</code> 查一次索引：从
-                <code>(from_capability, from_port)</code> 查到 N 行 <code>to_capability</code>，就是 N 个下游能力。触发器没有入边，所以它的 <code>from_capability</code> 由事件类型充当（<code>source:github</code>）。
+                <code>(from_capability, from_port)</code> 查到 N 行 <code>to_capability</code>，就是 N 个下游能力。触发器没有入边，所以它的 <code>from_capability</code> 由事件类型充当（<code>origin:github</code>）。
               </div>
               <pre class="code"><span class="c">-- 中枢侧唯一的路由依据：一次索引查询</span>
 <span class="k">SELECT</span> to_capability
   <span class="k">FROM</span> edges
- <span class="k">WHERE</span> from_capability = <span class="s">'source:github'</span>
+ <span class="k">WHERE</span> from_capability = <span class="s">'origin:github'</span>
    <span class="k">AND</span> from_port       = <span class="s">'pull_request.opened'</span>;
 
 <span class="c">-- 返回 N 行 → N 个下游能力，全部建任务</span></pre>
@@ -139,10 +139,10 @@
                 N 行结果在<b>同一个事务</b>里 INSERT N 行 <code>tasks</code>。这是扇出，不是互斥选择：一个 PR 可以既派 agent 审查、又推手机，两条都下发。事务保证了「要么都发出去，要么一条都没有」。
               </div>
               <pre class="code"><span class="k">BEGIN</span>;
-<span class="c">-- edges 第 1 行 → machine sink（capability = review）</span>
-<span class="k">INSERT INTO</span> tasks (id, event_id, capability, sink, state) <span class="k">VALUES</span> (:t1, :event_id, <span class="s">'review'</span>, <span class="s">'machine'</span>, <span class="s">'pending'</span>);
-<span class="c">-- edges 第 2 行 → human sink（capability = notify.phone）</span>
-<span class="k">INSERT INTO</span> tasks (id, event_id, capability, sink, state) <span class="k">VALUES</span> (:t2, :event_id, <span class="s">'notify.phone'</span>, <span class="s">'human'</span>, <span class="s">'pending'</span>);
+<span class="c">-- edges 第 1 行 → pipe 能力 review</span>
+<span class="k">INSERT INTO</span> tasks (id, event_id, capability, state) <span class="k">VALUES</span> (:t1, :event_id, <span class="s">'review'</span>, <span class="s">'pending'</span>);
+<span class="c">-- edges 第 2 行 → end 能力 notify.phone</span>
+<span class="k">INSERT INTO</span> tasks (id, event_id, capability, state) <span class="k">VALUES</span> (:t2, :event_id, <span class="s">'notify.phone'</span>, <span class="s">'pending'</span>);
 <span class="k">COMMIT</span>;</pre>
             </div>
 
@@ -153,7 +153,7 @@
                 <code>lease_until = now + 30s</code>，状态 <code>pending → assigned</code>。
                 <b>默认就是纯负载均衡</b>——结果存在中枢，下游读结果不需要回原机器。
                 只有能力在 manifest 里声明了 <code>sticky</code>（共享工作目录、增量编译这类），才先查
-                <code>node_pins</code>。本期不做收集，所以绝大多数任务走纯均衡那条路。
+                <code>runner_pins</code>。本期不做收集，所以绝大多数任务走纯均衡那条路。
               </div>
               <pre class="code"><span class="c">-- 默认：纯负载均衡，无状态</span>
 order_by inflight / concurrency asc
@@ -161,27 +161,27 @@ limit 1
 
 <span class="c">-- 仅当 manifest.capabilities[].sticky 声明了才走：</span>
 sticky_key = sha256(trace_id ∥ capability ∥ selector)
-<span class="c">-- node_pins 命中则直用；未命中按负载挑一个并写入</span></pre>
+<span class="c">-- runner_pins 命中则直用；未命中按负载挑一个并写入</span></pre>
             </div>
 
             <div class="step">
-              <div class="step-title">节点接单</div>
+              <div class="step-title">执行器接单</div>
               <div class="step-body">
-                节点收到 assign（或主动拉取），确认能力名在自己 manifest 里，回报 <code>ack</code>。<b>ack 只是接单确认，不是完成</b>。状态 <code>assigned → acked</code>，目标窗口 <code>assign → ack</code> 20s。
+                执行器收到 assign（或主动拉取），确认能力名在自己 manifest 里，回报 <code>ack</code>。<b>ack 只是接单确认，不是完成</b>。状态 <code>assigned → acked</code>，目标窗口 <code>assign → ack</code> 20s。
               </div>
             </div>
 
             <div class="step">
               <div class="step-title">执行</div>
               <div class="step-body">
-                节点在本地 <code>execve(argv[])</code> 跑能力对应的命令，绝不经过 <code>/bin/sh -c</code>。执行期间每 10s 发一次心跳续租。状态 <code>acked → running</code>。中枢从头到尾不知道 argv 长什么样。
+                执行器在本地 <code>execve(argv[])</code> 跑能力对应的命令，绝不经过 <code>/bin/sh -c</code>。执行期间每 10s 发一次心跳续租。状态 <code>acked → running</code>。中枢从头到尾不知道 argv 长什么样。
               </div>
             </div>
 
             <div class="step">
               <div class="step-title">结果回流</div>
               <div class="step-body">
-                节点回报 <code>result</code>：<code>{status, out, summary, artifacts}</code>，上限 8KB，超了截断并标记。状态从 <code>running</code> 落到 <code>succeeded</code> 或 <code>failed</code>，同时往 <code>events</code> 写一条派生事件。
+                执行器回报 <code>result</code>：<code>{status, out, summary, artifacts}</code>，上限 8KB，超了截断并标记。状态从 <code>running</code> 落到 <code>succeeded</code> 或 <code>failed</code>，同时往 <code>events</code> 写一条派生事件。
                 这里最关键的是新增的 <code>out</code>：<b>出口名，或 <code>null</code></b>。它同时回答了两件事——有没有下游、有哪个下游。
               </div>
               <pre class="code">{
@@ -245,45 +245,31 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
             </div>
 
             <div class="step">
-              <div class="step-title">收敛</div>
+              <div class="step-title">到头</div>
               <div class="step-body">
-                trace 内不再有 <code>pending / assigned / acked / running</code> 的任务，就记为
-                <code>trace.settled</code>，并向 human sink 发一条通知。
+                每个任务跑完都回报 <code>out</code>。拿（这个能力, 这个 <code>out</code>）再查一次表：
+                有边就建下一个任务，<b>没边就在这里走到头</b>。
               </div>
               <div class="step-body" style="margin-top: 8px">
-                <b>但“还有没有人会接着跑”不能靠看状态机猜。</b>任务落到 <code>succeeded</code> 只是这一个 span 结束了，
-                它随时可能再派生出下一跳；而派生事件可能晚到，也可能永远不来。
+                <b>中枢不判断「整条链是不是结束了」。</b>它没有这个职责，也不该有——
+                链有没有走完，是<b>你查看事件流向时</b>才关心的事，不是系统要实时维护的状态。
               </div>
               <div class="step-body" style="margin-top: 8px">
-                所以出口由<b>节点在结果里回报</b>：<code>result.out</code>。
-                它必须在命令<b>跑完之后</b>才说得出来——成功要跑完才知道，失败也要跑完才知道。
-                中枢不预判、不反推，只看这一个字段有没有回报过。<b><code>null</code> 也算已回报</b>（它明确表示「到头了」）。
+                这里只保留一个事实：<code>result.out</code> 由执行器自己报。
+                它必须在<b>跑完之后</b>才说得出来——成功要跑完才知道，失败也要跑完才知道。
+                中枢不预判、不反推，只看这个字段有没有回报过。<code>null</code> 也算已回报（明确表示「到头了」）。
               </div>
-              <div class="step-body" style="margin-top: 8px">
-                另外，收敛不等于全成功：<code>failed</code> 和 <code>abandoned</code> 也算落定，只是通知里会点明是哪一种。
-              </div>
-              <pre class="code"><span class="c">-- 收敛判定：三个条件，缺一不可</span>
-<span class="n">1</span> 无 pending / assigned / acked / running
-<span class="n">2</span> 无未到期任务（expires_at / not_before 全在过去）
-<span class="n">3</span> 每个终态任务都 <span class="k">out 已回报</span>（null 或具体值都算）
+              <pre class="code"><span class="c">-- 查表决定还有没有下一跳，这是唯一的路由动作</span>
+<span class="k">SELECT</span> to_capability <span class="k">FROM</span> edges
+ <span class="k">WHERE</span> from_capability = :cap <span class="k">AND</span> from_port = :out;
 
-<span class="c">-- 条件 2 是必须的：一个还在队列里排队的任务也满足条件 1，</span>
-<span class="c">-- 但它随时会被派发。少了它，trace 会在队列中途提前收敛。</span>
-
-<span class="c">-- out 来自节点回报的 result，不是 manifest 声明：</span>
-<span class="c">-- 命令跑完之前，谁也不知道它会走哪个出口。</span>
-<span class="c">-- 缺失 out → 按「未回报」计入（保守，不收敛），直到 max_duration 兜底。</span></pre>
-              <div class="note err">
-                <b>这里有个容易漏掉的竞态。</b>收敛判定的第一次扫描注定是「看着能收敛」——
-                因为 trigger 事务是<b>第二步</b>才提交的，扫描可能跑在它前面。
-                所以不能在扫描成立时就立刻发通知，必须<b>再查一次</b>（写一个
-                <code>pending_settle</code> 标记 → 下一轮复核 → 仍成立才发）。
-                否则现象就是：链明明还有下一跳，手机已经先响了。
-              </div>
+<span class="c">-- 0 行 = 到头。不建任务，没有「整条链结束」的判定，也不发通知。</span>
+<span class="c">-- 通知是图里的一条边（→ notify.phone），它在链上正常派发，</span>
+<span class="c">-- 不依赖任何「链走完了」的全局状态。</span></pre>
             </div>
           </div>
 
-          <h2>两个 sink 同时发生</h2>
+          <h2>一个事件，两条分支</h2>
           <p class="prose">
             扇出的典型样子：一个 PR 事件，一半去机器、一半去人。两条分支从同一行 <code>events</code> 长出来，之后互不相干。
           </p>
@@ -296,14 +282,14 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
               <div class="bracket" aria-hidden="true"></div>
               <div class="fanout-col">
                 <div class="lane machine" style="margin-bottom: 0">
-                  <div class="lane-label">machine sink · 至少一次</div>
+                  <div class="lane-label">pipe · 至少一次</div>
                   <div class="box sm">
                     能力 review → node agent 审查
                     <span class="sub">ack · 租约 · 重试 · 必须回报</span>
                   </div>
                 </div>
                 <div class="lane human" style="margin-bottom: 0">
-                  <div class="lane-label">human sink · 尽力而为</div>
+                  <div class="lane-label">end · 尽力而为</div>
                   <div class="box sm">
                     能力 notify.phone → 推手机
                     <span class="sub">发了就忘 · 不回报 · 可丢</span>
@@ -312,7 +298,7 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
               </div>
             </div>
             <div class="fig-cap">
-              <b>一条事件，两个产物。</b>左支是一次 INSERT 出来的 task，右支也是一次 INSERT 出来的 task，两者只是 <code>sink</code> 字段不同——在 <code>edges</code> 表里就是<b>两行</b>不同的边。
+              <b>一条事件，两个产物。</b>左支是一次 INSERT 出来的 task，右支也是一次 INSERT 出来的 task，两者只是 <code>end</code> 字段不同——在 <code>edges</code> 表里就是<b>两行</b>不同的边。
             </div>
           </div>
           <p class="prose">
@@ -321,7 +307,7 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
 
           <h2>租约与心跳</h2>
           <p class="prose">
-            租约回答一个问题：这个任务现在归谁。答案写死在 <code>lease_until</code> 里，节点用心跳把它往后推。
+            租约回答一个问题：这个任务现在归谁。答案写死在 <code>lease_until</code> 里，执行器用心跳把它往后推。
           </p>
           <div class="fig">
             <div class="flow">
@@ -356,7 +342,7 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
               <div class="box dashed sm">TTL 30s / 心跳 10s = 允许连丢两次</div>
             </div>
             <div class="fig-cap">
-              <b>心跳不是保活，是续租。</b>连续两次心跳没到，租约到期，任务退回可派发状态——由中枢判，不由节点自报。
+              <b>心跳不是保活，是续租。</b>连续两次心跳没到，租约到期，任务退回可派发状态——由中枢判，不由执行器自报。
             </div>
           </div>
 
@@ -370,14 +356,14 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
                 <tr>
                   <th>维度</th>
                   <th>租约过期 lease_expired</th>
-                  <th>节点消失 abandoned</th>
+                  <th>执行器消失 abandoned</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
                   <td>触发</td>
                   <td>30s 内没有心跳（含没等到 ack）</td>
-                  <td>节点下线、被移除、长连接断到判死</td>
+                  <td>执行器下线、被移除、长连接断到判死</td>
                 </tr>
                 <tr>
                   <td>状态</td>
@@ -416,14 +402,14 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
               <div class="box sm">pending 重派<span class="sub">attempt 2 / 3</span></div>
             </div>
             <div class="flow" style="margin-top: 16px">
-              <div class="box sm">assigned<span class="sub">节点在线</span></div>
+              <div class="box sm">assigned<span class="sub">执行器在线</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box sm">节点消失<span class="sub">无法确认副作用</span></div>
+              <div class="box sm">执行器消失<span class="sub">无法确认副作用</span></div>
               <div class="arr"><span>→</span></div>
               <div class="box err sm">abandoned<span class="sub">不重试 · 默认通知</span></div>
             </div>
             <div class="fig-cap">
-              <b>abandoned 不等于成功。</b>它表示「不知道做没做成」，所以默认要吵醒人。唯一的例外是节点 manifest 标了 <code>resumable: true</code>——能力对应的命令本身可重入，才会重派到新节点。
+              <b>abandoned 不等于成功。</b>它表示「不知道做没做成」，所以默认要吵醒人。唯一的例外是能力清单标了 <code>resumable: true</code>——能力对应的命令本身可重入，才会重派到新机器。
             </div>
           </div>
 

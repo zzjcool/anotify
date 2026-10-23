@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -100,7 +100,7 @@
                 </tr>
                 <tr>
                   <td>接力</td>
-                  <td>节点回报的 <code>out</code> 拿去查表得到下游能力；<code>allow_chain</code> 显式开启才允许。</td>
+                  <td>执行器回报的 <code>out</code> 拿去查表得到下游能力；<code>allow_chain</code> 显式开启才允许。</td>
                 </tr>
                 <tr>
                   <td>成环</td>
@@ -111,16 +111,16 @@
                   <td>TTL 30s、心跳 10s、<code>max_attempts</code> 3、退避 10s → 60s → 300s；<code>pending → assigned → acked → running → succeeded | failed | canceled | abandoned</code>。</td>
                 </tr>
                 <tr>
-                  <td>节点池</td>
-                  <td>两级：<code>nodes</code> 管身份与脑、<code>node_instances</code> 管执行器；三层并发上限取 min，派发按最少负载优先。</td>
+                  <td>执行器池</td>
+                  <td>两级：<code>runners</code> 管身份与脑、<code>runner_instances</code> 管实例；三层并发上限取 min，派发按最少负载优先。</td>
                 </tr>
                 <tr>
                   <td>粘性路由</td>
-                  <td><b>按能力声明开启</b>（<code>manifest.capabilities[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                  <td><b>按能力声明开启</b>（<code>manifest.capabilities[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>runner_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
                 </tr>
                 <tr>
                   <td>版本钉住</td>
-                  <td>图配置（含 <code>edges</code>）、节点 manifest、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
+                  <td>图配置（含 <code>edges</code>）、执行器能力清单、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
                 </tr>
                 <tr>
                   <td>六道闸</td>
@@ -128,11 +128,11 @@
                 </tr>
                 <tr>
                   <td>出口回报</td>
-                  <td>节点在 <code>result</code> 里回报 <code>out</code>（出口名或 <code>null</code>，跑完才知道），收敛只认这个，不反推业务。缺失 <code>out</code> 按未回报计（保守，不收敛）。</td>
+                  <td>执行器在 <code>result</code> 里回报 <code>out</code>（出口名或 <code>null</code>，跑完才知道），收敛只认这个，不反推业务。缺失 <code>out</code> 按未回报计（保守，不收敛）。</td>
                 </tr>
                 <tr>
                   <td>通知</td>
-                  <td>human sink：推手机，尽力而为、可丢、不回报结果；与 machine sink 永不混用。</td>
+                  <td>推手机：<code>end</code> 角色，<code>out</code> 恒为 <code>null</code>。尽力而为、可丢。</td>
                 </tr>
               </tbody>
             </table>
@@ -166,7 +166,7 @@
                 <tr>
                   <td>收集 / <code>join</code></td>
                   <td>要回答「那几件事都回来了吗」，得引入批次、计数、菱形依赖、部分失败语义，是整套新状态机。</td>
-                  <td>等节点内并行这个替代方案被反复抱怨不够用时，再单独设计</td>
+                  <td>等「执行器内部并行」这个替代方案被反复抱怨不够用时，再单独设计</td>
                 </tr>
                 <tr>
                   <td><code>batching</code></td>
@@ -179,14 +179,14 @@
                   <td>暂时不打算。这是与 n8n 的定位分界线，不是待办</td>
                 </tr>
                 <tr>
-                  <td>任意代码节点</td>
+                  <td>任意代码执行</td>
                   <td>中枢一旦能存代码，就回到「中枢知道要跑什么」，安全边界直接失效。</td>
-                  <td>不做。需要复杂逻辑就在节点本地写成一个已申报的能力</td>
+                  <td>不做。需要复杂逻辑就在执行器本地写成一个已申报的能力</td>
                 </tr>
                 <tr>
                   <td>中枢存第三方密钥</td>
-                  <td>中枢存谁的密钥，谁就有动机把中枢变成攻击目标；凭据留在节点侧才符合边界。</td>
-                  <td>不做。集成需要凭据时，凭据由节点自身环境提供</td>
+                  <td>中枢存谁的密钥，谁就有动机把中枢变成攻击目标；凭据留在执行器侧才符合边界。</td>
+                  <td>不做。集成需要凭据时，凭据由执行器自身环境提供</td>
                 </tr>
                 <tr>
                   <td>大量第三方集成</td>
@@ -204,7 +204,7 @@
                   <td>出现托管版需求时，先在数据层加 <code>tenant_id</code>，UI 随后</td>
                 </tr>
                 <tr>
-                  <td>人工审批节点</td>
+                  <td>人工审批环节</td>
                   <td>审批需要挂起态、超时策略、审批人身份与通知重试，是另一套生命周期。</td>
                   <td>等「中断型任务」语义设计完成后再做，先用通知 + 人工触发替代</td>
                 </tr>
@@ -244,7 +244,7 @@
           </div>
 
           <p class="prose" style="margin-top: 18px">
-            没有收集，怎么实现「等一组都完成」？<strong>放在节点内部。</strong>A 在自己进程内并行、自己等待、自己汇总，最后回报中枢一个 result；对中枢来说这始终是一个任务。代价是 A 内部那层并行在 trace 上不可见。
+            没有收集，怎么实现「等一组都完成」？<strong>放在执行器内部。</strong>A 在自己进程内并行、自己等待、自己汇总，最后回报中枢一个 result；对中枢来说这始终是一个任务。代价是 A 内部那层并行在 trace 上不可见。
           </p>
 
           <h2>预留的扩展点</h2>
@@ -268,13 +268,13 @@
             <div class="def">
               <dt>动态扇出 <code>fanout</code> · 预留位置</dt>
               <dd>
-                位置留在两处：一是 <code>edges</code> 表天然就是 N 对 N——一行变多行就是变宽，不需要新的图结构；二是节点回报与派生新事件走<b>同一个上报入口</b>，以后要加新的派生类型，只需在载荷里加一个帧，不动连接、鉴权与重试逻辑。
+                位置留在两处：一是 <code>edges</code> 表天然就是 N 对 N——一行变多行就是变宽，不需要新的图结构；二是执行器回报与派生新事件走<b>同一个上报入口</b>，以后要加新的派生类型，只需在载荷里加一个帧，不动连接、鉴权与重试逻辑。
               </dd>
             </div>
           </dl>
 
           <p class="prose" style="margin-top: 18px">
-            <strong>一句话收尾：</strong>「本期做不到」是排期问题 —— 知道怎么做但还没做；「以后一定做」是已经写进路线的承诺 —— 而拖拽画布、任意代码节点、中枢存密钥不属于这两类，它们不是排期，是方向。
+            <strong>一句话收尾：</strong>「本期做不到」是排期问题 —— 知道怎么做但还没做；「以后一定做」是已经写进路线的承诺 —— 而拖拽画布、任意代码执行、中枢存密钥不属于这两类，它们不是排期，是方向。
           </p>
 
           <nav class="pager">

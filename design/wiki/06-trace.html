@@ -181,7 +181,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -280,9 +280,61 @@
             借的是模型和字段名，不是整套 SDK 与 collector 运行时。落到实现上就是几张表加几个字段——这也是「能解释」的前提：字段在库里才查得出来；只活在进程内存里的 trace，事后什么问题都回答不了。
           </p>
 
+          <h2>trace 是一趟，span 是一段</h2>
+          <p class="prose">
+            这两个词常被混着用，但关系很简单：<b>trace 是整趟，span 是其中一段</b>。
+          </p>
+
+          <div class="fig">
+            <div class="flow" style="align-items: flex-start">
+              <div class="flow-item">
+                <span class="box">trace<span class="sub">一次 webhook 引起的全部工作</span></span>
+              </div>
+              <span class="arr" style="margin-top: 14px"><span>⊃</span></span>
+              <div class="flow-item">
+                <span class="box accent">span<span class="sub">其中的一次执行</span></span>
+              </div>
+              <span class="arr" style="margin-top: 14px"><span>=</span></span>
+              <div class="flow-item">
+                <span class="box ok">task<span class="sub">就是我们的一行任务</span></span>
+              </div>
+            </div>
+            <div class="fig-cap">
+              一条 trace 里有多个 span，用 <code>parent_span_id</code> 连成树；所有 span 共用同一个 <code>trace_id</code>。
+            </div>
+          </div>
+
+          <h3>我们这里，span 就叫 task</h3>
+          <p class="prose">
+            既然 <code>span_id</code> 就是任务 id、一个任务就是一段执行，那<b>没必要再造一个 span 概念</b>。
+            所以全仓只有一个名字：<code>task</code>。表叫 <code>tasks</code>，id 前缀 <code>tsk_</code>，
+            OTel 意义上的 <code>span_id</code> 直接取这个值。
+          </p>
+
+          <pre class="code"><span class="c">-- 没有 spans 表，也不需要</span>
+<span class="k">SELECT</span> id <span class="k">AS</span> span_id,          <span class="c">-- OTel 视角</span>
+       parent_task_id <span class="k">AS</span> parent_span_id,
+       trace_id,
+       started_at, finished_at  <span class="c">-- 就是 span 的起止</span>
+  <span class="k">FROM</span> tasks
+ <span class="k">WHERE</span> trace_id = :trace_id;</pre>
+
+          <div class="note">
+            <b>只有一次查表是「零长度 span」。</b>查表瞬间完成、没有起止，所以它不建任务行，
+            只在事件 span 上留一条记录。<b>这不影响可解释性</b>——去痕迹里能查到「查了哪个键、返回几行」，
+            本来也不需要给它算时长。
+          </div>
+
+          <h3>什么时候这个名字会不够用</h3>
+          <p class="prose">
+            如果将来出现<b>一个任务内部有多个可观测阶段</b>（比如「准备环境 30s → 跑测试 90s」），
+            那么一个 task 就不再等于一个 span。那时才需要真正的 spans 表。
+            <b>本期不做</b>——现在的粒度是「一个任务一段」，够用。
+          </p>
+
           <h2>一条 trace 长什么样</h2>
           <p class="prose">
-            一个 <code>pull_request.opened</code> 事件进来，用 <code>(source:github, pull_request.opened)</code> 查一次 <code>edges</code>，拿到三条边，各派一个任务；任务回报的 <code>out</code> 再查表，接力往下走。每个条形是一个 span，长度就是它的时长。
+            一个 <code>pull_request.opened</code> 事件进来，用 <code>(origin:github, pull_request.opened)</code> 查一次 <code>edges</code>，拿到三条边，各派一个任务；任务回报的 <code>out</code> 再查表，接力往下走。每个条形是一个 span，长度就是它的时长。
           </p>
 
           <div class="fig">
@@ -393,7 +445,7 @@
             <code>trace_id</code> 归堆，链内靠 <code>parent_task_id</code> 连父子。
           </p>
           <p class="prose">
-            没有汇聚点，就不需要批次表、计数表，也不用定义「部分失败怎么算」。想「等一组都完成」，办法是把等待放进节点内部：A 在自己进程里并行、自己等、自己汇总，只回报一个 result，对中枢来说这仍是一个任务。代价要写清楚：A 内部那几路并行在 trace 上不可见，它是一条不可再分的横条。
+            没有汇聚点，就不需要批次表、计数表，也不用定义「部分失败怎么算」。想「等一组都完成」，办法是把等待放进执行器内部：A 在自己进程里并行、自己等、自己汇总，只回报一个 result，对中枢来说这仍是一个任务。代价要写清楚：A 内部那几路并行在 trace 上不可见，它是一条不可再分的横条。
           </p>
 
           <h2>「为什么没触发」</h2>
@@ -492,7 +544,7 @@
                 <tr>
                   <td>有几条边查到了</td>
                   <td>
-                    三条：<code>(source:github, pull_request.opened) → review / lint / notify.phone</code>，每条对应一个 task span。
+                    三条：<code>(origin:github, pull_request.opened) → review / lint / notify.phone</code>，每条对应一个 task span。
                   </td>
                 </tr>
                 <tr>
@@ -527,7 +579,7 @@
 
           <h2>版本钉住</h2>
           <p class="prose">
-            复盘要能回答「当时那张图长什么样」。所以出口图、节点 manifest、中枢侧能力注册表都按内容存快照，每次变更追加一行。
+            复盘要能回答「当时那张图长什么样」。所以出口图、执行器能力清单、中枢侧能力注册表都按内容存快照，每次变更追加一行。
           </p>
 
           <div class="tbl-wrap">
@@ -543,14 +595,14 @@
                 <tr>
                   <td><code>graph_versions</code></td>
                   <td>
-                    整张出口图的快照：<code>edges</code> 的全部行，加上各节点申报的 <code>capabilities[].outputs</code>。图是一份整体，拆开钉就没法回答「当时有没有这条边」。
+                    整张出口图的快照：<code>edges</code> 的全部行，加上各执行器申报的 <code>capabilities[].outputs</code>。图是一份整体，拆开钉就没法回答「当时有没有这条边」。
                   </td>
                   <td>图被保存时（增删一条边、或某个能力的出口集变了）。</td>
                 </tr>
                 <tr>
                   <td><code>node_manifest_versions</code></td>
-                  <td>节点上报的 manifest 内容快照：能力名、标签声明、<code>outputs</code>、<code>sticky</code>、<code>idempotent</code> / <code>resumable</code>。</td>
-                  <td>节点上报的内容变了。</td>
+                  <td>执行器上报的能力清单快照：能力名、标签声明、<code>outputs</code>、<code>sticky</code>、<code>idempotent</code> / <code>resumable</code>。</td>
+                  <td>执行器上报的内容变了。</td>
                 </tr>
                 <tr>
                   <td><code>registry_versions</code></td>
@@ -583,9 +635,9 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
             <strong>时间不是版本，内容是版本。</strong>补录、回滚、跨时区导入都会打乱时间顺序，但动不了已经算好的 hash。这也是为什么标识里既有时间又有 hash：时间是给人看的坐标，hash 才是被钉住的锚。
           </div>
 
-          <h3>节点不上报版本号</h3>
+          <h3>执行器不上报版本号</h3>
           <p class="prose">
-            节点只上报 manifest 内容，不报自己算的版本号。版本号是节点自己起的名字，中枢无从校验，节点一改编号方式历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
+            执行器只上报能力清单内容，不报自己算的版本号。版本号是执行器自己起的名字，中枢无从校验，执行器一改编号方式历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
           </p>
 
           <h2>叠回去看</h2>
@@ -609,9 +661,9 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
           </p>
 
           <nav class="pager">
-            <a href="05-nodes.html">
+            <a href="05-runners.html">
               <div class="dir">上一页</div>
-              <div class="ttl">节点与执行</div>
+              <div class="ttl">执行器与执行</div>
             </a>
             <a href="07-safety.html" class="next">
               <div class="dir">下一页</div>

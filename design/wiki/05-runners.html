@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>节点与执行 · Anotify Wiki</title>
+    <title>执行器与执行 · Anotify Wiki</title>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-nodes.html" class="active"><span class="n">05</span>节点与执行</a>
+            <a href="05-runners.html" class="active"><span class="n">05</span>执行器与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -62,19 +62,19 @@
               <path d="M3 6h18M3 12h18M3 18h18" />
             </svg>
           </button>
-          <span style="font-size: 12.5px; font-weight: 500">节点与执行</span>
+          <span style="font-size: 12.5px; font-weight: 500">执行器与执行</span>
         </div>
 
         <main class="content">
           <div class="crumb">第 05 页 · 运行时</div>
-          <h1>节点与执行</h1>
+          <h1>执行器与执行</h1>
           <p class="lead">
-            统一模型下「节点」不再只指一台执行任务的机器：触发器、机器上的一个能力、一个终端，都是节点。这页讲五件事：节点按端口形状分成哪三种、中枢与节点的分工边界、租约与状态机、节点池怎么选人、下线时任务怎么收场。
+            两种东西要分清：<b>角色</b>（按端口形状分三种）和<b>执行器</b>（一台注册的机器）。这页讲五件事：角色按端口形状分成哪三种、中枢与执行器的分工边界、租约与状态机、执行器池怎么选人、下线时任务怎么收场。
           </p>
 
-          <h2>节点有三种，不是一种</h2>
+          <h2>角色有三种，不是一种</h2>
           <p class="prose">
-            旧模型里「节点」只指跑任务的机器。统一模型把它放宽了：<strong>一切参与流转的东西都是节点</strong>——
+            旧模型里没有「角色」这个概念，整页都在讲机器。统一模型把它放宽了：<strong>一切参与流转的东西都是角色</strong>——
             一个 webhook、机器上的一个能力、一个收通知的手机。它们不是三套机制，是同一个东西的三种<strong>端口形状</strong>。
           </p>
 
@@ -88,17 +88,17 @@
                 </p>
               </div>
               <div class="card-2">
-                <div class="lane-label">worker · 工作节点</div>
+                <div class="lane-label">pipe · 管道</div>
                 <div class="box sm">有进有出<span class="sub">入 ✓ · 出 ✓</span></div>
                 <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
                   机器上的 <code>review</code> / <code>implement</code> / <code>test</code>。接任务，跑完再选一个出口。
                 </p>
               </div>
               <div class="card-2">
-                <div class="lane-label">sink · 终端</div>
+                <div class="lane-label">end · 终点</div>
                 <div class="box sm">只有入口<span class="sub">入 ✓ · 出 ✗</span></div>
                 <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
-                  推手机（human sink）、写日志。收了活就结束，不产生下游。
+                  推手机、写日志（都是 <code>end</code>）。收了活就结束，不产生下游。
                 </p>
               </div>
             </div>
@@ -125,34 +125,34 @@
                   <td>GitHub webhook、cron、watch、外部 API</td>
                 </tr>
                 <tr>
-                  <td><code>worker</code> · 工作节点</td>
+                  <td><code>pipe</code> · 管道</td>
                   <td>✓</td>
                   <td>✓</td>
                   <td>机器上的 <code>review</code> / <code>implement</code> / <code>test</code></td>
                 </tr>
                 <tr>
-                  <td><code>sink</code> · 终端</td>
+                  <td><code>end</code> · 终点</td>
                   <td>✓</td>
                   <td>✗</td>
-                  <td>推手机（human sink）、写日志</td>
+                  <td>推手机、写日志（都是 <code>end</code>）</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p class="prose">
-            <strong>没有第四种。</strong>一个东西要参与流转，它要么只能产生事件（<code>source</code>），要么既能接也能往下走（<code>worker</code>），
-            要么只收不发（<code>sink</code>）。判据只有两个问题：「有没有入」「有没有出」，组合起来只有三种答案。
+            <strong>没有第四种。</strong>一个东西要参与流转，它要么只能产生事件（<code>origin</code>），要么既能接也能往下走（<code>pipe</code>），
+            要么只收不发（<code>end</code>）。判据只有两个问题：「有没有入」「有没有出」，组合起来只有三种答案。
             以后无论冒出来什么新东西——一个 IM 回调、一次定时扫描、一个审批环节——都先拿这两个问题量一遍，答案会把它塞进这三类里。
           </p>
 
-          <h2>中枢不知道节点上有什么能力</h2>
+          <h2>中枢不知道执行器上有什么能力</h2>
           <p class="prose">
-            节点在自己机器上维护一份能力表（能力名 → <code>argv</code>），<strong>永不上传</strong>。中枢只知道「这个节点申报了哪些能力」，
+            执行器在自己机器上维护一份能力表（能力名 → <code>argv</code>），<strong>永不上传</strong>。中枢只知道「这个执行器申报了哪些能力」，
             不知道能力背后是什么程序、带什么参数、在不在。
           </p>
 
-          <pre class="code"><span class="c"># 节点本地 ~/.anotifyd/config.yaml —— 这份文件从不离开本机</span>
+          <pre class="code"><span class="c"># 执行器本地 ~/.anotifyd/config.yaml —— 这份文件从不离开本机</span>
 <span class="k">node</span>:
   <span class="k">command_timeout_sec</span>: 900
 
@@ -160,7 +160,7 @@
   - <span class="k">name</span>: git.fetch          <span class="c"># 中枢只认这个名字</span>
     <span class="k">argv</span>: [<span class="s">"git"</span>, <span class="s">"fetch"</span>, <span class="s">"--prune"</span>, <span class="s">"origin"</span>]
     <span class="k">outputs</span>: [<span class="s">done</span>]           <span class="c"># 会用到的出口名，不是目的地</span>
-    <span class="k">retries</span>: 2                <span class="c"># 节点内部重试，不消耗中枢 attempts</span>
+    <span class="k">retries</span>: 2                <span class="c"># 执行器内部重试，不消耗中枢 attempts</span>
     <span class="k">idempotent</span>: true          <span class="c"># 只读，重跑无副作用</span>
     <span class="k">concurrency</span>: 2            <span class="c"># 能力级并发上限</span>
 
@@ -182,12 +182,12 @@
                 <span class="box">中枢 <code>edges</code> 表<span class="sub">(test.unit, fix) → implement</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
-              <span class="box">下一跳派给谁<span class="sub">节点不知道，也不需要知道</span></span>
+              <span class="box">下一跳派给谁<span class="sub">执行器不知道，也不需要知道</span></span>
             </div>
             <div class="fig-cap">
               <b><code>outputs</code> 是「我会用到的出口名」，不是「我会去哪」。</b>
-              能力只说自己可能走哪几个门，门后面通向谁由中枢的 <code>edges</code> 表决定——节点不该知道整张图长什么样。
-              这正是分工：节点负责「我干完了，走了 fix 这个门」，中枢负责「fix 这个门通向 implement」。
+              能力只说自己可能走哪几个门，门后面通向谁由中枢的 <code>edges</code> 表决定——执行器不该知道整张图长什么样。
+              这正是分工：执行器负责「我干完了，走了 fix 这个门」，中枢负责「fix 这个门通向 implement」。
             </div>
           </div>
 
@@ -202,7 +202,7 @@
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
-                <span class="box">节点查自己的表<span class="sub">name → argv</span></span>
+                <span class="box">执行器查自己的表<span class="sub">name → argv</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
@@ -210,7 +210,7 @@
               </div>
             </div>
             <div class="fig-cap">
-              <b>线上只跑这三个字段。</b>节点收到 <code>{kind, name, params}</code>，拿 <code>name</code> 查本地表得到 <code>argv</code>，直接
+              <b>线上只跑这三个字段。</b>执行器收到 <code>{kind, name, params}</code>，拿 <code>name</code> 查本地表得到 <code>argv</code>，直接
               <code>execve(argv[])</code>；查不到就回报「不认识这个能力」。中枢不改写命令、不猜参数、不拼命令行。
             </div>
           </div>
@@ -222,34 +222,34 @@
 
           <h2>凭据与标签</h2>
           <p class="prose">
-            节点身份由中枢发放，不由节点自述。标签挂在身份上，所以「谁是不是 review 节点」是中枢侧的事实，不是节点说了算。
+            执行器身份由中枢发放，不由执行器自述。标签挂在身份上，所以「谁是不是能跑 review 的机器」是中枢侧的事实，不是执行器说了算。
           </p>
 
           <dl class="defs">
             <div class="def">
-              <dt><code>node_id</code></dt>
-              <dd>注册时由中枢生成并写进凭据。节点拿到的是哪个就是哪个，不接受自报、不接受改名。</dd>
+              <dt><code>runner_id</code></dt>
+              <dd>注册时由中枢生成并写进凭据。执行器拿到的是哪个就是哪个，不接受自报、不接受改名。</dd>
             </div>
             <div class="def">
               <dt>token</dt>
-              <dd>节点唯一凭据，一一对应一个 <code>node_id</code>。可撤销后重发；撤销即该节点全部标签一起失效。</dd>
+              <dd>执行器唯一凭据，一一对应一个 <code>runner_id</code>。可撤销后重发；撤销即这台执行器全部标签一起失效。</dd>
             </div>
             <div class="def">
               <dt>标签 labels</dt>
-              <dd>绑在 <code>node_id</code> 上，<strong>中枢赋值</strong>。出口表按标签挑节点，不写机器名、不写 IP。</dd>
+              <dd>绑在 <code>runner_id</code> 上，<strong>中枢赋值</strong>。出口表按标签挑执行器，不写机器名、不写 IP。</dd>
             </div>
             <div class="def">
               <dt>泄漏的代价</dt>
               <dd>
-                token 泄漏 = 继承该节点的全部标签。这是必然代价，不做过度防御——不搞短时令牌轮换、不搞节点内二次鉴权。
-                想缩小爆炸半径，就少给标签、多拆节点。
+                token 泄漏 = 继承这台执行器的全部标签。这是必然代价，不做过度防御——不搞短时令牌轮换、不搞执行器内二次鉴权。
+                想缩小爆炸半径，就少给标签、多拆机器。
               </dd>
             </div>
           </dl>
 
           <h2>状态机与租约</h2>
           <p class="prose">
-            中枢不知道任务在这台机器上跑到哪一步，它只知道租约还在不在。状态推进全部由节点上报事件驱动，中枢只做两件事：续租、超时回收。
+            中枢不知道任务在这台机器上跑到哪一步，它只知道租约还在不在。状态推进全部由执行器上报事件驱动，中枢只做两件事：续租、超时回收。
           </p>
 
           <div class="fig">
@@ -283,7 +283,7 @@
               <div class="fanout-col">
                 <span class="box sm">failed · 重试耗尽</span>
                 <span class="box sm">canceled · 人取消 / 配置撤销</span>
-                <span class="box sm">abandoned · 节点下线 / 硬过期</span>
+                <span class="box sm">abandoned · 执行器下线 / 硬过期</span>
               </div>
             </div>
 
@@ -306,7 +306,7 @@
             </div>
 
             <div class="fig-cap">
-              <b><code>ack</code> = 接单确认，不是完成。</b>节点说「这单我接了」，租约才开始正式计时；任务真正结束只看
+              <b><code>ack</code> = 接单确认，不是完成。</b>执行器说「这单我接了」，租约才开始正式计时；任务真正结束只看
               <code>result</code> 事件。把 ack 当完成，所有长任务都会在超时后被判重跑。
             </div>
           </div>
@@ -336,13 +336,13 @@
             </div>
             <div class="fig-cap">
               派发后 20s 内没等到 <code>ack</code> 就直接 <code>lease_expired</code>。之后每 10s 一次心跳把过期时间推到
-              <code>now + 30s</code>，心跳停了就是节点失联，剩下的 TTL 里仍无上报即回收。每次回收算一次 attempt。
+              <code>now + 30s</code>，心跳停了就是执行器失联，剩下的 TTL 里仍无上报即回收。每次回收算一次 attempt。
             </div>
           </div>
 
-          <h2>节点内部重试 vs 中枢重派</h2>
+          <h2>执行器内部重试 vs 中枢重派</h2>
           <p class="prose">
-            两套重试解决两类问题，不能互相替代。节点内部重试是「这台机器上再试一次」，中枢重派是「换一台机器再来」。
+            两套重试解决两类问题，不能互相替代。执行器内部重试是「这台机器上再试一次」，中枢重派是「换一台机器再来」。
           </p>
 
           <div class="tbl-wrap">
@@ -350,14 +350,14 @@
               <thead>
                 <tr>
                   <th>维度</th>
-                  <th>节点内部重试</th>
+                  <th>执行器内部重试</th>
                   <th>中枢重派</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
                   <td>谁定义次数</td>
-                  <td>节点 <code>manifest.capabilities[].retries</code></td>
+                  <td>执行器 <code>manifest.capabilities[].retries</code></td>
                   <td>能力 <code>lifecycle.maxAttempts</code></td>
                 </tr>
                 <tr>
@@ -368,25 +368,25 @@
                 <tr>
                   <td>触发条件</td>
                   <td>能力非零退出、网络抖动</td>
-                  <td>租约过期、节点下线、节点上报可重试错误</td>
+                  <td>租约过期、执行器下线、执行器上报可重试错误</td>
                 </tr>
                 <tr>
                   <td>退避</td>
-                  <td>节点自己定</td>
+                  <td>执行器自己定</td>
                   <td>10s → 60s → 300s</td>
                 </tr>
                 <tr>
                   <td>审计影响</td>
-                  <td>记在节点侧；trace 上是同一个 span</td>
-                  <td>每个 attempt 一个 span，换节点就换 <code>node_id</code></td>
+                  <td>记在执行器侧；trace 上是同一个 span</td>
+                  <td>每个 attempt 一个 span，换执行器就换 <code>runner_id</code></td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <h2>节点池：两级模型</h2>
+          <h2>执行器池：两级模型</h2>
           <p class="prose">
-            一个节点 = 一份身份 + 若干执行器。身份（<code>nodes</code>）管脑、标签、配额；执行器（<code>node_instances</code>）管手、并发、存活。
+            一个执行器 = 一份身份 + 若干实例。身份（<code>runners</code>）管脑、标签、配额；实例（<code>runner_instances</code>）管手、并发、存活。
             一台机器可以起多个实例，但只有一份身份。
           </p>
 
@@ -396,14 +396,14 @@
               <div class="fanout" style="margin-top: 16px">
                 <span class="bracket"></span>
                 <div class="fanout-col">
-                  <span class="box sm">node_instances #1<span class="sub">concurrency 4 · inflight 2 · alive</span></span>
-                  <span class="box sm">node_instances #2<span class="sub">concurrency 4 · inflight 4 · alive</span></span>
-                  <span class="box sm">node_instances #3<span class="sub">concurrency 4 · inflight 0 · draining</span></span>
+                  <span class="box sm">runner_instances #1<span class="sub">concurrency 4 · inflight 2 · alive</span></span>
+                  <span class="box sm">runner_instances #2<span class="sub">concurrency 4 · inflight 4 · alive</span></span>
+                  <span class="box sm">runner_instances #3<span class="sub">concurrency 4 · inflight 0 · draining</span></span>
                 </div>
               </div>
             </div>
             <div class="fig-cap">
-              <b>身份一份，手可以多只。</b>实例掉线只影响自己名下的任务；所有实例都掉线，才算这个节点下线（见下文下线分级）。
+              <b>身份一份，手可以多只。</b>实例掉线只影响自己名下的任务；所有实例都掉线，才算这个执行器下线（见下文下线分级）。
               <code>max_instances = 20</code> 是硬顶，防止一份 token 复制出一片执行器。
             </div>
           </div>
@@ -411,16 +411,16 @@
           <div class="fig">
             <div class="fanout">
               <div class="fanout-col">
-                <span class="box sm">实例申报 · node_instances.concurrency</span>
+                <span class="box sm">实例申报 · runner_instances.concurrency</span>
                 <span class="box sm">能力级 · capabilities[].concurrency</span>
-                <span class="box sm">节点级 · nodes.max_concurrency</span>
+                <span class="box sm">执行器级 · runners.max_concurrency</span>
               </div>
               <span class="bracket"></span>
               <span class="box">实际并发 = min(三者)<span class="sub">谁申报得小听谁的</span></span>
             </div>
             <div class="fig-cap">
               三个上限同时生效。一个能力不许同时跑 5 份，就不会跑 5 份，哪怕整套池子还空着。
-              <b>派发策略只有一条：最少负载优先</b>——在标签命中的节点里比 <code>inflight / concurrency</code>，取最小的；全满就排队，不溢出到标签不匹配的节点。
+              <b>派发策略只有一条：最少负载优先</b>——在标签命中的执行器里比 <code>inflight / concurrency</code>，取最小的；全满就排队，不溢出到标签不匹配的执行器。
             </div>
           </div>
 
@@ -434,8 +434,8 @@
           <p class="prose">
             <strong>本期默认不粘。</strong>因为本期不做收集，下游本来就拿不到上游的本地产物；
             而同一个 trace 的多条分支（机器 / 人）本来就不该挤在同一台机器上。
-            粘性是<strong>按能力声明开启</strong>的：节点在 <code>manifest.capabilities[].sticky</code> 里说
-            「这个能力要求固定实例」，中枢才会查 <code>node_pins</code>。
+            粘性是<strong>按能力声明开启</strong>的：执行器在 <code>manifest.capabilities[].sticky</code> 里说
+            「这个能力要求固定实例」，中枢才会查 <code>runner_pins</code>。
           </p>
 
           <div class="tbl-wrap">
@@ -459,9 +459,9 @@
                   <td>声明 <code>sticky: worktree</code>，同 key 钉同一个实例</td>
                 </tr>
                 <tr>
-                  <td>human sink（推手机）</td>
+                  <td>手机（<code>end</code>）</td>
                   <td>不要</td>
-                  <td>不进节点池，不参与派发</td>
+                  <td>不进执行器池，不参与派发</td>
                 </tr>
               </tbody>
             </table>
@@ -478,10 +478,10 @@
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
-                <span class="box">查 node_pins</span>
+                <span class="box">查 runner_pins</span>
                 <span class="arr"><span>→</span></span>
               </div>
-              <span class="box sm">命中 → 粘住原 node_id</span>
+              <span class="box sm">命中 → 粘住原 runner_id</span>
             </div>
             <div class="flow" style="margin-top: 16px">
               <div class="flow-item">
@@ -489,7 +489,7 @@
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
-                <span class="box sm">按负载选一个节点</span>
+                <span class="box sm">按负载选一台执行器</span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
@@ -497,22 +497,22 @@
               </div>
             </div>
             <div class="fig-cap">
-              <b>pin 一旦写就不再重算。</b><code>rebalance</code> 只处理失效 pin（节点下线、实例全满），不重排全局——
+              <b>pin 一旦写就不再重算。</b><code>rebalance</code> 只处理失效 pin（执行器下线、实例全满），不重排全局——
               每次全局重排都会让一半任务的中间产物白跑。
             </div>
           </div>
 
-          <pre class="code"><span class="k">CREATE TABLE</span> node_pins (
+          <pre class="code"><span class="k">CREATE TABLE</span> runner_pins (
   <span class="k">sticky_key</span>   TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- sha256(trace_id ∥ capability ∥ selector)</span>
-  <span class="k">node_id</span>      TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 选中就钉死，不随负载漂移</span>
+  <span class="k">runner_id</span>    TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 选中就钉死，不随负载漂移</span>
   <span class="k">selector</span>     TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 当时命中的标签，失效判断用</span>
   <span class="k">created_at</span>   INTEGER <span class="k">NOT NULL</span>,
   <span class="k">last_used_at</span> INTEGER <span class="k">NOT NULL</span>,
-  <span class="k">FOREIGN KEY</span> (node_id) <span class="k">REFERENCES</span> nodes(node_id)
+  <span class="k">FOREIGN KEY</span> (runner_id) <span class="k">REFERENCES</span> runners(runner_id)
 );
 
 <span class="c">-- 写 pin 与建任务在同一个事务里：任务在，pin 一定在。</span>
-<span class="c">-- rebalance 只扫 node_id 已下线 / 实例全满的 pin，重新选节点并改写 node_id。</span></pre>
+<span class="c">-- rebalance 只扫 runner_id 已下线 / 实例全满的 pin，重新选一台执行器并改写 runner_id。</span></pre>
 
           <h2>谁能终结一条链：<code>out</code> 写在结果里</h2>
           <p class="prose">
@@ -523,7 +523,7 @@
           <div class="note err">
             <b>但这件事<u>不能</u>写在 manifest 里。</b>能力还没跑，谁也不知道它会走到哪个出口——
             成功要跑完才知道，失败也要跑完才知道。让 manifest 提前承诺「我不会继续」，
-            等于让节点在开局就赌，赌错了就是手机提前响。
+            等于让执行器在开局就赌，赌错了就是手机提前响。
             <b>所以 <code>out</code> 是 <code>result</code> 里的一个字段，不是 manifest 里的声明。</b>
           </div>
 
@@ -545,7 +545,7 @@
             </div>
           </div>
 
-          <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
+          <pre class="code"><span class="c">// 执行器回报的 result（≤8KB）</span>
 {
   <span class="s">"status"</span>: <span class="s">"succeeded"</span>,
   <span class="s">"out"</span>: <span class="s">"fix"</span>,          <span class="c">// ★ 干完了，走 fix 这个出口</span>
@@ -569,7 +569,7 @@
           <p class="prose">
             失败和继续是两个独立的维度。一次失败可能让链停在这里（<code>out: null</code>），
             也可能触发一条「修复」分支（<code>out: "fix"</code>）。
-            中枢<b>不判断</b>哪种该发生，它只读节点回报的事实，然后查表。
+            中枢<b>不判断</b>哪种该发生，它只读执行器回报的事实，然后查表。
           </p>
 
           <div class="tbl-wrap">
@@ -606,7 +606,7 @@
             </table>
           </div>
 
-          <h3>节点漏报怎么办</h3>
+          <h3>执行器漏报怎么办</h3>
           <p class="prose">
             缺失、迟到、或格式不对时，中枢一律按「未回报」处理（<b>保守</b>，不收敛）——
             宁可晚收敛，也不提前误报。代价是可能永远不收敛，所以要有三道兜底：
@@ -627,14 +627,14 @@
           </dl>
 
           <div class="note warn">
-            <b>本期 human sink 一律 <code>out: null</code>。</b>推送没有下游、不需要接续，天然到头。
+            <b>本期推手机一律 <code>out: null</code>。</b>推送没有下游、不需要接续，天然到头。
             但以后接审批时，人点完「通过」可能触发下一跳——那时它报的就不是 <code>null</code> 了。
             <b>所以走 <code>result.out</code> 这条通道，而不是把 <code>null</code> 写死在代码里。</b>
           </div>
 
-          <h2>节点下线分级</h2>
+          <h2>执行器下线分级</h2>
           <p class="prose">
-            节点掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由能力自己的声明决定，不让中枢猜。
+            执行器掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由能力自己的声明决定，不让中枢猜。
           </p>
 
           <div class="tbl-wrap">
@@ -660,7 +660,7 @@
                 <tr>
                   <td><code>resumable: true</code></td>
                   <td>可断点续传的批处理</td>
-                  <td>重派到新节点，从中断点继续</td>
+                  <td>重派到新机器，从中断点继续</td>
                 </tr>
               </tbody>
             </table>
