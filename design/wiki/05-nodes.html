@@ -329,9 +329,51 @@
             </div>
           </div>
 
-          <h2>粘性路由</h2>
+          <h2>粘性路由：只在任务真的共享本地产物时才需要</h2>
           <p class="prose">
-            同一件事的连续任务最好落在同一台机器上——本地缓存、工作目录、刚编译出来的产物都在那儿。粘性不靠节点自报亲缘，靠中枢侧一张表。
+            先分清两件事。任务的 <b>result 存在中枢</b>（上限 8KB），所以下游读结果不需要回到原机器——
+            <b>这一层跟粘性无关</b>。真正需要粘性的只有一种情况：连续任务要共享<b>本地产物</b>，
+            比如同一个工作目录、刚编译出来的中间文件、未提交的 worktree。
+          </p>
+
+          <div class="note">
+            <b>本期默认不粘。</b>因为本期不做收集，下游本来就拿不到上游的本地产物；
+            而同一个 trace 的多条分支（机器 / 人）本来就不该挤在同一台机器上。
+            粘性是<b>按命令声明开启</b>的：节点在 <code>manifest.commands[].sticky</code> 里说
+            「这个命令要求固定实例」，中枢才会查 <code>node_pins</code>。
+          </div>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>命令类型</th>
+                  <th>需要粘性吗</th>
+                  <th>派发方式</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>纯计算 / 只读（lint、审查、探索）</td>
+                  <td>不要</td>
+                  <td>纯负载均衡，每次挑最空的实例</td>
+                </tr>
+                <tr>
+                  <td>共享工作区（连续改同一个 worktree、增量编译）</td>
+                  <td>要</td>
+                  <td>声明 <code>sticky: worktree</code>，同 key 钉同一个实例</td>
+                </tr>
+                <tr>
+                  <td>human sink（推手机）</td>
+                  <td>不要</td>
+                  <td>不进节点池，不参与派发</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            声明了粘性的命令，才走下面这条链路。
           </p>
 
           <div class="fig">
@@ -376,6 +418,73 @@
 
 <span class="c">-- 写 pin 与建任务在同一个事务里：任务在，pin 一定在。</span>
 <span class="c">-- rebalance 只扫 node_id 已下线 / 实例全满的 pin，重新选节点并改写 node_id。</span></pre>
+
+          <h2>谁能终结一条链：<code>terminal</code> 声明</h2>
+          <p class="prose">
+            中枢有一件事必须知道：<b>这条链还会不会往下走</b>。因为「收敛」要发通知，
+            而通知发出去就不能收回。这个判断不能由中枢猜——它不知道某个命令的业务语义，
+            只知道名字。
+          </p>
+          <p class="prose">
+            所以每个命令在 manifest 里<b>自己声明</b>它的出口。<b>默认是最保守的那个：不声明就按「还能继续」算。</b>
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box dashed">不声明<span class="sub">默认</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box warn">terminal: false<span class="sub">保守：不动</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <span class="box">状态成终态，但<b>不</b>算能收敛</span>
+            </div>
+            <div class="flow" style="margin-top: 16px">
+              <div class="flow-item">
+                <span class="box dashed">声明 terminal: true</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box ok">这个 span 可终结</span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <span class="box">纳入收敛判定</span>
+            </div>
+            <div class="fig-cap">
+              <b>“能终结”不是“是叶子”。</b>同一个命令可以某次跑完是叶子，某次又靠派生事件接下去——
+              <code>terminal</code> 说的是 <b>当它没派生时算不算走完</b>，而不是“它永远不会派生”。
+            </div>
+          </div>
+
+          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 节点自己声明出口</span>
+commands:
+  - name: review
+    argv: [<span class="s">"git"</span>, <span class="s">"diff"</span>, <span class="s">"--name-only"</span>]
+    <span class="k">terminal: false</span>     <span class="c"># 审查的结果会派生下一个任务</span>
+
+  - name: notify.phone
+    argv: [<span class="s">"./notify"</span>]
+    <span class="k">terminal: true</span>      <span class="c"># 推完就完了，没有下游</span>
+
+  - name: approve
+    argv: [<span class="s">"./wait-approval"</span>]
+    <span class="k">terminal: false</span>     <span class="c"># 以后接了审批分支，它也可能不是终点</span>
+    <span class="c"># 注意：terminal 是「当前这个命令」的属性，不是节点属性</span></pre>
+
+          <h3>这是申报制，不是自动推断</h3>
+          <p class="prose">
+            中枢不读命令输出，不从「有没有派生事件」反推出口。原因很简单：
+            <b>派生事件可能晚一点才到，也可能永远不来</b>。自动推断要么晚发通知，要么发错。
+            改成声明制之后，中枢只需把 manifest 里的事实当输入，不需要理解任何业务。
+          </p>
+
+          <div class="note warn">
+            <b>本期 human sink 一律当叶子。</b>推送没有下游、不需要回报，天然是 <code>terminal: true</code>。
+            但以后接审批时，人点完“通过”可能触发下一跳——那时 human sink 就不再是叶子了。
+            <b>所以不把它写死在代码里，而是也用同一种方式声明。</b>
+          </div>
 
           <h2>节点下线分级</h2>
           <p class="prose">

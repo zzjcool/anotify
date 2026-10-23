@@ -116,7 +116,7 @@
                 </tr>
                 <tr>
                   <td>粘性路由</td>
-                  <td><code>sticky_key = sha256(trace_id ∥ rule_id ∥ selector)</code>，首次写入 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                  <td><b>按命令声明开启</b>（<code>manifest.commands[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ rule_id ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
                 </tr>
                 <tr>
                   <td>版本钉住</td>
@@ -125,6 +125,10 @@
                 <tr>
                   <td>六道闸</td>
                   <td>G1 <code>allow_chain</code>、G2 <code>max_hops</code>、G3 环检测、G4 <code>max_tasks</code>、G6 <code>max_duration</code>，默认收紧 + 代码硬顶。</td>
+                </tr>
+                <tr>
+                  <td>出口申报</td>
+                  <td>命令在 manifest 里声明 <code>terminal</code>，收敛只认这个，不反推业务。默认 <code>false</code>（保守）。</td>
                 </tr>
                 <tr>
                   <td>通知</td>

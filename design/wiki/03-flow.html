@@ -136,10 +136,19 @@ labels contains <span class="s">"review-needed"</span>         <span class="e">f
             <div class="step">
               <div class="step-title">派发</div>
               <div class="step-body">
-                按最少负载选执行器，再用粘性路由把同一 <code>trace_id</code> + <code>rule_id</code> 钉到同一个实例：首次按负载挑并写 <code>node_pins</code>，之后一律查表。写 <code>lease_until = now + 30s</code>，状态 <code>pending → assigned</code>。
+                在标签命中的实例里按最少负载挑一个（比 <code>inflight / concurrency</code>），写
+                <code>lease_until = now + 30s</code>，状态 <code>pending → assigned</code>。
+                <b>默认就是纯负载均衡</b>——结果存在中枢，下游读结果不需要回原机器。
+                只有命令在 manifest 里声明了 <code>sticky</code>（共享工作目录、增量编译这类），才先查
+                <code>node_pins</code>。本期不做收集，所以绝大多数任务走纯均衡那条路。
               </div>
-              <pre class="code">sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
-<span class="c">-- node_pins 命中则直用；未命中按 inflight 最少挑一个并写入</span></pre>
+              <pre class="code"><span class="c">-- 默认：纯负载均衡，无状态</span>
+order_by inflight / concurrency asc
+limit 1
+
+<span class="c">-- 仅当 manifest.commands[].sticky 声明了才走：</span>
+sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
+<span class="c">-- node_pins 命中则直用；未命中按负载挑一个并写入</span></pre>
             </div>
 
             <div class="step">
@@ -173,7 +182,34 @@ labels contains <span class="s">"review-needed"</span>         <span class="e">f
             <div class="step">
               <div class="step-title">收敛</div>
               <div class="step-body">
-                trace 内不再有 <code>pending / assigned / acked / running</code> 的任务，就记为 <code>trace.settled</code>，并向 human sink 发一条通知。注意收敛不等于全成功：<code>failed</code> 和 <code>abandoned</code> 也算落定，只是通知里会点明是哪一种。
+                trace 内不再有 <code>pending / assigned / acked / running</code> 的任务，就记为
+                <code>trace.settled</code>，并向 human sink 发一条通知。
+              </div>
+              <div class="step-body" style="margin-top: 8px">
+                <b>但“还有没有人会接着跑”不能靠看状态机猜。</b>任务落到 <code>succeeded</code> 只是这一个 span 结束了，
+                它随时可能再派生出下一跳；而派生事件可能晚到，也可能永远不来。
+                所以中枢看的是每个任务<b>自己申报的出口</b>：<code>terminal: true</code> 才算这个 span 能终结，
+                否则即使它已经成终态，trace 也保持未收敛。默认值是 <code>false</code>（保守）。
+              </div>
+              <div class="step-body" style="margin-top: 8px">
+                另外，收敛不等于全成功：<code>failed</code> 和 <code>abandoned</code> 也算落定，只是通知里会点明是哪一种。
+              </div>
+              <pre class="code"><span class="c">-- 收敛判定：三个条件，缺一不可</span>
+<span class="n">1</span> 无 pending / assigned / acked / running
+<span class="n">2</span> 无未到期任务（expires_at / not_before 全在过去）
+<span class="n">3</span> 每个终态任务都 <span class="k">terminal: true</span>
+
+<span class="c">-- 条件 2 是必须的：一个还在队列里排队的任务也满足条件 1，</span>
+<span class="c">-- 但它随时会被派发。少了它，trace 会在队列中途提前收敛。</span>
+
+<span class="c">-- terminal 由 manifest.commands[].terminal 提供，</span>
+<span class="c">-- 中枢只读声明，不读命令输出、不反推业务语义。</span></pre>
+              <div class="note err">
+                <b>这里有个容易漏掉的竞态。</b>收敛判定的第一次扫描注定是「看着能收敛」——
+                因为 trigger 事务是<b>第二步</b>才提交的，扫描可能跑在它前面。
+                所以不能在扫描成立时就立刻发通知，必须<b>再查一次</b>（写一个
+                <code>pending_settle</code> 标记 → 下一轮复核 → 仍成立才发）。
+                否则现象就是：链明明还有下一跳，手机已经先响了。
               </div>
             </div>
           </div>

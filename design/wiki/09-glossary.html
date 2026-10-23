@@ -301,7 +301,15 @@
             </div>
             <div class="def">
               <dt><code>sticky_key</code></dt>
-              <dd>由 trace、规则、选择器三段算出的哈希。同一条链上的同类任务因此落到同一节点，不在机器之间来回漂。</dd>
+              <dd>由 trace、规则、选择器三段算出的哈希。<b>只在命令声明了 <code>sticky</code> 时使用</b>；默认派发不查这张表。</dd>
+            </div>
+            <div class="def">
+              <dt>粘性 <code>manifest.commands[].sticky</code></dt>
+              <dd>命令是否要求固定实例（共享工作目录、增量编译）。默认关闭——结果存在中枢，下游不需要回原机器。</dd>
+            </div>
+            <div class="def">
+              <dt>出口申报 <code>terminal</code></dt>
+              <dd>命令自己声明「没派生后续时算不算走完」，默认 <code>false</code>（保守）。收敛判定只认这个，不从命令输出反推。</dd>
             </div>
             <div class="def">
               <dt>幂等 <code>idempotent</code></dt>
