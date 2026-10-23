@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>本期范围 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html" class="active"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">本期范围</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 08 页 · 参考</div>
+          <h1>本期范围</h1>
+          <p class="lead">
+            这一页把线画清楚：哪些能力本期就有、哪些明确不做、哪些留了扩展点但先不实现。范围不清的项目会变成 n8n 的劣化版，所以宁可现在写死。
+          </p>
+
+          <h2>本期做的</h2>
+          <p class="prose">
+            十一项。每一项都能落到具体的表、字段或状态机上，没有「后续再细化」的占位。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>能力</th>
+                  <th>本期做到的</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>事件</td>
+                  <td>统一的 <code>events</code> 表记录 <code>source</code> / <code>type</code> / <code>payload</code> / <code>trace_id</code> / <code>span_id</code>，cron、webhook、watch 与外部 API 都写进同一张表。</td>
+                </tr>
+                <tr>
+                  <td>规则</td>
+                  <td><code>match</code> 条件 + <code>action</code>，多个条件各自可解释；命中 0 条也记 trace，标 <code>pruned</code> 与原因。</td>
+                </tr>
+                <tr>
+                  <td>扇出</td>
+                  <td>多条规则同时命中则全部下发，一次 INSERT 写成 N 行任务，互不排斥。</td>
+                </tr>
+                <tr>
+                  <td>接力</td>
+                  <td>任务结果可以产生新事件，新事件再命中规则；<code>allow_chain</code> 显式开启才允许。</td>
+                </tr>
+                <tr>
+                  <td>成环</td>
+                  <td>允许成环（审查 → 修复 → 复审），用 <code>path</code> 里 <code>rule_id</code> 去重做剪枝，剪枝在 trace 上可见。</td>
+                </tr>
+                <tr>
+                  <td>任务租约</td>
+                  <td>TTL 30s、心跳 10s、<code>max_attempts</code> 3、退避 10s → 60s → 300s；<code>pending → assigned → acked → running → succeeded | failed | canceled | abandoned</code>。</td>
+                </tr>
+                <tr>
+                  <td>节点池</td>
+                  <td>两级：<code>nodes</code> 管身份与脑、<code>node_instances</code> 管执行器；三层并发上限取 min，派发按最少负载优先。</td>
+                </tr>
+                <tr>
+                  <td>粘性路由</td>
+                  <td><code>sticky_key = sha256(trace_id ∥ rule_id ∥ selector)</code>，首次写入 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                </tr>
+                <tr>
+                  <td>版本钉住</td>
+                  <td>规则、节点 manifest、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
+                </tr>
+                <tr>
+                  <td>六道闸</td>
+                  <td>G1 <code>allow_chain</code>、G2 <code>max_hops</code>、G3 环检测、G4 <code>max_tasks</code>、G6 <code>max_duration</code>，默认收紧 + 代码硬顶。</td>
+                </tr>
+                <tr>
+                  <td>通知</td>
+                  <td>human sink：推手机，尽力而为、可丢、不回报结果；与 machine sink 永不混用。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>本期不做的</h2>
+          <p class="prose">
+            每一条后面都写了「为什么现在不做」和「什么条件下会做」。不做不是因为难，大多数是因为做错了会让产品变成另一个东西。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>不做的</th>
+                  <th>为什么不做</th>
+                  <th>什么时候可能做</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>收集 / <code>join</code></td>
+                  <td>要回答「那几件事都回来了吗」，得引入批次、计数、菱形依赖、部分失败语义，是整套新状态机。</td>
+                  <td>等节点内并行这个替代方案被反复抱怨不够用时，再单独设计</td>
+                </tr>
+                <tr>
+                  <td><code>batching</code></td>
+                  <td>把多条事件攒成一批再执行，会打乱「一次事件一条 trace」的可解释性。</td>
+                  <td>出现明确的批量写入场景（如一天一次的全量扫描）时，按触发源做而不是按规则做</td>
+                </tr>
+                <tr>
+                  <td>拖拽画布</td>
+                  <td>画布意味着图模型，图模型意味着 DAG 语义、布局存储、协同编辑；我们的规则是文本 + 参数。</td>
+                  <td>暂时不打算。这是与 n8n 的定位分界线，不是待办</td>
+                </tr>
+                <tr>
+                  <td>任意代码节点</td>
+                  <td>中枢一旦能存代码，就回到「中枢知道要跑什么」，安全边界直接失效。</td>
+                  <td>不做。需要复杂逻辑就在节点本地写成一个命名命令</td>
+                </tr>
+                <tr>
+                  <td>中枢存第三方密钥</td>
+                  <td>中枢存谁的密钥，谁就有动机把中枢变成攻击目标；凭据留在节点侧才符合边界。</td>
+                  <td>不做。集成需要凭据时，凭据由节点自身环境提供</td>
+                </tr>
+                <tr>
+                  <td>大量第三方集成</td>
+                  <td>五十个集成是产品运营成本，不是内核能力；先把事件契约做稳。</td>
+                  <td>内核稳定后按用户需求逐个加，优先 webhook 能覆盖的那批</td>
+                </tr>
+                <tr>
+                  <td>DAG 校验</td>
+                  <td>规则之间是运行期动态命中的，没有静态图可校验；能校验的只有 <code>path</code>，已经做了。</td>
+                  <td>只有在真的引入静态流程图之后才有意义</td>
+                </tr>
+                <tr>
+                  <td>多租户 UI</td>
+                  <td>自托管单组织是当前形态，租户隔离会渗透到每张表和每条查询。</td>
+                  <td>出现托管版需求时，先在数据层加 <code>tenant_id</code>，UI 随后</td>
+                </tr>
+                <tr>
+                  <td>人工审批节点</td>
+                  <td>审批需要挂起态、超时策略、审批人身份与通知重试，是另一套生命周期。</td>
+                  <td>等「中断型任务」语义设计完成后再做，先用通知 + 人工触发替代</td>
+                </tr>
+                <tr>
+                  <td>子流程复用</td>
+                  <td>复用要求参数化与版本引用，会逼出模块系统，复杂度陡增。</td>
+                  <td>规则数量到需要抽公共部分的规模时再做，届时复用规则版本对象</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>关键澄清：扇出做，收集不做</h2>
+          <p class="prose">
+            这两个词经常被混成一件事，其实是一个问题的两端。我们只做前一半，并且明确不做后一半。
+          </p>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="box ok" style="display: inline-block; margin-bottom: 10px">扇出 · 本期做</div>
+              <p style="margin: 0 0 8px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                回答的是「这个事件要引起几件事」。N 条规则命中就写 N 行任务，一次 INSERT，没有额外状态。
+              </p>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                难度极低，收益直接：一个 PR 既派 agent 审查，也推手机通知。
+              </p>
+            </div>
+            <div class="card">
+              <div class="box err" style="display: inline-block; margin-bottom: 10px">收集 · 本期不做</div>
+              <p style="margin: 0 0 8px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                回答的是「那几件事都回来了吗」。需要批次 id、计数器、菱形依赖、部分失败的判定规则。
+              </p>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                难度高，而且一旦引入，任务就不再是独立的，整条链路都要围着批次重写。
+              </p>
+            </div>
+          </div>
+
+          <p class="prose" style="margin-top: 18px">
+            没有收集，怎么实现「等一组都完成」？<strong>放在节点内部。</strong>A 在自己进程内并行、自己等待、自己汇总，最后回报中枢一个 result；对中枢来说这始终是一个任务。代价是 A 内部那层并行在 trace 上不可见。
+          </p>
+
+          <h2>预留的扩展点</h2>
+          <p class="prose">
+            不做不代表什么都不留。下面三处是刻意的留白：不实现能力，但把将来的入口放在正确的位置，避免以后靠改协议硬塞。
+          </p>
+
+          <dl class="defs">
+            <div class="def">
+              <dt><code>fanout</code> 表不建<br />但留 <code>parent_task_id</code></dt>
+              <dd>
+                任务行上有父任务引用，子任务与根任务的关系现在就查得出来。真要做收集时分两步：建批次表、按 <code>parent_task_id</code> 回填历史分组，链路数据不用重算。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>派生消息走单一接口</dt>
+              <dd>
+                节点回报结果和节点派生新事件走同一个上报入口。要加新的派生类型，只需在载荷里加一个帧，不动连接、鉴权与重试逻辑 —— 长连接协议已经按「可扩展帧」设计。
+              </dd>
+            </div>
+            <div class="def">
+              <dt><code>join</code> 字段写了直接报错</dt>
+              <dd>
+                规则里出现 <code>join</code> / <code>join_on</code> 之类的字段，配置校验期直接拒绝并说明本期不支持。不静默忽略 —— 静默忽略会让人以为收集生效了，然后在生产里等一个永远不来的结果。
+              </dd>
+            </div>
+          </dl>
+
+          <p class="prose" style="margin-top: 18px">
+            <strong>一句话收尾：</strong>「本期做不到」是能力还没到，补上只是时间问题；「以后一定做」是我们赌它不该存在 —— 混在一起，范围就会一点点失守。
+          </p>
+
+          <nav class="pager">
+            <a href="07-safety.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">安全边界</div>
+            </a>
+            <a href="09-glossary.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">术语表</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
