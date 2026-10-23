@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>核心概念 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html" class="active"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">核心概念</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 02 页 · 开始</div>
+          <h1>核心概念</h1>
+          <p class="lead">
+            整份文档只用五个名词：Event、Rule、Task、Node、Trace。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。后面所有页面都按这套叫法写。
+          </p>
+
+          <h2>五个名词</h2>
+          <p class="prose">
+            五个词各自回答一个问题：发生了什么（Event）、要不要动手（Rule）、动手这件事本身（Task）、谁来动手（Node）、整件事怎么被查（Trace）。括号里是代码原名。
+          </p>
+
+          <dl class="defs">
+            <div class="def">
+              <dt>Event <code>event</code></dt>
+              <dd>
+                触发源在某一刻发生的事，原样入库；事件只陈述事实，不含任何判断。
+                <br />
+                例：GitHub 送来一条 <code>pull_request.opened</code>，入库成一行 <code>source=github</code>、<code>type=pr.opened</code>、<code>payload</code> 里带 PR 号与 diff 链接。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>Rule <code>rule</code></dt>
+              <dd>
+                一条 <code>match</code> 条件配一个 <code>action</code>，决定某类事件要不要引起某个动作；规则不改事件，只决定做不做、做什么。
+                <br />
+                例：<code>match: source=github AND type=pr.opened</code> &rarr; <code>action: 在节点上跑 review-pr</code>。同一事件还能同时命中另一条规则「推手机通知」。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>Task <code>task</code></dt>
+              <dd>
+                规则命中后落地的一行待办，带租约和状态机；它是「谁去做、做到哪一步」的唯一载体。
+                <br />
+                例：<code>task_id=8f21</code>，命令 <code>review-pr</code>，参数 <code>{pr: 431}</code>，状态依次 <code>pending &rarr; assigned &rarr; acked &rarr; running</code>。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>Node <code>node</code></dt>
+              <dd>
+                一台注册过的机器，本机 <code>config.yaml</code> 里声明自己能跑哪些命令名；中枢只按名字派活，不知道命令内容。
+                <br />
+                例：<code>node: mbp-16</code>，注册了 <code>review-pr</code> 与 <code>run-tests</code> 两个命令，<code>max_concurrency=2</code>。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>Trace <code>trace_id</code></dt>
+              <dd>
+                从最初那个事件到最后一个任务的因果链，事件、规则判定、任务状态全部挂在同一个 <code>trace_id</code> 下。
+                <br />
+                例：<code>trace=tr_7c1a</code>，下挂 1 个事件、2 条规则命中、1 条剪枝记录、2 个任务。
+              </dd>
+            </div>
+          </dl>
+
+          <h2>它们怎么串起来</h2>
+          <p class="prose">
+            一条主链，两头是两个 sink。触发源产生事件，规则把事件翻译成任务，任务落到节点上执行，结果回来可以变成新事件，也可以变成一条推手机的通知。
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <div class="box">触发源<span class="sub">cron / webhook / watch</span></div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box accent">Event<span class="sub">事实，入库</span></div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box">Rule<span class="sub">match + action</span></div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box accent">Task<span class="sub">待办 + 租约</span></div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box">Node<span class="sub">在本机执行命令</span></div>
+              </div>
+            </div>
+            <div class="flow" style="margin-top: 16px">
+              <div class="box dashed">
+                Trace<span class="sub">trace_id 横跨以上全部：事件、规则判定、任务、结果都在同一条链上</span>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>读法：</b>箭头左边是数据，右边是执行。Event 和 Task 是链上真正被存下来的两样东西（入库存一行），Rule 和 Node 是两端的能力：一个负责判定，一个负责动手。
+            </div>
+          </div>
+
+          <h3>一个事件能引出几件事</h3>
+          <p class="prose">
+            规则不是互斥的选择题。同一个事件命中几条规则，就产出几个任务，全部下发。没命中的规则不会被丢掉，而是在 trace 上留一条剪枝记录和原因。
+          </p>
+
+          <div class="fig">
+            <div class="fanout">
+              <div class="box">一个 Event<span class="sub">pr.opened</span></div>
+              <div class="bracket"></div>
+              <div class="fanout-col">
+                <div class="box sm">rule.review &rarr; Task<span class="sub">派给 node · machine sink</span></div>
+                <div class="box sm">rule.notify &rarr; 推手机<span class="sub">human sink</span></div>
+                <div class="box sm dashed">条件不满足 &rarr; pruned<span class="sub">trace 上可见，附原因</span></div>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>扇出，不收集。</b>一个事件引出多个任务是天然支持的（一次写入多行）。反过来「等这组任务都回来再继续」本期不做——那件事放在节点内部自己并行、自己汇总。任务的结果本身也可以是一条新事件，再命中规则就是接力。
+            </div>
+          </div>
+
+          <h2>两类 sink，永不混用</h2>
+          <p class="prose">
+            链尾有两条出口，语义完全不同：一条给人，一条给机器。它们不共用代码路径，也不共用同一套「失败怎么办」的假设——把两条混在一起，最终会得到既保证不了送达、又保证不了结果的中间态。
+          </p>
+
+          <div class="fig">
+            <div class="lane human">
+              <div class="lane-label">human sink · 推手机</div>
+              <div class="prose">
+                <p>给人看的。任务跑完了、或某个事件值得一看，就推一条到你手机。</p>
+                <ul>
+                  <li>投递：<strong>尽力而为</strong>。设备离线、推送服务抽风，这条就没了。</li>
+                  <li>失败：不重试、不补发，不为此建持久队列。</li>
+                  <li>回报：<strong>不回报结果</strong>。你点没点开，对系统没有意义。</li>
+                </ul>
+              </div>
+            </div>
+            <div class="lane machine">
+              <div class="lane-label">machine sink · node agent</div>
+              <div class="prose">
+                <p>给机器干的。任务必须真的在某个节点上被执行，并落到一个明确结局。</p>
+                <ul>
+                  <li>投递：<strong>至少一次</strong>。租约 30s、心跳 10s、退避重试 10s &rarr; 60s &rarr; 300s、重试用尽进死信。</li>
+                  <li>失败：租约到期即重派，<code>max_attempts</code> 用尽落 <code>failed</code>。</li>
+                  <li>回报：<strong>必须回报</strong>。<code>acked</code> 只是接单确认，不是完成；不回报就不算做过。</li>
+                </ul>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>判断标准：</b>这条投递丢了会不会有人受损。丢一条手机通知最多是晚知道十分钟；丢一个任务等于没人干活，所以两条出口的保证级别不可能一致。
+            </div>
+          </div>
+
+          <h2>一次旅程（文字版）</h2>
+          <p class="prose">
+            把上面的名词按时间排一遍，就是一次完整的调用。完整的时序图在下一页，这里先记住四步。
+          </p>
+
+          <div class="steps">
+            <div class="step">
+              <div class="step-title">事件入库</div>
+              <div class="step-body">
+                触发源发来一次调用（或者 cron 到点），中枢把它存成一行 event：<code>source</code>、<code>type</code>、<code>payload</code>、<code>trace_id</code>、<code>span_id</code>。入库即完成，之后所有判定都基于这条记录，不基于原始请求。
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-title">规则匹配</div>
+              <div class="step-body">
+                拿这条事件去比所有规则的 <code>match</code>。命中的规则各自产出一个 task，有多条就产出多个，全部下发。命中零条的，不产任务，但在 trace 上记一条 <code>pruned</code> 和原因。
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-title">任务派发</div>
+              <div class="step-body">
+                每个 task 按标签选出可用节点，带租约下发：中枢只发命令名和参数，节点用注册过的 <code>argv</code> 执行。节点 <code>acked</code> 表示接单，随后 <code>running</code>，心跳持续续租。
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-title">结果回流</div>
+              <div class="step-body">
+                节点回报结果，任务落 <code>succeeded</code> 或 <code>failed</code>。结果本身可以是一条新事件——再命中规则就是接力；不需要接力的，走 human sink 推手机。
+              </div>
+            </div>
+          </div>
+
+          <nav class="pager">
+            <a href="01-why.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">为什么</div>
+            </a>
+            <a href="03-flow.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">一条事件的旅程</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
