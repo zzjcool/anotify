@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>安全边界 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html" class="active"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">安全边界</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 07 页 · 保障</div>
+          <h1>安全边界</h1>
+          <p class="lead">
+            中枢手上没有任何一条命令。这页讲这条边界怎么落到 DB 字段、协议载荷和 execve 上，为了保住它设了哪六道闸，以及我们因此接受了什么代价。
+          </p>
+
+          <h2>根本原则：中枢永不下发命令</h2>
+          <p class="prose">
+            中枢只做三件事：记事件、匹配规则、派任务。它不知道目标机器上装着什么程序，也不知道某个名字背后对应哪条 argv。任务载荷里只有 <code>{kind, name, params}</code> —— 一个名字，加上给这个命令的参数。
+          </p>
+
+          <div class="fig">
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <div class="card-2">
+                <div class="lane-label">中枢 · 不掌握执行</div>
+                <p style="margin: 0 0 9px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                  DB 里只有事实与引用：<code>events</code> / <code>rules</code> / <code>tasks</code> / <code>node_pins</code>。<strong style="color: var(--text)">没有 argv，没有 shell 字符串，没有脚本文本。</strong>
+                </p>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px">
+                  <div class="box sm dashed">argv<span class="sub">不存在</span></div>
+                  <div class="box sm dashed">shell / cmd<span class="sub">不存在</span></div>
+                  <div class="box sm dashed">script<span class="sub">不存在</span></div>
+                </div>
+              </div>
+
+              <div class="arr" style="align-self: center; width: auto; height: 18px; font-size: 13px"><span>↓</span></div>
+
+              <div class="box accent">任务载荷 {kind, name, params}<span class="sub">中枢所能表达的全部</span></div>
+
+              <div class="arr" style="align-self: center; width: auto; height: 18px; font-size: 13px"><span>↓</span></div>
+
+              <div class="card-2">
+                <div class="lane-label">节点 · 本地决定能执行什么</div>
+                <p style="margin: 0 0 9px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                  本地 <code>config.yaml</code> 把 <code>name</code> 映射到 <code>argv[]</code>，命中就 <code>execve(argv[0], argv, envp)</code> 起进程。这个名字存在过，中枢才知道它存在。
+                </p>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px">
+                  <div class="box sm">review-pr</div>
+                  <div class="box sm">deploy-preview</div>
+                  <div class="box sm dashed">未注册 → unknown_action</div>
+                </div>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>边界画在「名字」上。</b>中枢能说的最多是「review-pr 这个命令，参数是这些」；这串东西能不能变成进程，由节点本地的 config.yaml 和节点进程的 OS 权限决定。
+            </div>
+          </div>
+
+          <p class="prose">节点侧的真东西长这样，留在本地，永不上传：</p>
+
+          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml —— 只在本机，中枢读不到</span>
+commands:
+  - name: review-pr
+    argv: ["/usr/local/bin/review", "--pr", "{pr}", "--json"]
+    idempotent: true
+    retries: 1
+  - name: deploy-preview
+    argv: ["/opt/deploy/bin/deploy", "--sha", "{sha}"]
+    idempotent: false</pre>
+
+          <p class="prose">
+            节点收到任务后自己查表：<code>name</code> 命中本地注册表就取 <code>argv[]</code>，把 <code>params</code> 逐个填进占位符，然后 <code>execve</code> 直接起进程。<strong>不经过 shell</strong> —— 没有引号拼接、没有变量展开、没有通配符、没有管道。
+          </p>
+          <div class="prose">
+            <ul>
+              <li>未注册的 <code>name</code> → <code>unknown_action</code>。不回退到默认命令，不做模糊匹配。</li>
+              <li><code>params</code> 的值只做占位替换，替换结果作为一个完整的 argv 元素传入，不再做二次字符串拼接。</li>
+              <li><code>env</code> 由节点本地决定，中枢不提供环境变量。</li>
+            </ul>
+          </div>
+
+          <div class="note err">
+            <strong>为什么 <code>/bin/sh -c</code> 是禁区。</strong>一旦 argv 被拼成一个字符串交给 shell，<code>params</code> 里的一个分号、一个反引号就能改写整条命令。参数注入的上限会从「某个程序收到一个奇怪的字符串」变成「攻击者在节点上执行任意命令」。这条线不放松，一次都不放松。
+          </div>
+
+          <h2>别人怎么做，我们怎么不一样</h2>
+          <p class="prose">
+            多数自动化工具把「要做什么」当成数据存在中枢里：流程节点定义、脚本体、命令行模板。我们反过来，中枢只存名字的引用，能不能执行由节点自己说了算。差别不在实现细节，在被攻破之后的半径。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>问题</th>
+                  <th>其他方案</th>
+                  <th>本设计</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>中枢存不存「要跑什么」</td>
+                  <td>存。流程节点的命令、脚本、镜像都在中枢 DB 里</td>
+                  <td>不存。只有节点声明过的 <code>name</code></td>
+                </tr>
+                <tr>
+                  <td>命令从哪来</td>
+                  <td>中枢随任务下发，节点照着执行</td>
+                  <td>节点本地 <code>config.yaml</code>，中枢永远读不到</td>
+                </tr>
+                <tr>
+                  <td>怎么起进程</td>
+                  <td>解释执行脚本，或拼字符串后交给 <code>sh -c</code></td>
+                  <td><code>execve(argv[])</code>，参数不经过 shell</td>
+                </tr>
+                <tr>
+                  <td>中枢被打穿之后</td>
+                  <td>攻击者拿到全部执行能力，可下发任意命令</td>
+                  <td>攻击者只能重复点名已注册的命令</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>六道闸</h2>
+          <p class="prose">
+            扇出、接力、成环都是真实需求，所以不能靠「不允许多发」来防死循环。改成一组数值闸：默认收紧，规则作者可以在硬顶以内放松，越界在配置校验期直接拒绝，而不是运行时静默截断。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>闸</th>
+                  <th>内容</th>
+                  <th>默认</th>
+                  <th>硬顶</th>
+                  <th>防什么</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>G1 <code>allow_chain</code></td>
+                  <td>不显式开启就不允许接力派生</td>
+                  <td>关</td>
+                  <td>不可配</td>
+                  <td>防「顺手」接力：一次事件不会靠自己长出第二条链</td>
+                </tr>
+                <tr>
+                  <td>G2 <code>max_hops</code></td>
+                  <td>一条链上允许的最大跳数</td>
+                  <td>10</td>
+                  <td>32</td>
+                  <td>防规则互相触发把链路无限拉长</td>
+                </tr>
+                <tr>
+                  <td>G3 环检测</td>
+                  <td><code>path</code> 里 <code>rule_id</code> 去重，重复即静默剪枝</td>
+                  <td>隐含</td>
+                  <td>不可配</td>
+                  <td>防 A→B→A 转圈；剪枝必须在 trace 上可见</td>
+                </tr>
+                <tr>
+                  <td>G4 <code>max_tasks</code></td>
+                  <td>单个事件最多扇出多少个任务</td>
+                  <td>100</td>
+                  <td>1000</td>
+                  <td>防一条 webhook 把节点池一次打满</td>
+                </tr>
+                <tr>
+                  <td>G6 <code>max_duration</code></td>
+                  <td>一条链从根任务算起的总时长</td>
+                  <td>24h</td>
+                  <td>7d</td>
+                  <td>防慢速循环长期占着租约和预算</td>
+                </tr>
+                <tr>
+                  <td>G5 <span style="color: var(--faint)">已废弃</span></td>
+                  <td>付费任务数</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>计费口径没定，先留一个空位比留一个错的闸好</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            注意分工：G3 保证终止，G2 只是兜住异常。<code>path</code> 去重之后，一条链最长不可能超过规则总数，<code>max_hops</code> 管的是「作者期望的深度」而不是「系统的安全上限」。两者都留着，因为前者防转圈，后者防人类配置失误。
+          </p>
+
+          <h2>三层可配，硬顶只能改代码</h2>
+          <p class="prose">
+            同一个限额有三个来源，优先级从下往上：全局 env 给默认值，单规则可以覆盖，代码里的常量是天花板。规则里写超过硬顶的数字，校验期直接报错，不悄悄收窄 —— 作者必须知道他写的东西没有生效。
+          </p>
+
+          <div class="fig">
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline">
+                <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">1 全局 env</span>
+                <code>ANOTIFY_MAX_HOPS=10</code>
+                <span style="font-size: 12px; color: var(--muted)">部署时定，所有规则的默认值</span>
+              </div>
+              <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 单规则可覆盖</div>
+              <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline">
+                <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">2 单规则</span>
+                <code>limits.max_hops: 24</code>
+                <span style="font-size: 12px; color: var(--muted)">规则作者填，越界即拒</span>
+              </div>
+              <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 但不可越过</div>
+              <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; border-style: dashed">
+                <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">3 代码硬顶</span>
+                <code>hardMaxHops = 32</code>
+                <span style="font-size: 12px; color: var(--muted)">常量。只能改代码并重新部署，没有配置项、没有 env</span>
+              </div>
+            </div>
+            <div class="fig-cap">
+              <b>为什么硬顶不开放配置。</b>如果硬顶也能改，那它就不是硬顶，只是一层更深的默认值。真正需要放松时走代码变更，让它被 review、被记进版本、被所有部署继承。
+            </div>
+          </div>
+
+          <h2>信任边界与代价</h2>
+          <p class="prose">
+            这套边界不是免费的。把代价写清楚，比再堆一层防御更像一个工程决策。
+          </p>
+
+          <dl class="defs">
+            <div class="def">
+              <dt>token 泄露 = 继承该节点全部标签</dt>
+              <dd>
+                拿到节点 token 的人可以冒充这个节点接单，也就继承了它能跑的全部命名命令，以及它所属节点池的派发面。这是「中枢不掌握命令」的必然代价：中枢不知道命令是什么，就无法按命令粒度再授权。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>不做过度防御</dt>
+              <dd>
+                不搞 per-command ACL，不搞短时二次签名，不做「中枢签名后节点验签再执行」的链式校验 —— 这些机制都要求中枢理解命令，正好把丢掉的东西请回来。要缩小半径就缩小节点：给高风险命令单独注册节点，用 <code>max_instances</code> 限制扩散面。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>只出站长连接</dt>
+              <dd>
+                node agent 主动向中枢发起长连接，中枢不开放任何入站端口。内网机器不需要打洞、不需要公网回调地址，中枢也不成为新的攻击面入口。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>最坏情况是什么</dt>
+              <dd>
+                中枢完全被打穿：攻击者能读事件与结果、能反复点名已注册的命令、能伪造 <code>params</code>。但不能新增命令、不能改 argv、不能拿到节点上的凭据。伤害上限被钉在「这些命令被以奇怪的参数跑了很多次」。
+              </dd>
+            </div>
+          </dl>
+
+          <div class="note warn">
+            知道代价，就别假装能消掉它。我们选择用「节点本地定义命令 + 中枢只认名字」换掉一大类远程执行风险，剩下的风险通过缩小节点权限面来管理，而不是通过更多协议层。
+          </div>
+
+          <nav class="pager">
+            <a href="06-trace.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">可观测与版本</div>
+            </a>
+            <a href="08-scope.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">本期范围</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
