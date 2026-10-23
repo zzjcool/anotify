@@ -105,7 +105,7 @@
                 <div style="display: flex; flex-wrap: wrap; gap: 6px">
                   <div class="box sm">review-pr</div>
                   <div class="box sm">deploy-preview</div>
-                  <div class="box sm dashed">未注册 → unknown_action</div>
+                  <div class="box sm dashed">未注册 → unknown_capability</div>
                 </div>
               </div>
             </div>
@@ -131,7 +131,7 @@ commands:
           </p>
           <div class="prose">
             <ul>
-              <li>未注册的 <code>name</code> → <code>unknown_action</code>。不回退到默认命令，不做模糊匹配。</li>
+              <li>未注册的 <code>name</code> → <code>unknown_capability</code>。不回退到默认命令，不做模糊匹配。</li>
               <li><code>params</code> 的值只做占位替换，替换结果作为一个完整的 argv 元素传入，不再做二次字符串拼接。</li>
               <li><code>env</code> 由节点本地决定，中枢不提供环境变量。</li>
             </ul>
@@ -213,7 +213,7 @@ commands:
                 </tr>
                 <tr>
                   <td>G3 环检测</td>
-                  <td><code>path</code> 里 <code>rule_id</code> 去重，重复即静默剪枝</td>
+                  <td><code>path</code> 里能力名去重，重复即静默剪枝</td>
                   <td>隐含</td>
                   <td>不可配</td>
                   <td>防 A→B→A 转圈；剪枝必须在 trace 上可见</td>

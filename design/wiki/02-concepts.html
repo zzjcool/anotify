@@ -233,7 +233,7 @@
             <div class="step">
               <div class="step-title">查出口表</div>
               <div class="step-body">
-                拿这条事件去查出口表的 <code>match</code>。查到的每一行各自产出一个 task，有多条就产出多个，全部下发。命中零条的，不产任务，但在 trace 上记一条 <code>pruned</code> 和原因。
+                拿 <code>(source, type)</code> 去查 <code>edges</code> 表。查到的每一行各自产出一个 task，有多行就产出多个，全部下发。<b>没有条件求值</b>。查到零行的，不产任务，但在 trace 上记一条 <code>pruned</code> 和原因——「表里没有这条边」。
               </div>
             </div>
             <div class="step">

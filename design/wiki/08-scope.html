@@ -92,7 +92,7 @@
                 </tr>
                 <tr>
                   <td>出口表 <code>edges</code></td>
-                  <td><code>match</code> 条件 + <code>action</code>，多个条件各自可解释；命中 0 条也记 trace，标 <code>pruned</code> 与原因。</td>
+                  <td>显式声明 <code>(能力, 出口) → 能力</code>；查到的 N 行全部下发，查不到也记 trace，标 <code>pruned</code> 与原因。</td>
                 </tr>
                 <tr>
                   <td>扇出</td>
@@ -104,7 +104,7 @@
                 </tr>
                 <tr>
                   <td>成环</td>
-                  <td>允许成环（审查 → 修复 → 复审），用 <code>path</code> 里 <code>rule_id</code> 去重做剪枝，剪枝在 trace 上可见。</td>
+                  <td>允许成环（审查 → 修复 → 复审），用 <code>path</code> 里能力名去重做剪枝，剪枝在 trace 上可见。</td>
                 </tr>
                 <tr>
                   <td>任务租约</td>
