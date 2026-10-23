@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>规则与扇出 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-rules.html" class="active"><span class="n">04</span>规则与扇出</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">规则与扇出</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 04 页 · 运行时</div>
+          <h1>规则与扇出</h1>
+          <p class="lead">
+            事件进来之后，规则决定派哪些任务；任务的结果又能变成新事件，继续往下派。这页讲清四件事：规则长什么样、为什么命中就全部下发、扇出为什么不是收集、以及允许成环时靠什么保证一定停得下来。
+          </p>
+
+          <h2>规则长什么样</h2>
+          <p class="prose">
+            一条规则就是一份声明式配置，三块内容：<code>match</code> 说「什么算命中」，<code>action</code> 说「命中之后做什么」，剩下四个字段是这条规则能花掉多少预算。没有脚本，没有表达式引擎，也没有节点图。
+          </p>
+
+          <pre class="code"><span class="c">// design/rules/github-pr.jsonc</span>
+{
+  <span class="k">"id"</span>: <span class="s">"rev-pr"</span>,
+
+  <span class="c">// 1. 什么算命中：全部满足才命中，缺省字段 = 不约束</span>
+  <span class="k">"match"</span>: {
+    <span class="k">"source"</span>: <span class="s">"github"</span>,
+    <span class="k">"type"</span>: <span class="s">"pr.opened"</span>,
+    <span class="k">"payload.repo"</span>: <span class="s">"^acme/"</span>,
+    <span class="k">"payload.draft"</span>: <span class="n">false</span>
+  },
+
+  <span class="c">// 2. 命中之后做什么：派给节点（要回报）还是推手机（不回报）</span>
+  <span class="k">"action"</span>: {
+    <span class="k">"sink"</span>: <span class="s">"machine"</span>,
+    <span class="k">"kind"</span>: <span class="s">"command"</span>,
+    <span class="k">"name"</span>: <span class="s">"review"</span>,
+    <span class="k">"params"</span>: { <span class="k">"mode"</span>: <span class="s">"diff"</span> },
+    <span class="k">"selector"</span>: { <span class="k">"label"</span>: <span class="s">"go"</span> }
+  },
+
+  <span class="c">// 3. 四个钳子：深度 / 任务数 / 总时长 / 每日配额</span>
+  <span class="k">"max_hops"</span>: <span class="n">6</span>,
+  <span class="k">"max_tasks"</span>: <span class="n">40</span>,
+  <span class="k">"max_duration"</span>: <span class="s">"6h"</span>,
+  <span class="k">"daily_budget"</span>: <span class="n">300</span>
+}</pre>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>字段</th>
+                  <th>类型</th>
+                  <th>含义</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>id</code></td>
+                  <td>string</td>
+                  <td>规则标识。成环剪枝、粘性路由、trace 都认这个名字；同名即同一环。</td>
+                </tr>
+                <tr>
+                  <td><code>match</code></td>
+                  <td>object</td>
+                  <td>
+                    条件集合，<strong>全部满足</strong>才算命中。支持 <code>source</code>、<code>type</code> 和 <code>payload</code> 的点路径（如 <code>payload.repo</code>）加正则；没写的字段表示不约束。
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>action</code></td>
+                  <td>object</td>
+                  <td>
+                    <code>sink: machine</code> 派任务到节点，必须回报、有租约、失败重试；<code>sink: human</code> 推手机，尽力而为、可丢、不回报。两者永不混用。发给节点的全部内容只有 <code>{kind, name, params}</code> 三段，外加上面的 <code>selector</code>（选节点标签）。
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>max_hops</code></td>
+                  <td>int</td>
+                  <td>接力深度上限（闸 G2）。默认 10，硬顶 32。</td>
+                </tr>
+                <tr>
+                  <td><code>max_tasks</code></td>
+                  <td>int</td>
+                  <td>这条规则在一条 trace 里最多建多少个任务（闸 G4）。默认 100，硬顶 1000。</td>
+                </tr>
+                <tr>
+                  <td><code>max_duration</code></td>
+                  <td>duration</td>
+                  <td>一条 trace 的总时长上限（闸 G6）。默认 24h，硬顶 7d。到点后不再派生新任务。</td>
+                </tr>
+                <tr>
+                  <td><code>daily_budget</code></td>
+                  <td>int</td>
+                  <td>这条规则每天的建任务配额。用尽后新命中不建任务——成本可预测就靠它和 <code>max_tasks</code> 两个数。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            命中 0 条规则时结果很干脆：不派任何任务。但这不是「什么都不发生」——trace 上留下一条 <code>pruned</code> 记着没命中的原因，否则事后没法回答「这次为什么没触发」。
+          </p>
+
+          <h2>多条命中，全部下发</h2>
+          <p class="prose">
+            一个事件可以和任意多条规则同时匹配。匹配结果<strong>不是</strong>一个「被选中的规则」，而是 N 个任务，一次性全部建出来。没有优先级，没有互斥，没有「取第一条命中的」。
+          </p>
+
+          <div class="fig">
+            <div class="fanout">
+              <div class="box">pr.opened<span class="sub">1 个事件</span></div>
+              <div class="bracket" style="width: 0; margin-right: 4px"></div>
+              <div class="fanout-col">
+                <div class="box sm">rev-pr → T1<span class="sub">machine sink · 派 agent 审查</span></div>
+                <div class="box sm">pr-notify → T2<span class="sub">human sink · 推手机</span></div>
+                <div class="box sm">label-guard → T3<span class="sub">machine sink · 打标签</span></div>
+              </div>
+            </div>
+            <div class="fig-cap">
+              三条规则各自求值，互不知道对方存在。这里一个事件同时走了两类 sink：机器任务要回报，手机通知不回报。
+            </div>
+          </div>
+
+          <p class="prose">
+            三个任务之间没有任何依赖关系：T1 失败不会撤销 T2、T3，T3 成功也不代表事件「已被处理」。实现上扇出的代价几乎为零——一次 <code>INSERT</code> 多行而已，这也是它在本期被无条件支持的原因。
+          </p>
+
+          <h2>扇出不等于收集</h2>
+          <p class="prose">
+            这是两个方向相反的问题，在别的工作流产品里常常被混成一个词。扇出回答「这个事件要引起几件事」，收集回答「那几件事都回来了吗」。前者本期做，后者本期不做。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>维度</th>
+                  <th>扇出 fan-out</th>
+                  <th>收集 gather / join</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>回答的问题</td>
+                  <td>这个事件要引起几件事</td>
+                  <td>那几件事都回来了吗</td>
+                </tr>
+                <tr>
+                  <td>本期</td>
+                  <td>无条件支持：N 条规则 → N 个任务</td>
+                  <td><strong>不做</strong></td>
+                </tr>
+                <tr>
+                  <td>难度</td>
+                  <td>极低，一次 <code>INSERT</code> 多行</td>
+                  <td>高：批次、计数、菱形依赖、部分失败要各自定义规则</td>
+                </tr>
+                <tr>
+                  <td>缺失时的代价</td>
+                  <td>没有。扇出本身就是默认行为，不需要开关</td>
+                  <td>遇到「等一组都完成」的需求时，只能把等待塞进节点内部</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>没有收集，怎么「等一组都完成」</h3>
+          <p class="prose">
+            放进节点进程内部。节点 A 收到一个任务，自己在进程里并行跑三个子步骤，自己等齐，自己汇总，最后只回报中枢一个 result。对中枢来说，从头到尾就只有一个任务。
+          </p>
+
+          <div class="fig">
+            <div class="fanout">
+              <div class="box">中枢<span class="sub">只看到 Task T1</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="card-2">
+                <div class="lane-label">节点 A · 进程内</div>
+                <div class="fanout-col">
+                  <div class="box sm">子步骤 1 · lint</div>
+                  <div class="box sm">子步骤 2 · 单测</div>
+                  <div class="box sm">子步骤 3 · 审查 diff</div>
+                </div>
+              </div>
+              <div class="arr"><span>→</span></div>
+              <div class="box">1 个 result<span class="sub">汇总后回报</span></div>
+            </div>
+            <div class="fig-cap">
+              中枢侧只有一个任务、一份租约、一个 span；三个子步骤只存在于节点 A 的进程里。
+            </div>
+          </div>
+
+          <div class="note">
+            <strong>代价要说清楚：</strong>节点内部的并行在 trace 上不可见。中枢只知道 T1 跑了多久、回了一个什么 result；三个子步骤各自耗时多少、哪个重试过、哪个失败了，都在节点自己的日志里。这是换取实现极简的代价，也是本期不做收集的直接后果。
+          </div>
+
+          <h2>接力与成环</h2>
+
+          <h3>接力：任务结果变成下一个事件</h3>
+          <p class="prose">
+            任务的结果不是终点。节点回报 result 时可以选择性地带一个派生事件，事件照常进日志、照常过规则，命中就继续派任务。这条链就叫接力。
+          </p>
+
+          <div class="steps">
+            <div class="step">
+              <div class="step-title">任务结束，回报 result</div>
+              <div class="step-body">
+                节点把结果交给中枢：一段摘要，加上可选的派生事件。没带派生事件，这条链就到此为止——绝大多数任务都是这样。
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-title">派生事件写入事件日志</div>
+              <div class="step-body">
+                新事件有自己的 <code>source</code>、<code>type</code>、<code>payload</code>，但沿用同一个 <code>trace_id</code>，<code>hop</code> 加一。它在日志里和外部进来的事件长得一模一样。
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-title">规则重新求值</div>
+              <div class="step-body">
+                新事件走完整的匹配流程。这里没有「上一条规则的子规则」这种概念，接力不是嵌套，只是同一个循环再跑一遍。
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-title">建下一跳任务，path 加长一位</div>
+              <div class="step-body">
+                命中就建任务，新任务的 <code>path</code> = 父任务的 <code>path</code> 加上本条规则 id。没命中的话不建任务，trace 上记 <code>pruned</code>。
+              </div>
+            </div>
+          </div>
+
+          <h3>允许成环</h3>
+          <p class="prose">
+            审查 → 修复 → 复审是真实存在的工作流，不是配置写错了。所以本期不禁止环：禁止它等于让最有用的一种用法没法表达。取而代之的是让每个任务记住自己是怎么走到这里的，然后按记忆剪枝。
+          </p>
+
+          <div class="fig">
+            <div class="flow" style="justify-content: flex-start">
+              <div class="box">rev-pr<span class="sub">规则</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box">T1 审查<span class="sub">path [rev-pr]</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box">impl-fix<span class="sub">规则</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box">T2 修复<span class="sub">path [rev-pr, impl-fix]</span></div>
+              <div class="arr"><span>→</span></div>
+              <div class="box dashed">rev-pr 再命中<span class="sub">已在 path 里 → 剪枝</span></div>
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line-strong)">
+              <span class="mono" style="font-size: 12px; color: var(--faint)">←</span>
+              <span style="font-size: 11px; color: var(--muted); line-height: 1.7">
+                回边：T2 的 result 派生事件 <code>fix.pushed</code>，规则 <code>rev-pr</code> 再次命中——环在这里被切断，不建 T3。
+              </span>
+            </div>
+            <div class="fig-cap">
+              <b>path</b> 一直往前带：T1 是 <code>[rev-pr]</code>，T2 是 <code>[rev-pr, impl-fix]</code>。因此 T2 之后 <code>rev-pr</code> 的命中被判定为回到走过的路。
+            </div>
+          </div>
+
+          <h3>path 是这条路径，不是整条 trace</h3>
+          <p class="prose">
+            <code>path</code> 的定义很容易被误读成「这条 trace 走过的所有规则」。不是。它是<strong>从根到本任务这一条具体路径</strong>上的 rule_id 序列。区别在分叉时会立刻显现——两条分支各算各的，互不影响。
+          </p>
+
+          <div class="fig">
+            <div style="display: flex; margin-bottom: 14px">
+              <div class="box">事件 E0<span class="sub">根，path 为空</span></div>
+            </div>
+            <div class="lane">
+              <div class="lane-label">分支 1 · 起点是规则 A</div>
+              <div class="flow" style="justify-content: flex-start">
+                <div class="box sm">规则 A</div>
+                <div class="arr"><span>→</span></div>
+                <div class="box sm">T1<span class="sub">path [A]</span></div>
+                <div class="arr"><span>→</span></div>
+                <div class="box sm">规则 C</div>
+                <div class="arr"><span>→</span></div>
+                <div class="box sm">T3<span class="sub">path [A, C]</span></div>
+              </div>
+            </div>
+            <div class="lane" style="margin-bottom: 0">
+              <div class="lane-label">分支 2 · 起点是规则 B</div>
+              <div class="flow" style="justify-content: flex-start">
+                <div class="box sm">规则 B</div>
+                <div class="arr"><span>→</span></div>
+                <div class="box sm">T2<span class="sub">path [B]</span></div>
+                <div class="arr"><span>→</span></div>
+                <div class="box sm">规则 C</div>
+                <div class="arr"><span>→</span></div>
+                <div class="box sm">T4<span class="sub">path [B, C]</span></div>
+              </div>
+            </div>
+            <div class="fig-cap">
+              同一个 E0 扇出两条分支。<code>C</code> 在两条分支里都允许命中，因为 T3 的 path 是 <code>[A, C]</code>、T4 的是 <code>[B, C]</code>——各自都是第一次走到 C。
+            </div>
+          </div>
+
+          <div class="prose">
+            <ul>
+              <li>往下推：T3 派生的事件若再命中 <code>A</code>，剪枝——<code>A</code> 已在 <code>[A, C]</code> 里。</li>
+              <li>同一时刻：T4 派生的事件若命中 <code>A</code>，<strong>允许</strong>建任务——<code>A</code> 不在 <code>[B, C]</code> 里。同一个规则 id，在另一条分支上照样能跑。</li>
+              <li>由此得出：保证终止的不是 <code>max_hops</code>，是 path 去重。路径最长 = 规则总数，走到头自然停。<code>max_hops</code> 只是深度方向的另一道保险。</li>
+            </ul>
+          </div>
+
+          <h3>剪枝是静默的，但必须可见</h3>
+          <p class="prose">
+            「静默」的意思是：不报错、不暂停、不弹窗、不惊动调用方。不是「什么都不记」。命中被剪掉时，trace 上要留一条 <code>pruned</code> 并写明原因，按下面四类之一：
+          </p>
+
+          <div class="prose">
+            <ul>
+              <li><strong>环</strong>：规则 id 已在本任务的 <code>path</code> 里。</li>
+              <li><strong>深度</strong>：超出 <code>max_hops</code>。</li>
+              <li><strong>预算</strong>：超出 <code>max_tasks</code> 或 <code>daily_budget</code>。</li>
+              <li><strong>时长</strong>：超出 <code>max_duration</code>，或未开启接力。</li>
+            </ul>
+          </div>
+
+          <p class="prose">
+            还要把剪枝和「没命中」分开记。没命中是 <code>match</code> 条件不成立；剪枝是条件明明成立了，却被环或预算挡下。两者混在一起，「为什么没发生」就再也解释不清了——而解释这件事正是这个产品的主要卖点。
+          </p>
+
+          <h2>防炸</h2>
+          <p class="prose">
+            扇出、接力、成环三条叠在一起会放大任务量，所以必须有钳子。和本页直接相关的有两个：
+          </p>
+
+          <div class="defs">
+            <div class="def">
+              <dt><code>max_tasks</code>（G4）</dt>
+              <dd>
+                一条 trace 里这条规则最多建多少个任务。默认 100，硬顶 1000，硬顶只能改代码。超出后不再建任务，trace 上记 <code>pruned: task_budget_exhausted</code>。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>单事件命中规则数</dt>
+              <dd>
+                一个事件同时命中的规则数上限 50 条。第 51 条起不再建任务，同样记 <code>pruned</code> 加原因。防的是「一条兜底规则配得太宽，一个事件把整个节点池占满」。
+              </dd>
+            </div>
+          </div>
+
+          <p class="prose">
+            三个钳子（G2/G4/G6）的数值都可以三层覆盖：全局环境变量 → 单条规则 → 代码里的硬顶。硬顶改不了配置，只能改代码。
+          </p>
+
+          <div class="note warn">
+            预算用完时唯一正确的行为是<strong>不建任务 + 记 pruned</strong>。绝不静默丢弃：既不悄悄少建一个任务，也不把超出的部分折进另一个任务里。控制台和 trace 上都要能看到被挡下了几条、因为哪道闸。
+          </div>
+
+          <p class="prose">
+            到这里，一条事件怎么变成一堆任务、任务又怎么变成新事件，讲完了。下一页进节点内部，看一个任务在机器上实际怎么跑起来。
+          </p>
+
+          <nav class="pager">
+            <a href="03-flow.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">一条事件的旅程</div>
+            </a>
+            <a href="05-nodes.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">节点与执行</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
