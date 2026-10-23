@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>能力与出口 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-edges.html" class="active"><span class="n">04</span>能力与出口</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">能力与出口</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 04 页 · 运行时</div>
+          <h1>能力与出口</h1>
+          <p class="lead">
+            这一页讲路由。旧模型用「规则 + 条件匹配」，新模型把这一层整个去掉了：
+            一切参与流转的东西都是节点，节点申报能力，能力带出口，
+            <b>派发就是查一张表</b>。没有条件求值，没有优先级，没有表达式引擎。
+          </p>
+
+          <h2>三个要素</h2>
+          <p class="prose">
+            先把词定住。后面所有页面都只用这三个词描述结构。
+          </p>
+
+          <div class="defs">
+            <div class="def">
+              <dt>节点 <code>node</code></dt>
+              <dd>参与流转的一个实体。可以是一台机器、一个 webhook、一个收通知的手机。</dd>
+            </div>
+            <div class="def">
+              <dt>能力 <code>capability</code></dt>
+              <dd>节点申报的「我能做什么」。<b>路由的单位是能力，不是机器</b>——同一台机器可以申报很多个能力。</dd>
+            </div>
+            <div class="def">
+              <dt>出口 <code>output</code></dt>
+              <dd>能力的命名出口。跑完之后节点选择走哪个出口。出口是字符串，不是条件。</dd>
+            </div>
+          </div>
+
+          <h2>三种节点，按端口形状分</h2>
+          <p class="prose">
+            分类只有一条依据：<b>有没有入口、有没有出口</b>。不看它跑在哪、用什么语言、由谁维护、是不是人。
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box">source · 源<span class="sub">入 ✗ · 出 ✓</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box accent">worker · 工作节点<span class="sub">入 ✓ · 出 ✓</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <span class="box ok">sink · 终端<span class="sub">入 ✓ · 出 ✗</span></span>
+            </div>
+            <div class="fig-cap">
+              <b>触发器就是「只有出口、没有能力」的节点。</b>它不接任务，只把外部世界的变化转成一次出口选择。
+            </div>
+          </div>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>种类</th>
+                  <th>入</th>
+                  <th>出</th>
+                  <th>例子</th>
+                  <th><code>kind</code></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>源 / 触发器</td>
+                  <td>✗</td>
+                  <td>✓</td>
+                  <td>GitHub webhook、cron、文件 watch、外部 API</td>
+                  <td><code>source</code></td>
+                </tr>
+                <tr>
+                  <td>工作节点</td>
+                  <td>✓</td>
+                  <td>✓</td>
+                  <td>机器上的 <code>review</code> / <code>implement</code> / <code>test</code></td>
+                  <td><code>worker</code></td>
+                </tr>
+                <tr>
+                  <td>终端 / 叶子</td>
+                  <td>✓</td>
+                  <td>✗</td>
+                  <td>推手机（human sink）、写日志</td>
+                  <td><code>sink</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <b>没有第四种。</b>任何东西都能落进这三类之一——包括你没想过的那些：
+            一个审批人点「通过」是 worker（有入有出）；一个只负责收尾的 webhook 回调是 sink。
+          </p>
+
+          <h2>出口表：路由的唯一依据</h2>
+          <p class="prose">
+            中枢不存条件、不跑匹配。它只存一张边表。
+          </p>
+
+          <pre class="code"><span class="k">CREATE TABLE</span> edges (
+  <span class="k">from_capability</span> TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 谁产的</span>
+  <span class="k">from_port</span>       TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 走了哪个出口</span>
+  <span class="k">to_capability</span>   TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 下一个能力</span>
+  <span class="k">PRIMARY KEY</span> (from_capability, from_port, to_capability)
+);</pre>
+
+          <p class="prose">
+            派发就是一次索引查询。返回几行，就派几个任务：
+          </p>
+
+          <pre class="code"><span class="k">SELECT</span> to_capability <span class="k">FROM</span> edges
+ <span class="k">WHERE</span> from_capability = :cap
+   <span class="k">AND</span> from_port = :port;
+
+<span class="c">-- 返回 N 行 → 派 N 个任务（全部下发，不是择一）</span>
+<span class="c">-- 返回 0 行 → 这条线到此为止，记 pruned + 原因</span></pre>
+
+          <div class="note">
+            <b>这就是全部的路由逻辑。</b>没有 <code>match</code> 表达式、没有条件树、没有优先级排序、
+            没有 DSL 解析器。它之所以能这样，是因为<b>图是显式声明的</b>——
+            「PR 打开之后要做什么」不再是一条需要求值的规则，而是表里的两三行。
+          </div>
+
+          <h2>三方怎么声明</h2>
+          <p class="prose">
+            节点在本地配置文件里申报自己的能力与出口，这些<b>事实</b>被上报到中枢，
+            中枢把它们拼成 <code>edges</code> 表。节点看不到全图，也不需要看。
+          </p>
+
+          <h3>source：只有出口</h3>
+          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 触发器节点</span>
+node: gh-webhook
+kind: <span class="s">source</span>
+emits:
+  pr_opened:
+    to: [review, notify.phone]   <span class="c"># 一个出口通向两个能力 → 扇出</span>
+  pr_merged:
+    to: [notify.phone]</pre>
+          <p class="prose">
+            中枢只收到「<code>source:github</code> 的 <code>pr_opened</code> 通向 review 和 notify.phone」
+            这个事实，<b>收不到任何 webhook 解析逻辑</b>。
+          </p>
+
+          <h3>worker：有进有出</h3>
+          <pre class="code"><span class="c"># 工作节点</span>
+node: mbp-16
+kind: <span class="s">worker</span>
+capabilities:
+  - name: review
+    argv: [<span class="s">"git"</span>, <span class="s">"diff"</span>, <span class="s">"--name-only"</span>]
+    outputs: [fix, clean]        <span class="c"># 我可能往哪走</span>
+  - name: implement
+    argv: [<span class="s">"./agent.sh"</span>]
+    outputs: [verify]</pre>
+
+          <div class="note warn">
+            <b><code>outputs</code> 是「我会用到的出口名」，不是「我会去哪」。</b>
+            这一点很容易读错。review 知道自己在两种情况下会走 <code>fix</code> 或 <code>clean</code>，
+            但它<b>不知道 <code>fix</code> 后面接谁</b>——那是中枢 edges 表的事。
+            节点不该知道图长什么样。这就是「中枢不下发命令」的同一条原则。
+          </div>
+
+          <h3>sink：只有入口</h3>
+          <pre class="code"><span class="c"># 终端节点</span>
+node: my-phone
+kind: <span class="s">sink</span>
+capabilities:
+  - name: notify.phone
+    outputs: []                  <span class="c"># 没有出口</span></pre>
+
+          <h2>运行时：节点跑完才选出口</h2>
+          <p class="prose">
+            出口不能提前定，因为<b>命令还没跑，谁也不知道会走到哪</b>。
+            成功要跑完才知道，失败也要跑完才知道。所以它出现在 <code>result</code> 里。
+          </p>
+
+          <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
+{
+  <span class="s">"status"</span>: <span class="s">"succeeded"</span>,
+  <span class="s">"out"</span>: <span class="s">"fix"</span>,              <span class="c">// ★ 我选了 fix 这个出口</span>
+  <span class="s">"summary"</span>: <span class="s">"发现 2 处类型错误"</span>,
+  <span class="s">"artifacts"</span>: [<span class="s">"diff.patch"</span>]
+}
+
+{
+  <span class="s">"status"</span>: <span class="s">"failed"</span>,
+  <span class="s">"out"</span>: <span class="k">null</span>,               <span class="c">// ★ 失败，且这条线到我为止</span>
+  <span class="s">"error"</span>: <span class="s">"build exited 1"</span>
+}</pre>
+
+          <p class="prose">
+            <code>out</code> 一个字段同时表达两件事：<b>有没有下游</b>（<code>null</code> = 没有）、
+            <b>有哪个下游</b>（<code>"fix"</code> = 走这条边）。它和 <code>status</code> 正交：
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th><code>status</code></th>
+                  <th><code>out</code></th>
+                  <th>含义</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>succeeded</code></td>
+                  <td><code>"fix"</code></td>
+                  <td>干完了，往下走</td>
+                </tr>
+                <tr>
+                  <td><code>succeeded</code></td>
+                  <td><code>null</code></td>
+                  <td>干完了，到头了</td>
+                </tr>
+                <tr>
+                  <td><code>failed</code></td>
+                  <td><code>"fix"</code></td>
+                  <td>失败，但触发了修复分支</td>
+                </tr>
+                <tr>
+                  <td><code>failed</code></td>
+                  <td><code>null</code></td>
+                  <td>失败且断在这里</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            第二行和第四行是「这条线结束」；第一行和第三行会继续。
+            <b>注意失败也能继续</b>——失败本身可能就是下一跳的起点，中枢不判断该不该。
+          </p>
+
+          <h2>可解释性：比之前更强</h2>
+          <p class="prose">
+            旧模型要回答「为什么没触发」，得逐条件求值、记录每个条件的 passed/failed。
+            新模型只需要看两个地方。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>问题</th>
+                  <th>答案</th>
+                  <th>怎么展示</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>为什么没有下一个任务？</td>
+                  <td><code>edges</code> 里没有 <code>(能力, 出口)</code> 这一行</td>
+                  <td>直接高亮「表里无此行」，不需要推理</td>
+                </tr>
+                <tr>
+                  <td>为什么走了这条边？</td>
+                  <td>上游回报了 <code>out = 这个出口</code></td>
+                  <td>把上游的 <code>result.out</code> 和边放在一起</td>
+                </tr>
+                <tr>
+                  <td>为什么另一条边没走？</td>
+                  <td>上游回报的 <code>out</code> 不是它</td>
+                  <td>标出上游实际选的出口</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <b>这三种都能在跑之前静态展示。</b>旧模型要解释「某个条件为什么是 false」，
+            往往得重跑一次；新模型只是「表里有没有这一行」。
+          </p>
+
+          <h2>环：配置期就看得见</h2>
+          <p class="prose">
+            图是显式声明出来的，所以环不需要等到运行时才发现——它在 <code>edges</code> 表里就是几条首尾相接的行。
+            <b>而且环是允许的</b>：审查 → 修复 → 复审 是真实场景。
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box">review<span class="sub">out: fix</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box">implement<span class="sub">out: verify</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <span class="box warn">review<span class="sub">path 已含 → 剪枝</span></span>
+            </div>
+            <div class="fig-cap">
+              <b>第二次回到 review 时剪枝</b>——不报错、不暂停 trace，但这笔要留在 trace 上看得见。
+            </div>
+          </div>
+
+          <div class="defs">
+            <div class="def">
+              <dt>行程 <code>path</code></dt>
+              <dd><b>从根到本任务这条具体路径</b>的能力名序列，不是整个 trace 见过的集合。两条分支的 path 互不影响。</dd>
+            </div>
+            <div class="def">
+              <dt>剪枝 <code>pruned</code></dt>
+              <dd>path 里已有该能力 → 不建任务。<b>静默但不隐形成</b>：trace 上记 <code>pruned</code> + 原因。</dd>
+            </div>
+            <div class="def">
+              <dt>为什么必然终止</dt>
+              <dd>path 去重保证路径最长 = 图里的能力数。<code>max_hops</code> 只是这个上界的外显配置，不是唯一防线。</dd>
+            </div>
+          </div>
+
+          <nav class="pager">
+            <a href="03-flow.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">一条事件的旅程</div>
+            </a>
+            <a href="05-nodes.html" class="next">
+              <div class="dir">下一页</div>
+              <div class="ttl">节点与执行</div>
+            </a>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>

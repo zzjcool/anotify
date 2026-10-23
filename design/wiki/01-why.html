@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -118,7 +118,7 @@
 
           <h3>一、「为什么没触发」说不清</h3>
           <p class="prose">
-            定时没跑、webhook 丢了、规则没匹配，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。事件中心把事件本身和它的判定过程一起记下来：哪个条件没满足、哪条规则被剪枝、剪枝原因是什么，都在同一条 trace 上。
+            定时没跑、webhook 丢了、出口表里没有这条边，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。事件中心把事件本身和它的路由过程一起记下来：查表查到几行、走了哪个出口、剪枝原因是什么，都在同一条 trace 上。
           </p>
 
           <h3>二、长任务一断就没了</h3>
@@ -169,7 +169,7 @@
             <div class="def">
               <dt>拖拽画布</dt>
               <dd>
-                画布把一条规则变成一张需要读懂位置的图，改一个条件要点三次；我们让规则是文本，能进 git、能 diff、能 review。
+                画布把一条边变成一张需要读懂位置的图，改一条边要点三次；我们让路由是一张表，能进 git、能 diff、能 review。
               </dd>
             </div>
             <div class="def">

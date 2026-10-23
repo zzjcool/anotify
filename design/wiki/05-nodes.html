@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html" class="active"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -69,32 +69,127 @@
           <div class="crumb">第 05 页 · 运行时</div>
           <h1>节点与执行</h1>
           <p class="lead">
-            任务落到哪台机器、怎么跑、中途掉线归谁。这页讲四件事：中枢与节点的分工边界、租约与状态机、节点池怎么选人、下线时任务怎么收场。
+            统一模型下「节点」不再只指一台执行任务的机器：触发器、机器上的一个能力、一个终端，都是节点。这页讲五件事：节点按端口形状分成哪三种、中枢与节点的分工边界、租约与状态机、节点池怎么选人、下线时任务怎么收场。
           </p>
 
-          <h2>中枢不知道节点上有什么命令</h2>
+          <h2>节点有三种，不是一种</h2>
           <p class="prose">
-            节点在自己机器上维护一份命令表（命令名 → <code>argv</code>），<strong>永不上传</strong>。中枢只知道「这个节点声明了哪些名字」，
-            不知道名字背后是什么程序、带什么参数、在不在。
+            旧模型里「节点」只指跑任务的机器。统一模型把它放宽了：<strong>一切参与流转的东西都是节点</strong>——
+            一个 webhook、机器上的一个能力、一个收通知的手机。它们不是三套机制，是同一个东西的三种<strong>端口形状</strong>。
+          </p>
+
+          <div class="fig">
+            <div class="grid-3">
+              <div class="card-2">
+                <div class="lane-label">source · 源</div>
+                <div class="box sm">只有出口<span class="sub">入 ✗ · 出 ✓</span></div>
+                <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
+                  webhook / cron / watch / 外部 API。产生事件，不接任务。
+                </p>
+              </div>
+              <div class="card-2">
+                <div class="lane-label">worker · 工作节点</div>
+                <div class="box sm">有进有出<span class="sub">入 ✓ · 出 ✓</span></div>
+                <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
+                  机器上的 <code>review</code> / <code>implement</code> / <code>test</code>。接任务，跑完再选一个出口。
+                </p>
+              </div>
+              <div class="card-2">
+                <div class="lane-label">sink · 终端</div>
+                <div class="box sm">只有入口<span class="sub">入 ✓ · 出 ✗</span></div>
+                <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
+                  推手机（human sink）、写日志。收了活就结束，不产生下游。
+                </p>
+              </div>
+            </div>
+            <div class="fig-cap">
+              分类只有一条依据：<b>端口形状</b>。不看它跑在哪、用什么语言、由谁维护、是不是人。
+            </div>
+          </div>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>kind</th>
+                  <th>入</th>
+                  <th>出</th>
+                  <th>例子</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>source</code> · 源</td>
+                  <td>✗</td>
+                  <td>✓</td>
+                  <td>GitHub webhook、cron、watch、外部 API</td>
+                </tr>
+                <tr>
+                  <td><code>worker</code> · 工作节点</td>
+                  <td>✓</td>
+                  <td>✓</td>
+                  <td>机器上的 <code>review</code> / <code>implement</code> / <code>test</code></td>
+                </tr>
+                <tr>
+                  <td><code>sink</code> · 终端</td>
+                  <td>✓</td>
+                  <td>✗</td>
+                  <td>推手机（human sink）、写日志</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <strong>没有第四种。</strong>一个东西要参与流转，它要么只能产生事件（<code>source</code>），要么既能接也能往下走（<code>worker</code>），
+            要么只收不发（<code>sink</code>）。判据只有两个问题：「有没有入」「有没有出」，组合起来只有三种答案。
+            以后无论冒出来什么新东西——一个 IM 回调、一次定时扫描、一个审批环节——都先拿这两个问题量一遍，答案会把它塞进这三类里。
+          </p>
+
+          <h2>中枢不知道节点上有什么能力</h2>
+          <p class="prose">
+            节点在自己机器上维护一份能力表（能力名 → <code>argv</code>），<strong>永不上传</strong>。中枢只知道「这个节点申报了哪些能力」，
+            不知道能力背后是什么程序、带什么参数、在不在。
           </p>
 
           <pre class="code"><span class="c"># 节点本地 ~/.anotifyd/config.yaml —— 这份文件从不离开本机</span>
 <span class="k">node</span>:
   <span class="k">command_timeout_sec</span>: 900
 
-<span class="k">commands</span>:
+<span class="k">capabilities</span>:
   - <span class="k">name</span>: git.fetch          <span class="c"># 中枢只认这个名字</span>
     <span class="k">argv</span>: [<span class="s">"git"</span>, <span class="s">"fetch"</span>, <span class="s">"--prune"</span>, <span class="s">"origin"</span>]
+    <span class="k">outputs</span>: [<span class="s">done</span>]           <span class="c"># 会用到的出口名，不是目的地</span>
     <span class="k">retries</span>: 2                <span class="c"># 节点内部重试，不消耗中枢 attempts</span>
     <span class="k">idempotent</span>: true          <span class="c"># 只读，重跑无副作用</span>
-    <span class="k">concurrency</span>: 2            <span class="c"># 命令级并发上限</span>
+    <span class="k">concurrency</span>: 2            <span class="c"># 能力级并发上限</span>
 
   - <span class="k">name</span>: test.unit
     <span class="k">argv</span>: [<span class="s">"make"</span>, <span class="s">"test"</span>]
+    <span class="k">outputs</span>: [<span class="s">fix</span>, <span class="s">done</span>]     <span class="c"># 走 fix 去修，或走 done 收工</span>
     <span class="k">retries</span>: 0
     <span class="k">idempotent</span>: false         <span class="c"># 默认值：有副作用</span>
     <span class="k">resumable</span>: false
     <span class="k">concurrency</span>: 1</pre>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <span class="box">能力声明 <code>outputs: [fix, done]</code><span class="sub">我会用到这两个出口名</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <div class="flow-item">
+                <span class="box">中枢 <code>edges</code> 表<span class="sub">(test.unit, fix) → implement</span></span>
+                <span class="arr"><span>→</span></span>
+              </div>
+              <span class="box">下一跳派给谁<span class="sub">节点不知道，也不需要知道</span></span>
+            </div>
+            <div class="fig-cap">
+              <b><code>outputs</code> 是「我会用到的出口名」，不是「我会去哪」。</b>
+              能力只说自己可能走哪几个门，门后面通向谁由中枢的 <code>edges</code> 表决定——节点不该知道整张图长什么样。
+              这正是分工：节点负责「我干完了，走了 fix 这个门」，中枢负责「fix 这个门通向 implement」。
+            </div>
+          </div>
 
           <div class="fig">
             <div class="flow">
@@ -116,7 +211,7 @@
             </div>
             <div class="fig-cap">
               <b>线上只跑这三个字段。</b>节点收到 <code>{kind, name, params}</code>，拿 <code>name</code> 查本地表得到 <code>argv</code>，直接
-              <code>execve(argv[])</code>；查不到就回 <code>unknown_action</code>。中枢不改写命令、不猜参数、不拼命令行。
+              <code>execve(argv[])</code>；查不到就回报「不认识这个能力」。中枢不改写命令、不猜参数、不拼命令行。
             </div>
           </div>
 
@@ -141,7 +236,7 @@
             </div>
             <div class="def">
               <dt>标签 labels</dt>
-              <dd>绑在 <code>node_id</code> 上，<strong>中枢赋值</strong>。规则按标签挑节点，不写机器名、不写 IP。</dd>
+              <dd>绑在 <code>node_id</code> 上，<strong>中枢赋值</strong>。出口表按标签挑节点，不写机器名、不写 IP。</dd>
             </div>
             <div class="def">
               <dt>泄漏的代价</dt>
@@ -177,7 +272,7 @@
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
-                <span class="box ok">succeeded</span>
+                <span class="box sm">succeeded</span>
               </div>
             </div>
 
@@ -187,7 +282,7 @@
               <span class="bracket"></span>
               <div class="fanout-col">
                 <span class="box sm">failed · 重试耗尽</span>
-                <span class="box sm">canceled · 人取消 / 规则撤销</span>
+                <span class="box sm">canceled · 人取消 / 配置撤销</span>
                 <span class="box sm">abandoned · 节点下线 / 硬过期</span>
               </div>
             </div>
@@ -262,8 +357,8 @@
               <tbody>
                 <tr>
                   <td>谁定义次数</td>
-                  <td>节点 <code>manifest.commands[].retries</code></td>
-                  <td>规则 <code>lifecycle.maxAttempts</code></td>
+                  <td>节点 <code>manifest.capabilities[].retries</code></td>
+                  <td>能力 <code>lifecycle.maxAttempts</code></td>
                 </tr>
                 <tr>
                   <td>是否消耗中枢 attempts</td>
@@ -272,7 +367,7 @@
                 </tr>
                 <tr>
                   <td>触发条件</td>
-                  <td>命令非零退出、网络抖动</td>
+                  <td>能力非零退出、网络抖动</td>
                   <td>租约过期、节点下线、节点上报可重试错误</td>
                 </tr>
                 <tr>
@@ -317,14 +412,14 @@
             <div class="fanout">
               <div class="fanout-col">
                 <span class="box sm">实例申报 · node_instances.concurrency</span>
-                <span class="box sm">命令级 · commands[].concurrency</span>
+                <span class="box sm">能力级 · capabilities[].concurrency</span>
                 <span class="box sm">节点级 · nodes.max_concurrency</span>
               </div>
               <span class="bracket"></span>
               <span class="box">实际并发 = min(三者)<span class="sub">谁申报得小听谁的</span></span>
             </div>
             <div class="fig-cap">
-              三个上限同时生效。一个命令不许同时跑 5 份，就不会跑 5 份，哪怕整套池子还空着。
+              三个上限同时生效。一个能力不许同时跑 5 份，就不会跑 5 份，哪怕整套池子还空着。
               <b>派发策略只有一条：最少负载优先</b>——在标签命中的节点里比 <code>inflight / concurrency</code>，取最小的；全满就排队，不溢出到标签不匹配的节点。
             </div>
           </div>
@@ -336,18 +431,18 @@
             比如同一个工作目录、刚编译出来的中间文件、未提交的 worktree。
           </p>
 
-          <div class="note">
-            <b>本期默认不粘。</b>因为本期不做收集，下游本来就拿不到上游的本地产物；
+          <p class="prose">
+            <strong>本期默认不粘。</strong>因为本期不做收集，下游本来就拿不到上游的本地产物；
             而同一个 trace 的多条分支（机器 / 人）本来就不该挤在同一台机器上。
-            粘性是<b>按命令声明开启</b>的：节点在 <code>manifest.commands[].sticky</code> 里说
-            「这个命令要求固定实例」，中枢才会查 <code>node_pins</code>。
-          </div>
+            粘性是<strong>按能力声明开启</strong>的：节点在 <code>manifest.capabilities[].sticky</code> 里说
+            「这个能力要求固定实例」，中枢才会查 <code>node_pins</code>。
+          </p>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
-                  <th>命令类型</th>
+                  <th>能力类型</th>
                   <th>需要粘性吗</th>
                   <th>派发方式</th>
                 </tr>
@@ -373,13 +468,13 @@
           </div>
 
           <p class="prose">
-            声明了粘性的命令，才走下面这条链路。
+            声明了粘性的能力，才走下面这条链路。
           </p>
 
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <span class="box">sticky_key<span class="sub">sha256(trace_id ∥ rule_id ∥ selector)</span></span>
+                <span class="box">sticky_key<span class="sub">sha256(trace_id ∥ capability ∥ selector)</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
@@ -408,7 +503,7 @@
           </div>
 
           <pre class="code"><span class="k">CREATE TABLE</span> node_pins (
-  <span class="k">sticky_key</span>   TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- sha256(trace_id ∥ rule_id ∥ selector)</span>
+  <span class="k">sticky_key</span>   TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- sha256(trace_id ∥ capability ∥ selector)</span>
   <span class="k">node_id</span>      TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 选中就钉死，不随负载漂移</span>
   <span class="k">selector</span>     TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 当时命中的标签，失效判断用</span>
   <span class="k">created_at</span>   INTEGER <span class="k">NOT NULL</span>,
@@ -419,84 +514,135 @@
 <span class="c">-- 写 pin 与建任务在同一个事务里：任务在，pin 一定在。</span>
 <span class="c">-- rebalance 只扫 node_id 已下线 / 实例全满的 pin，重新选节点并改写 node_id。</span></pre>
 
-          <h2>谁能终结一条链：<code>terminal</code> 声明</h2>
+          <h2>谁能终结一条链：<code>out</code> 写在结果里</h2>
           <p class="prose">
             中枢有一件事必须知道：<b>这条链还会不会往下走</b>。因为「收敛」要发通知，
-            而通知发出去就不能收回。这个判断不能由中枢猜——它不知道某个命令的业务语义，
-            只知道名字。
+            而通知发出去就不能收回。这个判断中枢不能猜——它不知道某个能力的业务语义，只知道名字。
           </p>
-          <p class="prose">
-            所以每个命令在 manifest 里<b>自己声明</b>它的出口。<b>默认是最保守的那个：不声明就按「还能继续」算。</b>
-          </p>
+
+          <div class="note err">
+            <b>但这件事<u>不能</u>写在 manifest 里。</b>能力还没跑，谁也不知道它会走到哪个出口——
+            成功要跑完才知道，失败也要跑完才知道。让 manifest 提前承诺「我不会继续」，
+            等于让节点在开局就赌，赌错了就是手机提前响。
+            <b>所以 <code>out</code> 是 <code>result</code> 里的一个字段，不是 manifest 里的声明。</b>
+          </div>
 
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <span class="box dashed">不声明<span class="sub">默认</span></span>
+                <span class="box">执行完成<span class="sub">成功 / 失败都算</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
-                <span class="box warn">terminal: false<span class="sub">保守：不动</span></span>
+                <span class="box">result 里带 <code>out</code><span class="sub">出口名 或 null</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
-              <span class="box">状态成终态，但<b>不</b>算能收敛</span>
-            </div>
-            <div class="flow" style="margin-top: 16px">
-              <div class="flow-item">
-                <span class="box dashed">声明 terminal: true</span>
-                <span class="arr"><span>→</span></span>
-              </div>
-              <div class="flow-item">
-                <span class="box ok">这个 span 可终结</span>
-                <span class="arr"><span>→</span></span>
-              </div>
-              <span class="box">纳入收敛判定</span>
+              <span class="box">中枢查 <code>edges</code> 表<span class="sub">有边就派，没边就到头</span></span>
             </div>
             <div class="fig-cap">
-              <b>“能终结”不是“是叶子”。</b>同一个命令可以某次跑完是叶子，某次又靠派生事件接下去——
-              <code>terminal</code> 说的是 <b>当它没派生时算不算走完</b>，而不是“它永远不会派生”。
+              <b><code>out</code> 一个字段同时回答两件事：有没有下游（<code>null</code> = 没有）、有哪个下游（<code>"fix"</code> = 走这条边）。</b>
+              旧的 <code>terminal</code> 布尔字段只答得出第一件，还得再猜一次走哪条；换成出口名之后，一件就够了。
             </div>
           </div>
 
-          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 节点自己声明出口</span>
-commands:
-  - name: review
-    argv: [<span class="s">"git"</span>, <span class="s">"diff"</span>, <span class="s">"--name-only"</span>]
-    <span class="k">terminal: false</span>     <span class="c"># 审查的结果会派生下一个任务</span>
+          <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
+{
+  <span class="s">"status"</span>: <span class="s">"succeeded"</span>,
+  <span class="s">"out"</span>: <span class="s">"fix"</span>,          <span class="c">// ★ 干完了，走 fix 这个出口</span>
+  <span class="s">"summary"</span>: <span class="s">"发现 2 处类型错误，交给修复分支"</span>,
+  <span class="s">"artifacts"</span>: [<span class="s">"tsk_8f21a3c0"</span>]
+}
 
-  - name: notify.phone
-    argv: [<span class="s">"./notify"</span>]
-    <span class="k">terminal: true</span>      <span class="c"># 推完就完了，没有下游</span>
+{
+  <span class="s">"status"</span>: <span class="s">"failed"</span>,
+  <span class="s">"out"</span>: <span class="k">null</span>,           <span class="c">// ★ 失败，且这条线断在这里</span>
+  <span class="s">"error"</span>: <span class="s">"build exited 1, 无后续"</span>
+}</pre>
 
-  - name: approve
-    argv: [<span class="s">"./wait-approval"</span>]
-    <span class="k">terminal: false</span>     <span class="c"># 以后接了审批分支，它也可能不是终点</span>
-    <span class="c"># 注意：terminal 是「当前这个命令」的属性，不是节点属性</span></pre>
-
-          <h3>这是申报制，不是自动推断</h3>
           <p class="prose">
-            中枢不读命令输出，不从「有没有派生事件」反推出口。原因很简单：
-            <b>派生事件可能晚一点才到，也可能永远不来</b>。自动推断要么晚发通知，要么发错。
-            改成声明制之后，中枢只需把 manifest 里的事实当输入，不需要理解任何业务。
+            <strong>它描述的是「这一次」，不是「这个能力」。</strong>同一个 <code>review</code>，
+            这次改完了就回报 <code>null</code> 收工，下次发现新问题就回报 <code>"fix"</code> 接着走——同一个能力，两次的 <code>out</code> 可以不同。
+            中枢不预判、不反推，只读这一个字段；拿到之后做一次查表：<code>edges</code> 里有 <code>(能力, 出口)</code> 这一行就往下派，没有就到头。
           </p>
 
-          <div class="note warn">
-            <b>本期 human sink 一律当叶子。</b>推送没有下游、不需要回报，天然是 <code>terminal: true</code>。
-            但以后接审批时，人点完“通过”可能触发下一跳——那时 human sink 就不再是叶子了。
-            <b>所以不把它写死在代码里，而是也用同一种方式声明。</b>
-          </div>
-
-          <h2>节点下线分级</h2>
+          <h3>为什么失败也要带这个字段</h3>
           <p class="prose">
-            节点掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由命令自己的声明决定，不让中枢猜。
+            失败和继续是两个独立的维度。一次失败可能让链停在这里（<code>out: null</code>），
+            也可能触发一条「修复」分支（<code>out: "fix"</code>）。
+            中枢<b>不判断</b>哪种该发生，它只读节点回报的事实，然后查表。
           </p>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
-                  <th>命令声明</th>
-                  <th>这类命令</th>
+                  <th>status</th>
+                  <th><code>out</code></th>
+                  <th>含义</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>succeeded</code></td>
+                  <td><code>"fix"</code></td>
+                  <td>干完了，往下走。查 <code>edges</code>：(能力, fix) 指向谁就派谁。</td>
+                </tr>
+                <tr>
+                  <td><code>succeeded</code></td>
+                  <td><code>null</code></td>
+                  <td>干完了，到头了。这条线在这里结束。</td>
+                </tr>
+                <tr>
+                  <td><code>failed</code></td>
+                  <td><code>"fix"</code></td>
+                  <td>失败，但触发了修复分支。同样查表派下一跳，不能收敛。</td>
+                </tr>
+                <tr>
+                  <td><code>failed</code></td>
+                  <td><code>null</code></td>
+                  <td>失败且断在这里。可以收敛，通知里点明失败。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>节点漏报怎么办</h3>
+          <p class="prose">
+            缺失、迟到、或格式不对时，中枢一律按「未回报」处理（<b>保守</b>，不收敛）——
+            宁可晚收敛，也不提前误报。代价是可能永远不收敛，所以要有三道兜底：
+          </p>
+          <div class="defs">
+            <div class="def">
+              <dt>租约兜底</dt>
+              <dd>任务最终都会被租约重置到一个终态（含 <code>abandoned</code>），不会永远挂着。</dd>
+            </div>
+            <div class="def">
+              <dt>缺省补齐</dt>
+              <dd>终态任务若没有 <code>out</code>，按「未回报」计入，直到 <code>max_duration</code> 用尽。</dd>
+            </div>
+            <div class="def">
+              <dt>超时收敛</dt>
+              <dd><code>max_duration</code> 耗尽时强制收敛，并标注「有 N 个任务未申报出口」——不静默。</dd>
+            </div>
+          </div>
+
+          <div class="note warn">
+            <b>本期 human sink 一律 <code>out: null</code>。</b>推送没有下游、不需要接续，天然到头。
+            但以后接审批时，人点完「通过」可能触发下一跳——那时它报的就不是 <code>null</code> 了。
+            <b>所以走 <code>result.out</code> 这条通道，而不是把 <code>null</code> 写死在代码里。</b>
+          </div>
+
+          <h2>节点下线分级</h2>
+          <p class="prose">
+            节点掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由能力自己的声明决定，不让中枢猜。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>能力声明</th>
+                  <th>这类能力</th>
                   <th>下线时任务处理</th>
                 </tr>
               </thead>
@@ -526,7 +672,7 @@ commands:
           </div>
 
           <h2>任务生命周期属性</h2>
-          <p class="prose">规则可以声明一个任务能活多久、能不能重来、结果留多久。四项，都在 <code>lifecycle</code> 下。</p>
+          <p class="prose">能力可以声明一个任务能活多久、能不能重来、结果留多久。四项，都在 <code>lifecycle</code> 下。</p>
 
           <div class="tbl-wrap">
             <table class="tbl">
@@ -546,7 +692,7 @@ commands:
                 <tr>
                   <td><code>lifecycle.retryable</code></td>
                   <td>是否允许中枢重派</td>
-                  <td><code>false</code> = 一次性；命令 <code>idempotent: false</code> 时被强制为 <code>false</code></td>
+                  <td><code>false</code> = 一次性；能力 <code>idempotent: false</code> 时被强制为 <code>false</code></td>
                 </tr>
                 <tr>
                   <td><code>lifecycle.maxAttempts</code></td>
@@ -563,15 +709,15 @@ commands:
           </div>
 
           <p class="prose">
-            <strong><code>retryable</code> 是中枢的意愿，<code>idempotent</code> 是命令的事实。</strong>
-            中枢可以决定「想不想重派」，但碰上 <code>idempotent: false</code> 的命令，意愿无效——重跑一个已经发过版的任务，代价比失败更大。
-            接力与链路的次数上限见 <a href="04-rules.html">04 规则与扇出</a>。
+            <strong><code>retryable</code> 是中枢的意愿，<code>idempotent</code> 是能力的事实。</strong>
+            中枢可以决定「想不想重派」，但碰上 <code>idempotent: false</code> 的能力，意愿无效——重跑一个已经发过版的任务，代价比失败更大。
+            接力与链路的次数上限见 <a href="04-edges.html">04 能力与出口</a>。
           </p>
 
           <nav class="pager">
-            <a href="04-rules.html">
+            <a href="04-edges.html">
               <div class="dir">上一页</div>
-              <div class="ttl">规则与扇出</div>
+              <div class="ttl">能力与出口</div>
             </a>
             <a href="06-trace.html" class="next">
               <div class="dir">下一页</div>

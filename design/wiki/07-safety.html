@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -74,7 +74,7 @@
 
           <h2>根本原则：中枢永不下发命令</h2>
           <p class="prose">
-            中枢只做三件事：记事件、匹配规则、派任务。它不知道目标机器上装着什么程序，也不知道某个名字背后对应哪条 argv。任务载荷里只有 <code>{kind, name, params}</code> —— 一个名字，加上给这个命令的参数。
+            中枢只做三件事：记事件、查出口表、派任务。它不知道目标机器上装着什么程序，也不知道某个名字背后对应哪条 argv。任务载荷里只有 <code>{kind, name, params}</code> —— 一个名字，加上给这个命令的参数。
           </p>
 
           <div class="fig">
@@ -182,7 +182,7 @@ commands:
 
           <h2>六道闸</h2>
           <p class="prose">
-            扇出、接力、成环都是真实需求，所以不能靠「不允许多发」来防死循环。改成一组数值闸：默认收紧，规则作者可以在硬顶以内放松，越界在配置校验期直接拒绝，而不是运行时静默截断。
+            扇出、接力、成环都是真实需求，所以不能靠「不允许多发」来防死循环。改成一组数值闸：默认收紧，配置者可以在硬顶以内放松，越界在配置校验期直接拒绝，而不是运行时静默截断。
           </p>
 
           <div class="tbl-wrap">
@@ -209,7 +209,7 @@ commands:
                   <td>一条链上允许的最大跳数</td>
                   <td>10</td>
                   <td>32</td>
-                  <td>防规则互相触发把链路无限拉长</td>
+                  <td>防能力互相触发把链路无限拉长</td>
                 </tr>
                 <tr>
                   <td>G3 环检测</td>
@@ -244,12 +244,12 @@ commands:
           </div>
 
           <p class="prose">
-            注意分工：G3 保证终止，G2 只是兜住异常。<code>path</code> 去重之后，一条链最长不可能超过规则总数，<code>max_hops</code> 管的是「作者期望的深度」而不是「系统的安全上限」。两者都留着，因为前者防转圈，后者防人类配置失误。
+            注意分工：G3 保证终止，G2 只是兜住异常。<code>path</code> 去重之后，一条链最长不可能超过能力总数，<code>max_hops</code> 管的是「作者期望的深度」而不是「系统的安全上限」。两者都留着，因为前者防转圈，后者防人类配置失误。
           </p>
 
           <h2>三层可配，硬顶只能改代码</h2>
           <p class="prose">
-            同一个限额有三个来源，优先级从下往上：全局 env 给默认值，单规则可以覆盖，代码里的常量是天花板。规则里写超过硬顶的数字，校验期直接报错，不悄悄收窄 —— 作者必须知道他写的东西没有生效。
+            同一个限额有三个来源，优先级从下往上：全局 env 给默认值，单个能力可以覆盖，代码里的常量是天花板。配置里写超过硬顶的数字，校验期直接报错，不悄悄收窄 —— 作者必须知道他写的东西没有生效。
           </p>
 
           <div class="fig">
@@ -257,13 +257,13 @@ commands:
               <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline">
                 <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">1 全局 env</span>
                 <code>ANOTIFY_MAX_HOPS=10</code>
-                <span style="font-size: 12px; color: var(--muted)">部署时定，所有规则的默认值</span>
+                <span style="font-size: 12px; color: var(--muted)">部署时定，所有能力的默认值</span>
               </div>
-              <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 单规则可覆盖</div>
+              <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 单个能力可覆盖</div>
               <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline">
-                <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">2 单规则</span>
+                <span class="mono" style="min-width: 86px; font-size: 10px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase">2 单个能力</span>
                 <code>limits.max_hops: 24</code>
-                <span style="font-size: 12px; color: var(--muted)">规则作者填，越界即拒</span>
+                <span style="font-size: 12px; color: var(--muted)">配置者填，越界即拒</span>
               </div>
               <div style="text-align: center; font-size: 10.5px; color: var(--faint); line-height: 1.4">↓ 但不可越过</div>
               <div class="card-2" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; border-style: dashed">

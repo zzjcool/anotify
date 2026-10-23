@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -73,8 +73,9 @@
           </p>
 
           <p class="prose" style="font-size: 12.5px">
-            共 76 条。跳到：
-            <a href="#g-event">事件与链路</a> · <a href="#g-rule">规则</a> · <a href="#g-task">任务</a> · <a href="#g-node">节点</a> ·
+            共 95 条。跳到：
+            <a href="#g-event">事件与链路</a> · <a href="#g-node">节点与种类</a> · <a href="#g-edge">能力与出口</a> ·
+            <a href="#g-task">任务</a> · <a href="#g-runtime">运行时</a> ·
             <a href="#g-safety">安全与限额</a> · <a href="#g-version">版本</a> · <a href="#g-sink">sink</a> · <a href="#g-prefix">前缀速查</a>
           </p>
 
@@ -82,11 +83,11 @@
           <dl class="defs">
             <div class="def">
               <dt>事件 Event <code>event</code></dt>
-              <dd>系统里唯一的事实单位：外部触发写一行，任务结果也写一行，两者形状相同，过的是同一套规则。</dd>
+              <dd>系统里唯一的事实单位：外部触发写一行，任务结果也写一行，两者形状相同，过的是同一套路由。</dd>
             </div>
             <div class="def">
               <dt>来源 <code>source</code></dt>
-              <dd>事件从哪来，如 <code>github</code> / <code>cron</code> / <code>watch</code> / <code>agent</code>。规则 <code>match</code> 的第一维。</dd>
+              <dd>事件从哪来，如 <code>github</code> / <code>cron</code> / <code>watch</code> / <code>agent</code>。edges 表查表键的第一维。</dd>
             </div>
             <div class="def">
               <dt>类型 <code>type</code></dt>
@@ -94,7 +95,7 @@
             </div>
             <div class="def">
               <dt>载荷 <code>payload</code></dt>
-              <dd>事件携带的 JSON 主体。规则用点路径加正则匹配其中字段，如 <code>payload.repo</code>。</dd>
+              <dd>事件携带的 JSON 主体。事件类型与来源构成查表的键，如 <code>payload.repo</code>。</dd>
             </div>
             <div class="def">
               <dt>链路 id <code>trace_id</code></dt>
@@ -118,15 +119,15 @@
             </div>
             <div class="def">
               <dt>路径 <code>path</code></dt>
-              <dd>从根到<strong>本任务这条具体路径</strong>的 rule_id 序列，用于环检测。不是整条 trace 的规则集合——同一条规则在另一条分支上照样能跑。</dd>
+              <dd>从根到<strong>本任务这条具体路径</strong>的 rule_id 序列，用于环检测。不是整条 trace 的能力集合——同一个能力在另一条分支上照样能跑。</dd>
             </div>
             <div class="def">
               <dt>链路 Trace <code>trace</code></dt>
-              <dd>一条完整链路的视图，按 <code>trace_id</code> 把事件、规则判定、任务状态聚到一起，是事后回答「走了哪条路」的唯一入口。</dd>
+              <dd>一条完整链路的视图，按 <code>trace_id</code> 把事件、查表结果、任务状态聚到一起，是事后回答「走了哪条路」的唯一入口。</dd>
             </div>
             <div class="def">
               <dt>span Span</dt>
-              <dd>链路里的一个节点，有起止时间。一个任务是一个 span，一次规则求值也可以画成一条零长度的 span。</dd>
+              <dd>链路里的一个节点，有起止时间。一个任务是一个 span，一次查表也可以画成一条零长度的 span。</dd>
             </div>
             <div class="def">
               <dt>剪枝 <code>pruned</code></dt>
@@ -142,27 +143,119 @@
             </div>
           </dl>
 
-          <h2 id="g-rule">规则</h2>
+          <h2 id="g-node">节点与种类</h2>
           <dl class="defs">
             <div class="def">
-              <dt>规则 Rule <code>rule</code></dt>
-              <dd>一份声明式配置：<code>match</code> 加 <code>action</code> 加四个预算字段。没有脚本，没有表达式引擎。</dd>
+              <dt>节点 <code>node</code></dt>
+              <dd>一切参与流转的实体。可能是机器、webhook、手机。分类只看端口形状。</dd>
             </div>
             <div class="def">
-              <dt>匹配 <code>match</code></dt>
-              <dd>条件集合，<strong>全部满足</strong>才算命中；没写的字段表示不约束。支持 <code>source</code>、<code>type</code>、<code>payload</code> 点路径加正则。</dd>
+              <dt>种类 <code>kind</code></dt>
+              <dd><code>source</code> / <code>worker</code> / <code>sink</code> 三选一，没有第四种。</dd>
             </div>
             <div class="def">
-              <dt>动作 <code>action</code></dt>
-              <dd>命中之后做什么。<code>sink</code> 选 human 还是 machine；machine 侧再带 <code>kind</code> / <code>name</code> / <code>params</code> / <code>selector</code>。</dd>
+              <dt>源 / 触发器 <code>source</code></dt>
+              <dd>只有出口、没有入口的节点。把外部世界的变化转成一次出口选择。例：GitHub webhook、cron、文件 watch。</dd>
             </div>
             <div class="def">
-              <dt>优先级 <code>priority</code></dt>
-              <dd>本期没有这个字段，也不该有。多条命中<strong>全部下发</strong>，不存在「取优先级最高的那条」。</dd>
+              <dt>工作节点 <code>worker</code></dt>
+              <dd>有进有出的节点。接任务、跑能力、跑完选一个出口。例：机器上的 <code>review</code>、<code>implement</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>终端 / 叶子 <code>sink</code></dt>
+              <dd>只有入口、没有出口的节点。收了活就结束。例：推手机、写日志。</dd>
+            </div>
+            <div class="def">
+              <dt>节点池</dt>
+              <dd>两级：<code>nodes</code> 管身份与配额，<code>node_instances</code> 管执行器与并发。一台机器一份身份、多个实例。</dd>
+            </div>
+            <div class="def">
+              <dt>凭据与标签</dt>
+              <dd>节点用 token 注册，标签由中枢赋值、不接受自报。token 泄露 = 继承该节点全部标签，这是必然代价。</dd>
+            </div>
+            <div class="def">
+              <dt>下线分级</dt>
+              <dd>节点消失时按 <code>idempotent</code> / <code>resumable</code> 决定：只读的放弃，有副作用的告警等人工，可续传的换节点重派。</dd>
+            </div>
+            <div class="def">
+              <dt>粘性 <code>sticky</code></dt>
+              <dd>能力是否要求固定实例（共享工作目录、增量编译）。<b>默认关闭</b>——结果存在中枢，下游不需要回原机器。</dd>
+            </div>
+            <div class="def">
+              <dt>落点表 <code>node_pins</code></dt>
+              <dd>粘性路由的查表结果。只在能力声明了 <code>sticky</code> 时才写入和查询。</dd>
+            </div>
+            <div class="def">
+              <dt><code>sticky_key</code></dt>
+              <dd>由 trace、能力、选择器三段算出的哈希。只在 <code>sticky</code> 开启时使用。</dd>
+            </div>
+            <div class="def">
+              <dt>最少负载优先</dt>
+              <dd>默认派发策略：在标签命中的实例里比 <code>inflight / concurrency</code>，取最小的。全满就排队，不溢出到不匹配的节点。</dd>
+            </div>
+          </dl>
+
+          <h2 id="g-edge">能力与出口</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt>能力 <code>capability</code></dt>
+              <dd>节点申报的「我能做什么」。<b>路由的单位是能力，不是机器</b>。一台机器可以申报很多个。</dd>
+            </div>
+            <div class="def">
+              <dt>出口 <code>output</code> / <code>port</code></dt>
+              <dd>能力的命名出口。跑完之后节点选择走哪个。<b>它是字符串，不是条件。</b></dd>
+            </div>
+            <div class="def">
+              <dt>边 <code>edge</code></dt>
+              <dd><code>(from_capability, from_port) → to_capability</code> 的三元组，路由表的一行。</dd>
+            </div>
+            <div class="def">
+              <dt>出口表 <code>edges</code></dt>
+              <dd>全部边的集合，<b>中枢侧唯一的路由依据</b>。没有 <code>match</code>、没有条件树、没有优先级、没有表达式引擎。</dd>
+            </div>
+            <div class="def">
+              <dt>派发 <code>dispatch</code></dt>
+              <dd>查 edges 表，返回 N 行就建 N 个任务。全部下发，不择一。</dd>
+            </div>
+            <div class="def">
+              <dt>扇出</dt>
+              <dd>一个事件引起多个任务。本期无条件支持，N 是多少不管。</dd>
+            </div>
+            <div class="def">
+              <dt>收集 / join</dt>
+              <dd>等一组任务齐了再触发下游。<b>本期不做</b>，需要时放在节点内部实现。</dd>
+            </div>
+            <div class="def">
+              <dt>接力</dt>
+              <dd>任务结果变成新事件，再查一次 edges 表，生出下一跳。</dd>
+            </div>
+            <div class="def">
+              <dt>回报 <code>report</code></dt>
+              <dd>节点跑完提交 <code>{status, out}</code>。<code>out</code> 是出口名或 null。</dd>
+            </div>
+            <div class="def">
+              <dt>出口名 <code>out</code></dt>
+              <dd>节点在 result 里回报的出口选择。<b>一个字段表达两件事</b>：有没有下游（null）、有哪个下游（具体值）。它和 <code>status</code> 正交。</dd>
+            </div>
+            <div class="def">
+              <dt>行程 <code>path</code></dt>
+              <dd><b>从根到本任务这条具体路径</b>的能力名序列，不是整个 trace 见过的集合。两条分支互不影响。</dd>
+            </div>
+            <div class="def">
+              <dt>剪枝 <code>pruned</code></dt>
+              <dd>因行程里已有该能力而不建任务。<b>静默但不隐形成</b>：trace 上记原因。</dd>
+            </div>
+            <div class="def">
+              <dt>环</dt>
+              <dd>允许。图是显式声明的，所以配置期就看得见。运行期靠行程去重保证终止，<code>max_hops</code> 只是外显上界。</dd>
+            </div>
+            <div class="def">
+              <dt>落定 <code>settled</code></dt>
+              <dd>没有在跑的任务、没有未到期任务、每个终态任务都已回报出口。三者缺一不可。</dd>
             </div>
             <div class="def">
               <dt>接力开关 <code>allow_chain</code></dt>
-              <dd>闸 G1。不显式打开就绝不接力，任务结果不会派生新事件。默认关，不可配。</dd>
+              <dd>闸 G1。不显式打开就绝不接力。默认关，不可配。</dd>
             </div>
             <div class="def">
               <dt>深度上限 <code>max_hops</code></dt>
@@ -170,27 +263,7 @@
             </div>
             <div class="def">
               <dt>任务上限 <code>max_tasks</code></dt>
-              <dd>闸 G4。这条规则在一条 trace 里最多建多少任务。默认 100，硬顶 1000。超出记 <code>pruned</code>。</dd>
-            </div>
-            <div class="def">
-              <dt>时长上限 <code>max_duration</code></dt>
-              <dd>闸 G6。一条 trace 的总时长上限。默认 24h，硬顶 7d。到点不再派生。</dd>
-            </div>
-            <div class="def">
-              <dt>每日配额 <code>daily_budget</code></dt>
-              <dd>这条规则每天能建多少任务。用尽后新命中不建任务、记 <code>pruned</code>。成本可预测靠它加 <code>max_tasks</code> 两个数。</dd>
-            </div>
-            <div class="def">
-              <dt>扇出 fanout</dt>
-              <dd>一个事件命中 N 条规则就建 N 个任务，互不依赖、互不等待。实现就是一次 INSERT 多行，本期无条件支持。</dd>
-            </div>
-            <div class="def">
-              <dt>接力 chain</dt>
-              <dd>任务结果带一个派生事件回灌日志，事件再命中规则再建任务。同一条 <code>trace_id</code> 延续下去，<code>hop</code> 加一。</dd>
-            </div>
-            <div class="def">
-              <dt>环检测 cycle check</dt>
-              <dd>闸 G3，判断等价于 <code>rule_id</code> 是否已在 <code>path</code> 里。命中即剪枝。不可配——允许成环，但靠 path 去重保证终止。</dd>
+              <dd>闸 G4。一条 trace 最多建多少任务。默认 100，硬顶 1000。超出记 <code>pruned</code>。</dd>
             </div>
           </dl>
 
@@ -237,7 +310,7 @@
             </div>
             <div class="def">
               <dt><code>internal_attempts</code></dt>
-              <dd>节点在机器上自己重试的次数，<strong>不消耗中枢 attempts</strong>。由 <code>manifest.commands[].retries</code> 约束。</dd>
+              <dd>节点在机器上自己重试的次数，<strong>不消耗中枢 attempts</strong>。由 <code>manifest.capabilities[].retries</code> 约束。</dd>
             </div>
             <div class="def">
               <dt>结果 <code>result</code></dt>
@@ -249,11 +322,11 @@
             </div>
             <div class="def">
               <dt>生命周期 <code>lifecycle</code></dt>
-              <dd>规则可声明四项：<code>expiresInSec</code> 硬过期到点即放弃绝不重派 / <code>retryable</code> 是否允许中枢重派 / <code>maxAttempts</code> 重派上限 / <code>resultTtlSec</code> 到期只清 result 不清行。</dd>
+              <dd>能力可声明四项：<code>expiresInSec</code> 硬过期到点即放弃绝不重派 / <code>retryable</code> 是否允许中枢重派 / <code>maxAttempts</code> 重派上限 / <code>resultTtlSec</code> 到期只清 result 不清行。</dd>
             </div>
           </dl>
 
-          <h2 id="g-node">节点</h2>
+          <h2 id="g-runtime">运行时</h2>
           <dl class="defs">
             <div class="def">
               <dt>节点 Node <code>node</code></dt>
@@ -301,10 +374,10 @@
             </div>
             <div class="def">
               <dt><code>sticky_key</code></dt>
-              <dd>由 trace、规则、选择器三段算出的哈希。<b>只在命令声明了 <code>sticky</code> 时使用</b>；默认派发不查这张表。</dd>
+              <dd>由 trace、能力、选择器三段算出的哈希。<b>只在命令声明了 <code>sticky</code> 时使用</b>；默认派发不查这张表。</dd>
             </div>
             <div class="def">
-              <dt>粘性 <code>manifest.commands[].sticky</code></dt>
+              <dt>粘性 <code>manifest.capabilities[].sticky</code></dt>
               <dd>命令是否要求固定实例（共享工作目录、增量编译）。默认关闭——结果存在中枢，下游不需要回原机器。</dd>
             </div>
             <div class="def">
@@ -337,7 +410,7 @@
             </div>
             <div class="def">
               <dt>闸 G4</dt>
-              <dd><code>max_tasks</code>：单规则单 trace 的任务数上限，默认 100，硬顶 1000。</dd>
+              <dd><code>max_tasks</code>：单个能力单 trace 的任务数上限，默认 100，硬顶 1000。</dd>
             </div>
             <div class="def">
               <dt>闸 G5（已废弃）</dt>
@@ -353,7 +426,7 @@
             </div>
             <div class="def">
               <dt>三层覆盘</dt>
-              <dd>同一类限额的三层配置：全局 env → 单规则 → 代码硬顶。前面两层可改，最后一层只能改代码。</dd>
+              <dd>同一类限额的三层配置：全局 env → 单个能力 → 代码硬顶。前面两层可改，最后一层只能改代码。</dd>
             </div>
             <div class="def">
               <dt>派生凭据 <code>jti</code></dt>
@@ -380,8 +453,8 @@
           <h2 id="g-version">版本</h2>
           <dl class="defs">
             <div class="def">
-              <dt><code>rule_versions</code></dt>
-              <dd>规则配置的版本表，append-only：改一次加一行，旧行不覆盖。trace 钉的是这里的 id。</dd>
+              <dt><code>graph_versions</code></dt>
+              <dd>图配置的版本表（edges + capabilities），append-only：改一次加一行，旧行不覆盖。trace 钉的是这里的 id。</dd>
             </div>
             <div class="def">
               <dt><code>node_manifest_versions</code></dt>
@@ -460,9 +533,9 @@
                   <td>任务 id，与 <code>span_id</code> 同值。trace 上的任务 span 就是它。</td>
                 </tr>
                 <tr>
-                  <td><code>rty_</code></td>
-                  <td>版本 rule_versions</td>
-                  <td>规则版本，格式 <code>rty_&lt;UTC&gt;_&lt;hash8&gt;</code>，append-only。</td>
+                  <td><code>grf_</code></td>
+                  <td>版本 graph_versions（图：edges + capabilities）</td>
+                  <td>图版本，格式 <code>grf_&lt;UTC&gt;_&lt;hash8&gt;</code>，append-only。</td>
                 </tr>
                 <tr>
                   <td><code>nmf_</code></td>

@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -69,12 +69,12 @@
           <div class="crumb">第 02 页 · 开始</div>
           <h1>核心概念</h1>
           <p class="lead">
-            整份文档只用五个名词：Event、Rule、Task、Node、Trace。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。后面所有页面都按这套叫法写。
+            整份文档只用五个名词：Node、Capability、Output、Task、Trace。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。后面所有页面都按这套叫法写。
           </p>
 
           <h2>五个名词</h2>
           <p class="prose">
-            五个词各自回答一个问题：发生了什么（Event）、要不要动手（Rule）、动手这件事本身（Task）、谁来动手（Node）、整件事怎么被查（Trace）。括号里是代码原名。
+            五个词各自回答一个问题：谁参与（Node）、能做什么（Capability）、做完往哪走（Output）、动手这件事本身（Task）、整件事怎么被查（Trace）。括号里是代码原名。
           </p>
 
           <dl class="defs">
@@ -87,42 +87,50 @@
               </dd>
             </div>
             <div class="def">
-              <dt>Rule <code>rule</code></dt>
+              <dt>Capability <code>capability</code></dt>
               <dd>
-                一条 <code>match</code> 条件配一个 <code>action</code>，决定某类事件要不要引起某个动作；规则不改事件，只决定做不做、做什么。
+                节点申报的「我能做什么」。<b>路由的单位是能力，不是机器</b>——同一台机器可以申报很多个能力。
                 <br />
-                例：<code>match: source=github AND type=pr.opened</code> &rarr; <code>action: 在节点上跑 review-pr</code>。同一事件还能同时命中另一条规则「推手机通知」。
+                例：<code>mbp-16</code> 申报了 <code>review</code> 和 <code>test</code> 两个能力，各自有 argv 和出口。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>Output <code>output</code></dt>
+              <dd>
+                能力的命名出口。<b>跑完之后节点才选</b>走哪个出口，它和 <code>status</code> 正交——失败也可以继续，成功也可以到头。
+                <br />
+                例：<code>review</code> 有两个出口 <code>fix</code> 和 <code>clean</code>；中枢的 <code>edges</code> 表决定 <code>fix</code> 后面接谁。
               </dd>
             </div>
             <div class="def">
               <dt>Task <code>task</code></dt>
               <dd>
-                规则命中后落地的一行待办，带租约和状态机；它是「谁去做、做到哪一步」的唯一载体。
+                查表命中后落地的一行待办，带租约和状态机；它是「谁去做、做到哪一步」的唯一载体。
                 <br />
-                例：<code>task_id=8f21</code>，命令 <code>review-pr</code>，参数 <code>{pr: 431}</code>，状态依次 <code>pending &rarr; assigned &rarr; acked &rarr; running</code>。
+                例：<code>task_id=8f21</code>，能力 <code>review</code>，参数 <code>{pr: 431}</code>，状态依次 <code>pending &rarr; assigned &rarr; acked &rarr; running</code>。
               </dd>
             </div>
             <div class="def">
               <dt>Node <code>node</code></dt>
               <dd>
-                一台注册过的机器，本机 <code>config.yaml</code> 里声明自己能跑哪些命令名；中枢只按名字派活，不知道命令内容。
+                一切参与流转的实体。<b>按端口形状分三种</b>：<code>source</code>（只有出，触发器）、<code>worker</code>（有进有出，跑能力）、<code>sink</code>（只有入，终端）。
                 <br />
-                例：<code>node: mbp-16</code>，注册了 <code>review-pr</code> 与 <code>run-tests</code> 两个命令，<code>max_concurrency=2</code>。
+                例：<code>gh-webhook</code> 是 source，<code>mbp-16</code> 是 worker，<code>my-phone</code> 是 sink。
               </dd>
             </div>
             <div class="def">
               <dt>Trace <code>trace_id</code></dt>
               <dd>
-                从最初那个事件到最后一个任务的因果链，事件、规则判定、任务状态全部挂在同一个 <code>trace_id</code> 下。
+                从最初那个事件到最后一个任务的因果链，事件、查表结果、任务状态全部挂在同一个 <code>trace_id</code> 下。
                 <br />
-                例：<code>trace=tr_7c1a</code>，下挂 1 个事件、2 条规则命中、1 条剪枝记录、2 个任务。
+                例：<code>trace=tr_7c1a</code>，下挂 1 个事件、2 条边命中、1 条剪枝记录、2 个任务。
               </dd>
             </div>
           </dl>
 
           <h2>它们怎么串起来</h2>
           <p class="prose">
-            一条主链，两头是两个 sink。触发源产生事件，规则把事件翻译成任务，任务落到节点上执行，结果回来可以变成新事件，也可以变成一条推手机的通知。
+            一条主链，两头是两个 sink。触发源产生事件，出口表把事件翻译成任务，任务落到节点上执行，结果回来可以变成新事件，也可以变成一条推手机的通知。
           </p>
 
           <div class="fig">
@@ -136,7 +144,7 @@
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
-                <div class="box">Rule<span class="sub">match + action</span></div>
+                <div class="box">edges<span class="sub">查表</span></div>
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
@@ -149,17 +157,17 @@
             </div>
             <div class="flow" style="margin-top: 16px">
               <div class="box dashed">
-                Trace<span class="sub">trace_id 横跨以上全部：事件、规则判定、任务、结果都在同一条链上</span>
+                Trace<span class="sub">trace_id 横跨以上全部：事件、查表、任务、结果都在同一条链上</span>
               </div>
             </div>
             <div class="fig-cap">
-              <b>读法：</b>箭头左边是数据，右边是执行。Event 和 Task 是链上真正被存下来的两样东西（入库存一行），Rule 和 Node 是两端的能力：一个负责判定，一个负责动手。
+              <b>读法：</b>箭头左边是数据，右边是执行。Event 和 Task 是链上真正被存下来的两样东西（入库存一行），edges 是中间的查表依据，Node 是两端的能力提供者。
             </div>
           </div>
 
           <h3>一个事件能引出几件事</h3>
           <p class="prose">
-            规则不是互斥的选择题。同一个事件命中几条规则，就产出几个任务，全部下发。没命中的规则不会被丢掉，而是在 trace 上留一条剪枝记录和原因。
+            扇出不是互斥的选择题。同一个事件查到几条边，就产出几个任务，全部下发。没查到的边不会被丢掉，而是在 trace 上留一条剪枝记录和原因。
           </p>
 
           <div class="fig">
@@ -173,7 +181,7 @@
               </div>
             </div>
             <div class="fig-cap">
-              <b>扇出，不收集。</b>一个事件引出多个任务是天然支持的（一次写入多行）。反过来「等这组任务都回来再继续」本期不做——那件事放在节点内部自己并行、自己汇总。任务的结果本身也可以是一条新事件，再命中规则就是接力。
+              <b>扇出，不收集。</b>一个事件引出多个任务是天然支持的（一次写入多行）。反过来「等这组任务都回来再继续」本期不做——那件事放在节点内部自己并行、自己汇总。任务的结果本身也可以是一条新事件，再查到边就是接力。
             </div>
           </div>
 
@@ -223,9 +231,9 @@
               </div>
             </div>
             <div class="step">
-              <div class="step-title">规则匹配</div>
+              <div class="step-title">查出口表</div>
               <div class="step-body">
-                拿这条事件去比所有规则的 <code>match</code>。命中的规则各自产出一个 task，有多条就产出多个，全部下发。命中零条的，不产任务，但在 trace 上记一条 <code>pruned</code> 和原因。
+                拿这条事件去查出口表的 <code>match</code>。查到的每一行各自产出一个 task，有多条就产出多个，全部下发。命中零条的，不产任务，但在 trace 上记一条 <code>pruned</code> 和原因。
               </div>
             </div>
             <div class="step">
@@ -237,7 +245,7 @@
             <div class="step">
               <div class="step-title">结果回流</div>
               <div class="step-body">
-                节点回报结果，任务落 <code>succeeded</code> 或 <code>failed</code>。结果本身可以是一条新事件——再命中规则就是接力；不需要接力的，走 human sink 推手机。
+                节点回报结果，任务落 <code>succeeded</code> 或 <code>failed</code>。结果本身可以是一条新事件——再查到边就是接力；不需要接力的，走 human sink 推手机。
               </div>
             </div>
           </div>

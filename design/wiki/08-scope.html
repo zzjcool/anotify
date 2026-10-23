@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -91,16 +91,16 @@
                   <td>统一的 <code>events</code> 表记录 <code>source</code> / <code>type</code> / <code>payload</code> / <code>trace_id</code> / <code>span_id</code>，cron、webhook、watch 与外部 API 都写进同一张表。</td>
                 </tr>
                 <tr>
-                  <td>规则</td>
+                  <td>出口表 <code>edges</code></td>
                   <td><code>match</code> 条件 + <code>action</code>，多个条件各自可解释；命中 0 条也记 trace，标 <code>pruned</code> 与原因。</td>
                 </tr>
                 <tr>
                   <td>扇出</td>
-                  <td>多条规则同时命中则全部下发，一次 INSERT 写成 N 行任务，互不排斥。</td>
+                  <td>显式声明 <code>(能力, 出口) → 能力</code>；查到的 N 行全部下发，一次 INSERT 写成 N 行任务，互不排斥。</td>
                 </tr>
                 <tr>
                   <td>接力</td>
-                  <td>任务结果可以产生新事件，新事件再命中规则；<code>allow_chain</code> 显式开启才允许。</td>
+                  <td>任务结果可以产生新事件，新事件再查一次出口表；<code>allow_chain</code> 显式开启才允许。</td>
                 </tr>
                 <tr>
                   <td>成环</td>
@@ -116,19 +116,19 @@
                 </tr>
                 <tr>
                   <td>粘性路由</td>
-                  <td><b>按命令声明开启</b>（<code>manifest.commands[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ rule_id ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                  <td><b>按命令声明开启</b>（<code>manifest.capabilities[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
                 </tr>
                 <tr>
                   <td>版本钉住</td>
-                  <td>规则、节点 manifest、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
+                  <td>图（edges + capabilities）、节点 manifest、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
                 </tr>
                 <tr>
                   <td>六道闸</td>
                   <td>G1 <code>allow_chain</code>、G2 <code>max_hops</code>、G3 环检测、G4 <code>max_tasks</code>、G6 <code>max_duration</code>，默认收紧 + 代码硬顶。</td>
                 </tr>
                 <tr>
-                  <td>出口申报</td>
-                  <td>命令在 manifest 里声明 <code>terminal</code>，收敛只认这个，不反推业务。默认 <code>false</code>（保守）。</td>
+                  <td>出口回报</td>
+                  <td>节点在 <code>result</code> 里回报 <code>terminal</code>（跑完才知道），收敛只认这个，不反推业务。缺失按 <code>false</code>（保守）。</td>
                 </tr>
                 <tr>
                   <td>通知</td>
@@ -161,11 +161,11 @@
                 <tr>
                   <td><code>batching</code></td>
                   <td>把多条事件攒成一批再执行，会打乱「一次事件一条 trace」的可解释性。</td>
-                  <td>出现明确的批量写入场景（如一天一次的全量扫描）时，按触发源做而不是按规则做</td>
+                  <td>出现明确的批量写入场景（如一天一次的全量扫描）时，按触发源做而不是按边做</td>
                 </tr>
                 <tr>
                   <td>拖拽画布</td>
-                  <td>画布意味着图模型，图模型意味着 DAG 语义、布局存储、协同编辑；我们的规则是文本 + 参数。</td>
+                  <td>画布意味着图模型，图模型意味着 DAG 语义、布局存储、协同编辑；我们的图是出口表 + 能力声明。</td>
                   <td>暂时不打算。这是与 n8n 的定位分界线，不是待办</td>
                 </tr>
                 <tr>
@@ -185,7 +185,7 @@
                 </tr>
                 <tr>
                   <td>DAG 校验</td>
-                  <td>规则之间是运行期动态命中的，没有静态图可校验；能校验的只有 <code>path</code>，已经做了。</td>
+                  <td>边之间是配置期显式声明的，没有静态图可校验；能校验的只有 <code>path</code>，已经做了。</td>
                   <td>只有在真的引入静态流程图之后才有意义</td>
                 </tr>
                 <tr>
@@ -201,7 +201,7 @@
                 <tr>
                   <td>子流程复用</td>
                   <td>复用要求参数化与版本引用，会逼出模块系统，复杂度陡增。</td>
-                  <td>规则数量到需要抽公共部分的规模时再做，届时复用规则版本对象</td>
+                  <td>边数量到需要抽公共部分的规模时再做，届时复用图版本对象</td>
                 </tr>
               </tbody>
             </table>
@@ -216,7 +216,7 @@
             <div class="card">
               <div class="box ok" style="display: inline-block; margin-bottom: 10px">扇出 · 本期做</div>
               <p style="margin: 0 0 8px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                回答的是「这个事件要引起几件事」。N 条规则命中就写 N 行任务，一次 INSERT，没有额外状态。
+                回答的是「这个事件要引起几件事」。N 行边就写 N 行任务，一次 INSERT，没有额外状态。
               </p>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
                 难度极低，收益直接：一个 PR 既派 agent 审查，也推手机通知。
@@ -225,7 +225,7 @@
             <div class="card">
               <div class="box err" style="display: inline-block; margin-bottom: 10px">收集 · 本期不做</div>
               <p style="margin: 0 0 8px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                回答的是「那几件事都回来了吗」。需要批次 id、计数器、菱形依赖、部分失败的判定规则。
+                回答的是「那几件事都回来了吗」。需要批次 id、计数器、菱形依赖、部分失败的判定逻辑。
               </p>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
                 难度高，而且一旦引入，任务就不再是独立的，整条链路都要围着批次重写。
@@ -258,7 +258,7 @@
             <div class="def">
               <dt><code>join</code> 字段写了直接报错</dt>
               <dd>
-                规则里出现 <code>join</code> / <code>join_on</code> 之类的字段，配置校验期直接拒绝并说明本期不支持。不静默忽略 —— 静默忽略会让人以为收集生效了，然后在生产里等一个永远不来的结果。
+                配置里出现 <code>join</code> / <code>join_on</code> 之类的字段，配置校验期直接拒绝并说明本期不支持。不静默忽略 —— 静默忽略会让人以为收集生效了，然后在生产里等一个永远不来的结果。
               </dd>
             </div>
           </dl>

@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html" class="active"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -79,7 +79,7 @@
               <div class="arr"><span>→</span></div>
               <div class="box accent">events<span class="sub">append-only</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box">rules<span class="sub">match 求值</span></div>
+              <div class="box">edges<span class="sub">查表</span></div>
               <div class="arr"><span>→</span></div>
               <div class="box">tasks<span class="sub">一个事务 N 行</span></div>
               <div class="arr"><span>→</span></div>
@@ -112,9 +112,9 @@
             </div>
 
             <div class="step">
-              <div class="step-title">规则求值</div>
+              <div class="step-title">查出口表</div>
               <div class="step-body">
-                取出该 source 下启用中的规则，逐条求 <code>match</code>。命中 N 条就是 N 条，不选最优的一条。命中 0 条则不派任务，但 trace 上要写 <code>pruned</code> 和具体原因——是哪个条件、实际值是什么。
+                拿事件的 <code>(source, type)</code> 当入参，查 <code>edges</code> 表。<b>没有条件求值，就是一次索引查询</b>。查到 N 行就是 N 个下游能力，不选最优的一条。查到 0 行则不派任务，trace 上写 <code>pruned</code> 和原因——「表里没有这条边」。
               </div>
               <pre class="code">action == <span class="s">"opened"</span>                     <span class="k">pass</span>
 labels contains <span class="s">"review-needed"</span>         <span class="e">fail</span>  <span class="c">actual: ["bug"]</span></pre>
@@ -123,13 +123,13 @@ labels contains <span class="s">"review-needed"</span>         <span class="e">f
             <div class="step">
               <div class="step-title">扇出</div>
               <div class="step-body">
-                N 条命中规则在<b>同一个事务</b>里 INSERT N 行 <code>tasks</code>。这是扇出，不是互斥选择：一个 PR 可以既派 agent 审查、又推手机，两条都下发。事务保证了「要么都发出去，要么一条都没有」。
+                N 行边在<b>同一个事务</b>里 INSERT N 行 <code>tasks</code>。这是扇出，不是互斥选择：一个 PR 可以既派 agent 审查、又推手机，两条都下发。事务保证了「要么都发出去，要么一条都没有」。
               </div>
               <pre class="code"><span class="k">BEGIN</span>;
-<span class="c">-- 规则 A → machine sink</span>
-<span class="k">INSERT INTO</span> tasks (id, event_id, rule_id, sink, state) <span class="k">VALUES</span> (:t1, :event_id, :ra, <span class="s">'machine'</span>, <span class="s">'pending'</span>);
-<span class="c">-- 规则 B → human sink</span>
-<span class="k">INSERT INTO</span> tasks (id, event_id, rule_id, sink, state) <span class="k">VALUES</span> (:t2, :event_id, :rb, <span class="s">'human'</span>, <span class="s">'pending'</span>);
+<span class="c">-- 边 A → worker 能力 review</span>
+<span class="k">INSERT INTO</span> tasks (id, event_id, capability, sink, state) <span class="k">VALUES</span> (:t1, :event_id, <span class="s">'review'</span>, <span class="s">'machine'</span>, <span class="s">'pending'</span>);
+<span class="c">-- 边 B → sink 能力 notify.phone</span>
+<span class="k">INSERT INTO</span> tasks (id, event_id, capability, sink, state) <span class="k">VALUES</span> (:t2, :event_id, <span class="s">'notify.phone'</span>, <span class="s">'human'</span>, <span class="s">'pending'</span>);
 <span class="k">COMMIT</span>;</pre>
             </div>
 
@@ -146,8 +146,8 @@ labels contains <span class="s">"review-needed"</span>         <span class="e">f
 order_by inflight / concurrency asc
 limit 1
 
-<span class="c">-- 仅当 manifest.commands[].sticky 声明了才走：</span>
-sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
+<span class="c">-- 仅当 manifest.capabilities[].sticky 声明了才走：</span>
+sticky_key = sha256(trace_id ∥ capability ∥ selector)
 <span class="c">-- node_pins 命中则直用；未命中按负载挑一个并写入</span></pre>
             </div>
 
@@ -175,7 +175,7 @@ sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
             <div class="step">
               <div class="step-title">接力</div>
               <div class="step-body">
-                派生事件再走一遍规则求值，命中就生出下一跳任务——这就是接力。防死循环靠 <code>path</code>：它是「从根到本任务这条具体路径」的 rule_id 序列，路径里已有的 rule_id 会被静默剪枝，不报错但必须在 trace 上看得见。没有可接的规则，链路就到此结束。
+                节点回报的 <code>out</code> 去查 <code>edges</code> 表，查到就生出下一跳任务——这就是接力。防死循环靠 <code>path</code>：它是「从根到本任务这条具体路径」的<b>能力名</b>序列，路径里已有的能力会被静默剪枝，不报错但必须在 trace 上看得见。查不到边，链路就到此结束。
               </div>
             </div>
 
@@ -188,8 +188,11 @@ sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
               <div class="step-body" style="margin-top: 8px">
                 <b>但“还有没有人会接着跑”不能靠看状态机猜。</b>任务落到 <code>succeeded</code> 只是这一个 span 结束了，
                 它随时可能再派生出下一跳；而派生事件可能晚到，也可能永远不来。
-                所以中枢看的是每个任务<b>自己申报的出口</b>：<code>terminal: true</code> 才算这个 span 能终结，
-                否则即使它已经成终态，trace 也保持未收敛。默认值是 <code>false</code>（保守）。
+              </div>
+              <div class="step-body" style="margin-top: 8px">
+                所以出口由<b>节点在结果里回报</b>：<code>result.terminal</code>。
+                它必须在命令<b>跑完之后</b>才说得出来——成功要跑完才知道，失败也要跑完才知道。
+                中枢不预判、不反推，只读这一个字段。缺失或不合法时按 <code>false</code> 处理（保守）。
               </div>
               <div class="step-body" style="margin-top: 8px">
                 另外，收敛不等于全成功：<code>failed</code> 和 <code>abandoned</code> 也算落定，只是通知里会点明是哪一种。
@@ -197,13 +200,13 @@ sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
               <pre class="code"><span class="c">-- 收敛判定：三个条件，缺一不可</span>
 <span class="n">1</span> 无 pending / assigned / acked / running
 <span class="n">2</span> 无未到期任务（expires_at / not_before 全在过去）
-<span class="n">3</span> 每个终态任务都 <span class="k">terminal: true</span>
+<span class="n">3</span> 每个终态任务都 <span class="k">result.terminal = true</span>
 
 <span class="c">-- 条件 2 是必须的：一个还在队列里排队的任务也满足条件 1，</span>
 <span class="c">-- 但它随时会被派发。少了它，trace 会在队列中途提前收敛。</span>
 
-<span class="c">-- terminal 由 manifest.commands[].terminal 提供，</span>
-<span class="c">-- 中枢只读声明，不读命令输出、不反推业务语义。</span></pre>
+<span class="c">-- terminal 来自节点回报的 result，不是 manifest 声明：</span>
+<span class="c">-- 命令跑完之前，谁也不知道它会不会派生下一跳。</span></pre>
               <div class="note err">
                 <b>这里有个容易漏掉的竞态。</b>收敛判定的第一次扫描注定是「看着能收敛」——
                 因为 trigger 事务是<b>第二步</b>才提交的，扫描可能跑在它前面。
@@ -229,14 +232,14 @@ sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
                 <div class="lane machine" style="margin-bottom: 0">
                   <div class="lane-label">machine sink · 至少一次</div>
                   <div class="box sm">
-                    规则 A → node agent 审查
+                    能力 review → node agent 审查
                     <span class="sub">ack · 租约 · 重试 · 必须回报</span>
                   </div>
                 </div>
                 <div class="lane human" style="margin-bottom: 0">
                   <div class="lane-label">human sink · 尽力而为</div>
                   <div class="box sm">
-                    规则 B → 推手机
+                    能力 notify.phone → 推手机
                     <span class="sub">发了就忘 · 不回报 · 可丢</span>
                   </div>
                 </div>
@@ -363,9 +366,9 @@ sticky_key = sha256(trace_id ∥ rule_id ∥ selector)
               <div class="dir">上一页</div>
               <div class="ttl">核心概念</div>
             </a>
-            <a href="04-rules.html" class="next">
+            <a href="04-edges.html" class="next">
               <div class="dir">下一页</div>
-              <div class="ttl">规则与扇出</div>
+              <div class="ttl">能力与出口</div>
             </a>
           </nav>
         </main>

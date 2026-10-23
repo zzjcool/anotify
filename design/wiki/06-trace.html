@@ -153,7 +153,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -255,7 +255,7 @@
 
           <h2>一条 trace 长什么样</h2>
           <p class="prose">
-            一个 <code>pull_request.opened</code> 事件进来，四条规则被求值、三条命中，各自派任务；任务的结果再产生新事件，接力往下走。每个条形是一个 span，长度就是它的时长。
+            一个 <code>pull_request.opened</code> 事件进来，四条边被查、三条命中，各自派任务；任务的结果再产生新事件，接力往下走。每个条形是一个 span，长度就是它的时长。
           </p>
 
           <div class="fig">
@@ -350,7 +350,7 @@
             </div>
 
             <div class="fig-cap">
-              <b>横轴是时间，条的长度就是 span 的时长。</b>左侧字母是分支：A 审查链、B lint 链、C 通知链，都由 <code>t+0.00</code> 的同一个根事件扇出，互不等待、互不汇聚。规则求值是一瞬间，画成细竖线；被 G3 剪掉的那次没有时长，画成红虚框，位置就是它被拒的那一刻。最下面那行灰虚线是配了但没走成的规则。不足一个像素的短 span 保底 3px 才看得见。
+              <b>横轴是时间，条的长度就是 span 的时长。</b>左侧字母是分支：A 审查链、B lint 链、C 通知链，都由 <code>t+0.00</code> 的同一个根事件扇出，互不等待、互不汇聚。查表是一瞬间，画成细竖线；被 G3 剪掉的那次没有时长，画成红虚框，位置就是它被拒的那一刻。最下面那行灰虚线是配了但没走成的边。不足一个像素的短 span 保底 3px 才看得见。
             </div>
           </div>
 
@@ -389,7 +389,7 @@
                   <td>收到了。根 span 在 <code>t+0.00</code> 落库，原始 payload 挂在事件行上。</td>
                 </tr>
                 <tr>
-                  <td>有几条规则看过它</td>
+                  <td>有几条边看过它</td>
                   <td>
                     四条。每条一行求值记录：<code>pr-review</code>、<code>pr-lint</code>、<code>pr-notify</code>
                     命中，<code>pr-release</code> 差一个条件。
@@ -413,7 +413,7 @@
                   <td>有。红虚框加 <code>prune=cycle</code>，并指出重复的是哪个 <code>rule_id</code>。</td>
                 </tr>
                 <tr>
-                  <td>当时用的是哪个版本的规则</td>
+                  <td>当时用的是哪个版本的图</td>
                   <td>trace 上钉着 <code>rule_20261024T090402Z_5e7c1b0f</code>，点开就是当时的快照。</td>
                 </tr>
               </tbody>
@@ -422,7 +422,7 @@
 
           <h3>逐条件求值</h3>
           <p class="prose">
-            规则 <code>match</code> 里的每个条件单独记一行：哪条条件、实际值多少、passed 还是 failed。不是只留一个总的「未命中」。
+            图 <code>match</code> 里的每个条件单独记一行：哪条条件、实际值多少、passed 还是 failed。不是只留一个总的「未命中」。
           </p>
 
           <div class="tbl-wrap">
@@ -475,8 +475,8 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>规则没命中</td>
-                  <td>条件求值完，没有一条规则整体 passed，不建任务。</td>
+                  <td>表里没有这条边</td>
+                  <td>条件求值完，没有一条边成立，不建任务。</td>
                   <td>
                     事件 span 上一条求值记录：<code>pruned / reason=no_match</code>，附逐条件明细；没有 task span。
                   </td>
@@ -484,7 +484,7 @@
                 <tr>
                   <td>被闸剪枝</td>
                   <td>
-                    规则命中了，但被 G1 <code>allow_chain</code>、G2 <code>max_hops</code>、G4
+                    查到了边，但被 G1 <code>allow_chain</code>、G2 <code>max_hops</code>、G4
                     <code>max_tasks</code> 或 G6 <code>max_duration</code> 拦下。不建任务。
                   </td>
                   <td>红虚框加 <code>gate=G2 max_hops=10 hop=10</code>，带上撞线那一刻的计数值。</td>
@@ -506,7 +506,7 @@
 
           <h2>版本钉住</h2>
           <p class="prose">
-            复盘要能回答「当时那条规则长什么样」。所以规则、节点 manifest、中枢侧命令注册表都按内容存快照，每次变更追加一行。
+            复盘要能回答「当时那张表长什么样」。所以图（edges + capabilities）、节点 manifest、中枢侧能力注册表都按内容存快照，每次变更追加一行。
           </p>
 
           <div class="tbl-wrap">
@@ -520,9 +520,9 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><code>rule_versions</code></td>
-                  <td>一条规则的完整快照：<code>match</code>、<code>action</code>、<code>max_hops</code> 等限额、生命周期配置。</td>
-                  <td>规则被保存时。</td>
+                  <td><code>graph_versions</code></td>
+                  <td>一张图的完整快照：<code>match</code>、<code>action</code>、<code>max_hops</code> 等限额、生命周期配置。</td>
+                  <td>图被保存时。</td>
                 </tr>
                 <tr>
                   <td><code>node_manifest_versions</code></td>
@@ -539,13 +539,13 @@
           </div>
 
           <p class="prose">
-            三张表都是 append-only，且 <code>content_hash</code> 上有 UNIQUE：同样的内容不会存第二遍；规则改坏又改回来，命中旧行，也不会多出一条「看起来是新的」版本。
+            三张表都是 append-only，且 <code>content_hash</code> 上有 UNIQUE：同样的内容不会存第二遍；图改坏又改回来，命中旧行，也不会多出一条「看起来是新的」版本。
           </p>
 
           <p class="prose">每行的标识是 <code>&lt;prefix&gt;_&lt;UTC时间&gt;_&lt;content_hash前8&gt;</code>：</p>
 
           <pre class="code">reg_20261023T101500Z_a1b2c3d4   <span class="c"># registry_versions</span>
-rule_20261024T090402Z_5e7c1b0f  <span class="c"># rule_versions</span>
+rule_20261024T090402Z_5e7c1b0f  <span class="c"># graph_versions</span>
 man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span></pre>
 
           <h3>钉 hash，不钉时间</h3>
@@ -553,7 +553,7 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
             trace 上记的是不可变的版本 id（那串 hash），不是「按时间反查当时生效的版本」这种结果。差别全在补录上。
           </p>
           <p class="prose">
-            假设有人在十月导入了一条八月的规则历史版本。任何按「<code>created_at</code> 早于 span 时间且取最新一条」实现的解析，都会让八月的旧 trace 突然指向另一条规则——旧结论当场变形，而没人动过那条 trace。钉死 hash 的话，补录只能新增一行，旧 trace 的指向一个字节都不会变。
+            假设有人在十月导入了一张八月的图历史版本。任何按「<code>created_at</code> 早于 span 时间且取最新一条」实现的解析，都会让八月的旧 trace 突然指向另一张表——旧结论当场变形，而没人动过那条 trace。钉死 hash 的话，补录只能新增一行，旧 trace 的指向一个字节都不会变。
           </p>
 
           <div class="note">
@@ -562,7 +562,7 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
 
           <h3>节点不上报版本号</h3>
           <p class="prose">
-            节点只上报 manifest 内容，不报自己算的版本号。版本号是节点自己起的名字，中枢无从校验，节点一改编号规则历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
+            节点只上报 manifest 内容，不报自己算的版本号。版本号是节点自己起的名字，中枢无从校验，节点一改编号图历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
           </p>
 
           <h2>叠回去看</h2>
