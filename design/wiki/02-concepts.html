@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -69,144 +69,232 @@
           <div class="crumb">第 02 页 · 开始</div>
           <h1>核心概念</h1>
           <p class="lead">
-            整份文档只用五个名词：Event、Rule、Task、Node、Trace。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。后面所有页面都按这套叫法写。
+            整份文档只用五个名词：Node、Capability、Output、Task、Trace。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。没有条件求值，也没有优先级：派发只是查一张表。
           </p>
 
           <h2>五个名词</h2>
           <p class="prose">
-            五个词各自回答一个问题：发生了什么（Event）、要不要动手（Rule）、动手这件事本身（Task）、谁来动手（Node）、整件事怎么被查（Trace）。括号里是代码原名。
+            五个词各自回答一个问题：谁在场（Node）、谁会干什么（Capability）、干完往哪走（Output）、这一趟待办本身（Task）、整件事怎么被查（Trace）。括号里是代码原名。
           </p>
 
           <dl class="defs">
             <div class="def">
-              <dt>Event <code>event</code></dt>
+              <dt>Node <code>node</code></dt>
               <dd>
-                触发源在某一刻发生的事，原样入库；事件只陈述事实，不含任何判断。
+                参与流转的一个实体，带一个 <code>kind</code>：<code>source</code> / <code>worker</code> / <code>sink</code>。它在自己机器上的 <code>config.yaml</code> 里申报自己是谁、会什么。
                 <br />
-                例：GitHub 送来一条 <code>pull_request.opened</code>，入库成一行 <code>source=github</code>、<code>type=pr.opened</code>、<code>payload</code> 里带 PR 号与 diff 链接。
+                例：<code>node: mbp-16</code>、<code>kind: worker</code>，下挂 <code>review</code> 与 <code>implement</code> 两个能力；另一台 <code>node: my-phone</code>、<code>kind: sink</code>。
               </dd>
             </div>
             <div class="def">
-              <dt>Rule <code>rule</code></dt>
+              <dt>Capability <code>capability</code></dt>
               <dd>
-                一条 <code>match</code> 条件配一个 <code>action</code>，决定某类事件要不要引起某个动作；规则不改事件，只决定做不做、做什么。
+                节点申报的「我能做什么」。<strong>路由的单位是能力，不是机器</strong>：派出去的是 <code>review</code>，至于落到哪台机器，由节点池按负载挑。
                 <br />
-                例：<code>match: source=github AND type=pr.opened</code> &rarr; <code>action: 在节点上跑 review-pr</code>。同一事件还能同时命中另一条规则「推手机通知」。
+                例：<code>name: review</code>，带一段本机的 <code>argv</code>；中枢只认这个名字，不知道命令内容。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>Output <code>output</code> / <code>port</code></dt>
+              <dd>
+                能力的命名出口，一个可以指认的点，跑完之后才由节点选一个。节点声明里的 <code>outputs</code> 是「我会用到的出口名」，<strong>不是「我会去哪」</strong>——去哪由中枢的出口表决定，节点不该知道图长什么样。
+                <br />
+                例：<code>review</code> 声明 <code>outputs: [fix, done]</code>；这次跑完它回报 <code>out: "fix"</code>，就意味着它选了那个叫 <code>fix</code> 的出口。
               </dd>
             </div>
             <div class="def">
               <dt>Task <code>task</code></dt>
               <dd>
-                规则命中后落地的一行待办，带租约和状态机；它是「谁去做、做到哪一步」的唯一载体。
+                查表查到一条边之后落地的一行待办，带租约和状态机；它是「谁去做、做到哪一步」的唯一载体。
                 <br />
-                例：<code>task_id=8f21</code>，命令 <code>review-pr</code>，参数 <code>{pr: 431}</code>，状态依次 <code>pending &rarr; assigned &rarr; acked &rarr; running</code>。
-              </dd>
-            </div>
-            <div class="def">
-              <dt>Node <code>node</code></dt>
-              <dd>
-                一台注册过的机器，本机 <code>config.yaml</code> 里声明自己能跑哪些命令名；中枢只按名字派活，不知道命令内容。
-                <br />
-                例：<code>node: mbp-16</code>，注册了 <code>review-pr</code> 与 <code>run-tests</code> 两个命令，<code>max_concurrency=2</code>。
+                例：<code>task_id=8f21</code>，能力 <code>review</code>，参数 <code>{pr: 431}</code>，状态依次 <code>pending &rarr; assigned &rarr; acked &rarr; running</code>。
               </dd>
             </div>
             <div class="def">
               <dt>Trace <code>trace_id</code></dt>
               <dd>
-                从最初那个事件到最后一个任务的因果链，事件、规则判定、任务状态全部挂在同一个 <code>trace_id</code> 下。
+                从最初那个事件到最后一条任务的因果链，事件、每次查表、每个任务的回报都挂在同一个 <code>trace_id</code> 下。它的<b>行程</b>记在 <code>path</code> 上：从根到本任务这条具体路径的能力名序列，用来做去重剪枝。
                 <br />
-                例：<code>trace=tr_7c1a</code>，下挂 1 个事件、2 条规则命中、1 条剪枝记录、2 个任务。
+                例：<code>trace=tr_7c1a</code>，跑到 <code>review &rarr; implement</code>，那么 implement 这个任务走的行程是 <code>path = [review, implement]</code>。
               </dd>
             </div>
           </dl>
 
-          <h2>它们怎么串起来</h2>
           <p class="prose">
-            一条主链，两头是两个 sink。触发源产生事件，规则把事件翻译成任务，任务落到节点上执行，结果回来可以变成新事件，也可以变成一条推手机的通知。
+            五个词的关系是一句套娃：<strong>节点申报能力，能力带出口，出口经一条边指向下一个能力，一次派发落成一个任务，整条因果链是一条 trace</strong>。所以系统里唯一需要被推理的东西只剩「查表」，其余都是记录。
+          </p>
+
+          <h2>节点有三种，按端口形状分</h2>
+          <p class="prose">
+            分类的依据不是「这东西有多重要」，而是它的<strong>端口形状</strong>：有没有入口、有没有出口。<code>source</code> 只有出，<code>worker</code> 有进有出，<code>sink</code> 只有入。
           </p>
 
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <div class="box">触发源<span class="sub">cron / webhook / watch</span></div>
+                <div class="box">源 · source<span class="sub">有出 · 无入</span></div>
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
-                <div class="box accent">Event<span class="sub">事实，入库</span></div>
+                <div class="box">工作节点 · worker<span class="sub">有入 · 有出</span></div>
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
-                <div class="box">Rule<span class="sub">match + action</span></div>
-              </div>
-              <div class="arr"><span>&rarr;</span></div>
-              <div class="flow-item">
-                <div class="box accent">Task<span class="sub">待办 + 租约</span></div>
-              </div>
-              <div class="arr"><span>&rarr;</span></div>
-              <div class="flow-item">
-                <div class="box">Node<span class="sub">在本机执行命令</span></div>
-              </div>
-            </div>
-            <div class="flow" style="margin-top: 16px">
-              <div class="box dashed">
-                Trace<span class="sub">trace_id 横跨以上全部：事件、规则判定、任务、结果都在同一条链上</span>
+                <div class="box">终端 · sink<span class="sub">有入 · 无出</span></div>
               </div>
             </div>
             <div class="fig-cap">
-              <b>读法：</b>箭头左边是数据，右边是执行。Event 和 Task 是链上真正被存下来的两样东西（入库存一行），Rule 和 Node 是两端的能力：一个负责判定，一个负责动手。
+              <b>入在左，出在右。</b>一个节点最多两类端口，所以它必定落进上面三种形状之一。链的最左边只能是 <code>source</code>，最右边只能是 <code>sink</code>——中间想再插什么，都得是 <code>worker</code>。
             </div>
           </div>
 
-          <h3>一个事件能引出几件事</h3>
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>种类</th>
+                  <th>入</th>
+                  <th>出</th>
+                  <th>能力</th>
+                  <th>例子</th>
+                  <th><code>kind</code></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>源 · 触发器</td>
+                  <td>✗</td>
+                  <td>✓</td>
+                  <td>不申报能力，边的起点用事件类型充当</td>
+                  <td>GitHub webhook、cron、watch、外部 API 轮询</td>
+                  <td><code>source</code></td>
+                </tr>
+                <tr>
+                  <td>工作节点</td>
+                  <td>✓</td>
+                  <td>✓</td>
+                  <td>申报 <code>capabilities</code>，每个带自己的 <code>outputs</code></td>
+                  <td>机器上的 <code>review</code> / <code>implement</code> / <code>test</code></td>
+                  <td><code>worker</code></td>
+                </tr>
+                <tr>
+                  <td>终端 · 叶子</td>
+                  <td>✓</td>
+                  <td>✗</td>
+                  <td>申报 <code>capabilities</code>，<code>outputs</code> 为空</td>
+                  <td>推手机 <code>notify.phone</code>、写归档日志</td>
+                  <td><code>sink</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="note">
+            <strong>没有第四种。</strong>任何参与流转的东西都能被这三类装下：定时器是源，CI 里的一个步骤是工作节点，企业微信机器人是终端。所以中枢不必为「新类型实体」写新代码，只读它的 <code>kind</code> 和它申报的能力。
+            <br />
+            <b>触发器就是「只有出口、没有能力的节点」。</b>它不申报能力，所以边的起点由事件类型充当：<code>source:github --(pr_opened)--&gt; review</code>。
+          </div>
+
+          <h2>一条链是怎么连起来的</h2>
           <p class="prose">
-            规则不是互斥的选择题。同一个事件命中几条规则，就产出几个任务，全部下发。没命中的规则不会被丢掉，而是在 trace 上留一条剪枝记录和原因。
+            整条链只有一个形状：源出一件事件，用事件类型当出口查一次表，落到一个能力上；能力跑完选一个出口，再查一次表。中间可以插任意多个 <code>worker</code>，两头分别是 <code>source</code> 和 <code>sink</code>。连起来的整条因果链，就是一条 Trace。
+          </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="flow-item">
+                <div class="box">github<span class="sub">kind: source</span></div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box sm dashed">pr_opened</div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box accent">review<span class="sub">kind: worker</span></div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box sm dashed">fix</div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box accent">implement<span class="sub">kind: worker</span></div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box sm dashed">done</div>
+              </div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="flow-item">
+                <div class="box">notify.phone<span class="sub">kind: sink</span></div>
+              </div>
+            </div>
+
+            <pre class="code" style="margin: 18px 0 0"><span class="c">-- 同一件事：画出来是上面那张图，存下来是表里的三行</span>
+<span class="c">-- from_capability      from_port     to_capability</span>
+   (<span class="s">source:github</span>,      <span class="s">pr_opened</span>)  &rarr;  <span class="k">review</span>
+   (<span class="s">review</span>,             <span class="s">fix</span>)        &rarr;  <span class="k">implement</span>
+   (<span class="s">implement</span>,          <span class="s">done</span>)       &rarr;  <span class="k">notify.phone</span></pre>
+
+            <div class="fig-cap">
+              <b>edges 表是中枢侧唯一的路由依据。</b>中间那几个虚线框是出口，也是表里的 <code>from_port</code>。中枢不看节点代码、不解释出口的业务含义，只把（能力, 出口）这一对填进表里查一次——图是画给人看的，跑的永远是这张表。
+            </div>
+          </div>
+
+          <h3>一个出口可以有多条边</h3>
+          <p class="prose">
+            表里同一个（能力, 出口）可以有多行，那就是扇出。<strong>返回 N 行就派 N 个任务，全部下发，不是择一</strong>；返回 0 行就是到头，理由是「表里没有这一行」。
           </p>
 
           <div class="fig">
             <div class="fanout">
-              <div class="box">一个 Event<span class="sub">pr.opened</span></div>
+              <div class="box">review<span class="sub">这次走了出口 fix</span></div>
               <div class="bracket"></div>
               <div class="fanout-col">
-                <div class="box sm">rule.review &rarr; Task<span class="sub">派给 node · machine sink</span></div>
-                <div class="box sm">rule.notify &rarr; 推手机<span class="sub">human sink</span></div>
-                <div class="box sm dashed">条件不满足 &rarr; pruned<span class="sub">trace 上可见，附原因</span></div>
+                <div class="box sm">implement<span class="sub">(review, fix) 的第 1 行</span></div>
+                <div class="box sm">notify.phone<span class="sub">(review, fix) 的第 2 行</span></div>
               </div>
             </div>
             <div class="fig-cap">
-              <b>扇出，不收集。</b>一个事件引出多个任务是天然支持的（一次写入多行）。反过来「等这组任务都回来再继续」本期不做——那件事放在节点内部自己并行、自己汇总。任务的结果本身也可以是一条新事件，再命中规则就是接力。
+              <b>扇出，不收集。</b>两条边都成立，所以建两个任务、<code>trace</code> 在这里分叉——没有优先级，也不需要挑一个，一次查表返回多行就往多下走。反过来「等这组任务都回来再继续」本期不做——那件事放在节点内部自己并行、自己汇总。任务回报的出口本身可以再查表，那就是接力。
             </div>
           </div>
 
-          <h2>两类 sink，永不混用</h2>
+          <h2>两类落点，永不混用</h2>
           <p class="prose">
-            链尾有两条出口，语义完全不同：一条给人，一条给机器。它们不共用代码路径，也不共用同一套「失败怎么办」的假设——把两条混在一起，最终会得到既保证不了送达、又保证不了结果的中间态。
+            链尾只有两条泳道，语义完全不同：一条给人，一条给机器。human 侧是 <code>sink</code> 节点的一种；machine 侧不是 sink，是<b>有进有出的 <code>worker</code> 节点</b>——它跑完还能再查一次表。两条泳道不共用代码路径，也不共用同一套「失败怎么办」的假设：把两条混在一起，最终会得到既保证不了送达、又保证不了结果的中间态。
           </p>
 
           <div class="fig">
             <div class="lane human">
               <div class="lane-label">human sink · 推手机</div>
               <div class="prose">
-                <p>给人看的。任务跑完了、或某个事件值得一看，就推一条到你手机。</p>
+                <p>
+                  给人看的。它是 <code>sink</code> 节点的一种：只有入口、没有出口，申报一个 <code>notify.phone</code> 能力，<code>outputs</code> 为空。
+                </p>
                 <ul>
                   <li>投递：<strong>尽力而为</strong>。设备离线、推送服务抽风，这条就没了。</li>
                   <li>失败：不重试、不补发，不为此建持久队列。</li>
-                  <li>回报：<strong>不回报结果</strong>。你点没点开，对系统没有意义。</li>
+                  <li>回报：<strong>没有下游可走</strong>，<code>out</code> 恒为 <code>null</code>，链到这里就落定。</li>
                 </ul>
               </div>
             </div>
             <div class="lane machine">
-              <div class="lane-label">machine sink · node agent</div>
+              <div class="lane-label">worker 节点 · 执行能力</div>
               <div class="prose">
-                <p>给机器干的。任务必须真的在某个节点上被执行，并落到一个明确结局。</p>
+                <p>
+                  给机器干的。这里不是 sink，是 <code>worker</code> 节点：<strong>有进有出</strong>，跑完必须回报，而且要说出自己走了哪个出口。
+                </p>
                 <ul>
                   <li>投递：<strong>至少一次</strong>。租约 30s、心跳 10s、退避重试 10s &rarr; 60s &rarr; 300s、重试用尽进死信。</li>
-                  <li>失败：租约到期即重派，<code>max_attempts</code> 用尽落 <code>failed</code>。</li>
+                  <li>失败：租约到期即重派，<code>max_attempts</code> 用尽落 <code>failed</code>；<code>failed</code> 也可能带出口，照样查表往下走。</li>
                   <li>回报：<strong>必须回报</strong>。<code>acked</code> 只是接单确认，不是完成；不回报就不算做过。</li>
                 </ul>
               </div>
             </div>
             <div class="fig-cap">
-              <b>判断标准：</b>这条投递丢了会不会有人受损。丢一条手机通知最多是晚知道十分钟；丢一个任务等于没人干活，所以两条出口的保证级别不可能一致。
+              <b>判断标准：</b>这条投递丢了会不会有人受损。丢一条手机通知最多是晚知道十分钟；丢一个任务等于没人干活，所以两条泳道永不混用：human 侧是 <code>sink</code> 节点，machine 侧是 <code>worker</code> 节点，保证级别与代码路径都不共用。
             </div>
           </div>
 
@@ -219,25 +307,25 @@
             <div class="step">
               <div class="step-title">事件入库</div>
               <div class="step-body">
-                触发源发来一次调用（或者 cron 到点），中枢把它存成一行 event：<code>source</code>、<code>type</code>、<code>payload</code>、<code>trace_id</code>、<code>span_id</code>。入库即完成，之后所有判定都基于这条记录，不基于原始请求。
+                触发源发来一次调用（或者 cron 到点），中枢把它存成一行 event：<code>source</code>、<code>type</code>、<code>payload</code>、<code>trace_id</code>、<code>span_id</code>。入库即完成，之后的一切都基于这条记录，不基于原始请求。
               </div>
             </div>
             <div class="step">
-              <div class="step-title">规则匹配</div>
+              <div class="step-title">查出口表</div>
               <div class="step-body">
-                拿这条事件去比所有规则的 <code>match</code>。命中的规则各自产出一个 task，有多条就产出多个，全部下发。命中零条的，不产任务，但在 trace 上记一条 <code>pruned</code> 和原因。
+                拿（源标识, 事件类型）这一对去 <code>edges</code> 表查<b>一次</b>：<code>from_capability</code> 用事件源充当、<code>from_port</code> 用事件类型充当。查表只有一次索引查询——没有条件求值、没有优先级、也不是择一。返回 <b>N 行，就是 N 个下游能力</b>，全部都要派；返回 0 行就到此为止，理由写清楚是「表里没有这一行」。
               </div>
             </div>
             <div class="step">
               <div class="step-title">任务派发</div>
               <div class="step-body">
-                每个 task 按标签选出可用节点，带租约下发：中枢只发命令名和参数，节点用注册过的 <code>argv</code> 执行。节点 <code>acked</code> 表示接单，随后 <code>running</code>，心跳持续续租。
+                每个下游能力建一个 task，按能力名挑一台声明过它的 <code>worker</code> 节点，带租约下发。中枢只发能力名和参数，节点用自己注册的 <code>argv</code> 执行。节点 <code>acked</code> 表示接单，随后 <code>running</code>，心跳持续续租。
               </div>
             </div>
             <div class="step">
               <div class="step-title">结果回流</div>
               <div class="step-body">
-                节点回报结果，任务落 <code>succeeded</code> 或 <code>failed</code>。结果本身可以是一条新事件——再命中规则就是接力；不需要接力的，走 human sink 推手机。
+                节点回报 <code>status</code> 与 <code>out</code>。中枢拿（这个能力, 这个 <code>out</code>）再查一次表：有边就建下一个任务，没边就在这里走到头。同一条 trace 不换 <code>trace_id</code>，等到没有会继续的节点就落定，然后推手机。
               </div>
             </div>
           </div>
