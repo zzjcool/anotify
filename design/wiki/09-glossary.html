@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>术语表 · Anotify Wiki</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%238b8bfd'/%3E%3Crect x='7' y='7' width='10' height='10' rx='2' fill='%23050508'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="assets/wiki.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="sidebar-brand" href="index.html">
+            <span class="dot"></span>
+            <span>Anotify</span>
+          </a>
+          <div class="sidebar-sub">事件中心 · 设计文档</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label">开始</div>
+            <a href="index.html"><span class="n">00</span>总览</a>
+            <a href="01-why.html"><span class="n">01</span>为什么</a>
+            <a href="02-concepts.html"><span class="n">02</span>核心概念</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">运行时</div>
+            <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
+            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">保障</div>
+            <a href="06-trace.html"><span class="n">06</span>可观测与版本</a>
+            <a href="07-safety.html"><span class="n">07</span>安全边界</a>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-label">参考</div>
+            <a href="08-scope.html"><span class="n">08</span>本期范围</a>
+            <a href="09-glossary.html" class="active"><span class="n">09</span>术语表</a>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <div class="main">
+        <div class="topbar">
+          <button class="menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <span style="font-size: 12.5px; font-weight: 500">术语表</span>
+        </div>
+
+        <main class="content">
+          <div class="crumb">第 09 页 · 参考</div>
+          <h1>术语表</h1>
+          <p class="lead">
+            前面八页用到的名词、字段名、状态名都在这里，一个词一行，只给一句话。写代码、读 trace、查配置时对照用；每条的定义展开在对应正文页，这里不重复论证。
+          </p>
+
+          <p class="prose" style="font-size: 12.5px">
+            共 76 条。跳到：
+            <a href="#g-event">事件与链路</a> · <a href="#g-rule">规则</a> · <a href="#g-task">任务</a> · <a href="#g-node">节点</a> ·
+            <a href="#g-safety">安全与限额</a> · <a href="#g-version">版本</a> · <a href="#g-sink">sink</a> · <a href="#g-prefix">前缀速查</a>
+          </p>
+
+          <h2 id="g-event">事件与链路</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt>事件 Event <code>event</code></dt>
+              <dd>系统里唯一的事实单位：外部触发写一行，任务结果也写一行，两者形状相同，过的是同一套规则。</dd>
+            </div>
+            <div class="def">
+              <dt>来源 <code>source</code></dt>
+              <dd>事件从哪来，如 <code>github</code> / <code>cron</code> / <code>watch</code> / <code>agent</code>。规则 <code>match</code> 的第一维。</dd>
+            </div>
+            <div class="def">
+              <dt>类型 <code>type</code></dt>
+              <dd>事件类型，写成 <code>&lt;域&gt;.&lt;动作&gt;</code>，如 <code>pr.opened</code>、<code>task.succeeded</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>载荷 <code>payload</code></dt>
+              <dd>事件携带的 JSON 主体。规则用点路径加正则匹配其中字段，如 <code>payload.repo</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>链路 id <code>trace_id</code></dt>
+              <dd>一次触发引起的全部工作共用的 id。根事件生成，后继事件与任务一律沿用，不新开。</dd>
+            </div>
+            <div class="def">
+              <dt>span id <code>span_id</code></dt>
+              <dd>一次工作的唯一标识。本项目里它<strong>就是任务 id</strong>（<code>task.id</code>），不另发号。</dd>
+            </div>
+            <div class="def">
+              <dt>父 span <code>parent_span_id</code></dt>
+              <dd>哪个任务派生出来的（<code>tasks.parent_task_id</code>）。根事件直接派生的任务，这一列为空。</dd>
+            </div>
+            <div class="def">
+              <dt>跳数 <code>hop</code></dt>
+              <dd>接力深度。根事件 0，每派生一次加一。上限由 <code>max_hops</code>（G2）管。</dd>
+            </div>
+            <div class="def">
+              <dt>深度 <code>depth</code></dt>
+              <dd>这个任务在派生链里的层级，与本任务 <code>path</code> 的长度一致。和 <code>hop</code> 说的是同一件事，一个从路径看、一个从跳数看。</dd>
+            </div>
+            <div class="def">
+              <dt>路径 <code>path</code></dt>
+              <dd>从根到<strong>本任务这条具体路径</strong>的 rule_id 序列，用于环检测。不是整条 trace 的规则集合——同一条规则在另一条分支上照样能跑。</dd>
+            </div>
+            <div class="def">
+              <dt>链路 Trace <code>trace</code></dt>
+              <dd>一条完整链路的视图，按 <code>trace_id</code> 把事件、规则判定、任务状态聚到一起，是事后回答「走了哪条路」的唯一入口。</dd>
+            </div>
+            <div class="def">
+              <dt>span Span</dt>
+              <dd>链路里的一个节点，有起止时间。一个任务是一个 span，一次规则求值也可以画成一条零长度的 span。</dd>
+            </div>
+            <div class="def">
+              <dt>剪枝 <code>pruned</code></dt>
+              <dd>条件成立却被挡下时留下的记录，必须带原因：环 / 深度 / 预算 / 时长。静默指不报错不暂停，不是不记。</dd>
+            </div>
+            <div class="def">
+              <dt>抑制 <code>suppressed</code></dt>
+              <dd>本该发出去却没发的记录，用于回答「通知去哪了」。它是显式的丢弃，和「跑过但失败」区分开。</dd>
+            </div>
+            <div class="def">
+              <dt>链路终态 <code>trace.settled</code></dt>
+              <dd>整条链路的终结标记：所有 span 都进了终态才为真。控制台靠它区分「跑完了」和「还在跑、别急着下结论」。</dd>
+            </div>
+          </dl>
+
+          <h2 id="g-rule">规则</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt>规则 Rule <code>rule</code></dt>
+              <dd>一份声明式配置：<code>match</code> 加 <code>action</code> 加四个预算字段。没有脚本，没有表达式引擎。</dd>
+            </div>
+            <div class="def">
+              <dt>匹配 <code>match</code></dt>
+              <dd>条件集合，<strong>全部满足</strong>才算命中；没写的字段表示不约束。支持 <code>source</code>、<code>type</code>、<code>payload</code> 点路径加正则。</dd>
+            </div>
+            <div class="def">
+              <dt>动作 <code>action</code></dt>
+              <dd>命中之后做什么。<code>sink</code> 选 human 还是 machine；machine 侧再带 <code>kind</code> / <code>name</code> / <code>params</code> / <code>selector</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>优先级 <code>priority</code></dt>
+              <dd>本期没有这个字段，也不该有。多条命中<strong>全部下发</strong>，不存在「取优先级最高的那条」。</dd>
+            </div>
+            <div class="def">
+              <dt>接力开关 <code>allow_chain</code></dt>
+              <dd>闸 G1。不显式打开就绝不接力，任务结果不会派生新事件。默认关，不可配。</dd>
+            </div>
+            <div class="def">
+              <dt>深度上限 <code>max_hops</code></dt>
+              <dd>闸 G2。一条链最多走到第几跳。默认 10，硬顶 32。</dd>
+            </div>
+            <div class="def">
+              <dt>任务上限 <code>max_tasks</code></dt>
+              <dd>闸 G4。这条规则在一条 trace 里最多建多少任务。默认 100，硬顶 1000。超出记 <code>pruned</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>时长上限 <code>max_duration</code></dt>
+              <dd>闸 G6。一条 trace 的总时长上限。默认 24h，硬顶 7d。到点不再派生。</dd>
+            </div>
+            <div class="def">
+              <dt>每日配额 <code>daily_budget</code></dt>
+              <dd>这条规则每天能建多少任务。用尽后新命中不建任务、记 <code>pruned</code>。成本可预测靠它加 <code>max_tasks</code> 两个数。</dd>
+            </div>
+            <div class="def">
+              <dt>扇出 fanout</dt>
+              <dd>一个事件命中 N 条规则就建 N 个任务，互不依赖、互不等待。实现就是一次 INSERT 多行，本期无条件支持。</dd>
+            </div>
+            <div class="def">
+              <dt>接力 chain</dt>
+              <dd>任务结果带一个派生事件回灌日志，事件再命中规则再建任务。同一条 <code>trace_id</code> 延续下去，<code>hop</code> 加一。</dd>
+            </div>
+            <div class="def">
+              <dt>环检测 cycle check</dt>
+              <dd>闸 G3，判断等价于 <code>rule_id</code> 是否已在 <code>path</code> 里。命中即剪枝。不可配——允许成环，但靠 path 去重保证终止。</dd>
+            </div>
+          </dl>
+
+          <h2 id="g-task">任务</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt>任务 Task <code>task</code></dt>
+              <dd>「让某台机器做一件事」的意图加它的执行状态。machine sink 的最小调度单位。</dd>
+            </div>
+            <div class="def">
+              <dt>任务 id <code>tsk_</code></dt>
+              <dd>任务 id 前缀，值同时充当该任务的 <code>span_id</code>。trace 上看到的每个任务 span 都有对应的 <code>tsk_</code> 行。</dd>
+            </div>
+            <div class="def">
+              <dt>幂等键 <code>idempotency_key</code></dt>
+              <dd>去重键：同一个 key 的重复投递应当只落一个任务。本期范围里没有定义这个字段，重复触发就是重复任务，防重复靠收紧 <code>match</code> 加 <code>daily_budget</code> 兜底。</dd>
+            </div>
+            <div class="def">
+              <dt>状态 <code>status</code></dt>
+              <dd>九态状态机里的当前值，是唯一能回答「这个任务卡在哪」的字段。</dd>
+            </div>
+            <div class="def">
+              <dt>九态状态机</dt>
+              <dd>
+                <code>pending</code> → <code>assigned</code> → <code>acked</code> → <code>running</code> →
+                <code>succeeded</code> / <code>failed</code> / <code>canceled</code> / <code>abandoned</code>，另有 <code>lease_expired</code> 中间态。中间态不是终态。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>租约到期 <code>lease_until</code></dt>
+              <dd>这个任务被某节点占用的截止时刻。心跳每 10s 把它推到 <code>now + 30s</code>；心跳停了就是失联。</dd>
+            </div>
+            <div class="def">
+              <dt><code>lease_expired</code></dt>
+              <dd>租约失效的中间态。attempts 没用尽就回 <code>pending</code> 重派，用尽则 <code>abandoned</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>接单 <code>ack</code></dt>
+              <dd>接单确认，<strong>不是完成</strong>。节点说「这单我接了」，租约才正式计时；结束只看 result 事件。</dd>
+            </div>
+            <div class="def">
+              <dt><code>attempts</code></dt>
+              <dd>中枢派发次数，租约回收也算一次。上限 3，退避 10s → 60s → 300s。</dd>
+            </div>
+            <div class="def">
+              <dt><code>internal_attempts</code></dt>
+              <dd>节点在机器上自己重试的次数，<strong>不消耗中枢 attempts</strong>。由 <code>manifest.commands[].retries</code> 约束。</dd>
+            </div>
+            <div class="def">
+              <dt>结果 <code>result</code></dt>
+              <dd>终态时节点回报的内容，上限 8KB。更大的输出留在节点本地，回执只带截断后的结果和本地日志位置。</dd>
+            </div>
+            <div class="def">
+              <dt>放弃 <code>abandoned</code></dt>
+              <dd>不重试、必通知。<strong>不等于成功，也不等于静默丢弃</strong>；和 <code>failed</code> 的区别正在「不重试」。</dd>
+            </div>
+            <div class="def">
+              <dt>生命周期 <code>lifecycle</code></dt>
+              <dd>规则可声明四项：<code>expiresInSec</code> 硬过期到点即放弃绝不重派 / <code>retryable</code> 是否允许中枢重派 / <code>maxAttempts</code> 重派上限 / <code>resultTtlSec</code> 到期只清 result 不清行。</dd>
+            </div>
+          </dl>
+
+          <h2 id="g-node">节点</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt>节点 Node <code>node</code></dt>
+              <dd>身份（脑）：一个 <code>node_id</code>、一份凭据、一组中枢赋值的标签，以及它声明过的命令名。并发瓶颈在它这一层。</dd>
+            </div>
+            <div class="def">
+              <dt>实例 NodeInstance <code>node_instance</code></dt>
+              <dd>执行器（手）。一台机器可以跑多个实例，各自申报 <code>concurrency</code> / <code>inflight</code> / <code>status</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>能力清单 <code>manifest</code></dt>
+              <dd>节点上报的「声明了哪些命令名」。只报名字和参数形状，<strong>不含 argv 原文，也不报版本号</strong>。</dd>
+            </div>
+            <div class="def">
+              <dt>参数表 <code>commands[].argv</code></dt>
+              <dd>命令的真实参数数组，写在节点本地 <code>~/.anotifyd/config.yaml</code>，<strong>永不上传</strong>。</dd>
+            </div>
+            <div class="def">
+              <dt><code>execve</code></dt>
+              <dd>唯一执行方式：拿 argv 数组直接 exec，不经 shell。禁止 <code>/bin/sh -c</code>，所以参数不会被二次解析。</dd>
+            </div>
+            <div class="def">
+              <dt><code>unknown_action</code></dt>
+              <dd>收到自己表里没有的命令名时的回报。中枢不猜、不改写、不换成别的命令重试。</dd>
+            </div>
+            <div class="def">
+              <dt>命令并发 <code>concurrency</code></dt>
+              <dd>命令级并发上限，节点本地声明。实际并发取三层上限的 min。</dd>
+            </div>
+            <div class="def">
+              <dt>在跑数 <code>inflight</code></dt>
+              <dd>实例当前正在跑几个任务。派发按它做「最少负载优先」。</dd>
+            </div>
+            <div class="def">
+              <dt><code>max_concurrency</code></dt>
+              <dd>节点级并发上限。三层取 min 的最后一道，防止单个节点被一个高峰吃满。</dd>
+            </div>
+            <div class="def">
+              <dt><code>max_instances</code></dt>
+              <dd>一个节点允许跑几个实例，默认 20。防的是凭据扩散：每个实例一份 token，越多越难收。</dd>
+            </div>
+            <div class="def">
+              <dt>落点表 <code>node_pins</code></dt>
+              <dd>粘性路由的查表结果。首次选完写进去，之后同一 key 一律查表，不重新算。</dd>
+            </div>
+            <div class="def">
+              <dt><code>sticky_key</code></dt>
+              <dd>由 trace、规则、选择器三段算出的哈希。同一条链上的同类任务因此落到同一节点，不在机器之间来回漂。</dd>
+            </div>
+            <div class="def">
+              <dt>幂等 <code>idempotent</code></dt>
+              <dd>命令是否只读无副作用，默认 <code>false</code>。它决定节点下线时任务怎么收场：<code>true</code> 直接放弃，<code>false</code> 放弃加告警加人工确认。</dd>
+            </div>
+            <div class="def">
+              <dt>可续传 <code>resumable</code></dt>
+              <dd>命令是否支持断点续传。<code>true</code> 时节点下线可重派到新节点，从中断点继续。</dd>
+            </div>
+          </dl>
+
+          <h2 id="g-safety">安全与限额</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt>闸 G1</dt>
+              <dd><code>allow_chain</code>：不显式开启就不接力。默认关，<strong>不可配</strong>。</dd>
+            </div>
+            <div class="def">
+              <dt>闸 G2</dt>
+              <dd><code>max_hops</code>：深度上限，默认 10，硬顶 32。</dd>
+            </div>
+            <div class="def">
+              <dt>闸 G3</dt>
+              <dd>环检测：<code>path</code> 里 rule_id 去重。隐含生效，<strong>不可配</strong>，也是终止性的真正来源。</dd>
+            </div>
+            <div class="def">
+              <dt>闸 G4</dt>
+              <dd><code>max_tasks</code>：单规则单 trace 的任务数上限，默认 100，硬顶 1000。</dd>
+            </div>
+            <div class="def">
+              <dt>闸 G5（已废弃）</dt>
+              <dd>付费任务数。已从设计里删掉，任何新配置都不该再引用这个编号。</dd>
+            </div>
+            <div class="def">
+              <dt>闸 G6</dt>
+              <dd><code>max_duration</code>：单 trace 总时长上限，默认 24h，硬顶 7d。</dd>
+            </div>
+            <div class="def">
+              <dt>硬顶</dt>
+              <dd>写在代码里的上限，配置只能往下改不能往上改。改硬顶等于改代码加发版，不走配置。</dd>
+            </div>
+            <div class="def">
+              <dt>三层覆盘</dt>
+              <dd>同一类限额的三层配置：全局 env → 单规则 → 代码硬顶。前面两层可改，最后一层只能改代码。</dd>
+            </div>
+            <div class="def">
+              <dt>派生凭据 <code>jti</code></dt>
+              <dd>派生 JWT 里的一次性 id。claim 还含 trace / span / hop / maxHop / branchBudget / exp，跳数由中枢签发，节点改不动。</dd>
+            </div>
+            <div class="def">
+              <dt><code>branch_nonces</code></dt>
+              <dd>已消费 jti 的表。消费 jti、建任务、扣额度在<strong>同一个事务</strong>里，重放直接失败。</dd>
+            </div>
+            <div class="def">
+              <dt><code>branchBudget</code></dt>
+              <dd>本次派生还剩多少额度，由节点自主分配。额度用尽必须可见，绝不静默失败。</dd>
+            </div>
+            <div class="def">
+              <dt><code>budget_exhausted</code></dt>
+              <dd>额度用尽的三件套：返回 409、span 上写一条 event、控制台标注。少一件就等于静默失败。</dd>
+            </div>
+            <div class="def">
+              <dt>凭据 <code>token</code></dt>
+              <dd>节点唯一凭据，一一对应一个 <code>node_id</code>。泄漏即继承该节点全部标签，这是已知代价；可撤销后重发。</dd>
+            </div>
+          </dl>
+
+          <h2 id="g-version">版本</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt><code>rule_versions</code></dt>
+              <dd>规则配置的版本表，append-only：改一次加一行，旧行不覆盖。trace 钉的是这里的 id。</dd>
+            </div>
+            <div class="def">
+              <dt><code>node_manifest_versions</code></dt>
+              <dd>节点能力清单的版本表。节点不报版本号，中枢按内容算哈希得到版本，所以「声称的能力」和「实际内容」不会分叉。</dd>
+            </div>
+            <div class="def">
+              <dt><code>registry_versions</code></dt>
+              <dd>命令注册表（命令名到参数形状）的版本表。中枢只知道名字，形状的变更也要钉版本。</dd>
+            </div>
+            <div class="def">
+              <dt><code>content_hash</code></dt>
+              <dd>版本内容规范化后的哈希，带唯一约束。内容没变就不产生新版本，版本膨胀被挡住。</dd>
+            </div>
+            <div class="def">
+              <dt>版本 id 格式</dt>
+              <dd><code>&lt;prefix&gt;_&lt;UTC&gt;_&lt;hash8&gt;</code>，例如 <code>reg_20261023T101500Z_a1b2c3d4</code>。人眼能看出时间和前缀，机器能校验前八位哈希。</dd>
+            </div>
+            <div class="def">
+              <dt>叠加图 <code>overlay</code></dt>
+              <dd>把「配置了什么」和「实际走了什么」叠在一张图上的视图。亮实线 = 走过，灰虚线 = 配了没走，红虚框 = 剪枝。</dd>
+            </div>
+          </dl>
+
+          <h2 id="g-sink">sink</h2>
+          <dl class="defs">
+            <div class="def">
+              <dt>human sink</dt>
+              <dd>推手机。尽力而为、可丢、不回报结果，没有租约也没有重试。</dd>
+            </div>
+            <div class="def">
+              <dt>machine sink</dt>
+              <dd>node agent。至少一次、有租约、有重试、有 DLQ，而且<strong>必须回报</strong>。两类 sink 永不混用。</dd>
+            </div>
+            <div class="def">
+              <dt>死信 <code>DLQ</code></dt>
+              <dd>machine sink 重试耗尽的投递落到这里等人工看，不静默消失。这就是 machine sink 必须回报的代价，也是它跟 human sink 最硬的分界。</dd>
+            </div>
+          </dl>
+
+          <div class="note">
+            <strong>四个「没做成」别混。</strong><code>pruned</code> 是任务压根没建（条件成立但被环/深度/预算/时长挡下）；<code>suppressed</code> 是本来要发的没发；
+            <code>failed</code> 是跑过但失败、可重试；<code>abandoned</code> 是不再重试且必须通知。混用任何一个，事后就再也解释不清「这次为什么没发生」。
+          </div>
+
+          <h2 id="g-prefix">前缀速查</h2>
+          <p class="prose">id 前缀一眼就能看出对象类型。标「本期不用」的，是这个前缀没有对应的对象——不是还没写，而是设计上就不需要。</p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>前缀</th>
+                  <th>代表</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>evt_</code></td>
+                  <td>事件 event</td>
+                  <td>外部触发与任务结果回流都用它，事件只追加不修改。</td>
+                </tr>
+                <tr>
+                  <td><code>trc_</code></td>
+                  <td>链路 trace</td>
+                  <td><strong>本期不用</strong>：没有独立的 trace 行，链路是按 <code>trace_id</code> 把事件和任务聚合出来的。</td>
+                </tr>
+                <tr>
+                  <td><code>spn_</code></td>
+                  <td>span</td>
+                  <td><strong>本期不用</strong>：<code>span_id</code> 就是 <code>task.id</code>，走的 <code>tsk_</code> 前缀。</td>
+                </tr>
+                <tr>
+                  <td><code>tsk_</code></td>
+                  <td>任务 task</td>
+                  <td>任务 id，与 <code>span_id</code> 同值。trace 上的任务 span 就是它。</td>
+                </tr>
+                <tr>
+                  <td><code>rty_</code></td>
+                  <td>版本 rule_versions</td>
+                  <td>规则版本，格式 <code>rty_&lt;UTC&gt;_&lt;hash8&gt;</code>，append-only。</td>
+                </tr>
+                <tr>
+                  <td><code>nmf_</code></td>
+                  <td>版本 node_manifest_versions</td>
+                  <td>节点能力清单版本，由内容哈希算出，不由节点自报。</td>
+                </tr>
+                <tr>
+                  <td><code>reg_</code></td>
+                  <td>版本 registry_versions</td>
+                  <td>命令注册表版本，例 <code>reg_20261023T101500Z_a1b2c3d4</code>。</td>
+                </tr>
+                <tr>
+                  <td><code>inst_</code></td>
+                  <td>node_instances</td>
+                  <td>执行器实例，一台机器可以有多个。带 <code>concurrency</code> 与 <code>inflight</code>。</td>
+                </tr>
+                <tr>
+                  <td><code>fan_</code></td>
+                  <td>扇出批次</td>
+                  <td><strong>本期不用</strong>：没有「批次」这个对象，扇出只是一次 INSERT 多建几行任务，不需要批次 id。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <nav class="pager">
+            <a href="08-scope.html">
+              <div class="dir">上一页</div>
+              <div class="ttl">本期范围</div>
+            </a>
+            <div class="spacer"></div>
+          </nav>
+        </main>
+      </div>
+    </div>
+
+    <script src="assets/wiki.js"></script>
+  </body>
+</html>
