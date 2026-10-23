@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -118,8 +118,23 @@
 
           <h3>一、「为什么没触发」说不清</h3>
           <p class="prose">
-            定时没跑、webhook 丢了、规则没匹配，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。事件中心把事件本身和它的判定过程一起记下来：哪个条件没满足、哪条规则被剪枝、剪枝原因是什么，都在同一条 trace 上。
+            定时没跑、webhook 丢了、下游没接上，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。新模型把这个问题压成了一次查表问答，答案只有两种：<strong>出口表里没有这一行</strong>，或者<strong>上游没回报这个出口</strong>。两个都能直接从记录里展示出来，不需要推演。
           </p>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案一 · 图的问题</div>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                能力 <code>review</code> 回报走了出口 <code>fix</code>，但出口表里没有 <code>(review, fix)</code> 这一行 —— 所以到这里就是尽头。改配置。<strong style="color: var(--text)">表里有没有这一行，一眼能查。</strong>
+              </p>
+            </div>
+            <div class="card">
+              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案二 · 行为的问题</div>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                表里明明有 <code>(review, fix)</code> 这一行，但这次 <code>review</code> 回报的 <code>out</code> 是 <code>null</code> —— 没人走这个出口。不是配置错，是节点这一次选择了到头。改节点行为。
+              </p>
+            </div>
+          </div>
 
           <h3>二、长任务一断就没了</h3>
           <p class="prose">
@@ -144,7 +159,7 @@
                 <tr>
                   <td>为什么没触发</td>
                   <td>没有通知，原因未知，只能翻日志</td>
-                  <td>trace 上逐条记 <code>match</code> / <code>pruned</code> 与命中的条件</td>
+                  <td>trace 上直接写清是「表里没有 <code>(能力, 出口)</code> 这一行」还是「上游没回报出口」；因环剪枝另记 <code>pruned</code></td>
                 </tr>
                 <tr>
                   <td>长任务中断</td>
@@ -154,7 +169,7 @@
                 <tr>
                   <td>凭据在哪</td>
                   <td>中枢持有密钥，并负责拼命令</td>
-                  <td>命令只在节点注册，中枢只发命令名 + <code>params</code></td>
+                  <td>argv 只在节点申报，中枢只发能力名 + <code>params</code></td>
                 </tr>
               </tbody>
             </table>
@@ -169,13 +184,13 @@
             <div class="def">
               <dt>拖拽画布</dt>
               <dd>
-                画布把一条规则变成一张需要读懂位置的图，改一个条件要点三次；我们让规则是文本，能进 git、能 diff、能 review。
+                画布把一条出口边变成一张需要读懂位置的图，改一行边要点三次；我们让出口表是文本，能进 git、能 diff、能 review。
               </dd>
             </div>
             <div class="def">
               <dt>任意代码节点</dt>
               <dd>
-                一旦中枢能下发任意代码，它就成了执行平台，安全边界不复存在；我们只认节点上注册过的命令名。
+                一旦中枢能下发任意代码，它就成了执行平台，安全边界不复存在；我们只认节点自己申报过的能力名。
               </dd>
             </div>
             <div class="def">
@@ -193,7 +208,7 @@
             <div class="def">
               <dt>DAG 校验</dt>
               <dd>
-                真实流程会成环（审查 &rarr; 修复 &rarr; 复审），静态 DAG 会直接禁掉它；我们允许成环，靠 <code>path</code> 去重剪枝来保证终止。
+                我们的图不是运行期拼出来的：它就是一张<strong>显式声明的出口表</strong>，所以环在配置期就看得见 —— 画得出来，也查得出来，<strong>不需要运行期的 DAG 校验</strong>。而真实流程本来就该成环（审查 &rarr; 修复 &rarr; 复审），静态 DAG 会把它直接禁掉；我们允许成环，运行期靠 <code>path</code> 去重剪枝保证终止。
               </dd>
             </div>
           </dl>

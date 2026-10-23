@@ -37,7 +37,7 @@
           <div class="nav-group">
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
-            <a href="04-rules.html"><span class="n">04</span>规则与扇出</a>
+            <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
             <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
@@ -74,7 +74,7 @@
 
           <h2>本期做的</h2>
           <p class="prose">
-            十一项。每一项都能落到具体的表、字段或状态机上，没有「后续再细化」的占位。
+            十二项。每一项都能落到具体的表、字段或状态机上，没有「后续再细化」的占位。
           </p>
 
           <div class="tbl-wrap">
@@ -91,20 +91,20 @@
                   <td>统一的 <code>events</code> 表记录 <code>source</code> / <code>type</code> / <code>payload</code> / <code>trace_id</code> / <code>span_id</code>，cron、webhook、watch 与外部 API 都写进同一张表。</td>
                 </tr>
                 <tr>
-                  <td>规则</td>
-                  <td><code>match</code> 条件 + <code>action</code>，多个条件各自可解释；命中 0 条也记 trace，标 <code>pruned</code> 与原因。</td>
+                  <td>出口表（edges）</td>
+                  <td>显式声明 <code>(能力, 出口) → 能力</code> 三元组，派发就是一次索引查询：查得到就全部下发，查不到就到头。<b>无 <code>match</code> 求值、无条件表达式、无优先级。</b></td>
                 </tr>
                 <tr>
                   <td>扇出</td>
-                  <td>多条规则同时命中则全部下发，一次 INSERT 写成 N 行任务，互不排斥。</td>
+                  <td>查表返回 N 行就全部下发，一次 INSERT 写成 N 行任务，互不排斥。</td>
                 </tr>
                 <tr>
                   <td>接力</td>
-                  <td>任务结果可以产生新事件，新事件再命中规则；<code>allow_chain</code> 显式开启才允许。</td>
+                  <td>节点回报的 <code>out</code> 拿去查表得到下游能力；<code>allow_chain</code> 显式开启才允许。</td>
                 </tr>
                 <tr>
                   <td>成环</td>
-                  <td>允许成环（审查 → 修复 → 复审），用 <code>path</code> 里 <code>rule_id</code> 去重做剪枝，剪枝在 trace 上可见。</td>
+                  <td>允许成环（审查 → 修复 → 复审）；环在配置期由 <code>edges</code> 静态可见，运行期用 <code>path</code> 里能力名去重做剪枝，剪枝在 trace 上可见。</td>
                 </tr>
                 <tr>
                   <td>任务租约</td>
@@ -116,19 +116,19 @@
                 </tr>
                 <tr>
                   <td>粘性路由</td>
-                  <td><b>按命令声明开启</b>（<code>manifest.commands[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ rule_id ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                  <td><b>按能力声明开启</b>（<code>manifest.capabilities[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
                 </tr>
                 <tr>
                   <td>版本钉住</td>
-                  <td>规则、节点 manifest、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
+                  <td>图配置（含 <code>edges</code>）、节点 manifest、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
                 </tr>
                 <tr>
                   <td>六道闸</td>
                   <td>G1 <code>allow_chain</code>、G2 <code>max_hops</code>、G3 环检测、G4 <code>max_tasks</code>、G6 <code>max_duration</code>，默认收紧 + 代码硬顶。</td>
                 </tr>
                 <tr>
-                  <td>出口申报</td>
-                  <td>命令在 manifest 里声明 <code>terminal</code>，收敛只认这个，不反推业务。默认 <code>false</code>（保守）。</td>
+                  <td>出口回报</td>
+                  <td>节点在 <code>result</code> 里回报 <code>out</code>（出口名或 <code>null</code>，跑完才知道），收敛只认这个，不反推业务。缺失 <code>out</code> 按未回报计（保守，不收敛）。</td>
                 </tr>
                 <tr>
                   <td>通知</td>
@@ -154,6 +154,16 @@
               </thead>
               <tbody>
                 <tr>
+                  <td>条件路由 / 表达式路由</td>
+                  <td><b>不做。</b>路由靠显式出口，不支持 <code>if payload.x &gt; 5 then ...</code> 这种条件。条件路由需要在中枢里放一个表达式求值器，而且一旦路由依赖 payload，<b>图就不再可静态分析</b>——配置期看不到哪些边会被走、「为什么没触发」也不再是查表能回答的问题。</td>
+                  <td>明确有需求再说。做的话是路由层重设计，不是加一个开关</td>
+                </tr>
+                <tr>
+                  <td>动态边（运行期修改路由表）</td>
+                  <td><b>不做。</b><code>edges</code> 变动需要新版本（走版本钉住）：旧 trace 钉旧 hash，新 trace 钉新 hash。运行期改表会让「当时它为什么走这条路」变得不可复现。</td>
+                  <td>不做。改路由就发新版本，代价是一行版本号</td>
+                </tr>
+                <tr>
                   <td>收集 / <code>join</code></td>
                   <td>要回答「那几件事都回来了吗」，得引入批次、计数、菱形依赖、部分失败语义，是整套新状态机。</td>
                   <td>等节点内并行这个替代方案被反复抱怨不够用时，再单独设计</td>
@@ -161,17 +171,17 @@
                 <tr>
                   <td><code>batching</code></td>
                   <td>把多条事件攒成一批再执行，会打乱「一次事件一条 trace」的可解释性。</td>
-                  <td>出现明确的批量写入场景（如一天一次的全量扫描）时，按触发源做而不是按规则做</td>
+                  <td>出现明确的批量写入场景（如一天一次的全量扫描）时，按触发源做而不是按边做</td>
                 </tr>
                 <tr>
                   <td>拖拽画布</td>
-                  <td>画布意味着图模型，图模型意味着 DAG 语义、布局存储、协同编辑；我们的规则是文本 + 参数。</td>
+                  <td>画布意味着图模型，图模型意味着 DAG 语义、布局存储、协同编辑；我们的图是显式声明的出口表，文本就能表达。</td>
                   <td>暂时不打算。这是与 n8n 的定位分界线，不是待办</td>
                 </tr>
                 <tr>
                   <td>任意代码节点</td>
                   <td>中枢一旦能存代码，就回到「中枢知道要跑什么」，安全边界直接失效。</td>
-                  <td>不做。需要复杂逻辑就在节点本地写成一个命名命令</td>
+                  <td>不做。需要复杂逻辑就在节点本地写成一个已申报的能力</td>
                 </tr>
                 <tr>
                   <td>中枢存第三方密钥</td>
@@ -184,9 +194,9 @@
                   <td>内核稳定后按用户需求逐个加，优先 webhook 能覆盖的那批</td>
                 </tr>
                 <tr>
-                  <td>DAG 校验</td>
-                  <td>规则之间是运行期动态命中的，没有静态图可校验；能校验的只有 <code>path</code>，已经做了。</td>
-                  <td>只有在真的引入静态流程图之后才有意义</td>
+                  <td>运行期 DAG 校验</td>
+                  <td>图是显式声明的出口表，<b>环在配置期就看得见</b>，画得出也查得出，静态检查在配置期已经做完；运行期再多一道 DAG 校验既换不来新的信息，还会和「允许成环」直接矛盾。运行期只靠 <code>path</code> 去重剪枝。</td>
+                  <td>不做。「允许环」是有意的产品决定，不是待修的缺陷</td>
                 </tr>
                 <tr>
                   <td>多租户 UI</td>
@@ -201,7 +211,7 @@
                 <tr>
                   <td>子流程复用</td>
                   <td>复用要求参数化与版本引用，会逼出模块系统，复杂度陡增。</td>
-                  <td>规则数量到需要抽公共部分的规模时再做，届时复用规则版本对象</td>
+                  <td>能力数量到需要抽公共部分的规模时再做，届时复用图配置版本对象</td>
                 </tr>
               </tbody>
             </table>
@@ -216,7 +226,7 @@
             <div class="card">
               <div class="box ok" style="display: inline-block; margin-bottom: 10px">扇出 · 本期做</div>
               <p style="margin: 0 0 8px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                回答的是「这个事件要引起几件事」。N 条规则命中就写 N 行任务，一次 INSERT，没有额外状态。
+                回答的是「这个事件要引起几件事」。查表拿到 N 行就写 N 行任务，一次 INSERT，没有额外状态。
               </p>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
                 难度极低，收益直接：一个 PR 既派 agent 审查，也推手机通知。
@@ -225,7 +235,7 @@
             <div class="card">
               <div class="box err" style="display: inline-block; margin-bottom: 10px">收集 · 本期不做</div>
               <p style="margin: 0 0 8px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                回答的是「那几件事都回来了吗」。需要批次 id、计数器、菱形依赖、部分失败的判定规则。
+                回答的是「那几件事都回来了吗」。需要批次 id、计数器、菱形依赖、部分失败的判定标准。
               </p>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
                 难度高，而且一旦引入，任务就不再是独立的，整条链路都要围着批次重写。
@@ -239,26 +249,26 @@
 
           <h2>预留的扩展点</h2>
           <p class="prose">
-            不做不代表什么都不留。下面三处是刻意的留白：不实现能力，但把将来的入口放在正确的位置，避免以后靠改协议硬塞。
+            <code>edges</code> 表本身已经是实现了的东西，不算预留。真正算留白的只有下面三条：一条明确<b>不</b>留，两条留了位置。
           </p>
 
           <dl class="defs">
             <div class="def">
-              <dt><code>fanout</code> 表不建<br />但留 <code>parent_task_id</code></dt>
+              <dt>条件路由 · 不预留</dt>
               <dd>
-                任务行上有父任务引用，子任务与根任务的关系现在就查得出来。真要做收集时分两步：建批次表、按 <code>parent_task_id</code> 回填历史分组，链路数据不用重算。
+                没有地方留，也不打算留。条件路由要的是一个表达式求值器，它会同时推翻三件事：中枢不解释用户逻辑、图可静态分析、「为什么没触发」可以只靠查表回答。硬把入口先留出来，等于给以后的自己一个把求值器装回来的方便。真要做是一次<b>路由层重设计</b>，不是填一个已经挖好的坑。
               </dd>
             </div>
             <div class="def">
-              <dt>派生消息走单一接口</dt>
+              <dt>收集 <code>join</code> · 预留位置</dt>
               <dd>
-                节点回报结果和节点派生新事件走同一个上报入口。要加新的派生类型，只需在载荷里加一个帧，不动连接、鉴权与重试逻辑 —— 长连接协议已经按「可扩展帧」设计。
+                位置留在任务行的 <code>parent_task_id</code> 上：子任务与根任务的关系现在就查得出来，真要做收集时分两步——建批次表、按 <code>parent_task_id</code> 回填历史分组，链路数据不用重算。同时配置里写 <code>join</code> / <code>join_on</code> 一律在<b>校验期直接报错</b>，不静默忽略（静默忽略会让人以为收集生效了，然后在生产里等一个永远不会来的结果）。
               </dd>
             </div>
             <div class="def">
-              <dt><code>join</code> 字段写了直接报错</dt>
+              <dt>动态扇出 <code>fanout</code> · 预留位置</dt>
               <dd>
-                规则里出现 <code>join</code> / <code>join_on</code> 之类的字段，配置校验期直接拒绝并说明本期不支持。不静默忽略 —— 静默忽略会让人以为收集生效了，然后在生产里等一个永远不来的结果。
+                位置留在两处：一是 <code>edges</code> 表天然就是 N 对 N——一行变多行就是变宽，不需要新的图结构；二是节点回报与派生新事件走<b>同一个上报入口</b>，以后要加新的派生类型，只需在载荷里加一个帧，不动连接、鉴权与重试逻辑。
               </dd>
             </div>
           </dl>
