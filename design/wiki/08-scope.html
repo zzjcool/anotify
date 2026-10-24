@@ -213,6 +213,71 @@
             派发时多一步：<code>params</code> 不符合目标能力的 <code>params_schema</code> 就<b>不建任务</b>，记 <code>pruned / reason=param_schema</code>。
           </p>
 
+          <h2>组织：图属于组织，不属于个人</h2>
+          <p class="prose">
+            <b>单库、多组织。</b>借鉴 Tailscale 的 tailnet 模型：一次部署服务所有人，
+            每个组织有自己独立的节点、能力定义和出口表，<b>相互之间零可见</b>。
+          </p>
+
+          <pre class="code"><span class="k">CREATE TABLE</span> orgs (
+  id         TEXT <span class="k">PRIMARY KEY</span>,        <span class="c">-- org_xxx</span>
+  name       TEXT <span class="k">NOT NULL UNIQUE</span>,
+  created_at INTEGER <span class="k">NOT NULL</span>
+);
+
+<span class="c">-- 一个用户可属多个组织（人跨组织共享，图不共享）</span>
+<span class="k">CREATE TABLE</span> org_members (
+  org_id  TEXT <span class="k">NOT NULL</span>,
+  user_id TEXT <span class="k">NOT NULL</span>,
+  role    TEXT <span class="k">NOT NULL DEFAULT</span> <span class="s">'member'</span>,  <span class="c">-- owner | admin | member</span>
+  <span class="k">PRIMARY KEY</span> (org_id, user_id)
+);</pre>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>对象</th>
+                  <th>属于谁</th>
+                  <th>为什么</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>capability_versions</code> / <code>edges</code></td>
+                  <td><b>组织</b></td>
+                  <td>图是组织的流程资产；两家公司同名能力可以定义不同</td>
+                </tr>
+                <tr>
+                  <td><code>nodes</code> / <code>events</code> / <code>tasks</code></td>
+                  <td><b>组织</b></td>
+                  <td>你的机器不能接我的任务，事件日志必须隔离</td>
+                </tr>
+                <tr>
+                  <td><code>users</code> / <code>passkeys</code> / <code>sessions</code> / <code>api_keys</code></td>
+                  <td><b>人</b></td>
+                  <td>人跨组织共享身份，不需要每个组织一个账号</td>
+                </tr>
+                <tr>
+                  <td><code>devices</code>（推送目标）</td>
+                  <td><b>人</b></td>
+                  <td>手机是你的，不是组织的；组织被删手机还在</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <b>首次注册自动建组织。</b>和 Tailscale 一样：任何人不经审批注册进来，
+            系统立刻给他建一个个人组织（他就是 owner），代码里因此<b>不存在「没有组织」的分支</b>。
+            要协作就邀请别人进组织，要隔离就再建一个。
+          </p>
+
+          <div class="note warn">
+            <b>节点 token 必须带 <code>org_id</code>。</b>这是安全边界，不是数据整理：
+            拿 A 组织的 token 不能连到 B 组织的图。同理，事件入库、任务派发、图配置全都先过组织校验。
+          </div>
+
           <h2>本期不做的</h2>
           <p class="prose">
             每一条后面都写了「为什么现在不做」和「什么条件下会做」。不做不是因为难，大多数是因为做错了会让产品变成另一个东西。
@@ -279,9 +344,9 @@
                   <td>不做。「允许环」是有意的产品决定，不是待修的缺陷</td>
                 </tr>
                 <tr>
-                  <td>多租户 UI</td>
-                  <td>自托管单组织是当前形态，租户隔离会渗透到每张表和每条查询。</td>
-                  <td>出现托管版需求时，先在数据层加 <code>tenant_id</code>，UI 随后</td>
+                  <td>跨组织共享</td>
+                  <td>Tailscale 的 node sharing 是单独一层语义：把一个能力显式租给别的组织，要处理授权、撤销、计量。先把单组织的图画稳。</td>
+                  <td><code>edges</code> 不放跨组织边；将来用一张显式的共享表桥接</td>
                 </tr>
                 <tr>
                   <td>人工审批环节</td>
