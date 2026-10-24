@@ -126,7 +126,7 @@
         border-radius: 3px;
         background: var(--error-soft);
       }
-      /* 四种未触发原因的并列小示意：2×2 网格，窄屏单列堆叠 */
+      /* 未触发原因的并列小示意：2 列网格，窄屏单列堆叠 */
       .why {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -448,10 +448,10 @@
 
           <h2>「为什么没触发」</h2>
           <p class="prose">
-            这是事件中心最常被问到的一句话。路由只是查表加一次参数校验，所以「为什么没走这条边」只有五种可能，每一种都是<b>图 + 回报</b>的直接对照。
+            这是事件中心最常被问到的一句话。路由只是查表加一次参数校验，所以「为什么没走这条边」只有六种可能，每一种都是<b>图 + 回报</b>的直接对照。
           </p>
 
-          <h3>五种原因长什么样</h3>
+          <h3>六种原因长什么样</h3>
           <div class="fig">
             <div class="why">
               <div class="why-cell">
@@ -482,7 +482,26 @@
                 </div>
               </div>
               <div class="why-cell">
-                <div class="why-t">④ 被 path 剪枝</div>
+                <div class="why-t">④ 没有人声明这个能力</div>
+                <div class="why-d">
+                  edges(cap_2e04, fix)<br />
+                  <span class="hit">→ cap_9a13 1 行</span><br />
+                  node_capabilities(cap_9a13)<br />
+                  <span class="miss">→ ∅ 0 行</span><br />
+                  记 pruned / no_node
+                </div>
+              </div>
+              <div class="why-cell">
+                <div class="why-t">⑤ to 指向别的组织的人</div>
+                <div class="why-d">
+                  notify.phone@1<br />
+                  params.to = usr_other<br />
+                  <span class="miss">→ 不在本组织</span><br />
+                  记 pruned / foreign_user
+                </div>
+              </div>
+              <div class="why-cell">
+                <div class="why-t">⑥ 被 path 剪枝</div>
                 <div class="why-d">
                   edges(implement@1, fix)<br />
                   <span class="hit">→ review@1 1 行</span><br />
@@ -492,7 +511,7 @@
               </div>
             </div>
             <div class="fig-cap">
-              <b>五种互斥，按运行时顺序排，前一步不过就走不到下一步。</b>先看上游有没有回报这个出口（①），再看表里有没有这一行（②），再用目标能力的 schema 校一次参数（③），再看有没有节点接（③′），最后看 path 里是不是已经有它（④）。
+              <b>六种互斥，按运行时顺序排，前一步不过就走不到下一步。</b>先看上游有没有回报这个出口（①），再看表里有没有这一行（②），再用目标能力的 schema 校一次参数（③），再看有没有节点接（④），再查目标用户属不属于本组织（⑤），最后看 path 里是不是已经有它（⑥）。
               四种判断都是常量时间，都只读一行数据。<b>②③④ 都是 <code>pruned</code></b>，共用 trace 上那套剪枝标记；① 不是剪枝，它是一个正常结束的分支。
             </div>
           </div>
@@ -511,11 +530,15 @@
               <dd>边查到了、出口也对，但 <code>params</code> 校不过。<b>这个错误在建任务之前就发生</b>，任务从来不存在，也永远不会被派到节点上。记 <code>pruned / reason=param_schema</code>。</dd>
             </div>
             <div class="def">
-              <dt>③′ 表里有边，但没有节点声明目标能力</dt>
+              <dt>④ 表里有边，但没有节点声明目标能力</dt>
               <dd>边在、参数也对，<code>node_capabilities</code> 查不到任何节点。这通常意味着<b>能力定义了却没人实现</b>——记 <code>pruned / no_node</code>，不建任务。它和 ② 是两类问题：② 是图没连，这条是没人干。</dd>
             </div>
             <div class="def">
-              <dt>④ 被 <code>path</code> 剪枝</dt>
+              <dt>⑤ <code>params.to</code> 指向别的组织的用户</dt>
+              <dd><code>devices</code> 属于用户、不属于组织，所以能力拿到一个 <code>user_id</code> 时必须确认这个人属于本组织。<b>这是 schema 管不到的部分</b>——schema 只能说「<code>to</code> 是非空字符串」。记 <code>pruned / reason=foreign_user</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>⑥ 被 <code>path</code> 剪枝</dt>
               <dd>边在、参数也对，但要去的那个能力已经在从根到本任务的路径里。静默剪枝：不报错、不暂停。记 <code>pruned / reason=path</code>，指出重复的是哪个 <code>name@version</code>。</dd>
             </div>
           </dl>
@@ -573,7 +596,7 @@
           </div>
 
           <p class="prose">
-            五种原因里的四种（<code>no_edge</code> / <code>param_schema</code> / <code>no_node</code> / <code>path</code>）都是 <code>pruned</code>，共用 trace 上那套剪枝标记，区别只在 reason 字段和随附的证据：<code>no_edge</code> 附查表的两个键，<code>param_schema</code> 附目标能力 id 与第一条校验错误，<code>no_node</code> 附目标能力 id，<code>path</code> 附重复的那个能力。
+            六种原因里的五种（<code>no_edge</code> / <code>param_schema</code> / <code>no_node</code> / <code>foreign_user</code> / <code>path</code>）都是 <code>pruned</code>，共用 trace 上那套剪枝标记，区别只在 reason 字段和随附的证据：<code>no_edge</code> 附查表的两个键，<code>param_schema</code> 附目标能力 id 与第一条校验错误，<code>no_node</code> 附目标能力 id，<code>foreign_user</code> 附被拒的 user_id，<code>path</code> 附重复的那个能力。
             而「上游没回报这个出口」根本不算剪枝——它是一个正常结束的分支，只在 span 上标 <code>out</code>。剪枝是静默的，但一定留痕——静默指的是不打断业务，不是不记录。
           </p>
 

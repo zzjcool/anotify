@@ -126,7 +126,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     name         TEXT NOT NULL,               -- mbp-16（可改，id 不变）
     tags         TEXT NOT NULL DEFAULT '[]',  -- JSON 数组，节点池标签
     status       TEXT NOT NULL DEFAULT 'offline', -- online | offline | draining
-    token_hash   TEXT NOT NULL,               -- 节点凭据哈希
+    token_hash   TEXT NOT NULL,               -- sha256，明文只在创建时返回一次
+    max_instances   INTEGER NOT NULL DEFAULT 20,  -- 硬顶，防一份 token 复制出一片
+    max_concurrency INTEGER NOT NULL DEFAULT 8,   -- 节点级并发上限
     last_seen_at INTEGER,
     created_at   INTEGER NOT NULL,
     UNIQUE (org_id, name)
@@ -143,13 +145,17 @@ CREATE INDEX IF NOT EXISTS idx_nodecap_cap ON node_capabilities(capability_id);
 
 -- 并发槽位（node_instances），一个节点可以有 N 个
 CREATE TABLE IF NOT EXISTS node_instances (
-    id         TEXT PRIMARY KEY,              -- nins_<base62>
-    node_id    TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    slot       INTEGER NOT NULL,              -- 0..N-1
-    busy_task  TEXT,                          -- 当前任务 id，空闲为 NULL
-    updated_at INTEGER NOT NULL,
+    id          TEXT PRIMARY KEY,             -- nins_<base62>
+    node_id     TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    slot        INTEGER NOT NULL,             -- 0..N-1，节点申报
+    concurrency INTEGER NOT NULL DEFAULT 1,   -- 这个实例能同时跑几份（节点申报）
+    busy_task   TEXT,                         -- 当前任务 id，空闲为 NULL
+    alive       INTEGER NOT NULL DEFAULT 1,   -- 0 = 已掉线（不等同于整个节点下线）
+    updated_at  INTEGER NOT NULL,
     UNIQUE (node_id, slot)
 );
+
+-- 实际并发 = min(实例 concurrency, 实现级 capabilities[].concurrency, nodes.max_concurrency)
 
 -- 粘性路由
 CREATE TABLE IF NOT EXISTS node_pins (
@@ -455,9 +461,22 @@ func DeriveKind(outputs []string, declaredByAnyNode bool) Kind {
 | `param_schema` | 路由 | 参数不过目标能力 `params_schema` |
 | `path` | 路由 | 目标能力已在 `path` 里（环剪枝） |
 | `no_node` | 路由 | 没有节点声明该能力 |
+| `foreign_user` | 路由 | `params.to` 指向的用户不属于本组织 |
 | `invalid_transition` | 状态机 | 非法状态迁移 |
 
-**四种「没触发」原因**（`pruned/reason`）：`no_edge` / `param_schema` / `path` / `no_node`。
+**「没触发」的全部原因**，分两类：
+
+| # | 原因 | 是剪枝吗 | 说明 |
+|---|---|---|---|
+| ① | 上游没回报这个出口 | **不是** | `reported=0` 或 `out` 指向别的出口——正常结束的分支，压根没查表 |
+| ② | `no_edge` | 是 | 查表 0 行 |
+| ③ | `param_schema` | 是 | 参数不过目标能力 schema |
+| ④ | `no_node` | 是 | 有边、参数也对，但没有节点声明该能力 |
+| ⑤ | `foreign_user` | 是 | `params.to` 指向的用户不属于本组织 |
+| ⑥ | `path` | 是 | 目标能力已在路径里（环剪枝） |
+
+**②~⑥ 五种记 `pruned` + `reason`；① 不是剪枝。**
+剪枝是静默的（不打断业务），但**一律留痕**——trace 上能看到 `reason` 和随附证据。
 
 ---
 
@@ -496,16 +515,76 @@ func DeriveKind(outputs []string, declaredByAnyNode bool) Kind {
 
 ---
 
-## 10. 未决项（需拍板后才能实现）
+## 10. 已决项
 
-| # | 问题 | 影响 |
+| # | 决定 | 落地 |
 |---|---|---|
-| Q1 | `notify.phone` 推送目标：组织级还是用户级？ | `devices` 表要不要 `org_id` |
-| Q2 | 事件入 `POST /v1/events` 时 `trace_id` 由谁生成？ | 幂等键设计 |
-| Q3 | `graph_versions` 何时产生新版本？每次 `edges` 变更？ | 写放大 |
-| Q4 | 节点 token 形态：JWT 还是 opaque token + DB 查表？ | 鉴权实现 |
-| Q5 | `node_instances` 是预创建还是按需创建？ | 并发限制实现 |
-| Q6 | 事件去重：同一 webhook 重投怎么处理？ | 是否引入 idempotency key |
+| **Q1** | **推送目标是用户，不是组织** | `devices` 表**不加** `org_id`——手机是你的，组织删了手机还在。`notify.phone@1` 的 `params_schema` 要求 `{to: <user_id>, title, body}` |
+| **Q2** | **`trace_id` 由触发器生成**，事件诞生时就带上 | 触发器（webhook/cron/watch）产事件时生成 `trace_id` 并写进 `events`。中枢不代生成、不猜 |
+| **Q5** | **实例由节点申报**，不是中枢预创建 | 节点 `hello` 帧里带 `instances: [{slot, concurrency}]`；中枢 upsert `node_instances`。超 `nodes.max_instances` 拒绝注册 |
+| **Q6** | **要幂等**：同一 webhook 重投不能重复建链 | 见 §10.1 |
+
+### 10.1 事件幂等（Q6）
+
+幂等键由**触发器**给，中枢只做唯一约束：
+
+```sql
+ALTER TABLE events ADD COLUMN idem_key TEXT;
+CREATE UNIQUE INDEX idx_events_idem ON events(org_id, source, idem_key)
+    WHERE idem_key IS NOT NULL;
+```
+
+- 触发器产事件时带 `idem_key`（GitHub 用 `X-GitHub-Delivery`，自己写的 cron 用 `cron:<name>:<fire_time>`）。
+- **不带 `idem_key` 就允许重复**——不是所有来源都有稳定的投递 ID，硬造一个反而制造假幂等。
+- 重投时 `INSERT ... ON CONFLICT DO NOTHING`；命中冲突返回**已有的 `event_id` 和 `trace_id`**，不是 409。
+  理由：对 webhook 发送方而言「我已经收过了」和「我这次收下了」的正确行为都是 200，重试不该被当成错误。
+
+### 10.1.1 推送的跨组织校验（Q1 的必然后果）
+
+`devices` 属于用户、不属于组织，所以**必须在派发时补一道校验**，否则 A 组织能推给 B 组织的用户：
+
+```sql
+-- notify.phone 派发前
+SELECT 1 FROM org_members WHERE org_id = :current_org AND user_id = :params_to;
+-- 0 行 → pruned / reason=foreign_user，不建任务
+```
+
+这是 `params_schema` 管不到的部分：schema 只能校验「`to` 是个非空字符串」，
+**「这个人属于本组织」是业务规则，要单独查**。同类规则以后每加一个跨组织能力都要补一次。
+
+### 10.2 Q3：`graph_versions` 的写入时机
+
+**两种做法，代价不同：**
+
+| | 每次改边就落一版 | 派发时按需落版 |
+|:--|:--|:--|
+| 触发 | `POST/DELETE /v1/edges` 成功后立即写 | 事务内发现当前图 hash 不存在才写 |
+| 写放大 | 改 10 次边 = 10 行（哪怕中途改错又改回来） | 只有「被派发用到过」的图才会留版 |
+| 未派发的图 | 也留版 | 不留（省空间，但事后查不到「当时配过什么」） |
+| 实现复杂度 | 低 | 中（事务内查 hash 再条件插入） |
+
+**决定：按需落版（后者）。** 理由：`graph_versions` 的唯一用途是**解释已经发生的 trace**，
+从没被任何一次派发用过的图，事后没人会去查它。按需落版既不丢可解释性，又不会因为反复试错配置而堆垃圾。
+写的时候用 `INSERT ... ON CONFLICT(org_id, content_hash) DO NOTHING` 后回查，保证同一份图只有一行。
+
+### 10.3 Q4：节点 token 形态
+
+**两种做法，代价不同：**
+
+| | JWT（自包含） | Opaque token + 查表 |
+|:--|:--|:--|
+| 验签 | 本地算签名，不碰 DB | 每次查 `nodes.token_hash` |
+| 吊销 | **做不到立即失效**，只能靠短 TTL + 刷新 | 改一行立刻生效 |
+| `org_id` 携带 | 写进 claim | 查表得到 |
+| 泄露后的处置 | 等 TTL 过期 | 立即吊销 |
+| 实现 | 需要签名/验证 + 刷新逻辑 | 一个索引查询 |
+
+**决定：opaque token + 查表。** 理由：
+1. **节点要有「立即踢掉」的能力**——一台机器丢了，改一行就该断，不该等 TTL。
+2. WS 连接是长连接，JWT 的短 TTL 在这里反而是负担（要么频繁刷新，要么长 TTL 失去意义）。
+3. 验签成本可以忽略：`hello` 时查一次，之后靠连接对象持有 `node_id`/`org_id`，不是每帧都查。
+
+token 形态与现有 `api_keys` 一致：`ant_<label>_<base64url(24B)>`，DB 只存 `sha256`，明文只在创建时返回一次。
 
 ---
 
