@@ -52,6 +52,12 @@ func main() {
 		}
 		uid = u.ID
 	}
+	// 注册即得组织（契约 A1）。seed 工具也走同一条规则，别绕开。
+	org, err := db.EnsureOrgForUser(ctx, uid, *username)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("组织就绪: %s (%s)", org.Name, org.ID)
 
 	km := auth.NewKeyManager(db)
 	sendPlain, _, err := km.CreateKey(uid, "dev-send", []string{"notify:send"})
