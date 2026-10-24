@@ -81,14 +81,16 @@
 
           <h2>六层结构</h2>
           <p class="prose">
-            整条管道有六层，每层职责单一：能力定义不管运行，触发源不管路由，出口表不管执行，任务不管命令长什么样。通知和 trace 不是层，是挂在旁边的两条出路。
+            六层是一条直管：能力定义不管运行，触发源不管路由，出口表不管执行，任务不管命令长什么样。
+            <b>通知和 trace 不是额外的层</b>——通知就是图里一条普通的边，终点是一个 <code>end</code> 节点；
+            trace 是这些记录本身，不需要旁挂。
           </p>
 
           <div class="fig">
             <div class="flow">
               <div class="box sm accent">能力定义<span class="sub">name@版本 · params_schema · outputs</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box sm">触发器<span class="sub">无人声明 → origin</span></div>
+              <div class="box sm">触发器<span class="sub">产生事件 · 没有节点声明它</span></div>
               <div class="arr"><span>→</span></div>
               <div class="box sm">事件日志<span class="sub">type · payload</span></div>
               <div class="arr"><span>→</span></div>
@@ -96,18 +98,12 @@
               <div class="arr"><span>→</span></div>
               <div class="box sm">任务<span class="sub">租约 · 状态机</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box sm">节点<span class="sub">一台声明了能力的机器</span></div>
-            </div>
-
-            <h4 style="margin: 22px 0 8px">旁挂（不是层，是两条出路）</h4>
-
-            <div class="flow" style="gap: 10px; justify-content: flex-start">
-              <div class="box sm dashed">通知 · <code>end</code><span class="sub">推手机 · 尽力而为 · 不回报</span></div>
-              <div class="box sm dashed">trace · 可观测<span class="sub">走了哪条边 · 为什么到头</span></div>
+              <div class="box sm">节点<span class="sub">声明能力 · kind 由声明推导</span></div>
             </div>
 
             <div class="fig-cap">
-              <b>第一层是能力定义，它先于一切。</b>能力规定了参数结构、出口名；节点只能声明自己有哪些已定义的能力，<b>不能自己发明能力名，也不能自己加出口</b>。第四层（出口表）是唯一的路由依据：它没有条件、没有优先级、也不需要求值：把（能力, 出口）这一对填进去，返回几行就往几个能力派，而不是往几台机器派。<b>最后一层是节点</b>：它只声明「我有 <code>review@1</code>」，<code>origin</code> / <code>pipe</code> / <code>end</code> 是从这份声明算出来的，不手写。<b>终点也分两种</b>：推手机是可丢的通知（<code>outputs</code> 为空 → <code>end</code>），干活的任务必须回报结果（<code>pipe</code>），它们各自记账。
+              <b>第一层是能力定义，它先于一切。</b>能力规定了参数结构、出口名；节点只能声明自己有哪些已定义的能力，<b>不能自己发明能力名，也不能自己加出口</b>。第四层（出口表）是唯一的路由依据：它没有条件、没有优先级、也不需要求值：把（能力, 出口）这一对填进去，返回几行就往几个能力派，而不是往几台机器派。<b>最后一层是节点</b>：它只声明「我有 <code>review@1</code>」，<code>origin</code> / <code>pipe</code> / <code>end</code> 是从这份声明算出来的，不手写。
+            <code>end</code> 节点的特点是<b>声明的能力 <code>outputs</code> 全为空</b>——推手机只是其中最常见的一种，写日志、打 webhook 回调、归档同样落在这一层。
             </div>
           </div>
 

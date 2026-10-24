@@ -136,7 +136,7 @@
                 </tr>
                 <tr>
                   <td>出口回报</td>
-                  <td>节点在 <code>result</code> 里回报 <code>out</code>（出口名或 <code>null</code>，跑完才知道），收敛只认这个，不反推业务。缺失 <code>out</code> 按未回报计（保守，不收敛）。</td>
+                  <td>节点在 <code>result</code> 里回报 <code>out</code>（出口名或 <code>null</code>，跑完才知道），路由只认这个，不反推业务。缺失按未回报计，不替它猜。</td>
                 </tr>
                 <tr>
                   <td>通知</td>

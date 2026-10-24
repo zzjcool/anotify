@@ -227,7 +227,7 @@
                   <td>终点</td>
                   <td>✓</td>
                   <td>✗</td>
-                  <td>推手机、写日志（都是 <code>end</code>）</td>
+                  <td>推手机 <code>notify.phone@1</code>、写日志 <code>log@1</code>、webhook 回调 <code>notify.webhook@1</code></td>
                   <td><code>end</code></td>
                 </tr>
               </tbody>
@@ -247,7 +247,7 @@
 
           <pre class="code"><span class="c">// 由节点的能力声明推导，不手写</span>
 kind(node) =
-  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机、写日志</span>
+  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机 / 写日志 / 回调 / 归档</span>
   <span class="k">some</span> outputs 非空       → <span class="s">pipe</span>     <span class="c">// 有进有出：review / implement</span>
   没有任何节点声明它        → <span class="s">origin</span>   <span class="c">// 只有出：触发器，事件本身充当起点</span></pre>
 

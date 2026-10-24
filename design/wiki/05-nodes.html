@@ -81,7 +81,7 @@
 
           <pre class="code"><span class="c">// 由节点的能力声明推导，不手写</span>
 kind(node) =
-  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机、写日志</span>
+  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机 / 写日志 / 回调 / 归档</span>
   <span class="k">some</span> outputs 非空       → <span class="s">pipe</span>     <span class="c">// 有进有出：review / test</span>
   没有任何节点声明它        → <span class="s">origin</span>   <span class="c">// 只有出：事件本身是链的起点</span></pre>
 
@@ -110,7 +110,7 @@ kind(node) =
                 <div class="lane-label">end · 终点</div>
                 <div class="box sm">只有入口<span class="sub">入 ✓ · 出 ✗</span></div>
                 <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
-                  推手机、写日志（都是 <code>end</code>）。收了活就结束，不产生下游。
+                  推手机、写日志、打 webhook 回调——都是 <code>end</code>。收了活就结束，不产生下游。
                 </p>
               </div>
             </div>
@@ -146,7 +146,7 @@ kind(node) =
                   <td><code>end</code> · 终点</td>
                   <td>✓</td>
                   <td>✗</td>
-                  <td>推手机、写日志（都是 <code>end</code>）</td>
+                  <td>推手机 <code>notify.phone@1</code>、写日志 <code>log@1</code>、webhook 回调 <code>notify.webhook@1</code></td>
                 </tr>
               </tbody>
             </table>
@@ -601,17 +601,18 @@ kind(node) =
 <span class="c">-- 写 pin 与建任务在同一个事务里：任务在，pin 一定在。</span>
 <span class="c">-- rebalance 只扫 node_id 已下线 / 实例全满的 pin，重新选一台节点并改写 node_id。</span></pre>
 
-          <h2>谁能终结一条链：<code>out</code> 写在结果里</h2>
+          <h2>往哪走：<code>out</code> 写在结果里</h2>
           <p class="prose">
-            中枢有一件事必须知道：<b>这条链还会不会往下走</b>。因为「收敛」要发通知，
-            而通知发出去就不能收回。这个判断中枢不能猜——它不知道某个能力的业务语义，只知道名字和版本。
+            中枢只需要知道一件事：<b>这一次跑完，接下来派哪个能力</b>。
+            它不判断「整条链有没有结束」——那件事没有系统级的消费者，命令跑完了就是跑完了。
+            而「派哪个」中枢也不能猜：它不知道某个能力的业务语义，只知道名字和版本。
           </p>
 
           <div class="note err">
-            <b>但这件事<u>不能</u>写在 manifest 里。</b>实现还没跑，谁也不知道它会走到哪个出口——
-            成功要跑完才知道，失败也要跑完才知道。让 manifest 提前承诺「我不会继续」，
-            等于让节点在开局就赌，赌错了就是手机提前响。
-            <b>所以 <code>out</code> 是 <code>result</code> 里的一个字段，不是 manifest 里的声明。</b>
+            <b>但这件事<u>不能</u>写在能力声明里。</b>实现还没跑，谁也不知道它会走到哪个出口——
+            成功要跑完才知道，失败也要跑完才知道。让声明提前承诺「我一定会走 fix」，
+            等于让节点在开局就赌。
+            <b>所以 <code>out</code> 是 <code>result</code> 里的一个字段，不是声明里的常量。</b>
           </div>
 
           <div class="fig">
@@ -682,12 +683,12 @@ kind(node) =
                 <tr>
                   <td><code>failed</code></td>
                   <td><code>"fix"</code></td>
-                  <td>失败，但触发了修复分支。同样查表派下一跳，不能收敛。</td>
+                  <td>失败，但触发了修复分支。同样查表派下一跳。</td>
                 </tr>
                 <tr>
                   <td><code>failed</code></td>
                   <td><code>null</code></td>
-                  <td>失败且断在这里。可以收敛，通知里点明失败。</td>
+                  <td>失败且断在这里。没有下一跳，链在这里结束。</td>
                 </tr>
               </tbody>
             </table>
@@ -695,28 +696,29 @@ kind(node) =
 
           <h3>节点漏报怎么办</h3>
           <p class="prose">
-            缺失、迟到、或格式不对时，中枢一律按「未回报」处理（<b>保守</b>，不收敛）——
-            宁可晚收敛，也不提前误报。代价是可能永远不收敛，所以要有三道兜底：
+            缺失、迟到、或格式不对时，中枢一律按「<b>没回报</b>」处理——不替它猜一个出口。
+            后果很直接：<b>这一跳不派</b>，链在记录上停在这里，但不伪造一个「到头」。
+            三道兜底保证任务行不会永远挂着：
           </p>
           <dl class="defs">
             <div class="def">
               <dt>租约兜底</dt>
-              <dd>任务最终都会被租约重置到一个终态（含 <code>abandoned</code>），不会永远挂着。</dd>
+              <dd>任务最终都会被租约重置到一个终态（含 <code>abandoned</code>），不会永远 <code>running</code>。</dd>
             </div>
             <div class="def">
-              <dt>缺省补齐</dt>
-              <dd>终态任务若没有 <code>out</code>，按「未回报」计入，直到 <code>max_duration</code> 用尽。</dd>
+              <dt>超时置终态</dt>
+              <dd><code>max_duration</code> 耗尽时强制落 <code>abandoned</code>，<code>out</code> 保持空——不填 <code>null</code> 冒充已回报。</dd>
             </div>
             <div class="def">
-              <dt>超时收敛</dt>
-              <dd><code>max_duration</code> 耗尽时强制收敛，并标注「有 N 个任务未申报出口」——不静默。</dd>
+              <dt>漏报可见</dt>
+              <dd>这种任务在 trace 上单独标出，并且计数进控制台。「有 N 个任务未回报出口」是给人看的告警，不是自动补一个假出口。</dd>
             </div>
           </dl>
 
           <div class="note warn">
-            <b>本期推手机一律 <code>out: null</code>。</b>推送没有下游、不需要接续，天然到头。
+            <b>推手机这类 <code>end</code> 能力，本期一律报 <code>out: null</code>。</b>推送没有下游、不需要接续，天然到头。
             但以后接审批时，人点完「通过」可能触发下一跳——那时它报的就不是 <code>null</code> 了。
-            <b>所以走 <code>result.out</code> 这条通道，而不是把 <code>null</code> 写死在代码里。</b>
+            <b>所以走 <code>result.out</code> 这条通道，而不是把「到头」写死在代码里。</b>
           </div>
 
           <h2>节点下线分级</h2>
