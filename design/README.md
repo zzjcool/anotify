@@ -18,21 +18,24 @@ Anotify 视觉事实源：mockup HTML + `tokens.css`。
 
 | 页 | 内容 |
 | --- | --- |
-| [00 总览](./wiki/index.html) | 五层结构、为什么不是 workflow 引擎 |
-| [01 为什么](./wiki/01-why.html) | 现有断裂点、要解决的三件事、我们不是什么 |
-| [02 核心概念](./wiki/02-concepts.html) | Capability / Output / Node / Task / Trace / Edge 六个名词、kind 推导、一次旅程 |
+| [00 总览](./wiki/index.html) | 六层结构、和 workflow 引擎的差别 |
+| [01 为什么](./wiki/01-why.html) | 和单机 agent / dify·n8n 的对比、要解决的三件事、我们不是什么 |
+| [02 核心概念](./wiki/02-concepts.html) | Capability / Output / Node / Task / Trace / Edge 六个名词、三种节点 |
 | [03 一条事件的旅程](./wiki/03-flow.html) | 十步时序、四步派发、租约心跳、失败分支 |
-| [04 能力与出口](./wiki/04-edges.html) | 三个要素、kind 推导、edges 表查表派发、版本并存、成环与剪枝 |
-| [05 节点与执行](./wiki/05-nodes.html) | 能力声明与校验、状态机、节点池、粘性路由、下线分级 |
+| [04 能力与出口](./wiki/04-edges.html) | 三个要素、出口即下一能力名、kind 推导、edges 查表、版本并存、成环 |
+| [05 节点与执行](./wiki/05-nodes.html) | 能力声明与校验、状态机、节点池、粘性路由、下线与生命周期 |
 | [06 可观测与版本](./wiki/06-trace.html) | OTel 对齐、trace 与 span、没触发的四种原因、四对象版本钉住 |
-| [07 安全边界](./wiki/07-safety.html) | 中枢永不下发命令、六道闸、删掉规则引擎的安全收益 |
-| [08 本期范围](./wiki/08-scope.html) | 做/不做、预留扩展点 |
-| [09 术语表](./wiki/09-glossary.html) | 全部名词速查 |
+| [07 安全边界](./wiki/07-safety.html) | 中枢永不下发命令、六道闸、中枢不解释任何用户逻辑 |
+| [08 本期范围](./wiki/08-scope.html) | 组织模型、做/不做、预留扩展点 |
+| [09 术语表](./wiki/09-glossary.html) | 94 条名词速查 |
 
-样式：`wiki/assets/wiki.css`（依赖 `tokens.css`，无 Tailwind、无内联色值）。
-维护约定：`wiki/_meta/README.md`（硬约束、已废弃术语、交付前自查清单）。
+**这一套是设计终态。** 它描述的模型（能力原子 + 出口即能力名 + kind 推导）已经定下来，
+后续按它做实现重构。**没有历史包袱：库清空重建，不迁移、不双写、不兼容。**
 
-### 历史稿
+改动 wiki 前先读 [wiki/_meta/README.md](./wiki/_meta/README.md) 的硬约束与写作原则
+（只写结论不写推导过程、同一规则只讲一次、不留「旧模型 vs 新模型」这类痕迹）。
+
+## 历史稿
 
 早期讨论稿（hub-blueprint / hub-architecture / adr-001 / positioning）**已删除**。
 它们是旧模型（规则引擎、两类 sink、节点=机器）的过程稿，与现行 wiki 冲突太多，

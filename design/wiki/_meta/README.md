@@ -59,7 +59,7 @@
 | `manifest.commands[]` | `manifest.capabilities[]`（只报能力名，不报 argv/出口/kind） |
 | `manifest.capabilities[].outputs` | 删掉：出口由能力定义给定，节点无命名权 |
 | `role` / 角色 | `node` / 节点（链上的位置） |
-| `interface` / 接口 | `capability` / 能力（原子；接口只作为将来「组合」的预留） |
+| `interface` / 接口 | `capability` / 能力（原子）。接口这一层已整个撤销，不预留 |
 | `implements` | 「声明能力」`capabilities: [review@1]` |
 | `runner` / 执行器 | `node` / 节点 |
 | `runner_id` / `runners` / `runner_instances` / `runner_pins` | `node_id` / `nodes` / `node_instances` / `node_pins` |
