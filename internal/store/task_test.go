@@ -18,9 +18,14 @@ var allStatuses = []string{
 
 // legalTransitions 是契约 §3.2 迁移表的**逐条**转写。
 // 测试用它对照 ValidTransition：表内必须通过，表外必须拒绝。
+//
+// 与 §3.2 原表唯一的一处扩展：`assigned → running`。
+// 依据是 §3.1「running 由 progress 帧**或隐式**推进」——节点跳过 ack
+// 直接报 progress/result 是正常时序，不允许这条会让这类节点永远推不动任务。
+// 已在 #57 的实现说明里向契约所有者指出这处歧义。
 var legalTransitions = map[string][]string{
 	TaskPending:      {TaskAssigned, TaskCanceled},
-	TaskAssigned:     {TaskAcked, TaskLeaseExpired, TaskCanceled},
+	TaskAssigned:     {TaskAcked, TaskRunning, TaskLeaseExpired, TaskCanceled},
 	TaskAcked:        {TaskRunning, TaskLeaseExpired, TaskCanceled},
 	TaskRunning:      {TaskSucceeded, TaskFailed, TaskLeaseExpired, TaskCanceled},
 	TaskLeaseExpired: {TaskPending, TaskAbandoned},

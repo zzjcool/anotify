@@ -251,8 +251,14 @@ func (d *DB) ListTasks(ctx context.Context, orgID, traceID, nodeID, status strin
 // 逐条对应契约表格，表外一律 false：
 //
 //	pending      → assigned | canceled
-//	assigned     → acked | lease_expired | canceled
+//	assigned     → acked | running | lease_expired | canceled
 //	acked        → running | lease_expired | canceled
+//
+// 关于 `assigned → running`：契约 §3.2 的表格里没直接画这条，
+// 但 §3.1 明确「running 由 progress 帧**或隐式**推进」。节点跳过 ack
+// 直接报 progress/result 是正常时序（ack 只是「接单」，不是「必须经过」），
+// 不允许这条会让这类节点永远推不动任务。
+//
 //	running      → succeeded | failed | lease_expired | canceled
 //	lease_expired→ pending | abandoned
 //	终态         → （无）
@@ -264,7 +270,8 @@ func ValidTransition(from, to string) bool {
 	case TaskPending:
 		return to == TaskAssigned || to == TaskCanceled
 	case TaskAssigned:
-		return to == TaskAcked || to == TaskLeaseExpired || to == TaskCanceled
+		return to == TaskAcked || to == TaskRunning ||
+			to == TaskLeaseExpired || to == TaskCanceled
 	case TaskAcked:
 		return to == TaskRunning || to == TaskLeaseExpired || to == TaskCanceled
 	case TaskRunning:

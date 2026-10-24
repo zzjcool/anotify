@@ -22,7 +22,11 @@ import (
 // 形式 "evt_<seq>"，解析时取数字部分。
 const resumeTokenPrefix = "evt_"
 
-// Handler 处理 GET /v1/stream 的 WebSocket 升级与连接生命周期。
+// Handler 处理 GET /v1/stream 的 WebSocket 升级与连接生命周期（**旧浏览器端协议**）。
+//
+// Deprecated: 这是「面向浏览器收通知」的旧模型（notification/ack/subscribe 帧），
+// 与事件中心的节点协议无关。节点协议见 node_handler.go / node_protocol.go。
+// 等 #7 把前端与 /v1/stream 一起下线后，本文件与 protocol.go 一并删除。
 type Handler struct {
 	Broker broker.Broker
 	Keys   authn.KeyValidator
