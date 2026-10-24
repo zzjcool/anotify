@@ -119,7 +119,9 @@
             这是整个模型里最容易被想歪的一点。<b><code>fix</code> 不是一个「子结果」，它就是 <code>fix</code> 这个能力的名字。</b>
           </p>
 
-          <pre class="code"><span class="c"># 三个独立的能力，各有各的版本，互不包含</span>
+          <details class="fold">
+            <summary>三个独立的能力定义<span class="hint">review / fix / clean</span></summary>
+            <pre class="code"><span class="c"># 三个独立的能力，各有各的版本，互不包含</span>
 - name: review      <span class="c"># 跑完报出「我接下来要 fix」或「我接下来要 clean」</span>
   version: 1
   <span class="k">outputs: [fix, clean]</span>
@@ -134,6 +136,7 @@
 - name: clean       <span class="c"># ★ 另一个能力，另一个版本</span>
   version: 1
   outputs: []</pre>
+          </details>
 
           <p class="prose">
             所以路由查的是：<b><code>review@1</code> 报出 <code>fix</code> → 派 <code>fix@1</code> 这个能力 → 找声明了 <code>fix@1</code> 的节点。</b>
@@ -245,12 +248,15 @@ kind(node) =
             中枢不存条件、不跑匹配。它只存一张边表——<b>两端都是能力定义，不引用任何机器</b>。
           </p>
 
-          <pre class="code"><span class="k">CREATE TABLE</span> edges (
+          <details class="fold">
+            <summary>edges 表结构<span class="hint">DDL</span></summary>
+            <pre class="code"><span class="k">CREATE TABLE</span> edges (
   <span class="k">from_capability</span> TEXT <span class="k">NOT NULL</span>,   <span class="c">-- cap_...</span>
   <span class="k">from_port</span>       TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 必须是该能力 outputs 里的一个</span>
   <span class="k">to_capability</span>   TEXT <span class="k">NOT NULL</span>,   <span class="c">-- cap_...</span>
   <span class="k">PRIMARY KEY</span> (from_capability, from_port, to_capability)
 );</pre>
+          </details>
 
           <p class="prose">
             派发是四步：
@@ -285,7 +291,9 @@ kind(node) =
             能力定义进 git、走 review，和代码一样可 diff。项目自带一批内置能力，用户可以追加自己的。
             <b>注意这里没有 <code>kind</code></b>——它不属于能力。
           </p>
-          <pre class="code"><span class="c"># capabilities/ · 进 git · 一份定义 = 一个原子能力</span>
+          <details class="fold">
+            <summary>能力定义示例<span class="hint">capabilities/</span></summary>
+            <pre class="code"><span class="c"># capabilities/ · 进 git · 一份定义 = 一个原子能力</span>
 - name: review
   version: 1
   params_schema:                 <span class="c"># 派发前用它校验参数</span>
@@ -302,9 +310,12 @@ kind(node) =
 - name: github
   version: 1
   outputs: [pr_opened, pr_merged]  <span class="c"># 触发器也是一种能力定义</span></pre>
+          </details>
 
           <h3>② 节点：只声明「我有哪些能力」</h3>
-          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 节点本地</span>
+          <details class="fold">
+            <summary>节点声明示例<span class="hint">config.yaml</span></summary>
+            <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 节点本地</span>
 node: mbp-16
 <span class="c"># 没有 kind —— 它由下面这份声明推导</span>
 capabilities:
@@ -312,6 +323,7 @@ capabilities:
     argv: [<span class="s">"git"</span>, <span class="s">"diff"</span>, <span class="s">"--name-only"</span>]
   - implement@1
     argv: [<span class="s">"./agent.sh"</span>]</pre>
+          </details>
 
           <div class="note warn">
             <b>节点没有定义权。</b>它不能发明能力名，也不能加出口——两者都来自中枢的定义。
@@ -322,7 +334,9 @@ capabilities:
           </div>
 
           <h3>③ 边：中枢侧配置</h3>
-          <pre class="code"><span class="c"># 边在能力之间，不引用任何机器</span>
+          <details class="fold">
+            <summary>边配置示例<span class="hint">不引用任何机器</span></summary>
+            <pre class="code"><span class="c"># 边在能力之间，不引用任何机器</span>
 edges:
   - from: origin:github
     port: pr_opened
@@ -330,17 +344,21 @@ edges:
   - from: review@1
     port: <span class="k">fix</span>                          <span class="c"># 出口名 = 要把活派给谁</span>
     to: [fix@1]</pre>
+          </details>
 
           <h3>节点实际收到什么</h3>
           <p class="prose">
             只有能力名、版本和参数——<b>没有 argv，没有图，也没有「下一步是谁」</b>。
           </p>
-          <pre class="code">{
+          <details class="fold">
+            <summary>节点实际收到的载荷<span class="hint">三个字段</span></summary>
+            <pre class="code">{
   <span class="s">"task"</span>: <span class="s">"tsk_8f21a3c0"</span>,
   <span class="s">"capability"</span>: <span class="s">"review"</span>,
   <span class="s">"version"</span>: 1,
   <span class="s">"params"</span>: { <span class="s">"pr"</span>: 431 }
 }</pre>
+          </details>
 
           <h2>版本：两个版本就是两个能力</h2>
           <p class="prose">
@@ -388,7 +406,9 @@ edges:
             成功要跑完才知道，失败也要跑完才知道。所以它出现在 <code>result</code> 里。
           </p>
 
-          <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
+          <details class="fold">
+            <summary>result 载荷示例<span class="hint">status + out</span></summary>
+            <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
 {
   <span class="s">"status"</span>: <span class="s">"succeeded"</span>,
   <span class="s">"out"</span>: <span class="s">"fix"</span>,              <span class="c">// ★ 我选了 fix 这个出口</span>
@@ -401,49 +421,13 @@ edges:
   <span class="s">"out"</span>: <span class="k">null</span>,               <span class="c">// ★ 失败，且这条线到我为止</span>
   <span class="s">"error"</span>: <span class="s">"build exited 1"</span>
 }</pre>
+            <div class="fold-note">完整的字段语义见 <a href="05-nodes.html">05 节点与执行</a>。</div>
+          </details>
 
           <p class="prose">
             <code>out</code> 一个字段同时表达两件事：<b>有没有下游</b>（<code>null</code> = 没有）、
-            <b>有哪个下游</b>（<code>"fix"</code> = 走这条边）。它和 <code>status</code> 正交：
-          </p>
-
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead>
-                <tr>
-                  <th><code>status</code></th>
-                  <th><code>out</code></th>
-                  <th>含义</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>succeeded</code></td>
-                  <td><code>"fix"</code></td>
-                  <td>干完了，往下走</td>
-                </tr>
-                <tr>
-                  <td><code>succeeded</code></td>
-                  <td><code>null</code></td>
-                  <td>干完了，到头了</td>
-                </tr>
-                <tr>
-                  <td><code>failed</code></td>
-                  <td><code>"fix"</code></td>
-                  <td>失败，但触发了修复分支</td>
-                </tr>
-                <tr>
-                  <td><code>failed</code></td>
-                  <td><code>null</code></td>
-                  <td>失败且断在这里</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <p class="prose">
-            第二行和第四行是「这条线结束」；第一行和第三行会继续。
-            <b>注意失败也能继续</b>——失败本身可能就是下一跳的起点，中枢不判断该不该。
+            <b>有哪个下游</b>（<code>"fix"</code> = 走这条边）。它和 <code>status</code> 正交——
+            <b>失败也能继续，成功也能到头</b>。四种组合见 <a href="05-nodes.html">05 节点与执行</a>。
           </p>
 
           <h2>可解释性</h2>

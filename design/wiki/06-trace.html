@@ -263,26 +263,15 @@
             </table>
           </div>
 
-          <p class="prose">借的理由只有两条，但都硬：</p>
-
-          <dl class="defs">
-            <div class="def">
-              <dt>语义已经被推演完整</dt>
-              <dd>
-                父子、兄弟、并行、跨服务关联，以及「不是父子但相关」这几种情况，自己设计表结构一定会漏掉一两种；补的时候要改 schema，还要迁历史数据。OTel 把这些情况都想过了，照着摆就行。
-              </dd>
-            </div>
-            <div class="def">
-              <dt>字段名就是契约</dt>
-              <dd>
-                命名对齐以后，要把 trace 吐给任何一个吃 OTel 的后端都不用重新建模；反过来，读过 OTel 的人不用再学一套私有词汇。
-              </dd>
-            </div>
-          </dl>
-
           <p class="prose">
-            借的是模型和字段名，不是整套 SDK 与 collector 运行时。落到实现上就是几张表加几个字段——这也是「能解释」的前提：字段在库里才查得出来；只活在进程内存里的 trace，事后什么问题都回答不了。
+            借的是<b>模型和字段名</b>，不是整套 SDK 与 collector 运行时。落地就是几张表加几个字段——
+            这也是「能解释」的前提：<b>字段在库里才查得出来</b>，只活在进程内存里的 trace，事后什么问题都回答不了。
           </p>
+
+          <div class="note">
+            <b>字段名对齐之后，吐给任何吃 OTel 的后端都不用重新建模</b>；
+            反过来，读过 OTel 的人不用再学一套私有词汇。
+          </div>
 
           <h2>trace 是一趟，span 是一段</h2>
           <p class="prose">
@@ -314,13 +303,18 @@
             OTel 意义上的 <code>span_id</code> 直接取这个值。<b>没有 <code>spans</code> 表。</b>
           </p>
 
-          <pre class="code"><span class="c">-- 不需要 spans 表</span>
+          <details class="fold">
+            <summary>为什么不需要 spans 表<span class="hint">tasks 表就够了</span></summary>
+            <details class="fold">
+            <summary>三个前缀长什么样<span class="hint">cap_ / reg_ / grf_</span></summary>
+            <pre class="code"><span class="c">-- 不需要 spans 表</span>
 <span class="k">SELECT</span> id <span class="k">AS</span> span_id,          <span class="c">-- OTel 视角</span>
        parent_task_id <span class="k">AS</span> parent_span_id,
        trace_id,
        started_at, finished_at  <span class="c">-- 就是 span 的起止</span>
   <span class="k">FROM</span> tasks
  <span class="k">WHERE</span> trace_id = :trace_id;</pre>
+          </details>
 
           <p class="prose">
             一个 span 从任务建行（<code>pending</code>）开始计时，到进入终态（<code>succeeded</code> / <code>failed</code> /
@@ -328,11 +322,10 @@
             它之后要么重试成新的一次尝试，要么落到上面某个终态。
           </p>
 
-          <div class="note">
+          <p class="prose">
             <b>查表和参数校验是「零长度 span」。</b>两者都是瞬间完成、没有起止，所以不建任务行，
-            只在事件 span 上留一条记录。这不影响可解释性——痕迹里能查到「查了哪个键、返回几行、参数为什么没过」，
-            本来也不需要给它算时长。
-          </div>
+            只在事件 span 上留一条记录——痕迹里能查到「查了哪个键、返回几行、参数为什么没过」，本来也不需要给它算时长。
+          </p>
 
           <h2>一条 trace 长什么样</h2>
           <p class="prose">
@@ -458,49 +451,6 @@
             这是事件中心最常被问到的一句话。路由只是查表加一次参数校验，所以「为什么没走这条边」只有四种可能，每一种都是<b>图 + 回报</b>的直接对照。
           </p>
 
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead>
-                <tr>
-                  <th>原因</th>
-                  <th>判据（一眼可查）</th>
-                  <th>trace 上的样子</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>上游没回报这个出口</td>
-                  <td>
-                    上游任务的 <code>result.out</code> 是 <code>null</code> 或别的出口名。既然没有从这个出口出去，就压根没查过表。
-                  </td>
-                  <td>上游 span 上标着 <code>out=null</code> 或 <code>out=&lt;其它&gt;</code>，下游没有 span、也没有 <code>pruned</code> 记录。</td>
-                </tr>
-                <tr>
-                  <td>表里没有这条边</td>
-                  <td>
-                    拿 <code>(from_capability, from_port)</code> 查 <code>edges</code>，返回 0 行。图是显式声明的，所以这一条<b>不跑也能知道</b>：把图投影出来就能看见缺口。
-                  </td>
-                  <td>事件 span 上记 <code>pruned / reason=no_edge</code>，附上查表的两个键；没有 task span。</td>
-                </tr>
-                <tr>
-                  <td>参数不符合目标能力的 <code>params_schema</code></td>
-                  <td>
-                    边查到了、上游也回报了这个出口，但本次 <code>params</code> 校不过目标能力的 <code>params_schema</code>。
-                    <b>这个错误在建任务之前就发生</b>，任务从来不存在，也永远不会被派到节点上。
-                  </td>
-                  <td>事件 span 上记 <code>pruned / reason=param_schema</code>，附目标能力的 <code>cap_</code> id 和第一条校验错误路径；没有 task span。</td>
-                </tr>
-                <tr>
-                  <td>被 path 剪枝</td>
-                  <td>
-                    边查到了、参数也过了，但要去的那个能力已经在 <code>path</code> 里（从根到本任务这条路径的能力序列）。静默剪枝：不报错、不暂停。
-                  </td>
-                  <td>红虚框加 <code>pruned / reason=path</code>，指出重复的是哪个 <code>name@version</code>。</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
           <h3>四种原因长什么样</h3>
           <div class="fig">
             <div class="why">
@@ -546,6 +496,25 @@
               四种判断都是常量时间，都只读一行数据。<b>②③④ 都是 <code>pruned</code></b>，共用 trace 上那套剪枝标记；① 不是剪枝，它是一个正常结束的分支。
             </div>
           </div>
+
+          <dl class="defs">
+            <div class="def">
+              <dt>① 上游没回报这个出口</dt>
+              <dd>上游的 <code>result.out</code> 是 <code>null</code> 或别的出口名。既然没从这个出口出去，就压根没查过表——<b>这是正常结束，不是剪枝</b>。</dd>
+            </div>
+            <div class="def">
+              <dt>② 表里没有这条边</dt>
+              <dd>拿 <code>(from_capability, from_port)</code> 查 <code>edges</code> 返回 0 行。图是显式声明的，<b>不跑也能知道</b>：把图投影出来就看得见缺口。记 <code>pruned / reason=no_edge</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>③ 参数不符合目标能力的 <code>params_schema</code></dt>
+              <dd>边查到了、出口也对，但 <code>params</code> 校不过。<b>这个错误在建任务之前就发生</b>，任务从来不存在，也永远不会被派到节点上。记 <code>pruned / reason=param_schema</code>。</dd>
+            </div>
+            <div class="def">
+              <dt>④ 被 <code>path</code> 剪枝</dt>
+              <dd>边在、参数也对，但要去的那个能力已经在从根到本任务的路径里。静默剪枝：不报错、不暂停。记 <code>pruned / reason=path</code>，指出重复的是哪个 <code>name@version</code>。</dd>
+            </div>
+          </dl>
 
           <p class="prose">
             <b>「为什么没触发」是一个查表问题。</b>图是静态的，<code>path</code> 和 <code>out</code> 是落库的字段，两条一对照，答案是确定的。
@@ -687,7 +656,9 @@
             <b>所以 trace 上钉的不是能力名，而是能力的那个具体版本。</b>旧 trace 必须能看到当时的那份定义，永远不能是「现在这个定义」。
           </p>
 
-          <pre class="code"><span class="c">-- 能力定义版本（append-only，一行就是一个不可变版本）</span>
+          <details class="fold">
+            <summary>capability_versions 表结构<span class="hint">DDL</span></summary>
+            <pre class="code"><span class="c">-- 能力定义版本（append-only，一行就是一个不可变版本）</span>
 <span class="k">CREATE TABLE</span> capability_versions (
   id            TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- cap_&lt;UTC&gt;_&lt;hash8&gt;</span>
   name          TEXT <span class="k">NOT NULL</span>,      <span class="c">-- review</span>
@@ -699,6 +670,8 @@
   created_at    TEXT <span class="k">NOT NULL</span>,
   <span class="k">UNIQUE</span> (name, version)
 );</pre>
+          </details>
+          </details>
 
           <p class="prose">
             <code>UNIQUE (name, version)</code> 与 <code>UNIQUE (content_hash)</code> 一起把两件事按死：同一个 <code>name@version</code> 只能有一份定义，同样的内容不会存两遍。

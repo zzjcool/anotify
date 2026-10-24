@@ -119,7 +119,9 @@
             中枢知道「这个节点声明了哪些能力」，但不知道能力背后是什么程序、带什么参数、在不在。
           </p>
 
-          <pre class="code"><span class="c"># 节点本地 ~/.anotifyd/config.yaml —— 这份文件从不离开本机</span>
+          <details class="fold">
+            <summary>节点本地的实现表（这份文件从不离开本机）<span class="hint">不进中枢</span></summary>
+            <pre class="code"><span class="c"># 节点本地 ~/.anotifyd/config.yaml —— 这份文件从不离开本机</span>
 <span class="k">node</span>: mbp-16
 
 <span class="k">capabilities</span>:
@@ -135,19 +137,25 @@
     <span class="k">idempotent</span>: false                <span class="c"># 默认值：有副作用</span>
     <span class="k">resumable</span>: false
     <span class="k">concurrency</span>: 1</pre>
+            <div class="fold-note">中枢只知道这个节点声明了哪些能力名与版本，不知道背后是什么程序、带什么参数。</div>
+          </details>
 
           <p class="prose">
             上报到中枢的 manifest 里只有一份 <code>capabilities</code> 列表——<b>能力名 + 版本，没有 <code>outputs</code>，也没有 <code>kind</code></b>。
             出口集合 <code>{fix, clean}</code> 长在能力定义里：节点既没有位置写它，也没有命名权。
           </p>
 
-          <pre class="code"><span class="c">// 节点上报的 manifest（注册 / 心跳时）—— 只有能力名列表</span>
+          <details class="fold">
+            <summary>节点上报的 manifest<span class="hint">只有能力名 + 版本</span></summary>
+            <pre class="code"><span class="c">// 节点上报的 manifest（注册 / 心跳时）—— 只有能力名列表</span>
 {
   <span class="s">"capabilities"</span>: [
     { <span class="s">"capability"</span>: <span class="s">"review"</span>, <span class="s">"version"</span>: 1 },
     { <span class="s">"capability"</span>: <span class="s">"test"</span>,   <span class="s">"version"</span>: 1 }
   ]
 }</pre>
+            <div class="fold-note">没有 argv，没有 <code>outputs</code>，也没有 <code>kind</code>。</div>
+          </details>
 
           <div class="fig">
             <div class="flow">
@@ -238,13 +246,16 @@
             现在中枢手里有一份白名单，名字不在名单上就没有这个能力，也没有「先注册上再补能力」这条路。
           </p>
 
-          <pre class="code"><span class="c">// 注册响应：逐项判决，坏的作废，好的照常注册</span>
+          <details class="fold">
+            <summary>注册响应：逐项判决<span class="hint">坏的作废，好的照常注册</span></summary>
+            <pre class="code"><span class="c">// 注册响应：逐项判决，坏的作废，好的照常注册</span>
 {
   <span class="s">"accepted"</span>: [{ <span class="s">"capability"</span>: <span class="s">"review"</span>, <span class="s">"version"</span>: 1 }],
   <span class="s">"rejected"</span>: [
     { <span class="s">"capability"</span>: <span class="s">"git.fetch"</span>, <span class="s">"version"</span>: 1, <span class="s">"reason"</span>: <span class="s">"unknown_capability"</span> }
   ]
 }</pre>
+          </details>
 
           <p class="prose">
             <b>为什么删掉了 <code>kind_mismatch</code>。</b><code>kind</code> 是推导出来的，不是节点自报的字段，所以不存在「和定义不符」这种可能。
@@ -396,7 +407,7 @@
               <tbody>
                 <tr>
                   <td>谁定义次数</td>
-                  <td>节点 <code>config.capabilities[].retries</code>（本地，不上传）</td>
+                  <td>节点本地 <code>capabilities[].retries</code>（不上传）</td>
                   <td>能力 <code>lifecycle.maxAttempts</code>（中枢侧）</td>
                 </tr>
                 <tr>
@@ -543,7 +554,9 @@
             </div>
           </div>
 
-          <pre class="code"><span class="k">CREATE TABLE</span> node_pins (
+          <details class="fold">
+            <summary>node_pins 表结构<span class="hint">DDL</span></summary>
+            <pre class="code"><span class="k">CREATE TABLE</span> node_pins (
   <span class="k">sticky_key</span>   TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- sha256(trace_id ∥ capability_id ∥ selector)</span>
   <span class="k">node_id</span>      TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 选中就钉死，不随负载漂移</span>
   <span class="k">selector</span>     TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 当时命中的标签，失效判断用</span>
@@ -554,6 +567,7 @@
 
 <span class="c">-- 写 pin 与建任务在同一个事务里：任务在，pin 一定在。</span>
 <span class="c">-- rebalance 只扫 node_id 已下线 / 实例全满的 pin，重新选一台节点并改写 node_id。</span></pre>
+          </details>
 
           <h2>往哪走：<code>out</code> 写在结果里</h2>
           <p class="prose">
@@ -587,7 +601,9 @@
             </div>
           </div>
 
-          <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
+          <details class="fold">
+            <summary>result 载荷示例<span class="hint">status + out + summary + artifacts</span></summary>
+            <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
 {
   <span class="s">"status"</span>: <span class="s">"succeeded"</span>,
   <span class="s">"out"</span>: <span class="s">"fix"</span>,          <span class="c">// ★ 干完了，走 fix 这个出口</span>
@@ -600,6 +616,8 @@
   <span class="s">"out"</span>: <span class="k">null</span>,           <span class="c">// ★ 失败，且这条线断在这里</span>
   <span class="s">"error"</span>: <span class="s">"build exited 1, 无后续"</span>
 }</pre>
+            <div class="fold-note"><code>out</code> 是出口名或 <code>null</code>，跑完才知道。</div>
+          </details>
 
           <p class="prose">
             <strong>它描述的是「这一次」，不是「这个能力」。</strong>同一个 <code>review@1</code>，
@@ -675,9 +693,10 @@
             <b>所以走 <code>result.out</code> 这条通道，而不是把「到头」写死在代码里。</b>
           </div>
 
-          <h2>节点下线分级</h2>
+          <h2>下线、过期与生命周期</h2>
           <p class="prose">
-            节点掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由实现自己的本地声明决定（<b>不写进能力</b>：同一能力的不同机器可以有不同的事实），不让中枢猜。
+            节点掉线时，它手上的任务没有一个能「继续跑」。区别只在于<b>重派是否安全</b>——
+            这由实现自己的本地声明决定（同一能力的不同机器可以有不同的事实），不让中枢猜。
           </p>
 
           <div class="tbl-wrap">
@@ -709,15 +728,14 @@
             </table>
           </div>
 
-          <div class="note warn">
-            <strong>abandoned ≠ 成功，也 ≠ 静默丢弃。</strong>它和 <code>failed</code> 的区别是：不重试、但<strong>默认通知</strong>。
-            默认值是有副作用的 <code>idempotent: false</code>，所以「拿不准要不要重跑」时，结论永远是「不跑，叫人看」。
-          </div>
-
-          <h2>任务生命周期属性</h2>
           <p class="prose">
-            能力可以声明一个任务能活多久、能不能重来、结果留多久。四项，都在 <code>lifecycle</code> 下——
-            <b>归属在能力层，不在节点</b>：同样的限制应该对所有实现了这个能力的机器一视同仁。
+            <strong><code>abandoned</code> ≠ 成功，也 ≠ 静默丢弃。</strong>它和 <code>failed</code> 的区别是：不重试、但<strong>默认通知</strong>。
+            默认值是有副作用的 <code>idempotent: false</code>，所以「拿不准要不要重跑」时，结论永远是<b>不跑，叫人看</b>。
+          </p>
+
+          <p class="prose">
+            任务能活多久、能不能重来、结果留多久，写在<b>能力定义</b>的 <code>lifecycle</code> 下——
+            换一台机器实现同一个能力，拿到的限制是同一套。
           </p>
 
           <div class="tbl-wrap">
@@ -738,7 +756,7 @@
                 <tr>
                   <td><code>lifecycle.retryable</code></td>
                   <td>是否允许中枢重派</td>
-                  <td><code>false</code> = 一次性；能力 <code>idempotent: false</code> 时被强制为 <code>false</code></td>
+                  <td><code>false</code> = 一次性；实现 <code>idempotent: false</code> 时被强制为 <code>false</code></td>
                 </tr>
                 <tr>
                   <td><code>lifecycle.maxAttempts</code></td>
@@ -755,16 +773,15 @@
           </div>
 
           <p class="prose">
-            这四项都写在<strong>能力定义</strong>里（和 <code>params_schema</code>、<code>outputs</code> 同级），和节点无关：
-            换一台机器实现同一个能力，拿到的 <code>maxAttempts</code> 是同一个数。节点本地只管「我自己内部重试几次」（<code>retries</code>）
-            和「我重跑有没有副作用」（<code>idempotent</code>），这两项是本地事实；上面四项是共享契约。
+            <b>分工是这样的</b>：这四项在能力定义里（和 <code>params_schema</code>、<code>outputs</code> 同级），是共享契约；
+            节点本地只管「我自己内部重试几次」（<code>retries</code>）和「我重跑有没有副作用」（<code>idempotent</code>），这两项是本地事实。
           </p>
 
-          <p class="prose">
+          <div class="note">
             <strong><code>retryable</code> 是中枢的意愿，<code>idempotent</code> 是实现的事实。</strong>
-            中枢可以决定「想不想重派」，但碰上 <code>idempotent: false</code> 的实现，意愿无效——重跑一个已经发过版的任务，代价比失败更大。
-            接力与链路的次数上限见 <a href="04-edges.html">04 能力与出口</a>。
-          </p>
+            中枢可以决定「想不想重派」，但碰上 <code>idempotent: false</code> 的实现，意愿无效——
+            重跑一个已经发过版的任务，代价比失败更大。接力与链路的次数上限见 <a href="04-edges.html">04 能力与出口</a>。
+          </div>
 
           <nav class="pager">
             <a href="04-edges.html">

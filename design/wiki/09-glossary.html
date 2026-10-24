@@ -242,7 +242,7 @@
               <dd>能力声明对应的命令是否支持断点续传。<code>true</code> 时节点下线可重派到新机器，从中断点继续。</dd>
             </div>
             <div class="def">
-              <dt>粘性 <code>manifest.capabilities[].sticky</code></dt>
+              <dt>粘性 <code>sticky</code></dt>
               <dd>这个能力在派发时是否要求固定实例（共享工作目录、增量编译）。<strong>默认关闭</strong>——结果存在中枢，下游不需要回原机器。</dd>
             </div>
           </dl>
@@ -318,7 +318,7 @@
             </div>
             <div class="def">
               <dt><code>internal_attempts</code></dt>
-              <dd>节点在机器上自己重试的次数，<strong>不消耗中枢 attempts</strong>。由 <code>manifest.capabilities[].retries</code> 约束。</dd>
+              <dd>节点在机器上自己重试的次数，<strong>不消耗中枢 attempts</strong>。由节点本地 <code>capabilities[].retries</code> 约束。</dd>
             </div>
             <div class="def">
               <dt>退避 backoff</dt>

@@ -124,7 +124,7 @@
                 </tr>
                 <tr>
                   <td>粘性路由</td>
-                  <td><b>按能力声明开启</b>（<code>manifest.capabilities[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                  <td><b>开在能力定义里</b>（<code>sticky: worktree</code>）、默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
                 </tr>
                 <tr>
                   <td>版本钉住</td>
@@ -219,7 +219,9 @@
             每个组织有自己独立的节点、能力定义和出口表，<b>相互之间零可见</b>。
           </p>
 
-          <pre class="code"><span class="k">CREATE TABLE</span> orgs (
+          <details class="fold">
+            <summary>orgs / org_members 表结构<span class="hint">DDL</span></summary>
+            <pre class="code"><span class="k">CREATE TABLE</span> orgs (
   id         TEXT <span class="k">PRIMARY KEY</span>,        <span class="c">-- org_xxx</span>
   name       TEXT <span class="k">NOT NULL UNIQUE</span>,
   created_at INTEGER <span class="k">NOT NULL</span>
@@ -232,6 +234,7 @@
   role    TEXT <span class="k">NOT NULL DEFAULT</span> <span class="s">'member'</span>,  <span class="c">-- owner | admin | member</span>
   <span class="k">PRIMARY KEY</span> (org_id, user_id)
 );</pre>
+          </details>
 
           <div class="tbl-wrap">
             <table class="tbl">

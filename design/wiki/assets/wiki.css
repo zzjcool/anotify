@@ -275,6 +275,77 @@ pre.code .s { color: var(--success-300); }
 pre.code .n { color: var(--warn-300); }
 pre.code .e { color: var(--error-300); }
 
+/* ── 折叠块（代码 / 接口定义等细节，默认收起）─────────────── */
+details.fold {
+	background: var(--surface-1);
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	margin: 0 0 18px;
+	overflow: hidden;
+}
+
+details.fold > summary {
+	cursor: pointer;
+	padding: 10px 14px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--muted);
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	background: var(--surface-2);
+	border-radius: 9px;
+}
+
+details.fold > summary::-webkit-details-marker { display: none; }
+
+details.fold > summary::before {
+	content: "\25B8";
+	color: var(--accent-strong);
+	font-size: 11px;
+	flex: 0 0 auto;
+	transition: transform 0.15s ease;
+}
+
+details.fold[open] > summary::before { transform: rotate(90deg); }
+
+details.fold[open] > summary {
+	border-bottom-left-radius: 0;
+	border-bottom-right-radius: 0;
+	border-bottom: 1px solid var(--line);
+}
+
+details.fold > summary .hint {
+	font-weight: 400;
+	color: var(--faint);
+	font-size: 11.5px;
+	margin-left: auto;
+	white-space: nowrap;
+}
+
+details.fold > summary:hover { color: var(--text); }
+
+details.fold > *:not(summary) { margin-left: 14px; margin-right: 14px; }
+
+details.fold pre.code {
+	margin-top: 14px;
+	margin-bottom: 14px;
+	border: none;
+	padding: 0;
+	background: transparent;
+}
+
+details.fold > .prose:last-child { margin-bottom: 14px; }
+
+details.fold .fold-note {
+	font-size: 11.5px;
+	color: var(--faint);
+	padding: 0 0 14px;
+	line-height: 1.7;
+}
+
 /* ── 卡片 ─────────────────────────────────────────────── */
 .card {
 	background: var(--surface-1);

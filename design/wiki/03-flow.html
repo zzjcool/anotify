@@ -106,9 +106,12 @@
               <div class="step-body">
                 写一行 <code>events</code>，拿到 <code>event_id</code>；同一事务里分配 <code>trace_id</code>（新链路则新建）和 <code>span_id</code>（本跳）。到这一步事件只是「已发生的事实」，还没决定做任何事。
               </div>
+              <details class="fold">
+              <summary>事件入库的 SQL<span class="hint">同一事务里建 trace 起点</span></summary>
               <pre class="code"><span class="c">-- 同一事务：事件 + trace 起点</span>
 <span class="k">INSERT INTO</span> events (id, source, type, payload, trace_id, span_id, created_at)
 <span class="k">VALUES</span> (:event_id, <span class="s">'github'</span>, <span class="s">'pull_request.opened'</span>, :payload, :trace_id, :span_id, now());</pre>
+            </details>
             </div>
 
             <div class="step">
@@ -224,12 +227,15 @@ sticky_key = sha256(trace_id ∥ capability_id ∥ selector)
                 节点回报 <code>result</code>：<code>{status, out, summary, artifacts}</code>，上限 8KB，超了截断并标记。状态从 <code>running</code> 落到 <code>succeeded</code> 或 <code>failed</code>，同时往 <code>events</code> 写一条派生事件。
                 这里最关键的是新增的 <code>out</code>：<b>出口名，或 <code>null</code></b>。它同时回答了两件事——有没有下游、有哪个下游。
               </div>
+              <details class="fold">
+              <summary>result 回报示例<span class="hint">status + out</span></summary>
               <pre class="code">{
   <span class="s">"status"</span>: <span class="s">"succeeded"</span>,   <span class="c">// succeeded | failed</span>
   <span class="s">"out"</span>:    <span class="s">"fix"</span>,        <span class="c">// 我选了哪个出口；null = 到此为止</span>
   <span class="s">"summary"</span>: <span class="s">"..."</span>,      <span class="c">// ≤8KB</span>
   <span class="s">"artifacts"</span>: []
 }</pre>
+            </details>
               <div class="step-body" style="margin-top: 8px">
                 <code>status</code> 和 <code>out</code> <b>正交</b>，失败也可能要走修复分支：
               </div>
@@ -274,9 +280,12 @@ sticky_key = sha256(trace_id ∥ capability_id ∥ selector)
                 派生事件不会重新求值任何东西——它带着上游回报的 <code>out</code> 回来。拿
                 <code>(该任务的 capability, out)</code> 去 <code>edges</code> 查，命中一行就建下一跳任务，<code>hop</code> 加一，<code>trace_id</code> 沿用。
               </div>
+              <details class="fold">
+              <summary>一次接力：fix 之后派给谁<span class="hint">查表 → 建任务</span></summary>
               <pre class="code">out = <span class="s">"fix"</span>   →  edges(cap_2e04, fix) = cap_9a13  →  建任务（再校一次参数）
 out = <span class="k">null</span>    →  不查表，这条分支停在这里
 out = <span class="s">"xyz"</span>   →  edges(cap_2e04, xyz) 空  →  pruned / no_edge</pre>
+            </details>
               <div class="step-body" style="margin-top: 8px">
                 环是允许的（<code>review → fix → review</code> 是真实场景），终止性靠 <code>path</code> 保证：
                 <code>path</code> 是<b>从根到本任务这条具体路径</b>的能力序列，不是整条 trace 的能力集合——同一个能力在另一条分支上照样能跑。

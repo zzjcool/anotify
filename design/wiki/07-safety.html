@@ -117,7 +117,9 @@
 
           <p class="prose">节点侧的真东西长这样，留在本地，永不上传：</p>
 
-          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml —— 只在本机，中枢读不到</span>
+          <details class="fold">
+            <summary>节点本地配置（中枢读不到）<span class="hint">argv 永远不离开机器</span></summary>
+            <pre class="code"><span class="c"># ~/.anotifyd/config.yaml —— 只在本机，中枢读不到</span>
 <span class="k">capabilities</span>:
   - review@1
     argv: [<span class="s">"/usr/local/bin/review"</span>, <span class="s">"--pr"</span>, <span class="s">"{pr}"</span>, <span class="s">"--json"</span>]
@@ -126,6 +128,7 @@
   - deploy.preview@1
     argv: [<span class="s">"/opt/deploy/bin/deploy"</span>, <span class="s">"--sha"</span>, <span class="s">"{sha}"</span>]
     idempotent: false</pre>
+          </details>
 
           <p class="prose">
             节点收到任务后自己查表：能力名 + 版本命中本地实现表就取 <code>argv[]</code>，把 <code>params</code> 逐个填进占位符，然后 <code>execve</code> 直接起进程。<strong>不经过 shell</strong> —— 没有引号拼接、没有变量展开、没有通配符、没有管道。
