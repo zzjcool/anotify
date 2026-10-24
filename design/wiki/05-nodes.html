@@ -73,89 +73,43 @@
             这页讲六件事：<code>kind</code> 怎么从声明里算出来、中枢与节点的分工边界、<b>注册时的能力校验</b>、租约与状态机、节点池怎么选人、下线时任务怎么收场。
           </p>
 
-          <h2>kind 是推导出来的三种</h2>
+          <h2>kind 由声明推导</h2>
           <p class="prose">
-            <strong><code>kind</code> 不是填的，是算的。</strong>判据和 <a href="04-edges.html">04 能力与出口</a> 完全一致：
-            看它声明的能力有没有非空 <code>outputs</code>，看有没有任何节点声明过它。组合起来只有三种答案。
+            <code>kind</code> 不是填的，是算的：看它声明的能力有没有非空 <code>outputs</code>，
+            以及有没有任何节点声明过它。规则和 <a href="04-edges.html">04 能力与出口</a> 同一套，不重复。
           </p>
-
-          <pre class="code"><span class="c">// 由节点的能力声明推导，不手写</span>
-kind(node) =
-  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机 / 写日志 / 回调 / 归档</span>
-  <span class="k">some</span> outputs 非空       → <span class="s">pipe</span>     <span class="c">// 有进有出：review / test</span>
-  没有任何节点声明它        → <span class="s">origin</span>   <span class="c">// 只有出：事件本身是链的起点</span></pre>
-
-          <p class="prose">
-            <strong>三条规则里，前两条需要节点，第三条恰好相反。</strong><code>pipe</code> 和 <code>end</code> 都是某个节点
-            声明了能力之后算出来的；<code>origin</code> 没有任何节点声明它——能力定义在那里，事件一来就从它的出口起步。
-          </p>
-
-          <div class="fig">
-            <div class="grid-3">
-              <div class="card-2">
-                <div class="lane-label">origin · 源</div>
-                <div class="box sm">只有出口<span class="sub">入 ✗ · 出 ✓</span></div>
-                <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
-                  webhook / cron / watch / 外部 API。产生事件，不接任务。
-                </p>
-              </div>
-              <div class="card-2">
-                <div class="lane-label">pipe · 管道</div>
-                <div class="box sm">有进有出<span class="sub">入 ✓ · 出 ✓</span></div>
-                <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
-                  机器上的 <code>review</code> / <code>implement</code> / <code>test</code>。接任务，跑完再选一个出口。
-                </p>
-              </div>
-              <div class="card-2">
-                <div class="lane-label">end · 终点</div>
-                <div class="box sm">只有入口<span class="sub">入 ✓ · 出 ✗</span></div>
-                <p class="prose" style="margin: 10px 0 0; font-size: 11.5px; line-height: 1.7">
-                  推手机、写日志、打 webhook 回调——都是 <code>end</code>。收了活就结束，不产生下游。
-                </p>
-              </div>
-            </div>
-            <div class="fig-cap">
-              分类只有一条依据：<b>端口形状</b>。不看它跑在哪、用什么语言、由谁维护、是不是人。
-            </div>
-          </div>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
-                  <th>kind</th>
-                  <th>入</th>
-                  <th>出</th>
-                  <th>例子</th>
+                  <th>节点声明的能力</th>
+                  <th><code>kind</code></th>
+                  <th>典型</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td><code>origin</code> · 源</td>
-                  <td>✗</td>
-                  <td>✓</td>
-                  <td>GitHub webhook、cron、watch、外部 API</td>
+                  <td>没有节点声明（能力定义存在，事件从它的出口起步）</td>
+                  <td><code>origin</code></td>
+                  <td>webhook / cron / watch / 外部 API</td>
                 </tr>
                 <tr>
-                  <td><code>pipe</code> · 管道</td>
-                  <td>✓</td>
-                  <td>✓</td>
-                  <td>机器上的 <code>review</code> / <code>implement</code> / <code>test</code></td>
+                  <td>有任一能力 <code>outputs</code> 非空</td>
+                  <td><code>pipe</code></td>
+                  <td><code>review</code> / <code>implement</code> / <code>test</code></td>
                 </tr>
                 <tr>
-                  <td><code>end</code> · 终点</td>
-                  <td>✓</td>
-                  <td>✗</td>
-                  <td>推手机 <code>notify.phone@1</code>、写日志 <code>log@1</code>、webhook 回调 <code>notify.webhook@1</code></td>
+                  <td>声明的能力 <code>outputs</code> 全为空</td>
+                  <td><code>end</code></td>
+                  <td>推手机 / 写日志 / 打回调 / 归档</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p class="prose">
-            <strong>没有第四种，也没有「配置自相矛盾」这种可能。</strong>如果 <code>kind</code> 要手写，就会有人标了 <code>end</code>
-            却挂上一个带出口的能力，然后指望校验期拦住他；现在它由声明推导，<b>这种配置根本表达不出来</b>。
-            以后无论冒出来什么新东西——一个 IM 回调、一次定时扫描、一个审批环节——都先量这两个问题，答案会自动把它归进这三类。
+            <b>前两行需要节点，第三行恰好相反</b>——<code>origin</code> 没有任何节点声明它，事件一来就从能力定义的出口起步。
           </p>
 
           <h2>中枢不知道节点上有什么能力（argv 在本地）</h2>
@@ -280,7 +234,7 @@ kind(node) =
 
           <p class="prose">
             <b>能力不存在，就不允许注册这个能力。</b>中枢不接受自由字符串：<code>capabilities</code> 里写下的每个名字都要能查到能力定义，
-            否则这一项直接作废。旧模型里的能力名是节点自己起的（<code>git.fetch</code>、<code>my-review-v2</code>），中枢只能照单全收；
+            否则这一项直接作废。
             现在中枢手里有一份白名单，名字不在名单上就没有这个能力，也没有「先注册上再补能力」这条路。
           </p>
 

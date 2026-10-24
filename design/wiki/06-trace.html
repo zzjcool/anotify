@@ -308,14 +308,13 @@
             </div>
           </div>
 
-          <h3>我们这里，span 就叫 task</h3>
+          <h3>我们这里，span 就是 task</h3>
           <p class="prose">
-            既然 <code>span_id</code> 就是任务 id、一个任务就是一段执行，那<b>没必要再造一个 span 概念</b>。
-            所以全仓只有一个名字：<code>task</code>。表叫 <code>tasks</code>，id 前缀 <code>tsk_</code>，
-            OTel 意义上的 <code>span_id</code> 直接取这个值。
+            既然一个任务就是一段执行，那就<b>没必要再造一个 span 概念</b>。表叫 <code>tasks</code>，id 前缀 <code>tsk_</code>，
+            OTel 意义上的 <code>span_id</code> 直接取这个值。<b>没有 <code>spans</code> 表。</b>
           </p>
 
-          <pre class="code"><span class="c">-- 没有 spans 表，也不需要</span>
+          <pre class="code"><span class="c">-- 不需要 spans 表</span>
 <span class="k">SELECT</span> id <span class="k">AS</span> span_id,          <span class="c">-- OTel 视角</span>
        parent_task_id <span class="k">AS</span> parent_span_id,
        trace_id,
@@ -323,18 +322,17 @@
   <span class="k">FROM</span> tasks
  <span class="k">WHERE</span> trace_id = :trace_id;</pre>
 
+          <p class="prose">
+            一个 span 从任务建行（<code>pending</code>）开始计时，到进入终态（<code>succeeded</code> / <code>failed</code> /
+            <code>canceled</code> / <code>abandoned</code>）结束。<code>lease_expired</code> 是中间态，不算结束——
+            它之后要么重试成新的一次尝试，要么落到上面某个终态。
+          </p>
+
           <div class="note">
-            <b>只有查表 + 参数校验是「零长度 span」。</b>查表和校一次 schema 都是瞬间完成、没有起止，所以它们不建任务行，
-            只在事件 span 上留一条记录。<b>这不影响可解释性</b>——去痕迹里能查到「查了哪个键、返回几行、参数为什么没过」，
+            <b>查表和参数校验是「零长度 span」。</b>两者都是瞬间完成、没有起止，所以不建任务行，
+            只在事件 span 上留一条记录。这不影响可解释性——痕迹里能查到「查了哪个键、返回几行、参数为什么没过」，
             本来也不需要给它算时长。
           </div>
-
-          <h3>什么时候这个名字会不够用</h3>
-          <p class="prose">
-            如果将来出现<b>一个任务内部有多个可观测阶段</b>（比如「准备环境 30s → 跑测试 90s」），
-            那么一个 task 就不再等于一个 span。那时才需要真正的 spans 表。
-            <b>本期不做</b>——现在的粒度是「一个任务一段」，够用。
-          </p>
 
           <h2>一条 trace 长什么样</h2>
           <p class="prose">
@@ -446,12 +444,6 @@
             所以从 span 到图、到控制台列表，凡是要出现能力名的地方一律写 <code>name@version</code>。
           </p>
 
-          <h3>能标出起止，是因为 span 就是任务</h3>
-          <p class="prose">
-            一个 span 从任务建行（<code>pending</code>）开始计时，到进入终态（<code>succeeded</code> / <code>failed</code> /
-            <code>canceled</code> / <code>abandoned</code>）结束。<code>lease_expired</code> 是中间态，不算结束——它之后要么重试成新的一次尝试，要么落到上面某个终态。
-          </p>
-
           <h3>森林，不是树</h3>
           <p class="prose">
             三条分支之间没有汇聚点：审查的结论不会和 lint 的结论合并成一个下游任务。中枢本期不做收集（join），所以 trace 在数据上是一片森林——每棵树是一条接力链，树与树之间靠
@@ -463,7 +455,7 @@
 
           <h2>「为什么没触发」</h2>
           <p class="prose">
-            这是事件中心最常被问到的一句话。<b>新模型下它变简单了</b>：路由只是查表加一次参数校验，所以「为什么没走这条边」只有四种可能，而且每一种都是<b>图 + 回报</b>的直接对照，不需要把任何求值过程重放一遍。
+            这是事件中心最常被问到的一句话。路由只是查表加一次参数校验，所以「为什么没走这条边」只有四种可能，每一种都是<b>图 + 回报</b>的直接对照。
           </p>
 
           <div class="tbl-wrap">
@@ -556,7 +548,7 @@
           </div>
 
           <p class="prose">
-            这就是新模型最大的收益：<b>「为什么没触发」从一个推理问题变成了一个查表问题。</b>以前的逐条件求值要跑过才知道答案，现在连线上的证据都不需要——图是静态的，<code>path</code> 和 <code>out</code> 是落库的字段，两条一对照，答案是确定的。
+            <b>「为什么没触发」是一个查表问题。</b>图是静态的，<code>path</code> 和 <code>out</code> 是落库的字段，两条一对照，答案是确定的。
           </p>
 
           <div class="tbl-wrap">

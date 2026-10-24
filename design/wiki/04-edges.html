@@ -69,8 +69,7 @@
           <div class="crumb">第 04 页 · 运行时</div>
           <h1>能力与出口</h1>
           <p class="lead">
-            这一页讲路由。旧模型用「规则 + 条件匹配」，新模型把这一层整个去掉了：
-            <b>能力必须先定义，节点只能声明自己有哪些已定义的能力</b>。
+            这一页讲路由。<b>能力必须先定义，节点只能声明自己有哪些已定义的能力</b>。
             派发就是查一张表——没有条件求值，没有优先级，没有表达式引擎。
           </p>
 
@@ -175,9 +174,10 @@
             </table>
           </div>
 
-          <h2>三种节点，按端口形状分</h2>
+          <h2>三种节点，<code>kind</code> 是算出来的</h2>
           <p class="prose">
             分类只有一条依据：<b>有没有入口、有没有出口</b>。不看它跑在哪、用什么语言、由谁维护、是不是人。
+            而这两个问题不用回答——<b>它们由节点的能力声明推导，<code>kind</code> 从来不写进配置。</b>
           </p>
 
           <div class="fig">
@@ -192,84 +192,33 @@
               </div>
               <span class="box">end · 终点<span class="sub">入 ✓ · 出 ✗</span></span>
             </div>
-            <div class="fig-cap">
-              <b>触发器就是「只有出口、没有入边」的位置。</b>它不接任务，只把外部世界的变化转成一次出口选择。
-            </div>
           </div>
-
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead>
-                <tr>
-                  <th>种类</th>
-                  <th>入</th>
-                  <th>出</th>
-                  <th>例子</th>
-                  <th><code>kind</code></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>源 / 触发器</td>
-                  <td>✗</td>
-                  <td>✓</td>
-                  <td>GitHub webhook、cron、文件 watch、外部 API</td>
-                  <td><code>origin</code></td>
-                </tr>
-                <tr>
-                  <td>管道</td>
-                  <td>✓</td>
-                  <td>✓</td>
-                  <td>机器上的 <code>review</code> / <code>implement</code> / <code>test</code></td>
-                  <td><code>pipe</code></td>
-                </tr>
-                <tr>
-                  <td>终点</td>
-                  <td>✓</td>
-                  <td>✗</td>
-                  <td>推手机 <code>notify.phone@1</code>、写日志 <code>log@1</code>、webhook 回调 <code>notify.webhook@1</code></td>
-                  <td><code>end</code></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <p class="prose">
-            <b>没有第四种。</b>任何东西都能落进这三类之一——包括你没想过的那些：
-            一个审批人点「通过」是 <code>pipe</code>（有进有出）；一个只负责收尾的 webhook 回调是 <code>end</code>。
-          </p>
-
-          <h2>kind 是算出来的，不是写上去的</h2>
-          <p class="prose">
-            <b><code>kind</code> 从来不写进配置。</b>它由节点声明的能力自动推导——
-            「有没有入」看它有没有被别的节点指向；「有没有出」看它声明的能力有没有非空 <code>outputs</code>。
-          </p>
 
           <pre class="code"><span class="c">// 由节点的能力声明推导，不手写</span>
 kind(node) =
-  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机 / 写日志 / 回调 / 归档</span>
-  <span class="k">some</span> outputs 非空       → <span class="s">pipe</span>     <span class="c">// 有进有出：review / implement</span>
-  没有任何节点声明它        → <span class="s">origin</span>   <span class="c">// 只有出：触发器，事件本身充当起点</span></pre>
+  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入</span>
+  <span class="k">some</span> outputs 非空       → <span class="s">pipe</span>     <span class="c">// 有进有出</span>
+  没有任何节点声明它        → <span class="s">origin</span>   <span class="c">// 只有出：事件本身是链的起点</span></pre>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
                   <th>节点声明的能力</th>
-                  <th>推导出的 <code>kind</code></th>
-                  <th>为什么</th>
+                  <th><code>kind</code></th>
+                  <th>典型</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td><code>[notify.phone]</code>，<code>outputs</code> 全为空</td>
-                  <td><code>end</code></td>
-                  <td>能接任务，但跑完没有下一跳</td>
+                  <td>没有任何节点声明（能力定义存在）</td>
+                  <td><code>origin</code></td>
+                  <td>GitHub webhook、cron、文件 watch、外部 API</td>
                 </tr>
                 <tr>
                   <td><code>[review]</code>，<code>outputs: [fix, clean]</code></td>
                   <td><code>pipe</code></td>
-                  <td>能接任务，跑完还能往下走</td>
+                  <td><code>review</code> / <code>implement</code> / <code>test</code></td>
                 </tr>
                 <tr>
                   <td><code>[review, notify.phone]</code> 混挂</td>
@@ -277,9 +226,9 @@ kind(node) =
                   <td>只要有一个能力带出口，这个节点就还能往下走</td>
                 </tr>
                 <tr>
-                  <td>没有节点声明（如 <code>github</code>）</td>
-                  <td><code>origin</code></td>
-                  <td>没人实现它，事件本身是链的起点</td>
+                  <td><code>[notify.phone]</code>，<code>outputs</code> 全为空</td>
+                  <td><code>end</code></td>
+                  <td>推手机、写日志、打回调、归档</td>
                 </tr>
               </tbody>
             </table>
@@ -287,8 +236,8 @@ kind(node) =
 
           <p class="prose">
             <b>推导的好处：不可能出现自相矛盾的配置。</b>
-            如果 <code>kind</code> 要手写，就会有人标了 <code>end</code> 却挂上一个带出口的能力，
-            然后指望校验期拦住他。<b>让它是算出来的，这种配置根本表达不出来。</b>
+            如果 <code>kind</code> 要手写，就会有人标了 <code>end</code> 却挂上一个带出口的能力，然后指望校验期拦住他。
+            <b>让它是算出来的，这种配置根本表达不出来。</b>
           </p>
 
           <h2>出口表：路由的唯一依据</h2>
@@ -304,7 +253,7 @@ kind(node) =
 );</pre>
 
           <p class="prose">
-            派发是四步，比之前多一步参数校验：
+            派发是四步：
           </p>
 
           <pre class="code"><span class="c">-- ① 查表</span>
@@ -497,10 +446,9 @@ edges:
             <b>注意失败也能继续</b>——失败本身可能就是下一跳的起点，中枢不判断该不该。
           </p>
 
-          <h2>可解释性：比之前更强</h2>
+          <h2>可解释性</h2>
           <p class="prose">
-            旧模型要回答「为什么没触发」，得逐条件求值、记录每个条件的 passed/failed。
-            新模型只需要看两个地方。
+            回答「为什么没触发」只需要看两个地方。
           </p>
 
           <div class="tbl-wrap">
@@ -533,8 +481,7 @@ edges:
           </div>
 
           <p class="prose">
-            <b>这三种都能在跑之前静态展示。</b>旧模型要解释「某个条件为什么是 false」，
-            往往得重跑一次；新模型只是「表里有没有这一行」。
+            <b>这几种都能在跑之前静态展示</b>——不需要重跑，答案就是「表里有没有这一行」。
           </p>
 
           <h2>环：配置期就看得见</h2>

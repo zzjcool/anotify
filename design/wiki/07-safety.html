@@ -69,7 +69,8 @@
           <div class="crumb">第 07 页 · 保障</div>
           <h1>安全边界</h1>
           <p class="lead">
-            中枢手上没有任何一条命令。这页讲这条边界怎么落到 DB 字段、协议载荷和 execve 上，<b>能力必须先定义又如何把它又收窄了一格</b>，为了保住它设了哪六道闸，为什么删掉规则引擎本身也是一道安全收益，以及我们因此接受了什么代价。
+            中枢手上没有任何一条命令。这页讲这条边界怎么落到 DB 字段、协议载荷和 execve 上，
+            能力先定义又如何收窄一格，为了保住它设了哪六道闸，以及我们因此接受了什么代价。
           </p>
 
           <h2>根本原则：中枢永不下发命令</h2>
@@ -151,8 +152,8 @@
             <div class="def">
               <dt>能力是白名单</dt>
               <dd>
-                节点只能声明<b>已定义的能力</b>，不能自己发明名字、也不能加出口。旧模型里名字由节点起，同一类能力可以叫 <code>review</code>、
-                <code>review-pr</code>、<code>code-review</code>；现在在 <code>capability_versions</code> 里查不到就是 <code>unknown_capability</code>，注册直接被拒。
+                节点只能声明<b>已定义的能力</b>，不能自己发明名字、也不能加出口。
+                在 <code>capability_versions</code> 里查不到就是 <code>unknown_capability</code>，注册直接被拒。
                 <b>「自由字符串」这一类注入面消失了</b>：不再存在一个「节点自己填、中枢无条件接受」的名字字段。
               </dd>
             </div>
@@ -223,7 +224,7 @@
 
           <h2>六道闸</h2>
           <p class="prose">
-            扇出、接力、成环都是真实需求，所以不能靠「不允许多发」来防死循环。改成一组数值闸：默认收紧，配置作者可以在硬顶以内放松，越界在配置校验期直接拒绝，而不是运行时静默截断。最后一列分两段写：第一段是它一直防的东西，第二段是它<b>在新模型下</b>防的东西。
+            扇出、接力、成环都是真实需求，所以不能靠「不允许多发」来防死循环。改成一组数值闸：默认收紧，配置作者可以在硬顶以内放松，越界在<b>配置校验期</b>直接拒绝，而不是运行时静默截断。
           </p>
 
           <div class="tbl-wrap">
@@ -234,7 +235,6 @@
                   <th>内容</th>
                   <th style="min-width: 76px">默认 / 硬顶</th>
                   <th>防什么</th>
-                  <th>在新模型下防什么</th>
                 </tr>
               </thead>
               <tbody>
@@ -243,42 +243,36 @@
                   <td>不显式开启就不允许接力派生</td>
                   <td>关 / 不可配</td>
                   <td>防「顺手」接力：一次事件不会靠自己长出第二条链</td>
-                  <td>表里查得到一行，不等于允许走。G1 独立于 <code>edges</code>：它管「允不允许派生」，跟图宽不宽无关。</td>
                 </tr>
                 <tr>
                   <td>G2 <code>max_hops</code></td>
                   <td>一条链上允许的最大跳数</td>
                   <td>10 / 32</td>
                   <td>防链路无限拉长</td>
-                  <td>扇出由表决定，一跳可以同时走多条边；<code>max_hops</code> 管的是<b>深度</b>，不管宽度。</td>
                 </tr>
                 <tr>
                   <td>G3 环检测</td>
                   <td><code>path</code> 里能力（<code>name@version</code>）去重，重复即静默剪枝</td>
                   <td>隐含 / 不可配</td>
                   <td>防 A→B→A 转圈；剪枝必须在 trace 上可见</td>
-                  <td><b>环在配置期就看得见</b>：<code>edges</code> 是显式声明的，画得出也查得出。运行期仍靠 <code>path</code> 去重剪枝 —— 看得见不等于不会走到。</td>
                 </tr>
                 <tr>
                   <td>G4 <code>max_tasks</code></td>
                   <td>单个事件最多扇出多少个任务</td>
                   <td>100 / 1000</td>
                   <td>防一条 webhook 把节点池一次打满</td>
-                  <td>一次查表返回 N 行就建 N 个任务，<b>表写多宽直接决定分发面</b>，所以这里必须封顶。</td>
                 </tr>
                 <tr>
                   <td>G6 <code>max_duration</code></td>
                   <td>一条链从根任务算起的总时长</td>
                   <td>24h / 7d</td>
                   <td>防慢速循环长期占着租约和预算</td>
-                  <td>环虽然配置期可见，心跳、等待与重试照样能拖很久；总时长兜住慢速循环。</td>
                 </tr>
                 <tr>
                   <td>G5 <span style="color: var(--faint)">已废弃</span></td>
                   <td>付费任务数</td>
                   <td>— / —</td>
                   <td>计费口径没定，先留一个空位比留一个错的闸好</td>
-                  <td>无。不参与路由，也不参与任何全局判定。</td>
                 </tr>
               </tbody>
             </table>
@@ -318,48 +312,34 @@
             </div>
           </div>
 
-          <h2>为什么删掉规则引擎是一道安全收益</h2>
+          <h2>中枢不解释任何用户逻辑</h2>
           <p class="prose">
-            旧模型里，「下一步派给谁」由规则里的 <code>match</code> 表达式决定。要让它能跑，中枢里就必须有一个<b>表达式求值器</b>：一个真正的解释器，要支持字段路径、比较、布尔组合、函数调用，还得维护一套自己的 DSL 语法和文档。这个求值器会成为整个中枢最危险的代码。
+            路由只是「拿两个字符串查一次索引」。中枢里<b>没有表达式求值器，没有 DSL 解析器，没有优先级排序</b>。
+            这不是重构的副产品，是直接少掉的攻击面：
           </p>
 
-          <div class="grid-2">
-            <div class="card">
-              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">旧模型 · 规则引擎</div>
-              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                收到事件 → 解 payload → <b>求值表达式</b>（大量运算）→ 排序优先级 → 选一个 action。求值器要处理任意嵌套的输入结构，输入又来自外部 webhook。
-              </p>
+          <dl class="defs">
+            <div class="def">
+              <dt>没有求值器可以注入</dt>
+              <dd>求值器天然要处理任意深度、任意类型的输入，历史上反复出过沙箱逃逸、原型链污染、正则灾难回溯。中枢只把 <code>capability</code> 和 <code>out</code> 当字符串比对索引，不把它当代码。</dd>
             </div>
-            <div class="card">
-              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">新模型 · 出口表</div>
-              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                收到回报 <code>{capability, out}</code> → <b>一次索引查询</b> <code>edges</code> → 拿到 N 行 → 全部下发。没有求值，没有表达式，没有优先级。
-              </p>
+            <div class="def">
+              <dt>没有 DSL 要维护</dt>
+              <dd>自己发明的语法就是自己发明的解析器，而解析器是 fuzzing 的经典目标，还得同时维护语法文档、错误信息、兼容性。整套去掉，这一类缺陷就不存在。</dd>
             </div>
-          </div>
-
-          <p class="prose" style="margin-top: 18px">
-            换成查表之后，中枢里<b>没有表达式求值，也没有 DSL 解析器</b>。这不是重构的副产品，是直接少掉的攻击面：
-          </p>
-
-          <div class="prose">
-            <ul>
-              <li><b>没有求值器可以注入。</b>表达式求值器天然要面对任意深度、任意类型的输入；现成的求值库历史上反复出过沙箱逃逸、原型链污染、正则灾难回溯。现在中枢只把 <code>capability</code> 和 <code>out</code> 当两个字符串拿去匹配索引，不把它当代码。</li>
-              <li><b>没有 DSL 要维护。</b>自己发明的表达式语法就是自己发明的解析器——解析器是 fuzzing 的经典目标，还得同时维护语法文档、错误信息、兼容性。删掉整套 DSL，就删掉了这一整类缺陷。</li>
-              <li><b>配置期的检查变强了。</b>表达式能不能写错要到求值（甚至到真跑）才知道；<code>edges</code> 是静态数据，可以在配置期把每条边的两端能力都校验一遍——指向不存在能力的行，根本进不了表。</li>
-              <li><b>路由不再依赖 payload。</b>旧模型里，payload 的任何一个字段都可能改变路由结果；现在 payload 只被当作 <code>params</code> 传给节点，<b>完全不参与中枢的路由决策</b>。伪造 payload 也就伪造不出路由。</li>
-            </ul>
-          </div>
+            <div class="def">
+              <dt>配置期就能查完</dt>
+              <dd>表达式写错要到求值才知道；<code>edges</code> 是静态数据，每条边的两端能在配置期全部校验——指向不存在能力的行根本进不了表。</dd>
+            </div>
+            <div class="def">
+              <dt>payload 不参与路由</dt>
+              <dd>它只作为 <code>params</code> 传给节点，<b>完全不参与中枢的路由决策</b>。所以伪造 payload 伪造不出路由。</dd>
+            </div>
+          </dl>
 
           <p class="prose">
-            一句话：安全边界不只是「中枢不掌握命令」，还包括「<b>中枢不解释任何用户提供的逻辑</b>」。求值器、优先级排序、择一——这三样一起去掉，中枢的路由部分就退化成一张固定的表和一个索引查询。
-          </p>
-
-          <p class="prose">
-            能力必须先定义，把这件事又推了一步：它连<b>「自由字符串」这一类注入面</b>也一并消掉了。对比一下：
-            没有能力定义的时候，节点可以自定义 <code>outputs</code>，中枢就得接受任意出口名——这些名字最后会进 <code>edges</code> 表、
-            成为路由的起点，等于中枢把一个用户可控的字符串当成了索引键。
-            现在节点只能引用中枢已经定义好的能力和出口，<b>注册期就把非法名字挡住了</b>，不再有「先写进去、以后再清洗」的窗口。
+            安全边界不只是「中枢不掌握命令」，还包括「<b>中枢不解释任何用户提供的逻辑</b>」——
+            路由部分退化成一张固定的表和一个索引查询。
           </p>
 
           <h2>信任边界与代价</h2>

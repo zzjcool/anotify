@@ -156,36 +156,12 @@
             </div>
           </div>
 
-          <h2>kind 是算出来的，不是写上去的</h2>
+          <h2>三种节点</h2>
           <p class="prose">
-            <b><code>kind</code> 归节点，而且从来不用手写。</b>它由节点声明的能力推导出来：<b>有没有出</b>看它声明的能力有没有非空 <code>outputs</code>，<b>有没有入</b>看它有没有被别的节点指着。
-            于是只剩三种：有非空出口 → <code>pipe</code>；出口全为空 → <code>end</code>；<b>没有任何节点声明它</b> → <code>origin</code>——没人实现它，事件本身充当链的起点。
+            按端口形状分，只有三种。<code>kind</code> 不写，由节点的能力声明推导：
+            有非空出口 → <code>pipe</code>，出口全空 → <code>end</code>，没有任何节点声明它 → <code>origin</code>。
+            <a href="04-edges.html">04 能力与出口</a> 有完整的推导规则。
           </p>
-
-          <pre class="code"><span class="c">// 由节点的能力声明推导，不手写</span>
-kind(node) =
-  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机 / 写日志 / 回调 / 归档</span>
-  <span class="k">some</span> outputs 非空       → <span class="s">pipe</span>     <span class="c">// 有进有出：review / implement</span>
-  没有任何节点声明它        → <span class="s">origin</span>   <span class="c">// 只有出：触发器，事件本身充当起点</span></pre>
-
-          <div class="fig">
-            <div class="flow">
-              <div class="flow-item">
-                <div class="box">origin · 源头<span class="sub">入 ✗ · 出 ✓</span></div>
-              </div>
-              <div class="arr"><span>&rarr;</span></div>
-              <div class="flow-item">
-                <div class="box">pipe · 管道<span class="sub">入 ✓ · 出 ✓</span></div>
-              </div>
-              <div class="arr"><span>&rarr;</span></div>
-              <div class="flow-item">
-                <div class="box">end · 终点<span class="sub">入 ✓ · 出 ✗</span></div>
-              </div>
-            </div>
-            <div class="fig-cap">
-              <b>入在左，出在右。</b>一个节点最多两类端口，所以它必定落进上面三种形状之一。链的最左边只能是 <code>origin</code>，最右边只能是 <code>end</code>——中间想再插什么，都得是 <code>pipe</code>。
-            </div>
-          </div>
 
           <div class="tbl-wrap">
             <table class="tbl">
@@ -217,17 +193,16 @@ kind(node) =
                   <td>终点</td>
                   <td>✓</td>
                   <td>✗</td>
-                  <td>推手机 <code>notify.phone@1</code>、写归档日志 <code>log@1</code>、webhook 回调 <code>notify.webhook@1</code></td>
+                  <td><code>notify.phone@1</code>、<code>log@1</code>、<code>notify.webhook@1</code></td>
                   <td><code>end</code></td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <div class="note">
-            <strong>没有第四种。</strong>任何参与流转的东西都能被这三类装下：定时器是源，CI 里的一个步骤是管道，企业微信机器人是终端。
-            <b>触发器就是「只有出口、没有入边」的位置</b>：没有节点声明它，所以推导出 <code>origin</code>——外部事件打进来，中枢直接拿它的出口（事件类型）查表，<code>github@1 --(pr_opened)--&gt; review@1</code>。
-          </div>
+          <p class="prose">
+            <b>没有第四种。</b>链的最左边只能是 <code>origin</code>，最右边只能是 <code>end</code>，中间插什么都是 <code>pipe</code>。
+          </p>
 
           <h2>一条链是怎么连起来的</h2>
           <p class="prose">
