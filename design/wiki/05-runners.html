@@ -243,33 +243,28 @@
                 <tr>
                   <th>拒绝理由</th>
                   <th>触发条件</th>
-                  <th>例子</th>
                   <th>中枢处理</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
                   <td><code>unknown_interface</code></td>
-                  <td>接口名在 <code>interface_versions</code> 里不存在</td>
-                  <td>申报 <code>git.fetch@1</code>，但中枢没有这个接口</td>
+                  <td>接口名在 <code>interface_versions</code> 里不存在（如申报 <code>git.fetch@1</code>）</td>
                   <td>拒绝这一项，其余项照常注册</td>
                 </tr>
                 <tr>
                   <td><code>unsupported_interface_version</code></td>
-                  <td>名字存在，但这个版本没有定义（或已下线）</td>
-                  <td>申报 <code>review@3</code>，而中枢只有 <code>review@1</code></td>
+                  <td>名字存在，但这个版本没有定义（如申报 <code>review@3</code>，中枢只有 <code>review@1</code>）</td>
                   <td>拒绝这一项，<b>不降级到 <code>@1</code></b></td>
                 </tr>
                 <tr>
                   <td><code>kind_mismatch</code></td>
-                  <td>执行器 <code>kind</code> 与接口声明的 <code>kind</code> 不同</td>
-                  <td><code>notify.phone@1</code> 是 <code>end</code>，只能被 <code>end</code> 执行器实现</td>
+                  <td>执行器 <code>kind</code> 与接口声明的不同（<code>notify.phone@1</code> 是 <code>end</code>，只能被 <code>end</code> 实现）</td>
                   <td>拒绝这一项</td>
                 </tr>
                 <tr>
                   <td>实现子集</td>
-                  <td>想只实现接口的一部分出口（如 <code>review@1</code> 只保证 <code>fix</code>）</td>
-                  <td>manifest 里附 <code>outputs: [fix]</code>，或写 <code>review@1#fix</code> 这种子集写法</td>
+                  <td>想只实现接口的一部分出口（如 <code>review@1</code> 只保证 <code>fix</code>）：或附 <code>outputs: [fix]</code>，或写 <code>review@1#fix</code></td>
                   <td>拒绝这一项——<b>没有部分实现这回事</b></td>
                 </tr>
               </tbody>
