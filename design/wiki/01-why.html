@@ -69,51 +69,75 @@
           <div class="crumb">第 01 页 · 开始</div>
           <h1>为什么</h1>
           <p class="lead">
-            这页说三件事：现在的 agent 通知在哪三处断掉，事件中心针对性地补哪三个洞，以及我们刻意不做什么——免得被当成又一个 workflow 引擎。
+            这页说三件事：和现有几类工具差在哪、要解决哪三个问题、以及刻意不做什么。
           </p>
 
-          <h2>现状：一条只走一次的单向链</h2>
+          <h2>和谁比</h2>
           <p class="prose">
-            最常见的用法是：本机跑一个 agent，结束时 <code>curl</code> 一下回调地址，手机收到一条「任务完成」。它能用，但整条链只走一遍，而且每一段都不留痕。
+            三类东西看起来都能「跑一段自动化」，但各自解决了不同的问题。
           </p>
 
-          <div class="fig">
-            <div class="flow">
-              <div class="flow-item">
-                <div class="box">agent 在本机跑完<span class="sub">exit 0，没有记录</span></div>
-              </div>
-              <div class="arr"><span>&rarr;</span></div>
-              <div class="flow-item">
-                <div class="box">推一条通知<span class="sub">一句话：完成了</span></div>
-              </div>
-              <div class="arr"><span>&rarr;</span></div>
-              <div class="flow-item">
-                <div class="box">手机震一下<span class="sub">人在开会，没看见</span></div>
-              </div>
-              <div class="arr"><span>&rarr;</span></div>
-              <div class="flow-item">
-                <div class="box dashed">到此为止<span class="sub">无事件、无结果、无下一步</span></div>
-              </div>
-            </div>
-            <div class="flow" style="margin-top: 18px; gap: 8px">
-              <div class="flow-item">
-                <div class="box dashed">断开点 1 · 干完了没人在场<span class="sub">只留一个 exit code</span></div>
-              </div>
-              <div class="flow-item">
-                <div class="box dashed">断开点 2 · 长任务没有地方接<span class="sub">进程一死，从头再来</span></div>
-              </div>
-              <div class="flow-item">
-                <div class="box dashed">断开点 3 · 通知发出去就断了<span class="sub">背后没有可查的记录</span></div>
-              </div>
-            </div>
-            <div class="fig-cap">
-              <b>人盯着屏幕时三处都不明显</b>；任务一多、时长一长、人不在机器前，它们会同时断。本节之后的三小节，就是分别接这三处。
-            </div>
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>单机 agent</th>
+                  <th>dify / n8n</th>
+                  <th>本设计</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><b>谁触发</b></td>
+                  <td>你敲下命令</td>
+                  <td>平台里配的触发器</td>
+                  <td>事件（webhook / cron / 外部调用），和人工手动</td>
+                </tr>
+                <tr>
+                  <td><b>能跑几步</b></td>
+                  <td>一步到几步，跑完就结束</td>
+                  <td>图里画多少步就跑多少步</td>
+                  <td>图里查到几行就派几个，可以接力、可以成环</td>
+                </tr>
+                <tr>
+                  <td><b>跑在哪</b></td>
+                  <td>你的机器</td>
+                  <td>平台侧，或你部署的集群</td>
+                  <td>你的机器（节点出站连中枢），凭据永不出本机</td>
+                </tr>
+                <tr>
+                  <td><b>能力从哪来</b></td>
+                  <td>你本地有什么就用什么，没有契约</td>
+                  <td>平台内置 + 插件市场</td>
+                  <td>中枢先定义，节点只能声明已定义的那些</td>
+                </tr>
+                <tr>
+                  <td><b>长任务断了</b></td>
+                  <td>进程死了就没了</td>
+                  <td>平台重试，但看不出断在哪一步</td>
+                  <td>租约接管、换台机器重派，trace 上留痕</td>
+                </tr>
+                <tr>
+                  <td><b>漏了怎么查</b></td>
+                  <td>翻 shell 历史</td>
+                  <td>翻执行日志，人肉还原</td>
+                  <td>查一张表：<code>(能力, 出口)</code> 有没有这一行</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
 
-          <h2>事件中心要解决的三件事</h2>
           <p class="prose">
-            不是为了多接几个集成，而是把上面三处接上。每个洞对应一个具体问题，也对应一条必须能验证的设计约束。
+            <b>差别不在功能多少，在「谁掌握图」。</b>
+            单机 agent 没有图，跑一步算一步；dify / n8n 的图在平台里，节点是平台提供的积木；
+            这里的图也是显式的，但它由<b>能力定义 + 出口表</b>两层组成，节点只声明自己会哪些能力，
+            <b>不掌握图长什么样</b>——所以换机器不影响图，加机器也不用改图。
+          </p>
+
+          <h2>要解决的三件事</h2>
+          <p class="prose">
+            每一条都对应一个具体问题，也对应一条必须能验证的设计约束。
           </p>
 
           <h3>一、「为什么没触发」说不清</h3>
@@ -238,10 +262,10 @@
             </div>
           </dl>
 
-          <h2>所以定位是什么</h2>
+          <h2>定位</h2>
           <p class="prose">
-            执行能力是第二层。第一层是：人能在不翻日志的前提下回答三个问题，且答案来自记录而不是推断。
-            这三个问题的答案现在都能直接从表里读出来——不必重跑一条链路，也不必推理。
+            执行能力是手段，不是卖点。卖点是：<b>人能在不翻日志的前提下回答三个问题，而且答案来自记录，不是推断</b>——
+            事件为什么触发、走了哪条路、卡在哪一步。三者的答案都直接躺在表里，不必重跑一条链路。
           </p>
 
           <div class="note">

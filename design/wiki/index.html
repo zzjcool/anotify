@@ -127,54 +127,26 @@
             </div>
           </div>
 
-          <h2>为什么不是 workflow 引擎</h2>
+          <h2>和 workflow 引擎的差别</h2>
           <p class="prose">
-            它借用了 workflow 引擎的几个名字（触发、节点、边），但整条链路上<strong>没有一处需要求值</strong>：路由靠查表，边的存在与否就是全部答案。形状不靠画布规定，执行细节留在节点自己的进程里。
+            它借用了 workflow 引擎的几个名字（触发、节点、边），但整条链路上<strong>没有一处需要求值</strong>：
+            路由靠查表，边的存在与否就是全部答案。更细的对比见 <a href="01-why.html">01 为什么</a>。
           </p>
 
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead>
-                <tr>
-                  <th>维度</th>
-                  <th>本设计</th>
-                  <th>n8n / Temporal 类</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>路由</td>
-                  <td>显式出口表，查表派发，没有条件求值</td>
-                  <td>画布上的 DAG，或代码里的 workflow 定义</td>
-                </tr>
-                <tr>
-                  <td>谁能定义节点</td>
-                  <td><b>能力先定义</b>（中枢侧、版本化），节点只能声明自己有哪些已定义的能力，拿不到出口命名权</td>
-                  <td>节点自由组合：谁拖画布谁就能随手加一个新节点，出口自己编</td>
-                </tr>
-                <tr>
-                  <td>执行与凭据</td>
-                  <td>声明了能力的节点跑在你机器上，凭据永不出本机；中枢只发 <code>(能力, 版本, 参数)</code></td>
-                  <td>执行在平台侧或你部署的集群；集成凭据常存在平台侧</td>
-                </tr>
-                <tr>
-                  <td>时间尺度</td>
-                  <td>没有 workflow 运行时长上限，靠租约 + <code>max_duration</code> 收口</td>
-                  <td>受运行期上限与执行历史大小的约束</td>
-                </tr>
-                <tr>
-                  <td>失败长什么样</td>
-                  <td>trace 上逐条可见：查表查到了哪几行、哪条边不存在、<code>path</code> 为什么被剪</td>
-                  <td>翻 workflow history 或执行日志，人肉还原</td>
-                </tr>
-                <tr>
-                  <td>本期边界</td>
-                  <td>不做拖拽画布、任意代码执行、DAG 校验、join 收集</td>
-                  <td>这些正是它们的主场</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <dl class="defs">
+            <div class="def">
+              <dt>图是文本，不是画布</dt>
+              <dd>出口表能进 git、能 diff、能 review。改一条边是一行 diff，不是点三次鼠标。</dd>
+            </div>
+            <div class="def">
+              <dt>能力先定义，节点只声明</dt>
+              <dd>节点拿不到出口命名权，只能在已定义的清单里挑。谁拖画布谁就能加节点的那种自由度，这里没有。</dd>
+            </div>
+            <div class="def">
+              <dt>执行和凭据都在你机器上</dt>
+              <dd>中枢只发 <code>(能力, 版本, 参数)</code>；<code>argv</code> 和集成凭据永不出本机。</dd>
+            </div>
+          </dl>
 
           <div class="note">
             <strong>不比拼集成数量。</strong>定位是可解释的自动化——事件为什么触发、走了哪条边、卡在哪一步。拖拽画布、任意代码执行、中枢存密钥、几十个现成集成，这些不做，避免变成 n8n 的劣化版。
