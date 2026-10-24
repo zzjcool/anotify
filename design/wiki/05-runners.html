@@ -69,7 +69,7 @@
           <div class="crumb">第 05 页 · 运行时</div>
           <h1>执行器与执行</h1>
           <p class="lead">
-            两种东西要分清：<b>角色</b>（按端口形状分三种）和<b>执行器</b>（一台注册的机器）。这页讲五件事：角色按端口形状分成哪三种、中枢与执行器的分工边界、租约与状态机、执行器池怎么选人、下线时任务怎么收场。
+            两种东西要分清：<b>角色</b>（按端口形状分三种）和<b>执行器</b>（一台注册的机器）。这页讲六件事：角色按端口形状分成哪三种、中枢与执行器的分工边界、<b>注册时的接口校验</b>、租约与状态机、执行器池怎么选人、下线时任务怎么收场。
           </p>
 
           <h2>角色有三种，不是一种</h2>
@@ -148,53 +148,64 @@
 
           <h2>中枢不知道执行器上有什么能力</h2>
           <p class="prose">
-            执行器在自己机器上维护一份能力表（能力名 → <code>argv</code>），<strong>永不上传</strong>。中枢只知道「这个执行器申报了哪些能力」，
-            不知道能力背后是什么程序、带什么参数、在不在。
+            执行器在自己机器上维护一份实现表（接口 <code>name@version</code> → <code>argv</code>），<strong>永不上传</strong>。
+            中枢只知道「这个执行器申报了哪些接口、哪个版本」，不知道接口背后是什么程序、带什么参数、在不在。
           </p>
 
           <pre class="code"><span class="c"># 执行器本地 ~/.anotifyd/config.yaml —— 这份文件从不离开本机</span>
-<span class="k">node</span>:
-  <span class="k">command_timeout_sec</span>: 900
+<span class="k">runner</span>: mbp-16
 
 <span class="k">capabilities</span>:
-  - <span class="k">name</span>: git.fetch          <span class="c"># 中枢只认这个名字</span>
-    <span class="k">argv</span>: [<span class="s">"git"</span>, <span class="s">"fetch"</span>, <span class="s">"--prune"</span>, <span class="s">"origin"</span>]
-    <span class="k">outputs</span>: [<span class="s">done</span>]           <span class="c"># 会用到的出口名，不是目的地</span>
+  - <span class="k">implements</span>: review@1      <span class="c"># ★ 只写实现了哪个接口，不写出口</span>
+    <span class="k">argv</span>: [<span class="s">"git"</span>, <span class="s">"diff"</span>, <span class="s">"--name-only"</span>]
     <span class="k">retries</span>: 2                <span class="c"># 执行器内部重试，不消耗中枢 attempts</span>
     <span class="k">idempotent</span>: true          <span class="c"># 只读，重跑无副作用</span>
-    <span class="k">concurrency</span>: 2            <span class="c"># 能力级并发上限</span>
+    <span class="k">concurrency</span>: 2            <span class="c"># 实现级并发上限</span>
 
-  - <span class="k">name</span>: test.unit
+  - <span class="k">implements</span>: test@1
     <span class="k">argv</span>: [<span class="s">"make"</span>, <span class="s">"test"</span>]
-    <span class="k">outputs</span>: [<span class="s">fix</span>, <span class="s">done</span>]     <span class="c"># 走 fix 去修，或走 done 收工</span>
     <span class="k">retries</span>: 0
     <span class="k">idempotent</span>: false         <span class="c"># 默认值：有副作用</span>
     <span class="k">resumable</span>: false
     <span class="k">concurrency</span>: 1</pre>
 
+          <p class="prose">
+            上报到中枢的 manifest 里只有一份 <code>implements</code> 列表——<b>接口名 + 版本，没有 <code>outputs</code></b>。
+            出口集合 <code>{fix, clean}</code> 长在接口定义里：执行器既没有位置写它，也没有命名权。
+          </p>
+
+          <pre class="code"><span class="c">// 执行器上报的 manifest（注册 / 心跳时）</span>
+{
+  <span class="s">"kind"</span>: <span class="s">"pipe"</span>,
+  <span class="s">"implements"</span>: [
+    { <span class="s">"interface"</span>: <span class="s">"review"</span>, <span class="s">"version"</span>: 1 },
+    { <span class="s">"interface"</span>: <span class="s">"test"</span>,   <span class="s">"version"</span>: 1 }
+  ]
+}</pre>
+
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <span class="box">能力声明 <code>outputs: [fix, done]</code><span class="sub">我会用到这两个出口名</span></span>
+                <span class="box">执行器声明 <code>implements: review@1</code><span class="sub">只说实现了哪个接口</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
-                <span class="box">中枢 <code>edges</code> 表<span class="sub">(test.unit, fix) → implement</span></span>
+                <span class="box">中枢 <code>interface_versions</code> + <code>edges</code><span class="sub">review@1 的出口是 {fix, clean}</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <span class="box">下一跳派给谁<span class="sub">执行器不知道，也不需要知道</span></span>
             </div>
             <div class="fig-cap">
-              <b><code>outputs</code> 是「我会用到的出口名」，不是「我会去哪」。</b>
-              能力只说自己可能走哪几个门，门后面通向谁由中枢的 <code>edges</code> 表决定——执行器不该知道整张图长什么样。
-              这正是分工：执行器负责「我干完了，走了 fix 这个门」，中枢负责「fix 这个门通向 implement」。
+              <b>出口集合来自接口，下一跳来自 <code>edges</code>，两层都不在执行器手里。</b>
+              执行器只负责「我干完了，走了 <code>fix</code> 这个门」：<code>fix</code> 在不在允许集合里由接口定，门后通向谁由中枢的
+              <code>edges</code> 表定。这正是分工——接口管命名，中枢管连线，执行器管执行。
             </div>
           </div>
 
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <span class="box">中枢<span class="sub">{kind, name, params}</span></span>
+                <span class="box">中枢<span class="sub">{implements, version, params}</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
@@ -202,7 +213,7 @@
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
-                <span class="box">执行器查自己的表<span class="sub">name → argv</span></span>
+                <span class="box">执行器查自己的表<span class="sub">implements@version → argv</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
@@ -210,16 +221,81 @@
               </div>
             </div>
             <div class="fig-cap">
-              <b>线上只跑这三个字段。</b>执行器收到 <code>{kind, name, params}</code>，拿 <code>name</code> 查本地表得到 <code>argv</code>，直接
-              <code>execve(argv[])</code>；查不到就回报「不认识这个能力」。中枢不改写命令、不猜参数、不拼命令行。
+              <b>线上只跑这三个字段。</b>执行器收到 <code>{implements, version, params}</code>，拿 <code>implements@version</code> 查本地实现表得到
+              <code>argv</code>，直接 <code>execve(argv[])</code>；查不到就回报 <code>unknown_interface</code>。中枢不改写命令、不猜参数、不拼命令行。
             </div>
           </div>
 
-          <div class="note">
+          <p class="prose">
             <strong>DB 里没有 argv 字段，也没有 shell 字符串字段。</strong>执行一律 <code>execve(argv[])</code>，禁止
             <code>/bin/sh -c</code>：参数不会被二次解析，也就没有注入面。中枢整个被拿走，也拼不出一条真实命令。
+          </p>
+
+          <h2>注册时的接口校验</h2>
+          <p class="prose">
+            执行器上报 <code>implements</code> 的那一刻，中枢做一次闭卷考试：<b>列表里每一项都必须能在 <code>interface_versions</code>
+            里查到</b>（名字和版本都对得上），并且和这个执行器自报的 <code>kind</code> 相容。四条拒绝理由，没有第五条。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>拒绝理由</th>
+                  <th>触发条件</th>
+                  <th>例子</th>
+                  <th>中枢处理</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>unknown_interface</code></td>
+                  <td>接口名在 <code>interface_versions</code> 里不存在</td>
+                  <td>申报 <code>git.fetch@1</code>，但中枢没有这个接口</td>
+                  <td>拒绝这一项，其余项照常注册</td>
+                </tr>
+                <tr>
+                  <td><code>unsupported_interface_version</code></td>
+                  <td>名字存在，但这个版本没有定义（或已下线）</td>
+                  <td>申报 <code>review@3</code>，而中枢只有 <code>review@1</code></td>
+                  <td>拒绝这一项，<b>不降级到 <code>@1</code></b></td>
+                </tr>
+                <tr>
+                  <td><code>kind_mismatch</code></td>
+                  <td>执行器 <code>kind</code> 与接口声明的 <code>kind</code> 不同</td>
+                  <td><code>notify.phone@1</code> 是 <code>end</code>，只能被 <code>end</code> 执行器实现</td>
+                  <td>拒绝这一项</td>
+                </tr>
+                <tr>
+                  <td>实现子集</td>
+                  <td>想只实现接口的一部分出口（如 <code>review@1</code> 只保证 <code>fix</code>）</td>
+                  <td>manifest 里附 <code>outputs: [fix]</code>，或写 <code>review@1#fix</code> 这种子集写法</td>
+                  <td>拒绝这一项——<b>没有部分实现这回事</b></td>
+                </tr>
+              </tbody>
+            </table>
           </div>
 
+          <p class="prose">
+            <b>接口不存在，就不允许注册这个能力。</b>中枢不接受自由字符串：<code>implements</code> 里写下的每个名字都要能查到接口定义，
+            否则这一项直接作废。旧模型里的能力名是执行器自己起的（<code>git.fetch</code>、<code>my-review-v2</code>），中枢只能照单全收；
+            现在中枢手里有一份白名单，名字不在名单上就没有这个能力，也没有「先注册上再补接口」这条路。
+          </p>
+
+          <pre class="code"><span class="c">// 注册响应：逐项判决，坏的作废，好的照常注册</span>
+{
+  <span class="s">"accepted"</span>: [{ <span class="s">"interface"</span>: <span class="s">"review"</span>, <span class="s">"version"</span>: 1 }],
+  <span class="s">"rejected"</span>: [
+    { <span class="s">"interface"</span>: <span class="s">"git.fetch"</span>,   <span class="s">"version"</span>: 1, <span class="s">"reason"</span>: <span class="s">"unknown_interface"</span> },
+    { <span class="s">"interface"</span>: <span class="s">"notify.phone"</span>, <span class="s">"version"</span>: 1, <span class="s">"reason"</span>: <span class="s">"kind_mismatch"</span> }
+  ]
+}</pre>
+
+          <p class="prose">
+            <b>为什么「实现子集」也要拒。</b>如果允许只实现 <code>fix</code> 不实现 <code>clean</code>，<code>edges</code> 里就会出现「查到了
+            <code>(review@1, clean)</code> 这条边，但这台机器走不出来」的分叉——表命中却派不出去。要单独一种能力，就定义一个新接口，
+            而不是在共享契约上抠掉一块；所以「子集」不是一种申报方式，而是一种错误。
+          </p>
           <h2>凭据与标签</h2>
           <p class="prose">
             执行器身份由中枢发放，不由执行器自述。标签挂在身份上，所以「谁是不是能跑 review 的机器」是中枢侧的事实，不是执行器说了算。
@@ -357,8 +433,8 @@
               <tbody>
                 <tr>
                   <td>谁定义次数</td>
-                  <td>执行器 <code>manifest.capabilities[].retries</code></td>
-                  <td>能力 <code>lifecycle.maxAttempts</code></td>
+                  <td>执行器 <code>config.capabilities[].retries</code>（本地，不上传）</td>
+                  <td>接口 <code>lifecycle.maxAttempts</code>（中枢侧）</td>
                 </tr>
                 <tr>
                   <td>是否消耗中枢 attempts</td>
@@ -367,7 +443,7 @@
                 </tr>
                 <tr>
                   <td>触发条件</td>
-                  <td>能力非零退出、网络抖动</td>
+                  <td>实现非零退出、网络抖动</td>
                   <td>租约过期、执行器下线、执行器上报可重试错误</td>
                 </tr>
                 <tr>
@@ -392,7 +468,7 @@
 
           <div class="fig">
             <div class="card">
-              <div class="box">nodes<span class="sub">身份 / 脑 · labels · max_concurrency 8 · max_instances 20</span></div>
+              <div class="box">runners<span class="sub">身份 / 脑 · labels · max_concurrency 8 · max_instances 20</span></div>
               <div class="fanout" style="margin-top: 16px">
                 <span class="bracket"></span>
                 <div class="fanout-col">
@@ -412,14 +488,15 @@
             <div class="fanout">
               <div class="fanout-col">
                 <span class="box sm">实例申报 · runner_instances.concurrency</span>
-                <span class="box sm">能力级 · capabilities[].concurrency</span>
+                <span class="box sm">实现级 · <code>implements[].concurrency</code></span>
                 <span class="box sm">执行器级 · runners.max_concurrency</span>
               </div>
               <span class="bracket"></span>
               <span class="box">实际并发 = min(三者)<span class="sub">谁申报得小听谁的</span></span>
             </div>
             <div class="fig-cap">
-              三个上限同时生效。一个能力不许同时跑 5 份，就不会跑 5 份，哪怕整套池子还空着。
+              三个上限同时生效。<b>并发是本地事实，不上提到接口层</b>——同一台机器同时跑几份 <code>review@1</code> 取决于它自己的手，
+             而不是接口规定。一份实现不许同时跑 5 份，就不会跑 5 份，哪怕整套池子还空着。
               <b>派发策略只有一条：最少负载优先</b>——在标签命中的执行器里比 <code>inflight / concurrency</code>，取最小的；全满就排队，不溢出到标签不匹配的执行器。
             </div>
           </div>
@@ -434,15 +511,15 @@
           <p class="prose">
             <strong>本期默认不粘。</strong>因为本期不做收集，下游本来就拿不到上游的本地产物；
             而同一个 trace 的多条分支（机器 / 人）本来就不该挤在同一台机器上。
-            粘性是<strong>按能力声明开启</strong>的：执行器在 <code>manifest.capabilities[].sticky</code> 里说
-            「这个能力要求固定实例」，中枢才会查 <code>runner_pins</code>。
+            粘性是<strong>由接口声明开启</strong>的：接口定义里写 <code>sticky: worktree</code>（或在中枢侧按接口名开启），中枢才会查
+            <code>runner_pins</code>。<b>执行器自己开不了粘性</b>——因为接口是共享契约，粘性应该由接口决定，而不是由某台机器决定。
           </p>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
-                  <th>能力类型</th>
+                  <th>接口类型</th>
                   <th>需要粘性吗</th>
                   <th>派发方式</th>
                 </tr>
@@ -456,7 +533,7 @@
                 <tr>
                   <td>共享工作区（连续改同一个 worktree、增量编译）</td>
                   <td>要</td>
-                  <td>声明 <code>sticky: worktree</code>，同 key 钉同一个实例</td>
+                  <td>接口声明 <code>sticky: worktree</code>，同 key 钉同一个实例</td>
                 </tr>
                 <tr>
                   <td>手机（<code>end</code>）</td>
@@ -468,13 +545,13 @@
           </div>
 
           <p class="prose">
-            声明了粘性的能力，才走下面这条链路。
+            接口开了粘性，才走下面这条链路。
           </p>
 
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <span class="box">sticky_key<span class="sub">sha256(trace_id ∥ capability ∥ selector)</span></span>
+                <span class="box">sticky_key<span class="sub">sha256(trace_id ∥ interface_id ∥ selector)</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
@@ -503,7 +580,7 @@
           </div>
 
           <pre class="code"><span class="k">CREATE TABLE</span> runner_pins (
-  <span class="k">sticky_key</span>   TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- sha256(trace_id ∥ capability ∥ selector)</span>
+  <span class="k">sticky_key</span>   TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- sha256(trace_id ∥ interface_id ∥ selector)</span>
   <span class="k">runner_id</span>    TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 选中就钉死，不随负载漂移</span>
   <span class="k">selector</span>     TEXT <span class="k">NOT NULL</span>,      <span class="c">-- 当时命中的标签，失效判断用</span>
   <span class="k">created_at</span>   INTEGER <span class="k">NOT NULL</span>,
@@ -517,11 +594,11 @@
           <h2>谁能终结一条链：<code>out</code> 写在结果里</h2>
           <p class="prose">
             中枢有一件事必须知道：<b>这条链还会不会往下走</b>。因为「收敛」要发通知，
-            而通知发出去就不能收回。这个判断中枢不能猜——它不知道某个能力的业务语义，只知道名字。
+            而通知发出去就不能收回。这个判断中枢不能猜——它不知道某个接口的业务语义，只知道名字和版本。
           </p>
 
           <div class="note err">
-            <b>但这件事<u>不能</u>写在 manifest 里。</b>能力还没跑，谁也不知道它会走到哪个出口——
+            <b>但这件事<u>不能</u>写在 manifest 里。</b>实现还没跑，谁也不知道它会走到哪个出口——
             成功要跑完才知道，失败也要跑完才知道。让 manifest 提前承诺「我不会继续」，
             等于让执行器在开局就赌，赌错了就是手机提前响。
             <b>所以 <code>out</code> 是 <code>result</code> 里的一个字段，不是 manifest 里的声明。</b>
@@ -560,9 +637,9 @@
 }</pre>
 
           <p class="prose">
-            <strong>它描述的是「这一次」，不是「这个能力」。</strong>同一个 <code>review</code>，
-            这次改完了就回报 <code>null</code> 收工，下次发现新问题就回报 <code>"fix"</code> 接着走——同一个能力，两次的 <code>out</code> 可以不同。
-            中枢不预判、不反推，只读这一个字段；拿到之后做一次查表：<code>edges</code> 里有 <code>(能力, 出口)</code> 这一行就往下派，没有就到头。
+            <strong>它描述的是「这一次」，不是「这个接口」。</strong>同一个 <code>review@1</code>，
+            这次改完了就回报 <code>null</code> 收工，下次发现新问题就回报 <code>"fix"</code> 接着走——同一个接口，两次的 <code>out</code> 可以不同。
+            中枢不预判、不反推，只读这一个字段；拿到之后做一次查表：<code>edges</code> 里有 <code>(接口, 出口)</code> 这一行就往下派，没有就到头。
           </p>
 
           <h3>为什么失败也要带这个字段</h3>
@@ -585,7 +662,7 @@
                 <tr>
                   <td><code>succeeded</code></td>
                   <td><code>"fix"</code></td>
-                  <td>干完了，往下走。查 <code>edges</code>：(能力, fix) 指向谁就派谁。</td>
+                  <td>干完了，往下走。查 <code>edges</code>：(接口, fix) 指向谁就派谁。</td>
                 </tr>
                 <tr>
                   <td><code>succeeded</code></td>
@@ -634,15 +711,15 @@
 
           <h2>执行器下线分级</h2>
           <p class="prose">
-            执行器掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由能力自己的声明决定，不让中枢猜。
+            执行器掉线时，它手上的任务没有一个能「继续跑」。区别只在于重派是否安全——这由实现自己的本地声明决定（<b>不写进接口</b>：同一接口的不同机器可以有不同的事实），不让中枢猜。
           </p>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
-                  <th>能力声明</th>
-                  <th>这类能力</th>
+                  <th>实现声明（执行器本地）</th>
+                  <th>这类实现</th>
                   <th>下线时任务处理</th>
                 </tr>
               </thead>
@@ -672,7 +749,10 @@
           </div>
 
           <h2>任务生命周期属性</h2>
-          <p class="prose">能力可以声明一个任务能活多久、能不能重来、结果留多久。四项，都在 <code>lifecycle</code> 下。</p>
+          <p class="prose">
+            接口可以声明一个任务能活多久、能不能重来、结果留多久。四项，都在 <code>lifecycle</code> 下——
+            <b>归属在接口层，不在执行器</b>：同样的限制应该对所有实现了这个接口的机器一视同仁。
+          </p>
 
           <div class="tbl-wrap">
             <table class="tbl">
@@ -709,8 +789,14 @@
           </div>
 
           <p class="prose">
-            <strong><code>retryable</code> 是中枢的意愿，<code>idempotent</code> 是能力的事实。</strong>
-            中枢可以决定「想不想重派」，但碰上 <code>idempotent: false</code> 的能力，意愿无效——重跑一个已经发过版的任务，代价比失败更大。
+            这四项都写在<strong>接口定义</strong>里（和 <code>params_schema</code>、<code>outputs</code> 同级），和执行器无关：
+            换一台机器实现同一个接口，拿到的 <code>maxAttempts</code> 是同一个数。执行器本地只管「我自己内部重试几次」（<code>retries</code>）
+            和「我重跑有没有副作用」（<code>idempotent</code>），这两项是本地事实；上面四项是共享契约。
+          </p>
+
+          <p class="prose">
+            <strong><code>retryable</code> 是中枢的意愿，<code>idempotent</code> 是实现的事实。</strong>
+            中枢可以决定「想不想重派」，但碰上 <code>idempotent: false</code> 的实现，意愿无效——重跑一个已经发过版的任务，代价比失败更大。
             接力与链路的次数上限见 <a href="04-edges.html">04 能力与出口</a>。
           </p>
 

@@ -69,12 +69,12 @@
           <div class="crumb">第 07 页 · 保障</div>
           <h1>安全边界</h1>
           <p class="lead">
-            中枢手上没有任何一条命令。这页讲这条边界怎么落到 DB 字段、协议载荷和 execve 上，为了保住它设了哪六道闸，为什么删掉规则引擎本身也是一道安全收益，以及我们因此接受了什么代价。
+            中枢手上没有任何一条命令。这页讲这条边界怎么落到 DB 字段、协议载荷和 execve 上，<b>接口层又如何把它又收窄了一格</b>，为了保住它设了哪六道闸，为什么删掉规则引擎本身也是一道安全收益，以及我们因此接受了什么代价。
           </p>
 
           <h2>根本原则：中枢永不下发命令</h2>
           <p class="prose">
-            中枢只做三件事：记事件、查出口表、派任务。它不知道目标机器上装着什么程序，也不知道某个名字背后对应哪条 argv。任务载荷里只有 <code>{kind, name, params}</code> —— 一个能力名，加上给这个能力的参数。
+            中枢只做三件事：记事件、查出口表、派任务。它不知道目标机器上装着什么程序，也不知道某个接口背后对应哪条 argv。任务载荷里只有 <code>{implements, version, params}</code> —— 一个接口名、一个版本号，加上送给这个接口的参数。<strong>版本也是必填的，因为 <code>review@1</code> 和 <code>review@2</code> 是两个接口。</strong>
           </p>
 
           <div class="fig">
@@ -93,24 +93,24 @@
 
               <div class="arr" style="align-self: center; width: auto; height: 18px; font-size: 13px"><span>↓</span></div>
 
-              <div class="box accent">任务载荷 {kind, name, params}<span class="sub">中枢所能表达的全部</span></div>
+              <div class="box accent">任务载荷 {implements, version, params}<span class="sub">中枢所能表达的全部</span></div>
 
               <div class="arr" style="align-self: center; width: auto; height: 18px; font-size: 13px"><span>↓</span></div>
 
               <div class="card-2">
                 <div class="lane-label">执行器 · 本地决定能执行什么</div>
                 <p style="margin: 0 0 9px; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                  本地 <code>config.yaml</code> 把 <code>capabilities[].name</code> 映射到 <code>argv[]</code>，命中就 <code>execve(argv[0], argv, envp)</code> 起进程。这个名字存在过，中枢才知道它存在。
+                  本地 <code>config.yaml</code> 把 <code>capabilities[].implements</code>（<code>name@version</code>）映射到 <code>argv[]</code>，命中就 <code>execve(argv[0], argv, envp)</code> 起进程。接口在中枢侧定义过，才允许注册。
                 </p>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px">
-                  <div class="box sm">review-pr</div>
-                  <div class="box sm">deploy-preview</div>
-                  <div class="box sm dashed">未申报 → unknown_capability</div>
+                  <div class="box sm">review@1</div>
+                  <div class="box sm">deploy.preview@1</div>
+                  <div class="box sm dashed">未定义 → unknown_interface</div>
                 </div>
               </div>
             </div>
             <div class="fig-cap">
-              <b>边界画在「名字」上。</b>中枢能说的最多是「review-pr 这个能力，参数是这些」；这串东西能不能变成进程，由执行器本地的 config.yaml 和进程的 OS 权限决定。
+              <b>边界画在「接口名 + 版本」上。</b>中枢能说的最多是「<code>review@1</code> 这个接口，参数是这些」；这串东西能不能变成进程，由执行器本地的 config.yaml 和进程的 OS 权限决定。
             </div>
           </div>
 
@@ -118,22 +118,20 @@
 
           <pre class="code"><span class="c"># ~/.anotifyd/config.yaml —— 只在本机，中枢读不到</span>
 <span class="k">capabilities</span>:
-  - name: review-pr
+  - implements: review@1
     argv: [<span class="s">"/usr/local/bin/review"</span>, <span class="s">"--pr"</span>, <span class="s">"{pr}"</span>, <span class="s">"--json"</span>]
-    outputs: [fix, done]        <span class="c"># 我会用到这两个出口名，不是目的地</span>
     idempotent: true
     retries: 1
-  - name: deploy-preview
+  - implements: deploy.preview@1
     argv: [<span class="s">"/opt/deploy/bin/deploy"</span>, <span class="s">"--sha"</span>, <span class="s">"{sha}"</span>]
-    outputs: []                 <span class="c"># 没有出口，干完就结束</span>
     idempotent: false</pre>
 
           <p class="prose">
-            执行器收到任务后自己查表：<code>name</code> 命中本地申报的能力表就取 <code>argv[]</code>，把 <code>params</code> 逐个填进占位符，然后 <code>execve</code> 直接起进程。<strong>不经过 shell</strong> —— 没有引号拼接、没有变量展开、没有通配符、没有管道。
+            执行器收到任务后自己查表：<code>implements@version</code> 命中本地实现表就取 <code>argv[]</code>，把 <code>params</code> 逐个填进占位符，然后 <code>execve</code> 直接起进程。<strong>不经过 shell</strong> —— 没有引号拼接、没有变量展开、没有通配符、没有管道。
           </p>
           <div class="prose">
             <ul>
-              <li>未申报的 <code>name</code> → <code>unknown_capability</code>。不回退到默认能力，不做模糊匹配。</li>
+              <li>未定义的接口 <code>implements@version</code> → <code>unknown_interface</code>。不回退到默认能力，不做模糊匹配，也不降级到另一个版本。</li>
               <li><code>params</code> 的值只做占位替换，替换结果作为一个完整的 argv 元素传入，不再做二次字符串拼接。</li>
               <li><code>env</code> 由执行器本地决定，中枢不提供环境变量。</li>
             </ul>
@@ -142,6 +140,42 @@
           <div class="note err">
             <strong>为什么 <code>/bin/sh -c</code> 是禁区。</strong>一旦 argv 被拼成一个字符串交给 shell，<code>params</code> 里的一个分号、一个反引号就能改写整条命令。参数注入的上限会从「某个程序收到一个奇怪的字符串」变成「攻击者在你的机器上执行任意命令」。这条线不放松，一次都不放松。
           </div>
+
+          <h2>接口定义把攻击面又收窄了一格</h2>
+          <p class="prose">
+            「中枢不存 argv」解决的是「中枢能不能写出命令」；接口层解决的是另一件事——<b>执行器能不能自己编出一个新的口子</b>。
+            两道约束是叠加的，不是重复的。
+          </p>
+
+          <dl class="defs">
+            <div class="def">
+              <dt>接口是白名单</dt>
+              <dd>
+                执行器只能实现<b>已存在的接口</b>，不能自己发明名字。旧模型里名字由执行器起，同一类能力可以叫 <code>review</code>、
+                <code>review-pr</code>、<code>code-review</code>；现在在 <code>interface_versions</code> 里查不到就是 <code>unknown_interface</code>，注册直接被拒。
+                <b>「自由字符串」这一类注入面消失了</b>：不再存在一个「执行器自己填、中枢无条件接受」的名字字段。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>参数在建任务前就被 schema 校验</dt>
+              <dd>
+                <code>params</code> 先过目标接口的 <code>params_schema</code>，不通过就记 <code>pruned / reason=param_schema</code>、<b>不建任务</b>。
+                所以<b>拿畸形参数去探执行器边界这条路，在派发前就被堵住了</b>，而不是靠执行器自己容错。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>出口集合也是封闭的</dt>
+              <dd>
+                执行器回报的 <code>out</code> 必须属于接口的 <code>outputs</code>；报一个不在集合里的出口名，等于报一个不存在的结果，中枢不会为它找边。
+                出口名不再是执行器可自由创造的字段。
+              </dd>
+            </div>
+          </dl>
+
+          <p class="prose">
+            一句话：<b>接口层是「中枢不存 argv」之外的第二道结构性约束</b>。前者拿走了中枢的执行能力，后者拿走了执行器的命名能力——
+            两边各收一格，中间只剩「已定义接口 + 已校验参数」。
+          </p>
 
           <h2>别人怎么做，我们怎么不一样</h2>
           <p class="prose">
@@ -161,12 +195,12 @@
                 <tr>
                   <td>中枢存不存「要跑什么」</td>
                   <td>存。流程节点的命令、脚本、镜像都在中枢 DB 里</td>
-                  <td>不存。只有执行器申报过的能力名 <code>name</code></td>
+                  <td>不存。只有接口名与版本 <code>implements@version</code>，指向中枢自己定义的接口</td>
                 </tr>
                 <tr>
                   <td>能力从哪来</td>
                   <td>中枢随任务下发，执行器照着执行</td>
-                  <td>节点本地 <code>config.yaml</code> 申报，中枢永远读不到 argv</td>
+                  <td>节点本地 <code>config.yaml</code> 声明 <code>implements: review@1</code>，argv 中枢永远读不到</td>
                 </tr>
                 <tr>
                   <td>怎么起进程</td>
@@ -174,9 +208,14 @@
                   <td><code>execve(argv[])</code>，参数不经过 shell</td>
                 </tr>
                 <tr>
+                  <td>谁能定义「有哪些出口」</td>
+                  <td>执行器（或流程作者）自己起名</td>
+                  <td>只有中枢的接口定义；执行器只声明实现，<b>没有出口命名权</b></td>
+                </tr>
+                <tr>
                   <td>中枢被打穿之后</td>
                   <td>攻击者拿到全部执行能力，可下发任意命令</td>
-                  <td>攻击者只能重复点名已申报的能力</td>
+                  <td>攻击者只能重复点名已注册的接口，参数还要过 schema</td>
                 </tr>
               </tbody>
             </table>
@@ -215,7 +254,7 @@
                 </tr>
                 <tr>
                   <td>G3 环检测</td>
-                  <td><code>path</code> 里能力名去重，重复即静默剪枝</td>
+                  <td><code>path</code> 里接口（<code>name@version</code>）去重，重复即静默剪枝</td>
                   <td>隐含 / 不可配</td>
                   <td>防 A→B→A 转圈；剪枝必须在 trace 上可见</td>
                   <td><b>环在配置期就看得见</b>：<code>edges</code> 是显式声明的，画得出也查得出。运行期仍靠 <code>path</code> 去重剪枝 —— 看得见不等于不会走到。</td>
@@ -294,7 +333,7 @@
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">新模型 · 出口表</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                收到回报 <code>{capability, out}</code> → <b>一次索引查询</b> <code>edges</code> → 拿到 N 行 → 全部下发。没有求值，没有表达式，没有优先级。
+                收到回报 <code>{interface, out}</code> → <b>一次索引查询</b> <code>edges</code> → 拿到 N 行 → 全部下发。没有求值，没有表达式，没有优先级。
               </p>
             </div>
           </div>
@@ -305,7 +344,7 @@
 
           <div class="prose">
             <ul>
-              <li><b>没有求值器可以注入。</b>表达式求值器天然要面对任意深度、任意类型的输入；现成的求值库历史上反复出过沙箱逃逸、原型链污染、正则灾难回溯。现在中枢只把 <code>capability</code> 和 <code>out</code> 当两个字符串拿去匹配索引，不把它当代码。</li>
+              <li><b>没有求值器可以注入。</b>表达式求值器天然要面对任意深度、任意类型的输入；现成的求值库历史上反复出过沙箱逃逸、原型链污染、正则灾难回溯。现在中枢只把 <code>interface</code> 和 <code>out</code> 当两个字符串拿去匹配索引，不把它当代码。</li>
               <li><b>没有 DSL 要维护。</b>自己发明的表达式语法就是自己发明的解析器——解析器是 fuzzing 的经典目标，还得同时维护语法文档、错误信息、兼容性。删掉整套 DSL，就删掉了这一整类缺陷。</li>
               <li><b>配置期的检查变强了。</b>表达式能不能写错要到求值（甚至到真跑）才知道；<code>edges</code> 是静态数据，可以在配置期把每条边的两端能力都校验一遍——指向不存在能力的行，根本进不了表。</li>
               <li><b>路由不再依赖 payload。</b>旧模型里，payload 的任何一个字段都可能改变路由结果；现在 payload 只被当作 <code>params</code> 传给节点，<b>完全不参与中枢的路由决策</b>。伪造 payload 也就伪造不出路由。</li>
@@ -314,6 +353,13 @@
 
           <p class="prose">
             一句话：安全边界不只是「中枢不掌握命令」，还包括「<b>中枢不解释任何用户提供的逻辑</b>」。求值器、优先级排序、择一——这三样一起去掉，中枢的路由部分就退化成一张固定的表和一个索引查询。
+          </p>
+
+          <p class="prose">
+            接口层把这件事又推了一步：它连<b>「自由字符串」这一类注入面</b>也一并消掉了。对比一下：
+            没有接口的时候，执行器可以自定义 <code>outputs</code>，中枢就得接受任意出口名——这些名字最后会进 <code>edges</code> 表、
+            成为路由的起点，等于中枢把一个用户可控的字符串当成了索引键。
+            现在执行器只能引用中枢已经定义好的接口和出口，<b>注册期就把非法名字挡住了</b>，不再有「先写进去、以后再清洗」的窗口。
           </p>
 
           <h2>信任边界与代价</h2>
@@ -331,7 +377,7 @@
             <div class="def">
               <dt>不做过度防御</dt>
               <dd>
-                不搞 per-capability ACL，不搞短时二次签名，不做「中枢签名后节点验签再执行」的链式校验 —— 这些机制都要求中枢理解能力背后是什么，正好把丢掉的东西请回来。要缩小半径就缩小执行器：给高风险能力单独注册一台机器，用 <code>max_instances</code> 限制扩散面。
+                不搞 per-interface ACL，不搞短时二次签名，不做「中枢签名后节点验签再执行」的链式校验 —— 这些机制都要求中枢理解接口背后是什么，正好把丢掉的东西请回来。要缩小半径就缩小执行器：给高风险接口单独注册一台机器，用 <code>max_instances</code> 限制扩散面。
               </dd>
             </div>
             <div class="def">
@@ -343,7 +389,7 @@
             <div class="def">
               <dt>最坏情况是什么</dt>
               <dd>
-                中枢完全被打穿：攻击者能读事件与结果、能反复点名已申报的能力、能伪造 <code>params</code>。但不能新增能力、不能改 argv、不能拿到机器上的凭据。伤害上限被钉在「这些能力被以奇怪的参数跑了很多次」。
+                中枢完全被打穿：攻击者能读事件与结果、能反复点名已注册的接口、能伪造 <code>params</code>（但要先过 <code>params_schema</code>）。但不能新增接口、不能改 argv、不能拿到机器上的凭据。伤害上限被钉在「这些接口被以奇怪的参数跑了很多次」。
               </dd>
             </div>
           </dl>
