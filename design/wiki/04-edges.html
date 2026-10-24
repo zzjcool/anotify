@@ -268,9 +268,11 @@ kind(node) =
 <span class="c">-- 返回 N 行 → N 个下游；0 行 → 到头，记 pruned</span>
 
 <span class="c">-- ② 用目标能力的 schema 校验参数（不通过就不建任务）</span>
+
 <span class="c">-- ③ 找声明了这个能力的节点</span>
 <span class="k">SELECT</span> node_id <span class="k">FROM</span> node_capabilities
  <span class="k">WHERE</span> capability_id = :to_capability;
+<span class="c">-- 0 行 → 没人接这个能力，记 pruned / no_node，不建任务</span>
 
 <span class="c">-- ④ 按负载挑一台（或按 sticky 查 node_pins）</span></pre>
 
