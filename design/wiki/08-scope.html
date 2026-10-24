@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -70,13 +70,13 @@
           <h1>本期范围</h1>
           <p class="lead">
             这一页把线画清楚：哪些东西本期就有、哪些明确不做、哪些留了扩展点但先不实现。范围不清的项目会变成 n8n 的劣化版，所以宁可现在写死。
-            本轮新增的是最上面一层——<b>接口</b>：先定义契约，执行器再实现它。
+            本轮新增的是最底层——<b>能力定义</b>：中枢先把能力写下来（名字、版本、参数、出口），节点再声明自己有哪些。
           </p>
 
           <h2>本期做的</h2>
           <p class="prose">
             十三项。每一项都能落到具体的表、字段或状态机上，没有「后续再细化」的占位。
-            第一项是接口层——它决定了下面每一行里「出口」这个词的含义。
+            第一项是能力定义层——它决定了下面每一行里「出口」这个词的含义。
           </p>
 
           <div class="tbl-wrap">
@@ -89,9 +89,9 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>接口层</td>
+                  <td>能力定义层</td>
                   <td>
-                    <b>接口先定义</b>（<code>name@version</code> + <code>kind</code> + <code>params_schema</code> + <code>outputs</code>），执行器只能 <code>implements</code>，<b>不能自己编出口名</b>。内置接口随项目发布，用户可在中枢配置目录里追加自定义接口；<code>review@1</code> 与 <code>review@2</code> 视为两个接口、<b>版本并存</b>，迁移期不强制全量升级。
+                    <b>能力先定义</b>（<code>name@version</code> + <code>params_schema</code> + <code>outputs</code>），节点只能声明自己有哪些<b>已定义</b>的能力，<b>不能自己编能力名，也不能自己加出口</b>。内置能力随项目发布，用户可在中枢配置目录里追加自定义能力；<code>review@1</code> 与 <code>review@2</code> 视为两个能力、<b>版本并存</b>，迁移期不强制全量升级。节点侧 <code>kind</code>（<code>origin</code> / <code>pipe</code> / <code>end</code>）由它声明的能力推导，<b>不写进定义也不写进配置</b>。
                   </td>
                 </tr>
                 <tr>
@@ -100,7 +100,7 @@
                 </tr>
                 <tr>
                   <td>出口表（edges）</td>
-                  <td>显式声明 <code>(接口, 出口) → 接口</code> 三元组，派发就是一次索引查询：查得到就全部下发，查不到就到头。<b>无 <code>match</code> 求值、无条件表达式、无优先级。</b>派发前多一道：用目标接口的 <code>params_schema</code> 校验 <code>params</code>。</td>
+                  <td>显式声明 <code>(能力, 出口) → 能力</code> 三元组，派发就是一次索引查询：查得到就全部下发，查不到就到头。<b>无 <code>match</code> 求值、无条件表达式、无优先级。</b>派发前多一道：用目标能力的 <code>params_schema</code> 校验 <code>params</code>。</td>
                 </tr>
                 <tr>
                   <td>扇出</td>
@@ -108,27 +108,27 @@
                 </tr>
                 <tr>
                   <td>接力</td>
-                  <td>执行器回报的 <code>out</code> 拿去查表得到下游接口，再按接口找实现了它的执行器；<code>allow_chain</code> 显式开启才允许。</td>
+                  <td>节点回报的 <code>out</code> 拿去查表得到下游能力，再按能力找声明了它的节点；<code>allow_chain</code> 显式开启才允许。</td>
                 </tr>
                 <tr>
                   <td>成环</td>
-                  <td>允许成环（审查 → 修复 → 复审）；环在配置期由 <code>edges</code> 静态可见，运行期用 <code>path</code> 里接口名去重做剪枝，剪枝在 trace 上可见。</td>
+                  <td>允许成环（审查 → 修复 → 复审）；环在配置期由 <code>edges</code> 静态可见，运行期用 <code>path</code> 里能力名去重做剪枝，剪枝在 trace 上可见。</td>
                 </tr>
                 <tr>
                   <td>任务租约</td>
                   <td>TTL 30s、心跳 10s、<code>max_attempts</code> 3、退避 10s → 60s → 300s；<code>pending → assigned → acked → running → succeeded | failed | canceled | abandoned</code>。</td>
                 </tr>
                 <tr>
-                  <td>执行器池</td>
-                  <td>两级：<code>runners</code> 管身份与脑、<code>runner_instances</code> 管实例；三层并发上限取 min，派发按最少负载优先。</td>
+                  <td>节点池</td>
+                  <td>两级：<code>nodes</code> 管身份与脑、<code>node_instances</code> 管实例；三层并发上限取 min，派发按最少负载优先。</td>
                 </tr>
                 <tr>
                   <td>粘性路由</td>
-                  <td><b>按 <code>implements</code> 声明开启</b>（<code>manifest.implements[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>runner_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                  <td><b>按能力声明开启</b>（<code>manifest.capabilities[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>node_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
                 </tr>
                 <tr>
                   <td>版本钉住</td>
-                  <td>图配置（含 <code>edges</code>）、接口版本（<code>interface_versions</code>）、执行器能力清单、注册表四对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
+                  <td>图配置（含 <code>edges</code>）、能力版本（<code>capability_versions</code>）、节点能力清单、注册表四对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
                 </tr>
                 <tr>
                   <td>六道闸</td>
@@ -136,81 +136,71 @@
                 </tr>
                 <tr>
                   <td>出口回报</td>
-                  <td>执行器在 <code>result</code> 里回报 <code>out</code>（出口名或 <code>null</code>，跑完才知道），收敛只认这个，不反推业务。缺失 <code>out</code> 按未回报计（保守，不收敛）。</td>
+                  <td>节点在 <code>result</code> 里回报 <code>out</code>（出口名或 <code>null</code>，跑完才知道），收敛只认这个，不反推业务。缺失 <code>out</code> 按未回报计（保守，不收敛）。</td>
                 </tr>
                 <tr>
                   <td>通知</td>
-                  <td>推手机：<code>end</code> 节点，<code>out</code> 恒为 <code>null</code>。尽力而为、可丢。</td>
+                  <td>推手机：<code>end</code> 节点（<code>notify.phone</code>），<code>out</code> 恒为 <code>null</code>。尽力而为、可丢。</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <h2>内置接口清单</h2>
+          <h2>内置能力清单</h2>
           <p class="prose">
-            随项目发布的就这十个，放在 <code>interfaces/builtin/</code>，进 git、走 review。
-            <b>出口名由这张表给定，执行器只能实现、不能扩展</b>——实现 <code>review@1</code> 就必须两个出口都能走，不允许只做 <code>fix</code>。
-            用户自己的接口放中枢配置目录，同一套格式、同一套版本化，加载后与内置接口没有区别（<code>source</code> 字段区分来源）。
+            随项目发布的就这十个，放在 <code>capabilities/builtin/</code>，进 git、走 review。
+            <b>表里只有能力与它的出口</b>——没有 <code>kind</code>，因为 <code>kind</code> 是节点侧推导出来的，不属于能力本身。
+            <b>出口名由这张表给定，节点只能声明、不能扩展</b>——声明 <code>review@1</code> 就必须两个出口都能走，不允许只做 <code>fix</code>。
+            用户自己的能力放中枢配置目录，同一套格式、同一套版本化，加载后与内置能力没有区别（<code>source</code> 字段区分来源）。
           </p>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
-                  <th>接口</th>
-                  <th><code>kind</code></th>
+                  <th>能力</th>
                   <th><code>outputs</code></th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
                   <td><code>github@1</code></td>
-                  <td><code>origin</code></td>
                   <td><code>pr_opened</code> / <code>pr_merged</code> / <code>issue_opened</code></td>
                 </tr>
                 <tr>
                   <td><code>cron@1</code></td>
-                  <td><code>origin</code></td>
                   <td><code>tick</code></td>
                 </tr>
                 <tr>
                   <td><code>watch@1</code></td>
-                  <td><code>origin</code></td>
                   <td><code>changed</code></td>
                 </tr>
                 <tr>
                   <td><code>http@1</code></td>
-                  <td><code>origin</code></td>
                   <td><code>received</code></td>
                 </tr>
                 <tr>
                   <td><code>review@1</code></td>
-                  <td><code>pipe</code></td>
                   <td><code>fix</code> / <code>clean</code></td>
                 </tr>
                 <tr>
                   <td><code>implement@1</code></td>
-                  <td><code>pipe</code></td>
                   <td><code>verify</code> / <code>give_up</code></td>
                 </tr>
                 <tr>
                   <td><code>test@1</code></td>
-                  <td><code>pipe</code></td>
                   <td><code>pass</code> / <code>fail</code></td>
                 </tr>
                 <tr>
                   <td><code>notify.phone@1</code></td>
-                  <td><code>end</code></td>
                   <td>—</td>
                 </tr>
                 <tr>
                   <td><code>notify.webhook@1</code></td>
-                  <td><code>end</code></td>
                   <td>—</td>
                 </tr>
                 <tr>
                   <td><code>log@1</code></td>
-                  <td><code>end</code></td>
                   <td>—</td>
                 </tr>
               </tbody>
@@ -218,9 +208,9 @@
           </div>
 
           <p class="prose">
-            注册时校验三件事：接口存在（否则 <code>unknown_interface</code>）、版本受支持（<code>unsupported_interface_version</code>）、
-            <code>kind</code> 与接口声明一致（<code>kind_mismatch</code>，<code>notify.phone</code> 只能被 <code>end</code> 实现）。
-            派发时多一步：<code>params</code> 不符合目标接口的 <code>params_schema</code> 就<b>不建任务</b>，记 <code>pruned / reason=param_schema</code>。
+            注册时校验两件事：能力存在（否则 <code>unknown_capability</code>）、版本受支持（<code>unsupported_capability_version</code>）。
+            <b>不存在「kind 不符」这种错</b>——<code>kind</code> 是推导出来的，不存两份就不可能不符。
+            派发时多一步：<code>params</code> 不符合目标能力的 <code>params_schema</code> 就<b>不建任务</b>，记 <code>pruned / reason=param_schema</code>。
           </p>
 
           <h2>本期不做的</h2>
@@ -251,12 +241,12 @@
                 <tr>
                   <td>收集 / <code>join</code></td>
                   <td>要回答「那几件事都回来了吗」，得引入批次、计数、菱形依赖、部分失败语义，是整套新状态机。</td>
-                  <td>等「执行器内部并行」这个替代方案被反复抱怨不够用时，再单独设计</td>
+                  <td>等「节点内部并行」这个替代方案被反复抱怨不够用时，再单独设计</td>
                 </tr>
                 <tr>
-                  <td>接口市场 / 接口继承 / 接口组合</td>
-                  <td><b>不做。</b>市场要的是发布、签名、信任与撤权；继承和组合会逼出「一个接口有多个父接口」的合并语义——<code>outputs</code> 该取并集还是交集、<code>params_schema</code> 冲突怎么裁，一套都答不上来。<b>先把单一层级的契约做稳</b>：一个接口就是一份平铺的定义，没有父、没有引用、没有拼装。</td>
-                  <td>等内置接口+自定义接口这一层被真实用满、且出现「同义接口反复重复」的具体案例时再谈；届时也只是复制粘贴的成本被量出来了</td>
+                  <td>能力组合 / 子流程复用</td>
+                  <td><b>不做。</b><b>能力是原子</b>：它是「一个动作 + 一组可能的出口」，不包含其它能力，也没有父、没有引用、没有拼装——这样 <code>outputs</code> 才是封闭集合，查表才不需要展开一层嵌套。<b>组合/复用是同一块空缺</b>（把几条链当一个动作调），真要做得先答「参数怎么传、出口怎么合并、内部跳数算不算 hop」，一套都还答不上来。这也是组合能力的预留位置：将来若支持，就在这里开口，而不是给单个能力加父能力。</td>
+                  <td>等内置能力 + 自定义能力这一层被真实用满、且出现「同几条链反复手写」的具体案例时再谈；届时也先量出复制粘贴的成本</td>
                 </tr>
                 <tr>
                   <td><code>batching</code></td>
@@ -271,12 +261,12 @@
                 <tr>
                   <td>任意代码执行</td>
                   <td>中枢一旦能存代码，就回到「中枢知道要跑什么」，安全边界直接失效。</td>
-                  <td>不做。需要复杂逻辑就在执行器本地写成一个实现了已定义接口的能力</td>
+                  <td>不做。需要复杂逻辑就在节点本地写成一个声明了已定义能力的东西</td>
                 </tr>
                 <tr>
                   <td>中枢存第三方密钥</td>
-                  <td>中枢存谁的密钥，谁就有动机把中枢变成攻击目标；凭据留在执行器侧才符合边界。</td>
-                  <td>不做。集成需要凭据时，凭据由执行器自身环境提供</td>
+                  <td>中枢存谁的密钥，谁就有动机把中枢变成攻击目标；凭据留在节点侧才符合边界。</td>
+                  <td>不做。集成需要凭据时，凭据由节点自身环境提供</td>
                 </tr>
                 <tr>
                   <td>大量第三方集成</td>
@@ -297,11 +287,6 @@
                   <td>人工审批环节</td>
                   <td>审批需要挂起态、超时策略、审批人身份与通知重试，是另一套生命周期。</td>
                   <td>等「中断型任务」语义设计完成后再做，先用通知 + 人工触发替代</td>
-                </tr>
-                <tr>
-                  <td>子流程复用</td>
-                  <td>复用要求参数化与版本引用，会逼出模块系统，复杂度陡增。</td>
-                  <td>能力数量到需要抽公共部分的规模时再做，届时复用接口层与图配置版本对象</td>
                 </tr>
               </tbody>
             </table>
@@ -334,7 +319,7 @@
           </div>
 
           <p class="prose" style="margin-top: 18px">
-            没有收集，怎么实现「等一组都完成」？<strong>放在执行器内部。</strong>A 在自己进程内并行、自己等待、自己汇总，最后回报中枢一个 result；对中枢来说这始终是一个任务。代价是 A 内部那层并行在 trace 上不可见。
+            没有收集，怎么实现「等一组都完成」？<strong>放在节点内部。</strong>A 在自己进程内并行、自己等待、自己汇总，最后回报中枢一个 result；对中枢来说这始终是一个任务。代价是 A 内部那层并行在 trace 上不可见。
           </p>
 
           <h2>预留的扩展点</h2>
@@ -350,11 +335,11 @@
               </dd>
             </div>
             <div class="def">
-              <dt>接口子集实现 <code>partial</code> · 预留但本期明确禁止</dt>
+              <dt>能力子集声明 <code>partial</code> · 预留但本期明确禁止</dt>
               <dd>
-                位置预留在 <code>capabilities</code> 表：主键是 <code>(runner_id, interface_id)</code>，将来真要放宽，加一列 <code>partial: true</code> 就能表达「我实现了 <code>review@1</code> 但只会走 <code>fix</code>」，行的形状不用改。
-                <b>但本期明确不做</b>：一旦允许子集，<code>edges</code> 里查到的边可能对这台机器不存在对应出口，
-                就重新引入了「查表命中、却派不出去」的分叉风险——而收拢出口命名权正是加接口层要解决的那件事。要单独能力就定义新接口，不要拿子集当快捷键。
+                位置预留在 <code>node_capabilities</code> 表：主键是 <code>(node_id, capability_id)</code>，将来真要放宽，加一列 <code>partial: true</code> 就能表达「我声明了 <code>review@1</code> 但只会走 <code>fix</code>」，行的形状不用改。
+                <b>但本期明确不做</b>：一旦允许子集，<code>edges</code> 里查到的边可能对这个节点不存在对应出口，
+                就重新引入了「查表命中、却派不出去」的分叉风险——而收拢出口命名权正是「能力先定义」要解决的那件事。要单独能力就定义新能力，不要拿子集当快捷键。
               </dd>
             </div>
             <div class="def">
@@ -366,7 +351,7 @@
             <div class="def">
               <dt>动态扇出 <code>fanout</code> · 预留位置</dt>
               <dd>
-                位置留在两处：一是 <code>edges</code> 表天然就是 N 对 N——一行变多行就是变宽，不需要新的图结构；二是执行器回报与派生新事件走<b>同一个上报入口</b>，以后要加新的派生类型，只需在载荷里加一个帧，不动连接、鉴权与重试逻辑。
+                位置留在两处：一是 <code>edges</code> 表天然就是 N 对 N——一行变多行就是变宽，不需要新的图结构；二是节点回报与派生新事件走<b>同一个上报入口</b>，以后要加新的派生类型，只需在载荷里加一个帧，不动连接、鉴权与重试逻辑。
               </dd>
             </div>
           </dl>

@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -73,8 +73,8 @@
           </p>
 
           <p class="prose" style="font-size: 12.5px">
-            共 98 条。跳到：
-            <a href="#g-iface">接口</a> · <a href="#g-node">节点与执行器</a> · <a href="#g-cap">能力与出口</a> · <a href="#g-task">任务</a> ·
+            共 95 条。跳到：
+            <a href="#g-cdef">能力定义</a> · <a href="#g-node">节点</a> · <a href="#g-cap">能力与出口</a> · <a href="#g-task">任务</a> ·
             <a href="#g-runtime">运行时</a> · <a href="#g-safety">安全与限额</a> · <a href="#g-version">版本</a> ·
             <a href="#g-event">事件与行程</a> · <a href="#g-prefix">前缀速查</a>
           </p>
@@ -83,91 +83,91 @@
             本页只收当前模型的词汇。旧模型的求值类名词已整体作废，不在此列——若在别的文档里看到它们，按 <code>_MODEL-V2.md</code> 的废弃表处理。
           </p>
 
-          <h2 id="g-iface">接口</h2>
+          <h2 id="g-cdef">能力定义</h2>
           <p class="prose" style="font-size: 12.5px">
-            这一组是四层里最上面的一层。<b>先把词序记住：接口 → 能力 → 执行器 → 图</b>，
-            下面的词条都只在这个方向上解释：接口定义契约，能力是执行器对它的实现，边只连接口。
+            这一组是最底的一层，也是最原始的一层。<b>先把词序记住：能力定义 → 节点 → 图</b>，
+            下面的词条都只在这个方向上解释：能力先由中枢定义，节点只能声明自己有哪些已定义的，边只连能力。
           </p>
           <dl class="defs">
             <div class="def">
-              <dt>接口 <code>interface</code></dt>
-              <dd>一份契约，由中枢侧定义并版本化：<code>name@version</code> + <code>kind</code> + <code>params_schema</code> + <code>outputs</code>。<strong>出口名只能来自这里</strong>——执行器没有命名权，只能说「我实现了哪个接口」。存在 <code>interface_versions</code> 表，append-only。</dd>
+              <dt>能力定义 <code>capability</code></dt>
+              <dd>一份由中枢提前写好的定义：<code>name@version</code> + <code>params_schema</code> + <code>outputs</code>。<strong>出口名只能来自这里</strong>——节点没有命名权，只能说「我声明了哪个能力」。<b>它是最小的原子</b>：一个动作 + 一组可能的出口，不包含其它能力。<b>定义里没有 <code>kind</code></b>——那是节点侧推导的。存在 <code>capability_versions</code> 表，append-only。</dd>
             </div>
             <div class="def">
-              <dt>接口版本 <code>name@version</code></dt>
-              <dd>接口的具名引用，如 <code>review@1</code>。<strong>两个版本就是两个接口</strong>：<code>review@1</code> 与 <code>review@2</code> 可并存，旧机器继续实现 <code>@1</code>，迁移期不强制升级。代价是图里同名接口会出现两个版本，所以<b>控制台必须显式显示版本号</b>。</dd>
+              <dt>能力版本 <code>capability@version</code></dt>
+              <dd>能力的具名引用，如 <code>review@1</code>。<strong>两个版本就是两个能力定义</strong>：<code>review@1</code> 与 <code>review@2</code> 可并存，旧节点继续声明 <code>@1</code>，迁移期不强制升级。代价是图里同名能力会出现两个版本，所以<b>控制台必须显式显示版本号</b>。</dd>
             </div>
             <div class="def">
               <dt>参数结构 <code>params_schema</code></dt>
-              <dd>接口定义里的 JSON Schema。派发前用它校验 <code>params</code>，<strong>不合格就不建任务</strong>。它是「参数不对」与「图不对」「行为不对」区分开的那一层——没有它，参数错误会被当成分支没走到。</dd>
+              <dd>能力定义里的 JSON Schema。派发前用它校验 <code>params</code>，<strong>不合格就不建任务</strong>。它是「参数不对」与「图不对」「行为不对」区分开的那一层——没有它，参数错误会被当成分支没走到。</dd>
             </div>
             <div class="def">
-              <dt>内置接口 <code>builtin</code></dt>
-              <dd>随项目发布的接口（<code>interfaces/builtin/</code>），由项目维护、进 git 走 review。本期共 10 个：<code>github</code> / <code>cron</code> / <code>watch</code> / <code>http</code> / <code>review</code> / <code>implement</code> / <code>test</code> / <code>notify.phone</code> / <code>notify.webhook</code> / <code>log</code>。表里的 <code>source = builtin</code>。</dd>
+              <dt>出口集 <code>outputs</code></dt>
+              <dd>能力定义里那句「这个能力可能怎么结束」，如 <code>[fix, clean]</code>。<strong>它是契约，不是申报</strong>，节点无权增减。它同时是节点 <code>kind</code> 的推导依据：<code>outputs</code> 全为空的能力只能把节点推成 <code>end</code>。</dd>
             </div>
             <div class="def">
-              <dt>自定义接口 <code>custom</code></dt>
-              <dd>用户自己在中枢配置目录里追加的接口。同一套格式、同一套版本化，<strong>加载后与内置没有区别</strong>，只靠 <code>source = custom</code> 区分来源。</dd>
+              <dt>内置能力 <code>builtin</code></dt>
+              <dd>随项目发布的能力（<code>capabilities/builtin/</code>），由项目维护、进 git 走 review。本期共 10 个：<code>github</code> / <code>cron</code> / <code>watch</code> / <code>http</code> / <code>review</code> / <code>implement</code> / <code>test</code> / <code>notify.phone</code> / <code>notify.webhook</code> / <code>log</code>。表里的 <code>source = builtin</code>。</dd>
             </div>
             <div class="def">
-              <dt>未知接口 <code>unknown_interface</code></dt>
-              <dd>执行器上报的 <code>implements</code> 指向一个中枢里不存在的接口。<strong>拒绝该能力，不自动创建同名接口</strong>——接口必须先在 git 里有定义。</dd>
+              <dt>自定义能力 <code>custom</code></dt>
+              <dd>用户自己在中枢配置目录里追加的能力。同一套格式、同一套版本化，<strong>加载后与内置没有区别</strong>，只靠 <code>source = custom</code> 区分来源。</dd>
             </div>
             <div class="def">
-              <dt>节点类型不符 <code>kind_mismatch</code></dt>
-              <dd>执行器声明的 <code>kind</code> 与接口声明的 <code>kind</code> 不一致，如拿 <code>pipe</code> 去实现 <code>notify.phone</code>（<code>end</code>）。注册时直接拒绝。</dd>
+              <dt>未知能力 <code>unknown_capability</code></dt>
+              <dd>节点声明的能力指向一个中枢里不存在的定义。<strong>拒绝该声明，不自动创建同名能力</strong>——能力必须先在 git 里有定义。</dd>
             </div>
             <div class="def">
-              <dt>版本不受支持 <code>unsupported_interface_version</code></dt>
-              <dd>接口名在、但那个版本不在。和 <code>unknown_interface</code> 分开报，是因为修法不同：一个是名字写错，一个是版本号写错。</dd>
+              <dt>版本不受支持 <code>unsupported_capability_version</code></dt>
+              <dd>能力名在、但那个版本不在。和 <code>unknown_capability</code> 分开报，是因为修法不同：一个是名字写错，一个是版本号写错。</dd>
             </div>
             <div class="def">
               <dt>参数不合格 <code>param_schema</code></dt>
-              <dd>剪枝原因之一：<code>params</code> 没通过目标接口的 <code>params_schema</code>，<strong>不建任务</strong>，trace 上记 <code>pruned / reason=param_schema</code>。与 <code>no_edge</code> 区分：那是图里没这行边，这是边在、参数不对。</dd>
+              <dd>剪枝原因之一：<code>params</code> 没通过目标能力的 <code>params_schema</code>，<strong>不建任务</strong>，trace 上记 <code>pruned / reason=param_schema</code>。与 <code>no_edge</code> 区分：那是图里没这行边，这是边在、参数不对。</dd>
             </div>
           </dl>
 
-          <h2 id="g-node">节点与执行器</h2>
+          <h2 id="g-node">节点</h2>
           <dl class="defs">
             <div class="def">
-              <dt>节点 Node <code>node</code></dt>
-              <dd>参与流转的一个实体，按端口形状三选一：<code>origin</code> / <code>pipe</code> / <code>end</code>。没有第四种。<b>它不是机器</b>——机器见下面的「执行器」。</dd>
+              <dt>节点 <code>node</code></dt>
+              <dd>参与流转的一台机器：<b>一份身份 + 若干实例</b>，本地持有一批 <code>argv</code> 与凭据。它<strong>只声明自己有哪些已定义的能力</strong>，不定义能力、不命名出口。存在 <code>nodes</code> 表。</dd>
             </div>
             <div class="def">
               <dt>种类 <code>kind</code></dt>
-              <dd>节点在链上的位置，按端口分：<code>origin</code>（只出）、<code>pipe</code>（有进有出）、<code>end</code>（只进）。</dd>
+              <dd><b>推导的，不手写。</b>由节点声明的能力自动算出：全部 <code>outputs</code> 为空 → <code>end</code>；有非空 → <code>pipe</code>；没有任何节点声明它 → <code>origin</code>。所以不存在「写错 kind」这种配置，<b>也不会有一类「kind 不符」的校验错误</b>——不存两份就不可能不符。</dd>
             </div>
             <div class="def">
               <dt>源头、触发器 <code>origin</code></dt>
-              <dd>只有出口的节点，负责产生事件：GitHub webhook、cron、watch、外部 API。它没有入边，所以永远不会被派任务。</dd>
+              <dd>只有出口的位置，负责产生事件：GitHub webhook、cron、watch、外部 API。<b>它不是一台机器</b>——没有任何节点声明那个能力，事件本身就是链的起点，所以永远不会被派任务。</dd>
             </div>
             <div class="def">
               <dt>管道 <code>pipe</code></dt>
-              <dd>有进有出的节点：<code>review</code> / <code>implement</code> / <code>test</code>。任务落在它身上，跑完必须回报 <code>out</code>。</dd>
+              <dd>有进有出的节点，比如声明了 <code>review@1</code> / <code>implement@1</code> / <code>test@1</code> 的机器——这三个能力的 <code>outputs</code> 都非空。任务落在它身上，跑完必须回报 <code>out</code>。</dd>
             </div>
             <div class="def">
               <dt>终点 <code>end</code></dt>
-              <dd>只有入口的节点，跑完不产生下游：推手机、写日志。<code>outputs</code> 为空数组，<code>out</code> 恒为 <code>null</code>。</dd>
+              <dd>只有入口的节点，跑完不产生下游：推手机、写日志。它声明的能力全部 <code>outputs</code> 为空，所以 <code>out</code> 恒为 <code>null</code>。</dd>
             </div>
             <div class="def">
               <dt>推手机</dt>
-              <dd>最常见的一个 <code>end</code> 接口（<code>notify.phone</code>）的实现。尽力而为、可丢、不回报 result，没有租约也没有重试。</dd>
+              <dd>最常见的一个 <code>end</code> 节点，能力是 <code>notify.phone</code>。尽力而为、可丢、不回报 result，没有租约也没有重试。</dd>
             </div>
             <div class="def">
               <dt>能力清单 <code>manifest</code></dt>
-              <dd>执行器上报的「我实现了哪些接口」：<code>implements: [{interface, version}]</code> 加各自的 <code>sticky</code> / <code>idempotent</code> 等声明。<strong>不写 <code>outputs</code></strong>（出口由接口给定），<strong>不含 argv 原文</strong>。</dd>
+              <dd>节点上报的「我声明了哪些能力」：<code>capabilities: [{capability, version}]</code> 加各自的 <code>sticky</code> / <code>idempotent</code> 等声明。<strong>不写 <code>outputs</code></strong>（出口由能力定义给定），<strong>不含 argv 原文</strong>，也不写 <code>kind</code>（推导）。</dd>
             </div>
             <div class="def">
-              <dt>执行器 id <code>runner_id</code></dt>
-              <dd>一台执行器的稳定标识，和凭据一一对应。改名字不改 id。</dd>
+              <dt>节点 id <code>node_id</code></dt>
+              <dd>一台节点的稳定标识，和凭据一一对应。改名字不改 id。<b>图里从不出现它</b>——边只连能力，换节点不影响图。</dd>
             </div>
             <div class="def">
-              <dt>实例 <code>runner_instance</code></dt>
-              <dd>执行器进程（手）。一台执行器可以跑多个实例，各自申报 <code>concurrency</code> / <code>inflight</code> / <code>status</code>。</dd>
+              <dt>实例 <code>node_instance</code></dt>
+              <dd>节点进程（手）。一台节点可以跑多个实例，各自申报 <code>concurrency</code> / <code>inflight</code> / <code>status</code>。存在 <code>node_instances</code> 表。</dd>
             </div>
             <div class="def">
               <dt>标签 <code>label</code></dt>
-              <dd>中枢赋给执行器的分组名，用来圈定候选实例。接口实现决定「能不能做」，标签决定「让谁做」。</dd>
+              <dd>中枢赋给节点的分组名，用来圈定候选实例。<b>能力声明决定「能不能做」，标签决定「让谁做」。</b></dd>
             </div>
             <div class="def">
               <dt>在跑数 <code>inflight</code></dt>
@@ -175,86 +175,75 @@
             </div>
             <div class="def">
               <dt>并发 <code>concurrency</code></dt>
-              <dd>实现级并发上限，执行器本地声明。实际并发取三层上限的 <code>min</code>。</dd>
+              <dd>能力级并发上限，节点本地声明。实际并发取三层上限的 <code>min</code>。</dd>
             </div>
             <div class="def">
               <dt><code>max_instances</code></dt>
-              <dd>一台执行器允许跑几个实例，默认 20。防的是凭据扩散：每个实例一份 token，越多越难收。</dd>
+              <dd>一台节点允许跑几个实例，默认 20。防的是凭据扩散：每个实例一份 token，越多越难收。</dd>
             </div>
           </dl>
 
           <h2 id="g-cap">能力与出口</h2>
+          <p class="prose" style="font-size: 12.5px">
+            上一组说的是「能力定义长什么样」，这一组说的是「它怎么被用起来」：节点怎么声明、出口怎么选、边怎么查。
+            <b>「能力」本身不在这里重复定义</b>（见 <a href="#g-cdef">能力定义</a> 组）——一个词只有一条。
+          </p>
           <dl class="defs">
             <div class="def">
-              <dt>能力 <code>capability</code></dt>
-              <dd>
-                不是「我能做什么」，而是<strong>某台执行器对某个接口的实现</strong>，就是一个二元组 <code>(runner_id, interface_id)</code>，存在 <code>capabilities</code> 表。
-                <strong>它不自带出口</strong>——出口是它实现的接口给的。路由的单位是<strong>接口</strong>，不是能力；能力决定「谁能跑」，接口决定「跑完往哪走」。
-              </dd>
-            </div>
-            <div class="def">
-              <dt>实现 <code>implements</code></dt>
-              <dd>执行器在本地配置里声明「我实现了哪个接口」，如 <code>implements: review@1</code>。<strong>它不再写 <code>outputs</code></strong>，出口集合由接口给定；也<strong>不允许只实现一部分</strong>——实现 <code>review@1</code> 就必须两个出口都能走。</dd>
+              <dt>声明能力 <code>capabilities[]</code></dt>
+              <dd>节点在本地配置里声明「我有哪些已定义的能力」，如 <code>review@1</code>。<strong>它不写 <code>outputs</code></strong>，出口集合由能力定义给定；也<strong>不允许只声明一部分出口</strong>——声明 <code>review@1</code> 就必须两个出口都能走。</dd>
             </div>
             <div class="def">
               <dt>出口 <code>output</code> / <code>port</code></dt>
-              <dd>接口定义里的一个命名点（<code>outputs</code> 数组的一个元素）。跑完之后执行器选一个，走法就是回报它的名字。<strong>它是字符串，不是条件。</strong></dd>
+              <dd>能力定义里的一个命名点（<code>outputs</code> 数组的一个元素）。跑完之后节点选一个，走法就是回报它的名字。<strong>它是字符串，不是条件。</strong>路由的原子坐标是 <code>(能力, 出口)</code>。</dd>
             </div>
             <div class="def">
               <dt>边 <code>edge</code></dt>
-              <dd><code>(from_interface, from_port) → to_interface</code> 三元组，路由表的一行。<strong>两端都是接口，不引用任何机器</strong>——换机器不影响图。</dd>
+              <dd><code>(from_capability, from_port) → to_capability</code> 三元组，路由表的一行。<strong>两端都是能力定义，不引用任何机器</strong>——换节点不影响图。</dd>
             </div>
             <div class="def">
               <dt>出口表 <code>edges</code></dt>
-              <dd>全部边的集合，<strong>路由的唯一依据</strong>。主键 <code>(from_interface, from_port, to_interface)</code>，查询是一次索引命中。存的是 <code>interface_versions.id</code>（<code>ifc_...</code>）而不是 <code>name@version</code>，所以改名、加版本都不影响已有的边。</dd>
+              <dd>全部边的集合，<strong>路由的唯一依据</strong>。主键 <code>(from_capability, from_port, to_capability)</code>，查询是一次索引命中。存的是 <code>capability_versions.id</code>（<code>cap_...</code>）而不是 <code>name@version</code>，所以改名、加版本都不影响已有的边。</dd>
             </div>
             <div class="def">
-              <dt><code>from_interface</code></dt>
-              <dd>边的起点，产出口的那个接口（<code>ifc_...</code>）。触发器的这一端也走接口，如 <code>github@1</code>。</dd>
+              <dt><code>from_capability</code></dt>
+              <dd>边的起点，产出口的那个能力（<code>cap_...</code>）。触发器的这一端也是能力定义，如 <code>github@1</code>。</dd>
             </div>
             <div class="def">
               <dt><code>from_port</code></dt>
-              <dd>边从哪个出口出发。<strong>必须是 <code>from_interface.outputs</code> 里的一个</strong>，静态检查会拒给不存在的出口名。触发器的这一列就是接口的出口名，如 <code>pr_opened</code>。</dd>
+              <dd>边从哪个出口出发。<strong>必须是 <code>from_capability.outputs</code> 里的一个</strong>，静态检查会拒给不存在的出口名。触发器的这一列就是能力的出口名，如 <code>pr_opened</code>。</dd>
             </div>
             <div class="def">
-              <dt><code>to_interface</code></dt>
-              <dd>边的终点，下一个接口（<code>ifc_...</code>）。同一个 <code>(from_interface, from_port)</code> 可以有 N 行，就是 N 个下游。</dd>
-            </div>
-            <div class="def">
-              <dt>出口集 <code>outputs</code></dt>
-              <dd>接口定义里那句「这个接口可能怎么结束」，<strong>它是契约，不是申报</strong>。执行器无权增减——<code>review@1</code> 就只能是 <code>[fix, clean]</code>。</dd>
+              <dt><code>to_capability</code></dt>
+              <dd>边的终点，下一个能力（<code>cap_...</code>）。同一个 <code>(from_capability, from_port)</code> 可以有 N 行，就是 N 个下游。</dd>
             </div>
             <div class="def">
               <dt>源的出口声明 <code>emits</code></dt>
-              <dd>触发器在 <code>config.yaml</code> 里声明「我产出哪些事件、各通向哪些接口」。中枢只收到这些事实，不收到任何 webhook 逻辑。</dd>
+              <dd>触发器在 <code>config.yaml</code> 里声明「我产出哪些事件、各通向哪些能力」。中枢只收到这些事实，不收到任何 webhook 逻辑。</dd>
             </div>
             <div class="def">
               <dt>路由 routing</dt>
-              <dd>取 <code>(source, type)</code> 或 <code>(接口, out)</code> 当键，查 <code>edges</code> 拿 N 行，再用目标接口的 <code>params_schema</code> 校验参数、按接口找执行器。<strong>没有条件求值、没有优先级、没有表达式。</strong></dd>
+              <dd>取 <code>(source, type)</code> 或 <code>(能力, out)</code> 当键，查 <code>edges</code> 拿 N 行，再用目标能力的 <code>params_schema</code> 校验参数、按能力找声明了它的节点。<strong>没有条件求值、没有优先级、没有表达式。</strong></dd>
             </div>
             <div class="def">
               <dt>参数表 <code>argv</code></dt>
-              <dd>每个接口实现对应的真实参数数组，写在执行器本地 <code>~/.anotifyd/config.yaml</code> 的 <code>implements[].argv</code>，<strong>永不上传</strong>。中枢不知道它长什么样。</dd>
+              <dd>每个能力声明对应的真实参数数组，写在节点本地 <code>~/.anotifyd/config.yaml</code> 的 <code>capabilities[].argv</code>，<strong>永不上传</strong>。中枢不知道它长什么样。</dd>
             </div>
             <div class="def">
               <dt><code>execve</code></dt>
               <dd>唯一执行方式：拿 argv 数组直接 exec，不经 shell。禁止 <code>/bin/sh -c</code>，所以参数不会被二次解析。</dd>
             </div>
             <div class="def">
-              <dt>未知接口 <code>unknown_interface</code></dt>
-              <dd>中枢把某个接口派给这台执行器，但它没在 <code>implements</code> 里声明实现过。中枢不猜、不改写、不换一个实现了该接口的执行器重试。</dd>
-            </div>
-            <div class="def">
               <dt>幂等 <code>idempotent</code></dt>
-              <dd>接口实现是否只读无副作用，默认 <code>false</code>。它决定执行器下线时任务怎么收场：<code>true</code> 直接放弃，<code>false</code> 放弃加告警加人工确认。</dd>
+              <dd>能力声明是否只读无副作用，默认 <code>false</code>。它决定节点下线时任务怎么收场：<code>true</code> 直接放弃，<code>false</code> 放弃加告警加人工确认。</dd>
             </div>
             <div class="def">
               <dt>可续传 <code>resumable</code></dt>
-              <dd>接口实现对应的命令是否支持断点续传。<code>true</code> 时执行器下线可重派到新机器，从中断点继续。</dd>
+              <dd>能力声明对应的命令是否支持断点续传。<code>true</code> 时节点下线可重派到新机器，从中断点继续。</dd>
             </div>
             <div class="def">
-              <dt>粘性 <code>manifest.implements[].sticky</code></dt>
-              <dd>这个实现在派发时是否要求固定实例（共享工作目录、增量编译）。<strong>默认关闭</strong>——结果存在中枢，下游不需要回原机器。</dd>
+              <dt>粘性 <code>manifest.capabilities[].sticky</code></dt>
+              <dd>这个能力在派发时是否要求固定实例（共享工作目录、增量编译）。<strong>默认关闭</strong>——结果存在中枢，下游不需要回原机器。</dd>
             </div>
           </dl>
 
@@ -262,7 +251,7 @@
           <dl class="defs">
             <div class="def">
               <dt>任务 Task <code>task</code></dt>
-              <dd>「让某个接口实现跑一次」的记录加它的执行状态，同时就是 trace 上的一个 span。最小调度单位。</dd>
+              <dd>「让某个能力在某个节点上跑一次」的记录加它的执行状态，同时就是 trace 上的一个 span。最小调度单位。</dd>
             </div>
             <div class="def">
               <dt>任务 id <code>tsk_</code></dt>
@@ -270,15 +259,15 @@
             </div>
             <div class="def">
               <dt>派发 <code>dispatch</code></dt>
-              <dd>查表得到 N 个接口，<strong>全部</strong>建任务（每个只建一个，不是每个实现建一个），然后按接口找实现了它的执行器。不择一、不排序、不丢弃。</dd>
+              <dd>查表得到 N 个能力，<strong>全部</strong>建任务（每个只建一个，不是每个节点建一个），然后按能力找声明了它的节点。不择一、不排序、不丢弃。</dd>
             </div>
             <div class="def">
               <dt>回报 <code>report</code></dt>
-              <dd>执行器跑完提交 <code>status</code> + <code>out</code>（外加 summary / artifacts）。中枢只认回报，不反推业务语义。</dd>
+              <dd>节点跑完提交 <code>status</code> + <code>out</code>（外加 summary / artifacts）。中枢只认回报，不反推业务语义。</dd>
             </div>
             <div class="def">
               <dt>结果 <code>result</code></dt>
-              <dd>终态时执行器回报的内容，上限 8KB。更大的输出留在执行器本地，回执只带截断后的结果和本地日志位置。</dd>
+              <dd>终态时节点回报的内容，上限 8KB。更大的输出留在节点本地，回执只带截断后的结果和本地日志位置。</dd>
             </div>
             <div class="def">
               <dt>出口回报 <code>out</code></dt>
@@ -294,7 +283,7 @@
             </div>
             <div class="def">
               <dt>生命周期 <code>lifecycle</code></dt>
-              <dd>接口实现可声明四项：<code>expiresInSec</code> 硬过期到点即放弃绝不重派 / <code>retryable</code> 是否允许中枢重派 / <code>maxAttempts</code> 重派上限 / <code>resultTtlSec</code> 到期只清 result 不清行。</dd>
+              <dd>能力声明可声明四项：<code>expiresInSec</code> 硬过期到点即放弃绝不重派 / <code>retryable</code> 是否允许中枢重派 / <code>maxAttempts</code> 重派上限 / <code>resultTtlSec</code> 到期只清 result 不清行。</dd>
             </div>
           </dl>
 
@@ -317,11 +306,11 @@
             </div>
             <div class="def">
               <dt>接单 <code>ack</code></dt>
-              <dd>接单确认，<strong>不是完成</strong>。执行器说「这单我接了」，租约才正式计时；结束只看 result 回报。</dd>
+              <dd>接单确认，<strong>不是完成</strong>。节点说「这单我接了」，租约才正式计时；结束只看 result 回报。</dd>
             </div>
             <div class="def">
               <dt>心跳 heartbeat</dt>
-              <dd>每 10s 一次续租，不是保活探针。TTL 30s 除心跳 10s = 允许连丢两次；判定由中枢做，不由执行器自报。</dd>
+              <dd>每 10s 一次续租，不是保活探针。TTL 30s 除心跳 10s = 允许连丢两次；判定由中枢做，不由节点自报。</dd>
             </div>
             <div class="def">
               <dt><code>attempts</code></dt>
@@ -329,7 +318,7 @@
             </div>
             <div class="def">
               <dt><code>internal_attempts</code></dt>
-              <dd>执行器在机器上自己重试的次数，<strong>不消耗中枢 attempts</strong>。由 <code>manifest.implements[].retries</code> 约束。</dd>
+              <dd>节点在机器上自己重试的次数，<strong>不消耗中枢 attempts</strong>。由 <code>manifest.capabilities[].retries</code> 约束。</dd>
             </div>
             <div class="def">
               <dt>退避 backoff</dt>
@@ -349,15 +338,15 @@
             </div>
             <div class="def">
               <dt>接力 chain</dt>
-              <dd>任务回报的 <code>out</code> 查到 <code>edges</code> 里的一行，就建下一跳任务。同一条 <code>trace_id</code> 延续，<code>hop</code> 加一，<code>path</code> 追加接口名。</dd>
+              <dd>任务回报的 <code>out</code> 查到 <code>edges</code> 里的一行，就建下一跳任务。同一条 <code>trace_id</code> 延续，<code>hop</code> 加一，<code>path</code> 追加能力名。</dd>
             </div>
             <div class="def">
-              <dt>落点表 <code>runner_pins</code></dt>
+              <dt>落点表 <code>node_pins</code></dt>
               <dd>粘性路由的查表结果。首次选完写进去，之后同一 key 一律查表，不重新算。默认派发不碰这张表。</dd>
             </div>
             <div class="def">
               <dt><code>sticky_key</code></dt>
-              <dd>由 trace、目标接口、选择器三段算出的哈希。<b>只在实现声明了 <code>sticky</code> 时使用</b>。</dd>
+              <dd>由 trace、目标能力、选择器三段算出的哈希。<b>只在能力声明了 <code>sticky</code> 时使用</b>。</dd>
             </div>
           </dl>
 
@@ -373,7 +362,7 @@
             </div>
             <div class="def">
               <dt>闸 G3</dt>
-              <dd><code>path</code> 去重：目标接口已在本次行程里就静默剪枝。隐含生效，<strong>不可配</strong>。</dd>
+              <dd><code>path</code> 去重：目标能力已在本次行程里就静默剪枝。隐含生效，<strong>不可配</strong>。</dd>
             </div>
             <div class="def">
               <dt>闸 G4</dt>
@@ -401,7 +390,7 @@
             </div>
             <div class="def">
               <dt>派生凭据 <code>jti</code></dt>
-              <dd>派生 JWT 里的一次性 id。claim 还含 trace / span / hop / maxHop / branchBudget / exp，跳数由中枢签发，执行器改不动。</dd>
+              <dd>派生 JWT 里的一次性 id。claim 还含 trace / span / hop / maxHop / branchBudget / exp，跳数由中枢签发，节点改不动。</dd>
             </div>
             <div class="def">
               <dt><code>branch_nonces</code></dt>
@@ -409,7 +398,7 @@
             </div>
             <div class="def">
               <dt><code>branchBudget</code></dt>
-              <dd>本次派生还剩多少额度，由执行器自主分配。额度用尽必须可见，绝不静默失败。</dd>
+              <dd>本次派生还剩多少额度，由节点自主分配。额度用尽必须可见，绝不静默失败。</dd>
             </div>
             <div class="def">
               <dt><code>budget_exhausted</code></dt>
@@ -417,7 +406,7 @@
             </div>
             <div class="def">
               <dt>凭据 <code>token</code></dt>
-              <dd>执行器唯一凭据，一一对应一个 <code>runner_id</code>。泄漏即继承这台机器全部标签，这是已知代价；可撤销后重发。</dd>
+              <dd>节点唯一凭据，一一对应一个 <code>node_id</code>。泄漏即继承这台机器全部标签，这是已知代价；可撤销后重发。</dd>
             </div>
           </dl>
 
@@ -425,15 +414,15 @@
           <dl class="defs">
             <div class="def">
               <dt><code>graph_versions</code></dt>
-              <dd>出口图的版本表，append-only：<strong>一整张图</strong>（全部 <code>edges</code> 行加各接口的 <code>outputs</code>）存一份快照。图是整体，拆开钉就回答不了「当时有没有这条边」。</dd>
+              <dd>出口图的版本表，append-only：<strong>一整张图</strong>（全部 <code>edges</code> 行加各能力的 <code>outputs</code>）存一份快照。图是整体，拆开钉就回答不了「当时有没有这条边」。</dd>
             </div>
             <div class="def">
               <dt><code>node_manifest_versions</code></dt>
-              <dd>执行器上报的 <code>implements</code> 清单的版本表。执行器不报版本号，中枢按内容算哈希得到版本，所以「声称的实现」和「实际内容」不会分叉。</dd>
+              <dd>节点上报的能力声明清单的版本表。节点不报版本号，中枢按内容算哈希得到版本，所以「声称的能力」和「实际内容」不会分叉。</dd>
             </div>
             <div class="def">
               <dt><code>registry_versions</code></dt>
-              <dd>接口注册表（接口名到参数形状）的版本表。中枢只知道名字，形状的变更也要钉版本。接口自身的定义以 <code>interface_versions</code> 为准，这张表记的是注册侧的视图。</dd>
+              <dd>能力注册表的版本表。中枢只知道能力名，形状的变更也要钉版本。能力自身的定义以 <code>capability_versions</code> 为准，这张表记的是注册侧的视图。</dd>
             </div>
             <div class="def">
               <dt><code>content_hash</code></dt>
@@ -493,7 +482,7 @@
             </div>
             <div class="def">
               <dt>行程 <code>path</code></dt>
-              <dd>从根到<strong>本任务这条具体路径</strong>的接口名序列，用于去重剪枝。不是整条 trace 的接口集合——同一个接口在另一条分支上照样能跑。</dd>
+              <dd>从根到<strong>本任务这条具体路径</strong>的能力名序列，用于去重剪枝。不是整条 trace 的能力集合——同一个能力在另一条分支上照样能跑。</dd>
             </div>
             <div class="def">
               <dt>剪枝 <code>pruned</code></dt>
@@ -501,7 +490,7 @@
             </div>
             <div class="def">
               <dt><code>no_edge</code></dt>
-              <dd>剪枝原因之一：<code>edges</code> 表里查不到 <code>(from_interface, from_port)</code> 这一行。图是静态的，所以这个原因不跑也能知道。</dd>
+              <dd>剪枝原因之一：<code>edges</code> 表里查不到 <code>(from_capability, from_port)</code> 这一行。图是静态的，所以这个原因不跑也能知道。</dd>
             </div>
             <div class="def">
               <dt>抑制 <code>suppressed</code></dt>
@@ -518,7 +507,7 @@
           </dl>
 
           <div class="note">
-            <strong>四个「没做成」别混。</strong><code>pruned</code> 是任务压根没建（表里没有这条边 / 行程里已有该接口 / 参数不合 schema / 被限额挡下）；<code>suppressed</code> 是本来要发的没发；
+            <strong>四个「没做成」别混。</strong><code>pruned</code> 是任务压根没建（表里没有这条边 / 行程里已有该能力 / 参数不合 schema / 被限额挡下）；<code>suppressed</code> 是本来要发的没发；
             <code>failed</code> 是跑过但失败、可重试；<code>abandoned</code> 是不再重试且必须通知。混用任何一个，事后就再也解释不清「这次为什么没发生」。
           </div>
 
@@ -556,19 +545,19 @@
                   <td>任务 id，与 <code>span_id</code> 同值。trace 上的任务 span 就是它。</td>
                 </tr>
                 <tr>
-                  <td><code>ifc_</code></td>
-                  <td>接口版本 interface_versions</td>
-                  <td>接口的一个具体版本，格式 <code>ifc_&lt;UTC&gt;_&lt;hash8&gt;</code>，append-only。<code>edges</code> 与 <code>capabilities</code> 存的都是这个 id。</td>
+                  <td><code>cap_</code></td>
+                  <td>能力版本 capability_versions</td>
+                  <td>能力的一个具体定义版本，格式 <code>cap_&lt;UTC&gt;_&lt;hash8&gt;</code>，append-only。<code>edges</code> 与 <code>node_capabilities</code> 存的都是这个 id。</td>
                 </tr>
                 <tr>
                   <td><code>grf_</code></td>
                   <td>图版本 graph_versions</td>
-                  <td>出口图版本，格式 <code>grf_&lt;UTC&gt;_&lt;hash8&gt;</code>，append-only。一份快照含全部 edges 与 capabilities。</td>
+                  <td>出口图版本，格式 <code>grf_&lt;UTC&gt;_&lt;hash8&gt;</code>，append-only。一份快照含全部 edges 与能力声明。</td>
                 </tr>
                 <tr>
                   <td><code>nmf_</code></td>
                   <td>版本 node_manifest_versions</td>
-                  <td>执行器 <code>implements</code> 清单版本，由内容哈希算出，不由执行器自报。</td>
+                  <td>节点能力声明清单的版本，由内容哈希算出，不由节点自报。</td>
                 </tr>
                 <tr>
                   <td><code>reg_</code></td>
@@ -576,9 +565,14 @@
                   <td>能力注册表版本，例 <code>reg_20261023T101500Z_a1b2c3d4</code>。</td>
                 </tr>
                 <tr>
+                  <td><code>nd_</code></td>
+                  <td>节点 nodes</td>
+                  <td>节点身份 id，注册时由中枢发放，不接受自报、不接受改名。</td>
+                </tr>
+                <tr>
                   <td><code>inst_</code></td>
-                  <td>runner_instances</td>
-                  <td>执行器实例，一台机器可以有多个。带 <code>concurrency</code> 与 <code>inflight</code>。</td>
+                  <td>node_instances</td>
+                  <td>节点实例，一台节点可以有多个。带 <code>concurrency</code> 与 <code>inflight</code>。</td>
                 </tr>
                 <tr>
                   <td><code>fan_</code></td>
