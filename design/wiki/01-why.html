@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -74,7 +74,7 @@
 
           <h2>现状：一条只走一次的单向链</h2>
           <p class="prose">
-            最常见的用法是：本机跑一个 agent，结束时 <code>curl</code> 一下接口，手机收到一条「任务完成」。它能用，但整条链只走一遍，而且每一段都不留痕。
+            最常见的用法是：本机跑一个 agent，结束时 <code>curl</code> 一下回调地址，手机收到一条「任务完成」。它能用，但整条链只走一遍，而且每一段都不留痕。
           </p>
 
           <div class="fig">
@@ -118,44 +118,44 @@
 
           <h3>一、「为什么没触发」说不清</h3>
           <p class="prose">
-            定时没跑、webhook 丢了、下游没接上，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。新模型把这个问题压成了一次查表问答，答案只有四种：<strong>表里没有这一行</strong>、<strong>上游没回报这个出口</strong>、<strong>参数不符合目标接口的 schema</strong>，或者<strong>被 path 剪枝</strong>。四个都能直接从记录里展示出来，不需要推演。
+            定时没跑、webhook 丢了、下游没接上，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。新模型把这个问题压成了一次查表问答，答案只有四种：<strong>表里没有这一行</strong>、<strong>上游没回报这个出口</strong>、<strong>参数不符合目标能力的 schema</strong>，或者<strong>被 path 剪枝</strong>。四个都能直接从记录里展示出来，不需要推演。
           </p>
 
           <div class="grid-2">
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案一 · 图的问题</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                接口 <code>review@1</code> 回报走了出口 <code>fix</code>，但出口表里没有 <code>(review@1, fix)</code> 这一行 —— 所以到这里就是尽头。<strong style="color: var(--text)">表里有没有这一行，一眼能查。</strong>
+                能力 <code>review@1</code> 回报走了出口 <code>fix</code>，但出口表里没有 <code>(review@1, fix)</code> 这一行 —— 所以到这里就是尽头。<strong style="color: var(--text)">表里有没有这一行，一眼能查。</strong>
               </p>
             </div>
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案二 · 行为的问题</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                表里明明有 <code>(review@1, fix)</code> 这一行，但这次实现 <code>review@1</code> 的那台执行器回报的 <code>out</code> 是 <code>null</code> —— 没人走这个出口。不是配置错，是这台执行器这一次选择了到头。
+                表里明明有 <code>(review@1, fix)</code> 这一行，但这次声明 <code>review@1</code> 的那个节点回报的 <code>out</code> 是 <code>null</code> —— 没人走这个出口。不是配置错，是这个节点这一次选择了到头。
               </p>
             </div>
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案三 · 参数的问题</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                边在、出口也对，但 <code>params</code> 过不了目标接口的 <code>params_schema</code>（比如少了必填的 <code>pr</code>）—— <strong style="color: var(--text)">任务压根没建</strong>，记 <code>pruned / reason=param_schema</code>。前两个答案要查记录，这一个在派发前就拦住了。
+                边在、出口也对，但 <code>params</code> 过不了目标能力的 <code>params_schema</code>（比如少了必填的 <code>pr</code>）—— <strong style="color: var(--text)">任务压根没建</strong>，记 <code>pruned / reason=param_schema</code>。前两个答案要查记录，这一个在派发前就拦住了。
               </p>
             </div>
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案四 · 行程的问题</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                边在、参数也对，但这个接口<b>已经在本次行程的 <code>path</code> 里走过</b>（<code>review &rarr; fix &rarr; review</code>）—— 静默剪枝，不报错不停链，但 trace 上记 <code>pruned / reason=path</code>，并指出重复的是哪个接口。
+                边在、参数也对，但这个能力<b>已经在本次行程的 <code>path</code> 里走过</b>（<code>review &rarr; fix &rarr; review</code>）—— 静默剪枝，不报错不停链，但 trace 上记 <code>pruned / reason=path</code>，并指出重复的是哪个能力。
               </p>
             </div>
           </div>
 
           <p class="prose" style="margin-top: 14px">
             <b>四个答案都指向同一件事：不需要跑一遍才能知道原因。</b>参数校验在派发前做，边的存在性在配置期就看得见，
-            出口回报是执行器自己写的，行程是随任务落库的字段——四者都是躺在表里的记录，不是要从日志里推的因果。
+            出口回报是节点自己写的，行程是随任务落库的字段——四者都是躺在表里的记录，不是要从日志里推的因果。
           </p>
 
           <h3>二、长任务一断就没了</h3>
           <p class="prose">
-            几十分钟的 agent 通常挂在 tmux 里，电脑一睡、进程一死，什么都没留下，只能从头再来，也没人知道它死在第几步。任务需要有租约和心跳：执行器挂了，任务显式落到 <code>failed</code> 或 <code>abandoned</code>（不等于成功，默认通知），该重派的重派，结果按 TTL 留存。
+            几十分钟的 agent 通常挂在 tmux 里，电脑一睡、进程一死，什么都没留下，只能从头再来，也没人知道它死在第几步。任务需要有租约和心跳：节点挂了，任务显式落到 <code>failed</code> 或 <code>abandoned</code>（不等于成功，默认通知），该重派的重派，结果按 TTL 留存。
           </p>
 
           <h3>三、凭据被迫放在中枢</h3>
@@ -176,7 +176,7 @@
                 <tr>
                   <td>为什么没触发</td>
                   <td>没有通知，原因未知，只能翻日志</td>
-                  <td>trace 上直接写清是「表里没有 <code>(接口, 出口)</code> 这一行」、「上游没回报出口」还是「参数不符合接口 schema」；因环剪枝另记 <code>pruned</code></td>
+                  <td>trace 上直接写清是「表里没有 <code>(能力, 出口)</code> 这一行」、「上游没回报出口」还是「参数不符合能力 schema」；因环剪枝另记 <code>pruned</code></td>
                 </tr>
                 <tr>
                   <td>长任务中断</td>
@@ -186,7 +186,7 @@
                 <tr>
                   <td>凭据在哪</td>
                   <td>中枢持有密钥，并负责拼命令</td>
-                  <td>argv 只在执行器申报，中枢只发接口名 + 版本 + <code>params</code></td>
+                  <td>argv 只在节点申报，中枢只发能力名 + 版本 + <code>params</code></td>
                 </tr>
               </tbody>
             </table>
@@ -207,15 +207,15 @@
             <div class="def">
               <dt>任意名字当能力</dt>
               <dd>
-                <strong>不是。</strong>接口是白名单：执行器只能说「我实现了 <code>review@1</code>」，不能说「我有一个叫 xxx 的能力、带 yy 和 zz 两个出口」。
-                如果出口名由执行器自己编，两台机器实现同一个 <code>review</code> 却报出两套出口，<code>edges</code> 的 <code>from_port</code> 就不再是封闭集合，查表命中却派不出去——这正是加接口层要堵的洞。
-                要新名字，先在中枢定义一个新接口。
+                <strong>不是。</strong>能力定义是白名单：节点只能说「我声明了 <code>review@1</code>」，不能说「我有一个叫 xxx 的能力、带 yy 和 zz 两个出口」。
+                如果能力名和出口名都由节点自己编，两台机器都叫 <code>review</code> 却报出两套出口，<code>edges</code> 的 <code>from_port</code> 就不再是封闭集合，查表命中却派不出去——这正是「能力必须先定义」要堵的洞。
+                要新名字，先在中枢定义一个能力。
               </dd>
             </div>
             <div class="def">
               <dt>任意代码执行</dt>
               <dd>
-                一旦中枢能下发任意代码，它就成了执行平台，安全边界不复存在；执行器只能实现已定义的接口，命令与 <code>argv</code> 永远留在本机配置里。
+                一旦中枢能下发任意代码，它就成了执行平台，安全边界不复存在；节点只能声明已定义的能力，命令与 <code>argv</code> 永远留在本机配置里。
               </dd>
             </div>
             <div class="def">

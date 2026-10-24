@@ -39,7 +39,7 @@
 | `02-concepts.html` | 核心概念 | Node / Capability / Output / Task / Trace 五个名词、三类节点、一条链怎么连起来 |
 | `03-flow.html` | 一条事件的旅程 | 十步时序，从 webhook 到手机震动 |
 | `04-edges.html` | 能力与出口 | 三个要素、三种节点、edges 表、三方声明、出口选择、可解释性、环 |
-| `05-runners.html` | 节点与执行 | 三类节点、能力注册表、凭据与标签、状态机与租约、节点池、粘性路由、下线分级、生命周期 |
+| `05-nodes.html` | 节点与执行 | kind 推导、能力声明与校验、凭据与标签、状态机与租约、节点池、粘性路由、下线分级 |
 | `06-trace.html` | 可观测与版本 | OTel 对齐、trace/span、为什么没触发、版本钉住 |
 | `07-safety.html` | 安全边界 | 中枢永不下发命令、execve argv、六道闸、删掉规则引擎的安全收益 |
 | `08-scope.html` | 本期范围 | 做什么、不做什么、预留的扩展点 |
@@ -56,14 +56,18 @@
 | `priority` / 优先级择一 | 无（查到的 N 行全部下发） |
 | `action` | 能力 `capability` + 出口 `output` |
 | `terminal`（布尔字段） | `result.out`（出口名或 `null`） |
-| `manifest.commands[]` | `manifest.implements[]` |
-| `manifest.capabilities[].outputs` | 删掉：出口由接口定义，执行器无命名权 |
-| `role` / 角色 | `node` / 节点（链上的位置；机器叫 runner） |
-| `unknown_action` / `unknown_capability` | `unknown_interface` |
-| （无接口层） | **接口 `interface` 先定义**，执行器只能 implements |
-| `rule_id` | 接口名 `name@version` |
+| `manifest.commands[]` | `manifest.capabilities[]`（只报能力名，不报 argv/出口/kind） |
+| `manifest.capabilities[].outputs` | 删掉：出口由能力定义给定，节点无命名权 |
+| `role` / 角色 | `node` / 节点（链上的位置） |
+| `interface` / 接口 | `capability` / 能力（原子；接口只作为将来「组合」的预留） |
+| `implements` | 「声明能力」`capabilities: [review@1]` |
+| `runner` / 执行器 | `node` / 节点 |
+| `runner_id` / `runners` / `runner_instances` / `runner_pins` | `node_id` / `nodes` / `node_instances` / `node_pins` |
+| `interface_versions` / `ifc_` | `capability_versions` / `cap_` |
+| `unknown_interface` | `unknown_capability` |
+| `kind_mismatch` | 概念消失：kind 是推导的，不可能不符 |
+| `rule_id` | 能力名 `name@version`（如 `review@1`） |
 | `rule_versions` / `rty_` 前缀 | `graph_versions` / `grf_` 前缀 |
-| `unknown_action` | `unknown_capability` |
 
 **例外**：`04-edges.html` 和 `07-safety.html` 里有几处刻意保留的「旧模型 vs 新模型」对照说明，那些是对的，别删。
 
@@ -71,24 +75,28 @@
 
 写任何页面时的事实依据：
 
-**四层**——接口 `interface`（契约：name@version + kind + params_schema + outputs）→ 能力 `capability`（某台执行器对某接口的实现，= `(runner_id, interface_id)`）→ 执行器 `runner`（一台机器）→ 图 `edges`（只引用接口，不引用机器）。
+**三层**——能力定义 `capability`（中枢提前定义：name@version + params_schema + outputs，**它就是最小原子**）→ 节点 `node`（一台机器，只声明「我有 review@1」）→ 图 `edges`（只引用能力，不引用机器）。
 
-**关键**：出口名只能来自接口定义，执行器没有命名权；不允许只实现一部分出口；`review@1` 与 `review@2` 是两个不同接口，并存。
+**关键**：
+- 出口名只能来自能力定义，节点没有命名权，也不能发明能力名
+- 不允许只实现一部分出口：声明 `review@1` 就得两个出口都能走
+- `review@1` 与 `review@2` 是两个不同能力定义，并存
+- **`kind` 归节点且是推导的**：全 outputs 空 → `end`；有非空 → `pipe`；无节点声明 → `origin`。不手写。
 
-**三种节点，按端口形状分**——`origin`（只有出，触发器）、`pipe`（有进有出）、`end`（只有入，终点）。没有第四种。注意「节点」是**链上的位置**，不是机器；机器叫执行器 `runner`。
+**`kind` 由节点的能力声明推导**——`origin`（无节点声明它，只有出）、`pipe`（声明了带出口的能力）、`end`（声明的能力 outputs 全空）。**不写进配置**，所以不可能出现自相矛盾的配置。
 
 **路由**——
 
 派发四步：
 
 ```sql
--- ① 查表（两端都是接口）
-SELECT to_interface FROM edges
- WHERE from_interface = :ifc AND from_port = :out;
+-- ① 查表（两端都是能力定义）
+SELECT to_capability FROM edges
+ WHERE from_capability = :cap AND from_port = :out;
 -- 返回 N 行 → N 个下游；0 行 → 到头，记 pruned
--- ② 用目标接口的 params_schema 校验参数（不通过不建任务）
--- ③ SELECT runner_id FROM capabilities WHERE interface_id = :to_interface
--- ④ 按负载挑一台（或按 sticky 查 runner_pins）
+-- ② 用目标能力的 params_schema 校验参数（不通过不建任务）
+-- ③ SELECT node_id FROM node_capabilities WHERE capability_id = :to_capability
+-- ④ 按负载挑一台（或按 sticky 查 node_pins）
 ```
 
 没有条件求值、没有优先级、没有 DSL。
@@ -115,8 +123,8 @@ grep -n 'innerHTML' design/wiki/*.html
 # 3. 旧术语（应只剩 04/07 的对照片段）
 grep -n '规则\|match\|priority\|rule_id\|unknown_action\|manifest\.commands' design/wiki/*.html
 
-# 3b. 接口层的旧写法（应为 0）
-grep -n 'from_capability\|to_capability\|manifest\.capabilities\[\]\.outputs' design/wiki/*.html
+# 3b. 已退休的旧词（应为 0；本文件的废弃对照表除外）
+grep -n 'interface\|接口\|implements\|runner\|执行器\|kind_mismatch' design/wiki/*.html
 
 # 4. 侧栏 active 每页恰好 1
 for f in design/wiki/*.html; do echo "$f $(grep -c 'class="active"' $f)"; done

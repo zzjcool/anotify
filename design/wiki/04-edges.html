@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html" class="active"><span class="n">04</span>能力与出口</a>
-            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -70,49 +70,47 @@
           <h1>能力与出口</h1>
           <p class="lead">
             这一页讲路由。旧模型用「规则 + 条件匹配」，新模型把这一层整个去掉了：
-            <b>接口先定义，执行器只能实现已定义的接口，出口名由接口给定</b>。
+            <b>能力必须先定义，节点只能声明自己有哪些已定义的能力</b>。
             派发就是查一张表——没有条件求值，没有优先级，没有表达式引擎。
           </p>
 
-          <h2>四个要素</h2>
+          <h2>三个要素</h2>
           <p class="prose">
-            先把词定住。<b>关键是接口在最上面一层</b>——它规定了「这个能力接受什么参数、可能怎么结束」，
-            下面三层都受它约束。
+            先把词定住。<b>能力是最小单位</b>——一个动作、一条命令、一组可能的出口。
+            下面所有结构都建立在它之上。
           </p>
 
           <dl class="defs">
             <div class="def">
-              <dt>接口 <code>interface</code></dt>
+              <dt>能力定义 <code>capability</code></dt>
               <dd>
-                一份契约：<code>name@version</code>、节点类型 <code>kind</code>、参数结构 <code>params_schema</code>、
-                出口名集合 <code>outputs</code>。<b>出口名只能来自这里</b>，执行器没有命名权。
+                中枢提前写好的一份定义：<code>name@version</code>、参数结构 <code>params_schema</code>、
+                出口名集合 <code>outputs</code>。<b>出口名只能来自这里</b>，节点没有命名权。
+                <br />
+                <b>它就是最小的原子</b>：<code>review</code> 是一个能力，<code>fix</code> / <code>clean</code> 是它跑完后可能的两个结局，不是两个能力。
               </dd>
             </div>
             <div class="def">
-              <dt>能力 <code>capability</code></dt>
+              <dt>节点 <code>node</code></dt>
               <dd>
-                一台执行器对某个接口的实现。能力 = <code>(runner_id, interface_id)</code>。
-                <b>它不再自带出口</b>——出口是它实现的那个接口给的。
+                一台声明了能力的机器。它只说「我有 <code>review@1</code>」，
+                <b>不能自己发明能力名，也不能自己加出口</b>。
               </dd>
             </div>
             <div class="def">
               <dt>出口 <code>output</code></dt>
-              <dd>接口定义里的一个命名点。跑完之后执行器选一个。<b>它是字符串，不是条件</b>。</dd>
-            </div>
-            <div class="def">
-              <dt>边 <code>edge</code></dt>
               <dd>
-                <code>(from_interface, from_port) → to_interface</code>。
-                注意两端都是<b>接口</b>，不是机器——换机器不影响图。
+                能力定义里的一个命名点，跑完之后节点选一个。
+                <b>它是字符串，不是条件</b>。路由的原子坐标是 <code>(能力, 出口)</code>。
               </dd>
             </div>
           </dl>
 
           <p class="prose">
-            <b>为什么必须有接口这一层。</b>如果出口名由执行器自己编，两台机器实现同一个 <code>review</code>
+            <b>为什么能力必须先定义。</b>如果能力名和出口名都由节点自己编，两台机器都叫 <code>review</code>
             却报出 <code>[fix, clean]</code> 和 <code>[ok, bad]</code>，<code>edges</code> 里就会出现
             <code>(review, fix)</code> 和 <code>(review, ok)</code> 两套起点——查表时不知道该用哪个。
-            接口把命名权收归中枢，<code>from_port</code> 才是封闭集合。
+            <b>定义权归中枢，<code>from_port</code> 才是封闭集合。</b>
           </p>
 
           <h2>三种节点，按端口形状分</h2>
@@ -123,7 +121,7 @@
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <span class="box">source · 源<span class="sub">入 ✗ · 出 ✓</span></span>
+                <span class="box">origin · 源头<span class="sub">入 ✗ · 出 ✓</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
               <div class="flow-item">
@@ -133,7 +131,7 @@
               <span class="box">end · 终点<span class="sub">入 ✓ · 出 ✗</span></span>
             </div>
             <div class="fig-cap">
-              <b>触发器就是「只有出口、没有入边」的节点。</b>它不接任务，只把外部世界的变化转成一次出口选择。
+              <b>触发器就是「只有出口、没有入边」的位置。</b>它不接任务，只把外部世界的变化转成一次出口选择。
             </div>
           </div>
 
@@ -179,16 +177,68 @@
             一个审批人点「通过」是 <code>pipe</code>（有进有出）；一个只负责收尾的 webhook 回调是 <code>end</code>。
           </p>
 
+          <h2>kind 是算出来的，不是写上去的</h2>
+          <p class="prose">
+            <b><code>kind</code> 从来不写进配置。</b>它由节点声明的能力自动推导——
+            「有没有入」看它有没有被别的节点指向；「有没有出」看它声明的能力有没有非空 <code>outputs</code>。
+          </p>
+
+          <pre class="code"><span class="c">// 由节点的能力声明推导，不手写</span>
+kind(node) =
+  <span class="k">all</span> outputs 为空        → <span class="s">end</span>      <span class="c">// 只有入：推手机、写日志</span>
+  <span class="k">some</span> outputs 非空       → <span class="s">pipe</span>     <span class="c">// 有进有出：review / implement</span>
+  没有任何节点声明它        → <span class="s">origin</span>   <span class="c">// 只有出：触发器，事件本身充当起点</span></pre>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>节点声明的能力</th>
+                  <th>推导出的 <code>kind</code></th>
+                  <th>为什么</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>[notify.phone]</code>，<code>outputs</code> 全为空</td>
+                  <td><code>end</code></td>
+                  <td>能接任务，但跑完没有下一跳</td>
+                </tr>
+                <tr>
+                  <td><code>[review]</code>，<code>outputs: [fix, clean]</code></td>
+                  <td><code>pipe</code></td>
+                  <td>能接任务，跑完还能往下走</td>
+                </tr>
+                <tr>
+                  <td><code>[review, notify.phone]</code> 混挂</td>
+                  <td><code>pipe</code></td>
+                  <td>只要有一个能力带出口，这个节点就还能往下走</td>
+                </tr>
+                <tr>
+                  <td>没有节点声明（如 <code>github</code>）</td>
+                  <td><code>origin</code></td>
+                  <td>没人实现它，事件本身是链的起点</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <b>推导的好处：不可能出现自相矛盾的配置。</b>
+            如果 <code>kind</code> 要手写，就会有人标了 <code>end</code> 却挂上一个带出口的能力，
+            然后指望校验期拦住他。<b>让它是算出来的，这种配置根本表达不出来。</b>
+          </p>
+
           <h2>出口表：路由的唯一依据</h2>
           <p class="prose">
-            中枢不存条件、不跑匹配。它只存一张边表——<b>两端都是接口，不引用任何机器</b>。
+            中枢不存条件、不跑匹配。它只存一张边表——<b>两端都是能力定义，不引用任何机器</b>。
           </p>
 
           <pre class="code"><span class="k">CREATE TABLE</span> edges (
-  <span class="k">from_interface</span> TEXT <span class="k">NOT NULL</span>,   <span class="c">-- ifc_...</span>
-  <span class="k">from_port</span>      TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 必须是该接口 outputs 里的一个</span>
-  <span class="k">to_interface</span>   TEXT <span class="k">NOT NULL</span>,   <span class="c">-- ifc_...</span>
-  <span class="k">PRIMARY KEY</span> (from_interface, from_port, to_interface)
+  <span class="k">from_capability</span> TEXT <span class="k">NOT NULL</span>,   <span class="c">-- cap_...</span>
+  <span class="k">from_port</span>       TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 必须是该能力 outputs 里的一个</span>
+  <span class="k">to_capability</span>   TEXT <span class="k">NOT NULL</span>,   <span class="c">-- cap_...</span>
+  <span class="k">PRIMARY KEY</span> (from_capability, from_port, to_capability)
 );</pre>
 
           <p class="prose">
@@ -196,16 +246,16 @@
           </p>
 
           <pre class="code"><span class="c">-- ① 查表</span>
-<span class="k">SELECT</span> to_interface <span class="k">FROM</span> edges
- <span class="k">WHERE</span> from_interface = :ifc <span class="k">AND</span> from_port = :out;
+<span class="k">SELECT</span> to_capability <span class="k">FROM</span> edges
+ <span class="k">WHERE</span> from_capability = :cap <span class="k">AND</span> from_port = :out;
 <span class="c">-- 返回 N 行 → N 个下游；0 行 → 到头，记 pruned</span>
 
-<span class="c">-- ② 用目标接口的 schema 校验参数（不通过就不建任务）</span>
-<span class="c">-- ③ 找实现了这个接口的执行器</span>
-<span class="k">SELECT</span> runner_id <span class="k">FROM</span> capabilities
- <span class="k">WHERE</span> interface_id = :to_interface;
+<span class="c">-- ② 用目标能力的 schema 校验参数（不通过就不建任务）</span>
+<span class="c">-- ③ 找声明了这个能力的节点</span>
+<span class="k">SELECT</span> node_id <span class="k">FROM</span> node_capabilities
+ <span class="k">WHERE</span> capability_id = :to_capability;
 
-<span class="c">-- ④ 按负载挑一台（或按 sticky 查 runner_pins）</span></pre>
+<span class="c">-- ④ 按负载挑一台（或按 sticky 查 node_pins）</span></pre>
 
           <div class="note">
             <b>这就是全部的路由逻辑。</b>没有 <code>match</code> 表达式、没有条件树、没有优先级排序、
@@ -213,56 +263,53 @@
             「PR 打开之后要做什么」不再是一条需要求值的规则，而是表里的两三行。
           </div>
 
-          <h2>四方怎么声明</h2>
+          <h2>三方怎么声明</h2>
           <p class="prose">
-            顺序很重要：<b>接口先定义，执行器再实现，最后才画边</b>。
-            执行器从头到尾不知道全图长什么样，也不需要知道。
+            顺序很重要：<b>能力先定义，节点再声明自己有哪些，最后才画边</b>。
+            节点从头到尾不知道全图长什么样，也不需要知道。
           </p>
 
-          <h3>① 接口：中枢侧定义</h3>
+          <h3>① 能力：中枢侧提前定义</h3>
           <p class="prose">
-            接口进 git、走 review，和代码一样可 diff。项目自带一批内置接口，用户可以在自己的配置目录里追加。
+            能力定义进 git、走 review，和代码一样可 diff。项目自带一批内置能力，用户可以追加自己的。
+            <b>注意这里没有 <code>kind</code></b>——它不属于能力。
           </p>
-          <pre class="code"><span class="c"># interfaces/ · 进 git</span>
+          <pre class="code"><span class="c"># capabilities/ · 进 git · 一份定义 = 一个原子能力</span>
 - name: review
   version: 1
-  kind: <span class="s">pipe</span>
   params_schema:                 <span class="c"># 派发前用它校验参数</span>
     type: object
     required: [pr]
     properties:
       pr: { type: integer }
-  <span class="k">outputs: [fix, clean]</span>          <span class="c"># ★ 出口名在这里定死</span>
+  <span class="k">outputs: [fix, clean]</span>          <span class="c"># ★ 跑完可能走这两个结局之一</span>
 
 - name: notify.phone
   version: 1
-  kind: <span class="s">end</span>
-  outputs: []                    <span class="c"># 终点，没有出口</span>
+  outputs: []                    <span class="c"># 没有出口 = 到头</span>
 
 - name: github
   version: 1
-  kind: <span class="s">origin</span>                  <span class="c"># 触发器也走接口</span>
-  <span class="k">outputs: [pr_opened, pr_merged]</span></pre>
+  outputs: [pr_opened, pr_merged]  <span class="c"># 触发器也是一种能力定义</span></pre>
 
-          <h3>② 执行器：只写「实现了哪个接口」</h3>
-          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 执行器本地</span>
-runner: mbp-16
-kind: <span class="s">pipe</span>
+          <h3>② 节点：只声明「我有哪些能力」</h3>
+          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 节点本地</span>
+node: mbp-16
+<span class="c"># 没有 kind —— 它由下面这份声明推导</span>
 capabilities:
-  - <span class="k">implements: review@1</span>        <span class="c"># ★ 不再自己写 outputs</span>
+  - <span class="k">review@1</span>                      <span class="c"># ★ 只能从已定义的清单里挑</span>
     argv: [<span class="s">"git"</span>, <span class="s">"diff"</span>, <span class="s">"--name-only"</span>]
-  - implements: implement@1
+  - implement@1
     argv: [<span class="s">"./agent.sh"</span>]</pre>
 
           <div class="note warn">
-            <b>执行器没有出口命名权。</b>它只能声明「我实现了 <code>review@1</code>」，
-            出口集合 <code>{fix, clean}</code> 是接口给的。
-            而且<b>不允许只实现一部分</b>——实现 <code>review@1</code> 就必须两个出口都能走，
+            <b>节点没有定义权。</b>它不能发明能力名，也不能加出口——两者都来自中枢的定义。
+            而且<b>不允许只实现一部分出口</b>：声明了 <code>review@1</code> 就必须两个出口都能走，
             否则 <code>edges</code> 里会出现「查到了边但这台机器没有这个出口」的分叉。
           </div>
 
           <h3>③ 边：中枢侧配置</h3>
-          <pre class="code"><span class="c"># 边在接口之间，不引用机器</span>
+          <pre class="code"><span class="c"># 边在能力之间，不引用任何机器</span>
 edges:
   - from: origin:github
     port: pr_opened
@@ -271,21 +318,21 @@ edges:
     port: fix
     to: [implement@1]</pre>
 
-          <h3>④ 执行器实际收到什么</h3>
+          <h3>节点实际收到什么</h3>
           <p class="prose">
-            只有接口名、版本和参数——<b>没有 argv，没有图，也没有「下一步是谁」</b>。
+            只有能力名、版本和参数——<b>没有 argv，没有图，也没有「下一步是谁」</b>。
           </p>
           <pre class="code">{
   <span class="s">"task"</span>: <span class="s">"tsk_8f21a3c0"</span>,
-  <span class="s">"implements"</span>: <span class="s">"review"</span>,
+  <span class="s">"capability"</span>: <span class="s">"review"</span>,
   <span class="s">"version"</span>: 1,
   <span class="s">"params"</span>: { <span class="s">"pr"</span>: 431 }
 }</pre>
 
-          <h2>版本：两个版本就是两个接口</h2>
+          <h2>版本：两个版本就是两个能力</h2>
           <p class="prose">
-            <code>review@1</code> 和 <code>review@2</code> 是<b>两个不同的接口</b>，可以同时存在。
-            旧机器继续实现 <code>@1</code>，新机器实现 <code>@2</code>，<code>edges</code> 里各有一条边。
+            <code>review@1</code> 和 <code>review@2</code> 是<b>两个不同的能力定义</b>，可以同时存在。
+            旧节点继续声明 <code>@1</code>，新节点声明 <code>@2</code>，<code>edges</code> 里各有一条边。
           </p>
 
           <div class="tbl-wrap">
@@ -300,17 +347,17 @@ edges:
               <tbody>
                 <tr>
                   <td>升级期</td>
-                  <td>旧接口继续跑，不中断</td>
+                  <td>旧版本继续跑，不中断</td>
                   <td>全网停机到全部升级完</td>
                 </tr>
                 <tr>
                   <td>代价</td>
-                  <td>图里同名接口出现两个版本，<b>控制台必须显式显示版本号</b></td>
+                  <td>图里同名能力出现两个版本，<b>控制台必须显式显示版本号</b></td>
                   <td>无</td>
                 </tr>
                 <tr>
                   <td>清理</td>
-                  <td>旧版本没人实现后，删掉它的边即可</td>
+                  <td>旧版本没有节点声明后，删掉它的边即可</td>
                   <td>—</td>
                 </tr>
               </tbody>
@@ -322,13 +369,13 @@ edges:
             否则看不出走的是哪条边。
           </p>
 
-          <h2>运行时：执行器跑完才选出口</h2>
+          <h2>运行时：节点跑完才选出口</h2>
           <p class="prose">
             出口不能提前定，因为<b>命令还没跑，谁也不知道会走到哪</b>。
             成功要跑完才知道，失败也要跑完才知道。所以它出现在 <code>result</code> 里。
           </p>
 
-          <pre class="code"><span class="c">// 执行器回报的 result（≤8KB）</span>
+          <pre class="code"><span class="c">// 节点回报的 result（≤8KB）</span>
 {
   <span class="s">"status"</span>: <span class="s">"succeeded"</span>,
   <span class="s">"out"</span>: <span class="s">"fix"</span>,              <span class="c">// ★ 我选了 fix 这个出口</span>
@@ -469,9 +516,9 @@ edges:
               <div class="dir">上一页</div>
               <div class="ttl">一条事件的旅程</div>
             </a>
-            <a href="05-runners.html" class="next">
+            <a href="05-nodes.html" class="next">
               <div class="dir">下一页</div>
-              <div class="ttl">执行器与执行</div>
+              <div class="ttl">节点与执行</div>
             </a>
           </nav>
         </main>
