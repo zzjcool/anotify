@@ -70,29 +70,50 @@
           <h1>能力与出口</h1>
           <p class="lead">
             这一页讲路由。旧模型用「规则 + 条件匹配」，新模型把这一层整个去掉了：
-            一切参与流转的东西都是角色，执行器申报能力，能力带出口，
-            <b>派发就是查一张表</b>。没有条件求值，没有优先级，没有表达式引擎。
+            <b>接口先定义，执行器只能实现已定义的接口，出口名由接口给定</b>。
+            派发就是查一张表——没有条件求值，没有优先级，没有表达式引擎。
           </p>
 
-          <h2>三个要素</h2>
+          <h2>四个要素</h2>
           <p class="prose">
-            先把词定住。后面所有页面都只用这三个词描述结构。
+            先把词定住。<b>关键是接口在最上面一层</b>——它规定了「这个能力接受什么参数、可能怎么结束」，
+            下面三层都受它约束。
           </p>
 
           <dl class="defs">
             <div class="def">
-              <dt>角色 <code>role</code></dt>
-              <dd>参与流转的一个实体。可以是一台机器、一个 webhook、一个收通知的手机。</dd>
+              <dt>接口 <code>interface</code></dt>
+              <dd>
+                一份契约：<code>name@version</code>、角色 <code>kind</code>、参数结构 <code>params_schema</code>、
+                出口名集合 <code>outputs</code>。<b>出口名只能来自这里</b>，执行器没有命名权。
+              </dd>
             </div>
             <div class="def">
               <dt>能力 <code>capability</code></dt>
-              <dd>能力是执行器申报的「我能做什么」。<b>路由的单位是能力，不是机器</b>——同一台机器可以申报很多个能力。</dd>
+              <dd>
+                一台执行器对某个接口的实现。能力 = <code>(runner_id, interface_id)</code>。
+                <b>它不再自带出口</b>——出口是它实现的那个接口给的。
+              </dd>
             </div>
             <div class="def">
               <dt>出口 <code>output</code></dt>
-              <dd>能力的命名出口。跑完之后执行器选择走哪个出口。出口是字符串，不是条件。</dd>
+              <dd>接口定义里的一个命名点。跑完之后执行器选一个。<b>它是字符串，不是条件</b>。</dd>
+            </div>
+            <div class="def">
+              <dt>边 <code>edge</code></dt>
+              <dd>
+                <code>(from_interface, from_port) → to_interface</code>。
+                注意两端都是<b>接口</b>，不是机器——换机器不影响图。
+              </dd>
             </div>
           </dl>
+
+          <div class="note">
+            <b>为什么必须有接口这一层。</b>如果出口名由执行器自己编，两台机器实现同一个 <code>review</code>
+            却报出 <code>[fix, clean]</code> 和 <code>[ok, bad]</code>，<code>edges</code> 里就会出现
+            <code>(review, fix)</code> 和 <code>(review, ok)</code> 两套起点——查表时不知道该用哪个。
+            接口把命名权收归中枢，<code>from_port</code> 才是封闭集合。
+          </div>
 
           <h2>三种角色，按端口形状分</h2>
           <p class="prose">
@@ -160,26 +181,31 @@
 
           <h2>出口表：路由的唯一依据</h2>
           <p class="prose">
-            中枢不存条件、不跑匹配。它只存一张边表。
+            中枢不存条件、不跑匹配。它只存一张边表——<b>两端都是接口，不引用任何机器</b>。
           </p>
 
           <pre class="code"><span class="k">CREATE TABLE</span> edges (
-  <span class="k">from_capability</span> TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 谁产的</span>
-  <span class="k">from_port</span>       TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 走了哪个出口</span>
-  <span class="k">to_capability</span>   TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 下一个能力</span>
-  <span class="k">PRIMARY KEY</span> (from_capability, from_port, to_capability)
+  <span class="k">from_interface</span> TEXT <span class="k">NOT NULL</span>,   <span class="c">-- ifc_...</span>
+  <span class="k">from_port</span>      TEXT <span class="k">NOT NULL</span>,   <span class="c">-- 必须是该接口 outputs 里的一个</span>
+  <span class="k">to_interface</span>   TEXT <span class="k">NOT NULL</span>,   <span class="c">-- ifc_...</span>
+  <span class="k">PRIMARY KEY</span> (from_interface, from_port, to_interface)
 );</pre>
 
           <p class="prose">
-            派发就是一次索引查询。返回几行，就派几个任务：
+            派发是四步，比之前多一步参数校验：
           </p>
 
-          <pre class="code"><span class="k">SELECT</span> to_capability <span class="k">FROM</span> edges
- <span class="k">WHERE</span> from_capability = :cap
-   <span class="k">AND</span> from_port = :port;
+          <pre class="code"><span class="c">-- ① 查表</span>
+<span class="k">SELECT</span> to_interface <span class="k">FROM</span> edges
+ <span class="k">WHERE</span> from_interface = :ifc <span class="k">AND</span> from_port = :out;
+<span class="c">-- 返回 N 行 → N 个下游；0 行 → 到头，记 pruned</span>
 
-<span class="c">-- 返回 N 行 → 派 N 个任务（全部下发，不是择一）</span>
-<span class="c">-- 返回 0 行 → 这条线到此为止，记 pruned + 原因</span></pre>
+<span class="c">-- ② 用目标接口的 schema 校验参数（不通过就不建任务）</span>
+<span class="c">-- ③ 找实现了这个接口的执行器</span>
+<span class="k">SELECT</span> runner_id <span class="k">FROM</span> capabilities
+ <span class="k">WHERE</span> interface_id = :to_interface;
+
+<span class="c">-- ④ 按负载挑一台（或按 sticky 查 runner_pins）</span></pre>
 
           <div class="note">
             <b>这就是全部的路由逻辑。</b>没有 <code>match</code> 表达式、没有条件树、没有优先级排序、
@@ -187,52 +213,114 @@
             「PR 打开之后要做什么」不再是一条需要求值的规则，而是表里的两三行。
           </div>
 
-          <h2>三方怎么声明</h2>
+          <h2>四方怎么声明</h2>
           <p class="prose">
-            执行器在本地配置文件里申报自己的能力与出口，这些<b>事实</b>被上报到中枢，
-            中枢把它们拼成 <code>edges</code> 表。执行器看不到全图，也不需要看。
+            顺序很重要：<b>接口先定义，执行器再实现，最后才画边</b>。
+            执行器从头到尾不知道全图长什么样，也不需要知道。
           </p>
 
-          <h3>origin：只有出口</h3>
-          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 触发器执行器</span>
-runner: gh-webhook
-kind: <span class="s">origin</span>
-emits:
-  pr_opened:
-    to: [review, notify.phone]   <span class="c"># 一个出口通向两个能力 → 扇出</span>
-  pr_merged:
-    to: [notify.phone]</pre>
+          <h3>① 接口：中枢侧定义</h3>
           <p class="prose">
-            中枢只收到「<code>origin:github</code> 的 <code>pr_opened</code> 通向 review 和 notify.phone」
-            这个事实，<b>收不到任何 webhook 解析逻辑</b>。
+            接口进 git、走 review，和代码一样可 diff。项目自带一批内置接口，用户可以在自己的配置目录里追加。
           </p>
+          <pre class="code"><span class="c"># interfaces/ · 进 git</span>
+- name: review
+  version: 1
+  kind: <span class="s">pipe</span>
+  params_schema:                 <span class="c"># 派发前用它校验参数</span>
+    type: object
+    required: [pr]
+    properties:
+      pr: { type: integer }
+  <span class="k">outputs: [fix, clean]</span>          <span class="c"># ★ 出口名在这里定死</span>
 
-          <h3>pipe：有进有出</h3>
-          <pre class="code"><span class="c"># 管道</span>
+- name: notify.phone
+  version: 1
+  kind: <span class="s">end</span>
+  outputs: []                    <span class="c"># 终点，没有出口</span>
+
+- name: github
+  version: 1
+  kind: <span class="s">origin</span>                  <span class="c"># 触发器也走接口</span>
+  <span class="k">outputs: [pr_opened, pr_merged]</span></pre>
+
+          <h3>② 执行器：只写「实现了哪个接口」</h3>
+          <pre class="code"><span class="c"># ~/.anotifyd/config.yaml · 执行器本地</span>
 runner: mbp-16
 kind: <span class="s">pipe</span>
 capabilities:
-  - name: review
+  - <span class="k">implements: review@1</span>        <span class="c"># ★ 不再自己写 outputs</span>
     argv: [<span class="s">"git"</span>, <span class="s">"diff"</span>, <span class="s">"--name-only"</span>]
-    outputs: [fix, clean]        <span class="c"># 我可能往哪走</span>
-  - name: implement
-    argv: [<span class="s">"./agent.sh"</span>]
-    outputs: [verify]</pre>
+  - implements: implement@1
+    argv: [<span class="s">"./agent.sh"</span>]</pre>
 
           <div class="note warn">
-            <b><code>outputs</code> 是「我会用到的出口名」，不是「我会去哪」。</b>
-            这一点很容易读错。review 知道自己在两种情况下会走 <code>fix</code> 或 <code>clean</code>，
-            但它<b>不知道 <code>fix</code> 后面接谁</b>——那是中枢 edges 表的事。
-            执行器不该知道图长什么样。这就是「中枢不下发命令」的同一条原则。
+            <b>执行器没有出口命名权。</b>它只能声明「我实现了 <code>review@1</code>」，
+            出口集合 <code>{fix, clean}</code> 是接口给的。
+            而且<b>不允许只实现一部分</b>——实现 <code>review@1</code> 就必须两个出口都能走，
+            否则 <code>edges</code> 里会出现「查到了边但这台机器没有这个出口」的分叉。
           </div>
 
-          <h3>end：只有入口</h3>
-          <pre class="code"><span class="c"># 终点执行器</span>
-runner: my-phone
-kind: <span class="s">end</span>
-capabilities:
-  - name: notify.phone
-    outputs: []                  <span class="c"># 没有出口</span></pre>
+          <h3>③ 边：中枢侧配置</h3>
+          <pre class="code"><span class="c"># 边在接口之间，不引用机器</span>
+edges:
+  - from: origin:github
+    port: pr_opened
+    to: [review@1, notify.phone@1]   <span class="c"># 一个出口两条边 → 扇出</span>
+  - from: review@1
+    port: fix
+    to: [implement@1]</pre>
+
+          <h3>④ 执行器实际收到什么</h3>
+          <p class="prose">
+            只有接口名、版本和参数——<b>没有 argv，没有图，也没有「下一步是谁」</b>。
+          </p>
+          <pre class="code">{
+  <span class="s">"task"</span>: <span class="s">"tsk_8f21a3c0"</span>,
+  <span class="s">"implements"</span>: <span class="s">"review"</span>,
+  <span class="s">"version"</span>: 1,
+  <span class="s">"params"</span>: { <span class="s">"pr"</span>: 431 }
+}</pre>
+
+          <h2>版本：两个版本就是两个接口</h2>
+          <p class="prose">
+            <code>review@1</code> 和 <code>review@2</code> 是<b>两个不同的接口</b>，可以同时存在。
+            旧机器继续实现 <code>@1</code>，新机器实现 <code>@2</code>，<code>edges</code> 里各有一条边。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>版本并存（选这个）</th>
+                  <th>强制全量升级</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>升级期</td>
+                  <td>旧接口继续跑，不中断</td>
+                  <td>全网停机到全部升级完</td>
+                </tr>
+                <tr>
+                  <td>代价</td>
+                  <td>图里同名接口出现两个版本，<b>控制台必须显式显示版本号</b></td>
+                  <td>无</td>
+                </tr>
+                <tr>
+                  <td>清理</td>
+                  <td>旧版本没人实现后，删掉它的边即可</td>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <b>所以展示时不能只写 <code>review</code></b>——必须写 <code>review@1</code> 或 <code>review@2</code>，
+            否则看不出走的是哪条边。
+          </p>
 
           <h2>运行时：执行器跑完才选出口</h2>
           <p class="prose">
