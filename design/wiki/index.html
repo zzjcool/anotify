@@ -38,7 +38,7 @@
             <div class="nav-group-label">运行时</div>
             <a href="03-flow.html"><span class="n">03</span>一条事件的旅程</a>
             <a href="04-edges.html"><span class="n">04</span>能力与出口</a>
-            <a href="05-runners.html"><span class="n">05</span>执行器与执行</a>
+            <a href="05-nodes.html"><span class="n">05</span>节点与执行</a>
           </div>
           <div class="nav-group">
             <div class="nav-group-label">保障</div>
@@ -75,28 +75,28 @@
           <div class="card" style="margin: 0 0 34px">
             <h4>一句话</h4>
             <p class="prose" style="margin: 0; max-width: 62ch; color: var(--text)">
-              Anotify 从一个「Agent 完成通知终端」，升级为<strong>事件中心 + 执行器</strong>：<strong>接口先定义</strong>（契约层），触发源产生的事件都进同一本事件日志，中枢拿它去查一张显式的<strong>出口表</strong>，得到若干个下游接口，最后派给实现了那个接口的一台机器、落成一个任务，或者你手机上的一次震动。
+              Anotify 从一个「Agent 完成通知终端」，升级为<strong>事件中心 + 节点网络</strong>：<strong>能力先定义</strong>（中枢侧、版本化），触发源产生的事件都进同一本事件日志，中枢拿它去查一张显式的<strong>出口表</strong>，得到若干个下游能力，最后派给声明了那个能力的一台机器、落成一个任务，或者你手机上的一次震动。
             </p>
           </div>
 
           <h2>六层结构</h2>
           <p class="prose">
-            整条管道有六层，每层职责单一：接口定义不管运行，触发源不管路由，出口表不管执行，任务不管命令长什么样。通知和 trace 不是层，是挂在旁边的两条出路。
+            整条管道有六层，每层职责单一：能力定义不管运行，触发源不管路由，出口表不管执行，任务不管命令长什么样。通知和 trace 不是层，是挂在旁边的两条出路。
           </p>
 
           <div class="fig">
             <div class="flow">
-              <div class="box sm accent">接口定义<span class="sub">契约 · name@版本</span></div>
+              <div class="box sm accent">能力定义<span class="sub">name@版本 · params_schema · outputs</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box sm">触发器<span class="sub">origin</span></div>
+              <div class="box sm">触发器<span class="sub">无人声明 → origin</span></div>
               <div class="arr"><span>→</span></div>
               <div class="box sm">事件日志<span class="sub">type · payload</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box sm">出口表<span class="sub">接口 → 接口</span></div>
+              <div class="box sm">出口表<span class="sub">能力 → 能力</span></div>
               <div class="arr"><span>→</span></div>
               <div class="box sm">任务<span class="sub">租约 · 状态机</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box sm">能力<span class="sub">implements</span></div>
+              <div class="box sm">节点<span class="sub">一台声明了能力的机器</span></div>
             </div>
 
             <h4 style="margin: 22px 0 8px">旁挂（不是层，是两条出路）</h4>
@@ -107,7 +107,7 @@
             </div>
 
             <div class="fig-cap">
-              <b>第一层是契约层，它先于一切。</b>接口规定了参数结构、出口名、谁能实现；下面五层只能引用已有接口，<b>不能自己发明出口名</b>。第四层（出口表）是唯一的路由依据：它没有条件、没有优先级、也不需要求值：把（接口, 出口）这一对填进去，返回几行就往几个接口派，而不是往几台机器派。<b>终点也分两种</b>：推手机是可丢的通知（<code>end</code>），执行任务必须回报结果（<code>pipe</code>），它们各自记账。
+              <b>第一层是能力定义，它先于一切。</b>能力规定了参数结构、出口名；节点只能声明自己有哪些已定义的能力，<b>不能自己发明能力名，也不能自己加出口</b>。第四层（出口表）是唯一的路由依据：它没有条件、没有优先级、也不需要求值：把（能力, 出口）这一对填进去，返回几行就往几个能力派，而不是往几台机器派。<b>最后一层是节点</b>：它只声明「我有 <code>review@1</code>」，<code>origin</code> / <code>pipe</code> / <code>end</code> 是从这份声明算出来的，不手写。<b>终点也分两种</b>：推手机是可丢的通知（<code>outputs</code> 为空 → <code>end</code>），干活的任务必须回报结果（<code>pipe</code>），它们各自记账。
             </div>
           </div>
 
@@ -118,7 +118,7 @@
 
           <div class="fig">
             <div class="flow">
-              <div class="box sm">PR 合并 → webhook<span class="sub">接口 github@1 · kind: origin</span></div>
+              <div class="box sm">PR 合并 → webhook<span class="sub">能力 github@1 · 无人声明 → origin</span></div>
               <div class="arr"><span>→</span></div>
               <div class="box sm">写入事件日志<span class="sub">type: pr.merged</span></div>
               <div class="arr"><span>→</span></div>
@@ -127,13 +127,13 @@
               <div class="box sm ok">手机震动<span class="sub">end · notify.phone@1</span></div>
             </div>
             <div class="fig-cap">
-              把这条边指向的接口从 <code>notify.phone@1</code> 换成 <code>implement@1</code>，第三个盒子就变成「用 <code>params_schema</code> 校参数 → 找实现了这个接口的执行器 → 建任务」，最后一个盒子换成 <code>pipe</code> 执行后回报出口、再查一次表。两条路共用同一本事件日志、同一个 <code>trace_id</code>。
+              把这条边指向的能力从 <code>notify.phone@1</code> 换成 <code>implement@1</code>，第三个盒子就变成「用 <code>params_schema</code> 校参数 → 找声明了这个能力的节点 → 建任务」，最后一个盒子换成 <code>pipe</code> 执行后回报出口、再查一次表。两条路共用同一本事件日志、同一个 <code>trace_id</code>。
             </div>
           </div>
 
           <h2>为什么不是 workflow 引擎</h2>
           <p class="prose">
-            它借用了 workflow 引擎的几个名字（触发、节点、边），但整条链路上<strong>没有一处需要求值</strong>：路由靠查表，边的存在与否就是全部答案。形状不靠画布规定，执行细节留在执行器自己的进程里。
+            它借用了 workflow 引擎的几个名字（触发、节点、边），但整条链路上<strong>没有一处需要求值</strong>：路由靠查表，边的存在与否就是全部答案。形状不靠画布规定，执行细节留在节点自己的进程里。
           </p>
 
           <div class="tbl-wrap">
@@ -153,12 +153,12 @@
                 </tr>
                 <tr>
                   <td>谁能定义节点</td>
-                  <td><b>接口先定义</b>（中枢侧、版本化），执行器只能实现已存在的接口，拿不到出口命名权</td>
+                  <td><b>能力先定义</b>（中枢侧、版本化），节点只能声明自己有哪些已定义的能力，拿不到出口命名权</td>
                   <td>节点自由组合：谁拖画布谁就能随手加一个新节点，出口自己编</td>
                 </tr>
                 <tr>
                   <td>执行与凭据</td>
-                  <td>接口实现（能力）注册在你机器上，凭据永不出本机；中枢只发 <code>(接口, 版本, 参数)</code></td>
+                  <td>声明了能力的节点跑在你机器上，凭据永不出本机；中枢只发 <code>(能力, 版本, 参数)</code></td>
                   <td>执行在平台侧或你部署的集群；集成凭据常存在平台侧</td>
                 </tr>
                 <tr>
@@ -198,7 +198,7 @@
             <a class="toc-card" href="02-concepts.html">
               <div class="num">02</div>
               <div class="ttl">核心概念</div>
-              <div class="dsc">Interface / Capability / Output / Task / Trace / Node 六个名词，外加三种节点、关系图和一次旅程。</div>
+              <div class="dsc">Capability / Output / Node / Task / Trace / Edge 六个名词，外加 kind 推导、一条链怎么连起来、一次旅程。</div>
             </a>
             <a class="toc-card" href="03-flow.html">
               <div class="num">03</div>
@@ -208,12 +208,12 @@
             <a class="toc-card" href="04-edges.html">
               <div class="num">04</div>
               <div class="ttl">能力与出口</div>
-              <div class="dsc">接口、能力、出口、edges 表查表派发、版本并存。</div>
+              <div class="dsc">能力定义、出口、edges 表查表派发、kind 推导、版本并存。</div>
             </a>
-            <a class="toc-card" href="05-runners.html">
+            <a class="toc-card" href="05-nodes.html">
               <div class="num">05</div>
-              <div class="ttl">执行器与执行</div>
-              <div class="dsc">三种节点、接口校验、凭据与标签、租约与 ack、执行器池、粘性路由、下线分级。</div>
+              <div class="ttl">节点与执行</div>
+              <div class="dsc">能力声明、三种节点与 kind 推导、凭据与标签、租约与 ack、选节点、粘性路由、下线分级。</div>
             </a>
             <a class="toc-card" href="06-trace.html">
               <div class="num">06</div>
