@@ -155,12 +155,11 @@ make ci
 | Go 单测 | `internal/*_test.go` | broker/auth/api/push/ws/store/server 包级逻辑 |
 | API 契约 | `scripts/e2e/suites/api_contract.mjs` | 全端点状态码/鉴权/校验 |
 | Passkey 认证 | `scripts/e2e/suites/auth_flow.mjs` | **虚拟认证器无头跑注册/登录/登出/会话** |
-| WS 协议 | `scripts/e2e/suites/ws_protocol.mjs` | hello/subscribe/ack/replay/心跳/标签过滤 |
-| 路由矩阵 | `scripts/e2e/suites/routing.mjs` | 标签 + status 投递全边界 |
-| 持久化 | `scripts/e2e/suites/persistence.mjs` | 重启后数据/seq 连续 |
+| 节点协议 | `scripts/e2e/suites/ws_protocol.mjs` | 九帧（hello/heartbeat/ack/progress/result + welcome/assign/cancel/error）、握手鉴权、out 三态、心跳判死 |
+| 派发路由 | `scripts/e2e/suites/routing.mjs` | 派发四步 + 六种未触发原因（no_edge/param_schema/no_node/foreign_user/path）、扇出、容量不足留 pending |
+| 持久化 | `scripts/e2e/suites/persistence.mjs` | 重启后 events/tasks 存活、状态机与 out 三态保持、终态不可变 |
 | 安全 | `scripts/e2e/suites/security.mjs` | scope 越权/Key 篡改/哈希不可逆/SQL 注入/路径穿越 |
 | 前端 | `scripts/e2e/suites/frontend.mjs` | 6 页渲染 + 路由守卫 + 真实数据 |
-| 桌面推送 | `scripts/e2e/suites/push_e2e.mjs` | 真实 FCM 订阅 → 投递 |
 | 边界 | `scripts/e2e/suites/edge_cases.mjs` | 并发 seq/Unicode/超大体/畸形输入 |
 
 ### 测试底座

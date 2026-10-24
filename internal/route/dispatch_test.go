@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/store"
@@ -19,6 +20,7 @@ import (
 // 不用真 SQLite：路由层是纯逻辑（契约 §4「最纯的一块」），
 // mock 能让每个剪枝原因都精确构造，且测试毫秒级。
 type fakeStore struct {
+	mu sync.Mutex
 	// 出口表：(org, from, port) → []toCapability
 	edges map[string][]string
 	// 能力定义：id → 定义
@@ -175,6 +177,38 @@ func (f *fakeStore) PutPin(ctx context.Context, p *store.NodePin) error {
 	cp := *p
 	f.pins[p.StickyKey] = &cp
 	return nil
+}
+
+func (f *fakeStore) ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.createdTasks {
+		if t.ID == taskID {
+			t.LeaseUntil = &leaseUntil
+		}
+	}
+	return nil
+}
+
+// SweepExpiredLeases 模拟租约巡检：把过期租约的任务退回 pending 并清归属。
+func (f *fakeStore) SweepExpiredLeases(ctx context.Context, now int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var reclaimed []string
+	for _, t := range f.createdTasks {
+		if t.Status != store.TaskAssigned {
+			continue
+		}
+		if t.LeaseUntil == nil || *t.LeaseUntil >= now {
+			continue
+		}
+		t.Status = store.TaskPending
+		t.NodeID = nil
+		t.InstanceID = nil
+		t.LeaseUntil = nil
+		reclaimed = append(reclaimed, t.ID)
+	}
+	return reclaimed, nil
 }
 
 func (f *fakeStore) CreateTasks(ctx context.Context, ts []*store.Task) error {

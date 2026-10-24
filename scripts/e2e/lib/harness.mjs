@@ -188,6 +188,7 @@ export async function req(base, p, opts = {}) {
 // 冲突时在段内 +1 重试（最多 50 次）。
 export const SUITE_PORTS = {
 	api_contract: 5900,
+	contract: 5850,
 	auth_flow: 5950,
 	ws_protocol: 6000,
 	routing: 6050,
@@ -196,7 +197,6 @@ export const SUITE_PORTS = {
 	edge_cases: 6200,
 	frontend: 6250,
 	deeplink: 6300,
-	push_e2e: 6350,
 	i18n: 6400,
 	lang_hint: 6450,
 	cli_auth: 6500,
