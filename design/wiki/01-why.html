@@ -118,23 +118,34 @@
 
           <h3>一、「为什么没触发」说不清</h3>
           <p class="prose">
-            定时没跑、webhook 丢了、下游没接上，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。新模型把这个问题压成了一次查表问答，答案只有两种：<strong>出口表里没有这一行</strong>，或者<strong>上游没回报这个出口</strong>。两个都能直接从记录里展示出来，不需要推演。
+            定时没跑、webhook 丢了、下游没接上，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。新模型把这个问题压成了一次查表问答，答案只有三种：<strong>表里没有这一行</strong>、<strong>上游没回报这个出口</strong>，或者<strong>参数不符合目标接口的 schema</strong>。三个都能直接从记录里展示出来，不需要推演。
           </p>
 
-          <div class="grid-2">
+          <div class="grid-3">
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案一 · 图的问题</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                能力 <code>review</code> 回报走了出口 <code>fix</code>，但出口表里没有 <code>(review, fix)</code> 这一行 —— 所以到这里就是尽头。改配置。<strong style="color: var(--text)">表里有没有这一行，一眼能查。</strong>
+                接口 <code>review@1</code> 回报走了出口 <code>fix</code>，但出口表里没有 <code>(review@1, fix)</code> 这一行 —— 所以到这里就是尽头。<strong style="color: var(--text)">表里有没有这一行，一眼能查。</strong>
               </p>
             </div>
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案二 · 行为的问题</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
-                表里明明有 <code>(review, fix)</code> 这一行，但这次 <code>review</code> 回报的 <code>out</code> 是 <code>null</code> —— 没人走这个出口。不是配置错，是哪个能力这一次选择了到头。改执行器上的行为。
+                表里明明有 <code>(review@1, fix)</code> 这一行，但这次实现 <code>review@1</code> 的那台执行器回报的 <code>out</code> 是 <code>null</code> —— 没人走这个出口。不是配置错，是这台执行器这一次选择了到头。
+              </p>
+            </div>
+            <div class="card">
+              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案三 · 参数的问题</div>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                边在、出口也对，但 <code>params</code> 过不了目标接口的 <code>params_schema</code>（比如少了必填的 <code>pr</code>）—— <strong style="color: var(--text)">任务压根没建</strong>，记 <code>pruned / reason=param_schema</code>。前两个答案要查记录，这一个在派发前就拦住了。
               </p>
             </div>
           </div>
+
+          <p class="prose" style="margin-top: 14px">
+            <b>三个答案都指向同一件事：不需要跑一遍才能知道原因。</b>参数校验在派发前做，边的存在性在配置期就看得见，
+            出口回报是执行器自己写的——三者都是躺在表里的记录，不是要从日志里推的因果。
+          </p>
 
           <h3>二、长任务一断就没了</h3>
           <p class="prose">
@@ -159,7 +170,7 @@
                 <tr>
                   <td>为什么没触发</td>
                   <td>没有通知，原因未知，只能翻日志</td>
-                  <td>trace 上直接写清是「表里没有 <code>(能力, 出口)</code> 这一行」还是「上游没回报出口」；因环剪枝另记 <code>pruned</code></td>
+                  <td>trace 上直接写清是「表里没有 <code>(接口, 出口)</code> 这一行」、「上游没回报出口」还是「参数不符合接口 schema」；因环剪枝另记 <code>pruned</code></td>
                 </tr>
                 <tr>
                   <td>长任务中断</td>
@@ -169,7 +180,7 @@
                 <tr>
                   <td>凭据在哪</td>
                   <td>中枢持有密钥，并负责拼命令</td>
-                  <td>argv 只在执行器申报，中枢只发能力名 + <code>params</code></td>
+                  <td>argv 只在执行器申报，中枢只发接口名 + 版本 + <code>params</code></td>
                 </tr>
               </tbody>
             </table>
@@ -188,9 +199,17 @@
               </dd>
             </div>
             <div class="def">
+              <dt>任意名字当能力</dt>
+              <dd>
+                <strong>不是。</strong>接口是白名单：执行器只能说「我实现了 <code>review@1</code>」，不能说「我有一个叫 xxx 的能力、带 yy 和 zz 两个出口」。
+                如果出口名由执行器自己编，两台机器实现同一个 <code>review</code> 却报出两套出口，<code>edges</code> 的 <code>from_port</code> 就不再是封闭集合，查表命中却派不出去——这正是加接口层要堵的洞。
+                要新名字，先在中枢定义一个新接口。
+              </dd>
+            </div>
+            <div class="def">
               <dt>任意代码执行</dt>
               <dd>
-                一旦中枢能下发任意代码，它就成了执行平台，安全边界不复存在；我们只认执行器自己申报过的能力名。
+                一旦中枢能下发任意代码，它就成了执行平台，安全边界不复存在；执行器只能实现已定义的接口，命令与 <code>argv</code> 永远留在本机配置里。
               </dd>
             </div>
             <div class="def">
@@ -216,6 +235,7 @@
           <h2>所以定位是什么</h2>
           <p class="prose">
             执行能力是第二层。第一层是：人能在不翻日志的前提下回答三个问题，且答案来自记录而不是推断。
+            这三个问题的答案现在各有三种形态，全部静态可展示——不必重跑一条链路，也不必推理。
           </p>
 
           <div class="note">
