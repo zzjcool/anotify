@@ -69,30 +69,38 @@
           <div class="crumb">第 08 页 · 参考</div>
           <h1>本期范围</h1>
           <p class="lead">
-            这一页把线画清楚：哪些能力本期就有、哪些明确不做、哪些留了扩展点但先不实现。范围不清的项目会变成 n8n 的劣化版，所以宁可现在写死。
+            这一页把线画清楚：哪些东西本期就有、哪些明确不做、哪些留了扩展点但先不实现。范围不清的项目会变成 n8n 的劣化版，所以宁可现在写死。
+            本轮新增的是最上面一层——<b>接口</b>：先定义契约，执行器再实现它。
           </p>
 
           <h2>本期做的</h2>
           <p class="prose">
-            十二项。每一项都能落到具体的表、字段或状态机上，没有「后续再细化」的占位。
+            十三项。每一项都能落到具体的表、字段或状态机上，没有「后续再细化」的占位。
+            第一项是接口层——它决定了下面每一行里「出口」这个词的含义。
           </p>
 
           <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
-                  <th>能力</th>
+                  <th>模块</th>
                   <th>本期做到的</th>
                 </tr>
               </thead>
               <tbody>
+                <tr>
+                  <td>接口层</td>
+                  <td>
+                    <b>接口先定义</b>（<code>name@version</code> + <code>kind</code> + <code>params_schema</code> + <code>outputs</code>），执行器只能 <code>implements</code>，<b>不能自己编出口名</b>。内置接口随项目发布，用户可在中枢配置目录里追加自定义接口；<code>review@1</code> 与 <code>review@2</code> 视为两个接口、<b>版本并存</b>，迁移期不强制全量升级。
+                  </td>
+                </tr>
                 <tr>
                   <td>事件</td>
                   <td>统一的 <code>events</code> 表记录 <code>source</code> / <code>type</code> / <code>payload</code> / <code>trace_id</code> / <code>span_id</code>，cron、webhook、watch 与外部 API 都写进同一张表。</td>
                 </tr>
                 <tr>
                   <td>出口表（edges）</td>
-                  <td>显式声明 <code>(能力, 出口) → 能力</code> 三元组，派发就是一次索引查询：查得到就全部下发，查不到就到头。<b>无 <code>match</code> 求值、无条件表达式、无优先级。</b></td>
+                  <td>显式声明 <code>(接口, 出口) → 接口</code> 三元组，派发就是一次索引查询：查得到就全部下发，查不到就到头。<b>无 <code>match</code> 求值、无条件表达式、无优先级。</b>派发前多一道：用目标接口的 <code>params_schema</code> 校验 <code>params</code>。</td>
                 </tr>
                 <tr>
                   <td>扇出</td>
@@ -100,11 +108,11 @@
                 </tr>
                 <tr>
                   <td>接力</td>
-                  <td>执行器回报的 <code>out</code> 拿去查表得到下游能力；<code>allow_chain</code> 显式开启才允许。</td>
+                  <td>执行器回报的 <code>out</code> 拿去查表得到下游接口，再按接口找实现了它的执行器；<code>allow_chain</code> 显式开启才允许。</td>
                 </tr>
                 <tr>
                   <td>成环</td>
-                  <td>允许成环（审查 → 修复 → 复审）；环在配置期由 <code>edges</code> 静态可见，运行期用 <code>path</code> 里能力名去重做剪枝，剪枝在 trace 上可见。</td>
+                  <td>允许成环（审查 → 修复 → 复审）；环在配置期由 <code>edges</code> 静态可见，运行期用 <code>path</code> 里接口名去重做剪枝，剪枝在 trace 上可见。</td>
                 </tr>
                 <tr>
                   <td>任务租约</td>
@@ -116,11 +124,11 @@
                 </tr>
                 <tr>
                   <td>粘性路由</td>
-                  <td><b>按能力声明开启</b>（<code>manifest.capabilities[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>runner_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
+                  <td><b>按 <code>implements</code> 声明开启</b>（<code>manifest.implements[].sticky</code>），默认纯负载均衡。开启时 <code>sticky_key = sha256(trace_id ∥ capability ∥ selector)</code>，写 <code>runner_pins</code> 后一律查表；rebalance 只处理失效 pin。</td>
                 </tr>
                 <tr>
                   <td>版本钉住</td>
-                  <td>图配置（含 <code>edges</code>）、执行器能力清单、注册表三对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
+                  <td>图配置（含 <code>edges</code>）、接口版本（<code>interface_versions</code>）、执行器能力清单、注册表四对象 append-only 版本，trace 钉住不可变的版本 id（content hash），不钉时间。</td>
                 </tr>
                 <tr>
                   <td>六道闸</td>
@@ -137,6 +145,83 @@
               </tbody>
             </table>
           </div>
+
+          <h2>内置接口清单</h2>
+          <p class="prose">
+            随项目发布的就这十个，放在 <code>interfaces/builtin/</code>，进 git、走 review。
+            <b>出口名由这张表给定，执行器只能实现、不能扩展</b>——实现 <code>review@1</code> 就必须两个出口都能走，不允许只做 <code>fix</code>。
+            用户自己的接口放中枢配置目录，同一套格式、同一套版本化，加载后与内置接口没有区别（<code>source</code> 字段区分来源）。
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>接口</th>
+                  <th><code>kind</code></th>
+                  <th><code>outputs</code></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>github@1</code></td>
+                  <td><code>origin</code></td>
+                  <td><code>pr_opened</code> / <code>pr_merged</code> / <code>issue_opened</code></td>
+                </tr>
+                <tr>
+                  <td><code>cron@1</code></td>
+                  <td><code>origin</code></td>
+                  <td><code>tick</code></td>
+                </tr>
+                <tr>
+                  <td><code>watch@1</code></td>
+                  <td><code>origin</code></td>
+                  <td><code>changed</code></td>
+                </tr>
+                <tr>
+                  <td><code>http@1</code></td>
+                  <td><code>origin</code></td>
+                  <td><code>received</code></td>
+                </tr>
+                <tr>
+                  <td><code>review@1</code></td>
+                  <td><code>pipe</code></td>
+                  <td><code>fix</code> / <code>clean</code></td>
+                </tr>
+                <tr>
+                  <td><code>implement@1</code></td>
+                  <td><code>pipe</code></td>
+                  <td><code>verify</code> / <code>give_up</code></td>
+                </tr>
+                <tr>
+                  <td><code>test@1</code></td>
+                  <td><code>pipe</code></td>
+                  <td><code>pass</code> / <code>fail</code></td>
+                </tr>
+                <tr>
+                  <td><code>notify.phone@1</code></td>
+                  <td><code>end</code></td>
+                  <td>—</td>
+                </tr>
+                <tr>
+                  <td><code>notify.webhook@1</code></td>
+                  <td><code>end</code></td>
+                  <td>—</td>
+                </tr>
+                <tr>
+                  <td><code>log@1</code></td>
+                  <td><code>end</code></td>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            注册时校验三件事：接口存在（否则 <code>unknown_interface</code>）、版本受支持（<code>unsupported_interface_version</code>）、
+            <code>kind</code> 与接口声明一致（<code>kind_mismatch</code>，<code>notify.phone</code> 只能被 <code>end</code> 实现）。
+            派发时多一步：<code>params</code> 不符合目标接口的 <code>params_schema</code> 就<b>不建任务</b>，记 <code>pruned / reason=param_schema</code>。
+          </p>
 
           <h2>本期不做的</h2>
           <p class="prose">
@@ -169,6 +254,11 @@
                   <td>等「执行器内部并行」这个替代方案被反复抱怨不够用时，再单独设计</td>
                 </tr>
                 <tr>
+                  <td>接口市场 / 接口继承 / 接口组合</td>
+                  <td><b>不做。</b>市场要的是发布、签名、信任与撤权；继承和组合会逼出「一个接口有多个父接口」的合并语义——<code>outputs</code> 该取并集还是交集、<code>params_schema</code> 冲突怎么裁，一套都答不上来。<b>先把单一层级的契约做稳</b>：一个接口就是一份平铺的定义，没有父、没有引用、没有拼装。</td>
+                  <td>等内置接口+自定义接口这一层被真实用满、且出现「同义接口反复重复」的具体案例时再谈；届时也只是复制粘贴的成本被量出来了</td>
+                </tr>
+                <tr>
                   <td><code>batching</code></td>
                   <td>把多条事件攒成一批再执行，会打乱「一次事件一条 trace」的可解释性。</td>
                   <td>出现明确的批量写入场景（如一天一次的全量扫描）时，按触发源做而不是按边做</td>
@@ -181,7 +271,7 @@
                 <tr>
                   <td>任意代码执行</td>
                   <td>中枢一旦能存代码，就回到「中枢知道要跑什么」，安全边界直接失效。</td>
-                  <td>不做。需要复杂逻辑就在执行器本地写成一个已申报的能力</td>
+                  <td>不做。需要复杂逻辑就在执行器本地写成一个实现了已定义接口的能力</td>
                 </tr>
                 <tr>
                   <td>中枢存第三方密钥</td>
@@ -211,7 +301,7 @@
                 <tr>
                   <td>子流程复用</td>
                   <td>复用要求参数化与版本引用，会逼出模块系统，复杂度陡增。</td>
-                  <td>能力数量到需要抽公共部分的规模时再做，届时复用图配置版本对象</td>
+                  <td>能力数量到需要抽公共部分的规模时再做，届时复用接口层与图配置版本对象</td>
                 </tr>
               </tbody>
             </table>
@@ -249,7 +339,7 @@
 
           <h2>预留的扩展点</h2>
           <p class="prose">
-            <code>edges</code> 表本身已经是实现了的东西，不算预留。真正算留白的只有下面三条：一条明确<b>不</b>留，两条留了位置。
+            <code>edges</code> 表本身已经是实现了的东西，不算预留。真正算留白的只有下面四条：一条明确<b>不</b>留，一条留了位置但本期<b>明确禁止</b>，两条留了位置。
           </p>
 
           <dl class="defs">
@@ -257,6 +347,14 @@
               <dt>条件路由 · 不预留</dt>
               <dd>
                 没有地方留，也不打算留。条件路由要的是一个表达式求值器，它会同时推翻三件事：中枢不解释用户逻辑、图可静态分析、「为什么没触发」可以只靠查表回答。硬把入口先留出来，等于给以后的自己一个把求值器装回来的方便。真要做是一次<b>路由层重设计</b>，不是填一个已经挖好的坑。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>接口子集实现 <code>partial</code> · 预留但本期明确禁止</dt>
+              <dd>
+                位置预留在 <code>capabilities</code> 表：主键是 <code>(runner_id, interface_id)</code>，将来真要放宽，加一列 <code>partial: true</code> 就能表达「我实现了 <code>review@1</code> 但只会走 <code>fix</code>」，行的形状不用改。
+                <b>但本期明确不做</b>：一旦允许子集，<code>edges</code> 里查到的边可能对这台机器不存在对应出口，
+                就重新引入了「查表命中、却派不出去」的分叉风险——而收拢出口命名权正是加接口层要解决的那件事。要单独能力就定义新接口，不要拿子集当快捷键。
               </dd>
             </div>
             <div class="def">

@@ -69,37 +69,43 @@
           <div class="crumb">第 02 页 · 开始</div>
           <h1>核心概念</h1>
           <p class="lead">
-            整份文档只用五个名词：Node、Capability、Output、Task、Trace。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。没有条件求值，也没有优先级：派发只是查一张表。
+            整份文档只用六个名词：Interface、Capability、Output、Task、Trace、Role。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。没有条件求值，也没有优先级：派发只是查一张表。
           </p>
 
-          <h2>五个名词</h2>
+          <h2>六个名词</h2>
           <p class="prose">
-            五个词各自回答一个问题：谁在场（Node）、谁会干什么（Capability）、干完往哪走（Output）、这一趟待办本身（Task）、这整趟是怎么走的（Trace，行程）。括号里是代码原名。
+            六个词各自回答一个问题：契约是什么（Interface）、哪台机器实现了它（Capability）、干完往哪走（Output）、这一趟待办本身（Task）、这整趟是怎么走的（Trace，行程）、它站在链的哪一端（Role）。括号里是代码原名。
           </p>
 
           <dl class="defs">
             <div class="def">
-              <dt>Node <code>node</code></dt>
+              <dt>Interface <code>interface</code> · 接口</dt>
               <dd>
-                参与流转的一个实体，带一个 <code>kind</code>：<code>origin</code> / <code>pipe</code> / <code>end</code>。它在自己机器上的 <code>config.yaml</code> 里申报自己是谁、会什么。
+                一份<b>契约</b>：中枢侧定义、进 git、走 review、版本化。里面钉死四样东西——<code>name@version</code>（如 <code>review@1</code>）、角色 <code>kind</code>（<code>origin</code> / <code>pipe</code> / <code>end</code>）、参数结构 <code>params_schema</code>（JSON Schema，派发前校验）、出口名集合 <code>outputs</code>。<strong>出口名只能来自这里</strong>，执行器没有命名权。
                 <br />
-                例：<code>runner: mbp-16</code>、<code>kind: pipe</code>，下挂 <code>review</code> 与 <code>implement</code> 两个能力；另一台 <code>runner: my-phone</code>、<code>kind: end</code>。
+                来源两种：<b>内置接口</b> <code>builtin</code>（<code>interfaces/builtin/</code>，随项目发布，项目维护）与<b>自定义接口</b> <code>custom</code>（中枢配置目录里用户自己加），同一套格式、同一套版本化，加载后没有区别。
+                <br />
+                例：<code>review@1</code>，<code>kind: pipe</code>，<code>params_schema</code> 要求一个整数 <code>pr</code>，<code>outputs: [fix, clean]</code>。
               </dd>
             </div>
             <div class="def">
-              <dt>Capability <code>capability</code></dt>
+              <dt>Capability <code>capability</code> · 能力</dt>
               <dd>
-                能力是执行器申报的「我能做什么」。<strong>路由的单位是能力，不是机器</strong>：派出去的是 <code>review</code>，至于落到哪台机器，由执行器池按负载挑。
+                不是「我能做什么」，而是<strong>某台机器对某个接口的实现</strong>：能力 = <code>(runner_id, interface_id)</code>。<strong>它不自带出口</strong>——出口是它实现的那个接口给的。
                 <br />
-                例：<code>name: review</code>，带一段本机的 <code>argv</code>；中枢只认这个名字，不知道命令内容。
+                路由的单位是<strong>接口</strong>，不是能力：中枢派出去的是「谁来实现 <code>review@1</code>」，落到哪台机器由执行器池按负载挑。而且必须整份实现——实现 <code>review@1</code> 就得 <code>fix</code> 和 <code>clean</code> 两个出口都能走。
+                <br />
+                例：<code>runner: mbp-16</code> 声明 <code>implements: review@1</code>，带一段本机的 <code>argv</code>；中枢只记 <code>(mbp-16, review@1)</code>，不知道命令内容。
               </dd>
             </div>
             <div class="def">
-              <dt>Output <code>output</code> / <code>port</code></dt>
+              <dt>Output <code>output</code> · 出口</dt>
               <dd>
-                能力的命名出口，一个可以指认的点，跑完之后才由执行器选一个。能力声明里的 <code>outputs</code> 是「我会用到的出口名」，<strong>不是「我会去哪」</strong>——去哪由中枢的出口表决定，执行器不该知道图长什么样。
+                接口定义里的一个命名点，一个可以指认的字符串，<strong>不是条件</strong>；跑完之后才由执行器选一个。
                 <br />
-                例：<code>review</code> 声明 <code>outputs: [fix, done]</code>；这次跑完它回报 <code>out: "fix"</code>，就意味着它选了那个叫 <code>fix</code> 的出口。
+                它是接口给的，不是执行器编的——两台机器实现同一个 <code>review@1</code>，出口集合必然一样。去哪仍由中枢的边表决定，执行器不该知道图长什么样。
+                <br />
+                例：<code>review@1</code> 的出口是 <code>{fix, clean}</code>；这次跑完它回报 <code>out: "fix"</code>，就意味着它选了那个叫 <code>fix</code> 的出口。
               </dd>
             </div>
             <div class="def">
@@ -107,22 +113,47 @@
               <dd>
                 查表查到一条边之后落地的一行待办，带租约和状态机；它是「谁去做、做到哪一步」的唯一载体。
                 <br />
-                例：<code>task_id=8f21</code>，能力 <code>review</code>，参数 <code>{pr: 431}</code>，状态依次 <code>pending &rarr; assigned &rarr; acked &rarr; running</code>。
+                例：<code>task_id=8f21</code>，实现 <code>review@1</code>，参数 <code>{pr: 431}</code>，状态依次 <code>pending &rarr; assigned &rarr; acked &rarr; running</code>。
               </dd>
             </div>
             <div class="def">
               <dt>Trace <code>trace_id</code> · 行程</dt>
               <dd>
-                一趟行程：从最初那个事件到最后一条任务的完整因果链，事件、每次查表、每个任务的回报都挂在同一个 <code>trace_id</code> 下。这次行程具体走过哪些能力，记在 <code>path</code> 上——<b>从根到本任务这条具体路径的能力名序列</b>，用来做去重剪枝。
+                一趟行程：从最初那个事件到最后一条任务的完整因果链，事件、每次查表、每个任务的回报都挂在同一个 <code>trace_id</code> 下。这次行程具体走过哪些接口，记在 <code>path</code> 上——<b>从根到本任务这条具体路径的接口名序列</b>，用来做去重剪枝。
                 <br />
-                例：<code>trace=tr_7c1a</code>，跑到 <code>review &rarr; implement</code>，那么 implement 这个任务走的行程是 <code>path = [review, implement]</code>。
+                例：<code>trace=tr_7c1a</code>，跑到 <code>review@1 &rarr; implement@1</code>，那么 implement 这个任务走的行程是 <code>path = [review@1, implement@1]</code>。
+              </dd>
+            </div>
+            <div class="def">
+              <dt>Role <code>role</code> · 角色</dt>
+              <dd>
+                一个东西站在链的哪一端，只有三种：<code>origin</code>（只有出）、<code>pipe</code>（有进有出）、<code>end</code>（只有入）。
+                <br />
+                <strong>接口自己带 <code>kind</code>，执行器也带 <code>kind</code></strong>，实现时两者必须一致，否则注册就被拒（<code>kind_mismatch</code>）——<code>end</code> 接口只能被 <code>end</code> 执行器实现。
+                <br />
+                例：<code>notify.phone@1</code> 是 <code>end</code>，只能由 <code>kind: end</code> 的手机端承接；<code>review@1</code> 是 <code>pipe</code>。
               </dd>
             </div>
           </dl>
 
           <p class="prose">
-            五个词的关系是一句套娃：<strong>执行器申报能力，能力带出口，出口经一条边指向下一个能力，一次派发落成一个任务，整趟行程是一条 trace</strong>。所以系统里唯一需要被推理的东西只剩「查表」，其余都是记录。
+            六个词的关系是一句套娃：<strong>中枢先定义接口，执行器实现接口形成能力，能力里那个接口的出口经一条边指向下一个接口，一次派发落成一个任务，整趟行程是一条 trace</strong>。出口名、参数结构、谁能实现，全在接口里定死了，所以系统里唯一需要被推理的东西只剩「查表」，其余都是记录。
           </p>
+
+          <div class="fig">
+            <div class="flow">
+              <div class="box sm">接口<span class="sub">name@版本 · 中枢定义</span></div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="box sm">执行器<span class="sub">一台机器 · implements</span></div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="box sm">能力<span class="sub">(runner_id, interface_id)</span></div>
+              <div class="arr"><span>&rarr;</span></div>
+              <div class="box sm">图<span class="sub">edges · 只连接口</span></div>
+            </div>
+            <div class="fig-cap">
+              <b>箭头就是动词。</b>执行器 <code>implements</code> 接口，这个实现就是能力；能力里的接口按 <code>edges</code> 连成图。<b>图只认接口，不认机器</b>——换一台机器实现同一个接口，图一个字都不用改。
+            </div>
+          </div>
 
           <h2>角色有三种，按端口形状分</h2>
           <p class="prose">
@@ -155,7 +186,7 @@
                   <th>种类</th>
                   <th>入</th>
                   <th>出</th>
-                  <th>能力</th>
+                  <th>接口与能力</th>
                   <th>例子</th>
                   <th><code>kind</code></th>
                 </tr>
@@ -165,7 +196,7 @@
                   <td>源 · 触发器</td>
                   <td>✗</td>
                   <td>✓</td>
-                  <td>不申报能力，边的起点用事件类型充当</td>
+                  <td>有 <code>kind: origin</code> 的接口（<code>github@1</code> 等），出口由接口给定；执行器不实现它，事件本身充当起点</td>
                   <td>GitHub webhook、cron、watch、外部 API 轮询</td>
                   <td><code>origin</code></td>
                 </tr>
@@ -173,16 +204,16 @@
                   <td>管道</td>
                   <td>✓</td>
                   <td>✓</td>
-                  <td>申报 <code>capabilities</code>，每个带自己的 <code>outputs</code></td>
-                  <td>机器上的 <code>review</code> / <code>implement</code> / <code>test</code></td>
+                  <td>执行器 <code>implements</code> 某个 <code>kind: pipe</code> 的接口，形成能力；<b>出口来自接口</b></td>
+                  <td>机器上的 <code>review@1</code> / <code>implement@1</code> / <code>test@1</code></td>
                   <td><code>pipe</code></td>
                 </tr>
                 <tr>
                   <td>终端 · 叶子</td>
                   <td>✓</td>
                   <td>✗</td>
-                  <td>申报 <code>capabilities</code>，<code>outputs</code> 为空</td>
-                  <td>推手机 <code>notify.phone</code>、写归档日志</td>
+                  <td>执行器 <code>implements</code> 某个 <code>kind: end</code> 的接口，该接口 <code>outputs</code> 为空</td>
+                  <td>推手机 <code>notify.phone@1</code>、写归档日志 <code>log@1</code></td>
                   <td><code>end</code></td>
                 </tr>
               </tbody>
@@ -190,20 +221,20 @@
           </div>
 
           <div class="note">
-            <strong>没有第四种。</strong>任何参与流转的东西都能被这三类装下：定时器是源，CI 里的一个步骤是管道，企业微信机器人是终端。所以中枢不必为「新类型实体」写新代码，只读它的 <code>kind</code> 和它申报的能力。
+            <strong>没有第四种。</strong>任何参与流转的东西都能被这三类装下：定时器是源，CI 里的一个步骤是管道，企业微信机器人是终端。所以中枢不必为「新类型实体」写新代码，只读它的 <code>kind</code> 和它实现了哪些接口。
             <br />
-            <b>触发器就是「只有出口、没有入边的角色」。</b>它不申报能力，所以边的起点由事件类型充当：<code>origin:github --(pr_opened)--&gt; review</code>。
+            <b>触发器就是「只有出口、没有入边的角色」。</b>它也是一个接口（<code>github@1</code>，<code>kind: origin</code>），只是没有执行器去实现它：外部事件打进来，中枢直接拿这个接口的出口（事件类型）查表——<code>github@1 --(pr_opened)--&gt; review@1</code>。
           </div>
 
           <h2>一条链是怎么连起来的</h2>
           <p class="prose">
-            整条链只有一个形状：源出一件事件，用事件类型当出口查一次表，落到一个能力上；能力跑完选一个出口，再查一次表。中间可以插任意多个 <code>pipe</code>，两头分别是 <code>origin</code> 和 <code>end</code>。连起来的整条因果链，就是一条 Trace。
+            整条链只有一个形状：源出一件事件，用事件类型当出口查一次表，落到一个接口上；接口被某台执行器实现，跑完选一个出口，再查一次表。中间可以插任意多个 <code>pipe</code> 接口，两头分别是 <code>origin</code> 和 <code>end</code>。连起来的整条因果链，就是一条 Trace。
           </p>
 
           <div class="fig">
             <div class="flow">
               <div class="flow-item">
-                <div class="box">github<span class="sub">kind: source</span></div>
+                <div class="box">github@1<span class="sub">interface · kind: origin</span></div>
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
@@ -211,7 +242,7 @@
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
-                <div class="box accent">review<span class="sub">kind: pipe</span></div>
+                <div class="box accent">review@1<span class="sub">interface · kind: pipe</span></div>
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
@@ -219,7 +250,7 @@
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
-                <div class="box accent">implement<span class="sub">kind: pipe</span></div>
+                <div class="box accent">implement@1<span class="sub">interface · kind: pipe</span></div>
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
@@ -227,33 +258,48 @@
               </div>
               <div class="arr"><span>&rarr;</span></div>
               <div class="flow-item">
-                <div class="box">notify.phone<span class="sub">kind: end</span></div>
+                <div class="box">notify.phone@1<span class="sub">interface · kind: end</span></div>
               </div>
             </div>
 
             <pre class="code" style="margin: 18px 0 0"><span class="c">-- 同一件事：画出来是上面那张图，存下来是表里的三行</span>
-<span class="c">-- from_capability      from_port     to_capability</span>
-   (<span class="s">origin:github</span>,      <span class="s">pr_opened</span>)  &rarr;  <span class="k">review</span>
-   (<span class="s">review</span>,             <span class="s">fix</span>)        &rarr;  <span class="k">implement</span>
-   (<span class="s">implement</span>,          <span class="s">done</span>)       &rarr;  <span class="k">notify.phone</span></pre>
+<span class="c">-- edges 存 interface_id，不是 name@版本；展示时 join 出名字</span>
+<span class="c">-- from_interface              from_port     to_interface        名字</span>
+   (<span class="s">ifc_7c1a</span>,                <span class="s">pr_opened</span>)  &rarr;  <span class="k">ifc_2e04</span>   <span class="c">-- github@1 &rarr; review@1</span>
+   (<span class="s">ifc_2e04</span>,                <span class="s">fix</span>)        &rarr;  <span class="k">ifc_9a13</span>   <span class="c">-- review@1 &rarr; implement@1</span>
+   (<span class="s">ifc_9a13</span>,                <span class="s">done</span>)       &rarr;  <span class="k">ifc_51bd</span>   <span class="c">-- implement@1 &rarr; notify.phone@1</span></pre>
 
             <div class="fig-cap">
-              <b>edges 表是中枢侧唯一的路由依据。</b>中间那几个虚线框是出口，也是表里的 <code>from_port</code>。中枢不看执行器上的代码、不解释出口的业务含义，只把（能力, 出口）这一对填进表里查一次——图是画给人看的，跑的永远是这张表。
+              <b>这些名字全是接口，不是机器。</b>图里没有一个执行器——机器在后面：<code>review@1</code> 这个接口由某台机器 <code>implements</code>，换一台机器实现图也不用改。中间那几个虚线框是接口给的出口，也就是表里的 <code>from_port</code>。<code>edges</code> 表是中枢侧唯一的路由依据：它不看执行器上的代码、不解释出口的业务含义，只把（接口, 出口）这一对填进表里查一次——图是画给人看的，跑的永远是这张表。
             </div>
           </div>
 
+          <h3>出口名为什么必须由接口给定</h3>
+          <p class="prose">
+            旧模型让执行器自己编出口名，结果是两台机器实现同一个 <code>review</code> 却报出 <code>[fix, clean]</code> 和 <code>[ok, bad]</code>，<code>edges</code> 里于是出现 <code>(review, fix)</code> 和 <code>(review, ok)</code> 两套起点——查表时不知道该用哪个，边的唯一性没了。接口把命名权收归中枢，<code>from_port</code> 才是封闭集合；执行器只负责说「我实现了 <code>review@1</code>」，以及跑完从接口给定的那几个出口里选一个。
+          </p>
+
+          <h3>一个版本就是一个接口</h3>
+          <p class="prose">
+            <code>review@1</code> 和 <code>review@2</code> 是<b>两个不同的接口</b>，可以并存：旧机器继续实现 <code>@1</code>，新机器实现 <code>@2</code>，<code>edges</code> 里各有一条边，升级期不必全网停机。代价是图里同名接口会出现两个版本，所以<b>展示时不能只写 <code>review</code></b>，必须带版本号，否则看不出走的是哪条边。
+          </p>
+
+          <p class="prose">
+            <strong>而且不允许实现子集。</strong>实现 <code>review@1</code> 就必须 <code>fix</code> 和 <code>clean</code> 两个出口都能走。若能只实现一半，<code>edges</code> 里就会出现「这台机器没这个出口」的分叉：查表命中却派不出去。要单独能力就定义一个新接口，别在旧接口上开洞。
+          </p>
+
           <h3>一个出口可以有多条边</h3>
           <p class="prose">
-            表里同一个（能力, 出口）可以有多行，那就是扇出。<strong>返回 N 行就派 N 个任务，全部下发，不是择一</strong>；返回 0 行就是到头，理由是「表里没有这一行」。
+            表里同一个（接口, 出口）可以有多行，那就是扇出。<strong>返回 N 行就派 N 个任务，全部下发，不是择一</strong>；返回 0 行就是到头，理由是「表里没有这一行」。
           </p>
 
           <div class="fig">
             <div class="fanout">
-              <div class="box">review<span class="sub">这次走了出口 fix</span></div>
+              <div class="box">review@1<span class="sub">这次走了出口 fix</span></div>
               <div class="bracket"></div>
               <div class="fanout-col">
-                <div class="box sm">implement<span class="sub">(review, fix) 的第 1 行</span></div>
-                <div class="box sm">notify.phone<span class="sub">(review, fix) 的第 2 行</span></div>
+                <div class="box sm">implement@1<span class="sub">(review@1, fix) 的第 1 行</span></div>
+                <div class="box sm">notify.phone@1<span class="sub">(review@1, fix) 的第 2 行</span></div>
               </div>
             </div>
             <div class="fig-cap">
@@ -274,21 +320,24 @@
               </div>
             </div>
             <div class="step">
-              <div class="step-title">查出口表</div>
+              <div class="step-title">查表 → 校验参数 → 选执行器</div>
               <div class="step-body">
-                拿（源标识, 事件类型）这一对去 <code>edges</code> 表查<b>一次</b>：<code>from_capability</code> 用事件源充当、<code>from_port</code> 用事件类型充当。查表只有一次索引查询——没有条件求值、没有优先级、也不是择一。返回 <b>N 行，就是 N 个下游能力</b>，全部都要派；返回 0 行就到此为止，理由写清楚是「表里没有这一行」。
+                拿（源接口, 出口）这一对去 <code>edges</code> 表查<b>一次</b>：<code>from_interface</code> 是触发源那个接口、<code>from_port</code> 是事件类型。查表只有一次索引查询——没有条件求值、没有优先级、也不是择一。返回 <b>N 行，就是 N 个下游接口</b>，全部都要派；返回 0 行就到此为止，理由写清楚是「表里没有这一行」。
+                <br />
+                拿到的每个下游接口再走四步（派发全貌在 <a href="04-edges.html">第 04 页</a>）：
+                <b>① 查表</b>得 <code>to_interface</code> → <b>② 用这个接口的 <code>params_schema</code> 校验参数</b>（不通过就记 <code>pruned</code>、<code>reason=param_schema</code>，<b>不建任务</b>）→ <b>③ 找实现了这个接口的执行器</b>（查 <code>capabilities</code> 表里 <code>interface_id</code> 等于它的行；一台都没实现就保持 <code>pending</code> 排队，不算错）→ <b>④ 按负载挑一台</b>（或按 sticky 查 <code>runner_pins</code>）建任务。
               </div>
             </div>
             <div class="step">
               <div class="step-title">任务派发</div>
               <div class="step-body">
-                每个下游能力建一个 task，按能力名挑一台声明过它的执行器，带租约下发。中枢只发能力名和参数，执行器用自己注册的 <code>argv</code> 执行。执行器 <code>acked</code> 表示接单，随后 <code>running</code>，心跳持续续租。
+                每个下游接口建一个 task，带租约下发给选中的那台执行器。中枢只发接口名、版本和参数——<b>不发 argv、不发图、不说下一步是谁</b>；执行器用自己本地的 <code>argv</code> 执行。执行器 <code>acked</code> 表示接单，随后 <code>running</code>，心跳持续续租。
               </div>
             </div>
             <div class="step">
               <div class="step-title">结果回流</div>
               <div class="step-body">
-                执行器回报 <code>status</code> 与 <code>out</code>。中枢拿（这个能力, 这个 <code>out</code>）再查一次表：有边就建下一个任务，没边就在这里走到头。同一条 trace 不换 <code>trace_id</code>。每个任务各自到头，通知走图里那条边，不需要等整条链结束。
+                执行器回报 <code>status</code> 与 <code>out</code>。中枢拿（这个接口, 这个 <code>out</code>）再查一次表：有边就建下一个任务，没边就在这里走到头。同一条 trace 不换 <code>trace_id</code>。每个任务各自到头，通知走图里那条边，不需要等整条链结束。
               </div>
             </div>
           </div>

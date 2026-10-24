@@ -69,7 +69,7 @@
           <div class="crumb">第 03 页 · 运行时</div>
           <h1>一条事件的旅程</h1>
           <p class="lead">
-            一个 webhook 从进来到手机震动，中间到底发生了什么。这页把十跳摊开，标出哪一步会丢、哪一步会重、哪一步之后事实就不能再改。全程只有一次「路由决策」，就是查出口表。
+            一个 webhook 从进来到手机震动，中间到底发生了什么。这页把十跳摊开，标出哪一步会丢、哪一步会重、哪一步之后事实就不能再改。全程只有一次「路由决策」，就是查出口表——查完之后还要拿目标接口的 schema 校一次参数。
           </p>
 
           <h2>主通路</h2>
@@ -79,7 +79,7 @@
               <div class="arr"><span>→</span></div>
               <div class="box accent">events<span class="sub">append-only</span></div>
               <div class="arr"><span>→</span></div>
-              <div class="box">edges<span class="sub">一次查表</span></div>
+              <div class="box">edges<span class="sub">接口 → 接口 · 一次查表</span></div>
               <div class="arr"><span>→</span></div>
               <div class="box">tasks<span class="sub">一个事务 N 行</span></div>
               <div class="arr"><span>→</span></div>
@@ -88,7 +88,7 @@
               <div class="box">手机<span class="sub">end · 推手机</span></div>
             </div>
             <div class="fig-cap">
-              <b>六跳一条线。</b>真正落库的只有两处：<code>events</code> 与 <code>tasks</code>，其余都是状态迁移。中间的 <code>edges</code> 不是一张运行时写进去的表，而是配置期就画好的出口图——跑起来只是读它。
+              <b>六跳一条线。</b>真正落库的只有两处：<code>events</code> 与 <code>tasks</code>，其余都是状态迁移。中间的 <code>edges</code> 不是一张运行时写进去的表，而是配置期就画好的出口图——<b>两端都是接口</b>，不引用任何机器；跑起来只是读它。
             </div>
           </div>
 
@@ -112,24 +112,48 @@
             </div>
 
             <div class="step">
-              <div class="step-title">查出口表</div>
+              <div class="step-title">查出口表，校验参数</div>
               <div class="step-body">
-                取事件的 <code>(source, type)</code> 作为起点，去 <code>edges</code> 查一次索引：从
-                <code>(from_capability, from_port)</code> 查到 N 行 <code>to_capability</code>，就是 N 个下游能力。触发器没有入边，所以它的 <code>from_capability</code> 由事件类型充当（<code>origin:github</code>）。
+                取事件的 <code>(source, type)</code> 定位起点——<b>起点也是接口</b>：<code>github@1</code>（<code>kind: origin</code>）。
+                它的出口名不由事件类型自由充当，而是由接口给定，<code>pull_request.opened</code> 归一到 <code>pr_opened</code>。
+                然后去 <code>edges</code> 查一次索引：从 <code>(from_interface, from_port)</code> 查到 N 行 <code>to_interface</code>，就是 N 个下游接口。
               </div>
-              <pre class="code"><span class="c">-- 中枢侧唯一的路由依据：一次索引查询</span>
-<span class="k">SELECT</span> to_capability
-  <span class="k">FROM</span> edges
- <span class="k">WHERE</span> from_capability = <span class="s">'origin:github'</span>
-   <span class="k">AND</span> from_port       = <span class="s">'pull_request.opened'</span>;
+              <div class="step-body" style="margin-top: 8px">
+                <b>查到边不等于派得出去。</b>每个目标接口还要用它的 <code>params_schema</code> 校一次参数：
+                本次要带的 <code>params</code> 合不合目标接口的契约。不通过的出口记一条
+                <code>pruned / reason=param_schema</code>，<b>任务不建</b>——这一校验发生在建任务之前，执行器根本不会看到它。
+              </div>
+              <pre class="code"><span class="c">-- 派发四步：查表 → 校参数 → 找实现者 → 挑一台</span>
 
-<span class="c">-- 返回 N 行 → N 个下游能力，全部建任务</span></pre>
+<span class="c">-- ① 查表（出口名来自接口，两端都是 interface_id）</span>
+<span class="k">SELECT</span> to_interface <span class="k">FROM</span> edges
+ <span class="k">WHERE</span> from_interface = <span class="s">'ifc_7c1a'</span>      <span class="c">-- github@1</span>
+   <span class="k">AND</span> from_port      = <span class="s">'pr_opened'</span>;
+<span class="c">-- N 行 → N 个下游接口；0 行 → 记 pruned / no_edge</span>
+
+<span class="c">-- ② 逐个用目标接口的 params_schema 校验本次参数（不通过就不建任务）</span>
+<span class="k">for each</span> to_interface:
+    schema = interface_versions[to_interface].params_schema
+    <span class="k">if not</span> validate(params, schema):
+        trace.pruned(reason = <span class="s">'param_schema'</span>)   <span class="c">-- 到此为止，不落 tasks</span>
+        <span class="k">continue</span>
+
+<span class="c">-- ③ 找实现了这个接口的执行器（不是按能力名找，是按 interface_id 找）</span>
+<span class="k">SELECT</span> runner_id <span class="k">FROM</span> capabilities <span class="k">WHERE</span> interface_id = :to_interface;
+
+<span class="c">-- ④ 在这些执行器里挑一台 → 建任务</span></pre>
               <div class="step-body" style="margin-top: 8px">
                 <b>没有条件求值、没有优先级、没有表达式。</b>路由就是这一次查表：同样的
-                <code>(source, type)</code> 在任何机器、任何时间都得到同一批行，因为答案写死在图里。
+                <code>(from_interface, from_port)</code> 在任何机器、任何时间都得到同一批行，因为答案写死在图里。
               </div>
               <div class="step-body" style="margin-top: 8px">
                 查不到行 → 一个任务都不建，trace 上记 <code>pruned</code>，原因是 <code>no_edge</code>：<b>表里没有这条边</b>。
+                查到了但参数不合 schema → 同样不建任务，原因换成 <code>param_schema</code>：<b>这条边存在，只是这次的数据走不进去</b>。
+              </div>
+              <div class="note">
+                <b>参数校验是查表之后唯一还能拦住的一步。</b>它前移到<b>建任务之前</b>，所以执行器永远收不到一个
+                「参数不合自己接口契约」的任务。反过来说，一个任务只要能建出来，它的 <code>params</code> 就已经对得上目标接口的
+                <code>params_schema</code>——执行器不需要再校一次，也没有机会校错。
               </div>
             </div>
 
@@ -139,28 +163,43 @@
                 N 行结果在<b>同一个事务</b>里 INSERT N 行 <code>tasks</code>。这是扇出，不是互斥选择：一个 PR 可以既派 agent 审查、又推手机，两条都下发。事务保证了「要么都发出去，要么一条都没有」。
               </div>
               <pre class="code"><span class="k">BEGIN</span>;
-<span class="c">-- edges 第 1 行 → pipe 能力 review</span>
-<span class="k">INSERT INTO</span> tasks (id, event_id, capability, state) <span class="k">VALUES</span> (:t1, :event_id, <span class="s">'review'</span>, <span class="s">'pending'</span>);
-<span class="c">-- edges 第 2 行 → end 能力 notify.phone</span>
-<span class="k">INSERT INTO</span> tasks (id, event_id, capability, state) <span class="k">VALUES</span> (:t2, :event_id, <span class="s">'notify.phone'</span>, <span class="s">'pending'</span>);
+<span class="c">-- edges 第 1 行 → 接口 review@1（ifc_2e04）</span>
+<span class="k">INSERT INTO</span> tasks (id, event_id, interface, state) <span class="k">VALUES</span> (:t1, :event_id, <span class="s">'ifc_2e04'</span>, <span class="s">'pending'</span>);
+<span class="c">-- edges 第 2 行 → 接口 notify.phone@1（ifc_51bd）</span>
+<span class="k">INSERT INTO</span> tasks (id, event_id, interface, state) <span class="k">VALUES</span> (:t2, :event_id, <span class="s">'ifc_51bd'</span>, <span class="s">'pending'</span>);
 <span class="k">COMMIT</span>;</pre>
+              <div class="step-body" style="margin-top: 8px">
+                写进 <code>tasks</code> 的是 <b><code>interface_id</code></b>，不是能力名。因为图里没有机器，只有接口；
+                「哪台机器去跑」是下一步才决定的事，<b>建任务的时刻不需要知道它</b>。这也意味着换一台机器重派同一个任务，
+                <code>interface</code> 这一列一个字节都不用改。
+              </div>
             </div>
 
             <div class="step">
               <div class="step-title">派发</div>
               <div class="step-body">
-                在申报了该能力的实例里按最少负载挑一个（比 <code>inflight / concurrency</code>），写
+                先查 <code>capabilities WHERE interface_id = ?</code>，得到<b>实现了这个接口的所有执行器</b>；
+                再在<b>这些执行器里</b>按最少负载挑一个（比 <code>inflight / concurrency</code>），写
                 <code>lease_until = now + 30s</code>，状态 <code>pending → assigned</code>。
+                <b>顺序不能反</b>：先有「谁能做这个接口」，才谈得上「在能做的里面挑哪一台」。
+              </div>
+              <div class="step-body" style="margin-top: 8px">
                 <b>默认就是纯负载均衡</b>——结果存在中枢，下游读结果不需要回原机器。
-                只有能力在 manifest 里声明了 <code>sticky</code>（共享工作目录、增量编译这类），才先查
+                只有能力在执行器 manifest 里声明了 <code>sticky</code>（共享工作目录、增量编译这类），才先查
                 <code>runner_pins</code>。本期不做收集，所以绝大多数任务走纯均衡那条路。
               </div>
-              <pre class="code"><span class="c">-- 默认：纯负载均衡，无状态</span>
+              <pre class="code"><span class="c">-- ① 先找实现者：按 interface_id，不按名字</span>
+<span class="k">SELECT</span> runner_id
+  <span class="k">FROM</span> capabilities
+ <span class="k">WHERE</span> interface_id = :task.interface;
+<span class="c">-- 0 行 → 任务保持 pending，按租约排队（这不是错误，也不是剪枝）</span>
+
+<span class="c">-- ② 在这些候选里按负载挑一台，默认纯均衡、无状态</span>
 order_by inflight / concurrency asc
 limit 1
 
-<span class="c">-- 仅当 manifest.capabilities[].sticky 声明了才走：</span>
-sticky_key = sha256(trace_id ∥ capability ∥ selector)
+<span class="c">-- 仅当该接口在定义里声明了 sticky 才走：</span>
+sticky_key = sha256(trace_id ∥ interface_id ∥ selector)
 <span class="c">-- runner_pins 命中则直用；未命中按负载挑一个并写入</span></pre>
             </div>
 
@@ -232,22 +271,22 @@ sticky_key = sha256(trace_id ∥ capability ∥ selector)
               <div class="step-title">接力</div>
               <div class="step-body">
                 派生事件不会重新求值任何东西——它带着上游回报的 <code>out</code> 回来。拿
-                <code>(上游能力, out)</code> 去 <code>edges</code> 查，命中一行就建下一跳任务，<code>hop</code> 加一，<code>trace_id</code> 沿用。
+                <code>(该任务的 interface, out)</code> 去 <code>edges</code> 查，命中一行就建下一跳任务，<code>hop</code> 加一，<code>trace_id</code> 沿用。
               </div>
-              <pre class="code">out = <span class="s">"fix"</span>   →  edges(review, fix) = implement  →  建任务
+              <pre class="code">out = <span class="s">"fix"</span>   →  edges(ifc_2e04, fix) = ifc_9a13  →  建任务（再校一次参数）
 out = <span class="k">null</span>    →  不查表，这条分支停在这里
-out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / no_edge</pre>
+out = <span class="s">"xyz"</span>   →  edges(ifc_2e04, xyz) 空  →  pruned / no_edge</pre>
               <div class="step-body" style="margin-top: 8px">
                 环是允许的（<code>review → fix → review</code> 是真实场景），终止性靠 <code>path</code> 保证：
-                <code>path</code> 是<b>从根到本任务这条具体路径</b>的能力名序列，不是整条 trace 的能力集合——同一个能力在另一条分支上照样能跑。
-                path 里已有该能力 → <b>静默剪枝</b>，不报错、不暂停，但必须在 trace 上看得见（记 <code>pruned</code> 加原因）。
+                <code>path</code> 是<b>从根到本任务这条具体路径</b>的接口序列，不是整条 trace 的接口集合——同一个接口在另一条分支上照样能跑。
+                path 里已有该接口 → <b>静默剪枝</b>，不报错、不暂停，但必须在 trace 上看得见（记 <code>pruned</code> 加原因）。
               </div>
             </div>
 
             <div class="step">
               <div class="step-title">到头</div>
               <div class="step-body">
-                每个任务跑完都回报 <code>out</code>。拿（这个能力, 这个 <code>out</code>）再查一次表：
+                每个任务跑完都回报 <code>out</code>。拿（这个接口, 这个 <code>out</code>）再查一次表：
                 有边就建下一个任务，<b>没边就在这里走到头</b>。
               </div>
               <div class="step-body" style="margin-top: 8px">
@@ -260,11 +299,11 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
                 中枢不预判、不反推，只看这个字段有没有回报过。<code>null</code> 也算已回报（明确表示「到头了」）。
               </div>
               <pre class="code"><span class="c">-- 查表决定还有没有下一跳，这是唯一的路由动作</span>
-<span class="k">SELECT</span> to_capability <span class="k">FROM</span> edges
- <span class="k">WHERE</span> from_capability = :cap <span class="k">AND</span> from_port = :out;
+<span class="k">SELECT</span> to_interface <span class="k">FROM</span> edges
+ <span class="k">WHERE</span> from_interface = :ifc <span class="k">AND</span> from_port = :out;
 
 <span class="c">-- 0 行 = 到头。不建任务，没有「整条链结束」的判定，也不发通知。</span>
-<span class="c">-- 通知是图里的一条边（→ notify.phone），它在链上正常派发，</span>
+<span class="c">-- 通知是图里的一条边（→ notify.phone@1），它在链上正常派发，</span>
 <span class="c">-- 不依赖任何「链走完了」的全局状态。</span></pre>
             </div>
           </div>
@@ -284,14 +323,14 @@ out = <span class="s">"xyz"</span>   →  edges(review, xyz) 空  →  pruned / 
                 <div class="lane machine" style="margin-bottom: 0">
                   <div class="lane-label">pipe · 至少一次</div>
                   <div class="box sm">
-                    能力 review → node agent 审查
+                    接口 review@1 → 执行器上 node agent 审查
                     <span class="sub">ack · 租约 · 重试 · 必须回报</span>
                   </div>
                 </div>
                 <div class="lane human" style="margin-bottom: 0">
                   <div class="lane-label">end · 尽力而为</div>
                   <div class="box sm">
-                    能力 notify.phone → 推手机
+                    接口 notify.phone@1 → 推手机
                     <span class="sub">发了就忘 · 不回报 · 可丢</span>
                   </div>
                 </div>

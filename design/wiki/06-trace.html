@@ -20,7 +20,7 @@
       /* 本页局部：trace 瀑布图的栅格与标记。只出现几何值与 var(--token)。 */
       .wf {
         display: grid;
-        grid-template-columns: 14px 126px minmax(0, 1fr);
+        grid-template-columns: 14px 142px minmax(0, 1fr);
         column-gap: 9px;
       }
       .wf-axis {
@@ -126,10 +126,13 @@
         border-radius: 3px;
         background: var(--error-soft);
       }
-      /* 三种未触发原因的并列小示意：三行等宽，窄屏纵向堆叠 */
-      .why { display: flex; flex-wrap: wrap; gap: 10px; }
+      /* 四种未触发原因的并列小示意：2×2 网格，窄屏单列堆叠 */
+      .why {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
       .why-cell {
-        flex: 1 1 200px;
         min-width: 0;
         border: 1px solid var(--line);
         border-radius: 9px;
@@ -157,6 +160,7 @@
         .wf { grid-template-columns: 12px 96px minmax(0, 1fr); column-gap: 7px; }
         .wf-n { font-size: 9.5px; }
         .wf-s { font-size: 8.5px; }
+        .why { grid-template-columns: minmax(0, 1fr); }
       }
     </style>
   </head>
@@ -320,8 +324,8 @@
  <span class="k">WHERE</span> trace_id = :trace_id;</pre>
 
           <div class="note">
-            <b>只有一次查表是「零长度 span」。</b>查表瞬间完成、没有起止，所以它不建任务行，
-            只在事件 span 上留一条记录。<b>这不影响可解释性</b>——去痕迹里能查到「查了哪个键、返回几行」，
+            <b>只有查表 + 参数校验是「零长度 span」。</b>查表和校一次 schema 都是瞬间完成、没有起止，所以它们不建任务行，
+            只在事件 span 上留一条记录。<b>这不影响可解释性</b>——去痕迹里能查到「查了哪个键、返回几行、参数为什么没过」，
             本来也不需要给它算时长。
           </div>
 
@@ -334,7 +338,8 @@
 
           <h2>一条 trace 长什么样</h2>
           <p class="prose">
-            一个 <code>pull_request.opened</code> 事件进来，用 <code>(origin:github, pull_request.opened)</code> 查一次 <code>edges</code>，拿到三条边，各派一个任务；任务回报的 <code>out</code> 再查表，接力往下走。每个条形是一个 span，长度就是它的时长。
+            一个 <code>pull_request.opened</code> 事件进来，用 <code>(github@1, pr_opened)</code> 查一次 <code>edges</code>，拿到三条边，各派一个任务；任务回报的 <code>out</code> 再查表，接力往下走。每个条形是一个 span，长度就是它的时长。
+            <b>span 的标签带接口版本</b>——是 <code>review@1</code> 而不是 <code>review</code>。
           </p>
 
           <div class="fig">
@@ -360,22 +365,22 @@
 
               <div class="wf-mark">A</div>
               <div class="wf-lbl">
-                <div class="wf-n">查表 → review</div>
+                <div class="wf-n">查表 → review@1</div>
                 <div class="wf-s">edges 1 行</div>
               </div>
               <div class="wf-lane"><div class="wf-look" style="left: 0.2%"></div></div>
 
               <div class="wf-mark">A</div>
               <div class="wf-lbl">
-                <div class="wf-n">review</div>
+                <div class="wf-n">review@1</div>
                 <div class="wf-s">0.1 → 41.2s · out=fix</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 0.1%; width: 41.1%"></div></div>
 
               <div class="wf-mark">A</div>
               <div class="wf-lbl">
-                <div class="wf-n">implement</div>
-                <div class="wf-s">41.5 → 96.0s · out=fix</div>
+                <div class="wf-n">implement@1</div>
+                <div class="wf-s">41.5 → 96.0s · out=verify</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 41.5%; width: 54.5%"></div></div>
 
@@ -388,41 +393,41 @@
 
               <div class="wf-mark">B</div>
               <div class="wf-lbl">
-                <div class="wf-n">查表 → lint</div>
+                <div class="wf-n">查表 → lint@1</div>
                 <div class="wf-s">edges 1 行</div>
               </div>
               <div class="wf-lane"><div class="wf-look" style="left: 0.2%"></div></div>
               <div class="wf-mark">B</div>
               <div class="wf-lbl">
-                <div class="wf-n">lint</div>
+                <div class="wf-n">lint@1</div>
                 <div class="wf-s">0.1 → 12.4s · out=autofix</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 0.1%; width: 12.3%"></div></div>
 
               <div class="wf-mark">B</div>
               <div class="wf-lbl">
-                <div class="wf-n">autofix</div>
+                <div class="wf-n">autofix@1</div>
                 <div class="wf-s">12.6 → 38.0s · out=null</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 12.6%; width: 25.4%"></div></div>
 
               <div class="wf-mark">C</div>
               <div class="wf-lbl">
-                <div class="wf-n">查表 → notify.phone</div>
+                <div class="wf-n">查表 → notify.phone@1</div>
                 <div class="wf-s">edges 1 行</div>
               </div>
               <div class="wf-lane"><div class="wf-look" style="left: 0.2%"></div></div>
 
               <div class="wf-mark">C</div>
               <div class="wf-lbl">
-                <div class="wf-n">notify.phone</div>
+                <div class="wf-n">notify.phone@1</div>
                 <div class="wf-s">0.1 → 0.9s</div>
               </div>
               <div class="wf-lane"><div class="wf-bar" style="left: 0.1%; width: 0.8%"></div></div>
 
               <div class="wf-mark">—</div>
               <div class="wf-lbl">
-                <div class="wf-n" style="color: var(--faint)">边 (review, done)</div>
+                <div class="wf-n" style="color: var(--faint)">边 (review@1, clean)</div>
                 <div class="wf-s">在表里，这次没走</div>
               </div>
               <div class="wf-lane"><div class="wf-skip" style="left: 0.2%"></div></div>
@@ -432,6 +437,14 @@
               <b>横轴是时间，条的长度就是 span 的时长。</b>左侧字母是分支：A 审查链、B lint 链、C 通知链，都由 <code>t+0.00</code> 的同一个根事件扇出，互不等待、互不汇聚。查表是一瞬间，画成细竖线；被 <code>path</code> 剪掉的那次没有时长，画成红虚框，位置就是它被拒的那一刻。最下面那行灰虚线是表里有、但这次没被走到的边。不足一个像素的短 span 保底 3px 才看得见。
             </div>
           </div>
+
+          <h3>为什么 span 标签必须带版本号</h3>
+          <p class="prose">
+            因为 <code>review@1</code> 和 <code>review@2</code> <b>是两个不同的接口</b>，不是同一个接口的两个版本号。
+            两个版本的 <code>outputs</code> 和 <code>params_schema</code> 可以完全不同，<code>edges</code> 里也各自有各自的边。
+            span 上只写 <code>review</code>，复盘时就看不出这次走的是<b>哪一条边</b>——两条边的区别被你抹掉了。
+            所以从 span 到图、到控制台列表，凡是要出现接口名的地方一律写 <code>name@version</code>。
+          </p>
 
           <h3>能标出起止，是因为 span 就是任务</h3>
           <p class="prose">
@@ -450,7 +463,7 @@
 
           <h2>「为什么没触发」</h2>
           <p class="prose">
-            这是事件中心最常被问到的一句话。<b>新模型下它变简单了</b>：路由只是查表，所以「为什么没走这条边」只有三种可能，而且每一种都是<b>图 + 回报</b>的直接对照，不需要把任何求值过程重放一遍。
+            这是事件中心最常被问到的一句话。<b>新模型下它变简单了</b>：路由只是查表加一次参数校验，所以「为什么没走这条边」只有四种可能，而且每一种都是<b>图 + 回报</b>的直接对照，不需要把任何求值过程重放一遍。
           </p>
 
           <div class="tbl-wrap">
@@ -464,13 +477,6 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>表里没有这条边</td>
-                  <td>
-                    拿 <code>(from_capability, from_port)</code> 查 <code>edges</code>，返回 0 行。图是显式声明的，所以这一条<b>不跑也能知道</b>：把图投影出来就能看见缺口。
-                  </td>
-                  <td>事件 span 上记 <code>pruned / reason=no_edge</code>，附上查表的两个键；没有 task span。</td>
-                </tr>
-                <tr>
                   <td>上游没回报这个出口</td>
                   <td>
                     上游任务的 <code>result.out</code> 是 <code>null</code> 或别的出口名。既然没有从这个出口出去，就压根没查过表。
@@ -478,49 +484,74 @@
                   <td>上游 span 上标着 <code>out=null</code> 或 <code>out=&lt;其它&gt;</code>，下游没有 span、也没有 <code>pruned</code> 记录。</td>
                 </tr>
                 <tr>
+                  <td>表里没有这条边</td>
+                  <td>
+                    拿 <code>(from_interface, from_port)</code> 查 <code>edges</code>，返回 0 行。图是显式声明的，所以这一条<b>不跑也能知道</b>：把图投影出来就能看见缺口。
+                  </td>
+                  <td>事件 span 上记 <code>pruned / reason=no_edge</code>，附上查表的两个键；没有 task span。</td>
+                </tr>
+                <tr>
+                  <td>参数不符合目标接口的 <code>params_schema</code></td>
+                  <td>
+                    边查到了、上游也回报了这个出口，但本次 <code>params</code> 校不过目标接口的 <code>params_schema</code>。
+                    <b>这个错误在建任务之前就发生</b>，任务从来不存在，也永远不会被派到执行器上。
+                  </td>
+                  <td>事件 span 上记 <code>pruned / reason=param_schema</code>，附目标接口的 <code>ifc_</code> id 和第一条校验错误路径；没有 task span。</td>
+                </tr>
+                <tr>
                   <td>被 path 剪枝</td>
                   <td>
-                    边查到了，但要去的那个能力已经在 <code>path</code> 里（从根到本任务这条路径的能力名序列）。静默剪枝：不报错、不暂停。
+                    边查到了、参数也过了，但要去的那个接口已经在 <code>path</code> 里（从根到本任务这条路径的接口序列）。静默剪枝：不报错、不暂停。
                   </td>
-                  <td>红虚框加 <code>pruned / reason=path</code>，指出重复的是哪个能力名。</td>
+                  <td>红虚框加 <code>pruned / reason=path</code>，指出重复的是哪个 <code>name@version</code>。</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <h3>三种原因长什么样</h3>
+          <h3>四种原因长什么样</h3>
           <div class="fig">
             <div class="why">
               <div class="why-cell">
-                <div class="why-t">① 表里没有这条边</div>
+                <div class="why-t">① 上游没回报这个出口</div>
                 <div class="why-d">
-                  review --(fix)--&gt; ?<br />
-                  edges(review, fix)<br />
-                  <span class="miss">→ ∅ 0 行</span><br />
-                  记 pruned / no_edge
-                </div>
-              </div>
-              <div class="why-cell">
-                <div class="why-t">② 上游没回报这个出口</div>
-                <div class="why-d">
-                  review result.out<br />
+                  review@1 result.out<br />
                   <span class="nil">→ null</span><br />
                   <span class="nil">不查表</span><br />
                   到此为止，非剪枝
                 </div>
               </div>
               <div class="why-cell">
-                <div class="why-t">③ 被 path 剪枝</div>
+                <div class="why-t">② 表里没有这条边</div>
                 <div class="why-d">
-                  edges(implement, fix)<br />
-                  <span class="hit">→ review 1 行</span><br />
-                  path 里已有 review<br />
+                  review@1 --(clean)--&gt; ?<br />
+                  edges(ifc_2e04, clean)<br />
+                  <span class="miss">→ ∅ 0 行</span><br />
+                  记 pruned / no_edge
+                </div>
+              </div>
+              <div class="why-cell">
+                <div class="why-t">③ 参数不合 params_schema</div>
+                <div class="why-d">
+                  edges(ifc_2e04, fix)<br />
+                  <span class="hit">→ ifc_9a13 1 行</span><br />
+                  validate(params, schema)<br />
+                  <span class="miss">→ pruned / param_schema</span>
+                </div>
+              </div>
+              <div class="why-cell">
+                <div class="why-t">④ 被 path 剪枝</div>
+                <div class="why-d">
+                  edges(implement@1, fix)<br />
+                  <span class="hit">→ review@1 1 行</span><br />
+                  path 里已有 ifc_2e04<br />
                   <span class="miss">→ pruned / path</span>
                 </div>
               </div>
             </div>
             <div class="fig-cap">
-              <b>三者互斥，顺序也是固定的。</b>先看上游有没有回报这个出口（②），再看表里有没有这一行（①），最后看 path 里是不是已经有它（③）。三种判断都是常量时间，都只读一行数据。
+              <b>四种互斥，按运行时顺序排，前一步不过就走不到下一步。</b>先看上游有没有回报这个出口（①），再看表里有没有这一行（②），再用目标接口的 schema 校一次参数（③），最后看 path 里是不是已经有它（④）。
+              四种判断都是常量时间，都只读一行数据。<b>②③④ 都是 <code>pruned</code></b>，共用 trace 上那套剪枝标记；① 不是剪枝，它是一个正常结束的分支。
             </div>
           </div>
 
@@ -548,15 +579,16 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>为什么 review 没有往下走 done 那条边</td>
+                  <td>为什么 review@1 没有往下走 clean 那条边</td>
                   <td>
-                    review 回报的是 <code>out=fix</code>；<code>edges(review, done)</code> 确实在表里，但这次没被走到——图中灰虚线那一行。
+                    review@1 回报的是 <code>out=fix</code>；<code>edges(review@1, clean)</code> 确实在表里，但这次没被走到——图中灰虚线那一行。
                   </td>
                 </tr>
                 <tr>
-                  <td>为什么 implement 之后的 review 没跑</td>
+                  <td>为什么 implement@1 之后的 review@1 没跑</td>
                   <td>
-                    被 path 剪枝：<code>path = [review, implement]</code> 里已经有 <code>review</code>。红虚框加 <code>pruned / path</code>。
+                    被 path 剪枝：<code>path = [review@1, implement@1]</code> 里已经有 <code>review@1</code>。红虚框加 <code>pruned / path</code>。
+                    <b>注意比的是 <code>interface_id</code></b>：如果下一跳是 <code>review@2</code>，那是另一个接口，path 里没有它，不会剪。
                   </td>
                 </tr>
                 <tr>
@@ -566,20 +598,23 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>当时用的是哪张图</td>
-                  <td>trace 上钉着 <code>grf_20261024T090402Z_5e7c1b0f</code>，点开就是当时的 edges + capabilities 快照。</td>
+                  <td>当时用的是哪张图、哪套接口</td>
+                  <td>
+                    trace 上钉着两张快照：<code>grf_20261024T090402Z_5e7c1b0f</code>（图）和 <code>ifc_20261024T090402Z_3f8a9d21</code>（接口定义）。前者是当时的 <code>edges</code> + <code>capabilities</code>，后者是当时的 <code>params_schema</code> + <code>outputs</code>。
+                  </td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p class="prose">
-            三种原因在界面上共用一个视觉语言（红虚框），区别只在 reason 字段和随附的证据：<code>no_edge</code> 附查表的两个键，<code>path</code> 附重复的能力名，而「上游没回报这个出口」根本不算剪枝——它是一个正常结束的分支，只在 span 上标 <code>out</code>。剪枝是静默的，但一定留痕——静默指的是不打断业务，不是不记录。
+            四种原因里的三种（<code>no_edge</code> / <code>param_schema</code> / <code>path</code>）都是 <code>pruned</code>，共用 trace 上那套剪枝标记，区别只在 reason 字段和随附的证据：<code>no_edge</code> 附查表的两个键，<code>param_schema</code> 附目标接口 id 和第一条校验错误，<code>path</code> 附重复的接口。
+            而「上游没回报这个出口」根本不算剪枝——它是一个正常结束的分支，只在 span 上标 <code>out</code>。剪枝是静默的，但一定留痕——静默指的是不打断业务，不是不记录。
           </p>
 
           <h2>版本钉住</h2>
           <p class="prose">
-            复盘要能回答「当时那张图长什么样」。所以出口图、执行器能力清单、中枢侧能力注册表都按内容存快照，每次变更追加一行。
+            复盘要能回答「当时那张图长什么样」。所以有四样东西都要按内容存快照，每次变更追加一行：出口图、执行器能力清单、中枢侧能力注册表，以及<b>接口定义</b>。
           </p>
 
           <div class="tbl-wrap">
@@ -593,15 +628,23 @@
               </thead>
               <tbody>
                 <tr>
+                  <td><code>interface_versions</code></td>
+                  <td>
+                    每个接口版本的完整定义：<code>name</code> / <code>version</code> / <code>kind</code> / <code>params_schema</code> / <code>outputs</code> / <code>source</code>。
+                    <b>它定义了「哪些出口合法」</b>，也是参数校验的唯一依据。
+                  </td>
+                  <td>接口定义被保存时（新增接口、升版本、改 schema、改 outputs）。</td>
+                </tr>
+                <tr>
                   <td><code>graph_versions</code></td>
                   <td>
-                    整张出口图的快照：<code>edges</code> 的全部行，加上各执行器申报的 <code>capabilities[].outputs</code>。图是一份整体，拆开钉就没法回答「当时有没有这条边」。
+                    整张出口图的快照：<code>edges</code> 的全部行（两端都是 <code>interface_id</code>），加上 <code>capabilities</code>（哪个 <code>runner_id</code> 实现了哪个 <code>interface_id</code>）。图是一份整体，拆开钉就没法回答「当时有没有这条边」。
                   </td>
-                  <td>图被保存时（增删一条边、或某个能力的出口集变了）。</td>
+                  <td>图被保存时（增删一条边、或某个执行器新实现/放弃了一个接口）。</td>
                 </tr>
                 <tr>
                   <td><code>node_manifest_versions</code></td>
-                  <td>执行器上报的能力清单快照：能力名、标签声明、<code>outputs</code>、<code>sticky</code>、<code>idempotent</code> / <code>resumable</code>。</td>
+                  <td>执行器上报的能力清单快照：它 <code>implements</code> 了哪几个接口（<code>name</code> + <code>version</code>）、标签声明、<code>sticky</code>、<code>idempotent</code> / <code>resumable</code>。<b>没有 <code>outputs</code></b>——出口不归执行器管。</td>
                   <td>执行器上报的内容变了。</td>
                 </tr>
                 <tr>
@@ -614,12 +657,66 @@
           </div>
 
           <p class="prose">
-            三张表都是 append-only，且 <code>content_hash</code> 上有 UNIQUE：同样的内容不会存第二遍；图改坏又改回来，命中旧行，也不会多出一条「看起来是新的」版本。
+            四张表都是 append-only，且 <code>content_hash</code> 上有 UNIQUE：同样的内容不会存第二遍；图改坏又改回来，命中旧行，也不会多出一条「看起来是新的」版本。
+          </p>
+
+          <h3>为什么接口也要钉</h3>
+          <p class="prose">
+            因为<b>接口定义了 <code>outputs</code> 和 <code>params_schema</code></b>，而这两样合起来定义了「哪些出口合法、什么样的参数能进去」。
+            改一个接口就等于改了这个答案：
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>接口里的字段</th>
+                  <th>改了它等于改了什么</th>
+                  <th>不钉住会怎样</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>outputs</code></td>
+                  <td>哪些出口名合法——也就是 <code>edges.from_port</code> 的封闭集合变了</td>
+                  <td>旧 trace 上的 <code>out=fix</code>，对着新的 <code>outputs: [ok, bad]</code> 就成了一个不存在的出口，当时的「为什么走这条边」当场自相矛盾。</td>
+                </tr>
+                <tr>
+                  <td><code>params_schema</code></td>
+                  <td>什么样的参数能建任务——也就是 <code>pruned / param_schema</code> 的判据变了</td>
+                  <td>当时被判 <code>param_schema</code> 剪掉的那次，用新 schema 一看是能过的，结论从「数据不合契约」变成「系统有 bug」。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            <b>所以 trace 上钉的不是接口，而是接口的那个具体版本。</b>旧 trace 必须能看到当时的那份定义，永远不能是「现在这个定义」。
+          </p>
+
+          <pre class="code"><span class="c">-- 接口版本（append-only，一行就是一个不可变版本）</span>
+<span class="k">CREATE TABLE</span> interface_versions (
+  id            TEXT <span class="k">PRIMARY KEY</span>,   <span class="c">-- ifc_&lt;UTC&gt;_&lt;hash8&gt;</span>
+  name          TEXT <span class="k">NOT NULL</span>,      <span class="c">-- review</span>
+  version       INTEGER <span class="k">NOT NULL</span>,   <span class="c">-- 1</span>
+  kind          TEXT <span class="k">NOT NULL</span>,      <span class="c">-- origin | pipe | end</span>
+  params_schema TEXT <span class="k">NOT NULL</span>,      <span class="c">-- JSON，派发前校验用</span>
+  outputs       TEXT <span class="k">NOT NULL</span>,      <span class="c">-- JSON 数组：出口名的唯一来源</span>
+  source        TEXT <span class="k">NOT NULL</span>,      <span class="c">-- builtin | custom</span>
+  content_hash  TEXT <span class="k">NOT NULL UNIQUE</span>,
+  created_at    TEXT <span class="k">NOT NULL</span>,
+  <span class="k">UNIQUE</span> (name, version)
+);</pre>
+
+          <p class="prose">
+            <code>UNIQUE (name, version)</code> 与 <code>UNIQUE (content_hash)</code> 一起把两件事按死：同一个 <code>name@version</code> 只能有一份定义，同样的内容不会存两遍。
+            <b><code>edges</code> 存的是 <code>interface_versions.id</code></b>，不是 <code>name@version</code>，所以改名、加版本都不会弄脏已有的边。
           </p>
 
           <p class="prose">每行的标识是 <code>&lt;prefix&gt;_&lt;UTC时间&gt;_&lt;content_hash前8&gt;</code>：</p>
 
-          <pre class="code">reg_20261023T101500Z_a1b2c3d4   <span class="c"># registry_versions</span>
+          <pre class="code">ifc_20261024T090402Z_3f8a9d21   <span class="c"># interface_versions · 接口定义</span>
+reg_20261023T101500Z_a1b2c3d4   <span class="c"># registry_versions</span>
 grf_20261024T090402Z_5e7c1b0f   <span class="c"># graph_versions</span>
 man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span></pre>
 
@@ -630,19 +727,28 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
           <p class="prose">
             假设有人在十月导入了一张八月的图版本。任何按「<code>created_at</code> 早于 span 时间且取最新一条」实现的解析，都会让八月的旧 trace 突然指向另一张图——旧结论当场变形，而没人动过那条 trace。钉死 hash 的话，补录只能新增一行，旧 trace 的指向一个字节都不会变。
           </p>
+          <p class="prose">
+            <b>接口版本尤其不能按时间反查。</b>图是改得少的，接口是改得多的：今天把 <code>review@1</code> 的
+            <code>outputs</code> 从 <code>[fix, clean]</code> 改成 <code>[fix, clean, skip]</code>，八月那条 trace 里的
+            <code>out=fix</code> 本身还是对的，但「当时到底有几个合法出口」就答错了。钉了 <code>ifc_</code> id，
+            旧 trace 指向的就是当时那份定义。
+          </p>
 
-          <div class="note">
-            <strong>时间不是版本，内容是版本。</strong>补录、回滚、跨时区导入都会打乱时间顺序，但动不了已经算好的 hash。这也是为什么标识里既有时间又有 hash：时间是给人看的坐标，hash 才是被钉住的锚。
-          </div>
+          <p class="prose">
+            <strong>时间不是版本，内容是版本。</strong>补录、回滚、跨时区导入都会打乱时间顺序，但动不了已经算好的 hash。
+            这也是为什么标识里既有时间又有 hash：时间是给人看的坐标，hash 才是被钉住的锚。接口版本同理：
+            <code>review@1</code> 的 <code>outputs</code> 改了一个出口名，hash 就变，于是<b>多出一个新的 <code>ifc_</code> 行</b>而不是覆盖旧的。
+          </p>
 
           <h3>执行器不上报版本号</h3>
           <p class="prose">
-            执行器只上报能力清单内容，不报自己算的版本号。版本号是执行器自己起的名字，中枢无从校验，执行器一改编号方式历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
+            执行器只上报能力清单内容（我 <code>implements</code> 了哪几个接口、它们的版本号），不报自己算的版本号。
+            版本号是执行器自己起的名字，中枢无从校验，执行器一改编号方式历史就对不上；内容是事实，hash 由中枢算，内容变一个字符 hash 就变。要认版本，就认 hash。
           </p>
 
           <h2>叠回去看</h2>
           <p class="prose">
-            复盘时取 trace 上钉住的版本 id，读出当时的图快照，再把图里的每条边与 trace 上真实出现的 span 对齐：出现了的画亮实线，图里有但这次没走到的画灰虚线，被剪掉的画红虚框。
+            复盘时取 trace 上钉住的版本 id，读出当时的图快照和接口快照，再把图里的每条边与 trace 上真实出现的 span 对齐：出现了的画亮实线，图里有但这次没走到的画灰虚线，被剪掉的画红虚框。
           </p>
 
           <div class="fig">
@@ -657,7 +763,8 @@ man_20261022T183300Z_c93d24ae   <span class="c"># node_manifest_versions</span><
           </div>
 
           <p class="prose">
-            三种标记都来自同一份 trace 加同一份图快照，不用再查别的地方。这也是不做拖拽画布的原因之一：能解释的东西不靠画出来，靠记下来。
+            三种标记都来自同一份 trace 加同一份图快照，不用再查别的地方。而「这条边当时为什么存在」还要问一层：<code>edges</code> 里的两端是 <code>ifc_</code> id，点进去才是那份接口定义。
+            <b>三层指向都可追溯，没有一个环节靠猜</b>——这也是不做拖拽画布的原因之一：能解释的东西不靠画出来，靠记下来。
           </p>
 
           <nav class="pager">
