@@ -12,7 +12,7 @@
 //   - 消息无 deviceTags → 广播到所有 enabled 设备
 //   - 设备无 tags → 接收一切（catch-all）
 //   - 双方都有 tags → 求交集，≥1 个共同 tag 才投递（ANY，不是 ALL）
-package route
+package push
 
 import (
 	"strings"

@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/broker"
-	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -50,7 +49,7 @@ func TestScopeMatch(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := route.ScopeMatch(c.filter, c.agentState); got != c.want {
+			if got := ScopeMatch(c.filter, c.agentState); got != c.want {
 				t.Fatalf("ScopeMatch(%q,%q)=%v, want %v", c.filter, c.agentState, got, c.want)
 			}
 		})
@@ -76,7 +75,7 @@ func TestTagMatch(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := route.TagMatch(c.deviceTags, c.msgTags); got != c.want {
+			if got := TagMatch(c.deviceTags, c.msgTags); got != c.want {
 				t.Fatalf("TagMatch(%v,%v)=%v, want %v", c.deviceTags, c.msgTags, got, c.want)
 			}
 		})
@@ -103,7 +102,7 @@ func TestShouldDeliver(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := route.ShouldDeliver(c.dev, c.msg); got != c.want {
+			if got := ShouldDeliver(c.dev, c.msg); got != c.want {
 				t.Fatalf("ShouldDeliver()=%v, want %v", got, c.want)
 			}
 		})
@@ -120,17 +119,17 @@ func TestFilterDevices(t *testing.T) {
 	}
 
 	// 广播 done（终态）：a✓ b✓(终态+final) c✓ d✗(disabled)
-	got := route.FilterDevices(devices, msg("done"))
+	got := FilterDevices(devices, msg("done"))
 	wantIDs := map[string]bool{"a": true, "b": true, "c": true}
 	assertIDs(t, got, wantIDs)
 
 	// 广播 working（非终态）：a✓ b✗(final拒绝非终态) c✓ d✗(disabled)
-	got = route.FilterDevices(devices, msg("working"))
+	got = FilterDevices(devices, msg("working"))
 	wantIDs = map[string]bool{"a": true, "c": true}
 	assertIDs(t, got, wantIDs)
 
 	// 定向 error 到 工作：b✓(tag+终态+final) c✓(catch-all) a✗(tag不命中)
-	got = route.FilterDevices(devices, msg("error", "工作"))
+	got = FilterDevices(devices, msg("error", "工作"))
 	wantIDs = map[string]bool{"b": true, "c": true}
 	assertIDs(t, got, wantIDs)
 }

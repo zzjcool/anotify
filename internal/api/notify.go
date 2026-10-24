@@ -13,7 +13,7 @@ import (
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/authn"
 	"github.com/zzjcool/anotify/internal/broker"
-	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/push"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -203,7 +203,7 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.Store != nil {
 		devices, derr := h.Store.ListEnabledDevices(r.Context(), userID)
 		if derr == nil {
-			matched := route.FilterDevices(devices, msg)
+			matched := push.FilterDevices(devices, msg)
 			resp.Matched = len(matched)
 			for _, dev := range matched {
 				resp.Results = append(resp.Results, DeliveryResult{
@@ -322,7 +322,7 @@ func (h *NotifyHandler) ServeTestNotify(w http.ResponseWriter, r *http.Request) 
 	if h.Store != nil {
 		devices, derr := h.Store.ListEnabledDevices(r.Context(), user)
 		if derr == nil {
-			matched := route.FilterDevices(devices, msg)
+			matched := push.FilterDevices(devices, msg)
 			resp.Matched = len(matched)
 			for _, dev := range matched {
 				resp.Results = append(resp.Results, DeliveryResult{
