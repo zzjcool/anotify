@@ -66,6 +66,8 @@
 | `interface_versions` / `ifc_` | `capability_versions` / `cap_` |
 | `unknown_interface` | `unknown_capability` |
 | `kind_mismatch` | 概念消失：kind 是推导的，不可能不符 |
+| 「实现子集」/ `partial` | 概念消失：出口不是子功能，无需实现，也就没有子集问题 |
+| 「出口是 review 的子结果」 | 出口名 = 下一个能力名（`fix` 就是 `fix@1` 这个能力） |
 | `rule_id` | 能力名 `name@version`（如 `review@1`） |
 | `rule_versions` / `rty_` 前缀 | `graph_versions` / `grf_` 前缀 |
 
@@ -79,7 +81,7 @@
 
 **关键**：
 - 出口名只能来自能力定义，节点没有命名权，也不能发明能力名
-- 不允许只实现一部分出口：声明 `review@1` 就得两个出口都能走
+- 出口名就是另一个能力的名字：`outputs: [fix, clean]` 只表示「跑完会报这两个名字之一」，**不是**「我得实现 fix 和 clean」。fix / clean 各自是独立能力，各有版本，由别的节点声明
 - `review@1` 与 `review@2` 是两个不同能力定义，并存
 - **`kind` 归节点且是推导的**：全 outputs 空 → `end`；有非空 → `pipe`；无节点声明 → `origin`。不手写。
 

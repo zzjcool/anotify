@@ -270,9 +270,9 @@ kind(node) =
                   <td>拒绝这一项，<b>不降级到 <code>@1</code></b></td>
                 </tr>
                 <tr>
-                  <td>实现子集</td>
-                  <td>想只实现能力的一部分出口（如 <code>review@1</code> 只保证 <code>fix</code>）：或附 <code>outputs: [fix]</code>，或写 <code>review@1#fix</code></td>
-                  <td>拒绝这一项——<b>没有部分实现这回事</b></td>
+                  <td>报了 <code>outputs</code></td>
+                  <td>节点想在声明里自己加出口（如附 <code>outputs: [fix]</code>）</td>
+                  <td>拒绝这一项——<b>出口由能力定义给定，节点只报能力名</b></td>
                 </tr>
               </tbody>
             </table>
@@ -299,9 +299,11 @@ kind(node) =
           </p>
 
           <p class="prose">
-            <b>为什么「实现子集」也要拒。</b>如果允许只实现 <code>fix</code> 不实现 <code>clean</code>，<code>edges</code> 里就会出现「查到了
-            <code>(review@1, clean)</code> 这条边，但这台机器走不出来」的分叉——表命中却派不出去。要单独一种能力，就定义一个新能力，
-            而不是在共享契约上抠掉一块；所以「子集」不是一种申报方式，而是一种错误。
+            <b>「声明 review@1 就得能走 fix 和 clean」是个误解。</b>节点声明的只是「我认得这个名字」，
+            <code>outputs</code> 是它<b>跑完可以报出的名字</b>，不是「我得把 fix 和 clean 都实现出来」。
+            <code>fix</code> 和 <code>clean</code> 各自是<b>独立的能力定义</b>，各带自己的版本，由别的节点声明。
+            review 报出 <code>fix</code>，中枢就去派 <code>fix@1</code>——<b>回头找的不是 review</b>。
+            所以要更小的粒度，本来就只需定义一个更小的能力，不存在「在旧能力上开洞」这回事。
           </p>
           <h2>凭据与标签</h2>
           <p class="prose">

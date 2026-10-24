@@ -191,11 +191,11 @@
           <dl class="defs">
             <div class="def">
               <dt>声明能力 <code>capabilities[]</code></dt>
-              <dd>节点在本地配置里声明「我有哪些已定义的能力」，如 <code>review@1</code>。<strong>它不写 <code>outputs</code></strong>，出口集合由能力定义给定；也<strong>不允许只声明一部分出口</strong>——声明 <code>review@1</code> 就必须两个出口都能走。</dd>
+              <dd>节点在本地配置里声明「我有哪些已定义的能力」，如 <code>review@1</code>。<strong>它不写 <code>outputs</code></strong>，出口集合由能力定义给定。但它<strong>不需要实现这些出口</strong>——出口名是别的能力的名字，由那些能力的节点去做。</dd>
             </div>
             <div class="def">
               <dt>出口 <code>output</code> / <code>port</code></dt>
-              <dd>能力定义里的一个命名点（<code>outputs</code> 数组的一个元素）。跑完之后节点选一个，走法就是回报它的名字。<strong>它是字符串，不是条件。</strong>路由的原子坐标是 <code>(能力, 出口)</code>。</dd>
+              <dd>能力定义里的一个命名点（<code>outputs</code> 数组的一个元素）。跑完之后节点选一个，走法就是回报它的名字。<strong>它是字符串，不是条件。</strong><b>出口名就是一个能力名</b>——报 <code>fix</code> 就派 <code>fix@1</code>。路由的原子坐标是 <code>(能力, 出口)</code>。</dd>
             </div>
             <div class="def">
               <dt>边 <code>edge</code></dt>

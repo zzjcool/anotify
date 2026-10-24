@@ -87,7 +87,7 @@
                 中枢提前写好的一份定义：<code>name@version</code>、参数结构 <code>params_schema</code>、
                 出口名集合 <code>outputs</code>。<b>出口名只能来自这里</b>，节点没有命名权。
                 <br />
-                <b>它就是最小的原子</b>：<code>review</code> 是一个能力，<code>fix</code> / <code>clean</code> 是它跑完后可能的两个结局，不是两个能力。
+                <b>它就是最小的原子</b>：一个能力定义一条命令，不能再分。
               </dd>
             </div>
             <div class="def">
@@ -100,8 +100,10 @@
             <div class="def">
               <dt>出口 <code>output</code></dt>
               <dd>
-                能力定义里的一个命名点，跑完之后节点选一个。
-                <b>它是字符串，不是条件</b>。路由的原子坐标是 <code>(能力, 出口)</code>。
+                能力定义里允许报出的几个名字之一，跑完之后节点选一个报出来。
+                <b>它是字符串，不是条件</b>。
+                <br />
+                <b>出口名就是一个能力名</b>——报出 <code>fix</code>，就是要求中枢去派 <code>fix</code> 这个能力。所以 <code>fix</code> / <code>clean</code> 各自是<b>独立的能力定义</b>，各带自己的版本，各自被不同节点声明。
               </dd>
             </div>
           </dl>
@@ -112,6 +114,66 @@
             <code>(review, fix)</code> 和 <code>(review, ok)</code> 两套起点——查表时不知道该用哪个。
             <b>定义权归中枢，<code>from_port</code> 才是封闭集合。</b>
           </p>
+
+          <h2>出口名就是下一个能力的名字</h2>
+          <p class="prose">
+            这是整个模型里最容易被想歪的一点。<b><code>fix</code> 不是一个「子结果」，它就是 <code>fix</code> 这个能力的名字。</b>
+          </p>
+
+          <pre class="code"><span class="c"># 三个独立的能力，各有各的版本，互不包含</span>
+- name: review      <span class="c"># 跑完报出「我接下来要 fix」或「我接下来要 clean」</span>
+  version: 1
+  <span class="k">outputs: [fix, clean]</span>
+
+- name: fix         <span class="c"># ★ 它自己就是一个能力，有人认领它</span>
+  version: 1
+  params_schema:
+    type: object
+    required: [diff]
+  outputs: [verify]
+
+- name: clean       <span class="c"># ★ 另一个能力，另一个版本</span>
+  version: 1
+  outputs: []</pre>
+
+          <p class="prose">
+            所以路由查的是：<b><code>review@1</code> 报出 <code>fix</code> → 派 <code>fix@1</code> 这个能力 → 找声明了 <code>fix@1</code> 的节点。</b>
+            不存在「先找 review 这台机器」这回事——<b>review 只负责报出口，之后它的事就完了。</b>
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>错误理解</th>
+                  <th>正确理解</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>outputs: [fix, clean]</code></td>
+                  <td>review 包含 fix 和 clean 两个子功能<br />→ 所以声明 review 就得全实现</td>
+                  <td>review 跑完可以<b>报出</b> fix 或 clean<br />→ fix / clean 是别人的能力，跟 review 的实现无关</td>
+                </tr>
+                <tr>
+                  <td>版本属于谁</td>
+                  <td>版本属于 review，fix 跟着 review 的版本走</td>
+                  <td><b>每个能力各有版本</b>：<code>review@1</code>、<code>fix@2</code>、<code>clean@1</code> 互不相干</td>
+                </tr>
+                <tr>
+                  <td>派发时找谁</td>
+                  <td>找声明了 review 的节点</td>
+                  <td>review 已经跑完了；<b>找声明了 <code>fix@1</code> 的节点</b></td>
+                </tr>
+                <tr>
+                  <td>能不能只做一半</td>
+                  <td>不可以，必须 fix 和 clean 都能走</td>
+                  <td><b>可以</b>——review 只报名字，它不需要「实现」fix。谁实现 fix 是 fix 自己的事</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
 
           <h2>三种节点，按端口形状分</h2>
           <p class="prose">
@@ -304,8 +366,10 @@ capabilities:
 
           <div class="note warn">
             <b>节点没有定义权。</b>它不能发明能力名，也不能加出口——两者都来自中枢的定义。
-            而且<b>不允许只实现一部分出口</b>：声明了 <code>review@1</code> 就必须两个出口都能走，
-            否则 <code>edges</code> 里会出现「查到了边但这台机器没有这个出口」的分叉。
+            <br />
+            但<b>它也不需要「实现」自己报出的那些出口</b>：<code>review</code> 声明 <code>outputs: [fix, clean]</code>，
+            意思只是「跑完我会报这两个名字之一」，<b>不是</b>「我得把 fix 和 clean 都做出来」。
+            fix 由谁做，是 fix 这个能力自己的事，由别的节点声明。
           </div>
 
           <h3>③ 边：中枢侧配置</h3>
@@ -315,8 +379,8 @@ edges:
     port: pr_opened
     to: [review@1, notify.phone@1]   <span class="c"># 一个出口两条边 → 扇出</span>
   - from: review@1
-    port: fix
-    to: [implement@1]</pre>
+    port: <span class="k">fix</span>                          <span class="c"># 出口名 = 要把活派给谁</span>
+    to: [fix@1]</pre>
 
           <h3>节点实际收到什么</h3>
           <p class="prose">

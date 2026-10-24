@@ -276,7 +276,7 @@ kind(node) =
           </p>
 
           <p class="prose">
-            <strong>而且不允许只声明一部分出口。</strong>声明 <code>review@1</code> 就必须 <code>fix</code> 和 <code>clean</code> 两个出口都能走。若能只写一半，<code>edges</code> 里就会出现「查到了边但这台机器没有这个出口」的分叉：查表命中却派不出去。想要更小的粒度就定义一个新能力，别在旧能力上开洞。
+            <strong>而且它不需要「实现」自己报出的出口。</strong><code>outputs: [fix, clean]</code> 只是说「跑完会报这两个名字之一」——<code>fix</code> 和 <code>clean</code> 各自是<b>独立的能力定义</b>，各带自己的版本，由别的节点声明。review 报出 <code>fix</code>，中枢就去派 <code>fix@1</code> 这个能力，<b>不会回头找 review</b>。
           </p>
 
           <h3>一个出口可以有多条边</h3>
@@ -289,7 +289,7 @@ kind(node) =
               <div class="box">review@1<span class="sub">这次走了出口 fix</span></div>
               <div class="bracket"></div>
               <div class="fanout-col">
-                <div class="box sm">implement@1<span class="sub">(review@1, fix) 的第 1 行</span></div>
+                <div class="box sm">fix@1<span class="sub">(review@1, fix) 的第 1 行 → 派 fix 能力</span></div>
                 <div class="box sm">notify.phone@1<span class="sub">(review@1, fix) 的第 2 行</span></div>
               </div>
             </div>

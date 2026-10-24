@@ -150,7 +150,7 @@
           <p class="prose">
             随项目发布的就这十个，放在 <code>capabilities/builtin/</code>，进 git、走 review。
             <b>表里只有能力与它的出口</b>——没有 <code>kind</code>，因为 <code>kind</code> 是节点侧推导出来的，不属于能力本身。
-            <b>出口名由这张表给定，节点只能声明、不能扩展</b>——声明 <code>review@1</code> 就必须两个出口都能走，不允许只做 <code>fix</code>。
+            <b>出口名由这张表给定，节点只能声明、不能扩展</b>——但它不需要「实现」自己报出的出口：<code>fix</code> 和 <code>clean</code> 各自是独立能力，由别的节点声明。
             用户自己的能力放中枢配置目录，同一套格式、同一套版本化，加载后与内置能力没有区别（<code>source</code> 字段区分来源）。
           </p>
 
@@ -335,11 +335,11 @@
               </dd>
             </div>
             <div class="def">
-              <dt>能力子集声明 <code>partial</code> · 预留但本期明确禁止</dt>
+              <dt>能力子集声明 · 不存在这个概念</dt>
               <dd>
-                位置预留在 <code>node_capabilities</code> 表：主键是 <code>(node_id, capability_id)</code>，将来真要放宽，加一列 <code>partial: true</code> 就能表达「我声明了 <code>review@1</code> 但只会走 <code>fix</code>」，行的形状不用改。
-                <b>但本期明确不做</b>：一旦允许子集，<code>edges</code> 里查到的边可能对这个节点不存在对应出口，
-                就重新引入了「查表命中、却派不出去」的分叉风险——而收拢出口命名权正是「能力先定义」要解决的那件事。要单独能力就定义新能力，不要拿子集当快捷键。
+                不是「本期不做」，而是<b>模型里没有这个位置</b>。节点声明 <code>review@1</code> 只表示「我认得这个名字」；
+                <code>outputs</code> 是它跑完可以<b>报出</b>的名字，不是它要实现的子功能——<code>fix</code> 和 <code>clean</code> 各自是独立能力，
+                由别的节点声明。所以「我只会 fix 不会 clean」这种说法本来就无处可写，也不需要预留列。
               </dd>
             </div>
             <div class="def">
