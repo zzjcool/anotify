@@ -1,14 +1,17 @@
-// Package ws 实现 WebSocket 接收通道（Broker 的消费者1）。
+// Package ws 实现 WebSocket 通道，有两条互不相干的通路：
 //
-// 帧协议（JSON over WebSocket）：
+//	节点协议（事件中心，本期主线）：GET /v1/node/stream → node_handler.go，
+//	  九帧定义在 node_protocol.go（hello/heartbeat/ack/progress/result 上行，
+//	  welcome/assign/cancel/error 下行）。
 //
-//	服务端→客户端: hello / notification / replay_end / pong / subscribed / error / bye
-//	客户端→服务端: subscribe / unsubscribe / ack / ping / resume
-//
-// 断线重连：客户端用 Last-Event-Id 头或 resume 帧携带 resume_token，
-// 服务端 broker.Replay 补漏 → replay_end → 进入实时流。
+//	旧浏览器端协议（Deprecated，待 #7 下线）：GET /v1/stream → handler.go + 本文件，
+//	  帧是 notification/ack/subscribe，面向「浏览器收通知」的旧模型。
 package ws
 
+// 本文件是**旧浏览器端**的 WS 帧定义（notification/ack/subscribe），
+// 与事件中心的节点协议（node_protocol.go 的九帧）**没有关系**。
+//
+// Deprecated: 等 #7 下线 /v1/stream 与前端页面后，本文件一并删除。
 import "github.com/zzjcool/anotify/internal/broker"
 
 // 帧类型。
