@@ -198,7 +198,7 @@
 order_by inflight / concurrency asc
 limit 1
 
-<span class="c">-- 仅当 manifest.capabilities[].sticky 声明了才走：</span>
+<span class="c">-- 仅当该接口在定义里声明了 sticky 才走：</span>
 sticky_key = sha256(trace_id ∥ interface_id ∥ selector)
 <span class="c">-- runner_pins 命中则直用；未命中按负载挑一个并写入</span></pre>
             </div>

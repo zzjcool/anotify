@@ -118,10 +118,10 @@
 
           <h3>一、「为什么没触发」说不清</h3>
           <p class="prose">
-            定时没跑、webhook 丢了、下游没接上，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。新模型把这个问题压成了一次查表问答，答案只有三种：<strong>表里没有这一行</strong>、<strong>上游没回报这个出口</strong>，或者<strong>参数不符合目标接口的 schema</strong>。三个都能直接从记录里展示出来，不需要推演。
+            定时没跑、webhook 丢了、下游没接上，从外面看都是同一个现象：手机没响。现在只能翻日志猜是哪一步。新模型把这个问题压成了一次查表问答，答案只有四种：<strong>表里没有这一行</strong>、<strong>上游没回报这个出口</strong>、<strong>参数不符合目标接口的 schema</strong>，或者<strong>被 path 剪枝</strong>。四个都能直接从记录里展示出来，不需要推演。
           </p>
 
-          <div class="grid-3">
+          <div class="grid-2">
             <div class="card">
               <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案一 · 图的问题</div>
               <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
@@ -140,11 +140,17 @@
                 边在、出口也对，但 <code>params</code> 过不了目标接口的 <code>params_schema</code>（比如少了必填的 <code>pr</code>）—— <strong style="color: var(--text)">任务压根没建</strong>，记 <code>pruned / reason=param_schema</code>。前两个答案要查记录，这一个在派发前就拦住了。
               </p>
             </div>
+            <div class="card">
+              <div class="box sm dashed" style="display: inline-block; margin-bottom: 9px">答案四 · 行程的问题</div>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.72; color: var(--muted)">
+                边在、参数也对，但这个接口<b>已经在本次行程的 <code>path</code> 里走过</b>（<code>review &rarr; fix &rarr; review</code>）—— 静默剪枝，不报错不停链，但 trace 上记 <code>pruned / reason=path</code>，并指出重复的是哪个接口。
+              </p>
+            </div>
           </div>
 
           <p class="prose" style="margin-top: 14px">
-            <b>三个答案都指向同一件事：不需要跑一遍才能知道原因。</b>参数校验在派发前做，边的存在性在配置期就看得见，
-            出口回报是执行器自己写的——三者都是躺在表里的记录，不是要从日志里推的因果。
+            <b>四个答案都指向同一件事：不需要跑一遍才能知道原因。</b>参数校验在派发前做，边的存在性在配置期就看得见，
+            出口回报是执行器自己写的，行程是随任务落库的字段——四者都是躺在表里的记录，不是要从日志里推的因果。
           </p>
 
           <h3>二、长任务一断就没了</h3>
@@ -235,7 +241,7 @@
           <h2>所以定位是什么</h2>
           <p class="prose">
             执行能力是第二层。第一层是：人能在不翻日志的前提下回答三个问题，且答案来自记录而不是推断。
-            这三个问题的答案现在各有三种形态，全部静态可展示——不必重跑一条链路，也不必推理。
+            这三个问题的答案现在都能直接从表里读出来——不必重跑一条链路，也不必推理。
           </p>
 
           <div class="note">

@@ -108,12 +108,12 @@
             </div>
           </dl>
 
-          <div class="note">
+          <p class="prose">
             <b>为什么必须有接口这一层。</b>如果出口名由执行器自己编，两台机器实现同一个 <code>review</code>
             却报出 <code>[fix, clean]</code> 和 <code>[ok, bad]</code>，<code>edges</code> 里就会出现
             <code>(review, fix)</code> 和 <code>(review, ok)</code> 两套起点——查表时不知道该用哪个。
             接口把命名权收归中枢，<code>from_port</code> 才是封闭集合。
-          </div>
+          </p>
 
           <h2>三种角色，按端口形状分</h2>
           <p class="prose">
@@ -130,7 +130,7 @@
                 <span class="box accent">pipe · 管道<span class="sub">入 ✓ · 出 ✓</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
-              <span class="box ok">end · 终点<span class="sub">入 ✓ · 出 ✗</span></span>
+              <span class="box">end · 终点<span class="sub">入 ✓ · 出 ✗</span></span>
             </div>
             <div class="fig-cap">
               <b>触发器就是「只有出口、没有入边」的角色。</b>它不接任务，只把外部世界的变化转成一次出口选择。
@@ -442,7 +442,7 @@ edges:
                 <span class="box">implement<span class="sub">out: verify</span></span>
                 <span class="arr"><span>→</span></span>
               </div>
-              <span class="box warn">review<span class="sub">path 已含 → 剪枝</span></span>
+              <span class="box sm dashed">review<span class="sub">path 已含 → 剪枝</span></span>
             </div>
             <div class="fig-cap">
               <b>第二次回到 review 时剪枝</b>——不报错、不暂停 trace，但这笔要留在 trace 上看得见。

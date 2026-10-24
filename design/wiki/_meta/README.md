@@ -56,8 +56,11 @@
 | `priority` / 优先级择一 | 无（查到的 N 行全部下发） |
 | `action` | 能力 `capability` + 出口 `output` |
 | `terminal`（布尔字段） | `result.out`（出口名或 `null`） |
-| `manifest.commands[]` | `manifest.capabilities[]` |
-| `rule_id` | 能力名 |
+| `manifest.commands[]` | `manifest.implements[]` |
+| `manifest.capabilities[].outputs` | 删掉：出口由接口定义，执行器无命名权 |
+| `unknown_action` / `unknown_capability` | `unknown_interface` |
+| （无接口层） | **接口 `interface` 先定义**，执行器只能 implements |
+| `rule_id` | 接口名 `name@version` |
 | `rule_versions` / `rty_` 前缀 | `graph_versions` / `grf_` 前缀 |
 | `unknown_action` | `unknown_capability` |
 
@@ -67,22 +70,31 @@
 
 写任何页面时的事实依据：
 
-**三个要素**——节点 `node`（参与流转的实体）、能力 `capability`（我能做什么，路由单位）、出口 `output`（命名出口，跑完才选）。
+**四层**——接口 `interface`（契约：name@version + kind + params_schema + outputs）→ 能力 `capability`（某台执行器对某接口的实现，= `(runner_id, interface_id)`）→ 执行器 `runner`（一台机器）→ 图 `edges`（只引用接口，不引用机器）。
 
-**三种节点，按端口形状分**——`source`（只有出，触发器）、`worker`（有进有出）、`sink`（只有入，终端）。没有第四种。
+**关键**：出口名只能来自接口定义，执行器没有命名权；不允许只实现一部分出口；`review@1` 与 `review@2` 是两个不同接口，并存。
+
+**三种角色，按端口形状分**——`origin`（只有出，触发器）、`pipe`（有进有出）、`end`（只有入，终点）。没有第四种。注意「角色」不是「机器」，机器叫执行器 `runner`。
 
 **路由**——
 
+派发四步：
+
 ```sql
-SELECT to_capability FROM edges
- WHERE from_capability = :cap AND from_port = :port;
+-- ① 查表（两端都是接口）
+SELECT to_interface FROM edges
+ WHERE from_interface = :ifc AND from_port = :out;
+-- 返回 N 行 → N 个下游；0 行 → 到头，记 pruned
+-- ② 用目标接口的 params_schema 校验参数（不通过不建任务）
+-- ③ SELECT runner_id FROM capabilities WHERE interface_id = :to_interface
+-- ④ 按负载挑一台（或按 sticky 查 runner_pins）
 ```
 
-返回 N 行派 N 个任务，0 行就到头。没有条件求值、没有优先级、没有 DSL。
+没有条件求值、没有优先级、没有 DSL。
 
 **出口选择**——节点在 `result` 里回报 `{status, out}`。`out` 与 `status` 正交：失败也能继续，成功也能到头。
 
-**收敛**——三个条件缺一不可：① 无在跑任务 ② 无未到期任务 ③ 每个终态任务都已回报 `out`。且不能首次扫描成立就发通知（要 `pending_settle` 复核），否则 trigger 事务还没提交手机就响了。
+**没有后台收敛判定**——中枢不维护「整条链是否结束」这个状态，它只在你查看事件流向时才有意义。通知不依赖收敛，它本身就是图里的一条边（→ `notify.phone`）。
 
 **环**——允许。图显式声明，环在配置期可见；运行期靠 `path` 能力名去重剪枝，剪枝静默但必须在 trace 上可见。
 
@@ -101,6 +113,9 @@ grep -n 'innerHTML' design/wiki/*.html
 
 # 3. 旧术语（应只剩 04/07 的对照片段）
 grep -n '规则\|match\|priority\|rule_id\|unknown_action\|manifest\.commands' design/wiki/*.html
+
+# 3b. 接口层的旧写法（应为 0）
+grep -n 'from_capability\|to_capability\|manifest\.capabilities\[\]\.outputs' design/wiki/*.html
 
 # 4. 侧栏 active 每页恰好 1
 for f in design/wiki/*.html; do echo "$f $(grep -c 'class="active"' $f)"; done
