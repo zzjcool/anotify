@@ -74,7 +74,7 @@
 
           <p class="prose" style="font-size: 12.5px">
             共 98 条。跳到：
-            <a href="#g-iface">接口</a> · <a href="#g-node">角色与执行器</a> · <a href="#g-cap">能力与出口</a> · <a href="#g-task">任务</a> ·
+            <a href="#g-iface">接口</a> · <a href="#g-node">节点与执行器</a> · <a href="#g-cap">能力与出口</a> · <a href="#g-task">任务</a> ·
             <a href="#g-runtime">运行时</a> · <a href="#g-safety">安全与限额</a> · <a href="#g-version">版本</a> ·
             <a href="#g-event">事件与行程</a> · <a href="#g-prefix">前缀速查</a>
           </p>
@@ -114,7 +114,7 @@
               <dd>执行器上报的 <code>implements</code> 指向一个中枢里不存在的接口。<strong>拒绝该能力，不自动创建同名接口</strong>——接口必须先在 git 里有定义。</dd>
             </div>
             <div class="def">
-              <dt>角色不符 <code>kind_mismatch</code></dt>
+              <dt>节点类型不符 <code>kind_mismatch</code></dt>
               <dd>执行器声明的 <code>kind</code> 与接口声明的 <code>kind</code> 不一致，如拿 <code>pipe</code> 去实现 <code>notify.phone</code>（<code>end</code>）。注册时直接拒绝。</dd>
             </div>
             <div class="def">
@@ -127,27 +127,27 @@
             </div>
           </dl>
 
-          <h2 id="g-node">角色与执行器</h2>
+          <h2 id="g-node">节点与执行器</h2>
           <dl class="defs">
             <div class="def">
-              <dt>角色 Role</dt>
+              <dt>节点 Node <code>node</code></dt>
               <dd>参与流转的一个实体，按端口形状三选一：<code>origin</code> / <code>pipe</code> / <code>end</code>。没有第四种。<b>它不是机器</b>——机器见下面的「执行器」。</dd>
             </div>
             <div class="def">
               <dt>种类 <code>kind</code></dt>
-              <dd>角色的形状，按端口分：<code>origin</code>（只出）、<code>pipe</code>（有进有出）、<code>end</code>（只进）。</dd>
+              <dd>节点在链上的位置，按端口分：<code>origin</code>（只出）、<code>pipe</code>（有进有出）、<code>end</code>（只进）。</dd>
             </div>
             <div class="def">
               <dt>源头、触发器 <code>origin</code></dt>
-              <dd>只有出口的角色，负责产生事件：GitHub webhook、cron、watch、外部 API。它没有入边，所以永远不会被派任务。</dd>
+              <dd>只有出口的节点，负责产生事件：GitHub webhook、cron、watch、外部 API。它没有入边，所以永远不会被派任务。</dd>
             </div>
             <div class="def">
               <dt>管道 <code>pipe</code></dt>
-              <dd>有进有出的角色：<code>review</code> / <code>implement</code> / <code>test</code>。任务落在它身上，跑完必须回报 <code>out</code>。</dd>
+              <dd>有进有出的节点：<code>review</code> / <code>implement</code> / <code>test</code>。任务落在它身上，跑完必须回报 <code>out</code>。</dd>
             </div>
             <div class="def">
               <dt>终点 <code>end</code></dt>
-              <dd>只有入口的角色，跑完不产生下游：推手机、写日志。<code>outputs</code> 为空数组，<code>out</code> 恒为 <code>null</code>。</dd>
+              <dd>只有入口的节点，跑完不产生下游：推手机、写日志。<code>outputs</code> 为空数组，<code>out</code> 恒为 <code>null</code>。</dd>
             </div>
             <div class="def">
               <dt>推手机</dt>

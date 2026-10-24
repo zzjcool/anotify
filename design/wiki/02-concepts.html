@@ -69,19 +69,19 @@
           <div class="crumb">第 02 页 · 开始</div>
           <h1>核心概念</h1>
           <p class="lead">
-            整份文档只用六个名词：Interface、Capability、Output、Task、Trace、Role。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。没有条件求值，也没有优先级：派发只是查一张表。
+            整份文档只用六个名词：Interface、Capability、Output、Task、Trace、Node。这页把每个名词钉死——它是什么、长什么样、举一个具体例子——然后画一张图说明它们怎么串起来。没有条件求值，也没有优先级：派发只是查一张表。
           </p>
 
           <h2>六个名词</h2>
           <p class="prose">
-            六个词各自回答一个问题：契约是什么（Interface）、哪台机器实现了它（Capability）、干完往哪走（Output）、这一趟待办本身（Task）、这整趟是怎么走的（Trace，行程）、它站在链的哪一端（Role）。括号里是代码原名。
+            六个词各自回答一个问题：契约是什么（Interface）、哪台机器实现了它（Capability）、干完往哪走（Output）、这一趟待办本身（Task）、这整趟是怎么走的（Trace，行程）、它站在链的哪一端（Node）。括号里是代码原名。
           </p>
 
           <dl class="defs">
             <div class="def">
               <dt>Interface <code>interface</code> · 接口</dt>
               <dd>
-                一份<b>契约</b>：中枢侧定义、进 git、走 review、版本化。里面钉死四样东西——<code>name@version</code>（如 <code>review@1</code>）、角色 <code>kind</code>（<code>origin</code> / <code>pipe</code> / <code>end</code>）、参数结构 <code>params_schema</code>（JSON Schema，派发前校验）、出口名集合 <code>outputs</code>。<strong>出口名只能来自这里</strong>，执行器没有命名权。
+                一份<b>契约</b>：中枢侧定义、进 git、走 review、版本化。里面钉死四样东西——<code>name@version</code>（如 <code>review@1</code>）、节点类型 <code>kind</code>（<code>origin</code> / <code>pipe</code> / <code>end</code>）、参数结构 <code>params_schema</code>（JSON Schema，派发前校验）、出口名集合 <code>outputs</code>。<strong>出口名只能来自这里</strong>，执行器没有命名权。
                 <br />
                 来源两种：<b>内置接口</b> <code>builtin</code>（<code>interfaces/builtin/</code>，随项目发布，项目维护）与<b>自定义接口</b> <code>custom</code>（中枢配置目录里用户自己加），同一套格式、同一套版本化，加载后没有区别。
                 <br />
@@ -125,9 +125,9 @@
               </dd>
             </div>
             <div class="def">
-              <dt>Role <code>role</code> · 角色</dt>
+              <dt>Node <code>node</code> · 链路节点</dt>
               <dd>
-                一个东西站在链的哪一端，只有三种：<code>origin</code>（只有出）、<code>pipe</code>（有进有出）、<code>end</code>（只有入）。
+                链上的一个位置，只有三种：<code>origin</code>（只有出）、<code>pipe</code>（有进有出）、<code>end</code>（只有入）。<b>注意它不是机器</b>——机器叫执行器 <code>runner</code>。
                 <br />
                 <strong>接口自己带 <code>kind</code>，执行器也带 <code>kind</code></strong>，实现时两者必须一致，否则注册就被拒（<code>kind_mismatch</code>）——<code>end</code> 接口只能被 <code>end</code> 执行器实现。
                 <br />
@@ -155,7 +155,7 @@
             </div>
           </div>
 
-          <h2>角色有三种，按端口形状分</h2>
+          <h2>节点有三种，按端口形状分</h2>
           <p class="prose">
             分类的依据不是「这东西有多重要」，而是它的<strong>端口形状</strong>：有没有入口、有没有出口。<code>origin</code> 只有出，<code>pipe</code> 有进有出，<code>end</code> 只有入。
           </p>
@@ -175,7 +175,7 @@
               </div>
             </div>
             <div class="fig-cap">
-              <b>入在左，出在右。</b>一个角色最多两类端口，所以它必定落进上面三种形状之一。链的最左边只能是 <code>origin</code>，最右边只能是 <code>end</code>——中间想再插什么，都得是 <code>pipe</code>。
+              <b>入在左，出在右。</b>一个节点最多两类端口，所以它必定落进上面三种形状之一。链的最左边只能是 <code>origin</code>，最右边只能是 <code>end</code>——中间想再插什么，都得是 <code>pipe</code>。
             </div>
           </div>
 
@@ -223,7 +223,7 @@
           <div class="note">
             <strong>没有第四种。</strong>任何参与流转的东西都能被这三类装下：定时器是源，CI 里的一个步骤是管道，企业微信机器人是终端。所以中枢不必为「新类型实体」写新代码，只读它的 <code>kind</code> 和它实现了哪些接口。
             <br />
-            <b>触发器就是「只有出口、没有入边的角色」。</b>它也是一个接口（<code>github@1</code>，<code>kind: origin</code>），只是没有执行器去实现它：外部事件打进来，中枢直接拿这个接口的出口（事件类型）查表——<code>github@1 --(pr_opened)--&gt; review@1</code>。
+            <b>触发器就是「只有出口、没有入边的节点」。</b>它也是一个接口（<code>github@1</code>，<code>kind: origin</code>），只是没有执行器去实现它：外部事件打进来，中枢直接拿这个接口的出口（事件类型）查表——<code>github@1 --(pr_opened)--&gt; review@1</code>。
           </div>
 
           <h2>一条链是怎么连起来的</h2>

@@ -58,6 +58,7 @@
 | `terminal`（布尔字段） | `result.out`（出口名或 `null`） |
 | `manifest.commands[]` | `manifest.implements[]` |
 | `manifest.capabilities[].outputs` | 删掉：出口由接口定义，执行器无命名权 |
+| `role` / 角色 | `node` / 节点（链上的位置；机器叫 runner） |
 | `unknown_action` / `unknown_capability` | `unknown_interface` |
 | （无接口层） | **接口 `interface` 先定义**，执行器只能 implements |
 | `rule_id` | 接口名 `name@version` |
@@ -74,7 +75,7 @@
 
 **关键**：出口名只能来自接口定义，执行器没有命名权；不允许只实现一部分出口；`review@1` 与 `review@2` 是两个不同接口，并存。
 
-**三种角色，按端口形状分**——`origin`（只有出，触发器）、`pipe`（有进有出）、`end`（只有入，终点）。没有第四种。注意「角色」不是「机器」，机器叫执行器 `runner`。
+**三种节点，按端口形状分**——`origin`（只有出，触发器）、`pipe`（有进有出）、`end`（只有入，终点）。没有第四种。注意「节点」是**链上的位置**，不是机器；机器叫执行器 `runner`。
 
 **路由**——
 

@@ -84,7 +84,7 @@
             <div class="def">
               <dt>接口 <code>interface</code></dt>
               <dd>
-                一份契约：<code>name@version</code>、角色 <code>kind</code>、参数结构 <code>params_schema</code>、
+                一份契约：<code>name@version</code>、节点类型 <code>kind</code>、参数结构 <code>params_schema</code>、
                 出口名集合 <code>outputs</code>。<b>出口名只能来自这里</b>，执行器没有命名权。
               </dd>
             </div>
@@ -115,7 +115,7 @@
             接口把命名权收归中枢，<code>from_port</code> 才是封闭集合。
           </p>
 
-          <h2>三种角色，按端口形状分</h2>
+          <h2>三种节点，按端口形状分</h2>
           <p class="prose">
             分类只有一条依据：<b>有没有入口、有没有出口</b>。不看它跑在哪、用什么语言、由谁维护、是不是人。
           </p>
@@ -133,7 +133,7 @@
               <span class="box">end · 终点<span class="sub">入 ✓ · 出 ✗</span></span>
             </div>
             <div class="fig-cap">
-              <b>触发器就是「只有出口、没有入边」的角色。</b>它不接任务，只把外部世界的变化转成一次出口选择。
+              <b>触发器就是「只有出口、没有入边」的节点。</b>它不接任务，只把外部世界的变化转成一次出口选择。
             </div>
           </div>
 
