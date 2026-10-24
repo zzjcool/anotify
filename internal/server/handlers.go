@@ -388,7 +388,34 @@ type notificationDetail struct {
 	Deliveries []*store.DeliveryRow `json:"deliveries"`
 }
 
+// DeprecatedNoticeHeader 是旧模型端点上的废弃标记头。
+//
+// 存量 8 页前端读的是旧模型（/v1/notifications 等）。契约 §D5 决定本期**不改前端**，
+// 所以这些端点继续返回**真实数据**（不是空壳、不是 500），
+// 同时带上这个头，让调用方（以及将来的前端迁移）能明确知道自己用的是废弃接口。
+//
+// 处置策略（#59 §4 要求写清楚）：
+//   - 端点继续工作，数据来自 messages 表（#54 特意保留，见 migrate.go 的第 3 块）
+//   - 响应头带 `Deprecation: true` + `Link: </v1/events>; rel="successor-version"`
+//   - 等 #7 把前端与这些端点一起下线时，messages 表一并删除
+//
+// 不做的事：不返回 410、不返回空数据、不在响应体里塞警告——
+// 前者会让存量页面看起来"坏了"，后者会污染前端已经解析的 JSON 结构。
+const (
+	DeprecatedNoticeHeader = "Deprecation"
+	SuccessorLinkHeader    = "Link"
+	successorEndpoint      = `</v1/events>; rel="successor-version"`
+)
+
+// markDeprecated 给旧模型端点的响应打上废弃标记。
+func markDeprecated(w http.ResponseWriter) {
+	w.Header().Set(DeprecatedNoticeHeader, "true")
+	w.Header().Set(SuccessorLinkHeader, successorEndpoint)
+}
+
 func (h *notificationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 旧模型端点：打废弃标记，但**照常返回真实数据**（见 markDeprecated 的说明）
+	markDeprecated(w)
 	// /v1/notifications/{id} → 单条消息详情
 	if rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/notifications"), "/"); rest != "" {
 		h.getOne(w, r, rest)

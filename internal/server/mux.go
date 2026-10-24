@@ -12,7 +12,9 @@ import (
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/broker"
 	"github.com/zzjcool/anotify/internal/push"
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/trigger"
 	"github.com/zzjcool/anotify/internal/ws"
 )
 
@@ -109,6 +111,16 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	enrollH := &passkeyEnrollHandler{mgr: enrollMgr, db: db}
 
+	// 事件入口（#58）：触发器 + 派发器
+	eventH := &api.EventHandler{
+		Store:    db,
+		Keys:     keyValidator,
+		Triggers: trigger.New(db, route.New(db)),
+	}
+
+	// 控制台 API（#59）：8 个新端点，全部走组织维度（I10）
+	consoleH := &consoleHandler{db: db, auth: authSvc}
+
 	sessMW := authSvc.Sessions().Middleware
 	// 管理后台：登录会话 + 超管权限（两层中间件）
 	adminMW := sessMW(authSvc.AdminMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +172,24 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/notifications", noStore(sessMW(notifsH)))
 	mux.Handle("/v1/notifications/", noStore(sessMW(notifsH)))
 	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
+
+	// --- 节点协议（#57）：WS，opaque token 鉴权在 Upgrade 之前 ---
+	mux.Handle("GET /v1/node/stream", noStore(ws.NewNodeHandler(db)))
+
+	// --- 事件中心（#58 / #59）---
+	// 事件入口用 API Key（机器调用），与控制台用会话是两套鉴权。
+	mux.Handle("POST /v1/events", noStore(eventH))
+	mux.Handle("GET /v1/events", noStore(eventH))
+	// 控制台端点：登录会话 + 组织维度校验
+	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(consoleH.tasks))))
+	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))
+	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
+	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
+	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
+	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
+	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
+	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.nodes))))
+	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(consoleH.drainNode))))
 
 	// --- 管理后台（/v1/admin/*，需登录会话 + 超管权限） ---
 	mux.Handle("/v1/admin/", noStore(adminMW))
