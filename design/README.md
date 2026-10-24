@@ -32,14 +32,16 @@ Anotify 视觉事实源：mockup HTML + `tokens.css`。
 样式：`wiki/assets/wiki.css`（依赖 `tokens.css`，无 Tailwind、无内联色值）。
 维护约定：`wiki/_meta/README.md`（硬约束、已废弃术语、交付前自查清单）。
 
-### 历史稿（已归档，不维护）
+### 历史稿
 
-`archive/` 下的四份是本轮讨论的过程稿，与 wiki 冲突时**以 wiki 为准**：
+早期讨论稿（hub-blueprint / hub-architecture / adr-001 / positioning）**已删除**。
+它们是旧模型（规则引擎、两类 sink、节点=机器）的过程稿，与现行 wiki 冲突太多，
+留着只会被误读。需要查历史时用 git：
 
-- `archive/hub-blueprint.md` — 早期实施蓝图
-- `archive/hub-architecture.html` — 早期可视化页
-- `archive/adr-001-event-center-pivot.md` — 早期决策记录
-- `archive/positioning.md` — 早期定位分析
+```bash
+git log --all --diff-filter=D -- design/archive/
+git show <commit>:design/archive/hub-blueprint.md
+```
 
 ### v1 原型（通知终端）
 
