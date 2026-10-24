@@ -73,14 +73,32 @@ func NewNodeID() string     { return newID("nd") }
 func NewInstanceID() string { return newID("nins") }
 func NewTaskID() string     { return newID("tsk") }
 
-// NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2）。
+// NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。
+//
+// 形态里有时间戳和内容 hash 前 8 位——但这两者都**不足以保证唯一**：
+//   - 同一秒内为不同组织创建同名同内容能力时，时间戳与 hash8 完全相同
+//   - 不同内容也可能撞 hash 前 8 位（4 字节，生日碰撞在万级数量就可能出）
+//
+// 而 id 是 PRIMARY KEY，冲突直接报错。所以尾部再加 4 字节随机熵，
+// 保持契约里「可读的时间 + hash 前缀」形态，同时真正唯一。
 func NewCapabilityID(contentHash string) string {
-	return "cap_" + itoa64(time.Now().Unix()) + "_" + idHashSuffix(contentHash)
+	return "cap_" + itoa64(time.Now().Unix()) + "_" + idHashSuffix(contentHash) + "_" + randomSuffix()
 }
 
-// NewGraphVersionID 生成图快照 ID：grf_<UTC 秒>_<hash8>（契约 §2.6）。
+// NewGraphVersionID 生成图快照 ID：grf_<UTC 秒>_<hash8>（同 NewCapabilityID 的唯一性考量）。
 func NewGraphVersionID(contentHash string) string {
-	return "grf_" + itoa64(time.Now().Unix()) + "_" + idHashSuffix(contentHash)
+	return "grf_" + itoa64(time.Now().Unix()) + "_" + idHashSuffix(contentHash) + "_" + randomSuffix()
+}
+
+// randomSuffix 返回 6 位 base62 随机后缀（约 35 bit 熵）。
+func randomSuffix() string {
+	var b [5]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// 同 newID：熵源不可用时不提供不安全的降级路径
+		//nolint:panic // 见 newID 注释
+		panic("store: crypto/rand failed: " + err.Error())
+	}
+	return base62Encode(b[:])
 }
 
 // itoa64 是无 strconv 依赖的十进制转换（避免 ids.go 拉入额外包）。
