@@ -73,7 +73,7 @@
           </p>
 
           <p class="prose" style="font-size: 12.5px">
-            共 95 条。跳到：
+            共 94 条。跳到：
             <a href="#g-cdef">能力定义</a> · <a href="#g-node">节点</a> · <a href="#g-cap">能力与出口</a> · <a href="#g-task">任务</a> ·
             <a href="#g-runtime">运行时</a> · <a href="#g-safety">安全与限额</a> · <a href="#g-version">版本</a> ·
             <a href="#g-event">事件与行程</a> · <a href="#g-prefix">前缀速查</a>
@@ -216,10 +216,6 @@
             <div class="def">
               <dt><code>to_capability</code></dt>
               <dd>边的终点，下一个能力（<code>cap_...</code>）。同一个 <code>(from_capability, from_port)</code> 可以有 N 行，就是 N 个下游。</dd>
-            </div>
-            <div class="def">
-              <dt>源的出口声明 <code>emits</code></dt>
-              <dd>触发器在 <code>config.yaml</code> 里声明「我产出哪些事件、各通向哪些能力」。中枢只收到这些事实，不收到任何 webhook 逻辑。</dd>
             </div>
             <div class="def">
               <dt>路由 routing</dt>
@@ -422,11 +418,11 @@
             </div>
             <div class="def">
               <dt><code>node_manifest_versions</code></dt>
-              <dd>节点上报的能力声明清单的版本表。节点不报版本号，中枢按内容算哈希得到版本，所以「声称的能力」和「实际内容」不会分叉。</dd>
+              <dd>节点上报的能力清单的版本表。节点<b>不报清单自身的版本号</b>，中枢按内容算哈希得到，所以「声称的能力」和「实际内容」不会分叉。（清单里的 <code>name@version</code> 是能力定义的版本，另一回事。）</dd>
             </div>
             <div class="def">
               <dt><code>registry_versions</code></dt>
-              <dd>能力注册表的版本表。中枢只知道能力名，形状的变更也要钉版本。能力自身的定义以 <code>capability_versions</code> 为准，这张表记的是注册侧的视图。</dd>
+              <dd>能力注册表的版本表。形状的变更也要钉版本。能力自身的定义以 <code>capability_versions</code> 为准，这张表记的是注册侧的视图。</dd>
             </div>
             <div class="def">
               <dt><code>content_hash</code></dt>
