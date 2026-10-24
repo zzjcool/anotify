@@ -12,7 +12,6 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 
 	"github.com/zzjcool/anotify/internal/broker"
-	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -126,7 +125,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, msg *broker.Message) error {
 	if err != nil {
 		return fmt.Errorf("list devices: %w", err)
 	}
-	matched := route.FilterDevices(devices, msg)
+	matched := FilterDevices(devices, msg)
 
 	payload := pushPayload(msg)
 
