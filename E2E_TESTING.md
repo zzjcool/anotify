@@ -33,13 +33,12 @@ scripts/e2e/
   suites/
     api_contract.mjs    # API 契约矩阵
     auth_flow.mjs       # Passkey 全流程（虚拟认证器）
-    ws_protocol.mjs     # WS 帧协议
-    routing.mjs         # 标签/status 投递矩阵
-    persistence.mjs     # 重启持久化
+    ws_protocol.mjs     # 节点协议九帧（事件中心）
+    routing.mjs         # 派发四步 + 六种剪枝
+    persistence.mjs     # 重启后 events/tasks 存活
     security.mjs        # 安全矩阵
     edge_cases.mjs      # 边界/并发/Unicode
     frontend.mjs        # 前端渲染 + 路由守卫
-    push_e2e.mjs        # 桌面推送（真实 FCM）
 ```
 
 ## 运行

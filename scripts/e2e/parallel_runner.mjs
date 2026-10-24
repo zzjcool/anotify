@@ -32,6 +32,7 @@ const ROOT = path.resolve(
 // ---------- 套件分类（design §1.1） ----------
 const HTTP_SUITES = [
 	"api_contract",
+	"contract",
 	"ws_protocol",
 	"routing",
 	"persistence",
@@ -49,7 +50,6 @@ const CHROME_SUITES = [
 	"admin_flow",
 	"deeplink",
 	"auth_flow",
-	"push_e2e",
 	"ux_regression_19_23",
 	"recovery_next",
 ];

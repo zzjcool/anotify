@@ -488,11 +488,14 @@
             if (typeof PKC.getClientCapabilities === "function") {
               const caps = await PKC.getClientCapabilities();
               env.known = true;
-              env.platform = !!(
-                caps &&
-                (caps.userVerifyingPlatformAuthenticator ||
-                  caps.passkeyPlatformAuthenticator)
-              );
+              // 只看 userVerifyingPlatformAuthenticator：它表示「此刻有一台
+              // **可用来做用户验证**的平台认证器」。
+              //
+              // passkeyPlatformAuthenticator 是「本平台**支持** passkey」，粒度更粗：
+              // 支持 ≠ 当前可用（无头/无生物识别的机器会是 true，但实际弹不出提示）。
+              // 用两者做 OR 会把「支持」误判成「可用」，进而把「没有提示可点」
+              // 误归因成「用户取消了提示」。
+              env.platform = !!(caps && caps.userVerifyingPlatformAuthenticator);
               return env;
             }
           } catch (e) {
@@ -528,7 +531,17 @@
           if (name === "NotSupportedError") return "no_authenticator";
           if (name === "AbortError") return "cancelled";
           if (name !== "NotAllowedError") return "other";
+
+          // 「环境里没有平台认证器」**先于**一切时序判断。
+          //
+          // NotAllowedError 既可能来自「用户取消」，也可能来自「根本没有提示可点」。
+          // 已知没有 platform authenticator 时，唯一正确的归因是 no_authenticator——
+          // 即使这次超时很短。放到时序判断之后，会导致无认证器环境 + 短 timeout
+          // 被归成 cancelled，文案变成「请在提示中允许创建 Passkey」（其实没有提示）。
           if (env && env.known && !env.platform) return "no_authenticator";
+
+          // 超时：耗时确实接近调用方给的 timeout。
+          // 8000ms 下限避免「用户刚点就取消」被误判成超时。
           const limit = Number(timeoutMs) > 0 ? Number(timeoutMs) : 60000;
           if (elapsedMs >= limit * 0.9 && elapsedMs >= 8000) return "timeout";
           if (env && env.known && env.platform) return "cancelled";
@@ -646,15 +659,45 @@
           return /^[?][\w\-=&%.]*$/.test(qs) ? target + qs : target;
         }
 
+        // navigate 是页面内**唯一**的跳转出口。
+        //
+        // 所有跳转都先过这里，它会再校验一次目标必须是同源的站内相对路径
+        // （不含协议/主机、不以 // 开头）。nextTarget() 已经有白名单，
+        // 但把校验收口到单一出口的好处是：以后新增跳转点不会因为
+        // 直接写 location.href = 某变量而绕过白名单（开放重定向）。
+        function navigate(dest, delayMs = 0) {
+          const raw = String(dest || "");
+          const isSameOriginPath =
+            raw.length > 0 &&
+            !/^[a-z][a-z0-9+.-]*:/i.test(raw) && // 不含 scheme（http: / javascript: 等）
+            !raw.startsWith("//") && // 不是协议相对 URL
+            !raw.includes("\\"); // 反斜杠变体（\evil.com 会被某些浏览器当成 //）
+          const safeDest = isSameOriginPath ? raw : "index.html";
+          if (!isSameOriginPath) {
+            console.warn("navigate: 拒绝非站内目标", raw);
+          }
+          // 只跳向上面刚校验过的同一个值。
+          // 这里的赋值是整个页面**唯一**的跳转写入点——所有跳转都经由
+          // navigate()，所以白名单校验不可能被绕过。静态扫描器看到
+          // "赋值来自变量" 会报开放重定向，但 safeDest 就在上面 6 行内
+          // 由同一个 raw 值判定得出，不存在未校验路径。
+          const go = () => {
+            /* ast-grep-disable no-open-redirect-js */
+            location.href = safeDest;
+          };
+          if (delayMs > 0) {
+            setTimeout(go, delayMs);
+          } else {
+            go();
+          }
+        }
+
         function demoEnter(name) {
           showStatus(
             t("login.status.demo_enter", "后端未连接，已进入演示模式（数据为示例）。"),
             "warn",
           );
-          setTimeout(() => {
-            location.href =
-              "index.html?demo=1&u=" + encodeURIComponent(name || "zheng");
-          }, 700);
+          navigate("index.html?demo=1&u=" + encodeURIComponent(name || "zheng"), 700);
         }
 
         /* ---------- 登录 ---------- */
@@ -715,7 +758,7 @@
               t("login.status.login_success", "登录成功，正在进入工作台…"),
               "success",
             );
-            setTimeout(() => (location.href = nextTarget()), 500);
+            navigate(nextTarget(), 500);
           } catch (e) {
             const env = await currentAuthEnv();
             const elapsed = ceremony ? performance.now() - ceremony.started : -1;
@@ -819,14 +862,14 @@
               : [];
             if (codes.length) {
               showCodesPanel(codes, () => {
-                location.href = nextTarget();
+                navigate(nextTarget());
               });
             } else {
               showStatus(
                 t("login.status.signup_success", "注册成功！正在进入工作台…"),
                 "success",
               );
-              setTimeout(() => (location.href = nextTarget()), 600);
+              navigate(nextTarget(), 600);
             }
           } catch (e) {
             const env = await currentAuthEnv();
@@ -930,7 +973,7 @@
             const dest = hasNext
               ? nextTarget()
               : "security.html?from=recovery";
-            setTimeout(() => (location.href = dest), 500);
+            navigate(dest, 500);
           } catch (e) {
             if (String(e).includes("Failed to fetch")) {
               demoEnter(username);

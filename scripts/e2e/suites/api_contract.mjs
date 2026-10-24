@@ -154,12 +154,25 @@ async function main() {
 	H.eq("无设备用户上报 matched=0", noDevResp.json?.matched, 0);
 
 	// ---------- vapid-public-key ----------
+	// 推送是**可选**功能：没配 VAPID 时服务端返回 200 + 空 publicKey，
+	// 前端据此隐藏「启用推送」入口。所以端点本身必须永远 200，
+	// 但 publicKey 是否非空取决于部署配置——不能把「未配置」当成失败。
 	const vapidResp = await H.req(B, "/v1/vapid-public-key");
 	H.eq("vapid-public-key → 200", vapidResp.status, 200);
-	H.check(
-		"vapid-public-key publicKey 非空",
-		!!vapidResp.json?.publicKey && vapidResp.json.publicKey.length > 0,
-	);
+	const vapidPub = vapidResp.json?.publicKey || "";
+	if (process.env.ANOTIFY_VAPID_PUBLIC_KEY) {
+		H.check(
+			"vapid-public-key publicKey 非空（已配置 VAPID）",
+			vapidPub.length > 0,
+			vapidPub.slice(0, 20),
+		);
+	} else {
+		H.check(
+			"vapid-public-key 未配置时返回空串而非报错",
+			vapidPub === "",
+			vapidPub.slice(0, 20),
+		);
+	}
 
 	// ---------- test-notify（会话鉴权）----------
 	H.eq(

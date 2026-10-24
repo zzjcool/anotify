@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -47,6 +48,32 @@ type NodeHandler struct {
 
 	// Now 返回当前 unixepoch 秒（测试可注入）。
 	Now func() int64
+
+	// Hub 维护「节点 → 活跃连接」，派发器通过它推送 assign 帧。
+	// 为 nil 时自动创建一个（handler 自己持有，不共享）。
+	Hub *NodeHub
+
+	// NextHop 在任务成功回报 out 后派发下一跳（契约 §4 的递归应用）。
+	//
+	// 为 nil 时**不派下一跳**——链路就停在当前任务（测试/仅配置场景）。
+	// 非 nil 时若派发失败只记日志，不把错误回给节点：
+	// 任务本身已经成功完成了，下一跳的失败不该让它变成失败。
+	NextHop NextHopDispatcher
+}
+
+// NextHopDispatcher 派发下一跳（由 route.Dispatcher 实现）。
+//
+// 抽成接口是为了让 ws 包不依赖 route 包（避免循环依赖）。
+type NextHopDispatcher interface {
+	DispatchNext(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) error
+}
+
+// hub 返回 Hub，必要时惰性创建。
+func (h *NodeHandler) hub() *NodeHub {
+	if h.Hub == nil {
+		h.Hub = NewNodeHub()
+	}
+	return h.Hub
 }
 
 // NewNodeHandler 构造默认配置的节点协议 handler。
@@ -314,6 +341,9 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 	}
 	s.markHello()
 	s.touch()
+	// 握手成功 → 成为该节点的当前连接（后连的顶掉旧的）。
+	// 必须在 welcome 之前注册：节点收到 welcome 后可能立刻开始等 assign。
+	s.h.hub().Register(s.node.ID, s)
 	// welcome 是握手成功的信号：节点据此配置心跳节奏（间隔/TTL 以服务端为准）。
 	if err := s.send(ctx, welcomeFrameFor(s.node)); err != nil {
 		return err
@@ -380,6 +410,8 @@ func (s *nodeSession) watchdog(ctx context.Context, cancel context.CancelFunc) {
 // 注意：**不回收任务**。任务归属由租约巡检（SweepExpiredLeases）统一处理，
 // 那是唯一入口；这里只把「连接不在了」这个事实记下来。
 func (s *nodeSession) cleanup(ctx context.Context) {
+	// 先从 hub 摘掉：否则派发器会把 assign 推给一条已断的连接。
+	s.h.hub().Unregister(s.node.ID, s)
 	if err := s.h.Store.MarkInstancesDead(ctx, s.node.ID); err != nil {
 		slog.Warn("mark instances dead failed",
 			"event", "node.ws.cleanup.instances",
@@ -410,4 +442,14 @@ func isNormalClose(err error) bool {
 		return true
 	}
 	return false
+}
+
+// kill 主动断开这条连接（被新连接顶掉时调用）。
+//
+// 用 NormalClosure 而不是 PolicyViolation：这是正常的「换连接」，
+// 不是协议违规。节点看到 1000 会直接重连，看到 1008 可能会退避更久。
+func (s *nodeSession) kill(reason string) {
+	s.writeMu.Lock()
+	_ = s.conn.Close(websocket.StatusNormalClosure, reason)
+	s.writeMu.Unlock()
 }

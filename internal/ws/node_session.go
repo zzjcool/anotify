@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -160,7 +161,41 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 		"reported", reported,
 		"out", outString(out),
 	)
+
+	// 派发下一跳（契约 §4 的递归应用）。
+	//
+	// 只在**成功**且有出口时派：失败的任务不该继续往下走
+	// （它的产物不可信），out 为 nil 时是"到头了"，也不派。
+	//
+	// 派发失败只记日志、**不把错误回给节点**：这个任务本身已经成功完成，
+	// 下一跳的失败不该让它变成失败任务（否则节点会重试、结果重复落库）。
+	if s.h.NextHop != nil && f.Status == store.TaskSucceeded && out != nil {
+		s.dispatchNext(ctx, task, *out)
+	}
 	return nil
+}
+
+// dispatchNext 异步派发下一跳（不阻塞这条连接的读循环）。
+//
+// 异步的理由：Dispatch 会查库、挑节点、推 assign 帧，耗时可能到几十毫秒；
+// 在读循环里同步做会卡住同一节点上其他任务的 ack/result 处理。
+func (s *nodeSession) dispatchNext(ctx context.Context, task *store.Task, out string) {
+	go func() {
+		// 用 WithoutCancel：连接断开不该让已经完成的任务丢失下一跳。
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := s.h.NextHop.DispatchNext(
+			bg, s.node.OrgID, task.TraceID, task.ID,
+			task.CapabilityID, out, task.Params, task.Path,
+		); err != nil {
+			slog.Warn("dispatch next hop failed",
+				"event", "node.ws.result.next_hop_failed",
+				"task_id", task.ID,
+				"out", out,
+				"error", err.Error(),
+			)
+		}
+	}()
 }
 
 // reportTransitionError 把状态机拒绝翻译成协议错误帧。

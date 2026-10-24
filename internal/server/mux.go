@@ -111,11 +111,19 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	enrollH := &passkeyEnrollHandler{mgr: enrollMgr, db: db}
 
+	// 节点连接注册表：派发器通过它把 assign 帧推给节点。
+	// 必须在 eventH 之前创建——派发器需要它作为 Publisher。
+	nodeHub := ws.NewNodeHub()
+
 	// 事件入口（#58）：触发器 + 派发器
+	// 派发器带 Publisher，这样「派发成功」包含「assign 帧真的推出去了」，
+	// 而不是仅仅把库里的状态改成 assigned（节点可能根本不在线）。
+	dispatcher := route.New(db)
+	dispatcher.Publisher = nodeHub
 	eventH := &api.EventHandler{
 		Store:    db,
 		Keys:     keyValidator,
-		Triggers: trigger.New(db, route.New(db)),
+		Triggers: trigger.New(db, dispatcher),
 	}
 
 	// 控制台 API（#59）：8 个新端点，全部走组织维度（I10）
@@ -174,7 +182,14 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
 
 	// --- 节点协议（#57）：WS，opaque token 鉴权在 Upgrade 之前 ---
-	mux.Handle("GET /v1/node/stream", noStore(ws.NewNodeHandler(db)))
+	// 必须复用上面的 nodeHub：否则 handler 会惰性建一个**独立**的 hub，
+	// 派发器往 nodeHub 里推，handler 往自己的 hub 里注册 —— 永远推不到。
+	nodeH := ws.NewNodeHandler(db)
+	nodeH.Hub = nodeHub
+	// 任务成功回报 out 后派发下一跳（契约 §4 的递归应用）。
+	// 不接这个的话整条链路只能走一步——第一跳完成后就永远停在那里。
+	nodeH.NextHop = dispatcher
+	mux.Handle("GET /v1/node/stream", noStore(nodeH))
 
 	// --- 事件中心（#58 / #59）---
 	// 事件入口用 API Key（机器调用），与控制台用会话是两套鉴权。

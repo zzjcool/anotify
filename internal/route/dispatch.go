@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -61,6 +62,13 @@ type Store interface {
 	PutPin(ctx context.Context, p *store.NodePin) error
 	CreateTasks(ctx context.Context, ts []*store.Task) error
 	AssignTask(ctx context.Context, orgID, taskID, nodeID, instanceID string, leaseUntil int64) error
+	// ExtendLease 把租约推到指定时刻（派发失败回滚时用来"提前过期"）。
+	ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error
+	// SweepExpiredLeases 回收过期租约（契约 §3.3）。
+	//
+	// 派发失败回滚复用它，而不是自己拼一套"退回 pending + 清归属"的 SQL：
+	// 那样会出现第二个改任务归属的地方，与「唯一入口」的约束冲突。
+	SweepExpiredLeases(ctx context.Context, now int64) ([]string, error)
 	EnsureGraphVersion(ctx context.Context, orgID string) (*store.GraphVersion, error)
 	IsOrgMember(ctx context.Context, orgID, userID string) (bool, error)
 }
@@ -78,6 +86,24 @@ type Dispatcher struct {
 
 	// Now 返回当前 unixepoch 秒（测试可注入）。
 	Now func() int64
+
+	// Publisher 把刚派发的任务推给节点（assign 帧）。
+	//
+	// 为 nil 时只落库不推送（测试、以及"仅配置不跑"的场景）。
+	// **非 nil 时推送失败会让 Dispatch 返回错误**：任务已经 assigned 在库里、
+	// 但节点不知道有活干，这种状态必须让调用方知道（否则任务会静默卡到租约过期）。
+	Publisher Publisher
+}
+
+// Publisher 把一条已派发的任务推给目标节点。
+//
+// 由 ws 层实现（NodeHub）。抽成接口是为了让 route 包不依赖 ws 包。
+type Publisher interface {
+	// PublishAssign 向 nodeID 推送 assign 帧；节点不在线返回 error。
+	//
+	// 返回 error 时派发器会把任务退回 pending（并释放槽位），
+	// 让下一次派发能立刻重试——而不是让它卡到租约过期。
+	PublishAssign(ctx context.Context, orgID, nodeID string, task *store.Task) error
 }
 
 // New 构造一个 Dispatcher，默认把 notify.phone 视为用户维度能力。
@@ -248,6 +274,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		return nil, fmt.Errorf("route: create tasks: %w", err)
 	}
 
+	published := make([]bool, len(tasks))
 	for i, task := range tasks {
 		c := candidates[i]
 		// 挑一台：粘性优先，否则负载最小
@@ -275,12 +302,30 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			_ = d.Store.ReleaseInstance(ctx, nodeID, instanceID)
 			return nil, fmt.Errorf("route: assign task %s: %w", task.ID, err)
 		}
+		published[i] = true // 成功占用槽位并派发
 		// 读回派发后的状态，让调用方拿到最新值
 		task.Status = store.TaskAssigned
 		task.NodeID = &nodeID
 		task.InstanceID = &instanceID
 		task.LeaseUntil = &lease
 		task.Attempts = 1
+
+		// 推 assign 帧。**必须在 AssignTask 之后**：节点收到帧就会开始干活，
+		// 若此时库里还不是 assigned，它回报的 ack/result 会因为状态不匹配被拒。
+		//
+		// 推送失败（节点掉线/连接忙）时要把任务**退回 pending**并释放槽位：
+		// 否则库里的状态是 assigned、节点却根本不知道有活干，
+		// 这条任务会一直卡到租约过期才被巡检回收（30s 起，重试还要再来一轮）。
+		// 退回 pending 让它能被下一次派发立刻捡起。
+		if d.Publisher != nil {
+			if err := d.Publisher.PublishAssign(ctx, in.OrgID, nodeID, task); err != nil {
+				d.requeueAfterPublishFailure(ctx, in.OrgID, task, nodeID, instanceID)
+				// 从返回值里剔除：它已退回 pending，不算"派发出去了"。
+				// （仍留在库里，会被后续调度捡起。）
+				published[i] = false
+				continue
+			}
+		}
 
 		// 粘性钉住：能力开了 sticky 且是第一次落到这台机器时写 pin
 		if stickySelector != nil {
@@ -296,8 +341,71 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		}
 	}
 
-	out.Tasks = tasks
+	// 返回值语义：
+	//   - 容量不足留在 pending 的 → **要返回**（任务确实建出来了，在等调度；
+	//     隐藏它会让调用方以为"这个出口什么都没触发"）
+	//   - 推送失败被退回 pending 的 → **不返回**（它没派出去，是回滚）
+	//
+	// 两者在库里都是 pending，区别只在"这次派发有没有成功"。
+	out.Tasks = make([]*store.Task, 0, len(tasks))
+	for i, t := range tasks {
+		if !published[i] && t.Status == store.TaskPending && t.Attempts > 0 {
+			continue // 推送失败回滚的那条（attempts 已被 AssignTask +1）
+		}
+		out.Tasks = append(out.Tasks, t)
+	}
 	return out, nil
+}
+
+// requeueAfterPublishFailure 把「已 assigned 但推不出去」的任务退回 pending。
+//
+// 关键是**复用租约巡检**而不是自己拼一套回滚：
+//
+//  1. ReleaseInstance 释放派发时占住的槽位
+//  2. ExtendLease(…, 0) 把租约推到"已过期"
+//  3. SweepExpiredLeases 走同一条回收路径（改状态 + 清归属 + 释放槽位）
+//
+// 这样"清理任务归属"的逻辑只存在一处（sweepOne），不会出现第二份实现。
+// 失败只记日志：最坏情况是等 30s 后巡检自然兜底，结果一样。
+func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, orgID string, task *store.Task, nodeID, instanceID string) {
+	if err := d.Store.ReleaseInstance(ctx, nodeID, instanceID); err != nil {
+		slog.Warn("release instance after publish failure failed",
+			"event", "route.publish.requeue",
+			"task_id", task.ID, "node_id", nodeID, "error", err.Error())
+	}
+	// 把租约推到过去，然后走**同一条**巡检路径回收。
+	//
+	// 为什么不直接 Transition：租约巡检除了改状态，还要清空
+	// node_id/instance_id/lease_until 并释放实例槽位。自己再写一遍
+	// 就等于出现第二个改归属的地方，且容易漏步骤（漏了 node_id 会让
+	// 下次派发以为任务还挂在旧节点上）。
+	//
+	// 代价是这中间有极短的时间窗任务仍是 assigned（租约已过期），
+	// 但巡检的 CAS 保证只有一个执行者能改它。
+	if err := d.Store.ExtendLease(ctx, orgID, task.ID, 0); err != nil {
+		slog.Warn("expire lease after publish failure failed",
+			"event", "route.publish.requeue",
+			"task_id", task.ID, "error", err.Error())
+		return
+	}
+	if _, err := d.Store.SweepExpiredLeases(ctx, d.now()); err != nil {
+		slog.Warn("sweep after publish failure failed",
+			"event", "route.publish.requeue",
+			"task_id", task.ID, "error", err.Error())
+		return
+	}
+	task.Status = store.TaskPending
+	task.NodeID = nil
+	task.InstanceID = nil
+	task.LeaseUntil = nil
+}
+
+// now 返回当前 unixepoch 秒。
+func (d *Dispatcher) now() int64 {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return store.Now()
 }
 
 // checkUserScoped 校验 params.to 是否属于本组织（契约 §10.1.1）。
@@ -438,4 +546,46 @@ func parentPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// DispatchNext 实现 ws.NextHopDispatcher：任务回报 out 后派发下一跳。
+//
+// 这是契约 §4 的**递归应用**——把上一跳的结果当作下一跳的输入：
+//
+//	FromCap = 刚完成的能力
+//	Out     = 它回报的出口名
+//	Params  = 它的 params（原样传递，不求值）
+//	Path    = 它的 path（环剪枝的累积路径）
+//
+// 三种情况不派发，都不是错误：
+//   - out == ""：节点没回报出口（reported=0），这条分支自然结束
+//   - 查表 0 行：pruned/no_edge，链到头了
+//   - 目标是 origin 能力且已在 path 里：pruned/path，成环
+func (d *Dispatcher) DispatchNext(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) error {
+	if out == "" {
+		return nil // 没回报出口：不派下一跳（契约 §7 第 ① 行）
+	}
+
+	var paramMap map[string]any
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &paramMap); err != nil {
+			paramMap = map[string]any{}
+		}
+	}
+	if paramMap == nil {
+		paramMap = map[string]any{}
+	}
+
+	// path 已经包含 fromCapabilityID（父任务建的时候写进去的），
+	// 直接沿用即可——Dispatch 会把目标能力追加到末尾。
+	_, err := d.Dispatch(ctx, DispatchInput{
+		OrgID:        orgID,
+		TraceID:      traceID,
+		ParentTaskID: parentTaskID,
+		FromCap:      fromCapabilityID,
+		Out:          out,
+		Params:       paramMap,
+		Path:         path,
+	})
+	return err
 }

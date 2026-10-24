@@ -205,7 +205,7 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- login UX：#6 恢复码不是假按钮，#7 用户名错误可见，#8 切 tab 清错误，
+	// ---- login UX：恢复码入口可用（非占位），#7 用户名错误可见，#8 切 tab 清错误，
 	//      #9 不加载 Play CDN，#10 无认证器时不说「请允许」 ----
 	console.log("--- login UX ---");
 	{
@@ -252,30 +252,51 @@ async function main() {
 		});
 		H.check("login 本地 tailwind.css 生效（main 为 flex）", layoutOk === true);
 
+		// 恢复码是**已上线**的功能（recovery_next 套件端到端验证了恢复码登录），
+		// 所以这里断言的是「入口真的可用」，而不是早期「即将推出」的占位状态。
 		const recovery = await page.evaluate(() => {
-			const note = document.getElementById("recovery-note");
+			const toggle = document.getElementById("recovery-toggle");
+			const btn = document.getElementById("recovery-btn");
+			const panel = document.getElementById("recovery-panel");
+			const input = document.getElementById("recovery-code");
 			return {
-				hasNote: !!note,
-				text: note ? note.textContent : "",
-				hasBtn: !!document.getElementById("recovery-btn"),
+				hasToggle: !!toggle,
+				toggleText: toggle ? toggle.textContent.trim() : "",
+				hasBtn: !!btn,
+				btnDisabled: btn ? btn.disabled : null,
+				hasPanel: !!panel,
+				panelHidden: panel ? panel.classList.contains("hidden") : null,
+				hasInput: !!input,
 			};
 		});
 		H.check(
-			"恢复码入口不是可点击按钮",
-			recovery.hasNote && !recovery.hasBtn,
+			"恢复码入口是可用按钮（不是占位）",
+			recovery.hasToggle &&
+				recovery.hasBtn &&
+				recovery.btnDisabled === false &&
+				recovery.hasPanel &&
+				recovery.hasInput,
 			JSON.stringify(recovery),
 		);
 		H.check(
-			"恢复码文案标明即将推出且当前不可用",
-			/即将推出/.test(recovery.text) && /不能/.test(recovery.text),
-			recovery.text,
+			"恢复码入口默认折叠，点击后展开",
+			recovery.panelHidden === true,
+			JSON.stringify(recovery),
 		);
+		await page.click("#recovery-toggle");
+		const expanded = await page.evaluate(() => {
+			const panel = document.getElementById("recovery-panel");
+			return panel ? !panel.classList.contains("hidden") : false;
+		});
+		H.check("点击后恢复码面板展开", expanded === true);
 
 		await page.click("#tab-signup");
 		const hint = await page.locator("#signup-panel").innerText();
+		// 文案应如实承诺「注册后展示一次性恢复码」（功能已上线），
+		// 而不是早期那条「尚未开放」的占位说明。
 		H.check(
-			"注册说明不再承诺立即发放恢复码",
-			!hint.includes("注册后会生成") && hint.includes("尚未开放"),
+			"注册说明如实告知会发放一次性恢复码",
+			hint.includes("恢复码") && hint.includes("丢失"),
 			hint.slice(0, 180),
 		);
 		const cases = [
@@ -413,9 +434,11 @@ async function main() {
 					(msg.includes("没有弹出") || msg.includes("没有可用")),
 				msg,
 			);
+			// 恢复码是真实可用的退路（recovery_next 端到端验证），
+			// 所以文案**应该**指向它——这是帮助而非误导。
 			H.check(
-				"无认证器文案不把恢复码当成可用退路",
-				msg.includes("尚未开放"),
+				"无认证器文案把恢复码当作可用退路",
+				msg.includes("恢复码"),
 				msg,
 			);
 			await page.click("#tab-login");

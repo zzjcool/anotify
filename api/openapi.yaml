@@ -1,20 +1,576 @@
 openapi: 3.0.3
 info:
   title: Anotify API
-  version: "0.1.0"
+  version: "1.0.0"
   description: |
-    Anotify 后端 API。静态资源走 /static/*（CDN），动态 API 走 /v1/*（no-store）。
-    鉴权两种方式：
-      - 会话 Cookie（Passkey 登录后的工作台浏览）
-      - Bearer API Key（Agent 上报 / 接收端长连接），Key 仅存哈希，带 scope
+    事件中心 API（契约见 docs/contracts/CONTRACT.md）。
+
+    模型演化：从「通知终端」到「事件中心」。
+    外部事件（webhook / cron / watch）→ `events` → 派发成 `tasks` → 节点执行 → 回报出口 → 下一跳。
+
+    鉴权三种：
+      - **会话 Cookie**（`anotify_session`）：控制台浏览，Passkey 登录后获得
+      - **Bearer API Key**（`ant_...`）：机器调用（上报 / 事件入口），带 scope
+      - **Bearer 节点 token**（`ant_node_...`）：节点 WS 长连接，opaque，仅存 sha256
+
+    约定：
+      - 所有 JSON 字段 **camelCase**
+      - 空列表返回 `[]` 而不是 `null`（不变量 I9）
+      - 一切租户数据先过 `orgId`（不变量 I10）；显式传 `orgId` 时必须校验成员身份
+
+    ## 迁移中的旧端点
+
+    原有 `/notify`、`/notifications`、`/devices`、`/stream` 属于**旧的「通知终端」模型**，
+    现在仍在服务（存量前端页面依赖），但响应带 `Deprecation: true` 与
+    `Link: </v1/events>; rel="successor-version"`。
+    它们将在前端切换到事件中心后下线，届时 `messages` 表一并删除。
 servers:
   - url: /v1
 tags:
-  [auth, keys, devices, notify, notifications, stream, cli-auth, passkey-enroll]
+  - name: events
+    description: 事件入口（外部世界的变化）
+  - name: tasks
+    description: 任务（派发出来的执行单元）
+  - name: capabilities
+    description: 能力定义（append-only，每次改动开新版本）
+  - name: edges
+    description: 出口表（路由的唯一依据）
+  - name: nodes
+    description: 节点（执行者）
+  - name: node-stream
+    description: 节点 WebSocket 协议
+  - name: auth
+    description: 认证与恢复
+  - name: keys
+    description: API Key
+  - name: devices
+    description: "[旧模型] 推送设备"
+  - name: notify
+    description: "[旧模型] 通知上报与查询"
+  - name: cli-auth
+    description: CLI 设备授权
+  - name: passkey-enroll
+    description: Passkey 设备补建
+  - name: admin
+    description: 管理后台
+
+security:
+  - cookieAuth: []
+  - bearerAuth: []
 
 paths:
+  # ========== 事件中心：事件 ==========
+  /admin:
+    get:
+      tags: [admin]
+      summary: 管理后台端点索引
+      description: 无尾斜杠访问（/v1/admin）返回可用子端点列表，不发重定向。
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: 子端点清单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /../agent-login.sh:
+    get:
+      tags: [cli-auth]
+      summary: 获取 CLI 登录脚本（curl | sh 的源头）
+      description: |
+        **注意**：这个端点不在 `/v1` 下，实际路径是 `/agent-login.sh`。
+        在本文件里写成 `/../agent-login.sh` 是为了相对 `servers: /v1` 表达它。
+        返回 plain text 的 shell 脚本，供 `curl -fsSL .../agent-login.sh | sh`。
+      security: []
+      responses:
+        "200":
+          description: shell 脚本正文
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /events:
+    post:
+      tags: [events]
+      summary: 提交一个外部事件（webhook 通用入口）
+      description: |
+        把外部世界的变化变成一条 `event` 并触发第一次派发。
+
+        - `traceId` 由**触发器**生成（不给时），中枢不代生成
+        - `idemKey` 用于幂等：冲突时返回**已有**的 `eventId` + `traceId`，**不是 409**
+          （对发送方而言「已收过」和「本次收下」都该是 200）
+        - 不带 `idemKey` 允许重复——不是所有来源都有稳定投递 ID
+        - 事件已入库但派发失败/起源未知时**仍返回 200**（事件确实收下了）
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, type]
+              properties:
+                source:
+                  type: string
+                  description: 事件来源，与 origin 能力同名（github / cron / watch / ...）
+                  example: github
+                type:
+                  type: string
+                  description: 事件类型，**同时是 origin 能力的出口名**
+                  example: pull_request.opened
+                idemKey:
+                  type: string
+                  description: 幂等键（如 X-GitHub-Delivery）。省略则允许重复
+                traceId:
+                  type: string
+                  description: 可选；省略时由触发器生成
+                payload:
+                  type: object
+                  description: 原始负载，只存不解释（不求值、不改写）
+                orgId:
+                  type: string
+                  description: 可选；省略时用调用者的主组织
+      responses:
+        "200":
+          description: 事件已受理（含幂等命中）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventIngestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    get:
+      tags: [events]
+      summary: 事件列表（按 trace 过滤）
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: traceId, in: query, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: '事件列表（空时 `events: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/Event" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ========== 认证：当前用户与凭据 ==========
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: 当前会话的用户 + 主组织
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  org:
+                    type: object
+                    description: 主组织（注册即得，不变量 A1）
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/passkeys:
+    get:
+      tags: [auth]
+      summary: 列出当前用户的 Passkey
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: "Passkey 列表（空时 passkeys 为 []）"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [passkeys]
+                properties:
+                  passkeys:
+                    type: array
+                    items: { $ref: "#/components/schemas/Passkey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/passkeys/{id}:
+    patch:
+      tags: [auth]
+      summary: 重命名 Passkey
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "200": { description: 已重命名 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [auth]
+      summary: 删除 Passkey
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /auth/passkeys/register/options:
+    post:
+      tags: [auth]
+      summary: 补建 Passkey（新设备）——取 challenge
+      security:
+        - cookieAuth: []
+      responses:
+        "200": { description: WebAuthn 注册选项 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/passkeys/register:
+    post:
+      tags: [auth]
+      summary: 补建 Passkey（新设备）——提交凭证
+      security:
+        - cookieAuth: []
+      responses:
+        "200": { description: 已注册 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ========== 统计 ==========
+  /stats:
+    get:
+      tags: [notify]
+      summary: "[旧模型] 通知统计"
+      deprecated: true
+      security:
+        - cookieAuth: []
+      responses:
+        "200": { description: 统计数字 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+
+  # ========== 事件中心：任务 ==========
+  /tasks:
+    get:
+      tags: [tasks]
+      summary: 任务列表（按 trace / node / status 过滤）
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: traceId, in: query, schema: { type: string } }
+        - { name: nodeId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/TaskStatus" } }
+        - { name: orgId, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: '任务列表（空时 `tasks: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks]
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /tasks/{id}/cancel:
+    post:
+      tags: [tasks]
+      summary: 取消任务
+      description: |
+        把任务推进到 `canceled`（终态）。终态不可再变，
+        对已终态的任务再取消返回 409。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: 已取消
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 任务已是终态（`invalid_transition`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ========== 事件中心：能力 ==========
+  /capabilities:
+    get:
+      tags: [capabilities]
+      summary: 能力定义列表（带推导出的 kind）
+      description: |
+        `kind` 是**推导量，不落库**（不变量 I3）：
+        - 没有任何节点声明 → `origin`
+        - 有节点声明且 `outputs` 全空 → `end`
+        - 有节点声明且 `outputs` 有非空项 → `pipe`
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '能力列表（空时 `capabilities: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [capabilities]
+                properties:
+                  capabilities:
+                    type: array
+                    items: { $ref: "#/components/schemas/CapabilityWithKind" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [capabilities]
+      summary: 定义新能力（自动算 contentHash、自动开版本）
+      description: |
+        `capability_versions` 是 **append-only**（不变量 I8）：
+        - 不指定 `version` 时自动开下一个版本
+        - 同名同版本但内容不同 → 409（版本不能被改写）
+        - 内容相同（含 name）→ 幂等返回已有定义
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CapabilityInput" }
+      responses:
+        "200":
+          description: 已创建（或幂等返回已有）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capability: { $ref: "#/components/schemas/Capability" }
+                  kind: { $ref: "#/components/schemas/Kind" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: 同 name@version 换内容（`capability_conflict`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ========== 事件中心：出口表 ==========
+  /edges:
+    get:
+      tags: [edges]
+      summary: 出口表列表
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: fromCapability, in: query, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '边列表（空时 `edges: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [edges]
+                properties:
+                  edges:
+                    type: array
+                    items: { $ref: "#/components/schemas/Edge" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [edges]
+      summary: 新增一条边
+      description: |
+        配置期两条硬校验（违反即 400，`code: edge_rejected`）：
+        1. `fromPort` 必须属于 `fromCapability.outputs`（**出口是封闭集合**，不变量 I2）
+        2. 两端能力必须**同组织**（不允许跨组织边）
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EdgeInput" }
+      responses:
+        "200":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  edge: { $ref: "#/components/schemas/Edge" }
+        "400":
+          description: 出口不在 outputs 里 / 跨组织 / 能力不存在（`edge_rejected`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [edges]
+      summary: 删除一条边
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: fromCapability, in: query, required: true, schema: { type: string } }
+        - { name: fromPort, in: query, required: true, schema: { type: string } }
+        - { name: toCapability, in: query, required: true, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ========== 事件中心：节点 ==========
+  /nodes:
+    get:
+      tags: [nodes]
+      summary: 节点列表（含在线状态、声明的能力、实例占用）
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '节点列表（空时 `nodes: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes]
+                properties:
+                  nodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /nodes/{id}/drain:
+    post:
+      tags: [nodes]
+      summary: 排空节点（不再接新任务，在跑的继续）
+      description: |
+        只把 `status` 改成 `draining`（派发时会被过滤掉），
+        **不主动取消**已在跑的任务——取消是破坏性操作，排空是渐进退役。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: 已排空
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: { $ref: "#/components/schemas/Node" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ========== 事件中心：节点协议 ==========
+  /node/stream:
+    get:
+      tags: [node-stream]
+      summary: 节点 WebSocket 长连接（九帧协议）
+      description: |
+        **必须**在 Upgrade 之前用 `Authorization: Bearer <node token>` 完成鉴权：
+        鉴权失败返回 401/403，**绝不返回 101**。
+
+        token 是 opaque（`ant_node_...`），服务端只存 sha256。
+        握手成功后先发 `hello`，收到 `welcome` 即接入成功。
+
+        ### 上行（节点 → 中枢）
+        | type | 说明 |
+        |---|---|
+        | `hello` | 自报身份 + 能力声明 + 实例申报（必须第一帧） |
+        | `heartbeat` | 心跳；任何上行帧都续命 |
+        | `ack` | 接单：`assigned → acked` |
+        | `progress` | 开始执行：`acked → running` |
+        | `result` | 结果：`running → succeeded/failed` |
+
+        ### 下行（中枢 → 节点）
+        | type | 说明 |
+        |---|---|
+        | `welcome` | 握手成功，带 `heartbeatSec` / `leaseTtlSec` |
+        | `assign` | 派活：能力名 + 版本 + params + 租约（**不含命令/脚本/argv**） |
+        | `cancel` | 停止任务 |
+        | `error` | 协议错误（不关连接，除 hello 失败） |
+
+        ### result 的 out 三态（不变量 I5）
+        | 线上 JSON | 落库 | 含义 |
+        |---|---|---|
+        | 没有 `out` 键 | `reported=0, out=NULL` | 没回报出口 → 不派下一跳 |
+        | `"out": null` | `reported=1, out=NULL` | 明确到头了 |
+        | `"out": "fix"` | `reported=1, out='fix'` | 走 fix 出口 |
+      security:
+        - nodeToken: []
+      responses:
+        "101":
+          description: 协议切换成功（此后走 WebSocket 帧）
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /auth/register/options:
     post:
+      security: []  # 匿名可访问
       tags: [auth]
       summary: 开始 Passkey 注册（返回 WebAuthn challenge）
       requestBody:
@@ -31,6 +587,7 @@ paths:
         "200": { description: WebAuthn creation options }
   /auth/register:
     post:
+      security: []  # 匿名可访问
       tags: [auth]
       summary: 完成 Passkey 注册（校验 attestation，建用户+会话+恢复码）
       responses:
@@ -40,6 +597,7 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
   /auth/login/options:
     post:
+      security: []  # 匿名可访问
       tags: [auth]
       summary: 开始 Passkey 登录
       requestBody:
@@ -53,6 +611,7 @@ paths:
         "200": { description: WebAuthn request options }
   /auth/login:
     post:
+      security: []  # 匿名可访问
       tags: [auth]
       summary: 完成 Passkey 登录（建会话）
       responses:
@@ -60,12 +619,15 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
   /auth/logout:
     post:
+      security: []  # 匿名可访问
       tags: [auth]
       summary: 登出（吊销会话）
       responses:
         "200": { description: 已登出 }
   /auth/sessions:
     get:
+      security:
+        - cookieAuth: []
       tags: [auth]
       summary: 列出当前用户的登录会话
       responses:
@@ -73,6 +635,7 @@ paths:
 
   /auth/recovery/login:
     post:
+      security: []  # 匿名可访问
       tags: [auth]
       summary: 用恢复码登录（校验哈希 → 作废该码 → 建会话 Cookie）
       description: |
@@ -95,10 +658,12 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "429":
-          description: 限速（IP 或 username）；响应头 Retry-After: 60
+          description: '限速（IP 或 username）；响应头 Retry-After: 60'
 
   /auth/recovery/regenerate:
     post:
+      security:
+        - cookieAuth: []
       tags: [auth]
       summary: 重新生成恢复码（需登录；作废全部未用旧码）
       description: |
@@ -119,6 +684,8 @@ paths:
 
   /auth/recovery/status:
     get:
+      security:
+        - cookieAuth: []
       tags: [auth]
       summary: 恢复码状态（需登录；不含明文）
       responses:
@@ -135,11 +702,15 @@ paths:
 
   /keys:
     get:
+      security:
+        - cookieAuth: []
       tags: [keys]
       summary: 列出 API Keys（不含明文/哈希）
       responses:
         "200": { description: Key 列表 }
     post:
+      security:
+        - cookieAuth: []
       tags: [keys]
       summary: 新建 API Key（仅此处返回一次明文）
       requestBody:
@@ -161,6 +732,8 @@ paths:
         "200": { description: 创建的 Key（含明文，仅此一次） }
   /keys/{id}/revoke:
     post:
+      security:
+        - cookieAuth: []
       tags: [keys]
       summary: 停用 API Key
       parameters:
@@ -170,11 +743,17 @@ paths:
 
   /devices:
     get:
+      deprecated: true
+      security:
+        - cookieAuth: []
       tags: [devices]
       summary: 列出接收设备
       responses:
         "200": { description: 设备列表 }
     post:
+      deprecated: true
+      security:
+        - cookieAuth: []
       tags: [devices]
       summary: 注册/更新推送订阅设备（前端订阅后上报）
       requestBody:
@@ -186,6 +765,9 @@ paths:
         "200": { description: 已保存 }
   /devices/{id}:
     patch:
+      deprecated: true
+      security:
+        - cookieAuth: []
       tags: [devices]
       summary: 更新设备（重命名/开关/status 过滤/标签）
       parameters:
@@ -203,6 +785,9 @@ paths:
       responses:
         "200": { description: 已更新 }
     delete:
+      deprecated: true
+      security:
+        - cookieAuth: []
       tags: [devices]
       summary: 解绑设备
       parameters:
@@ -212,6 +797,7 @@ paths:
 
   /vapid-public-key:
     get:
+      security: []  # 匿名可访问
       tags: [devices]
       summary: 返回 VAPID 公钥（前端订阅用）
       responses:
@@ -219,6 +805,7 @@ paths:
 
   /notify:
     post:
+      deprecated: true
       tags: [notify]
       summary: Agent 上报一条通知（Bearer Key，scope=notify:send）
       security: [{ bearerAuth: [] }]
@@ -285,6 +872,9 @@ paths:
 
   /notifications:
     get:
+      deprecated: true
+      security:
+        - cookieAuth: []
       tags: [notifications]
       summary: 通知历史（分页）
       parameters:
@@ -300,6 +890,9 @@ paths:
 
   /notifications/{id}:
     get:
+      deprecated: true
+      security:
+        - cookieAuth: []
       tags: [notifications]
       summary: 单条通知详情（完整消息 + 真实投递记录）
       description: |
@@ -313,6 +906,7 @@ paths:
 
   /stream:
     get:
+      deprecated: true
       tags: [stream]
       summary: WebSocket 长连接接收通知（Bearer Key，scope=notify:receive）
       description: |
@@ -1098,7 +1692,269 @@ components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: APIKey }
     cookieAuth: { type: apiKey, in: cookie, name: anotify_session }
+    nodeToken:
+      type: http
+      scheme: bearer
+      bearerFormat: NodeToken
+      description: |
+        节点专用 opaque token（`ant_node_...`），只存 sha256。
+        与 `bearerAuth`（用户 API Key）是两套凭据。
   schemas:
+
+    # ---------- 事件中心 ----------
+    Kind:
+      type: string
+      enum: [origin, end, pipe]
+      description: |
+        能力在链上的角色，**推导量，不落库**（不变量 I3）。
+        origin = 没有节点声明；end = 有声明且 outputs 全空；pipe = 有声明且有出口。
+
+    Capability:
+      type: object
+      properties:
+        id: { type: string, example: cap_1730000000_a1b2c3d4 }
+        orgId: { type: string }
+        name: { type: string, example: review }
+        version: { type: integer, example: 1 }
+        paramsSchema:
+          type: object
+          description: JSON Schema 的**受控子集**（不支持 $ref / if-then-else）
+        outputs:
+          type: array
+          items: { type: string }
+          description: 出口名的**封闭集合**（不变量 I2）；边的 fromPort 必须属于它
+        sticky:
+          type: string
+          description: 粘性路由的 selector 键名（空表示不粘）
+        lifecycle:
+          type: object
+          properties:
+            expiresInSec: { type: integer }
+            retryable: { type: boolean }
+            maxAttempts: { type: integer }
+            resultTtlSec: { type: integer }
+        source: { type: string, enum: [builtin, custom] }
+        contentHash:
+          type: string
+          description: 规范化内容的 sha256；内容相同则幂等返回同一行
+        createdAt: { type: integer, format: int64 }
+
+    CapabilityWithKind:
+      allOf:
+        - $ref: "#/components/schemas/Capability"
+        - type: object
+          required: [kind]
+          properties:
+            kind: { $ref: "#/components/schemas/Kind" }
+
+    CapabilityInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, example: review }
+        version:
+          type: integer
+          description: 省略时自动开下一个版本（append-only，不变量 I8）
+        paramsSchema: { type: object }
+        outputs:
+          type: array
+          items: { type: string }
+        sticky: { type: string }
+        lifecycle: { type: object }
+        source: { type: string, enum: [builtin, custom], default: custom }
+
+    Edge:
+      type: object
+      properties:
+        orgId: { type: string }
+        fromCapability: { type: string }
+        fromPort:
+          type: string
+          description: 必须属于 fromCapability.outputs
+        toCapability: { type: string }
+        createdAt: { type: integer, format: int64 }
+
+    EdgeInput:
+      type: object
+      required: [fromCapability, fromPort, toCapability]
+      properties:
+        fromCapability: { type: string }
+        fromPort: { type: string }
+        toCapability: { type: string }
+
+    TaskStatus:
+      type: string
+      description: 九态状态机（契约 §3）
+      enum:
+        - pending
+        - assigned
+        - acked
+        - running
+        - succeeded
+        - failed
+        - canceled
+        - abandoned
+        - lease_expired
+
+    Task:
+      type: object
+      properties:
+        id: { type: string, example: tsk_1730000000_abcd1234 }
+        orgId: { type: string }
+        traceId: { type: string, description: 一个根事件引起的全部工作 }
+        parentTaskId:
+          type: string
+          nullable: true
+          description: 谁派生；根事件直接派生的为 null
+        path:
+          type: array
+          items: { type: string }
+          description: 从根到本任务的能力序列（环剪枝用）
+        capabilityId: { type: string }
+        capability: { type: string, description: 冗余存 name，展示用 }
+        version: { type: integer }
+        params: { type: object }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+        nodeId: { type: string, nullable: true }
+        instanceId: { type: string, nullable: true }
+        leaseUntil: { type: integer, format: int64, nullable: true }
+        attempts: { type: integer }
+        out:
+          type: string
+          nullable: true
+          description: |
+            出口名。与 reported 一起表达三态（不变量 I5）：
+            reported=0 且 out=null → 没回报；reported=1 且 out=null → 到头了；
+            reported=1 且 out="x" → 走 x 出口。
+        reported: { type: boolean }
+        summary: { type: string }
+        artifacts:
+          type: array
+          items: { type: string }
+        error: { type: string }
+        capHash:
+          type: string
+          description: 派发时的能力定义 content_hash（版本钉住，不变量 I8）
+        graphId:
+          type: string
+          description: 派发时的 graph_versions.id
+        createdAt: { type: integer, format: int64 }
+        startedAt: { type: integer, format: int64, nullable: true }
+        finishedAt: { type: integer, format: int64, nullable: true }
+
+    Event:
+      type: object
+      properties:
+        id: { type: string, example: evt_1730000000_abcd1234 }
+        orgId: { type: string }
+        traceId: { type: string }
+        source: { type: string, example: github }
+        type: { type: string, example: pull_request.opened }
+        payload:
+          type: object
+          description: 原始负载，只存不解释
+        idemKey: { type: string, nullable: true }
+        createdAt: { type: integer, format: int64 }
+
+    EventIngestResponse:
+      type: object
+      required: [eventId, traceId, inserted, tasks, pruned]
+      properties:
+        eventId: { type: string }
+        traceId: { type: string }
+        inserted:
+          type: boolean
+          description: false 表示命中幂等（返回的是已有事件，且**不重复派发**）
+        origin:
+          type: string
+          description: 匹配到的起点能力（name@version）；找不到时省略
+          example: github@1
+        tasks:
+          type: array
+          description: 首轮派发建出的任务；幂等命中时为空数组
+          items: { $ref: "#/components/schemas/TaskBrief" }
+        pruned:
+          type: array
+          description: 首轮派发的剪枝记录（静默但一律留痕）
+          items: { $ref: "#/components/schemas/PrunedRecord" }
+
+    TaskBrief:
+      type: object
+      properties:
+        id: { type: string }
+        capability: { type: string }
+        version: { type: integer }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+
+    PrunedRecord:
+      type: object
+      required: [reason, detail]
+      properties:
+        reason:
+          type: string
+          description: |
+            剪枝原因（契约 §7）。注意「上游没回报出口」**不是**剪枝，
+            不会出现在这里。
+          enum: [no_edge, param_schema, no_node, foreign_user, path]
+        capabilityId: { type: string }
+        port: { type: string }
+        detail: { type: string, description: 给人看的证据 }
+
+    Node:
+      type: object
+      properties:
+        id: { type: string }
+        orgId: { type: string }
+        name: { type: string, example: mbp-16 }
+        tags:
+          type: array
+          items: { type: string }
+        status: { type: string, enum: [online, offline, draining] }
+        maxInstances: { type: integer }
+        maxConcurrency: { type: integer }
+        lastSeenAt: { type: integer, format: int64, nullable: true }
+        createdAt: { type: integer, format: int64 }
+
+    NodeView:
+      allOf:
+        - $ref: "#/components/schemas/Node"
+        - type: object
+          properties:
+            capabilities:
+              type: array
+              items: { type: string }
+              description: 形如 review@1
+            instances: { type: integer, description: 申报的槽位总数 }
+            busy: { type: integer, description: 正在占用的槽位数 }
+
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [admin, member] }
+        createdAt: { type: integer, format: int64 }
+
+    Passkey:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: integer, format: int64 }
+        lastUsedAt: { type: integer, format: int64, nullable: true }
+        backupEligible: { type: boolean }
+        backupState: { type: boolean }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        code:
+          type: string
+          description: 机器可读错误码（如 edge_rejected / invalid_transition / capability_conflict）
+
     DeviceUpsert:
       type: object
       required: [endpoint, keys]

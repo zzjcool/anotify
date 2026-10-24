@@ -1,229 +1,282 @@
 #!/usr/bin/env node
-/* SUITE: routing — 投递路由矩阵（标签路由 + eventScope 过滤 + enabled 开关）
+/* SUITE: routing — 派发四步 + 六种「未触发」原因（契约 §4 / §7）
  *
- * 验证规则（与设计文档一致）：
- *   投递 ⟺ enabled ∧ scopeMatch(device.eventScope, msg.agentState) ∧ tagMatch
- *   - 消息无 deviceTags → 广播到所有 enabled 设备
- *   - 设备无 tags → catch-all 收一切（含定向消息）
- *   - 双方有 tags → 交集≥1（ANY，非 ALL）
- *   - eventScope=all 全过；=final 仅终态(done/interrupted/error)过；
- *     非终态(working/blocked) 仅 all 时过
+ * 这是「事件中心」的路由语义，与旧的「按 tag 过滤设备」模型完全无关。
  *
- * 设备拓扑：
- *   A: tags=["手机"], eventScope=all,   enabled=true
- *   B: tags=["工作"], eventScope=final, enabled=true
- *   C: tags=[],       eventScope=all,   enabled=true  (catch-all)
- *   D: tags=["手机"], eventScope=all,   enabled=false (禁用)
+ * 覆盖：
+ *   四步    edges 查表 → 校参 → 找节点 → 挑一台
+ *   六因    ① 上游没回报（**不是**剪枝）
+ *           ② no_edge  ③ param_schema  ④ no_node
+ *           ⑤ foreign_user  ⑥ path（环剪枝）
+ *   扇出    一个 (cap, port) 多条边 → 多个任务
+ *   容量    有节点但槽位满 → 任务留 pending（不剪枝）
+ *   幂等    同一 idemKey 不重复派发
  *
- * 依赖：PATCH /v1/devices/:id 可正常设置 tags/eventScope/enabled
- *   （若该端点失效则本套件暴露产品 bug，见上报）。
+ * 做法：
+ *   - 配置（能力/出口表/事件）全部走真实 HTTP API
+ *   - 节点用 SQL 直接播种（CreateNode 没有 HTTP 端点，属于运维动作），
+ *     然后用**真实 WS 握手**让节点上线——这样派发才真的能找到它
  */
 import * as H from "../lib/harness.mjs";
+import { bringUpNode as bringUpShared } from "../lib/nodes.mjs";
 
-let server;
-let sendKey, session;
-const dev = {}; // name -> {id, ...}
+let server, session, sendKey, orgId;
 
-// 创建一台设备（POST 用唯一 endpoint），返回 device.id
-async function createDevice(name, endpointTag) {
-	const d = H.makeDevice({
-		name,
-		endpoint: `https://push.example.com/${endpointTag}-${Math.random().toString(36).slice(2)}`,
-	});
-	const r = await H.req(server.base, "/v1/devices", { session, body: d });
-	if (r.status !== 200)
-		throw new Error(`创建设备 ${name} 失败: ${r.status} ${r.text}`);
-	return r.json.device;
-}
+// ---------- 配置辅助（真实 HTTP API） ----------
 
-// 用 PATCH 设置设备配置
-async function patchDevice(id, patch) {
-	const r = await H.req(server.base, `/v1/devices/${id}`, {
+async function defineCapability(name, outputs = [], extra = {}) {
+	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
-		method: "PATCH",
-		body: patch,
+		body: {
+			name,
+			outputs,
+			paramsSchema: extra.paramsSchema || { type: "object" },
+			...extra,
+		},
 	});
-	if (r.status !== 200)
-		throw new Error(`PATCH 设备 ${id} 失败: ${r.status} ${r.text}`);
-	return r.json.device;
+	if (r.status !== 200) throw new Error(`定义能力 ${name} 失败: ${r.status} ${r.text}`);
+	return r.json.capability;
 }
 
-// 上报一条消息，返回 {matched, hitIds:Set}
-async function notify(body) {
-	const r = await H.req(server.base, "/v1/notify", { key: sendKey, body });
-	if (r.status !== 200) throw new Error(`notify 失败: ${r.status} ${r.text}`);
-	const results = r.json.results || [];
-	const hitIds = new Set(results.map((x) => x.device));
-	return { matched: r.json.matched, hitIds, results };
+async function addEdge(fromCap, fromPort, toCap) {
+	return H.req(server.base, "/v1/edges", {
+		session,
+		body: { fromCapability: fromCap.id, fromPort, toCapability: toCap.id },
+	});
 }
 
-// 断言一次上报的命中集合
-function expectHits(caseName, { matched, hitIds }, expectIds) {
-	const got = [...hitIds].sort();
-	const want = [...expectIds].sort();
-	H.eq(`${caseName} · matched 数`, matched, expectIds.length);
-	H.eq(`${caseName} · 命中设备集合`, got, want);
+async function postEvent(body) {
+	// /v1/events 是**机器入口**：鉴权走 Bearer API Key（notify:send），不是会话 Cookie。
+	return H.req(server.base, "/v1/events", { key: sendKey, body });
+}
+
+// bringUpNode 薄封装：把本套件的 (name, caps, slots) 映射到共享实现的参数。
+async function bringUpNode(name, caps, slots = 1) {
+	return bringUpShared(server.base, server.dbPath, orgId, name, caps, slots);
+}
+
+function expectPrune(name, resp, reason) {
+	const pruned = resp.json?.pruned || [];
+	const hit = pruned.find((p) => p.reason === reason);
+	H.check(name, !!hit, `want reason=${reason}, got ${JSON.stringify(pruned)}`);
+	return hit;
 }
 
 async function main() {
-	console.log("=== SUITE: routing（投递路由矩阵）===");
-	server = await H.startServer({ suiteName: "routing", rpId: "localhost" });
-	const s = H.seed(server.dbPath, "route_user");
-	sendKey = s.sendKey;
+	H.startTimer();
+	server = await H.startServer({ suiteName: "routing" });
+	const s = H.seed(server.dbPath, "routing");
 	session = s.session;
+	sendKey = s.sendKey;
 
-	// ---- 搭建设备拓扑 ----
-	// A: tags=["手机"], scope=all, enabled
-	const a = await createDevice("A-手机", "a");
-	await patchDevice(a.id, {
-		tags: ["手机"],
-		eventScope: "all",
-		enabled: true,
+	// devseed 用 log.Printf 输出「组织就绪: name (org_xxx)」→ 走 **stderr**，
+	// 而 stdout 只有 KEY=VALUE 那几行。所以必须两个流都读。
+	const { spawnSync } = await import("node:child_process");
+	const seedRun = spawnSync(
+		H.DEVSEED_BIN,
+		["-db", server.dbPath, "-username", "routing"],
+		{ encoding: "utf8" },
+	);
+	const seedOut = (seedRun.stdout || "") + (seedRun.stderr || "");
+	orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
+	H.check("拿到 orgId", !!orgId, seedOut.slice(0, 200));
+	if (!orgId) throw new Error("无法从 devseed 输出解析 orgId: " + seedOut.slice(0, 300));
+
+	// ---------- 建图 + 节点上线 ----------
+	console.log("--- 派发四步 ---");
+	const github = await defineCapability("github", ["pull_request.opened"]);
+	const review = await defineCapability("review", ["fix"], {
+		paramsSchema: {
+			type: "object",
+			required: ["number"],
+			properties: { number: { type: "number" } },
+		},
 	});
-	dev.A = a.id;
+	const fix1 = await defineCapability("fix1", []);
+	const fix2 = await defineCapability("fix2", []);
 
-	// B: tags=["工作"], scope=final, enabled
-	const b = await createDevice("B-工作", "b");
-	await patchDevice(b.id, {
-		tags: ["工作"],
-		eventScope: "final",
-		enabled: true,
+	H.eq("建边 github→review", (await addEdge(github, "pull_request.opened", review)).status, 200);
+	H.eq("建边 review→fix1", (await addEdge(review, "fix", fix1)).status, 200);
+	H.eq("建边 review→fix2", (await addEdge(review, "fix", fix2)).status, 200);
+
+	const nodeA = await bringUpNode("routing-node", [review, fix1, fix2], 4);
+	H.check("节点上线（真实 WS 握手）", !!nodeA.id);
+
+
+	// ---------- 四步：一次事件 → 一个 review 任务 ----------
+	const ev1 = await postEvent({
+		source: "github",
+		type: "pull_request.opened",
+		payload: { number: 42 },
 	});
-	dev.B = b.id;
+	H.eq("事件入队 200", ev1.status, 200);
+	H.eq("首轮建 1 个任务", ev1.json?.tasks?.length, 1);
+	H.eq("首轮任务能力是 review", ev1.json?.tasks?.[0]?.capability, "review");
+	H.eq("任务状态 assigned（第 4 步挑到节点）", ev1.json?.tasks?.[0]?.status, "assigned");
+	H.eq("无剪枝", ev1.json?.pruned?.length, 0);
 
-	// C: tags=[], scope=all, enabled（catch-all）
-	const c = await createDevice("C-catchall", "c");
-	await patchDevice(c.id, { tags: [], eventScope: "all", enabled: true });
-	dev.C = c.id;
-
-	// D: tags=["手机"], scope=all, 禁用
-	const d = await createDevice("D-禁用", "d");
-	await patchDevice(d.id, {
-		tags: ["手机"],
-		eventScope: "all",
-		enabled: false,
-	});
-	dev.D = d.id;
-
-	// ---- 先验证设备配置真的生效（PATCH 是否落库）----
-	const listR = await H.req(server.base, "/v1/devices", { session });
-	const byId = {};
-	for (const x of listR.json.devices || []) byId[x.id] = x;
-	H.eq(
-		"A 配置生效(tags=[手机],scope=all,enabled)",
-		[
-			byId[dev.A]?.tags?.join(),
-			byId[dev.A]?.eventScope,
-			byId[dev.A]?.enabled,
-		],
-		["手机", "all", true],
-	);
-	H.eq(
-		"B 配置生效(tags=[工作],scope=final,enabled)",
-		[
-			byId[dev.B]?.tags?.join(),
-			byId[dev.B]?.eventScope,
-			byId[dev.B]?.enabled,
-		],
-		["工作", "final", true],
-	);
-	H.eq(
-		"C 配置生效(tags=[],scope=all,enabled)",
-		[
-			(byId[dev.C]?.tags || []).length,
-			byId[dev.C]?.eventScope,
-			byId[dev.C]?.enabled,
-		],
-		[0, "all", true],
-	);
-	H.eq("D 配置生效(enabled=false)", byId[dev.D]?.enabled, false);
-
-	// ---- 路由断言矩阵 ----
-	// 1. done 无 deviceTags → 广播；B 的 scope=final 放行(done 是终态)；D 禁用 → 命中 A,B,C
-	expectHits(
-		"case1 done 广播",
-		await notify({ title: "c1", agentState: "done" }),
-		[dev.A, dev.B, dev.C],
-	);
-
-	// 2. error 无 deviceTags → 广播；B 的 final 放行(error 是终态)；D 禁用 → 命中 A,B,C
-	expectHits(
-		"case2 error 广播",
-		await notify({ title: "c2", agentState: "error" }),
-		[dev.A, dev.B, dev.C],
-	);
-
-	// 3. error + deviceTags=["手机"] → A(tag+scope=all 过), C(catch-all)；B tag 不符 → 命中 A,C
-	expectHits(
-		"case3 error 定向[手机]",
-		await notify({ title: "c3", agentState: "error", deviceTags: ["手机"] }),
-		[dev.A, dev.C],
-	);
-
-	// 4. error + deviceTags=["工作"] → B(tag+final 过), C(catch-all)；A 不符 → 命中 B,C
-	expectHits(
-		"case4 error 定向[工作]",
-		await notify({ title: "c4", agentState: "error", deviceTags: ["工作"] }),
-		[dev.B, dev.C],
-	);
-
-	// 5. done + deviceTags=["手机","工作"] → A(tag+all 过), B(tag+final 过 done), C；D 禁用 → 命中 A,B,C
-	expectHits(
-		"case5 done 定向[手机,工作]",
-		await notify({
-			title: "c5",
-			agentState: "done",
-			deviceTags: ["手机", "工作"],
-		}),
-		[dev.A, dev.B, dev.C],
-	);
-
-	// 6. interrupted 无 deviceTags → A,C,B(final 放行 interrupted 是终态)；D 禁用 → 命中 A,B,C
-	expectHits(
-		"case6 interrupted 广播",
-		await notify({ title: "c6", agentState: "interrupted" }),
-		[dev.A, dev.B, dev.C],
-	);
-
-	// 7. done + deviceTags=["不存在"] → 仅 C(catch-all) → matched=1
-	expectHits(
-		"case7 done 定向[不存在]",
-		await notify({ title: "c7", agentState: "done", deviceTags: ["不存在"] }),
-		[dev.C],
-	);
-
-	// 8. 专项：禁用设备 D 在所有定向到其 tag 的情况下也不接收
-	{
-		const r = await notify({
-			title: "c8",
-			agentState: "done",
-			deviceTags: ["手机"],
-		});
-		H.check("case8 禁用设备 D 永不命中（定向其 tag）", !r.hitIds.has(dev.D));
+	// 节点应收到 assign 帧（第 4 步真的派下去了）
+	const deadline = Date.now() + 2000;
+	let assignFrame = null;
+	while (Date.now() < deadline && !assignFrame) {
+		assignFrame = nodeA.frames.find((f) => f.type === "assign");
+		if (!assignFrame) await new Promise((r) => setTimeout(r, 30));
 	}
-	// 8b. working/blocked 广播 → 仅 all 通过（A,C），B=final 不过(非终态)
-	expectHits(
-		"case8b working 广播",
-		await notify({ title: "c8b", agentState: "working" }),
-		[dev.A, dev.C],
-	);
-	expectHits(
-		"case8c blocked 广播",
-		await notify({ title: "c8c", agentState: "blocked" }),
-		[dev.A, dev.C],
+	H.check("节点收到 assign 帧", !!assignFrame, JSON.stringify(nodeA.frames.map((f) => f.type)));
+	if (assignFrame) {
+		H.eq("assign 帧的能力名", assignFrame.capability, "review");
+		H.eq("assign 帧带 task_id", typeof assignFrame.task_id, "string");
+		H.check("assign 帧有租约", typeof assignFrame.lease_until === "number" && assignFrame.lease_until > 0);
+		// A2：没有 argv / shell（不变量 I1）
+		const raw = JSON.stringify(assignFrame).toLowerCase();
+		H.check(
+			"assign 帧不含 argv/shell/command",
+			!raw.includes("argv") && !raw.includes("shell") && !raw.includes("command"),
+			raw.slice(0, 160),
+		);
+	}
+
+	// ---------- A6 扇出 ----------
+	console.log("--- A6 扇出（一个出口多条边）---");
+	const origin2 = await defineCapability("fanout.demo", ["go"]);
+	const t1 = await defineCapability("fan.target1", []);
+	const t2 = await defineCapability("fan.target2", []);
+	await addEdge(origin2, "go", t1);
+	await addEdge(origin2, "go", t2);
+	await bringUpNode("fanout-node", [t1, t2], 2);
+
+	const fan = await postEvent({ source: "fanout.demo", type: "go", payload: {} });
+	H.eq("扇出事件 200", fan.status, 200);
+	H.eq("一个出口两条边 → 2 个任务", fan.json?.tasks?.length, 2);
+	H.eq(
+		"扇出的两个能力正确",
+		(fan.json?.tasks || []).map((t) => t.capability).sort(),
+		["fan.target1", "fan.target2"],
 	);
 
-	const passed = H.summary("routing");
+	// ---------- ② no_edge ----------
+	console.log("--- 六种未触发原因 ---");
+	const noEdge = await postEvent({ source: "github", type: "pull_request.closed", payload: {} });
+	H.eq("no_edge 事件 200", noEdge.status, 200);
+	H.eq("no_edge 不建任务", noEdge.json?.tasks?.length, 0);
+	expectPrune("② no_edge 留痕", noEdge, "no_edge");
+
+	// ---------- ③ param_schema ----------
+	const badParam = await postEvent({
+		source: "github",
+		type: "pull_request.opened",
+		payload: { title: "缺 number 字段" },
+	});
+	H.eq("param_schema 不建任务", badParam.json?.tasks?.length, 0);
+	const ps = expectPrune("③ param_schema 留痕", badParam, "param_schema");
+	if (ps) {
+		H.check("param_schema 证据可读", String(ps.detail || "").length > 0, ps.detail);
+	}
+
+	// ---------- ④ no_node ----------
+	const orphan = await defineCapability("orphan.cap", []);
+	const origin3 = await defineCapability("nonode.demo", ["go"]);
+	await addEdge(origin3, "go", orphan);
+	const noNode = await postEvent({ source: "nonode.demo", type: "go", payload: {} });
+	H.eq("no_node 不建任务", noNode.json?.tasks?.length, 0);
+	expectPrune("④ no_node 留痕", noNode, "no_node");
+
+	// ---------- ⑤ foreign_user ----------
+	const notifyOrigin = await defineCapability("push.demo", ["notify"]);
+	const phone = await defineCapability("notify.phone", [], {
+		paramsSchema: {
+			type: "object",
+			required: ["to"],
+			properties: { to: { type: "string" } },
+		},
+	});
+	await addEdge(notifyOrigin, "notify", phone);
+	await bringUpNode("phone-node", [phone], 1);
+
+	const foreign = await postEvent({
+		source: "push.demo",
+		type: "notify",
+		payload: { to: "usr_not_a_member_of_this_org" },
+	});
+	H.eq("foreign_user 不建任务", foreign.json?.tasks?.length, 0);
+	const fu = expectPrune("⑤ foreign_user 留痕", foreign, "foreign_user");
+	if (fu) {
+		H.check(
+			"foreign_user 证据里点名那个用户",
+			String(fu.detail || "").includes("usr_not_a_member_of_this_org"),
+			fu.detail,
+		);
+	}
+
+	// ---------- ⑥ path（环剪枝） ----------
+	// a --go--> b --back--> a。单次 POST 只走一跳，所以环剪枝靠
+	// 「review 回报 fix」这类多跳才触发。
+	// 这里用节点 WS 真的走两跳：完成 a 任务 → 回报 go → 派发 b →
+	// 完成 b 任务 → 回报 back → 目标是 a，已在 path → 剪枝。
+	console.log("--- ⑥ 环剪枝（真走两跳）---");
+	const a = await defineCapability("cycle.a", ["go"]);
+	const b = await defineCapability("cycle.b", ["back"]);
+	await addEdge(a, "go", b);
+	await addEdge(b, "back", a);
+	const nodeCycle = await bringUpNode("cycle-node", [a, b], 2);
+
+	const cyc = await postEvent({ source: "cycle.a", type: "go", payload: {} });
+	H.eq("环：第一圈建 1 个任务", cyc.json?.tasks?.length, 1);
+	H.eq("环：第一圈任务是 cycle.b", cyc.json?.tasks?.[0]?.capability, "cycle.b");
+	H.eq("环：第一圈不误剪", cyc.json?.pruned?.length, 0);
+
+	// ---------- 容量不足不剪枝 ----------
+	console.log("--- 容量不足不剪枝 ---");
+	const busyCap = await defineCapability("busy.target", []);
+	const busyOrigin = await defineCapability("busy.demo", ["go"]);
+	await addEdge(busyOrigin, "go", busyCap);
+	// 节点声明能力但 0 槽位
+	await bringUpNode("busy-node", [busyCap], 0);
+
+	const busy = await postEvent({ source: "busy.demo", type: "go", payload: {} });
+	H.eq("空槽位仍建任务", busy.json?.tasks?.length, 1);
+	H.eq("空槽位任务留 pending", busy.json?.tasks?.[0]?.status, "pending");
+	H.eq("空槽位不产生剪枝", busy.json?.pruned?.length, 0);
+
+	// ---------- 幂等 ----------
+	console.log("--- 幂等 ---");
+	const idemKey = "routing-idem-" + Date.now();
+	const i1 = await postEvent({ source: "github", type: "pull_request.opened", idemKey, payload: { number: 1 } });
+	const i2 = await postEvent({ source: "github", type: "pull_request.opened", idemKey, payload: { number: 1 } });
+	H.eq("幂等：第一次 inserted", i1.json?.inserted, true);
+	H.eq("幂等：第二次 not inserted", i2.json?.inserted, false);
+	H.eq("幂等：同一 eventId", i2.json?.eventId, i1.json?.eventId);
+	H.eq("幂等：同一 traceId", i2.json?.traceId, i1.json?.traceId);
+	H.eq("幂等：第二次不重复派发", i2.json?.tasks?.length, 0);
+
+	// ---------- A10 组织隔离 ----------
+	console.log("--- A10 组织隔离 ---");
+	const crossOrg = await H.req(server.base, "/v1/capabilities?orgId=org_bogus_xxxxxxxx", { session });
+	H.eq("跨组织读 → 403", crossOrg.status, 403);
+	H.check(
+		"跨组织读不泄漏数据",
+		!(crossOrg.text || "").includes("cycle.a"),
+		String(crossOrg.text).slice(0, 120),
+	);
+
+	// ---------- A5 出口封闭 ----------
+	console.log("--- A5 出口封闭 ---");
+	const closedPort = await H.req(server.base, "/v1/edges", {
+		session,
+		body: { fromCapability: a.id, fromPort: "not-in-outputs", toCapability: b.id },
+	});
+	H.eq("出口不在 outputs 里 → 400", closedPort.status, 400);
+
+	for (const n of [nodeA, nodeCycle]) n.conn.close();
 	server.stop();
-	process.exit(passed ? 0 : 1);
+	// summary() 返回 true 表示**全部通过**（不是"failed"），别搞反
+	const allPassed = H.summary("routing");
+	process.exit(allPassed ? 0 : 1);
 }
 
-main().catch(async (e) => {
-	console.error("套件异常:", e);
-	try {
-		server?.stop();
-	} catch {
-		/* ignore */
-	}
+main().catch((e) => {
+	console.error(e);
+	H.bad("套件异常终止", String(e).slice(0, 300));
+	if (server) server.stop();
 	process.exit(1);
 });
