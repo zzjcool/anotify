@@ -226,8 +226,12 @@
               <dd>取 <code>(source, type)</code> 或 <code>(能力, out)</code> 当键，查 <code>edges</code> 拿 N 行，再用目标能力的 <code>params_schema</code> 校验参数、按能力找声明了它的节点。<strong>没有条件求值、没有优先级、没有表达式。</strong></dd>
             </div>
             <div class="def">
-              <dt>参数表 <code>argv</code></dt>
-              <dd>每个能力声明对应的真实参数数组，写在节点本地 <code>~/.anotifyd/config.yaml</code> 的 <code>capabilities[].argv</code>，<strong>永不上传</strong>。中枢不知道它长什么样。</dd>
+              <dt>命令数组 <code>argv</code></dt>
+              <dd>
+                能力对应的<b>那一条命令</b>，写在节点本地 <code>~/.anotifyd/config.yaml</code> 的 <code>capabilities[].argv</code>，<strong>永不上传</strong>。
+                <b>别和 <code>params</code> 混</b>：<code>params</code> 是中枢每次派发带的任务参数（结构由中枢的 <code>params_schema</code> 定义）；
+                <code>argv</code> 是节点怎么放它，中枢不知道也不该知道。
+              </dd>
             </div>
             <div class="def">
               <dt><code>execve</code></dt>

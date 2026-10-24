@@ -112,11 +112,46 @@
             <b>前两行需要节点，第三行恰好相反</b>——<code>origin</code> 没有任何节点声明它，事件一来就从能力定义的出口起步。
           </p>
 
-          <h2>中枢不知道节点上有什么能力（argv 在本地）</h2>
+          <h2>中枢知道「谁会做」，不知道「怎么做」</h2>
           <p class="prose">
-            节点在自己机器上维护一份实现表（能力 <code>name@version</code> → <code>argv</code>），<strong>永不上传</strong>。
-            上传给中枢的只有<b>一份能力名列表</b>：名字 + 版本，<b>没有 argv，没有出口，也没有 <code>kind</code></b>。
-            中枢知道「这个节点声明了哪些能力」，但不知道能力背后是什么程序、带什么参数、在不在。
+            这两件事分得很开，容易混：
+          </p>
+
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>中枢知道</th>
+                  <th>中枢不知道</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><b>能力定义</b><br /><span style="color: var(--faint)">（中枢侧，进 git）</span></td>
+                  <td>
+                    参数<b>结构</b>（<code>params_schema</code>：有哪些字段、哪些必填、什么类型）<br />
+                    出口名集合 <code>outputs</code>
+                  </td>
+                  <td>—</td>
+                </tr>
+                <tr>
+                  <td><b>这次派发</b><br /><span style="color: var(--faint)">（中枢自己生成）</span></td>
+                  <td>参数的<b>具体取值</b>，因为它要拿去校 <code>params_schema</code></td>
+                  <td>—</td>
+                </tr>
+                <tr>
+                  <td><b>节点</b><br /><span style="color: var(--faint)">（本机，不上传）</span></td>
+                  <td>这个节点声明了哪些<b>能力名 + 版本</b><br />它<b>在不在线</b>（心跳、租约）</td>
+                  <td>用哪条 <code>argv</code> 实现这份能力<br />本地的重试次数与并发上限</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="prose">
+            换句话说：<b>中枢知道接口长什么样、这次要传什么，但不知道你怎么实现它。</b>
+            节点在自己机器上维护一份实现表（<code>name@version</code> → <code>argv</code>），<b>永不上传</b>。
           </p>
 
           <details class="fold">
@@ -137,7 +172,7 @@
     <span class="k">idempotent</span>: false                <span class="c"># 默认值：有副作用</span>
     <span class="k">resumable</span>: false
     <span class="k">concurrency</span>: 1</pre>
-            <div class="fold-note">中枢只知道这个节点声明了哪些能力名与版本，不知道背后是什么程序、带什么参数。</div>
+            <div class="fold-note">中枢只知道这个节点声明了哪些能力名与版本；下面这些 <code>argv</code>、重试次数、并发上限都不上传。</div>
           </details>
 
           <p class="prose">
