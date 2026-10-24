@@ -216,6 +216,21 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 		if err := s.db.CreateUser(user); err != nil {
 			return "", nil, err
 		}
+		// 注册即得组织（契约 A1）：没有组织就不违反「代码里不存在没有组织的分支」。
+		// 建组织失败不是致命错（用户已建好），记日志让 EnsureOrgForUser 后续补。
+		if org, oerr := s.db.EnsureOrgForUser(r.Context(), user.ID, user.Username); oerr != nil {
+			slog.Error("register: ensure org failed",
+				"event", "auth.register.org_failed",
+				"user_id", user.ID,
+				"error", oerr.Error(),
+			)
+		} else {
+			slog.Info("register: org ready",
+				"event", "auth.register.org_ready",
+				"user_id", user.ID,
+				"org_id", org.ID,
+			)
+		}
 		if user.Role == store.RoleAdmin {
 			slog.Info("first user promoted to admin",
 				"event", "auth.register.first_admin",
