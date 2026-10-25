@@ -827,3 +827,40 @@ func (d *DB) SetNotBefore(ctx context.Context, orgID, taskID string, notBefore i
 	}
 	return nil
 }
+
+// CountOpenTasksSince 只数 createdAt >= since 的未终态任务。
+//
+// 开发工具要「等本次生产的那批链跑完」，不能把历史遗留的 pending 也算进来
+// ——否则永远等不到 0（那些行不会自己消失）。
+func (d *DB) CountOpenTasksSince(ctx context.Context, orgID string, since int64) (int, error) {
+	if orgID == "" {
+		return 0, fmt.Errorf("count open tasks since: empty org_id")
+	}
+	var n int
+	if err := d.QueryRowContext(ctx,
+		`SELECT count(*) FROM tasks
+		 WHERE org_id = ? AND created_at >= ?
+		   AND status NOT IN ('succeeded','failed','canceled','abandoned')`,
+		orgID, since).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count open tasks since: %w", err)
+	}
+	return n, nil
+}
+
+// CountOpenTasks 返回组织内**未到终态**的任务数。
+//
+// 用途：开发/测试工具想知道「这一批链跑完了没有」。
+// 终态集合与 ValidTransition 的口径保持一致（succeeded/failed/canceled/abandoned）。
+func (d *DB) CountOpenTasks(ctx context.Context, orgID string) (int, error) {
+	if orgID == "" {
+		return 0, fmt.Errorf("count open tasks: empty org_id")
+	}
+	var n int
+	if err := d.QueryRowContext(ctx,
+		`SELECT count(*) FROM tasks
+		 WHERE org_id = ? AND status NOT IN ('succeeded','failed','canceled','abandoned')`,
+		orgID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count open tasks: %w", err)
+	}
+	return n, nil
+}

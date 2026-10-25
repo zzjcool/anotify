@@ -7,6 +7,14 @@
 //
 // 输出：SEND_KEY / RECV_KEY / SESSION（可直接作为 Cookie 注入做 Web Push E2E）
 //
+// 加 -demo 时额外造一份「真跑过」的示例数据（见 demo.go）：
+//
+//	go run ./cmd/devseed -db ./anotify.db -username demo -demo
+//
+// 它会建能力图、注册一个节点、用真实 WS 握手把它挂上线，然后发一批事件，
+// 让节点接单、ack、回报——所以前端看到的是走完整条派发链路的数据，
+// 而不是手工塞进库里的状态行。
+//
 // 加 -autologin-file 时额外写一个自动登录页（见 scripts/dev.sh）：
 //
 //	go run ./cmd/devseed -db ./anotify.db -username demo \
@@ -35,6 +43,9 @@ func main() {
 	username := flag.String("username", "demo", "用户名")
 	admin := flag.Bool("admin", false, "设为超管角色")
 	autoLoginFile := flag.String("autologin-file", "", "写一个自动登录页到指定路径（开发用；空=不写）")
+	demo := flag.Bool("demo", false, "造一份示例数据：能力图 + 节点 + 真跑过的事件链（幂等，可重复跑）")
+	demoURL := flag.String("demo-url", "http://localhost:8080", "-demo 时节点要连的服务地址（走真实 WS 握手）")
+	demoFollow := flag.Int("demo-follow-sec", 25, "-demo 时保持节点在线多少秒（期间事件链会真的跑完）")
 	flag.Parse()
 
 	db, err := store.Open(*dbPath)
@@ -94,6 +105,13 @@ func main() {
 	fmt.Printf("SESSION=%s\n", sess.ID)
 	if u, err := db.GetUserByID(uid); err == nil {
 		fmt.Printf("ROLE=%s\n", u.Role)
+	}
+
+	if *demo {
+		// 注意：必须在 sendPlain 生成之后——事件通过 HTTP + API Key 投递
+		if err := runDemo(ctx, db, org.ID, *demoURL, sendPlain, *demoFollow); err != nil {
+			log.Fatalf("-demo 失败: %v", err)
+		}
 	}
 
 	if *autoLoginFile != "" {

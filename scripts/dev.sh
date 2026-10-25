@@ -16,12 +16,15 @@
 #   3. 后台起 cloudflared tunnel run anotify（固定 dev.openaaas.org → :8080）
 #   4. 播种开发账号并生成自动登录页（web/__dev_login.html，退出时删除）
 #   5. 前台起 go run ./cmd/server
+#   6. server 就绪后造示例数据（能力图 + 真跑过的节点 + 事件链）
 #   6. 捕获 SIGINT/SIGTERM，退出时一并停掉 tunnel 和 server
 #
 # 可选环境变量：
 #   NO_TUNNEL=1      只起 server，不起 tunnel
 #   NO_AUTOLOGIN=1   不播种开发账号、不生成自动登录页（只用 passkey）
+#   NO_DEMO_DATA=1   不造示例数据（能力图/节点/事件链），起一个**完全空**的实例
 #   ANOTIFY_DEV_USER 开发账号用户名（默认 demo）
+#   ANOTIFY_DEMO_SEC 示例节点保持在线的秒数（默认 18；期间事件链真的跑完）
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -175,11 +178,20 @@ fi
 #
 # 这里用 devseed 直接落一个会话，再生成一个「写 cookie 并跳转」的页面，
 # 打开就能进工作台 —— passkey 那条路依然完整可用，这只是多一条便道。
-if [ "${NO_AUTOLOGIN:-0}" = "1" ]; then
-	echo "▶ NO_AUTOLOGIN=1，跳过开发账号播种"
+#
+# 注意：这一步**只造账号和登录页**。示例数据（-demo）放在第 8 步，
+# 因为它要通过 HTTP 投事件、用 WS 把节点挂上线，server 必须先跑起来。
+if [ "${NO_AUTOLOGIN:-0}" = "1" ] && [ "${NO_DEMO_DATA:-0}" = "1" ]; then
+	echo "▶ NO_AUTOLOGIN=1 + NO_DEMO_DATA=1，跳过开发账号与示例数据"
 else
 	DEV_USER="${ANOTIFY_DEV_USER:-demo}"
+	# 默认造示例数据；`NO_DEMO_DATA=1` 起一个**完全空**的实例。
+	#
+	# 示例数据不是"往库里塞假状态"：devseed -demo 会注册一个节点、用真实 WS
+	# 握手上线、再通过 /v1/events 投递事件，让整条派发链路真的跑一遍。
+	# 所以界面上看到的事件流、任务链、out 三态都是真跑出来的。
 	echo "▶ 播种开发账号 ${DEV_USER}…"
+
 	if go run ./cmd/devseed \
 		-db "${ANOTIFY_DB:-./anotify.db}" \
 		-username "$DEV_USER" \
@@ -251,6 +263,35 @@ if [ -n "$TUNNEL_URL" ]; then
 		echo "     常见原因：本地代理/防火墙拦了 *.trycloudflare.com。"
 		echo "     本地地址照常可用：http://localhost:${PORT_NUM}"
 		TUNNEL_URL=""
+	fi
+fi
+
+# ---------- 8. 示例数据（默认造；NO_DEMO_DATA=1 起空实例）----------
+#
+# 顺序上必须在这里：devseed -demo 要通过 HTTP /v1/events 投事件、还要用 WS
+# 把节点挂上线，server 不先起来只会 connection refused。
+#
+# 这也是示例数据「是真的」的原因——它不走后门：等同于一个外部系统在发
+# webhook，外加一台真节点在接单、ack、回报，于是事件流与任务链自然长出来。
+if [ "${NO_DEMO_DATA:-0}" != "1" ] && [ "${NO_AUTOLOGIN:-0}" != "1" ]; then
+	DEV_USER="${ANOTIFY_DEV_USER:-demo}"
+	echo "▶ 造示例数据（能力图 + 节点 + 事件链）…"
+	# 等 server 真能应答，别抢跑
+	for _ in $(seq 1 25); do
+		curl -fsS -o /dev/null --max-time 2 "http://localhost:${PORT_NUM}/v1/vapid-public-key" 2>/dev/null && break
+		sleep 1
+	done
+	if go run ./cmd/devseed \
+		-db "${ANOTIFY_DB:-./anotify.db}" \
+		-username "$DEV_USER" \
+		-demo \
+		-demo-url "http://localhost:${PORT_NUM}" \
+		-demo-follow-sec "${ANOTIFY_DEMO_SEC:-30}" >/tmp/anotify-demo.log 2>&1; then
+		grep -E "节点已上线|已投递|链路已全部跑完" /tmp/anotify-demo.log 2>/dev/null \
+			| sed 's/^[0-9/: ]*//' | sed 's/^/     /'
+	else
+		echo "  ⚠️  示例数据失败（不影响使用），日志：/tmp/anotify-demo.log"
+		tail -3 /tmp/anotify-demo.log 2>/dev/null | sed 's/^/     /'
 	fi
 fi
 

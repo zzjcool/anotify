@@ -654,3 +654,23 @@ func (d *DB) DeletePinsForNode(ctx context.Context, nodeID string) error {
 	}
 	return nil
 }
+
+// SetNodeTokenHash 覆盖节点的 token 哈希（仅用于开发工具重建节点凭据）。
+//
+// 明文 token 只在 CreateNode 时返回一次，之后无法复原。开发场景（devseed
+// 反复跑）需要一个"同一个节点、换一把钥匙"的入口，否则只能不断新建节点行，
+// 留下大量永远离线的死节点。
+func (d *DB) SetNodeTokenHash(ctx context.Context, nodeID, tokenHash string) error {
+	if nodeID == "" || tokenHash == "" {
+		return fmt.Errorf("set node token hash: empty node_id or hash")
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE nodes SET token_hash = ? WHERE id = ?`, tokenHash, nodeID)
+	if err != nil {
+		return fmt.Errorf("update node token hash: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("set node token hash: %w", ErrNotFound)
+	}
+	return nil
+}

@@ -113,6 +113,51 @@ make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 必须与访问域名严格一致**，换成 trycloudflare 随机域名 / 局域网 IP / 手机访问时
 就注册不了 passkey，否则每次都要手工造会话、手工往浏览器粘 cookie。
 
+#### 示例数据（默认造，`NO_DEMO_DATA=1` 起空实例）
+
+`make dev` 默认把一份示例数据摆好，打开就能看到完整效果：
+
+```
+▶ 造示例数据（能力图 + 节点 + 事件链）…
+     节点已上线（3 个能力，真实 WS 握手）
+     已投递 7 条事件，等待任务链执行…
+     节点执行了 4 个任务，链路已全部跑完，断开
+```
+
+**它不是往库里插假状态**。`devseed -demo` 做的是真事：
+
+1. 建能力图（`analyze-pr` / `apply-fix` / `deploy-preview` + 8 条边）
+2. 注册一个节点并**用真实 WS 握手上线**
+3. 通过 `POST /v1/events` 投 7 条事件（等同于外部系统发 webhook）
+4. 节点接单、`ack`、回报 `result`，链路自己长出来
+
+所以界面上的事件流、任务链、`out` 三态都是**真跑出来的**：
+
+```
+github -opened------> analyze-pr ─needs-fix─> apply-fix ─ok─> deploy-preview
+cron   -nightly----->               └─approved──────────────────────┘
+http   -webhook-----> deploy-preview
+manual -manual.run--> deploy-preview
+```
+
+`analyze-pr` 按 `payload.changedLines` 分叉（>200 走 `needs-fix`），
+所以同一个图能演「小改直接过」和「大改要返工」两种走向。
+
+起一个**完全空**的实例：
+
+```bash
+NO_DEMO_DATA=1 make dev      # 只有账号和内置起点能力，0 事件 0 边 0 任务
+```
+
+| 变量 | 作用 |
+|---|---|
+| `NO_DEMO_DATA=1` | 不造示例数据（要自己从零配图时用） |
+| `ANOTIFY_DEMO_SEC=60` | 示例节点保持在线的秒数上限（默认 30；跑完会提前退出） |
+
+> 实现细节：`-demo` 必须**在 server 起来之后**跑（它要 POST 事件、还要 WS
+> 上线节点）。`dev.sh` 第 5 步只造账号和登录页，示例数据在第 8 步。
+> 同名节点会被复用并轮换 token，重复跑不会攒出一堆离线死节点。
+
 #### tunnel 模式
 
 `make dev` 默认起 **quick tunnel**（trycloudflare 随机域名），零配置，
