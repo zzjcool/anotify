@@ -1087,6 +1087,11 @@ events:
     no_root: 找不到根任务（trace 可能不完整）。
     out_none: 未回报
     out_end: 到头了
+  wf:
+    waterfall: 瀑布图
+    tree: 树
+    not_started: 还没开始执行
+    running: 进行中
 caps:
   title: 能力与出口表
   subtitle: 能力是"做什么"（不含"怎么做"）；出口表决定了事件进来后往哪走。

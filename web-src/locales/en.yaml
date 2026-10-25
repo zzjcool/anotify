@@ -1087,6 +1087,11 @@ events:
     no_root: Root task not found (the trace may be incomplete).
     out_none: Not reported
     out_end: End reached
+  wf:
+    waterfall: Waterfall
+    tree: Tree
+    not_started: Not started yet
+    running: running
 caps:
   title: Capabilities & Edges
   subtitle: A capability says WHAT to do (never HOW); the edge table decides where an event goes next.
