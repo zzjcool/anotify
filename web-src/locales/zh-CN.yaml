@@ -98,6 +98,17 @@ common:
     expires_at: 过期时间
     external_link: 外部链接
     cwd: 项目 CWD
+    task_id: 任务 ID
+    trace: Trace
+    capability: 能力
+    out: 出口 out
+    node: 执行节点
+    attempts: 尝试次数
+    parent_task: 父任务
+    started_at: 开始时间
+    finished_at: 结束时间
+    error: 错误
+    summary: 结果摘要
 index:
   title: 总览
   subtitle: 你的通知一览
@@ -273,6 +284,27 @@ message:
   error:
     missing_id: 缺少消息 ID（URL 应有 ?id=ntf_…）
     not_found: 消息不存在或已被清理
+  task_title: 任务详情
+  chain_title: 任务链
+  task_state:
+    pending: 排队中
+    assigned: 已派发
+    acked: 已接单
+    running: 执行中
+    succeeded: 成功
+    failed: 失败
+    canceled: 已取消
+    abandoned: 已放弃
+    lease_expired: 租约过期
+  out:
+    none: 未回报
+    end: 到头了（无出口）
+  node:
+    central: 中枢执行
+  chain:
+    count: "共 {n} 步"
+    empty: 这条 trace 上没有其它任务
+    current: 当前
 login:
   title: 登录
   welcome: 欢迎回到
@@ -657,6 +689,34 @@ docs:
     notify: POST /v1/notify
     webpush: Web Push 订阅
     stream: WebSocket 接收
+    events: POST /v1/events
+    node: 节点协议
+  events:
+    core: 核心
+    intro: 事件是图里一切的起点。任何外部变化都从这里进入，中枢按出口表把它派发成任务链。
+    required: 必填
+    optional: 可选
+    params:
+      title: 事件字段
+      source: 事件来源。它同时是起点能力的名字（如 github、cron、http）。
+      type: 事件类型，对该来源有意义的名字（如 pull_request.opened）。
+      payload: 事件载荷，原样传给下游任务的 params。
+      idem: 幂等键。同一 source + idemKey 重复提交只产生一个事件。
+      trace: 指定 trace。不填则新建一条。
+    note: 事件入库即返回 200。即使派发失败也是 200——事件不会因为下游出错而丢失，你可以稍后重放。
+    curl:
+      title: curl 示例
+  node:
+    intro: 节点是执行者。它主动连中枢、声明自己能跑哪些能力，然后接收 assign 帧干活。
+    connect:
+      title: 连接
+    up:
+      title: 节点 → 中枢（上行）
+      comment: "# 握手、接单、进度、结果"
+    down:
+      title: 中枢 → 节点（下行）
+      comment: "# 握手确认、派单、取消、错误"
+    note: 中枢只下发「做什么」（能力名 + 参数），从不下发「怎么做」——没有 argv、没有 shell、没有命令行。
   copy: 复制
   your_domain: 你的域名
   agent:
@@ -681,11 +741,13 @@ docs:
     map:
       title: 接口地图
       notify: Agent 上报通知（核心）
+      tasks: 任务列表（事件中心）
       notifications: 通知历史列表
       devices_list: 设备列表
       devices_sub: 订阅（注册）设备
       devices_update: 更新设备（开关/过滤/标签）
       devices_delete: 解绑设备
+      node_stream: 节点 WebSocket 协议
       stream: WebSocket 长连接接收
       keys_list: API Key 列表
       keys_create: 新建 API Key

@@ -3,7 +3,6 @@ package push
 import (
 	"testing"
 
-	"github.com/zzjcool/anotify/internal/broker"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -17,8 +16,9 @@ func dev(enabled bool, eventScope string, tags ...string) *store.Device {
 	}
 }
 
-func msg(agentState string, tags ...string) *broker.Message {
-	return &broker.Message{ID: "ntf_test", AgentState: agentState, DeviceTags: tags}
+// msg 构造一个投递描述（Deliverable 只有参与过滤的两个字段）。
+func msg(agentState string, tags ...string) Deliverable {
+	return Deliverable{AgentState: agentState, DeviceTags: tags}
 }
 
 // TestScopeMatch 覆盖 scopeMatch 全部分支。
@@ -30,22 +30,22 @@ func TestScopeMatch(t *testing.T) {
 		want       bool
 	}{
 		// all 档：全放行
-		{"all 放行 done", "all", broker.AgentStateDone, true},
-		{"all 放行 error", "all", broker.AgentStateError, true},
-		{"all 放行 interrupted", "all", broker.AgentStateInterrupted, true},
-		{"all 放行 working", "all", broker.AgentStateWorking, true},
-		{"all 放行 blocked", "all", broker.AgentStateBlocked, true},
-		{"空 filter 视为 all", "", broker.AgentStateDone, true},
+		{"all 放行 done", "all", AgentStateDone, true},
+		{"all 放行 error", "all", AgentStateError, true},
+		{"all 放行 interrupted", "all", AgentStateInterrupted, true},
+		{"all 放行 working", "all", "working", true},
+		{"all 放行 blocked", "all", "blocked", true},
+		{"空 filter 视为 all", "", AgentStateDone, true},
 
 		// final 档：仅终态放行
-		{"final 放行 done（终态）", "final", broker.AgentStateDone, true},
-		{"final 放行 error（终态）", "final", broker.AgentStateError, true},
-		{"final 放行 interrupted（终态）", "final", broker.AgentStateInterrupted, true},
-		{"final 拒绝 working（非终态）", "final", broker.AgentStateWorking, false},
-		{"final 拒绝 blocked（非终态）", "final", broker.AgentStateBlocked, false},
+		{"final 放行 done（终态）", "final", AgentStateDone, true},
+		{"final 放行 error（终态）", "final", AgentStateError, true},
+		{"final 放行 interrupted（终态）", "final", AgentStateInterrupted, true},
+		{"final 拒绝 working（非终态）", "final", "working", false},
+		{"final 拒绝 blocked（非终态）", "final", "blocked", false},
 
 		// 未知 filter 拒绝一切
-		{"未知 filter 拒绝一切", "bogus", broker.AgentStateDone, false},
+		{"未知 filter 拒绝一切", "bogus", AgentStateDone, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -87,7 +87,7 @@ func TestShouldDeliver(t *testing.T) {
 	cases := []struct {
 		name string
 		dev  *store.Device
-		msg  *broker.Message
+		msg  Deliverable
 		want bool
 	}{
 		{"禁用设备一律不投递", dev(false, "all", "手机"), msg("done"), false},

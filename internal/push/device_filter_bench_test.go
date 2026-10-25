@@ -3,7 +3,6 @@ package push
 import (
 	"testing"
 
-	"github.com/zzjcool/anotify/internal/broker"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -33,10 +32,8 @@ func benchmarkDevices(n int, msgTags []string) []*store.Device {
 // BenchmarkFilterDevices 度量「按路由规则从候选设备中筛选命中设备」的吞吐。
 // 这是每条消息 × 每用户投递路径上的核心热点（广播给多设备时被反复调用）。
 func BenchmarkFilterDevices(b *testing.B) {
-	msg := &broker.Message{
-		ID:         "ntf_bench",
-		UserID:     "usr_bench",
-		AgentState: broker.AgentStateDone,
+	msg := Deliverable{
+		AgentState: AgentStateDone,
 		DeviceTags: []string{"ops", "build"},
 	}
 	devices := benchmarkDevices(100, []string{"ops", "build"})
@@ -54,7 +51,7 @@ func BenchmarkFilterDevices(b *testing.B) {
 // BenchmarkFilterDevicesBroadcast 度量广播消息（无 deviceTags）命中大量设备的场景。
 // 广播走最热路径：所有 enabled+status 匹配设备都命中。
 func BenchmarkFilterDevicesBroadcast(b *testing.B) {
-	msg := &broker.Message{ID: "ntf_bench", UserID: "usr", AgentState: broker.AgentStateDone}
+	msg := Deliverable{AgentState: AgentStateDone}
 	devices := make([]*store.Device, 100)
 	for i := range devices {
 		devices[i] = benchDev(true, "all", nil)
@@ -87,7 +84,7 @@ func BenchmarkTagMatch(b *testing.B) {
 // BenchmarkShouldDeliver 度量综合判定（enabled + status + tag）的单设备成本。
 func BenchmarkShouldDeliver(b *testing.B) {
 	dev := benchDev(true, "final", []string{"ops"})
-	msg := &broker.Message{ID: "ntf", AgentState: broker.AgentStateError, DeviceTags: []string{"ops"}}
+	msg := Deliverable{AgentState: AgentStateError, DeviceTags: []string{"ops"}}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -103,7 +100,7 @@ func BenchmarkScopeMatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if !ScopeMatch("final", broker.AgentStateError) {
+		if !ScopeMatch("final", AgentStateError) {
 			b.Fatal("ScopeMatch 应命中")
 		}
 	}

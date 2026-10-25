@@ -5,12 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
-	"github.com/zzjcool/anotify/internal/broker"
 	"github.com/zzjcool/anotify/internal/executor"
 	"github.com/zzjcool/anotify/internal/lease"
 	"github.com/zzjcool/anotify/internal/push"
@@ -23,7 +21,6 @@ import (
 // App 是装配好的应用（持有需要关闭的资源）。
 type App struct {
 	Handler http.Handler
-	Broker  broker.Broker
 	DB      *store.DB
 	AuthSvc *auth.Service
 }
@@ -50,9 +47,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		"path", cfg.DBPath,
 	)
 
-	// 2. Broker
-	bk := broker.NewSQLite(db)
-
 	// 3. 认证（WebAuthn + API Key）
 	authSvc, err := auth.NewService(db, auth.Config{
 		RPDisplayName: cfg.RPDisplay,
@@ -77,14 +71,14 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 3.6 Passkey 设备授权管理器（复用 cli_auth_sessions 表，kind=passkey）
 	enrollMgr := auth.NewPasskeyEnrollManager(db, authSvc, 0)
 
-	// 4. Web Push 派发器（后台 goroutine，动态按需为每个用户启动消费）
-	var dm *dispatchManager
+	// 4. Web Push（P-256 VAPID 密钥）
+	//
+	// #80 之后不再有"按用户的消息消费者"（那套依赖 broker 的消息订阅）。
+	// 推送由中枢执行器在 notify.phone 任务里直接发（见 push.CentralNotifier）。
 	var vapidSender push.Sender
 	vapidCfg, vapidErr := push.LoadVAPID()
 	if vapidErr == nil {
 		vapidSender = push.NewVAPIDSender(vapidCfg)
-		d := &push.Dispatcher{Broker: bk, Store: db, Sender: vapidSender}
-		dm = newDispatchManager(ctx, d, db)
 	} else {
 		slog.Warn("VAPID not configured, push disabled",
 			"event", "push.vapid.missing",
@@ -93,16 +87,13 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 
 	// 5. HTTP 处理器
-	notifyH := &api.NotifyHandler{Broker: bk, Keys: keyValidator, Store: db}
-	// 上报成功后确保该用户的 push 消费者已启动（覆盖运行期新注册用户）
-	if dm != nil {
-		notifyH.OnPublished = dm.Ensure
-	}
-	streamH := ws.NewHandler(bk, keyValidator)
+	//
+	// #80：旧通知终端模型的 handler（NotifyHandler / ws.Handler /
+	// notificationsHandler）已随 broker 包一起删除。事件中心用
+	// /v1/events（api.EventHandler）+ 会话版 /v1/console/events。
 	authH := &authHandler{svc: authSvc}
 	devicesH := &devicesHandler{db: db}
 	keysH := &keysHandler{keys: authSvc.Keys(), db: db}
-	notifsH := &notificationsHandler{bk: bk, db: db}
 	statsH := &statsHandler{db: db}
 	cliAuthStaticFS := resolveStaticFS(cfg)
 	cliAuthH := &cliAuthHandler{
@@ -143,11 +134,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 限速器信任代理头开关（仅在反代后开启）
 	trustProxyHeaders = cfg.TrustProxy
 
-	// 启动时已存在的用户先各起一个 push 消费者
-	if dm != nil {
-		dm.StartExisting()
-	}
-
 	mux := http.NewServeMux()
 	// --- 动态 API（no-store）---
 	// 认证端点：register/login/logout 无需登录；me/sessions 需登录会话。
@@ -162,12 +148,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/auth/recovery/regenerate", noStore(sessMW(http.HandlerFunc(authH.recoveryRegenerate))))
 	mux.Handle("/v1/auth/recovery/status", noStore(sessMW(http.HandlerFunc(authH.recoveryStatus))))
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
-	// Agent 上报（Bearer Key，内部自校验）
-	mux.Handle("/v1/notify", noStore(notifyH))
-	// 工作台测试上报（会话 Cookie 鉴权）：已登录用户在网页直接发测试通知到自己设备
-	mux.Handle("/v1/test-notify", noStore(sessMW(http.HandlerFunc(notifyH.ServeTestNotify))))
-	// WS 长连接（Bearer Key，内部自校验）
-	mux.Handle("/v1/stream", noStore(streamH))
 	// VAPID 公钥（前端订阅用，无需登录也可读；单一事实源 = push.LoadVAPID）
 	mux.Handle("/v1/vapid-public-key", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pub := ""
@@ -181,8 +161,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/devices/", noStore(sessMW(devicesH)))
 	mux.Handle("/v1/keys", noStore(sessMW(keysH)))
 	mux.Handle("/v1/keys/", noStore(sessMW(keysH)))
-	mux.Handle("/v1/notifications", noStore(sessMW(notifsH)))
-	mux.Handle("/v1/notifications/", noStore(sessMW(notifsH)))
 	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
 
 	// --- 节点协议（#57）：WS，opaque token 鉴权在 Upgrade 之前 ---
@@ -259,6 +237,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/events", noStore(eventH))
 	// 控制台端点：登录会话 + 组织维度校验
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(consoleH.tasks))))
+	mux.Handle("GET /v1/tasks/{id}", noStore(sessMW(http.HandlerFunc(consoleH.task))))
 	// 控制台读事件流：走会话 Cookie（机器入口的 GET /v1/events 走 Bearer Key）。
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(consoleH.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))
@@ -343,64 +322,5 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// --- 静态资源（CDN 缓存分级）---
 	mux.Handle("/", resolveStatic(cfg))
 
-	return &App{Handler: accessLog(mux), Broker: bk, DB: db, AuthSvc: authSvc}
-}
-
-// dispatchManager 动态管理 per-user push 消费者：上报/启动时按需为每个用户
-// 启动一个 broker 消费 goroutine，避免为不活跃用户常驻订阅。
-type dispatchManager struct {
-	ctx context.Context
-	d   *push.Dispatcher
-	db  *store.DB
-	mu  sync.Mutex
-	run map[string]struct{}
-}
-
-func newDispatchManager(ctx context.Context, d *push.Dispatcher, db *store.DB) *dispatchManager {
-	return &dispatchManager{ctx: ctx, d: d, db: db, run: make(map[string]struct{})}
-}
-
-// Ensure 确保某用户的 push 消费者已启动（幂等）。
-func (m *dispatchManager) Ensure(userID string) {
-	if userID == "" {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.run[userID]; ok {
-		return
-	}
-	m.run[userID] = struct{}{}
-	go func() {
-		if err := m.d.Run(m.ctx, userID); err != nil && err != context.Canceled {
-			slog.Error("push consumer exited",
-				"event", "push.consumer.exit",
-				"user_id", userID,
-				"error", err.Error(),
-			)
-		}
-	}()
-}
-
-// StartExisting 为启动时已存在的所有用户各起一个消费者。
-func (m *dispatchManager) StartExisting() {
-	users, err := m.db.ListAllUserIDs(m.ctx)
-	if err != nil {
-		slog.Error("failed to list users for push consumers",
-			"event", "push.consumer.list_failed",
-			"error", err.Error(),
-		)
-		return
-	}
-	for _, uid := range users {
-		slog.Info("push consumer started",
-			"event", "push.consumer.start",
-			"user_id", uid,
-		)
-		m.Ensure(uid)
-	}
-	slog.Info("push consumers started",
-		"event", "push.consumer.start",
-		"count", len(users),
-	)
+	return &App{Handler: accessLog(mux), DB: db, AuthSvc: authSvc}
 }

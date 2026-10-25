@@ -53,28 +53,3 @@ func BenchmarkListEnabledDevices(b *testing.B) {
 		}
 	}
 }
-
-// BenchmarkGetMessage 度量按 ID 取单条消息（消息详情页 / WS 回放单条）的读取成本。
-func BenchmarkGetMessage(b *testing.B) {
-	db := benchStore(b)
-	ctx := context.Background()
-	// 预置若干消息，取中间一条做基准（贴近真实随机访问）。
-	for i := 0; i < 100; i++ {
-		if err := db.InsertTestMessage(ctx, fmt.Sprintf("ntf_bench_%03d", i), "usr_bench", int64(i+1), "success"); err != nil {
-			b.Fatalf("insert message: %v", err)
-		}
-	}
-	target := "ntf_bench_050"
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		m, err := db.GetMessage(ctx, "usr_bench", target)
-		if err != nil {
-			b.Fatalf("get message: %v", err)
-		}
-		if m == nil {
-			b.Fatal("消息不存在")
-		}
-	}
-}

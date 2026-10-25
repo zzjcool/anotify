@@ -98,6 +98,17 @@ common:
     expires_at: Expires at
     external_link: External link
     cwd: Project CWD
+    task_id: Task ID
+    trace: Trace
+    capability: Capability
+    out: Output
+    node: Node
+    attempts: Attempts
+    parent_task: Parent task
+    started_at: Started
+    finished_at: Finished
+    error: Error
+    summary: Summary
 index:
   title: Overview
   subtitle: Your notifications at a glance
@@ -272,6 +283,27 @@ message:
   error:
     missing_id: Missing message ID (URL should have ?id=ntf_…)
     not_found: Message not found or has been cleaned up
+  task_title: Task Detail
+  chain_title: Task Chain
+  task_state:
+    pending: Queued
+    assigned: Assigned
+    acked: Accepted
+    running: Running
+    succeeded: Succeeded
+    failed: Failed
+    canceled: Canceled
+    abandoned: Abandoned
+    lease_expired: Lease expired
+  out:
+    none: Not reported
+    end: End reached (no output)
+  node:
+    central: Executed by hub
+  chain:
+    count: "{n} steps"
+    empty: No other tasks on this trace
+    current: Current
 login:
   title: Sign in
   welcome: Welcome back to
@@ -656,6 +688,34 @@ docs:
     notify: POST /v1/notify
     webpush: Web Push subscription
     stream: WebSocket receiving
+    events: POST /v1/events
+    node: Node protocol
+  events:
+    core: Core
+    intro: Events are where everything begins. Every external change enters here; the hub dispatches it into task chains along the edge table.
+    required: Required
+    optional: Optional
+    params:
+      title: Event fields
+      source: Event source. It doubles as the origin capability name (github, cron, http).
+      type: Event type, a name meaningful to that source (e.g. pull_request.opened).
+      payload: Event payload, passed through verbatim as the downstream task params.
+      idem: Idempotency key. The same source + idemKey produces one event only.
+      trace: Explicit trace id. A new trace is created when omitted.
+    note: "A 200 is returned as soon as the event is stored. Dispatch failures still return 200 — events are never lost because a downstream step failed; you can replay later."
+    curl:
+      title: curl example
+  node:
+    intro: Nodes are the executors. A node connects to the hub, declares which capabilities it can run, then takes assign frames.
+    connect:
+      title: Connect
+    up:
+      title: "Node → hub (uplink)"
+      comment: "# hello, ack, progress, result"
+    down:
+      title: "Hub → node (downlink)"
+      comment: "# welcome, assign, cancel, error"
+    note: "The hub only ever says WHAT to do (capability + params), never HOW — no argv, no shell, no command line."
   copy: Copy
   your_domain: your-domain
   agent:
@@ -680,11 +740,13 @@ docs:
     map:
       title: Endpoint map
       notify: Agent reports a notification (core)
+      tasks: Task list (event hub)
       notifications: Notification history list
       devices_list: Device list
       devices_sub: Subscribe (register) a device
       devices_update: Update device (toggle / filter / tags)
       devices_delete: Unbind device
+      node_stream: Node WebSocket protocol
       stream: WebSocket long-poll receiving
       keys_list: API Key list
       keys_create: Create API Key

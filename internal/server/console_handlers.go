@@ -141,6 +141,50 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
+// ---------- GET /v1/tasks/{id} ----------
+
+// task 处理 GET /v1/tasks/{id} —— 按 ID 取单个任务。
+//
+// 为什么需要它：深链（点通知跳到 ?id=tsk_xxx）只有任务 ID，
+// 不知道它属于哪条 trace。没有这个端点就只能靠 traceId 猜，
+// 而 traceId 不是任务 ID——猜不中。
+func (h *consoleHandler) task(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing task id"})
+		return
+	}
+
+	task, err := h.db.GetTask(r.Context(), orgID, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+			return
+		}
+		slog.Error("get task failed", "event", "console.task.get_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+
+	// 同时返回整条链，详情页一次请求就能画出任务链（省一次往返）
+	chain, err := h.db.ListTasks(r.Context(), orgID, task.TraceID, "", "", 100)
+	if err != nil {
+		chain = []*store.Task{task}
+	}
+	if chain == nil {
+		chain = []*store.Task{} // 不变量 I9
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task": task, "chain": chain})
+}
+
 // ---------- POST /v1/tasks/{id}/cancel ----------
 
 // cancelTask 处理 POST /v1/tasks/{id}/cancel。

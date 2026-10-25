@@ -40,7 +40,9 @@ type UserWithStats struct {
 func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at,
-		        (SELECT COUNT(*) FROM messages  m WHERE m.user_id = u.id),
+		        (SELECT COUNT(*) FROM events e
+		           JOIN org_members om ON om.org_id = e.org_id
+		          WHERE om.user_id = u.id),
 		        (SELECT COUNT(*) FROM devices   d WHERE d.user_id = u.id),
 		        (SELECT COUNT(*) FROM api_keys  k WHERE k.user_id = u.id),
 		        (SELECT COUNT(*) FROM sessions  s WHERE s.user_id = u.id)
@@ -103,12 +105,16 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		{&s.UserCount, `SELECT COUNT(*) FROM users`, nil, "user count"},
 		{&s.AdminCount, `SELECT COUNT(*) FROM users WHERE role = ?`, []any{RoleAdmin}, "admin count"},
 		{&s.ActiveUserCount,
-			`SELECT COUNT(DISTINCT user_id) FROM messages WHERE created_at >= strftime('%s','now','-7 days')`,
+			`SELECT COUNT(DISTINCT om.user_id) FROM events e
+			   JOIN org_members om ON om.org_id = e.org_id
+			  WHERE e.created_at >= strftime('%s','now','-7 days')`,
 			nil, "active user count"},
-		{&s.MessageCount, `SELECT COUNT(*) FROM messages`, nil, "message count"},
+		// MessageCount 字段名保留（前端/接口契约不变），语义已是"事件数"。
+		// 改名会让管理后台 API 变成破坏性变更，收益不足。
+		{&s.MessageCount, `SELECT COUNT(*) FROM events`, nil, "event count"},
 		{&s.TodayMessages,
-			`SELECT COUNT(*) FROM messages WHERE created_at >= strftime('%s','now','start of day')`,
-			nil, "today messages"},
+			`SELECT COUNT(*) FROM events WHERE created_at >= strftime('%s','now','start of day')`,
+			nil, "today events"},
 		{&s.DeviceCount, `SELECT COUNT(*) FROM devices`, nil, "device count"},
 		{&s.EnabledDevices, `SELECT COUNT(*) FROM devices WHERE enabled = 1`, nil, "enabled devices"},
 		{&s.KeyCount, `SELECT COUNT(*) FROM api_keys`, nil, "key count"},
@@ -120,19 +126,26 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		}
 	}
 
-	// 投递统计（sent/delivered/acked 视为成功送达）
+	// 任务完成统计（口径见 #80）：
+	//
+	//	DeliveredCount = 成功任务数
+	//	DeliveryTotal  = 已结束任务数（四个终态）
+	//
+	// 以前查 deliveries 表统计"推送送达"，但那张表随旧消息模型一起删除了。
+	// 现在的语义是"任务办成了没有"——推送只是其中一种任务结果。
 	if err := d.QueryRowContext(ctx,
 		`SELECT
-		   COALESCE(SUM(CASE WHEN status IN ('sent','delivered','acked') THEN 1 ELSE 0 END),0),
+		   COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END),0),
 		   COUNT(*)
-		 FROM deliveries`).Scan(&s.DeliveredCount, &s.DeliveryTotal); err != nil {
+		 FROM tasks
+		 WHERE status IN ('succeeded','failed','canceled','abandoned')`).Scan(&s.DeliveredCount, &s.DeliveryTotal); err != nil {
 		return nil, fmt.Errorf("system stats delivered: %w", err)
 	}
 
-	// 近 N 天每天全站消息数
+	// 近 N 天每天全站事件数
 	rows, err := d.QueryContext(ctx,
 		`SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS day, COUNT(*)
-		 FROM messages
+		 FROM events
 		 WHERE created_at >= ?
 		 GROUP BY day ORDER BY day`, sinceSec)
 	if err != nil {
@@ -150,13 +163,17 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		return nil, fmt.Errorf("system stats daily rows: %w", err)
 	}
 
-	// Top 10 活跃用户（按消息数降序）
+	// Top 10 活跃用户（按所属组织的事件数降序）
 	trows, err := d.QueryContext(ctx,
 		`SELECT u.id, u.username, u.display_name,
-		        (SELECT COUNT(*) FROM messages m WHERE m.user_id = u.id),
-		        (SELECT COUNT(*) FROM devices  d WHERE d.user_id = u.id)
+		        (SELECT COUNT(*) FROM events e
+		           JOIN org_members om2 ON om2.org_id = e.org_id
+		          WHERE om2.user_id = u.id),
+		        (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id)
 		 FROM users u
-		 ORDER BY (SELECT COUNT(*) FROM messages m WHERE m.user_id = u.id) DESC
+		 ORDER BY (SELECT COUNT(*) FROM events e2
+		             JOIN org_members om3 ON om3.org_id = e2.org_id
+		            WHERE om3.user_id = u.id) DESC
 		 LIMIT 10`)
 	if err != nil {
 		return nil, fmt.Errorf("system stats top users: %w", err)
@@ -203,40 +220,46 @@ func (d *DB) UpdateUserDisabled(ctx context.Context, id string, disabled bool) (
 }
 
 // AdminGlobalMessages 是管理后台全局消息流的一行（跨用户）。
-type AdminGlobalMessage struct {
-	ID         string `json:"id"`
-	UserID     string `json:"userId"`
-	Username   string `json:"username"`
-	Seq        int64  `json:"seq"`
-	Title      string `json:"title"`
-	AgentState string `json:"agentState"`
-	CreatedAt  int64  `json:"createdAt"`
+// AdminGlobalEvent 是全站事件流的一行（跨组织）。
+//
+// 替代旧 AdminGlobalMessage：事件中心里"发生了什么"是 events，
+// 不再是"给某人推过的消息"。
+type AdminGlobalEvent struct {
+	ID        string `json:"id"`
+	OrgID     string `json:"orgId"`
+	Source    string `json:"source"`
+	Type      string `json:"type"`
+	TraceID   string `json:"traceId"`
+	IdemKey   string `json:"idemKey"`
+	CreatedAt int64  `json:"createdAt"`
 }
 
-// ListGlobalMessages 列出全站最近消息（跨用户，按 created_at DESC）。limit 上限 500。
-func (d *DB) ListGlobalMessages(ctx context.Context, limit int) ([]*AdminGlobalMessage, error) {
+// ListGlobalEvents 列出全站最近事件（跨组织，按 created_at DESC）。limit 上限 500。
+func (d *DB) ListGlobalEvents(ctx context.Context, limit int) ([]*AdminGlobalEvent, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT m.id, m.user_id, u.username, m.seq, m.title, m.agent_state, m.created_at
-		 FROM messages m
-		 LEFT JOIN users u ON u.id = m.user_id
-		 ORDER BY m.created_at DESC
+		`SELECT id, org_id, source, type, trace_id, idem_key, created_at
+		 FROM events
+		 ORDER BY created_at DESC
 		 LIMIT ?`, limit)
 	if err != nil {
-		return nil, fmt.Errorf("list global messages: %w", err)
+		return nil, fmt.Errorf("list global events: %w", err)
 	}
 	defer rows.Close()
-	var out []*AdminGlobalMessage
+	out := []*AdminGlobalEvent{} // 不变量 I9：空列表是 [] 不是 null
 	for rows.Next() {
-		var m AdminGlobalMessage
-		if err := rows.Scan(&m.ID, &m.UserID, &m.Username, &m.Seq, &m.Title, &m.AgentState, &m.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan global message: %w", err)
+		var e AdminGlobalEvent
+		if err := rows.Scan(&e.ID, &e.OrgID, &e.Source, &e.Type, &e.TraceID, &e.IdemKey, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan global event: %w", err)
 		}
-		out = append(out, &m)
+		out = append(out, &e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate global events: %w", err)
+	}
+	return out, nil
 }
 
 // AdminSessionRow 是管理后台活跃会话总览的一行。

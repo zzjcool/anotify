@@ -29,129 +29,50 @@ async function main() {
 	const B = server.base;
 	const { sendKey, recvKey, session } = H.seed(server.dbPath, "api");
 
-	// ---------- notify 鉴权 ----------
+	// ---------- events 鉴权 ----------
 	H.eq(
-		"notify 无 Key → 401",
-		(await H.req(B, "/v1/notify", { body: { title: "t", agentState: "done" } }))
-			.status,
+		"events 无 Key → 401",
+		(await H.req(B, "/v1/events", { body: { source: "s", type: "t" } })).status,
 		401,
 	);
 	H.eq(
-		"notify 错误 Key → 401",
-		(
-			await H.req(B, "/v1/notify", {
-				key: "ant_send_wrong_wrong",
-				body: { title: "t", agentState: "done" },
-			})
-		).status,
+		"events 错误 Key → 401",
+		(await H.req(B, "/v1/events", {
+			key: "ant_live_bogus",
+			body: { source: "s", type: "t" },
+		})).status,
 		401,
 	);
 	H.eq(
-		"notify recv scope Key → 403",
+		"events recv scope Key → 403",
 		(
-			await H.req(B, "/v1/notify", {
+			await H.req(B, "/v1/events", {
 				key: recvKey,
-				body: { title: "t", agentState: "done" },
+				body: { source: "s", type: "t" },
 			})
 		).status,
 		403,
 	);
 
-	// ---------- notify 参数校验 ----------
+	// ---------- events 参数校验 ----------
 	H.eq(
-		"notify 缺 title → 400",
-		(
-			await H.req(B, "/v1/notify", {
-				key: sendKey,
-				body: { agentState: "done" },
-			})
-		).status,
+		"events 缺 source → 400",
+		(await H.req(B, "/v1/events", { key: sendKey, body: { type: "t" } })).status,
 		400,
 	);
 	H.eq(
-		"notify 空 title(空格) → 400",
-		(
-			await H.req(B, "/v1/notify", {
-				key: sendKey,
-				body: { title: "   ", agentState: "done" },
-			})
-		).status,
+		"events 缺 type → 400",
+		(await H.req(B, "/v1/events", { key: sendKey, body: { source: "s" } })).status,
 		400,
 	);
 	H.eq(
-		"notify 坏 agentState → 400",
-		(
-			await H.req(B, "/v1/notify", {
-				key: sendKey,
-				body: { title: "t", agentState: "bogus" },
-			})
-		).status,
+		"events 空 source → 400",
+		(await H.req(B, "/v1/events", {
+			key: sendKey,
+			body: { source: "  ", type: "t" },
+		})).status,
 		400,
 	);
-	for (const st of ["working", "blocked", "done", "interrupted", "error"]) {
-		H.eq(
-			`notify agentState=${st} → 200`,
-			(
-				await H.req(B, "/v1/notify", {
-					key: sendKey,
-					body: { title: "t", agentState: st },
-				})
-			).status,
-			200,
-		);
-	}
-	H.eq(
-		"notify 畸形 JSON → 400",
-		(
-			await H.req(B, "/v1/notify", {
-				key: sendKey,
-				body: "{not json",
-				headers: { "Content-Type": "application/json" },
-			})
-		).status,
-		400,
-	);
-	const bigBody = JSON.stringify({
-		title: "t",
-		agentState: "done",
-		body: "x".repeat(2 * 1024 * 1024),
-	});
-	const bigResp = await H.req(B, "/v1/notify", {
-		key: sendKey,
-		body: bigBody,
-		headers: { "Content-Type": "application/json" },
-	});
-	H.check(
-		"notify 超大体(>1MB) → 400/413",
-		bigResp.status === 400 || bigResp.status === 413,
-		`got ${bigResp.status}`,
-	);
-	H.eq(
-		"notify deviceTags 重复/超限/超长不报错 → 200",
-		(
-			await H.req(B, "/v1/notify", {
-				key: sendKey,
-				body: {
-					title: "t",
-					agentState: "done",
-					deviceTags: [
-						"a",
-						"a",
-						"b",
-						...Array.from({ length: 20 }, (_, i) => "tag" + i),
-						"x".repeat(50),
-					],
-				},
-			})
-		).status,
-		200,
-	);
-	const noDevResp = await H.req(B, "/v1/notify", {
-		key: sendKey,
-		body: { title: "t", agentState: "done" },
-	});
-	H.eq("无设备用户上报 → 200", noDevResp.status, 200);
-	H.eq("无设备用户上报 matched=0", noDevResp.json?.matched, 0);
 
 	// ---------- vapid-public-key ----------
 	// 推送是**可选**功能：没配 VAPID 时服务端返回 200 + 空 publicKey，
@@ -173,38 +94,6 @@ async function main() {
 			vapidPub.slice(0, 20),
 		);
 	}
-
-	// ---------- test-notify（会话鉴权）----------
-	H.eq(
-		"test-notify 无 session → 401",
-		(
-			await H.req(B, "/v1/test-notify", {
-				body: { title: "t", agentState: "working" },
-			})
-		).status,
-		401,
-	);
-	const tnResp = await H.req(B, "/v1/test-notify", {
-		session,
-		body: { title: "测试通知", agentState: "working", body: "hi" },
-	});
-	H.eq("test-notify 有 session + 合法体 → 200", tnResp.status, 200);
-	H.check("test-notify 返回 id", !!tnResp.json?.id);
-	H.check(
-		"test-notify 返回 matched 为数字",
-		typeof tnResp.json?.matched === "number",
-	);
-	H.eq(
-		"test-notify 缺 title → 仍 200（默认标题）",
-		(await H.req(B, "/v1/test-notify", { session, body: {} })).status,
-		200,
-	);
-	H.eq(
-		"test-notify 坏 agentState → 400",
-		(await H.req(B, "/v1/test-notify", { session, body: { agentState: "bogus" } }))
-			.status,
-		400,
-	);
 
 	// ---------- devices ----------
 	H.eq("devices 无 session → 401", (await H.req(B, "/v1/devices")).status, 401);
@@ -320,53 +209,76 @@ async function main() {
 	H.eq(
 		"被 revoke 的 Key 上报 → 401",
 		(
-			await H.req(B, "/v1/notify", {
+			await H.req(B, "/v1/events", {
 				key: keyPost.json.key,
-				body: { title: "t", agentState: "done" },
+				body: { source: "github", type: "pr_opened" },
 			})
 		).status,
 		401,
 	);
 
-	// ---------- notifications ----------
+	// ---------- events（事件入口，API Key）+ tasks（控制台读）----------
 	H.eq(
-		"notifications 无 session → 401",
-		(await H.req(B, "/v1/notifications")).status,
+		"console/events 无 session → 401",
+		(await H.req(B, "/v1/console/events")).status,
 		401,
 	);
-	await H.req(B, "/v1/notify", {
+	// 事件入口需要 notify:send scope 的 Key
+	const ev1 = await H.req(B, "/v1/events", {
 		key: sendKey,
-		body: { title: "n1", agentState: "done" },
+		body: { source: "github", type: "pr_opened", payload: { n: 1 } },
 	});
-	await H.req(B, "/v1/notify", {
+	H.eq("POST /v1/events → 200", ev1.status, 200);
+	H.check("事件返回 eventId", !!ev1.json?.eventId, JSON.stringify(ev1.json));
+	H.check("事件返回 traceId", !!ev1.json?.traceId, JSON.stringify(ev1.json));
+
+	// 幂等：同 idemKey 再来一次 → 200 且同一 eventId
+	const ev1b = await H.req(B, "/v1/events", {
 		key: sendKey,
-		body: { title: "n2", agentState: "error" },
+		body: {
+			source: "github",
+			type: "pr_opened",
+			idemKey: "dup-1",
+			payload: { n: 1 },
+		},
 	});
-	const notifAll = await H.req(B, "/v1/notifications?limit=50", { session });
-	H.eq("notifications GET → 200", notifAll.status, 200);
-	H.check(
-		"notifications count≥2",
-		(notifAll.json?.count ?? 0) >= 2,
-		`count=${notifAll.json?.count}`,
+	const ev1c = await H.req(B, "/v1/events", {
+		key: sendKey,
+		body: {
+			source: "github",
+			type: "pr_opened",
+			idemKey: "dup-1",
+			payload: { n: 1 },
+		},
+	});
+	H.eq("幂等重复提交 → 200", ev1c.status, 200);
+	H.eq(
+		"幂等重复提交返回同一 eventId",
+		ev1c.json?.eventId,
+		ev1b.json?.eventId,
 	);
-	const notifLimit1 = await H.req(B, "/v1/notifications?limit=1", { session });
-	H.eq("notifications limit=1 → count=1", notifLimit1.json?.count, 1);
-	const maxSeq = Math.max(
-		...(notifAll.json?.notifications || []).map((m) => m.Seq ?? m.seq ?? 0),
-	);
-	// 列表返回最新 N 条（seq 降序，最新在前），与 broker.Replay（升序回放）语义相反
-	const notifOrder = await H.req(B, "/v1/notifications?limit=10", { session });
-	const seqs = (notifOrder.json?.notifications || []).map((m) => m.Seq ?? m.seq ?? 0);
+
+	// 控制台读事件流（会话鉴权）
+	const evList = await H.req(B, "/v1/console/events?limit=50", { session });
+	H.eq("console/events GET → 200", evList.status, 200);
 	H.check(
-		"notifications 返回最新消息（seq 降序）",
-		seqs.length > 0 && seqs[0] === Math.max(...seqs) && seqs[seqs.length - 1] === Math.min(...seqs),
-		`seqs=${JSON.stringify(seqs)}`,
+		"console/events 返回数组（空时 []）",
+		Array.isArray(evList.json?.events),
+		JSON.stringify(evList.json),
 	);
-	// 首条应等于全局最大 seq（刚才上报的 n1/n2 是最新的）
 	H.check(
-		"notifications 首条是最新消息",
-		seqs[0] >= maxSeq,
-		`first=${seqs[0]} max=${maxSeq}`,
+		"console/events count≥2",
+		(evList.json?.events || []).length >= 2,
+		`n=${(evList.json?.events || []).length}`,
+	);
+
+	// 任务列表（控制台）
+	const taskList = await H.req(B, "/v1/tasks?limit=50", { session });
+	H.eq("tasks GET → 200", taskList.status, 200);
+	H.check(
+		"tasks 返回数组（空时 []）",
+		Array.isArray(taskList.json?.tasks),
+		JSON.stringify(taskList.json),
 	);
 
 	// ---------- 静态/缓存 ----------
@@ -377,7 +289,7 @@ async function main() {
 		(idxHeaders["cache-control"] || "").includes("max-age=60"),
 		idxHeaders["cache-control"],
 	);
-	const apiHeaders = (await H.req(B, "/v1/notifications", { session })).headers;
+	const apiHeaders = (await H.req(B, "/v1/tasks", { session })).headers;
 	H.check(
 		"/v1/* Cache-Control 含 no-store",
 		(apiHeaders["cache-control"] || "").includes("no-store"),

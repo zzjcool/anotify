@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -13,43 +14,68 @@ type DayCount struct {
 
 // Stats 是用户工作台的真实统计。
 type Stats struct {
-	Total         int        `json:"total"`         // 通知总数
-	Today         int        `json:"today"`         // 今日通知数
-	Delivered     int        `json:"delivered"`     // 已送达次数（deliveries status in sent/delivered/acked）
-	DeliveryTotal int        `json:"deliveryTotal"` // 投递尝试总数（非 failed 之外的也算，分母用全部）
-	DeviceCount   int        `json:"deviceCount"`   // 已启用接收设备数
-	Daily         []DayCount `json:"daily"`         // 近 N 天每天通知数（热力图）
+	// #80 后口径（messages → events/tasks）：
+	// Total/Today/Daily 是**事件**数；Delivered/DeliveryTotal 是**任务**终态统计。
+	// 字段名与 JSON key 保持不变，避免破坏前端契约；语义变了但形状没变。
+	Total         int        `json:"total"`         // 事件总数
+	Today         int        `json:"today"`         // 今日事件数
+	Delivered     int        `json:"delivered"`     // 成功任务数
+	DeliveryTotal int        `json:"deliveryTotal"` // 已结束任务数（分母）
+	DeviceCount   int        `json:"deviceCount"`   // 已启用推送设备数
+	Daily         []DayCount `json:"daily"`         // 近 N 天每天事件数（热力图）
 }
 
-// MessageStats 计算某用户的真实统计。sinceSec 为热力图起始（unixepoch 秒）。
+// MessageStats 计算某用户所在组织的真实统计。sinceSec 为热力图起始（unixepoch 秒）。
+//
+// 口径（#80 事件中心化后的定义）：
+//
+//	Total     = 该组织的事件总数（events 表）
+//	Today     = 今日事件数（UTC 0 点起）
+//	Delivered/DeliveryTotal = 任务成功数 / 已结束任务数（tasks 的终态统计）
+//	DeviceCount = 该用户启用的推送设备数（devices 仍按 user 维度）
+//	Daily     = 近 N 天每天事件数（热力图）
+//
+// 为什么从 messages 改为 events/tasks：messages 是旧"通知历史"模型，
+// 事件中心里"发生了什么"是 events、"做完没有"是 tasks。
+// 数值会与旧版本不同（历史通知数 ≠ 事件数），这是口径变化不是 bug。
 func (d *DB) MessageStats(ctx context.Context, userID string, sinceSec int64) (*Stats, error) {
 	s := &Stats{Daily: []DayCount{}}
 
+	// 用户 → 组织（事件与任务都按组织隔离，见不变量 I10）
+	orgID, err := d.PrimaryOrgOf(ctx, userID)
+	if errors.Is(err, ErrNotFound) {
+		// 还没组织：返回全零而不是报错（未完成注册的用户也会打开首页）
+		return s, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("stats primary org: %w", err)
+	}
+
 	// 总数
 	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM messages WHERE user_id=?`, userID).Scan(&s.Total); err != nil {
+		`SELECT COUNT(*) FROM events WHERE org_id=?`, orgID).Scan(&s.Total); err != nil {
 		return nil, fmt.Errorf("stats total: %w", err)
 	}
 
 	// 今日（UTC 0 点起）
 	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM messages WHERE user_id=? AND created_at >=
-		   (strftime('%s','now','start of day'))`, userID).Scan(&s.Today); err != nil {
+		`SELECT COUNT(*) FROM events WHERE org_id=? AND created_at >=
+		   (strftime('%s','now','start of day'))`, orgID).Scan(&s.Today); err != nil {
 		return nil, fmt.Errorf("stats today: %w", err)
 	}
 
-	// 送达统计（deliveries 关联该用户的消息）
+	// 成功/完成比（口径：终态任务里 succeeded 的比例）
 	if err := d.QueryRowContext(ctx,
 		`SELECT
-		   COALESCE(SUM(CASE WHEN dl.status IN ('sent','delivered','acked') THEN 1 ELSE 0 END),0),
+		   COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END),0),
 		   COUNT(*)
-		 FROM deliveries dl
-		 JOIN messages m ON m.id = dl.message_id
-		 WHERE m.user_id=?`, userID).Scan(&s.Delivered, &s.DeliveryTotal); err != nil {
-		return nil, fmt.Errorf("stats delivered: %w", err)
+		 FROM tasks
+		 WHERE org_id=? AND status IN ('succeeded','failed','canceled','abandoned')`,
+		orgID).Scan(&s.Delivered, &s.DeliveryTotal); err != nil {
+		return nil, fmt.Errorf("stats tasks: %w", err)
 	}
 
-	// 启用设备数
+	// 启用设备数（推送订阅仍按用户维度）
 	if err := d.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM devices WHERE user_id=? AND enabled=1`, userID).Scan(&s.DeviceCount); err != nil {
 		return nil, fmt.Errorf("stats devices: %w", err)
@@ -58,9 +84,9 @@ func (d *DB) MessageStats(ctx context.Context, userID string, sinceSec int64) (*
 	// 近 N 天每天数量（热力图）
 	rows, err := d.QueryContext(ctx,
 		`SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS day, COUNT(*)
-		 FROM messages
-		 WHERE user_id=? AND created_at >= ?
-		 GROUP BY day ORDER BY day`, userID, sinceSec)
+		 FROM events
+		 WHERE org_id=? AND created_at >= ?
+		 GROUP BY day ORDER BY day`, orgID, sinceSec)
 	if err != nil {
 		return nil, fmt.Errorf("stats daily: %w", err)
 	}

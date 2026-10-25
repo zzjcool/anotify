@@ -5,7 +5,7 @@
  *  1. scope 越权：recv Key 上报→403；send Key 连 /v1/stream→403/拒
  *  2. Key 篡改：改字符→401；改前缀→401
  *  3. 无 Authorization 头→401；非 Bearer scheme（Basic）→401
- *  4. 未登录访问 /v1/devices /v1/keys /v1/notifications→各 401
+ *  4. 未登录访问 /v1/devices /v1/keys /v1/tasks→各 401
  *  5. Key 哈希不可逆：DB 中 key_hash 为 argon2id PHC 格式（$argon2id$ 开头），
  *     不等于明文、DB 文件二进制中搜不到明文 Key
  *  6. 会话 Cookie 属性：Set-Cookie 含 HttpOnly
@@ -25,9 +25,9 @@ async function main() {
 	H.eq(
 		"recv Key 上报 → 403",
 		(
-			await H.req(server.base, "/v1/notify", {
+			await H.req(server.base, "/v1/events", {
 				key: recvKey,
-				body: { title: "t", agentState: "done" },
+				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
 			})
 		).status,
 		403,
@@ -89,9 +89,9 @@ async function main() {
 	H.eq(
 		"篡改尾部的 Key → 401",
 		(
-			await H.req(server.base, "/v1/notify", {
+			await H.req(server.base, "/v1/events", {
 				key: tampered,
-				body: { title: "t", agentState: "done" },
+				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
 			})
 		).status,
 		401,
@@ -100,9 +100,9 @@ async function main() {
 	H.eq(
 		"改前缀的 Key → 401",
 		(
-			await H.req(server.base, "/v1/notify", {
+			await H.req(server.base, "/v1/events", {
 				key: prefixChanged,
-				body: { title: "t", agentState: "done" },
+				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
 			})
 		).status,
 		401,
@@ -112,8 +112,8 @@ async function main() {
 	H.eq(
 		"无 Authorization 头 → 401",
 		(
-			await H.req(server.base, "/v1/notify", {
-				body: { title: "t", agentState: "done" },
+			await H.req(server.base, "/v1/events", {
+				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
 			})
 		).status,
 		401,
@@ -121,16 +121,16 @@ async function main() {
 	H.eq(
 		"Basic scheme → 401",
 		(
-			await H.req(server.base, "/v1/notify", {
+			await H.req(server.base, "/v1/events", {
 				headers: { Authorization: "Basic " + sendKey },
-				body: { title: "t", agentState: "done" },
+				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
 			})
 		).status,
 		401,
 	);
 
 	// ---- 4. 未登录访问受保护端点 ----
-	for (const p of ["/v1/devices", "/v1/keys", "/v1/notifications"]) {
+	for (const p of ["/v1/devices", "/v1/keys", "/v1/tasks"]) {
 		H.eq(`未登录 GET ${p} → 401`, (await H.req(server.base, p)).status, 401);
 	}
 
@@ -166,20 +166,20 @@ async function main() {
 		inj1.status !== 500,
 		`got ${inj1.status}`,
 	);
-	const inj2 = await H.req(server.base, "/v1/notify", {
+	const inj2 = await H.req(server.base, "/v1/events", {
 		key: sendKey,
-		body: { title: "'; DROP TABLE users;--", agentState: "done" },
+		body: { source: "github", type: "pr_opened", payload: { title: "'; DROP TABLE users;--" } },
 	});
 	H.eq("SQL注入串作为 title 上报仍正常", inj2.status, 200);
 	H.eq(
 		"SQL注入后服务正常（会话可用）",
-		(await H.req(server.base, "/v1/notifications", { session })).status,
+		(await H.req(server.base, "/v1/tasks", { session })).status,
 		200,
 	);
 	H.eq(
 		"伪造 session → 401",
 		(
-			await H.req(server.base, "/v1/notifications", {
+			await H.req(server.base, "/v1/tasks", {
 				session: "sess_fake.' OR '1'='1",
 			})
 		).status,

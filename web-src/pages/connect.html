@@ -158,7 +158,7 @@
  Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
     │                        │                        │                        │
     │ ① agent_settled        │                        │                        │
-    │ ② POST /v1/notify ────▶│ ③ verify Key → locate user                        │
+    │ ② POST /v1/events ────▶│ ③ verify Key → locate user                        │
     │                        │ ④ filter by tag/level   │                        │
     │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
     │                        │                        │     ⑦ SW showNotification

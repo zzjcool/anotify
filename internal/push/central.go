@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/zzjcool/anotify/internal/broker"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -35,16 +34,15 @@ func (n *CentralNotifier) NotifyUser(ctx context.Context, userID string, m Notif
 		return 0, fmt.Errorf("central notifier list devices: %w", err)
 	}
 
-	// 复用设备过滤：把 NotifyMessage 投影成 broker.Message 的**只读视图**。
+	// 复用设备过滤：ShouldDeliver 的判定（enabled + scopeMatch + tagMatch）
+	// 是"哪台设备该收到"的唯一定义，不复制第二份。
 	//
-	// 这样做而不是复制一份过滤逻辑：ShouldDeliver 的判定（enabled +
-	// scopeMatch + tagMatch）是"哪台设备该收到"的唯一定义。
-	// 投影成旧结构只是为了让纯函数签名复用——不产生任何 messages 行。
-	probe := &broker.Message{
+	// #80 之后 Deliverable 已经收窄成最小结构（不再借 broker.Message），
+	// 所以这里直接投影两个参与过滤的字段。
+	matched := FilterDevices(devices, Deliverable{
 		AgentState: m.AgentState,
 		DeviceTags: m.DeviceTags,
-	}
-	matched := FilterDevices(devices, probe)
+	})
 
 	if len(matched) == 0 {
 		return 0, nil

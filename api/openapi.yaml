@@ -343,6 +343,35 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /tasks/{id}:
+    get:
+      tags: [tasks]
+      summary: 单个任务详情（含整条 trace 的任务链）
+      description: |
+        深链（点通知跳 `message.html?id=tsk_xxx`）只有任务 ID，不知道它属于哪条 trace，
+        所以需要按 ID 取单任务。响应同时带上整条链，详情页一次请求即可画出任务链。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: "任务详情 + 整条链（链为空时 chain 为 []）"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task, chain]
+                properties:
+                  task: { $ref: "#/components/schemas/Task" }
+                  chain:
+                    type: array
+                    items: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: 任务不存在 }
+
   /tasks/{id}/cancel:
     post:
       tags: [tasks]
@@ -836,121 +865,6 @@ paths:
       summary: 返回 VAPID 公钥（前端订阅用）
       responses:
         "200": { description: 公钥 }
-
-  /notify:
-    post:
-      deprecated: true
-      tags: [notify]
-      summary: Agent 上报一条通知（Bearer Key，scope=notify:send）
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/NotifyRequest" }
-      responses:
-        "200":
-          description: 投递结果（含每台设备状态）
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id: { type: string }
-                  matched: { type: integer }
-                  results:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        device: { type: string }
-                        status: { type: string }
-                        error: { type: string }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-
-  /test-notify:
-    post:
-      tags: [notify]
-      summary: 工作台发送测试通知（会话 Cookie 鉴权）
-      description: |
-        已登录用户在网页工作台直接发一条测试通知到自己所有已启用且匹配的设备，
-        无需持有 send Key。userID 从会话取，消息以该用户身份发布。
-        payload 带 source="test-notify" 标记，便于在通知历史里区分测试消息。
-      security: [{ cookieAuth: [] }]
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/TestNotifyRequest" }
-      responses:
-        "200":
-          description: 投递结果（含每台设备状态）
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id: { type: string }
-                  matched: { type: integer }
-                  results:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        device: { type: string }
-                        status: { type: string }
-                        error: { type: string }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-
-  /notifications:
-    get:
-      deprecated: true
-      security:
-        - cookieAuth: []
-      tags: [notifications]
-      summary: 通知历史（分页）
-      parameters:
-        - { name: limit, in: query, schema: { type: integer, default: 50 } }
-        - {
-            name: before,
-            in: query,
-            schema: { type: string },
-            description: 游标(message id),
-          }
-      responses:
-        "200": { description: 历史列表 }
-
-  /notifications/{id}:
-    get:
-      deprecated: true
-      security:
-        - cookieAuth: []
-      tags: [notifications]
-      summary: 单条通知详情（完整消息 + 真实投递记录）
-      description: |
-        返回消息的完整字段（broker.Message，camelCase）加 deliveries 数组
-        （每台设备/通道的投递状态明细）。仅限消息属主（会话 Cookie）。
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: 消息详情 + deliveries 投递记录 }
-        "404": { $ref: "#/components/responses/Error" }
-
-  /stream:
-    get:
-      deprecated: true
-      tags: [stream]
-      summary: WebSocket 长连接接收通知（Bearer Key，scope=notify:receive）
-      description: |
-        升级为 WebSocket。帧协议（JSON）：
-          服务端→客户端: hello / notification / replay_end / pong / subscribed / error / bye
-          客户端→服务端: subscribe / unsubscribe / ack / ping / resume
-        断线重连用 Last-Event-Id 头或 resume 帧携带 resume_token。
-      security: [{ bearerAuth: [] }]
-      responses:
-        "101": { description: Switching Protocols }
 
   /cli-auth/sessions:
     post:

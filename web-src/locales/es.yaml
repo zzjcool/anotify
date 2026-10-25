@@ -98,6 +98,17 @@ common:
     expires_at: Expira
     external_link: Enlace externo
     cwd: Proyecto CWD
+    task_id: ID de tarea
+    trace: Traza
+    capability: Capacidad
+    out: Salida
+    node: Nodo
+    attempts: Intentos
+    parent_task: Tarea padre
+    started_at: Iniciada
+    finished_at: Finalizada
+    error: Error
+    summary: Resumen
 index:
   title: Resumen
   subtitle: Tus notificaciones de un vistazo
@@ -272,6 +283,27 @@ message:
   error:
     missing_id: Falta el ID de mensaje (URL debe tener ?id=ntf_…)
     not_found: Mensaje no encontrado o ha sido eliminado
+  task_title: Detalle de tarea
+  chain_title: Cadena de tareas
+  task_state:
+    pending: En cola
+    assigned: Asignada
+    acked: Aceptada
+    running: En ejecución
+    succeeded: Completada
+    failed: Fallida
+    canceled: Cancelada
+    abandoned: Abandonada
+    lease_expired: Arrendamiento expirado
+  out:
+    none: Sin reportar
+    end: Fin alcanzado (sin salida)
+  node:
+    central: Ejecutada por el hub
+  chain:
+    count: "{n} pasos"
+    empty: No hay otras tareas en esta traza
+    current: Actual
 login:
   title: Iniciar sesión
   welcome: Bienvenido de nuevo a
@@ -656,6 +688,34 @@ docs:
     notify: POST /v1/notify
     webpush: Suscripción Web Push
     stream: Recepción WebSocket
+    events: POST /v1/events
+    node: Protocolo de nodo
+  events:
+    core: Núcleo
+    intro: Los eventos son el origen de todo. Cada cambio externo entra aquí y el hub lo despacha en cadenas de tareas según la tabla de aristas.
+    required: Obligatorio
+    optional: Opcional
+    params:
+      title: Campos del evento
+      source: Origen del evento. También es el nombre de la capacidad raíz (github, cron, http).
+      type: Evento tipo, un nombre significativo para ese origen (p. ej. pull_request.opened).
+      payload: Carga del evento, se pasa tal cual a los params de las tareas siguientes.
+      idem: Clave de idempotencia. El mismo source + idemKey produce un solo evento.
+      trace: Trace explícito. Si se omite, se crea uno nuevo.
+    note: "Devuelve 200 en cuanto el evento se guarda. Un fallo de despacho también devuelve 200 — los eventos no se pierden por un error posterior; puedes reenviarlos luego."
+    curl:
+      title: ejemplo curl
+  node:
+    intro: Los nodos son los ejecutores. Se conectan al hub, declaran qué capacidades pueden ejecutar y aceptan los frames assign.
+    connect:
+      title: Conexión
+    up:
+      title: "Nodo → hub (subida)"
+      comment: "# hello, ack, progress, result"
+    down:
+      title: "Hub → nodo (bajada)"
+      comment: "# welcome, assign, cancel, error"
+    note: "El hub solo dice QUÉ hacer (capacidad + params), nunca CÓMO — sin argv, sin shell, sin línea de comandos."
   copy: Copiar
   your_domain: su-dominio
   agent:
@@ -680,11 +740,13 @@ docs:
     map:
       title: Mapa de endpoints
       notify: El Agent reporta una notificación (núcleo)
+      tasks: Lista de tareas (centro de eventos)
       notifications: Lista del historial de notificaciones
       devices_list: Lista de dispositivos
       devices_sub: Suscribir (registrar) un dispositivo
       devices_update: Actualizar dispositivo (interruptor / filtro / tags)
       devices_delete: Desvincular dispositivo
+      node_stream: Protocolo WebSocket de nodo
       stream: Recepción por WebSocket long-poll
       keys_list: Lista de API Keys
       keys_create: Crear API Key

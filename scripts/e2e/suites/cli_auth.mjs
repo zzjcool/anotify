@@ -167,15 +167,22 @@ async function main() {
 		H.eq("AC-11 name=agent:my-macbook", p.json.name, "agent:my-macbook");
 		H.eq("AC-11 scopes=[notify:send]", JSON.stringify(p.json.scopes), JSON.stringify(["notify:send"]));
 
-		// 该 Key 调 /v1/notify 成功
-		const notify = await H.req(server.base, "/v1/notify", {
+		// 该 Key 调 /v1/events 成功
+		const notify = await H.req(server.base, "/v1/events", {
 			key: p.json.apiKey,
-			body: { title: "cli-auth ok", agentState: "done" },
+			body: { source: "github", type: "pr_opened", payload: { title: "cli-auth ok" } },
 		});
-		H.eq("AC-11 Key 调 /v1/notify → 200", notify.status, 200);
-		// 该 Key 调 /v1/stream → 403（无 receive scope）
-		const stream = await H.req(server.base, "/v1/stream", { key: p.json.apiKey });
-		H.eq("AC-11 Key 调 /v1/stream → 403", stream.status, 403);
+		H.eq("AC-11 Key 调 /v1/events → 200", notify.status, 200);
+		// 该 Key 不能调**节点入口**：/v1/node/stream 要 nodeToken，不是 API Key。
+		// （旧 /v1/stream 已随消息模型删除，这条断言保的是「入口之间不串用」。）
+		const nodeEntry = await H.req(server.base, "/v1/node/stream", {
+			key: p.json.apiKey,
+		});
+		H.check(
+			"AC-11 API Key 不能当 nodeToken 用",
+			nodeEntry.status === 401 || nodeEntry.status === 403,
+			`got ${nodeEntry.status}`,
+		);
 
 		sess1._key = p.json.apiKey;
 	}
@@ -187,15 +194,21 @@ async function main() {
 		H.eq("AC-12 approve 减量 → 200", ap.status, 200);
 		const p = await pollSafe(server, s12.json.sessionId, s12.json.secret);
 		H.eq("AC-12 poll scopes 只含 send", JSON.stringify(p.json.scopes), JSON.stringify(["notify:send"]));
-		// 用该 Key 调 /v1/stream → 403
-		const stream = await H.req(server.base, "/v1/stream", { key: p.json.apiKey });
-		H.eq("AC-12 减量 Key 调 /v1/stream → 403", stream.status, 403);
-		// notify 仍可用
-		const notify = await H.req(server.base, "/v1/notify", {
+		// 减量后的 Key 依然不能当 nodeToken 用
+		const nodeEntry12 = await H.req(server.base, "/v1/node/stream", {
 			key: p.json.apiKey,
-			body: { title: "scope reduce", agentState: "done" },
 		});
-		H.eq("AC-12 减量 Key 调 /v1/notify → 200", notify.status, 200);
+		H.check(
+			"AC-12 减量 Key 不能当 nodeToken 用",
+			nodeEntry12.status === 401 || nodeEntry12.status === 403,
+			`got ${nodeEntry12.status}`,
+		);
+		// notify 仍可用
+		const notify = await H.req(server.base, "/v1/events", {
+			key: p.json.apiKey,
+			body: { source: "github", type: "pr_opened", payload: { title: "scope reduce" } },
+		});
+		H.eq("AC-12 减量 Key 调 /v1/events → 200", notify.status, 200);
 	}
 
 	// AC-13 不允许勾出未申请的 scope（构造超集）
@@ -372,11 +385,11 @@ async function main() {
 		if (sess1._keyId) {
 			const rev = await H.req(server.base, `/v1/keys/${sess1._keyId}/revoke`, { method: "POST", session });
 			H.eq("AC-32 停用 Key → 200", rev.status, 200);
-			const notify = await H.req(server.base, "/v1/notify", {
+			const notify = await H.req(server.base, "/v1/events", {
 				key: sess1._key,
-				body: { title: "after revoke", agentState: "done" },
+				body: { source: "github", type: "pr_opened", payload: { title: "after revoke" } },
 			});
-			H.eq("AC-32 停用后 /v1/notify → 401", notify.status, 401);
+			H.eq("AC-32 停用后 /v1/events → 401", notify.status, 401);
 		} else {
 			H.bad("AC-32 停用测试：未找到 Key");
 		}
@@ -612,9 +625,9 @@ async function scriptE2E(server, seedSession) {
 		H.check("AC-21 含 server", cred.server === server.base, `server=${cred.server}`);
 
 		// 该 Key 可用
-		const notify = await H.req(server.base, "/v1/notify", {
+		const notify = await H.req(server.base, "/v1/events", {
 			key: cred.apiKey,
-			body: { title: "script e2e", agentState: "done" },
+			body: { source: "github", type: "pr_opened", payload: { title: "script e2e" } },
 		});
 		H.eq("AC-21 脚本领到的 Key 可用 → 200", notify.status, 200);
 	}

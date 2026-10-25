@@ -64,6 +64,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	sessMW := svc.Sessions().Middleware
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(h.tasks))))
+	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(h.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(h.cancelTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
@@ -610,41 +611,44 @@ func containsToken(header, want string) bool {
 	return false
 }
 
-// TestLegacyEndpointsStillServe 旧模型端点继续工作（不 500），并带废弃标记。
+// TestLegacyNotificationEndpointsRemoved 验证旧通知终端模型端点已下线（#80）。
 //
-// 契约 §D5：本期不改前端，所以旧端点必须继续能用。
-// 但策略要明确、可测——所以打 Deprecation + Link 头，而不是静默继续跑。
-func TestLegacyEndpointsStillServe(t *testing.T) {
+// 这些端点（/v1/notifications、/v1/stream、/v1/notify）连同 broker 包
+// 一起删除：事件中心里"发生了什么"是 events、"做完没有"是 tasks，
+// 不再有"给某人推过的消息"这个实体。
+//
+// 断言用真实 mux（不是手搭的子 mux），否则测不到路由注册的真实状态。
+func TestLegacyNotificationEndpointsRemoved(t *testing.T) {
 	env := newConsoleEnv(t)
 
-	notifs := &notificationsHandler{db: env.db}
-	mux := http.NewServeMux()
-	sessMW := env.svc.Sessions().Middleware
-	mux.Handle("/v1/notifications", noStore(sessMW(http.HandlerFunc(notifs.ServeHTTP))))
-	mux.Handle("/v1/notifications/", noStore(sessMW(http.HandlerFunc(notifs.ServeHTTP))))
+	legacy := []struct{ method, path string }{
+		{http.MethodGet, "/v1/notifications"},
+		{http.MethodGet, "/v1/notifications/ntf_whatever"},
+		{http.MethodPost, "/v1/notify"},
+		{http.MethodPost, "/v1/test-notify"},
+		{http.MethodGet, "/v1/stream"},
+	}
+	for _, tc := range legacy {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.AddCookie(env.cookie)
+		rr := httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, req)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/notifications", nil)
-	req.AddCookie(env.cookie)
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+		// 404 = 路由不存在。401/403 也算下线（没注册就会落到兜底），
+		// 但绝不能是 200——那说明旧端点还活着。
+		if rr.Code == http.StatusOK {
+			t.Errorf("%s %s 仍返回 200，旧端点未下线", tc.method, tc.path)
+		}
+	}
 
-	// 不是 500 —— 存量页面照常能读
-	if rr.Code >= 500 {
-		t.Fatalf("legacy endpoint returned %d, should keep working until #7", rr.Code)
-	}
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
-	}
-	// 废弃标记必须存在（否则没人知道这是废弃接口）
-	if got := rr.Header().Get(DeprecatedNoticeHeader); got != "true" {
-		t.Fatalf("Deprecation header = %q, want true", got)
-	}
-	if got := rr.Header().Get(SuccessorLinkHeader); got == "" {
-		t.Fatal("missing Link header pointing to the successor endpoint")
-	}
-	// 响应体仍是可解析的 JSON（不塞警告污染结构）
-	var m map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &m); err != nil {
-		t.Fatalf("legacy response is not valid JSON: %v", err)
+	// 新的事件中心端点仍在
+	for _, path := range []string{"/v1/console/events", "/v1/tasks", "/v1/capabilities"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(env.cookie)
+		rr := httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200（新端点应正常工作）", path, rr.Code)
+		}
 	}
 }

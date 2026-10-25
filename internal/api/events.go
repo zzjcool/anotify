@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/authn"
 	"github.com/zzjcool/anotify/internal/store"
@@ -94,6 +95,17 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 	var req EventIngestRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+
+	// 必填校验要在落库前做：空 source/type 的事件没有任何路由意义
+	// （source 就是起点能力名），存进去只会污染事件流。
+	if strings.TrimSpace(req.Source) == "" {
+		writeError(w, http.StatusBadRequest, "source is required")
+		return
+	}
+	if strings.TrimSpace(req.Type) == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
 		return
 	}
 
@@ -219,4 +231,25 @@ func (h *EventHandler) resolveOrg(r *http.Request, userID, requested string) (st
 		return "", errors.New("no org specified and user has no primary org")
 	}
 	return orgID, nil
+}
+
+// writeJSON 写一个 JSON 响应。
+//
+// 带 Cache-Control: no-store：事件与任务数据是用户私有且实时变化的，
+// 中间缓存会把一个组织的响应喂给另一个组织。
+//
+// 原本在 api/notify.go 里，随旧通知终端模型（#80）搬到本文件：
+// 事件中心只剩这一个 API 包，helper 不该再挂在已删除的文件名下。
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+}
+
+// writeError 写一个 {"error": msg} 响应。
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
 }
