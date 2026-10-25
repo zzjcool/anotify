@@ -968,15 +968,18 @@
           (selected || []).map((x) => (typeof x === "string" ? x : x && x.capabilityId)).filter(Boolean),
         );
 
-        // 出口只能是"有节点认领、等着干活的"能力。
+        // 出口不能是**内置起点**（github / cron / http / manual）。
         //
-        // 原来只排除了 kind=origin 且 source=builtin 的（内置起点），
-        // 但 kind=origin 还有另一种成因：**没有任何节点声明它**。
-        // 那种能力现在还是"起点"语义（事件可以从它发起），不该被当成
-        // 别人事件的出口 —— 选了它，任务永远没有执行者。
+        // 这类能力是"事件的入口"，不是"干活的执行者"：它们没有节点声明、
+        // 没有 outputs，选成出口的话派过去的任务永远找不到执行者。
         //
-        // 所以判断只看 kind，不看 source：origin 一律排除。
-        const usable = CAPS.filter((c) => c.kind !== "origin");
+        // 注意**不能**用 `kind !== "origin"` 一刀切：kind 是从"有没有节点
+        // 声明"推导的（不落库，见不变量 I3），所以一个刚建好、节点还没上线
+        // 声明的自定义能力，kind 同样是 origin。把它排除掉的话，用户
+        // 建完能力就选不到了 —— 那正是这里要避免的。
+        //
+        // 判据回到 source：内置起点是唯一的"真正的入口"。
+        const usable = CAPS.filter((c) => !(c.source === "builtin" && c.kind === "origin"));
 
         if (!usable.length) {
           box.appendChild(

@@ -1018,6 +1018,105 @@ main().catch(async (e) => {
 // 逐个确认 mock 有对应实现（返回 501 = 未实现）。
 // ---------------------------------------------------------------------------
 
+// checkWaterfall 在 mock 预览里验证 trace/span 瀑布图。
+//
+// 关键断言点都是实测踩过的坑：
+//   - 刻度单位（时间戳是 Unix 秒，格式化函数要毫秒，曾差 1000 倍）
+//   - 并行：两个子任务的 left 应该相同（不是串行排开）
+//   - 层级：子任务有缩进，跟父任务不在同一列
+//   - 失败/进行中要有对应的 class
+async function checkWaterfall(page) {
+	// 找任务最多的那条事件（扇出的那条）
+	const picked = await page.evaluate(() => {
+		const cards = Array.from(document.querySelectorAll("#ev-list > div"));
+		const target =
+			cards.find((c) => c.textContent.includes("pull_request.opened")) || cards[0];
+		if (!target) return null;
+		target.click();
+		return true;
+	});
+	if (!picked) {
+		H.check("事件列表非空（瀑布图前置）", false, "没有事件卡片");
+		return;
+	}
+	await page.waitForTimeout(1500);
+
+	const wf = await page.evaluate(() => {
+		const box = document.querySelector(".wf");
+		if (!box) return null;
+		return {
+			ticks: Array.from(box.querySelectorAll(".wf-tick")).map((x) => x.textContent),
+			rows: Array.from(box.querySelectorAll(".wf-row")).map((row) => {
+				const nm = row.querySelector(".wf-name");
+				const bar = row.querySelector(".wf-bar");
+				const wait = row.querySelector(".wf-wait");
+				return {
+					name: nm ? nm.textContent.trim() : "",
+					indent: nm ? nm.style.paddingLeft : "0",
+					left: bar ? parseFloat(bar.style.left) : null,
+					width: bar ? parseFloat(bar.style.width) : null,
+					cls: bar ? bar.className : "",
+					wait: wait ? true : false,
+				};
+			}),
+		};
+	});
+
+	H.check("点事件后出现瀑布图", !!wf, "找不到 .wf");
+	if (!wf) return;
+
+	H.check("瀑布图有多个 span", wf.rows.length >= 2, `rows=${wf.rows.length}`);
+
+	// 刻度：必须有秒级单位（时间戳是 Unix 秒）
+	H.check(
+		"时间轴刻度用了秒级单位",
+		wf.ticks.some((x) => /s$/.test(x)),
+		wf.ticks.join(" | "),
+	);
+
+	// 并行：两个不同任务的 left 相同
+	const lefts = wf.rows.filter((r) => r.left != null).map((r) => r.left);
+	const hasParallel = lefts.some((v, i) => lefts.indexOf(v) !== i);
+	H.check("能画出并行分支（两个 span 起点相同）", hasParallel, lefts.join(","));
+
+	// 层级：至少有一行缩进 > 0
+	H.check(
+		"子任务有缩进（层级可见）",
+		wf.rows.some((r) => parseFloat(r.indent) > 0),
+		wf.rows.map((r) => r.indent).join(","),
+	);
+
+	// 状态着色：出现 failed / running / succeeded 中至少两种
+	const classes = wf.rows.map((r) => r.cls).join(" ");
+	const kinds = ["b-succeeded", "b-failed", "b-running", "b-pending"].filter((k) =>
+		classes.includes(k),
+	);
+	H.check("状态用不同颜色区分", kinds.length >= 2, kinds.join(","));
+
+	// 宽度合理：都在 0~100 之间
+	H.check(
+		"时间条宽度在合法区间",
+		wf.rows.filter((r) => r.width != null).every((r) => r.width >= 0 && r.width <= 100),
+		wf.rows.map((r) => r.width).join(","),
+	);
+
+	// 切到树视图再切回来，两个视图都能渲染
+	const switched = await page.evaluate(() => {
+		const btns = Array.from(document.querySelectorAll(".wf-switch button"));
+		const treeBtn = btns.find((b) => !b.classList.contains("on"));
+		if (!treeBtn) return null;
+		treeBtn.click();
+		return true;
+	});
+	if (switched) {
+		await page.waitForTimeout(400);
+		const treeOK = await page.evaluate(
+			() => document.querySelectorAll(".chain-node").length > 0,
+		);
+		H.check("可切换到树视图", treeOK === true);
+	}
+}
+
 // checkFlowChart 在 mock 预览里验证流向图。
 //
 // 为什么必须在这里测而不是在真实 server 上：断言依赖 demo 数据里的
@@ -1169,6 +1268,7 @@ async function runMockCoverage() {
 		await page.waitForTimeout(1200);
 		// 流向图的形状断言放在带 mock 数据的 sources.html 上
 		if (p === "sources.html") await checkFlowChart(page);
+		if (p === "events.html") await checkWaterfall(page);
 		await page.close();
 	}
 

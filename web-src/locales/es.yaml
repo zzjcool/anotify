@@ -1087,6 +1087,11 @@ events:
     no_root: No se encontró la tarea raíz (la traza puede estar incompleta).
     out_none: Sin reportar
     out_end: Fin alcanzado
+  wf:
+    waterfall: Cascada
+    tree: Árbol
+    not_started: Aún no iniciado
+    running: en curso
 caps:
   title: Capacidades y aristas
   subtitle: Una capacidad dice QUÉ hacer (nunca CÓMO); la tabla de aristas decide a dónde va un evento.

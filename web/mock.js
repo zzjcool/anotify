@@ -275,106 +275,154 @@
 
 	// ---------- 初始事件与任务 ----------
 	(function initEventsTasks() {
-		const traces = [
-			{ source: "github", type: "pull_request.opened", chain: ["analyze-pr", "apply-fix"], out: "needs-fix" },
-			{ source: "github", type: "pull_request.opened", chain: ["analyze-pr", "deploy-preview"], out: "approved" },
-			{ source: "cron", type: "nightly", chain: ["analyze-pr"], out: null },
-			{ source: "http", type: "webhook.incoming", chain: ["deploy-preview"], out: null },
-			{ source: "manual", type: "manual.run", chain: ["deploy-preview"], out: null },
-		];
-		let t = now() - 120;
-		for (const tr of traces) {
-			const ev = {
-				id: uid("evt"),
-				orgId: ORG,
-				traceId: "trace_mock_" + Math.random().toString(36).slice(2, 10),
-				source: tr.source,
-				type: tr.type,
-				payload: { mock: true },
-				createdAt: t,
-			};
-			state.events.push(ev);
+		// 演示数据刻意做得"有形状"，而不是一串整齐的 3 秒成功：
+		//
+		//   - 并行扇出：analyze-pr 之后同时跑 apply-fix 和 deploy-preview
+		//   - 耗时差异：有 0.4s 的快任务，也有 12s 的慢任务
+		//   - 三种终态：succeeded / failed / running（进行中，宽度算到"现在"）
+		//   - 一个 pending（还没开始，只能画左边界细线）
+		//
+		// 全是"3 秒成功"的链会让瀑布图看起来像一堆等长方块，
+		// 既看不出时序也验证不了 5 种边界情况。
 
-			let parent = null;
-			const chainIDs = [];
-			for (const capName of tr.chain) {
-				const c = capByName(capName);
-				const tk = {
-					id: uid("tsk"),
-					orgId: ORG,
-					traceId: ev.traceId,
-					parentTaskId: parent,
-					path: chainIDs.concat([c.id]),
-					capabilityId: c.id,
-					capability: c.name,
-					version: c.version,
-					params: { mock: true },
-					status: "succeeded",
-					nodeId: state.nodes[0].id,
-					instanceId: "nins_mock_0",
-					leaseUntil: t + 30,
-					attempts: 1,
-					out: capName === "analyze-pr" ? tr.out : null,
-					reported: true,
-					summary: "已完成（演示数据）",
-					artifacts: [],
-					error: "",
-					contentHash: c.contentHash,
-					capHash: c.contentHash,
-					graphId: "grf_mock",
-					createdAt: t,
-					startedAt: t + 1,
-					finishedAt: t + 3,
-					notBefore: null,
-				};
-				state.tasks.push(tk);
-				chainIDs.push(c.id);
-				parent = tk.id;
-				t += 5;
-			}
-			t += 20;
-		}
-
-		// 一条失败的任务，让页面能看出错误状态
-		const c = capByName("deploy-preview");
-		const failTrace = "trace_mock_" + Math.random().toString(36).slice(2, 10);
-		state.events.push({
-			id: uid("evt"),
-			orgId: ORG,
-			traceId: failTrace,
-			source: "cron",
-			type: "nightly.deploy",
-			payload: { mock: true },
-			createdAt: now() - 60,
-		});
-		state.tasks.push({
+		const mkTask = (o) => ({
 			id: uid("tsk"),
 			orgId: ORG,
-			traceId: failTrace,
-			parentTaskId: null,
-			path: [c.id],
-			capabilityId: c.id,
-			capability: c.name,
-			version: c.version,
-			params: { env: "prod" },
-			status: "failed",
-			nodeId: state.nodes[1].id,
-			instanceId: "nins_mock_1",
-			leaseUntil: now() - 30,
-			attempts: 2,
-			out: null,
-			reported: true,
-			summary: "",
+			traceId: o.traceId,
+			parentTaskId: o.parent || null,
+			path: o.path || [],
+			capabilityId: o.cap.id,
+			capability: o.cap.name,
+			version: o.cap.version,
+			params: o.params || { mock: true },
+			status: o.status || "succeeded",
+			nodeId: o.nodeId !== undefined ? o.nodeId : state.nodes[0].id,
+			instanceId: o.nodeId === null ? null : "nins_mock_0",
+			leaseUntil: o.finishedAt ? null : o.createdAt + 30,
+			attempts: o.attempts || 1,
+			out: o.out || null,
+			reported: o.status === "succeeded" || o.status === "failed",
+			summary: o.summary || "",
 			artifacts: [],
-			error: "deploy failed: upstream 502",
-			contentHash: c.contentHash,
-			capHash: c.contentHash,
+			error: o.error || "",
+			contentHash: o.cap.contentHash,
+			capHash: o.cap.contentHash,
 			graphId: "grf_mock",
-			createdAt: now() - 60,
-			startedAt: now() - 59,
-			finishedAt: now() - 40,
+			createdAt: o.createdAt,
+			startedAt: o.startedAt !== undefined ? o.startedAt : o.createdAt,
+			finishedAt: o.finishedAt !== undefined ? o.finishedAt : null,
 			notBefore: null,
 		});
+
+		let t = now() - 180;
+
+		// ---- 1) 扇出 + 并行：一条 PR 事件，analyze-pr 后同时跑两个分支 ----
+		{
+			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			state.events.push({
+				id: uid("evt"), orgId: ORG, traceId,
+				source: "GitHub PR", type: "pull_request.opened",
+				payload: { pr: 842, repo: "anotify" }, createdAt: t,
+			});
+			const analyze = capByName("analyze-pr");
+			const fix = capByName("apply-fix");
+			const deploy = capByName("deploy-preview");
+
+			// 根：analyze-pr 跑 4 秒
+			const a = mkTask({
+				traceId, cap: analyze, createdAt: t,
+				startedAt: t + 1, finishedAt: t + 5,
+				out: "needs-fix", summary: "发现 3 处 lint 问题",
+			});
+			state.tasks.push(a);
+
+			// 两个并行子任务（起始时间相同 = 真并行）
+			const f = mkTask({
+				traceId, cap: fix, parent: a.id, path: [analyze.id, fix.id],
+				createdAt: t + 5, startedAt: t + 6, finishedAt: t + 6.4,
+				summary: "修复完成", out: "fixed",
+			});
+			const d = mkTask({
+				traceId, cap: deploy, parent: a.id, path: [analyze.id, deploy.id],
+				createdAt: t + 5, startedAt: t + 6, finishedAt: t + 18,
+				params: { env: "staging" }, summary: "预览环境已部署", out: "preview.ready",
+			});
+			state.tasks.push(f, d);
+
+			// deploy 的子任务：失败，带 error
+			state.tasks.push(mkTask({
+				traceId, cap: capByName("report.send"), parent: d.id,
+				path: [analyze.id, deploy.id], createdAt: t + 18,
+				startedAt: t + 18.5, finishedAt: t + 19,
+				params: { channel: "slack", title: "部署通知" },
+				status: "failed", error: "slack: 403 invalid token",
+			}));
+			t += 40;
+		}
+
+		// ---- 2) 进行中：有一条任务还没结束（瀑布图宽度算到"现在"）----
+		{
+			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			state.events.push({
+				id: uid("evt"), orgId: ORG, traceId,
+				source: "每晚体检", type: "nightly",
+				payload: {}, createdAt: now() - 6,
+			});
+			const analyze = capByName("analyze-pr");
+			const a = mkTask({
+				traceId, cap: analyze, createdAt: now() - 6,
+				startedAt: now() - 5, finishedAt: null,
+				status: "running", summary: "",
+			});
+			state.tasks.push(a);
+		}
+
+		// ---- 3) 待派发：还没被节点认领（只能画左边界细线）----
+		{
+			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			state.events.push({
+				id: uid("evt"), orgId: ORG, traceId,
+				source: "每日汇总", type: "manual.run",
+				payload: {}, createdAt: now() - 30,
+			});
+			state.tasks.push(mkTask({
+				traceId, cap: capByName("report.send"),
+				createdAt: now() - 30, startedAt: null, finishedAt: null,
+				status: "pending", nodeId: null,
+				params: { channel: "email", title: "周报" },
+			}));
+		}
+
+		// ---- 4) 快任务：0.4 秒，验证"零耗时也看得见" ----
+		{
+			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			state.events.push({
+				id: uid("evt"), orgId: ORG, traceId,
+				source: "GitHub PR", type: "pull_request.synchronize",
+				payload: { pr: 843 }, createdAt: t,
+			});
+			state.tasks.push(mkTask({
+				traceId, cap: capByName("deploy-preview"),
+				createdAt: t, startedAt: t + 1, finishedAt: t + 1.4,
+				params: { env: "staging" }, summary: "已部署",
+			}));
+			t += 30;
+		}
+
+		// ---- 5) 重试过的任务：attempts=3，瀑布图要标出 ×3 ----
+		{
+			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			state.events.push({
+				id: uid("evt"), orgId: ORG, traceId,
+				source: "cron", type: "nightly",
+				payload: {}, createdAt: t,
+			});
+			state.tasks.push(mkTask({
+				traceId, cap: capByName("apply-fix"),
+				createdAt: t, startedAt: t + 2, finishedAt: t + 9,
+				attempts: 3, summary: "第 3 次尝试成功",
+			}));
+		}
 	})();
 
 	// ---------- 初始 keys ----------
