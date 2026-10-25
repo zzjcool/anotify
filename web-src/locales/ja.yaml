@@ -1224,3 +1224,14 @@ sources:
     daily3: 毎日 3:00
     weekdays9: 平日 9:00
     every15: 15 分ごと
+  flow:
+    title: 下流フロー（プレビュー）
+    nodes: ノード
+    hascycle: 循環あり
+    back: ↩ {n} に戻る（循環）
+    seen: （上で展開済み）
+    missing: （ケイパビリティ削除済み）
+    terminal: 終点
+    noedge: 下流なし
+    no_target: このソースには出口ケイパビリティがありません。
+    unconnected: （下流未接続）

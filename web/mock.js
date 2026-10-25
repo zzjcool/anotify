@@ -91,7 +91,9 @@
 				type: "object",
 				properties: { scope: { type: "string", enum: ["lint", "test", "all"] } },
 			}),
-			cap("deploy-preview", 1, [], {
+			// outputs 里刻意留一个没接边的端口（preview.ready）：
+			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏
+			cap("deploy-preview", 1, ["failed", "preview.ready"], {
 				type: "object",
 				required: ["env"],
 				properties: { env: { type: "string", enum: ["staging", "prod"] } },
@@ -170,6 +172,11 @@
 			from("manual", "manual.run", "deploy-preview"),
 			from("analyze-pr", "needs-fix", "apply-fix"),
 			from("analyze-pr", "approved", "deploy-preview"),
+			// 一条真实存在的环：部署失败 → 回去改 → 再部署。
+			// 留着它是刻意的：流向图必须能画出环路，而"全是 DAG"的演示数据
+			// 会让人以为这功能只能处理简单情况。
+			from("apply-fix", "fixed", "deploy-preview"),
+			from("deploy-preview", "failed", "apply-fix"),
 		];
 	})();
 

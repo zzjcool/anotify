@@ -1224,3 +1224,14 @@ sources:
     daily3: Diario 3:00
     weekdays9: Laborables 9:00
     every15: Cada 15 min
+  flow:
+    title: Flujo descendente (vista previa)
+    nodes: nodos
+    hascycle: con ciclo
+    back: ↩ vuelve a {n} (ciclo)
+    seen: (expandido arriba)
+    missing: (capacidad eliminada)
+    terminal: terminal
+    noedge: sin destino
+    no_target: Esta fuente no tiene capacidades de salida.
+    unconnected: (sin conectar)

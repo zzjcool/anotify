@@ -1224,3 +1224,14 @@ sources:
     daily3: Daily 3:00
     weekdays9: Weekdays 9:00
     every15: Every 15 min
+  flow:
+    title: Downstream flow (preview)
+    nodes: nodes
+    hascycle: has cycle
+    back: ↩ back to {n} (cycle)
+    seen: (expanded above)
+    missing: (capability deleted)
+    terminal: terminal
+    noedge: no downstream
+    no_target: This source has no target capabilities.
+    unconnected: (not connected)

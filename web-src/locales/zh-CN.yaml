@@ -1224,3 +1224,14 @@ sources:
     daily3: 每天 3:00
     weekdays9: 工作日 9:00
     every15: 每 15 分钟
+  flow:
+    title: 下游流向（预览）
+    nodes: 个节点
+    hascycle: 含环路
+    back: 回到 {n}（环路）
+    seen: （已在上方展开）
+    missing: （能力已删除）
+    terminal: 终点
+    noedge: 没有下游
+    no_target: 这个源没有出口能力。
+    unconnected: （未接下游）

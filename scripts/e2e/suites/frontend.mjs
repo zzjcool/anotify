@@ -1017,6 +1017,90 @@ main().catch(async (e) => {
 // 所以这里把 mock 覆盖度当成断言：把页面真实发出的每个 /v1 请求记下来，
 // 逐个确认 mock 有对应实现（返回 501 = 未实现）。
 // ---------------------------------------------------------------------------
+
+// checkFlowChart 在 mock 预览里验证流向图。
+//
+// 为什么必须在这里测而不是在真实 server 上：断言依赖 demo 数据里的
+// **环路**（deploy-preview → apply-fix → deploy-preview）和**未接出口**
+// （preview.ready）。真实环境不一定有这些形状，那样的断言会假失败。
+// mock 的数据形状是固定的，正好拿来锁住渲染逻辑。
+async function checkFlowChart(page) {
+			// ---- 下游流向图：只读预览，能画出环路与未接出口 ----
+			//
+			// 这块的核心是"从源出发把所有可能路线画出来"。含环的图最容易出错
+			// （无限递归 / 重复展开），所以断言要盯住：
+			//   ① 环路被识别成「回到 X（环路）」而不是死循环
+			//   ② 同一子树不重复展开两遍
+			//   ③ 多个出口（多个根）各自完整展开，不互相挤掉
+			//   ④ 声明了但没接边的出口要显式标出来
+				const flow = await page.evaluate(() => {
+					const wraps = Array.from(document.querySelectorAll(".flow-wrap"));
+					return wraps.map((w) => {
+						// 展开它
+						const toggle = w.querySelector(".flow-toggle");
+						toggle.click();
+						const body = w.querySelector(".flow-body");
+						return {
+							title: toggle.textContent.replace(/\s+/g, " ").trim(),
+							rows: Array.from(body.querySelectorAll(".flow-node")).map((el) => ({
+								text: el.textContent.replace(/\s+/g, " ").trim(),
+								back: !!el.querySelector(".flow-back"),
+								dead: !!el.querySelector(".flow-dead"),
+								terminal: !!el.querySelector(".flow-terminal"),
+								port: el.querySelector(".flow-port")?.textContent?.trim() || "",
+							})),
+							seps: body.querySelectorAll(".flow-root-sep").length,
+						};
+					});
+				});
+
+				H.check("每个源都有流向图", flow.length > 0, `共 ${flow.length} 个`);
+
+				const nightly = flow.find((f) => /每日|nightly|每晚/.test(f.title)) || flow[0];
+				H.check(
+					"流向图列出了下游能力",
+					nightly.rows.some((r) => /deploy-preview|apply-fix/.test(r.text)),
+					nightly.rows.map((r) => r.text).join(" | ").slice(0, 160),
+				);
+				H.check(
+					"环路被标成「回到 X」而不是无限递归",
+					nightly.rows.some((r) => r.back && /deploy-preview/.test(r.text)),
+					nightly.rows.filter((r) => r.back).map((r) => r.text).join(" | ").slice(0, 160),
+				);
+				H.check(
+					"同一子树不重复展开（出现「已在上方展开」）",
+					nightly.rows.some((r) => /已在上方展开|expanded above/.test(r.text)),
+					nightly.rows.map((r) => r.text).join(" | ").slice(0, 200),
+				);
+				H.check(
+					"出口名标在每条支路上",
+					nightly.rows.filter((r) => r.port).length >= 2,
+					nightly.rows.filter((r) => r.port).map((r) => r.port).join(","),
+				);
+				H.check(
+					"声明了但没接边的出口被标出",
+					flow.some((f) => f.rows.some((r) => r.dead && r.port === "preview.ready")),
+					flow.flatMap((f) => f.rows.filter((r) => r.dead).map((r) => r.port)).join(","),
+				);
+
+				// 多出口的源：两个根之间要有分隔线，否则会被看成同一棵树
+				const multi = flow.find((f) => f.seps > 0);
+				H.check(
+					"多出口的源在根之间有分隔",
+					!!multi,
+					flow.map((f) => `${f.title.slice(0, 12)}=seps${f.seps}`).join(" "),
+				);
+
+				// 终止能力（没有下游）要能区分于"未接下游"
+				H.check(
+					"没有下游的能力标为「没有下游」/「终点」",
+					flow.some((f) =>
+						f.rows.some((r) => r.dead && /没有下游|no downstream/.test(r.text)),
+					),
+					"",
+				);
+}
+
 // runMockCoverage 检查 web/mock.js 覆盖了页面用到的全部接口。
 async function runMockCoverage() {
 	const { spawn } = await import("node:child_process");
@@ -1083,6 +1167,8 @@ async function runMockCoverage() {
 		});
 		await page.goto(`${base}/${p}`, { waitUntil: "load", timeout: 20000 });
 		await page.waitForTimeout(1200);
+		// 流向图的形状断言放在带 mock 数据的 sources.html 上
+		if (p === "sources.html") await checkFlowChart(page);
 		await page.close();
 	}
 
