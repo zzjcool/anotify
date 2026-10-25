@@ -24,7 +24,20 @@ make mock-local  # 只本机
 
 ## 已发现问题（细节）
 
-### #88 流向图太简陋
+### #88 流向图 → 用成熟库做完整工作流图
+
+**需求已明确**：用户要完整的工作流图，**用成熟好看的库**，不自研布局。
+
+引入方式受项目硬约束（纯静态、无构建框架）：
+- 单文件放 `web/vendor/`，`<script src="/vendor/xxx.min.js" defer>`
+- 先例：`web/vendor/marked.min.js`（35KB）
+- 不引 npm 构建；版本 pin 死 + 记录来源与许可证
+- **不能依赖 CDN**：e2e 离线门禁会拦所有外网请求
+
+候选：Xyflow / Cytoscape.js+dagre / dagre+自绘 / Mermaid / D3。
+倾向 Xyflow 或 Cytoscape.js，等确认图的真实形状后定。
+
+#### 原始现状（待替换）
 
 现状是缩进树：
 
