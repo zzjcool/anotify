@@ -1100,6 +1100,8 @@ events:
     tree: Tree
     not_started: Not started yet
     running: running
+    graph: Graph
+    nolib: Graph library failed to load.
   group:
     other: Uncategorized
     count: '{n} events'

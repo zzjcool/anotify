@@ -1100,6 +1100,8 @@ events:
     tree: ツリー
     not_started: まだ実行されていません
     running: 実行中
+    graph: グラフ
+    nolib: グラフライブラリを読み込めませんでした。
   group:
     other: 未分類
     count: '{n} 件'

@@ -1100,6 +1100,8 @@ events:
     tree: Árbol
     not_started: Aún no iniciado
     running: en curso
+    graph: Grafo
+    nolib: No se pudo cargar la librería de grafos.
   group:
     other: Sin clasificar
     count: '{n} eventos'
