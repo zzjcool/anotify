@@ -135,56 +135,12 @@
         font-size: 0.72rem;
         line-height: 1.5;
       }
-      .flow-node {
-        display: flex;
-        align-items: baseline;
-        gap: 0.4rem;
-        padding: 0.1rem 0;
-      }
-      .flow-node .cap {
-        color: var(--text);
-      }
-      .flow-node .cap.root {
-        color: var(--accent-strong);
-        font-weight: 600;
-      }
-      /* 出口名：它是"分流"发生的地方，视觉上要能一眼看见 */
-      .flow-port {
-        color: #7dd3fc;
-        font-size: 0.68rem;
-      }
-      .flow-port::before {
-        content: "↓";
-        margin-right: 0.25rem;
-        color: var(--faint);
-      }
-      /* 回到已画过的节点（环） */
-      .flow-back {
-        color: var(--faint);
-        font-style: italic;
-      }
       .flow-dead {
         color: var(--faint);
-      }
-      .flow-terminal {
-        color: #4ade80;
-        font-size: 0.68rem;
       }
       .flow-empty {
         color: var(--faint);
         font-size: 0.7rem;
-      }
-      /* 树的竖线：用 border-left 表达"这一支从上面来" */
-      .flow-kids {
-        margin-left: 0.55rem;
-        padding-left: 0.7rem;
-        border-left: 1px solid var(--line);
-      }
-      /* 多个根的间隔：源有多个出口时它们是并列起点 */
-      .flow-root-sep {
-        height: 1px;
-        background: var(--line);
-        margin: 0.4rem 0;
       }
       .hook-url {
         font-family: var(--mono, monospace);

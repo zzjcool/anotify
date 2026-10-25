@@ -1,0 +1,26 @@
+{
+  "_comment": "pi-lens 项目级配置：只关掉『在本仓库必然误报』的规则，其余全开。每条都写明理由，避免以后被当成图省事关掉的。规则源码见 ~/.pi/agent/npm/node_modules/pi-lens/rules/。",
+  "_schema": "rules.<id>.disable 是【规则 ID 数组】而不是布尔值 —— 见 pi-lens 的 rulePolicyMapFromConfig（entry.disable?.length）。写成 true 会被整条跳过。",
+  "rules": {
+    "gorm-n-plus-one": {
+      "disable": ["gorm-n-plus-one"],
+      "_why": "本仓库没有 GORM（go.mod 无依赖、全仓无 import），只用 database/sql。该规则匹配『for_statement 内调用 .Scan()』，而 `for rows.Next() { rows.Scan(...) }` 正是 database/sql 遍历结果集的标准写法，不是循环内发查询。全仓 30 处同样写法（internal/store/*.go），逐条标记无意义。"
+    },
+    "waitgroup-done-scope": {
+      "disable": ["waitgroup-done-scope"],
+      "_why": "规则 pattern 是 `$WG.Done()` 且不在 go_statement 内 —— 它无法区分 `ctx.Done()`（context.Context 的 channel 方法，标准用法就是在 for/select 里同步调用）和 `wg.Done()`。本仓库 6 处 select 里的 ctx.Done() 全部误报；真正的 wg.Done() 只有 2 处且都在 goroutine 内。"
+    },
+    "no-conditional-empty-object-spread-js": {
+      "disable": ["no-conditional-empty-object-spread-js"],
+      "_why": "`{...(cond ? {k:v} : {})}` 是本仓库构造可选 HTTP header / 请求体的既有惯例。规则自身是 hint 级，note 里就承认『147 hits, all a deliberate existing idiom』。"
+    },
+    "go-no-fmt-println": {
+      "ignorePaths": ["cmd/devseed/**"],
+      "_why": "devseed 是开发者用的命令行播种工具，职责就是往 stdout 打印 UID=/SEND_KEY= 供 scripts/dev.sh 解析。规则自己的 note 也写了『fmt.Println is acceptable in CLI tools』——它只是无法自动判断哪些是 CLI 入口。"
+    },
+    "nil-map-assignment": {
+      "ignorePaths": ["internal/ws/**"],
+      "_why": "internal/ws 里刻意用 `var m map[string]any` + 失败兜底：json.Unmarshal 失败时回退空 map，随后还有 `if m == nil { m = map[string]any{} }` 二次保险。这是『解析失败就发空对象，比悄悄改写安全』的既定策略，不是漏 make。"
+    }
+  }
+}
