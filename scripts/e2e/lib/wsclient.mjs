@@ -42,7 +42,9 @@ export async function wsConnect(base, token, pathname = "/v1/node/stream") {
 				...(token ? { Authorization: "Bearer " + token } : {}),
 			},
 		});
-		req.on("upgrade", (res, sock) => {
+		// 第一个参数是 Node 的 http.IncomingMessage，这里用不到，但必须占位
+		// 才能拿到 socket —— 所以命名成 _res（下划线前缀是「有意不用」的约定）。
+		req.on("upgrade", (_res, sock) => {
 			sock.on("error", () => {});
 			sock.setNoDelay?.(true);
 			resolve(sock);
