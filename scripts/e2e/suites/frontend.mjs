@@ -1410,7 +1410,7 @@ async function checkWaterfall(page) {
 	// 切到树视图再切回来，两个视图都能渲染
 	const switched = await page.evaluate(() => {
 		const btns = Array.from(document.querySelectorAll(".wf-switch button"));
-		const treeBtn = btns.find((b) => !b.classList.contains("on"));
+		const treeBtn = btns.find((b) => b.textContent.trim() === "树");
 		if (!treeBtn) return null;
 		treeBtn.click();
 		return true;
@@ -1421,6 +1421,64 @@ async function checkWaterfall(page) {
 			() => document.querySelectorAll(".chain-node").length > 0,
 		);
 		H.check("可切换到树视图", treeOK === true);
+	}
+
+	// ---- 图视图（#90）：拓扑 + 九态着色 ----
+	const toGraph = await page.evaluate(() => {
+		const btns = Array.from(document.querySelectorAll(".wf-switch button"));
+		const g = btns.find((b) => b.textContent.trim() === "图");
+		if (!g) return false;
+		g.click();
+		return true;
+	});
+	H.check("有「图」视图可切换", toGraph === true);
+
+	if (toGraph) {
+		await page.waitForTimeout(1800);
+		const cg = await page.evaluate(() => {
+			const host = document.querySelector(".chain-graph");
+			if (!host) return { has: false };
+			const cy = host._cy;
+			if (!cy) return { has: true, hasCy: false };
+			return {
+				has: true,
+				hasCy: true,
+				nodeCount: cy.nodes().length,
+				edgeCount: cy.edges().length,
+				statuses: cy.nodes().map((n) => n.data("status")),
+				borders: cy.nodes().map((n) => n.style("border-color")),
+				grabbable: cy.nodes().some((n) => n.grabbable()),
+				labels: cy.nodes().map((n) => n.data("label")),
+			};
+		});
+
+		H.check("图视图用图形库渲染", cg.has === true && cg.hasCy === true,
+			JSON.stringify({ has: cg.has, cy: cg.hasCy }));
+		if (cg.hasCy) {
+			H.check("拓扑图有节点", cg.nodeCount >= 2, `nodes=${cg.nodeCount}`);
+			H.check("拓扑图有边", cg.edgeCount >= 1, `edges=${cg.edgeCount}`);
+			H.check("节点显示能力名@版本",
+				cg.labels.some((x) => /@\d/.test(x)), cg.labels.join(","));
+			// 九态里的 succeeded / failed 应该用不同颜色
+			const distinct = new Set(cg.borders);
+			H.check("不同状态用不同边框色", distinct.size >= 2,
+				[...distinct].join(","));
+			H.check("拓扑图节点不可拖动（只读）", cg.grabbable === false);
+		}
+
+		// 切回瀑布图确认可以来回切
+		const back = await page.evaluate(() => {
+			const btns = Array.from(document.querySelectorAll(".wf-switch button"));
+			const w = btns.find((b) => b.textContent.trim() === "瀑布图");
+			if (!w) return false;
+			w.click();
+			return true;
+		});
+		if (back) {
+			await page.waitForTimeout(600);
+			const wfBack = await page.evaluate(() => !!document.querySelector(".wf"));
+			H.check("可从图视图切回瀑布图", wfBack === true);
+		}
 	}
 }
 

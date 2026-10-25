@@ -1100,6 +1100,8 @@ events:
     tree: 树
     not_started: 还没开始执行
     running: 进行中
+    graph: 图
+    nolib: 图库未能加载，无法渲染拓扑图。
   group:
     other: 未归类
     count: '{n} 条'

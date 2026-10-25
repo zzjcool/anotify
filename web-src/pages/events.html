@@ -80,6 +80,15 @@
         margin-left: 0.35rem;
       }
 
+      /* 任务链拓扑图的容器：需要固定高度，否则 Cytoscape 算不出布局 */
+      .chain-graph {
+        width: 100%;
+        height: 320px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.012);
+      }
+
       /* 事件按源分组：组头是源名 + 类型 + 计数，组内是事件卡 */
       .ev-group {
         margin-bottom: 1.25rem;
@@ -362,6 +371,9 @@
 {{end}}
 
 {{define "script"}}
+    <!-- 图渲染：本地 vendor（不依赖 CDN —— e2e 离线门禁会拦外网请求） -->
+    <script src="/vendor/cytoscape.min.js"></script>
+    <script src="/vendor/cytoscape-dagre.min.js"></script>
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
 
@@ -846,14 +858,186 @@
         renderChainView(chain, byParent, roots);
       }
 
+      // renderChainGraph 用 Cytoscape 画任务链的拓扑图（#90）。
+      //
+      // 与瀑布图的分工：瀑布图看时序，这里看**拓扑**（谁派生自谁、
+      // 扇出和汇聚的形状）。数据源相同（chainTasks），只是表达的维度不同。
+      //
+      // 节点着色用九态（与瀑布图/状态点同一套语义），边标 out（哪个出口派生的）。
+      function renderChainGraph(tasks, byParent, roots) {
+        const wrap = el("div", "");
+
+        if (typeof cytoscape !== "function") {
+          wrap.appendChild(
+            el("div", "wf-empty", t("events.wf.nolib", "图库未能加载，无法渲染拓扑图。")),
+          );
+          return wrap;
+        }
+
+        const host = el("div", "chain-graph");
+        wrap.appendChild(host);
+
+        // 节点：每个任务一个方块，标签是能力名@版本 + 状态
+        const nodes = tasks.map((tk) => {
+          const st = tk.status || "pending";
+          return {
+            data: {
+              id: tk.id,
+              label: (tk.capability || "?") + "@" + (tk.version ?? "?"),
+              status: st,
+              attempts: tk.attempts || 1,
+              duration: tk.startedAt && tk.finishedAt ? tk.finishedAt - tk.startedAt : null,
+              node: tk.nodeId || "",
+              error: tk.error || "",
+              summary: tk.summary || "",
+            },
+          };
+        });
+
+        // 边：parentTaskId 关系。
+        //
+        // 边上标父任务报告的 out（从哪个出口派生的）。但要注意：
+        // store.Task.Out 是**单值**（一个任务最终只报告一个出口），
+        // 所以当一个父任务扇出多个子任务时，它们会共享同一个 out ——
+        // 那时标签是"父任务最终走了哪个出口"，不是"这条边对应哪个出口"。
+        // 多子时干脆不标，避免让人误以为每条边都有独立的出口名。
+        const childCount = {};
+        for (const tk of tasks) {
+          if (tk.parentTaskId) {
+            childCount[tk.parentTaskId] = (childCount[tk.parentTaskId] || 0) + 1;
+          }
+        }
+
+        const edges = [];
+        for (const tk of tasks) {
+          if (!tk.parentTaskId) continue;
+          const parent = tasks.find((x) => x.id === tk.parentTaskId);
+          if (!parent) continue;
+          const single = childCount[tk.parentTaskId] === 1;
+          edges.push({
+            data: {
+              id: "ce" + edges.length,
+              source: tk.parentTaskId,
+              target: tk.id,
+              port: single ? parent.out || "" : "",
+            },
+          });
+        }
+
+        const cy = cytoscape({
+          container: host,
+          elements: nodes.concat(edges),
+          layout: { name: "dagre", rankDir: "TB", nodeSep: 30, rankSep: 46, animate: false },
+          autoungrabify: true, // 只读：不能拖节点改数据
+          boxSelectionEnabled: false,
+          wheelSensitivity: 0.2,
+          style: [
+            {
+              selector: "node",
+              style: {
+                label: "data(label)",
+                "font-size": 9,
+                "font-family": "ui-monospace, monospace",
+                color: "#d4d4d8",
+                "text-valign": "center",
+                "text-halign": "center",
+                "background-color": "#141419",
+                "border-width": 1,
+                "border-color": "#3f3f46",
+                shape: "round-rectangle",
+                width: "label",
+                height: 24,
+                padding: "8px",
+              },
+            },
+            // 九态配色：与瀑布图/状态点同色
+            { selector: 'node[status = "succeeded"]', style: { "border-color": "#10b981" } },
+            { selector: 'node[status = "failed"]', style: { "border-color": "#ef4444", "border-width": 2 } },
+            { selector: 'node[status = "running"]', style: { "border-color": "#22c55e", "border-width": 2 } },
+            { selector: 'node[status = "acked"]', style: { "border-color": "#06b6d4" } },
+            { selector: 'node[status = "assigned"]', style: { "border-color": "#3b82f6" } },
+            { selector: 'node[status = "pending"]', style: { "border-color": "#71717a", "border-style": "dashed" } },
+            { selector: 'node[status = "canceled"]', style: { "border-color": "#a1a1aa" } },
+            { selector: 'node[status = "abandoned"]', style: { "border-color": "#f97316" } },
+            { selector: 'node[status = "lease_expired"]', style: { "border-color": "#eab308" } },
+            {
+              selector: "edge",
+              style: {
+                width: 1,
+                "line-color": "#3f3f46",
+                "target-arrow-color": "#3f3f46",
+                "target-arrow-shape": "triangle",
+                "arrow-scale": 0.7,
+                "curve-style": "bezier",
+                label: "data(port)",
+                "font-size": 7,
+                "font-family": "ui-monospace, monospace",
+                color: "#8b8bfd",
+                "text-background-color": "#0a0a0f",
+                "text-background-opacity": 1,
+                "text-background-padding": "2px",
+                // 不旋转：斜边上的标签会读不了
+                "text-rotation": "none",
+              },
+            },
+          ],
+        });
+
+        // 悬浮提示：状态/耗时/节点/错误。比塞进方块标签可靠（方块会撑得很大）
+        cy.nodes().forEach((n) => {
+          const d = n.data();
+          const lines = [
+            d.label,
+            "status: " + d.status,
+            d.duration != null ? "耗时: " + fmtDur(d.duration * 1000) : "",
+            d.attempts > 1 ? "重试: " + d.attempts : "",
+            d.node ? "节点: " + d.node : "",
+            d.summary ? "结果: " + d.summary : "",
+            d.error ? "错误: " + d.error : "",
+          ].filter(Boolean);
+          n.tooltip = lines.join("\n");
+        });
+        // Cytoscape 没有内置 tooltip，用原生 title 挂在 canvas 上
+        host.addEventListener("mousemove", (ev) => {
+          const tgt = cy.renderer().findNearestElement(ev.offsetX, ev.offsetY);
+          if (tgt && tgt.isNode && tgt.isNode()) {
+            host.title = tgt.data().label + "\n" + (tgt.tooltip || "").split("\n").slice(1).join("\n");
+          } else {
+            host.title = "";
+          }
+        });
+
+        // 挂在 host 上而不是 wrap：wrap 是外层容器，.chain-graph 才是
+        // Cytoscape 的 canvas 宿主。调试和 e2e 都是从 .chain-graph 找实例的。
+        host._cy = cy;
+        host._refit = () => {
+          cy.resize();
+          cy.fit(undefined, 30);
+        };
+
+        // 浏览器里挂好后 fit 一次（此时容器已在 DOM 中，尺寸可用）
+        requestAnimationFrame(() => {
+          cy.resize();
+          cy.fit(undefined, 30);
+        });
+
+        return wrap;
+      }
+
       // renderChainView 按当前模式渲染任务链
       function renderChainView(chain, byParent, roots) {
         chain.replaceChildren();
 
         // 视图切换器
+        //
+        // 三种视图各有强项，不是重复：
+        //   瀑布图 → 时序（谁先谁后、各跑多久、哪里并行）
+        //   图     → 拓扑（谁派生自谁，扇出/汇聚的形状）
+        //   树     → 紧凑（列表里扫一眼层级，占地方最少）
         const sw = el("div", "wf-switch mb-3");
         for (const [key, label] of [
           ["waterfall", t("events.wf.waterfall", "瀑布图")],
+          ["graph", t("events.wf.graph", "图")],
           ["tree", t("events.wf.tree", "树")],
         ]) {
           const b = el("button", chainView === key ? "on" : "", label);
@@ -867,6 +1051,8 @@
 
         if (chainView === "waterfall") {
           chain.appendChild(renderWaterfall(chainTasks));
+        } else if (chainView === "graph") {
+          chain.appendChild(renderChainGraph(chainTasks, byParent, roots));
         } else {
           for (const r of roots) chain.appendChild(renderNode(r, byParent));
         }
