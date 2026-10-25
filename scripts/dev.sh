@@ -24,7 +24,11 @@
 #   NO_AUTOLOGIN=1   不播种开发账号、不生成自动登录页（只用 passkey）
 #   NO_DEMO_DATA=1   不造示例数据（能力图/节点/事件链），起一个**完全空**的实例
 #   ANOTIFY_DEV_USER 开发账号用户名（默认 demo）
-#   ANOTIFY_DEMO_SEC 示例节点保持在线的秒数（默认 18；期间事件链真的跑完）
+#   ANOTIFY_DEMO_SEC 示例节点保持在线的秒数（默认 30；期间事件链真的跑完）
+#
+# 输出的访问地址有三种：本地(localhost) / 内网(局域网 IP，手机可用) / 公网(trycloudflare)。
+# 内网地址取默认路由的出口 IP——不用 `hostname -I`，那个在有 docker 网桥的机器上
+# 常返回 172.17.0.1，手机连不上。
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -73,6 +77,29 @@ if lsof -nP -iTCP:"${PORT_NUM}" -sTCP:LISTEN >/dev/null 2>&1; then
 	lsof -nP -iTCP:"${PORT_NUM}" -sTCP:LISTEN
 	exit 1
 fi
+
+# ---------- 3.5 探测内网地址（手机/别的机器访问用）----------
+#
+# 为什么要单独探：开发时最常见的需求是"用手机看看效果"。localhost 不行，
+# trycloudflare 要等隧道且域名会变，内网直连是最省事的一条路。
+#
+# 取默认路由的出口 IP，而不是 `hostname -I | awk '{print $1}'`：
+# 后者在有 docker0 / br-* 网桥的机器上经常先返回 172.17.0.1，
+# 那个地址手机根本连不上。
+LAN_IP=""
+if command -v ip >/dev/null 2>&1; then
+	LAN_IP=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+fi
+# 兜底：路由查不到就直接问内核（排除回环与 docker 网桥）
+if [ -z "$LAN_IP" ]; then
+	LAN_IP=$(ip -4 -brief addr show 2>/dev/null \
+		| awk '$2=="UP" && $3 !~ /^(127\.|172\.1[0-9]\.|172\.2[0-9]\.|172\.3[01]\.)/ {split($3,a,"/"); print a[1]; exit}')
+fi
+# 只保留私有网段，公网 IP 不该被当成"内网地址"展示
+case "$LAN_IP" in
+	10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
+	*) LAN_IP="" ;;
+esac
 
 # ---------- 4. 起 cloudflared tunnel ----------
 TUNNEL_PID=""
@@ -213,6 +240,7 @@ fi
 echo ""
 echo "▶ 启动 Anotify server（ANOTIFY_ADDR=$ANOTIFY_ADDR, RP_ID=${ANOTIFY_RP_ID:-localhost}）…"
 echo "  本地：http://localhost:${PORT_NUM}"
+[ -n "$LAN_IP" ] && echo "  内网：http://${LAN_IP}:${PORT_NUM}  （手机/同网段机器）"
 [ -n "$TUNNEL_URL" ] && echo "  公网：${TUNNEL_URL}  （启动后自动验证）"
 [ -n "$AUTOLOGIN_URL" ] && echo "  免 passkey 登录：$AUTOLOGIN_URL"
 echo "  日志：/tmp/anotify-dev.log"
@@ -292,6 +320,26 @@ if [ "${NO_DEMO_DATA:-0}" != "1" ] && [ "${NO_AUTOLOGIN:-0}" != "1" ]; then
 	else
 		echo "  ⚠️  示例数据失败（不影响使用），日志：/tmp/anotify-demo.log"
 		tail -3 /tmp/anotify-demo.log 2>/dev/null | sed 's/^/     /'
+	fi
+fi
+
+# ---------- 9. 访问地址汇总 ----------
+#
+# 放在最后是因为此时 server 已确认能应答，内网地址也才值得打印
+# （早打印等于承诺一个还没验证的地址）。
+if [ -n "$LAN_IP" ]; then
+	lan_login="http://${LAN_IP}:${PORT_NUM}/$(basename "$AUTOLOGIN_PAGE")"
+	if curl -fsS -o /dev/null --max-time 3 "http://${LAN_IP}:${PORT_NUM}/" 2>/dev/null; then
+		echo ""
+		echo "▶ 内网访问（手机/同网段机器，同一 WiFi 下直接打开）："
+		echo "   http://${LAN_IP}:${PORT_NUM}"
+		if [ -f "$AUTOLOGIN_PAGE" ]; then
+			echo "   免 passkey 登录：${lan_login}"
+		fi
+	else
+		echo ""
+		echo "▶ 内网地址 http://${LAN_IP}:${PORT_NUM} 本机连不通"
+		echo "   （常见原因：防火墙拦了 ${PORT_NUM} 端口，或 server 只绑了 127.0.0.1）"
 	fi
 fi
 
