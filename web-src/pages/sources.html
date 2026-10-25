@@ -253,8 +253,13 @@
   class="fixed inset-0 z-50 hidden items-center justify-center p-4"
   style="background: rgba(0, 0, 0, 0.62)"
 >
+  <!--
+    面板底色必须不透明：.card 的 --surface-1 是 rgba(…, 0.02)，
+    直接用在弹窗上会把背后的列表透出来，看起来像"弹窗消失了"。
+    --panel-modal 是专为模态层定义的不透明底色（见 tokens.css）。
+  -->
   <div
-    class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden p-6 shadow-2xl"
+    class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden !bg-[var(--panel-modal)] p-6 shadow-2xl"
   >
     <div class="mb-4 flex items-center justify-between">
       <h3 id="modal-title" class="font-display text-lg text-white"></h3>
@@ -963,10 +968,15 @@
           (selected || []).map((x) => (typeof x === "string" ? x : x && x.capabilityId)).filter(Boolean),
         );
 
-        const usable = CAPS.filter((c) => {
-          if (c.kind === "origin" && c.source === "builtin") return false;
-          return true;
-        });
+        // 出口只能是"有节点认领、等着干活的"能力。
+        //
+        // 原来只排除了 kind=origin 且 source=builtin 的（内置起点），
+        // 但 kind=origin 还有另一种成因：**没有任何节点声明它**。
+        // 那种能力现在还是"起点"语义（事件可以从它发起），不该被当成
+        // 别人事件的出口 —— 选了它，任务永远没有执行者。
+        //
+        // 所以判断只看 kind，不看 source：origin 一律排除。
+        const usable = CAPS.filter((c) => c.kind !== "origin");
 
         if (!usable.length) {
           box.appendChild(
