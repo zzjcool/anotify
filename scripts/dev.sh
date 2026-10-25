@@ -318,7 +318,10 @@ fi
 #
 # 这也是示例数据「是真的」的原因——它不走后门：等同于一个外部系统在发
 # webhook，外加一台真节点在接单、ack、回报，于是事件流与任务链自然长出来。
-if [ "${NO_DEMO_DATA:-0}" != "1" ] && [ "${NO_AUTOLOGIN:-0}" != "1" ]; then
+# 只看 NO_DEMO_DATA：示例数据和自动登录页是两件事。
+# 早先这里还要求 NO_AUTOLOGIN!=1，导致"我只想要数据、不要登录页"时
+# 连数据也没有了——NO_AUTOLOGIN 的语义应该是"不生成登录页"，不是"跳过一切"。
+if [ "${NO_DEMO_DATA:-0}" != "1" ]; then
 	DEV_USER="${ANOTIFY_DEV_USER:-demo}"
 	echo "▶ 造示例数据（能力图 + 节点 + 事件链）…"
 	# 等 server 真能应答，别抢跑

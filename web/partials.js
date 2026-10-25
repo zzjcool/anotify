@@ -81,6 +81,7 @@
 		],
 		security: ["M3 11h18v11H3z", "M7 11V7a5 5 0 0 1 10 0v4"],
 		home: ["M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+		sources: ["M13 2L3 14h8l-1 8 10-12h-8z"],
 	};
 
 	/* ---------- 侧栏导航结构（IA：工作台 / 集成 / 账户） ----------
@@ -102,6 +103,13 @@
 					fallback: "事件流",
 					href: "events.html",
 					icon: "overview",
+				},
+				{
+					id: "sources",
+					labelKey: "common.nav.sources",
+					fallback: "源",
+					href: "sources.html",
+					icon: "sources",
 				},
 				{
 					id: "capabilities",
@@ -758,6 +766,7 @@
 						"receivers.html",
 						"keys.html",
 						"events.html",
+						"sources.html",
 						"capabilities.html",
 						"nodes.html",
 						"security.html",

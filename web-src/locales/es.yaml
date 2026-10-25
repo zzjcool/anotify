@@ -20,6 +20,7 @@ common:
     notification: Notificaciones
     admin_section: Admin
     admin: Consola Admin
+    sources: Fuentes
   lang:
     label: Idioma
     switcher_label: Cambiar idioma
@@ -54,10 +55,10 @@ common:
     never: Nunca usado
     weeks_ago: hace {n} sem
   ttl:
-    day: "{n} d"
-    hour: "{n} h"
-    minute: "{n} min"
-    second: "{n} s"
+    day: '{n} d'
+    hour: '{n} h'
+    minute: '{n} min'
+    second: '{n} s'
   agentState:
     working: En ejecución
     blocked: En espera
@@ -119,7 +120,7 @@ index:
     morning: Buenos días
     afternoon: Buenas tardes
     evening: Buenas noches
-    with_name: "{greeting}, {name}"
+    with_name: '{greeting}, {name}'
   loading: Cargando tus estadísticas…
   demo_badge: Datos demo (backend no conectado)
   kpi:
@@ -130,7 +131,7 @@ index:
     today_sub: Enviado → Entregado
     devices: Dispositivos receptores
     devices_enabled: Activos
-    devices_sub: "{n} dispositivos · cifrado de extremo a extremo"
+    devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
     devices_sub2: Suscripciones push + WebSocket
     rate_na: Sin receptores — tasa de entrega no disponible
     trend_demo: Demo
@@ -150,9 +151,9 @@ index:
       sat: S
     month: Mes {n}
     tip:
-      count: "{n} notificaciones"
+      count: '{n} notificaciones'
       none: Sin notificaciones
-      date: "{d}/{m} {w}"
+      date: '{d}/{m} {w}'
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
@@ -162,12 +163,16 @@ index:
     option_b: O reporta desde un script / CI
     copy: Copiar
     curl_example_title: Despliegue listo
-    cmd_a_comment: "# Copia esto y envíaloelo a tu pi"
-    cmd_a: |
-      Instálame el plugin de notificaciones de anotify:
+    cmd_a_comment: '# Copia esto y envíaloelo a tu pi'
+    cmd_a: 'Instálame el plugin de notificaciones de anotify:
+
       1. Ejecuta pi install npm:pi-anotify
+
       2. Ejecuta sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+
       3. Muéstrame el enlace o código de autorización del terminal — lo apruebo en el navegador y te digo el resultado
+
+      '
   recent:
     title: Notificaciones recientes
     subtitle: Actualización en vivo · clic en una fila para detalles
@@ -197,13 +202,13 @@ index:
     sending: Enviando…
     success: Enviado, coincide con {n} dispositivo(s)
     no_device: Enviado, pero ningún dispositivo coincidente está suscrito
-    failed: "Error al enviar: {msg}"
+    failed: 'Error al enviar: {msg}'
     demo_disabled: Backend no conectado, no se puede enviar la notificación
     no_devices_block: No hay receptores. Activa notificaciones o añade un dispositivo en Receptores primero.
     cancel: Cancelar
   notif:
     empty: No hay notificaciones con este estado
-    delivered: "{d}/{t} dispositivos entregados"
+    delivered: '{d}/{t} dispositivos entregados'
     count: Mostrando {n}
   detail:
     open_session: Abrir sesión de Agent
@@ -216,7 +221,7 @@ index:
     n3_title: Tarea interrumpida
     n3_body: La tarea fue detenida manualmente. Progreso al 62%, estado preservado, puede reanudar.
     n4_title: Documentación actualizada
-    n4_body: "Generadas 3 páginas: README, referencia API, guía de despliegue."
+    n4_body: 'Generadas 3 páginas: README, referencia API, guía de despliegue.'
     n5_title: Revisión de código completada
     n5_body: Revisados 12 archivos, encontrados 2 punteros nulos potenciales, sugerencias generadas.
     n6_title: Migración de BD fallida
@@ -245,11 +250,15 @@ connect:
       tagline: pi-coding-agent
       desc: Escucha el evento agent_settled y envía notificaciones a todos tus dispositivos al terminar una tarea.
       prompt_title: Envíale esto a tu pi
-      prompt: |
-        Instálame el plugin de notificaciones de anotify:
+      prompt: 'Instálame el plugin de notificaciones de anotify:
+
         1. Ejecuta pi install npm:pi-anotify
+
         2. Ejecuta sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+
         3. Muéstrame el enlace o código de autorización del terminal — lo apruebo en el navegador y te digo el resultado
+
+        '
       prompt_hint: Al pegarlo, pi completa la instalación y la autorización automáticamente. Aprueba desde un dispositivo con sesión iniciada en Anotify (escanea el código QR del terminal con el móvil).
       self_hosted: ¿Autoalojado? Consulta la documentación de la API para usar tu propio dominio.
     claude_code:
@@ -263,9 +272,9 @@ connect:
       desc: Añade notificaciones de fin de tarea a OpenCode, con reporte automático tras la autorización. Plugin en desarrollo.
   journey:
     title: El viaje de una notificación
-    more: "¿Quieres profundizar? Ver docs de la API →"
+    more: ¿Quieres profundizar? Ver docs de la API →
   help:
-    title: "¿Tienes más preguntas?"
+    title: ¿Tienes más preguntas?
     docs: Docs de la API →
     keys: Gestionar Keys →
     receivers: Recepción de notificaciones →
@@ -277,9 +286,9 @@ message:
   fields_title: Todos los campos
   deliveries_title: Entregas
   delivery:
-    delivered_count: "{ok}/{n} entregados"
+    delivered_count: '{ok}/{n} entregados'
     empty: Sin registros de entrega (sin dispositivos habilitados coincidentes)
-    attempt_info: "{channel} · {n} intentos · {time}"
+    attempt_info: '{channel} · {n} intentos · {time}'
   error:
     missing_id: Falta el ID de mensaje (URL debe tener ?id=ntf_…)
     not_found: Mensaje no encontrado o ha sido eliminado
@@ -301,7 +310,7 @@ message:
   node:
     central: Ejecutada por el hub
   chain:
-    count: "{n} pasos"
+    count: '{n} pasos'
     empty: No hay otras tareas en esta traza
     current: Actual
 login:
@@ -318,21 +327,21 @@ login:
   signup:
     username_label: Elige un nombre de usuario
     username_placeholder: Ponte un nombre
-    username_hint: "2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los extremos)"
+    username_hint: '2–32 caracteres: letras, dígitos, _ -. (sin símbolos en los extremos)'
     button: Crear Passkey y registrarse
-    recovery_hint_prefix: "Tras registrarte verás "
+    recovery_hint_prefix: 'Tras registrarte verás '
     recovery_code: códigos de recuperación de un solo uso
-    recovery_hint_suffix: " una vez: guárdalos en un gestor de contraseñas. Si pierdes todos los dispositivos, entra con usuario + código de recuperación."
-    recovery_hint: "Tras registrarte verás códigos de recuperación de un solo uso una vez: guárdalos en un gestor de contraseñas. Si pierdes todos los dispositivos, entra con usuario + código de recuperación."
+    recovery_hint_suffix: ' una vez: guárdalos en un gestor de contraseñas. Si pierdes todos los dispositivos, entra con usuario + código de recuperación.'
+    recovery_hint: 'Tras registrarte verás códigos de recuperación de un solo uso una vez: guárdalos en un gestor de contraseñas. Si pierdes todos los dispositivos, entra con usuario + código de recuperación.'
     err_empty: Primero elige un nombre de usuario.
     err_short: El nombre de usuario necesita al menos 2 caracteres.
     err_long: El nombre de usuario puede tener como máximo 32 caracteres.
-    err_chars: "Usa solo letras, dígitos, _, - y . — y no empieces ni termines con _ - ."
-  ios_tip_label: "Usuarios de iOS: "
+    err_chars: Usa solo letras, dígitos, _, - y . — y no empieces ni termines con _ - .
+  ios_tip_label: 'Usuarios de iOS: '
   ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
-  recovery_soon: ""
+  recovery_soon: ''
   recovery:
-    toggle: "¿No puedes usar Passkey? Entra con un código de recuperación"
+    toggle: ¿No puedes usar Passkey? Entra con un código de recuperación
     toggle_hide: Ocultar acceso con código
     username_label: Nombre de usuario
     username_placeholder: your-name
@@ -340,17 +349,17 @@ login:
     code_placeholder: XXXX-XXXX-XXXX-XXXX
     button: Entrar con código de recuperación
     busy: Entrando…
-    err_empty: "Introduce el usuario y el código de recuperación."
-    err_failed: "Error al entrar con código: {msg}"
-    success: "Sesión iniciada — añade un Passkey en este dispositivo pronto…"
+    err_empty: Introduce el usuario y el código de recuperación.
+    err_failed: 'Error al entrar con código: {msg}'
+    success: Sesión iniciada — añade un Passkey en este dispositivo pronto…
   codes:
     title: Guarda tus códigos de recuperación
-    subtitle: "Cada código sirve una sola vez. No volverás a ver el texto en claro al salir. Cópialos a un gestor de contraseñas."
+    subtitle: Cada código sirve una sola vez. No volverás a ver el texto en claro al salir. Cópialos a un gestor de contraseñas.
     copy_all: Copiar todos
     copy: Copiar
     copied: Copiado
-    continue: "Guardados — entrar al espacio de trabajo"
-    warn: "Es la única vez que se muestran. Sin ellos, si pierdes todos los dispositivos con Passkey no podrás entrar."
+    continue: Guardados — entrar al espacio de trabajo
+    warn: Es la única vez que se muestran. Sin ellos, si pierdes todos los dispositivos con Passkey no podrás entrar.
   trust:
     data_local: Tus datos solo en tu servidor
     webauthn: Estándar WebAuthn
@@ -370,8 +379,8 @@ login:
     uncertain_signup: No se pudo crear el Passkey. Si no viste ningún aviso, usa un dispositivo con huella, Face ID o Windows Hello. Si cerraste un aviso, reintenta y permite la creación ahí.
     security: El navegador bloqueó Passkey (la página no es un origen seguro, o el dominio no coincide con la configuración del sitio). Ábrela con https o localhost.
     need_username: Primero elige un nombre de usuario.
-    login_failed: "Error al iniciar sesión: {msg}"
-    signup_failed: "Error al registrarse: {msg}"
+    login_failed: 'Error al iniciar sesión: {msg}'
+    signup_failed: 'Error al registrarse: {msg}'
     demo_enter: Backend no conectado — modo demo activado (datos de ejemplo).
     login_success_short: Sesión iniciada — entrando al workspace…
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
@@ -384,9 +393,9 @@ receivers:
     ws: Conexiones WebSocket
   push:
     title: Suscripciones push del navegador
-    subtitle_prefix: "Entregado vía servicios Push del sistema (APNs / FCM). "
+    subtitle_prefix: 'Entregado vía servicios Push del sistema (APNs / FCM). '
     subtitle_highlight: Recibe aunque el navegador esté cerrado.
-    subtitle_suffix: ""
+    subtitle_suffix: ''
     add_device: Añadir este dispositivo
   ws:
     title: Recepción por conexión larga · para plugins y cualquier dispositivo
@@ -395,7 +404,7 @@ receivers:
     copy: Copiar
     active_title: Conexiones activas
     active_subtitle: Conexiones WebSocket establecidas actualmente
-    online: " en línea"
+    online: ' en línea'
     empty_hint: Al conectar el backend, aparecerán aquí las conexiones en vivo (nombre / prefijo de Key / tiempo activo / etiquetas / último mensaje).
   tags:
     title: Enrutado por etiquetas · qué dispositivo recibe qué notificación
@@ -417,7 +426,7 @@ receivers:
     subscribing: Suscribiendo a push…
     reporting: Reportando suscripción…
     success: ¡Suscrito! Este dispositivo recibirá notificaciones push.
-    failed: "Error de suscripción: {msg}"
+    failed: 'Error de suscripción: {msg}'
   scope:
     all: Ciclo de vida completo
     final: Solo resultados finales
@@ -437,8 +446,8 @@ receivers:
   troubleshoot:
     title: Lista de verificación por dispositivo
     local_check: Verificación local
-    perm_granted: "Permiso de notificaciones: Concedido ✓"
-    perm_denied: "Permiso de notificaciones: Denegado ✗ (reinicia en la configuración y vuelve a suscribirte)"
+    perm_granted: 'Permiso de notificaciones: Concedido ✓'
+    perm_denied: 'Permiso de notificaciones: Denegado ✗ (reinicia en la configuración y vuelve a suscribirte)'
     perm_default: 'Permiso de notificaciones: Sin solicitar (se pide al hacer clic en "Añadir dispositivo")'
     expand: ¿No recibes? Revisa esto →
   empty: Aún no hay dispositivos receptores. Haz clic en "Añadir dispositivo" arriba a la derecha para empezar.
@@ -454,22 +463,22 @@ receivers:
     rename: Renombrar
     unbind: Desvincular
   prompt:
-    tag: "Añadir etiqueta (ej: móvil / trabajo / alerta)"
+    tag: 'Añadir etiqueta (ej: móvil / trabajo / alerta)'
     rename: Nombre del dispositivo
   confirm:
     unbind: ¿Desvincular "{name}"? Ya no recibirá notificaciones.
   toast:
     saved: Guardado
-    save_failed: "Error al guardar: {msg}"
+    save_failed: 'Error al guardar: {msg}'
     unbound: Desvinculado
-    unbind_failed: "Error al desvincular: {msg}"
+    unbind_failed: 'Error al desvincular: {msg}'
     local_off: Notificaciones locales desactivadas
     added_demo: Registrado (demo)
     added: Dispositivo añadido
   checklist:
     ios_1: Debe abrirse desde el icono de la pantalla de inicio (standalone) — las pestañas normales de Safari no soportan notificaciones
     ios_2: Ajustes de iOS → Notificaciones → Safari/PWA → Permitir notificaciones
-    ios_3: "No recibe tras suscribirse: desactiva el modo No Molestar, confirma que el permiso del sitio sea «Permitir»"
+    ios_3: 'No recibe tras suscribirse: desactiva el modo No Molestar, confirma que el permiso del sitio sea «Permitir»'
     mac_1: Ajustes del sistema macOS → Notificaciones → busca tu navegador (ej. Google Chrome) → Permitir
     mac_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir» (no por defecto/bloquear)
     mac_3: Push requiere el proceso del navegador activo con la pestaña de este sitio abierta; cerrar el navegador detiene el push en tiempo real
@@ -508,13 +517,13 @@ keys:
     actions: Acciones
   security:
     title: Buenas prácticas de seguridad de la Key
-    point1_prefix: "El texto plano de la Key "
+    point1_prefix: 'El texto plano de la Key '
     point1_highlight: se muestra una sola vez al crearla
     point1_suffix: ; no puede volver a verse, solo regenerarse
-    point2_prefix: "El servidor solo guarda el "
+    point2_prefix: 'El servidor solo guarda el '
     point2_highlight: hash argon2id
     point2_suffix: ; ni una fuga de DB puede recuperar la Key
-    point3_prefix: "Usa "
+    point3_prefix: 'Usa '
     point3_highlight: una Key por Agent / entorno
     point3_suffix: ; revoca solo la afectada si hay fuga
     point4: Nunca subas Keys al control de versiones; inyéctalas con vars de entorno o un gestor de secretos
@@ -530,12 +539,12 @@ keys:
     scope_receive_desc: Para que plugins / dispositivos abran conexiones WebSocket. Prefijo ant_recv_
     scope_read_label: Leer dispositivos
     scope_read_desc: Listado de solo lectura para inspección con scripts
-    scope_hint: "Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado."
+    scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
     cancel: Cancelar
     generate: Generar Key
   save:
     title: Guarda tu Key
-    subtitle_prefix: "Esta es su "
+    subtitle_prefix: 'Esta es su '
     subtitle_highlight: única muestra completa
     copy: Copiar
     warning: Al cerrar, la Key completa no podrá volver a verse. Guárdala en un gestor de contraseñas o lugar seguro de inmediato.
@@ -546,8 +555,8 @@ keys:
     read: Lectura de dispositivos
   unnamed: Sin nombre
   unnamed_key: Key sin nombre
-  summary: "{total} Keys · {active} activos{demo}"
-  summary_demo: " · datos demo"
+  summary: '{total} Keys · {active} activos{demo}'
+  summary_demo: ' · datos demo'
   empty: Aún no hay Keys. Haz clic en "+ Nuevo Key" arriba a la derecha para crear uno y que los Agents empiecen a reportar.
   created_at: Creado {date}
   status:
@@ -560,14 +569,14 @@ keys:
   toast:
     revoked_demo: Revocado (modo demo, solo local)
     revoked: Revocado "{name}"
-    revoke_failed: "Error al revocar: {msg}"
+    revoke_failed: 'Error al revocar: {msg}'
     copied: Copiado ✓
     copy_failed: Error al copiar, selecciona y copia manualmente
     created: Key creado
   error:
     no_scope: Selecciona al menos un ámbito
     no_plaintext: El servidor no devolvió el texto plano del Key
-    create_failed: "Error al crear: {msg} (prueba el modo demo si el backend no está listo)"
+    create_failed: 'Error al crear: {msg} (prueba el modo demo si el backend no está listo)'
   demo:
     name1: Desarrollo local
     name2: Pipeline CI
@@ -576,45 +585,45 @@ keys:
 security:
   title: Seguridad y acceso
   subtitle: Passkey · Sesiones · Códigos de recuperación
-  intro: "Gestiona todo sobre quién eres: credenciales Passkey, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores)."
+  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores).'
   add_passkey: Añadir Passkey
   passkey:
     title: Credenciales Passkey
     subtitle: Tus credenciales de acceso sin contraseña. Una cuenta puede tener varios Passkeys, sincronizados entre dispositivos del mismo ecosistema.
-    count: " credenciales"
+    count: ' credenciales'
   session:
     title: Sesiones de acceso
     subtitle: En qué dispositivos está tu cuenta iniciada ahora. Las sesiones son independientes y se pueden revocar individualmente.
-    count: " sesiones activas"
+    count: ' sesiones activas'
   recovery:
     title: Códigos de recuperación
-    desc_prefix: "El respaldo final cuando pierdes todos los dispositivos y "
+    desc_prefix: 'El respaldo final cuando pierdes todos los dispositivos y '
     desc_highlight: no puedes entrar con Passkey
     desc_suffix: . Entra con usuario + código de recuperación y luego añade un nuevo Passkey. Cada código sirve una sola vez.
     regenerate: Regenerar
     regenerating: Generando…
-    hint: "{n} sin usar · el texto en claro solo se muestra al generar — guárdalos en un gestor de contraseñas"
-    hint_none: "Aún no hay códigos. Pulsa Regenerar para emitir un juego nuevo."
-    hint_plaintext: "Copia y guarda ahora · al salir o actualizar solo verás la cantidad restante"
-    confirm_regen: "Regenerar anula de inmediato todos los códigos antiguos. ¿Continuar?"
-    toast_regen: "Nuevos códigos generados — guárdalos ahora"
-    toast_regen_failed: "Error al regenerar: {msg}"
+    hint: '{n} sin usar · el texto en claro solo se muestra al generar — guárdalos en un gestor de contraseñas'
+    hint_none: Aún no hay códigos. Pulsa Regenerar para emitir un juego nuevo.
+    hint_plaintext: Copia y guarda ahora · al salir o actualizar solo verás la cantidad restante
+    confirm_regen: Regenerar anula de inmediato todos los códigos antiguos. ¿Continuar?
+    toast_regen: Nuevos códigos generados — guárdalos ahora
+    toast_regen_failed: 'Error al regenerar: {msg}'
     toast_status_failed: No se pudo cargar el estado de los códigos
     copy_all: Copiar todos
     copy: Copiar
     copied: Copiado
     status_loading: Cargando…
-    nudge_title: "Acabas de entrar con un código de recuperación"
-    nudge_body: "Añade pronto un Passkey en este dispositivo para no depender de los códigos."
-    nudge_action: "Añadir Passkey en este dispositivo"
+    nudge_title: Acabas de entrar con un código de recuperación
+    nudge_body: Añade pronto un Passkey en este dispositivo para no depender de los códigos.
+    nudge_action: Añadir Passkey en este dispositivo
     nudge_dismiss: Entendido
   concept:
     title: Dos ejes independientes
     auth_label: Eje de autenticación
     auth_axis: quién eres (esta página)
-    auth_p1: "· Credenciales Passkey: una cuenta puede tener varias"
-    auth_p2: "· Sesiones de acceso: multidispositivo, revocables individualmente"
-    auth_p3: "· Códigos de recuperación: respaldo si se pierden todos los dispositivos"
+    auth_p1: '· Credenciales Passkey: una cuenta puede tener varias'
+    auth_p2: '· Sesiones de acceso: multidispositivo, revocables individualmente'
+    auth_p3: '· Códigos de recuperación: respaldo si se pierden todos los dispositivos'
     delivery_label: Eje de entrega
     delivery_axis: a dónde van las notificaciones
     delivery_p1: · Se gestiona en la página Destinatarios, aparte de esta
@@ -635,33 +644,33 @@ security:
   revoke: Revocar
   last_active: Última actividad {time}
   prompt:
-    rename: "Introduce un nuevo nombre para este Passkey:"
+    rename: 'Introduce un nuevo nombre para este Passkey:'
   confirm:
     delete: '¿Eliminar Passkey "{name}"?
 
       Los dispositivos que lo usen ya no podrán iniciar sesión (códigos de recuperación como respaldo).'
     revoke: ¿Revocar la sesión de "{name}"? Ese dispositivo tendrá que iniciar sesión de nuevo.
   alert:
-    add_requirement: "Para añadir un Passkey se necesita:
+    add_requirement: 'Para añadir un Passkey se necesita:
 
       1. Backend funcionando con HTTPS
 
       2. Navegador con soporte WebAuthn
 
 
-      Actualmente en modo demo. Cuando el backend esté listo, se activará la biometría del sistema."
+      Actualmente en modo demo. Cuando el backend esté listo, se activará la biometría del sistema.'
   toast:
     renamed_demo: Renombrado (modo demo, solo local)
     renamed: Renombrado
-    rename_failed: "Error al renombrar: {msg}"
+    rename_failed: 'Error al renombrar: {msg}'
     deleted_demo: Eliminado (modo demo, solo local)
     deleted: Eliminado "{name}"
-    delete_failed: "Error al eliminar: {msg}"
+    delete_failed: 'Error al eliminar: {msg}'
     add_success: Passkey añadido correctamente
-    add_failed: "Error al añadir: {msg}"
+    add_failed: 'Error al añadir: {msg}'
     revoked_demo: Revocado (modo demo, solo local)
     revoked: Sesión revocada para "{name}"
-    revoke_failed: "Error al revocar: {msg}"
+    revoke_failed: 'Error al revocar: {msg}'
   demo:
     pk1_name: iCloud Llavero
     pk1_type: Sincronización de plataforma
@@ -679,7 +688,7 @@ security:
     current: Actual
 docs:
   title: Documentación de integración
-  subtitle: "Reportes de Agent · Web Push · WebSocket"
+  subtitle: Reportes de Agent · Web Push · WebSocket
   toc_heading: En esta página
   toc:
     agent: Conectar Agent
@@ -702,7 +711,7 @@ docs:
       payload: Carga del evento, se pasa tal cual a los params de las tareas siguientes.
       idem: Clave de idempotencia. El mismo source + idemKey produce un solo evento.
       trace: Trace explícito. Si se omite, se crea uno nuevo.
-    note: "Devuelve 200 en cuanto el evento se guarda. Un fallo de despacho también devuelve 200 — los eventos no se pierden por un error posterior; puedes reenviarlos luego."
+    note: Devuelve 200 en cuanto el evento se guarda. Un fallo de despacho también devuelve 200 — los eventos no se pierden por un error posterior; puedes reenviarlos luego.
     curl:
       title: ejemplo curl
   node:
@@ -710,12 +719,12 @@ docs:
     connect:
       title: Conexión
     up:
-      title: "Nodo → hub (subida)"
-      comment: "# hello, ack, progress, result"
+      title: Nodo → hub (subida)
+      comment: '# hello, ack, progress, result'
     down:
-      title: "Hub → nodo (bajada)"
-      comment: "# welcome, assign, cancel, error"
-    note: "El hub solo dice QUÉ hacer (capacidad + params), nunca CÓMO — sin argv, sin shell, sin línea de comandos."
+      title: Hub → nodo (bajada)
+      comment: '# welcome, assign, cancel, error'
+    note: El hub solo dice QUÉ hacer (capacidad + params), nunca CÓMO — sin argv, sin shell, sin línea de comandos.
   copy: Copiar
   your_domain: su-dominio
   agent:
@@ -723,12 +732,12 @@ docs:
     intro: 'El escenario principal de Anotify: <b class="text-zinc-200">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea.'
     step1:
       title: Crear una Key de reporte
-      desc: 'Vaya a la página <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> y cree una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> (prefijo <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>). Guárdela inmediatamente.'
+      desc: Vaya a la página <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> y cree una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> (prefijo <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>). Guárdela inmediatamente.
     step2:
       title: Reportar al terminar la tarea
-      desc: 'En un evento de finalización del Agent (p. ej. <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>.'
+      desc: En un evento de finalización del Agent (p. ej. <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>.
     curl:
-      title: "Configuración mínima · un curl para enviar a todos los dispositivos"
+      title: Configuración mínima · un curl para enviar a todos los dispositivos
     journey:
       title: El viaje de una notificación
   api:
@@ -757,236 +766,232 @@ docs:
     intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="text-zinc-200">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado.'
     key:
       title: API Key (Bearer)
-      li1: "· Para reportes del Agent / conexiones long-poll del receptor"
+      li1: · Para reportes del Agent / conexiones long-poll del receptor
       li2: '· Header: <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
       li3: '· scope: <code class="mono text-[12px] text-blue-300">notify:send</code> reportar · <code class="mono text-[12px] text-emerald-300">notify:receive</code> recibir · <code class="mono text-[12px] text-amber-300">devices:read</code> solo lectura'
-      li4: "· El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear"
+      li4: · El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear
     passkey:
       title: Cookie de sesión
-      li1: "· Para acceso al workspace desde el navegador (Resumen / Dispositivos / Keys)"
-      li2: "· Login sin contraseña con WebAuthn, biometría o clave de dispositivo"
-      li3: "· Cookie httpOnly; las sesiones multi-dispositivo son independientes y revocables individualmente"
-      li4: "· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación"
+      li1: · Para acceso al workspace desde el navegador (Resumen / Dispositivos / Keys)
+      li2: · Login sin contraseña con WebAuthn, biometría o clave de dispositivo
+      li3: · Cookie httpOnly; las sesiones multi-dispositivo son independientes y revocables individualmente
+      li4: '· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación'
   notify:
     core: Núcleo
-    intro: 'Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class="text-zinc-200">cifrada de extremo a extremo</b> a todos los dispositivos "habilitados y que coincidan en nivel/tag".'
+    intro: Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class="text-zinc-200">cifrada de extremo a extremo</b> a todos los dispositivos "habilitados y que coincidan en nivel/tag".
     params:
       title: Parámetros del cuerpo de la petición
-      title_desc: 'Título de la notificación, p. ej. <code>"Despliegue completado"</code>, se muestra como título principal de la notificación del sistema.'
-      agent_state_desc: "Estado del agente: <code>working</code> en ejecución · <code>blocked</code> en espera · <code>done</code> completado · <code>interrupted</code> interrumpido · <code>error</code> fallido. Determina el color del icono y el filtrado de dispositivos."
-      body_desc: "Cuerpo de la notificación, detalle complementario."
-      tags_desc: "Tags de enrutamiento. Vacío = difundir a todos los dispositivos habilitados; no vacío = solo se entrega a dispositivos con tag en común o sin tags (catch-all). ≤10 tags, cada uno ≤32 caracteres."
-      link_desc: "Deep link que se abre al tocar la notificación, p. ej. <code>pi://session/sess_8f3a2c</code>."
-      meta_desc: "Metadatos de contexto para trazabilidad y estadísticas, almacenados en el historial."
-      ttl_desc: "<code>ttl</code> validez en segundos (por defecto 86400); <code>priority</code> prioridad (por defecto normal)."
+      title_desc: Título de la notificación, p. ej. <code>"Despliegue completado"</code>, se muestra como título principal de la notificación del sistema.
+      agent_state_desc: 'Estado del agente: <code>working</code> en ejecución · <code>blocked</code> en espera · <code>done</code> completado · <code>interrupted</code> interrumpido · <code>error</code> fallido. Determina el color del icono y el filtrado de dispositivos.'
+      body_desc: Cuerpo de la notificación, detalle complementario.
+      tags_desc: Tags de enrutamiento. Vacío = difundir a todos los dispositivos habilitados; no vacío = solo se entrega a dispositivos con tag en común o sin tags (catch-all). ≤10 tags, cada uno ≤32 caracteres.
+      link_desc: Deep link que se abre al tocar la notificación, p. ej. <code>pi://session/sess_8f3a2c</code>.
+      meta_desc: Metadatos de contexto para trazabilidad y estadísticas, almacenados en el historial.
+      ttl_desc: <code>ttl</code> validez en segundos (por defecto 86400); <code>priority</code> prioridad (por defecto normal).
     required: Obligatorio
     optional: Opcional
     curl:
-      title: "cURL · petición completa"
-      title_val: "Despliegue completado"
-      body_val: "Build exitoso, desplegado a producción"
-      tag_val: "trabajo"
+      title: cURL · petición completa
+      title_val: Despliegue completado
+      body_val: Build exitoso, desplegado a producción
+      tag_val: trabajo
     resp200: Aceptado y enviado
     resp200_dev1: Teléfono principal
     resp200_dev2: Mac de oficina
     resp400: Sin dispositivo coincidente / error de parámetros
-    resp400_err: "No hay dispositivos suscritos; suscríbase primero en el workspace"
-    resp400_comment: "// 401 · Key ausente o inválida (403 si scope insuficiente)"
+    resp400_err: No hay dispositivos suscritos; suscríbase primero en el workspace
+    resp400_comment: // 401 · Key ausente o inválida (403 si scope insuficiente)
     rules:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
   webpush:
     title: Suscripción Web Push (recepción en navegador)
-    intro: 'El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="text-zinc-200">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).'
-    step1: '<b class="text-zinc-200">① Obtener clave pública VAPID</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>'
-    step2: '<b class="text-zinc-200">② Registrar Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register(''/sw.js'')</code>'
-    step3: '<b class="text-zinc-200">③ Solicitar permiso y suscribir</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>'
-    step4: '<b class="text-zinc-200">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>'
+    intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="text-zinc-200">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
+    step1: <b class="text-zinc-200">① Obtener clave pública VAPID</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>
+    step2: <b class="text-zinc-200">② Registrar Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code>
+    step3: <b class="text-zinc-200">③ Solicitar permiso y suscribir</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
+    step4: <b class="text-zinc-200">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>
     code:
-      title: "Suscripción frontend · código central"
-      comment1: "// 1. Registrar SW + obtener clave pública VAPID"
-      comment2: "// 2. Suscribir (requiere permiso de notificaciones)"
-      comment3: "// 3. Reportar al backend (auth por Cookie de sesión)"
-      comment_p256dh: "// { p256dh, auth }"
-      comment_platform: "// ios|mac|win|android|other"
+      title: Suscripción frontend · código central
+      comment1: // 1. Registrar SW + obtener clave pública VAPID
+      comment2: // 2. Suscribir (requiere permiso de notificaciones)
+      comment3: // 3. Reportar al backend (auth por Cookie de sesión)
+      comment_p256dh: // { p256dh, auth }
+      comment_platform: // ios|mac|win|android|other
     ios:
       title: ⚠️ Requisito de iOS
-      desc: 'Debe "Añadir a pantalla de inicio" y ejecutar en modo standalone, de lo contrario Safari no proporciona Notification / Push API.'
+      desc: Debe "Añadir a pantalla de inicio" y ejecutar en modo standalone, de lo contrario Safari no proporciona Notification / Push API.
     android:
       title: ✅ Android es más fácil
-      desc: "Chrome/Edge puede suscribirse desde una pestaña normal vía FCM; no necesita añadir a pantalla de inicio."
+      desc: Chrome/Edge puede suscribirse desde una pestaña normal vía FCM; no necesita añadir a pantalla de inicio.
     e2e:
       title: 🔒 Cifrado de extremo a extremo
-      desc: "El payload se cifra con las claves p256dh/auth de la suscripción; el servicio de push no puede leer el contenido."
+      desc: El payload se cifra con las claves p256dh/auth de la suscripción; el servicio de push no puede leer el contenido.
   ws:
     channel2: Segundo canal de recepción
-    intro: 'Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.'
+    intro: Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
     connect:
-      title: "Establecer conexión"
-      comment: "# requiere permiso notify:receive"
-      comment2: "# opcional, para reanudar tras reconectar"
+      title: Establecer conexión
+      comment: '# requiere permiso notify:receive'
+      comment2: '# opcional, para reanudar tras reconectar'
     s2c:
-      title: "Servidor → Cliente"
-      comment1: "// primer frame tras conectar"
-      comment2: "// nueva notificación recibida"
-      title_val: "Despliegue completado"
-      body_val: "Desplegado a prod"
-      tag_val: "trabajo"
-      comment3: "// fin de replay / heartbeat / error"
+      title: Servidor → Cliente
+      comment1: // primer frame tras conectar
+      comment2: // nueva notificación recibida
+      title_val: Despliegue completado
+      body_val: Desplegado a prod
+      tag_val: trabajo
+      comment3: // fin de replay / heartbeat / error
     c2s:
-      title: "Cliente → Servidor"
-      comment1: "// suscribir / cancelar tags (vacío = todos)"
-      comment2: "// confirmar procesado (at-least-once)"
-      comment3: "// heartbeat (cada heartbeat_sec; 2 perdidos = desconectar)"
-      comment4: "// tras reconectar, usar frame resume (reemplaza header Last-Event-Id)"
+      title: Cliente → Servidor
+      comment1: // suscribir / cancelar tags (vacío = todos)
+      comment2: // confirmar procesado (at-least-once)
+      comment3: // heartbeat (cada heartbeat_sec; 2 perdidos = desconectar)
+      comment4: // tras reconectar, usar frame resume (reemplaza header Last-Event-Id)
     reconnect:
       title: Reconectar y reanudar
-      desc: 'Al reconectar, envíe el header <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> (o un primer frame <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code>; el cliente debe obtener el historial completo.'
-
+      desc: Al reconectar, envíe el header <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> (o un primer frame <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code>; el cliente debe obtener el historial completo.
 cliauth:
-  title: "Autorización de dispositivo CLI"
-  back_home: "Volver al panel"
+  title: Autorización de dispositivo CLI
+  back_home: Volver al panel
   entry:
-    heading: "Introduce el código de autorización"
-    sub: "Tras ejecutar el script de inicio de sesión en tu terminal, introduce el código de 8 caracteres que aparece allí."
-    placeholder: "XXXX-XXXX"
-    hint: "Válido durante 10 minutos · No distingue mayúsculas · Sin caracteres ambiguos como 0/O o 1/I"
-    continue: "Continuar"
-    busy: "Buscando la sesión…"
-    not_found: "No se encontró ninguna sesión de autorización para este código. Compruébalo e inténtalo de nuevo."
+    heading: Introduce el código de autorización
+    sub: Tras ejecutar el script de inicio de sesión en tu terminal, introduce el código de 8 caracteres que aparece allí.
+    placeholder: XXXX-XXXX
+    hint: Válido durante 10 minutos · No distingue mayúsculas · Sin caracteres ambiguos como 0/O o 1/I
+    continue: Continuar
+    busy: Buscando la sesión…
+    not_found: No se encontró ninguna sesión de autorización para este código. Compruébalo e inténtalo de nuevo.
   confirm:
-    heading: "¿Autorizar este dispositivo?"
-    sub: "Al aprobarlo, recibirá una clave API que actuará como tu cuenta con los permisos seleccionados."
-    ttl_hint: "La sesión de autorización es válida durante 10 minutos"
-    identity_prefix: "Autorizando como "
-    identity_suffix: ""
-    switch_prefix: "¿No eres "
-    switch_suffix: "? Cierra sesión y cambia de cuenta →"
-    scopes_label: "Permisos (selecciona al menos uno)"
-    scope_send_label: "Enviar notificaciones"
-    scope_send_desc: "Permite al agente enviar notificaciones"
-    scope_receive_label: "Recibir notificaciones"
-    scope_receive_desc: "Recibir notificaciones y suscripciones"
-    scope_read_label: "Ver dispositivos"
-    scope_read_desc: "Ver la lista de dispositivos"
-    scopes_required: "Selecciona al menos un permiso"
-    approve: "Aprobar"
-    deny: "Denegar"
-    busy: "Enviando…"
+    heading: ¿Autorizar este dispositivo?
+    sub: Al aprobarlo, recibirá una clave API que actuará como tu cuenta con los permisos seleccionados.
+    ttl_hint: La sesión de autorización es válida durante 10 minutos
+    identity_prefix: 'Autorizando como '
+    identity_suffix: ''
+    switch_prefix: '¿No eres '
+    switch_suffix: '? Cierra sesión y cambia de cuenta →'
+    scopes_label: Permisos (selecciona al menos uno)
+    scope_send_label: Enviar notificaciones
+    scope_send_desc: Permite al agente enviar notificaciones
+    scope_receive_label: Recibir notificaciones
+    scope_receive_desc: Recibir notificaciones y suscripciones
+    scope_read_label: Ver dispositivos
+    scope_read_desc: Ver la lista de dispositivos
+    scopes_required: Selecciona al menos un permiso
+    approve: Aprobar
+    deny: Denegar
+    busy: Enviando…
   done:
-    approved_badge: "Aprobado"
-    approved_title: "Autorización aprobada"
-    approved_desc: "Puedes cerrar esta página y volver a la terminal para ver el resultado."
-    approved_keys_link: "Ver en API Keys →"
-    denied_badge: "Denegado"
-    denied_title: "Autorización denegada"
-    denied_desc: "La terminal recibirá el resultado. Si no has sido tú, comprueba si alguien está intentando acceder a tu cuenta."
-    expired_badge: "Caducado"
-    expired_title: "La sesión ha caducado"
-    expired_desc: "Las sesiones de autorización son válidas durante 10 minutos. Vuelve a ejecutar el script en tu terminal para obtener un nuevo enlace o código."
-    expired_action: "Introducir un código nuevo"
-    notfound_badge: "No encontrado"
-    notfound_title: "La sesión no existe o el código es incorrecto"
-    notfound_desc: "Comprueba el código que aparece en tu terminal e inténtalo de nuevo, o vuelve a ejecutar el script."
-    notfound_action: "Reintentar"
-    consumed_badge: "Ya utilizado"
-    consumed_title: "Esta sesión ya fue autorizada"
-    consumed_desc: "Ya se emitió una clave para esta sesión. Vuelve a ejecutar el script en tu terminal si necesitas una nueva."
-    error_title: "No se puede conectar con el servidor"
-    error_desc: "Comprueba tu conexión e inténtalo de nuevo."
-    rejected_desc: "La solicitud de autorización fue rechazada. Verifica los permisos seleccionados e inténtalo de nuevo."
-    retry: "Reintentar"
+    approved_badge: Aprobado
+    approved_title: Autorización aprobada
+    approved_desc: Puedes cerrar esta página y volver a la terminal para ver el resultado.
+    approved_keys_link: Ver en API Keys →
+    denied_badge: Denegado
+    denied_title: Autorización denegada
+    denied_desc: La terminal recibirá el resultado. Si no has sido tú, comprueba si alguien está intentando acceder a tu cuenta.
+    expired_badge: Caducado
+    expired_title: La sesión ha caducado
+    expired_desc: Las sesiones de autorización son válidas durante 10 minutos. Vuelve a ejecutar el script en tu terminal para obtener un nuevo enlace o código.
+    expired_action: Introducir un código nuevo
+    notfound_badge: No encontrado
+    notfound_title: La sesión no existe o el código es incorrecto
+    notfound_desc: Comprueba el código que aparece en tu terminal e inténtalo de nuevo, o vuelve a ejecutar el script.
+    notfound_action: Reintentar
+    consumed_badge: Ya utilizado
+    consumed_title: Esta sesión ya fue autorizada
+    consumed_desc: Ya se emitió una clave para esta sesión. Vuelve a ejecutar el script en tu terminal si necesitas una nueva.
+    error_title: No se puede conectar con el servidor
+    error_desc: Comprueba tu conexión e inténtalo de nuevo.
+    rejected_desc: La solicitud de autorización fue rechazada. Verifica los permisos seleccionados e inténtalo de nuevo.
+    retry: Reintentar
   trust:
-    local: "La autorización solo tiene efecto en tu servidor"
-    ttl: "Los códigos caducan en 10 minutos"
-    revoke: "Las claves se pueden desactivar en cualquier momento en API Keys"
-
+    local: La autorización solo tiene efecto en tu servidor
+    ttl: Los códigos caducan en 10 minutos
+    revoke: Las claves se pueden desactivar en cualquier momento en API Keys
 passkeyenroll:
-  title: "Añadir una passkey en un dispositivo nuevo"
-  entry_button: "Añadir en un dispositivo nuevo"
-  local_button: "Añadir en este dispositivo"
+  title: Añadir una passkey en un dispositivo nuevo
+  entry_button: Añadir en un dispositivo nuevo
+  local_button: Añadir en este dispositivo
   panel:
-    title: "Añadir una passkey en un dispositivo nuevo"
-    sub: "Ábrelo en el dispositivo nuevo con cualquiera de estos métodos y aprueba aquí."
-    tab_qr: "Código QR"
-    tab_url: "Enlace"
-    tab_code: "Código"
-    qr_hint: "Escanéalo con la cámara del dispositivo nuevo"
-    url_hint: "Envía este enlace al dispositivo nuevo"
-    code_hint: "Introduce este código en el dispositivo nuevo"
-    waiting: "Esperando al dispositivo nuevo…"
-    expires_in: "Caduca en"
-    confirm_title: "¿Aprobar este dispositivo nuevo?"
-    confirm_sub: "Al aprobar, el dispositivo nuevo pedirá biometría para crear la passkey."
-    confirm_warn: "¿No eres tú? Recházalo. El QR / código solo debería aparecer en un dispositivo que tengas en la mano."
-    approve: "Aprobar"
-    approved_waiting: "Aprobado. Esperando a que el dispositivo nuevo complete la biometría…"
-    cancel_confirm: "¿Cancelar este registro? El enlace y el código del dispositivo nuevo dejarán de funcionar al instante."
-    success_title: "Dispositivo nuevo añadido"
-    success_desc: "Se creó la passkey para «{name}». La próxima vez podrá iniciar sesión directamente."
-    done: "Listo"
-    restart: "Empezar de nuevo"
-    error_backend_desc: "No se puede conectar con el backend (modo demo). Comprueba que el servidor esté activo y servido por HTTPS."
-    denied_title: "Registro rechazado"
-    denied_desc: "No se creó ninguna credencial. Si no has sido tú, comprueba si alguien intenta acceder a tu cuenta."
-    expired_title: "La sesión ha caducado"
-    expired_desc: "Las sesiones son válidas 10 minutos. Al empezar de nuevo se generan un QR y un código nuevos."
-    error_title: "No se puede conectar con el servidor"
-    error_desc: "Comprueba tu conexión e inténtalo de nuevo."
-    via_qr: "por QR"
-    via_url: "por enlace"
-    via_code: "por código"
+    title: Añadir una passkey en un dispositivo nuevo
+    sub: Ábrelo en el dispositivo nuevo con cualquiera de estos métodos y aprueba aquí.
+    tab_qr: Código QR
+    tab_url: Enlace
+    tab_code: Código
+    qr_hint: Escanéalo con la cámara del dispositivo nuevo
+    url_hint: Envía este enlace al dispositivo nuevo
+    code_hint: Introduce este código en el dispositivo nuevo
+    waiting: Esperando al dispositivo nuevo…
+    expires_in: Caduca en
+    confirm_title: ¿Aprobar este dispositivo nuevo?
+    confirm_sub: Al aprobar, el dispositivo nuevo pedirá biometría para crear la passkey.
+    confirm_warn: ¿No eres tú? Recházalo. El QR / código solo debería aparecer en un dispositivo que tengas en la mano.
+    approve: Aprobar
+    approved_waiting: Aprobado. Esperando a que el dispositivo nuevo complete la biometría…
+    cancel_confirm: ¿Cancelar este registro? El enlace y el código del dispositivo nuevo dejarán de funcionar al instante.
+    success_title: Dispositivo nuevo añadido
+    success_desc: Se creó la passkey para «{name}». La próxima vez podrá iniciar sesión directamente.
+    done: Listo
+    restart: Empezar de nuevo
+    error_backend_desc: No se puede conectar con el backend (modo demo). Comprueba que el servidor esté activo y servido por HTTPS.
+    denied_title: Registro rechazado
+    denied_desc: No se creó ninguna credencial. Si no has sido tú, comprueba si alguien intenta acceder a tu cuenta.
+    expired_title: La sesión ha caducado
+    expired_desc: Las sesiones son válidas 10 minutos. Al empezar de nuevo se generan un QR y un código nuevos.
+    error_title: No se puede conectar con el servidor
+    error_desc: Comprueba tu conexión e inténtalo de nuevo.
+    via_qr: por QR
+    via_url: por enlace
+    via_code: por código
   trust:
-    approve_only: "La credencial solo se crea tras aprobar en el dispositivo con sesión iniciada"
+    approve_only: La credencial solo se crea tras aprobar en el dispositivo con sesión iniciada
   entry:
-    heading: "Introduce el código de registro"
-    sub: "Tras iniciar el registro en «Seguridad e inicio de sesión» en un dispositivo con sesión iniciada, introduce el código de 8 caracteres que allí aparece."
-    continue: "Continuar"
-    busy: "Buscando la sesión…"
-    not_found: "No hay ninguna sesión para este código. Compruébalo e inténtalo de nuevo."
+    heading: Introduce el código de registro
+    sub: Tras iniciar el registro en «Seguridad e inicio de sesión» en un dispositivo con sesión iniciada, introduce el código de 8 caracteres que allí aparece.
+    continue: Continuar
+    busy: Buscando la sesión…
+    not_found: No hay ninguna sesión para este código. Compruébalo e inténtalo de nuevo.
   overview:
-    heading: "Añadir una passkey en este dispositivo"
-    session_line: "Registro solicitado por «{name}»"
-    desc: "Al continuar, tu dispositivo con sesión iniciada recibirá una solicitud de aprobación. Tras aprobar, este dispositivo pedirá biometría."
-    step1: "Este dispositivo solicita"
-    step2: "Aprueba en el dispositivo con sesión"
-    step3: "Completa la biometría aquí"
-    ttl_hint: "Sesión válida durante 10 minutos"
-    continue: "Continuar y solicitar aprobación"
-    not_mine: "¿No lo has solicitado tú? Simplemente cierra esta página."
+    heading: Añadir una passkey en este dispositivo
+    session_line: Registro solicitado por «{name}»
+    desc: Al continuar, tu dispositivo con sesión iniciada recibirá una solicitud de aprobación. Tras aprobar, este dispositivo pedirá biometría.
+    step1: Este dispositivo solicita
+    step2: Aprueba en el dispositivo con sesión
+    step3: Completa la biometría aquí
+    ttl_hint: Sesión válida durante 10 minutos
+    continue: Continuar y solicitar aprobación
+    not_mine: ¿No lo has solicitado tú? Simplemente cierra esta página.
   wait:
-    heading: "Aprueba en tu dispositivo con sesión iniciada"
-    desc: "El panel de aprobación en «{name}» espera tu confirmación."
-    status: "Esperando aprobación…"
-    code_label: "Código"
-    cancel: "Cancelar y volver"
+    heading: Aprueba en tu dispositivo con sesión iniciada
+    desc: El panel de aprobación en «{name}» espera tu confirmación.
+    status: Esperando aprobación…
+    code_label: Código
+    cancel: Cancelar y volver
   creating:
-    heading: "Creando passkey…"
-    desc: "Completa huella / cara / PIN del dispositivo en el diálogo del sistema."
-    name_label: "Ponle un nombre a esta passkey"
-    name_placeholder: "p. ej. «Móvil principal»"
-    busy: "Esperando la verificación del sistema…"
-    retry: "Reintentar"
-    cancelled: "Se canceló la verificación del sistema. Aún no hay passkey; puedes reintentar."
-    failed_desc: "Este dispositivo no pudo completar la creación (navegador o dispositivo no compatible)."
+    heading: Creando passkey…
+    desc: Completa huella / cara / PIN del dispositivo en el diálogo del sistema.
+    name_label: Ponle un nombre a esta passkey
+    name_placeholder: p. ej. «Móvil principal»
+    busy: Esperando la verificación del sistema…
+    retry: Reintentar
+    cancelled: Se canceló la verificación del sistema. Aún no hay passkey; puedes reintentar.
+    failed_desc: Este dispositivo no pudo completar la creación (navegador o dispositivo no compatible).
   success:
-    heading: "Passkey añadida"
-    desc: "La próxima vez en este dispositivo, inicia sesión solo con biometría."
-    login_now: "Iniciar sesión ahora"
+    heading: Passkey añadida
+    desc: La próxima vez en este dispositivo, inicia sesión solo con biometría.
+    login_now: Iniciar sesión ahora
   failed:
-    denied_title: "Registro rechazado"
-    denied_desc: "El dispositivo con sesión iniciada rechazó esta solicitud. No se creó ninguna credencial."
-    expired_title: "La sesión ha caducado"
-    expired_desc: "Las sesiones son válidas 10 minutos. Empieza de nuevo en el dispositivo con sesión para obtener un nuevo QR o código."
-    expired_action: "Introducir un código nuevo"
-    notfound_title: "Autorización cancelada o caducada"
-    notfound_desc: "El dispositivo de origen ha cancelado la autorización o la sesión ha caducado. Inicia un nuevo registro en el dispositivo de origen."
-    notfound_action: "Introducir nuevo código"
-    error_title: "No se puede conectar con el servidor"
-    error_desc: "Varias solicitudes han fallado. Puede deberse a una interrupción de red o a que el servidor no está en ejecución. Comprueba tu conexión e inténtalo de nuevo."
-    no_webauthn_desc: "Este navegador o entorno no admite passkeys (requiere HTTPS y un navegador moderno). Prueba con la última versión de Chrome o Safari."
-    consumed_desc: "Esta sesión ya está completada y no puede reutilizarse. Empieza de nuevo."
-
-# ===== Consola Admin =====
+    denied_title: Registro rechazado
+    denied_desc: El dispositivo con sesión iniciada rechazó esta solicitud. No se creó ninguna credencial.
+    expired_title: La sesión ha caducado
+    expired_desc: Las sesiones son válidas 10 minutos. Empieza de nuevo en el dispositivo con sesión para obtener un nuevo QR o código.
+    expired_action: Introducir un código nuevo
+    notfound_title: Autorización cancelada o caducada
+    notfound_desc: El dispositivo de origen ha cancelado la autorización o la sesión ha caducado. Inicia un nuevo registro en el dispositivo de origen.
+    notfound_action: Introducir nuevo código
+    error_title: No se puede conectar con el servidor
+    error_desc: Varias solicitudes han fallado. Puede deberse a una interrupción de red o a que el servidor no está en ejecución. Comprueba tu conexión e inténtalo de nuevo.
+    no_webauthn_desc: Este navegador o entorno no admite passkeys (requiere HTTPS y un navegador moderno). Prueba con la última versión de Chrome o Safari.
+    consumed_desc: Esta sesión ya está completada y no puede reutilizarse. Empieza de nuevo.
 admin:
   title: Consola Admin
   forbidden:
@@ -999,13 +1004,13 @@ admin:
   success: Hecho
   kpi:
     users: Usuarios totales
-    users_sub: "{n} admins"
-    active: "{n} activos (7d)"
+    users_sub: '{n} admins'
+    active: '{n} activos (7d)'
     messages: Mensajes totales
-    today: "Hoy {n}"
+    today: Hoy {n}
     devices: Dispositivos
-    enabled: "{n} habilitados"
-    keys: "{n} keys"
+    enabled: '{n} habilitados'
+    keys: '{n} keys'
     delivery_rate: Tasa de entrega
   tab:
     users: Usuarios
@@ -1042,19 +1047,19 @@ admin:
     empty: Sin sesiones activas
   top:
     messages: mensajes
-    devices: "{n} dispositivos"
+    devices: '{n} dispositivos'
   confirm:
     title: Confirmar
     cancel: Cancelar
     ok: Confirmar
     promote_title: Hacer admin
-    promote_body: "¿Promover a {name} como super admin?"
+    promote_body: ¿Promover a {name} como super admin?
     demote_title: Hacer miembro
-    demote_body: "¿Degradar a {name} a miembro?"
+    demote_body: ¿Degradar a {name} a miembro?
     disable_title: Deshabilitar usuario
-    disable_body: "¿Deshabilitar a {name}? Se cerrará su sesión al instante."
+    disable_body: ¿Deshabilitar a {name}? Se cerrará su sesión al instante.
     enable_title: Habilitar usuario
-    enable_body: "¿Habilitar a {name}?"
+    enable_body: ¿Habilitar a {name}?
   error:
     load_stats: Error al cargar estadísticas
     load_users: Error al cargar usuarios
@@ -1071,7 +1076,7 @@ events:
   empty: Aún no hay eventos. Envía uno con POST /v1/events.
   demo_badge: Modo demo — backend no conectado
   demo_hint: Backend no conectado, aún no hay eventos reales.
-  count: "{n} eventos"
+  count: '{n} eventos'
   view_chain: Ver cadena
   filter:
     trace: Trace ID
@@ -1088,7 +1093,7 @@ caps:
   new: Definir capacidad
   loading: Cargando capacidades…
   empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
-  count: "{n} capacidades"
+  count: '{n} capacidades'
   no_outputs: Sin salidas (capacidad terminal)
   any_event_type: Cualquier tipo de evento (origen)
   list:
@@ -1102,25 +1107,25 @@ caps:
     cancel: Cancelar
     submit: Crear
     created: Capacidad creada
-    create_failed: "Error al crear: "
+    create_failed: 'Error al crear: '
     err_name: Introduce un nombre de capacidad
     err_schema: paramsSchema no es JSON válido
   edges:
     title: Aristas
     new: Nueva arista
     desc: Cada arista significa "esta salida de esta capacidad apunta a otra capacidad". Una salida puede tener varias aristas (fan-out).
-    empty: "La tabla de aristas está vacía: los eventos que llegan aquí no tienen a dónde ir."
+    empty: 'La tabla de aristas está vacía: los eventos que llegan aquí no tienen a dónde ir.'
     from: Capacidad origen
     port: Salida
     port_hint: Solo se listan las salidas declaradas por la capacidad (conjunto cerrado, invariante I2).
-    port_hint_origin: "Para un origen, el puerto es el propio tipo de evento (lo decide el sistema externo, p. ej. pull_request.opened de GitHub)"
+    port_hint_origin: Para un origen, el puerto es el propio tipo de evento (lo decide el sistema externo, p. ej. pull_request.opened de GitHub)
     port_placeholder: pull_request.opened
     to: Capacidad destino
     remove: Eliminar
     removed: Eliminada
-    remove_failed: "Error al eliminar: "
+    remove_failed: 'Error al eliminar: '
     created: Arista creada
-    create_failed: "Error al crear: "
+    create_failed: 'Error al crear: '
     err_incomplete: Elige origen, salida y destino
     no_ports: (esta capacidad no tiene salidas)
 nodes:
@@ -1129,16 +1134,16 @@ nodes:
   refresh: Actualizar
   loading: Cargando nodos…
   empty: Aún no hay nodos. Registra el primero abajo — empieza a recibir trabajo cuando esté en línea.
-  count: "{online}/{total} en línea"
+  count: '{online}/{total} en línea'
   never: Nunca
   last_seen: Latido
   no_caps: Sin capacidades declaradas
-  slots: "Ranuras {busy}/{total}"
+  slots: Ranuras {busy}/{total}
   drain: Vaciar
   draining_hint: Vaciando
   drain_confirm: ¿Vaciar {name}? Termina las tareas actuales pero no acepta nuevas.
   drain_done: Vaciado
-  drain_failed: "Error al vaciar: "
+  drain_failed: 'Error al vaciar: '
   status:
     online: En línea
     offline: Desconectado
@@ -1150,3 +1155,69 @@ nodes:
     desc: El registro de nodos es una acción de operador (no autoservicio), así que ejecútala en el servidor. El token se devuelve una sola vez.
     step1: Registra el nodo en el servidor (declara qué capacidades puede ejecutar)
     step2: Arráncalo en la máquina del nodo con el token; se conecta de vuelta por WS
+sources:
+  title: Fuentes
+  subtitle: 'Una fuente es la entrada de eventos: un temporizador se dispara, un webhook es llamado, o haces clic en ejecutar. Produce eventos y los despacha a las capacidades que elijas.'
+  new: Nueva fuente
+  refresh: Actualizar
+  empty: Aún no hay fuentes. Haz clic en «Nueva fuente» para empezar.
+  explain:
+    title: 'Fuentes vs. capacidades: '
+    body: 'Una capacidad responde «qué se puede hacer»: los nodos la declaran y el hub le despacha tareas. Una fuente responde «cuándo empezar»: tiene configuración, produce eventos y no hace trabajo por sí misma. Por eso una fuente no necesita aristas: sus salidas son las capacidades que eliges aquí.'
+  kind:
+    cron: Temporizador
+    webhook: Webhook
+    manual: Manual
+  next_fire: próximo {t}
+  manual_hint: Se dispara al hacer clic en Ejecutar
+  targets_label: Salidas
+  no_target: ninguna
+  target_missing: eliminada
+  fire: Ejecutar ahora
+  enable: Activar
+  disable: Desactivar
+  edit: Editar
+  delete: Eliminar
+  disabled: desactivada
+  deleted: Eliminada
+  created: Creada
+  saved: Guardada
+  save_failed: 'Error al guardar: {e}'
+  fire_failed: 'Error al ejecutar: {e}'
+  fired: 'Disparada: {n} tarea(s) despachada(s)'
+  fired_pruned: ', {n} podada(s)'
+  fired_none: Evento guardado pero no despachado ({r})
+  fired_empty: Evento guardado, sin tareas que despachar
+  delete_confirm: ¿Eliminar la fuente «{n}»? Los eventos y tareas existentes se conservan.
+  in: en {n}
+  ago: hace {n}
+  unit:
+    sec: s
+    min: min
+    hour: h
+    day: d
+  modal:
+    new: Nueva fuente
+    edit: Editar fuente
+  form:
+    name: Nombre
+    name_ph: 'ej.: chequeo-nocturno'
+    kind: Disparador
+    kind_hint: No se puede cambiar tras crearla (cambiar el tipo cambia la semántica). Elimínala y créala de nuevo.
+    expr: 'Expresión cron (5 campos: min hora dom mes dow)'
+    expr_hint: 'Admite * / , - ; las macros como @daily no están soportadas. Ejemplo: 0 3 * * * significa diario a las 03:00.'
+    hook_hint: 'Tras crearla se genera una URL dedicada; cualquier sistema externo puede hacer POST a ella. Quien tenga la URL puede enviar eventos: guárdala con cuidado.'
+    targets: Capacidades de salida (selección múltiple)
+    targets_hint: El evento se despacha a todas las capacidades seleccionadas (fan-out). Se requiere al menos una.
+    enabled: Activada
+    cancel: Cancelar
+    save: Guardar
+    name_required: El nombre es obligatorio
+    expr_required: La expresión cron es obligatoria
+    targets_required: Elige al menos una capacidad de salida
+    no_caps: Aún no hay capacidades utilizables. Defínelas primero en la página «Capacidades».
+  preset:
+    hourly: Cada hora
+    daily3: Diario 3:00
+    weekdays9: Laborables 9:00
+    every15: Cada 15 min

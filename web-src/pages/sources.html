@@ -1,0 +1,697 @@
+{{define "title"}}{{t "sources.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* 源卡片：左边是"什么时候触发"，右边是"派给谁" */
+      .src-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 1rem;
+        align-items: start;
+      }
+      @media (max-width: 720px) {
+        .src-row {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      /* kind 徽章：cron 紫 / webhook 蓝 / manual 绿 */
+      .src-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.1rem 0.45rem;
+        border-radius: 9999px;
+        font-size: 0.68rem;
+        font-family: var(--mono, monospace);
+        border: 1px solid var(--line-strong);
+        white-space: nowrap;
+      }
+      .src-cron {
+        color: #a78bfa;
+        border-color: rgba(167, 139, 250, 0.35);
+      }
+      .src-webhook {
+        color: #60a5fa;
+        border-color: rgba(96, 165, 250, 0.35);
+      }
+      .src-manual {
+        color: #34d399;
+        border-color: rgba(52, 211, 153, 0.35);
+      }
+      /* 出口能力：小药丸 */
+      .target-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.1rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.7rem;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--line);
+        font-family: var(--mono, monospace);
+      }
+      .target-pill.missing {
+        color: #f87171;
+        border-color: rgba(248, 113, 113, 0.4);
+      }
+      /* 表单里的多选能力：滚动容器，避免长列表把弹窗撑爆 */
+      .target-picker {
+        max-height: 14rem;
+        overflow-y: auto;
+        border: 1px solid var(--line);
+        border-radius: 0.75rem;
+        padding: 0.5rem;
+      }
+      .target-opt {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.35rem 0.5rem;
+        border-radius: 0.5rem;
+        cursor: pointer;
+        font-size: 0.8rem;
+      }
+      .target-opt:hover {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .hook-url {
+        font-family: var(--mono, monospace);
+        font-size: 0.7rem;
+        word-break: break-all;
+        opacity: 0.8;
+      }
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 2rem;
+        transform: translateX(-50%) translateY(1rem);
+        opacity: 0;
+        pointer-events: none;
+        transition: all 0.22s ease;
+        z-index: 60;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+      <div class="mx-auto max-w-6xl space-y-8">
+        <div class="reveal visible">
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 class="font-display text-3xl text-white">{{t "sources.title"}}</h2>
+              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+                {{t "sources.subtitle"}}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <button
+                id="btn-refresh"
+                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
+              >
+                {{t "sources.refresh"}}
+              </button>
+              <button
+                id="btn-new"
+                class="btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium"
+              >
+                {{t "sources.new"}}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 说明：源和能力的分工 -->
+        <div class="card rounded-2xl p-4 text-sm leading-relaxed text-zinc-400">
+          <span class="text-zinc-200">{{t "sources.explain.title"}}</span>
+          {{t "sources.explain.body"}}
+        </div>
+
+        <div id="src-list" class="space-y-3"></div>
+      </div>
+</div>
+
+<!-- 新建 / 编辑弹窗 -->
+<div
+  id="src-modal"
+  class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+  style="background: rgba(0, 0, 0, 0.62)"
+>
+  <div
+    class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden p-6 shadow-2xl"
+  >
+    <div class="mb-4 flex items-center justify-between">
+      <h3 id="modal-title" class="font-display text-lg text-white"></h3>
+      <button id="modal-close" class="btn-ghost rounded-lg px-2 py-1 text-sm">✕</button>
+    </div>
+
+    <div class="flex-1 space-y-4 overflow-y-auto">
+      <div>
+        <label class="mb-1 block text-xs text-zinc-400" for="f-name"
+          >{{t "sources.form.name"}}</label
+        >
+        <input id="f-name" class="input w-full text-sm" placeholder="{{t "sources.form.name_ph"}}" />
+      </div>
+
+      <div>
+        <label class="mb-1 block text-xs text-zinc-400" for="f-kind"
+          >{{t "sources.form.kind"}}</label
+        >
+        <select id="f-kind" class="input w-full text-sm">
+          <option value="cron">{{t "sources.kind.cron"}}</option>
+          <option value="webhook">{{t "sources.kind.webhook"}}</option>
+          <option value="manual">{{t "sources.kind.manual"}}</option>
+        </select>
+        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.kind_hint"}}</p>
+      </div>
+
+      <!-- cron 专属 -->
+      <div id="f-cron-wrap" class="hidden">
+        <label class="mb-1 block text-xs text-zinc-400" for="f-expr"
+          >{{t "sources.form.expr"}}</label
+        >
+        <input
+          id="f-expr"
+          class="input mono w-full text-sm"
+          placeholder="0 3 * * *"
+        />
+        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.expr_hint"}}</p>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="0 * * * *">
+            {{t "sources.preset.hourly"}}
+          </button>
+          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="0 3 * * *">
+            {{t "sources.preset.daily3"}}
+          </button>
+          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="0 9 * * 1-5">
+            {{t "sources.preset.weekdays9"}}
+          </button>
+          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="*/15 * * * *">
+            {{t "sources.preset.every15"}}
+          </button>
+        </div>
+      </div>
+
+      <!-- webhook 专属 -->
+      <div id="f-hook-wrap" class="hidden">
+        <p class="text-[11px] leading-relaxed text-zinc-500">
+          {{t "sources.form.hook_hint"}}
+        </p>
+      </div>
+
+      <!-- 出口能力（多选） -->
+      <div>
+        <label class="mb-1 block text-xs text-zinc-400"
+          >{{t "sources.form.targets"}}</label
+        >
+        <div id="f-targets" class="target-picker"></div>
+        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.targets_hint"}}</p>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm text-zinc-300">
+        <input id="f-enabled" type="checkbox" checked />
+        {{t "sources.form.enabled"}}
+      </label>
+    </div>
+
+    <div class="mt-4 flex items-center justify-end gap-2">
+      <button id="modal-cancel" class="btn-ghost rounded-xl px-4 py-2 text-sm">
+        {{t "sources.form.cancel"}}
+      </button>
+      <button id="modal-save" class="btn-primary rounded-xl px-4 py-2 text-sm font-medium">
+        {{t "sources.form.save"}}
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast card rounded-xl px-4 py-2 text-sm"></div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+      const API = "/v1";
+
+      // 挂载「侧栏 + 顶栏」布局。
+      //
+      // 这一步不是可选的：不调 mountLayout 的话 #page-main 不会被装进布局，
+      // 页面能渲染内容但没有侧边栏，用户点不到别的页。active 要和 NAV 里的
+      // item.id 对齐（"sources"），侧栏才会高亮当前项。
+      Anotify.mountLayout({
+        active: "sources",
+        title: t("sources.title", "源"),
+        subtitle: t("sources.subtitle", "事件的入口"),
+      });
+
+      let SOURCES = [];
+      let CAPS = [];
+      let editingID = null;
+
+      function toast(msg) {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        clearTimeout(el._timer);
+        el._timer = setTimeout(() => el.classList.remove("show"), 2800);
+      }
+
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = String(text);
+        return n;
+      }
+      function code(text, cls) {
+        const n = el("code", "mono " + (cls || ""));
+        n.textContent = String(text == null ? "" : text);
+        return n;
+      }
+
+      async function apiGet(path) {
+        try {
+          return await Anotify.api(path, { demo: null });
+        } catch (e) {
+          return null;
+        }
+      }
+
+      // ---------- 时间格式化 ----------
+      function fmtTime(ts) {
+        if (!ts) return "—";
+        const d = new Date(ts * 1000);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+      // 相对时间：cron 的"下次 3 小时后"比绝对时刻更好读
+      function relTime(ts) {
+        if (!ts) return "";
+        const diff = ts - Math.floor(Date.now() / 1000);
+        const abs = Math.abs(diff);
+        const unit =
+          abs < 60
+            ? [Math.round(abs), t("sources.unit.sec", "秒")]
+            : abs < 3600
+              ? [Math.round(abs / 60), t("sources.unit.min", "分钟")]
+              : abs < 86400
+                ? [Math.round(abs / 3600), t("sources.unit.hour", "小时")]
+                : [Math.round(abs / 86400), t("sources.unit.day", "天")];
+        return diff >= 0
+          ? t("sources.in", "{n} 后").replace("{n}", unit[0] + " " + unit[1])
+          : t("sources.ago", "{n} 前").replace("{n}", unit[0] + " " + unit[1]);
+      }
+
+      const KIND_LABEL = {
+        cron: () => t("sources.kind.cron", "定时器"),
+        webhook: () => t("sources.kind.webhook", "Webhook"),
+        manual: () => t("sources.kind.manual", "手动"),
+      };
+      const KIND_CLASS = { cron: "src-cron", webhook: "src-webhook", manual: "src-manual" };
+
+      // ---------- 加载 ----------
+      async function loadAll() {
+        const [srcData, capData] = await Promise.all([
+          apiGet(API + "/sources"),
+          apiGet(API + "/capabilities"),
+        ]);
+        SOURCES = (srcData && srcData.sources) || [];
+        CAPS = (capData && capData.capabilities) || [];
+        render();
+      }
+
+      // ---------- 渲染 ----------
+      function render() {
+        const list = document.getElementById("src-list");
+        list.replaceChildren();
+
+        if (!SOURCES.length) {
+          list.appendChild(
+            el(
+              "div",
+              "card rounded-2xl p-8 text-center text-sm text-zinc-500",
+              t("sources.empty", "还没有源。点右上角「新建源」开始。"),
+            ),
+          );
+          return;
+        }
+
+        for (const s of SOURCES) {
+          list.appendChild(sourceCard(s));
+        }
+      }
+
+      function sourceCard(s) {
+        const card = el("div", "card rounded-2xl p-5");
+        const row = el("div", "src-row");
+
+        // ---- 左：名字 + 触发方式 + 状态 ----
+        const left = el("div", "min-w-0");
+
+        const head = el("div", "flex flex-wrap items-center gap-2");
+        head.appendChild(el("span", "text-[15px] text-white", s.name));
+        head.appendChild(
+          el("span", "src-badge " + (KIND_CLASS[s.kind] || ""), KIND_LABEL[s.kind]()),
+        );
+        if (!s.enabled) {
+          head.appendChild(
+            el("span", "status-badge status-warn shrink-0", t("sources.disabled", "已停用")),
+          );
+        }
+        left.appendChild(head);
+
+        // 触发配置摘要
+        const cfgLine = el("div", "mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500");
+        if (s.kind === "cron") {
+          let expr = "";
+          try {
+            expr = (JSON.parse(s.configRaw || "{}").expr) || "";
+          } catch (e) {
+            /* 忽略 */
+          }
+          // config 走的是 JSON 对象（store 已解析），这里直接用
+          const cfg = s.config || {};
+          expr = cfg.expr || expr;
+          cfgLine.appendChild(code(expr || "?", "text-[11px] text-indigo-300"));
+          if (cfg.tz && cfg.tz !== "Local") {
+            cfgLine.appendChild(el("span", "", "· " + cfg.tz));
+          }
+          if (s.nextFireAt) {
+            cfgLine.appendChild(
+              el(
+                "span",
+                "",
+                "· " +
+                  t("sources.next_fire", "下次 {t}")
+                    .replace("{t}", fmtTime(s.nextFireAt))
+                    .replace("}", "") +
+                  "（" + relTime(s.nextFireAt) + "）",
+              ),
+            );
+          }
+        } else if (s.kind === "webhook") {
+          if (s.hookUrl) {
+            const urlLine = el("div", "hook-url mt-1");
+            urlLine.textContent = location.origin + s.hookUrl;
+            left.appendChild(urlLine);
+          }
+        } else {
+          cfgLine.appendChild(el("span", "", t("sources.manual_hint", "页面上点「立即运行」时触发")));
+        }
+        left.appendChild(cfgLine);
+
+        // 出口能力
+        const tgtWrap = el("div", "mt-2.5 flex flex-wrap items-center gap-1.5");
+        tgtWrap.appendChild(
+          el("span", "text-[11px] text-zinc-500", t("sources.targets_label", "出口") + " →"),
+        );
+        const caps = s.targetCaps || [];
+        if (!caps.length) {
+          tgtWrap.appendChild(el("span", "text-[11px] text-red-400", t("sources.no_target", "未配置")));
+        }
+        for (const c of caps) {
+          const pill = el(
+            "span",
+            "target-pill" + (c.missing ? " missing" : ""),
+            c.missing ? t("sources.target_missing", "已删除") + " " + c.id : c.name + "@" + c.version,
+          );
+          tgtWrap.appendChild(pill);
+        }
+        left.appendChild(tgtWrap);
+
+        // ---- 右：操作按钮 ----
+        const right = el("div", "flex flex-wrap items-center gap-2");
+        if (s.enabled) {
+          const fireBtn = el(
+            "button",
+            "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+            t("sources.fire", "立即运行"),
+          );
+          fireBtn.addEventListener("click", () => fireSource(s, fireBtn));
+          right.appendChild(fireBtn);
+        }
+        const toggleBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          s.enabled ? t("sources.disable", "停用") : t("sources.enable", "启用"),
+        );
+        toggleBtn.addEventListener("click", () => toggleSource(s, toggleBtn));
+        right.appendChild(toggleBtn);
+
+        const editBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          t("sources.edit", "编辑"),
+        );
+        editBtn.addEventListener("click", () => openModal(s));
+        right.appendChild(editBtn);
+
+        const delBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px] text-red-400",
+          t("sources.delete", "删除"),
+        );
+        delBtn.addEventListener("click", () => deleteSource(s, delBtn));
+        right.appendChild(delBtn);
+
+        row.appendChild(left);
+        row.appendChild(right);
+        card.appendChild(row);
+        return card;
+      }
+
+      // ---------- 操作 ----------
+      async function fireSource(s, btn) {
+        btn.disabled = true;
+        try {
+          const res = await Anotify.api(API + "/sources/" + encodeURIComponent(s.id) + "/fire", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          const n = (res && res.dispatch && res.dispatch.tasks && res.dispatch.tasks.length) || 0;
+          const pruned =
+            (res && res.dispatch && res.dispatch.pruned && res.dispatch.pruned.length) || 0;
+          if (n > 0) {
+            toast(
+              t("sources.fired", "已触发：派发 {n} 个任务").replace("{n}", n) +
+                (pruned ? t("sources.fired_pruned", "，剪枝 {n}").replace("{n}", pruned) : ""),
+            );
+          } else if (pruned > 0) {
+            // 派不出去要说清楚原因，别让用户以为"点了没反应"
+            const reasons = (res.dispatch.pruned || [])
+              .map((p) => p.reason)
+              .filter((v, i, a) => a.indexOf(v) === i);
+            toast(
+              t("sources.fired_none", "事件已入库，但没派出去（{r}）").replace(
+                "{r}",
+                reasons.join(", "),
+              ),
+            );
+          } else {
+            toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"));
+          }
+          setTimeout(loadAll, 800);
+        } catch (e) {
+          toast(t("sources.fire_failed", "触发失败：{e}").replace("{e}", e.message));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function toggleSource(s, btn) {
+        btn.disabled = true;
+        try {
+          await Anotify.api(API + "/sources/" + encodeURIComponent(s.id), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !s.enabled }),
+          });
+          await loadAll();
+        } catch (e) {
+          toast(t("sources.save_failed", "保存失败：{e}").replace("{e}", e.message));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function deleteSource(s, btn) {
+        if (!confirm(t("sources.delete_confirm", "删除源「{n}」？已产生的事件与任务会保留。").replace("{n}", s.name))) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          await Anotify.api(API + "/sources/" + encodeURIComponent(s.id), { method: "DELETE" });
+          toast(t("sources.deleted", "已删除"));
+          await loadAll();
+        } catch (e) {
+          toast(t("sources.save_failed", "保存失败：{e}").replace("{e}", e.message));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      // ---------- 弹窗 ----------
+      function openModal(src) {
+        editingID = src ? src.id : null;
+        document.getElementById("modal-title").textContent = src
+          ? t("sources.modal.edit", "编辑源")
+          : t("sources.modal.new", "新建源");
+        document.getElementById("f-name").value = src ? src.name : "";
+        document.getElementById("f-kind").value = src ? src.kind : "cron";
+        document.getElementById("f-kind").disabled = !!src; // kind 不可改
+        document.getElementById("f-enabled").checked = src ? src.enabled : true;
+
+        const cfg = (src && src.config) || {};
+        document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
+
+        renderTargetPicker(src ? src.targets || [] : []);
+        syncKindFields();
+
+        const modal = document.getElementById("src-modal");
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+      }
+
+      function closeModal() {
+        const modal = document.getElementById("src-modal");
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+        editingID = null;
+      }
+
+      // syncKindFields 按当前 kind 显示对应的配置块。
+      function syncKindFields() {
+        const kind = document.getElementById("f-kind").value;
+        document.getElementById("f-cron-wrap").classList.toggle("hidden", kind !== "cron");
+        document.getElementById("f-hook-wrap").classList.toggle("hidden", kind !== "webhook");
+      }
+
+      // renderTargetPicker 渲染出口能力多选。
+      //
+      // 只列"能被派发"的能力：
+      //   - 排除内置起点（github/cron/http/manual 这些是老模型的产物，
+      //     在新的源模型里它们已被源取代，选它们没有意义）
+      //   - 排除没有节点声明的 origin（派出去也会 pruned/no_node）
+      function renderTargetPicker(selected) {
+        const box = document.getElementById("f-targets");
+        box.replaceChildren();
+        const sel = new Set(selected || []);
+
+        const usable = CAPS.filter((c) => {
+          if (c.kind === "origin" && c.source === "builtin") return false;
+          return true;
+        });
+
+        if (!usable.length) {
+          box.appendChild(
+            el(
+              "div",
+              "p-2 text-[11px] text-zinc-500",
+              t("sources.form.no_caps", "还没有可用能力。先到「能力与出口」页定义能力。"),
+            ),
+          );
+          return;
+        }
+
+        for (const c of usable) {
+          const label = el("label", "target-opt");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.value = c.id;
+          cb.checked = sel.has(c.id);
+          label.appendChild(cb);
+          const span = el("span", "", c.name + "@" + (c.version != null ? c.version : "?"));
+          label.appendChild(span);
+          // 标出这个能力是什么角色，避免误选终端能力当入口
+          if (c.kind) {
+            label.appendChild(el("span", "text-[10px] text-zinc-600", "· " + c.kind));
+          }
+          box.appendChild(label);
+        }
+      }
+
+      function collectTargets() {
+        const box = document.getElementById("f-targets");
+        return Array.from(box.querySelectorAll("input[type=checkbox]:checked")).map((x) => x.value);
+      }
+
+      async function save() {
+        const name = document.getElementById("f-name").value.trim();
+        const kind = document.getElementById("f-kind").value;
+        const enabled = document.getElementById("f-enabled").checked;
+        const targets = collectTargets();
+
+        if (!name) {
+          toast(t("sources.form.name_required", "请填名字"));
+          return;
+        }
+        if (!targets.length) {
+          toast(t("sources.form.targets_required", "至少要选一个出口能力"));
+          return;
+        }
+
+        let config = {};
+        if (kind === "cron") {
+          const expr = document.getElementById("f-expr").value.trim();
+          if (!expr) {
+            toast(t("sources.form.expr_required", "请填 cron 表达式"));
+            return;
+          }
+          config = { expr: expr };
+        }
+
+        const body = { name: name, kind: kind, config: config, enabled: enabled, targets: targets };
+        const btn = document.getElementById("modal-save");
+        btn.disabled = true;
+        try {
+          if (editingID) {
+            await Anotify.api(API + "/sources/" + encodeURIComponent(editingID), {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            toast(t("sources.saved", "已保存"));
+          } else {
+            await Anotify.api(API + "/sources", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            toast(t("sources.created", "已创建"));
+          }
+          closeModal();
+          await loadAll();
+        } catch (e) {
+          // 服务端的校验信息（如 cron 表达式非法）原样展示，不要笼统说"失败"
+          toast(t("sources.save_failed", "保存失败：{e}").replace("{e}", e.message));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      // ---------- 绑定 ----------
+      document.getElementById("btn-refresh").addEventListener("click", loadAll);
+      document.getElementById("btn-new").addEventListener("click", () => openModal(null));
+      document.getElementById("modal-close").addEventListener("click", closeModal);
+      document.getElementById("modal-cancel").addEventListener("click", closeModal);
+      document.getElementById("modal-save").addEventListener("click", save);
+      document.getElementById("f-kind").addEventListener("change", syncKindFields);
+
+      // 预设表达式按钮
+      document.querySelectorAll("[data-expr]").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.getElementById("f-expr").value = b.getAttribute("data-expr");
+        });
+      });
+
+      // 点遮罩关闭
+      document.getElementById("src-modal").addEventListener("click", (ev) => {
+        if (ev.target.id === "src-modal") closeModal();
+      });
+
+      loadAll();
+    </script>
+{{end}}

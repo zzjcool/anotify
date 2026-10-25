@@ -20,6 +20,7 @@ common:
     notification: 通知
     admin_section: 管理
     admin: 管理后台
+    sources: 源
   lang:
     label: 语言
     switcher_label: 切换语言
@@ -48,16 +49,16 @@ common:
     login_copyright: © 2026 Anotify · MIT License · Passkey 免密
   time:
     just_now: 刚刚
-    minutes_ago: "{n} 分钟前"
-    hours_ago: "{n} 小时前"
-    days_ago: "{n} 天前"
+    minutes_ago: '{n} 分钟前'
+    hours_ago: '{n} 小时前'
+    days_ago: '{n} 天前'
     never: 从未使用
-    weeks_ago: "{n} 周前"
+    weeks_ago: '{n} 周前'
   ttl:
-    day: "{n} 天"
-    hour: "{n} 小时"
-    minute: "{n} 分钟"
-    second: "{n} 秒"
+    day: '{n} 天'
+    hour: '{n} 小时'
+    minute: '{n} 分钟'
+    second: '{n} 秒'
   agentState:
     working: 运行中
     blocked: 等待中
@@ -119,7 +120,7 @@ index:
     morning: 早上好
     afternoon: 下午好
     evening: 晚上好
-    with_name: "{greeting}，{name}"
+    with_name: '{greeting}，{name}'
   loading: 正在加载你的通知统计…
   demo_badge: 演示数据（后端未连接）
   kpi:
@@ -130,7 +131,7 @@ index:
     today_sub: 上报 → 送达
     devices: 接收设备
     devices_enabled: 已启用
-    devices_sub: "{n} 台设备 · 端到端加密"
+    devices_sub: '{n} 台设备 · 端到端加密'
     devices_sub2: 推送订阅 + 长连接
     rate_na: 暂无接收设备，送达率不可用
     trend_demo: 示例
@@ -148,11 +149,11 @@ index:
       thu: 四
       fri: 五
       sat: 六
-    month: "{n}月"
+    month: '{n}月'
     tip:
-      count: "{n} 条通知"
+      count: '{n} 条通知'
       none: 无通知
-      date: "{m}月{d}日 周{w}"
+      date: '{m}月{d}日 周{w}'
   quickstart:
     cta: 接入新 Agent
     title: 接入你的 Agent
@@ -162,12 +163,16 @@ index:
     option_b: 或脚本 / CI 直接上报
     copy: 复制
     curl_example_title: 部署完成
-    cmd_a_comment: "# 复制这段话，发给你的 pi"
-    cmd_a: |
-      请为我安装 anotify 通知插件：
+    cmd_a_comment: '# 复制这段话，发给你的 pi'
+    cmd_a: '请为我安装 anotify 通知插件：
+
       1. 运行 pi install npm:pi-anotify
+
       2. 运行 sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+
       3. 把终端里显示的授权链接或验证码告诉我，我在浏览器批准后告诉你结果
+
+      '
   recent:
     title: 最近通知
     subtitle: 实时更新 · 点击行查看详情
@@ -203,7 +208,7 @@ index:
     cancel: 取消
   notif:
     empty: 暂无该状态的通知
-    delivered: "{d}/{t} 设备已送达"
+    delivered: '{d}/{t} 设备已送达'
     count: 显示 {n} 条
   detail:
     open_session: 打开 Agent 会话
@@ -245,11 +250,15 @@ connect:
       tagline: pi-coding-agent
       desc: 监听 agent_settled 事件，任务结束时自动推送通知到你的所有设备。
       prompt_title: 发给你的 pi
-      prompt: |
-        请为我安装 anotify 通知插件：
+      prompt: '请为我安装 anotify 通知插件：
+
         1. 运行 pi install npm:pi-anotify
+
         2. 运行 sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+
         3. 把终端里显示的授权链接或验证码告诉我，我在浏览器批准后告诉你结果
+
+        '
       prompt_hint: 粘贴后 pi 会自动完成安装与授权引导；批准动作需在已登录 Anotify 的设备上进行（手机扫终端里的二维码即可）。
       self_hosted: 自部署用户：见 API 文档把接入地址换成你的域名。
     claude_code:
@@ -269,7 +278,6 @@ connect:
     docs: API 文档 →
     keys: 管理 Keys →
     receivers: 通知接收 →
-
 message:
   title: 通知详情
   loading: 正在加载…
@@ -278,9 +286,9 @@ message:
   fields_title: 全部字段
   deliveries_title: 投递记录
   delivery:
-    delivered_count: "{ok}/{n} 已送达"
+    delivered_count: '{ok}/{n} 已送达'
     empty: 暂无投递记录（未匹配到启用设备）
-    attempt_info: "{channel} · 尝试 {n} 次 · {time}"
+    attempt_info: '{channel} · 尝试 {n} 次 · {time}'
   error:
     missing_id: 缺少消息 ID（URL 应有 ?id=ntf_…）
     not_found: 消息不存在或已被清理
@@ -302,7 +310,7 @@ message:
   node:
     central: 中枢执行
   chain:
-    count: "共 {n} 步"
+    count: 共 {n} 步
     empty: 这条 trace 上没有其它任务
     current: 当前
 login:
@@ -331,7 +339,7 @@ login:
     err_chars: 只能包含字母、数字、_、-、.，且不能以 _ - . 开头或结尾。
   ios_tip_label: iOS 用户：
   ios_tip: 要接收推送通知，请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。
-  recovery_soon: ""
+  recovery_soon: ''
   recovery:
     toggle: 无法使用 Passkey？用恢复码登录
     toggle_hide: 收起恢复码登录
@@ -387,7 +395,7 @@ receivers:
     title: 浏览器推送订阅
     subtitle_prefix: 通过系统 Push 服务（APNs / FCM）送达，
     subtitle_highlight: 浏览器关闭也能收到
-    subtitle_suffix: ""
+    subtitle_suffix: ''
     add_device: 添加此设备
   ws:
     title: 长连接接收 · 为插件与任意设备而生
@@ -547,8 +555,8 @@ keys:
     read: 设备查询
   unnamed: 未命名
   unnamed_key: 未命名 Key
-  summary: "{total} 个 Key · {active} 启用{demo}"
-  summary_demo: " · 演示数据"
+  summary: '{total} 个 Key · {active} 启用{demo}'
+  summary_demo: ' · 演示数据'
   empty: 还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。
   created_at: 创建于 {date}
   status:
@@ -638,19 +646,19 @@ security:
   prompt:
     rename: 给这个 Passkey 起个新名字：
   confirm:
-    delete: "确定删除 Passkey「{name}」吗？
+    delete: '确定删除 Passkey「{name}」吗？
 
-      用它的设备将无法再登录（可用恢复码兜底）。"
+      用它的设备将无法再登录（可用恢复码兜底）。'
     revoke: 吊销「{name}」的登录会话？该设备将需要重新登录。
   alert:
-    add_requirement: "添加 Passkey 需要：
+    add_requirement: '添加 Passkey 需要：
 
       1. 后端已启动并处于 HTTPS 环境
 
       2. 浏览器支持 WebAuthn
 
 
-      当前为演示模式，后端就绪后此处将调起系统生物识别。"
+      当前为演示模式，后端就绪后此处将调起系统生物识别。'
   toast:
     renamed_demo: 已重命名（演示模式，仅本地生效）
     renamed: 已重命名
@@ -680,7 +688,7 @@ security:
     current: 当前
 docs:
   title: 接入文档
-  subtitle: "Agent 上报 · Web Push · WebSocket"
+  subtitle: Agent 上报 · Web Push · WebSocket
   toc_heading: 本页目录
   toc:
     agent: 接入 Agent
@@ -712,24 +720,24 @@ docs:
       title: 连接
     up:
       title: 节点 → 中枢（上行）
-      comment: "# 握手、接单、进度、结果"
+      comment: '# 握手、接单、进度、结果'
     down:
       title: 中枢 → 节点（下行）
-      comment: "# 握手确认、派单、取消、错误"
+      comment: '# 握手确认、派单、取消、错误'
     note: 中枢只下发「做什么」（能力名 + 参数），从不下发「怎么做」——没有 argv、没有 shell、没有命令行。
   copy: 复制
   your_domain: 你的域名
   agent:
     title: 接入 Agent
-    intro: 'Anotify 的核心场景：<b class="text-zinc-200">Agent 完成任务后，把通知自动送到你的所有设备</b>。接入只需两步——创建一个上报 Key，然后在任务结束时发一个 POST 请求。'
+    intro: Anotify 的核心场景：<b class="text-zinc-200">Agent 完成任务后，把通知自动送到你的所有设备</b>。接入只需两步——创建一个上报 Key，然后在任务结束时发一个 POST 请求。
     step1:
       title: 创建上报 Key
-      desc: '到 <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> 页新建一个 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> 权限的 Key（前缀 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>），立即保存。'
+      desc: 到 <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> 页新建一个 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> 权限的 Key（前缀 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>），立即保存。
     step2:
       title: 任务结束时上报
-      desc: '在 Agent 结束事件（如 pi 的 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>）或脚本末尾，携带 Key <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>。'
+      desc: 在 Agent 结束事件（如 pi 的 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>）或脚本末尾，携带 Key <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>。
     curl:
-      title: "最小接入 · 一行 curl 让通知送到所有设备"
+      title: 最小接入 · 一行 curl 让通知送到所有设备
     journey:
       title: 一条通知的旅程
   api:
@@ -755,239 +763,235 @@ docs:
       vapid: VAPID 公钥（订阅用）
   auth:
     title: 认证方式
-    intro: '两种凭证，对应两类调用方。<b class="text-zinc-200">权限最小化</b>：上报与接收分开，泄露一个 Key 不会波及另一头。'
+    intro: 两种凭证，对应两类调用方。<b class="text-zinc-200">权限最小化</b>：上报与接收分开，泄露一个 Key 不会波及另一头。
     key:
       title: API Key（Bearer）
-      li1: "· 用于 Agent 上报 / 接收端长连接"
+      li1: · 用于 Agent 上报 / 接收端长连接
       li2: '· Header：<code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
-      li3: '· scope：<code class="mono text-[12px] text-blue-300">notify:send</code> 上报 · <code class="mono text-[12px] text-emerald-300">notify:receive</code> 接收 · <code class="mono text-[12px] text-amber-300">devices:read</code> 只读'
-      li4: "· 服务端只存 argon2id 哈希，明文仅创建时展示一次"
+      li3: · scope：<code class="mono text-[12px] text-blue-300">notify:send</code> 上报 · <code class="mono text-[12px] text-emerald-300">notify:receive</code> 接收 · <code class="mono text-[12px] text-amber-300">devices:read</code> 只读
+      li4: · 服务端只存 argon2id 哈希，明文仅创建时展示一次
     passkey:
       title: 会话 Cookie
-      li1: "· 用于工作台浏览器访问（总览 / 设备 / Keys 管理）"
-      li2: "· WebAuthn 无密码登录，生物识别或设备密钥"
-      li3: "· httpOnly Cookie，多端会话独立、可单独吊销"
-      li4: "· 跨设备：平台同步 / 一次性连接引导 / 恢复码兜底"
+      li1: · 用于工作台浏览器访问（总览 / 设备 / Keys 管理）
+      li2: · WebAuthn 无密码登录，生物识别或设备密钥
+      li3: · httpOnly Cookie，多端会话独立、可单独吊销
+      li4: · 跨设备：平台同步 / 一次性连接引导 / 恢复码兜底
   notify:
     core: 核心
-    intro: 'Agent 在任务结束后调用本接口上报一条通知。服务端校验 API Key，定位所属用户，把通知<b class="text-zinc-200">端到端加密</b>推送到该用户所有「已启用且级别/标签匹配」的设备。'
+    intro: Agent 在任务结束后调用本接口上报一条通知。服务端校验 API Key，定位所属用户，把通知<b class="text-zinc-200">端到端加密</b>推送到该用户所有「已启用且级别/标签匹配」的设备。
     params:
       title: 请求体参数
-      title_desc: '通知标题，如 <code>"部署完成"</code>，作为系统通知主标题。'
-      agent_state_desc: "Agent 运行态：<code>working</code> 运行中 · <code>blocked</code> 等待中 · <code>done</code> 完成 · <code>interrupted</code> 中断 · <code>error</code> 失败。决定图标颜色与设备过滤。"
-      body_desc: "通知正文，补充说明。"
-      tags_desc: "路由标签。空 = 广播到所有已启用设备；非空时只投给「有共同标签」或「无标签(catch-all)」的设备。≤10 个，每个 ≤32 字符。"
-      link_desc: "点击通知后打开的深链，如 <code>pi://session/sess_8f3a2c</code>。"
-      meta_desc: "上下文元数据，用于回溯与统计，存入通知历史。"
-      ttl_desc: "<code>ttl</code> 有效期秒数（默认 86400）；<code>priority</code> 优先级（默认 normal）。"
+      title_desc: 通知标题，如 <code>"部署完成"</code>，作为系统通知主标题。
+      agent_state_desc: Agent 运行态：<code>working</code> 运行中 · <code>blocked</code> 等待中 · <code>done</code> 完成 · <code>interrupted</code> 中断 · <code>error</code> 失败。决定图标颜色与设备过滤。
+      body_desc: 通知正文，补充说明。
+      tags_desc: 路由标签。空 = 广播到所有已启用设备；非空时只投给「有共同标签」或「无标签(catch-all)」的设备。≤10 个，每个 ≤32 字符。
+      link_desc: 点击通知后打开的深链，如 <code>pi://session/sess_8f3a2c</code>。
+      meta_desc: 上下文元数据，用于回溯与统计，存入通知历史。
+      ttl_desc: <code>ttl</code> 有效期秒数（默认 86400）；<code>priority</code> 优先级（默认 normal）。
     required: 必填
     optional: 可选
     curl:
-      title: "cURL · 完整请求"
-      title_val: "部署完成"
-      body_val: "构建成功，已发布到生产环境"
-      tag_val: "工作"
+      title: cURL · 完整请求
+      title_val: 部署完成
+      body_val: 构建成功，已发布到生产环境
+      tag_val: 工作
     resp200: 已接收并分发
     resp200_dev1: 主力手机
     resp200_dev2: 办公室 Mac
     resp400: 无匹配设备 / 参数错误
-    resp400_err: "没有已订阅的设备，请先在工作台订阅"
-    resp400_comment: "// 401 · Key 缺失或无效（scope 不足时 403）"
+    resp400_err: 没有已订阅的设备，请先在工作台订阅
+    resp400_comment: // 401 · Key 缺失或无效（scope 不足时 403）
     rules:
       title: 投递规则（标签路由 + 级别过滤）
   webpush:
     title: Web Push 订阅（浏览器接收）
-    intro: '浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。<b class="text-zinc-200">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。'
-    step1: '<b class="text-zinc-200">① 取 VAPID 公钥</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>'
-    step2: '<b class="text-zinc-200">② 注册 Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register(''/sw.js'')</code>'
-    step3: '<b class="text-zinc-200">③ 请求权限并订阅</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>'
-    step4: '<b class="text-zinc-200">④ 上报订阅</b> · 把 endpoint + keys <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>'
+    intro: 浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。<b class="text-zinc-200">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。
+    step1: <b class="text-zinc-200">① 取 VAPID 公钥</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>
+    step2: <b class="text-zinc-200">② 注册 Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code>
+    step3: <b class="text-zinc-200">③ 请求权限并订阅</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
+    step4: <b class="text-zinc-200">④ 上报订阅</b> · 把 endpoint + keys <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>
     code:
-      title: "前端订阅 · 核心代码"
-      comment1: "// 1. 注册 SW + 取 VAPID 公钥"
-      comment2: "// 2. 订阅（需用户已授权通知权限）"
-      comment3: "// 3. 上报后端（会话 Cookie 鉴权）"
-      comment_p256dh: "// { p256dh, auth }"
-      comment_platform: "// ios|mac|win|android|other"
+      title: 前端订阅 · 核心代码
+      comment1: // 1. 注册 SW + 取 VAPID 公钥
+      comment2: // 2. 订阅（需用户已授权通知权限）
+      comment3: // 3. 上报后端（会话 Cookie 鉴权）
+      comment_p256dh: // { p256dh, auth }
+      comment_platform: // ios|mac|win|android|other
     ios:
       title: ⚠️ iOS 前提
-      desc: "必须先「添加到主屏幕」standalone 运行，否则 Safari 不提供 Notification / Push API。"
+      desc: 必须先「添加到主屏幕」standalone 运行，否则 Safari 不提供 Notification / Push API。
     android:
       title: ✅ Android 更省事
-      desc: "Chrome/Edge 普通标签页即可订阅，走 FCM，无需添加到主屏幕。"
+      desc: Chrome/Edge 普通标签页即可订阅，走 FCM，无需添加到主屏幕。
     e2e:
       title: 🔒 端到端加密
-      desc: "载荷用订阅的 p256dh/auth 密钥加密，推送服务无法读取内容。"
+      desc: 载荷用订阅的 p256dh/auth 密钥加密，推送服务无法读取内容。
   ws:
     channel2: 第二条接收通道
-    intro: '除浏览器推送外，任意设备 / 插件可用 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> 权限的 Key 建立 WebSocket 长连接实时接收。适合做桌面插件、CLI 守护进程、智能家居桥接，与浏览器推送并行。'
+    intro: 除浏览器推送外，任意设备 / 插件可用 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> 权限的 Key 建立 WebSocket 长连接实时接收。适合做桌面插件、CLI 守护进程、智能家居桥接，与浏览器推送并行。
     connect:
-      title: "建立连接"
-      comment: "# 需 notify:receive 权限"
-      comment2: "# 可选，断线续传"
+      title: 建立连接
+      comment: '# 需 notify:receive 权限'
+      comment2: '# 可选，断线续传'
     s2c:
-      title: "服务端 → 客户端"
-      comment1: "// 连接成功后第一条"
-      comment2: "// 收到新通知"
-      title_val: "部署完成"
-      body_val: "已发布到 prod"
-      tag_val: "工作"
-      comment3: "// 断线补漏结束 / 心跳 / 错误"
+      title: 服务端 → 客户端
+      comment1: // 连接成功后第一条
+      comment2: // 收到新通知
+      title_val: 部署完成
+      body_val: 已发布到 prod
+      tag_val: 工作
+      comment3: // 断线补漏结束 / 心跳 / 错误
     c2s:
-      title: "客户端 → 服务端"
-      comment1: "// 订阅 / 退订标签（空 = 全订阅）"
-      comment2: "// 确认已处理（at-least-once）"
-      comment3: "// 心跳（每 heartbeat_sec 一次，2 次未收则断连）"
-      comment4: "// 断线重连后用 resume 帧续传（替代 Last-Event-Id 头）"
+      title: 客户端 → 服务端
+      comment1: // 订阅 / 退订标签（空 = 全订阅）
+      comment2: // 确认已处理（at-least-once）
+      comment3: // 心跳（每 heartbeat_sec 一次，2 次未收则断连）
+      comment4: // 断线重连后用 resume 帧续传（替代 Last-Event-Id 头）
     reconnect:
       title: 重连与续传
-      desc: '断线后重连时携带 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> 头（或首帧发 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>），服务端会重放该位置之后 24h 内未确认的通知（回放窗口），随后进入实时流。超出保留窗口则返回 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> 错误，客户端应拉取全量历史。'
-
+      desc: 断线后重连时携带 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> 头（或首帧发 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>），服务端会重放该位置之后 24h 内未确认的通知（回放窗口），随后进入实时流。超出保留窗口则返回 <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> 错误，客户端应拉取全量历史。
 cliauth:
-  title: "CLI 设备授权"
-  back_home: "返回工作台"
+  title: CLI 设备授权
+  back_home: 返回工作台
   entry:
-    heading: "输入授权码"
-    sub: "在终端运行登录脚本后，输入终端显示的 8 位短码完成授权"
-    placeholder: "XXXX-XXXX"
-    hint: "短码 10 分钟内有效 · 不区分大小写 · 不含 0/O、1/I 等易混淆字符"
-    continue: "继续"
-    busy: "正在查找会话…"
-    not_found: "未找到该短码对应的授权会话，请核对后重试"
+    heading: 输入授权码
+    sub: 在终端运行登录脚本后，输入终端显示的 8 位短码完成授权
+    placeholder: XXXX-XXXX
+    hint: 短码 10 分钟内有效 · 不区分大小写 · 不含 0/O、1/I 等易混淆字符
+    continue: 继续
+    busy: 正在查找会话…
+    not_found: 未找到该短码对应的授权会话，请核对后重试
   confirm:
-    heading: "授权这台设备？"
-    sub: "批准后它将获得一个 API Key，以你的账号执行勾选的权限"
-    ttl_hint: "授权会话 10 分钟内有效"
-    identity_prefix: "以"
-    identity_suffix: "的身份授权"
-    switch_prefix: "不是"
-    switch_suffix: "？退出并切换账号 →"
-    scopes_label: "权限范围（至少选择一项）"
-    scope_send_label: "发送通知"
-    scope_send_desc: "允许 Agent 发送通知"
-    scope_receive_label: "接收通知"
-    scope_receive_desc: "接收 / 订阅通知"
-    scope_read_label: "查看设备"
-    scope_read_desc: "查看设备列表"
-    scopes_required: "请至少选择一个权限范围"
-    approve: "批准授权"
-    deny: "拒绝"
-    busy: "正在提交…"
+    heading: 授权这台设备？
+    sub: 批准后它将获得一个 API Key，以你的账号执行勾选的权限
+    ttl_hint: 授权会话 10 分钟内有效
+    identity_prefix: 以
+    identity_suffix: 的身份授权
+    switch_prefix: 不是
+    switch_suffix: ？退出并切换账号 →
+    scopes_label: 权限范围（至少选择一项）
+    scope_send_label: 发送通知
+    scope_send_desc: 允许 Agent 发送通知
+    scope_receive_label: 接收通知
+    scope_receive_desc: 接收 / 订阅通知
+    scope_read_label: 查看设备
+    scope_read_desc: 查看设备列表
+    scopes_required: 请至少选择一个权限范围
+    approve: 批准授权
+    deny: 拒绝
+    busy: 正在提交…
   done:
-    approved_badge: "已批准"
-    approved_title: "授权成功"
-    approved_desc: "可以关闭此页面，回到终端查看结果。"
-    approved_keys_link: "前往 API Keys 查看 →"
-    denied_badge: "已拒绝"
-    denied_title: "已拒绝本次授权"
-    denied_desc: "终端会收到拒绝结果。如果这不是你的操作，请检查是否有人在尝试登录你的账号。"
-    expired_badge: "已过期"
-    expired_title: "会话已过期"
-    expired_desc: "授权会话 10 分钟内有效。请回到终端重新运行登录脚本，获取新的链接或短码。"
-    expired_action: "输入新短码"
-    notfound_badge: "未找到"
-    notfound_title: "会话不存在或短码错误"
-    notfound_desc: "请核对终端显示的短码后重试，或重新运行登录脚本。"
-    notfound_action: "重新输入"
-    consumed_badge: "已使用"
-    consumed_title: "该会话已完成授权"
-    consumed_desc: "Key 已下发过，不能重复授权。如需新的 Key，请回到终端重新运行登录脚本。"
-    error_title: "无法连接服务器"
-    error_desc: "请检查网络连接后重试。"
-    rejected_desc: "授权请求被拒绝，请确认所选权限范围后重试。"
-    retry: "重试"
+    approved_badge: 已批准
+    approved_title: 授权成功
+    approved_desc: 可以关闭此页面，回到终端查看结果。
+    approved_keys_link: 前往 API Keys 查看 →
+    denied_badge: 已拒绝
+    denied_title: 已拒绝本次授权
+    denied_desc: 终端会收到拒绝结果。如果这不是你的操作，请检查是否有人在尝试登录你的账号。
+    expired_badge: 已过期
+    expired_title: 会话已过期
+    expired_desc: 授权会话 10 分钟内有效。请回到终端重新运行登录脚本，获取新的链接或短码。
+    expired_action: 输入新短码
+    notfound_badge: 未找到
+    notfound_title: 会话不存在或短码错误
+    notfound_desc: 请核对终端显示的短码后重试，或重新运行登录脚本。
+    notfound_action: 重新输入
+    consumed_badge: 已使用
+    consumed_title: 该会话已完成授权
+    consumed_desc: Key 已下发过，不能重复授权。如需新的 Key，请回到终端重新运行登录脚本。
+    error_title: 无法连接服务器
+    error_desc: 请检查网络连接后重试。
+    rejected_desc: 授权请求被拒绝，请确认所选权限范围后重试。
+    retry: 重试
   trust:
-    local: "授权仅在你的服务器上生效"
-    ttl: "短码 10 分钟过期"
-    revoke: "Key 可随时在 API Keys 页停用"
-
+    local: 授权仅在你的服务器上生效
+    ttl: 短码 10 分钟过期
+    revoke: Key 可随时在 API Keys 页停用
 passkeyenroll:
-  title: "在新设备添加 Passkey"
-  entry_button: "在新设备添加"
-  local_button: "本机添加"
+  title: 在新设备添加 Passkey
+  entry_button: 在新设备添加
+  local_button: 本机添加
   panel:
-    title: "在新设备添加 Passkey"
-    sub: "用新设备任选一种方式打开，然后在下方批准"
-    tab_qr: "二维码"
-    tab_url: "链接"
-    tab_code: "短码"
-    qr_hint: "用新设备的相机扫码打开"
-    url_hint: "把链接发到新设备打开"
-    code_hint: "在新设备的添加页面输入此短码"
-    waiting: "等待新设备接入…"
-    expires_in: "剩余有效期"
-    confirm_title: "批准这台新设备？"
-    confirm_sub: "批准后，新设备将弹出系统生物识别来创建 Passkey"
-    confirm_warn: "不是你正在操作？点拒绝。二维码 / 短码只应出现在你手里的新设备上。"
-    approve: "批准并继续"
-    approved_waiting: "已批准，等待新设备完成生物识别…"
-    cancel_confirm: "取消本次添加？新设备上的链接与短码将立即失效。"
-    success_title: "新设备已添加成功"
-    success_desc: "「{name}」的 Passkey 已创建，下次可用它直接登录。"
-    done: "完成"
-    restart: "重新发起"
-    error_backend_desc: "无法连接后端（当前为演示模式）。请确认后端已启动且通过 HTTPS 访问。"
-    denied_title: "已拒绝本次添加"
-    denied_desc: "凭证未创建。如果这不是你的操作，请检查是否有人正尝试登录你的账号。"
-    expired_title: "会话已过期"
-    expired_desc: "授权会话 10 分钟内有效。重新发起会生成新的二维码与短码。"
-    error_title: "无法连接服务器"
-    error_desc: "请检查网络连接后重试。"
-    via_qr: "扫码接入"
-    via_url: "链接接入"
-    via_code: "短码接入"
+    title: 在新设备添加 Passkey
+    sub: 用新设备任选一种方式打开，然后在下方批准
+    tab_qr: 二维码
+    tab_url: 链接
+    tab_code: 短码
+    qr_hint: 用新设备的相机扫码打开
+    url_hint: 把链接发到新设备打开
+    code_hint: 在新设备的添加页面输入此短码
+    waiting: 等待新设备接入…
+    expires_in: 剩余有效期
+    confirm_title: 批准这台新设备？
+    confirm_sub: 批准后，新设备将弹出系统生物识别来创建 Passkey
+    confirm_warn: 不是你正在操作？点拒绝。二维码 / 短码只应出现在你手里的新设备上。
+    approve: 批准并继续
+    approved_waiting: 已批准，等待新设备完成生物识别…
+    cancel_confirm: 取消本次添加？新设备上的链接与短码将立即失效。
+    success_title: 新设备已添加成功
+    success_desc: 「{name}」的 Passkey 已创建，下次可用它直接登录。
+    done: 完成
+    restart: 重新发起
+    error_backend_desc: 无法连接后端（当前为演示模式）。请确认后端已启动且通过 HTTPS 访问。
+    denied_title: 已拒绝本次添加
+    denied_desc: 凭证未创建。如果这不是你的操作，请检查是否有人正尝试登录你的账号。
+    expired_title: 会话已过期
+    expired_desc: 授权会话 10 分钟内有效。重新发起会生成新的二维码与短码。
+    error_title: 无法连接服务器
+    error_desc: 请检查网络连接后重试。
+    via_qr: 扫码接入
+    via_url: 链接接入
+    via_code: 短码接入
   trust:
-    approve_only: "旧设备批准后才会创建凭证"
+    approve_only: 旧设备批准后才会创建凭证
   entry:
-    heading: "输入添加短码"
-    sub: "在已登录设备的「安全与登录」页发起添加后，输入其显示的 8 位短码"
-    continue: "继续"
-    busy: "正在查找会话…"
-    not_found: "未找到该短码对应的会话，请核对后重试"
+    heading: 输入添加短码
+    sub: 在已登录设备的「安全与登录」页发起添加后，输入其显示的 8 位短码
+    continue: 继续
+    busy: 正在查找会话…
+    not_found: 未找到该短码对应的会话，请核对后重试
   overview:
-    heading: "在这台设备上添加 Passkey"
-    session_line: "由「{name}」发起的添加请求"
-    desc: "点继续后，你已登录的设备会收到批准请求；批准后本机将弹出系统生物识别完成创建。"
-    step1: "本设备发出请求"
-    step2: "在已登录设备上批准"
-    step3: "本机完成生物识别"
-    ttl_hint: "会话 10 分钟内有效"
-    continue: "继续，请求批准"
-    not_mine: "不是我发起的？直接关闭本页即可"
+    heading: 在这台设备上添加 Passkey
+    session_line: 由「{name}」发起的添加请求
+    desc: 点继续后，你已登录的设备会收到批准请求；批准后本机将弹出系统生物识别完成创建。
+    step1: 本设备发出请求
+    step2: 在已登录设备上批准
+    step3: 本机完成生物识别
+    ttl_hint: 会话 10 分钟内有效
+    continue: 继续，请求批准
+    not_mine: 不是我发起的？直接关闭本页即可
   wait:
-    heading: "请在已登录的设备上批准"
-    desc: "「{name}」的批准面板正在等待你确认"
-    status: "等待批准中…"
-    code_label: "本次短码"
-    cancel: "取消并返回"
+    heading: 请在已登录的设备上批准
+    desc: 「{name}」的批准面板正在等待你确认
+    status: 等待批准中…
+    code_label: 本次短码
+    cancel: 取消并返回
   creating:
-    heading: "正在创建 Passkey…"
-    desc: "请在系统弹窗中完成指纹 / 面容 / 设备密码验证"
-    name_label: "给这个 Passkey 起个名字"
-    name_placeholder: "如「主力手机」"
-    busy: "等待系统验证…"
-    retry: "重试"
-    cancelled: "你已取消系统验证，Passkey 尚未创建，可重试。"
-    failed_desc: "本机无法完成创建（浏览器或设备不支持）。"
+    heading: 正在创建 Passkey…
+    desc: 请在系统弹窗中完成指纹 / 面容 / 设备密码验证
+    name_label: 给这个 Passkey 起个名字
+    name_placeholder: 如「主力手机」
+    busy: 等待系统验证…
+    retry: 重试
+    cancelled: 你已取消系统验证，Passkey 尚未创建，可重试。
+    failed_desc: 本机无法完成创建（浏览器或设备不支持）。
   success:
-    heading: "Passkey 已添加"
-    desc: "下次在这台设备登录，直接使用生物识别即可。"
-    login_now: "立即登录"
+    heading: Passkey 已添加
+    desc: 下次在这台设备登录，直接使用生物识别即可。
+    login_now: 立即登录
   failed:
-    denied_title: "添加已被拒绝"
-    denied_desc: "已登录设备拒绝了本次请求，凭证未创建。"
-    expired_title: "会话已过期"
-    expired_desc: "会话 10 分钟内有效。请回到已登录设备重新发起，获取新的二维码或短码。"
-    expired_action: "输入新短码"
-    notfound_title: "授权已取消或失效"
-    notfound_desc: "发起设备已取消授权，或会话已失效。请回到发起设备重新发起。"
-    notfound_action: "输入新短码"
-    error_title: "无法连接服务器"
-    error_desc: "多次请求失败，可能是网络中断或服务器未运行。请检查网络连接后重试。"
-    no_webauthn_desc: "当前浏览器或环境不支持 Passkey（需 HTTPS + 现代浏览器）。请换用最新版 Chrome / Safari。"
-    consumed_desc: "该会话已完成，不能重复使用。如需再次添加请重新发起。"
-
-# ===== 管理后台 =====
+    denied_title: 添加已被拒绝
+    denied_desc: 已登录设备拒绝了本次请求，凭证未创建。
+    expired_title: 会话已过期
+    expired_desc: 会话 10 分钟内有效。请回到已登录设备重新发起，获取新的二维码或短码。
+    expired_action: 输入新短码
+    notfound_title: 授权已取消或失效
+    notfound_desc: 发起设备已取消授权，或会话已失效。请回到发起设备重新发起。
+    notfound_action: 输入新短码
+    error_title: 无法连接服务器
+    error_desc: 多次请求失败，可能是网络中断或服务器未运行。请检查网络连接后重试。
+    no_webauthn_desc: 当前浏览器或环境不支持 Passkey（需 HTTPS + 现代浏览器）。请换用最新版 Chrome / Safari。
+    consumed_desc: 该会话已完成，不能重复使用。如需再次添加请重新发起。
 admin:
   title: 管理后台
   forbidden:
@@ -1000,13 +1004,13 @@ admin:
   success: 操作成功
   kpi:
     users: 用户总数
-    users_sub: "{n} 超管"
-    active: "{n} 7天活跃"
+    users_sub: '{n} 超管'
+    active: '{n} 7天活跃'
     messages: 消息总数
-    today: "今日 {n}"
+    today: 今日 {n}
     devices: 接收设备
-    enabled: "{n} 启用"
-    keys: "{n} Keys"
+    enabled: '{n} 启用'
+    keys: '{n} Keys'
     delivery_rate: 投递成功率
   tab:
     users: 用户管理
@@ -1043,19 +1047,19 @@ admin:
     empty: 暂无活跃会话
   top:
     messages: 消息
-    devices: "{n} 设备"
+    devices: '{n} 设备'
   confirm:
     title: 确认操作
     cancel: 取消
     ok: 确认
     promote_title: 提为超管
-    promote_body: "确认将 {name} 提升为超级管理员？"
+    promote_body: 确认将 {name} 提升为超级管理员？
     demote_title: 降为成员
-    demote_body: "确认将 {name} 降为普通成员？"
+    demote_body: 确认将 {name} 降为普通成员？
     disable_title: 禁用用户
-    disable_body: "确认禁用 {name}？该用户将立即无法登录。"
+    disable_body: 确认禁用 {name}？该用户将立即无法登录。
     enable_title: 启用用户
-    enable_body: "确认启用 {name}？"
+    enable_body: 确认启用 {name}？
   error:
     load_stats: 加载统计失败
     load_users: 加载用户失败
@@ -1072,7 +1076,7 @@ events:
   empty: 还没有事件。用 POST /v1/events 提交第一个。
   demo_badge: 演示模式：后端未连接
   demo_hint: 后端未连接，暂无真实事件。
-  count: "{n} 条事件"
+  count: '{n} 条事件'
   view_chain: 查看链路
   filter:
     trace: Trace ID
@@ -1089,7 +1093,7 @@ caps:
   new: 定义能力
   loading: 正在加载能力…
   empty: 还没有能力。定义一个，节点才能声明它。
-  count: "{n} 个能力"
+  count: '{n} 个能力'
   no_outputs: 无出口（终端能力）
   any_event_type: 任意事件类型（起点）
   list:
@@ -1130,7 +1134,7 @@ nodes:
   refresh: 刷新
   loading: 正在加载节点…
   empty: 还没有节点。按下面的步骤注册第一台，它上线后才会接活。
-  count: "{online}/{total} 在线"
+  count: '{online}/{total} 在线'
   never: 从未
   last_seen: 心跳
   no_caps: 未声明能力
@@ -1151,3 +1155,69 @@ nodes:
     desc: 节点注册是运维动作（不是自助服务），所以要在服务器上执行。token 只在创建时返回一次。
     step1: 在服务器上注册节点（声明它能跑哪些能力）
     step2: 在节点机器上用 token 启动，它会用 WS 连回中枢
+sources:
+  title: 源
+  subtitle: 源是事件的入口：定时器到点、webhook 被调用、或者你手动点一下。它自己产生事件，再把事件派给你选好的能力。
+  new: 新建源
+  refresh: 刷新
+  empty: 还没有源。点右上角「新建源」开始。
+  explain:
+    title: 源与能力的分工：
+    body: 能力回答「能干什么」，由节点声明、中枢派任务给它；源回答「什么时候开始干」，有配置、自己产生事件、自己不干活。所以源不需要建边——它的出口就是你在这里选的能力。
+  kind:
+    cron: 定时器
+    webhook: Webhook
+    manual: 手动
+  next_fire: 下次 {t}
+  manual_hint: 点「立即运行」时触发
+  targets_label: 出口
+  no_target: 未配置
+  target_missing: 已删除
+  fire: 立即运行
+  enable: 启用
+  disable: 停用
+  edit: 编辑
+  delete: 删除
+  disabled: 已停用
+  deleted: 已删除
+  created: 已创建
+  saved: 已保存
+  save_failed: 保存失败：{e}
+  fire_failed: 触发失败：{e}
+  fired: 已触发：派发 {n} 个任务
+  fired_pruned: ，剪枝 {n}
+  fired_none: 事件已入库，但没派出去（{r}）
+  fired_empty: 事件已入库，但没有可派发的任务
+  delete_confirm: 删除源「{n}」？已产生的事件与任务会保留。
+  in: '{n} 后'
+  ago: '{n} 前'
+  unit:
+    sec: 秒
+    min: 分钟
+    hour: 小时
+    day: 天
+  modal:
+    new: 新建源
+    edit: 编辑源
+  form:
+    name: 名字
+    name_ph: 如：每晚体检
+    kind: 触发方式
+    kind_hint: 创建后不可修改（换种类等于换语义，请删除后重建）。
+    expr: Cron 表达式（五段：分 时 日 月 周）
+    expr_hint: 支持 * / , - ；不支持 @daily 这类宏。示例：0 3 * * * 表示每天 03:00。
+    hook_hint: 创建后会生成一个专属 URL，外部系统 POST 到它即可触发。谁拿到这个 URL 谁就能发事件，请妥善保管。
+    targets: 出口能力（可多选）
+    targets_hint: 事件会同时派给选中的能力（扇出）。至少要选一个。
+    enabled: 启用
+    cancel: 取消
+    save: 保存
+    name_required: 请填名字
+    expr_required: 请填 cron 表达式
+    targets_required: 至少要选一个出口能力
+    no_caps: 还没有可用能力。先到「能力与出口」页定义能力。
+  preset:
+    hourly: 每小时
+    daily3: 每天 3:00
+    weekdays9: 工作日 9:00
+    every15: 每 15 分钟

@@ -352,3 +352,53 @@ CREATE TABLE IF NOT EXISTS graph_versions (
 DROP TABLE IF EXISTS deliveries;
 DROP TABLE IF EXISTS consumer_offsets;
 DROP TABLE IF EXISTS messages;
+
+-- +migration 7 sources
+-- 「源」（origin）：事件的**入口实例**，不是能力。
+--
+-- 为什么单独一张表而不是复用 capability_versions：
+--
+--   能力（capability）回答"能干什么"——它由节点声明、中枢派任务给它。
+--   源（source）回答"什么时候开始干"——它有配置（cron 表达式 / webhook 密钥），
+--   自己产生事件，自己不干活。
+--
+-- 之前把它们混在一起（github/cron/http/manual 是内置起点能力），后果是
+-- 用户为了发一个事件得先造一个"没有出口、没有节点"的假能力，而且没法配置
+-- "每晚 3 点"这种参数——能力表里没有存这种配置的地方。
+--
+-- 与 graph.edge 的关系：源**不建边**。源直接持有出口能力（source_targets），
+-- 语义是"我来事件 → 派给这些能力"。这样用户不需要理解 kind=origin、
+-- 也不需要为每个事件类型手建一条边。
+CREATE TABLE IF NOT EXISTS sources (
+    id          TEXT PRIMARY KEY,             -- src_<base62>
+    org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,                -- 用户可读名（"每晚体检"）
+    kind        TEXT NOT NULL,                -- cron | webhook | manual
+    -- config 是按 kind 解释的 JSON（不变量 I6：只读配置字段，不求值、不执行）
+    --   cron    {"expr":"0 3 * * *","tz":"Local"}
+    --   webhook {"token":"..."}（token 用于拼出唯一 URL）
+    --   manual  {}
+    config      TEXT NOT NULL DEFAULT '{}',
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    -- 调度元数据（只有 cron 用；其它 kind 为 NULL）
+    last_fired_at  INTEGER,
+    next_fire_at   INTEGER,
+    created_at  INTEGER NOT NULL,
+    UNIQUE (org_id, name)
+);
+
+-- 源的出口：事件要派给哪些能力。
+--
+-- 多行 = 扇出（一个源同时喂多个能力）。**只存 capability_id**，
+-- 不存端口名：源的"端口"就是它自己产生的 type，由 kind 决定
+-- （cron/manual 用源自己的 name，webhook 用请求体里的 type）。
+CREATE TABLE IF NOT EXISTS source_targets (
+    source_id     TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (source_id, capability_id)
+);
+
+CREATE        INDEX IF NOT EXISTS idx_sources_org      ON sources(org_id, created_at);
+CREATE        INDEX IF NOT EXISTS idx_sources_due      ON sources(enabled, next_fire_at);
+CREATE        INDEX IF NOT EXISTS idx_src_targets_cap  ON source_targets(capability_id);

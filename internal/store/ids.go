@@ -71,6 +71,7 @@ func NewMessageID() string { return newID("ntf") }
 func NewOrgID() string      { return newID("org") }
 func NewNodeID() string     { return newID("nd") }
 func NewInstanceID() string { return newID("nins") }
+func NewSourceID() string   { return newID("src") }
 func NewTaskID() string     { return newID("tsk") }
 
 // NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。

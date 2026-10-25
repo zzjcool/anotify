@@ -303,16 +303,55 @@ func TestNoArgvOrKindInSchema(t *testing.T) {
 
 	// 按迁移块解析：I3 只约束新模型（migration 4 起）的表定义。
 	// 保留的旧表 cli_auth_sessions 有 kind 列（授权类型），不受影响。
+	//
+	// **例外（sources.kind）**：I3 的本意是「**推导量**不落库」——
+	// capability 的 kind 由 outputs + 节点声明推导，存下来就可能与推导结果
+	// 自相矛盾。但源的 kind（cron/webhook/manual）不是推导量：它是用户显式
+	// 选择的**配置**，没有任何东西能推导出"这个源应该是定时器还是 webhook"，
+	// 不存就没法知道该跑哪套逻辑。
+	//
+	// 所以这里按表限定，而不是按列名一刀切：守卫要精确表达不变量，
+	// 否则只能靠改名绕过，那不变量就形同虚设了。
 	set := mustParse(t, schemaSQL)
 	for _, m := range set {
 		if m.version < 4 {
 			continue
 		}
+		var curTable string
 		for _, line := range strings.Split(m.body, "\n") {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "kind ") {
-				t.Errorf("migration %d declares banned column kind (invariant I3): %q", m.version, trimmed)
+			// 记录当前处于哪张表的定义里
+			if strings.HasPrefix(strings.ToUpper(trimmed), "CREATE TABLE") {
+				fields := strings.Fields(trimmed)
+				for i, f := range fields {
+					if strings.EqualFold(f, "EXISTS") && i+1 < len(fields) {
+						curTable = strings.TrimSuffix(fields[i+1], "(")
+						break
+					}
+					if strings.EqualFold(f, "TABLE") && i+1 < len(fields) {
+						name := fields[i+1]
+						if strings.EqualFold(name, "IF") {
+							continue
+						}
+						curTable = strings.TrimSuffix(name, "(")
+						break
+					}
+				}
+				continue
 			}
+			if strings.HasPrefix(trimmed, ")") || strings.HasPrefix(trimmed, ";") {
+				curTable = ""
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "kind ") {
+				continue
+			}
+			// sources.kind 是用户配置，不是推导量（见上方注释）
+			if curTable == "sources" {
+				continue
+			}
+			t.Errorf("migration %d declares banned column kind on table %q (invariant I3): %q",
+				m.version, curTable, trimmed)
 		}
 	}
 }

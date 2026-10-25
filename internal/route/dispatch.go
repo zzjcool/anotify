@@ -34,6 +34,16 @@ type DispatchInput struct {
 	// Out 是上游回报的出口名。"" 表示上游没回报——此时不派发、也不记剪枝。
 	Out    string
 	Params map[string]any
+	// Targets 非空时**跳过 edges 查表**，直接把事件派给这些能力。
+	//
+	// 这是「源」（source）用的路径：源不建边，它自己就是起点，出口是
+	// 它明确配置好的能力列表（source_targets）。
+	//
+	// 为什么不给源也建边：
+	//   - 边是"能力 A 的某个出口 → 能力 B"，而源不是能力，没有 outputs 可枚举；
+	//   - 用户为了配一个定时器去理解 kind=origin、去手建一条边，是多余的心智负担。
+	// 所以源走这条直连路径，其余（参数校验 / 找节点 / 占槽位 / 建任务）完全复用。
+	Targets []string
 	// Path 是从根到本任务的能力序列（含本任务的能力），用于环剪枝。
 	Path []string
 }
@@ -42,8 +52,12 @@ type DispatchInput struct {
 //
 // 两者可以同时非空：扇出里某条边参数不过、另一条正常建任务，是合法结果（契约 §4 ②）。
 type DispatchOutput struct {
-	Tasks  []*store.Task
-	Pruned []PrunedRecord
+	// json tag 必须写：这个结构会直接出现在 HTTP 响应里
+	// （/v1/events、/v1/sources/{id}/fire、/v1/hooks/{token}）。
+	// 不写的话 Go 默认用字段名 "Tasks"/"Pruned"，前端按 camelCase 读会得到
+	// undefined——曾经就是这样：派发明明成功、前端却显示"0 个任务"。
+	Tasks  []*store.Task  `json:"tasks"`
+	Pruned []PrunedRecord `json:"pruned"`
 }
 
 // Store 是派发需要的最小 store 表面（便于 mock 测试，也便于将来换实现）。
@@ -153,18 +167,24 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		return out, nil
 	}
 
-	// ② 查出口表
-	targets, err := d.Store.EdgesFrom(ctx, in.OrgID, in.FromCap, in.Out)
-	if err != nil {
-		return nil, fmt.Errorf("route: lookup edges: %w", err)
-	}
-	if len(targets) == 0 {
-		out.Pruned = append(out.Pruned, PrunedRecord{
-			Reason: ReasonNoEdge,
-			Port:   in.Out,
-			Detail: fmt.Sprintf("no edge from %s port %q", in.FromCap, in.Out),
-		})
-		return out, nil
+	// ② 查出口表；源（Targets 非空）跳过这一步，直接用配置好的目标
+	var targets []string
+	if len(in.Targets) > 0 {
+		targets = in.Targets
+	} else {
+		var err error
+		targets, err = d.Store.EdgesFrom(ctx, in.OrgID, in.FromCap, in.Out)
+		if err != nil {
+			return nil, fmt.Errorf("route: lookup edges: %w", err)
+		}
+		if len(targets) == 0 {
+			out.Pruned = append(out.Pruned, PrunedRecord{
+				Reason: ReasonNoEdge,
+				Port:   in.Out,
+				Detail: fmt.Sprintf("no edge from %s port %q", in.FromCap, in.Out),
+			})
+			return out, nil
+		}
 	}
 
 	// 图版本只落一次（按需落版，契约 §10.2）

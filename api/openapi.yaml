@@ -31,6 +31,8 @@ tags:
     description: 事件入口（外部世界的变化）
   - name: tasks
     description: 任务（派发出来的执行单元）
+  - name: sources
+    description: 源（origin）—— 事件的入口实例：cron / webhook / manual
   - name: capabilities
     description: 能力定义（append-only，每次改动开新版本）
   - name: edges
@@ -421,6 +423,245 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: 任务已是终态（`invalid_transition`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ========== 源（origin）：事件的入口实例 ==========
+  #
+  # 源 ≠ 能力。能力回答"能干什么"（由节点声明、中枢派任务）；
+  # 源回答"什么时候开始干"（有配置、自己产生事件、自己不干活）。
+  /sources:
+    get:
+      tags: [sources]
+      summary: 源列表（含出口能力可读信息）
+      description: |
+        源是事件的**入口实例**：`cron`（定时）/ `webhook`（回调）/ `manual`（手动）。
+        每个源带一组出口能力（`targets`），触发时事件直接派给它们。
+
+        与「能力 + 边」的区别：源不建边。用户不需要理解 `kind=origin`、
+        也不需要为每种事件类型手建一条边。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '源列表（空时 `sources: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sources]
+                properties:
+                  sources:
+                    type: array
+                    items: { $ref: "#/components/schemas/Source" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [sources]
+      summary: 新建源
+      description: |
+        - `targets` 至少一个：没有出口的源产生的事件永远派不出去，直接 400
+        - `kind=cron` 时 `config.expr` 必须是合法五段表达式（`61 * * * *` → 400）
+        - `kind=webhook` 时服务端自动生成 `token`，返回的 `hookUrl` 可直接贴给外部系统
+        - 同组织内 `name` 唯一（重名 → 409）
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SourceInput" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [source]
+                properties:
+                  source: { $ref: "#/components/schemas/Source" }
+        "400":
+          description: 参数非法（kind 未知 / cron 表达式非法 / targets 为空）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: 同名源已存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /sources/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [sources]
+      summary: 取单个源
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: 源详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [source]
+                properties:
+                  source: { $ref: "#/components/schemas/Source" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 源不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      tags: [sources]
+      summary: 更新源（name / config / enabled / targets）
+      description: |
+        `kind` **不可修改**：换种类等于换语义（cron 表达式对 webhook 无意义）。
+        需要换种类时请删除后重建。
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SourceInput" }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [source]
+                properties:
+                  source: { $ref: "#/components/schemas/Source" }
+        "400":
+          description: 参数非法
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 源不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 同名源已存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [sources]
+      summary: 删除源
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 源不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /sources/{id}/fire:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [sources]
+      summary: 手动触发一次（调试 / manual 源的正常用法）
+      description: |
+        写一条事件并立即派发给源的出口能力。
+        `type` 缺省用源的名字；带 `payload` 时其内容作为任务 params 传下去
+        （原样传递，不做模板替换——不变量 I6）。
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string }
+                payload: { type: object }
+      responses:
+        "200":
+          description: 已触发
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event: { $ref: "#/components/schemas/Event" }
+                  inserted: { type: boolean }
+                  idempotent: { type: boolean }
+                  dispatch: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 源不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ========== webhook 入口（无需会话，鉴权靠 URL 里的 token）==========
+  /hooks/{token}:
+    parameters:
+      - { name: token, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [sources]
+      # 匿名端点：鉴权靠 URL 里的 token，不是 Cookie/Key。
+      # 必须显式写空数组，check_openapi.py 靠它区分"忘了写"和"故意匿名"。
+      security: []
+      summary: 外部系统投递事件（webhook 源）
+      description: |
+        **不需要 Cookie / API Key**：鉴权就是 URL 里的 token。
+        外部系统（GitHub / 监控告警）不可能带我们的会话。
+
+        - token 无效或源已停用 → 404（不区分两者，避免探测 token 有效性）
+        - `type` 缺省用源的名字；可用 body.type 区分不同事件
+        - 空 body 允许（有些系统只发 ping）
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string }
+                payload: { type: object }
+      responses:
+        "200":
+          description: 已接收并派发
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event: { $ref: "#/components/schemas/Event" }
+                  inserted: { type: boolean }
+                  dispatch: { type: object }
+        "404":
+          description: token 无效或源已停用
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1813,6 +2054,86 @@ components:
         createdAt: { type: integer, format: int64 }
         startedAt: { type: integer, format: int64, nullable: true }
         finishedAt: { type: integer, format: int64, nullable: true }
+
+    # ---------- 源（origin）----------
+
+    SourceInput:
+      type: object
+      required: [name, kind, targets]
+      properties:
+        name:
+          type: string
+          description: 用户可读名，同组织内唯一（如「每晚体检」）
+        kind:
+          type: string
+          enum: [cron, webhook, manual]
+          description: |
+            - `cron`：定时器，按 config.expr 到点触发
+            - `webhook`：外部 POST 到 hookUrl
+            - `manual`：页面上点一下就跑
+
+            创建后不可修改（换种类等于换语义）。
+        config:
+          type: object
+          description: |
+            按 kind 解释（**只读配置字段，不求值、不执行** —— 不变量 I6）：
+
+            - cron：`{"expr": "0 3 * * *", "tz": "Asia/Shanghai"}`
+              五段表达式，支持 `*` `/` `,` `-`；不支持 `@daily` 等宏
+            - webhook：`{"token": "src_..."}`（留空则服务端生成）
+            - manual：`{}`
+          properties:
+            expr: { type: string }
+            tz: { type: string }
+            token: { type: string }
+        enabled:
+          type: boolean
+          default: true
+        targets:
+          type: array
+          minItems: 1
+          description: |
+            出口能力 ID 列表（多选 = 扇出）。至少要一个：
+            没有出口的源产生的事件永远派不出去。
+          items: { type: string }
+
+    Source:
+      type: object
+      required: [id, orgId, name, kind, enabled, targets, createdAt]
+      properties:
+        id: { type: string, example: "src_..." }
+        orgId: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [cron, webhook, manual] }
+        config: { type: object }
+        enabled: { type: boolean }
+        targets:
+          type: array
+          description: 出口能力 ID 列表
+          items: { type: string }
+        targetCaps:
+          type: array
+          description: |
+            出口能力的可读信息（前端直接用，不必再拉一次能力列表做 join）。
+            `missing=true` 表示该能力已被删除但源仍指向它。
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              version: { type: integer }
+              missing: { type: boolean }
+        hookUrl:
+          type: string
+          nullable: true
+          description: 仅 webhook 源有：可直接贴给外部系统的回调路径（`/v1/hooks/<token>`）
+        lastFiredAt: { type: integer, format: int64, nullable: true }
+        nextFireAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: 仅 cron 源有：下次计划触发时刻
+        createdAt: { type: integer, format: int64 }
 
     Event:
       type: object

@@ -20,6 +20,7 @@ common:
     notification: 通知
     admin_section: 管理
     admin: 管理コンソール
+    sources: ソース
   lang:
     label: 言語
     switcher_label: 言語を切り替え
@@ -48,16 +49,16 @@ common:
     login_copyright: © 2026 Anotify · MIT License · Passkey のみ
   time:
     just_now: たった今
-    minutes_ago: "{n} 分前"
-    hours_ago: "{n} 時間前"
-    days_ago: "{n} 日前"
+    minutes_ago: '{n} 分前'
+    hours_ago: '{n} 時間前'
+    days_ago: '{n} 日前'
     never: 未使用
-    weeks_ago: "{n} 週間前"
+    weeks_ago: '{n} 週間前'
   ttl:
-    day: "{n} 日"
-    hour: "{n} 時間"
-    minute: "{n} 分"
-    second: "{n} 秒"
+    day: '{n} 日'
+    hour: '{n} 時間'
+    minute: '{n} 分'
+    second: '{n} 秒'
   agentState:
     working: 実行中
     blocked: 待機中
@@ -119,7 +120,7 @@ index:
     morning: おはようございます
     afternoon: こんにちは
     evening: こんばんは
-    with_name: "{greeting}、{name}"
+    with_name: '{greeting}、{name}'
   loading: 通知の統計を読み込み中…
   demo_badge: デモデータ（バックエンド未接続）
   kpi:
@@ -130,7 +131,7 @@ index:
     today_sub: 送信 → 配信
     devices: 受信デバイス
     devices_enabled: 有効
-    devices_sub: "{n} 台 · エンドツーエンド暗号化"
+    devices_sub: '{n} 台 · エンドツーエンド暗号化'
     devices_sub2: プッシュ購読 + WebSocket
     rate_na: 受信デバイスがまだないため、配信率は表示できません
     trend_demo: デモ
@@ -148,11 +149,11 @@ index:
       thu: 木
       fri: 金
       sat: 土
-    month: "{n}月"
+    month: '{n}月'
     tip:
-      count: "{n} 件の通知"
+      count: '{n} 件の通知'
       none: 通知なし
-      date: "{m}月{d}日 {w}曜日"
+      date: '{m}月{d}日 {w}曜日'
   quickstart:
     cta: 新しい Agent を連携
     title: Agent を連携
@@ -162,12 +163,16 @@ index:
     option_b: またはスクリプト / CI から送信
     copy: コピー
     curl_example_title: デプロイ完了
-    cmd_a_comment: "# コピーしてあなたの pi に送る"
-    cmd_a: |
-      anotify 通知プラグインをインストールしてください：
+    cmd_a_comment: '# コピーしてあなたの pi に送る'
+    cmd_a: 'anotify 通知プラグインをインストールしてください：
+
       1. pi install npm:pi-anotify を実行
+
       2. sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh を実行
+
       3. ターミナルに表示された認可リンクまたはコードを教えてください。ブラウザで承認して結果を伝えます
+
+      '
   recent:
     title: 最近の通知
     subtitle: リアルタイム更新 · 行をクリックで詳細
@@ -191,20 +196,20 @@ index:
     body_placeholder: これはダッシュボードからのテスト通知です
     agent_state_label: エージェント状態
     tags_label: ルーティングタグ
-    tags_placeholder: "任意、カンマ区切り、例: スマホ,仕事"
+    tags_placeholder: '任意、カンマ区切り、例: スマホ,仕事'
     priority_label: 優先度
     send: 送信
     sending: 送信中…
     success: 送信済み、{n} 台のデバイスにマッチ
     no_device: 送信済み、ただし現在マッチする受信デバイスがありません
-    failed: "送信失敗: {msg}"
+    failed: '送信失敗: {msg}'
     demo_disabled: バックエンド未接続、テスト通知を送信できません
     no_devices_block: 受信デバイスがありません。先に「通知受信」で本機通知をオンにするかデバイスを追加してください。
     cancel: キャンセル
   notif:
     empty: このステータスの通知はありません
-    delivered: "{d}/{t} 台に配信済み"
-    count: "{n} 件表示"
+    delivered: '{d}/{t} 台に配信済み'
+    count: '{n} 件表示'
   detail:
     open_session: Agent セッションを開く
     view_full: 完全ページを表示（全フィールド + 配信記録）→
@@ -245,11 +250,15 @@ connect:
       tagline: pi-coding-agent
       desc: agent_settled イベントを監視し、タスク完了時にすべてのデバイスへ通知を自動プッシュします。
       prompt_title: あなたの pi に送る
-      prompt: |
-        anotify 通知プラグインをインストールしてください：
+      prompt: 'anotify 通知プラグインをインストールしてください：
+
         1. pi install npm:pi-anotify を実行
+
         2. sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh を実行
+
         3. ターミナルに表示された認可リンクまたはコードを教えてください。ブラウザで承認して結果を伝えます
+
+        '
       prompt_hint: 貼り付ければ pi がインストールと認可を自動で進めます。承認は Anotify にサインイン済みのデバイスで行ってください（ターミナルの QR コードをスマホで読み取るだけ）。
       self_hosted: セルフホストの場合：API ドキュメントを参照して接続先を自分のドメインに変更してください。
     claude_code:
@@ -277,9 +286,9 @@ message:
   fields_title: すべてのフィールド
   deliveries_title: 配信記録
   delivery:
-    delivered_count: "{ok}/{n} 配信済み"
+    delivered_count: '{ok}/{n} 配信済み'
     empty: 配信記録なし（有効なデバイスが見つかりません）
-    attempt_info: "{channel} · {n} 回試行 · {time}"
+    attempt_info: '{channel} · {n} 回試行 · {time}'
   error:
     missing_id: メッセージ ID がありません（URL に ?id=ntf_… が必要）
     not_found: メッセージが見つからないか削除されました
@@ -301,7 +310,7 @@ message:
   node:
     central: ハブが実行
   chain:
-    count: "{n} ステップ"
+    count: '{n} ステップ'
     empty: このトレースに他のタスクはありません
     current: 現在
 login:
@@ -330,7 +339,7 @@ login:
     err_chars: 使える文字は英字、数字、_、-、. のみです。_ - . で始めたり終わったりできません。
   ios_tip_label: iOS ユーザー：
   ios_tip: プッシュ通知を受信するには、まず Safari で本サイトを開き、 「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから 起動してログインしてください。
-  recovery_soon: ""
+  recovery_soon: ''
   recovery:
     toggle: Passkey が使えない？リカバリーコードでログイン
     toggle_hide: リカバリーコードログインを閉じる
@@ -386,7 +395,7 @@ receivers:
     title: ブラウザプッシュ購読
     subtitle_prefix: システム Push サービス（APNs / FCM）で配信。
     subtitle_highlight: ブラウザを閉じていても受信
-    subtitle_suffix: ""
+    subtitle_suffix: ''
     add_device: このデバイスを追加
   ws:
     title: 長接続受信 · プラグインと任意デバイスのために
@@ -395,7 +404,7 @@ receivers:
     copy: コピー
     active_title: アクティブな接続
     active_subtitle: 現在確立している WebSocket 接続
-    online: " 件オンライン"
+    online: ' 件オンライン'
     empty_hint: バックエンド接続後、ここにリアルタイム接続が表示されます （接続名 / Key プレフィックス / 稼働時間 / タグ / 最新メッセージ）。
   tags:
     title: タグルーティング · どのデバイスがどの通知を受け取るか
@@ -546,8 +555,8 @@ keys:
     read: デバイス参照
   unnamed: 名前なし
   unnamed_key: 名前なし Key
-  summary: "{total} 個の Key · {active} 有効{demo}"
-  summary_demo: " · デモデータ"
+  summary: '{total} 個の Key · {active} 有効{demo}'
+  summary_demo: ' · デモデータ'
   empty: まだ Key がありません。右上の「+ 新規 Key」をクリックして作成し、Agent の報告を始めましょう。
   created_at: 作成日 {date}
   status:
@@ -637,19 +646,19 @@ security:
   prompt:
     rename: この Passkey に新しい名前を付けてください：
   confirm:
-    delete: "Passkey「{name}」を削除しますか？
+    delete: 'Passkey「{name}」を削除しますか？
 
-      この Passkey を使うデバイスはログインできなくなります（復旧コードで対応可能）。"
+      この Passkey を使うデバイスはログインできなくなります（復旧コードで対応可能）。'
     revoke: 「{name}」のログインセッションを取り消しますか？そのデバイスは再ログインが必要になります。
   alert:
-    add_requirement: "Passkey の追加に必要な条件：
+    add_requirement: 'Passkey の追加に必要な条件：
 
       1. バックエンドが HTTPS 環境で起動済み
 
       2. ブラウザが WebAuthn に対応
 
 
-      現在はデモモードです。バックエンド準備後に生体認証が起動します。"
+      現在はデモモードです。バックエンド準備後に生体認証が起動します。'
   toast:
     renamed_demo: 名前を変更しました（デモモード、ローカルのみ）
     renamed: 名前を変更しました
@@ -679,7 +688,7 @@ security:
     current: 現在
 docs:
   title: 連携ドキュメント
-  subtitle: "Agent 上報 · Web Push · WebSocket"
+  subtitle: Agent 上報 · Web Push · WebSocket
   toc_heading: このページの目次
   toc:
     agent: Agent 連携
@@ -702,7 +711,7 @@ docs:
       payload: イベントのペイロード。下流タスクの params としてそのまま渡されます。
       idem: 冪等キー。同じ source + idemKey は 1 つのイベントだけを生みます。
       trace: trace を明示。省略すると新規作成されます。
-    note: "イベントを保存した時点で 200 を返します。派発に失敗しても 200 です — 下流の失敗でイベントが失われることはなく、後から再送できます。"
+    note: イベントを保存した時点で 200 を返します。派発に失敗しても 200 です — 下流の失敗でイベントが失われることはなく、後から再送できます。
     curl:
       title: curl の例
   node:
@@ -710,25 +719,25 @@ docs:
     connect:
       title: 接続
     up:
-      title: "ノード → ハブ（上り）"
-      comment: "# hello / ack / progress / result"
+      title: ノード → ハブ（上り）
+      comment: '# hello / ack / progress / result'
     down:
-      title: "ハブ → ノード（下り）"
-      comment: "# welcome / assign / cancel / error"
-    note: "ハブは「何をするか」（ケイパビリティ + params）だけを伝え、「どうやるか」は決して伝えません — argv も shell もコマンドラインもありません。"
+      title: ハブ → ノード（下り）
+      comment: '# welcome / assign / cancel / error'
+    note: ハブは「何をするか」（ケイパビリティ + params）だけを伝え、「どうやるか」は決して伝えません — argv も shell もコマンドラインもありません。
   copy: コピー
   your_domain: あなたのドメイン
   agent:
     title: Agent 連携
-    intro: 'Anotify の中核シナリオ：<b class="text-zinc-200">Agent がタスクを完了すると、通知がすべてのデバイスに自動的にプッシュされます</b>。連携は 2 ステップ — 上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。'
+    intro: Anotify の中核シナリオ：<b class="text-zinc-200">Agent がタスクを完了すると、通知がすべてのデバイスに自動的にプッシュされます</b>。連携は 2 ステップ — 上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。
     step1:
       title: 上報用 Key を作成
-      desc: '<a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> ページで <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>）。作成後すぐに保存してください。'
+      desc: <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> ページで <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>）。作成後すぐに保存してください。
     step2:
       title: タスク終了時に上報
-      desc: 'Agent の終了イベント（例：pi の <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code> を送信します。'
+      desc: Agent の終了イベント（例：pi の <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code> を送信します。
     curl:
-      title: "最小構成 · curl 一行で全デバイスに通知"
+      title: 最小構成 · curl 一行で全デバイスに通知
     journey:
       title: 通知の旅
   api:
@@ -754,239 +763,235 @@ docs:
       vapid: VAPID 公開鍵（購読用）
   auth:
     title: 認証方法
-    intro: '2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="text-zinc-200">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。'
+    intro: 2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="text-zinc-200">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。
     key:
       title: API Key（Bearer）
-      li1: "· Agent 上報 / 受信側ロングポール接続に使用"
+      li1: · Agent 上報 / 受信側ロングポール接続に使用
       li2: '· Header：<code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
-      li3: '· scope：<code class="mono text-[12px] text-blue-300">notify:send</code> 上報 · <code class="mono text-[12px] text-emerald-300">notify:receive</code> 受信 · <code class="mono text-[12px] text-amber-300">devices:read</code> 読み取り専用'
-      li4: "· サーバーは argon2id ハッシュのみ保存、平文は作成時のみ表示"
+      li3: · scope：<code class="mono text-[12px] text-blue-300">notify:send</code> 上報 · <code class="mono text-[12px] text-emerald-300">notify:receive</code> 受信 · <code class="mono text-[12px] text-amber-300">devices:read</code> 読み取り専用
+      li4: · サーバーは argon2id ハッシュのみ保存、平文は作成時のみ表示
     passkey:
       title: セッション Cookie
-      li1: "· ワークスペースのブラウザアクセスに使用（概要 / デバイス / Keys 管理）"
-      li2: "· WebAuthn パスワードレスログイン、生体認証またはデバイスキー"
-      li3: "· httpOnly Cookie、マルチデバイスセッションは独立して個別に取り消し可能"
-      li4: "· クロスデバイス：プラットフォーム同期 / 一時接続ガイド / リカバリーコード"
+      li1: · ワークスペースのブラウザアクセスに使用（概要 / デバイス / Keys 管理）
+      li2: · WebAuthn パスワードレスログイン、生体認証またはデバイスキー
+      li3: · httpOnly Cookie、マルチデバイスセッションは独立して個別に取り消し可能
+      li4: · クロスデバイス：プラットフォーム同期 / 一時接続ガイド / リカバリーコード
   notify:
     core: 中核
-    intro: 'Agent がタスク終了後にこのエンドポイントを呼び出して通知を上報します。サーバーは API Key を検証し、所有者を特定し、通知を<b class="text-zinc-200">エンドツーエンド暗号化</b>で「有効かつレベル / タグが一致する」すべてのデバイスにプッシュします。'
+    intro: Agent がタスク終了後にこのエンドポイントを呼び出して通知を上報します。サーバーは API Key を検証し、所有者を特定し、通知を<b class="text-zinc-200">エンドツーエンド暗号化</b>で「有効かつレベル / タグが一致する」すべてのデバイスにプッシュします。
     params:
       title: リクエストボディ パラメータ
-      title_desc: '通知タイトル。例：<code>"デプロイ完了"</code>。システム通知のメインタイトルになります。'
-      agent_state_desc: "エージェント状態：<code>working</code> 実行中 · <code>blocked</code> 待機中 · <code>done</code> 完了 · <code>interrupted</code> 中断 · <code>error</code> 失敗。アイコン色とデバイスフィルタを決定します。"
-      body_desc: "通知本文。補足説明です。"
-      tags_desc: "ルーティングタグ。空 = すべての有効デバイスにブロードキャスト。非空 = 「共通タグがある」または「タグなし（catch-all）」のデバイスのみに配信。≤10 個、各 ≤32 文字。"
-      link_desc: "通知タップ時に開くディープリンク。例：<code>pi://session/sess_8f3a2c</code>。"
-      meta_desc: "コンテキストメタデータ。追跡と統計に使用され、通知履歴に保存されます。"
-      ttl_desc: "<code>ttl</code> 有効期限（秒）（デフォルト 86400）；<code>priority</code> 優先度（デフォルト normal）。"
+      title_desc: 通知タイトル。例：<code>"デプロイ完了"</code>。システム通知のメインタイトルになります。
+      agent_state_desc: エージェント状態：<code>working</code> 実行中 · <code>blocked</code> 待機中 · <code>done</code> 完了 · <code>interrupted</code> 中断 · <code>error</code> 失敗。アイコン色とデバイスフィルタを決定します。
+      body_desc: 通知本文。補足説明です。
+      tags_desc: ルーティングタグ。空 = すべての有効デバイスにブロードキャスト。非空 = 「共通タグがある」または「タグなし（catch-all）」のデバイスのみに配信。≤10 個、各 ≤32 文字。
+      link_desc: 通知タップ時に開くディープリンク。例：<code>pi://session/sess_8f3a2c</code>。
+      meta_desc: コンテキストメタデータ。追跡と統計に使用され、通知履歴に保存されます。
+      ttl_desc: <code>ttl</code> 有効期限（秒）（デフォルト 86400）；<code>priority</code> 優先度（デフォルト normal）。
     required: 必須
     optional: 任意
     curl:
-      title: "cURL · 完全なリクエスト"
-      title_val: "デプロイ完了"
-      body_val: "ビルド成功、本番環境にデプロイ済み"
-      tag_val: "仕事"
+      title: cURL · 完全なリクエスト
+      title_val: デプロイ完了
+      body_val: ビルド成功、本番環境にデプロイ済み
+      tag_val: 仕事
     resp200: 受領・配信完了
     resp200_dev1: メインスマホ
     resp200_dev2: オフィス Mac
     resp400: 一致するデバイスなし / パラメータエラー
-    resp400_err: "購読済みデバイスがありません。先にワークスペースで購読してください"
-    resp400_comment: "// 401 · Key がないまたは無効（scope 不足時は 403）"
+    resp400_err: 購読済みデバイスがありません。先にワークスペースで購読してください
+    resp400_comment: // 401 · Key がないまたは無効（scope 不足時は 403）
     rules:
       title: 配信ルール（タグルーティング + レベルフィルタ）
   webpush:
     title: Web Push 購読（ブラウザ受信）
-    intro: 'ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="text-zinc-200">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。'
-    step1: '<b class="text-zinc-200">① VAPID 公開鍵を取得</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>'
-    step2: '<b class="text-zinc-200">② Service Worker を登録</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register(''/sw.js'')</code>'
-    step3: '<b class="text-zinc-200">③ 権限を要求して購読</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>'
-    step4: '<b class="text-zinc-200">④ 購読を上報</b> · endpoint + keys を <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code> で送信'
+    intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="text-zinc-200">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
+    step1: <b class="text-zinc-200">① VAPID 公開鍵を取得</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>
+    step2: <b class="text-zinc-200">② Service Worker を登録</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code>
+    step3: <b class="text-zinc-200">③ 権限を要求して購読</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
+    step4: <b class="text-zinc-200">④ 購読を上報</b> · endpoint + keys を <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code> で送信
     code:
-      title: "フロントエンド購読 · コアコード"
-      comment1: "// 1. SW 登録 + VAPID 公開鍵を取得"
-      comment2: "// 2. 購読（通知権限の許可が必要）"
-      comment3: "// 3. バックエンドに報告（セッション Cookie 認証）"
-      comment_p256dh: "// { p256dh, auth }"
-      comment_platform: "// ios|mac|win|android|other"
+      title: フロントエンド購読 · コアコード
+      comment1: // 1. SW 登録 + VAPID 公開鍵を取得
+      comment2: // 2. 購読（通知権限の許可が必要）
+      comment3: // 3. バックエンドに報告（セッション Cookie 認証）
+      comment_p256dh: // { p256dh, auth }
+      comment_platform: // ios|mac|win|android|other
     ios:
       title: ⚠️ iOS の前提条件
-      desc: "「ホーム画面に追加」してスタンドアローンモードで実行する必要があります。そうしないと Safari は Notification / Push API を提供しません。"
+      desc: 「ホーム画面に追加」してスタンドアローンモードで実行する必要があります。そうしないと Safari は Notification / Push API を提供しません。
     android:
       title: ✅ Android はもっと簡単
-      desc: "Chrome/Edge は通常のタブから購読でき、FCM 経由です。ホーム画面に追加する必要はありません。"
+      desc: Chrome/Edge は通常のタブから購読でき、FCM 経由です。ホーム画面に追加する必要はありません。
     e2e:
       title: 🔒 エンドツーエンド暗号化
-      desc: "ペイロードは購読の p256dh/auth 鍵で暗号化され、プッシュサービスは内容を読めません。"
+      desc: ペイロードは購読の p256dh/auth 鍵で暗号化され、プッシュサービスは内容を読めません。
   ws:
     channel2: 2 つ目の受信チャネル
-    intro: 'ブラウザプッシュに加え、任意のデバイス / プラグインが <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> 権限の Key で WebSocket ロングポールを確立し、リアルタイム受信できます。デスクトップウィジェット、CLI デーモン、スマートホームブリッジに最適。ブラウザプッシュと並行稼働します。'
+    intro: ブラウザプッシュに加え、任意のデバイス / プラグインが <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> 権限の Key で WebSocket ロングポールを確立し、リアルタイム受信できます。デスクトップウィジェット、CLI デーモン、スマートホームブリッジに最適。ブラウザプッシュと並行稼働します。
     connect:
-      title: "接続の確立"
-      comment: "# notify:receive 権限が必要"
-      comment2: "# 任意、再接続時のレジュム用"
+      title: 接続の確立
+      comment: '# notify:receive 権限が必要'
+      comment2: '# 任意、再接続時のレジュム用'
     s2c:
-      title: "サーバー → クライアント"
-      comment1: "// 接続成功後の最初のフレーム"
-      comment2: "// 新しい通知を受信"
-      title_val: "デプロイ完了"
-      body_val: "本番にデプロイ済み"
-      tag_val: "仕事"
-      comment3: "// リプレイ終了 / ハートビート / エラー"
+      title: サーバー → クライアント
+      comment1: // 接続成功後の最初のフレーム
+      comment2: // 新しい通知を受信
+      title_val: デプロイ完了
+      body_val: 本番にデプロイ済み
+      tag_val: 仕事
+      comment3: // リプレイ終了 / ハートビート / エラー
     c2s:
-      title: "クライアント → サーバー"
-      comment1: "// タグの購読 / 購読解除（空 = 全て）"
-      comment2: "// 処理済みを確認（at-least-once）"
-      comment3: "// ハートビート（heartbeat_sec ごと、2 回連続未受信で切断）"
-      comment4: "// 再接続後、resume フレームでレジュム（Last-Event-Id ヘッダの代替）"
+      title: クライアント → サーバー
+      comment1: // タグの購読 / 購読解除（空 = 全て）
+      comment2: // 処理済みを確認（at-least-once）
+      comment3: // ハートビート（heartbeat_sec ごと、2 回連続未受信で切断）
+      comment4: // 再接続後、resume フレームでレジュム（Last-Event-Id ヘッダの代替）
     reconnect:
       title: 再接続とレジュム
-      desc: '再接続時に <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。'
-
+      desc: 再接続時に <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。
 cliauth:
-  title: "CLI デバイス認証"
-  back_home: "ダッシュボードに戻る"
+  title: CLI デバイス認証
+  back_home: ダッシュボードに戻る
   entry:
-    heading: "認証コードを入力"
-    sub: "ターミナルでログインスクリプトを実行後、表示された 8 文字のコードを入力して承認してください"
-    placeholder: "XXXX-XXXX"
-    hint: "コードは 10 分間有効 · 大文字小文字は区別しません · 0/O・1/I などの紛らわしい文字は含まれません"
-    continue: "続ける"
-    busy: "セッションを検索中…"
-    not_found: "このコードに対応する認証セッションが見つかりません。確認して再入力してください"
+    heading: 認証コードを入力
+    sub: ターミナルでログインスクリプトを実行後、表示された 8 文字のコードを入力して承認してください
+    placeholder: XXXX-XXXX
+    hint: コードは 10 分間有効 · 大文字小文字は区別しません · 0/O・1/I などの紛らわしい文字は含まれません
+    continue: 続ける
+    busy: セッションを検索中…
+    not_found: このコードに対応する認証セッションが見つかりません。確認して再入力してください
   confirm:
-    heading: "このデバイスを承認しますか？"
-    sub: "承認すると、選択した権限であなたのアカウントとして動作する API キーが発行されます"
-    ttl_hint: "認証セッションは 10 分間有効です"
-    identity_prefix: ""
-    identity_suffix: " として承認します"
-    switch_prefix: ""
-    switch_suffix: " ではありませんか？ログアウトして切り替え →"
-    scopes_label: "権限範囲（少なくとも 1 つ選択）"
-    scope_send_label: "通知を送信"
-    scope_send_desc: "Agent が通知を送信することを許可"
-    scope_receive_label: "通知を受信"
-    scope_receive_desc: "通知の受信・購読"
-    scope_read_label: "デバイスを表示"
-    scope_read_desc: "デバイス一覧の表示"
-    scopes_required: "少なくとも 1 つの権限を選択してください"
-    approve: "承認する"
-    deny: "拒否"
-    busy: "送信中…"
+    heading: このデバイスを承認しますか？
+    sub: 承認すると、選択した権限であなたのアカウントとして動作する API キーが発行されます
+    ttl_hint: 認証セッションは 10 分間有効です
+    identity_prefix: ''
+    identity_suffix: ' として承認します'
+    switch_prefix: ''
+    switch_suffix: ' ではありませんか？ログアウトして切り替え →'
+    scopes_label: 権限範囲（少なくとも 1 つ選択）
+    scope_send_label: 通知を送信
+    scope_send_desc: Agent が通知を送信することを許可
+    scope_receive_label: 通知を受信
+    scope_receive_desc: 通知の受信・購読
+    scope_read_label: デバイスを表示
+    scope_read_desc: デバイス一覧の表示
+    scopes_required: 少なくとも 1 つの権限を選択してください
+    approve: 承認する
+    deny: 拒否
+    busy: 送信中…
   done:
-    approved_badge: "承認済み"
-    approved_title: "承認しました"
-    approved_desc: "このページを閉じて、ターミナルで結果を確認してください。"
-    approved_keys_link: "API Keys で確認 →"
-    denied_badge: "拒否しました"
-    denied_title: "この承認を拒否しました"
-    denied_desc: "ターミナルに拒否結果が通知されます。心当たりがない場合は、第三者がアカウントにログインしようとしていないか確認してください。"
-    expired_badge: "期限切れ"
-    expired_title: "セッションの有効期限が切れました"
-    expired_desc: "認証セッションは 10 分間有効です。ターミナルでログインスクリプトを再実行し、新しいリンクまたはコードを取得してください。"
-    expired_action: "新しいコードを入力"
-    notfound_badge: "見つかりません"
-    notfound_title: "セッションが存在しないか、コードが間違っています"
-    notfound_desc: "ターミナルに表示されたコードを確認して再試行するか、ログインスクリプトを再実行してください。"
-    notfound_action: "再入力"
-    consumed_badge: "使用済み"
-    consumed_title: "このセッションは承認済みです"
-    consumed_desc: "このセッションのキーはすでに発行されています。新しいキーが必要な場合は、ターミナルでログインスクリプトを再実行してください。"
-    error_title: "サーバーに接続できません"
-    error_desc: "ネットワーク接続を確認して再試行してください。"
-    rejected_desc: "承認リクエストが拒否されました。選択した権限スコープを確認して再試行してください。"
-    retry: "再試行"
+    approved_badge: 承認済み
+    approved_title: 承認しました
+    approved_desc: このページを閉じて、ターミナルで結果を確認してください。
+    approved_keys_link: API Keys で確認 →
+    denied_badge: 拒否しました
+    denied_title: この承認を拒否しました
+    denied_desc: ターミナルに拒否結果が通知されます。心当たりがない場合は、第三者がアカウントにログインしようとしていないか確認してください。
+    expired_badge: 期限切れ
+    expired_title: セッションの有効期限が切れました
+    expired_desc: 認証セッションは 10 分間有効です。ターミナルでログインスクリプトを再実行し、新しいリンクまたはコードを取得してください。
+    expired_action: 新しいコードを入力
+    notfound_badge: 見つかりません
+    notfound_title: セッションが存在しないか、コードが間違っています
+    notfound_desc: ターミナルに表示されたコードを確認して再試行するか、ログインスクリプトを再実行してください。
+    notfound_action: 再入力
+    consumed_badge: 使用済み
+    consumed_title: このセッションは承認済みです
+    consumed_desc: このセッションのキーはすでに発行されています。新しいキーが必要な場合は、ターミナルでログインスクリプトを再実行してください。
+    error_title: サーバーに接続できません
+    error_desc: ネットワーク接続を確認して再試行してください。
+    rejected_desc: 承認リクエストが拒否されました。選択した権限スコープを確認して再試行してください。
+    retry: 再試行
   trust:
-    local: "承認はあなたのサーバー上でのみ有効です"
-    ttl: "コードは 10 分で失効します"
-    revoke: "キーは API Keys ページでいつでも無効化できます"
-
+    local: 承認はあなたのサーバー上でのみ有効です
+    ttl: コードは 10 分で失効します
+    revoke: キーは API Keys ページでいつでも無効化できます
 passkeyenroll:
-  title: "新しいデバイスでパスキーを追加"
-  entry_button: "新しいデバイスで追加"
-  local_button: "このデバイスで追加"
+  title: 新しいデバイスでパスキーを追加
+  entry_button: 新しいデバイスで追加
+  local_button: このデバイスで追加
   panel:
-    title: "新しいデバイスでパスキーを追加"
-    sub: "新しいデバイスでいずれかの方法で開き、ここで承認してください"
-    tab_qr: "QRコード"
-    tab_url: "リンク"
-    tab_code: "コード"
-    qr_hint: "新しいデバイスのカメラでスキャン"
-    url_hint: "このリンクを新しいデバイスに送る"
-    code_hint: "新しいデバイスの追加ページでこのコードを入力"
-    waiting: "新しいデバイスを待っています…"
-    expires_in: "有効期限"
-    confirm_title: "この新しいデバイスを承認しますか？"
-    confirm_sub: "承認すると、新しいデバイスで生体認証が起動しパスキーが作成されます"
-    confirm_warn: "自分の操作ではありませんか？拒否してください。QRコード・コードは手元の新しいデバイスにだけ表示されているはずです。"
-    approve: "承認する"
-    approved_waiting: "承認しました。新しいデバイスの生体認証を待っています…"
-    cancel_confirm: "この追加をキャンセルしますか？新しいデバイス側のリンクとコードは直ちに無効になります。"
-    success_title: "新しいデバイスを追加しました"
-    success_desc: "「{name}」のパスキーが作成されました。次回からそのままログインできます。"
-    done: "完了"
-    restart: "やり直す"
-    error_backend_desc: "バックエンドに接続できません（デモモード）。サーバーが HTTPS で起動しているか確認してください。"
-    denied_title: "追加を拒否しました"
-    denied_desc: "認証情報は作成されていません。心当たりがない場合は、第三者がログインを試みていないか確認してください。"
-    expired_title: "セッションの有効期限が切れました"
-    expired_desc: "セッションは 10 分間有効です。やり直すと新しい QRコードとコードが発行されます。"
-    error_title: "サーバーに接続できません"
-    error_desc: "ネットワークを確認して再試行してください。"
-    via_qr: "QRコードで接続"
-    via_url: "リンクで接続"
-    via_code: "コードで接続"
+    title: 新しいデバイスでパスキーを追加
+    sub: 新しいデバイスでいずれかの方法で開き、ここで承認してください
+    tab_qr: QRコード
+    tab_url: リンク
+    tab_code: コード
+    qr_hint: 新しいデバイスのカメラでスキャン
+    url_hint: このリンクを新しいデバイスに送る
+    code_hint: 新しいデバイスの追加ページでこのコードを入力
+    waiting: 新しいデバイスを待っています…
+    expires_in: 有効期限
+    confirm_title: この新しいデバイスを承認しますか？
+    confirm_sub: 承認すると、新しいデバイスで生体認証が起動しパスキーが作成されます
+    confirm_warn: 自分の操作ではありませんか？拒否してください。QRコード・コードは手元の新しいデバイスにだけ表示されているはずです。
+    approve: 承認する
+    approved_waiting: 承認しました。新しいデバイスの生体認証を待っています…
+    cancel_confirm: この追加をキャンセルしますか？新しいデバイス側のリンクとコードは直ちに無効になります。
+    success_title: 新しいデバイスを追加しました
+    success_desc: 「{name}」のパスキーが作成されました。次回からそのままログインできます。
+    done: 完了
+    restart: やり直す
+    error_backend_desc: バックエンドに接続できません（デモモード）。サーバーが HTTPS で起動しているか確認してください。
+    denied_title: 追加を拒否しました
+    denied_desc: 認証情報は作成されていません。心当たりがない場合は、第三者がログインを試みていないか確認してください。
+    expired_title: セッションの有効期限が切れました
+    expired_desc: セッションは 10 分間有効です。やり直すと新しい QRコードとコードが発行されます。
+    error_title: サーバーに接続できません
+    error_desc: ネットワークを確認して再試行してください。
+    via_qr: QRコードで接続
+    via_url: リンクで接続
+    via_code: コードで接続
   trust:
-    approve_only: "ログイン済みデバイスでの承認後にのみ作成されます"
+    approve_only: ログイン済みデバイスでの承認後にのみ作成されます
   entry:
-    heading: "追加コードを入力"
-    sub: "ログイン済みデバイスの「安全とログイン」で追加を開始後、表示された 8 文字のコードを入力してください"
-    continue: "続ける"
-    busy: "セッションを検索中…"
-    not_found: "このコードに対応するセッションが見つかりません。確認して再入力してください"
+    heading: 追加コードを入力
+    sub: ログイン済みデバイスの「安全とログイン」で追加を開始後、表示された 8 文字のコードを入力してください
+    continue: 続ける
+    busy: セッションを検索中…
+    not_found: このコードに対応するセッションが見つかりません。確認して再入力してください
   overview:
-    heading: "このデバイスにパスキーを追加"
-    session_line: "「{name}」からの追加リクエスト"
-    desc: "続けると、ログイン済みデバイスに承認リクエストが届きます。承認後、このデバイスで生体認証が起動します。"
-    step1: "このデバイスがリクエスト"
-    step2: "ログイン済みデバイスで承認"
-    step3: "このデバイスで生体認証"
-    ttl_hint: "セッションは 10 分間有効"
-    continue: "続けて承認をリクエスト"
-    not_mine: "自分のリクエストではありませんか？このページを閉じてください"
+    heading: このデバイスにパスキーを追加
+    session_line: 「{name}」からの追加リクエスト
+    desc: 続けると、ログイン済みデバイスに承認リクエストが届きます。承認後、このデバイスで生体認証が起動します。
+    step1: このデバイスがリクエスト
+    step2: ログイン済みデバイスで承認
+    step3: このデバイスで生体認証
+    ttl_hint: セッションは 10 分間有効
+    continue: 続けて承認をリクエスト
+    not_mine: 自分のリクエストではありませんか？このページを閉じてください
   wait:
-    heading: "ログイン済みデバイスで承認してください"
-    desc: "「{name}」の承認パネルがあなたの確認を待っています"
-    status: "承認待ち…"
-    code_label: "コード"
-    cancel: "キャンセルして戻る"
+    heading: ログイン済みデバイスで承認してください
+    desc: 「{name}」の承認パネルがあなたの確認を待っています
+    status: 承認待ち…
+    code_label: コード
+    cancel: キャンセルして戻る
   creating:
-    heading: "パスキーを作成中…"
-    desc: "システムのダイアログで指紋 / 顔 / デバイスパスコードを完了してください"
-    name_label: "このパスキーに名前を付ける"
-    name_placeholder: "例：「メインのスマホ」"
-    busy: "システム認証を待っています…"
-    retry: "再試行"
-    cancelled: "システム認証がキャンセルされました。まだ作成されていません。再試行できます。"
-    failed_desc: "このデバイスでは作成を完了できませんでした（ブラウザまたはデバイス非対応）。"
+    heading: パスキーを作成中…
+    desc: システムのダイアログで指紋 / 顔 / デバイスパスコードを完了してください
+    name_label: このパスキーに名前を付ける
+    name_placeholder: 例：「メインのスマホ」
+    busy: システム認証を待っています…
+    retry: 再試行
+    cancelled: システム認証がキャンセルされました。まだ作成されていません。再試行できます。
+    failed_desc: このデバイスでは作成を完了できませんでした（ブラウザまたはデバイス非対応）。
   success:
-    heading: "パスキーを追加しました"
-    desc: "次回からこのデバイスでは生体認証だけでログインできます。"
-    login_now: "今すぐログイン"
+    heading: パスキーを追加しました
+    desc: 次回からこのデバイスでは生体認証だけでログインできます。
+    login_now: 今すぐログイン
   failed:
-    denied_title: "追加が拒否されました"
-    denied_desc: "ログイン済みデバイスがこのリクエストを拒否しました。認証情報は作成されていません。"
-    expired_title: "セッションの有効期限が切れました"
-    expired_desc: "セッションは 10 分間有効です。ログイン済みデバイスでやり直し、新しい QRコードまたはコードを取得してください。"
-    expired_action: "新しいコードを入力"
-    notfound_title: "認証がキャンセルまたは期限切れ"
-    notfound_desc: "送信元デバイスが認証をキャンセルしたか、セッションが期限切れです。送信元デバイスで再発行してください。"
-    notfound_action: "新しいコードを入力"
-    error_title: "サーバーに接続できません"
-    error_desc: "複数のリクエストが失敗しました。ネットワーク障害またはサーバー停止の可能性があります。ネットワークを確認して再試行してください。"
-    no_webauthn_desc: "このブラウザまたは環境はパスキーに対応していません（HTTPS + 最新ブラウザが必要）。最新の Chrome / Safari をお試しください。"
-    consumed_desc: "このセッションは完了済みで再利用できません。やり直してください。"
-
-# ===== 管理コンソール =====
+    denied_title: 追加が拒否されました
+    denied_desc: ログイン済みデバイスがこのリクエストを拒否しました。認証情報は作成されていません。
+    expired_title: セッションの有効期限が切れました
+    expired_desc: セッションは 10 分間有効です。ログイン済みデバイスでやり直し、新しい QRコードまたはコードを取得してください。
+    expired_action: 新しいコードを入力
+    notfound_title: 認証がキャンセルまたは期限切れ
+    notfound_desc: 送信元デバイスが認証をキャンセルしたか、セッションが期限切れです。送信元デバイスで再発行してください。
+    notfound_action: 新しいコードを入力
+    error_title: サーバーに接続できません
+    error_desc: 複数のリクエストが失敗しました。ネットワーク障害またはサーバー停止の可能性があります。ネットワークを確認して再試行してください。
+    no_webauthn_desc: このブラウザまたは環境はパスキーに対応していません（HTTPS + 最新ブラウザが必要）。最新の Chrome / Safari をお試しください。
+    consumed_desc: このセッションは完了済みで再利用できません。やり直してください。
 admin:
   title: 管理コンソール
   forbidden:
@@ -999,13 +1004,13 @@ admin:
   success: 完了
   kpi:
     users: ユーザー総数
-    users_sub: "{n} 管理者"
-    active: "7日間 {n} アクティブ"
+    users_sub: '{n} 管理者'
+    active: 7日間 {n} アクティブ
     messages: メッセージ総数
-    today: "今日 {n}"
+    today: 今日 {n}
     devices: デバイス
-    enabled: "{n} 有効"
-    keys: "{n} Keys"
+    enabled: '{n} 有効'
+    keys: '{n} Keys'
     delivery_rate: 配信成功率
   tab:
     users: ユーザー
@@ -1042,19 +1047,19 @@ admin:
     empty: アクティブセッションなし
   top:
     messages: メッセージ
-    devices: "{n} デバイス"
+    devices: '{n} デバイス'
   confirm:
     title: 確認
     cancel: キャンセル
     ok: 確認
     promote_title: 管理者に昇格
-    promote_body: "{name} をスーパー管理者に昇格しますか？"
+    promote_body: '{name} をスーパー管理者に昇格しますか？'
     demote_title: メンバーに降格
-    demote_body: "{name} をメンバーに降格しますか？"
+    demote_body: '{name} をメンバーに降格しますか？'
     disable_title: ユーザーを無効化
-    disable_body: "{name} を無効化しますか？直ちにログアウトされます。"
+    disable_body: '{name} を無効化しますか？直ちにログアウトされます。'
     enable_title: ユーザーを有効化
-    enable_body: "{name} を有効化しますか？"
+    enable_body: '{name} を有効化しますか？'
   error:
     load_stats: 統計の読み込みに失敗
     load_users: ユーザーの読み込みに失敗
@@ -1071,7 +1076,7 @@ events:
   empty: イベントはまだありません。POST /v1/events で送信してください。
   demo_badge: デモモード — バックエンド未接続
   demo_hint: バックエンド未接続のため、実際のイベントはまだありません。
-  count: "{n} 件のイベント"
+  count: '{n} 件のイベント'
   view_chain: チェーンを表示
   filter:
     trace: Trace ID
@@ -1088,7 +1093,7 @@ caps:
   new: ケイパビリティを定義
   loading: ケイパビリティを読み込み中…
   empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
-  count: "{n} 個のケイパビリティ"
+  count: '{n} 個のケイパビリティ'
   no_outputs: 出口なし（終端ケイパビリティ）
   any_event_type: 任意のイベント種別（起点）
   list:
@@ -1102,25 +1107,25 @@ caps:
     cancel: キャンセル
     submit: 作成
     created: ケイパビリティを作成しました
-    create_failed: "作成に失敗: "
+    create_failed: '作成に失敗: '
     err_name: ケイパビリティ名を入力してください
     err_schema: paramsSchema が正しい JSON ではありません
   edges:
     title: エッジ
     new: エッジを追加
     desc: 各エッジは「このケイパビリティのこの出口が別のケイパビリティを指す」ことを表します。1 つの出口に複数のエッジを張れます（ファンアウト）。
-    empty: "エッジ表が空です: ここに届いたイベントの行き先がありません。"
+    empty: 'エッジ表が空です: ここに届いたイベントの行き先がありません。'
     from: 起点ケイパビリティ
     port: 出口
     port_hint: そのケイパビリティが宣言した出口のみ表示されます（出口は閉集合、不変条件 I2）。
-    port_hint_origin: "起点ケイパビリティの出口はイベント種別そのものです（外部システムが決めます。例：GitHub の pull_request.opened）"
+    port_hint_origin: 起点ケイパビリティの出口はイベント種別そのものです（外部システムが決めます。例：GitHub の pull_request.opened）
     port_placeholder: pull_request.opened
     to: 終点ケイパビリティ
     remove: 削除
     removed: 削除しました
-    remove_failed: "削除に失敗: "
+    remove_failed: '削除に失敗: '
     created: エッジを作成しました
-    create_failed: "作成に失敗: "
+    create_failed: '作成に失敗: '
     err_incomplete: 起点・出口・終点を選択してください
     no_ports: （このケイパビリティには出口がありません）
 nodes:
@@ -1129,16 +1134,16 @@ nodes:
   refresh: 更新
   loading: ノードを読み込み中…
   empty: ノードがまだありません。下の手順で最初の 1 台を登録してください。オンラインになると仕事を受けます。
-  count: "{online}/{total} オンライン"
+  count: '{online}/{total} オンライン'
   never: なし
   last_seen: ハートビート
   no_caps: ケイパビリティ未宣言
-  slots: "スロット {busy}/{total}"
+  slots: スロット {busy}/{total}
   drain: ドレイン
   draining_hint: ドレイン中
-  drain_confirm: "{name} をドレインしますか？実行中のタスクは完了しますが、新しいタスクは受けません。"
+  drain_confirm: '{name} をドレインしますか？実行中のタスクは完了しますが、新しいタスクは受けません。'
   drain_done: ドレインしました
-  drain_failed: "ドレインに失敗: "
+  drain_failed: 'ドレインに失敗: '
   status:
     online: オンライン
     offline: オフライン
@@ -1150,3 +1155,69 @@ nodes:
     desc: ノード登録は運用者向けの操作（セルフサービスではありません）なので、サーバー上で実行します。トークンは一度だけ返されます。
     step1: サーバー上でノードを登録（実行できるケイパビリティを宣言）
     step2: ノードのマシンでトークンを使って起動。WS でハブに接続します
+sources:
+  title: ソース
+  subtitle: ソースはイベントの入口です：タイマーが発火する、webhook が呼ばれる、または手動で実行します。自らイベントを生成し、選択したケイパビリティに配信します。
+  new: ソースを作成
+  refresh: 更新
+  empty: ソースがまだありません。「ソースを作成」から始めてください。
+  explain:
+    title: ソースとケイパビリティの役割分担：
+    body: ケイパビリティは「何ができるか」に答えます（ノードが宣言し、中枢がタスクを配信）。ソースは「いつ始めるか」に答えます（設定を持ち、イベントを生成し、自分では作業しません）。そのためソースは辺を作りません。出口はここで選んだケイパビリティです。
+  kind:
+    cron: タイマー
+    webhook: Webhook
+    manual: 手動
+  next_fire: 次回 {t}
+  manual_hint: 「今すぐ実行」を押すと発火します
+  targets_label: 出口
+  no_target: 未設定
+  target_missing: 削除済み
+  fire: 今すぐ実行
+  enable: 有効化
+  disable: 無効化
+  edit: 編集
+  delete: 削除
+  disabled: 無効
+  deleted: 削除しました
+  created: 作成しました
+  saved: 保存しました
+  save_failed: 保存に失敗：{e}
+  fire_failed: 実行に失敗：{e}
+  fired: 発火：{n} 件のタスクを配信
+  fired_pruned: 、{n} 件を剪定
+  fired_none: イベントは保存されましたが配信されませんでした（{r}）
+  fired_empty: イベントは保存されましたが配信できるタスクがありません
+  delete_confirm: ソース「{n}」を削除しますか？既存のイベントとタスクは保持されます。
+  in: '{n} 後'
+  ago: '{n} 前'
+  unit:
+    sec: 秒
+    min: 分
+    hour: 時間
+    day: 日
+  modal:
+    new: ソースを作成
+    edit: ソースを編集
+  form:
+    name: 名前
+    name_ph: 例：夜間チェック
+    kind: トリガー
+    kind_hint: 作成後は変更できません（種類の変更は意味の変更）。削除して作り直してください。
+    expr: Cron 式（5 フィールド：分 時 日 月 曜）
+    expr_hint: '* / , - に対応。@daily などのマクロは非対応。例：0 3 * * * は毎日 03:00。'
+    hook_hint: 作成後に専用 URL が生成され、外部システムがそこへ POST すると発火します。URL を知っていれば誰でもイベントを送れるため、厳重に管理してください。
+    targets: 出口ケイパビリティ（複数選択可）
+    targets_hint: イベントは選択したすべてのケイパビリティに配信されます（ファンアウト）。最低 1 つ必要です。
+    enabled: 有効
+    cancel: キャンセル
+    save: 保存
+    name_required: 名前を入力してください
+    expr_required: Cron 式を入力してください
+    targets_required: 出口ケイパビリティを 1 つ以上選択してください
+    no_caps: 利用可能なケイパビリティがありません。先に「ケイパビリティ」ページで定義してください。
+  preset:
+    hourly: 毎時
+    daily3: 毎日 3:00
+    weekdays9: 平日 9:00
+    every15: 15 分ごと

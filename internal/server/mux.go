@@ -13,6 +13,7 @@ import (
 	"github.com/zzjcool/anotify/internal/lease"
 	"github.com/zzjcool/anotify/internal/push"
 	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/trigger"
 	"github.com/zzjcool/anotify/internal/ws"
@@ -193,6 +194,18 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		)
 	}
 
+	// 源（origin）的 cron 调度器。
+	//
+	// 与 sweeper / executor 并列：都是"后台自愈/驱动"循环，
+	// 单轮失败只记日志继续，不能因一次 DB 抖动就永久停摆。
+	//
+	// 它需要 Dispatcher 才能把触发变成任务，所以只能在这里起
+	// （不能放进 store 层——那会让 store 依赖 route）。
+	srcTrigger := &source.Trigger{Store: db, Dispatcher: dispatcher}
+	srcSched := &source.Scheduler{Store: db, Dispatcher: dispatcher}
+	go srcSched.Run(ctx)
+	slog.Info("source scheduler wired", "event", "server.source.ready")
+
 	sweeper := lease.New(db)
 	sweeper.Redispatch = func(sctx context.Context, task *store.Task) (bool, error) {
 		ok, err := dispatcher.RedispatchTask(sctx, task)
@@ -246,6 +259,20 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
 	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
 	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
+	// 源（origin）：事件的入口实例。增删改查 + 手动触发。
+	//
+	// 与控制台其它读接口一样走会话 Cookie。
+	srcH := &sourceHandler{db: db, commander: srcTrigger, resolveOrg: consoleH.resolveOrg}
+	mux.Handle("GET /v1/sources", noStore(sessMW(http.HandlerFunc(srcH.sources))))
+	mux.Handle("POST /v1/sources", noStore(sessMW(http.HandlerFunc(srcH.sources))))
+	mux.Handle("GET /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
+	mux.Handle("PATCH /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
+	mux.Handle("DELETE /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
+	mux.Handle("POST /v1/sources/{id}/fire", noStore(sessMW(http.HandlerFunc(srcH.fire))))
+	// webhook 入口**不需要会话**：鉴权是 URL 里的 token。
+	// 外部系统（GitHub / 监控告警）不可能带我们的 Cookie。
+	mux.Handle("POST /v1/hooks/{token}", noStore(http.HandlerFunc(srcH.hook)))
+
 	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.nodes))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(consoleH.drainNode))))
 

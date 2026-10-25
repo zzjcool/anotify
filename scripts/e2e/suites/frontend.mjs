@@ -30,6 +30,7 @@ const PAGES = [
 	"connect.html",
 	// 事件中心页面（#79）
 	"events.html",
+	"sources.html",
 	"capabilities.html",
 	"nodes.html",
 ];
@@ -42,6 +43,7 @@ const GUARDED = [
 	"connect.html",
 	// 事件中心页面同样需要登录（未登录 → login.html）
 	"events.html",
+	"sources.html",
 	"capabilities.html",
 	"nodes.html",
 ];
@@ -598,6 +600,71 @@ async function main() {
 				JSON.stringify(chain.text),
 			);
 			await page2.close();
+		}
+
+		// ---- 源页面：列表能渲染、能新建、出口选项来自真实能力 ----
+		//
+		// 这条断言盯住几个曾经真出过问题的地方：
+		//   - 忘了调 mountLayout → 页面能渲染但**没有侧栏**，点不到别的页
+		//   - DispatchOutput 缺 json tag → 派发明明成功，前端显示"0 个任务"
+		//   - 出口下拉把内置起点（github/cron/http/manual）也列出来，
+		//     选了必然 pruned/no_node
+		{
+			const page3 = await ctx.newPage();
+			const srcErrors = [];
+			page3.on("pageerror", (e) => srcErrors.push(String(e)));
+			await page3.goto(server.base + "/sources.html", {
+				waitUntil: "load",
+				timeout: 15000,
+			});
+			await page3.waitForTimeout(1200);
+
+			// 侧栏必须存在且当前项高亮为「源」
+			const nav = await page3.evaluate(() => {
+				const links = Array.from(document.querySelectorAll(".side-link"));
+				const active = document.querySelector(".side-link.active");
+				return {
+					count: links.length,
+					hasSources: links.some((a) => a.getAttribute("href") === "sources.html"),
+					active: active ? active.getAttribute("href") : null,
+				};
+			});
+			H.check("源页面有侧边栏", nav.count > 0, `side-link 数=${nav.count}`);
+			H.check(
+				"侧边栏含「源」且高亮",
+				nav.hasSources && nav.active === "sources.html",
+				`hasSources=${nav.hasSources} active=${nav.active}`,
+			);
+
+			// 新建一个 manual 源，出口选真实能力
+			await page3.click("#btn-new");
+			await page3.waitForTimeout(300);
+			await page3.fill("#f-name", "e2e-manual-src");
+			await page3.selectOption("#f-kind", "manual");
+			await page3.waitForTimeout(200);
+			// 勾选第一个可用的出口能力（不含内置起点）
+			const picked = await page3.evaluate(() => {
+				const box = document.getElementById("f-targets");
+				const cbs = Array.from(box.querySelectorAll("input[type=checkbox]"));
+				if (!cbs.length) return null;
+				cbs[0].checked = true;
+				const label = cbs[0].closest("label");
+				return label ? label.textContent.trim() : null;
+			});
+			H.check("出口选择器列出了可用能力", picked != null, String(picked));
+			await page3.click("#modal-save");
+			await page3.waitForTimeout(1500);
+
+			const list = await page3.evaluate(() => {
+				const cards = Array.from(document.querySelectorAll("#src-list > div"));
+				return {
+					n: cards.length,
+					text: cards.map((c) => c.textContent.replace(/\s+/g, " ")).join(" | ").slice(0, 300),
+				};
+			});
+			H.check("新建的源出现在列表里", /e2e-manual-src/.test(list.text), list.text);
+			H.check("渲染源页面没有 JS 报错", srcErrors.length === 0, srcErrors.slice(0, 2).join("; "));
+			await page3.close();
 		}
 
 		// demo-badge 应隐藏（有真实数据，非演示模式）

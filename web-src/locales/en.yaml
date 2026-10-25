@@ -20,6 +20,7 @@ common:
     notification: Notifications
     admin_section: Admin
     admin: Admin Console
+    sources: Sources
   lang:
     label: Language
     switcher_label: Switch language
@@ -48,16 +49,16 @@ common:
     login_copyright: © 2026 Anotify · MIT License · Passkey-only
   time:
     just_now: just now
-    minutes_ago: "{n} min ago"
-    hours_ago: "{n} h ago"
-    days_ago: "{n} d ago"
+    minutes_ago: '{n} min ago'
+    hours_ago: '{n} h ago'
+    days_ago: '{n} d ago'
     never: Never used
-    weeks_ago: "{n} w ago"
+    weeks_ago: '{n} w ago'
   ttl:
-    day: "{n} d"
-    hour: "{n} h"
-    minute: "{n} min"
-    second: "{n} s"
+    day: '{n} d'
+    hour: '{n} h'
+    minute: '{n} min'
+    second: '{n} s'
   agentState:
     working: Running
     blocked: Waiting
@@ -119,7 +120,7 @@ index:
     morning: Good morning
     afternoon: Good afternoon
     evening: Good evening
-    with_name: "{greeting}, {name}"
+    with_name: '{greeting}, {name}'
   loading: Loading your notification stats…
   demo_badge: Demo data (backend not connected)
   kpi:
@@ -130,7 +131,7 @@ index:
     today_sub: Sent → Delivered
     devices: Receiving devices
     devices_enabled: Enabled
-    devices_sub: "{n} devices · end-to-end encrypted"
+    devices_sub: '{n} devices · end-to-end encrypted'
     devices_sub2: Push subscriptions + WebSocket
     rate_na: No receivers yet — delivery rate unavailable
     trend_demo: Demo
@@ -150,9 +151,9 @@ index:
       sat: S
     month: Month {n}
     tip:
-      count: "{n} notifications"
+      count: '{n} notifications'
       none: No notifications
-      date: "{m}/{d} {w}"
+      date: '{m}/{d} {w}'
   quickstart:
     cta: Connect a new Agent
     title: Connect your Agent
@@ -161,13 +162,17 @@ index:
     option_a: One line to set up your Agent
     option_b: Or report from a script / CI
     copy: Copy
-    cmd_a_comment: "# Copy this and send it to your pi"
+    cmd_a_comment: '# Copy this and send it to your pi'
     curl_example_title: Deploy done
-    cmd_a: |
-      Install the anotify notification plugin for me:
+    cmd_a: 'Install the anotify notification plugin for me:
+
       1. Run pi install npm:pi-anotify
+
       2. Run sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
-      3. Show me the authorization link or code from the terminal — I'll approve it in the browser and tell you the result
+
+      3. Show me the authorization link or code from the terminal — I''ll approve it in the browser and tell you the result
+
+      '
   recent:
     title: Recent notifications
     subtitle: Live updates · click a row for details
@@ -197,13 +202,13 @@ index:
     sending: Sending…
     success: Sent, matched {n} device(s)
     no_device: Sent, but no matching device is currently subscribed
-    failed: "Send failed: {msg}"
+    failed: 'Send failed: {msg}'
     demo_disabled: Backend not connected, cannot send test notification
     no_devices_block: No receivers yet. Turn on notifications or add a device under Receivers first.
     cancel: Cancel
   notif:
     empty: No notifications with this status
-    delivered: "{d}/{t} devices delivered"
+    delivered: '{d}/{t} devices delivered'
     count: Showing {n}
   detail:
     open_session: Open Agent session
@@ -216,7 +221,7 @@ index:
     n3_title: Task interrupted
     n3_body: Task was manually stopped. Progress at 62%, state preserved, can resume.
     n4_title: Docs update complete
-    n4_body: "Generated 3 pages: README, API reference, deployment guide."
+    n4_body: 'Generated 3 pages: README, API reference, deployment guide.'
     n5_title: Code review complete
     n5_body: Reviewed 12 files, found 2 potential null pointers, generated fix suggestions.
     n6_title: Database migration failed
@@ -245,11 +250,15 @@ connect:
       tagline: pi-coding-agent
       desc: Listens for the agent_settled event and pushes notifications to all your devices when a task finishes.
       prompt_title: Send this to your pi
-      prompt: |
-        Install the anotify notification plugin for me:
+      prompt: 'Install the anotify notification plugin for me:
+
         1. Run pi install npm:pi-anotify
+
         2. Run sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
-        3. Show me the authorization link or code from the terminal — I'll approve it in the browser and tell you the result
+
+        3. Show me the authorization link or code from the terminal — I''ll approve it in the browser and tell you the result
+
+        '
       prompt_hint: After pasting, pi handles install and authorization automatically. Approve on a device already signed in to Anotify (scan the QR code in the terminal with your phone).
       self_hosted: Self-hosting? See the API docs to point at your own domain instead.
     claude_code:
@@ -277,9 +286,9 @@ message:
   fields_title: All fields
   deliveries_title: Deliveries
   delivery:
-    delivered_count: "{ok}/{n} delivered"
+    delivered_count: '{ok}/{n} delivered'
     empty: No delivery records (no matching enabled devices)
-    attempt_info: "{channel} · {n} attempts · {time}"
+    attempt_info: '{channel} · {n} attempts · {time}'
   error:
     missing_id: Missing message ID (URL should have ?id=ntf_…)
     not_found: Message not found or has been cleaned up
@@ -301,7 +310,7 @@ message:
   node:
     central: Executed by hub
   chain:
-    count: "{n} steps"
+    count: '{n} steps'
     empty: No other tasks on this trace
     current: Current
 login:
@@ -318,19 +327,19 @@ login:
   signup:
     username_label: Choose a username
     username_placeholder: Pick a name for yourself
-    username_hint: "2–32 chars: letters, digits, _ -. (no edge symbols)"
+    username_hint: '2–32 chars: letters, digits, _ -. (no edge symbols)'
     button: Create Passkey & sign up
-    recovery_hint_prefix: "After sign-up you will see "
+    recovery_hint_prefix: 'After sign-up you will see '
     recovery_code: one-time recovery codes
-    recovery_hint_suffix: " once — save them to a password manager. If you lose every device, sign in with username + recovery code."
+    recovery_hint_suffix: ' once — save them to a password manager. If you lose every device, sign in with username + recovery code.'
     recovery_hint: After sign-up you will see one-time recovery codes once — save them to a password manager. If you lose every device, sign in with username + recovery code.
     err_empty: Please pick a username first.
     err_short: Usernames need at least 2 characters.
     err_long: Usernames can be at most 32 characters.
-    err_chars: "Use only letters, digits, _, -, and . — and don't start or end with _ - ."
-  ios_tip_label: "iOS users: "
+    err_chars: Use only letters, digits, _, -, and . — and don't start or end with _ - .
+  ios_tip_label: 'iOS users: '
   ios_tip: to receive push notifications, first open this site in Safari, tap Share → Add to Home Screen, then launch from the home screen icon and sign in.
-  recovery_soon: ""
+  recovery_soon: ''
   recovery:
     toggle: Can't use Passkey? Sign in with a recovery code
     toggle_hide: Hide recovery-code sign-in
@@ -341,7 +350,7 @@ login:
     button: Sign in with recovery code
     busy: Signing in…
     err_empty: Enter both username and recovery code.
-    err_failed: "Recovery sign-in failed: {msg}"
+    err_failed: 'Recovery sign-in failed: {msg}'
     success: Signed in — please add a Passkey on this device soon…
   codes:
     title: Save your recovery codes
@@ -370,8 +379,8 @@ login:
     uncertain_signup: Passkey creation didn't finish. If you never saw a system prompt, use a device with fingerprint, Face ID, or Windows Hello. If you dismissed a prompt, try again and allow creation there.
     security: The browser blocked Passkey (the page is not a secure origin, or the domain doesn't match the site configuration). Open it over https or localhost.
     need_username: Please pick a username first.
-    login_failed: "Sign-in failed: {msg}"
-    signup_failed: "Sign-up failed: {msg}"
+    login_failed: 'Sign-in failed: {msg}'
+    signup_failed: 'Sign-up failed: {msg}'
     demo_enter: Backend not connected — entered demo mode (sample data).
     login_success_short: Signed in — entering workspace…
     signup_success_short: Account created — entering workspace…
@@ -384,9 +393,9 @@ receivers:
     ws: WebSocket connections
   push:
     title: Browser push subscriptions
-    subtitle_prefix: "Delivered via system Push services (APNs / FCM). "
+    subtitle_prefix: 'Delivered via system Push services (APNs / FCM). '
     subtitle_highlight: Receives even when the browser is closed.
-    subtitle_suffix: ""
+    subtitle_suffix: ''
     add_device: Add this device
   ws:
     title: Long-poll receiving · for plugins and any device
@@ -395,7 +404,7 @@ receivers:
     copy: Copy
     active_title: Active connections
     active_subtitle: Currently established WebSocket connections
-    online: " online"
+    online: ' online'
     empty_hint: Once the backend is connected, live connections will appear here (name / Key prefix / uptime / tags / last message).
   tags:
     title: Tag routing · which device gets which notification
@@ -417,7 +426,7 @@ receivers:
     subscribing: Subscribing to push…
     reporting: Reporting subscription…
     success: Subscribed! This device will receive push notifications.
-    failed: "Subscription failed: {msg}"
+    failed: 'Subscription failed: {msg}'
   scope:
     all: Full lifecycle
     final: Final results only
@@ -437,8 +446,8 @@ receivers:
   troubleshoot:
     title: Device checklist
     local_check: Local check
-    perm_granted: "Notification permission: Granted ✓"
-    perm_denied: "Notification permission: Denied ✗ (reset in browser settings and re-subscribe)"
+    perm_granted: 'Notification permission: Granted ✓'
+    perm_denied: 'Notification permission: Denied ✗ (reset in browser settings and re-subscribe)'
     perm_default: 'Notification permission: Not asked (requested when you click "Add this device")'
     expand: Not receiving? Check these →
   empty: No receiving devices yet. Click "Add this device" in the top right to start.
@@ -460,9 +469,9 @@ receivers:
     unbind: Unbind "{name}"? It will no longer receive notifications.
   toast:
     saved: Saved
-    save_failed: "Save failed: {msg}"
+    save_failed: 'Save failed: {msg}'
     unbound: Unbound
-    unbind_failed: "Unbind failed: {msg}"
+    unbind_failed: 'Unbind failed: {msg}'
     local_off: Local notifications turned off
     added_demo: Registered (demo)
     added: Device added
@@ -508,13 +517,13 @@ keys:
     actions: Actions
   security:
     title: Key security best practices
-    point1_prefix: "Key plaintext is "
+    point1_prefix: 'Key plaintext is '
     point1_highlight: shown only once at creation
     point1_suffix: ; it cannot be viewed again, only regenerated
-    point2_prefix: "Server stores only "
+    point2_prefix: 'Server stores only '
     point2_highlight: argon2id hash
     point2_suffix: ; even a DB leak cannot recover the Key
-    point3_prefix: "Use "
+    point3_prefix: 'Use '
     point3_highlight: one Key per Agent / environment
     point3_suffix: ; revoke only the affected one on leak
     point4: Never commit Keys to version control; inject via env vars or a secrets manager
@@ -530,12 +539,12 @@ keys:
     scope_receive_desc: For plugins / devices to establish WebSocket connections. Prefix ant_recv_
     scope_read_label: Device read
     scope_read_desc: Read-only device listing for script inspection
-    scope_hint: "Least privilege: send and receive are separate, so a leaked Key only affects one side."
+    scope_hint: 'Least privilege: send and receive are separate, so a leaked Key only affects one side.'
     cancel: Cancel
     generate: Generate Key
   save:
     title: Save your Key
-    subtitle_prefix: "This is its "
+    subtitle_prefix: 'This is its '
     subtitle_highlight: only full display
     copy: Copy
     warning: Once closed, the full Key cannot be viewed again. Save it to a password manager or secure location immediately.
@@ -546,8 +555,8 @@ keys:
     read: Device read
   unnamed: Unnamed
   unnamed_key: Unnamed Key
-  summary: "{total} Keys · {active} active{demo}"
-  summary_demo: " · demo data"
+  summary: '{total} Keys · {active} active{demo}'
+  summary_demo: ' · demo data'
   empty: No Keys yet. Click "+ New Key" in the top right to create one and let Agents start reporting.
   created_at: Created {date}
   status:
@@ -560,14 +569,14 @@ keys:
   toast:
     revoked_demo: Revoked (demo mode, local only)
     revoked: Revoked "{name}"
-    revoke_failed: "Revoke failed: {msg}"
+    revoke_failed: 'Revoke failed: {msg}'
     copied: Copied ✓
     copy_failed: Copy failed, please select and copy manually
     created: Key created
   error:
     no_scope: Please select at least one scope
     no_plaintext: Server did not return the Key plaintext
-    create_failed: "Create failed: {msg} (try demo mode if backend isn't ready)"
+    create_failed: 'Create failed: {msg} (try demo mode if backend isn''t ready)'
   demo:
     name1: Local dev
     name2: CI pipeline
@@ -576,29 +585,29 @@ keys:
 security:
   title: Security & Login
   subtitle: Passkey · Sessions · Recovery codes
-  intro: "Manage everything about who you are: Passkey credentials, login sessions, and recovery codes. These are separate from where notifications go (receiving devices)."
+  intro: 'Manage everything about who you are: Passkey credentials, login sessions, and recovery codes. These are separate from where notifications go (receiving devices).'
   add_passkey: Add Passkey
   passkey:
     title: Passkey credentials
     subtitle: Your passwordless login credentials. One account can hold multiple Passkeys, synced across devices in the same ecosystem.
-    count: " credentials"
+    count: ' credentials'
   session:
     title: Login sessions
     subtitle: Which devices are currently logged into your account. Sessions are independent and can be revoked individually.
-    count: " active sessions"
+    count: ' active sessions'
   recovery:
     title: Recovery codes
-    desc_prefix: "The ultimate fallback when you lose all devices and "
+    desc_prefix: 'The ultimate fallback when you lose all devices and '
     desc_highlight: cannot sign in with Passkey
     desc_suffix: . Sign in with username + recovery code, then add a new Passkey. Each code is single-use.
     regenerate: Regenerate
     regenerating: Generating…
-    hint: "{n} unused · plaintext is shown only when codes are generated — save them to a password manager"
+    hint: '{n} unused · plaintext is shown only when codes are generated — save them to a password manager'
     hint_none: No recovery codes yet. Tap Regenerate to issue a new set.
     hint_plaintext: Copy and save now · after you leave or refresh, only the remaining count is shown
     confirm_regen: Regenerating voids all old recovery codes immediately. Continue?
     toast_regen: New recovery codes generated — save them now
-    toast_regen_failed: "Regenerate failed: {msg}"
+    toast_regen_failed: 'Regenerate failed: {msg}'
     toast_status_failed: Could not load recovery-code status
     copy_all: Copy all
     copy: Copy
@@ -612,9 +621,9 @@ security:
     title: Two independent axes
     auth_label: Auth axis
     auth_axis: who you are (this page)
-    auth_p1: "· Passkey credentials: one account can hold multiple"
-    auth_p2: "· Login sessions: multi-device, individually revocable"
-    auth_p3: "· Recovery codes: fallback when all devices are lost"
+    auth_p1: '· Passkey credentials: one account can hold multiple'
+    auth_p2: '· Login sessions: multi-device, individually revocable'
+    auth_p3: '· Recovery codes: fallback when all devices are lost'
     delivery_label: Delivery axis
     delivery_axis: where notifications go
     delivery_p1: · Managed on the Receivers page, separate from this page
@@ -635,33 +644,33 @@ security:
   revoke: Revoke
   last_active: Last active {time}
   prompt:
-    rename: "Enter a new name for this Passkey:"
+    rename: 'Enter a new name for this Passkey:'
   confirm:
     delete: 'Delete Passkey "{name}"?
 
       Devices using it will no longer be able to sign in (recovery codes can be used as fallback).'
     revoke: Revoke the session for "{name}"? That device will need to sign in again.
   alert:
-    add_requirement: "Adding a Passkey requires:
+    add_requirement: 'Adding a Passkey requires:
 
       1. Backend running with HTTPS
 
       2. Browser supporting WebAuthn
 
 
-      Currently in demo mode. Once the backend is ready, this will trigger system biometrics."
+      Currently in demo mode. Once the backend is ready, this will trigger system biometrics.'
   toast:
     renamed_demo: Renamed (demo mode, local only)
     renamed: Renamed
-    rename_failed: "Rename failed: {msg}"
+    rename_failed: 'Rename failed: {msg}'
     deleted_demo: Deleted (demo mode, local only)
     deleted: Deleted "{name}"
-    delete_failed: "Delete failed: {msg}"
+    delete_failed: 'Delete failed: {msg}'
     add_success: Passkey added successfully
-    add_failed: "Add failed: {msg}"
+    add_failed: 'Add failed: {msg}'
     revoked_demo: Revoked (demo mode, local only)
     revoked: Revoked session for "{name}"
-    revoke_failed: "Revoke failed: {msg}"
+    revoke_failed: 'Revoke failed: {msg}'
   demo:
     pk1_name: iCloud Keychain
     pk1_type: Platform sync
@@ -679,7 +688,7 @@ security:
     current: Current
 docs:
   title: Integration Docs
-  subtitle: "Agent reporting · Web Push · WebSocket"
+  subtitle: Agent reporting · Web Push · WebSocket
   toc_heading: On this page
   toc:
     agent: Connect Agent
@@ -702,7 +711,7 @@ docs:
       payload: Event payload, passed through verbatim as the downstream task params.
       idem: Idempotency key. The same source + idemKey produces one event only.
       trace: Explicit trace id. A new trace is created when omitted.
-    note: "A 200 is returned as soon as the event is stored. Dispatch failures still return 200 — events are never lost because a downstream step failed; you can replay later."
+    note: A 200 is returned as soon as the event is stored. Dispatch failures still return 200 — events are never lost because a downstream step failed; you can replay later.
     curl:
       title: curl example
   node:
@@ -710,12 +719,12 @@ docs:
     connect:
       title: Connect
     up:
-      title: "Node → hub (uplink)"
-      comment: "# hello, ack, progress, result"
+      title: Node → hub (uplink)
+      comment: '# hello, ack, progress, result'
     down:
-      title: "Hub → node (downlink)"
-      comment: "# welcome, assign, cancel, error"
-    note: "The hub only ever says WHAT to do (capability + params), never HOW — no argv, no shell, no command line."
+      title: Hub → node (downlink)
+      comment: '# welcome, assign, cancel, error'
+    note: The hub only ever says WHAT to do (capability + params), never HOW — no argv, no shell, no command line.
   copy: Copy
   your_domain: your-domain
   agent:
@@ -723,12 +732,12 @@ docs:
     intro: 'Anotify''s core scenario: <b class="text-zinc-200">when an Agent finishes a task, the notification is automatically pushed to all your devices</b>. Setup is two steps — create a reporting Key, then send a POST request when the task ends.'
     step1:
       title: Create a reporting Key
-      desc: 'Go to the <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> page and create a Key with <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> scope (prefix <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>). Save it immediately.'
+      desc: Go to the <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> page and create a Key with <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> scope (prefix <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>). Save it immediately.
     step2:
       title: Report when the task ends
-      desc: 'On an Agent completion event (e.g. pi''s <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>) or at the end of a script, include the Key and <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>.'
+      desc: On an Agent completion event (e.g. pi's <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>) or at the end of a script, include the Key and <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>.
     curl:
-      title: "Minimal setup · one curl to push to all devices"
+      title: Minimal setup · one curl to push to all devices
     journey:
       title: A notification's journey
   api:
@@ -757,236 +766,232 @@ docs:
     intro: 'Two credential types, for two kinds of callers. <b class="text-zinc-200">Least privilege</b>: send and receive are separate, so a leaked Key only affects one side.'
     key:
       title: API Key (Bearer)
-      li1: "· For Agent reporting / receiver long-poll connections"
+      li1: · For Agent reporting / receiver long-poll connections
       li2: '· Header: <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
       li3: '· scope: <code class="mono text-[12px] text-blue-300">notify:send</code> report · <code class="mono text-[12px] text-emerald-300">notify:receive</code> receive · <code class="mono text-[12px] text-amber-300">devices:read</code> read-only'
-      li4: "· Server stores only an argon2id hash; plaintext is shown once at creation"
+      li4: · Server stores only an argon2id hash; plaintext is shown once at creation
     passkey:
       title: Session Cookie
-      li1: "· For workspace browser access (Overview / Devices / Keys management)"
-      li2: "· WebAuthn passwordless login, biometric or device key"
-      li3: "· httpOnly Cookie; multi-device sessions are independent and individually revocable"
-      li4: "· Cross-device: platform sync / one-time connection guide / recovery code fallback"
+      li1: · For workspace browser access (Overview / Devices / Keys management)
+      li2: · WebAuthn passwordless login, biometric or device key
+      li3: · httpOnly Cookie; multi-device sessions are independent and individually revocable
+      li4: '· Cross-device: platform sync / one-time connection guide / recovery code fallback'
   notify:
     core: Core
-    intro: 'An Agent calls this endpoint to report a notification after a task ends. The server validates the API Key, locates the owner, and pushes the notification <b class="text-zinc-200">end-to-end encrypted</b> to all of that user''s "enabled and level/tag-matched" devices.'
+    intro: An Agent calls this endpoint to report a notification after a task ends. The server validates the API Key, locates the owner, and pushes the notification <b class="text-zinc-200">end-to-end encrypted</b> to all of that user's "enabled and level/tag-matched" devices.
     params:
       title: Request body parameters
-      title_desc: 'Notification title, e.g. <code>"Deploy done"</code>, shown as the system notification''s main title.'
-      agent_state_desc: "Agent state: <code>working</code> running · <code>blocked</code> waiting · <code>done</code> completed · <code>interrupted</code> interrupted · <code>error</code> failed. Determines icon color and device filtering."
-      body_desc: "Notification body, supplementary detail."
-      tags_desc: "Routing tags. Empty = broadcast to all enabled devices; non-empty = only delivered to devices with a matching tag or no tags (catch-all). ≤10 tags, each ≤32 chars."
-      link_desc: "Deep link opened when the notification is tapped, e.g. <code>pi://session/sess_8f3a2c</code>."
-      meta_desc: "Context metadata for traceability and statistics, stored in notification history."
-      ttl_desc: "<code>ttl</code> validity in seconds (default 86400); <code>priority</code> (default normal)."
+      title_desc: Notification title, e.g. <code>"Deploy done"</code>, shown as the system notification's main title.
+      agent_state_desc: 'Agent state: <code>working</code> running · <code>blocked</code> waiting · <code>done</code> completed · <code>interrupted</code> interrupted · <code>error</code> failed. Determines icon color and device filtering.'
+      body_desc: Notification body, supplementary detail.
+      tags_desc: Routing tags. Empty = broadcast to all enabled devices; non-empty = only delivered to devices with a matching tag or no tags (catch-all). ≤10 tags, each ≤32 chars.
+      link_desc: Deep link opened when the notification is tapped, e.g. <code>pi://session/sess_8f3a2c</code>.
+      meta_desc: Context metadata for traceability and statistics, stored in notification history.
+      ttl_desc: <code>ttl</code> validity in seconds (default 86400); <code>priority</code> (default normal).
     required: Required
     optional: Optional
     curl:
-      title: "cURL · full request"
-      title_val: "Deploy done"
-      body_val: "Build succeeded, deployed to production"
-      tag_val: "work"
+      title: cURL · full request
+      title_val: Deploy done
+      body_val: Build succeeded, deployed to production
+      tag_val: work
     resp200: Accepted and dispatched
     resp200_dev1: Primary phone
     resp200_dev2: Office Mac
     resp400: No matching device / bad request
-    resp400_err: "No subscribed devices; please subscribe in the workspace first"
-    resp400_comment: "// 401 · Key missing or invalid (403 if scope insufficient)"
+    resp400_err: No subscribed devices; please subscribe in the workspace first
+    resp400_comment: // 401 · Key missing or invalid (403 if scope insufficient)
     rules:
       title: Delivery rules (tag routing + level filtering)
   webpush:
     title: Web Push subscription (browser receiving)
-    intro: 'The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="text-zinc-200">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).'
-    step1: '<b class="text-zinc-200">① Get VAPID public key</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>'
-    step2: '<b class="text-zinc-200">② Register Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register(''/sw.js'')</code>'
-    step3: '<b class="text-zinc-200">③ Request permission and subscribe</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>'
-    step4: '<b class="text-zinc-200">④ Report subscription</b> · send endpoint + keys via <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>'
+    intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="text-zinc-200">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
+    step1: <b class="text-zinc-200">① Get VAPID public key</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>
+    step2: <b class="text-zinc-200">② Register Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code>
+    step3: <b class="text-zinc-200">③ Request permission and subscribe</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
+    step4: <b class="text-zinc-200">④ Report subscription</b> · send endpoint + keys via <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>
     code:
-      title: "Frontend subscription · core code"
-      comment1: "// 1. Register SW + get VAPID public key"
-      comment2: "// 2. Subscribe (requires notification permission)"
-      comment3: "// 3. Report to backend (session Cookie auth)"
-      comment_p256dh: "// { p256dh, auth }"
-      comment_platform: "// ios|mac|win|android|other"
+      title: Frontend subscription · core code
+      comment1: // 1. Register SW + get VAPID public key
+      comment2: // 2. Subscribe (requires notification permission)
+      comment3: // 3. Report to backend (session Cookie auth)
+      comment_p256dh: // { p256dh, auth }
+      comment_platform: // ios|mac|win|android|other
     ios:
       title: ⚠️ iOS prerequisite
-      desc: 'Must "Add to Home Screen" and run in standalone mode, otherwise Safari does not provide Notification / Push API.'
+      desc: Must "Add to Home Screen" and run in standalone mode, otherwise Safari does not provide Notification / Push API.
     android:
       title: ✅ Android is easier
-      desc: "Chrome/Edge can subscribe from a normal tab via FCM — no need to add to Home Screen."
+      desc: Chrome/Edge can subscribe from a normal tab via FCM — no need to add to Home Screen.
     e2e:
       title: 🔒 End-to-end encrypted
-      desc: "Payload encrypted with the subscription's p256dh/auth keys; the push service cannot read the content."
+      desc: Payload encrypted with the subscription's p256dh/auth keys; the push service cannot read the content.
   ws:
     channel2: Second receive channel
-    intro: 'Besides browser push, any device / plugin can use a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.'
+    intro: Besides browser push, any device / plugin can use a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
     connect:
-      title: "Establishing a connection"
-      comment: "# requires notify:receive scope"
-      comment2: "# optional, for resume after reconnect"
+      title: Establishing a connection
+      comment: '# requires notify:receive scope'
+      comment2: '# optional, for resume after reconnect'
     s2c:
-      title: "Server → Client"
-      comment1: "// first frame after connection"
-      comment2: "// new notification received"
-      title_val: "Deploy done"
-      body_val: "Deployed to prod"
-      tag_val: "work"
-      comment3: "// replay end / heartbeat / error"
+      title: Server → Client
+      comment1: // first frame after connection
+      comment2: // new notification received
+      title_val: Deploy done
+      body_val: Deployed to prod
+      tag_val: work
+      comment3: // replay end / heartbeat / error
     c2s:
-      title: "Client → Server"
-      comment1: "// subscribe / unsubscribe tags (empty = all)"
-      comment2: "// acknowledge processed (at-least-once)"
-      comment3: "// heartbeat (every heartbeat_sec; 2 missed = disconnect)"
-      comment4: "// after reconnect, use resume frame (replaces Last-Event-Id header)"
+      title: Client → Server
+      comment1: // subscribe / unsubscribe tags (empty = all)
+      comment2: // acknowledge processed (at-least-once)
+      comment3: // heartbeat (every heartbeat_sec; 2 missed = disconnect)
+      comment4: // after reconnect, use resume frame (replaces Last-Event-Id header)
     reconnect:
       title: Reconnect and resume
-      desc: 'On reconnect, send the <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> header (or a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> error; the client should fetch full history.'
-
+      desc: On reconnect, send the <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> header (or a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> error; the client should fetch full history.
 cliauth:
-  title: "CLI Device Authorization"
-  back_home: "Back to dashboard"
+  title: CLI Device Authorization
+  back_home: Back to dashboard
   entry:
-    heading: "Enter authorization code"
-    sub: "After running the login script in your terminal, enter the 8-character code shown there to authorize it."
-    placeholder: "XXXX-XXXX"
-    hint: "Valid for 10 minutes · Case-insensitive · No ambiguous characters like 0/O or 1/I"
-    continue: "Continue"
-    busy: "Looking up session…"
-    not_found: "No authorization session matches this code. Check it and try again."
+    heading: Enter authorization code
+    sub: After running the login script in your terminal, enter the 8-character code shown there to authorize it.
+    placeholder: XXXX-XXXX
+    hint: Valid for 10 minutes · Case-insensitive · No ambiguous characters like 0/O or 1/I
+    continue: Continue
+    busy: Looking up session…
+    not_found: No authorization session matches this code. Check it and try again.
   confirm:
-    heading: "Authorize this device?"
-    sub: "Once approved, it will receive an API key that acts as your account with the selected permissions."
-    ttl_hint: "Authorization session valid for 10 minutes"
-    identity_prefix: "Authorizing as "
-    identity_suffix: ""
-    switch_prefix: "Not "
-    switch_suffix: "? Sign out and switch account →"
-    scopes_label: "Permissions (select at least one)"
-    scope_send_label: "Send notifications"
-    scope_send_desc: "Allow the agent to send notifications"
-    scope_receive_label: "Receive notifications"
-    scope_receive_desc: "Receive / subscribe to notifications"
-    scope_read_label: "View devices"
-    scope_read_desc: "View the device list"
-    scopes_required: "Select at least one permission"
-    approve: "Approve"
-    deny: "Deny"
-    busy: "Submitting…"
+    heading: Authorize this device?
+    sub: Once approved, it will receive an API key that acts as your account with the selected permissions.
+    ttl_hint: Authorization session valid for 10 minutes
+    identity_prefix: 'Authorizing as '
+    identity_suffix: ''
+    switch_prefix: 'Not '
+    switch_suffix: '? Sign out and switch account →'
+    scopes_label: Permissions (select at least one)
+    scope_send_label: Send notifications
+    scope_send_desc: Allow the agent to send notifications
+    scope_receive_label: Receive notifications
+    scope_receive_desc: Receive / subscribe to notifications
+    scope_read_label: View devices
+    scope_read_desc: View the device list
+    scopes_required: Select at least one permission
+    approve: Approve
+    deny: Deny
+    busy: Submitting…
   done:
-    approved_badge: "Approved"
-    approved_title: "Authorization approved"
-    approved_desc: "You can close this page and return to the terminal for the result."
-    approved_keys_link: "View in API Keys →"
-    denied_badge: "Denied"
-    denied_title: "Authorization denied"
-    denied_desc: "The terminal will be notified. If this wasn't you, check whether someone is trying to sign in to your account."
-    expired_badge: "Expired"
-    expired_title: "Session expired"
-    expired_desc: "Authorization sessions are valid for 10 minutes. Run the login script again in your terminal to get a new link or code."
-    expired_action: "Enter a new code"
-    notfound_badge: "Not found"
-    notfound_title: "Session not found or incorrect code"
-    notfound_desc: "Check the code shown in your terminal and try again, or re-run the login script."
-    notfound_action: "Try again"
-    consumed_badge: "Already used"
-    consumed_title: "This session was already authorized"
-    consumed_desc: "A key was already issued for this session. Run the login script again in your terminal to create a new one."
-    error_title: "Cannot reach the server"
-    error_desc: "Check your connection and try again."
-    rejected_desc: "The authorization request was rejected. Please verify the selected scopes and try again."
-    retry: "Retry"
+    approved_badge: Approved
+    approved_title: Authorization approved
+    approved_desc: You can close this page and return to the terminal for the result.
+    approved_keys_link: View in API Keys →
+    denied_badge: Denied
+    denied_title: Authorization denied
+    denied_desc: The terminal will be notified. If this wasn't you, check whether someone is trying to sign in to your account.
+    expired_badge: Expired
+    expired_title: Session expired
+    expired_desc: Authorization sessions are valid for 10 minutes. Run the login script again in your terminal to get a new link or code.
+    expired_action: Enter a new code
+    notfound_badge: Not found
+    notfound_title: Session not found or incorrect code
+    notfound_desc: Check the code shown in your terminal and try again, or re-run the login script.
+    notfound_action: Try again
+    consumed_badge: Already used
+    consumed_title: This session was already authorized
+    consumed_desc: A key was already issued for this session. Run the login script again in your terminal to create a new one.
+    error_title: Cannot reach the server
+    error_desc: Check your connection and try again.
+    rejected_desc: The authorization request was rejected. Please verify the selected scopes and try again.
+    retry: Retry
   trust:
-    local: "Authorization only takes effect on your server"
-    ttl: "Codes expire in 10 minutes"
-    revoke: "Keys can be revoked anytime in API Keys"
-
+    local: Authorization only takes effect on your server
+    ttl: Codes expire in 10 minutes
+    revoke: Keys can be revoked anytime in API Keys
 passkeyenroll:
-  title: "Add a Passkey on a new device"
-  entry_button: "Add on a new device"
-  local_button: "Add on this device"
+  title: Add a Passkey on a new device
+  entry_button: Add on a new device
+  local_button: Add on this device
   panel:
-    title: "Add a Passkey on a new device"
-    sub: "Open on the new device with any method below, then approve here."
-    tab_qr: "QR code"
-    tab_url: "Link"
-    tab_code: "Code"
-    qr_hint: "Scan with the new device's camera"
-    url_hint: "Send this link to the new device"
-    code_hint: "Enter this code on the new device"
-    waiting: "Waiting for the new device…"
-    expires_in: "Expires in"
-    confirm_title: "Approve this new device?"
-    confirm_sub: "Once approved, the new device will prompt for biometrics to create the passkey."
-    confirm_warn: "Not you? Deny. The QR code / short code should only appear on a device in your hands."
-    approve: "Approve"
-    approved_waiting: "Approved. Waiting for the new device to finish biometrics…"
-    cancel_confirm: "Cancel this enrollment? The link and code on the new device will stop working immediately."
-    success_title: "New device added"
-    success_desc: 'A passkey for "{name}" was created. It can sign in directly next time.'
-    done: "Done"
-    restart: "Start over"
-    error_backend_desc: "Cannot reach the backend (demo mode). Make sure the server is running and served over HTTPS."
-    denied_title: "Enrollment denied"
-    denied_desc: "No credential was created. If this wasn't you, check whether someone is trying to sign in to your account."
-    expired_title: "Session expired"
-    expired_desc: "Enrollment sessions are valid for 10 minutes. Starting over generates a new QR code and code."
-    error_title: "Cannot reach the server"
-    error_desc: "Check your connection and try again."
-    via_qr: "via QR code"
-    via_url: "via link"
-    via_code: "via code"
+    title: Add a Passkey on a new device
+    sub: Open on the new device with any method below, then approve here.
+    tab_qr: QR code
+    tab_url: Link
+    tab_code: Code
+    qr_hint: Scan with the new device's camera
+    url_hint: Send this link to the new device
+    code_hint: Enter this code on the new device
+    waiting: Waiting for the new device…
+    expires_in: Expires in
+    confirm_title: Approve this new device?
+    confirm_sub: Once approved, the new device will prompt for biometrics to create the passkey.
+    confirm_warn: Not you? Deny. The QR code / short code should only appear on a device in your hands.
+    approve: Approve
+    approved_waiting: Approved. Waiting for the new device to finish biometrics…
+    cancel_confirm: Cancel this enrollment? The link and code on the new device will stop working immediately.
+    success_title: New device added
+    success_desc: A passkey for "{name}" was created. It can sign in directly next time.
+    done: Done
+    restart: Start over
+    error_backend_desc: Cannot reach the backend (demo mode). Make sure the server is running and served over HTTPS.
+    denied_title: Enrollment denied
+    denied_desc: No credential was created. If this wasn't you, check whether someone is trying to sign in to your account.
+    expired_title: Session expired
+    expired_desc: Enrollment sessions are valid for 10 minutes. Starting over generates a new QR code and code.
+    error_title: Cannot reach the server
+    error_desc: Check your connection and try again.
+    via_qr: via QR code
+    via_url: via link
+    via_code: via code
   trust:
-    approve_only: "A credential is created only after approval on the signed-in device"
+    approve_only: A credential is created only after approval on the signed-in device
   entry:
-    heading: "Enter enrollment code"
-    sub: "After starting enrollment in Security & Login on a signed-in device, enter the 8-character code shown there."
-    continue: "Continue"
-    busy: "Looking up session…"
-    not_found: "No session matches this code. Check it and try again."
+    heading: Enter enrollment code
+    sub: After starting enrollment in Security & Login on a signed-in device, enter the 8-character code shown there.
+    continue: Continue
+    busy: Looking up session…
+    not_found: No session matches this code. Check it and try again.
   overview:
-    heading: "Add a passkey on this device"
-    session_line: 'Enrollment requested by "{name}"'
-    desc: "After you continue, your signed-in device gets an approval request. Once approved, this device prompts for biometrics."
-    step1: "This device requests"
-    step2: "Approve on the signed-in device"
-    step3: "Finish biometrics here"
-    ttl_hint: "Session valid for 10 minutes"
-    continue: "Continue and request approval"
-    not_mine: "Didn't request this? Just close this page."
+    heading: Add a passkey on this device
+    session_line: Enrollment requested by "{name}"
+    desc: After you continue, your signed-in device gets an approval request. Once approved, this device prompts for biometrics.
+    step1: This device requests
+    step2: Approve on the signed-in device
+    step3: Finish biometrics here
+    ttl_hint: Session valid for 10 minutes
+    continue: Continue and request approval
+    not_mine: Didn't request this? Just close this page.
   wait:
-    heading: "Approve on your signed-in device"
-    desc: 'The approval panel on "{name}" is waiting for you.'
-    status: "Waiting for approval…"
-    code_label: "Code"
-    cancel: "Cancel and go back"
+    heading: Approve on your signed-in device
+    desc: The approval panel on "{name}" is waiting for you.
+    status: Waiting for approval…
+    code_label: Code
+    cancel: Cancel and go back
   creating:
-    heading: "Creating passkey…"
-    desc: "Finish fingerprint / face / device PIN in the system prompt."
-    name_label: "Name this passkey"
-    name_placeholder: 'e.g. "Daily phone"'
-    busy: "Waiting for system verification…"
-    retry: "Try again"
-    cancelled: "System verification was cancelled. No passkey yet — you can retry."
-    failed_desc: "This device couldn't complete creation (unsupported browser or device)."
+    heading: Creating passkey…
+    desc: Finish fingerprint / face / device PIN in the system prompt.
+    name_label: Name this passkey
+    name_placeholder: e.g. "Daily phone"
+    busy: Waiting for system verification…
+    retry: Try again
+    cancelled: System verification was cancelled. No passkey yet — you can retry.
+    failed_desc: This device couldn't complete creation (unsupported browser or device).
   success:
-    heading: "Passkey added"
-    desc: "Next time on this device, sign in with biometrics directly."
-    login_now: "Sign in now"
+    heading: Passkey added
+    desc: Next time on this device, sign in with biometrics directly.
+    login_now: Sign in now
   failed:
-    denied_title: "Enrollment denied"
-    denied_desc: "The signed-in device denied this request. No credential was created."
-    expired_title: "Session expired"
-    expired_desc: "Sessions are valid for 10 minutes. Start over on the signed-in device for a new QR code or code."
-    expired_action: "Enter a new code"
-    notfound_title: "Authorization cancelled or expired"
-    notfound_desc: "The originating device has cancelled the authorization, or the session has expired. Please start a new enrollment on the originating device."
-    notfound_action: "Enter new code"
-    error_title: "Cannot reach the server"
-    error_desc: "Multiple requests failed. This may be due to a network outage or the server not running. Please check your connection and try again."
-    no_webauthn_desc: "This browser or environment doesn't support passkeys (HTTPS + a modern browser required). Try the latest Chrome or Safari."
-    consumed_desc: "This session is already complete and can't be reused. Start over for a new one."
-
-# ===== Admin Console =====
+    denied_title: Enrollment denied
+    denied_desc: The signed-in device denied this request. No credential was created.
+    expired_title: Session expired
+    expired_desc: Sessions are valid for 10 minutes. Start over on the signed-in device for a new QR code or code.
+    expired_action: Enter a new code
+    notfound_title: Authorization cancelled or expired
+    notfound_desc: The originating device has cancelled the authorization, or the session has expired. Please start a new enrollment on the originating device.
+    notfound_action: Enter new code
+    error_title: Cannot reach the server
+    error_desc: Multiple requests failed. This may be due to a network outage or the server not running. Please check your connection and try again.
+    no_webauthn_desc: This browser or environment doesn't support passkeys (HTTPS + a modern browser required). Try the latest Chrome or Safari.
+    consumed_desc: This session is already complete and can't be reused. Start over for a new one.
 admin:
   title: Admin Console
   forbidden:
@@ -999,13 +1004,13 @@ admin:
   success: Done
   kpi:
     users: Total users
-    users_sub: "{n} admins"
-    active: "{n} active (7d)"
+    users_sub: '{n} admins'
+    active: '{n} active (7d)'
     messages: Total messages
-    today: "Today {n}"
+    today: Today {n}
     devices: Devices
-    enabled: "{n} enabled"
-    keys: "{n} keys"
+    enabled: '{n} enabled'
+    keys: '{n} keys'
     delivery_rate: Delivery rate
   tab:
     users: Users
@@ -1042,19 +1047,19 @@ admin:
     empty: No active sessions
   top:
     messages: messages
-    devices: "{n} devices"
+    devices: '{n} devices'
   confirm:
     title: Confirm
     cancel: Cancel
     ok: Confirm
     promote_title: Make admin
-    promote_body: "Promote {name} to super admin?"
+    promote_body: Promote {name} to super admin?
     demote_title: Make member
-    demote_body: "Demote {name} to member?"
+    demote_body: Demote {name} to member?
     disable_title: Disable user
-    disable_body: "Disable {name}? They will be signed out immediately."
+    disable_body: Disable {name}? They will be signed out immediately.
     enable_title: Enable user
-    enable_body: "Enable {name}?"
+    enable_body: Enable {name}?
   error:
     load_stats: Failed to load stats
     load_users: Failed to load users
@@ -1071,7 +1076,7 @@ events:
   empty: No events yet. Submit one with POST /v1/events.
   demo_badge: Demo mode — backend not connected
   demo_hint: Backend not connected, no real events yet.
-  count: "{n} events"
+  count: '{n} events'
   view_chain: View chain
   filter:
     trace: Trace ID
@@ -1088,7 +1093,7 @@ caps:
   new: Define capability
   loading: Loading capabilities…
   empty: No capabilities yet. Define one so nodes can declare it.
-  count: "{n} capabilities"
+  count: '{n} capabilities'
   no_outputs: No outputs (terminal capability)
   any_event_type: Any event type (origin)
   list:
@@ -1102,25 +1107,25 @@ caps:
     cancel: Cancel
     submit: Create
     created: Capability created
-    create_failed: "Create failed: "
+    create_failed: 'Create failed: '
     err_name: Please enter a capability name
     err_schema: paramsSchema is not valid JSON
   edges:
     title: Edges
     new: New edge
     desc: Each edge means "this output of this capability points at another capability". One output may have several edges (fan-out).
-    empty: "Edge table is empty: events arriving here have nowhere to go."
+    empty: 'Edge table is empty: events arriving here have nowhere to go.'
     from: From capability
     port: Output
     port_hint: Only outputs declared by the capability are listed (outputs are closed, invariant I2).
-    port_hint_origin: "For an origin, the port is the event type itself (decided by the external system, e.g. GitHub's pull_request.opened)"
+    port_hint_origin: For an origin, the port is the event type itself (decided by the external system, e.g. GitHub's pull_request.opened)
     port_placeholder: pull_request.opened
     to: To capability
     remove: Delete
     removed: Deleted
-    remove_failed: "Delete failed: "
+    remove_failed: 'Delete failed: '
     created: Edge created
-    create_failed: "Create failed: "
+    create_failed: 'Create failed: '
     err_incomplete: Pick a source, an output and a target
     no_ports: (this capability has no outputs)
 nodes:
@@ -1129,16 +1134,16 @@ nodes:
   refresh: Refresh
   loading: Loading nodes…
   empty: No nodes yet. Register the first one below — it starts taking work once it is online.
-  count: "{online}/{total} online"
+  count: '{online}/{total} online'
   never: Never
   last_seen: Heartbeat
   no_caps: No capabilities declared
-  slots: "Slots {busy}/{total}"
+  slots: Slots {busy}/{total}
   drain: Drain
   draining_hint: Draining
   drain_confirm: Drain {name}? It finishes current tasks but takes no new ones.
   drain_done: Drained
-  drain_failed: "Drain failed: "
+  drain_failed: 'Drain failed: '
   status:
     online: Online
     offline: Offline
@@ -1150,3 +1155,69 @@ nodes:
     desc: Node registration is an operator action (not self-service), so run it on the server. The token is returned only once.
     step1: Register the node on the server (declare which capabilities it can run)
     step2: Start it on the node machine with the token; it connects back over WS
+sources:
+  title: Sources
+  subtitle: 'A source is where events enter: a timer fires, a webhook gets called, or you click run. It produces events and dispatches them to the capabilities you pick.'
+  new: New source
+  refresh: Refresh
+  empty: No sources yet. Click “New source” to start.
+  explain:
+    title: 'Sources vs. capabilities: '
+    body: 'A capability answers “what can be done” — nodes declare it and the hub dispatches tasks to it. A source answers “when to start” — it has config, produces events, and does no work itself. So a source needs no edges: its exits are the capabilities you pick here.'
+  kind:
+    cron: Timer
+    webhook: Webhook
+    manual: Manual
+  next_fire: next {t}
+  manual_hint: Fires when you click Run
+  targets_label: Exits
+  no_target: none
+  target_missing: deleted
+  fire: Run now
+  enable: Enable
+  disable: Disable
+  edit: Edit
+  delete: Delete
+  disabled: disabled
+  deleted: Deleted
+  created: Created
+  saved: Saved
+  save_failed: 'Save failed: {e}'
+  fire_failed: 'Run failed: {e}'
+  fired: 'Fired: {n} task(s) dispatched'
+  fired_pruned: ', {n} pruned'
+  fired_none: Event stored but not dispatched ({r})
+  fired_empty: Event stored, no tasks to dispatch
+  delete_confirm: Delete source “{n}”? Existing events and tasks are kept.
+  in: in {n}
+  ago: '{n} ago'
+  unit:
+    sec: s
+    min: min
+    hour: h
+    day: d
+  modal:
+    new: New source
+    edit: Edit source
+  form:
+    name: Name
+    name_ph: e.g. nightly-check
+    kind: Trigger
+    kind_hint: Cannot be changed after creation (switching kind changes semantics). Delete and recreate instead.
+    expr: 'Cron expression (5 fields: min hour dom month dow)'
+    expr_hint: 'Supports * / , - ; macros like @daily are not supported. Example: 0 3 * * * means daily at 03:00.'
+    hook_hint: A dedicated URL is generated after creation; any external system can POST to it. Whoever holds the URL can send events — keep it safe.
+    targets: Exit capabilities (multi-select)
+    targets_hint: The event is dispatched to all selected capabilities (fan-out). At least one is required.
+    enabled: Enabled
+    cancel: Cancel
+    save: Save
+    name_required: Name is required
+    expr_required: Cron expression is required
+    targets_required: Pick at least one exit capability
+    no_caps: No usable capabilities yet. Define some on the “Capabilities” page first.
+  preset:
+    hourly: Hourly
+    daily3: Daily 3:00
+    weekdays9: Weekdays 9:00
+    every15: Every 15 min
