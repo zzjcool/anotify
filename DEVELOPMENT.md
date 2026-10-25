@@ -105,11 +105,21 @@ make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 任何一步出问题，看到的都是"页面空着"，很难判断是前端坏了还是后端没起来。
 
 ```
-make mock              # → http://localhost:7788
+make mock                  # 本地 + trycloudflare 公网地址，→ :7788
+make mock-local            # 只本机，不起隧道
 make mock MOCK_PORT=7789   # 换端口
 ```
 
-`make fe-preview` 是它的同义词（旧写法仍可用）。
+和 `make dev` 一样默认带 **trycloudflare 隧道**，所以可以直接把这个地址发给别人看
+（不需要数据库、后端、节点，对方打开就能点）。
+
+`make fe-preview` 是 `make mock` 的同义词（旧写法仍可用）。
+
+隧道域名每次启动都会变；拿到域名后脚本会真探测一次可达性再宣布可用。
+quick tunnel 的新域名要下发到边缘节点，实测 60~90 秒才稳定，所以探测窗口
+给到约 120 秒（先静等 15 秒再开始探）。如果本机始终探不通但隧道已注册成功，
+脚本仍然把地址打印出来——那种情况通常只是本机代理拦了 `*.trycloudflare.com`，
+换手机或换网络就能访问。
 
 它只做一件事：起一个静态服务器托管 `web/`，并给每个 HTML 注入 `web/mock.js`。
 于是**所有 `/v1/*` 请求都在浏览器里被拦下**，由 mock 直接应答，一个请求都不会

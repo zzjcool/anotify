@@ -17,7 +17,7 @@ BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
 # 但把 Makefile 映射成"shell 语言"的分析器会把它当 shell 解析并报语法错。
 VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
 
-.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes check-tailwind tailwind ci mock fe-preview fe-preview-port
+.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -92,18 +92,23 @@ dev-local: check-classes sitegen ## 开发模式：只起 server，不起 tunnel
 
 # ---- 纯前端预览（不连后端）----
 #
-# 只想看前端效果时的最短路径：不需要 server、tunnel、devseed、WS worker。
+# 只想看前端效果时的最短路径：不需要 server、devseed、WS worker。
 # 所有 /v1/* 请求由浏览器里的 web/mock.js 应答，一个请求都不会真正发出。
-# 端口用独立变量：PORT 是 dev 的 8080，直接复用会跟 dev 抢端口
+#
+# 默认带 trycloudflare 隧道（和 make dev 一样），方便直接发给别人看。
+# 端口用独立变量：PORT 是 dev 的 8080，复用会跟 dev 抢端口。
 MOCK_PORT ?= 7788
 
-mock: check-classes sitegen ## 启动 mock 服务器（纯前端预览，数据全假，不连后端）
-	@go run ./cmd/fe-preview -dir web -port $(MOCK_PORT)
+mock: check-classes sitegen ## 启动 mock 服务器（纯前端 + trycloudflare 隧道）
+	@MOCK_PORT=$(MOCK_PORT) ./scripts/mock.sh
+
+mock-local: check-classes sitegen ## 同上，但不起隧道（只本机访问）
+	@NO_TUNNEL=1 MOCK_PORT=$(MOCK_PORT) ./scripts/mock.sh
 
 # fe-preview 保留为同义词：文档和旧习惯都在用它
 fe-preview: mock ## mock 的同义词（兼容旧写法）
 fe-preview-port: ## 同 mock，指定端口（用法：make mock MOCK_PORT=7789）
-	@go run ./cmd/fe-preview -dir web -port $(MOCK_PORT)
+	@MOCK_PORT=$(MOCK_PORT) ./scripts/mock.sh
 
 integration: ## 集成测试（需服务已在 PORT 运行）
 	BASE=http://localhost:$(PORT) ./scripts/integration.sh
