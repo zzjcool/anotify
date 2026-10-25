@@ -734,3 +734,241 @@ body {
 	background: rgba(255, 255, 255, 0.08);
 	color: var(--text);
 }
+
+/* ==================== 工作流图（HTML 节点 + SVG 连线）====================
+ *
+ * 为什么不用图库的节点：Cytoscape / G6 这类库的节点本质是"一个背景色 +
+ * 一条边框 + 一段文本"，做不出 n8n 那种卡片节点（图标 + 标题 + 副标题 +
+ * 状态徽章 + 悬浮操作）。要做成卡片就只能用真正的 DOM。
+ *
+ * 所以这里的分工是：
+ *   dagre   → 只算坐标（分层、排序、减少交叉）
+ *   HTML    → 画节点（任意结构、任意样式、可换肤）
+ *   SVG     → 画连线（贝塞尔曲线 + 箭头）
+ *
+ * 好处是节点样式彻底自由：以后要做"每个能力自定义颜色/图标"，
+ * 只要改 .wf-node 的修饰类或塞 data 属性，不用换库。
+ */
+.flograph {
+	position: relative;
+	width: 100%;
+	height: 440px;
+	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	background:
+		radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.045) 1px, transparent 0)
+		0 0 / 22px 22px,
+		rgba(255, 255, 255, 0.008);
+	cursor: grab;
+}
+.flograph.is-panning {
+	cursor: grabbing;
+}
+/* 平移/缩放的容器：所有节点和连线都在里面，整体 transform */
+.flograph-viewport {
+	position: absolute;
+	inset: 0;
+	transform-origin: 0 0;
+}
+.flograph-svg {
+	position: absolute;
+	inset: 0;
+	overflow: visible;
+	pointer-events: none;
+}
+.flograph-svg path {
+	fill: none;
+	stroke: var(--line-strong);
+	stroke-width: 1.4;
+}
+.flograph-svg path.is-cycle {
+	stroke: #f97316;
+	stroke-dasharray: 5 4;
+}
+.flograph-svg path.is-muted {
+	stroke: rgba(113, 113, 122, 0.55);
+	stroke-dasharray: 3 3;
+}
+.flograph-svg .arrow {
+	fill: var(--line-strong);
+}
+.flograph-svg .arrow.is-cycle {
+	fill: #f97316;
+}
+/* 边上的出口名 */
+.flograph-edge-label {
+	position: absolute;
+	transform: translate(-50%, -50%);
+	font-family: var(--mono, monospace);
+	font-size: 9px;
+	line-height: 1;
+	padding: 2px 5px;
+	border-radius: 4px;
+	background: var(--bg, #09090b);
+	border: 1px solid var(--line);
+	color: var(--accent);
+	white-space: nowrap;
+	pointer-events: none;
+}
+.flograph-edge-label.is-cycle {
+	color: #f97316;
+	border-color: rgba(249, 115, 22, 0.4);
+}
+.flograph-edge-label.is-muted {
+	color: var(--faint);
+	border-style: dashed;
+}
+
+/* ---------- 节点卡片 ---------- */
+.wf-node {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 168px;
+	max-width: 240px;
+	padding: 10px 12px;
+	border-radius: 11px;
+	background: linear-gradient(180deg, #17171d 0%, #121216 100%);
+	border: 1px solid var(--line-strong);
+	box-shadow:
+		0 1px 0 rgba(255, 255, 255, 0.04) inset,
+		0 4px 12px rgba(0, 0, 0, 0.35);
+	transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+	cursor: default;
+}
+.wf-node:hover {
+	border-color: var(--accent);
+	box-shadow:
+		0 1px 0 rgba(255, 255, 255, 0.06) inset,
+		0 6px 18px rgba(0, 0, 0, 0.45),
+		0 0 0 1px rgba(139, 139, 253, 0.25);
+}
+/* 节点左上的图标块：n8n 那种"彩色方块 + 图标"的观感 */
+.wf-node-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	flex: 0 0 30px;
+	border-radius: 8px;
+	font-size: 14px;
+	line-height: 1;
+}
+.wf-node-body {
+	min-width: 0;
+	flex: 1 1 auto;
+}
+.wf-node-title {
+	font-size: 12.5px;
+	color: var(--text);
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.wf-node-sub {
+	font-size: 10px;
+	color: var(--muted);
+	margin-top: 1px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* 右侧状态点 */
+.wf-node-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 9999px;
+	flex: 0 0 6px;
+}
+
+/* ---------- 节点类型（kind）配色 ----------
+ * 这些是"默认主题"。以后要支持每个能力自定义样式，
+ * 就从 api 读 cap.ui = { color, icon } 覆盖这里的变量即可。
+ */
+/* 源 / 触发器节点：最醒目的一层，用主色实心图标块 */
+.wf-node.is-trigger {
+	border-color: rgba(139, 139, 253, 0.5);
+	background: linear-gradient(180deg, #1b1b2a 0%, #14141f 100%);
+}
+.wf-node.is-trigger .wf-node-icon {
+	background: rgba(139, 139, 253, 0.28);
+	color: #c7c7ff;
+}
+.wf-node.is-trigger .wf-node-title {
+	font-weight: 600;
+}
+.wf-node.is-origin .wf-node-icon {
+	background: rgba(139, 139, 253, 0.16);
+	color: #a5a5ff;
+}
+.wf-node.is-pipe .wf-node-icon {
+	background: rgba(56, 189, 248, 0.14);
+	color: #7dd3fc;
+}
+.wf-node.is-end .wf-node-icon {
+	background: rgba(16, 185, 129, 0.14);
+	color: #6ee7b7;
+}
+.wf-node.is-unknown .wf-node-icon {
+	background: rgba(239, 68, 68, 0.14);
+	color: #fca5a5;
+}
+.wf-node.is-deadport {
+	border-style: dashed;
+	background: transparent;
+	box-shadow: none;
+	opacity: 0.75;
+}
+.wf-node.is-deadport .wf-node-icon {
+	background: rgba(113, 113, 122, 0.14);
+	color: var(--muted);
+}
+
+/* 根节点（源直接指向的）：主色描边 + 微光 */
+.wf-node.is-root {
+	border-color: rgba(139, 139, 253, 0.55);
+	box-shadow:
+		0 0 0 1px rgba(139, 139, 253, 0.18),
+		0 6px 20px rgba(139, 139, 253, 0.14);
+}
+/* 环上的节点：橙色虚线 */
+.wf-node.is-cycle {
+	border-color: rgba(249, 115, 22, 0.6);
+	border-style: dashed;
+}
+/* 已在上方展开（seen）：淡一点 */
+.wf-node.is-seen {
+	opacity: 0.6;
+}
+
+/* 缩放控制 */
+.flograph-ctrl {
+	position: absolute;
+	right: 8px;
+	bottom: 8px;
+	display: flex;
+	gap: 4px;
+	z-index: 2;
+}
+.flograph-ctrl button {
+	width: 24px;
+	height: 24px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	border: 1px solid var(--line);
+	background: rgba(20, 20, 25, 0.9);
+	color: var(--muted);
+	font-size: 12px;
+	cursor: pointer;
+	line-height: 1;
+}
+.flograph-ctrl button:hover {
+	color: var(--text);
+	border-color: var(--line-strong);
+}

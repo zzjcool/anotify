@@ -1436,34 +1436,39 @@ async function checkWaterfall(page) {
 	if (toGraph) {
 		await page.waitForTimeout(1800);
 		const cg = await page.evaluate(() => {
-			const host = document.querySelector(".chain-graph");
+			const host = document.querySelector(".flograph");
 			if (!host) return { has: false };
-			const cy = host._cy;
-			if (!cy) return { has: true, hasCy: false };
+			const nodeEls = Array.from(host.querySelectorAll(".wf-node"));
 			return {
 				has: true,
-				hasCy: true,
-				nodeCount: cy.nodes().length,
-				edgeCount: cy.edges().length,
-				statuses: cy.nodes().map((n) => n.data("status")),
-				borders: cy.nodes().map((n) => n.style("border-color")),
-				grabbable: cy.nodes().some((n) => n.grabbable()),
-				labels: cy.nodes().map((n) => n.data("label")),
+				hasGraph: !!host._graph,
+				nodeCount: nodeEls.length,
+				edgeCount: host.querySelectorAll(".flograph-svg path[marker-end]").length,
+				// 状态现在显示为副标题的第一段（"succeeded · 1.2s"）
+				subs: nodeEls.map((n) => n.querySelector(".wf-node-sub")?.textContent || ""),
+				dots: nodeEls.map((n) => {
+					const d = n.querySelector(".wf-node-dot");
+					return d ? getComputedStyle(d).backgroundColor : "";
+				}),
+				labels: nodeEls.map((n) => n.querySelector(".wf-node-title")?.textContent || ""),
 			};
 		});
 
-		H.check("图视图用图形库渲染", cg.has === true && cg.hasCy === true,
-			JSON.stringify({ has: cg.has, cy: cg.hasCy }));
-		if (cg.hasCy) {
+		H.check("图视图用 HTML 卡片节点渲染", cg.has === true && cg.hasGraph === true,
+			JSON.stringify({ has: cg.has, graph: cg.hasGraph }));
+		if (cg.hasGraph) {
 			H.check("拓扑图有节点", cg.nodeCount >= 2, `nodes=${cg.nodeCount}`);
 			H.check("拓扑图有边", cg.edgeCount >= 1, `edges=${cg.edgeCount}`);
 			H.check("节点显示能力名@版本",
 				cg.labels.some((x) => /@\d/.test(x)), cg.labels.join(","));
-			// 九态里的 succeeded / failed 应该用不同颜色
-			const distinct = new Set(cg.borders);
-			H.check("不同状态用不同边框色", distinct.size >= 2,
-				[...distinct].join(","));
-			H.check("拓扑图节点不可拖动（只读）", cg.grabbable === false);
+			// 九态里的 succeeded / failed 应该用不同状态色（右下角小圆点）
+			const distinct = new Set(cg.dots.filter(Boolean));
+			H.check("不同状态用不同颜色标记", distinct.size >= 2, [...distinct].join(","));
+			H.check(
+				"节点副标题显示状态",
+				cg.subs.some((x) => /succeeded|failed|running|pending/.test(x)),
+				cg.subs.join(" | "),
+			);
 		}
 
 		// 切回瀑布图确认可以来回切
@@ -1507,33 +1512,43 @@ async function checkFlowChart(page) {
 	await page.waitForTimeout(1800);
 
 	const g = await page.evaluate(() => {
-		const host = document.querySelector(".flow-canvas");
+		const host = document.querySelector(".flograph");
 		if (!host) return { hasCanvas: false };
-		const cy = host._cy;
-		if (!cy) return { hasCanvas: true, hasCy: false };
+		// 节点是真正的 DOM 卡片（不是 canvas 里画的），所以断言直接读 DOM：
+		// 这也顺带验证了"节点可以是任意结构"这个换渲染方式的初衷。
+		const nodeEls = Array.from(host.querySelectorAll(".wf-node"));
+		const dbg = host._graph && host._graph._debug;
 		return {
 			hasCanvas: true,
-			hasCy: true,
-			nodeCount: cy.nodes().length,
-			edgeCount: cy.edges().length,
-			labels: cy.nodes().map((n) => n.data("label")),
-			ports: cy.edges().map((e) => e.data("port")).filter(Boolean),
-			hasCycleEdge: cy.edges().some((e) => e.data("cycle") === true),
-			hasDeadPort: cy.nodes().some((n) => n.data("kind") === "deadport"),
-			rootCount: cy.nodes().filter((n) => n.data("root") === true).length,
-			grabbable: cy.nodes().some((n) => n.grabbable()),
-			rootOpacity: (() => {
-				const root = cy.nodes().filter((n) => n.data("root") === true).first();
-				return root.length ? Number(root.style("background-opacity")) : -1;
-			})(),
+			hasGraph: !!host._graph,
+			nodeCount: nodeEls.length,
+			edgeCount: host.querySelectorAll(".flograph-svg path[marker-end]").length,
+			labels: nodeEls.map((n) => n.querySelector(".wf-node-title")?.textContent || ""),
+			ports: Array.from(host.querySelectorAll(".flograph-edge-label")).map((x) =>
+				x.textContent.trim(),
+			),
+			hasCycleEdge: host.querySelectorAll(".flograph-svg path.is-cycle").length > 0,
+			hasDeadPort: nodeEls.some((n) => n.classList.contains("is-deadport")),
+			rootCount: nodeEls.filter(
+				(n) => n.classList.contains("is-root") || n.classList.contains("is-trigger"),
+			).length,
+			// "只读"在这里的含义变了：DOM 节点本来就能拖（那是浏览器行为），
+			// 但拖节点不会改变数据 —— 布局是 dagre 一次性算好的。
+			// 所以改为断言"节点有明确坐标、不是自由拖动"。
+			hasCoords: nodeEls.every((n) => n.style.left && n.style.top),
+			subTitles: nodeEls.map((n) => n.querySelector(".wf-node-sub")?.textContent || ""),
+			icons: nodeEls.map((n) => n.querySelector(".wf-node-icon")?.textContent || ""),
 		};
 	});
 
 	H.check(
-		"流向图用图形库渲染（canvas + cy 实例）",
-		g.hasCanvas === true && g.hasCy === true,
-		JSON.stringify({ canvas: g.hasCanvas, cy: g.hasCy }),
+		"流向图用 HTML 卡片节点渲染",
+		g.hasCanvas === true && g.hasGraph === true,
+		JSON.stringify({ host: g.hasCanvas, graph: g.hasGraph }),
 	);
+	H.check("节点是真正的 DOM 卡片（有图标 + 标题 + 副标题）",
+		g.icons.every(Boolean) && g.subTitles !== undefined,
+		`icons=${g.icons.length} subs=${g.subTitles.length}`);
 	H.check("图上有节点", (g.nodeCount || 0) >= 2, `nodes=${g.nodeCount}`);
 	H.check("图上有边", (g.edgeCount || 0) >= 2, `edges=${g.edgeCount}`);
 	H.check(
@@ -1544,15 +1559,57 @@ async function checkFlowChart(page) {
 	H.check("边上标了出口名", (g.ports || []).length >= 2, (g.ports || []).join(","));
 	H.check("环路用专门的边标记画出来", g.hasCycleEdge === true);
 	H.check("「未接下游」在图上可见", g.hasDeadPort === true);
-	H.check("只有 1 个根节点高亮", g.rootCount === 1, `roots=${g.rootCount}`);
-	// 这条盯的是 Cytoscape 的 rgba() 陷阱：background-color 只接受纯色，
-	// 写 rgba(…, 0.12) 会被当成纯紫，整个节点变成实心色块。
-	H.check(
-		"根节点背景是半透明（不是实心色块）",
-		g.rootOpacity > 0 && g.rootOpacity < 1,
-		`opacity=${g.rootOpacity}`,
-	);
-	H.check("节点不可拖动（只读）", g.grabbable === false);
+	// 图上只有"源"这一个触发器是根，能力节点都该有上游
+	H.check("只有源节点被标成根（触发器）", g.rootCount === 1, `roots=${g.rootCount}`);
+	H.check("所有节点都有 dagre 算出的固定坐标", g.hasCoords === true);
+
+	// ---- 节点外观可自定义（这是换掉图库的核心理由）----
+	//
+	// 图库的节点只能是"背景色 + 边框 + 文本"，做不出卡片；换成 HTML 节点后
+	// 每个节点都能带 icon / accent / badge。这条断言锁住这个能力，
+	// 防止以后有人图省事又换回 canvas 方案。
+	const custom = await page.evaluate(() => {
+		const host = document.createElement("div");
+		host.style.cssText = "width:420px;height:240px";
+		document.body.appendChild(host);
+		try {
+			window.FlowGraph.mount(host, {
+				nodes: [
+					{ id: "a", label: "默认", kind: "pipe", icon: "◆" },
+					{ id: "b", label: "自定义", kind: "pipe", icon: "🔥", accent: "#c084fc" },
+				],
+				edges: [{ from: "a", to: "b", port: "ok" }],
+			});
+			const ns = Array.from(host.querySelectorAll(".wf-node"));
+			const custom = ns.find((n) => n.dataset.nodeId === "b");
+			const icon = custom.querySelector(".wf-node-icon");
+			return {
+				ok: true,
+				nodes: ns.length,
+				icon: icon.textContent,
+				iconBg: getComputedStyle(icon).backgroundColor,
+				border: getComputedStyle(custom).borderColor,
+			};
+		} catch (e) {
+			return { ok: false, err: String(e) };
+		} finally {
+			host.remove();
+		}
+	});
+	H.check("FlowGraph 可独立挂载", custom.ok === true, custom.err || "");
+	if (custom.ok) {
+		H.check("节点图标可自定义", custom.icon === "🔥", custom.icon);
+		H.check(
+			"节点主色（accent）可自定义且图标底色跟着变",
+			custom.iconBg.includes("192, 132, 252"),
+			custom.iconBg,
+		);
+		H.check(
+			"accent 也作用到边框",
+			custom.border.includes("192, 132, 252"),
+			custom.border,
+		);
+	}
 }
 
 // runMockCoverage 检查 web/mock.js 覆盖了页面用到的全部接口。

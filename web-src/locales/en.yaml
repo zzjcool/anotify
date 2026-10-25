@@ -1272,6 +1272,9 @@ sources:
     unconnected: (not connected)
     truncated: Graph too large ({n} nodes); showing the first {m}.
     nolib: Graph library failed to load; cannot render the flow.
+    source: Source
+    terminal_short: terminal
+    no_edge: nothing connected
   view_events: View events
 edges:
   title: Edges

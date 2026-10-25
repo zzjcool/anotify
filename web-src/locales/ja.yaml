@@ -1272,6 +1272,9 @@ sources:
     unconnected: （下流未接続）
     truncated: グラフが大きすぎます（{n} ノード）。最初の {m} 個のみ表示します。
     nolib: グラフライブラリを読み込めなかったため、フローを描画できません。
+    source: ソース
+    terminal_short: 終点
+    no_edge: 下流未接続
   view_events: イベントを見る
 edges:
   title: 出口
