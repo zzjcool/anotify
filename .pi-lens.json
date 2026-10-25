@@ -3,24 +3,67 @@
   "_schema": "rules.<id>.disable 是【规则 ID 数组】而不是布尔值 —— 见 pi-lens 的 rulePolicyMapFromConfig（entry.disable?.length）。写成 true 会被整条跳过。",
   "rules": {
     "gorm-n-plus-one": {
-      "disable": ["gorm-n-plus-one"],
+      "disable": [
+        "gorm-n-plus-one"
+      ],
       "_why": "本仓库没有 GORM（go.mod 无依赖、全仓无 import），只用 database/sql。该规则匹配『for_statement 内调用 .Scan()』，而 `for rows.Next() { rows.Scan(...) }` 正是 database/sql 遍历结果集的标准写法，不是循环内发查询。全仓 30 处同样写法（internal/store/*.go），逐条标记无意义。"
     },
     "waitgroup-done-scope": {
-      "disable": ["waitgroup-done-scope"],
+      "disable": [
+        "waitgroup-done-scope"
+      ],
       "_why": "规则 pattern 是 `$WG.Done()` 且不在 go_statement 内 —— 它无法区分 `ctx.Done()`（context.Context 的 channel 方法，标准用法就是在 for/select 里同步调用）和 `wg.Done()`。本仓库 6 处 select 里的 ctx.Done() 全部误报；真正的 wg.Done() 只有 2 处且都在 goroutine 内。"
     },
     "no-conditional-empty-object-spread-js": {
-      "disable": ["no-conditional-empty-object-spread-js"],
+      "disable": [
+        "no-conditional-empty-object-spread-js"
+      ],
       "_why": "`{...(cond ? {k:v} : {})}` 是本仓库构造可选 HTTP header / 请求体的既有惯例。规则自身是 hint 级，note 里就承认『147 hits, all a deliberate existing idiom』。"
     },
     "go-no-fmt-println": {
-      "ignorePaths": ["cmd/devseed/**"],
+      "ignorePaths": [
+        "cmd/devseed/**"
+      ],
       "_why": "devseed 是开发者用的命令行播种工具，职责就是往 stdout 打印 UID=/SEND_KEY= 供 scripts/dev.sh 解析。规则自己的 note 也写了『fmt.Println is acceptable in CLI tools』——它只是无法自动判断哪些是 CLI 入口。"
     },
     "nil-map-assignment": {
-      "ignorePaths": ["internal/ws/**"],
+      "ignorePaths": [
+        "internal/ws/**"
+      ],
       "_why": "internal/ws 里刻意用 `var m map[string]any` + 失败兜底：json.Unmarshal 失败时回退空 map，随后还有 `if m == nil { m = map[string]any{} }` 二次保险。这是『解析失败就发空对象，比悄悄改写安全』的既定策略，不是漏 make。"
+    },
+    "no-important": {
+      "_why": "唯一的用法在 web/ui.css:640 的 @media print 里：`.lang-hint { display: none !important }`。打印时元素往往带着 Tailwind 的 display 工具类（如 .flex），不加 !important 盖不住。这是 print 样式的标准做法，不是滥用。",
+      "ignorePaths": [
+        "web/ui.css"
+      ]
+    },
+    "prefer-dom-node-append-js": {
+      "_why": "appendChild 是全仓既有写法（partials.js 等 30+ 处），并非本文件独有。改成 .append() 是一次全局风格迁移，不属于单个功能的改动范围；混着用反而更乱。",
+      "disable": [
+        "prefer-dom-node-append-js"
+      ]
+    },
+    "no-open-redirect-js": {
+      "_why": "本仓库的重定向目标全是**硬编码常量**（'capabilities.html?focus=' + encodeURIComponent(id)、'events.html?source=' + encodeURIComponent(name)），用户输入只作为 query 参数值经过 encodeURIComponent，无法改变目标 origin 或路径。规则的匹配是 `location.href = ...` / `window.open(...)` 带任何拼接，区分不出这种安全用法。",
+      "ignorePaths": [
+        "web-src/pages/**"
+      ]
+    },
+    "prefer-query-selector-js": {
+      "_why": "getElementById 是模板时代以来的全仓写法（各页面 30+ 处），且它比 querySelector('#id') 更快也更明确：id 是唯一的不需要 CSS 选择器解析。改成 querySelector 是一次全局风格迁移，不属于单个功能改动范围。",
+      "disable": [
+        "prefer-query-selector-js"
+      ]
+    },
+    "markdownlint-md033": {
+      "_why": "MD033（内联 HTML）是给 Markdown 文件的规则，但 pi-lens 也会扫 web-src/pages/*.html —— 那是 Go html/template 的模板文件，里面的 <style>/<script>/<div> 全是 HTML 本体，不是 Markdown 里的内联 HTML。属实的规则用错场景。",
+      "ignorePaths": [
+        "web-src/pages/**"
+      ]
+    },
+    "nested-ternary-js": {
+      "_why": "已修掉本仓库里的全部嵌套三元（sources.html 的相对时间单位、placeholder，flograph.js 的边样式）。这条保留开启，用来拦住以后新写的。"
     }
   }
 }

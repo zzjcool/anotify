@@ -87,18 +87,20 @@
 					repo: { type: "string" },
 				},
 			}),
-			cap("apply-fix", 1, [], {
+			cap("apply-fix", 1, ["fixed"], {
 				type: "object",
 				properties: { scope: { type: "string", enum: ["lint", "test", "all"] } },
 			}),
 			// outputs 里刻意留一个没接边的端口（preview.ready）：
 			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏
-			cap("deploy-preview", 1, ["failed", "preview.ready"], {
+			// outputs 里刻意留一个没接边的端口（manual.approval）：
+			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏。
+			cap("deploy-preview", 1, ["failed", "preview.ready", "manual.approval"], {
 				type: "object",
 				required: ["env"],
 				properties: { env: { type: "string", enum: ["staging", "prod"] } },
 			}),
-			cap("report.send", 1, [], {
+			cap("report.send", 1, ["escalate"], {
 				type: "object",
 				required: ["channel", "title"],
 				properties: {
@@ -106,6 +108,35 @@
 					title: { type: "string" },
 					urgent: { type: "boolean" },
 					retries: { type: "integer", minimum: 0, maximum: 5 },
+				},
+			}),
+			// 下面几个能力是为了让流向图有真实的"深度 + 分叉 + 汇聚"：
+			// 一条链只有 3 个节点看不出布局和信息密度，太简单了。
+			cap("run-tests", 1, ["passed", "failed"], {
+				type: "object",
+				properties: {
+					suite: { type: "string", enum: ["unit", "integration", "e2e"] },
+					shard: { type: "integer", minimum: 1 },
+				},
+			}),
+			cap("lint-fix", 1, ["clean", "remaining"], {
+				type: "object",
+				properties: { scope: { type: "string" } },
+			}),
+			cap("gen-changelog", 1, [], {
+				type: "object",
+				properties: { since: { type: "string" } },
+			}),
+			cap("rollback", 1, ["done"], {
+				type: "object",
+				properties: { reason: { type: "string" } },
+			}),
+			cap("alert.oncall", 1, [], {
+				type: "object",
+				required: ["level"],
+				properties: {
+					level: { type: "string", enum: ["warn", "critical"] },
+					page: { type: "boolean" },
 				},
 			}),
 		],
@@ -170,13 +201,31 @@
 			from("cron", "nightly", "analyze-pr"),
 			from("http", "webhook.incoming", "deploy-preview"),
 			from("manual", "manual.run", "deploy-preview"),
-			from("analyze-pr", "needs-fix", "apply-fix"),
-			from("analyze-pr", "approved", "deploy-preview"),
-			// 一条真实存在的环：部署失败 → 回去改 → 再部署。
+			from("analyze-pr", "needs-fix", "lint-fix"),
+			from("analyze-pr", "approved", "run-tests"),
+
+			// 两个分支各自往下走一步，然后在 deploy-preview 汇聚 ——
+			// 汇聚是布局最容易画歪的形状（菱形），值得在演示数据里出现。
+			from("lint-fix", "clean", "run-tests"),
+			from("lint-fix", "remaining", "report.send"),
+			from("run-tests", "passed", "deploy-preview"),
+			// 测试挂了先尝试自动修，修完再测一次 —— 这是本仓库真实存在的
+			// 环（run-tests → apply-fix → run-tests）。流向图必须画出环路，
+			// 而"全是 DAG"的演示数据会让人以为这功能只能处理简单情况。
+			from("run-tests", "failed", "apply-fix"),
+
+			// 部署之后：成功就发通知 + 生成变更日志（一对多分叉）
+			from("deploy-preview", "preview.ready", "gen-changelog"),
+			from("deploy-preview", "failed", "rollback"),
+
+			// 一条真实存在的环：改了再测，测完再改。
 			// 留着它是刻意的：流向图必须能画出环路，而"全是 DAG"的演示数据
 			// 会让人以为这功能只能处理简单情况。
-			from("apply-fix", "fixed", "deploy-preview"),
-			from("deploy-preview", "failed", "apply-fix"),
+			from("apply-fix", "fixed", "run-tests"),
+
+			// 兜底告警：report.send 和 rollback 都能触发值班
+			from("rollback", "done", "alert.oncall"),
+			from("report.send", "escalate", "alert.oncall"),
 		];
 	})();
 
@@ -316,7 +365,14 @@
 
 		let t = now() - 180;
 
-		// ---- 1) 扇出 + 并行：一条 PR 事件，analyze-pr 后同时跑两个分支 ----
+		// ---- 1) 一条完整的修复链：analyze → lint-fix → run-tests → 部署 ----
+		//
+		// 这里**必须**符合真实派发语义：每个任务只回报一个 out
+		// （store.Task.Out 是单值，不变量 I5），所以每个父任务
+		// **最多只有一个子任务**。真实的执行路径永远是一条链，不是树。
+		//
+		// 想表现"并行"不能靠让一个父任务扇出 —— 那在模型里不存在。
+		// 并行要靠两条独立的 trace 各自在跑（见下面第 3 条）。
 		{
 			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
 			state.events.push({
@@ -325,42 +381,169 @@
 				payload: { pr: 842, repo: "anotify" }, createdAt: t,
 			});
 			const analyze = capByName("analyze-pr");
-			const fix = capByName("apply-fix");
+			const lintFix = capByName("lint-fix");
+			const tests = capByName("run-tests");
 			const deploy = capByName("deploy-preview");
+			const report = capByName("report.send");
 
-			// 根：analyze-pr 跑 4 秒
-			const a = mkTask({
+			// 逐跳串起来：每一跳的 out 决定下一跳是谁
+			let prev = mkTask({
 				traceId, cap: analyze, createdAt: t,
 				startedAt: t + 1, finishedAt: t + 5,
 				out: "needs-fix", summary: "发现 3 处 lint 问题",
 			});
-			state.tasks.push(a);
+			state.tasks.push(prev);
 
-			// 两个并行子任务（起始时间相同 = 真并行）
-			const f = mkTask({
-				traceId, cap: fix, parent: a.id, path: [analyze.id, fix.id],
-				createdAt: t + 5, startedAt: t + 6, finishedAt: t + 6.4,
-				summary: "修复完成", out: "fixed",
-			});
-			// 交给 ci-runner：部署常跑在 CI 机器上，顺便让"按节点筛选"
-			// 在演示数据里看得出差异（全都同一个节点就分不出来）
-			const d = mkTask({
-				traceId, cap: deploy, parent: a.id, path: [analyze.id, deploy.id],
-				nodeId: state.nodes[1].id,
-				createdAt: t + 5, startedAt: t + 6, finishedAt: t + 18,
-				params: { env: "staging" }, summary: "预览环境已部署", out: "preview.ready",
-			});
-			state.tasks.push(f, d);
+			const steps = [
+				{
+					cap: lintFix, out: "clean", summary: "自动修复 2 处，1 处需人工",
+					start: t + 5, end: t + 6.4, node: state.nodes[0].id,
+				},
+				{
+					cap: tests, out: "passed", summary: "12 个用例全部通过",
+					// 测试常跑在 CI 机器上，顺便让"按节点筛选"在演示数据里看得出差异
+					start: t + 6.4, end: t + 18.6, node: state.nodes[1].id,
+				},
+				{
+					cap: deploy, out: "preview.ready", summary: "预览环境已部署",
+					start: t + 18.6, end: t + 21.2, node: state.nodes[1].id,
+					params: { env: "staging" },
+				},
+			];
 
-			// deploy 的子任务：失败，带 error
+			for (const st of steps) {
+				const child = mkTask({
+					traceId, cap: st.cap, parent: prev.id,
+					path: [analyze.id, st.cap.id],
+					nodeId: st.node,
+					createdAt: st.start, startedAt: st.start, finishedAt: st.end,
+					out: st.out, summary: st.summary, params: st.params,
+				});
+				state.tasks.push(child);
+				prev = child;
+			}
+
+			// 最后一跳失败，带 error —— 让链尾出现一个红节点
 			state.tasks.push(mkTask({
-				traceId, cap: capByName("report.send"), parent: d.id,
-				path: [analyze.id, deploy.id], createdAt: t + 18,
-				startedAt: t + 18.5, finishedAt: t + 19,
+				traceId, cap: report, parent: prev.id,
+				path: [analyze.id, deploy.id, report.id],
+				createdAt: t + 21.2,
+				startedAt: t + 21.3, finishedAt: t + 21.7,
 				params: { channel: "slack", title: "部署通知" },
 				status: "failed", error: "slack: 403 invalid token",
 			}));
 			t += 40;
+		}
+
+		// ---- 1b) 深链 + 环：11 跳，中间回溯过一次 ----
+		//
+		// 这是给图视图准备的"难看的形状"：足够长的链才能看出
+		// 布局是否分层、连线是否打架、缩放到什么程度才可读。
+		// 3~5 个节点的演示数据根本暴露不出布局问题。
+		//
+		// 结构：analyze → lint-fix → run-tests(failed) → report.send(escalate)
+		//       → apply-fix → run-tests(passed) → deploy-preview
+		//       → gen-changelog / alert.oncall
+		//
+		// 注意 run-tests 出现两次（同一个能力，两个任务）——这是真实的
+		// "改完再测"循环，不是数据错误。
+		{
+			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			state.events.push({
+				id: uid("evt"), orgId: ORG, traceId,
+				source: "GitHub PR", type: "pull_request.reopened",
+				payload: { pr: 913, repo: "anotify", files: 27 }, createdAt: t,
+			});
+
+			const plan = [
+				// [能力名, out, status, 耗时(s), 节点索引, summary/error]
+				["analyze-pr", "needs-fix", "succeeded", 3.8, 0, "27 个文件，发现 6 处问题"],
+				["lint-fix", "remaining", "succeeded", 2.1, 0, "自动修复 4 处，2 处需人工"],
+				["run-tests", "failed", "failed", 34.2, 1, ""],
+				["report.send", "escalate", "succeeded", 0.9, 0, "已通知 #ci-alerts"],
+				["apply-fix", "fixed", "succeeded", 12.6, 1, "人工修复完成"],
+				["run-tests", "passed", "succeeded", 41.3, 1, "全部 218 个用例通过"],
+				["deploy-preview", "preview.ready", "succeeded", 18.4, 1, "staging 已就绪"],
+				["gen-changelog", null, "succeeded", 1.2, 0, "生成 14 条变更"],
+				["alert.oncall", null, "succeeded", 0.3, 0, "值班已确认"],
+			];
+
+			let clock = t;
+			let prev = null;
+			const analyzeId = capByName("analyze-pr").id;
+
+			for (const [name, out, status, dur, nodeIdx, note] of plan) {
+				const cap = capByName(name);
+				const isTestRetry = name === "run-tests" && prev && prev.cap === "apply-fix";
+				const task = mkTask({
+					traceId,
+					cap,
+					parent: prev ? prev.id : null,
+					path: [analyzeId, cap.id],
+					nodeId: state.nodes[nodeIdx].id,
+					createdAt: clock,
+					startedAt: clock,
+					finishedAt: clock + dur,
+					out: out || null,
+					status,
+					// 第一次测试失败要给 error，第二次重试才成功
+					error: status === "failed" ? "e2e: 3 specs timed out (30s)" : "",
+					summary: status === "failed" ? "" : note,
+					// 重试过的任务：attempts > 1 让瀑布图标出 ×N
+					attempts: isTestRetry ? 2 : 1,
+				});
+				state.tasks.push(task);
+				prev = { id: task.id, cap: name };
+				clock += dur;
+			}
+			t += 120;
+		}
+
+		// ---- 1c) 并行：两条独立的 trace 同时在跑 ----
+		//
+		// 想表现并行**不能**让一个父任务扇出（模型不存在那个状态，
+		// Task.Out 是单值）。真实并行 = 两条 trace 各自在跑。
+		// 事件流按源分组时，这两条会落在同一个源下面，瀑布图/图视图
+		// 可以对比它们的耗时差异。
+		{
+			const branch = [
+				{ src: "GitHub PR", type: "pull_request.opened", plan: [
+					["analyze-pr", "approved", "succeeded", 5.1, 0, "无问题"],
+					["run-tests", "passed", "succeeded", 22.7, 1, "218 用例通过"],
+					["deploy-preview", "preview.ready", "succeeded", 15.2, 1, "staging 就绪"],
+				]},
+				{ src: "每晚体检", type: "nightly", plan: [
+					["analyze-pr", "approved", "succeeded", 2.2, 0, "基线正常"],
+					["run-tests", "passed", "succeeded", 9.4, 0, "冒烟通过"],
+				]},
+			];
+			// 两条 **必须从完全相同的 createdAt 开始**，否则"并行"看不出来。
+			// 取整到秒是刻意的：浮点毫秒会有微小差异，图上就有个错位。
+			const baseClock = Math.floor(now() - 45);
+			for (const br of branch) {
+				const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+				state.events.push({
+					id: uid("evt"), orgId: ORG, traceId,
+					source: br.src, type: br.type, payload: {}, createdAt: baseClock,
+				});
+				let clock = baseClock;
+				let prev = null;
+				const rootId = capByName("analyze-pr").id;
+				for (const [name, out, status, dur, nodeIdx, note] of br.plan) {
+					const cap = capByName(name);
+					const task = mkTask({
+						traceId, cap,
+						parent: prev ? prev.id : null,
+						path: [rootId, cap.id],
+						nodeId: state.nodes[nodeIdx].id,
+						createdAt: clock, startedAt: clock, finishedAt: clock + dur,
+						out: out || null, status, summary: note,
+					});
+					state.tasks.push(task);
+					prev = task;
+					clock += dur;
+				}
+			}
 		}
 
 		// ---- 2) 进行中：有一条任务还没结束（瀑布图宽度算到"现在"）----

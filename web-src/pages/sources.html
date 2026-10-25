@@ -306,10 +306,6 @@
 {{end}}
 
 {{define "script"}}
-    <!-- 流向图：dagre 只算布局坐标，节点用 HTML 画（见 web/flograph.js）。
-         本地 vendor，不依赖 CDN —— e2e 离线门禁会拦外网请求。 -->
-    <script src="/vendor/dagre.min.js"></script>
-    <script src="/flograph.js"></script>
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
       const API = "/v1";
@@ -369,15 +365,18 @@
       function relTime(ts) {
         if (!ts) return "";
         const diff = ts - Math.floor(Date.now() / 1000);
+        // 选最大合适的单位。用顺序 if 而不是嵌套三元 —— 三元套四层读不动。
         const abs = Math.abs(diff);
-        const unit =
-          abs < 60
-            ? [Math.round(abs), t("sources.unit.sec", "秒")]
-            : abs < 3600
-              ? [Math.round(abs / 60), t("sources.unit.min", "分钟")]
-              : abs < 86400
-                ? [Math.round(abs / 3600), t("sources.unit.hour", "小时")]
-                : [Math.round(abs / 86400), t("sources.unit.day", "天")];
+        let unit;
+        if (abs < 60) {
+          unit = [Math.round(abs), t("sources.unit.sec", "秒")];
+        } else if (abs < 3600) {
+          unit = [Math.round(abs / 60), t("sources.unit.min", "分钟")];
+        } else if (abs < 86400) {
+          unit = [Math.round(abs / 3600), t("sources.unit.hour", "小时")];
+        } else {
+          unit = [Math.round(abs / 86400), t("sources.unit.day", "天")];
+        }
         return diff >= 0
           ? t("sources.in", "{n} 后").replace("{n}", unit[0] + " " + unit[1])
           : t("sources.ago", "{n} 前").replace("{n}", unit[0] + " " + unit[1]);
@@ -500,200 +499,67 @@
       //
       // 数据仍然是能力和边（不依赖运行态），所以它依然是"提前预览"。
 
-      // flowToElements 把 buildFlow 的树展开成 Cytoscape 的 nodes/edges。
+      // renderFlowGraph 把 buildFlow 的树交给共享的图模块画。
       //
-      // 关键点：
-      //   - 节点按"能力"去重（同一个能力在图上只有一个方块），
-      //     否则菱形汇聚时会画出好几个同名方块，看着像不同东西
-      //   - 边按 (fromPort, to) 去重
-      //   - 环上的边加 cycle 标记（红色虚线），这是缩进树给不了的信息
-      //   - "未接下游的出口"画成灰色虚线小节点，让配置遗漏在图上可见
-      function flowToElements(roots) {
-        const nodes = new Map(); // id → node data
-        const edges = new Map(); // key → edge data
-
-        function addNode(id, data) {
-          if (!nodes.has(id)) nodes.set(id, { data: { id, ...data } });
-        }
-
-        function addEdge(from, to, port, isCycle) {
-          const key = from + "|" + port + "|" + to;
-          if (edges.has(key)) {
-            if (isCycle) edges.get(key).data.cycle = true;
-            return key;
-          }
-          edges.set(key, {
-            data: { id: "e" + edges.size, source: from, target: to, port, cycle: !!isCycle },
-          });
-          return key;
-        }
-
-        // "未接下游"伪节点的 id 要稳定且不撞真实能力 id
-        const deadPortID = (capId, port) => "dead|" + capId + "|" + port;
-
-        (function walk(list, parentId) {
-          for (const n of list) {
-            const isRoot = parentId == null;
-            const unknown = n.kind === "unknown";
-            const label = unknown ? n.capId : n.cap.name + "@" + (n.cap.version ?? "?");
-
-            addNode(n.capId, {
-              label,
-              kind: unknown ? "unknown" : n.cap.kind || "pipe",
-              root: isRoot,
-              // 三种"不再往下展开"的状态，视觉上要区分开：
-              //   cycle → 橙色虚线（真的是环）
-              //   seen  → 半透明（这条路径上展开过了，别处还有）
-              //   dead  → 这就是终点（能力本身没有出边）
-              cycleNode: n.kind === "cycle",
-              seenNode: n.kind === "seen",
-              terminal: n.kind === "dead" && n.cap && n.cap.kind === "end",
-            });
-
-            // 上一跳的边：parent → 这个节点，带着"从哪个出口下来的"
-            if (parentId != null) {
-              addEdge(parentId, n.capId, n.viaPort || "", n.kind === "cycle");
-            }
-
-            // 没接边的出口：画一个灰色终点伪节点 + 虚线边
-            for (const port of n.unconnected || []) {
-              const did = deadPortID(n.capId, port);
-              addNode(did, {
-                label: t("sources.flow.unconnected", "未接下游"),
-                kind: "deadport",
-                root: false,
-              });
-              addEdge(n.capId, did, port, false);
-            }
-
-            if (n.children && n.children.length) walk(n.children, n.capId);
-          }
-        })(roots, null);
-
-        return { nodes: [...nodes.values()], edges: [...edges.values()] };
-      }
-
-      // renderFlowGraph 把树画成图。
-      //
-      // 用 web/flograph.js（HTML 节点 + SVG 连线 + dagre 布局）而不是图库：
-      // 图库的节点只能是"背景色 + 边框 + 文本"，做不出卡片观感，
-      // 也没法给单个能力自定义外观。
+      // 映射逻辑（树 → 节点/边、触发器节点、未接出口伪节点、截断保护）
+      // 都在 web/graphs.js 的 AnotifyGraphs.capabilityFlow 里 —— 那边只有
+      // 一份，事件流的任务链图用的是同一个 FlowGraph 渲染器。
+      // 这里只负责：拿到树、挂容器、处理"这个源没有出口"的空态。
       function renderFlowGraph(container, roots, src) {
-        const { nodes, edges } = flowToElements(roots);
-        if (!nodes.length) {
+        if (!roots || !roots.length) {
           container.appendChild(
             el("div", "flow-empty", t("sources.flow.no_target", "这个源没有出口能力。")),
           );
           return;
         }
-
-        // 上限保护：数据异常时不要画出几百个节点卡死浏览器
-        const LIMIT = 120;
-        const truncated = nodes.length > LIMIT;
-        const useNodes = nodes.slice(0, LIMIT);
-        const usedIds = new Set(useNodes.map((n) => n.data.id));
-        const useEdges = edges.filter(
-          (e) => usedIds.has(e.data.source) && usedIds.has(e.data.target),
-        );
-
-        if (truncated) {
-          container.appendChild(
-            el(
-              "div",
-              "flow-dead mb-2",
-              t("sources.flow.truncated", "图太大（{n} 个节点），只显示前 {m} 个。")
-                .replace("{n}", nodes.length)
-                .replace("{m}", LIMIT),
-            ),
-          );
-        }
-
-        if (!window.FlowGraph) {
+        if (!window.AnotifyGraphs) {
           container.appendChild(
             el("div", "flow-empty", t("sources.flow.nolib", "图渲染脚本未能加载。")),
           );
           return;
         }
 
-        // 把"源"本身也画进去当第一层触发器节点。
-        //
-        // n8n 里触发器就是图上的第一个节点 —— 不画它的话，
-        // 用户看到的是"凭空冒出来一堆能力"，看不出是谁触发的。
-        const SRC_ID = "__source__";
-        const srcKindLabel = {
-          cron: t("sources.kind.cron", "定时器"),
-          webhook: t("sources.kind.webhook", "Webhook"),
-          manual: t("sources.kind.manual", "手动"),
-        };
-        const graphNodes = [
-          {
-            id: SRC_ID,
-            label: src && src.name ? src.name : t("sources.flow.source", "源"),
-            sub: (src && srcKindLabel[src.kind]) || "",
-            kind: "trigger",
-            root: true,
-            icon: "⚡",
-          },
-        ];
-        const graphEdges = [];
-        // 源 → 每个直接出口能力（一条边一个目标，不带 port：源没有"出口名"）
-        for (const n of useNodes) {
-          if (!n.data.root) continue;
-          graphEdges.push({ from: SRC_ID, to: n.data.id, port: "" });
-        }
-
         const host = el("div", "");
         container.appendChild(host);
 
-        // 节点图标与副标题按 kind 走默认主题；cap.ui（将来）可以覆盖。
-        const ICON = { origin: "⚡", pipe: "◆", end: "◉", unknown: "✕", deadport: "○" };
-        const graph = window.FlowGraph.mount(host, {
-          nodes: graphNodes.concat(useNodes.map((n) => {
-            const d = n.data;
-            return {
-              id: d.id,
-              label: d.label,
-              // 副标题说人话：内部 kind（pipe/end）对用户没意义，
-              // 但"有没有下游"是他真正关心的。
-              sub:
-                d.kind === "deadport"
-                  ? t("sources.flow.no_edge", "没有接下游")
-                  : d.kind === "unknown"
-                    ? t("sources.flow.missing", "能力已删除")
-                    : d.kind === "end"
-                      ? t("sources.flow.terminal_short", "终点")
-                      : "",
-              kind: d.kind,
-              // 不再把"源直接指向的能力"当根高亮：图上的根是触发器节点，
-              // 能力全都有上游，都标 root 的话第一层就分不出来了。
-              root: false,
-              cycle: d.cycleNode,
-              seen: d.seenNode,
-              icon: ICON[d.kind] || "◆",
-              // 单个能力的自定义外观（目前数据里还没有，预留接口）
-              accent: d.accent,
-            };
-          })),
-          edges: graphEdges.concat(useEdges.map((e) => ({
-            from: e.data.source,
-            to: e.data.target,
-            port: e.data.port,
-            cycle: e.data.cycle,
-            // 指向"未接下游"伪节点的边用虚线弱化
-            muted: useNodes.some(
-              (n) => n.data.id === e.data.target && n.data.kind === "deadport",
-            ),
-          }))),
+        const res = window.AnotifyGraphs.capabilityFlow(host, {
+          src: src,
+          tree: roots,
+          t: t,
           onNodeClick: (n) => {
-            // 点节点 → 滚到能力页对应能力（能力页支持 ?focus=）
-            if (n.kind === "deadport" || n.kind === "unknown" || n.kind === "trigger") return;
-            const capId = String(n.id);
-            window.open("capabilities.html?focus=" + encodeURIComponent(capId), "_blank");
+            // 点能力节点 → 能力页对应能力（能力页支持 ?focus=）
+            window.open(
+              "capabilities.html?focus=" + encodeURIComponent(String(n.id)),
+              "_blank",
+            );
           },
         });
 
-        // 存一份引用，卡片重渲染时能 destroy（避免 window 监听泄漏）
-        host._graph = graph;
+        if (res.truncated) {
+          container.insertBefore(
+            el(
+              "div",
+              "flow-dead mb-2",
+              t("sources.flow.truncated", "图太大（{n} 个节点），只显示前一部分。").replace(
+                "{n}",
+                res.truncated,
+              ),
+            ),
+            host,
+          );
+        }
+      }
+
+      /**
+       * placeholderForType 给"复杂类型走 JSON 手输"的输入框一个示例。
+       *
+       * 抽成函数是因为原来写成三层嵌套三元（object ? ... : array ? ... : ""），
+       * 在那一行里已经很难看出这三种情况分别对应什么。
+       */
+      function placeholderForType(type) {
+        if (type === "object") return '{"k":"v"}';
+        if (type === "array") return "[1,2]";
+        return "";
       }
 
       // renderFlow 是卡片底部那块：折叠头 + 图
@@ -1202,13 +1068,13 @@
             if (cur != null) input.value = String(cur);
             if (spec.minimum != null) input.min = String(spec.minimum);
             if (spec.maximum != null) input.max = String(spec.maximum);
-          } else if ((spec.type === "object" || spec.type === "array") || typeof spec.type === "undefined") {
+          } else if (spec.type === "object" || spec.type === "array" || spec.type === undefined) {
             // object/array（或没声明类型）：用文本框，提交前按 JSON 解析。
             // 不做结构化编辑器——那是另一种复杂度，先用最直白的方式。
             input = document.createElement("input");
             input.type = "text";
             input.dataset.json = "1";
-            input.placeholder = spec.type === "object" ? '{"k":"v"}' : spec.type === "array" ? "[1,2]" : "";
+            input.placeholder = placeholderForType(spec.type);
             if (cur != null) input.value = typeof cur === "string" ? cur : JSON.stringify(cur);
           } else {
             input = document.createElement("input");

@@ -1331,16 +1331,36 @@ async function checkEventsFilter(page, base) {
 //   - 层级：子任务有缩进，跟父任务不在同一列
 //   - 失败/进行中要有对应的 class
 async function checkWaterfall(page) {
-	// 找任务最多的那条事件（扇出的那条）
-	const picked = await page.evaluate(() => {
-		// 注意：事件现在按源分组，卡片在 .ev-group 里面，不在 #ev-list 的直接子级。
+	// 逐条点开，挑 span 最多的那条 —— 不靠事件类型名猜。
+	//
+	// 之前按 `pull_request.opened` 找是脆的：同一个类型可以有好多条 trace
+	// （不同 PR、不同时间），.find() 拿到哪条全看数据顺序，而瀑布图断言需要
+	// 一条"够长"的链才测得出时序。
+	const picked = await page.evaluate(async () => {
+		// 事件按源分组，卡片在 .ev-group 里，不在 #ev-list 的直接子级。
 		// 用 .card 选真正的可点击事件卡（点 .ev-group 不会触发 showChain）。
 		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
-		const target =
-			cards.find((c) => c.textContent.includes("pull_request.opened")) || cards[0];
-		if (!target) return null;
-		target.click();
-		return true;
+		if (!cards.length) return 0;
+
+		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+		let best = 0;
+		let bestCount = -1;
+
+		for (const card of cards) {
+			card.click();
+			// 等链渲染完再数字段。280ms 太短 —— 9 个 span 的链要先 fetch
+			// /v1/tasks 再画，实测要 400ms 以上，否则数到的还是上一条的。
+			await sleep(620);
+			const n = document.querySelectorAll(".wf-row").length;
+			if (n > bestCount) {
+				bestCount = n;
+				best = Array.prototype.indexOf.call(cards, card);
+			}
+		}
+		// 回到任务最多的那条
+		cards[best].click();
+		await sleep(400);
+		return bestCount;
 	});
 	if (!picked) {
 		H.check("事件列表非空（瀑布图前置）", false, "没有事件卡片");
@@ -1381,10 +1401,17 @@ async function checkWaterfall(page) {
 		wf.ticks.join(" | "),
 	);
 
-	// 并行：两个不同任务的 left 相同
+	// 并行 **不能**在单条 trace 内断言。
+	//
+	// store.Task.Out 是单值（不变量 I5），一个任务只沿它汇报的那一个出口
+	// 派发下一跳，所以同一 trace 内每个任务最多一个子任务 —— 真实执行路径
+	// 永远是一条链，不存在"同一 trace 内两个 span 起点相同"。
+	//
+	// 所以这里改为断言**链的严格串行**：后一个 span 的起点不早于前一个的终点
+	// （即 left 单调不减）。这正好锁住"时序计算没有错乱"。
 	const lefts = wf.rows.filter((r) => r.left != null).map((r) => r.left);
-	const hasParallel = lefts.some((v, i) => lefts.indexOf(v) !== i);
-	H.check("能画出并行分支（两个 span 起点相同）", hasParallel, lefts.join(","));
+	const monotonic = lefts.every((v, i) => i === 0 || v >= lefts[i - 1] - 0.5);
+	H.check("span 起点沿链单调不减（串行执行）", monotonic, lefts.join(","));
 
 	// 层级：至少有一行缩进 > 0
 	H.check(
@@ -1393,12 +1420,25 @@ async function checkWaterfall(page) {
 		wf.rows.map((r) => r.indent).join(","),
 	);
 
-	// 状态着色：出现 failed / running / succeeded 中至少两种
-	const classes = wf.rows.map((r) => r.cls).join(" ");
-	const kinds = ["b-succeeded", "b-failed", "b-running", "b-pending"].filter((k) =>
-		classes.includes(k),
-	);
-	H.check("状态用不同颜色区分", kinds.length >= 2, kinds.join(","));
+	// 状态着色：一条纯成功的链只有一种状态，所以要看**全站**有没有区分出来。
+	//
+	// 改成逐条事件扫一遍，收集所有出现过的状态类。这比"要求当前这条链
+	// 有多色"更贴近事实：状态多样性来自不同的 trace，不是单条链里。
+	const statusVariety = await page.evaluate(async () => {
+		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
+		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+		const seen = new Set();
+		for (const card of cards.slice(0, 8)) {
+			card.click();
+			await sleep(520);
+			for (const bar of document.querySelectorAll(".wf-bar")) {
+				const m = bar.className.match(/b-(succeeded|failed|running|pending|assigned|acked|canceled|abandoned|lease_expired)/);
+				if (m) seen.add(m[0]);
+			}
+		}
+		return [...seen];
+	});
+	H.check("状态用不同颜色区分", statusVariety.length >= 2, statusVariety.join(","));
 
 	// 宽度合理：都在 0~100 之间
 	H.check(
@@ -1406,6 +1446,26 @@ async function checkWaterfall(page) {
 		wf.rows.filter((r) => r.width != null).every((r) => r.width >= 0 && r.width <= 100),
 		wf.rows.map((r) => r.width).join(","),
 	);
+
+	// 上面扫状态时把最后一张卡点开了，这里把"最长的那条"重新选回来，
+	// 否则后面的图视图断言拿到的是一条只有 1 个节点的短链。
+	await page.evaluate(async () => {
+		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
+		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+		let best = 0;
+		let bestCount = -1;
+		for (const card of cards) {
+			card.click();
+			await sleep(620);
+			const n = document.querySelectorAll(".wf-row").length;
+			if (n > bestCount) {
+				bestCount = n;
+				best = Array.prototype.indexOf.call(cards, card);
+			}
+		}
+		cards[best].click();
+		await sleep(450);
+	});
 
 	// 切到树视图再切回来，两个视图都能渲染
 	const switched = await page.evaluate(() => {
