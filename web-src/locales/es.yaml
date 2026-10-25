@@ -1127,6 +1127,18 @@ caps:
     create_failed: 'Error al crear: '
     err_name: Introduce un nombre de capacidad
     err_schema: paramsSchema no es JSON válido
+    schema_mode_form: Formulario
+    schema_mode_json: JSON
+    schema_add_field: Añadir campo
+    schema_no_extra: Prohibir campos no declarados
+    schema_field_name: Nombre del campo
+    schema_required: Obligatorio
+    schema_enum: Valores enum, separados por comas (opcional)
+    schema_no_fields: Aún no hay campos. Añade uno abajo.
+    schema_dup: Nombre de campo duplicado
+    schema_preserved: 'Esto no se puede editar visualmente y se conservará tal cual:'
+    schema_form_hint: Solo usa palabras clave que el backend admite (type / properties / required / enum / rangos). Cambia a JSON para objetos anidados y arreglos.
+    err_schema_obj: paramsSchema debe ser un objeto JSON
   edges:
     title: Aristas
     new: Nueva arista

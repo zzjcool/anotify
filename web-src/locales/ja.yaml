@@ -1127,6 +1127,18 @@ caps:
     create_failed: '作成に失敗: '
     err_name: ケイパビリティ名を入力してください
     err_schema: paramsSchema が正しい JSON ではありません
+    schema_mode_form: フォーム
+    schema_mode_json: JSON
+    schema_add_field: フィールド追加
+    schema_no_extra: 未宣言のフィールドを禁止
+    schema_field_name: フィールド名
+    schema_required: 必須
+    schema_enum: 列挙値（カンマ区切り・空可）
+    schema_no_fields: まだフィールドがありません。下のボタンで追加してください。
+    schema_dup: フィールド名が重複しています
+    schema_preserved: 以下はビジュアル編集できません。そのまま保持されます：
+    schema_form_hint: バックエンドが対応するキーワードのみ使用します（type / properties / required / enum / 範囲）。ネストしたオブジェクトや配列は JSON モードに切り替えてください。
+    err_schema_obj: paramsSchema は JSON オブジェクトである必要があります
   edges:
     title: エッジ
     new: エッジを追加

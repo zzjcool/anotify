@@ -1127,6 +1127,18 @@ caps:
     create_failed: 'Create failed: '
     err_name: Please enter a capability name
     err_schema: paramsSchema is not valid JSON
+    schema_mode_form: Form
+    schema_mode_json: JSON
+    schema_add_field: Add field
+    schema_no_extra: Disallow undeclared fields
+    schema_field_name: Field name
+    schema_required: Required
+    schema_enum: Enum values, comma separated (optional)
+    schema_no_fields: No fields yet. Add one below.
+    schema_dup: Duplicate field name
+    schema_preserved: 'These cannot be edited visually and will be kept as-is:'
+    schema_form_hint: Only uses keywords the backend supports (type / properties / required / enum / ranges). Switch to JSON for nested objects and arrays.
+    err_schema_obj: paramsSchema must be a JSON object
   edges:
     title: Edges
     new: New edge
