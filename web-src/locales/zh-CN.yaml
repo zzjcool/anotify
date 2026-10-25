@@ -1081,6 +1081,13 @@ events:
   filter:
     trace: Trace ID
     apply: 筛选
+    source: 源
+    all_sources: 全部源
+    node: 节点
+    all_nodes: 全部节点
+    active: 生效中
+    clear: 清除筛选
+    empty: 当前筛选条件下没有事件。
   chain:
     title: 任务链
     empty: 这条 trace 下没有任务（可能在第一步就被剪枝了）。
@@ -1092,6 +1099,10 @@ events:
     tree: 树
     not_started: 还没开始执行
     running: 进行中
+  group:
+    other: 未归类
+    count: '{n} 条'
+    more: 展开其余 {n} 条
 caps:
   title: 能力与出口表
   subtitle: 能力是"做什么"（不含"怎么做"）；出口表决定了事件进来后往哪走。

@@ -1081,6 +1081,13 @@ events:
   filter:
     trace: Trace ID
     apply: Filtrar
+    source: Fuente
+    all_sources: Todas las fuentes
+    node: Nodo
+    all_nodes: Todos los nodos
+    active: Activo
+    clear: Borrar filtros
+    empty: Ningún evento coincide con los filtros.
   chain:
     title: Cadena de tareas
     empty: No hay tareas en esta traza (puede haberse podado en el primer paso).
@@ -1092,6 +1099,10 @@ events:
     tree: Árbol
     not_started: Aún no iniciado
     running: en curso
+  group:
+    other: Sin clasificar
+    count: '{n} eventos'
+    more: Mostrar {n} más
 caps:
   title: Capacidades y aristas
   subtitle: Una capacidad dice QUÉ hacer (nunca CÓMO); la tabla de aristas decide a dónde va un evento.

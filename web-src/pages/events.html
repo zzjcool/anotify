@@ -80,6 +80,24 @@
         margin-left: 0.35rem;
       }
 
+      /* 事件按源分组：组头是源名 + 类型 + 计数，组内是事件卡 */
+      .ev-group {
+        margin-bottom: 1.25rem;
+      }
+      .ev-group:last-child {
+        margin-bottom: 0;
+      }
+      .ev-group-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0 0.15rem 0.4rem;
+        margin-bottom: 0.5rem;
+        border-bottom: 1px solid var(--line);
+      }
+
       /* ---------- trace / span 瀑布图 ----------
        *
        * 为什么纯 CSS 就够，不需要图库：
@@ -283,22 +301,44 @@
 
         <!-- 筛选 -->
         <div class="card rounded-2xl p-4">
-          <div class="flex flex-wrap items-center gap-3">
-            <label class="text-xs text-zinc-400" for="ev-trace">{{t "events.filter.trace"}}</label>
-            <input
-              id="ev-trace"
-              class="input mono w-64 text-xs"
-              placeholder="trace_..."
-              onkeydown="if(event.key==='Enter')loadAll()"
-            />
+          <div class="flex flex-wrap items-end gap-3">
+            <!-- 每个 label+控件包一层：否则 label 和 select 是各自的 flex 项，
+                 窄屏时会被拆到两行，看起来像标签和控件没关系 -->
+            <div class="flex flex-col gap-1">
+              <label class="text-[11px] text-zinc-400" for="ev-source">{{t "events.filter.source"}}</label>
+              <select id="ev-source" class="input w-48 text-xs" onchange="loadAll()">
+                <option value="">{{t "events.filter.all_sources"}}</option>
+              </select>
+            </div>
+
+            <div class="flex flex-col gap-1">
+              <label class="text-[11px] text-zinc-400" for="ev-node">{{t "events.filter.node"}}</label>
+              <select id="ev-node" class="input w-48 text-xs" onchange="loadAll()">
+                <option value="">{{t "events.filter.all_nodes"}}</option>
+              </select>
+            </div>
+
+            <div class="flex flex-col gap-1">
+              <label class="text-[11px] text-zinc-400" for="ev-trace">{{t "events.filter.trace"}}</label>
+              <input
+                id="ev-trace"
+                class="input mono w-48 text-xs"
+                placeholder="trace_..."
+                onkeydown="if(event.key==='Enter')loadAll()"
+              />
+            </div>
+
             <button
               onclick="loadAll()"
-              class="btn-primary rounded-lg px-3 py-1.5 text-xs"
+              class="btn-primary rounded-lg px-3 py-2 text-xs"
             >
               {{t "events.filter.apply"}}
             </button>
             <span id="ev-summary" class="ml-auto text-xs text-zinc-500"></span>
           </div>
+          <!-- 生效中的过滤条件（来自 URL 参数时尤其需要提示，否则用户不知道
+               自己为什么只看到一部分事件） -->
+          <div id="ev-active" class="mt-2 hidden flex-wrap items-center gap-2 text-[11px]"></div>
         </div>
 
         <!-- 事件列表 -->
@@ -413,10 +453,155 @@
         return n;
       }
 
+      // init 先拉源和节点（用于筛选下拉和分组），再拉事件。
+      //
+      // 顺序有依赖：分组要知道"哪些 source 是已知的源"，
+      // 否则所有事件都会落到「未归类」。
+      async function init() {
+        const f = readUrlFilters();
+
+        const [srcData, nodeData] = await Promise.all([
+          fetchApi(API + "/sources").catch(() => null),
+          fetchApi(API + "/nodes").catch(() => null),
+        ]);
+        SOURCES = (srcData && srcData.sources) || [];
+        NODES = (nodeData && nodeData.nodes) || [];
+
+        fillSelects();
+        if (f.source) document.getElementById("ev-source").value = f.source;
+        if (f.node) document.getElementById("ev-node").value = f.node;
+        if (f.trace) document.getElementById("ev-trace").value = f.trace;
+        // URL 里指定的源可能已不存在（被删了），此时 select.value 设不上，
+        // 会回落成"全部源"——不报错，但记住这一点免得以后困惑。
+
+        await loadAll();
+      }
+
       // ==================== 渲染 ====================
+
+      // ==================== 源 / 节点 筛选 ====================
+      //
+      // 事件本身只有 `source`（字符串）和 `traceId`，**没有** sourceId / nodeId：
+      //
+      //   event ──派发──▶ task ──分配给──▶ node
+      //
+      // 所以按源筛选 = 用源的名字匹配 event.source
+      //   （Trigger.Fire 写的是源名，见 internal/source/source.go:99；
+      //     源名在 org 内 UNIQUE，够用）
+      // 按节点筛选 = 先查该节点的任务拿 traceId 集合，再用集合过滤事件。
+      //   后端已支持 /v1/tasks?nodeId=（console_handlers.go:96）。
+
+      let SOURCES = [];
+      let NODES = [];
+      let nodeTraceIds = null; // null = 未按节点筛选；Set = 该节点相关的 trace
+
+      // readUrlFilters 从 URL 读初始筛选条件。
+      //
+      // 从「源」页 / 「节点」页跳过来时带 ?source= / ?node=，
+      // 用 URL 承载的好处是可分享、刷新不丢。
+      function readUrlFilters() {
+        const q = new URLSearchParams(location.search);
+        return {
+          source: q.get("source") || "",
+          node: q.get("node") || "",
+          trace: q.get("traceId") || "",
+        };
+      }
+
+      // fillSelects 填两个下拉：源（按名字）和节点（按名字）
+      function fillSelects() {
+        const srcSel = document.getElementById("ev-source");
+        const nodeSel = document.getElementById("ev-node");
+
+        const curSrc = srcSel.value;
+        srcSel.replaceChildren(new Option(t("events.filter.all_sources", "全部源"), ""));
+        for (const s of SOURCES) {
+          srcSel.appendChild(new Option(s.name, s.name));
+        }
+        if (curSrc) srcSel.value = curSrc;
+
+        const curNode = nodeSel.value;
+        nodeSel.replaceChildren(new Option(t("events.filter.all_nodes", "全部节点"), ""));
+        for (const n of NODES) {
+          nodeSel.appendChild(new Option(n.name, n.id));
+        }
+        if (curNode) nodeSel.value = curNode;
+      }
+
+      // renderActiveFilters 显示当前生效的过滤条件 + 一键清除。
+      //
+      // 为什么需要：从别处带参数跳进来时，用户看到"只有 3 条事件"会以为
+      // 数据丢了。把过滤条件显式摆出来，并提供清除按钮。
+      function renderActiveFilters() {
+        const box = document.getElementById("ev-active");
+        const src = document.getElementById("ev-source").value;
+        const nodeSel = document.getElementById("ev-node");
+        const nodeId = nodeSel.value;
+        const trace = document.getElementById("ev-trace").value.trim();
+
+        const chips = [];
+        if (src) chips.push([t("events.filter.source", "源") + ": " + src, "source"]);
+        if (nodeId) {
+          const n = NODES.find((x) => x.id === nodeId);
+          chips.push([t("events.filter.node", "节点") + ": " + (n ? n.name : nodeId), "node"]);
+        }
+        if (trace) chips.push(["trace: " + trace, "trace"]);
+
+        box.replaceChildren();
+        if (!chips.length) {
+          box.classList.add("hidden");
+          box.classList.remove("flex");
+          return;
+        }
+        box.classList.remove("hidden");
+        box.classList.add("flex");
+        box.appendChild(el("span", "text-zinc-500", t("events.filter.active", "生效中") + ":"));
+
+        for (const [label] of chips) {
+          box.appendChild(el("span", "prune-chip", label));
+        }
+        const clear = el(
+          "button",
+          "btn-ghost rounded px-2 py-0.5 text-[11px]",
+          t("events.filter.clear", "清除筛选"),
+        );
+        clear.addEventListener("click", () => {
+          document.getElementById("ev-source").value = "";
+          nodeSel.value = "";
+          document.getElementById("ev-trace").value = "";
+          nodeTraceIds = null;
+          // 清掉 URL 参数，否则刷新又回来了
+          history.replaceState(null, "", location.pathname);
+          // 只刷新事件列表：源/节点列表没变，没必要重拉
+          loadAll();
+        });
+        box.appendChild(clear);
+      }
+
+      // ensureNodeTraces 按节点查任务，拿到该节点处理过的 trace 集合。
+      //
+      // 一次点击要打两个请求（tasks 再 events），所以结果缓存到 nodeTraceIds，
+      // 同一个节点连续操作不重复拉。
+      async function ensureNodeTraces(nodeId) {
+        if (!nodeId) {
+          nodeTraceIds = null;
+          return;
+        }
+        const data = await fetchApi(
+          API + "/tasks?nodeId=" + encodeURIComponent(nodeId) + "&limit=200",
+        );
+        const tasks = (data && data.tasks) || [];
+        nodeTraceIds = new Set(tasks.map((x) => x.traceId).filter(Boolean));
+      }
 
       async function loadAll() {
         const trace = document.getElementById("ev-trace").value.trim();
+        const nodeId = document.getElementById("ev-node").value;
+        try {
+          await ensureNodeTraces(nodeId);
+        } catch (e) {
+          nodeTraceIds = null;
+        }
         const qs = trace ? "?traceId=" + encodeURIComponent(trace) : "";
         // 走**控制台**端点（会话 Cookie 鉴权）。
         // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
@@ -454,9 +639,110 @@
           return;
         }
 
-        for (const e of EVENTS) {
-          list.appendChild(eventCard(e));
+        // 按源分组展示。
+        //
+        // 为什么要分组而不是平铺：用户对"谁触发了我"的感知是**按源**的
+        // （"今晚的定时任务跑了吗""GitHub 那边有动静吗"），而不是
+        // "最近 20 条事件按时间排"。平铺列表里同一源的事件会散落在各处。
+        const srcFilter = document.getElementById("ev-source").value;
+
+        // 按节点筛选：用该节点的任务 trace 集合过滤
+        let visible = EVENTS;
+        if (nodeTraceIds) {
+          visible = visible.filter((e) => nodeTraceIds.has(e.traceId));
         }
+        if (srcFilter) {
+          visible = visible.filter((e) => e.source === srcFilter);
+        }
+
+        if (!visible.length) {
+          list.appendChild(
+            el(
+              "div",
+              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+              t("events.filter.empty", "当前筛选条件下没有事件。"),
+            ),
+          );
+          renderActiveFilters();
+          return;
+        }
+
+        // 分组：已知源名 → 该源的事件；剩下的是「未归类」
+        const bySource = new Map();
+        const knownNames = new Set(SOURCES.map((x) => x.name));
+        for (const e of visible) {
+          const key = knownNames.has(e.source) ? e.source : "__other__";
+          if (!bySource.has(key)) bySource.set(key, []);
+          bySource.get(key).push(e);
+        }
+
+        // 已知源按"最近一次触发"倒序，未归类永远排最后
+        const groups = [...bySource.keys()]
+          .filter((k) => k !== "__other__")
+          .sort((a, b) => {
+            const ta = Math.max(...bySource.get(a).map((e) => e.createdAt || 0));
+            const tb = Math.max(...bySource.get(b).map((e) => e.createdAt || 0));
+            return tb - ta;
+          });
+        if (bySource.has("__other__")) groups.push("__other__");
+
+        for (const key of groups) {
+          const evs = bySource.get(key);
+          const isOther = key === "__other__";
+          const srcObj = isOther ? null : SOURCES.find((x) => x.name === key);
+
+          const group = el("div", "ev-group");
+
+          // 组头
+          const head = el("div", "ev-group-head");
+          const title = el("div", "flex flex-wrap items-center gap-2 min-w-0");
+          title.appendChild(
+            el("span", "text-[13px] text-zinc-200", isOther ? t("events.group.other", "未归类") : key),
+          );
+          if (srcObj) {
+            title.appendChild(el("span", "out-chip", srcObj.kind));
+            if (srcObj.enabled === false) {
+              title.appendChild(el("span", "prune-chip", t("sources.disabled", "已停用")));
+            }
+          }
+          head.appendChild(title);
+
+          const meta = el("div", "text-[11px] text-zinc-500 whitespace-nowrap");
+          const latest = Math.max(...evs.map((e) => e.createdAt || 0));
+          meta.textContent =
+            t("events.group.count", "{n} 条").replace("{n}", evs.length) +
+            " · " +
+            fmtTime(latest);
+          head.appendChild(meta);
+          group.appendChild(head);
+
+          // 组内事件（默认最多 5 条，多的折叠）
+          const PAGE = 5;
+          const shown = evs.slice(0, PAGE);
+          for (const e of shown) group.appendChild(eventCard(e));
+
+          if (evs.length > PAGE) {
+            const more = el(
+              "button",
+              "btn-ghost mt-1 rounded px-2 py-1 text-[11px]",
+              t("events.group.more", "展开其余 {n} 条").replace("{n}", evs.length - PAGE),
+            );
+            more.addEventListener("click", () => {
+              // 插在 more 按钮**之前**（也就是 group 内的末尾），
+              // 不能插到 group 后面——那会让这些卡片跑到分组外面去，
+              // 视觉上脱离所属的源。
+              for (let i = PAGE; i < evs.length; i++) {
+                group.insertBefore(eventCard(evs[i]), more);
+              }
+              more.remove();
+            });
+            group.appendChild(more);
+          }
+
+          list.appendChild(group);
+        }
+
+        renderActiveFilters();
       }
 
       // eventCard 渲染一条事件。
@@ -832,6 +1118,6 @@
 
       // 不需要显式 requireAuth：fetchApi 走 Anotify.api，
       // 未登录时它自己会把用户送到 login.html?next=events.html。
-      document.addEventListener("DOMContentLoaded", loadAll);
+      document.addEventListener("DOMContentLoaded", init);
     </script>
 {{end}}

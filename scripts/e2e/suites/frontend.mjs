@@ -1018,6 +1018,68 @@ main().catch(async (e) => {
 // 逐个确认 mock 有对应实现（返回 501 = 未实现）。
 // ---------------------------------------------------------------------------
 
+// checkEventsFilter 验证事件流按源分组 + 按源/节点筛选 + URL 参数。
+//
+// 三个需求（#89/#94）合在一起测，因为它们改的是同一个筛选区：
+//   ① 事件按源分组（组头显示源名 + 数量）
+//   ② 按源 / 按节点筛选
+//   ③ 从别的页面带 ?source= / ?node= 跳过来能落地即生效
+async function checkEventsFilter(page, base) {
+	const r = await page.evaluate(() => {
+		const groups = Array.from(document.querySelectorAll(".ev-group")).map((g) => ({
+			head: g.querySelector(".ev-group-head")?.textContent?.replace(/\s+/g, " ").trim() || "",
+			cards: g.querySelectorAll(".card").length,
+		}));
+		return {
+			groups,
+			srcOptions: Array.from(document.querySelectorAll("#ev-source option")).map(
+				(o) => o.textContent,
+			),
+			nodeOptions: Array.from(document.querySelectorAll("#ev-node option")).map(
+				(o) => o.textContent,
+			),
+		};
+	});
+
+	H.check("事件按源分组渲染", r.groups.length >= 2, `groups=${r.groups.length}`);
+	H.check(
+		"组头显示数量",
+		r.groups.every((g) => /\d+\s*条|\d+\s*events/.test(g.head)),
+		r.groups.map((g) => g.head).join(" | ").slice(0, 160),
+	);
+	H.check(
+		"有「未归类」组（source 对不上任何源的事件不丢）",
+		r.groups.some((g) => /未归类|Uncategorized/.test(g.head)),
+		r.groups.map((g) => g.head).join(" | ").slice(0, 160),
+	);
+	H.check("源下拉有选项", r.srcOptions.length >= 2, r.srcOptions.join(","));
+	H.check("节点下拉有选项", r.nodeOptions.length >= 2, r.nodeOptions.join(","));
+
+	// 带 ?source= 跳转
+	const srcName = r.srcOptions.find((x) => x && !/全部|All/.test(x)) || "";
+	if (srcName) {
+		await page.goto(base + "/events.html?source=" + encodeURIComponent(srcName), {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await page.waitForTimeout(1800);
+		const after = await page.evaluate(() => ({
+			selected: document.getElementById("ev-source").value,
+			active: document.getElementById("ev-active")?.textContent?.replace(/\s+/g, " ").trim() || "",
+			groups: Array.from(document.querySelectorAll(".ev-group-head")).map((g) =>
+				g.textContent.replace(/\s+/g, " ").trim(),
+			),
+		}));
+		H.check("?source= 跳转后下拉自动选中", after.selected === srcName, after.selected);
+		H.check("生效中的过滤条件有提示", /生效中|Active/.test(after.active), after.active);
+		H.check(
+			"?source= 后只剩该源的组",
+			after.groups.length === 1 && after.groups[0].includes(srcName),
+			after.groups.join(" | "),
+		);
+	}
+}
+
 // checkWaterfall 在 mock 预览里验证 trace/span 瀑布图。
 //
 // 关键断言点都是实测踩过的坑：
@@ -1028,7 +1090,9 @@ main().catch(async (e) => {
 async function checkWaterfall(page) {
 	// 找任务最多的那条事件（扇出的那条）
 	const picked = await page.evaluate(() => {
-		const cards = Array.from(document.querySelectorAll("#ev-list > div"));
+		// 注意：事件现在按源分组，卡片在 .ev-group 里面，不在 #ev-list 的直接子级。
+		// 用 .card 选真正的可点击事件卡（点 .ev-group 不会触发 showChain）。
+		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
 		const target =
 			cards.find((c) => c.textContent.includes("pull_request.opened")) || cards[0];
 		if (!target) return null;
@@ -1268,7 +1332,12 @@ async function runMockCoverage() {
 		await page.waitForTimeout(1200);
 		// 流向图的形状断言放在带 mock 数据的 sources.html 上
 		if (p === "sources.html") await checkFlowChart(page);
-		if (p === "events.html") await checkWaterfall(page);
+		if (p === "events.html") {
+			await checkEventsFilter(page, base);
+			await page.goto(`${base}/events.html`, { waitUntil: "load", timeout: 20000 });
+			await page.waitForTimeout(1500);
+			await checkWaterfall(page);
+		}
 		await page.close();
 	}
 

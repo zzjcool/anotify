@@ -1081,6 +1081,13 @@ events:
   filter:
     trace: Trace ID
     apply: 絞り込む
+    source: ソース
+    all_sources: すべてのソース
+    node: ノード
+    all_nodes: すべてのノード
+    active: 適用中
+    clear: フィルタ解除
+    empty: 現在のフィルタに一致するイベントはありません。
   chain:
     title: タスクチェーン
     empty: このトレースにタスクはありません（最初のステップで剪定された可能性があります）。
@@ -1092,6 +1099,10 @@ events:
     tree: ツリー
     not_started: まだ実行されていません
     running: 実行中
+  group:
+    other: 未分類
+    count: '{n} 件'
+    more: 残り {n} 件を表示
 caps:
   title: ケイパビリティとエッジ
   subtitle: ケイパビリティは「何をするか」だけを表し（「どうやるか」は含みません）、エッジ表がイベントの次の行き先を決めます。
