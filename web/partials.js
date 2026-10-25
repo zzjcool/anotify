@@ -114,22 +114,25 @@
 				{
 					id: "capabilities",
 					labelKey: "common.nav.capabilities",
-					fallback: "能力与出口",
+					fallback: "能力",
 					href: "capabilities.html",
 					icon: "keys",
+				},
+				{
+					// 出口（边）从能力页拆出来了：能力是"能干什么"（节点代码声明，
+					// 低频变动），边是"什么出口接到哪里"（用户控制台配，高频试错）。
+					// 两者心智对象不同，出口表的规模也长得快得多。
+					id: "edges",
+					labelKey: "common.nav.edges",
+					fallback: "出口",
+					href: "edges.html",
+					icon: "overview",
 				},
 				{
 					id: "nodes",
 					labelKey: "common.nav.nodes",
 					fallback: "节点",
 					href: "nodes.html",
-					icon: "receivers",
-				},
-				{
-					id: "receivers",
-					labelKey: "common.nav.receivers",
-					fallback: "通知接收",
-					href: "receivers.html",
 					icon: "receivers",
 				},
 				{

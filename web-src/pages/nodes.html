@@ -119,6 +119,17 @@ anotify node run --token &lt;token-from-step-1&gt;</code></pre>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
       const API = "/v1";
 
+      // 挂载「侧栏 + 顶栏」布局。
+      //
+      // 这一步不是可选的：不调 mountLayout 的话 #page-main 不会被装进布局，
+      // 页面能渲染内容但没有侧边栏，用户点不到别的页。active 要和 NAV 里的
+      // item.id 对齐（"nodes"），侧栏才会高亮当前项。
+      Anotify.mountLayout({
+        active: "nodes",
+        title: t("nodes.title", "节点"),
+        subtitle: t("nodes.subtitle", "接活的机器"),
+      });
+
       let NODES = [];
 
       function toast(msg) {

@@ -5,7 +5,7 @@ common:
   nav:
     overview: Resumen
     events: Flujo de eventos
-    capabilities: Capacidades y aristas
+    capabilities: Capacidades
     nodes: Nodos
     receivers: Destinatarios
     keys: API Keys
@@ -21,6 +21,7 @@ common:
     admin_section: Admin
     admin: Consola Admin
     sources: Fuentes
+    edges: Salidas
   lang:
     label: Idioma
     switcher_label: Cambiar idioma
@@ -1104,8 +1105,8 @@ events:
     count: '{n} eventos'
     more: Mostrar {n} más
 caps:
-  title: Capacidades y aristas
-  subtitle: Una capacidad dice QUÉ hacer (nunca CÓMO); la tabla de aristas decide a dónde va un evento.
+  title: Capacidades
+  subtitle: Una capacidad es "qué hacer" (no "cómo"). Las aristas — a dónde van los eventos — tienen su propia página.
   new: Definir capacidad
   loading: Cargando capacidades…
   empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
@@ -1144,6 +1145,9 @@ caps:
     create_failed: 'Error al crear: '
     err_incomplete: Elige origen, salida y destino
     no_ports: (esta capacidad no tiene salidas)
+    moved_title: Las aristas tienen su propia página
+    moved_desc: Una capacidad responde qué puede hacer; una arista responde a dónde va después. Las aristas crecen rápido con el abanico y necesitan búsqueda y agrupación, por eso tienen su propia página.
+    moved_link: Abrir aristas
 nodes:
   title: Nodos
   subtitle: Los ejecutores. Un nodo sabe cómo ejecutar una capacidad; el hub solo le dice qué hacer.
@@ -1253,3 +1257,33 @@ sources:
     no_target: Esta fuente no tiene capacidades de salida.
     unconnected: (sin conectar)
   view_events: Ver eventos
+edges:
+  title: Salidas
+  subtitle: Qué salida lleva a dónde
+  intro: Una capacidad responde «qué puede hacer»; una arista responde «a dónde va después». Una arista = una salida conectada a una capacidad posterior. La misma salida puede tener varias aristas (abanico) y el evento se despacha a todas.
+  refresh: Actualizar
+  new: Nueva arista
+  search: Buscar
+  search_hint: Nombre de capacidad o salida
+  filter_cap: Por capacidad
+  all_caps: Todas las capacidades
+  count: '{n} aristas'
+  port_count: '{n} salidas'
+  from: Desde capacidad
+  port: Salida
+  port_hint: La salida debe ser una de las declaradas en outputs
+  port_hint_origin: Las capacidades de origen aceptan cualquier tipo de evento — escríbelo directamente, p. ej. pull_request.opened
+  port_hint_end: Esta capacidad no declara salidas (terminal). Se puede crear la arista pero nunca se despachará.
+  to: Hacia capacidad
+  cancel: Cancelar
+  save: Guardar
+  remove: Eliminar
+  missing: Salidas sin destino
+  empty: 'La lista de aristas está vacía: los eventos no tienen a dónde ir.'
+  nomatch: Ninguna arista coincide.
+  created: Arista creada
+  removed: Arista eliminada
+  err_port: La salida es obligatoria
+  err_self: Una capacidad no puede conectarse a sí misma
+  err_create: Error al crear
+  err_remove: Error al eliminar

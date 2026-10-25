@@ -5,7 +5,7 @@ common:
   nav:
     overview: 总览
     events: 事件流
-    capabilities: 能力与出口
+    capabilities: 能力
     nodes: 节点
     receivers: 通知接收
     keys: API Keys
@@ -21,6 +21,7 @@ common:
     admin_section: 管理
     admin: 管理后台
     sources: 源
+    edges: 出口
   lang:
     label: 语言
     switcher_label: 切换语言
@@ -1104,8 +1105,8 @@ events:
     count: '{n} 条'
     more: 展开其余 {n} 条
 caps:
-  title: 能力与出口表
-  subtitle: 能力是"做什么"（不含"怎么做"）；出口表决定了事件进来后往哪走。
+  title: 能力
+  subtitle: 能力是"做什么"（不含"怎么做"）。出口（事件进来后往哪走）已独立成页。
   new: 定义能力
   loading: 正在加载能力…
   empty: 还没有能力。定义一个，节点才能声明它。
@@ -1144,6 +1145,9 @@ caps:
     create_failed: 创建失败：
     err_incomplete: 请选择来源、出口和目标
     no_ports: （该能力没有出口）
+    moved_title: 出口表已独立成页
+    moved_desc: 能力是「能干什么」，出口是「干完之后往哪走」。出口的规模会随扇出快速增长，需要搜索和按能力分组，所以单独一页。
+    moved_link: 去出口表
 nodes:
   title: 节点
   subtitle: 执行者。节点自己知道怎么跑某个能力，中枢只告诉它"做什么"。
@@ -1253,3 +1257,33 @@ sources:
     no_target: 这个源没有出口能力。
     unconnected: （未接下游）
   view_events: 查看事件
+edges:
+  title: 出口
+  subtitle: 什么出口接到哪里
+  intro: 能力回答「能干什么」，出口回答「干完之后往哪走」。一条边 = 一个出口接到一个下游能力。同一个出口可以接多条边（扇出），事件会同时派给它们。
+  refresh: 刷新
+  new: 新建出口
+  search: 搜索
+  search_hint: 能力名或出口名
+  filter_cap: 按能力
+  all_caps: 全部能力
+  count: '{n} 条边'
+  port_count: '{n} 个出口'
+  from: 从哪个能力
+  port: 哪个出口
+  port_hint: 出口必须是该能力声明的 outputs 之一
+  port_hint_origin: 起点能力的出口是任意事件类型，直接填事件类型名，如 pull_request.opened
+  port_hint_end: 这个能力没有声明出口（终端能力）。填一个事件类型也能建边，但派发时不会被走到。
+  to: 接到哪个能力
+  cancel: 取消
+  save: 保存
+  remove: 删除
+  missing: 未接下游的出口
+  empty: 出口表为空：事件进来后没有任何出口可走。
+  nomatch: 没有匹配的边。
+  created: 边已创建
+  removed: 边已删除
+  err_port: 请填写出口名
+  err_self: 不能让能力连到自己
+  err_create: 创建失败
+  err_remove: 删除失败

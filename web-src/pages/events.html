@@ -366,6 +366,17 @@
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
 
       const API = "/v1"; // 各页面各自声明（与 keys.html 一致，无全局常量）
+
+      // 挂载「侧栏 + 顶栏」布局。
+      //
+      // 这一步不是可选的：不调 mountLayout 的话 #page-main 不会被装进布局，
+      // 页面能渲染内容但没有侧边栏，用户点不到别的页。active 要和 NAV 里的
+      // item.id 对齐（"events"），侧栏才会高亮当前项。
+      Anotify.mountLayout({
+        active: "events",
+        title: t("events.title", "事件流"),
+        subtitle: t("events.subtitle", "外部世界的变化 → 任务链 → 结果"),
+      });
       let EVENTS = [];
 
       // 九态 → 圆点颜色 / 中文标签。

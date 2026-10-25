@@ -5,7 +5,7 @@ common:
   nav:
     overview: 概要
     events: イベントストリーム
-    capabilities: ケイパビリティとエッジ
+    capabilities: ケイパビリティ
     nodes: ノード
     receivers: 通知先
     keys: API Keys
@@ -21,6 +21,7 @@ common:
     admin_section: 管理
     admin: 管理コンソール
     sources: ソース
+    edges: 出口
   lang:
     label: 言語
     switcher_label: 言語を切り替え
@@ -1104,8 +1105,8 @@ events:
     count: '{n} 件'
     more: 残り {n} 件を表示
 caps:
-  title: ケイパビリティとエッジ
-  subtitle: ケイパビリティは「何をするか」だけを表し（「どうやるか」は含みません）、エッジ表がイベントの次の行き先を決めます。
+  title: ケイパビリティ
+  subtitle: ケイパビリティは「何をするか」（「どうやるか」ではない）。出口（イベントの行き先）は独立したページになりました。
   new: ケイパビリティを定義
   loading: ケイパビリティを読み込み中…
   empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
@@ -1144,6 +1145,9 @@ caps:
     create_failed: '作成に失敗: '
     err_incomplete: 起点・出口・終点を選択してください
     no_ports: （このケイパビリティには出口がありません）
+    moved_title: 出口表は独立したページに移動しました
+    moved_desc: ケイパビリティは「何ができるか」、出口は「終わった後どこへ行くか」。ファンアウトで出口は急増し、検索やグループ化が必要になるため別ページにしました。
+    moved_link: 出口表を開く
 nodes:
   title: ノード
   subtitle: 実行者です。ノードはケイパビリティの実行方法を知っており、ハブは「何をするか」だけを伝えます。
@@ -1253,3 +1257,33 @@ sources:
     no_target: このソースには出口ケイパビリティがありません。
     unconnected: （下流未接続）
   view_events: イベントを見る
+edges:
+  title: 出口
+  subtitle: どの出口がどこへ繋がるか
+  intro: ケイパビリティは「何ができるか」、出口は「終わった後どこへ行くか」を表します。1本の辺 = 1つの出口を1つの下流ケイパビリティへ接続。同じ出口に複数の辺が張れ（ファンアウト）、イベントはそれら全てへ同時に届きます。
+  refresh: 更新
+  new: 出口を作成
+  search: 検索
+  search_hint: ケイパビリティ名または出口名
+  filter_cap: ケイパビリティで絞る
+  all_caps: すべてのケイパビリティ
+  count: '{n} 本の辺'
+  port_count: '{n} 個の出口'
+  from: 接続元
+  port: 出口
+  port_hint: 出口はそのケイパビリティが宣言した outputs のいずれか
+  port_hint_origin: '起点ケイパビリティの出口は任意のイベント型です。型名を直接入力してください（例: pull_request.opened）'
+  port_hint_end: このケイパビリティは出口を宣言していません（終端）。辺は作れますが派遣されません。
+  to: 接続先
+  cancel: キャンセル
+  save: 保存
+  remove: 削除
+  missing: 下流が未接続の出口
+  empty: 出口表が空です：イベントが来ても行き先がありません。
+  nomatch: 一致する辺がありません。
+  created: 辺を作成しました
+  removed: 辺を削除しました
+  err_port: 出口名を入力してください
+  err_self: 自分自身には接続できません
+  err_create: 作成に失敗しました
+  err_remove: 削除に失敗しました
