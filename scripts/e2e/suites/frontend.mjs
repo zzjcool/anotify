@@ -547,6 +547,59 @@ async function main() {
 			`最终 ${page.url()}`,
 		);
 
+		// ---- 事件流页面：点事件卡 → 任务链必须真的渲染出来 ----
+		//
+		// 这条断言是回归防线。曾经发生过：events.html 的 renderNode 引用了
+		// 未定义的 STATUS_CLASS / STATUS_LABELS，点击事件卡时抛
+		// ReferenceError —— ev-chain 先被 replaceChildren() 清空，然后第一个
+		// 节点就炸了。用户看到的是「任务链」标题下一个**空框**，页面没有任何
+		// 报错提示，看起来像"数据没加载出来"。
+		//
+		// 所以这里不能只断言「页面能打开」，必须点进去看链里有没有内容。
+		{
+			const page2 = await ctx.newPage();
+			const chainErrors = [];
+			page2.on("pageerror", (e) => chainErrors.push(String(e)));
+			await page2.goto(server.base + "/events.html", {
+				waitUntil: "load",
+				timeout: 15000,
+			});
+			await page2.waitForTimeout(1200);
+
+			const clicked = await page2.evaluate(() => {
+				const c = document.querySelector(".cursor-pointer");
+				if (!c) return false;
+				c.click();
+				return true;
+			});
+			H.check("事件流页面有可点击的事件卡", clicked === true);
+			await page2.waitForTimeout(1500);
+
+			const chain = await page2.evaluate(() => {
+				const box = document.getElementById("ev-chain");
+				return {
+					n: box ? box.children.length : -1,
+					text: (box?.textContent || "").replace(/\s+/g, " ").slice(0, 120),
+				};
+			});
+			H.check(
+				"点事件卡后任务链渲染出节点（非空框）",
+				chain.n > 0,
+				`ev-chain 子节点=${chain.n} text=${JSON.stringify(chain.text)}`,
+			);
+			H.check(
+				"渲染任务链没有 JS 报错",
+				chainErrors.length === 0,
+				chainErrors.slice(0, 2).join("; "),
+			);
+			H.check(
+				"任务链里出现了能力名",
+				/frontend\.(src|work)/.test(chain.text),
+				JSON.stringify(chain.text),
+			);
+			await page2.close();
+		}
+
 		// demo-badge 应隐藏（有真实数据，非演示模式）
 		const badgeHidden = await page.evaluate(() => {
 			const b = document.getElementById("demo-badge");

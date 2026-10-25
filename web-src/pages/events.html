@@ -170,6 +170,37 @@
 
       const API = "/v1"; // 各页面各自声明（与 keys.html 一致，无全局常量）
       let EVENTS = [];
+
+      // 九态 → 圆点颜色 / 中文标签。
+      //
+      // 这两个表以前**根本没定义**（renderNode 直接引用了 STATUS_CLASS 和
+      // STATUS_LABELS），于是渲染任务链时抛 ReferenceError：ev-chain 先被
+      // replaceChildren() 清空，然后第一条节点就炸了 —— 用户看到的是
+      // 「任务链」标题下面一个空框，没有任何报错提示。
+      //
+      // 口径与 message.html 的 TASK_STATE_META 保持一致（同九个状态）。
+      const STATUS_CLASS = {
+        pending: "pending",
+        assigned: "assigned",
+        acked: "acked",
+        running: "running",
+        succeeded: "succeeded",
+        failed: "failed",
+        canceled: "canceled",
+        abandoned: "abandoned",
+        lease_expired: "lease_expired",
+      };
+      const STATUS_LABELS = {
+        pending: "排队中",
+        assigned: "已派发",
+        acked: "已接单",
+        running: "执行中",
+        succeeded: "成功",
+        failed: "失败",
+        canceled: "已取消",
+        abandoned: "已放弃",
+        lease_expired: "租约过期",
+      };
       let demoMode = false;
 
       function toast(msg) {
@@ -308,13 +339,21 @@
       //
       // 按 parentTaskId 组装成树：根任务 parent=null，子任务挂在父下面。
       // 这样扇出（一个出口多条边）与链式派生都能直接看出来。
+      // chainSeq：防止连点产生乱序覆盖。
+      //
+      // 快速点 A、B 两张卡片时，若 A 的响应比 B 晚到，A 会把 B 的结果盖掉，
+      // 用户看到的是自己没点的那条链。用递增序号认领最新一次请求即可。
+      let chainSeq = 0;
+
       async function showChain(traceId) {
+        const seq = ++chainSeq;
         const detail = document.getElementById("ev-detail");
         const chain = document.getElementById("ev-chain");
         detail.classList.remove("hidden");
         chain.replaceChildren(el("div", "text-sm text-zinc-500", t("events.loading", "加载中…")));
 
         const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(traceId));
+        if (seq !== chainSeq) return; // 已有更新的点击，丢弃这次结果
         const tasks = (data && data.tasks) || [];
 
         chain.replaceChildren();
