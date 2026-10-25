@@ -1268,6 +1268,8 @@ sources:
     noedge: no downstream
     no_target: This source has no target capabilities.
     unconnected: (not connected)
+    truncated: Graph too large ({n} nodes); showing the first {m}.
+    nolib: Graph library failed to load; cannot render the flow.
   view_events: View events
 edges:
   title: Edges

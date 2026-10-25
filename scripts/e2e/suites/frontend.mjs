@@ -1431,80 +1431,70 @@ async function checkWaterfall(page) {
 // （preview.ready）。真实环境不一定有这些形状，那样的断言会假失败。
 // mock 的数据形状是固定的，正好拿来锁住渲染逻辑。
 async function checkFlowChart(page) {
-			// ---- 下游流向图：只读预览，能画出环路与未接出口 ----
-			//
-			// 这块的核心是"从源出发把所有可能路线画出来"。含环的图最容易出错
-			// （无限递归 / 重复展开），所以断言要盯住：
-			//   ① 环路被识别成「回到 X（环路）」而不是死循环
-			//   ② 同一子树不重复展开两遍
-			//   ③ 多个出口（多个根）各自完整展开，不互相挤掉
-			//   ④ 声明了但没接边的出口要显式标出来
-				const flow = await page.evaluate(() => {
-					const wraps = Array.from(document.querySelectorAll(".flow-wrap"));
-					return wraps.map((w) => {
-						// 展开它
-						const toggle = w.querySelector(".flow-toggle");
-						toggle.click();
-						const body = w.querySelector(".flow-body");
-						return {
-							title: toggle.textContent.replace(/\s+/g, " ").trim(),
-							rows: Array.from(body.querySelectorAll(".flow-node")).map((el) => ({
-								text: el.textContent.replace(/\s+/g, " ").trim(),
-								back: !!el.querySelector(".flow-back"),
-								dead: !!el.querySelector(".flow-dead"),
-								terminal: !!el.querySelector(".flow-terminal"),
-								port: el.querySelector(".flow-port")?.textContent?.trim() || "",
-							})),
-							seps: body.querySelectorAll(".flow-root-sep").length,
-						};
-					});
-				});
+	// 从缩进文本换成 Cytoscape 图形库后（#88），断言改成看"图上有什么"：
+	// 节点、边、环路边、未接下游的伪节点、以及只读性。
+	//
+	// 为什么必须在这里测而不是在真实 server 上：断言依赖 demo 数据里的
+	// **环路**（deploy-preview → apply-fix → deploy-preview）和**未接出口**
+	// （preview.ready）。真实环境不一定有这些形状，那样的断言会假失败。
+	const found = await page.evaluate(() => {
+		const toggles = Array.from(document.querySelectorAll(".flow-toggle"));
+		if (!toggles.length) return 0;
+		toggles[0].click();
+		return toggles.length;
+	});
+	H.check("源卡片有流向图入口", found > 0, `count=${found}`);
+	if (!found) return;
 
-				H.check("每个源都有流向图", flow.length > 0, `共 ${flow.length} 个`);
+	await page.waitForTimeout(1800);
 
-				const nightly = flow.find((f) => /每日|nightly|每晚/.test(f.title)) || flow[0];
-				H.check(
-					"流向图列出了下游能力",
-					nightly.rows.some((r) => /deploy-preview|apply-fix/.test(r.text)),
-					nightly.rows.map((r) => r.text).join(" | ").slice(0, 160),
-				);
-				H.check(
-					"环路被标成「回到 X」而不是无限递归",
-					nightly.rows.some((r) => r.back && /deploy-preview/.test(r.text)),
-					nightly.rows.filter((r) => r.back).map((r) => r.text).join(" | ").slice(0, 160),
-				);
-				H.check(
-					"同一子树不重复展开（出现「已在上方展开」）",
-					nightly.rows.some((r) => /已在上方展开|expanded above/.test(r.text)),
-					nightly.rows.map((r) => r.text).join(" | ").slice(0, 200),
-				);
-				H.check(
-					"出口名标在每条支路上",
-					nightly.rows.filter((r) => r.port).length >= 2,
-					nightly.rows.filter((r) => r.port).map((r) => r.port).join(","),
-				);
-				H.check(
-					"声明了但没接边的出口被标出",
-					flow.some((f) => f.rows.some((r) => r.dead && r.port === "preview.ready")),
-					flow.flatMap((f) => f.rows.filter((r) => r.dead).map((r) => r.port)).join(","),
-				);
+	const g = await page.evaluate(() => {
+		const host = document.querySelector(".flow-canvas");
+		if (!host) return { hasCanvas: false };
+		const cy = host._cy;
+		if (!cy) return { hasCanvas: true, hasCy: false };
+		return {
+			hasCanvas: true,
+			hasCy: true,
+			nodeCount: cy.nodes().length,
+			edgeCount: cy.edges().length,
+			labels: cy.nodes().map((n) => n.data("label")),
+			ports: cy.edges().map((e) => e.data("port")).filter(Boolean),
+			hasCycleEdge: cy.edges().some((e) => e.data("cycle") === true),
+			hasDeadPort: cy.nodes().some((n) => n.data("kind") === "deadport"),
+			rootCount: cy.nodes().filter((n) => n.data("root") === true).length,
+			grabbable: cy.nodes().some((n) => n.grabbable()),
+			rootOpacity: (() => {
+				const root = cy.nodes().filter((n) => n.data("root") === true).first();
+				return root.length ? Number(root.style("background-opacity")) : -1;
+			})(),
+		};
+	});
 
-				// 多出口的源：两个根之间要有分隔线，否则会被看成同一棵树
-				const multi = flow.find((f) => f.seps > 0);
-				H.check(
-					"多出口的源在根之间有分隔",
-					!!multi,
-					flow.map((f) => `${f.title.slice(0, 12)}=seps${f.seps}`).join(" "),
-				);
-
-				// 终止能力（没有下游）要能区分于"未接下游"
-				H.check(
-					"没有下游的能力标为「没有下游」/「终点」",
-					flow.some((f) =>
-						f.rows.some((r) => r.dead && /没有下游|no downstream/.test(r.text)),
-					),
-					"",
-				);
+	H.check(
+		"流向图用图形库渲染（canvas + cy 实例）",
+		g.hasCanvas === true && g.hasCy === true,
+		JSON.stringify({ canvas: g.hasCanvas, cy: g.hasCy }),
+	);
+	H.check("图上有节点", (g.nodeCount || 0) >= 2, `nodes=${g.nodeCount}`);
+	H.check("图上有边", (g.edgeCount || 0) >= 2, `edges=${g.edgeCount}`);
+	H.check(
+		"节点显示能力名@版本",
+		(g.labels || []).some((x) => /@\d/.test(x)),
+		(g.labels || []).join(","),
+	);
+	H.check("边上标了出口名", (g.ports || []).length >= 2, (g.ports || []).join(","));
+	H.check("环路用专门的边标记画出来", g.hasCycleEdge === true);
+	H.check("「未接下游」在图上可见", g.hasDeadPort === true);
+	H.check("只有 1 个根节点高亮", g.rootCount === 1, `roots=${g.rootCount}`);
+	// 这条盯的是 Cytoscape 的 rgba() 陷阱：background-color 只接受纯色，
+	// 写 rgba(…, 0.12) 会被当成纯紫，整个节点变成实心色块。
+	H.check(
+		"根节点背景是半透明（不是实心色块）",
+		g.rootOpacity > 0 && g.rootOpacity < 1,
+		`opacity=${g.rootOpacity}`,
+	);
+	H.check("节点不可拖动（只读）", g.grabbable === false);
 }
 
 // runMockCoverage 检查 web/mock.js 覆盖了页面用到的全部接口。

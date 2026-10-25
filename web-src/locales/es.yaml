@@ -1268,6 +1268,8 @@ sources:
     noedge: sin destino
     no_target: Esta fuente no tiene capacidades de salida.
     unconnected: (sin conectar)
+    truncated: Grafo demasiado grande ({n} nodos); mostrando los primeros {m}.
+    nolib: No se pudo cargar la librería de grafos.
   view_events: Ver eventos
 edges:
   title: Salidas

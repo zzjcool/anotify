@@ -1268,6 +1268,8 @@ sources:
     noedge: 没有下游
     no_target: 这个源没有出口能力。
     unconnected: （未接下游）
+    truncated: 图太大（{n} 个节点），只显示前 {m} 个。
+    nolib: 图库未能加载，无法渲染流向图。
   view_events: 查看事件
 edges:
   title: 出口
