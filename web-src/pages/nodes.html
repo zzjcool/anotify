@@ -215,7 +215,17 @@ anotify node run --token &lt;token-from-step-1&gt;</code></pre>
         const capList = n.capabilities || [];
         if (capList.length) {
           for (const c of capList) {
-            caps.appendChild(el("span", "out-chip", c));
+            // c 是 {id, name, version} 对象，不是字符串。
+            // 以前直接 el("span", "out-chip", c) —— el() 内部会 String(c)，
+            // 于是整页的能力标签全渲染成 "[object Object]"。
+            //
+            // 这里同时兼容后端可能只给字符串的形式（旧接口 / 手写数据），
+            // 免得为了一个显示问题在前后端之间来回改契约。
+            const label =
+              typeof c === "string"
+                ? c
+                : (c.name || c.id || "?") + (c.version != null ? "@" + c.version : "");
+            caps.appendChild(el("span", "out-chip", label));
           }
         } else {
           caps.appendChild(

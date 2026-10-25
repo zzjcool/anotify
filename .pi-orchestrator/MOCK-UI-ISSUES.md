@@ -25,6 +25,7 @@ make mock-local  # 只本机
 | [#91](https://github.com/zzjcool/anotify/issues/91) | 「通知接收」不该是独立一级页面——它只是 notify.phone 这个 end 能力的实现 | 待做 |
 | [#92](https://github.com/zzjcool/anotify/issues/92) | 定义能力的 paramsSchema 支持可视化编辑（可与 JSON 模式切换） | 待做 |
 | [#93](https://github.com/zzjcool/anotify/issues/93) | 「出口表」拆成独立页面（能力和边是两个不同的东西） | 待做 |
+| [#94](https://github.com/zzjcool/anotify/issues/94) | 节点页显示能力详情 + 事件流按节点过滤 + 节点跳转到事件流 | 待做 |
 | — | 等待用户逐条补充 | — |
 
 ### 已完成（本阶段）
@@ -32,6 +33,7 @@ make mock-local  # 只本机
 | 问题 | 修复 |
 |---|---|
 | 新建源弹窗背景透明 | `.card` 的 `--surface-1` 是 `rgba(…,0.02)`，弹窗直接复用导致背后列表透出来。改用 `--panel-modal`（不透明 `#0b0b12`），同步修了 capabilities.html 两处 |
+| 节点页能力标签全渲染成 `[object Object]` | `el("span","out-chip", c)` 里 c 是 `{id,name,version}` 对象，`el()` 内部 `String(c)`。改成拼 `name@version`，并兼容字符串形式 |
 | 出口能力列表混入 `kind=origin` 的能力 | 过滤条件原本是 `kind==="origin" && source==="builtin"`，漏掉了「无节点声明 → 推导为 origin」的自定义能力。改成只看 kind |
 
 ## 已发现问题（细节）
@@ -148,6 +150,19 @@ pattern / minimum / maximum / minProperties / maxProperties
 
 待定：图视图现在就做还是先只做列表；能不能在图上手绘连线；
 与 #88 共用同一个图库。
+
+### #94 节点页能力详情 + 事件流按节点过滤 + 跳转
+
+三条一起提的：节点页显示能力详情；事件流按节点过滤；节点页跳到事件流。
+
+**已核实（不用新接口）**：
+- `GET /v1/tasks?nodeId=<id>` **后端已支持**（`console_handlers.go:96`）
+- 响应里 `nodeId` 字段完整（实测有）
+
+所以前端流程：任务按 nodeId 查 → 取 traceId 去重 → 用 trace 过滤事件。
+遗留风险：任务超 limit 会漏更早的事件（数据量小时可接受）。
+
+与 #89（事件流按源分组）是同一页面的改动，**两件一起做**别改两遍筛选区。
 
 ## 待定问题（等用户逐条确认）
 
