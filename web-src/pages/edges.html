@@ -1,0 +1,461 @@
+{{define "title"}}{{t "edges.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* 出口（边）列表：一行一条边，左边 from —port→ to，右边删除 */
+      .edge-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 1rem;
+        align-items: center;
+      }
+      .edge-flow {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        min-width: 0;
+        font-size: 0.78rem;
+      }
+      .edge-cap {
+        color: var(--text);
+        white-space: nowrap;
+      }
+      /* 出口名是这条边的身份：它是封闭集合里的一个值（不变量 I2），
+         必须比两端的能力名更醒目 */
+      .edge-port {
+        font-family: var(--mono, monospace);
+        font-size: 0.7rem;
+        color: var(--accent);
+        background: rgba(139, 139, 253, 0.1);
+        border: 1px solid rgba(139, 139, 253, 0.25);
+        border-radius: 6px;
+        padding: 0.05rem 0.4rem;
+        white-space: nowrap;
+      }
+      .edge-arrow {
+        color: var(--faint);
+        font-size: 0.7rem;
+      }
+      /* 按 from 能力分组：同一能力的多个出口聚在一起 */
+      .edge-group {
+        margin-bottom: 1.1rem;
+      }
+      .edge-group-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0 0.15rem 0.4rem;
+        margin-bottom: 0.45rem;
+        border-bottom: 1px solid var(--line);
+        font-size: 0.75rem;
+      }
+      /* 该能力声明了但没接边的出口：配置遗漏，要显眼 */
+      .edge-missing {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.3rem 0.4rem;
+        border-radius: 8px;
+        background: rgba(251, 191, 36, 0.06);
+        border: 1px dashed rgba(251, 191, 36, 0.3);
+        font-size: 0.7rem;
+        color: #fbbf24;
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-6xl space-y-8">
+    <div class="reveal visible">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 class="font-display text-3xl text-white">{{t "edges.title"}}</h2>
+          <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+            {{t "edges.subtitle"}}
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <button id="btn-refresh" class="btn-ghost rounded-xl px-4 py-2 text-sm">
+            {{t "edges.refresh"}}
+          </button>
+          <button id="btn-new" class="btn-primary rounded-xl px-4 py-2 text-sm">
+            {{t "edges.new"}}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 说明：为什么边和能力是两件事 -->
+    <div class="card rounded-2xl p-5">
+      <p class="text-sm leading-relaxed text-zinc-400">
+        {{t "edges.intro"}}
+      </p>
+    </div>
+
+    <!-- 筛选 -->
+    <div class="card rounded-2xl p-4">
+      <div class="flex flex-wrap items-end gap-3">
+        <div class="flex flex-col gap-1">
+          <label class="text-[11px] text-zinc-400" for="edge-search">{{t "edges.search"}}</label>
+          <input
+            id="edge-search"
+            class="input w-56 text-xs"
+            placeholder='{{t "edges.search_hint"}}'
+          />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-[11px] text-zinc-400" for="edge-filter-cap">{{t "edges.filter_cap"}}</label>
+          <select id="edge-filter-cap" class="input w-48 text-xs">
+            <option value="">{{t "edges.all_caps"}}</option>
+          </select>
+        </div>
+        <span id="edges-summary" class="ml-auto text-xs text-zinc-500"></span>
+      </div>
+    </div>
+
+    <!-- 边列表（按 from 能力分组） -->
+    <div id="edges-list" class="reveal visible"></div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- 新建边弹层 -->
+  <div id="edge-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+       style="background: rgba(0, 0, 0, 0.62)">
+    <div class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden !bg-[var(--panel-modal)] p-6 shadow-2xl">
+      <div class="mb-4 flex items-center justify-between">
+        <h3 class="font-display text-lg text-white">{{t "edges.new"}}</h3>
+        <button id="modal-close" class="btn-ghost rounded-lg px-2 py-1 text-sm">✕</button>
+      </div>
+
+      <div class="flex-1 space-y-4 overflow-y-auto">
+        <div>
+          <label class="mb-1 block text-xs text-zinc-400" for="f-from">{{t "edges.from"}}</label>
+          <select id="f-from" class="input w-full text-sm"></select>
+        </div>
+        <div>
+          <label class="mb-1 block text-xs text-zinc-400" for="f-port">{{t "edges.port"}}</label>
+          <select id="f-port" class="input w-full text-sm"></select>
+          <!-- 起点能力没有预置出口（出口就是"任意事件类型"），改为自由输入 -->
+          <input id="f-port-input" class="input hidden w-full text-sm" type="text"
+                 placeholder="pull_request.opened" />
+          <p class="mt-1 text-[11px] text-zinc-500" id="f-port-hint">{{t "edges.port_hint"}}</p>
+        </div>
+        <div>
+          <label class="mb-1 block text-xs text-zinc-400" for="f-to">{{t "edges.to"}}</label>
+          <select id="f-to" class="input w-full text-sm"></select>
+        </div>
+      </div>
+
+      <div class="mt-6 flex justify-end gap-2">
+        <button id="modal-cancel" class="btn-ghost rounded-lg px-4 py-2 text-sm">
+          {{t "edges.cancel"}}
+        </button>
+        <button id="modal-save" class="btn-primary rounded-lg px-4 py-2 text-sm">
+          {{t "edges.save"}}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+
+      // 各页面各自声明，无全局常量（与 sources.html / keys.html 一致）
+      const API = "/v1";
+
+      Anotify.mountLayout({
+        active: "edges",
+        title: t("edges.title", "出口"),
+        subtitle: t("edges.subtitle", "什么出口接到哪里"),
+      });
+
+      let EDGES = [];
+      let CAPS = [];
+
+      function toast(msg) {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        setTimeout(() => el.classList.remove("show"), 2600);
+      }
+
+      function el(tag, className, text) {
+        const n = document.createElement(tag);
+        if (className) n.className = className;
+        if (text != null) n.textContent = String(text);
+        return n;
+      }
+
+      function code(text, className) {
+        const n = el("code", "mono " + (className || ""));
+        n.textContent = String(text == null ? "" : text);
+        return n;
+      }
+
+      function capByID(id) {
+        return CAPS.find((c) => c.id === id) || null;
+      }
+
+      function capName(id) {
+        const c = capByID(id);
+        return c ? c.name + (c.version != null ? "@" + c.version : "") : id;
+      }
+
+      // ---------- 加载 ----------
+      async function loadAll() {
+        const [edgesData, capsData] = await Promise.all([
+          Anotify.api(API + "/edges", { demo: null }).catch(() => null),
+          Anotify.api(API + "/capabilities", { demo: null }).catch(() => null),
+        ]);
+        EDGES = (edgesData && edgesData.edges) || [];
+        CAPS = (capsData && capsData.capabilities) || [];
+        fillCapFilter();
+        render();
+      }
+
+      function fillCapFilter() {
+        const sel = document.getElementById("edge-filter-cap");
+        const cur = sel.value;
+        sel.replaceChildren(new Option(t("edges.all_caps", "全部能力"), ""));
+        for (const c of CAPS) {
+          sel.appendChild(new Option(c.name + "@" + c.version, c.id));
+        }
+        if (cur) sel.value = cur;
+      }
+
+      // ---------- 渲染 ----------
+      function render() {
+        const list = document.getElementById("edges-list");
+        const q = document.getElementById("edge-search").value.trim().toLowerCase();
+        const capFilter = document.getElementById("edge-filter-cap").value;
+
+        list.replaceChildren();
+
+        // 按 from 能力分组
+        const groups = new Map();
+        for (const e of EDGES) {
+          if (!groups.has(e.fromCapability)) groups.set(e.fromCapability, []);
+          groups.get(e.fromCapability).push(e);
+        }
+
+        // 过滤
+        let shown = 0;
+        const visibleGroups = [...groups.entries()].filter(([fromId, evs]) => {
+          if (capFilter && fromId !== capFilter) return false;
+          if (!q) return true;
+          return evs.some(
+            (e) =>
+              capName(e.fromCapability).toLowerCase().includes(q) ||
+              capName(e.toCapability).toLowerCase().includes(q) ||
+              String(e.fromPort).toLowerCase().includes(q),
+          );
+        });
+
+        for (const [fromId, evs] of visibleGroups) {
+          const filtered = !q
+            ? evs
+            : evs.filter(
+                (e) =>
+                  capName(e.fromCapability).toLowerCase().includes(q) ||
+                  capName(e.toCapability).toLowerCase().includes(q) ||
+                  String(e.fromPort).toLowerCase().includes(q),
+              );
+          shown += filtered.length;
+
+          const group = el("div", "edge-group");
+
+          // 组头：from 能力 + 出口数
+          const head = el("div", "edge-group-head");
+          const title = el("div", "flex flex-wrap items-center gap-2 min-w-0");
+          title.appendChild(el("span", "text-zinc-200", capName(fromId)));
+          const ports = new Set(filtered.map((e) => e.fromPort));
+          title.appendChild(
+            el("span", "text-[11px] text-zinc-500",
+              t("edges.port_count", "{n} 个出口").replace("{n}", ports.size)),
+          );
+          head.appendChild(title);
+          group.appendChild(head);
+
+          // 每条边一行
+          for (const e of filtered) {
+            const card = el("div", "card rounded-xl px-4 py-2.5 mb-2");
+            const row = el("div", "edge-row");
+
+            const flow = el("div", "edge-flow");
+            flow.appendChild(el("span", "edge-cap", capName(e.fromCapability)));
+            flow.appendChild(el("span", "edge-arrow", "—"));
+            flow.appendChild(el("span", "edge-port", e.fromPort));
+            flow.appendChild(el("span", "edge-arrow", "→"));
+            flow.appendChild(el("span", "edge-cap", capName(e.toCapability)));
+            row.appendChild(flow);
+
+            const del = el("button", "btn-ghost rounded px-2 py-1 text-[11px] text-red-400",
+              t("edges.remove", "删除"));
+            del.addEventListener("click", () => removeEdge(e, del));
+            row.appendChild(del);
+
+            card.appendChild(row);
+            group.appendChild(card);
+          }
+
+          // 该能力声明了但一条边都没接的出口 —— 配置遗漏
+          const cap = capByID(fromId);
+          const connected = new Set(evs.map((e) => e.fromPort));
+          const missing = ((cap && cap.outputs) || []).filter(
+            (p) => p && !connected.has(p),
+          );
+          if (missing.length && !q && !capFilter) {
+            const warn = el("div", "edge-missing");
+            warn.appendChild(el("span", "", t("edges.missing", "未接下游的出口")));
+            for (const p of missing) warn.appendChild(el("span", "edge-port", p));
+            group.appendChild(warn);
+          }
+
+          list.appendChild(group);
+        }
+
+        const summary = document.getElementById("edges-summary");
+        summary.textContent = t("edges.count", "{n} 条边").replace("{n}", shown);
+
+        if (!shown) {
+          list.appendChild(
+            el("div", "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+              EDGES.length
+                ? t("edges.nomatch", "没有匹配的边。")
+                : t("edges.empty", "出口表为空：事件进来后没有任何出口可走。")),
+          );
+        }
+      }
+
+      // ---------- 新建 ----------
+      function openModal() {
+        const modal = document.getElementById("edge-modal");
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+
+        const fromSel = document.getElementById("f-from");
+        const toSel = document.getElementById("f-to");
+        fromSel.replaceChildren();
+        toSel.replaceChildren();
+        for (const c of CAPS) {
+          const label = c.name + "@" + c.version;
+          fromSel.appendChild(new Option(label, c.id));
+          toSel.appendChild(new Option(label, c.id));
+        }
+        syncPorts();
+      }
+
+      function closeModal() {
+        const modal = document.getElementById("edge-modal");
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+      }
+
+      // syncPorts 根据 from 能力刷新出口下拉。
+      // 起点能力（builtin）没有预置出口 —— 它的出口就是"任意事件类型"，
+      // 所以改成自由输入（不变量 I2 的唯一例外）。
+      function syncPorts() {
+        const fromId = document.getElementById("f-from").value;
+        const cap = capByID(fromId);
+        const sel = document.getElementById("f-port");
+        const input = document.getElementById("f-port-input");
+        const hint = document.getElementById("f-port-hint");
+
+        const outputs = (cap && cap.outputs) || [];
+        const isOrigin = cap && cap.source === "builtin";
+
+        if (isOrigin || !outputs.length) {
+          sel.classList.add("hidden");
+          input.classList.remove("hidden");
+          if (isOrigin) {
+            hint.textContent = t("edges.port_hint_origin",
+              "起点能力的出口是任意事件类型，直接填事件类型名，如 pull_request.opened");
+          } else {
+            hint.textContent = t("edges.port_hint_end",
+              "这个能力没有声明出口（终端能力）。填一个事件类型也能建边，但派发时不会被走到。");
+          }
+        } else {
+          input.classList.add("hidden");
+          sel.classList.remove("hidden");
+          sel.replaceChildren();
+          for (const p of outputs) sel.appendChild(new Option(p, p));
+          hint.textContent = t("edges.port_hint", "出口必须是该能力声明的 outputs 之一");
+        }
+      }
+
+      async function createEdge() {
+        const fromId = document.getElementById("f-from").value;
+        const toId = document.getElementById("f-to").value;
+        const cap = capByID(fromId);
+        const isOrigin = cap && cap.source === "builtin";
+        const outputs = (cap && cap.outputs) || [];
+        const port =
+          isOrigin || !outputs.length
+            ? document.getElementById("f-port-input").value.trim()
+            : document.getElementById("f-port").value;
+
+        if (!port) {
+          toast(t("edges.err_port", "请填写出口名"));
+          return;
+        }
+        if (fromId === toId) {
+          toast(t("edges.err_self", "不能让能力连到自己"));
+          return;
+        }
+
+        const btn = document.getElementById("modal-save");
+        btn.disabled = true;
+        try {
+          await Anotify.api(API + "/edges", {
+            method: "POST",
+            body: { fromCapability: fromId, fromPort: port, toCapability: toId },
+            demo: null,
+          });
+          closeModal();
+          toast(t("edges.created", "边已创建"));
+          await loadAll();
+        } catch (e) {
+          toast(t("edges.err_create", "创建失败") + ": " + (e.detail || e.message || e));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function removeEdge(e, btn) {
+        btn.disabled = true;
+        try {
+          const qs =
+            "?fromCapability=" + encodeURIComponent(e.fromCapability) +
+            "&fromPort=" + encodeURIComponent(e.fromPort) +
+            "&toCapability=" + encodeURIComponent(e.toCapability);
+          await Anotify.api(API + "/edges" + qs, { method: "DELETE", demo: null });
+          toast(t("edges.removed", "边已删除"));
+          await loadAll();
+        } catch (err) {
+          toast(t("edges.err_remove", "删除失败") + ": " + (err.detail || err.message || err));
+          btn.disabled = false;
+        }
+      }
+
+      // ---------- 事件绑定 ----------
+      document.getElementById("btn-new").addEventListener("click", openModal);
+      document.getElementById("btn-refresh").addEventListener("click", loadAll);
+      document.getElementById("modal-close").addEventListener("click", closeModal);
+      document.getElementById("modal-cancel").addEventListener("click", closeModal);
+      document.getElementById("modal-save").addEventListener("click", createEdge);
+      document.getElementById("f-from").addEventListener("change", syncPorts);
+      document.getElementById("edge-search").addEventListener("input", render);
+      document.getElementById("edge-filter-cap").addEventListener("change", render);
+
+      loadAll();
+    </script>
+{{end}}

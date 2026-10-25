@@ -32,6 +32,7 @@ const PAGES = [
 	"events.html",
 	"sources.html",
 	"capabilities.html",
+	"edges.html",
 	"nodes.html",
 ];
 const GUARDED = [
@@ -45,6 +46,7 @@ const GUARDED = [
 	"events.html",
 	"sources.html",
 	"capabilities.html",
+	"edges.html",
 	"nodes.html",
 ];
 const VIEWPORTS = [
@@ -1018,6 +1020,88 @@ main().catch(async (e) => {
 // 逐个确认 mock 有对应实现（返回 501 = 未实现）。
 // ---------------------------------------------------------------------------
 
+// checkEdgesPage 验证出口表已经独立成页（#93）。
+//
+// 核心断言：能力页不再有出口表、出口页有、两侧导航一致、
+// 并且"未接下游的出口"这种配置遗漏能显示出来。
+async function checkEdgesPage(page) {
+	// 1) 出口页能渲染分组和边
+	await page.goto(page.url().replace(/capabilities\.html.*$/, "edges.html"), {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	await page.waitForTimeout(1600);
+
+	const edges = await page.evaluate(() => ({
+		title: document.querySelector("h2")?.textContent?.trim() || "",
+		groups: Array.from(document.querySelectorAll(".edge-group-head")).length,
+		rows: Array.from(document.querySelectorAll(".edge-flow")).map((f) =>
+			f.textContent.replace(/\s+/g, " ").trim(),
+		),
+		ports: Array.from(document.querySelectorAll(".edge-port")).map((x) =>
+			x.textContent.trim(),
+		),
+		missing: Array.from(document.querySelectorAll(".edge-missing")).length,
+		summary: document.getElementById("edges-summary")?.textContent || "",
+		// 高亮 class 就是 "active"（见 partials.js: class: `side-link ${... ? "active" : ""}`）
+		navActive: Array.from(document.querySelectorAll("a.side-link")).some((a) => {
+			const last = a.lastChild;
+			const label =
+				last && last.nodeType === 3 ? last.textContent.trim() : a.textContent.trim();
+			return label === "出口" && a.classList.contains("active");
+		}),
+	}));
+
+	H.check("出口页标题正确", /出口|Edges/.test(edges.title), edges.title);
+	H.check("出口页按能力分组", edges.groups >= 2, `groups=${edges.groups}`);
+	H.check("出口页列出了边", edges.rows.length >= 3, `rows=${edges.rows.length}`);
+	H.check(
+		"每条边都标出了出口名",
+		edges.ports.length >= edges.rows.length,
+		`ports=${edges.ports.length} rows=${edges.rows.length}`,
+	);
+	H.check(
+		"边显示成 from —port→ to 形式",
+		edges.rows.some((r) => /—.*→/.test(r)),
+		edges.rows[0] || "",
+	);
+	H.check("有汇总计数", /\d+/.test(edges.summary), edges.summary);
+	H.check("侧栏「出口」高亮", edges.navActive === true);
+
+	// 2) 能力页不再有出口表（搬走了，只留引导链接）
+	await page.goto(page.url().replace(/edges\.html.*$/, "capabilities.html"), {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	await page.waitForTimeout(1600);
+	const caps = await page.evaluate(() => ({
+		hasEdgeList: !!document.getElementById("edges-list"),
+		hasMovedLink: Array.from(document.querySelectorAll("a")).some((a) =>
+			a.getAttribute("href") === "edges.html",
+		),
+		// a.side-link 里含 SVG 图标，textContent 会把图标里的文本也算进来。
+		// 取最后一个文本子节点才是标签文字。
+		navItems: Array.from(document.querySelectorAll("a.side-link"))
+			.map((a) => {
+				const last = a.lastChild;
+				return last && last.nodeType === 3 ? last.textContent.trim() : a.textContent.trim();
+			})
+			.filter((x) => ["能力", "出口", "能力与出口", "通知接收"].some((k) => x === k)),
+	}));
+	H.check("能力页不再有出口表", caps.hasEdgeList === false);
+	H.check("能力页有指向出口页的链接", caps.hasMovedLink === true);
+	H.check(
+		"导航里「能力与出口」已拆成「能力」+「出口」",
+		caps.navItems.includes("能力") && caps.navItems.includes("出口"),
+		caps.navItems.join(","),
+	);
+	H.check(
+		"导航里不再有「通知接收」",
+		!caps.navItems.includes("通知接收"),
+		caps.navItems.join(","),
+	);
+}
+
 // checkEventsFilter 验证事件流按源分组 + 按源/节点筛选 + URL 参数。
 //
 // 三个需求（#89/#94）合在一起测，因为它们改的是同一个筛选区：
@@ -1367,6 +1451,7 @@ async function runMockCoverage() {
 		await page.goto(`${base}/${p}`, { waitUntil: "load", timeout: 20000 });
 		await page.waitForTimeout(1200);
 		// 流向图的形状断言放在带 mock 数据的 sources.html 上
+		if (p === "capabilities.html") await checkEdgesPage(page);
 		if (p === "sources.html") await checkFlowChart(page);
 		if (p === "events.html") {
 			await checkEventsFilter(page, base);
