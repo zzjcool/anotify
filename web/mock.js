@@ -342,8 +342,11 @@
 				createdAt: t + 5, startedAt: t + 6, finishedAt: t + 6.4,
 				summary: "修复完成", out: "fixed",
 			});
+			// 交给 ci-runner：部署常跑在 CI 机器上，顺便让"按节点筛选"
+			// 在演示数据里看得出差异（全都同一个节点就分不出来）
 			const d = mkTask({
 				traceId, cap: deploy, parent: a.id, path: [analyze.id, deploy.id],
+				nodeId: state.nodes[1].id,
 				createdAt: t + 5, startedAt: t + 6, finishedAt: t + 18,
 				params: { env: "staging" }, summary: "预览环境已部署", out: "preview.ready",
 			});
@@ -403,6 +406,7 @@
 			});
 			state.tasks.push(mkTask({
 				traceId, cap: capByName("deploy-preview"),
+				nodeId: state.nodes[1].id,
 				createdAt: t, startedAt: t + 1, finishedAt: t + 1.4,
 				params: { env: "staging" }, summary: "已部署",
 			}));
@@ -539,6 +543,12 @@
 		}
 		if (ctx.query.get("status")) {
 			list = list.filter((t) => t.status === ctx.query.get("status"));
+		}
+		// nodeId 过滤：真实后端支持（console_handlers.go:96），
+		// mock 之前漏了 —— 事件流"按节点筛选"于是永远筛不出东西。
+		if (ctx.query.get("nodeId")) {
+			const nid = ctx.query.get("nodeId");
+			list = list.filter((t) => t.nodeId === nid);
 		}
 		const limit = Number(ctx.query.get("limit") || 50);
 		list.sort((a, b) => b.createdAt - a.createdAt);

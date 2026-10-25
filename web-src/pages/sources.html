@@ -807,6 +807,21 @@
         toggleBtn.addEventListener("click", () => toggleSource(s, toggleBtn));
         right.appendChild(toggleBtn);
 
+        // 跳到事件流，只看这个源的事件。
+        //
+        // 用源的**名字**当参数：事件表里存的是 event.source 字符串，
+        // 而 Trigger.Fire 写的正是源名（internal/source/source.go:99）。
+        // 用 id 的话对不上。
+        const evBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          t("sources.view_events", "查看事件"),
+        );
+        evBtn.addEventListener("click", () => {
+          location.href = "events.html?source=" + encodeURIComponent(s.name);
+        });
+        right.appendChild(evBtn);
+
         const editBtn = el(
           "button",
           "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",

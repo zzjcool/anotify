@@ -1171,6 +1171,7 @@ nodes:
     desc: 节点注册是运维动作（不是自助服务），所以要在服务器上执行。token 只在创建时返回一次。
     step1: 在服务器上注册节点（声明它能跑哪些能力）
     step2: 在节点机器上用 token 启动，它会用 WS 连回中枢
+  view_events: 查看事件
 sources:
   title: 源
   subtitle: 源是事件的入口：定时器到点、webhook 被调用、或者你手动点一下。它自己产生事件，再把事件派给你选好的能力。
@@ -1251,3 +1252,4 @@ sources:
     noedge: 没有下游
     no_target: 这个源没有出口能力。
     unconnected: （未接下游）
+  view_events: 查看事件

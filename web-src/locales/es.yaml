@@ -1171,6 +1171,7 @@ nodes:
     desc: El registro de nodos es una acción de operador (no autoservicio), así que ejecútala en el servidor. El token se devuelve una sola vez.
     step1: Registra el nodo en el servidor (declara qué capacidades puede ejecutar)
     step2: Arráncalo en la máquina del nodo con el token; se conecta de vuelta por WS
+  view_events: Ver eventos
 sources:
   title: Fuentes
   subtitle: 'Una fuente es la entrada de eventos: un temporizador se dispara, un webhook es llamado, o haces clic en ejecutar. Produce eventos y los despacha a las capacidades que elijas.'
@@ -1251,3 +1252,4 @@ sources:
     noedge: sin destino
     no_target: Esta fuente no tiene capacidades de salida.
     unconnected: (sin conectar)
+  view_events: Ver eventos

@@ -1055,6 +1055,42 @@ async function checkEventsFilter(page, base) {
 	H.check("源下拉有选项", r.srcOptions.length >= 2, r.srcOptions.join(","));
 	H.check("节点下拉有选项", r.nodeOptions.length >= 2, r.nodeOptions.join(","));
 
+	// 带 ?node= 跳转：不同节点应该看到**不同**的事件集合
+	//
+	// 这条断言的价值在于抓"过滤没生效"——如果 /v1/tasks 不支持 nodeId
+	// （mock 曾经漏了），两个节点会返回一模一样的列表，表面看没报错，
+	// 实际筛选是假的。
+	const nodeIds = await page.evaluate(() =>
+		Array.from(document.querySelectorAll("#ev-node option"))
+			.map((o) => o.value)
+			.filter(Boolean),
+	);
+	if (nodeIds.length >= 2) {
+		const seen = [];
+		for (const nid of nodeIds.slice(0, 2)) {
+			await page.goto(base + "/events.html?node=" + encodeURIComponent(nid), {
+				waitUntil: "load",
+				timeout: 20000,
+			});
+			await page.waitForTimeout(1800);
+			const got = await page.evaluate(() => ({
+				sel: document.getElementById("ev-node").value,
+				traces: Array.from(document.querySelectorAll("#ev-list .card")).map(
+					(c) => c.querySelector(".mono")?.textContent?.trim() || "",
+				),
+			}));
+			seen.push(got);
+			H.check(`?node= 跳转后下拉自动选中 (${nid})`, got.sel === nid, got.sel);
+		}
+		const a = seen[0].traces.join(",");
+		const b = seen[1].traces.join(",");
+		H.check(
+			"不同节点看到不同的事件集合（过滤真的生效了）",
+			a !== b,
+			`${a.slice(0, 60)} vs ${b.slice(0, 60)}`,
+		);
+	}
+
 	// 带 ?source= 跳转
 	const srcName = r.srcOptions.find((x) => x && !/全部|All/.test(x)) || "";
 	if (srcName) {
