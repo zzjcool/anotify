@@ -22,6 +22,7 @@ make mock-local  # 只本机
 | [#88](https://github.com/zzjcool/anotify/issues/88) | 源的下游流向图要用成熟图库做完整工作流图 | 待做 |
 | [#89](https://github.com/zzjcool/anotify/issues/89) | 事件流按源（触发器）分组展示最近事件 | 待做 |
 | [#90](https://github.com/zzjcool/anotify/issues/90) | 任务链用图展示（当前是缩进树） | 待做 |
+| [#91](https://github.com/zzjcool/anotify/issues/91) | 「通知接收」不该是独立一级页面——它只是 notify.phone 这个 end 能力的实现 | 待做 |
 | — | 等待用户逐条补充 | — |
 
 ### 已完成（本阶段）
@@ -92,6 +93,21 @@ mock 数据需要改：现在事件的 `source` 是 `github`/`cron` 这类原始
 | 数据 | 能力定义+边（静态） | 实际任务（运行态） |
 | 形状 | 可能含环 | 树（parentTaskId，无环） |
 | 语义 | 可能怎么走 | 实际怎么走的 |
+
+### #91 通知接收不该是独立页面
+
+`receivers.html` 现在占一级导航（管理组，节点和 API Keys 之间），
+内容是两个 tab：推送设备订阅 + WebSocket 在线连接。
+
+问题：这是 `notify.phone`（内置 end 能力，中枢执行）的**实现细节**，
+不是并列的一等概念。用户接了自己的 send-slack / send-email 后，
+notify.phone 只是可选的一个。
+
+期望：从一级导航移除，内容并入「能力与出口」页的 notify.phone 详情面板。
+退一步方案：保留页面但去掉导航项，从能力详情链过去。
+
+待定：receivers.html 的 URL 要不要保留兼容（有收藏/分享过）；
+文案 key 怎么处理；e2e 的 PAGES 列表要同步。
 
 ## 待定问题（等用户逐条确认）
 
