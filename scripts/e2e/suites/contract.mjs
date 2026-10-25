@@ -336,6 +336,78 @@ async function main() {
 		cycNode.conn.close();
 	}
 
+	// ============ #83 内置能力：notify.phone 由中枢执行 ============
+	// 验证「没有节点执行者的能力」也能在图里跑通：
+	// 建边 → 派发（跳过找节点）→ 中枢执行 → 任务进终态。
+	{
+		// notify.phone 由 EnsureOrgForUser 播种（内置能力），直接查是否就位
+		const capsResp = await H.req(server.base, "/v1/capabilities", { session });
+		const phone = (capsResp.json?.capabilities || []).find(
+			(n) => n.name === "notify.phone" && n.version === 1,
+		);
+		A(3, "notify.phone 作为内置能力已播种", !!phone, JSON.stringify(phone));
+		if (phone) {
+			A(3, "notify.phone 无出口（终端能力）", (phone.outputs || []).length === 0);
+			// kind 是推导量：没有节点声明 + 无出口 → origin（不是 end）
+			// end 的定义是「有节点声明且 outputs 全空」，notify.phone 没有节点声明。
+			A(3, "notify.phone 的 kind 已推导", !!phone.kind, phone.kind);
+		}
+
+		// 建一条边：某 origin 的出口 → notify.phone
+		const nOrigin = (await defineCapability("notice.src", ["fire"])).json.capability;
+		const nEdge = await addEdge(nOrigin, "fire", phone);
+		A(5, "可以给内置能力建入边", nEdge.status === 200, String(nEdge.status));
+
+		// 触发：payload 必须满足 notify.phone 的 params_schema（required: to + title），
+		// 否则会在第 ② 步被 param_schema 剪枝——那是正确行为，但不是本断言要验的东西。
+		//
+		// to 用当前组织成员（否则 foreign_user 剪枝）；这里用 devseed 建的 uid。
+		const nEv = await postEvent({
+			source: "notice.src",
+			type: "fire",
+			payload: { to: uid, title: "内置能力测试" },
+		});
+		A(3, "内置能力事件 200", nEv.status === 200, String(nEv.status));
+		const nPruned = (nEv.json?.pruned || []).map((p) => p.reason);
+		A(
+			3,
+			"内置能力不因「没有节点」被剪枝",
+			!nPruned.includes("no_node"),
+			JSON.stringify(nPruned),
+		);
+		A(
+			3,
+			"内置能力建出了任务",
+			(nEv.json?.tasks || []).length === 1,
+			JSON.stringify({
+				tasks: nEv.json?.tasks?.length,
+				pruned: nEv.json?.pruned,
+			}),
+		);
+
+		// 任务应被中枢执行器领取并跑完（VAPID 未配置 → notifier 为 nil → failed）
+		// 关键：**必须进终态**，不能卡在 running（中枢任务没有租约，卡住就永不回收）
+		const phoneTaskId = nEv.json?.tasks?.[0]?.id;
+		if (phoneTaskId) {
+			const deadline = Date.now() + 8000;
+			let st = null;
+			while (Date.now() < deadline) {
+				st = sqlQuery(`SELECT status, out, reported FROM tasks WHERE id = ?`, phoneTaskId)[0];
+				if (st && ["succeeded", "failed", "canceled", "abandoned"].includes(st.status)) break;
+				await new Promise((r) => setTimeout(r, 150));
+			}
+			A(
+				3,
+				"中枢任务进入终态（不卡在 running）",
+				st && ["succeeded", "failed", "canceled", "abandoned"].includes(st.status),
+				JSON.stringify(st),
+			);
+			// 中枢任务没有节点归属
+			const owner = sqlQuery(`SELECT node_id FROM tasks WHERE id = ?`, phoneTaskId)[0];
+			A(3, "中枢任务没有 node_id", owner && owner.node_id === null, JSON.stringify(owner));
+		}
+	}
+
 	// A9 租约接管：节点掉线后，任务被巡检回收并重派
 	{
 		const t = (await postEvent({ source: "c.origin", type: "go", payload: {} })).json?.tasks?.[0]?.id;

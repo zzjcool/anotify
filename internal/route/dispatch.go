@@ -178,6 +178,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		cap    *store.CapabilityVersion
 		params map[string]any
 		nodes  []string
+		// central 表示这个能力由**中枢自己执行**，不找节点。
+		// 典型是 notify.phone：没人会写一个"发推送节点"。
+		central bool
 	}
 	var candidates []candidate
 
@@ -213,6 +216,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		if pruned, rec := d.checkUserScoped(ctx, in.OrgID, capDef, in.Params); pruned {
 			rec.Port = in.Out // 留痕要有完整证据：哪条边、哪个出口
 			out.Pruned = append(out.Pruned, rec)
+			continue
+		}
+
+		// 内置中枢能力（如 notify.phone）：**跳过找节点**。
+		//
+		// 这类能力没有节点执行者——推送是中枢自己的能力。若照常走
+		// node_capabilities 查询必然是 0 行，于是 pruned/no_node，
+		// 推送永远发不出去。这是「内置能力」与「自定义能力」唯一的分岔点。
+		if bc, ok := store.IsBuiltinCapability(capDef.Name, capDef.Version); ok && bc.Central {
+			candidates = append(candidates, candidate{
+				cap: capDef, params: in.Params, central: true,
+			})
 			continue
 		}
 
@@ -275,8 +290,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 	}
 
 	published := make([]bool, len(tasks))
+	centralTasks := make([]*store.Task, 0)
 	for i, task := range tasks {
 		c := candidates[i]
+
+		// 中枢执行的候选：不挑节点、不占槽位、不设租约。
+		// 任务保持 pending，由中枢执行器（internal/executor）领取并推进状态机。
+		// 用 pending 而不是新状态：九态是契约定的，不能为内部实现加状态。
+		if c.central {
+			centralTasks = append(centralTasks, task)
+			continue
+		}
+
 		// 挑一台：粘性优先，否则负载最小
 		nodeID, stickySelector, err := d.pickNode(ctx, in, c.cap, c.nodes)
 		if err != nil {
