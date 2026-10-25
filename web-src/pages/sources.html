@@ -129,6 +129,14 @@
       .flow-toggle.open .chev {
         transform: rotate(90deg);
       }
+      /* 图容器：高度固定，否则 Cytoscape 拿不到可用高度会画成一条线 */
+      .flow-canvas {
+        width: 100%;
+        height: 340px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.012);
+      }
       .flow-body {
         margin-top: 0.5rem;
         font-family: var(--mono, monospace);
@@ -350,6 +358,10 @@
 {{end}}
 
 {{define "script"}}
+    <!-- 图渲染：本地 vendor（不依赖 CDN —— e2e 离线门禁会拦外网请求）。
+         cytoscape 是框架无关的图库，dagre 扩展负责分层排版（有向图自动布局）。 -->
+    <script src="/vendor/cytoscape.min.js"></script>
+    <script src="/vendor/cytoscape-dagre.min.js"></script>
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
       const API = "/v1";
@@ -528,98 +540,247 @@
         return (rootCapIds || []).map((id) => walkFromRoot(id));
       }
 
-      // renderFlowTree 把 buildFlow 的结果画成缩进的树
-      function renderFlowTree(nodes, depth) {
-        const box = el("div", depth === 0 ? "" : "flow-kids");
-        nodes.forEach((n, i) => {
-          // 多个根之间加一条细线：源有多个出口时，它们是**并列**的起点，
-          // 不加分隔会被看成同一棵树的一部分（截图里就误读过一次）
-          if (depth === 0 && nodes.length > 1 && i > 0) {
-            box.appendChild(el("div", "flow-root-sep"));
-          }
-          box.appendChild(renderFlowNode(n, depth));
-        });
-        return box;
-      }
-
-      function renderFlowNode(n, depth) {
-        const wrap = el("div", "");
-
-        const line = el("div", "flow-node");
-        const name = n.cap ? n.cap.name : n.capId;
-        const ver = n.cap && n.cap.version != null ? "@" + n.cap.version : "";
-
-        // 出口名放在能力名**前面**：它是分流发生的位置，先看到才知道
-        // "这条支路是从哪个出口下来的"
-        if (n.viaPort) {
-          line.appendChild(el("span", "flow-port", n.viaPort));
-        }
-
-        const capSpan = el(
-          "span",
-          "cap" + (depth === 0 ? " root" : ""),
-          name + ver,
-        );
-        line.appendChild(capSpan);
-
-        if (n.kind === "cycle") {
-          line.appendChild(
-            el(
-              "span",
-              "flow-back",
-              "↩ " + t("sources.flow.back", "回到 {n}（环路）").replace("{n}", name),
-            ),
-          );
-        } else if (n.kind === "seen") {
-          line.appendChild(
-            el(
-              "span",
-              "flow-back",
-              t("sources.flow.seen", "（已在上方展开）"),
-            ),
-          );
-        } else if (n.kind === "unknown") {
-          line.appendChild(
-            el("span", "flow-dead", t("sources.flow.missing", "（能力已删除）")),
-          );
-        } else if (n.kind === "dead") {
-          // 终端能力与"还没接下游"要区分：前者是正常的，后者是待配置
-          const isTerminal = n.cap && n.cap.kind === "end";
-          line.appendChild(
-            el(
-              "span",
-              isTerminal ? "flow-terminal" : "flow-dead",
-              isTerminal
-                ? t("sources.flow.terminal", "终点")
-                : t("sources.flow.noedge", "没有下游"),
-            ),
-          );
-        }
-
-        wrap.appendChild(line);
-        if (n.children && n.children.length) {
-          wrap.appendChild(renderFlowTree(n.children, depth + 1));
-        }
-        // 声明了但没接边的出口：画成"这条路走不通"
-        if (n.unconnected && n.unconnected.length) {
-          const kids = el("div", "flow-kids");
-          for (const port of n.unconnected) {
-            const row = el("div", "flow-node");
-            row.appendChild(el("span", "flow-port", port));
-            row.appendChild(
-              el("span", "flow-dead", t("sources.flow.unconnected", "（未接下游）")),
-            );
-            kids.appendChild(row);
-          }
-          wrap.appendChild(kids);
-        }
-        return wrap;
-      }
-
-      // renderFlow 是卡片底部那块：折叠头 + 树
+      // ---------- 流向图：Cytoscape 渲染 ----------
       //
-      // 默认折叠：一张卡片展开一棵树会把列表撑得很长，而多数时候用户
-      // 只想扫一眼有哪些源。想看流向再点开。
+      // 为什么用图库而不是自己画：
+      //   缩进文本表达不出"流向"这件事本身；而要画真正的图就需要
+      //   分层布局（dagre）+ 边路由 + 缩放拖拽，这些都是图库已经做好的。
+      //   自己写布局算法等于重造一遍 dagre，且很难处理环。
+      //
+      // 数据仍然是能力和边（不依赖运行态），所以它依然是"提前预览"。
+
+      // flowToElements 把 buildFlow 的树展开成 Cytoscape 的 nodes/edges。
+      //
+      // 关键点：
+      //   - 节点按"能力"去重（同一个能力在图上只有一个方块），
+      //     否则菱形汇聚时会画出好几个同名方块，看着像不同东西
+      //   - 边按 (fromPort, to) 去重
+      //   - 环上的边加 cycle 标记（红色虚线），这是缩进树给不了的信息
+      //   - "未接下游的出口"画成灰色虚线小节点，让配置遗漏在图上可见
+      function flowToElements(roots) {
+        const nodes = new Map(); // id → node data
+        const edges = new Map(); // key → edge data
+
+        function addNode(id, data) {
+          if (!nodes.has(id)) nodes.set(id, { data: { id, ...data } });
+        }
+
+        function addEdge(from, to, port, isCycle) {
+          const key = from + "|" + port + "|" + to;
+          if (edges.has(key)) {
+            if (isCycle) edges.get(key).data.cycle = true;
+            return key;
+          }
+          edges.set(key, {
+            data: { id: "e" + edges.size, source: from, target: to, port, cycle: !!isCycle },
+          });
+          return key;
+        }
+
+        // "未接下游"伪节点的 id 要稳定且不撞真实能力 id
+        const deadPortID = (capId, port) => "dead|" + capId + "|" + port;
+
+        (function walk(list, parentId) {
+          for (const n of list) {
+            const isRoot = parentId == null;
+            const unknown = n.kind === "unknown";
+            const label = unknown ? n.capId : n.cap.name + "@" + (n.cap.version ?? "?");
+
+            addNode(n.capId, {
+              label,
+              kind: unknown ? "unknown" : n.cap.kind || "pipe",
+              root: isRoot,
+              cycleNode: n.kind === "cycle",
+              // 环/已展开的节点用虚线边框：说明"这里不再往下走了"
+              terminal: n.kind === "dead" && n.cap && n.cap.kind === "end",
+            });
+
+            // 上一跳的边：parent → 这个节点，带着"从哪个出口下来的"
+            if (parentId != null) {
+              addEdge(parentId, n.capId, n.viaPort || "", n.kind === "cycle");
+            }
+
+            // 没接边的出口：画一个灰色终点伪节点 + 虚线边
+            for (const port of n.unconnected || []) {
+              const did = deadPortID(n.capId, port);
+              addNode(did, {
+                label: t("sources.flow.unconnected", "未接下游"),
+                kind: "deadport",
+                root: false,
+              });
+              addEdge(n.capId, did, port, false);
+            }
+
+            if (n.children && n.children.length) walk(n.children, n.capId);
+          }
+        })(roots, null);
+
+        return { nodes: [...nodes.values()], edges: [...edges.values()] };
+      }
+
+      // renderFlowGraph 真正画图。
+      //
+      // 用 dagre 布局（有向图分层），方向上下：事件的流向是"往下走"，
+      // 和页面阅读顺序一致。
+      function renderFlowGraph(container, roots) {
+        const { nodes, edges } = flowToElements(roots);
+        if (!nodes.length) {
+          container.appendChild(
+            el("div", "flow-empty", t("sources.flow.no_target", "这个源没有出口能力。")),
+          );
+          return;
+        }
+
+        // 上限保护：数据异常时不要画出几百个节点卡死浏览器
+        const LIMIT = 120;
+        const truncated = nodes.length > LIMIT;
+        const useNodes = nodes.slice(0, LIMIT);
+        const usedIds = new Set(useNodes.map((n) => n.data.id));
+        const useEdges = edges.filter(
+          (e) => usedIds.has(e.data.source) && usedIds.has(e.data.target),
+        );
+
+        if (truncated) {
+          container.appendChild(
+            el(
+              "div",
+              "flow-dead mb-2",
+              t("sources.flow.truncated", "图太大（{n} 个节点），只显示前 {m} 个。")
+                .replace("{n}", nodes.length)
+                .replace("{m}", LIMIT),
+            ),
+          );
+        }
+
+        const host = el("div", "flow-canvas");
+        container.appendChild(host);
+
+        if (typeof cytoscape !== "function") {
+          // 库没加载（离线/被拦）：退化成一句提示，不要白屏
+          container.appendChild(
+            el("div", "flow-empty", t("sources.flow.nolib", "图库未能加载，无法渲染流向图。")),
+          );
+          return;
+        }
+
+        const cy = cytoscape({
+          container: host,
+          elements: useNodes.concat(useEdges),
+          layout: { name: "dagre", rankDir: "TB", nodeSep: 34, rankSep: 52, animate: false },
+          // 只读：不能拖节点改数据、不能连线
+          autoungrabify: true,
+          autounselectify: false,
+          boxSelectionEnabled: false,
+          wheelSensitivity: 0.2,
+          style: [
+            {
+              selector: "node",
+              style: {
+                label: "data(label)",
+                "font-size": 10,
+                "font-family": "ui-monospace, monospace",
+                color: "#d4d4d8",
+                "text-valign": "center",
+                "text-halign": "center",
+                "background-color": "#141419",
+                "border-width": 1,
+                "border-color": "#3f3f46",
+                shape: "round-rectangle",
+                width: "label",
+                height: 24,
+                padding: "8px",
+              },
+            },
+            // 根节点（源直接指向的能力）：主色高亮
+            //
+            // 注意 [?root] 不是 [root]：后者在 Cytoscape 里表示"该属性存在"，
+            // 而我给每个节点都写了 root: true/false，于是全部命中 —— 图上
+            // 每个方块都变成了紫色。? 前缀才是"属性为真"。
+            {
+              selector: "node[?root]",
+              style: {
+                "border-color": "#8b8bfd",
+                "border-width": 2,
+                // background-color 只接受纯色：写 rgba() 会被当成纯紫，
+                // 透明度要用 background-opacity 单独给。
+                "background-color": "#8b8bfd",
+                "background-opacity": 0.12,
+              },
+            },
+            // 终端能力：绿色
+            {
+              selector: "node[?terminal]",
+              style: { "border-color": "#10b981" },
+            },
+            // 环上的节点：橙色虚线框
+            {
+              selector: "node[?cycleNode]",
+              style: {
+                "border-color": "#f97316",
+                "border-style": "dashed",
+                "border-width": 2,
+              },
+            },
+            // 未接下游的伪节点：灰色虚线小方块
+            {
+              selector: 'node[kind = "deadport"]',
+              style: {
+                "border-color": "#71717a",
+                "border-style": "dashed",
+                color: "#71717a",
+                "background-color": "transparent",
+              },
+            },
+            // 能力已删除：红色
+            {
+              selector: 'node[kind = "unknown"]',
+              style: { "border-color": "#ef4444", color: "#ef4444" },
+            },
+            {
+              selector: "edge",
+              style: {
+                width: 1,
+                "line-color": "#3f3f46",
+                "target-arrow-color": "#3f3f46",
+                "target-arrow-shape": "triangle",
+                "arrow-scale": 0.7,
+                "curve-style": "bezier",
+                label: "data(port)",
+                "font-size": 7,
+                "font-family": "ui-monospace, monospace",
+                color: "#8b8bfd",
+                "text-background-color": "#0a0a0f",
+                "text-background-opacity": 1,
+                "text-background-padding": "2px",
+                // 不用 autorotate：边角度不同会让标签斜着，几乎读不了。
+                // 水平摆放 + 背景块，压在线上也看得清。
+                "text-rotation": "none",
+              },
+            },
+            // 环上的边：橙色虚线，一眼看出"这里回环了"
+            {
+              selector: "edge[?cycle]",
+              style: {
+                "line-color": "#f97316",
+                "target-arrow-color": "#f97316",
+                "line-style": "dashed",
+                "line-width": 1.5,
+              },
+            },
+          ],
+        });
+
+        // 容器隐藏时布局算不出正确尺寸（宽高为 0），展开后要重算一次
+        host._cy = cy;
+        host._refit = () => {
+          cy.resize();
+          cy.fit(undefined, 36);
+        };
+      }
+
+      // renderFlow 是卡片底部那块：折叠头 + 图
+      //
+      // 默认折叠：一张卡片展开一张大图会把列表撑得很长。
       function renderFlow(s) {
         const wrap = el("div", "flow-wrap");
         const targetIds = (s.targets || []).map((x) =>
@@ -628,9 +789,9 @@
 
         const toggle = el("div", "flow-toggle");
         toggle.appendChild(el("span", "chev", "▶"));
-        const label = t("sources.flow.title", "下游流向（预览）");
+        const label = t("sources.flow.title", "下游流向");
         const tree = buildFlow(targetIds);
-        // 统计一下规模，让用户知道值不值得点开
+
         let nodeCount = 0;
         let hasCycle = false;
         (function count(nodes) {
@@ -651,23 +812,24 @@
 
         const body = el("div", "flow-body");
         body.style.display = "none";
-
-        if (!tree.length) {
-          body.appendChild(
-            el(
-              "div",
-              "flow-empty",
-              t("sources.flow.no_target", "这个源没有出口能力。"),
-            ),
-          );
-        } else {
-          body.appendChild(renderFlowTree(tree, 0));
-        }
+        let rendered = false;
 
         toggle.addEventListener("click", () => {
           const open = body.style.display !== "none";
           body.style.display = open ? "none" : "block";
           toggle.classList.toggle("open", !open);
+          if (!open && !rendered) {
+            // 懒渲染：折叠状态下 Cypress 拿不到尺寸，展开时才建图
+            renderFlowGraph(body, tree);
+            rendered = true;
+          }
+          if (!open) {
+            // 展开后等一帧让布局稳定，再 fit 到可视区
+            requestAnimationFrame(() => {
+              const host = body.querySelector(".flow-canvas");
+              if (host && host._refit) host._refit();
+            });
+          }
         });
 
         wrap.appendChild(toggle);
