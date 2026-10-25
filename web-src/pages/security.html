@@ -1101,7 +1101,17 @@
           body: JSON.stringify({ name: newName }),
         },
       );
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
+        let msg = "HTTP " + res.status;
+        try {
+          const b = await res.json();
+          if (b && b.error) msg = b.error;
+        } catch (e) {
+          /* 非 JSON 响应，保留状态码 */
+        }
+        throw new Error(msg);
+      }
       p.name = newName;
       renderPasskeys();
       toast(t("security.toast.renamed", "已重命名"));
@@ -1385,7 +1395,17 @@
           credentials: "same-origin",
         },
       );
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
+        let msg = "HTTP " + res.status;
+        try {
+          const b = await res.json();
+          if (b && b.error) msg = b.error;
+        } catch (e) {
+          /* 非 JSON 响应，保留状态码 */
+        }
+        throw new Error(msg);
+      }
       SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
       renderSessions();
       toast(
@@ -1707,7 +1727,17 @@
         credentials: "same-origin",
         body: JSON.stringify({ deviceName: deviceName }),
       });
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
+        let msg = "HTTP " + res.status;
+        try {
+          const b = await res.json();
+          if (b && b.error) msg = b.error;
+        } catch (e) {
+          /* 非 JSON 响应，保留状态码 */
+        }
+        throw new Error(msg);
+      }
       const data = await res.json();
       enrollSession = {
         sessionId: data.sessionId,
@@ -1951,7 +1981,17 @@
           "/watch",
         { credentials: "same-origin" },
       );
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
+        let msg = "HTTP " + res.status;
+        try {
+          const b = await res.json();
+          if (b && b.error) msg = b.error;
+        } catch (e) {
+          /* 非 JSON 响应，保留状态码 */
+        }
+        throw new Error(msg);
+      }
       const data = await res.json();
       enrollErrorCount = 0;
       handleEnrollWatch(data);
@@ -2060,7 +2100,17 @@
         doEnrollWatch();
         return;
       }
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
+        let msg = "HTTP " + res.status;
+        try {
+          const b = await res.json();
+          if (b && b.error) msg = b.error;
+        } catch (e) {
+          /* 非 JSON 响应，保留状态码 */
+        }
+        throw new Error(msg);
+      }
       // approved → 切 approved_waiting 变体
       const btnArea = document.getElementById("enroll-confirm-buttons");
       const waitingArea = document.getElementById("enroll-approved-waiting");
@@ -2095,7 +2145,17 @@
         doEnrollWatch();
         return;
       }
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
+        let msg = "HTTP " + res.status;
+        try {
+          const b = await res.json();
+          if (b && b.error) msg = b.error;
+        } catch (e) {
+          /* 非 JSON 响应，保留状态码 */
+        }
+        throw new Error(msg);
+      }
       stopEnrollWatch();
       stopEnrollCountdown();
       showEnrollFailed("denied");

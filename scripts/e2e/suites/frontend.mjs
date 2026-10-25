@@ -988,6 +988,9 @@ async function main() {
 		/* ignore */
 	}
 
+	console.log("--- 前端预览（mock）覆盖度 ---");
+	await runMockCoverage();
+
 	const passed = H.summary("frontend");
 	await browser.close();
 	server.stop();
@@ -1003,3 +1006,98 @@ main().catch(async (e) => {
 	}
 	process.exit(1);
 });
+
+// ---------------------------------------------------------------------------
+// 前端预览（mock）守卫
+//
+// make fe-preview 用 web/mock.js 拦下所有 /v1/* 请求。这套 mock 是手写的，
+// 会随着后端接口演化而腐化 —— 页面调了一个 mock 没实现的路径，用户看到的
+// 是"页面空着"，而没有任何报错提示他是 mock 缺了一条。
+//
+// 所以这里把 mock 覆盖度当成断言：把页面真实发出的每个 /v1 请求记下来，
+// 逐个确认 mock 有对应实现（返回 501 = 未实现）。
+// ---------------------------------------------------------------------------
+// runMockCoverage 检查 web/mock.js 覆盖了页面用到的全部接口。
+async function runMockCoverage() {
+	const { spawn } = await import("node:child_process");
+	const net = await import("node:net");
+
+	// 选一个空闲端口，避免和别的测试撞
+	const port = await new Promise((resolve) => {
+		const srv = net.createServer();
+		srv.listen(0, "127.0.0.1", () => {
+			const p = srv.address().port;
+			srv.close(() => resolve(p));
+		});
+	});
+
+	const proc = spawn("go", ["run", "./cmd/fe-preview", "-dir", "web", "-port", String(port)], {
+		cwd: process.cwd(),
+		stdio: "ignore",
+		env: { ...process.env },
+	});
+
+	const base = `http://127.0.0.1:${port}`;
+
+	// 等端口就绪（go run 要先编译）
+	let ready = false;
+	for (let i = 0; i < 60; i++) {
+		try {
+			const r = await fetch(base + "/index.html");
+			if (r.ok) {
+				ready = true;
+				break;
+			}
+		} catch {
+			/* 还没起来：go run 需要先编译，连不上是正常的 */
+		}
+		await new Promise((r) => setTimeout(r, 250));
+	}
+	H.check("fe-preview 能启动", ready, `port=${port}`);
+
+	if (!ready) {
+		proc.kill("SIGKILL");
+		return;
+	}
+
+	// 与套件其它地方保持一致：用系统 Chrome（channel:"chrome"），
+	// 默认 launch() 会去找 Playwright 自带的 headless-shell，那未必装了
+	const browser = await chromium.launch({
+		channel: "chrome",
+		headless: true,
+		args: ["--no-sandbox"],
+	});
+	const ctx = await browser.newContext();
+	const pages = ["index.html", "sources.html", "capabilities.html", "nodes.html", "events.html"];
+	const missing = [];
+	const realRequests = [];
+
+	for (const p of pages) {
+		const page = await ctx.newPage();
+		page.on("console", (m) => {
+			const t = m.text();
+			if (t.includes("mock 未实现")) missing.push(`${p}: ${t}`);
+		});
+		page.on("request", (r) => {
+			if (r.url().includes("/v1/")) realRequests.push(r.url());
+		});
+		await page.goto(`${base}/${p}`, { waitUntil: "load", timeout: 20000 });
+		await page.waitForTimeout(1200);
+		await page.close();
+	}
+
+	await ctx.close();
+	await browser.close();
+	proc.kill("SIGKILL");
+
+	H.check(
+		"mock 覆盖了页面用到的全部接口",
+		missing.length === 0,
+		missing.slice(0, 3).join(" | "),
+	);
+	H.check(
+		"预览模式下没有任何请求真的发出去",
+		realRequests.length === 0,
+		realRequests.slice(0, 3).join(" | "),
+	);
+}

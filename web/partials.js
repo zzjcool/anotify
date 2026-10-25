@@ -786,7 +786,22 @@
 				}
 				throw new Error("HTTP 401");
 			}
-			if (!res.ok) throw new Error("HTTP " + res.status);
+			if (!res.ok) {
+				// 服务端的校验信息（"cron 表达式需要 5 段"、"channel 必须是
+				// slack/email"）比 "HTTP 400" 有用得多。以前直接丢掉了，
+				// 于是页面只能显示笼统的失败，用户不知道哪填错了。
+				let detail = "";
+				try {
+					const j = await res.json();
+					detail = (j && (j.error || j.message)) || "";
+				} catch (e) {
+					/* 响应不是 JSON（网关错误页等），保持空 */
+				}
+				const err = new Error(detail || "HTTP " + res.status);
+				err.status = res.status;
+				err.detail = detail;
+				throw err;
+			}
 			return await res.json();
 		} catch (e) {
 			if (demo && typeof demo.then === "function") return demo;

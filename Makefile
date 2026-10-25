@@ -90,6 +90,16 @@ dev: check-classes sitegen ## 开发模式：起 server + cloudflared tunnel（�
 dev-local: check-classes sitegen ## 开发模式：只起 server，不起 tunnel（本地 localhost）
 	NO_TUNNEL=1 ./scripts/dev.sh
 
+# ---- 纯前端预览（不连后端）----
+#
+# 只想看前端效果时的最短路径：不需要 server、tunnel、devseed、WS worker。
+# 所有 /v1/* 请求由浏览器里的 web/mock.js 应答，一个请求都不会真正发出。
+fe-preview: check-classes sitegen ## 前端预览：只起静态服务器 + mock 数据，不连后端
+	@go run ./cmd/fe-preview -dir web
+
+fe-preview-port: ## 同上，但指定端口（用法：make fe-preview-port PORT=7789）
+	@go run ./cmd/fe-preview -dir web -port $(PORT)
+
 integration: ## 集成测试（需服务已在 PORT 运行）
 	BASE=http://localhost:$(PORT) ./scripts/integration.sh
 

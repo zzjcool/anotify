@@ -94,9 +94,36 @@ make fe       # sitegen + hash（指纹化到 internal/server/dist）
 ### 本地开发
 
 ```bash
+make fe-preview  # 纯前端预览（mock 数据，不连后端），:7788
 make dev    # 先跑 sitegen 生成 web/*.html，再用 web/ 本地目录起服务（改完即生效），:8080
 make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 ```
+
+#### 只想看前端？`make fe-preview`
+
+调 UI 时不需要把整条后端链路拉起来（server + tunnel + devseed + WS worker）。
+任何一步出问题，看到的都是"页面空着"，很难判断是前端坏了还是后端没起来。
+
+```
+make fe-preview        # → http://localhost:7788
+```
+
+它只做一件事：起一个静态服务器托管 `web/`，并给每个 HTML 注入 `web/mock.js`。
+于是**所有 `/v1/*` 请求都在浏览器里被拦下**，由 mock 直接应答，一个请求都不会
+真正发出。页面底部有个黄色提示条，避免误以为是真数据。
+
+- 数据是内存里的可变状态：新建源、立即运行、删边都会真的改变它，能点着试完整流程
+- 刷新页面回到初始状态
+- 任意接口加 `?mockFail=1` 可以看错误态长什么样
+- `window.MockApi.state` 可以在控制台里改数据
+- 换端口：`make fe-preview-port PORT=7789`
+
+**为什么 mock 在浏览器侧而不是 Go 侧假装后端**：Go 侧等于维护第二套后端，
+会跟真后端漂移，看到的"效果"就不可信；而且 mock 里要做状态（新建/触发/任务
+跑完），Go 侧等于重写一遍。浏览器侧改一行就生效，不用重新编译。
+
+`web/mock.js` **不会**进 `internal/server/dist/`（指纹脚本只处理
+`FINGERPRINT_EXT` 里列出的扩展名），所以生产二进制里没有它。
 
 #### 免 passkey 登录（换域名时很省事）
 

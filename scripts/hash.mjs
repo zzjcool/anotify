@@ -47,6 +47,16 @@ const NO_FINGERPRINT = new Set([
 	"manifest.webmanifest",
 ]);
 
+// 只给开发用的文件：**不进生产产物**。
+//
+// mock.js 是 make fe-preview 用的 API 拦截层，塞满假数据。
+// 它被打进二进制本身不算漏洞（要浏览器的 /mock.js 才生效），
+// 但没有任何理由让它存在 —— 一旦有人手工请求就打开了"假数据模式"，
+// 排查真问题时会浪费时间。
+const DEV_ONLY = new Set([
+	"mock.js",
+]);
+
 async function* walk(dir) {
 	for (const e of await fs.readdir(dir, { withFileTypes: true })) {
 		const full = path.join(dir, e.name);
@@ -72,6 +82,10 @@ async function main() {
 		const rel = path.relative(src, file);
 		const ext = path.extname(file).toLowerCase();
 		const base = path.basename(file);
+		if (DEV_ONLY.has(base)) {
+			// 开发专用：直接跳过，不复制、不指纹
+			continue;
+		}
 		if (NO_FINGERPRINT.has(base)) {
 			// 原样复制（不指纹）
 			const target = path.join(out, rel);
