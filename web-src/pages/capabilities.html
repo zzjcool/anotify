@@ -170,7 +170,16 @@
             <div>
               <label class="mb-1 block text-xs text-zinc-400" for="edge-port">{{t "caps.edges.port"}}</label>
               <select id="edge-port" class="input w-full text-sm"></select>
-              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.edges.port_hint"}}</p>
+              <!-- 起点能力没有预置出口（出口就是"任意事件类型"），改为自由输入 -->
+              <input
+                id="edge-port-input"
+                class="input hidden w-full text-sm"
+                type="text"
+                placeholder="pull_request.opened"
+              />
+              <p class="mt-1 text-[11px] text-zinc-500" id="edge-port-hint">
+                {{t "caps.edges.port_hint"}}
+              </p>
             </div>
             <div>
               <label class="mb-1 block text-xs text-zinc-400" for="edge-to">{{t "caps.edges.to"}}</label>
@@ -425,14 +434,46 @@
       //
       // 出口是封闭集合（不变量 I2）：from_port 必须属于 outputs，
       // 所以这里不给用户输入自由文本的机会 —— 开放输入会让人建出无效边。
+      // 起点能力（内置 github/cron/http/manual）的出口是**任意事件类型**，
+      // 不可能预先枚举，所以那边用自由输入框；其余能力仍走封闭集合下拉。
+      function isOriginCap(cap) {
+        return !!cap && cap.kind === "origin" && cap.source === "builtin";
+      }
+
       function syncPorts() {
         const fromId = document.getElementById("edge-from").value;
         const port = document.getElementById("edge-port");
+        const input = document.getElementById("edge-port-input");
+        const hint = document.getElementById("edge-port-hint");
         port.replaceChildren();
+
         const cap = CAPS.find((c) => c.id === fromId);
+
+        if (isOriginCap(cap)) {
+          // 起点：自由输入事件类型
+          port.classList.add("hidden");
+          input.classList.remove("hidden");
+          input.value = "";
+          input.placeholder = t(
+            "caps.edges.port_placeholder",
+            "pull_request.opened",
+          );
+          hint.textContent = t(
+            "caps.edges.port_hint_origin",
+            "起点能力的出口就是事件类型（由外部系统决定，例如 GitHub 的 pull_request.opened）",
+          );
+          return;
+        }
+
+        port.classList.remove("hidden");
+        input.classList.add("hidden");
+        hint.textContent = t("caps.edges.port_hint", "只能选择该能力声明过的出口（封闭集合）");
+
         const outputs = (cap && cap.outputs) || [];
         if (!outputs.length) {
-          port.appendChild(new Option(t("caps.edges.no_ports", "（该能力没有出口）"), ""));
+          port.appendChild(
+            new Option(t("caps.edges.no_ports", "（该能力没有出口）"), ""),
+          );
           return;
         }
         for (const o of outputs) port.appendChild(new Option(o, o));
@@ -440,7 +481,10 @@
 
       async function createEdge() {
         const fromCapability = document.getElementById("edge-from").value;
-        const fromPort = document.getElementById("edge-port").value;
+        const fromCap = CAPS.find((c) => c.id === fromCapability);
+        const fromPort = isOriginCap(fromCap)
+          ? document.getElementById("edge-port-input").value.trim()
+          : document.getElementById("edge-port").value;
         const toCapability = document.getElementById("edge-to").value;
 
         if (!fromCapability || !fromPort || !toCapability) {

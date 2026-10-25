@@ -305,6 +305,7 @@ CREATE TABLE IF NOT EXISTS graph_versions (
 |---|---|---|---|
 | `pending` | `assigned` | 中枢派发 | 选中节点 + 写租约 |
 | `assigned` | `acked` | `ack` 帧 | 租约未过期 |
+| `assigned` | `running` | `progress`/`result` 帧 | 节点跳过 ack（§3.1「或隐式」） |
 | `assigned` | `lease_expired` | 租约巡检 | `now > lease_until` |
 | `acked` | `running` | `progress` 帧 | — |
 | `acked` | `lease_expired` | 租约巡检 | 心跳停 |
@@ -377,6 +378,57 @@ func DeriveKind(outputs []string, declaredByAnyNode bool) Kind {
 | 有节点声明，且能力 `outputs` 有非空项 | `pipe` |
 
 **多能力混挂**：节点声明了多个能力时，只要**有任一**能力的 `outputs` 非空 → 该节点 `pipe`。
+
+### 5.1 内置能力的 kind 特例
+
+`DeriveKind` 只看 `outputs` + 节点声明，会把两类内置能力判错：
+
+| 内置能力 | `DeriveKind` 会算出 | 实际含义 | 覆盖为 |
+|---|---|---|---|
+| `notify.phone@1`（中枢执行） | `origin`（无节点、outputs 空） | 链的**终点**，中枢自己执行 | `end` |
+| `github`/`cron`/`http`/`manual` | `origin` | 链的起点 | `origin`（正确） |
+
+所以全仓推导 kind 走 **`route.KindForCapability`**，不直接调 `DeriveKind`。
+特例散落多处必然漂移——`notify.phone` 曾在能力页显示成 `origin`，误导用户把它当事件来源。
+
+### 5.2 内置起点能力的出口是「任意事件类型」
+
+`github`/`cron`/`http`/`manual` 是随项目发布的内置起点（`source = builtin`，`Origin = true`）。
+它们的 `outputs` 为空（不是 `["*"]`），因为：
+
+- `EdgesFrom` 是精确匹配（`WHERE from_port = ?`），通配符在 SQL 里配不上具体事件类型；
+- kind 推导对「无节点声明」的能力直接返回 `origin`，不需要非空 `outputs`。
+
+通配语义放在**建边校验**侧：`CreateEdge` 对内置起点跳过「`from_port ∈ outputs`」检查，
+只要求非空。这样用户建边时填的是真实事件名（`pull_request.opened`），派发时能精确命中。
+
+**不变量 I2 没有被放松**：自定义能力（`source = custom`）依然严格校验出口封闭集合。
+起点的事件类型本来就由外部系统决定，不可能预先枚举。
+
+**用户收益**：接入一个 GitHub webhook 时，**不需要先伪造一个叫 `github`、没有出口、没有节点的"能力"**，
+直接在能力页建边即可。自定义来源依然支持（自己定义 `jira@1`，`source = "jira"` 一样能找到）。
+
+### 5.3 未知起点 → 422
+
+`POST /v1/events` 的 `source` 必须匹配某个已定义的能力名。匹配不到时返回 **422** 并带
+`available` 列表，**不是** 200 + 空 `origin`。
+
+早先的 200 是个陷阱：调用方看到成功、事件也确实入库了，但它永远派不出去——存下来只占库位。
+现在立刻告诉用户该填什么。
+
+响应示例：
+
+```json
+{
+  "error": "unknown origin "nope"; available: cron, github, http, manual",
+  "source": "nope",
+  "available": ["cron", "github", "http", "manual"],
+  "eventId": "evt_..."
+}
+```
+
+`eventId` 如实回传：事件确实已入库（落库早于找起点），避免调用方以为"什么都没留下"。
+`available` 只列真正的起点——中枢执行能力（`notify.phone`）不会出现在里面。
 
 ---
 

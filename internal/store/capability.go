@@ -17,6 +17,13 @@ const (
 	CapSourceCustom  = "custom"
 )
 
+// ErrCapabilityReserved 表示试图用内置能力的保留名字创建/覆盖定义。
+//
+// 内置起点（github/cron/http/manual）的名字是保留的：findOrigin 取该 name 的
+// 最高版本，若允许用户开 github@2，source=github 就会解析到自定义版本上——
+// 而自定义版本不享受起点的「任意事件类型」出口，建好的边全废且无任何提示。
+var ErrCapabilityReserved = errors.New("capability name reserved")
+
 // Lifecycle 是能力定义里的生命周期参数（JSON 存在 lifecycle 列）。
 type Lifecycle struct {
 	ExpiresInSec int  `json:"expiresInSec,omitempty"`
@@ -180,6 +187,20 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	}
 	if c.Version <= 0 {
 		return fmt.Errorf("create capability: version must be > 0, got %d", c.Version)
+	}
+	// 内置起点的名字是**保留**的，用户不能开新版本接管它。
+	//
+	// 为什么必须拦：findOrigin 取该 name 的**最高版本**。用户建了 github@2
+	// 之后，source=github 就会解析到 @2——而 @2 是自定义能力，不享受起点的
+	// 「任意事件类型」出口，于是建好的边全废、事件派不出去，且没有任何提示。
+	// 这个失败方式极其隐蔽，所以在写入处直接拒绝。
+	//
+	// 注意要放行 source=builtin：内置能力自己的播种（ensureOneBuiltin）
+	// 也走这条路径，否则会把播种自己也拦死。
+	if c.Source != CapSourceBuiltin {
+		if bc, ok := IsBuiltinCapabilityName(c.Name); ok && bc.Origin {
+			return fmt.Errorf("%w: %q is a builtin origin and its name is reserved", ErrCapabilityReserved, c.Name)
+		}
 	}
 	hash, err := NormalizeCapability(c)
 	if err != nil {

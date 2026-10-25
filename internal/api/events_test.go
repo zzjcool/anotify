@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -133,6 +134,31 @@ func (f *eventFixture) post(t *testing.T, body any) (*http.Response, EventIngest
 	return resp, out
 }
 
+// postRaw 发请求并**保留** body（错误路径要读错误体；post 会 defer close）。
+func (f *eventFixture) postRaw(t *testing.T, body any) (int, []byte) {
+	t.Helper()
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, f.server.URL+"/v1/events", bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp.StatusCode, raw
+}
+
 // ---------- #58 验收：端到端 ----------
 
 // TestEventToDispatch POST /v1/events → 产生 event + 首批 task（#58 验收）。
@@ -245,24 +271,42 @@ func TestEventNoEdgePruned(t *testing.T) {
 	}
 }
 
-// TestEventUnknownOriginStill200 没有 origin 能力 → 200（事件收下了），但无任务。
-func TestEventUnknownOriginStill200(t *testing.T) {
+// TestEventUnknownOrigin422 没有 origin 能力 → 422 并列出可用来源。
+//
+// 早先这里是 200 + origin:""（"事件收下了，只是派不出去"）。
+// 那是个陷阱：调用方看到成功、事件也确实入库了，但它永远不会派发。
+// 现在显式 422，错误里带 available 列表，调用方立刻知道该填什么。
+func TestEventUnknownOrigin422(t *testing.T) {
 	f := newEventFixture(t)
 
-	resp, out := f.post(t, EventIngestRequest{
-		Source: "jira", Type: "issue.created", // jira 没定义
+	status, raw := f.postRaw(t, EventIngestRequest{
+		Source: "no.such.origin", Type: "issue.created",
 	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (unknown origin is a config problem, not client error)", resp.StatusCode)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", status)
 	}
-	if out.EventID == "" {
-		t.Fatal("event was not created")
+
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, raw)
 	}
-	if out.Origin != "" {
-		t.Fatalf("origin = %q, want empty", out.Origin)
+	if got := m["source"]; got != "no.such.origin" {
+		t.Errorf("source = %v, want no.such.origin", got)
 	}
-	if len(out.Tasks) != 0 {
-		t.Fatalf("tasks = %d, want 0", len(out.Tasks))
+	// eventId 必须回传：事件确实入库了，如实告知（否则调用方以为什么都没留下）
+	if id, _ := m["eventId"].(string); id == "" {
+		t.Error("eventId is empty: the event WAS stored, response must say so")
+	}
+	// available 里应有内置起点（fixture 会播种）
+	avail, _ := m["available"].([]any)
+	found := false
+	for _, a := range avail {
+		if a == "github" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("available = %v, want to contain builtin origins like github", avail)
 	}
 }
 

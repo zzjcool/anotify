@@ -1112,6 +1112,8 @@ caps:
     from: 起点ケイパビリティ
     port: 出口
     port_hint: そのケイパビリティが宣言した出口のみ表示されます（出口は閉集合、不変条件 I2）。
+    port_hint_origin: "起点ケイパビリティの出口はイベント種別そのものです（外部システムが決めます。例：GitHub の pull_request.opened）"
+    port_placeholder: pull_request.opened
     to: 終点ケイパビリティ
     remove: 削除
     removed: 削除しました

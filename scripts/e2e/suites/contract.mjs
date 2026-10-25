@@ -460,6 +460,89 @@ async function main() {
 	node.conn.close();
 	await new Promise((r) => setTimeout(r, 300));
 
+	// ================= A10：内置起点能力 =================
+	//
+	// 起点的两件事必须成立：
+	//   1. 内置起点开箱可用 —— 用户不必先伪造一个"叫 github 的能力"
+	//   2. 起点的出口是任意事件类型 —— 但**只限内置起点**，自定义能力仍严格
+	{
+		const capsResp = await H.req(server.base, "/v1/capabilities", {
+			session,
+		});
+		const caps = capsResp.json?.capabilities || [];
+		const byName = (n) => caps.find((c) => c.name === n);
+
+		const github = byName("github");
+		A(10, "内置 github 起点已播种", !!github, JSON.stringify(caps.map((c) => c.name)));
+		A(10, "github source=builtin", github?.source === "builtin", String(github?.source));
+		A(10, "github kind=origin", github?.kind === "origin", String(github?.kind));
+
+		// notify.phone 是中枢终端能力，绝不能被当成起点
+		const phone = byName("notify.phone");
+		A(
+			10,
+			"notify.phone kind=end（不是起点）",
+			phone?.kind === "end",
+			String(phone?.kind),
+		);
+
+		// 起点出口可填任意事件类型
+		const sinkResp = await H.req(server.base, "/v1/capabilities", {
+			session,
+			method: "POST",
+			body: { name: "a10.sink", outputs: [], paramsSchema: { type: "object" } },
+		});
+		const sinkId = sinkResp.json?.capability?.id;
+		const wildEdge = await H.req(server.base, "/v1/edges", {
+			session,
+			method: "POST",
+			body: {
+				fromCapability: github?.id,
+				fromPort: "never_declared_before.opened",
+				toCapability: sinkId,
+			},
+		});
+		A(10, "内置起点出口可任意（未声明过也能建边）", wildEdge.status === 200, `${wildEdge.status} ${wildEdge.text?.slice(0, 80)}`);
+
+		// 自定义能力的出口仍严格（通配只给内置起点，没有放松不变量 I2）
+		const customResp = await H.req(server.base, "/v1/capabilities", {
+			session,
+			method: "POST",
+			body: { name: "a10.custom", outputs: ["only_port"], paramsSchema: { type: "object" } },
+		});
+		const badEdge = await H.req(server.base, "/v1/edges", {
+			session,
+			method: "POST",
+			body: {
+				fromCapability: customResp.json?.capability?.id,
+				fromPort: "NOT_DECLARED",
+				toCapability: sinkId,
+			},
+		});
+		A(10, "自定义能力出口仍封闭（I2 未放松）", badEdge.status === 400, String(badEdge.status));
+
+		// 未知 source → 422（不是静默 200），且 available 只列真正的起点
+		const unknown = await H.req(server.base, "/v1/events", {
+			key: sendKey,
+			body: { source: "a10.no.such.source", type: "x", payload: {} },
+		});
+		A(10, "未知起点 → 422（非静默 200）", unknown.status === 422, String(unknown.status));
+		const avail = unknown.json?.available || [];
+		A(10, "422 带 available 列表", Array.isArray(avail) && avail.length > 0, JSON.stringify(avail));
+		A(
+			10,
+			"available 含内置起点 github",
+			avail.includes("github"),
+			JSON.stringify(avail),
+		);
+		A(
+			10,
+			"available 不含中枢能力 notify.phone",
+			!avail.includes("notify.phone"),
+			JSON.stringify(avail),
+		);
+	}
+
 	// ================= A3 的运行时侧：未定义能力不能被声明 =================
 	// （由 ws_protocol 的 unknown_capability 断言覆盖；这里确认它仍在）
 	A(3, "未定义能力无法建边（运行时侧）", ghostEdge.status === 400);

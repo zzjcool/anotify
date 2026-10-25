@@ -247,3 +247,99 @@ func TestFinishTaskRejectsInvalidStatus(t *testing.T) {
 		t.Fatalf("want ErrInvalidTransition, got %v", err)
 	}
 }
+
+// TestOriginCapabilityNameReserved 内置起点的名字是保留的。
+//
+// 为什么重要：findOrigin 取该 name 的**最高版本**。若允许用户建 github@2，
+// source=github 会解析到 @2，而 @2 是自定义能力、不享受起点的
+// 「任意事件类型」出口——于是用户已经建好的边全废，事件派不出去，
+// 且没有任何提示。这个失败极其隐蔽，所以在写入处直接拒绝。
+func TestOriginCapabilityNameReserved(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+
+	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+		t.Fatalf("seed builtins: %v", err)
+	}
+
+	// 试图用内置起点的名字开新版本 → 拒绝
+	for _, name := range []string{"github", "cron", "http", "manual"} {
+		err := db.CreateCapability(ctx, &CapabilityVersion{
+			OrgID:        orgID,
+			Name:         name,
+			Version:      2,
+			ParamsSchema: json.RawMessage(`{"type":"object"}`),
+			Outputs:      []string{"hijacked"},
+			Source:       CapSourceCustom,
+		})
+		if !errors.Is(err, ErrCapabilityReserved) {
+			t.Fatalf("%s@2 应被拒绝（ErrCapabilityReserved），got %v", name, err)
+		}
+	}
+
+	// 但内置能力自己的播种必须放行（否则 ensureOneBuiltin 会拦死自己）
+	if _, err := db.GetCapability(ctx, orgID, "github", 1); err != nil {
+		t.Fatalf("内置 github@1 应已播种: %v", err)
+	}
+
+	// 非保留名不受影响
+	if err := db.CreateCapability(ctx, &CapabilityVersion{
+		OrgID:        orgID,
+		Name:         "jira",
+		Version:      1,
+		ParamsSchema: json.RawMessage(`{"type":"object"}`),
+		Outputs:      []string{},
+		Source:       CapSourceCustom,
+	}); err != nil {
+		t.Fatalf("自定义 jira@1 应允许: %v", err)
+	}
+}
+
+// TestOriginEdgeAcceptsAnyPort 内置起点的出口是任意事件类型（不变量 I2 的唯一例外）。
+func TestOriginEdgeAcceptsAnyPort(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+		t.Fatalf("seed builtins: %v", err)
+	}
+
+	github, err := db.GetCapability(ctx, orgID, "github", 1)
+	if err != nil {
+		t.Fatalf("get github: %v", err)
+	}
+	sink := &CapabilityVersion{
+		OrgID: orgID, Name: "sink", Version: 1,
+		ParamsSchema: json.RawMessage(`{"type":"object"}`),
+		Outputs:      []string{}, Source: CapSourceCustom,
+	}
+	if err := db.CreateCapability(ctx, sink); err != nil {
+		t.Fatalf("create sink: %v", err)
+	}
+
+	// 任意未声明过的事件类型都应能建边
+	if err := db.CreateEdge(ctx, &Edge{
+		OrgID: orgID, FromCapability: github.ID,
+		FromPort: "never.declared.before", ToCapability: sink.ID,
+	}); err != nil {
+		t.Fatalf("内置起点的任意出口应被接受: %v", err)
+	}
+
+	// 自定义能力仍然严格（I2 没有放松）
+	custom := &CapabilityVersion{
+		OrgID: orgID, Name: "custom", Version: 1,
+		ParamsSchema: json.RawMessage(`{"type":"object"}`),
+		Outputs:      []string{"only"}, Source: CapSourceCustom,
+	}
+	if err := db.CreateCapability(ctx, custom); err != nil {
+		t.Fatalf("create custom: %v", err)
+	}
+	err = db.CreateEdge(ctx, &Edge{
+		OrgID: orgID, FromCapability: custom.ID,
+		FromPort: "not_declared", ToCapability: sink.ID,
+	})
+	if !errors.Is(err, ErrEdgeRejected) {
+		t.Fatalf("自定义能力的非法出口应被拒绝，got %v", err)
+	}
+}

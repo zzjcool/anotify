@@ -298,7 +298,7 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 	for _, c := range caps {
 		views = append(views, capView{
 			CapabilityVersion: c,
-			Kind:              route.DeriveKind(c.Outputs, declared[c.ID]),
+			Kind:              route.KindForCapability(c, declared[c.ID]),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"capabilities": views})
@@ -365,7 +365,8 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"capability": c,
-		"kind":       route.DeriveKind(c.Outputs, false),
+		// 新建时该能力还没有节点声明（declared=false），但内置能力要走特例
+		"kind": route.KindForCapability(c, false),
 	})
 }
 

@@ -20,6 +20,11 @@ const (
 //	有节点声明，outputs 全空          → end
 //	有节点声明，outputs 有任一非空项   → pipe
 //
+// 注意：中枢执行的内置能力（notify.phone）没有节点声明、outputs 也为空，
+// 这个函数会把它算成 origin。那是不对的——它不接收事件，它是链的**终点**
+// （中枢自己执行完就结束）。调用方应先用 CentralKind 覆盖，
+// 见 KindForCapability。
+//
 // 多能力混挂：节点声明多个能力时，只要**有任一**能力的 outputs 非空 → 该节点是 pipe。
 // 这个判定由调用方对节点的全部能力做「有任一非空」合并后再传入 declaredByAnyNode 与
 // outputs 的并集即可（见 NodeKind）。
@@ -48,4 +53,29 @@ func NodeKind(caps []*store.CapabilityVersion, declaredByAnyNode bool) Kind {
 		merged = append(merged, c.Outputs...)
 	}
 	return DeriveKind(merged, true)
+}
+
+// KindForCapability 是整个仓库推导 kind 的**唯一入口**。
+//
+// 它在 DeriveKind 之上补两条内置能力的特例：
+//
+//	内置中山执行（notify.phone）→ end   中枢是它的"执行者"，不是"来源"
+//	内置起点（github/cron/...） → origin 它没有节点，也不产生任务
+//
+// 为什么必须集中在这里：console 列表、能力详情、前端建边表单都各自
+// 调过一次 DeriveKind，特例散落三处必然漂移（notify.phone 曾在能力页
+// 显示成 origin，误导用户把它当事件来源）。
+func KindForCapability(c *store.CapabilityVersion, declaredByAnyNode bool) Kind {
+	if c == nil {
+		return KindOrigin
+	}
+	if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok {
+		if bc.Central {
+			return KindEnd
+		}
+		if bc.Origin {
+			return KindOrigin
+		}
+	}
+	return DeriveKind(c.Outputs, declaredByAnyNode)
 }

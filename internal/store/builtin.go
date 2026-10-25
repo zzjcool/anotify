@@ -24,6 +24,12 @@ type BuiltinCapability struct {
 	Outputs      []string
 	// Central 表示由中枢执行（不找节点）。终端能力为 true。
 	Central bool
+	// Origin 表示它是**事件起点**：没有节点执行者，也不产生任务，
+	// 只提供「事件从这里进来」的命名锚点 + 任意事件类型作为出口。
+	//
+	// 与 Central 的区别：Central 会派发成中枢执行的任务；Origin 不建任务行，
+	// 它是链的 0 号位（trigger 按 source 找到它，再用 type 当出口派发）。
+	Origin bool
 }
 
 // NotifyPhoneCapability 是 `notify.phone@1` 的定义。
@@ -49,13 +55,45 @@ var NotifyPhoneCapability = BuiltinCapability{
 	Central: true,
 }
 
+// OriginCapability 构造一个内置起点能力。
+//
+// outputs 保持为空（不是 ["*"]）。原因：
+//
+//   - `EdgesFrom` 是精确匹配（`WHERE from_port = ?`），通配符在 SQL 里配不上
+//     具体事件类型，写 "*" 只会让用户在建边下拉里看到一个用不了的选项；
+//   - kind 推导对「无节点声明」的能力直接返回 origin，也不需要非空 outputs。
+//
+// 通配语义放在**建边校验**侧：内置起点的出口允许任意非空事件类型
+// （见 store.CreateEdge）。这样用户建边时填的是真实事件名（github 的
+// `pull_request.opened`），派发时也能精确命中。
+func OriginCapability(name, desc string) BuiltinCapability {
+	return BuiltinCapability{
+		Name:         name,
+		Version:      1,
+		ParamsSchema: `{"type": "object"}`,
+		Outputs:      []string{},
+		Origin:       true,
+	}
+}
+
 // BuiltinCapabilities 是随项目发布的全部内置能力。
 //
-// 2026-08 现状：只有 notify.phone 是中枢执行的。github/cron/watch/http
-// 是**事件来源**，不是任务能力——它们由 trigger 层处理，不走节点。
-// review/fix/test 等需要节点执行，用户按需自己定义。
+// 两类：
+//   - 中枢执行（Central）：notify.phone —— 没有节点会去"发推送"
+//   - 事件起点（Origin）：github/cron/http/manual —— 没有节点会去"当来源"
+//
+// 起点做成内置的收益：用户接入一个 GitHub webhook 时，**不需要先伪造一个
+// 叫 github、没有出口、没有节点的"能力"**，直接在能力页建边即可。
+// 这是把「入口」和「能干活的东西」两个概念分开，而不是绑死。
+//
+// 自定义来源依然支持：用户可以自己定义一个能力（比如 jira@1），
+// source = "jira" 一样能找到它——内置只是把常见来源预先备好。
 var BuiltinCapabilities = []BuiltinCapability{
 	NotifyPhoneCapability,
+	OriginCapability("github", "GitHub webhook"),
+	OriginCapability("cron", "定时触发"),
+	OriginCapability("http", "通用 HTTP 事件"),
+	OriginCapability("manual", "手动触发"),
 }
 
 // EnsureBuiltinCapabilities 为一个组织补齐所有内置能力（幂等）。
@@ -110,14 +148,31 @@ func (d *DB) ensureOneBuiltin(ctx context.Context, orgID string, bc BuiltinCapab
 	return nil
 }
 
-// IsBuiltinCapability 判断某个 name@version 是不是中枢执行的内置能力。
+// IsBuiltinCapability 判断某个 name@version 是不是内置能力（中央执行或起点）。
 //
 // 派发器用它决定「是否跳过找节点」：内置终端能力没有节点执行者，
 // 查 node_capabilities 必然是 0 行，若照常走第 ③ 步就会 pruned/no_node——
 // 推送能力永远发不出去。
+//
+// 注意调用方要**同时**判断 bc.Central：起点能力也是 builtin，但它不该
+// 被当成中枢任务来执行（它根本不产生任务行）。
 func IsBuiltinCapability(name string, version int) (BuiltinCapability, bool) {
 	for _, bc := range BuiltinCapabilities {
 		if bc.Name == name && bc.Version == version {
+			return bc, true
+		}
+	}
+	return BuiltinCapability{}, false
+}
+
+// IsBuiltinCapabilityName 按名字判断是不是内置能力（不看版本）。
+//
+// 用于「名字是否保留」的判定：内置起点的名字不能被用户开新版本接管，
+// 否则 findOrigin 取最高版本会让 source 解析到自定义版本上，
+// 而自定义版本不享受起点的任意出口——失败得极其隐蔽。
+func IsBuiltinCapabilityName(name string) (BuiltinCapability, bool) {
+	for _, bc := range BuiltinCapabilities {
+		if bc.Name == name {
 			return bc, true
 		}
 	}

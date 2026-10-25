@@ -84,7 +84,13 @@ async function main() {
 
 	// ---------- 建图 + 节点上线 ----------
 	console.log("--- 派发四步 ---");
-	const github = await defineCapability("github", ["pull_request.opened"]);
+	// github 是**内置起点**（#86）：不再自己定义，直接取播种好的那个。
+	// 内置起点的出口是任意事件类型，所以不需要预先声明 pull_request.opened。
+	const capsAll = await H.req(server.base, "/v1/capabilities", { session });
+	const github = (capsAll.json?.capabilities || []).find(
+		(c) => c.name === "github",
+	);
+	H.check("内置起点 github 已播种", !!github, JSON.stringify(capsAll.json?.capabilities?.map((c) => c.name)));
 	const review = await defineCapability("review", ["fix"], {
 		paramsSchema: {
 			type: "object",

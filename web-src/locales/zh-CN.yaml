@@ -1113,6 +1113,8 @@ caps:
     from: 来源能力
     port: 出口
     port_hint: 只列出该能力声明过的出口（出口封闭，不变量 I2）。
+    port_hint_origin: 起点能力的出口就是事件类型（由外部系统决定，例如 GitHub 的 pull_request.opened）
+    port_placeholder: pull_request.opened
     to: 目标能力
     remove: 删除
     removed: 已删除

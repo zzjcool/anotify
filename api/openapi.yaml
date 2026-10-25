@@ -108,7 +108,11 @@ paths:
         - `idemKey` 用于幂等：冲突时返回**已有**的 `eventId` + `traceId`，**不是 409**
           （对发送方而言「已收过」和「本次收下」都该是 200）
         - 不带 `idemKey` 允许重复——不是所有来源都有稳定投递 ID
-        - 事件已入库但派发失败/起源未知时**仍返回 200**（事件确实收下了）
+        - 派发失败（非起点问题）仍返回 200（事件确实收下了）
+        - **来源未知 → 422**：没有匹配的起点能力时事件永远派不出去，
+          静默 200 会让调用方以为成功。响应带 `available` 列出可用的来源
+        - `source` 匹配的是**能力名**。内置起点 `github`/`cron`/`http`/`manual`
+          开箱可用，无需先定义；也可自定义能力（如 `jira@1`）后使用
       security:
         - bearerAuth: []
       requestBody:
@@ -121,7 +125,9 @@ paths:
               properties:
                 source:
                   type: string
-                  description: 事件来源，与 origin 能力同名（github / cron / watch / ...）
+                  description: |
+                    事件来源，与能力名一致。内置起点（github / cron / http / manual）
+                    开箱可用；也可使用自定义能力名。找不到则返回 422。
                   example: github
                 type:
                   type: string
@@ -140,6 +146,24 @@ paths:
                   type: string
                   description: 可选；省略时用调用者的主组织
       responses:
+        "422":
+          description: |
+            来源未匹配到任何起点能力。事件已入库，但不会派发。
+            响应带 `available`（可用来源列表）与 `eventId`（如实告知已入库）。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, source, available]
+                properties:
+                  error: { type: string }
+                  source: { type: string }
+                  available:
+                    type: array
+                    items: { type: string }
+                  eventId:
+                    type: string
+                    description: 已入库的事件 ID（便于排查/清理孤儿行）
         "200":
           description: 事件已受理（含幂等命中）
           content:

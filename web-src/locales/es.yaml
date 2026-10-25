@@ -1112,6 +1112,8 @@ caps:
     from: Capacidad origen
     port: Salida
     port_hint: Solo se listan las salidas declaradas por la capacidad (conjunto cerrado, invariante I2).
+    port_hint_origin: "Para un origen, el puerto es el propio tipo de evento (lo decide el sistema externo, p. ej. pull_request.opened de GitHub)"
+    port_placeholder: pull_request.opened
     to: Capacidad destino
     remove: Eliminar
     removed: Eliminada

@@ -9,7 +9,7 @@
  *  2. Unicode/Emoji/换行/引号/尖括号 → 200 且 payload 原样存回（按文本存，不做转义）
  *  3. 超长 payload 字段 → 明确 200 或 400，绝不 500
  *  4. 同一 idemKey 并发提交 → 只产生一个事件（幂等约束在并发下成立）
- *  5. 不存在的 source（未定义 origin 能力）→ 200 且 origin 为空（事件仍收下）
+ *  5. 不存在的 source → 422（不是静默 200），错误里带 available 列表
  *  6. 极大 limit=99999 → 钳制，不 500
  *  7. 负数/非法 limit → 不 500，按默认处理
  */
@@ -36,8 +36,8 @@ async function main() {
 	const results = await Promise.all(
 		Array.from({ length: N }, (_, i) =>
 			notify({
-				source: "edge.src",
-				type: "tick",
+				source: "github",
+				type: "edge.tick",
 				payload: { seq: i },
 			}),
 		),
@@ -57,8 +57,8 @@ async function main() {
 		"部署完成 🎉 中文「引号」<script>alert(1)</script>\n换行\t制表";
 	const unicodeBody = "正文：émojis 🚀🔥、特殊字符 <>\"'&、多行\n第二行";
 	const u = await notify({
-		source: "edge.src",
-		type: "tick",
+		source: "github",
+		type: "edge.tick",
 		payload: { title: unicodeTitle, body: unicodeBody },
 	});
 	H.eq("Unicode/Emoji/特殊字符事件 → 200", u.status, 200);
@@ -87,8 +87,8 @@ async function main() {
 	const longTitle = "x".repeat(5000);
 	const longBody = "y".repeat(50000);
 	const big = await notify({
-		source: "edge.src",
-		type: "tick",
+		source: "github",
+		type: "edge.tick",
 		payload: { title: longTitle, body: longBody },
 	});
 	H.check(
@@ -99,8 +99,8 @@ async function main() {
 
 	// 超大 body（>1MB，超过 MaxBytesReader）必须 400 而不是 500
 	const huge = await notify({
-		source: "edge.src",
-		type: "tick",
+		source: "github",
+		type: "edge.tick",
 		payload: { body: "z".repeat(2 << 20) },
 	});
 	H.check(
@@ -115,8 +115,8 @@ async function main() {
 	const idem = await Promise.all(
 		Array.from({ length: 5 }, () =>
 			notify({
-				source: "edge.src",
-				type: "tick",
+				source: "github",
+				type: "edge.tick",
 				idemKey: sameKey,
 				payload: { n: 1 },
 			}),
@@ -130,17 +130,30 @@ async function main() {
 	const idemIDs = idem.map((r) => r.json?.eventId).filter(Boolean);
 	H.eq("同一 idemKey 只产生一个事件", new Set(idemIDs).size, 1);
 
-	// ---- 5. 未定义的 source ----
+	// ---- 5. 未定义的 source → 422 ----
+	//
+	// 早先是 200 + origin:""（"事件收下但派不出去"）。那会让调用方以为成功，
+	// 实际什么都没发生。现在显式 422 并列出可用来源。
 	console.log("--- 未定义的 source ---");
 	const noOrigin = await notify({
 		source: "no.such.source." + Date.now(),
 		type: "whatever",
 		payload: {},
 	});
-	H.eq("未定义 source 的事件仍 200", noOrigin.status, 200);
+	H.eq("未定义 source → 422（非静默 200）", noOrigin.status, 422);
 	H.check(
-		"未定义 source 的 origin 为空",
-		!noOrigin.json?.origin,
+		"422 带 available 列表",
+		Array.isArray(noOrigin.json?.available) && noOrigin.json.available.length > 0,
+		JSON.stringify(noOrigin.json),
+	);
+	H.check(
+		"available 提示含内置起点 github",
+		(noOrigin.json?.available || []).includes("github"),
+		JSON.stringify(noOrigin.json?.available),
+	);
+	H.check(
+		"422 如实回传 eventId（事件确实已入库）",
+		typeof noOrigin.json?.eventId === "string" && noOrigin.json.eventId.length > 0,
 		JSON.stringify(noOrigin.json),
 	);
 

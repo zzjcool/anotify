@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -95,9 +96,32 @@ type IngestResult struct {
 
 // ErrUnknownOrigin 表示 source 没有对应的 origin 能力定义。
 //
-// 这是**配置问题**（不是客户端错误）：事件已入库，但没法派发。
-// 调用方应记日志并返回 200（事件确实收下了），而不是 4xx。
+// 这是**调用方的错误**，不是"事件先存后补"的场景：
+// 没有起源能力的事件永远派不出去，存下来只是占库位。
+// 所以 HTTP 层应该返回 422 并告诉用户有哪些可用的 source，
+// 而不是 200 + 空 origin（那会让人以为成功了，实际什么都没发生）。
 var ErrUnknownOrigin = errors.New("unknown origin capability for source")
+
+// UnknownOriginError 携带可用 source 列表，供 HTTP 层写进错误信息。
+//
+// 用户看到 "未知来源 github-ee；可用：github、cron、http、manual"
+// 远比看到 "unknown origin capability for source" 有用——
+// 前者直接告诉下一步该填什么。
+type UnknownOriginError struct {
+	Source    string
+	Available []string
+}
+
+func (e *UnknownOriginError) Error() string {
+	if len(e.Available) == 0 {
+		return fmt.Sprintf("unknown origin %q; no capabilities defined yet", e.Source)
+	}
+	return fmt.Sprintf("unknown origin %q; available: %s",
+		e.Source, strings.Join(e.Available, ", "))
+}
+
+// Unwrap 让 errors.Is(err, ErrUnknownOrigin) 仍然成立。
+func (e *UnknownOriginError) Unwrap() error { return ErrUnknownOrigin }
 
 // Ingest 把一次外部变化变成事件行，并触发第一次派发（契约 §2.5 / §10.1）。
 //
@@ -209,7 +233,26 @@ func (s *Service) findOrigin(ctx context.Context, orgID, source string) (*store.
 		}
 	}
 	if best == nil {
-		return nil, fmt.Errorf("%w: no capability named %q", ErrUnknownOrigin, source)
+		// 把**能当起点**的能力名列给调用方——这是"下一步该做什么"的信息。
+		//
+		// 不能把中枢执行的终端能力（notify.phone）列进去：它没有节点、
+		// outputs 为空，按 DeriveKind 也会被算成 origin，但拿它当事件来源
+		// 毫无意义（source=notify.phone 的事件该派给谁？）。
+		// 列错了比不列更糟——用户会照着提示填一个错的值。
+		available := make([]string, 0, len(all))
+		seen := map[string]bool{}
+		for _, c := range all {
+			if seen[c.Name] {
+				continue
+			}
+			if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok && !bc.Origin {
+				continue // 中枢执行的内置能力（notify.phone）：不能当起点
+			}
+			seen[c.Name] = true
+			available = append(available, c.Name)
+		}
+		sort.Strings(available)
+		return nil, &UnknownOriginError{Source: source, Available: available}
 	}
 	return best, nil
 }

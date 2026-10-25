@@ -1112,6 +1112,8 @@ caps:
     from: From capability
     port: Output
     port_hint: Only outputs declared by the capability are listed (outputs are closed, invariant I2).
+    port_hint_origin: "For an origin, the port is the event type itself (decided by the external system, e.g. GitHub's pull_request.opened)"
+    port_placeholder: pull_request.opened
     to: To capability
     remove: Delete
     removed: Deleted

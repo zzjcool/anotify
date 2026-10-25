@@ -13,6 +13,19 @@ import (
 
 // Edge 是 edges 表的一行：出口表是路由的唯一依据（契约 §2.4）。
 //
+// isOriginCapability 判断某个能力定义是不是内置起点。
+//
+// 起点没有节点声明（kind=origin），出口是「任意事件类型」。
+// 注意这里按 name+version 查内置表，而不是看 outputs——
+// 用户自定义的、恰好没有 outputs 的能力**不应该**获得通配出口。
+func isOriginCapability(c *CapabilityVersion) bool {
+	if c == nil {
+		return false
+	}
+	bc, ok := IsBuiltinCapability(c.Name, c.Version)
+	return ok && bc.Origin
+}
+
 // 一行 = 一条边；同一 (FromCapability, FromPort) 可有多行 → 扇出（不变量 I7：
 // 两端都是 capability_id，图里没有机器）。
 type Edge struct {
@@ -62,7 +75,14 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	if from.OrgID != e.OrgID || to.OrgID != e.OrgID {
 		return fmt.Errorf("%w: cross-org edge not allowed", ErrEdgeRejected)
 	}
-	if !from.HasOutput(e.FromPort) {
+	// 出口封闭集合（不变量 I2）：from_port 必须属于该能力的 outputs。
+	//
+	// 唯一例外是**内置起点**（github/cron/http/manual）：它的出口就是
+	// "任意事件类型"，不可能预先枚举。所以对起点只要求非空。
+	//
+	// 这没有放松 I2 的本意——I2 要防的是「凭空发明下游口子」，
+	// 而起点的事件类型本来就由外部系统决定（GitHub 发什么 type 就是什么）。
+	if !isOriginCapability(from) && !from.HasOutput(e.FromPort) {
 		return fmt.Errorf("%w: port %q not in %s@%d outputs %v",
 			ErrEdgeRejected, e.FromPort, from.Name, from.Version, from.Outputs)
 	}
