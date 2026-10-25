@@ -4,6 +4,9 @@ common:
     tagline: エージェント完了通知
   nav:
     overview: 概要
+    events: イベントストリーム
+    capabilities: ケイパビリティとエッジ
+    nodes: ノード
     receivers: 通知先
     keys: API Keys
     integration: 連携
@@ -211,6 +214,12 @@ index:
     n7_body: 8 件の依存関係を最新安定版にアップグレード、破壊的変更なし。
     n8_title: バックアップ完了
     n8_body: DB スナップショットを生成しオブジェクトストレージにアップロード、1.2 GB。
+  events:
+    title: 最近のイベント
+    subtitle: 何が届き、どのタスクが生まれたか
+    open: イベントストリームを開く →
+    loading: イベントを読み込み中…
+    empty: イベントはまだありません。webhook や cron トリガーを繋ぐと、ここに流れが表示されます。
 connect:
   title: Agent 連携
   subtitle: お使いの Agent に通知プラグインをインストールします。インストール後、プラグインがログイン認可まで案内し、タスク完了時に通知をデバイスへ自動配信します。
@@ -991,3 +1000,88 @@ admin:
     load_sessions: セッションの読み込みに失敗
     action: 操作に失敗
     network: ネットワークエラー
+events:
+  title: イベントストリーム
+  subtitle: 外部世界の変化 → タスクチェーン → 結果。イベントをクリックするとチェーン全体を表示します。
+  refresh: 更新
+  recent: 最近のイベント
+  loading: イベントを読み込み中…
+  empty: イベントはまだありません。POST /v1/events で送信してください。
+  demo_badge: デモモード — バックエンド未接続
+  demo_hint: バックエンド未接続のため、実際のイベントはまだありません。
+  count: "{n} 件のイベント"
+  view_chain: チェーンを表示
+  filter:
+    trace: Trace ID
+    apply: 絞り込む
+  chain:
+    title: タスクチェーン
+    empty: このトレースにタスクはありません（最初のステップで剪定された可能性があります）。
+    no_root: ルートタスクが見つかりません（トレースが不完全な可能性があります）。
+    out_none: 未報告
+    out_end: 終端に到達
+caps:
+  title: ケイパビリティとエッジ
+  subtitle: ケイパビリティは「何をするか」だけを表し（「どうやるか」は含みません）、エッジ表がイベントの次の行き先を決めます。
+  new: ケイパビリティを定義
+  loading: ケイパビリティを読み込み中…
+  empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
+  count: "{n} 個のケイパビリティ"
+  no_outputs: 出口なし（終端ケイパビリティ）
+  list:
+    title: ケイパビリティ一覧
+  form:
+    name: ケイパビリティ名
+    outputs: 出口名（カンマ区切り）
+    outputs_hint: 出口は閉じた集合です — エッジにはここで宣言した名前しか使えません。
+    schema: パラメータ検証（JSON Schema）
+    schema_hint: 制御されたサブセットのみ（$ref / if-then-else 非対応）。ハブは式を評価しません。
+    cancel: キャンセル
+    submit: 作成
+    created: ケイパビリティを作成しました
+    create_failed: "作成に失敗: "
+    err_name: ケイパビリティ名を入力してください
+    err_schema: paramsSchema が正しい JSON ではありません
+  edges:
+    title: エッジ
+    new: エッジを追加
+    desc: 各エッジは「このケイパビリティのこの出口が別のケイパビリティを指す」ことを表します。1 つの出口に複数のエッジを張れます（ファンアウト）。
+    empty: "エッジ表が空です: ここに届いたイベントの行き先がありません。"
+    from: 起点ケイパビリティ
+    port: 出口
+    port_hint: そのケイパビリティが宣言した出口のみ表示されます（出口は閉集合、不変条件 I2）。
+    to: 終点ケイパビリティ
+    remove: 削除
+    removed: 削除しました
+    remove_failed: "削除に失敗: "
+    created: エッジを作成しました
+    create_failed: "作成に失敗: "
+    err_incomplete: 起点・出口・終点を選択してください
+    no_ports: （このケイパビリティには出口がありません）
+nodes:
+  title: ノード
+  subtitle: 実行者です。ノードはケイパビリティの実行方法を知っており、ハブは「何をするか」だけを伝えます。
+  refresh: 更新
+  loading: ノードを読み込み中…
+  empty: ノードがまだありません。下の手順で最初の 1 台を登録してください。オンラインになると仕事を受けます。
+  count: "{online}/{total} オンライン"
+  never: なし
+  last_seen: ハートビート
+  no_caps: ケイパビリティ未宣言
+  slots: "スロット {busy}/{total}"
+  drain: ドレイン
+  draining_hint: ドレイン中
+  drain_confirm: "{name} をドレインしますか？実行中のタスクは完了しますが、新しいタスクは受けません。"
+  drain_done: ドレインしました
+  drain_failed: "ドレインに失敗: "
+  status:
+    online: オンライン
+    offline: オフライン
+    draining: ドレイン中
+  list:
+    title: ノード一覧
+  howto:
+    title: ノードの接続方法
+    desc: ノード登録は運用者向けの操作（セルフサービスではありません）なので、サーバー上で実行します。トークンは一度だけ返されます。
+    step1: サーバー上でノードを登録（実行できるケイパビリティを宣言）
+    step2: ノードのマシンでトークンを使って起動。WS でハブに接続します

@@ -4,6 +4,9 @@ common:
     tagline: Get notified when your agents finish
   nav:
     overview: Overview
+    events: Event Stream
+    capabilities: Capabilities & Edges
+    nodes: Nodes
     receivers: Receivers
     keys: API Keys
     integration: Integrations
@@ -211,6 +214,12 @@ index:
     n7_body: Upgraded 8 dependencies to latest stable, no breaking changes.
     n8_title: Backup complete
     n8_body: Database snapshot generated and uploaded to object storage, 1.2 GB.
+  events:
+    title: Recent events
+    subtitle: What came in, and which tasks it spawned
+    open: Open event stream →
+    loading: Loading events…
+    empty: No events yet. Once a webhook or cron trigger is wired up, the stream shows here.
 connect:
   title: Connect Agent
   subtitle: Install a notification plugin for your Agent. After install, the plugin guides you through login authorization, then automatically delivers notifications to your devices when tasks finish.
@@ -991,3 +1000,88 @@ admin:
     load_sessions: Failed to load sessions
     action: Action failed
     network: Network error
+events:
+  title: Event Stream
+  subtitle: Changes in the outside world → task chains → results. Click any event to inspect its full chain.
+  refresh: Refresh
+  recent: Recent events
+  loading: Loading events…
+  empty: No events yet. Submit one with POST /v1/events.
+  demo_badge: Demo mode — backend not connected
+  demo_hint: Backend not connected, no real events yet.
+  count: "{n} events"
+  view_chain: View chain
+  filter:
+    trace: Trace ID
+    apply: Filter
+  chain:
+    title: Task chain
+    empty: No tasks under this trace (it may have been pruned at the first step).
+    no_root: Root task not found (the trace may be incomplete).
+    out_none: Not reported
+    out_end: End reached
+caps:
+  title: Capabilities & Edges
+  subtitle: A capability says WHAT to do (never HOW); the edge table decides where an event goes next.
+  new: Define capability
+  loading: Loading capabilities…
+  empty: No capabilities yet. Define one so nodes can declare it.
+  count: "{n} capabilities"
+  no_outputs: No outputs (terminal capability)
+  list:
+    title: Capabilities
+  form:
+    name: Capability name
+    outputs: Output names (comma separated)
+    outputs_hint: Outputs are a closed set — edges can only use names declared here.
+    schema: Param validation (JSON Schema)
+    schema_hint: Controlled subset only (no $ref / if-then-else); the hub never evaluates expressions.
+    cancel: Cancel
+    submit: Create
+    created: Capability created
+    create_failed: "Create failed: "
+    err_name: Please enter a capability name
+    err_schema: paramsSchema is not valid JSON
+  edges:
+    title: Edges
+    new: New edge
+    desc: Each edge means "this output of this capability points at another capability". One output may have several edges (fan-out).
+    empty: "Edge table is empty: events arriving here have nowhere to go."
+    from: From capability
+    port: Output
+    port_hint: Only outputs declared by the capability are listed (outputs are closed, invariant I2).
+    to: To capability
+    remove: Delete
+    removed: Deleted
+    remove_failed: "Delete failed: "
+    created: Edge created
+    create_failed: "Create failed: "
+    err_incomplete: Pick a source, an output and a target
+    no_ports: (this capability has no outputs)
+nodes:
+  title: Nodes
+  subtitle: The executors. A node knows how to run a capability; the hub only tells it what to do.
+  refresh: Refresh
+  loading: Loading nodes…
+  empty: No nodes yet. Register the first one below — it starts taking work once it is online.
+  count: "{online}/{total} online"
+  never: Never
+  last_seen: Heartbeat
+  no_caps: No capabilities declared
+  slots: "Slots {busy}/{total}"
+  drain: Drain
+  draining_hint: Draining
+  drain_confirm: Drain {name}? It finishes current tasks but takes no new ones.
+  drain_done: Drained
+  drain_failed: "Drain failed: "
+  status:
+    online: Online
+    offline: Offline
+    draining: Draining
+  list:
+    title: Nodes
+  howto:
+    title: How to connect a node
+    desc: Node registration is an operator action (not self-service), so run it on the server. The token is returned only once.
+    step1: Register the node on the server (declare which capabilities it can run)
+    step2: Start it on the node machine with the token; it connects back over WS

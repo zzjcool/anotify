@@ -227,6 +227,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/events", noStore(eventH))
 	// 控制台端点：登录会话 + 组织维度校验
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(consoleH.tasks))))
+	// 控制台读事件流：走会话 Cookie（机器入口的 GET /v1/events 走 Bearer Key）。
+	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(consoleH.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))

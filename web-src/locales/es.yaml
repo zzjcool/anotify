@@ -4,6 +4,9 @@ common:
     tagline: Notifica cuando tu agente termina
   nav:
     overview: Resumen
+    events: Flujo de eventos
+    capabilities: Capacidades y aristas
+    nodes: Nodos
     receivers: Destinatarios
     keys: API Keys
     integration: Integraciones
@@ -211,6 +214,12 @@ index:
     n7_body: 8 dependencias actualizadas a la última versión estable, sin cambios disruptivos.
     n8_title: Backup completado
     n8_body: Snapshot de BD generado y subido a almacenamiento de objetos, 1.2 GB.
+  events:
+    title: Eventos recientes
+    subtitle: Qué llegó y qué tareas generó
+    open: Abrir flujo de eventos →
+    loading: Cargando eventos…
+    empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
 connect:
   title: Conectar Agent
   subtitle: Instala un plugin de notificación para tu Agent. Tras la instalación, el plugin te guía por la autorización de inicio de sesión y entrega notificaciones a tus dispositivos al terminar las tareas.
@@ -991,3 +1000,88 @@ admin:
     load_sessions: Error al cargar sesiones
     action: Acción fallida
     network: Error de red
+events:
+  title: Flujo de eventos
+  subtitle: Cambios del mundo exterior → cadenas de tareas → resultados. Haz clic en un evento para ver su cadena completa.
+  refresh: Actualizar
+  recent: Eventos recientes
+  loading: Cargando eventos…
+  empty: Aún no hay eventos. Envía uno con POST /v1/events.
+  demo_badge: Modo demo — backend no conectado
+  demo_hint: Backend no conectado, aún no hay eventos reales.
+  count: "{n} eventos"
+  view_chain: Ver cadena
+  filter:
+    trace: Trace ID
+    apply: Filtrar
+  chain:
+    title: Cadena de tareas
+    empty: No hay tareas en esta traza (puede haberse podado en el primer paso).
+    no_root: No se encontró la tarea raíz (la traza puede estar incompleta).
+    out_none: Sin reportar
+    out_end: Fin alcanzado
+caps:
+  title: Capacidades y aristas
+  subtitle: Una capacidad dice QUÉ hacer (nunca CÓMO); la tabla de aristas decide a dónde va un evento.
+  new: Definir capacidad
+  loading: Cargando capacidades…
+  empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
+  count: "{n} capacidades"
+  no_outputs: Sin salidas (capacidad terminal)
+  list:
+    title: Capacidades
+  form:
+    name: Nombre de la capacidad
+    outputs: Nombres de salida (separados por comas)
+    outputs_hint: Las salidas son un conjunto cerrado — las aristas solo pueden usar nombres declarados aquí.
+    schema: Validación de parámetros (JSON Schema)
+    schema_hint: Solo un subconjunto controlado (sin $ref / if-then-else); el hub nunca evalúa expresiones.
+    cancel: Cancelar
+    submit: Crear
+    created: Capacidad creada
+    create_failed: "Error al crear: "
+    err_name: Introduce un nombre de capacidad
+    err_schema: paramsSchema no es JSON válido
+  edges:
+    title: Aristas
+    new: Nueva arista
+    desc: Cada arista significa "esta salida de esta capacidad apunta a otra capacidad". Una salida puede tener varias aristas (fan-out).
+    empty: "La tabla de aristas está vacía: los eventos que llegan aquí no tienen a dónde ir."
+    from: Capacidad origen
+    port: Salida
+    port_hint: Solo se listan las salidas declaradas por la capacidad (conjunto cerrado, invariante I2).
+    to: Capacidad destino
+    remove: Eliminar
+    removed: Eliminada
+    remove_failed: "Error al eliminar: "
+    created: Arista creada
+    create_failed: "Error al crear: "
+    err_incomplete: Elige origen, salida y destino
+    no_ports: (esta capacidad no tiene salidas)
+nodes:
+  title: Nodos
+  subtitle: Los ejecutores. Un nodo sabe cómo ejecutar una capacidad; el hub solo le dice qué hacer.
+  refresh: Actualizar
+  loading: Cargando nodos…
+  empty: Aún no hay nodos. Registra el primero abajo — empieza a recibir trabajo cuando esté en línea.
+  count: "{online}/{total} en línea"
+  never: Nunca
+  last_seen: Latido
+  no_caps: Sin capacidades declaradas
+  slots: "Ranuras {busy}/{total}"
+  drain: Vaciar
+  draining_hint: Vaciando
+  drain_confirm: ¿Vaciar {name}? Termina las tareas actuales pero no acepta nuevas.
+  drain_done: Vaciado
+  drain_failed: "Error al vaciar: "
+  status:
+    online: En línea
+    offline: Desconectado
+    draining: Vaciando
+  list:
+    title: Nodos
+  howto:
+    title: Cómo conectar un nodo
+    desc: El registro de nodos es una acción de operador (no autoservicio), así que ejecútala en el servidor. El token se devuelve una sola vez.
+    step1: Registra el nodo en el servidor (declara qué capacidades puede ejecutar)
+    step2: Arráncalo en la máquina del nodo con el token; se conecta de vuelta por WS
