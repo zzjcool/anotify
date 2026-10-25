@@ -81,7 +81,7 @@ TAIL_PID=""
 # .gitignore 的 `web/*.html` 已覆盖它，不会入库。
 AUTOLOGIN_PAGE="web/__dev_login.html"
 AUTOLOGIN_URL=""
-TUNNEL_URL="https://dev.openaaas.org"
+TUNNEL_URL=""  # 由 tunnel 段填（quick 模式下来自 trycloudflare 日志）
 
 cleanup() {
 	echo ""
@@ -113,25 +113,58 @@ cleanup() {
 # 导致 cleanup 跑两遍（日志里两行「停止服务」）。EXIT 在正常退出和被信号杀死时都会跑。
 trap cleanup EXIT
 
-if [ "${NO_TUNNEL:-0}" = "1" ]; then
-	echo "▶ NO_TUNNEL=1，跳过 cloudflared tunnel"
+# tunnel 模式（默认 quick = trycloudflare 随机域名）
+#
+#   quick（默认）  cloudflared tunnel --url …  → https://<随机>.trycloudflare.com
+#                  零配置、不碰任何已登录的命名 tunnel。域名每次启动都会变，
+#                  所以靠日志解析（没有别的 API 能拿到它）。
+#   named          走你自己的命名 tunnel（固定域名，来自 .env.local 的
+#                  ANOTIFY_RP_ID / ANOTIFY_RP_ORIGIN）。需要事先 cloudflared login
+#                  + tunnel create + 配好 DNS。默认**不用**，因为随机域名已经够用，
+#                  动用户的命名 tunnel 属于越界。
+#   none           NO_TUNNEL=1，只起本地
+TUNNEL_MODE="${ANOTIFY_TUNNEL:-quick}"
+[ "${NO_TUNNEL:-0}" = "1" ] && TUNNEL_MODE="none"
+
+if [ "$TUNNEL_MODE" = "none" ]; then
+	echo "▶ 跳过 cloudflared tunnel（TUNNEL_MODE=none）"
+elif ! command -v cloudflared >/dev/null 2>&1; then
+	echo "⚠️  cloudflared 未安装，跳过 tunnel（brew install cloudflared）"
 else
-	if ! command -v cloudflared >/dev/null 2>&1; then
-		echo "⚠️  cloudflared 未安装，跳过 tunnel（brew install cloudflared）"
-	else
-		echo "▶ 启动 cloudflared tunnel（dev.openaaas.org → localhost:${PORT_NUM}）…"
-		cloudflared tunnel run anotify >/tmp/anotify-tunnel.log 2>&1 &
+	TUNNEL_LOG=/tmp/anotify-tunnel.log
+	: >"$TUNNEL_LOG"
+	if [ "$TUNNEL_MODE" = "named" ]; then
+		TUNNEL_NAME="${ANOTIFY_TUNNEL_NAME:-anotify}"
+		echo "▶ 启动命名 tunnel（$TUNNEL_NAME → localhost:${PORT_NUM}）…"
+		cloudflared tunnel run "$TUNNEL_NAME" >"$TUNNEL_LOG" 2>&1 &
 		TUNNEL_PID=$!
-		# 等 tunnel 就绪（日志出现 "Registered tunnel connection"）
-		for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-			if grep -q "Registered tunnel connection\|connection registered" /tmp/anotify-tunnel.log 2>/dev/null; then
-				echo "  ✅ tunnel 就绪（https://dev.openaaas.org）"
+		for _ in $(seq 1 20); do
+			if grep -q "Registered tunnel connection\|connection registered" "$TUNNEL_LOG" 2>/dev/null; then
+				TUNNEL_URL="${ANOTIFY_RP_ORIGIN:-https://dev.openaaas.org}"
+				echo "  ✅ tunnel 就绪（$TUNNEL_URL）"
 				break
 			fi
 			sleep 1
 		done
-		echo "  tunnel 日志：tail -f /tmp/anotify-tunnel.log"
+	else
+		echo "▶ 启动 quick tunnel（trycloudflare 随机域名 → localhost:${PORT_NUM}）…"
+		cloudflared tunnel --url "http://localhost:${PORT_NUM}" --no-autoupdate >"$TUNNEL_LOG" 2>&1 &
+		TUNNEL_PID=$!
+		# 域名只能从日志里解析：cloudflared 会打一行
+		#   INF |  https://<随机>.trycloudflare.com   |
+		for _ in $(seq 1 30); do
+			TUNNEL_URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$TUNNEL_LOG" 2>/dev/null | head -1)
+			[ -n "$TUNNEL_URL" ] && break
+			sleep 1
+		done
+		if [ -n "$TUNNEL_URL" ]; then
+			echo "  ✅ tunnel 就绪（$TUNNEL_URL）"
+		else
+			echo "  ⚠️  30s 内没拿到 trycloudflare 域名，日志：$TUNNEL_LOG"
+			tail -5 "$TUNNEL_LOG" 2>/dev/null | sed 's/^/     /'
+		fi
 	fi
+	echo "  tunnel 日志：tail -f $TUNNEL_LOG"
 fi
 
 # ---------- 5. 开发账号 + 自动登录页 ----------

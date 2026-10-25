@@ -113,6 +113,22 @@ make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 必须与访问域名严格一致**，换成 trycloudflare 随机域名 / 局域网 IP / 手机访问时
 就注册不了 passkey，否则每次都要手工造会话、手工往浏览器粘 cookie。
 
+#### tunnel 模式
+
+`make dev` 默认起 **quick tunnel**（trycloudflare 随机域名），零配置，
+**不会碰你已登录的命名 tunnel**：
+
+```
+▶ 启动 quick tunnel（trycloudflare 随机域名 → localhost:8080）…
+  ✅ tunnel 就绪（https://<随机>.trycloudflare.com）
+```
+
+| 变量 | 行为 |
+|---|---|
+| （默认） | quick tunnel，随机域名每次变；域名从 cloudflared 日志解析 |
+| `ANOTIFY_TUNNEL=named` | 用命名 tunnel（固定域名）；需事先 `cloudflared login` + `tunnel create` + 配 DNS。名字由 `ANOTIFY_TUNNEL_NAME`（默认 `anotify`）指定 |
+| `NO_TUNNEL=1` | 只起本地，不起 tunnel |
+
 可选环境变量：
 
 | 变量 | 作用 |
