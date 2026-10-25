@@ -87,6 +87,32 @@ func parseMigrations(src string) (migrationSet, error) {
 var migrationHooks = map[int]func(*sql.Tx) error{
 	2: migrateLegacyColumns,
 	3: fixLegacyMessageColumns,
+	5: migrateNewModelColumns,
+}
+
+// migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
+//
+// 为什么单独一个迁移而不是塞进迁移 2：迁移 2 叫 legacy_columns，跑在
+// **迁移 4 之前**，那时 tasks 表还不存在，ALTER 必然失败。
+// 新模型的列只能放在建表之后。
+func migrateNewModelColumns(tx *sql.Tx) error {
+	alters := []struct{ table, column, ddl string }{
+		// 退避时间：NULL = 立刻可派（契约 §3.3）。老任务补 NULL 即可，行为不变。
+		{"tasks", "not_before", `ALTER TABLE tasks ADD COLUMN not_before INTEGER`},
+	}
+	for _, a := range alters {
+		has, err := hasColumn(tx, a.table, a.column)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := tx.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", a.table, a.column, err)
+		}
+	}
+	return nil
 }
 
 // migrate 应用所有未记账的迁移，并返回本次实际应用的版本数。

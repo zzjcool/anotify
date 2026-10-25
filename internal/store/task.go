@@ -31,6 +31,15 @@ const (
 	AckWaitSec = 20
 	// DeadAfterHeartbeats 是判死倍数：超过 2×心跳无上行帧即判死。
 	DeadAfterHeartbeats = 2
+	// LeaseSweepIntervalSec 是租约巡检周期：每 5s 扫一次过期租约。
+	//
+	// 取 5s 而不是 30s（= TTL）：最坏情况下任务多占 5s 才被发现，
+	// 用户等待可接受；再小则空扫太频繁。
+	LeaseSweepIntervalSec = 5
+	// RetryBackoffSec 是重派退避序列（契约 §3.3）：第 n 次失败后等多久。
+	//
+	// 第 1/2/3 次失败 → 10s / 60s / 300s；超出序列则一直用最后一个。
+	RetryBackoffSec = "10,60,300"
 )
 
 // ErrInvalidTransition 表示状态机拒绝该迁移（契约 §3.2 表外的一切组合）。
@@ -75,13 +84,16 @@ type Task struct {
 	CreatedAt    int64           `json:"createdAt"`
 	StartedAt    *int64          `json:"startedAt"`
 	FinishedAt   *int64          `json:"finishedAt"`
+	// NotBefore 是退避时间：早于此刻的 pending 任务不该被重派（契约 §3.3）。
+	// nil 表示立刻可派。
+	NotBefore *int64 `json:"notBefore"`
 }
 
 // taskColumns 是统一的列顺序，scanTask 依赖它。
 const taskColumns = `id, org_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
 	out, reported, summary, artifacts, error, cap_hash, graph_id,
-	created_at, started_at, finished_at`
+	created_at, started_at, finished_at, not_before`
 
 // scanTask 从 rows 解析一行。
 func scanTask(rows *sql.Rows) (*Task, error) {
@@ -92,7 +104,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		&t.ID, &t.OrgID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
 		&t.Version, &params, &t.Status, &t.NodeID, &t.InstanceID, &t.LeaseUntil, &t.Attempts,
 		&t.Out, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.GraphID,
-		&t.CreatedAt, &t.StartedAt, &t.FinishedAt,
+		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
@@ -738,4 +750,80 @@ func (d *DB) CountTasksByStatus(ctx context.Context, orgID, traceID string) (map
 		out[status] = n
 	}
 	return out, rows.Err()
+}
+
+// RetryBackoff 返回第 attempts 次失败后的退避时长（秒）。
+//
+// 契约 §3.3：10s / 60s / 300s。超出序列则一直用最后一个值，
+// 不会无限增长——重试有 attempts 上限兜底，退避只需单调不降。
+func RetryBackoff(attempts int) int64 {
+	seq := []int64{10, 60, 300}
+	if attempts <= 0 {
+		return 0
+	}
+	idx := attempts - 1
+	if idx >= len(seq) {
+		idx = len(seq) - 1
+	}
+	return seq[idx]
+}
+
+// ListRedispatchable 列出「可以立刻重派」的 pending 任务。
+//
+// 三个条件缺一不可：
+//   - status = pending（回滚/新建后等待调度的）
+//   - node_id IS NULL（没有归属；有归属的说明已经被派过）
+//   - not_before IS NULL OR not_before <= now（退避期已过）
+//
+// 按 not_before、created_at 排序：先重试等得最久的，避免老任务饿死。
+func (d *DB) ListRedispatchable(ctx context.Context, now int64, limit int) ([]*Task, error) {
+	if now == 0 {
+		now = Now()
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := d.QueryContext(ctx,
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE status = ? AND node_id IS NULL
+		   AND (not_before IS NULL OR not_before <= ?)
+		 ORDER BY COALESCE(not_before, 0), created_at, id
+		 LIMIT ?`,
+		TaskPending, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list redispatchable: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate redispatchable: %w", err)
+	}
+	if out == nil {
+		out = []*Task{} // 不变量 I9
+	}
+	return out, nil
+}
+
+// SetNotBefore 设置任务的退避时间（重派失败时调用）。
+//
+// 只对 pending 任务生效：其他状态设退避没有意义（它们不在调度池里）。
+func (d *DB) SetNotBefore(ctx context.Context, orgID, taskID string, notBefore int64) error {
+	res, err := d.ExecContext(ctx,
+		`UPDATE tasks SET not_before = ? WHERE org_id = ? AND id = ? AND status = ?`,
+		notBefore, orgID, taskID, TaskPending)
+	if err != nil {
+		return fmt.Errorf("set not_before: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: task %s", ErrNotFound, taskID)
+	}
+	return nil
 }

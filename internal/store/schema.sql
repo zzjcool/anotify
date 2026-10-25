@@ -304,7 +304,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 
     created_at     INTEGER NOT NULL,
     started_at     INTEGER,
-    finished_at    INTEGER
+    finished_at    INTEGER,
+
+    -- 退避：早于此刻的 pending 任务不该被重派（契约 §3.3 的 10s/60s/300s）。
+    -- NULL 表示「立刻可派」（新建任务、或没经历过失败）。
+    not_before     INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_trace   ON tasks(org_id, trace_id);

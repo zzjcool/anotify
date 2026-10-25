@@ -11,6 +11,7 @@ import (
 	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/lease"
 	"github.com/zzjcool/anotify/internal/push"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
@@ -189,6 +190,35 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 任务成功回报 out 后派发下一跳（契约 §4 的递归应用）。
 	// 不接这个的话整条链路只能走一步——第一跳完成后就永远停在那里。
 	nodeH.NextHop = dispatcher
+
+	// 租约巡检（契约 §3.3）：每 5s 回收过期租约并重派到期的 pending 任务。
+	//
+	// 没有它的话，节点异常下线后任务会永远停在 assigned/acked/running：
+	// 租约到期没人扫 → 任务不回收 → 槽位永久占用 → 节点并发能力逐次泄漏。
+	// 这是自愈机制，单轮失败只记日志，不能停摆。
+	sweeper := lease.New(db)
+	sweeper.Redispatch = func(sctx context.Context, task *store.Task) (bool, error) {
+		ok, err := dispatcher.RedispatchTask(sctx, task)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			// 这次没派成（没节点/容量不足）：设退避，避免每 5s 空转打日志。
+			// 不动 status——任务本来就是 pending。
+			backoff := store.RetryBackoff(task.Attempts)
+			if backoff > 0 {
+				if serr := db.SetNotBefore(sctx, task.OrgID, task.ID, store.Now()+backoff); serr != nil {
+					slog.Warn("set retry backoff failed",
+						"event", "lease.sweeper.backoff_failed",
+						"task_id", task.ID,
+						"error", serr.Error(),
+					)
+				}
+			}
+		}
+		return ok, nil
+	}
+	go sweeper.Run(ctx)
 	mux.Handle("GET /v1/node/stream", noStore(nodeH))
 
 	// --- 事件中心（#58 / #59）---
