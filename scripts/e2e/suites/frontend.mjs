@@ -1020,6 +1020,129 @@ main().catch(async (e) => {
 // 逐个确认 mock 有对应实现（返回 501 = 未实现）。
 // ---------------------------------------------------------------------------
 
+// checkSchemaEditor 验证 paramsSchema 的可视化编辑器（#92）。
+//
+// 这条最关键的断言不是"能加字段"，而是**不丢数据**：
+// 用户手写在 JSON 里、可视化表达不了的东西（patternProperties / $schema）
+// 切到可视化时必须提示并保留，绝不能被静默吞掉。
+// 另一个关键是非法 JSON 时不能切模式（否则用户的输入就没了）。
+async function checkSchemaEditor(page) {
+	const base = page.url().replace(/\/edge[s]?\.html.*$|\/capabilities\.html.*$/, "");
+	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1600);
+
+	const opened = await page.evaluate(() => {
+		const btn = document.querySelector("button[onclick='openCapModal()']");
+		if (!btn) return false;
+		btn.click();
+		return true;
+	});
+	H.check("能打开新建能力弹窗", opened === true);
+	if (!opened) return;
+	await page.waitForTimeout(500);
+
+	// 默认应该是可视化模式
+	const initial = await page.evaluate(() => ({
+		formVisible: !document.getElementById("schema-form").classList.contains("hidden"),
+		jsonVisible: !document.getElementById("schema-json").classList.contains("hidden"),
+	}));
+	H.check("schema 默认是可视化模式", initial.formVisible && !initial.jsonVisible,
+		`form=${initial.formVisible} json=${initial.jsonVisible}`);
+
+	// 加字段
+	await page.click("#schema-add-field");
+	await page.waitForTimeout(150);
+	await page.click("#schema-add-field");
+	await page.waitForTimeout(250);
+	const added = await page.evaluate(() => document.querySelectorAll(".sf-row").length);
+	H.check("可视化模式能加字段", added === 2, `rows=${added}`);
+
+	// 切到 JSON 看生成的结构
+	await page.click("#schema-mode-json");
+	await page.waitForTimeout(300);
+	const gen = await page.evaluate(() => {
+		try {
+			return JSON.parse(document.getElementById("cap-schema").value);
+		} catch (e) {
+			return null;
+		}
+	});
+	H.check("切到 JSON 后是合法 JSON", gen != null);
+	H.check("生成的是 object schema", gen && gen.type === "object", JSON.stringify(gen && gen.type));
+	H.check(
+		"生成的 properties 有刚加的字段",
+		gen && gen.properties && Object.keys(gen.properties).length === 2,
+		JSON.stringify(gen && gen.properties && Object.keys(gen.properties)),
+	);
+	H.check(
+		"没有生成后端不支持的 key（$ref/oneOf/if-then-else）",
+		gen && !["$ref", "oneOf", "anyOf", "allOf", "if"].some((k) => k in gen),
+		JSON.stringify(gen && Object.keys(gen)),
+	);
+
+	// 手写含"可视化表达不了"的 key，切回可视化 → 必须提示且保留
+	await page.evaluate(() => {
+		document.getElementById("cap-schema").value = JSON.stringify(
+			{
+				type: "object",
+				properties: { channel: { type: "string", enum: ["slack", "email"] } },
+				required: ["channel"],
+				patternProperties: { "^x-": { type: "string" } },
+			},
+			null,
+			2,
+		);
+	});
+	await page.click("#schema-mode-form");
+	await page.waitForTimeout(400);
+
+	const preserved = await page.evaluate(() => {
+		const pEl = document.getElementById("schema-preserved");
+		return {
+			notified: pEl && !pEl.classList.contains("hidden"),
+			text: pEl ? pEl.textContent.trim() : "",
+			rows: document.querySelectorAll(".sf-row").length,
+		};
+	});
+	H.check("可视化表达不了的 key 有明确提示", preserved.notified === true, preserved.text);
+	H.check("提示里点名了 patternProperties", /patternProperties/.test(preserved.text), preserved.text);
+	H.check("能渲染的部分照常渲染", preserved.rows === 1, `rows=${preserved.rows}`);
+
+	// 再切回 JSON：那个 key 必须还在
+	await page.click("#schema-mode-json");
+	await page.waitForTimeout(300);
+	const kept = await page.evaluate(() => {
+		try {
+			return JSON.parse(document.getElementById("cap-schema").value);
+		} catch (e) {
+			return null;
+		}
+	});
+	H.check(
+		"逐键往返不丢数据（patternProperties 还在）",
+		kept && kept.patternProperties && kept.patternProperties["^x-"],
+		JSON.stringify(kept && kept.patternProperties),
+	);
+	H.check(
+		"enum 往返不丢",
+		kept && kept.properties && JSON.stringify(kept.properties.channel?.enum) === '["slack","email"]',
+		JSON.stringify(kept && kept.properties && kept.properties.channel),
+	);
+
+	// 非法 JSON：不能切模式（否则用户输入丢了）
+	await page.evaluate(() => {
+		document.getElementById("cap-schema").value = "{ broken";
+	});
+	await page.click("#schema-mode-form");
+	await page.waitForTimeout(400);
+	const bad = await page.evaluate(() => ({
+		stillJson: !document.getElementById("schema-json").classList.contains("hidden"),
+		text: document.getElementById("cap-schema").value,
+	}));
+	H.check("非法 JSON 时不切换到可视化", bad.stillJson === true);
+	H.check("非法 JSON 时保留用户输入", bad.text === "{ broken", JSON.stringify(bad.text));
+}
+
 // checkEdgesPage 验证出口表已经独立成页（#93）。
 //
 // 核心断言：能力页不再有出口表、出口页有、两侧导航一致、
@@ -1451,7 +1574,10 @@ async function runMockCoverage() {
 		await page.goto(`${base}/${p}`, { waitUntil: "load", timeout: 20000 });
 		await page.waitForTimeout(1200);
 		// 流向图的形状断言放在带 mock 数据的 sources.html 上
-		if (p === "capabilities.html") await checkEdgesPage(page);
+		if (p === "capabilities.html") {
+			await checkSchemaEditor(page);
+			await checkEdgesPage(page);
+		}
 		if (p === "sources.html") await checkFlowChart(page);
 		if (p === "events.html") {
 			await checkEventsFilter(page, base);

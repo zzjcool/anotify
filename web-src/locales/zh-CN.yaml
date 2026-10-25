@@ -1127,6 +1127,18 @@ caps:
     create_failed: 创建失败：
     err_name: 请填写能力名
     err_schema: paramsSchema 不是合法 JSON
+    schema_mode_form: 可视化
+    schema_mode_json: JSON
+    schema_add_field: 添加字段
+    schema_no_extra: 禁止未声明的字段
+    schema_field_name: 字段名
+    schema_required: 必填
+    schema_enum: 枚举值，逗号分隔（可留空）
+    schema_no_fields: 还没有字段。点下面的按钮添加。
+    schema_dup: 字段名重复
+    schema_preserved: 以下内容可视化编辑不了，会原样保留：
+    schema_form_hint: 只使用后端支持的关键字（type / properties / required / enum / 范围）。嵌套对象和数组请切到 JSON 模式。
+    err_schema_obj: paramsSchema 必须是一个 JSON 对象
   edges:
     title: 出口表
     new: 新增边

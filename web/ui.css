@@ -702,3 +702,35 @@ body {
 .md-body table { border-collapse: collapse; margin: 0.7em 0; font-size: 0.82rem; }
 .md-body th, .md-body td { border: 1px solid var(--line); padding: 0.4em 0.7em; text-align: left; }
 .md-body th { background: rgba(255,255,255,0.04); font-weight: 600; }
+
+/* ---------- 分段切换（可视化 / JSON 等二选一） ----------
+ *
+ * 用在 capabilities.html 的 paramsSchema 编辑器上。
+ * 放 ui.css 而不是页面内联：check-classes 只认组件类或 Tailwind 工具类，
+ * 页面内联的复合选择器（.foo button.on）它识别不到。
+ */
+.seg-switch {
+	display: inline-flex;
+	gap: 0.15rem;
+	border: 1px solid var(--line);
+	border-radius: 0.45rem;
+	padding: 0.1rem;
+}
+.seg-item {
+	border-radius: 0.3rem;
+	padding: 0.15rem 0.5rem;
+	font-size: 0.65rem;
+	color: var(--muted);
+	cursor: pointer;
+	background: transparent;
+	border: 0;
+}
+.seg-item:hover {
+	color: var(--text);
+}
+/* 用独立类名而不是复合选择器：check-classes 按"类名是否被定义"判断，
+   .seg-item.is-active 里的 is-active 它认不出来，会报死类。 */
+.seg-item-active {
+	background: rgba(255, 255, 255, 0.08);
+	color: var(--text);
+}

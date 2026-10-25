@@ -2,6 +2,70 @@
 
 {{define "style"}}
     <style>
+      /* ---------- paramsSchema 可视化编辑 ---------- */
+      .schema-form {
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        padding: 0.5rem;
+        background: rgba(255, 255, 255, 0.015);
+      }
+      /* 一行一个字段：名字 + 类型 + 删除。必填/枚举/范围在展开行里。 */
+      .sf-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.9fr) auto auto;
+        gap: 0.35rem;
+        align-items: center;
+        padding: 0.2rem 0;
+      }
+      .sf-input {
+        width: 100%;
+        min-width: 0;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        border-radius: 0.35rem;
+        padding: 0.2rem 0.4rem;
+        font-size: 0.7rem;
+        color: var(--text);
+      }
+      .sf-input:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .sf-del {
+        color: #f87171;
+        font-size: 0.7rem;
+        padding: 0 0.3rem;
+        cursor: pointer;
+      }
+      /* 字段的附加选项（必填 / 枚举 / 范围）折叠在下面 */
+      .sf-opts {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0 0 0.35rem 0.15rem;
+        font-size: 0.65rem;
+        color: var(--muted);
+      }
+      .sf-opts input[type="text"] {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        border-radius: 0.3rem;
+        padding: 0.1rem 0.3rem;
+        font-size: 0.65rem;
+        color: var(--text);
+      }
+      .schema-fields {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+      }
+      .sf-empty {
+        color: var(--faint);
+        font-size: 0.7rem;
+        padding: 0.25rem 0;
+      }
+
       .cap-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
@@ -145,9 +209,45 @@
               <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.outputs_hint"}}</p>
             </div>
             <div>
-              <label class="mb-1 block text-xs text-zinc-400" for="cap-schema">{{t "caps.form.schema"}}</label>
-              <textarea id="cap-schema" class="input mono w-full text-xs" rows="4">{"type":"object"}</textarea>
-              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.schema_hint"}}</p>
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <label class="block text-xs text-zinc-400" for="cap-schema">{{t "caps.form.schema"}}</label>
+                <!-- 两种模式：可视化（默认）和 JSON 原文。
+                     懂 schema 的人直接写 JSON 更快；不懂的人不该被迫手写 JSON。 -->
+                <div class="seg-switch">
+                  <button type="button" id="schema-mode-form" class="seg-item seg-item-active">
+                    {{t "caps.form.schema_mode_form"}}
+                  </button>
+                  <button type="button" id="schema-mode-json" class="seg-item">
+                    {{t "caps.form.schema_mode_json"}}
+                  </button>
+                </div>
+              </div>
+
+              <!-- 可视化编辑区 -->
+              <div id="schema-form" class="schema-form">
+                <div class="schema-fields" id="schema-fields"></div>
+                <div class="mt-2 flex flex-wrap items-center gap-3">
+                  <button type="button" id="schema-add-field" class="btn-ghost rounded px-2 py-1 text-[11px]">
+                    + {{t "caps.form.schema_add_field"}}
+                  </button>
+                  <label class="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input type="checkbox" id="schema-no-extra" />
+                    {{t "caps.form.schema_no_extra"}}
+                  </label>
+                </div>
+                <p class="mt-2 text-[11px] text-zinc-500">
+                  {{t "caps.form.schema_form_hint"}}
+                </p>
+              </div>
+
+              <!-- JSON 编辑区（默认隐藏） -->
+              <div id="schema-json" class="hidden">
+                <textarea id="cap-schema" class="input mono w-full text-xs" rows="8">{"type":"object"}</textarea>
+                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.schema_hint"}}</p>
+              </div>
+
+              <!-- 可视化表达不了的 key：必须显式告知，绝不能静默丢掉 -->
+              <p id="schema-preserved" class="mt-1 hidden text-[11px] text-amber-400"></p>
             </div>
           </div>
           <div class="mt-6 flex justify-end gap-2">
@@ -200,6 +300,351 @@
         const n = el("code", "mono " + (cls || ""));
         n.textContent = String(text == null ? "" : text);
         return n;
+      }
+
+      // 弹窗开关。也是上一版重构时被连带删掉的（它们和出口表函数相邻，
+      // 我按行号范围删 JS 时把它们一起削了）。
+      function openCapModal() {
+        // 重置表单：否则上一次填的字段会残留到下一次新建
+        document.getElementById("cap-name").value = "";
+        document.getElementById("cap-outputs").value = "";
+        setSchema({ type: "object", properties: {} });
+        document.getElementById("cap-modal").classList.add("open");
+      }
+      function closeCapModal() {
+        document.getElementById("cap-modal").classList.remove("open");
+      }
+
+      // createCapability 提交新建能力。
+      //
+      // 注意：上一版重构（PR #99）误删了这个函数，只剩调用 —— 点"保存"会
+      // 抛 "createCapability is not defined"。这里补回来，并改成走
+      // collectSchema()（可视化 / JSON 两种模式统一出口）。
+      async function createCapability() {
+        const name = document.getElementById("cap-name").value.trim();
+        const outputsRaw = document.getElementById("cap-outputs").value.trim();
+
+        if (!name) {
+          toast(t("caps.form.err_name", "请填写能力名"));
+          return;
+        }
+
+        let paramsSchema;
+        try {
+          paramsSchema = collectSchema();
+        } catch (e) {
+          toast(t("caps.form.err_schema", "paramsSchema 不是合法 JSON") + ": " + e.message);
+          return;
+        }
+        const outputs = outputsRaw
+          ? outputsRaw.split(",").map((x) => x.trim()).filter(Boolean)
+          : [];
+
+        try {
+          await Anotify.api(API + "/capabilities", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, outputs, paramsSchema }),
+          });
+          toast(t("caps.form.created", "能力已创建"));
+          closeCapModal();
+          loadAll();
+        } catch (err) {
+          // 409 = 同 name@version 换内容（append-only，不变量 I8）
+          toast(t("caps.form.create_failed", "创建失败：") + (err.detail || err.message));
+        }
+      }
+
+      // ==================== paramsSchema 可视化编辑 ====================
+      //
+      // 设计要点：
+      //
+      //   1. 单一数据源是**对象**（schemaObj）。JSON 模式只是它的文本表示：
+      //      切到 JSON → JSON.stringify；切回可视化 → JSON.parse 后渲染。
+      //      解析失败就不切，并提示哪里错了。
+      //
+      //   2. 只生成**后端真正支持的关键字**（internal/route/validate.go:19-31）。
+      //      生成 $ref / oneOf / if-then-else 会让用户以为设了约束、
+      //      实际后端静默忽略 —— 那比不提供可视化更糟。
+      //
+      //   3. 用户手写在 JSON 里、可视化表达不了的东西（如 patternProperties）
+      //      **绝不能静默丢掉**。做法：schemaObj 始终保留完整对象，
+      //      可视化只增删它自己认识的键；不认识的键原样留着并显式提示。
+
+      let schemaMode = "form"; // form | json
+      // schemaObj 是权威数据。可视化操作都在它上面做。
+      let schemaObj = { type: "object", properties: {} };
+      // preservedKeys：当前 schema 里可视化表达不了的顶层 key
+      let preservedKeys = [];
+
+      const TYPES = ["string", "number", "integer", "boolean", "object", "array"];
+
+      function schemaSwitch(mode) {
+        if (mode === schemaMode) return;
+
+        if (mode === "json") {
+          // 可视化 → JSON：把对象序列化进 textarea
+          document.getElementById("cap-schema").value = JSON.stringify(schemaObj, null, 2);
+        } else {
+          // JSON → 可视化：先解析，失败就不切（保住用户输入）
+          const raw = document.getElementById("cap-schema").value.trim() || "{}";
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (e) {
+            toast(t("caps.form.err_schema", "paramsSchema 不是合法 JSON") + ": " + e.message);
+            return;
+          }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            toast(t("caps.form.err_schema_obj", "paramsSchema 必须是一个 JSON 对象"));
+            return;
+          }
+          schemaObj = parsed;
+        }
+
+        schemaMode = mode;
+        document.getElementById("schema-mode-form").classList.toggle("seg-item-active", mode === "form");
+        document.getElementById("schema-mode-json").classList.toggle("seg-item-active", mode === "json");
+        document.getElementById("schema-form").classList.toggle("hidden", mode !== "form");
+        document.getElementById("schema-json").classList.toggle("hidden", mode !== "json");
+        if (mode === "form") renderSchemaForm();
+      }
+
+      // renderSchemaForm 把 schemaObj 渲染成字段列表
+      function renderSchemaForm() {
+        const box = document.getElementById("schema-fields");
+        box.replaceChildren();
+
+        const props = schemaObj.properties || {};
+        const required = Array.isArray(schemaObj.required) ? schemaObj.required : [];
+        const names = Object.keys(props);
+
+        // 记录可视化表达不了的顶层 key（type / properties / required /
+        // additionalProperties 之外的都是）
+        const known = ["type", "properties", "required", "additionalProperties"];
+        preservedKeys = Object.keys(schemaObj).filter((k) => !known.includes(k));
+        const pEl = document.getElementById("schema-preserved");
+        if (preservedKeys.length) {
+          pEl.classList.remove("hidden");
+          pEl.textContent =
+            t("caps.form.schema_preserved", "以下内容可视化编辑不了，会原样保留：") +
+            " " +
+            preservedKeys.join(", ");
+        } else {
+          pEl.classList.add("hidden");
+        }
+
+        document.getElementById("schema-no-extra").checked =
+          schemaObj.additionalProperties === false;
+
+        if (!names.length) {
+          box.appendChild(
+            el("div", "sf-empty", t("caps.form.schema_no_fields", "还没有字段。点下面的按钮添加。")),
+          );
+          return;
+        }
+
+        for (const name of names) {
+          box.appendChild(schemaFieldRow(name, props[name] || {}, required.includes(name)));
+        }
+      }
+
+      // schemaFieldRow 渲染一个字段的可编辑行
+      function schemaFieldRow(name, def, isRequired) {
+        const wrap = el("div", "");
+
+        const row = el("div", "sf-row");
+
+        // 字段名（改名要同步 key，所以失去焦点时迁移）
+        const nameIn = document.createElement("input");
+        nameIn.className = "sf-input";
+        nameIn.value = name;
+        nameIn.placeholder = t("caps.form.schema_field_name", "字段名");
+        nameIn.addEventListener("change", () => {
+          const newName = nameIn.value.trim();
+          if (!newName || newName === name) {
+            nameIn.value = name;
+            return;
+          }
+          const props = schemaObj.properties || {};
+          if (Object.hasOwn(props, newName)) {
+            toast(t("caps.form.schema_dup", "字段名重复") + ": " + newName);
+            nameIn.value = name;
+            return;
+          }
+          // 保留插入顺序：重建 properties
+          const next = {};
+          for (const k of Object.keys(props)) {
+            next[k === name ? newName : k] = props[k];
+          }
+          schemaObj.properties = next;
+          // required 里的名字也要跟着改
+          if (Array.isArray(schemaObj.required)) {
+            schemaObj.required = schemaObj.required.map((x) => (x === name ? newName : x));
+          }
+          renderSchemaForm();
+        });
+        row.appendChild(nameIn);
+
+        // 类型
+        const typeSel = document.createElement("select");
+        typeSel.className = "sf-input";
+        for (const ty of TYPES) typeSel.appendChild(new Option(ty, ty));
+        typeSel.value = def.type || "string";
+        typeSel.addEventListener("change", () => {
+          def.type = typeSel.value;
+          // 换类型后旧的范围约束可能不适用，清掉避免生成矛盾 schema
+          for (const k of ["minimum", "maximum", "minLength", "maxLength", "enum"]) {
+            delete def[k];
+          }
+          renderSchemaForm();
+        });
+        row.appendChild(typeSel);
+
+        // 必填
+        const reqWrap = document.createElement("label");
+        reqWrap.className = "flex items-center gap-1 text-[10px] text-zinc-400";
+        const reqCb = document.createElement("input");
+        reqCb.type = "checkbox";
+        reqCb.checked = isRequired;
+        reqCb.addEventListener("change", () => {
+          if (!Array.isArray(schemaObj.required)) schemaObj.required = [];
+          if (reqCb.checked) {
+            if (!schemaObj.required.includes(name)) schemaObj.required.push(name);
+          } else {
+            schemaObj.required = schemaObj.required.filter((x) => x !== name);
+          }
+          if (!schemaObj.required.length) delete schemaObj.required;
+        });
+        reqWrap.appendChild(reqCb);
+        reqWrap.appendChild(document.createTextNode("*"));
+        reqWrap.title = t("caps.form.schema_required", "必填");
+        row.appendChild(reqWrap);
+
+        // 删除
+        const del = el("button", "sf-del", "✕");
+        del.type = "button";
+        del.addEventListener("click", () => {
+          delete schemaObj.properties[name];
+          if (Array.isArray(schemaObj.required)) {
+            schemaObj.required = schemaObj.required.filter((x) => x !== name);
+            if (!schemaObj.required.length) delete schemaObj.required;
+          }
+          renderSchemaForm();
+        });
+        row.appendChild(del);
+
+        wrap.appendChild(row);
+
+        // 附加选项：枚举 / 范围
+        const opts = el("div", "sf-opts");
+
+        if (def.type === "string" || def.type === "number" || def.type === "integer") {
+          const enumIn = document.createElement("input");
+          enumIn.type = "text";
+          enumIn.placeholder = t("caps.form.schema_enum", "枚举值，逗号分隔（可留空）");
+          enumIn.value = (def.enum || []).join(", ");
+          enumIn.addEventListener("change", () => {
+            const vals = enumIn.value
+              .split(",")
+              .map((x) => x.trim())
+              .filter(Boolean);
+            if (vals.length) {
+              // number/integer 的枚举要转成数字，否则后端类型校验不过
+              def.enum =
+                def.type === "string"
+                  ? vals
+                  : vals.map((x) => Number(x)).filter((x) => !Number.isNaN(x));
+            } else {
+              delete def.enum;
+            }
+          });
+          opts.appendChild(enumIn);
+        }
+
+        if (def.type === "number" || def.type === "integer") {
+          for (const [key, ph] of [
+            ["minimum", "min"],
+            ["maximum", "max"],
+          ]) {
+            const inp = document.createElement("input");
+            inp.type = "text";
+            inp.placeholder = ph;
+            inp.size = 6;
+            inp.value = def[key] != null ? String(def[key]) : "";
+            inp.addEventListener("change", () => {
+              const v = inp.value.trim();
+              if (v === "") delete def[key];
+              else if (!Number.isNaN(Number(v))) def[key] = Number(v);
+              else inp.value = "";
+            });
+            opts.appendChild(inp);
+          }
+        }
+
+        if (def.type === "string") {
+          for (const [key, ph] of [
+            ["minLength", "minLen"],
+            ["maxLength", "maxLen"],
+          ]) {
+            const inp = document.createElement("input");
+            inp.type = "text";
+            inp.placeholder = ph;
+            inp.size = 6;
+            inp.value = def[key] != null ? String(def[key]) : "";
+            inp.addEventListener("change", () => {
+              const v = inp.value.trim();
+              if (v === "") delete def[key];
+              else if (!Number.isNaN(Number(v))) def[key] = Number(v);
+              else inp.value = "";
+            });
+            opts.appendChild(inp);
+          }
+        }
+
+        if (opts.childNodes.length) wrap.appendChild(opts);
+        return wrap;
+      }
+
+      // addSchemaField 加一个空字段（名字自动避重）
+      function addSchemaField() {
+        if (!schemaObj.properties) schemaObj.properties = {};
+        let i = 1;
+        let name = "field" + i;
+        while (Object.hasOwn(schemaObj.properties, name)) {
+          i++;
+          name = "field" + i;
+        }
+        schemaObj.properties[name] = { type: "string" };
+        renderSchemaForm();
+      }
+
+      // collectSchema 返回最终要提交的 schema 对象。
+      //
+      // JSON 模式下以 textarea 的原文为准（用户可能在那边写了可视化
+      // 表达不了的东西）；视觉模式以 schemaObj 为准。
+      function collectSchema() {
+        if (schemaMode === "json") {
+          const raw = document.getElementById("cap-schema").value.trim() || "{}";
+          return JSON.parse(raw); // 抛错由调用方处理
+        }
+        // 可视化模式：同步 additionalProperties 开关后再序列化
+        const noExtra = document.getElementById("schema-no-extra").checked;
+        if (noExtra) schemaObj.additionalProperties = false;
+        else delete schemaObj.additionalProperties;
+        if (schemaObj.type == null) schemaObj.type = "object";
+        return schemaObj;
+      }
+
+      // setSchema 把已有 schema 灌进编辑器（编辑已有能力时用）
+      function setSchema(obj) {
+        schemaObj = obj && typeof obj === "object" ? obj : { type: "object", properties: {} };
+        schemaMode = "form";
+        document.getElementById("schema-mode-form").classList.add("seg-item-active");
+        document.getElementById("schema-mode-json").classList.remove("seg-item-active");
+        document.getElementById("schema-form").classList.remove("hidden");
+        document.getElementById("schema-json").classList.add("hidden");
+        renderSchemaForm();
       }
 
       // 所有请求走 Anotify.api（内置 401 → 登录守卫）
@@ -294,6 +739,19 @@
         const c = CAPS.find((x) => x.id === id);
         return c ? c.name + "@" + c.version : id;
       }
+
+      // ---------- 编辑器事件绑定 ----------
+      document.getElementById("schema-mode-form").addEventListener("click", () => {
+        schemaSwitch("form");
+      });
+      document.getElementById("schema-mode-json").addEventListener("click", () => {
+        schemaSwitch("json");
+      });
+      document.getElementById("schema-add-field").addEventListener("click", addSchemaField);
+      document.getElementById("schema-no-extra").addEventListener("change", (e) => {
+        if (e.target.checked) schemaObj.additionalProperties = false;
+        else delete schemaObj.additionalProperties;
+      });
 
       document.addEventListener("DOMContentLoaded", loadAll);
     </script>
