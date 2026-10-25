@@ -1081,6 +1081,13 @@ events:
   filter:
     trace: Trace ID
     apply: Filter
+    source: Source
+    all_sources: All sources
+    node: Node
+    all_nodes: All nodes
+    active: Active
+    clear: Clear filters
+    empty: No events match the current filters.
   chain:
     title: Task chain
     empty: No tasks under this trace (it may have been pruned at the first step).
@@ -1092,6 +1099,10 @@ events:
     tree: Tree
     not_started: Not started yet
     running: running
+  group:
+    other: Uncategorized
+    count: '{n} events'
+    more: Show {n} more
 caps:
   title: Capabilities & Edges
   subtitle: A capability says WHAT to do (never HOW); the edge table decides where an event goes next.
