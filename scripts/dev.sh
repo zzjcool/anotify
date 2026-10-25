@@ -187,7 +187,8 @@ else
 		-autologin-file "$AUTOLOGIN_PAGE" >/tmp/anotify-devseed.log 2>&1; then
 		AUTOLOGIN_URL="http://localhost:${PORT_NUM}/$(basename "$AUTOLOGIN_PAGE")"
 		echo "  ✅ 自动登录页：$AUTOLOGIN_URL"
-		if [ "${NO_TUNNEL:-0}" != "1" ] && command -v cloudflared >/dev/null 2>&1; then
+		# TUNNEL_URL 为空 = 没起 tunnel 或起了但连不通，别拼出一个 "//__dev_login.html"
+		if [ -n "$TUNNEL_URL" ]; then
 			echo "     公网版本：${TUNNEL_URL}/$(basename "$AUTOLOGIN_PAGE")"
 		fi
 	else
@@ -200,7 +201,7 @@ fi
 echo ""
 echo "▶ 启动 Anotify server（ANOTIFY_ADDR=$ANOTIFY_ADDR, RP_ID=${ANOTIFY_RP_ID:-localhost}）…"
 echo "  本地：http://localhost:${PORT_NUM}"
-echo "  公网：${TUNNEL_URL}  （需 tunnel）"
+[ -n "$TUNNEL_URL" ] && echo "  公网：${TUNNEL_URL}  （启动后自动验证）"
 [ -n "$AUTOLOGIN_URL" ] && echo "  免 passkey 登录：$AUTOLOGIN_URL"
 echo "  日志：/tmp/anotify-dev.log"
 echo "  Ctrl-C 停止 server + tunnel"
@@ -213,5 +214,44 @@ SERVER_PID=$!
 # 顺手把日志回显到终端，保留原来 `| tee` 的观感
 tail -n +1 -f /tmp/anotify-dev.log 2>/dev/null &
 TAIL_PID=$!
+
+# ---------- 7. 公网可达性探测 ----------
+#
+# 必须放在 server 起来**之后**：tunnel 是反代到 localhost:PORT 的，
+# 本地还没服务时探测必然失败，那只会误报「公网不通」。
+#
+# 两个坑都踩过：
+#   - quick tunnel 的域名在边缘侧要几秒到几十秒才传播开 → 必须重试
+#   - 本机 DNS 可能把外网域名全解析到 198.18.0.0/15（clash fake-ip 的正常
+#     表现，不是劫持），域名照样能通 → **不能靠解析结果判死**，只认真实请求
+if [ -n "$TUNNEL_URL" ]; then
+	# 先等本地 server 应答，再探公网
+	for _ in $(seq 1 20); do
+		curl -fsS -o /dev/null --max-time 3 "http://localhost:${PORT_NUM}/" 2>/dev/null && break
+		sleep 1
+	done
+	echo "▶ 检查公网可达性…"
+	reachable=0
+	for i in $(seq 1 12); do
+		if curl -fsS -o /dev/null --max-time 10 "$TUNNEL_URL/" 2>/dev/null; then
+			reachable=1
+			break
+		fi
+		[ "$i" -lt 12 ] && echo "  等待边缘传播…($i/12)"
+		sleep 4
+	done
+	if [ "$reachable" = "1" ]; then
+		echo "  ✅ 公网可达：$TUNNEL_URL"
+		if [ -f "$AUTOLOGIN_PAGE" ]; then
+			echo "     免 passkey 登录：$TUNNEL_URL/$(basename "$AUTOLOGIN_PAGE")"
+		fi
+		echo "     （此地址随进程退出失效，下次启动会变）"
+	else
+		echo "  ⚠️  公网域名 48s 内仍不可达（tunnel 进程本身注册成功）。"
+		echo "     常见原因：本地代理/防火墙拦了 *.trycloudflare.com。"
+		echo "     本地地址照常可用：http://localhost:${PORT_NUM}"
+		TUNNEL_URL=""
+	fi
+fi
 
 wait "$SERVER_PID"

@@ -129,6 +129,22 @@ make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 | `ANOTIFY_TUNNEL=named` | 用命名 tunnel（固定域名）；需事先 `cloudflared login` + `tunnel create` + 配 DNS。名字由 `ANOTIFY_TUNNEL_NAME`（默认 `anotify`）指定 |
 | `NO_TUNNEL=1` | 只起本地，不起 tunnel |
 
+quick tunnel 的域名**要等 Cloudflare 边缘传播**（实测几秒到几十秒），
+所以 `make dev` 会在 server 起来之后才探测可达性，并打印**已验证可用**的地址：
+
+```
+▶ 检查公网可达性…
+  ✅ 公网可达：https://<随机>.trycloudflare.com
+     免 passkey 登录：https://<随机>.trycloudflare.com/__dev_login.html
+     （此地址随进程退出失效，下次启动会变）
+```
+
+探测失败会明确说「tunnel 进程注册成功但域名不可达」，而不是给一个打不开的链接。
+
+> 排查提示：如果 `getent hosts <任意域名>` 返回 `198.18.x.x`，那是 clash
+> 之类 **fake-ip 模式**的正常表现，不代表被劫持——域名仍然能通。
+> 所以脚本只认真实 HTTP 请求，不看 DNS 结果。
+
 可选环境变量：
 
 | 变量 | 作用 |
