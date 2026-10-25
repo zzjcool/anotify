@@ -1272,6 +1272,9 @@ sources:
     unconnected: (sin conectar)
     truncated: Grafo demasiado grande ({n} nodos); mostrando los primeros {m}.
     nolib: No se pudo cargar la librería de grafos.
+    source: Origen
+    terminal_short: terminal
+    no_edge: sin conexión
   view_events: Ver eventos
 edges:
   title: Salidas
