@@ -23,6 +23,7 @@ make mock-local  # 只本机
 | [#89](https://github.com/zzjcool/anotify/issues/89) | 事件流按源（触发器）分组展示最近事件 | 待做 |
 | [#90](https://github.com/zzjcool/anotify/issues/90) | 任务链用图展示（当前是缩进树） | 待做 |
 | [#91](https://github.com/zzjcool/anotify/issues/91) | 「通知接收」不该是独立一级页面——它只是 notify.phone 这个 end 能力的实现 | 待做 |
+| [#92](https://github.com/zzjcool/anotify/issues/92) | 定义能力的 paramsSchema 支持可视化编辑（可与 JSON 模式切换） | 待做 |
 | — | 等待用户逐条补充 | — |
 
 ### 已完成（本阶段）
@@ -108,6 +109,25 @@ notify.phone 只是可选的一个。
 
 待定：receivers.html 的 URL 要不要保留兼容（有收藏/分享过）；
 文案 key 怎么处理；e2e 的 PAGES 列表要同步。
+
+### #92 paramsSchema 可视化编辑
+
+`capabilities.html` 新建能力弹窗里 `paramsSchema` 是裸 textarea，必须手写 JSON Schema。
+
+期望：可视化表单 ⇄ JSON 原文，可切换、双向同步。
+可视化只覆盖后端**真正支持的子集**（`internal/route/validate.go:19-31`）：
+
+```
+type / properties / required / additionalProperties / items /
+minItems / maxItems / enum / minLength / maxLength /
+pattern / minimum / maximum / minProperties / maxProperties
+```
+
+**最重要的坑**：可视化绝不能生成后端不认识的关键字（`$ref`、`if-then-else`、`oneOf`）——
+那会让用户以为设了约束、实际后端静默忽略。
+
+同理，用户手写在 JSON 里的、可视化表达不了的内容（如 `patternProperties`），
+切到可视化时**绝不能静默丢掉**，必须明确告知。
 
 ## 待定问题（等用户逐条确认）
 
