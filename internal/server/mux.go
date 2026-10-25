@@ -11,6 +11,7 @@ import (
 	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/broker"
+	"github.com/zzjcool/anotify/internal/executor"
 	"github.com/zzjcool/anotify/internal/lease"
 	"github.com/zzjcool/anotify/internal/push"
 	"github.com/zzjcool/anotify/internal/route"
@@ -78,9 +79,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	// 4. Web Push 派发器（后台 goroutine，动态按需为每个用户启动消费）
 	var dm *dispatchManager
+	var vapidSender push.Sender
 	vapidCfg, vapidErr := push.LoadVAPID()
 	if vapidErr == nil {
-		d := &push.Dispatcher{Broker: bk, Store: db, Sender: push.NewVAPIDSender(vapidCfg)}
+		vapidSender = push.NewVAPIDSender(vapidCfg)
+		d := &push.Dispatcher{Broker: bk, Store: db, Sender: vapidSender}
 		dm = newDispatchManager(ctx, d, db)
 	} else {
 		slog.Warn("VAPID not configured, push disabled",
@@ -196,6 +199,22 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 没有它的话，节点异常下线后任务会永远停在 assigned/acked/running：
 	// 租约到期没人扫 → 任务不回收 → 槽位永久占用 → 节点并发能力逐次泄漏。
 	// 这是自愈机制，单轮失败只记日志，不能停摆。
+	// 启动时为所有已存在组织补齐内置能力（#83）。
+	//
+	// 内置能力清单可能随版本升级新增；只在注册时播种的话，
+	// 已有组织永远补不上，notify.phone 派发会一直 pruned/no_node。
+	if n, err := db.BackfillBuiltinCapabilities(ctx); err != nil {
+		slog.Warn("backfill builtin capabilities failed",
+			"event", "server.builtin.backfill_failed",
+			"error", err.Error(),
+		)
+	} else if n > 0 {
+		slog.Info("builtin capabilities ready",
+			"event", "server.builtin.backfill",
+			"orgs", n,
+		)
+	}
+
 	sweeper := lease.New(db)
 	sweeper.Redispatch = func(sctx context.Context, task *store.Task) (bool, error) {
 		ok, err := dispatcher.RedispatchTask(sctx, task)
@@ -219,6 +238,19 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		return ok, nil
 	}
 	go sweeper.Run(ctx)
+
+	// 中枢能力执行器（#83）：执行 notify.phone 这类没有节点执行者的内置能力。
+	//
+	// 它们在图里是正常的一条边，只是"执行者"是中枢自己而不是外部节点。
+	// 没有它的话，notify.phone 派发时永远 pruned/no_node——推送发不出去。
+	{
+		var notifier executor.Notifier
+		if vapidSender != nil {
+			notifier = &push.CentralNotifier{Store: db, Sender: vapidSender}
+		}
+		centralExec := executor.New(db, notifier)
+		go centralExec.Run(ctx, 0) // 0 = 默认间隔
+	}
 	mux.Handle("GET /v1/node/stream", noStore(nodeH))
 
 	// --- 事件中心（#58 / #59）---

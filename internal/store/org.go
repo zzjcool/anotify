@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 )
 
 // ErrNotImplemented 表示该 store 方法尚未实现（重构期脚手架，#2 填充）。
@@ -268,5 +269,57 @@ func (d *DB) EnsureOrgForUser(ctx context.Context, userID, username string) (*Or
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit ensure org: %w", err)
 	}
+
+	// 新组织播种内置能力（notify.phone 等）。
+	//
+	// 放在 commit 之后而不是事务内：EnsureBuiltinCapabilities 复用了
+	// CreateCapability（它内部会算 hash、处理唯一约束），在事务里嵌套
+	// 会让错误语义变复杂。播种失败不该让建组织失败——组织建好了，
+	// 内置能力可以在启动时补（见 backfillBuiltins）。
+	if err := d.EnsureBuiltinCapabilities(ctx, org.ID); err != nil {
+		// 只记日志，不阻断：缺内置能力会导致 notify.phone 派发时 pruned/no_node，
+		// 但用户仍可正常使用其他功能，且下次启动会补。
+		slog.Warn("seed builtin capabilities failed",
+			"event", "org.builtin.seed_failed",
+			"org_id", org.ID,
+			"error", err.Error(),
+		)
+	}
 	return org, nil
+}
+
+// BackfillBuiltinCapabilities 给所有已存在的组织补齐内置能力。
+//
+// 用途：内置能力清单随版本升级而增加（比如以后加 notify.webhook），
+// 那时已有组织也需要补上。启动时跑一遍比"只在注册时播种"可靠。
+//
+// 幂等：EnsureBuiltinCapabilities 内部按 (name, version) 探测。
+func (d *DB) BackfillBuiltinCapabilities(ctx context.Context) (int, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id FROM orgs`)
+	if err != nil {
+		return 0, fmt.Errorf("list orgs for builtin backfill: %w", err)
+	}
+	var orgIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan org id: %w", err)
+		}
+		orgIDs = append(orgIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate orgs: %w", err)
+	}
+	rows.Close()
+
+	n := 0
+	for _, orgID := range orgIDs {
+		if err := d.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+			return n, fmt.Errorf("backfill org %s: %w", orgID, err)
+		}
+		n++
+	}
+	return n, nil
 }

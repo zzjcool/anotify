@@ -360,12 +360,25 @@ func TestCapabilityCreate(t *testing.T) {
 	}
 }
 
+// mustGetCapability 取一个已播种的能力（不存在则失败）。
+func (e *consoleEnv) mustGetCapability(t *testing.T, name string, version int) *store.CapabilityVersion {
+	t.Helper()
+	c, err := e.db.GetCapability(context.Background(), e.orgID, name, version)
+	if err != nil {
+		t.Fatalf("capability %s@%d not seeded: %v", name, version, err)
+	}
+	return c
+}
+
 // TestCapabilityListIncludesKind 列表带 kind（推导量，不落库）。
 func TestCapabilityListIncludesKind(t *testing.T) {
 	env := newConsoleEnv(t)
 	review := env.seedCapability(t, "review", 1, []string{"fix"}) // 有出口
-	end := env.seedCapability(t, "notify.phone", 1, nil)          // 无出口
-	env.seedCapability(t, "trigger", 1, []string{"go"})           // 无节点声明
+	// notify.phone 现在是**内置能力**（#83），由 EnsureOrgForUser 播种。
+	// 不要再自己 seed 一份——那会因为内容不同而撞 append-only 约束
+	// （capability_versions 的 (org_id,name,version) 唯一 + I8）。
+	end := env.mustGetCapability(t, "notify.phone", 1)
+	env.seedCapability(t, "trigger", 1, []string{"go"}) // 无节点声明
 
 	// 声明 review 与 notify.phone 给一台节点
 	node := &store.Node{OrgID: env.orgID, Name: "mbp"}
