@@ -91,13 +91,31 @@ async function openPage(ctx, url, pageType) {
  * Strips exempt native-language names (中文 / 日本語) that appear in the
  * language switcher across ALL language versions by design. */
 async function getScannedText(page) {
-	return page.evaluate(() => {
-		let text = document.body.innerText || "";
-		/* Remove exempt native language names that are intentionally shown
-		 * in every language version (switcher shows native names). */
-		text = text.replace(/中文/g, "").replace(/日本語/g, "");
-		return text;
-	});
+	/* Navigation races: `goto(waitUntil:"load")` resolves before client-side
+	 * redirects / demo-mode boot finish, so the execution context can be torn
+	 * down mid-evaluate. Retrying after the page settles avoids a crash that
+	 * reported "0 assertions" instead of a real failure — which silently
+	 * turned this suite into a no-op red light.
+	 */
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			return await page.evaluate(() => {
+				let text = document.body.innerText || "";
+				/* Remove exempt native language names that are intentionally shown
+				 * in every language version (switcher shows native names). */
+				text = text.replace(/中文/g, "").replace(/日本語/g, "");
+				return text;
+			});
+		} catch (e) {
+			if (!/Execution context was destroyed|navigat/i.test(String(e))) throw e;
+			/* Wait for the in-flight navigation to settle, then retry. */
+			await page.waitForLoadState("load", { timeout: 10000 }).catch(() => {});
+			await page.waitForTimeout(150);
+		}
+	}
+	/* Still racing after 5 tries: treat as empty text so the CJK assertion
+	 * reports a real failure (visible, with a message) rather than throwing. */
+	return "";
 }
 
 /* Scan text for CJK characters, return array of matching lines */

@@ -589,3 +589,78 @@ func (d *Dispatcher) DispatchNext(ctx context.Context, orgID, traceID, parentTas
 	})
 	return err
 }
+
+// RedispatchTask 尝试把一条已存在的 pending 任务重新派给节点。
+//
+// 与 Dispatch 的区别：Dispatch 是「从出口表算出要建哪些任务」，
+// 本方法是「任务已经建好了，只是还没找到机器」——典型场景是租约过期后
+// 被巡检退回 pending，或派发时容量不足。
+//
+// 不重新走 ①②（出口表/参数校验）：那些在建模时就过了，重走一遍只会
+// 因为图变了而产生不一致（任务已存在，却不该存在——那是另一个问题）。
+//
+// 返回 (true, nil) 表示派发出去了；false 表示没派成（没有可用节点、
+// 容量不足），调用方应保持 pending 并在退避后重试。
+func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool, error) {
+	if task == nil {
+		return false, fmt.Errorf("route: redispatch nil task")
+	}
+	if task.Status != store.TaskPending {
+		// 不是 pending 说明已被别人处理（派发/取消/回收），不是错误。
+		return false, nil
+	}
+
+	nodes, err := d.Store.NodesForCapability(ctx, task.OrgID, task.CapabilityID)
+	if err != nil {
+		return false, fmt.Errorf("route: redispatch nodes for %s: %w", task.CapabilityID, err)
+	}
+	if len(nodes) == 0 {
+		// 没有节点声明这个能力。不是错误——节点可能临时全下线，
+		// 保持 pending，等节点回来再派。
+		return false, nil
+	}
+
+	// 复用派发第 ④ 步的挑机器逻辑（粘性 + 负载）。
+	capDef, err := d.Store.GetCapabilityByID(ctx, task.OrgID, task.CapabilityID)
+	if err != nil {
+		return false, fmt.Errorf("route: redispatch load capability %s: %w", task.CapabilityID, err)
+	}
+	nodeID, _, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, TraceID: task.TraceID}, capDef, nodes)
+	if err != nil {
+		return false, err
+	}
+
+	instanceID, err := d.Store.LeaseInstance(ctx, nodeID, task.ID)
+	if errors.Is(err, store.ErrNoCapacity) {
+		// 有节点但满了：不是永久失败，下轮再试。
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("route: redispatch lease instance: %w", err)
+	}
+
+	lease := d.now() + store.LeaseTTLSec
+	if ackLease := d.now() + store.AckWaitSec; ackLease < lease {
+		lease = ackLease
+	}
+	if err := d.Store.AssignTask(ctx, task.OrgID, task.ID, nodeID, instanceID, lease); err != nil {
+		_ = d.Store.ReleaseInstance(ctx, nodeID, instanceID)
+		return false, fmt.Errorf("route: redispatch assign: %w", err)
+	}
+
+	task.Status = store.TaskAssigned
+	task.NodeID = &nodeID
+	task.InstanceID = &instanceID
+	task.LeaseUntil = &lease
+	task.Attempts++
+	// 派出去了，清掉退避时间（下次若再失败会重新设）
+	task.NotBefore = nil
+
+	if d.Publisher != nil {
+		if err := d.Publisher.PublishAssign(ctx, task.OrgID, nodeID, task); err != nil {
+			d.requeueAfterPublishFailure(ctx, task.OrgID, task, nodeID, instanceID)
+			return false, nil // 推不出去 = 这次没派成，下轮重试
+		}
+	}
+	return true, nil
+}

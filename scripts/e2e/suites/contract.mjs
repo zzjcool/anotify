@@ -353,18 +353,36 @@ async function main() {
 				db.close();
 			}
 		}
-		// 触发巡检：用 cancel 之外的方式——直接等后台巡检？没有后台巡检 goroutine，
-		// 所以这里通过"再派发一次"来触发。巡检由 server 的定时器驱动；
-		// 若没有定时器，则手工验证 store 层可达（单测已覆盖 sweepOne 全分支）。
-		//
-		// e2e 层面能断言的是「过期任务不会被再次当成有效租约」：
-		const stale = sqlQuery(`SELECT status, lease_until FROM tasks WHERE id = ?`, t)[0];
+		// 后台巡检每 5s 一轮（契约 §3.3），所以最多等 5s + 余量。
+		// 这里断言的是「真的被回收并重派」——不是「能被识别」。
+		// 第一版只断言 lease_until < now，绿灯漏过了「巡检从未被调度」这个 bug。
+		const deadline = Date.now() + 12000;
+		let row = null;
+		let reclaimed = false;
+		while (Date.now() < deadline) {
+			row = sqlQuery(`SELECT status, attempts, node_id, lease_until FROM tasks WHERE id = ?`, t)[0];
+			// 被回收的标志：不再是 assigned（回 pending 或已重派成新的 assigned）
+			// 且 attempts 增加了（说明经历了回收 → 重派）
+			if (row && (row.status === "pending" || row.attempts > 1)) {
+				reclaimed = true;
+				break;
+			}
+			await new Promise((r) => setTimeout(r, 200));
+		}
 		A(
 			9,
-			"过期租约的任务仍可被识别（lease_until < now）",
-			stale && stale.lease_until < Math.floor(Date.now() / 1000),
-			JSON.stringify(stale),
+			"租约过期后任务被巡检回收（不再是原租约）",
+			reclaimed,
+			JSON.stringify(row),
 		);
+		if (reclaimed && row) {
+			// 槽位必须被释放，否则节点并发能力会永久泄漏
+			const busy = sqlQuery(
+				`SELECT count(*) AS n FROM node_instances WHERE busy_task = ?`,
+				t,
+			)[0].n;
+			A(9, "回收后实例槽位被释放", busy === 0, `busy_task 仍指向该任务: ${busy}`);
+		}
 	}
 
 	node.conn.close();

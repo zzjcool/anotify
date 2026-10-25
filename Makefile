@@ -12,6 +12,9 @@ PORT ?= 8080
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null)
 GIT_DIRTY := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo -dirty)
 BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
+# shellcheck disable=SC1073,SC1050,SC1072,SC1009
+# 下一行是 **Make 的** $(if ...) 函数，不是 shell 的 if。本文件是 Makefile，
+# 但把 Makefile 映射成"shell 语言"的分析器会把它当 shell 解析并报语法错。
 VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
 
 .PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes check-tailwind tailwind ci
