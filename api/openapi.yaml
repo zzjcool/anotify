@@ -281,6 +281,40 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
 
 
+  # ========== 事件中心：控制台读取 ==========
+  /console/events:
+    get:
+      tags: [events]
+      summary: 事件列表（控制台视图，会话 Cookie 鉴权）
+      description: |
+        浏览器控制台读事件流用。
+
+        与 `GET /events` 的区别是**鉴权模型**：
+        - `GET /events` 是机器入口，Bearer API Key + `notify:send` scope，给外部系统拉事件
+        - `GET /console/events` 是控制台入口，会话 Cookie + 组织成员身份
+
+        两者语义不同（一个要 scope，一个要成员身份），所以不共用一个 handler。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: traceId, in: query, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: 事件列表（空时 events 为 []）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/Event" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ========== 事件中心：任务 ==========
   /tasks:
     get:

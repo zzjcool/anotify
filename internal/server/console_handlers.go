@@ -105,6 +105,42 @@ func (h *consoleHandler) tasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
 }
 
+// ---------- GET /v1/events（控制台读）----------
+
+// events 处理 GET /v1/events —— **控制台读取**用，走会话 Cookie。
+//
+// 为什么和 api.EventHandler 的 GET /v1/events 分开：
+// 那个是**机器入口**（Bearer API Key + ScopeNotifySend），给外部系统拉事件；
+// 控制台页面需要的是"我登录了这个组织，让我看看本组织的事件流"。
+// 两者鉴权模型不同，硬塞进一个 handler 会让权限语义含混
+// （一个需要 scope，一个需要会话成员身份）。
+//
+// mux 里两条路由靠方法区分不了（都是 GET），所以控制台的这条挂在
+// /v1/console/events 下，避免和机器入口抢占同一路径。
+func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	limit := intParam(q.Get("limit"), 100, 1, 1000)
+
+	events, err := h.db.ListEvents(r.Context(), orgID, q.Get("traceId"), limit)
+	if err != nil {
+		slog.Error("list events failed", "event", "console.events.list_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	if events == nil {
+		events = []*store.Event{} // 空列表是 [] 不是 null（I9）
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
 // ---------- POST /v1/tasks/{id}/cancel ----------
 
 // cancelTask 处理 POST /v1/tasks/{id}/cancel。

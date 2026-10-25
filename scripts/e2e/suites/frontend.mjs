@@ -26,6 +26,10 @@ const PAGES = [
 	"docs.html",
 	"message.html",
 	"connect.html",
+	// 事件中心页面（#79）
+	"events.html",
+	"capabilities.html",
+	"nodes.html",
 ];
 const GUARDED = [
 	"index.html",
@@ -34,6 +38,10 @@ const GUARDED = [
 	"security.html",
 	"message.html",
 	"connect.html",
+	// 事件中心页面同样需要登录（未登录 → login.html）
+	"events.html",
+	"capabilities.html",
+	"nodes.html",
 ];
 const VIEWPORTS = [
 	{ name: "桌面1280", width: 1280, height: 800 },

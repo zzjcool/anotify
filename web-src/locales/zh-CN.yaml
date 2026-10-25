@@ -4,6 +4,9 @@ common:
     tagline: Agent 完成即通知
   nav:
     overview: 总览
+    events: 事件流
+    capabilities: 能力与出口
+    nodes: 节点
     receivers: 通知接收
     keys: API Keys
     integration: 集成
@@ -211,6 +214,12 @@ index:
     n7_body: 升级 8 个依赖至最新稳定版，无破坏性变更。
     n8_title: 备份任务完成
     n8_body: 数据库快照已生成并上传至对象存储，大小 1.2 GB。
+  events:
+    title: 最近事件
+    subtitle: 什么事件进来、派成了哪些任务
+    open: 查看事件流 →
+    loading: 正在加载事件…
+    empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
 connect:
   title: 接入 Agent
   subtitle: 为你的 Agent 安装通知插件。装好后插件会引导完成登录授权，任务结束时自动把通知送到你的设备。
@@ -992,3 +1001,88 @@ admin:
     load_sessions: 加载会话失败
     action: 操作失败
     network: 网络错误
+events:
+  title: 事件流
+  subtitle: 外部世界的变化 → 任务链 → 结果。点任意事件查看它的完整链路。
+  refresh: 刷新
+  recent: 最近事件
+  loading: 正在加载事件…
+  empty: 还没有事件。用 POST /v1/events 提交第一个。
+  demo_badge: 演示模式：后端未连接
+  demo_hint: 后端未连接，暂无真实事件。
+  count: "{n} 条事件"
+  view_chain: 查看链路
+  filter:
+    trace: Trace ID
+    apply: 筛选
+  chain:
+    title: 任务链
+    empty: 这条 trace 下没有任务（可能在第一步就被剪枝了）。
+    no_root: 找不到根任务（trace 可能不完整）。
+    out_none: 未回报
+    out_end: 到头了
+caps:
+  title: 能力与出口表
+  subtitle: 能力是"做什么"（不含"怎么做"）；出口表决定了事件进来后往哪走。
+  new: 定义能力
+  loading: 正在加载能力…
+  empty: 还没有能力。定义一个，节点才能声明它。
+  count: "{n} 个能力"
+  no_outputs: 无出口（终端能力）
+  list:
+    title: 能力列表
+  form:
+    name: 能力名
+    outputs: 出口名（逗号分隔）
+    outputs_hint: 出口是封闭集合——建边时只能选这里声明过的名字。
+    schema: 参数校验（JSON Schema）
+    schema_hint: 只支持受控子集（不支持 $ref / if-then-else），中枢不做表达式求值。
+    cancel: 取消
+    submit: 创建
+    created: 能力已创建
+    create_failed: 创建失败：
+    err_name: 请填写能力名
+    err_schema: paramsSchema 不是合法 JSON
+  edges:
+    title: 出口表
+    new: 新增边
+    desc: 每条边表示"某个能力的某个出口，指向另一个能力"。一个出口可以有多条边（扇出）。
+    empty: 出口表为空：事件进来后没有任何出口可走。
+    from: 来源能力
+    port: 出口
+    port_hint: 只列出该能力声明过的出口（出口封闭，不变量 I2）。
+    to: 目标能力
+    remove: 删除
+    removed: 已删除
+    remove_failed: 删除失败：
+    created: 边已创建
+    create_failed: 创建失败：
+    err_incomplete: 请选择来源、出口和目标
+    no_ports: （该能力没有出口）
+nodes:
+  title: 节点
+  subtitle: 执行者。节点自己知道怎么跑某个能力，中枢只告诉它"做什么"。
+  refresh: 刷新
+  loading: 正在加载节点…
+  empty: 还没有节点。按下面的步骤注册第一台，它上线后才会接活。
+  count: "{online}/{total} 在线"
+  never: 从未
+  last_seen: 心跳
+  no_caps: 未声明能力
+  slots: 槽位 {busy}/{total}
+  drain: 排空
+  draining_hint: 排空中
+  drain_confirm: 排空 {name}？它跑完手上的任务后不再接新任务。
+  drain_done: 已排空
+  drain_failed: 排空失败：
+  status:
+    online: 在线
+    offline: 离线
+    draining: 排空中
+  list:
+    title: 节点列表
+  howto:
+    title: 如何接入一台节点
+    desc: 节点注册是运维动作（不是自助服务），所以要在服务器上执行。token 只在创建时返回一次。
+    step1: 在服务器上注册节点（声明它能跑哪些能力）
+    step2: 在节点机器上用 token 启动，它会用 WS 连回中枢

@@ -1,0 +1,295 @@
+{{define "title"}}{{t "nodes.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      .node-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 1rem;
+        align-items: start;
+      }
+      .st-dot {
+        display: inline-block;
+        width: 0.45rem;
+        height: 0.45rem;
+        border-radius: 9999px;
+        margin-right: 0.35rem;
+        vertical-align: middle;
+      }
+      .st-online {
+        background: #22c55e;
+        box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+      }
+      .st-offline {
+        background: #52525b;
+      }
+      .st-draining {
+        background: #eab308;
+      }
+      /* 槽位占用条 */
+      .slot-bar {
+        display: flex;
+        gap: 2px;
+        flex-wrap: wrap;
+      }
+      .slot {
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .slot.busy {
+        background: #6366f1;
+      }
+      .toast {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 50%;
+        transform: translateX(-50%) translateY(20px);
+        background: var(--panel-overlay);
+        border: 1px solid var(--line-strong);
+        color: var(--text);
+        font-size: 0.82rem;
+        padding: 0.6rem 1rem;
+        border-radius: 10px;
+        opacity: 0;
+        pointer-events: none;
+        transition: all 0.3s ease;
+        z-index: 100;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+      <div class="mx-auto max-w-6xl space-y-8">
+        <div class="reveal visible">
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 class="font-display text-3xl text-white">{{t "nodes.title"}}</h2>
+              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+                {{t "nodes.subtitle"}}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <button
+                onclick="loadAll()"
+                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
+              >
+                {{t "nodes.refresh"}}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="reveal visible">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="text-sm font-medium text-zinc-300">{{t "nodes.list.title"}}</h3>
+            <span id="nodes-summary" class="text-xs text-zinc-500"></span>
+          </div>
+          <div id="nodes-list" class="space-y-3">
+            <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
+              {{t "nodes.loading"}}
+            </div>
+          </div>
+        </div>
+
+        <div class="card rounded-2xl p-5">
+          <h3 class="mb-2 text-sm font-medium text-zinc-300">{{t "nodes.howto.title"}}</h3>
+          <p class="mb-3 text-xs leading-relaxed text-zinc-500">
+            {{t "nodes.howto.desc"}}
+          </p>
+          <pre class="code-block"><code># {{t "nodes.howto.step1"}}
+anotify node create --name my-mbp --capabilities review@1,fix@1
+
+# {{t "nodes.howto.step2"}}
+anotify node run --token &lt;token-from-step-1&gt;</code></pre>
+        </div>
+      </div>
+      <div id="toast" class="toast"></div>
+</div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+      const API = "/v1";
+
+      let NODES = [];
+
+      function toast(msg) {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        clearTimeout(el._timer);
+        el._timer = setTimeout(() => el.classList.remove("show"), 2600);
+      }
+
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = String(text);
+        return n;
+      }
+      function code(text, cls) {
+        const n = el("code", "mono " + (cls || ""));
+        n.textContent = String(text == null ? "" : text);
+        return n;
+      }
+
+      async function apiGet(path) {
+        try {
+          return await Anotify.api(path, { demo: null });
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return t("nodes.never", "从未");
+        const d = new Date(ts * 1000);
+        if (isNaN(d.getTime())) return String(ts);
+        const diff = Date.now() - d.getTime();
+        if (diff < 60e3) return t("common.time.just_now", "刚刚");
+        if (diff < 3600e3)
+          return t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", Math.floor(diff / 60e3));
+        if (diff < 86400e3)
+          return t("common.time.hours_ago", "{n} 小时前").replace("{n}", Math.floor(diff / 3600e3));
+        return d.toISOString().slice(0, 16).replace("T", " ");
+      }
+
+      const STATUS_CLASS = { online: "online", offline: "offline", draining: "draining" };
+
+      async function loadAll() {
+        const data = await apiGet(API + "/nodes");
+        NODES = (data && data.nodes) || [];
+        render();
+      }
+
+      function render() {
+        const list = document.getElementById("nodes-list");
+        const summary = document.getElementById("nodes-summary");
+        const online = NODES.filter((n) => n.status === "online").length;
+        summary.textContent = t("nodes.count", "{online}/{total} 在线")
+          .replace("{online}", online)
+          .replace("{total}", NODES.length);
+
+        list.replaceChildren();
+
+        if (!NODES.length) {
+          list.appendChild(
+            el(
+              "div",
+              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+              t("nodes.empty", "还没有节点。按下面的步骤注册第一台，它上线后才会接活。"),
+            ),
+          );
+          return;
+        }
+
+        for (const n of NODES) list.appendChild(nodeCard(n));
+      }
+
+      function nodeCard(n) {
+        const card = el("div", "card rounded-2xl p-4");
+        const row = el("div", "node-row");
+        const left = el("div", "min-w-0");
+
+        // 名称 + 状态点
+        const head = el("div", "flex flex-wrap items-center gap-2");
+        const nameWrap = el("span", "text-[13px] text-zinc-200");
+        nameWrap.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[n.status] || "offline")));
+        nameWrap.appendChild(document.createTextNode(n.name || "?"));
+        head.appendChild(nameWrap);
+        head.appendChild(
+          el("span", "text-[11px] text-zinc-500", t("nodes.status." + n.status, n.status)),
+        );
+        left.appendChild(head);
+
+        // 声明的能力
+        const caps = el("div", "mt-2 flex flex-wrap gap-1");
+        const capList = n.capabilities || [];
+        if (capList.length) {
+          for (const c of capList) {
+            caps.appendChild(el("span", "out-chip", c));
+          }
+        } else {
+          caps.appendChild(
+            el("span", "text-[11px] text-zinc-600", t("nodes.no_caps", "未声明能力")),
+          );
+        }
+        left.appendChild(caps);
+
+        // 槽位占用
+        const slots = n.instances || 0;
+        const busy = n.busy || 0;
+        const slotWrap = el("div", "mt-2 flex items-center gap-2");
+        slotWrap.appendChild(
+          el(
+            "span",
+            "text-[11px] text-zinc-500",
+            t("nodes.slots", "槽位 {busy}/{total}")
+              .replace("{busy}", busy)
+              .replace("{total}", slots),
+          ),
+        );
+        if (slots > 0) {
+          const bar = el("div", "slot-bar");
+          for (let i = 0; i < slots; i++) {
+            bar.appendChild(el("span", "slot" + (i < busy ? " busy" : "")));
+          }
+          slotWrap.appendChild(bar);
+        }
+        left.appendChild(slotWrap);
+
+        // 右侧：最后心跳 + drain
+        const right = el("div", "text-right");
+        right.appendChild(
+          el("div", "text-[11px] text-zinc-500", t("nodes.last_seen", "心跳 ") + fmtTime(n.lastSeenAt)),
+        );
+        if (n.status !== "draining") {
+          const btn = el(
+            "button",
+            "btn-ghost mt-2 rounded px-2 py-1 text-[11px]",
+            t("nodes.drain", "排空"),
+          );
+          btn.addEventListener("click", () => drain(n));
+          right.appendChild(btn);
+        } else {
+          right.appendChild(
+            el("div", "mt-2 text-[11px] text-amber-400", t("nodes.draining_hint", "排空中")),
+          );
+        }
+
+        row.appendChild(left);
+        row.appendChild(right);
+        card.appendChild(row);
+        return card;
+      }
+
+      // drain 排空节点：只改 status，**不取消**在跑的任务。
+      // 排空是渐进退役（跑完手上这单就不再接新活），取消是破坏性操作。
+      async function drain(n) {
+        const msg = t("nodes.drain_confirm", "排空 {name}？它跑完手上的任务后不再接新任务。").replace(
+          "{name}",
+          n.name || "",
+        );
+        if (!confirm(msg)) return;
+        try {
+          await Anotify.api(API + "/nodes/" + encodeURIComponent(n.id) + "/drain", {
+            method: "POST",
+          });
+          toast(t("nodes.drain_done", "已排空"));
+          loadAll();
+        } catch (err) {
+          toast(t("nodes.drain_failed", "排空失败：") + err.message);
+        }
+      }
+
+      document.addEventListener("DOMContentLoaded", loadAll);
+    </script>
+{{end}}

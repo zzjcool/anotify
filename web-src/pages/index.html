@@ -86,6 +86,27 @@
       </div>
     </section>
 
+    <!-- ===== 事件中心概览（#79）=====
+         旧的「通知列表」是结果视角，这里是**因果视角**：
+         什么事件进来、派成了哪些任务、哪一步被剪枝。
+         两者并存：通知回答「我收到了什么」，事件流回答「为什么」。 -->
+    <section class="card reveal visible p-5">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium text-white">{{t "index.events.title"}}</div>
+          <div class="text-[11px] text-zinc-500">{{t "index.events.subtitle"}}</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <a href="events.html" class="btn-ghost rounded-lg px-3 py-1.5 text-xs">
+            {{t "index.events.open"}}
+          </a>
+        </div>
+      </div>
+      <div id="index-events" class="mt-4 space-y-2">
+        <div class="text-xs text-zinc-500">{{t "index.events.loading"}}</div>
+      </div>
+    </section>
+
     <!-- ===== 通知活动热力图 ===== -->
     <section class="card reveal visible p-5">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -658,6 +679,66 @@
       renderNotifs(currentFilter);
       renderSummary();
       renderHeatmap();
+      loadEvents();
+    }
+
+    /* ================= 事件中心概览（#79）================= */
+    // loadEvents 拉最近几条事件，渲染成首页的小卡片。
+    //
+    // 走控制台端点 /v1/console/events（会话 Cookie 鉴权）——机器入口的
+    // GET /v1/events 要 Bearer API Key，浏览器页面拿不到那种凭据。
+    async function loadEvents() {
+      const box = document.getElementById("index-events");
+      if (!box) return;
+      let data = null;
+      try {
+        data = await api("/v1/console/events?limit=5");
+      } catch {
+        data = null;
+      }
+      const events = (data && data.events) || [];
+      box.replaceChildren();
+
+      if (!events.length) {
+        const hint = document.createElement("div");
+        hint.className = "text-xs text-zinc-500";
+        hint.textContent = t(
+          "index.events.empty",
+          "还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。",
+        );
+        box.appendChild(hint);
+        return;
+      }
+
+      for (const e of events) {
+        const row = document.createElement("a");
+        row.className =
+          "flex flex-wrap items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-white/5";
+        row.href = "events.html";
+
+        const src = document.createElement("code");
+        src.className =
+          "mono rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-indigo-300";
+        src.textContent = e.source;
+        row.appendChild(src);
+
+        const arrow = document.createElement("span");
+        arrow.className = "text-zinc-600";
+        arrow.textContent = "→";
+        row.appendChild(arrow);
+
+        const typ = document.createElement("code");
+        typ.className = "mono text-[11px] text-zinc-300";
+        typ.textContent = e.type;
+        row.appendChild(typ);
+
+        const tr = document.createElement("span");
+        tr.className = "ml-auto mono truncate text-[10px] text-zinc-600";
+        tr.textContent = e.traceId;
+        row.appendChild(tr);
+
+        box.appendChild(row);
+      }
     }
 
     /* ================= KPI ================= */

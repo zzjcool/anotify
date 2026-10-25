@@ -1,0 +1,419 @@
+{{define "title"}}{{t "events.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* 本页特有样式（共享样式见 ui.css / tokens.css） */
+      .ev-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 1rem;
+        align-items: start;
+      }
+      /* 剪枝记录：不是错误，是"这条分支在这里断了"，所以用中性色而不是红 */
+      .prune-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.15rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.7rem;
+        font-family: var(--mono, monospace);
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--line-strong);
+        color: var(--text-muted, #a1a1aa);
+      }
+      .prune-chip.no_edge {
+        color: #a1a1aa;
+      }
+      .prune-chip.param_schema {
+        color: #fbbf24;
+      }
+      .prune-chip.no_node {
+        color: #60a5fa;
+      }
+      .prune-chip.foreign_user {
+        color: #f472b6;
+      }
+      .prune-chip.path {
+        color: #a78bfa;
+      }
+      /* 状态点：九态 */
+      .st-dot {
+        display: inline-block;
+        width: 0.45rem;
+        height: 0.45rem;
+        border-radius: 9999px;
+        margin-right: 0.35rem;
+        vertical-align: middle;
+      }
+      .st-pending {
+        background: #71717a;
+      }
+      .st-assigned {
+        background: #3b82f6;
+      }
+      .st-acked {
+        background: #06b6d4;
+      }
+      .st-running {
+        background: #22c55e;
+      }
+      .st-succeeded {
+        background: #10b981;
+      }
+      .st-failed {
+        background: #ef4444;
+      }
+      .st-canceled {
+        background: #a1a1aa;
+      }
+      .st-abandoned {
+        background: #f97316;
+      }
+      .st-lease_expired {
+        background: #eab308;
+      }
+      /* 事件链：缩进表示派生关系 */
+      .chain-node {
+        border-left: 2px solid var(--line-strong);
+        padding-left: 0.85rem;
+        margin-left: 0.35rem;
+      }
+      .toast {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 50%;
+        transform: translateX(-50%) translateY(20px);
+        background: var(--panel-overlay);
+        border: 1px solid var(--line-strong);
+        color: var(--text);
+        font-size: 0.82rem;
+        padding: 0.6rem 1rem;
+        border-radius: 10px;
+        opacity: 0;
+        pointer-events: none;
+        transition: all 0.3s ease;
+        z-index: 100;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+      <div class="mx-auto max-w-6xl space-y-8">
+        <div class="reveal visible">
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 class="font-display text-3xl text-white">{{t "events.title"}}</h2>
+              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+                {{t "events.subtitle"}}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <button
+                onclick="loadAll()"
+                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
+              >
+                {{t "events.refresh"}}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 筛选 -->
+        <div class="card rounded-2xl p-4">
+          <div class="flex flex-wrap items-center gap-3">
+            <label class="text-xs text-zinc-400" for="ev-trace">{{t "events.filter.trace"}}</label>
+            <input
+              id="ev-trace"
+              class="input mono w-64 text-xs"
+              placeholder="trace_..."
+              onkeydown="if(event.key==='Enter')loadAll()"
+            />
+            <button
+              onclick="loadAll()"
+              class="btn-primary rounded-lg px-3 py-1.5 text-xs"
+            >
+              {{t "events.filter.apply"}}
+            </button>
+            <span id="ev-summary" class="ml-auto text-xs text-zinc-500"></span>
+          </div>
+        </div>
+
+        <!-- 事件列表 -->
+        <div class="reveal visible">
+          <h3 class="mb-3 text-sm font-medium text-zinc-300">{{t "events.recent"}}</h3>
+          <div id="ev-list" class="space-y-3">
+            <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
+              {{t "events.loading"}}
+            </div>
+          </div>
+        </div>
+
+        <!-- 任务链详情（点事件展开） -->
+        <div id="ev-detail" class="hidden reveal visible">
+          <h3 class="mb-3 text-sm font-medium text-zinc-300">{{t "events.chain.title"}}</h3>
+          <div id="ev-chain" class="card rounded-2xl p-5"></div>
+        </div>
+      </div>
+      <div id="toast" class="toast"></div>
+</div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+
+      const API = "/v1"; // 各页面各自声明（与 keys.html 一致，无全局常量）
+      let EVENTS = [];
+      let demoMode = false;
+
+      function toast(msg) {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        clearTimeout(el._timer);
+        el._timer = setTimeout(() => el.classList.remove("show"), 2400);
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return "—";
+        const d = new Date(ts * 1000);
+        if (isNaN(d.getTime())) return String(ts);
+        const diff = Date.now() - d.getTime();
+        if (diff < 60e3) return t("common.time.just_now", "刚刚");
+        if (diff < 3600e3)
+          return t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", Math.floor(diff / 60e3));
+        if (diff < 86400e3)
+          return t("common.time.hours_ago", "{n} 小时前").replace("{n}", Math.floor(diff / 3600e3));
+        return d.toISOString().slice(0, 16).replace("T", " ");
+      }
+
+      // fetchApi：全部走 Anotify.api —— 它内置了 401 → 跳登录的守卫。
+      // 直接裸 fetch 会绕过守卫：401 时页面只是空白，用户不知道自己被登出了。
+      // 传入 demo 值让"后端未就绪"降级成演示数据而不是抛错。
+      async function fetchApi(path) {
+        try {
+          return await Anotify.api(path, { demo: null });
+        } catch (e) {
+          return null;
+        }
+      }
+
+      // ==================== DOM 构建工具 ====================
+      //
+      // 全程用 createElement + textContent，**不用 innerHTML**。
+      //
+      // 为什么：本页的数据全部来自服务端（source/type/traceId/capability/out/summary…），
+      // 而 payload 是外部 webhook 的原始 JSON，可能含任意字符串。
+      // esc()+innerHTML 只要漏一处就是 XSS；createElement 结构上不可能注入，
+      // 因为 textContent 永远只当文本，不会被解析成标签。
+      function el(tag, className, text) {
+        const n = document.createElement(tag);
+        if (className) n.className = className;
+        if (text != null) n.textContent = String(text);
+        return n;
+      }
+
+      function code(text, className) {
+        const n = el("code", "mono " + (className || ""));
+        n.textContent = String(text == null ? "" : text);
+        return n;
+      }
+
+      // ==================== 渲染 ====================
+
+      async function loadAll() {
+        const trace = document.getElementById("ev-trace").value.trim();
+        const qs = trace ? "?traceId=" + encodeURIComponent(trace) : "";
+        // 走**控制台**端点（会话 Cookie 鉴权）。
+        // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
+        // 浏览器页面拿不到也拿不对这个凭据。
+        const data = await fetchApi(API + "/console/events" + qs);
+        if (data) {
+          EVENTS = data.events || [];
+          demoMode = false;
+        } else {
+          EVENTS = [];
+          demoMode = true;
+        }
+        renderList();
+      }
+
+      // renderList 用纯 DOM 重建事件列表。
+      function renderList() {
+        const list = document.getElementById("ev-list");
+        const summary = document.getElementById("ev-summary");
+        summary.textContent = demoMode
+          ? t("events.demo_badge", "演示模式：后端未连接")
+          : t("events.count", "{n} 条事件").replace("{n}", EVENTS.length);
+
+        list.replaceChildren();
+
+        if (!EVENTS.length) {
+          const empty = el(
+            "div",
+            "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+            demoMode
+              ? t("events.demo_hint", "后端未连接，暂无真实事件。")
+              : t("events.empty", "还没有事件。用 POST /v1/events 提交第一个。"),
+          );
+          list.appendChild(empty);
+          return;
+        }
+
+        for (const e of EVENTS) {
+          list.appendChild(eventCard(e));
+        }
+      }
+
+      // eventCard 渲染一条事件。
+      function eventCard(e) {
+        const card = el(
+          "div",
+          "card rounded-2xl p-4 hover:border-white/20 transition cursor-pointer",
+        );
+        card.addEventListener("click", () => showChain(e.traceId));
+
+        const row = el("div", "ev-row");
+        const left = el("div", "min-w-0");
+
+        const head = el("div", "flex flex-wrap items-center gap-2");
+        head.appendChild(
+          code(e.source, "rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-indigo-300"),
+        );
+        head.appendChild(el("span", "text-zinc-500", "→"));
+        head.appendChild(code(e.type, "text-[12px] text-zinc-200"));
+        left.appendChild(head);
+
+        left.appendChild(el("div", "mt-1.5 mono truncate text-[11px] text-zinc-500", e.traceId));
+
+        const right = el("div", "text-right text-[11px] text-zinc-500 whitespace-nowrap");
+        right.appendChild(el("div", "", fmtTime(e.createdAt)));
+        right.appendChild(
+          el("div", "mt-1 text-indigo-400", t("events.view_chain", "查看链路") + " →"),
+        );
+
+        row.appendChild(left);
+        row.appendChild(right);
+        card.appendChild(row);
+        return card;
+      }
+
+      // showChain 展示一条 trace 下的任务链。
+      //
+      // 按 parentTaskId 组装成树：根任务 parent=null，子任务挂在父下面。
+      // 这样扇出（一个出口多条边）与链式派生都能直接看出来。
+      async function showChain(traceId) {
+        const detail = document.getElementById("ev-detail");
+        const chain = document.getElementById("ev-chain");
+        detail.classList.remove("hidden");
+        chain.replaceChildren(el("div", "text-sm text-zinc-500", t("events.loading", "加载中…")));
+
+        const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(traceId));
+        const tasks = (data && data.tasks) || [];
+
+        chain.replaceChildren();
+        if (!tasks.length) {
+          chain.appendChild(
+            el(
+              "div",
+              "text-sm text-zinc-500",
+              t("events.chain.empty", "这条 trace 下没有任务（可能在第一步就被剪枝了）。"),
+            ),
+          );
+          return;
+        }
+
+        const byParent = {};
+        for (const tk of tasks) {
+          const p = tk.parentTaskId || "__root__";
+          (byParent[p] = byParent[p] || []).push(tk);
+        }
+
+        const roots = byParent["__root__"] || [];
+        if (!roots.length) {
+          chain.appendChild(
+            el(
+              "div",
+              "text-sm text-zinc-500",
+              t("events.chain.no_root", "找不到根任务（trace 可能不完整）。"),
+            ),
+          );
+          return;
+        }
+        for (const r of roots) chain.appendChild(renderNode(r, byParent));
+      }
+
+      // renderNode 递归渲染一个任务及其子任务。
+      function renderNode(tk, byParent) {
+        const kids = byParent[tk.id] || [];
+        const st = tk.status || "pending";
+
+        const box = el("div", "chain-node py-2");
+        const line = el("div", "flex flex-wrap items-center gap-2");
+
+        const name = el("span", "text-[13px] text-zinc-200");
+        name.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[st] || "pending")));
+        name.appendChild(document.createTextNode(tk.capability || "?"));
+        line.appendChild(name);
+
+        line.appendChild(code("v" + tk.version, "text-[10px] text-zinc-600"));
+        line.appendChild(el("span", "text-[11px] text-zinc-500", STATUS_LABELS[st] || st));
+
+        if (tk.startedAt && tk.finishedAt) {
+          line.appendChild(
+            el("span", "text-[11px] text-zinc-600", "· " + (tk.finishedAt - tk.startedAt) + "s"),
+          );
+        }
+
+        // out 三态：未回报 / 到头了 / 走某个出口
+        const outWrap = el("span", "text-[11px] text-zinc-500");
+        outWrap.appendChild(document.createTextNode("· "));
+        if (!tk.reported) {
+          outWrap.appendChild(
+            document.createTextNode(t("events.chain.out_none", "未回报")),
+          );
+        } else if (tk.out == null) {
+          outWrap.appendChild(document.createTextNode(t("events.chain.out_end", "到头了")));
+        } else {
+          outWrap.appendChild(document.createTextNode("→ "));
+          outWrap.appendChild(code(tk.out, "text-emerald-300"));
+        }
+        line.appendChild(outWrap);
+
+        if (tk.error) {
+          line.appendChild(el("span", "text-[11px] text-red-400", "· " + tk.error));
+        }
+        box.appendChild(line);
+
+        if (kids.length) {
+          const childBox = el("div", "mt-1");
+          for (const k of kids) childBox.appendChild(renderNode(k, byParent));
+          box.appendChild(childBox);
+        }
+        return box;
+      }
+
+      // 演示数据：后端未连接时给一个可看的样例，避免空白页。
+      function demoEvents() {
+        return [
+          {
+            id: "evt_demo",
+            source: "github",
+            type: "pull_request.opened",
+            traceId: "trace_demo_0001",
+            createdAt: Math.floor(Date.now() / 1000) - 120,
+          },
+        ];
+      }
+
+      // 不需要显式 requireAuth：fetchApi 走 Anotify.api，
+      // 未登录时它自己会把用户送到 login.html?next=events.html。
+      document.addEventListener("DOMContentLoaded", loadAll);
+    </script>
+{{end}}
