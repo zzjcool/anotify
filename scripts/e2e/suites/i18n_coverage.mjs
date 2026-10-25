@@ -141,17 +141,62 @@ async function main() {
 
 	const seedData = H.seed(server.dbPath, "i18n_cov");
 
-	/* Post a real notification so message.html can be tested with a real ID */
-	const notifyResp = await H.req(server.base, "/v1/notify", {
-		key: seedData.sendKey,
+	/* 提一条真实事件，让 message.html 能用真实任务 ID 打开
+	 *
+	 * #80：message.html 现在是**任务详情**页（?id=tsk_xxx），
+	 * 旧 /v1/notify 已下线。这里先建一个最小能力图让事件能派成任务。
+	 */
+	const capResp = await H.req(server.base, "/v1/capabilities", {
+		session: seedData.session,
+		method: "POST",
 		body: {
-			title: "Coverage Test Notification",
-			agentState: "done",
-			body: "Real data path verification",
+			name: "i18n.cover",
+			outputs: ["go"],
+			paramsSchema: { type: "object" },
 		},
 	});
-	const realMsgId = notifyResp.json?.id || "";
-	console.log("  posted notification id:", realMsgId);
+	const coverCap = capResp.json?.capability;
+	const sinkResp = await H.req(server.base, "/v1/capabilities", {
+		session: seedData.session,
+		method: "POST",
+		body: { name: "i18n.sink", outputs: [], paramsSchema: { type: "object" } },
+	});
+	const sinkCap = sinkResp.json?.capability;
+
+	// 边：i18n.cover --go--> i18n.sink
+	await H.req(server.base, "/v1/edges", {
+		session: seedData.session,
+		method: "POST",
+		body: {
+			fromCapability: coverCap?.id,
+			fromPort: "go",
+			toCapability: sinkCap?.id,
+		},
+	});
+
+	const notifyResp = await H.req(server.base, "/v1/events", {
+		key: seedData.sendKey,
+		body: {
+			source: "i18n.cover",
+			type: "go",
+			payload: { title: "Coverage Test Task", body: "Real data path verification" },
+		},
+	});
+	let realMsgId = notifyResp.json?.tasks?.[0]?.id || "";
+	console.log(
+		"  posted task id:", realMsgId,
+		"| resp:", JSON.stringify({ tasks: notifyResp.json?.tasks, pruned: notifyResp.json?.pruned, origin: notifyResp.json?.origin }),
+	);
+
+	// 没有节点时事件不会派成任务。此时退到「列表里任意一个任务」，
+	// 再退到「用 traceId 打开」（详情页两个都支持）。
+	if (!realMsgId) {
+		const t = await H.req(server.base, "/v1/tasks?limit=1", {
+			session: seedData.session,
+		});
+		realMsgId = t.json?.tasks?.[0]?.id || notifyResp.json?.traceId || "";
+		console.log("  fallback task id:", realMsgId);
+	}
 
 	/* =========================================================
 	 * A. en/es × 7 pages (demo mode) — no CJK residue

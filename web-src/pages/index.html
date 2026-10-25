@@ -388,53 +388,91 @@
 
     /* ================= 数据层 ================= */
     // 统一通知结构（兼容后端 Message / 契约返回）
-    // 注意：/v1/notifications 直接序列化 broker.Message（Go 无 json tag → PascalCase 字段），
+    // 注意：早期的 /v1/notifications 直接序列化 broker.Message（PascalCase 字段），
     //       故每个字段都要兼容 PascalCase（真实 API）与 camelCase（演示数据/契约）。
+    // 任务状态 → 工作台的 agentState 语义（复用既有配色与文案）
+    //
+    // 九态比旧的 5 个 agentState 更细：把"进行中"的四种归到 working、
+    // 三种失败归到 error、canceled/abandoned 归到 interrupted。
+    // 这样 UI 不用加新配色，但状态仍然精确（详情页展示原始 status）。
+    const TASK_STATE_MAP = {
+      pending: "working",
+      assigned: "working",
+      acked: "working",
+      running: "working",
+      succeeded: "done",
+      failed: "error",
+      canceled: "interrupted",
+      abandoned: "interrupted",
+      lease_expired: "interrupted",
+    };
+
+    // normalize 把数据投影成工作台卡片需要的形状。
+    //
+    // 两种输入：
+    //   1. 真实任务（/v1/tasks）——有 status（九态），params 里放业务字段
+    //   2. 演示数据（DEMO_NOTIFICATIONS）——那是旧消息结构，有 agentState/title/body
+    // 演示态必须继续工作（后端宕机时的兜底体验），所以两条路都要走通。
     function normalize(n, i) {
-      const payload = n.Payload
-        ? safeParse(n.Payload)
-        : n.payload
-          ? safeParse(n.payload)
-          : n;
+      const isDemo = n.agentState != null && n.status == null;
+      const params = n.params
+        ? safeParse(n.params)
+        : isDemo
+          ? {
+              title: n.title,
+              body: n.body,
+              link: n.link,
+              agent: n.agent,
+              cwd: n.project,
+              model: n.model,
+              sessionId: n.sessionId,
+            }
+          : {};
+      const status = n.status || "pending";
+      const created = n.createdAt || n.created_at;
       return {
-        id: n.id || n.ID || "n" + i,
-        seq: n.seq != null ? n.seq : n.Seq,
-        agentState: n.agentState || n.AgentState || "working",
-        title:
-          n.title || n.Title || t("common.placeholder.no_title", "（无标题）"),
-        body: n.body || n.Body || "",
-        link: n.link || n.Link || payload.link || "",
-        agent: payload.agentId || payload.agent || "agent",
-        project: payload.cwd || payload.project || "—",
-        duration: payload.durationMs
-          ? Math.round(payload.durationMs / 1000)
-          : payload.duration || 0,
-        model: payload.model || "—",
-        sessionId: payload.sessionId || "—",
-        deviceTags: n.deviceTags || n.DeviceTags || [],
-        priority: n.priority || n.Priority || "normal",
-        ttlSeconds: n.ttlSeconds || n.TTLSeconds || 0,
-        time: timeAgo(n.created_at || n.createdAt || n.CreatedAt || n.time),
+        id: n.id || "t" + i,
+        seq: null,
+        status,
+        // 演示数据直接用自己的 agentState（不经过九态映射）
+        agentState: isDemo ? n.agentState : TASK_STATE_MAP[status] || "working",
+        title: isDemo
+          ? n.title || t("common.placeholder.no_title", "（无标题）")
+          : n.capability
+            ? n.capability + "@" + (n.version != null ? n.version : "?")
+            : t("common.placeholder.no_title", "（无标题）"),
+        body: isDemo
+          ? n.body || ""
+          : (params.title || "") + (params.body ? " · " + params.body : ""),
+        link: isDemo ? n.link || "" : params.link || "",
+        agent: (isDemo ? n.agent : params.agent) || "agent",
+        project: (isDemo ? n.project : params.cwd) || "—",
+        duration: isDemo
+          ? n.duration || 0
+          : n.startedAt && n.finishedAt
+            ? n.finishedAt - n.startedAt
+            : 0,
+        model: (isDemo ? n.model : params.model) || "—",
+        sessionId: isDemo ? n.sessionId || "—" : n.traceId || "—",
+        deviceTags: params.deviceTags || [],
+        priority: params.priority || "normal",
+        ttlSeconds: 0,
+        out: n.out != null ? n.out : null,
+        reported: !!n.reported,
+        error: n.error || "",
+        time: timeAgo(created),
         isToday: (() => {
-          const ts = n.created_at || n.createdAt || n.CreatedAt;
-          if (!ts) return false;
-          const d = new Date(ts);
+          if (!created) return false;
+          // 真实任务是 unix 秒；演示数据是 ISO 字符串
+          const d =
+            typeof created === "number"
+              ? new Date(created * 1000)
+              : new Date(created);
           if (Number.isNaN(d.getTime())) return false;
-          const now = new Date();
-          return d.toDateString() === now.toDateString();
+          return d.toDateString() === new Date().toDateString();
         })(),
-        delivered:
-          n.delivered != null
-            ? n.delivered
-            : n.delivered_count != null
-              ? n.delivered_count
-              : 0,
-        total:
-          n.total != null
-            ? n.total
-            : n.device_count != null
-              ? n.device_count
-              : 0,
+        delivered: isDemo ? n.delivered || 0 : 0,
+        total: isDemo ? n.total || 0 : 0,
       };
     }
     function safeParse(s) {
@@ -640,13 +678,11 @@
       let items = null;
       let connected = false;
       try {
-        const data = await api("/v1/notifications?limit=50");
-        // 连接成功：notifications 是数组（可能为空 []）即真实数据，哪怕 0 条
-        if (data && Array.isArray(data.notifications)) {
-          items = data.notifications;
-          connected = true;
-        } else if (Array.isArray(data)) {
-          items = data;
+        // #80：旧 /v1/notifications 已随消息模型下线，改用任务列表。
+        // 语义从"推给过你什么"变成"为你办了什么"——这正是事件中心的核心。
+        const data = await api("/v1/tasks?limit=50");
+        if (data && Array.isArray(data.tasks)) {
+          items = data.tasks;
           connected = true;
         }
       } catch (e) {
@@ -1354,16 +1390,16 @@
     }
 
     /* ================= 消息深链（推送点击 ?msg=<id>）================= */
-    // 点击推送通知 → index.html?msg=<id>：数据加载完成后自动打开该消息详情。
-    // 消息不在最近 50 条时（如延迟点击旧通知），真实模式下拉更长历史再匹配一次。
+    // 点击推送通知 → index.html?msg=<taskId>：数据加载完成后自动打开该任务详情。
+    // 任务不在最近 50 条时（如延迟点击旧通知），真实模式下拉更长历史再匹配一次。
     async function openMsgFromQuery() {
       const msgId = qs.get("msg");
       if (!msgId) return;
       let n = NOTIFICATIONS.find((x) => x.id === msgId);
       if (!n && !usingDemo) {
         try {
-          const data = await api("/v1/notifications?limit=500");
-          const items = Array.isArray(data) ? data : data.notifications;
+          const data = await api("/v1/tasks?limit=500");
+          const items = data && Array.isArray(data.tasks) ? data.tasks : null;
           if (Array.isArray(items)) {
             NOTIFICATIONS = items.map(normalize).sort(byNewest);
             renderNotifs(currentFilter);

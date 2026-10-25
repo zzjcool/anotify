@@ -325,3 +325,30 @@ CREATE TABLE IF NOT EXISTS graph_versions (
     created_at   INTEGER NOT NULL,
     UNIQUE (org_id, content_hash)
 );
+
+-- +migration 5 new_model_columns
+-- 新模型（events/tasks/...）的补列，由 store.go 的 migrationHooks[5] 实现；SQL 空块。
+-- （tasks.not_before 退避列，见 #78）
+-- 注意：本块此前只有 Go hook、缺 SQL 头，导致 parseMigrations 的连续性检查
+-- 看到 4 → 6 而报错。补上这个空块让编号连续。
+
+-- +migration 6 drop_legacy_message_model
+-- #80：下线旧「通知终端」模型。
+--
+-- 为什么**不删迁移 3 的建表语句**：迁移规则是「只追加，不改已发布的块」。
+-- 老库已经执行过迁移 3（建了这三张表），改迁移 3 对它不起作用；
+-- 新库若跳过迁移 3 又会破坏版本连续性检查。
+-- 所以正确的做法是新增一个迁移来 DROP。
+--
+-- 为什么可以安全删：
+--   - messages   → 事件中心里"发生了什么"是 events、"做完没有"是 tasks
+--   - consumer_offsets → broker 的 per-user 序列位点，broker 包已删除
+--   - deliveries → 旧消息的投递记录；推送结果现在落在任务状态与日志里
+--
+-- devices **不在此列**：它是推送订阅注册表（"用户设备在哪"是持久事实），
+-- notify.phone 仍需要它投递。
+--
+-- 迁移前请先导出历史数据（见 DEVELOPMENT.md 的「旧模型下线」一节）。
+DROP TABLE IF EXISTS deliveries;
+DROP TABLE IF EXISTS consumer_offsets;
+DROP TABLE IF EXISTS messages;

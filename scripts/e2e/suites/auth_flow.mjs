@@ -226,7 +226,7 @@ async function main() {
 	H.check("注册后会话 Cookie 已建立", !!sess);
 	H.eq(
 		"会话可访问受保护 API",
-		(await H.req(server.base, "/v1/notifications", { session: sess })).status,
+		(await H.req(server.base, "/v1/tasks", { session: sess })).status,
 		200,
 	);
 
@@ -257,9 +257,9 @@ async function main() {
 	H.eq(
 		"send Key 可上报",
 		(
-			await H.req(server.base, "/v1/notify", {
+			await H.req(server.base, "/v1/events", {
 				key: sendKey,
-				body: { title: "t", agentState: "done" },
+				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
 			})
 		).status,
 		200,
@@ -267,9 +267,9 @@ async function main() {
 	H.eq(
 		"recv Key 上报被拒(403)",
 		(
-			await H.req(server.base, "/v1/notify", {
+			await H.req(server.base, "/v1/events", {
 				key: recvKey,
-				body: { title: "t", agentState: "done" },
+				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
 			})
 		).status,
 		403,
@@ -295,7 +295,7 @@ async function main() {
 	);
 	H.eq(
 		"登出后会话失效(401)",
-		(await H.req(server.base, "/v1/notifications", { session: sess })).status,
+		(await H.req(server.base, "/v1/tasks", { session: sess })).status,
 		401,
 	);
 
@@ -306,7 +306,7 @@ async function main() {
 	H.check(
 		"重新登录后会话恢复",
 		!!sess &&
-			(await H.req(server.base, "/v1/notifications", { session: sess }))
+			(await H.req(server.base, "/v1/tasks", { session: sess }))
 				.status === 200,
 	);
 
@@ -337,9 +337,9 @@ async function main() {
 	H.check("免用户名登录后会话建立", !!sess);
 
 	// 11. /v1/stats 真实统计
-	await H.req(server.base, "/v1/notify", {
+	await H.req(server.base, "/v1/events", {
 		key: sendKey,
-		body: { title: "统计测试", agentState: "done" },
+		body: { source: "github", type: "pr_opened", payload: { title: "统计测试" } },
 	});
 	const stats = await H.req(server.base, "/v1/stats", { session: sess });
 	H.eq("GET /v1/stats → 200", stats.status, 200);

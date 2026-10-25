@@ -170,7 +170,7 @@
               </button>
             </div>
             <div class="code-body">
-              curl -X POST https://{{t "docs.your_domain"}}/v1/notify \ -H
+              curl -X POST https://{{t "docs.your_domain"}}/v1/events \ -H
               <span class="tk-str"
                 >"Authorization: Bearer ant_live_9f3a2c8e…"</span
               >
@@ -194,7 +194,7 @@
  Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
     │                        │                        │                        │
     │ ① agent_settled        │                        │                        │
-    │ ② POST /v1/notify ────▶│ ③ verify Key → locate user                        │
+    │ ② POST /v1/events ────▶│ ③ verify Key → route by edges                    │
     │                        │ ④ filter by tag/level   │                        │
     │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
     │                        │                        │     ⑦ SW showNotification
@@ -245,7 +245,7 @@
                     <td class="px-5 py-2.5">
                       <span class="method m-post">POST</span>
                     </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/notify</td>
+                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/events</td>
                     <td class="px-5 py-2.5 text-zinc-500">
                       {{t "docs.api.map.notify"}}
                     </td>
@@ -255,10 +255,10 @@
                       <span class="method m-get">GET</span>
                     </td>
                     <td class="px-2 py-2.5 mono text-zinc-300">
-                      /v1/notifications
+                      /v1/tasks
                     </td>
                     <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.notifications"}}
+                      {{t "docs.api.map.tasks"}}
                     </td>
                   </tr>
                   <tr class="hover:bg-white/[0.02]">
@@ -305,7 +305,7 @@
                     <td class="px-5 py-2.5">
                       <span class="method m-ws">WS</span>
                     </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/stream</td>
+                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/node/stream</td>
                     <td class="px-5 py-2.5 text-zinc-500">
                       {{t "docs.api.map.stream"}}
                     </td>
@@ -400,98 +400,69 @@
           </div>
         </section>
 
-        <!-- ===== POST /v1/notify ===== -->
-        <section id="notify" class="doc-anchor mt-16 reveal visible">
+        <!-- ===== POST /v1/events（事件入口）===== -->
+        <section id="events" class="doc-anchor mt-16 reveal visible">
           <div class="flex items-center gap-3">
             <span class="method m-post">POST</span>
-            <code class="mono text-lg text-white">/v1/notify</code>
+            <code class="mono text-lg text-white">/v1/events</code>
             <span
               class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold"
               style="background: var(--accent-soft); color: var(--accent)"
-              >{{t "docs.notify.core"}}</span
+              >{{t "docs.events.core"}}</span
             >
           </div>
           <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
-            {{t "docs.notify.intro"}}
+            {{t "docs.events.intro"}}
           </p>
 
           <div class="card mt-5 overflow-hidden">
             <div
               class="border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs font-semibold text-zinc-300"
             >
-              {{t "docs.notify.params.title"}}
+              {{t "docs.events.params.title"}}
             </div>
             <div class="overflow-x-auto">
               <table class="param-table">
                 <tbody>
                   <tr>
                     <td>
-                      <span class="param-name">title</span
-                      ><span class="req">{{t "docs.notify.required"}}</span>
-                      <div class="param-type mt-1">string ≤ 120</div>
+                      <span class="param-name">source</span
+                      ><span class="req">{{t "docs.events.required"}}</span>
+                      <div class="param-type mt-1">string</div>
                     </td>
-                    <td class="param-desc">
-                      {{t "docs.notify.params.title_desc"}}
-                    </td>
+                    <td class="param-desc">{{t "docs.events.params.source"}}</td>
                   </tr>
                   <tr>
                     <td>
-                      <span class="param-name">agentState</span
-                      ><span class="req">{{t "docs.notify.required"}}</span>
-                      <div class="param-type mt-1">enum</div>
+                      <span class="param-name">type</span
+                      ><span class="req">{{t "docs.events.required"}}</span>
+                      <div class="param-type mt-1">string</div>
                     </td>
-                    <td class="param-desc">
-                      {{t "docs.notify.params.agent_state_desc"}}
-                    </td>
+                    <td class="param-desc">{{t "docs.events.params.type"}}</td>
                   </tr>
                   <tr>
                     <td>
-                      <span class="param-name">body</span
-                      ><span class="opt">{{t "docs.notify.optional"}}</span>
-                      <div class="param-type mt-1">string ≤ 500</div>
+                      <span class="param-name">payload</span
+                      ><span class="opt">{{t "docs.events.optional"}}</span>
+                      <div class="param-type mt-1">object</div>
                     </td>
-                    <td class="param-desc">
-                      {{t "docs.notify.params.body_desc"}}
-                    </td>
+                    <td class="param-desc">{{t "docs.events.params.payload"}}</td>
                   </tr>
                   <tr>
                     <td>
-                      <span class="param-name">deviceTags</span
-                      ><span class="opt">{{t "docs.notify.optional"}}</span>
-                      <div class="param-type mt-1">string[]</div>
+                      <span class="param-name">idemKey</span
+                      ><span class="opt">{{t "docs.events.optional"}}</span>
+                      <div class="param-type mt-1">string</div>
                     </td>
-                    <td class="param-desc">
-                      {{t "docs.notify.params.tags_desc"}}
-                    </td>
+                    <td class="param-desc">{{t "docs.events.params.idem"}}</td>
                   </tr>
                   <tr>
                     <td>
-                      <span class="param-name">link</span
-                      ><span class="opt">{{t "docs.notify.optional"}}</span>
-                      <div class="param-type mt-1">string (uri)</div>
+                      <span class="param-name">traceId</span
+                      ><span class="opt">{{t "docs.events.optional"}}</span>
+                      <div class="param-type mt-1">string</div>
                     </td>
-                    <td class="param-desc">
-                      {{t "docs.notify.params.link_desc"}}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <span class="param-name"
-                        >agentId / sessionId / cwd / model / durationMs</span
-                      ><span class="opt">{{t "docs.notify.optional"}}</span>
-                    </td>
-                    <td class="param-desc">
-                      {{t "docs.notify.params.meta_desc"}}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <span class="param-name">ttl / priority</span
-                      ><span class="opt">{{t "docs.notify.optional"}}</span>
-                    </td>
-                    <td class="param-desc">
-                      {{t "docs.notify.params.ttl_desc"}}
-                    </td>
+                    <td class="param-desc">{{t "docs.events.params.trace"}}</td>
                   </tr>
                 </tbody>
               </table>
@@ -500,111 +471,30 @@
 
           <div class="code-block mt-5">
             <div class="code-head">
-              <span>{{t "docs.notify.curl.title"}}</span
+              <span>{{t "docs.events.curl.title"}}</span
               ><button class="copy-btn" onclick="copyBlock(this)">
                 {{t "docs.copy"}}
               </button>
             </div>
             <div class="code-body">
-              curl -X POST https://{{t "docs.your_domain"}}/v1/notify \ -H
+              curl -X POST https://{{t "docs.your_domain"}}/v1/events \ -H
               <span class="tk-str"
                 >"Authorization: Bearer ant_live_9f3a2c8e…"</span
               >
               \ -H
               <span class="tk-str">"Content-Type: application/json"</span> \ -d
               <span class="tk-str"
-                >'{ "title": "{{t "docs.notify.curl.title_val"}}", "agentState":
-                "done", "body": "{{t "docs.notify.curl.body_val"}}", "link":
-                "pi://session/sess_8f3a2c", "agentId": "deploy-bot",
-                "sessionId": "sess_8f3a2c", "cwd": "/repo/prod-backend",
-                "durationMs": 24000, "model": "anthropic/claude-4",
-                "deviceTags": ["{{t "docs.notify.curl.tag_val"}}"] }'</span
+                >'{ "source": "github", "type": "pull_request.opened", "idemKey":
+                "pr-1234-opened", "payload": { "pr": 1234, "repo": "acme/api" }
+                }'</span
               >
             </div>
           </div>
 
-          <div class="mt-5 grid gap-4 lg:grid-cols-2">
-            <div>
-              <div class="mb-2 flex items-center gap-2 text-xs text-zinc-500">
-                <span class="method m-get">200</span> {{t
-                "docs.notify.resp200"}}
-              </div>
-              <div class="code-block">
-                <div class="code-body">
-                  <span class="tk-punct">{</span>
-                  <span class="tk-key">"id"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-str">"ntf_01J8XA…"</span
-                  ><span class="tk-punct">,</span>
-                  <span class="tk-key">"matched"</span
-                  ><span class="tk-punct">:</span> <span class="tk-num">2</span
-                  ><span class="tk-punct">,</span>
-                  <span class="tk-key">"results"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-punct">[</span>
-                  <span class="tk-punct">{</span>
-                  <span class="tk-key">"device"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-str">"{{t "docs.notify.resp200_dev1"}}"</span
-                  ><span class="tk-punct">,</span>
-                  <span class="tk-key">"status"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-str">"sent"</span>
-                  <span class="tk-punct">},</span>
-                  <span class="tk-punct">{</span>
-                  <span class="tk-key">"device"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-str">"{{t "docs.notify.resp200_dev2"}}"</span
-                  ><span class="tk-punct">,</span>
-                  <span class="tk-key">"status"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-str">"sent"</span>
-                  <span class="tk-punct">}</span>
-                  <span class="tk-punct">]</span>
-                  <span class="tk-punct">}</span>
-                </div>
-              </div>
-            </div>
-            <div>
-              <div class="mb-2 flex items-center gap-2 text-xs text-zinc-500">
-                <span class="method m-patch">400</span> {{t
-                "docs.notify.resp400"}}
-              </div>
-              <div class="code-block">
-                <div class="code-body">
-                  <span class="tk-punct">{</span>
-                  <span class="tk-key">"error"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-str">"{{t "docs.notify.resp400_err"}}"</span>
-                  <span class="tk-punct">}</span>
-
-                  <span class="tk-comment"
-                    >{{t "docs.notify.resp400_comment"}}</span
-                  >
-                  <span class="tk-punct">{</span>
-                  <span class="tk-key">"error"</span
-                  ><span class="tk-punct">:</span>
-                  <span class="tk-str">"invalid api key"</span>
-                  <span class="tk-punct">}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="card mt-5 p-5">
-            <div class="text-xs font-medium text-zinc-500">
-              {{t "docs.notify.rules.title"}}
-            </div>
-            <pre
-              class="mono mt-3 overflow-x-auto text-[11.5px] leading-relaxed text-zinc-400"
-            >
-deliver ⟺ device.enabled AND scopeMatch AND tagMatch
-
-scopeMatch: device eventScope all=catch-all · final=terminal-only (done|interrupted|error)
-tagMatch:
-  · no deviceTags on notification → broadcast to all enabled devices
-  · no tags on device            → receives everything (catch-all)
-  · both have tags               → delivers if ≥1 tag in common (ANY)</pre>
+          <div
+            class="mt-5 rounded-lg border border-white/10 bg-white/[0.02] p-4 text-[13px] leading-relaxed text-zinc-400"
+          >
+            {{t "docs.events.note"}}
           </div>
         </section>
 
@@ -695,185 +585,77 @@ tagMatch:
         </section>
 
         <!-- ===== WebSocket receiving ===== -->
-        <section id="stream" class="doc-anchor mt-16 reveal visible">
+        <!-- ===== 节点 WS 协议 ===== -->
+        <section id="node" class="doc-anchor mt-16 reveal visible">
           <div class="flex items-center gap-3">
             <span class="method m-ws">WS</span>
-            <code class="mono text-lg text-white">/v1/stream</code>
+            <code class="mono text-lg text-white">/v1/node/stream</code>
             <span
               class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold"
               style="background: var(--success-soft); color: var(--success)"
-              >notify:receive</span
-            >
-            <span
-              class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold"
-              style="background: var(--accent-soft); color: var(--accent)"
-              >{{t "docs.ws.channel2"}}</span
+              >nodeToken</span
             >
           </div>
           <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
-            {{t "docs.ws.intro"}}
+            {{t "docs.node.intro"}}
           </p>
 
           <div class="code-block mt-5">
             <div class="code-head">
-              <span>{{t "docs.ws.connect.title"}}</span
+              <span>{{t "docs.node.connect.title"}}</span
               ><button class="copy-btn" onclick="copyBlock(this)">
                 {{t "docs.copy"}}
               </button>
             </div>
             <div class="code-body">
-              GET wss://{{t "docs.your_domain"}}/v1/stream
-              <span class="tk-key">Authorization:</span> Bearer ant_recv_9f3a…
-              <span class="tk-comment">{{t "docs.ws.connect.comment"}}</span>
-              <span class="tk-key">Last-Event-Id:</span> evt_01J8X3A1
-              <span class="tk-comment">{{t "docs.ws.connect.comment2"}}</span>
+              GET wss://{{t "docs.your_domain"}}/v1/node/stream
+              <span class="tk-key">Authorization:</span> Bearer
+              ant_node_9f3a2c8e…
             </div>
           </div>
 
           <div class="mt-5 grid gap-4 lg:grid-cols-2">
             <div class="code-block">
               <div class="code-head">
-                <span>{{t "docs.ws.s2c.title"}}</span
+                <span>{{t "docs.node.up.title"}}</span
                 ><button class="copy-btn" onclick="copyBlock(this)">
                   {{t "docs.copy"}}
                 </button>
               </div>
               <div class="code-body">
-                <span class="tk-comment">{{t "docs.ws.s2c.comment1"}}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"hello"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"conn_id"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"c_9f2"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"heartbeat_sec"</span
-                ><span class="tk-punct">:</span> <span class="tk-num">30</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"resume_token"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"evt_01J8X2"</span>
-                <span class="tk-punct">}</span>
-
-                <span class="tk-comment">{{t "docs.ws.s2c.comment2"}}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"notification"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"event_id"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"evt_01J8X3A1"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"title"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"{{t "docs.ws.s2c.title_val"}}"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"agentState"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"done"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"body"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"{{t "docs.ws.s2c.body_val"}}"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"deviceTags"</span
-                ><span class="tk-punct">:</span> <span class="tk-punct">[</span
-                ><span class="tk-str">"{{t "docs.ws.s2c.tag_val"}}"</span
-                ><span class="tk-punct">]</span> <span class="tk-punct">}</span>
-
-                <span class="tk-comment">{{t "docs.ws.s2c.comment3"}}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"replay_end"</span>
-                <span class="tk-punct">}</span> <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"pong"</span>
-                <span class="tk-punct">}</span> <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"error"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"code"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"resume_expired"</span>
-                <span class="tk-punct">}</span>
+                <span class="tk-comment">{{t "docs.node.up.comment"}}</span>
+                { "type": "hello", "capabilities": ["review@1"], "instance": 2 }
+                { "type": "ack", "taskId": "tsk_01J8" }
+                { "type": "progress", "taskId": "tsk_01J8", "percent": 40 }
+                { "type": "result", "taskId": "tsk_01J8", "status": "succeeded",
+                "out": "fix" }
               </div>
             </div>
             <div class="code-block">
               <div class="code-head">
-                <span>{{t "docs.ws.c2s.title"}}</span
+                <span>{{t "docs.node.down.title"}}</span
                 ><button class="copy-btn" onclick="copyBlock(this)">
                   {{t "docs.copy"}}
                 </button>
               </div>
               <div class="code-body">
-                <span class="tk-comment">{{t "docs.ws.c2s.comment1"}}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"subscribe"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"tags"</span
-                ><span class="tk-punct">:</span> <span class="tk-punct">[</span
-                ><span class="tk-str">"ops"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-str">"builds"</span
-                ><span class="tk-punct">]</span> <span class="tk-punct">}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"unsubscribe"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"tags"</span
-                ><span class="tk-punct">:</span> <span class="tk-punct">[</span
-                ><span class="tk-str">"ops"</span
-                ><span class="tk-punct">]</span> <span class="tk-punct">}</span>
-
-                <span class="tk-comment">{{t "docs.ws.c2s.comment2"}}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"ack"</span><span class="tk-punct">,</span>
-                <span class="tk-key">"event_ids"</span
-                ><span class="tk-punct">:</span> <span class="tk-punct">[</span
-                ><span class="tk-str">"evt_01J8X3A1"</span
-                ><span class="tk-punct">]</span> <span class="tk-punct">}</span>
-
-                <span class="tk-comment">{{t "docs.ws.c2s.comment3"}}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"ping"</span>
-                <span class="tk-punct">}</span>
-
-                <span class="tk-comment">{{t "docs.ws.c2s.comment4"}}</span>
-                <span class="tk-punct">{</span>
-                <span class="tk-key">"type"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"resume"</span
-                ><span class="tk-punct">,</span>
-                <span class="tk-key">"resume_token"</span
-                ><span class="tk-punct">:</span>
-                <span class="tk-str">"evt_01J8X2"</span>
-                <span class="tk-punct">}</span>
+                <span class="tk-comment">{{t "docs.node.down.comment"}}</span>
+                { "type": "welcome", "heartbeatSec": 10 }
+                { "type": "assign", "taskId": "tsk_01J8", "capability":
+                "review@1", "params": { } }
+                { "type": "cancel", "taskId": "tsk_01J8" }
+                { "type": "error", "code": "unknown_capability" }
               </div>
             </div>
           </div>
 
-          <div class="card mt-5 p-5">
-            <div class="text-xs font-medium text-zinc-500">
-              {{t "docs.ws.reconnect.title"}}
-            </div>
-            <p class="mt-2 text-[13px] leading-relaxed text-zinc-400">
-              {{t "docs.ws.reconnect.desc"}}
-            </p>
+          <div
+            class="mt-5 rounded-lg border border-white/10 bg-white/[0.02] p-4 text-[13px] leading-relaxed text-zinc-400"
+          >
+            {{t "docs.node.note"}}
           </div>
         </section>
+
       </div>
 
       <!-- Right sidebar TOC (xl breakpoint) -->
@@ -887,9 +669,9 @@ tagMatch:
           <a href="#agent" class="toc-link">{{t "docs.toc.agent"}}</a>
           <a href="#api" class="toc-link">{{t "docs.toc.api"}}</a>
           <a href="#auth" class="toc-link">{{t "docs.toc.auth"}}</a>
-          <a href="#notify" class="toc-link">{{t "docs.toc.notify"}}</a>
+          <a href="#events" class="toc-link">{{t "docs.toc.events"}}</a>
           <a href="#webpush" class="toc-link">{{t "docs.toc.webpush"}}</a>
-          <a href="#stream" class="toc-link">{{t "docs.toc.stream"}}</a>
+          <a href="#node" class="toc-link">{{t "docs.toc.node"}}</a>
         </div>
       </nav>
     </div>

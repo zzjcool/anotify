@@ -15,6 +15,8 @@
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
+import * as N from "../lib/nodes.mjs";
+import { DatabaseSync } from "node:sqlite";
 
 const RP = "localhost";
 const PAGES = [
@@ -49,6 +51,22 @@ const VIEWPORTS = [
 ];
 
 let server, browser;
+// 真实数据用例需要上线节点（节点掉线后要 close，避免句柄泄漏）
+let frontendNode = null;
+
+function primaryOrgOf(dbPath, uid) {
+	const db = new DatabaseSync(dbPath);
+	try {
+		const row = db
+			.prepare(
+				"SELECT org_id FROM org_members WHERE user_id = ? ORDER BY rowid LIMIT 1",
+			)
+			.get(uid);
+		return row ? row.org_id : null;
+	} finally {
+		db.close();
+	}
+}
 
 // 收集单页在指定视口下的渲染问题
 async function checkPage(ctx, url, viewportName, viewport) {
@@ -466,11 +484,49 @@ async function main() {
 	{
 		// 用 devseed 建会话（无需 WebAuthn），注入 cookie
 		const s = H.seed(server.dbPath, "frontend");
-		// 先上报一条真实通知，验证真实数据渲染
-		await H.req(server.base, "/v1/notify", {
-			key: s.sendKey,
-			body: { title: "前端真实数据验证", agentState: "done" },
+
+		// 造一条真实任务，验证真实数据渲染。
+		// #80 后 index 读 /v1/tasks（旧 /v1/notify 已删），所以要先建图 + 上线节点，
+		// 否则事件只会留在 pending/no_node，列表读不到。
+		const capA = await H.req(server.base, "/v1/capabilities", {
+			session: s.session,
+			method: "POST",
+			body: { name: "frontend.src", outputs: ["go"], paramsSchema: { type: "object" } },
 		});
+		const capB = await H.req(server.base, "/v1/capabilities", {
+			session: s.session,
+			method: "POST",
+			body: { name: "frontend.work", outputs: [], paramsSchema: { type: "object" } },
+		});
+		await H.req(server.base, "/v1/edges", {
+			session: s.session,
+			method: "POST",
+			body: {
+				fromCapability: capA.json?.capability?.id,
+				fromPort: "go",
+				toCapability: capB.json?.capability?.id,
+			},
+		});
+		const orgId = primaryOrgOf(server.dbPath, s.uid);
+		const node = await N.bringUpNode(
+			server.base,
+			server.dbPath,
+			orgId,
+			"frontend-node",
+			[
+				{ id: capA.json?.capability?.id, name: "frontend.src", version: 1 },
+				{ id: capB.json?.capability?.id, name: "frontend.work", version: 1 },
+			],
+		);
+		await H.req(server.base, "/v1/events", {
+			key: s.sendKey,
+			body: {
+				source: "frontend.src",
+				type: "go",
+				payload: { title: "前端真实数据验证" },
+			},
+		});
+		frontendNode = node;
 
 		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
@@ -504,10 +560,12 @@ async function main() {
 		);
 
 		// 真实通知应出现在列表中
-		const hasReal = await page.evaluate(() =>
-			document.body.innerText.includes("前端真实数据验证"),
-		);
-		H.check("已登录 index 显示真实通知数据", hasReal);
+		// 真实任务卡片显示 capability@version（title 来自 payload，进的是正文摘要）
+		const hasReal = await page.evaluate(() => {
+			const t = document.body.textContent || "";
+			return t.includes("frontend.work") || t.includes("前端真实数据验证");
+		});
+		H.check("已登录 index 显示真实任务数据", hasReal);
 
 		await page.close();
 		await ctx.close();
@@ -683,6 +741,13 @@ async function main() {
 			await checkPage(ctx, server.base + "/" + p, vp.name, vp);
 		}
 		await ctx.close();
+	}
+
+	// 关掉上线节点，别把 WS 连接带出进程
+	try {
+		frontendNode?.conn?.close?.();
+	} catch {
+		/* ignore */
 	}
 
 	const passed = H.summary("frontend");

@@ -297,7 +297,11 @@ func (h *adminHandler) applyDisabledChange(r *http.Request, id string, disabled 
 	return nil
 }
 
-// GET /v1/admin/messages —— 全局消息流（跨用户，?limit=）。
+// GET /v1/admin/messages —— 全站事件流（跨组织，?limit=）。
+//
+// 端点形状保留（path 与响应键名都不变），但数据源换成 events：
+// 事件中心里没有"消息"这个实体，硬留着只能返回空列表。
+// 管理后台前端因此无需改动，只是看到的内容从"推过的通知"变成"进来的事件"。
 func (h *adminHandler) listMessages(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	if q := r.URL.Query().Get("limit"); q != "" {
@@ -305,15 +309,12 @@ func (h *adminHandler) listMessages(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	msgs, err := h.db.ListGlobalMessages(r.Context(), limit)
+	events, err := h.db.ListGlobalEvents(r.Context(), limit)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if msgs == nil {
-		msgs = []*store.AdminGlobalMessage{}
-	}
-	writeJSON(w, 200, map[string]any{"messages": msgs, "count": len(msgs)})
+	writeJSON(w, 200, map[string]any{"messages": events, "count": len(events)})
 }
 
 // GET /v1/admin/sessions —— 全站活跃会话总览。

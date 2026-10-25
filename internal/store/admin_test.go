@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 // TestUser_RoleRoundtrip 验证 role 字段往返一致性（存什么读什么）。
@@ -129,10 +128,25 @@ func TestListUsersWithStats(t *testing.T) {
 	db.CreateUser(u1)
 	db.CreateUser(u2)
 
-	// 给 alice 建 2 条消息
-	now := time.Now()
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "m1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 2, Title: "m2", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	// 给 alice 的组织建 2 条事件（统计口径已从 messages 改为 events）
+	org1, err := db.EnsureOrgForUser(ctx, u1.ID, u1.Username)
+	if err != nil {
+		t.Fatalf("ensure org for alice: %v", err)
+	}
+	if _, err := db.EnsureOrgForUser(ctx, u2.ID, u2.Username); err != nil {
+		t.Fatalf("ensure org for bob: %v", err)
+	}
+	now := Now()
+	for i, k := range []string{"k1", "k2"} {
+		idem := k
+		if _, err := db.InsertEvent(ctx, &Event{
+			ID: NewEventID(), OrgID: org1.ID, Source: "github", Type: "pr_opened",
+			TraceID: "trace_" + k, IdemKey: &idem, Payload: []byte("{}"),
+			CreatedAt: now + int64(i),
+		}); err != nil {
+			t.Fatalf("insert event %s: %v", k, err)
+		}
+	}
 
 	users, err := db.ListUsersWithStats(ctx)
 	if err != nil {
@@ -166,16 +180,34 @@ func TestSystemStats(t *testing.T) {
 	db.CreateUser(u1)
 	db.CreateUser(u2)
 
-	// 各 2 条消息
-	now := time.Now()
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "a1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 2, Title: "a2", AgentState: "error", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u2.ID, Seq: 1, Title: "b1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u2.ID, Seq: 2, Title: "b2", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-
-	s, err := db.SystemStats(ctx, Now()-86400)
+	// 各 2 条事件（统计口径已从 messages 改为 events）
+	org1, err := db.EnsureOrgForUser(ctx, u1.ID, u1.Username)
 	if err != nil {
-		t.Fatalf("stats: %v", err)
+		t.Fatalf("ensure org for alice: %v", err)
+	}
+	org2, err := db.EnsureOrgForUser(ctx, u2.ID, u2.Username)
+	if err != nil {
+		t.Fatalf("ensure org for bob: %v", err)
+	}
+	now := Now()
+	seed := func(orgID, prefix string) {
+		for i := 0; i < 2; i++ {
+			idem := prefix + string(rune('0'+i))
+			if _, err := db.InsertEvent(ctx, &Event{
+				ID: NewEventID(), OrgID: orgID, Source: "github", Type: "pr_opened",
+				TraceID: "trace_" + idem, IdemKey: &idem, Payload: []byte("{}"),
+				CreatedAt: now + int64(i),
+			}); err != nil {
+				t.Fatalf("insert event %s: %v", idem, err)
+			}
+		}
+	}
+	seed(org1.ID, "a")
+	seed(org2.ID, "b")
+
+	s, serr := db.SystemStats(ctx, Now()-86400)
+	if serr != nil {
+		t.Fatalf("stats: %v", serr)
 	}
 	if s.UserCount != 2 {
 		t.Errorf("UserCount 应为 2, got %d", s.UserCount)
@@ -189,7 +221,7 @@ func TestSystemStats(t *testing.T) {
 	if s.TodayMessages != 4 {
 		t.Errorf("TodayMessages 应为 4, got %d", s.TodayMessages)
 	}
-	// alice 应是 top1（2 条消息）
+	// 两人各 2 条事件，top1 可能是任一
 	if len(s.TopUsers) == 0 || s.TopUsers[0].UserID != u1.ID && s.TopUsers[0].UserID != u2.ID {
 		// 两人都是 2 条，top1 可能是任一；只检查总数
 	}
@@ -198,34 +230,71 @@ func TestSystemStats(t *testing.T) {
 	}
 }
 
-// TestListGlobalMessages 验证全局消息流（跨用户，含 username join）。
-func TestListGlobalMessages(t *testing.T) {
+// TestListGlobalEvents 验证全站事件流（跨组织，按时间倒序）。
+//
+// 替代旧的 TestListGlobalMessages：事件中心里"发生了什么"是 events，
+// 不再有"推给某人的消息"这个实体。
+func TestListGlobalEvents(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	u1 := &User{ID: NewUserID(), Username: "alice", CreatedAt: Now()}
-	db.CreateUser(u1)
+	orgID, _ := newTestOrg(t, db)
+	now := Now()
+	for i, src := range []string{"github", "cron", "manual"} {
+		src := src
+		idem := "k" + src
+		if _, err := db.InsertEvent(ctx, &Event{
+			ID:        NewEventID(),
+			OrgID:     orgID,
+			Source:    src,
+			Type:      "test",
+			TraceID:   "trace_" + src,
+			IdemKey:   &idem,
+			Payload:   []byte("{}"),
+			CreatedAt: now + int64(i),
+		}); err != nil {
+			t.Fatalf("insert event %s: %v", src, err)
+		}
+	}
 
-	now := time.Now()
-	db.InsertMessage(ctx, &MessageRow{ID: NewMessageID(), UserID: u1.ID, Seq: 1, Title: "m1", AgentState: "done", Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-
-	msgs, err := db.ListGlobalMessages(ctx, 50)
+	events, err := db.ListGlobalEvents(ctx, 50)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(msgs) != 1 {
-		t.Fatalf("应返回 1 条, got %d", len(msgs))
+	if len(events) != 3 {
+		t.Fatalf("应返回 3 条, got %d", len(events))
 	}
-	if msgs[0].Username != "alice" {
-		t.Errorf("username 应为 alice, got %q", msgs[0].Username)
+	// 倒序：最新的 manual 在前
+	if events[0].Source != "manual" {
+		t.Errorf("应按 created_at DESC 排序，首条 got %q", events[0].Source)
 	}
-	if msgs[0].Title != "m1" {
-		t.Errorf("title 应为 m1, got %q", msgs[0].Title)
+	if events[0].OrgID != orgID {
+		t.Errorf("orgId 应为 %q, got %q", orgID, events[0].OrgID)
+	}
+	if events[0].TraceID == "" {
+		t.Error("traceId 不该为空")
 	}
 
-	// limit 上限
-	if _, err := db.ListGlobalMessages(ctx, 0); err != nil {
+	// limit 兜底
+	limited, err := db.ListGlobalEvents(ctx, 0)
+	if err != nil {
 		t.Errorf("limit=0 应兜底为 50, got err %v", err)
+	}
+	if len(limited) != 3 {
+		t.Errorf("limit=0 兜底后应仍返回 3 条, got %d", len(limited))
+	}
+
+	// 空库返回 [] 不是 nil（不变量 I9）
+	db2 := newTestDB(t)
+	empty, err := db2.ListGlobalEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("empty list: %v", err)
+	}
+	if empty == nil {
+		t.Error("空列表应为 [] 而不是 nil")
+	}
+	if len(empty) != 0 {
+		t.Errorf("空库应返回 0 条, got %d", len(empty))
 	}
 }
 

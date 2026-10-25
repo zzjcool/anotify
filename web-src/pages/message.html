@@ -54,7 +54,7 @@
     <section class="card reveal visible p-5">
       <div class="flex items-center justify-between">
         <div class="text-sm font-medium text-white">
-          {{t "message.deliveries_title"}}
+          {{t "message.chain_title"}}
         </div>
         <span class="text-xs text-zinc-500" id="delivery-count">—</span>
       </div>
@@ -73,7 +73,10 @@
     const qs = new URLSearchParams(location.search);
     const msgId = qs.get("id") || "";
 
-    mountLayout({ active: "overview", title: t("message.title", "通知详情") });
+    mountLayout({
+      active: "overview",
+      title: t("message.task_title", "任务详情"),
+    });
 
     const AGENT_STATE_META = {
       working: { dot: "dot-info", badge: "status-info", labelKey: "common.agentState.working", fb: "运行中" },
@@ -172,112 +175,191 @@
       el.textContent = raw;
     }
 
-    function render(m) {
-      const payload = safeParse(m.payload);
-      const meta = AGENT_STATE_META[m.agentState] || AGENT_STATE_META.working;
+    // 任务状态 → 视觉（复用既有 dot/status 样式，九态收敛到五类）
+    const TASK_STATE_META = {
+      pending: { dot: "dot-warn", badge: "status-warn", fb: "排队中" },
+      assigned: { dot: "dot-info", badge: "status-info", fb: "已派发" },
+      acked: { dot: "dot-info", badge: "status-info", fb: "已接单" },
+      running: { dot: "dot-info", badge: "status-info", fb: "执行中" },
+      succeeded: { dot: "dot-success", badge: "status-success", fb: "成功" },
+      failed: { dot: "dot-error", badge: "status-error", fb: "失败" },
+      canceled: { dot: "dot-warn", badge: "status-warn", fb: "已取消" },
+      abandoned: { dot: "dot-warn", badge: "status-warn", fb: "已放弃" },
+      lease_expired: { dot: "dot-warn", badge: "status-warn", fb: "租约过期" },
+    };
+
+    // render 渲染任务详情。
+    //
+    // 参数（params）就是任务的全部输入——事件中心里没有"消息正文"，
+    // 任务带什么就展示什么（不变量 I6：中枢不做模板替换）。
+    function render(task, chain) {
+      const params = safeParse(task.params);
+      const status = task.status || "pending";
+      const meta = TASK_STATE_META[status] || TASK_STATE_META.pending;
 
       document.getElementById("msg-dot").className =
         "dot " + meta.dot + " mt-2";
       document.getElementById("msg-title").textContent =
-        m.title || t("common.placeholder.no_title", "（无标题）");
+        (task.capability || "?") +
+        "@" +
+        (task.version != null ? task.version : "?");
       document.getElementById("msg-subtitle").textContent =
-        (payload.cwd || payload.project || "—") +
+        (params.cwd || params.project || "—") +
         " · " +
-        timeAgo(m.createdAt) +
+        timeAgo(task.createdAt) +
         " · " +
-        m.id;
+        task.id;
+
       const badge = document.getElementById("msg-status-badge");
       badge.className = "status-badge shrink-0 " + meta.badge;
-      badge.textContent = t(meta.labelKey, meta.fb);
+      badge.textContent = t("message.task_state." + status, meta.fb);
 
-      renderBody(document.getElementById("msg-body"), m.body);
+      // 正文：优先 params.body；没有就展示整个 params（JSON，便于排查）
+      const bodyText =
+        params.body ||
+        params.title ||
+        (Object.keys(params).length
+          ? "```json\n" + JSON.stringify(params, null, 2) + "\n```"
+          : t("common.placeholder.no_body", "（无正文）"));
+      renderBody(document.getElementById("msg-body"), bodyText);
+
+      // 外部链接：params.link（有才显示）
       const linkBtn = document.getElementById("msg-link-btn");
-      if (m.link) {
-        linkBtn.href = m.link;
+      if (params.link) {
+        linkBtn.href = params.link;
         linkBtn.classList.replace("hidden", "flex");
       }
 
-      const duration = payload.durationMs
-        ? Math.round(payload.durationMs / 1000) + "s"
-        : payload.duration != null
-          ? payload.duration + "s"
+      const duration =
+        task.startedAt && task.finishedAt
+          ? task.finishedAt - task.startedAt + "s"
           : "—";
-      const tags = Array.isArray(m.deviceTags) ? m.deviceTags : [];
+
+      // out 三态（不变量 I5）：没回报 / 到头了 / 走某个出口
+      const outText = !task.reported
+        ? t("message.out.none", "未回报")
+        : task.out == null
+          ? t("message.out.end", "到头了（无出口）")
+          : task.out;
+
       document
         .getElementById("msg-fields")
         .replaceChildren(
-          field(t("common.field.msg_id", "消息 ID"), m.id),
-          field(t("common.field.seq", "序号 Seq"), m.seq),
-          field(t("common.field.agent_state", "运行状态"), `${t(meta.labelKey, meta.fb)}（${m.agentState}）`, false),
-          field(t("common.field.agent", "Agent"), payload.agentId || payload.agent),
-          field(t("common.field.session", "会话 Session"), payload.sessionId),
-          field(t("common.field.cwd", "项目 CWD"), payload.cwd || payload.project),
-          field(t("common.field.model", "模型 Model"), payload.model),
+          field(t("common.field.task_id", "任务 ID"), task.id),
+          field(t("common.field.trace", "Trace"), task.traceId),
+          field(
+            t("common.field.capability", "能力"),
+            (task.capability || "?") + "@" + (task.version != null ? task.version : "?"),
+          ),
+          field(
+            t("common.field.agent_state", "运行状态"),
+            t("message.task_state." + status, meta.fb) + "（" + status + "）",
+            false,
+          ),
+          field(t("common.field.out", "出口 out"), outText, false),
+          field(t("common.field.node", "执行节点"), task.nodeId || t("message.node.central", "中枢执行"), true),
+          field(t("common.field.attempts", "尝试次数"), task.attempts != null ? task.attempts : 0, false),
           field(t("common.field.duration", "耗时"), duration),
-          field(t("common.field.priority", "优先级"), priorityLabel(m.priority), false),
-          field(t("common.field.device_tags", "路由标签"), tags.length ? tags.join("、") : t("common.placeholder.broadcast", "（广播）"), false),
-          field(t("common.field.ttl", "TTL"), fmtTTL(m.ttlSeconds)),
-          field(t("common.field.created_at", "创建时间"), fmtTime(m.createdAt)),
-          field(t("common.field.expires_at", "过期时间"), fmtTime(m.expiresAt)),
-          field(t("common.field.external_link", "外部链接"), m.link || "—"),
+          field(t("common.field.parent_task", "父任务"), task.parentTaskId || "—"),
+          field(t("common.field.created_at", "创建时间"), fmtTime(task.createdAt)),
+          field(t("common.field.started_at", "开始时间"), task.startedAt ? fmtTime(task.startedAt) : "—"),
+          field(t("common.field.finished_at", "结束时间"), task.finishedAt ? fmtTime(task.finishedAt) : "—"),
+          field(t("common.field.error", "错误"), task.error || "—", false),
+          field(t("common.field.summary", "结果摘要"), task.summary || "—", false),
         );
+
+      renderChain(chain, task.id);
     }
 
-    function renderDeliveries(list) {
-      const okCount = list.filter((d) =>
-        ["sent", "delivered", "acked"].includes(d.status),
-      ).length;
-      document.getElementById("delivery-count").textContent = t(
-        "message.delivery.delivered_count",
-        "{ok}/{n} 已送达",
-      )
-        .replace("{ok}", okCount)
-        .replace("{n}", list.length);
+    // renderChain 渲染整条 trace 上的任务链（替代旧的"投递记录"）。
+    //
+    // 投递记录回答"推给了哪几台设备"，任务链回答"这条链一共办了几步、
+    // 哪一步断了"——后者才是事件中心要回答的问题。
+    function renderChain(chain, currentId) {
       const box = document.getElementById("delivery-list");
+      const count = document.getElementById("delivery-count");
+      const list = Array.isArray(chain) ? chain : [];
+
+      count.textContent = t("message.chain.count", "共 {n} 步").replace(
+        "{n}",
+        list.length,
+      );
+
       if (list.length === 0) {
         box.replaceChildren(
           el("div", {
             class: "py-6 text-center text-sm text-zinc-500",
-            text: t("message.delivery.empty", "暂无投递记录（未匹配到启用设备）"),
+            text: t("message.chain.empty", "这条 trace 上没有其它任务"),
           }),
         );
         return;
       }
-      box.replaceChildren(
-        ...list.map((d) => {
-          const dm = DSTATUS_META[d.status] || DSTATUS_META.pending;
-          return el(
-            "div",
-            { class: "flex items-center gap-3 py-3" },
-            el(
-              "div",
-              { class: "min-w-0 flex-1" },
-              el(
-                "div",
-                { class: "flex flex-wrap items-center gap-2" },
-                el("span", {
-                  class: "mono truncate text-[12px] text-zinc-200",
-                  text: d.deviceId,
-                }),
-                el("span", {
-                  class: `status-badge ${dm.cls}`,
-                  text: t(dm.labelKey, dm.fb),
-                }),
-              ),
-              el(
-                "div",
-                { class: "mt-0.5 text-[11px] text-zinc-500" },
-                t("message.delivery.attempt_info", "{channel} · 尝试 {n} 次 · {time}")
-                  .replace("{channel}", CHANNEL_LABEL[d.channel] || d.channel)
-                  .replace("{n}", d.attempts)
-                  .replace("{time}", timeAgo(d.updatedAt)) +
-                  (d.error ? " · " + d.error : ""),
-              ),
-            ),
+
+      // 按 parentTaskId 组装树，缩进表示派生关系
+      const byParent = {};
+      list.forEach((x) => {
+        const p = x.parentTaskId || "__root__";
+        (byParent[p] = byParent[p] || []).push(x);
+      });
+
+      function node(task_, depth) {
+        const kids = byParent[task_.id] || [];
+        const st = task_.status || "pending";
+        const meta = TASK_STATE_META[st] || TASK_STATE_META.pending;
+        const isCurrent = task_.id === currentId;
+
+        const row = el("div", {
+          class:
+            "py-3" +
+            (isCurrent ? " bg-white/[0.03] -mx-2 px-2 rounded-lg" : ""),
+          style: "margin-left:" + depth * 16 + "px",
+        });
+
+        const line = el("div", { class: "flex flex-wrap items-center gap-2" });
+        line.appendChild(
+          el("span", {
+            class: "dot " + meta.dot,
+            style: "width:6px;height:6px;border-radius:9999px",
+          }),
+        );
+        line.appendChild(
+          el("code", {
+            class: "mono text-[12px] text-zinc-200",
+            text:
+              (task_.capability || "?") +
+              "@" +
+              (task_.version != null ? task_.version : "?"),
+          }),
+        );
+        line.appendChild(
+          el("span", {
+            class: "text-[11px] text-zinc-500",
+            text: t("message.task_state." + st, meta.fb),
+          }),
+        );
+        if (isCurrent) {
+          line.appendChild(
+            el("span", {
+              class: "text-[10px] text-indigo-400",
+              text: t("message.chain.current", "当前"),
+            }),
           );
-        }),
-      );
+        }
+        row.appendChild(line);
+
+        if (kids.length) {
+          const box2 = el("div", {});
+          kids.forEach((k) => box2.appendChild(node(k, depth + 1)));
+          row.appendChild(box2);
+        }
+        return row;
+      }
+
+      const roots = byParent["__root__"] || list;
+      box.replaceChildren();
+      roots.forEach((r) => box.appendChild(node(r, 0)));
     }
+
 
     /* ================= 加载 ================= */
     async function load() {
@@ -285,25 +367,36 @@
         renderError(t("message.error.missing_id", "缺少消息 ID（URL 应有 ?id=ntf_…）"));
         return;
       }
-      let m;
+      // #80：旧 /v1/notifications/:id 已随消息模型下线。
+      // 深链现在指向**任务**详情：?id=tsk_xxx。
+      //
+      // 用 GET /v1/tasks/{id}（按 ID 取单任务 + 整条链）：
+      // 不能拿 id 当 traceId 去查——那是两个不同的标识，永远查不到。
+      let task = null;
+      let chain = [];
       try {
-        m = await api("/v1/notifications/" + encodeURIComponent(msgId));
+        const res = await api("/v1/tasks/" + encodeURIComponent(msgId));
+        task = (res && res.task) || null;
+        chain = (res && res.chain) || [];
       } catch (e) {
-        renderError(t("message.error.not_found", "消息不存在或已被清理"));
+        task = null;
+      }
+      if (!task) {
+        renderError(t("message.error.not_found", "任务不存在或已被清理"));
         return;
       }
-      if (!m || !m.id) {
-        renderError(t("message.error.not_found", "消息不存在或已被清理"));
-        return;
-      }
-      render(m);
-      renderDeliveries(Array.isArray(m.deliveries) ? m.deliveries : []);
+      render(task, chain);
       // marked（defer 加载，本地打包）通常已就绪；极端情况下晚于 render 时
       // 走了纯文本 fallback，这里轻轮询等其就绪后重渲染一次 body 为 Markdown。
+      //
+      // 注意用 task 而不是旧的 m：m 是消息时代的变量，#80 之后已不存在。
       if (!(window.marked && window.marked.parse)) {
+        const params = safeParse(task.params);
+        const bodyText =
+          params.body || params.title || "```json\n" + JSON.stringify(params, null, 2) + "\n```";
         const tryRerender = () => {
           if (window.marked && window.marked.parse) {
-            renderBody(document.getElementById("msg-body"), m.body);
+            renderBody(document.getElementById("msg-body"), bodyText);
           } else {
             setTimeout(tryRerender, 50);
           }

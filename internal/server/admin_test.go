@@ -50,6 +50,14 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 		t.Fatalf("new auth svc: %v", err)
 	}
 
+	// 用户需要所属组织：统计口径按组织（events/tasks 都挂 org_id）
+	if _, err := db.EnsureOrgForUser(context.Background(), adminU.ID, adminU.Username); err != nil {
+		t.Fatalf("ensure org for admin: %v", err)
+	}
+	if _, err := db.EnsureOrgForUser(context.Background(), memberU.ID, memberU.Username); err != nil {
+		t.Fatalf("ensure org for member: %v", err)
+	}
+
 	adminSess, _ := sm.Create(adminU.ID, "admin · test")
 	memberSess, _ := sm.Create(memberU.ID, "member · test")
 
@@ -276,30 +284,44 @@ func TestAdmin_DisabledUserSessionInvalidated(t *testing.T) {
 	}
 }
 
-// TestAdmin_MessagesAndSessions 验证全局消息流与会话总览端点。
+// TestAdmin_MessagesAndSessions 验证全站事件流与会话总览端点。
+//
+// 端点路径仍是 /v1/admin/messages（保持管理后台前端不变），
+// 但数据源已换成 events（#80：事件中心里没有"消息"这个实体）。
 func TestAdmin_MessagesAndSessions(t *testing.T) {
 	env := newAdminTestEnv(t)
 	ctx := context.Background()
 	now := time.Now()
 
-	// 建一条消息 + 一条投递
-	env.db.InsertMessage(ctx, &store.MessageRow{
-		ID: store.NewMessageID(), UserID: env.adminID, Seq: 1, Title: "hello", AgentState: "done",
-		Payload: []byte("{}"), CreatedAt: now, ExpiresAt: now.Add(time.Hour),
-	})
+	// 建一条事件（挂在 admin 的主组织下）
+	orgID, err := env.db.PrimaryOrgOf(ctx, env.adminID)
+	if err != nil {
+		t.Fatalf("primary org: %v", err)
+	}
+	idem := "admin-test-1"
+	if _, err := env.db.InsertEvent(ctx, &store.Event{
+		ID: store.NewEventID(), OrgID: orgID, Source: "github", Type: "pr_opened",
+		TraceID: "trace_admin_test", IdemKey: &idem,
+		Payload: []byte("{}"), CreatedAt: now.Unix(),
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
 
-	// 全局消息流
+	// 全局事件流
 	rec := adminReq(t, env, "GET", "/v1/admin/messages", nil, env.adminCookie)
 	if rec.Code != 200 {
 		t.Fatalf("messages status %d", rec.Code)
 	}
 	var msgResp struct {
-		Messages []*store.AdminGlobalMessage `json:"messages"`
-		Count    int                         `json:"count"`
+		Messages []*store.AdminGlobalEvent `json:"messages"`
+		Count    int                       `json:"count"`
 	}
 	json.Unmarshal(rec.Body.Bytes(), &msgResp)
 	if msgResp.Count != 1 {
 		t.Errorf("messages count 应 1, got %d", msgResp.Count)
+	}
+	if len(msgResp.Messages) == 1 && msgResp.Messages[0].Source != "github" {
+		t.Errorf("事件 source 应 github, got %q", msgResp.Messages[0].Source)
 	}
 
 	// 会话总览（admin 和 member 各 1 个活跃会话）

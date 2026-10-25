@@ -98,6 +98,17 @@ common:
     expires_at: 有効期限
     external_link: 外部リンク
     cwd: プロジェクト CWD
+    task_id: タスク ID
+    trace: トレース
+    capability: ケイパビリティ
+    out: 出口
+    node: 実行ノード
+    attempts: 試行回数
+    parent_task: 親タスク
+    started_at: 開始時刻
+    finished_at: 終了時刻
+    error: エラー
+    summary: 結果サマリ
 index:
   title: 概要
   subtitle: 通知の概要
@@ -272,6 +283,27 @@ message:
   error:
     missing_id: メッセージ ID がありません（URL に ?id=ntf_… が必要）
     not_found: メッセージが見つからないか削除されました
+  task_title: タスク詳細
+  chain_title: タスクチェーン
+  task_state:
+    pending: 待機中
+    assigned: 割り当て済み
+    acked: 受付済み
+    running: 実行中
+    succeeded: 成功
+    failed: 失敗
+    canceled: キャンセル済み
+    abandoned: 放棄
+    lease_expired: リース期限切れ
+  out:
+    none: 未報告
+    end: 終端に到達（出口なし）
+  node:
+    central: ハブが実行
+  chain:
+    count: "{n} ステップ"
+    empty: このトレースに他のタスクはありません
+    current: 現在
 login:
   title: ログイン
   welcome: おかえりなさい
@@ -656,6 +688,34 @@ docs:
     notify: POST /v1/notify
     webpush: Web Push 購読
     stream: WebSocket 受信
+    events: POST /v1/events
+    node: ノードプロトコル
+  events:
+    core: 中核
+    intro: イベントはすべての起点です。外部の変化はここから入り、ハブがエッジ表に従ってタスクチェーンへ派発します。
+    required: 必須
+    optional: 任意
+    params:
+      title: イベントのフィールド
+      source: イベントの発生元。起点ケイパビリティ名を兼ねます（github、cron、http）。
+      type: イベント種別。その発生元にとって意味のある名前（例：pull_request.opened）。
+      payload: イベントのペイロード。下流タスクの params としてそのまま渡されます。
+      idem: 冪等キー。同じ source + idemKey は 1 つのイベントだけを生みます。
+      trace: trace を明示。省略すると新規作成されます。
+    note: "イベントを保存した時点で 200 を返します。派発に失敗しても 200 です — 下流の失敗でイベントが失われることはなく、後から再送できます。"
+    curl:
+      title: curl の例
+  node:
+    intro: ノードは実行者です。ハブに接続し、実行できるケイパビリティを宣言して assign フレームを受け取ります。
+    connect:
+      title: 接続
+    up:
+      title: "ノード → ハブ（上り）"
+      comment: "# hello / ack / progress / result"
+    down:
+      title: "ハブ → ノード（下り）"
+      comment: "# welcome / assign / cancel / error"
+    note: "ハブは「何をするか」（ケイパビリティ + params）だけを伝え、「どうやるか」は決して伝えません — argv も shell もコマンドラインもありません。"
   copy: コピー
   your_domain: あなたのドメイン
   agent:
@@ -680,11 +740,13 @@ docs:
     map:
       title: エンドポイントマップ
       notify: Agent による通知上報（中核）
+      tasks: タスク一覧（イベントハブ）
       notifications: 通知履歴一覧
       devices_list: デバイス一覧
       devices_sub: デバイス購読（登録）
       devices_update: デバイス更新（オンオフ / フィルタ / タグ）
       devices_delete: デバイス解除
+      node_stream: ノード WebSocket プロトコル
       stream: WebSocket ロングポール受信
       keys_list: API Key 一覧
       keys_create: API Key 新規作成

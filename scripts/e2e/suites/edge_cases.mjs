@@ -1,23 +1,26 @@
 #!/usr/bin/env node
-/* SUITE: edge_cases — 边界 / 并发 / Unicode
+/* SUITE: edge_cases — 边界 / 并发 / Unicode（事件中心模型）
  *
- * 覆盖 case：
- *  1. 并发上报 10 条 → 全 200；Replay 回来 seq 为 1..10 无重复无缺口（broker 并发 seq 事务正确）
- *  2. Unicode/Emoji/换行/引号/<script> → 200 且 Replay 内容一致（按文本存储）
- *  3. 超长 title(5000) / 超长 body → 行为明确（200 或 400，绝不 500）
- *  4. 空 deviceTags [] vs 省略 → 都是广播（matched 一致）
- *  5. deviceTags 含空串/纯空格 → 归一化剔除，不报错
- *  6. 重复 endpoint 设备 → Upsert（列表只一个）
- *  7. 极大 limit=99999 → 钳制，不 500
- *  8. 负数/非法 sinceSeq → 不 500，按 0 处理
+ * #80 之后旧「通知/消息」模型已下线（/v1/notify、/v1/notifications、broker 删除）。
+ * 原先基于 seq 单调、title/body 透传、deviceTags 广播的断言都失去意义了。
+ * 这里改为验证**事件与任务**的等价边界：
+ *
+ *  1. 并发提交 10 条事件 → 全 200，事件全部落库、ID 唯一
+ *  2. Unicode/Emoji/换行/引号/尖括号 → 200 且 payload 原样存回（按文本存，不做转义）
+ *  3. 超长 payload 字段 → 明确 200 或 400，绝不 500
+ *  4. 同一 idemKey 并发提交 → 只产生一个事件（幂等约束在并发下成立）
+ *  5. 不存在的 source（未定义 origin 能力）→ 200 且 origin 为空（事件仍收下）
+ *  6. 极大 limit=99999 → 钳制，不 500
+ *  7. 负数/非法 limit → 不 500，按默认处理
  */
 import * as H from "../lib/harness.mjs";
 
 let server;
 let sendKey, session;
 
+// notify 提交一条事件。payload 任意，用于验证原样存取。
 async function notify(body, key = sendKey) {
-	return H.req(server.base, "/v1/notify", { key, body });
+	return H.req(server.base, "/v1/events", { key, body });
 }
 
 async function main() {
@@ -27,30 +30,26 @@ async function main() {
 	sendKey = s.sendKey;
 	session = s.session;
 
-	// ---- 1. 并发上报 seq 单调无缺口 ----
-	console.log("--- 并发上报 ---");
+	// ---- 1. 并发提交事件 ----
+	console.log("--- 并发提交 ---");
 	const N = 10;
 	const results = await Promise.all(
 		Array.from({ length: N }, (_, i) =>
-			notify({ title: `并发-${i}`, agentState: "done" }),
+			notify({
+				source: "edge.src",
+				type: "tick",
+				payload: { seq: i },
+			}),
 		),
 	);
-	const allOk = results.every((r) => r.status === 200);
 	H.check(
-		`并发 ${N} 条上报全部 200`,
-		allOk,
+		`并发 ${N} 条事件全部 200`,
+		results.every((r) => r.status === 200),
 		results.map((r) => r.status).join(","),
 	);
-
-	const list = await H.req(server.base, "/v1/notifications?limit=50", {
-		session,
-	});
-	// 注意：/v1/notifications 直接序列化 broker.Message（Go 默认 PascalCase 字段名，无 json tag）
-	const seqs = (list.json?.notifications || [])
-		.map((m) => m.seq)
-		.sort((a, b) => a - b);
-	const expected = Array.from({ length: N }, (_, i) => i + 1);
-	H.eq("并发后 seq 为 1..N 无重复无缺口", seqs, expected);
+	const evIDs = results.map((r) => r.json?.eventId).filter(Boolean);
+	H.eq("并发后事件 ID 数 = N", evIDs.length, N);
+	H.eq("并发后事件 ID 无重复", new Set(evIDs).size, N);
 
 	// ---- 2. Unicode / Emoji / 特殊字符 ----
 	console.log("--- Unicode/特殊字符 ---");
@@ -58,134 +57,129 @@ async function main() {
 		"部署完成 🎉 中文「引号」<script>alert(1)</script>\n换行\t制表";
 	const unicodeBody = "正文：émojis 🚀🔥、特殊字符 <>\"'&、多行\n第二行";
 	const u = await notify({
-		title: unicodeTitle,
-		body: unicodeBody,
-		agentState: "done",
+		source: "edge.src",
+		type: "tick",
+		payload: { title: unicodeTitle, body: unicodeBody },
 	});
-	H.eq("Unicode/Emoji/特殊字符上报 → 200", u.status, 200);
-	const u2 = await H.req(server.base, "/v1/notifications?limit=50", {
+	H.eq("Unicode/Emoji/特殊字符事件 → 200", u.status, 200);
+
+	// 事件列表里能找到，且 payload 原样存回（不转义、不截断）
+	const list = await H.req(server.base, "/v1/console/events?limit=100", {
 		session,
 	});
-	const found = (u2.json?.notifications || []).find((m) => m.id === u.json?.id);
-	H.check(
-		"Unicode 内容 Replay 一致",
-		!!found && found.title === unicodeTitle && found.body === unicodeBody,
-		found
-			? `title=${JSON.stringify(found.title).slice(0, 60)}`
-			: "未找到该消息",
-	);
+	H.eq("console/events → 200", list.status, 200);
+	const events = list.json?.events || [];
+	const found = events.find((e) => e.id === u.json?.eventId);
+	H.check("Unicode 事件可查回", !!found, u.json?.eventId);
+	if (found) {
+		// payload 是 json.RawMessage → 序列化后已是 JSON 对象，
+		// 不再需要二次 JSON.parse（那是字符串形态才需要的）。
+		const payload =
+			typeof found.payload === "string"
+				? JSON.parse(found.payload)
+				: found.payload || {};
+		H.eq("Unicode title 原样存回", payload.title, unicodeTitle);
+		H.eq("Unicode body 原样存回", payload.body, unicodeBody);
+	}
 
-	// ---- 3. 超长 title / body ----
+	// ---- 3. 超长字段 ----
 	console.log("--- 超长字段 ---");
-	const longTitle = await notify({
-		title: "T".repeat(5000),
-		agentState: "done",
+	const longTitle = "x".repeat(5000);
+	const longBody = "y".repeat(50000);
+	const big = await notify({
+		source: "edge.src",
+		type: "tick",
+		payload: { title: longTitle, body: longBody },
 	});
 	H.check(
-		"超长 title(5000) 不 500",
-		longTitle.status !== 500,
-		`got ${longTitle.status}`,
+		"超长 payload 不 500（200 收下或 400 拒绝）",
+		big.status === 200 || big.status === 400,
+		`got ${big.status}`,
 	);
-	const longBody = await notify({
-		title: "正常",
-		body: "B".repeat(50000),
-		agentState: "done",
+
+	// 超大 body（>1MB，超过 MaxBytesReader）必须 400 而不是 500
+	const huge = await notify({
+		source: "edge.src",
+		type: "tick",
+		payload: { body: "z".repeat(2 << 20) },
 	});
 	H.check(
-		"超长 body(50000) 不 500",
-		longBody.status !== 500,
-		`got ${longBody.status}`,
+		">1MB 请求体被拒（400，不 500）",
+		huge.status === 400 || huge.status === 413,
+		`got ${huge.status}`,
 	);
 
-	// ---- 4/5. deviceTags 边界（需要一台 catch-all 设备来观测 matched）----
-	console.log("--- deviceTags 边界 ---");
-	// 建一台无 tag 设备（catch-all），用于观测 matched
-	const dev = await H.req(server.base, "/v1/devices", {
-		session,
-		body: H.makeDevice({ name: "catch-all", tags: [] }),
-	});
-	H.eq("创建 catch-all 设备 → 200", dev.status, 200);
-
-	const noTags = await notify({ title: "省略tags", agentState: "done" });
-	const emptyTags = await notify({
-		title: "空tags",
-		agentState: "done",
-		deviceTags: [],
-	});
-	H.eq("省略 deviceTags 是广播", noTags.json?.matched, 1);
-	H.eq(
-		"空 deviceTags [] 也是广播",
-		emptyTags.json?.matched,
-		noTags.json?.matched,
+	// ---- 4. 同一 idemKey 并发提交 ----
+	console.log("--- 幂等并发 ---");
+	const sameKey = "edge-idem-" + Date.now();
+	const idem = await Promise.all(
+		Array.from({ length: 5 }, () =>
+			notify({
+				source: "edge.src",
+				type: "tick",
+				idemKey: sameKey,
+				payload: { n: 1 },
+			}),
+		),
 	);
-
-	const blankTags = await notify({
-		title: "空白tags",
-		agentState: "done",
-		deviceTags: ["", "   ", "\t"],
-	});
 	H.check(
-		"deviceTags 含空串/纯空格被剔除不报错",
-		blankTags.status === 200,
-		`got ${blankTags.status}`,
+		"幂等并发全部 200",
+		idem.every((r) => r.status === 200),
+		idem.map((r) => r.status).join(","),
 	);
-	H.eq(
-		"全空白 tags 归一化后按广播",
-		blankTags.json?.matched,
-		noTags.json?.matched,
+	const idemIDs = idem.map((r) => r.json?.eventId).filter(Boolean);
+	H.eq("同一 idemKey 只产生一个事件", new Set(idemIDs).size, 1);
+
+	// ---- 5. 未定义的 source ----
+	console.log("--- 未定义的 source ---");
+	const noOrigin = await notify({
+		source: "no.such.source." + Date.now(),
+		type: "whatever",
+		payload: {},
+	});
+	H.eq("未定义 source 的事件仍 200", noOrigin.status, 200);
+	H.check(
+		"未定义 source 的 origin 为空",
+		!noOrigin.json?.origin,
+		JSON.stringify(noOrigin.json),
 	);
 
-	// ---- 6. 重复 endpoint 设备 Upsert ----
-	console.log("--- 重复 endpoint Upsert ---");
-	const sameEndpoint = "https://push.example.com/dup-" + Date.now();
-	const d1 = await H.req(server.base, "/v1/devices", {
-		session,
-		body: H.makeDevice({ name: "设备A", endpoint: sameEndpoint }),
-	});
-	const d2 = await H.req(server.base, "/v1/devices", {
-		session,
-		body: H.makeDevice({ name: "设备B", endpoint: sameEndpoint }),
-	});
-	H.check(
-		"相同 endpoint 两次 POST 均 200",
-		d1.status === 200 && d2.status === 200,
-		`${d1.status},${d2.status}`,
+	// ---- 6/7. limit 边界 ----
+	console.log("--- limit 边界 ---");
+	const bigLimit = await H.req(
+		server.base,
+		"/v1/console/events?limit=99999",
+		{ session },
 	);
-	const devList = await H.req(server.base, "/v1/devices", { session });
-	const dupCount = (devList.json?.devices || []).filter(
-		(d) => d.endpoint === sameEndpoint,
-	).length;
-	H.eq("相同 endpoint 列表只保留一个(Upsert)", dupCount, 1);
+	H.check("极大 limit 不 500", bigLimit.status !== 500, `got ${bigLimit.status}`);
+	H.eq("极大 limit → 200", bigLimit.status, 200);
 
-	// ---- 7. 极大 limit 钳制 ----
-	console.log("--- 极大 limit ---");
-	const bigLimit = await H.req(server.base, "/v1/notifications?limit=99999", {
-		session,
-	});
-	H.check(
-		"limit=99999 不 500",
-		bigLimit.status !== 500,
-		`got ${bigLimit.status}`,
+	const negLimit = await H.req(
+		server.base,
+		"/v1/console/events?limit=-5",
+		{ session },
 	);
-	H.check("limit=99999 返回数组", Array.isArray(bigLimit.json?.notifications));
+	H.check("负数 limit 不 500", negLimit.status !== 500, `got ${negLimit.status}`);
 
-	// ---- 8. 非法 sinceSeq ----
-	console.log("--- 非法 sinceSeq ---");
-	const negSeq = await H.req(server.base, "/v1/notifications?sinceSeq=-5", {
-		session,
-	});
-	H.check("sinceSeq=-5 不 500", negSeq.status !== 500, `got ${negSeq.status}`);
-	const badSeq = await H.req(server.base, "/v1/notifications?sinceSeq=abc", {
-		session,
-	});
-	H.check("sinceSeq=abc 不 500", badSeq.status !== 500, `got ${badSeq.status}`);
-	const negSeqCount = negSeq.json?.notifications?.length ?? -1;
+	const badLimit = await H.req(
+		server.base,
+		"/v1/console/events?limit=abc",
+		{ session },
+	);
+	H.check("非法 limit 不 500", badLimit.status !== 500, `got ${badLimit.status}`);
+
+	// 空 trace 过滤 → [] 而非 null（不变量 I9）
+	const emptyTrace = await H.req(
+		server.base,
+		"/v1/console/events?traceId=trace_does_not_exist",
+		{ session },
+	);
+	H.eq("空 trace 过滤 → 200", emptyTrace.status, 200);
 	H.check(
-		"负数 sinceSeq 按 0 处理(返回全部)",
-		negSeqCount ===
-			(await H.req(server.base, "/v1/notifications?limit=500", { session }))
-				.json?.notifications?.length,
-		`negSeq=${negSeqCount}`,
+		"空 trace 过滤返回 [] 而非 null",
+		Array.isArray(emptyTrace.json?.events) &&
+			emptyTrace.json.events.length === 0,
+		JSON.stringify(emptyTrace.json),
 	);
 
 	const passed = H.summary("edge_cases");
