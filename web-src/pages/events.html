@@ -362,9 +362,6 @@
 {{end}}
 
 {{define "script"}}
-    <!-- 任务链拓扑图：dagre 算布局，节点用 HTML 画（与源流向图同一套渲染） -->
-    <script src="/vendor/dagre.min.js"></script>
-    <script src="/flograph.js"></script>
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
 
@@ -849,80 +846,38 @@
         renderChainView(chain, byParent, roots);
       }
 
-      // renderChainGraph 画任务链的拓扑图（#90）。
+      // renderChainGraph 把一条 trace 的任务列表画成拓扑图（#90）。
       //
-      // 与瀑布图的分工：瀑布图看时序，这里看**拓扑**（谁派生自谁、
-      // 扇出和汇聚的形状）。数据源相同（chainTasks），只是表达的维度不同。
+      // 映射逻辑在 web/graphs.js 的 AnotifyGraphs.taskChain —— 和源的下游
+      // 流向图共用同一个 FlowGraph 渲染器，所以整个产品只有一种图的观感。
       //
-      // 渲染用 web/flograph.js（与源的下游流向图同一套），这样整个产品
-      // 只有一种图的观感 —— 卡片节点、贝塞尔连线、缩放平移都一致。
-      function renderChainGraph(tasks, byParent, roots) {
-        const wrap = el("div", "");
+      // 两者的语义差别（别混）：
+      //   流向图   = 静态配置：这条链**可能**流向哪些能力（全部声明的边）
+      //   任务链图 = 动态运行：这次执行**实际**走了哪条路径
+      // mountInto 而不是 renderXxx-return-wrap：
+      //
+      // FlowGraph 靠 offsetWidth 量节点尺寸喂给 dagre，脱离文档的元素量出来
+      // 是 0 → 布局算成一团、节点全叠在原点。所以"先插入文档，再画"，
+      // 不能"先画好，再插入"。
+      function mountChainGraph(container, tasks) {
+        container.replaceChildren();
 
-        if (!window.FlowGraph) {
-          wrap.appendChild(
+        if (!window.AnotifyGraphs) {
+          container.appendChild(
             el("div", "wf-empty", t("events.wf.nolib", "图渲染脚本未能加载。")),
           );
-          return wrap;
-        }
-
-        // 节点：每个任务一个卡片；副标题放状态，右下角小圆点用状态色
-        const STATUS_COLOR = {
-          pending: "#71717a",
-          assigned: "#3b82f6",
-          acked: "#06b6d4",
-          running: "#22c55e",
-          succeeded: "#10b981",
-          failed: "#ef4444",
-          canceled: "#a1a1aa",
-          abandoned: "#f97316",
-          lease_expired: "#eab308",
-        };
-
-        // 一个父任务可能有多个子任务（扇出），这时 out 是"父任务最终走了
-        // 哪个出口"，不是每条边各自的出口名。多子时不标，避免误导。
-        const childCount = {};
-        for (const tk of tasks) {
-          if (tk.parentTaskId) {
-            childCount[tk.parentTaskId] = (childCount[tk.parentTaskId] || 0) + 1;
-          }
+          return;
         }
 
         const host = el("div", "");
-        wrap.appendChild(host);
+        container.appendChild(host);
 
-        const graph = window.FlowGraph.mount(host, {
-          nodes: tasks.map((tk) => {
-            const st = tk.status || "pending";
-            const dur =
-              tk.startedAt && tk.finishedAt ? tk.finishedAt - tk.startedAt : null;
-            return {
-              id: tk.id,
-              label: (tk.capability || "?") + "@" + (tk.version ?? "?"),
-              // 副标题：状态 + 耗时（用户扫链时最关心这两个）
-              sub: st + (dur != null ? " · " + fmtDur(dur) : ""),
-              kind: st === "failed" ? "unknown" : st === "succeeded" ? "end" : "pipe",
-              badge: STATUS_COLOR[st] || "#71717a",
-              icon:
-                st === "failed" ? "✕" : st === "succeeded" ? "✓" : st === "running" ? "▶" : "◆",
-              // 失败节点用红框，一眼能定位
-              accent: st === "failed" ? "#ef4444" : null,
-            };
-          }),
-          edges: tasks
-            .filter((tk) => tk.parentTaskId && tasks.some((x) => x.id === tk.parentTaskId))
-            .map((tk) => {
-              const parent = tasks.find((x) => x.id === tk.parentTaskId);
-              return {
-                from: tk.parentTaskId,
-                to: tk.id,
-                port: childCount[tk.parentTaskId] === 1 ? parent.out || "" : "",
-                // 失败的那条路径用橙色虚线，沿着线就能看出是哪一步挂了
-                cycle: tk.status === "failed",
-              };
-            }),
+        // 此刻 host 已 in document（container 是 .wf-chain 之类的已挂载节点）
+        const res = window.AnotifyGraphs.taskChain(host, {
+          tasks: tasks,
+          t: t,
           onNodeClick: (n) => {
-            // 点节点 → 到该任务的节点页看详情
+            // 点节点 → 到该任务的执行节点看看
             const tk = tasks.find((x) => x.id === n.id);
             if (tk && tk.nodeId) {
               window.open("nodes.html?focus=" + encodeURIComponent(tk.nodeId), "_blank");
@@ -930,10 +885,10 @@
           },
         });
 
-        // 挂在 host（.flograph 那个 div）上而不是 wrap：
-        // 宿主才是图的根，调试和 e2e 都从 .flograph 找实例。
-        host._graph = graph;
-        return wrap;
+        // 画廊/滚动容器可能刚显示，尺寸还没稳定 —— 下一帧再 fit 一次
+        if (res && res.graph) {
+          requestAnimationFrame(() => res.graph.fit());
+        }
       }
 
       // renderChainView 按当前模式渲染任务链
@@ -964,7 +919,9 @@
         if (chainView === "waterfall") {
           chain.appendChild(renderWaterfall(chainTasks));
         } else if (chainView === "graph") {
-          chain.appendChild(renderChainGraph(chainTasks, byParent, roots));
+          const box = el("div", "");
+          chain.appendChild(box);
+          mountChainGraph(box, chainTasks);
         } else {
           for (const r of roots) chain.appendChild(renderNode(r, byParent));
         }

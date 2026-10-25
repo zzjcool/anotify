@@ -41,6 +41,15 @@
     {{end}}
     <script src="/i18n.{{.Lang}}.js"></script>
     <script src="/partials.js"></script>
+    <!-- 图渲染：dagre 只算布局坐标，节点用 HTML/SVG 画。
+         放在 layout 里而不是各页面：整个产品只有一套图渲染，页面不该各自引入。
+
+         **不能加 defer**：页面自己的内联脚本就在下面（layout 末尾的 script block），
+         它会在 DOMContentLoaded 里直接调 AnotifyGraphs；defer 的脚本要等
+         文档解析完才按序执行，那时内联脚本早就跑了，会拿到 undefined。 -->
+    <script src="/vendor/dagre.min.js"></script>
+    <script src="/flograph.js"></script>
+    <script src="/graphs.js"></script>
     {{block "script" .}}{{end}}
   </body>
 </html>

@@ -54,16 +54,45 @@
 	 * "先往下走再拐过去"，跟 n8n / 流程图工具的观感一致。
 	 * 偏移量取两点垂直距离的一半（有上下限），距离近时不要画成直线。
 	 */
-	function edgePath(x1, y1, x2, y2) {
+	function edgePath(x1, y1, x2, y2, horizontal) {
+		if (horizontal) {
+			// 横向：控制点沿 x 方向偏移，曲线"先往右走再拐过去"
+			const dx = Math.max(Math.abs(x2 - x1) * 0.5, 20);
+			return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+		}
 		const dy = Math.max(Math.abs(y2 - y1) * 0.5, 18);
 		return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
 	}
 
+	/**
+	 * 边的修饰类。cycle（环路）优先于 muted（弱化/虚线）。
+	 *
+	 * 抽成函数是因为原来用了嵌套三元（e.cycle ? ... : e.muted ? ... : ""），
+	 * 三处调用各写一遍既重复又难读。
+	 *
+	 * @param {boolean} withSpace 拼进已有 class 字符串时要带前导空格
+	 */
+	function edgeClass(e, withSpace) {
+		let cls = "";
+		if (e.cycle) cls = "is-cycle";
+		else if (e.muted) cls = "is-muted";
+		if (cls && withSpace) return " " + cls;
+		return cls;
+	}
+
 	/** 贝塞尔在 t 处的点（用来把出口名标签放到曲线中点） */
-	function bezierAt(x1, y1, x2, y2, t) {
-		const dy = Math.max(Math.abs(y2 - y1) * 0.5, 18);
-		const p1 = [x1, y1 + dy];
-		const p2 = [x2, y2 - dy];
+	function bezierAt(x1, y1, x2, y2, t, horizontal) {
+		let p1;
+		let p2;
+		if (horizontal) {
+			const dx = Math.max(Math.abs(x2 - x1) * 0.5, 20);
+			p1 = [x1 + dx, y1];
+			p2 = [x2 - dx, y2];
+		} else {
+			const dy = Math.max(Math.abs(y2 - y1) * 0.5, 18);
+			p1 = [x1, y1 + dy];
+			p2 = [x2, y2 - dy];
+		}
 		const mt = 1 - t;
 		const a = mt * mt * mt;
 		const b = 3 * mt * mt * t;
@@ -168,7 +197,23 @@
 			nodeEls.set(n.id, el);
 		}
 
-		// 测量（此刻元素已在 DOM，offsetWidth/Height 可用）
+		// 测量节点尺寸给 dagre 用。
+		//
+		// **必须用 offsetWidth/offsetHeight，不能用 getBoundingClientRect()**：
+		// 节点在一个被 transform:scale() 的 viewport 里，rect 拿到的是**缩放后**
+		// 的尺寸。首次 fit 前 scale=1 时两者相同，但 ResizeObserver 触发
+		// fit() 把 scale 提到 1.15 之后，rect 就变成 0.87 倍——用那个值重算
+		// 布局会让 dagre 以为节点更窄，于是节点重叠。
+		// offsetWidth 是布局尺寸，不受 transform 影响。
+		//
+		// 另：节点是 position:absolute，先给临时定位让它在确定的上下文里测量。
+		for (const n of nodes) {
+			const el = nodeEls.get(n.id);
+			el.style.left = "0px";
+			el.style.top = "0px";
+		}
+		void viewport.offsetHeight; // 强制回流，确保样式应用完
+
 		for (const n of nodes) {
 			const el = nodeEls.get(n.id);
 			n._w = el.offsetWidth;
@@ -210,6 +255,10 @@
 		}
 
 		// ---------- 4. 画连线 ----------
+		//
+		// 边的进出点取决于布局方向：TB 从上到下（底出顶进），
+		// LR 从左到右（右出左进）。写死一边会让另一个方向的连线穿过节点。
+		const horizontal = (options.rankdir || "TB") === "LR";
 		const labelEls = [];
 		const edgePos = new Map();
 		edges.forEach((e, i) => {
@@ -217,18 +266,15 @@
 			const dst = g.node(e.to);
 			if (!src || !dst) return;
 
-			// TB 布局：从下边中点出发，到上边中点
-			const x1 = src.x;
-			const y1 = src.y + src.height / 2;
-			const x2 = dst.x;
-			const y2 = dst.y - dst.height / 2;
+			// 出/进点按布局方向取边中点
+			const x1 = horizontal ? src.x + src.width / 2 : src.x;
+			const y1 = horizontal ? src.y : src.y + src.height / 2;
+			const x2 = horizontal ? dst.x - dst.width / 2 : dst.x;
+			const y2 = horizontal ? dst.y : dst.y - dst.height / 2;
 
-			const path = svg("path", { d: edgePath(x1, y1, x2, y2) });
-			path.setAttribute(
-				"marker-end",
-				e.cycle ? "url(#fg-arrow-cycle)" : "url(#fg-arrow)",
-			);
-			const cls = e.cycle ? "is-cycle" : e.muted ? "is-muted" : "";
+			const path = svg("path", { d: edgePath(x1, y1, x2, y2, horizontal) });
+			path.setAttribute("marker-end", e.cycle ? "url(#fg-arrow-cycle)" : "url(#fg-arrow)");
+			const cls = edgeClass(e);
 			if (cls) path.setAttribute("class", cls);
 			svgRoot.appendChild(path);
 
@@ -236,11 +282,8 @@
 
 			// 出口名：放在曲线上 42% 处（稍微偏向出发端，读起来像"从这个口出"）
 			if (e.port) {
-				const [lx, ly] = bezierAt(x1, y1, x2, y2, 0.42);
-				const lb = div(
-					"flograph-edge-label" + (e.cycle ? " is-cycle" : e.muted ? " is-muted" : ""),
-					e.port,
-				);
+				const [lx, ly] = bezierAt(x1, y1, x2, y2, 0.42, horizontal);
+				const lb = div("flograph-edge-label" + edgeClass(e, true), e.port);
 				lb.style.left = lx + "px";
 				lb.style.top = ly + "px";
 				viewport.appendChild(lb);
@@ -268,8 +311,12 @@
 			const sx = (box.width - pad * 2) / contentW;
 			const sy = (box.height - pad * 2) / contentH;
 			// 不放大超过 1.15：小图放到最大会很怪
+			//
+			// 缩放下限 0.42：图大时如果一路缩到底，字会小到读不了。
+			// 宁可让它溢出（用户能拖/滚），也不要给出"看得见但看不清"的全景。
 			scale = Math.min(sx, sy, 1.15);
-			if (!isFinite(scale) || scale <= 0) scale = 1;
+			if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+			scale = Math.max(scale, 0.42);
 			tx = (box.width - contentW * scale) / 2;
 			ty = (box.height - contentH * scale) / 2;
 			applyTransform();
@@ -281,11 +328,11 @@
 			const py = cy != null ? cy : box.height / 2;
 			const next = Math.min(2.5, Math.max(0.25, scale * factor));
 			// 以鼠标位置为锚点缩放：先算该点在内容坐标下的位置，缩放后保持不动
-			const ix = (px - tx) / scale;
-			const iy = (py - ty) / scale;
+			const innerX = (px - tx) / scale;
+			const innerY = (py - ty) / scale;
 			scale = next;
-			tx = px - ix * scale;
-			ty = py - iy * scale;
+			tx = px - innerX * scale;
+			ty = py - innerY * scale;
 			applyTransform();
 		}
 
