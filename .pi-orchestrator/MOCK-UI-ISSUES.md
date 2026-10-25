@@ -19,15 +19,16 @@ make mock-local  # 只本机
 
 | # | 问题 | 状态 |
 |---|---|---|
-| [#88](https://github.com/zzjcool/anotify/issues/88) | 源的下游流向图要用成熟图库做完整工作流图 | 待做 |
-| [#89](https://github.com/zzjcool/anotify/issues/89) | 事件流按源（触发器）分组展示最近事件 | 待做 |
-| [#90](https://github.com/zzjcool/anotify/issues/90) | 任务链用图展示（当前是缩进树） | 待做 |
-| [#91](https://github.com/zzjcool/anotify/issues/91) | 「通知接收」不该是独立一级页面——它只是 notify.phone 这个 end 能力的实现 | 待做 |
-| [#92](https://github.com/zzjcool/anotify/issues/92) | 定义能力的 paramsSchema 支持可视化编辑（可与 JSON 模式切换） | 待做 |
-| [#93](https://github.com/zzjcool/anotify/issues/93) | 「出口表」拆成独立页面（能力和边是两个不同的东西） | 待做 |
-| [#94](https://github.com/zzjcool/anotify/issues/94) | 节点页显示能力详情 + 事件流按节点过滤 + 节点跳转到事件流 | 待做 |
-| [#95](https://github.com/zzjcool/anotify/issues/95) | 事件流用 trace/span 瀑布图展示（时间维度） | 待做 |
-| — | 等待用户逐条补充 | — |
+| [#88](https://github.com/zzjcool/anotify/issues/88) | 源的下游流向图用 Cytoscape 画真图 | ✅ PR #101 |
+| [#89](https://github.com/zzjcool/anotify/issues/89) | 事件流按源分组 + 按源/节点筛选 | ✅ PR #97 |
+| [#90](https://github.com/zzjcool/anotify/issues/90) | 任务链拓扑图视图 | ✅ PR #102 |
+| [#91](https://github.com/zzjcool/anotify/issues/91) | 「通知接收」移出一级导航 | ✅ PR #99 |
+| [#92](https://github.com/zzjcool/anotify/issues/92) | paramsSchema 可视化编辑 ⇄ JSON | ✅ PR #100 |
+| [#93](https://github.com/zzjcool/anotify/issues/93) | 出口表拆成独立页面 edges.html | ✅ PR #99 |
+| [#94](https://github.com/zzjcool/anotify/issues/94) | 节点能力详情 + 事件流按节点过滤 + 跳转 | ✅ PR #97 #98 |
+| [#95](https://github.com/zzjcool/anotify/issues/95) | 事件流 trace/span 瀑布图 | ✅ PR #96 |
+
+**全部完成。** 19 套件 / frontend 210 断言 / 0 失败。
 
 ### 已完成（本阶段）
 
