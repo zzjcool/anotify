@@ -26,6 +26,7 @@ make mock-local  # 只本机
 | [#92](https://github.com/zzjcool/anotify/issues/92) | 定义能力的 paramsSchema 支持可视化编辑（可与 JSON 模式切换） | 待做 |
 | [#93](https://github.com/zzjcool/anotify/issues/93) | 「出口表」拆成独立页面（能力和边是两个不同的东西） | 待做 |
 | [#94](https://github.com/zzjcool/anotify/issues/94) | 节点页显示能力详情 + 事件流按节点过滤 + 节点跳转到事件流 | 待做 |
+| [#95](https://github.com/zzjcool/anotify/issues/95) | 事件流用 trace/span 瀑布图展示（时间维度） | 待做 |
 | — | 等待用户逐条补充 | — |
 
 ### 已完成（本阶段）
@@ -163,6 +164,29 @@ pattern / minimum / maximum / minProperties / maxProperties
 遗留风险：任务超 limit 会漏更早的事件（数据量小时可接受）。
 
 与 #89（事件流按源分组）是同一页面的改动，**两件一起做**别改两遍筛选区。
+
+### #95 trace/span 瀑布图（与 #90 高度重叠）
+
+用户："我还希望能够使用 trace 和 span 的那种图展示一下事件，因为我们本身就是这种形态嘛。"
+
+**数据完全够，不用改后端**（`internal/store/task.go:63-91`）：
+traceId / parentTaskId / createdAt / startedAt / finishedAt / status / attempts / nodeId / error。
+Event 也有 traceId + createdAt，可当根 span。
+
+关键价值：**时序信息只有瀑布图能给**，节点图给不了 —— 谁先谁后、各跑多久、哪里并行。
+
+**不需要图库**：纯 CSS 就够
+```
+span.left  = (startedAt - traceStart) / totalMs * 100%
+span.width = duration / totalMs * 100%
+```
+
+与 #90 的关系：
+| | #90 节点图 | #95 瀑布图 |
+|---|---|---|
+| 强项 | 派生关系、扇出汇聚 | 时序、耗时、并行 |
+
+**建议 #95 优先**（数据现成、不用布局算法、时序信息不可替代），#90 后置。
 
 ## 待定问题（等用户逐条确认）
 
