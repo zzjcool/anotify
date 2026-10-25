@@ -127,7 +127,10 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 		TraceID: ev.TraceID,
 		Params:  extractParams(payload),
 		// Targets 非空 → Dispatcher 跳过 edges 查表，直接派给这些能力
-		Targets: src.Targets,
+		Targets: src.TargetIDs(),
+		// 每个出口各自的参数模板：各能力的 params_schema 不同，
+		// 一份公共 params 必然对不上至少一边（会被静默剪枝）。
+		TargetParams: src.TargetParamsMap(),
 		// Out 仅用于剪枝记录里的 port 字段，让人知道"是哪次触发派不出去"
 		Out: eventType,
 		// 源没有"能力 path"：它自己不是能力，所以环检测从空开始

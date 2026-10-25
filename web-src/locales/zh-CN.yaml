@@ -1208,7 +1208,7 @@ sources:
     expr_hint: 支持 * / , - ；不支持 @daily 这类宏。示例：0 3 * * * 表示每天 03:00。
     hook_hint: 创建后会生成一个专属 URL，外部系统 POST 到它即可触发。谁拿到这个 URL 谁就能发事件，请妥善保管。
     targets: 出口能力（可多选）
-    targets_hint: 事件会同时派给选中的能力（扇出）。至少要选一个。
+    targets_hint: 事件会同时派给选中的能力（扇出）。勾选后可以填该能力需要的参数——每个能力的参数是独立的。
     enabled: 启用
     cancel: 取消
     save: 保存
@@ -1216,6 +1216,9 @@ sources:
     expr_required: 请填 cron 表达式
     targets_required: 至少要选一个出口能力
     no_caps: 还没有可用能力。先到「能力与出口」页定义能力。
+    no_params: 该能力不需要参数
+    bad_json: 参数 {k} 不是合法 JSON
+    bad_num: 参数 {k} 不是数字
   preset:
     hourly: 每小时
     daily3: 每天 3:00

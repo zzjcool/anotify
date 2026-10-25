@@ -1208,7 +1208,7 @@ sources:
     expr_hint: 'Supports * / , - ; macros like @daily are not supported. Example: 0 3 * * * means daily at 03:00.'
     hook_hint: A dedicated URL is generated after creation; any external system can POST to it. Whoever holds the URL can send events — keep it safe.
     targets: Exit capabilities (multi-select)
-    targets_hint: The event is dispatched to all selected capabilities (fan-out). At least one is required.
+    targets_hint: The event is dispatched to all selected capabilities (fan-out). Once checked, fill in that capability's own parameters — each capability keeps its own set.
     enabled: Enabled
     cancel: Cancel
     save: Save
@@ -1216,6 +1216,9 @@ sources:
     expr_required: Cron expression is required
     targets_required: Pick at least one exit capability
     no_caps: No usable capabilities yet. Define some on the “Capabilities” page first.
+    no_params: This capability takes no parameters
+    bad_json: Parameter {k} is not valid JSON
+    bad_num: Parameter {k} is not a number
   preset:
     hourly: Hourly
     daily3: Daily 3:00

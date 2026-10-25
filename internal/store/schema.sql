@@ -402,3 +402,21 @@ CREATE TABLE IF NOT EXISTS source_targets (
 CREATE        INDEX IF NOT EXISTS idx_sources_org      ON sources(org_id, created_at);
 CREATE        INDEX IF NOT EXISTS idx_sources_due      ON sources(enabled, next_fire_at);
 CREATE        INDEX IF NOT EXISTS idx_src_targets_cap  ON source_targets(capability_id);
+
+-- +migration 8 source_target_params
+-- 源 → 出口能力的**参数模板**（由 store.go 的 migrationHooks[8] 实现；SQL 空块）。
+--
+-- 为什么必须按每个能力分别存，而不是源上存一份 params：
+-- 每个出口能力有自己的 params_schema（字段名、必填项都不一样）。
+-- 一个源同时喂 analyze-pr（要 changedLines）和 deploy-preview（要 env）
+-- 时，一份公共 params 必然对不上其中至少一边，触发时被 param_schema 剪枝，
+-- 而用户配完以为好了——这正是要消灭的静默失败。
+--
+-- 语义：触发时把**所有出口的参数**合并成一份 params 传给 Dispatcher。
+-- 字段名冲突时以后写入的为准（出口按 capability_id 排序，行为确定）。
+--
+-- 与不变量 I6 的关系：这里存的是**数据**，不是模板表达式。
+-- 不做 {{ .body.x }} 这种替换——中枢不解释任何用户提供的逻辑。
+--
+-- 用 Go hook 而不是裸 ALTER：SQLite 没有 ADD COLUMN IF NOT EXISTS，
+-- 而迁移必须幂等（同一版本可能因重试执行多次）。

@@ -67,7 +67,7 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 
 	src := &store.Source{
 		ID: "src_1", OrgID: "org_1", Name: "每晚体检", Kind: store.SourceKindCron,
-		Enabled: true, Targets: []string{"cap_a", "cap_b"},
+		Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "cap_a"}, {CapabilityID: "cap_b"}},
 	}
 	res, err := tr.Fire(context.Background(), src, "nightly", "", json.RawMessage(`{"k":"v"}`))
 	if err != nil {
@@ -112,7 +112,7 @@ func TestFireIdempotent(t *testing.T) {
 	st := &fakeStore{inserted: false} // 模拟幂等命中
 	disp := &fakeDisp{}
 	tr := &Trigger{Store: st, Dispatcher: disp}
-	src := &store.Source{ID: "s", OrgID: "o", Name: "n", Enabled: true, Targets: []string{"c"}}
+	src := &store.Source{ID: "s", OrgID: "o", Name: "n", Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "c"}}}
 	res, err := tr.Fire(context.Background(), src, "t", "k1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestSchedulerTickFiresDueCron(t *testing.T) {
 		}},
 	}
 	st.src = st.due[0]
-	st.src.Targets = []string{"cap_a"}
+	st.src.Targets = []store.SourceTarget{{CapabilityID: "cap_a"}}
 	disp := &fakeDisp{out: &route.DispatchOutput{Tasks: []*store.Task{{ID: "t1"}}}}
 	s := &Scheduler{Store: st, Dispatcher: disp, Now: func() int64 { return now }}
 	s.Tick(context.Background())
@@ -198,3 +198,52 @@ var _ Dispatcher = (*fakeDisp)(nil)
 
 // 让 time 被用到（NextCronTime 相关断言在上面用不到 time 时避免 unused import）
 var _ = time.Now
+
+// TestFirePerTargetParams 是最核心的一条：每个出口用自己的参数。
+//
+// 这是「源可以带参数」的关键语义。曾经的做法是源只有一份公共 params，
+// 那么同时喂两个 params_schema 不同的能力时，必然对不上至少一边 ——
+// 触发时被 param_schema 静默剪枝，用户配完以为好了。
+func TestFirePerTargetParams(t *testing.T) {
+	st := &fakeStore{inserted: true}
+	disp := &fakeDisp{out: &route.DispatchOutput{}}
+	tr := &Trigger{Store: st, Dispatcher: disp}
+
+	src := &store.Source{
+		ID: "src_1", OrgID: "org_1", Name: "多出口", Kind: store.SourceKindManual,
+		Enabled: true,
+		Targets: []store.SourceTarget{
+			{CapabilityID: "cap_analyze", Params: map[string]any{"changedLines": float64(350)}},
+			{CapabilityID: "cap_deploy", Params: map[string]any{"env": "staging"}},
+			{CapabilityID: "cap_noargs"},
+		},
+	}
+	if _, err := tr.Fire(context.Background(), src, "t", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(disp.got) != 1 {
+		t.Fatalf("应派发 1 次, got %d", len(disp.got))
+	}
+	in := disp.got[0]
+
+	// Targets 顺序与 ID 一致
+	if len(in.Targets) != 3 {
+		t.Fatalf("应透传 3 个出口, got %v", in.Targets)
+	}
+
+	// 每个出口拿到**自己**那份额参数
+	if got := in.TargetParams["cap_analyze"]["changedLines"]; got != float64(350) {
+		t.Errorf("cap_analyze 的参数不对: %v", in.TargetParams["cap_analyze"])
+	}
+	if got := in.TargetParams["cap_deploy"]["env"]; got != "staging" {
+		t.Errorf("cap_deploy 的参数不对: %v", in.TargetParams["cap_deploy"])
+	}
+	// 没配参数的出口不该出现空条目（回退到公共 Params）
+	if _, ok := in.TargetParams["cap_noargs"]; ok {
+		t.Errorf("没配参数的出口不该有条目: %v", in.TargetParams["cap_noargs"])
+	}
+	// 关键：cap_deploy 不能拿到 cap_analyze 的参数（串味就是设计失败）
+	if _, leaked := in.TargetParams["cap_deploy"]["changedLines"]; leaked {
+		t.Error("cap_deploy 拿到了别的出口的参数（参数串味）")
+	}
+}

@@ -58,9 +58,48 @@ type Source struct {
 
 	CreatedAt int64 `json:"createdAt"`
 
-	// Targets 是出口能力的 ID 列表（多行 = 扇出）。
-	// 不落在这张表里，读取时按需拼（见 ListSources）。
-	Targets []string `json:"targets"`
+	// Targets 是出口能力（多行 = 扇出），每个带自己的参数模板。
+	Targets []SourceTarget `json:"targets"`
+}
+
+// SourceTarget 是一个出口：能力 + 该能力专属的参数模板。
+//
+// 为什么参数按出口分别存：每个能力的 params_schema 各不相同（字段名、
+// 必填项都不同），一份公共参数必然对不上至少一边，触发时被剪枝却无从察觉。
+type SourceTarget struct {
+	CapabilityID string `json:"capabilityId"`
+	// Params 是这个出口的默认参数（触发时按目标能力分别传给 Dispatcher）。
+	// 空对象 = 不额外传参。
+	Params map[string]any `json:"params,omitempty"`
+}
+
+// TargetIDs 返回出口能力 ID 列表（顺序与 Targets 一致）。
+//
+// 单独一个方法是因为"只要 ID"的地方很多（校验、派发 Targets），
+// 而拿 ID 的调用方不该关心参数。
+func (s *Source) TargetIDs() []string {
+	out := make([]string, 0, len(s.Targets))
+	for _, t := range s.Targets {
+		out = append(out, t.CapabilityID)
+	}
+	return out
+}
+
+// TargetParamsMap 返回 capabilityID → params 的映射（派发时用）。
+func (s *Source) TargetParamsMap() map[string]map[string]any {
+	if len(s.Targets) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(s.Targets))
+	for _, t := range s.Targets {
+		if len(t.Params) > 0 {
+			out[t.CapabilityID] = t.Params
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // CronConfig 是 kind=cron 的配置。
@@ -178,7 +217,7 @@ func scanSource(r scanner) (*Source, error) {
 		v := next.Int64
 		s.NextFireAt = &v
 	}
-	s.Targets = []string{}
+	s.Targets = []SourceTarget{}
 	return &s, nil
 }
 
@@ -215,12 +254,12 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	s.Config = cfg
 
 	// 出口能力必须都存在且同组织（不变量 I10：一切过 org_id）
-	for _, capID := range s.Targets {
-		if _, err := d.GetCapabilityByID(ctx, s.OrgID, capID); err != nil {
+	for _, t := range s.Targets {
+		if _, err := d.GetCapabilityByID(ctx, s.OrgID, t.CapabilityID); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("create source: 出口能力 %s 不存在", capID)
+				return fmt.Errorf("create source: 出口能力 %s 不存在", t.CapabilityID)
 			}
-			return fmt.Errorf("create source: 查能力 %s: %w", capID, err)
+			return fmt.Errorf("create source: 查能力 %s: %w", t.CapabilityID, err)
 		}
 	}
 
@@ -254,10 +293,14 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 		}
 		return fmt.Errorf("create source: %w", err)
 	}
-	for _, capID := range s.Targets {
+	for _, t := range s.Targets {
+		paramsJSON, err := marshalTargetParams(t.Params)
+		if err != nil {
+			return fmt.Errorf("create source target params: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO source_targets (source_id, capability_id, created_at) VALUES (?,?,?)`,
-			s.ID, capID, s.CreatedAt); err != nil {
+			`INSERT INTO source_targets (source_id, capability_id, params, created_at) VALUES (?,?,?,?)`,
+			s.ID, t.CapabilityID, paramsJSON, s.CreatedAt); err != nil {
 			return fmt.Errorf("create source target: %w", err)
 		}
 	}
@@ -293,21 +336,24 @@ func (d *DB) ListSources(ctx context.Context, orgID string) ([]*Source, error) {
 		return out, nil
 	}
 	trows, err := d.QueryContext(ctx,
-		`SELECT st.source_id, st.capability_id
+		`SELECT st.source_id, st.capability_id, st.params
 		   FROM source_targets st
 		   JOIN sources s ON s.id = st.source_id
-		  WHERE s.org_id = ?`, orgID)
+		  WHERE s.org_id = ?
+		  ORDER BY st.capability_id`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("list source targets: %w", err)
 	}
 	defer trows.Close()
-	bySrc := map[string][]string{}
+	bySrc := map[string][]SourceTarget{}
 	for trows.Next() {
-		var sid, cid string
-		if err := trows.Scan(&sid, &cid); err != nil {
+		var sid, cid, pj string
+		if err := trows.Scan(&sid, &cid, &pj); err != nil {
 			return nil, fmt.Errorf("scan source target: %w", err)
 		}
-		bySrc[sid] = append(bySrc[sid], cid)
+		bySrc[sid] = append(bySrc[sid], SourceTarget{
+			CapabilityID: cid, Params: unmarshalTargetParams(pj),
+		})
 	}
 	if err := trows.Err(); err != nil {
 		return nil, fmt.Errorf("list source targets: %w", err)
@@ -332,17 +378,20 @@ func (d *DB) GetSource(ctx context.Context, orgID, id string) (*Source, error) {
 		return nil, fmt.Errorf("get source: %w", err)
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT capability_id FROM source_targets WHERE source_id = ?`, id)
+		`SELECT capability_id, params FROM source_targets
+		  WHERE source_id = ? ORDER BY capability_id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("get source targets: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var cid string
-		if err := rows.Scan(&cid); err != nil {
+		var cid, pj string
+		if err := rows.Scan(&cid, &pj); err != nil {
 			return nil, fmt.Errorf("scan source target: %w", err)
 		}
-		s.Targets = append(s.Targets, cid)
+		s.Targets = append(s.Targets, SourceTarget{
+			CapabilityID: cid, Params: unmarshalTargetParams(pj),
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("get source targets: %w", err)
@@ -395,10 +444,10 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	if err != nil {
 		return err
 	}
-	for _, capID := range s.Targets {
-		if _, err := d.GetCapabilityByID(ctx, s.OrgID, capID); err != nil {
+	for _, t := range s.Targets {
+		if _, err := d.GetCapabilityByID(ctx, s.OrgID, t.CapabilityID); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("update source: 出口能力 %s 不存在", capID)
+				return fmt.Errorf("update source: 出口能力 %s 不存在", t.CapabilityID)
 			}
 			return err
 		}
@@ -435,10 +484,14 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 		`DELETE FROM source_targets WHERE source_id = ?`, s.ID); err != nil {
 		return fmt.Errorf("update source: clear targets: %w", err)
 	}
-	for _, capID := range s.Targets {
+	for _, t := range s.Targets {
+		paramsJSON, err := marshalTargetParams(t.Params)
+		if err != nil {
+			return fmt.Errorf("update source: target params: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO source_targets (source_id, capability_id, created_at) VALUES (?,?,?)`,
-			s.ID, capID, Now()); err != nil {
+			`INSERT INTO source_targets (source_id, capability_id, params, created_at) VALUES (?,?,?,?)`,
+			s.ID, t.CapabilityID, paramsJSON, Now()); err != nil {
 			return fmt.Errorf("update source: insert target: %w", err)
 		}
 	}
@@ -512,4 +565,31 @@ func isUniqueViolation(err error) bool {
 	}
 	s := err.Error()
 	return strings.Contains(s, "UNIQUE constraint failed") || strings.Contains(s, "constraint failed: UNIQUE")
+}
+
+// marshalTargetParams 把参数序列化成 JSON（nil → "{}"）。
+func marshalTargetParams(p map[string]any) (string, error) {
+	if len(p) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return "", fmt.Errorf("marshal params: %w", err)
+	}
+	return string(b), nil
+}
+
+// unmarshalTargetParams 反序列化参数（坏数据 → nil，不阻塞读取）。
+//
+// 坏数据不报错是有意的：一条来源不明的手改数据不该让整个源列表打不开。
+// 触发时这些参数会走 params_schema 校验，该被拦的仍会被拦。
+func unmarshalTargetParams(s string) map[string]any {
+	if s == "" || s == "{}" {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil || len(m) == 0 {
+		return nil
+	}
+	return m
 }

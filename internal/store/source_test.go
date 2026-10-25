@@ -113,7 +113,7 @@ func TestSourceCRUD(t *testing.T) {
 		Kind:    SourceKindCron,
 		Config:  json.RawMessage(`{"expr":"0 3 * * *"}`),
 		Enabled: true,
-		Targets: []string{capA.ID},
+		Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestSourceCRUD(t *testing.T) {
 	if got.Name != src.Name || got.Kind != SourceKindCron || !got.Enabled {
 		t.Errorf("往返不一致: %+v", got)
 	}
-	if len(got.Targets) != 1 || got.Targets[0] != capA.ID {
+	if len(got.Targets) != 1 || got.Targets[0].CapabilityID != capA.ID {
 		t.Errorf("出口不一致: %v", got.Targets)
 	}
 	// cron 建源时就该算好首次触发时刻
@@ -175,7 +175,7 @@ func TestSourceValidation(t *testing.T) {
 
 	// 未知 kind
 	err = db.CreateSource(ctx, &Source{
-		OrgID: orgID, Name: "怪种类", Kind: "nope", Targets: []string{capA.ID},
+		OrgID: orgID, Name: "怪种类", Kind: "nope", Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	})
 	if !errors.Is(err, ErrInvalidSourceKind) {
 		t.Errorf("应 ErrInvalidSourceKind, got %v", err)
@@ -185,18 +185,18 @@ func TestSourceValidation(t *testing.T) {
 	err = db.CreateSource(ctx, &Source{
 		OrgID: orgID, Name: "坏表达式", Kind: SourceKindCron,
 		Config:  json.RawMessage(`{"expr":"61 * * * *"}`),
-		Targets: []string{capA.ID},
+		Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	})
 	if !errors.Is(err, ErrInvalidSourceConfig) {
 		t.Errorf("应 ErrInvalidSourceConfig, got %v", err)
 	}
 
 	// 重名
-	ok := &Source{OrgID: orgID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []string{capA.ID}}
+	ok := &Source{OrgID: orgID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
 	if err := db.CreateSource(ctx, ok); err != nil {
 		t.Fatal(err)
 	}
-	dup := &Source{OrgID: orgID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []string{capA.ID}}
+	dup := &Source{OrgID: orgID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
 	if err := db.CreateSource(ctx, dup); !errors.Is(err, ErrSourceNameTaken) {
 		t.Errorf("重名应 ErrSourceNameTaken, got %v", err)
 	}
@@ -213,7 +213,7 @@ func TestSourceWebhookToken(t *testing.T) {
 
 	src := &Source{
 		OrgID: orgID, Name: "hook", Kind: SourceKindWebhook,
-		Enabled: true, Targets: []string{capA.ID},
+		Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)
@@ -236,7 +236,7 @@ func TestSourceWebhookToken(t *testing.T) {
 	// 停用后 token 不再有效（停用的源不该接受事件）
 	if err := db.UpdateSource(ctx, &Source{
 		ID: src.ID, OrgID: orgID, Name: src.Name, Kind: src.Kind,
-		Config: src.Config, Enabled: false, Targets: []string{capA.ID},
+		Config: src.Config, Enabled: false, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -254,14 +254,14 @@ func TestSourceKindImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	src := &Source{OrgID: orgID, Name: "keep", Kind: SourceKindManual, Enabled: true, Targets: []string{capA.ID}}
+	src := &Source{OrgID: orgID, Name: "keep", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
 	if err := db.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)
 	}
 	// 试图把 manual 改成 cron
 	err := db.UpdateSource(ctx, &Source{
 		ID: src.ID, OrgID: orgID, Name: "keep", Kind: SourceKindCron,
-		Config: json.RawMessage(`{"expr":"0 3 * * *"}`), Enabled: true, Targets: []string{capA.ID},
+		Config: json.RawMessage(`{"expr":"0 3 * * *"}`), Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	})
 	if err == nil {
 		t.Error("kind 不应允许修改")
@@ -279,7 +279,7 @@ func TestDueCronSources(t *testing.T) {
 
 	src := &Source{
 		OrgID: orgID, Name: "due", Kind: SourceKindCron,
-		Config: json.RawMessage(`{"expr":"0 3 * * *"}`), Enabled: true, Targets: []string{capA.ID},
+		Config: json.RawMessage(`{"expr":"0 3 * * *"}`), Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)

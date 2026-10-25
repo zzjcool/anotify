@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -37,7 +38,37 @@ type sourceRequest struct {
 	Kind    string          `json:"kind"`
 	Config  json.RawMessage `json:"config"`
 	Enabled *bool           `json:"enabled"`
-	Targets []string        `json:"targets"`
+	// Targets 支持两种写法，兼容简单调用方：
+	//   ["cap_a", "cap_b"]                                ← 只要 ID，无参数
+	//   [{"capabilityId":"cap_a","params":{"x":1}}, ...]   ← 带参数
+	Targets []sourceTargetInput `json:"targets"`
+}
+
+// sourceTargetInput 是请求里的一个出口。
+//
+// 自定义 UnmarshalJSON 让同一个字段既能接字符串也能接对象：
+// 大多数调用方（脚本、e2e）只关心"派给谁"、不关心参数，
+// 强制它们写 {"capabilityId": "..."} 是没必要的摩擦。
+type sourceTargetInput struct {
+	CapabilityID string         `json:"capabilityId"`
+	Params       map[string]any `json:"params,omitempty"`
+}
+
+func (t *sourceTargetInput) UnmarshalJSON(b []byte) error {
+	// 先试字符串形式
+	var id string
+	if err := json.Unmarshal(b, &id); err == nil {
+		t.CapabilityID = id
+		return nil
+	}
+	// 再试对象形式
+	type alias sourceTargetInput
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*t = sourceTargetInput(a)
+	return nil
 }
 
 // sourceView 是返回给前端的源视图。
@@ -56,6 +87,54 @@ type sourceTargetView struct {
 	Name    string `json:"name"`
 	Version int    `json:"version"`
 	Missing bool   `json:"missing,omitempty"` // 能力已被删（源指向不存在的目标）
+
+	// Params 是这个出口已配置的参数（触发时传给该能力）
+	Params map[string]any `json:"params,omitempty"`
+	// ParamsSchema 是该能力的参数 schema（前端据此生成表单）。
+	// 带上它前端就不用再拉一次能力列表做 join。
+	ParamsSchema json.RawMessage `json:"paramsSchema,omitempty"`
+}
+
+// validateTargetParams 逐个出口用该能力的 params_schema 校验参数。
+//
+// 为什么必须在建源时就校验，而不是等触发时让它被剪枝：
+// 用户填完表单点保存，就该知道"channel 必须是 slack/email"；
+// 等到触发才发现，只会看到"事件入库但没派出去"，而那时人已经离开页面了。
+//
+// 用的是 route.ValidateParams —— 与派发期**同一个函数**。两边口径必须一致，
+// 否则会出现"建源说没问题、触发被剪枝"这种最让人困惑的情况。
+func (h *sourceHandler) validateTargetParams(ctx context.Context, orgID string, targets []store.SourceTarget) error {
+	for _, tg := range targets {
+		if len(tg.Params) == 0 {
+			continue // 没配参数：交给派发期的 schema 校验（可能该能力本来就不要参数）
+		}
+		capDef, err := h.db.GetCapabilityByID(ctx, orgID, tg.CapabilityID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("出口能力 %s 不存在", tg.CapabilityID)
+			}
+			return err
+		}
+		if msg := route.ValidateParams(capDef.ParamsSchema, tg.Params); msg != "" {
+			return fmt.Errorf("%s@%d 的参数不合法：%s", capDef.Name, capDef.Version, msg)
+		}
+	}
+	return nil
+}
+
+// toStoreTargets 把请求里的出口转成 store 类型。
+func toStoreTargets(in []sourceTargetInput) []store.SourceTarget {
+	out := make([]store.SourceTarget, 0, len(in))
+	for _, t := range in {
+		if t.CapabilityID == "" {
+			continue
+		}
+		out = append(out, store.SourceTarget{
+			CapabilityID: t.CapabilityID,
+			Params:       t.Params,
+		})
+	}
+	return out
 }
 
 // sources 处理 /v1/sources 的 GET 与 POST。
@@ -162,7 +241,12 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 		Kind:    req.Kind,
 		Config:  req.Config,
 		Enabled: enabled,
-		Targets: req.Targets,
+		Targets: toStoreTargets(req.Targets),
+	}
+	// 先校验参数再落库：填错了立刻告诉用户，别等触发时被剪枝
+	if err := h.validateTargetParams(r.Context(), orgID, src.Targets); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
 	}
 	if err := h.db.CreateSource(r.Context(), src); err != nil {
 		h.writeSourceErr(w, err, "create")
@@ -206,7 +290,11 @@ func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string
 		cur.Enabled = *req.Enabled
 	}
 	if len(req.Targets) > 0 {
-		cur.Targets = req.Targets
+		cur.Targets = toStoreTargets(req.Targets)
+	}
+	if err := h.validateTargetParams(r.Context(), orgID, cur.Targets); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
 	}
 	// kind 不可改：换种类等于换语义（见 store.UpdateSource 注释）
 	if err := h.db.UpdateSource(r.Context(), cur); err != nil {
@@ -304,14 +392,19 @@ func (h *sourceHandler) views(ctx context.Context, orgID string, list []*store.S
 	out := make([]sourceView, 0, len(list))
 	for _, s := range list {
 		v := sourceView{Source: s, TargetCaps: []sourceTargetView{}}
-		for _, cid := range s.Targets {
-			if c, ok := byID[cid]; ok {
+		for _, t := range s.Targets {
+			if c, ok := byID[t.CapabilityID]; ok {
 				v.TargetCaps = append(v.TargetCaps, sourceTargetView{
 					ID: c.ID, Name: c.Name, Version: c.Version,
+					Params: t.Params,
+					// 带上 schema，前端才能按它生成参数表单
+					ParamsSchema: c.ParamsSchema,
 				})
 			} else {
 				// 能力被删了但源还指着它：如实标出来，别静默消失
-				v.TargetCaps = append(v.TargetCaps, sourceTargetView{ID: cid, Missing: true})
+				v.TargetCaps = append(v.TargetCaps, sourceTargetView{
+					ID: t.CapabilityID, Missing: true, Params: t.Params,
+				})
 			}
 		}
 		if s.Kind == store.SourceKindWebhook {

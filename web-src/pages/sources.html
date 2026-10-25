@@ -73,6 +73,27 @@
       .target-opt:hover {
         background: rgba(255, 255, 255, 0.04);
       }
+      /* 勾选后展开的参数字段：缩进 + 左侧细线，视觉上从属于该能力 */
+      .target-params {
+        margin: 0.25rem 0 0.5rem 1.6rem;
+        padding-left: 0.75rem;
+        border-left: 1px solid var(--line);
+        display: grid;
+        gap: 0.4rem;
+      }
+      .target-params label {
+        font-size: 0.7rem;
+        color: var(--muted, #71717a);
+      }
+      .target-params input,
+      .target-params select {
+        font-size: 0.75rem;
+        padding: 0.3rem 0.5rem;
+      }
+      .param-req {
+        color: #f87171;
+        margin-left: 0.15rem;
+      }
       .hook-url {
         font-family: var(--mono, monospace);
         font-size: 0.7rem;
@@ -534,7 +555,17 @@
       }
 
       // ---------- 弹窗 ----------
-      function openModal(src) {
+      async function openModal(src) {
+        // 每次打开都刷新能力列表：用户可能刚在「能力与出口」页建了新能力，
+        // 或者刚才保存了带新能力的源。用缓存会让新能力在选择器里缺席，
+        // 用户以为"建了却选不到"。
+        try {
+          const capData = await apiGet(API + "/capabilities");
+          if (capData && Array.isArray(capData.capabilities)) CAPS = capData.capabilities;
+        } catch (e) {
+          /* 拉不到就用缓存，不阻塞打开弹窗 */
+        }
+
         editingID = src ? src.id : null;
         document.getElementById("modal-title").textContent = src
           ? t("sources.modal.edit", "编辑源")
@@ -547,7 +578,12 @@
         const cfg = (src && src.config) || {};
         document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
 
-        renderTargetPicker(src ? src.targets || [] : []);
+        // 已保存的出口参数：从 targetCaps 里取（后端并入视图了）
+        const existing = {};
+        for (const tc of (src && src.targetCaps) || []) {
+          if (tc.params && Object.keys(tc.params).length) existing[tc.id] = tc.params;
+        }
+        renderTargetPicker(src ? src.targets || [] : [], existing);
         syncKindFields();
 
         const modal = document.getElementById("src-modal");
@@ -575,10 +611,14 @@
       //   - 排除内置起点（github/cron/http/manual 这些是老模型的产物，
       //     在新的源模型里它们已被源取代，选它们没有意义）
       //   - 排除没有节点声明的 origin（派出去也会 pruned/no_node）
-      function renderTargetPicker(selected) {
+      function renderTargetPicker(selected, existingParams) {
         const box = document.getElementById("f-targets");
         box.replaceChildren();
-        const sel = new Set(selected || []);
+        existingParams = existingParams || {};
+        // 兼容两种入参：只有 ID 的字符串数组，或 {capabilityId, params} 对象数组
+        const sel = new Set(
+          (selected || []).map((x) => (typeof x === "string" ? x : x && x.capabilityId)).filter(Boolean),
+        );
 
         const usable = CAPS.filter((c) => {
           if (c.kind === "origin" && c.source === "builtin") return false;
@@ -597,11 +637,16 @@
         }
 
         for (const c of usable) {
+          const checked = sel.has(c.id);
           const label = el("label", "target-opt");
           const cb = document.createElement("input");
           cb.type = "checkbox";
+          // 专属类：参数面板里有 boolean 参数时也会产生 checkbox，
+          // 只用 input[type=checkbox] 选择会把它们一起选中，
+          // 导致 collectTargets 收集出 value="on" 的假出口。
+          cb.className = "target-cap";
           cb.value = c.id;
-          cb.checked = sel.has(c.id);
+          cb.checked = checked;
           label.appendChild(cb);
           const span = el("span", "", c.name + "@" + (c.version != null ? c.version : "?"));
           label.appendChild(span);
@@ -609,13 +654,170 @@
           if (c.kind) {
             label.appendChild(el("span", "text-[10px] text-zinc-600", "· " + c.kind));
           }
+          // 有必填参数时提示，让人知道勾了还得填
+          const req = requiredFields(c.paramsSchema);
+          if (req.length) {
+            label.appendChild(
+              el("span", "text-[10px] text-amber-400", req.length + " 个参数"),
+            );
+          }
           box.appendChild(label);
+
+          // 勾选后才展开参数表单：不勾的能力不该占版面
+          const paramWrap = el("div", "target-params");
+          paramWrap.dataset.for = c.id;
+          paramWrap.style.display = checked ? "grid" : "none";
+          renderParamFields(paramWrap, c, existingParams[c.id] || {});
+          box.appendChild(paramWrap);
+
+          cb.addEventListener("change", () => {
+            paramWrap.style.display = cb.checked ? "grid" : "none";
+          });
         }
       }
 
+      // requiredFields 从 params_schema 取必填字段名。
+      //
+      // 只用受控子集里最稳的那几个关键字（route.validate.go 支持的集合），
+      // 遇到不认识的忽略——和中枢的校验口径保持一致，避免前端说"必填"
+      // 而后端其实不校验（那种不一致比不提示更糟）。
+      function requiredFields(schema) {
+        if (!schema || typeof schema !== "object") return [];
+        const req = schema.required;
+        return Array.isArray(req) ? req.filter((x) => typeof x === "string") : [];
+      }
+
+      // schemaProps 取出 properties（保证是对象）。
+      function schemaProps(schema) {
+        if (!schema || typeof schema !== "object") return {};
+        const p = schema.properties;
+        return p && typeof p === "object" ? p : {};
+      }
+
+      // renderParamFields 按 schema 生成参数输入控件。
+      //
+      // 支持的类型映射（够覆盖实际用法，且都是声明式的）：
+      //   string  → text（有 enum 则 select；有 format=uri 用 url）
+      //   number/integer → number
+      //   boolean → checkbox
+      //   其它（object/array）→ 文本框，按 JSON 解析后提交
+      //
+      // 空 schema 或没有 properties 时不渲染任何字段（该能力不要参数）。
+      function renderParamFields(wrap, cap, current) {
+        const props = schemaProps(cap.paramsSchema);
+        const keys = Object.keys(props);
+        if (!keys.length) {
+          wrap.appendChild(
+            el("div", "text-[10px] text-zinc-600", t("sources.form.no_params", "该能力不需要参数")),
+          );
+          return;
+        }
+        const required = new Set(requiredFields(cap.paramsSchema));
+
+        for (const k of keys) {
+          const spec = props[k] && typeof props[k] === "object" ? props[k] : {};
+          const field = el("div", "");
+          const lab = el("label", "", k);
+          if (required.has(k)) lab.appendChild(el("span", "param-req", "*"));
+          field.appendChild(lab);
+
+          const cur = current[k];
+          let input;
+
+          if (Array.isArray(spec.enum) && spec.enum.length) {
+            input = document.createElement("select");
+            if (!required.has(k)) {
+              const empty = document.createElement("option");
+              empty.value = "";
+              empty.textContent = "—";
+              input.appendChild(empty);
+            }
+            for (const v of spec.enum) {
+              const o = document.createElement("option");
+              o.value = String(v);
+              o.textContent = String(v);
+              if (cur != null && String(cur) === String(v)) o.selected = true;
+              input.appendChild(o);
+            }
+          } else if (spec.type === "boolean") {
+            input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = cur === true;
+          } else if (spec.type === "number" || spec.type === "integer") {
+            input = document.createElement("input");
+            input.type = "number";
+            if (spec.type === "integer") input.step = "1";
+            if (cur != null) input.value = String(cur);
+            if (spec.minimum != null) input.min = String(spec.minimum);
+            if (spec.maximum != null) input.max = String(spec.maximum);
+          } else if ((spec.type === "object" || spec.type === "array") || typeof spec.type === "undefined") {
+            // object/array（或没声明类型）：用文本框，提交前按 JSON 解析。
+            // 不做结构化编辑器——那是另一种复杂度，先用最直白的方式。
+            input = document.createElement("input");
+            input.type = "text";
+            input.dataset.json = "1";
+            input.placeholder = spec.type === "object" ? '{"k":"v"}' : spec.type === "array" ? "[1,2]" : "";
+            if (cur != null) input.value = typeof cur === "string" ? cur : JSON.stringify(cur);
+          } else {
+            input = document.createElement("input");
+            input.type = spec.format === "uri" ? "url" : "text";
+            if (cur != null) input.value = String(cur);
+            if (spec.pattern) input.placeholder = spec.pattern;
+          }
+
+          input.className = "input mono w-full";
+          input.dataset.param = k;
+          input.dataset.ptype = input.dataset.json ? "json" : spec.type || "string";
+          field.appendChild(input);
+          wrap.appendChild(field);
+        }
+      }
+
+      // collectTargets 收集 {capabilityId, params} 列表。
+      //
+      // 每个出口带自己那份参数：各能力的 params_schema 不同，
+      // 一份公共参数必然对不上至少一边（会被静默剪枝）。
       function collectTargets() {
         const box = document.getElementById("f-targets");
-        return Array.from(box.querySelectorAll("input[type=checkbox]:checked")).map((x) => x.value);
+        const out = [];
+        for (const cb of box.querySelectorAll("input.target-cap:checked")) {
+          const capId = cb.value;
+          const wrap = box.querySelector('.target-params[data-for="' + CSS.escape(capId) + '"]');
+          const params = {};
+          if (wrap) {
+            for (const input of wrap.querySelectorAll("[data-param]")) {
+              const k = input.dataset.param;
+              const t_ = input.dataset.ptype;
+              let v;
+              if (t_ === "boolean") {
+                if (!input.checked) continue; // 未勾选 = 不传，避免把 false 强加给后端
+                v = true;
+              } else {
+                const raw = input.value.trim();
+                if (raw === "") continue; // 空 = 不传（交给 schema 默认/必填校验）
+                if (t_ === "json") {
+                  try {
+                    v = JSON.parse(raw);
+                  } catch (e) {
+                    throw new Error(
+                      t("sources.form.bad_json", "参数 {k} 不是合法 JSON").replace("{k}", k),
+                    );
+                  }
+                } else if (t_ === "number" || t_ === "integer") {
+                  v = Number(raw);
+                  if (Number.isNaN(v)) {
+                    throw new Error(t("sources.form.bad_num", "参数 {k} 不是数字").replace("{k}", k));
+                  }
+                } else {
+                  v = raw;
+                }
+              }
+              params[k] = v;
+            }
+          }
+          out.push(Object.keys(params).length ? { capabilityId: capId, params } : { capabilityId: capId });
+        }
+        return out;
       }
 
       async function save() {
@@ -674,7 +876,9 @@
 
       // ---------- 绑定 ----------
       document.getElementById("btn-refresh").addEventListener("click", loadAll);
-      document.getElementById("btn-new").addEventListener("click", () => openModal(null));
+      document.getElementById("btn-new").addEventListener("click", () => {
+        openModal(null);
+      });
       document.getElementById("modal-close").addEventListener("click", closeModal);
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
       document.getElementById("modal-save").addEventListener("click", save);

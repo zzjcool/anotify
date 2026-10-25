@@ -466,6 +466,32 @@ func DeriveKind(outputs []string, declaredByAnyNode bool) Kind {
 结果矛盾）。源的 `kind` 是用户显式选择的**配置**，无从推导、不存就不知道该
 跑哪套逻辑，因此不受 I3 约束。守卫测试按表名限定而非按列名一刀切。
 
+**源的参数（每个出口一份）**
+
+源的每个出口能力**带自己的参数**，不是源上一份公共 params：
+
+```
+sources ──< source_targets(source_id, capability_id, params) >── capability_versions
+```
+
+为什么必须按出口分别存：每个能力的 `params_schema` 字段名与必填项都不同。
+一个源同时喂 `analyze-pr`（要 `changedLines`）和 `deploy-preview`（要 `env`）时，
+一份公共 params 必然对不上至少一边，触发时被 `param_schema` 剪枝，而用户配完
+以为好了——那正是要消灭的静默失败。
+
+派发时通过 `route.DispatchInput.TargetParams`（capabilityID → params）传递：
+`Dispatch` 在步骤 ② 的循环里按当前目标取参数，没有条目时回退到公共 `Params`
+（保持对 `/v1/events` 与普通边的兼容）。
+
+**两处校验，同一个函数**（`route.ValidateParams`）：
+
+| 时机 | 目的 |
+|---|---|
+| 建源 / 改源 | 用户填完表单立刻知道填错了，不用等到触发 |
+| 触发派发 | 兜底（数据可能被手改过） |
+
+两边口径必须一致——否则会出现「建源说没问题、触发被剪枝」这种最让人困惑的情况。
+
 **cron 语义**：
 
 - 五段表达式（分 时 日 月 周），支持 `*` `/` `,` `-`；不支持 `@daily` 等宏

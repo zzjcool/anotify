@@ -655,6 +655,124 @@ async function main() {
 			await page3.click("#modal-save");
 			await page3.waitForTimeout(1500);
 
+			// ---- 参数表单：按目标能力的 params_schema 生成 ----
+			//
+			// 这是「源可以带参数」的核心 UI。曾经源只有一份公共 params，
+			// 同时喂两个 schema 不同的能力时必然对不上至少一边，触发时被
+			// param_schema 静默剪枝 —— 用户配完以为好了。
+			{
+				// 建一个带必填参数 + enum + boolean + 整数的能力
+				const capResp = await H.req(server.base, "/v1/capabilities", {
+					session: s.session,
+					method: "POST",
+					body: {
+						name: "e2e.report",
+						outputs: [],
+						paramsSchema: {
+							type: "object",
+							required: ["channel", "title"],
+							properties: {
+								channel: { type: "string", enum: ["slack", "email"] },
+								title: { type: "string" },
+								urgent: { type: "boolean" },
+								retries: { type: "integer", minimum: 0, maximum: 5 },
+							},
+						},
+					},
+				});
+				const capID = capResp.json?.capability?.id;
+				H.check("建带参数的能力成功", !!capID, JSON.stringify(capResp.json).slice(0, 120));
+
+				await page3.click("#btn-new");
+				await page3.waitForTimeout(300);
+				await page3.fill("#f-name", "e2e-param-src");
+				await page3.selectOption("#f-kind", "manual");
+				await page3.waitForTimeout(200);
+
+				// 勾选 e2e.report，参数面板应展开
+				const picked2 = await page3.evaluate((cid) => {
+					const cb = document.querySelector(`#f-targets input[value="${cid}"]`);
+					if (!cb) return false;
+					cb.checked = true;
+					cb.dispatchEvent(new Event("change"));
+					return true;
+				}, capID);
+				H.check("勾选带参数的能力", picked2 === true);
+				await page3.waitForTimeout(300);
+
+				const fields = await page3.evaluate((cid) => {
+					const wrap = document.querySelector(`#f-targets .target-params[data-for="${cid}"]`);
+					if (!wrap) return null;
+					return {
+						visible: wrap.style.display !== "none",
+						inputs: Array.from(wrap.querySelectorAll("[data-param]")).map((i) => ({
+							k: i.dataset.param,
+							tag: i.tagName.toLowerCase(),
+							type: i.type,
+						})),
+					};
+				}, capID);
+				H.check("勾选后展开参数面板", fields && fields.visible === true);
+				H.check(
+					"schema 的 4 个字段都生成了控件",
+					fields && fields.inputs.length === 4,
+					fields ? JSON.stringify(fields.inputs.map((x) => x.k)) : "null",
+				);
+				H.check(
+					"enum 字段渲染成 select",
+					fields && fields.inputs.some((x) => x.k === "channel" && x.tag === "select"),
+				);
+				H.check(
+					"boolean 字段渲染成 checkbox",
+					fields && fields.inputs.some((x) => x.k === "urgent" && x.type === "checkbox"),
+				);
+				H.check(
+					"integer 字段渲染成 number",
+					fields && fields.inputs.some((x) => x.k === "retries" && x.type === "number"),
+				);
+
+				// 填非法 enum → 保存应被服务端拒绝（400）
+				await page3.evaluate((cid) => {
+					const wrap = document.querySelector(`#f-targets .target-params[data-for="${cid}"]`);
+					wrap.querySelector('[data-param="channel"]').value = "pager";
+					wrap.querySelector('[data-param="title"]').value = "x";
+				}, capID);
+				await page3.click("#modal-save");
+				await page3.waitForTimeout(1200);
+				const stillOpen = await page3.evaluate(
+					() => !document.getElementById("src-modal").classList.contains("hidden"),
+				);
+				H.check("非法参数被服务端拒绝（弹窗未关闭）", stillOpen === true);
+
+				// 改成合法值 → 保存成功
+				await page3.evaluate((cid) => {
+					const wrap = document.querySelector(`#f-targets .target-params[data-for="${cid}"]`);
+					wrap.querySelector('[data-param="channel"]').value = "slack";
+				}, capID);
+				await page3.click("#modal-save");
+				await page3.waitForTimeout(1500);
+				const closed = await page3.evaluate(
+					() => document.getElementById("src-modal").classList.contains("hidden"),
+				);
+				H.check("合法参数保存成功（弹窗关闭）", closed === true);
+
+				// 回读：参数真的存下来了
+				const saved = await page3.evaluate(async (name) => {
+					const r = await fetch("/v1/sources", { credentials: "include" });
+					const j = await r.json();
+					const src = (j.sources || []).find((x) => x.name === name);
+					if (!src) return null;
+					const tc = (src.targetCaps || [])[0] || {};
+					return { params: tc.params, hasSchema: !!tc.paramsSchema };
+				}, "e2e-param-src");
+				H.check(
+					"参数已持久化",
+					saved && saved.params && saved.params.channel === "slack",
+					JSON.stringify(saved),
+				);
+				H.check("视图带回 paramsSchema（前端生成表单用）", saved && saved.hasSchema === true);
+			}
+
 			const list = await page3.evaluate(() => {
 				const cards = Array.from(document.querySelectorAll("#src-list > div"));
 				return {

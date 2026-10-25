@@ -88,6 +88,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	2: migrateLegacyColumns,
 	3: fixLegacyMessageColumns,
 	5: migrateNewModelColumns,
+	8: migrateSourceTargetParams,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -111,6 +112,25 @@ func migrateNewModelColumns(tx *sql.Tx) error {
 		if _, err := tx.Exec(a.ddl); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", a.table, a.column, err)
 		}
+	}
+	return nil
+}
+
+// migrateSourceTargetParams 迁移 8：给 source_targets 加 params 列。
+//
+// 每个出口能力各自的参数模板（见 schema.sql 迁移 8 的说明）。
+// 默认 '{}'：老数据没有参数，行为不变（空 params 对空 schema 的能力正好够用）。
+func migrateSourceTargetParams(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "source_targets", "params")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`ALTER TABLE source_targets ADD COLUMN params TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return fmt.Errorf("add column source_targets.params: %w", err)
 	}
 	return nil
 }

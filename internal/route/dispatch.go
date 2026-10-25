@@ -34,6 +34,17 @@ type DispatchInput struct {
 	// Out 是上游回报的出口名。"" 表示上游没回报——此时不派发、也不记剪枝。
 	Out    string
 	Params map[string]any
+	// TargetParams 按目标能力 ID 指定该目标的参数（源用）。
+	//
+	// 为什么必须**按目标**分别给，而不是一份公共 Params：
+	// 每个能力有自己的 params_schema（字段名、必填项都不同）。一个源同时
+	// 喂 analyze-pr（要 changedLines）和 deploy-preview（要 env）时，
+	// 一份公共 params 必然对不上其中至少一边，触发时被 param_schema 剪枝，
+	// 而用户配完以为好了——那正是要消灭的静默失败。
+	//
+	// 某目标没有条目时回退到 Params（保持对 events / 普通派发的兼容）。
+	TargetParams map[string]map[string]any
+
 	// Targets 非空时**跳过 edges 查表**，直接把事件派给这些能力。
 	//
 	// 这是「源」（source）用的路径：源不建边，它自己就是起点，出口是
@@ -221,8 +232,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			continue
 		}
 
+		// 该目标实际使用的参数：优先 TargetParams，回退到公共 Params
+		targetParams := in.Params
+		if tp, ok := in.TargetParams[targetID]; ok && tp != nil {
+			targetParams = tp
+		}
+
 		// 参数校验：不过只跳过这一条边，不影响其他边（扇出可部分成功）
-		if msg := validateParams(capDef.ParamsSchema, in.Params); msg != "" {
+		if msg := validateParams(capDef.ParamsSchema, targetParams); msg != "" {
 			out.Pruned = append(out.Pruned, PrunedRecord{
 				Reason:       ReasonParamSchema,
 				CapabilityID: targetID,
@@ -233,7 +250,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		}
 
 		// 跨组织用户校验（params_schema 管不到的业务规则）
-		if pruned, rec := d.checkUserScoped(ctx, in.OrgID, capDef, in.Params); pruned {
+		if pruned, rec := d.checkUserScoped(ctx, in.OrgID, capDef, targetParams); pruned {
 			rec.Port = in.Out // 留痕要有完整证据：哪条边、哪个出口
 			out.Pruned = append(out.Pruned, rec)
 			continue
@@ -246,7 +263,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		// 推送永远发不出去。这是「内置能力」与「自定义能力」唯一的分岔点。
 		if bc, ok := store.IsBuiltinCapability(capDef.Name, capDef.Version); ok && bc.Central {
 			candidates = append(candidates, candidate{
-				cap: capDef, params: in.Params, central: true,
+				cap: capDef, params: targetParams, central: true,
 			})
 			continue
 		}
@@ -266,7 +283,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			continue
 		}
 
-		candidates = append(candidates, candidate{cap: capDef, params: in.Params, nodes: nodes})
+		candidates = append(candidates, candidate{cap: capDef, params: targetParams, nodes: nodes})
 	}
 
 	if len(candidates) == 0 {
@@ -323,7 +340,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		}
 
 		// 挑一台：粘性优先，否则负载最小
-		nodeID, stickySelector, err := d.pickNode(ctx, in, c.cap, c.nodes)
+		nodeID, stickySelector, err := d.pickNode(ctx, in, c.cap, c.params, c.nodes)
 		if err != nil {
 			return nil, err
 		}
@@ -487,10 +504,12 @@ func (d *Dispatcher) checkUserScoped(ctx context.Context, orgID string, capDef *
 //
 // 返回 (nodeID, stickySelector, error)。stickySelector 非 nil 表示该能力开了 sticky，
 // 调用方应写 pin。粘性命中时沿用钉住的那台（哪怕负载更高）。
-func (d *Dispatcher) pickNode(ctx context.Context, in DispatchInput, capDef *store.CapabilityVersion, candidates []string) (string, *string, error) {
+func (d *Dispatcher) pickNode(ctx context.Context, in DispatchInput, capDef *store.CapabilityVersion, params map[string]any, candidates []string) (string, *string, error) {
 	var selector *string
 	if capDef.Sticky != "" {
-		sel := stickySelectorValue(capDef, in.Params)
+		// 用**该目标实际的参数**算粘性选择值：多目标各有各的 params，
+		// 拿公共 Params 会算出错的 key，钉到不该钉的节点上。
+		sel := stickySelectorValue(capDef, params)
 		selector = &sel
 		key := store.StickyKey(in.TraceID, capDef.ID, sel)
 		pin, err := d.Store.GetPin(ctx, key)
@@ -545,6 +564,16 @@ func stickySelectorValue(capDef *store.CapabilityVersion, params map[string]any)
 		return fmt.Sprintf("%v", v)
 	}
 	return ""
+}
+
+// ValidateParams 用 params_schema 校验参数，返回不合法原因（"" = 通过）。
+//
+// 导出供控制台在建源/改源时**立即**校验源配置的参数：
+// 用户填完表单就该知道填错了，而不是等触发时被剪枝才发现。
+// 与派发期用的是同一个函数——两边口径必须一致，否则会出现
+// "建源说没问题、触发被剪枝"这种最让人困惑的情况。
+func ValidateParams(schema json.RawMessage, params map[string]any) string {
+	return validateParams(schema, params)
 }
 
 // validateParams 用 params_schema 校验参数，返回不合法原因（"" = 通过）。
@@ -670,7 +699,12 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	if err != nil {
 		return false, fmt.Errorf("route: redispatch load capability %s: %w", task.CapabilityID, err)
 	}
-	nodeID, _, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, TraceID: task.TraceID}, capDef, nodes)
+	// 重派时用**任务自己存的 params**算粘性（不能空着，否则粘性形同虚设）
+	var taskParams map[string]any
+	if len(task.Params) > 0 {
+		_ = json.Unmarshal(task.Params, &taskParams)
+	}
+	nodeID, _, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, TraceID: task.TraceID}, capDef, taskParams, nodes)
 	if err != nil {
 		return false, err
 	}

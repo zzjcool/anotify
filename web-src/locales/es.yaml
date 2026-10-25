@@ -1208,7 +1208,7 @@ sources:
     expr_hint: 'Admite * / , - ; las macros como @daily no están soportadas. Ejemplo: 0 3 * * * significa diario a las 03:00.'
     hook_hint: 'Tras crearla se genera una URL dedicada; cualquier sistema externo puede hacer POST a ella. Quien tenga la URL puede enviar eventos: guárdala con cuidado.'
     targets: Capacidades de salida (selección múltiple)
-    targets_hint: El evento se despacha a todas las capacidades seleccionadas (fan-out). Se requiere al menos una.
+    targets_hint: El evento se despacha a todas las capacidades seleccionadas (fan-out). Al marcarlas, rellena los parámetros propios de cada capacidad — cada una mantiene su propio conjunto.
     enabled: Activada
     cancel: Cancelar
     save: Guardar
@@ -1216,6 +1216,9 @@ sources:
     expr_required: La expresión cron es obligatoria
     targets_required: Elige al menos una capacidad de salida
     no_caps: Aún no hay capacidades utilizables. Defínelas primero en la página «Capacidades».
+    no_params: Esta capacidad no toma parámetros
+    bad_json: El parámetro {k} no es JSON válido
+    bad_num: El parámetro {k} no es un número
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

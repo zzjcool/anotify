@@ -2093,9 +2093,26 @@ components:
           type: array
           minItems: 1
           description: |
-            出口能力 ID 列表（多选 = 扇出）。至少要一个：
-            没有出口的源产生的事件永远派不出去。
-          items: { type: string }
+            出口能力列表（多选 = 扇出）。至少要一个：没有出口的源产生的事件永远派不出去。
+
+            **每个出口带自己的参数**（`params`）——各能力的 `params_schema`
+            字段名与必填项都不同，一份公共参数必然对不上至少一边。
+            服务端在建源时就用该能力的 schema 校验，非法直接 400。
+
+            兼容两种写法：
+              `["cap_a", "cap_b"]`                              只要 ID
+              `[{"capabilityId":"cap_a","params":{"x":1}}]`      带参数
+          items:
+            oneOf:
+              - type: string
+                description: 出口能力 ID（不传参数）
+              - type: object
+                required: [capabilityId]
+                properties:
+                  capabilityId: { type: string }
+                  params:
+                    type: object
+                    description: 该能力的参数（按它的 params_schema 校验）
 
     Source:
       type: object
@@ -2109,8 +2126,13 @@ components:
         enabled: { type: boolean }
         targets:
           type: array
-          description: 出口能力 ID 列表
-          items: { type: string }
+          description: 出口能力列表（含各自已配置的参数）
+          items:
+            type: object
+            required: [capabilityId]
+            properties:
+              capabilityId: { type: string }
+              params: { type: object }
         targetCaps:
           type: array
           description: |
