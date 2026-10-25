@@ -261,6 +261,20 @@ anotify node run --token &lt;token-from-step-1&gt;</code></pre>
         right.appendChild(
           el("div", "text-[11px] text-zinc-500", t("nodes.last_seen", "心跳 ") + fmtTime(n.lastSeenAt)),
         );
+        // 跳到事件流，只看这个节点处理过的事件。
+        //
+        // 这里传的是节点 **id**（不是名字）：事件流那边会拿它去查
+        // GET /v1/tasks?nodeId=，再按 traceId 反查事件。
+        const evBtn = el(
+          "button",
+          "btn-ghost mt-2 mr-2 rounded px-2 py-1 text-[11px]",
+          t("nodes.view_events", "查看事件"),
+        );
+        evBtn.addEventListener("click", () => {
+          location.href = "events.html?node=" + encodeURIComponent(n.id);
+        });
+        right.appendChild(evBtn);
+
         if (n.status !== "draining") {
           const btn = el(
             "button",

@@ -1171,6 +1171,7 @@ nodes:
     desc: Node registration is an operator action (not self-service), so run it on the server. The token is returned only once.
     step1: Register the node on the server (declare which capabilities it can run)
     step2: Start it on the node machine with the token; it connects back over WS
+  view_events: View events
 sources:
   title: Sources
   subtitle: 'A source is where events enter: a timer fires, a webhook gets called, or you click run. It produces events and dispatches them to the capabilities you pick.'
@@ -1251,3 +1252,4 @@ sources:
     noedge: no downstream
     no_target: This source has no target capabilities.
     unconnected: (not connected)
+  view_events: View events
