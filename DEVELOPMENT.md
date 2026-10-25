@@ -94,19 +94,22 @@ make fe       # sitegen + hash（指纹化到 internal/server/dist）
 ### 本地开发
 
 ```bash
-make fe-preview  # 纯前端预览（mock 数据，不连后端），:7788
+make mock   # 纯前端预览（mock 数据，不连后端），:7788
 make dev    # 先跑 sitegen 生成 web/*.html，再用 web/ 本地目录起服务（改完即生效），:8080
 make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 ```
 
-#### 只想看前端？`make fe-preview`
+#### 只想看前端？`make mock`
 
 调 UI 时不需要把整条后端链路拉起来（server + tunnel + devseed + WS worker）。
 任何一步出问题，看到的都是"页面空着"，很难判断是前端坏了还是后端没起来。
 
 ```
-make fe-preview        # → http://localhost:7788
+make mock              # → http://localhost:7788
+make mock MOCK_PORT=7789   # 换端口
 ```
+
+`make fe-preview` 是它的同义词（旧写法仍可用）。
 
 它只做一件事：起一个静态服务器托管 `web/`，并给每个 HTML 注入 `web/mock.js`。
 于是**所有 `/v1/*` 请求都在浏览器里被拦下**，由 mock 直接应答，一个请求都不会
@@ -116,7 +119,7 @@ make fe-preview        # → http://localhost:7788
 - 刷新页面回到初始状态
 - 任意接口加 `?mockFail=1` 可以看错误态长什么样
 - `window.MockApi.state` 可以在控制台里改数据
-- 换端口：`make fe-preview-port PORT=7789`
+- 换端口：`make mock MOCK_PORT=7789`
 
 **为什么 mock 在浏览器侧而不是 Go 侧假装后端**：Go 侧等于维护第二套后端，
 会跟真后端漂移，看到的"效果"就不可信；而且 mock 里要做状态（新建/触发/任务
