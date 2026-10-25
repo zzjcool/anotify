@@ -1090,6 +1090,7 @@ caps:
   empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
   count: "{n} capacidades"
   no_outputs: Sin salidas (capacidad terminal)
+  any_event_type: Cualquier tipo de evento (origen)
   list:
     title: Capacidades
   form:

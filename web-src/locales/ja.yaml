@@ -1090,6 +1090,7 @@ caps:
   empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
   count: "{n} 個のケイパビリティ"
   no_outputs: 出口なし（終端ケイパビリティ）
+  any_event_type: 任意のイベント種別（起点）
   list:
     title: ケイパビリティ一覧
   form:

@@ -14,8 +14,14 @@
 #   1. 加载 .env.local（不覆盖已 export 的环境变量，便于临时覆盖）
 #   2. 确保 web/*.html 存在（否则 make sitegen）
 #   3. 后台起 cloudflared tunnel run anotify（固定 dev.openaaas.org → :8080）
-#   4. 前台起 go run ./cmd/server
-#   5. 捕获 SIGINT/SIGTERM，退出时一并停掉 tunnel 和 server
+#   4. 播种开发账号并生成自动登录页（web/__dev_login.html，退出时删除）
+#   5. 前台起 go run ./cmd/server
+#   6. 捕获 SIGINT/SIGTERM，退出时一并停掉 tunnel 和 server
+#
+# 可选环境变量：
+#   NO_TUNNEL=1      只起 server，不起 tunnel
+#   NO_AUTOLOGIN=1   不播种开发账号、不生成自动登录页（只用 passkey）
+#   ANOTIFY_DEV_USER 开发账号用户名（默认 demo）
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -68,15 +74,44 @@ fi
 # ---------- 4. 起 cloudflared tunnel ----------
 TUNNEL_PID=""
 SERVER_PID=""
+TAIL_PID=""
+
+# 自动登录页（开发专用，见下方 ---------- 5 ----------）
+# 放在 web/ 下是因为 ANOTIFY_STATIC=./web 时静态服务直接读这个目录；
+# .gitignore 的 `web/*.html` 已覆盖它，不会入库。
+AUTOLOGIN_PAGE="web/__dev_login.html"
+AUTOLOGIN_URL=""
+TUNNEL_URL="https://dev.openaaas.org"
+
 cleanup() {
 	echo ""
 	echo "▶ 停止服务…"
 	[ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null
-	[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+	[ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+
+	# 为什么不能只 kill $SERVER_PID：
+	# `go run ./cmd/server` 自己是个编译器进程，真正的 server 是它 fork 出来的
+	# 子进程。杀掉 go run 后子进程会变孤儿，**继续活着占着端口**，
+	# 下次 make dev 就报「端口已被占用」。
+	#
+	# 所以要杀整个进程组：起 server 时用 setsid 让它自成一组，
+	# 退出时对组发 TERM（负 PID），组内所有进程一并收掉。
+	if [ -n "$SERVER_PID" ]; then
+		kill -TERM -- "-$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null
+		sleep 1
+		kill -KILL -- "-$SERVER_PID" 2>/dev/null
+		pkill -P "$SERVER_PID" 2>/dev/null
+		kill "$SERVER_PID" 2>/dev/null
+	fi
+
+	# 页面里内嵌着有效会话，退出时必须删掉，否则它一直能被本地静态服务读到
+	rm -f "$AUTOLOGIN_PAGE"
 	wait 2>/dev/null
 	echo "✅ 已停止"
 }
-trap cleanup EXIT INT TERM
+# 只 trap EXIT 一个：trap "..." EXIT INT TERM 会在 TERM 后又被 EXIT 触发一次，
+# 导致 cleanup 跑两遍（日志里两行「停止服务」）。EXIT 在正常退出和被信号杀死时都会跑。
+trap cleanup EXIT
 
 if [ "${NO_TUNNEL:-0}" = "1" ]; then
 	echo "▶ NO_TUNNEL=1，跳过 cloudflared tunnel"
@@ -99,14 +134,51 @@ else
 	fi
 fi
 
-# ---------- 5. 起 server（前台）----------
+# ---------- 5. 开发账号 + 自动登录页 ----------
+#
+# 为什么需要这个：WebAuthn 的 RP_ID 必须与访问域名**严格一致**。换了域名
+# （trycloudflare 随机域名、局域网 IP、手机访问）就注册不了 passkey，
+# 于是每次都要手工造会话、手工往浏览器里粘 cookie。
+#
+# 这里用 devseed 直接落一个会话，再生成一个「写 cookie 并跳转」的页面，
+# 打开就能进工作台 —— passkey 那条路依然完整可用，这只是多一条便道。
+if [ "${NO_AUTOLOGIN:-0}" = "1" ]; then
+	echo "▶ NO_AUTOLOGIN=1，跳过开发账号播种"
+else
+	DEV_USER="${ANOTIFY_DEV_USER:-demo}"
+	echo "▶ 播种开发账号 ${DEV_USER}…"
+	if go run ./cmd/devseed \
+		-db "${ANOTIFY_DB:-./anotify.db}" \
+		-username "$DEV_USER" \
+		-admin \
+		-autologin-file "$AUTOLOGIN_PAGE" >/tmp/anotify-devseed.log 2>&1; then
+		AUTOLOGIN_URL="http://localhost:${PORT_NUM}/$(basename "$AUTOLOGIN_PAGE")"
+		echo "  ✅ 自动登录页：$AUTOLOGIN_URL"
+		if [ "${NO_TUNNEL:-0}" != "1" ] && command -v cloudflared >/dev/null 2>&1; then
+			echo "     公网版本：${TUNNEL_URL}/$(basename "$AUTOLOGIN_PAGE")"
+		fi
+	else
+		echo "  ⚠️  devseed 失败（passkey 登录仍可正常用），日志：/tmp/anotify-devseed.log"
+		tail -3 /tmp/anotify-devseed.log 2>/dev/null | sed 's/^/     /'
+	fi
+fi
+
+# ---------- 6. 起 server（前台）----------
 echo ""
 echo "▶ 启动 Anotify server（ANOTIFY_ADDR=$ANOTIFY_ADDR, RP_ID=${ANOTIFY_RP_ID:-localhost}）…"
 echo "  本地：http://localhost:${PORT_NUM}"
-echo "  公网：https://dev.openaaas.org  （需 tunnel）"
+echo "  公网：${TUNNEL_URL}  （需 tunnel）"
+[ -n "$AUTOLOGIN_URL" ] && echo "  免 passkey 登录：$AUTOLOGIN_URL"
 echo "  日志：/tmp/anotify-dev.log"
 echo "  Ctrl-C 停止 server + tunnel"
 echo ""
-go run ./cmd/server 2>&1 | tee /tmp/anotify-dev.log &
+# 用 setsid 让 server 自成进程组，退出时能整组收掉（见 cleanup 的说明）。
+# 不用 `| tee`：管道下 $! 拿到的是 tee 的 PID，杀它不会停 server。
+setsid go run ./cmd/server >/tmp/anotify-dev.log 2>&1 &
 SERVER_PID=$!
+
+# 顺手把日志回显到终端，保留原来 `| tee` 的观感
+tail -n +1 -f /tmp/anotify-dev.log 2>/dev/null &
+TAIL_PID=$!
+
 wait "$SERVER_PID"

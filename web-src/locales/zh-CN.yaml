@@ -1091,6 +1091,7 @@ caps:
   empty: 还没有能力。定义一个，节点才能声明它。
   count: "{n} 个能力"
   no_outputs: 无出口（终端能力）
+  any_event_type: 任意事件类型（起点）
   list:
     title: 能力列表
   form:

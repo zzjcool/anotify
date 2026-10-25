@@ -98,6 +98,36 @@ make dev    # 先跑 sitegen 生成 web/*.html，再用 web/ 本地目录起服�
 make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 ```
 
+#### 免 passkey 登录（换域名时很省事）
+
+`make dev` 会顺手播种一个开发账号，并在 `web/__dev_login.html` 生成一个
+**自动登录页**：
+
+```
+▶ 播种开发账号 demo…
+  ✅ 自动登录页：http://localhost:8080/__dev_login.html
+     公网版本：https://dev.openaaas.org/__dev_login.html
+```
+
+打开它 → 写入会话 cookie → 跳工作台。为什么需要这个：**WebAuthn 的 RP_ID
+必须与访问域名严格一致**，换成 trycloudflare 随机域名 / 局域网 IP / 手机访问时
+就注册不了 passkey，否则每次都要手工造会话、手工往浏览器粘 cookie。
+
+可选环境变量：
+
+| 变量 | 作用 |
+|---|---|
+| `NO_AUTOLOGIN=1` | 不播种开发账号、不生成登录页（只用 passkey） |
+| `ANOTIFY_DEV_USER=alice` | 开发账号用户名（默认 `demo`） |
+| `NO_TUNNEL=1` | 只起 server，不起 cloudflared |
+
+两点注意：
+
+- 页面里**内嵌着有效会话**，所以 `dev.sh` 退出时会删掉它；文件权限 0600，
+  且 `web/*.html` 已被 `.gitignore` 覆盖，不会入库
+- 它写的是普通 cookie（JS 无法设 `HttpOnly`），比正常登录的会话更容易被页面
+  脚本读到。**仅限开发**，别把这个机制带到生产
+
 ### 指纹脚本（content-hash + CDN 缓存）
 
 `scripts/hash.mjs` 在构建期把 `web/` → `internal/server/dist/`：

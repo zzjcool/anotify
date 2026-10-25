@@ -12,6 +12,7 @@ node_modules/
 
 # === 构建产物 ===
 anotify
+devseed
 dist/
 web/dist/
 internal/server/dist/

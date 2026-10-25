@@ -1090,6 +1090,7 @@ caps:
   empty: No capabilities yet. Define one so nodes can declare it.
   count: "{n} capabilities"
   no_outputs: No outputs (terminal capability)
+  any_event_type: Any event type (origin)
   list:
     title: Capabilities
   form:

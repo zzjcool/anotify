@@ -289,6 +289,12 @@
           const outputs = c.outputs || [];
           if (outputs.length) {
             for (const o of outputs) outs.appendChild(el("span", "out-chip", o));
+          } else if (c.kind === "origin") {
+            // 起点没有预置出口是**正常**的：它的出口就是任意事件类型。
+            // 之前这里统一显示「无出口（终端能力）」，把起点说成了终端，是错的。
+            outs.appendChild(
+              el("span", "text-[11px] text-zinc-600", t("caps.any_event_type", "任意事件类型（起点）")),
+            );
           } else {
             outs.appendChild(
               el("span", "text-[11px] text-zinc-600", t("caps.no_outputs", "无出口（终端能力）")),

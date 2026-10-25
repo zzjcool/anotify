@@ -6,6 +6,15 @@
 //	go run ./cmd/devseed -db ./anotify.db -username demo
 //
 // 输出：SEND_KEY / RECV_KEY / SESSION（可直接作为 Cookie 注入做 Web Push E2E）
+//
+// 加 -autologin-file 时额外写一个自动登录页（见 scripts/dev.sh）：
+//
+//	go run ./cmd/devseed -db ./anotify.db -username demo \
+//	  -autologin-file ./web/__dev_login.html
+//
+// 页面作用是「把 session 变成 cookie 并跳首页」——WebAuthn 的 RP_ID 必须
+// 与域名严格一致，换域名（trycloudflare 随机域名等）就注册不了 passkey，
+// 有个免 passkey 的入口能省掉一堆手工操作。
 package main
 
 import (
@@ -13,6 +22,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/store"
@@ -22,6 +34,7 @@ func main() {
 	dbPath := flag.String("db", "./anotify.db", "SQLite 路径")
 	username := flag.String("username", "demo", "用户名")
 	admin := flag.Bool("admin", false, "设为超管角色")
+	autoLoginFile := flag.String("autologin-file", "", "写一个自动登录页到指定路径（开发用；空=不写）")
 	flag.Parse()
 
 	db, err := store.Open(*dbPath)
@@ -82,4 +95,93 @@ func main() {
 	if u, err := db.GetUserByID(uid); err == nil {
 		fmt.Printf("ROLE=%s\n", u.Role)
 	}
+
+	if *autoLoginFile != "" {
+		if err := writeAutoLoginPage(*autoLoginFile, sess.ID, *username); err != nil {
+			log.Fatalf("写自动登录页失败: %v", err)
+		}
+		log.Printf("自动登录页已写入: %s", *autoLoginFile)
+	}
+}
+
+// autoLoginPage 是自动登录页的模板。
+//
+// 设计要点：
+//   - session **内嵌在页面里**，不经过 URL/日志/Referer——它是个长期凭据，
+//     放到 query 上会漏进 access log 和 Referer 头。
+//   - 用 location.replace 而不是 href：不在浏览器历史里留一条能回退的登录页。
+//   - 页面只在开发模式存在（dev.sh 生成、.gitignore 忽略、退出时删除）。
+const autoLoginPage = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>开发登录 · Anotify</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center;
+         background:#0a0a0b; color:#e4e4e7;
+         font:14px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .card { max-width:26rem; padding:2rem; border-radius:1rem;
+          background:#131316; box-shadow:0 0 0 1px rgba(255,255,255,.06); }
+  h1 { margin:0 0 .5rem; font-size:1.05rem; font-weight:600; color:#fafafa; }
+  p { margin:.5rem 0; color:#a1a1aa; }
+  code { color:#a5b4fc; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .ok { color:#4ade80; }
+  .err { color:#f87171; }
+  .bar { height:3px; border-radius:2px; background:#27272a; overflow:hidden; margin-top:1rem; }
+  .bar > i { display:block; height:100%; width:0; background:#6366f1; transition:width .3s; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>开发模式自动登录</h1>
+  <p>用户 <code>__USERNAME__</code> · 即将跳转工作台…</p>
+  <p id="status">正在写入会话…</p>
+  <div class="bar"><i id="bar"></i></div>
+  <noscript><p class="err">需要启用 JavaScript。</p></noscript>
+</div>
+<script>
+(function () {
+  "use strict";
+  var SESSION = "__SESSION__";
+  var bar = document.getElementById("bar");
+  var status = document.getElementById("status");
+
+  // 跟 dev.sh 保持同一个跳转目标（默认总览）
+  var next = new URLSearchParams(location.search).get("next") || "/index.html";
+
+  try {
+    // httpOnly 拿不到，但这里只是开发页；Secure 由 https 决定，
+    // http://localhost 下写 Secure cookie 浏览器会静默丢弃，所以按协议判断。
+    var attrs = "; path=/; samesite=lax";
+    if (location.protocol === "https:") attrs += "; secure";
+    document.cookie = "anotify_session=" + encodeURIComponent(SESSION) + attrs;
+    bar.style.width = "100%";
+    status.textContent = "会话已写入，跳转中…";
+    status.className = "ok";
+    setTimeout(function () { location.replace(next); }, 250);
+  } catch (e) {
+    status.textContent = "写入失败：" + e.message;
+    status.className = "err";
+  }
+})();
+</script>
+</body>
+</html>
+`
+
+// writeAutoLoginPage 把自动登录页写到指定路径（开发辅助）。
+func writeAutoLoginPage(path, session, username string) error {
+	html := strings.NewReplacer(
+		"__SESSION__", session,
+		"__USERNAME__", username,
+	).Replace(autoLoginPage)
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	// 0600：里面含会话凭据，别让同机其他用户读到
+	return os.WriteFile(path, []byte(html), 0o600)
 }
