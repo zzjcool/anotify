@@ -101,6 +101,17 @@ case "$LAN_IP" in
 	*) LAN_IP="" ;;
 esac
 
+# 防火墙会拦下外部访问，而**本机 curl 永远能通**（回环不进 INPUT 链）。
+# 所以这里单独查 ufw 是否有本端口的放行规则，别等用户拿手机试半天。
+LAN_BLOCKED_BY=""
+if [ -n "$LAN_IP" ] && [ -r /etc/ufw/ufw.conf ] && grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
+	if ! grep -q -- "--dport ${PORT_NUM}" /etc/ufw/user.rules 2>/dev/null; then
+		if grep -qi '^DEFAULT_INPUT_POLICY="DROP"' /etc/default/ufw 2>/dev/null; then
+			LAN_BLOCKED_BY="ufw"
+		fi
+	fi
+fi
+
 # ---------- 4. 起 cloudflared tunnel ----------
 TUNNEL_PID=""
 SERVER_PID=""
@@ -240,7 +251,13 @@ fi
 echo ""
 echo "▶ 启动 Anotify server（ANOTIFY_ADDR=$ANOTIFY_ADDR, RP_ID=${ANOTIFY_RP_ID:-localhost}）…"
 echo "  本地：http://localhost:${PORT_NUM}"
-[ -n "$LAN_IP" ] && echo "  内网：http://${LAN_IP}:${PORT_NUM}  （手机/同网段机器）"
+if [ -n "$LAN_IP" ]; then
+	if [ -n "$LAN_BLOCKED_BY" ]; then
+		echo "  内网：http://${LAN_IP}:${PORT_NUM}  ⚠️ 被 ${LAN_BLOCKED_BY} 拦（见下方提示）"
+	else
+		echo "  内网：http://${LAN_IP}:${PORT_NUM}  （手机/同网段机器）"
+	fi
+fi
 [ -n "$TUNNEL_URL" ] && echo "  公网：${TUNNEL_URL}  （启动后自动验证）"
 [ -n "$AUTOLOGIN_URL" ] && echo "  免 passkey 登录：$AUTOLOGIN_URL"
 echo "  日志：/tmp/anotify-dev.log"
@@ -329,7 +346,19 @@ fi
 # （早打印等于承诺一个还没验证的地址）。
 if [ -n "$LAN_IP" ]; then
 	lan_login="http://${LAN_IP}:${PORT_NUM}/$(basename "$AUTOLOGIN_PAGE")"
-	if curl -fsS -o /dev/null --max-time 3 "http://${LAN_IP}:${PORT_NUM}/" 2>/dev/null; then
+	if [ -n "$LAN_BLOCKED_BY" ]; then
+		echo ""
+		echo "▶ 内网地址被 ${LAN_BLOCKED_BY} 拦住了"
+		echo "   这台机器开了 ufw（默认策略 DROP），但没有放行 ${PORT_NUM} 端口。"
+		echo "   本机 curl 能通只是走了回环，手机/别的机器连不上，符合预期。"
+		echo ""
+		echo "   放行（需要 sudo，执行一次即可，一直有效）："
+		echo "     sudo ufw allow ${PORT_NUM}/tcp"
+		echo "   用完想收回："
+		echo "     sudo ufw delete allow ${PORT_NUM}/tcp"
+		echo ""
+		echo "   不想动防火墙的话，用 trycloudflare 公网地址（走 https，不受本机 INPUT 策略影响）。"
+	elif curl -fsS -o /dev/null --max-time 3 "http://${LAN_IP}:${PORT_NUM}/" 2>/dev/null; then
 		echo ""
 		echo "▶ 内网访问（手机/同网段机器，同一 WiFi 下直接打开）："
 		echo "   http://${LAN_IP}:${PORT_NUM}"
