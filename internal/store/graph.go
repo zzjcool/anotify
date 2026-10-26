@@ -29,7 +29,20 @@ func isOriginCapability(c *CapabilityVersion) bool {
 // 一行 = 一条边；同一 (FromCapability, FromPort) 可有多行 → 扇出（不变量 I7：
 // 两端都是 capability_id，图里没有机器）。
 type Edge struct {
-	OrgID          string `json:"orgId"`
+	OrgID string `json:"orgId"`
+
+	// FromIsSource 决定 FromCapability 字段怎么解释（字段名为了兼容而保留）：
+	//
+	//   false（默认）  FromCapability = 上游能力的 capability_versions.id
+	//                  fromPort 必须 ∈ 该能力的 outputs（不变量 I2）
+	//
+	//   true            FromCapability = **来源名**（"github"/"jira"/…）
+	//                  fromPort = 事件类型，任意值（外部系统决定）
+	//
+	// 第二种就是「入口边」：机器入口 POST /v1/events?source=github 靠它找下游。
+	// 它原先靠一个叫 github@1 的空壳能力当锚点，现在不需要了 —— 那种能力
+	// 不执行代码、不产生任务、也不可配置，却会出现在能力列表上。
+	FromIsSource   bool   `json:"fromIsSource"`
 	FromCapability string `json:"fromCapability"`
 	FromPort       string `json:"fromPort"`
 	ToCapability   string `json:"toCapability"`
@@ -62,49 +75,67 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	if e.OrgID == "" || e.FromCapability == "" || e.FromPort == "" || e.ToCapability == "" {
 		return fmt.Errorf("%w: org/from/port/to all required", ErrEdgeRejected)
 	}
-	from, err := d.GetCapabilityByID(ctx, e.OrgID, e.FromCapability)
-	if err != nil {
-		return fmt.Errorf("%w: from capability %q: %v", ErrEdgeRejected, e.FromCapability, err)
-	}
 	to, err := d.GetCapabilityByID(ctx, e.OrgID, e.ToCapability)
 	if err != nil {
 		return fmt.Errorf("%w: to capability %q: %v", ErrEdgeRejected, e.ToCapability, err)
 	}
-	// 双保险：GetCapabilityByID 已经带了 org 过滤，这里再断言一次
-	// （防止将来有人改成不带 org 的查询而不自知）
-	if from.OrgID != e.OrgID || to.OrgID != e.OrgID {
+	if to.OrgID != e.OrgID {
 		return fmt.Errorf("%w: cross-org edge not allowed", ErrEdgeRejected)
 	}
-	// 出口封闭集合（不变量 I2）：from_port 必须属于该能力的 outputs。
-	//
-	// 唯一例外是**内置起点**（github/cron/http/manual）：它的出口就是
-	// "任意事件类型"，不可能预先枚举。所以对起点只要求非空。
-	//
-	// 这没有放松 I2 的本意——I2 要防的是「凭空发明下游口子」，
-	// 而起点的事件类型本来就由外部系统决定（GitHub 发什么 type 就是什么）。
-	if !isOriginCapability(from) && !from.HasOutput(e.FromPort) {
-		return fmt.Errorf("%w: port %q not in %s@%d outputs %v",
-			ErrEdgeRejected, e.FromPort, from.Name, from.Version, from.Outputs)
+
+	if e.FromIsSource {
+		// 入口边：左端是来源名，出口是事件类型。
+		//
+		// **不校验出口名**（契约 §5.2）：事件类型由外部系统决定
+		// （GitHub 发什么 type 就是什么），不可能预先枚举。
+		// 这没有放松 I2 的本意 —— I2 防的是「凭空发明下游口子」，
+		// 而来源没有 outputs 这个概念，无从封闭。
+		//
+		// 也要校验来源名不比能力名更容易撞车：来源名非空即可。
+	} else {
+		from, err := d.GetCapabilityByID(ctx, e.OrgID, e.FromCapability)
+		if err != nil {
+			return fmt.Errorf("%w: from capability %q: %v", ErrEdgeRejected, e.FromCapability, err)
+		}
+		// 双保险：GetCapabilityByID 已经带了 org 过滤，这里再断言一次
+		// （防止将来有人改成不带 org 的查询而不自知）
+		if from.OrgID != e.OrgID {
+			return fmt.Errorf("%w: cross-org edge not allowed", ErrEdgeRejected)
+		}
+		// 出口封闭集合（不变量 I2）：from_port 必须属于该能力的 outputs。
+		if !from.HasOutput(e.FromPort) {
+			return fmt.Errorf("%w: port %q not in %s@%d outputs %v",
+				ErrEdgeRejected, e.FromPort, from.Name, from.Version, from.Outputs)
+		}
 	}
+
 	if e.CreatedAt == 0 {
 		e.CreatedAt = Now()
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO edges (org_id, from_capability, from_port, to_capability, created_at)
-		 VALUES (?,?,?,?,?)
-		 ON CONFLICT(org_id, from_capability, from_port, to_capability) DO NOTHING`,
-		e.OrgID, e.FromCapability, e.FromPort, e.ToCapability, e.CreatedAt); err != nil {
+		`INSERT INTO edges (org_id, from_is_source, from_key, from_port, to_capability, created_at)
+		 VALUES (?,?,?,?,?,?)
+		 ON CONFLICT(org_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
+		e.OrgID, boolToInt(e.FromIsSource), e.FromCapability, e.FromPort, e.ToCapability, e.CreatedAt); err != nil {
 		return fmt.Errorf("insert edge: %w", err)
 	}
 	return nil
 }
 
+// boolToInt 把 bool 存成 SQLite 的 0/1（没有原生 bool 类型）。
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // DeleteEdge 删除一条边。边不存在返回 ErrNotFound。
-func (d *DB) DeleteEdge(ctx context.Context, orgID, fromCapability, fromPort, toCapability string) error {
+func (d *DB) DeleteEdge(ctx context.Context, orgID string, fromIsSource bool, fromKey, fromPort, toCapability string) error {
 	res, err := d.ExecContext(ctx,
 		`DELETE FROM edges
-		 WHERE org_id = ? AND from_capability = ? AND from_port = ? AND to_capability = ?`,
-		orgID, fromCapability, fromPort, toCapability)
+		 WHERE org_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ? AND to_capability = ?`,
+		orgID, boolToInt(fromIsSource), fromKey, fromPort, toCapability)
 	if err != nil {
 		return fmt.Errorf("delete edge: %w", err)
 	}
@@ -119,14 +150,15 @@ func (d *DB) DeleteEdge(ctx context.Context, orgID, fromCapability, fromPort, to
 }
 
 // ListEdges 列出组织的边（fromCapability 非空时按它过滤）；空列表返回 []。
-func (d *DB) ListEdges(ctx context.Context, orgID, fromCapability string) ([]*Edge, error) {
-	q := `SELECT org_id, from_capability, from_port, to_capability, created_at FROM edges WHERE org_id = ?`
+func (d *DB) ListEdges(ctx context.Context, orgID, fromKey string) ([]*Edge, error) {
+	q := `SELECT org_id, from_is_source, from_key, from_port, to_capability, created_at
+	        FROM edges WHERE org_id = ?`
 	args := []any{orgID}
-	if fromCapability != "" {
-		q += ` AND from_capability = ?`
-		args = append(args, fromCapability)
+	if fromKey != "" {
+		q += ` AND from_key = ?`
+		args = append(args, fromKey)
 	}
-	q += ` ORDER BY from_capability, from_port, to_capability`
+	q += ` ORDER BY from_is_source, from_key, from_port, to_capability`
 	rows, err := d.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list edges: %w", err)
@@ -135,23 +167,27 @@ func (d *DB) ListEdges(ctx context.Context, orgID, fromCapability string) ([]*Ed
 	out := []*Edge{}
 	for rows.Next() {
 		var e Edge
-		if err := rows.Scan(&e.OrgID, &e.FromCapability, &e.FromPort, &e.ToCapability, &e.CreatedAt); err != nil {
+		var isSrc int
+		if err := rows.Scan(&e.OrgID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan edge: %w", err)
 		}
+		e.FromIsSource = isSrc == 1
 		out = append(out, &e)
 	}
 	return out, rows.Err()
 }
 
 // EdgesFrom 是派发第 ① 步的**唯一**查表入口（契约 §4）：
-// 返回 (orgID, fromCapability, fromPort) 的全部下游 capability_id。
+// 返回 (orgID, fromKey, fromPort) 的全部下游 capability_id。
+//
+// fromIsSource 决定 fromKey 是能力 id 还是来源名（见 Edge.FromIsSource）。
 //
 // 除了 route 包，其他包不得再写 `FROM edges`（见 #56 的验收：全仓只允许 1 处）。
-func (d *DB) EdgesFrom(ctx context.Context, orgID, fromCapability, fromPort string) ([]string, error) {
+func (d *DB) EdgesFrom(ctx context.Context, orgID string, fromIsSource bool, fromKey, fromPort string) ([]string, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT to_capability FROM edges
-		 WHERE org_id = ? AND from_capability = ? AND from_port = ?
-		 ORDER BY to_capability`, orgID, fromCapability, fromPort)
+		 WHERE org_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ?
+		 ORDER BY to_capability`, orgID, boolToInt(fromIsSource), fromKey, fromPort)
 	if err != nil {
 		return nil, fmt.Errorf("lookup edges: %w", err)
 	}

@@ -184,23 +184,22 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 		return result, nil
 	}
 
-	// ④ 找 source 对应的 origin 能力（source@latest）
-	origin, err := s.findOrigin(ctx, req.OrgID, req.Source)
-	if err != nil {
-		return result, err
-	}
-	result.OriginCapability = origin
-
-	// ⑤ 首轮派发：出口名就是事件 type
+	// ④ 首轮派发：入口边的左端就是**来源名**，出口名就是事件 type。
+	//
+	// 这里原来要先 findOrigin 找一个叫 github@1 的"起点能力"当锚点。
+	// 那种能力不执行代码、不产生任务、也没地方存配置（cron 表达式之类），
+	// 却必须存在、而且会出现在能力列表上 —— 源（sources）已经是它的
+	// 完整替代，所以入口边直接以来源名为左端（契约 §2.4）。
 	out, err := s.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:   req.OrgID,
-		TraceID: traceID,
-		FromCap: origin.ID,
-		Out:     req.Type,
-		Params:  extractParams(payload),
-		// 起点没有父任务（parent_task_id 留空）
-		// path 从 origin 能力开始，防止「A→B→A」这种环
-		Path: []string{origin.ID},
+		OrgID:        req.OrgID,
+		TraceID:      traceID,
+		FromCap:      req.Source,
+		FromIsSource: true,
+		Out:          req.Type,
+		Params:       extractParams(payload),
+		// 入口没有父任务（parent_task_id 留空）
+		// path 为空：来源不是能力，不参与「A→B→A」环检测
+		Path: nil,
 	})
 	if err != nil {
 		// 事件已入库，派发失败不该让发送方重投（重投也还是同一条事件）。

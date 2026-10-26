@@ -47,6 +47,19 @@ async function addEdge(from, port, to) {
 	});
 }
 
+// addEntryEdge 建入口边：左端是**来源名**（#110），不是能力 id。
+async function addEntryEdge(source, port, to) {
+	return H.req(server.base, "/v1/edges", {
+		session,
+		body: {
+			fromIsSource: true,
+			fromCapability: source,
+			fromPort: port,
+			toCapability: to.id,
+		},
+	});
+}
+
 async function postEvent(body) {
 	return H.req(server.base, "/v1/events", { key: sendKey, body });
 }
@@ -105,7 +118,9 @@ async function main() {
 	const origin = (await defineCapability("c.origin", ["go"])).json.capability;
 	const work = (await defineCapability("c.work", ["done"])).json.capability;
 	const fin = (await defineCapability("c.fin", [])).json.capability;
-	await addEdge(origin, "go", work);
+	// #110：事件入口用**入口边**（左端是来源名），不再需要"起点能力"。
+	// c.origin 这个能力仍保留，专门给下面 A5「出口封闭」的负例用。
+	await addEntryEdge("c.origin", "go", work);
 	await addEdge(work, "done", fin);
 
 	// ================= A5 出口封闭 =================
@@ -307,13 +322,31 @@ async function main() {
 	{
 		const a = (await defineCapability("c.cycle.a", ["go"])).json.capability;
 		const b = (await defineCapability("c.cycle.b", ["back"])).json.capability;
+		// #110：环检测靠 task.path（能力 id 链）。入口边不贡献 path
+		// （来源不是能力），所以第一跳必须先进 a，环才成立：
+		//   来源 c.cycle.src → a --go--> b --back--> a（a 已在 path → 剪枝）
+		await addEntryEdge("c.cycle.src", "start", a);
 		await addEdge(a, "go", b);
 		await addEdge(b, "back", a);
 
 		const cycNode = await bringUpNode(server.base, server.dbPath, orgId, "contract-cycle", [a, b], 2);
-		const ev = await postEvent({ source: "c.cycle.a", type: "go", payload: {} });
-		const tB = ev.json?.tasks?.[0]?.id;
-		A(7, "环：第一跳建 1 个任务（b）", ev.json?.tasks?.length === 1);
+		const ev = await postEvent({ source: "c.cycle.src", type: "start", payload: {} });
+		// 第一跳进 a；完成 a 回报 go → b；完成 b 回报 back → a 已在 path → 剪枝
+		const tA = ev.json?.tasks?.[0]?.id;
+		A(7, "环：第一跳建 1 个任务（a）", ev.json?.tasks?.length === 1);
+		A(7, "环：第一跳任务是 c.cycle.a", ev.json?.tasks?.[0]?.capability, "c.cycle.a");
+
+		await new Promise((r) => setTimeout(r, 400));
+		cycNode.conn.send({ type: "ack", task_id: tA });
+		await new Promise((r) => setTimeout(r, 200));
+		cycNode.conn.send({ type: "result", task_id: tA, status: "succeeded", out: "go" });
+		await new Promise((r) => setTimeout(r, 600));
+
+		// 第二跳：b 应被建出来
+		const tB = sqlQuery(
+			`SELECT id FROM tasks WHERE parent_task_id = ? AND capability = 'c.cycle.b'`,
+			tA,
+		)[0]?.id;
 
 		// 完成 b，回报 back → 目标是 a，但 a 已在 path 里 → 应被剪枝
 		await new Promise((r) => setTimeout(r, 400));
@@ -354,8 +387,8 @@ async function main() {
 		}
 
 		// 建一条边：某 origin 的出口 → notify.phone
-		const nOrigin = (await defineCapability("notice.src", ["fire"])).json.capability;
-		const nEdge = await addEdge(nOrigin, "fire", phone);
+		// #110：来源用入口边，不再需要"起点能力"
+		const nEdge = await addEntryEdge("notice.src", "fire", phone);
 		A(5, "可以给内置能力建入边", nEdge.status === 200, String(nEdge.status));
 
 		// 触发：payload 必须满足 notify.phone 的 params_schema（required: to + title），
@@ -472,10 +505,13 @@ async function main() {
 		const caps = capsResp.json?.capabilities || [];
 		const byName = (n) => caps.find((c) => c.name === n);
 
-		const github = byName("github");
-		A(10, "内置 github 起点已播种", !!github, JSON.stringify(caps.map((c) => c.name)));
-		A(10, "github source=builtin", github?.source === "builtin", String(github?.source));
-		A(10, "github kind=origin", github?.kind === "origin", String(github?.kind));
+		// #110：起点不再作为能力存在 —— 能力列表里只该有真能干活的东西
+		A(
+			10,
+			"起点不再是能力（#110）",
+			!byName("github") && !byName("cron"),
+			JSON.stringify(caps.map((c) => c.name)),
+		);
 
 		// notify.phone 是中枢终端能力，绝不能被当成起点
 		const phone = byName("notify.phone");
@@ -486,7 +522,7 @@ async function main() {
 			String(phone?.kind),
 		);
 
-		// 起点出口可填任意事件类型
+		// 入口边的出口可填任意事件类型（外部系统决定，不可能枚举）
 		const sinkResp = await H.req(server.base, "/v1/capabilities", {
 			session,
 			method: "POST",
@@ -497,14 +533,15 @@ async function main() {
 			session,
 			method: "POST",
 			body: {
-				fromCapability: github?.id,
+				fromIsSource: true,
+				fromCapability: "github",
 				fromPort: "never_declared_before.opened",
 				toCapability: sinkId,
 			},
 		});
-		A(10, "内置起点出口可任意（未声明过也能建边）", wildEdge.status === 200, `${wildEdge.status} ${wildEdge.text?.slice(0, 80)}`);
+		A(10, "入口边出口可任意（未声明过也能建边）", wildEdge.status === 200, `${wildEdge.status} ${wildEdge.text?.slice(0, 80)}`);
 
-		// 自定义能力的出口仍严格（通配只给内置起点，没有放松不变量 I2）
+		// 自定义能力的出口仍严格（通配只给入口边，没有放松不变量 I2）
 		const customResp = await H.req(server.base, "/v1/capabilities", {
 			session,
 			method: "POST",
@@ -521,26 +558,27 @@ async function main() {
 		});
 		A(10, "自定义能力出口仍封闭（I2 未放松）", badEdge.status === 400, String(badEdge.status));
 
-		// 未知 source → 422（不是静默 200），且 available 只列真正的起点
+		// 未知 source → 200 + no_edge（#110 之后的新语义：
+		// 先让 webhook 打着、后配边是正常流程，事件不该因为还没配边而丢）
 		const unknown = await H.req(server.base, "/v1/events", {
 			key: sendKey,
 			body: { source: "a10.no.such.source", type: "x", payload: {} },
 		});
-		A(10, "未知起点 → 422（非静默 200）", unknown.status === 422, String(unknown.status));
-		const avail = unknown.json?.available || [];
-		A(10, "422 带 available 列表", Array.isArray(avail) && avail.length > 0, JSON.stringify(avail));
+		A(10, "未知 source → 200（事件照收）", unknown.status === 200, String(unknown.status));
 		A(
 			10,
-			"available 含内置起点 github",
-			avail.includes("github"),
-			JSON.stringify(avail),
+			"未知 source 记 no_edge（可回答为什么没触发）",
+			(unknown.json?.pruned || [])[0]?.reason === "no_edge",
+			JSON.stringify(unknown.json?.pruned),
 		);
 		A(
 			10,
-			"available 不含中枢能力 notify.phone",
-			!avail.includes("notify.phone"),
-			JSON.stringify(avail),
+			"未知 source 无害（事件已入库）",
+			typeof unknown.json?.eventId === "string" && unknown.json.eventId.length > 0,
+			JSON.stringify(unknown.json?.eventId),
 		);
+		// available 列表已随 422 一起移除（#110）：来源不再需要预先登记，
+		// 所以没有"可用起点"这个概念了。
 	}
 
 	// ================= A3 的运行时侧：未定义能力不能被声明 =================

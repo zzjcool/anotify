@@ -391,46 +391,37 @@ func DeriveKind(outputs []string, declaredByAnyNode bool) Kind {
 所以全仓推导 kind 走 **`route.KindForCapability`**，不直接调 `DeriveKind`。
 特例散落多处必然漂移——`notify.phone` 曾在能力页显示成 `origin`，误导用户把它当事件来源。
 
-### 5.2 内置起点能力的出口是「任意事件类型」
+### 5.2 入口边的出口是「任意事件类型」
 
-`github`/`cron`/`http`/`manual` 是随项目发布的内置起点（`source = builtin`，`Origin = true`）。
-它们的 `outputs` 为空（不是 `["*"]`），因为：
+**（#110 后已无「内置起点能力」这个概念。** 本节保留编号，内容描述的是现在
+的入口边；原「内置起点能力」的那 4 行已被 sources 取代，见 §5.4。）
 
-- `EdgesFrom` 是精确匹配（`WHERE from_port = ?`），通配符在 SQL 里配不上具体事件类型；
-- kind 推导对「无节点声明」的能力直接返回 `origin`，不需要非空 `outputs`。
+事件从机器入口进来时（`POST /v1/events`），首轮派发查的是**入口边**：
 
-通配语义放在**建边校验**侧：`CreateEdge` 对内置起点跳过「`from_port ∈ outputs`」检查，
-只要求非空。这样用户建边时填的是真实事件名（`pull_request.opened`），派发时能精确命中。
-
-**不变量 I2 没有被放松**：自定义能力（`source = custom`）依然严格校验出口封闭集合。
-起点的事件类型本来就由外部系统决定，不可能预先枚举。
-
-**用户收益**：接入一个 GitHub webhook 时，**不需要先伪造一个叫 `github`、没有出口、没有节点的"能力"**，
-直接在能力页建边即可。自定义来源依然支持（自己定义 `jira@1`，`source = "jira"` 一样能找到）。
-
-### 5.3 未知起点 → 422
-
-`POST /v1/events` 的 `source` 必须匹配某个已定义的能力名。匹配不到时返回 **422** 并带
-`available` 列表，**不是** 200 + 空 `origin`。
-
-早先的 200 是个陷阱：调用方看到成功、事件也确实入库了，但它永远派不出去——存下来只占库位。
-现在立刻告诉用户该填什么。
-
-响应示例：
-
-```json
-{
-  "error": "unknown origin "nope"; available: cron, github, http, manual",
-  "source": "nope",
-  "available": ["cron", "github", "http", "manual"],
-  "eventId": "evt_..."
-}
+```sql
+edges.from_is_source = 1     -- 入口边
+edges.from_key       = 'github'   -- 来源名（不是能力 id）
+edges.from_port      = 'pull_request.opened'  -- 事件类型，任意值
 ```
 
-`eventId` 如实回传：事件确实已入库（落库早于找起点），避免调用方以为"什么都没留下"。
-`available` 只列真正的起点——中枢执行能力（`notify.phone`）不会出现在里面。
+入口边的出口**不校验封闭集合**（不变量 I2 的唯一例外）：
 
----
+- 事件类型由外部系统决定（GitHub 发什么 type 就是什么），不可能预先枚举；
+- 来源没有 `outputs` 这个概念，无从封闭。
+
+**I2 没有被放松**：`from_is_source = 0` 的能力边，`from_port` 依然必须 ∈ 上游
+能力的 `outputs`。
+
+**为什么不再用「能力」当入口锚点**：那个"起点能力"不执行代码、不产生任务、
+也没有地方存配置（cron 表达式之类），唯一作用是给边当左端。代价是能力列表
+上多出 4 个用户看得见却用不上的条目。现在左端直接是来源名。
+
+### 5.3 未知来源
+
+**不再返回 422。** 来源不需要预先登记（它是自由字符串），所以"未知来源"
+不是错误：事件照收（200），首轮派发查不到入口边 → `pruned reason=no_edge`。
+
+理由：先让 webhook 打着、后回来建边是正常流程，事件不该因为还没配边而丢。
 
 ### 5.4 源（source）：事件的入口实例
 

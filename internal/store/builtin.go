@@ -98,10 +98,14 @@ func OriginCapability(name, displayName string) BuiltinCapability {
 // source = "jira" 一样能找到它——内置只是把常见来源预先备好。
 var BuiltinCapabilities = []BuiltinCapability{
 	NotifyPhoneCapability,
-	OriginCapability("github", "GitHub webhook"),
-	OriginCapability("cron", "定时触发"),
-	OriginCapability("http", "通用 HTTP 事件"),
-	OriginCapability("manual", "手动触发"),
+	// github/cron/http/manual **不再是能力**（契约 §2.4 / #110）。
+	//
+	// 它们原来是以「内置起点能力」的形式存在的：不执行代码、不产生任务、
+	// 也没地方存配置（cron 表达式之类）。唯一作用是给入口边当左端锚点。
+	// 代价是能力列表上多出 4 个用户看得见却用不上的条目。
+	//
+	// 现在入口边的左端直接是来源名（edges.from_is_source=1），
+	// 用户视角的「事件从哪来」完全由 sources 承担。
 }
 
 // EnsureBuiltinCapabilities 为一个组织补齐所有内置能力（幂等）。

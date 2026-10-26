@@ -45,6 +45,21 @@ async function addEdge(fromCap, fromPort, toCap) {
 	});
 }
 
+// addEntryEdge 建"入口边"：左端是**来源名**（#110），不是能力 id。
+//
+// 旧模型要求先播一个叫 github@1 的空壳能力当锚点；那个空壳已经不存在了。
+async function addEntryEdge(source, port, toCap) {
+	return H.req(server.base, "/v1/edges", {
+		session,
+		body: {
+			fromIsSource: true,
+			fromCapability: source,
+			fromPort: port,
+			toCapability: toCap.id,
+		},
+	});
+}
+
 async function postEvent(body) {
 	// /v1/events 是**机器入口**：鉴权走 Bearer API Key（notify:send），不是会话 Cookie。
 	return H.req(server.base, "/v1/events", { key: sendKey, body });
@@ -84,13 +99,15 @@ async function main() {
 
 	// ---------- 建图 + 节点上线 ----------
 	console.log("--- 派发四步 ---");
-	// github 是**内置起点**（#86）：不再自己定义，直接取播种好的那个。
-	// 内置起点的出口是任意事件类型，所以不需要预先声明 pull_request.opened。
+	// #110：github 不再是能力，入口边直接以来源名 "github" 为左端。
+	// 出口是任意事件类型，所以不需要预先声明 pull_request.opened。
 	const capsAll = await H.req(server.base, "/v1/capabilities", { session });
-	const github = (capsAll.json?.capabilities || []).find(
-		(c) => c.name === "github",
+	const names = (capsAll.json?.capabilities || []).map((c) => c.name);
+	H.check(
+		"起点不再是能力（#110）",
+		!names.includes("github") && !names.includes("cron"),
+		JSON.stringify(names),
 	);
-	H.check("内置起点 github 已播种", !!github, JSON.stringify(capsAll.json?.capabilities?.map((c) => c.name)));
 	const review = await defineCapability("review", ["fix"], {
 		paramsSchema: {
 			type: "object",
@@ -101,7 +118,7 @@ async function main() {
 	const fix1 = await defineCapability("fix1", []);
 	const fix2 = await defineCapability("fix2", []);
 
-	H.eq("建边 github→review", (await addEdge(github, "pull_request.opened", review)).status, 200);
+	H.eq("建入口边 github→review", (await addEntryEdge("github", "pull_request.opened", review)).status, 200);
 	H.eq("建边 review→fix1", (await addEdge(review, "fix", fix1)).status, 200);
 	H.eq("建边 review→fix2", (await addEdge(review, "fix", fix2)).status, 200);
 
@@ -144,11 +161,11 @@ async function main() {
 
 	// ---------- A6 扇出 ----------
 	console.log("--- A6 扇出（一个出口多条边）---");
-	const origin2 = await defineCapability("fanout.demo", ["go"]);
+	// #110：来源不是能力，两条边都从来源名直接出发（这就是扇出）
 	const t1 = await defineCapability("fan.target1", []);
 	const t2 = await defineCapability("fan.target2", []);
-	await addEdge(origin2, "go", t1);
-	await addEdge(origin2, "go", t2);
+	await addEntryEdge("fanout.demo", "go", t1);
+	await addEntryEdge("fanout.demo", "go", t2);
 	await bringUpNode("fanout-node", [t1, t2], 2);
 
 	const fan = await postEvent({ source: "fanout.demo", type: "go", payload: {} });
@@ -181,14 +198,14 @@ async function main() {
 
 	// ---------- ④ no_node ----------
 	const orphan = await defineCapability("orphan.cap", []);
-	const origin3 = await defineCapability("nonode.demo", ["go"]);
-	await addEdge(origin3, "go", orphan);
+	// #110：来源不需要是能力，直接建入口边
+	await addEntryEdge("nonode.demo", "go", orphan);
 	const noNode = await postEvent({ source: "nonode.demo", type: "go", payload: {} });
 	H.eq("no_node 不建任务", noNode.json?.tasks?.length, 0);
 	expectPrune("④ no_node 留痕", noNode, "no_node");
 
 	// ---------- ⑤ foreign_user ----------
-	const notifyOrigin = await defineCapability("push.demo", ["notify"]);
+	// #110：来源名直接当左端
 	const phone = await defineCapability("notify.phone", [], {
 		paramsSchema: {
 			type: "object",
@@ -196,7 +213,7 @@ async function main() {
 			properties: { to: { type: "string" } },
 		},
 	});
-	await addEdge(notifyOrigin, "notify", phone);
+	await addEntryEdge("push.demo", "notify", phone);
 	await bringUpNode("phone-node", [phone], 1);
 
 	const foreign = await postEvent({
@@ -222,7 +239,9 @@ async function main() {
 	console.log("--- ⑥ 环剪枝（真走两跳）---");
 	const a = await defineCapability("cycle.a", ["go"]);
 	const b = await defineCapability("cycle.b", ["back"]);
-	await addEdge(a, "go", b);
+	// 第一跳是入口边（来源 "cycle.a" → b），第二跳是能力边（b → a），
+	// 这样才能真的绕回 a 触发环剪枝
+	await addEntryEdge("cycle.a", "go", b);
 	await addEdge(b, "back", a);
 	const nodeCycle = await bringUpNode("cycle-node", [a, b], 2);
 
@@ -234,8 +253,8 @@ async function main() {
 	// ---------- 容量不足不剪枝 ----------
 	console.log("--- 容量不足不剪枝 ---");
 	const busyCap = await defineCapability("busy.target", []);
-	const busyOrigin = await defineCapability("busy.demo", ["go"]);
-	await addEdge(busyOrigin, "go", busyCap);
+	// #110：来源不是能力
+	await addEntryEdge("busy.demo", "go", busyCap);
 	// 节点声明能力但 0 槽位
 	await bringUpNode("busy-node", [busyCap], 0);
 

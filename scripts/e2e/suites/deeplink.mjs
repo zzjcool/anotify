@@ -91,14 +91,24 @@ async function main() {
 	const edgeResp = await H.req(server.base, "/v1/edges", {
 		session: s.session,
 		method: "POST",
-		body: { fromCapability: srcId, fromPort: "go", toCapability: reviewId },
+		// #110：入口边——来源名 "deeplink.src" 直接当左端
+		body: {
+			fromIsSource: true,
+			fromCapability: "deeplink.src",
+			fromPort: "go",
+			toCapability: reviewId,
+		},
 	});
 	H.eq("建边 deeplink.src→review → 200", edgeResp.status, 200);
 	const edgesResp = await H.req(server.base, "/v1/edges", { session: s.session });
+	// #110：入口边的左端是**来源名**（"deeplink.src"），不是能力 id
 	H.check(
 		"边指向 review",
 		(edgesResp.json?.edges || []).some(
-			(e) => e.fromCapability === srcId && e.toCapability === reviewId,
+			(e) =>
+				e.fromIsSource === true &&
+				e.fromCapability === "deeplink.src" &&
+				e.toCapability === reviewId,
 		),
 		JSON.stringify(edgesResp.json?.edges),
 	);

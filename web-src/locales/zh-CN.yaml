@@ -1292,6 +1292,8 @@ sources:
 edges:
   title: 出口
   subtitle: 什么出口接到哪里
+  src_prefix: 来源
+  from_source: 来源
   intro: 能力回答「能干什么」，出口回答「干完之后往哪走」。一条边 = 一个出口接到一个下游能力。同一个出口可以接多条边（扇出），事件会同时派给它们。
   refresh: 刷新
   new: 新建出口

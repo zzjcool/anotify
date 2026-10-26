@@ -130,31 +130,39 @@ async function main() {
 	const idemIDs = idem.map((r) => r.json?.eventId).filter(Boolean);
 	H.eq("同一 idemKey 只产生一个事件", new Set(idemIDs).size, 1);
 
-	// ---- 5. 未定义的 source → 422 ----
+	// ---- 5. 未定义的 source → 200 + no_edge（#110 之后的新语义）----
 	//
-	// 早先是 200 + origin:""（"事件收下但派不出去"）。那会让调用方以为成功，
-	// 实际什么都没发生。现在显式 422 并列出可用来源。
+	// 旧模型要求 source 必须对应一个"起点能力"，否则 422。
+	// 来源不再是能力之后这个检查没有依据了，而且它挡住了真实场景：
+	// 先让 webhook 打着（事件照收），再回来建边。
+	//
+	// 现在：200 + 事件入库 + pruned 记一条 no_edge（回答"为什么没触发"）。
 	console.log("--- 未定义的 source ---");
 	const noOrigin = await notify({
 		source: "no.such.source." + Date.now(),
 		type: "whatever",
 		payload: {},
 	});
-	H.eq("未定义 source → 422（非静默 200）", noOrigin.status, 422);
+	H.eq("未定义 source → 200（事件照收，来源可以还没配边）", noOrigin.status, 200);
 	H.check(
-		"422 带 available 列表",
-		Array.isArray(noOrigin.json?.available) && noOrigin.json.available.length > 0,
-		JSON.stringify(noOrigin.json),
+		"未定义 source 不建任务",
+		(noOrigin.json?.tasks || []).length === 0,
+		JSON.stringify(noOrigin.json?.tasks),
 	);
 	H.check(
-		"available 提示含内置起点 github",
-		(noOrigin.json?.available || []).includes("github"),
-		JSON.stringify(noOrigin.json?.available),
+		"未定义 source 的剪枝原因是 no_edge",
+		(noOrigin.json?.pruned || [])[0]?.reason === "no_edge",
+		JSON.stringify(noOrigin.json?.pruned),
 	);
 	H.check(
-		"422 如实回传 eventId（事件确实已入库）",
+		"如实回传 eventId（事件确实已入库）",
 		typeof noOrigin.json?.eventId === "string" && noOrigin.json.eventId.length > 0,
 		JSON.stringify(noOrigin.json),
+	);
+	H.check(
+		"origin 回显来源名（不再是能力 name@version）",
+		typeof noOrigin.json?.origin === "string" && !noOrigin.json.origin.includes("@"),
+		JSON.stringify(noOrigin.json?.origin),
 	);
 
 	// ---- 6/7. limit 边界 ----

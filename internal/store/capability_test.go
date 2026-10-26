@@ -453,7 +453,7 @@ func TestGraphVersionChangesWithEdges(t *testing.T) {
 		t.Fatal("graph did not change after adding an edge")
 	}
 	// 删回原状 → hash 回到 g1 的（同一份图只有一行，复用旧版本）
-	if err := db.DeleteEdge(ctx, orgID, up.ID, "clean", down2.ID); err != nil {
+	if err := db.DeleteEdge(ctx, orgID, false, up.ID, "clean", down2.ID); err != nil {
 		t.Fatalf("delete edge: %v", err)
 	}
 	g3, err := db.EnsureGraphVersion(ctx, orgID)
@@ -551,7 +551,7 @@ func TestEdgesFromLookup(t *testing.T) {
 			t.Fatalf("create edge: %v", err)
 		}
 	}
-	got, err := db.EdgesFrom(ctx, orgID, up.ID, "fix")
+	got, err := db.EdgesFrom(ctx, orgID, false, up.ID, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestEdgesFromLookup(t *testing.T) {
 	}
 
 	// 不存在的出口 → 空列表（不是 nil）
-	none, err := db.EdgesFrom(ctx, orgID, up.ID, "clean")
+	none, err := db.EdgesFrom(ctx, orgID, false, up.ID, "clean")
 	if err != nil {
 		t.Fatalf("EdgesFrom missing port: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestEdgesFromLookup(t *testing.T) {
 	if err := db.CreateEdge(ctx, &Edge{OrgID: orgID, FromCapability: up.ID, FromPort: "fix", ToCapability: d1.ID}); err != nil {
 		t.Fatalf("idempotent create edge: %v", err)
 	}
-	got, err = db.EdgesFrom(ctx, orgID, up.ID, "fix")
+	got, err = db.EdgesFrom(ctx, orgID, false, up.ID, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom after dup: %v", err)
 	}
@@ -584,13 +584,13 @@ func TestEdgesFromLookup(t *testing.T) {
 	}
 
 	// 删除
-	if err := db.DeleteEdge(ctx, orgID, up.ID, "fix", d1.ID); err != nil {
+	if err := db.DeleteEdge(ctx, orgID, false, up.ID, "fix", d1.ID); err != nil {
 		t.Fatalf("delete edge: %v", err)
 	}
-	if err := db.DeleteEdge(ctx, orgID, up.ID, "fix", d1.ID); !errors.Is(err, ErrNotFound) {
+	if err := db.DeleteEdge(ctx, orgID, false, up.ID, "fix", d1.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete missing edge err = %v, want ErrNotFound", err)
 	}
-	got, err = db.EdgesFrom(ctx, orgID, up.ID, "fix")
+	got, err = db.EdgesFrom(ctx, orgID, false, up.ID, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom after delete: %v", err)
 	}

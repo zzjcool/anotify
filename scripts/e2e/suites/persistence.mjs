@@ -113,7 +113,9 @@ async function main() {
 			(await H.req(server.base, "/v1/edges", {
 				session,
 				body: {
-					fromCapability: origin.id,
+					// #110：入口边（左端是来源名），不再需要"起点能力"
+					fromIsSource: true,
+					fromCapability: "persist.demo",
 					fromPort: "go",
 					toCapability: target.id,
 				},

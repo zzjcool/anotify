@@ -47,7 +47,11 @@ type EventIngestResponse struct {
 	Tasks []TaskBrief `json:"tasks"`
 	// Pruned 是首轮派发的剪枝记录（静默但留痕）。
 	Pruned []PrunedBrief `json:"pruned"`
-	// Origin 是匹配到的起点能力（name@version），没找到时为空串。
+	// Origin 是这次事件被归到的**来源名**（"github"/"cron"/…）。
+	//
+	// 它曾经是"匹配到的起点能力 name@version"（#110 之前）。来源不再是一个
+	// 能力，所以这里只是把请求里的 source 原样回显 —— 方便调用方确认
+	// "我发的事件被归到哪个来源"，不再有"找不到起点能力"这种失败形态。
 	Origin string `json:"origin,omitempty"`
 }
 
@@ -144,8 +148,9 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 		Tasks:    []TaskBrief{},
 		Pruned:   []PrunedBrief{},
 	}
-	if res.OriginCapability != nil {
-		resp.Origin = res.OriginCapability.Name + "@" + strconv.Itoa(res.OriginCapability.Version)
+	// 来源名原样回显（不再需要去能力表里解析 name@version）
+	if res.Event != nil {
+		resp.Origin = res.Event.Source
 	}
 	if res.Dispatch != nil {
 		for _, t := range res.Dispatch.Tasks {
@@ -159,41 +164,6 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 				Port: p.Port, Detail: p.Detail,
 			})
 		}
-	}
-
-	// 未知起点：**显式报错**，不再静默 200。
-	//
-	// 曾经的 200 + origin:"" 是个陷阱：调用方看到成功、事件也确实入库了，
-	// 但它永远派不出去——因为没有 source 对应的起点能力。存下来只是占库位。
-	// 现在直接 422 并列出可用来源，调用方立刻知道该填什么。
-	//
-	// 关于重复投递：事件此时已入库（落库在 ② 步，早于找起点）。
-	// 但这不构成问题——调用方修正 source 后会得到**另一条**事件（source 变了），
-	// 而用同一个 source + 同一个 idemKey 重投会被幂等吃掉，不会重复。
-	// 也就是说：错误的那条事件是孤儿行，但它无害（不派发、不建任务）。
-	if errors.Is(err, trigger.ErrUnknownOrigin) {
-		var unknownErr *trigger.UnknownOriginError
-		msg := "unknown origin: " + req.Source
-		var available []string
-		if errors.As(err, &unknownErr) {
-			msg = unknownErr.Error()
-			available = unknownErr.Available
-		}
-		slog.Warn("event has no origin capability",
-			"event", "events.origin.missing",
-			"event_id", resp.EventID,
-			"source", req.Source,
-			"available", strings.Join(available, ","),
-		)
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error": msg,
-			// 结构化返回，前端不必解析错误字符串
-			"source":    req.Source,
-			"available": available,
-			// 事件确实入库了，如实告知，避免调用方以为"什么都没留下"
-			"eventId": resp.EventID,
-		})
-		return
 	}
 
 	if err != nil {

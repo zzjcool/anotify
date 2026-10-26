@@ -29,8 +29,10 @@ type DispatchInput struct {
 	OrgID        string
 	TraceID      string
 	ParentTaskID string
-	// FromCap 是上游能力定义 ID（events 起的链用 origin 能力）。
-	FromCap string
+	// FromCap 是上游标识：默认是上游能力定义 ID；
+	// FromIsSource 为 true 时它是**来源名**（入口边，如 "github"）。
+	FromCap      string
+	FromIsSource bool
 	// Out 是上游回报的出口名。"" 表示上游没回报——此时不派发、也不记剪枝。
 	Out    string
 	Params map[string]any
@@ -76,7 +78,10 @@ type DispatchOutput struct {
 // *store.DB 满足这个接口。
 type Store interface {
 	// EdgesFrom 是派发第 ① 步的唯一查表入口。
-	EdgesFrom(ctx context.Context, orgID, fromCapability, fromPort string) ([]string, error)
+	//
+	// fromIsSource 决定 fromKey 的解释（见 store.Edge.FromIsSource）：
+	// false → 上游能力 id；true → 来源名（入口边）。
+	EdgesFrom(ctx context.Context, orgID string, fromIsSource bool, fromKey, fromPort string) ([]string, error)
 	GetCapabilityByID(ctx context.Context, orgID, id string) (*store.CapabilityVersion, error)
 	NodesForCapability(ctx context.Context, orgID, capabilityID string) ([]string, error)
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
@@ -184,7 +189,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		targets = in.Targets
 	} else {
 		var err error
-		targets, err = d.Store.EdgesFrom(ctx, in.OrgID, in.FromCap, in.Out)
+		targets, err = d.Store.EdgesFrom(ctx, in.OrgID, in.FromIsSource, in.FromCap, in.Out)
 		if err != nil {
 			return nil, fmt.Errorf("route: lookup edges: %w", err)
 		}

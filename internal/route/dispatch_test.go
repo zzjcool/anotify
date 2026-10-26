@@ -102,11 +102,16 @@ func (f *fakeStore) addNode(nodeID, capabilityID string, slots int) {
 	f.instances[nodeID] = insts
 }
 
-func (f *fakeStore) EdgesFrom(ctx context.Context, orgID, fromCapability, fromPort string) ([]string, error) {
+func (f *fakeStore) EdgesFrom(ctx context.Context, orgID string, fromIsSource bool, fromKey, fromPort string) ([]string, error) {
 	if f.errEdges != nil {
 		return nil, f.errEdges
 	}
-	got := f.edges[orgID+"|"+fromCapability+"|"+fromPort]
+	// 入口边（fromIsSource）与能力边分开存，避免互相污染
+	prefix := orgID + "|"
+	if fromIsSource {
+		prefix += "src|"
+	}
+	got := f.edges[prefix+fromKey+"|"+fromPort]
 	out := make([]string, len(got))
 	copy(out, got)
 	return out, nil

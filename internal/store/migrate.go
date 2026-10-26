@@ -89,6 +89,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	3: fixLegacyMessageColumns,
 	5: migrateNewModelColumns,
 	8: migrateSourceTargetParams,
+	9: migrateEdgesFromSource,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -133,6 +134,78 @@ func migrateSourceTargetParams(tx *sql.Tx) error {
 	if _, err := tx.Exec(
 		`ALTER TABLE source_targets ADD COLUMN params TEXT NOT NULL DEFAULT '{}'`); err != nil {
 		return fmt.Errorf("add column source_targets.params: %w", err)
+	}
+	return nil
+}
+
+// migrateEdgesFromSource 迁移 9：边表左端从「能力外键」改成「能力 id 或来源名」。
+//
+// 旧表 edges(from_capability → capability_versions.id)。起点边靠一个
+// 叫 github@1 的内置能力当锚点，于是那个空壳必须存在、会出现在能力列表上。
+//
+// 新表 edges(from_is_source, from_key)：入口边的左端直接是来源名。
+//
+// 重建而不是 ALTER 的原因：from_capability 在**主键**里，SQLite 不能改列。
+// 步骤：建新表 → 搬数据（起点边转成 from_is_source=1 + 来源名）→ 删旧表 → 改名。
+//
+// 幂等：用 hasColumn 判断是否已经迁移过（新表有 from_is_source，旧表没有）。
+func migrateEdgesFromSource(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "edges", "from_is_source")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil // 已经迁移过
+	}
+
+	// 旧表存在吗？全新库（先跑 CREATE TABLE 的新定义）不会被走到这里，
+	// 但防御一下：表不存在说明这个迁移无事可做。
+	exists, err := hasTable(tx, "edges")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE edges_new (
+			org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			from_is_source  INTEGER NOT NULL DEFAULT 0,
+			from_key        TEXT NOT NULL,
+			from_port       TEXT NOT NULL,
+			to_capability   TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+			created_at      INTEGER NOT NULL,
+			PRIMARY KEY (org_id, from_is_source, from_key, from_port, to_capability)
+		)`,
+
+		// 能力之间（from 不是内置起点）的边原样搬过来
+		`INSERT INTO edges_new (org_id, from_is_source, from_key, from_port, to_capability, created_at)
+		 SELECT e.org_id, 0, e.from_capability, e.from_port, e.to_capability, e.created_at
+		   FROM edges e
+		  WHERE NOT EXISTS (
+		        SELECT 1 FROM capability_versions cv
+		         WHERE cv.id = e.from_capability AND cv.source = 'builtin'
+		           AND cv.name IN ('github','cron','http','manual')
+		  )`,
+
+		// 起点边：左端从「能力 id」换成「来源名」（就是该能力的 name）
+		`INSERT INTO edges_new (org_id, from_is_source, from_key, from_port, to_capability, created_at)
+		 SELECT e.org_id, 1, cv.name, e.from_port, e.to_capability, e.created_at
+		   FROM edges e
+		   JOIN capability_versions cv ON cv.id = e.from_capability
+		  WHERE cv.source = 'builtin'
+		    AND cv.name IN ('github','cron','http','manual')`,
+
+		`DROP TABLE edges`,
+		`ALTER TABLE edges_new RENAME TO edges`,
+		`CREATE INDEX IF NOT EXISTS idx_edges_lookup
+		   ON edges(org_id, from_is_source, from_key, from_port)`,
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("migrate edges from_source: %w", err)
+		}
 	}
 	return nil
 }
@@ -332,6 +405,17 @@ func hasColumn(tx *sql.Tx, table, column string) (bool, error) {
 		`SELECT count(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
 	).Scan(&n); err != nil {
 		return false, fmt.Errorf("probe column %s.%s: %w", table, column, err)
+	}
+	return n > 0, nil
+}
+
+// hasTable 判断表是否存在（SQLite 没有 information_schema）。
+func hasTable(tx *sql.Tx, table string) (bool, error) {
+	var n int
+	if err := tx.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+	).Scan(&n); err != nil {
+		return false, fmt.Errorf("probe table %s: %w", table, err)
 	}
 	return n > 0, nil
 }

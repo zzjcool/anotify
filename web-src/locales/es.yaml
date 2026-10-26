@@ -1292,6 +1292,8 @@ sources:
 edges:
   title: Salidas
   subtitle: Qué salida lleva a dónde
+  src_prefix: Origen
+  from_source: Origen
   intro: Una capacidad responde «qué puede hacer»; una arista responde «a dónde va después». Una arista = una salida conectada a una capacidad posterior. La misma salida puede tener varias aristas (abanico) y el evento se despacha a todas.
   refresh: Actualizar
   new: Nueva arista

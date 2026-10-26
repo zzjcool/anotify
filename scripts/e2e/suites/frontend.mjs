@@ -508,7 +508,9 @@ async function main() {
 			session: s.session,
 			method: "POST",
 			body: {
-				fromCapability: capA.json?.capability?.id,
+				// #110：入口边（来源名当左端），不再需要"起点能力"
+				fromIsSource: true,
+				fromCapability: "frontend.src",
 				fromPort: "go",
 				toCapability: capB.json?.capability?.id,
 			},
@@ -1349,17 +1351,21 @@ async function checkDisplayName(page, base) {
 		const edges = eRes.edges || [];
 		return {
 			n: edges.length,
-			// 每条边的两端在库里都能找到对应能力
+			// 下游必须总能解析到能力；上游只在「能力边」时才要求解析
+			// （入口边的左端是来源名，本来就没有对应能力行 —— #110）
 			allResolve: edges.every(
-				(e) => byID.has(e.fromCapability) && byID.has(e.toCapability),
+				(e) =>
+					byID.has(e.toCapability) &&
+					(e.fromIsSource ? true : byID.has(e.fromCapability)),
 			),
 			// 出口名来自 from 能力的 outputs（或起点的事件类型），
 			// 不可能等于某个能力的显示名 —— 这就是"路由键不被显示名替换"
 			portsAreRaw: edges.every((e) => {
+				// 入口边：左端是来源名，出口是事件类型，任意值
+				if (e.fromIsSource) return true;
 				const from = byID.get(e.fromCapability);
 				if (!from) return false;
-				const isOrigin = from.source === "builtin";
-				return isOrigin || (from.outputs || []).includes(e.fromPort);
+				return (from.outputs || []).includes(e.fromPort);
 			}),
 			// 至少有一个 To 端能力带显示名（证明渲染时会用到它）
 			hasDisplayName: edges.some((e) => {
@@ -1372,7 +1378,7 @@ async function checkDisplayName(page, base) {
 			}),
 		};
 	});
-	H.check("出口表能解析到两端能力", edge.allResolve === true, `edges=${edge.n}`);
+	H.check("出口表两端都能解析（入口边左端是来源名）", edge.allResolve === true, `edges=${edge.n}`);
 	H.check(
 		"出口名仍是原始路由键（不被显示名替换）",
 		edge.portsAreRaw === true,

@@ -70,12 +70,12 @@ func TestStubSignaturesFrozen(t *testing.T) {
 
 	// ── graph.go ───────────────────────────────────
 	var (
-		_ func(context.Context, *Edge) error                              = db.CreateEdge
-		_ func(context.Context, string, string, string, string) error     = db.DeleteEdge
-		_ func(context.Context, string, string) ([]*Edge, error)          = db.ListEdges
-		_ func(context.Context, string, string, string) ([]string, error) = db.EdgesFrom
-		_ func(context.Context, string) (*GraphVersion, error)            = db.EnsureGraphVersion
-		_ func(context.Context, string, string) (*GraphVersion, error)    = db.GetGraphVersion
+		_ func(context.Context, *Edge) error                                    = db.CreateEdge
+		_ func(context.Context, string, bool, string, string, string) error     = db.DeleteEdge
+		_ func(context.Context, string, string) ([]*Edge, error)                = db.ListEdges
+		_ func(context.Context, string, bool, string, string) ([]string, error) = db.EdgesFrom
+		_ func(context.Context, string) (*GraphVersion, error)                  = db.EnsureGraphVersion
+		_ func(context.Context, string, string) (*GraphVersion, error)          = db.GetGraphVersion
 	)
 
 	// ── org.go ─────────────────────────────────────
@@ -151,9 +151,9 @@ func TestNoStubRemains(t *testing.T) {
 			return db.ReportResult(ctx, orgID, "tsk_x", TaskSucceeded, nil, true, "", nil, "")
 		},
 		"CreateEdge":         func() error { return db.CreateEdge(ctx, &Edge{}) },
-		"DeleteEdge":         func() error { return db.DeleteEdge(ctx, orgID, "cap_a", "fix", "cap_b") },
+		"DeleteEdge":         func() error { return db.DeleteEdge(ctx, orgID, false, "cap_a", "fix", "cap_b") },
 		"ListEdges":          func() error { _, err := db.ListEdges(ctx, orgID, ""); return err },
-		"EdgesFrom":          func() error { _, err := db.EdgesFrom(ctx, orgID, "cap_a", "fix"); return err },
+		"EdgesFrom":          func() error { _, err := db.EdgesFrom(ctx, orgID, false, "cap_a", "fix"); return err },
 		"EnsureGraphVersion": func() error { _, err := db.EnsureGraphVersion(ctx, orgID); return err },
 		"GetGraphVersion":    func() error { _, err := db.GetGraphVersion(ctx, orgID, "grf_x"); return err },
 	}
