@@ -1311,6 +1311,8 @@ sources:
     hook_github_events: "只勾这个就够；其它事件不会派发"
     hook_github_secret: "GitHub 的 Secret 由 GitHub 侧校验；本系统暂不校验签名，建议用长随机 token 的 URL"
     hook_github_why: "填好后点「Add webhook」。GitHub 会立刻发一个 ping，事件照收；回来看「出口能力」把参数接上。"
+    ref_tip: "从事件或变量取值"
+    no_interp: "参数 {k}：引用必须占满整个值（如 {{pull_request.title}}），不支持前后缀拼接"
   preset:
     hourly: 每小时
     daily3: 每天 3:00

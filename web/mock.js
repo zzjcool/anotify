@@ -1119,6 +1119,43 @@
 	//
 	// 判据要严：只有**恰好**含 from 的对象才算映射。否则 {"from":1} 这种
 	// 用户真想当字面量传的对象会被误认。多一个字段就退回字面量，行为可预期。
+	// ---------- 模板引用（{{path}}）----------
+	//
+	// 语法只有一种：**整个字符串就是一个引用**
+	//
+	//   "{{pull_request.title}}"   → 取 payload.pull_request.title
+	//   "{{$env}}"                 → 取源变量 env（固定值或它的 from）
+	//   "prod"                     → 字面量，原样传
+	//
+	// 为什么**不做** "PR: {{title}}" 这种混写：
+	// 那是字符串插值 = 求值器（拼接/转义/嵌套），越过 I6「中枢不解释
+	// 用户提供的逻辑」。而"整个值是一个引用"只是一次查表，和 {from:x}
+	// 完全等价，只是写法更短、且能直接写在同一个输入框里。
+	//
+	// 这个区分很关键：
+	//   {{x}}        → 查表 ✅
+	//   "a{{x}}b"    → 求值 ❌
+	const TMPL_RE = /^\{\{\s*([^{}]+?)\s*\}\}$/;
+
+	// parseTemplate 判断一个字符串是不是"整个值就是引用"。
+	// 返回 {ref} 或 null。ref 形如 "$name" 或 "a.b.c"。
+	function parseTemplate(v) {
+		if (typeof v !== "string") return null;
+		const m = v.match(TMPL_RE);
+		if (!m) return null;
+		const ref = m[1].trim();
+		if (!ref) return null;
+		// 混写（"a{{x}}b"）不匹配上面的 ^...$，自然落到字面量；
+		// 这里再挡一次，避免 {{a}}{{b}} 这类只有一个外层匹配的情况
+		if (ref.includes("{{") || ref.includes("}}")) return null;
+		return { ref };
+	}
+
+	// isTemplate 字符串是否是"整个值是一个引用"。
+	function isTemplate(v) {
+		return parseTemplate(v) !== null;
+	}
+
 	function isMapping(v) {
 		if (!v || typeof v !== "object" || Array.isArray(v)) return false;
 		const keys = Object.keys(v);
@@ -1197,7 +1234,44 @@
 		const missing = [];
 		if (!template) return { params: out, used, missing };
 		const vars = varValues || {};
+
+		// lookup 解析一个模板引用（{{x}}）指向哪里。
+		//
+		//   {{$name}}  → 源变量（优先，$ 前缀明确指向变量表）
+		//   {{a.b.c}}  → 直接按 payload 路径取，**不需要先声明成变量**
+		//
+		// 后者是这次简化的核心：用户看到 `pull_request.title` 就能直接写
+		// {{pull_request.title}}，不必先去变量表里给它取个名字。
+		const lookup = (ref) => {
+			if (ref.startsWith("$")) {
+				const name = ref.slice(1).trim();
+				if (!name) return { found: false, ref };
+				if (Object.prototype.hasOwnProperty.call(vars, name)) {
+					const v = vars[name];
+					return v === undefined ? { found: false, ref } : { found: true, val: v, ref };
+				}
+				return { found: false, ref };
+			}
+			const got = getPath(payload, ref);
+			return got === undefined ? { found: false, ref } : { found: true, val: got, ref };
+		};
+
 		for (const [k, v] of Object.entries(template)) {
+			// ① 字符串形态的模板引用：{{x}}
+			const tpl = parseTemplate(v);
+			if (tpl) {
+				const r = lookup(tpl.ref);
+				if (r.found) {
+					out[k] = clone(r.val);
+					used.push({ field: k, from: "{{" + tpl.ref + "}}" });
+					continue;
+				}
+				missing.push({ field: k, from: "{{" + tpl.ref + "}}" });
+				continue;
+			}
+
+			// ② 对象形态的声明式引用（{from} / {var}）——保留，供旧配置与
+			//    需要 default/as 的场景使用
 			if (!isMapping(v)) {
 				out[k] = clone(v);
 				continue;
@@ -1206,7 +1280,6 @@
 			let got;
 			let ref;
 			if (isVarRef(v)) {
-				// 变量引用：值来自源声明的变量表
 				ref = "$" + v.var;
 				got = vars[v.var];
 			} else {
@@ -1234,6 +1307,25 @@
 		if (!template) return "";
 		const known = declaredVars ? new Set(declaredVars.map((d) => d && d.name).filter(Boolean)) : null;
 		for (const [k, v] of Object.entries(template)) {
+			// 字符串模板 {{x}}：校验形式 + $变量是否声明过
+			const tpl = parseTemplate(v);
+			if (tpl) {
+				const ref = tpl.ref;
+				if (ref.startsWith("$")) {
+					const name = ref.slice(1).trim();
+					if (!name) return `参数 ${k} 的引用为空：{{$}}`;
+					if (known && !known.has(name)) {
+						return `参数 ${k} 引用了未声明的变量「${name}」`;
+					}
+				} else if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
+					return `参数 ${k} 的路径不合法：「${ref}」`;
+				}
+				continue;
+			}
+			// 含 {{ 但不是"整个值是一个引用" → 混写，明确拒绝并说清原因
+			if (typeof v === "string" && v.includes("{{") && v.includes("}}")) {
+				return `参数 ${k}：模板必须是整个值（如 "{{pull_request.title}}"），不支持 "前缀{{x}}后缀" 这种拼接`;
+			}
 			if (!isMapping(v)) continue;
 			if (typeof v.from === "string" && typeof v.var === "string") {
 				return `参数 ${k} 同时写了 from 和 var，只能选一个`;
@@ -1348,7 +1440,11 @@
 				if (mmsg) return `${c.name}@${c.version}：${mmsg}`;
 				const literals = {};
 				for (const [k, v] of Object.entries(t.params)) {
-					if (!isMapping(v)) literals[k] = v;
+					// 模板引用（{{x}}）不是字面量：它的实际值要等触发时才知道，
+					// 配置期不能拿字符串去校验 "expected integer"。
+					// 这正是「参数可以写引用」与「参数必须是数字」的边界。
+					if (isMapping(v) || isTemplate(v)) continue;
+					literals[k] = v;
 				}
 				if (Object.keys(literals).length) {
 					const msg = validateParams(c.paramsSchema, literals);
