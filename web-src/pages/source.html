@@ -1,0 +1,674 @@
+{{define "title"}}{{t "srcpage.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* 源详情页：一个源的全貌。
+         URL 形如 source.html?id=src_xxx（源列表点进来）。
+
+         为什么单独一页：源的细节（触发配置、出口参数、流向图、最近事件）
+         塞在列表卡片里会让列表变得没法扫。列表只该回答"有哪些源、活着吗"，
+         细节是点进去才关心的事。 */
+      .src-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      .src-id {
+        font-family: var(--mono, monospace);
+        font-size: 0.75rem;
+        color: var(--faint);
+        word-break: break-all;
+      }
+      /* 键值对：左边固定宽度标签，右边内容。
+         用 grid 而不是 flex，保证多行之间标签列对齐。 */
+      .kv {
+        display: grid;
+        grid-template-columns: 7.5rem 1fr;
+        gap: 0.5rem 1rem;
+        align-items: baseline;
+      }
+      .kv dt {
+        font-size: 0.72rem;
+        color: var(--faint);
+      }
+      .kv dd {
+        font-size: 0.8rem;
+        color: var(--text);
+        min-width: 0;
+        word-break: break-word;
+      }
+      .src-section-title {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--faint);
+        margin-bottom: 0.6rem;
+      }
+      /* 出口参数表：参数可能带映射，用等宽字体看起来更像"配置"而不是散文 */
+      .param-table {
+        display: grid;
+        gap: 0.35rem;
+      }
+      .param-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.4rem;
+        font-size: 0.75rem;
+        padding: 0.3rem 0.5rem;
+        border-radius: 0.375rem;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .param-key {
+        font-family: var(--mono, monospace);
+        color: var(--accent);
+      }
+      .param-val {
+        font-family: var(--mono, monospace);
+        color: var(--text);
+        word-break: break-all;
+      }
+      /* 映射态单独着色：它填的不是值，是"取值规则" */
+      .param-map-badge {
+        font-size: 0.6rem;
+        padding: 0.05rem 0.3rem;
+        border-radius: 0.25rem;
+        border: 1px solid var(--accent);
+        color: var(--accent);
+      }
+      .hook-url {
+        font-family: var(--mono, monospace);
+        font-size: 0.72rem;
+        color: var(--accent);
+        word-break: break-all;
+      }
+      /* 最近事件行 */
+      .ev-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.45rem 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 0.75rem;
+      }
+      .ev-row:last-child {
+        border-bottom: none;
+      }
+      /* toast：每页各自实现（partials.js 的 toast 是它 IIFE 里的局部函数，
+         没挂 window —— 在这个页面里裸调会在**渲染时**抛 ReferenceError，
+         不是加载时，所以更容易漏到线上）。 */
+      .toast {
+        position: fixed;
+        bottom: 1.25rem;
+        right: 1.25rem;
+        z-index: 80;
+        opacity: 0;
+        transform: translateY(0.5rem);
+        pointer-events: none;
+        transition:
+          opacity 0.18s ease,
+          transform 0.18s ease;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-3xl space-y-6">
+    <!-- 头部：名字 + 状态 + 操作 -->
+    <div class="reveal visible">
+      <div class="src-head">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <a href="sources.html" class="text-sm text-zinc-500 hover:text-zinc-300"
+              >← {{t "srcpage.back"}}</a
+            >
+          </div>
+          <h2 id="head-name" class="mt-2 font-display text-3xl text-white">
+            {{t "srcpage.loading"}}
+          </h2>
+          <div id="head-badges" class="mt-2 flex flex-wrap items-center gap-2"></div>
+        </div>
+        <div id="head-actions" class="flex flex-wrap items-center gap-2"></div>
+      </div>
+    </div>
+
+    <!-- 主体 -->
+    <div id="src-body" class="space-y-6">
+      <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
+        {{t "srcpage.loading"}}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast card rounded-xl px-4 py-2 text-sm"></div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+
+      // 各页面各自声明，无全局常量（与 sources.html / trace.html 一致）
+      const API = "/v1";
+
+      Anotify.mountLayout({
+        active: "sources",
+        title: t("srcpage.layout_title", "源详情"),
+        subtitle: t("srcpage.layout_subtitle", "一个源的触发配置、出口参数和下游流向"),
+      });
+
+      function toast(msg) {
+        const node = document.getElementById("toast");
+        if (!node) return;
+        node.textContent = msg;
+        node.classList.add("show");
+        clearTimeout(node._timer);
+        node._timer = setTimeout(() => node.classList.remove("show"), 2800);
+      }
+
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = String(text);
+        return n;
+      }
+      function code(text, cls) {
+        return el("code", cls || "", text);
+      }
+      function mono(text, cls) {
+        return el("span", cls || "", text);
+      }
+
+      function fmtTime(sec) {
+        if (!sec) return "—";
+        const d = new Date(sec * 1000);
+        const p = (n) => String(n).padStart(2, "0");
+        return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+      }
+      function relTime(sec) {
+        if (!sec) return "";
+        const diff = sec - Math.floor(Date.now() / 1000);
+        const abs = Math.abs(diff);
+        const unit =
+          abs < 60
+            ? [Math.round(abs), t("srcpage.u_sec", "秒")]
+            : abs < 3600
+              ? [Math.round(abs / 60), t("srcpage.u_min", "分")]
+              : abs < 86400
+                ? [Math.round(abs / 3600), t("srcpage.u_hour", "时")]
+                : [Math.round(abs / 86400), t("srcpage.u_day", "天")];
+        return diff >= 0
+          ? t("srcpage.in", "{n}{u}后").replace("{n}", unit[0]).replace("{u}", unit[1])
+          : t("srcpage.ago", "{n}{u}前").replace("{n}", unit[0]).replace("{u}", unit[1]);
+      }
+
+      const KIND_LABEL = {
+        cron: () => t("sources.kind.cron", "定时器"),
+        webhook: () => t("sources.kind.webhook", "Webhook"),
+        manual: () => t("sources.kind.manual", "手动"),
+      };
+      // 类名必须与 web/ui.css 里真实存在的组件类一致（check-classes 会拦，
+      // 但更好的做法是照抄 sources.html 那份，别自己另起一套名字）。
+      const KIND_CLASS = {
+        cron: "src-cron",
+        webhook: "src-webhook",
+        manual: "src-manual",
+      };
+
+      const srcId = new URLSearchParams(location.search).get("id");
+      let SRC = null;
+      let CAPS = [];
+      let EDGES = [];
+
+      // ---------- 加载 ----------
+      async function load() {
+        if (!srcId) {
+          renderEmpty(t("srcpage.no_id", "地址里缺少 ?id=，无法确定是哪个源"));
+          return;
+        }
+        try {
+          const [srcData, capData, edgeData] = await Promise.all([
+            Anotify.api(API + "/sources/" + encodeURIComponent(srcId), { demo: null }),
+            Anotify.api(API + "/capabilities", { demo: null }).catch(() => ({ capabilities: [] })),
+            Anotify.api(API + "/edges", { demo: null }).catch(() => ({ edges: [] })),
+          ]);
+          SRC = (srcData && srcData.source) || null;
+          CAPS = (capData && capData.capabilities) || [];
+          EDGES = (edgeData && edgeData.edges) || [];
+        } catch (e) {
+          renderEmpty(
+            t("srcpage.load_failed", "加载失败：{m}").replace("{m}", e.detail || e.message || e),
+          );
+          return;
+        }
+        if (!SRC) {
+          renderEmpty(t("srcpage.notfound", "这个源不存在，可能已被删除"));
+          return;
+        }
+        renderHead();
+        renderBody();
+      }
+
+      function renderEmpty(msg) {
+        document.getElementById("head-name").textContent = t("srcpage.title", "源详情");
+        document.getElementById("src-body").replaceChildren(
+          el("div", "card rounded-2xl p-8 text-center text-sm text-zinc-500", msg),
+        );
+      }
+
+      // ---------- 头部 ----------
+      function renderHead() {
+        document.getElementById("head-name").textContent = SRC.name;
+        document.title = SRC.name + " · Anotify";
+
+        const badges = document.getElementById("head-badges");
+        badges.replaceChildren();
+        badges.appendChild(
+          el("span", "src-badge " + (KIND_CLASS[SRC.kind] || ""), KIND_LABEL[SRC.kind]()),
+        );
+        if (SRC.enabled) {
+          badges.appendChild(el("span", "status-badge status-on", t("sources.on", "运行中")));
+        } else {
+          badges.appendChild(el("span", "status-badge status-warn", t("sources.disabled", "已停用")));
+        }
+        badges.appendChild(el("span", "src-id", SRC.id));
+
+        // 操作：与列表页一致，只是搬到这里
+        const acts = document.getElementById("head-actions");
+        acts.replaceChildren();
+        if (SRC.enabled) {
+          const fireBtn = el(
+            "button",
+            "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+            t("sources.fire", "立即运行"),
+          );
+          fireBtn.addEventListener("click", () => fireSource(fireBtn));
+          acts.appendChild(fireBtn);
+        }
+        const toggleBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          SRC.enabled ? t("sources.disable", "停用") : t("sources.enable", "启用"),
+        );
+        toggleBtn.addEventListener("click", () => toggleSource(toggleBtn));
+        acts.appendChild(toggleBtn);
+
+        const evBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          t("sources.view_events", "查看事件"),
+        );
+        evBtn.addEventListener("click", () => {
+          location.href = "events.html?source=" + encodeURIComponent(SRC.name);
+        });
+        acts.appendChild(evBtn);
+
+        const delBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px] text-red-400",
+          t("sources.delete", "删除"),
+        );
+        delBtn.addEventListener("click", () => deleteSource(delBtn));
+        acts.appendChild(delBtn);
+      }
+
+      // ---------- 主体 ----------
+      function renderBody() {
+        const body = document.getElementById("src-body");
+        body.replaceChildren();
+        body.appendChild(renderConfigCard());
+        body.appendChild(renderTargetsCard());
+        body.appendChild(renderFlowCard());
+      }
+
+      function card(titleKey, titleDefault) {
+        const c = el("div", "card rounded-2xl p-5");
+        c.appendChild(el("div", "src-section-title", t(titleKey, titleDefault)));
+        return c;
+      }
+
+      // 触发配置：cron 的表达式/时区/自定义字段，webhook 的 URL
+      function renderConfigCard() {
+        const c = card("srcpage.config", "触发配置");
+        const dl = el("dl", "kv");
+        const cfg = SRC.config || {};
+
+        const add = (label, valueNode) => {
+          dl.appendChild(el("dt", "", label));
+          const dd = el("dd", "");
+          if (typeof valueNode === "string") dd.textContent = valueNode;
+          else dd.appendChild(valueNode);
+          dl.appendChild(dd);
+        };
+
+        if (SRC.kind === "cron") {
+          add(t("sources.form.expr", "Cron 表达式"), code(cfg.expr || "?", "param-val"));
+          add(t("srcpage.tz", "时区"), cfg.tz || "Local");
+          if (SRC.nextFireAt) {
+            add(
+              t("srcpage.next_fire", "下次触发"),
+              fmtTime(SRC.nextFireAt) + "（" + relTime(SRC.nextFireAt) + "）",
+            );
+          }
+          if (SRC.lastFiredAt) {
+            add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
+          }
+          // 自定义事件字段：cron 没有外部 payload，这些是它自带的数据
+          if (cfg.payload && Object.keys(cfg.payload).length) {
+            add(
+              t("srcpage.cfg_payload", "事件字段"),
+              code(JSON.stringify(cfg.payload), "param-val"),
+            );
+          }
+        } else if (SRC.kind === "webhook") {
+          if (SRC.hookUrl) {
+            const url = location.origin + SRC.hookUrl;
+            const wrap = el("div", "flex flex-wrap items-center gap-2");
+            wrap.appendChild(el("span", "hook-url", url));
+            const cp = el("button", "btn-ghost rounded-lg px-2 py-1 text-[10px]", t("srcpage.copy", "复制"));
+            cp.addEventListener("click", async () => {
+              try {
+                await navigator.clipboard.writeText(url);
+                toast(t("srcpage.copied", "已复制"));
+              } catch (e) {
+                toast(t("srcpage.copy_failed", "复制失败"));
+              }
+            });
+            wrap.appendChild(cp);
+            add(t("srcpage.hook_url", "Webhook URL"), wrap);
+          }
+          if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
+        } else {
+          add(
+            t("srcpage.manual_hint", "触发方式"),
+            t("sources.manual_hint", "页面上点「立即运行」时触发"),
+          );
+          if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
+        }
+        add(t("srcpage.created", "创建时间"), fmtTime(SRC.createdAt));
+
+        c.appendChild(dl);
+        return c;
+      }
+
+      // 出口能力 + 各自的参数（含映射）
+      function renderTargetsCard() {
+        const c = card("srcpage.targets", "出口能力");
+        const caps = SRC.targetCaps || [];
+        if (!caps.length) {
+          c.appendChild(
+            el("div", "text-xs text-red-400", t("sources.no_target", "未配置")),
+          );
+          return c;
+        }
+
+        for (const tc of caps) {
+          const box = el("div", "mb-3");
+          const head = el("div", "flex flex-wrap items-center gap-2");
+          if (tc.missing) {
+            head.appendChild(
+              el(
+                "span",
+                "target-pill missing",
+                t("sources.target_missing", "已删除") + " " + tc.id,
+              ),
+            );
+          } else {
+            head.appendChild(el("span", "target-pill", Anotify.capLabel(tc, { withRaw: false })));
+          }
+          box.appendChild(head);
+
+          // 参数：值 or 映射
+          const params = tc.params || {};
+          const keys = Object.keys(params);
+          if (!keys.length) {
+            box.appendChild(
+              el("div", "mt-1 text-[11px] text-zinc-600", t("srcpage.no_params", "没有配置参数")),
+            );
+          } else {
+            const table = el("div", "param-table mt-1.5");
+            for (const k of keys) {
+              const v = params[k];
+              const row = el("div", "param-row");
+              row.appendChild(el("span", "param-key", k));
+
+              // 判断是不是映射声明：必须与前端表单/sources.html 的 isMappingDecl 一致
+              const isMap =
+                v &&
+                typeof v === "object" &&
+                !Array.isArray(v) &&
+                Object.prototype.hasOwnProperty.call(v, "from") &&
+                Object.keys(v).every((x) => x === "from" || x === "default" || x === "as");
+
+              if (isMap) {
+                row.appendChild(el("span", "param-map-badge", t("srcpage.mapped", "映射")));
+                row.appendChild(el("span", "param-val", "← payload." + v.from));
+                if (Object.prototype.hasOwnProperty.call(v, "default")) {
+                  row.appendChild(
+                    el(
+                      "span",
+                      "text-[11px] text-zinc-500",
+                      t("srcpage.default_is", "默认 {v}").replace(
+                        "{v}",
+                        JSON.stringify(v.default),
+                      ),
+                    ),
+                  );
+                }
+                if (v.as) {
+                  row.appendChild(
+                    el("span", "text-[11px] text-zinc-500", "as " + v.as),
+                  );
+                }
+              } else {
+                row.appendChild(
+                  el("span", "param-val", JSON.stringify(v)),
+                );
+              }
+              table.appendChild(row);
+            }
+            box.appendChild(table);
+          }
+          c.appendChild(box);
+        }
+        return c;
+      }
+
+      // 下游流向图：复用 graphs.js 的共享实现（不重写一份时序/布局逻辑）
+      function renderFlowCard() {
+        const c = card("srcpage.flow", "下游流向");
+        const host = el("div", "flow-host");
+        const tree = buildFlowTree(SRC);
+        if (!tree.length) {
+          c.appendChild(el("div", "text-[11px] text-zinc-500", t("srcpage.flow_empty", "这个源还没有可展开的下游")));
+          return c;
+        }
+        c.appendChild(host);
+
+        // 展开后才建图：折叠时 offsetWidth 是 0，fit() 会算出错误的缩放
+        requestAnimationFrame(() => {
+          if (!window.AnotifyGraphs) return;
+          window.AnotifyGraphs.capabilityFlow(host, {
+            src: SRC,
+            tree,
+            t,
+            limit: 200,
+            onNodeClick: (nodeId) => {
+              if (nodeId) location.href = "capabilities.html?focus=" + encodeURIComponent(nodeId);
+            },
+          });
+          requestAnimationFrame(() => {
+            const g = host.querySelector(".flograph");
+            if (g && g._graph) g._graph.fit();
+          });
+        });
+        return c;
+      }
+
+      // buildFlowTree 把"源 → 出口能力 → 下游边"铺成一棵树。
+      //
+      // 与 sources.html 里那份逻辑相同（都是纯函数，读 CAPS/EDGES）。
+      // 这里不抽公共模块是为了让详情页能独立演进 —— 两边形状一旦分叉，
+      // 各自改各自的比共享一个"什么都要兼顾"的函数更省事。
+      function buildFlowTree(s) {
+        const capById = new Map(CAPS.map((c) => [c.id, c]));
+        const seen = new Set();
+        const roots = [];
+        const rootsSeen = new Set();
+
+        const node = (cap, viaPort, pathSet) => {
+          const out = {
+            capId: cap.id,
+            cap,
+            viaPort: viaPort || "",
+            children: [],
+            unconnected: [],
+          };
+          const outs = cap.outputs || [];
+          const connected = new Set();
+          for (const e of EDGES) {
+            if (e.fromIsSource) continue;
+            if (e.fromCapability !== cap.id) continue;
+            if (pathSet.has(e.toCapability)) {
+              out.children.push({
+                capId: e.toCapability,
+                cap: capById.get(e.toCapability) || null,
+                kind: "cycle",
+                viaPort: e.fromPort,
+                children: [],
+                unconnected: [],
+              });
+              connected.add(e.fromPort);
+              continue;
+            }
+            const to = capById.get(e.toCapability);
+            if (!to) {
+              out.children.push({
+                capId: e.toCapability,
+                cap: null,
+                kind: "unknown",
+                viaPort: e.fromPort,
+                children: [],
+                unconnected: [],
+              });
+              connected.add(e.fromPort);
+              continue;
+            }
+            connected.add(e.fromPort);
+            const nextPath = new Set(pathSet);
+            nextPath.add(to.id);
+            out.children.push(node(to, e.fromPort, nextPath));
+          }
+          out.unconnected = outs.filter((p) => p && !connected.has(p));
+          return out;
+        };
+
+        for (const tc of s.targetCaps || []) {
+          const cap = capById.get(tc.id);
+          if (!cap) {
+            if (!rootsSeen.has(tc.id)) {
+              rootsSeen.add(tc.id);
+              roots.push({
+                capId: tc.id,
+                cap: null,
+                kind: "unknown",
+                viaPort: "",
+                children: [],
+                unconnected: [],
+              });
+            }
+            continue;
+          }
+          if (rootsSeen.has(cap.id)) continue;
+          rootsSeen.add(cap.id);
+          seen.add(cap.id);
+          roots.push(node(cap, "", new Set([cap.id])));
+        }
+        return roots;
+      }
+
+      // ---------- 操作 ----------
+      async function fireSource(btn) {
+        btn.disabled = true;
+        try {
+          const res = await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id) + "/fire", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          const n = (res && res.dispatch && res.dispatch.tasks && res.dispatch.tasks.length) || 0;
+          const pruned = (res && res.dispatch && res.dispatch.pruned) || [];
+          if (n > 0) {
+            toast(
+              t("sources.fired", "已触发：派发 {n} 个任务").replace("{n}", n) +
+                (pruned.length
+                  ? t("sources.fired_pruned", "，剪枝 {n}").replace("{n}", pruned.length)
+                  : ""),
+            );
+          } else if (pruned.length) {
+            // 派不出去要说清楚原因，别让用户以为"点了没反应"
+            const reasons = [...new Set(pruned.map((p) => p.reason))];
+            const detail = pruned[0] && pruned[0].detail ? "：" + pruned[0].detail : "";
+            toast(
+              t("sources.fired_none", "事件已入库，但没派出去（{r}）").replace(
+                "{r}",
+                reasons.join(", ") + detail,
+              ),
+            );
+          } else {
+            toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"));
+          }
+          await load();
+        } catch (e) {
+          toast(t("sources.fire_failed", "触发失败") + ": " + (e.detail || e.message || e));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function toggleSource(btn) {
+        btn.disabled = true;
+        try {
+          await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !SRC.enabled }),
+          });
+          toast(SRC.enabled ? t("sources.disabled_ok", "已停用") : t("sources.enabled_ok", "已启用"));
+          await load();
+        } catch (e) {
+          toast(t("sources.toggle_failed", "操作失败") + ": " + (e.detail || e.message || e));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function deleteSource(btn) {
+        if (!confirm(t("sources.confirm_delete", "删除后不能恢复，确认删除？").replace("{n}", SRC.name))) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id), {
+            method: "DELETE",
+            demo: null,
+          });
+          toast(t("sources.deleted", "已删除"));
+          location.href = "sources.html";
+        } catch (e) {
+          toast(t("sources.delete_failed", "删除失败") + ": " + (e.detail || e.message || e));
+          btn.disabled = false;
+        }
+      }
+
+      document.addEventListener("DOMContentLoaded", load);
+    </script>
+{{end}}

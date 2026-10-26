@@ -1804,23 +1804,36 @@ async function checkWaterfall(page) {
 // **环路**（deploy-preview → apply-fix → deploy-preview）和**未接出口**
 // （preview.ready）。真实环境不一定有这些形状，那样的断言会假失败。
 // mock 的数据形状是固定的，正好拿来锁住渲染逻辑。
-async function checkFlowChart(page) {
+async function checkFlowChart(page, base) {
 	// 从缩进文本换成 Cytoscape 图形库后（#88），断言改成看"图上有什么"：
 	// 节点、边、环路边、未接下游的伪节点、以及只读性。
 	//
 	// 为什么必须在这里测而不是在真实 server 上：断言依赖 demo 数据里的
 	// **环路**（deploy-preview → apply-fix → deploy-preview）和**未接出口**
 	// （preview.ready）。真实环境不一定有这些形状，那样的断言会假失败。
-	const found = await page.evaluate(() => {
-		const toggles = Array.from(document.querySelectorAll(".flow-toggle"));
-		if (!toggles.length) return 0;
-		toggles[0].click();
-		return toggles.length;
+	// #112：流向图从**列表卡片**搬到了**源详情页**（source.html?id=…）。
+	// 列表只回答"有哪些源、活着吗"，细节（配置/参数/流向）点进去看。
+	//
+	// 图本身的形状断言没有变，变的是它挂在哪一页。
+	//
+	// 从**已渲染的 DOM** 拿链接，不发任何请求：这是 mock 预览环境，
+	// 整页的前提是"没有真实请求发出去"（本套件末尾有断言在查这个）。
+	const flowHref = await page.evaluate(() => {
+		const a = document.querySelector(".src-name-link");
+		return a ? a.getAttribute("href") : null;
 	});
-	H.check("源卡片有流向图入口", found > 0, `count=${found}`);
+	if (!flowHref) {
+		H.check("详情页可进入（列表里有源链接）", false, "列表里没有 .src-name-link");
+		return;
+	}
+	await page.goto(base + "/" + flowHref, { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(2200);
+
+	const found = await page.evaluate(() => document.querySelectorAll(".flograph").length);
+	H.check("源详情页有流向图", found > 0, `count=${found}`);
 	if (!found) return;
 
-	await page.waitForTimeout(1800);
+	await page.waitForTimeout(600);
 
 	const g = await page.evaluate(() => {
 		const host = document.querySelector(".flograph");
@@ -1828,7 +1841,6 @@ async function checkFlowChart(page) {
 		// 节点是真正的 DOM 卡片（不是 canvas 里画的），所以断言直接读 DOM：
 		// 这也顺带验证了"节点可以是任意结构"这个换渲染方式的初衷。
 		const nodeEls = Array.from(host.querySelectorAll(".wf-node"));
-		const dbg = host._graph && host._graph._debug;
 		return {
 			hasCanvas: true,
 			hasGraph: !!host._graph,
@@ -1996,7 +2008,7 @@ async function runMockCoverage() {
 			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
 			await checkDisplayName(page, base);
 		}
-		if (p === "sources.html") await checkFlowChart(page);
+		if (p === "sources.html") await checkFlowChart(page, base);
 		if (p === "events.html") {
 			await checkEventsFilter(page, base);
 			await page.goto(`${base}/events.html`, { waitUntil: "load", timeout: 20000 });

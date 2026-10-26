@@ -373,10 +373,51 @@
 		window.addEventListener("mouseup", onUp);
 
 		// ---- 滚轮缩放 ----
+		//
+		// 原来每个 wheel 事件一律 ×1.12，只看 deltaY 的正负。这手感很差：
+		//
+		//   - 触控板一次双指手势会连发几十个 wheel 事件（deltaY 只有几像素），
+		//     每个都乘 1.12 → 瞬间顶到上限，用户根本控制不住；
+		//   - 鼠标滚轮 deltaY 常是 100 或 120，一次就跳 12%；
+		//   - 而平滑滚轮（Firefox、部分 macOS）deltaY 是 1~3，得狂滚。
+		//
+		// 正确做法是**按滚动量连续缩放**：把 deltaY 归一化到"行"，
+		// 每行缩放 exp 曲线的固定比例。这样：
+		//   - 同样的物理滚动距离，得到同样的缩放幅度（设备无关）
+		//   - 触控板的连续小事件累加后正好等于一次大滚动，不会失控
+		//
+		// 还要设一个上限：单个事件的 deltaY 可能极大（触控板甩一下 300+），
+		// 直接指数化会把 scale 一次打到底。
+		// 每"行"滚动的缩放强度（指数）：exp(0.12) ≈ 1.127，
+		// 也就是滚一格 ≈ 12.7%，和原来 1.12 的手感接近，但**由滚动量决定**。
+		const ZOOM_PER_LINE = 0.12;
+		const MAX_LINES_PER_EVENT = 12; // 单事件最多折算 12 行
+
+		// wheelLines 把 deltaY 折算成"行数"。
+		//
+		// deltaMode：0=像素，1=行，2=页（浏览器按设备/系统设置给不同单位，
+		// 不归一化的话同一个手势在不同机器上差几十倍）。
+		function wheelLines(ev) {
+			let dy = ev.deltaY;
+			if (ev.deltaMode === 1) dy *= 16; // 行 → 像素（约 16px/行）
+			else if (ev.deltaMode === 2) dy *= container.clientHeight || 800; // 页 → 像素
+			let lines = dy / 100; // 100px 约等于"一行"
+			if (lines > MAX_LINES_PER_EVENT) lines = MAX_LINES_PER_EVENT;
+			if (lines < -MAX_LINES_PER_EVENT) lines = -MAX_LINES_PER_EVENT;
+			return lines;
+		}
+
 		function onWheel(ev) {
+			// 只拦纵向滚动来做缩放；横向滚轮（shift+滚轮、触控板横滑）留给浏览器
+			if (Math.abs(ev.deltaY) < Math.abs(ev.deltaX)) return;
 			ev.preventDefault();
+			const lines = wheelLines(ev);
+			if (!lines) return;
 			const box = container.getBoundingClientRect();
-			zoomBy(ev.deltaY < 0 ? 1.12 : 1 / 1.12, ev.clientX - box.left, ev.clientY - box.top);
+			// 指数映射：滚 −1 行 → ×exp(0.12)，连续且可逆
+			// （滚回同样距离能精确回到原来的比例，线性乘法做不到）
+			const factor = Math.exp(-lines * ZOOM_PER_LINE);
+			zoomBy(factor, ev.clientX - box.left, ev.clientY - box.top);
 		}
 		container.addEventListener("wheel", onWheel, { passive: false });
 

@@ -769,7 +769,12 @@
 						"receivers.html",
 						"keys.html",
 						"events.html",
+						// trace 页 (#107)：同样是带查询串的深层链接
+						"trace.html",
 						"sources.html",
+						// 源详情页 (#112)：页面私有的深层链接，必须留在白名单里，
+						// 否则 401 后 next= 会回落到 index.html，把 ?id= 丢掉。
+						"source.html",
 						"capabilities.html",
 						"nodes.html",
 						"security.html",
