@@ -1298,6 +1298,11 @@ sources:
     dup_var: "Duplicate variable name \"{n}\""
     var_need_src: "Variable \"{n}\" needs either a payload path or a fixed value"
     unknown_var: "Param {k} references undeclared variable \"{v}\""
+    demo: "Fill example"
+    demo_hint: "Fill in a working \"variables + params referencing variables\" config; runnable right after saving"
+    demo_name: "Demo · GitHub PR analysis"
+    demo_ok: "Example filled: 4 variables + params bound to them"
+    demo_no_caps: "No target capability with params; variables were filled in"
   preset:
     hourly: Hourly
     daily3: Daily 3:00

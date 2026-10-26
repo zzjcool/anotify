@@ -86,6 +86,18 @@
         padding: 0.15rem 0.35rem;
         cursor: pointer;
       }
+      /* 演示填充后闪一下，指明"往这看" */
+      @keyframes var-flash-kf {
+        0% {
+          box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.55);
+        }
+        100% {
+          box-shadow: 0 0 0 8px rgba(167, 139, 250, 0);
+        }
+      }
+      .var-flash {
+        animation: var-flash-kf 1.3s ease-out 1;
+      }
       .var-empty {
         font-size: 0.7rem;
         color: var(--faint);
@@ -204,13 +216,26 @@
   -->
   <div
     class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden !bg-[var(--panel-modal)] p-6 shadow-2xl"
+    style="min-height: 20rem"
   >
-    <div class="mb-4 flex items-center justify-between">
+    <div class="mb-4 flex items-center justify-between gap-2">
       <h3 id="modal-title" class="font-display text-lg text-white"></h3>
-      <button id="modal-close" class="btn-ghost rounded-lg px-2 py-1 text-sm">✕</button>
+      <div class="flex items-center gap-1.5">
+        <!-- 演示按钮：一键把"变量 + 参数引用变量"整套配置铺好。
+             只看文档很难体会"变量到底省了什么"，点一下看得最快。 -->
+        <button
+          type="button"
+          id="btn-demo"
+          class="btn-ghost rounded-lg px-2 py-1 text-[11px]"
+          title="{{t "sources.form.demo_hint"}}"
+        >
+          {{t "sources.form.demo"}}
+        </button>
+        <button id="modal-close" class="btn-ghost rounded-lg px-2 py-1 text-sm">✕</button>
+      </div>
     </div>
 
-    <div class="flex-1 space-y-4 overflow-y-auto">
+    <div class="modal-scroll flex-1 space-y-4 overflow-y-auto" style="min-height: 12rem">
       <div>
         <label class="mb-1 block text-xs text-zinc-400" for="f-name"
           >{{t "sources.form.name"}}</label
@@ -255,13 +280,6 @@
             {{t "sources.preset.every15"}}
           </button>
         </div>
-
-
-      <!-- webhook 专属 -->
-      <div id="f-hook-wrap" class="hidden">
-        <p class="text-[11px] leading-relaxed text-zinc-500">
-          {{t "sources.form.hook_hint"}}
-        </p>
       </div>
 
       <!-- 变量：这个源对外提供哪些数据。
@@ -281,6 +299,13 @@
           + {{t "sources.form.add_var"}}
         </button>
         <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.vars_hint"}}</p>
+      </div>
+
+      <!-- webhook 专属 -->
+      <div id="f-hook-wrap" class="hidden">
+        <p class="text-[11px] leading-relaxed text-zinc-500">
+          {{t "sources.form.hook_hint"}}
+        </p>
       </div>
 
       <!-- 出口能力（多选） -->
@@ -1374,11 +1399,109 @@
         }
       }
 
+
+      // fillDemo 一键铺好一套"变量 + 参数引用变量"的完整配置。
+      //
+      // 为什么需要这个：变量这个功能看文档很难体会到底省了什么 ——
+      // "记录名字然后在下拉里选"听起来和"直接填路径"差不多，
+      // 只有真的看到「3 个参数全部 ← $xxx」才明白它把路径收敛了。
+      //
+      // 铺出来的这套是**可用的**（不是纯占位）：保存后点「立即运行」就能
+      // 在 mock 里跑通，因为 webhook 的 payload 结构就是 GitHub 的 PR 事件。
+      function fillDemo() {
+        // 1) 名字与 kind：webhook 才有"从事件取"的意义
+        document.getElementById("f-name").value = t(
+          "sources.form.demo_name",
+          "演示 · GitHub PR 分析",
+        );
+        const kindEl = document.getElementById("f-kind");
+        kindEl.value = "webhook";
+        kindEl.disabled = false; // 编辑态可能是禁用的，演示要能切
+        syncKindFields();
+
+        // 2) 变量：把 GitHub 的深层路径收敛成短名字
+        VAR_DEFS = [
+          { name: "lines", from: "pull_request.additions" },
+          { name: "repo", from: "repository.name" },
+          { name: "title", from: "pull_request.title" },
+          { name: "env", value: "staging" },
+        ];
+        renderVars();
+
+        // 3) 选一个"有参数"的出口能力，把每个参数都接上变量。
+        //
+        // 不强依赖某个具体能力名（用户环境里未必有）：挑第一个有
+        // paramsSchema 属性的能力，按它的字段名依次匹配变量。
+        const usable = CAPS.filter(
+          (c) =>
+            c &&
+            !(c.source === "builtin" && c.kind === "origin") &&
+            schemaProps(c.paramsSchema) &&
+            Object.keys(schemaProps(c.paramsSchema)).length,
+        );
+        if (!usable.length) {
+          toast(t("sources.form.demo_no_caps", "没有带参数的出口能力，变量部分已填好"));
+          return;
+        }
+        const cap = usable[0];
+
+        renderTargetPicker([cap.id], {});
+        const box = document.getElementById("f-targets");
+        const cb = box.querySelector('input.target-cap[value="' + CSS.escape(cap.id) + '"]');
+        if (cb) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
+        // 4) 把每个参数的映射态打开，能对上变量名的就选变量。
+        const wrap = box.querySelector('.target-params[data-for="' + CSS.escape(cap.id) + '"]');
+        if (wrap) {
+          const props = schemaProps(cap.paramsSchema);
+          const names = VAR_DEFS.map((d) => d.name);
+          // 字段容器是 [data-param-field]（不是 .param-field）——
+          // 这里曾经写错，导致演示按钮"点了没反应"但也不报错。
+          const fieldEls = wrap.querySelectorAll("[data-param-field]");
+          let idx = 0;
+          for (const field of Object.keys(props)) {
+            const fieldEl = fieldEls[idx];
+            idx += 1;
+            if (!fieldEl) continue;
+            const mapBtn = fieldEl.querySelector('.param-mode-btn[data-mode="map"]');
+            if (mapBtn) mapBtn.click();
+            const chooser = fieldEl.querySelector("[data-var-chooser]");
+            if (!chooser) continue;
+            // 同名优先，否则取第一个还没用过的变量
+            const pick = names.includes(field) ? field : names[0];
+            if (pick) {
+              chooser.value = pick;
+              chooser.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+          }
+        }
+
+        // 滚回顶部：变量区在名字/触发方式**下面**，小视口下刚打开时
+        // 看不见。不滚的话用户只看到"名字变了"，以为按钮没生效。
+        const scroller = document.querySelector("#src-modal .modal-scroll");
+        if (scroller) scroller.scrollTop = 0;
+
+        // 闪一下变量区，指明"看这里"
+        const varsBox = document.getElementById("f-vars");
+        if (varsBox) {
+          varsBox.classList.add("var-flash");
+          setTimeout(() => varsBox.classList.remove("var-flash"), 1400);
+        }
+
+        toast(
+          t("sources.form.demo_ok", "已填入演示配置：4 个变量 + 参数引用变量"),
+        );
+      }
+
       // ---------- 绑定 ----------
       document.getElementById("btn-refresh").addEventListener("click", loadAll);
       document.getElementById("btn-new").addEventListener("click", () => {
         openModal(null);
       });
+      document.getElementById("btn-demo").addEventListener("click", fillDemo);
       document.getElementById("modal-close").addEventListener("click", closeModal);
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
       document.getElementById("modal-save").addEventListener("click", save);

@@ -1298,6 +1298,11 @@ sources:
     dup_var: "Nombre de variable «{n}» duplicado"
     var_need_src: "La variable «{n}» necesita una ruta del payload o un valor fijo"
     unknown_var: "El parámetro {k} referencia la variable no declarada «{v}»"
+    demo: "Rellenar ejemplo"
+    demo_hint: "Rellena una configuración funcional de «variables + parámetros que las referencian»; ejecutable tras guardar"
+    demo_name: "Demo · Análisis de PR de GitHub"
+    demo_ok: "Ejemplo rellenado: 4 variables + parámetros enlazados a ellas"
+    demo_no_caps: "No hay capacidad de destino con parámetros; se rellenaron las variables"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

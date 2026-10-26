@@ -1298,6 +1298,11 @@ sources:
     dup_var: "变量名「{n}」重复"
     var_need_src: "变量「{n}」要么填 payload 路径，要么改选固定值"
     unknown_var: "参数 {k} 引用了未声明的变量「{v}」"
+    demo: "填入示例"
+    demo_hint: "一键填入一套可用的「变量 + 参数引用变量」配置，保存后可直接运行"
+    demo_name: "演示 · GitHub PR 分析"
+    demo_ok: "已填入演示配置：4 个变量 + 参数引用变量"
+    demo_no_caps: "没有带参数的出口能力，变量部分已填好"
   preset:
     hourly: 每小时
     daily3: 每天 3:00

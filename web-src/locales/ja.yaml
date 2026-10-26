@@ -1298,6 +1298,11 @@ sources:
     dup_var: "変数名「{n}」が重複しています"
     var_need_src: "変数「{n}」には payload パスか固定値が必要です"
     unknown_var: "パラメータ {k} が未宣言の変数「{v}」を参照しています"
+    demo: "サンプルを入力"
+    demo_hint: "「変数 + 変数を参照するパラメータ」の実用的な設定を一括入力します。保存後すぐ実行できます"
+    demo_name: "デモ · GitHub PR 分析"
+    demo_ok: "サンプルを入力しました：変数 4 個 + パラメータの変数参照"
+    demo_no_caps: "パラメータ付きの出口能力がありません。変数のみ入力しました"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00
