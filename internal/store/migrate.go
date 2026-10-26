@@ -100,6 +100,8 @@ func migrateNewModelColumns(tx *sql.Tx) error {
 	alters := []struct{ table, column, ddl string }{
 		// 退避时间：NULL = 立刻可派（契约 §3.3）。老任务补 NULL 即可，行为不变。
 		{"tasks", "not_before", `ALTER TABLE tasks ADD COLUMN not_before INTEGER`},
+		// 能力的显示名（用户自己取的中文名）。默认空串 = 没取，前端回落到 name@version。
+		{"capability_versions", "display_name", `ALTER TABLE capability_versions ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, a := range alters {
 		has, err := hasColumn(tx, a.table, a.column)

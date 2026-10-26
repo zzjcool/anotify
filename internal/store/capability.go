@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // 能力来源（契约 §2.2 source 列）。
@@ -61,6 +62,10 @@ type CapabilityVersion struct {
 	ID           string          `json:"id"`
 	OrgID        string          `json:"orgId"`
 	Name         string          `json:"name"`
+	// DisplayName 是**纯展示**标签（用户自己取的名字，如「分析 PR」）。
+	// 空串表示没取，前端回落到 name@version。
+	// 它不参与路由、不参与 content_hash —— 改它不该产生新版本。
+	DisplayName  string          `json:"displayName"`
 	Version      int             `json:"version"`
 	ParamsSchema json.RawMessage `json:"paramsSchema"`
 	Outputs      []string        `json:"outputs"`
@@ -234,9 +239,9 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 
 	_, err = d.ExecContext(ctx,
 		`INSERT INTO capability_versions
-		   (id, org_id, name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.OrgID, c.Name, c.Version, schema, string(outputsJSON),
+		   (id, org_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.OrgID, c.Name, c.DisplayName, c.Version, schema, string(outputsJSON),
 		string(lifecycleJSON), c.Sticky, c.Source, hash, c.CreatedAt)
 	if err == nil {
 		c.ContentHash = hash
@@ -249,6 +254,21 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	// 冲突：要么是同内容（幂等，返回已有行），要么是同 name@version 换内容（真错）。
 	existing, gerr := d.getCapabilityByHash(ctx, c.OrgID, hash)
 	if gerr == nil && existing != nil {
+		// 同内容已存在 → 幂等返回已有行。
+		//
+		// **但 display_name 要单独处理**：它不参与 hash，所以"内容相同"
+		// 不代表"显示名相同"。如果这次请求带了 displayName 而旧行没有
+		// （或不同），就把它落库 —— 否则用户填的名字会被静默吞掉，
+		// 界面上看起来"我明明改了却没生效"。
+		//
+		// 这里只 UPDATE 装饰字段，不违反 append-only（I8）：
+		// 能力定义本身（name/schema/outputs/lifecycle/sticky）一个字节都没动。
+		if want := strings.TrimSpace(c.DisplayName); want != "" && want != existing.DisplayName {
+			if uerr := d.SetCapabilityDisplayName(ctx, c.OrgID, existing.ID, want); uerr != nil {
+				return fmt.Errorf("update display name on idempotent create: %w", uerr)
+			}
+			existing.DisplayName = want
+		}
 		*c = *existing
 		return nil
 	}
@@ -272,7 +292,7 @@ func (d *DB) getCapabilityByHash(ctx context.Context, orgID, hash string) (*Capa
 }
 
 // capabilityColumns 是统一的列顺序，scanCapability 依赖它。
-const capabilityColumns = `id, org_id, name, version, params_schema, outputs, lifecycle,
+const capabilityColumns = `id, org_id, name, display_name, version, params_schema, outputs, lifecycle,
 	sticky, source, content_hash, created_at`
 
 // scanCapability 执行查询并解析一行；未命中返回 ErrNotFound。
@@ -280,7 +300,7 @@ func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*Ca
 	var c CapabilityVersion
 	var paramsSchema, outputs, lifecycle string
 	err := d.QueryRowContext(ctx, query, args...).Scan(
-		&c.ID, &c.OrgID, &c.Name, &c.Version, &paramsSchema, &outputs,
+		&c.ID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 		&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -318,6 +338,33 @@ func (d *DB) GetCapabilityByID(ctx context.Context, orgID, id string) (*Capabili
 		`SELECT `+capabilityColumns+` FROM capability_versions WHERE org_id = ? AND id = ?`, orgID, id)
 }
 
+// SetCapabilityDisplayName 只更新 display_name 一列。
+//
+// **不碰 content_hash**：显示名不参与 hash 计算（见 capHashInput 注释），
+// 所以改它不会产生新版本，也不会让 UNIQUE(org_id, content_hash) 冲突。
+//
+// 这是这张表上唯一的 UPDATE。其余字段全都 append-only（不变量 I8）——
+// display_name 是装饰字段，不属于"能力定义"，改它不影响任何旧 trace 的解释。
+func (d *DB) SetCapabilityDisplayName(ctx context.Context, orgID, id, displayName string) error {
+	if orgID == "" || id == "" {
+		return fmt.Errorf("set display name: empty org_id or id")
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE capability_versions SET display_name = ? WHERE org_id = ? AND id = ?`,
+		displayName, orgID, id)
+	if err != nil {
+		return fmt.Errorf("set display name: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set display name rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListCapabilities 列出组织内全部能力定义（按 name、version 升序；空列表返回 []）。
 func (d *DB) ListCapabilities(ctx context.Context, orgID string) ([]*CapabilityVersion, error) {
 	rows, err := d.QueryContext(ctx,
@@ -332,7 +379,7 @@ func (d *DB) ListCapabilities(ctx context.Context, orgID string) ([]*CapabilityV
 		var c CapabilityVersion
 		var paramsSchema, outputs, lifecycle string
 		if err := rows.Scan(
-			&c.ID, &c.OrgID, &c.Name, &c.Version, &paramsSchema, &outputs,
+			&c.ID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan capability row: %w", err)

@@ -1117,6 +1117,13 @@ caps:
   count: '{n} capabilities'
   no_outputs: No outputs (terminal capability)
   any_event_type: Any event type (origin)
+  rename: Rename
+  name_it: Name it
+  save: Save
+  cancel: Cancel
+  rename_ph: Give it a name, e.g. "Analyze PR"
+  rename_failed: Rename failed
+  renamed: Name updated
   list:
     title: Capabilities
   form:

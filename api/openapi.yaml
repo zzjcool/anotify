@@ -728,6 +728,43 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      tags: [capabilities]
+      summary: 改能力的显示名（只动 display_name 一列）
+      description: |
+        `displayName` 是**纯展示**标签，不属于能力定义：
+
+        - **不参与 `contentHash`** —— 改它不产生新版本，不会让旧 trace 无法解释
+        - **不参与路由** —— 出口名来自 `outputs`，边指向 `id`，节点声明用 `name`
+        - 传空串表示清掉显示名（前端回落到 `name@version`）
+
+        这是这张表上**唯一**的 UPDATE。其余字段仍然 append-only（不变量 I8）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: 能力的 capability_versions.id }
+                displayName: { type: string, description: 空串 = 清除显示名 }
+      responses:
+        "200":
+          description: 已更新（返回更新后的能力）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capability: { $ref: "#/components/schemas/Capability" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   # ========== 事件中心：出口表 ==========
   /edges:
@@ -1928,6 +1965,12 @@ components:
         id: { type: string, example: cap_1730000000_a1b2c3d4 }
         orgId: { type: string }
         name: { type: string, example: review }
+        displayName:
+          type: string
+          description: |
+            **纯展示**用的标签（用户自己取的名字，如「分析 PR」）。空串表示没取，
+            前端回落到 `name@version`。
+            它不参与路由，也**不参与 contentHash** —— 改它不会产生新版本。
         version: { type: integer, example: 1 }
         paramsSchema:
           type: object
@@ -1965,6 +2008,12 @@ components:
       required: [name]
       properties:
         name: { type: string, example: review }
+        displayName:
+          type: string
+          description: |
+            纯展示标签，可省略。**不参与 contentHash**：改名不产生新版本。
+            但同一 name@version 已有内容时，改 displayName 会被判为
+            "同内容已存在"（hash 相同）而不落库 —— 见 CreateCapability 注释。
         version:
           type: integer
           description: 省略时自动开下一个版本（append-only，不变量 I8）

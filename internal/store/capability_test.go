@@ -611,3 +611,75 @@ func TestListEdgesEmptyIsArray(t *testing.T) {
 		t.Fatal("ListEdges returned nil (need [])")
 	}
 }
+
+// TestCapabilityDisplayName 显示名的往返 + 三个必须成立的边界。
+//
+// 这个测试盯的是 display_name 的"装饰字段"性质 —— 它一旦被误算进
+// content_hash，或者改它产生新版本，I8（能力定义 append-only）就被破坏了：
+// 用户改个中文名，旧 trace 会因为 capHash 对不上而无法解释。
+func TestCapabilityDisplayName(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+
+	// ① 往返：存什么读什么
+	c := mkCap(orgID, "analyze-pr", 1, []string{"needs-fix"})
+	c.DisplayName = "分析 PR"
+	if err := db.CreateCapability(ctx, c); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := db.GetCapability(ctx, orgID, "analyze-pr", 1)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.DisplayName != "分析 PR" {
+		t.Fatalf("display name roundtrip: got %q want %q", got.DisplayName, "分析 PR")
+	}
+
+	// ② 显示名不参与 content_hash：同一份定义、不同显示名 → 同一行
+	hashBefore := got.ContentHash
+	c2 := mkCap(orgID, "analyze-pr", 1, []string{"needs-fix"})
+	c2.DisplayName = "完全不同的名字"
+	if err := db.CreateCapability(ctx, c2); err != nil {
+		t.Fatalf("create same content with different display name: %v", err)
+	}
+	if c2.ContentHash != hashBefore {
+		t.Fatalf("display name leaked into content_hash: %q vs %q", c2.ContentHash, hashBefore)
+	}
+	if c2.ID != c.ID {
+		t.Fatalf("same content produced a second row: %q vs %q", c2.ID, c.ID)
+	}
+	// 幂等创建时带了新显示名 → 应该更新那一列（而不是静默丢弃）
+	if c2.DisplayName != "完全不同的名字" {
+		t.Fatalf("idempotent create dropped new display name: %q", c2.DisplayName)
+	}
+
+	// ③ 单独改名：只动 display_name，不动 hash / 不产生新版本
+	if err := db.SetCapabilityDisplayName(ctx, orgID, c.ID, "改过的名字"); err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
+	after, err := db.GetCapabilityByID(ctx, orgID, c.ID)
+	if err != nil {
+		t.Fatalf("get after rename: %v", err)
+	}
+	if after.DisplayName != "改过的名字" {
+		t.Fatalf("rename did not stick: %q", after.DisplayName)
+	}
+	if after.ContentHash != hashBefore {
+		t.Fatalf("rename changed content_hash: %q vs %q", after.ContentHash, hashBefore)
+	}
+	// 版本数没变（还是 1）
+	list, err := db.ListCapabilities(ctx, orgID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("rename created a new version: %d rows", len(list))
+	}
+
+	// ④ 跨组织改不动（不变量 I10）
+	otherOrg, _ := newTestOrg(t, db)
+	if err := db.SetCapabilityDisplayName(ctx, otherOrg, c.ID, "偷改"); err == nil {
+		t.Fatal("cross-org display name update should fail")
+	}
+}

@@ -729,7 +729,9 @@
           const pill = el(
             "span",
             "target-pill" + (c.missing ? " missing" : ""),
-            c.missing ? t("sources.target_missing", "已删除") + " " + c.id : c.name + "@" + c.version,
+            c.missing
+              ? t("sources.target_missing", "已删除") + " " + c.id
+              : Anotify.capLabel(c, { withRaw: false }),
           );
           tgtWrap.appendChild(pill);
         }
@@ -966,7 +968,7 @@
           cb.value = c.id;
           cb.checked = checked;
           label.appendChild(cb);
-          const span = el("span", "", c.name + "@" + (c.version != null ? c.version : "?"));
+          const span = el("span", "", Anotify.capLabel(c));
           label.appendChild(span);
           // 标出这个能力是什么角色，避免误选终端能力当入口
           if (c.kind) {

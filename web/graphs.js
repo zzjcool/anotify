@@ -32,6 +32,25 @@
 (function () {
 	"use strict";
 
+	/**
+	 * capLabel 是本模块对 Anotify.capLabel 的薄代理。
+	 *
+	 * 为什么不能裸调：graphs.js 与 partials.js 是两个独立的 IIFE，
+	 * 后者的局部函数在前者作用域里不存在 —— 裸调会在**渲染时**抛
+	 * ReferenceError（不是加载时，所以更容易漏到线上）。
+	 *
+	 * 为什么要有代理而不是到处写 window.Anotify.capLabel：加载顺序
+	 * 不保证（base.html 里两个都是普通 script），代理能在调用时才解析，
+	 * 而且 capLabel 缺失时给出可读的回落而不是崩掉整张图。
+	 */
+	function capLabel(cap) {
+		const A = window.Anotify;
+		if (A && typeof A.capLabel === "function") return A.capLabel(cap);
+		// 回落：至少别崩，也别显示 "undefined"
+		if (!cap) return "";
+		return String(cap.name || "") + (cap.version != null ? "@" + cap.version : "");
+	}
+
 	// ==================== 内部工具 ====================
 
 	const ICON = {
@@ -139,7 +158,11 @@
 			for (const n of list) {
 				const unknown = n.kind === "unknown";
 				addNode(n.capId, {
-					label: unknown ? n.capId : n.cap.name + "@" + (n.cap.version ?? "?"),
+					// 有显示名就用它。裁决点只有一处：Anotify.capLabel
+					// （它活在 partials.js 的 IIFE 里，本文件是独立 IIFE，
+					// 只能通过 window.Anotify 访问，不能裸调）。
+					// 图节点不带版本号：视觉空间有限，版本放悬停标题里。
+					label: unknown ? n.capId : capLabel(n.cap),
 					kind: unknown ? "unknown" : n.cap.kind || "pipe",
 					// "源直接指向"这个信息不用于高亮（图上唯一的根是触发器），
 					// 但下面要用它来连"源 → 首层能力"的边

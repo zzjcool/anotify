@@ -1117,6 +1117,13 @@ caps:
   count: '{n} 個のケイパビリティ'
   no_outputs: 出口なし（終端ケイパビリティ）
   any_event_type: 任意のイベント種別（起点）
+  rename: 名前を変更
+  name_it: 名前を付ける
+  save: 保存
+  cancel: キャンセル
+  rename_ph: 名前を付けてください（例：「PR を分析」）
+  rename_failed: 名前の変更に失敗しました
+  renamed: 名前を更新しました
   list:
     title: ケイパビリティ一覧
   form:

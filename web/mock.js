@@ -63,11 +63,13 @@
 	// 刻意做得像真的：有扇出、有分叉的 out、有失败与剪枝，
 	// 这样看页面时能看出各种状态长什么样，而不是一排"成功"。
 
-	function cap(name, version, outputs, paramsSchema, source) {
+	function cap(name, version, outputs, paramsSchema, source, displayName) {
 		return {
 			id: "cap_mock_" + name.replace(/\./g, "_") + "_v" + version,
 			orgId: ORG,
 			name: name,
+			// 纯展示标签，空串 = 没取（前端回落到 name@version）
+			displayName: displayName || "",
 			version: version,
 			outputs: outputs,
 			paramsSchema: paramsSchema || { type: "object" },
@@ -79,6 +81,9 @@
 	}
 
 	const state = {
+		// displayName 是纯展示标签（用户自己取的名字）。
+		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
+		// 留几个空的，用来验证没有显示名时回落到 name@version。
 		capabilities: [
 			// 内置起点（source=builtin，outputs 空，任意事件类型）
 			cap("github", 1, [], { type: "object" }, "builtin"),
@@ -96,10 +101,17 @@
 					repo: { type: "string" },
 				},
 			}),
-			cap("apply-fix", 1, ["fixed"], {
-				type: "object",
-				properties: { scope: { type: "string", enum: ["lint", "test", "all"] } },
-			}),
+			cap(
+				"apply-fix",
+				1,
+				["fixed"],
+				{
+					type: "object",
+					properties: { scope: { type: "string", enum: ["lint", "test", "all"] } },
+				},
+				"custom",
+				"应用修复",
+			),
 			// outputs 里刻意留一个没接边的端口（preview.ready）：
 			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏
 			// outputs 里刻意留一个没接边的端口（manual.approval）：
@@ -284,7 +296,10 @@
 				status: "online",
 				lastSeenAt: now() - 3,
 				createdAt: now() - 86400,
-				capabilities: ["analyze-pr", "lint-fix", "apply-fix", "report.send", "alert.oncall"].map(capRef),
+				// displayName 是纯展示标签（用户自己取的名字）。
+		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
+		// 留几个空的，用来验证没有显示名时回落到 name@version。
+		capabilities: ["analyze-pr", "lint-fix", "apply-fix", "report.send", "alert.oncall"].map(capRef),
 				instances: [
 					{ id: "nins_mock_0", index: 0, concurrency: 4, busy: 1 },
 				],
@@ -298,7 +313,10 @@
 				status: "offline",
 				lastSeenAt: now() - 7200,
 				createdAt: now() - 86400 * 3,
-				capabilities: ["deploy-preview", "run-tests", "gen-changelog"].map(capRef),
+				// displayName 是纯展示标签（用户自己取的名字）。
+		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
+		// 留几个空的，用来验证没有显示名时回落到 name@version。
+		capabilities: ["deploy-preview", "run-tests", "gen-changelog"].map(capRef),
 				instances: [{ id: "nins_mock_1", index: 0, concurrency: 2, busy: 0 }],
 			},
 			{
@@ -310,7 +328,10 @@
 				status: "online",
 				lastSeenAt: now() - 12,
 				createdAt: now() - 86400 * 7,
-				capabilities: ["rollback"].map(capRef),
+				// displayName 是纯展示标签（用户自己取的名字）。
+		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
+		// 留几个空的，用来验证没有显示名时回落到 name@version。
+		capabilities: ["rollback"].map(capRef),
 				instances: [{ id: "nins_mock_2", index: 0, concurrency: 1, busy: 0 }],
 			},
 		];
@@ -737,6 +758,7 @@
 			return {
 				id: c.id,
 				name: c.name,
+				displayName: c.displayName || "",
 				version: c.version,
 				params: t.params || {},
 				paramsSchema: c.paramsSchema,
@@ -848,6 +870,17 @@
 		const c = cap(b.name, b.version || nextVer, b.outputs || [], b.paramsSchema);
 		state.capabilities.push(c);
 		return json({ capability: capView(c) }, 201);
+	});
+
+	// PATCH 只改 display_name（装饰字段），不产生新版本。
+	// 真实后端同样如此：它不参与 contentHash（见 store.capHashInput 注释）。
+	on("PATCH", /^\/v1\/capabilities$/, (ctx) => {
+		const b = ctx.body || {};
+		if (!b.id) return err(400, "id is required");
+		const c = state.capabilities.find((x) => x.id === b.id);
+		if (!c) return err(404, "capability not found");
+		c.displayName = String(b.displayName || "").trim();
+		return json({ capability: capView(c) });
 	});
 
 	on("GET", /^\/v1\/edges$/, () => json({ edges: clone(state.edges) }));

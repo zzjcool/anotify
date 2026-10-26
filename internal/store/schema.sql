@@ -185,6 +185,10 @@ CREATE TABLE IF NOT EXISTS capability_versions (
     id            TEXT PRIMARY KEY,           -- cap_<UTC>_<hash8>
     org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     name          TEXT NOT NULL,              -- review
+    -- display_name 是**纯展示**用的标签（用户自己取的中文名）。
+    -- 它绝不参与路由：edges 两端指向 id，出口名来自 outputs，节点声明用 name。
+    -- 也**不参与 content_hash** —— 改个显示名不该算"内容变了"。
+    display_name  TEXT NOT NULL DEFAULT '',
     version       INTEGER NOT NULL,           -- 1
     params_schema TEXT NOT NULL,              -- JSON Schema
     outputs       TEXT NOT NULL,              -- JSON 数组，如 ["fix","clean"]
