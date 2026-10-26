@@ -1275,6 +1275,21 @@ sources:
     payload: "Event fields (optional)"
     payload_hint: "Fields to include on each scheduled run, as a JSON object like {\"env\":\"prod\"}. Target param mappings can reference them."
     bad_payload: "Event fields must be a JSON object like {\"env\":\"prod\"}"
+    vars: "Variables"
+    add_var: "Add variable"
+    no_vars: "No variables yet. You can skip this and use a payload path directly."
+    vars_hint: "Variables are the field names this source exposes. Target params can pick one instead of remembering deep paths like pull_request.title. For scheduled sources a variable is just a constant."
+    var_from: "From event"
+    var_value: "Fixed value"
+    var_none: "— use path below —"
+    del_var: "Delete variable"
+    vars_available: "Available variables: "
+    var_hint: "Takes the variable value and passes it through as-is."
+    need_src: "Param {k} is set to \"From event\"; pick a variable or fill in the payload path"
+    bad_var_name: "Variable name \"{n}\" is invalid (letters/digits/underscore, cannot start with a digit)"
+    dup_var: "Duplicate variable name \"{n}\""
+    var_need_src: "Variable \"{n}\" needs either a payload path or a fixed value"
+    unknown_var: "Param {k} references undeclared variable \"{v}\""
   preset:
     hourly: Hourly
     daily3: Daily 3:00

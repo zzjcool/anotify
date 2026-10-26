@@ -1031,8 +1031,47 @@
 	function isMapping(v) {
 		if (!v || typeof v !== "object" || Array.isArray(v)) return false;
 		const keys = Object.keys(v);
-		if (!keys.includes("from")) return false;
-		return keys.every((k) => k === "from" || k === "default" || k === "as");
+		// 两种引用形态：
+		//   {from:"pull_request.title"}  → 直接写 payload 路径（上一轮的形态）
+		//   {var:"title"}                → 引用**源声明的变量**（本轮新增，推荐）
+		// 二者都有时拒绝（"到底取哪个"没有合理默认，配置期就该拦）。
+		const hasFrom = keys.includes("from");
+		const hasVar = keys.includes("var");
+		if (!hasFrom && !hasVar) return false;
+		if (hasFrom && hasVar) return false;
+		return keys.every((k) => k === "from" || k === "var" || k === "default" || k === "as");
+	}
+
+	// isVarRef 判断是不是变量引用（{var:"x"}）。与 isMapping 保持同一口径。
+	function isVarRef(v) {
+		return isMapping(v) && typeof v.var === "string" && v.var !== "";
+	}
+
+	// resolveVars 把源声明的变量表求值成 {name: value}。
+	//
+	// 变量定义（存在 sources.config.vars 里，纯数据列，不需要改表）：
+	//   [{ name:"title",  from:"pull_request.title" }]         ← 从 payload 取
+	//   [{ name:"env",    value:"prod" }]                      ← 字面量
+	//
+	// 返回 {values, missing}：missing 是"声明了 from 但这个 payload 里没有"的变量名，
+	// 由调用方决定是报错还是放过（出口参数若是字面量、不引用它，就不该因此失败）。
+	function resolveVars(varDefs, payload) {
+		const values = {};
+		const missing = [];
+		for (const d of varDefs || []) {
+			if (!d || typeof d.name !== "string" || !d.name) continue;
+			if (Object.prototype.hasOwnProperty.call(d, "value")) {
+				values[d.name] = clone(d.value);
+				continue;
+			}
+			const got = getPath(payload, d.from);
+			if (got !== undefined) {
+				values[d.name] = clone(got);
+			} else {
+				missing.push(d.name);
+			}
+		}
+		return { values, missing };
 	}
 
 	// getPath 按点号路径从对象里取值。数组用数字下标（items.0.name）。
@@ -1061,45 +1100,94 @@
 	// 返回 {params, used, missing}：missing 是"声明了映射但 payload 里没有、
 	// 也没有 default"的字段名。上游（触发响应）会把它报出去，让用户知道
 	// 哪个字段没取到值——静默丢掉是最难查的一种失败。
-	function resolveParams(template, payload) {
+	function resolveParams(template, payload, varValues) {
 		const out = {};
 		const used = [];
 		const missing = [];
 		if (!template) return { params: out, used, missing };
+		const vars = varValues || {};
 		for (const [k, v] of Object.entries(template)) {
 			if (!isMapping(v)) {
 				out[k] = clone(v);
 				continue;
 			}
-			const got = getPath(payload, v.from);
+
+			let got;
+			let ref;
+			if (isVarRef(v)) {
+				// 变量引用：值来自源声明的变量表
+				ref = "$" + v.var;
+				got = vars[v.var];
+			} else {
+				ref = "payload." + v.from;
+				got = getPath(payload, v.from);
+			}
+
 			if (got !== undefined) {
 				out[k] = clone(got);
-				used.push({ field: k, from: v.from });
+				used.push({ field: k, from: ref });
 				continue;
 			}
 			if (Object.prototype.hasOwnProperty.call(v, "default")) {
 				out[k] = clone(v.default);
 				continue;
 			}
-			missing.push({ field: k, from: v.from });
+			missing.push({ field: k, from: ref });
 		}
 		return { params: out, used, missing };
 	}
 
 	// validateMappingPaths 校验映射声明本身（配置期，不是触发期）。
 	// 只查形式：from 必须是点号路径字符串，as 只能是 string/number/boolean/json。
-	function validateMappingPaths(template) {
+	function validateMappingPaths(template, declaredVars) {
 		if (!template) return "";
+		const known = declaredVars ? new Set(declaredVars.map((d) => d && d.name).filter(Boolean)) : null;
 		for (const [k, v] of Object.entries(template)) {
 			if (!isMapping(v)) continue;
-			if (typeof v.from !== "string" || !v.from.trim()) {
-				return `参数 ${k} 的映射缺少 from（payload 字段路径）`;
+			if (typeof v.from === "string" && typeof v.var === "string") {
+				return `参数 ${k} 同时写了 from 和 var，只能选一个`;
 			}
-			if (v.from.includes("..") || v.from.startsWith(".") || v.from.endsWith(".")) {
-				return `参数 ${k} 的 from 路径不合法：「${v.from}」`;
+			if (typeof v.var === "string") {
+				// 变量引用：配置期就能校验"这个变量到底声明过没有"。
+				// 不校验的话用户写了 $titel 拼错，要等到触发时才在剪枝里看到。
+				if (!v.var.trim()) return `参数 ${k} 的变量名为空`;
+				if (known && !known.has(v.var)) {
+					return `参数 ${k} 引用了未声明的变量「${v.var}」`;
+				}
+			} else {
+				if (typeof v.from !== "string" || !v.from.trim()) {
+					return `参数 ${k} 的映射缺少 from 或 var`;
+				}
+				if (v.from.includes("..") || v.from.startsWith(".") || v.from.endsWith(".")) {
+					return `参数 ${k} 的 from 路径不合法：「${v.from}」`;
+				}
 			}
 			if (v.as !== undefined && !["string", "number", "boolean", "json"].includes(v.as)) {
 				return `参数 ${k} 的 as 只能是 string/number/boolean/json`;
+			}
+		}
+		return "";
+	}
+
+	// validateVarDefs 校验源声明的变量表（配置期）。
+	function validateVarDefs(defs) {
+		if (!Array.isArray(defs)) return "变量必须是数组";
+		const seen = new Set();
+		for (const d of defs) {
+			if (!d || typeof d !== "object") return "变量项必须是对象";
+			const name = d.name;
+			if (typeof name !== "string" || !name.trim()) return "每个变量都要有名字";
+			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+				return `变量名「${name}」不合法（只能是字母/数字/下划线，且不以数字开头）`;
+			}
+			if (seen.has(name)) return `变量名「${name}」重复`;
+			seen.add(name);
+			const hasFrom = typeof d.from === "string" && d.from !== "";
+			const hasValue = Object.prototype.hasOwnProperty.call(d, "value");
+			if (hasFrom && hasValue) return `变量「${name}」不能同时有 from 和 value`;
+			if (!hasFrom && !hasValue) return `变量「${name}」要么给 from（payload 路径），要么给 value（固定值）`;
+			if (hasFrom && (d.from.includes("..") || d.from.startsWith(".") || d.from.endsWith("."))) {
+				return `变量「${name}」的 from 路径不合法：「${d.from}」`;
 			}
 		}
 		return "";
@@ -1157,7 +1245,7 @@
 		return v;
 	}
 
-	function validateTargets(targets) {
+	function validateTargets(targets, varDefs) {
 		const byID = new Map(state.capabilities.map((c) => [c.id, c]));
 		for (const t of targets) {
 			const c = byID.get(t.capabilityId);
@@ -1165,7 +1253,7 @@
 			if (t.params && Object.keys(t.params).length) {
 				// 先校验映射声明本身（形式对不对），再校验字面量的 schema。
 				// 映射的值要触发时才有，这里不能拿它去做 schema 校验。
-				const mmsg = validateMappingPaths(t.params);
+				const mmsg = validateMappingPaths(t.params, varDefs);
 				if (mmsg) return `${c.name}@${c.version}：${mmsg}`;
 				const literals = {};
 				for (const [k, v] of Object.entries(t.params)) {
@@ -1195,10 +1283,16 @@
 		if (state.sources.some((s) => s.name === b.name.trim())) {
 			return err(409, "同名源已存在，换个名字");
 		}
-		const bad = validateTargets(targets);
+		let cfg = b.config || {};
+
+		// 变量表：所有 kind 通用（webhook 从 payload 取、cron 用字面量）。
+		const vars = Array.isArray(cfg.vars) ? cfg.vars : [];
+		const vbad = validateVarDefs(vars);
+		if (vbad) return err(400, vbad);
+
+		const bad = validateTargets(targets, vars);
 		if (bad) return err(400, bad);
 
-		let cfg = b.config || {};
 		if (b.kind === "cron") {
 			const expr = (cfg.expr || "").trim();
 			if (!expr) return err(400, "cron 需要 expr（五段表达式，如 0 3 * * *）");
@@ -1209,11 +1303,14 @@
 			// 纯数据，不参与求值（I6）。这就是"cron 用户自定义字段"的答案：
 			// 它不需要模板语法，只是想让事件带上 {"env":"prod"} 这种常量。
 			const pl = cfg.payload && typeof cfg.payload === "object" ? cfg.payload : {};
-			cfg = { expr: expr, tz: cfg.tz || "Local", payload: pl };
+			cfg = { expr: expr, tz: cfg.tz || "Local", payload: pl, vars };
 		} else if (b.kind === "webhook") {
-			cfg = { token: cfg.token || "src_mock" + Math.random().toString(36).slice(2, 12) };
+			cfg = {
+				token: cfg.token || "src_mock" + Math.random().toString(36).slice(2, 12),
+				vars,
+			};
 		} else {
-			cfg = {};
+			cfg = { vars };
 		}
 
 		const s = {
@@ -1251,9 +1348,18 @@
 			}
 			s.name = b.name.trim();
 		}
+		// 变量表可以单独改，也可以跟着 config 一起改
+		let nextVars = (s.config && s.config.vars) || [];
+		if (b.config && b.config.vars !== undefined) {
+			if (!Array.isArray(b.config.vars)) return err(400, "vars 必须是数组");
+			const vbad = validateVarDefs(b.config.vars);
+			if (vbad) return err(400, vbad);
+			nextVars = b.config.vars;
+		}
+
 		if (b.targets && b.targets.length) {
 			const targets = normTargets(b.targets);
-			const bad = validateTargets(targets);
+			const bad = validateTargets(targets, nextVars);
 			if (bad) return err(400, bad);
 			s.targets = targets;
 		}
@@ -1268,9 +1374,12 @@
 					tz: b.config.tz || "Local",
 					payload:
 						b.config.payload && typeof b.config.payload === "object" ? b.config.payload : {},
+					vars: nextVars,
 				};
 			} else {
-				s.config = b.config;
+				// webhook / manual：config 整体替换，但 vars 必须跟着 nextVars 走，
+				// 否则"只改 token 不传 vars"会把已声明的变量全清掉。
+				s.config = Object.assign({}, b.config, { vars: nextVars });
 			}
 		}
 		if (b.enabled !== undefined) s.enabled = !!b.enabled;
@@ -1309,14 +1418,20 @@
 
 		const tasks = [];
 		const pruned = [];
+
+		// 先把源声明的变量求值一次（所有出口共用），
+		// 再让每个出口的参数按这份变量表解析。
+		const varDefs = (s.config && s.config.vars) || [];
+		const resolvedVars = resolveVars(varDefs, ev.payload);
+
 		for (const t of s.targets) {
 			const c = state.capabilities.find((x) => x.id === t.capabilityId);
 			if (!c) {
 				pruned.push({ reason: "no_capability", capabilityId: t.capabilityId, detail: "能力不存在" });
 				continue;
 			}
-			// 参数模板按 payload 求值（字面量原样，映射按路径取值）
-			const resolved = resolveParams(t.params, ev.payload);
+			// 参数模板按 payload + 变量表求值
+			const resolved = resolveParams(t.params, ev.payload, resolvedVars.values);
 			for (const [k, v] of Object.entries(resolved.params)) {
 				const decl = (t.params || {})[k];
 				// 类型：显式 as 优先，否则按 schema 自动推断。

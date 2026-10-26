@@ -1275,6 +1275,21 @@ sources:
     payload: "Campos del evento (opcional)"
     payload_hint: "Campos que se incluirán en cada ejecución programada, como objeto JSON p. ej. {\"env\":\"prod\"}. Las asignaciones de parámetros de destino pueden referenciarlos."
     bad_payload: "Los campos del evento deben ser un objeto JSON como {\"env\":\"prod\"}"
+    vars: "Variables"
+    add_var: "Añadir variable"
+    no_vars: "Aún no hay variables. Puedes omitirlas y usar una ruta del payload directamente."
+    vars_hint: "Las variables son los nombres de campo que este origen expone. Los parámetros de destino pueden elegir una en vez de recordar rutas profundas como pull_request.title. En orígenes programados una variable es simplemente una constante."
+    var_from: "Desde el evento"
+    var_value: "Valor fijo"
+    var_none: "— usar la ruta de abajo —"
+    del_var: "Eliminar variable"
+    vars_available: "Variables disponibles: "
+    var_hint: "Toma el valor de la variable y lo pasa tal cual."
+    need_src: "El parámetro {k} está en «Desde el evento»; elige una variable o escribe la ruta del payload"
+    bad_var_name: "El nombre de variable «{n}» no es válido (letras/dígitos/guion bajo, no puede empezar por dígito)"
+    dup_var: "Nombre de variable «{n}» duplicado"
+    var_need_src: "La variable «{n}» necesita una ruta del payload o un valor fijo"
+    unknown_var: "El parámetro {k} referencia la variable no declarada «{v}»"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

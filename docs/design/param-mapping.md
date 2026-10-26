@@ -242,3 +242,165 @@ i18n：4 语言各加 8 个 key（`pm_literal` / `pm_map` / `from_hint` / `defau
 
 所以中枢的能力上限就是**声明式取值**，这已经覆盖了绝大多数真实用法
 （GitHub PR 的 title / number / author，cron 的自定义常量）。
+
+---
+
+# 附：源变量（source variables）· 后端实现需求（v2）
+
+> 状态：**前端 + mock 已实现，后端未实现**
+> 触发：用户提问「源的默认变量，能力配置时引用 `{{$A}}` 这样」
+> 前置：本文档 §1–§6 的参数映射已在此基础上演进；**本节是推荐形态**
+
+## A.1 为什么从「payload 路径」升级成「变量」
+
+§2 的形态是 `{"title": {"from": "pull_request.title"}}` —— 能用，但：
+
+- 用户要记 `pull_request.head.ref`、`pull_request.user.login` 这种深层路径
+- cron 源**没有 payload**，只能写死 `config.payload` 里的一坨 JSON，和 webhook 是两套写法
+- 同一个路径在多个出口参数里重复出现，改一处要翻遍所有出口
+
+变量把「源对外暴露什么」显式声明出来：
+
+```jsonc
+// sources.config.vars —— 这个源提供哪些数据
+[
+  { "name": "title",  "from": "pull_request.title" },   // webhook：从请求体取
+  { "name": "env",    "value": "prod" },                // cron：常量
+  { "name": "lines",  "from": "pull_request.additions" }
+]
+```
+
+```jsonc
+// source_targets.params —— 参数引用变量
+{ "title": { "var": "title" },
+  "env":   { "var": "env" },
+  "n":     { "var": "lines" } }
+```
+
+**两种引用形态并存**（向后兼容）：`{from: "payload.path"}` 与 `{var: "name"}`。
+同时写两个 → 配置期拒绝（"到底取哪个"没有合理默认）。
+
+## A.2 I6 边界：为什么 `{{$A}}` 不能做，而 `{var:"A"}` 可以
+
+用户原话是想要 `{{$A}}` 这种模板语法。**这不做**，原因是它和变量引用是两件事：
+
+| 形态 | 中枢要做什么 | I6 |
+|---|---|---|
+| `{"title": {"var": "A"}}` | 查表取值，**原样传** | ✅ 不解释逻辑 |
+| `{"env": "prod"}` | 原样传 | ✅ |
+| `{"title": "PR: {{$A}} by {{$B}}"}` | **字符串解析 + 替换 + 拼接** | ❌ 求值器 |
+
+引入模板语法就多出三类攻击面：模板注入（`{{` 嵌套/递归）、表达式 DoS（超长/深嵌套）、
+以及"用户以为支持条件/运算"的语义漂移。
+
+**变量名不是表达式**：`$title` 里没有运算符、没有函数、没有嵌套。它就是一个键。
+所以 `{var:"title"}` 在法律上等价于"从字典里读一个键"，和 `{from:"a.b.c"}` 是同一类操作。
+
+如果用户真的要拼接/条件，正确做法是**在节点侧做**（节点是执行者，它跑用户代码）。
+
+## A.3 后端改动清单
+
+### A.3.1 `internal/store`（无 schema 变更）
+
+`sources.config` 是自由 JSON 列，`vars` 存在里面即可。
+
+- [ ] `validateVarDefs(vars) error`：
+  - `name` 非空且匹配 `^[A-Za-z_][A-Za-z0-9_]*$`
+  - 名字不重复
+  - `from` 与 `value` **恰好有一个**
+  - `from` 路径形式合法（非空、不含 `..`、不以 `.` 开头/结尾）
+- [ ] `Source` 增加便捷方法 `VarDefs()`、`VarValue(name)`（可选，也可在 trigger 里直接读）
+
+### A.3.2 `internal/route`
+
+- [ ] `isMapping` 扩展到接受 `var`（与 `from` 互斥）
+- [ ] 新增 `resolveVars(varDefs, payload) (values map[string]any, missing []string)`
+- [ ] `resolveParams(template, payload, varValues)`：
+  - `{var}` → 从 `varValues` 取
+  - `{from}` → 从 `payload` 取（保持不变）
+  - 未命中 + 无 default → `param_missing`，detail 要写 `$var` 或 `payload.x` 区分来源
+- [ ] 配置期校验：参数引用的变量**必须在源的 vars 里声明过**
+      （不校验的话拼错 `$titel` 要等触发时才在剪枝里看到）
+
+### A.3.3 `internal/source`
+
+- [ ] `Trigger.Fire` 里先 `resolveVars(src.VarDefs(), payload)`，再传给 route
+- [ ] cron 的 `config.payload` **保留**（向后兼容老数据），但新语义下它等价于
+      "所有 `value` 型变量" —— 可以把 payload 由 vars 推导出来：
+      `payload = {v.name: v.value for v where has(value)}`
+- [ ] manual fire 同理
+
+### A.3.4 API 契约
+
+- [ ] `api/openapi.yaml`：`sourceTargetParams` 的 oneOf 增加 `{var,default,as}` 形态
+- [ ] `sources.config` 增加 `vars` 的 schema 描述（数组，元素 oneOf from/value）
+- [ ] `docs/contracts/CONTRACT.md` 新增 §5.5「源变量与参数引用」，
+      明确写清 **不做模板语法** 及其理由（I6）
+
+## A.4 验收（后端实现时必须有的测试）
+
+单测：
+
+- [ ] `validateVarDefs`：非法名 / 重名 / from+value 并存 / 两者都没有
+- [ ] `isMapping`：`{var:"x"}` ✅ / `{var:"x",from:"y"}` ❌ / `{var:1}` ❌
+- [ ] `resolveVars`：from 命中 / from 未命中 / value 常量 / 空 vars
+- [ ] `resolveParams`：`{var}` 命中 / 未命中 + default / 未命中无 default（`param_missing`）
+- [ ] 变量引用 + 类型推断：`{"var":"n"}` 且 schema 是 integer，payload 里是 `"88"` → 88
+- [ ] 配置期拒绝未声明变量
+
+e2e（`routing` 套件加一节）：
+
+- [ ] webhook 源声明 `vars: [{name:"n", from:"pr.count"}]`，
+      出口参数 `{var:"n"}` → 任务 params 拿到值
+- [ ] cron 源 `vars: [{name:"env", value:"prod"}]` → 同一套写法可用
+- [ ] 引用未声明变量 → 创建/更新源时 400，错误信息含变量名
+- [ ] 变量 from 未命中且无 default → `pruned param_missing`，detail 含 `$var`
+
+## A.5 已实现（本次提交，前端 + mock）
+
+**mock `web/mock.js`**：
+
+- `isMapping` 支持 `var`（与 `from` 互斥）
+- 新增 `isVarRef` / `resolveVars` / `validateVarDefs`
+- `resolveParams(template, payload, varValues)` 支持两种引用
+- `validateMappingPaths(template, declaredVars)`：变量必须声明过
+- fire 端点：先 `resolveVars` 再 `resolveParams`
+- POST/PATCH `/v1/sources`：校验并持久化 `config.vars`
+  （PATCH 的 webhook/manual 分支要把 `vars` 一起带上，否则"只改 token"会清空变量）
+
+**前端 `web-src/pages/sources.html`**：
+
+- 源弹窗新增「变量」区：`名字 = 从事件取/固定值 + 值`，可增删
+- 出口参数的映射态新增「选变量」下拉；选了变量时路径框禁用
+- 变量改名后已渲染的下拉实时更新（不重建整个参数区，避免清掉用户正在填的输入）
+- 配置期本地先校验未声明变量（不用等后端 400）
+- **删除了上一轮的「事件字段」JSON 框**：它和变量的「固定值」是同一件事，
+  两个入口会让人不知道写哪个。现在统一走变量，
+  保存时把 `value` 型变量折算进 `config.payload`（兼容老数据）
+
+**实测（mock）**：
+
+| 用例 | 结果 |
+|---|---|
+| 变量引用 `{var:"n"}`，payload `{pr:{count:42}}` | 任务 params = **42** |
+| 变量字面量 `{name:"n",value:7}` | 任务 params = **7** |
+| 引用未声明变量 `titel` | **400**，错误含变量名 |
+| 非法变量名 `9bad` | **400** |
+| UI 全流程（填变量 → 选变量 → 保存 → 触发） | `vars.lines="88"` → 任务 `changedLines: **88**`（integer 自动推断） |
+
+i18n：4 语言各加 15 个 key（`vars`/`add_var`/`var_from`/`var_value`/`var_none`/
+`bad_var_name`/`dup_var`/`unknown_var` 等）。
+
+## A.6 两个实现时容易踩的坑（我踩过）
+
+**① `buildVarChooser` 必须在输入框进 DOM 之后调**
+
+它要 `pathIn.parentNode.insertBefore(...)`。放在 `appendChild` 之前会拿不到
+`parentNode` 抛 TypeError —— 而 `openModal` 是 `async` 且调用处没有 `await`，
+异常变成**静默的 unhandled rejection**，表现为"点新建源没反应"，
+`pageerror` 也收不到。定位方法是往页面里注入 `unhandledrejection` 监听。
+
+**② 值输入框不能用闭包捕获 `isVal`**
+
+用户切换「从事件取 / 固定值」之后，那是个常量不会变，输入会一直写进旧字段
+（表现为"填了固定值但保存后是空的"）。每次输入都要从下拉的**当前值**判断。

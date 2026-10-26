@@ -1275,6 +1275,21 @@ sources:
     payload: "イベントフィールド（任意）"
     payload_hint: "定期実行時に付与するフィールドを JSON オブジェクトで指定します（例 {\"env\":\"prod\"}）。出口パラメータのマッピングから参照できます。"
     bad_payload: "イベントフィールドは {\"env\":\"prod\"} のような JSON オブジェクトである必要があります"
+    vars: "変数"
+    add_var: "変数を追加"
+    no_vars: "変数はまだありません。省略して payload パスを直接書くこともできます。"
+    vars_hint: "変数はこのソースが外部に公開するフィールド名です。出口パラメータで選べるので、pull_request.title のような深いパスを覚える必要はありません。定期実行ソースでは変数は定数です。"
+    var_from: "イベントから取得"
+    var_value: "固定値"
+    var_none: "— 下のパスを使う —"
+    del_var: "変数を削除"
+    vars_available: "利用可能な変数："
+    var_hint: "変数の値をそのままこのパラメータに渡します。"
+    need_src: "パラメータ {k} は「イベントから取得」です。変数を選ぶか payload パスを入力してください"
+    bad_var_name: "変数名「{n}」が不正です（英数字/アンダースコア、数字始まり不可）"
+    dup_var: "変数名「{n}」が重複しています"
+    var_need_src: "変数「{n}」には payload パスか固定値が必要です"
+    unknown_var: "パラメータ {k} が未宣言の変数「{v}」を参照しています"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00

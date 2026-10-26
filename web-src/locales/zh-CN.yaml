@@ -1275,6 +1275,21 @@ sources:
     payload: "事件字段（可选）"
     payload_hint: "定时触发时带上这些字段，写成 JSON 对象，如 {\"env\":\"prod\"}。出口参数的映射可以引用它们。"
     bad_payload: "事件字段必须是 JSON 对象，如 {\"env\":\"prod\"}"
+    vars: "变量"
+    add_var: "添加变量"
+    no_vars: "还没有变量。可以不加，直接写 payload 路径。"
+    vars_hint: "变量是这个源对外的\"字段名\"。出口参数可以直接选它，不用记 pull_request.title 这种深层路径。定时源的变量就是常量。"
+    var_from: "从事件取"
+    var_value: "固定值"
+    var_none: "— 用下面的路径 —"
+    del_var: "删除变量"
+    vars_available: "可用变量："
+    var_hint: "取变量的值，原样传给这个参数。"
+    need_src: "参数 {k} 选了「从事件取值」，要么选一个变量，要么填 payload 路径"
+    bad_var_name: "变量名「{n}」不合法（字母/数字/下划线，不以数字开头）"
+    dup_var: "变量名「{n}」重复"
+    var_need_src: "变量「{n}」要么填 payload 路径，要么改选固定值"
+    unknown_var: "参数 {k} 引用了未声明的变量「{v}」"
   preset:
     hourly: 每小时
     daily3: 每天 3:00
