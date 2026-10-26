@@ -1303,6 +1303,14 @@ sources:
     demo_name: "Demo · Análisis de PR de GitHub"
     demo_ok: "Ejemplo rellenado: 4 variables + parámetros enlazados a ellas"
     demo_no_caps: "No hay capacidad de destino con parámetros; se rellenaron las variables"
+    avail_vars: "¿Qué variables ofrece este disparador? (clic para rellenar)"
+    av_fill: "Haz clic para rellenar el origen de la variable"
+    hook_url: "URL de carga"
+    hook_url_pending: "Se genera al guardar (p. ej. /v1/hooks/src_xxx)"
+    hook_github: "Cómo configurarlo en GitHub"
+    hook_github_events: "Con este basta; los demás eventos no se despachan"
+    hook_github_secret: "El Secret lo valida GitHub; este sistema aún no verifica firmas, usa un token largo y aleatorio en la URL"
+    hook_github_why: "Tras rellenar, pulsa «Add webhook». GitHub enviará un ping de inmediato y el evento se guarda; luego enlaza los parámetros de destino."
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

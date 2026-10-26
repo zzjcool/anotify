@@ -86,6 +86,118 @@
         padding: 0.15rem 0.35rem;
         cursor: pointer;
       }
+      /* 可用变量清单 */
+      .avail-vars {
+        margin-top: 0.45rem;
+        font-size: 0.7rem;
+      }
+      .avail-vars summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 0.7rem;
+      }
+      .avail-vars summary:hover {
+        color: var(--fg);
+      }
+      .avail-vars-body {
+        margin-top: 0.4rem;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 0.375rem;
+        display: grid;
+        gap: 0.3rem;
+      }
+      .av-row {
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+      }
+      .av-path {
+        font-family: var(--mono, ui-monospace, monospace);
+        font-size: 0.66rem;
+        color: var(--accent);
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 0.25rem;
+        padding: 0.05rem 0.3rem;
+        cursor: pointer;
+      }
+      .av-path:hover {
+        border-color: var(--accent);
+      }
+      .av-desc {
+        color: var(--faint);
+        font-size: 0.63rem;
+      }
+      .av-empty {
+        color: var(--faint);
+        font-size: 0.65rem;
+        line-height: 1.6;
+      }
+
+      /* webhook 接入指引 */
+      .hook-guide {
+        margin-top: 0.5rem;
+      }
+      .hook-url-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+      }
+      .hook-url-label {
+        font-size: 0.65rem;
+        color: var(--faint);
+      }
+      .hook-url {
+        font-family: var(--mono, ui-monospace, monospace);
+        font-size: 0.68rem;
+        color: var(--accent);
+        word-break: break-all;
+      }
+      .hook-github {
+        margin-top: 0.5rem;
+        font-size: 0.7rem;
+      }
+      .hook-github summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 0.7rem;
+      }
+      .hook-github summary:hover {
+        color: var(--fg);
+      }
+      .hook-github-body {
+        margin-top: 0.4rem;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 0.375rem;
+      }
+      .hook-kv {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.2rem 0.6rem;
+        align-items: baseline;
+      }
+      .hook-kv dt {
+        color: var(--faint);
+        font-size: 0.65rem;
+        white-space: nowrap;
+      }
+      .hook-kv dd {
+        margin: 0;
+        font-family: var(--mono, ui-monospace, monospace);
+        font-size: 0.68rem;
+        word-break: break-all;
+      }
+      .hook-note {
+        color: var(--faint);
+        font-size: 0.63rem;
+        line-height: 1.5;
+        display: block;
+      }
+
       /* 演示填充后闪一下，指明"往这看" */
       @keyframes var-flash-kf {
         0% {
@@ -299,13 +411,58 @@
           + {{t "sources.form.add_var"}}
         </button>
         <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.vars_hint"}}</p>
+
+        <!-- 这个触发方式能提供哪些字段。
+             用户不需要记住 GitHub/GitLab 的 payload 结构，照着点即可。 -->
+        <details class="avail-vars" id="avail-vars">
+          <summary>{{t "sources.form.avail_vars"}}</summary>
+          <div id="avail-vars-body" class="avail-vars-body"></div>
+        </details>
       </div>
 
-      <!-- webhook 专属 -->
+      <!-- webhook 专属：外部系统那边怎么配 -->
       <div id="f-hook-wrap" class="hidden">
         <p class="text-[11px] leading-relaxed text-zinc-500">
           {{t "sources.form.hook_hint"}}
         </p>
+
+        <!-- 回调地址：编辑已有源时能直接看到；新建时说明"保存后生成" -->
+        <div class="hook-guide" id="hook-url-box">
+          <div class="hook-url-row">
+            <span class="hook-url-label">{{t "sources.form.hook_url"}}</span>
+            <code id="hook-url-val" class="hook-url"></code>
+            <button
+              type="button"
+              id="btn-copy-hook"
+              class="btn-ghost rounded-lg px-2 py-0.5 text-[10px]"
+            >
+              {{t "srcpage.copy"}}
+            </button>
+          </div>
+        </div>
+
+        <!-- GitHub 具体怎么填。四个字段照抄即可，不用去翻文档。 -->
+        <details class="hook-github" id="hook-github">
+          <summary>{{t "sources.form.hook_github"}}</summary>
+          <div class="hook-github-body">
+            <dl class="hook-kv">
+              <dt>Payload URL</dt>
+              <dd><code id="hook-gh-url">—</code></dd>
+              <dt>Content type</dt>
+              <dd><code>application/json</code></dd>
+              <dt>Which events?</dt>
+              <dd>
+                <code>Pull requests</code>
+                <span class="hook-note">{{t "sources.form.hook_github_events"}}</span>
+              </dd>
+              <dt>Secret</dt>
+              <dd>
+                <span class="hook-note">{{t "sources.form.hook_github_secret"}}</span>
+              </dd>
+            </dl>
+            <p class="hook-note">{{t "sources.form.hook_github_why"}}</p>
+          </div>
+        </details>
       </div>
 
       <!-- 出口能力（多选） -->
@@ -356,6 +513,9 @@
       let SOURCES = [];
       let CAPS = [];
       let editingID = null;
+      // 正在编辑的源对象（新建时为 null）。列表页没有详情页那个 SRC，
+      // 但 webhook 回调指引需要 hookUrl，所以留一份。
+      let EDITING_SRC = null;
 
       function toast(msg) {
         const el = document.getElementById("toast");
@@ -674,6 +834,7 @@
         }
 
         editingID = src ? src.id : null;
+        EDITING_SRC = src || null;
         document.getElementById("modal-title").textContent = src
           ? t("sources.modal.edit", "编辑源")
           : t("sources.modal.new", "新建源");
@@ -706,6 +867,7 @@
         modal.classList.add("hidden");
         modal.classList.remove("flex");
         editingID = null;
+        EDITING_SRC = null;
       }
 
       // syncKindFields 按当前 kind 显示对应的配置块。
@@ -713,6 +875,37 @@
         const kind = document.getElementById("f-kind").value;
         document.getElementById("f-cron-wrap").classList.toggle("hidden", kind !== "cron");
         document.getElementById("f-hook-wrap").classList.toggle("hidden", kind !== "webhook");
+        // 切 kind 时清单要跟着换（webhook 有 PR 字段，cron 只能固定值）
+        renderAvailVars();
+        updateHookGuide();
+      }
+
+      // updateHookGuide 填 webhook 回调地址。
+      //
+      // 新建源时还没有 id/token，所以只能显示"保存后生成"；
+      // 编辑已有源时后端已经算好了 hookUrl，直接展示并可复制。
+      function updateHookGuide() {
+        const box = document.getElementById("hook-url-box");
+        const val = document.getElementById("hook-url-val");
+        if (!box || !val) return;
+        const kind = document.getElementById("f-kind").value;
+        if (kind !== "webhook") return;
+
+        const url = EDITING_SRC && EDITING_SRC.hookUrl ? location.origin + EDITING_SRC.hookUrl : "";
+        if (url) {
+          val.textContent = url;
+          const gh = document.getElementById("hook-gh-url");
+          if (gh) gh.textContent = url;
+          box.dataset.ready = "1";
+        } else {
+          val.textContent = t(
+            "sources.form.hook_url_pending",
+            "保存后生成（形如 /v1/hooks/src_xxx）",
+          );
+          const gh = document.getElementById("hook-gh-url");
+          if (gh) gh.textContent = t("sources.form.hook_url_pending", "保存后生成");
+          delete box.dataset.ready;
+        }
       }
 
       // renderTargetPicker 渲染出口能力多选。
@@ -938,6 +1131,19 @@
         });
       }
 
+      // hintText 决定映射态下方的提示语。抽出来是因为原来写成三层嵌套
+      // 三元（useVar ? A : names.length ? B : C），读的人得在脑子里跑一遍。
+      function hintText(useVar, names) {
+        if (useVar) return t("sources.form.var_hint", "取变量的值，原样传给这个参数。");
+        if (names.length) {
+          return t("sources.form.vars_available", "可用变量：") + names.map((n) => "$" + n).join("、");
+        }
+        return t(
+          "sources.form.from_hint",
+          "按点号路径从事件 payload 取值，如 pull_request.title。",
+        );
+      }
+
       // buildVarChooser 在映射态里加一个"选变量"下拉，
       // 与"手填 payload 路径"二选一（选变量时路径框禁用）。
       function buildVarChooser(pathIn, hintEl, cur) {
@@ -957,11 +1163,7 @@
             pathIn.value = "";
           }
           hintEl.dataset.varHint = "1";
-          hintEl.textContent = useVar
-            ? t("sources.form.var_hint", "取变量的值，原样传给这个参数。")
-            : names.length
-              ? t("sources.form.vars_available", "可用变量：") + names.map((n) => "$" + n).join("、")
-              : t("sources.form.from_hint", "按点号路径从事件 payload 取值，如 pull_request.title。");
+          hintEl.textContent = hintText(useVar, names);
         };
         sel.dataset.varChooser = "1";
         sel.addEventListener("change", sync);
@@ -1400,6 +1602,84 @@
       }
 
 
+
+      // ---------- 可用变量清单 ----------
+      //
+      // "这个触发方式能给我哪些变量" —— 用户不该去翻 GitHub / GitLab 的
+      // payload 文档。这里按 kind 给出常见的路径，点一下就能填进变量的
+      // "从事件取"框里。
+      //
+      // 为什么是**固定清单**而不是从真实事件反推：
+      //   - 新建源时还没有任何事件，无从反推
+      //   - payload 形状由外部系统决定，中枢不解释、也不该猜（I6）
+      //   - 给常见路径 + 让人能自由手填，比"猜"更诚实
+      const AVAIL_VARS = {
+        webhook: [
+          { path: "pull_request.title", desc: "PR 标题（GitHub）" },
+          { path: "pull_request.number", desc: "PR 编号" },
+          { path: "pull_request.additions", desc: "新增行数" },
+          { path: "pull_request.deletions", desc: "删除行数" },
+          { path: "pull_request.user.login", desc: "作者登录名" },
+          { path: "pull_request.head.ref", desc: "源分支名" },
+          { path: "pull_request.base.ref", desc: "目标分支名" },
+          { path: "repository.name", desc: "仓库名" },
+          { path: "repository.full_name", desc: "仓库全名 owner/repo" },
+          { path: "action", desc: "动作，如 opened / synchronize" },
+        ],
+        cron: [
+          { path: "(无)", desc: "定时器没有外部事件，变量只能用固定值" },
+        ],
+        manual: [
+          { path: "(无)", desc: "手动触发没有外部事件，变量只能用固定值" },
+        ],
+      };
+
+      // renderAvailVars 按当前 kind 渲染清单。点路径会填进"第一个还没填
+      // 来源的变量行的值框"，省得手打。
+      function renderAvailVars() {
+        const body = document.getElementById("avail-vars-body");
+        if (!body) return;
+        body.replaceChildren();
+        const kind = document.getElementById("f-kind").value;
+        const list = AVAIL_VARS[kind] || [];
+        const noneOnly = list.length === 1 && list[0].path === "(无)";
+
+        if (noneOnly) {
+          body.appendChild(el("div", "av-empty", list[0].desc));
+          return;
+        }
+
+        for (const item of list) {
+          const row = el("div", "av-row");
+          const btn = el("button", "av-path", item.path);
+          btn.type = "button";
+          btn.title = t("sources.form.av_fill", "点一下填入变量的来源");
+          btn.addEventListener("click", () => {
+            // 找第一个"从事件取"且来源为空的变量行；没有就新加一行
+            let rowEl = [...document.querySelectorAll(".var-row")].find((r) => {
+              const sel = r.querySelector("select");
+              const val = r.querySelectorAll("input")[1];
+              return sel && sel.value === "from" && !val.value.trim();
+            });
+            if (!rowEl) {
+              if (!VAR_DEFS.length) {
+                VAR_DEFS.push({ name: "", from: "" });
+                renderVars();
+              }
+              rowEl = document.querySelector(".var-row:last-child");
+            }
+            if (!rowEl) return;
+            const val = rowEl.querySelectorAll("input")[1];
+            val.value = item.path;
+            val.dispatchEvent(new Event("input", { bubbles: true }));
+            val.focus();
+          });
+          row.appendChild(btn);
+          row.appendChild(el("span", "av-desc", item.desc));
+          body.appendChild(row);
+        }
+      }
+
       // fillDemo 一键铺好一套"变量 + 参数引用变量"的完整配置。
       //
       // 为什么需要这个：变量这个功能看文档很难体会到底省了什么 ——
@@ -1502,6 +1782,19 @@
         openModal(null);
       });
       document.getElementById("btn-demo").addEventListener("click", fillDemo);
+      document.getElementById("btn-copy-hook").addEventListener("click", async () => {
+        const url = document.getElementById("hook-url-val").textContent;
+        if (!url || !document.getElementById("hook-url-box").dataset.ready) {
+          toast(t("sources.form.hook_url_pending", "保存后生成"));
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(url);
+          toast(t("srcpage.copied", "已复制"));
+        } catch (e) {
+          toast(t("srcpage.copy_failed", "复制失败"));
+        }
+      });
       document.getElementById("modal-close").addEventListener("click", closeModal);
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
       document.getElementById("modal-save").addEventListener("click", save);

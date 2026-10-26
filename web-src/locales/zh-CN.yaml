@@ -1303,6 +1303,14 @@ sources:
     demo_name: "演示 · GitHub PR 分析"
     demo_ok: "已填入演示配置：4 个变量 + 参数引用变量"
     demo_no_caps: "没有带参数的出口能力，变量部分已填好"
+    avail_vars: "这个触发方式能提供哪些变量？（点一下填入）"
+    av_fill: "点一下填入变量的来源"
+    hook_url: "回调地址"
+    hook_url_pending: "保存后生成（形如 /v1/hooks/src_xxx）"
+    hook_github: "GitHub 那边怎么配"
+    hook_github_events: "只勾这个就够；其它事件不会派发"
+    hook_github_secret: "GitHub 的 Secret 由 GitHub 侧校验；本系统暂不校验签名，建议用长随机 token 的 URL"
+    hook_github_why: "填好后点「Add webhook」。GitHub 会立刻发一个 ping，事件照收；回来看「出口能力」把参数接上。"
   preset:
     hourly: 每小时
     daily3: 每天 3:00

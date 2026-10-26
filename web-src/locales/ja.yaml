@@ -1303,6 +1303,14 @@ sources:
     demo_name: "デモ · GitHub PR 分析"
     demo_ok: "サンプルを入力しました：変数 4 個 + パラメータの変数参照"
     demo_no_caps: "パラメータ付きの出口能力がありません。変数のみ入力しました"
+    avail_vars: "このトリガーが提供する変数（クリックで入力）"
+    av_fill: "クリックして変数の取得元を入力"
+    hook_url: "ペイロード URL"
+    hook_url_pending: "保存後に生成（/v1/hooks/src_xxx の形式）"
+    hook_github: "GitHub 側の設定方法"
+    hook_github_events: "これだけで十分です。他のイベントはディスパッチされません"
+    hook_github_secret: "Secret は GitHub 側の検証用です。本システムは署名検証をまだ行わないため、URL には長いランダムトークンを使ってください"
+    hook_github_why: "入力後に「Add webhook」をクリックしてください。GitHub がすぐに ping を送り、イベントは保存されます。その後「出口能力」でパラメータを紐付けます。"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00
