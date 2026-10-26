@@ -108,10 +108,43 @@ make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
 make mock                  # 本地 + trycloudflare 公网地址，→ :7788
 make mock-local            # 只本机，不起隧道
 make mock MOCK_PORT=7789   # 换端口
+make mock MOCK_BIND=0.0.0.0  # 同时暴露到局域网（手机/同 WiFi 的人能开）
 ```
 
 和 `make dev` 一样默认带 **trycloudflare 隧道**，所以可以直接把这个地址发给别人看
 （不需要数据库、后端、节点，对方打开就能点）。
+
+#### 内网地址为什么默认不可用（`MOCK_BIND`）
+
+mock 服务器默认**只绑 `127.0.0.1`**，不暴露到局域网。这是刻意的：
+
+> `cmd/fe-preview` 的 `-addr` 默认值就是 `localhost:7788`，而 `-port`
+> 只替换端口的数字部分、**保留 host**。所以光传 `-port` 得到的监听地址
+> 还是 `127.0.0.1:7788`。这时局域网主机收到的 SYN 会被内核**直接 RST
+> （Connection refused）**，数据包根本没进 ufw 的 INPUT 链——
+> **防火墙怎么配都不会生效**。
+>
+> 所以脚本显式传 `-addr "$MOCK_BIND:$MOCK_PORT"`，把「host」和「port」
+> 当成同一件事处理。
+
+要给同一 WiFi 的手机或同事看：
+
+```bash
+make mock MOCK_BIND=0.0.0.0 MOCK_PORT=7788
+# 如果提示「被 ufw 拦着」，放行一次即可（一直有效）：
+#   sudo ufw allow 7788/tcp
+```
+
+脚本会自己分辨三种状态，不会误导人：
+
+| 输出 | 含义 | 怎么办 |
+|---|---|---|
+| `✖ 不可用（当前只绑 127.0.0.1）` | 没绑 0.0.0.0，内核回 RST | 加 `MOCK_BIND=0.0.0.0` |
+| `⚠️ 被 ufw 拦着（连上去要等超时）` | 绑对了但 ufw 默认 DROP 且未放行端口 | `sudo ufw allow <端口>/tcp` |
+| `（手机连同一 WiFi 可用）` | 已绑非回环 + ufw 已放行或未启用 | 直接用 |
+
+对比 `make dev`：`dev.sh` 用的是 `ANOTIFY_ADDR=:8080`（空 host = 全部接口），
+所以它天然对内网可见；mock 的 `fe-preview` 默认不是，两边不要混为一谈。
 
 `make fe-preview` 是 `make mock` 的同义词（旧写法仍可用）。
 

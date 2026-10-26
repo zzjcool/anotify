@@ -11,6 +11,12 @@
 #
 # 和 dev.sh 的区别：这里没有 server、登录页、示例数据、可达性之后的一堆步骤。
 # mock 是纯静态站点，隧道只是把本地静态服务器反代出去，所以脚本短得多。
+#
+# 环境变量：
+#   MOCK_PORT=7788        监听端口
+#   MOCK_BIND=127.0.0.1   监听地址。默认只绑回环（不暴露到局域网）。
+#                         要给手机/别人同 WiFi 看，用 MOCK_BIND=0.0.0.0，
+#                         并按脚本打印的提示放行防火墙端口。
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
@@ -58,16 +64,22 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------- 1. 起静态预览服务器 ----------
+#
+# 必须显式传 -addr：fe-preview 的 -addr 默认是 "localhost:PORT"（只绑回环），
+# 而 -port 只替换 addr 的端口部分、保留 host。曾因此出现过「内网打不开、
+# 看起来像防火墙没配」的误判——实际是内核直接回 RST，包根本没进 INPUT 链，
+# ufw 怎么放行都没用。所以要暴露到局域网，必须改的是 addr 的 host。
+MOCK_BIND="${MOCK_BIND:-127.0.0.1}"
 echo "▶ 启动前端预览（mock 数据，不连后端）…"
 # setsid 让它自成进程组，退出时能整组收掉（见 cleanup）
-setsid go run ./cmd/fe-preview -dir web -port "$MOCK_PORT" >/tmp/anotify-mock.log 2>&1 &
+setsid go run ./cmd/fe-preview -dir web -addr "${MOCK_BIND}:${MOCK_PORT}" >/tmp/anotify-mock.log 2>&1 &
 PREVIEW_PID=$!
 
 # 等端口真的能应答再继续：tunnel 是反代到本端口的，
 # 本地还没起来就起 tunnel，打开公网地址只会看到 502。
 ready=0
 for _ in $(seq 1 60); do
-	if curl -fsS -o /dev/null --max-time 2 "http://localhost:${MOCK_PORT}/index.html" 2>/dev/null; then
+	if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${MOCK_PORT}/index.html" 2>/dev/null; then
 		ready=1
 		break
 	fi
@@ -78,7 +90,13 @@ if [ "$ready" != "1" ]; then
 	tail -10 /tmp/anotify-mock.log 2>/dev/null | sed 's/^/     /'
 	exit 1
 fi
-echo "  ✅ 本地已就绪：http://localhost:${MOCK_PORT}"
+echo "  ✅ 本地已就绪：http://127.0.0.1:${MOCK_PORT}"
+
+# 绑回环时，内网地址压根不存在——不是防火墙的问题，多说一句会误导
+case "$MOCK_BIND" in
+	127.0.0.1|localhost) EXPOSED_LAN=0 ;;
+	*)                  EXPOSED_LAN=1 ;;
+esac
 
 # ---------- 2. 内网地址（手机看）----------
 #
@@ -109,8 +127,10 @@ esac
 
 # 防火墙会拦外部访问，而**本机 curl 永远能通**（回环不进 INPUT 链）。
 # 所以单独查 ufw 有没有放行本端口，别等用户拿手机试半天。
+# 只在真绑了非回环地址时才判断：绑 127.0.0.1 时问题不在防火墙，
+# 否则会打印「被 ufw 拦着 / 放行：sudo ufw allow ...」，让人白白去改防火墙。
 LAN_BLOCKED_BY=""
-if [ -n "$LAN_IP" ] && [ -r /etc/ufw/ufw.conf ] && grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
+if [ "$EXPOSED_LAN" = "1" ] && [ -n "$LAN_IP" ] && [ -r /etc/ufw/ufw.conf ] && grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
 	if ! grep -q -- "--dport ${MOCK_PORT}" /etc/ufw/user.rules 2>/dev/null; then
 		if grep -qi '^DEFAULT_INPUT_POLICY="DROP"' /etc/default/ufw 2>/dev/null; then
 			LAN_BLOCKED_BY="ufw"
@@ -185,10 +205,15 @@ echo ""
 echo "=========================================="
 echo "  🎭 前端 mock 预览（数据全是假的）"
 echo "=========================================="
-echo "  本机：  http://localhost:${MOCK_PORT}/sources.html"
+echo "  本机：  http://127.0.0.1:${MOCK_PORT}/sources.html"
 if [ -n "$LAN_IP" ]; then
-	if [ "$LAN_BLOCKED_BY" = "ufw" ]; then
-		echo "  内网：  http://${LAN_IP}:${MOCK_PORT}  ⚠️ 被 ufw 拦着"
+	if [ "$EXPOSED_LAN" != "1" ]; then
+		# 别说「手机同一 WiFi 可用」：绑回环时内网访问会被内核 RST，
+		# 那句提示是假的，还会把排查方向带偏到防火墙上。
+		echo "  内网：  http://${LAN_IP}:${MOCK_PORT}  ✖ 不可用（当前只绑 ${MOCK_BIND}）"
+		echo "          要共享：MOCK_BIND=0.0.0.0 make mock"
+	elif [ "$LAN_BLOCKED_BY" = "ufw" ]; then
+		echo "  内网：  http://${LAN_IP}:${MOCK_PORT}  ⚠️ 被 ufw 拦着（连上去要等超时）"
 		echo "          放行：sudo ufw allow ${MOCK_PORT}/tcp"
 	else
 		echo "  内网：  http://${LAN_IP}:${MOCK_PORT}  （手机连同一 WiFi 可用）"

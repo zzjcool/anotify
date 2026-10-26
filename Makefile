@@ -98,17 +98,21 @@ dev-local: check-classes sitegen ## 开发模式：只起 server，不起 tunnel
 # 默认带 trycloudflare 隧道（和 make dev 一样），方便直接发给别人看。
 # 端口用独立变量：PORT 是 dev 的 8080，复用会跟 dev 抢端口。
 MOCK_PORT ?= 7788
+# 监听地址。默认只绑回环（不暴露到局域网）；
+# 要给同一 WiFi 的手机/别人看就用 make mock MOCK_BIND=0.0.0.0，
+# 并按脚本输出的提示放行防火墙端口（sudo ufw allow 7788/tcp）。
+MOCK_BIND ?= 127.0.0.1
 
 mock: check-classes sitegen ## 启动 mock 服务器（纯前端 + trycloudflare 隧道）
-	@MOCK_PORT=$(MOCK_PORT) ./scripts/mock.sh
+	@MOCK_PORT=$(MOCK_PORT) MOCK_BIND=$(MOCK_BIND) ./scripts/mock.sh
 
 mock-local: check-classes sitegen ## 同上，但不起隧道（只本机访问）
-	@NO_TUNNEL=1 MOCK_PORT=$(MOCK_PORT) ./scripts/mock.sh
+	@NO_TUNNEL=1 MOCK_PORT=$(MOCK_PORT) MOCK_BIND=$(MOCK_BIND) ./scripts/mock.sh
 
 # fe-preview 保留为同义词：文档和旧习惯都在用它
 fe-preview: mock ## mock 的同义词（兼容旧写法）
 fe-preview-port: ## 同 mock，指定端口（用法：make mock MOCK_PORT=7789）
-	@MOCK_PORT=$(MOCK_PORT) ./scripts/mock.sh
+	@MOCK_PORT=$(MOCK_PORT) MOCK_BIND=$(MOCK_BIND) ./scripts/mock.sh
 
 integration: ## 集成测试（需服务已在 PORT 运行）
 	BASE=http://localhost:$(PORT) ./scripts/integration.sh
