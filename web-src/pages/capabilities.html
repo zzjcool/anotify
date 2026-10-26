@@ -230,9 +230,23 @@
         <div class="card w-full max-w-lg rounded-2xl !bg-[var(--panel-modal)] p-6">
           <h3 class="mb-4 text-lg font-medium text-white">{{t "caps.new"}}</h3>
           <div class="space-y-4">
+            <!-- 顺序是刻意的：先问"这是干什么的"（人能回答），
+                 再问"它在系统里叫什么"（技术名，节点声明要用）。
+                 以前只问后者，于是用户建完能力后界面上一片
+                 analyze-pr@1，还得再回来改名。 -->
+            <div>
+              <label class="mb-1 block text-xs text-zinc-400" for="cap-display-name">{{t "caps.form.display_name"}}</label>
+              <input
+                id="cap-display-name"
+                class="input w-full text-sm"
+                placeholder="{{t "caps.form.display_name_ph"}}"
+              />
+              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.display_name_hint"}}</p>
+            </div>
             <div>
               <label class="mb-1 block text-xs text-zinc-400" for="cap-name">{{t "caps.form.name"}}</label>
               <input id="cap-name" class="input w-full text-sm" placeholder="review" />
+              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.name_hint"}}</p>
             </div>
             <div>
               <label class="mb-1 block text-xs text-zinc-400" for="cap-outputs">{{t "caps.form.outputs"}}</label>
@@ -338,6 +352,7 @@
       function openCapModal() {
         // 重置表单：否则上一次填的字段会残留到下一次新建
         document.getElementById("cap-name").value = "";
+        document.getElementById("cap-display-name").value = "";
         document.getElementById("cap-outputs").value = "";
         setSchema({ type: "object", properties: {} });
         document.getElementById("cap-modal").classList.add("open");
@@ -353,6 +368,7 @@
       // collectSchema()（可视化 / JSON 两种模式统一出口）。
       async function createCapability() {
         const name = document.getElementById("cap-name").value.trim();
+        const displayName = document.getElementById("cap-display-name").value.trim();
         const outputsRaw = document.getElementById("cap-outputs").value.trim();
 
         if (!name) {
@@ -375,7 +391,7 @@
           await Anotify.api(API + "/capabilities", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, outputs, paramsSchema }),
+            body: JSON.stringify({ name, displayName, outputs, paramsSchema }),
           });
           toast(t("caps.form.created", "能力已创建"));
           closeCapModal();
@@ -804,6 +820,10 @@
           const dn = (c.displayName || "").trim();
           head.appendChild(el("span", "text-[13px] text-zinc-200", dn || c.name));
           if (dn) {
+            // 中文显示名和英文技术名之间需要明确分隔：
+            // 「通用 HTTP 事件 http@1」两个中文/英文词挨着时读起来像一个词。
+            // 用一个细分隔符 + 稍大的间距。
+            head.appendChild(el("span", "text-[10px] text-zinc-700", "·"));
             head.appendChild(code(c.name + "@" + c.version, "text-[10px] text-zinc-600"));
           } else {
             head.appendChild(code("v" + c.version, "text-[10px] text-zinc-600"));

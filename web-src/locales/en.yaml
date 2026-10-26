@@ -1127,7 +1127,11 @@ caps:
   list:
     title: Capabilities
   form:
+    display_name: Display name
+    display_name_ph: e.g. "Analyze PR", "Deploy staging"
+    display_name_hint: Shown in the UI. Leave blank to use the technical name below.
     name: Capability name
+    name_hint: Technical name — nodes, edges and logs use it. Cannot be changed after creation.
     outputs: Output names (comma separated)
     outputs_hint: Outputs are a closed set — edges can only use names declared here.
     schema: Param validation (JSON Schema)

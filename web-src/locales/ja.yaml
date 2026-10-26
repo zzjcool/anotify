@@ -1127,7 +1127,11 @@ caps:
   list:
     title: ケイパビリティ一覧
   form:
+    display_name: 表示名
+    display_name_ph: 例：「PR を分析」「ステージングへ配備」
+    display_name_hint: 画面にはこれが表示されます。空欄なら下の技術名を使います。
     name: ケイパビリティ名
+    name_hint: 技術名：ノード宣言・辺・ログで使います。作成後は変更できません。
     outputs: 出口名（カンマ区切り）
     outputs_hint: 出口は閉じた集合です — エッジにはここで宣言した名前しか使えません。
     schema: パラメータ検証（JSON Schema）

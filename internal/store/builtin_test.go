@@ -343,3 +343,70 @@ func TestOriginEdgeAcceptsAnyPort(t *testing.T) {
 		t.Fatalf("自定义能力的非法出口应被拒绝，got %v", err)
 	}
 }
+
+// TestBuiltinDisplayNames 内置能力必须**自带**显示名。
+//
+// 用户的原话是「默认的内置的我们给他取好了」——内置能力随项目发布，
+// 名字该由我们定，不该让用户对着 github@1 猜这是什么。
+func TestBuiltinDisplayNames(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+
+	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+		t.Fatalf("ensure builtin: %v", err)
+	}
+	for _, bc := range BuiltinCapabilities {
+		got, err := db.GetCapability(ctx, orgID, bc.Name, bc.Version)
+		if err != nil {
+			t.Fatalf("get %s@%d: %v", bc.Name, bc.Version, err)
+		}
+		if bc.DisplayName == "" {
+			t.Fatalf("builtin %s has no DisplayName in code", bc.Name)
+		}
+		if got.DisplayName != bc.DisplayName {
+			t.Fatalf("builtin %s display name = %q, want %q",
+				bc.Name, got.DisplayName, bc.DisplayName)
+		}
+	}
+}
+
+// TestBuiltinDisplayNameBackfill 老库补名：已存在的内置行 display_name 为空时要补上，
+// 但**用户改过的名字不能被启动流程覆盖**。
+func TestBuiltinDisplayNameBackfill(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+
+	// 先播种，然后模拟"老库"：把 github 的显示名清空（就像这列刚加时那样）
+	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+		t.Fatalf("ensure builtin: %v", err)
+	}
+	gh, err := db.GetCapability(ctx, orgID, "github", 1)
+	if err != nil {
+		t.Fatalf("get github: %v", err)
+	}
+	if err := db.SetCapabilityDisplayName(ctx, orgID, gh.ID, ""); err != nil {
+		t.Fatalf("clear display name: %v", err)
+	}
+	// 再跑一次 Ensure（启动时会对所有组织跑一遍）→ 应该补回来
+	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+		t.Fatalf("re-ensure builtin: %v", err)
+	}
+	gh2, _ := db.GetCapability(ctx, orgID, "github", 1)
+	if gh2.DisplayName != "GitHub webhook" {
+		t.Fatalf("backfill failed: %q", gh2.DisplayName)
+	}
+
+	// 用户改成自己的名字 → 不能被启动流程改回去
+	if err := db.SetCapabilityDisplayName(ctx, orgID, gh.ID, "我们的 PR 入口"); err != nil {
+		t.Fatalf("user rename: %v", err)
+	}
+	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+		t.Fatalf("ensure again: %v", err)
+	}
+	gh3, _ := db.GetCapability(ctx, orgID, "github", 1)
+	if gh3.DisplayName != "我们的 PR 入口" {
+		t.Fatalf("startup overwrote user's display name: %q", gh3.DisplayName)
+	}
+}

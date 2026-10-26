@@ -47,7 +47,9 @@
     "no-open-redirect-js": {
       "_why": "本仓库的重定向目标全是**硬编码常量**（'capabilities.html?focus=' + encodeURIComponent(id)、'events.html?source=' + encodeURIComponent(name)），用户输入只作为 query 参数值经过 encodeURIComponent，无法改变目标 origin 或路径。规则的匹配是 `location.href = ...` / `window.open(...)` 带任何拼接，区分不出这种安全用法。",
       "ignorePaths": [
-        "web-src/pages/**"
+        "web-src/pages/**",
+        "web/graphs.js",
+        "web/traceview.js"
       ]
     },
     "prefer-query-selector-js": {
