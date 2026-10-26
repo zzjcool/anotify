@@ -214,36 +214,16 @@
         font-size: 0.7rem;
         color: var(--faint);
       }
-      /* 参数填法的两态切换：固定值 / 从事件取值。
-       * 两个按钮并排、选中态用 accent，让人一眼看出这是"同一个字段的两种填法"，
-       * 而不是两个不同的字段。 */
-      .param-mode {
-        display: flex;
-        gap: 0.25rem;
-        margin-bottom: 0.25rem;
+      /* 参数输入框下方的引用提示。引用时显示"从事件或变量取值"，
+         不改变值本身——只是让人一眼看出这行不是字面量。 */
+      .param-tip {
+        font-size: 0.62rem;
+        color: var(--faint);
+        line-height: 1.4;
+        min-height: 0.9rem;
       }
-      .param-mode-btn {
-        padding: 0.1rem 0.4rem;
-        font-size: 0.65rem;
-        border-radius: 0.375rem;
-        border: 1px solid var(--line);
-        background: transparent;
-        color: var(--muted, #71717a);
-        cursor: pointer;
-      }
-      .param-mode-btn.is-on {
-        border-color: var(--accent);
+      .param-tip.is-ref {
         color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 12%, transparent);
-      }
-      .param-body {
-        display: grid;
-        gap: 0.25rem;
-      }
-      /* 映射态左侧细线，提示"这里填的是取值规则，不是值本身" */
-      .param-map {
-        padding-left: 0.5rem;
-        border-left: 1px dashed var(--line);
       }
 
       /* ---------- 流向图（只读预览）----------
@@ -498,6 +478,15 @@
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
       const API = "/v1";
+
+      // 模板引用用「双大括号」包住路径。这两个常量代替字面量：
+      // Go template 会渲染 web-src/pages/*.html，脚本里直接写双大括号
+      // 会被当成模板语法（报 `function "pull_request" not defined`）。
+      // 拼出来的字符串不经过模板解析，也顺带让正则好读一点。
+      const TPL_OPEN = "{" + "{";
+      const TPL_CLOSE = "}" + "}";
+      const TPL = (ref) => TPL_OPEN + ref + TPL_CLOSE;
+      const TPL_RE = new RegExp("^\\{\\{[^{}]+\\}\\}$");
 
       // 挂载「侧栏 + 顶栏」布局。
       //
@@ -1048,8 +1037,6 @@
           nameIn.value = d.name || "";
           nameIn.addEventListener("input", () => {
             VAR_DEFS[i].name = nameIn.value;
-            // 改完名字要让出口参数里的变量下拉跟着更新（但不重建整个弹窗）
-            refreshVarChoosers();
           });
 
           // 来源：payload 路径 or 固定值
@@ -1072,7 +1059,6 @@
             valIn.placeholder = isVal ? "prod" : "pull_request.title";
             // 切类型后值框里是另一类内容（路径 vs 常量），清掉避免误存
             valIn.value = String(isVal ? VAR_DEFS[i].value ?? "" : VAR_DEFS[i].from ?? "");
-            refreshVarChoosers();
           });
 
           const valIn = document.createElement("input");
@@ -1099,7 +1085,6 @@
           del.addEventListener("click", () => {
             VAR_DEFS.splice(i, 1);
             renderVars();
-            refreshVarChoosers();
           });
 
           row.appendChild(nameIn);
@@ -1108,69 +1093,6 @@
           row.appendChild(del);
           box.appendChild(row);
         });
-      }
-
-      // refreshVarChoosers 让所有已渲染的"变量下拉"跟上当前变量表。
-      //
-      // 不重建整个参数区：用户可能正在填别的字段，重建会把输入状态清掉。
-      // 只更新每个映射态里的下拉选项，并尽量保留当前选中值。
-      function refreshVarChoosers() {
-        const names = VAR_DEFS.map((d) => d && d.name).filter(Boolean);
-        document.querySelectorAll("[data-var-chooser]").forEach((sel) => {
-          const cur = sel.value;
-          sel.replaceChildren();
-          sel.appendChild(new Option(t("sources.form.var_none", "— 用下面的路径 —"), ""));
-          for (const n of names) sel.appendChild(new Option("$" + n, n));
-          if (cur && names.includes(cur)) sel.value = cur;
-        });
-        // 同步刷新"可用变量"提示文字
-        document.querySelectorAll("[data-var-hint]").forEach((h) => {
-          h.textContent = names.length
-            ? t("sources.form.vars_available", "可用变量：") + names.map((n) => "$" + n).join("、")
-            : t("sources.form.from_hint", "按点号路径从事件 payload 取值，如 pull_request.title。");
-        });
-      }
-
-      // hintText 决定映射态下方的提示语。抽出来是因为原来写成三层嵌套
-      // 三元（useVar ? A : names.length ? B : C），读的人得在脑子里跑一遍。
-      function hintText(useVar, names) {
-        if (useVar) return t("sources.form.var_hint", "取变量的值，原样传给这个参数。");
-        if (names.length) {
-          return t("sources.form.vars_available", "可用变量：") + names.map((n) => "$" + n).join("、");
-        }
-        return t(
-          "sources.form.from_hint",
-          "按点号路径从事件 payload 取值，如 pull_request.title。",
-        );
-      }
-
-      // buildVarChooser 在映射态里加一个"选变量"下拉，
-      // 与"手填 payload 路径"二选一（选变量时路径框禁用）。
-      function buildVarChooser(pathIn, hintEl, cur) {
-        const names = VAR_DEFS.map((d) => d && d.name).filter(Boolean);
-        const sel = document.createElement("select");
-        sel.className = "input w-full text-xs";
-        sel.dataset.varChooser = "1";
-        sel.appendChild(new Option(t("sources.form.var_none", "— 用下面的路径 —"), ""));
-        for (const n of names) sel.appendChild(new Option("$" + n, n));
-        if (cur && cur.var) sel.value = cur.var;
-
-        const sync = () => {
-          const useVar = sel.value !== "";
-          pathIn.disabled = useVar;
-          pathIn.classList.toggle("opacity-40", useVar);
-          if (useVar) {
-            pathIn.value = "";
-          }
-          hintEl.dataset.varHint = "1";
-          hintEl.textContent = hintText(useVar, names);
-        };
-        sel.dataset.varChooser = "1";
-        sel.addEventListener("change", sync);
-        sync();
-
-        // 插到路径框前面
-        pathIn.parentNode.insertBefore(sel, pathIn);
       }
 
       // requiredFields 从 params_schema 取必填字段名。
@@ -1233,35 +1155,24 @@
 
           const cur = current[k];
           // 该参数现在是"映射"（{from,default}）还是字面量？
-          const asMapping = isMappingDecl(cur);
-
-          // 模式切换：固定值 / 从事件取值。
+          // 参数只有一个输入框：值里写「双大括号 + 路径」就是引用，否则是字面量。
           //
-          // 这两种模式是**同一个参数**的两种填法，所以并排放在同一行，
-          // 而不是拆成两组字段——拆开会让用户以为要填两个东西。
-          const modeRow = el("div", "param-mode");
-          const pick = (val, labelKey, fallback) => {
-            const b = el("button", "param-mode-btn", t(labelKey, fallback));
-            b.type = "button";
-            b.dataset.mode = val;
-            if ((val === "map") === asMapping) b.classList.add("is-on");
-            return b;
-          };
-          const btnLit = pick("literal", "sources.form.pm_literal", "固定值");
-          const btnMap = pick("map", "sources.form.pm_map", "从事件取值");
-          modeRow.appendChild(btnLit);
-          modeRow.appendChild(btnMap);
-          field.appendChild(modeRow);
-
-          // 字面量容器
-          const litWrap = el("div", "param-body");
-          if (asMapping) litWrap.classList.add("hidden");
-          // 映射容器
-          const mapWrap = el("div", "param-body param-map");
-          if (!asMapping) mapWrap.classList.add("hidden");
+          // 以前这里是「固定值 / 从事件取值」两个按钮切两套控件 —— 用户要
+          // 先判断"我这次算哪种"，而实际上他脑子里想的只是"这个值从哪来"。
+          // 现在按内容自动识别：看到「双大括号 + pull_request.title」就知道是取事件，
+          // 看到 prod 就知道是字面量。少一次选择，也少一类"选错了"的错误。
+          //
+          // 注意：只支持**整个值是一个引用**（见 TPL 常量）。
+          // 带前缀后缀的拼接仍然拒绝 —— 那是字符串求值，越过 I6。
+          const rawVal = isMappingDecl(cur)
+            ? cur.var
+              ? TPL("$" + cur.var)
+              : cur.from
+                ? TPL(cur.from)
+                : ""
+            : cur;
 
           let input;
-
           if (Array.isArray(spec.enum) && spec.enum.length) {
             input = document.createElement("select");
             if (!required.has(k)) {
@@ -1270,102 +1181,69 @@
               empty.textContent = "—";
               input.appendChild(empty);
             }
-            for (const v of spec.enum) {
-              const o = document.createElement("option");
-              o.value = String(v);
-              o.textContent = String(v);
-              if (cur != null && String(cur) === String(v)) o.selected = true;
-              input.appendChild(o);
+            for (const opt of spec.enum) {
+              input.appendChild(new Option(String(opt), String(opt)));
             }
+            if (rawVal != null) input.value = String(rawVal);
           } else if (spec.type === "boolean") {
             input = document.createElement("input");
             input.type = "checkbox";
-            input.checked = cur === true;
+            input.checked = rawVal === true || rawVal === "true";
           } else if (spec.type === "number" || spec.type === "integer") {
             input = document.createElement("input");
-            input.type = "number";
-            if (spec.type === "integer") input.step = "1";
-            if (cur != null) input.value = String(cur);
-            if (spec.minimum != null) input.min = String(spec.minimum);
-            if (spec.maximum != null) input.max = String(spec.maximum);
-          } else if (spec.type === "object" || spec.type === "array" || spec.type === undefined) {
-            // object/array（或没声明类型）：用文本框，提交前按 JSON 解析。
-            // 不做结构化编辑器——那是另一种复杂度，先用最直白的方式。
+            // type=number 会**拒绝**非数字内容：写进去的引用表达式
+            // 被静默清空（表现为"填了但保存后没有"）。引用是字符串，所以
+            // 只要当前值是引用就用 text，让用户能把它写进去并在提交时原样交给中枢。
+            const isRefVal = typeof rawVal === "string" && TPL_RE.test(rawVal.trim());
+            input.type = isRefVal ? "text" : "number";
+            if (isRefVal) {
+              input.inputMode = "numeric";
+              input.placeholder = "120 或 " + TPL("pull_request.additions");
+            }
+            if (rawVal != null && rawVal !== "") input.value = String(rawVal);
+          } else if (spec.type === "object" || spec.type === "array") {
             input = document.createElement("input");
             input.type = "text";
             input.dataset.json = "1";
             input.placeholder = placeholderForType(spec.type);
-            if (cur != null) input.value = typeof cur === "string" ? cur : JSON.stringify(cur);
+            if (rawVal != null) {
+              input.value = typeof rawVal === "string" ? rawVal : JSON.stringify(rawVal);
+            }
           } else {
             input = document.createElement("input");
             input.type = spec.format === "uri" ? "url" : "text";
-            if (cur != null) input.value = String(cur);
+            if (rawVal != null) input.value = String(rawVal);
             if (spec.pattern) input.placeholder = spec.pattern;
           }
 
           input.className = "input mono w-full";
           input.dataset.param = k;
           input.dataset.ptype = input.dataset.json ? "json" : spec.type || "string";
-          litWrap.appendChild(input);
 
-          // ---- 映射态：payload 路径 + 默认值 ----
-          const fromIn = document.createElement("input");
-          fromIn.type = "text";
-          fromIn.className = "input mono w-full text-xs";
-          fromIn.placeholder = "pull_request.title";
-          fromIn.dataset.map = "source"; // 可以是变量名（var）或路径（from）
-          if (asMapping && cur.var) {
-            fromIn.dataset.kind = "var";
-            fromIn.value = cur.var;
-          } else if (asMapping && cur.from) {
-            fromIn.dataset.kind = "from";
-            fromIn.value = cur.from;
-          }
-          const fromHint = el(
-            "p",
-            "text-[10px] leading-relaxed text-zinc-500",
-            "",
-          );
+          // 引用模式时给个视觉提示（不改变值，只是让用户知道这行是引用）
+          const tip = el("p", "param-tip", "");
+          const updateTip = () => {
+            const isRef = TPL_RE.test(input.value.trim());
+            tip.textContent = isRef
+              ? t("sources.form.ref_tip", "从事件或变量取值")
+              : "";
+            tip.classList.toggle("is-ref", isRef);
 
+            // 数字字段要能在"填数字"和"填引用"之间自由切换。
+            // type=number 的框里根本敲不进 `{`，所以一旦用户开始写引用
+            // （或以 `{` 开头），就把类型换成 text；清空后又换回 number
+            // 以便拿到数字键盘和上下微调。
+            if (input.dataset.ptype === "number" || input.dataset.ptype === "integer") {
+              const looksLikeRef = isRef || input.value.trim().startsWith("{");
+              const want = looksLikeRef ? "text" : "number";
+              if (input.type !== want) input.type = want;
+            }
+          };
+          input.addEventListener("input", updateTip);
+          updateTip();
 
-          const defIn = document.createElement("input");
-          defIn.type = "text";
-          defIn.className = "input mono w-full text-xs";
-          defIn.placeholder = t("sources.form.default_ph", "默认值（可选）");
-          defIn.dataset.map = "default";
-          if (asMapping && cur.default !== undefined) {
-            defIn.value =
-              typeof cur.default === "string" ? cur.default : JSON.stringify(cur.default);
-          }
-
-          mapWrap.appendChild(fromIn);
-          mapWrap.appendChild(fromHint);
-          mapWrap.appendChild(defIn);
-
-          // 变量下拉：源声明过变量时优先让用户选，而不是手打路径。
-          //
-          // 必须在 fromIn 已经进 DOM 之后调（它要 insertBefore 到 fromIn 前面）——
-          // 之前放在 appendChild 之前会拿不到 parentNode 抛 TypeError，
-          // 而 openModal 是 async 且调用处没 await，异常会变成静默的
-          // unhandled rejection，表现为"点新建没反应"。
-          buildVarChooser(fromIn, fromHint, cur);
-
-          // 切换：两个容器互斥显示
-          btnLit.addEventListener("click", () => {
-            btnLit.classList.add("is-on");
-            btnMap.classList.remove("is-on");
-            litWrap.classList.remove("hidden");
-            mapWrap.classList.add("hidden");
-          });
-          btnMap.addEventListener("click", () => {
-            btnMap.classList.add("is-on");
-            btnLit.classList.remove("is-on");
-            mapWrap.classList.remove("hidden");
-            litWrap.classList.add("hidden");
-          });
-
-          field.appendChild(litWrap);
-          field.appendChild(mapWrap);
+          field.appendChild(input);
+          field.appendChild(tip);
           wrap.appendChild(field);
         }
       }
@@ -1409,6 +1287,7 @@
         return out;
       }
 
+
       // collectTargets 收集 {capabilityId, params} 列表。
       //
       // 每个出口带自己那份参数：各能力的 params_schema 不同，
@@ -1422,95 +1301,64 @@
           const wrap = box.querySelector('.target-params[data-for="' + CSS.escape(capId) + '"]');
           const params = {};
           if (wrap) {
-            // 每个字段先看它当前在哪一态（看哪个容器可见）。
-            // 不能靠"哪个有值"判断：映射态里 from 为空但 default 有值时，
-            // 靠值判断会误判成字面量。
             for (const field of wrap.querySelectorAll("[data-param-field]")) {
               const k = field.dataset.paramField;
-              const litWrap = field.querySelector(".param-body:not(.param-map)");
-              const mapWrap = field.querySelector(".param-map");
-              const literalMode = litWrap && !litWrap.classList.contains("hidden");
+              const input = field.querySelector("[data-param]");
+              if (!input) continue;
+              const type = input.dataset.ptype;
 
-              if (!literalMode && mapWrap) {
-                const srcIn = mapWrap.querySelector('[data-map="source"]');
-                const varSel = mapWrap.querySelector("[data-var-chooser]");
-                const defIn = mapWrap.querySelector('[data-map="default"]');
-                const defRaw = (defIn.value || "").trim();
-                const varName = varSel ? varSel.value : "";
-                const pathVal = (srcIn.value || "").trim();
-
-                const m = {};
-                if (varName) {
-                  if (!known.has(varName)) {
-                    throw new Error(
-                      t("sources.form.unknown_var", "参数 {k} 引用了未声明的变量「{v}」")
-                        .replace("{k}", k)
-                        .replace("{v}", varName),
-                    );
-                  }
-                  m.var = varName;
-                } else {
-                  if (!pathVal) {
-                    throw new Error(
-                      t(
-                        "sources.form.need_src",
-                        "参数 {k} 选了「从事件取值」，要么选一个变量，要么填 payload 路径",
-                      ).replace("{k}", k),
-                    );
-                  }
-                  m.from = pathVal;
-                }
-                const from = varName ? "$" + varName : pathVal;
-                if (defRaw !== "") {
-                  // 默认值按该参数声明的类型解析，否则 number 字段会拿到 "3" 这种字符串
-                  const t_ = litWrap?.querySelector("[data-param]")?.dataset.ptype || "string";
-                  if (t_ === "json") {
-                    try {
-                      m.default = JSON.parse(defRaw);
-                    } catch (e) {
-                      throw new Error(
-                        t("sources.form.bad_json", "参数 {k} 不是合法 JSON").replace("{k}", k),
-                      );
-                    }
-                  } else if (t_ === "number" || t_ === "integer") {
-                    const n = Number(defRaw);
-                    if (!Number.isNaN(n)) m.default = n;
-                  } else if (t_ === "boolean") {
-                    m.default = defRaw === "true";
-                  } else {
-                    m.default = defRaw;
-                  }
-                }
-                params[k] = m;
+              if (type === "boolean" && input.type === "checkbox") {
+                if (!input.checked) continue; // 未勾选 = 不传
+                params[k] = true;
                 continue;
               }
 
-              const input = field.querySelector("[data-param]");
-              if (!input) continue;
-              const t_ = input.dataset.ptype;
-              let v;
-              if (t_ === "boolean") {
-                if (!input.checked) continue; // 未勾选 = 不传，避免把 false 强加给后端
-                v = true;
-              } else {
-                const raw = input.value.trim();
-                if (raw === "") continue; // 空 = 不传（交给 schema 默认/必填校验）
-                if (t_ === "json") {
-                  try {
-                    v = JSON.parse(raw);
-                  } catch (e) {
-                    throw new Error(
-                      t("sources.form.bad_json", "参数 {k} 不是合法 JSON").replace("{k}", k),
-                    );
-                  }
-                } else if (t_ === "number" || t_ === "integer") {
-                  v = Number(raw);
-                  if (Number.isNaN(v)) {
-                    throw new Error(t("sources.form.bad_num", "参数 {k} 不是数字").replace("{k}", k));
-                  }
-                } else {
-                  v = raw;
+              const raw = String(input.value).trim();
+              if (raw === "") continue; // 空 = 不传（交给 schema 默认/必填校验）
+
+              // 唯一的分支点：整个值是不是一个引用（TPL_RE）。
+              //
+              // 是 → 原样存成字符串交给中枢解析，不由前端展开成 {from:...}。
+              //      展开会丢掉"用户写的是哪个路径"，出错时只能说"某字段取不到"。
+              if (TPL_RE.test(raw)) {
+                const m = raw.match(new RegExp("^\\{\\{\\s*\\$([A-Za-z_][A-Za-z0-9_]*)\\s*\\}\\}$"));
+                if (m && !known.has(m[1])) {
+                  throw new Error(
+                    t("sources.form.unknown_var", "参数 {k} 引用了未声明的变量「{v}」")
+                      .replace("{k}", k)
+                      .replace("{v}", m[1]),
+                  );
                 }
+                params[k] = raw;
+                continue;
+              }
+
+              // 混写（带前后缀）明确拒绝：那是字符串求值，越过 I6
+              if (raw.includes(TPL_OPEN) || raw.includes(TPL_CLOSE)) {
+                throw new Error(
+                  t(
+                    "sources.form.no_interp",
+                    "参数 {k}：引用必须占满整个值（形如 TPL(pull_request.title)），不支持前后缀拼接",
+                  ).replace("{k}", k),
+                );
+              }
+
+              let v;
+              if (type === "json") {
+                try {
+                  v = JSON.parse(raw);
+                } catch (e) {
+                  throw new Error(
+                    t("sources.form.bad_json", "参数 {k} 不是合法 JSON").replace("{k}", k),
+                  );
+                }
+              } else if (type === "number" || type === "integer") {
+                v = Number(raw);
+                if (Number.isNaN(v)) {
+                  throw new Error(t("sources.form.bad_num", "参数 {k} 不是数字").replace("{k}", k));
+                }
+              } else {
+                v = raw;
               }
               params[k] = v;
             }
@@ -1733,29 +1581,39 @@
           cb.dispatchEvent(new Event("change", { bubbles: true }));
         }
 
-        // 4) 把每个参数的映射态打开，能对上变量名的就选变量。
+        // 4) 把参数填成「双大括号 + payload 路径」，不必先声明成变量。
+        //
+        // 这条演示同时说明了两件事：
+        //   - 变量表是可选的（下面把 variables 清空也能跑）
+        //   - 参数里看到什么字段就写什么，直接写那个 payload 路径
         const wrap = box.querySelector('.target-params[data-for="' + CSS.escape(cap.id) + '"]');
         if (wrap) {
           const props = schemaProps(cap.paramsSchema);
-          const names = VAR_DEFS.map((d) => d.name);
-          // 字段容器是 [data-param-field]（不是 .param-field）——
-          // 这里曾经写错，导致演示按钮"点了没反应"但也不报错。
-          const fieldEls = wrap.querySelectorAll("[data-param-field]");
-          let idx = 0;
-          for (const field of Object.keys(props)) {
-            const fieldEl = fieldEls[idx];
-            idx += 1;
-            if (!fieldEl) continue;
-            const mapBtn = fieldEl.querySelector('.param-mode-btn[data-mode="map"]');
-            if (mapBtn) mapBtn.click();
-            const chooser = fieldEl.querySelector("[data-var-chooser]");
-            if (!chooser) continue;
-            // 同名优先，否则取第一个还没用过的变量
-            const pick = names.includes(field) ? field : names[0];
-            if (pick) {
-              chooser.value = pick;
-              chooser.dispatchEvent(new Event("change", { bubbles: true }));
+          // 按字段名挑一个合适的路径；命不中就按类型给个通用的
+          const guess = (field, spec) => {
+            const t2 = spec && spec.type;
+            if (/title|name|subject/i.test(field)) return TPL("pull_request.title");
+            if (/repo|repository/i.test(field)) return TPL("repository.name");
+            if (/author|user|login/i.test(field)) return TPL("pull_request.user.login");
+            if (/line|count|number|size|additions/i.test(field) || t2 === "integer" || t2 === "number") {
+              return TPL("pull_request.additions");
             }
+            if (/env|stage/i.test(field)) return "staging";
+            return TPL("pull_request.title");
+          };
+          for (const [field, spec] of Object.entries(props)) {
+            const fieldEl = wrap.querySelector(
+              '[data-param-field="' + CSS.escape(field) + '"]',
+            );
+            if (!fieldEl) continue;
+            const input = fieldEl.querySelector("[data-param]");
+            if (!input) continue;
+            const val = guess(field, spec);
+            // 数字字段默认是 type=number，直接写引用会被浏览器**静默清空**。
+            // 先切成 text 再写值 —— 否则演示按钮看起来"填了"实际是空的。
+            if (TPL_RE.test(val) && input.type === "number") input.type = "text";
+            input.value = val;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
           }
         }
 

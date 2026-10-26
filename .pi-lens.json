@@ -90,6 +90,12 @@
         "javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp"
       ],
       "_why": "唯一命中在 scripts/e2e/lib/harness.mjs:335 的 seed()：`new RegExp(`^${k}=(.*)$`, \"m\")`，而 k 的取值来自本函数内 4 处硬编码字面量（\"UID\" / \"SEND_KEY\" / \"RECV_KEY\" / \"SESSION\"），不是用户输入，也没有任何调用方能传进来。规则无法做这种跨语句的来源分析，只能按『RegExp 的参数是变量』报警。ReDoS 在这里不成立：模式里只有一个 `(.*)`，输入是 devseed 自己打印的几行文本。"
+    },
+    "semgrep-mustache-explicit-unescape": {
+      "disable": [
+        "javascript.express.security.audit.xss.mustache.explicit-unescape.template-explicit-unescape"
+      ],
+      "_why": "命中在 web-src/pages/sources.html 的一行**错误提示文案**里：`\"参数 {k}：引用必须占满整个值（如 {{{{pull_request.title}}}}）\"`。这里的 `{{{{...}}}}` 是 JS 字符串内的字面量（四个花括号是为了在提示语里打印出 `{{path}}` 给用户看），不是 Mustache 模板，不参与任何模板渲染，也没有外部数据流向它。规则只按『出现 {{{ 或 & 在模板语法上下文』匹配，无法区分『代码里的普通字符串』。"
     }
   }
 }

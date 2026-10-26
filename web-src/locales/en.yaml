@@ -1311,6 +1311,8 @@ sources:
     hook_github_events: "This one is enough; other events are not dispatched"
     hook_github_secret: "GitHub verifies against its own Secret; this system does not verify signatures yet, so use a long random token in the URL"
     hook_github_why: "After filling these in, click \"Add webhook\". GitHub sends a ping immediately and the event is stored; then bind the target params below."
+    ref_tip: "Reads from event or variable"
+    no_interp: "Param {k}: a reference must fill the whole value (e.g. {{pull_request.title}}); prefix/suffix concatenation is not supported"
   preset:
     hourly: Hourly
     daily3: Daily 3:00
