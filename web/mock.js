@@ -25,6 +25,15 @@
 	// ---------- 基础工具 ----------
 	const now = () => Math.floor(Date.now() / 1000);
 	const uid = (p) => p + "_mock" + Math.random().toString(36).slice(2, 10);
+
+	// traceSeq 给 trace id 用确定性的序号，不用随机。
+	//
+	// 为什么：mock 每次刷新都重新生成数据，随机 id 会让"分享/刷新 trace 页"
+	// 永远 404（真实后端不会——trace_id 落库后就不变了）。
+	// 用序号后，demo 里 trace_mock_t1 / t2 … 在刷新之间是稳定的，
+	// trace.html?traceId=trace_mock_t5 可以反复打开。
+	let traceSeq = 0;
+	const nextTraceId = () => "trace_mock_t" + ++traceSeq;
 	// clone 深拷贝演示数据，避免调用方改到 state 里的原对象。
 	//
 	// JSON.parse 会抛（带 undefined/循环引用时），而这个函数在每个 mock
@@ -414,7 +423,7 @@
 		// 想表现"并行"不能靠让一个父任务扇出 —— 那在模型里不存在。
 		// 并行要靠两条独立的 trace 各自在跑（见下面第 3 条）。
 		{
-			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			const traceId = nextTraceId();
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "GitHub PR", type: "pull_request.opened",
@@ -494,7 +503,7 @@
 		// 这是演示数据的核心：只有 3 个节点的链根本暴露不出布局问题、
 		// 也验证不了"扇出的边怎么画"。
 		{
-			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			const traceId = nextTraceId();
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "GitHub PR", type: "pull_request.reopened",
@@ -586,7 +595,7 @@
 			// 取整到秒是刻意的：浮点毫秒会有微小差异，图上就有个错位。
 			const baseClock = Math.floor(now() - 45);
 			for (const br of branch) {
-				const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+				const traceId = nextTraceId();
 				state.events.push({
 					id: uid("evt"), orgId: ORG, traceId,
 					source: br.src, type: br.type, payload: {}, createdAt: baseClock,
@@ -613,7 +622,7 @@
 
 		// ---- 2) 进行中：有一条任务还没结束（瀑布图宽度算到"现在"）----
 		{
-			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			const traceId = nextTraceId();
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "每晚体检", type: "nightly",
@@ -630,7 +639,7 @@
 
 		// ---- 3) 待派发：还没被节点认领（只能画左边界细线）----
 		{
-			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			const traceId = nextTraceId();
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "每日汇总", type: "manual.run",
@@ -646,7 +655,7 @@
 
 		// ---- 4) 快任务：0.4 秒，验证"零耗时也看得见" ----
 		{
-			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			const traceId = nextTraceId();
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "GitHub PR", type: "pull_request.synchronize",
@@ -663,7 +672,7 @@
 
 		// ---- 5) 重试过的任务：attempts=3，瀑布图要标出 ×3 ----
 		{
-			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+			const traceId = nextTraceId();
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "cron", type: "nightly",
@@ -1051,7 +1060,7 @@
 		if (!s.enabled) return err(400, "source: " + s.name + " 已停用");
 
 		const b = ctx.body || {};
-		const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
+		const traceId = nextTraceId();
 		const ev = {
 			id: uid("evt"),
 			orgId: ORG,
@@ -1164,7 +1173,7 @@
 		const ev = {
 			id: uid("evt"),
 			orgId: ORG,
-			traceId: "trace_mock_" + Math.random().toString(36).slice(2, 10),
+			traceId: nextTraceId(),
 			source: b.source || "manual",
 			type: b.type || "manual.run",
 			payload: b.payload || {},
@@ -1217,7 +1226,7 @@
 		const ev = {
 			id: uid("evt"),
 			orgId: ORG,
-			traceId: "trace_mock_" + Math.random().toString(36).slice(2, 10),
+			traceId: nextTraceId(),
 			source: "manual",
 			type: "test.notify",
 			payload: { title: b.title, body: b.body },

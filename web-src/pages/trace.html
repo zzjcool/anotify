@@ -1,0 +1,314 @@
+{{define "title"}}{{t "trace.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* trace 页：一条 trace 的全貌。
+         URL 形如 trace.html?traceId=trace_xxx（事件流里"查看链路"跳过来） */
+      .trace-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      /* trace_id 是这页的主键，要显眼可复制 */
+      .trace-id {
+        font-family: var(--mono, monospace);
+        font-size: 0.8rem;
+        color: var(--accent);
+        background: rgba(139, 139, 253, 0.08);
+        border: 1px solid rgba(139, 139, 253, 0.2);
+        border-radius: 8px;
+        padding: 0.25rem 0.6rem;
+        word-break: break-all;
+      }
+      /* 概览数字：事件数 / 任务数 / 总耗时 / 最慢一步 */
+      .trace-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.75rem;
+      }
+      .trace-stat-label {
+        font-size: 0.68rem;
+        color: var(--faint);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .trace-stat-value {
+        font-size: 0.95rem;
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+      }
+      /* 事件那一行：源 → 类型 + 时间 */
+      .trace-event {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.78rem;
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-6xl space-y-6">
+    <!-- 头部 -->
+    <div class="reveal visible">
+      <div class="trace-head">
+        <div class="min-w-0">
+          <h2 class="font-display text-3xl text-white">{{t "trace.title"}}</h2>
+          <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+            {{t "trace.subtitle"}}
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <a
+            href="events.html"
+            class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
+          >
+            {{t "trace.back"}}
+          </a>
+          <button
+            id="btn-refresh"
+            class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+          >
+            {{t "trace.refresh"}}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- trace 主体 -->
+    <div id="trace-body" class="space-y-6">
+      <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
+        {{t "trace.loading"}}
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+
+      // 各页面各自声明，无全局常量（与 events.html / sources.html 一致）
+      const API = "/v1";
+
+      Anotify.mountLayout({
+        active: "events",
+        title: t("trace.title", "链路"),
+        subtitle: t("trace.subtitle", "一条 trace 的全貌：谁触发的、走了哪条路、每一步多久"),
+      });
+
+      // el / code 是本页的小工具，不依赖 events.html。
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = String(text);
+        return n;
+      }
+      function code(text, cls) {
+        const n = el("code", cls || "", text);
+        return n;
+      }
+
+      const qs = new URLSearchParams(location.search);
+      const TRACE_ID = qs.get("traceId") || "";
+
+      function fmtTime(sec) {
+        if (!sec) return "—";
+        const d = new Date(sec * 1000);
+        const p = (n) => String(n).padStart(2, "0");
+        return (
+          d.getFullYear() +
+          "-" +
+          p(d.getMonth() + 1) +
+          "-" +
+          p(d.getDate()) +
+          " " +
+          p(d.getHours()) +
+          ":" +
+          p(d.getMinutes()) +
+          ":" +
+          p(d.getSeconds())
+        );
+      }
+
+      function fmtDur(ms) {
+        if (!Number.isFinite(ms) || ms < 0) return "—";
+        if (ms < 1000) return Math.round(ms) + "ms";
+        if (ms < 60000) return (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + "s";
+        const m = Math.floor(ms / 60000);
+        const s = Math.round((ms % 60000) / 1000);
+        return m + "m" + (s ? s + "s" : "");
+      }
+
+      async function fetchApi(url) {
+        return Anotify.api(url, { demo: null });
+      }
+
+      // 渲染整页
+      async function load() {
+        const body = document.getElementById("trace-body");
+
+        if (!TRACE_ID) {
+          body.replaceChildren(
+            el(
+              "div",
+              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+              t("trace.no_id", "URL 里没有 traceId。从事件流点「查看链路」进来，或手动填 ?traceId=trace_xxx。"),
+            ),
+          );
+          return;
+        }
+
+        body.replaceChildren(
+          el("div", "card rounded-2xl p-6 text-center text-sm text-zinc-500", t("trace.loading", "加载中…")),
+        );
+
+        // 任务链：这是本页的主体
+        const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(TRACE_ID));
+        const tasks = (data && data.tasks) || [];
+
+        // 事件：用来回答"谁触发的"。按 traceId 过滤（后端支持）。
+        let event = null;
+        try {
+          const evData = await fetchApi(API + "/console/events?traceId=" + encodeURIComponent(TRACE_ID));
+          const evs = (evData && (evData.events || evData)) || [];
+          if (Array.isArray(evs) && evs.length) event = evs[0];
+        } catch (_e) {
+          // 事件查不到不影响链路展示（trace 可能从别处发起）
+        }
+
+        body.replaceChildren();
+
+        // ---- 头部卡：traceId + 概览 ----
+        const head = el("div", "card rounded-2xl p-5 space-y-4");
+
+        const idRow = el("div", "flex flex-wrap items-center gap-3");
+        idRow.appendChild(el("span", "trace-id", TRACE_ID));
+        const copyBtn = el("button", "btn-ghost rounded px-2 py-1 text-[11px]", t("trace.copy", "复制"));
+        copyBtn.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(TRACE_ID);
+            copyBtn.textContent = t("trace.copied", "已复制");
+            setTimeout(() => (copyBtn.textContent = t("trace.copy", "复制")), 1500);
+          } catch (_e) {
+            copyBtn.textContent = t("trace.copy_failed", "复制失败");
+          }
+        });
+        idRow.appendChild(copyBtn);
+        head.appendChild(idRow);
+
+        // 概览数字：先算出来再渲染，避免各处重复计算
+        let spanStart = Infinity;
+        let spanEnd = -Infinity;
+        let slowest = null;
+        const statusCount = {};
+        for (const tk of tasks) {
+          const st = tk.status || "pending";
+          statusCount[st] = (statusCount[st] || 0) + 1;
+
+          const s = tk.startedAt != null ? tk.startedAt : tk.createdAt;
+          const now = Math.floor(Date.now() / 1000);
+          const e = tk.finishedAt != null ? tk.finishedAt : tk.startedAt != null ? now : tk.createdAt;
+          if (s != null && s < spanStart) spanStart = s;
+          if (e != null && e > spanEnd) spanEnd = e;
+
+          if (tk.startedAt != null && tk.finishedAt != null) {
+            const d = tk.finishedAt - tk.startedAt;
+            if (!slowest || d > slowest.d) slowest = { d, name: tk.capability };
+          }
+        }
+        const totalMs =
+          Number.isFinite(spanStart) && Number.isFinite(spanEnd) ? (spanEnd - spanStart) * 1000 : null;
+
+        const stats = el("div", "trace-stats");
+        const stat = (label, value) => {
+          const b = el("div", "");
+          b.appendChild(el("div", "trace-stat-label", label));
+          b.appendChild(el("div", "trace-stat-value", value));
+          return b;
+        };
+        stats.appendChild(stat(t("trace.stat.spans", "任务"), String(tasks.length)));
+        stats.appendChild(stat(t("trace.stat.duration", "总耗时"), fmtDur(totalMs)));
+        stats.appendChild(
+          stat(
+            t("trace.stat.slowest", "最慢一步"),
+            slowest ? slowest.name + " · " + fmtDur(slowest.d * 1000) : "—",
+          ),
+        );
+        // 失败数：不为 0 才显示，避免"0 失败"这种噪音
+        const failed = (statusCount.failed || 0) + (statusCount.abandoned || 0);
+        if (failed) {
+          const failBox = stat(t("trace.stat.failed", "失败"), String(failed));
+          failBox.querySelector(".trace-stat-value").className = "trace-stat-value text-red-400";
+          stats.appendChild(failBox);
+        }
+        head.appendChild(stats);
+
+        // 触发事件那一行：回答"谁触发的"
+        if (event) {
+          const evRow = el("div", "trace-event");
+          evRow.appendChild(el("span", "text-[11px] text-zinc-500", t("trace.triggered_by", "触发于")));
+          evRow.appendChild(code(event.source, "rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-indigo-300"));
+          evRow.appendChild(el("span", "text-zinc-600", "→"));
+          evRow.appendChild(code(event.type, "text-[11px] text-zinc-300"));
+          evRow.appendChild(el("span", "text-[11px] text-zinc-600", fmtTime(event.createdAt)));
+          head.appendChild(evRow);
+        }
+
+        body.appendChild(head);
+
+        // ---- 主体：三种视图（瀑布图 / 图 / 树）----
+        if (!tasks.length) {
+          body.appendChild(
+            el(
+              "div",
+              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+              t(
+                "trace.empty",
+                "这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。",
+              ),
+            ),
+          );
+          return;
+        }
+
+        if (!window.TraceView) {
+          body.appendChild(
+            el("div", "card rounded-2xl p-6 text-center text-sm text-zinc-500", t("trace.nolib", "渲染脚本未能加载。")),
+          );
+          return;
+        }
+
+        const viewBox = el("div", "card rounded-2xl p-5");
+        body.appendChild(viewBox);
+
+        // 视图选择记在 URL 上：刷新/分享时保留
+        const initView = qs.get("view") || "waterfall";
+        window.TraceView.mount(viewBox, {
+          tasks: tasks,
+          el: el,
+          code: code,
+          t: t,
+          view: initView,
+          // 视图选择记在 URL 上：刷新/分享时保留。
+          //
+          // 用 URLSearchParams 改 location.search 再拼回去，而不是
+          // new URL(location.href) —— 后者在异常输入上会抛 TypeError，
+          // 这里没有任何理由为一个"改个 query 参数"的动作承担抛错风险。
+          onViewChange: (v) => {
+            const params = new URLSearchParams(location.search);
+            params.set("view", v);
+            history.replaceState(null, "", "?" + params.toString());
+          },
+        });
+      }
+
+      document.getElementById("btn-refresh").addEventListener("click", load);
+      document.addEventListener("DOMContentLoaded", load);
+    </script>
+{{end}}

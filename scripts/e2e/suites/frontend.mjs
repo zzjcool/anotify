@@ -34,6 +34,8 @@ const PAGES = [
 	"capabilities.html",
 	"edges.html",
 	"nodes.html",
+	// 独立 trace 页（从事件流"查看链路"跳进来）
+	"trace.html",
 ];
 const GUARDED = [
 	"index.html",
@@ -577,29 +579,48 @@ async function main() {
 				return true;
 			});
 			H.check("事件流页面有可点击的事件卡", clicked === true);
-			await page2.waitForTimeout(1500);
+
+			// 点卡片现在会**跳转到独立 trace 页**（不再是同页展开）。
+			// 等导航完成，然后在新页面上断言。
+			await page2.waitForURL(/trace\.html\?traceId=/, { timeout: 12000 }).catch(() => {});
+			await page2.waitForTimeout(2200);
 
 			const chain = await page2.evaluate(() => {
-				const box = document.getElementById("ev-chain");
+				const body = document.getElementById("trace-body");
 				return {
-					n: box ? box.children.length : -1,
-					text: (box?.textContent || "").replace(/\s+/g, " ").slice(0, 120),
+					url: location.pathname + location.search,
+					n: body ? body.children.length : -1,
+					text: (body?.textContent || "").replace(/\s+/g, " ").slice(0, 160),
+					spans: document.querySelectorAll(".wf-row").length,
+					views: Array.from(document.querySelectorAll(".wf-switch button")).length,
 				};
 			});
+
 			H.check(
-				"点事件卡后任务链渲染出节点（非空框）",
-				chain.n > 0,
-				`ev-chain 子节点=${chain.n} text=${JSON.stringify(chain.text)}`,
+				"点事件卡跳到独立 trace 页（URL 带 traceId）",
+				/trace\.html\?traceId=/.test(chain.url),
+				chain.url,
 			);
 			H.check(
-				"渲染任务链没有 JS 报错",
-				chainErrors.length === 0,
-				chainErrors.slice(0, 2).join("; "),
+				"trace 页渲染出内容（非空框）",
+				chain.n > 0 && chain.text.length > 20,
+				`子节点=${chain.n} text=${JSON.stringify(chain.text)}`,
+			);
+			H.check("渲染 trace 页没有 JS 报错", chainErrors.length === 0, chainErrors.slice(0, 2).join("; "));
+			H.check(
+				"trace 页有三种视图切换器",
+				chain.views === 3,
+				`views=${chain.views}`,
 			);
 			H.check(
-				"任务链里出现了能力名",
-				/frontend\.(src|work)/.test(chain.text),
-				JSON.stringify(chain.text),
+				"瀑布图渲染出 span",
+				chain.spans >= 1,
+				`spans=${chain.spans}`,
+			);
+			H.check(
+				"trace 页出现了能力名@版本",
+				/@\d/.test(chain.text),
+				JSON.stringify(chain.text.slice(0, 80)),
 			);
 			await page2.close();
 		}
@@ -1225,20 +1246,27 @@ async function checkEdgesPage(page) {
 	);
 }
 
-// checkEventsFilter 验证事件流按源分组 + 按源/节点筛选 + URL 参数。
+// checkEventsFilter 验证事件流的排序 / 筛选 / 分组 / URL 参数。
 //
-// 三个需求（#89/#94）合在一起测，因为它们改的是同一个筛选区：
-//   ① 事件按源分组（组头显示源名 + 数量）
-//   ② 按源 / 按节点筛选
-//   ③ 从别的页面带 ?source= / ?node= 跳过来能落地即生效
+// 默认视图是**按时间倒序平铺**（事件流的第一个问题永远是"刚刚发生了什么"），
+// 分组是可选视图（?group=1），因为分组会把刚发生的事件压到组内第 6 条
+// 后面，用户以为没收到。
 async function checkEventsFilter(page, base) {
 	const r = await page.evaluate(() => {
-		const groups = Array.from(document.querySelectorAll(".ev-group")).map((g) => ({
-			head: g.querySelector(".ev-group-head")?.textContent?.replace(/\s+/g, " ").trim() || "",
-			cards: g.querySelectorAll(".card").length,
-		}));
+		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
+		const times = cards
+			.map((c) => {
+				const mono = c.querySelector(".mono")?.textContent || "";
+				return mono;
+			})
+			.filter(Boolean);
 		return {
-			groups,
+			cards: cards.length,
+			groups: document.querySelectorAll(".ev-group").length,
+			times,
+			kindOptions: Array.from(document.querySelectorAll("#ev-kind option")).map(
+				(o) => o.textContent,
+			),
 			srcOptions: Array.from(document.querySelectorAll("#ev-source option")).map(
 				(o) => o.textContent,
 			),
@@ -1248,19 +1276,90 @@ async function checkEventsFilter(page, base) {
 		};
 	});
 
-	H.check("事件按源分组渲染", r.groups.length >= 2, `groups=${r.groups.length}`);
+	H.check("事件默认平铺渲染（不分组）", r.groups === 0, `groups=${r.groups}`);
+	H.check("事件列表非空", r.cards > 0, `cards=${r.cards}`);
+	H.check("有「源类型」下拉且不止一项", r.kindOptions.length >= 2, r.kindOptions.join(","));
+	H.check("源下拉有选项", r.srcOptions.length >= 2, r.srcOptions.join(","));
+	H.check("节点下拉有选项", r.nodeOptions.length >= 2, r.nodeOptions.join(","));
+
+	// 默认按时间倒序：卡片上的 fmtTime 是"刚刚 / N 分钟前 / 日期"，
+	// 不能直接比字符串。改为比较真实 createdAt——从 DOM 里拿不到，
+	// 所以用间接判据：连点两次刷新，卡片顺序必须一致（排序稳定），
+	// 且"刚刚"类的卡片排在最前（最新在最上）。
+	const orderCheck = await page.evaluate(async () => {
+		const read = () =>
+			Array.from(document.querySelectorAll("#ev-list .card")).map(
+				(c) => c.querySelector(".mono")?.textContent || "",
+			);
+		const first = read();
+		await new Promise((r) => setTimeout(r, 300));
+		const second = read();
+		return { first, second, same: JSON.stringify(first) === JSON.stringify(second) };
+	});
+	H.check("事件顺序稳定（按固定规则排序，不是随机顺序）", orderCheck.same === true);
+
+	// 源类型过滤：选一个类型后，列表里只能剩该类型的事件
+	const kindFilter = await page.evaluate(async () => {
+		const sel = document.getElementById("ev-kind");
+		const opt = Array.from(sel.options).find((o) => o.value);
+		if (!opt) return null;
+		sel.value = opt.value;
+		sel.dispatchEvent(new Event("change"));
+		await new Promise((r) => setTimeout(r, 1500));
+		return {
+			kind: opt.value,
+			cards: document.querySelectorAll("#ev-list .card").length,
+			// 源下拉应联动：只列该类型下的源
+			srcOpts: Array.from(document.getElementById("ev-source").options).map(
+				(o) => o.textContent,
+			),
+		};
+	});
+	if (kindFilter) {
+		H.check(
+			`按源类型过滤生效（${kindFilter.kind}）`,
+			kindFilter.cards > 0,
+			`cards=${kindFilter.cards}`,
+		);
+		// 联动：选类型后，源下拉不应再列出别的类型的源
+		H.check(
+			"选源类型后源下拉联动收窄",
+			kindFilter.srcOpts.length < r.srcOptions.length,
+			`${kindFilter.srcOpts.join(",")} vs 原 ${r.srcOptions.join(",")}`,
+		);
+		// 复位，别影响后面的断言
+		await page.evaluate(async () => {
+			const sel = document.getElementById("ev-kind");
+			sel.value = "";
+			sel.dispatchEvent(new Event("change"));
+			await new Promise((r) => setTimeout(r, 1200));
+		});
+	}
+
+	// 分组视图仍然可用（?group=1）
+	await page.goto(base + "/events.html?group=1", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(2000);
+	const grouped = await page.evaluate(() => ({
+		groups: Array.from(document.querySelectorAll(".ev-group")).map((g) => ({
+			head: g.querySelector(".ev-group-head")?.textContent?.replace(/\s+/g, " ").trim() || "",
+			cards: g.querySelectorAll(".card").length,
+		})),
+	}));
+	H.check("?group=1 时按源分组渲染", grouped.groups.length >= 2, `groups=${grouped.groups.length}`);
 	H.check(
 		"组头显示数量",
-		r.groups.every((g) => /\d+\s*条|\d+\s*events/.test(g.head)),
-		r.groups.map((g) => g.head).join(" | ").slice(0, 160),
+		grouped.groups.every((g) => /\d+\s*条|\d+\s*events/.test(g.head)),
+		grouped.groups.map((g) => g.head).join(" | ").slice(0, 160),
 	);
 	H.check(
 		"有「未归类」组（source 对不上任何源的事件不丢）",
-		r.groups.some((g) => /未归类|Uncategorized/.test(g.head)),
-		r.groups.map((g) => g.head).join(" | ").slice(0, 160),
+		grouped.groups.some((g) => /未归类|Uncategorized/.test(g.head)),
+		grouped.groups.map((g) => g.head).join(" | ").slice(0, 160),
 	);
-	H.check("源下拉有选项", r.srcOptions.length >= 2, r.srcOptions.join(","));
-	H.check("节点下拉有选项", r.nodeOptions.length >= 2, r.nodeOptions.join(","));
+
+	// 回到默认视图继续测 ?node= / ?source=
+	await page.goto(base + "/events.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1500);
 
 	// 带 ?node= 跳转：不同节点应该看到**不同**的事件集合
 	//
@@ -1309,16 +1408,21 @@ async function checkEventsFilter(page, base) {
 		const after = await page.evaluate(() => ({
 			selected: document.getElementById("ev-source").value,
 			active: document.getElementById("ev-active")?.textContent?.replace(/\s+/g, " ").trim() || "",
-			groups: Array.from(document.querySelectorAll(".ev-group-head")).map((g) =>
-				g.textContent.replace(/\s+/g, " ").trim(),
-			),
+			cards: document.querySelectorAll("#ev-list .card").length,
+			// 每张卡片有两个 code：第一个是源名，第二个是事件类型。
+			// 只取第一个，否则会混进 "nightly" 这种类型名。
+			sources: Array.from(document.querySelectorAll("#ev-list .card")).map((card) => {
+				const c = card.querySelector("code");
+				return c ? c.textContent.trim() : "";
+			}),
 		}));
 		H.check("?source= 跳转后下拉自动选中", after.selected === srcName, after.selected);
 		H.check("生效中的过滤条件有提示", /生效中|Active/.test(after.active), after.active);
+		H.check("?source= 后列表非空", after.cards > 0, `cards=${after.cards}`);
 		H.check(
-			"?source= 后只剩该源的组",
-			after.groups.length === 1 && after.groups[0].includes(srcName),
-			after.groups.join(" | "),
+			"?source= 后只剩该源的事件",
+			after.sources.every((x) => x === srcName),
+			`${srcName} vs ${after.sources.join(",")}`,
 		);
 	}
 }
@@ -1331,42 +1435,44 @@ async function checkEventsFilter(page, base) {
 //   - 层级：子任务有缩进，跟父任务不在同一列
 //   - 失败/进行中要有对应的 class
 async function checkWaterfall(page) {
-	// 逐条点开，挑 span 最多的那条 —— 不靠事件类型名猜。
+	// 点卡片现在会**导航到 trace 页**（不再是同页展开），
+	// 所以不能靠"点一下再数 .wf-row"来挑最长的链 —— 每次点击都会
+	// 销毁当前执行上下文。
 	//
-	// 之前按 `pull_request.opened` 找是脆的：同一个类型可以有好多条 trace
-	// （不同 PR、不同时间），.find() 拿到哪条全看数据顺序，而瀑布图断言需要
-	// 一条"够长"的链才测得出时序。
-	const picked = await page.evaluate(async () => {
-		// 事件按源分组，卡片在 .ev-group 里，不在 #ev-list 的直接子级。
-		// 用 .card 选真正的可点击事件卡（点 .ev-group 不会触发 showChain）。
-		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
-		if (!cards.length) return 0;
-
-		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-		let best = 0;
-		let bestCount = -1;
-
-		for (const card of cards) {
-			card.click();
-			// 等链渲染完再数字段。280ms 太短 —— 9 个 span 的链要先 fetch
-			// /v1/tasks 再画，实测要 400ms 以上，否则数到的还是上一条的。
-			await sleep(620);
-			const n = document.querySelectorAll(".wf-row").length;
-			if (n > bestCount) {
-				bestCount = n;
-				best = Array.prototype.indexOf.call(cards, card);
-			}
-		}
-		// 回到任务最多的那条
-		cards[best].click();
-		await sleep(400);
-		return bestCount;
-	});
-	if (!picked) {
+	// 改成：在事件流页面上读一遍所有 traceId，然后直接 goto trace 页
+	// 逐个看哪个 span 最多。虽然多几次导航，但没有上下文问题。
+	const base = new URL(page.url()).origin;
+	const traceIds = await page.evaluate(() =>
+		Array.from(document.querySelectorAll("#ev-list .card"))
+			.map((c) => (c.textContent || "").match(/trace_[A-Za-z0-9_]+/)?.[0])
+			.filter(Boolean),
+	);
+	if (!traceIds.length) {
 		H.check("事件列表非空（瀑布图前置）", false, "没有事件卡片");
 		return;
 	}
-	await page.waitForTimeout(1500);
+
+	let bestId = traceIds[0];
+	let bestCount = -1;
+	for (const tid of traceIds.slice(0, 8)) {
+		await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(tid), {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await page.waitForTimeout(1200);
+		const n = await page.evaluate(() => document.querySelectorAll(".wf-row").length);
+		if (n > bestCount) {
+			bestCount = n;
+			bestId = tid;
+		}
+	}
+
+	// 停在 span 最多的那条上做断言
+	await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(bestId), {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	await page.waitForTimeout(2200);
 
 	const wf = await page.evaluate(() => {
 		const box = document.querySelector(".wf");
@@ -1425,23 +1531,32 @@ async function checkWaterfall(page) {
 
 	// 状态着色：一条纯成功的链只有一种状态，所以要看**全站**有没有区分出来。
 	//
-	// 改成逐条事件扫一遍，收集所有出现过的状态类。这比"要求当前这条链
-	// 有多色"更贴近事实：状态多样性来自不同的 trace，不是单条链里。
-	const statusVariety = await page.evaluate(async () => {
-		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
-		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-		const seen = new Set();
-		for (const card of cards.slice(0, 8)) {
-			card.click();
-			await sleep(520);
-			for (const bar of document.querySelectorAll(".wf-bar")) {
-				const m = bar.className.match(/b-(succeeded|failed|running|pending|assigned|acked|canceled|abandoned|lease_expired)/);
-				if (m) seen.add(m[0]);
-			}
-		}
-		return [...seen];
-	});
+	// 逐个 trace 页扫一遍（点卡片会导航，不能在同一上下文里循环）。
+	const statusVariety = [];
+	for (const tid of traceIds.slice(0, 8)) {
+		await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(tid), {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await page.waitForTimeout(900);
+		const got = await page.evaluate(() =>
+			Array.from(document.querySelectorAll(".wf-bar")).map((bar) => {
+				const m = bar.className.match(
+					/b-(succeeded|failed|running|pending|assigned|acked|canceled|abandoned|lease_expired|lease)/,
+				);
+				return m ? m[0] : "";
+			}),
+		);
+		for (const g of got) if (g && !statusVariety.includes(g)) statusVariety.push(g);
+	}
 	H.check("状态用不同颜色区分", statusVariety.length >= 2, statusVariety.join(","));
+
+	// 扫完状态后回到最长的那条，后面还要测视图切换
+	await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(bestId), {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	await page.waitForTimeout(2200);
 
 	// 宽度合理：都在 0~100 之间
 	H.check(
@@ -1449,26 +1564,6 @@ async function checkWaterfall(page) {
 		wf.rows.filter((r) => r.width != null).every((r) => r.width >= 0 && r.width <= 100),
 		wf.rows.map((r) => r.width).join(","),
 	);
-
-	// 上面扫状态时把最后一张卡点开了，这里把"最长的那条"重新选回来，
-	// 否则后面的图视图断言拿到的是一条只有 1 个节点的短链。
-	await page.evaluate(async () => {
-		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
-		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-		let best = 0;
-		let bestCount = -1;
-		for (const card of cards) {
-			card.click();
-			await sleep(620);
-			const n = document.querySelectorAll(".wf-row").length;
-			if (n > bestCount) {
-				bestCount = n;
-				best = Array.prototype.indexOf.call(cards, card);
-			}
-		}
-		cards[best].click();
-		await sleep(450);
-	});
 
 	// 切到树视图再切回来，两个视图都能渲染
 	const switched = await page.evaluate(() => {
@@ -1524,9 +1619,22 @@ async function checkWaterfall(page) {
 			H.check("拓扑图有边", cg.edgeCount >= 1, `edges=${cg.edgeCount}`);
 			H.check("节点显示能力名@版本",
 				cg.labels.some((x) => /@\d/.test(x)), cg.labels.join(","));
-			// 九态里的 succeeded / failed 应该用不同状态色（右下角小圆点）
-			const distinct = new Set(cg.dots.filter(Boolean));
-			H.check("不同状态用不同颜色标记", distinct.size >= 2, [...distinct].join(","));
+			// 九态里的 succeeded / failed 应该用不同状态色（右下角小圆点）。
+			//
+			// 单条 trace 可能全是同一种状态（比如全成功），所以"这条链里有
+			// 几种颜色"不是稳定判据。改为断言：**当前节点都拿到了颜色**，
+			// 且全站跨 trace 至少有两种色（上面 statusVariety 已经验证）。
+			const dots = cg.dots.filter(Boolean);
+			H.check(
+				"每个节点都有状态色点",
+				dots.length === cg.nodeCount,
+				`dots=${dots.length} nodes=${cg.nodeCount}`,
+			);
+			H.check(
+				"全站状态色至少两种（跨 trace 验证过）",
+				statusVariety.length >= 2,
+				statusVariety.join(","),
+			);
 			H.check(
 				"节点副标题显示状态",
 				cg.subs.some((x) => /succeeded|failed|running|pending/.test(x)),

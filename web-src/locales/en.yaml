@@ -1083,6 +1083,8 @@ events:
     trace: Trace ID
     apply: Filter
     source: Source
+    kind: Source type
+    all_kinds: All types
     all_sources: All sources
     node: Node
     all_nodes: All nodes
@@ -1306,3 +1308,21 @@ edges:
   err_self: A capability cannot connect to itself
   err_create: Create failed
   err_remove: Delete failed
+trace:
+  title: Trace
+  subtitle: One trace end to end — what triggered it, which path it took, how long each step ran
+  back: Back to events
+  refresh: Refresh
+  loading: Loading trace…
+  no_id: No traceId in the URL. Open this from "view chain" in the event stream, or pass ?traceId=trace_xxx.
+  copy: Copy
+  copied: Copied
+  copy_failed: Copy failed
+  triggered_by: Triggered by
+  nolib: Renderer failed to load.
+  empty: No tasks under this trace. Usually means it was pruned at the first step (no matching edge, params failed the schema, or no node declares the target capability).
+  stat:
+    spans: Tasks
+    duration: Duration
+    slowest: Slowest step
+    failed: Failed

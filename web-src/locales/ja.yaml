@@ -1083,6 +1083,8 @@ events:
     trace: Trace ID
     apply: 絞り込む
     source: ソース
+    kind: ソース種別
+    all_kinds: すべての種別
     all_sources: すべてのソース
     node: ノード
     all_nodes: すべてのノード
@@ -1306,3 +1308,21 @@ edges:
   err_self: 自分自身には接続できません
   err_create: 作成に失敗しました
   err_remove: 削除に失敗しました
+trace:
+  title: トレース
+  subtitle: 1 本のトレースの全体像 — 何が起点で、どの経路を通り、各ステップがどれだけかかったか
+  back: イベント一覧へ戻る
+  refresh: 更新
+  loading: トレースを読み込み中…
+  no_id: URL に traceId がありません。イベント一覧の「チェーンを表示」から開くか、?traceId=trace_xxx を指定してください。
+  copy: コピー
+  copied: コピーしました
+  copy_failed: コピーに失敗
+  triggered_by: 起点
+  nolib: 描画スクリプトを読み込めませんでした。
+  empty: このトレースにはタスクがありません。最初のステップで剪定された可能性があります（一致する辺がない、パラメータが schema に合わない、対象能力を宣言したノードがない）。
+  stat:
+    spans: タスク
+    duration: 所要時間
+    slowest: 最遅ステップ
+    failed: 失敗
