@@ -429,6 +429,9 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 
 // edgeRequest 是 POST/DELETE /v1/edges 的请求体。
 type edgeRequest struct {
+	// FromIsSource 为 true 时 FromCapability 被解释为**来源名**（"github"），
+	// 用于建「入口边」；否则是上游能力 id。
+	FromIsSource   bool   `json:"fromIsSource"`
 	FromCapability string `json:"fromCapability"`
 	FromPort       string `json:"fromPort"`
 	ToCapability   string `json:"toCapability"`
@@ -489,6 +492,7 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 
 	err := h.db.CreateEdge(r.Context(), &store.Edge{
 		OrgID:          orgID,
+		FromIsSource:   req.FromIsSource,
 		FromCapability: req.FromCapability,
 		FromPort:       req.FromPort,
 		ToCapability:   req.ToCapability,
@@ -507,8 +511,9 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"edge": &store.Edge{
-		OrgID: orgID, FromCapability: req.FromCapability,
-		FromPort: req.FromPort, ToCapability: req.ToCapability,
+		OrgID: orgID, FromIsSource: req.FromIsSource,
+		FromCapability: req.FromCapability,
+		FromPort:       req.FromPort, ToCapability: req.ToCapability,
 	}})
 }
 
@@ -520,10 +525,12 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 	// DELETE 没有 body 是常态，允许从 query 取
 	q := r.URL.Query()
 	from, port, to := q.Get("fromCapability"), q.Get("fromPort"), q.Get("toCapability")
+	fromIsSource := q.Get("fromIsSource") == "1" || q.Get("fromIsSource") == "true"
 	if from == "" && r.Body != nil {
 		var req edgeRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err == nil {
 			from, port, to = req.FromCapability, req.FromPort, req.ToCapability
+			fromIsSource = req.FromIsSource
 		}
 	}
 	if from == "" || port == "" || to == "" {
@@ -532,7 +539,7 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := h.db.DeleteEdge(r.Context(), orgID, from, port, to); err != nil {
+	if err := h.db.DeleteEdge(r.Context(), orgID, fromIsSource, from, port, to); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "edge not found"})
 			return

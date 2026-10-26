@@ -250,16 +250,36 @@ CREATE TABLE IF NOT EXISTS node_pins (
 );
 
 -- ── 出口表（路由唯一依据，契约 §2.4）────────────────────
--- 一行 = 一条边。同一 (from_capability, from_port) 可有多行 → 扇出。
--- 两端都是能力定义，不引用任何机器（不变量 I7）。
+-- 一行 = 一条边。同一 (from_key, from_port) 可有多行 → 扇出。
+-- 右端一定是能力定义，不引用任何机器（不变量 I7）。
+--
+-- 左端有**两种**，用 from_is_source 区分（见契约 §2.4）：
+--
+--   from_is_source = 0  能力之间的边：from_key = 上游能力的 capability_versions.id
+--                       出口名必须 ∈ 该能力的 outputs（不变量 I2，封闭集合）
+--
+--   from_is_source = 1  入口边（机器入口 POST /v1/events）：from_key = **来源名**
+--                       如 "github" / "cron" / "jira"，出口名 = 事件类型，
+--                       任意值（外部系统决定，不可能预先枚举，见契约 §5.2）
+--
+-- 为什么入口边不再引用能力：入口原来靠一个叫 github@1 的"空壳能力"当锚点，
+-- 它没有节点、不产生任务、也不可配置（能力表里没地方存 cron 表达式），
+-- 用户却在能力列表里看得见它。源（sources）已经是它的完整替代，
+-- 所以入口边直接以来源名为左端，不再需要那个空壳。
+--
+-- 历史数据：迁移 9 会把已存在的起点边（from_capability 指向内置 origin 能力）
+-- 转成 from_is_source=1 + from_key=该能力的 name，然后不再需要那些空壳能力。
 CREATE TABLE IF NOT EXISTS edges (
     org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    from_capability TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
-    from_port       TEXT NOT NULL,            -- 出口名，必须 ∈ from 的 outputs
+    from_is_source  INTEGER NOT NULL DEFAULT 0,   -- 0=能力边，1=入口边
+    from_key        TEXT NOT NULL,                -- 能力 id 或 来源名（看上面）
+    from_port       TEXT NOT NULL,
     to_capability   TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
     created_at      INTEGER NOT NULL,
-    PRIMARY KEY (org_id, from_capability, from_port, to_capability)
+    PRIMARY KEY (org_id, from_is_source, from_key, from_port, to_capability)
 );
+
+CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(org_id, from_is_source, from_key, from_port);
 
 CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(org_id, from_capability, from_port);
 
@@ -424,3 +444,14 @@ CREATE        INDEX IF NOT EXISTS idx_src_targets_cap  ON source_targets(capabil
 --
 -- 用 Go hook 而不是裸 ALTER：SQLite 没有 ADD COLUMN IF NOT EXISTS，
 -- 而迁移必须幂等（同一版本可能因重试执行多次）。
+
+-- +migration 9 edges_from_source
+-- #110：入口边不再需要一个"空壳能力"当左端。
+--
+-- 旧模型：github@1 这种内置起点能力是边表左端的外键锚点，于是它必须
+-- 存在于 capability_versions 里，也就会出现在能力列表上（用户可以看见
+-- 一个不执行任何代码、也不产生任务的条目）。
+--
+-- 新模型：入口边左端直接是**来源名**（from_is_source=1 + from_key='github'）。
+-- 这张表要重建（from_capability 在主键里，SQLite 不能直接改列），
+-- 所以 SQL 块留空，逻辑在 store.go 的 migrationHooks[9]。

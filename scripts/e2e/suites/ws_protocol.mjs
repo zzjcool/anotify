@@ -37,6 +37,19 @@ async function defineCapability(name, outputs = [], extra = {}) {
 	return r.json.capability;
 }
 
+async function addEntryEdge(source, port, to) {
+	const r = await H.req(server.base, "/v1/edges", {
+		session,
+		body: {
+			fromIsSource: true,
+			fromCapability: source,
+			fromPort: port,
+			toCapability: to.id,
+		},
+	});
+	return r;
+}
+
 async function addEdge(from, port, to) {
 	return H.req(server.base, "/v1/edges", {
 		session,
@@ -165,7 +178,9 @@ async function main() {
 
 	// ================= 完整任务流：assign → ack → progress → result =================
 	console.log("--- 任务流九帧 ---");
+	// #110：入口边（来源名 → 能力），不再需要"起点能力"
 	await addEdge(cap, "go", cap2);
+	await addEntryEdge("ws.demo", "go", cap2);
 
 	const ev = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	H.eq("事件派发建出 1 个任务", ev.json?.tasks?.length, 1);

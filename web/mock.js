@@ -85,13 +85,12 @@
 		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
 		capabilities: [
-			// 内置起点（source=builtin，outputs 空，任意事件类型）
-			// 内置能力的显示名是**预置好的**（用户不需要自己取），
-			// 与 internal/store/builtin.go 的 BuiltinCapabilities 一字对应。
-			cap("github", 1, [], { type: "object" }, "builtin", "GitHub webhook"),
-			cap("cron", 1, [], { type: "object" }, "builtin", "定时触发"),
-			cap("http", 1, [], { type: "object" }, "builtin", "通用 HTTP 事件"),
-			cap("manual", 1, [], { type: "object" }, "builtin", "手动触发"),
+			// #110：github/cron/http/manual **不再是能力**。
+			// 它们原来是不执行代码、不产生任务、也没地方存配置的空壳，
+			// 唯一作用是给入口边当左端锚点。现在入口边左端直接是来源名
+			// （fromIsSource: true），所以这里不该再有它们。
+			//
+			// 真实来源（GitHub webhook / 定时触发…）在「源」页面配置。
 			// 中枢执行的终端能力
 			cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知"),
 			// 用户能力：有参数、有分叉
@@ -216,6 +215,18 @@
 
 	// ---------- 初始边 ----------
 	(function initEdges() {
+		// fromSource: 左端是**来源名**（入口边，#110），不是能力 id。
+		// 旧模型靠一个叫 github@1 的空壳能力当锚点，那个空壳已经不存在了。
+		const fromSource = (source, port, to) => ({
+			id: uid("edg"),
+			orgId: ORG,
+			fromIsSource: true,
+			fromCapability: source,
+			fromPort: port,
+			toCapability: capByName(to).id,
+			toCapabilityName: to,
+			createdAt: now() - 3600,
+		});
 		const from = (name, port, to) => ({
 			id: uid("edg"),
 			orgId: ORG,
@@ -229,12 +240,12 @@
 		state.edges = [
 			// 源也可以扇出：一个 PR 事件同时派发分析和通知两条链。
 			// 这两条链互不等待（不做 join），各走各的。
-			from("github", "pull_request.opened", "analyze-pr"),
-			from("github", "pull_request.opened", "report.send"),
-			from("github", "pull_request.synchronize", "analyze-pr"),
-			from("cron", "nightly", "analyze-pr"),
-			from("http", "webhook.incoming", "deploy-preview"),
-			from("manual", "manual.run", "deploy-preview"),
+			fromSource("github", "pull_request.opened", "analyze-pr"),
+			fromSource("github", "pull_request.opened", "report.send"),
+			fromSource("github", "pull_request.synchronize", "analyze-pr"),
+			fromSource("cron", "nightly", "analyze-pr"),
+			fromSource("http", "webhook.incoming", "deploy-preview"),
+			fromSource("manual", "manual.run", "deploy-preview"),
 			from("analyze-pr", "needs-fix", "lint-fix"),
 			from("analyze-pr", "approved", "run-tests"),
 
@@ -889,12 +900,30 @@
 
 	on("POST", /^\/v1\/edges$/, (ctx) => {
 		const b = ctx.body || {};
-		const from = state.capabilities.find((c) => c.id === b.fromCapability);
 		const to = state.capabilities.find((c) => c.id === b.toCapability);
-		if (!from || !to) return err(400, "能力不存在");
-		// 非起点能力：fromPort 必须在该能力的 outputs 里（I2）
-		const isOrigin = kindOf(from) === "origin";
-		if (!isOrigin && !(from.outputs || []).includes(b.fromPort)) {
+		if (!to) return err(400, "下游能力不存在");
+
+		// 入口边（#110）：左端是来源名，出口是事件类型，任意值。
+		if (b.fromIsSource) {
+			if (!b.fromCapability) return err(400, "来源名不能为空");
+			const e = {
+				id: uid("edg"),
+				orgId: ORG,
+				fromIsSource: true,
+				fromCapability: String(b.fromCapability),
+				fromPort: b.fromPort,
+				toCapability: to.id,
+				toCapabilityName: to.name,
+				createdAt: now(),
+			};
+			state.edges.push(e);
+			return json({ edge: clone(e) }, 201);
+		}
+
+		const from = state.capabilities.find((c) => c.id === b.fromCapability);
+		if (!from) return err(400, "上游能力不存在");
+		// 能力之间的边：fromPort 必须在该能力的 outputs 里（I2）
+		if (!(from.outputs || []).includes(b.fromPort)) {
 			return err(400, "fromPort 不在该能力的出口集合内");
 		}
 		const e = {

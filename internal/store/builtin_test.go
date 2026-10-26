@@ -248,13 +248,12 @@ func TestFinishTaskRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
-// TestOriginCapabilityNameReserved 内置起点的名字是保留的。
+// TestNoOriginShellCapabilities #110：内置起点不再是能力。
 //
-// 为什么重要：findOrigin 取该 name 的**最高版本**。若允许用户建 github@2，
-// source=github 会解析到 @2，而 @2 是自定义能力、不享受起点的
-// 「任意事件类型」出口——于是用户已经建好的边全废，事件派不出去，
-// 且没有任何提示。这个失败极其隐蔽，所以在写入处直接拒绝。
-func TestOriginCapabilityNameReserved(t *testing.T) {
+// 它们原来以「内置起点能力」形式存在：不执行代码、不产生任务、也没地方
+// 存配置，唯一作用是给入口边当左端锚点，代价是能力列表多出 4 个看得见
+// 却用不上的条目。现在入口边左端直接是来源名，所以它们不该再被播种。
+func TestNoOriginShellCapabilities(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	orgID, _ := newTestOrg(t, db)
@@ -262,53 +261,37 @@ func TestOriginCapabilityNameReserved(t *testing.T) {
 	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
 		t.Fatalf("seed builtins: %v", err)
 	}
-
-	// 试图用内置起点的名字开新版本 → 拒绝
 	for _, name := range []string{"github", "cron", "http", "manual"} {
-		err := db.CreateCapability(ctx, &CapabilityVersion{
-			OrgID:        orgID,
-			Name:         name,
-			Version:      2,
-			ParamsSchema: json.RawMessage(`{"type":"object"}`),
-			Outputs:      []string{"hijacked"},
-			Source:       CapSourceCustom,
-		})
-		if !errors.Is(err, ErrCapabilityReserved) {
-			t.Fatalf("%s@2 应被拒绝（ErrCapabilityReserved），got %v", name, err)
+		if _, err := db.GetCapability(ctx, orgID, name, 1); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s@1 不该再作为能力存在（#110），got err=%v", name, err)
 		}
 	}
-
-	// 但内置能力自己的播种必须放行（否则 ensureOneBuiltin 会拦死自己）
-	if _, err := db.GetCapability(ctx, orgID, "github", 1); err != nil {
-		t.Fatalf("内置 github@1 应已播种: %v", err)
+	// 中枢执行的终端能力仍然在（它是真能力）
+	if _, err := db.GetCapability(ctx, orgID, "notify.phone", 1); err != nil {
+		t.Fatalf("notify.phone@1 应仍存在: %v", err)
 	}
-
-	// 非保留名不受影响
+	// 用户现在可以自由使用这些名字（不再保留给空壳）
 	if err := db.CreateCapability(ctx, &CapabilityVersion{
 		OrgID:        orgID,
-		Name:         "jira",
+		Name:         "github",
 		Version:      1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
-		Outputs:      []string{},
+		Outputs:      []string{"done"},
 		Source:       CapSourceCustom,
 	}); err != nil {
-		t.Fatalf("自定义 jira@1 应允许: %v", err)
+		t.Fatalf("用户现在可以定义叫 github 的能力: %v", err)
 	}
 }
 
-// TestOriginEdgeAcceptsAnyPort 内置起点的出口是任意事件类型（不变量 I2 的唯一例外）。
-func TestOriginEdgeAcceptsAnyPort(t *testing.T) {
+// TestEntryEdgeAcceptsAnyPort 入口边（from_is_source）的出口是任意事件类型。
+//
+// 这是不变量 I2 的唯一例外，而且现在表达得更直接：入口边的左端是
+// **来源名**而不是能力，来源没有 outputs 可枚举（事件类型由外部系统决定）。
+func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	orgID, _ := newTestOrg(t, db)
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
-		t.Fatalf("seed builtins: %v", err)
-	}
 
-	github, err := db.GetCapability(ctx, orgID, "github", 1)
-	if err != nil {
-		t.Fatalf("get github: %v", err)
-	}
 	sink := &CapabilityVersion{
 		OrgID: orgID, Name: "sink", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
@@ -318,15 +301,29 @@ func TestOriginEdgeAcceptsAnyPort(t *testing.T) {
 		t.Fatalf("create sink: %v", err)
 	}
 
-	// 任意未声明过的事件类型都应能建边
-	if err := db.CreateEdge(ctx, &Edge{
-		OrgID: orgID, FromCapability: github.ID,
-		FromPort: "never.declared.before", ToCapability: sink.ID,
-	}); err != nil {
-		t.Fatalf("内置起点的任意出口应被接受: %v", err)
+	// 入口边：左端是来源名，任意事件类型都能建
+	for _, port := range []string{"pull_request.opened", "never.declared.before", "x"} {
+		if err := db.CreateEdge(ctx, &Edge{
+			OrgID:          orgID,
+			FromIsSource:   true,
+			FromCapability: "github",
+			FromPort:       port,
+			ToCapability:   sink.ID,
+		}); err != nil {
+			t.Fatalf("入口边的任意出口应被接受（port=%s）: %v", port, err)
+		}
 	}
 
-	// 自定义能力仍然严格（I2 没有放松）
+	// 下游能查到（派发第 ① 步的查表）
+	got, err := db.EdgesFrom(ctx, orgID, true, "github", "pull_request.opened")
+	if err != nil {
+		t.Fatalf("edges from: %v", err)
+	}
+	if len(got) != 1 || got[0] != sink.ID {
+		t.Fatalf("入口边查表 = %v, want [%s]", got, sink.ID)
+	}
+
+	// 自定义能力的边仍然严格（I2 没有放松）
 	custom := &CapabilityVersion{
 		OrgID: orgID, Name: "custom", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
@@ -341,6 +338,11 @@ func TestOriginEdgeAcceptsAnyPort(t *testing.T) {
 	})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("自定义能力的非法出口应被拒绝，got %v", err)
+	}
+
+	// 两种边互不串味：来源名 "github" 与能力边不会互相命中
+	if _, err := db.GetCapability(ctx, orgID, "github", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不该存在一个叫 github 的能力来混淆入口边")
 	}
 }
 
@@ -378,13 +380,14 @@ func TestBuiltinDisplayNameBackfill(t *testing.T) {
 	ctx := context.Background()
 	orgID, _ := newTestOrg(t, db)
 
-	// 先播种，然后模拟"老库"：把 github 的显示名清空（就像这列刚加时那样）
+	// 先播种，然后模拟"老库"：把内置能力的显示名清空（就像这列刚加时那样）
 	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
 		t.Fatalf("ensure builtin: %v", err)
 	}
-	gh, err := db.GetCapability(ctx, orgID, "github", 1)
+	// notify.phone 是现在唯一的内置能力（起点已不再是能力）
+	gh, err := db.GetCapability(ctx, orgID, "notify.phone", 1)
 	if err != nil {
-		t.Fatalf("get github: %v", err)
+		t.Fatalf("get notify.phone: %v", err)
 	}
 	if err := db.SetCapabilityDisplayName(ctx, orgID, gh.ID, ""); err != nil {
 		t.Fatalf("clear display name: %v", err)
@@ -393,8 +396,8 @@ func TestBuiltinDisplayNameBackfill(t *testing.T) {
 	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
 		t.Fatalf("re-ensure builtin: %v", err)
 	}
-	gh2, _ := db.GetCapability(ctx, orgID, "github", 1)
-	if gh2.DisplayName != "GitHub webhook" {
+	gh2, _ := db.GetCapability(ctx, orgID, "notify.phone", 1)
+	if gh2.DisplayName != "推送通知" {
 		t.Fatalf("backfill failed: %q", gh2.DisplayName)
 	}
 
@@ -405,7 +408,7 @@ func TestBuiltinDisplayNameBackfill(t *testing.T) {
 	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
 		t.Fatalf("ensure again: %v", err)
 	}
-	gh3, _ := db.GetCapability(ctx, orgID, "github", 1)
+	gh3, _ := db.GetCapability(ctx, orgID, "notify.phone", 1)
 	if gh3.DisplayName != "我们的 PR 入口" {
 		t.Fatalf("startup overwrote user's display name: %q", gh3.DisplayName)
 	}

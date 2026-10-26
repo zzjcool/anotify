@@ -1292,6 +1292,8 @@ sources:
 edges:
   title: Edges
   subtitle: Which output leads where
+  src_prefix: Source
+  from_source: Source
   intro: A capability answers "what can it do"; an edge answers "where does it go next". One edge = one output wired to one downstream capability. The same output can have several edges (fan-out); the event is dispatched to all of them.
   refresh: Refresh
   new: New edge

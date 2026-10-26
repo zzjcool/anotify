@@ -3,7 +3,6 @@ package trigger
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -70,21 +69,36 @@ func newFixture(t *testing.T, originCaps ...string) *fixture {
 		t.Fatalf("create org: %v", err)
 	}
 
-	// 默认建 github + cron 两个 origin 能力（无节点声明 = 天然 origin）
-	if len(originCaps) == 0 {
+	// #110：不再需要"起点能力"。事件的来源由 source 名承担，
+	// 派发靠入口边（from_is_source=1）。这里建几条入口边，
+	// 让 Ingest 之后的派发有东西可查。
+	//
+	// 注意：测试关心的是"入口边被正确查询"，不是"能力存在"。
+	sink := &store.CapabilityVersion{
+		OrgID:        org.ID,
+		Name:         "sink",
+		Version:      1,
+		ParamsSchema: json.RawMessage(`{"type":"object"}`),
+		Outputs:      []string{},
+		Source:       store.CapSourceCustom,
+	}
+	if err := db.CreateCapability(ctx, sink); err != nil {
+		t.Fatalf("create sink: %v", err)
+	}
+	directInputs := len(originCaps) == 0
+	if directInputs {
 		originCaps = []string{"github", "cron", "watch"}
 	}
+	_ = directInputs
 	for _, name := range originCaps {
-		c := &store.CapabilityVersion{
-			OrgID:        org.ID,
-			Name:         name,
-			Version:      1,
-			ParamsSchema: json.RawMessage(`{"type":"object"}`),
-			Outputs:      []string{"some.event"},
-			Source:       store.CapSourceBuiltin,
-		}
-		if err := db.CreateCapability(ctx, c); err != nil {
-			t.Fatalf("create origin capability %s: %v", name, err)
+		if err := db.CreateEdge(ctx, &store.Edge{
+			OrgID:          org.ID,
+			FromIsSource:   true,
+			FromCapability: name,
+			FromPort:       "pull_request.opened",
+			ToCapability:   sink.ID,
+		}); err != nil {
+			t.Fatalf("create entry edge for %s: %v", name, err)
 		}
 	}
 
@@ -406,8 +420,11 @@ func TestCronIdempotentAcrossFire(t *testing.T) {
 
 // ---------- #58：接进派发 ----------
 
-// TestOriginCapabilityUsedAsSource 派发时用 origin 能力的 ID + 事件 type 作为出口。
-func TestOriginCapabilityUsedAsSource(t *testing.T) {
+// TestEntryEdgeUsesSourceName 派发时用**来源名** + 事件 type 作为入口边。
+//
+// 旧模型要求先找到一个叫 github@1 的"起点能力"当锚点（OriginCapability +
+// Path 从它开始）。#110 之后入口边左端就是来源名，不需要那个空壳。
+func TestEntryEdgeUsesSourceName(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
@@ -418,17 +435,19 @@ func TestOriginCapabilityUsedAsSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
-	if res.OriginCapability == nil || res.OriginCapability.Name != "github" {
-		t.Fatalf("origin capability = %v, want github", res.OriginCapability)
-	}
 
 	calls := f.dispatcher.calls()
 	if len(calls) != 1 {
 		t.Fatalf("dispatch calls = %d, want 1", len(calls))
 	}
 	in := calls[0]
-	if in.FromCap != res.OriginCapability.ID {
-		t.Fatalf("FromCap = %q, want %q", in.FromCap, res.OriginCapability.ID)
+
+	// 入口边：FromCap 是来源名，FromIsSource=true
+	if !in.FromIsSource {
+		t.Fatal("入口派发必须标记 FromIsSource（否则会去能力表里找 github@1）")
+	}
+	if in.FromCap != "github" {
+		t.Fatalf("FromCap = %q, want the source name \"github\"", in.FromCap)
 	}
 	if in.Out != "pull_request.opened" {
 		t.Fatalf("Out = %q, want the event type", in.Out)
@@ -436,9 +455,9 @@ func TestOriginCapabilityUsedAsSource(t *testing.T) {
 	if in.OrgID != f.orgID {
 		t.Fatalf("OrgID = %q", in.OrgID)
 	}
-	// path 从 origin 能力开始（环剪枝的起点）
-	if len(in.Path) != 1 || in.Path[0] != res.OriginCapability.ID {
-		t.Fatalf("Path = %v, want [origin capability]", in.Path)
+	// 来源不是能力，不参与「A→B→A」环检测
+	if len(in.Path) != 0 {
+		t.Fatalf("Path = %v, want empty（来源不是能力，不进环检测）", in.Path)
 	}
 	// payload 作为 params 透传（不求值、不改写）
 	if in.Params["number"] != 42.0 {
@@ -447,42 +466,57 @@ func TestOriginCapabilityUsedAsSource(t *testing.T) {
 	if in.Params["title"] != "fix bug" {
 		t.Fatalf("params.title = %v", in.Params["title"])
 	}
+	_ = res
 }
 
-// TestUnknownOrigin 没有对应 origin 能力 → ErrUnknownOrigin，但事件已入库。
+// TestUnknownSourceNoEntryEdge 来源没有任何入口边 → 事件照收，但记 pruned/no_edge。
 //
-// 这是配置问题不是客户端错误：事件确实收下了（200），只是没法派发。
-func TestUnknownOrigin(t *testing.T) {
+// 这是 #110 之后的语义：来源不再需要"对应一个能力"。
+// 一个从没配过的 source（比如 jira）会被接受，事件入库（200），
+// 首轮派发时查不到入口边 → pruned reason=no_edge。
+//
+// 这比旧的 422「未知来源」更符合实际：用户可能先接事件、后配边
+// （比如先让 GitHub webhook 打着，再回来建边）。事件不该丢。
+func TestUnknownSourceNoEntryEdge(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
 	res, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "jira", Type: "issue.created", // jira 没定义
+		OrgID: f.orgID, Source: "jira", Type: "issue.created",
 	})
-	if !errors.Is(err, ErrUnknownOrigin) {
-		t.Fatalf("err = %v, want ErrUnknownOrigin", err)
+	if err != nil {
+		t.Fatalf("ingest 不该因来源未配置而失败: %v", err)
 	}
 	if res == nil || res.Event == nil {
-		t.Fatal("event should still be returned even when origin is unknown")
+		t.Fatal("event should be returned")
 	}
 	if !res.Inserted {
 		t.Fatal("event should have been inserted")
 	}
-	// 库里确实有这一行
+	// 库里有这一行
 	var count int
-	if err := f.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE org_id = ? AND source = ?`, f.orgID, "jira").Scan(&count); err != nil {
+	if err := f.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE org_id = ? AND source = ?`, f.orgID, "jira",
+	).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("event not persisted: count=%d", count)
+		t.Fatalf("events row count = %d, want 1", count)
 	}
-	// 没有派发
-	if len(f.dispatcher.calls()) != 0 {
-		t.Fatal("dispatched despite unknown origin")
+	// trigger 的职责只是"把来源名 + 事件类型交给派发器"。
+	// 查不到边 → pruned/no_edge 是 **Dispatcher** 的事（route 包负责），
+	// 这里的 fakeDispatcher 不查库，所以不该断言 Pruned。
+	// 断言它收到的入口参数是对的即可。
+	calls := f.dispatcher.calls()
+	if len(calls) != 1 {
+		t.Fatalf("dispatch calls = %d, want 1", len(calls))
 	}
-}
-
-// TestDispatchFailureKeepsEvent 派发失败不影响事件落库（重投也不该重复建事件）。
+	in := calls[0]
+	if !in.FromIsSource || in.FromCap != "jira" || in.Out != "issue.created" {
+		t.Fatalf("dispatch input = {FromIsSource:%v FromCap:%q Out:%q}, want {true jira issue.created}",
+			in.FromIsSource, in.FromCap, in.Out)
+	}
+} // TestDispatchFailureKeepsEvent 派发失败不影响事件落库（重投也不该重复建事件）。
 func TestDispatchFailureKeepsEvent(t *testing.T) {
 	f := newFixture(t)
 	f.dispatcher.failWith = fmt.Errorf("nodes gone")

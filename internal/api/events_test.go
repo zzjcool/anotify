@@ -47,17 +47,10 @@ func newEventFixture(t *testing.T) *eventFixture {
 		t.Fatalf("register user with org: %v", err)
 	}
 
-	// origin 能力：github@1，出口 pull_request.opened
-	origin := &store.CapabilityVersion{
-		OrgID: org.ID, Name: "github", Version: 1,
-		ParamsSchema: json.RawMessage(`{"type":"object"}`),
-		Outputs:      []string{"pull_request.opened"},
-		Source:       store.CapSourceBuiltin,
-	}
-	if err := db.CreateCapability(ctx, origin); err != nil {
-		t.Fatalf("create origin capability: %v", err)
-	}
 	// 目标能力：review@1（有节点声明 → 会建任务）
+	//
+	// #110：不再需要一个叫 github@1 的"起点能力"。入口边的左端直接是
+	// 来源名 "github"，见下面 CreateEdge 的 FromIsSource。
 	review := &store.CapabilityVersion{
 		OrgID: org.ID, Name: "review", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["number"],"properties":{"number":{"type":"number"}}}`),
@@ -67,12 +60,15 @@ func newEventFixture(t *testing.T) *eventFixture {
 	if err := db.CreateCapability(ctx, review); err != nil {
 		t.Fatalf("create review capability: %v", err)
 	}
-	// 出口表：github 的 pull_request.opened → review
+	// 入口边：来源 "github" 的 pull_request.opened → review
 	if err := db.CreateEdge(ctx, &store.Edge{
-		OrgID: org.ID, FromCapability: origin.ID,
-		FromPort: "pull_request.opened", ToCapability: review.ID,
+		OrgID:          org.ID,
+		FromIsSource:   true,
+		FromCapability: "github",
+		FromPort:       "pull_request.opened",
+		ToCapability:   review.ID,
 	}); err != nil {
-		t.Fatalf("create edge: %v", err)
+		t.Fatalf("create entry edge: %v", err)
 	}
 	// 节点声明 review 并有 2 个槽位
 	node := &store.Node{OrgID: org.ID, Name: "mbp-" + store.NewUserID()}
@@ -181,8 +177,9 @@ func TestEventToDispatch(t *testing.T) {
 	if !out.Inserted {
 		t.Fatal("inserted = false on first request")
 	}
-	if out.Origin != "github@1" {
-		t.Fatalf("origin = %q, want github@1", out.Origin)
+	// #110：origin 现在是"来源名原样回显"，不再是能力 name@version
+	if out.Origin != "github" {
+		t.Fatalf("origin = %q, want the source name \"github\"", out.Origin)
 	}
 	// 首批任务建出来了
 	if len(out.Tasks) != 1 {
@@ -271,42 +268,33 @@ func TestEventNoEdgePruned(t *testing.T) {
 	}
 }
 
-// TestEventUnknownOrigin422 没有 origin 能力 → 422 并列出可用来源。
+// TestEventUnknownSourceAccepted #110：来源没有任何入口边时**不再 422**。
 //
-// 早先这里是 200 + origin:""（"事件收下了，只是派不出去"）。
-// 那是个陷阱：调用方看到成功、事件也确实入库了，但它永远不会派发。
-// 现在显式 422，错误里带 available 列表，调用方立刻知道该填什么。
-func TestEventUnknownOrigin422(t *testing.T) {
+// 旧模型要求 source 必须对应一个"起点能力"，否则 422 + 可用来源列表。
+// 来源不再是能力之后这个检查没有依据了 —— 而且它挡住了一个真实场景：
+// 先让 webhook 打着（事件照收），再回来建边。事件不该因为这个被丢掉。
+//
+// 正确行为：200 + 事件入库 + pruned 里记一条 no_edge（回答"为什么没触发"）。
+func TestEventUnknownSourceAccepted(t *testing.T) {
 	f := newEventFixture(t)
 
-	status, raw := f.postRaw(t, EventIngestRequest{
+	resp, out := f.post(t, EventIngestRequest{
 		Source: "no.such.origin", Type: "issue.created",
 	})
-	if status != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", status)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200（事件照收，来源可以还没配边）", resp.StatusCode)
 	}
-
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatalf("decode: %v (body=%s)", err, raw)
-	}
-	if got := m["source"]; got != "no.such.origin" {
-		t.Errorf("source = %v, want no.such.origin", got)
-	}
-	// eventId 必须回传：事件确实入库了，如实告知（否则调用方以为什么都没留下）
-	if id, _ := m["eventId"].(string); id == "" {
+	if out.EventID == "" {
 		t.Error("eventId is empty: the event WAS stored, response must say so")
 	}
-	// available 里应有内置起点（fixture 会播种）
-	avail, _ := m["available"].([]any)
-	found := false
-	for _, a := range avail {
-		if a == "github" {
-			found = true
-		}
+	if len(out.Tasks) != 0 {
+		t.Errorf("tasks = %d, want 0（没有入口边就派不出去）", len(out.Tasks))
 	}
-	if !found {
-		t.Errorf("available = %v, want to contain builtin origins like github", avail)
+	if out.Origin != "no.such.origin" {
+		t.Errorf("origin = %q, want the source name echoed back", out.Origin)
+	}
+	if len(out.Pruned) != 1 || out.Pruned[0].Reason != string(route.ReasonNoEdge) {
+		t.Fatalf("pruned = %+v, want one no_edge record", out.Pruned)
 	}
 }
 

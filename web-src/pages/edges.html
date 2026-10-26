@@ -21,6 +21,10 @@
         color: var(--text);
         white-space: nowrap;
       }
+      /* 入口边的左端是"来源"，不是能力 —— 用不同颜色提示这个区别 */
+      .edge-cap-src {
+        color: var(--accent);
+      }
       /* 出口名是这条边的身份：它是封闭集合里的一个值（不变量 I2），
          必须比两端的能力名更醒目 */
       .edge-port {
@@ -192,6 +196,17 @@
       let EDGES = [];
       let CAPS = [];
 
+      // SOURCE_NAMES 是"从"下拉里能选的来源名。
+      //
+      // 它**不是**固定列表：来源名是自由的（POST /v1/events?source=任意字符串），
+      // 所以派生自两处，取并集：
+      //   ① 已有入口边里出现过的来源（用户建过的）
+      //   ② 已配置的源（sources 表）的名字 —— 这些是用户真实在用的入口
+      //
+      // 硬编码 github/cron/http/manual 会漏掉用户自定义的来源（比如 jira），
+      // 而且那四个"内置起点"已经不是能力了（#110）。
+      let SOURCE_NAMES = ["github", "cron", "http", "manual"];
+
       function toast(msg) {
         const el = document.getElementById("toast");
         el.textContent = msg;
@@ -243,8 +258,21 @@
         ]);
         EDGES = (edgesData && edgesData.edges) || [];
         CAPS = (capsData && capsData.capabilities) || [];
+        refreshSourceNames();
         fillCapFilter();
         render();
+      }
+
+      // refreshSourceNames 汇总"可以当来源的名字"。
+      //
+      // 顺序：先用边里出现过的（最多），再补内置四个（首次使用时的引导），
+      // 去重排序后填进下面 openModal 用的那份列表。
+      function refreshSourceNames() {
+        const seen = new Set(["github", "cron", "http", "manual"]);
+        for (const e of EDGES) {
+          if (e.fromIsSource && e.fromCapability) seen.add(e.fromCapability);
+        }
+        SOURCE_NAMES = [...seen].sort();
       }
 
       function fillCapFilter() {
@@ -265,21 +293,24 @@
 
         list.replaceChildren();
 
-        // 按 from 能力分组
+        // 按「左端」分组。左端可能是能力，也可能是来源（入口边，#110），
+        // 两者的 key 空间不同（能力用 id，来源用名字），所以加前缀区分。
+        const groupKey = (e) => (e.fromIsSource ? "src:" + e.fromCapability : e.fromCapability);
         const groups = new Map();
         for (const e of EDGES) {
-          if (!groups.has(e.fromCapability)) groups.set(e.fromCapability, []);
-          groups.get(e.fromCapability).push(e);
+          const k = groupKey(e);
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(e);
         }
 
         // 过滤
         let shown = 0;
         const visibleGroups = [...groups.entries()].filter(([fromId, evs]) => {
-          if (capFilter && fromId !== capFilter) return false;
+          if (capFilter && fromId !== capFilter && fromId !== "src:" + capFilter) return false;
           if (!q) return true;
           return evs.some(
             (e) =>
-              capName(e.fromCapability).toLowerCase().includes(q) ||
+              (e.fromIsSource ? e.fromCapability : capName(e.fromCapability)).toLowerCase().includes(q) ||
               capName(e.toCapability).toLowerCase().includes(q) ||
               String(e.fromPort).toLowerCase().includes(q),
           );
@@ -290,7 +321,7 @@
             ? evs
             : evs.filter(
                 (e) =>
-                  capName(e.fromCapability).toLowerCase().includes(q) ||
+                  (e.fromIsSource ? e.fromCapability : capName(e.fromCapability)).toLowerCase().includes(q) ||
                   capName(e.toCapability).toLowerCase().includes(q) ||
                   String(e.fromPort).toLowerCase().includes(q),
               );
@@ -298,10 +329,20 @@
 
           const group = el("div", "edge-group");
 
-          // 组头：from 能力 + 出口数
+          // 组头：左端 + 出口数。左端是来源时显示「来源: github」，
+          // 不要拿 "src:github" 去能力表里查（永远查不到，会显示成原始 key）。
           const head = el("div", "edge-group-head");
           const title = el("div", "flex flex-wrap items-center gap-2 min-w-0");
-          title.appendChild(el("span", "text-zinc-200", capName(fromId)));
+          const isSrcGroup = fromId.startsWith("src:");
+          const groupLabel = isSrcGroup
+            ? t("edges.src_prefix", "来源") + ": " + fromId.slice(4)
+            : capName(fromId);
+          const groupEl = el(
+            "span",
+            isSrcGroup ? "text-zinc-200 edge-cap-src" : "text-zinc-200",
+            groupLabel,
+          );
+          title.appendChild(groupEl);
           const ports = new Set(filtered.map((e) => e.fromPort));
           title.appendChild(
             el("span", "text-[11px] text-zinc-500",
@@ -330,8 +371,14 @@
             const row = el("div", "edge-row");
 
             const flow = el("div", "edge-flow");
-            const fromCapEl = el("span", "edge-cap", capName(e.fromCapability));
-            fromCapEl.title = rawCapName(e.fromCapability);
+            // 左端有两种：来源（入口边）或能力。
+            // 来源显示成「来源: github」，避免界面出现一个并不存在的"能力"。
+            const fromCapEl = e.fromIsSource
+              ? el("span", "edge-cap edge-cap-src", t("edges.src_prefix", "来源") + ": " + e.fromCapability)
+              : el("span", "edge-cap", capName(e.fromCapability));
+            fromCapEl.title = e.fromIsSource
+              ? e.fromCapability
+              : rawCapName(e.fromCapability);
             flow.appendChild(fromCapEl);
             flow.appendChild(el("span", "edge-arrow", "—"));
             // 出口名保持**原样**：它是路由键，用户建边时要一字不差地填它，
@@ -363,8 +410,11 @@
           }
           } // ← 闭合 for (const [port, portEdges] of byPort)
 
-          // 该能力声明了但一条边都没接的出口 —— 配置遗漏
-          const cap = capByID(fromId);
+          // 该能力声明了但一条边都没接的出口 —— 配置遗漏。
+          //
+          // 只对**能力**成立：来源没有 outputs 概念（它的"出口"是事件类型，
+          // 由外部系统决定，不可能预先枚举），所以来源组不检查这项。
+          const cap = isSrcGroup ? null : capByID(fromId);
           const connected = new Set(evs.map((e) => e.fromPort));
           const missing = ((cap && cap.outputs) || []).filter(
             (p) => p && !connected.has(p),
@@ -402,8 +452,20 @@
         const toSel = document.getElementById("f-to");
         fromSel.replaceChildren();
         toSel.replaceChildren();
+
+        // 「从」有两种：能力，或**来源**（入口边）。
+        //
+        // 来源用 "src:" 前缀区分。用户看到的就是"GitHub 事件 → 分析 PR"，
+        // 不再需要理解"github@1 这个能力"——那个空壳已经不存在了（#110）。
+        for (const name of SOURCE_NAMES) {
+          const opt = new Option(
+            t("edges.from_source", "来源") + ": " + name,
+            "src:" + name,
+          );
+          fromSel.appendChild(opt);
+        }
         for (const c of CAPS) {
-          const label = c.name + "@" + c.version;
+          const label = Anotify.capLabel(c);
           fromSel.appendChild(new Option(label, c.id));
           toSel.appendChild(new Option(label, c.id));
         }
@@ -426,15 +488,17 @@
         const input = document.getElementById("f-port-input");
         const hint = document.getElementById("f-port-hint");
 
+        // 来源 → 出口就是任意事件类型（外部系统决定，不可能枚举）
+        const isSource = fromId.startsWith("src:");
         const outputs = (cap && cap.outputs) || [];
-        const isOrigin = cap && cap.source === "builtin";
+        const isOrigin = isSource;
 
         if (isOrigin || !outputs.length) {
           sel.classList.add("hidden");
           input.classList.remove("hidden");
           if (isOrigin) {
             hint.textContent = t("edges.port_hint_origin",
-              "起点能力的出口是任意事件类型，直接填事件类型名，如 pull_request.opened");
+              "事件类型由来源决定（如 pull_request.opened），直接填写即可");
           } else {
             hint.textContent = t("edges.port_hint_end",
               "这个能力没有声明出口（终端能力）。填一个事件类型也能建边，但派发时不会被走到。");
@@ -452,7 +516,10 @@
         const fromId = document.getElementById("f-from").value;
         const toId = document.getElementById("f-to").value;
         const cap = capByID(fromId);
-        const isOrigin = cap && cap.source === "builtin";
+        // 来源（入口边）：左端是来源名，出口是事件类型
+        const isSource = fromId.startsWith("src:");
+        const fromKey = isSource ? fromId.slice(4) : fromId;
+        const isOrigin = isSource;
         const outputs = (cap && cap.outputs) || [];
         const port =
           isOrigin || !outputs.length
@@ -473,7 +540,12 @@
         try {
           await Anotify.api(API + "/edges", {
             method: "POST",
-            body: { fromCapability: fromId, fromPort: port, toCapability: toId },
+            body: {
+              fromIsSource: isSource,
+              fromCapability: fromKey,
+              fromPort: port,
+              toCapability: toId,
+            },
             demo: null,
           });
           closeModal();
@@ -490,7 +562,8 @@
         btn.disabled = true;
         try {
           const qs =
-            "?fromCapability=" + encodeURIComponent(e.fromCapability) +
+            "?fromIsSource=" + (e.fromIsSource ? "1" : "0") +
+            "&fromCapability=" + encodeURIComponent(e.fromCapability) +
             "&fromPort=" + encodeURIComponent(e.fromPort) +
             "&toCapability=" + encodeURIComponent(e.toCapability);
           await Anotify.api(API + "/edges" + qs, { method: "DELETE", demo: null });
