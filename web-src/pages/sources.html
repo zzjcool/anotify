@@ -15,44 +15,6 @@
         }
       }
       /* kind 徽章：cron 紫 / webhook 蓝 / manual 绿 */
-      .src-badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 0.1rem 0.45rem;
-        border-radius: 9999px;
-        font-size: 0.68rem;
-        font-family: var(--mono, monospace);
-        border: 1px solid var(--line-strong);
-        white-space: nowrap;
-      }
-      .src-cron {
-        color: #a78bfa;
-        border-color: rgba(167, 139, 250, 0.35);
-      }
-      .src-webhook {
-        color: #60a5fa;
-        border-color: rgba(96, 165, 250, 0.35);
-      }
-      .src-manual {
-        color: #34d399;
-        border-color: rgba(52, 211, 153, 0.35);
-      }
-      /* 出口能力：小药丸 */
-      .target-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        padding: 0.1rem 0.5rem;
-        border-radius: 9999px;
-        font-size: 0.7rem;
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid var(--line);
-        font-family: var(--mono, monospace);
-      }
-      .target-pill.missing {
-        color: #f87171;
-        border-color: rgba(248, 113, 113, 0.4);
-      }
       /* 表单里的多选能力：滚动容器，避免长列表把弹窗撑爆 */
       .target-picker {
         max-height: 14rem;
@@ -134,45 +96,6 @@
        *
        * 环（D→B→D 这种）用"↩ 回到 X"标记，不重复展开 —— 见 buildFlow。
        */
-      .flow-wrap {
-        margin-top: 0.75rem;
-        padding-top: 0.75rem;
-        border-top: 1px dashed var(--line);
-      }
-      .flow-toggle {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        font-size: 0.7rem;
-        color: var(--muted);
-        cursor: pointer;
-        user-select: none;
-        padding: 0.2rem 0;
-      }
-      .flow-toggle:hover {
-        color: var(--text);
-      }
-      .flow-toggle .chev {
-        display: inline-block;
-        transition: transform 0.15s ease;
-        font-size: 0.6rem;
-      }
-      .flow-toggle.open .chev {
-        transform: rotate(90deg);
-      }
-      .flow-body {
-        margin-top: 0.5rem;
-        font-family: var(--mono, monospace);
-        font-size: 0.72rem;
-        line-height: 1.5;
-      }
-      .flow-dead {
-        color: var(--faint);
-      }
-      .flow-empty {
-        color: var(--faint);
-        font-size: 0.7rem;
-      }
       .hook-url {
         font-family: var(--mono, monospace);
         font-size: 0.7rem;
@@ -367,7 +290,6 @@
       });
 
       let SOURCES = [];
-      let EDGES = [];
       let CAPS = [];
       let editingID = null;
 
@@ -434,250 +356,15 @@
       };
       const KIND_CLASS = { cron: "src-cron", webhook: "src-webhook", manual: "src-manual" };
 
-      // ---------- 流向图（只读预览）----------
-      //
-      // 目标：从**这个源**出发，把所有可能到达的下游都画出来。
-      //
-      //   A(源) → B、C ; C → D ; D → B ; B → D
-      //
-      // 这是一张**有环**的有向图，所以不能用简单的递归展开
-      // （D→B→D 会无限循环）。做法是 DFS + 记录当前路径：
-      //
-      //   - 节点在**当前路径**上 → 画成「↩ 回到 X」，不再展开（这是环）
-      //   - 节点已经完整展开过 → 只画一次，标「（已在上方展开）」
-      //   - 没有下游 → 标「终点」
-      //
-      // 为什么是 DFS 而不是 BFS 分层：用户问的是"这条路会怎么走"，
-      // 沿着一条路走到底比按层横排更符合直觉，也更容易看出分叉点在哪。
-      //
-      // 数据来源全是**能力定义 + 边**，不依赖任何运行态 —— 所以它是
-      // 真正的"提前预览"：任务还没发生，流向已经能看。
-
-      // capByID 用 ID 找能力（含推导出的 kind）
-      function capByID(id) {
-        return CAPS.find((c) => c.id === id) || null;
-      }
-
-      // edgesFrom 返回某能力的全部出边，按出口名排序保证渲染稳定
-      function edgesFrom(capId) {
-        return EDGES.filter((e) => e.fromCapability === capId).sort((a, b) =>
-          String(a.fromPort).localeCompare(String(b.fromPort)),
-        );
-      }
-
-      // buildFlow 从源的一组出口能力出发，构建流向树。
-      //
-      // 返回 [{cap, viaPort, children:[...], kind}]，kind 取值：
-      //   "node"   正常展开的节点
-      //   "cycle"  在当前路径上出现过（环）
-      //   "seen"   之前已经完整展开过（避免同一子树重复画两遍）
-      //   "dead"   该能力没有任何出边（终点）
-      function buildFlow(rootCapIds) {
-        // expanded: 已完整展开过的能力 ID（不含当前路径）
-        const expanded = new Set();
-
-        // 每个**起点分支**都要有一棵树可以完整展开。
-        //
-        // 为什么不能让 expanded 跨分支共享：源有多个出口时（A→B、A→C），
-        // 如果 B 和 C 都能到 D，共享的 expanded 会让第二个分支的 D 变成
-        // 一句孤零零的"（已在上方展开）"，看起来像 bug。
-        // 真正的去重只该发生在**同一分支内部**的重复子树。
-        //
-        // 所以每个 root 单独走一遍，各自一个 expanded。
-        function walkFromRoot(rootId) {
-          const seenInBranch = new Set();
-          return walkIn(rootId, [], null, seenInBranch);
-        }
-
-        function walkIn(capId, path, viaPort, expanded) {
-          const cap = capByID(capId);
-          if (!cap) {
-            return { capId, viaPort, kind: "unknown", children: [] };
-          }
-          // 环：这条路径上已经有了
-          if (path.includes(capId)) {
-            return { capId, cap, viaPort, kind: "cycle", children: [] };
-          }
-          // 之前展开过：只标一下，不重复画子树
-          if (expanded.has(capId)) {
-            return { capId, cap, viaPort, kind: "seen", children: [] };
-          }
-          expanded.add(capId);
-
-          const out = edgesFrom(capId);
-          const nextPath = path.concat([capId]);
-          const children = out.map((e) =>
-            walkIn(e.toCapability, nextPath, e.fromPort, expanded),
-          );
-
-          // 该能力声明了但**没接边**的出口：这也是一条"到此为止"的路，
-          // 而且是最常被忽略的一种配置遗漏（用户以为接上了，其实没有）。
-          // 只在有出边时才提示未接出口 —— 完全没有出边的能力会走下面的
-          // "dead" 分支，那时单独说"没有下游"就够了，不必逐个列出口。
-          const unconnected = (cap.outputs || []).filter(
-            (port) => port && !out.some((e) => e.fromPort === port),
-          );
-
-          return {
-            capId,
-            cap,
-            viaPort,
-            kind: children.length ? "node" : "dead",
-            children,
-            unconnected,
-          };
-        }
-
-        // 源的多个出口 = 多条并行的起点，各自独立展开
-        return (rootCapIds || []).map((id) => walkFromRoot(id));
-      }
-
-      // ---------- 流向图 ----------
-      //
-      // 为什么是"HTML 节点 + SVG 连线"而不是图库：
-      //   图库（Cytoscape / G6）的节点本质是"一个背景色 + 一条边框 + 一段
-      //   文本"，做不出卡片观感（图标 / 标题 / 副标题 / 状态点），也没法
-      //   给单个能力自定义外观。要卡片就必须用 DOM。
-      //
-      //   布局仍然用 dagre（只管算坐标）—— 自己写分层布局等于重造一遍，
-      //   而且环的处理很难写对。
-      //
-      // 数据仍然是能力和边（不依赖运行态），所以它依然是"提前预览"。
-
-      // renderFlowGraph 把 buildFlow 的树交给共享的图模块画。
-      //
-      // 映射逻辑（树 → 节点/边、触发器节点、未接出口伪节点、截断保护）
-      // 都在 web/graphs.js 的 AnotifyGraphs.capabilityFlow 里 —— 那边只有
-      // 一份，事件流的任务链图用的是同一个 FlowGraph 渲染器。
-      // 这里只负责：拿到树、挂容器、处理"这个源没有出口"的空态。
-      function renderFlowGraph(container, roots, src) {
-        if (!roots || !roots.length) {
-          container.appendChild(
-            el("div", "flow-empty", t("sources.flow.no_target", "这个源没有出口能力。")),
-          );
-          return;
-        }
-        if (!window.AnotifyGraphs) {
-          container.appendChild(
-            el("div", "flow-empty", t("sources.flow.nolib", "图渲染脚本未能加载。")),
-          );
-          return;
-        }
-
-        const host = el("div", "");
-        container.appendChild(host);
-
-        const res = window.AnotifyGraphs.capabilityFlow(host, {
-          src: src,
-          tree: roots,
-          t: t,
-          onNodeClick: (n) => {
-            // 点能力节点 → 能力页对应能力（能力页支持 ?focus=）
-            window.open(
-              "capabilities.html?focus=" + encodeURIComponent(String(n.id)),
-              "_blank",
-            );
-          },
-        });
-
-        if (res.truncated) {
-          container.insertBefore(
-            el(
-              "div",
-              "flow-dead mb-2",
-              t("sources.flow.truncated", "图太大（{n} 个节点），只显示前一部分。").replace(
-                "{n}",
-                res.truncated,
-              ),
-            ),
-            host,
-          );
-        }
-      }
-
-      /**
-       * placeholderForType 给"复杂类型走 JSON 手输"的输入框一个示例。
-       *
-       * 抽成函数是因为原来写成三层嵌套三元（object ? ... : array ? ... : ""），
-       * 在那一行里已经很难看出这三种情况分别对应什么。
-       */
-      function placeholderForType(type) {
-        if (type === "object") return '{"k":"v"}';
-        if (type === "array") return "[1,2]";
-        return "";
-      }
-
-      // renderFlow 是卡片底部那块：折叠头 + 图
-      //
-      // 默认折叠：一张卡片展开一张大图会把列表撑得很长。
-      function renderFlow(s) {
-        const wrap = el("div", "flow-wrap");
-        const targetIds = (s.targets || []).map((x) =>
-          typeof x === "string" ? x : x.capabilityId,
-        );
-
-        const toggle = el("div", "flow-toggle");
-        toggle.appendChild(el("span", "chev", "▶"));
-        const label = t("sources.flow.title", "下游流向");
-        const tree = buildFlow(targetIds);
-
-        let nodeCount = 0;
-        let hasCycle = false;
-        (function count(nodes) {
-          for (const n of nodes) {
-            nodeCount++;
-            if (n.kind === "cycle") hasCycle = true;
-            count(n.children || []);
-          }
-        })(tree);
-        toggle.appendChild(
-          el(
-            "span",
-            "",
-            label + " · " + nodeCount + " " + t("sources.flow.nodes", "个节点") +
-              (hasCycle ? " · " + t("sources.flow.hascycle", "含环路") : ""),
-          ),
-        );
-
-        const body = el("div", "flow-body");
-        body.style.display = "none";
-        let rendered = false;
-
-        toggle.addEventListener("click", () => {
-          const open = body.style.display !== "none";
-          body.style.display = open ? "none" : "block";
-          toggle.classList.toggle("open", !open);
-          if (!open && !rendered) {
-            // 懒渲染：折叠状态下 Cypress 拿不到尺寸，展开时才建图
-            renderFlowGraph(body, tree, s);
-            rendered = true;
-          }
-          if (!open) {
-            // 展开后等一帧让容器拿到尺寸，再 fit 到可视区
-            // （折叠时 offsetWidth 是 0，fit 会算出错误的缩放）
-            requestAnimationFrame(() => {
-              const host = body.querySelector(".flograph");
-              if (host && host._graph) host._graph.fit();
-            });
-          }
-        });
-
-        wrap.appendChild(toggle);
-        wrap.appendChild(body);
-        return wrap;
-      }
-
       // ---------- 加载 ----------
       async function loadAll() {
-        const [srcData, capData, edgeData] = await Promise.all([
+        // 流向图搬到详情页了，列表不再需要 edges —— 少一次请求
+        const [srcData, capData] = await Promise.all([
           apiGet(API + "/sources"),
           apiGet(API + "/capabilities"),
-          // 流向图需要边。拉失败不该让整页崩：退化成"只显示直接出口"。
-          apiGet(API + "/edges").catch(() => ({ edges: [] })),
         ]);
         SOURCES = (srcData && srcData.sources) || [];
         CAPS = (capData && capData.capabilities) || [];
-        EDGES = (edgeData && edgeData.edges) || [];
         render();
       }
 
@@ -710,7 +397,12 @@
         const left = el("div", "min-w-0");
 
         const head = el("div", "flex flex-wrap items-center gap-2");
-        head.appendChild(el("span", "text-[15px] text-white", s.name));
+        // 名字就是详情页入口：列表只回答"有哪些源、活着吗"，
+        // 细节（触发配置 / 出口参数 / 流向图）点进去看。
+        const nameLink = el("a", "src-name-link text-[15px] text-white", s.name);
+        nameLink.href = "source.html?id=" + encodeURIComponent(s.id);
+        nameLink.title = t("sources.open_detail", "打开详情");
+        head.appendChild(nameLink);
         head.appendChild(
           el("span", "src-badge " + (KIND_CLASS[s.kind] || ""), KIND_LABEL[s.kind]()),
         );
@@ -816,27 +508,21 @@
         });
         right.appendChild(evBtn);
 
-        const editBtn = el(
-          "button",
+        // 编辑 / 删除 / 流向图 都在详情页：列表上放五六个按钮会让人
+        // 每次都要读完按钮才能找到目标源。
+        const detailBtn = el(
+          "a",
           "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
-          t("sources.edit", "编辑"),
+          t("sources.detail", "详情"),
         );
-        editBtn.addEventListener("click", () => openModal(s));
-        right.appendChild(editBtn);
-
-        const delBtn = el(
-          "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px] text-red-400",
-          t("sources.delete", "删除"),
-        );
-        delBtn.addEventListener("click", () => deleteSource(s, delBtn));
-        right.appendChild(delBtn);
+        detailBtn.href = "source.html?id=" + encodeURIComponent(s.id);
+        right.appendChild(detailBtn);
 
         row.appendChild(left);
         row.appendChild(right);
         card.appendChild(row);
-        // 流向图放在操作行下面：先看清这个源是什么，再决定要不要展开下游
-        card.appendChild(renderFlow(s));
+        // 流向图**不在列表里展开**：它体积大、要 fit 尺寸、还得懒渲染，
+        // 放进列表会让一屏只放得下两三个源。搬到详情页了（source.html）。
         return card;
       }
 
@@ -1075,6 +761,18 @@
         if (!schema || typeof schema !== "object") return {};
         const p = schema.properties;
         return p && typeof p === "object" ? p : {};
+      }
+
+      /**
+       * placeholderForType 给"复杂类型走 JSON 手输"的输入框一个示例。
+       *
+       * 抽成函数是因为原来写成三层嵌套三元（object ? ... : array ? ... : ""），
+       * 在那一行里已经很难看出这三种情况分别对应什么。
+       */
+      function placeholderForType(type) {
+        if (type === "object") return '{"k":"v"}';
+        if (type === "array") return "[1,2]";
+        return "";
       }
 
       // renderParamFields 按 schema 生成参数输入控件。
