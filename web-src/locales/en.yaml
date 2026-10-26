@@ -1303,6 +1303,14 @@ sources:
     demo_name: "Demo · GitHub PR analysis"
     demo_ok: "Example filled: 4 variables + params bound to them"
     demo_no_caps: "No target capability with params; variables were filled in"
+    avail_vars: "What variables does this trigger provide? (click to fill)"
+    av_fill: "Click to fill the variable source"
+    hook_url: "Payload URL"
+    hook_url_pending: "Generated after saving (e.g. /v1/hooks/src_xxx)"
+    hook_github: "How to configure it on GitHub"
+    hook_github_events: "This one is enough; other events are not dispatched"
+    hook_github_secret: "GitHub verifies against its own Secret; this system does not verify signatures yet, so use a long random token in the URL"
+    hook_github_why: "After filling these in, click \"Add webhook\". GitHub sends a ping immediately and the event is stored; then bind the target params below."
   preset:
     hourly: Hourly
     daily3: Daily 3:00
