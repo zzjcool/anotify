@@ -52,6 +52,17 @@
         border-bottom: 1px solid var(--line);
         font-size: 0.75rem;
       }
+      /* 扇出标记：一个出口对应多个下游时显式标出来。
+         这是模型的核心形状之一（wiki 02「一个出口可以有多条边」），
+         在 UI 上必须能一眼看出来，否则用户会以为这个出口只连了一个目标。 */
+      .edge-port-fan {
+        font-size: 0.68rem;
+        padding: 0.1rem 0.4rem;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        color: var(--accent);
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      }
       /* 该能力声明了但没接边的出口：配置遗漏，要显眼 */
       .edge-missing {
         display: flex;
@@ -285,8 +296,22 @@
           head.appendChild(title);
           group.appendChild(head);
 
-          // 每条边一行
+          // 按 (from, port) 再分一层：**同一个出口的多条边 = 扇出**，
+          // 必须聚在一起显示，否则会被别的出口的边插在中间，看不出
+          // "一次查表返回 N 行、派 N 个任务"这件事。
+          //
+          // 顺序按出口名排（而不是边在库里的顺序），让同一出口必然相邻。
+          const byPort = new Map();
           for (const e of filtered) {
+            if (!byPort.has(e.fromPort)) byPort.set(e.fromPort, []);
+            byPort.get(e.fromPort).push(e);
+          }
+
+          for (const [port, portEdges] of byPort) {
+            const fanout = portEdges.length > 1;
+
+            // 每条边一行，保持 from —port→ to 的完整读法
+            for (const e of portEdges) {
             const card = el("div", "card rounded-xl px-4 py-2.5 mb-2");
             const row = el("div", "edge-row");
 
@@ -294,6 +319,14 @@
             flow.appendChild(el("span", "edge-cap", capName(e.fromCapability)));
             flow.appendChild(el("span", "edge-arrow", "—"));
             flow.appendChild(el("span", "edge-port", e.fromPort));
+            // 扇出角标：同一个出口 >1 条边时标出来。
+            // 文案只说事实（这个出口连了几个下游），不加术语。
+            if (fanout) {
+              flow.appendChild(
+                el("span", "edge-port-fan",
+                  t("edges.fanout", "扇出 ×{n}").replace("{n}", portEdges.length)),
+              );
+            }
             flow.appendChild(el("span", "edge-arrow", "→"));
             flow.appendChild(el("span", "edge-cap", capName(e.toCapability)));
             row.appendChild(flow);
@@ -306,6 +339,7 @@
             card.appendChild(row);
             group.appendChild(card);
           }
+          } // ← 闭合 for (const [port, portEdges] of byPort)
 
           // 该能力声明了但一条边都没接的出口 —— 配置遗漏
           const cap = capByID(fromId);

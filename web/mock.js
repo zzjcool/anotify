@@ -156,26 +156,34 @@
 		return list.reduce((a, b) => (b.version > a.version ? b : a));
 	}
 
-	// 推导 kind（与后端 route.KindForCapability 同口径，但这里是 mock，
-	// 只看 outputs + 是否有节点声明）
-	function deriveKind(c) {
-		if (c.name === "notify.phone") return "end"; // 中枢执行
-		const declared = state.nodes.some((n) =>
-			(n.capabilities || []).some((x) => x.id === c.id),
-		);
-		const hasOut = (c.outputs || []).some((o) => o);
-		if (!declared22(c)) return "origin";
-		return hasOut ? "pipe" : "end";
-	}
-	// 内置起点即使没有节点也算 origin
-	function declared22(c) {
-		if (c.source === "builtin" && !(["notify.phone"].includes(c.name))) return false;
-		return state.nodes.some((n) => (n.capabilities || []).some((x) => x.id === c.id));
-	}
+	// ===== kind 推导 =====
+	//
+	// 必须和后端 route.KindForCapability 一字不差，否则 mock 里看到的
+	// 标签和真实产品对不上，等于在演示里撒谎。
+	//
+	// 后端真身（internal/route/kind.go:68）：
+	//
+	//	if 是内置能力:
+	//	    Central(notify.phone)  → end      // 中枢执行，没有节点
+	//	    Origin(github/cron/...) → origin   // 起点，不产生任务行
+	//	return DeriveKind(outputs, declared)   // 其余一律按 outputs 推导
+	//
+	// 关键：`origin` 只给那 4 个内置起点（OriginCapability 的调用只有
+	// github / cron / http / manual），**不是**"所有 builtin 都算起点"。
+	// 之前这里写成 `c.source === "builtin" → origin`，导致 report.send
+	// 这种用户能力因为 source 标记而被误标成 origin —— 它有 escalate
+	// 出口、也有节点声明，按规则该是 pipe。
+
+	// 内置起点的名字（后端 store.BuiltinCapabilities 里 OriginCapability 的四个）
+	const ORIGIN_NAMES = ["github", "cron", "http", "manual"];
+	// 中枢执行的终端能力（BuiltinCapability.Central）
+	const CENTRAL_NAMES = ["notify.phone"];
 
 	function kindOf(c) {
-		if (c.name === "notify.phone") return "end";
-		if (c.source === "builtin") return "origin"; // github/cron/http/manual
+		if (!c) return "origin";
+		if (CENTRAL_NAMES.includes(c.name)) return "end";
+		if (ORIGIN_NAMES.includes(c.name)) return "origin";
+		// 其余按 DeriveKind：有节点声明 + 有出口 → pipe，否则 end/origin
 		const declared = state.nodes.some((n) =>
 			(n.capabilities || []).some((x) => x.id === c.id),
 		);
@@ -196,7 +204,10 @@
 			createdAt: now() - 3600,
 		});
 		state.edges = [
+			// 源也可以扇出：一个 PR 事件同时派发分析和通知两条链。
+			// 这两条链互不等待（不做 join），各走各的。
 			from("github", "pull_request.opened", "analyze-pr"),
+			from("github", "pull_request.opened", "report.send"),
 			from("github", "pull_request.synchronize", "analyze-pr"),
 			from("cron", "nightly", "analyze-pr"),
 			from("http", "webhook.incoming", "deploy-preview"),
@@ -209,6 +220,17 @@
 			from("lint-fix", "clean", "run-tests"),
 			from("lint-fix", "remaining", "report.send"),
 			from("run-tests", "passed", "deploy-preview"),
+
+			// ===== 扇出（一个出口多条边）=====
+			//
+			// 这是模型的核心形状之一（wiki 02「一个出口可以有多条边」）：
+			// 拿 (review@1, needs-fix) 查表返回 2 行 → 建 2 个任务，
+			// 它们的 parent_task_id 是同一个。**不是择一，是全部下发。**
+			//
+			// 之前的 mock 完全没有扇出，等于把产品最重要的形状藏起来了。
+			from("analyze-pr", "needs-fix", "run-tests"),
+			from("apply-fix", "fixed", "deploy-preview"),
+
 			// 测试挂了先尝试自动修，修完再测一次 —— 这是本仓库真实存在的
 			// 环（run-tests → apply-fix → run-tests）。流向图必须画出环路，
 			// 而"全是 DAG"的演示数据会让人以为这功能只能处理简单情况。
@@ -230,39 +252,57 @@
 	})();
 
 	// ---------- 初始节点 ----------
+	//
+	// 三台机器按"谁干什么"分工，而不是随便挂几个能力。
+	// 这件事不只是好看：**kind 是由"有没有节点声明"推导出来的**，一个能力
+	// 没有节点声明就是 origin（表示"没人实现它，只有出边"）。如果 mock 里
+	// 中间能力都没人声明，整张图会显示成一堆孤立的起点 —— 看起来像配置错误，
+	// 其实只是演示数据没铺完。
+	//
+	// 所以这里让每个"应该有实现"的能力都被某台机器声明。
 	(function initNodes() {
-		const ids = ["analyze-pr", "apply-fix", "deploy-preview"];
+		const capRef = (n) => {
+			const c = capByName(n);
+			return { id: c.id, name: c.name, version: c.version };
+		};
+
 		state.nodes = [
 			{
+				// 主工作站：分析、修复、告警
 				id: "nd_mock_laptop",
 				orgId: ORG,
 				name: "laptop-worker",
 				status: "online",
 				lastSeenAt: now() - 3,
 				createdAt: now() - 86400,
-				capabilities: ids.map((n) => {
-					const c = capByName(n);
-					return { id: c.id, name: c.name, version: c.version };
-				}),
+				capabilities: ["analyze-pr", "lint-fix", "apply-fix", "report.send", "alert.oncall"].map(capRef),
 				instances: [
 					{ id: "nins_mock_0", index: 0, concurrency: 4, busy: 1 },
 				],
 			},
 			{
+				// CI 机器：测试、部署、生成变更日志。离线是故意的（演示"节点掉线
+				// 时任务保持 pending"这条路径）。
 				id: "nd_mock_ci",
 				orgId: ORG,
 				name: "ci-runner",
 				status: "offline",
 				lastSeenAt: now() - 7200,
 				createdAt: now() - 86400 * 3,
-				capabilities: [
-					{
-						id: capByName("deploy-preview").id,
-						name: "deploy-preview",
-						version: 1,
-					},
-				],
+				capabilities: ["deploy-preview", "run-tests", "gen-changelog"].map(capRef),
 				instances: [{ id: "nins_mock_1", index: 0, concurrency: 2, busy: 0 }],
+			},
+			{
+				// 运维机：回滚。单独一台，方便演示"能力分散在不同机器上"，
+				// 也让"按节点筛选"有东西可筛。
+				id: "nd_mock_ops",
+				orgId: ORG,
+				name: "ops-box",
+				status: "online",
+				lastSeenAt: now() - 12,
+				createdAt: now() - 86400 * 7,
+				capabilities: ["rollback"].map(capRef),
+				instances: [{ id: "nins_mock_2", index: 0, concurrency: 1, busy: 0 }],
 			},
 		];
 	})();
@@ -435,18 +475,24 @@
 			t += 40;
 		}
 
-		// ---- 1b) 深链 + 环：11 跳，中间回溯过一次 ----
+		// ---- 1b) 主线：一条真正复杂的 trace（森林，不是单链）----
 		//
-		// 这是给图视图准备的"难看的形状"：足够长的链才能看出
-		// 布局是否分层、连线是否打架、缩放到什么程度才可读。
-		// 3~5 个节点的演示数据根本暴露不出布局问题。
+		// 按 wiki 06「森林，不是树」的形状造：
 		//
-		// 结构：analyze → lint-fix → run-tests(failed) → report.send(escalate)
-		//       → apply-fix → run-tests(passed) → deploy-preview
-		//       → gen-changelog / alert.oncall
+		//   根事件 pull_request.opened
+		//     ├─ analyze-pr ─┬─ lint-fix ── run-tests(failed) ── apply-fix ── run-tests
+		//     │              └─ run-tests(passed) ──────────────┐（analyze 的 needs-fix 扇出 2 条）
+		//     │                            └→ deploy-preview ─┬─ gen-changelog
+		//     │                                                └─ alert.oncall
+		//     └─ report.send（源扇出：同一个事件同时派发通知链）
 		//
-		// 注意 run-tests 出现两次（同一个能力，两个任务）——这是真实的
-		// "改完再测"循环，不是数据错误。
+		// 同时含三种真实形状，一张图能验证完：
+		//   ① 源扇出     —— 一个事件派两条互不等待的链
+		//   ② 出口扇出   —— analyze-pr 的 needs-fix 有 2 条边 → 2 个子任务
+		//   ③ 环         —— run-tests(failed) → apply-fix → run-tests(passed)
+		//
+		// 这是演示数据的核心：只有 3 个节点的链根本暴露不出布局问题、
+		// 也验证不了"扇出的边怎么画"。
 		{
 			const traceId = "trace_mock_" + Math.random().toString(36).slice(2, 10);
 			state.events.push({
@@ -455,48 +501,67 @@
 				payload: { pr: 913, repo: "anotify", files: 27 }, createdAt: t,
 			});
 
-			const plan = [
-				// [能力名, out, status, 耗时(s), 节点索引, summary/error]
-				["analyze-pr", "needs-fix", "succeeded", 3.8, 0, "27 个文件，发现 6 处问题"],
-				["lint-fix", "remaining", "succeeded", 2.1, 0, "自动修复 4 处，2 处需人工"],
-				["run-tests", "failed", "failed", 34.2, 1, ""],
-				["report.send", "escalate", "succeeded", 0.9, 0, "已通知 #ci-alerts"],
-				["apply-fix", "fixed", "succeeded", 12.6, 1, "人工修复完成"],
-				["run-tests", "passed", "succeeded", 41.3, 1, "全部 218 个用例通过"],
-				["deploy-preview", "preview.ready", "succeeded", 18.4, 1, "staging 已就绪"],
-				["gen-changelog", null, "succeeded", 1.2, 0, "生成 14 条变更"],
-				["alert.oncall", null, "succeeded", 0.3, 0, "值班已确认"],
-			];
-
-			let clock = t;
-			let prev = null;
-			const analyzeId = capByName("analyze-pr").id;
-
-			for (const [name, out, status, dur, nodeIdx, note] of plan) {
+			const analyze = capByName("analyze-pr");
+			// 用「名字 + 起始偏移」建任务，方便表达扇出后的时间重叠
+			const add = (name, parent, offset, dur, opts) => {
 				const cap = capByName(name);
-				const isTestRetry = name === "run-tests" && prev && prev.cap === "apply-fix";
-				const task = mkTask({
-					traceId,
-					cap,
-					parent: prev ? prev.id : null,
-					path: [analyzeId, cap.id],
+				const nodeIdx = opts.node != null ? opts.node : 0;
+				const task = mkTask(Object.assign({
+					traceId, cap,
+					parent: parent ? parent.id : null,
+					path: [analyze.id, cap.id],
 					nodeId: state.nodes[nodeIdx].id,
-					createdAt: clock,
-					startedAt: clock,
-					finishedAt: clock + dur,
-					out: out || null,
-					status,
-					// 第一次测试失败要给 error，第二次重试才成功
-					error: status === "failed" ? "e2e: 3 specs timed out (30s)" : "",
-					summary: status === "failed" ? "" : note,
-					// 重试过的任务：attempts > 1 让瀑布图标出 ×N
-					attempts: isTestRetry ? 2 : 1,
-				});
+					createdAt: t + offset,
+					startedAt: t + offset,
+					finishedAt: t + offset + dur,
+					attempts: 1,
+				}, opts));
 				state.tasks.push(task);
-				prev = { id: task.id, cap: name };
-				clock += dur;
-			}
-			t += 120;
+				return task;
+			};
+
+			// ---- 根：analyze-pr（报告 needs-fix，出口上有 2 条边）----
+			const a = add("analyze-pr", null, 0, 3.8, {
+				out: "needs-fix", summary: "27 个文件，发现 6 处问题",
+			});
+
+			// ---- 扇出第 1 支：lint-fix → run-tests(失败) ----
+			const lintFix = add("lint-fix", a, 3.9, 2.1, {
+				out: "remaining", summary: "自动修复 4 处，2 处需人工",
+			});
+			const testFail = add("run-tests", lintFix, 6.1, 34.2, {
+				out: "failed", status: "failed", node: 1,
+				error: "e2e: 3 specs timed out (30s)",
+			});
+			// 失败后走环：改 → 再测（第二次带重试标记）
+			const fix = add("apply-fix", testFail, 40.4, 12.6, {
+				out: "fixed", node: 1, summary: "人工修复完成",
+			});
+			const testPass = add("run-tests", fix, 53.1, 41.3, {
+				out: "passed", node: 1, attempts: 2, summary: "全部 218 个用例通过",
+			});
+
+			// ---- 扇出第 2 支：analyze-pr 的 needs-fix 还直接连了 run-tests ----
+			// （和上面那支同时开始 —— 这是"同一个出口两条边各派一个任务"的直接后果）
+			const testDirect = add("run-tests", a, 3.9, 96.0, {
+				out: "passed", node: 1, summary: "全量回归通过",
+			});
+
+			// ---- 汇聚（不是 join，只是两条分支都指向同一个下游能力）----
+			const deploy = add("deploy-preview", testPass, 94.5, 18.4, {
+				out: "preview.ready", node: 1, params: { env: "staging" },
+				summary: "staging 已就绪",
+			});
+			add("gen-changelog", deploy, 113, 1.2, { summary: "生成 14 条变更" });
+			add("alert.oncall", deploy, 113, 0.3, { summary: "值班已确认" });
+
+			// ---- 源扇出的另一支：通知链，与上面完全并行 ----
+			add("report.send", null, 0.2, 0.9, {
+				out: "escalate", params: { level: "warn", page: true },
+				summary: "已通知 #ci-alerts",
+			});
+
+			t += 140;
 		}
 
 		// ---- 1c) 并行：两条独立的 trace 同时在跑 ----
