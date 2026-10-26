@@ -1267,6 +1267,14 @@ sources:
     no_params: Esta capacidad no toma parámetros
     bad_json: El parámetro {k} no es JSON válido
     bad_num: El parámetro {k} no es un número
+    pm_literal: "Valor fijo"
+    pm_map: "Desde el evento"
+    from_hint: "Ruta con puntos dentro del payload del evento, p. ej. pull_request.title o items.0.name. Si no se encuentra, se usa el valor por defecto."
+    default_ph: "Valor por defecto (opcional)"
+    need_from: "El parámetro {k} está en «Desde el evento»; hace falta la ruta del payload"
+    payload: "Campos del evento (opcional)"
+    payload_hint: "Campos que se incluirán en cada ejecución programada, como objeto JSON p. ej. {\"env\":\"prod\"}. Las asignaciones de parámetros de destino pueden referenciarlos."
+    bad_payload: "Los campos del evento deben ser un objeto JSON como {\"env\":\"prod\"}"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

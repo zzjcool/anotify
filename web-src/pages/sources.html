@@ -94,6 +94,37 @@
         color: #f87171;
         margin-left: 0.15rem;
       }
+      /* 参数填法的两态切换：固定值 / 从事件取值。
+       * 两个按钮并排、选中态用 accent，让人一眼看出这是"同一个字段的两种填法"，
+       * 而不是两个不同的字段。 */
+      .param-mode {
+        display: flex;
+        gap: 0.25rem;
+        margin-bottom: 0.25rem;
+      }
+      .param-mode-btn {
+        padding: 0.1rem 0.4rem;
+        font-size: 0.65rem;
+        border-radius: 0.375rem;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--muted, #71717a);
+        cursor: pointer;
+      }
+      .param-mode-btn.is-on {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+      }
+      .param-body {
+        display: grid;
+        gap: 0.25rem;
+      }
+      /* 映射态左侧细线，提示"这里填的是取值规则，不是值本身" */
+      .param-map {
+        padding-left: 0.5rem;
+        border-left: 1px dashed var(--line);
+      }
 
       /* ---------- 流向图（只读预览）----------
        *
@@ -267,6 +298,20 @@
             {{t "sources.preset.every15"}}
           </button>
         </div>
+
+        <!-- 触发时带上的自定义字段。
+             定时器没有外部 payload（不像 webhook 有请求体），
+             所以"这次触发要带什么数据"只能在这里写死。
+             它是纯数据字面量，不参与求值（I6），但可以被出口的映射引用。 -->
+        <label class="mb-1 mt-3 block text-xs text-zinc-400" for="f-payload"
+          >{{t "sources.form.payload"}}</label
+        >
+        <input
+          id="f-payload"
+          class="input mono w-full text-sm"
+          placeholder='{"env": "prod"}'
+        />
+        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.payload_hint"}}</p>
       </div>
 
       <!-- webhook 专属 -->
@@ -889,6 +934,11 @@
 
         const cfg = (src && src.config) || {};
         document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
+        // 自定义事件字段：空对象不显示 "{}"，留空更像"没有"
+        const pl = cfg.payload || {};
+        document.getElementById("f-payload").value = Object.keys(pl).length
+          ? JSON.stringify(pl, null, 0)
+          : "";
 
         // 已保存的出口参数：从 targetCaps 里取（后端并入视图了）
         const existing = {};
@@ -996,6 +1046,19 @@
         }
       }
 
+      // isMappingDecl 判断一个参数值是不是"映射声明"（{from,default}）。
+      //
+      // 判据必须严：只有**恰好**含 from（外加 default/as）的对象才算映射。
+      // 否则用户真想当字面量传的 {"from": 1} 会被误认。多一个字段就退回字面量。
+      // 这里的口径必须与 web/mock.js 的 isMapping 一致 —— 前端说"这是映射"、
+      // 后端当成字面量，就是最难查的那种不一致。
+      function isMappingDecl(v) {
+        if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+        const keys = Object.keys(v);
+        if (!keys.includes("from")) return false;
+        return keys.every((k) => k === "from" || k === "default" || k === "as");
+      }
+
       // requiredFields 从 params_schema 取必填字段名。
       //
       // 只用受控子集里最稳的那几个关键字（route.validate.go 支持的集合），
@@ -1037,11 +1100,40 @@
         for (const k of keys) {
           const spec = props[k] && typeof props[k] === "object" ? props[k] : {};
           const field = el("div", "");
+          field.dataset.paramField = k;
           const lab = el("label", "", k);
           if (required.has(k)) lab.appendChild(el("span", "param-req", "*"));
           field.appendChild(lab);
 
           const cur = current[k];
+          // 该参数现在是"映射"（{from,default}）还是字面量？
+          const asMapping = isMappingDecl(cur);
+
+          // 模式切换：固定值 / 从事件取值。
+          //
+          // 这两种模式是**同一个参数**的两种填法，所以并排放在同一行，
+          // 而不是拆成两组字段——拆开会让用户以为要填两个东西。
+          const modeRow = el("div", "param-mode");
+          const pick = (val, labelKey, fallback) => {
+            const b = el("button", "param-mode-btn", t(labelKey, fallback));
+            b.type = "button";
+            b.dataset.mode = val;
+            if ((val === "map") === asMapping) b.classList.add("is-on");
+            return b;
+          };
+          const btnLit = pick("literal", "sources.form.pm_literal", "固定值");
+          const btnMap = pick("map", "sources.form.pm_map", "从事件取值");
+          modeRow.appendChild(btnLit);
+          modeRow.appendChild(btnMap);
+          field.appendChild(modeRow);
+
+          // 字面量容器
+          const litWrap = el("div", "param-body");
+          if (asMapping) litWrap.classList.add("hidden");
+          // 映射容器
+          const mapWrap = el("div", "param-body param-map");
+          if (!asMapping) mapWrap.classList.add("hidden");
+
           let input;
 
           if (Array.isArray(spec.enum) && spec.enum.length) {
@@ -1088,7 +1180,54 @@
           input.className = "input mono w-full";
           input.dataset.param = k;
           input.dataset.ptype = input.dataset.json ? "json" : spec.type || "string";
-          field.appendChild(input);
+          litWrap.appendChild(input);
+
+          // ---- 映射态：payload 路径 + 默认值 ----
+          const fromIn = document.createElement("input");
+          fromIn.type = "text";
+          fromIn.className = "input mono w-full text-xs";
+          fromIn.placeholder = "pull_request.title";
+          fromIn.dataset.map = "from";
+          if (asMapping && cur.from) fromIn.value = cur.from;
+          const fromHint = el(
+            "p",
+            "text-[10px] leading-relaxed text-zinc-500",
+            t(
+              "sources.form.from_hint",
+              "按点号路径从事件 payload 取值，如 pull_request.title 或 items.0.name。取不到时用下面的默认值。",
+            ),
+          );
+
+          const defIn = document.createElement("input");
+          defIn.type = "text";
+          defIn.className = "input mono w-full text-xs";
+          defIn.placeholder = t("sources.form.default_ph", "默认值（可选）");
+          defIn.dataset.map = "default";
+          if (asMapping && cur.default !== undefined) {
+            defIn.value =
+              typeof cur.default === "string" ? cur.default : JSON.stringify(cur.default);
+          }
+
+          mapWrap.appendChild(fromIn);
+          mapWrap.appendChild(fromHint);
+          mapWrap.appendChild(defIn);
+
+          // 切换：两个容器互斥显示
+          btnLit.addEventListener("click", () => {
+            btnLit.classList.add("is-on");
+            btnMap.classList.remove("is-on");
+            litWrap.classList.remove("hidden");
+            mapWrap.classList.add("hidden");
+          });
+          btnMap.addEventListener("click", () => {
+            btnMap.classList.add("is-on");
+            btnLit.classList.remove("is-on");
+            mapWrap.classList.remove("hidden");
+            litWrap.classList.add("hidden");
+          });
+
+          field.appendChild(litWrap);
+          field.appendChild(mapWrap);
           wrap.appendChild(field);
         }
       }
@@ -1105,8 +1244,55 @@
           const wrap = box.querySelector('.target-params[data-for="' + CSS.escape(capId) + '"]');
           const params = {};
           if (wrap) {
-            for (const input of wrap.querySelectorAll("[data-param]")) {
-              const k = input.dataset.param;
+            // 每个字段先看它当前在哪一态（看哪个容器可见）。
+            // 不能靠"哪个有值"判断：映射态里 from 为空但 default 有值时，
+            // 靠值判断会误判成字面量。
+            for (const field of wrap.querySelectorAll("[data-param-field]")) {
+              const k = field.dataset.paramField;
+              const litWrap = field.querySelector(".param-body:not(.param-map)");
+              const mapWrap = field.querySelector(".param-map");
+              const literalMode = litWrap && !litWrap.classList.contains("hidden");
+
+              if (!literalMode && mapWrap) {
+                const fromIn = mapWrap.querySelector('[data-map="from"]');
+                const defIn = mapWrap.querySelector('[data-map="default"]');
+                const from = (fromIn.value || "").trim();
+                const defRaw = (defIn.value || "").trim();
+                if (!from) {
+                  throw new Error(
+                    t("sources.form.need_from", "参数 {k} 选了「从事件取值」，要填 payload 路径").replace(
+                      "{k}",
+                      k,
+                    ),
+                  );
+                }
+                const m = { from };
+                if (defRaw !== "") {
+                  // 默认值按该参数声明的类型解析，否则 number 字段会拿到 "3" 这种字符串
+                  const t_ = litWrap?.querySelector("[data-param]")?.dataset.ptype || "string";
+                  if (t_ === "json") {
+                    try {
+                      m.default = JSON.parse(defRaw);
+                    } catch (e) {
+                      throw new Error(
+                        t("sources.form.bad_json", "参数 {k} 不是合法 JSON").replace("{k}", k),
+                      );
+                    }
+                  } else if (t_ === "number" || t_ === "integer") {
+                    const n = Number(defRaw);
+                    if (!Number.isNaN(n)) m.default = n;
+                  } else if (t_ === "boolean") {
+                    m.default = defRaw === "true";
+                  } else {
+                    m.default = defRaw;
+                  }
+                }
+                params[k] = m;
+                continue;
+              }
+
+              const input = field.querySelector("[data-param]");
+              if (!input) continue;
               const t_ = input.dataset.ptype;
               let v;
               if (t_ === "boolean") {
@@ -1162,7 +1348,21 @@
             toast(t("sources.form.expr_required", "请填 cron 表达式"));
             return;
           }
-          config = { expr: expr };
+          const plRaw = document.getElementById("f-payload").value.trim();
+          let payload = {};
+          if (plRaw !== "") {
+            try {
+              const parsed = JSON.parse(plRaw);
+              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                throw new Error("not an object");
+              }
+              payload = parsed;
+            } catch (e) {
+              toast(t("sources.form.bad_payload", "事件字段必须是 JSON 对象，如 {\"env\":\"prod\"}"));
+              return;
+            }
+          }
+          config = { expr: expr, payload };
         }
 
         const body = { name: name, kind: kind, config: config, enabled: enabled, targets: targets };

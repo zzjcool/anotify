@@ -1009,14 +1009,172 @@
 			.filter((x) => x && x.capabilityId);
 	}
 
+	// ---------- 字段映射（params 模板）----------
+	//
+	// 一个出口的 params 里，每个值可以是两种形态：
+	//
+	//   字面量       "env": "prod"                     → 直接就是 prod
+	//   映射         "title": { "from": "pr.title" }   → 从 payload 按路径取值
+	//
+	// **I6：这里不做表达式求值。**
+	// 规则只有一条：按点号路径取一个已存在的值。没有拼接、没有运算、
+	// 没有条件、没有函数调用。取不到时用 default（没有 default 就整字段不传）。
+	//
+	// 为什么坚持不引入表达式：中枢一旦求值用户提供的字符串，就多出
+	// 模板注入 / 无限递归 / 超大表达式 DoS 三类攻击面，而收益只是"少一次
+	// 节点侧拼装"。节点本来就能自己取数据（它才是知道数据形状的那一方）。
+
+	// isMapping 判断某个参数值是不是"映射声明"而不是字面量。
+	//
+	// 判据要严：只有**恰好**含 from 的对象才算映射。否则 {"from":1} 这种
+	// 用户真想当字面量传的对象会被误认。多一个字段就退回字面量，行为可预期。
+	function isMapping(v) {
+		if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+		const keys = Object.keys(v);
+		if (!keys.includes("from")) return false;
+		return keys.every((k) => k === "from" || k === "default" || k === "as");
+	}
+
+	// getPath 按点号路径从对象里取值。数组用数字下标（items.0.name）。
+	// 任何一段取不到都返回 undefined（不抛错：payload 来自外部，形状不受控）。
+	function getPath(obj, path) {
+		if (!obj || typeof obj !== "object") return undefined;
+		let cur = obj;
+		for (const seg of String(path).split(".")) {
+			if (cur == null) return undefined;
+			if (Array.isArray(cur)) {
+				const i = Number(seg);
+				if (!Number.isInteger(i) || i < 0 || i >= cur.length) return undefined;
+				cur = cur[i];
+			} else if (typeof cur === "object") {
+				if (!Object.prototype.hasOwnProperty.call(cur, seg)) return undefined;
+				cur = cur[seg];
+			} else {
+				return undefined;
+			}
+		}
+		return cur;
+	}
+
+	// resolveParams 把一份带映射的 params 按 payload 求值成实际参数。
+	//
+	// 返回 {params, used, missing}：missing 是"声明了映射但 payload 里没有、
+	// 也没有 default"的字段名。上游（触发响应）会把它报出去，让用户知道
+	// 哪个字段没取到值——静默丢掉是最难查的一种失败。
+	function resolveParams(template, payload) {
+		const out = {};
+		const used = [];
+		const missing = [];
+		if (!template) return { params: out, used, missing };
+		for (const [k, v] of Object.entries(template)) {
+			if (!isMapping(v)) {
+				out[k] = clone(v);
+				continue;
+			}
+			const got = getPath(payload, v.from);
+			if (got !== undefined) {
+				out[k] = clone(got);
+				used.push({ field: k, from: v.from });
+				continue;
+			}
+			if (Object.prototype.hasOwnProperty.call(v, "default")) {
+				out[k] = clone(v.default);
+				continue;
+			}
+			missing.push({ field: k, from: v.from });
+		}
+		return { params: out, used, missing };
+	}
+
+	// validateMappingPaths 校验映射声明本身（配置期，不是触发期）。
+	// 只查形式：from 必须是点号路径字符串，as 只能是 string/number/boolean/json。
+	function validateMappingPaths(template) {
+		if (!template) return "";
+		for (const [k, v] of Object.entries(template)) {
+			if (!isMapping(v)) continue;
+			if (typeof v.from !== "string" || !v.from.trim()) {
+				return `参数 ${k} 的映射缺少 from（payload 字段路径）`;
+			}
+			if (v.from.includes("..") || v.from.startsWith(".") || v.from.endsWith(".")) {
+				return `参数 ${k} 的 from 路径不合法：「${v.from}」`;
+			}
+			if (v.as !== undefined && !["string", "number", "boolean", "json"].includes(v.as)) {
+				return `参数 ${k} 的 as 只能是 string/number/boolean/json`;
+			}
+		}
+		return "";
+	}
+
+	// schemaPropType 取某个参数在 params_schema 里声明的类型（没有则空）。
+	//
+	// 只用 route.validate.go 受控子集里的 type 关键字，不认识的一律当"不转换"，
+	// 保证前端的自动推断不会比后端校验更激进。
+	function schemaPropType(cap, key) {
+		let schema = cap && cap.paramsSchema;
+		if (typeof schema === "string") {
+			try {
+				schema = JSON.parse(schema);
+			} catch (e) {
+				return "";
+			}
+		}
+		const props = schema && typeof schema === "object" ? schema.properties : null;
+		const spec = props && typeof props === "object" ? props[key] : null;
+		return spec && typeof spec.type === "string" ? spec.type : "";
+	}
+
+	// coerceValue 按目标类型转换；**转不了返回 undefined**（不是原值退回）。
+	//
+	// 为什么必须区分"转不了"和"不用转"：把 "修了个 bug" 塞进 integer 字段时，
+	// 若悄悄退回原字符串，用户会在 param_schema 剪枝里看到一条
+	// "expected integer, got string" —— 但真正的原因（payload 里的字段不是数字）
+	// 完全没体现。返回 undefined 才能报出「payload.x 的值转不了 integer」。
+	function coerceValue(v, as) {
+		if (as === undefined || as === null || as === "") return v;
+		if (as === "json" || as === "object" || as === "array") return v;
+		if (as === "string") {
+			if (typeof v === "string") return v;
+			if (v !== null && typeof v === "object") return JSON.stringify(v);
+			return String(v);
+		}
+		if (as === "number" || as === "integer") {
+			if (typeof v === "number") {
+				return as === "integer" && !Number.isInteger(v) ? undefined : v;
+			}
+			if (typeof v === "string" && v.trim() !== "") {
+				const n = Number(v);
+				if (Number.isNaN(n)) return undefined;
+				return as === "integer" && !Number.isInteger(n) ? undefined : n;
+			}
+			return undefined;
+		}
+		if (as === "boolean") {
+			if (typeof v === "boolean") return v;
+			if (v === "true" || v === "1" || v === 1) return true;
+			if (v === "false" || v === "0" || v === 0) return false;
+			return undefined;
+		}
+		return v;
+	}
+
 	function validateTargets(targets) {
 		const byID = new Map(state.capabilities.map((c) => [c.id, c]));
 		for (const t of targets) {
 			const c = byID.get(t.capabilityId);
 			if (!c) return "出口能力 " + t.capabilityId + " 不存在";
 			if (t.params && Object.keys(t.params).length) {
-				const msg = validateParams(c.paramsSchema, t.params);
-				if (msg) return `${c.name}@${c.version} 的参数不合法：${msg}`;
+				// 先校验映射声明本身（形式对不对），再校验字面量的 schema。
+				// 映射的值要触发时才有，这里不能拿它去做 schema 校验。
+				const mmsg = validateMappingPaths(t.params);
+				if (mmsg) return `${c.name}@${c.version}：${mmsg}`;
+				const literals = {};
+				for (const [k, v] of Object.entries(t.params)) {
+					if (!isMapping(v)) literals[k] = v;
+				}
+				if (Object.keys(literals).length) {
+					const msg = validateParams(c.paramsSchema, literals);
+					if (msg) return `${c.name}@${c.version} 的参数不合法：${msg}`;
+				}
 			}
 		}
 		return "";
@@ -1047,7 +1205,11 @@
 			if (expr.split(/\s+/).length !== 5) {
 				return err(400, "cron 表达式需要 5 段，得到 " + expr.split(/\s+/).length + " 段");
 			}
-			cfg = { expr: expr, tz: cfg.tz || "Local" };
+			// payload：cron 触发时带上的**字面量**字段（用户自定义）。
+			// 纯数据，不参与求值（I6）。这就是"cron 用户自定义字段"的答案：
+			// 它不需要模板语法，只是想让事件带上 {"env":"prod"} 这种常量。
+			const pl = cfg.payload && typeof cfg.payload === "object" ? cfg.payload : {};
+			cfg = { expr: expr, tz: cfg.tz || "Local", payload: pl };
 		} else if (b.kind === "webhook") {
 			cfg = { token: cfg.token || "src_mock" + Math.random().toString(36).slice(2, 12) };
 		} else {
@@ -1101,7 +1263,12 @@
 				if (expr.split(/\s+/).length !== 5) {
 					return err(400, "cron 表达式需要 5 段");
 				}
-				s.config = { expr: expr, tz: b.config.tz || "Local" };
+				s.config = {
+					expr: expr,
+					tz: b.config.tz || "Local",
+					payload:
+						b.config.payload && typeof b.config.payload === "object" ? b.config.payload : {},
+				};
 			} else {
 				s.config = b.config;
 			}
@@ -1125,13 +1292,17 @@
 
 		const b = ctx.body || {};
 		const traceId = nextTraceId();
+		// cron/manual 没有外部 payload：用源上配的字面量作为 payload 基础，
+		// 调用方显式传的 payload 覆盖它（手工触发时临时传参更常见）。
+		const basePayload =
+			s.kind !== "webhook" && s.config && s.config.payload ? clone(s.config.payload) : {};
 		const ev = {
 			id: uid("evt"),
 			orgId: ORG,
 			traceId: traceId,
 			source: s.name,
 			type: b.type || s.name,
-			payload: b.payload || {},
+			payload: Object.assign(basePayload, b.payload || {}),
 			createdAt: now(),
 		};
 		state.events.push(ev);
@@ -1144,8 +1315,43 @@
 				pruned.push({ reason: "no_capability", capabilityId: t.capabilityId, detail: "能力不存在" });
 				continue;
 			}
-			const params = t.params || {};
-			const msg = validateParams(c.paramsSchema, params);
+			// 参数模板按 payload 求值（字面量原样，映射按路径取值）
+			const resolved = resolveParams(t.params, ev.payload);
+			for (const [k, v] of Object.entries(resolved.params)) {
+				const decl = (t.params || {})[k];
+				// 类型：显式 as 优先，否则按 schema 自动推断。
+				//
+				// 自动推断是有意的：用户不该为了"把 GitHub 的字符串 title 塞进
+				// integer 字段"再去学一个 as。schema 已经声明了它要什么类型，
+				// 中枢照着转就行。as 留给"schema 说 string 但我想存数字"这种少数情况。
+				const wantAs = isMapping(decl)
+					? decl.as || schemaPropType(c, k)
+					: undefined;
+				const converted = coerceValue(v, wantAs);
+				if (converted === undefined) {
+					pruned.push({
+						reason: "param_type",
+						capabilityId: c.id,
+						detail: `参数 ${k} 期望 ${wantAs}，但 payload.${decl.from} 的值 ${JSON.stringify(v)} 转不了`,
+					});
+					resolved.params = null;
+					break;
+				}
+				resolved.params[k] = converted;
+			}
+			if (resolved.params === null) continue;
+			// 取不到值又没 default 的字段：记下来报给调用方，
+			// 静默丢掉是最难查的失败
+			for (const m of resolved.missing) {
+				pruned.push({
+					reason: "param_missing",
+					capabilityId: c.id,
+					detail: `参数 ${m.field} 要从 payload.${m.from} 取值，但 payload 里没有`,
+				});
+			}
+			if (resolved.missing.length) continue;
+
+			const msg = validateParams(c.paramsSchema, resolved.params);
 			if (msg) {
 				pruned.push({
 					reason: "param_schema",
@@ -1173,8 +1379,8 @@
 				path: [c.id],
 				capabilityId: c.id,
 				capability: c.name,
+				params: resolved.params,
 				version: c.version,
-				params: clone(params),
 				status: "pending",
 				nodeId: null,
 				instanceId: null,

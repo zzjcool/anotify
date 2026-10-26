@@ -1267,6 +1267,14 @@ sources:
     no_params: このケイパビリティはパラメータを取りません
     bad_json: パラメータ {k} が正しい JSON ではありません
     bad_num: パラメータ {k} が数値ではありません
+    pm_literal: "固定値"
+    pm_map: "イベントから取得"
+    from_hint: "イベント payload へのドットパス（例 pull_request.title、items.0.name）。取得できない場合は既定値を使います。"
+    default_ph: "既定値（任意）"
+    need_from: "パラメータ {k} は「イベントから取得」なので payload パスが必要です"
+    payload: "イベントフィールド（任意）"
+    payload_hint: "定期実行時に付与するフィールドを JSON オブジェクトで指定します（例 {\"env\":\"prod\"}）。出口パラメータのマッピングから参照できます。"
+    bad_payload: "イベントフィールドは {\"env\":\"prod\"} のような JSON オブジェクトである必要があります"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00
