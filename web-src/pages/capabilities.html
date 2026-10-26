@@ -73,6 +73,15 @@
         align-items: center;
       }
       /* kind 徽章：origin / pipe / end 三色 */
+      /* 内置能力标记：灰底、低对比，提示"名字保留、不可删" */
+      .src-badge {
+        font-size: 0.62rem;
+        padding: 0.05rem 0.35rem;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--faint, #71717a);
+        letter-spacing: 0.02em;
+      }
       .kind-badge {
         display: inline-flex;
         align-items: center;
@@ -697,6 +706,17 @@
           if (c.kind) {
             head.appendChild(
               el("span", "kind-badge kind-" + (c.kind === "origin" || c.kind === "pipe" || c.kind === "end" ? c.kind : "pipe"), c.kind),
+            );
+          }
+          // 内置 / 自定义。
+          //
+          // 这个标记不是为了区分"高级与否"——两者加载后完全等价（wiki 02）。
+          // 它只回答一个用户实际会问的问题：**这个名字我能不能改/删**。
+          // 内置起点的名字是保留的（后端 ErrCapabilityReserved），
+          // 用户在这里改成 github@2 会被拒，提前标出来比报错才发现好。
+          if (c.source === "builtin") {
+            head.appendChild(
+              el("span", "src-badge", t("caps.source_builtin", "内置")),
             );
           }
           left.appendChild(head);

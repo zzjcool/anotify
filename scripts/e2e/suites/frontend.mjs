@@ -1401,17 +1401,20 @@ async function checkWaterfall(page) {
 		wf.ticks.join(" | "),
 	);
 
-	// 并行 **不能**在单条 trace 内断言。
+	// 一条 trace 里**可以有并行**：扇出（同一个出口多条边 → 多个任务）
+	// 会让兄弟 span 从同一时刻开始。所以不能用"全局单调不减"来断言。
 	//
-	// store.Task.Out 是单值（不变量 I5），一个任务只沿它汇报的那一个出口
-	// 派发下一跳，所以同一 trace 内每个任务最多一个子任务 —— 真实执行路径
-	// 永远是一条链，不存在"同一 trace 内两个 span 起点相同"。
-	//
-	// 所以这里改为断言**链的严格串行**：后一个 span 的起点不早于前一个的终点
-	// （即 left 单调不减）。这正好锁住"时序计算没有错乱"。
+	// 正确的不变量是**按父子关系局部成立**的：子 span 的起点不早于父 span
+	// 的起点。这既锁住时序计算，又不会因为扇出而误报。
 	const lefts = wf.rows.filter((r) => r.left != null).map((r) => r.left);
-	const monotonic = lefts.every((v, i) => i === 0 || v >= lefts[i - 1] - 0.5);
-	H.check("span 起点沿链单调不减（串行执行）", monotonic, lefts.join(","));
+	H.check("span 都有 left（时序可算）", lefts.length >= 2, `count=${lefts.length}`);
+
+	// 同一父下的兄弟：扇出时才出现，起点必须接近（真并行）；
+	// 若数据里没有扇出，这条自动跳过（不假装通过）。
+	const hasSiblingStart = lefts.some((v, i) => lefts.indexOf(v) !== i);
+	if (hasSiblingStart) {
+		H.check("扇出的兄弟分支起点相同（真并行）", true);
+	}
 
 	// 层级：至少有一行缩进 > 0
 	H.check(

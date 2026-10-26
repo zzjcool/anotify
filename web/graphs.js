@@ -17,9 +17,15 @@
  *     所以它天然是 DAG（或有意保留的环），跟运行状态无关。
  *
  *   任务链图（taskChain）     动态运行视图
- *     问"这次执行实际走了哪条路径"。数据来自 /v1/tasks，每个任务一行，
- *     一个父任务只汇报**一个** out（不变量 I5），所以每个任务最多只有
- *     一条出边 —— 真实的执行路径永远是一条链，不是全图。
+ *     问"这次执行实际走了哪条路径"。数据来自 /v1/tasks，每个任务一行。
+ *
+ *     **扇出是合法的**：一个任务回报一个 out，拿这个 (能力, 出口) 去查
+ *     edges 会返回 N 行（同一个出口可以有多条边），于是建 N 个子任务，
+ *     它们的 parent_task_id 都是同一个。wiki 02「一个出口可以有多条边」
+ *     与 e2e 契约 A6 都以此为准。
+ *
+ *     所以一条 trace 的数据形状是**森林/树**，不是单链：多个根（源扇出）
+ *     + 中间分叉（出口扇出）。每条分支各自到底，不做收集（join）。
  *
  * 依赖：vendor/dagre.min.js + web/flograph.js（全局 FlowGraph）
  */
@@ -240,13 +246,6 @@
 		const tasks = opts.tasks || [];
 		const limit = opts.limit || 120;
 
-		// 父 → 子计数：用于判断 out 能不能安全地当边标签
-		const childCount = {};
-		for (const tk of tasks) {
-			if (tk.parentTaskId) {
-				childCount[tk.parentTaskId] = (childCount[tk.parentTaskId] || 0) + 1;
-			}
-		}
 		const byId = new Map(tasks.map((x) => [x.id, x]));
 
 		const nodes = tasks.map((tk) => {
@@ -274,12 +273,19 @@
 		for (const tk of tasks) {
 			if (!tk.parentTaskId || !byId.has(tk.parentTaskId)) continue;
 			const parent = byId.get(tk.parentTaskId);
-			const single = childCount[tk.parentTaskId] === 1;
 			edges.push({
 				from: tk.parentTaskId,
 				to: tk.id,
-				// 单子时 out 就是这个边的出口名（精确）；多子时无法区分，不标
-				port: single ? parent.out || "" : "",
+				// 出口名取**父任务回报的那个 out**。
+				//
+				// 扇出时这个 out 对每条边都成立 —— 一个任务只回报一个 out，
+				// 拿它查表返回 N 行，就是从这个出口同时走向 N 个能力。
+				// 所以多子时标同一个名字是**正确的**，不是"无法区分"。
+				//
+				// （要精确到"哪条边是第几行"没有意义：库里 edges 只是
+				//  (from_capability, from_port) → to_capability 的集合，
+				//   同一个出口的多条边本来就并列，没有先后。）
+				port: parent.out || "",
 				// 失败的分支用橙色虚线，顺着线能看出是哪一步挂了
 				cycle: tk.status === "failed",
 			});
@@ -288,13 +294,11 @@
 		const cut = truncate(nodes, edges, limit);
 
 		const graph = render(host, {
-			// 横向布局：一条 trace 的形态是**链**（每个任务最多一个子任务），
-			// 从上到下排会变成一根细长条，把容器宽度全浪费掉。
-			// 从左到右读起来也更像"时间推进"。
+			// 横向布局：时间从左往右推进，和瀑布图的读法一致。
+			// 竖向排会变成一个细长条（尤其纯链的情况），把容器宽度浪费掉。
 			//
-			// rankSep 要放大：LR 下它是"相邻两层之间的水平间隙"，
-			// 68px 时 9 个节点的链会首尾挤在一起（卡片宽 160+）。
-			// nodeSep 管同一层内的垂直间距，链状图用不到多少。
+			// rankSep 是"相邻两层之间的水平间隙"；扇出时同一层的兄弟节点
+			// 靠 nodeSep 拉开垂直距离，太小会挤在一起。
 			rankdir: "LR",
 			rankSep: 96,
 			nodeSep: 26,
