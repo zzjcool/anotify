@@ -972,3 +972,169 @@ body {
 	color: var(--text);
 	border-color: var(--line-strong);
 }
+
+/* ==================== trace / span 渲染 ====================
+ *
+ * 这些类原先定义在 events.html 的内联 <style> 里，只因为当时唯一用到
+ * 瀑布图的就是那一页。现在 events.html 和 trace.html 共用
+ * web/traceview.js，样式必须跟着代码一起搬到共享层 ——
+ * 否则 trace 页拿到的是一堆没有样式的裸文本（真实踩过）。
+ */
+
+      /* ---------- trace / span 瀑布图 ----------
+       *
+       * 为什么纯 CSS 就够，不需要图库：
+       *   每个 span 只需要 left% 和 width% 两个数——时间轴是线性的，
+       *   换算方式是 (t - traceStart) / totalMs * 100。没有需要求解的
+       *   布局问题（不像有向图要减少交叉），所以引 graph 库反而是负担。
+       *
+       * 结构：
+       *   .wf-row      一行 = 一个 span，左边名字，右边时间条
+       *   .wf-track    时间条所在的轨道（相对定位的容器）
+       *   .wf-bar      时间条本身（绝对定位，left/width 百分比）
+       */
+      .wf {
+        font-size: 0.72rem;
+      }
+      /* 顶部刻度尺 */
+      .wf-axis {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.25rem 0;
+        margin-bottom: 0.35rem;
+        border-bottom: 1px solid var(--line);
+        color: var(--faint);
+        font-size: 0.62rem;
+        font-family: var(--mono, monospace);
+      }
+      .wf-axis-name {
+        flex: 0 0 13rem;
+        min-width: 0;
+      }
+      .wf-axis-track {
+        flex: 1 1 auto;
+        position: relative;
+        height: 1rem;
+      }
+      .wf-tick {
+        position: absolute;
+        top: 0;
+        transform: translateX(-50%);
+        white-space: nowrap;
+      }
+      .wf-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.12rem 0;
+        border-radius: 0.25rem;
+      }
+      .wf-row:hover {
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .wf-name {
+        flex: 0 0 13rem;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        cursor: default;
+      }
+      .wf-name .cap {
+        color: var(--text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .wf-name .meta {
+        color: var(--faint);
+        font-size: 0.62rem;
+        flex-shrink: 0;
+      }
+      .wf-track {
+        flex: 1 1 auto;
+        position: relative;
+        height: 1.15rem;
+        /* 极淡的网格线：让"哪一段没任务在跑"看得见 */
+        background-image: linear-gradient(
+          to right,
+          var(--line) 1px,
+          transparent 1px
+        );
+        background-size: 25% 100%;
+      }
+      .wf-bar {
+        position: absolute;
+        top: 15%;
+        height: 70%;
+        border-radius: 3px;
+        min-width: 2px;
+        cursor: default;
+      }
+      /* 九态配色：与左侧状态点同色，但条状要更醒目一点 */
+      .wf-bar.b-pending { background: rgba(113, 113, 122, 0.55); }
+      .wf-bar.b-assigned { background: rgba(59, 130, 246, 0.75); }
+      .wf-bar.b-acked { background: rgba(6, 182, 212, 0.75); }
+      .wf-bar.b-running {
+        background: rgba(34, 197, 94, 0.85);
+        /* 运行中：脉动一下，一眼看出"还在跑" */
+        animation: wf-pulse 1.4s ease-in-out infinite;
+      }
+      .wf-bar.b-succeeded { background: rgba(16, 185, 129, 0.85); }
+      .wf-bar.b-failed { background: rgba(239, 68, 68, 0.9); }
+      .wf-bar.b-canceled { background: rgba(161, 161, 170, 0.7); }
+      .wf-bar.b-abandoned { background: rgba(249, 115, 22, 0.85); }
+      .wf-bar.b-lease_expired { background: rgba(234, 179, 8, 0.85); }
+      @keyframes wf-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.45; }
+      }
+      /* 还没开始的任务（startedAt 为空）：左边界一根细线 */
+      .wf-wait {
+        position: absolute;
+        top: 20%;
+        height: 60%;
+        width: 2px;
+        background: var(--faint);
+        border-radius: 1px;
+      }
+      .wf-dur {
+        position: absolute;
+        top: 15%;
+        height: 70%;
+        display: flex;
+        align-items: center;
+        color: var(--muted);
+        font-size: 0.6rem;
+        font-family: var(--mono, monospace);
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      /* 视图切换 */
+      .wf-switch {
+        display: inline-flex;
+        gap: 0.25rem;
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        padding: 0.15rem;
+      }
+      .wf-switch button {
+        border-radius: 0.35rem;
+        padding: 0.2rem 0.6rem;
+        font-size: 0.68rem;
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .wf-switch button.on {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text);
+      }
+      .wf-empty {
+        color: var(--faint);
+        font-size: 0.72rem;
+        padding: 0.5rem 0;
+      }
+

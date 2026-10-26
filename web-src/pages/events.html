@@ -38,48 +38,6 @@
         color: #a78bfa;
       }
       /* 状态点：九态 */
-      .st-dot {
-        display: inline-block;
-        width: 0.45rem;
-        height: 0.45rem;
-        border-radius: 9999px;
-        margin-right: 0.35rem;
-        vertical-align: middle;
-      }
-      .st-pending {
-        background: #71717a;
-      }
-      .st-assigned {
-        background: #3b82f6;
-      }
-      .st-acked {
-        background: #06b6d4;
-      }
-      .st-running {
-        background: #22c55e;
-      }
-      .st-succeeded {
-        background: #10b981;
-      }
-      .st-failed {
-        background: #ef4444;
-      }
-      .st-canceled {
-        background: #a1a1aa;
-      }
-      .st-abandoned {
-        background: #f97316;
-      }
-      .st-lease_expired {
-        background: #eab308;
-      }
-      /* 事件链：缩进表示派生关系 */
-      .chain-node {
-        border-left: 2px solid var(--line-strong);
-        padding-left: 0.85rem;
-        margin-left: 0.35rem;
-      }
-
       /* 事件按源分组：组头是源名 + 类型 + 计数，组内是事件卡 */
       .ev-group {
         margin-bottom: 1.25rem;
@@ -98,162 +56,6 @@
         border-bottom: 1px solid var(--line);
       }
 
-      /* ---------- trace / span 瀑布图 ----------
-       *
-       * 为什么纯 CSS 就够，不需要图库：
-       *   每个 span 只需要 left% 和 width% 两个数——时间轴是线性的，
-       *   换算方式是 (t - traceStart) / totalMs * 100。没有需要求解的
-       *   布局问题（不像有向图要减少交叉），所以引 graph 库反而是负担。
-       *
-       * 结构：
-       *   .wf-row      一行 = 一个 span，左边名字，右边时间条
-       *   .wf-track    时间条所在的轨道（相对定位的容器）
-       *   .wf-bar      时间条本身（绝对定位，left/width 百分比）
-       */
-      .wf {
-        font-size: 0.72rem;
-      }
-      /* 顶部刻度尺 */
-      .wf-axis {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.25rem 0;
-        margin-bottom: 0.35rem;
-        border-bottom: 1px solid var(--line);
-        color: var(--faint);
-        font-size: 0.62rem;
-        font-family: var(--mono, monospace);
-      }
-      .wf-axis-name {
-        flex: 0 0 13rem;
-        min-width: 0;
-      }
-      .wf-axis-track {
-        flex: 1 1 auto;
-        position: relative;
-        height: 1rem;
-      }
-      .wf-tick {
-        position: absolute;
-        top: 0;
-        transform: translateX(-50%);
-        white-space: nowrap;
-      }
-      .wf-row {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.12rem 0;
-        border-radius: 0.25rem;
-      }
-      .wf-row:hover {
-        background: rgba(255, 255, 255, 0.03);
-      }
-      .wf-name {
-        flex: 0 0 13rem;
-        min-width: 0;
-        display: flex;
-        align-items: center;
-        gap: 0.3rem;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-        cursor: default;
-      }
-      .wf-name .cap {
-        color: var(--text);
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .wf-name .meta {
-        color: var(--faint);
-        font-size: 0.62rem;
-        flex-shrink: 0;
-      }
-      .wf-track {
-        flex: 1 1 auto;
-        position: relative;
-        height: 1.15rem;
-        /* 极淡的网格线：让"哪一段没任务在跑"看得见 */
-        background-image: linear-gradient(
-          to right,
-          var(--line) 1px,
-          transparent 1px
-        );
-        background-size: 25% 100%;
-      }
-      .wf-bar {
-        position: absolute;
-        top: 15%;
-        height: 70%;
-        border-radius: 3px;
-        min-width: 2px;
-        cursor: default;
-      }
-      /* 九态配色：与左侧状态点同色，但条状要更醒目一点 */
-      .wf-bar.b-pending { background: rgba(113, 113, 122, 0.55); }
-      .wf-bar.b-assigned { background: rgba(59, 130, 246, 0.75); }
-      .wf-bar.b-acked { background: rgba(6, 182, 212, 0.75); }
-      .wf-bar.b-running {
-        background: rgba(34, 197, 94, 0.85);
-        /* 运行中：脉动一下，一眼看出"还在跑" */
-        animation: wf-pulse 1.4s ease-in-out infinite;
-      }
-      .wf-bar.b-succeeded { background: rgba(16, 185, 129, 0.85); }
-      .wf-bar.b-failed { background: rgba(239, 68, 68, 0.9); }
-      .wf-bar.b-canceled { background: rgba(161, 161, 170, 0.7); }
-      .wf-bar.b-abandoned { background: rgba(249, 115, 22, 0.85); }
-      .wf-bar.b-lease_expired { background: rgba(234, 179, 8, 0.85); }
-      @keyframes wf-pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.45; }
-      }
-      /* 还没开始的任务（startedAt 为空）：左边界一根细线 */
-      .wf-wait {
-        position: absolute;
-        top: 20%;
-        height: 60%;
-        width: 2px;
-        background: var(--faint);
-        border-radius: 1px;
-      }
-      .wf-dur {
-        position: absolute;
-        top: 15%;
-        height: 70%;
-        display: flex;
-        align-items: center;
-        color: var(--muted);
-        font-size: 0.6rem;
-        font-family: var(--mono, monospace);
-        white-space: nowrap;
-        pointer-events: none;
-      }
-      /* 视图切换 */
-      .wf-switch {
-        display: inline-flex;
-        gap: 0.25rem;
-        border: 1px solid var(--line);
-        border-radius: 0.5rem;
-        padding: 0.15rem;
-      }
-      .wf-switch button {
-        border-radius: 0.35rem;
-        padding: 0.2rem 0.6rem;
-        font-size: 0.68rem;
-        color: var(--muted);
-        cursor: pointer;
-      }
-      .wf-switch button.on {
-        background: rgba(255, 255, 255, 0.08);
-        color: var(--text);
-      }
-      .wf-empty {
-        color: var(--faint);
-        font-size: 0.72rem;
-        padding: 0.5rem 0;
-      }
       .toast {
         position: fixed;
         bottom: 1.5rem;
@@ -305,6 +107,13 @@
             <!-- 每个 label+控件包一层：否则 label 和 select 是各自的 flex 项，
                  窄屏时会被拆到两行，看起来像标签和控件没关系 -->
             <div class="flex flex-col gap-1">
+              <label class="text-[11px] text-zinc-400" for="ev-kind">{{t "events.filter.kind"}}</label>
+              <select id="ev-kind" class="input w-48 text-xs" onchange="loadAll()">
+                <option value="">{{t "events.filter.all_kinds"}}</option>
+              </select>
+            </div>
+
+            <div class="flex flex-col gap-1">
               <label class="text-[11px] text-zinc-400" for="ev-source">{{t "events.filter.source"}}</label>
               <select id="ev-source" class="input w-48 text-xs" onchange="loadAll()">
                 <option value="">{{t "events.filter.all_sources"}}</option>
@@ -351,11 +160,6 @@
           </div>
         </div>
 
-        <!-- 任务链详情（点事件展开） -->
-        <div id="ev-detail" class="hidden reveal visible">
-          <h3 class="mb-3 text-sm font-medium text-zinc-300">{{t "events.chain.title"}}</h3>
-          <div id="ev-chain" class="card rounded-2xl p-5"></div>
-        </div>
       </div>
       <div id="toast" class="toast"></div>
 </div>
@@ -379,36 +183,6 @@
       });
       let EVENTS = [];
 
-      // 九态 → 圆点颜色 / 中文标签。
-      //
-      // 这两个表以前**根本没定义**（renderNode 直接引用了 STATUS_CLASS 和
-      // STATUS_LABELS），于是渲染任务链时抛 ReferenceError：ev-chain 先被
-      // replaceChildren() 清空，然后第一条节点就炸了 —— 用户看到的是
-      // 「任务链」标题下面一个空框，没有任何报错提示。
-      //
-      // 口径与 message.html 的 TASK_STATE_META 保持一致（同九个状态）。
-      const STATUS_CLASS = {
-        pending: "pending",
-        assigned: "assigned",
-        acked: "acked",
-        running: "running",
-        succeeded: "succeeded",
-        failed: "failed",
-        canceled: "canceled",
-        abandoned: "abandoned",
-        lease_expired: "lease_expired",
-      };
-      const STATUS_LABELS = {
-        pending: "排队中",
-        assigned: "已派发",
-        acked: "已接单",
-        running: "执行中",
-        succeeded: "成功",
-        failed: "失败",
-        canceled: "已取消",
-        abandoned: "已放弃",
-        lease_expired: "租约过期",
-      };
       let demoMode = false;
 
       function toast(msg) {
@@ -520,16 +294,53 @@
       }
 
       // fillSelects 填两个下拉：源（按名字）和节点（按名字）
+      // kindLabel 把 kind 翻成用户能读的标签。
+      // 类型名本身（cron/webhook/manual）是协议的词汇，展示时给个中文，
+      // 但在筛选值里仍然用原名（URL 可读、和 API 一致）。
+      function kindLabel(k) {
+        const map = {
+          cron: t("sources.kind.cron", "定时器"),
+          webhook: t("sources.kind.webhook", "Webhook"),
+          manual: t("sources.kind.manual", "手动"),
+        };
+        return map[k] || k;
+      }
+
+      // sourceKind 取某个源名对应的类型（cron / webhook / manual）。
+      //
+      // 事件行自己不存 kind —— 它只记 source 名字。kind 属于源的定义，
+      // 所以要回查 SOURCES。源被删掉后事件还在（事件是事实），
+      // 这时回查不到，返回空串（归到"未归类"）。
+      function sourceKind(name) {
+        const s = SOURCES.find((x) => x.name === name);
+        return (s && s.kind) || "";
+      }
+
       function fillSelects() {
+        const kindSel = document.getElementById("ev-kind");
         const srcSel = document.getElementById("ev-source");
+
+        // 源类型下拉：只列实际存在的类型，不写死三种
+        const curKind = kindSel.value;
+        kindSel.replaceChildren(new Option(t("events.filter.all_kinds", "全部类型"), ""));
+        const kinds = [...new Set(SOURCES.map((x) => x.kind).filter(Boolean))].sort();
+        for (const k of kinds) {
+          kindSel.appendChild(new Option(kindLabel(k), k));
+        }
+        if (curKind) kindSel.value = curKind;
+
         const nodeSel = document.getElementById("ev-node");
 
         const curSrc = srcSel.value;
         srcSel.replaceChildren(new Option(t("events.filter.all_sources", "全部源"), ""));
-        for (const s of SOURCES) {
+        // 选了源类型时，"源"下拉只列该类型下的源 ——
+        // 否则用户可以选出"类型=cron + 源=GitHub PR"这种必然为空的组合。
+        const kindNow = kindSel.value;
+        const srcPool = kindNow ? SOURCES.filter((x) => x.kind === kindNow) : SOURCES;
+        for (const s of srcPool) {
           srcSel.appendChild(new Option(s.name, s.name));
         }
-        if (curSrc) srcSel.value = curSrc;
+        if (curSrc && srcPool.some((x) => x.name === curSrc)) srcSel.value = curSrc;
 
         const curNode = nodeSel.value;
         nodeSel.replaceChildren(new Option(t("events.filter.all_nodes", "全部节点"), ""));
@@ -606,6 +417,11 @@
       }
 
       async function loadAll() {
+        // 每次加载前重填下拉：「源类型」变了以后，「源」下拉必须跟着只列
+        // 该类型下的源。只调一次 init 的话，用户切类型后源下拉还是旧的
+        // 全集，能选出「类型=cron + 源=GitHub PR」这种必然为空的组合。
+        fillSelects();
+
         const trace = document.getElementById("ev-trace").value.trim();
         const nodeId = document.getElementById("ev-node").value;
         try {
@@ -650,17 +466,16 @@
           return;
         }
 
-        // 按源分组展示。
-        //
-        // 为什么要分组而不是平铺：用户对"谁触发了我"的感知是**按源**的
-        // （"今晚的定时任务跑了吗""GitHub 那边有动静吗"），而不是
-        // "最近 20 条事件按时间排"。平铺列表里同一源的事件会散落在各处。
+        // 过滤：源类型 → 源 → 节点
+        const kindFilter = document.getElementById("ev-kind").value;
         const srcFilter = document.getElementById("ev-source").value;
 
-        // 按节点筛选：用该节点的任务 trace 集合过滤
         let visible = EVENTS;
         if (nodeTraceIds) {
           visible = visible.filter((e) => nodeTraceIds.has(e.traceId));
+        }
+        if (kindFilter) {
+          visible = visible.filter((e) => sourceKind(e.source) === kindFilter);
         }
         if (srcFilter) {
           visible = visible.filter((e) => e.source === srcFilter);
@@ -678,10 +493,30 @@
           return;
         }
 
-        // 分组：已知源名 → 该源的事件；剩下的是「未归类」
+        // ===== 默认视图：按时间倒序平铺 =====
+        //
+        // 事件流的第一性问题是"刚刚发生了什么"，所以默认必须是最新的在最上面。
+        // 之前默认按源分组，代价是：一个刚触发的事件可能被压在某组第 6 条后面
+        // （展开才看得见），用户以为没收到。
+        //
+        // 分组仍然有用（"今晚定时任务跑了吗"），所以留成可选项，
+        // 通过 URL ?group=1 切过来。
+        const grouped = new URLSearchParams(location.search).get("group") === "1";
+
+        // 统一按 createdAt 倒序。**必须显式排序**：后端按 id/插入顺序返回，
+        // 和事件时间不一定同序（补录、幂等重投都会打乱）。
+        const ordered = [...visible].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+        if (!grouped) {
+          for (const e of ordered) list.appendChild(eventCard(e));
+          renderActiveFilters();
+          return;
+        }
+
+        // ===== 可选视图：按源分组 =====
         const bySource = new Map();
         const knownNames = new Set(SOURCES.map((x) => x.name));
-        for (const e of visible) {
+        for (const e of ordered) {
           const key = knownNames.has(e.source) ? e.source : "__other__";
           if (!bySource.has(key)) bySource.set(key, []);
           bySource.get(key).push(e);
@@ -762,7 +597,16 @@
           "div",
           "card rounded-2xl p-4 hover:border-white/20 transition cursor-pointer",
         );
-        card.addEventListener("click", () => showChain(e.traceId));
+        // 点卡片 → 独立 trace 页。
+        //
+        // 原来是"在同一页下面展开链路"，问题有三个：
+        //   ① 链路很长时，展开后要滚很远，事件列表就看不到了
+        //   ② URL 不变，没法把"这条链路"发给别人
+        //   ③ 刷新就丢了
+        // 拆成独立页后 traceId 在 URL 里，可以收藏、分享、后退。
+        card.addEventListener("click", () => {
+          location.href = "trace.html?traceId=" + encodeURIComponent(e.traceId);
+        });
 
         const row = el("div", "ev-row");
         const left = el("div", "min-w-0");
@@ -787,386 +631,6 @@
         row.appendChild(right);
         card.appendChild(row);
         return card;
-      }
-
-      // showChain 展示一条 trace 下的任务链。
-      //
-      // 按 parentTaskId 组装成树：根任务 parent=null，子任务挂在父下面。
-      // 这样扇出（一个出口多条边）与链式派生都能直接看出来。
-      // chainSeq：防止连点产生乱序覆盖。
-      //
-      // 快速点 A、B 两张卡片时，若 A 的响应比 B 晚到，A 会把 B 的结果盖掉，
-      // 用户看到的是自己没点的那条链。用递增序号认领最新一次请求即可。
-      let chainSeq = 0;
-
-      async function showChain(traceId) {
-        const seq = ++chainSeq;
-        const detail = document.getElementById("ev-detail");
-        const chain = document.getElementById("ev-chain");
-        detail.classList.remove("hidden");
-        chain.replaceChildren(el("div", "text-sm text-zinc-500", t("events.loading", "加载中…")));
-
-        const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(traceId));
-        if (seq !== chainSeq) return; // 已有更新的点击，丢弃这次结果
-        const tasks = (data && data.tasks) || [];
-
-        chain.replaceChildren();
-        if (!tasks.length) {
-          chain.appendChild(
-            el(
-              "div",
-              "text-sm text-zinc-500",
-              t("events.chain.empty", "这条 trace 下没有任务（可能在第一步就被剪枝了）。"),
-            ),
-          );
-          return;
-        }
-
-        const byParent = {};
-        for (const tk of tasks) {
-          const p = tk.parentTaskId || "__root__";
-          (byParent[p] = byParent[p] || []).push(tk);
-        }
-
-        const roots = byParent["__root__"] || [];
-        if (!roots.length) {
-          chain.appendChild(
-            el(
-              "div",
-              "text-sm text-zinc-500",
-              t("events.chain.no_root", "找不到根任务（trace 可能不完整）。"),
-            ),
-          );
-          return;
-        }
-
-        // 两种视图共存：瀑布图看时序，树看派生关系。
-        // 默认瀑布图（#95）—— 时序信息树给不了。
-        chainTasks = tasks;
-        renderChainView(chain, byParent, roots);
-      }
-
-      // renderChainGraph 把一条 trace 的任务列表画成拓扑图（#90）。
-      //
-      // 映射逻辑在 web/graphs.js 的 AnotifyGraphs.taskChain —— 和源的下游
-      // 流向图共用同一个 FlowGraph 渲染器，所以整个产品只有一种图的观感。
-      //
-      // 两者的语义差别（别混）：
-      //   流向图   = 静态配置：这条链**可能**流向哪些能力（全部声明的边）
-      //   任务链图 = 动态运行：这次执行**实际**走了哪条路径
-      // mountInto 而不是 renderXxx-return-wrap：
-      //
-      // FlowGraph 靠 offsetWidth 量节点尺寸喂给 dagre，脱离文档的元素量出来
-      // 是 0 → 布局算成一团、节点全叠在原点。所以"先插入文档，再画"，
-      // 不能"先画好，再插入"。
-      function mountChainGraph(container, tasks) {
-        container.replaceChildren();
-
-        if (!window.AnotifyGraphs) {
-          container.appendChild(
-            el("div", "wf-empty", t("events.wf.nolib", "图渲染脚本未能加载。")),
-          );
-          return;
-        }
-
-        const host = el("div", "");
-        container.appendChild(host);
-
-        // 此刻 host 已 in document（container 是 .wf-chain 之类的已挂载节点）
-        const res = window.AnotifyGraphs.taskChain(host, {
-          tasks: tasks,
-          t: t,
-          onNodeClick: (n) => {
-            // 点节点 → 到该任务的执行节点看看
-            const tk = tasks.find((x) => x.id === n.id);
-            if (tk && tk.nodeId) {
-              window.open("nodes.html?focus=" + encodeURIComponent(tk.nodeId), "_blank");
-            }
-          },
-        });
-
-        // 画廊/滚动容器可能刚显示，尺寸还没稳定 —— 下一帧再 fit 一次
-        if (res && res.graph) {
-          requestAnimationFrame(() => res.graph.fit());
-        }
-      }
-
-      // renderChainView 按当前模式渲染任务链
-      function renderChainView(chain, byParent, roots) {
-        chain.replaceChildren();
-
-        // 视图切换器
-        //
-        // 三种视图各有强项，不是重复：
-        //   瀑布图 → 时序（谁先谁后、各跑多久、哪里并行）
-        //   图     → 拓扑（谁派生自谁，扇出/汇聚的形状）
-        //   树     → 紧凑（列表里扫一眼层级，占地方最少）
-        const sw = el("div", "wf-switch mb-3");
-        for (const [key, label] of [
-          ["waterfall", t("events.wf.waterfall", "瀑布图")],
-          ["graph", t("events.wf.graph", "图")],
-          ["tree", t("events.wf.tree", "树")],
-        ]) {
-          const b = el("button", chainView === key ? "on" : "", label);
-          b.addEventListener("click", () => {
-            chainView = key;
-            renderChainView(chain, byParent, roots);
-          });
-          sw.appendChild(b);
-        }
-        chain.appendChild(sw);
-
-        if (chainView === "waterfall") {
-          chain.appendChild(renderWaterfall(chainTasks));
-        } else if (chainView === "graph") {
-          const box = el("div", "");
-          chain.appendChild(box);
-          mountChainGraph(box, chainTasks);
-        } else {
-          for (const r of roots) chain.appendChild(renderNode(r, byParent));
-        }
-      }
-
-      // ---------- trace / span 瀑布图 ----------
-      //
-      // 数据全在 /v1/tasks?traceId= 的响应里，不需要新接口：
-      //   createdAt   ← trace 的起点候选
-      //   startedAt   ← span 起点（节点 ack 之后才填）
-      //   finishedAt  ← span 终点（未完成的任务为 null）
-      //   parentTaskId← 层级
-      //   status      ← 九态着色
-      //
-      // 几个必须处理好的边界：
-      //   ① 单任务 trace（只有一层）—— 不能因为层级少就画歪
-      //   ② 未开始（startedAt 为空）—— 在左边界画一根细线，不要当成 0 宽度
-      //   ③ 进行中（finishedAt 为空）—— 宽度算到"现在"，并脉动
-      //   ④ 零耗时（started==finished）—— min-width 保证还看得见
-      //   ⑤ 所有任务时间戳都一样 —— totalMs 会是 0，除零要防
-
-      let chainTasks = [];
-      let chainView = "waterfall"; // waterfall | tree
-
-      // fmtDur 把毫秒转成人类可读的时长
-      function fmtDur(ms) {
-        if (!isFinite(ms) || ms < 0) return "";
-        if (ms < 1000) return Math.round(ms) + "ms";
-        if (ms < 60000) return (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + "s";
-        const m = Math.floor(ms / 60000);
-        const s2 = Math.round((ms % 60000) / 1000);
-        return m + "m" + (s2 ? s2 + "s" : "");
-      }
-
-      // buildSpans 把任务列表整理成带时间与层级的 span 数组。
-      //
-      // 顺序按 DFS（父在前、子紧随），这样瀑布图从上到下就是调用顺序，
-      // 而不是按时间戳乱序 —— 后者会让父子关系看不出来。
-      function buildSpans(tasks) {
-        const byParent = {};
-        for (const tk of tasks) {
-          const p = tk.parentTaskId || "__root__";
-          (byParent[p] = byParent[p] || []).push(tk);
-        }
-        for (const k of Object.keys(byParent)) {
-          byParent[k].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-        }
-
-        const out = [];
-        const roots = byParent["__root__"] || [];
-        // 兜底：如果一条 trace 里找不到 root（可能只查到部分任务），
-        // 把没有父的全部当 root，别让整张图空着
-        const start = roots.length
-          ? roots
-          : tasks.filter((t) => !t.parentTaskId || !tasks.some((x) => x.id === t.parentTaskId));
-
-        const seen = new Set();
-        (function walk(list, depth) {
-          for (const tk of list) {
-            if (seen.has(tk.id)) continue; // 防御：数据异常时不成环
-            seen.add(tk.id);
-            out.push({ task: tk, depth });
-            walk(byParent[tk.id] || [], depth + 1);
-          }
-        })(start, 0);
-
-        // 还有没走到的（孤儿）也补上，宁可多画也不要丢
-        for (const tk of tasks) {
-          if (!seen.has(tk.id)) out.push({ task: tk, depth: 0 });
-        }
-        return out;
-      }
-
-      // renderWaterfall 画瀑布图
-      function renderWaterfall(tasks) {
-        const spans = buildSpans(tasks);
-        if (!spans.length) {
-          return el("div", "wf-empty", t("events.chain.empty", "这条 trace 下没有任务。"));
-        }
-
-        const now = Math.floor(Date.now() / 1000);
-
-        // 时间轴范围：起点取最早的活动，终点取最晚的结束（进行中的算"现在"）
-        let traceStart = Infinity;
-        let traceEnd = -Infinity;
-        for (const sp of spans) {
-          const tk = sp.task;
-          const s = tk.startedAt != null ? tk.startedAt : tk.createdAt;
-          const e =
-            tk.finishedAt != null ? tk.finishedAt : tk.startedAt != null ? now : tk.createdAt;
-          if (s != null && s < traceStart) traceStart = s;
-          if (e != null && e > traceEnd) traceEnd = e;
-        }
-        if (!isFinite(traceStart)) traceStart = now;
-        if (!isFinite(traceEnd)) traceEnd = traceStart;
-        const total = Math.max(traceEnd - traceStart, 0);
-
-        // 刻度：4 段。总时长为 0 时退化成一个刻度，避免除零。
-        //
-        // 注意单位：createdAt / startedAt / finishedAt 全是 **Unix 秒**，
-        // 而 fmtDur 收的是**毫秒**。这里以前直接把秒喂给 fmtDur，
-        // 于是 2 秒的跨度显示成 "2ms"（差 1000 倍）。
-        const ticks = [];
-        const TICK_N = 4;
-        for (let i = 0; i <= TICK_N; i++) {
-          ticks.push(total > 0 ? ((total * i) / TICK_N) * 1000 : 0);
-        }
-
-        const box = el("div", "wf");
-
-        // 顶部刻度尺
-        const axis = el("div", "wf-axis");
-        axis.appendChild(el("div", "wf-axis-name", ""));
-        const axisTrack = el("div", "wf-axis-track");
-        ticks.forEach((ms, i) => {
-          const tick = el("span", "wf-tick", total > 0 ? fmtDur(ms) : "0ms");
-          tick.style.left = (i / TICK_N) * 100 + "%";
-          // 首尾刻度贴边，不再居中偏移（否则会溢出容器）
-          if (i === 0) tick.style.transform = "translateX(0)";
-          if (i === TICK_N) tick.style.transform = "translateX(-100%)";
-          axisTrack.appendChild(tick);
-        });
-        axis.appendChild(axisTrack);
-        box.appendChild(axis);
-
-        // 每行一个 span
-        for (const sp of spans) {
-          const tk = sp.task;
-          const st = tk.status || "pending";
-          const row = el("div", "wf-row");
-
-          // 左：缩进 + 状态点 + 能力名@版本
-          const name = el("div", "wf-name");
-          name.style.paddingLeft = sp.depth * 0.9 + "rem";
-          name.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[st] || "pending")));
-          name.appendChild(
-            el("span", "cap", (tk.capability || "?") + "@" + (tk.version != null ? tk.version : "?")),
-          );
-          // 重试次数：attempts > 1 才显示，避免噪音
-          if (tk.attempts > 1) {
-            name.appendChild(el("span", "meta", "×" + tk.attempts));
-          }
-          name.title = [
-            tk.capability + "@" + tk.version,
-            "status: " + st,
-            tk.nodeId ? "node: " + tk.nodeId : "",
-            tk.error ? "error: " + tk.error : "",
-            tk.summary ? "summary: " + tk.summary : "",
-          ]
-            .filter(Boolean)
-            .join("\n");
-          row.appendChild(name);
-
-          // 右：轨道 + 时间条
-          const track = el("div", "wf-track");
-          const started = tk.startedAt;
-          const finished = tk.finishedAt;
-
-          if (started == null) {
-            // 还没开始：左边界细线
-            const leftPct = total > 0 ? ((tk.createdAt - traceStart) / total) * 100 : 0;
-            const wait = el("div", "wf-wait");
-            wait.style.left = Math.max(0, Math.min(100, leftPct)) + "%";
-            wait.title = t("events.wf.not_started", "还没开始执行");
-            track.appendChild(wait);
-          } else {
-            const end = finished != null ? finished : now;
-            const leftPct = total > 0 ? ((started - traceStart) / total) * 100 : 0;
-            const widthPct = total > 0 ? ((end - started) / total) * 100 : 100;
-            const bar = el("div", "wf-bar b-" + (STATUS_CLASS[st] || "pending"));
-            bar.style.left = Math.max(0, Math.min(100, leftPct)) + "%";
-            // min-width 在 CSS 里保证 0 宽度的条也看得见
-            bar.style.width = Math.max(0, Math.min(100 - leftPct, widthPct)) + "%";
-
-            const dur = fmtDur((end - started) * 1000);
-            const tip = [dur, st];
-            if (finished == null) tip.push(t("events.wf.running", "进行中"));
-            if (tk.error) tip.push(tk.error);
-            bar.title = tip.join(" · ");
-            track.appendChild(bar);
-
-            // 时长标签：只给根任务和够宽的条显示，否则会糊成一团
-            if (sp.depth === 0 || widthPct > 8) {
-              const lab = el("div", "wf-dur", dur + (finished == null ? " ⏳" : ""));
-              const labLeft = leftPct + Math.min(widthPct, 100 - leftPct) + 0.6;
-              lab.style.left = Math.min(98, labLeft) + "%";
-              track.appendChild(lab);
-            }
-          }
-
-          row.appendChild(track);
-          box.appendChild(row);
-        }
-
-        return box;
-      }
-
-      // renderNode 递归渲染一个任务及其子任务。
-      function renderNode(tk, byParent) {
-        const kids = byParent[tk.id] || [];
-        const st = tk.status || "pending";
-
-        const box = el("div", "chain-node py-2");
-        const line = el("div", "flex flex-wrap items-center gap-2");
-
-        const name = el("span", "text-[13px] text-zinc-200");
-        name.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[st] || "pending")));
-        name.appendChild(document.createTextNode(tk.capability || "?"));
-        line.appendChild(name);
-
-        line.appendChild(code("v" + tk.version, "text-[10px] text-zinc-600"));
-        line.appendChild(el("span", "text-[11px] text-zinc-500", STATUS_LABELS[st] || st));
-
-        if (tk.startedAt && tk.finishedAt) {
-          line.appendChild(
-            el("span", "text-[11px] text-zinc-600", "· " + (tk.finishedAt - tk.startedAt) + "s"),
-          );
-        }
-
-        // out 三态：未回报 / 到头了 / 走某个出口
-        const outWrap = el("span", "text-[11px] text-zinc-500");
-        outWrap.appendChild(document.createTextNode("· "));
-        if (!tk.reported) {
-          outWrap.appendChild(
-            document.createTextNode(t("events.chain.out_none", "未回报")),
-          );
-        } else if (tk.out == null) {
-          outWrap.appendChild(document.createTextNode(t("events.chain.out_end", "到头了")));
-        } else {
-          outWrap.appendChild(document.createTextNode("→ "));
-          outWrap.appendChild(code(tk.out, "text-emerald-300"));
-        }
-        line.appendChild(outWrap);
-
-        if (tk.error) {
-          line.appendChild(el("span", "text-[11px] text-red-400", "· " + tk.error));
-        }
-        box.appendChild(line);
-
-        if (kids.length) {
-          const childBox = el("div", "mt-1");
-          for (const k of kids) childBox.appendChild(renderNode(k, byParent));
-          box.appendChild(childBox);
-        }
-        return box;
       }
 
       // 演示数据：后端未连接时给一个可看的样例，避免空白页。

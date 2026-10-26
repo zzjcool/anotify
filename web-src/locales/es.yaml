@@ -1083,6 +1083,8 @@ events:
     trace: Trace ID
     apply: Filtrar
     source: Fuente
+    kind: Tipo de origen
+    all_kinds: Todos los tipos
     all_sources: Todas las fuentes
     node: Nodo
     all_nodes: Todos los nodos
@@ -1306,3 +1308,21 @@ edges:
   err_self: Una capacidad no puede conectarse a sí misma
   err_create: Error al crear
   err_remove: Error al eliminar
+trace:
+  title: Traza
+  subtitle: Una traza completa — qué la activó, qué ruta siguió y cuánto tardó cada paso
+  back: Volver a eventos
+  refresh: Actualizar
+  loading: Cargando traza…
+  no_id: No hay traceId en la URL. Ábrela desde "ver cadena" en el flujo de eventos, o pasa ?traceId=trace_xxx.
+  copy: Copiar
+  copied: Copiado
+  copy_failed: No se pudo copiar
+  triggered_by: Activada por
+  nolib: No se pudo cargar el renderizador.
+  empty: No hay tareas en esta traza. Suele significar que se podó en el primer paso (sin arista coincidente, parámetros que no cumplen el schema, o ningún nodo declara la capacidad destino).
+  stat:
+    spans: Tareas
+    duration: Duración
+    slowest: Paso más lento
+    failed: Fallidas

@@ -1083,6 +1083,8 @@ events:
     trace: Trace ID
     apply: 筛选
     source: 源
+    kind: 源类型
+    all_kinds: 全部类型
     all_sources: 全部源
     node: 节点
     all_nodes: 全部节点
@@ -1306,3 +1308,21 @@ edges:
   err_self: 不能让能力连到自己
   err_create: 创建失败
   err_remove: 删除失败
+trace:
+  title: 链路
+  subtitle: 一条 trace 的全貌：谁触发的、走了哪条路、每一步多久
+  back: 返回事件流
+  refresh: 刷新
+  loading: 正在加载链路…
+  no_id: URL 里没有 traceId。从事件流点「查看链路」进来，或手动填 ?traceId=trace_xxx。
+  copy: 复制
+  copied: 已复制
+  copy_failed: 复制失败
+  triggered_by: 触发于
+  nolib: 渲染脚本未能加载。
+  empty: 这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。
+  stat:
+    spans: 任务
+    duration: 总耗时
+    slowest: 最慢一步
+    failed: 失败
