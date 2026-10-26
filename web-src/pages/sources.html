@@ -56,6 +56,40 @@
         color: #f87171;
         margin-left: 0.15rem;
       }
+      /* 变量表：一行一个「名字 = 来源」 */
+      .var-list {
+        display: grid;
+        gap: 0.35rem;
+      }
+      .var-row {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr auto;
+        align-items: center;
+        gap: 0.35rem;
+      }
+      .var-row input,
+      .var-row select {
+        font-family: var(--mono, monospace);
+        font-size: 0.72rem;
+        padding: 0.25rem 0.4rem;
+      }
+      .var-eq {
+        font-size: 0.7rem;
+        color: var(--faint);
+      }
+      .var-del {
+        font-size: 0.7rem;
+        color: #f87171;
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 0.375rem;
+        padding: 0.15rem 0.35rem;
+        cursor: pointer;
+      }
+      .var-empty {
+        font-size: 0.7rem;
+        color: var(--faint);
+      }
       /* 参数填法的两态切换：固定值 / 从事件取值。
        * 两个按钮并排、选中态用 accent，让人一眼看出这是"同一个字段的两种填法"，
        * 而不是两个不同的字段。 */
@@ -222,26 +256,31 @@
           </button>
         </div>
 
-        <!-- 触发时带上的自定义字段。
-             定时器没有外部 payload（不像 webhook 有请求体），
-             所以"这次触发要带什么数据"只能在这里写死。
-             它是纯数据字面量，不参与求值（I6），但可以被出口的映射引用。 -->
-        <label class="mb-1 mt-3 block text-xs text-zinc-400" for="f-payload"
-          >{{t "sources.form.payload"}}</label
-        >
-        <input
-          id="f-payload"
-          class="input mono w-full text-sm"
-          placeholder='{"env": "prod"}'
-        />
-        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.payload_hint"}}</p>
-      </div>
 
       <!-- webhook 专属 -->
       <div id="f-hook-wrap" class="hidden">
         <p class="text-[11px] leading-relaxed text-zinc-500">
           {{t "sources.form.hook_hint"}}
         </p>
+      </div>
+
+      <!-- 变量：这个源对外提供哪些数据。
+           出口参数可以直接引用它们（下拉选，不用记 payload 路径）。
+           这也让 cron 和 webhook 用同一套写法：webhook 的变量来自请求体，
+           cron 的变量就是常量。 -->
+      <div>
+        <label class="mb-1 block text-xs text-zinc-400"
+          >{{t "sources.form.vars"}}</label
+        >
+        <div id="f-vars" class="var-list"></div>
+        <button
+          type="button"
+          id="btn-add-var"
+          class="btn-ghost mt-1.5 rounded-lg px-2 py-1 text-[11px]"
+        >
+          + {{t "sources.form.add_var"}}
+        </button>
+        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.vars_hint"}}</p>
       </div>
 
       <!-- 出口能力（多选） -->
@@ -619,12 +658,10 @@
         document.getElementById("f-enabled").checked = src ? src.enabled : true;
 
         const cfg = (src && src.config) || {};
+        // 变量表要在渲染出口参数**之前**恢复：参数里的"选变量"下拉依赖它
+        VAR_DEFS = Array.isArray(cfg.vars) ? cfg.vars.map((x) => Object.assign({}, x)) : [];
+        renderVars();
         document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
-        // 自定义事件字段：空对象不显示 "{}"，留空更像"没有"
-        const pl = cfg.payload || {};
-        document.getElementById("f-payload").value = Object.keys(pl).length
-          ? JSON.stringify(pl, null, 0)
-          : "";
 
         // 已保存的出口参数：从 targetCaps 里取（后端并入视图了）
         const existing = {};
@@ -741,8 +778,172 @@
       function isMappingDecl(v) {
         if (!v || typeof v !== "object" || Array.isArray(v)) return false;
         const keys = Object.keys(v);
-        if (!keys.includes("from")) return false;
-        return keys.every((k) => k === "from" || k === "default" || k === "as");
+        // 两种引用形态：{from: payload路径} 或 {var: 变量名}
+        const hasFrom = keys.includes("from");
+        const hasVar = keys.includes("var");
+        if (!hasFrom && !hasVar) return false;
+        if (hasFrom && hasVar) return false;
+        return keys.every((k) => k === "from" || k === "var" || k === "default" || k === "as");
+      }
+
+      // isVarRef 与 mock 的 isVarRef 同口径
+      function isVarRef(v) {
+        return isMappingDecl(v) && typeof v.var === "string" && v.var !== "";
+      }
+
+      // ---------- 源的变量表 ----------
+      //
+      // 变量是"这个源对外提供哪些数据"的声明，存在 sources.config.vars 里：
+      //   [{name:"title", from:"pull_request.title"}]   ← webhook：从请求体取
+      //   [{name:"env",   value:"prod"}]                ← cron：常量
+      //
+      // 出口参数引用变量（{var:"title"}）而不是直接写 payload 路径，好处：
+      //   - 用户不用记 pull_request.head.ref 这种深层路径
+      //   - cron 源没有 payload，也能用同一套写法（变量就是常量）
+      //   - 改引用的字段时只改一处，不用翻遍所有出口参数
+      //
+      // I6 边界没有变：**仍然是"取一个值、原样传"**，不拼接不运算。
+      // 变量名就是名字，不是表达式。
+
+      // VAR_DEFS 是当前编辑中的变量表（弹窗作用域）。
+      let VAR_DEFS = [];
+
+      function renderVars() {
+        const box = document.getElementById("f-vars");
+        if (!box) return;
+        box.replaceChildren();
+
+        if (!VAR_DEFS.length) {
+          box.appendChild(
+            el("div", "var-empty", t("sources.form.no_vars", "还没有变量。可以不加，直接写 payload 路径。")),
+          );
+          return;
+        }
+
+        VAR_DEFS.forEach((d, i) => {
+          const row = el("div", "var-row");
+
+          // 名字
+          const nameIn = document.createElement("input");
+          nameIn.className = "input";
+          nameIn.placeholder = "title";
+          nameIn.value = d.name || "";
+          nameIn.addEventListener("input", () => {
+            VAR_DEFS[i].name = nameIn.value;
+            // 改完名字要让出口参数里的变量下拉跟着更新（但不重建整个弹窗）
+            refreshVarChoosers();
+          });
+
+          // 来源：payload 路径 or 固定值
+          const kindSel = document.createElement("select");
+          kindSel.className = "input";
+          for (const [v, lab] of [
+            ["from", t("sources.form.var_from", "从事件取")],
+            ["value", t("sources.form.var_value", "固定值")],
+          ]) {
+            kindSel.appendChild(new Option(lab, v));
+          }
+          kindSel.value = Object.prototype.hasOwnProperty.call(d, "value") ? "value" : "from";
+          kindSel.addEventListener("change", () => {
+            const isVal = kindSel.value === "value";
+            if (isVal) {
+              VAR_DEFS[i] = { name: VAR_DEFS[i].name, value: valIn.value || "" };
+            } else {
+              VAR_DEFS[i] = { name: VAR_DEFS[i].name, from: valIn.value || "" };
+            }
+            valIn.placeholder = isVal ? "prod" : "pull_request.title";
+            // 切类型后值框里是另一类内容（路径 vs 常量），清掉避免误存
+            valIn.value = String(isVal ? VAR_DEFS[i].value ?? "" : VAR_DEFS[i].from ?? "");
+            refreshVarChoosers();
+          });
+
+          const valIn = document.createElement("input");
+          valIn.className = "input";
+          const isValInit = Object.prototype.hasOwnProperty.call(d, "value");
+          valIn.placeholder = isValInit ? "prod" : "pull_request.title";
+          valIn.value = String(isValInit ? d.value ?? "" : d.from ?? "");
+          // 每次输入都从**下拉的当前值**判断该写哪个字段。
+          //
+          // 不能闭包捕获一个 isVal 常量：用户切换"从事件取 / 固定值"之后，
+          // 那个常量不会变，输入会一直写进旧字段（表现为"填了固定值但保存后是空的"）。
+          valIn.addEventListener("input", () => {
+            const nowIsVal = kindSel.value === "value";
+            if (nowIsVal) {
+              VAR_DEFS[i] = { name: VAR_DEFS[i].name, value: valIn.value };
+            } else {
+              VAR_DEFS[i] = { name: VAR_DEFS[i].name, from: valIn.value };
+            }
+          });
+
+          const del = el("button", "var-del", "✕");
+          del.type = "button";
+          del.title = t("sources.form.del_var", "删除变量");
+          del.addEventListener("click", () => {
+            VAR_DEFS.splice(i, 1);
+            renderVars();
+            refreshVarChoosers();
+          });
+
+          row.appendChild(nameIn);
+          row.appendChild(kindSel);
+          row.appendChild(valIn);
+          row.appendChild(del);
+          box.appendChild(row);
+        });
+      }
+
+      // refreshVarChoosers 让所有已渲染的"变量下拉"跟上当前变量表。
+      //
+      // 不重建整个参数区：用户可能正在填别的字段，重建会把输入状态清掉。
+      // 只更新每个映射态里的下拉选项，并尽量保留当前选中值。
+      function refreshVarChoosers() {
+        const names = VAR_DEFS.map((d) => d && d.name).filter(Boolean);
+        document.querySelectorAll("[data-var-chooser]").forEach((sel) => {
+          const cur = sel.value;
+          sel.replaceChildren();
+          sel.appendChild(new Option(t("sources.form.var_none", "— 用下面的路径 —"), ""));
+          for (const n of names) sel.appendChild(new Option("$" + n, n));
+          if (cur && names.includes(cur)) sel.value = cur;
+        });
+        // 同步刷新"可用变量"提示文字
+        document.querySelectorAll("[data-var-hint]").forEach((h) => {
+          h.textContent = names.length
+            ? t("sources.form.vars_available", "可用变量：") + names.map((n) => "$" + n).join("、")
+            : t("sources.form.from_hint", "按点号路径从事件 payload 取值，如 pull_request.title。");
+        });
+      }
+
+      // buildVarChooser 在映射态里加一个"选变量"下拉，
+      // 与"手填 payload 路径"二选一（选变量时路径框禁用）。
+      function buildVarChooser(pathIn, hintEl, cur) {
+        const names = VAR_DEFS.map((d) => d && d.name).filter(Boolean);
+        const sel = document.createElement("select");
+        sel.className = "input w-full text-xs";
+        sel.dataset.varChooser = "1";
+        sel.appendChild(new Option(t("sources.form.var_none", "— 用下面的路径 —"), ""));
+        for (const n of names) sel.appendChild(new Option("$" + n, n));
+        if (cur && cur.var) sel.value = cur.var;
+
+        const sync = () => {
+          const useVar = sel.value !== "";
+          pathIn.disabled = useVar;
+          pathIn.classList.toggle("opacity-40", useVar);
+          if (useVar) {
+            pathIn.value = "";
+          }
+          hintEl.dataset.varHint = "1";
+          hintEl.textContent = useVar
+            ? t("sources.form.var_hint", "取变量的值，原样传给这个参数。")
+            : names.length
+              ? t("sources.form.vars_available", "可用变量：") + names.map((n) => "$" + n).join("、")
+              : t("sources.form.from_hint", "按点号路径从事件 payload 取值，如 pull_request.title。");
+        };
+        sel.dataset.varChooser = "1";
+        sel.addEventListener("change", sync);
+        sync();
+
+        // 插到路径框前面
+        pathIn.parentNode.insertBefore(sel, pathIn);
       }
 
       // requiredFields 从 params_schema 取必填字段名。
@@ -885,16 +1086,20 @@
           fromIn.type = "text";
           fromIn.className = "input mono w-full text-xs";
           fromIn.placeholder = "pull_request.title";
-          fromIn.dataset.map = "from";
-          if (asMapping && cur.from) fromIn.value = cur.from;
+          fromIn.dataset.map = "source"; // 可以是变量名（var）或路径（from）
+          if (asMapping && cur.var) {
+            fromIn.dataset.kind = "var";
+            fromIn.value = cur.var;
+          } else if (asMapping && cur.from) {
+            fromIn.dataset.kind = "from";
+            fromIn.value = cur.from;
+          }
           const fromHint = el(
             "p",
             "text-[10px] leading-relaxed text-zinc-500",
-            t(
-              "sources.form.from_hint",
-              "按点号路径从事件 payload 取值，如 pull_request.title 或 items.0.name。取不到时用下面的默认值。",
-            ),
+            "",
           );
+
 
           const defIn = document.createElement("input");
           defIn.type = "text";
@@ -909,6 +1114,14 @@
           mapWrap.appendChild(fromIn);
           mapWrap.appendChild(fromHint);
           mapWrap.appendChild(defIn);
+
+          // 变量下拉：源声明过变量时优先让用户选，而不是手打路径。
+          //
+          // 必须在 fromIn 已经进 DOM 之后调（它要 insertBefore 到 fromIn 前面）——
+          // 之前放在 appendChild 之前会拿不到 parentNode 抛 TypeError，
+          // 而 openModal 是 async 且调用处没 await，异常会变成静默的
+          // unhandled rejection，表现为"点新建没反应"。
+          buildVarChooser(fromIn, fromHint, cur);
 
           // 切换：两个容器互斥显示
           btnLit.addEventListener("click", () => {
@@ -930,11 +1143,51 @@
         }
       }
 
+      // collectVars 收集变量表，并做基础校验（与 mock 的 validateVarDefs 同口径）。
+      function collectVars() {
+        const out = [];
+        const seen = new Set();
+        for (const d of VAR_DEFS) {
+          const name = String(d.name || "").trim();
+          if (!name) continue; // 空行忽略，不报错（用户可能正在填）
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+            throw new Error(
+              t("sources.form.bad_var_name", "变量名「{n}」不合法（字母/数字/下划线，不以数字开头）").replace(
+                "{n}",
+                name,
+              ),
+            );
+          }
+          if (seen.has(name)) {
+            throw new Error(
+              t("sources.form.dup_var", "变量名「{n}」重复").replace("{n}", name),
+            );
+          }
+          seen.add(name);
+          if (Object.prototype.hasOwnProperty.call(d, "value")) {
+            out.push({ name, value: d.value });
+          } else {
+            const from = String(d.from || "").trim();
+            if (!from) {
+              throw new Error(
+                t("sources.form.var_need_src", "变量「{n}」要么填 payload 路径，要么改选固定值").replace(
+                  "{n}",
+                  name,
+                ),
+              );
+            }
+            out.push({ name, from });
+          }
+        }
+        return out;
+      }
+
       // collectTargets 收集 {capabilityId, params} 列表。
       //
       // 每个出口带自己那份参数：各能力的 params_schema 不同，
       // 一份公共参数必然对不上至少一边（会被静默剪枝）。
-      function collectTargets() {
+      function collectTargets(varDefs) {
+        const known = new Set((varDefs || []).map((d) => d && d.name).filter(Boolean));
         const box = document.getElementById("f-targets");
         const out = [];
         for (const cb of box.querySelectorAll("input.target-cap:checked")) {
@@ -952,19 +1205,35 @@
               const literalMode = litWrap && !litWrap.classList.contains("hidden");
 
               if (!literalMode && mapWrap) {
-                const fromIn = mapWrap.querySelector('[data-map="from"]');
+                const srcIn = mapWrap.querySelector('[data-map="source"]');
+                const varSel = mapWrap.querySelector("[data-var-chooser]");
                 const defIn = mapWrap.querySelector('[data-map="default"]');
-                const from = (fromIn.value || "").trim();
                 const defRaw = (defIn.value || "").trim();
-                if (!from) {
-                  throw new Error(
-                    t("sources.form.need_from", "参数 {k} 选了「从事件取值」，要填 payload 路径").replace(
-                      "{k}",
-                      k,
-                    ),
-                  );
+                const varName = varSel ? varSel.value : "";
+                const pathVal = (srcIn.value || "").trim();
+
+                const m = {};
+                if (varName) {
+                  if (!known.has(varName)) {
+                    throw new Error(
+                      t("sources.form.unknown_var", "参数 {k} 引用了未声明的变量「{v}」")
+                        .replace("{k}", k)
+                        .replace("{v}", varName),
+                    );
+                  }
+                  m.var = varName;
+                } else {
+                  if (!pathVal) {
+                    throw new Error(
+                      t(
+                        "sources.form.need_src",
+                        "参数 {k} 选了「从事件取值」，要么选一个变量，要么填 payload 路径",
+                      ).replace("{k}", k),
+                    );
+                  }
+                  m.from = pathVal;
                 }
-                const m = { from };
+                const from = varName ? "$" + varName : pathVal;
                 if (defRaw !== "") {
                   // 默认值按该参数声明的类型解析，否则 number 字段会拿到 "3" 这种字符串
                   const t_ = litWrap?.querySelector("[data-param]")?.dataset.ptype || "string";
@@ -1028,7 +1297,23 @@
         const name = document.getElementById("f-name").value.trim();
         const kind = document.getElementById("f-kind").value;
         const enabled = document.getElementById("f-enabled").checked;
-        const targets = collectTargets();
+
+        // 变量先收集：出口参数里的 {var:"x"} 要拿它做"变量是否声明过"的校验
+        let vars;
+        try {
+          vars = collectVars();
+        } catch (e) {
+          toast(e.message);
+          return;
+        }
+
+        let targets;
+        try {
+          targets = collectTargets(vars);
+        } catch (e) {
+          toast(e.message);
+          return;
+        }
 
         if (!name) {
           toast(t("sources.form.name_required", "请填名字"));
@@ -1046,22 +1331,19 @@
             toast(t("sources.form.expr_required", "请填 cron 表达式"));
             return;
           }
-          const plRaw = document.getElementById("f-payload").value.trim();
-          let payload = {};
-          if (plRaw !== "") {
-            try {
-              const parsed = JSON.parse(plRaw);
-              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-                throw new Error("not an object");
-              }
-              payload = parsed;
-            } catch (e) {
-              toast(t("sources.form.bad_payload", "事件字段必须是 JSON 对象，如 {\"env\":\"prod\"}"));
-              return;
-            }
+          // 事件的附加字段统一走"变量"（固定值的变量就是原来的 payload）：
+          // 上一轮那个独立的「事件字段」JSON 框和变量区的"固定值"是同一件事，
+          // 两个入口会让人不知道写哪个。保留一个。
+          const payload = {};
+          for (const v of vars) {
+            if (Object.prototype.hasOwnProperty.call(v, "value")) payload[v.name] = v.value;
           }
-          config = { expr: expr, payload };
+          config = { expr: expr, payload: payload, vars: vars };
         }
+
+        // webhook / manual 的 config 目前是空的（token 由后端生成），
+        // 但变量表必须一起提交，否则保存后变量就丢了
+        if (kind !== "cron") config = Object.assign({}, config, { vars: vars });
 
         const body = { name: name, kind: kind, config: config, enabled: enabled, targets: targets };
         const btn = document.getElementById("modal-save");
@@ -1101,6 +1383,10 @@
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
       document.getElementById("modal-save").addEventListener("click", save);
       document.getElementById("f-kind").addEventListener("change", syncKindFields);
+      document.getElementById("btn-add-var").addEventListener("click", () => {
+        VAR_DEFS.push({ name: "", from: "" });
+        renderVars();
+      });
 
       // 预设表达式按钮
       document.querySelectorAll("[data-expr]").forEach((b) => {
