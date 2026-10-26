@@ -216,9 +216,23 @@
         return CAPS.find((c) => c.id === id) || null;
       }
 
+      // capName 决定"能力在这行里怎么显示"：有显示名用显示名。
+      // 唯一裁决点还是 Anotify.capLabel，这里只是补一个"找不到时的回落"。
       function capName(id) {
         const c = capByID(id);
-        return c ? c.name + (c.version != null ? "@" + c.version : "") : id;
+        if (!c) return id;
+        return Anotify.capLabel(c);
+      }
+
+      // rawCapName 是技术身份（name@version），用在 title 里。
+      // 显示名可以让界面干净，但排查问题、对日志、写节点配置时
+      // 用户需要看到真名 —— 所以它不能从界面上彻底消失。
+      function rawCapName(id) {
+        const c = capByID(id);
+        if (!c) return id;
+        const dn = (c.displayName || "").trim();
+        const raw = c.name + (c.version != null ? "@" + c.version : "");
+        return dn ? raw + "（显示名：" + dn + "）" : raw;
       }
 
       // ---------- 加载 ----------
@@ -316,8 +330,14 @@
             const row = el("div", "edge-row");
 
             const flow = el("div", "edge-flow");
-            flow.appendChild(el("span", "edge-cap", capName(e.fromCapability)));
+            const fromCapEl = el("span", "edge-cap", capName(e.fromCapability));
+            fromCapEl.title = rawCapName(e.fromCapability);
+            flow.appendChild(fromCapEl);
             flow.appendChild(el("span", "edge-arrow", "—"));
+            // 出口名保持**原样**：它是路由键，用户建边时要一字不差地填它，
+            // 改成别的显示名会让人对不上（出口名 == 下游能力名，这是模型
+            // 的核心约定）。可读性由右边的能力显示名提供 ——
+            // 读作「—needs-fix→ 应用修复」，出口的含义自然就出来了。
             flow.appendChild(el("span", "edge-port", e.fromPort));
             // 扇出角标：同一个出口 >1 条边时标出来。
             // 文案只说事实（这个出口连了几个下游），不加术语。
@@ -328,7 +348,9 @@
               );
             }
             flow.appendChild(el("span", "edge-arrow", "→"));
-            flow.appendChild(el("span", "edge-cap", capName(e.toCapability)));
+            const toCapEl = el("span", "edge-cap", capName(e.toCapability));
+            toCapEl.title = rawCapName(e.toCapability);
+            flow.appendChild(toCapEl);
             row.appendChild(flow);
 
             const del = el("button", "btn-ghost rounded px-2 py-1 text-[11px] text-red-400",

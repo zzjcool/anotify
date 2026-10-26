@@ -244,6 +244,7 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 // capabilityListRequest 是 POST /v1/capabilities 的请求体（camelCase）。
 type capabilityListRequest struct {
 	Name         string           `json:"name"`
+	DisplayName  string           `json:"displayName,omitempty"`
 	Version      int              `json:"version,omitempty"`
 	ParamsSchema json.RawMessage  `json:"paramsSchema,omitempty"`
 	Outputs      []string         `json:"outputs,omitempty"`
@@ -259,9 +260,62 @@ func (h *consoleHandler) capabilities(w http.ResponseWriter, r *http.Request) {
 		h.listCapabilities(w, r)
 	case http.MethodPost:
 		h.createCapability(w, r)
+	case http.MethodPatch:
+		h.updateCapabilityDisplayName(w, r)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		methodNotAllowed(w, "GET, POST, PATCH")
 	}
+}
+
+// updateCapabilityDisplayName 只改 display_name 一列。
+//
+// 为什么不把它做成"新版本"：display_name 不属于能力定义。
+// 不变量 I8 说的是「能力定义 append-only，钉 hash」——指的是
+// name / params_schema / outputs / lifecycle / sticky 这些**影响行为**的字段，
+// 它们一变，旧 trace 就无法解释。而显示名不参与路由、不参与 content_hash，
+// 改它不会让任何历史 trace 变得看不懂。
+//
+// 所以这是一个**装饰字段的可变更新**，不是能力定义的修改。
+// 能力定义本身仍然 append-only。
+func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
+	if !ok {
+		return
+	}
+	var req struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"displayName"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	// 先确认这个能力属于本组织（不变量 I10），顺便拿到更新后的行回给前端
+	if _, err := h.db.GetCapabilityByID(r.Context(), orgID, req.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "capability not found", "code": "not_found"})
+			return
+		}
+		slog.Error("get capability for patch failed", "event", "console.caps.patch_get_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	if err := h.db.SetCapabilityDisplayName(r.Context(), orgID, req.ID, strings.TrimSpace(req.DisplayName)); err != nil {
+		slog.Error("set capability display name failed", "event", "console.caps.patch_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	updated, err := h.db.GetCapabilityByID(r.Context(), orgID, req.ID)
+	if err != nil {
+		slog.Error("reload capability after patch failed", "event", "console.caps.patch_reload_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"capability": updated})
 }
 
 func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -342,6 +396,7 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	c := &store.CapabilityVersion{
 		OrgID:        orgID,
 		Name:         req.Name,
+		DisplayName:  strings.TrimSpace(req.DisplayName),
 		Version:      version,
 		ParamsSchema: schema,
 		Outputs:      req.Outputs,

@@ -103,6 +103,28 @@
         color: #34d399;
         border-color: rgba(52, 211, 153, 0.35);
       }
+      /* 改名按钮：默认隐形，行悬停才出现。
+         每行常驻一个「取个名字」会让能力列表看起来像一张表单 ——
+         而这个动作是低频的，不该占常驻视觉位置。
+         用 opacity 而不是 display:none，保留占位避免悬停时行宽跳动。 */
+      .cap-rename {
+        opacity: 0;
+        transition: opacity 0.12s;
+      }
+      .cap-row:hover .cap-rename,
+      .cap-rename:focus-visible {
+        opacity: 1;
+      }
+      /* 已经有名字的行，按钮一直可见（用户能立刻发现"可以改"） */
+      .cap-row.has-name .cap-rename {
+        opacity: 1;
+      }
+
+      /* 内联改名输入框：宽度自适应，不要撑破卡片 */
+      .rename-input {
+        width: 11rem;
+        min-width: 0;
+      }
       .out-chip {
         display: inline-block;
         padding: 0.1rem 0.4rem;
@@ -678,6 +700,80 @@
         end: "end",
       };
 
+      /**
+       * openRename 内联改显示名。
+       *
+       * 为什么内联而不是弹窗：改一个标签而已，弹层太重 —— 用户要
+       * "看到它 → 改掉它 → 继续看下一行"，中间不该跳出一个遮罩。
+       *
+       * 走 PATCH /v1/capabilities（只改 display_name 一列）：
+       * 显示名不参与 content_hash，所以**不会产生新版本**，
+       * 也不会让旧 trace 变得无法解释（I8 说的是能力定义 append-only）。
+       */
+      function openRename(c, btn) {
+        const wrap = btn.parentElement;
+        if (!wrap || wrap.querySelector(".rename-input")) return; // 已打开
+
+        const input = el("input", "input rename-input px-2 py-0.5 text-[12px]");
+        input.value = (c.displayName || "").trim();
+        input.placeholder = t("caps.rename_ph", "给它取个名字，例如「分析 PR」");
+        input.maxLength = 60;
+
+        const save = el("button", "btn-primary rounded px-2 py-0.5 text-[11px]", t("caps.save", "保存"));
+        const cancel = el("button", "btn-ghost rounded px-2 py-0.5 text-[11px]", t("caps.cancel", "取消"));
+
+        btn.style.display = "none";
+        wrap.appendChild(input);
+        wrap.appendChild(save);
+        wrap.appendChild(cancel);
+        input.focus();
+        input.select();
+
+        function close() {
+          input.remove();
+          save.remove();
+          cancel.remove();
+          btn.style.display = "";
+        }
+
+        async function commit() {
+          const v = input.value.trim();
+          save.disabled = true;
+          try {
+            // Anotify.api(path, opts, demo) —— body 要自己 JSON.stringify，
+            // 并显式声明 Content-Type（与 sources.html 的调用一致）。
+            const res = await Anotify.api(API + "/capabilities", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: c.id, displayName: v }),
+            });
+            const updated = (res && res.capability) || null;
+            if (updated) c.displayName = updated.displayName;
+            close();
+            renderCaps();
+          } catch (e) {
+            save.disabled = false;
+            // 错误要带服务端信息 —— 不然用户看到"保存失败"不知道哪错了
+            let msg = t("caps.rename_failed", "改名失败");
+            const raw = String((e && e.message) || e || "");
+            try {
+              const parsed = JSON.parse(raw);
+              if (parsed && parsed.error) msg += "：" + parsed.error;
+            } catch (_) {
+              if (raw) msg += "：" + raw;
+            }
+            toast(msg);
+          }
+        }
+
+        save.addEventListener("click", commit);
+        cancel.addEventListener("click", close);
+        input.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") commit();
+          if (ev.key === "Escape") close();
+        });
+      }
+
       function renderCaps() {
         const list = document.getElementById("caps-list");
         const summary = document.getElementById("caps-summary");
@@ -697,12 +793,36 @@
 
         for (const c of CAPS) {
           const card = el("div", "card rounded-2xl p-4");
-          const row = el("div", "cap-row");
+          // has-name 让"已经有名字"的行常驻显示改名按钮 ——
+          // 有名字说明用户在意这个能力的可读性，入口别藏起来。
+          const row = el("div", "cap-row" + ((c.displayName || "").trim() ? " has-name" : ""));
           const left = el("div", "min-w-0");
 
           const head = el("div", "flex flex-wrap items-center gap-2");
-          head.appendChild(el("span", "text-[13px] text-zinc-200", c.name));
-          head.appendChild(code("v" + c.version, "text-[10px] text-zinc-600"));
+          // 有显示名就当作标题，真名放后面（保留技术身份，方便对日志/节点配置）；
+          // 没取显示名就只显示 name@version，不隐藏任何东西。
+          const dn = (c.displayName || "").trim();
+          head.appendChild(el("span", "text-[13px] text-zinc-200", dn || c.name));
+          if (dn) {
+            head.appendChild(code(c.name + "@" + c.version, "text-[10px] text-zinc-600"));
+          } else {
+            head.appendChild(code("v" + c.version, "text-[10px] text-zinc-600"));
+          }
+          // 改名按钮：只在自定义能力上给（内置起点的名字是保留的，改显示名可以，
+          // 但这里统一都允许改显示名——显示名不是名字，不受保留约束）
+          // 改名按钮平时不占视觉重量 —— 每一行都挂一个"取个名字"会让
+          // 列表看起来像表单。鼠标移到行上才出现（触摸设备也点得到，
+          // 只是没有 hover 效果）。
+          const renameBtn = el(
+            "button",
+            "cap-rename btn-ghost rounded px-1.5 py-0.5 text-[10px] text-zinc-500",
+            dn ? t("caps.rename", "改名") : t("caps.name_it", "取个名字"),
+          );
+          renameBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            openRename(c, renameBtn);
+          });
+          head.appendChild(renameBtn);
           if (c.kind) {
             head.appendChild(
               el("span", "kind-badge kind-" + (c.kind === "origin" || c.kind === "pipe" || c.kind === "end" ? c.kind : "pipe"), c.kind),

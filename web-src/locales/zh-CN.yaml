@@ -1117,6 +1117,13 @@ caps:
   count: '{n} 个能力'
   no_outputs: 无出口（终端能力）
   any_event_type: 任意事件类型（起点）
+  rename: 改名
+  name_it: 取个名字
+  save: 保存
+  cancel: 取消
+  rename_ph: 给它取个名字，例如「分析 PR」
+  rename_failed: 改名失败
+  renamed: 已更新名字
   list:
     title: 能力列表
   form:

@@ -1092,9 +1092,40 @@
 	}
 
 	/* ---------- 导出 ---------- */
+	/**
+	 * capLabel 统一决定"能力在界面上怎么显示"。
+	 *
+	 * 一个地方决定，所有页面照用 —— 否则 capabilities/edges/sources/图
+	 * 各拼各的，用户给能力取了名字却只有某一页生效，比不取还困惑。
+	 *
+	 * 规则：
+	 *   displayName 有值 → 「分析 PR」（干净、给人读）
+	 *   displayName 为空 → 「analyze-pr@1」（回落到真名，不隐藏技术身份）
+	 *
+	 * 可选 withVersion=true 时，有 displayName 也带上 @版本 ——
+	 * 用在"必须区分版本"的地方（同一能力的 @1 和 @2 并存时）。
+	 *
+	 * @param {object} cap  能力对象 { name, version, displayName }
+	 * @param {object} [opts]
+	 * @param {boolean} [opts.withVersion] 有 displayName 时也追加 @version
+	 * @param {boolean} [opts.withRaw]     有 displayName 时括号里补真名
+	 */
+	function capLabel(cap, opts) {
+		if (!cap) return "";
+		const o = opts || {};
+		const raw = cap.name + (cap.version != null ? "@" + cap.version : "");
+		const dn = (cap.displayName || "").trim();
+		if (!dn) return raw;
+		let out = dn;
+		if (o.withVersion && cap.version != null) out += "@" + cap.version;
+		if (o.withRaw) out += "（" + raw + "）";
+		return out;
+	}
+
 	window.Anotify = {
 		el,
 		icon,
+		capLabel,
 		mountLayout,
 		mountPullRefresh,
 		closeSidebar,

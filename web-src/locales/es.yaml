@@ -1117,6 +1117,13 @@ caps:
   count: '{n} capacidades'
   no_outputs: Sin salidas (capacidad terminal)
   any_event_type: Cualquier tipo de evento (origen)
+  rename: Renombrar
+  name_it: Ponerle nombre
+  save: Guardar
+  cancel: Cancelar
+  rename_ph: Ponle un nombre, por ejemplo "Analizar PR"
+  rename_failed: No se pudo renombrar
+  renamed: Nombre actualizado
   list:
     title: Capacidades
   form:

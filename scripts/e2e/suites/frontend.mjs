@@ -1251,6 +1251,140 @@ async function checkEdgesPage(page) {
 // 默认视图是**按时间倒序平铺**（事件流的第一个问题永远是"刚刚发生了什么"），
 // 分组是可选视图（?group=1），因为分组会把刚发生的事件压到组内第 6 条
 // 后面，用户以为没收到。
+// checkDisplayName 验证"能力显示名"这条链路端到端可用。
+//
+// 它盯三件事，每一件都对应一个真实会坏的环节：
+//   ① 改名能存下来（PATCH 只改 display_name，不产生新版本）
+//   ② 有显示名时界面用显示名，**但真名不能消失**（排查问题时要看真名）
+//   ③ 出口名保持原样 —— 它是路由键，用户建边时要一字不差地填它
+async function checkDisplayName(page, base) {
+	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(2000);
+
+	const before = await page.evaluate(() => {
+		const rows = Array.from(document.querySelectorAll(".cap-row"));
+		const row = rows.find((r) => r.querySelector(".cap-rename"));
+		return { rows: rows.length, hasRenameBtn: !!row };
+	});
+	H.check("能力页每行都有改名入口", before.hasRenameBtn === true, `rows=${before.rows}`);
+
+	// 改哪个能力很重要：必须挑**有入边**的，否则改了名字也不会出现在出口页，
+	// 后面那条断言就变成在要求一个模型里不存在的形状。
+	//
+	// 做法：先去出口页取一个真实的 toCapability 名字，再回来改它。
+	await page.goto(base + "/edges.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1800);
+	const target = await page.evaluate(() => {
+		// edges 数据在 mock 里；从 DOM 拿不到 id，所以直接问接口
+		return fetch("/v1/edges")
+			.then((r) => r.json())
+			.then((d) => {
+				const e = (d.edges || [])[0];
+				return e ? { id: e.toCapability } : null;
+			});
+	});
+	if (!target) {
+		H.check("出口页有边（显示名断言前置）", false, "edges 为空");
+		return;
+	}
+
+	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(2000);
+
+	const renamed = await page.evaluate(async (targetId) => {
+		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+		// 按 id 找行：能力页每行没有暴露 id，用 /v1/capabilities 反查名字
+		const caps = await fetch("/v1/capabilities")
+			.then((r) => r.json())
+			.then((d) => d.capabilities || []);
+		const want = caps.find((c) => c.id === targetId);
+		if (!want) return null;
+		// 行里显示的是 name + code("v1")，中间没有 @，
+		// 所以用 name 匹配（能力名在一行里唯一）。
+		const needle = want.name;
+		const rows = Array.from(document.querySelectorAll(".cap-row"));
+		const row = rows.find((r) => r.textContent.includes(needle));
+		if (!row) return null;
+		row.querySelector(".cap-rename")?.click();
+		await sleep(300);
+		const input = row.querySelector(".rename-input");
+		if (!input) return null;
+		input.value = "E2E 显示名";
+		Array.from(row.querySelectorAll("button"))
+			.find((b) => /保存|Save|Guardar/.test(b.textContent))
+			?.click();
+		await sleep(1200);
+		return { needle };
+	}, target.id);
+	if (!renamed) {
+		H.check("能打开内联改名输入", false, "找不到目标能力的行");
+		return;
+	}
+
+	const after = await page.evaluate((needle) => {
+		const rows = Array.from(document.querySelectorAll(".cap-row"));
+		const row = rows.find((r) => r.textContent.includes(needle));
+		return {
+			found: row ? row.textContent.includes("E2E 显示名") : false,
+			// 真名必须还在（技术身份不能因为取了昵称就消失）
+			keepsRaw: row ? row.textContent.includes(needle) : false,
+			text: row ? row.textContent.replace(/\s+/g, " ").trim().slice(0, 90) : "",
+		};
+	}, renamed.needle);
+	H.check("改名后界面用显示名", after.found === true, after.text);
+	H.check("显示名旁边仍保留真名@版本", after.keepsRaw === true, after.text);
+
+	// 出口页：出口名不能被显示名替换（它是路由键），但能力名要用显示名。
+	//
+	// **必须在同一个页面上下文里验**：mock 的 state 是页面级的，导航到
+	// 出口页会重建数据，刚才改的显示名就没了（真实后端落库，不会有这问题）。
+	// 所以这里不走 goto，而是在 capability 页面内直接调 /v1/edges +
+	// /v1/capabilities 验证"边渲染时会用到 displayName"这个契约。
+	const edge = await page.evaluate(async () => {
+		const [eRes, cRes] = await Promise.all([
+			fetch("/v1/edges").then((r) => r.json()),
+			fetch("/v1/capabilities").then((r) => r.json()),
+		]);
+		const byID = new Map((cRes.capabilities || []).map((c) => [c.id, c]));
+		const edges = eRes.edges || [];
+		return {
+			n: edges.length,
+			// 每条边的两端在库里都能找到对应能力
+			allResolve: edges.every(
+				(e) => byID.has(e.fromCapability) && byID.has(e.toCapability),
+			),
+			// 出口名来自 from 能力的 outputs（或起点的事件类型），
+			// 不可能等于某个能力的显示名 —— 这就是"路由键不被显示名替换"
+			portsAreRaw: edges.every((e) => {
+				const from = byID.get(e.fromCapability);
+				if (!from) return false;
+				const isOrigin = from.source === "builtin";
+				return isOrigin || (from.outputs || []).includes(e.fromPort);
+			}),
+			// 至少有一个 To 端能力带显示名（证明渲染时会用到它）
+			hasDisplayName: edges.some((e) => {
+				const to = byID.get(e.toCapability);
+				return to && (to.displayName || "").trim();
+			}),
+			sample: edges.slice(0, 4).map((e) => {
+				const to = byID.get(e.toCapability);
+				return e.fromPort + " -> " + (to ? to.displayName || to.name : "?");
+			}),
+		};
+	});
+	H.check("出口表能解析到两端能力", edge.allResolve === true, `edges=${edge.n}`);
+	H.check(
+		"出口名仍是原始路由键（不被显示名替换）",
+		edge.portsAreRaw === true,
+		`edges=${edge.n}`,
+	);
+	H.check(
+		"显示名会出现在边的下游侧",
+		edge.hasDisplayName === true,
+		edge.sample.join(" | "),
+	);
+}
+
 async function checkEventsFilter(page, base) {
 	const r = await page.evaluate(() => {
 		const cards = Array.from(document.querySelectorAll("#ev-list .card"));
@@ -1853,6 +1987,8 @@ async function runMockCoverage() {
 		if (p === "capabilities.html") {
 			await checkSchemaEditor(page);
 			await checkEdgesPage(page);
+			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
+			await checkDisplayName(page, base);
 		}
 		if (p === "sources.html") await checkFlowChart(page);
 		if (p === "events.html") {
