@@ -1127,7 +1127,11 @@ caps:
   list:
     title: Capacidades
   form:
+    display_name: Nombre visible
+    display_name_ph: p. ej. "Analizar PR", "Desplegar staging"
+    display_name_hint: Se muestra en la interfaz. Si lo dejas vacío se usa el nombre técnico.
     name: Nombre de la capacidad
+    name_hint: 'Nombre técnico: lo usan nodos, aristas y logs. No se puede cambiar después.'
     outputs: Nombres de salida (separados por comas)
     outputs_hint: Las salidas son un conjunto cerrado — las aristas solo pueden usar nombres declarados aquí.
     schema: Validación de parámetros (JSON Schema)

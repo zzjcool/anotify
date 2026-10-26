@@ -18,7 +18,13 @@ import (
 // 为什么放在 store 而不是 route：这是**能力定义数据**，和 params_schema
 // 一样属于"什么是一个合法能力"，不是路由算法。
 type BuiltinCapability struct {
-	Name         string
+	Name string
+	// DisplayName 是内置能力**预先取好的**显示名（「GitHub webhook」这种）。
+	//
+	// 用户不需要给内置能力取名 —— 它们随项目发布，名字由我们定。
+	// 用户仍然可以改（不满意就改掉），但默认得有个能读的名字，
+	// 否则能力页一打开满屏 github@1 / notify.phone@1。
+	DisplayName  string
 	Version      int
 	ParamsSchema string // JSON
 	Outputs      []string
@@ -37,8 +43,9 @@ type BuiltinCapability struct {
 // params 就是通知内容本身——**没有模板替换、没有表达式求值**（不变量 I6）：
 // 上游事件带什么就推什么。`to` 走 foreign_user 校验（契约 §10.1.1）。
 var NotifyPhoneCapability = BuiltinCapability{
-	Name:    "notify.phone",
-	Version: 1,
+	Name:        "notify.phone",
+	DisplayName: "推送通知",
+	Version:     1,
 	ParamsSchema: `{
 		"type": "object",
 		"required": ["to", "title"],
@@ -66,9 +73,10 @@ var NotifyPhoneCapability = BuiltinCapability{
 // 通配语义放在**建边校验**侧：内置起点的出口允许任意非空事件类型
 // （见 store.CreateEdge）。这样用户建边时填的是真实事件名（github 的
 // `pull_request.opened`），派发时也能精确命中。
-func OriginCapability(name, desc string) BuiltinCapability {
+func OriginCapability(name, displayName string) BuiltinCapability {
 	return BuiltinCapability{
 		Name:         name,
+		DisplayName:  displayName,
 		Version:      1,
 		ParamsSchema: `{"type": "object"}`,
 		Outputs:      []string{},
@@ -118,8 +126,21 @@ func (d *DB) EnsureBuiltinCapabilities(ctx context.Context, orgID string) error 
 
 // ensureOneBuiltin 播种一个内置能力（若该 org 还没有这个 name@version）。
 func (d *DB) ensureOneBuiltin(ctx context.Context, orgID string, bc BuiltinCapability) error {
-	// 已存在就跳过（不改内容：capability_versions 是 append-only，不变量 I8）
-	if _, err := d.GetCapability(ctx, orgID, bc.Name, bc.Version); err == nil {
+	// 已存在就跳过**内容**（append-only，不变量 I8），但显示名要补齐。
+	//
+	// 这是为了让**已有组织**也拿到内置能力预置的显示名：这个字段是后加的，
+	// 老库里的内置能力行 display_name 还是空串。如果这里直接 return，
+	// 那些组织的能力页会一直显示 github@1 —— 而「内置的名字
+	// 由我们预置好」这个承诺就对老用户失效了。
+	//
+	// 只补空值，不覆盖用户改过的名字：用户把「GitHub webhook」改成
+	// 「我们的 PR 入口」以后，不能被启动流程改回去。
+	if existing, err := d.GetCapability(ctx, orgID, bc.Name, bc.Version); err == nil {
+		if bc.DisplayName != "" && existing.DisplayName == "" {
+			if uerr := d.SetCapabilityDisplayName(ctx, orgID, existing.ID, bc.DisplayName); uerr != nil {
+				return fmt.Errorf("backfill display name for builtin %s@%d: %w", bc.Name, bc.Version, uerr)
+			}
+		}
 		return nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("probe builtin capability %s@%d: %w", bc.Name, bc.Version, err)
@@ -136,6 +157,7 @@ func (d *DB) ensureOneBuiltin(ctx context.Context, orgID string, bc BuiltinCapab
 	c := &CapabilityVersion{
 		OrgID:        orgID,
 		Name:         bc.Name,
+		DisplayName:  bc.DisplayName,
 		Version:      bc.Version,
 		ParamsSchema: json.RawMessage(bc.ParamsSchema),
 		Outputs:      outputs,

@@ -86,12 +86,14 @@
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
 		capabilities: [
 			// 内置起点（source=builtin，outputs 空，任意事件类型）
-			cap("github", 1, [], { type: "object" }, "builtin"),
-			cap("cron", 1, [], { type: "object" }, "builtin"),
-			cap("http", 1, [], { type: "object" }, "builtin"),
-			cap("manual", 1, [], { type: "object" }, "builtin"),
+			// 内置能力的显示名是**预置好的**（用户不需要自己取），
+			// 与 internal/store/builtin.go 的 BuiltinCapabilities 一字对应。
+			cap("github", 1, [], { type: "object" }, "builtin", "GitHub webhook"),
+			cap("cron", 1, [], { type: "object" }, "builtin", "定时触发"),
+			cap("http", 1, [], { type: "object" }, "builtin", "通用 HTTP 事件"),
+			cap("manual", 1, [], { type: "object" }, "builtin", "手动触发"),
 			// 中枢执行的终端能力
-			cap("notify.phone", 1, [], { type: "object" }, "builtin"),
+			cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知"),
 			// 用户能力：有参数、有分叉
 			cap("analyze-pr", 1, ["needs-fix", "approved"], {
 				type: "object",

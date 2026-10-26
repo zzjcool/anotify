@@ -1127,7 +1127,11 @@ caps:
   list:
     title: 能力列表
   form:
+    display_name: 名字（给人看）
+    display_name_ph: 例如「分析 PR」「部署预发」
+    display_name_hint: 界面上显示这个。留空就用下面的技术名。
     name: 能力名
+    name_hint: 技术名：节点声明、边、日志都用它，建好后不能改。
     outputs: 出口名（逗号分隔）
     outputs_hint: 出口是封闭集合——建边时只能选这里声明过的名字。
     schema: 参数校验（JSON Schema）
