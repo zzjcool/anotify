@@ -1267,6 +1267,14 @@ sources:
     no_params: This capability takes no parameters
     bad_json: Parameter {k} is not valid JSON
     bad_num: Parameter {k} is not a number
+    pm_literal: "Fixed value"
+    pm_map: "From event"
+    from_hint: "Dot-path into the event payload, e.g. pull_request.title or items.0.name. Falls back to the default value."
+    default_ph: "Default (optional)"
+    need_from: "Param {k} is set to \"From event\"; the payload path is required"
+    payload: "Event fields (optional)"
+    payload_hint: "Fields to include on each scheduled run, as a JSON object like {\"env\":\"prod\"}. Target param mappings can reference them."
+    bad_payload: "Event fields must be a JSON object like {\"env\":\"prod\"}"
   preset:
     hourly: Hourly
     daily3: Daily 3:00

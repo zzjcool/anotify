@@ -1267,6 +1267,14 @@ sources:
     no_params: 该能力不需要参数
     bad_json: 参数 {k} 不是合法 JSON
     bad_num: 参数 {k} 不是数字
+    pm_literal: "固定值"
+    pm_map: "从事件取值"
+    from_hint: "按点号路径从事件 payload 取值，如 pull_request.title 或 items.0.name。取不到时用默认值。"
+    default_ph: "默认值（可选）"
+    need_from: "参数 {k} 选了「从事件取值」，要填 payload 路径"
+    payload: "事件字段（可选）"
+    payload_hint: "定时触发时带上这些字段，写成 JSON 对象，如 {\"env\":\"prod\"}。出口参数的映射可以引用它们。"
+    bad_payload: "事件字段必须是 JSON 对象，如 {\"env\":\"prod\"}"
   preset:
     hourly: 每小时
     daily3: 每天 3:00
