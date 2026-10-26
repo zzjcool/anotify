@@ -59,9 +59,9 @@ func (l Lifecycle) MaxAttemptsOrDefault() int {
 // Outputs 是出口名的唯一来源，同时是 edges.from_port 的封闭集合（不变量 I2）。
 // 没有 Kind 字段——kind 由 DeriveKind 推导，不落库（不变量 I3）。
 type CapabilityVersion struct {
-	ID           string          `json:"id"`
-	OrgID        string          `json:"orgId"`
-	Name         string          `json:"name"`
+	ID    string `json:"id"`
+	OrgID string `json:"orgId"`
+	Name  string `json:"name"`
 	// DisplayName 是**纯展示**标签（用户自己取的名字，如「分析 PR」）。
 	// 空串表示没取，前端回落到 name@version。
 	// 它不参与路由、不参与 content_hash —— 改它不该产生新版本。
