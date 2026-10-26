@@ -2171,7 +2171,42 @@ components:
         orgId: { type: string }
         name: { type: string }
         kind: { type: string, enum: [cron, webhook, manual] }
-        config: { type: object }
+        config:
+          type: object
+          description: |
+            按 kind 解释的配置。所有 kind 都可以带 `vars`。
+
+            `vars` 是这个源对外暴露的变量表，出口参数用 `{var: "<name>"}` 引用它们。
+            每个变量**恰好**是两种之一：
+
+            - `{name, from}`  —— 从事件 payload 按点号路径取值（webhook 用）
+            - `{name, value}` —— 固定值（cron/manual 用，它们没有外部 payload）
+
+            中枢只做"取值并原样传"，**不求值**（不变量 I6）：不支持字符串拼接、
+            条件、函数调用或 `{{...}}` 模板语法。
+          properties:
+            expr: { type: string, description: "cron 专用：五段表达式" }
+            tz: { type: string, description: "cron 专用：时区，默认 Local" }
+            payload:
+              type: object
+              description: |
+                cron 专用：触发时携带的事件字段。等价于"所有 value 型变量"，
+                新配置请优先用 `vars`。
+            vars:
+              type: array
+              description: 源变量表。名字必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$` 且不重复。
+              items:
+                type: object
+                required: [name]
+                properties:
+                  name: { type: string, example: "lines" }
+                  from:
+                    type: string
+                    description: |
+                      payload 点号路径，如 `pull_request.additions` 或 `items.0.name`。
+                      与 `value` 互斥。
+                  value:
+                    description: 固定值（任意 JSON 类型）。与 `from` 互斥。
         enabled: { type: boolean }
         targets:
           type: array
@@ -2181,7 +2216,19 @@ components:
             required: [capabilityId]
             properties:
               capabilityId: { type: string }
-              params: { type: object }
+              params:
+                type: object
+                description: |
+                  参数值。三种形态：
+
+                  - **字面量**：`{"env": "prod"}` —— 原样传给能力
+                  - **引用源变量**：`{"lines": {"var": "lines", "as": "integer"}}`
+                  - **直接取 payload 路径**：`{"lines": {"from": "pr.additions"}}`
+
+                  后两种可带 `default`（未命中时的回退值）与 `as`
+                  （强制类型：string/number/boolean/json）。
+                  类型未指定时按目标能力 `paramsSchema` 自动推断。
+                  `from` 与 `var` 互斥。
         targetCaps:
           type: array
           description: |

@@ -116,6 +116,31 @@
         opacity: 1;
         transform: translateY(0);
       }
+      /* 变量表：$name = 来源。出口参数里的 `← $name` 指的就是这里，
+         不显示出来用户无从知道变量来自哪。 */
+      .var-kv {
+        display: grid;
+        gap: 0.2rem;
+      }
+      .var-kv-row {
+        display: flex;
+        align-items: baseline;
+        gap: 0.3rem;
+        font-family: var(--mono, ui-monospace, monospace);
+        font-size: 0.7rem;
+      }
+      .var-kv-name {
+        color: var(--accent);
+      }
+      .var-kv-eq {
+        color: var(--faint);
+      }
+      .var-kv-path {
+        color: var(--muted);
+      }
+      .var-kv-lit {
+        color: #7dd3a8;
+      }
     </style>
 {{end}}
 
@@ -361,13 +386,6 @@
           if (SRC.lastFiredAt) {
             add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
           }
-          // 自定义事件字段：cron 没有外部 payload，这些是它自带的数据
-          if (cfg.payload && Object.keys(cfg.payload).length) {
-            add(
-              t("srcpage.cfg_payload", "事件字段"),
-              code(JSON.stringify(cfg.payload), "param-val"),
-            );
-          }
         } else if (SRC.kind === "webhook") {
           if (SRC.hookUrl) {
             const url = location.origin + SRC.hookUrl;
@@ -393,6 +411,28 @@
           );
           if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
         }
+        // 变量：这个源对外提供哪些数据。出口参数的 `← $name` 指的就是这里，
+        // 不显示出来的话用户看到 $lines 无从知道它来自哪。
+        const varDefs = Array.isArray(cfg.vars) ? cfg.vars : [];
+        if (varDefs.length) {
+          const box = el("div", "var-kv");
+          for (const v of varDefs) {
+            const line = el("div", "var-kv-row");
+            line.appendChild(el("span", "var-kv-name", "$" + v.name));
+            line.appendChild(el("span", "var-kv-eq", "="));
+            const hasVal = Object.prototype.hasOwnProperty.call(v, "value");
+            line.appendChild(
+              el(
+                "span",
+                hasVal ? "var-kv-lit" : "var-kv-path",
+                hasVal ? JSON.stringify(v.value) : "payload." + v.from,
+              ),
+            );
+            box.appendChild(line);
+          }
+          add(t("srcpage.vars", "变量"), box);
+        }
+
         add(t("srcpage.created", "创建时间"), fmtTime(SRC.createdAt));
 
         c.appendChild(dl);
@@ -440,17 +480,30 @@
               const row = el("div", "param-row");
               row.appendChild(el("span", "param-key", k));
 
-              // 判断是不是映射声明：必须与前端表单/sources.html 的 isMappingDecl 一致
+              // 判断是不是引用声明：必须与 sources.html 的 isMappingDecl 一致。
+              // 两种形态：{from:"payload.path"} 或 {var:"变量名"}。
               const isMap =
                 v &&
                 typeof v === "object" &&
                 !Array.isArray(v) &&
-                Object.prototype.hasOwnProperty.call(v, "from") &&
-                Object.keys(v).every((x) => x === "from" || x === "default" || x === "as");
+                (Object.prototype.hasOwnProperty.call(v, "from") ||
+                  Object.prototype.hasOwnProperty.call(v, "var")) &&
+                !(Object.prototype.hasOwnProperty.call(v, "from") &&
+                  Object.prototype.hasOwnProperty.call(v, "var")) &&
+                Object.keys(v).every(
+                  (x) => x === "from" || x === "var" || x === "default" || x === "as",
+                );
 
               if (isMap) {
                 row.appendChild(el("span", "param-map-badge", t("srcpage.mapped", "映射")));
-                row.appendChild(el("span", "param-val", "← payload." + v.from));
+                // 变量引用比 payload 路径好读：显示 $name 而不是 {"var":"name"}
+                row.appendChild(
+                  el(
+                    "span",
+                    "param-val",
+                    v.var ? "← $" + v.var : "← payload." + v.from,
+                  ),
+                );
                 if (Object.prototype.hasOwnProperty.call(v, "default")) {
                   row.appendChild(
                     el(

@@ -1128,7 +1128,7 @@ caps:
     title: Capacidades
   form:
     display_name: Nombre visible
-    display_name_ph: p. ej. "Analizar PR", "Desplegar staging"
+    display_name_ph: "p. ej. «Analizar PR», «Desplegar a staging»"
     display_name_hint: Se muestra en la interfaz. Si lo dejas vacío se usa el nombre técnico.
     name: Nombre de la capacidad
     name_hint: 'Nombre técnico: lo usan nodos, aristas y logs. No se puede cambiar después.'
@@ -1204,6 +1204,14 @@ nodes:
     step2: Arráncalo en la máquina del nodo con el token; se conecta de vuelta por WS
   view_events: Ver eventos
 sources:
+  detail: "Detalles"
+  open_detail: "Abrir detalles"
+  "on": "En ejecución"
+  disabled_ok: "Desactivado"
+  enabled_ok: "Activado"
+  toggle_failed: "La operación falló"
+  confirm_delete: "Esto no se puede deshacer. ¿Eliminar «{n}»?"
+  delete_failed: "Error al eliminar"
   title: Fuentes
   subtitle: 'Una fuente es la entrada de eventos: un temporizador se dispara, un webhook es llamado, o haces clic en ejecutar. Produce eventos y los despacha a las capacidades que elijas.'
   new: Nueva fuente
@@ -1364,6 +1372,7 @@ trace:
     failed: Fallidas
 
 srcpage:
+  vars: "Variables"
   title: "Detalle del origen"
   loading: "Cargando…"
   back: "Volver a orígenes"
