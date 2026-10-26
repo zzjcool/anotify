@@ -1757,8 +1757,35 @@ async function checkWaterfall(page) {
 		if (cg.hasGraph) {
 			H.check("拓扑图有节点", cg.nodeCount >= 2, `nodes=${cg.nodeCount}`);
 			H.check("拓扑图有边", cg.edgeCount >= 1, `edges=${cg.edgeCount}`);
-			H.check("节点显示能力名@版本",
-				cg.labels.some((x) => /@\d/.test(x)), cg.labels.join(","));
+			// 节点标题用 capLabel：**有 displayName 显示显示名，没有则回落
+			// 到 name@version**。
+			//
+			// 这条断言原来写成"图上存在某个含 @版本 的标签"，它依赖
+			// "mock 里恰好有几个能力没填 displayName" —— 那只是数据形状，
+			// 不是契约。后来把 mock 的显示名补全（为了让变量演示有连贯的
+			// 业务语义），断言就假失败了。
+			//
+			// 改成直接验 capLabel 的两条分支，与数据无关。
+			const lbl = await page.evaluate(() => {
+				const f = window.Anotify.capLabel;
+				if (typeof f !== "function") return null;
+				return {
+					withDN: f({ name: "acme-fix", version: 1, displayName: "应用修复" }),
+					noDN: f({ name: "acme-fix", version: 1 }),
+					blankDN: f({ name: "acme-fix", version: 1, displayName: "   " }),
+					withVer: f({ name: "x", version: 2, displayName: "名字" }, { withVersion: true }),
+				};
+			});
+			H.check(
+				"capLabel：有显示名用显示名，没填回落 name@version",
+				lbl !== null &&
+					lbl.withDN === "应用修复" &&
+					lbl.noDN === "acme-fix@1" &&
+					// 全空白也算"没填"，否则会出现只剩空格的标题
+					lbl.blankDN === "acme-fix@1" &&
+					lbl.withVer === "名字@2",
+				JSON.stringify(lbl),
+			);
 			// 九态里的 succeeded / failed 应该用不同状态色（右下角小圆点）。
 			//
 			// 单条 trace 可能全是同一种状态（比如全成功），所以"这条链里有
@@ -1874,10 +1901,24 @@ async function checkFlowChart(page, base) {
 		`icons=${g.icons.length} subs=${g.subTitles.length}`);
 	H.check("图上有节点", (g.nodeCount || 0) >= 2, `nodes=${g.nodeCount}`);
 	H.check("图上有边", (g.edgeCount || 0) >= 2, `edges=${g.edgeCount}`);
+	// 节点标题走 capLabel：有 displayName 用显示名，否则回落 name@version。
+	//
+	// 原来断言"图上存在含 @版本 的标签"，依赖 mock 里恰好有几个能力没填
+	// displayName —— 那是数据形状不是契约。把 mock 显示名补全（为了让变量
+	// 演示有连贯的业务语义）后它就假失败了。改成验规则本身。
+	const lbl = await page.evaluate(() => {
+		const f = window.Anotify && window.Anotify.capLabel;
+		if (typeof f !== "function") return null;
+		return {
+			withDN: f({ name: "acme-fix", version: 1, displayName: "应用修复" }),
+			noDN: f({ name: "acme-fix", version: 1 }),
+			blankDN: f({ name: "acme-fix", version: 1, displayName: "   " }),
+		};
+	});
 	H.check(
-		"节点显示能力名@版本",
-		(g.labels || []).some((x) => /@\d/.test(x)),
-		(g.labels || []).join(","),
+		"节点标题有显示名用显示名，没填回落 name@version",
+		lbl !== null && lbl.withDN === "应用修复" && lbl.noDN === "acme-fix@1" && lbl.blankDN === "acme-fix@1",
+		JSON.stringify(lbl),
 	);
 	H.check("边上标了出口名", (g.ports || []).length >= 2, (g.ports || []).join(","));
 	H.check("环路用专门的边标记画出来", g.hasCycleEdge === true);

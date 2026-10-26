@@ -1128,7 +1128,7 @@ caps:
     title: Capabilities
   form:
     display_name: Display name
-    display_name_ph: e.g. "Analyze PR", "Deploy staging"
+    display_name_ph: "e.g. \"Analyze PR\", \"Deploy to staging\""
     display_name_hint: Shown in the UI. Leave blank to use the technical name below.
     name: Capability name
     name_hint: Technical name — nodes, edges and logs use it. Cannot be changed after creation.
@@ -1204,6 +1204,14 @@ nodes:
     step2: Start it on the node machine with the token; it connects back over WS
   view_events: View events
 sources:
+  detail: "Details"
+  open_detail: "Open details"
+  "on": "Running"
+  disabled_ok: "Disabled"
+  enabled_ok: "Enabled"
+  toggle_failed: "Operation failed"
+  confirm_delete: "This cannot be undone. Delete \"{n}\"?"
+  delete_failed: "Delete failed"
   title: Sources
   subtitle: 'A source is where events enter: a timer fires, a webhook gets called, or you click run. It produces events and dispatches them to the capabilities you pick.'
   new: New source
@@ -1364,6 +1372,7 @@ trace:
     failed: Failed
 
 srcpage:
+  vars: "Variables"
   title: "Source"
   loading: "Loading…"
   back: "Back to sources"

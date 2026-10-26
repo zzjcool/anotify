@@ -1,6 +1,1 @@
-{
-	"subagents": {
-		"defaultModel": "codebuddy/glm-5.2",
-		"defaultThinking": "high"
-	}
-}
+{}

@@ -94,14 +94,18 @@
 			// 中枢执行的终端能力
 			cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知"),
 			// 用户能力：有参数、有分叉
-			cap("analyze-pr", 1, ["needs-fix", "approved"], {
+			cap(
+				"analyze-pr",
+				1,
+				["needs-fix", "approved"],
+				{
 				type: "object",
 				required: ["changedLines"],
 				properties: {
 					changedLines: { type: "integer", minimum: 0 },
 					repo: { type: "string" },
 				},
-			}),
+			}, "custom", "分析 PR"),
 			cap(
 				"apply-fix",
 				1,
@@ -117,12 +121,20 @@
 			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏
 			// outputs 里刻意留一个没接边的端口（manual.approval）：
 			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏。
-			cap("deploy-preview", 1, ["failed", "preview.ready", "manual.approval"], {
+			cap(
+				"deploy-preview",
+				1,
+				["failed", "preview.ready", "manual.approval"],
+				{
 				type: "object",
 				required: ["env"],
 				properties: { env: { type: "string", enum: ["staging", "prod"] } },
-			}),
-			cap("report.send", 1, ["escalate"], {
+			}, "custom", "部署预发"),
+			cap(
+				"report.send",
+				1,
+				["escalate"],
+				{
 				type: "object",
 				required: ["channel", "title"],
 				properties: {
@@ -131,36 +143,56 @@
 					urgent: { type: "boolean" },
 					retries: { type: "integer", minimum: 0, maximum: 5 },
 				},
-			}),
+			}, "custom", "发告警"),
 			// 下面几个能力是为了让流向图有真实的"深度 + 分叉 + 汇聚"：
 			// 一条链只有 3 个节点看不出布局和信息密度，太简单了。
-			cap("run-tests", 1, ["passed", "failed"], {
+			cap(
+				"run-tests",
+				1,
+				["passed", "failed"],
+				{
 				type: "object",
 				properties: {
 					suite: { type: "string", enum: ["unit", "integration", "e2e"] },
 					shard: { type: "integer", minimum: 1 },
 				},
-			}),
-			cap("lint-fix", 1, ["clean", "remaining"], {
+			}, "custom", "跑测试"),
+			cap(
+				"lint-fix",
+				1,
+				["clean", "remaining"],
+				{
 				type: "object",
 				properties: { scope: { type: "string" } },
-			}),
-			cap("gen-changelog", 1, [], {
+			}, "custom", "清理构建缓存"),
+			cap(
+				"gen-changelog",
+				1,
+				[],
+				{
 				type: "object",
 				properties: { since: { type: "string" } },
-			}),
-			cap("rollback", 1, ["done"], {
+			}, "custom", "生成变更日志"),
+			cap(
+				"rollback",
+				1,
+				["done"],
+				{
 				type: "object",
 				properties: { reason: { type: "string" } },
-			}),
-			cap("alert.oncall", 1, [], {
+			}, "custom", "回滚"),
+			cap(
+				"alert.oncall",
+				1,
+				[],
+				{
 				type: "object",
 				required: ["level"],
 				properties: {
 					level: { type: "string", enum: ["warn", "critical"] },
 					page: { type: "boolean" },
 				},
-			}),
+			}, "custom", "告警升级"),
 		],
 		edges: [],
 		nodes: [],
@@ -312,7 +344,17 @@
 				// displayName 是纯展示标签（用户自己取的名字）。
 		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
-		capabilities: ["analyze-pr", "lint-fix", "apply-fix", "report.send", "alert.oncall"].map(capRef),
+		capabilities: [
+					"analyze-pr",
+					"lint-fix",
+					"apply-fix",
+					"report.send",
+					"alert.oncall",
+					// 部署预发也放这台：源「GitHub PR」用它演示变量，
+					// 挂在离线节点上会让那条示例每次都 pruned/no_node，
+					// 用户点"立即运行"只能看到失败。
+					"deploy-preview",
+				].map(capRef),
 				instances: [
 					{ id: "nins_mock_0", index: 0, concurrency: 4, busy: 1 },
 				],
@@ -329,7 +371,7 @@
 				// displayName 是纯展示标签（用户自己取的名字）。
 		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
-		capabilities: ["deploy-preview", "run-tests", "gen-changelog"].map(capRef),
+		capabilities: ["run-tests", "gen-changelog"].map(capRef),
 				instances: [{ id: "nins_mock_1", index: 0, concurrency: 2, busy: 0 }],
 			},
 			{
@@ -355,19 +397,41 @@
 		const analyze = capByName("analyze-pr");
 		const deploy = capByName("deploy-preview");
 		const report = capByName("report.send");
+		// 三个源刻意覆盖**变量用法的三种典型形态**，让变量功能打开就能看到：
+		//
+		//   每晚体检（cron）    变量全是固定值 —— 定时任务没有外部 payload
+		//   GitHub PR（webhook）变量从请求体取 —— 真实场景的主力
+		//   发布审批（webhook）一条边用变量、另一条边用字面量 —— 混用也很常见
+		//
+		// 如果这里全写成字面量，用户点开任何一个源都看不到变量长什么样，
+		// 新功能等于没演示。
 		state.sources = [
 			{
 				id: "src_mock_nightly",
 				orgId: ORG,
 				name: "每晚体检",
 				kind: "cron",
-				config: { expr: "0 3 * * *", tz: "Local" },
+				config: {
+					expr: "0 3 * * *",
+					tz: "Local",
+					// cron 的变量只能是固定值：它没有请求体可读。
+					// 这也是"变量"比"payload 路径"更通用的地方 —— 同一种写法
+					// 既能描述 webhook 的字段，也能描述定时任务的常量。
+					vars: [
+						{ name: "changedLines", value: 120 },
+						{ name: "repo", value: "anotify" },
+					],
+					payload: { changedLines: 120, repo: "anotify" },
+				},
 				enabled: true,
 				lastFiredAt: now() - 3600 * 9,
 				nextFireAt: now() + 3600 * 7,
 				createdAt: now() - 86400 * 2,
 				targets: [
-					{ capabilityId: analyze.id, params: { changedLines: 120, repo: "anotify" } },
+					{
+						capabilityId: analyze.id,
+						params: { changedLines: { var: "changedLines" }, repo: { var: "repo" } },
+					},
 				],
 			},
 			{
@@ -375,30 +439,57 @@
 				orgId: ORG,
 				name: "GitHub PR",
 				kind: "webhook",
-				config: { token: "src_mocktoken_abc123" },
+				config: {
+					token: "src_mocktoken_abc123",
+					// 变量把 GitHub 那套深层路径收敛成几个短名字。
+					// 出口参数里只写 {var:"lines"}，不用记
+					// pull_request.additions 这种路径，改的时候也只改这里。
+					vars: [
+						{ name: "lines", from: "pull_request.additions" },
+						{ name: "repo", from: "repository.name" },
+						{ name: "title", from: "pull_request.title" },
+						{ name: "author", from: "pull_request.user.login" },
+						{ name: "env", value: "staging" },
+					],
+				},
 				enabled: true,
 				lastFiredAt: now() - 600,
 				nextFireAt: null,
 				createdAt: now() - 86400,
 				targets: [
-					{ capabilityId: analyze.id, params: { changedLines: 350 } },
-					{ capabilityId: deploy.id, params: { env: "staging" } },
+					{
+						capabilityId: analyze.id,
+						params: { changedLines: { var: "lines" }, repo: { var: "repo" } },
+					},
+					{ capabilityId: deploy.id, params: { env: { var: "env" } } },
 				],
 			},
 			{
 				id: "src_mock_report",
 				orgId: ORG,
-				name: "每日汇总",
+				name: "发布审批",
 				kind: "manual",
-				config: {},
+				config: {
+					vars: [
+						{ name: "title", value: "v1.4.0 发布" },
+						{ name: "channel", value: "slack" },
+					],
+				},
 				enabled: false,
 				lastFiredAt: null,
 				nextFireAt: null,
 				createdAt: now() - 3600 * 5,
+				// 一条边用变量、一条边用字面量：混用是允许的，
+				// 也正是真实配置最常见的样子（有些值随事件变，有些写死）。
 				targets: [
 					{
 						capabilityId: report.id,
-						params: { channel: "slack", title: "每日汇总", urgent: false, retries: 2 },
+						params: {
+							channel: { var: "channel" },
+							title: { var: "title" },
+							urgent: false,
+							retries: 2,
+						},
 					},
 				],
 			},

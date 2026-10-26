@@ -1128,7 +1128,7 @@ caps:
     title: ケイパビリティ一覧
   form:
     display_name: 表示名
-    display_name_ph: 例：「PR を分析」「ステージングへ配備」
+    display_name_ph: "例：「PR を分析」「ステージングへデプロイ」"
     display_name_hint: 画面にはこれが表示されます。空欄なら下の技術名を使います。
     name: ケイパビリティ名
     name_hint: 技術名：ノード宣言・辺・ログで使います。作成後は変更できません。
@@ -1204,6 +1204,14 @@ nodes:
     step2: ノードのマシンでトークンを使って起動。WS でハブに接続します
   view_events: イベントを見る
 sources:
+  detail: "詳細"
+  open_detail: "詳細を開く"
+  "on": "実行中"
+  disabled_ok: "無効化しました"
+  enabled_ok: "有効化しました"
+  toggle_failed: "操作に失敗しました"
+  confirm_delete: "削除すると元に戻せません。「{n}」を削除しますか？"
+  delete_failed: "削除に失敗しました"
   title: ソース
   subtitle: ソースはイベントの入口です：タイマーが発火する、webhook が呼ばれる、または手動で実行します。自らイベントを生成し、選択したケイパビリティに配信します。
   new: ソースを作成
@@ -1364,6 +1372,7 @@ trace:
     failed: 失敗
 
 srcpage:
+  vars: "変数"
   title: "ソース詳細"
   loading: "読み込み中…"
   back: "ソース一覧へ戻る"
