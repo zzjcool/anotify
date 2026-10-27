@@ -417,7 +417,7 @@ async function main() {
 		);
 		if (jaLink) {
 			await jaLink.click();
-			await pg.waitForURL("**/ja/keys.html", { timeout: 8000 });
+			await H.waitForUrl(pg, /ja\/keys\.html/, 8000);
 			const finalUrl = pg.url();
 			H.check(
 				"AC-3.3 en/keys → ja lands on /ja/keys.html",
@@ -447,7 +447,7 @@ async function main() {
 		H.check("AC-3.3 ja/login → zh link exists", !!zhLink, "no zh link");
 		if (zhLink) {
 			await zhLink.click();
-			await pg.waitForURL("**/login.html*", { timeout: 8000 });
+			await H.waitForUrl(pg, /login\.html/, 8000);
 			const finalUrl = pg.url();
 			/* Should be /login.html (default lang = root, no prefix) */
 			H.check(
@@ -495,7 +495,7 @@ async function main() {
 		);
 		if (esLink) {
 			await esLink.click();
-			await pg.waitForURL("**/es/receivers.html*", { timeout: 8000 });
+			await H.waitForUrl(pg, /es\/receivers\.html/, 8000);
 			const finalUrl = pg.url();
 			H.check(
 				"AC-3.4 switch to es preserves ?msg=ntf_test1",
@@ -694,7 +694,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForURL("**/en/login.html*", { timeout: 8000 });
+		await H.waitForUrl(pg, /en\/login\.html/, 8000);
 		const finalUrl = pg.url();
 		H.check(
 			"AC-4.1 /en/index.html (guarded) → redirects to /en/login.html",
@@ -707,7 +707,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await pg.waitForURL("**/ja/login.html*", { timeout: 8000 });
+		await H.waitForUrl(pg, /ja\/login\.html/, 8000);
 		const finalUrlJa = pg.url();
 		H.check(
 			"AC-4.1 /ja/index.html (guarded) → redirects to /ja/login.html",

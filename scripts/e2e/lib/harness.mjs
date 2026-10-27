@@ -125,6 +125,47 @@ export async function mockExternalCdn(ctx) {
 	});
 }
 
+// waitForUrl 等页面导航到指定 URL，**轮询最终状态**而不是监听单次导航事件。
+//
+// 为什么需要它（真实踩过，多个套件偶发失败）：
+//
+//   未登录页可能同时发出好几个请求（/v1/auth/me、/v1/tasks、/v1/stats），
+//   每个 401 都会执行一次 location.href = "login.html?next=..."。
+//   第二次赋值会 **中止** 前一次导航，于是 page.waitForURL() 抛出
+//   net::ERR_ABORTED（"maybe frame was detached"）。调用方一旦写
+//   .catch(() => {}) 然后立即读 page.url()，拿到的还是被打断前的旧地址，
+//   断言就假失败 —— 而且频率随机器负载变化，看起来像是随机 flaky。
+//
+//   产品行为本身是对的（最终一定会停在 login.html），错的只是测试用
+//   “等一次导航事件”去断言“最终落在哪”。所以这里改成轮询 page.url()，
+//   中途的 abort 与我们无关。
+//
+export async function waitForUrl(page, pattern, timeout = 8000) {
+	const re =
+		pattern instanceof RegExp
+			? pattern
+			: new RegExp(
+					"^" +
+						String(pattern)
+							.split("*") // 把 Playwright 风格的 **/x* 变成正则
+							.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+							.join(".*") +
+						"$",
+				);
+	const deadline = Date.now() + timeout;
+	let last = "";
+	while (Date.now() < deadline) {
+		try {
+			last = page.url();
+		} catch {
+			/* 页面正在换文档时 url() 可能拿到过渡态，下一轮再看 */
+		}
+		if (re.test(last)) return last;
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	return last;
+}
+
 export async function waitForAppReady(page, pageType, opts = {}) {
 	const timeout = 10000;
 	try {

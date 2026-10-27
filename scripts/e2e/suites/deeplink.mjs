@@ -286,7 +286,7 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await page.waitForURL("**/login.html*", { timeout: 8000 });
+		await H.waitForUrl(page, /login\.html/, 8000);
 		const u = page.url();
 		H.check("未登录点深链 → 跳登录页", u.includes("login.html"), u);
 		let next = "";

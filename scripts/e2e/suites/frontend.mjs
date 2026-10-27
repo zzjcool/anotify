@@ -197,10 +197,13 @@ async function main() {
 				waitUntil: "load",
 				timeout: 15000,
 			});
-			// 等客户端 JS 触发 401 → 跳转 login.html
-			await page
-				.waitForURL("**/login.html*", { timeout: 8000 })
-				.catch(() => {});
+			// 等客户端 JS 触发 401 → 跳转 login.html。
+			//
+			// 用轮询而不是 waitForURL：页面上多个并发 401 各自赋值 location.href，
+			// 后一次会中止前一次导航，waitForURL 因此抛 ERR_ABORTED。原本
+			// .catch(() => {}) 吞掉后立即读 url()，拿到的还是旧地址 —— 偶发假失败。
+			// 详见 harness.waitForUrl 的注释。
+			await H.waitForUrl(page, /login\.html/, 8000);
 			const finalUrl = page.url();
 			H.check(
 				`未登录访问 ${p} → 跳转到 login.html`,
@@ -1086,7 +1089,8 @@ async function checkSchemaEditor(page) {
 	const gen = await page.evaluate(() => {
 		try {
 			return JSON.parse(document.getElementById("cap-schema").value);
-		} catch (e) {
+		} catch {
+			// 解析失败 = 不是合法 JSON，回 null 给下面的断言判断
 			return null;
 		}
 	});
@@ -1137,7 +1141,8 @@ async function checkSchemaEditor(page) {
 	const kept = await page.evaluate(() => {
 		try {
 			return JSON.parse(document.getElementById("cap-schema").value);
-		} catch (e) {
+		} catch {
+			// 解析失败 = 不是合法 JSON，回 null 给下面的断言判断
 			return null;
 		}
 	});
@@ -1926,6 +1931,191 @@ async function checkFlowChart(page, base) {
 	// 图上只有"源"这一个触发器是根，能力节点都该有上游
 	H.check("只有源节点被标成根（触发器）", g.rootCount === 1, `roots=${g.rootCount}`);
 	H.check("所有节点都有 dagre 算出的固定坐标", g.hasCoords === true);
+
+	// ---- 全屏（#117）----
+	//
+	// 全屏是这个图的主要使用方式：520px 的卡片放下 11 个节点只能缩到 0.46，
+	// 字小到读不了。所以这条链路必须固化：
+	//
+	//   ① 控件里有全屏按钮（不是要用户去按 F11 —— 那样连控件都没了）；
+	//   ② 点击后容器尺寸 = 视口（不能只是 fixed：祖先有 transform 时会被裁）；
+	//   ③ 容器真的移到了 body 下（脱出卡片裁剪）；
+	//   ④ 占位符 Height = 原高度（否则关掉时页面会跳）；
+	//   ⑤ Esc 可退，且样式/位置/滚动都复原；
+	//   ⑥ 全屏后 scale 变大（说明真的重排了，不是把图拉大）。
+	const fsBtn = await page.evaluate(() => {
+		const b = document.querySelector('.flograph [data-fg-action="fullscreen"]');
+		if (!b) return null;
+		return {
+			hasIcon: !!b.querySelector("svg"),
+			// 字体缺字会把 Unicode 符号画成豆腐块，所以控件必须是 SVG 图标
+			text: b.textContent.trim(),
+			title: b.getAttribute("title"),
+			aria: b.getAttribute("aria-label"),
+		};
+	});
+	H.check(
+		"流向图控件里有全屏按钮（SVG 图标 + 可读名称）",
+		fsBtn !== null && fsBtn.hasIcon && fsBtn.text === "" && !!fsBtn.aria,
+		JSON.stringify(fsBtn),
+	);
+
+	if (fsBtn) {
+		const before = await page.evaluate(() => {
+			const h = document.querySelector(".flograph");
+			return {
+				w: Math.round(h.getBoundingClientRect().width),
+				h: Math.round(h.getBoundingClientRect().height),
+				scale: h._graph._debug.scale(),
+			};
+		});
+		await page.locator('.flograph [data-fg-action="fullscreen"]').click();
+		// 事件等待而不是固定 sleep：全屏是「改样式 → 下一帧重排 → fit」，
+		// 固定 500ms 既慢又不稳（并行跑 4 个 Chrome 时可能还没排完）。
+		// 判据用最终状态本身：容器已在 body 下且尺寸铺满视口。
+		await page
+			.waitForFunction(
+				() => {
+					const h = document.querySelector(".flograph");
+					if (!h || h.parentElement !== document.body) return false;
+					const r = h.getBoundingClientRect();
+					return (
+						Math.abs(r.width - window.innerWidth) < 2 &&
+						Math.abs(r.height - window.innerHeight) < 2
+					);
+				},
+				null,
+				{ timeout: 3000 },
+			)
+			.catch(() => {});
+		const on = await page.evaluate(() => {
+			const h = document.querySelector(".flograph");
+			const r = h.getBoundingClientRect();
+			const ph = document.querySelector(".flograph-placeholder");
+			return {
+				parentIsBody: h.parentElement === document.body,
+				w: Math.round(r.width),
+				h: Math.round(r.height),
+				vw: window.innerWidth,
+				vh: window.innerHeight,
+				scale: h._graph._debug.scale(),
+				isFs: h._graph._debug.fullscreen(),
+				placeholderH: ph && !ph.hidden ? Math.round(ph.getBoundingClientRect().height) : 0,
+				// 全屏时不能还能拖动背后页面：html 上锁了 overflow
+				locked: document.documentElement.classList.contains("flograph-fullscreen-open"),
+				// 退出提示只在该显示的时候显示
+				hintVisible:
+					getComputedStyle(h.querySelector(".flograph-fullscreen-hint")).display !== "none",
+			};
+		});
+		H.check(
+			"点全屏后容器铺满视口且脱离卡片裁剪",
+			on.isFs === true &&
+				on.parentIsBody === true &&
+				on.w === on.vw &&
+				on.h === on.vh,
+			JSON.stringify({ fs: on.isFs, body: on.parentIsBody, box: [on.w, on.h], vp: [on.vw, on.vh] }),
+		);
+		H.check(
+			"全屏后重新布局（scale 变大）并锁住页面滚动",
+			on.scale > before.scale && on.locked === true && on.hintVisible === true,
+			JSON.stringify({ before: before.scale, after: on.scale, locked: on.locked }),
+		);
+		H.check(
+			"全屏时占位符撑住原高度（关掉不会跳）",
+			on.placeholderH === before.h,
+			`placeholder=${on.placeholderH} before=${before.h}`,
+		);
+
+		// Esc 退出：等容器真的回到卡片里再断言
+		await page.keyboard.press("Escape");
+		await page
+			.waitForFunction(
+				() => {
+					const h = document.querySelector(".flograph");
+					return h !== null && h.parentElement !== document.body && h.closest(".card") !== null;
+				},
+				null,
+				{ timeout: 3000 },
+			)
+			.catch(() => {});
+		const off = await page.evaluate(() => {
+			const h = document.querySelector(".flograph");
+			const r = h.getBoundingClientRect();
+			return {
+				isFs: h._graph._debug.fullscreen(),
+				backInCard: !!h.closest(".card"),
+				w: Math.round(r.width),
+				h: Math.round(r.height),
+				placeholderGone: !document.querySelector(".flograph-placeholder:not([hidden])"),
+				locked: document.documentElement.classList.contains("flograph-fullscreen-open"),
+				styleAttr: h.getAttribute("style"),
+			};
+		});
+		H.check(
+			"Esc 退出全屏并完全复原（回卡片 / 原尺寸 / 无残留样式）",
+			off.isFs === false &&
+				off.backInCard === true &&
+				off.w === before.w &&
+				off.h === before.h &&
+				off.placeholderGone === true &&
+				off.locked === false &&
+				!off.styleAttr,
+			JSON.stringify({ ...off, before }),
+		);
+	}
+
+	// 卡片标题行的「全屏」文字按钮：图上右下角的图标按钮容易漏看，
+	// 这条入口必须也能用（它只是转发到同一个 setFullscreen）。
+	const headFs = await page.evaluate(() => {
+		const c = document.querySelector(".flograph").closest(".card");
+		const head = c && c.querySelector(".src-section-head");
+		const btn = head && head.querySelector("button");
+		if (!btn) return null;
+		const before = document.querySelector(".flograph")._graph._debug.fullscreen();
+		btn.click();
+		return { label: btn.textContent.trim(), before };
+	});
+	H.check(
+		"卡片标题上有「全屏」入口",
+		headFs !== null && headFs.label.length > 0 && headFs.before === false,
+		JSON.stringify(headFs),
+	);
+	if (headFs) {
+		await page
+			.waitForFunction(
+				() => {
+					const h = document.querySelector(".flograph");
+					return h !== null && h.parentElement === document.body;
+				},
+				null,
+				{ timeout: 3000 },
+			)
+			.catch(() => {});
+		const headOn = await page.evaluate(() => {
+			const h = document.querySelector(".flograph");
+			return {
+				isFs: h._graph._debug.fullscreen(),
+				parentIsBody: h.parentElement === document.body,
+			};
+		});
+		H.check(
+			"标题入口也能进入全屏",
+			headOn.isFs === true && headOn.parentIsBody === true,
+			JSON.stringify(headOn),
+		);
+		await page.keyboard.press("Escape");
+		await page
+			.waitForFunction(
+				() => {
+					const h = document.querySelector(".flograph");
+					return h !== null && h.parentElement !== document.body;
+				},
+				null,
+				{ timeout: 3000 },
+			)
+			.catch(() => {});
+	}
 
 	// ---- 节点外观可自定义（这是换掉图库的核心理由）----
 	//
