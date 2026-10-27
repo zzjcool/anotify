@@ -583,6 +583,97 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /sources/dry-run:
+    post:
+      tags: [sources]
+      summary: 试运行（草稿，尚未保存）
+      description: |
+        用请求体里的草稿源算出"会派发什么、会剪枝什么"，**不写事件、不建任务**。
+
+        与 `POST /sources/{id}/fire` 共用同一套派发判定（`Dispatcher.Dispatch`
+        的 `DryRun` 模式），所以试运行和真实触发不会给出不同结论 ——
+        那种"试运行说能跑、真点却剪枝"的差异会直接摧毁用户对配置的信任。
+
+        不检查 `enabled`：停用状态下也该能先验证再启用。
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source:
+                  type: object
+                  description: 与创建源时的请求体同形（草稿，无需 id）
+                payload:
+                  type: object
+                  description: 用哪份 payload 试算；缺省为空对象
+                type: { type: string }
+      responses:
+        "200":
+          description: 推演结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  dispatch:
+                    type: object
+                    properties:
+                      tasks:
+                        type: array
+                        description: 会派发的出口（含求值后的 params）
+                        items: { type: object }
+                      pruned:
+                        type: array
+                        description: 被跳过的出口及原因
+                        items: { type: object }
+        "400":
+          description: 缺 source
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /sources/{id}/dry-run:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [sources]
+      summary: 试运行（已保存的源）
+      description: 同 `/sources/dry-run`，只是用库里已保存的源。
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string }
+                payload: { type: object }
+      responses:
+        "200":
+          description: 推演结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  dispatch: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 源不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /sources/{id}/fire:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }

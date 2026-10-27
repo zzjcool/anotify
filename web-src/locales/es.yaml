@@ -1329,6 +1329,16 @@ sources:
     pv_nosample: "Aún no hay eventos; dispara una vez para ver la vista previa"
     pv_missing: "No está en la muestra: «{p}»"
     pv_missing_multi: "No está en la muestra: {p}"
+    dry_run: "Simulación"
+    dry_running: "Ejecutando…"
+    dry_no_target: "Selecciona al menos una capacidad de salida"
+    dry_will_run: "Se enviará a {n} salida(s)"
+    dry_and_pruned: ", {n} omitida(s)"
+    dry_nothing: "No se enviará nada (todas omitidas)"
+    pick_no_sample: "Aún no hay eventos para usar como muestra"
+    pick_none: "Ningún campo coincide"
+    av_no_event_hook: "Aún no se han recibido eventos. Cuando el sistema externo envíe uno, aquí aparecerán los campos reales."
+    av_no_event: "Este disparador no tiene evento externo, así que no hay campos que referenciar; escribe los valores directamente en los parámetros."
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

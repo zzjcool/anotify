@@ -1585,61 +1585,48 @@
 	});
 
 	// 手动触发：真的往 state 里加事件 + 任务，页面上能看到链长出来
-	on("POST", /^\/v1\/sources\/([^/]+)\/fire$/, (ctx) => {
-		const s = state.sources.find((x) => x.id === ctx.m[1]);
-		if (!s) return err(404, "源不存在");
-		if (!s.enabled) return err(400, "source: " + s.name + " 已停用");
-
-		const b = ctx.body || {};
-		const traceId = nextTraceId();
-		// cron/manual 没有外部 payload，只有调用方显式传的那份。
-		const basePayload = {};
-		const ev = {
-			id: uid("evt"),
-			orgId: ORG,
-			traceId: traceId,
-			source: s.name,
-			type: b.type || s.name,
-			payload: Object.assign(basePayload, b.payload || {}),
-			createdAt: now(),
-		};
-		state.events.push(ev);
-
+	// planDispatch 算出"这条配置会不会真的跑起来"——**不产生任何副作用**。
+	//
+	// fire 和「试运行」共用它：fire 拿结果去建任务，试运行只展示。
+	// 抽出来是因为两边必须给出**一致**的判定，否则用户会看到
+	// "试运行说能跑，一点真的跑却剪枝了"这种最伤信任的差异。
+	//
+	// 返回 {tasks, pruned}：
+	//   tasks  —— 会派发的出口（含求值后的参数）
+	//   pruned —— 被跳过的出口及原因（no_capability / param_missing /
+	//             param_schema / param_type / no_node）
+	function planDispatch(source, payload) {
 		const tasks = [];
 		const pruned = [];
+		const varDefs = (source.config && source.config.vars) || [];
+		const resolvedVars = resolveVars(varDefs, payload);
 
-		// 先把源声明的变量求值一次（所有出口共用），
-		// 再让每个出口的参数按这份变量表解析。
-		const varDefs = (s.config && s.config.vars) || [];
-		const resolvedVars = resolveVars(varDefs, ev.payload);
-
-		for (const t of s.targets) {
+		for (const t of source.targets) {
 			const c = state.capabilities.find((x) => x.id === t.capabilityId);
 			if (!c) {
-				pruned.push({ reason: "no_capability", capabilityId: t.capabilityId, detail: "能力不存在" });
+				pruned.push({
+					reason: "no_capability",
+					capabilityId: t.capabilityId,
+					capability: null,
+					detail: "能力不存在（可能已被删除）",
+				});
 				continue;
 			}
-			// 参数模板按 payload + 变量表求值
-			const resolved = resolveParams(t.params, ev.payload, resolvedVars.values);
+			const resolved = resolveParams(t.params, payload, resolvedVars.values);
+
+			// 类型推断：含占位符的值按 schema 转（整值引用保留原类型，
+			// 混写一定是字符串但目标字段可能是 integer）
 			for (const [k, v] of Object.entries(resolved.params)) {
 				const decl = (t.params || {})[k];
-				// 类型：显式 as 优先，否则按 schema 自动推断。
-				//
-				// 自动推断是有意的：用户不该为了"把 GitHub 的字符串 title 塞进
-				// integer 字段"再去学一个 as。schema 已经声明了它要什么类型，
-				// 中枢照着转就行。as 留给"schema 说 string 但我想存数字"这种少数情况。
-				// 含占位符的值按 schema 推断类型：
-				//   整值引用 {{x}}        保留原类型（payload 是数字就是数字）
-				//   混写 PR #{{x}}        结果必是字符串，但目标字段可能是 integer，
-				//                         不转换就对数字字段永远派不出去
-				// 纯字面量不转换，尊重用户写的类型。
 				const wantAs = hasPlaceholder(decl) ? schemaPropType(c, k) : undefined;
 				const converted = coerceValue(v, wantAs);
 				if (converted === undefined) {
 					pruned.push({
 						reason: "param_type",
 						capabilityId: c.id,
-						detail: `参数 ${k} 期望 ${wantAs}，但 ${JSON.stringify(decl)} 求值得到 ${JSON.stringify(v)}，转不了`,
+						capability: c.name,
+						field: k,
+						detail: `参数 ${k} 期望 ${wantAs}，但求值得到 ${JSON.stringify(v)}，转不了`,
 					});
 					resolved.params = null;
 					break;
@@ -1647,13 +1634,14 @@
 				resolved.params[k] = converted;
 			}
 			if (resolved.params === null) continue;
-			// 取不到值又没 default 的字段：记下来报给调用方，
-			// 静默丢掉是最难查的失败
+
 			for (const m of resolved.missing) {
 				pruned.push({
 					reason: "param_missing",
 					capabilityId: c.id,
-					detail: `参数 ${m.field} 要从 payload.${m.from} 取值，但 payload 里没有`,
+					capability: c.name,
+					field: m.field,
+					detail: `参数 ${m.field} 取不到 ${m.from}（payload 里没有这个字段）`,
 				});
 			}
 			if (resolved.missing.length) continue;
@@ -1663,31 +1651,95 @@
 				pruned.push({
 					reason: "param_schema",
 					capabilityId: c.id,
+					capability: c.name,
 					detail: `${c.name}@${c.version} params_schema: ${msg}`,
 				});
 				continue;
 			}
-			const hasNode = state.nodes.some(
+			const node = state.nodes.find(
 				(n) => n.status === "online" && (n.capabilities || []).some((x) => x.id === c.id),
 			);
-			if (!hasNode) {
+			if (!node) {
 				pruned.push({
 					reason: "no_node",
 					capabilityId: c.id,
-					detail: `no node declares ${c.name}@${c.version}`,
+					capability: c.name,
+					detail: `没有在线节点声明 ${c.name}@${c.version}`,
 				});
 				continue;
 			}
+			tasks.push({
+				capabilityId: c.id,
+				capability: c.name,
+				version: c.version,
+				params: resolved.params,
+				node: node.name,
+			});
+		}
+		return { tasks, pruned };
+	}
+
+	// 试运行：用给定 payload 算出"会派发什么、会剪枝什么"，**不落库**。
+	//
+	// 和 fire 共用 planDispatch，所以两边判定一定一致 —— 用户不会遇到
+	// "试运行说能跑，真点却剪枝"这种最伤信任的差异。
+	// 草稿试运行：弹窗里还没保存的配置也能先验一遍。
+	// 请求体带 { source: {...}, payload: {...} }，与 /{id}/dry-run 共用 planDispatch。
+	on("POST", /^\/v1\/sources\/dry-run$/, (ctx) => {
+		const b = ctx.body || {};
+		const draft = b.source;
+		if (!draft || !Array.isArray(draft.targets)) return err(400, "source is required");
+		const payload = b.payload && typeof b.payload === "object" ? b.payload : {};
+		const plan = planDispatch(draft, payload);
+		return json({ enabled: true, dispatch: plan });
+	});
+
+	on("POST", /^\/v1\/sources\/([^/]+)\/dry-run$/, (ctx) => {
+		const s = state.sources.find((x) => x.id === ctx.m[1]);
+		if (!s) return err(404, "源不存在");
+		const b = ctx.body || {};
+		const payload = b.payload && typeof b.payload === "object" ? b.payload : {};
+		const plan = planDispatch(s, payload);
+		return json({
+			payload: clone(payload),
+			enabled: !!s.enabled,
+			dispatch: plan,
+		});
+	});
+
+	on("POST", /^\/v1\/sources\/([^/]+)\/fire$/, (ctx) => {
+		const s = state.sources.find((x) => x.id === ctx.m[1]);
+		if (!s) return err(404, "源不存在");
+		if (!s.enabled) return err(400, "source: " + s.name + " 已停用");
+
+		const b = ctx.body || {};
+		const traceId = nextTraceId();
+		const ev = {
+			id: uid("evt"),
+			orgId: ORG,
+			traceId: traceId,
+			source: s.name,
+			type: b.type || s.name,
+			payload: b.payload || {},
+			createdAt: now(),
+		};
+		state.events.push(ev);
+
+		// 判定逻辑与「试运行」同一份实现
+		const plan = planDispatch(s, ev.payload);
+		const tasks = [];
+		for (const p of plan.tasks) {
+			const c = state.capabilities.find((x) => x.id === p.capabilityId);
 			const tk = {
 				id: uid("tsk"),
 				orgId: ORG,
 				traceId: traceId,
 				parentTaskId: null,
-				path: [c.id],
-				capabilityId: c.id,
-				capability: c.name,
-				params: resolved.params,
-				version: c.version,
+				path: [p.capabilityId],
+				capabilityId: p.capabilityId,
+				capability: p.capability,
+				params: p.params,
+				version: p.version,
 				status: "pending",
 				nodeId: null,
 				instanceId: null,
@@ -1711,7 +1763,6 @@
 		}
 		s.lastFiredAt = now();
 
-		// 演示"任务跑完"：1.2s 后把刚建的任务标成功，刷新就能看到结果
 		if (tasks.length) {
 			setTimeout(() => {
 				for (const tk of tasks) {
@@ -1731,7 +1782,7 @@
 			event: clone(ev),
 			inserted: true,
 			idempotent: false,
-			dispatch: { tasks: clone(tasks), pruned: pruned },
+			dispatch: { tasks: clone(tasks), pruned: plan.pruned },
 		});
 	});
 

@@ -377,6 +377,71 @@ func (h *sourceHandler) fire(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// dryRun 处理 POST /v1/sources/{id}/dry-run 和 POST /v1/sources/dry-run。
+//
+// 两条路径的分工：
+//   - /{id}/dry-run：拿已保存的源试运行
+//   - /dry-run     ：**拿请求体里的草稿**试运行（还没保存的配置）
+//
+// 后者是主路径：用户改完参数、还没保存时最想试。如果只支持已保存的源，
+// 就得"先保存坏的配置再试"——那正是要消灭的往返。
+//
+// 不检查 enabled，也不写事件：它是个只读推演。
+func (h *sourceHandler) dryRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, "POST")
+		return
+	}
+	orgID, ok := h.resolveOrg(w, r, "")
+	if !ok {
+		return
+	}
+	if h.commander == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "源调度器未启用（server 未注入 dispatcher）",
+		})
+		return
+	}
+
+	var body struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+		// Source 只在 /dry-run（无 id）时使用：前端把弹窗里的草稿原样发来
+		Source *store.Source `json:"source"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+
+	// 有 id 走已保存的源；没有就用请求体里的草稿
+	var src *store.Source
+	if id := r.PathValue("id"); id != "" {
+		got, err := h.db.GetSource(r.Context(), orgID, id)
+		if err != nil {
+			h.writeSourceErr(w, err, "dry_run")
+			return
+		}
+		src = got
+	} else {
+		if body.Source == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source is required"})
+			return
+		}
+		src = body.Source
+		src.OrgID = orgID // 草稿的组织以会话为准，不信请求体
+	}
+
+	out, err := h.commander.DryRun(r.Context(), src, body.Type, body.Payload)
+	if err != nil {
+		slog.Error("dry run source failed",
+			"event", "console.sources.dry_run_failed", "error", err.Error())
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":  src.Enabled,
+		"dispatch": out,
+	})
+}
+
 // views 批量组装返回视图（出口能力信息 + webhook URL）。
 func (h *sourceHandler) views(ctx context.Context, orgID string, list []*store.Source) ([]sourceView, error) {
 	// 一次取全量能力，避免每个源都查一遍

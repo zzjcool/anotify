@@ -1329,6 +1329,16 @@ sources:
     pv_nosample: "还没有事件可当样本，触发一次后才能预览"
     pv_missing: "样本里没有「{p}」"
     pv_missing_multi: "样本里没有：{p}"
+    dry_run: "试运行"
+    dry_running: "试运行中…"
+    dry_no_target: "先勾选至少一个出口能力"
+    dry_will_run: "会派发 {n} 个出口"
+    dry_and_pruned: "，{n} 个被跳过"
+    dry_nothing: "没有出口会派发（全部被跳过）"
+    pick_no_sample: "还没有事件可当样本"
+    pick_none: "没有匹配的字段"
+    av_no_event_hook: "还没有收到过事件。配好回调地址后让外部系统发一次，这里会列出真实字段。"
+    av_no_event: "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。"
   preset:
     hourly: 每小时
     daily3: 每天 3:00
