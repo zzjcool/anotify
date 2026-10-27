@@ -2253,11 +2253,28 @@ async function runMockCoverage() {
 		});
 	});
 
+	// detached: 让 go run 自成**进程组**。
+	//
+	// 为什么必须这样：`go run` 是编译器，真正监听端口的是它 exec/fork
+	// 出来的子进程。只 kill go run 会留下孤儿继续占着端口和内存 ——
+	// 曾经累积上百个残留进程，把后续 e2e 逼到随机失败（看着像代码问题，
+	// 实际是资源被自己人吃光）。detached 之后能按进程组一次收干净。
 	const proc = spawn("go", ["run", "./cmd/fe-preview", "-dir", "web", "-port", String(port)], {
 		cwd: process.cwd(),
 		stdio: "ignore",
 		env: { ...process.env },
+		detached: true,
 	});
+
+	// killGroup 收掉 go run 及它派生的静态服务器。
+	const killGroup = () => {
+		try {
+			// 负 PID = 整个进程组
+			process.kill(-proc.pid, "SIGKILL");
+		} catch {
+			try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+		}
+	};
 
 	const base = `http://127.0.0.1:${port}`;
 
@@ -2278,7 +2295,7 @@ async function runMockCoverage() {
 	H.check("fe-preview 能启动", ready, `port=${port}`);
 
 	if (!ready) {
-		proc.kill("SIGKILL");
+		killGroup();
 		return;
 	}
 
@@ -2324,7 +2341,7 @@ async function runMockCoverage() {
 
 	await ctx.close();
 	await browser.close();
-	proc.kill("SIGKILL");
+	killGroup();
 
 	H.check(
 		"mock 覆盖了页面用到的全部接口",

@@ -57,6 +57,23 @@ cleanup() {
 		pkill -P "$PREVIEW_PID" 2>/dev/null
 		kill "$PREVIEW_PID" 2>/dev/null
 	fi
+
+	# 按端口兜底再收一次。
+	#
+	# 为什么需要：`go run` 编译完会 exec 真正的二进制，而这个二进制
+	# **可能已经不在原进程组里**（go run 的部分行为如此）。上面按
+	# PREVIEW_PID 收整组就会漏掉它 —— 孤儿进程继续占着端口和内存。
+	# 曾经因此累积 138 个残留 fe-preview、1.9GB 内存，把后续 e2e
+	# 逼到随机失败（看着像代码问题，其实是资源被自己人吃光）。
+	if command -v ss >/dev/null 2>&1; then
+		for pid in $(ss -tlnp 2>/dev/null \
+			| grep -E ":${MOCK_PORT} " \
+			| grep -oP 'pid=\K[0-9]+' | sort -u); do
+			kill -TERM "$pid" 2>/dev/null
+			sleep 0.3
+			kill -KILL "$pid" 2>/dev/null
+		done
+	fi
 	wait 2>/dev/null
 	echo "✅ 已停止"
 }
