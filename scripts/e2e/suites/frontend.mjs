@@ -676,8 +676,10 @@ async function main() {
 				await page3.selectOption("#f-kind", "github");
 				await page3.waitForTimeout(600);
 				const gh = await page3.evaluate(() => {
-					const paths = Array.from(document.querySelectorAll(".av-path")).map((n) =>
-						n.textContent.trim(),
+					// 分组后可见文本是**短名**（前缀在组标题里），
+					// 完整路径在 .av-row 的 data-path 上
+					const paths = Array.from(document.querySelectorAll(".av-row")).map((n) =>
+						n.dataset.path,
 					);
 					const src = document.getElementById("avail-src");
 					return {
@@ -698,6 +700,76 @@ async function main() {
 					gh.srcText.slice(0, 60),
 				);
 
+				// ---- 字段清单按顶层键分组、默认折叠 ----
+				//
+				// 35 个字段平铺会吃掉整屏。分组后一眼能看到有哪几组，
+				// 想深入再展开 —— 面板高度从 ~1200px 降到 ~240px。
+				const grouped = await page3.evaluate(() => {
+					const groups = Array.from(document.querySelectorAll(".av-group"));
+					return {
+						names: groups.map((g) =>
+							g.querySelector(".av-group-name").textContent.trim(),
+						),
+						openCount: groups.filter((g) => g.classList.contains("is-open")).length,
+						visibleRows: Array.from(document.querySelectorAll(".av-row")).filter(
+							(r) => r.offsetParent !== null,
+						).length,
+						hasFilter: !!document.querySelector(".av-filter"),
+					};
+				});
+				H.check(
+					"字段按顶层键分组",
+					grouped.names.includes("pull_request") && grouped.names.includes("repository"),
+					grouped.names.join(","),
+				);
+				H.check(
+					"默认全部折叠（不占满屏）",
+					grouped.openCount === 0 && grouped.visibleRows === 0,
+					`open=${grouped.openCount} visibleRows=${grouped.visibleRows}`,
+				);
+				H.check("有字段筛选框", grouped.hasFilter, String(grouped.hasFilter));
+
+				// 展开一组：应出现组内字段，且显示的是**短名**（前缀在标题里）
+				await page3.evaluate(() => {
+					const g = Array.from(document.querySelectorAll(".av-group")).find(
+						(x) => x.querySelector(".av-group-name").textContent.trim() === "pull_request",
+					);
+					g.querySelector(".av-group-head").click();
+				});
+				await page3.waitForTimeout(300);
+				const opened = await page3.evaluate(() => {
+					const paths = Array.from(
+						document.querySelectorAll(".av-group.is-open .av-path"),
+					).map((n) => n.textContent.trim());
+					return { paths, visibleRows: document.querySelectorAll(".av-row:not([style*='none'])").length };
+				});
+				H.check(
+					"展开后显示组内短名",
+					opened.paths.includes("title") && opened.paths.includes("additions"),
+					opened.paths.slice(0, 5).join(","),
+				);
+				H.check(
+					"展开后不再显示完整路径前缀",
+					!opened.paths.includes("pull_request.title"),
+					opened.paths.slice(0, 3).join(","),
+				);
+
+				// 筛选：输入后只剩命中的组和行
+				await page3.fill(".av-filter", "addi");
+				await page3.waitForTimeout(300);
+				const filtered = await page3.evaluate(() => ({
+					visiblePaths: Array.from(document.querySelectorAll(".av-row"))
+						.filter((r) => r.offsetParent !== null)
+						.map((r) => r.dataset.path),
+				}));
+				H.check(
+					"筛选框能定位到具体字段",
+					filtered.visiblePaths.includes("pull_request.additions") &&
+						filtered.visiblePaths.length <= 3,
+					filtered.visiblePaths.join(","),
+				);
+				await page3.fill(".av-filter", "");
+
 				// ---- 按事件类型切换结构 ----
 				//
 				// pull_request 和 push 的 payload 没有共同字段（前者是
@@ -708,8 +780,8 @@ async function main() {
 					await page3.selectOption("#f-gh-event", ev);
 					await page3.waitForTimeout(500);
 					const r = await page3.evaluate(() => ({
-						paths: Array.from(document.querySelectorAll(".av-path")).map((n) =>
-							n.textContent.trim(),
+						paths: Array.from(document.querySelectorAll(".av-row")).map(
+							(n) => n.dataset.path,
 						),
 						src: (document.getElementById("avail-src") || {}).textContent || "",
 					}));

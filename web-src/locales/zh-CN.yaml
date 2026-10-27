@@ -1327,6 +1327,10 @@ sources:
     gh_event: "GitHub 事件类型"
     gh_event_hint: "不同类型的事件载荷结构完全不同，选哪个就按哪个给字段清单。"
     av_src_unknown: "没有「{ty}」的内置结构样例；收到真实事件后会列出实际字段。"
+    av_filter: "筛选字段…"
+    av_filter_none: "没有匹配的字段"
+    av_group_top: "顶层"
+    av_copied2: "已复制 {p}"
   preset:
     hourly: 每小时
     daily3: 每天 3:00
