@@ -1312,7 +1312,8 @@ sources:
     hook_github_secret: "Secret は GitHub 側の検証用です。本システムは署名検証をまだ行わないため、URL には長いランダムトークンを使ってください"
     hook_github_why: "入力後に「Add webhook」をクリックしてください。GitHub がすぐに ping を送り、イベントは保存されます。その後「出口能力」でパラメータを紐付けます。"
     ref_tip: "イベントまたは変数から取得"
-    no_interp: "パラメータ {k}：参照は値全体を占める必要があります（例 {{{{pull_request.title}}}}）。前後の文字列連結は非対応です"
+    ref_mix_tip: "テンプレート連結。結果はテキストとして渡されます"
+    bad_placeholder: "パラメータ {k}：プレースホルダーが閉じていません"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00

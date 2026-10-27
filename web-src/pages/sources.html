@@ -486,7 +486,17 @@
       const TPL_OPEN = "{" + "{";
       const TPL_CLOSE = "}" + "}";
       const TPL = (ref) => TPL_OPEN + ref + TPL_CLOSE;
-      const TPL_RE = new RegExp("^\\{\\{[^{}]+\\}\\}$");
+      // 含至少一个占位符就算"引用"（不再要求占满整个值）。
+      // 支持混写：带前后缀的模板拼接
+      // 安全前提是**单趟替换** —— 见 web/mock.js 里 renderTemplate 的注释。
+      // 正则用字符类拼出花括号，避免 Go template 把源码里的双花括号当语法
+      const BRACE_OPEN = "[" + "{" + "]" + "[" + "{" + "]";
+      const BRACE_CLOSE = "[" + "}" + "]" + "[" + "}" + "]";
+      const REF_BODY = "[$A-Za-z_][$A-Za-z0-9_.]*";
+      const TPL_RE = new RegExp(BRACE_OPEN + "\\s*" + REF_BODY + "\\s*" + BRACE_CLOSE);
+      const TPL_WHOLE_RE = new RegExp(
+        "^" + BRACE_OPEN + "\\s*(" + REF_BODY + ")\\s*" + BRACE_CLOSE + "$",
+      );
 
       // 挂载「侧栏 + 顶栏」布局。
       //
@@ -1223,10 +1233,18 @@
           // 引用模式时给个视觉提示（不改变值，只是让用户知道这行是引用）
           const tip = el("p", "param-tip", "");
           const updateTip = () => {
-            const isRef = TPL_RE.test(input.value.trim());
-            tip.textContent = isRef
-              ? t("sources.form.ref_tip", "从事件或变量取值")
-              : "";
+            const val = input.value.trim();
+            const isRef = TPL_RE.test(val);
+            if (isRef) {
+              // 整值引用保留原始类型；混写一定是字符串——提示里说清楚，
+              // 否则用户会疑惑"为什么我拼了数字却成了文字"。
+              const whole = TPL_WHOLE_RE.test(val);
+              tip.textContent = whole
+                ? t("sources.form.ref_tip", "从事件或变量取值（保留原类型）")
+                : t("sources.form.ref_mix_tip", "模板拼接，结果按文本传入");
+            } else {
+              tip.textContent = "";
+            }
             tip.classList.toggle("is-ref", isRef);
 
             // 数字字段要能在"填数字"和"填引用"之间自由切换。
@@ -1590,15 +1608,27 @@
         if (wrap) {
           const props = schemaProps(cap.paramsSchema);
           // 按字段名挑一个合适的路径；命不中就按类型给个通用的
+          // 演示里**刻意混用三种写法**，一次看全：
+          //   数字字段 → 整值引用（保留数字类型）
+          //   文本字段 → 模板拼接（带前后缀）
+          //   枚举字段 → 字面量
           const guess = (field, spec) => {
             const t2 = spec && spec.type;
-            if (/title|name|subject/i.test(field)) return TPL("pull_request.title");
-            if (/repo|repository/i.test(field)) return TPL("repository.name");
-            if (/author|user|login/i.test(field)) return TPL("pull_request.user.login");
-            if (/line|count|number|size|additions/i.test(field) || t2 === "integer" || t2 === "number") {
+            const isNum = t2 === "integer" || t2 === "number";
+            if (Array.isArray(spec && spec.enum) && spec.enum.length) return spec.enum[0];
+            if (/env|stage/i.test(field)) return "staging";
+            if (isNum || /line|count|size|additions/i.test(field)) {
               return TPL("pull_request.additions");
             }
-            if (/env|stage/i.test(field)) return "staging";
+            // 文本字段用拼接："PR #42: 修个错字 by alice"
+            if (/title|name|subject|summary/i.test(field)) {
+              return (
+                "PR #" + TPL("pull_request.number") + ": " + TPL("pull_request.title") +
+                " by " + TPL("pull_request.user.login")
+              );
+            }
+            if (/repo|repository/i.test(field)) return TPL("repository.name");
+            if (/author|user|login/i.test(field)) return TPL("pull_request.user.login");
             return TPL("pull_request.title");
           };
           for (const [field, spec] of Object.entries(props)) {

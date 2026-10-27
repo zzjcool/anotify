@@ -15,7 +15,7 @@ targetParams := in.Params
 if tp, ok := in.TargetParams[targetID]; ok && tp != nil {
     targetParams = tp      // 配了参数 → payload 被整个丢掉
 }
-```
+```text
 
 后果：
 
@@ -33,7 +33,7 @@ cron 更没有自定义字段的能力——payload 是硬编码的：
 payload, _ := json.Marshal(map[string]any{
     "source": src.Name, "kind": store.SourceKindCron, "firedAt": fireAt,
 })
-```
+```text
 
 ## 2. 设计（已在前端/mock 落地，后端照此实现）
 
@@ -51,7 +51,7 @@ payload, _ := json.Marshal(map[string]any{
   "number": { "from": "pull_request.number" },
   "lines":  { "from": "pull_request.additions", "as": "integer" }
 }
-```
+```text
 
 混合也行（一部分字面量、一部分映射）。
 
@@ -72,7 +72,7 @@ func isMapping(v any) bool {
     }
     return true
 }
-```
+```text
 
 **多一个字段就退回字面量**。理由：用户真想传 `{"from": 1}` 这种字面量对象时不该被误认为映射。
 行为可预期比"聪明"重要。
@@ -123,7 +123,7 @@ I6 原文：**中枢不解释任何用户提供的逻辑：无表达式求值、
 { "params_schema": { "properties": { "n": { "type": "integer" } } } }
 // 配置 { "n": { "from": "pr.number" } }，payload 是 {"pr":{"number":"42"}}
 // → 自动转成 42（不需要用户写 as）
-```
+```text
 
 支持：`string` / `number` / `integer` / `boolean` / `json`。
 
@@ -268,14 +268,14 @@ i18n：4 语言各加 8 个 key（`pm_literal` / `pm_map` / `from_hint` / `defau
   { "name": "env",    "value": "prod" },                // cron：常量
   { "name": "lines",  "from": "pull_request.additions" }
 ]
-```
+```text
 
 ```jsonc
 // source_targets.params —— 参数引用变量
 { "title": { "var": "title" },
   "env":   { "var": "env" },
   "n":     { "var": "lines" } }
-```
+```text
 
 **两种引用形态并存**（向后兼容）：`{from: "payload.path"}` 与 `{var: "name"}`。
 同时写两个 → 配置期拒绝（"到底取哪个"没有合理默认）。
@@ -449,24 +449,24 @@ A 章的 `{name:"title", from:"pull_request.title"}` 要用户：
 
 一个输入框，按内容自动识别：
 
-```
+```text
 120                          ← 字面量，按 schema 转成 integer
 prod                         ← 字面量
 {{pull_request.additions}}   ← 引用 payload 路径
 {{$env}}                     ← 引用源变量（固定值或它的 from）
-```
+```text
 
 界面不再有「固定值 / 从事件取值」的按钮切换——用户脑子里想的是
 「这个值从哪来」，不是「我这次算哪种填法」。有内容就以内容为准。
 
 ## B.4 仍然拒绝的写法
 
-```
+```text
 "PR: {{pull_request.title}}"        ← 前后缀拼接 = 求值
 "{{a}}{{b}}"                        ← 多个引用拼接
 "{{toUpper(x)}}"                    ← 函数调用
 "{{#if x}}...{{/if}}"               ← 条件
-```
+```text
 
 配置期就报错并说明原因（`sources.form.no_interp`），不是等触发时静默失败。
 
@@ -498,3 +498,99 @@ prod                         ← 字面量
 - Go template 会解析 `web-src/pages/*.html` 里的 `{{...}}`，脚本里直接写
   双大括号会报 `function "pull_request" not defined`。改用 `TPL_OPEN` /
   `TPL_CLOSE` 常量拼接，注释里也避开完整的花括号对
+
+---
+
+# 附三：支持模板拼接（修正 B 章的过度限制）
+
+> 状态：**前端 + mock 已实现**
+> 触发：用户「PR: {{pull_request.title}} 为什么不支持呢，我其实就是想要这种，有时候通知类能力就是需要自己拼接模板」
+
+B 章把「整值引用」和「混写」划了一条线，认为混写是求值器。**这个划线仍然过严了。**
+
+## C.1 关键区分不是「有没有前后缀」，而是「替换后还解不解析」
+
+真正危险的是**替换结果被再次当作模板扫描**（模板引擎的递归展开）：
+
+| 能力 | 单趟替换 | 递归展开 |
+|---|---|---|
+| 无限展开（`{{a}}` 展开出 `{{b}}`…） | 不会 | 会 |
+| 函数调用 `{{toUpper(x)}}` | 解析不了 | 可以 |
+| 访问外部资源 | 不会 | 可能 |
+| 本质 | `strings.Replace` | 解释器 |
+
+单趟替换里，用户提供的是「一段文本 + 若干取值点」，不是「一段要被执行的程序」。**`"PR: {{title}}"` 和一个 HTML 模板里写 `<b>{{title}}</b>` 是同一类东西**——所有服务端渲染框架都在做这件事，没有人认为那是引入了求值器。
+
+## C.2 现在支持的写法
+
+```text
+120                                     字面量（数字）
+staging                                 字面量（字符串）
+{{pull_request.additions}}              整值引用 → 保留原类型（数字还是数字）
+PR #{{pull_request.number}}: {{pull_request.title}} by {{pull_request.user.login}}
+                                        模板拼接 → 结果一定是字符串
+[{{$env}}] {{$author}}                 变量 + 拼接
+```text
+
+**整值引用保留类型**这点很重要：
+
+```text
+"{{pull_request.additions}}"        →  42         (number)
+"PR has {{pull_request.additions}}" →  "PR has 42" (string)
+```text
+
+同一份数据，整值引用能进 `integer` 字段，拼接就只能进 `string` 字段。这是语义决定的，不是实现限制。
+
+## C.3 仍然不做
+
+```text
+{{#if x}}...{{/if}}      条件
+{{#each xs}}...{{/each}} 循环
+{{toUpper(x)}}           函数调用
+{{a + b}}                运算
+```text
+
+**占位符正则只接受标识符 + 点 / $ / 数字下标**：
+
+```js
+/\{\{\s*([$A-Za-z_][$A-Za-z0-9_.]*)\s*\}\}/g
+```text
+
+所以 `{{a + b}}` 不会被当成表达式求值，而是被当成「查一个叫 `a + b` 的路径」（查不到 → `param_missing`）。这是有意的：**语法上就没有运算的位置**。
+
+## C.4 类型处理（实现要点）
+
+| 情况 | 类型推断 |
+|---|---|
+| 对象形态 `{from}` / `{var}` | `as` 优先，否则 `params_schema` |
+| 整值引用 `{{x}}` | 保留原类型（payload 里是数字就是数字） |
+| 混写 | `params_schema`（结果必是字符串） |
+| 纯字面量 | 不转换，尊重用户写的 |
+
+混写对 `integer` 字段：`"PR #42"` 转不成数字 → `param_type` 剪枝，detail 说清楚。这是正确的——用户确实把一段文字塞进了数字字段。
+
+## C.5 后端改动清单（替代 B.6）
+
+- [ ] `renderTemplate(s, lookup)`：**一次性遍历 + 拼接**，绝不对替换结果再扫描
+- [ ] 占位符正则严格限定为标识符路径（不允许括号/运算符/空格表达式）
+- [ ] 整值引用走「保留原类型」分支，混写走「一律字符串」分支
+- [ ] 未命中时**原样保留 `{{x}}` 文本**并记 `param_missing`（用户要能看见自己写了什么，而不是只被告知"某字段取不到"）
+- [ ] 配置期 `validateTargets` 必须跳过**所有含占位符的值**（不只整值引用——混写同样是运行时才知道类型）
+- [ ] `{{$name}}` 未声明 → 配置期 400
+
+## C.6 三个实现坑（都真踩过）
+
+**① `type=number` 的输入框会静默吞掉 `{{x}}`**
+
+浏览器对 `type="number"` 输入非数字内容会清空 value，表现为"填了但保存后没有"。现在引用时切成 `text`，输入以 `{` 开头时也切，清空后切回 `number`。
+
+**② 配置期 schema 校验把混写当字面量**
+
+`"PR #{{x}}"` 拿去校验 `expected integer` → 合法配置被拒。校验必须跳过所有含占位符的值。
+
+**③ Go template 会把脚本里的双花括号当语法**
+
+`web-src/pages/*.html` 走 Go template 渲染，JS 里写 `{{...}}` 会报 `function "pull_request" not defined`。解法：
+
+- 值用 `TPL(ref)` 常量拼接
+- **正则在字符类里拼花括号**：`"[" + "{" + "]"` 得到 `[{]`，效果等价于字面 `\{`，但源码里不出现双花括号

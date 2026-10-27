@@ -1312,7 +1312,8 @@ sources:
     hook_github_secret: "El Secret lo valida GitHub; este sistema aún no verifica firmas, usa un token largo y aleatorio en la URL"
     hook_github_why: "Tras rellenar, pulsa «Add webhook». GitHub enviará un ping de inmediato y el evento se guarda; luego enlaza los parámetros de destino."
     ref_tip: "Se lee del evento o la variable"
-    no_interp: "Parámetro {k}: la referencia debe ocupar todo el valor (p. ej. {{pull_request.title}}); no se admite concatenar prefijos o sufijos"
+    ref_mix_tip: "Concatenación de plantilla; el resultado se pasa como texto"
+    bad_placeholder: "Parámetro {k}: marcador sin cerrar"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00
