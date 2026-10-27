@@ -985,6 +985,34 @@ html.flograph-fullscreen-open body {
 	background: rgba(239, 68, 68, 0.14);
 	color: #fca5a5;
 }
+
+/* 执行失败。
+ *
+ * 和 is-unknown（"配置里指向一个不存在的能力"）分开：两者都是红色系，
+ * 但失败是**这次**挂了、配置本身没问题，所以边框也是红的并带发光；
+ * unknown 只有图标红、边框正常 —— 一眼能区分"运维问题"和"配置问题"。 */
+.wf-node.is-failed {
+	border-color: rgba(239, 68, 68, 0.6);
+	box-shadow:
+		0 0 0 1px rgba(239, 68, 68, 0.16),
+		0 6px 20px rgba(239, 68, 68, 0.1);
+}
+.wf-node.is-failed .wf-node-icon {
+	background: rgba(239, 68, 68, 0.16);
+	color: #fca5a5;
+}
+.wf-node.is-failed .wf-node-sub {
+	color: #fca5a5;
+}
+
+/* 进行中：蓝色呼吸感留给"还在跑"，不要和成功的绿混 */
+.wf-node.is-running {
+	border-color: rgba(56, 189, 248, 0.5);
+}
+.wf-node.is-running .wf-node-icon {
+	background: rgba(56, 189, 248, 0.16);
+	color: #7dd3fc;
+}
 .wf-node.is-deadport {
 	border-style: dashed;
 	background: transparent;
@@ -1011,6 +1039,29 @@ html.flograph-fullscreen-open body {
 /* 已在上方展开（seen）：淡一点 */
 .wf-node.is-seen {
 	opacity: 0.6;
+}
+
+/* 剪枝：配置里有这条路，但这条 trace 没走。
+ *
+ * 刻意做成"虚线 + 低饱和"而不是直接 opacity: 0.2 ——
+ * 它要同时表达两件事：① 这是真实存在的配置（所以还在图上、还可读）；
+ * ② 这次没走（所以视觉上退到背景）。压得太狠就和"能力已删除"混了。 */
+.wf-node.is-pruned {
+	border-style: dashed;
+	border-color: rgba(113, 113, 122, 0.45);
+	background: transparent;
+	box-shadow: none;
+	color: var(--muted);
+}
+.wf-node.is-pruned .wf-node-icon {
+	background: rgba(113, 113, 122, 0.12);
+	color: var(--faint);
+}
+.wf-node.is-pruned .wf-node-title {
+	color: var(--muted);
+}
+.wf-node.is-pruned .wf-node-sub {
+	color: var(--faint);
 }
 
 /* 缩放控制 */

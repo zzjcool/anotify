@@ -364,6 +364,10 @@
 
 		const res = window.AnotifyGraphs.taskChain(host, {
 			tasks: tasks,
+			// 底图：这个 trace 所属源的静态配置拓扑。
+			// 有它时图视图画"配置拓扑 + 执行染色"，被剪枝的分支留成灰色；
+			// 没有时退回"只画执行链"。见 graphs.js 里 taskChain 的注释。
+			baseGraph: opts.baseGraph || null,
 			t: t,
 			// 这一页没有标题栏的「全屏」入口（源详情页有），所以保留
 			// 工具栏里的全屏按钮 —— 否则链路图就没法全屏看了。
