@@ -765,6 +765,74 @@ body {
 .flograph.is-panning {
 	cursor: grabbing;
 }
+
+/* ---------- 全屏 ----------
+ *
+ * 容器被 JS 从文档里摘出来挂到 body 上（见 flograph.js 的 setFullscreen）。
+ * 为什么不用 position:fixed 就地放大：祖先节点只要有 transform / filter /
+ * contain，fixed 的包含块就成了那个祖先，容器会被裁在卡片里；而页面外面那层
+ * .reveal 恰好就带 transform。摘出来是唯一不依赖祖先样式的做法。
+ *
+ * 层级取 90：全屏是「临时独占」的观看态，必须盖住侧栏（z-40）、顶栏
+ * （z-20）和 mock 提示条（z-[60]）。站点里比它高的只剩全局 loading 遮罩
+ * 那种真的应该盖住一切的东西。
+ */
+.flograph.is-fullscreen {
+	position: fixed;
+	inset: 0;
+	z-index: 90;
+	width: 100vw;
+	width: 100dvw;
+	height: 100vh;
+	height: 100dvh;
+	border: 0;
+	border-radius: 0;
+	/* 全屏时不能靠半透明卡片底：背后就是页面内容，会透出来 */
+	background:
+		radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.045) 1px, transparent 0)
+		0 0 / 22px 22px,
+		var(--bg);
+}
+/* 占位符：容器被摘走后撑住原位置，否则关掉全屏时页面会跳 */
+.flograph-placeholder {
+	width: 100%;
+	border-radius: 12px;
+	border: 1px dashed var(--line);
+}
+.flograph-placeholder[hidden] {
+	display: none;
+}
+/* 全屏提示：平时不存在（display:none），避免在卡片里多出一段没用的说明 */
+.flograph-fullscreen-hint {
+	display: none;
+	position: absolute;
+	left: 16px;
+	bottom: 16px;
+	z-index: 2;
+	font-size: 11px;
+	color: var(--faint);
+	padding: 5px 9px;
+	border-radius: 7px;
+	border: 1px solid var(--line);
+	background: rgba(9, 9, 11, 0.7);
+	pointer-events: none;
+}
+.flograph-fullscreen-hint.is-on {
+	display: block;
+}
+/* 窄屏不显示提示：那里没有键盘，Esc 这句对用户是噪音；而且左下角正是
+ * mock 预览提示条 / 手势区的位置，摆上去只会互相遮挡。退出靠右下角按钮。 */
+@media (max-width: 640px) {
+	.flograph-fullscreen-hint,
+	.flograph-fullscreen-hint.is-on {
+		display: none;
+	}
+}
+/* 全屏时锁住页面滚动：否则滚轮缩放正常了，但触控板手势仍会带动背后页面 */
+html.flograph-fullscreen-open,
+html.flograph-fullscreen-open body {
+	overflow: hidden;
+}
 /* 平移/缩放的容器：所有节点和连线都在里面，整体 transform */
 .flograph-viewport {
 	position: absolute;
@@ -968,9 +1036,28 @@ body {
 	cursor: pointer;
 	line-height: 1;
 }
+.flograph-ctrl button svg.flograph-ctrl-icon {
+	width: 13px;
+	height: 13px;
+}
 .flograph-ctrl button:hover {
 	color: var(--text);
 	border-color: var(--line-strong);
+}
+/* 全屏态：退出按钮用主色标一下当前状态（图标已由 JS 换成「向内收」） */
+.flograph-ctrl button.is-on {
+	color: var(--accent);
+	border-color: var(--accent-3);
+}
+/* 全屏时右下角控件要离屏幕边远一点，否则贴边很难点 */
+.flograph.is-fullscreen .flograph-ctrl {
+	right: 16px;
+	bottom: 16px;
+}
+.flograph.is-fullscreen .flograph-ctrl button {
+	width: 30px;
+	height: 30px;
+	font-size: 14px;
 }
 
 /* ==================== trace / span 渲染 ====================

@@ -46,6 +46,18 @@
         color: var(--faint);
         margin-bottom: 0.6rem;
       }
+      /* 标题 + 右侧操作（现在只有「全屏」）：同一行两端对齐。
+         标题自带的 margin-bottom 在这一行里要归零，间距交给行容器统一给。 */
+      .src-section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.6rem;
+      }
+      .src-section-head .src-section-title {
+        margin-bottom: 0;
+      }
       /* 出口参数表：参数可能带映射，用等宽字体看起来更像"配置"而不是散文 */
       .param-table {
         display: grid;
@@ -544,6 +556,32 @@
           c.appendChild(el("div", "text-[11px] text-zinc-500", t("srcpage.flow_empty", "这个源还没有可展开的下游")));
           return c;
         }
+
+        // 标题行加一个「全屏」按钮：图上右下角那个图标按钮很容易被当成
+        // “又一个缩放键”而漏掉，而这图在 520px 卡片里只能缩到 0.46（字小到
+        // 读不了），全屏才是它真正的读法。带文字的入口更容易发现。
+        //
+        // 它只是转发到 FlowGraph 的 setFullscreen（实例挂载后才存在），
+        // 不重写一份状态机。
+        const fsBtn = el(
+          "button",
+          "btn-ghost rounded-lg px-2 py-1 text-[11px]",
+          t("graph.fullscreen", "全屏"),
+        );
+        fsBtn.setAttribute("aria-label", t("graph.fullscreen", "全屏"));
+        fsBtn.addEventListener("click", () => {
+          const g = host._graph;
+          if (!g) return;
+          // 已经全屏时不重复开（按钮在卡片上，全屏后本来也点不到）
+          if (!g.isFullscreen()) g.setFullscreen(true);
+        });
+
+        // card() 已经把标题插在第一个子节点，这里把它包进一行
+        const titleNode = c.firstElementChild;
+        const head = el("div", "src-section-head");
+        head.append(titleNode, fsBtn); // append 会把 titleNode 从 card 里移出来
+        c.insertBefore(head, c.firstChild);
+
         c.appendChild(host);
 
         // 展开后才建图：折叠时 offsetWidth 是 0，fit() 会算出错误的缩放

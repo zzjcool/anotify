@@ -237,6 +237,14 @@ index:
     open: Abrir flujo de eventos →
     loading: Cargando eventos…
     empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
+graph:
+  zoom_in: Acercar
+  zoom_out: Alejar
+  fit: Ajustar a la vista
+  fullscreen: Pantalla completa
+  exit_fullscreen: Salir de pantalla completa (Esc)
+  fullscreen_hint: Rueda para zoom · arrastra para mover · Esc para salir
+
 connect:
   title: Conectar Agent
   subtitle: Instala un plugin de notificación para tu Agent. Tras la instalación, el plugin te guía por la autorización de inicio de sesión y entrega notificaciones a tus dispositivos al terminar las tareas.

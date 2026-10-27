@@ -48,6 +48,47 @@
 	}
 
 	/**
+	 * 控件图标（24×24 线性图标，stroke=currentColor）。
+	 *
+	 * 为什么不用 Unicode 字符：⛶ / ⤢ 这类符号在字体缺字时会被渲染成「豆腐块」
+	 * （DejaVu / 部分 Linux Chrome 就没有 ⤢），一个方块按钮看起来像坏了。
+	 * 内联 SVG 不依赖字体，永远画得出来。
+	 */
+	function ctrlIcon(name) {
+		const paths = {
+			// 加 / 减
+			"zoom-in": ["M12 5v14", "M5 12h14"],
+			"zoom-out": ["M5 12h14"],
+			// 四角向内的框：适应视图（收缩到内容）
+			fit: [
+				"M9 4H4v5",
+				"M15 4h5v5",
+				"M15 20h5v-5",
+				"M9 20H4v-5",
+			],
+			// 四角向外的箭头：全屏 / 退出全屏
+			expand: ["M4 9V4h5", "M20 9V4h-5", "M4 15v5h5", "M20 15v5h-5"],
+			collapse: ["M9 4v5H4", "M15 4v5h5", "M9 20v-5H4", "M15 20v-5h5"],
+		};
+		const ns = "http://www.w3.org/2000/svg";
+		const el = document.createElementNS(ns, "svg");
+		el.setAttribute("viewBox", "0 0 24 24");
+		el.setAttribute("fill", "none");
+		el.setAttribute("stroke", "currentColor");
+		el.setAttribute("stroke-width", "1.7");
+		el.setAttribute("stroke-linecap", "round");
+		el.setAttribute("stroke-linejoin", "round");
+		el.setAttribute("aria-hidden", "true");
+		el.classList.add("flograph-ctrl-icon");
+		for (const d of paths[name] || []) {
+			const p = document.createElementNS(ns, "path");
+			p.setAttribute("d", d);
+			el.appendChild(p);
+		}
+		return el;
+	}
+
+	/**
 	 * 连线路径：从 (x1,y1) 到 (x2,y2) 的三次贝塞尔。
 	 *
 	 * 控制点用垂直偏移（TB 布局下边从底部出、顶部进），这样曲线是
@@ -108,6 +149,22 @@
 		const options = opts || {};
 		const nodes = (options.nodes || []).map((n) => Object.assign({}, n));
 		const edges = (options.edges || []).map((e) => Object.assign({}, e));
+
+		// 本模块自己的文案（缩放/全屏按钮 title）。
+		//
+		// 为什么不直接读 window.AnotifyI18n：sitegen 把翻译表注入成
+		// `window.AnotifyI18n[lang].键` 的平铺字典，而这里也可能被调用方
+		// 通过 options.t 传入（页面里拿的是同一个字典的闭包）。两条都支持，
+		// 都拿不到就用中文默认值 —— 图上的控件没字也不会崩。
+		const tt = (k, d) => {
+			if (typeof options.t === "function") {
+				const v = options.t(k, d);
+				if (v && v !== k) return v;
+			}
+			const dict = window.AnotifyI18n;
+			if (dict && dict[k]) return dict[k];
+			return d || k;
+		};
 
 		container.replaceChildren();
 		container.classList.add("flograph");
@@ -422,16 +479,24 @@
 		container.addEventListener("wheel", onWheel, { passive: false });
 
 		// ---- 右下角缩放控制 ----
+		//
+		// 全屏按钮放这里而不是让各页面自己在外层包一个容器：
+		// 全屏要重排**这一个**容器（见 setFullscreen），页面拿不到内部
+		// 的 fit()/scale，自己实现必然要复制一份状态机。
 		const ctrl = div("flograph-ctrl");
-		for (const [label, title, fn] of [
-			["+", "放大", () => zoomBy(1.25)],
-			["−", "缩小", () => zoomBy(1 / 1.25)],
-			["⛶", "适应视图", () => fit()],
+		for (const [key, icon, title, fn] of [
+			["zoom-in", "zoom-in", tt("graph.zoom_in", "放大"), () => zoomBy(1.25)],
+			["zoom-out", "zoom-out", tt("graph.zoom_out", "缩小"), () => zoomBy(1 / 1.25)],
+			["fit", "fit", tt("graph.fit", "适应视图"), () => fit()],
+			["fullscreen", "expand", tt("graph.fullscreen", "全屏"), () => toggleFullscreen()],
 		]) {
 			const b = document.createElement("button");
 			b.type = "button";
-			b.textContent = label;
 			b.title = title;
+			b.dataset.fgAction = key;
+			// aria-label：按钮里只有图标，读屏软件需要一个名字
+			b.setAttribute("aria-label", title);
+			b.appendChild(ctrlIcon(icon));
 			b.addEventListener("click", (ev) => {
 				ev.stopPropagation();
 				fn();
@@ -439,6 +504,120 @@
 			ctrl.appendChild(b);
 		}
 		container.appendChild(ctrl);
+
+		// 全屏时左下角给一行操作提示。只在全屏显示：卡片里的日常状态不需要解释，
+		// 而全屏后页面其它元素都被遮住了，没有提示用户只能靠猜（尤其 Esc 退出）。
+		const fsHint = div("flograph-fullscreen-hint", tt("graph.fullscreen_hint", "滚轮缩放 · 拖动平移 · Esc 退出"));
+		container.appendChild(fsHint);
+
+		// ---- 全屏 ----
+		//
+		// 为什么不直接用 Fullscreen API：
+		//
+		//   ① 它是**异步且可被拒绝**的（用户手势外调用 / iframe 缺 allowfullscreen /
+		//      iOS Safari 对非 video 元素直接不支持），失败时要回落到别的方案；
+		//   ② 全屏后 Esc 由浏览器接管，退出事件不保证经过我们的代码。
+		//
+		// 所以主路径是「伪全屏」：把容器从文档里**摘出来**挂到 body 上放满视口，
+		// 关掉时按占位符的位置放回去。摘出来而不是只加 position:fixed，是因为
+		// 祖先节点只要有一个 transform / filter / contain，fixed 的包含块就变成
+		// 那个祖先，容器会被裁在卡片里（.reveal 块就带 transform + opacity 动画，
+		// 这种坑在真实页面里非常容易踩到）。
+		const fsPlaceholder = document.createElement("div");
+		fsPlaceholder.className = "flograph-placeholder";
+		fsPlaceholder.hidden = true;
+
+		let fullscreen = false;
+		// 退出全屏后要还原的样式与位置。容器平时是页面的静态结构，
+		// 只有全屏期间才会被摘出去，所以必须把内联样式改回原样（不是清空：
+		// 调用方可能给容器设过高度）。
+		let fsRestore = null;
+
+		function setFullscreen(on) {
+			if (on === fullscreen) return;
+			fullscreen = on;
+			if (on) {
+				// **先量再改样式**：容器已经在文档里，此刻它的 getBoundingClientRect()
+				// 是卡片里的真实尺寸。要是先加 .is-fullscreen（position:fixed +
+				// inset:0），再量就是整个视口的高度——占位符会变成一整屏高，
+				// 退出全屏时页面会“多出一大块”（真实踩过）。
+				const box = container.getBoundingClientRect();
+				fsRestore = {
+					parent: container.parentNode,
+					next: container.nextSibling,
+					style: container.getAttribute("style"),
+					w: Math.round(box.width),
+					h: Math.round(box.height),
+				};
+				// 占位符撑住原来的位置：容器被摘走后卡片会塌成 0 高，
+				// 关掉全屏时页面就会“跳”到别处
+				fsPlaceholder.style.width = fsRestore.w + "px";
+				fsPlaceholder.style.height = fsRestore.h + "px";
+				fsPlaceholder.hidden = false;
+				if (container.parentNode) {
+					container.parentNode.insertBefore(fsPlaceholder, container);
+				}
+				container.classList.add("is-fullscreen");
+				document.body.appendChild(container);
+				document.documentElement.classList.add("flograph-fullscreen-open");
+			} else {
+				document.documentElement.classList.remove("flograph-fullscreen-open");
+				container.classList.remove("is-fullscreen");
+				const r = fsRestore;
+				if (r && r.parent) {
+					if (r.next && r.next.parentNode === r.parent) {
+						r.parent.insertBefore(container, r.next);
+					} else {
+						r.parent.appendChild(container);
+					}
+				}
+				if (r && r.style == null) container.removeAttribute("style");
+				else if (r) container.setAttribute("style", r.style);
+				fsPlaceholder.remove();
+				fsPlaceholder.hidden = true;
+				fsRestore = null;
+			}
+			// 容器尺寸彻底变了（520px 卡片 → 视口大小），必须重排一次。
+			// 放在下一帧：样式刚改，这一帧量到的还是旧尺寸。
+			//
+			// 全屏是「要看全景」的意图，所以**强制** fit（忽略 userAdjusted），
+			// 顺便把 userAdjusted 重置，否则退出全屏后 ResizeObserver 也不再自动适配。
+			requestAnimationFrame(() => {
+				if (!fullscreen && !container.isConnected) return;
+				userAdjusted = false;
+				fit();
+				onFullscreenChange(fullscreen);
+			});
+		}
+
+		function toggleFullscreen() {
+			setFullscreen(!fullscreen);
+		}
+
+		function onFullscreenChange(v) {
+			const b = ctrl.querySelector('[data-fg-action="fullscreen"]');
+			if (!b) return;
+			const title = v
+				? tt("graph.exit_fullscreen", "退出全屏（Esc）")
+				: tt("graph.fullscreen", "全屏");
+			b.title = title;
+			b.setAttribute("aria-label", title);
+			// 图标也跟着换：全屏中显示「向内收」，提示点一下会退回去
+			b.replaceChildren(ctrlIcon(v ? "collapse" : "expand"));
+			b.classList.toggle("is-on", v);
+			if (fsHint) fsHint.classList.toggle("is-on", v);
+		}
+
+		// Esc 退出。keydown 挂 window：全屏时容器是 body 的直接子节点，
+		// 但焦点可能在任何地方（点过按钮、选中过文字）。
+		function onKeydown(ev) {
+			if (!fullscreen) return;
+			if (ev.key === "Escape") {
+				ev.preventDefault();
+				setFullscreen(false);
+			}
+		}
+		window.addEventListener("keydown", onKeydown);
 
 		// 首次适配。等一帧：容器可能刚插入 DOM，尺寸还没算出来
 		requestAnimationFrame(() => fit());
@@ -465,7 +644,15 @@
 		return {
 			fit,
 			zoomBy,
+			// 全屏开关：页面也可以用（例如卡片标题上的「全屏」按钮），
+			// 但主入口是右下角控件里的那一个按钮。
+			setFullscreen,
+			isFullscreen: () => fullscreen,
 			destroy() {
+				// 销毁时如果在全屏状态，先把容器放回去：否则节点被清空、
+				// 容器却还挂在 body 上占着整个视口，页面上会多出一块黑底。
+				if (fullscreen) setFullscreen(false);
+				window.removeEventListener("keydown", onKeydown);
 				window.removeEventListener("mousemove", onMove);
 				window.removeEventListener("mouseup", onUp);
 				container.removeEventListener("wheel", onWheel);
@@ -478,6 +665,7 @@
 			_debug: {
 				nodes: () => nodes.map((n) => ({ id: n.id, label: n.label, kind: n.kind })),
 				edges: () => edges.map((e) => ({ from: e.from, to: e.to, port: e.port })),
+				fullscreen: () => fullscreen,
 				scale: () => scale,
 				contentSize: () => ({ w: contentW, h: contentH }),
 			},

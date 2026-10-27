@@ -237,6 +237,14 @@ index:
     open: 查看事件流 →
     loading: 正在加载事件…
     empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
+graph:
+  zoom_in: 放大
+  zoom_out: 缩小
+  fit: 适应视图
+  fullscreen: 全屏
+  exit_fullscreen: 退出全屏（Esc）
+  fullscreen_hint: 滚轮缩放 · 拖动平移 · Esc 退出
+
 connect:
   title: 接入 Agent
   subtitle: 为你的 Agent 安装通知插件。装好后插件会引导完成登录授权，任务结束时自动把通知送到你的设备。
