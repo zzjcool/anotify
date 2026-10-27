@@ -266,52 +266,147 @@
 	function taskChain(host, opts) {
 		// 这里不用 i18n：副标题显示的是九态原始名（succeeded / failed …），
 		// 它们是协议里的状态标识，翻译反而对不上日志和 API 响应。
+		const t = opts.t || ((k, d) => d || k);
 		const tasks = opts.tasks || [];
 		const limit = opts.limit || 120;
 
-		const byId = new Map(tasks.map((x) => [x.id, x]));
+		// 底图：这个 trace 所属源在「源」页配置的静态拓扑。
+		//
+		// 为什么用底图而不是只画执行过的那条链：只画链的话，"为什么这条
+		// 分支没走"这个问题图上根本看不见 —— 剪枝的分支压根不出现，
+		// 用户看到的永远是一条顺顺利利的直线。用配置拓扑当底、执行状态
+		// 当覆盖层，被剪枝的分支会以灰色留在原地，一眼看出"这里本来有
+		// 条路，这次没走"。
+		const base = opts.baseGraph || null;
 
-		const nodes = tasks.map((tk) => {
-			const st = tk.status || "pending";
-			const dur =
-				tk.startedAt != null && tk.finishedAt != null
-					? (tk.finishedAt - tk.startedAt) * 1000
-					: null;
-			const bits = [st];
-			if (dur != null) bits.push(fmtDur(dur));
-			if (tk.attempts > 1) bits.push("×" + tk.attempts);
-			return {
-				id: tk.id,
-				label: (tk.capability || "?") + "@" + (tk.version ?? "?"),
-				sub: bits.join(" · "),
-				kind: kindForStatus(st),
-				icon: STATUS_ICON[st] || "◆",
-				badge: STATUS_COLOR[st] || "#71717a",
-				accent: st === "failed" ? "#ef4444" : null,
-				_task: tk,
-			};
-		});
-
-		const edges = [];
+		// ------- 执行状态索引：能力 id → 该能力本条 trace 的任务列表 -------
+		//
+		// 同一个能力可能执行多次（失败重试后再次进入同一步），所以是数组。
+		// 底图的一个节点用一个徽章汇总：n 次执行里"最坏"的那个状态露出来，
+		// 次数标在旁边。
+		const byCapability = new Map();
 		for (const tk of tasks) {
-			if (!tk.parentTaskId || !byId.has(tk.parentTaskId)) continue;
-			const parent = byId.get(tk.parentTaskId);
-			edges.push({
-				from: tk.parentTaskId,
-				to: tk.id,
-				// 出口名取**父任务回报的那个 out**。
-				//
-				// 扇出时这个 out 对每条边都成立 —— 一个任务只回报一个 out，
-				// 拿它查表返回 N 行，就是从这个出口同时走向 N 个能力。
-				// 所以多子时标同一个名字是**正确的**，不是"无法区分"。
-				//
-				// （要精确到"哪条边是第几行"没有意义：库里 edges 只是
-				//  (from_capability, from_port) → to_capability 的集合，
-				//   同一个出口的多条边本来就并列，没有先后。）
-				port: parent.out || "",
-				// 失败的分支用橙色虚线，顺着线能看出是哪一步挂了
-				cycle: tk.status === "failed",
+			const cid = tk.capabilityId;
+			if (!cid) continue;
+			if (!byCapability.has(cid)) byCapability.set(cid, []);
+			byCapability.get(cid).push(tk);
+		}
+
+		// 状态严重度：节点汇总时取最坏的那个（failed 比 succeeded 更该被看见）
+		const SEVERITY = {
+			failed: 5,
+			abandoned: 4,
+			running: 3,
+			assigned: 3,
+			leased: 3,
+			pending: 2,
+			succeeded: 1,
+		};
+		const worst = (list) => {
+			let best = null;
+			let bestScore = -1;
+			for (const tk of list) {
+				const sc = SEVERITY[tk.status] || 0;
+				if (sc > bestScore) {
+					bestScore = sc;
+					best = tk;
+				}
+			}
+			return best;
+		};
+
+		let nodes;
+		let edges;
+
+		if (base && base.nodes && base.nodes.length) {
+			// ------- 有底图：配置拓扑 + 执行染色 -------
+			nodes = base.nodes.map((n) => {
+				const hits = byCapability.get(n.id);
+				if (!hits || !hits.length) {
+					// 剪枝：这条分支这次没走。
+					//
+					// 用独立 kind（不是简单的变灰），让它能同时表达
+					// "这是配置里真实存在的路"和"这次没走"。
+					return {
+						id: n.id,
+						label: n.label,
+						sub: t("trace.graph.pruned", "未执行"),
+						kind: "pruned",
+						icon: n.icon || "◆",
+						dead: true,
+					};
+				}
+				const tk = worst(hits);
+				const st = tk.status || "pending";
+				const dur =
+					tk.startedAt != null && tk.finishedAt != null
+						? (tk.finishedAt - tk.startedAt) * 1000
+						: null;
+				const bits = [st];
+				if (dur != null) bits.push(fmtDur(dur));
+				if (hits.length > 1) bits.push("×" + hits.length);
+				return {
+					id: n.id,
+					label: n.label,
+					sub: bits.join(" · "),
+					kind: kindForStatus(st),
+					icon: STATUS_ICON[st] || "◆",
+					badge: STATUS_COLOR[st] || "#71717a",
+					accent: st === "failed" ? "#ef4444" : null,
+					_task: tk,
+				};
 			});
+
+			edges = base.edges.map((e) => {
+				const fromNode = nodes.find((n) => n.id === e.from);
+				const toNode = nodes.find((n) => n.id === e.to);
+				const bothAlive = !(fromNode && fromNode.dead) && !(toNode && toNode.dead);
+				return {
+					from: e.from,
+					to: e.to,
+					port: e.port,
+					// 剪枝的边用虚线灰掉：和"配置里没有这条边"区分开
+					cycle: !!e.cycle,
+					muted: !bothAlive,
+				};
+			});
+		} else {
+			// ------- 没有底图：退回"只画执行链"（原行为） -------
+			//
+			// 拿不到源配置时（源已删除、trace 来自未知源）仍然要能看图。
+			const byId = new Map(tasks.map((x) => [x.id, x]));
+			nodes = tasks.map((tk) => {
+				const st = tk.status || "pending";
+				const dur =
+					tk.startedAt != null && tk.finishedAt != null
+						? (tk.finishedAt - tk.startedAt) * 1000
+						: null;
+				const bits = [st];
+				if (dur != null) bits.push(fmtDur(dur));
+				if (tk.attempts > 1) bits.push("×" + tk.attempts);
+				return {
+					id: tk.id,
+					label: (tk.capability || "?") + "@" + (tk.version ?? "?"),
+					sub: bits.join(" · "),
+					kind: kindForStatus(st),
+					icon: STATUS_ICON[st] || "◆",
+					badge: STATUS_COLOR[st] || "#71717a",
+					accent: st === "failed" ? "#ef4444" : null,
+					_task: tk,
+				};
+			});
+
+			edges = [];
+			for (const tk of tasks) {
+				if (!tk.parentTaskId || !byId.has(tk.parentTaskId)) continue;
+				const parent = byId.get(tk.parentTaskId);
+				edges.push({
+					from: tk.parentTaskId,
+					to: tk.id,
+					port: parent.out || "",
+					cycle: tk.status === "failed",
+				});
+			}
 		}
 
 		const cut = truncate(nodes, edges, limit);
@@ -325,9 +420,9 @@
 		// 超过 7 个节点改用纵向（TB）：链路图天生是**一条**链，
 		// 纵向排正好顺着容器的高度走，宽高比正常。
 		//
-		// rankSep 是"相邻两层之间的间隙"；扇出时同一层的兄弟节点
-		// 靠 nodeSep 拉开距离，太小会挤在一起。
-		const longChain = nodes.length > 7;
+		// 有底图时反而是横着的（源流向图就是横向，扇出往右铺），
+		// 所以那边按宽高比判断更合适 —— 但节点数少时横向仍然更好读。
+		const longChain = cut.nodes.length > 7;
 		const graph = render(host, {
 			rankdir: longChain ? "TB" : "LR",
 			rankSep: longChain ? 40 : 96,
@@ -342,7 +437,10 @@
 			// 所以需要工具栏版本；源流向图那边有，默认不画避免重复。
 			showFullscreen: !!opts.showFullscreen,
 			onNodeClick: (n) => {
-				if (opts.onNodeClick) opts.onNodeClick(n);
+				if (!opts.onNodeClick) return;
+				// 有底图时节点 id 是能力 id，映射回该能力最"严重"的那次任务
+				const hit = byCapability.get(n.id);
+				if (hit && hit.length) opts.onNodeClick(hit[0]);
 			},
 		});
 
@@ -355,9 +453,16 @@
 	 * 只有三种视觉分组：失败（红）／成功（绿）／进行中（默认蓝）。
 	 * 用 if/else 而不是嵌套三元 —— 三元套三元在这里已经读不动了。
 	 */
+	// 九态 → 视觉分组。注意这一层**不是** i18n 文案，是 CSS 类名后缀，
+	// ui.css 里要有对应的 .wf-node.is-* 才能上色。
+	//
+	// 曾经 failed 映射到 "unknown" —— 那个类的语义是"能力已被删除"，
+	// 于是一次执行失败和"配置里指向一个不存在的能力"长得一模一样。
+	// 现在分开：failed 有独立的红色，真·unknown 仍是红色但配 ✕ 图标。
 	function kindForStatus(st) {
-		if (st === "failed") return "unknown";
+		if (st === "failed" || st === "abandoned") return "failed";
 		if (st === "succeeded") return "end";
+		if (st === "running" || st === "assigned" || st === "leased") return "running";
 		return "pipe";
 	}
 

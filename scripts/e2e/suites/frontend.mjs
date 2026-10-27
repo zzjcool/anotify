@@ -1842,6 +1842,52 @@ async function checkWaterfall(page) {
 		}
 	}
 
+	// ---- 图视图用「源拓扑」当底图，执行状态叠上去 ----
+	//
+	// 只画执行链的话，被剪枝的分支压根不出现 —— 用户看到的永远是一条
+	// 顺顺利利的直线，"为什么这条分支没走"在图上根本问不出来。
+	// 底图把它们留成灰色虚线，一眼看出"这里本来有条路，这次没走"。
+	{
+		await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(bestId) + "&view=graph", {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await page.waitForTimeout(2500);
+		const gv = await page.evaluate(() => {
+			const ns = Array.from(document.querySelectorAll(".wf-node"));
+			const by = (c) => ns.filter((n) => n.classList.contains(c)).length;
+			return {
+				total: ns.length,
+				pruned: by("is-pruned"),
+				failed: by("is-failed"),
+				ok: by("is-end"),
+				titles: ns.map((n) => (n.querySelector(".wf-node-title") || {}).textContent || ""),
+			};
+		});
+		H.check(
+			"图视图有节点（底图或执行链）",
+			gv.total > 0,
+			`total=${gv.total}`,
+		);
+		// 底图节点用的是**能力显示名**，不是 "cap@version"。
+		// 用了底图就说明源配置的拓扑真的被读进来了。
+		H.check(
+			"底图节点用能力显示名（说明读到了源配置）",
+			gv.titles.some((x) => /[\u4e00-\u9fa5]/.test(x)),
+			gv.titles.slice(0, 5).join(","),
+		);
+		H.check(
+			"剪枝的分支以灰色留在图上（未执行）",
+			gv.pruned > 0,
+			`pruned=${gv.pruned} failed=${gv.failed} ok=${gv.ok}`,
+		);
+		H.check(
+			"失败节点有独立样式（不再与「能力已删除」共用）",
+			gv.failed > 0,
+			`failed=${gv.failed}`,
+		);
+	}
+
 	// 停在 span 最多的那条上做断言
 	await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(bestId), {
 		waitUntil: "load",
@@ -1976,6 +2022,8 @@ async function checkWaterfall(page) {
 				has: true,
 				hasGraph: !!host._graph,
 				nodeCount: nodeEls.length,
+				// 剪枝节点没有状态色点（它这次没执行），断言要能扣掉
+				prunedCount: nodeEls.filter((n) => n.classList.contains("is-pruned")).length,
 				edgeCount: host.querySelectorAll(".flograph-svg path[marker-end]").length,
 				// 状态现在显示为副标题的第一段（"succeeded · 1.2s"）
 				subs: nodeEls.map((n) => n.querySelector(".wf-node-sub")?.textContent || ""),
@@ -2024,13 +2072,16 @@ async function checkWaterfall(page) {
 			// 九态里的 succeeded / failed 应该用不同状态色（右下角小圆点）。
 			//
 			// 单条 trace 可能全是同一种状态（比如全成功），所以"这条链里有
-			// 几种颜色"不是稳定判据。改为断言：**当前节点都拿到了颜色**，
+			// 几种颜色"不是稳定判据。改为断言：**执行过的节点都拿到了颜色**，
 			// 且全站跨 trace 至少有两种色（上面 statusVariety 已经验证）。
+			//
+			// 例外是剪枝节点（is-pruned）：它这次根本没执行，没有状态可言，
+			// 所以**不该**有色点。底图上有它、执行链上没有它，都是正常的。
 			const dots = cg.dots.filter(Boolean);
 			H.check(
-				"每个节点都有状态色点",
-				dots.length === cg.nodeCount,
-				`dots=${dots.length} nodes=${cg.nodeCount}`,
+				"执行过的节点都有状态色点（剪枝的没有）",
+				dots.length === cg.nodeCount - cg.prunedCount,
+				`dots=${dots.length} nodes=${cg.nodeCount} pruned=${cg.prunedCount}`,
 			);
 			H.check(
 				"全站状态色至少两种（跨 trace 验证过）",

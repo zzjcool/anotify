@@ -826,7 +826,8 @@
 		//   analyze-pr ─needs-fix→ lint-fix ─remaining→ report.send ─escalate→ alert.oncall
 		//        │                      └─clean→ （剪枝：run-tests 不被派发）
 		//        └─approved→ run-tests ─failed→ apply-fix ─fixed→ run-tests（第 2 次，成功）
-		//                                              └────passed→ deploy-preview ─failed→ rollback ─done→ gen-changelog
+		//                                              └────passed→ deploy-preview ─failed→ rollback ─done→ alert.oncall
+		//                                                          （preview.ready→gen-changelog 分支被剪枝）
 		//
 		// 这一条特意做了几件别的 trace 没做的事：
 		//   · 同一个能力在一个 trace 里出现**两次**（run-tests 第 1 次失败、
@@ -876,7 +877,6 @@
 			const fix = capByName("apply-fix");
 			const deploy = capByName("deploy-preview");
 			const rollback = capByName("rollback");
-			const changelog = capByName("gen-changelog");
 			const rootId = analyze.id;
 
 			// 每跳的 [能力, 起点, 终点, out, 状态, 备注, nodeIdx, attempts]
@@ -891,7 +891,15 @@
 				[tests, 132.6, 178.9, "passed", "succeeded", "278 用例全部通过", 1, 1],
 				[deploy, 178.9, 231.5, "failed", "failed", "健康检查 5 分钟未通过", 1, 1],
 				[rollback, 231.5, 250.8, "done", "succeeded", "已回滚到上一版", 1, 1],
-				[changelog, 250.8, 269.9, null, "succeeded", "生成并归档", 1, 1],
+				[alert, 250.8, 251.4, null, "succeeded", "值班已收到升级", 2, 1],
+				// 注意这里**没有** gen-changelog：
+				//
+				// 配置里它是 `deploy-preview --preview.ready--> gen-changelog`，
+				// 而这次部署走的是 `failed` 那条边。所以它根本没被派发，
+				// 图视图上会以"剪枝"形式留在原地 —— 这正是底图的意义：
+				// 让"配置里有这条路、但这次没走"变得可见。
+				//
+				// （之前让它"执行了"是错的：部署失败了哪来的预览地址去生成变更日志。）
 			];
 
 			let prev = null;

@@ -93,6 +93,63 @@
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
 
+      /**
+       * buildBaseGraph 把「源的出口 + 能力图」摊平成 nodes/edges。
+       *
+       * 和源详情页的流向图同源（都是这个源配好的目标能力 + 下游边），
+       * 但这里不需要树形结构 —— 链路图只关心"有哪些节点、怎么连"，
+       * 所以直接摊平，由 graphs.js 去布局。
+       *
+       * 拿不到能力清单时返回 null，调用方退回只画执行链。
+       */
+      function buildBaseGraph(src, caps, edgesAll) {
+        if (!src || !window.AnotifyGraphs) return null;
+        if (!caps || !caps.length) return null;
+        const capById = new Map(caps.map((c) => [c.id, c]));
+        const nodes = [];
+        const seen = new Set();
+        const push = (id, label, extra) => {
+          if (seen.has(id)) return;
+          seen.add(id);
+          nodes.push(Object.assign({ id, label }, extra || {}));
+        };
+
+        // 从源的每个目标能力出发，沿边往下走（含剪枝后的分支）
+        for (const tc of src.targetCaps || []) {
+          const cap = capById.get(tc.id);
+          push(tc.id, cap ? window.Anotify.capLabel(cap) : tc.id, {
+            icon: "◆",
+            root: true,
+          });
+        }
+
+        const edges = [];
+        const edgeSeen = new Set();
+        const walk = (capId, depth) => {
+          if (depth > 20) return;
+          for (const e of edgesAll) {
+            if (e.fromIsSource) continue;
+            if (e.fromCapability !== capId) continue;
+            const key = e.fromCapability + "|" + (e.fromPort || "") + "|" + e.toCapability;
+            if (edgeSeen.has(key)) continue;
+            edgeSeen.add(key);
+            const to = capById.get(e.toCapability);
+            push(e.toCapability, to ? window.Anotify.capLabel(to) : e.toCapability, {
+              icon: "◆",
+            });
+            edges.push({
+              from: e.fromCapability,
+              to: e.toCapability,
+              port: e.fromPort || "",
+            });
+            walk(e.toCapability, depth + 1);
+          }
+        };
+        for (const tc of src.targetCaps || []) walk(tc.id, 0);
+
+        return nodes.length ? { nodes, edges } : null;
+      }
+
       // 各页面各自声明，无全局常量（与 events.html / sources.html 一致）
       const API = "/v1";
 
@@ -180,6 +237,39 @@
           if (Array.isArray(evs) && evs.length) event = evs[0];
         } catch (_e) {
           // 事件查不到不影响链路展示（trace 可能从别处发起）
+        }
+
+        // 底图：这个 trace 所属源在「源」页配好的静态拓扑。
+        //
+        // 图视图要拿它当底、执行状态当覆盖层 —— 只画执行链的话，
+        // 被剪枝的分支压根不出现，用户看到的永远是一条顺畅直线，
+        // "为什么这条分支没走"在图上根本问不出来。
+        //
+        // 拿不到就退回"只画执行链"（源已删、trace 来自未知源）。
+        let baseGraph = null;
+        if (event && event.source) {
+          try {
+            const [srcData, capData, edgeData] = await Promise.all([
+              fetchApi(API + "/sources"),
+              fetchApi(API + "/capabilities"),
+              fetchApi(API + "/edges"),
+            ]);
+            const srcList = (srcData && (srcData.sources || [])) || [];
+            const srcObj = srcList.find((x) => x.name === event.source);
+            if (srcObj) {
+              const detail = await fetchApi(
+                API + "/sources/" + encodeURIComponent(srcObj.id),
+              );
+              const full = (detail && detail.source) || srcObj;
+              baseGraph = buildBaseGraph(
+                full,
+                (capData && capData.capabilities) || [],
+                (edgeData && edgeData.edges) || [],
+              );
+            }
+          } catch (_e) {
+            // 拿不到源配置不算错：图视图会退回只画执行链
+          }
         }
 
         body.replaceChildren();
@@ -291,6 +381,7 @@
         const initView = qs.get("view") || "waterfall";
         window.TraceView.mount(viewBox, {
           tasks: tasks,
+          baseGraph: baseGraph,
           el: el,
           code: code,
           t: t,
