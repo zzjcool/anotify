@@ -119,6 +119,29 @@ type CronConfig struct {
 // 谁拿到这个 URL 谁就能往里发事件，所以创建时随机生成、可轮换。
 type WebhookConfig struct {
 	Token string `json:"token"`
+
+	// Event 只对 kind=github 有意义：这个源订阅的 GitHub 事件类型
+	// （pull_request / push / issues / issue_comment / release / workflow_run …）。
+	//
+	// 它决定两件事：
+	//   1. 前端给哪一份字段清单（各事件的 payload 结构完全不同）
+	//   2. 收到投递时用哪个事件名（真实 GitHub 把它放在 X-GitHub-Event 头里）
+	//
+	// 为空表示"接受所有事件"，事件名以请求头为准。
+	Event string `json:"event,omitempty"`
+}
+
+// 常用的 GitHub 事件类型。**不是白名单**：GitHub 会新增事件类型，
+// 中枢不该拦（I6 只约束"推导量"，不约束外部世界的枚举）。这个列表
+// 只用于前端下拉的默认项，未知值一律允许。
+var GitHubEvents = []string{
+	"pull_request",
+	"push",
+	"issues",
+	"issue_comment",
+	"pull_request_review",
+	"release",
+	"workflow_run",
 }
 
 // ParseCronConfig 解析并校验 cron 配置。

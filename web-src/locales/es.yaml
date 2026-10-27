@@ -1322,8 +1322,11 @@ sources:
     av_no_event: "Este disparador no tiene evento externo, así que no hay campos que referenciar; escribe los valores directamente en los parámetros."
     kind_github_hint: "Eventos PR/push de GitHub. Los campos conocidos y la configuración del lado de GitHub vienen incluidos."
     av_copied: "Copiado; pégalo en el parámetro"
-    av_src_builtin: "Según la estructura oficial del evento pull_request de GitHub (valores de ejemplo)"
+    av_src_builtin: "Según la estructura oficial del evento {ty} de GitHub (valores de ejemplo)"
     av_src_event: "Del evento real más reciente de esta fuente: {ty}"
+    gh_event: "Tipo de evento de GitHub"
+    gh_event_hint: "Cada tipo de evento tiene una estructura de payload distinta; la lista de campos sigue tu elección."
+    av_src_unknown: "No hay estructura integrada para «{ty}»; los campos reales aparecerán cuando llegue un evento."
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

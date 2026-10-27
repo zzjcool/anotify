@@ -444,6 +444,17 @@
         </div>
       </div>
 
+      <!-- GitHub 事件类型：决定 payload 结构，所以必须选。
+           pull_request 和 push 的载荷没有任何共同字段，给一份"通用样例"
+           等于两份都不对。 -->
+      <div id="f-gh-event-wrap" class="hidden">
+        <label class="mb-1 block text-xs text-zinc-400" for="f-gh-event"
+          >{{t "sources.form.gh_event"}}</label
+        >
+        <select id="f-gh-event" class="input w-full text-sm"></select>
+        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.gh_event_hint"}}</p>
+      </div>
+
       <!-- 这个触发方式能提供哪些字段 —— **只读展示**。
            以前这里是一张可编辑的"变量表"（给路径起短名字），但那件事
            参数框里的点选补全已经做了：打双大括号就能选字段，不需要先
@@ -488,7 +499,7 @@
               <dd><code>application/json</code></dd>
               <dt>Which events?</dt>
               <dd>
-                <code>Pull requests</code>
+                <code id="hook-gh-events">Pull requests</code>
                 <span class="hook-note">{{t "sources.form.hook_github_events"}}</span>
               </dd>
               <dt>Secret</dt>
@@ -920,6 +931,10 @@
         // 变量表要在渲染出口参数**之前**恢复：参数里的"选变量"下拉依赖它
         document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
 
+        // GitHub 事件类型要**先**回填：样本按它选，晚填就会用错样例
+        const evSel = document.getElementById("f-gh-event");
+        if (evSel) evSel.value = cfg.event || "pull_request";
+
         // 已保存的出口参数：从 targetCaps 里取（后端并入视图了）
         const existing = {};
         for (const tc of (src && src.targetCaps) || []) {
@@ -930,7 +945,11 @@
         //
         // kind 决定样本来源：github 用内置官方结构（新建就能配），
         // webhook 用真实事件，cron/manual 没有。
-        await loadSample({ kind: document.getElementById("f-kind").value, name: src ? src.name : "" });
+        await loadSample({
+          kind: document.getElementById("f-kind").value,
+          name: src ? src.name : "",
+          event: document.getElementById("f-gh-event")?.value || "pull_request",
+        });
         renderTargetPicker(src ? src.targets || [] : [], existing);
         syncKindFields();
 
@@ -957,6 +976,8 @@
         document.getElementById("f-hook-wrap").classList.toggle("hidden", !isHook);
         const gh = document.getElementById("hook-github");
         if (gh) gh.classList.toggle("hidden", kind !== "github");
+        const ghEv = document.getElementById("f-gh-event-wrap");
+        if (ghEv) ghEv.classList.toggle("hidden", kind !== "github");
 
         // 提示语跟着 kind 变：github 是"知道载荷长什么样"的那种 webhook，
         // 值得单独说明一句，否则用户分不清它和普通 webhook 的差别。
@@ -972,7 +993,11 @@
         //   webhook → 这个源最近一条真实事件（可能还没有）
         //   cron/manual → 没有样本
         // 用当前正在编辑的源名去拉（新建时为 null，webhook 会拿不到事件）。
-        loadSample({ kind: kind, name: EDITING_SRC ? EDITING_SRC.name : "" })
+        loadSample({
+          kind: kind,
+          name: EDITING_SRC ? EDITING_SRC.name : "",
+          event: document.getElementById("f-gh-event")?.value || "pull_request",
+        })
           .then(() => {
             renderAvailVars();
             // 参数框下方的预览也要重算：换了样本，之前写的引用结果就变了
@@ -991,7 +1016,17 @@
         const val = document.getElementById("hook-url-val");
         if (!box || !val) return;
         const kind = document.getElementById("f-kind").value;
-        if (kind !== "webhook") return;
+        // github 也是要投递 URL 的（与 webhook 同一套）——写成
+        // `kind !== "webhook"` 会让 github 源的回调地址永远显示不出来。
+        if (kind !== "webhook" && kind !== "github") return;
+
+        // GitHub 的 "Which events?" 要跟事件类型下拉一致，
+        // 否则用户照抄一段 pull_request 的说明去配 push。
+        const evEl = document.getElementById("hook-gh-events");
+        if (evEl && kind === "github") {
+          const ev = document.getElementById("f-gh-event")?.value || "pull_request";
+          evEl.textContent = GITHUB_EVENTS[ev] ? GITHUB_EVENTS[ev].label : ev;
+        }
 
         const url = EDITING_SRC && EDITING_SRC.hookUrl ? location.origin + EDITING_SRC.hookUrl : "";
         if (url) {
@@ -1151,47 +1186,242 @@
       let SAMPLE_PAYLOAD = null; // 当前的预览样本（null = 还没有可用样本）
       let SAMPLE_META = null; // {at, type, builtin}
 
-      // GITHUB_SAMPLE 是 GitHub 官方 pull_request webhook 的**结构样例**。
+      // GITHUB_EVENTS 是 GitHub 各事件类型的**结构样例**，按事件分类。
       //
-      // 值是我编的（真实事件的值当然因人而异），但**键名与嵌套层级
-      // 严格照 GitHub 文档**——用户配参数时依赖的是结构，不是值。
+      // 为什么必须分类：pull_request 和 push 的 payload 结构没有任何共同字段
+      // （前者有 pull_request.title，后者是 commits[] + ref + before/after）。
+      // 给一份"通用 GitHub 样例"等于两份都不对。
       //
-      // 为什么内置而不等真实事件：新建 GitHub 源时一个事件都还没有，
-      // 要求用户"先让 GitHub 发一次再回来配参数"是本末倒置。
-      const GITHUB_SAMPLE = {
-        action: "opened",
-        number: 42,
-        pull_request: {
-          number: 42,
-          title: "修个错字",
-          body: "把 README 里的拼写错误改掉。",
-          state: "open",
-          draft: false,
-          merged: false,
-          additions: 12,
-          deletions: 3,
-          changed_files: 2,
-          commits: 1,
-          comments: 0,
-          created_at: "2026-01-02T03:04:05Z",
-          html_url: "https://github.com/owner/repo/pull/42",
-          user: { login: "alice", id: 1234567, type: "User" },
-          head: { ref: "fix/typo", sha: "0f1e2d3c4b5a69788796a5b4c3d2e1f0" },
-          base: { ref: "main", sha: "9a8b7c6d5e4f30211203f4e5d6c7b8a9" },
-          labels: [{ name: "docs" }],
-          requested_reviewers: [{ login: "bob" }],
-        },
-        repository: {
-          name: "repo",
-          full_name: "owner/repo",
-          private: false,
-          html_url: "https://github.com/owner/repo",
-          default_branch: "main",
-          owner: { login: "owner", type: "Organization" },
-        },
-        sender: { login: "alice", id: 1234567, type: "User" },
-        installation: { id: 987654 },
+      // 键名与嵌套层级严格照 GitHub 官方文档；值是我编的示意值——
+      // 用户配参数依赖的是**结构**，不是值。
+      //
+      // 只预置常用事件（不代表白名单：GitHub 的事件类型是开放的，
+      // 后端接受任意 X-GitHub-Event 值，这里只是给用户一个起点）。
+      const GITHUB_REPO = {
+        name: "repo",
+        full_name: "owner/repo",
+        private: false,
+        html_url: "https://github.com/owner/repo",
+        default_branch: "main",
+        owner: { login: "owner", type: "Organization" },
       };
+      const GITHUB_SENDER = { login: "alice", id: 1234567, type: "User" };
+
+      const GITHUB_EVENTS = {
+        pull_request: {
+          label: "Pull request",
+          sample: {
+            action: "opened",
+            number: 42,
+            pull_request: {
+              number: 42,
+              title: "修个错字",
+              body: "把 README 里的拼写错误改掉。",
+              state: "open",
+              draft: false,
+              merged: false,
+              additions: 12,
+              deletions: 3,
+              changed_files: 2,
+              commits: 1,
+              comments: 0,
+              created_at: "2026-01-02T03:04:05Z",
+              html_url: "https://github.com/owner/repo/pull/42",
+              user: { login: "alice", id: 1234567, type: "User" },
+              head: { ref: "fix/typo", sha: "0f1e2d3c4b5a6978" },
+              base: { ref: "main", sha: "9a8b7c6d5e4f3021" },
+              labels: [{ name: "docs" }],
+              requested_reviewers: [{ login: "bob" }],
+            },
+            repository: GITHUB_REPO,
+            sender: GITHUB_SENDER,
+            installation: { id: 987654 },
+          },
+        },
+
+        push: {
+          label: "Push",
+          sample: {
+            ref: "refs/heads/main",
+            before: "9a8b7c6d5e4f30211203f4e5d6c7b8a9",
+            after: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            created: false,
+            deleted: false,
+            forced: false,
+            compare: "https://github.com/owner/repo/compare/9a8b7c6d...0f1e2d3c",
+            head_commit: {
+              id: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+              message: "修个错字",
+              timestamp: "2026-01-02T03:04:05Z",
+              author: { name: "Alice", email: "alice@example.com", username: "alice" },
+              committer: { name: "Alice", email: "alice@example.com", username: "alice" },
+              added: ["docs/a.md"],
+              removed: [],
+              modified: ["README.md"],
+            },
+            // GitHub 把 commits 限制在最近 20 条
+            commits: [
+              {
+                id: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+                message: "修个错字",
+                timestamp: "2026-01-02T03:04:05Z",
+                author: { name: "Alice", username: "alice" },
+                added: ["docs/a.md"],
+                removed: [],
+                modified: ["README.md"],
+              },
+            ],
+            repository: GITHUB_REPO,
+            pusher: { name: "alice", email: "alice@example.com" },
+            sender: GITHUB_SENDER,
+          },
+        },
+
+        issues: {
+          label: "Issues",
+          sample: {
+            action: "opened",
+            issue: {
+              number: 7,
+              title: "参数说明不清楚",
+              body: "希望能看到每个字段的示例值。",
+              state: "open",
+              html_url: "https://github.com/owner/repo/issues/7",
+              user: { login: "carol", id: 7654321, type: "User" },
+              labels: [{ name: "question" }],
+              assignees: [],
+              comments: 0,
+              created_at: "2026-01-02T03:04:05Z",
+            },
+            repository: GITHUB_REPO,
+            sender: GITHUB_SENDER,
+          },
+        },
+
+        issue_comment: {
+          label: "Issue comment",
+          sample: {
+            action: "created",
+            issue: {
+              number: 7,
+              title: "参数说明不清楚",
+              state: "open",
+              html_url: "https://github.com/owner/repo/issues/7",
+              user: { login: "carol", type: "User" },
+            },
+            comment: {
+              id: 987654321,
+              body: "同意，示例值很有帮助。",
+              html_url: "https://github.com/owner/repo/issues/7#issuecomment-987654321",
+              user: { login: "bob", type: "User" },
+              created_at: "2026-01-02T04:00:00Z",
+            },
+            repository: GITHUB_REPO,
+            sender: GITHUB_SENDER,
+          },
+        },
+
+        pull_request_review: {
+          label: "Pull request review",
+          sample: {
+            action: "submitted",
+            review: {
+              id: 555000111,
+              state: "approved",
+              body: "LGTM",
+              html_url: "https://github.com/owner/repo/pull/42#pullrequestreview-555000111",
+              user: { login: "bob", type: "User" },
+              submitted_at: "2026-01-02T05:00:00Z",
+            },
+            pull_request: {
+              number: 42,
+              title: "修个错字",
+              state: "open",
+              html_url: "https://github.com/owner/repo/pull/42",
+              user: { login: "alice", type: "User" },
+            },
+            repository: GITHUB_REPO,
+            sender: GITHUB_SENDER,
+          },
+        },
+
+        release: {
+          label: "Release",
+          sample: {
+            action: "published",
+            release: {
+              id: 11223344,
+              tag_name: "v1.4.0",
+              name: "v1.4.0 发布",
+              body: "### 变更\n- 参数支持点选插入",
+              draft: false,
+              prerelease: false,
+              html_url: "https://github.com/owner/repo/releases/tag/v1.4.0",
+              author: { login: "alice", type: "User" },
+              published_at: "2026-01-02T06:00:00Z",
+            },
+            repository: GITHUB_REPO,
+            sender: GITHUB_SENDER,
+          },
+        },
+
+        workflow_run: {
+          label: "Workflow run",
+          sample: {
+            action: "completed",
+            workflow_run: {
+              id: 44778899,
+              name: "CI",
+              event: "push",
+              status: "completed",
+              conclusion: "success",
+              head_branch: "main",
+              head_sha: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+              html_url: "https://github.com/owner/repo/actions/runs/44778899",
+              run_number: 128,
+              created_at: "2026-01-02T07:00:00Z",
+              updated_at: "2026-01-02T07:03:21Z",
+            },
+            workflow: { id: 3322110, name: "CI", path: ".github/workflows/ci.yml" },
+            repository: GITHUB_REPO,
+            sender: GITHUB_SENDER,
+          },
+        },
+      };
+
+      /** renderGhEventOptions 填事件类型下拉（只填一次）。 */
+      function renderGhEventOptions() {
+        const sel = document.getElementById("f-gh-event");
+        if (!sel || sel.options.length) return;
+        for (const ev of GITHUB_EVENT_ORDER) {
+          const o = document.createElement("option");
+          o.value = ev;
+          o.textContent = GITHUB_EVENTS[ev].label + "  (" + ev + ")";
+          sel.appendChild(o);
+        }
+        sel.addEventListener("change", () => {
+          loadSample({
+            kind: "github",
+            name: EDITING_SRC ? EDITING_SRC.name : "",
+            event: sel.value,
+          }).then(() => {
+            renderAvailVars();
+            refreshParamTips();
+            updateHookGuide();
+          });
+        });
+      }
+
+      // GITHUB_EVENT_ORDER 是下拉里的展示顺序（常用在前）
+      const GITHUB_EVENT_ORDER = [
+        "pull_request",
+        "push",
+        "issues",
+        "issue_comment",
+        "pull_request_review",
+        "release",
+        "workflow_run",
+      ];
 
       /** loadSample 按触发方式决定用哪份预览样本。 */
       async function loadSample(spec) {
@@ -1200,10 +1430,19 @@
         const kind = spec && spec.kind;
         const sourceName = spec && spec.name;
 
-        // GitHub：内置官方结构样例，**新建时就能配参数**
+        // GitHub：按**事件类型**取内置官方结构样例
         if (kind === "github") {
-          SAMPLE_PAYLOAD = GITHUB_SAMPLE;
-          SAMPLE_META = { builtin: true, type: "pull_request" };
+          const ev = (spec && spec.event) || "pull_request";
+          const def = GITHUB_EVENTS[ev];
+          if (def) {
+            SAMPLE_PAYLOAD = def.sample;
+            SAMPLE_META = { builtin: true, type: ev };
+          } else {
+            // 未知事件类型：不猜结构，如实说"没有内置样例"，
+            // 用户仍可手写路径（收到真实事件后预览会生效）
+            SAMPLE_PAYLOAD = null;
+            SAMPLE_META = { builtin: true, type: ev, unknown: true };
+          }
           return;
         }
 
@@ -1598,8 +1837,13 @@
             return;
           }
           config = { expr: expr };
+        } else if (kind === "github") {
+          // 事件类型存在 config.event：它决定收到投递时用什么事件名
+          //（真实 GitHub 把它放在 X-GitHub-Event 头里，这里只是订阅声明
+          // 和"手动 curl 测试"时的兜底）。
+          config = { event: document.getElementById("f-gh-event").value || "pull_request" };
         }
-        // webhook / github / manual 的 config 由后端补 token，前端不填。
+        // webhook / manual 的 config 由后端补 token，前端不填。
         // 也不再写 config.vars：别名表整个删除了。
 
         const body = { name: name, kind: kind, config: config, enabled: enabled, targets: targets };
@@ -1653,10 +1897,19 @@
         if (srcEl) {
           srcEl.textContent = "";
           if (SAMPLE_META && SAMPLE_META.builtin) {
-            srcEl.textContent = t(
-              "sources.form.av_src_builtin",
-              "来自 GitHub 官方 pull_request 事件结构（示例值）",
-            );
+            if (SAMPLE_META.unknown) {
+              srcEl.textContent = t(
+                "sources.form.av_src_unknown",
+                "没有「{ty}」的内置结构样例；收到真实事件后会列出实际字段。",
+              ).replace("{ty}", SAMPLE_META.type || "—");
+            } else {
+              // 事件类型要出现在文案里：换了 event 却还写 pull_request，
+              // 用户会以为这份清单对不上自己选的事件。
+              srcEl.textContent = t(
+                "sources.form.av_src_builtin",
+                "来自 GitHub 官方 {ty} 事件结构（示例值）",
+              ).replace("{ty}", SAMPLE_META.type || "pull_request");
+            }
           } else if (SAMPLE_META && SAMPLE_META.at) {
             srcEl.textContent = t(
               "sources.form.av_src_event",
@@ -1883,7 +2136,10 @@
           name: document.getElementById("f-name").value.trim(),
           kind: kind,
           // 不再有 config.vars：别名表已删除，参数直接写完整 payload 路径。
-          config: { expr: document.getElementById("f-expr").value.trim() },
+          config:
+            kind === "github"
+              ? { event: document.getElementById("f-gh-event").value || "pull_request" }
+              : { expr: document.getElementById("f-expr").value.trim() },
           targets: targets,
         };
       }
@@ -2109,6 +2365,7 @@
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
       document.getElementById("modal-save").addEventListener("click", save);
       document.getElementById("f-kind").addEventListener("change", syncKindFields);
+      renderGhEventOptions();
 
       // 预设表达式按钮
       document.querySelectorAll("[data-expr]").forEach((b) => {

@@ -55,7 +55,12 @@ const CHROME_SUITES = [
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 
-const SUITE_TIMEOUT = 120_000; // 120s per suite
+const SUITE_TIMEOUT = 120_000; // 120s per suite（默认）
+// frontend 是唯一一个要跑 249 条断言的套件，光 Chrome 交互就要 ~106s，
+// 默认 120s 只剩十几秒余量 —— 并发跑时必然踩线。给它单独放宽。
+const SUITE_TIMEOUT_OVERRIDE = {
+	frontend: 240_000,
+};
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
@@ -125,15 +130,17 @@ function runSuite(name) {
 		proc.stdout.on("data", (d) => { stdout += d; });
 		proc.stderr.on("data", (d) => { stderr += d; });
 
+		const budget = SUITE_TIMEOUT_OVERRIDE[name] || SUITE_TIMEOUT;
 		const timer = setTimeout(() => {
 			proc.kill("SIGKILL");
 			resolve({
 				suite: name,
 				status: "timeout",
+				budget,
 				stdout,
 				stderr,
 			});
-		}, SUITE_TIMEOUT);
+		}, budget);
 
 		proc.on("exit", (code) => {
 			clearTimeout(timer);
@@ -173,7 +180,8 @@ async function runSerial(suites) {
 		if (r.status === "pass") {
 			console.log(`  ✅ 套件 ${name} 通过\n`);
 		} else if (r.status === "timeout") {
-			console.log(`  ⏱️ 套件 ${name} 超时（${SUITE_TIMEOUT / 1000}s）\n`);
+			const b = r.budget || SUITE_TIMEOUT;
+			console.log(`  ⏱️ 套件 ${name} 超时（${b / 1000}s）\n`);
 		} else {
 			console.log(`  ❌ 套件 ${name} 失败\n`);
 		}

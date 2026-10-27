@@ -1322,8 +1322,11 @@ sources:
     av_no_event: "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。"
     kind_github_hint: "GitHub 的 PR/推送事件。已内置字段清单与 GitHub 侧填法，不用自己翻文档。"
     av_copied: "已复制，粘到参数里即可"
-    av_src_builtin: "来自 GitHub 官方 pull_request 事件结构（示例值）"
+    av_src_builtin: "来自 GitHub 官方 {ty} 事件结构（示例值）"
     av_src_event: "来自这个源最近一条真实事件：{ty}"
+    gh_event: "GitHub 事件类型"
+    gh_event_hint: "不同类型的事件载荷结构完全不同，选哪个就按哪个给字段清单。"
+    av_src_unknown: "没有「{ty}」的内置结构样例；收到真实事件后会列出实际字段。"
   preset:
     hourly: 每小时
     daily3: 每天 3:00

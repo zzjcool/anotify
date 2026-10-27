@@ -1577,6 +1577,69 @@
 		return { tasks, pruned };
 	}
 
+	// Webhook 投递：外部系统 POST 到 /v1/hooks/{token}。
+	//
+	// 与 Go 侧同构，两种格式靠 kind 区分：
+	//   github  —— GitHub 原生格式：body 就是 payload，事件名在
+	//              X-GitHub-Event 头里（mock 用 body.__event 模拟，因为
+	//              浏览器里没法设自定义头）
+	//   webhook —— 本系统包装体 {"type","payload"}
+	on("POST", /^\/v1\/hooks\/([^/]+)$/, (ctx) => {
+		const token = ctx.m[1];
+		const s = state.sources.find(
+			(x) => (x.kind === "webhook" || x.kind === "github") && x.config && x.config.token === token,
+		);
+		if (!s) return err(404, "not found");
+		if (!s.enabled) return err(404, "not found");
+
+		const b = ctx.body || {};
+		let payload;
+		let eventType;
+		if (s.kind === "github") {
+			// 原生格式：整个 body 就是 payload
+			eventType = b.__event || (s.config && s.config.event) || "pull_request";
+			payload = Object.assign({}, b);
+			delete payload.__event;
+		} else {
+			eventType = b.type || s.name;
+			payload = b.payload && typeof b.payload === "object" ? b.payload : {};
+		}
+
+		const traceId = nextTraceId();
+		const ev = {
+			id: uid("evt"),
+			orgId: ORG,
+			traceId: traceId,
+			source: s.name,
+			type: eventType,
+			payload: payload,
+			createdAt: now(),
+		};
+		state.events.push(ev);
+
+		const plan = planDispatch(s, payload);
+		const tasks = [];
+		for (const p of plan.tasks) {
+			const c = state.capabilities.find((x) => x.id === p.capabilityId);
+			const tk = {
+				id: uid("tsk"), orgId: ORG, traceId: traceId,
+				parentTaskId: null, path: [p.capabilityId],
+				capabilityId: p.capabilityId, capability: p.capability,
+				params: p.params, version: p.version,
+				status: "pending", nodeId: null, instanceId: null,
+				leaseUntil: null, attempts: 0, out: null, reported: false,
+				summary: "", artifacts: [], error: "",
+				contentHash: c.contentHash, capHash: c.contentHash,
+				graphId: "grf_mock", createdAt: now(),
+				startedAt: null, finishedAt: null, notBefore: null,
+			};
+			state.tasks.push(tk);
+			tasks.push(tk);
+		}
+		s.lastFiredAt = now();
+		return json({ event: clone(ev), inserted: true, dispatch: { tasks: clone(tasks), pruned: plan.pruned } });
+	});
+
 	// 试运行：用给定 payload 算出"会派发什么、会剪枝什么"，**不落库**。
 	//
 	// 和 fire 共用 planDispatch，所以两边判定一定一致 —— 用户不会遇到

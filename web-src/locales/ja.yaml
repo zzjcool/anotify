@@ -1322,8 +1322,11 @@ sources:
     av_no_event: "このトリガーには外部イベントがないため、参照できるフィールドはありません。値はパラメータに直接書いてください。"
     kind_github_hint: "GitHub の PR / push イベント。既知のフィールドと GitHub 側の設定方法が組み込まれています。"
     av_copied: "コピーしました。パラメータに貼り付けてください"
-    av_src_builtin: "GitHub 公式の pull_request イベント構造に基づく（値はサンプル）"
+    av_src_builtin: "GitHub 公式の {ty} イベント構造に基づく（値はサンプル）"
     av_src_event: "このソースの直近の実際のイベント: {ty}"
+    gh_event: "GitHub イベント種別"
+    gh_event_hint: "イベント種別ごとにペイロード構造が全く異なります。選んだ種別のフィールド一覧を表示します。"
+    av_src_unknown: "「{ty}」の組み込み構造がありません。実際のイベントを受信すると項目が表示されます。"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00
