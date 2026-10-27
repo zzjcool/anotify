@@ -48,10 +48,10 @@ func TestStubSignaturesFrozen(t *testing.T) {
 
 	// ── event.go ───────────────────────────────────
 	var (
-		_ func(context.Context, *Event) (bool, error)                  = db.InsertEvent
-		_ func(context.Context, string, string) (*Event, error)        = db.GetEvent
-		_ func(context.Context, string, string, int) ([]*Event, error) = db.ListEvents
-		_ func(context.Context, string, string) (*Event, error)        = db.GetEventByTrace
+		_ func(context.Context, *Event) (bool, error)                          = db.InsertEvent
+		_ func(context.Context, string, string) (*Event, error)                = db.GetEvent
+		_ func(context.Context, string, string, string, int) ([]*Event, error) = db.ListEvents
+		_ func(context.Context, string, string) (*Event, error)                = db.GetEventByTrace
 	)
 
 	// ── task.go ────────────────────────────────────
@@ -139,7 +139,7 @@ func TestNoStubRemains(t *testing.T) {
 			return err
 		},
 		"GetEvent":           func() error { _, err := db.GetEvent(ctx, orgID, "evt_x"); return err },
-		"ListEvents":         func() error { _, err := db.ListEvents(ctx, orgID, "", 10); return err },
+		"ListEvents":         func() error { _, err := db.ListEvents(ctx, orgID, "", "", 10); return err },
 		"GetEventByTrace":    func() error { _, err := db.GetEventByTrace(ctx, orgID, "trace"); return err },
 		"CreateTasks":        func() error { return db.CreateTasks(ctx, nil) },
 		"GetTask":            func() error { _, err := db.GetTask(ctx, orgID, "tsk_x"); return err },

@@ -1325,6 +1325,10 @@ sources:
     ref_tip: "从事件或变量取值"
     ref_mix_tip: "模板拼接，结果按文本传入"
     bad_placeholder: "参数 {k}：占位符没闭合"
+    pv_broken: "占位符没闭合"
+    pv_nosample: "还没有事件可当样本，触发一次后才能预览"
+    pv_missing: "样本里没有「{p}」"
+    pv_missing_multi: "样本里没有：{p}"
   preset:
     hourly: 每小时
     daily3: 每天 3:00

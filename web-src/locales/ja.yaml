@@ -1325,6 +1325,10 @@ sources:
     ref_tip: "イベントまたは変数から取得"
     ref_mix_tip: "テンプレート連結。結果はテキストとして渡されます"
     bad_placeholder: "パラメータ {k}：プレースホルダーが閉じていません"
+    pv_broken: "プレースホルダーが閉じていません"
+    pv_nosample: "まだイベントがありません。1 回トリガーするとプレビューできます"
+    pv_missing: "サンプルに「{p}」がありません"
+    pv_missing_multi: "サンプルにありません：{p}"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00

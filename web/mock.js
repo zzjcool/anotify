@@ -414,14 +414,9 @@
 				config: {
 					expr: "0 3 * * *",
 					tz: "Local",
-					// cron 的变量只能是固定值：它没有请求体可读。
-					// 这也是"变量"比"payload 路径"更通用的地方 —— 同一种写法
-					// 既能描述 webhook 的字段，也能描述定时任务的常量。
-					vars: [
-						{ name: "changedLines", value: 120 },
-						{ name: "repo", value: "anotify" },
-					],
-					payload: { changedLines: 120, repo: "anotify" },
+					// cron 没有请求体，所以没有别名可声明（别名指向 payload 路径）。
+					// 常量直接写在参数里就行 —— 不需要先起个名字。
+					vars: [],
 				},
 				enabled: true,
 				lastFiredAt: now() - 3600 * 9,
@@ -430,7 +425,7 @@
 				targets: [
 					{
 						capabilityId: analyze.id,
-						params: { changedLines: { var: "changedLines" }, repo: { var: "repo" } },
+						params: { changedLines: 120, repo: "anotify" },
 					},
 				],
 			},
@@ -449,7 +444,6 @@
 						{ name: "repo", from: "repository.name" },
 						{ name: "title", from: "pull_request.title" },
 						{ name: "author", from: "pull_request.user.login" },
-						{ name: "env", value: "staging" },
 					],
 				},
 				enabled: true,
@@ -459,9 +453,9 @@
 				targets: [
 					{
 						capabilityId: analyze.id,
-						params: { changedLines: { var: "lines" }, repo: { var: "repo" } },
+						params: { changedLines: "{{lines}}", repo: "{{repo}}" },
 					},
-					{ capabilityId: deploy.id, params: { env: { var: "env" } } },
+					{ capabilityId: deploy.id, params: { env: "{{env}}" } },
 				],
 			},
 			{
@@ -470,10 +464,8 @@
 				name: "发布审批",
 				kind: "manual",
 				config: {
-					vars: [
-						{ name: "title", value: "v1.4.0 发布" },
-						{ name: "channel", value: "slack" },
-					],
+					// 手动触发同样没有外部 payload，全用字面量。
+					vars: [],
 				},
 				enabled: false,
 				lastFiredAt: null,
@@ -485,8 +477,8 @@
 					{
 						capabilityId: report.id,
 						params: {
-							channel: { var: "channel" },
-							title: { var: "title" },
+							channel: "slack",
+							title: "v1.4.0 发布",
 							urgent: false,
 							retries: 2,
 						},
@@ -552,7 +544,14 @@
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "GitHub PR", type: "pull_request.opened",
-				payload: { pr: 842, repo: "anotify" }, createdAt: t,
+				payload: {
+					pull_request: {
+						number: 842, title: "修个错字", additions: 12, deletions: 3,
+						user: { login: "alice" }, head: { ref: "fix/typo" }, base: { ref: "main" },
+					},
+					repository: { name: "anotify", full_name: "zzjcool/anotify" },
+					action: "opened",
+				}, createdAt: t,
 			});
 			const analyze = capByName("analyze-pr");
 			const lintFix = capByName("lint-fix");
@@ -632,7 +631,14 @@
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "GitHub PR", type: "pull_request.reopened",
-				payload: { pr: 913, repo: "anotify", files: 27 }, createdAt: t,
+				payload: {
+					pull_request: {
+						number: 913, title: "重构参数映射", additions: 240, deletions: 88,
+						user: { login: "bob" }, head: { ref: "refactor/params" }, base: { ref: "main" },
+					},
+					repository: { name: "anotify", full_name: "zzjcool/anotify" },
+					action: "reopened",
+				}, createdAt: t,
 			});
 
 			const analyze = capByName("analyze-pr");
@@ -784,7 +790,14 @@
 			state.events.push({
 				id: uid("evt"), orgId: ORG, traceId,
 				source: "GitHub PR", type: "pull_request.synchronize",
-				payload: { pr: 843 }, createdAt: t,
+				payload: {
+					pull_request: {
+						number: 843, title: "加个测试", additions: 31, deletions: 0,
+						user: { login: "carol" }, head: { ref: "test/more" }, base: { ref: "main" },
+					},
+					repository: { name: "anotify", full_name: "zzjcool/anotify" },
+					action: "synchronize",
+				}, createdAt: t,
 			});
 			state.tasks.push(mkTask({
 				traceId, cap: capByName("deploy-preview"),
@@ -1726,8 +1739,12 @@
 	on("GET", /^\/v1\/console\/events$/, (ctx) => {
 		const limit = Number(ctx.query.get("limit") || 50);
 		const trace = ctx.query.get("traceId");
+		// source 过滤：参数编辑器用它拿"这个源最近一条真实事件"当预览样本，
+		// 让用户能看到 {{pull_request.title}} 到底会取到什么，而不是盲写路径。
+		const source = ctx.query.get("source");
 		let list = state.events.slice();
 		if (trace) list = list.filter((e) => e.traceId === trace);
+		if (source) list = list.filter((e) => e.source === source);
 		list.sort((a, b) => b.createdAt - a.createdAt);
 		return json({ events: clone(list.slice(0, limit)) });
 	});

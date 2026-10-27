@@ -187,6 +187,7 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 		return
 	}
 	traceID := r.URL.Query().Get("traceId")
+	source := r.URL.Query().Get("source")
 	limit := 100
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 1000 {
@@ -194,7 +195,7 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 		}
 	}
 
-	events, err := h.Store.ListEvents(r.Context(), orgID, traceID, limit)
+	events, err := h.Store.ListEvents(r.Context(), orgID, traceID, source, limit)
 	if err != nil {
 		slog.Error("list events failed", "event", "events.list.failed", "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "internal error")
