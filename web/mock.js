@@ -1122,7 +1122,7 @@
 	//   "PR #{{number}}: {{title}}" → 模板拼接
 	//   "prod"                     → 字面量，原样传
 	//
-	// 支持**混写**："PR: {{pull_request.title}} by {{$author}}"。
+	// 支持**混写**（模板拼接）：文本里可以出现多个引用。
 	//
 	// 为什么这是安全的（I6「中枢不解释用户提供的逻辑」的边界）：
 	//
@@ -1138,13 +1138,10 @@
 	// 仍然**不做**的（这些才需要真正的解释器）：
 	//   条件 {{#if x}}、循环 {{#each}}、函数调用、运算 {{a + b}}
 	//
-	// 引用语法：
-	//   {{pull_request.title}}   从 payload 按点号路径取
-	//   {{$author}}              从源变量表取
-	//
-	// 占位符正则只允许「标识符 + 点 / $ / 数字下标」，不允许括号、运算符、
-	// 空格分隔的表达式 —— 这样即使有人写了 {{a + b}}，也不会被当成表达式求值，
+	// 占位符正则只允许「标识符 + 点号」，不允许括号、运算符、空格分隔的
+	// 表达式 —— 这样即使有人写了 {{a + b}}，也不会被当成表达式求值，
 	// 而是当成"查一个叫 `a + b` 的路径"（查不到 → param_missing）。
+	// **语法上就没有运算的位置**，这是 I6 的结构性保证，不靠运行时检查。
 	const PLACEHOLDER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g;
 
 	// hasPlaceholder 字符串里是否含至少一个 {{x}}。
@@ -1154,15 +1151,6 @@
 		const found = PLACEHOLDER_RE.test(v);
 		PLACEHOLDER_RE.lastIndex = 0;
 		return found;
-	}
-
-	// isTemplate 字符串是否是"整个值就是一个引用"——
-	// 这种情况下**保留原始类型**（数字还是数字、对象还是对象），
-	// 而不是转成字符串再拼。
-	function isTemplate(v) {
-		if (typeof v !== "string") return false;
-		const m = v.match(/^\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}$/);
-		return m !== null;
 	}
 
 	// wholeRef 取出"整个值就是一个引用"里的那个引用；不是则返回 null。
@@ -1268,14 +1256,13 @@
 
 		// lookup 解析一个引用：**先查别名表，再查 payload**。
 		//
-		// 没有 `$` 前缀了。之前用 `{{$env}}` 表示"变量"、`{{a.b.c}}` 表示
-		// "payload 路径"，但这个区分纯粹是实现细节 —— 用户想的是"这个值
-		// 从哪来"，却要先记住两套语法。现在统一：
+		// 只有一种语法：统一按名字查，顺序是
 		//
 		//   1. 别名表（config.vars）里有这个名字 → 用它指向的 payload 路径取值
 		//   2. 否则直接当 payload 路径取
 		//
-		// 名字冲突时别名优先——别名本来就是为了"改写/缩短"而存在的。
+		// 用户不需要区分"这是变量还是 payload 字段"。名字冲突时别名优先——
+		// 别名本来就是为了改写/缩短而存在的。
 		const lookup = (ref) => {
 			const r = String(ref).trim();
 			const key = r;
@@ -1327,34 +1314,32 @@
 
 	// validateMappingPaths 校验映射声明本身（配置期，不是触发期）。
 	// 只查形式：from 必须是点号路径字符串，as 只能是 string/number/boolean/json。
-	function validateMappingPaths(template, declaredVars) {
+	// validatePlaceholders 校验参数里的占位符**形式**（配置期）。
+	//
+	// 只查形式不查可达性：{{pull_request.title}} 无需任何声明就合法，
+	// 拼错会在触发时以 param_missing 报出来（并原样回显用户写的引用）。
+	function validatePlaceholders(template) {
 		if (!template) return "";
-		const known = declaredVars ? new Set(declaredVars.map((d) => d && d.name).filter(Boolean)) : null;
 		for (const [k, v] of Object.entries(template)) {
-			// 含占位符的字符串：逐个校验引用形式。
-			//
-			// 不再要求"必须是已声明的变量"：因为 {{pull_request.title}}
-			// 这种直写 payload 路径是合法的、且不需要任何声明。拼写错误
-			// 会在触发时以 param_missing 报出来（带原始引用文本）。
-			if (typeof v === "string" && hasPlaceholder(v)) {
-				PLACEHOLDER_RE.lastIndex = 0;
-				let m;
-				while ((m = PLACEHOLDER_RE.exec(v)) !== null) {
-					const ref = m[1].trim();
-					if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
-						return `参数 ${k} 的路径不合法：「${ref}」`;
-					}
-				}
-				PLACEHOLDER_RE.lastIndex = 0;
-				// 不完整的 {{ 或 }} 配错，提示一下（否则用户以为没生效）
-				const opens = (v.match(/\{\{/g) || []).length;
-				const closes = (v.match(/\}\}/g) || []).length;
-				if (opens !== closes) {
-					return `参数 ${k}：占位符没有闭合（{{ 与 }} 数量不一致）`;
-				}
-				continue;
+			if (typeof v !== "string") continue;
+			// 闭合检查要**先于** hasPlaceholder：写了 "PR {{title" 这种
+			// 半截占位符时，正则匹配不到任何完整占位符，hasPlaceholder
+			// 返回 false，那个分支根本进不来 —— 用户会以为设置生效了。
+			const opens = (v.match(/\{\{/g) || []).length;
+			const closes = (v.match(/\}\}/g) || []).length;
+			if (opens !== closes) {
+				return `参数 ${k}：占位符没有闭合（{{ 与 }} 数量不一致）`;
 			}
-
+			if (!hasPlaceholder(v)) continue;
+			PLACEHOLDER_RE.lastIndex = 0;
+			let m;
+			while ((m = PLACEHOLDER_RE.exec(v)) !== null) {
+				const ref = m[1].trim();
+				if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
+					return `参数 ${k} 的路径不合法：「${ref}」`;
+				}
+			}
+			PLACEHOLDER_RE.lastIndex = 0;
 		}
 		return "";
 	}
@@ -1444,7 +1429,7 @@
 			if (t.params && Object.keys(t.params).length) {
 				// 先校验映射声明本身（形式对不对），再校验字面量的 schema。
 				// 映射的值要触发时才有，这里不能拿它去做 schema 校验。
-				const mmsg = validateMappingPaths(t.params, varDefs);
+				const mmsg = validatePlaceholders(t.params);
 				if (mmsg) return `${c.name}@${c.version}：${mmsg}`;
 				const literals = {};
 				for (const [k, v] of Object.entries(t.params)) {

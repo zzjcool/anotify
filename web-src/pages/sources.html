@@ -1285,8 +1285,10 @@
               //
               // 不在这里展开成 {from:...}：展开会丢掉"用户拼的文本"，
               // 出错时只能报"某字段取不到"，用户看不到自己写了什么。
-              if (TPL_RE.test(raw)) {
-                // 占位符必须成对（否则用户以为生效了其实没有）
+              // 占位符必须成对。这一步**先于** TPL_RE 判断：
+              // 写了半截占位符时正则匹配不到完整引用，TPL_RE 为 false，
+              // 会被当字面量存下去 —— 用户以为生效了，实际什么都不发生。
+              {
                 const opens = (raw.match(new RegExp(BRACE_OPEN, "g")) || []).length;
                 const closes = (raw.match(new RegExp(BRACE_CLOSE, "g")) || []).length;
                 if (opens !== closes) {
@@ -1294,6 +1296,9 @@
                     t("sources.form.bad_placeholder", "参数 {k}：占位符没闭合").replace("{k}", k),
                   );
                 }
+              }
+
+              if (TPL_RE.test(raw)) {
                 params[k] = raw;
                 continue;
               }
