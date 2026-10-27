@@ -1150,7 +1150,7 @@
 	// 占位符正则只允许「标识符 + 点 / $ / 数字下标」，不允许括号、运算符、
 	// 空格分隔的表达式 —— 这样即使有人写了 {{a + b}}，也不会被当成表达式求值，
 	// 而是当成"查一个叫 `a + b` 的路径"（查不到 → param_missing）。
-	const PLACEHOLDER_RE = /\{\{\s*([$A-Za-z_][$A-Za-z0-9_.]*)\s*\}\}/g;
+	const PLACEHOLDER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g;
 
 	// hasPlaceholder 字符串里是否含至少一个 {{x}}。
 	function hasPlaceholder(v) {
@@ -1166,14 +1166,14 @@
 	// 而不是转成字符串再拼。
 	function isTemplate(v) {
 		if (typeof v !== "string") return false;
-		const m = v.match(/^\{\{\s*([$A-Za-z_][$A-Za-z0-9_.]*)\s*\}\}$/);
+		const m = v.match(/^\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}$/);
 		return m !== null;
 	}
 
 	// wholeRef 取出"整个值就是一个引用"里的那个引用；不是则返回 null。
 	function wholeRef(v) {
 		if (typeof v !== "string") return null;
-		const m = v.match(/^\{\{\s*([$A-Za-z_][$A-Za-z0-9_.]*)\s*\}\}$/);
+		const m = v.match(/^\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}$/);
 		return m ? m[1] : null;
 	}
 
@@ -1230,11 +1230,25 @@
 	//
 	// 返回 {values, missing}：missing 是"声明了 from 但这个 payload 里没有"的变量名，
 	// 由调用方决定是报错还是放过（出口参数若是字面量、不引用它，就不该因此失败）。
+	// resolveVars 把源的**别名表**求值成 {name: value}。
+	//
+	// 别名表不承载数据 —— 它只是 "短名字 → payload 路径" 的映射：
+	//
+	//   vars: [{ name:"author", from:"pull_request.user.login" }]
+	//   参数里 {{author}}  ===  {{pull_request.user.login}}
+	//
+	// 为什么不再有 { name, value } 这种"固定值变量"：
+	// 那种东西和 cron 的 config.payload 重复存了同一份数据（前端要
+	// 把 value 型变量再折算回 payload，两处都写）。常量直接写在参数里
+	// 就行（"env": "staging"），不需要先起个名字。
+	//
+	// 老配置里的 {name, value} 仍然认（转成常量值），只是不再推荐。
 	function resolveVars(varDefs, payload) {
 		const values = {};
 		const missing = [];
 		for (const d of varDefs || []) {
 			if (!d || typeof d.name !== "string" || !d.name) continue;
+			// 旧形态：常量
 			if (Object.prototype.hasOwnProperty.call(d, "value")) {
 				values[d.name] = clone(d.value);
 				continue;
@@ -1282,17 +1296,24 @@
 		if (!template) return { params: out, used, missing };
 		const vars = varValues || {};
 
-		// lookup 解析一个引用：{{$name}} 查变量表，{{a.b.c}} 查 payload。
+		// lookup 解析一个引用：**先查别名表，再查 payload**。
+		//
+		// 没有 `$` 前缀了。之前用 `{{$env}}` 表示"变量"、`{{a.b.c}}` 表示
+		// "payload 路径"，但这个区分纯粹是实现细节 —— 用户想的是"这个值
+		// 从哪来"，却要先记住两套语法。现在统一：
+		//
+		//   1. 别名表（config.vars）里有这个名字 → 用它指向的 payload 路径取值
+		//   2. 否则直接当 payload 路径取
+		//
+		// 名字冲突时别名优先——别名本来就是为了"改写/缩短"而存在的。
 		const lookup = (ref) => {
 			const r = String(ref).trim();
-			if (r.startsWith("$")) {
-				const name = r.slice(1);
-				if (Object.prototype.hasOwnProperty.call(vars, name) && vars[name] !== undefined) {
-					return { found: true, val: vars[name] };
-				}
-				return { found: false };
+			// $ 前缀已废弃，但老配置里的 {{$x}} 仍然认得（去掉 $ 再查）
+			const key = r.startsWith("$") ? r.slice(1) : r;
+			if (Object.prototype.hasOwnProperty.call(vars, key) && vars[key] !== undefined) {
+				return { found: true, val: vars[key], via: key };
 			}
-			const got = getPath(payload, r);
+			const got = getPath(payload, key);
 			return got === undefined ? { found: false } : { found: true, val: got };
 		};
 
@@ -1363,19 +1384,17 @@
 		if (!template) return "";
 		const known = declaredVars ? new Set(declaredVars.map((d) => d && d.name).filter(Boolean)) : null;
 		for (const [k, v] of Object.entries(template)) {
-			// 含占位符的字符串：逐个校验引用形式 + $变量是否声明过。
+			// 含占位符的字符串：逐个校验引用形式。
+			//
+			// 不再要求"必须是已声明的变量"：因为 {{pull_request.title}}
+			// 这种直写 payload 路径是合法的、且不需要任何声明。拼写错误
+			// 会在触发时以 param_missing 报出来（带原始引用文本）。
 			if (typeof v === "string" && hasPlaceholder(v)) {
 				PLACEHOLDER_RE.lastIndex = 0;
 				let m;
 				while ((m = PLACEHOLDER_RE.exec(v)) !== null) {
 					const ref = m[1].trim();
-					if (ref.startsWith("$")) {
-						const name = ref.slice(1);
-						if (!name) return `参数 ${k} 的引用为空：{{$}}`;
-						if (known && !known.has(name)) {
-							return `参数 ${k} 引用了未声明的变量「${name}」`;
-						}
-					} else if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
+					if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
 						return `参数 ${k} 的路径不合法：「${ref}」`;
 					}
 				}
@@ -1430,7 +1449,9 @@
 			const hasFrom = typeof d.from === "string" && d.from !== "";
 			const hasValue = Object.prototype.hasOwnProperty.call(d, "value");
 			if (hasFrom && hasValue) return `变量「${name}」不能同时有 from 和 value`;
-			if (!hasFrom && !hasValue) return `变量「${name}」要么给 from（payload 路径），要么给 value（固定值）`;
+			// 新推荐形态只有 from（纯别名）。value 型仍然接受（兼容老数据），
+			// 但前端不再生成它 —— 常量直接写在参数里就行。
+			if (!hasFrom && !hasValue) return `变量「${name}」需要 from（payload 路径）`;
 			if (hasFrom && (d.from.includes("..") || d.from.startsWith(".") || d.from.endsWith("."))) {
 				return `变量「${name}」的 from 路径不合法：「${d.from}」`;
 			}

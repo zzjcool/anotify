@@ -1032,7 +1032,14 @@
 
         if (!VAR_DEFS.length) {
           box.appendChild(
-            el("div", "var-empty", t("sources.form.no_vars", "还没有变量。可以不加，直接写 payload 路径。")),
+            el(
+              "div",
+              "var-empty",
+              t(
+                "sources.form.no_vars",
+                "还没有别名。可以不加，直接在参数里写完整路径。",
+              ),
+            ),
           );
           return;
         }
@@ -1040,65 +1047,36 @@
         VAR_DEFS.forEach((d, i) => {
           const row = el("div", "var-row");
 
-          // 名字
+          // 名字：只是一个更好记的别名
           const nameIn = document.createElement("input");
           nameIn.className = "input";
-          nameIn.placeholder = "title";
+          nameIn.placeholder = "author";
           nameIn.value = d.name || "";
           nameIn.addEventListener("input", () => {
             VAR_DEFS[i].name = nameIn.value;
           });
 
-          // 来源：payload 路径 or 固定值
-          const kindSel = document.createElement("select");
-          kindSel.className = "input";
-          for (const [v, lab] of [
-            ["from", t("sources.form.var_from", "从事件取")],
-            ["value", t("sources.form.var_value", "固定值")],
-          ]) {
-            kindSel.appendChild(new Option(lab, v));
-          }
-          kindSel.value = Object.prototype.hasOwnProperty.call(d, "value") ? "value" : "from";
-          kindSel.addEventListener("change", () => {
-            const isVal = kindSel.value === "value";
-            if (isVal) {
-              VAR_DEFS[i] = { name: VAR_DEFS[i].name, value: valIn.value || "" };
-            } else {
-              VAR_DEFS[i] = { name: VAR_DEFS[i].name, from: valIn.value || "" };
-            }
-            valIn.placeholder = isVal ? "prod" : "pull_request.title";
-            // 切类型后值框里是另一类内容（路径 vs 常量），清掉避免误存
-            valIn.value = String(isVal ? VAR_DEFS[i].value ?? "" : VAR_DEFS[i].from ?? "");
-          });
+          const eq = el("span", "var-eq", "=");
 
+          // 指向：payload 路径。别名表不承载数据，只做重命名。
           const valIn = document.createElement("input");
           valIn.className = "input";
-          const isValInit = Object.prototype.hasOwnProperty.call(d, "value");
-          valIn.placeholder = isValInit ? "prod" : "pull_request.title";
-          valIn.value = String(isValInit ? d.value ?? "" : d.from ?? "");
-          // 每次输入都从**下拉的当前值**判断该写哪个字段。
-          //
-          // 不能闭包捕获一个 isVal 常量：用户切换"从事件取 / 固定值"之后，
-          // 那个常量不会变，输入会一直写进旧字段（表现为"填了固定值但保存后是空的"）。
+          valIn.placeholder = "pull_request.user.login";
+          valIn.value = String(d.from ?? "");
           valIn.addEventListener("input", () => {
-            const nowIsVal = kindSel.value === "value";
-            if (nowIsVal) {
-              VAR_DEFS[i] = { name: VAR_DEFS[i].name, value: valIn.value };
-            } else {
-              VAR_DEFS[i] = { name: VAR_DEFS[i].name, from: valIn.value };
-            }
+            VAR_DEFS[i] = { name: VAR_DEFS[i].name, from: valIn.value };
           });
 
           const del = el("button", "var-del", "✕");
           del.type = "button";
-          del.title = t("sources.form.del_var", "删除变量");
+          del.title = t("sources.form.del_var", "删除别名");
           del.addEventListener("click", () => {
             VAR_DEFS.splice(i, 1);
             renderVars();
           });
 
           row.appendChild(nameIn);
-          row.appendChild(kindSel);
+          row.appendChild(eq);
           row.appendChild(valIn);
           row.appendChild(del);
           box.appendChild(row);
@@ -1169,14 +1147,14 @@
           //
           // 以前这里是「固定值 / 从事件取值」两个按钮切两套控件 —— 用户要
           // 先判断"我这次算哪种"，而实际上他脑子里想的只是"这个值从哪来"。
-          // 现在按内容自动识别：看到「双大括号 + pull_request.title」就知道是取事件，
-          // 看到 prod 就知道是字面量。少一次选择，也少一类"选错了"的错误。
+          // 现在按内容自动识别：含双大括号就是取值/模板，否则是字面量。
+          // 少一次选择，也少一类"选错了"的错误。
           //
-          // 注意：只支持**整个值是一个引用**（见 TPL 常量）。
-          // 带前缀后缀的拼接仍然拒绝 —— 那是字符串求值，越过 I6。
+          // 旧配置里的 {from}/{var} 对象形态转回双大括号文本；
+          // 现在只有一种写法，不再有 $ 前缀。
           const rawVal = isMappingDecl(cur)
             ? cur.var
-              ? TPL("$" + cur.var)
+              ? TPL(cur.var)
               : cur.from
                 ? TPL(cur.from)
                 : ""
@@ -1287,20 +1265,16 @@
             );
           }
           seen.add(name);
-          if (Object.prototype.hasOwnProperty.call(d, "value")) {
-            out.push({ name, value: d.value });
-          } else {
-            const from = String(d.from || "").trim();
-            if (!from) {
-              throw new Error(
-                t("sources.form.var_need_src", "变量「{n}」要么填 payload 路径，要么改选固定值").replace(
-                  "{n}",
-                  name,
-                ),
-              );
-            }
-            out.push({ name, from });
+          const from = String(d.from || "").trim();
+          if (!from) {
+            throw new Error(
+              t("sources.form.var_need_src", "别名「{n}」要指向一个 payload 路径").replace(
+                "{n}",
+                name,
+              ),
+            );
           }
+          out.push({ name, from });
         }
         return out;
       }
@@ -1334,31 +1308,25 @@
               const raw = String(input.value).trim();
               if (raw === "") continue; // 空 = 不传（交给 schema 默认/必填校验）
 
-              // 唯一的分支点：整个值是不是一个引用（TPL_RE）。
+              // 含占位符 → 原样存成字符串交给中枢做单趟替换。
               //
-              // 是 → 原样存成字符串交给中枢解析，不由前端展开成 {from:...}。
-              //      展开会丢掉"用户写的是哪个路径"，出错时只能说"某字段取不到"。
+              // 支持两种：
+              //   双大括号 + pull_request.title    直接写 payload 路径
+              //   带前后缀的模板拼接（模板里可放多个引用）
+              //
+              // 不在这里展开成 {from:...}：展开会丢掉"用户拼的文本"，
+              // 出错时只能报"某字段取不到"，用户看不到自己写了什么。
               if (TPL_RE.test(raw)) {
-                const m = raw.match(new RegExp("^\\{\\{\\s*\\$([A-Za-z_][A-Za-z0-9_]*)\\s*\\}\\}$"));
-                if (m && !known.has(m[1])) {
+                // 占位符必须成对（否则用户以为生效了其实没有）
+                const opens = (raw.match(new RegExp(BRACE_OPEN, "g")) || []).length;
+                const closes = (raw.match(new RegExp(BRACE_CLOSE, "g")) || []).length;
+                if (opens !== closes) {
                   throw new Error(
-                    t("sources.form.unknown_var", "参数 {k} 引用了未声明的变量「{v}」")
-                      .replace("{k}", k)
-                      .replace("{v}", m[1]),
+                    t("sources.form.bad_placeholder", "参数 {k}：占位符没闭合").replace("{k}", k),
                   );
                 }
                 params[k] = raw;
                 continue;
-              }
-
-              // 混写（带前后缀）明确拒绝：那是字符串求值，越过 I6
-              if (raw.includes(TPL_OPEN) || raw.includes(TPL_CLOSE)) {
-                throw new Error(
-                  t(
-                    "sources.form.no_interp",
-                    "参数 {k}：引用必须占满整个值（形如 TPL(pull_request.title)），不支持前后缀拼接",
-                  ).replace("{k}", k),
-                );
               }
 
               let v;
@@ -1424,14 +1392,10 @@
             toast(t("sources.form.expr_required", "请填 cron 表达式"));
             return;
           }
-          // 事件的附加字段统一走"变量"（固定值的变量就是原来的 payload）：
-          // 上一轮那个独立的「事件字段」JSON 框和变量区的"固定值"是同一件事，
-          // 两个入口会让人不知道写哪个。保留一个。
-          const payload = {};
-          for (const v of vars) {
-            if (Object.prototype.hasOwnProperty.call(v, "value")) payload[v.name] = v.value;
-          }
-          config = { expr: expr, payload: payload, vars: vars };
+          // 不再写 config.payload：它和"固定值变量"重复存了同一份数据
+          // （以前要把 value 型变量折算回 payload，两处都写）。
+          // 常量直接写在参数里就行。老配置里的 payload 仍然可读。
+          config = { expr: expr, vars: vars };
         }
 
         // webhook / manual 的 config 目前是空的（token 由后端生成），
@@ -1565,12 +1529,14 @@
         kindEl.disabled = false; // 编辑态可能是禁用的，演示要能切
         syncKindFields();
 
-        // 2) 变量：把 GitHub 的深层路径收敛成短名字
+        // 2) 别名：把 GitHub 的深层路径收敛成短名字。
+        //    注意别名表**只做重命名**，不承载数据 —— 常量（如 staging）
+        //    直接写在参数里，不需要先起个名字。
         VAR_DEFS = [
-          { name: "lines", from: "pull_request.additions" },
-          { name: "repo", from: "repository.name" },
+          { name: "number", from: "pull_request.number" },
           { name: "title", from: "pull_request.title" },
-          { name: "env", value: "staging" },
+          { name: "author", from: "pull_request.user.login" },
+          { name: "lines", from: "pull_request.additions" },
         ];
         renderVars();
 

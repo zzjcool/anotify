@@ -430,7 +430,7 @@
           const box = el("div", "var-kv");
           for (const v of varDefs) {
             const line = el("div", "var-kv-row");
-            line.appendChild(el("span", "var-kv-name", "$" + v.name));
+            line.appendChild(el("span", "var-kv-name", v.name));
             line.appendChild(el("span", "var-kv-eq", "="));
             const hasVal = Object.prototype.hasOwnProperty.call(v, "value");
             line.appendChild(

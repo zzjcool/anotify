@@ -594,3 +594,102 @@ PR #{{pull_request.number}}: {{pull_request.title}} by {{pull_request.user.login
 
 - 值用 `TPL(ref)` 常量拼接
 - **正则在字符类里拼花括号**：`"[" + "{" + "]"` 得到 `[{]`，效果等价于字面 `\{`，但源码里不出现双花括号
+
+---
+
+# 附四：去掉 `$`，变量表降级为纯别名（D 章）
+
+> 状态：**前端 + mock 已实现**
+> 触发：用户「{{$env}} 和 {{pull_request.additions}} 这两个有什么区别，为什么一个带 $」
+> + 「我不明白为什么有 payload 和变量表之分」
+
+这两个疑问指向的是同一个问题：**模型里多了一层没有理由的区分。**
+
+## D.1 `$` 是纯实现细节的语法
+
+```text
+{{$env}}                  查变量表
+{{pull_request.title}}    查 payload
+```text
+
+用户想的是「这个值从哪来」，却要先记住「我该不该加 `$`」。而 `$` 本身**不携带任何语义**——它只是我在实现里区分两个 Map 的开关。
+
+更糟的是：
+
+- 想用固定值 `prod`，得先去变量表声明 `env = prod`，再写 `{{$env}}` —— 绕一圈
+- 而直接写字面量 `prod` 就行
+
+**那 `{{$env}}` 比 `prod` 多了什么？** 除了「改一处生效多处」，什么都没有。为了这个让用户学一个符号，不划算。
+
+## D.2 payload 和变量表为什么会分成两个
+
+这是一段**历史叠加**，不是设计：
+
+| 阶段 | 发生了什么 |
+|---|---|
+| 最早 | 只有 payload（事件请求体），参数写 `{from: "路径"}` |
+| 加 cron | cron 没有请求体，于是塞了个 `config.payload` 让它也能带数据 |
+| 加变量 | 为了让 cron 也能给字段起名，做了 `vars` |
+| 结果 | `vars` 的 `value` 项又被折算回 `payload` —— **同一份数据存两遍** |
+
+证据就是这行代码（改动前）：
+
+```js
+const payload = {};
+for (const v of vars) {
+  if (v.value !== undefined) payload[v.name] = v.value;
+}
+config = { expr, payload, vars };   // value 型变量同时存在于 payload 和 vars
+```json
+
+## D.3 现在的模型
+
+只有两个真实概念：
+
+```text
+事件（payload，由外部系统产生）
+    ↓
+参数取值：字面量 / {{路径}} / {{别名}}
+```text
+
+**别名表不是第三样东西**，它只是「短名字 → payload 路径」的映射，不承载数据：
+
+```json
+"config": { "vars": [{ "name": "author", "from": "pull_request.user.login" }] }
+```text
+
+```text
+{{author}}  等价于  {{pull_request.user.login}}
+{{pull_request.title}}         直接用，不必先声明
+"staging"                      字面量，不需要变量
+```text
+
+解析顺序：**先查别名表（未命中）→ 再当 payload 路径**。名字冲突时别名优先——别名本来就是为了改写/缩短而存在。
+
+## D.4 废弃项
+
+| 项 | 处置 |
+|---|---|
+| `{{$name}}` 语法 | 不再生成。老配置仍认（去掉 `$` 后按别名查） |
+| `config.vars[].value` | 不再生成。老配置仍认（当常量处理） |
+| `config.payload`（前端写入） | **不再写入**。常量直接写在参数里 |
+| `config.payload`（读取） | 保留兼容 |
+
+## D.5 验证
+
+```text
+别名 {{lines}} → {{pull_request.additions}}  →  changedLines: 42   ✅
+直接 {{pull_request.additions}}               →  changedLines: 9    ✅
+保存后的 config: vars=4 项别名，payload 不写入                        ✅
+cron 常量直写参数（零别名）                    →  changedLines: 5    ✅
+页面正文不出现 `$`                                                  ✅
+```text
+
+## D.6 后端改动清单
+
+- [ ] `resolveParams` 的 lookup：先查别名表 → 再查 payload
+- [ ] 废弃 `$` 前缀（保留兼容读取）
+- [ ] `validateVarDefs`：只要求 `from`；`value` 兼容但不再接受新建
+- [ ] 前端保存时不再写 `config.payload`
+- [ ] 配置期不再强制「引用的名字必须声明过」——`{{pull_request.title}}` 无需声明；
+      拼错会在触发时以 `param_missing` 报出，并**原样回显用户的引用文本**
