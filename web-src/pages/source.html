@@ -423,8 +423,8 @@
           );
           if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
         }
-        // 变量：这个源对外提供哪些数据。出口参数的 `← $name` 指的就是这里，
-        // 不显示出来的话用户看到 $lines 无从知道它来自哪。
+        // 别名表：短名字 → payload 路径。出口参数里引用别名时，
+        // 用户需要能看到它到底指向哪里。
         const varDefs = Array.isArray(cfg.vars) ? cfg.vars : [];
         if (varDefs.length) {
           const box = el("div", "var-kv");
@@ -432,14 +432,7 @@
             const line = el("div", "var-kv-row");
             line.appendChild(el("span", "var-kv-name", v.name));
             line.appendChild(el("span", "var-kv-eq", "="));
-            const hasVal = Object.prototype.hasOwnProperty.call(v, "value");
-            line.appendChild(
-              el(
-                "span",
-                hasVal ? "var-kv-lit" : "var-kv-path",
-                hasVal ? JSON.stringify(v.value) : "payload." + v.from,
-              ),
-            );
+            line.appendChild(el("span", "var-kv-path", v.from));
             box.appendChild(line);
           }
           add(t("srcpage.vars", "变量"), box);
