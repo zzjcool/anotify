@@ -210,8 +210,16 @@
 			const el = div("wf-node");
 			el.dataset.nodeId = n.id;
 
-			// kind 类：决定默认配色
+			// kind 类：决定默认配色（执行状态：成功/失败/剪枝…）
 			el.classList.add("is-" + (n.kind || "pipe"));
+			// role 类：决定**结构身份**（origin / pipe / end）。
+			//
+			// 和 kind 分开是刻意的：一个是"它在链上是什么"，一个是
+			// "这次跑得怎么样"。同一个 pipe 可能成功也可能失败，
+			// 而同一次 trace 里 origin/pipe/end 三种形状都该看得见。
+			if (n.role) el.classList.add("role-" + n.role);
+			// 源直接指向的（触发器产出）：左端锚点，加个标记
+			if (n.entry) el.classList.add("is-entry");
 			if (n.root) el.classList.add("is-root");
 			if (n.cycle) el.classList.add("is-cycle");
 			if (n.seen) el.classList.add("is-seen");

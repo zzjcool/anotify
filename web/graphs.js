@@ -219,7 +219,12 @@
 				label: n.label,
 				sub: subOf(n),
 				kind: n.kind,
+				// 源详情页画的**就是**结构身份（这里的 kind 不是执行状态），
+				// 所以原样传成 role —— 和 trace 页的图共用同一套 role 样式，
+				// 两处看起来才一致。
+				role: n.kind,
 				root: !!n.root,
+				entry: !!n.isEntry,
 				cycle: n.cycle,
 				seen: n.seen,
 				icon: ICON[n.kind] || "◆",
@@ -321,6 +326,14 @@
 		if (base && base.nodes && base.nodes.length) {
 			// ------- 有底图：配置拓扑 + 执行染色 -------
 			nodes = base.nodes.map((n) => {
+				// 图标永远表达**结构身份**（origin / pipe / end），
+				// 颜色和徽章表达**执行状态**。
+				//
+				// 这两件事必须同时可见：图标若换成状态图标，
+				// "这个节点本来是终点"就没了；只靠颜色表达结构的话，
+				// 失败/剪枝又看不出来。
+				const roleIcon = ICON[n.kind] || ICON.pipe;
+
 				const hits = byCapability.get(n.id);
 				if (!hits || !hits.length) {
 					// 剪枝：这条分支这次没走。
@@ -332,7 +345,9 @@
 						label: n.label,
 						sub: t("trace.graph.pruned", "未执行"),
 						kind: "pruned",
-						icon: n.icon || "◆",
+						icon: roleIcon,
+						role: n.kind,
+						entry: n.entry,
 						dead: true,
 					};
 				}
@@ -350,7 +365,9 @@
 					label: n.label,
 					sub: bits.join(" · "),
 					kind: kindForStatus(st),
-					icon: STATUS_ICON[st] || "◆",
+					icon: roleIcon,
+					role: n.kind,
+					entry: n.entry,
 					badge: STATUS_COLOR[st] || "#71717a",
 					accent: st === "failed" ? "#ef4444" : null,
 					_task: tk,
@@ -370,6 +387,37 @@
 					muted: !bothAlive,
 				};
 			});
+
+			// ---- 源节点：这条 trace 是谁触发的 ----
+			//
+			// 没有它，图只是"一堆能力怎么连"，看不出这个 trace 的**起点** ——
+			// 而"谁触发"恰恰是排查的第一步。
+			if (opts.sourceLabel) {
+				const SRC_NODE_ID = "__trigger__";
+				nodes.unshift({
+					id: SRC_NODE_ID,
+					label: opts.sourceLabel,
+					sub: opts.sourceSub || "",
+					kind: "trigger",
+					icon: ICON.trigger,
+					role: "origin",
+					root: true,
+				});
+				// 连向所有"源直接指向"的能力。没有 entry 标记时
+				// （老数据 / 底图不完整）就连到所有无入边的节点。
+				const hasIncoming = new Set(base.edges.map((e) => e.to));
+				const entries = base.nodes.filter((n) =>
+					n.entry !== undefined ? n.entry : !hasIncoming.has(n.id),
+				);
+				for (const n of entries) {
+					edges.push({
+						from: SRC_NODE_ID,
+						to: n.id,
+						port: opts.sourcePort || "",
+						muted: !!n.dead,
+					});
+				}
+			}
 		} else {
 			// ------- 没有底图：退回"只画执行链"（原行为） -------
 			//
@@ -389,6 +437,7 @@
 					label: (tk.capability || "?") + "@" + (tk.version ?? "?"),
 					sub: bits.join(" · "),
 					kind: kindForStatus(st),
+					// 没有底图时不知道结构身份，只能用状态图标
 					icon: STATUS_ICON[st] || "◆",
 					badge: STATUS_COLOR[st] || "#71717a",
 					accent: st === "failed" ? "#ef4444" : null,

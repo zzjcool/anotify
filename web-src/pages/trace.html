@@ -115,11 +115,20 @@
         };
 
         // 从源的每个目标能力出发，沿边往下走（含剪枝后的分支）
+        //
+        // 每个节点带两种身份，图上要能分开看：
+        //   · entry  —— 源直接指向的（触发器产出，左端）
+        //   · kind   —— origin（只能当起点）/ pipe（中间段）/ end（终点）
+        //
+        // kind 是后端推出来的派生量（internal/route/kind.go），capabilities
+        // 接口已经带回来了。之前这里一律写死 "◆"，图上看不出谁是终点、
+        // 谁是管道 —— 而这三者形状完全不同，正是图上最该一眼看出的东西。
         for (const tc of src.targetCaps || []) {
           const cap = capById.get(tc.id);
           push(tc.id, cap ? window.Anotify.capLabel(cap) : tc.id, {
             icon: "◆",
-            root: true,
+            kind: cap ? cap.kind : "origin",
+            entry: true,
           });
         }
 
@@ -136,6 +145,7 @@
             const to = capById.get(e.toCapability);
             push(e.toCapability, to ? window.Anotify.capLabel(to) : e.toCapability, {
               icon: "◆",
+              kind: to ? to.kind : "origin",
             });
             edges.push({
               from: e.fromCapability,
@@ -382,6 +392,10 @@
         window.TraceView.mount(viewBox, {
           tasks: tasks,
           baseGraph: baseGraph,
+          // 源节点信息（图视图左上角那个触发器）
+          sourceLabel: event ? event.source : "",
+          sourceSub: event ? event.type : "",
+          sourcePort: event ? event.type : "",
           el: el,
           code: code,
           t: t,

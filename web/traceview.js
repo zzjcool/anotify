@@ -368,6 +368,11 @@
 			// 有它时图视图画"配置拓扑 + 执行染色"，被剪枝的分支留成灰色；
 			// 没有时退回"只画执行链"。见 graphs.js 里 taskChain 的注释。
 			baseGraph: opts.baseGraph || null,
+			// 源节点：图左上角那个 ⚡ —— 回答"这条 trace 谁触发的"。
+			// 没有它，图只是一堆能力怎么连，看不出起点。
+			sourceLabel: opts.sourceLabel || "",
+			sourceSub: opts.sourceSub || "",
+			sourcePort: opts.sourcePort || "",
 			t: t,
 			// 这一页没有标题栏的「全屏」入口（源详情页有），所以保留
 			// 工具栏里的全屏按钮 —— 否则链路图就没法全屏看了。
