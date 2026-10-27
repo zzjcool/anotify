@@ -518,7 +518,13 @@
 			notBefore: null,
 		});
 
-		let t = now() - 180;
+		// t 是这几条 demo 的**时间游标**，各段末尾用 `t += N` 往后推。
+		//
+		// 注意累加总量不能超过起点：曾经从 -180 起步、累加 210，
+		// 结果最后一条落在 **+30s（未来）**，事件流里显示成"刚刚"，
+		// 而且把真正想让人第一眼看到的那条挤到了下面。留着这个注释
+		// 免得下次又往上加步长。
+		let t = now() - 420;
 
 		// ---- 1) 一条完整的修复链：analyze → lint-fix → run-tests → 部署 ----
 		//
@@ -810,6 +816,118 @@
 				createdAt: t, startedAt: t + 2, finishedAt: t + 9,
 				attempts: 3, summary: "第 3 次尝试成功",
 			}));
+		}
+
+		// ---- 6) 复杂链路：失败 → 重试 → 分支 → 汇聚 → 剪枝 全都占上 ----
+		//
+		// 前面每一条都只演示**一种**状态（纯成功链、并行对比、进行中、待派发、
+		// 零耗时、重试过）。真实一次事故里这些是同时出现的：
+		//
+		//   analyze-pr ─needs-fix→ lint-fix ─remaining→ report.send ─escalate→ alert.oncall
+		//        │                      └─clean→ （剪枝：run-tests 不被派发）
+		//        └─approved→ run-tests ─failed→ apply-fix ─fixed→ run-tests（第 2 次，成功）
+		//                                              └────passed→ deploy-preview ─failed→ rollback ─done→ gen-changelog
+		//
+		// 这一条特意做了几件别的 trace 没做的事：
+		//   · 同一个能力在一个 trace 里出现**两次**（run-tests 第 1 次失败、
+		//     第 2 次成功）——瀑布图要能分清这是两次执行，不是重复渲染
+		//   · 失败任务的 error 字段非空（UI 要展示错误文本）
+		//   · 有 attempts=2 的重试标记
+		//   · 有剪枝（clean 分支的 run-tests 没被派发，所以它不在任务里）
+		//   · 时间跨度是前几条的两倍多（4 分半），瀑布图的刻度会换单位
+		//
+		// 注意仍然遵守 I5：每个任务只回报一个 out，所以是**一条链**在
+		// 不同位置分叉，不是一棵同时展开的树。
+		{
+			const traceId = nextTraceId();
+			// 刻意让这条**最新**：事件流按时间倒序，最近的一条排最上面。
+			// 比"进行中"（-6s）和"零耗时"（t≈-120s）都新，这样打开 demo
+			// 一眼就能看到"复杂链路"长什么样，不用往下翻找。
+			const base = Math.floor(now() - 2);
+			state.events.push({
+				id: uid("evt"), orgId: ORG, traceId,
+				source: "GitHub PR", type: "pull_request.synchronize",
+				payload: {
+					action: "synchronize",
+					number: 844,
+					pull_request: {
+						number: 844,
+						title: "重构参数解析（第 3 次推送）",
+						additions: 486, deletions: 213, changed_files: 27,
+						commits: 11, draft: false, merged: false,
+						user: { login: "dave" },
+						head: { ref: "refactor/param-parse", sha: "a1b2c3d4e5f6a7b8" },
+						base: { ref: "main", sha: "9a8b7c6d5e4f3021" },
+					},
+					repository: {
+						name: "anotify", full_name: "zzjcool/anotify",
+						default_branch: "main", private: false,
+					},
+					sender: { login: "dave" },
+				},
+				createdAt: base,
+			});
+
+			const analyze = capByName("analyze-pr");
+			const lintFix = capByName("lint-fix");
+			const report = capByName("report.send");
+			const alert = capByName("alert.oncall");
+			const tests = capByName("run-tests");
+			const fix = capByName("apply-fix");
+			const deploy = capByName("deploy-preview");
+			const rollback = capByName("rollback");
+			const changelog = capByName("gen-changelog");
+			const rootId = analyze.id;
+
+			// 每跳的 [能力, 起点, 终点, out, 状态, 备注, nodeIdx, attempts]
+			// nodeIdx 让瀑布图和节点页的"哪个实例跑的"对得上。
+			const plan = [
+				[analyze, 0.0, 4.8, "needs-fix", "succeeded", "发现 1 个高危 + 27 处 lint", 0, 1],
+				[lintFix, 4.8, 96.2, "remaining", "succeeded", "自动修了 26 处，1 处需人工", 0, 1],
+				[report, 96.2, 97.4, "escalate", "succeeded", "已通知值班人", 2, 1],
+				[alert, 97.4, 98.1, null, "succeeded", "电话已拨出", 2, 1],
+				[tests, 4.8, 71.3, "failed", "failed", "3 个用例失败（parse_test.go）", 1, 1],
+				[fix, 71.3, 132.6, "fixed", "succeeded", "自动补了边界判断", 1, 2],
+				[tests, 132.6, 178.9, "passed", "succeeded", "278 用例全部通过", 1, 1],
+				[deploy, 178.9, 231.5, "failed", "failed", "健康检查 5 分钟未通过", 1, 1],
+				[rollback, 231.5, 250.8, "done", "succeeded", "已回滚到上一版", 1, 1],
+				[changelog, 250.8, 269.9, null, "succeeded", "生成并归档", 1, 1],
+			];
+
+			let prev = null;
+			for (const [cap, t0, t1, out, status, note, nodeIdx, attempts] of plan) {
+				const clock = base + t0;
+				const task = mkTask({
+					traceId,
+					cap,
+					parent: prev ? prev.id : null,
+					path: [rootId, cap.id],
+					nodeId: state.nodes[nodeIdx].id,
+					createdAt: clock,
+					startedAt: clock,
+					finishedAt: base + t1,
+					out: out || null,
+					status,
+					summary: note,
+					attempts,
+					params:
+						cap.name === "deploy-preview"
+							? { env: "production", version: "v1.4.0-rc3" }
+							: cap.name === "report.send"
+								? { channel: "slack", title: "PR #844 需要人工确认" }
+								: { mock: true },
+					// 失败任务必须带错误文本：UI 上要能展开看原因，
+					// 只有 status=failed 而没有 error 是"假装失败"。
+					error:
+						status === "failed"
+							? cap.name === "run-tests"
+								? "3 failures: TestParseNested / TestParseEmpty / TestParseLoop"
+								: "healthcheck timed out after 300s (GET /health → 503)"
+							: "",
+				});
+				state.tasks.push(task);
+				prev = task;
+			}
 		}
 	})();
 
