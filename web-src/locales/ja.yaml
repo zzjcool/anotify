@@ -1235,6 +1235,7 @@ sources:
     cron: タイマー
     webhook: Webhook
     manual: 手動
+    github: "GitHub トリガー"
   next_fire: 次回 {t}
   manual_hint: 「今すぐ実行」を押すと発火します
   targets_label: 出口
@@ -1339,6 +1340,8 @@ sources:
     pick_none: "一致するフィールドがありません"
     av_no_event_hook: "まだイベントを受信していません。コールバックを設定して外部システムから 1 回送ると、実際のフィールドがここに表示されます。"
     av_no_event: "このトリガーには外部イベントがないため、参照できるフィールドはありません。値はパラメータに直接書いてください。"
+    kind_github_hint: "GitHub の PR / push イベント。既知のフィールドと GitHub 側の設定方法が組み込まれています。"
+    av_copied: "コピーしました。パラメータに貼り付けてください"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00

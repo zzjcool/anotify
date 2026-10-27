@@ -2206,10 +2206,12 @@ components:
           description: 用户可读名，同组织内唯一（如「每晚体检」）
         kind:
           type: string
-          enum: [cron, webhook, manual]
+          enum: [cron, webhook, github, manual]
           description: |
             - `cron`：定时器，按 config.expr 到点触发
             - `webhook`：外部 POST 到 hookUrl
+            - `github`：GitHub 触发器。投递路径与 webhook 完全相同，
+              区别只在载荷形状已知——前端据此给字段清单和 GitHub 侧配置指引
             - `manual`：页面上点一下就跑
 
             创建后不可修改（换种类等于换语义）。
@@ -2261,23 +2263,30 @@ components:
         id: { type: string, example: "src_..." }
         orgId: { type: string }
         name: { type: string }
-        kind: { type: string, enum: [cron, webhook, manual] }
+        kind:
+          type: string
+          enum: [cron, webhook, github, manual]
+          description: |
+            cron 定时器 / webhook 通用 HTTP 回调 / github GitHub 触发器（形状已知，
+            前端给字段清单与一键配置；投递路径与 webhook 相同）/ manual 手动。
         config:
           type: object
           description: |
             按 kind 解释的配置。
 
-            `vars` 是**别名表**：把深层的 payload 路径起个短名字。它不承载数据。
-            每项只有一个字段 `{name, from}`。
+            **已弃用 `vars`**：别名表（给 payload 路径起短名字）整个删掉了。
+            参数里直接写完整路径即可，前端提供点选补全。
 
-            出口参数里 `{{name}}` 等价于 `{{from 指向的完整路径}}`。
-            解析顺序：先查别名表 → 未命中就直接当 payload 路径。
+            老配置里的 `vars` 仍会被读取（按别名解析 `{{name}}`），
+            但新配置不再写入。
           properties:
             expr: { type: string, description: "cron 专用：五段表达式" }
             tz: { type: string, description: "cron 专用：时区，默认 Local" }
             vars:
               type: array
-              description: 别名表。名字必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$` 且不重复。
+              deprecated: true
+              description: |
+                已弃用。旧配置里的别名表仍会被读取，新配置不再写入。
               items:
                 type: object
                 required: [name, from]

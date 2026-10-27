@@ -249,13 +249,17 @@
 
       const KIND_LABEL = {
         cron: () => t("sources.kind.cron", "定时器"),
+        github: () => t("sources.kind.github", "GitHub 触发器"),
         webhook: () => t("sources.kind.webhook", "Webhook"),
         manual: () => t("sources.kind.manual", "手动"),
       };
+      // 兜底：后端加了新 kind 而这里没跟上时，别抛 TypeError 把整页搞崩
+      const kindLabel = (k) => (KIND_LABEL[k] ? KIND_LABEL[k]() : String(k || "—"));
       // 类名必须与 web/ui.css 里真实存在的组件类一致（check-classes 会拦，
       // 但更好的做法是照抄 sources.html 那份，别自己另起一套名字）。
       const KIND_CLASS = {
         cron: "src-cron",
+        github: "src-github",
         webhook: "src-webhook",
         manual: "src-manual",
       };
@@ -309,7 +313,7 @@
         const badges = document.getElementById("head-badges");
         badges.replaceChildren();
         badges.appendChild(
-          el("span", "src-badge " + (KIND_CLASS[SRC.kind] || ""), KIND_LABEL[SRC.kind]()),
+          el("span", "src-badge " + (KIND_CLASS[SRC.kind] || ""), kindLabel(SRC.kind)),
         );
         if (SRC.enabled) {
           badges.appendChild(el("span", "status-badge status-on", t("sources.on", "运行中")));
