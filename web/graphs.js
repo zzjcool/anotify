@@ -331,6 +331,9 @@
 				return out;
 			}),
 			edges: cut.edges,
+			// 透传给 flograph：链路图这一页没有标题栏的「全屏」入口，
+			// 所以需要工具栏版本；源流向图那边有，默认不画避免重复。
+			showFullscreen: !!opts.showFullscreen,
 			onNodeClick: (n) => {
 				if (opts.onNodeClick) opts.onNodeClick(n);
 			},

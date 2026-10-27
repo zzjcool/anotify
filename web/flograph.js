@@ -59,12 +59,17 @@
 			// 加 / 减
 			"zoom-in": ["M12 5v14", "M5 12h14"],
 			"zoom-out": ["M5 12h14"],
-			// 四角向内的框：适应视图（收缩到内容）
+			// 适应视图：四角**向内**的折角。
+			//
+			// 原本和 expand（四角向外）只差箭头方向，在 14px 图标尺寸下
+			// 几乎看不出区别，用户会以为是重复按钮。现在改成"中间一个框 +
+			// 四角折角"，轮廓差异明显。
 			fit: [
-				"M9 4H4v5",
-				"M15 4h5v5",
-				"M15 20h5v-5",
-				"M9 20H4v-5",
+				"M8 8h8v8H8z",
+				"M4 8V4h4",
+				"M16 4h4v4",
+				"M4 16v4h4",
+				"M20 16v4h-4",
 			],
 			// 四角向外的箭头：全屏 / 退出全屏
 			expand: ["M4 9V4h5", "M20 9V4h-5", "M4 15v5h5", "M20 15v5h-5"],
@@ -488,8 +493,13 @@
 			["zoom-in", "zoom-in", tt("graph.zoom_in", "放大"), () => zoomBy(1.25)],
 			["zoom-out", "zoom-out", tt("graph.zoom_out", "缩小"), () => zoomBy(1 / 1.25)],
 			["fit", "fit", tt("graph.fit", "适应视图"), () => fit()],
+			// 全屏默认**不放进工具栏**：调用方通常在卡片标题上还有一个
+			// 带文字的「全屏」入口（更容易发现）。两个都放会看到两个
+			// 形状相近的图标挨在一起，反而让人以为是重复按钮。
+			// 需要工具栏版本时传 opts.showFullscreen。
 			["fullscreen", "expand", tt("graph.fullscreen", "全屏"), () => toggleFullscreen()],
 		]) {
+			if (key === "fullscreen" && !options.showFullscreen) continue;
 			const b = document.createElement("button");
 			b.type = "button";
 			b.title = title;
@@ -595,16 +605,21 @@
 		}
 
 		function onFullscreenChange(v) {
+			// 按钮和提示必须**分别**处理：工具栏全屏按钮可能不存在
+			// （调用方在标题栏有自己的入口，见 options.showFullscreen），
+			// 早期写法是 `if (!b) return;` —— 那一句会把下面的提示也跳过，
+			// 于是没有工具栏按钮时，全屏后左下角的「Esc 退出」永远不出现。
 			const b = ctrl.querySelector('[data-fg-action="fullscreen"]');
-			if (!b) return;
-			const title = v
-				? tt("graph.exit_fullscreen", "退出全屏（Esc）")
-				: tt("graph.fullscreen", "全屏");
-			b.title = title;
-			b.setAttribute("aria-label", title);
-			// 图标也跟着换：全屏中显示「向内收」，提示点一下会退回去
-			b.replaceChildren(ctrlIcon(v ? "collapse" : "expand"));
-			b.classList.toggle("is-on", v);
+			if (b) {
+				const title = v
+					? tt("graph.exit_fullscreen", "退出全屏（Esc）")
+					: tt("graph.fullscreen", "全屏");
+				b.title = title;
+				b.setAttribute("aria-label", title);
+				// 图标也跟着换：全屏中显示「向内收」，提示点一下会退回去
+				b.replaceChildren(ctrlIcon(v ? "collapse" : "expand"));
+				b.classList.toggle("is-on", v);
+			}
 			if (fsHint) fsHint.classList.toggle("is-on", v);
 		}
 
