@@ -1322,8 +1322,11 @@ sources:
     av_no_event: "This trigger has no external event, so there are no fields to reference — just write values directly in params."
     kind_github_hint: "GitHub PR/push events. Known fields and the GitHub-side setup are built in — no doc digging."
     av_copied: "Copied — paste it into the param"
-    av_src_builtin: "From the official GitHub pull_request event structure (sample values)"
+    av_src_builtin: "From the official GitHub {ty} event structure (sample values)"
     av_src_event: "From this source's most recent real event: {ty}"
+    gh_event: "GitHub event type"
+    gh_event_hint: "Each event type has a completely different payload structure; the field list follows your choice."
+    av_src_unknown: "No built-in structure for \"{ty}\"; real fields will appear once an event arrives."
   preset:
     hourly: Hourly
     daily3: Daily 3:00

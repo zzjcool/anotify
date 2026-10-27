@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -532,26 +533,61 @@ func (h *sourceHandler) hook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read body: " + err.Error()})
+		return
 	}
-	// 允许空 body：有些系统只发 ping。此时用最小 payload。
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
-			return
+
+	// 两种投递格式，靠 kind 区分：
+	//
+	//   webhook —— 本系统自定义的包装体 {"type":"...","payload":{...}}。
+	//              对接方是我们自己写脚本 / curl 的场景，怎么方便怎么来。
+	//
+	//   github  —— **GitHub 的原生格式**：body 就是 payload 本身，
+	//              事件名在 X-GitHub-Event 请求头里。
+	//              这里绝不能要求包装体：GitHub 不会迁就我们的格式，
+	//              要求包装体等于这个源永远收不到任何事件。
+	var payload json.RawMessage
+	eventType := ""
+	if src.Kind == store.SourceKindGitHub {
+		eventType = strings.TrimSpace(r.Header.Get("X-GitHub-Event"))
+		if eventType == "" {
+			// 少了这个头就不是 GitHub 投递（可能是人手 curl 测试）。
+			// 不拒绝：用配置里订阅的事件名兜底，方便用户手动调。
+			var wc store.WebhookConfig
+			if len(src.Config) > 0 {
+				_ = json.Unmarshal(src.Config, &wc)
+			}
+			eventType = wc.Event
+		}
+		payload = raw
+	} else {
+		// 允许空 body：有些系统只发 ping。此时用最小 payload。
+		if len(raw) > 0 {
+			var body struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(raw, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+				return
+			}
+			eventType = strings.TrimSpace(body.Type)
+			payload = body.Payload
 		}
 	}
-	eventType := strings.TrimSpace(body.Type)
 	if eventType == "" {
 		eventType = src.Name
+	}
+	if len(payload) == 0 || !json.Valid(payload) {
+		payload = json.RawMessage(`{}`)
 	}
 	if h.commander == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "源调度器未启用"})
 		return
 	}
-	res, err := h.commander.Fire(r.Context(), src, eventType, "", body.Payload)
+	res, err := h.commander.Fire(r.Context(), src, eventType, "", payload)
 	if err != nil {
 		slog.Error("webhook fire failed",
 			"event", "console.sources.hook_failed", "source_id", src.ID, "error", err.Error())

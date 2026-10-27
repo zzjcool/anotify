@@ -697,6 +697,42 @@ async function main() {
 					/GitHub/.test(gh.srcText),
 					gh.srcText.slice(0, 60),
 				);
+
+				// ---- 按事件类型切换结构 ----
+				//
+				// pull_request 和 push 的 payload 没有共同字段（前者是
+				// pull_request.title，后者是 commits[] + ref）。给一份"通用
+				// GitHub 样例"等于两份都不对，所以必须按事件分类。
+				const byEvent = {};
+				for (const ev of ["pull_request", "push", "release"]) {
+					await page3.selectOption("#f-gh-event", ev);
+					await page3.waitForTimeout(500);
+					const r = await page3.evaluate(() => ({
+						paths: Array.from(document.querySelectorAll(".av-path")).map((n) =>
+							n.textContent.trim(),
+						),
+						src: (document.getElementById("avail-src") || {}).textContent || "",
+					}));
+					byEvent[ev] = r;
+				}
+				H.check(
+					"push 事件给出 push 的字段",
+					byEvent.push.paths.includes("ref") &&
+						byEvent.push.paths.includes("commits") &&
+						!byEvent.push.paths.includes("pull_request.title"),
+					`push 前几项=${byEvent.push.paths.slice(0, 3).join(",")}`,
+				);
+				H.check(
+					"release 事件给出 release 的字段",
+					byEvent.release.paths.includes("release.tag_name"),
+					`release 含 tag_name=${byEvent.release.paths.includes("release.tag_name")}`,
+				);
+				H.check(
+					"来源说明跟着事件类型变",
+					/push/.test(byEvent.push.src) && /release/.test(byEvent.release.src),
+					`push="${byEvent.push.src.slice(0, 40)}"`,
+				);
+
 				await page3.click("#modal-cancel");
 				await page3.waitForTimeout(300);
 			}
