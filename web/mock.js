@@ -1127,33 +1127,80 @@
 	//   "{{$env}}"                 → 取源变量 env（固定值或它的 from）
 	//   "prod"                     → 字面量，原样传
 	//
-	// 为什么**不做** "PR: {{title}}" 这种混写：
-	// 那是字符串插值 = 求值器（拼接/转义/嵌套），越过 I6「中枢不解释
-	// 用户提供的逻辑」。而"整个值是一个引用"只是一次查表，和 {from:x}
-	// 完全等价，只是写法更短、且能直接写在同一个输入框里。
+	// 支持**混写**："PR: {{pull_request.title}} by {{$author}}"。
 	//
-	// 这个区分很关键：
-	//   {{x}}        → 查表 ✅
-	//   "a{{x}}b"    → 求值 ❌
-	const TMPL_RE = /^\{\{\s*([^{}]+?)\s*\}\}$/;
+	// 为什么这是安全的（I6「中枢不解释用户提供的逻辑」的边界）：
+	//
+	//   单趟扫描  → 逐个 {{x}} 替换 → **不再把替换结果当模板扫描**
+	//
+	// 危险的是"替换后再解析"（模板引擎的递归展开），那才能：
+	//   - 嵌套/无限展开（{{a}} 展开出 {{b}} 展开出 ...）
+	//   - 调用函数（{{toUpper(x)}}）
+	//   - 访问外部资源
+	// 单趟替换没有其中任何一条：它本质上是 `strings.Replace`，
+	// 用户提供的是"文本 + 几个取值点"，不是"一段要被执行的程序"。
+	//
+	// 仍然**不做**的（这些才需要真正的解释器）：
+	//   条件 {{#if x}}、循环 {{#each}}、函数调用、运算 {{a + b}}
+	//
+	// 引用语法：
+	//   {{pull_request.title}}   从 payload 按点号路径取
+	//   {{$author}}              从源变量表取
+	//
+	// 占位符正则只允许「标识符 + 点 / $ / 数字下标」，不允许括号、运算符、
+	// 空格分隔的表达式 —— 这样即使有人写了 {{a + b}}，也不会被当成表达式求值，
+	// 而是当成"查一个叫 `a + b` 的路径"（查不到 → param_missing）。
+	const PLACEHOLDER_RE = /\{\{\s*([$A-Za-z_][$A-Za-z0-9_.]*)\s*\}\}/g;
 
-	// parseTemplate 判断一个字符串是不是"整个值就是引用"。
-	// 返回 {ref} 或 null。ref 形如 "$name" 或 "a.b.c"。
-	function parseTemplate(v) {
-		if (typeof v !== "string") return null;
-		const m = v.match(TMPL_RE);
-		if (!m) return null;
-		const ref = m[1].trim();
-		if (!ref) return null;
-		// 混写（"a{{x}}b"）不匹配上面的 ^...$，自然落到字面量；
-		// 这里再挡一次，避免 {{a}}{{b}} 这类只有一个外层匹配的情况
-		if (ref.includes("{{") || ref.includes("}}")) return null;
-		return { ref };
+	// hasPlaceholder 字符串里是否含至少一个 {{x}}。
+	function hasPlaceholder(v) {
+		if (typeof v !== "string") return false;
+		PLACEHOLDER_RE.lastIndex = 0;
+		const found = PLACEHOLDER_RE.test(v);
+		PLACEHOLDER_RE.lastIndex = 0;
+		return found;
 	}
 
-	// isTemplate 字符串是否是"整个值是一个引用"。
+	// isTemplate 字符串是否是"整个值就是一个引用"——
+	// 这种情况下**保留原始类型**（数字还是数字、对象还是对象），
+	// 而不是转成字符串再拼。
 	function isTemplate(v) {
-		return parseTemplate(v) !== null;
+		if (typeof v !== "string") return false;
+		const m = v.match(/^\{\{\s*([$A-Za-z_][$A-Za-z0-9_.]*)\s*\}\}$/);
+		return m !== null;
+	}
+
+	// wholeRef 取出"整个值就是一个引用"里的那个引用；不是则返回 null。
+	function wholeRef(v) {
+		if (typeof v !== "string") return null;
+		const m = v.match(/^\{\{\s*([$A-Za-z_][$A-Za-z0-9_.]*)\s*\}\}$/);
+		return m ? m[1] : null;
+	}
+
+	// renderTemplate 单趟替换。
+	//
+	// lookup(ref) 返回 {found, val}。任何取不到值的占位符都记进 missing，
+	// **并且原样保留 {{x}} 文本**（让用户在报错里看到自己写了什么）。
+	//
+	// 关键：替换进去的值**不会被再次扫描**。用一次性遍历 + 拼接实现，
+	// 而不是"替换后再 match 一遍"。
+	function renderTemplate(str, lookup) {
+		const missing = [];
+		const out = str.replace(PLACEHOLDER_RE, (whole, ref) => {
+			const r = lookup(ref);
+			if (!r || !r.found) {
+				missing.push(ref);
+				return whole; // 原样留着，不丢信息
+			}
+			// 字符串化：对象/数组用 JSON，其它用 String。
+			// 这里刻意不做 HTML/JSON 转义——值是要喂给能力的原始数据，
+			// 中转擅自转义会让「路径里本来就有引号」变两次。
+			if (r.val === null) return "";
+			if (typeof r.val === "object") return JSON.stringify(r.val);
+			return String(r.val);
+		});
+		PLACEHOLDER_RE.lastIndex = 0;
+		return { text: out, missing };
 	}
 
 	function isMapping(v) {
@@ -1235,43 +1282,52 @@
 		if (!template) return { params: out, used, missing };
 		const vars = varValues || {};
 
-		// lookup 解析一个模板引用（{{x}}）指向哪里。
-		//
-		//   {{$name}}  → 源变量（优先，$ 前缀明确指向变量表）
-		//   {{a.b.c}}  → 直接按 payload 路径取，**不需要先声明成变量**
-		//
-		// 后者是这次简化的核心：用户看到 `pull_request.title` 就能直接写
-		// {{pull_request.title}}，不必先去变量表里给它取个名字。
+		// lookup 解析一个引用：{{$name}} 查变量表，{{a.b.c}} 查 payload。
 		const lookup = (ref) => {
-			if (ref.startsWith("$")) {
-				const name = ref.slice(1).trim();
-				if (!name) return { found: false, ref };
-				if (Object.prototype.hasOwnProperty.call(vars, name)) {
-					const v = vars[name];
-					return v === undefined ? { found: false, ref } : { found: true, val: v, ref };
+			const r = String(ref).trim();
+			if (r.startsWith("$")) {
+				const name = r.slice(1);
+				if (Object.prototype.hasOwnProperty.call(vars, name) && vars[name] !== undefined) {
+					return { found: true, val: vars[name] };
 				}
-				return { found: false, ref };
+				return { found: false };
 			}
-			const got = getPath(payload, ref);
-			return got === undefined ? { found: false, ref } : { found: true, val: got, ref };
+			const got = getPath(payload, r);
+			return got === undefined ? { found: false } : { found: true, val: got };
 		};
 
 		for (const [k, v] of Object.entries(template)) {
-			// ① 字符串形态的模板引用：{{x}}
-			const tpl = parseTemplate(v);
-			if (tpl) {
-				const r = lookup(tpl.ref);
+			// ① 整个值就是一个引用 —— **保留原始类型**。
+			//    "{{pull_request.additions}}" 拿到的是数字 77，不是 "77"。
+			//    这对 integer/number 参数很重要：字符串 "77" 会被 schema 判错。
+			const whole = wholeRef(v);
+			if (whole) {
+				const r = lookup(whole);
 				if (r.found) {
 					out[k] = clone(r.val);
-					used.push({ field: k, from: "{{" + tpl.ref + "}}" });
-					continue;
+					used.push({ field: k, from: "{{" + whole + "}}" });
+				} else {
+					missing.push({ field: k, from: "{{" + whole + "}}" });
 				}
-				missing.push({ field: k, from: "{{" + tpl.ref + "}}" });
 				continue;
 			}
 
-			// ② 对象形态的声明式引用（{from} / {var}）——保留，供旧配置与
-			//    需要 default/as 的场景使用
+			// ② 含占位符的字符串 —— 单趟替换，结果一律是字符串。
+			if (hasPlaceholder(v)) {
+				const r = renderTemplate(v, lookup);
+				out[k] = r.text;
+				if (r.missing.length) {
+					for (const m of r.missing) {
+						missing.push({ field: k, from: "{{" + m + "}}" });
+					}
+				} else {
+					used.push({ field: k, from: v });
+				}
+				continue;
+			}
+
+			// ③ 对象形态的声明式引用（{from} / {var}）—— 保留，供旧配置与
+			//    需要 default/as 的场景
 			if (!isMapping(v)) {
 				out[k] = clone(v);
 				continue;
@@ -1307,24 +1363,30 @@
 		if (!template) return "";
 		const known = declaredVars ? new Set(declaredVars.map((d) => d && d.name).filter(Boolean)) : null;
 		for (const [k, v] of Object.entries(template)) {
-			// 字符串模板 {{x}}：校验形式 + $变量是否声明过
-			const tpl = parseTemplate(v);
-			if (tpl) {
-				const ref = tpl.ref;
-				if (ref.startsWith("$")) {
-					const name = ref.slice(1).trim();
-					if (!name) return `参数 ${k} 的引用为空：{{$}}`;
-					if (known && !known.has(name)) {
-						return `参数 ${k} 引用了未声明的变量「${name}」`;
+			// 含占位符的字符串：逐个校验引用形式 + $变量是否声明过。
+			if (typeof v === "string" && hasPlaceholder(v)) {
+				PLACEHOLDER_RE.lastIndex = 0;
+				let m;
+				while ((m = PLACEHOLDER_RE.exec(v)) !== null) {
+					const ref = m[1].trim();
+					if (ref.startsWith("$")) {
+						const name = ref.slice(1);
+						if (!name) return `参数 ${k} 的引用为空：{{$}}`;
+						if (known && !known.has(name)) {
+							return `参数 ${k} 引用了未声明的变量「${name}」`;
+						}
+					} else if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
+						return `参数 ${k} 的路径不合法：「${ref}」`;
 					}
-				} else if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
-					return `参数 ${k} 的路径不合法：「${ref}」`;
+				}
+				PLACEHOLDER_RE.lastIndex = 0;
+				// 不完整的 {{ 或 }} 配错，提示一下（否则用户以为没生效）
+				const opens = (v.match(/\{\{/g) || []).length;
+				const closes = (v.match(/\}\}/g) || []).length;
+				if (opens !== closes) {
+					return `参数 ${k}：占位符没有闭合（{{ 与 }} 数量不一致）`;
 				}
 				continue;
-			}
-			// 含 {{ 但不是"整个值是一个引用" → 混写，明确拒绝并说清原因
-			if (typeof v === "string" && v.includes("{{") && v.includes("}}")) {
-				return `参数 ${k}：模板必须是整个值（如 "{{pull_request.title}}"），不支持 "前缀{{x}}后缀" 这种拼接`;
 			}
 			if (!isMapping(v)) continue;
 			if (typeof v.from === "string" && typeof v.var === "string") {
@@ -1440,10 +1502,12 @@
 				if (mmsg) return `${c.name}@${c.version}：${mmsg}`;
 				const literals = {};
 				for (const [k, v] of Object.entries(t.params)) {
-					// 模板引用（{{x}}）不是字面量：它的实际值要等触发时才知道，
-					// 配置期不能拿字符串去校验 "expected integer"。
-					// 这正是「参数可以写引用」与「参数必须是数字」的边界。
-					if (isMapping(v) || isTemplate(v)) continue;
+					// 含占位符的值（无论是整值引用还是混写）都不是字面量：
+					// 它的实际值要等触发时才知道，配置期不能拿字符串去校验
+					// "expected integer"。混写一定产出字符串，所以它的类型
+					// 由 "这个参数能不能收字符串" 决定 —— 那个判断在触发时
+					// 由 coerceValue 做（转不了就 param_type 剪枝）。
+					if (isMapping(v) || hasPlaceholder(v)) continue;
 					literals[k] = v;
 				}
 				if (Object.keys(literals).length) {
@@ -1626,9 +1690,18 @@
 				// 自动推断是有意的：用户不该为了"把 GitHub 的字符串 title 塞进
 				// integer 字段"再去学一个 as。schema 已经声明了它要什么类型，
 				// 中枢照着转就行。as 留给"schema 说 string 但我想存数字"这种少数情况。
-				const wantAs = isMapping(decl)
-					? decl.as || schemaPropType(c, k)
-					: undefined;
+				// 三种情况都按 schema 推断：
+				//   - 对象形态的引用（{from}/{var}）：as 优先，否则 schema
+				//   - 含占位符的字符串：**拼接结果一定是字符串**，而目标字段可能是
+				//     integer。不转换的话 "PR #42" 这种混写对数字字段永远派不出去
+				//     （"expected integer"）。
+				//   - 纯字面量：不做转换，尊重用户写的类型
+				let wantAs;
+				if (isMapping(decl)) {
+					wantAs = decl.as || schemaPropType(c, k);
+				} else if (hasPlaceholder(decl)) {
+					wantAs = schemaPropType(c, k);
+				}
 				const converted = coerceValue(v, wantAs);
 				if (converted === undefined) {
 					pruned.push({
