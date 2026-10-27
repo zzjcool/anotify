@@ -1295,7 +1295,7 @@ sources:
     demo_name: "Demo · GitHub PR analysis"
     demo_ok: "Example filled: 4 variables + params bound to them"
     demo_no_caps: "No target capability with params; variables were filled in"
-    avail_vars: "What variables does this trigger provide? (click to fill)"
+    avail_vars: "Which fields does this trigger provide? (click to copy)"
     av_fill: "Click to fill the variable source"
     hook_url: "Payload URL"
     hook_url_pending: "Generated after saving (e.g. /v1/hooks/src_xxx)"
@@ -1322,6 +1322,8 @@ sources:
     av_no_event: "This trigger has no external event, so there are no fields to reference — just write values directly in params."
     kind_github_hint: "GitHub PR/push events. Known fields and the GitHub-side setup are built in — no doc digging."
     av_copied: "Copied — paste it into the param"
+    av_src_builtin: "From the official GitHub pull_request event structure (sample values)"
+    av_src_event: "From this source's most recent real event: {ty}"
   preset:
     hourly: Hourly
     daily3: Daily 3:00

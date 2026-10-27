@@ -69,6 +69,11 @@
       .avail-vars summary:hover {
         color: var(--fg);
       }
+      .av-src {
+        font-size: 0.62rem;
+        color: var(--faint);
+        padding: 0 0 0.3rem 0.1rem;
+      }
       .avail-vars-body {
         margin-top: 0.4rem;
         padding: 0.5rem 0.6rem;
@@ -446,6 +451,7 @@
       <div>
         <details class="avail-vars" id="avail-vars" open>
           <summary>{{t "sources.form.avail_vars"}}</summary>
+          <div id="avail-src" class="av-src"></div>
           <div id="avail-vars-body" class="avail-vars-body"></div>
         </details>
       </div>
@@ -921,7 +927,10 @@
         }
         // 预览样本必须在渲染参数**之前**加载：参数框下方的预览要用它
         // 求值。没有样本时预览显示"还没有事件"，不影响编辑。
-        await loadSample(src ? src.name : "");
+        //
+        // kind 决定样本来源：github 用内置官方结构（新建就能配），
+        // webhook 用真实事件，cron/manual 没有。
+        await loadSample({ kind: document.getElementById("f-kind").value, name: src ? src.name : "" });
         renderTargetPicker(src ? src.targets || [] : [], existing);
         syncKindFields();
 
@@ -958,8 +967,18 @@
               ? t("sources.form.kind_github_hint", "GitHub 的 PR/推送事件。已内置字段清单与 GitHub 侧填法。")
               : t("sources.form.kind_hint", "创建后不可修改（换种类等于换语义，请删除后重建）。");
         }
-        // 切 kind 时清单要跟着换（webhook 有 PR 字段，cron 只能固定值）
-        renderAvailVars();
+        // 切 kind 时样本和清单都要跟着换：
+        //   github  → 内置官方结构（立刻有字段）
+        //   webhook → 这个源最近一条真实事件（可能还没有）
+        //   cron/manual → 没有样本
+        // 用当前正在编辑的源名去拉（新建时为 null，webhook 会拿不到事件）。
+        loadSample({ kind: kind, name: EDITING_SRC ? EDITING_SRC.name : "" })
+          .then(() => {
+            renderAvailVars();
+            // 参数框下方的预览也要重算：换了样本，之前写的引用结果就变了
+            refreshParamTips();
+          })
+          .catch(() => renderAvailVars());
         updateHookGuide();
       }
 
@@ -1000,6 +1019,8 @@
       function renderTargetPicker(selected, existingParams) {
         const box = document.getElementById("f-targets");
         box.replaceChildren();
+        // 重建参数框 → 旧的预览刷新闭包全部失效，清空重登记
+        PARAM_TIP_UPDATERS.length = 0;
         existingParams = existingParams || {};
         // 兼容两种入参：只有 ID 的字符串数组，或 {capabilityId, params} 对象数组
         const sel = new Set(
@@ -1112,18 +1133,84 @@
       // ---------- 预览样本 ----------
       //
       // 参数是**盲写**的：用户写下某个 payload 路径时，系统不告诉他
-      // 这个路径存不存在、会取到什么、取不到会怎样。之前只给了一份硬编码的
-      // GitHub 字段清单——那只覆盖一种 payload 形状，接第二个系统就全废。
+      // 这个路径存不存在、会取到什么、取不到会怎样。
       //
-      // 所以改成用**真实事件**当样本：拉这个源最近一条事件的 payload，
-      // 在参数框下面直接算出结果给用户看。看不到结果时才会写出拼错的路径。
-      let SAMPLE_PAYLOAD = null; // 最近一条事件的 payload（null = 还没有事件）
-      let SAMPLE_META = null; // {at, type}
+      // 样本从哪来，按触发方式分三种：
+      //
+      //   1. GitHub 触发器 → **内置 GitHub 官方 payload 样例**。
+      //      GitHub 的 webhook 结构是公开契约（不是"猜"），新建源就能配参数，
+      //      不必先触发一次。这也是它的价值：用户不该被要求"先发个事件来看看"。
+      //   2. 通用 webhook → 这个源**最近一条真实事件**（外部系统形状未知，
+      //      只能等真的有事件）。
+      //   3. cron / manual → 没有外部 payload，样本为空。
+      // PARAM_TIP_UPDATERS 收集每个参数框的预览刷新函数。
+      // 样本变了（换 kind、拉到新事件）要把所有预览重算一遍，
+      // 否则用户看到的是"用旧样本算出来的结果"。
+      const PARAM_TIP_UPDATERS = [];
 
-      /** loadSample 取该源最近一条事件当预览样本。 */
-      async function loadSample(sourceName) {
+      let SAMPLE_PAYLOAD = null; // 当前的预览样本（null = 还没有可用样本）
+      let SAMPLE_META = null; // {at, type, builtin}
+
+      // GITHUB_SAMPLE 是 GitHub 官方 pull_request webhook 的**结构样例**。
+      //
+      // 值是我编的（真实事件的值当然因人而异），但**键名与嵌套层级
+      // 严格照 GitHub 文档**——用户配参数时依赖的是结构，不是值。
+      //
+      // 为什么内置而不等真实事件：新建 GitHub 源时一个事件都还没有，
+      // 要求用户"先让 GitHub 发一次再回来配参数"是本末倒置。
+      const GITHUB_SAMPLE = {
+        action: "opened",
+        number: 42,
+        pull_request: {
+          number: 42,
+          title: "修个错字",
+          body: "把 README 里的拼写错误改掉。",
+          state: "open",
+          draft: false,
+          merged: false,
+          additions: 12,
+          deletions: 3,
+          changed_files: 2,
+          commits: 1,
+          comments: 0,
+          created_at: "2026-01-02T03:04:05Z",
+          html_url: "https://github.com/owner/repo/pull/42",
+          user: { login: "alice", id: 1234567, type: "User" },
+          head: { ref: "fix/typo", sha: "0f1e2d3c4b5a69788796a5b4c3d2e1f0" },
+          base: { ref: "main", sha: "9a8b7c6d5e4f30211203f4e5d6c7b8a9" },
+          labels: [{ name: "docs" }],
+          requested_reviewers: [{ login: "bob" }],
+        },
+        repository: {
+          name: "repo",
+          full_name: "owner/repo",
+          private: false,
+          html_url: "https://github.com/owner/repo",
+          default_branch: "main",
+          owner: { login: "owner", type: "Organization" },
+        },
+        sender: { login: "alice", id: 1234567, type: "User" },
+        installation: { id: 987654 },
+      };
+
+      /** loadSample 按触发方式决定用哪份预览样本。 */
+      async function loadSample(spec) {
         SAMPLE_PAYLOAD = null;
         SAMPLE_META = null;
+        const kind = spec && spec.kind;
+        const sourceName = spec && spec.name;
+
+        // GitHub：内置官方结构样例，**新建时就能配参数**
+        if (kind === "github") {
+          SAMPLE_PAYLOAD = GITHUB_SAMPLE;
+          SAMPLE_META = { builtin: true, type: "pull_request" };
+          return;
+        }
+
+        // 其它触发方式没有外部 payload
+        if (kind !== "webhook") return;
+
+        // 通用 webhook：只能拿这个源最近一条真实事件
         if (!sourceName) return;
         try {
           const r = await apiGet(
@@ -1136,6 +1223,17 @@
           SAMPLE_META = { at: ev.createdAt, type: ev.type };
         } catch (e) {
           SAMPLE_PAYLOAD = null;
+        }
+      }
+
+      /** refreshParamTips 让所有参数框按当前样本重算预览。 */
+      function refreshParamTips() {
+        for (const f of PARAM_TIP_UPDATERS) {
+          try {
+            f();
+          } catch (e) {
+            /* 单个框算不出来不影响其它 */
+          }
         }
       }
 
@@ -1347,6 +1445,7 @@
             }
           };
           input.addEventListener("input", updateTip);
+          PARAM_TIP_UPDATERS.push(updateTip);
           // 打「双大括号」时弹出真实字段清单，点一下插入 —— 不用手打
           // pull_request.user.login 这种路径。只在文本类输入框上装
           // （select / checkbox 没有可插入的文本）。
@@ -1547,6 +1646,24 @@
 
         const kind = document.getElementById("f-kind").value;
         const paths = SAMPLE_PAYLOAD ? flattenPaths(SAMPLE_PAYLOAD, "") : [];
+
+        // 说明这份清单是哪来的 —— 内置样例和真实事件的"可信度"不同，
+        // 用户需要知道自己在看哪一种（前者结构准、值是我编的示意）。
+        const srcEl = document.getElementById("avail-src");
+        if (srcEl) {
+          srcEl.textContent = "";
+          if (SAMPLE_META && SAMPLE_META.builtin) {
+            srcEl.textContent = t(
+              "sources.form.av_src_builtin",
+              "来自 GitHub 官方 pull_request 事件结构（示例值）",
+            );
+          } else if (SAMPLE_META && SAMPLE_META.at) {
+            srcEl.textContent = t(
+              "sources.form.av_src_event",
+              "来自这个源最近一条真实事件：{ty}",
+            ).replace("{ty}", SAMPLE_META.type || "—");
+          }
+        }
 
         if (!paths.length) {
           // github / webhook 是有外部事件的：如实说"还没收到过"。

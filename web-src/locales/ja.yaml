@@ -1295,7 +1295,7 @@ sources:
     demo_name: "デモ · GitHub PR 分析"
     demo_ok: "サンプルを入力しました：変数 4 個 + パラメータの変数参照"
     demo_no_caps: "パラメータ付きの出口能力がありません。変数のみ入力しました"
-    avail_vars: "このトリガーが提供する変数（クリックで入力）"
+    avail_vars: "このトリガーが提供するフィールド（クリックでコピー）"
     av_fill: "クリックして変数の取得元を入力"
     hook_url: "ペイロード URL"
     hook_url_pending: "保存後に生成（/v1/hooks/src_xxx の形式）"
@@ -1322,6 +1322,8 @@ sources:
     av_no_event: "このトリガーには外部イベントがないため、参照できるフィールドはありません。値はパラメータに直接書いてください。"
     kind_github_hint: "GitHub の PR / push イベント。既知のフィールドと GitHub 側の設定方法が組み込まれています。"
     av_copied: "コピーしました。パラメータに貼り付けてください"
+    av_src_builtin: "GitHub 公式の pull_request イベント構造に基づく（値はサンプル）"
+    av_src_event: "このソースの直近の実際のイベント: {ty}"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00
