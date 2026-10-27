@@ -850,9 +850,15 @@ html.flograph-fullscreen-open body {
 	stroke: var(--line-strong);
 	stroke-width: 1.4;
 }
+/* 回边（环）：橙色虚线 + 略粗。
+ *
+ * dagre 会把环上的边临时反向来分层，所以画出来的走向可能和配置里的
+ * from→to 相反 —— 这不是 bug，但**必须**和普通边在视觉上区分开，
+ * 否则用户会以为配置写反了。 */
 .flograph-svg path.is-cycle {
 	stroke: #f97316;
-	stroke-dasharray: 5 4;
+	stroke-width: 1.8;
+	stroke-dasharray: 6 4;
 }
 .flograph-svg path.is-muted {
 	stroke: rgba(113, 113, 122, 0.55);
@@ -1147,6 +1153,9 @@ html.flograph-fullscreen-open body {
 }
 .flograph-legend-icon.lg-pruned {
 	color: var(--faint);
+}
+.flograph-legend-icon.lg-cycle {
+	color: #f97316;
 }
 /* 窄屏隐藏：图本身已经很小，图例会挡住内容 */
 @media (max-width: 640px) {

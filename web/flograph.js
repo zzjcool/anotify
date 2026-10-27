@@ -111,6 +111,128 @@
 	}
 
 	/**
+	 * pickLabelSpot 给出口名找一个不压节点、不压别的标签的落点。
+	 *
+	 * 标签是绝对定位的 DOM，和 SVG 路径不在一个坐标系（zoom/pan 只作用于
+	 * 共同的 viewport），所以必须自己算避让 —— 之前固定放 42% 处，
+	 * 那个点可能正好落在某个节点矩形里，看上去就是"文字乱标"。
+	 *
+	 * 候选顺序从路径中点向两边扩散（0.5 → 0.42/0.58 → 0.34/0.66 …），
+	 * 取第一个既不撞节点也不撞已放标签的。全撞就退回中点：
+	 * 挤一点也比丢失"这条边是哪个出口"要好。
+	 */
+	function pickLabelSpot(points, x1, y1, x2, y2, el, nodeBoxes, labelBoxes) {
+		// 先量一下标签尺寸（还没定位置就能量：绝对定位 + 空 left/top 也对）
+		const w = el.offsetWidth || 40;
+		const h = el.offsetHeight || 16;
+
+		const hitsNode = (cx, cy) => {
+			const l = cx - w / 2;
+			const r = cx + w / 2;
+			const t = cy - h / 2;
+			const b = cy + h / 2;
+			for (const n of nodeBoxes) {
+				// 留 3px 余量，避免"紧贴边框"看着也像压着
+				if (l < n.right + 3 && r > n.left - 3 && t < n.bottom + 3 && b > n.top - 3) {
+					return true;
+				}
+			}
+			return false;
+		};
+		const hitsLabel = (cx, cy) => {
+			const l = cx - w / 2;
+			const r = cx + w / 2;
+			const t = cy - h / 2;
+			const b = cy + h / 2;
+			for (const o of labelBoxes) {
+				if (l < o.right + 2 && r > o.left - 2 && t < o.bottom + 2 && b > o.top - 2) {
+					return true;
+				}
+			}
+			return false;
+		};
+
+		// 中点优先，然后左右交替扩散
+		const cands = [0.5];
+		for (let k = 1; k <= 5; k++) {
+			cands.push(0.5 - k * 0.08, 0.5 + k * 0.08);
+		}
+
+		for (const t of cands) {
+			if (t <= 0.06 || t >= 0.94) continue;
+			const [cx, cy] = pointAlongPath(points, x1, y1, x2, y2, t);
+			if (!hitsNode(cx, cy) && !hitsLabel(cx, cy)) {
+				return { x: cx, y: cy, w, h };
+			}
+		}
+		const [mx, my] = pointAlongPath(points, x1, y1, x2, y2, 0.5);
+		return { x: mx, y: my, w, h };
+	}
+
+	/**
+	 * pullOutOfBox 把路径末端推到"目标节点框向外扩 pad"的边界之外。
+	 *
+	 * 为什么不用"沿 from→to 方向数值回缩"：**回边**（环上的边）在 dagre
+	 * 内部是被临时反向后才分层的，`points` 的走向因此可能和 from→to 相反。
+	 * 按 from→to 算的端点会落进目标节点矩形，marker-end 那个箭头就被
+	 * 节点盖住了（截图里"箭头缺了一半"）。几何判据对两种顺序都成立。
+	 *
+	 * 做法：从末段方向上找一个刚好在扩容框外的点。末段太短就往前退一段，
+	 * 用更早的点参与计算。
+	 */
+	function pullOutOfBox(points, x1, y1, x2, y2, box, pad) {
+		const pts = (points || []).slice();
+		if (!box) return { pts: pts, x: x2, y: y2 };
+
+		const l = box.x - box.width / 2 - pad;
+		const r = box.x + box.width / 2 + pad;
+		const t = box.y - box.height / 2 - pad;
+		const b = box.y + box.height / 2 + pad;
+		const outside = (p) => p.x <= l || p.x >= r || p.y <= t || p.y >= b;
+
+		const end = { x: x2, y: y2 };
+		if (outside(end)) return { pts: pts, x: x2, y: y2 };
+
+		// 从终点往回找第一个在框外的点，沿这条线段求与扩容框的交点
+		const chain = [{ x: x2, y: y2 }].concat(pts.slice().reverse(), [{ x: x1, y: y1 }]);
+		let from = null;
+		for (let i = 1; i < chain.length; i++) {
+			if (outside(chain[i])) {
+				from = chain[i];
+				break;
+			}
+		}
+		if (!from) {
+			// 整条线都在框里（极短边）：往上推 pad*2
+			return { pts: [], x: x2, y: t };
+		}
+
+		// from（框外）→ end（框内）的线段与扩容框求交
+		const dx = end.x - from.x;
+		const dy = end.y - from.y;
+		let k = 1;
+		// 求最近的那个边界穿越点
+		const cand = [];
+		if (dx !== 0) {
+			cand.push((l - from.x) / dx, (r - from.x) / dx);
+		}
+		if (dy !== 0) {
+			cand.push((t - from.y) / dy, (b - from.y) / dy);
+		}
+		for (const c of cand) {
+			if (c > 0 && c < 1 && c < k) k = c;
+		}
+		// 稍微再退一点，让箭头整体留在外面
+		const pt = { x: from.x + dx * k, y: from.y + dy * k };
+		const shrink = 0.02;
+		return {
+			pts: pts,
+			x: pt.x - dx * shrink,
+			y: pt.y - dy * shrink,
+		};
+	}
+
+	/**
 	 * pointAlongPath 取"实际画出来的那条折线"上 42% 位置的点。
 	 *
 	 * 用来放出口名标签。必须和 pathFromPoints 用**同一组点**，
@@ -218,29 +340,6 @@
 		return cls;
 	}
 
-	/** 贝塞尔在 t 处的点（用来把出口名标签放到曲线中点） */
-	function bezierAt(x1, y1, x2, y2, t, horizontal) {
-		let p1;
-		let p2;
-		if (horizontal) {
-			const dx = Math.max(Math.abs(x2 - x1) * 0.5, 20);
-			p1 = [x1 + dx, y1];
-			p2 = [x2 - dx, y2];
-		} else {
-			const dy = Math.max(Math.abs(y2 - y1) * 0.5, 18);
-			p1 = [x1, y1 + dy];
-			p2 = [x2, y2 - dy];
-		}
-		const mt = 1 - t;
-		const a = mt * mt * mt;
-		const b = 3 * mt * mt * t;
-		const c = 3 * mt * t * t;
-		const d = t * t * t;
-		return [
-			a * x1 + b * p1[0] + c * p2[0] + d * x2,
-			a * y1 + b * p1[1] + c * p2[1] + d * y2,
-		];
-	}
 
 	function mount(container, opts) {
 		const options = opts || {};
@@ -422,6 +521,23 @@
 		// LR 从左到右（右出左进）。写死一边会让另一个方向的连线穿过节点。
 		const horizontal = (options.rankdir || "TB") === "LR";
 		const labelEls = [];
+		// 标签避让用的包围盒。
+		//
+		// nodeBoxes 用 dagre 的坐标（和路径同一套坐标系）——不能拿
+		// getBoundingClientRect，那会带上 zoom/pan 的变换，和路径对不上。
+		const nodeBoxes = [];
+		for (const n of nodes) {
+			const p = g.node(n.id);
+			if (!p) continue;
+			nodeBoxes.push({
+				left: p.x - p.width / 2,
+				right: p.x + p.width / 2,
+				top: p.y - p.height / 2,
+				bottom: p.y + p.height / 2,
+			});
+		}
+		const labelBoxes = [];
+
 		const edgePos = new Map();
 		edges.forEach((e, i) => {
 			const src = g.node(e.from);
@@ -437,7 +553,23 @@
 			// 取 dagre 给的绕行点：它知道怎么避开中间的节点
 			const le = g.edge(e.from, e.to, "e" + i);
 			const pts = (le && le.points) || [];
-			const path = svg("path", { d: pathFromPoints(pts, x1, y1, x2, y2) });
+
+			// 末端回缩一个箭头长度。
+			//
+			// 节点是画在 SVG **上层**的（后 append，同 z 序），所以
+			// marker-end 那个三角只要有一像素落进节点矩形就被盖住 ——
+			// 截图里"箭头像是缺了一半"就是这个原因。把线缩回来，
+			// 让整个箭头都待在节点外面。
+			// 末端推到目标节点框外一段距离。
+			//
+			// 不能只按 from/to 的方向做数值回缩：**回边**（环上的边）在
+			// dagre 内部是临时反向的，points 的顺序也跟着反了，按 from→to
+			// 算出来的端点会落在节点里面 —— 箭头就被节点盖住了。
+			// 所以改成几何判据：把端点推到"目标框向外扩 pad"的边界上，
+			// 不管 points 是正序还是反序都成立。
+			const tip = pullOutOfBox(pts, x1, y1, x2, y2, dst, 8);
+
+			const path = svg("path", { d: pathFromPoints(tip.pts, x1, y1, tip.x, tip.y) });
 			path.setAttribute("marker-end", e.cycle ? "url(#fg-arrow-cycle)" : "url(#fg-arrow)");
 			const cls = edgeClass(e);
 			if (cls) path.setAttribute("class", cls);
@@ -445,18 +577,27 @@
 
 			edgePos.set(i, { x1, y1, x2, y2 });
 
-			// 出口名：挂在**实际路径**的中间点上。
+			// 出口名：沿着实际路径找一个**不压节点、不压别的标签**的位置。
 			//
-			// 之前用"两点贝塞尔的 42% 处"，那条曲线根本不是实际画出来的
-			// 路径（实际路径会绕行），于是标签落到别的节点上 —— 截图里
-			// passed / fixed 压在"应用修复"卡片里就是这个问题。
+			// 之前固定放在 42% 处，问题是：那个点可能正好在某个节点的矩形里
+			// （图上就出现标签压在卡片上、或者两个标签叠在一起）。标签是
+			// 绝对定位的 DOM，和 SVG 不在一个坐标系里，所以只能自己算避让。
+			//
+			// 策略：沿路径从中间往两边扫一串候选点，取第一个既不撞节点
+			// 也不撞已放标签的。全撞就退回中间 —— 宁可挤也不丢信息。
 			if (e.port) {
-				const [lx, ly] = pointAlongPath(pts, x1, y1, x2, y2, 0.42);
 				const lb = div("flograph-edge-label" + edgeClass(e, true), e.port);
-				lb.style.left = lx + "px";
-				lb.style.top = ly + "px";
+				const spot = pickLabelSpot(pts, x1, y1, x2, y2, lb, nodeBoxes, labelBoxes);
+				lb.style.left = spot.x + "px";
+				lb.style.top = spot.y + "px";
 				viewport.appendChild(lb);
 				labelEls.push(lb);
+				labelBoxes.push({
+					left: spot.x - spot.w / 2,
+					right: spot.x + spot.w / 2,
+					top: spot.y - spot.h / 2,
+					bottom: spot.y + spot.h / 2,
+				});
 			}
 		});
 

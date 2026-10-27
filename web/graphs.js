@@ -374,6 +374,16 @@
 				};
 			});
 
+			// 回边检测：环路必须能看出来。
+			//
+			// "跑测试 --failed--> 应用修复 --fixed--> 跑测试"这种环在配置里
+			// 是合法的（重试语义），dagre 内部会临时反向边来分层，但**不会**
+			// 告诉你哪条是回边 —— 于是画出来和普通边一模一样，用户看不出
+			// 这里有个环。
+			//
+			// 用 DFS 三色标记找回边：指向"当前递归栈上"的节点的边就是回边。
+			const backEdges = findBackEdges(base.nodes.map((n) => n.id), base.edges);
+
 			edges = base.edges.map((e) => {
 				const fromNode = nodes.find((n) => n.id === e.from);
 				const toNode = nodes.find((n) => n.id === e.to);
@@ -382,8 +392,9 @@
 					from: e.from,
 					to: e.to,
 					port: e.port,
+					// 回边用橙色虚线：和普通边、和剪枝的灰虚线都区分开
+					cycle: backEdges.has(e.from + "\u0000" + e.to),
 					// 剪枝的边用虚线灰掉：和"配置里没有这条边"区分开
-					cycle: !!e.cycle,
 					muted: !bothAlive,
 				};
 			});
@@ -483,6 +494,7 @@
 				{ icon: "✓", cls: "lg-ok", text: t("trace.legend.ok", "执行成功") },
 				{ icon: "✕", cls: "lg-bad", text: t("trace.legend.bad", "执行失败") },
 				{ icon: "○", cls: "lg-pruned", text: t("trace.legend.pruned", "未执行（配置里有、这次没走）") },
+				{ icon: "↺", cls: "lg-cycle", text: t("trace.legend.cycle", "回边 · 这里有个环（会重试/回退）") },
 			);
 		}
 
@@ -509,6 +521,52 @@
 		});
 
 		return { graph, truncated: cut.truncated };
+	}
+
+	/**
+	 * findBackEdges 用 DFS 找"回边"（指向当前递归栈上节点的边）。
+	 *
+	 * 一条边 (u→v) 是回边，当且仅当 v 还在 u 的递归栈上 —— 也就是
+	 * 沿着 v ⇝ u 已经有一条路径，加上这条就闭环了。
+	 *
+	 * 返回 Set，元素是 "from\u0000to"（用 NUL 分隔，避免 id 里含分隔符）。
+	 *
+	 * 为什么不用 dagre 的 acyclic 结果：那个过程在内部完成，边被临时
+	 * 反向又还原，外部拿不到"哪些是回边"这个信息。
+	 */
+	function findBackEdges(nodeIds, edges) {
+		const out = new Map();
+		for (const id of nodeIds) out.set(id, []);
+		for (const e of edges) {
+			if (out.has(e.from)) out.get(e.from).push(e.to);
+		}
+
+		const WHITE = 0;
+		const GRAY = 1;
+		const BLACK = 2;
+		const color = new Map();
+		for (const id of nodeIds) color.set(id, WHITE);
+
+		const back = new Set();
+		const visit = (u) => {
+			color.set(u, GRAY);
+			for (const v of out.get(u) || []) {
+				if (!color.has(v)) continue;
+				const c = color.get(v);
+				if (c === GRAY) {
+					// v 还在栈上 → 回边
+					back.add(u + "\u0000" + v);
+				} else if (c === WHITE) {
+					visit(v);
+				}
+			}
+			color.set(u, BLACK);
+		};
+
+		for (const id of nodeIds) {
+			if (color.get(id) === WHITE) visit(id);
+		}
+		return back;
 	}
 
 	/**
