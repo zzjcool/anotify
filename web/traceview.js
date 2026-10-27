@@ -365,6 +365,9 @@
 		const res = window.AnotifyGraphs.taskChain(host, {
 			tasks: tasks,
 			t: t,
+			// 这一页没有标题栏的「全屏」入口（源详情页有），所以保留
+			// 工具栏里的全屏按钮 —— 否则链路图就没法全屏看了。
+			showFullscreen: true,
 			onNodeClick: (n) => {
 				const tk = tasks.find((x) => x.id === n.id);
 				if (tk && tk.nodeId) {
