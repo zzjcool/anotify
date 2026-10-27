@@ -638,8 +638,13 @@
       // 正则用字符类拼出花括号，避免 Go template 把源码里的双花括号当语法
       const BRACE_OPEN = "[" + "{" + "]" + "[" + "{" + "]";
       const BRACE_CLOSE = "[" + "}" + "]" + "[" + "}" + "]";
-      const REF_BODY = "[$A-Za-z_][$A-Za-z0-9_.]*";
-      const TPL_RE = new RegExp(BRACE_OPEN + "\\s*" + REF_BODY + "\\s*" + BRACE_CLOSE);
+      const REF_BODY = "[A-Za-z_][A-Za-z0-9_.]*";
+      // 必须带**捕获组**：混写替换时 `String.replace(re, (m, ref) => ...)`
+      // 的第二个参数是第一个捕获组。没有捕获组时它是**匹配位置**，
+      // 于是"哪个字段取不到"会报成一串数字（曾经显示「样本里没有：0、27」）。
+      const TPL_RE = new RegExp(
+        BRACE_OPEN + "\\s*(" + REF_BODY + ")\\s*" + BRACE_CLOSE,
+      );
       const TPL_WHOLE_RE = new RegExp(
         "^" + BRACE_OPEN + "\\s*(" + REF_BODY + ")\\s*" + BRACE_CLOSE + "$",
       );
