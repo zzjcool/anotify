@@ -1115,16 +1115,11 @@
 	// 模板注入 / 无限递归 / 超大表达式 DoS 三类攻击面，而收益只是"少一次
 	// 节点侧拼装"。节点本来就能自己取数据（它才是知道数据形状的那一方）。
 
-	// isMapping 判断某个参数值是不是"映射声明"而不是字面量。
-	//
-	// 判据要严：只有**恰好**含 from 的对象才算映射。否则 {"from":1} 这种
-	// 用户真想当字面量传的对象会被误认。多一个字段就退回字面量，行为可预期。
-	// ---------- 模板引用（{{path}}）----------
-	//
-	// 语法只有一种：**整个字符串就是一个引用**
+	// ---------- 模板引用 ----------
 	//
 	//   "{{pull_request.title}}"   → 取 payload.pull_request.title
-	//   "{{$env}}"                 → 取源变量 env（固定值或它的 from）
+	//   "{{author}}"               → 先查别名表（config.vars），命中就用它
+	//   "PR #{{number}}: {{title}}" → 模板拼接
 	//   "prod"                     → 字面量，原样传
 	//
 	// 支持**混写**："PR: {{pull_request.title}} by {{$author}}"。
@@ -1202,26 +1197,6 @@
 		PLACEHOLDER_RE.lastIndex = 0;
 		return { text: out, missing };
 	}
-
-	function isMapping(v) {
-		if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-		const keys = Object.keys(v);
-		// 两种引用形态：
-		//   {from:"pull_request.title"}  → 直接写 payload 路径（上一轮的形态）
-		//   {var:"title"}                → 引用**源声明的变量**（本轮新增，推荐）
-		// 二者都有时拒绝（"到底取哪个"没有合理默认，配置期就该拦）。
-		const hasFrom = keys.includes("from");
-		const hasVar = keys.includes("var");
-		if (!hasFrom && !hasVar) return false;
-		if (hasFrom && hasVar) return false;
-		return keys.every((k) => k === "from" || k === "var" || k === "default" || k === "as");
-	}
-
-	// isVarRef 判断是不是变量引用（{var:"x"}）。与 isMapping 保持同一口径。
-	function isVarRef(v) {
-		return isMapping(v) && typeof v.var === "string" && v.var !== "";
-	}
-
 	// resolveVars 把源声明的变量表求值成 {name: value}。
 	//
 	// 变量定义（存在 sources.config.vars 里，纯数据列，不需要改表）：
@@ -1248,11 +1223,6 @@
 		const missing = [];
 		for (const d of varDefs || []) {
 			if (!d || typeof d.name !== "string" || !d.name) continue;
-			// 旧形态：常量
-			if (Object.prototype.hasOwnProperty.call(d, "value")) {
-				values[d.name] = clone(d.value);
-				continue;
-			}
 			const got = getPath(payload, d.from);
 			if (got !== undefined) {
 				values[d.name] = clone(got);
@@ -1308,8 +1278,7 @@
 		// 名字冲突时别名优先——别名本来就是为了"改写/缩短"而存在的。
 		const lookup = (ref) => {
 			const r = String(ref).trim();
-			// $ 前缀已废弃，但老配置里的 {{$x}} 仍然认得（去掉 $ 再查）
-			const key = r.startsWith("$") ? r.slice(1) : r;
+			const key = r;
 			if (Object.prototype.hasOwnProperty.call(vars, key) && vars[key] !== undefined) {
 				return { found: true, val: vars[key], via: key };
 			}
@@ -1347,33 +1316,11 @@
 				continue;
 			}
 
-			// ③ 对象形态的声明式引用（{from} / {var}）—— 保留，供旧配置与
-			//    需要 default/as 的场景
-			if (!isMapping(v)) {
-				out[k] = clone(v);
-				continue;
-			}
-
-			let got;
-			let ref;
-			if (isVarRef(v)) {
-				ref = "$" + v.var;
-				got = vars[v.var];
-			} else {
-				ref = "payload." + v.from;
-				got = getPath(payload, v.from);
-			}
-
-			if (got !== undefined) {
-				out[k] = clone(got);
-				used.push({ field: k, from: ref });
-				continue;
-			}
-			if (Object.prototype.hasOwnProperty.call(v, "default")) {
-				out[k] = clone(v.default);
-				continue;
-			}
-			missing.push({ field: k, from: ref });
+			// ③ 其余都是字面量（数字、布尔、对象…）—— 原样传。
+			//
+			// 已经没有 {from}/{var} 这种对象形态了：引用统一写成 {}
+			// 里的路径文本。少一套语法，也少一处"两种写法怎么选"的困惑。
+			out[k] = clone(v);
 		}
 		return { params: out, used, missing };
 	}
@@ -1407,28 +1354,7 @@
 				}
 				continue;
 			}
-			if (!isMapping(v)) continue;
-			if (typeof v.from === "string" && typeof v.var === "string") {
-				return `参数 ${k} 同时写了 from 和 var，只能选一个`;
-			}
-			if (typeof v.var === "string") {
-				// 变量引用：配置期就能校验"这个变量到底声明过没有"。
-				// 不校验的话用户写了 $titel 拼错，要等到触发时才在剪枝里看到。
-				if (!v.var.trim()) return `参数 ${k} 的变量名为空`;
-				if (known && !known.has(v.var)) {
-					return `参数 ${k} 引用了未声明的变量「${v.var}」`;
-				}
-			} else {
-				if (typeof v.from !== "string" || !v.from.trim()) {
-					return `参数 ${k} 的映射缺少 from 或 var`;
-				}
-				if (v.from.includes("..") || v.from.startsWith(".") || v.from.endsWith(".")) {
-					return `参数 ${k} 的 from 路径不合法：「${v.from}」`;
-				}
-			}
-			if (v.as !== undefined && !["string", "number", "boolean", "json"].includes(v.as)) {
-				return `参数 ${k} 的 as 只能是 string/number/boolean/json`;
-			}
+
 		}
 		return "";
 	}
@@ -1446,14 +1372,13 @@
 			}
 			if (seen.has(name)) return `变量名「${name}」重复`;
 			seen.add(name);
-			const hasFrom = typeof d.from === "string" && d.from !== "";
-			const hasValue = Object.prototype.hasOwnProperty.call(d, "value");
-			if (hasFrom && hasValue) return `变量「${name}」不能同时有 from 和 value`;
-			// 新推荐形态只有 from（纯别名）。value 型仍然接受（兼容老数据），
-			// 但前端不再生成它 —— 常量直接写在参数里就行。
-			if (!hasFrom && !hasValue) return `变量「${name}」需要 from（payload 路径）`;
-			if (hasFrom && (d.from.includes("..") || d.from.startsWith(".") || d.from.endsWith("."))) {
-				return `变量「${name}」的 from 路径不合法：「${d.from}」`;
+			// 别名只有一种形态：from 指向一个 payload 路径。不承载数据，
+			// 所以没有 value。常量要的是"直接写在参数里"，不需要起名字。
+			if (typeof d.from !== "string" || !d.from.trim()) {
+				return `别名「${name}」需要 from（payload 路径）`;
+			}
+			if (d.from.includes("..") || d.from.startsWith(".") || d.from.endsWith(".")) {
+				return `别名「${name}」的 from 路径不合法：「${d.from}」`;
 			}
 		}
 		return "";
@@ -1528,7 +1453,7 @@
 					// "expected integer"。混写一定产出字符串，所以它的类型
 					// 由 "这个参数能不能收字符串" 决定 —— 那个判断在触发时
 					// 由 coerceValue 做（转不了就 param_type 剪枝）。
-					if (isMapping(v) || hasPlaceholder(v)) continue;
+					if (hasPlaceholder(v)) continue;
 					literals[k] = v;
 				}
 				if (Object.keys(literals).length) {
@@ -1571,11 +1496,9 @@
 			if (expr.split(/\s+/).length !== 5) {
 				return err(400, "cron 表达式需要 5 段，得到 " + expr.split(/\s+/).length + " 段");
 			}
-			// payload：cron 触发时带上的**字面量**字段（用户自定义）。
-			// 纯数据，不参与求值（I6）。这就是"cron 用户自定义字段"的答案：
-			// 它不需要模板语法，只是想让事件带上 {"env":"prod"} 这种常量。
-			const pl = cfg.payload && typeof cfg.payload === "object" ? cfg.payload : {};
-			cfg = { expr: expr, tz: cfg.tz || "Local", payload: pl, vars };
+			// 不再有 config.payload：它是"cron 也能带数据"的历史补丁，
+			// 和常量直写参数重复。cron 的常量写在参数里就行。
+			cfg = { expr: expr, tz: cfg.tz || "Local", vars };
 		} else if (b.kind === "webhook") {
 			cfg = {
 				token: cfg.token || "src_mock" + Math.random().toString(36).slice(2, 12),
@@ -1644,8 +1567,6 @@
 				s.config = {
 					expr: expr,
 					tz: b.config.tz || "Local",
-					payload:
-						b.config.payload && typeof b.config.payload === "object" ? b.config.payload : {},
 					vars: nextVars,
 				};
 			} else {
@@ -1673,10 +1594,8 @@
 
 		const b = ctx.body || {};
 		const traceId = nextTraceId();
-		// cron/manual 没有外部 payload：用源上配的字面量作为 payload 基础，
-		// 调用方显式传的 payload 覆盖它（手工触发时临时传参更常见）。
-		const basePayload =
-			s.kind !== "webhook" && s.config && s.config.payload ? clone(s.config.payload) : {};
+		// cron/manual 没有外部 payload，只有调用方显式传的那份。
+		const basePayload = {};
 		const ev = {
 			id: uid("evt"),
 			orgId: ORG,
@@ -1711,24 +1630,18 @@
 				// 自动推断是有意的：用户不该为了"把 GitHub 的字符串 title 塞进
 				// integer 字段"再去学一个 as。schema 已经声明了它要什么类型，
 				// 中枢照着转就行。as 留给"schema 说 string 但我想存数字"这种少数情况。
-				// 三种情况都按 schema 推断：
-				//   - 对象形态的引用（{from}/{var}）：as 优先，否则 schema
-				//   - 含占位符的字符串：**拼接结果一定是字符串**，而目标字段可能是
-				//     integer。不转换的话 "PR #42" 这种混写对数字字段永远派不出去
-				//     （"expected integer"）。
-				//   - 纯字面量：不做转换，尊重用户写的类型
-				let wantAs;
-				if (isMapping(decl)) {
-					wantAs = decl.as || schemaPropType(c, k);
-				} else if (hasPlaceholder(decl)) {
-					wantAs = schemaPropType(c, k);
-				}
+				// 含占位符的值按 schema 推断类型：
+				//   整值引用 {{x}}        保留原类型（payload 是数字就是数字）
+				//   混写 PR #{{x}}        结果必是字符串，但目标字段可能是 integer，
+				//                         不转换就对数字字段永远派不出去
+				// 纯字面量不转换，尊重用户写的类型。
+				const wantAs = hasPlaceholder(decl) ? schemaPropType(c, k) : undefined;
 				const converted = coerceValue(v, wantAs);
 				if (converted === undefined) {
 					pruned.push({
 						reason: "param_type",
 						capabilityId: c.id,
-						detail: `参数 ${k} 期望 ${wantAs}，但 payload.${decl.from} 的值 ${JSON.stringify(v)} 转不了`,
+						detail: `参数 ${k} 期望 ${wantAs}，但 ${JSON.stringify(decl)} 求值得到 ${JSON.stringify(v)}，转不了`,
 					});
 					resolved.params = null;
 					break;

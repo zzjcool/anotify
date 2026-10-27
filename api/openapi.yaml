@@ -2174,39 +2174,29 @@ components:
         config:
           type: object
           description: |
-            按 kind 解释的配置。所有 kind 都可以带 `vars`。
+            按 kind 解释的配置。
 
-            `vars` 是这个源对外暴露的变量表，出口参数用 `{var: "<name>"}` 引用它们。
-            每个变量**恰好**是两种之一：
+            `vars` 是**别名表**：把深层的 payload 路径起个短名字。它不承载数据。
+            每项只有一个字段 `{name, from}`。
 
-            - `{name, from}`  —— 从事件 payload 按点号路径取值（webhook 用）
-            - `{name, value}` —— 固定值（cron/manual 用，它们没有外部 payload）
-
-            中枢只做"取值并原样传"，**不求值**（不变量 I6）：不支持字符串拼接、
-            条件、函数调用或 `{{...}}` 模板语法。
+            出口参数里 `{{name}}` 等价于 `{{from 指向的完整路径}}`。
+            解析顺序：先查别名表 → 未命中就直接当 payload 路径。
           properties:
             expr: { type: string, description: "cron 专用：五段表达式" }
             tz: { type: string, description: "cron 专用：时区，默认 Local" }
-            payload:
-              type: object
-              description: |
-                cron 专用：触发时携带的事件字段。等价于"所有 value 型变量"，
-                新配置请优先用 `vars`。
             vars:
               type: array
-              description: 源变量表。名字必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$` 且不重复。
+              description: 别名表。名字必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$` 且不重复。
               items:
                 type: object
-                required: [name]
+                required: [name, from]
                 properties:
-                  name: { type: string, example: "lines" }
+                  name: { type: string, example: "author" }
                   from:
                     type: string
                     description: |
-                      payload 点号路径，如 `pull_request.additions` 或 `items.0.name`。
-                      与 `value` 互斥。
-                  value:
-                    description: 固定值（任意 JSON 类型）。与 `from` 互斥。
+                      payload 点号路径，如 `pull_request.user.login`。
+                      别名不承载数据，因此没有 `value`；常量直接写在参数值里。
         enabled: { type: boolean }
         targets:
           type: array
@@ -2219,16 +2209,20 @@ components:
               params:
                 type: object
                 description: |
-                  参数值。三种形态：
+                  参数值。**统一是字符串**，按内容区分形态：
 
-                  - **字面量**：`{"env": "prod"}` —— 原样传给能力
-                  - **引用源变量**：`{"lines": {"var": "lines", "as": "integer"}}`
-                  - **直接取 payload 路径**：`{"lines": {"from": "pr.additions"}}`
+                  - **字面量**：`{"env": "prod"}`
+                  - **整值引用**：`{"lines": "{{pull_request.additions}}"}`
+                    保留原始类型（payload 里是数字就是数字）
+                  - **模板拼接**：`{"title": "PR #{{number}}: {{title}}"}`
+                    结果一定是字符串
+                  - **别名**：`{"author": "{{author}}"}`（`vars` 里声明的短名字）
 
-                  后两种可带 `default`（未命中时的回退值）与 `as`
-                  （强制类型：string/number/boolean/json）。
-                  类型未指定时按目标能力 `paramsSchema` 自动推断。
-                  `from` 与 `var` 互斥。
+                  解析顺序：先查 `vars` 别名表，未命中就当 payload 点号路径。
+                  类型按目标能力 `paramsSchema` 推断；转不了则按 `param_type` 剪枝。
+
+                  **不做求值**（不变量 I6）：单趟替换，替换结果不再扫描。
+                  不支持条件/循环/函数调用/运算 —— 占位符语法只接受标识符加点号。
         targetCaps:
           type: array
           description: |

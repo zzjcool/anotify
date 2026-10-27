@@ -986,41 +986,17 @@
         }
       }
 
-      // isMappingDecl 判断一个参数值是不是"映射声明"（{from,default}）。
+      // ---------- 源的别名表 ----------
       //
-      // 判据必须严：只有**恰好**含 from（外加 default/as）的对象才算映射。
-      // 否则用户真想当字面量传的 {"from": 1} 会被误认。多一个字段就退回字面量。
-      // 这里的口径必须与 web/mock.js 的 isMapping 一致 —— 前端说"这是映射"、
-      // 后端当成字面量，就是最难查的那种不一致。
-      function isMappingDecl(v) {
-        if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-        const keys = Object.keys(v);
-        // 两种引用形态：{from: payload路径} 或 {var: 变量名}
-        const hasFrom = keys.includes("from");
-        const hasVar = keys.includes("var");
-        if (!hasFrom && !hasVar) return false;
-        if (hasFrom && hasVar) return false;
-        return keys.every((k) => k === "from" || k === "var" || k === "default" || k === "as");
-      }
-
-      // isVarRef 与 mock 的 isVarRef 同口径
-      function isVarRef(v) {
-        return isMappingDecl(v) && typeof v.var === "string" && v.var !== "";
-      }
-
-      // ---------- 源的变量表 ----------
+      // 别名只是"短名字 → payload 路径"的映射，存在 sources.config.vars 里：
+      //   [{name:"author", from:"pull_request.user.login"}]
       //
-      // 变量是"这个源对外提供哪些数据"的声明，存在 sources.config.vars 里：
-      //   [{name:"title", from:"pull_request.title"}]   ← webhook：从请求体取
-      //   [{name:"env",   value:"prod"}]                ← cron：常量
+      // 参数里写别名的双大括号形式，就等于写它指向的完整路径。
+      // 它**不承载数据**（没有 value 形态）：常量直接写在参数里就行。
       //
-      // 出口参数引用变量（{var:"title"}）而不是直接写 payload 路径，好处：
-      //   - 用户不用记 pull_request.head.ref 这种深层路径
-      //   - cron 源没有 payload，也能用同一套写法（变量就是常量）
-      //   - 改引用的字段时只改一处，不用翻遍所有出口参数
-      //
-      // I6 边界没有变：**仍然是"取一个值、原样传"**，不拼接不运算。
-      // 变量名就是名字，不是表达式。
+      // 这么做的价值只有两点：
+      //   - 用户不用反复敲长得离谱的路径
+      //   - 改字段形状时只改一处，不用翻遍所有出口参数
 
       // VAR_DEFS 是当前编辑中的变量表（弹窗作用域）。
       let VAR_DEFS = [];
@@ -1150,15 +1126,8 @@
           // 现在按内容自动识别：含双大括号就是取值/模板，否则是字面量。
           // 少一次选择，也少一类"选错了"的错误。
           //
-          // 旧配置里的 {from}/{var} 对象形态转回双大括号文本；
-          // 现在只有一种写法，不再有 $ 前缀。
-          const rawVal = isMappingDecl(cur)
-            ? cur.var
-              ? TPL(cur.var)
-              : cur.from
-                ? TPL(cur.from)
-                : ""
-            : cur;
+          // 参数值统一是文本：要么字面量，要么含双大括号的引用/模板。
+          const rawVal = cur;
 
           let input;
           if (Array.isArray(spec.enum) && spec.enum.length) {
