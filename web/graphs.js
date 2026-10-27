@@ -316,15 +316,22 @@
 
 		const cut = truncate(nodes, edges, limit);
 
+		// 布局方向按**节点数**自适应。
+		//
+		// 原先固定横向（LR）：节点少时确实好读（时间从左往右，和瀑布图一致）。
+		// 但长链会退化 —— 10 个节点的链横向排开要 2000px 以上，520px 宽的
+		// 卡片里只能缩到 0.2 倍，字完全看不清，而容器高度还空着大半。
+		//
+		// 超过 7 个节点改用纵向（TB）：链路图天生是**一条**链，
+		// 纵向排正好顺着容器的高度走，宽高比正常。
+		//
+		// rankSep 是"相邻两层之间的间隙"；扇出时同一层的兄弟节点
+		// 靠 nodeSep 拉开距离，太小会挤在一起。
+		const longChain = nodes.length > 7;
 		const graph = render(host, {
-			// 横向布局：时间从左往右推进，和瀑布图的读法一致。
-			// 竖向排会变成一个细长条（尤其纯链的情况），把容器宽度浪费掉。
-			//
-			// rankSep 是"相邻两层之间的水平间隙"；扇出时同一层的兄弟节点
-			// 靠 nodeSep 拉开垂直距离，太小会挤在一起。
-			rankdir: "LR",
-			rankSep: 96,
-			nodeSep: 26,
+			rankdir: longChain ? "TB" : "LR",
+			rankSep: longChain ? 40 : 96,
+			nodeSep: longChain ? 22 : 26,
 			nodes: cut.nodes.map((n) => {
 				const out = Object.assign({}, n);
 				delete out._task;

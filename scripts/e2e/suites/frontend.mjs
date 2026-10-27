@@ -1784,7 +1784,14 @@ async function checkWaterfall(page) {
 	//
 	// 改成：在事件流页面上读一遍所有 traceId，然后直接 goto trace 页
 	// 逐个看哪个 span 最多。虽然多几次导航，但没有上下文问题。
-	const base = new URL(page.url()).origin;
+	// page.url() 在页面被关掉/换过上下文时可能不是合法 URL，
+	// 直接 new URL 会抛。拿不到就当作空 origin（下面用相对路径也能跑）。
+	let base = "";
+	try {
+		base = new URL(page.url()).origin;
+	} catch {
+		/* 拿不到 origin 就退回相对路径 */
+	}
 	const traceIds = await page.evaluate(() =>
 		Array.from(document.querySelectorAll("#ev-list .card"))
 			.map((c) => (c.textContent || "").match(/trace_[A-Za-z0-9_]+/)?.[0])
@@ -1793,6 +1800,31 @@ async function checkWaterfall(page) {
 	if (!traceIds.length) {
 		H.check("事件列表非空（瀑布图前置）", false, "没有事件卡片");
 		return;
+	}
+
+	// ---- 演示数据的时间戳必须都在过去 ----
+	//
+	// 踩过：mock 的时间游标从 -180 起步、各段累加 210，最后一条落在
+	// **+30s（未来）**，事件流里显示成"刚刚"，还把真正想让人第一眼
+	// 看到的那条挤到了下面。这种"数据时间在未来"很难从界面上看出来，
+	// 只会在排序时造成诡异结果，所以用断言钉住。
+	{
+		const stamps = await page.evaluate(async () => {
+			// 不用页面里的 apiGet：它在 sources.html 上才存在，
+			// 这里停在 events 页。直接 fetch 同一个端点。
+			const r = await fetch("/v1/console/events?limit=50").then((x) => x.json());
+			const nx = Date.now() / 1000;
+			return (r.events || []).map((e) => ({
+				traceId: e.traceId,
+				ago: Math.round(nx - e.createdAt),
+			}));
+		});
+		const future = stamps.filter((x) => x.ago < 0);
+		H.check(
+			"演示事件的时间戳都在过去（没有未来时间）",
+			future.length === 0,
+			future.map((x) => `${x.traceId}:${x.ago}s`).join(",") || `共 ${stamps.length} 条均在过去`,
+		);
 	}
 
 	let bestId = traceIds[0];
