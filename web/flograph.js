@@ -170,15 +170,21 @@
 	}
 
 	/**
-	 * pullOutOfBox 把路径末端推到"目标节点框向外扩 pad"的边界之外。
+	 * pullOutOfBox 把路径末端裁到"目标节点框向外扩 pad"的边界之外。
 	 *
-	 * 为什么不用"沿 from→to 方向数值回缩"：**回边**（环上的边）在 dagre
-	 * 内部是被临时反向后才分层的，`points` 的走向因此可能和 from→to 相反。
-	 * 按 from→to 算的端点会落进目标节点矩形，marker-end 那个箭头就被
-	 * 节点盖住了（截图里"箭头缺了一半"）。几何判据对两种顺序都成立。
+	 * 为什么需要：节点画在 SVG 上层（同 z 序、后 append），marker-end 的
+	 * 箭头只要有一像素落进节点矩形就被盖住，看上去像"箭头缺了一半"。
 	 *
-	 * 做法：从末段方向上找一个刚好在扩容框外的点。末段太短就往前退一段，
-	 * 用更早的点参与计算。
+	 * 关键约束：**必须沿着真实折线往回裁**。
+	 *
+	 * 早先的写法是"算一个框外交点当新终点，原 points 不动"，结果路径变成
+	 * "起点 → 全部原始点 → 新终点"，而新终点落在原始末点的**后面**，
+	 * 画出来就是先冲过目标再折回来 —— 箭头落在往回折的那一段上，
+	 * 看上去方向完全反了（用户看到的就是这个）。
+	 *
+	 * 现在的做法：把 (起点, ...dagre points, 终点) 当一条折线，从末端往
+	 * 回走，找到最后一个在扩容框**外**的顶点 j，取 (j → j+1) 与框的交点
+	 * 作为新终点，并把 j 之后的点全部丢掉。这样折线顺序天然保持。
 	 */
 	function pullOutOfBox(points, x1, y1, x2, y2, box, pad) {
 		const pts = (points || []).slice();
@@ -188,51 +194,53 @@
 		const r = box.x + box.width / 2 + pad;
 		const t = box.y - box.height / 2 - pad;
 		const b = box.y + box.height / 2 + pad;
-		const outside = (p) => p.x <= l || p.x >= r || p.y <= t || p.y >= b;
+		const outside = (q) => q.x <= l || q.x >= r || q.y <= t || q.y >= b;
 
-		const end = { x: x2, y: y2 };
-		if (outside(end)) return { pts: pts, x: x2, y: y2 };
+		// 完整折线（绘制顺序）
+		const full = [{ x: x1, y: y1 }].concat(pts, [{ x: x2, y: y2 }]);
 
-		// 从终点往回找第一个在框外的点，沿这条线段求与扩容框的交点
-		const chain = [{ x: x2, y: y2 }].concat(pts.slice().reverse(), [{ x: x1, y: y1 }]);
-		let from = null;
-		for (let i = 1; i < chain.length; i++) {
-			if (outside(chain[i])) {
-				from = chain[i];
+		// 终点已经在外：不用裁
+		if (outside(full[full.length - 1])) {
+			return { pts: pts, x: x2, y: y2 };
+		}
+
+		// 从末端往回找最后一个在框外的顶点
+		let j = -1;
+		for (let k = full.length - 2; k >= 0; k--) {
+			if (outside(full[k])) {
+				j = k;
 				break;
 			}
 		}
-		if (!from) {
-			// 整条线都在框里（极短边）：往上推 pad*2
+		if (j < 0) {
+			// 整条线都在框里（极短边）：把它推到框上方
 			return { pts: [], x: x2, y: t };
 		}
 
-		// from（框外）→ end（框内）的线段与扩容框求交
-		const dx = end.x - from.x;
-		const dy = end.y - from.y;
-		let k = 1;
-		// 求最近的那个边界穿越点
-		const cand = [];
-		if (dx !== 0) {
-			cand.push((l - from.x) / dx, (r - from.x) / dx);
-		}
-		if (dy !== 0) {
-			cand.push((t - from.y) / dy, (b - from.y) / dy);
-		}
-		for (const c of cand) {
-			if (c > 0 && c < 1 && c < k) k = c;
-		}
-		// 稍微再退一点，让箭头整体留在外面
-		const pt = { x: from.x + dx * k, y: from.y + dy * k };
-		const shrink = 0.02;
-		return {
-			pts: pts,
-			x: pt.x - dx * shrink,
-			y: pt.y - dy * shrink,
+		// (full[j] → full[j+1]) 与扩容框求交，取最近的那个正交点
+		const a = full[j];
+		const z = full[j + 1];
+		const dx = z.x - a.x;
+		const dy = z.y - a.y;
+		let best = 1;
+		const tryK = (num, den) => {
+			if (den === 0) return;
+			const kk = num / den;
+			if (kk > 0 && kk < best) best = kk;
 		};
+		tryK(l - a.x, dx);
+		tryK(r - a.x, dx);
+		tryK(t - a.y, dy);
+		tryK(b - a.y, dy);
+
+		const tip = { x: a.x + dx * best, y: a.y + dy * best };
+
+		// 丢掉 j 之后的点，让折线止于 tip
+		const kept = full.slice(1, j + 1);
+		return { pts: kept, x: tip.x, y: tip.y };
 	}
 
-	/**
+		/**
 	 * pointAlongPath 取"实际画出来的那条折线"上 42% 位置的点。
 	 *
 	 * 用来放出口名标签。必须和 pathFromPoints 用**同一组点**，
@@ -334,8 +342,21 @@
 	 */
 	function edgeClass(e, withSpace) {
 		let cls = "";
-		if (e.cycle) cls = "is-cycle";
-		else if (e.muted) cls = "is-muted";
+		if (e.muted) {
+			cls = "is-muted";
+		} else {
+			// "这条路走了很多次"：同一色系，但更深更粗。
+			//
+			// 语义**不是**"这里危险"—— 环本来就是工作流的正常形状
+			// （失败了修、修完再测）。原来涂成橙色虚线读起来像告警，
+			// 会让人误以为配置有问题。
+			//
+			// 两种来源都算：真实遍历次数（trace 页），以及结构上的环
+			// （源详情页只有拓扑、没有执行数据，只能按环算）。
+			const n = Math.max(e.times || 0, e.cycle ? 2 : 0);
+			if (n > 2) cls = "is-hot2";
+			else if (n > 1) cls = "is-hot";
+		}
 		if (cls && withSpace) return " " + cls;
 		return cls;
 	}
@@ -372,7 +393,9 @@
 		const defs = svg("defs");
 		for (const [id, color] of [
 			["arrow", "currentColor"],
-			["arrow-cycle", "#f97316"],
+			// 走过多次的边：同色系更深，表达"这条路走了很多次"
+			["arrow-hot", "#6366f1"],
+			["arrow-hot2", "#818cf8"],
 		]) {
 			const marker = svg("marker", {
 				id: "fg-" + id,
@@ -538,6 +561,14 @@
 		}
 		const labelBoxes = [];
 
+		// 画布中心：回边鼓弯时用它判断"往哪一侧鼓"（背离中心）。
+		// 必须在边循环之前算好 —— dagre 给的坐标这时已经定下来了。
+		const gi = g.graph();
+		const graphCenter = {
+			x: (gi.width || 0) / 2,
+			y: (gi.height || 0) / 2,
+		};
+
 		const edgePos = new Map();
 		edges.forEach((e, i) => {
 			const src = g.node(e.from);
@@ -554,23 +585,95 @@
 			const le = g.edge(e.from, e.to, "e" + i);
 			const pts = (le && le.points) || [];
 
-			// 末端回缩一个箭头长度。
+			// 回边（环上的边）：画成绕到外侧的弧。
 			//
-			// 节点是画在 SVG **上层**的（后 append，同 z 序），所以
-			// marker-end 那个三角只要有一像素落进节点矩形就被盖住 ——
-			// 截图里"箭头像是缺了一半"就是这个原因。把线缩回来，
-			// 让整个箭头都待在节点外面。
-			// 末端推到目标节点框外一段距离。
+			// dagre 给回边的路点几乎就是两节点之间的一小段（它只是把边反向
+			// 了一下），画出来看不出"这里是绕回来的"。而环是工作流的正常
+			// 形状（失败 → 修 → 再测），必须让人一眼看见它闭合。
 			//
-			// 不能只按 from/to 的方向做数值回缩：**回边**（环上的边）在
-			// dagre 内部是临时反向的，points 的顺序也跟着反了，按 from→to
-			// 算出来的端点会落在节点里面 —— 箭头就被节点盖住了。
-			// 所以改成几何判据：把端点推到"目标框向外扩 pad"的边界上，
-			// 不管 points 是正序还是反序都成立。
-			const tip = pullOutOfBox(pts, x1, y1, x2, y2, dst, 8);
+			// 为什么不"把 dagre 的点整体往外推"：那样末段切线会变成斜的，
+			// 箭头侧着扎进节点，看起来又像反了。这里改成**显式构造**：
+			// 从源节点朝向外的那个面出发，绕出去，再从目标节点同一个面
+			// 垂直插回去 —— 末段一定垂直于节点边，箭头方向天然正确。
+			let tip;
+			if (e.loopback) {
+				// 往外鼓的方向（背离画布中心），避免回边都往同一边挤
+				const awayV = {
+					x: src.x <= graphCenter.x ? -1 : 1,
+					y: src.y <= graphCenter.y ? -1 : 1,
+				};
+				let sax;
+				let say;
+				let tax;
+				let tay;
+				let out;
+				if (horizontal) {
+					const sy = awayV.y;
+					sax = src.x;
+					say = src.y + (sy * src.height) / 2;
+					tax = dst.x;
+					tay = dst.y + (sy * dst.height) / 2;
+					out = { x: 0, y: sy };
+				} else {
+					const sx2 = awayV.x;
+					sax = src.x + (sx2 * src.width) / 2;
+					say = src.y;
+					tax = dst.x + (sx2 * dst.width) / 2;
+					tay = dst.y;
+					out = { x: sx2, y: 0 };
+				}
+
+				// 端点各让开 8px：正好落在边界线上的话箭头会压着边框
+				const GAP = 8;
+				const p0 = { x: sax + out.x * GAP, y: say + out.y * GAP };
+				const p2 = { x: tax + out.x * GAP, y: tay + out.y * GAP };
+
+				// 二次贝塞尔的控制点：中点再往外推 bulge。
+				// 直接只放 2 个折点会画成一个尖三角（实测过），
+				// 采样成一条曲线才像"绕了一圈回来"。
+				const bulge = Math.max(horizontal ? src.height : src.width, 80) * 0.75;
+				const ctrl = {
+					x: (p0.x + p2.x) / 2 + out.x * bulge,
+					y: (p0.y + p2.y) / 2 + out.y * bulge,
+				};
+				const STEPS = 7;
+				const arc = [];
+				for (let k = 1; k < STEPS; k++) {
+					const u = k / STEPS;
+					const mu = 1 - u;
+					arc.push({
+						x: mu * mu * p0.x + 2 * mu * u * ctrl.x + u * u * p2.x,
+						y: mu * mu * p0.y + 2 * mu * u * ctrl.y + u * u * p2.y,
+					});
+				}
+				tip = { pts: arc, x: p2.x, y: p2.y };
+			} else {
+				// 普通边：末端裁到目标框外。
+				//
+				// 节点画在 SVG 上层，箭头只要有一像素落进节点矩形就被盖住，
+				// 看上去像"缺了一半"。
+				//
+				// 判据必须是几何的：回边在 dagre 内部被临时反向，points 的
+				// 走向和 from→to 可能相反，按方向做数值回缩会把端点推进节点。
+				tip = pullOutOfBox(pts, x1, y1, x2, y2, dst, 8);
+			}
 
 			const path = svg("path", { d: pathFromPoints(tip.pts, x1, y1, tip.x, tip.y) });
-			path.setAttribute("marker-end", e.cycle ? "url(#fg-arrow-cycle)" : "url(#fg-arrow)");
+			// 箭头跟随边的档位（剪枝→普通，走过 2 次→hot，3 次以上→hot2）
+			const arrowFor = (e2) => {
+				if (e2.muted) return "url(#fg-arrow)";
+				const n = Math.max(e2.times || 0, e2.cycle ? 2 : 0);
+				if (n > 2) return "url(#fg-arrow-hot2)";
+				if (n > 1) return "url(#fg-arrow-hot)";
+				return "url(#fg-arrow)";
+			};
+			path.setAttribute("marker-end", arrowFor(e));
+			// 记下这条边连的是哪两个节点。
+			// 一是方便排查（箭头方向不对时能直接看出是哪条边），
+			// 二是让 E2E 能**对着真实的 from/to** 验证方向，
+			// 而不是靠"离哪个节点最近"猜。
+			path.dataset.from = e.from;
+			path.dataset.to = e.to;
 			const cls = edgeClass(e);
 			if (cls) path.setAttribute("class", cls);
 			svgRoot.appendChild(path);

@@ -374,26 +374,50 @@
 				};
 			});
 
-			// 回边检测：环路必须能看出来。
+			// 每条边**实际被走过几次**。
 			//
-			// "跑测试 --failed--> 应用修复 --fixed--> 跑测试"这种环在配置里
-			// 是合法的（重试语义），dagre 内部会临时反向边来分层，但**不会**
-			// 告诉你哪条是回边 —— 于是画出来和普通边一模一样，用户看不出
-			// 这里有个环。
+			// 这不是"拓扑上有没有环"的判断，而是纯执行事实：
+			// "跑测试 --failed--> 应用修复 --fixed--> 跑测试" 这条环走一遍，
+			// 其中 apply-fix→run-tests 这条边就被**再走一次**。
 			//
-			// 用 DFS 三色标记找回边：指向"当前递归栈上"的节点的边就是回边。
+			// 原来把回边涂成橙色虚线，语义是"这里有环 = 危险"。但环本身
+			// 不危险 —— 它就是这个工作流的样子（失败了就修、修完再测）。
+			// 真正想表达的是"这条边走过很多次"，所以改成：**次数越多颜色越深**，
+			// 和普通边同一个色系，只是更实、更粗。
+			const walkCount = new Map();
+			const capOfTask = new Map();
+			for (const tk of tasks) capOfTask.set(tk.id, tk.capabilityId);
+			for (const tk of tasks) {
+				if (!tk.parentTaskId) continue;
+				const fromCap = capOfTask.get(tk.parentTaskId);
+				if (!fromCap) continue;
+				const key = fromCap + "\u0000" + tk.capabilityId;
+				walkCount.set(key, (walkCount.get(key) || 0) + 1);
+			}
+
+			// 回边：环上的边。
+			//
+			// 判据不是"危险"，而是"这条路会回来"—— 环意味着同一段路
+			// 会被走第二遍、第三遍。所以它天然比直线更深。
 			const backEdges = findBackEdges(base.nodes.map((n) => n.id), base.edges);
 
 			edges = base.edges.map((e) => {
 				const fromNode = nodes.find((n) => n.id === e.from);
 				const toNode = nodes.find((n) => n.id === e.to);
 				const bothAlive = !(fromNode && fromNode.dead) && !(toNode && toNode.dead);
+				const walked = walkCount.get(e.from + "\u0000" + e.to) || 0;
+				const isCycle = backEdges.has(e.from + "\u0000" + e.to);
 				return {
 					from: e.from,
 					to: e.to,
 					port: e.port,
-					// 回边用橙色虚线：和普通边、和剪枝的灰虚线都区分开
-					cycle: backEdges.has(e.from + "\u0000" + e.to),
+					// "这条路被走过几遍"：
+					//   真实遍历次数 + 环（在环上意味着还会绕回来）
+					// 两个信号合并成一个数，渲染层只需要一个档位。
+					times: walked + (isCycle ? 1 : 0),
+					// 回边要绕出去画：否则它只是两个相邻节点之间的一小段，
+					// 看不出"这里是绕回来的"。渲染层据此把路径鼓出弧线。
+					loopback: isCycle,
 					// 剪枝的边用虚线灰掉：和"配置里没有这条边"区分开
 					muted: !bothAlive,
 				};
@@ -494,7 +518,7 @@
 				{ icon: "✓", cls: "lg-ok", text: t("trace.legend.ok", "执行成功") },
 				{ icon: "✕", cls: "lg-bad", text: t("trace.legend.bad", "执行失败") },
 				{ icon: "○", cls: "lg-pruned", text: t("trace.legend.pruned", "未执行（配置里有、这次没走）") },
-				{ icon: "↺", cls: "lg-cycle", text: t("trace.legend.cycle", "回边 · 这里有个环（会重试/回退）") },
+				{ icon: "↺", cls: "lg-hot", text: t("trace.legend.hot", "线与数字越深 · 这条路走了很多次（重试/回环）") },
 			);
 		}
 
@@ -529,10 +553,8 @@
 	 * 一条边 (u→v) 是回边，当且仅当 v 还在 u 的递归栈上 —— 也就是
 	 * 沿着 v ⇝ u 已经有一条路径，加上这条就闭环了。
 	 *
-	 * 返回 Set，元素是 "from\u0000to"（用 NUL 分隔，避免 id 里含分隔符）。
-	 *
-	 * 为什么不用 dagre 的 acyclic 结果：那个过程在内部完成，边被临时
-	 * 反向又还原，外部拿不到"哪些是回边"这个信息。
+	 * 用来判断"这条路会回来"：环上的边天然比直线走得更多次，
+	 * 图上应该更深一些。
 	 */
 	function findBackEdges(nodeIds, edges) {
 		const out = new Map();
@@ -553,12 +575,8 @@
 			for (const v of out.get(u) || []) {
 				if (!color.has(v)) continue;
 				const c = color.get(v);
-				if (c === GRAY) {
-					// v 还在栈上 → 回边
-					back.add(u + "\u0000" + v);
-				} else if (c === WHITE) {
-					visit(v);
-				}
+				if (c === GRAY) back.add(u + "\u0000" + v);
+				else if (c === WHITE) visit(v);
 			}
 			color.set(u, BLACK);
 		};

@@ -1386,7 +1386,7 @@ edges:
   err_create: 作成に失敗しました
   err_remove: 削除に失敗しました
 trace:
-  legend_cycle: "後退辺 · ここにループがある（再試行／ロールバック）"
+  legend_hot: "線が濃いほど · この経路は何度も通った（再試行／ループ）"
   legend_origin: "ソース · トリガー（ここからイベントが入る）"
   legend_pipe: "パイプ · 下流へ派遣を続ける"
   legend_end: "終点 · ここで終了、派遣しない"
