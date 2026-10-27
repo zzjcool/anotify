@@ -170,74 +170,107 @@
 	}
 
 	/**
-	 * pullOutOfBox 把路径末端裁到"目标节点框向外扩 pad"的边界之外。
+	 * snapEnd 把路径末端吸附到目标节点边界外 gap 像素处。
 	 *
-	 * 为什么需要：节点画在 SVG 上层（同 z 序、后 append），marker-end 的
-	 * 箭头只要有一像素落进节点矩形就被盖住，看上去像"箭头缺了一半"。
+	 * 要同时满足两件事：
+	 *   1. **贴住节点** —— 离远了看上去就是"线断了"
+	 *   2. **别压进节点** —— 节点画在 SVG 上层，箭头有一像素落进节点矩形
+	 *      就被盖住，看上去像"箭头缺了一半"
 	 *
-	 * 关键约束：**必须沿着真实折线往回裁**。
+	 * 做法：找"最后一个还在【外扩 gap 后的框】外面"的折线顶点，从它朝
+	 * 节点中心打射线，取与这个外扩框的**第一个**交点。
 	 *
-	 * 早先的写法是"算一个框外交点当新终点，原 points 不动"，结果路径变成
-	 * "起点 → 全部原始点 → 新终点"，而新终点落在原始末点的**后面**，
-	 * 画出来就是先冲过目标再折回来 —— 箭头落在往回折的那一段上，
-	 * 看上去方向完全反了（用户看到的就是这个）。
+	 * 两个坑都踩过：
 	 *
-	 * 现在的做法：把 (起点, ...dagre points, 终点) 当一条折线，从末端往
-	 * 回走，找到最后一个在扩容框**外**的顶点 j，取 (j → j+1) 与框的交点
-	 * 作为新终点，并把 j 之后的点全部丢掉。这样折线顺序天然保持。
+	 * ① 不能拿"折线与框的交点"当端点：dagre 的折线末点本身就在节点边界
+	 *    上（它会补一个 node-intersect 点），据此求交会偏出去 17~27px，
+	 *    渲染出来就是箭头悬空、看起来没连上。
+	 *
+	 * ② 反向搜索必须用**外扩后的框**，不能用原节点框。因为边界上的点
+	 *    不算"在节点内部"，会被当成合格的起点；从边界朝中心打射线就会
+	 *    **穿过整个节点**、从对面穿出去 —— 实测虚线直穿
+	 *    「生成变更日志」，箭头落在节点下方的外面。
 	 */
-	function pullOutOfBox(points, x1, y1, x2, y2, box, pad) {
-		const pts = (points || []).slice();
-		if (!box) return { pts: pts, x: x2, y: y2 };
+	function snapEnd(points, x1, y1, x2, y2, box, gap) {
+		const full = [{ x: x1, y: y1 }].concat(points || [], [{ x: x2, y: y2 }]);
+		if (!box) return { pts: points || [], x: x2, y: y2 };
 
-		const l = box.x - box.width / 2 - pad;
-		const r = box.x + box.width / 2 + pad;
-		const t = box.y - box.height / 2 - pad;
-		const b = box.y + box.height / 2 + pad;
+		const l = box.x - box.width / 2 - gap;
+		const r = box.x + box.width / 2 + gap;
+		const t = box.y - box.height / 2 - gap;
+		const b = box.y + box.height / 2 + gap;
 		const outside = (q) => q.x <= l || q.x >= r || q.y <= t || q.y >= b;
 
-		// 完整折线（绘制顺序）
-		const full = [{ x: x1, y: y1 }].concat(pts, [{ x: x2, y: y2 }]);
-
-		// 终点已经在外：不用裁
-		if (outside(full[full.length - 1])) {
-			return { pts: pts, x: x2, y: y2 };
-		}
-
-		// 从末端往回找最后一个在框外的顶点
+		// 最后一个还在外扩框外面的顶点
 		let j = -1;
-		for (let k = full.length - 2; k >= 0; k--) {
+		for (let k = full.length - 1; k >= 0; k--) {
 			if (outside(full[k])) {
 				j = k;
 				break;
 			}
 		}
-		if (j < 0) {
-			// 整条线都在框里（极短边）：把它推到框上方
-			return { pts: [], x: x2, y: t };
+
+		// 与外扩框求**进入点**（沿 from → 节点中心方向的射线）。
+		//
+		// 必须用 slab 法（射线与 AABB 求交），不能"分别和四条边所在的直线
+		// 求交再取最小正 k" —— 那样求出来的点可能落在那条边的**延长线**上，
+		// 根本不在框上。实测：射线与顶边直线的交点是 x=361.6，而框的右边界
+		// 只到 340，那个点其实在框外右侧 25px —— 箭头就悬在那儿。
+		const firstHit = (from) => {
+			let dx = box.x - from.x;
+			let dy = box.y - from.y;
+			const len = Math.hypot(dx, dy);
+			if (!len) return null;
+			dx /= len;
+			dy /= len;
+
+			let tmin = -Infinity;
+			let tmax = Infinity;
+
+			if (dx === 0) {
+				if (from.x < l || from.x > r) return null;
+			} else {
+				let t1 = (l - from.x) / dx;
+				let t2 = (r - from.x) / dx;
+				if (t1 > t2) {
+					const tmp = t1;
+					t1 = t2;
+					t2 = tmp;
+				}
+				tmin = Math.max(tmin, t1);
+				tmax = Math.min(tmax, t2);
+			}
+
+			if (dy === 0) {
+				if (from.y < t || from.y > b) return null;
+			} else {
+				let t1 = (t - from.y) / dy;
+				let t2 = (b - from.y) / dy;
+				if (t1 > t2) {
+					const tmp = t1;
+					t1 = t2;
+					t2 = tmp;
+				}
+				tmin = Math.max(tmin, t1);
+				tmax = Math.min(tmax, t2);
+			}
+
+			if (tmax < tmin) return null;
+			const enter = tmin > 0 ? tmin : 0;
+			if (enter > len) return null;
+			return { x: from.x + dx * enter, y: from.y + dy * enter };
+		};
+
+		if (j >= 0) {
+			const tip = firstHit(full[j]);
+			if (tip) return { pts: full.slice(1, j + 1), x: tip.x, y: tip.y };
 		}
 
-		// (full[j] → full[j+1]) 与扩容框求交，取最近的那个正交点
-		const a = full[j];
-		const z = full[j + 1];
-		const dx = z.x - a.x;
-		const dy = z.y - a.y;
-		let best = 1;
-		const tryK = (num, den) => {
-			if (den === 0) return;
-			const kk = num / den;
-			if (kk > 0 && kk < best) best = kk;
-		};
-		tryK(l - a.x, dx);
-		tryK(r - a.x, dx);
-		tryK(t - a.y, dy);
-		tryK(b - a.y, dy);
-
-		const tip = { x: a.x + dx * best, y: a.y + dy * best };
-
-		// 丢掉 j 之后的点，让折线止于 tip
-		const kept = full.slice(1, j + 1);
-		return { pts: kept, x: tip.x, y: tip.y };
+		// 所有点都在外扩框里（极短的边）：从**起点一侧**朝中心找交点，
+		// 这样箭头落在靠近源的那一面，而不是穿到对面去。
+		const near = firstHit(full[0]);
+		if (near) return { pts: [], x: near.x, y: near.y };
+		return { pts: [], x: box.x, y: t };
 	}
 
 		/**
@@ -361,6 +394,14 @@
 		return cls;
 	}
 
+
+	/**
+	 * 边端点与节点边框之间留的空隙（像素）。
+	 *
+	 * 太小：箭头压进节点里被盖住；太大：看上去线没连上。
+	 * 4px 是实测下来"箭头完整可见 + 明显贴着节点"的平衡点。
+	 */
+	const EDGE_GAP = 4;
 
 	function mount(container, opts) {
 		const options = opts || {};
@@ -623,10 +664,9 @@
 					out = { x: sx2, y: 0 };
 				}
 
-				// 端点各让开 8px：正好落在边界线上的话箭头会压着边框
-				const GAP = 8;
-				const p0 = { x: sax + out.x * GAP, y: say + out.y * GAP };
-				const p2 = { x: tax + out.x * GAP, y: tay + out.y * GAP };
+				// 端点各让开 EDGE_GAP：正好落在边界线上的话箭头会压着边框
+				const p0 = { x: sax + out.x * EDGE_GAP, y: say + out.y * EDGE_GAP };
+				const p2 = { x: tax + out.x * EDGE_GAP, y: tay + out.y * EDGE_GAP };
 
 				// 二次贝塞尔的控制点：中点再往外推 bulge。
 				// 直接只放 2 个折点会画成一个尖三角（实测过），
@@ -655,7 +695,7 @@
 				//
 				// 判据必须是几何的：回边在 dagre 内部被临时反向，points 的
 				// 走向和 from→to 可能相反，按方向做数值回缩会把端点推进节点。
-				tip = pullOutOfBox(pts, x1, y1, x2, y2, dst, 8);
+				tip = snapEnd(pts, x1, y1, x2, y2, dst, EDGE_GAP);
 			}
 
 			const path = svg("path", { d: pathFromPoints(tip.pts, x1, y1, tip.x, tip.y) });
@@ -674,6 +714,9 @@
 			// 而不是靠"离哪个节点最近"猜。
 			path.dataset.from = e.from;
 			path.dataset.to = e.to;
+			// 记录吸附后的端点（dagre 坐标系）。排查"箭头悬空/线没连上"
+			// 时可以直接读出来算距离，不用靠肉眼猜。
+			path.dataset.tip = Math.round(tip.x) + "," + Math.round(tip.y);
 			const cls = edgeClass(e);
 			if (cls) path.setAttribute("class", cls);
 			svgRoot.appendChild(path);
@@ -690,7 +733,24 @@
 			// 也不撞已放标签的。全撞就退回中间 —— 宁可挤也不丢信息。
 			if (e.port) {
 				const lb = div("flograph-edge-label" + edgeClass(e, true), e.port);
-				const spot = pickLabelSpot(pts, x1, y1, x2, y2, lb, nodeBoxes, labelBoxes);
+				// 挂在**实际画出来的那条线**上，不是 dagre 原始折线。
+				//
+				// 回边会被绕成一条向外鼓的弧，几何和 pts 完全不同；拿 pts
+				// 算标签位置的话，标签会飘在弧线旁边的空地上（实测：回边的
+				// `fixed` 标签悬在跑测试与部署预发中间，谁也不知道它属于
+				// 哪条线）。
+				const spot = pickLabelSpot(
+					tip.pts,
+					x1,
+					y1,
+					tip.x,
+					tip.y,
+					lb,
+					nodeBoxes,
+					labelBoxes,
+				);
+				lb.dataset.from = e.from;
+				lb.dataset.to = e.to;
 				lb.style.left = spot.x + "px";
 				lb.style.top = spot.y + "px";
 				viewport.appendChild(lb);

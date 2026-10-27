@@ -2004,44 +2004,124 @@ async function checkWaterfall(page) {
 			);
 		}
 
-		// ---- 箭头必须露在节点外 ----
+		// ---- 边必须真的"连上"节点 ----
 		//
-		// 节点画在 SVG 上层（同 z 序、后 append），marker-end 的三角只要
-		// 有一像素进到节点矩形就被盖住，看上去像"箭头缺了一半"，
-		// 指向关系就读不出来了。
+		// 这里踩过两个坑，都只靠肉眼才能发现，所以断言要写死：
 		//
-		// 注意回边（环上的边）在 dagre 内部被临时反向，points 顺序也跟着
-		// 反 —— 所以判据必须是几何的（端点是否落在节点框内），
-		// 不能按 from→to 的方向做数值偏移。
+		//   ① 端点悬空：dagre 的折线末点本身就在节点边界上，拿它求交会
+		//      偏出去 17~27px，箭头飘在半空，看着就是"线没连上"。
+		//   ② 线穿过节点：从边界点朝节点中心打射线会穿过整个节点，从对面
+		//      穿出去（实测虚线直穿「生成变更日志」）。
+		//
+		// 光断言"端点不在节点内部"是不够的 —— 悬空和穿出去都满足那一条。
 		{
-			const arrows = await page.evaluate(() => {
+			const geo = await page.evaluate(() => {
 				const paths = Array.from(
 					document.querySelectorAll(".flograph-svg path[marker-end]"),
 				);
-				const nodes = Array.from(document.querySelectorAll(".wf-node")).map((n) =>
-					n.getBoundingClientRect(),
-				);
-				let inside = 0;
+				const all = Array.from(document.querySelectorAll(".wf-node")).map((n) => ({
+					id: n.dataset.nodeId,
+					label: (n.querySelector(".wf-node-title") || {}).textContent || "",
+					rc: n.getBoundingClientRect(),
+				}));
+				const byId = new Map(all.map((n) => [n.id, n]));
+				const distToRect = (pt, rc) =>
+					Math.hypot(
+						Math.max(rc.left - pt.x, 0, pt.x - rc.right),
+						Math.max(rc.top - pt.y, 0, pt.y - rc.bottom),
+					);
+
+				const gaps = [];
+				const through = [];
 				for (const pth of paths) {
+					const toEl = byId.get(pth.dataset.to);
+					const fromEl = byId.get(pth.dataset.from);
+					if (!toEl || !fromEl) continue;
 					const len = pth.getTotalLength();
-					const end = pth.getPointAtLength(len);
 					const m = pth.getScreenCTM();
-					const pt = new DOMPoint(end.x, end.y).matrixTransform(m);
-					if (
-						nodes.some(
-							(n) =>
-								pt.x >= n.left && pt.x <= n.right && pt.y >= n.top && pt.y <= n.bottom,
-						)
-					) {
-						inside++;
+					const at = (k) => {
+						const q = pth.getPointAtLength(len * k);
+						return new DOMPoint(q.x, q.y).matrixTransform(m);
+					};
+					const gap = distToRect(at(1), toEl.rc);
+					gaps.push({
+						edge: `${fromEl.label}→${toEl.label}`,
+						gap: +gap.toFixed(1),
+					});
+					for (let i = 1; i < 24; i++) {
+						const q = at(i / 24);
+						for (const n of all) {
+							if (n.id === pth.dataset.from || n.id === pth.dataset.to) continue;
+							const rc = n.rc;
+							if (
+								q.x > rc.left + 1 &&
+								q.x < rc.right - 1 &&
+								q.y > rc.top + 1 &&
+								q.y < rc.bottom - 1
+							) {
+								through.push(`${fromEl.label}→${toEl.label} 穿过 ${n.label}`);
+							}
+						}
 					}
 				}
-				return { total: paths.length, inside };
+				return { gaps, through: [...new Set(through)] };
 			});
+
+			const loose = geo.gaps.filter((g) => g.gap > 7);
 			H.check(
-				"箭头端点都在节点外（不被卡片盖住）",
-				arrows.inside === 0,
-				`${arrows.inside}/${arrows.total} 个箭头落在节点内`,
+				"每条边的终点都贴着目标节点（≤7px，不是悬空）",
+				loose.length === 0,
+				loose.map((g) => `${g.edge}=${g.gap}px`).join(", ") ||
+					`共 ${geo.gaps.length} 条，最大 ${Math.max(...geo.gaps.map((g) => g.gap))}px`,
+			);
+			H.check(
+				"边不穿过无关节点",
+				geo.through.length === 0,
+				geo.through.join("; ") || "无",
+			);
+		}
+
+		// ---- 出口名标签必须贴着自己的线 ----
+		//
+		// 标签是绝对定位的 DOM，位置靠算。回边会被绕成弧，如果还拿 dagre
+		// 原始折线去算标签位置，标签就飘在弧线旁边的空地上 —— 谁也看不出
+		// 它属于哪条边。
+		{
+			const lbl = await page.evaluate(() => {
+				const paths = Array.from(
+					document.querySelectorAll(".flograph-svg path[marker-end]"),
+				);
+				const labels = Array.from(document.querySelectorAll(".flograph-edge-label"));
+				const out = [];
+				for (const lb of labels) {
+					const mine = paths.filter(
+						(p) =>
+							p.dataset.from === lb.dataset.from && p.dataset.to === lb.dataset.to,
+					);
+					if (!mine.length) continue;
+					const lr = lb.getBoundingClientRect();
+					const cx = lr.left + lr.width / 2;
+					const cy = lr.top + lr.height / 2;
+					let best = Infinity;
+					for (const pth of mine) {
+						const len = pth.getTotalLength();
+						const m = pth.getScreenCTM();
+						for (let i = 0; i <= 60; i++) {
+							const q = pth.getPointAtLength((len * i) / 60);
+							const d = new DOMPoint(q.x, q.y).matrixTransform(m);
+							best = Math.min(best, Math.hypot(d.x - cx, d.y - cy));
+						}
+					}
+					out.push({ port: lb.textContent.trim(), dist: +best.toFixed(1) });
+				}
+				return out;
+			});
+			const far = lbl.filter((x) => x.dist > 12);
+			H.check(
+				"出口名标签贴在自己的线上（≤12px）",
+				far.length === 0,
+				far.map((x) => `${x.port}=${x.dist}px`).join(", ") ||
+					`共 ${lbl.length} 个，最大 ${Math.max(...lbl.map((x) => x.dist))}px`,
 			);
 		}
 
