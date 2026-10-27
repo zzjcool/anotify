@@ -129,7 +129,7 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := intParam(q.Get("limit"), 100, 1, 1000)
 
-	events, err := h.db.ListEvents(r.Context(), orgID, q.Get("traceId"), limit)
+	events, err := h.db.ListEvents(r.Context(), orgID, q.Get("traceId"), q.Get("source"), limit)
 	if err != nil {
 		slog.Error("list events failed", "event", "console.events.list_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})

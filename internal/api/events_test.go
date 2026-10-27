@@ -193,7 +193,7 @@ func TestEventToDispatch(t *testing.T) {
 	}
 
 	// 库里确实有 event + task
-	events, err := f.db.ListEvents(context.Background(), f.orgID, out.TraceID, 10)
+	events, err := f.db.ListEvents(context.Background(), f.orgID, out.TraceID, "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestEventCrossOrgForbidden(t *testing.T) {
 		t.Fatalf("status = %d, want 403 (cross-org write must be rejected)", resp.StatusCode)
 	}
 	// 不该有事件落进那个组织
-	events, err := f.db.ListEvents(context.Background(), other.ID, "", 10)
+	events, err := f.db.ListEvents(context.Background(), other.ID, "", "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}

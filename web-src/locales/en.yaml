@@ -1325,6 +1325,10 @@ sources:
     ref_tip: "Reads from event or variable"
     ref_mix_tip: "Template concatenation; result passed as text"
     bad_placeholder: "Param {k}: unclosed placeholder"
+    pv_broken: "Unclosed placeholder"
+    pv_nosample: "No events yet — trigger once to see a preview"
+    pv_missing: "Not in the sample: \"{p}\""
+    pv_missing_multi: "Not in the sample: {p}"
   preset:
     hourly: Hourly
     daily3: Daily 3:00

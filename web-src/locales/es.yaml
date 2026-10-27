@@ -1325,6 +1325,10 @@ sources:
     ref_tip: "Se lee del evento o la variable"
     ref_mix_tip: "Concatenación de plantilla; el resultado se pasa como texto"
     bad_placeholder: "Parámetro {k}: marcador sin cerrar"
+    pv_broken: "Marcador sin cerrar"
+    pv_nosample: "Aún no hay eventos; dispara una vez para ver la vista previa"
+    pv_missing: "No está en la muestra: «{p}»"
+    pv_missing_multi: "No está en la muestra: {p}"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

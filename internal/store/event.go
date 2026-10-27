@@ -118,10 +118,14 @@ func (d *DB) GetEvent(ctx context.Context, orgID, id string) (*Event, error) {
 		`SELECT `+eventColumns+` FROM events WHERE org_id = ? AND id = ?`, orgID, id)
 }
 
-// ListEvents 列出组织事件，可按 traceID 过滤（"" = 不过滤）；空列表返回 []。
+// ListEvents 列出组织事件，可按 traceID / source 过滤（"" = 不过滤）；空列表返回 []。
 //
 // 按 created_at DESC（最新在前）+ id DESC（同秒内稳定序），limit ≤ 0 时用默认 50。
-func (d *DB) ListEvents(ctx context.Context, orgID, traceID string, limit int) ([]*Event, error) {
+//
+// source 过滤用于"给这个源找一条真实样本"：参数编辑器拿最近一条事件的
+// payload 当预览样本，用户就能看到 {{pull_request.title}} 到底会取到什么，
+// 而不是盲写路径。source 是起点能力名（见 I2 入口边），与 sources 表无关。
+func (d *DB) ListEvents(ctx context.Context, orgID, traceID, source string, limit int) ([]*Event, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
@@ -130,6 +134,10 @@ func (d *DB) ListEvents(ctx context.Context, orgID, traceID string, limit int) (
 	if traceID != "" {
 		q += ` AND trace_id = ?`
 		args = append(args, traceID)
+	}
+	if source != "" {
+		q += ` AND source = ?`
+		args = append(args, source)
 	}
 	q += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)

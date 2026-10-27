@@ -225,6 +225,14 @@
       .param-tip.is-ref {
         color: var(--accent);
       }
+      /* 预览求值结果：取到了绿、取不到红。颜色是唯一能让人不看文字
+         就发现"这条配置有问题"的信号，所以不用中性色。 */
+      .param-tip.is-ok {
+        color: var(--ok, #34d399);
+      }
+      .param-tip.is-bad {
+        color: var(--danger, #f87171);
+      }
 
       /* ---------- 流向图（只读预览）----------
        *
@@ -853,6 +861,9 @@
         for (const tc of (src && src.targetCaps) || []) {
           if (tc.params && Object.keys(tc.params).length) existing[tc.id] = tc.params;
         }
+        // 预览样本必须在渲染参数**之前**加载：参数框下方的预览要用它
+        // 求值。没有样本时预览显示"还没有事件"，不影响编辑。
+        await loadSample(src ? src.name : "");
         renderTargetPicker(src ? src.targets || [] : [], existing);
         syncKindFields();
 
@@ -1098,6 +1109,146 @@
       //   其它（object/array）→ 文本框，按 JSON 解析后提交
       //
       // 空 schema 或没有 properties 时不渲染任何字段（该能力不要参数）。
+      // ---------- 预览样本 ----------
+      //
+      // 参数是**盲写**的：用户写下某个 payload 路径时，系统不告诉他
+      // 这个路径存不存在、会取到什么、取不到会怎样。之前只给了一份硬编码的
+      // GitHub 字段清单——那只覆盖一种 payload 形状，接第二个系统就全废。
+      //
+      // 所以改成用**真实事件**当样本：拉这个源最近一条事件的 payload，
+      // 在参数框下面直接算出结果给用户看。看不到结果时才会写出拼错的路径。
+      let SAMPLE_PAYLOAD = null; // 最近一条事件的 payload（null = 还没有事件）
+      let SAMPLE_META = null; // {at, type}
+
+      /** aliasMap 把当前别名表折成 {name: payloadPath}，供预览解析。 */
+      function aliasMap() {
+        const m = {};
+        for (const d of VAR_DEFS) {
+          const n = String((d && d.name) || "").trim();
+          const f = String((d && d.from) || "").trim();
+          if (n && f) m[n] = f;
+        }
+        return m;
+      }
+
+      /** loadSample 取该源最近一条事件当预览样本。 */
+      async function loadSample(sourceName) {
+        SAMPLE_PAYLOAD = null;
+        SAMPLE_META = null;
+        if (!sourceName) return;
+        try {
+          const r = await apiGet(
+            API + "/console/events?limit=1&source=" + encodeURIComponent(sourceName),
+          );
+          if (!r) return;
+          const ev = (r.events || [])[0];
+          if (!ev) return;
+          SAMPLE_PAYLOAD = ev.payload && typeof ev.payload === "object" ? ev.payload : {};
+          SAMPLE_META = { at: ev.createdAt, type: ev.type };
+        } catch (e) {
+          SAMPLE_PAYLOAD = null;
+        }
+      }
+
+      /** getPathOf 按点号路径从样本里取值（与 mock 的 getPath 同口径）。 */
+      function getPathOf(obj, path) {
+        let cur = obj;
+        for (const seg of String(path).split(".")) {
+          if (seg === "") return undefined;
+          if (Array.isArray(cur)) {
+            const i = Number(seg);
+            if (!Number.isInteger(i) || i < 0 || i >= cur.length) return undefined;
+            cur = cur[i];
+          } else if (cur && typeof cur === "object") {
+            if (!Object.prototype.hasOwnProperty.call(cur, seg)) return undefined;
+            cur = cur[seg];
+          } else {
+            return undefined;
+          }
+        }
+        return cur;
+      }
+
+      /**
+       * previewValue 用样本求值一个参数，返回给用户看的诊断。
+       *
+       * 返回 {kind, text}：
+       *   kind = "ok"      取到了，text 是结果预览
+       *   kind = "literal" 字面量，无需预览
+       *   kind = "missing" 引用没命中（拼错/事件里没有）
+       *   kind = "broken"  占位符没闭合
+       *   kind = "nosample" 还没有事件可当样本
+       */
+      function previewValue(raw, aliasMap) {
+        const val = String(raw == null ? "" : raw).trim();
+        if (!val) return { kind: "literal", text: "" };
+
+        const opens = (val.match(new RegExp(BRACE_OPEN, "g")) || []).length;
+        const closes = (val.match(new RegExp(BRACE_CLOSE, "g")) || []).length;
+        if (opens !== closes) {
+          return { kind: "broken", text: t("sources.form.pv_broken", "占位符没闭合") };
+        }
+        if (!TPL_RE.test(val)) return { kind: "literal", text: "" };
+        if (SAMPLE_PAYLOAD === null) {
+          return {
+            kind: "nosample",
+            text: t("sources.form.pv_nosample", "还没有事件可当样本，触发一次后才能预览"),
+          };
+        }
+
+        // 整值引用：保留原类型（和中枢行为一致）
+        const whole = val.match(TPL_WHOLE_RE);
+        const lookup = (ref) => {
+          const key = String(ref).trim();
+          if (Object.prototype.hasOwnProperty.call(aliasMap, key)) {
+            return getPathOf(SAMPLE_PAYLOAD, aliasMap[key]);
+          }
+          return getPathOf(SAMPLE_PAYLOAD, key);
+        };
+
+        if (whole) {
+          const got = lookup(whole[1]);
+          if (got === undefined) {
+            return {
+              kind: "missing",
+              text: t("sources.form.pv_missing", "样本里没有「{p}」").replace("{p}", whole[1]),
+            };
+          }
+          return { kind: "ok", text: previewText(got) };
+        }
+
+        // 混写：逐个替换，任何一处取不到都报出来
+        const missed = [];
+        const text = val.replace(new RegExp(TPL_RE.source, "g"), (m, ref) => {
+          const got = lookup(ref);
+          if (got === undefined) {
+            missed.push(ref);
+            return m;
+          }
+          if (got === null) return "";
+          return typeof got === "object" ? JSON.stringify(got) : String(got);
+        });
+        if (missed.length) {
+          return {
+            kind: "missing",
+            text: t("sources.form.pv_missing_multi", "样本里没有：{p}").replace(
+              "{p}",
+              missed.map((x) => "「" + x + "」").join(""),
+            ),
+          };
+        }
+        return { kind: "ok", text: '"' + text + '"  (string)' };
+      }
+
+      /** previewText 把取到的值渲染成"值 + 类型"，让人一眼看出类型对不对。 */
+      function previewText(v) {
+        if (v === null) return "null  (null)";
+        if (Array.isArray(v)) return JSON.stringify(v) + "  (array)";
+        if (typeof v === "object") return JSON.stringify(v) + "  (object)";
+        const str = String(v);
+        return str + "  (" + typeof v + ")";
+      }
+
       function renderParamFields(wrap, cap, current) {
         const props = schemaProps(cap.paramsSchema);
         const keys = Object.keys(props);
@@ -1127,7 +1278,15 @@
           // 少一次选择，也少一类"选错了"的错误。
           //
           // 参数值统一是文本：要么字面量，要么含双大括号的引用/模板。
-          const rawVal = cur;
+          //
+          // 兜底：早期数据的参数是 {from:"..."} / {var:"..."} 对象形态
+          // （该形态已删除）。遇到时转成文本，否则会显示成 [object Object]。
+          const rawVal = (() => {
+            if (!cur || typeof cur !== "object" || Array.isArray(cur)) return cur;
+            if (typeof cur.var === "string" && cur.var) return TPL(cur.var);
+            if (typeof cur.from === "string" && cur.from) return TPL(cur.from);
+            return JSON.stringify(cur);
+          })();
 
           let input;
           if (Array.isArray(spec.enum) && spec.enum.length) {
@@ -1182,17 +1341,17 @@
           const updateTip = () => {
             const val = input.value.trim();
             const isRef = TPL_RE.test(val);
-            if (isRef) {
-              // 整值引用保留原始类型；混写一定是字符串——提示里说清楚，
-              // 否则用户会疑惑"为什么我拼了数字却成了文字"。
-              const whole = TPL_WHOLE_RE.test(val);
-              tip.textContent = whole
-                ? t("sources.form.ref_tip", "从事件或变量取值（保留原类型）")
-                : t("sources.form.ref_mix_tip", "模板拼接，结果按文本传入");
-            } else {
-              tip.textContent = "";
-            }
+
+            // 用样本直接求值给用户看。这比任何文字说明都管用：
+            //   ✅ 42  (integer)          —— 取到了，类型也对
+            //   ⚠️ 样本里没有「pull_request.titel」 —— 拼错了，现在就看得见
+            // 之前只写"从事件取值"，用户得等触发才知道对不对。
+            const pv = previewValue(val, aliasMap());
+            tip.dataset.pv = pv.kind;
+            tip.textContent = pv.text;
             tip.classList.toggle("is-ref", isRef);
+            tip.classList.toggle("is-ok", pv.kind === "ok");
+            tip.classList.toggle("is-bad", pv.kind === "missing" || pv.kind === "broken");
 
             // 数字字段要能在"填数字"和"填引用"之间自由切换。
             // type=number 的框里根本敲不进 `{`，所以一旦用户开始写引用
@@ -1644,6 +1803,23 @@
         if (ev.target.id === "src-modal") closeModal();
       });
 
-      loadAll();
+      // 启动：先拉数据；若 URL 带了 ?edit=<id>（从详情页的「编辑」过来），
+      // 数据到手后直接把那个源打开 —— 否则用户点了编辑只是回到列表。
+      (async () => {
+        try {
+          await loadAll();
+        } catch (e) {
+          // 列表拉失败不影响"打开编辑"这条路径
+        }
+        const editID = new URLSearchParams(location.search).get("edit");
+        if (!editID) return;
+        try {
+          const d = await apiGet(API + "/sources");
+          const src = d && (d.sources || []).find((x) => x.id === editID);
+          if (src) await openModal(src);
+        } catch (e) {
+          /* 打不开就算了，用户还能手动点 */
+        }
+      })();
     </script>
 {{end}}

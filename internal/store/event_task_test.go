@@ -261,7 +261,7 @@ func TestEventGetAndList(t *testing.T) {
 		t.Fatalf("payload not preserved: %s", got.Payload)
 	}
 
-	all, err := db.ListEvents(ctx, orgID, "", 10)
+	all, err := db.ListEvents(ctx, orgID, "", "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestEventGetAndList(t *testing.T) {
 		t.Fatalf("want 2 events, got %d", len(all))
 	}
 	// 按 trace 过滤
-	byTrace, err := db.ListEvents(ctx, orgID, "trace_1", 10)
+	byTrace, err := db.ListEvents(ctx, orgID, "trace_1", "", 10)
 	if err != nil {
 		t.Fatalf("list by trace: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestEventGetAndList(t *testing.T) {
 	}
 
 	// 空列表是 []
-	empty, err := db.ListEvents(ctx, orgID, "trace_none", 10)
+	empty, err := db.ListEvents(ctx, orgID, "trace_none", "", 10)
 	if err != nil {
 		t.Fatalf("list empty: %v", err)
 	}

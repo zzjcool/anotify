@@ -321,6 +321,17 @@
         // 操作：与列表页一致，只是搬到这里
         const acts = document.getElementById("head-actions");
         acts.replaceChildren();
+
+        // 「编辑」必须在这里：列表页为了少放按钮把它挪走了，但详情页
+        // 之前也没放 —— 结果源建好之后根本没有入口能改参数。
+        const editBtn = el(
+          "a",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          t("sources.edit", "编辑"),
+        );
+        editBtn.href = "sources.html?edit=" + encodeURIComponent(SRC.id);
+        acts.appendChild(editBtn);
+
         if (SRC.enabled) {
           const fireBtn = el(
             "button",
