@@ -1886,6 +1886,49 @@ async function checkWaterfall(page) {
 			gv.failed > 0,
 			`failed=${gv.failed}`,
 		);
+
+		// ---- 三种结构身份必须能分辨 ----
+		//
+		// 图要回答的不只是"跑得怎么样"，还有"这个节点在链上是什么角色"。
+		// 源（⚡）/ 管道（◆）/ 终点（◉）形状完全不同，挤在一起看不出层次
+		// 的话，"这条链到哪儿结束"就得挨个数。
+		{
+			const roles = await page.evaluate(() => {
+				const ns = Array.from(document.querySelectorAll(".wf-node"));
+				const roleOf = (n) =>
+					Array.from(n.classList).find((c) => c.startsWith("role-")) || "";
+				return {
+					hasTrigger: ns.some((n) => n.classList.contains("is-trigger")),
+					triggerIcon: (() => {
+						const tr = ns.find((n) => n.classList.contains("is-trigger"));
+						const ic = tr && tr.querySelector(".wf-node-icon");
+						return ic ? ic.textContent.trim() : "";
+					})(),
+					origins: ns.filter((n) => roleOf(n) === "role-origin").length,
+					pipes: ns.filter((n) => roleOf(n) === "role-pipe").length,
+					ends: ns.filter((n) => roleOf(n) === "role-end").length,
+					icons: ns.map((n) => {
+						const ic = n.querySelector(".wf-node-icon");
+						return ic ? ic.textContent : "";
+					}),
+				};
+			});
+			H.check(
+				"图上有源节点（⚡ 触发器，回答「谁触发的」）",
+				roles.hasTrigger && roles.triggerIcon === "⚡",
+				`trigger=${roles.hasTrigger} icon=${roles.triggerIcon}`,
+			);
+			H.check(
+				"三种结构身份都在图上（origin/pipe/end）",
+				roles.origins > 0 && roles.pipes > 0 && roles.ends > 0,
+				`origin=${roles.origins} pipe=${roles.pipes} end=${roles.ends}`,
+			);
+			H.check(
+				"结构身份用不同图标（⚡/◆/◉）",
+				roles.icons.includes("⚡") && roles.icons.includes("◆") && roles.icons.includes("◉"),
+				[...new Set(roles.icons)].join(""),
+			);
+		}
 	}
 
 	// 停在 span 最多的那条上做断言
@@ -2024,6 +2067,8 @@ async function checkWaterfall(page) {
 				nodeCount: nodeEls.length,
 				// 剪枝节点没有状态色点（它这次没执行），断言要能扣掉
 				prunedCount: nodeEls.filter((n) => n.classList.contains("is-pruned")).length,
+				// 触发器节点是"源"，没有执行状态
+				triggerCount: nodeEls.filter((n) => n.classList.contains("is-trigger")).length,
 				edgeCount: host.querySelectorAll(".flograph-svg path[marker-end]").length,
 				// 状态现在显示为副标题的第一段（"succeeded · 1.2s"）
 				subs: nodeEls.map((n) => n.querySelector(".wf-node-sub")?.textContent || ""),
@@ -2078,10 +2123,13 @@ async function checkWaterfall(page) {
 			// 例外是剪枝节点（is-pruned）：它这次根本没执行，没有状态可言，
 			// 所以**不该**有色点。底图上有它、执行链上没有它，都是正常的。
 			const dots = cg.dots.filter(Boolean);
+			// 扣掉两类没有状态的节点：
+			//   · 剪枝（is-pruned）—— 这次没执行
+			//   · 触发器（is-trigger）—— 它是"源"，不是任务
 			H.check(
-				"执行过的节点都有状态色点（剪枝的没有）",
-				dots.length === cg.nodeCount - cg.prunedCount,
-				`dots=${dots.length} nodes=${cg.nodeCount} pruned=${cg.prunedCount}`,
+				"执行过的节点都有状态色点（剪枝/触发器没有）",
+				dots.length === cg.nodeCount - cg.prunedCount - cg.triggerCount,
+				`dots=${dots.length} nodes=${cg.nodeCount} pruned=${cg.prunedCount} trigger=${cg.triggerCount}`,
 			);
 			H.check(
 				"全站状态色至少两种（跨 trace 验证过）",

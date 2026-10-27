@@ -986,6 +986,46 @@ html.flograph-fullscreen-open body {
 	color: #fca5a5;
 }
 
+/* ---------- 结构身份（role）----------
+ *
+ * 三种角色在链上的形状完全不同，图上必须一眼分得出：
+ *
+ *   origin  只能当起点（没有任何节点声明它）—— 闪电图标
+ *   pipe    中间段（有出口，会继续往下派发）  —— 菱形
+ *   end     终点（outputs 全空或中枢内置）    —— 实心圆
+ *
+ * 它们和"执行状态"是两个正交维度：一个 pipe 可能成功也可能失败。
+ * 所以 role 管**图标与左边框的形状感**，kind 管底色与状态点。
+ */
+.wf-node.role-origin .wf-node-icon {
+	background: rgba(139, 139, 253, 0.18);
+	color: #a5a5ff;
+}
+.wf-node.role-pipe .wf-node-icon {
+	background: rgba(56, 189, 248, 0.14);
+	color: #7dd3fc;
+}
+.wf-node.role-end .wf-node-icon {
+	background: rgba(16, 185, 129, 0.14);
+	color: #6ee7b7;
+}
+
+/* 源直接指向的节点（触发器产出）：左侧加一道主色竖条，
+ * 和"下游被其它能力连过来的"区分开。 */
+.wf-node.is-entry::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 6px;
+	bottom: 6px;
+	width: 2px;
+	border-radius: 2px;
+	background: rgba(139, 139, 253, 0.55);
+}
+.wf-node.is-entry {
+	padding-left: 8px;
+}
+
 /* 执行失败。
  *
  * 和 is-unknown（"配置里指向一个不存在的能力"）分开：两者都是红色系，
