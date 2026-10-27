@@ -1980,13 +1980,98 @@ async function checkWaterfall(page) {
 						);
 					})
 					.map((lb) => lb.textContent);
-				return { total: labels.length, inside };
+				const overlapping = [];
+				for (let i = 0; i < labels.length; i++) {
+					for (let j = i + 1; j < labels.length; j++) {
+						const a = labels[i].getBoundingClientRect();
+						const c = labels[j].getBoundingClientRect();
+						if (a.left < c.right && a.right > c.left && a.top < c.bottom && a.bottom > c.top) {
+							overlapping.push(labels[i].textContent + "|" + labels[j].textContent);
+						}
+					}
+				}
+				return { total: labels.length, inside, overlapping };
 			});
 			H.check(
 				"边标签没有压在节点上",
 				overlap.inside.length === 0,
 				`${overlap.inside.join(",") || "无"}（共 ${overlap.total} 个标签）`,
 			);
+			H.check(
+				"边标签之间不重叠",
+				overlap.overlapping.length === 0,
+				overlap.overlapping.join(",") || "无",
+			);
+		}
+
+		// ---- 箭头必须露在节点外 ----
+		//
+		// 节点画在 SVG 上层（同 z 序、后 append），marker-end 的三角只要
+		// 有一像素进到节点矩形就被盖住，看上去像"箭头缺了一半"，
+		// 指向关系就读不出来了。
+		//
+		// 注意回边（环上的边）在 dagre 内部被临时反向，points 顺序也跟着
+		// 反 —— 所以判据必须是几何的（端点是否落在节点框内），
+		// 不能按 from→to 的方向做数值偏移。
+		{
+			const arrows = await page.evaluate(() => {
+				const paths = Array.from(
+					document.querySelectorAll(".flograph-svg path[marker-end]"),
+				);
+				const nodes = Array.from(document.querySelectorAll(".wf-node")).map((n) =>
+					n.getBoundingClientRect(),
+				);
+				let inside = 0;
+				for (const pth of paths) {
+					const len = pth.getTotalLength();
+					const end = pth.getPointAtLength(len);
+					const m = pth.getScreenCTM();
+					const pt = new DOMPoint(end.x, end.y).matrixTransform(m);
+					if (
+						nodes.some(
+							(n) =>
+								pt.x >= n.left && pt.x <= n.right && pt.y >= n.top && pt.y <= n.bottom,
+						)
+					) {
+						inside++;
+					}
+				}
+				return { total: paths.length, inside };
+			});
+			H.check(
+				"箭头端点都在节点外（不被卡片盖住）",
+				arrows.inside === 0,
+				`${arrows.inside}/${arrows.total} 个箭头落在节点内`,
+			);
+		}
+
+		// ---- 环（回边）必须能看出来 ----
+		//
+		// mock 里 "跑测试 --failed--> 应用修复 --fixed--> 跑测试" 是真实的环
+		// （重试语义）。dagre 会临时反向边来分层，但不会告诉你哪条是回边 ——
+		// 不自己检测的话，画出来和普通边一模一样，用户看不出这里有环。
+		{
+			const cyc = await page.evaluate(() => {
+				const paths = Array.from(
+					document.querySelectorAll(".flograph-svg path[marker-end]"),
+				);
+				const legend = document.querySelector(".flograph-legend");
+				const rows = legend
+					? Array.from(legend.querySelectorAll(".flograph-legend-row")).map((r) =>
+							r.textContent.trim(),
+						)
+					: [];
+				return {
+					cycleEdges: paths.filter((p) => p.classList.contains("is-cycle")).length,
+					hasCycleLegend: rows.some((x) => /回边|环/.test(x)),
+				};
+			});
+			H.check(
+				"环上的边有独立的环样式",
+				cyc.cycleEdges > 0,
+				`cycleEdges=${cyc.cycleEdges}`,
+			);
+			H.check("图例说明了环/回边", cyc.hasCycleLegend, String(cyc.hasCycleLegend));
 		}
 	}
 

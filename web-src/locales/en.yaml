@@ -1386,6 +1386,7 @@ edges:
   err_create: Create failed
   err_remove: Delete failed
 trace:
+  legend_cycle: "Back edge · there is a cycle here (retry / rollback)"
   legend_origin: "Source · trigger (events enter here)"
   legend_pipe: "Pipe · keeps dispatching downstream"
   legend_end: "End · stops here, no further dispatch"

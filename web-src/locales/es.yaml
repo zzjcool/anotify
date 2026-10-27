@@ -1386,6 +1386,7 @@ edges:
   err_create: Error al crear
   err_remove: Error al eliminar
 trace:
+  legend_cycle: "Arista de retorno · aquí hay un ciclo (reintento / reversión)"
   legend_origin: "Origen · disparador (los eventos entran aquí)"
   legend_pipe: "Tubería · sigue despachando aguas abajo"
   legend_end: "Fin · termina aquí, sin más despacho"
