@@ -111,6 +111,77 @@
         line-height: 1.6;
       }
 
+      /* ---------- 字段清单：按顶层键分组 + 折叠 ---------- */
+      .av-filter {
+        width: 100%;
+        margin: 0 0 0.35rem 0;
+        font-size: 0.68rem;
+        padding: 0.2rem 0.4rem;
+      }
+      .av-group {
+        border-top: 1px solid var(--line);
+      }
+      .av-group:first-of-type {
+        border-top: 0;
+      }
+      .av-group-head {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        width: 100%;
+        padding: 0.28rem 0.1rem;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        color: var(--fg);
+        font-size: 0.66rem;
+        text-align: left;
+      }
+      .av-group-head:hover {
+        color: var(--accent);
+      }
+      .av-caret {
+        color: var(--faint);
+        font-size: 0.6rem;
+        width: 0.6rem;
+        flex: none;
+        transition: transform 0.12s ease;
+      }
+      .av-group.is-open .av-caret {
+        transform: rotate(90deg);
+      }
+      .av-group-name {
+        font-family: var(--mono, ui-monospace, monospace);
+        color: var(--accent);
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .av-group-n {
+        color: var(--faint);
+        font-size: 0.6rem;
+        flex: none;
+      }
+      .av-group-body {
+        display: none;
+        padding: 0 0 0.25rem 0.9rem;
+      }
+      .av-group.is-open .av-group-body {
+        display: block;
+      }
+      /* 展开后仍可能很长：给个上限，超出滚动 */
+      .av-group-body.scrollable {
+        max-height: 13rem;
+        overflow-y: auto;
+      }
+      .av-empty-filter {
+        color: var(--faint);
+        font-size: 0.65rem;
+        padding: 0.3rem 0.1rem;
+      }
+
       /* webhook 接入指引 */
       .hook-guide {
         margin-top: 0.5rem;
@@ -1935,23 +2006,116 @@
           return;
         }
 
-        for (const it of paths.slice(0, 80)) {
-          const row = el("div", "av-row");
-          const btn = el("button", "av-path", it.path);
-          btn.type = "button";
-          btn.title = t("sources.form.av_fill", "点一下填入第一个空缺的别名");
-          btn.addEventListener("click", () => {
-            // 复制到剪贴板：清单是只读参考，实际取值请用参数框的
-            // 点选补全（打双大括号弹出同一份字段）。
-            if (navigator.clipboard) {
-              navigator.clipboard.writeText(TPL(it.path)).catch(() => {});
-              toast(t("sources.form.av_copied", "已复制，粘到参数里即可"));
-            }
-          });
-          row.appendChild(btn);
-          row.appendChild(el("span", "av-desc", pickValueText(it.value)));
-          body.appendChild(row);
+        renderAvailGroups(body, paths);
+      }
+
+      /**
+       * renderAvailGroups 把字段按**顶层键**分组显示（默认全折叠）。
+       *
+       * 为什么不再平铺：pull_request 一个事件就有 35 个字段，平铺下来
+       * 面板吃掉整屏（截图里就是这个样子），用户既扫不完也找不到东西。
+       * 分组之后一眼能看到"有 pull_request / repository / sender 三组"，
+       * 想深入再展开——信息层级回来了。
+       *
+       * 默认折叠而不是展开：这份面板是**参考清单**，不是主操作路径。
+       * 真正的取字段动作在参数框里打双大括号点选，那里有搜索和键盘导航。
+       */
+      function renderAvailGroups(body, paths) {
+        // 按第一段路径分组；没有点的（如 action / number）归到"顶层"
+        const groups = new Map();
+        for (const it of paths) {
+          const dot = it.path.indexOf(".");
+          const key = dot < 0 ? "" : it.path.slice(0, dot);
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(it);
         }
+
+        // 搜索框：字段多时唯一实用的定位方式
+        const filter = document.createElement("input");
+        filter.className = "input mono av-filter";
+        filter.placeholder = t("sources.form.av_filter", "筛选字段…");
+        filter.addEventListener("input", () => {
+          const q = filter.value.trim().toLowerCase();
+          for (const g of body.querySelectorAll(".av-group")) {
+            let shown = 0;
+            for (const row of g.querySelectorAll(".av-row")) {
+              const hit = !q || row.dataset.path.toLowerCase().includes(q);
+              row.style.display = hit ? "" : "none";
+              if (hit) shown++;
+            }
+            g.style.display = shown ? "" : "none";
+            // 搜索时自动展开命中的组，否则用户还要手点
+            if (q && shown) g.classList.add("is-open");
+          }
+          let any = false;
+          for (const g of body.querySelectorAll(".av-group")) {
+            if (g.style.display !== "none") any = true;
+          }
+          emptyEl.style.display = any ? "none" : "";
+        });
+        body.appendChild(filter);
+
+        const emptyEl = el(
+          "div",
+          "av-empty-filter",
+          t("sources.form.av_filter_none", "没有匹配的字段"),
+        );
+        emptyEl.style.display = "none";
+
+        // 顶层标量（action / number）先展示，它们最常用
+        const keys = [...groups.keys()].sort((a, b) => {
+          if (a === "") return -1;
+          if (b === "") return 1;
+          return a.localeCompare(b);
+        });
+
+        for (const key of keys) {
+          const items = groups.get(key);
+          const g = el("div", "av-group");
+          const head = document.createElement("button");
+          head.type = "button";
+          head.className = "av-group-head";
+          head.appendChild(el("span", "av-caret", "▶"));
+          head.appendChild(
+            el(
+              "span",
+              "av-group-name",
+              key === "" ? t("sources.form.av_group_top", "顶层") : key,
+            ),
+          );
+          head.appendChild(el("span", "av-group-n", String(items.length)));
+          head.addEventListener("click", () => g.classList.toggle("is-open"));
+
+          const bodyEl = el("div", "av-group-body");
+          if (items.length > 12) bodyEl.classList.add("scrollable");
+          for (const it of items) {
+            const row = el("div", "av-row");
+            row.dataset.path = it.path;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "av-path";
+            // 组内只显示去掉前缀的短名，省宽度；完整路径放 title
+            btn.textContent =
+              key === "" ? it.path : it.path.slice(key.length + 1);
+            btn.title = TPL(it.path);
+            btn.addEventListener("click", () => {
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(TPL(it.path)).catch(() => {});
+                toast(
+                  t("sources.form.av_copied2", "已复制 {p}").replace("{p}", TPL(it.path)),
+                );
+              }
+            });
+            row.appendChild(btn);
+            row.appendChild(el("span", "av-desc", pickValueText(it.value)));
+            bodyEl.appendChild(row);
+          }
+
+          g.appendChild(head);
+          g.appendChild(bodyEl);
+          body.appendChild(g);
+        }
+        body.appendChild(emptyEl);
       }
 
       // fillDemo 一键铺好一套"变量 + 参数引用变量"的完整配置。

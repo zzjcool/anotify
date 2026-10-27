@@ -1327,6 +1327,10 @@ sources:
     gh_event: "GitHub イベント種別"
     gh_event_hint: "イベント種別ごとにペイロード構造が全く異なります。選んだ種別のフィールド一覧を表示します。"
     av_src_unknown: "「{ty}」の組み込み構造がありません。実際のイベントを受信すると項目が表示されます。"
+    av_filter: "フィールドを絞り込む…"
+    av_filter_none: "一致するフィールドがありません"
+    av_group_top: "トップレベル"
+    av_copied2: "{p} をコピーしました"
   preset:
     hourly: 毎時
     daily3: 毎日 3:00

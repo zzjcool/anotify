@@ -1327,6 +1327,10 @@ sources:
     gh_event: "GitHub event type"
     gh_event_hint: "Each event type has a completely different payload structure; the field list follows your choice."
     av_src_unknown: "No built-in structure for \"{ty}\"; real fields will appear once an event arrives."
+    av_filter: "Filter fields…"
+    av_filter_none: "No matching fields"
+    av_group_top: "top level"
+    av_copied2: "Copied {p}"
   preset:
     hourly: Hourly
     daily3: Daily 3:00

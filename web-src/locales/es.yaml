@@ -1327,6 +1327,10 @@ sources:
     gh_event: "Tipo de evento de GitHub"
     gh_event_hint: "Cada tipo de evento tiene una estructura de payload distinta; la lista de campos sigue tu elección."
     av_src_unknown: "No hay estructura integrada para «{ty}»; los campos reales aparecerán cuando llegue un evento."
+    av_filter: "Filtrar campos…"
+    av_filter_none: "Ningún campo coincide"
+    av_group_top: "nivel superior"
+    av_copied2: "Copiado {p}"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00
