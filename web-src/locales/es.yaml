@@ -695,6 +695,9 @@ security:
     location_shanghai: Shanghái
     location_office: Oficina
     current: Actual
+    dev_ipad: iPad Air
+    dev_meeting_pc: PC de sala de reuniones
+    last_active_ipad: Ayer 21:40
 docs:
   title: Documentación de integración
   subtitle: Reportes de Agent · Web Push · WebSocket

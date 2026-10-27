@@ -695,6 +695,9 @@ security:
     location_shanghai: 上海
     location_office: 会社
     current: 現在
+    dev_ipad: iPad Air
+    dev_meeting_pc: 会議室 PC
+    last_active_ipad: 昨日 21:40
 docs:
   title: 連携ドキュメント
   subtitle: Agent 上報 · Web Push · WebSocket
