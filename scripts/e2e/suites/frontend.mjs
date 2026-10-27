@@ -664,6 +664,43 @@ async function main() {
 				`hasSources=${nav.hasSources} active=${nav.active}`,
 			);
 
+			// ---- GitHub 触发器：新建时就有字段清单（不必先触发）----
+			//
+			// GitHub 的 webhook 结构是公开契约，所以它的字段清单来自内置样例，
+			// 而不是"等这个源收到过事件才反推"。这条断言盯住的是：曾经只剩
+			// "真实事件"一条路径，于是新建 GitHub 源时一片空白，用户必须先让
+			// GitHub 发一次才能配参数 —— 顺序倒了。
+			{
+				await page3.click("#btn-new");
+				await page3.waitForTimeout(300);
+				await page3.selectOption("#f-kind", "github");
+				await page3.waitForTimeout(600);
+				const gh = await page3.evaluate(() => {
+					const paths = Array.from(document.querySelectorAll(".av-path")).map((n) =>
+						n.textContent.trim(),
+					);
+					const src = document.getElementById("avail-src");
+					return {
+						count: paths.length,
+						hasPrTitle: paths.includes("pull_request.title"),
+						hasRepoName: paths.includes("repository.name"),
+						srcText: src ? src.textContent.trim() : "",
+					};
+				});
+				H.check(
+					"GitHub 触发器新建即列出官方字段",
+					gh.count > 20 && gh.hasPrTitle && gh.hasRepoName,
+					`count=${gh.count} prTitle=${gh.hasPrTitle} repoName=${gh.hasRepoName}`,
+				);
+				H.check(
+					"字段清单标明来自内置官方结构",
+					/GitHub/.test(gh.srcText),
+					gh.srcText.slice(0, 60),
+				);
+				await page3.click("#modal-cancel");
+				await page3.waitForTimeout(300);
+			}
+
 			// 新建一个 manual 源，出口选真实能力
 			await page3.click("#btn-new");
 			await page3.waitForTimeout(300);

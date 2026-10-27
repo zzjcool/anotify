@@ -1295,7 +1295,7 @@ sources:
     demo_name: "Demo · Análisis de PR de GitHub"
     demo_ok: "Ejemplo rellenado: 4 variables + parámetros enlazados a ellas"
     demo_no_caps: "No hay capacidad de destino con parámetros; se rellenaron las variables"
-    avail_vars: "¿Qué variables ofrece este disparador? (clic para rellenar)"
+    avail_vars: "¿Qué campos ofrece este disparador? (clic para copiar)"
     av_fill: "Haz clic para rellenar el origen de la variable"
     hook_url: "URL de carga"
     hook_url_pending: "Se genera al guardar (p. ej. /v1/hooks/src_xxx)"
@@ -1322,6 +1322,8 @@ sources:
     av_no_event: "Este disparador no tiene evento externo, así que no hay campos que referenciar; escribe los valores directamente en los parámetros."
     kind_github_hint: "Eventos PR/push de GitHub. Los campos conocidos y la configuración del lado de GitHub vienen incluidos."
     av_copied: "Copiado; pégalo en el parámetro"
+    av_src_builtin: "Según la estructura oficial del evento pull_request de GitHub (valores de ejemplo)"
+    av_src_event: "Del evento real más reciente de esta fuente: {ty}"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

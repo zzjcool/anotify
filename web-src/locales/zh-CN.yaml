@@ -1295,7 +1295,7 @@ sources:
     demo_name: "演示 · GitHub PR 分析"
     demo_ok: "已填入演示配置：4 个变量 + 参数引用变量"
     demo_no_caps: "没有带参数的出口能力，变量部分已填好"
-    avail_vars: "这个触发方式能提供哪些变量？（点一下填入）"
+    avail_vars: "这个触发方式能提供哪些字段？（点一下复制）"
     av_fill: "点一下填入变量的来源"
     hook_url: "回调地址"
     hook_url_pending: "保存后生成（形如 /v1/hooks/src_xxx）"
@@ -1322,6 +1322,8 @@ sources:
     av_no_event: "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。"
     kind_github_hint: "GitHub 的 PR/推送事件。已内置字段清单与 GitHub 侧填法，不用自己翻文档。"
     av_copied: "已复制，粘到参数里即可"
+    av_src_builtin: "来自 GitHub 官方 pull_request 事件结构（示例值）"
+    av_src_event: "来自这个源最近一条真实事件：{ty}"
   preset:
     hourly: 每小时
     daily3: 每天 3:00
