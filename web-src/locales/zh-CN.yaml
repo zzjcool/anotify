@@ -1386,7 +1386,7 @@ edges:
   err_create: 创建失败
   err_remove: 删除失败
 trace:
-  legend_cycle: "回边 · 这里有个环（会重试/回退）"
+  legend_hot: "线与数字越深 · 这条路走了很多次（重试/回环）"
   legend_origin: "源 · 触发器（事件从这里进来）"
   legend_pipe: "管道 · 会继续往下派发"
   legend_end: "终点 · 到此结束，不再派发"

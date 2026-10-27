@@ -850,15 +850,21 @@ html.flograph-fullscreen-open body {
 	stroke: var(--line-strong);
 	stroke-width: 1.4;
 }
-/* 回边（环）：橙色虚线 + 略粗。
+/* 走过多次的边：同色系更深、更粗。
  *
- * dagre 会把环上的边临时反向来分层，所以画出来的走向可能和配置里的
- * from→to 相反 —— 这不是 bug，但**必须**和普通边在视觉上区分开，
- * 否则用户会以为配置写反了。 */
-.flograph-svg path.is-cycle {
-	stroke: #f97316;
-	stroke-width: 1.8;
-	stroke-dasharray: 6 4;
+ * 语义是"这条路被走了很多次"（重试 / 环），**不是**"这里危险"。
+ * 环本来就是工作流的正常形状 —— 失败了修、修完再测 —— 涂成橙色虚线
+ * 读起来像告警，会让人误以为配置有问题。
+ *
+ * 所以做成同一个色系加深：看得见"这条走得比别人多"，但不刺眼。
+ */
+.flograph-svg path.is-hot {
+	stroke: #6366f1;
+	stroke-width: 2.2;
+}
+.flograph-svg path.is-hot2 {
+	stroke: #818cf8;
+	stroke-width: 2.8;
 }
 .flograph-svg path.is-muted {
 	stroke: rgba(113, 113, 122, 0.55);
@@ -867,8 +873,11 @@ html.flograph-fullscreen-open body {
 .flograph-svg .arrow {
 	fill: var(--line-strong);
 }
-.flograph-svg .arrow.is-cycle {
-	fill: #f97316;
+.flograph-svg .arrow.is-hot {
+	fill: #6366f1;
+}
+.flograph-svg .arrow.is-hot2 {
+	fill: #818cf8;
 }
 /* 边上的出口名 */
 .flograph-edge-label {
@@ -885,9 +894,13 @@ html.flograph-fullscreen-open body {
 	white-space: nowrap;
 	pointer-events: none;
 }
-.flograph-edge-label.is-cycle {
-	color: #f97316;
-	border-color: rgba(249, 115, 22, 0.4);
+.flograph-edge-label.is-hot {
+	color: #a5b4fc;
+	border-color: rgba(129, 140, 248, 0.45);
+}
+.flograph-edge-label.is-hot2 {
+	color: #c7d2fe;
+	border-color: rgba(165, 180, 252, 0.6);
 }
 .flograph-edge-label.is-muted {
 	color: var(--faint);

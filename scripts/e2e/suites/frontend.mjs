@@ -2062,16 +2062,18 @@ async function checkWaterfall(page) {
 						)
 					: [];
 				return {
-					cycleEdges: paths.filter((p) => p.classList.contains("is-cycle")).length,
-					hasCycleLegend: rows.some((x) => /回边|环/.test(x)),
+					cycleEdges: paths.filter(
+						(p) => p.classList.contains("is-hot") || p.classList.contains("is-hot2"),
+					).length,
+					hasCycleLegend: rows.some((x) => /走了很多次|走过多/.test(x)),
 				};
 			});
 			H.check(
-				"环上的边有独立的环样式",
+				"环上的边用加深的样式（不是告警色）",
 				cyc.cycleEdges > 0,
-				`cycleEdges=${cyc.cycleEdges}`,
+				`cycled=${cyc.cycleEdges}`,
 			);
-			H.check("图例说明了环/回边", cyc.hasCycleLegend, String(cyc.hasCycleLegend));
+			H.check("图例说明了「走过多次」", cyc.hasCycleLegend, String(cyc.hasCycleLegend));
 		}
 	}
 
@@ -2146,7 +2148,16 @@ async function checkWaterfall(page) {
 			waitUntil: "load",
 			timeout: 20000,
 		});
-		await page.waitForTimeout(900);
+		// 等时间条真的画出来再读，而不是固定 sleep。
+		//
+		// 原来固定等 900ms：机器一忙这条就偶发失败（只读到 b-succeeded，
+		// 因为后来的 trace 还没渲染完）。这类"随机挂一条"最容易让人怀疑
+		// 被测代码，其实只是等待方式不对。
+		await page
+			.waitForFunction(() => document.querySelectorAll(".wf-bar").length > 0, {
+				timeout: 8000,
+			})
+			.catch(() => {});
 		const got = await page.evaluate(() =>
 			Array.from(document.querySelectorAll(".wf-bar")).map((bar) => {
 				const m = bar.className.match(
@@ -2355,7 +2366,10 @@ async function checkFlowChart(page, base) {
 			ports: Array.from(host.querySelectorAll(".flograph-edge-label")).map((x) =>
 				x.textContent.trim(),
 			),
-			hasCycleEdge: host.querySelectorAll(".flograph-svg path.is-cycle").length > 0,
+			// 环边现在用"同色系加深"（is-hot），语义是"这条路走了很多次"，
+			// 而不是"这里危险"。判据同步改成 is-hot。
+			hasCycleEdge: host.querySelectorAll(".flograph-svg path.is-hot, .flograph-svg path.is-hot2")
+				.length > 0,
 			hasDeadPort: nodeEls.some((n) => n.classList.contains("is-deadport")),
 			rootCount: nodeEls.filter(
 				(n) => n.classList.contains("is-root") || n.classList.contains("is-trigger"),
@@ -2433,7 +2447,7 @@ async function checkFlowChart(page, base) {
 		JSON.stringify(lbl),
 	);
 	H.check("边上标了出口名", (g.ports || []).length >= 2, (g.ports || []).join(","));
-	H.check("环路用专门的边标记画出来", g.hasCycleEdge === true);
+	H.check("环上的边用加深的样式画出来", g.hasCycleEdge === true);
 	H.check("「未接下游」在图上可见", g.hasDeadPort === true);
 	// 图上只有"源"这一个触发器是根，能力节点都该有上游
 	H.check("只有源节点被标成根（触发器）", g.rootCount === 1, `roots=${g.rootCount}`);
