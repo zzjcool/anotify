@@ -1928,6 +1928,65 @@ async function checkWaterfall(page) {
 				roles.icons.includes("⚡") && roles.icons.includes("◆") && roles.icons.includes("◉"),
 				[...new Set(roles.icons)].join(""),
 			);
+
+			// 图例：图标和颜色都有含义，不解释只能靠猜。
+			// "哪个是 end 哪个是源"是个合理的问题，图应该自己回答。
+			const lg = await page.evaluate(() => {
+				const box = document.querySelector(".flograph-legend");
+				return {
+					exists: !!box,
+					rows: box
+						? Array.from(box.querySelectorAll(".flograph-legend-row")).map((r) =>
+								r.textContent.trim(),
+							)
+						: [],
+				};
+			});
+			H.check("图里有图例", lg.exists, `exists=${lg.exists}`);
+			H.check(
+				"图例解释了三种结构身份",
+				lg.rows.some((x) => x.includes("源")) &&
+					lg.rows.some((x) => x.includes("管道")) &&
+					lg.rows.some((x) => x.includes("终点")),
+				lg.rows.join(" | "),
+			);
+			H.check(
+				"图例解释了剪枝（未执行）",
+				lg.rows.some((x) => /未执行/.test(x)),
+				lg.rows.join(" | "),
+			);
+		}
+
+		// ---- 边标签不能压在节点上 ----
+		//
+		// 踩过：连线用的是"起终点直接拉一条贝塞尔"，忽略 dagre 算出的
+		// 绕行点。两个节点横向错开时曲线会从中间穿过去，出口名标签
+		// （passed / fixed）正好落在别的节点卡片上，看起来像标签错乱。
+		{
+			const overlap = await page.evaluate(() => {
+				const labels = Array.from(document.querySelectorAll(".flograph-edge-label"));
+				const nodes = Array.from(document.querySelectorAll(".wf-node")).map((n) =>
+					n.getBoundingClientRect(),
+				);
+				const inside = labels
+					.filter((lb) => {
+						const b = lb.getBoundingClientRect();
+						return nodes.some(
+							(nr) =>
+								b.left >= nr.left - 2 &&
+								b.right <= nr.right + 2 &&
+								b.top >= nr.top - 2 &&
+								b.bottom <= nr.bottom + 2,
+						);
+					})
+					.map((lb) => lb.textContent);
+				return { total: labels.length, inside };
+			});
+			H.check(
+				"边标签没有压在节点上",
+				overlap.inside.length === 0,
+				`${overlap.inside.join(",") || "无"}（共 ${overlap.total} 个标签）`,
+			);
 		}
 	}
 

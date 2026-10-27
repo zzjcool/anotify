@@ -1104,6 +1104,57 @@ html.flograph-fullscreen-open body {
 	color: var(--faint);
 }
 
+/* 图例：解释图标 = 结构身份、颜色 = 执行状态、虚线 = 剪枝。
+ *
+ * 放左上角（缩放控件在右下角，不打架）。不做成可折叠 —— 六行很短，
+ * 而"这图上的圆点是什么意思"正是看图第一眼会问的问题。 */
+.flograph-legend {
+	position: absolute;
+	left: 10px;
+	top: 10px;
+	z-index: 2;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	padding: 7px 9px;
+	border-radius: 8px;
+	background: rgba(18, 18, 24, 0.82);
+	border: 1px solid var(--line);
+	backdrop-filter: blur(4px);
+	pointer-events: none;
+}
+.flograph-legend-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 10px;
+	line-height: 1.5;
+	color: var(--muted);
+	white-space: nowrap;
+}
+.flograph-legend-icon {
+	width: 14px;
+	text-align: center;
+	font-size: 10px;
+	color: var(--muted);
+	flex: none;
+}
+.flograph-legend-icon.lg-ok {
+	color: #6ee7b7;
+}
+.flograph-legend-icon.lg-bad {
+	color: #ef4444;
+}
+.flograph-legend-icon.lg-pruned {
+	color: var(--faint);
+}
+/* 窄屏隐藏：图本身已经很小，图例会挡住内容 */
+@media (max-width: 640px) {
+	.flograph-legend {
+		display: none;
+	}
+}
+
 /* 缩放控制 */
 .flograph-ctrl {
 	position: absolute;

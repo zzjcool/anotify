@@ -1386,6 +1386,13 @@ edges:
   err_create: 创建失败
   err_remove: 删除失败
 trace:
+  legend_origin: "源 · 触发器（事件从这里进来）"
+  legend_pipe: "管道 · 会继续往下派发"
+  legend_end: "终点 · 到此结束，不再派发"
+  legend_ok: "执行成功"
+  legend_bad: "执行失败"
+  legend_pruned: "未执行（配置里有、这次没走）"
+  graph_legend: "图例"
   title: 链路
   subtitle: 一条 trace 的全貌：谁触发的、走了哪条路、每一步多久
   back: 返回事件流

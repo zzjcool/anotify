@@ -472,7 +472,22 @@
 		// 有底图时反而是横着的（源流向图就是横向，扇出往右铺），
 		// 所以那边按宽高比判断更合适 —— 但节点数少时横向仍然更好读。
 		const longChain = cut.nodes.length > 7;
+		// 图例：只在有底图（也就是有两种编码要解释）时给。
+		// 没有底图时只有一个维度（状态），图上本来就说得清。
+		const legend = [];
+		if (base && base.nodes && base.nodes.length) {
+			legend.push(
+				{ icon: "⚡", text: t("trace.legend.origin", "源 · 触发器（事件从这里进来）") },
+				{ icon: "◆", text: t("trace.legend.pipe", "管道 · 会继续往下派发") },
+				{ icon: "◉", text: t("trace.legend.end", "终点 · 到此结束，不再派发") },
+				{ icon: "✓", cls: "lg-ok", text: t("trace.legend.ok", "执行成功") },
+				{ icon: "✕", cls: "lg-bad", text: t("trace.legend.bad", "执行失败") },
+				{ icon: "○", cls: "lg-pruned", text: t("trace.legend.pruned", "未执行（配置里有、这次没走）") },
+			);
+		}
+
 		const graph = render(host, {
+			legend: legend,
 			rankdir: longChain ? "TB" : "LR",
 			rankSep: longChain ? 40 : 96,
 			nodeSep: longChain ? 22 : 26,
