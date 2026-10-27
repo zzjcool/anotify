@@ -1386,6 +1386,13 @@ edges:
   err_create: 作成に失敗しました
   err_remove: 削除に失敗しました
 trace:
+  legend_origin: "ソース · トリガー（ここからイベントが入る）"
+  legend_pipe: "パイプ · 下流へ派遣を続ける"
+  legend_end: "終点 · ここで終了、派遣しない"
+  legend_ok: "成功"
+  legend_bad: "失敗"
+  legend_pruned: "未実行（設定にあるが今回は通らなかった）"
+  graph_legend: "凡例"
   title: トレース
   subtitle: 1 本のトレースの全体像 — 何が起点で、どの経路を通り、各ステップがどれだけかかったか
   back: イベント一覧へ戻る

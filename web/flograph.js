@@ -111,6 +111,98 @@
 	}
 
 	/**
+	 * pointAlongPath 取"实际画出来的那条折线"上 42% 位置的点。
+	 *
+	 * 用来放出口名标签。必须和 pathFromPoints 用**同一组点**，
+	 * 否则标签会飘到没有线经过的地方。
+	 */
+	function pointAlongPath(points, x1, y1, x2, y2, t) {
+		const pts = [{ x: x1, y: y1 }].concat(points || [], [{ x: x2, y: y2 }]);
+		if (pts.length < 2) return [x1, y1];
+
+		// 先算总长，再按比例找落在哪一段
+		const segs = [];
+		let total = 0;
+		for (let i = 1; i < pts.length; i++) {
+			const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+			segs.push(len);
+			total += len;
+		}
+		if (total === 0) return [x1, y1];
+
+		const want = total * t;
+		let acc = 0;
+		for (let i = 0; i < segs.length; i++) {
+			if (acc + segs[i] >= want) {
+				const k = segs[i] === 0 ? 0 : (want - acc) / segs[i];
+				return [
+					pts[i].x + (pts[i + 1].x - pts[i].x) * k,
+					pts[i].y + (pts[i + 1].y - pts[i].y) * k,
+				];
+			}
+			acc += segs[i];
+		}
+		return [x2, y2];
+	}
+
+	/**
+	 * pathFromPoints 用 dagre 算出的绕行点画边。
+	 *
+	 * 为什么不直接用 `edgePath(x1,y1,x2,y2)` 两点贝塞尔：
+	 *
+	 *   dagre 的 `points` 里包含**绕开其它节点的折点**。忽略它、自己从
+	 *   起点拉一条贝塞尔到终点，当两个节点横向错开时曲线会从中间
+	 *   **穿过去**，正好压在节点本体上 —— 图上就是一团线糊在一起，
+	 *   出口名标签也会落在别的节点上（截图里 passed / fixed 叠在
+	 *   "应用修复" 卡片上就是这个原因）。
+	 *
+	 * 折线用二次贝塞尔把拐角磨圆一点，观感接近手绘流程图，
+	 * 同时严格贴着 dagre 给的通道走，不穿节点。
+	 */
+	function pathFromPoints(points, x1, y1, x2, y2) {
+		// dagre 的 points 可能是空数组（直接相邻），此时退化成直线
+		const pts = [{ x: x1, y: y1 }].concat(points || [], [{ x: x2, y: y2 }]);
+		if (pts.length < 2) return "";
+
+		// 去掉连续重复点，否则拐角处会画出零长度段
+		const clean = [pts[0]];
+		for (let i = 1; i < pts.length; i++) {
+			const a = clean[clean.length - 1];
+			if (Math.abs(a.x - pts[i].x) > 0.5 || Math.abs(a.y - pts[i].y) > 0.5) {
+				clean.push(pts[i]);
+			}
+		}
+		if (clean.length < 2) return `M ${x1} ${y1} L ${x2} ${y2}`;
+
+		let d = `M ${clean[0].x} ${clean[0].y}`;
+		for (let i = 1; i < clean.length; i++) {
+			const prev = clean[i - 1];
+			const cur = clean[i];
+			if (i === clean.length - 1) {
+				d += ` L ${cur.x} ${cur.y}`;
+				break;
+			}
+			// 用二次贝塞尔把拐角磨圆：控制点取当前点
+			const next = clean[i + 1];
+			const r = Math.min(
+				8,
+				Math.hypot(cur.x - prev.x, cur.y - prev.y) / 2,
+				Math.hypot(next.x - cur.x, next.y - cur.y) / 2,
+			);
+			const p0 = {
+				x: cur.x + ((prev.x - cur.x) / (Math.hypot(prev.x - cur.x, prev.y - cur.y) || 1)) * r,
+				y: cur.y + ((prev.y - cur.y) / (Math.hypot(prev.x - cur.x, prev.y - cur.y) || 1)) * r,
+			};
+			const p1 = {
+				x: cur.x + ((next.x - cur.x) / (Math.hypot(next.x - cur.x, next.y - cur.y) || 1)) * r,
+				y: cur.y + ((next.y - cur.y) / (Math.hypot(next.x - cur.x, next.y - cur.y) || 1)) * r,
+			};
+			d += ` L ${p0.x} ${p0.y} Q ${cur.x} ${cur.y} ${p1.x} ${p1.y}`;
+		}
+		return d;
+	}
+
+	/**
 	 * 边的修饰类。cycle（环路）优先于 muted（弱化/虚线）。
 	 *
 	 * 抽成函数是因为原来用了嵌套三元（e.cycle ? ... : e.muted ? ... : ""），
@@ -342,7 +434,10 @@
 			const x2 = horizontal ? dst.x - dst.width / 2 : dst.x;
 			const y2 = horizontal ? dst.y : dst.y - dst.height / 2;
 
-			const path = svg("path", { d: edgePath(x1, y1, x2, y2, horizontal) });
+			// 取 dagre 给的绕行点：它知道怎么避开中间的节点
+			const le = g.edge(e.from, e.to, "e" + i);
+			const pts = (le && le.points) || [];
+			const path = svg("path", { d: pathFromPoints(pts, x1, y1, x2, y2) });
 			path.setAttribute("marker-end", e.cycle ? "url(#fg-arrow-cycle)" : "url(#fg-arrow)");
 			const cls = edgeClass(e);
 			if (cls) path.setAttribute("class", cls);
@@ -350,9 +445,13 @@
 
 			edgePos.set(i, { x1, y1, x2, y2 });
 
-			// 出口名：放在曲线上 42% 处（稍微偏向出发端，读起来像"从这个口出"）
+			// 出口名：挂在**实际路径**的中间点上。
+			//
+			// 之前用"两点贝塞尔的 42% 处"，那条曲线根本不是实际画出来的
+			// 路径（实际路径会绕行），于是标签落到别的节点上 —— 截图里
+			// passed / fixed 压在"应用修复"卡片里就是这个问题。
 			if (e.port) {
-				const [lx, ly] = bezierAt(x1, y1, x2, y2, 0.42, horizontal);
+				const [lx, ly] = pointAlongPath(pts, x1, y1, x2, y2, 0.42);
 				const lb = div("flograph-edge-label" + edgeClass(e, true), e.port);
 				lb.style.left = lx + "px";
 				lb.style.top = ly + "px";
@@ -522,6 +621,22 @@
 			ctrl.appendChild(b);
 		}
 		container.appendChild(ctrl);
+
+		// ---- 图例 ----
+		//
+		// 图上有三重编码：图标 = 结构身份（源/管道/终点），颜色 = 执行状态，
+		// 虚线 = 剪枝。不解释的话，用户只能靠猜 —— "哪个是 end" 本来就是个
+		// 合理的问题，图应该自己回答。
+		if (options.legend && options.legend.length) {
+			const lg = div("flograph-legend");
+			for (const item of options.legend) {
+				const row = div("flograph-legend-row");
+				row.appendChild(div("flograph-legend-icon " + (item.cls || ""), item.icon || ""));
+				row.appendChild(div("flograph-legend-text", item.text || ""));
+				lg.appendChild(row);
+			}
+			container.appendChild(lg);
+		}
 
 		// 全屏时左下角给一行操作提示。只在全屏显示：卡片里的日常状态不需要解释，
 		// 而全屏后页面其它元素都被遮住了，没有提示用户只能靠猜（尤其 Esc 退出）。
