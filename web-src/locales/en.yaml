@@ -1308,8 +1308,8 @@ sources:
     bad_placeholder: "Param {k}: unclosed placeholder"
     pv_broken: "Unclosed placeholder"
     pv_nosample: "No events yet — trigger once to see a preview"
-    pv_missing: "Not in the sample: \"{p}\""
-    pv_missing_multi: "Not in the sample: {p}"
+    pv_missing: 'The latest event has no field "{p}"'
+    pv_missing_multi: "The latest event is missing these fields: {p}"
     dry_run: "Dry run"
     dry_running: "Running…"
     dry_no_target: "Select at least one target capability first"

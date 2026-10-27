@@ -770,6 +770,59 @@ async function main() {
 				);
 				await page3.fill(".av-filter", "");
 
+				// ---- 混写模板的预览：报错必须是**字段名**，不能是数字 ----
+				//
+				// 曾经的 bug：TPL_RE 没有捕获组，而混写替换用的是
+				// `str.replace(re, (m, ref) => ...)` —— 没有捕获组时
+				// 第二个参数是**匹配位置**，于是"哪个字段取不到"会报成
+				// 「样本里没有：0、27」这种看不懂的数字。
+				{
+					const preview = async (v) =>
+						page3.evaluate((val) => {
+							const f = Array.from(document.querySelectorAll("[data-param-field]")).find(
+								(x) => x.querySelector("[data-param]").dataset.ptype === "string",
+							) || document.querySelectorAll("[data-param-field]")[1];
+							const i = f.querySelector("[data-param]");
+							i.value = val;
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							const tip = f.querySelector(".param-tip");
+							return { pv: tip.dataset.pv, text: tip.textContent };
+						}, v);
+
+					const bothOk = await preview("{{pull_request.additions}}-{{pull_request.merged}}");
+					H.check(
+						"混写两个占位符都能求值",
+						bothOk.pv === "ok" && bothOk.text.includes("12-false"),
+						`${bothOk.pv} | ${bothOk.text}`,
+					);
+
+					const oneBad = await preview("{{pull_request.additions}}-{{pull_request.typo}}");
+					H.check(
+						"混写里拼错的字段按名字报出来",
+						oneBad.pv === "missing" && oneBad.text.includes("pull_request.typo"),
+						oneBad.text,
+					);
+					H.check(
+						"报错里不含裸数字（捕获组没生效时会退化成 offset）",
+						!/[「"]\s*\d+\s*[」"]/.test(oneBad.text),
+						oneBad.text,
+					);
+
+					const twoBad = await preview("{{nope.a}}-{{nope.b}}");
+					H.check(
+						"多个缺失字段都列出来",
+						twoBad.pv === "missing" && twoBad.text.includes("nope.a") && twoBad.text.includes("nope.b"),
+						twoBad.text,
+					);
+
+					const wholeRef = await preview("{{pull_request.base.sha}}");
+					H.check(
+						"整值引用保留原类型（string）",
+						wholeRef.pv === "ok" && /string/.test(wholeRef.text),
+						wholeRef.text,
+					);
+				}
+
 				// ---- 按事件类型切换结构 ----
 				//
 				// pull_request 和 push 的 payload 没有共同字段（前者是
