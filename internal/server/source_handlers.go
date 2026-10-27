@@ -472,7 +472,7 @@ func (h *sourceHandler) views(ctx context.Context, orgID string, list []*store.S
 				})
 			}
 		}
-		if s.Kind == store.SourceKindWebhook {
+		if s.Kind == store.SourceKindWebhook || s.Kind == store.SourceKindGitHub {
 			var wc store.WebhookConfig
 			_ = json.Unmarshal(s.Config, &wc)
 			if wc.Token != "" {

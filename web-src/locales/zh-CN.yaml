@@ -1235,6 +1235,7 @@ sources:
     cron: 定时器
     webhook: Webhook
     manual: 手动
+    github: "GitHub 触发器"
   next_fire: 下次 {t}
   manual_hint: 点「立即运行」时触发
   targets_label: 出口
@@ -1339,6 +1340,8 @@ sources:
     pick_none: "没有匹配的字段"
     av_no_event_hook: "还没有收到过事件。配好回调地址后让外部系统发一次，这里会列出真实字段。"
     av_no_event: "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。"
+    kind_github_hint: "GitHub 的 PR/推送事件。已内置字段清单与 GitHub 侧填法，不用自己翻文档。"
+    av_copied: "已复制，粘到参数里即可"
   preset:
     hourly: 每小时
     daily3: 每天 3:00

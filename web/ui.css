@@ -1244,6 +1244,11 @@ html.flograph-fullscreen-open body {
   color: #60a5fa;
   border-color: rgba(96, 165, 250, 0.35);
 }
+/* GitHub 触发器：用 GitHub 的紫红色调，和通用 webhook 的蓝区分开 */
+.src-github {
+  color: #c084fc;
+  border-color: rgba(192, 132, 252, 0.35);
+}
 .src-manual {
   color: #34d399;
   border-color: rgba(52, 211, 153, 0.35);

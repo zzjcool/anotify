@@ -1235,6 +1235,7 @@ sources:
     cron: Timer
     webhook: Webhook
     manual: Manual
+    github: "GitHub trigger"
   next_fire: next {t}
   manual_hint: Fires when you click Run
   targets_label: Exits
@@ -1339,6 +1340,8 @@ sources:
     pick_none: "No matching fields"
     av_no_event_hook: "No events received yet. Once the callback is configured and the external system sends one, real fields show up here."
     av_no_event: "This trigger has no external event, so there are no fields to reference — just write values directly in params."
+    kind_github_hint: "GitHub PR/push events. Known fields and the GitHub-side setup are built in — no doc digging."
+    av_copied: "Copied — paste it into the param"
   preset:
     hourly: Hourly
     daily3: Daily 3:00

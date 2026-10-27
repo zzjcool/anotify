@@ -882,7 +882,7 @@
 			};
 		});
 		const v = Object.assign(clone(s), { targetCaps });
-		if (s.kind === "webhook" && s.config && s.config.token) {
+		if ((s.kind === "webhook" || s.kind === "github") && s.config && s.config.token) {
 			v.hookUrl = "/v1/hooks/" + s.config.token;
 		}
 		return v;
@@ -1466,9 +1466,9 @@
 	on("POST", /^\/v1\/sources$/, (ctx) => {
 		const b = ctx.body || {};
 		if (!b.name || !b.name.trim()) return err(400, "name is required");
-		if (!["cron", "webhook", "manual"].includes(b.kind)) {
-			return err(400, "kind 必须是 cron / webhook / manual", {
-				available: ["cron", "webhook", "manual"],
+		if (!["cron", "webhook", "github", "manual"].includes(b.kind)) {
+			return err(400, "kind 必须是 cron / webhook / github / manual", {
+				available: ["cron", "webhook", "github", "manual"],
 			});
 		}
 		const targets = normTargets(b.targets);
@@ -1497,7 +1497,8 @@
 			// 不再有 config.payload：它是"cron 也能带数据"的历史补丁，
 			// 和常量直写参数重复。cron 的常量写在参数里就行。
 			cfg = { expr: expr, tz: cfg.tz || "Local", vars };
-		} else if (b.kind === "webhook") {
+		} else if (b.kind === "webhook" || b.kind === "github") {
+			// github 就是"知道载荷长什么样"的 webhook：token/投递路径完全相同
 			cfg = {
 				token: cfg.token || "src_mock" + Math.random().toString(36).slice(2, 12),
 				vars,

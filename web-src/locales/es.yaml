@@ -1235,6 +1235,7 @@ sources:
     cron: Temporizador
     webhook: Webhook
     manual: Manual
+    github: "Disparador de GitHub"
   next_fire: próximo {t}
   manual_hint: Se dispara al hacer clic en Ejecutar
   targets_label: Salidas
@@ -1339,6 +1340,8 @@ sources:
     pick_none: "Ningún campo coincide"
     av_no_event_hook: "Aún no se han recibido eventos. Cuando el sistema externo envíe uno, aquí aparecerán los campos reales."
     av_no_event: "Este disparador no tiene evento externo, así que no hay campos que referenciar; escribe los valores directamente en los parámetros."
+    kind_github_hint: "Eventos PR/push de GitHub. Los campos conocidos y la configuración del lado de GitHub vienen incluidos."
+    av_copied: "Copiado; pégalo en el parámetro"
   preset:
     hourly: Cada hora
     daily3: Diario 3:00

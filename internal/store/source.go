@@ -15,12 +15,13 @@ import (
 // 源的种类（契约 §5.4）。新增种类时这里和 sourceKinds 一起改。
 const (
 	SourceKindCron    = "cron"    // 定时器：按五段表达式到点触发
-	SourceKindWebhook = "webhook" // HTTP 回调：外部系统 POST 到唯一 URL
+	SourceKindWebhook = "webhook" // 通用 HTTP 回调：外部系统 POST 到唯一 URL
+	SourceKindGitHub  = "github"  // GitHub webhook：形状已知，可给字段清单/一键配置
 	SourceKindManual  = "manual"  // 手动：页面上点一下就跑
 )
 
 // SourceKinds 是全部合法种类（供校验与前端下拉复用）。
-var SourceKinds = []string{SourceKindCron, SourceKindWebhook, SourceKindManual}
+var SourceKinds = []string{SourceKindCron, SourceKindWebhook, SourceKindGitHub, SourceKindManual}
 
 // IsValidSourceKind 判断种类是否合法。
 func IsValidSourceKind(k string) bool {
@@ -162,7 +163,10 @@ func ValidateSourceConfig(kind string, raw json.RawMessage) (json.RawMessage, er
 			return nil, err
 		}
 		return b, nil
-	case SourceKindWebhook:
+	case SourceKindWebhook, SourceKindGitHub:
+		// github 就是一个"知道载荷长什么样"的 webhook：投递路径、
+		// token、签名处理完全相同，差别只在前端能给字段清单和一键配置。
+		// 后端把两者当同一种东西校验，避免多一份会分叉的校验逻辑。
 		var c WebhookConfig
 		if len(raw) > 0 {
 			_ = json.Unmarshal(raw, &c) // 忽略解析错误：token 由服务端生成
@@ -402,13 +406,16 @@ func (d *DB) GetSource(ctx context.Context, orgID, id string) (*Source, error) {
 // GetSourceByWebhookToken 按 webhook token 找源（外部 POST 进来时用）。
 //
 // 返回 ErrSourceNotFound 也覆盖「找到了但已停用」：停用的源不该接受事件。
+//
+// kind 是 IN 而不是 =：webhook 和 github 共用同一套投递路径（后者只是
+// "知道载荷长什么样"），这里若只认 webhook，github 源的回调地址永远 404。
 func (d *DB) GetSourceByWebhookToken(ctx context.Context, token string) (*Source, error) {
 	row := d.QueryRowContext(ctx,
 		`SELECT `+sourceColumns+`
 		   FROM sources
-		  WHERE kind = ? AND enabled = 1
+		  WHERE kind IN (?, ?) AND enabled = 1
 		    AND json_extract(config, '$.token') = ?`,
-		SourceKindWebhook, token)
+		SourceKindWebhook, SourceKindGitHub, token)
 	s, err := scanSource(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSourceNotFound

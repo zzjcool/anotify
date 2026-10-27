@@ -451,10 +451,11 @@
         >
         <select id="f-kind" class="input w-full text-sm">
           <option value="cron">{{t "sources.kind.cron"}}</option>
+          <option value="github">{{t "sources.kind.github"}}</option>
           <option value="webhook">{{t "sources.kind.webhook"}}</option>
           <option value="manual">{{t "sources.kind.manual"}}</option>
         </select>
-        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.kind_hint"}}</p>
+        <p class="mt-1 text-[11px] text-zinc-500" id="f-kind-hint">{{t "sources.form.kind_hint"}}</p>
       </div>
 
       <!-- cron 专属 -->
@@ -484,27 +485,12 @@
         </div>
       </div>
 
-      <!-- 变量：这个源对外提供哪些数据。
-           出口参数可以直接引用它们（下拉选，不用记 payload 路径）。
-           这也让 cron 和 webhook 用同一套写法：webhook 的变量来自请求体，
-           cron 的变量就是常量。 -->
+      <!-- 这个触发方式能提供哪些字段 —— **只读展示**。
+           以前这里是一张可编辑的"变量表"（给路径起短名字），但那件事
+           参数框里的点选补全已经做了：打双大括号就能选字段，不需要先
+           声明再引用。用户少一层心智模型，也少一个会填错的地方。 -->
       <div>
-        <label class="mb-1 block text-xs text-zinc-400"
-          >{{t "sources.form.vars"}}</label
-        >
-        <div id="f-vars" class="var-list"></div>
-        <button
-          type="button"
-          id="btn-add-var"
-          class="btn-ghost mt-1.5 rounded-lg px-2 py-1 text-[11px]"
-        >
-          + {{t "sources.form.add_var"}}
-        </button>
-        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.vars_hint"}}</p>
-
-        <!-- 这个触发方式能提供哪些字段。
-             用户不需要记住 GitHub/GitLab 的 payload 结构，照着点即可。 -->
-        <details class="avail-vars" id="avail-vars">
+        <details class="avail-vars" id="avail-vars" open>
           <summary>{{t "sources.form.avail_vars"}}</summary>
           <div id="avail-vars-body" class="avail-vars-body"></div>
         </details>
@@ -692,10 +678,20 @@
 
       const KIND_LABEL = {
         cron: () => t("sources.kind.cron", "定时器"),
+        github: () => t("sources.kind.github", "GitHub 触发器"),
         webhook: () => t("sources.kind.webhook", "Webhook"),
         manual: () => t("sources.kind.manual", "手动"),
       };
-      const KIND_CLASS = { cron: "src-cron", webhook: "src-webhook", manual: "src-manual" };
+      const KIND_CLASS = {
+        cron: "src-cron",
+        github: "src-github",
+        webhook: "src-webhook",
+        manual: "src-manual",
+      };
+      // 取标签必须兜底：后端将来加了新 kind 而前端还没跟上时，
+      // `KIND_LABEL[k]()` 会抛 TypeError，**整页渲染中断**（不是少个徽章，
+      // 是一个源都看不见）。所以退化到显示原始 kind 字符串。
+      const kindLabel = (k) => (KIND_LABEL[k] ? KIND_LABEL[k]() : String(k || "—"));
 
       // ---------- 加载 ----------
       async function loadAll() {
@@ -745,7 +741,7 @@
         nameLink.title = t("sources.open_detail", "打开详情");
         head.appendChild(nameLink);
         head.appendChild(
-          el("span", "src-badge " + (KIND_CLASS[s.kind] || ""), KIND_LABEL[s.kind]()),
+          el("span", "src-badge " + (KIND_CLASS[s.kind] || ""), kindLabel(s.kind)),
         );
         if (!s.enabled) {
           head.appendChild(
@@ -962,8 +958,6 @@
 
         const cfg = (src && src.config) || {};
         // 变量表要在渲染出口参数**之前**恢复：参数里的"选变量"下拉依赖它
-        VAR_DEFS = Array.isArray(cfg.vars) ? cfg.vars.map((x) => Object.assign({}, x)) : [];
-        renderVars();
         document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
 
         // 已保存的出口参数：从 targetCaps 里取（后端并入视图了）
@@ -994,7 +988,22 @@
       function syncKindFields() {
         const kind = document.getElementById("f-kind").value;
         document.getElementById("f-cron-wrap").classList.toggle("hidden", kind !== "cron");
-        document.getElementById("f-hook-wrap").classList.toggle("hidden", kind !== "webhook");
+        // github 是"知道载荷长什么样"的 webhook：投递配置同一套，只是
+        // 额外给现成的 GitHub 侧填法 + 已知字段清单。
+        const isHook = kind === "webhook" || kind === "github";
+        document.getElementById("f-hook-wrap").classList.toggle("hidden", !isHook);
+        const gh = document.getElementById("hook-github");
+        if (gh) gh.classList.toggle("hidden", kind !== "github");
+
+        // 提示语跟着 kind 变：github 是"知道载荷长什么样"的那种 webhook，
+        // 值得单独说明一句，否则用户分不清它和普通 webhook 的差别。
+        const hint = document.getElementById("f-kind-hint");
+        if (hint) {
+          hint.textContent =
+            kind === "github"
+              ? t("sources.form.kind_github_hint", "GitHub 的 PR/推送事件。已内置字段清单与 GitHub 侧填法。")
+              : t("sources.form.kind_hint", "创建后不可修改（换种类等于换语义，请删除后重建）。");
+        }
         // 切 kind 时清单要跟着换（webhook 有 PR 字段，cron 只能固定值）
         renderAvailVars();
         updateHookGuide();
@@ -1107,79 +1116,6 @@
         }
       }
 
-      // ---------- 源的别名表 ----------
-      //
-      // 别名只是"短名字 → payload 路径"的映射，存在 sources.config.vars 里：
-      //   [{name:"author", from:"pull_request.user.login"}]
-      //
-      // 参数里写别名的双大括号形式，就等于写它指向的完整路径。
-      // 它**不承载数据**（没有 value 形态）：常量直接写在参数里就行。
-      //
-      // 这么做的价值只有两点：
-      //   - 用户不用反复敲长得离谱的路径
-      //   - 改字段形状时只改一处，不用翻遍所有出口参数
-
-      // VAR_DEFS 是当前编辑中的变量表（弹窗作用域）。
-      let VAR_DEFS = [];
-
-      function renderVars() {
-        const box = document.getElementById("f-vars");
-        if (!box) return;
-        box.replaceChildren();
-
-        if (!VAR_DEFS.length) {
-          box.appendChild(
-            el(
-              "div",
-              "var-empty",
-              t(
-                "sources.form.no_vars",
-                "还没有别名。可以不加，直接在参数里写完整路径。",
-              ),
-            ),
-          );
-          return;
-        }
-
-        VAR_DEFS.forEach((d, i) => {
-          const row = el("div", "var-row");
-
-          // 名字：只是一个更好记的别名
-          const nameIn = document.createElement("input");
-          nameIn.className = "input";
-          nameIn.placeholder = "author";
-          nameIn.value = d.name || "";
-          nameIn.addEventListener("input", () => {
-            VAR_DEFS[i].name = nameIn.value;
-          });
-
-          const eq = el("span", "var-eq", "=");
-
-          // 指向：payload 路径。别名表不承载数据，只做重命名。
-          const valIn = document.createElement("input");
-          valIn.className = "input";
-          valIn.placeholder = "pull_request.user.login";
-          valIn.value = String(d.from ?? "");
-          valIn.addEventListener("input", () => {
-            VAR_DEFS[i] = { name: VAR_DEFS[i].name, from: valIn.value };
-          });
-
-          const del = el("button", "var-del", "✕");
-          del.type = "button";
-          del.title = t("sources.form.del_var", "删除别名");
-          del.addEventListener("click", () => {
-            VAR_DEFS.splice(i, 1);
-            renderVars();
-          });
-
-          row.appendChild(nameIn);
-          row.appendChild(eq);
-          row.appendChild(valIn);
-          row.appendChild(del);
-          box.appendChild(row);
-        });
-      }
-
       // requiredFields 从 params_schema 取必填字段名。
       //
       // 只用受控子集里最稳的那几个关键字（route.validate.go 支持的集合），
@@ -1230,17 +1166,6 @@
       let SAMPLE_PAYLOAD = null; // 最近一条事件的 payload（null = 还没有事件）
       let SAMPLE_META = null; // {at, type}
 
-      /** aliasMap 把当前别名表折成 {name: payloadPath}，供预览解析。 */
-      function aliasMap() {
-        const m = {};
-        for (const d of VAR_DEFS) {
-          const n = String((d && d.name) || "").trim();
-          const f = String((d && d.from) || "").trim();
-          if (n && f) m[n] = f;
-        }
-        return m;
-      }
-
       /** loadSample 取该源最近一条事件当预览样本。 */
       async function loadSample(sourceName) {
         SAMPLE_PAYLOAD = null;
@@ -1289,7 +1214,7 @@
        *   kind = "broken"  占位符没闭合
        *   kind = "nosample" 还没有事件可当样本
        */
-      function previewValue(raw, aliasMap) {
+      function previewValue(raw) {
         const val = String(raw == null ? "" : raw).trim();
         if (!val) return { kind: "literal", text: "" };
 
@@ -1308,13 +1233,7 @@
 
         // 整值引用：保留原类型（和中枢行为一致）
         const whole = val.match(TPL_WHOLE_RE);
-        const lookup = (ref) => {
-          const key = String(ref).trim();
-          if (Object.prototype.hasOwnProperty.call(aliasMap, key)) {
-            return getPathOf(SAMPLE_PAYLOAD, aliasMap[key]);
-          }
-          return getPathOf(SAMPLE_PAYLOAD, key);
-        };
+        const lookup = (ref) => getPathOf(SAMPLE_PAYLOAD, String(ref).trim());
 
         if (whole) {
           const got = lookup(whole[1]);
@@ -1456,7 +1375,7 @@
             //   ✅ 42  (integer)          —— 取到了，类型也对
             //   ⚠️ 样本里没有「pull_request.titel」 —— 拼错了，现在就看得见
             // 之前只写"从事件取值"，用户得等触发才知道对不对。
-            const pv = previewValue(val, aliasMap());
+            const pv = previewValue(val);
             tip.dataset.pv = pv.kind;
             tip.textContent = pv.text;
             tip.classList.toggle("is-ref", isRef);
@@ -1488,48 +1407,41 @@
         }
       }
 
-      // collectVars 收集变量表，并做基础校验（与 mock 的 validateVarDefs 同口径）。
-      function collectVars() {
-        const out = [];
-        const seen = new Set();
-        for (const d of VAR_DEFS) {
-          const name = String(d.name || "").trim();
-          if (!name) continue; // 空行忽略，不报错（用户可能正在填）
-          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-            throw new Error(
-              t("sources.form.bad_var_name", "变量名「{n}」不合法（字母/数字/下划线，不以数字开头）").replace(
-                "{n}",
-                name,
-              ),
-            );
-          }
-          if (seen.has(name)) {
-            throw new Error(
-              t("sources.form.dup_var", "变量名「{n}」重复").replace("{n}", name),
-            );
-          }
-          seen.add(name);
-          const from = String(d.from || "").trim();
-          if (!from) {
-            throw new Error(
-              t("sources.form.var_need_src", "别名「{n}」要指向一个 payload 路径").replace(
-                "{n}",
-                name,
-              ),
-            );
-          }
-          out.push({ name, from });
-        }
-        return out;
+      // requiredFields 从 params_schema 取必填字段名。
+      //
+      // 只用受控子集里最稳的那几个关键字（route.validate.go 支持的集合），
+      // 遇到不认识的忽略——和中枢的校验口径保持一致，避免前端说"必填"
+      // 而后端其实不校验（那种不一致比不提示更糟）。
+      function requiredFields(schema) {
+        if (!schema || typeof schema !== "object") return [];
+        const req = schema.required;
+        return Array.isArray(req) ? req.filter((x) => typeof x === "string") : [];
       }
 
+      // schemaProps 取出 properties（保证是对象）。
+      function schemaProps(schema) {
+        if (!schema || typeof schema !== "object") return {};
+        const p = schema.properties;
+        return p && typeof p === "object" ? p : {};
+      }
+
+      /**
+       * placeholderForType 给"复杂类型走 JSON 手输"的输入框一个示例。
+       *
+       * 抽成函数是因为原来写成三层嵌套三元（object ? ... : array ? ... : ""），
+       * 在那一行里已经很难看出这三种情况分别对应什么。
+       */
+      function placeholderForType(type) {
+        if (type === "object") return '{"k":"v"}';
+        if (type === "array") return "[1,2]";
+        return "";
+      }
 
       // collectTargets 收集 {capabilityId, params} 列表。
       //
       // 每个出口带自己那份参数：各能力的 params_schema 不同，
       // 一份公共参数必然对不上至少一边（会被静默剪枝）。
-      function collectTargets(varDefs) {
-        const known = new Set((varDefs || []).map((d) => d && d.name).filter(Boolean));
+      function collectTargets() {
         const box = document.getElementById("f-targets");
         const out = [];
         for (const cb of box.querySelectorAll("input.target-cap:checked")) {
@@ -1608,18 +1520,9 @@
         const kind = document.getElementById("f-kind").value;
         const enabled = document.getElementById("f-enabled").checked;
 
-        // 变量先收集：出口参数里的 {var:"x"} 要拿它做"变量是否声明过"的校验
-        let vars;
-        try {
-          vars = collectVars();
-        } catch (e) {
-          toast(e.message);
-          return;
-        }
-
         let targets;
         try {
-          targets = collectTargets(vars);
+          targets = collectTargets();
         } catch (e) {
           toast(e.message);
           return;
@@ -1641,15 +1544,10 @@
             toast(t("sources.form.expr_required", "请填 cron 表达式"));
             return;
           }
-          // 不再写 config.payload：它和"固定值变量"重复存了同一份数据
-          // （以前要把 value 型变量折算回 payload，两处都写）。
-          // 常量直接写在参数里就行。老配置里的 payload 仍然可读。
-          config = { expr: expr, vars: vars };
+          config = { expr: expr };
         }
-
-        // webhook / manual 的 config 目前是空的（token 由后端生成），
-        // 但变量表必须一起提交，否则保存后变量就丢了
-        if (kind !== "cron") config = Object.assign({}, config, { vars: vars });
+        // webhook / github / manual 的 config 由后端补 token，前端不填。
+        // 也不再写 config.vars：别名表整个删除了。
 
         const body = { name: name, kind: kind, config: config, enabled: enabled, targets: targets };
         const btn = document.getElementById("modal-save");
@@ -1709,16 +1607,18 @@
         const paths = SAMPLE_PAYLOAD ? flattenPaths(SAMPLE_PAYLOAD, "") : [];
 
         if (!paths.length) {
-          const hint =
-            kind === "webhook"
-              ? t(
-                  "sources.form.av_no_event_hook",
-                  "还没有收到过事件。配好回调地址后让外部系统发一次，这里会列出真实字段。",
-                )
-              : t(
-                  "sources.form.av_no_event",
-                  "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。",
-                );
+          // github / webhook 是有外部事件的：如实说"还没收到过"。
+          // cron / manual 确实没有事件，说清"只能写字面量"。
+          const isHook = kind === "github" || kind === "webhook";
+          const hint = isHook
+            ? t(
+                "sources.form.av_no_event_hook",
+                "还没有收到过事件。配好回调地址后让外部系统发一次，这里会列出真实字段。",
+              )
+            : t(
+                "sources.form.av_no_event",
+                "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。",
+              );
           body.appendChild(el("div", "av-empty", hint));
           return;
         }
@@ -1729,21 +1629,12 @@
           btn.type = "button";
           btn.title = t("sources.form.av_fill", "点一下填入第一个空缺的别名");
           btn.addEventListener("click", () => {
-            // 填进第一个还没有来源的别名行；没有就新加一行
-            let rowEl = [...document.querySelectorAll(".var-row")].find((r) => {
-              const val = r.querySelectorAll("input")[1];
-              return val && !val.value.trim();
-            });
-            if (!rowEl) {
-              VAR_DEFS.push({ name: "", from: "" });
-              renderVars();
-              rowEl = document.querySelector(".var-row:last-child");
+            // 复制到剪贴板：清单是只读参考，实际取值请用参数框的
+            // 点选补全（打双大括号弹出同一份字段）。
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(TPL(it.path)).catch(() => {});
+              toast(t("sources.form.av_copied", "已复制，粘到参数里即可"));
             }
-            if (!rowEl) return;
-            const val = rowEl.querySelectorAll("input")[1];
-            val.value = it.path;
-            val.dispatchEvent(new Event("input", { bubbles: true }));
-            val.focus();
           });
           row.appendChild(btn);
           row.appendChild(el("span", "av-desc", pickValueText(it.value)));
@@ -1928,12 +1819,12 @@
       /** collectDraft 把弹窗当前内容收集成一份"草稿源"（未保存也能试运行）。 */
       function collectDraft() {
         const kind = document.getElementById("f-kind").value;
-        const vars = collectVars();
-        const targets = collectTargets(vars);
+        const targets = collectTargets();
         return {
           name: document.getElementById("f-name").value.trim(),
           kind: kind,
-          config: { vars: vars, expr: document.getElementById("f-expr").value.trim() },
+          // 不再有 config.vars：别名表已删除，参数直接写完整 payload 路径。
+          config: { expr: document.getElementById("f-expr").value.trim() },
           targets: targets,
         };
       }
@@ -1946,7 +1837,7 @@
         try {
           draft = collectDraft();
         } catch (e) {
-          // collectVars/collectTargets 抛的是配置错误（未声明别名、占位符没闭合…），
+          // collectTargets 抛的是配置错误（占位符没闭合、字段名非法…），
           // 直接显示在这里比弹 toast 更好：位置就在按钮旁边。
           renderDryError(box, e.message);
           return;
@@ -2057,16 +1948,7 @@
         kindEl.disabled = false; // 编辑态可能是禁用的，演示要能切
         syncKindFields();
 
-        // 2) 别名：把 GitHub 的深层路径收敛成短名字。
-        //    注意别名表**只做重命名**，不承载数据 —— 常量（如 staging）
-        //    直接写在参数里，不需要先起个名字。
-        VAR_DEFS = [
-          { name: "number", from: "pull_request.number" },
-          { name: "title", from: "pull_request.title" },
-          { name: "author", from: "pull_request.user.login" },
-          { name: "lines", from: "pull_request.additions" },
-        ];
-        renderVars();
+        // 2) 不再需要声明别名：参数里直接写完整路径（点选补全会给）。
 
         // 3) 选一个"有参数"的出口能力，把每个参数都接上变量。
         //
@@ -2182,10 +2064,6 @@
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
       document.getElementById("modal-save").addEventListener("click", save);
       document.getElementById("f-kind").addEventListener("change", syncKindFields);
-      document.getElementById("btn-add-var").addEventListener("click", () => {
-        VAR_DEFS.push({ name: "", from: "" });
-        renderVars();
-      });
 
       // 预设表达式按钮
       document.querySelectorAll("[data-expr]").forEach((b) => {
