@@ -278,6 +278,30 @@ export function findFreePort(base) {
 	});
 }
 
+// LIVE_SERVERS 记录本进程启动过的 server 子进程。
+//
+// 为什么需要：套件正常结束时自己会调 stop()，但**并行运行器超时用的是
+// SIGKILL**——那时 stop() 永远执行不到，server 进程会一直活着占着端口和
+// 内存。曾经因此累积了 138 个孤儿进程、1.9GB 常驻内存，把后续
+// `make e2e` 逼到随机失败（表现是多个套件"0通过/0失败"，看起来像
+// 代码问题，其实是资源被自己人吃光了）。
+const LIVE_SERVERS = new Set();
+let exitHookInstalled = false;
+function installExitHook() {
+	if (exitHookInstalled) return;
+	exitHookInstalled = true;
+	const killAll = () => {
+		for (const proc of LIVE_SERVERS) {
+			try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+		}
+		LIVE_SERVERS.clear();
+	};
+	// exit 只能做同步操作，正好 kill 是同步的
+	process.on("exit", killAll);
+	process.on("SIGTERM", () => { killAll(); process.exit(1); });
+	process.on("SIGINT", () => { killAll(); process.exit(1); });
+}
+
 // ---------- 服务生命周期 ----------
 // startServer({port, suiteName, portOffset, rpId, extraEnv}) → {base, dbPath, stop()}
 // port: 显式指定端口（向后兼容，优先级最高）
@@ -325,7 +349,10 @@ export async function startServer({
 			},
 			extraEnv,
 		);
+		installExitHook();
 		const proc = spawn(BIN, [], { env, stdio: ["ignore", "pipe", "pipe"] });
+		LIVE_SERVERS.add(proc);
+		proc.on("exit", () => LIVE_SERVERS.delete(proc));
 		let logBuf = "";
 		proc.stdout.on("data", (d) => { logBuf += d; });
 		proc.stderr.on("data", (d) => { logBuf += d; });
@@ -354,6 +381,31 @@ export async function startServer({
 				log: () => logBuf,
 				stop: () => {
 					try { proc.kill(); } catch { /* ignore */ }
+					LIVE_SERVERS.delete(proc);
+					// 等进程真的退出再返回。
+					//
+					// 为什么必须等：不等的话下一个套件用相邻端口启动时，
+					// 可能碰上还没退出的旧进程 —— 表现为 ECONNREFUSED 或
+					// bind 失败。这种"随机失败"极难查（曾经被误判成机器慢）。
+					//
+					// 用 process.kill(pid, 0) 探测而不是看 proc.exitCode：
+					// stop() 是同步的，同步忙等会阻塞事件循环，exitCode
+					// 永远不会更新。而 kill(pid,0) 是直接的系统调用，
+					// 进程不在了就抛 ESRCH。
+					const deadline = Date.now() + 3000;
+					for (;;) {
+						try {
+							process.kill(proc.pid, 0);
+						} catch {
+							break; // 已退出
+						}
+						if (Date.now() > deadline) {
+							try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+							break;
+						}
+						const until = Date.now() + 10;
+						while (Date.now() < until) { /* 短忙等 10ms */ }
+					}
 					rmSync(tmp, { recursive: true, force: true });
 				},
 			};
