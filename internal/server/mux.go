@@ -271,6 +271,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("PATCH /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
 	mux.Handle("DELETE /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
 	mux.Handle("POST /v1/sources/{id}/fire", noStore(sessMW(http.HandlerFunc(srcH.fire))))
+	mux.Handle("POST /v1/sources/{id}/dry-run", noStore(sessMW(http.HandlerFunc(srcH.dryRun))))
+	// 草稿试运行：还没保存的配置也能先验一遍（弹窗里改完就想试）
+	mux.Handle("POST /v1/sources/dry-run", noStore(sessMW(http.HandlerFunc(srcH.dryRun))))
 	// webhook 入口**不需要会话**：鉴权是 URL 里的 token。
 	// 外部系统（GitHub / 监控告警）不可能带我们的 Cookie。
 	mux.Handle("POST /v1/hooks/{token}", noStore(http.HandlerFunc(srcH.hook)))

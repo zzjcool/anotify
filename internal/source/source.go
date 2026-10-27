@@ -71,6 +71,39 @@ type FireResult struct {
 	Idempotent bool `json:"idempotent"`
 }
 
+// DryRun 试运行：用给定 payload 算出"会派发什么、会剪枝什么"，**不落库**。
+//
+// 和 Fire 共用 Dispatcher.Dispatch（只差 DryRun 标志），所以试运行和真实
+// 触发不会给出不同判定 —— 那种"试运行说能跑、真点却剪枝"的差异会直接
+// 摧毁用户对这套配置的信任。
+//
+// 不检查 src.Enabled：停用状态下也应该能试运行，否则用户没法先验证
+// 再启用。
+func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType string, payload json.RawMessage) (*route.DispatchOutput, error) {
+	if src == nil {
+		return nil, fmt.Errorf("source: nil source")
+	}
+	if eventType == "" {
+		eventType = src.Name
+	}
+	if len(payload) == 0 || !json.Valid(payload) {
+		payload = json.RawMessage(`{}`)
+	}
+	if len(src.Targets) == 0 {
+		return nil, fmt.Errorf("source: %s 没有出口能力（source_targets 为空）", src.Name)
+	}
+	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
+		OrgID:        src.OrgID,
+		TraceID:      "dryrun", // 不落库，trace 只是占位（Dispatch 要求非空）
+		Params:       extractParams(payload),
+		Targets:      src.TargetIDs(),
+		TargetParams: src.TargetParamsMap(),
+		Out:          eventType,
+		Path:         nil,
+		DryRun:       true,
+	})
+}
+
 // Fire 触发一个源：写事件 + 派给它的出口能力。
 //
 // eventType 是这次事件的类型（写进 events.type）。它同时会作为

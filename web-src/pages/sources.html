@@ -234,6 +234,108 @@
         color: var(--danger, #f87171);
       }
 
+      /* ---------- 字段浮层（点选插入）---------- */
+      .pick-pop {
+        position: fixed;
+        z-index: 80;
+        min-width: 16rem;
+        max-width: 26rem;
+        max-height: 16rem;
+        overflow-y: auto;
+        padding: 0.3rem;
+        border-radius: 0.5rem;
+        border: 1px solid var(--line);
+        background: var(--panel-modal, #18181b);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        font-size: 0.7rem;
+      }
+      .pick-row {
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+        width: 100%;
+        padding: 0.2rem 0.35rem;
+        border-radius: 0.3rem;
+        text-align: left;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        color: var(--fg);
+      }
+      .pick-row:hover,
+      .pick-row.is-active {
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+      }
+      .pick-path {
+        font-family: var(--mono);
+        color: var(--accent);
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pick-val {
+        color: var(--muted, #a1a1aa);
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        max-width: 9rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pick-empty {
+        padding: 0.4rem;
+        color: var(--faint);
+      }
+
+      /* ---------- 试运行结果 ---------- */
+      .dry-result {
+        margin-top: 0.75rem;
+        padding: 0.6rem 0.75rem;
+        border-radius: 0.5rem;
+        border: 1px solid var(--line);
+        background: color-mix(in srgb, var(--surface-1) 60%, transparent);
+        font-size: 0.7rem;
+        line-height: 1.6;
+        max-height: 14rem;
+        overflow-y: auto;
+      }
+      .dry-head {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-weight: 500;
+        margin-bottom: 0.4rem;
+        color: var(--fg);
+      }
+      .dry-row {
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+        padding: 0.15rem 0;
+      }
+      .dry-row.is-ok {
+        color: var(--ok, #34d399);
+      }
+      .dry-row.is-bad {
+        color: var(--danger, #f87171);
+      }
+      .dry-cap {
+        font-family: var(--mono);
+        color: var(--fg);
+      }
+      .dry-detail {
+        color: var(--faint);
+        font-size: 0.65rem;
+      }
+      .dry-params {
+        margin-left: 1rem;
+        color: var(--muted, #a1a1aa);
+        font-size: 0.65rem;
+        font-family: var(--mono);
+      }
+
       /* ---------- 流向图（只读预览）----------
        *
        * 不用 SVG 画曲线：我们要表达的是"从源出发能到达哪些能力、经过哪些出口"，
@@ -468,7 +570,15 @@
       </label>
     </div>
 
+    <!-- 试运行结果：保存前先看"这条配置会不会真的跑起来"。
+         和真实触发的判定共用 planDispatch，所以不会出现
+         "试运行说能跑、真点却剪枝"的差异。 -->
+    <div id="dry-result" class="dry-result hidden"></div>
+
     <div class="mt-4 flex items-center justify-end gap-2">
+      <button id="btn-dry" class="btn-ghost rounded-xl px-4 py-2 text-sm">
+        {{t "sources.form.dry_run"}}
+      </button>
       <button id="modal-cancel" class="btn-ghost rounded-xl px-4 py-2 text-sm">
         {{t "sources.form.cancel"}}
       </button>
@@ -1364,6 +1474,12 @@
             }
           };
           input.addEventListener("input", updateTip);
+          // 打「双大括号」时弹出真实字段清单，点一下插入 —— 不用手打
+          // pull_request.user.login 这种路径。只在文本类输入框上装
+          // （select / checkbox 没有可插入的文本）。
+          if (input.tagName === "INPUT" && input.type !== "checkbox") {
+            hookPick(input);
+          }
           updateTip();
 
           field.appendChild(input);
@@ -1576,69 +1692,61 @@
       //   - 新建源时还没有任何事件，无从反推
       //   - payload 形状由外部系统决定，中枢不解释、也不该猜（I6）
       //   - 给常见路径 + 让人能自由手填，比"猜"更诚实
-      const AVAIL_VARS = {
-        webhook: [
-          { path: "pull_request.title", desc: "PR 标题（GitHub）" },
-          { path: "pull_request.number", desc: "PR 编号" },
-          { path: "pull_request.additions", desc: "新增行数" },
-          { path: "pull_request.deletions", desc: "删除行数" },
-          { path: "pull_request.user.login", desc: "作者登录名" },
-          { path: "pull_request.head.ref", desc: "源分支名" },
-          { path: "pull_request.base.ref", desc: "目标分支名" },
-          { path: "repository.name", desc: "仓库名" },
-          { path: "repository.full_name", desc: "仓库全名 owner/repo" },
-          { path: "action", desc: "动作，如 opened / synchronize" },
-        ],
-        cron: [
-          { path: "(无)", desc: "定时器没有外部事件，变量只能用固定值" },
-        ],
-        manual: [
-          { path: "(无)", desc: "手动触发没有外部事件，变量只能用固定值" },
-        ],
-      };
-
-      // renderAvailVars 按当前 kind 渲染清单。点路径会填进"第一个还没填
-      // 来源的变量行的值框"，省得手打。
+      // renderAvailVars 渲染"这个触发方式能提供哪些字段"。
+      //
+      // **不再有硬编码清单**：字段列表直接来自这个源最近一条真实事件
+      // （SAMPLE_PAYLOAD）。原来的 10 条 GitHub PR 路径只覆盖一种 payload
+      // 形状，接 GitLab / 自定义系统时全是错的 —— 而 payload 的形状由
+      // 外部系统决定，中枢不该猜（I6）。
+      //
+      // 没有样本时如实说明"还没有事件"，而不是编一份可能不对的清单。
       function renderAvailVars() {
         const body = document.getElementById("avail-vars-body");
         if (!body) return;
         body.replaceChildren();
-        const kind = document.getElementById("f-kind").value;
-        const list = AVAIL_VARS[kind] || [];
-        const noneOnly = list.length === 1 && list[0].path === "(无)";
 
-        if (noneOnly) {
-          body.appendChild(el("div", "av-empty", list[0].desc));
+        const kind = document.getElementById("f-kind").value;
+        const paths = SAMPLE_PAYLOAD ? flattenPaths(SAMPLE_PAYLOAD, "") : [];
+
+        if (!paths.length) {
+          const hint =
+            kind === "webhook"
+              ? t(
+                  "sources.form.av_no_event_hook",
+                  "还没有收到过事件。配好回调地址后让外部系统发一次，这里会列出真实字段。",
+                )
+              : t(
+                  "sources.form.av_no_event",
+                  "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。",
+                );
+          body.appendChild(el("div", "av-empty", hint));
           return;
         }
 
-        for (const item of list) {
+        for (const it of paths.slice(0, 80)) {
           const row = el("div", "av-row");
-          const btn = el("button", "av-path", item.path);
+          const btn = el("button", "av-path", it.path);
           btn.type = "button";
-          btn.title = t("sources.form.av_fill", "点一下填入变量的来源");
+          btn.title = t("sources.form.av_fill", "点一下填入第一个空缺的别名");
           btn.addEventListener("click", () => {
-            // 找第一个"从事件取"且来源为空的变量行；没有就新加一行
+            // 填进第一个还没有来源的别名行；没有就新加一行
             let rowEl = [...document.querySelectorAll(".var-row")].find((r) => {
-              const sel = r.querySelector("select");
               const val = r.querySelectorAll("input")[1];
-              return sel && sel.value === "from" && !val.value.trim();
+              return val && !val.value.trim();
             });
             if (!rowEl) {
-              if (!VAR_DEFS.length) {
-                VAR_DEFS.push({ name: "", from: "" });
-                renderVars();
-              }
+              VAR_DEFS.push({ name: "", from: "" });
+              renderVars();
               rowEl = document.querySelector(".var-row:last-child");
             }
             if (!rowEl) return;
             const val = rowEl.querySelectorAll("input")[1];
-            val.value = item.path;
+            val.value = it.path;
             val.dispatchEvent(new Event("input", { bubbles: true }));
             val.focus();
           });
           row.appendChild(btn);
-          row.appendChild(el("span", "av-desc", item.desc));
+          row.appendChild(el("span", "av-desc", pickValueText(it.value)));
           body.appendChild(row);
         }
       }
@@ -1651,6 +1759,293 @@
       //
       // 铺出来的这套是**可用的**（不是纯占位）：保存后点「立即运行」就能
       // 在 mock 里跑通，因为 webhook 的 payload 结构就是 GitHub 的 PR 事件。
+      // ---------- 字段浮层：在参数框里点选插入 ----------
+      //
+      // 用户不该手打 pull_request.user.login。在参数框里打「双大括号」时
+      // 弹出**真实样本里的字段清单**（来自最近一条事件），点一下插入。
+      //
+      // 为什么用真实样本而不是固定清单：payload 形状由外部系统决定，
+      // 硬编码一份 GitHub 的字段在接 GitLab / 自定义系统时就是错的。
+      //
+      // 这一条让「别名表」失去主要价值：别名原本的意义是"不用记深层路径"，
+      // 而补全直接解决了。别名现在只用于"改一处生效多处"。
+
+      let PICK = null; // {el, input, items, active}
+
+      /** flattenPaths 把样本 payload 摊平成 [{path, value}]。 */
+      function flattenPaths(obj, prefix) {
+        const out = [];
+        if (!obj || typeof obj !== "object") return out;
+        for (const [k, v] of Object.entries(obj)) {
+          const path = prefix ? prefix + "." + k : k;
+          if (v && typeof v === "object" && !Array.isArray(v)) {
+            const kids = flattenPaths(v, path);
+            if (kids.length) {
+              out.push(...kids);
+              continue;
+            }
+          }
+          out.push({ path, value: v });
+        }
+        return out;
+      }
+
+      /** pickValueText 把值渲染成一小段预览。 */
+      function pickValueText(v) {
+        if (v === null) return "null";
+        if (typeof v === "object") return JSON.stringify(v);
+        return String(v);
+      }
+
+      function closePick() {
+        if (PICK && PICK.el && PICK.el.parentNode) PICK.el.parentNode.removeChild(PICK.el);
+        PICK = null;
+      }
+
+      /** openPick 在输入框下方弹出字段清单，定位到光标附近。 */
+      function openPick(input, filter) {
+        closePick();
+        const all = SAMPLE_PAYLOAD ? flattenPaths(SAMPLE_PAYLOAD, "") : [];
+        const q = String(filter || "").toLowerCase();
+        const items = q ? all.filter((x) => x.path.toLowerCase().includes(q)) : all;
+
+        const pop = el("div", "pick-pop");
+        if (!all.length) {
+          pop.appendChild(
+            el("div", "pick-empty", t("sources.form.pick_no_sample", "还没有事件可当样本")),
+          );
+        } else if (!items.length) {
+          pop.appendChild(
+            el("div", "pick-empty", t("sources.form.pick_none", "没有匹配的字段")),
+          );
+        } else {
+          items.slice(0, 60).forEach((it, i) => {
+            const row = document.createElement("button");
+            row.type = "button";
+            row.className = "pick-row";
+            if (i === 0) row.classList.add("is-active");
+            row.dataset.path = it.path;
+            row.appendChild(el("span", "pick-path", it.path));
+            row.appendChild(el("span", "pick-val", pickValueText(it.value)));
+            row.addEventListener("mousedown", (ev) => {
+              // mousedown 而不是 click：click 前 input 会先失焦
+              ev.preventDefault();
+              insertPick(it.path);
+            });
+            pop.appendChild(row);
+          });
+        }
+
+        document.body.appendChild(pop);
+        const rect = input.getBoundingClientRect();
+        pop.style.left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12) + "px";
+        pop.style.top = rect.bottom + 4 + "px";
+
+        PICK = { el: pop, input: input, items: items, active: 0 };
+      }
+
+      /** insertPick 用完整引用替换输入端里正在输入的那半截占位符。 */
+      function insertPick(path) {
+        if (!PICK) return;
+        const input = PICK.input;
+        const v = input.value;
+        const caret = input.selectionStart == null ? v.length : input.selectionStart;
+        // 从光标往前找最近一个未闭合的开括号
+        const before = v.slice(0, caret);
+        const idx = before.lastIndexOf(TPL_OPEN);
+        const text = TPL(path);
+        let next;
+        if (idx >= 0) {
+          // 吃掉已输入的部分（含可能存在的结尾 }}
+          const tail = v.slice(caret);
+          const closeAt = tail.indexOf(TPL_CLOSE);
+          const rest = closeAt >= 0 ? tail.slice(closeAt + TPL_CLOSE.length) : tail;
+          next = v.slice(0, idx) + text + rest;
+        } else {
+          next = v + text;
+        }
+        input.value = next;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        closePick();
+        input.focus();
+        const pos = next.length;
+        try {
+          input.setSelectionRange(pos, pos);
+        } catch (e) {
+          /* select 元素不支持 setSelectionRange */
+        }
+      }
+
+      /** hookPick 给一个文本输入框装上"打双大括号就弹清单"的行为。 */
+      function hookPick(input) {
+        input.addEventListener("input", () => {
+          const v = input.value;
+          const caret = input.selectionStart == null ? v.length : input.selectionStart;
+          const before = v.slice(0, caret);
+          const idx = before.lastIndexOf(TPL_OPEN);
+          if (idx < 0) {
+            closePick();
+            return;
+          }
+          const seg = before.slice(idx + TPL_OPEN.length);
+          // 已经写完了（出现了闭括号）就不再弹
+          if (seg.includes(TPL_CLOSE) || seg.includes(" ") || seg.length > 60) {
+            closePick();
+            return;
+          }
+          openPick(input, seg);
+        });
+        input.addEventListener("keydown", (ev) => {
+          if (!PICK || PICK.input !== input) return;
+          if (ev.key === "Escape") {
+            closePick();
+            ev.preventDefault();
+            return;
+          }
+          const rows = [...PICK.el.querySelectorAll(".pick-row")];
+          if (!rows.length) return;
+          if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+            ev.preventDefault();
+            PICK.active = (PICK.active + (ev.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
+            rows.forEach((r, i) => r.classList.toggle("is-active", i === PICK.active));
+            rows[PICK.active].scrollIntoView({ block: "nearest" });
+          } else if (ev.key === "Enter" || ev.key === "Tab") {
+            ev.preventDefault();
+            const r = rows[PICK.active] || rows[0];
+            insertPick(r.dataset.path);
+          }
+        });
+        input.addEventListener("blur", () => setTimeout(closePick, 120));
+      }
+
+      // ---------- 试运行 ----------
+      //
+      // 保存前先看"这条配置会不会真的跑起来"。用户改完参数最想知道的就是这个，
+      // 而在此之前只能先保存再点"立即运行"，错了再去事件流里找剪枝原因。
+      //
+      // 判定由后端 planDispatch/Dispatch(DryRun) 给，与真实触发同一份实现。
+
+      /** collectDraft 把弹窗当前内容收集成一份"草稿源"（未保存也能试运行）。 */
+      function collectDraft() {
+        const kind = document.getElementById("f-kind").value;
+        const vars = collectVars();
+        const targets = collectTargets(vars);
+        return {
+          name: document.getElementById("f-name").value.trim(),
+          kind: kind,
+          config: { vars: vars, expr: document.getElementById("f-expr").value.trim() },
+          targets: targets,
+        };
+      }
+
+      /** runDry 执行试运行并把结果渲染进 #dry-result。 */
+      async function runDry() {
+        const box = document.getElementById("dry-result");
+        const btn = document.getElementById("btn-dry");
+        let draft;
+        try {
+          draft = collectDraft();
+        } catch (e) {
+          // collectVars/collectTargets 抛的是配置错误（未声明别名、占位符没闭合…），
+          // 直接显示在这里比弹 toast 更好：位置就在按钮旁边。
+          renderDryError(box, e.message);
+          return;
+        }
+        if (!draft.targets.length) {
+          renderDryError(box, t("sources.form.dry_no_target", "先勾选至少一个出口能力"));
+          return;
+        }
+
+        btn.disabled = true;
+        const old = btn.textContent;
+        btn.textContent = t("sources.form.dry_running", "试运行中…");
+        try {
+          // 用最近一条真实事件当样本；没有就空 payload（会如实报取不到）
+          const payload = SAMPLE_PAYLOAD || {};
+          const r = await Anotify.api(
+            API + "/sources/dry-run",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                source: draft,
+                payload: payload,
+              }),
+            },
+            location.protocol === "file:" ? true : null,
+          );
+          renderDryResult(box, r, draft);
+        } catch (e) {
+          renderDryError(box, String(e.message || e));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = old;
+        }
+      }
+
+      function renderDryError(box, msg) {
+        box.classList.remove("hidden");
+        box.replaceChildren();
+        const row = el("div", "dry-row is-bad");
+        row.appendChild(el("span", "", "✕"));
+        row.appendChild(el("span", "", msg));
+        box.appendChild(row);
+      }
+
+      function renderDryResult(box, r, draft) {
+        box.classList.remove("hidden");
+        box.replaceChildren();
+        const d = r.dispatch || {};
+        const tasks = d.tasks || [];
+        const pruned = d.pruned || [];
+
+        const head = el("div", "dry-head");
+        if (tasks.length) {
+          head.appendChild(el("span", "", "✓"));
+          head.appendChild(
+            el(
+              "span",
+              "",
+              t("sources.form.dry_will_run", "会派发 {n} 个出口")
+                .replace("{n}", tasks.length)
+                + (pruned.length ? t("sources.form.dry_and_pruned", "，{n} 个被跳过").replace("{n}", pruned.length) : ""),
+            ),
+          );
+        } else {
+          head.appendChild(el("span", "", "⚠"));
+          head.appendChild(
+            el("span", "", t("sources.form.dry_nothing", "没有出口会派发（全部被跳过）")),
+          );
+        }
+        box.appendChild(head);
+
+        for (const tk of tasks) {
+          const row = el("div", "dry-row is-ok");
+          row.appendChild(el("span", "", "✓"));
+          row.appendChild(el("span", "dry-cap", tk.capability + "@" + tk.version));
+          box.appendChild(row);
+          // 求值后的参数：这是"试运行"最有价值的部分 —— 能直接看到
+          // 别名引用最后变成了具体值 31
+          if (tk.params && Object.keys(tk.params).length) {
+            for (const [k, v] of Object.entries(tk.params)) {
+              const p = el("div", "dry-params");
+              p.textContent = k + " = " + JSON.stringify(v);
+              box.appendChild(p);
+            }
+          }
+        }
+
+        for (const pr of pruned) {
+          const row = el("div", "dry-row is-bad");
+          row.appendChild(el("span", "", "⊘"));
+          row.appendChild(
+            el("span", "dry-cap", (pr.capability || pr.capabilityId || "—") + "  "),
+          );
+          row.appendChild(el("span", "dry-detail", pr.detail || pr.reason));
+          box.appendChild(row);
+        }
+      }
+
       function fillDemo() {
         // 1) 名字与 kind：webhook 才有"从事件取"的意义
         document.getElementById("f-name").value = t(
@@ -1769,6 +2164,7 @@
         openModal(null);
       });
       document.getElementById("btn-demo").addEventListener("click", fillDemo);
+      document.getElementById("btn-dry").addEventListener("click", runDry);
       document.getElementById("btn-copy-hook").addEventListener("click", async () => {
         const url = document.getElementById("hook-url-val").textContent;
         if (!url || !document.getElementById("hook-url-box").dataset.ready) {

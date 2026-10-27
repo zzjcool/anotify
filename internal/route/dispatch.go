@@ -47,6 +47,15 @@ type DispatchInput struct {
 	// 某目标没有条目时回退到 Params（保持对 events / 普通派发的兼容）。
 	TargetParams map[string]map[string]any
 
+	// DryRun 为 true 时只算"会派发什么、会剪枝什么"，**不落库、不推送**。
+	//
+	// 给「试运行」用：用户改完参数，保存前想看到"这条配置到底能不能跑"。
+	// 复用 Dispatch 的同一套判定，所以试运行和真实触发不会出现分歧
+	// （那种"试运行说能跑、真点却剪枝"的差异最伤信任）。
+	//
+	// DryRun 下 Tasks 里的任务只有能力/参数/节点信息，ID 等字段为空。
+	DryRun bool
+
 	// Targets 非空时**跳过 edges 查表**，直接把事件派给这些能力。
 	//
 	// 这是「源」（source）用的路径：源不建边，它自己就是起点，出口是
@@ -292,6 +301,20 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 	}
 
 	if len(candidates) == 0 {
+		return out, nil
+	}
+
+	// DryRun 在这里返回：判定已经做完（目标存在、参数过、节点在线），
+	// 但**不占槽位、不建任务、不推送**。这正好是"试运行"要的信息。
+	if in.DryRun {
+		for _, c := range candidates {
+			out.Tasks = append(out.Tasks, &store.Task{
+				CapabilityID: c.cap.ID,
+				Capability:   c.cap.Name,
+				Version:      c.cap.Version,
+				Status:       store.TaskPending,
+			})
+		}
 		return out, nil
 	}
 
