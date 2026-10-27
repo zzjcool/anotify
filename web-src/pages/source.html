@@ -128,31 +128,6 @@
         opacity: 1;
         transform: translateY(0);
       }
-      /* 变量表：$name = 来源。出口参数里的 `← $name` 指的就是这里，
-         不显示出来用户无从知道变量来自哪。 */
-      .var-kv {
-        display: grid;
-        gap: 0.2rem;
-      }
-      .var-kv-row {
-        display: flex;
-        align-items: baseline;
-        gap: 0.3rem;
-        font-family: var(--mono, ui-monospace, monospace);
-        font-size: 0.7rem;
-      }
-      .var-kv-name {
-        color: var(--accent);
-      }
-      .var-kv-eq {
-        color: var(--faint);
-      }
-      .var-kv-path {
-        color: var(--muted);
-      }
-      .var-kv-lit {
-        color: #7dd3a8;
-      }
     </style>
 {{end}}
 
@@ -438,21 +413,6 @@
           );
           if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
         }
-        // 别名表：短名字 → payload 路径。出口参数里引用别名时，
-        // 用户需要能看到它到底指向哪里。
-        const varDefs = Array.isArray(cfg.vars) ? cfg.vars : [];
-        if (varDefs.length) {
-          const box = el("div", "var-kv");
-          for (const v of varDefs) {
-            const line = el("div", "var-kv-row");
-            line.appendChild(el("span", "var-kv-name", v.name));
-            line.appendChild(el("span", "var-kv-eq", "="));
-            line.appendChild(el("span", "var-kv-path", v.from));
-            box.appendChild(line);
-          }
-          add(t("srcpage.vars", "变量"), box);
-        }
-
         add(t("srcpage.created", "创建时间"), fmtTime(SRC.createdAt));
 
         c.appendChild(dl);

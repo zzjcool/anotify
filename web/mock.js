@@ -414,9 +414,6 @@
 				config: {
 					expr: "0 3 * * *",
 					tz: "Local",
-					// cron 没有请求体，所以没有别名可声明（别名指向 payload 路径）。
-					// 常量直接写在参数里就行 —— 不需要先起个名字。
-					vars: [],
 				},
 				enabled: true,
 				lastFiredAt: now() - 3600 * 9,
@@ -437,14 +434,6 @@
 				config: {
 					token: "src_mocktoken_abc123",
 					// 变量把 GitHub 那套深层路径收敛成几个短名字。
-					// 出口参数里只写 {var:"lines"}，不用记
-					// pull_request.additions 这种路径，改的时候也只改这里。
-					vars: [
-						{ name: "lines", from: "pull_request.additions" },
-						{ name: "repo", from: "repository.name" },
-						{ name: "title", from: "pull_request.title" },
-						{ name: "author", from: "pull_request.user.login" },
-					],
 				},
 				enabled: true,
 				lastFiredAt: now() - 600,
@@ -453,9 +442,10 @@
 				targets: [
 					{
 						capabilityId: analyze.id,
-						params: { changedLines: "{{lines}}", repo: "{{repo}}" },
+						// 别名表已删除：参数直接写完整 payload 路径
+						params: { changedLines: "{{pull_request.additions}}", repo: "{{repository.name}}" },
 					},
-					{ capabilityId: deploy.id, params: { env: "{{env}}" } },
+					{ capabilityId: deploy.id, params: { env: "staging" } },
 				],
 			},
 			{
@@ -464,8 +454,7 @@
 				name: "发布审批",
 				kind: "manual",
 				config: {
-					// 手动触发同样没有外部 payload，全用字面量。
-					vars: [],
+					// 手动触发没有外部 payload，全用字面量。
 				},
 				enabled: false,
 				lastFiredAt: null,
@@ -1131,7 +1120,6 @@
 	// ---------- 模板引用 ----------
 	//
 	//   "{{pull_request.title}}"   → 取 payload.pull_request.title
-	//   "{{author}}"               → 先查别名表（config.vars），命中就用它
 	//   "PR #{{number}}: {{title}}" → 模板拼接
 	//   "prod"                     → 字面量，原样传
 	//
@@ -1198,44 +1186,63 @@
 		PLACEHOLDER_RE.lastIndex = 0;
 		return { text: out, missing };
 	}
-	// resolveVars 把源声明的变量表求值成 {name: value}。
+	// coerceValue 按目标类型转换一个求值结果；转不了返回 undefined（上层剪枝）。
 	//
-	// 变量定义（存在 sources.config.vars 里，纯数据列，不需要改表）：
-	//   [{ name:"title",  from:"pull_request.title" }]         ← 从 payload 取
-	//   [{ name:"env",    value:"prod" }]                      ← 字面量
-	//
-	// 返回 {values, missing}：missing 是"声明了 from 但这个 payload 里没有"的变量名，
-	// 由调用方决定是报错还是放过（出口参数若是字面量、不引用它，就不该因此失败）。
-	// resolveVars 把源的**别名表**求值成 {name: value}。
-	//
-	// 别名表不承载数据 —— 它只是 "短名字 → payload 路径" 的映射：
-	//
-	//   vars: [{ name:"author", from:"pull_request.user.login" }]
-	//   参数里 {{author}}  ===  {{pull_request.user.login}}
-	//
-	// 为什么不再有 { name, value } 这种"固定值变量"：
-	// 那种东西和 cron 的 config.payload 重复存了同一份数据（前端要
-	// 把 value 型变量再折算回 payload，两处都写）。常量直接写在参数里
-	// 就行（"env": "staging"），不需要先起个名字。
-	//
-	// 老配置里的 {name, value} 仍然认（转成常量值），只是不再推荐。
-	function resolveVars(varDefs, payload) {
-		const values = {};
-		const missing = [];
-		for (const d of varDefs || []) {
-			if (!d || typeof d.name !== "string" || !d.name) continue;
-			const got = getPath(payload, d.from);
-			if (got !== undefined) {
-				values[d.name] = clone(got);
-			} else {
-				missing.push(d.name);
+	// 为什么需要：整值引用保留原类型（数字还是数字），但混写模板
+	// 一定是字符串。如果目标字段声明 integer，字符串 "31" 应该能转成
+	// 31（模板拼出来的数字很正常），而 "abc" 转不了 —— 那种情况必须
+	// 剪枝报错，不能静默传一个类型不对的值下去。
+	function coerceValue(v, wantAs) {
+		if (!wantAs) return v;
+		if (wantAs === "integer" || wantAs === "number") {
+			if (typeof v === "number") return v;
+			if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+				return Number(v);
 			}
+			// boolean/object 转数字没有意义，但也别一律拒绝：
+			// true/false 在 JSON 里等价 1/0，是常见写法
+			if (typeof v === "boolean") return v ? 1 : 0;
+			return undefined;
 		}
-		return { values, missing };
+		if (wantAs === "boolean") {
+			if (typeof v === "boolean") return v;
+			if (v === "true" || v === 1) return true;
+			if (v === "false" || v === 0) return false;
+			return undefined;
+		}
+		if (wantAs === "string") {
+			if (typeof v === "string") return v;
+			if (v === null || v === undefined) return undefined;
+			if (typeof v === "object") return JSON.stringify(v);
+			return String(v);
+		}
+		// array / object：只能接受已经是该形状的值
+		if (wantAs === "array") return Array.isArray(v) ? v : undefined;
+		if (wantAs === "object") {
+			return v && typeof v === "object" && !Array.isArray(v) ? v : undefined;
+		}
+		return v;
 	}
 
-	// getPath 按点号路径从对象里取值。数组用数字下标（items.0.name）。
-	// 任何一段取不到都返回 undefined（不抛错：payload 来自外部，形状不受控）。
+	// schemaPropType 取某个字段在 params_schema 里声明的类型（取不到返回 undefined）。
+	//
+	// 参数值可能来自模板求值，类型是"求出来才知道"的：同一个
+	// {{pull_request.additions}} 既可能是数字也可能被拼进字符串。
+	// 目标字段需要什么类型，只能问 schema。
+	function schemaPropType(cap, field) {
+		const sc = cap && cap.paramsSchema;
+		if (!sc || typeof sc !== "object") return undefined;
+		const props = sc.properties;
+		if (!props || typeof props !== "object") return undefined;
+		const p = props[field];
+		return p && typeof p === "object" ? p.type : undefined;
+	}
+
+	// getPath 按点号路径从对象取值（"a.b.0.c"），取不到返回 undefined。
+	//
+	// 只用 hasOwnProperty 判断存在性：`payload.constructor` / `__proto__`
+	// 这类键不能从原型链上取到值（否则一个精心构造的 payload 能读到
+	// Object.prototype 上的东西）。
 	function getPath(obj, path) {
 		if (!obj || typeof obj !== "object") return undefined;
 		let cur = obj;
@@ -1260,29 +1267,15 @@
 	// 返回 {params, used, missing}：missing 是"声明了映射但 payload 里没有、
 	// 也没有 default"的字段名。上游（触发响应）会把它报出去，让用户知道
 	// 哪个字段没取到值——静默丢掉是最难查的一种失败。
-	function resolveParams(template, payload, varValues) {
+	function resolveParams(template, payload) {
 		const out = {};
 		const used = [];
 		const missing = [];
 		if (!template) return { params: out, used, missing };
-		const vars = varValues || {};
 
-		// lookup 解析一个引用：**先查别名表，再查 payload**。
-		//
-		// 只有一种语法：统一按名字查，顺序是
-		//
-		//   1. 别名表（config.vars）里有这个名字 → 用它指向的 payload 路径取值
-		//   2. 否则直接当 payload 路径取
-		//
-		// 用户不需要区分"这是变量还是 payload 字段"。名字冲突时别名优先——
-		// 别名本来就是为了改写/缩短而存在的。
+		// lookup 解析一个引用：只有一种语法 —— 按点号路径从 payload 取。
 		const lookup = (ref) => {
-			const r = String(ref).trim();
-			const key = r;
-			if (Object.prototype.hasOwnProperty.call(vars, key) && vars[key] !== undefined) {
-				return { found: true, val: vars[key], via: key };
-			}
-			const got = getPath(payload, key);
+			const got = getPath(payload, String(ref).trim());
 			return got === undefined ? { found: false } : { found: true, val: got };
 		};
 
@@ -1357,84 +1350,7 @@
 		return "";
 	}
 
-	// validateVarDefs 校验源声明的变量表（配置期）。
-	function validateVarDefs(defs) {
-		if (!Array.isArray(defs)) return "变量必须是数组";
-		const seen = new Set();
-		for (const d of defs) {
-			if (!d || typeof d !== "object") return "变量项必须是对象";
-			const name = d.name;
-			if (typeof name !== "string" || !name.trim()) return "每个变量都要有名字";
-			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-				return `变量名「${name}」不合法（只能是字母/数字/下划线，且不以数字开头）`;
-			}
-			if (seen.has(name)) return `变量名「${name}」重复`;
-			seen.add(name);
-			// 别名只有一种形态：from 指向一个 payload 路径。不承载数据，
-			// 所以没有 value。常量要的是"直接写在参数里"，不需要起名字。
-			if (typeof d.from !== "string" || !d.from.trim()) {
-				return `别名「${name}」需要 from（payload 路径）`;
-			}
-			if (d.from.includes("..") || d.from.startsWith(".") || d.from.endsWith(".")) {
-				return `别名「${name}」的 from 路径不合法：「${d.from}」`;
-			}
-		}
-		return "";
-	}
-
-	// schemaPropType 取某个参数在 params_schema 里声明的类型（没有则空）。
-	//
-	// 只用 route.validate.go 受控子集里的 type 关键字，不认识的一律当"不转换"，
-	// 保证前端的自动推断不会比后端校验更激进。
-	function schemaPropType(cap, key) {
-		let schema = cap && cap.paramsSchema;
-		if (typeof schema === "string") {
-			try {
-				schema = JSON.parse(schema);
-			} catch (e) {
-				return "";
-			}
-		}
-		const props = schema && typeof schema === "object" ? schema.properties : null;
-		const spec = props && typeof props === "object" ? props[key] : null;
-		return spec && typeof spec.type === "string" ? spec.type : "";
-	}
-
-	// coerceValue 按目标类型转换；**转不了返回 undefined**（不是原值退回）。
-	//
-	// 为什么必须区分"转不了"和"不用转"：把 "修了个 bug" 塞进 integer 字段时，
-	// 若悄悄退回原字符串，用户会在 param_schema 剪枝里看到一条
-	// "expected integer, got string" —— 但真正的原因（payload 里的字段不是数字）
-	// 完全没体现。返回 undefined 才能报出「payload.x 的值转不了 integer」。
-	function coerceValue(v, as) {
-		if (as === undefined || as === null || as === "") return v;
-		if (as === "json" || as === "object" || as === "array") return v;
-		if (as === "string") {
-			if (typeof v === "string") return v;
-			if (v !== null && typeof v === "object") return JSON.stringify(v);
-			return String(v);
-		}
-		if (as === "number" || as === "integer") {
-			if (typeof v === "number") {
-				return as === "integer" && !Number.isInteger(v) ? undefined : v;
-			}
-			if (typeof v === "string" && v.trim() !== "") {
-				const n = Number(v);
-				if (Number.isNaN(n)) return undefined;
-				return as === "integer" && !Number.isInteger(n) ? undefined : n;
-			}
-			return undefined;
-		}
-		if (as === "boolean") {
-			if (typeof v === "boolean") return v;
-			if (v === "true" || v === "1" || v === 1) return true;
-			if (v === "false" || v === "0" || v === 0) return false;
-			return undefined;
-		}
-		return v;
-	}
-
-	function validateTargets(targets, varDefs) {
+	function validateTargets(targets) {
 		const byID = new Map(state.capabilities.map((c) => [c.id, c]));
 		for (const t of targets) {
 			const c = byID.get(t.capabilityId);
@@ -1480,12 +1396,7 @@
 		}
 		let cfg = b.config || {};
 
-		// 变量表：所有 kind 通用（webhook 从 payload 取、cron 用字面量）。
-		const vars = Array.isArray(cfg.vars) ? cfg.vars : [];
-		const vbad = validateVarDefs(vars);
-		if (vbad) return err(400, vbad);
-
-		const bad = validateTargets(targets, vars);
+		const bad = validateTargets(targets);
 		if (bad) return err(400, bad);
 
 		if (b.kind === "cron") {
@@ -1496,15 +1407,14 @@
 			}
 			// 不再有 config.payload：它是"cron 也能带数据"的历史补丁，
 			// 和常量直写参数重复。cron 的常量写在参数里就行。
-			cfg = { expr: expr, tz: cfg.tz || "Local", vars };
+			cfg = { expr: expr, tz: cfg.tz || "Local" };
 		} else if (b.kind === "webhook" || b.kind === "github") {
 			// github 就是"知道载荷长什么样"的 webhook：token/投递路径完全相同
 			cfg = {
 				token: cfg.token || "src_mock" + Math.random().toString(36).slice(2, 12),
-				vars,
 			};
 		} else {
-			cfg = { vars };
+			cfg = {};
 		}
 
 		const s = {
@@ -1542,18 +1452,9 @@
 			}
 			s.name = b.name.trim();
 		}
-		// 变量表可以单独改，也可以跟着 config 一起改
-		let nextVars = (s.config && s.config.vars) || [];
-		if (b.config && b.config.vars !== undefined) {
-			if (!Array.isArray(b.config.vars)) return err(400, "vars 必须是数组");
-			const vbad = validateVarDefs(b.config.vars);
-			if (vbad) return err(400, vbad);
-			nextVars = b.config.vars;
-		}
-
 		if (b.targets && b.targets.length) {
 			const targets = normTargets(b.targets);
-			const bad = validateTargets(targets, nextVars);
+			const bad = validateTargets(targets);
 			if (bad) return err(400, bad);
 			s.targets = targets;
 		}
@@ -1566,12 +1467,10 @@
 				s.config = {
 					expr: expr,
 					tz: b.config.tz || "Local",
-					vars: nextVars,
 				};
 			} else {
-				// webhook / manual：config 整体替换，但 vars 必须跟着 nextVars 走，
-				// 否则"只改 token 不传 vars"会把已声明的变量全清掉。
-				s.config = Object.assign({}, b.config, { vars: nextVars });
+				// webhook / github / manual：config 整体替换（token 由服务端补）
+				s.config = Object.assign({}, b.config);
 			}
 		}
 		if (b.enabled !== undefined) s.enabled = !!b.enabled;
@@ -1599,8 +1498,6 @@
 	function planDispatch(source, payload) {
 		const tasks = [];
 		const pruned = [];
-		const varDefs = (source.config && source.config.vars) || [];
-		const resolvedVars = resolveVars(varDefs, payload);
 
 		for (const t of source.targets) {
 			const c = state.capabilities.find((x) => x.id === t.capabilityId);
@@ -1613,7 +1510,7 @@
 				});
 				continue;
 			}
-			const resolved = resolveParams(t.params, payload, resolvedVars.values);
+			const resolved = resolveParams(t.params, payload);
 
 			// 类型推断：含占位符的值按 schema 转（整值引用保留原类型，
 			// 混写一定是字符串但目标字段可能是 integer）

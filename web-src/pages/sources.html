@@ -56,36 +56,6 @@
         color: #f87171;
         margin-left: 0.15rem;
       }
-      /* 变量表：一行一个「名字 = 来源」 */
-      .var-list {
-        display: grid;
-        gap: 0.35rem;
-      }
-      .var-row {
-        display: grid;
-        grid-template-columns: 1fr auto 1fr auto;
-        align-items: center;
-        gap: 0.35rem;
-      }
-      .var-row input,
-      .var-row select {
-        font-family: var(--mono, monospace);
-        font-size: 0.72rem;
-        padding: 0.25rem 0.4rem;
-      }
-      .var-eq {
-        font-size: 0.7rem;
-        color: var(--faint);
-      }
-      .var-del {
-        font-size: 0.7rem;
-        color: #f87171;
-        background: transparent;
-        border: 1px solid var(--line);
-        border-radius: 0.375rem;
-        padding: 0.15rem 0.35rem;
-        cursor: pointer;
-      }
       /* 可用变量清单 */
       .avail-vars {
         margin-top: 0.45rem;
@@ -198,22 +168,6 @@
         display: block;
       }
 
-      /* 演示填充后闪一下，指明"往这看" */
-      @keyframes var-flash-kf {
-        0% {
-          box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.55);
-        }
-        100% {
-          box-shadow: 0 0 0 8px rgba(167, 139, 250, 0);
-        }
-      }
-      .var-flash {
-        animation: var-flash-kf 1.3s ease-out 1;
-      }
-      .var-empty {
-        font-size: 0.7rem;
-        color: var(--faint);
-      }
       /* 参数输入框下方的引用提示。引用时显示"从事件或变量取值"，
          不改变值本身——只是让人一眼看出这行不是字面量。 */
       .param-tip {
@@ -1582,22 +1536,10 @@
 
       // ---------- 可用变量清单 ----------
       //
-      // "这个触发方式能给我哪些变量" —— 用户不该去翻 GitHub / GitLab 的
-      // payload 文档。这里按 kind 给出常见的路径，点一下就能填进变量的
-      // "从事件取"框里。
+      // "这个触发方式能给我哪些变量" —— 用**真实事件**回答，不维护固定清单：
+      // payload 形状由外部系统决定，中枢不解释也不该猜（I6）。硬编码一份
+      // GitHub 的字段，接 GitLab / 自定义系统时就是错的。
       //
-      // 为什么是**固定清单**而不是从真实事件反推：
-      //   - 新建源时还没有任何事件，无从反推
-      //   - payload 形状由外部系统决定，中枢不解释、也不该猜（I6）
-      //   - 给常见路径 + 让人能自由手填，比"猜"更诚实
-      // renderAvailVars 渲染"这个触发方式能提供哪些字段"。
-      //
-      // **不再有硬编码清单**：字段列表直接来自这个源最近一条真实事件
-      // （SAMPLE_PAYLOAD）。原来的 10 条 GitHub PR 路径只覆盖一种 payload
-      // 形状，接 GitLab / 自定义系统时全是错的 —— 而 payload 的形状由
-      // 外部系统决定，中枢不该猜（I6）。
-      //
-      // 没有样本时如实说明"还没有事件"，而不是编一份可能不对的清单。
       function renderAvailVars() {
         const body = document.getElementById("avail-vars-body");
         if (!body) return;
@@ -1853,18 +1795,13 @@
         try {
           // 用最近一条真实事件当样本；没有就空 payload（会如实报取不到）
           const payload = SAMPLE_PAYLOAD || {};
-          const r = await Anotify.api(
-            API + "/sources/dry-run",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                source: draft,
-                payload: payload,
-              }),
-            },
-            location.protocol === "file:" ? true : null,
-          );
+          // 不传第三个参数（demo）：传 null 会让 api() 在**任何失败**时
+          // 返回 null，于是错误被静默吞掉、渲染时炸在 r.dispatch 上。
+          const r = await Anotify.api(API + "/sources/dry-run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: draft, payload: payload }),
+          });
           renderDryResult(box, r, draft);
         } catch (e) {
           renderDryError(box, String(e.message || e));
@@ -2028,16 +1965,7 @@
         const scroller = document.querySelector("#src-modal .modal-scroll");
         if (scroller) scroller.scrollTop = 0;
 
-        // 闪一下变量区，指明"看这里"
-        const varsBox = document.getElementById("f-vars");
-        if (varsBox) {
-          varsBox.classList.add("var-flash");
-          setTimeout(() => varsBox.classList.remove("var-flash"), 1400);
-        }
-
-        toast(
-          t("sources.form.demo_ok", "已填入演示配置：4 个变量 + 参数引用变量"),
-        );
+        toast(t("sources.form.demo_ok", "已填入演示配置：3 个参数引用 payload 字段"));
       }
 
       // ---------- 绑定 ----------
