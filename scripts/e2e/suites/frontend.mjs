@@ -2325,6 +2325,13 @@ async function checkWaterfall(page) {
 		// 只看"动画在播"是发现不了的 —— 必须盯 dashoffset 的中间态。
 		let partialDraws = 0;
 		let sawWaapi = false;
+		// 动画刚开始时，不允许有"这次没走过、却还亮着的实线"。
+		//
+		// 这个 bug 的表现是：配置里有、这次没走的分支画成正常实线，
+		// 而走过的元素被压暗了 —— 于是那一瞬间**没走过的比走过的还亮**，
+		// 看起来像"这条线一开始就点亮了"（issue #157 第二张截图）。
+		// 正确状态是：没走过的一律虚线（is-muted），走过的一律压暗（is-pre）。
+		let brightAtStart = -1;
 		for (let i = 0; i < 12; i++) {
 			const s = await page.evaluate(() => {
 				const host = document.querySelector(".flograph");
@@ -2332,6 +2339,11 @@ async function checkWaterfall(page) {
 				const nodes = Array.from(host.querySelectorAll(".wf-node"));
 				let partial = 0;
 				let waapi = false;
+				let solidBright = 0;
+				for (const p2 of host.querySelectorAll(".flograph-svg path[data-from]")) {
+					if (p2.classList.contains("is-muted")) continue; // 没走过的边本来就是虚线
+					if (!p2.classList.contains("is-pre")) solidBright++;
+				}
 				for (const p2 of host.querySelectorAll(".flograph-svg path")) {
 					if (p2.getAnimations && p2.getAnimations().length > 0) waapi = true;
 					const cs = getComputedStyle(p2);
@@ -2346,6 +2358,7 @@ async function checkWaterfall(page) {
 					total: nodes.length,
 					partial,
 					waapi,
+					solidBright,
 				};
 			});
 			if (s && s.total > 0) {
@@ -2354,6 +2367,9 @@ async function checkWaterfall(page) {
 				if (s.pre > preMax) preMax = s.pre;
 				if (s.partial > 0) partialDraws++;
 				if (s.waapi) sawWaapi = true;
+				// 只取"动画已开始"的第一个采样点：
+				// 再往后走过的边已经被画出来了，亮着是正确的
+				if (s.playing && brightAtStart < 0) brightAtStart = s.solidBright;
 			}
 			await page.waitForTimeout(110);
 		}
@@ -2361,6 +2377,11 @@ async function checkWaterfall(page) {
 			"图打开时有入场动画（先画成未执行再点亮）",
 			sawPlaying === true && preMax > 1,
 			`playing=${sawPlaying} 未点亮最多=${preMax}/${totalNodes}`,
+		);
+		H.check(
+			"动画刚开始没有「没走过却亮着」的边（没走的都是虚线）",
+			brightAtStart === 0,
+			`动画起始时实线且未压暗的边=${brightAtStart}（应为 0）`,
 		);
 		H.check(
 			"线是逐段画出来的（不是整条瞬现）",
