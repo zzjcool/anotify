@@ -2154,6 +2154,24 @@ async function checkWaterfall(page) {
 				`cycled=${cyc.cycleEdges}`,
 			);
 			H.check("图例说明了「走过多次」", cyc.hasCycleLegend, String(cyc.hasCycleLegend));
+
+			// 工具栏必须和源详情页那套一模一样（同一个组件，入口位置不能
+			// 一页一个样）。源详情页一侧的对应断言在它自己那节里。
+			const tb = await page.evaluate(() =>
+				Array.from(document.querySelectorAll(".flograph-ctrl button")).map(
+					(b) => b.dataset.fgAction,
+				),
+			);
+			H.check(
+				"trace 页工具栏有全屏（和源详情页同一位置）",
+				tb.includes("fullscreen"),
+				tb.join(","),
+			);
+			H.check(
+				"trace 页工具栏有缩放三件套",
+				["zoom-in", "zoom-out", "fit"].every((a) => tb.includes(a)),
+				tb.join(","),
+			);
 		}
 	}
 
@@ -2475,32 +2493,39 @@ async function checkFlowChart(page, base) {
 		JSON.stringify({ host: g.hasCanvas, graph: g.hasGraph }),
 	);
 
-	// ---- 全屏入口只能出现一次 ----
+	// ---- 全屏入口的位置：两页必须一样 ----
 	//
-	// 曾经标题栏有一个带文字的「全屏」，工具栏里又有一个图标版 ——
-	// 两个形状相近的按钮挨在一起，用户会以为是重复按钮（实际都调
-	// toggleFullscreen）。约定：有标题栏入口的页面，工具栏不画全屏。
+	// 走过两次弯路：
+	//   ① 标题栏一个文字「全屏」+ 工具栏一个图标版 → 两个形状相近的按钮
+	//      挨在一起，看着像重复；
+	//   ② 改成"有标题栏入口就不画工具栏图标" → 同一个组件在两个页面把
+	//      同一个功能放在两个地方，用户在 trace 页学会"右下角有全屏"，
+	//      到源详情页就找不到。
+	//
+	// 最终：**统一放在右下角工具栏**，位置和图标都一致。
 	{
 		const fs = await page.evaluate(() => {
 			const ctrl = document.querySelector(".flograph-ctrl");
 			const actions = ctrl
 				? Array.from(ctrl.querySelectorAll("button")).map((b) => b.dataset.fgAction)
 				: [];
-			const titleBtn = document.querySelector(".src-section-head button");
+			const titleBtns = Array.from(document.querySelectorAll("button")).filter(
+				(b) => /^\s*全屏\s*$/.test(b.textContent || ""),
+			);
 			return {
 				toolbarActions: actions,
-				titleText: titleBtn ? titleBtn.textContent.trim() : "",
+				titleTextCount: titleBtns.length,
 			};
 		});
 		H.check(
-			"源详情页工具栏不含全屏（避免与标题栏重复）",
-			!fs.toolbarActions.includes("fullscreen"),
+			"源详情页工具栏有全屏（和 trace 页同一位置）",
+			fs.toolbarActions.includes("fullscreen"),
 			fs.toolbarActions.join(","),
 		);
 		H.check(
-			"源详情页标题栏有文字版全屏入口",
-			fs.titleText === "全屏",
-			fs.titleText,
+			"没有第二个标题栏全屏入口（避免重复按钮）",
+			fs.titleTextCount === 0,
+			`titleTextCount=${fs.titleTextCount}`,
 		);
 		H.check(
 			"工具栏仍有缩放三件套",
@@ -2569,34 +2594,22 @@ async function checkFlowChart(page, base) {
 	//   ④ 占位符 Height = 原高度（否则关掉时页面会跳）；
 	//   ⑤ Esc 可退，且样式/位置/滚动都复原；
 	//   ⑥ 全屏后 scale 变大（说明真的重排了，不是把图拉大）。
-	// 触发全屏用的入口：源详情页是**标题栏那个带文字的按钮**，
-	// 不是工具栏图标（工具栏版会和它重复，见上面那条断言）。
-	// 这里只关心"有没有办法进全屏"，不关心入口长什么样。
+	// 入口就是右下角工具栏那个图标（两页一致）。
 	const fsBtn = await page.evaluate(() => {
-		const b = document.querySelector(".src-section-head button");
+		const b = document.querySelector('.flograph-ctrl button[data-fg-action="fullscreen"]');
 		if (!b) return null;
 		return {
-			text: b.textContent.trim(),
+			text: b.title,
 			aria: b.getAttribute("aria-label"),
+			// 必须是 SVG 图标：字体缺字会把 Unicode 符号画成豆腐块
+			isSvg: !!b.querySelector("svg"),
 		};
 	});
 	H.check(
-		"源详情页有进入全屏的入口",
-		fsBtn !== null && !!fsBtn.text,
+		"源详情页工具栏有全屏图标（带 aria-label）",
+		fsBtn !== null && !!fsBtn.aria && fsBtn.isSvg === true,
 		JSON.stringify(fsBtn),
 	);
-
-	// 图标版的「工具栏全屏」在**没有标题栏入口的页面**（trace 页）才画。
-	// 它必须是 SVG 图标：字体缺字会把 Unicode 符号画成豆腐块。
-	{
-		const traceHost = await page.evaluate(() => {
-			// 这个套件在同一 page 里跑，到这里是源详情页；
-			// 工具栏图标的存在性由 trace 页的用例覆盖，这里只验证
-			// "源详情页确实没有工具栏全屏"已在上面断言过。
-			return true;
-		});
-		H.check("（工具栏全屏的图标形态由 trace 页覆盖）", traceHost === true, "");
-	}
 
 	if (fsBtn) {
 		const before = await page.evaluate(() => {
@@ -2607,7 +2620,7 @@ async function checkFlowChart(page, base) {
 				scale: h._graph._debug.scale(),
 			};
 		});
-		await page.locator(".src-section-head button").click();
+		await page.locator('.flograph-ctrl button[data-fg-action="fullscreen"]').click();
 		// 事件等待而不是固定 sleep：全屏是「改样式 → 下一帧重排 → fit」，
 		// 固定 500ms 既慢又不稳（并行跑 4 个 Chrome 时可能还没排完）。
 		// 判据用最终状态本身：容器已在 body 下且尺寸铺满视口。
@@ -2701,58 +2714,6 @@ async function checkFlowChart(page, base) {
 				!off.styleAttr,
 			JSON.stringify({ ...off, before }),
 		);
-	}
-
-	// 卡片标题行的「全屏」文字按钮：图上右下角的图标按钮容易漏看，
-	// 这条入口必须也能用（它只是转发到同一个 setFullscreen）。
-	const headFs = await page.evaluate(() => {
-		const c = document.querySelector(".flograph").closest(".card");
-		const head = c && c.querySelector(".src-section-head");
-		const btn = head && head.querySelector("button");
-		if (!btn) return null;
-		const before = document.querySelector(".flograph")._graph._debug.fullscreen();
-		btn.click();
-		return { label: btn.textContent.trim(), before };
-	});
-	H.check(
-		"卡片标题上有「全屏」入口",
-		headFs !== null && headFs.label.length > 0 && headFs.before === false,
-		JSON.stringify(headFs),
-	);
-	if (headFs) {
-		await page
-			.waitForFunction(
-				() => {
-					const h = document.querySelector(".flograph");
-					return h !== null && h.parentElement === document.body;
-				},
-				null,
-				{ timeout: 3000 },
-			)
-			.catch(() => {});
-		const headOn = await page.evaluate(() => {
-			const h = document.querySelector(".flograph");
-			return {
-				isFs: h._graph._debug.fullscreen(),
-				parentIsBody: h.parentElement === document.body,
-			};
-		});
-		H.check(
-			"标题入口也能进入全屏",
-			headOn.isFs === true && headOn.parentIsBody === true,
-			JSON.stringify(headOn),
-		);
-		await page.keyboard.press("Escape");
-		await page
-			.waitForFunction(
-				() => {
-					const h = document.querySelector(".flograph");
-					return h !== null && h.parentElement !== document.body;
-				},
-				null,
-				{ timeout: 3000 },
-			)
-			.catch(() => {});
 	}
 
 	// ---- 节点外观可自定义（这是换掉图库的核心理由）----

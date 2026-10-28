@@ -46,18 +46,6 @@
         color: var(--faint);
         margin-bottom: 0.6rem;
       }
-      /* 标题 + 右侧操作（现在只有「全屏」）：同一行两端对齐。
-         标题自带的 margin-bottom 在这一行里要归零，间距交给行容器统一给。 */
-      .src-section-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem;
-        margin-bottom: 0.6rem;
-      }
-      .src-section-head .src-section-title {
-        margin-bottom: 0;
-      }
       /* 出口参数表：参数可能带映射，用等宽字体看起来更像"配置"而不是散文 */
       .param-table {
         display: grid;
@@ -525,36 +513,12 @@
           return c;
         }
 
-        // 标题行加一个带文字的「全屏」按钮。
+        // 全屏入口和 trace 页保持一致：**右下角工具栏那个图标**。
         //
-        // 这段图在 520px 卡片里只能缩到 0.46（字小到读不了），全屏才是它
-        // 真正的读法；而图标版入口很容易被当成"又一个缩放键"而漏掉，
-        // 带文字的更容易发现。
-        //
-        // 注意它和 FlowGraph 工具栏里那个全屏图标**不会同时出现**：
-        // 工具栏默认不画全屏按钮（见 flograph.js 的 options.showFullscreen），
-        // 否则两个形状相近的图标挨在一起，看起来像重复按钮。
-        //
-        // 它只是转发到 FlowGraph 的 setFullscreen（实例挂载后才存在），
-        // 不重写一份状态机。
-        const fsBtn = el(
-          "button",
-          "btn-ghost rounded-lg px-2 py-1 text-[11px]",
-          t("graph.fullscreen", "全屏"),
-        );
-        fsBtn.setAttribute("aria-label", t("graph.fullscreen", "全屏"));
-        fsBtn.addEventListener("click", () => {
-          const g = host._graph;
-          if (!g) return;
-          if (!g.isFullscreen()) g.setFullscreen(true);
-        });
-
-        // card() 已经把标题插在第一个子节点，这里把它包进一行
-        const titleNode = c.firstElementChild;
-        const head = el("div", "src-section-head");
-        head.append(titleNode, fsBtn); // append 会把 titleNode 从 card 里移出来
-        c.insertBefore(head, c.firstChild);
-
+        // 早先这里是标题栏一个带文字的「全屏」按钮，理由是"图标容易被当成
+        // 又一个缩放键"。但同一个组件在两个页面把同一个功能放在两个地方，
+        // 读起来更乱 —— 用户在 trace 页学会"右下角有全屏"，到这一页就找
+        // 不到了。统一放工具栏，位置和图标都一样。
         c.appendChild(host);
 
         // 展开后才建图：折叠时 offsetWidth 是 0，fit() 会算出错误的缩放
@@ -565,6 +529,8 @@
             tree,
             t,
             limit: 200,
+            // 工具栏画全屏按钮（和 trace 页一致）
+            showFullscreen: true,
             onNodeClick: (nodeId) => {
               if (nodeId) location.href = "capabilities.html?focus=" + encodeURIComponent(nodeId);
             },

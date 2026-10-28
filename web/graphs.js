@@ -288,6 +288,8 @@
 		const graph = renderFlow(host, {
 			scope: "source",
 			t: t,
+			// 工具栏全屏图标：和 trace 页保持一致的位置与图标
+			showFullscreen: !!opts.showFullscreen,
 			nodes: cut.nodes.map((n) => ({
 				id: n.id,
 				label: n.label,
