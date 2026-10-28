@@ -237,6 +237,14 @@ index:
     open: Open event stream →
     loading: Loading events…
     empty: No events yet. Once a webhook or cron trigger is wired up, the stream shows here.
+scope:
+  org: "Org"
+  ns: "Namespace"
+  none: "(no namespace yet)"
+  new_ns: "New namespace"
+  new_ns_prompt: "New namespace slug (lowercase letters / digits / hyphens)"
+  new_ns_failed: "Create failed"
+  org_level: "Org-wide"
 graph:
   zoom_in: Zoom in
   replay: Replay the animation

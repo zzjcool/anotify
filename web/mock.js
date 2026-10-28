@@ -51,6 +51,9 @@
 
 	// 演示用的固定组织/用户
 	const ORG = "org_mock_demo";
+	// 命名空间（设计见 docs/design/namespaces.md）：组织之下的隔离单位。
+	// 既有演示数据默认落在 prod；staging / sandbox 由 initNamespaces 造。
+	const NS = "ns_mock_prod";
 	const ME = {
 		id: "usr_mock_demo",
 		username: "demo",
@@ -998,6 +1001,157 @@
 		}
 	})();
 
+	// ---------- 组织与命名空间 ----------
+	//
+	// 组织是身份边界；命名空间是**配置 + 运行面**的隔离边界：
+	// sources / edges / events / tasks 属于命名空间，
+	// capabilities / nodes 属于组织（能力和节点是共享资源池，见设计文档 §2）。
+	//
+	// 演示要求：切命名空间得能看出差别，否则这功能等于没有。所以
+	//   prod    = 整套 t1~t12 演示数据（原来那些）
+	//   staging = 一条独立的 cron 链（源 / 边 / trace 都和 prod 不同）
+	//   sandbox = 故意留空（用来看空状态，也用来演示"非空不能删"）
+	//   外加第二个组织 Acme，证明"换组织 = 换一整套命名空间"。
+	(function initNamespaces() {
+		const STAGING = "ns_mock_staging";
+		const SANDBOX = "ns_mock_sandbox";
+		const ACME = "org_mock_acme";
+		const ACME_NS = "ns_mock_acme_default";
+
+		state.orgs = [
+			{ id: ORG, name: "演示组织", slug: "demo", createdAt: now() - 86400 * 40 },
+			{ id: ACME, name: "Acme", slug: "acme", createdAt: now() - 86400 * 12 },
+		];
+		state.namespaces = [
+			{ id: NS, orgId: ORG, slug: "prod", name: "生产", createdAt: now() - 86400 * 40 },
+			{
+				id: STAGING,
+				orgId: ORG,
+				slug: "staging",
+				name: "预发",
+				createdAt: now() - 86400 * 30,
+			},
+			{
+				id: SANDBOX,
+				orgId: ORG,
+				slug: "sandbox",
+				name: "沙箱",
+				createdAt: now() - 86400 * 3,
+			},
+			{
+				id: ACME_NS,
+				orgId: ACME,
+				slug: "default",
+				name: "默认",
+				createdAt: now() - 86400 * 12,
+			},
+		];
+
+		// 已有演示数据统一归到 prod（不逐个改写种子，省得以后加种子又漏）
+		for (const x of state.sources) x.namespaceId = NS;
+		for (const x of state.edges) x.namespaceId = NS;
+		for (const x of state.events) x.namespaceId = NS;
+		for (const x of state.tasks) x.namespaceId = NS;
+
+		// ---- staging：一条和 prod 完全无关的链 ----
+		const capOf = (n) => state.capabilities.find((c) => c.name === n);
+		const analyze = capOf("analyze-pr");
+		const tests = capOf("run-tests");
+		const deploy = capOf("deploy-preview");
+		if (!analyze || !tests || !deploy) return;
+
+		const traceId = "trace_mock_staging_daily";
+		const t0 = now() - 3600 * 6;
+
+		state.sources.push({
+			id: "src_mock_staging_cron",
+			orgId: ORG,
+			namespaceId: STAGING,
+			name: "预发每日体检",
+			kind: "cron",
+			config: { expr: "0 4 * * *", tz: "Local" },
+			enabled: true,
+			lastFiredAt: t0,
+			nextFireAt: t0 + 86400,
+			createdAt: t0 - 86400 * 10,
+			targets: [{ capabilityId: analyze.id, params: { changedLines: 12, repo: "anotify" } }],
+		});
+
+		const edge = (from, port, to) => ({
+			id: uid("edg"),
+			orgId: ORG,
+			namespaceId: STAGING,
+			fromCapability: capOf(from).id,
+			fromCapabilityName: from,
+			fromPort: port,
+			toCapability: capOf(to).id,
+			toCapabilityName: to,
+			createdAt: t0 - 86400 * 10,
+		});
+		state.edges.push(edge("analyze-pr", "approved", "run-tests"));
+		state.edges.push(edge("run-tests", "passed", "deploy-preview"));
+
+		state.events.push({
+			id: uid("evt"),
+			orgId: ORG,
+			namespaceId: STAGING,
+			traceId,
+			source: "每晚体检",
+			type: "nightly",
+			payload: { env: "staging", repo: "anotify", commit: "9f3c1ab" },
+			createdAt: t0,
+		});
+
+		const mkNsTask = (o) => ({
+			id: uid("tsk"),
+			orgId: ORG,
+			namespaceId: STAGING,
+			traceId,
+			parentTaskId: o.parent || null,
+			path: o.path || [],
+			capabilityId: o.cap.id,
+			capability: o.cap.name,
+			version: o.cap.version,
+			params: { mock: true },
+			status: "succeeded",
+			nodeId: state.nodes[1] ? state.nodes[1].id : null,
+			instanceId: state.nodes[1] ? "nins_mock_0" : null,
+			leaseUntil: null,
+			attempts: 1,
+			out: o.out !== undefined ? o.out : null,
+			reported: true,
+			summary: o.summary || "",
+			artifacts: [],
+			error: "",
+			contentHash: o.cap.contentHash,
+			capHash: o.cap.contentHash,
+			graphId: "grf_mock",
+			createdAt: o.at,
+			startedAt: o.at,
+			finishedAt: o.at + (o.secs || 20),
+			notBefore: null,
+		});
+		const a = mkNsTask({ cap: analyze, at: t0 + 0.4, out: "approved", secs: 18 });
+		const t = mkNsTask({
+			cap: tests,
+			parent: a.id,
+			path: [analyze.id, tests.id],
+			at: t0 + 19,
+			out: "passed",
+			secs: 63,
+		});
+		const d = mkNsTask({
+			cap: deploy,
+			parent: t.id,
+			path: [analyze.id, tests.id, deploy.id],
+			at: t0 + 83,
+			out: null,
+			secs: 41,
+			summary: "预发部署完成",
+		});
+		state.tasks.push(a, t, d);
+	})();
+
 	// ---------- 初始 keys ----------
 	(function initKeys() {
 		state.keys = [
@@ -1086,6 +1240,22 @@
 	// 每个条目：(method, 正则) → handler(ctx) → Response
 	// ctx 里有 json body、params、路径捕获。
 
+	// 命名空间解析。
+	//
+	// 契约（CONTRACT §6.2）要求命名空间资源**必须显式**带 namespaceId，
+	// 缺了返回 400。mock 这里故意宽松：缺省 = 默认命名空间。
+	// 理由：mock 是给人点着看的，深链（trace.html?traceId=...）和
+	// 手敲 curl 都不该因为少一个参数就白屏；而"UI 到底有没有带"
+	// 由 E2E 断言盯（它检查页面请求的 query）。
+	// `namespaceId=*` = 跨命名空间汇总（管理员视图）。
+	function nsScope(q) {
+		const v = q && q.get("namespaceId");
+		if (v === "*") return null; // null = 不按命名空间过滤
+		return v && v !== "" ? v : NS;
+	}
+	const inNs = (list, scope) =>
+		scope === null ? list.slice() : list.filter((x) => x.namespaceId === scope);
+
 	const routes = [];
 	function on(method, pattern, handler) {
 		routes.push({ method, pattern, handler });
@@ -1098,19 +1268,58 @@
 		json({ publicKey: "BMockPublicKeyForPreviewOnly_NotARealVapidKey" }),
 	);
 
-	// ===== 统计 =====
-	on("GET", /^\/v1\/stats$/, () => {
-		const done = state.tasks.filter((t) => t.status === "succeeded").length;
-		const failed = state.tasks.filter((t) => t.status === "failed").length;
+	// ===== 组织 / 命名空间 =====
+	//
+	// 这两个端点在真实后端还没实现（设计先行，见 docs/design/namespaces.md），
+	// 所以**故意不写进 api/openapi.yaml** —— check_openapi.py 要求 spec 与
+	// mux.go 双向一致，先写 spec 没有 handler 会直接让 make contract 失败。
+	on("GET", /^\/v1\/orgs$/, () => json({ orgs: clone(state.orgs) }));
+
+	on("GET", /^\/v1\/namespaces$/, (ctx) => {
+		const orgId = ctx.query.get("orgId") || ORG;
 		return json({
-			totalEvents: state.events.length,
-			totalTasks: state.tasks.length,
+			namespaces: clone(state.namespaces.filter((n) => n.orgId === orgId)),
+		});
+	});
+
+	on("POST", /^\/v1\/namespaces$/, (ctx) => {
+		const b = ctx.body || {};
+		const slug = String(b.slug || "").trim();
+		// slug 出现在 URL 里，只允许安全的字符集（和前端的校验一致）
+		if (!/^[a-z0-9][a-z0-9-]{0,30}$/.test(slug)) {
+			return err(400, "slug 只允许小写字母、数字、连字符，且以字母或数字开头");
+		}
+		const orgId = b.orgId || ORG;
+		if (state.namespaces.some((n) => n.orgId === orgId && n.slug === slug)) {
+			return err(409, "这个组织里已经有同名 slug 了");
+		}
+		const ns = {
+			id: uid("ns"),
+			orgId,
+			slug,
+			name: String(b.name || slug).trim() || slug,
+			createdAt: now(),
+		};
+		state.namespaces.push(ns);
+		return json({ namespace: clone(ns) });
+	});
+
+	// ===== 统计 =====
+	on("GET", /^\/v1\/stats$/, (ctx) => {
+		const sc = nsScope(ctx.query);
+		const evs = inNs(state.events, sc);
+		const tks = inNs(state.tasks, sc);
+		const done = tks.filter((t) => t.status === "succeeded").length;
+		const failed = tks.filter((t) => t.status === "failed").length;
+		return json({
+			totalEvents: evs.length,
+			totalTasks: tks.length,
 			succeeded: done,
 			failed: failed,
-			running: state.tasks.filter((t) =>
+			running: tks.filter((t) =>
 				["assigned", "acked", "running"].includes(t.status),
 			).length,
-			pending: state.tasks.filter((t) => t.status === "pending").length,
+			pending: tks.filter((t) => t.status === "pending").length,
 			nodesOnline: state.nodes.filter((n) => n.status === "online").length,
 			nodesTotal: state.nodes.length,
 			// 热力图：最近 7 天每天的任务数
@@ -1126,7 +1335,7 @@
 
 	// ===== 任务 =====
 	on("GET", /^\/v1\/tasks$/, (ctx) => {
-		let list = state.tasks.slice();
+		let list = inNs(state.tasks, nsScope(ctx.query));
 		if (ctx.query.get("traceId")) {
 			list = list.filter((t) => t.traceId === ctx.query.get("traceId"));
 		}
@@ -1193,7 +1402,9 @@
 		return json({ capability: capView(c) });
 	});
 
-	on("GET", /^\/v1\/edges$/, () => json({ edges: clone(state.edges) }));
+	on("GET", /^\/v1\/edges$/, (ctx) =>
+		json({ edges: clone(inNs(state.edges, nsScope(ctx.query))) }),
+	);
 
 	on("POST", /^\/v1\/edges$/, (ctx) => {
 		const b = ctx.body || {};
@@ -1206,6 +1417,7 @@
 			const e = {
 				id: uid("edg"),
 				orgId: ORG,
+				namespaceId: b.namespaceId || NS,
 				fromIsSource: true,
 				fromCapability: String(b.fromCapability),
 				fromPort: b.fromPort,
@@ -1298,8 +1510,10 @@
 	});
 
 	// ===== 源 =====
-	on("GET", /^\/v1\/sources$/, () =>
-		json({ sources: state.sources.map(sourceView) }),
+	on("GET", /^\/v1\/sources$/, (ctx) =>
+		json({
+			sources: inNs(state.sources, nsScope(ctx.query)).map(sourceView),
+		}),
 	);
 
 	// 参数校验：与后端 route.ValidateParams 同语义（mock 也要拦住，
@@ -2000,7 +2214,7 @@
 		// source 过滤：参数编辑器用它拿"这个源最近一条真实事件"当预览样本，
 		// 让用户能看到 {{pull_request.title}} 到底会取到什么，而不是盲写路径。
 		const source = ctx.query.get("source");
-		let list = state.events.slice();
+		let list = inNs(state.events, nsScope(ctx.query));
 		if (trace) list = list.filter((e) => e.traceId === trace);
 		if (source) list = list.filter((e) => e.source === source);
 		list.sort((a, b) => b.createdAt - a.createdAt);
@@ -2012,6 +2226,7 @@
 		const ev = {
 			id: uid("evt"),
 			orgId: ORG,
+			namespaceId: b.namespaceId || NS,
 			traceId: nextTraceId(),
 			source: b.source || "manual",
 			type: b.type || "manual.run",

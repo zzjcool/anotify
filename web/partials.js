@@ -484,9 +484,147 @@
 	/* ---------- 布局挂载：在 body 开头注入「侧栏 + 主栏容器」 ----------
 	 * 页面把主内容放在 <div id="page-main"></div> 里，本函数把它包进布局。
 	 */
+	// 侧栏顶部的「组织 / 命名空间」切换器。
+	//
+	// 只有后端提供 /v1/orgs 才显示：真实后端还没有这套端点
+	// （设计见 docs/design/namespaces.md），拿不到就保持隐藏，
+	// 页面行为一点不变 —— 不需要为 mock 和真后端分叉代码路径。
+	async function mountScopeSwitcher(box) {
+		let orgs = [];
+		try {
+			const r = await fetch("/v1/orgs", { credentials: "include" });
+			if (!r.ok) return;
+			orgs = (await r.json()).orgs || [];
+		} catch (e) {
+			return;
+		}
+		if (!orgs.length) return;
+
+		// 存着的选择可能已经失效（换了组织、删了命名空间），统一回落到第一个
+		const pick = (list, want, fallback) =>
+			list.some((x) => x.id === want) ? want : fallback;
+
+		const loadNamespaces = async (orgId) => {
+			try {
+				const r = await fetch(
+					`/v1/namespaces?orgId=${encodeURIComponent(orgId)}`,
+					{ credentials: "include" },
+				);
+				if (!r.ok) return [];
+				return (await r.json()).namespaces || [];
+			} catch (e) {
+				return [];
+			}
+		};
+
+		const orgSel = el("select", {
+			class: "scope-select",
+			"aria-label": t("scope.org", "组织"),
+		});
+		for (const o of orgs) orgSel.append(el("option", { value: o.id, text: o.name }));
+		const firstOrg = pick(orgs, scope.orgId, orgs[0].id);
+		orgSel.value = firstOrg;
+
+		const nsSel = el("select", {
+			class: "scope-select",
+			"aria-label": t("scope.ns", "命名空间"),
+		});
+		let namespaces = [];
+
+		const fillNs = (orgId) => {
+			nsSel.textContent = "";
+			for (const n of namespaces) {
+				nsSel.append(el("option", { value: n.id, text: `${n.name} · ${n.slug}` }));
+			}
+			if (!namespaces.length) {
+				nsSel.append(
+					el("option", { value: "", text: t("scope.none", "（还没有命名空间）") }),
+				);
+			}
+			nsSel.value = pick(namespaces, scope.namespaceId, (namespaces[0] || {}).id || "");
+		};
+
+		const plus = el("button", {
+			type: "button",
+			class: "scope-plus",
+			title: t("scope.new_ns", "新建命名空间"),
+			"aria-label": t("scope.new_ns", "新建命名空间"),
+			text: "+",
+		});
+		plus.addEventListener("click", async () => {
+			const slug = String(
+				window.prompt(t("scope.new_ns_prompt", "新命名空间 slug（小写字母 / 数字 / 连字符）"), "") ||
+					"",
+			).trim();
+			if (!slug) return;
+			try {
+				const r = await fetch("/v1/namespaces", {
+					method: "POST",
+					credentials: "include",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ orgId: orgSel.value, slug, name: slug }),
+				});
+				const j = await r.json().catch(() => ({}));
+				if (!r.ok) {
+					window.alert(j.error || t("scope.new_ns_failed", "创建失败"));
+					return;
+				}
+				namespaces = await loadNamespaces(orgSel.value);
+				fillNs(orgSel.value);
+				nsSel.value = j.namespace.id;
+				saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
+				location.reload();
+			} catch (e) {
+				window.alert(t("scope.new_ns_failed", "创建失败"));
+			}
+		});
+
+		// 换范围一律整页重取：数据来源整个变了，就地刷新最容易出错
+		orgSel.addEventListener("change", async () => {
+			namespaces = await loadNamespaces(orgSel.value);
+			fillNs(orgSel.value);
+			saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
+			location.reload();
+		});
+		nsSel.addEventListener("change", () => {
+			saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
+			location.reload();
+		});
+
+		namespaces = await loadNamespaces(firstOrg);
+		fillNs(firstOrg);
+		saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
+
+		box.append(
+			el(
+				"div",
+				{ class: "scope-row" },
+				el("span", { class: "scope-label", text: t("scope.org", "组织") }),
+				orgSel,
+			),
+			el(
+				"div",
+				{ class: "scope-row" },
+				el("span", { class: "scope-label", text: t("scope.ns", "命名空间") }),
+				nsSel,
+				plus,
+			),
+		);
+		box.classList.remove("hidden");
+	}
+
 	function mountLayout(opts) {
 		const o = Object.assign(
-			{ active: "", title: "", subtitle: "", username: "zheng" },
+			{
+				active: "",
+				title: "",
+				subtitle: "",
+				username: "zheng",
+				// "org" = 这一页是组织级的（能力 / 节点 / 密钥 / 管理），
+				// 不随命名空间切换。页面必须标出来，否则用户切了命名空间
+				// 发现列表没变，只会以为功能坏了。
+				scopeLevel: "",
+			},
 			opts || {},
 		);
 		const pageMain = document.getElementById("page-main");
@@ -521,6 +659,12 @@
 			nav.append(box);
 		}
 
+		const scopeBox = el("div", {
+			id: "scope-switcher",
+			class: "scope-switcher hidden",
+		});
+		mountScopeSwitcher(scopeBox);
+
 		const sidebar = el(
 			"aside",
 			{
@@ -553,6 +697,7 @@
 						return a;
 					})(),
 				),
+				scopeBox,
 				adminNav,
 				nav,
 				el(
@@ -625,10 +770,23 @@
 				el(
 					"div",
 					{},
-					el("h1", {
-						class: "text-base font-semibold text-white",
-						text: o.title,
-					}),
+					(() => {
+						const h = el("h1", { class: "text-base font-semibold text-white" });
+						h.append(o.title);
+						if (o.scopeLevel === "org") {
+							h.append(
+								el("span", {
+									class: "scope-badge",
+									title: t(
+										"scope.org_level_hint",
+										"这一页是组织级的，不随命名空间切换",
+									),
+									text: t("scope.org_level", "组织级"),
+								}),
+							);
+						}
+						return h;
+					})(),
 					el("p", { class: "text-[11px] text-zinc-500", text: o.subtitle }),
 				),
 			),
@@ -751,11 +909,64 @@
 	// 需登录的页面（工作台各页）；login.html 等公开页不设此标记
 	const isAuthedPage = !/login\.html$/.test(location.pathname);
 
+	/* ---------- 组织 / 命名空间（当前范围） ---------- */
+	//
+	// 命名空间是组织之下的隔离单位（docs/design/namespaces.md）：
+	// sources / edges / events / tasks / stats 属于命名空间，
+	// capabilities / nodes 属于组织。
+	//
+	// 选择记在 localStorage：刷新、切页面、深链都保持同一个范围。
+	const SCOPE_KEY = "anotify.scope";
+	// 这些端点前缀需要 namespaceId（其余是组织级，带了反而误导）
+	const NS_PATHS = [
+		"/v1/edges",
+		"/v1/sources",
+		"/v1/events",
+		"/v1/console/events",
+		"/v1/tasks",
+		"/v1/stats",
+	];
+	let scope = readScope();
+
+	function readScope() {
+		try {
+			return JSON.parse(localStorage.getItem(SCOPE_KEY) || "{}") || {};
+		} catch (e) {
+			return {};
+		}
+	}
+	function saveScope(v) {
+		scope = Object.assign({}, scope, v || {});
+		try {
+			localStorage.setItem(SCOPE_KEY, JSON.stringify(scope));
+		} catch (e) {
+			/* 隐私模式下写不进去：退化成"本次会话有效"，不影响功能 */
+		}
+	}
+
+	/**
+	 * 给命名空间资源自动带上当前 namespaceId。
+	 *
+	 * 只在**确实选过命名空间**时才加：真实后端还没有 /v1/orgs，
+	 * 拿不到范围时保持原样，页面行为完全不变（不需要分叉代码路径）。
+	 */
+	function withScope(path) {
+		if (!scope.namespaceId) return path;
+		const str = String(path);
+		const qi = str.indexOf("?");
+		const base = qi < 0 ? str : str.slice(0, qi);
+		if (!NS_PATHS.some((p) => base === p || base.startsWith(p + "/"))) return path;
+		const params = new URLSearchParams(qi < 0 ? "" : str.slice(qi + 1));
+		if (params.has("namespaceId")) return path;
+		params.set("namespaceId", scope.namespaceId);
+		return base + "?" + params.toString();
+	}
+
 	async function api(path, opts, demo) {
 		const o = opts || {};
 		try {
 			const res = await fetch(
-				path,
+				withScope(path),
 				Object.assign({ credentials: "include" }, o),
 			);
 			// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”，不进入演示模式）

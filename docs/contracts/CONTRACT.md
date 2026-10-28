@@ -21,18 +21,20 @@
 | **I7** | **图里只有能力，没有机器**；`edges` 两端都是 `capability_id` | 换节点要改图 |
 | **I8** | **一个能力定义 = 一个不可变版本**（append-only，钉 hash） | 旧 trace 无法解释 |
 | **I9** | **空列表返回 `[]` 不返回 `null`** | 前端误判「未连接」 |
-| **I10** | **一切租户数据先过 `org_id`** | 跨组织泄漏 |
+| **I10** | **一切租户数据先过 `org_id`**；命名空间资源还必须过 `namespace_id`，且两者必须一致（`namespace.org_id == org_id`） | 跨组织 / 跨命名空间泄漏 |
+| **I11** | **跨命名空间不引用**：`edges` 查表、`source_targets` 派发、子任务继承，全部锁在同一个 `namespace_id` 内；违反一律 `400` | 预发的图能把任务派到生产的拓扑上 |
 
 ---
 
 ## 1. 表清单
 
-**11 张新建 + 4 张沿用**，全部 `CREATE TABLE IF NOT EXISTS`。
+**12 张新建 + 4 张沿用**，全部 `CREATE TABLE IF NOT EXISTS`。
 
 | 表 | 归属 | 说明 |
 |---|---|---|
 | `orgs` | — | 组织（Tailscale tailnet 模型） |
 | `org_members` | — | 用户 ↔ 组织（多对多） |
+| `namespaces` | 组织 | 组织内的隔离单位（配置 + 运行面），见 §2.1.1 |
 | `users` | 人 | 跨组织共享身份 |
 | `passkeys` / `sessions` / `api_keys` | 人 | 认证（沿用现有实现，字段不变） |
 | `capability_versions` | 组织 | 能力定义，append-only，钉 hash |
@@ -40,15 +42,16 @@
 | `node_instances` | 组织 | 节点上的并发槽位 |
 | `node_capabilities` | 组织 | 节点声明「我有 review@1」 |
 | `node_pins` | 组织 | 粘性路由钉住 |
-| `edges` | 组织 | 出口表，路由唯一依据 |
-| `events` | 组织 | 事件日志（链的起点） |
-| `tasks` | 组织 | 任务行 = OTel span |
-| `graph_versions` | 组织 | 图快照，钉 hash |
+| `edges` | 命名空间 | 出口表，路由唯一依据 |
+| `events` | 命名空间 | 事件日志（链的起点） |
+| `tasks` | 命名空间 | 任务行 = OTel span |
+| `graph_versions` | 命名空间 | 图快照，钉 hash |
 
-### 1.1 本文定义的表（11 张）
+### 1.1 本文定义的表（12 张）
 
-`orgs` / `org_members` / `capability_versions` / `nodes` / `node_capabilities` /
-`node_instances` / `node_pins` / `edges` / `events` / `tasks` / `graph_versions`
+`orgs` / `org_members` / `namespaces` / `capability_versions` / `nodes` /
+`node_capabilities` / `node_instances` / `node_pins` / `edges` / `events` / `tasks` /
+`graph_versions`
 
 ### 1.2 沿用不动的表（4 张）
 
@@ -91,6 +94,34 @@ CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
 
 **首次注册自动建组织**：注册事务内 `INSERT orgs` + `INSERT org_members(role='owner')`。
 **代码里不存在「没有组织」的分支。**
+
+#### 2.1.1 命名空间
+
+**组织之下还有一层：命名空间。** 完整设计见 `docs/design/namespaces.md`，
+这里只放实现必需的部分。
+
+```sql
+CREATE TABLE IF NOT EXISTS namespaces (
+    id         TEXT PRIMARY KEY,              -- ns_<base62>
+    org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    slug       TEXT NOT NULL,                 -- prod / staging / team-a（稳定，出现在 URL 里）
+    name       TEXT NOT NULL,                 -- 展示名（可改）
+    created_at INTEGER NOT NULL,
+    UNIQUE (org_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);
+```
+
+**隔离什么**：`edges` / `sources` / `events` / `tasks` / `graph_versions`。
+**不隔离什么**：`capability_versions`、`nodes`、`node_capabilities`、`users` / `org_members`
+—— 能力和节点是**组织级共享资源池**，理由见设计文档 §2.1 / §2.2（核心：节点协议不用改）。
+
+**建组织时同事务建 `default` 命名空间**（slug `default`，名「默认」）。
+**代码里不存在「没有命名空间」的分支。**
+
+**`namespace_id` 与 `org_id` 同时存在**（I10 的字面要求），但两者是包含关系：
+`namespace.org_id` 就是这一行的 `org_id`。写入时由 store 层校验一致，**读路径一律用 `namespace_id`**。
 
 ### 2.2 能力定义（中枢侧，append-only）
 
@@ -172,16 +203,20 @@ CREATE TABLE IF NOT EXISTS node_pins (
 
 ```sql
 CREATE TABLE IF NOT EXISTS edges (
+    namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     from_capability TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
     from_port       TEXT NOT NULL,            -- 出口名，必须 ∈ from 的 outputs
     to_capability   TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
     created_at      INTEGER NOT NULL,
-    PRIMARY KEY (org_id, from_capability, from_port, to_capability)
+    PRIMARY KEY (namespace_id, from_capability, from_port, to_capability)
 );
 
-CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(org_id, from_capability, from_port);
+CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(namespace_id, from_capability, from_port);
 ```
+
+**边属于命名空间（I11）**：主键前缀从 `org_id` 换成 `namespace_id`。
+同一对能力可以在**不同命名空间**各有一条边，互不影响。
 
 **一行 = 一条边。同一个 `(from_capability, from_port)` 可以有多行 → 扇出。**
 **两端都是能力定义，不引用任何机器（I7）。**
@@ -190,19 +225,21 @@ CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(org_id, from_capability, fr
 
 ```sql
 CREATE TABLE IF NOT EXISTS events (
-    id         TEXT PRIMARY KEY,              -- evt_<base62>
-    org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    trace_id   TEXT NOT NULL,                 -- 一个根事件引起的全部工作
+    id           TEXT PRIMARY KEY,            -- evt_<base62>
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    trace_id     TEXT NOT NULL,               -- 一个根事件引起的全部工作
     source     TEXT NOT NULL,                 -- github | cron | watch | http | manual
     type       TEXT NOT NULL,                 -- pull_request.opened
     payload    TEXT NOT NULL DEFAULT '{}',    -- 原始 JSON，只存不解释
     created_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_trace ON events(org_id, trace_id);
+CREATE INDEX IF NOT EXISTS idx_events_trace ON events(namespace_id, trace_id);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id             TEXT PRIMARY KEY,          -- tsk_<base62>，同时是 OTel span_id
+    namespace_id   TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     org_id         TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     trace_id       TEXT NOT NULL,
     parent_task_id TEXT,                      -- 谁派生；根事件直接派生的为 NULL
@@ -237,8 +274,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     finished_at    INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_trace   ON tasks(org_id, trace_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent  ON tasks(org_id, parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_trace   ON tasks(namespace_id, trace_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent  ON tasks(namespace_id, parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_lease   ON tasks(status, lease_until);
 CREATE INDEX IF NOT EXISTS idx_tasks_node    ON tasks(node_id, status);
 ```
@@ -256,13 +293,17 @@ CREATE INDEX IF NOT EXISTS idx_tasks_node    ON tasks(node_id, status);
 ```sql
 CREATE TABLE IF NOT EXISTS graph_versions (
     id           TEXT PRIMARY KEY,            -- grf_<UTC>_<hash8>
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     content_hash TEXT NOT NULL,
     snapshot     TEXT NOT NULL,               -- JSON：全部 edges 的规范化快照
     created_at   INTEGER NOT NULL,
-    UNIQUE (org_id, content_hash)
+    UNIQUE (namespace_id, content_hash)
 );
 ```
+
+**快照的 hash 不含 `namespace_id`**：快照内容就是 edges 列表，命名空间已经由列表达。
+把命名空间混进 hash 会让「同一张图在两个命名空间」变成两条内容不同、实际相同的快照。
 
 **为什么钉图**：trace 要能重建「当时图长什么样」。`edges` 是可变的，`graph_versions` 不可变。
 
@@ -332,11 +373,11 @@ CREATE TABLE IF NOT EXISTS graph_versions (
 ## 4. 派发四步（唯一路由算法）
 
 ```text
-输入：org_id, 上游 (capability_id, out), params, trace_id, path, parent_task_id
+输入：org_id, namespace_id, 上游 (capability_id, out), params, trace_id, path, parent_task_id
 
 ① 查表
    SELECT to_capability FROM edges
-    WHERE org_id=? AND from_capability=? AND from_port=?
+    WHERE namespace_id=? AND from_capability=? AND from_port=?
    → N 行（N=0 则记 pruned/no_edge，结束）
 
 ② 校参数（对每个 to_capability）
@@ -358,6 +399,9 @@ CREATE TABLE IF NOT EXISTS graph_versions (
 
 **① ② ③ 都发生在建任务之前**，所以剪枝不产生任务行。
 **`pruned` 记录写在事件 span 上**（`tasks` 里没有对应的行），三态原因见 06 页。
+
+**命名空间只改 ① 的 WHERE（I11）**。②③④⑤ 完全不变：能力组织级、节点组织级。
+子任务的 `namespace_id` **继承父任务**，不接受调用方指定。
 
 ---
 
@@ -557,8 +601,23 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `GET/POST/DELETE` | `/v1/edges` | 出口表 CRUD |
 | `GET` | `/v1/nodes` | 节点列表与在线状态 |
 | `POST` | `/v1/nodes/{id}/drain` | 排空节点 |
+| `GET/POST/PATCH/DELETE` | `/v1/namespaces` | 命名空间 CRUD（详见设计文档 §6） |
 
 **JSON 字段一律 camelCase**（I9 同源约束的延伸）。
+
+#### 命名空间参数怎么带
+
+**显式，或者显式全部 —— 永远没有隐式默认。**
+
+| 端点 | `namespaceId` |
+|---|---|
+| `/v1/edges`、`/v1/sources`、`/v1/events`、`/v1/tasks`、`/v1/traces/*`、`/v1/stats` | **必填** |
+| 同上但要跨命名空间汇总（管理员视图） | `namespaceId=*` |
+| `/v1/capabilities`、`/v1/nodes`、`/v1/admin/*`、`/v1/auth/*` | **不需要**（组织级） |
+
+- 缺 `namespaceId` → `400`（**不回退到默认命名空间**：回退等于把人写错的地方藏起来）
+- 不存在 → `404`；属于别的 org → `403`；跨命名空间引用 → `400`（I11）
+- 命名空间资源在响应里带 `namespaceId`；能力和节点**不带**（加了会诱导前端按命名空间过滤，而它们不是）
 
 ---
 
@@ -695,6 +754,23 @@ SELECT 1 FROM org_members WHERE org_id = :current_org AND user_id = :params_to;
 3. 验签成本可以忽略：`hello` 时查一次，之后靠连接对象持有 `node_id`/`org_id`，不是每帧都查。
 
 token 形态与现有 `api_keys` 一致：`ant_<label>_<base64url(24B)>`，DB 只存 `sha256`，明文只在创建时返回一次。
+
+### 10.4 Q7：命名空间隔离到什么粒度
+
+**决定：命名空间隔离「配置 + 运行面」，能力与节点保持组织级。**
+
+| 候选 | 结论 |
+|---|---|
+| 只有 org 一层 | ❌ 多套流程无处安放；在预发配一条边，生产也会派发 |
+| 命名空间隔离全部（含能力、节点） | ❌ 节点 `hello` 必须带命名空间 → 改协议 + 所有已部署 agent 升级；且同名的 `review@1` 在 N 个命名空间指向 N 个定义，节点声明出现歧义 |
+| **隔离 edges / sources / events / tasks / graph_versions** | ✅ 覆盖「不同环境跑不同流程」的真实需求，节点协议零改动 |
+
+**已知限制（写下来，别假装不存在）**：无法把某个命名空间的活固定到某批机器上。
+正确解法不是命名空间级绑定，而是**能力定义加 `selector`** + 按 `nodes.tags` 过滤。
+
+**反向扩展点**：若将来确实要「同名能力多套定义」，给 `capability_versions` 加
+`namespace_id`、`UNIQUE(org_id,name,version)` 改成 `UNIQUE(org_id,namespace_id,name,version)`，
+并让 `hello` 带命名空间列表 —— 破坏性升级，必须先有节点侧配合。
 
 ---
 
