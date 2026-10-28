@@ -239,6 +239,7 @@ index:
     empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
 graph:
   zoom_in: Acercar
+  replay: Repetir la animación
   zoom_out: Alejar
   fit: Ajustar a la vista
   fullscreen: Pantalla completa

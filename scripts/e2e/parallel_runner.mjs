@@ -59,7 +59,9 @@ const SUITE_TIMEOUT = 120_000; // 120s per suite（默认）
 // frontend 是唯一一个要跑 249 条断言的套件，光 Chrome 交互就要 ~106s，
 // 默认 120s 只剩十几秒余量 —— 并发跑时必然踩线。给它单独放宽。
 const SUITE_TIMEOUT_OVERRIDE = {
-	frontend: 240_000,
+	// 断言数还会涨（现在 310 条），240s 在并发下只剩十几秒余量，
+	// 加几条动画采样就会被 SIGKILL 掉。留足一倍余量。
+	frontend: 300_000,
 };
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");

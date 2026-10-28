@@ -239,6 +239,7 @@ index:
     empty: イベントはまだありません。webhook や cron トリガーを繋ぐと、ここに流れが表示されます。
 graph:
   zoom_in: 拡大
+  replay: アニメーションを再生し直す
   zoom_out: 縮小
   fit: 全体を表示
   fullscreen: 全画面
