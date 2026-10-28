@@ -2599,10 +2599,22 @@ async function checkWaterfall(page) {
 				}
 				const drawn = Array.from(
 					document.querySelectorAll(".flograph-svg path[data-animated]"),
-				).map((p) => ({ pair: p.dataset.from + "\u0000" + p.dataset.to, label: p.dataset.from + "→" + p.dataset.to }));
+				).map((p) => ({
+					pair: p.dataset.from + "\u0000" + p.dataset.to,
+					triple: `${p.dataset.from}#${p.dataset.port}#${p.dataset.to}`,
+					label: p.dataset.from + "→" + p.dataset.to,
+				}));
+				// 所有边（画过没画过都要），用来验证"哪个出口被走过"这件事本身
+				const all = Array.from(document.querySelectorAll(".flograph-svg path[data-from]")).map(
+					(p) => ({
+						triple: `${p.dataset.from}#${p.dataset.port}#${p.dataset.to}`,
+						animated: p.dataset.animated === "1",
+					}),
+				);
 				return {
 					drawnCount: drawn.length,
 					fake: drawn.filter((d) => !walked.has(d.pair)).map((d) => d.label),
+					animatedByTriple: Object.fromEntries(all.map((x) => [x.triple, x.animated])),
 				};
 			});
 			H.check(
@@ -2611,6 +2623,32 @@ async function checkWaterfall(page) {
 				edgeCheck.fake.length === 0
 					? `画出 ${edgeCheck.drawnCount} 条，全部走过`
 					: `画了没走过的边: ${edgeCheck.fake.join(", ")}`,
+			);
+
+			// ---- issue #157：同一个源、同一个目标，走的是哪个出口必须分得清 ----
+			//
+			// t9 里 analyze-pr 有两条边进 run-tests（needs-fix 扇出 + approved），
+			// lint-fix 有一条 clean 进 run-tests。这次 analyze 走的是 needs-fix、
+			// lint-fix 走的是 remaining，所以只有 needs-fix 那条该被画出来。
+			//
+			// 这个 bug 的表现是"跑测试节点亮起时看不到有线进入它" —— 只断言
+			// "动画在播"完全抓不到，必须盯**具体哪条边**被画了。
+			const A = "cap_mock_analyze-pr_v1";
+			const L = "cap_mock_lint-fix_v1";
+			const T = "cap_mock_run-tests_v1";
+			const byTriple = edgeCheck.animatedByTriple || {};
+			const want = [
+				[`${A}#needs-fix#${T}`, true, "analyze--needs-fix--> run-tests（这次走过）"],
+				[`${A}#approved#${T}`, false, "analyze--approved--> run-tests（这次没走）"],
+				[`${L}#clean#${T}`, false, "lint-fix--clean--> run-tests（这次没走）"],
+			];
+			const wrong = want.filter(([k, v]) => byTriple[k] !== v);
+			H.check(
+				"同一对节点的多条边中，只画这次真正走过的那个出口",
+				wrong.length === 0,
+				wrong.length === 0
+					? want.map(([k, , d]) => d).join("；")
+					: wrong.map(([k, v]) => `${k} 期望 ${v} 实际 ${byTriple[k]}`).join("; "),
 			);
 
 			// ---- 走过多次的边要标出次数 ----

@@ -925,20 +925,31 @@
 			//
 			// 时间跨度保持原来的 4m11s（把各段压缩），不把任务时间戳
 			// 往未来推得更远。
+			// 最后一列是**父任务在本数组里的下标**（null = 根任务）。
+			//
+			// 必须显式写，不能用"上一个元素"当父任务 —— 原来就是那么写的，
+			// 结果算出 analyze→lint-fix→report→alert→**run-tests** 这种
+			// 底图里根本不存在的父子对：alert 是终点，它没有出口能派发到
+			// run-tests。连锁反应是"走过几次"全错位，
+			// 真正走过的 analyze --needs-fix--> run-tests 反而统计成 0 次，
+			// 图上那条线就永远不动（issue #157）。
 			const plan = [
-				[analyze, 0.0, 4.8, "needs-fix", "succeeded", "发现 1 个高危 + 27 处 lint", 0, 1],
-				[lintFix, 4.8, 96.2, "remaining", "succeeded", "自动修了 26 处，1 处需人工", 0, 1],
-				[report, 96.2, 97.4, "escalate", "succeeded", "已通知值班人", 2, 1],
-				[alert, 97.4, 98.1, null, "succeeded", "电话已拨出", 2, 1],
-				[tests, 4.8, 48.3, "failed", "failed", "3 个用例失败（parse_test.go）", 1, 1],
-				[fix, 48.3, 88.0, "fixed", "succeeded", "自动补了边界判断", 1, 2],
+				// [能力, 起点, 终点, 出口, 状态, 备注, nodeIdx, attempts, 父下标]
+				[analyze, 0.0, 4.8, "needs-fix", "succeeded", "发现 1 个高危 + 27 处 lint", 0, 1, null],
+				// needs-fix 是**扇出**：同时派给 lint-fix 和 run-tests，
+				// 两者是兄弟，不是一条链上的前后。
+				[lintFix, 4.8, 96.2, "remaining", "succeeded", "自动修了 26 处，1 处需人工", 0, 1, 0],
+				[report, 96.2, 97.4, "escalate", "succeeded", "已通知值班人", 2, 1, 1],
+				[alert, 97.4, 98.1, null, "succeeded", "电话已拨出", 2, 1, 2],
+				[tests, 4.8, 48.3, "failed", "failed", "3 个用例失败（parse_test.go）", 1, 1, 0],
+				[fix, 48.3, 88.0, "fixed", "succeeded", "自动补了边界判断", 1, 2, 4],
 				// 第二轮：修完还是不绿，再修一次才过
-				[tests, 88.0, 125.0, "failed", "failed", "还剩 1 个用例超时（TestParseTimeout）", 1, 1],
-				[fix, 125.0, 165.0, "fixed", "succeeded", "把超时阈值从 2s 提到 5s", 1, 2],
-				[tests, 165.0, 190.0, "passed", "succeeded", "278 用例全部通过", 1, 1],
-				[deploy, 190.0, 231.5, "failed", "failed", "健康检查 5 分钟未通过", 1, 1],
-				[rollback, 231.5, 250.8, "done", "succeeded", "已回滚到上一版", 1, 1],
-				[alert, 250.8, 251.4, null, "succeeded", "值班已收到升级", 2, 1],
+				[tests, 88.0, 125.0, "failed", "failed", "还剩 1 个用例超时（TestParseTimeout）", 1, 1, 5],
+				[fix, 125.0, 165.0, "fixed", "succeeded", "把超时阈值从 2s 提到 5s", 1, 2, 6],
+				[tests, 165.0, 190.0, "passed", "succeeded", "278 用例全部通过", 1, 1, 7],
+				[deploy, 190.0, 231.5, "failed", "failed", "健康检查 5 分钟未通过", 1, 1, 8],
+				[rollback, 231.5, 250.8, "done", "succeeded", "已回滚到上一版", 1, 1, 9],
+				[alert, 250.8, 251.4, null, "succeeded", "值班已收到升级", 2, 1, 10],
 				// 注意这里**没有** gen-changelog：
 				//
 				// 配置里它是 `deploy-preview --preview.ready--> gen-changelog`，
@@ -949,13 +960,14 @@
 				// （之前让它"执行了"是错的：部署失败了哪来的预览地址去生成变更日志。）
 			];
 
-			let prev = null;
-			for (const [cap, t0, t1, out, status, note, nodeIdx, attempts] of plan) {
+			const made = [];
+			for (const [cap, t0, t1, out, status, note, nodeIdx, attempts, parentIdx] of plan) {
+				const parent = parentIdx == null ? null : made[parentIdx];
 				const clock = base + t0;
 				const task = mkTask({
 					traceId,
 					cap,
-					parent: prev ? prev.id : null,
+					parent: parent ? parent.id : null,
 					path: [rootId, cap.id],
 					nodeId: state.nodes[nodeIdx].id,
 					createdAt: clock,
@@ -981,7 +993,7 @@
 							: "",
 				});
 				state.tasks.push(task);
-				prev = task;
+				made.push(task);
 			}
 		}
 	})();

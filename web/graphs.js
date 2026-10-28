@@ -420,16 +420,28 @@
 		// 用真实时间（startedAt）而不是数组下标：后端返回顺序不保证是
 		// 执行顺序。同一能力出现多次时**保留多个节拍** —— 重试本来就该
 		// 在动画里看得见（否则环上那三次 run-tests 只亮一次）。
-		const beats = tasks
-			.slice()
-			.sort(
-				(a, b) =>
-					(a.startedAt != null ? a.startedAt : a.createdAt) -
-						(b.startedAt != null ? b.startedAt : b.createdAt) ||
-					(a.id < b.id ? -1 : 1),
-			)
-			.map((tk) => tk.capabilityId)
-			.filter(Boolean);
+		// 每拍还要带"把流程带到这里"的那条边：
+		//   from = 父任务的能力，port = 父任务走的是哪个出口，cap = 本任务能力
+		//
+		// 有了这个，渲染层才能做到"先画出进入这个节点的那条线，再点亮它"。
+		// 只知道节点顺序的话，一条边只能跟着它的**源**节点一起画 —— 像
+		// run-tests→deploy-preview 就会在第一次跑测试时就画完，而那时
+		// 部署还早着（issue #157 里"看不到线进入"的观感就是这么来的）。
+		const sortedTasks = tasks.slice().sort(
+			(a, b) =>
+				(a.startedAt != null ? a.startedAt : a.createdAt) -
+					(b.startedAt != null ? b.startedAt : b.createdAt) ||
+				(a.id < b.id ? -1 : 1),
+		);
+		const capOfTaskID = new Map(tasks.map((tk) => [tk.id, tk.capabilityId]));
+		const outOfTaskID = new Map(tasks.map((tk) => [tk.id, tk.out]));
+		const beats = sortedTasks
+			.filter((tk) => tk.capabilityId)
+			.map((tk) => ({
+				cap: tk.capabilityId,
+				from: tk.parentTaskId ? capOfTaskID.get(tk.parentTaskId) || "" : "",
+				port: tk.parentTaskId ? outOfTaskID.get(tk.parentTaskId) || "" : "",
+			}));
 
 		let nodes;
 		let edges;
