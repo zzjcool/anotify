@@ -26,6 +26,20 @@
 
 代价是连线路由和缩放平移要自己写（约 400 行），换来的是节点可以任意设计。
 
+## 为什么动画也不引库（anime.js / GSAP / Motion One）
+
+链路图的入场动画只有两类动作：节点淡入 + 连线沿路径"长"出来。
+后者在业内**统一**是 `stroke-dasharray` + `stroke-dashoffset` 的做法
+（anime.js / GSAP / Motion One 画线也是这一招，只是包了层 API）。
+
+所以直接用了浏览器原生的 **Web Animations API**（`element.animate()`）：
+零依赖、不用 vendor、不用构建，而且拿到 `onfinish` 回调。
+
+**别再手写 CSS transition 做这个**：先设 `transition` 再设初值，初值
+那一跳会被过渡自己吃掉，浏览器最终只看到 `0 → 0`，线会"啪"一下整条
+出现（踩过两次）。判据见 E2E「线是逐段画出来的（不是整条瞬现）」——
+它盯的是 `stroke-dashoffset` 的中间值，只看"动画在播"是发现不了的。
+
 ## 为什么不能依赖 CDN
 
 e2e 的离线门禁（`scripts/e2e/lib/harness.mjs` 的 `mockExternalCdn`）会拦截
