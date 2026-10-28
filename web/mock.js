@@ -861,13 +861,13 @@
 		//
 		//   analyze-pr ─needs-fix→ lint-fix ─remaining→ report.send ─escalate→ alert.oncall
 		//        │                      └─clean→ （剪枝：run-tests 不被派发）
-		//        └─approved→ run-tests ─failed→ apply-fix ─fixed→ run-tests（第 2 次，成功）
+		//        └─approved→ run-tests ─failed→ apply-fix ─fixed→ run-tests（×2 重试）
 		//                                              └────passed→ deploy-preview ─failed→ rollback ─done→ alert.oncall
 		//                                                          （preview.ready→gen-changelog 分支被剪枝）
 		//
 		// 这一条特意做了几件别的 trace 没做的事：
-		//   · 同一个能力在一个 trace 里出现**两次**（run-tests 第 1 次失败、
-		//     第 2 次成功）——瀑布图要能分清这是两次执行，不是重复渲染
+		//   · 同一个能力在一个 trace 里出现**多次**（run-tests 跑了 3 次、
+		//     apply-fix 跑了 2 次）——瀑布图要能分清这是多次执行，不是重复渲染
 		//   · 失败任务的 error 字段非空（UI 要展示错误文本）
 		//   · 有 attempts=2 的重试标记
 		//   · 有剪枝（clean 分支的 run-tests 没被派发，所以它不在任务里）
@@ -917,15 +917,26 @@
 
 			// 每跳的 [能力, 起点, 终点, out, 状态, 备注, nodeIdx, attempts]
 			// nodeIdx 让瀑布图和节点页的"哪个实例跑的"对得上。
+			// 重试**两轮**（而不是一轮）是刻意的：
+			//
+			// 环只绕一圈时，环上每条边都只被走了 1 次 —— "边上标注走过
+			// 几次"这个功能就永远没有内容可显示。绕两圈才能看到
+			// `failed ×2` / `fixed ×2`，也才像真实的重试。
+			//
+			// 时间跨度保持原来的 4m11s（把各段压缩），不把任务时间戳
+			// 往未来推得更远。
 			const plan = [
 				[analyze, 0.0, 4.8, "needs-fix", "succeeded", "发现 1 个高危 + 27 处 lint", 0, 1],
 				[lintFix, 4.8, 96.2, "remaining", "succeeded", "自动修了 26 处，1 处需人工", 0, 1],
 				[report, 96.2, 97.4, "escalate", "succeeded", "已通知值班人", 2, 1],
 				[alert, 97.4, 98.1, null, "succeeded", "电话已拨出", 2, 1],
-				[tests, 4.8, 71.3, "failed", "failed", "3 个用例失败（parse_test.go）", 1, 1],
-				[fix, 71.3, 132.6, "fixed", "succeeded", "自动补了边界判断", 1, 2],
-				[tests, 132.6, 178.9, "passed", "succeeded", "278 用例全部通过", 1, 1],
-				[deploy, 178.9, 231.5, "failed", "failed", "健康检查 5 分钟未通过", 1, 1],
+				[tests, 4.8, 48.3, "failed", "failed", "3 个用例失败（parse_test.go）", 1, 1],
+				[fix, 48.3, 88.0, "fixed", "succeeded", "自动补了边界判断", 1, 2],
+				// 第二轮：修完还是不绿，再修一次才过
+				[tests, 88.0, 125.0, "failed", "failed", "还剩 1 个用例超时（TestParseTimeout）", 1, 1],
+				[fix, 125.0, 165.0, "fixed", "succeeded", "把超时阈值从 2s 提到 5s", 1, 2],
+				[tests, 165.0, 190.0, "passed", "succeeded", "278 用例全部通过", 1, 1],
+				[deploy, 190.0, 231.5, "failed", "failed", "健康检查 5 分钟未通过", 1, 1],
 				[rollback, 231.5, 250.8, "done", "succeeded", "已回滚到上一版", 1, 1],
 				[alert, 250.8, 251.4, null, "succeeded", "值班已收到升级", 2, 1],
 				// 注意这里**没有** gen-changelog：
