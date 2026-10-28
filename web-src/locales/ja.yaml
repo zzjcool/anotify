@@ -1127,6 +1127,11 @@ caps:
   empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
   count: '{n} 個のケイパビリティ'
   no_outputs: 出口なし（終端ケイパビリティ）
+  declared_by: 宣言ノード
+  no_node: 宣言ノードなし
+  no_node_hint: ノードが宣言するまでこのケイパビリティは実行できません
+  by_hub: 中枢で実行、ノード不要
+  by_none: イベント起点、コードは実行しません
   any_event_type: 任意のイベント種別（起点）
   rename: 名前を変更
   name_it: 名前を付ける

@@ -1127,6 +1127,11 @@ caps:
   empty: No capabilities yet. Define one so nodes can declare it.
   count: '{n} capabilities'
   no_outputs: No outputs (terminal capability)
+  declared_by: Declared by
+  no_node: No node declares it
+  no_node_hint: This capability can never run until a node declares it
+  by_hub: Runs on the hub, no node needed
+  by_none: Event origin, runs no code
   any_event_type: Any event type (origin)
   rename: Rename
   name_it: Name it

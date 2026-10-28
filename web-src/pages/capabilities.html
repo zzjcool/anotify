@@ -868,6 +868,47 @@
           }
           left.appendChild(outs);
 
+          // 声明节点：能力定义只是「能干什么」的白名单，真正让它跑起来的是
+          // **有机器声明它**。所以这一行不是锦上添花 —— 空数组意味着这个
+          // 能力永远跑不起来，必须显眼地说出来，否则要反向到节点页去拼。
+          const by = c.declaredBy || [];
+          const decl = el("div", "mt-2 flex flex-wrap items-center gap-1.5");
+          decl.appendChild(
+            el("span", "text-[11px] text-zinc-600", t("caps.declared_by", "声明节点")),
+          );
+          if (by.length) {
+            for (const n of by) {
+              const chip = el("span", "out-chip");
+              chip.appendChild(el("span", "st-dot st-" + (n.status || "offline")));
+              chip.appendChild(document.createTextNode(n.name));
+              // 悬停给出状态：在线/离线/排空中
+              chip.title = n.name + " · " + t("nodes.status." + n.status, n.status);
+              decl.appendChild(chip);
+            }
+          } else if (c.executedBy === "hub") {
+            // 中枢自己执行的能力**本来就不需要节点声明**，
+            // 不能报"跑不起来"—— 那是误报。
+            decl.appendChild(
+              el("span", "text-[11px] text-zinc-600", t("caps.by_hub", "中枢执行，不需要节点")),
+            );
+          } else if (c.executedBy === "none") {
+            decl.appendChild(
+              el("span", "text-[11px] text-zinc-600", t("caps.by_none", "事件起点，不执行代码")),
+            );
+          } else {
+            decl.appendChild(
+              el("span", "text-[11px] text-amber-400", t("caps.no_node", "没有节点声明")),
+            );
+            decl.appendChild(
+              el(
+                "span",
+                "text-[11px] text-zinc-600",
+                "· " + t("caps.no_node_hint", "这个能力跑不起来 —— 得先在节点上声明它"),
+              ),
+            );
+          }
+          left.appendChild(decl);
+
           const right = el("div", "text-right");
           right.appendChild(
             code(

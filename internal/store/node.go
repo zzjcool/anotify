@@ -417,6 +417,40 @@ func (d *DB) NodesForCapability(ctx context.Context, orgID, capabilityID string)
 	return out, rows.Err()
 }
 
+// NodesDeclaringCapability 返回声明了该能力的**所有**节点（含 offline / draining）。
+//
+// 与 NodesForCapability 的区别是**用途**，不是实现细节：
+//
+//	NodesForCapability    派发入口 —— 只给现在能接单的机器
+//	NodesDeclaringCapability  控制台展示 —— "谁声明了这个能力"是配置事实，
+//	                          排空中的机器仍然声明着它，页面上必须看得到，
+//	                          否则运维会以为这个能力没人管了
+//
+// 排序按状态（在线优先）+ 名字，让列表读起来稳定。
+func (d *DB) NodesDeclaringCapability(ctx context.Context, orgID, capabilityID string) ([]*Node, error) {
+	rows, err := d.QueryContext(ctx,
+		`SELECT `+nodeColumns+`
+		 FROM node_capabilities nc
+		 JOIN nodes n ON n.id = nc.node_id
+		 WHERE nc.capability_id = ? AND n.org_id = ?
+		 ORDER BY CASE n.status WHEN 'online' THEN 0 WHEN 'draining' THEN 1 ELSE 2 END,
+		          n.name, n.id`,
+		capabilityID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("nodes declaring capability: %w", err)
+	}
+	defer rows.Close()
+	out := []*Node{}
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
 // ErrNoCapacity 上面的哨兵错误。
 
 // UpsertInstances 落库节点申报的实例槽位；超过 nodes.max_instances 返回 ErrTooManyInstances。
