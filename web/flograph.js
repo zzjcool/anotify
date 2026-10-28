@@ -937,6 +937,38 @@
 		// `const beats = ...` 执行（同一个函数作用域，靠 TDZ 会炸），
 		// 所以这里直接读 options。
 		const canReplay = (options.beats || []).length >= 2;
+
+		// 播放速度（1× / 0.5× / 2×）。
+		//
+		// 默认 500ms/拍对 12 步的链路是"能看清"的节奏，但每个人的耐心
+		// 不一样 —— 给个开关比替所有人拍板强。用文字而不是图标：速度
+		// 本身没有公认图标，写了数字才不用猜。
+		if (canReplay) {
+			const SPEEDS = [1, 0.5, 2];
+			const speedBtn = document.createElement("button");
+			speedBtn.type = "button";
+			speedBtn.dataset.fgAction = "speed";
+			speedBtn.classList.add("fg-speed");
+			const paintSpeed = () => {
+				const txt = (revealSpeed === 1 ? "1" : String(revealSpeed)) + "\u00d7";
+				speedBtn.textContent = txt;
+				const title = tt("graph.speed", "播放速度") + " " + txt;
+				speedBtn.title = title;
+				speedBtn.setAttribute("aria-label", title);
+			};
+			paintSpeed();
+			speedBtn.addEventListener("click", (ev) => {
+				ev.stopPropagation();
+				const i = SPEEDS.indexOf(revealSpeed);
+				revealSpeed = SPEEDS[(i + 1) % SPEEDS.length] || 1;
+				paintSpeed();
+				// 换速度后立刻按新速度重播一遍：只改按钮文字的话，用户
+				// 无法判断到底生效没有。
+				playEnter(true);
+			});
+			ctrl.appendChild(speedBtn);
+		}
+
 		for (const [key, icon, title, fn] of [
 			// 重播放**最左**：它和缩放是两类动作，混在中间容易误点。
 			[
@@ -1145,6 +1177,8 @@
 		let enterTimer = null;
 		// 真的播过动画没有（页面据此决定"下次切回来还要不要重播"）
 		let animated = false;
+		// 上一次实际用的每拍时长（_debug 暴露给 E2E，避免靠掐表判时序）
+		let lastStepMs = 0;
 
 		function edgeElsFrom(cap) {
 			return edgeEls.filter((it) => it.from === cap && it.draw);
@@ -1253,9 +1287,27 @@
 			}
 			resetReveal();
 
-			// 总时长控制在 ~3s：节拍多就快一点，但每拍不低于 170ms，
-			// 否则"顺序"这个信息一闪而过看不出来。
-			const stepMs = Math.min(280, Math.max(170, 3000 / (beats.length + 1)));
+			// 每拍时长**不随步数压缩**。
+			//
+			// 原来写的是"总时长压到 3s"，于是步数越多每拍越快 —— 12 步的
+			// 重试链每拍只剩 231ms，人眼根本来不及看清"这一步是谁"。
+			// 方向反了：步数多本来就该播得更久。
+			//
+			// 500ms/拍 ≈ 看清一个节点 + 它那条线画出来的时间。总时长只在
+			// 极端长的链路上才封顶（10s），避免几十步的图播成一个小电影。
+			// 每拍固定时长，**不按总时长压缩**。
+			//
+			// 这是这条动画的基本约定：一步的时间是固定的，
+			// 所以图越复杂（步数越多）总时长就越长。
+			//
+			// 反面做法（踩过）：先把总时长定成 10s，再 steps 均分 ——
+			// 结果是链路越复杂每拍越短，最该看清的那条重试链反而播得最快。
+			// "慢一点"的意思不是总时长固定，而是每一步都留够看的工夫。
+			const BASE_STEP = 500;
+			const speed = revealSpeed > 0 ? revealSpeed : 1;
+			// "0.5×" 是**半速**，也就是每拍更**长** —— 所以要除，不是乘。
+			const stepMs = Math.max(120, BASE_STEP / speed);
+			lastStepMs = stepMs;
 
 			// 先把所有元素压成"未执行"，再按绝对时间表逐条执行。
 			// 用"时间表 + ticker"而不是层层嵌套 setTimeout：重播时
@@ -1346,11 +1398,16 @@
 				edges: () => edges.map((e) => ({ from: e.from, to: e.to, port: e.port })),
 				fullscreen: () => fullscreen,
 				animated: () => animated,
+				revealStep: () => lastStepMs,
 				scale: () => scale,
 				contentSize: () => ({ w: contentW, h: contentH }),
 			},
 		};
 	}
+
+	// 播放速度：1 → 正常、0.5 → 慢、2 → 快。
+	// 模块级，跨图重挂载保持用户的选择（切视图回来还是他选的那个速度）。
+	let revealSpeed = 1;
 
 	/** 十六进制色 + 透明度 → rgba()。支持 #rgb / #rrggbb。 */
 	function hexA(hex, alpha) {

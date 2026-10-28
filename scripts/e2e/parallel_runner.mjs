@@ -61,7 +61,7 @@ const SUITE_TIMEOUT = 120_000; // 120s per suite（默认）
 const SUITE_TIMEOUT_OVERRIDE = {
 	// 断言数还会涨（现在 310 条），240s 在并发下只剩十几秒余量，
 	// 加几条动画采样就会被 SIGKILL 掉。留足一倍余量。
-	frontend: 300_000,
+	frontend: 360_000,
 };
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
