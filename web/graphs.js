@@ -545,8 +545,14 @@
 					// 回边要绕出去画：否则它只是两个相邻节点之间的一小段，
 					// 看不出"这里是绕回来的"。渲染层据此把路径鼓出弧线。
 					loopback: isCycle,
-					// 剪枝的边用虚线灰掉：和"配置里没有这条边"区分开
-					muted: !bothAlive,
+					// 这次**没走过**的边也画成虚线灰掉，和剪枝节点同一个语义：
+					// "配置里有这条路，这次没走"。
+					//
+					// 只靠"不参与动画"是不够的：入场动画一开始会把走过的元素
+					// 压暗，而没走过的边如果保持正常实线，就会在那一瞬间显得
+					// **比走过的还亮** —— 看着像"这条线一开始就点亮了"，还分
+					// 不清哪条路这次真的用了（issue #157 第二张截图）。
+					muted: !bothAlive || walked === 0,
 				};
 			});
 
@@ -575,20 +581,31 @@
 				const entries = base.nodes.filter((n) =>
 					n.entry !== undefined ? n.entry : !hasIncoming.has(n.id),
 				);
+				const executedCaps = new Set(tasks.map((tk) => tk.capabilityId));
 				for (const n of entries) {
+					const isRoot = rootCaps.has(n.id);
+					// 这次不是它起跑、但它确实执行了 —— 别硬连一条触发器过来。
+					//
+					// 它有自己的入边（谁派发的它，图上已经画了）。再补一条
+					// 触发器→它 就是编造：比如部署预发这次是第 3 次跑测试
+					// 派发的，跟"PR 同步事件"没关系。
+					if (!isRoot && executedCaps.has(n.id)) continue;
 					edges.push({
 						from: SRC_NODE_ID,
 						to: n.id,
-						port: opts.sourcePort || "",
-						muted: !!n.dead,
-						// 入口边只有在**这个能力真的是本次的根任务**时才算走过。
+						// 出口名只有**真被这次事件拉起**时才写。
 						//
-						// 触发器画的是"源可能从这里起跑"的全集；这次真正被
-						// 触发器拉起的是根任务（没有 parentTaskId 的那些）。
-						// 把整片扇出都当成"走过"，动画就会画出一条
-						// 触发器→部署预发 的假路径 —— 而部署预发这次的父任务
-						// 其实是第 3 次跑测试。
-						times: rootCaps.has(n.id) ? 1 : 0,
+						// 触发器节点标的是具体事件（如 pull_request.synchronize），
+						// 而"源也接了别的入口"（部署预发是被 http/manual 源接的）
+						// 跟这个事件无关 —— 把 sourcePort 一律写上去等于说
+						// "这个事件能触发它"，是假的。
+						port: isRoot ? opts.sourcePort || "" : "",
+						// 没被这次走用的入口要显式画成"未走"（虚线），
+						// 不能只靠"不参与动画"来表达 —— 那会让它在整场
+						// 入场动画里以满不透明度的实线亮着，看着像一开始
+						// 就点亮了（issue #157 的第二张截图）。
+						muted: !!n.dead || !isRoot,
+						times: isRoot ? 1 : 0,
 					});
 				}
 			}
