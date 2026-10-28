@@ -714,7 +714,8 @@
 				if (n > 1) return "url(#fg-arrow-hot)";
 				return "url(#fg-arrow)";
 			};
-			path.setAttribute("marker-end", arrowFor(e));
+			const markerRef = arrowFor(e);
+			path.setAttribute("marker-end", markerRef);
 			// 记下这条边连的是哪两个节点。
 			// 一是方便排查（箭头方向不对时能直接看出是哪条边），
 			// 二是让 E2E 能**对着真实的 from/to** 验证方向，
@@ -727,7 +728,18 @@
 			const cls = edgeClass(e);
 			if (cls) path.setAttribute("class", cls);
 			svgRoot.appendChild(path);
-			edgeEls.push({ order: e.order, el: path });
+			edgeEls.push({
+				from: e.from,
+				el: path,
+				path: path,
+				marker: markerRef,
+				// 只有**真的走过**的边才画出来。
+				//
+				// times=0 表示"配置里有这条路，这次没走"（例如 lint-fix 走了
+				// remaining，它的 --clean--> 分支就没走）。把它也画出来等于
+				// 撒谎说这条分支被执行了。
+				draw: (e.times || 0) > 0 && !e.muted,
+			});
 
 			edgePos.set(i, { x1, y1, x2, y2 });
 
@@ -768,7 +780,11 @@
 				lb.style.top = spot.y + "px";
 				viewport.appendChild(lb);
 				labelEls.push(lb);
-				edgeEls.push({ order: e.order, el: lb });
+				edgeEls.push({
+					from: e.from,
+					el: lb,
+					draw: (e.times || 0) > 0 && !e.muted,
+				});
 				labelBoxes.push({
 					left: spot.x - spot.w / 2,
 					right: spot.x + spot.w / 2,
@@ -916,7 +932,11 @@
 		const ctrl = div("flograph-ctrl");
 		// 有没有"可播放的执行顺序"：源流向图没有执行数据，按钮点了也
 		// 只会原地不动 —— 干脆不显示，别放一个不响的按钮。
-		const canReplay = revealOrders(revealItems()).length >= 2;
+		//
+		// 注意 beats 在 options 里，工具栏这行代码**早于**下面的
+		// `const beats = ...` 执行（同一个函数作用域，靠 TDZ 会炸），
+		// 所以这里直接读 options。
+		const canReplay = (options.beats || []).length >= 2;
 		for (const [key, icon, title, fn] of [
 			// 重播放**最左**：它和缩放是两类动作，混在中间容易误点。
 			[
@@ -1108,96 +1128,176 @@
 			userAdjusted = true;
 		});
 
-		// ---- 入场动画：从"全量未执行"到"这条链真的跑过" ----
+		// ---- 入场动画：一拍一拍地"跑"一遍这条链 ----
 		//
-		// 为什么值得做：静态图看不出**顺序**。一条重试链最容易读错的地方就是
-		// "跑测试跑了两次、第二次才过" —— 而这正是排查时要看的东西。
-		// 动画按真实执行时间把节点和边一个个点亮，顺序本身成了信息。
+		// 为什么值得做：静态图看不出**顺序**。一条重试链最容易读错的地方
+		// 就是"跑测试跑了三次、第三次才过" —— 而这正是排查时要看的。
 		//
-		// 没有 order 的节点/边（剪枝的）**永远不点亮**：它们本来就是
-		// "配置里有、这次没走"，全程保持灰的才对。
+		// 节拍的定义（options.beats，由 graphs.js 按**真实 startedAt** 排好）：
+		// 一次任务执行 = 一拍。同一能力出现多次就占多拍 —— 重试因此看得见。
+		//
+		// 每一拍内部分两段，这是"不生硬"的关键：
+		//   0.00 拍  能力亮起（淡入 + 轻微放大）
+		//   0.55 拍  它的出边开始**沿着路径画出来**（stroke-dashoffset）
+		// 线比点晚半个拍子，视线就会跟着"能力 → 线 → 下一个能力"走。
+		const beats = Array.isArray(options.beats) ? options.beats : [];
+		const ROOT_ID = options.root || "";
 		let enterTimer = null;
 		// 真的播过动画没有（页面据此决定"下次切回来还要不要重播"）
 		let animated = false;
 
-		// 所有参与"点亮"的元素：节点 + 它的每条边（path 与出口名标签）
-		function revealItems() {
-			const items = [];
-			for (const n of nodes) {
-				const el = nodeEls.get(n.id);
-				if (el) items.push({ order: n.order, el: el });
-			}
-			for (const it of edgeEls) items.push(it);
-			return items;
+		function edgeElsFrom(cap) {
+			return edgeEls.filter((it) => it.from === cap && it.draw);
 		}
 
-		// 去重排序的点亮步骤。没有 order 的（剪枝）不参与。
-		function revealOrders(items) {
-			const orders = [];
-			for (const it of items) {
-				if (it.order != null && orders.indexOf(it.order) < 0) orders.push(it.order);
+		// 把上次动画留在 DOM 上的痕迹清干净（重播时用）
+		function resetReveal() {
+			for (const el of nodeEls.values()) {
+				el.classList.remove("is-pre", "is-pulse");
 			}
-			return orders.sort((a, b) => a - b);
+			for (const it of edgeEls) {
+				it.el.classList.remove("is-pre");
+				if (it.path) {
+					it.path.style.transition = "";
+					it.path.style.strokeDasharray = "";
+					it.path.style.strokeDashoffset = "";
+					if (it.marker) it.path.setAttribute("marker-end", it.marker);
+				}
+			}
+		}
+
+		// 点亮一个能力。已经亮过的再出现（重试）就"脉冲"一下，
+		// 否则第二次执行在画面上完全没有痕迹。
+		function lightNode(cap) {
+			const el = nodeEls.get(cap);
+			if (!el) return;
+			if (el.classList.contains("is-pre")) {
+				el.classList.remove("is-pre");
+				return;
+			}
+			// 已经在图上了：轻轻地"再跳一下"
+			el.classList.remove("is-pulse");
+			void el.offsetWidth; // 强制重排，让动画能重新开始
+			el.classList.add("is-pulse");
+			setTimeout(() => el.classList.remove("is-pulse"), 480);
 		}
 
 		/**
-		 * playEnter 播一遍"从全量未执行到实际执行"的动画。
+		 * 把一条边"画出来"。
 		 *
-		 * @param {boolean} force 用户**明确点了**重播按钮时为 true。
-		 *   自动播放尊重系统"减少动态效果"设置；但用户亲手点重播
-		 *   是明确的意图表达，此时不该再被系统偏好挡住 ——
-		 *   否则开了那个设置的人永远看不到这个功能。
+		 * 用 stroke-dashoffset 从全长收到 0：线是从起点长到终点的，
+		 * 不是整条淡入 —— 后者看不出方向。
+		 *
+		 * 箭头要在画完之后才出现，否则"线还没到，箭头先杵在那儿"。
 		 */
-		function playEnter(force) {
-			if (!force) {
-				if (
-					window.matchMedia &&
-					window.matchMedia("(prefers-reduced-motion: reduce)").matches
-				) {
-					return;
-				}
+		function drawEdge(it) {
+			const path = it.path;
+			if (!path || !path.classList.contains("is-pre")) {
+				// 已经画过（或本来就不是待点亮状态）：只把标签补上
+				if (it.label) it.label.classList.remove("is-pre");
+				return;
 			}
-			const items = revealItems();
-			const orders = revealOrders(items);
-			if (orders.length < 2) return; // 只有一步时动画没有意义
+			path.classList.remove("is-pre");
+			// 记下"这条边真的被画过"，E2E 用它对照任务的父子关系，
+			// 验证"没走过的分支不会被画出来"。
+			path.dataset.animated = "1";
+			const len = path.getTotalLength ? path.getTotalLength() : 0;
+			if (len > 0) {
+				path.style.transition = "stroke-dashoffset 0.36s ease-out";
+				path.style.strokeDasharray = String(len);
+				path.style.strokeDashoffset = String(len);
+				// 让上面的初值生效，再改目标值，否则会被合并成一次样式变更
+				void path.getBoundingClientRect();
+				path.style.strokeDashoffset = "0";
+			}
+			// 箭头等画完再现身
+			if (it.marker) path.removeAttribute("marker-end");
+			const done = () => {
+				path.style.transition = "";
+				path.style.strokeDasharray = "";
+				path.style.strokeDashoffset = "";
+				if (it.marker) path.setAttribute("marker-end", it.marker);
+				if (it.label) it.label.classList.remove("is-pre");
+			};
+			if (enterTimer === null) return; // 动画已停：直接给终态
+			setTimeout(done, len > 0 ? 380 : 0);
+		}
 
-			// 正在播的时候又点了一次：从干净状态重来，不叠两个定时器
+		function playEnter(force) {
+			// 自动播放尊重系统"减少动态效果"；用户亲手点重播则是明确意图，
+			// 不该再被挡住 —— 否则开了那个设置的人永远看不到这个功能。
+			if (
+				!force &&
+				window.matchMedia &&
+				window.matchMedia("(prefers-reduced-motion: reduce)").matches
+			) {
+				return;
+			}
+			if (beats.length < 2) return; // 一步都不到，没有可播的顺序
+
 			if (enterTimer) {
 				clearInterval(enterTimer);
 				enterTimer = null;
 			}
+			resetReveal();
+
+			// 总时长控制在 ~3s：节拍多就快一点，但每拍不低于 170ms，
+			// 否则"顺序"这个信息一闪而过看不出来。
+			const stepMs = Math.min(280, Math.max(170, 3000 / (beats.length + 1)));
+
+			// 先把所有元素压成"未执行"，再按绝对时间表逐条执行。
+			// 用"时间表 + ticker"而不是层层嵌套 setTimeout：重播时
+			// 一个 clearInterval 就能整体取消，不留孤儿回调。
+			const actions = [];
+			const push = (at, run) => actions.push({ at: at, run: run });
+
+			// 第 0 拍：触发器。它是这条 trace 的起点，先亮它再画它的扇出。
+			if (ROOT_ID && nodeEls.has(ROOT_ID)) {
+				push(0, () => lightNode(ROOT_ID));
+				push(stepMs * 0.55, () => edgeElsFrom(ROOT_ID).forEach(drawEdge));
+			}
+			beats.forEach((cap, i) => {
+				const at = stepMs * (i + 1);
+				push(at, () => lightNode(cap));
+				push(at + stepMs * 0.55, () => edgeElsFrom(cap).forEach(drawEdge));
+			});
+
+			// 只把**参与这次执行**的元素压暗。
+			//
+			// 剪枝的节点/边（这次根本没走）全程保持它们本来的样式：它们本来
+			// 就是"配置里有、这次没走"（虚线灰字），再压暗一次反而会让人
+			// 在动画结束时看到它们"慢慢浮出来"，误以为最后又跑了一步。
+			const beatCaps = new Set(beats);
+			if (ROOT_ID) beatCaps.add(ROOT_ID);
+			for (const [id, el] of nodeEls) {
+				if (beatCaps.has(id)) el.classList.add("is-pre");
+			}
+			for (const it of edgeEls) {
+				if (it.draw) it.el.classList.add("is-pre");
+			}
 
 			container.classList.add("is-playing");
 			animated = true;
-			for (const it of items) it.el.classList.add("is-pre");
 
-			// 总时长控制在 ~2.4s 内：步骤多就快一点，但每步不低于 90ms，
-			// 否则一闪而过反而看不出顺序。
-			const step = Math.max(90, Math.min(240, 2400 / orders.length));
-			let i = 0;
+			const total = stepMs * (beats.length + 1) + 520;
+			const startedAt = Date.now();
+			let cursor = 0;
 			enterTimer = setInterval(() => {
-				// 视图已经切走/重挂载：停掉，别在游离的 DOM 上空转
 				if (!container.isConnected) {
 					clearInterval(enterTimer);
 					enterTimer = null;
 					return;
 				}
-				if (i >= orders.length) {
+				const elapsed = Date.now() - startedAt;
+				while (cursor < actions.length && actions[cursor].at <= elapsed) {
+					actions[cursor++].run();
+				}
+				if (elapsed >= total) {
 					clearInterval(enterTimer);
 					enterTimer = null;
-					// 收尾时把**所有**残留的 is-pre 都清掉，包括全程没点亮的
-					// （剪枝的）。否则同一张图"首次进来"和"再切回来"长得
-					// 不一样 —— 入场动画不该留下永久痕迹，剪枝本身另有样式
-					// （虚线 + 灰字）表达"这次没走"。
-					for (const it of items) it.el.classList.remove("is-pre");
 					container.classList.remove("is-playing");
-					return;
 				}
-				const cur = orders[i++];
-				for (const it of items) {
-					if (it.order === cur) it.el.classList.remove("is-pre");
-				}
-			}, step);
+			}, 40);
 		}
 
 		if (options.animate) playEnter();
