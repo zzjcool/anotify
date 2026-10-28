@@ -186,6 +186,12 @@
 	 * 间距。两个视图都走这个函数 —— 否则 trace 页加了东西、源详情页忘了，
 	 * 同一个组件在两个页面长得不一样（图例就是这么丢的）。
 	 */
+	// 入场动画每次**页面加载**只播一次。
+	//
+	// 用户要的是"打开的时候有动画"；每次在瀑布图/图之间来回切都重播
+	// 2.4s，对比视图时会一直看到一片灰，反而是干扰。
+	let enterAnimated = false;
+
 	function renderFlow(host, spec) {
 		const t = spec.t;
 		const nodeCount = (spec.nodes || []).length;
@@ -196,6 +202,9 @@
 			legend: flowLegend(spec.scope || "trace", t),
 			// 全屏入口每页只出现一次：有标题栏文字入口的页面不画工具栏图标
 			showFullscreen: !!spec.showFullscreen,
+			// 入场动画只对"有执行事实"的图有意义（源详情页没有执行数据，
+			// 全图 order 都是 null，开了只会看到一片灰）。
+			animate: !!spec.animate,
 			rankdir: spec.rankdir || (longChain ? "TB" : "LR"),
 			rankSep: spec.rankSep != null ? spec.rankSep : longChain ? 40 : 96,
 			nodeSep: spec.nodeSep != null ? spec.nodeSep : longChain ? 22 : 26,
@@ -399,6 +408,21 @@
 			return best;
 		};
 
+		// 执行顺序：按任务开始时间排（没有 startedAt 就用 createdAt）。
+		//
+		// 入场动画按这个顺序逐个点亮 —— 所以它必须来自**真实时间**，
+		// 不能用数组下标（tasks 的顺序是后端返回顺序，不保证是执行顺序）。
+		const orderOfTask = new Map();
+		tasks
+			.slice()
+			.sort(
+				(a, b) =>
+					(a.startedAt != null ? a.startedAt : a.createdAt) -
+						(b.startedAt != null ? b.startedAt : b.createdAt) ||
+					(a.id < b.id ? -1 : 1),
+			)
+			.forEach((tk, i) => orderOfTask.set(tk.id, i));
+
 		let nodes;
 		let edges;
 
@@ -428,6 +452,8 @@
 						role: n.kind,
 						entry: n.entry,
 						dead: true,
+						// 没有任务 = 这次没走 = 动画里永远不点亮（它本来就是灰的）
+						order: null,
 					};
 				}
 				const tk = worst(hits);
@@ -439,6 +465,12 @@
 				const bits = [st];
 				if (dur != null) bits.push(fmtDur(dur));
 				if (hits.length > 1) bits.push("×" + hits.length);
+				// 第一次执行它的序号（执行过 3 次的节点从第 1 次就点亮）
+				let firstOrder = Infinity;
+				for (const h of hits) {
+					const o = orderOfTask.get(h.id);
+					if (o != null && o < firstOrder) firstOrder = o;
+				}
 				return {
 					id: n.id,
 					label: n.label,
@@ -449,6 +481,7 @@
 					entry: n.entry,
 					badge: STATUS_COLOR[st] || "#71717a",
 					accent: st === "failed" ? "#ef4444" : null,
+					order: firstOrder === Infinity ? null : firstOrder,
 					_task: tk,
 				};
 			});
@@ -464,6 +497,7 @@
 			// 真正想表达的是"这条边走过很多次"，所以改成：**次数越多颜色越深**，
 			// 和普通边同一个色系，只是更实、更粗。
 			const walkCount = new Map();
+			const walkOrder = new Map();
 			const capOfTask = new Map();
 			for (const tk of tasks) capOfTask.set(tk.id, tk.capabilityId);
 			for (const tk of tasks) {
@@ -472,6 +506,12 @@
 				if (!fromCap) continue;
 				const key = fromCap + "\u0000" + tk.capabilityId;
 				walkCount.set(key, (walkCount.get(key) || 0) + 1);
+				// 这条边第一次被走过的序号（动画按它点亮）
+				const o = orderOfTask.get(tk.id);
+				if (o != null) {
+					const prev = walkOrder.get(key);
+					if (prev == null || o < prev) walkOrder.set(key, o);
+				}
 			}
 
 			// 回边：环上的边。
@@ -484,21 +524,28 @@
 				const fromNode = nodes.find((n) => n.id === e.from);
 				const toNode = nodes.find((n) => n.id === e.to);
 				const bothAlive = !(fromNode && fromNode.dead) && !(toNode && toNode.dead);
-				const walked = walkCount.get(e.from + "\u0000" + e.to) || 0;
-				const isCycle = backEdges.has(e.from + "\u0000" + e.to);
+				const key = e.from + "\u0000" + e.to;
+				const walked = walkCount.get(key) || 0;
+				const isCycle = backEdges.has(key);
 				return {
 					from: e.from,
 					to: e.to,
 					port: e.port,
-					// "这条路被走过几遍"：
-					//   真实遍历次数 + 环（在环上意味着还会绕回来）
-					// 两个信号合并成一个数，渲染层只需要一个档位。
-					times: walked + (isCycle ? 1 : 0),
+					// **真实**遍历次数。边上要标 "出口名 ×N"，这个数必须是
+					// 事实，不能掺"这是环所以 +1"的调味 —— 环上那条边可能
+					// 就只走了一遍，标 ×2 是撒谎。
+					times: walked,
+					// 渲染档位（颜色深浅/粗细）是另一件事：在环上意味着
+					// "这段路会回来"，所以即使只走一遍也该比直线更实。
+					heat: walked + (isCycle ? 1 : 0),
 					// 回边要绕出去画：否则它只是两个相邻节点之间的一小段，
 					// 看不出"这里是绕回来的"。渲染层据此把路径鼓出弧线。
 					loopback: isCycle,
 					// 剪枝的边用虚线灰掉：和"配置里没有这条边"区分开
 					muted: !bothAlive,
+					// 动画点亮顺序：这条边第一次被走过的序号。
+					// 触发器发出的入口边没有"走过"的父任务，用目标节点的序号。
+					order: walkOrder.has(key) ? walkOrder.get(key) : null,
 				};
 			});
 
@@ -516,6 +563,8 @@
 					icon: ICON.trigger,
 					role: "origin",
 					root: true,
+					// 触发器是**第一个**亮起来的：它是这条 trace 的起点
+					order: -1,
 				});
 				// 连向所有"源直接指向"的能力。没有 entry 标记时
 				// （老数据 / 底图不完整）就连到所有无入边的节点。
@@ -523,12 +572,17 @@
 				const entries = base.nodes.filter((n) =>
 					n.entry !== undefined ? n.entry : !hasIncoming.has(n.id),
 				);
+				// 目标节点的点亮序号，用来决定入口边什么时候亮。
+				const orderByNode = new Map(nodes.map((n) => [n.id, n.order]));
 				for (const n of entries) {
+					const targetOrder = orderByNode.get(n.id);
 					edges.push({
 						from: SRC_NODE_ID,
 						to: n.id,
 						port: opts.sourcePort || "",
 						muted: !!n.dead,
+						// 入口边没有"走过的父任务"，跟着目标节点一起亮
+						order: targetOrder == null ? 0 : targetOrder,
 					});
 				}
 			}
@@ -587,6 +641,8 @@
 		const graph = renderFlow(host, {
 			// 有底图时才有"执行状态"这一层可讲；只画执行链时图例没有意义
 			scope: base && base.nodes && base.nodes.length ? "trace" : "none",
+			// 首次进入图视图时按真实执行顺序点亮（排序信息来自任务时间）
+			animate: !enterAnimated,
 			t: t,
 			nodes: cut.nodes.map((n) => {
 				const out = Object.assign({}, n);
@@ -604,6 +660,11 @@
 				if (hit && hit.length) opts.onNodeClick(hit[0]);
 			},
 		});
+
+		// 真的播过了才置位：图还没数据（切页早于数据到）时不该把机会用掉。
+		if (graph && graph._debug && graph._debug.animated && graph._debug.animated()) {
+			enterAnimated = true;
+		}
 
 		return { graph, truncated: cut.truncated };
 	}

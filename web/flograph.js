@@ -386,7 +386,9 @@
 			//
 			// 两种来源都算：真实遍历次数（trace 页），以及结构上的环
 			// （源详情页只有拓扑、没有执行数据，只能按环算）。
-			const n = Math.max(e.times || 0, e.cycle ? 2 : 0);
+			// 档位来自 heat（真实遍历次数 + 环的加成），不是 times
+			// —— times 要如实反映"走了几次"，不能为了上色掺水。
+			const n = Math.max(e.heat || 0, e.times || 0, e.cycle ? 2 : 0);
 			if (n > 2) cls = "is-hot2";
 			else if (n > 1) cls = "is-hot";
 		}
@@ -584,6 +586,8 @@
 		// 边的进出点取决于布局方向：TB 从上到下（底出顶进），
 		// LR 从左到右（右出左进）。写死一边会让另一个方向的连线穿过节点。
 		const horizontal = (options.rankdir || "TB") === "LR";
+		// 入场动画要点亮的边元素（path 与它的出口名标签一起亮）
+		const edgeEls = [];
 		const labelEls = [];
 		// 标签避让用的包围盒。
 		//
@@ -702,7 +706,7 @@
 			// 箭头跟随边的档位（剪枝→普通，走过 2 次→hot，3 次以上→hot2）
 			const arrowFor = (e2) => {
 				if (e2.muted) return "url(#fg-arrow)";
-				const n = Math.max(e2.times || 0, e2.cycle ? 2 : 0);
+				const n = Math.max(e2.heat || 0, e2.times || 0, e2.cycle ? 2 : 0);
 				if (n > 2) return "url(#fg-arrow-hot2)";
 				if (n > 1) return "url(#fg-arrow-hot)";
 				return "url(#fg-arrow)";
@@ -720,6 +724,7 @@
 			const cls = edgeClass(e);
 			if (cls) path.setAttribute("class", cls);
 			svgRoot.appendChild(path);
+			edgeEls.push({ order: e.order, el: path });
 
 			edgePos.set(i, { x1, y1, x2, y2 });
 
@@ -732,7 +737,12 @@
 			// 策略：沿路径从中间往两边扫一串候选点，取第一个既不撞节点
 			// 也不撞已放标签的。全撞就退回中间 —— 宁可挤也不丢信息。
 			if (e.port) {
-				const lb = div("flograph-edge-label" + edgeClass(e, true), e.port);
+				// 走过不止一次就标出来："fixed ×2"。
+				//
+				// 这是**真实遍历次数**，环上那条边可能只走了一遍，那就
+				// 老老实实不标 —— 靠颜色深浅表达"这段路会回来"就够了。
+				const portText = e.times > 1 ? e.port + " \u00d7" + e.times : e.port;
+				const lb = div("flograph-edge-label" + edgeClass(e, true), portText);
 				// 挂在**实际画出来的那条线**上，不是 dagre 原始折线。
 				//
 				// 回边会被绕成一条向外鼓的弧，几何和 pts 完全不同；拿 pts
@@ -755,6 +765,7 @@
 				lb.style.top = spot.y + "px";
 				viewport.appendChild(lb);
 				labelEls.push(lb);
+				edgeEls.push({ order: e.order, el: lb });
 				labelBoxes.push({
 					left: spot.x - spot.w / 2,
 					right: spot.x + spot.w / 2,
@@ -1083,6 +1094,76 @@
 			userAdjusted = true;
 		});
 
+		// ---- 入场动画：从"全量未执行"到"这条链真的跑过" ----
+		//
+		// 为什么值得做：静态图看不出**顺序**。一条重试链最容易读错的地方就是
+		// "跑测试跑了两次、第二次才过" —— 而这正是排查时要看的东西。
+		// 动画按真实执行时间把节点和边一个个点亮，顺序本身成了信息。
+		//
+		// 没有 order 的节点/边（剪枝的）**永远不点亮**：它们本来就是
+		// "配置里有、这次没走"，全程保持灰的才对。
+		let enterTimer = null;
+		// 真的播过动画没有（页面据此决定"下次切回来还要不要重播"）
+		let animated = false;
+
+		function playEnter() {
+			// 尊重系统的"减少动态效果"设置：这类用户要的是别动。
+			if (
+				window.matchMedia &&
+				window.matchMedia("(prefers-reduced-motion: reduce)").matches
+			) {
+				return;
+			}
+			const items = [];
+			for (const n of nodes) {
+				const el = nodeEls.get(n.id);
+				if (el) items.push({ order: n.order, el: el });
+			}
+			for (const it of edgeEls) items.push(it);
+			if (!items.length) return;
+
+			const orders = [];
+			for (const it of items) {
+				if (it.order != null && orders.indexOf(it.order) < 0) orders.push(it.order);
+			}
+			if (orders.length < 2) return; // 只有一步时动画没有意义
+			orders.sort((a, b) => a - b);
+
+			container.classList.add("is-playing");
+			animated = true;
+			for (const it of items) it.el.classList.add("is-pre");
+
+			// 总时长控制在 ~2.4s 内：步骤多就快一点，但每步不低于 90ms，
+			// 否则一闪而过反而看不出顺序。
+			const step = Math.max(90, Math.min(240, 2400 / orders.length));
+			let i = 0;
+			enterTimer = setInterval(() => {
+				// 视图已经切走/重挂载：停掉，别在游离的 DOM 上空转
+				if (!container.isConnected) {
+					clearInterval(enterTimer);
+					enterTimer = null;
+					return;
+				}
+				if (i >= orders.length) {
+					clearInterval(enterTimer);
+					enterTimer = null;
+					// 收尾时把**所有**残留的 is-pre 都清掉，包括全程没点亮的
+					// （剪枝的）。否则同一张图"首次进来"和"再切回来"长得
+					// 不一样 —— 入场动画不该留下永久痕迹，剪枝本身另有样式
+					// （虚线 + 灰字）表达"这次没走"。
+					for (const it of items) it.el.classList.remove("is-pre");
+					container.classList.remove("is-playing");
+					return;
+				}
+				const cur = orders[i++];
+				for (const it of items) {
+					if (it.order === cur) it.el.classList.remove("is-pre");
+				}
+			}, step);
+		}
+
+		if (options.animate) playEnter();
+
 		return {
 			fit,
 			zoomBy,
@@ -1091,6 +1172,10 @@
 			setFullscreen,
 			isFullscreen: () => fullscreen,
 			destroy() {
+				if (enterTimer) {
+					clearInterval(enterTimer);
+					enterTimer = null;
+				}
 				// 销毁时如果在全屏状态，先把容器放回去：否则节点被清空、
 				// 容器却还挂在 body 上占着整个视口，页面上会多出一块黑底。
 				if (fullscreen) setFullscreen(false);
@@ -1108,6 +1193,7 @@
 				nodes: () => nodes.map((n) => ({ id: n.id, label: n.label, kind: n.kind })),
 				edges: () => edges.map((e) => ({ from: e.from, to: e.to, port: e.port })),
 				fullscreen: () => fullscreen,
+				animated: () => animated,
 				scale: () => scale,
 				contentSize: () => ({ w: contentW, h: contentH }),
 			},

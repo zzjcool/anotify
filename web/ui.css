@@ -977,6 +977,22 @@ html.flograph-fullscreen-open body {
  * 就从 api 读 cap.ui = { color, icon } 覆盖这里的变量即可。
  */
 /* 源 / 触发器节点：最醒目的一层，用主色实心图标块 */
+/* 入场动画：先把整张图压成"未执行"，再按真实执行顺序点亮。
+   is-pre 用灰度 + 低透明度表达"这次没走到"，不动状态色本身 ——
+   这样点和边的主题色不会在动画过程中跳色。 */
+.flograph.is-playing .wf-node,
+.flograph.is-playing .flograph-svg path,
+.flograph.is-playing .flograph-edge-label {
+  transition:
+    opacity 0.28s ease,
+    filter 0.28s ease;
+}
+.wf-node.is-pre,
+.flograph-svg path.is-pre,
+.flograph-edge-label.is-pre {
+  opacity: 0.22;
+  filter: grayscale(1);
+}
 .wf-node.is-trigger {
 	border-color: rgba(139, 139, 253, 0.5);
 	background: linear-gradient(180deg, #1b1b2a 0%, #14141f 100%);

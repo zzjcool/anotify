@@ -2308,6 +2308,40 @@ async function checkWaterfall(page) {
 	});
 	H.check("有「图」视图可切换", toGraph === true);
 
+	// ---- 入场动画：打开时先"全量未执行"，再按执行顺序点亮 ----
+	//
+	// 采样必须紧跟在点击之后：动画总时长约 2.4s，晚了就什么都看不到。
+	// 断言的是"曾经有一刻几乎所有节点都没点亮"，而不是某个瞬时值 ——
+	// 采样窗口和帧率都不受控。
+	if (toGraph) {
+		let sawPlaying = false;
+		let preMax = 0;
+		let totalNodes = 0;
+		for (let i = 0; i < 12; i++) {
+			const s = await page.evaluate(() => {
+				const host = document.querySelector(".flograph");
+				if (!host) return null;
+				const nodes = Array.from(host.querySelectorAll(".wf-node"));
+				return {
+					playing: host.classList.contains("is-playing"),
+					pre: nodes.filter((n) => n.classList.contains("is-pre")).length,
+					total: nodes.length,
+				};
+			});
+			if (s && s.total > 0) {
+				totalNodes = Math.max(totalNodes, s.total);
+				if (s.playing) sawPlaying = true;
+				if (s.pre > preMax) preMax = s.pre;
+			}
+			await page.waitForTimeout(110);
+		}
+		H.check(
+			"图打开时有入场动画（先画成未执行再点亮）",
+			sawPlaying === true && preMax > 1,
+			`playing=${sawPlaying} 未点亮最多=${preMax}/${totalNodes}`,
+		);
+	}
+
 	if (toGraph) {
 		await page.waitForTimeout(1800);
 		const cg = await page.evaluate(() => {
@@ -2393,6 +2427,48 @@ async function checkWaterfall(page) {
 				"节点副标题显示状态",
 				cg.subs.some((x) => /succeeded|failed|running|pending/.test(x)),
 				cg.subs.join(" | "),
+			);
+		}
+
+		// ---- 动画播完：全部复位 ----
+		//
+		// 全程不点亮的是"配置里有、这次没走"的分支；但动画一结束必须
+		// **全部**复位，否则同一张图"首次进来"和"切回来"长得不一样
+		// （剪枝另有虚线/灰字表达，不靠这里留痕）。
+		await page.waitForTimeout(2200);
+		const after = await page.evaluate(() => {
+			const host = document.querySelector(".flograph");
+			if (!host) return null;
+			const nodes = Array.from(host.querySelectorAll(".wf-node"));
+			const title = (n) => n.querySelector(".wf-node-title")?.textContent || "";
+			return {
+				playing: host.classList.contains("is-playing"),
+				pre: nodes.filter((n) => n.classList.contains("is-pre")).map(title),
+				pruned: nodes.filter((n) => n.classList.contains("is-pruned")).map(title),
+				labels: Array.from(host.querySelectorAll(".flograph-edge-label"))
+					.map((x) => x.textContent.trim())
+					.filter((x) => /\u00d7\d+/.test(x)),
+			};
+		});
+		if (after) {
+			H.check(
+				"动画播完后没有残留的未点亮状态（不留永久痕迹）",
+				after.playing === false && after.pre.length === 0,
+				`残留=${after.pre.join(",") || "（无）"} 剪枝=${after.pruned.join(",") || "（无）"}`,
+			);
+
+			// ---- 走过多次的边要标出次数 ----
+			//
+			// 数字必须是**真实遍历次数**：为了让环更显眼而掺"环 +1"就是撒谎
+			// （环上那条边可能只走了一遍）。所以这里要求 ≥2 才允许出现。
+			const bad = after.labels.filter((x) => {
+				const m = x.match(/\u00d7(\d+)$/);
+				return !m || Number(m[1]) < 2;
+			});
+			H.check(
+				"走过多次的边上标出了真实次数（×N）",
+				after.labels.length > 0 && bad.length === 0,
+				after.labels.join(" | ") || "没有任何带 ×N 的边标签",
 			);
 		}
 
