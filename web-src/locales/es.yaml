@@ -1196,6 +1196,8 @@ nodes:
   never: Nunca
   last_seen: Latido
   no_caps: Sin capacidades declaradas
+  caps_label: Capacidades declaradas
+  caps_more: '+{n} más'
   slots: Ranuras {busy}/{total}
   drain: Vaciar
   draining_hint: Vaciando

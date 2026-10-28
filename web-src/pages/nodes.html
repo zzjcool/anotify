@@ -222,28 +222,59 @@ anotify node run --token &lt;token-from-step-1&gt;</code></pre>
         left.appendChild(head);
 
         // 声明的能力
-        const caps = el("div", "mt-2 flex flex-wrap gap-1");
+        //
+        // 节点**只声明**「我会哪些能力」（能力名 + 版本），命令与 argv
+        // 留在本机、不上传 —— 这是整套设计的安全边界。所以这一块展示的
+        // 就是"这台机器能干什么"，是节点页的主要信息。
+        //
+        // 标签优先用用户取的显示名（「分析 PR」比 analyze-pr@1 好读），
+        // 悬停给出精确身份 name@version，点了去能力详情。
+        // 超过 8 个折叠成 "+N"，避免一台机器声明几十个能力时把卡片撑爆。
+        const CAP_COLLAPSE = 8;
         const capList = n.capabilities || [];
-        if (capList.length) {
-          for (const c of capList) {
-            // c 是 {id, name, version} 对象，不是字符串。
-            // 以前直接 el("span", "out-chip", c) —— el() 内部会 String(c)，
-            // 于是整页的能力标签全渲染成 "[object Object]"。
-            //
-            // 这里同时兼容后端可能只给字符串的形式（旧接口 / 手写数据），
-            // 免得为了一个显示问题在前后端之间来回改契约。
-            const label =
-              typeof c === "string"
-                ? c
-                : (c.name || c.id || "?") + (c.version != null ? "@" + c.version : "");
-            caps.appendChild(el("span", "out-chip", label));
-          }
-        } else {
+        const caps = el("div", "mt-2 flex flex-wrap items-center gap-1.5");
+        caps.appendChild(
+          el("span", "text-[11px] text-zinc-600", t("nodes.caps_label", "声明能力")),
+        );
+        if (!capList.length) {
           caps.appendChild(
             el("span", "text-[11px] text-zinc-600", t("nodes.no_caps", "未声明能力")),
           );
+          left.appendChild(caps);
+        } else {
+          const chipFor = (c) => {
+            const exact = c.name + "@" + c.version;
+            const chip = el("span", "out-chip", c.displayName || exact);
+            chip.title = exact;
+            if (c.id) {
+              chip.classList.add("is-link");
+              chip.addEventListener("click", () => {
+                location.href = "capabilities.html?focus=" + encodeURIComponent(c.id);
+              });
+            }
+            return chip;
+          };
+          const box = el("div", "flex flex-wrap gap-1");
+          const shown = Math.min(capList.length, CAP_COLLAPSE);
+          for (let i = 0; i < shown; i++) box.appendChild(chipFor(capList[i]));
+          caps.appendChild(box);
+          if (capList.length > shown) {
+            const more = el(
+              "button",
+              "out-chip is-link",
+              t("nodes.caps_more", "+{n} 个").replace("{n}", capList.length - shown),
+            );
+            more.type = "button";
+            more.addEventListener("click", () => {
+              for (let i = shown; i < capList.length; i++) {
+                box.appendChild(chipFor(capList[i]));
+              }
+              more.remove();
+            });
+            caps.appendChild(more);
+          }
+          left.appendChild(caps);
         }
-        left.appendChild(caps);
 
         // 槽位占用
         const slots = n.instances || 0;

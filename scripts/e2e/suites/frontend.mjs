@@ -2418,6 +2418,77 @@ async function checkWaterfall(page) {
 // **环路**（deploy-preview → apply-fix → deploy-preview）和**未接出口**
 // （preview.ready）。真实环境不一定有这些形状，那样的断言会假失败。
 // mock 的数据形状是固定的，正好拿来锁住渲染逻辑。
+// checkNodeCaps 验证节点页把"这台机器声明了哪些能力"展示出来。
+//
+// 锁三件事（都踩过）：
+//   ① 能力标签真的渲染出来，并且**显示用户取的显示名**（悬停给精确身份）
+//   ② 标签有实际样式 —— `.out-chip` 曾经只内联在 capabilities.html 里，
+//      别的页面用了这个类却拿不到样式，节点页渲染成一长串裸文本
+//   ③ 页面上不能出现 [object Object] —— mock 曾经把槽位数组原样吐出去，
+//      页面按数字用就渲染成「槽位 0/[object Object]」
+async function checkNodeCaps(page, base) {
+	const info = await page.evaluate(async () => {
+		const res = await fetch("/v1/nodes");
+		const api = await res.json();
+		const expect = (api.nodes || []).reduce((n, x) => n + (x.capabilities || []).length, 0);
+		const spans = Array.from(document.querySelectorAll("span.out-chip"));
+		const styles = spans.map((c) => {
+			const cs = getComputedStyle(c);
+			return { pad: parseFloat(cs.paddingLeft), bg: cs.backgroundColor };
+		});
+		return {
+			expect,
+			chipCount: spans.length,
+			texts: spans.map((c) => c.textContent.trim()),
+			titles: spans.map((c) => c.title),
+			styled: styles.every(
+				(s) => s.pad > 0 && s.bg && s.bg !== "rgba(0, 0, 0, 0)" && s.bg !== "transparent",
+			),
+			hasLabel: Array.from(document.querySelectorAll("span")).some(
+				(x) => x.textContent.trim() === "声明能力",
+			),
+			objObj: document.body.innerText.includes("[object Object]"),
+			linkCount: document.querySelectorAll("span.out-chip.is-link").length,
+		};
+	});
+	H.check(
+		"节点页列出每台节点的声明能力",
+		info.hasLabel === true && info.expect > 0 && info.chipCount === info.expect,
+		`label=${info.hasLabel} chips=${info.chipCount}/${info.expect}`,
+	);
+	H.check(
+		"能力标签有实际样式（不是一长串裸文本）",
+		info.styled === true,
+		JSON.stringify(info.texts.slice(0, 4)),
+	);
+	H.check(
+		"能力标签显示显示名，悬停给出精确 name@version",
+		info.texts.some((x) => /[\u4e00-\u9fa5]/.test(x)) &&
+			info.titles.every((x) => /@\d+$/.test(x)),
+		`${info.texts.slice(0, 3).join("/")} | ${info.titles.slice(0, 3).join("/")}`,
+	);
+	H.check("节点页没有 [object Object]", info.objObj === false, String(info.objObj));
+	H.check(
+		"能力标签可点进能力详情",
+		info.linkCount === info.chipCount,
+		`${info.linkCount}/${info.chipCount}`,
+	);
+
+	// 点一下真的能过去（标签的 id 必须对得上能力详情页）
+	const href = await page.evaluate(() => {
+		const c = document.querySelector("span.out-chip.is-link");
+		if (!c) return "";
+		c.click();
+		return "";
+	});
+	await page.waitForTimeout(1200);
+	H.check(
+		"点能力标签会跳到能力页并带上 focus",
+		/capabilities\.html\?focus=/.test(page.url()),
+		page.url().replace(base, "") + href,
+	);
+}
+
 async function checkFlowChart(page, base) {
 	// 从缩进文本换成 Cytoscape 图形库后（#88），断言改成看"图上有什么"：
 	// 节点、边、环路边、未接下游的伪节点、以及只读性。
@@ -2856,6 +2927,7 @@ async function runMockCoverage() {
 			await checkDisplayName(page, base);
 		}
 		if (p === "sources.html") await checkFlowChart(page, base);
+		if (p === "nodes.html") await checkNodeCaps(page, base);
 		if (p === "events.html") {
 			await checkEventsFilter(page, base);
 			await page.goto(`${base}/events.html`, { waitUntil: "load", timeout: 20000 });

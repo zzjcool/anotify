@@ -574,11 +574,21 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 附带每台节点的能力与实例数（控制台要展示「谁跑什么」）
+	//
+	// capabilities 给的是**对象**而不是 "name@version" 字符串：节点页要
+	// 显示用户自己取的中文显示名（「分析 PR」比 analyze-pr@1 好读得多），
+	// 而且标签要能点进能力详情，需要一个稳定的 id。
+	type nodeCapView struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Version     int    `json:"version"`
+		DisplayName string `json:"displayName"`
+	}
 	type nodeView struct {
 		*store.Node
-		Capabilities []string `json:"capabilities"`
-		Instances    int      `json:"instances"`
-		Busy         int      `json:"busy"`
+		Capabilities []nodeCapView `json:"capabilities"`
+		Instances    int           `json:"instances"`
+		Busy         int           `json:"busy"`
 	}
 	views := make([]nodeView, 0, len(nodes))
 	for _, n := range nodes {
@@ -587,9 +597,14 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 			slog.Error("list node capabilities failed", "event", "console.nodes.caps_failed", "error", err.Error())
 			caps = nil
 		}
-		capNames := make([]string, 0, len(caps))
+		capViews := make([]nodeCapView, 0, len(caps))
 		for _, c := range caps {
-			capNames = append(capNames, c.Name+"@"+strconv.Itoa(c.Version))
+			capViews = append(capViews, nodeCapView{
+				ID:          c.ID,
+				Name:        c.Name,
+				Version:     c.Version,
+				DisplayName: c.DisplayName,
+			})
 		}
 		insts, err := h.db.ListInstances(r.Context(), n.ID)
 		if err != nil {
@@ -603,7 +618,7 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		views = append(views, nodeView{
-			Node: n, Capabilities: capNames, Instances: len(insts), Busy: busy,
+			Node: n, Capabilities: capViews, Instances: len(insts), Busy: busy,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": views})

@@ -2427,8 +2427,17 @@ components:
           properties:
             capabilities:
               type: array
-              items: { type: string }
-              description: 形如 review@1
+              description: '这台节点声明自己具备的能力（来自节点 hello 帧，中枢只记能力名，命令不上传）'
+              items:
+                type: object
+                required: [id, name, version]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  version: { type: integer }
+                  displayName:
+                    type: string
+                    description: '纯展示标签，空串表示没取（前端回落 name@version）'
             instances: { type: integer, description: 申报的槽位总数 }
             busy: { type: integer, description: 正在占用的槽位数 }
 

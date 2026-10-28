@@ -1196,6 +1196,8 @@ nodes:
   never: なし
   last_seen: ハートビート
   no_caps: ケイパビリティ未宣言
+  caps_label: 宣言ケイパビリティ
+  caps_more: '+{n} 件'
   slots: スロット {busy}/{total}
   drain: ドレイン
   draining_hint: ドレイン中

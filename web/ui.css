@@ -1390,6 +1390,32 @@ html.flograph-fullscreen-open body {
       }
 
 /* ---------- 源与出口（sources.html / source.html 共用）---------- */
+/* 出口名 / 能力名的小 chip。
+   多个页面用它（能力页的出口列表、事件页的源类型、节点页的声明能力），
+   所以必须放在共享样式里。以前它只内联在 capabilities.html，别的页面
+   用了这个类却拿不到样式 —— 节点页的能力列表就渲染成一长串裸文本。 */
+.out-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-family: var(--mono, monospace);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--faint);
+  white-space: nowrap;
+}
+/* 可点击的 chip（节点页的能力标签，点了去能力详情） */
+.out-chip.is-link {
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.out-chip.is-link:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
 .src-badge {
   display: inline-flex;
   align-items: center;
