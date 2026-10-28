@@ -203,8 +203,12 @@
 			// 全屏入口每页只出现一次：有标题栏文字入口的页面不画工具栏图标
 			showFullscreen: !!spec.showFullscreen,
 			// 入场动画只对"有执行事实"的图有意义（源详情页没有执行数据，
-			// 全图 order 都是 null，开了只会看到一片灰）。
+			// 没有节拍就没得播）。
 			animate: !!spec.animate,
+			// 执行节拍（按真实时间排的能力列表）与触发器节点 id：
+			// flograph 靠它决定"第几拍点亮谁、什么时候画线"。
+			beats: spec.beats || [],
+			root: spec.root || "",
 			rankdir: spec.rankdir || (longChain ? "TB" : "LR"),
 			rankSep: spec.rankSep != null ? spec.rankSep : longChain ? 40 : 96,
 			nodeSep: spec.nodeSep != null ? spec.nodeSep : longChain ? 22 : 26,
@@ -408,12 +412,15 @@
 			return best;
 		};
 
-		// 执行顺序：按任务开始时间排（没有 startedAt 就用 createdAt）。
+		// 执行节拍：把这次执行**按真实时间**排成一串能力。
 		//
-		// 入场动画按这个顺序逐个点亮 —— 所以它必须来自**真实时间**，
-		// 不能用数组下标（tasks 的顺序是后端返回顺序，不保证是执行顺序）。
-		const orderOfTask = new Map();
-		tasks
+		// 入场动画一拍一拍地播：触发器 → 它的线 → 第一个能力 → 它的线 →
+		// 下一个能力…… 所以这里要的是"任务执行顺序"，不是"图上的节点顺序"。
+		//
+		// 用真实时间（startedAt）而不是数组下标：后端返回顺序不保证是
+		// 执行顺序。同一能力出现多次时**保留多个节拍** —— 重试本来就该
+		// 在动画里看得见（否则环上那三次 run-tests 只亮一次）。
+		const beats = tasks
 			.slice()
 			.sort(
 				(a, b) =>
@@ -421,7 +428,8 @@
 						(b.startedAt != null ? b.startedAt : b.createdAt) ||
 					(a.id < b.id ? -1 : 1),
 			)
-			.forEach((tk, i) => orderOfTask.set(tk.id, i));
+			.map((tk) => tk.capabilityId)
+			.filter(Boolean);
 
 		let nodes;
 		let edges;
@@ -452,8 +460,6 @@
 						role: n.kind,
 						entry: n.entry,
 						dead: true,
-						// 没有任务 = 这次没走 = 动画里永远不点亮（它本来就是灰的）
-						order: null,
 					};
 				}
 				const tk = worst(hits);
@@ -465,12 +471,6 @@
 				const bits = [st];
 				if (dur != null) bits.push(fmtDur(dur));
 				if (hits.length > 1) bits.push("×" + hits.length);
-				// 第一次执行它的序号（执行过 3 次的节点从第 1 次就点亮）
-				let firstOrder = Infinity;
-				for (const h of hits) {
-					const o = orderOfTask.get(h.id);
-					if (o != null && o < firstOrder) firstOrder = o;
-				}
 				return {
 					id: n.id,
 					label: n.label,
@@ -481,7 +481,6 @@
 					entry: n.entry,
 					badge: STATUS_COLOR[st] || "#71717a",
 					accent: st === "failed" ? "#ef4444" : null,
-					order: firstOrder === Infinity ? null : firstOrder,
 					_task: tk,
 				};
 			});
@@ -497,7 +496,6 @@
 			// 真正想表达的是"这条边走过很多次"，所以改成：**次数越多颜色越深**，
 			// 和普通边同一个色系，只是更实、更粗。
 			const walkCount = new Map();
-			const walkOrder = new Map();
 			const capOfTask = new Map();
 			for (const tk of tasks) capOfTask.set(tk.id, tk.capabilityId);
 			for (const tk of tasks) {
@@ -506,12 +504,6 @@
 				if (!fromCap) continue;
 				const key = fromCap + "\u0000" + tk.capabilityId;
 				walkCount.set(key, (walkCount.get(key) || 0) + 1);
-				// 这条边第一次被走过的序号（动画按它点亮）
-				const o = orderOfTask.get(tk.id);
-				if (o != null) {
-					const prev = walkOrder.get(key);
-					if (prev == null || o < prev) walkOrder.set(key, o);
-				}
 			}
 
 			// 回边：环上的边。
@@ -543,9 +535,6 @@
 					loopback: isCycle,
 					// 剪枝的边用虚线灰掉：和"配置里没有这条边"区分开
 					muted: !bothAlive,
-					// 动画点亮顺序：这条边第一次被走过的序号。
-					// 触发器发出的入口边没有"走过"的父任务，用目标节点的序号。
-					order: walkOrder.has(key) ? walkOrder.get(key) : null,
 				};
 			});
 
@@ -555,6 +544,10 @@
 			// 而"谁触发"恰恰是排查的第一步。
 			if (opts.sourceLabel) {
 				const SRC_NODE_ID = "__trigger__";
+				// 本次真正的根任务（触发器直接拉起的能力）
+				const rootCaps = new Set(
+					tasks.filter((tk) => !tk.parentTaskId).map((tk) => tk.capabilityId),
+				);
 				nodes.unshift({
 					id: SRC_NODE_ID,
 					label: opts.sourceLabel,
@@ -563,8 +556,6 @@
 					icon: ICON.trigger,
 					role: "origin",
 					root: true,
-					// 触发器是**第一个**亮起来的：它是这条 trace 的起点
-					order: -1,
 				});
 				// 连向所有"源直接指向"的能力。没有 entry 标记时
 				// （老数据 / 底图不完整）就连到所有无入边的节点。
@@ -572,17 +563,20 @@
 				const entries = base.nodes.filter((n) =>
 					n.entry !== undefined ? n.entry : !hasIncoming.has(n.id),
 				);
-				// 目标节点的点亮序号，用来决定入口边什么时候亮。
-				const orderByNode = new Map(nodes.map((n) => [n.id, n.order]));
 				for (const n of entries) {
-					const targetOrder = orderByNode.get(n.id);
 					edges.push({
 						from: SRC_NODE_ID,
 						to: n.id,
 						port: opts.sourcePort || "",
 						muted: !!n.dead,
-						// 入口边没有"走过的父任务"，跟着目标节点一起亮
-						order: targetOrder == null ? 0 : targetOrder,
+						// 入口边只有在**这个能力真的是本次的根任务**时才算走过。
+						//
+						// 触发器画的是"源可能从这里起跑"的全集；这次真正被
+						// 触发器拉起的是根任务（没有 parentTaskId 的那些）。
+						// 把整片扇出都当成"走过"，动画就会画出一条
+						// 触发器→部署预发 的假路径 —— 而部署预发这次的父任务
+						// 其实是第 3 次跑测试。
+						times: rootCaps.has(n.id) ? 1 : 0,
 					});
 				}
 			}
@@ -643,6 +637,8 @@
 			scope: base && base.nodes && base.nodes.length ? "trace" : "none",
 			// 首次进入图视图时按真实执行顺序点亮（排序信息来自任务时间）
 			animate: !enterAnimated,
+			beats: beats,
+			root: opts.sourceLabel ? "__trigger__" : "",
 			t: t,
 			nodes: cut.nodes.map((n) => {
 				const out = Object.assign({}, n);

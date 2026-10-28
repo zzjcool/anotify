@@ -2457,6 +2457,132 @@ async function checkWaterfall(page) {
 				`残留=${after.pre.join(",") || "（无）"} 剪枝=${after.pruned.join(",") || "（无）"}`,
 			);
 
+			// ---- 点亮顺序必须等于真实执行顺序 ----
+			//
+			// 这是动画的核心承诺：顺序来自任务的 startedAt，不是数组下标、
+			// 也不是图的节点顺序。"跑测试"跑了三次，就该亮/脉冲三次。
+			const order = await page.evaluate(async () => {
+				const r = await (
+					await fetch("/v1/tasks?traceId=trace_mock_t9&limit=50")
+				).json();
+				const tasks = (r.tasks || []).slice();
+				const tasksSorted = tasks
+					.slice()
+					.sort((a, b) => (a.startedAt ?? a.createdAt) - (b.startedAt ?? b.createdAt));
+				const firstAt = new Map();
+				for (const t of tasksSorted) {
+					if (!firstAt.has(t.capabilityId)) firstAt.set(t.capabilityId, t.startedAt ?? t.createdAt);
+				}
+				const runs = new Map();
+				for (const t of tasks) runs.set(t.capabilityId, (runs.get(t.capabilityId) || 0) + 1);
+				// 重放一遍动画，记录点亮顺序与脉冲次数
+				document
+					.querySelector('.flograph-ctrl button[data-fg-action="replay"]')
+					.click();
+				const litOrder = [];
+				const seen = new Set();
+				// 脉冲只数"进入脉冲"的那次跳变：一次脉冲持续 480ms，
+				// 采样间隔 55ms，按帧去重会把它数成 9 次。
+				const pulseCounts = {};
+				let wasPulsing = new Set();
+				for (let i = 0; i < 70; i++) {
+					await new Promise((res) => setTimeout(res, 55));
+					for (const n of document.querySelectorAll(".wf-node")) {
+						const id = n.dataset.nodeId;
+						if (!n.classList.contains("is-pre") && !seen.has(id)) {
+							seen.add(id);
+							litOrder.push(id);
+						}
+					}
+					const nowPulsing = new Set(
+						Array.from(document.querySelectorAll(".wf-node.is-pulse")).map(
+							(n) => n.dataset.nodeId,
+						),
+					);
+					for (const id of nowPulsing) {
+						if (!wasPulsing.has(id)) pulseCounts[id] = (pulseCounts[id] || 0) + 1;
+					}
+					wasPulsing = nowPulsing;
+					const host = document.querySelector(".flograph");
+					if (host && !host.classList.contains("is-playing") && i > 8) break;
+				}
+				return {
+					litOrder,
+					firstAt: Object.fromEntries(firstAt),
+					runs: Object.fromEntries(runs),
+					pulseCounts,
+				};
+			});
+
+			// 点亮顺序的时间戳必须单调不减（允许同一时刻的并列，不许跳序）
+			let prev = -Infinity;
+			let monotonic = true;
+			let worst = "";
+			for (const cap of order.litOrder) {
+				const at = order.firstAt[cap];
+				if (at == null) continue;
+				if (at < prev) {
+					monotonic = false;
+					worst = `${prev} -> ${at} (${cap})`;
+				}
+				prev = at;
+			}
+			H.check(
+				"动画按真实执行时间顺序点亮（不跳序）",
+				order.litOrder.length > 2 && monotonic,
+				monotonic
+					? `lit=${order.litOrder.length} 单调不减`
+					: `跳序: ${worst}`,
+			);
+
+			// 重试必须看得见：执行过 N 次的节点除了首次点亮，还要再脉冲 N-1 次。
+			const retryCaps = Object.keys(order.runs).filter((c) => order.runs[c] > 1);
+			const missing = retryCaps.filter(
+				(c) => (order.pulseCounts[c] || 0) < order.runs[c] - 1,
+			);
+			H.check(
+				"重试的节点会再次脉冲（执行 N 次 = 亮 1 次 + 脉冲 N-1 次）",
+				retryCaps.length > 0 && missing.length === 0,
+				missing.length === 0
+					? `重试能力 ${retryCaps.length} 个，脉冲次数足够`
+					: `脉冲不足: ${missing.map((c) => `${c} 跑了 ${order.runs[c]} 次只有 ${order.pulseCounts[c] || 0} 次脉冲`).join("; ")}`,
+			);
+
+			// 只有**真的走过**的边才允许被画出来。配置里有、这次没走的分支
+			// （例如 lint-fix 走了 remaining，它的 --clean--> 就没走）画出来
+			// 等于撒谎说这条分支被执行了。
+			const edgeCheck = await page.evaluate(async () => {
+				const r = await (
+					await fetch("/v1/tasks?traceId=trace_mock_t9&limit=50")
+				).json();
+				const tasks = r.tasks || [];
+				const capOf = new Map(tasks.map((t) => [t.id, t.capabilityId]));
+				const walked = new Set();
+				for (const t of tasks) {
+					if (!t.parentTaskId) {
+						// 根任务是被**触发器**拉起的，它那条入口边合法
+						walked.add("__trigger__\u0000" + t.capabilityId);
+						continue;
+					}
+					const from = capOf.get(t.parentTaskId);
+					if (from) walked.add(from + "\u0000" + t.capabilityId);
+				}
+				const drawn = Array.from(
+					document.querySelectorAll(".flograph-svg path[data-animated]"),
+				).map((p) => ({ pair: p.dataset.from + "\u0000" + p.dataset.to, label: p.dataset.from + "→" + p.dataset.to }));
+				return {
+					drawnCount: drawn.length,
+					fake: drawn.filter((d) => !walked.has(d.pair)).map((d) => d.label),
+				};
+			});
+			H.check(
+				"只有真的走过的边才被画出来（没走的分支不画）",
+				edgeCheck.drawnCount > 0 && edgeCheck.fake.length === 0,
+				edgeCheck.fake.length === 0
+					? `画出 ${edgeCheck.drawnCount} 条，全部走过`
+					: `画了没走过的边: ${edgeCheck.fake.join(", ")}`,
+			);
+
 			// ---- 走过多次的边要标出次数 ----
 			//
 			// 数字必须是**真实遍历次数**：为了让环更显眼而掺"环 +1"就是撒谎
