@@ -132,6 +132,78 @@
 	 * @param {Function} [opts.onNodeClick]
 	 * @param {number} [opts.limit]
 	 */
+	/**
+	 * flowLegend 构建图例。
+	 *
+	 * 两个视图（源详情页的拓扑图、trace 页的叠加图）共用一套编码：
+	 *   · 图标 = 结构身份（源 / 管道 / 终点）
+	 *   · 颜色 = 状态（仅 trace 页有执行数据）
+	 *   · 深浅 = 这条路走了多少次
+	 *
+	 * 之前图例是 trace 页里硬拼的数组，源详情页压根没有 —— 同一个组件
+	 * 两个页面长得不一样。现在按 scope 生成，加一条只改这一处。
+	 *
+	 * @param {"trace"|"source"} scope
+	 */
+	function flowLegend(scope, t) {
+		// 没有底图时图上只有一个维度（执行状态），图例没有意义
+		if (scope === "none") return [];
+		const rows = [
+			{ icon: "⚡", text: t("trace.legend.origin", "源 · 触发器（事件从这里进来）") },
+			{ icon: "◆", text: t("trace.legend.pipe", "管道 · 会继续往下派发") },
+			{ icon: "◉", text: t("trace.legend.end", "终点 · 到此结束，不再派发") },
+		];
+		if (scope === "trace") {
+			rows.push(
+				{ icon: "✓", cls: "lg-ok", text: t("trace.legend.ok", "执行成功") },
+				{ icon: "✕", cls: "lg-bad", text: t("trace.legend.bad", "执行失败") },
+				{
+					icon: "○",
+					cls: "lg-pruned",
+					text: t("trace.legend.pruned", "未执行（配置里有、这次没走）"),
+				},
+			);
+		} else {
+			// 源详情页没有执行数据，但有"没接下游"这种配置问题
+			rows.push({
+				icon: "○",
+				cls: "lg-pruned",
+				text: t("sources.flow.no_edge", "没有接下游"),
+			});
+		}
+		rows.push({
+			icon: "↺",
+			cls: "lg-hot",
+			text: t("trace.legend.hot", "线与数字越深 · 这条路走了很多次（重试/回环）"),
+		});
+		return rows;
+	}
+
+	/**
+	 * renderFlow 装配 flograph 的渲染参数。
+	 *
+	 * **所有"图上该有什么"的开关只在这里决定**：图例、全屏入口、布局方向、
+	 * 间距。两个视图都走这个函数 —— 否则 trace 页加了东西、源详情页忘了，
+	 * 同一个组件在两个页面长得不一样（图例就是这么丢的）。
+	 */
+	function renderFlow(host, spec) {
+		const t = spec.t;
+		const nodeCount = (spec.nodes || []).length;
+		const longChain = nodeCount > 7;
+		return render(host, {
+			nodes: spec.nodes,
+			edges: spec.edges,
+			legend: flowLegend(spec.scope || "trace", t),
+			// 全屏入口每页只出现一次：有标题栏文字入口的页面不画工具栏图标
+			showFullscreen: !!spec.showFullscreen,
+			rankdir: spec.rankdir || (longChain ? "TB" : "LR"),
+			rankSep: spec.rankSep != null ? spec.rankSep : longChain ? 40 : 96,
+			nodeSep: spec.nodeSep != null ? spec.nodeSep : longChain ? 22 : 26,
+			t: t,
+			onNodeClick: spec.onNodeClick,
+		});
+	}
+
 	function capabilityFlow(host, opts) {
 		const t = opts.t || ((k, d) => d || k);
 		const tree = opts.tree || [];
@@ -213,7 +285,9 @@
 			return "";
 		};
 
-		const graph = render(host, {
+		const graph = renderFlow(host, {
+			scope: "source",
+			t: t,
 			nodes: cut.nodes.map((n) => ({
 				id: n.id,
 				label: n.label,
@@ -235,6 +309,9 @@
 				to: e.to,
 				port: e.port,
 				cycle: e.cycle,
+				// 环上的边绕出去画，和 trace 页同一个形状。
+				// 不传这个的话回边就是两节点之间的一小段斜线，看着像画坏了。
+				loopback: !!e.cycle,
 				muted: cut.nodes.some((n) => n.id === e.to && n.kind === "deadport"),
 			})),
 			onNodeClick: (n) => {
@@ -504,29 +581,11 @@
 		// 超过 7 个节点改用纵向（TB）：链路图天生是**一条**链，
 		// 纵向排正好顺着容器的高度走，宽高比正常。
 		//
-		// 有底图时反而是横着的（源流向图就是横向，扇出往右铺），
-		// 所以那边按宽高比判断更合适 —— 但节点数少时横向仍然更好读。
-		const longChain = cut.nodes.length > 7;
-		// 图例：只在有底图（也就是有两种编码要解释）时给。
-		// 没有底图时只有一个维度（状态），图上本来就说得清。
-		const legend = [];
-		if (base && base.nodes && base.nodes.length) {
-			legend.push(
-				{ icon: "⚡", text: t("trace.legend.origin", "源 · 触发器（事件从这里进来）") },
-				{ icon: "◆", text: t("trace.legend.pipe", "管道 · 会继续往下派发") },
-				{ icon: "◉", text: t("trace.legend.end", "终点 · 到此结束，不再派发") },
-				{ icon: "✓", cls: "lg-ok", text: t("trace.legend.ok", "执行成功") },
-				{ icon: "✕", cls: "lg-bad", text: t("trace.legend.bad", "执行失败") },
-				{ icon: "○", cls: "lg-pruned", text: t("trace.legend.pruned", "未执行（配置里有、这次没走）") },
-				{ icon: "↺", cls: "lg-hot", text: t("trace.legend.hot", "线与数字越深 · 这条路走了很多次（重试/回环）") },
-			);
-		}
-
-		const graph = render(host, {
-			legend: legend,
-			rankdir: longChain ? "TB" : "LR",
-			rankSep: longChain ? 40 : 96,
-			nodeSep: longChain ? 22 : 26,
+		// 布局方向由 renderFlow 统一按节点数决定，这里不再重复算一遍。
+		const graph = renderFlow(host, {
+			// 有底图时才有"执行状态"这一层可讲；只画执行链时图例没有意义
+			scope: base && base.nodes && base.nodes.length ? "trace" : "none",
+			t: t,
 			nodes: cut.nodes.map((n) => {
 				const out = Object.assign({}, n);
 				delete out._task;
