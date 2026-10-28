@@ -2090,9 +2090,30 @@ components:
       allOf:
         - $ref: "#/components/schemas/Capability"
         - type: object
-          required: [kind]
+          required: [kind, declaredBy, executedBy]
           properties:
             kind: { $ref: "#/components/schemas/Kind" }
+            executedBy:
+              type: string
+              enum: [hub, node, none]
+              description: |
+                谁执行这个能力（推导量，不落库）：
+                `hub` 中枢自己执行（本来就不需要节点声明）、
+                `none` 事件起点（不执行代码、不产生任务）、
+                `node` 需要节点声明才跑得起来。
+            declaredBy:
+              type: array
+              description: |
+                声明了这个能力的节点（含 offline / draining —— 声明是配置事实，
+                排空中的机器仍然声明着它）。空数组表示**没有任何节点能跑它**，
+                这是一个永远跑不起来的配置。
+              items:
+                type: object
+                required: [id, name, status]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  status: { type: string, enum: [online, offline, draining] }
 
     CapabilityInput:
       type: object

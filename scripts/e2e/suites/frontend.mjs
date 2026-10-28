@@ -2489,6 +2489,52 @@ async function checkNodeCaps(page, base) {
 	);
 }
 
+// checkDeclaredBy 验证能力页显示"谁声明了它"。
+//
+// 这条信息不是锦上添花：能力定义只是「能干什么」的白名单，真正让它跑起来
+// 的是**有机器声明它**。三种情况必须区分开，混在一起就是误导：
+//
+//   有节点声明  → 节点名 + 状态点
+//   中枢执行    → 「不需要节点」（notify.phone 这类，不能报"跑不起来"）
+//   没人声明    → 琥珀色警告「这个能力跑不起来」
+async function checkDeclaredBy(page) {
+	const info = await page.evaluate(async () => {
+		const api = await (await fetch("/v1/capabilities")).json();
+		const caps = api.capabilities || [];
+		const rows = Array.from(document.querySelectorAll(".cap-row"));
+		return {
+			hasLabel: rows.some((r) => /声明节点/.test(r.textContent)),
+			// 每种情况在后端侧各取一个代表
+			nodeDeclared: caps.filter((c) => (c.declaredBy || []).length > 0).length,
+			hub: caps.filter((c) => c.executedBy === "hub").length,
+			orphan: caps
+				.filter((c) => c.executedBy === "node" && (c.declaredBy || []).length === 0)
+				.map((c) => c.displayName || c.name),
+			dots: document.querySelectorAll(".cap-row .st-dot").length,
+			warnRows: rows.filter((r) => r.querySelector(".text-amber-400")).length,
+			hubRowText: rows
+				.filter((r) => r.textContent.includes("中枢执行"))
+				.map((r) => r.textContent.replace(/\s+/g, "")),
+		};
+	});
+	H.check("能力页显示「声明节点」", info.hasLabel === true, String(info.hasLabel));
+	H.check(
+		"有节点声明的能力画出节点名 + 状态点",
+		info.nodeDeclared > 0 && info.dots === info.nodeDeclared,
+		`declared=${info.nodeDeclared} dots=${info.dots}`,
+	);
+	H.check(
+		"中枢执行的能力不误报「跑不起来」",
+		info.hub > 0 && info.hubRowText.length === info.hub,
+		`hub=${info.hub} rows=${info.hubRowText.length}`,
+	);
+	H.check(
+		"没有节点声明的能力给出警告（不是静默）",
+		info.orphan.length === 0 || info.warnRows === info.orphan.length,
+		`orphan=${info.orphan.length} warnRows=${info.warnRows}`,
+	);
+}
+
 async function checkFlowChart(page, base) {
 	// 从缩进文本换成 Cytoscape 图形库后（#88），断言改成看"图上有什么"：
 	// 节点、边、环路边、未接下游的伪节点、以及只读性。
@@ -2924,6 +2970,7 @@ async function runMockCoverage() {
 			await checkSchemaEditor(page);
 			await checkEdgesPage(page);
 			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
+			await checkDeclaredBy(page);
 			await checkDisplayName(page, base);
 		}
 		if (p === "sources.html") await checkFlowChart(page, base);

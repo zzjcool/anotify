@@ -193,6 +193,22 @@
 					page: { type: "boolean" },
 				},
 			}, "custom", "告警升级"),
+			// 故意**没有任何节点声明**它（initNodes 里不引用）。
+			//
+			// 能力页要能演示最重要的那个运维信号：「这个能力定义好了，
+			// 但没有任何机器能跑它」—— 没有这条演示数据，那个警告分支
+			// 永远看不到，也就没人会去修。
+			cap(
+				"archive-logs",
+				1,
+				["archived"],
+				{
+					type: "object",
+					properties: { days: { type: "integer", minimum: 1 } },
+				},
+				"custom",
+				"归档日志",
+			),
 		],
 		edges: [],
 		nodes: [],
@@ -985,8 +1001,27 @@
 	}
 
 	// 视图：能力列表带推导出的 kind
+	// capView 与真实 handler（consoleHandler.capabilities）同形状：
+	// 除了推导的 kind，还带"谁声明了它"。
+	//
+	// declaredBy 是**关键信息**：能力定义只是"能干什么"的白名单，真正让它
+	// 跑得起来的是有机器声明它。空数组 = 这个能力永远跑不起来。
 	function capView(c) {
-		return Object.assign(clone(c), { kind: kindOf(c) });
+		const declaredBy = state.nodes
+			.filter((n) => (n.capabilities || []).some((x) => x.id === c.id))
+			// 与后端排序一致：在线优先，然后按名字
+			.sort((a, b) => {
+				const rank = (st) => (st === "online" ? 0 : st === "draining" ? 1 : 2);
+				return rank(a.status) - rank(b.status) || (a.name < b.name ? -1 : 1);
+			})
+			.map((n) => ({ id: n.id, name: n.name, status: n.status }));
+		// 谁执行它：和真实 handler 一致
+		const executedBy = CENTRAL_NAMES.includes(c.name)
+			? "hub"
+			: ORIGIN_NAMES.includes(c.name)
+				? "none"
+				: "node";
+		return Object.assign(clone(c), { kind: kindOf(c), declaredBy, executedBy });
 	}
 
 	// 视图：源带出口能力信息 + hookUrl

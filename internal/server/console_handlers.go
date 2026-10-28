@@ -333,26 +333,70 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		caps = []*store.CapabilityVersion{}
 	}
 
-	// 附带推导出来的 kind（不落库，不变量 I3）
+	// capNode 是节点在能力视图里的最小投影（够页面显示状态点就行）。
+	// 必须写在 capView 之前：Go 的**局部**类型声明不支持先用后声明。
+	type capNode struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	// 附带推导出来的 kind（不落库，不变量 I3）与"谁声明了它"。
 	type capView struct {
 		*store.CapabilityVersion
 		Kind route.Kind `json:"kind"`
+		// DeclaredBy 是声明了这个能力的节点（含 offline / draining）。
+		//
+		// 为什么要有：能力定义只是"能干什么"的白名单，真正让它跑得起来的是
+		// **有机器声明它**。一个没有任何节点声明的能力是永远跑不起来的配置 ——
+		// 这个事实在能力页上必须一眼看见，否则只能反向到节点页去拼。
+		DeclaredBy []capNode `json:"declaredBy"`
+		// ExecutedBy 说明这个能力由谁执行（推导量，不落库）：
+		//
+		//	hub   中枢自己执行（notify.phone）—— **本来就不需要节点声明**
+		//	none  事件起点，不执行代码、不产生任务
+		//	node  需要节点声明才跑得起来
+		//
+		// 没有这个字段的话，"没有节点声明"就无法区分"中枢执行"和
+		// "根本没机器能跑"—— 前者是正常的，后者是配了个跑不起来的空壳。
+		ExecutedBy string `json:"executedBy"`
 	}
-	// 每种能力是否有节点声明
-	declared := make(map[string]bool, len(caps))
+	// 每种能力由哪些节点声明。
+	//
+	// 用 NodesDeclaringCapability 而不是 NodesForCapability：后者是**派发**
+	// 入口，会滤掉 draining 的机器；但"谁声明了这个能力"是配置事实，
+	// 排空中的机器仍然声明着它，页面上必须看得到。
+	declaring := make(map[string][]capNode, len(caps))
 	for _, c := range caps {
-		nodes, err := h.db.NodesForCapability(r.Context(), orgID, c.ID)
+		nodes, err := h.db.NodesDeclaringCapability(r.Context(), orgID, c.ID)
 		if err != nil {
-			slog.Error("nodes for capability failed", "event", "console.caps.nodes_failed", "error", err.Error())
+			slog.Error("nodes declaring capability failed", "event", "console.caps.nodes_failed", "error", err.Error())
 			continue
 		}
-		declared[c.ID] = len(nodes) > 0
+		list := make([]capNode, 0, len(nodes))
+		for _, n := range nodes {
+			list = append(list, capNode{ID: n.ID, Name: n.Name, Status: n.Status})
+		}
+		declaring[c.ID] = list
 	}
 	views := make([]capView, 0, len(caps))
 	for _, c := range caps {
+		list := declaring[c.ID]
+		if list == nil {
+			list = []capNode{}
+		}
+		executedBy := "node"
+		if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok {
+			if bc.Central {
+				executedBy = "hub"
+			} else if bc.Origin {
+				executedBy = "none"
+			}
+		}
 		views = append(views, capView{
 			CapabilityVersion: c,
-			Kind:              route.KindForCapability(c, declared[c.ID]),
+			Kind:              route.KindForCapability(c, len(list) > 0),
+			DeclaredBy:        list,
+			ExecutedBy:        executedBy,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"capabilities": views})

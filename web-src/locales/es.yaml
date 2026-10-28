@@ -1127,6 +1127,11 @@ caps:
   empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
   count: '{n} capacidades'
   no_outputs: Sin salidas (capacidad terminal)
+  declared_by: Declarada por
+  no_node: Ningún nodo la declara
+  no_node_hint: Esta capacidad no puede ejecutarse hasta que un nodo la declare
+  by_hub: Se ejecuta en el hub, sin nodo
+  by_none: Origen de eventos, no ejecuta código
   any_event_type: Cualquier tipo de evento (origen)
   rename: Renombrar
   name_it: Ponerle nombre

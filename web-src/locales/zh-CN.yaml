@@ -1127,6 +1127,11 @@ caps:
   empty: 还没有能力。定义一个，节点才能声明它。
   count: '{n} 个能力'
   no_outputs: 无出口（终端能力）
+  declared_by: 声明节点
+  no_node: 没有节点声明
+  no_node_hint: 这个能力跑不起来 —— 得先在节点上声明它
+  by_hub: 中枢执行，不需要节点
+  by_none: 事件起点，不执行代码
   any_event_type: 任意事件类型（起点）
   rename: 改名
   name_it: 取个名字
