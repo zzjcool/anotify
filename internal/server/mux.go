@@ -279,6 +279,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("POST /v1/hooks/{token}", noStore(http.HandlerFunc(srcH.hook)))
 
 	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.nodes))))
+	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(consoleH.nodeByID))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(consoleH.drainNode))))
 
 	// --- 管理后台（/v1/admin/*，需登录会话 + 超管权限） ---

@@ -1452,3 +1452,30 @@ srcpage:
   u_day: "d"
   in: "en {n}{u}"
   ago: "hace {n}{u}"
+nodepage:
+  title: Detalle del nodo
+  layout_title: Detalle del nodo
+  layout_subtitle: Capacidades declaradas, ranuras de concurrencia y ejecuciones recientes
+  back: Volver a nodos
+  loading: Cargando…
+  basic: Datos básicos
+  status: Estado
+  last_seen: Último latido
+  created: Creado
+  limits: Límites
+  limits_val: '{i} instancias · {c} de concurrencia'
+  tags: Etiquetas
+  no_tags: Ninguna
+  caps: Capacidades declaradas
+  slots: Ranuras de concurrencia
+  no_slots: Aún no hay ranuras (el nodo las declara al conectar)
+  slot_n: '#{n}'
+  concurrency: '{n} en paralelo'
+  busy_task: 'Ejecutando {id}'
+  idle: Libre
+  recent: Ejecuciones recientes
+  no_tasks: Este nodo aún no ha ejecutado tareas
+  open_trace: Abrir traza
+  not_found: Nodo no encontrado
+  not_found_hint: Ningún nodo coincide con este id; puede haber sido eliminado.
+  missing_id: 'Falta el id del nodo (la URL debe llevar ?id=nd_…)'

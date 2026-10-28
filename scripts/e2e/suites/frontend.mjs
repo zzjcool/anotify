@@ -2535,6 +2535,67 @@ async function checkDeclaredBy(page) {
 	);
 }
 
+// checkNodeDetail 验证节点详情页（node.html?id=…）。
+//
+// 这个页面存在的理由：列表要能扫（有几台、活着吗、能跑什么），
+// "这台机器现在卡在哪个槽上、最近跑了什么"是点进去才关心的事。
+async function checkNodeDetail(page, base) {
+	// 从列表点进去：名字就是入口，链接必须带真实 node id
+	const href = await page.evaluate(() => {
+		const a = document.querySelector('a[href^="node.html?id="]');
+		return a ? a.getAttribute("href") : "";
+	});
+	H.check("节点列表的名字链到详情页", /^node\.html\?id=.+/.test(href), href);
+	if (!href) return;
+
+	await page.goto(base + "/" + href, { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1500);
+
+	const d = await page.evaluate(() => {
+		const txt = document.body.innerText;
+		return {
+			name: (document.getElementById("head-name") || {}).textContent || "",
+			hasBasic: txt.includes("基本信息"),
+			hasCaps: txt.includes("声明的能力"),
+			hasSlots: txt.includes("并发槽位"),
+			hasRecent: txt.includes("最近执行"),
+			capChips: document.querySelectorAll(".out-chip").length,
+			// 逐槽展示（不是只给一个总数）
+			slotRows: document.querySelectorAll(".np-slot").length,
+			taskRows: document.querySelectorAll(".np-task").length,
+			// 每个任务都能点进 trace
+			traceLinks: document.querySelectorAll('.np-task a[href^="trace.html?traceId="]')
+				.length,
+			// 上限必须真的渲染出数字（mock 少给 maxInstances 时这里会是 undefined）
+			hasUndefined: /undefined/.test(txt),
+			hasObjObj: txt.includes("[object Object]"),
+		};
+	});
+	H.check("详情页显示节点名", d.name.length > 0 && d.name !== "加载中…", d.name);
+	H.check(
+		"详情页有基本信息 / 声明的能力 / 并发槽位 / 最近执行 四块",
+		d.hasBasic && d.hasCaps && d.hasSlots && d.hasRecent,
+		JSON.stringify({
+			basic: d.hasBasic,
+			caps: d.hasCaps,
+			slots: d.hasSlots,
+			recent: d.hasRecent,
+		}),
+	);
+	H.check("详情页列出声明的能力", d.capChips > 0, `chips=${d.capChips}`);
+	H.check("槽位逐个展示（不是只给总数）", d.slotRows > 0, `slots=${d.slotRows}`);
+	H.check(
+		"最近执行能点进链路",
+		d.taskRows > 0 && d.traceLinks === d.taskRows,
+		`tasks=${d.taskRows} links=${d.traceLinks}`,
+	);
+	H.check(
+		"详情页没有 undefined / [object Object]",
+		d.hasUndefined === false && d.hasObjObj === false,
+		JSON.stringify({ undef: d.hasUndefined, obj: d.hasObjObj }),
+	);
+}
+
 async function checkFlowChart(page, base) {
 	// 从缩进文本换成 Cytoscape 图形库后（#88），断言改成看"图上有什么"：
 	// 节点、边、环路边、未接下游的伪节点、以及只读性。
@@ -2974,7 +3035,13 @@ async function runMockCoverage() {
 			await checkDisplayName(page, base);
 		}
 		if (p === "sources.html") await checkFlowChart(page, base);
-		if (p === "nodes.html") await checkNodeCaps(page, base);
+		if (p === "nodes.html") {
+			await checkNodeCaps(page, base);
+			// checkNodeCaps 会点 chip 跳走，回到列表再进详情
+			await page.goto(`${base}/nodes.html`, { waitUntil: "load", timeout: 20000 });
+			await page.waitForTimeout(1200);
+			await checkNodeDetail(page, base);
+		}
 		if (p === "events.html") {
 			await checkEventsFilter(page, base);
 			await page.goto(`${base}/events.html`, { waitUntil: "load", timeout: 20000 });

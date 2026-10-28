@@ -957,6 +957,55 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /nodes/{id}:
+    get:
+      tags: [nodes]
+      summary: 节点详情（含每个并发槽位的当前状态）
+      description: |
+        比列表多给 `instances` 的**逐槽细节**：哪个槽在跑哪个任务。
+        列表只给数量 —— 列表页不需要 N×M 行，详情页要能回答
+        "这台机器现在卡在哪个槽上"。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 节点详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node, instances]
+                properties:
+                  node: { $ref: "#/components/schemas/NodeView" }
+                  instances:
+                    type: array
+                    description: '申报的并发槽位（空时 instances 为 []）'
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        nodeId: { type: string }
+                        slot: { type: integer }
+                        concurrency: { type: integer }
+                        busyTask:
+                          type: string
+                          nullable: true
+                          description: 占用该槽的任务 id（空闲为 null）
+                        alive: { type: boolean }
+                        updatedAt: { type: integer, format: int64 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: 节点不存在
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { error: { type: string } }
+
   /nodes/{id}/drain:
     post:
       tags: [nodes]
