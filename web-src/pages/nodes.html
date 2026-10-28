@@ -194,7 +194,11 @@ anotify node run --token &lt;token-from-step-1&gt;</code></pre>
 
         // 名称 + 状态点
         const head = el("div", "flex flex-wrap items-center gap-2");
-        const nameWrap = el("span", "text-[13px] text-zinc-200");
+        // 名字就是进详情页的入口（列表负责扫，详情负责看）。
+        const nameWrap = document.createElement("a");
+        nameWrap.className =
+          "flex items-center text-[13px] text-zinc-200 hover:text-white";
+        nameWrap.href = "node.html?id=" + encodeURIComponent(n.id);
         nameWrap.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[n.status] || "offline")));
         nameWrap.appendChild(document.createTextNode(n.name || "?"));
         head.appendChild(nameWrap);

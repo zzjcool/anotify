@@ -1452,3 +1452,30 @@ srcpage:
   u_day: "d"
   in: "in {n}{u}"
   ago: "{n}{u} ago"
+nodepage:
+  title: Node detail
+  layout_title: Node detail
+  layout_subtitle: A node's declared capabilities, concurrency slots and recent runs
+  back: Back to nodes
+  loading: Loading…
+  basic: Basics
+  status: Status
+  last_seen: Last heartbeat
+  created: Created
+  limits: Limits
+  limits_val: '{i} instances · {c} concurrency'
+  tags: Tags
+  no_tags: None
+  caps: Declared capabilities
+  slots: Concurrency slots
+  no_slots: No slots reported yet (a node reports them when it connects)
+  slot_n: '#{n}'
+  concurrency: '{n} concurrent'
+  busy_task: 'Running {id}'
+  idle: Idle
+  recent: Recent runs
+  no_tasks: No tasks have run on this node yet
+  open_trace: Open trace
+  not_found: Node not found
+  not_found_hint: No node matches this id; it may have been deleted.
+  missing_id: 'Missing node id (the URL should carry ?id=nd_…)'

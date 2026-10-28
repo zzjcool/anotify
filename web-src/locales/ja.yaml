@@ -1452,3 +1452,30 @@ srcpage:
   u_day: "日"
   in: "{n}{u}後"
   ago: "{n}{u}前"
+nodepage:
+  title: ノード詳細
+  layout_title: ノード詳細
+  layout_subtitle: ノードの宣言ケイパビリティ・同時実行スロット・最近の実行
+  back: ノード一覧へ戻る
+  loading: 読み込み中…
+  basic: 基本情報
+  status: 状態
+  last_seen: 最終ハートビート
+  created: 作成日時
+  limits: 上限
+  limits_val: 'インスタンス {i} · 同時実行 {c}'
+  tags: タグ
+  no_tags: なし
+  caps: 宣言ケイパビリティ
+  slots: 同時実行スロット
+  no_slots: スロット未申告（ノード接続時に申告されます）
+  slot_n: '#{n}'
+  concurrency: '同時 {n}'
+  busy_task: '{id} を実行中'
+  idle: アイドル
+  recent: 最近の実行
+  no_tasks: このノードで実行されたタスクはまだありません
+  open_trace: トレースを開く
+  not_found: ノードが見つかりません
+  not_found_hint: この id に一致するノードはありません（削除された可能性）。
+  missing_id: 'ノード id がありません（URL に ?id=nd_… が必要です）'

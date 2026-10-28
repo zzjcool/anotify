@@ -72,6 +72,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(h.nodes))))
+	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(h.nodeByID))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(h.drainNode))))
 
 	return &consoleEnv{
@@ -492,6 +493,72 @@ func TestCancelUnknownTask(t *testing.T) {
 }
 
 // ---------- nodes ----------
+
+// TestNodeDetail 查单台节点：比列表多给**逐槽**的当前状态。
+//
+// 详情页要回答"这台机器现在卡在哪个槽上"，列表只给数量是答不了的。
+func TestNodeDetail(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+	env.seedCapability(t, "review", 1, []string{"fix"})
+
+	node := &store.Node{OrgID: env.orgID, Name: "mbp-detail"}
+	if _, err := env.db.CreateNode(ctx, node); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if _, err := env.db.ConfirmCapabilities(ctx, env.orgID, node.ID,
+		[]store.CapabilityRef{{Name: "review", Version: 1}}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := env.db.UpsertInstances(ctx, env.orgID, node.ID,
+		[]store.InstanceSpec{{Slot: 0, Concurrency: 3}, {Slot: 1, Concurrency: 2}}); err != nil {
+		t.Fatalf("instances: %v", err)
+	}
+
+	rr := env.do(t, http.MethodGet, "/v1/nodes/"+node.ID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	m := decode(t, rr)
+	obj, _ := m["node"].(map[string]any)
+	if obj == nil || obj["name"] != "mbp-detail" {
+		t.Fatalf("node = %v", m["node"])
+	}
+	if got, _ := obj["maxInstances"].(float64); got == 0 {
+		t.Fatalf("maxInstances 丢了（页面会显示 undefined），node=%v", obj)
+	}
+	if caps, _ := obj["capabilities"].([]any); len(caps) != 1 {
+		t.Fatalf("capabilities = %v", obj["capabilities"])
+	}
+
+	// 逐槽细节：两个槽、各自的并发额度、当前都空闲
+	insts, _ := m["instances"].([]any)
+	if len(insts) != 2 {
+		t.Fatalf("instances = %v, want 2", m["instances"])
+	}
+	seenSlot := map[float64]bool{}
+	for _, raw := range insts {
+		slot, _ := raw.(map[string]any)
+		n, _ := slot["slot"].(float64)
+		seenSlot[n] = true
+		if _, ok := slot["concurrency"].(float64); !ok {
+			t.Fatalf("concurrency 必须是数字，slot=%v", slot)
+		}
+		// 空闲槽的 busyTask 必须是 null（不是空串/缺失）
+		if v, exists := slot["busyTask"]; !exists || v != nil {
+			t.Fatalf("空闲槽 busyTask 应为 null，slot=%v", slot)
+		}
+	}
+	if !seenSlot[0] || !seenSlot[1] {
+		t.Fatalf("槽位编号不对: %v", seenSlot)
+	}
+
+	// 不存在的节点 → 404（不是 200 空对象）
+	rr = env.do(t, http.MethodGet, "/v1/nodes/nd_doesnotexist", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown node status = %d, want 404", rr.Code)
+	}
+}
 
 // TestNodeListAndDrain 列出节点（含能力与实例）+ 排空。
 func TestNodeListAndDrain(t *testing.T) {

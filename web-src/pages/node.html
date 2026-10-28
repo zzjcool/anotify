@@ -1,0 +1,521 @@
+{{define "title"}}{{t "nodepage.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* 节点详情页：一台机器的全貌。
+         URL 形如 node.html?id=nd_xxx（节点列表点进来）。
+
+         为什么单独一页：节点列表要能扫（"有几台、活着吗、能跑什么"），
+         而"这台机器现在的并发槽卡在哪个任务上、最近跑了什么"是点进去才
+         关心的事。塞进列表卡片会让列表没法读。 */
+      .np-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      /* 键值对：grid 保证多行之间标签列对齐（flex 做不到） */
+      .np-kv {
+        display: grid;
+        grid-template-columns: 7.5rem 1fr;
+        gap: 0.5rem 1rem;
+        align-items: baseline;
+      }
+      .np-kv dt {
+        font-size: 0.72rem;
+        color: var(--faint);
+      }
+      .np-kv dd {
+        font-size: 0.8rem;
+        color: var(--text);
+        min-width: 0;
+        word-break: break-word;
+      }
+      /* 单个并发槽位一行 */
+      .np-slot {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.3rem 0.5rem;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 0.75rem;
+      }
+      .np-slot.is-busy {
+        background: rgba(99, 102, 241, 0.12);
+      }
+      .np-slot-num {
+        font-family: var(--mono, monospace);
+        font-size: 0.7rem;
+        color: var(--faint);
+        min-width: 3.2rem;
+      }
+      /* 最近执行的一行 */
+      .np-task {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.45rem 0.6rem;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .np-task-main {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+      }
+      .np-task-meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.6rem;
+        font-size: 0.7rem;
+        color: var(--faint);
+        font-family: var(--mono, monospace);
+        white-space: nowrap;
+      }
+      /* 任务状态色：只染文字，和链路图上"状态靠颜色"的编码一致 */
+      .np-st-succeeded {
+        color: #22c55e;
+      }
+      .np-st-failed,
+      .np-st-abandoned {
+        color: #f87171;
+      }
+      .np-st-running,
+      .np-st-assigned,
+      .np-st-acked {
+        color: #60a5fa;
+      }
+      .np-st-pending,
+      .np-st-canceled,
+      .np-st-lease_expired {
+        color: var(--faint);
+      }
+      .np-empty {
+        font-size: 0.75rem;
+        color: var(--faint);
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-3xl space-y-6">
+    <div class="reveal visible">
+      <div class="np-head">
+        <div class="min-w-0">
+          <a href="nodes.html" class="text-sm text-zinc-500 hover:text-zinc-300"
+            >← {{t "nodepage.back"}}</a
+          >
+          <h2 id="head-name" class="mt-2 font-display text-3xl text-white">
+            {{t "nodepage.loading"}}
+          </h2>
+          <div id="head-badges" class="mt-2 flex flex-wrap items-center gap-2"></div>
+        </div>
+        <div id="head-actions" class="flex flex-wrap items-center gap-2"></div>
+      </div>
+    </div>
+
+    <div id="node-body" class="space-y-6">
+      <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
+        {{t "nodepage.loading"}}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast card rounded-xl px-4 py-2 text-sm"></div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+
+      const API = "/v1";
+
+      Anotify.mountLayout({
+        active: "nodes",
+        title: t("nodepage.layout_title", "节点详情"),
+        subtitle: t(
+          "nodepage.layout_subtitle",
+          "一台执行者的声明能力、并发槽位和最近执行过的任务",
+        ),
+      });
+
+      const STATUS_CLASS = { online: "online", offline: "offline", draining: "draining" };
+
+      const QS = new URLSearchParams(location.search);
+      const NODE_ID = QS.get("id") || "";
+
+      let NODE = null;
+      let INSTS = [];
+      let TASKS = [];
+      let CAPS = new Map();
+
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = String(text);
+        return n;
+      }
+      function code(text, cls) {
+        const n = el("code", "mono " + (cls || ""));
+        n.textContent = String(text == null ? "" : text);
+        return n;
+      }
+      async function apiGet(path) {
+        try {
+          return await Anotify.api(path, { demo: null });
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function toast(msg) {
+        const node = document.getElementById("toast");
+        if (!node) return;
+        node.textContent = msg;
+        node.classList.add("show");
+        clearTimeout(node._timer);
+        node._timer = setTimeout(() => node.classList.remove("show"), 2800);
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return t("nodes.never", "从未");
+        const d = new Date(ts * 1000);
+        if (isNaN(d.getTime())) return String(ts);
+        const diff = Date.now() - d.getTime();
+        if (diff < 60e3) return t("common.time.just_now", "刚刚");
+        if (diff < 3600e3)
+          return t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", Math.floor(diff / 60e3));
+        if (diff < 86400e3)
+          return t("common.time.hours_ago", "{n} 小时前").replace("{n}", Math.floor(diff / 3600e3));
+        return d.toISOString().slice(0, 16).replace("T", " ");
+      }
+
+      // 耗时：秒级给一位小数，分钟级给 m/s（和链路图上的一致性）
+      function fmtDur(a, b) {
+        if (!a || !b || b < a) return "";
+        const s = b - a;
+        if (s < 60) return (Math.round(s * 10) / 10).toFixed(1) + "s";
+        return Math.floor(s / 60) + "m" + Math.round(s % 60) + "s";
+      }
+
+      function capLabel(id, fallbackName, fallbackVersion) {
+        const c = CAPS.get(id);
+        if (c) return c.displayName || c.name + "@" + c.version;
+        if (fallbackName) return fallbackName + "@" + fallbackVersion;
+        return id || "?";
+      }
+
+      function statusText(st) {
+        return t("nodes.status." + st, st);
+      }
+      function taskStateText(st) {
+        // 任务状态文案复用 message 页那份（message.task_state.*）：
+        // 同一个概念不该有两套翻译，四语言都已就绪。
+        return t("message.task_state." + st, st);
+      }
+
+      // ---------- 渲染 ----------
+
+      function renderMissing() {
+        document.getElementById("head-name").textContent = t(
+          "nodepage.not_found",
+          "节点不存在",
+        );
+        const body = document.getElementById("node-body");
+        body.replaceChildren(
+          el(
+            "div",
+            "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+            NODE_ID
+              ? t("nodepage.not_found_hint", "这个 id 没有对应的节点，可能已被删除。")
+              : t("nodepage.missing_id", "缺少节点 id（URL 应该有 ?id=nd_…）"),
+          ),
+        );
+      }
+
+      function renderHead() {
+        document.getElementById("head-name").textContent = NODE.name || "?";
+
+        const badges = document.getElementById("head-badges");
+        badges.replaceChildren();
+        const st = el("span", "flex items-center gap-1 text-[11px] text-zinc-400");
+        st.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[NODE.status] || "offline")));
+        st.appendChild(document.createTextNode(statusText(NODE.status)));
+        badges.appendChild(st);
+        badges.appendChild(code(NODE.id, "text-[10px] text-zinc-600"));
+
+        const actions = document.getElementById("head-actions");
+        actions.replaceChildren();
+
+        const refresh = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[12px]",
+          t("nodes.refresh", "刷新"),
+        );
+        refresh.addEventListener("click", () => load());
+        actions.appendChild(refresh);
+
+        const ev = el(
+          "button",
+          "btn-ghost rounded-lg px-3 py-1.5 text-[12px]",
+          t("nodes.view_events", "查看事件"),
+        );
+        ev.addEventListener("click", () => {
+          location.href = "events.html?node=" + encodeURIComponent(NODE.id);
+        });
+        actions.appendChild(ev);
+
+        if (NODE.status !== "draining") {
+          const drain = el(
+            "button",
+            "btn-ghost rounded-lg px-3 py-1.5 text-[12px]",
+            t("nodes.drain", "排空"),
+          );
+          drain.addEventListener("click", () => drainNode(NODE));
+          actions.appendChild(drain);
+        } else {
+          actions.appendChild(
+            el("span", "text-[11px] text-amber-400", t("nodes.draining_hint", "排空中")),
+          );
+        }
+      }
+
+      function card(title) {
+        const c = el("div", "card rounded-2xl p-5");
+        c.appendChild(
+          el("div", "text-[11px] uppercase tracking-wider text-zinc-500 mb-3", title),
+        );
+        return c;
+      }
+
+      function renderBody() {
+        const body = document.getElementById("node-body");
+        body.replaceChildren();
+
+        // ---- 基本信息 ----
+        const info = card(t("nodepage.basic", "基本信息"));
+        const dl = el("dl", "np-kv");
+        const rows = [
+          [t("nodepage.status", "状态"), statusText(NODE.status)],
+          [t("nodepage.last_seen", "最近心跳"), fmtTime(NODE.lastSeenAt)],
+          [t("nodepage.created", "创建时间"), fmtTime(NODE.createdAt)],
+          [
+            t("nodepage.limits", "上限"),
+            t("nodepage.limits_val", "实例 {i} · 并发 {c}")
+              .replace("{i}", NODE.maxInstances)
+              .replace("{c}", NODE.maxConcurrency),
+          ],
+          [
+            t("nodepage.tags", "标签"),
+            (NODE.tags || []).length ? NODE.tags.join(" · ") : t("nodepage.no_tags", "无"),
+          ],
+        ];
+        for (const [k, v] of rows) {
+          dl.appendChild(el("dt", null, k));
+          dl.appendChild(el("dd", null, v));
+        }
+        info.appendChild(dl);
+        body.appendChild(info);
+
+        // ---- 声明的能力 ----
+        //
+        // 节点**只声明**能力名 + 版本，命令与 argv 留在本机不上传 ——
+        // 所以这一块就是"这台机器能干什么"的全部。
+        const capsCard = card(t("nodepage.caps", "声明的能力"));
+        const caps = NODE.capabilities || [];
+        if (!caps.length) {
+          capsCard.appendChild(
+            el("div", "np-empty", t("nodes.no_caps", "未声明能力")),
+          );
+        } else {
+          const wrap = el("div", "flex flex-wrap gap-1.5");
+          for (const c of caps) {
+            const exact = c.name + "@" + c.version;
+            const chip = el("span", "out-chip is-link", c.displayName || exact);
+            chip.title = exact;
+            chip.addEventListener("click", () => {
+              location.href = "capabilities.html?focus=" + encodeURIComponent(c.id);
+            });
+            wrap.appendChild(chip);
+          }
+          capsCard.appendChild(wrap);
+        }
+        body.appendChild(capsCard);
+
+        // ---- 并发槽位 ----
+        //
+        // 列表页只给"几个在用/共几个"，这里给每个槽的实际情况：
+        // 这台机器到底卡在哪个槽上。
+        const slotCard = card(t("nodepage.slots", "并发槽位"));
+        const busy = INSTS.filter((x) => x.busyTask).length;
+        slotCard.appendChild(
+          el(
+            "div",
+            "text-[12px] text-zinc-400 mb-3",
+            t("nodes.slots", "槽位 {busy}/{total}")
+              .replace("{busy}", busy)
+              .replace("{total}", INSTS.length),
+          ),
+        );
+        if (!INSTS.length) {
+          slotCard.appendChild(
+            el(
+              "div",
+              "np-empty",
+              t("nodepage.no_slots", "还没有申报槽位（节点上线握手时申报）"),
+            ),
+          );
+        } else {
+          const bar = el("div", "slot-bar mb-3");
+          for (const x of INSTS) {
+            bar.appendChild(el("span", "slot" + (x.busyTask ? " busy" : "")));
+          }
+          slotCard.appendChild(bar);
+
+          const list = el("div", "space-y-1.5");
+          for (const x of INSTS.sort((a, b) => a.slot - b.slot)) {
+            const row = el("div", "np-slot" + (x.busyTask ? " is-busy" : ""));
+            row.appendChild(
+              el("span", "np-slot-num", t("nodepage.slot_n", "#{n}").replace("{n}", x.slot)),
+            );
+            row.appendChild(
+              el(
+                "span",
+                "text-[11px] text-zinc-500",
+                t("nodepage.concurrency", "并发 {n}").replace("{n}", x.concurrency),
+              ),
+            );
+            if (x.busyTask) {
+              const link = el(
+                "a",
+                "text-[11px] text-indigo-400",
+                t("nodepage.busy_task", "正在跑 {id}").replace("{id}", x.busyTask),
+              );
+              link.href = "#";
+              link.addEventListener("click", (ev) => {
+                ev.preventDefault();
+                const hit = TASKS.find((tk) => tk.id === x.busyTask);
+                if (hit) location.href = "trace.html?traceId=" + encodeURIComponent(hit.traceId);
+              });
+              row.appendChild(link);
+            } else {
+              row.appendChild(
+                el("span", "text-[11px] text-zinc-600", t("nodepage.idle", "空闲")),
+              );
+            }
+            list.appendChild(row);
+          }
+          slotCard.appendChild(list);
+        }
+        body.appendChild(slotCard);
+
+        // ---- 最近执行 ----
+        const taskCard = card(t("nodepage.recent", "最近执行"));
+        if (!TASKS.length) {
+          taskCard.appendChild(
+            el(
+              "div",
+              "np-empty",
+              t("nodepage.no_tasks", "还没有在这台机器上执行过的任务"),
+            ),
+          );
+        } else {
+          const list = el("div", "space-y-1.5");
+          for (const tk of TASKS) {
+            const row = el("div", "np-task");
+            const main = el("div", "np-task-main");
+            main.appendChild(
+              el(
+                "span",
+                "text-[12px] text-zinc-200",
+                capLabel(tk.capabilityId, tk.capability, tk.version),
+              ),
+            );
+            main.appendChild(
+              el(
+                "span",
+                "text-[11px] np-st-" + (tk.status || "pending"),
+                taskStateText(tk.status),
+              ),
+            );
+            row.appendChild(main);
+
+            const meta = el("div", "np-task-meta");
+            const dur = fmtDur(tk.startedAt, tk.finishedAt);
+            if (dur) meta.appendChild(el("span", null, dur));
+            meta.appendChild(el("span", null, fmtTime(tk.createdAt)));
+            const trace = el(
+              "a",
+              "text-indigo-400",
+              t("nodepage.open_trace", "查看链路"),
+            );
+            trace.href = "trace.html?traceId=" + encodeURIComponent(tk.traceId);
+            meta.appendChild(trace);
+            row.appendChild(meta);
+
+            list.appendChild(row);
+          }
+          taskCard.appendChild(list);
+        }
+        body.appendChild(taskCard);
+      }
+
+      // ---------- 动作 ----------
+
+      async function drainNode(n) {
+        const msg = t("nodes.drain_confirm", "排空 {name}？它跑完手上的任务后不再接新任务。").replace(
+          "{name}",
+          n.name || "",
+        );
+        if (!confirm(msg)) return;
+        try {
+          await Anotify.api(API + "/nodes/" + encodeURIComponent(n.id) + "/drain", {
+            method: "POST",
+          });
+          toast(t("nodes.drain_done", "已排空"));
+          load();
+        } catch (err) {
+          toast(t("nodes.drain_failed", "排空失败：") + err.message);
+        }
+      }
+
+      async function load() {
+        if (!NODE_ID) {
+          renderMissing();
+          return;
+        }
+        // 能力表单独拉一份：任务的 capabilityId 未必在"这台节点现在声明的
+        // 能力"里（换过机器、或能力已从节点上撤掉），只查 NODE.capabilities
+        // 会退化成 run-tests@1 这种技术名。
+        const [detail, tasksRes, capsRes] = await Promise.all([
+          apiGet(API + "/nodes/" + encodeURIComponent(NODE_ID)),
+          apiGet(API + "/tasks?nodeId=" + encodeURIComponent(NODE_ID) + "&limit=20"),
+          apiGet(API + "/capabilities"),
+        ]);
+        if (!detail || !detail.node) {
+          renderMissing();
+          return;
+        }
+        NODE = detail.node;
+        INSTS = detail.instances || [];
+        TASKS = (tasksRes && tasksRes.tasks) || [];
+        CAPS = new Map((NODE.capabilities || []).map((c) => [c.id, c]));
+        for (const c of (capsRes && capsRes.capabilities) || []) {
+          if (!CAPS.has(c.id)) CAPS.set(c.id, c);
+        }
+        renderHead();
+        renderBody();
+      }
+
+      load();
+    </script>
+{{end}}

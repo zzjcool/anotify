@@ -365,6 +365,10 @@
 				status: "online",
 				lastSeenAt: now() - 3,
 				createdAt: now() - 86400,
+				// 契约里 Node 一定有这两个硬顶；缺了页面会显示 undefined
+				maxInstances: 20,
+				maxConcurrency: 8,
+				tags: ["local", "workstation"],
 				// displayName 是纯展示标签（用户自己取的名字）。
 		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
@@ -392,6 +396,10 @@
 				status: "offline",
 				lastSeenAt: now() - 7200,
 				createdAt: now() - 86400 * 3,
+				// 契约里 Node 一定有这两个硬顶；缺了页面会显示 undefined
+				maxInstances: 10,
+				maxConcurrency: 4,
+				tags: ["ci"],
 				// displayName 是纯展示标签（用户自己取的名字）。
 		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
@@ -407,6 +415,10 @@
 				status: "online",
 				lastSeenAt: now() - 12,
 				createdAt: now() - 86400 * 7,
+				// 契约里 Node 一定有这两个硬顶；缺了页面会显示 undefined
+				maxInstances: 5,
+				maxConcurrency: 2,
+				tags: ["ops"],
 				// displayName 是纯展示标签（用户自己取的名字）。
 		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
@@ -1232,6 +1244,28 @@
 	on("GET", /^\/v1\/nodes$/, () =>
 		json({ nodes: state.nodes.map(nodeView) }),
 	);
+
+	// 节点详情：比列表多给每个槽位的具体情况（哪个槽在跑哪个任务）。
+	// 与真实 handler（consoleHandler.nodeByID）同形状。
+	on("GET", /^\/v1\/nodes\/([^/]+)$/, (ctx) => {
+		const n = state.nodes.find((x) => x.id === ctx.m[1]);
+		if (!n) return err(404, "节点不存在");
+		// 让"正在跑"有东西可看：把该节点上 running 的任务挂到空闲槽位上。
+		// 真实环境里是节点上报的，mock 只能自己推。
+		const running = state.tasks.filter(
+			(t) => t.nodeId === n.id && t.status === "running" && t.instanceId,
+		);
+		const instances = (n.instances || []).map((slot, i) => ({
+			id: slot.id,
+			nodeId: n.id,
+			slot: i,
+			concurrency: slot.concurrency,
+			busyTask: running[i] ? running[i].id : null,
+			alive: n.status !== "offline",
+			updatedAt: n.lastSeenAt || n.createdAt,
+		}));
+		return json({ node: nodeView(n), instances });
+	});
 
 	on("POST", /^\/v1\/nodes\/([^/]+)\/drain$/, (ctx) => {
 		const n = state.nodes.find((x) => x.id === ctx.m[1]);

@@ -1452,3 +1452,30 @@ srcpage:
   u_day: "天"
   in: "{n}{u}后"
   ago: "{n}{u}前"
+nodepage:
+  title: 节点详情
+  layout_title: 节点详情
+  layout_subtitle: 一台执行者的声明能力、并发槽位和最近执行过的任务
+  back: 返回节点列表
+  loading: 加载中…
+  basic: 基本信息
+  status: 状态
+  last_seen: 最近心跳
+  created: 创建时间
+  limits: 上限
+  limits_val: '实例 {i} · 并发 {c}'
+  tags: 标签
+  no_tags: 无
+  caps: 声明的能力
+  slots: 并发槽位
+  no_slots: 还没有申报槽位（节点上线握手时申报）
+  slot_n: '#{n}'
+  concurrency: '并发 {n}'
+  busy_task: '正在跑 {id}'
+  idle: 空闲
+  recent: 最近执行
+  no_tasks: 还没有在这台机器上执行过的任务
+  open_trace: 查看链路
+  not_found: 节点不存在
+  not_found_hint: 这个 id 没有对应的节点，可能已被删除。
+  missing_id: '缺少节点 id（URL 应该有 ?id=nd_…）'

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -595,7 +596,60 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-// ---------- GET /v1/nodes + POST /v1/nodes/{id}/drain ----------
+// ---------- GET /v1/nodes + GET /v1/nodes/{id} + POST /v1/nodes/{id}/drain ----------
+
+// nodeCapView 是"节点声明的能力"在控制台视图里的投影。
+//
+// 为什么不直接给 "name@version" 字符串：节点页与节点详情页要显示用户自己
+// 取的中文显示名（「分析 PR」比 analyze-pr@1 好读），而且标签要能点进
+// 能力详情，需要一个稳定的 id。
+type nodeCapView struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Version     int    `json:"version"`
+	DisplayName string `json:"displayName"`
+}
+
+// nodeView 是 nodes 表的一行 + 控制台需要的派生信息。
+type nodeView struct {
+	*store.Node
+	Capabilities []nodeCapView `json:"capabilities"`
+	Instances    int           `json:"instances"`
+	Busy         int           `json:"busy"`
+}
+
+// viewFor 组装一台节点的控制台视图。
+//
+// 列表与详情**共用**它：这类"两处各拼一套字段"的分叉最后一定表现为
+// "同一个东西两个页面不一样"（图例、全屏入口都踩过）。
+func (h *consoleHandler) viewFor(ctx context.Context, n *store.Node) nodeView {
+	caps, err := h.db.ListNodeCapabilities(ctx, n.ID)
+	if err != nil {
+		slog.Error("list node capabilities failed", "event", "console.nodes.caps_failed", "error", err.Error())
+		caps = nil
+	}
+	capViews := make([]nodeCapView, 0, len(caps))
+	for _, c := range caps {
+		capViews = append(capViews, nodeCapView{
+			ID:          c.ID,
+			Name:        c.Name,
+			Version:     c.Version,
+			DisplayName: c.DisplayName,
+		})
+	}
+	insts, err := h.db.ListInstances(ctx, n.ID)
+	if err != nil {
+		slog.Error("list node instances failed", "event", "console.nodes.insts_failed", "error", err.Error())
+		insts = nil
+	}
+	busy := 0
+	for _, in := range insts {
+		if in.BusyTask != nil {
+			busy++
+		}
+	}
+	return nodeView{Node: n, Capabilities: capViews, Instances: len(insts), Busy: busy}
+}
 
 // nodes 处理 GET /v1/nodes（列表 + 在线状态）。
 func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
@@ -616,56 +670,50 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 	if nodes == nil {
 		nodes = []*store.Node{}
 	}
-
-	// 附带每台节点的能力与实例数（控制台要展示「谁跑什么」）
-	//
-	// capabilities 给的是**对象**而不是 "name@version" 字符串：节点页要
-	// 显示用户自己取的中文显示名（「分析 PR」比 analyze-pr@1 好读得多），
-	// 而且标签要能点进能力详情，需要一个稳定的 id。
-	type nodeCapView struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Version     int    `json:"version"`
-		DisplayName string `json:"displayName"`
-	}
-	type nodeView struct {
-		*store.Node
-		Capabilities []nodeCapView `json:"capabilities"`
-		Instances    int           `json:"instances"`
-		Busy         int           `json:"busy"`
-	}
 	views := make([]nodeView, 0, len(nodes))
 	for _, n := range nodes {
-		caps, err := h.db.ListNodeCapabilities(r.Context(), n.ID)
-		if err != nil {
-			slog.Error("list node capabilities failed", "event", "console.nodes.caps_failed", "error", err.Error())
-			caps = nil
-		}
-		capViews := make([]nodeCapView, 0, len(caps))
-		for _, c := range caps {
-			capViews = append(capViews, nodeCapView{
-				ID:          c.ID,
-				Name:        c.Name,
-				Version:     c.Version,
-				DisplayName: c.DisplayName,
-			})
-		}
-		insts, err := h.db.ListInstances(r.Context(), n.ID)
-		if err != nil {
-			slog.Error("list node instances failed", "event", "console.nodes.insts_failed", "error", err.Error())
-			insts = nil
-		}
-		busy := 0
-		for _, in := range insts {
-			if in.BusyTask != nil {
-				busy++
-			}
-		}
-		views = append(views, nodeView{
-			Node: n, Capabilities: capViews, Instances: len(insts), Busy: busy,
-		})
+		views = append(views, h.viewFor(r.Context(), n))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": views})
+}
+
+// nodeByID 处理 GET /v1/nodes/{id}（节点详情）。
+//
+// 比列表多给一样东西：**每个并发槽位的具体状态**（哪个槽在跑哪个任务）。
+// 列表只给数量 —— 一个列表页不需要 N×M 行，但详情页要能回答
+// "这台机器现在到底卡在哪个槽上"。
+func (h *consoleHandler) nodeByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
+	if !ok {
+		return
+	}
+	nodeID := r.PathValue("id")
+	n, err := h.db.GetNode(r.Context(), orgID, nodeID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "node not found"})
+		return
+	}
+	if err != nil {
+		slog.Error("get node failed", "event", "console.nodes.get_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	insts, err := h.db.ListInstances(r.Context(), n.ID)
+	if err != nil {
+		slog.Error("list node instances failed", "event", "console.nodes.insts_failed", "error", err.Error())
+		insts = nil
+	}
+	if insts == nil {
+		insts = []*store.NodeInstance{} // 不变量 I9：空列表给 []
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"node":      h.viewFor(r.Context(), n),
+		"instances": insts,
+	})
 }
 
 // drainNode 处理 POST /v1/nodes/{id}/drain（排空节点）。
