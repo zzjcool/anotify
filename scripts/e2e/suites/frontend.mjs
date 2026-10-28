@@ -2450,6 +2450,12 @@ async function checkFlowChart(page, base) {
 			// 而不是"这里危险"。判据同步改成 is-hot。
 			hasCycleEdge: host.querySelectorAll(".flograph-svg path.is-hot, .flograph-svg path.is-hot2")
 				.length > 0,
+			// 图例：源详情页曾经**没有**（trace 页有），同一个组件两个页面
+			// 长得不一样。这条断言就是防这个再发生。
+			hasLegend: !!document.querySelector(".flograph-legend"),
+			legendRows: Array.from(
+				document.querySelectorAll(".flograph-legend-row"),
+			).map((r) => r.textContent.trim()),
 			hasDeadPort: nodeEls.some((n) => n.classList.contains("is-deadport")),
 			rootCount: nodeEls.filter(
 				(n) => n.classList.contains("is-root") || n.classList.contains("is-trigger"),
@@ -2532,6 +2538,25 @@ async function checkFlowChart(page, base) {
 	// 图上只有"源"这一个触发器是根，能力节点都该有上游
 	H.check("只有源节点被标成根（触发器）", g.rootCount === 1, `roots=${g.rootCount}`);
 	H.check("所有节点都有 dagre 算出的固定坐标", g.hasCoords === true);
+
+	// ---- 两个页面用同一个组件，必须长得一样 ----
+	//
+	// 之前图例只在 trace 页有、源详情页没有；环也只在 trace 页绕成弧，
+	// 源详情页是两节点之间的一小段斜线（看着像画坏了）。
+	// 根因是两个页面各自拼一套渲染参数，加一边忘另一边。
+	H.check("源详情页也有图例（和 trace 页一致）", g.hasLegend === true, String(g.hasLegend));
+	H.check(
+		"源详情页的图例解释了三种结构身份",
+		g.legendRows.some((x) => x.includes("源")) &&
+			g.legendRows.some((x) => x.includes("管道")) &&
+			g.legendRows.some((x) => x.includes("终点")),
+		g.legendRows.join(" | "),
+	);
+	H.check(
+		"源详情页的图例没混进执行状态（那是 trace 页才有的维度）",
+		!g.legendRows.some((x) => /执行成功|执行失败|未执行/.test(x)),
+		g.legendRows.join(" | "),
+	);
 
 	// ---- 全屏（#117）----
 	//
