@@ -2435,7 +2435,7 @@ async function checkWaterfall(page) {
 		// 全程不点亮的是"配置里有、这次没走"的分支；但动画一结束必须
 		// **全部**复位，否则同一张图"首次进来"和"切回来"长得不一样
 		// （剪枝另有虚线/灰字表达，不靠这里留痕）。
-		await page.waitForTimeout(2200);
+		await waitAnimDone(page);
 		const after = await page.evaluate(() => {
 			const host = document.querySelector(".flograph");
 			if (!host) return null;
@@ -2470,6 +2470,84 @@ async function checkWaterfall(page) {
 				after.labels.length > 0 && bad.length === 0,
 				after.labels.join(" | ") || "没有任何带 ×N 的边标签",
 			);
+		}
+
+		// ---- 重播按钮 ----
+		//
+		// 动画只在打开时播一次，错过就得有办法再看 —— 否则"顺序"这个
+		// 信息只存在于那 2.4 秒里。
+		const rep = await page.evaluate(() => {
+			const host = document.querySelector(".flograph");
+			const b = host && host.querySelector('.flograph-ctrl button[data-fg-action="replay"]');
+			return b
+				? { has: true, label: b.getAttribute("aria-label") || "", svg: !!b.querySelector("svg") }
+				: { has: false };
+		});
+		H.check(
+			"工具栏有重播动画按钮（图标 + 名字）",
+			rep.has === true && rep.svg === true && rep.label.length > 0,
+			JSON.stringify(rep),
+		);
+
+		if (rep.has) {
+			await page.evaluate(() =>
+				document.querySelector('.flograph-ctrl button[data-fg-action="replay"]').click(),
+			);
+			let sawPlaying = false;
+			let preMax = 0;
+			for (let i = 0; i < 12; i++) {
+				await page.waitForTimeout(110);
+				const s2 = await page.evaluate(() => {
+					const h = document.querySelector(".flograph");
+					return {
+						playing: h.classList.contains("is-playing"),
+						pre: document.querySelectorAll(".wf-node.is-pre").length,
+					};
+				});
+				if (s2.playing) sawPlaying = true;
+				if (s2.pre > preMax) preMax = s2.pre;
+			}
+			H.check(
+				"点重播会重新播一遍动画",
+				sawPlaying === true && preMax > 1,
+				`playing=${sawPlaying} 未点亮最多=${preMax}`,
+			);
+			await waitAnimDone(page);
+			const end = await page.evaluate(() => ({
+				playing: document.querySelector(".flograph").classList.contains("is-playing"),
+				pre: document.querySelectorAll(".wf-node.is-pre").length,
+			}));
+			H.check(
+				"重播播完后正常收尾（不卡在播放态、没有残留）",
+				end.playing === false && end.pre === 0,
+				JSON.stringify(end),
+			);
+
+			// 系统开了"减少动态效果"时自动播放会跳过 —— 但用户亲手点重播
+			// 是明确的意图表达，必须照播。否则这个功能对他等于不存在，
+			// 而且从界面上完全看不出为什么"没有动画"。
+			await page.emulateMedia({ reducedMotion: "reduce" });
+			await page.evaluate(() =>
+				document.querySelector('.flograph-ctrl button[data-fg-action="replay"]').click(),
+			);
+			let forced = false;
+			for (let i = 0; i < 10; i++) {
+				await page.waitForTimeout(110);
+				const on = await page.evaluate(() =>
+					document.querySelector(".flograph").classList.contains("is-playing"),
+				);
+				if (on) {
+					forced = true;
+					break;
+				}
+			}
+			H.check(
+				"系统「减少动态效果」下手动重播仍然会播",
+				forced === true,
+				`playing=${forced}`,
+			);
+			await page.emulateMedia({ reducedMotion: "no-preference" });
+			await waitAnimDone(page);
 		}
 
 		// 切回瀑布图确认可以来回切
@@ -2609,6 +2687,22 @@ async function checkDeclaredBy(page) {
 		info.orphan.length === 0 || info.warnRows === info.orphan.length,
 		`orphan=${info.orphan.length} warnRows=${info.warnRows}`,
 	);
+}
+
+// waitAnimDone 等图上的入场动画自己播完（而不是瞎 sleep）。
+//
+// 动画总时长约 2.4s，但并行跑 4 个 Chrome 时会变慢；固定 sleep 要么
+// 不够（flaky）要么浪费（把套件拖过超时预算）。等条件最稳。
+async function waitAnimDone(page) {
+	await page
+		.waitForFunction(
+			() => {
+				const h = document.querySelector(".flograph");
+				return h && !h.classList.contains("is-playing");
+			},
+			{ timeout: 8000 },
+		)
+		.catch(() => {});
 }
 
 // checkNodeDetail 验证节点详情页（node.html?id=…）。
@@ -2863,6 +2957,17 @@ async function checkFlowChart(page, base) {
 		"源详情页工具栏有全屏图标（带 aria-label）",
 		fsBtn !== null && !!fsBtn.aria && fsBtn.isSvg === true,
 		JSON.stringify(fsBtn),
+	);
+
+	// 源流向图没有执行数据（每个节点都没有点亮顺序），所以**不该**有
+	// 重播按钮 —— 放一个点了不动的按钮比不放更糟。
+	const repBtn = await page.evaluate(
+		() => !!document.querySelector('.flograph-ctrl button[data-fg-action="replay"]'),
+	);
+	H.check(
+		"源流向图没有重播按钮（它没有可播放的执行顺序）",
+		repBtn === false,
+		`有重播按钮=${repBtn}`,
 	);
 
 	if (fsBtn) {

@@ -71,6 +71,9 @@
 				"M4 16v4h4",
 				"M20 16v4h-4",
 			],
+			// 重播：逆时针的环绕箭头。用它而不是三角形 play，
+			// 是因为这块是**图**不是播放器，"回到起点再来一遍"更准确。
+			replay: ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
 			// 四角向外的箭头：全屏 / 退出全屏
 			expand: ["M4 9V4h5", "M20 9V4h-5", "M4 15v5h5", "M20 15v5h-5"],
 			collapse: ["M9 4v5H4", "M15 4v5h5", "M9 20v-5H4", "M15 20v-5h5"],
@@ -911,7 +914,17 @@
 		// 全屏要重排**这一个**容器（见 setFullscreen），页面拿不到内部
 		// 的 fit()/scale，自己实现必然要复制一份状态机。
 		const ctrl = div("flograph-ctrl");
+		// 有没有"可播放的执行顺序"：源流向图没有执行数据，按钮点了也
+		// 只会原地不动 —— 干脆不显示，别放一个不响的按钮。
+		const canReplay = revealOrders(revealItems()).length >= 2;
 		for (const [key, icon, title, fn] of [
+			// 重播放**最左**：它和缩放是两类动作，混在中间容易误点。
+			[
+				"replay",
+				"replay",
+				tt("graph.replay", "重播动画"),
+				() => playEnter(true),
+			],
 			["zoom-in", "zoom-in", tt("graph.zoom_in", "放大"), () => zoomBy(1.25)],
 			["zoom-out", "zoom-out", tt("graph.zoom_out", "缩小"), () => zoomBy(1 / 1.25)],
 			["fit", "fit", tt("graph.fit", "适应视图"), () => fit()],
@@ -921,6 +934,7 @@
 			// 需要工具栏版本时传 opts.showFullscreen。
 			["fullscreen", "expand", tt("graph.fullscreen", "全屏"), () => toggleFullscreen()],
 		]) {
+			if (!canReplay && key === "replay") continue;
 			if (key === "fullscreen" && !options.showFullscreen) continue;
 			const b = document.createElement("button");
 			b.type = "button";
@@ -1106,28 +1120,52 @@
 		// 真的播过动画没有（页面据此决定"下次切回来还要不要重播"）
 		let animated = false;
 
-		function playEnter() {
-			// 尊重系统的"减少动态效果"设置：这类用户要的是别动。
-			if (
-				window.matchMedia &&
-				window.matchMedia("(prefers-reduced-motion: reduce)").matches
-			) {
-				return;
-			}
+		// 所有参与"点亮"的元素：节点 + 它的每条边（path 与出口名标签）
+		function revealItems() {
 			const items = [];
 			for (const n of nodes) {
 				const el = nodeEls.get(n.id);
 				if (el) items.push({ order: n.order, el: el });
 			}
 			for (const it of edgeEls) items.push(it);
-			if (!items.length) return;
+			return items;
+		}
 
+		// 去重排序的点亮步骤。没有 order 的（剪枝）不参与。
+		function revealOrders(items) {
 			const orders = [];
 			for (const it of items) {
 				if (it.order != null && orders.indexOf(it.order) < 0) orders.push(it.order);
 			}
+			return orders.sort((a, b) => a - b);
+		}
+
+		/**
+		 * playEnter 播一遍"从全量未执行到实际执行"的动画。
+		 *
+		 * @param {boolean} force 用户**明确点了**重播按钮时为 true。
+		 *   自动播放尊重系统"减少动态效果"设置；但用户亲手点重播
+		 *   是明确的意图表达，此时不该再被系统偏好挡住 ——
+		 *   否则开了那个设置的人永远看不到这个功能。
+		 */
+		function playEnter(force) {
+			if (!force) {
+				if (
+					window.matchMedia &&
+					window.matchMedia("(prefers-reduced-motion: reduce)").matches
+				) {
+					return;
+				}
+			}
+			const items = revealItems();
+			const orders = revealOrders(items);
 			if (orders.length < 2) return; // 只有一步时动画没有意义
-			orders.sort((a, b) => a - b);
+
+			// 正在播的时候又点了一次：从干净状态重来，不叠两个定时器
+			if (enterTimer) {
+				clearInterval(enterTimer);
+				enterTimer = null;
+			}
 
 			container.classList.add("is-playing");
 			animated = true;
@@ -1171,6 +1209,8 @@
 			// 但主入口是右下角控件里的那一个按钮。
 			setFullscreen,
 			isFullscreen: () => fullscreen,
+			// 重播入场动画（工具栏按钮用；页面也可以自己调）
+			replay: () => playEnter(true),
 			destroy() {
 				if (enterTimer) {
 					clearInterval(enterTimer);

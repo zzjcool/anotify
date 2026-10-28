@@ -239,6 +239,7 @@ index:
     empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
 graph:
   zoom_in: 放大
+  replay: 重播动画
   zoom_out: 缩小
   fit: 适应视图
   fullscreen: 全屏

@@ -239,6 +239,7 @@ index:
     empty: No events yet. Once a webhook or cron trigger is wired up, the stream shows here.
 graph:
   zoom_in: Zoom in
+  replay: Replay the animation
   zoom_out: Zoom out
   fit: Fit to view
   fullscreen: Fullscreen
