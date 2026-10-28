@@ -1158,7 +1158,8 @@
 			for (const it of edgeEls) {
 				it.el.classList.remove("is-pre");
 				if (it.path) {
-					it.path.style.transition = "";
+					it.path.getAnimations().forEach((a) => a.cancel());
+					delete it.path.dataset.animated;
 					it.path.style.strokeDasharray = "";
 					it.path.style.strokeDashoffset = "";
 					if (it.marker) it.path.setAttribute("marker-end", it.marker);
@@ -1183,44 +1184,55 @@
 		}
 
 		/**
-		 * 把一条边"画出来"。
+		 * 把一条边"沿着路径画出来"。
 		 *
-		 * 用 stroke-dashoffset 从全长收到 0：线是从起点长到终点的，
-		 * 不是整条淡入 —— 后者看不出方向。
+		 * 用的是 SVG 描边动画的标准做法：`stroke-dasharray` 设成全长、
+		 * `stroke-dashoffset` 从全长收到 0，线就从起点长到终点。
+		 * （anime.js / GSAP / Motion One 画线也是这一招，底层完全一样。）
 		 *
-		 * 箭头要在画完之后才出现，否则"线还没到，箭头先杵在那儿"。
+		 * **用 WAAPI（Element.animate）而不是手写 CSS transition**：
+		 * 手写那版实测 `stroke-dashoffset` 从来没取过中间值（computed 一直是
+		 * 0px、getAnimations() 为空），线是瞬间出现的 —— 因为"先开 transition
+		 * 再设初值"时，初值那一跳会被过渡自己吃掉，浏览器最终只看到 0 → 0。
+		 * WAAPI 明确给出 keyframes 和起止时间，不依赖样式提交时机。
 		 */
 		function drawEdge(it) {
 			const path = it.path;
-			if (!path || !path.classList.contains("is-pre")) {
-				// 已经画过（或本来就不是待点亮状态）：只把标签补上
-				if (it.label) it.label.classList.remove("is-pre");
+			const label = it.label;
+			if (!path || path.dataset.animated === "1") {
+				if (label) label.classList.remove("is-pre");
 				return;
 			}
 			path.classList.remove("is-pre");
 			// 记下"这条边真的被画过"，E2E 用它对照任务的父子关系，
 			// 验证"没走过的分支不会被画出来"。
 			path.dataset.animated = "1";
-			const len = path.getTotalLength ? path.getTotalLength() : 0;
-			if (len > 0) {
-				path.style.transition = "stroke-dashoffset 0.36s ease-out";
-				path.style.strokeDasharray = String(len);
-				path.style.strokeDashoffset = String(len);
-				// 让上面的初值生效，再改目标值，否则会被合并成一次样式变更
-				void path.getBoundingClientRect();
-				path.style.strokeDashoffset = "0";
-			}
-			// 箭头等画完再现身
-			if (it.marker) path.removeAttribute("marker-end");
-			const done = () => {
-				path.style.transition = "";
+
+			const finish = () => {
 				path.style.strokeDasharray = "";
 				path.style.strokeDashoffset = "";
 				if (it.marker) path.setAttribute("marker-end", it.marker);
-				if (it.label) it.label.classList.remove("is-pre");
+				if (label) label.classList.remove("is-pre");
 			};
-			if (enterTimer === null) return; // 动画已停：直接给终态
-			setTimeout(done, len > 0 ? 380 : 0);
+
+			const len = path.getTotalLength ? path.getTotalLength() : 0;
+			if (len > 0 && typeof path.animate === "function") {
+				// 先把整条线"藏"进 dash 里，再交给 WAAPI 放出来
+				path.style.strokeDasharray = String(len);
+				path.style.strokeDashoffset = String(len);
+				// 箭头等画完再出现，否则"线还没到、箭头先杵在那儿"
+				if (it.marker) path.removeAttribute("marker-end");
+				const anim = path.animate(
+					[{ strokeDashoffset: String(len) }, { strokeDashoffset: "0" }],
+					{ duration: 400, easing: "cubic-bezier(0.35, 0, 0.25, 1)", fill: "forwards" },
+				);
+				anim.onfinish = () => {
+					anim.cancel(); // 清掉 forwards 填充，再把内联样式还回去
+					finish();
+				};
+				return;
+			}
+			finish();
 		}
 
 		function playEnter(force) {

@@ -2317,21 +2317,43 @@ async function checkWaterfall(page) {
 		let sawPlaying = false;
 		let preMax = 0;
 		let totalNodes = 0;
+		// 线必须**逐段画出来**，不是整条瞬现。
+		//
+		// 踩过两次：手写 CSS transition 时 `stroke-dashoffset` 从来没取过
+		// 中间值（先开 transition 再设初值，初值那一跳被过渡自己吃掉，
+		// 浏览器最终只看到 0 → 0），线是"啪"一下整条出现的。
+		// 只看"动画在播"是发现不了的 —— 必须盯 dashoffset 的中间态。
+		let partialDraws = 0;
+		let sawWaapi = false;
 		for (let i = 0; i < 12; i++) {
 			const s = await page.evaluate(() => {
 				const host = document.querySelector(".flograph");
 				if (!host) return null;
 				const nodes = Array.from(host.querySelectorAll(".wf-node"));
+				let partial = 0;
+				let waapi = false;
+				for (const p2 of host.querySelectorAll(".flograph-svg path")) {
+					if (p2.getAnimations && p2.getAnimations().length > 0) waapi = true;
+					const cs = getComputedStyle(p2);
+					const off = parseFloat(cs.strokeDashoffset) || 0;
+					const dash = parseFloat(cs.strokeDasharray) || 0;
+					// 0 < off < dash  ⇔  线只画出了一部分
+					if (dash > 1 && off > 0.5 && off < dash - 0.5) partial++;
+				}
 				return {
 					playing: host.classList.contains("is-playing"),
 					pre: nodes.filter((n) => n.classList.contains("is-pre")).length,
 					total: nodes.length,
+					partial,
+					waapi,
 				};
 			});
 			if (s && s.total > 0) {
 				totalNodes = Math.max(totalNodes, s.total);
 				if (s.playing) sawPlaying = true;
 				if (s.pre > preMax) preMax = s.pre;
+				if (s.partial > 0) partialDraws++;
+				if (s.waapi) sawWaapi = true;
 			}
 			await page.waitForTimeout(110);
 		}
@@ -2339,6 +2361,11 @@ async function checkWaterfall(page) {
 			"图打开时有入场动画（先画成未执行再点亮）",
 			sawPlaying === true && preMax > 1,
 			`playing=${sawPlaying} 未点亮最多=${preMax}/${totalNodes}`,
+		);
+		H.check(
+			"线是逐段画出来的（不是整条瞬现）",
+			partialDraws > 0,
+			`看到部分绘制的采样点=${partialDraws}/12 waapi=${sawWaapi}`,
 		);
 	}
 
