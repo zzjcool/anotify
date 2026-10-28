@@ -722,6 +722,7 @@
 			// 而不是靠"离哪个节点最近"猜。
 			path.dataset.from = e.from;
 			path.dataset.to = e.to;
+			path.dataset.port = e.port || "";
 			// 记录吸附后的端点（dagre 坐标系）。排查"箭头悬空/线没连上"
 			// 时可以直接读出来算距离，不用靠肉眼猜。
 			path.dataset.tip = Math.round(tip.x) + "," + Math.round(tip.y);
@@ -730,6 +731,8 @@
 			svgRoot.appendChild(path);
 			edgeEls.push({
 				from: e.from,
+				to: e.to,
+				port: e.port || "",
 				el: path,
 				path: path,
 				marker: markerRef,
@@ -782,6 +785,8 @@
 				labelEls.push(lb);
 				edgeEls.push({
 					from: e.from,
+					to: e.to,
+					port: e.port || "",
 					el: lb,
 					draw: (e.times || 0) > 0 && !e.muted,
 				});
@@ -1180,8 +1185,28 @@
 		// 上一次实际用的每拍时长（_debug 暴露给 E2E，避免靠掐表判时序）
 		let lastStepMs = 0;
 
-		function edgeElsFrom(cap) {
-			return edgeEls.filter((it) => it.from === cap && it.draw);
+		// 把"把流程带到这里"的那条边找出来并画出来。
+		//
+		// 按 (from, port, to) 三者精确匹配，不是"这个节点的所有出边"：
+		//   · analyze-pr --needs-fix--> run-tests 走过、--approved--> 没走过，
+		//     只画前者，后者保持"配置里有、这次没走"的样子
+		//   · run-tests --passed--> deploy-preview 只在**部署那一拍**才画，
+		//     而不是第一次跑测试时就画完（那时候部署还早着）
+		function drawIncoming(b) {
+			for (const it of edgeEls) {
+				if (!it.draw || !it.path) continue;
+				if (it.from !== b.from || it.to !== b.cap) continue;
+				if (b.port && it.port && it.port !== b.port) continue;
+				drawEdge(it);
+			}
+		}
+
+		// 根任务的入边是触发器的扇出（触发器没有"出口名"，只能按目标匹配）
+		function drawFromRoot(cap) {
+			for (const it of edgeEls) {
+				if (!it.draw || !it.path) continue;
+				if (it.from === ROOT_ID && it.to === cap) drawEdge(it);
+			}
 		}
 
 		// 把上次动画留在 DOM 上的痕迹清干净（重播时用）
@@ -1315,15 +1340,24 @@
 			const actions = [];
 			const push = (at, run) => actions.push({ at: at, run: run });
 
-			// 第 0 拍：触发器。它是这条 trace 的起点，先亮它再画它的扇出。
-			if (ROOT_ID && nodeEls.has(ROOT_ID)) {
-				push(0, () => lightNode(ROOT_ID));
-				push(stepMs * 0.55, () => edgeElsFrom(ROOT_ID).forEach(drawEdge));
-			}
-			beats.forEach((cap, i) => {
+			// 第 0 拍：触发器。它是这条 trace 的起点，先亮它。
+			if (ROOT_ID && nodeEls.has(ROOT_ID)) push(0, () => lightNode(ROOT_ID));
+
+			// 之后的每一拍：**先画进入它的那条线**，半拍之后再点亮这个节点。
+			//
+			// 这就是"能力 → 线慢慢染色 → 下一个能力"：线在两个节点之间
+			// 长出来，节点在线的末端亮起。反过来的排法（先亮节点再画它的
+			// 出边）会让"进入这个节点的线"早好几拍就画完了，看节点亮的
+			// 那一刻没有任何线在动 —— 正是 issue #157 描述的观感。
+			beats.forEach((b, i) => {
 				const at = stepMs * (i + 1);
-				push(at, () => lightNode(cap));
-				push(at + stepMs * 0.55, () => edgeElsFrom(cap).forEach(drawEdge));
+				const lead = at - stepMs * 0.6;
+				if (ROOT_ID && !b.from) {
+					push(lead, () => drawFromRoot(b.cap));
+				} else if (b.from) {
+					push(lead, () => drawIncoming(b));
+				}
+				push(at, () => lightNode(b.cap));
 			});
 
 			// 只把**参与这次执行**的元素压暗。
@@ -1331,7 +1365,10 @@
 			// 剪枝的节点/边（这次根本没走）全程保持它们本来的样式：它们本来
 			// 就是"配置里有、这次没走"（虚线灰字），再压暗一次反而会让人
 			// 在动画结束时看到它们"慢慢浮出来"，误以为最后又跑了一步。
-			const beatCaps = new Set(beats);
+			// beats 现在是一组对象（{cap, from, port}），不是能力 id 数组 ——
+			// 直接 new Set(beats) 得不到任何 id，结果所有节点都不会被压暗，
+			// 整个入场动画退化成"线在动、点不动"。必须取 .cap。
+			const beatCaps = new Set(beats.map((b) => b.cap).filter(Boolean));
 			if (ROOT_ID) beatCaps.add(ROOT_ID);
 			for (const [id, el] of nodeEls) {
 				if (beatCaps.has(id)) el.classList.add("is-pre");
