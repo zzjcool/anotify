@@ -1196,6 +1196,8 @@ nodes:
   never: 从未
   last_seen: 心跳
   no_caps: 未声明能力
+  caps_label: 声明能力
+  caps_more: '+{n} 个'
   slots: 槽位 {busy}/{total}
   drain: 排空
   draining_hint: 排空中

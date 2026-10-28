@@ -525,8 +525,22 @@ func TestNodeListAndDrain(t *testing.T) {
 	if obj["name"] != "mbp-1" {
 		t.Fatalf("name = %v", obj["name"])
 	}
-	if caps, _ := obj["capabilities"].([]any); len(caps) != 1 || caps[0] != "review@1" {
-		t.Fatalf("capabilities = %v, want [review@1]", obj["capabilities"])
+	// capabilities 是**对象**而不是 "name@version" 字符串：节点页要用
+	// 显示名（displayName）和稳定的 id（标签点进能力详情）。
+	caps, _ := obj["capabilities"].([]any)
+	if len(caps) != 1 {
+		t.Fatalf("capabilities = %v, want 1 entry", obj["capabilities"])
+	}
+	cap0, _ := caps[0].(map[string]any)
+	if cap0["name"] != "review" || cap0["version"] != 1.0 {
+		t.Fatalf("capability name/version = %v/%v", cap0["name"], cap0["version"])
+	}
+	if got, _ := cap0["id"].(string); got == "" {
+		t.Fatalf("capability id 不能为空（页面要用它跳能力详情），cap=%v", cap0)
+	}
+	// 没取显示名时必须是空串（不是 null），前端才好判断要不要回落
+	if _, ok := cap0["displayName"].(string); !ok {
+		t.Fatalf("displayName 必须是字符串（空串表示没取），cap=%v", cap0)
 	}
 	if obj["instances"] != 2.0 {
 		t.Fatalf("instances = %v, want 2", obj["instances"])

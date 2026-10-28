@@ -329,7 +329,15 @@
 	(function initNodes() {
 		const capRef = (n) => {
 			const c = capByName(n);
-			return { id: c.id, name: c.name, version: c.version };
+			// displayName 也带上：节点页要显示用户取的中文名。
+			// kind 不在这里算 —— 它依赖"有没有节点声明"，而这段代码正在
+			// 构造 state.nodes，算出来会是半成品。放到请求时算（nodeView）。
+			return {
+				id: c.id,
+				name: c.name,
+				version: c.version,
+				displayName: c.displayName || "",
+			};
 		};
 
 		state.nodes = [
@@ -1168,13 +1176,33 @@
 	});
 
 	// ===== 节点 =====
-	on("GET", /^\/v1\/nodes$/, () => json({ nodes: clone(state.nodes) }));
+	// nodeView 与真实 handler（internal/server/console_handlers.go 的
+	// consoleHandler.nodes）保持同形状：
+	//
+	//   capabilities  对象数组，带 displayName + 推导的 kind
+	//   instances     申报的槽位**数量**（整数），不是槽位对象数组
+	//   busy          正在占用的槽位数
+	//
+	// 之前这里直接 clone(state.nodes)，把内部的槽位数组原样吐出去，页面
+	// 拿 instances 当数字用就渲染成「槽位 0/[object Object]」。
+	function nodeView(n) {
+		const slots = n.instances || [];
+		return Object.assign(clone(n), {
+			capabilities: (n.capabilities || []).map((ref) => Object.assign({}, ref)),
+			instances: slots.length,
+			busy: slots.filter((x) => (x.busy || 0) > 0).length,
+		});
+	}
+
+	on("GET", /^\/v1\/nodes$/, () =>
+		json({ nodes: state.nodes.map(nodeView) }),
+	);
 
 	on("POST", /^\/v1\/nodes\/([^/]+)\/drain$/, (ctx) => {
 		const n = state.nodes.find((x) => x.id === ctx.m[1]);
 		if (!n) return err(404, "节点不存在");
 		n.status = "draining";
-		return json({ node: clone(n) });
+		return json({ node: nodeView(n) });
 	});
 
 	// ===== 源 =====

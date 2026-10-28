@@ -1196,6 +1196,8 @@ nodes:
   never: Never
   last_seen: Heartbeat
   no_caps: No capabilities declared
+  caps_label: Declared capabilities
+  caps_more: '+{n} more'
   slots: Slots {busy}/{total}
   drain: Drain
   draining_hint: Draining
