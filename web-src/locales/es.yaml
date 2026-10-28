@@ -237,6 +237,14 @@ index:
     open: Abrir flujo de eventos →
     loading: Cargando eventos…
     empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
+scope:
+  org: "Organización"
+  ns: "Espacio de nombres"
+  none: "(sin espacios de nombres)"
+  new_ns: "Nuevo espacio de nombres"
+  new_ns_prompt: "Slug del nuevo espacio (minúsculas / dígitos / guiones)"
+  new_ns_failed: "Error al crear"
+  org_level: "Nivel de organización"
 graph:
   zoom_in: Acercar
   replay: Repetir la animación

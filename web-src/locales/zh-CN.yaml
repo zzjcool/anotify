@@ -237,6 +237,14 @@ index:
     open: 查看事件流 →
     loading: 正在加载事件…
     empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
+scope:
+  org: "组织"
+  ns: "命名空间"
+  none: "（还没有命名空间）"
+  new_ns: "新建命名空间"
+  new_ns_prompt: "新命名空间 slug（小写字母 / 数字 / 连字符）"
+  new_ns_failed: "创建失败"
+  org_level: "组织级"
 graph:
   zoom_in: 放大
   replay: 重播动画

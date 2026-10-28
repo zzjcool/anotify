@@ -63,6 +63,83 @@ body {
 	color: var(--text);
 	background: var(--surface-2);
 }
+/* ---- 侧栏顶部的组织 / 命名空间切换器 ---- */
+/* 共享组件类必须放这里（页面内联样式会让另一页看不见它） */
+.scope-switcher {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 12px;
+	border-bottom: 1px solid var(--line);
+}
+.scope-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+.scope-label {
+	flex: none;
+	width: 2.9rem;
+	font-size: 11px;
+	line-height: 1;
+	color: var(--muted);
+	letter-spacing: 0.03em;
+}
+.scope-select {
+	flex: 1 1 auto;
+	min-width: 0;
+	appearance: none;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 4px 6px;
+	font-size: 12px;
+	color: var(--text);
+	background: var(--bg-raise);
+	cursor: pointer;
+}
+.scope-select:hover {
+	border-color: var(--line-strong);
+}
+.scope-select:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+/* 「+」新建命名空间：和 select 等高的方形按钮 */
+.scope-plus {
+	flex: none;
+	width: 24px;
+	height: 24px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: var(--bg-raise);
+	color: var(--muted);
+	font-size: 14px;
+	line-height: 1;
+	cursor: pointer;
+}
+.scope-plus:hover {
+	color: var(--text);
+	border-color: var(--line-strong);
+}
+/* 组织级页面（能力 / 节点）的提示徽标：切命名空间它们不会变 */
+.scope-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: 8px;
+	padding: 1px 7px;
+	border-radius: 999px;
+	border: 1px solid var(--line);
+	color: var(--muted);
+	font-size: 11px;
+	font-weight: 400;
+	vertical-align: middle;
+	white-space: nowrap;
+}
 .side-link.active {
 	color: var(--text);
 	background: var(--accent-soft);
