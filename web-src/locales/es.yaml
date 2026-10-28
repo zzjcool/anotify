@@ -240,6 +240,7 @@ index:
 graph:
   zoom_in: Acercar
   replay: Repetir la animación
+  speed: Velocidad de reproducción
   zoom_out: Alejar
   fit: Ajustar a la vista
   fullscreen: Pantalla completa

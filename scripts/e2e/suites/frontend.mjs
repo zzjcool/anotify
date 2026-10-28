@@ -2512,7 +2512,10 @@ async function checkWaterfall(page) {
 				// 采样间隔 55ms，按帧去重会把它数成 9 次。
 				const pulseCounts = {};
 				let wasPulsing = new Set();
-				for (let i = 0; i < 70; i++) {
+				// 采样窗口必须覆盖**整段动画**：每拍固定 500ms，12 个任务的
+				// 链路 ≈ 6.5s，再留余量。窗口太短会漏掉后半段的脉冲
+				// （曾经 70×55ms=3.85s，把 apply-fix / alert 的重试全漏了）。
+				for (let i = 0; i < 320; i++) {
 					await new Promise((res) => setTimeout(res, 55));
 					for (const n of document.querySelectorAll(".wf-node")) {
 						const id = n.dataset.nodeId;
@@ -2703,6 +2706,35 @@ async function checkWaterfall(page) {
 			await waitAnimDone(page);
 		}
 
+		// ---- 播放速度：1× / 0.5× / 2× ----
+		//
+		// 每拍时长是 revealStep() 直接暴露的，不靠掐表 —— 并发跑 4 个
+		// Chrome 时计时断言必然抖。
+		const speeds = await page.evaluate(async () => {
+			const btn = document.querySelector('.flograph-ctrl button[data-fg-action="speed"]');
+			if (!btn) return null;
+			const out = [];
+			for (let i = 0; i < 3; i++) {
+				btn.click();
+				// playEnter 里同步算好的，80ms 足够它落到 _debug 上
+				await new Promise((r) => setTimeout(r, 80));
+				const g = document.querySelector(".flograph");
+				out.push({
+					label: btn.textContent.trim(),
+					step: g && g._graph ? g._graph._debug.revealStep() : 0,
+				});
+			}
+			return out;
+		});
+		H.check(
+			"播放速度可在 1× / 0.5× / 2× 之间切换（0.5× 是更慢，不是更快）",
+			!!speeds &&
+				speeds.map((x) => x.label).join(",") === "0.5×,2×,1×" &&
+				speeds[0].step > speeds[2].step &&
+				speeds[2].step > speeds[1].step,
+			speeds ? speeds.map((x) => `${x.label}=${x.step}ms`).join(" ") : "没有速度按钮",
+		);
+
 		// 切回瀑布图确认可以来回切
 		const back = await page.evaluate(() => {
 			const btns = Array.from(document.querySelectorAll(".wf-switch button"));
@@ -2717,6 +2749,41 @@ async function checkWaterfall(page) {
 			H.check("可从图视图切回瀑布图", wfBack === true);
 		}
 	}
+
+	// ---- 每拍时长固定，不随链路复杂度压缩 ----
+	//
+	// 这是节奏的基本约定：**一步的时间固定**，所以图越复杂总时长越长。
+	// 反面做法（踩过两次）：先把总时长定死再按步数均分 —— 结果最该看清
+	// 的那条复杂链路每拍最短。"慢一点"的意思是每一步都留够看的工夫，
+	// 不是总时长固定。
+	//
+	// 用 t1（5 个任务）和 t9（12 个任务）对比：每拍时长必须一样。
+	const steps = {};
+	for (const tid of ["trace_mock_t1", "trace_mock_t9"]) {
+		await page.goto(new URL(`trace.html?traceId=${tid}&view=graph`, page.url()).href, {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		// revealStep 在动画启动时同步写入，不用等它播完
+		await page
+			.waitForFunction(
+				() => {
+					const h = document.querySelector(".flograph");
+					return !!(h && h._graph && h._graph._debug.revealStep() > 0);
+				},
+				{ timeout: 20000 },
+			)
+			.catch(() => {});
+		steps[tid] = await page.evaluate(() => {
+			const g = document.querySelector(".flograph");
+			return g && g._graph ? g._graph._debug.revealStep() : 0;
+		});
+	}
+	H.check(
+		"每拍时长固定，不随链路复杂度压缩（图越复杂总时长越长）",
+		steps.trace_mock_t1 > 0 && steps.trace_mock_t1 === steps.trace_mock_t9,
+		`t1(5 任务)=${steps.trace_mock_t1}ms t9(12 任务)=${steps.trace_mock_t9}ms`,
+	);
 }
 
 // checkFlowChart 在 mock 预览里验证流向图。
@@ -2853,7 +2920,7 @@ async function waitAnimDone(page) {
 				const h = document.querySelector(".flograph");
 				return h && !h.classList.contains("is-playing");
 			},
-			{ timeout: 8000 },
+			{ timeout: 25000 },
 		)
 		.catch(() => {});
 }

@@ -240,6 +240,7 @@ index:
 graph:
   zoom_in: 放大
   replay: 重播动画
+  speed: 播放速度
   zoom_out: 缩小
   fit: 适应视图
   fullscreen: 全屏
