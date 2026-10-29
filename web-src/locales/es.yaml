@@ -1209,7 +1209,7 @@ nodes:
   subtitle: Los ejecutores. Un nodo sabe cómo ejecutar una capacidad; el hub solo le dice qué hacer.
   refresh: Actualizar
   loading: Cargando nodos…
-  empty: Aún no hay nodos. Registra el primero abajo — empieza a recibir trabajo cuando esté en línea.
+  empty: "Todavía no hay nodos en este espacio de nombres. Registra el primero con los pasos de abajo."
   count: '{online}/{total} en línea'
   never: Nunca
   last_seen: Latido

@@ -1209,7 +1209,7 @@ nodes:
   subtitle: 执行者。节点自己知道怎么跑某个能力，中枢只告诉它"做什么"。
   refresh: 刷新
   loading: 正在加载节点…
-  empty: 还没有节点。按下面的步骤注册第一台，它上线后才会接活。
+  empty: "这个命名空间里还没有节点。按下面的步骤注册第一台，它上线后才会接活。"
   count: '{online}/{total} 在线'
   never: 从未
   last_seen: 心跳

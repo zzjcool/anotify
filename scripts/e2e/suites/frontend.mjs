@@ -3124,6 +3124,7 @@ async function checkScope(page) {
 			prod: await n("/v1/sources?namespaceId=ns_mock_prod"),
 			staging: await n("/v1/sources?namespaceId=ns_mock_staging"),
 			sandbox: await n("/v1/sources?namespaceId=ns_mock_sandbox"),
+			acme: await n("/v1/sources?namespaceId=ns_mock_acme_default"),
 			all: await n("/v1/sources?namespaceId=*"),
 			prodEvents: await n("/v1/console/events?namespaceId=ns_mock_prod"),
 			stagingEvents: await n("/v1/console/events?namespaceId=ns_mock_staging"),
@@ -3133,9 +3134,11 @@ async function checkScope(page) {
 		"mock 按命名空间隔离数据（sandbox 空 / `*` 是并集）",
 		iso.prod > iso.staging &&
 			iso.sandbox === 0 &&
-			iso.all === iso.prod + iso.staging &&
+			// 全量必须等于**每个命名空间之和**（含另一个组织的 Acme）：
+			// 少算一个命名空间就会把"漏了一层过滤"放过去
+			iso.all === iso.prod + iso.staging + iso.sandbox + iso.acme &&
 			iso.prodEvents > iso.stagingEvents,
-		`源 prod=${iso.prod} staging=${iso.staging} sandbox=${iso.sandbox} 全量=${iso.all}；事件 prod=${iso.prodEvents} staging=${iso.stagingEvents}`,
+		`源 prod=${iso.prod} staging=${iso.staging} sandbox=${iso.sandbox} acme=${iso.acme} 全量=${iso.all}；事件 prod=${iso.prodEvents} staging=${iso.stagingEvents}`,
 	);
 
 	// ③ 切到 staging：列表内容真的变了
@@ -3212,6 +3215,7 @@ async function checkScope(page) {
 			prod: await n("ns_mock_prod"),
 			staging: await n("ns_mock_staging"),
 			sandbox: await n("ns_mock_sandbox"),
+			acme: await n("ns_mock_acme_default"),
 			all: await n("*"),
 		};
 	});
@@ -3221,10 +3225,13 @@ async function checkScope(page) {
 			// sandbox 里没有任何用户能力，但内置能力必须被播种进去
 			// （否则连一个 end 节点都声明不出来，推送直接失效）
 			caps.sandbox.caps === 1 &&
-			caps.all.caps === caps.prod.caps + caps.staging.caps + caps.sandbox.caps &&
+			caps.acme.caps > 1 &&
+			caps.all.caps ===
+				caps.prod.caps + caps.staging.caps + caps.sandbox.caps + caps.acme.caps &&
 			caps.prod.nodes > caps.staging.nodes &&
-			caps.sandbox.nodes === 0,
-		`能力 prod=${caps.prod.caps} staging=${caps.staging.caps} sandbox=${caps.sandbox.caps} 全量=${caps.all.caps}；节点 prod=${caps.prod.nodes} staging=${caps.staging.nodes} sandbox=${caps.sandbox.nodes}`,
+			caps.sandbox.nodes === 0 &&
+			caps.acme.nodes === 1,
+		`能力 prod=${caps.prod.caps} staging=${caps.staging.caps} sandbox=${caps.sandbox.caps} acme=${caps.acme.caps} 全量=${caps.all.caps}；节点 prod=${caps.prod.nodes} staging=${caps.staging.nodes} sandbox=${caps.sandbox.nodes} acme=${caps.acme.nodes}`,
 	);
 
 	// UI 侧：当前还在 staging，能力列表必须是 staging 的数量，且不再有「组织级」徽标

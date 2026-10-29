@@ -1203,6 +1203,139 @@
 			summary: "预发部署完成",
 		});
 		state.tasks.push(a, t, d);
+
+		// ---- Acme 组织：另一套完全独立的数据 ----
+		//
+		// 为什么要给第二个组织造全量数据：切过去如果整个产品是空的，
+		// 看起来就像"mock 挂了 / 这功能坏了"，而不是"这是另一个组织"。
+		// 换组织应该看到**同样完整、但内容完全不同**的东西。
+		const acmeBuiltin = builtinFor(ACME_NS);
+		state.capabilities.push(acmeBuiltin);
+
+		const acmeCap = (name, version, outputs, display) => {
+			const c = cap(name, version, outputs, { type: "object" }, "custom", display);
+			return Object.assign(c, {
+				id: "cap_mock_acme_" + name.replace(/\./g, "_") + "_v" + version,
+				orgId: ACME,
+				namespaceId: ACME_NS,
+			});
+		};
+		const build = acmeCap("build-image", 1, ["built", "failed"], "构建镜像");
+		const scan = acmeCap("scan-deps", 1, ["clean", "vulnerable"], "依赖扫描");
+		const release = acmeCap("release", 1, ["released"], "发布");
+		state.capabilities.push(build, scan, release);
+
+		state.nodes.push({
+			id: "nd_mock_acme_builder",
+			orgId: ACME,
+			namespaceId: ACME_NS,
+			name: "acme-builder",
+			status: "online",
+			lastSeenAt: now() - 5,
+			createdAt: now() - 86400 * 11,
+			maxInstances: 8,
+			maxConcurrency: 4,
+			tags: ["acme", "builder"],
+			capabilities: [build, scan, release, acmeBuiltin].map((c) => ({
+				id: c.id,
+				name: c.name,
+				version: c.version,
+				displayName: c.displayName,
+			})),
+			instances: [{ id: "nins_mock_acme_0", index: 0, concurrency: 4, busy: 0 }],
+		});
+
+		const acmeTrace = "trace_mock_acme_release";
+		const at = now() - 3600 * 2;
+		state.sources.push({
+			id: "src_mock_acme_pr",
+			orgId: ACME,
+			namespaceId: ACME_NS,
+			name: "Acme PR",
+			kind: "webhook",
+			config: { token: "acme-demo" },
+			enabled: true,
+			lastFiredAt: at,
+			createdAt: now() - 86400 * 11,
+			targets: [{ capabilityId: build.id, params: { repo: "acme/web", branch: "main" } }],
+		});
+
+		const acmeEdge = (from, port, to, caps) => ({
+			id: uid("edg"),
+			orgId: ACME,
+			namespaceId: ACME_NS,
+			fromCapability: caps[from].id,
+			fromCapabilityName: from,
+			fromPort: port,
+			toCapability: caps[to].id,
+			toCapabilityName: to,
+			createdAt: now() - 86400 * 11,
+		});
+		const acmeCaps = { "build-image": build, "scan-deps": scan, release: release };
+		state.edges.push(
+			acmeEdge("build-image", "built", "scan-deps", acmeCaps),
+			acmeEdge("scan-deps", "clean", "release", acmeCaps),
+		);
+
+		state.events.push({
+			id: uid("evt"),
+			orgId: ACME,
+			namespaceId: ACME_NS,
+			traceId: acmeTrace,
+			source: "Acme PR",
+			type: "pull_request.opened",
+			payload: { repository: { name: "acme/web" }, pull_request: { number: 17 } },
+			createdAt: at,
+		});
+
+		const acmeTask = (o) => ({
+			id: uid("tsk"),
+			orgId: ACME,
+			namespaceId: ACME_NS,
+			traceId: acmeTrace,
+			parentTaskId: o.parent || null,
+			path: o.path || [],
+			capabilityId: o.cap.id,
+			capability: o.cap.name,
+			version: o.cap.version,
+			params: { mock: true },
+			status: "succeeded",
+			nodeId: "nd_mock_acme_builder",
+			instanceId: "nins_mock_acme_0",
+			leaseUntil: null,
+			attempts: 1,
+			out: o.out !== undefined ? o.out : null,
+			reported: true,
+			summary: o.summary || "",
+			artifacts: [],
+			error: "",
+			contentHash: o.cap.contentHash,
+			capHash: o.cap.contentHash,
+			graphId: "grf_mock",
+			createdAt: o.at,
+			startedAt: o.at,
+			finishedAt: o.at + (o.secs || 20),
+			notBefore: null,
+		});
+		const ab = acmeTask({ cap: build, at: at + 0.3, out: "built", secs: 42 });
+		const as = acmeTask({
+			cap: scan,
+			parent: ab.id,
+			path: [build.id, scan.id],
+			at: at + 43,
+			out: "clean",
+			secs: 21,
+		});
+		const ar = acmeTask({
+			cap: release,
+			parent: as.id,
+			path: [build.id, scan.id, release.id],
+			at: at + 65,
+			out: null,
+			secs: 15,
+			summary: "已发布 v1.4.0",
+		});
+		state.tasks.push(ab, as, ar);
 	})();
 
 	// ---------- 初始 keys ----------

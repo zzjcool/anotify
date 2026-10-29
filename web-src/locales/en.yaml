@@ -1209,7 +1209,7 @@ nodes:
   subtitle: The executors. A node knows how to run a capability; the hub only tells it what to do.
   refresh: Refresh
   loading: Loading nodes…
-  empty: No nodes yet. Register the first one below — it starts taking work once it is online.
+  empty: "No nodes in this namespace yet. Register your first one below — it only takes work once it's online."
   count: '{online}/{total} online'
   never: Never
   last_seen: Heartbeat
