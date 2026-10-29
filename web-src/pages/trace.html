@@ -387,8 +387,12 @@
         const viewBox = el("div", "card rounded-2xl p-5");
         body.appendChild(viewBox);
 
-        // 视图选择记在 URL 上：刷新/分享时保留
-        const initView = qs.get("view") || "waterfall";
+        // 视图选择记在 URL 上：刷新/分享时保留。
+        //
+        // **默认是「图」**：图是这套产品唯一能把「谁派生了谁、走了哪个出口、
+        // 哪条分支没走」一次说清的地方；瀑布图只有时间，树只有层级。
+        // 打开一条 trace 最先要回答的是"它怎么跑的"，所以默认给图。
+        const initView = qs.get("view") || "graph";
         window.TraceView.mount(viewBox, {
           tasks: tasks,
           baseGraph: baseGraph,
