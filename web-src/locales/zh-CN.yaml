@@ -238,6 +238,9 @@ index:
     loading: 正在加载事件…
     empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
 scope:
+  switcher_label: "切换组织或命名空间"
+  section_org: "组织"
+  section_ns: "命名空间"
   org: "组织"
   ns: "命名空间"
   none: "（还没有命名空间）"

@@ -238,6 +238,9 @@ index:
     loading: Cargando eventos…
     empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
 scope:
+  switcher_label: "Cambiar de organización o espacio de nombres"
+  section_org: "Organización"
+  section_ns: "Espacio de nombres"
   org: "Organización"
   ns: "Espacio de nombres"
   none: "(sin espacios de nombres)"

@@ -3064,22 +3064,53 @@ async function checkScope(page) {
 	});
 	await page.waitForTimeout(1700);
 
-	// ① 控件存在，且能拿到组织 / 命名空间两级
+	// ① 触发器 + 分节菜单（组织 / 命名空间两节，且能新建）
 	const sw = await page.evaluate(() => {
 		const box = document.querySelector("#scope-switcher");
-		const sels = Array.from(document.querySelectorAll(".scope-select"));
-		return {
-			visible: !!box && !box.classList.contains("hidden"),
-			count: sels.length,
-			orgs: sels[0] ? sels[0].options.length : 0,
-			nss: sels[1] ? sels[1].options.length : 0,
-			plus: !!document.querySelector(".scope-plus"),
+		const trig = document.querySelector(".scope-trigger");
+		if (!box || !trig) return { ok: false };
+		trig.click();
+		const menu = document.querySelector(".scope-menu");
+		const groups = Array.from(menu.querySelectorAll(".scope-group")).map((g) =>
+			g.textContent.replace("+", "").trim(),
+		);
+		const subs = Array.from(menu.querySelectorAll(".scope-item-sub")).map((x) =>
+			x.textContent.trim(),
+		);
+		const opened = {
+			shows: !menu.classList.contains("hidden"),
+			expanded: trig.getAttribute("aria-expanded"),
+			groups,
+			orgItems: menu.querySelectorAll('.scope-item .scope-avatar').length,
+			subs,
+			plus: !!menu.querySelector(".scope-group-btn"),
+			// 触发器本身要能看出"当前在哪个组织 / 哪个命名空间"
+			org: (trig.querySelector(".scope-org") || {}).textContent || "",
+			ns: (trig.querySelector(".scope-ns") || {}).textContent || "",
+			role: (menu.querySelector(".scope-item") || {}).getAttribute
+				? menu.querySelector(".scope-item").getAttribute("role")
+				: "",
+			checked: menu.querySelectorAll('.scope-item[aria-checked="true"]').length,
 		};
+		trig.click(); // 关掉，别影响后面的操作
+		return opened;
 	});
 	H.check(
-		"侧栏有组织 / 命名空间切换器（两级 + 新建）",
-		sw.visible && sw.count === 2 && sw.orgs >= 2 && sw.nss >= 2 && sw.plus,
-		`visible=${sw.visible} orgs=${sw.orgs} namespaces=${sw.nss} plus=${sw.plus}`,
+		"侧栏切换器是一个触发器 + 分节菜单（不是两个原生 select）",
+		sw.ok !== false &&
+			sw.shows &&
+			sw.expanded === "true" &&
+			sw.groups.length === 2 &&
+			sw.groups[0] === "组织" &&
+			sw.groups[1] === "命名空间" &&
+			sw.orgItems >= 2 &&
+			sw.subs.includes("staging") &&
+			sw.plus &&
+			sw.org.length > 0 &&
+			sw.ns.length > 0 &&
+			sw.role === "menuitemradio" &&
+			sw.checked === 2,
+		`分节=${JSON.stringify(sw.groups)} 组织项=${sw.orgItems} 命名空间=${JSON.stringify(sw.subs)} 当前=${sw.org}/${sw.ns} role=${sw.role} 勾选=${sw.checked}`,
 	);
 
 	// ② 数据真的按命名空间隔离（含 `*` 通配）
@@ -3112,27 +3143,32 @@ async function checkScope(page) {
 		() => document.querySelectorAll("#src-list > *").length,
 	);
 	await page.evaluate(() => {
-		const sel = Array.from(document.querySelectorAll(".scope-select"))[1];
-		sel.value = "ns_mock_staging";
-		sel.dispatchEvent(new Event("change"));
+		document.querySelector(".scope-trigger").click();
+		const items = Array.from(document.querySelectorAll(".scope-menu .scope-item"));
+		const target = items.find((b) => {
+			const sub = b.querySelector(".scope-item-sub");
+			return sub && sub.textContent.trim() === "staging";
+		});
+		if (target) target.click();
 	});
 	// 切换会整页 reload，等它落地再读 —— 固定 sleep 在并发跑时不够稳
 	await page
 		.waitForFunction(
 			() => {
-				const s = Array.from(document.querySelectorAll(".scope-select"))[1];
-				return !!(s && s.value === "ns_mock_staging" && document.querySelector("#src-list > *"));
+				const t2 = document.querySelector(".scope-ns");
+				return !!(
+					t2 &&
+					t2.textContent.includes("staging") &&
+					document.querySelector("#src-list > *")
+				);
 			},
-			{ timeout: 15000 },
+			{ timeout: 20000 },
 		)
 		.catch(() => {});
 	await page.waitForTimeout(400);
 	const afterSwitch = await page.evaluate(() => ({
 		cards: document.querySelectorAll("#src-list > *").length,
-		ns: (() => {
-			const s = Array.from(document.querySelectorAll(".scope-select"))[1];
-			return s && s.selectedOptions[0] ? s.selectedOptions[0].textContent : "";
-		})(),
+		ns: (document.querySelector(".scope-ns") || {}).textContent || "",
 	}));
 	H.check(
 		"切换命名空间会换掉列表内容（不是只有下拉变了）",
@@ -3145,18 +3181,17 @@ async function checkScope(page) {
 	await page
 		.waitForFunction(
 			() => {
-				const s = Array.from(document.querySelectorAll(".scope-select"))[1];
-				return !!(s && s.options.length > 0);
+				const t2 = document.querySelector(".scope-ns");
+				return !!(t2 && t2.textContent.length > 0);
 			},
 			{ timeout: 15000 },
 		)
 		.catch(() => {});
 	await page.waitForTimeout(300);
 	const persisted = await page.evaluate(() => {
-		const s = Array.from(document.querySelectorAll(".scope-select"))[1];
 		const raw = localStorage.getItem("anotify.scope") || "";
 		return {
-			ns: s && s.selectedOptions[0] ? s.selectedOptions[0].textContent : "",
+			ns: (document.querySelector(".scope-ns") || {}).textContent || "",
 			stored: raw.includes("ns_mock_staging"),
 		};
 	});

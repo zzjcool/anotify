@@ -486,6 +486,10 @@
 	 */
 	// 侧栏顶部的「组织 / 命名空间」切换器。
 	//
+	// 一个触发器 + 一个分节菜单。**刻意不用原生 <select>**：原生下拉在暗色
+	// 界面里就是系统控件的样子（白底、方角、系统字体、没有悬浮反馈），
+	// 两个并排放在侧栏顶部，跟整套设计像两个时代的拼贴。
+	//
 	// 只有后端提供 /v1/orgs 才显示：真实后端还没有这套端点
 	// （设计见 docs/design/namespaces.md），拿不到就保持隐藏，
 	// 页面行为一点不变 —— 不需要为 mock 和真后端分叉代码路径。
@@ -503,13 +507,17 @@
 		// 存着的选择可能已经失效（换了组织、删了命名空间），统一回落到第一个
 		const pick = (list, want, fallback) =>
 			list.some((x) => x.id === want) ? want : fallback;
+		const initial = (name) =>
+			String(name || "?")
+				.trim()
+				.slice(0, 1)
+				.toUpperCase();
 
-		const loadNamespaces = async (orgId) => {
+		const loadNamespaces = async (id) => {
 			try {
-				const r = await fetch(
-					`/v1/namespaces?orgId=${encodeURIComponent(orgId)}`,
-					{ credentials: "include" },
-				);
+				const r = await fetch(`/v1/namespaces?orgId=${encodeURIComponent(id)}`, {
+					credentials: "include",
+				});
 				if (!r.ok) return [];
 				return (await r.json()).namespaces || [];
 			} catch (e) {
@@ -517,44 +525,152 @@
 			}
 		};
 
-		const orgSel = el("select", {
-			class: "scope-select",
-			"aria-label": t("scope.org", "组织"),
-		});
-		for (const o of orgs) orgSel.append(el("option", { value: o.id, text: o.name }));
-		const firstOrg = pick(orgs, scope.orgId, orgs[0].id);
-		orgSel.value = firstOrg;
+		let orgId = pick(orgs, scope.orgId, orgs[0].id);
+		let namespaces = await loadNamespaces(orgId);
+		let nsId = pick(namespaces, scope.namespaceId, (namespaces[0] || {}).id || "");
 
-		const nsSel = el("select", {
-			class: "scope-select",
-			"aria-label": t("scope.ns", "命名空间"),
-		});
-		let namespaces = [];
+		const orgOf = () => orgs.find((o) => o.id === orgId) || orgs[0];
+		const nsOf = () => namespaces.find((n) => n.id === nsId) || namespaces[0] || null;
 
-		const fillNs = (orgId) => {
-			nsSel.textContent = "";
-			for (const n of namespaces) {
-				nsSel.append(el("option", { value: n.id, text: `${n.name} · ${n.slug}` }));
-			}
-			if (!namespaces.length) {
-				nsSel.append(
-					el("option", { value: "", text: t("scope.none", "（还没有命名空间）") }),
-				);
-			}
-			nsSel.value = pick(namespaces, scope.namespaceId, (namespaces[0] || {}).id || "");
+		/* ---- 触发器：头像 + 组织（弱）/ 命名空间（强）+ 箭头 ---- */
+		const avatar = el("span", { class: "scope-avatar" });
+		const orgText = el("span", { class: "scope-org" });
+		const nsText = el("span", { class: "scope-ns" });
+		const trigger = el(
+			"button",
+			{
+				type: "button",
+				class: "scope-trigger",
+				"aria-haspopup": "menu",
+				"aria-expanded": "false",
+				"aria-label": t("scope.switcher_label", "切换组织或命名空间"),
+			},
+			avatar,
+			el("span", { class: "scope-text" }, orgText, nsText),
+			icon(["M6 9l6 6 6-6"], "h-3.5 w-3.5 scope-chevron"),
+		);
+
+		const menu = el("div", {
+			class: "lang-menu scope-menu hidden",
+			role: "menu",
+			"aria-orientation": "vertical",
+		});
+
+		// 一条可选项。lead = 左侧图标位（组织用头像，命名空间用 #）
+		const item = (opts) => {
+			const b = el(
+				"button",
+				{
+					type: "button",
+					class: "scope-item",
+					role: "menuitemradio",
+					"aria-checked": opts.checked ? "true" : "false",
+				},
+				opts.lead,
+				el("span", { class: "scope-item-name", text: opts.name }),
+				opts.sub ? el("span", { class: "scope-item-sub", text: opts.sub }) : null,
+				opts.checked ? icon(["M20 6L9 17l-5-5"], "h-3.5 w-3.5 scope-check") : null,
+			);
+			b.addEventListener("click", () => {
+				saveScope(opts.pick);
+				location.reload();
+			});
+			return b;
 		};
 
-		const plus = el("button", {
-			type: "button",
-			class: "scope-plus",
-			title: t("scope.new_ns", "新建命名空间"),
-			"aria-label": t("scope.new_ns", "新建命名空间"),
-			text: "+",
-		});
-		plus.addEventListener("click", async () => {
+		const paint = () => {
+			const o = orgOf();
+			const n = nsOf();
+			avatar.textContent = initial(o && o.name);
+			orgText.textContent = (o && o.name) || "";
+			nsText.textContent = n
+				? `${n.name} · ${n.slug}`
+				: t("scope.none", "（还没有命名空间）");
+
+			menu.textContent = "";
+			menu.append(el("div", { class: "scope-group", text: t("scope.section_org", "组织") }));
+			for (const g of orgs) {
+				menu.append(
+					item({
+						name: g.name,
+						lead: el("span", { class: "scope-avatar", text: initial(g.name) }),
+						checked: g.id === orgId,
+						// 换组织：命名空间列表整个换掉，所以清空让它回落到
+						// 新组织的第一个命名空间（重载后再解析）。
+						pick: { orgId: g.id, namespaceId: "" },
+					}),
+				);
+			}
+			menu.append(el("div", { class: "scope-divider" }));
+
+			const plus = el("button", {
+				type: "button",
+				class: "scope-group-btn",
+				title: t("scope.new_ns", "新建命名空间"),
+				"aria-label": t("scope.new_ns", "新建命名空间"),
+				text: "+",
+			});
+			plus.addEventListener("click", createNamespace);
+			menu.append(
+				el(
+					"div",
+					{ class: "scope-group" },
+					el("span", { text: t("scope.section_ns", "命名空间") }),
+					plus,
+				),
+			);
+
+			if (!namespaces.length) {
+				menu.append(
+					el("div", {
+						class: "scope-item-sub",
+						style: "padding: 6px 8px",
+						text: t("scope.none", "（还没有命名空间）"),
+					}),
+				);
+			}
+			for (const ns of namespaces) {
+				menu.append(
+					item({
+						name: ns.name,
+						sub: ns.slug,
+						lead: el("span", { class: "scope-hash", text: "#" }),
+						checked: ns.id === nsId,
+						pick: { orgId, namespaceId: ns.id },
+					}),
+				);
+			}
+		};
+
+		const onDocClick = (ev) => {
+			if (menu.contains(ev.target) || trigger.contains(ev.target)) return;
+			close();
+		};
+		const close = () => {
+			menu.classList.add("hidden");
+			trigger.setAttribute("aria-expanded", "false");
+			document.removeEventListener("click", onDocClick, true);
+		};
+		// focusItem：只有**键盘**打开才把焦点送进菜单。
+		// 鼠标点开时自动聚焦第一条会画出一圈 focus ring，
+		// 看起来像"这条被选中了"，容易误读。
+		const open = (focusItem) => {
+			paint();
+			menu.classList.remove("hidden");
+			trigger.setAttribute("aria-expanded", "true");
+			document.addEventListener("click", onDocClick, true);
+			if (focusItem) {
+				const first = menu.querySelector(".scope-item");
+				if (first) first.focus();
+			}
+		};
+
+		async function createNamespace() {
 			const slug = String(
-				window.prompt(t("scope.new_ns_prompt", "新命名空间 slug（小写字母 / 数字 / 连字符）"), "") ||
+				window.prompt(
+					t("scope.new_ns_prompt", "新命名空间 slug（小写字母 / 数字 / 连字符）"),
 					"",
+				) || "",
 			).trim();
 			if (!slug) return;
 			try {
@@ -562,55 +678,47 @@
 					method: "POST",
 					credentials: "include",
 					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ orgId: orgSel.value, slug, name: slug }),
+					body: JSON.stringify({ orgId, slug, name: slug }),
 				});
 				const j = await r.json().catch(() => ({}));
 				if (!r.ok) {
 					window.alert(j.error || t("scope.new_ns_failed", "创建失败"));
 					return;
 				}
-				namespaces = await loadNamespaces(orgSel.value);
-				fillNs(orgSel.value);
-				nsSel.value = j.namespace.id;
-				saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
+				saveScope({ orgId, namespaceId: j.namespace.id });
 				location.reload();
 			} catch (e) {
 				window.alert(t("scope.new_ns_failed", "创建失败"));
 			}
+		}
+
+		trigger.addEventListener("click", (ev) => {
+			ev.stopPropagation();
+			// detail === 0 ⇔ 由键盘（Enter/Space）触发，而不是鼠标
+			if (menu.classList.contains("hidden")) open(ev.detail === 0);
+			else close();
+		});
+		// 键盘：Esc 关、上下键在条目间移动（菜单的可访问性底线）
+		menu.addEventListener("keydown", (ev) => {
+			if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+			ev.preventDefault();
+			const items = Array.from(menu.querySelectorAll(".scope-item"));
+			if (!items.length) return;
+			const i = items.indexOf(document.activeElement);
+			const next =
+				ev.key === "ArrowDown"
+					? (i + 1) % items.length
+					: (i - 1 + items.length) % items.length;
+			items[next].focus();
+		});
+		document.addEventListener("keydown", (ev) => {
+			if (ev.key === "Escape" && !menu.classList.contains("hidden")) close();
 		});
 
-		// 换范围一律整页重取：数据来源整个变了，就地刷新最容易出错
-		orgSel.addEventListener("change", async () => {
-			namespaces = await loadNamespaces(orgSel.value);
-			fillNs(orgSel.value);
-			saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
-			location.reload();
-		});
-		nsSel.addEventListener("change", () => {
-			saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
-			location.reload();
-		});
-
-		namespaces = await loadNamespaces(firstOrg);
-		fillNs(firstOrg);
-		saveScope({ orgId: orgSel.value, namespaceId: nsSel.value });
-
-		box.append(
-			el(
-				"div",
-				{ class: "scope-row" },
-				el("span", { class: "scope-label", text: t("scope.org", "组织") }),
-				orgSel,
-			),
-			el(
-				"div",
-				{ class: "scope-row" },
-				el("span", { class: "scope-label", text: t("scope.ns", "命名空间") }),
-				nsSel,
-				plus,
-			),
-		);
+		box.append(el("div", { class: "scope-block" }, trigger, menu));
 		box.classList.remove("hidden");
+		paint();
+		saveScope({ orgId, namespaceId: nsId });
 	}
 
 	function mountLayout(opts) {
@@ -659,10 +767,7 @@
 			nav.append(box);
 		}
 
-		const scopeBox = el("div", {
-			id: "scope-switcher",
-			class: "scope-switcher hidden",
-		});
+		const scopeBox = el("div", { id: "scope-switcher", class: "hidden" });
 		mountScopeSwitcher(scopeBox);
 
 		const sidebar = el(
