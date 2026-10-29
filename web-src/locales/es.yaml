@@ -6,6 +6,7 @@ common:
     overview: Resumen
     events: Flujo de eventos
     capabilities: Capacidades
+    packages: "Paquetes"
     nodes: Nodos
     receivers: Destinatarios
     keys: API Keys
@@ -1492,3 +1493,75 @@ nodepage:
   not_found: Nodo no encontrado
   not_found_hint: Ningún nodo coincide con este id; puede haber sido eliminado.
   missing_id: 'Falta el id del nodo (la URL debe llevar ?id=nd_…)'
+
+pkg:
+  title: Paquetes
+  subtitle: Agrupa capacidades, aristas y disparadores en una pieza instalable y verificable
+  detail_subtitle: 'Verificación: definiciones → nodos → aristas → disparadores'
+  rescan: Verificar de nuevo
+  rescanned: Verificado de nuevo
+  back: Volver a paquetes
+  install: Completar
+  install_failed: 'No se pudo completar: '
+  installed_n: Se completaron {n} elemento(s)
+  installed_none: No queda nada que completar automáticamente
+  empty: Todavía no hay paquetes en este espacio de nombres.
+  load_failed: No se pudo cargar. Actualiza la página.
+  meta: '{c} capacidades · {e} aristas · {tr} disparadores'
+  ready_n: '{n}/{m} listos'
+  n_of_m: '{n}/{m} listos'
+  remaining: Faltan {n}
+  copy: Copiar
+  copied: Copiado — pégalo en node.yaml y reinicia el agente
+  copy_failed: No se pudo copiar — selecciona y copia manualmente
+  status:
+    ready: Listo
+    needs_node: Falta nodo
+    blocked: Falta definición
+    partial: Incompleto
+  next:
+    ready: Todo listo — puedes empezar a ejecutarlo
+    capability:
+      missing: 'Falta la definición de capacidad: {ref}'
+      no-node: Ningún nodo implementa {ref}
+      offline: Todos los nodos de {ref} están desconectados
+    edge:
+      missing: 'Falta la arista: {label}'
+    trigger:
+      missing: 'Falta el disparador: {label}'
+  sec:
+    capabilities: Definiciones de capacidad
+    nodes: Implementación en nodos
+    edges: Aristas
+    triggers: Disparadores
+  fix:
+    capability:
+      missing: Aún falta una definición de capacidad — añádela a este espacio primero
+      no-node: Las definiciones están, pero ningún nodo declara esta capacidad — escribe node.yaml
+      offline: Un nodo la declara pero está desconectado — solo reconéctalo
+    edge:
+      missing: Las capacidades están; las aristas aún no están conectadas
+    trigger:
+      missing: El grafo puede ejecutarse, pero nada lo dispara todavía
+  cap:
+    outputs: 'Salidas: {o}'
+    missing: Todavía no hay esta definición en el espacio de nombres
+  node:
+    blocked: Añade primero la definición de capacidad
+    none: Ningún nodo lo declara — la causa más común de que no arranque
+    offline: 'Hay nodos pero están desconectados: '
+  edges:
+    none: Este paquete no declara aristas
+  edge:
+    blocked: El extremo «{c}» aún no tiene definición — añádela primero
+    missing: Esta arista todavía no está en la tabla de rutas
+  trg:
+    missing: Ningún origen envía eventos a la capacidad de entrada {c}
+  act:
+    install_cap: Instalar definición
+    open_nodes: Abrir nodos
+    copy_yaml: Copiar YAML
+    install_edge: Añadir esta arista
+    create_source: Crear origen
+  yaml:
+    hint: Este es el fragmento que hay que añadir en el nodo (solo las capacidades que faltan). Pégalo en node.yaml, reinicia el agente y el nodo lo declarará al conectar.

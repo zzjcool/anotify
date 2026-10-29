@@ -1,0 +1,377 @@
+{{define "title"}}{{t "pkg.title"}}{{end}}
+
+{{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-6xl space-y-8">
+    <div class="reveal visible">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 id="pkg-name" class="font-display text-3xl text-white">—</h2>
+            <span id="pkg-badge" class="pkg-badge">—</span>
+          </div>
+          <p id="pkg-desc" class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400"></p>
+          <p id="pkg-slug" class="pkg-slug mt-1"></p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <a href="packages.html" class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm">
+            {{t "pkg.back"}}
+          </a>
+          <button id="btn-rescan" class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm">
+            {{t "pkg.rescan"}}
+          </button>
+          <button id="btn-install" class="btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium">
+            {{t "pkg.install"}}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="pkg-summary" class="card rounded-2xl p-5 text-sm"></div>
+
+    <div class="card rounded-2xl p-5">
+      <div class="chk-sec">
+        <h3>{{t "pkg.sec.capabilities"}}</h3>
+        <span id="cap-count" class="pkg-meta"></span>
+      </div>
+      <div id="cap-list"></div>
+    </div>
+
+    <div class="card rounded-2xl p-5">
+      <div class="chk-sec">
+        <h3>{{t "pkg.sec.nodes"}}</h3>
+        <span id="node-count" class="pkg-meta"></span>
+      </div>
+      <div id="node-list"></div>
+      <div id="yaml-wrap" class="hidden">
+        <p class="mt-3 text-xs leading-relaxed text-zinc-500">{{t "pkg.yaml.hint"}}</p>
+        <div class="yaml-box">
+          <button id="btn-copy-yaml" class="yaml-copy btn-ghost rounded-lg px-2 py-1 text-xs">
+            {{t "pkg.copy"}}
+          </button>
+          <span id="yaml-text"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card rounded-2xl p-5">
+      <div class="chk-sec">
+        <h3>{{t "pkg.sec.edges"}}</h3>
+        <span id="edge-count" class="pkg-meta"></span>
+      </div>
+      <div id="edge-list"></div>
+    </div>
+
+    <div class="card rounded-2xl p-5">
+      <div class="chk-sec">
+        <h3>{{t "pkg.sec.triggers"}}</h3>
+        <span id="trg-count" class="pkg-meta"></span>
+      </div>
+      <div id="trg-list"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+</div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+      const API = "/v1";
+      const pkgKey = new URLSearchParams(location.search).get("id") || "";
+
+      Anotify.mountLayout({
+        active: "packages",
+        title: t("pkg.title", "包"),
+        subtitle: t("pkg.detail_subtitle", "体检：定义 → 节点 → 出口 → 触发器"),
+      });
+
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = text;
+        return n;
+      }
+
+      function toast(msg) {
+        const box = document.getElementById("toast");
+        box.textContent = msg;
+        box.classList.add("show");
+        clearTimeout(box._timer);
+        box._timer = setTimeout(() => box.classList.remove("show"), 2800);
+      }
+
+      const STATUS_KEY = {
+        ready: "pkg.status.ready",
+        "needs-node": "pkg.status.needs_node",
+        blocked: "pkg.status.blocked",
+        partial: "pkg.status.partial",
+      };
+      const STATUS_FALLBACK = {
+        ready: "就绪",
+        "needs-node": "缺节点",
+        blocked: "缺定义",
+        partial: "不完整",
+      };
+      // 每种状态一个点：ok 绿 / 需要动手 黄 / 阻塞 红
+      const DOT = { ok: "is-ok", "no-node": "is-bad", offline: "is-warn", missing: "is-bad" };
+      const DOT_TEXT = { "is-ok": "●", "is-bad": "✕", "is-warn": "!" };
+
+      let PKG = null;
+
+      // 一行检查项：点 + 标题 + 说明 + 右侧动作
+      function row(dotCls, title, sub, action) {
+        const r = el("div", "chk");
+        r.appendChild(el("span", "chk-dot " + dotCls, DOT_TEXT[dotCls] || "·"));
+        const main = el("div", "chk-main");
+        main.appendChild(el("div", "chk-title", title));
+        if (sub) main.appendChild(el("div", "chk-sub", sub));
+        r.appendChild(main);
+        if (action) {
+          const box = el("div", "chk-act");
+          box.appendChild(action);
+          r.appendChild(box);
+        }
+        return r;
+      }
+
+      function actBtn(label, fn, primary) {
+        const b = el(
+          "button",
+          (primary ? "btn-primary" : "btn-ghost") + " rounded-lg px-2.5 py-1 text-xs",
+          label,
+        );
+        b.addEventListener("click", fn);
+        return b;
+      }
+
+      // 只把**缺的那个能力**写成 YAML，不是把整份文件吐出来让人自己删。
+      function yamlFor(items) {
+        const lines = [
+          "# node.yaml —— 贴进节点配置后重启 agent",
+          "node:",
+          "  name: <这台机器的名字>",
+          "capabilities:",
+        ];
+        for (const it of items) {
+          const name = String(it.ref || "").split("@")[0];
+          const ver = String(it.ref || "").split("@")[1] || "1";
+          const r = it.runner || {};
+          lines.push("  - name: " + name);
+          lines.push("    version: " + ver);
+          lines.push("    run: " + (r.runner || "bash"));
+          if (r.command) lines.push("    command: " + r.command);
+          if (r.timeoutSec) lines.push("    timeout_sec: " + r.timeoutSec);
+          if (r.concurrency) lines.push("    concurrency: " + r.concurrency);
+        }
+        return lines.join("\n");
+      }
+
+      function count(n, m) {
+        return t("pkg.n_of_m", "{n}/{m} 就绪").replace("{n}", n).replace("{m}", m);
+      }
+
+      function render() {
+        const p = PKG;
+        document.getElementById("pkg-name").textContent = p.name;
+        document.getElementById("pkg-desc").textContent = p.description || "";
+        document.getElementById("pkg-slug").textContent = p.slug;
+        const badge = document.getElementById("pkg-badge");
+        badge.className = "pkg-badge is-" + p.status;
+        badge.textContent = t(STATUS_KEY[p.status], STATUS_FALLBACK[p.status]);
+
+        const items = p.items || [];
+        const caps = items.filter((i) => i.kind === "capability");
+        const edges = items.filter((i) => i.kind === "edge");
+        const trgs = items.filter((i) => i.kind === "trigger");
+
+        // ---- 汇总：先说要紧的一句 ----
+        const sum = document.getElementById("pkg-summary");
+        sum.textContent = "";
+        const line = el("div", "text-zinc-300");
+        if (p.status === "ready") {
+          line.textContent = t("pkg.next.ready", "全部就绪，可以开始跑了");
+        } else {
+          const bad = items.filter((i) => i.status !== "ok");
+          const first = bad[0];
+          const map = {
+            "capability.missing": ["pkg.fix.capability.missing", "还缺能力定义，先把它补进当前命名空间"],
+            "capability.no-node": ["pkg.fix.capability.no-node", "定义齐了，但没有节点声明这个能力 —— 去写 node.yaml"],
+            "capability.offline": ["pkg.fix.capability.offline", "有节点声明了，但机器离线 —— 把它连上就行"],
+            "edge.missing": ["pkg.fix.edge.missing", "能力齐了，出口还没连上"],
+            "trigger.missing": ["pkg.fix.trigger.missing", "图能跑了，但还没有事件把它叫起来"],
+          };
+          const k = first.kind + "." + first.status;
+          line.textContent = t(map[k][0], map[k][1]) + "（" + t("pkg.remaining", "还差 {n} 项").replace("{n}", bad.length) + "）";
+        }
+        sum.appendChild(line);
+
+        // ---- ① 能力定义 ----
+        const capList = document.getElementById("cap-list");
+        capList.textContent = "";
+        for (const c of caps) {
+          const ok = c.status !== "missing";
+          capList.appendChild(
+            row(
+              ok ? "is-ok" : "is-bad",
+              c.ref,
+              ok
+                ? t("pkg.cap.outputs", "出口：{o}").replace("{o}", (c.outputs || []).join(", ") || "—")
+                : t("pkg.cap.missing", "当前命名空间里还没有这个定义"),
+              ok ? null : actBtn(t("pkg.act.install_cap", "安装定义"), () => install()),
+            ),
+          );
+        }
+        document.getElementById("cap-count").textContent =
+          count(caps.filter((c) => c.status !== "missing").length, caps.length);
+
+        // ---- ② 节点实现 ----
+        const nodeList = document.getElementById("node-list");
+        nodeList.textContent = "";
+        const needYaml = caps.filter((c) => c.status === "no-node");
+        for (const c of caps) {
+          let dot = "is-ok";
+          let sub = "";
+          if (c.status === "missing") {
+            dot = "is-warn";
+            sub = t("pkg.node.blocked", "先补能力定义");
+          } else if (c.status === "no-node") {
+            dot = "is-bad";
+            sub = t("pkg.node.none", "没有任何节点声明它 —— 这是最常见的「跑不起来」");
+          } else if (c.status === "offline") {
+            dot = "is-warn";
+            sub =
+              t("pkg.node.offline", "有节点，但离线：") +
+              (c.nodes || []).map((n) => n.name).join(", ");
+          } else {
+            sub = (c.nodes || []).map((n) => n.name).join(", ");
+          }
+          const action =
+            c.status === "offline"
+              ? actBtn(t("pkg.act.open_nodes", "打开节点页"), () => (location.href = "nodes.html"))
+              : c.status === "no-node"
+                ? actBtn(t("pkg.act.copy_yaml", "复制 YAML"), () => copyText(yamlFor([c])))
+                : null;
+          nodeList.appendChild(row(dot, c.ref, sub, action));
+        }
+        document.getElementById("node-count").textContent = count(
+          caps.filter((c) => c.status === "ok").length,
+          caps.length,
+        );
+
+        const yamlWrap = document.getElementById("yaml-wrap");
+        if (needYaml.length) {
+          document.getElementById("yaml-text").textContent = yamlFor(needYaml);
+          yamlWrap.classList.remove("hidden");
+        } else {
+          yamlWrap.classList.add("hidden");
+        }
+
+        // ---- ③ 出口 ----
+        const edgeList = document.getElementById("edge-list");
+        edgeList.textContent = "";
+        if (!edges.length) {
+          edgeList.appendChild(row("is-ok", t("pkg.edges.none", "这个包不声明出口"), "", null));
+        }
+        for (const e of edges) {
+          const ok = e.status === "ok";
+          edgeList.appendChild(
+            row(
+              ok ? "is-ok" : "is-bad",
+              e.label,
+              ok
+                ? ""
+                : e.blockedByCap
+                  ? t("pkg.edge.blocked", "端点「{c}」还没有定义，先补定义再补边").replace("{c}", e.blockedByCap)
+                  : t("pkg.edge.missing", "这条边还不在路由表里"),
+              ok || e.blockedByCap ? null : actBtn(t("pkg.act.install_edge", "补齐这条边"), () => install()),
+            ),
+          );
+        }
+        document.getElementById("edge-count").textContent = count(
+          edges.filter((e) => e.status === "ok").length,
+          edges.length,
+        );
+
+        // ---- ④ 触发器 ----
+        const trgList = document.getElementById("trg-list");
+        trgList.textContent = "";
+        for (const g of trgs) {
+          const ok = g.status === "ok";
+          trgList.appendChild(
+            row(
+              ok ? "is-ok" : "is-bad",
+              g.label,
+              ok
+                ? ""
+                : t("pkg.trg.missing", "没有把事件送进入口能力 {c} 的源").replace(
+                    "{c}",
+                    (g.entryCaps || []).join(", "),
+                  ),
+              ok ? null : actBtn(t("pkg.act.create_source", "创建源"), () => install()),
+            ),
+          );
+        }
+        document.getElementById("trg-count").textContent = count(
+          trgs.filter((g) => g.status === "ok").length,
+          trgs.length,
+        );
+
+        document.getElementById("btn-install").style.display = p.status === "ready" ? "none" : "";
+      }
+
+      async function copyText(txt) {
+        try {
+          await navigator.clipboard.writeText(txt);
+          toast(t("pkg.copied", "已复制，贴进 node.yaml 后重启 agent"));
+        } catch (e) {
+          toast(t("pkg.copy_failed", "复制失败，请手动选中复制"));
+        }
+      }
+
+      async function load() {
+        try {
+          const j = await Anotify.api(API + "/packages/" + encodeURIComponent(pkgKey));
+          PKG = j.package;
+        } catch (e) {
+          document.getElementById("pkg-summary").textContent = t(
+            "pkg.load_failed",
+            "载入失败，请刷新重试。",
+          );
+          return;
+        }
+        render();
+      }
+
+      // 补齐 = 幂等：能补的定义/边/源都补，补不了的（节点）留给 YAML。
+      async function install() {
+        try {
+          const j = await Anotify.api(API + "/packages/" + encodeURIComponent(pkgKey) + "/install", {
+            method: "POST",
+          });
+          PKG = j.package;
+          render();
+          const c = j.created || {};
+          const n =
+            (c.capabilities || []).length + (c.edges || []).length + (c.sources || []).length;
+          toast(
+            n
+              ? t("pkg.installed_n", "补齐了 {n} 项").replace("{n}", n)
+              : t("pkg.installed_none", "没有可自动补齐的项了"),
+          );
+        } catch (e) {
+          toast(t("pkg.install_failed", "补齐失败：" ) + e.message);
+        }
+      }
+
+      document.getElementById("btn-rescan").addEventListener("click", () => {
+        load().then(() => toast(t("pkg.rescanned", "已重新体检")));
+      });
+      document.getElementById("btn-install").addEventListener("click", install);
+      document.getElementById("btn-copy-yaml").addEventListener("click", () => {
+        copyText(document.getElementById("yaml-text").textContent);
+      });
+      document.addEventListener("DOMContentLoaded", load);
+    </script>
+{{end}}

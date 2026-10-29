@@ -129,6 +129,15 @@
 					icon: "overview",
 				},
 				{
+					// 包 = 把「能力 + 出口 + 触发器」打在一起的零件，
+					// 所以放在出口之后、节点之前（节点是它的实现方）
+					id: "packages",
+					labelKey: "common.nav.packages",
+					fallback: "包",
+					href: "packages.html",
+					icon: "sources",
+				},
+				{
 					id: "nodes",
 					labelKey: "common.nav.nodes",
 					fallback: "节点",
