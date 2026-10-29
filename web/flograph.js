@@ -1143,8 +1143,26 @@
 		}
 		window.addEventListener("keydown", onKeydown);
 
+		// 用户一旦手动缩放/平移，就不再自动 fit。
+		// 必须在下面的 ResizeObserver 之前声明：回调里会读它，
+		// 声明放在后面虽然靠事件循环能躲过 TDZ，但读代码的人躲不过。
+		let userAdjusted = false;
+
 		// 首次适配。等一帧：容器可能刚插入 DOM，尺寸还没算出来
 		requestAnimationFrame(() => fit());
+
+		// 字体就绪后再适配一次。
+		//
+		// 节点宽高是**量出来**的，首帧那次 fit 用的是回退字体的度量；
+		// 真字体一到位，同样的容器里该缩多少会变。补这一次让"首屏看到的
+		// 缩放"和"字体到位后的缩放"一致，不会看着图自己跳一下。
+		if (document.fonts && document.fonts.ready) {
+			document.fonts.ready
+				.then(() => {
+					if (!userAdjusted && container.isConnected) fit();
+				})
+				.catch(() => {});
+		}
 
 		// 容器尺寸变化（窗口缩放 / 侧栏折叠）时重新适配
 		let ro = null;
@@ -1156,8 +1174,6 @@
 			ro.observe(container);
 		}
 
-		// 用户一旦手动缩放/平移，就不再自动 fit
-		let userAdjusted = false;
 		container.addEventListener("wheel", () => {
 			userAdjusted = true;
 		});

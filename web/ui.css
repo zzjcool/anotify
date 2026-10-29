@@ -941,7 +941,16 @@ body {
 .flograph {
 	position: relative;
 	width: 100%;
-	height: 520px;
+	/* 高度跟着视口走，不再写死 520px。
+	 *
+	 * 为什么：fit() 是"按较紧的一边贴合"。一条 10 个节点的链在 TB 布局下
+	 * 约 569×776，塞进 1054×520 只能缩到 0.61 —— 字小到难读，两侧各空 350px。
+	 * 给到 64vh（1000px 高的屏幕上 640px）能把 scale 提到 0.76，
+	 * 字清楚一档，左右留白也跟着收窄。
+	 *
+	 * 上限 880px：超宽屏上别把图拉成一片空白；下限 480px：小窗口里也别挤成一条缝。
+	 */
+	height: clamp(480px, 64vh, 880px);
 	overflow: hidden;
 	border: 1px solid var(--line);
 	border-radius: 12px;
