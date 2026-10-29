@@ -3333,42 +3333,42 @@ async function checkScope(page) {
 	await page.evaluate(() => localStorage.removeItem("anotify.scope"));
 }
 
-// checkPackages 验证「包」的体检界面。
+// checkPlaybooks 验证「预案」的体检界面。
 //
 // 锁四件事（都是这一版真正想表达的产品语义）：
 //   ① 四种总体状态都能看到（就绪 / 缺节点 / 缺定义），不是只有一个"未就绪"
 //   ② 每张卡都给出「最该先做的一件事」—— 全页最有价值的一行
 //   ③ 缺节点的能力给的是**只含缺的那几个**的 node.yaml，不是整份文件
 //   ④ 「补齐」只补定义/边/源，**不会假装修好节点**
-async function checkPackages(page, base) {
-	await page.goto(base + "/packages.html", { waitUntil: "load", timeout: 20000 });
+async function checkPlaybooks(page, base) {
+	await page.goto(base + "/playbooks.html", { waitUntil: "load", timeout: 20000 });
 	await page
-		.waitForFunction(() => document.querySelectorAll(".pkg-card").length >= 4, {
+		.waitForFunction(() => document.querySelectorAll(".pb-card").length >= 4, {
 			timeout: 15000,
 		})
 		.catch(() => {});
 	await page.waitForTimeout(400);
 
 	const list = await page.evaluate(() => {
-		const cards = Array.from(document.querySelectorAll(".pkg-card"));
+		const cards = Array.from(document.querySelectorAll(".pb-card"));
 		return {
 			n: cards.length,
-			badges: cards.map((c) => (c.querySelector(".pkg-badge") || {}).textContent || ""),
-			nexts: cards.map((c) => (c.querySelector(".pkg-next") || {}).textContent || ""),
+			badges: cards.map((c) => (c.querySelector(".pb-badge") || {}).textContent || ""),
+			nexts: cards.map((c) => (c.querySelector(".pb-next") || {}).textContent || ""),
 			bars: cards.map((c) => {
-				const fill = c.querySelector(".pkg-bar > i");
+				const fill = c.querySelector(".pb-bar > i");
 				return fill ? getComputedStyle(fill).backgroundColor : "";
 			}),
 		};
 	});
 
 	H.check(
-		"包列表把三种状态分开展示（就绪 / 缺节点 / 缺定义）",
+		"预案列表把三种状态分开展示（就绪 / 缺节点 / 缺定义）",
 		list.n >= 4 && ["就绪", "缺节点", "缺定义"].every((x) => list.badges.includes(x)),
 		`卡片=${list.n} 状态=${Array.from(new Set(list.badges)).join(",")}`,
 	);
 	H.check(
-		"每张包卡片都给出「最该先做的一件事」",
+		"每张预案卡片都给出「最该先做的一件事」",
 		list.nexts.length === list.n && list.nexts.every((t) => t.replace("→", "").trim().length > 3),
 		JSON.stringify(list.nexts).slice(0, 180),
 	);
@@ -3376,13 +3376,13 @@ async function checkPackages(page, base) {
 	const okIdx = list.badges.indexOf("就绪");
 	const nnIdx = list.badges.indexOf("缺节点");
 	H.check(
-		"包的进度条按状态分色（就绪不是主色）",
+		"预案的进度条按状态分色（就绪不是主色）",
 		okIdx >= 0 && nnIdx >= 0 && list.bars[okIdx] !== list.bars[nnIdx],
 		`就绪=${list.bars[okIdx]} 缺节点=${list.bars[nnIdx]}`,
 	);
 
 	// ---- 详情页：四类检查 + 缺节点的 YAML ----
-	await page.goto(base + "/package.html?id=nightly-audit", {
+	await page.goto(base + "/playbook.html?id=nightly-audit", {
 		waitUntil: "load",
 		timeout: 20000,
 	});
@@ -3405,7 +3405,7 @@ async function checkPackages(page, base) {
 		),
 	}));
 	H.check(
-		"包详情把四类检查都列出来（定义 / 节点 / 出口 / 触发器）",
+		"预案详情把四类检查都列出来（定义 / 节点 / 出口 / 触发器）",
 		detail.caps >= 2 && detail.nodes >= 2 && detail.edges >= 1 && detail.trgs >= 1,
 		`定义=${detail.caps} 节点=${detail.nodes} 出口=${detail.edges} 触发器=${detail.trgs}`,
 	);
@@ -3428,7 +3428,7 @@ async function checkPackages(page, base) {
 		nodeStillBad: !!document
 			.getElementById("node-list")
 			.querySelector(".chk-dot.is-bad"),
-		badge: (document.getElementById("pkg-badge") || {}).textContent || "",
+		badge: (document.getElementById("pb-badge") || {}).textContent || "",
 	}));
 	H.check(
 		"「补齐」只补定义/边/源，不假装修好节点",
@@ -3901,7 +3901,7 @@ async function runMockCoverage() {
 			await checkWaterfall(page);
 			// 放最后：这套检查会切命名空间、还会跳页，不能夹在别的检查中间
 			await checkScope(page);
-			await checkPackages(page, base);
+			await checkPlaybooks(page, base);
 		}
 		await page.close();
 	}

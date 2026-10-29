@@ -1,4 +1,4 @@
-{{define "title"}}{{t "pkg.title"}}{{end}}
+{{define "title"}}{{t "pb.title"}}{{end}}
 
 {{define "content"}}
 <div id="page-main">
@@ -6,22 +6,22 @@
     <div class="reveal visible">
       <div class="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 class="font-display text-3xl text-white">{{t "pkg.title"}}</h2>
+          <h2 class="font-display text-3xl text-white">{{t "pb.title"}}</h2>
           <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-            {{t "pkg.subtitle"}}
+            {{t "pb.subtitle"}}
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-3">
           <button id="btn-refresh" class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm">
-            {{t "pkg.rescan"}}
+            {{t "pb.rescan"}}
           </button>
         </div>
       </div>
     </div>
 
-    <div id="pkg-grid" class="pkg-grid"></div>
+    <div id="pb-grid" class="pb-grid"></div>
 
-    <div id="pkg-empty" class="card rounded-2xl p-6 text-center text-sm text-zinc-500 hidden"></div>
+    <div id="pb-empty" class="card rounded-2xl p-6 text-center text-sm text-zinc-500 hidden"></div>
   </div>
 
   <div id="toast" class="toast"></div>
@@ -34,9 +34,9 @@
       const API = "/v1";
 
       Anotify.mountLayout({
-        active: "packages",
-        title: t("pkg.title", "包"),
-        subtitle: t("pkg.subtitle", "把能力、出口、触发器打包成一份可安装、可体检的零件"),
+        active: "playbooks",
+        title: t("pb.title", "预案"),
+        subtitle: t("pb.subtitle", "把能力、出口、触发器组成一份能体检、能补齐的预案"),
       });
 
       function el(tag, cls, text) {
@@ -54,13 +54,13 @@
         box._timer = setTimeout(() => box.classList.remove("show"), 2600);
       }
 
-      // 四种总体状态：文案 + 徽标色类。颜色靠 CSS（.pkg-badge.is-*），
+      // 四种总体状态：文案 + 徽标色类。颜色靠 CSS（.pb-badge.is-*），
       // 这里只决定语义，不写死颜色。
       const STATUS_KEY = {
-        ready: "pkg.status.ready",
-        "needs-node": "pkg.status.needs_node",
-        blocked: "pkg.status.blocked",
-        partial: "pkg.status.partial",
+        ready: "pb.status.ready",
+        "needs-node": "pb.status.needs_node",
+        blocked: "pb.status.blocked",
+        partial: "pb.status.partial",
       };
       const STATUS_FALLBACK = {
         ready: "就绪",
@@ -71,70 +71,70 @@
 
       // 「最该先做的一件事」：体检结论里第一个没过的项。
       // 这是全页最有价值的一行 —— 它把"哪里不对"变成"下一步做什么"。
-      function nextLine(pkg) {
-        const n = pkg.next;
-        if (!n) return t("pkg.next.ready", "全部就绪，可以开始跑了");
-        const key = "pkg.next." + n.kind + "." + n.status;
+      function nextLine(pb) {
+        const n = pb.next;
+        if (!n) return t("pb.next.ready", "全部就绪，可以开始跑了");
+        const key = "pb.next." + n.kind + "." + n.status;
         const fb = {
-          "pkg.next.capability.missing": "缺能力定义：{ref}",
-          "pkg.next.capability.no-node": "「{ref}」没有节点实现",
-          "pkg.next.capability.offline": "「{ref}」的节点都离线",
-          "pkg.next.edge.missing": "缺出口：{label}",
-          "pkg.next.trigger.missing": "缺触发器：{label}",
+          "pb.next.capability.missing": "缺能力定义：{ref}",
+          "pb.next.capability.no-node": "「{ref}」没有节点实现",
+          "pb.next.capability.offline": "「{ref}」的节点都离线",
+          "pb.next.edge.missing": "缺出口：{label}",
+          "pb.next.trigger.missing": "缺触发器：{label}",
         }[key] || "{label}";
         return t(key, fb).replace("{ref}", n.ref || n.label || "").replace("{label}", n.label || "");
       }
 
-      function card(pkg) {
-        const c = el("div", "pkg-card");
+      function card(pb) {
+        const c = el("div", "pb-card");
         c.tabIndex = 0;
         c.setAttribute("role", "link");
         c.addEventListener("click", () => {
-          location.href = "package.html?id=" + encodeURIComponent(pkg.slug);
+          location.href = "playbook.html?id=" + encodeURIComponent(pb.slug);
         });
         c.addEventListener("keydown", (ev) => {
           if (ev.key === "Enter" || ev.key === " ") {
             ev.preventDefault();
-            location.href = "package.html?id=" + encodeURIComponent(pkg.slug);
+            location.href = "playbook.html?id=" + encodeURIComponent(pb.slug);
           }
         });
 
-        const top = el("div", "pkg-card-top");
+        const top = el("div", "pb-card-top");
         const left = el("div", "");
-        left.appendChild(el("div", "pkg-name", pkg.name));
-        left.appendChild(el("div", "pkg-slug", pkg.slug));
+        left.appendChild(el("div", "pb-name", pb.name));
+        left.appendChild(el("div", "pb-slug", pb.slug));
         top.appendChild(left);
         top.appendChild(
-          el("span", "pkg-badge is-" + pkg.status, t(STATUS_KEY[pkg.status], STATUS_FALLBACK[pkg.status])),
+          el("span", "pb-badge is-" + pb.status, t(STATUS_KEY[pb.status], STATUS_FALLBACK[pb.status])),
         );
         c.appendChild(top);
 
-        if (pkg.description) c.appendChild(el("div", "pkg-desc", pkg.description));
+        if (pb.description) c.appendChild(el("div", "pb-desc", pb.description));
 
         c.appendChild(
           el(
             "div",
-            "pkg-meta",
-            t("pkg.meta", "能力 {c} · 出口 {e} · 触发器 {tr}")
-              .replace("{c}", pkg.counts.capabilities)
-              .replace("{e}", pkg.counts.edges)
-              .replace("{tr}", pkg.counts.triggers),
+            "pb-meta",
+            t("pb.meta", "能力 {c} · 出口 {e} · 触发器 {tr}")
+              .replace("{c}", pb.counts.capabilities)
+              .replace("{e}", pb.counts.edges)
+              .replace("{tr}", pb.counts.triggers),
           ),
         );
 
-        const bar = el("div", "pkg-bar");
-        const fill = el("i", "is-" + pkg.status);
-        // 0/0 的包（只有边的包）不要让进度条看起来像 100% 坏掉
-        fill.style.width = (pkg.total ? Math.round((pkg.ready / pkg.total) * 100) : 100) + "%";
+        const bar = el("div", "pb-bar");
+        const fill = el("i", "is-" + pb.status);
+        // 0/0 的预案（只有出口的）不要让进度条看起来像 100% 坏掉
+        fill.style.width = (pb.total ? Math.round((pb.ready / pb.total) * 100) : 100) + "%";
         bar.appendChild(fill);
         c.appendChild(bar);
         c.appendChild(
-          el("div", "pkg-meta", t("pkg.ready_n", "{n}/{m} 项就绪").replace("{n}", pkg.ready).replace("{m}", pkg.total)),
+          el("div", "pb-meta", t("pb.ready_n", "{n}/{m} 项就绪").replace("{n}", pb.ready).replace("{m}", pb.total)),
         );
 
-        const next = el("div", "pkg-next");
+        const next = el("div", "pb-next");
         next.appendChild(el("span", "", "→"));
-        next.appendChild(el("span", "", nextLine(pkg)));
+        next.appendChild(el("span", "", nextLine(pb)));
         c.appendChild(next);
         return c;
       }
@@ -142,20 +142,20 @@
       let PKGS = [];
 
       async function load() {
-        const grid = document.getElementById("pkg-grid");
-        const empty = document.getElementById("pkg-empty");
+        const grid = document.getElementById("pb-grid");
+        const empty = document.getElementById("pb-empty");
         grid.textContent = "";
         try {
           // Anotify.api 直接返回解析好的 JSON，非 2xx 会 throw（不是 Response）
-          const j = await Anotify.api(API + "/packages");
-          PKGS = j.packages || [];
+          const j = await Anotify.api(API + "/playbooks");
+          PKGS = j.playbooks || [];
         } catch (e) {
-          empty.textContent = t("pkg.load_failed", "载入失败，请刷新重试。");
+          empty.textContent = t("pb.load_failed", "载入失败，请刷新重试。");
           empty.classList.remove("hidden");
           return;
         }
         if (!PKGS.length) {
-          empty.textContent = t("pkg.empty", "这个命名空间里还没有包。");
+          empty.textContent = t("pb.empty", "这个命名空间里还没有预案。");
           empty.classList.remove("hidden");
           return;
         }
@@ -164,7 +164,7 @@
       }
 
       document.getElementById("btn-refresh").addEventListener("click", () => {
-        load().then(() => toast(t("pkg.rescanned", "已重新体检")));
+        load().then(() => toast(t("pb.rescanned", "已重新体检")));
       });
       document.addEventListener("DOMContentLoaded", load);
     </script>

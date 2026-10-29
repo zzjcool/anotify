@@ -1392,9 +1392,9 @@
 			extra || {},
 		);
 
-	state.packages = [
+	state.playbooks = [
 		{
-			id: "pkg_mock_pr_review",
+			id: "pb_mock_pr_review",
 			orgId: ORG,
 			namespaceId: NS,
 			slug: "pr-review",
@@ -1436,7 +1436,7 @@
 			},
 		},
 		{
-			id: "pkg_mock_nightly_audit",
+			id: "pb_mock_nightly_audit",
 			orgId: ORG,
 			namespaceId: NS,
 			slug: "nightly-audit",
@@ -1464,7 +1464,7 @@
 			},
 		},
 		{
-			id: "pkg_mock_release_train",
+			id: "pb_mock_release_train",
 			orgId: ORG,
 			namespaceId: NS,
 			slug: "release-train",
@@ -1501,7 +1501,7 @@
 			},
 		},
 		{
-			id: "pkg_mock_lint_guard",
+			id: "pb_mock_lint_guard",
 			orgId: ORG,
 			namespaceId: NS,
 			slug: "lint-guard",
@@ -1528,13 +1528,13 @@
 	// 四类检查按依赖顺序：能力定义 → 节点实现 → 出口 → 触发器。
 	// no-node 和 offline **必须分开**：前者要去写 YAML 装机器，
 	// 后者只需要把机器连上。合成一个"未就绪"会让人做错事。
-	function pkgChecks(pkg) {
-		const ns = pkg.namespaceId;
+	function pbChecks(pb) {
+		const ns = pb.namespaceId;
 		const caps = state.capabilities.filter((c) => c.namespaceId === ns);
 		const nodes = state.nodes.filter((n) => n.namespaceId === ns);
 		const edges = state.edges.filter((e) => e.namespaceId === ns);
 		const sources = state.sources.filter((x) => x.namespaceId === ns);
-		const m = pkg.manifest;
+		const m = pb.manifest;
 		const findCap = (name, version) =>
 			caps.find((c) => c.name === name && (version == null || c.version === version));
 
@@ -1658,22 +1658,22 @@
 		};
 	}
 
-	function pkgView(pkg, withItems) {
-		const checks = pkgChecks(pkg);
+	function pbView(pb, withItems) {
+		const checks = pbChecks(pb);
 		const view = {
-			id: pkg.id,
-			orgId: pkg.orgId,
-			namespaceId: pkg.namespaceId,
-			slug: pkg.slug,
-			name: pkg.name,
-			description: pkg.description,
-			createdAt: pkg.createdAt,
+			id: pb.id,
+			orgId: pb.orgId,
+			namespaceId: pb.namespaceId,
+			slug: pb.slug,
+			name: pb.name,
+			description: pb.description,
+			createdAt: pb.createdAt,
 			status: checks.status,
 			next: checks.next,
 			ready: checks.ready,
 			total: checks.total,
 			counts: checks.counts,
-			manifest: pkg.manifest,
+			manifest: pb.manifest,
 		};
 		if (withItems) view.items = checks.items;
 		return view;
@@ -1681,9 +1681,9 @@
 
 	// 幂等补齐。顺序必须是 能力 → 出口 → 源：
 	// 出口两端没有定义就建不了，源没有入口能力就没人可派。
-	function installPackage(pkg) {
-		const ns = pkg.namespaceId;
-		const m = pkg.manifest || {};
+	function installPlaybook(pb) {
+		const ns = pb.namespaceId;
+		const m = pb.manifest || {};
 		const created = { capabilities: [], edges: [], sources: [] };
 		const skipped = { capabilities: [], edges: [], sources: [] };
 		const find = (name) =>
@@ -1702,7 +1702,7 @@
 			}
 			state.capabilities.push({
 				id: "cap_" + ns + "_" + c.name.replace(/\./g, "_") + "_v" + c.version,
-				orgId: pkg.orgId,
+				orgId: pb.orgId,
 				namespaceId: ns,
 				name: c.name,
 				displayName: "",
@@ -1736,7 +1736,7 @@
 			}
 			state.edges.push({
 				id: uid("edg"),
-				orgId: pkg.orgId,
+				orgId: pb.orgId,
 				namespaceId: ns,
 				fromCapability: from.id,
 				fromCapabilityName: e.from,
@@ -1773,9 +1773,9 @@
 						: {};
 			const src = {
 				id: uid("src"),
-				orgId: pkg.orgId,
+				orgId: pb.orgId,
 				namespaceId: ns,
-				name: pkg.name + " · " + t.kind,
+				name: pb.name + " · " + t.kind,
 				kind: t.kind,
 				config: config,
 				enabled: true,
@@ -1943,33 +1943,33 @@
 	});
 
 	// ===== 包 =====
-	on("GET", /^\/v1\/packages$/, (ctx) => {
+	on("GET", /^\/v1\/playbooks$/, (ctx) => {
 		const sc = nsScope(ctx.query);
 		return json({
-			packages: inNs(state.packages, sc).map((p) => pkgView(p, false)),
+			playbooks: inNs(state.playbooks, sc).map((p) => pbView(p, false)),
 		});
 	});
 
-	on("GET", /^\/v1\/packages\/([^/]+)$/, (ctx) => {
+	on("GET", /^\/v1\/playbooks\/([^/]+)$/, (ctx) => {
 		const key = ctx.m[1];
-		const pkg = state.packages.find((p) => p.id === key || p.slug === key);
-		if (!pkg) return err(404, "包不存在");
-		return json({ package: pkgView(pkg, true) });
+		const pb = state.playbooks.find((p) => p.id === key || p.slug === key);
+		if (!pb) return err(404, "包不存在");
+		return json({ playbook: pbView(pb, true) });
 	});
 
 	// 幂等补齐：能力定义 → 出口 → 触发器，能补什么补什么。
 	//
 	// "缺节点"补不了：那是机器侧的事（要写 node.yaml 重启 agent），
 	// 所以这个接口不碰节点 —— 也正是体检里那一项要单独给 YAML 片段的原因。
-	on("POST", /^\/v1\/packages\/([^/]+)\/install$/, (ctx) => {
+	on("POST", /^\/v1\/playbooks\/([^/]+)\/install$/, (ctx) => {
 		const key = ctx.m[1];
-		const pkg = state.packages.find((p) => p.id === key || p.slug === key);
-		if (!pkg) return err(404, "包不存在");
-		const res = installPackage(pkg);
+		const pb = state.playbooks.find((p) => p.id === key || p.slug === key);
+		if (!pb) return err(404, "包不存在");
+		const res = installPlaybook(pb);
 		return json({
 			created: res.created,
 			skipped: res.skipped,
-			package: pkgView(pkg, true),
+			playbook: pbView(pb, true),
 		});
 	});
 

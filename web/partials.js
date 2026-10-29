@@ -129,12 +129,12 @@
 					icon: "overview",
 				},
 				{
-					// 包 = 把「能力 + 出口 + 触发器」打在一起的零件，
+					// 预案 = 把「能力 + 出口 + 触发器」打在一起的零件，
 					// 所以放在出口之后、节点之前（节点是它的实现方）
-					id: "packages",
-					labelKey: "common.nav.packages",
-					fallback: "包",
-					href: "packages.html",
+					id: "playbooks",
+					labelKey: "common.nav.playbooks",
+					fallback: "预案",
+					href: "playbooks.html",
 					icon: "sources",
 				},
 				{

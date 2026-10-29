@@ -6,7 +6,7 @@ common:
     overview: Resumen
     events: Flujo de eventos
     capabilities: Capacidades
-    packages: "Paquetes"
+    playbooks: "Playbooks"
     nodes: Nodos
     receivers: Destinatarios
     keys: API Keys
@@ -1494,18 +1494,18 @@ nodepage:
   not_found_hint: Ningún nodo coincide con este id; puede haber sido eliminado.
   missing_id: 'Falta el id del nodo (la URL debe llevar ?id=nd_…)'
 
-pkg:
-  title: Paquetes
-  subtitle: Agrupa capacidades, aristas y disparadores en una pieza instalable y verificable
+pb:
+  title: Playbooks
+  subtitle: Convierte capacidades, aristas y disparadores en un playbook verificable y completable
   detail_subtitle: 'Verificación: definiciones → nodos → aristas → disparadores'
   rescan: Verificar de nuevo
   rescanned: Verificado de nuevo
-  back: Volver a paquetes
+  back: Volver a playbooks
   install: Completar
   install_failed: 'No se pudo completar: '
   installed_n: Se completaron {n} elemento(s)
   installed_none: No queda nada que completar automáticamente
-  empty: Todavía no hay paquetes en este espacio de nombres.
+  empty: Todavía no hay playbooks en este espacio de nombres.
   load_failed: No se pudo cargar. Actualiza la página.
   meta: '{c} capacidades · {e} aristas · {tr} disparadores'
   ready_n: '{n}/{m} listos'
@@ -1523,7 +1523,7 @@ pkg:
     ready: Todo listo — puedes empezar a ejecutarlo
     capability:
       missing: 'Falta la definición de capacidad: {ref}'
-      no-node: Ningún nodo implementa {ref}
+      no-node: Ningún nodo puede ejecutar {ref}
       offline: Todos los nodos de {ref} están desconectados
     edge:
       missing: 'Falta la arista: {label}'
@@ -1531,27 +1531,27 @@ pkg:
       missing: 'Falta el disparador: {label}'
   sec:
     capabilities: Definiciones de capacidad
-    nodes: Implementación en nodos
+    nodes: Quién lo ejecuta
     edges: Aristas
     triggers: Disparadores
   fix:
     capability:
       missing: Aún falta una definición de capacidad — añádela a este espacio primero
-      no-node: Las definiciones están, pero ningún nodo declara esta capacidad — escribe node.yaml
-      offline: Un nodo la declara pero está desconectado — solo reconéctalo
+      no-node: Las definiciones están, pero ningún nodo declara que puede ejecutarlo — escribe node.yaml
+      offline: Un nodo lo declara pero está desconectado — solo reconéctalo
     edge:
       missing: Las capacidades están; las aristas aún no están conectadas
     trigger:
-      missing: El grafo puede ejecutarse, pero nada lo dispara todavía
+      missing: El playbook está listo, pero nada lo dispara todavía
   cap:
     outputs: 'Salidas: {o}'
     missing: Todavía no hay esta definición en el espacio de nombres
   node:
     blocked: Añade primero la definición de capacidad
-    none: Ningún nodo lo declara — la causa más común de que no arranque
+    none: Ningún nodo declara que puede ejecutarlo — la causa más común de que no arranque
     offline: 'Hay nodos pero están desconectados: '
   edges:
-    none: Este paquete no declara aristas
+    none: Este playbook no declara aristas
   edge:
     blocked: El extremo «{c}» aún no tiene definición — añádela primero
     missing: Esta arista todavía no está en la tabla de rutas
