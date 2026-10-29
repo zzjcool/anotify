@@ -139,6 +139,22 @@ func (f *fakeStore) ListInstances(ctx context.Context, nodeID string) ([]*store.
 	return f.instances[nodeID], nil
 }
 
+// FreeSlotsByNode 与真实 store 同口径（alive 且 busy_task 为空），
+// 从同一份 f.instances 计算，这样两条路径不会给出不同答案。
+func (f *fakeStore) FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]int, error) {
+	out := make(map[string]int, len(nodeIDs))
+	for _, id := range nodeIDs {
+		free := 0
+		for _, in := range f.instances[id] {
+			if in.Alive && in.BusyTask == nil {
+				free++
+			}
+		}
+		out[id] = free
+	}
+	return out, nil
+}
+
 func (f *fakeStore) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, error) {
 	for _, in := range f.instances[nodeID] {
 		if in.Alive && in.BusyTask == nil {
