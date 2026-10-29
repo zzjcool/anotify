@@ -588,7 +588,12 @@ async function main() {
 			// 点卡片现在会**跳转到独立 trace 页**（不再是同页展开）。
 			// 等导航完成，然后在新页面上断言。
 			await page2.waitForURL(/trace\.html\?traceId=/, { timeout: 12000 }).catch(() => {});
-			await page2.waitForTimeout(2200);
+			// 默认视图是图，等节点真的挂上来（dagre 量尺寸后才排布）
+			await page2
+				.waitForFunction(() => document.querySelectorAll(".wf-node").length > 0, {
+					timeout: 12000,
+				})
+				.catch(() => {});
 
 			const chain = await page2.evaluate(() => {
 				const body = document.getElementById("trace-body");
@@ -596,7 +601,11 @@ async function main() {
 					url: location.pathname + location.search,
 					n: body ? body.children.length : -1,
 					text: (body?.textContent || "").replace(/\s+/g, " ").slice(0, 160),
-					spans: document.querySelectorAll(".wf-row").length,
+					// 默认视图 = 图（瀑布行必须为 0，否则说明默认值被打回去了）
+					nodes: document.querySelectorAll(".wf-node").length,
+					hasGraph: !!document.querySelector(".flograph"),
+					active: (document.querySelector(".wf-switch button.on") || {}).textContent || "",
+					wfRows: document.querySelectorAll(".wf-row").length,
 					views: Array.from(document.querySelectorAll(".wf-switch button")).length,
 				};
 			});
@@ -618,9 +627,9 @@ async function main() {
 				`views=${chain.views}`,
 			);
 			H.check(
-				"瀑布图渲染出 span",
-				chain.spans >= 1,
-				`spans=${chain.spans}`,
+				"trace 页默认就是「图」视图（不是瀑布图）",
+				chain.hasGraph && chain.nodes >= 1 && chain.active === "图" && chain.wfRows === 0,
+				`hasGraph=${chain.hasGraph} 节点=${chain.nodes} 当前=${chain.active} 瀑布行=${chain.wfRows}`,
 			);
 			H.check(
 				"trace 页出现了能力名@版本",
@@ -1830,10 +1839,11 @@ async function checkWaterfall(page) {
 	let bestId = traceIds[0];
 	let bestCount = -1;
 	for (const tid of traceIds.slice(0, 8)) {
-		await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(tid), {
-			waitUntil: "load",
-			timeout: 20000,
-		});
+		// 显式要瀑布图：默认视图是「图」，不带 view 就读不到 .wf-row
+		await page.goto(
+			base + "/trace.html?traceId=" + encodeURIComponent(tid) + "&view=waterfall",
+			{ waitUntil: "load", timeout: 20000 },
+		);
 		await page.waitForTimeout(1200);
 		const n = await page.evaluate(() => document.querySelectorAll(".wf-row").length);
 		if (n > bestCount) {
@@ -2182,11 +2192,11 @@ async function checkWaterfall(page) {
 		}
 	}
 
-	// 停在 span 最多的那条上做断言
-	await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(bestId), {
-		waitUntil: "load",
-		timeout: 20000,
-	});
+	// 停在 span 最多的那条上做断言（显式要瀑布图，默认是图）
+	await page.goto(
+		base + "/trace.html?traceId=" + encodeURIComponent(bestId) + "&view=waterfall",
+		{ waitUntil: "load", timeout: 20000 },
+	);
 	await page.waitForTimeout(2200);
 
 	const wf = await page.evaluate(() => {
@@ -2249,10 +2259,11 @@ async function checkWaterfall(page) {
 	// 逐个 trace 页扫一遍（点卡片会导航，不能在同一上下文里循环）。
 	const statusVariety = [];
 	for (const tid of traceIds.slice(0, 8)) {
-		await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(tid), {
-			waitUntil: "load",
-			timeout: 20000,
-		});
+		// 状态色是瀑布图时间条上的类，所以要显式要瀑布图
+		await page.goto(
+			base + "/trace.html?traceId=" + encodeURIComponent(tid) + "&view=waterfall",
+			{ waitUntil: "load", timeout: 20000 },
+		);
 		// 等时间条真的画出来再读，而不是固定 sleep。
 		//
 		// 原来固定等 900ms：机器一忙这条就偶发失败（只读到 b-succeeded，
@@ -2276,10 +2287,10 @@ async function checkWaterfall(page) {
 	H.check("状态用不同颜色区分", statusVariety.length >= 2, statusVariety.join(","));
 
 	// 扫完状态后回到最长的那条，后面还要测视图切换
-	await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(bestId), {
-		waitUntil: "load",
-		timeout: 20000,
-	});
+	await page.goto(
+		base + "/trace.html?traceId=" + encodeURIComponent(bestId) + "&view=waterfall",
+		{ waitUntil: "load", timeout: 20000 },
+	);
 	await page.waitForTimeout(2200);
 
 	// 宽度合理：都在 0~100 之间

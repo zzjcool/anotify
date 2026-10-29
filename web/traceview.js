@@ -295,7 +295,9 @@
 	 */
 	function mount(container, opts) {
 		const { el, t } = opts;
-		let view = opts.view || "waterfall";
+		// 兜底与 trace 页保持一致：默认「图」。两处不一致的话，
+	// 任何忘记传 view 的调用方都会静默退回瀑布图，很难发现。
+	let view = opts.view || "graph";
 		const tasks = opts.tasks || [];
 
 		const byParent = {};
