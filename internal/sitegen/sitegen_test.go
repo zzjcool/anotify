@@ -195,6 +195,44 @@ func TestGenerate_RendersPagesWithI18n(t *testing.T) {
 	}
 }
 
+// TestGenerate_PrunesStalePages 锁住「页面改名不留死页面」。
+//
+// 踩过：把 packages.html 改名成 playbooks.html 之后，旧文件还在 web/ 里，
+// 被打进二进制（92 个 HTML 而不是 84）—— 没有入口链接，却仍可访问、仍进
+// i18n 扫描，而且从「构建成功」的输出里完全看不出来。
+func TestGenerate_PrunesStalePages(t *testing.T) {
+	srcDir := writeFixture(t)
+	outDir := t.TempDir()
+
+	// 模拟上一轮的产物：根目录和 en/ 各留一个已经不存在模板的页面
+	for _, dir := range []string{outDir, filepath.Join(outDir, "en")} {
+		mustWrite(t, filepath.Join(dir, "legacy.html"), "old")
+	}
+	// 非 .html 文件不归 sitegen 管，不能被顺手删掉
+	mustWrite(t, filepath.Join(outDir, "keep.txt"), "x")
+
+	gen, err := New(srcDir, outDir, []string{"zh-CN", "en"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	for _, dir := range []string{outDir, filepath.Join(outDir, "en")} {
+		if _, err := os.Stat(filepath.Join(dir, "legacy.html")); !os.IsNotExist(err) {
+			t.Errorf("%s/legacy.html 应被删除，stat err=%v", dir, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "keep.txt")); err != nil {
+		t.Errorf("非 html 文件不该被删：%v", err)
+	}
+	// 正常生成的页面必须还在（别把 prune 写成清空目录）
+	if _, err := os.Stat(filepath.Join(outDir, "index.html")); err != nil {
+		t.Errorf("生成的 index.html 不见了：%v", err)
+	}
+}
+
 func TestGenerate_LoginLayout(t *testing.T) {
 	srcDir := writeFixture(t)
 	outDir := t.TempDir()

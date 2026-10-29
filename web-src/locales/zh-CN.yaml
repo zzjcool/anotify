@@ -6,7 +6,7 @@ common:
     overview: 总览
     events: 事件流
     capabilities: 能力
-    packages: "包"
+    playbooks: "预案"
     nodes: 节点
     receivers: 通知接收
     keys: API Keys
@@ -1494,18 +1494,18 @@ nodepage:
   not_found_hint: 这个 id 没有对应的节点，可能已被删除。
   missing_id: '缺少节点 id（URL 应该有 ?id=nd_…）'
 
-pkg:
-  title: 包
-  subtitle: 把能力、出口、触发器打包成一份可安装、可体检的零件
+pb:
+  title: 预案
+  subtitle: 把能力、出口、触发器组成一份能体检、能补齐的预案
   detail_subtitle: 体检：定义 → 节点 → 出口 → 触发器
   rescan: 重新体检
   rescanned: 已重新体检
-  back: 返回包列表
+  back: 返回预案列表
   install: 补齐
   install_failed: 补齐失败：
   installed_n: 补齐了 {n} 项
   installed_none: 没有可自动补齐的项了
-  empty: 这个命名空间里还没有包。
+  empty: 这个命名空间里还没有预案。
   load_failed: 载入失败，请刷新重试。
   meta: 能力 {c} · 出口 {e} · 触发器 {tr}
   ready_n: '{n}/{m} 项就绪'
@@ -1523,7 +1523,7 @@ pkg:
     ready: 全部就绪，可以开始跑了
     capability:
       missing: 缺能力定义：{ref}
-      no-node: 「{ref}」没有节点实现
+      no-node: 「{ref}」没有节点能执行
       offline: 「{ref}」的节点都离线
     edge:
       missing: 缺出口：{label}
@@ -1531,27 +1531,27 @@ pkg:
       missing: 缺触发器：{label}
   sec:
     capabilities: 能力定义
-    nodes: 节点实现
+    nodes: 由谁执行
     edges: 出口
     triggers: 触发器
   fix:
     capability:
       missing: 还缺能力定义，先把它补进当前命名空间
-      no-node: 定义齐了，但没有节点声明这个能力 —— 去写 node.yaml
+      no-node: 定义齐了，但没有节点声明它能执行 —— 去写 node.yaml
       offline: 有节点声明了，但机器离线 —— 把它连上就行
     edge:
       missing: 能力齐了，出口还没连上
     trigger:
-      missing: 图能跑了，但还没有事件把它叫起来
+      missing: 预案齐了，但还没有事件把它叫起来
   cap:
     outputs: 出口：{o}
     missing: 当前命名空间里还没有这个定义
   node:
     blocked: 先补能力定义
-    none: 没有任何节点声明它 —— 这是最常见的「跑不起来」
+    none: 没有任何节点声明它能执行 —— 这是最常见的「跑不起来」
     offline: 有节点，但离线：
   edges:
-    none: 这个包不声明出口
+    none: 这份预案不声明出口
   edge:
     blocked: 端点「{c}」还没有定义，先补定义再补边
     missing: 这条边还不在路由表里

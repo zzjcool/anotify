@@ -170,11 +170,58 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// 4.5 删掉上一轮留下、这一轮不再生成的页面。
+	//
+	// 只写不删会留下**死页面**：把 packages.html 改名成 playbooks.html 之后，
+	// 旧文件仍然躺在 web/ 里被打进二进制 —— 它没有任何入口链接，却仍然可访问、
+	// 仍然进 i18n 扫描，而且没人会注意到（本轮就是这么发现 92 个 HTML ≠ 84 的）。
+	// sitegen 是这些文件的唯一来源，所以照着本次生成清单删是安全的。
+	if err := g.pruneStalePages(pages); err != nil {
+		return fmt.Errorf("sitegen: prune stale pages: %w", err)
+	}
+
 	// 5. Generate i18n.{lang}.js for runtime JS strings.
 	if err := g.GenerateI18nJS(g.outDir); err != nil {
 		return fmt.Errorf("sitegen: generate i18n JS: %w", err)
 	}
 
+	return nil
+}
+
+// pruneStalePages 删除 outDir（以及每个语言子目录）里本轮没有生成的 .html。
+//
+// 只扫 .html：assets/ 等目录由别的步骤负责，这里不碰。
+func (g *Generator) pruneStalePages(pages []pageSource) error {
+	want := make(map[string]struct{}, len(pages))
+	for _, p := range pages {
+		want[p.name] = struct{}{}
+	}
+
+	dirs := []string{g.outDir}
+	for _, lang := range g.langs {
+		if prefix := g.langPrefix(lang); prefix != "" {
+			dirs = append(dirs, filepath.Join(g.outDir, prefix))
+		}
+	}
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".html") {
+				continue
+			}
+			if _, keep := want[name]; keep {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				return fmt.Errorf("remove stale page %s: %w", name, err)
+			}
+		}
+	}
 	return nil
 }
 
