@@ -70,6 +70,8 @@
 		return {
 			id: "cap_mock_" + name.replace(/\./g, "_") + "_v" + version,
 			orgId: ORG,
+			// 能力属于命名空间（I11）：同名能力在不同命名空间是两个不同定义
+			namespaceId: NS,
 			name: name,
 			// 纯展示标签，空串 = 没取（前端回落到 name@version）
 			displayName: displayName || "",
@@ -1052,13 +1054,63 @@
 		for (const x of state.edges) x.namespaceId = NS;
 		for (const x of state.events) x.namespaceId = NS;
 		for (const x of state.tasks) x.namespaceId = NS;
+		for (const x of state.capabilities) x.namespaceId = NS;
+		for (const x of state.nodes) x.namespaceId = NS;
+
+		// ---- 内置能力：每个命名空间各有一份 ----
+		//
+		// 这是实现里最容易漏的一步：内置能力（notify.phone）是随项目发布的，
+		// 不属于任何用户操作，所以新建命名空间时**必须同事务播种**，
+		// 否则新命名空间里连一个 end 节点都声明不出来，推送直接失效。
+		// demo 里 staging / sandbox 各有一份，用来验证这条规则。
+		const builtinFor = (nsId) => {
+			const c = cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知");
+			return Object.assign(c, {
+				id: "cap_mock_" + nsId + "_notify_phone_v1",
+				namespaceId: nsId,
+				// 内容相同 → hash 相同（同一份二进制播种的），跨命名空间重复不算冲突
+				contentHash: "hash_builtin_notify_phone_v1",
+			});
+		};
+		state.capabilities.push(builtinFor(STAGING), builtinFor(SANDBOX));
 
 		// ---- staging：一条和 prod 完全无关的链 ----
-		const capOf = (n) => state.capabilities.find((c) => c.name === n);
-		const analyze = capOf("analyze-pr");
-		const tests = capOf("run-tests");
-		const deploy = capOf("deploy-preview");
-		if (!analyze || !tests || !deploy) return;
+		//
+		// 注意这里**故意不用 prod 的能力 id**：能力按命名空间隔离，
+		// staging 的 analyze-pr@1 是另一个定义（另一个 id）。
+		// 拿 prod 的 id 建边就是跨命名空间引用，I11 会拒。
+		const stgCap = (name, version, outputs, display) => {
+			const c = cap(name, version, outputs, { type: "object" }, "custom", display);
+			return Object.assign(c, {
+				id: "cap_mock_staging_" + name.replace(/\./g, "_") + "_v" + version,
+				namespaceId: STAGING,
+			});
+		};
+		const analyze = stgCap("analyze-pr", 1, ["needs-fix", "approved"], "分析 PR（预发）");
+		const tests = stgCap("run-tests", 1, ["passed", "failed"], "跑测试（预发）");
+		const deploy = stgCap("deploy-preview", 1, ["preview.ready"], "部署预发（预发）");
+		state.capabilities.push(analyze, tests, deploy);
+
+		// staging 的机器：一台，只声明 staging 的三个能力
+		state.nodes.push({
+			id: "nd_mock_staging_runner",
+			orgId: ORG,
+			namespaceId: STAGING,
+			name: "staging-runner",
+			status: "online",
+			lastSeenAt: now() - 12,
+			createdAt: now() - 86400 * 20,
+			maxInstances: 4,
+			maxConcurrency: 2,
+			tags: ["staging", "ci"],
+			capabilities: [analyze, tests, deploy].map((c) => ({
+				id: c.id,
+				name: c.name,
+				version: c.version,
+				displayName: c.displayName,
+			})),
+			instances: [{ id: "nins_mock_stg_0", index: 0, concurrency: 2, busy: 0 }],
+		});
 
 		const traceId = "trace_mock_staging_daily";
 		const t0 = now() - 3600 * 6;
@@ -1077,14 +1129,15 @@
 			targets: [{ capabilityId: analyze.id, params: { changedLines: 12, repo: "anotify" } }],
 		});
 
+		const stgByName = { "analyze-pr": analyze, "run-tests": tests, "deploy-preview": deploy };
 		const edge = (from, port, to) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			namespaceId: STAGING,
-			fromCapability: capOf(from).id,
+			fromCapability: stgByName[from].id,
 			fromCapabilityName: from,
 			fromPort: port,
-			toCapability: capOf(to).id,
+			toCapability: stgByName[to].id,
 			toCapabilityName: to,
 			createdAt: t0 - 86400 * 10,
 		});
@@ -1375,13 +1428,18 @@
 	});
 
 	// ===== 能力与边 =====
-	on("GET", /^\/v1\/capabilities$/, () =>
-		json({ capabilities: state.capabilities.map(capView) }),
+	on("GET", /^\/v1\/capabilities$/, (ctx) =>
+		json({
+			capabilities: inNs(state.capabilities, nsScope(ctx.query)).map(capView),
+		}),
 	);
 
 	on("POST", /^\/v1\/capabilities$/, (ctx) => {
 		const b = ctx.body || {};
 		if (!b.name) return err(400, "name is required");
+		// 能力归属命名空间（缺省 = 当前范围）。真实后端这里必须是必填，
+		// mock 宽松的理由见 nsScope 的注释。
+		b.namespaceId = b.namespaceId || nsScope(ctx.query) || NS;
 		const existing = state.capabilities.filter((c) => c.name === b.name);
 		const nextVer = existing.length
 			? Math.max(...existing.map((c) => c.version)) + 1
@@ -1476,8 +1534,8 @@
 		});
 	}
 
-	on("GET", /^\/v1\/nodes$/, () =>
-		json({ nodes: state.nodes.map(nodeView) }),
+	on("GET", /^\/v1\/nodes$/, (ctx) =>
+		json({ nodes: inNs(state.nodes, nsScope(ctx.query)).map(nodeView) }),
 	);
 
 	// 节点详情：比列表多给每个槽位的具体情况（哪个槽在跑哪个任务）。

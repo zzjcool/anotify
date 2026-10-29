@@ -1030,6 +1030,10 @@
 		"/v1/console/events",
 		"/v1/tasks",
 		"/v1/stats",
+		// 能力与节点也属于命名空间（I11）：加进这里之前它们是组织级的，
+		// 漏加的症状是"切了命名空间但能力/节点列表不变"，而且不报错。
+		"/v1/capabilities",
+		"/v1/nodes",
 	];
 	let scope = readScope();
 

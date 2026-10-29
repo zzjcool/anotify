@@ -22,7 +22,7 @@
 | **I8** | **一个能力定义 = 一个不可变版本**（append-only，钉 hash） | 旧 trace 无法解释 |
 | **I9** | **空列表返回 `[]` 不返回 `null`** | 前端误判「未连接」 |
 | **I10** | **一切租户数据先过 `org_id`**；命名空间资源还必须过 `namespace_id`，且两者必须一致（`namespace.org_id == org_id`） | 跨组织 / 跨命名空间泄漏 |
-| **I11** | **跨命名空间不引用**：`edges` 查表、`source_targets` 派发、子任务继承，全部锁在同一个 `namespace_id` 内；违反一律 `400` | 预发的图能把任务派到生产的拓扑上 |
+| **I11** | **跨命名空间不引用**：`edges` 两端、`source_targets` 目标、`node_capabilities` 声明、子任务继承，全部锁在同一个 `namespace_id` 内；违反一律 `400` | 预发的图能把任务派到生产的拓扑上 |
 
 ---
 
@@ -37,11 +37,11 @@
 | `namespaces` | 组织 | 组织内的隔离单位（配置 + 运行面），见 §2.1.1 |
 | `users` | 人 | 跨组织共享身份 |
 | `passkeys` / `sessions` / `api_keys` | 人 | 认证（沿用现有实现，字段不变） |
-| `capability_versions` | 组织 | 能力定义，append-only，钉 hash |
-| `nodes` | 组织 | 一台机器 |
-| `node_instances` | 组织 | 节点上的并发槽位 |
-| `node_capabilities` | 组织 | 节点声明「我有 review@1」 |
-| `node_pins` | 组织 | 粘性路由钉住 |
+| `capability_versions` | 命名空间 | 能力定义，append-only，钉 hash |
+| `nodes` | 命名空间 | 一台机器 |
+| `node_instances` | 命名空间 | 节点上的并发槽位 |
+| `node_capabilities` | 命名空间 | 节点声明「我有 review@1」 |
+| `node_pins` | 命名空间 | 粘性路由钉住 |
 | `edges` | 命名空间 | 出口表，路由唯一依据 |
 | `events` | 命名空间 | 事件日志（链的起点） |
 | `tasks` | 命名空间 | 任务行 = OTel span |
@@ -113,10 +113,17 @@ CREATE TABLE IF NOT EXISTS namespaces (
 CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);
 ```
 
-**隔离什么**：`edges` / `sources` / `events` / `tasks` / `graph_versions`。
-**不隔离什么**：`capability_versions`、`nodes`、`node_capabilities`、`users` / `org_members`
-—— 能力和节点是**组织级共享资源池**，理由见设计文档 §2.1 / §2.2（核心：节点协议不用改）。
+**隔离什么**：**全部资源** —— `capability_versions` / `nodes` / `node_capabilities` /
+`node_instances` / `node_pins` / `edges` / `sources` / `events` / `tasks` / `graph_versions`。
+**不隔离什么**：只有身份与密钥 —— `users` / `org_members`，以及 `api_keys`
+（密钥可额外绑定一个命名空间来限制作用域，见设计文档 §2.3）。
 
+**能力隔离后，节点协议不需要改**：命名空间放在**节点令牌**里，不在 `hello` 帧里。
+节点令牌 → 节点行 → `namespace_id`，所以 `hello` 里的 `capabilities: ["review@1"]`
+只在**该节点所在命名空间**里解析。完整理由见设计文档 §2.1。
+
+**内置能力必须按命名空间播种**：新建命名空间时同事务插内置能力（否则新命名空间里
+连 `notify.phone` 都没有），内置能力升版时遍历所有命名空间各插一行。
 **建组织时同事务建 `default` 命名空间**（slug `default`，名「默认」）。
 **代码里不存在「没有命名空间」的分支。**
 
@@ -128,6 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);
 ```sql
 CREATE TABLE IF NOT EXISTS capability_versions (
     id            TEXT PRIMARY KEY,           -- cap_<UTC>_<hash8>
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     name          TEXT NOT NULL,              -- review
     version       INTEGER NOT NULL,           -- 1
@@ -138,12 +146,17 @@ CREATE TABLE IF NOT EXISTS capability_versions (
     source        TEXT NOT NULL,              -- builtin | custom
     content_hash  TEXT NOT NULL,              -- 规范化内容 sha256
     created_at    INTEGER NOT NULL,
-    UNIQUE (org_id, name, version),
-    UNIQUE (org_id, content_hash)             -- 同内容不产生第二行
+    UNIQUE (namespace_id, name, version),
+    UNIQUE (namespace_id, content_hash)       -- 同内容不产生第二行
 );
 
-CREATE INDEX IF NOT EXISTS idx_cap_name_ver ON capability_versions(org_id, name, version);
+CREATE INDEX IF NOT EXISTS idx_cap_name_ver
+    ON capability_versions(namespace_id, name, version);
 ```
+
+**名字的唯一性从「组织」缩小到「命名空间」（I11）**：`review@1` 在 prod 和 staging
+是两个不同的定义、两个不同的 `id`。`edges.from_port` 的封闭集合、`kind` 推导，
+全部在命名空间内闭合。
 
 **`outputs` 是出口名的唯一来源。** 它同时是 `kind` 推导和 `edges.from_port` 的封闭集合。
 **没有 `kind` 字段**——推导量不落库（I3）。
@@ -153,6 +166,7 @@ CREATE INDEX IF NOT EXISTS idx_cap_name_ver ON capability_versions(org_id, name,
 ```sql
 CREATE TABLE IF NOT EXISTS nodes (
     id           TEXT PRIMARY KEY,            -- nd_<base62>
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,               -- mbp-16（可改，id 不变）
     tags         TEXT NOT NULL DEFAULT '[]',  -- JSON 数组，节点池标签
@@ -162,10 +176,16 @@ CREATE TABLE IF NOT EXISTS nodes (
     max_concurrency INTEGER NOT NULL DEFAULT 8,   -- 节点级并发上限
     last_seen_at INTEGER,
     created_at   INTEGER NOT NULL,
-    UNIQUE (org_id, name)
+    UNIQUE (namespace_id, name)
 );
 
+/** 一台机器属于一个命名空间（I11）。令牌绑在这个命名空间上（见设计文档 §2.1），
+  * 所以 `hello` 帧里的 `capabilities: ["review@1"]` 不会有歧义。
+  * 要服务两个命名空间就注册两次 → 两个节点行、两个令牌。
+  * 一个 WS 连接 = 一个节点 = 一个命名空间。 */
+
 -- 节点声明「我有 review@1」——只有名字 + 版本，没有 argv、没有出口、没有 kind
+-- 只能声明**本命名空间**定义的能力（I11，handler 校验）
 CREATE TABLE IF NOT EXISTS node_capabilities (
     node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
@@ -386,6 +406,7 @@ CREATE TABLE IF NOT EXISTS graph_versions (
 
 ③ 找节点
    SELECT node_id FROM node_capabilities WHERE capability_id=?
+   （只在这个命名空间的在线节点里挑，I11）
    → M 行（M=0 则记 pruned/no_node，结束）
 
 ④ 挑一台
@@ -400,7 +421,8 @@ CREATE TABLE IF NOT EXISTS graph_versions (
 **① ② ③ 都发生在建任务之前**，所以剪枝不产生任务行。
 **`pruned` 记录写在事件 span 上**（`tasks` 里没有对应的行），三态原因见 06 页。
 
-**命名空间只改 ① 的 WHERE（I11）**。②③④⑤ 完全不变：能力组织级、节点组织级。
+**命名空间改 ①③⑤（I11），②④ 一个字不改**：能力定义和节点都按命名空间隔离了，
+但参数校验（`params_schema` 属于能力自己）和挑机器（粘性/负载）跟命名空间无关。
 子任务的 `namespace_id` **继承父任务**，不接受调用方指定。
 
 ---
@@ -611,13 +633,15 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 | 端点 | `namespaceId` |
 |---|---|
-| `/v1/edges`、`/v1/sources`、`/v1/events`、`/v1/tasks`、`/v1/traces/*`、`/v1/stats` | **必填** |
+| `/v1/capabilities`、`/v1/nodes`、`/v1/nodes/{id}`、`/v1/edges`、`/v1/sources`、`/v1/events`、`/v1/tasks`、`/v1/traces/*`、`/v1/stats` | **必填** |
 | 同上但要跨命名空间汇总（管理员视图） | `namespaceId=*` |
-| `/v1/capabilities`、`/v1/nodes`、`/v1/admin/*`、`/v1/auth/*` | **不需要**（组织级） |
+| `/v1/orgs`、`/v1/admin/*`、`/v1/auth/*` | **不需要**（组织级） |
 
 - 缺 `namespaceId` → `400`（**不回退到默认命名空间**：回退等于把人写错的地方藏起来）
 - 不存在 → `404`；属于别的 org → `403`；跨命名空间引用 → `400`（I11）
-- 命名空间资源在响应里带 `namespaceId`；能力和节点**不带**（加了会诱导前端按命名空间过滤，而它们不是）
+- 所有资源在响应里带 `namespaceId`
+- **节点注册**：`POST /v1/nodes` 的 `namespaceId` 决定机器属于哪个命名空间，
+  **令牌绑在它上面**，创建后不可改（要换就删了重建）
 
 ---
 
@@ -757,20 +781,27 @@ token 形态与现有 `api_keys` 一致：`ant_<label>_<base64url(24B)>`，DB �
 
 ### 10.4 Q7：命名空间隔离到什么粒度
 
-**决定：命名空间隔离「配置 + 运行面」，能力与节点保持组织级。**
+**决定：全部隔离。能力、节点、源、边、事件、任务、图快照都属于命名空间；
+只有身份（`users` / `org_members`）和密钥（`api_keys`，可选绑定命名空间）属于组织。**
 
 | 候选 | 结论 |
 |---|---|
 | 只有 org 一层 | ❌ 多套流程无处安放；在预发配一条边，生产也会派发 |
-| 命名空间隔离全部（含能力、节点） | ❌ 节点 `hello` 必须带命名空间 → 改协议 + 所有已部署 agent 升级；且同名的 `review@1` 在 N 个命名空间指向 N 个定义，节点声明出现歧义 |
-| **隔离 edges / sources / events / tasks / graph_versions** | ✅ 覆盖「不同环境跑不同流程」的真实需求，节点协议零改动 |
+| 只隔离配置与运行面（能力、节点保持组织级） | ❌ 两个团队不能各有 `lint@1`；无法把某套流程的活固定到某批机器 |
+| **全部隔离** | ✅ 环境之间真正互不可见；能力名、机器池都按环境切 |
 
-**已知限制（写下来，别假装不存在）**：无法把某个命名空间的活固定到某批机器上。
-正确解法不是命名空间级绑定，而是**能力定义加 `selector`** + 按 `nodes.tags` 过滤。
+**代价与解法**：能力按命名空间划分后，节点 `hello` 里的 `review@1` 会有歧义。
+**解法是把命名空间放进节点令牌，而不是改协议帧** —— 令牌 → 节点行 → `namespace_id`，
+`hello` 一个字不用改，已部署的 agent 只需换令牌。
+一台机器要服务两个命名空间就注册两次（两个节点行、两个令牌）。
+完整推导见 `docs/design/namespaces.md` §2.1。
 
-**反向扩展点**：若将来确实要「同名能力多套定义」，给 `capability_versions` 加
-`namespace_id`、`UNIQUE(org_id,name,version)` 改成 `UNIQUE(org_id,namespace_id,name,version)`，
-并让 `hello` 带命名空间列表 —— 破坏性升级，必须先有节点侧配合。
+**两条容易漏的配套**：
+
+1. **内置能力按命名空间播种**：新建命名空间时同事务插入（否则新命名空间里连
+   `notify.phone` 都没有），内置能力升版时遍历所有命名空间各插一行。
+2. **删命名空间 = 拆掉一个环境**：级联删掉节点 → 里面的机器全部掉线（令牌失效），
+   UI 必须把「N 台机器将失去连接」写进确认框。
 
 ---
 

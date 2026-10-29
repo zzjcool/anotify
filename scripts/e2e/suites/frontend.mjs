@@ -3201,30 +3201,59 @@ async function checkScope(page) {
 		`当前=${persisted.ns} localStorage 记录=${persisted.stored}`,
 	);
 
-	// ⑤ 组织级页面：标注「组织级」且能力列表不随命名空间变化
+	// ⑤ 能力与节点也按命名空间隔离（不存在"组织级"页面了）
+	const caps = await page.evaluate(async () => {
+		const n = async (ns) => {
+			const c = await (await fetch(`/v1/capabilities?namespaceId=${ns}`)).json();
+			const d = await (await fetch(`/v1/nodes?namespaceId=${ns}`)).json();
+			return { caps: (c.capabilities || []).length, nodes: (d.nodes || []).length };
+		};
+		return {
+			prod: await n("ns_mock_prod"),
+			staging: await n("ns_mock_staging"),
+			sandbox: await n("ns_mock_sandbox"),
+			all: await n("*"),
+		};
+	});
+	H.check(
+		"能力与节点也按命名空间隔离（sandbox 只剩播种的内置能力）",
+		caps.prod.caps > caps.staging.caps &&
+			// sandbox 里没有任何用户能力，但内置能力必须被播种进去
+			// （否则连一个 end 节点都声明不出来，推送直接失效）
+			caps.sandbox.caps === 1 &&
+			caps.all.caps === caps.prod.caps + caps.staging.caps + caps.sandbox.caps &&
+			caps.prod.nodes > caps.staging.nodes &&
+			caps.sandbox.nodes === 0,
+		`能力 prod=${caps.prod.caps} staging=${caps.staging.caps} sandbox=${caps.sandbox.caps} 全量=${caps.all.caps}；节点 prod=${caps.prod.nodes} staging=${caps.staging.nodes} sandbox=${caps.sandbox.nodes}`,
+	);
+
+	// UI 侧：当前还在 staging，能力列表必须是 staging 的数量，且不再有「组织级」徽标
 	await page.goto(new URL("capabilities.html", page.url()).href, {
 		waitUntil: "load",
 		timeout: 20000,
 	});
-	// 等**数据**（能力卡片）出来，不是等徽标：徽标属于页面骨架，
-	// 它在 fetch 完成之前就已经在了，拿它当"加载完成"会读到空列表。
+	// 等**确切数量**，不等"非空"：`#caps-list` 先会有一个加载占位符，
+	// children.length > 0 在数据到达前就已经成立，会读到 1 行（踩过）。
 	await page
 		.waitForFunction(
-			() => {
+			(want) => {
 				const list = document.querySelector("#caps-list");
-				return !!(document.querySelector(".scope-badge") && list && list.children.length > 0);
+				const ns = document.querySelector(".scope-ns");
+				return !!(ns && ns.textContent && list && list.children.length === want);
 			},
+			caps.staging.caps,
 			{ timeout: 15000 },
 		)
 		.catch(() => {});
-	const orgLevel = await page.evaluate(() => ({
-		badge: (document.querySelector(".scope-badge") || {}).textContent || null,
-		caps: document.querySelectorAll("#caps-list > *").length,
+	const capPage = await page.evaluate(() => ({
+		badge: !!document.querySelector(".scope-badge"),
+		rows: document.querySelectorAll("#caps-list > *").length,
+		ns: (document.querySelector(".scope-ns") || {}).textContent || "",
 	}));
 	H.check(
-		"组织级页面标注「组织级」，能力列表不随命名空间变化",
-		orgLevel.badge === "组织级" && orgLevel.caps > 0,
-		`徽标=${orgLevel.badge} 能力行=${orgLevel.caps}`,
+		"能力页跟着命名空间变（不再有「组织级」页面 / 徽标）",
+		!capPage.badge && capPage.rows === caps.staging.caps && capPage.ns.includes("staging"),
+		`徽标=${capPage.badge} 行=${capPage.rows} 期望=${caps.staging.caps} 当前=${capPage.ns}`,
 	);
 
 	// 复位，避免影响后面用 prod 数据的断言
