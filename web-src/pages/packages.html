@@ -1,0 +1,171 @@
+{{define "title"}}{{t "pkg.title"}}{{end}}
+
+{{define "content"}}
+<div id="page-main">
+  <div class="mx-auto max-w-6xl space-y-8">
+    <div class="reveal visible">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 class="font-display text-3xl text-white">{{t "pkg.title"}}</h2>
+          <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
+            {{t "pkg.subtitle"}}
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <button id="btn-refresh" class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm">
+            {{t "pkg.rescan"}}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="pkg-grid" class="pkg-grid"></div>
+
+    <div id="pkg-empty" class="card rounded-2xl p-6 text-center text-sm text-zinc-500 hidden"></div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+</div>
+{{end}}
+
+{{define "script"}}
+    <script>
+      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+      const API = "/v1";
+
+      Anotify.mountLayout({
+        active: "packages",
+        title: t("pkg.title", "包"),
+        subtitle: t("pkg.subtitle", "把能力、出口、触发器打包成一份可安装、可体检的零件"),
+      });
+
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = text;
+        return n;
+      }
+
+      function toast(msg) {
+        const box = document.getElementById("toast");
+        box.textContent = msg;
+        box.classList.add("show");
+        clearTimeout(box._timer);
+        box._timer = setTimeout(() => box.classList.remove("show"), 2600);
+      }
+
+      // 四种总体状态：文案 + 徽标色类。颜色靠 CSS（.pkg-badge.is-*），
+      // 这里只决定语义，不写死颜色。
+      const STATUS_KEY = {
+        ready: "pkg.status.ready",
+        "needs-node": "pkg.status.needs_node",
+        blocked: "pkg.status.blocked",
+        partial: "pkg.status.partial",
+      };
+      const STATUS_FALLBACK = {
+        ready: "就绪",
+        "needs-node": "缺节点",
+        blocked: "缺定义",
+        partial: "不完整",
+      };
+
+      // 「最该先做的一件事」：体检结论里第一个没过的项。
+      // 这是全页最有价值的一行 —— 它把"哪里不对"变成"下一步做什么"。
+      function nextLine(pkg) {
+        const n = pkg.next;
+        if (!n) return t("pkg.next.ready", "全部就绪，可以开始跑了");
+        const key = "pkg.next." + n.kind + "." + n.status;
+        const fb = {
+          "pkg.next.capability.missing": "缺能力定义：{ref}",
+          "pkg.next.capability.no-node": "「{ref}」没有节点实现",
+          "pkg.next.capability.offline": "「{ref}」的节点都离线",
+          "pkg.next.edge.missing": "缺出口：{label}",
+          "pkg.next.trigger.missing": "缺触发器：{label}",
+        }[key] || "{label}";
+        return t(key, fb).replace("{ref}", n.ref || n.label || "").replace("{label}", n.label || "");
+      }
+
+      function card(pkg) {
+        const c = el("div", "pkg-card");
+        c.tabIndex = 0;
+        c.setAttribute("role", "link");
+        c.addEventListener("click", () => {
+          location.href = "package.html?id=" + encodeURIComponent(pkg.slug);
+        });
+        c.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            location.href = "package.html?id=" + encodeURIComponent(pkg.slug);
+          }
+        });
+
+        const top = el("div", "pkg-card-top");
+        const left = el("div", "");
+        left.appendChild(el("div", "pkg-name", pkg.name));
+        left.appendChild(el("div", "pkg-slug", pkg.slug));
+        top.appendChild(left);
+        top.appendChild(
+          el("span", "pkg-badge is-" + pkg.status, t(STATUS_KEY[pkg.status], STATUS_FALLBACK[pkg.status])),
+        );
+        c.appendChild(top);
+
+        if (pkg.description) c.appendChild(el("div", "pkg-desc", pkg.description));
+
+        c.appendChild(
+          el(
+            "div",
+            "pkg-meta",
+            t("pkg.meta", "能力 {c} · 出口 {e} · 触发器 {tr}")
+              .replace("{c}", pkg.counts.capabilities)
+              .replace("{e}", pkg.counts.edges)
+              .replace("{tr}", pkg.counts.triggers),
+          ),
+        );
+
+        const bar = el("div", "pkg-bar");
+        const fill = el("i", "is-" + pkg.status);
+        // 0/0 的包（只有边的包）不要让进度条看起来像 100% 坏掉
+        fill.style.width = (pkg.total ? Math.round((pkg.ready / pkg.total) * 100) : 100) + "%";
+        bar.appendChild(fill);
+        c.appendChild(bar);
+        c.appendChild(
+          el("div", "pkg-meta", t("pkg.ready_n", "{n}/{m} 项就绪").replace("{n}", pkg.ready).replace("{m}", pkg.total)),
+        );
+
+        const next = el("div", "pkg-next");
+        next.appendChild(el("span", "", "→"));
+        next.appendChild(el("span", "", nextLine(pkg)));
+        c.appendChild(next);
+        return c;
+      }
+
+      let PKGS = [];
+
+      async function load() {
+        const grid = document.getElementById("pkg-grid");
+        const empty = document.getElementById("pkg-empty");
+        grid.textContent = "";
+        try {
+          // Anotify.api 直接返回解析好的 JSON，非 2xx 会 throw（不是 Response）
+          const j = await Anotify.api(API + "/packages");
+          PKGS = j.packages || [];
+        } catch (e) {
+          empty.textContent = t("pkg.load_failed", "载入失败，请刷新重试。");
+          empty.classList.remove("hidden");
+          return;
+        }
+        if (!PKGS.length) {
+          empty.textContent = t("pkg.empty", "这个命名空间里还没有包。");
+          empty.classList.remove("hidden");
+          return;
+        }
+        empty.classList.add("hidden");
+        for (const p of PKGS) grid.appendChild(card(p));
+      }
+
+      document.getElementById("btn-refresh").addEventListener("click", () => {
+        load().then(() => toast(t("pkg.rescanned", "已重新体检")));
+      });
+      document.addEventListener("DOMContentLoaded", load);
+    </script>
+{{end}}

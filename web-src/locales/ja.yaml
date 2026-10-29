@@ -6,6 +6,7 @@ common:
     overview: 概要
     events: イベントストリーム
     capabilities: ケイパビリティ
+    packages: "パッケージ"
     nodes: ノード
     receivers: 通知先
     keys: API Keys
@@ -1492,3 +1493,75 @@ nodepage:
   not_found: ノードが見つかりません
   not_found_hint: この id に一致するノードはありません（削除された可能性）。
   missing_id: 'ノード id がありません（URL に ?id=nd_… が必要です）'
+
+pkg:
+  title: パッケージ
+  subtitle: 能力・出口・トリガーをひとつの導入可能で点検できる部品にまとめる
+  detail_subtitle: 点検：定義 → ノード → 出口 → トリガー
+  rescan: 再点検
+  rescanned: 再点検しました
+  back: パッケージ一覧へ
+  install: 補完
+  install_failed: 補完に失敗しました：
+  installed_n: '{n} 件を補完しました'
+  installed_none: 自動で補完できる項目はありません
+  empty: このネームスペースにはまだパッケージがありません。
+  load_failed: 読み込みに失敗しました。再読み込みしてください。
+  meta: 能力 {c} · 出口 {e} · トリガー {tr}
+  ready_n: '{n}/{m} 準備完了'
+  n_of_m: '{n}/{m} 準備完了'
+  remaining: 残り {n} 件
+  copy: コピー
+  copied: コピーしました。node.yaml に貼って agent を再起動してください
+  copy_failed: コピーに失敗しました。手動で選択してコピーしてください
+  status:
+    ready: 準備完了
+    needs_node: ノード不足
+    blocked: 定義不足
+    partial: 不完全
+  next:
+    ready: すべて準備完了です。実行を開始できます
+    capability:
+      missing: 能力定義がありません：{ref}
+      no-node: '{ref} を実装するノードがありません'
+      offline: '{ref} のノードがすべてオフラインです'
+    edge:
+      missing: 出口がありません：{label}
+    trigger:
+      missing: トリガーがありません：{label}
+  sec:
+    capabilities: 能力定義
+    nodes: ノード実装
+    edges: 出口
+    triggers: トリガー
+  fix:
+    capability:
+      missing: 能力定義がまだ足りません。まずこのネームスペースに追加してください
+      no-node: 定義は揃っていますが、この能力を宣言したノードがありません — node.yaml を書いてください
+      offline: 宣言しているノードはありますがオフラインです — 接続するだけで済みます
+    edge:
+      missing: 能力は揃っていますが、出口がまだ繋がっていません
+    trigger:
+      missing: グラフは動かせますが、まだイベントで起動されません
+  cap:
+    outputs: 出口：{o}
+    missing: このネームスペースにはまだこの定義がありません
+  node:
+    blocked: 先に能力定義を追加してください
+    none: どのノードも宣言していません — 動かない最も多い原因です
+    offline: ノードはありますがオフラインです：
+  edges:
+    none: このパッケージは出口を宣言していません
+  edge:
+    blocked: 端点「{c}」にまだ定義がありません。先に定義を追加してください
+    missing: この辺はまだルーティングテーブルにありません
+  trg:
+    missing: 入口能力 {c} にイベントを送る源がありません
+  act:
+    install_cap: 定義を導入
+    open_nodes: ノードページを開く
+    copy_yaml: YAML をコピー
+    install_edge: この辺を補完
+    create_source: 源を作成
+  yaml:
+    hint: 以下はノード側に追加する断片です（足りない能力のみ）。node.yaml に貼って agent を再起動すると、接続時に自動で宣言されます。

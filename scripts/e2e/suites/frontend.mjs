@@ -3333,6 +3333,110 @@ async function checkScope(page) {
 	await page.evaluate(() => localStorage.removeItem("anotify.scope"));
 }
 
+// checkPackages 验证「包」的体检界面。
+//
+// 锁四件事（都是这一版真正想表达的产品语义）：
+//   ① 四种总体状态都能看到（就绪 / 缺节点 / 缺定义），不是只有一个"未就绪"
+//   ② 每张卡都给出「最该先做的一件事」—— 全页最有价值的一行
+//   ③ 缺节点的能力给的是**只含缺的那几个**的 node.yaml，不是整份文件
+//   ④ 「补齐」只补定义/边/源，**不会假装修好节点**
+async function checkPackages(page, base) {
+	await page.goto(base + "/packages.html", { waitUntil: "load", timeout: 20000 });
+	await page
+		.waitForFunction(() => document.querySelectorAll(".pkg-card").length >= 4, {
+			timeout: 15000,
+		})
+		.catch(() => {});
+	await page.waitForTimeout(400);
+
+	const list = await page.evaluate(() => {
+		const cards = Array.from(document.querySelectorAll(".pkg-card"));
+		return {
+			n: cards.length,
+			badges: cards.map((c) => (c.querySelector(".pkg-badge") || {}).textContent || ""),
+			nexts: cards.map((c) => (c.querySelector(".pkg-next") || {}).textContent || ""),
+			bars: cards.map((c) => {
+				const fill = c.querySelector(".pkg-bar > i");
+				return fill ? getComputedStyle(fill).backgroundColor : "";
+			}),
+		};
+	});
+
+	H.check(
+		"包列表把三种状态分开展示（就绪 / 缺节点 / 缺定义）",
+		list.n >= 4 && ["就绪", "缺节点", "缺定义"].every((x) => list.badges.includes(x)),
+		`卡片=${list.n} 状态=${Array.from(new Set(list.badges)).join(",")}`,
+	);
+	H.check(
+		"每张包卡片都给出「最该先做的一件事」",
+		list.nexts.length === list.n && list.nexts.every((t) => t.replace("→", "").trim().length > 3),
+		JSON.stringify(list.nexts).slice(0, 180),
+	);
+	// 进度条必须跟状态同色：合成一种颜色就看不出哪张卡是好的了
+	const okIdx = list.badges.indexOf("就绪");
+	const nnIdx = list.badges.indexOf("缺节点");
+	H.check(
+		"包的进度条按状态分色（就绪不是主色）",
+		okIdx >= 0 && nnIdx >= 0 && list.bars[okIdx] !== list.bars[nnIdx],
+		`就绪=${list.bars[okIdx]} 缺节点=${list.bars[nnIdx]}`,
+	);
+
+	// ---- 详情页：四类检查 + 缺节点的 YAML ----
+	await page.goto(base + "/package.html?id=nightly-audit", {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	await page
+		.waitForFunction(() => document.querySelectorAll("#node-list .chk").length > 0, {
+			timeout: 15000,
+		})
+		.catch(() => {});
+	await page.waitForTimeout(400);
+
+	const detail = await page.evaluate(() => ({
+		caps: document.querySelectorAll("#cap-list .chk").length,
+		nodes: document.querySelectorAll("#node-list .chk").length,
+		edges: document.querySelectorAll("#edge-list .chk").length,
+		trgs: document.querySelectorAll("#trg-list .chk").length,
+		yaml: (document.getElementById("yaml-text") || {}).textContent || "",
+		badDots: document.querySelectorAll(".chk-dot.is-bad").length,
+		hasCopyYaml: !!Array.from(document.querySelectorAll("#node-list button")).find((b) =>
+			b.textContent.includes("YAML"),
+		),
+	}));
+	H.check(
+		"包详情把四类检查都列出来（定义 / 节点 / 出口 / 触发器）",
+		detail.caps >= 2 && detail.nodes >= 2 && detail.edges >= 1 && detail.trgs >= 1,
+		`定义=${detail.caps} 节点=${detail.nodes} 出口=${detail.edges} 触发器=${detail.trgs}`,
+	);
+	H.check(
+		"缺节点的能力给出可直接粘的 node.yaml（只含缺的那几个）",
+		detail.yaml.includes("archive-logs") &&
+			!detail.yaml.includes("report.send") &&
+			detail.yaml.includes("run: bash") &&
+			detail.hasCopyYaml,
+		`含 archive-logs=${detail.yaml.includes("archive-logs")} 混进 report.send=${detail.yaml.includes("report.send")} 有复制按钮=${detail.hasCopyYaml}`,
+	);
+
+	// ---- 「补齐」不能假装修好节点 ----
+	const before = detail.badDots;
+	await page.click("#btn-install");
+	await page.waitForTimeout(1500);
+	const after = await page.evaluate(() => ({
+		badDots: document.querySelectorAll(".chk-dot.is-bad").length,
+		// 节点这一项的缺失必须还在
+		nodeStillBad: !!document
+			.getElementById("node-list")
+			.querySelector(".chk-dot.is-bad"),
+		badge: (document.getElementById("pkg-badge") || {}).textContent || "",
+	}));
+	H.check(
+		"「补齐」只补定义/边/源，不假装修好节点",
+		after.badDots < before && after.nodeStillBad && after.badge === "缺节点",
+		`缺项 ${before} → ${after.badDots}，节点项仍缺=${after.nodeStillBad}，状态=${after.badge}`,
+	);
+}
+
 async function checkFlowChart(page, base) {
 	// 从缩进文本换成 Cytoscape 图形库后（#88），断言改成看"图上有什么"：
 	// 节点、边、环路边、未接下游的伪节点、以及只读性。
@@ -3797,6 +3901,7 @@ async function runMockCoverage() {
 			await checkWaterfall(page);
 			// 放最后：这套检查会切命名空间、还会跳页，不能夹在别的检查中间
 			await checkScope(page);
+			await checkPackages(page, base);
 		}
 		await page.close();
 	}

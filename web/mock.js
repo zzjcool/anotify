@@ -350,6 +350,16 @@
 	(function initNodes() {
 		const capRef = (n) => {
 			const c = capByName(n);
+			// 执行方式（run_spec）：节点侧 node.yaml 里声明的东西。
+			// 中枢**只存不执行**（I1：中枢不是执行者），这里造数据也一样：
+			// 只是给页面显示"这台机器上这个能力跑的什么命令"。
+			const run = {
+				runner: "bash",
+				command: "./runners/" + n.replace(/\./g, "-") + ".sh",
+				timeoutSec: 600,
+				concurrency: 1,
+				env: {},
+			};
 			// displayName 也带上：节点页要显示用户取的中文名。
 			// kind 不在这里算 —— 它依赖"有没有节点声明"，而这段代码正在
 			// 构造 state.nodes，算出来会是半成品。放到请求时算（nodeView）。
@@ -357,6 +367,7 @@
 				id: c.id,
 				name: c.name,
 				version: c.version,
+				run: run,
 				displayName: c.displayName || "",
 			};
 		};
@@ -1112,6 +1123,26 @@
 			instances: [{ id: "nins_mock_stg_0", index: 0, concurrency: 2, busy: 0 }],
 		});
 
+		// 让"全就绪"的包真的存在：需要一个源把事件送进 lint-fix。
+		// 否则每个包的触发器都是缺的，"就绪"这个状态在演示里永远看不到。
+		const lintCap = state.capabilities.find(
+			(c) => c.name === "lint-fix" && c.namespaceId === NS,
+		);
+		if (lintCap) {
+			state.sources.push({
+				id: "src_mock_lint",
+				orgId: ORG,
+				namespaceId: NS,
+				name: "Lint 钩子",
+				kind: "webhook",
+				config: { token: "lint-demo" },
+				enabled: true,
+				lastFiredAt: now() - 3600 * 5,
+				createdAt: now() - 86400 * 6,
+				targets: [{ capabilityId: lintCap.id, params: { changedLines: 30 } }],
+			});
+		}
+
 		const traceId = "trace_mock_staging_daily";
 		const t0 = now() - 3600 * 6;
 
@@ -1338,6 +1369,427 @@
 		state.tasks.push(ab, as, ar);
 	})();
 
+	// ---------- 包（可安装的流程零件）----------
+	//
+	// 包本身不持有自己的图：`manifest` 是"期望长什么样"，
+	// 真实状态永远从 capabilities / edges / sources / node_capabilities 里读。
+	// 所以"装完之后手工改了一条边"，体检会如实反映 —— 两边不会各说各话。
+	//
+	// 四个包刻意覆盖四种总体状态，让人一眼看到每个状态长什么样：
+	//   pr-review      needs-node（能力都有，但 run-tests 的机器离线了）
+	//   nightly-audit  needs-node（archive-logs 定义了，没有任何节点声明它）
+	//   release-train  blocked（notify.sms 连定义都没有）
+	//   lint-guard     ready（能力 + 触发器都齐）
+	const RUN = (name, extra) =>
+		Object.assign(
+			{
+				runner: "bash",
+				command: "./runners/" + name + ".sh",
+				timeoutSec: 600,
+				concurrency: 1,
+				env: {},
+			},
+			extra || {},
+		);
+
+	state.packages = [
+		{
+			id: "pkg_mock_pr_review",
+			orgId: ORG,
+			namespaceId: NS,
+			slug: "pr-review",
+			name: "PR 审查",
+			description: "PR 一开就分析改动：要修先修，再跑测试。",
+			createdAt: now() - 86400 * 9,
+			manifest: {
+				capabilities: [
+					{
+						name: "analyze-pr",
+						version: 1,
+						outputs: ["needs-fix", "approved"],
+						runner: RUN("analyze-pr", { timeoutSec: 900, concurrency: 2 }),
+					},
+					{
+						name: "lint-fix",
+						version: 1,
+						outputs: ["clean", "remaining"],
+						runner: RUN("lint-fix"),
+					},
+					{
+						name: "run-tests",
+						version: 1,
+						outputs: ["passed", "failed"],
+						runner: RUN("run-tests", { timeoutSec: 1800 }),
+					},
+				],
+				edges: [
+					{ from: "analyze-pr", fromPort: "needs-fix", to: "lint-fix" },
+					{ from: "analyze-pr", fromPort: "approved", to: "run-tests" },
+					{ from: "lint-fix", fromPort: "clean", to: "run-tests" },
+				],
+				triggers: [
+					{
+						kind: "webhook",
+						types: ["pull_request.opened", "pull_request.synchronize"],
+					},
+				],
+			},
+		},
+		{
+			id: "pkg_mock_nightly_audit",
+			orgId: ORG,
+			namespaceId: NS,
+			slug: "nightly-audit",
+			name: "夜间审计",
+			description: "每晚归档日志，然后把结果发出来。",
+			createdAt: now() - 86400 * 4,
+			manifest: {
+				capabilities: [
+					{
+						name: "archive-logs",
+						version: 1,
+						outputs: ["archived"],
+						runner: RUN("archive-logs", { timeoutSec: 3600 }),
+					},
+					{
+						name: "report.send",
+						version: 1,
+						outputs: ["escalate"],
+						runner: RUN("report.send"),
+					},
+				],
+				edges: [{ from: "archive-logs", fromPort: "archived", to: "report.send" }],
+				// cron 的 types 就是 5 段表达式本身：安装源时要原样写进 config.expr
+				triggers: [{ kind: "cron", types: ["0 3 * * *"] }],
+			},
+		},
+		{
+			id: "pkg_mock_release_train",
+			orgId: ORG,
+			namespaceId: NS,
+			slug: "release-train",
+			name: "发布列车",
+			description: "预先部署，失败就回滚，成功推一条短信。",
+			createdAt: now() - 86400 * 2,
+			manifest: {
+				capabilities: [
+					{
+						name: "deploy-preview",
+						version: 1,
+						outputs: ["failed", "preview.ready", "manual.approval"],
+						runner: RUN("deploy-preview"),
+					},
+					{
+						name: "rollback",
+						version: 1,
+						outputs: ["done"],
+						runner: RUN("rollback"),
+					},
+					{
+						// 故意没定义：演示 blocked（连契约都不全）
+						name: "notify.sms",
+						version: 1,
+						outputs: [],
+						runner: RUN("notify.sms"),
+					},
+				],
+				edges: [
+					{ from: "deploy-preview", fromPort: "failed", to: "rollback" },
+					{ from: "deploy-preview", fromPort: "preview.ready", to: "notify.sms" },
+				],
+				triggers: [{ kind: "webhook", types: ["release.published"] }],
+			},
+		},
+		{
+			id: "pkg_mock_lint_guard",
+			orgId: ORG,
+			namespaceId: NS,
+			slug: "lint-guard",
+			name: "静态检查",
+			description: "只有一条：改动进来就自动清理。",
+			createdAt: now() - 86400,
+			manifest: {
+				capabilities: [
+					{
+						name: "lint-fix",
+						version: 1,
+						outputs: ["clean", "remaining"],
+						runner: RUN("lint-fix"),
+					},
+				],
+				edges: [],
+				triggers: [{ kind: "webhook", types: ["push"] }],
+			},
+		},
+	];
+
+	// 就绪体检：全部是查询时算出来的（推导量不落库，I3 同源）
+	//
+	// 四类检查按依赖顺序：能力定义 → 节点实现 → 出口 → 触发器。
+	// no-node 和 offline **必须分开**：前者要去写 YAML 装机器，
+	// 后者只需要把机器连上。合成一个"未就绪"会让人做错事。
+	function pkgChecks(pkg) {
+		const ns = pkg.namespaceId;
+		const caps = state.capabilities.filter((c) => c.namespaceId === ns);
+		const nodes = state.nodes.filter((n) => n.namespaceId === ns);
+		const edges = state.edges.filter((e) => e.namespaceId === ns);
+		const sources = state.sources.filter((x) => x.namespaceId === ns);
+		const m = pkg.manifest;
+		const findCap = (name, version) =>
+			caps.find((c) => c.name === name && (version == null || c.version === version));
+
+		// ① 能力定义 + ② 节点实现（绑在同一行上，因为第二项依赖第一项）
+		const capItems = (m.capabilities || []).map((c) => {
+			const ref = c.name + "@" + c.version;
+			const def = findCap(c.name, c.version);
+			if (!def) {
+				return {
+					kind: "capability",
+					ref: ref,
+					status: "missing",
+					outputs: c.outputs || [],
+					runner: c.runner || null,
+				};
+			}
+			const owners = nodes.filter((n) =>
+				(n.capabilities || []).some((x) => x.id === def.id),
+			);
+			if (!owners.length) {
+				return {
+					kind: "capability",
+					ref: ref,
+					status: "no-node",
+					outputs: def.outputs,
+					capId: def.id,
+					runner: c.runner || null,
+				};
+			}
+			const online = owners.filter((n) => n.status === "online");
+			return {
+				kind: "capability",
+				ref: ref,
+				status: online.length ? "ok" : "offline",
+				outputs: def.outputs,
+				capId: def.id,
+				runner: c.runner || null,
+				nodes: owners.map((n) => ({ name: n.name, status: n.status })),
+			};
+		});
+
+		// ③ 出口：两端能力都要有定义才能谈"这条边在不在"
+		const edgeItems = (m.edges || []).map((e) => {
+			const from = findCap(e.from);
+			const to = findCap(e.to);
+			const label = e.from + " --" + e.fromPort + "--> " + e.to;
+			if (!from || !to) {
+				return {
+					kind: "edge",
+					label: label,
+					status: "missing",
+					// 端点缺定义 → 这条边现在补不了，先补能力
+					blockedByCap: !from ? e.from : e.to,
+				};
+			}
+			const hit = edges.some(
+				(x) =>
+					x.fromCapability === from.id &&
+					x.fromPort === e.fromPort &&
+					x.toCapability === to.id,
+			);
+			return {
+				kind: "edge",
+				label: label,
+				status: hit ? "ok" : "missing",
+				from: e.from,
+				fromPort: e.fromPort,
+				to: e.to,
+				fromId: from.id,
+				toId: to.id,
+			};
+		});
+
+		// ④ 触发器：kind 匹配**且**这个源的目标里有本包的入口能力
+		//
+		// 只匹配 kind 会把"你有一个 webhook 源"当成"这条流程有触发器了"，
+		// 而那个源可能指向完全无关的能力。
+		const toSet = new Set((m.edges || []).map((e) => e.to));
+		const entries = (m.capabilities || []).filter((c) => !toSet.has(c.name));
+		const entryIds = entries.map((c) => findCap(c.name, c.version)).filter(Boolean).map((c) => c.id);
+		const triggerItems = (m.triggers || []).map((t) => {
+			const hit = sources.some(
+				(x) =>
+					x.kind === t.kind &&
+					(x.targets || []).some((g) => entryIds.includes(g.capabilityId)),
+			);
+			return {
+				kind: "trigger",
+				label:
+					t.kind + (t.types && t.types.length ? " · " + t.types.join(" / ") : ""),
+				status: hit ? "ok" : "missing",
+				entryCaps: entries.map((c) => c.name),
+				declaredKind: t.kind,
+			};
+		});
+
+		const items = capItems.concat(edgeItems, triggerItems);
+		const capMissing = capItems.some((i) => i.status === "missing");
+		const capNoNode = capItems.some((i) => i.status === "no-node" || i.status === "offline");
+		const restBad =
+			edgeItems.some((i) => i.status !== "ok") ||
+			triggerItems.some((i) => i.status !== "ok");
+
+		let status = "ready";
+		if (capMissing) status = "blocked";
+		else if (capNoNode) status = "needs-node";
+		else if (restBad) status = "partial";
+
+		return {
+			status: status,
+			// 「最该先做的一件事」= 按依赖顺序第一个没过的项
+			next: items.find((i) => i.status !== "ok") || null,
+			ready: items.filter((i) => i.status === "ok").length,
+			total: items.length,
+			counts: {
+				capabilities: capItems.length,
+				edges: edgeItems.length,
+				triggers: triggerItems.length,
+			},
+			items: items,
+		};
+	}
+
+	function pkgView(pkg, withItems) {
+		const checks = pkgChecks(pkg);
+		const view = {
+			id: pkg.id,
+			orgId: pkg.orgId,
+			namespaceId: pkg.namespaceId,
+			slug: pkg.slug,
+			name: pkg.name,
+			description: pkg.description,
+			createdAt: pkg.createdAt,
+			status: checks.status,
+			next: checks.next,
+			ready: checks.ready,
+			total: checks.total,
+			counts: checks.counts,
+			manifest: pkg.manifest,
+		};
+		if (withItems) view.items = checks.items;
+		return view;
+	}
+
+	// 幂等补齐。顺序必须是 能力 → 出口 → 源：
+	// 出口两端没有定义就建不了，源没有入口能力就没人可派。
+	function installPackage(pkg) {
+		const ns = pkg.namespaceId;
+		const m = pkg.manifest || {};
+		const created = { capabilities: [], edges: [], sources: [] };
+		const skipped = { capabilities: [], edges: [], sources: [] };
+		const find = (name) =>
+			state.capabilities.find((c) => c.namespaceId === ns && c.name === name);
+
+		for (const c of m.capabilities || []) {
+			const ref = c.name + "@" + c.version;
+			if (
+				state.capabilities.some(
+					(x) =>
+						x.namespaceId === ns && x.name === c.name && x.version === c.version,
+				)
+			) {
+				skipped.capabilities.push(ref);
+				continue;
+			}
+			state.capabilities.push({
+				id: "cap_" + ns + "_" + c.name.replace(/\./g, "_") + "_v" + c.version,
+				orgId: pkg.orgId,
+				namespaceId: ns,
+				name: c.name,
+				displayName: "",
+				version: c.version,
+				outputs: c.outputs || [],
+				paramsSchema: c.paramsSchema || { type: "object" },
+				source: "custom",
+				contentHash: "hash" + Math.random().toString(16).slice(2, 10),
+				createdAt: now(),
+			});
+			created.capabilities.push(ref);
+		}
+
+		for (const e of m.edges || []) {
+			const from = find(e.from);
+			const to = find(e.to);
+			const label = e.from + " --" + e.fromPort + "--> " + e.to;
+			// 端点还缺定义：这一轮补不了，等能力补完再点一次（幂等所以无害）
+			if (!from || !to) continue;
+			if (
+				state.edges.some(
+					(x) =>
+						x.namespaceId === ns &&
+						x.fromCapability === from.id &&
+						x.fromPort === e.fromPort &&
+						x.toCapability === to.id,
+				)
+			) {
+				skipped.edges.push(label);
+				continue;
+			}
+			state.edges.push({
+				id: uid("edg"),
+				orgId: pkg.orgId,
+				namespaceId: ns,
+				fromCapability: from.id,
+				fromCapabilityName: e.from,
+				fromPort: e.fromPort,
+				toCapability: to.id,
+				toCapabilityName: e.to,
+				createdAt: now(),
+			});
+			created.edges.push(label);
+		}
+
+		const toSet = new Set((m.edges || []).map((e) => e.to));
+		const entries = (m.capabilities || []).filter((c) => !toSet.has(c.name));
+		const entryCaps = entries.map((c) => find(c.name)).filter(Boolean);
+		for (const t of m.triggers || []) {
+			if (!entryCaps.length) continue;
+			const hit = state.sources.some(
+				(x) =>
+					x.namespaceId === ns &&
+					x.kind === t.kind &&
+					(x.targets || []).some((g) =>
+						entryCaps.some((c) => c.id === g.capabilityId),
+					),
+			);
+			if (hit) {
+				skipped.sources.push(t.kind);
+				continue;
+			}
+			const config =
+				t.kind === "cron"
+					? { expr: (t.types && t.types[0]) || "0 3 * * *", tz: "Local" }
+					: t.kind === "webhook" || t.kind === "github"
+						? { token: "mock-" + Math.random().toString(36).slice(2, 8) }
+						: {};
+			const src = {
+				id: uid("src"),
+				orgId: pkg.orgId,
+				namespaceId: ns,
+				name: pkg.name + " · " + t.kind,
+				kind: t.kind,
+				config: config,
+				enabled: true,
+				lastFiredAt: null,
+				createdAt: now(),
+				targets: entryCaps.map((c) => ({ capabilityId: c.id, params: {} })),
+			};
+			state.sources.push(src);
+			created.sources.push(src.name);
+		}
+
+		return { created, skipped };
+	}
+
 	// ---------- 初始 keys ----------
 	(function initKeys() {
 		state.keys = [
@@ -1488,6 +1940,37 @@
 		};
 		state.namespaces.push(ns);
 		return json({ namespace: clone(ns) });
+	});
+
+	// ===== 包 =====
+	on("GET", /^\/v1\/packages$/, (ctx) => {
+		const sc = nsScope(ctx.query);
+		return json({
+			packages: inNs(state.packages, sc).map((p) => pkgView(p, false)),
+		});
+	});
+
+	on("GET", /^\/v1\/packages\/([^/]+)$/, (ctx) => {
+		const key = ctx.m[1];
+		const pkg = state.packages.find((p) => p.id === key || p.slug === key);
+		if (!pkg) return err(404, "包不存在");
+		return json({ package: pkgView(pkg, true) });
+	});
+
+	// 幂等补齐：能力定义 → 出口 → 触发器，能补什么补什么。
+	//
+	// "缺节点"补不了：那是机器侧的事（要写 node.yaml 重启 agent），
+	// 所以这个接口不碰节点 —— 也正是体检里那一项要单独给 YAML 片段的原因。
+	on("POST", /^\/v1\/packages\/([^/]+)\/install$/, (ctx) => {
+		const key = ctx.m[1];
+		const pkg = state.packages.find((p) => p.id === key || p.slug === key);
+		if (!pkg) return err(404, "包不存在");
+		const res = installPackage(pkg);
+		return json({
+			created: res.created,
+			skipped: res.skipped,
+			package: pkgView(pkg, true),
+		});
 	});
 
 	// ===== 统计 =====

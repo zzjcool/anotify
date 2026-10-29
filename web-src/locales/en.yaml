@@ -6,6 +6,7 @@ common:
     overview: Overview
     events: Event Stream
     capabilities: Capabilities
+    packages: "Packages"
     nodes: Nodes
     receivers: Receivers
     keys: API Keys
@@ -1492,3 +1493,75 @@ nodepage:
   not_found: Node not found
   not_found_hint: No node matches this id; it may have been deleted.
   missing_id: 'Missing node id (the URL should carry ?id=nd_…)'
+
+pkg:
+  title: Packages
+  subtitle: Bundle capabilities, edges and triggers into one installable, checkable part
+  detail_subtitle: 'Readiness: definitions → nodes → edges → triggers'
+  rescan: Re-check
+  rescanned: Re-checked
+  back: Back to packages
+  install: Fill in
+  install_failed: 'Fill-in failed: '
+  installed_n: Filled in {n} item(s)
+  installed_none: Nothing left to fill in automatically
+  empty: No packages in this namespace yet.
+  load_failed: Failed to load. Please refresh.
+  meta: '{c} capabilities · {e} edges · {tr} triggers'
+  ready_n: '{n}/{m} ready'
+  n_of_m: '{n}/{m} ready'
+  remaining: '{n} left'
+  copy: Copy
+  copied: Copied — paste into node.yaml and restart the agent
+  copy_failed: Copy failed — select and copy manually
+  status:
+    ready: Ready
+    needs_node: Needs node
+    blocked: Needs definition
+    partial: Incomplete
+  next:
+    ready: Everything is ready — you can start running it
+    capability:
+      missing: 'Missing capability definition: {ref}'
+      no-node: No node implements {ref}
+      offline: All nodes for {ref} are offline
+    edge:
+      missing: 'Missing edge: {label}'
+    trigger:
+      missing: 'Missing trigger: {label}'
+  sec:
+    capabilities: Capability definitions
+    nodes: Node implementations
+    edges: Edges
+    triggers: Triggers
+  fix:
+    capability:
+      missing: A capability definition is still missing — add it to this namespace first
+      no-node: All definitions exist, but no node declares this capability — write node.yaml
+      offline: A node declares it but is offline — just reconnect it
+    edge:
+      missing: Capabilities are in place; the edges are not connected yet
+    trigger:
+      missing: The graph can run, but nothing triggers it yet
+  cap:
+    outputs: 'Outputs: {o}'
+    missing: No such definition in this namespace yet
+  node:
+    blocked: Add the capability definition first
+    none: No node declares it — the most common reason it will not run
+    offline: 'Nodes exist but are offline: '
+  edges:
+    none: This package declares no edges
+  edge:
+    blocked: Endpoint "{c}" has no definition yet — add the definition first
+    missing: This edge is not in the routing table yet
+  trg:
+    missing: No source feeds events into entry capability {c}
+  act:
+    install_cap: Install definition
+    open_nodes: Open nodes
+    copy_yaml: Copy YAML
+    install_edge: Add this edge
+    create_source: Create source
+  yaml:
+    hint: This is the snippet to add on the node side (only the missing capabilities). Paste it into node.yaml, restart the agent, and the node will declare it on connect.
