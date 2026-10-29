@@ -528,6 +528,47 @@ func (d *DB) UpsertInstances(ctx context.Context, orgID, nodeID string, specs []
 }
 
 // ListInstances 列出节点实例（空列表返回 []）。
+// FreeSlotsByNode 一次查出多个节点的空闲槽位数（#145：消掉派发热路径上的 N+1）。
+//
+// 语义必须与 ListInstances 的口径一致：**alive 且 busy_task IS NULL** 的槽位算空闲。
+// 用 LEFT JOIN 而不是 INNER：没申报槽位的节点仍要出现在结果里（free=0），
+// 否则调用方会把它当成"查不到"而丢掉——它只是优先级最低，仍然可以接派发。
+func (d *DB) FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]int, error) {
+	out := make(map[string]int, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		if _, seen := out[id]; seen {
+			continue
+		}
+		out[id] = 0 // 先给 0：LEFT JOIN 没匹配到时不会出现在结果里
+		args = append(args, id)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := d.QueryContext(ctx,
+		`SELECT n.id, COUNT(i.id)
+		   FROM nodes n
+		   LEFT JOIN node_instances i
+		     ON i.node_id = n.id AND i.alive = 1 AND i.busy_task IS NULL
+		  WHERE n.id IN (`+placeholders+`)
+		  GROUP BY n.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("free slots by node: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var free int
+		if err := rows.Scan(&id, &free); err != nil {
+			return nil, fmt.Errorf("scan free slots: %w", err)
+		}
+		out[id] = free
+	}
+	return out, rows.Err()
+}
+
 func (d *DB) ListInstances(ctx context.Context, nodeID string) ([]*NodeInstance, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT id, node_id, slot, concurrency, busy_task, alive, updated_at

@@ -94,6 +94,8 @@ type Store interface {
 	GetCapabilityByID(ctx context.Context, orgID, id string) (*store.CapabilityVersion, error)
 	NodesForCapability(ctx context.Context, orgID, capabilityID string) ([]string, error)
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
+	// FreeSlotsByNode 一次拿到多个节点的空闲槽位数（#145：派发不能被 N+1 拖慢）
+	FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]int, error)
 	LeaseInstance(ctx context.Context, nodeID, taskID string) (string, error)
 	ReleaseInstance(ctx context.Context, nodeID, instanceID string) error
 	ReleaseInstanceByTask(ctx context.Context, nodeID, taskID string) error
@@ -560,22 +562,20 @@ func (d *Dispatcher) pickNode(ctx context.Context, in DispatchInput, capDef *sto
 	}
 
 	// 负载最小：空闲（alive 且 busy_task IS NULL）槽位最多的那台
+	//
+	// 一次聚合查询查完所有候选，而不是每个节点查一次 ListInstances：
+	// 这段在**派发热路径**上，每个任务都要付一次（接力派发还会再乘 T 次）。
+	// 节点数一多，N+1 就是吞吐的主要瓶颈，也是当前 node 数量上限的真正原因（#145）。
+	freeSlots, err := d.Store.FreeSlotsByNode(ctx, candidates)
+	if err != nil {
+		return "", nil, fmt.Errorf("route: free slots by node: %w", err)
+	}
 	best := ""
 	bestFree := -1
 	for _, nodeID := range candidates {
-		insts, err := d.Store.ListInstances(ctx, nodeID)
-		if err != nil {
-			return "", nil, fmt.Errorf("route: list instances of %s: %w", nodeID, err)
-		}
-		free := 0
-		for _, in := range insts {
-			if in.Alive && in.BusyTask == nil {
-				free++
-			}
-		}
 		// 完全没有槽位申报的节点也算候选（它可能会在下一次 hello 申报），
 		// 但优先级最低（free=0 已经体现了这一点）。
-		if free > bestFree {
+		if free := freeSlots[nodeID]; free > bestFree {
 			best, bestFree = nodeID, free
 		}
 	}

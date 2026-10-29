@@ -38,6 +38,7 @@ func TestStubSignaturesFrozen(t *testing.T) {
 		_ func(context.Context, string, string) ([]string, error)                        = db.NodesForCapability
 		_ func(context.Context, string, string, []InstanceSpec) ([]*NodeInstance, error) = db.UpsertInstances
 		_ func(context.Context, string) ([]*NodeInstance, error)                         = db.ListInstances
+		_ func(context.Context, []string) (map[string]int, error)                        = db.FreeSlotsByNode
 		_ func(context.Context, string) error                                            = db.MarkInstancesDead
 		_ func(context.Context, string, string) (string, error)                          = db.LeaseInstance
 		_ func(context.Context, string, string) error                                    = db.ReleaseInstance
@@ -129,6 +130,7 @@ func TestNoStubRemains(t *testing.T) {
 			return err
 		},
 		"ListInstances":     func() error { _, err := db.ListInstances(ctx, "nd_x"); return err },
+		"FreeSlotsByNode":   func() error { _, err := db.FreeSlotsByNode(ctx, []string{"nd_x"}); return err },
 		"MarkInstancesDead": func() error { return db.MarkInstancesDead(ctx, "nd_x") },
 		"LeaseInstance":     func() error { _, err := db.LeaseInstance(ctx, "nd_x", "tsk_x"); return err },
 		"ReleaseInstance":   func() error { return db.ReleaseInstance(ctx, "nd_x", "nins_x") },

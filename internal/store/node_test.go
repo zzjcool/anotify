@@ -676,3 +676,67 @@ func TestNewNodeTokenUnique(t *testing.T) {
 		}
 	}
 }
+
+// TestFreeSlotsByNode 聚合查询的空闲槽位统计（#145）。
+//
+// 语义必须与 ListInstances 的口径一致：**alive 且 busy_task IS NULL** 才算空闲。
+// 两个边界最容易写错：
+//   - 没申报槽位的节点必须出现在结果里（free=0），否则调用方会在 map 里查不到
+//     而把它当成"不存在"，与"优先级最低但仍可派发"的现有语义不符
+//   - 死掉的槽位不算空闲，否则会把任务派给一台已经掉线的机器
+func TestFreeSlotsByNode(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+
+	mk := func(name string, slots int) *Node {
+		n, _ := mkNode(t, db, orgID, name)
+		if slots > 0 {
+			specs := make([]InstanceSpec, slots)
+			for i := range specs {
+				specs[i] = InstanceSpec{Slot: i, Concurrency: 1}
+			}
+			if _, err := db.UpsertInstances(ctx, orgID, n.ID, specs); err != nil {
+				t.Fatalf("instances for %s: %v", name, err)
+			}
+		}
+		return n
+	}
+
+	twoFree := mk("two-free", 2)
+	oneBusy := mk("one-busy", 2)
+	noSlots := mk("no-slots", 0)
+	dead := mk("dead", 1)
+
+	// oneBusy 占掉一个槽位
+	if _, err := db.LeaseInstance(ctx, oneBusy.ID, "tk_1"); err != nil {
+		t.Fatalf("lease instance: %v", err)
+	}
+	// dead 的槽位标成死亡
+	if err := db.MarkInstancesDead(ctx, dead.ID); err != nil {
+		t.Fatalf("mark dead: %v", err)
+	}
+
+	got, err := db.FreeSlotsByNode(ctx, []string{twoFree.ID, oneBusy.ID, noSlots.ID, dead.ID})
+	if err != nil {
+		t.Fatalf("free slots: %v", err)
+	}
+	want := map[string]int{twoFree.ID: 2, oneBusy.ID: 1, noSlots.ID: 0, dead.ID: 0}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("node %s free = %d, want %d", id, got[id], w)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("result has %d entries, want %d (%v)", len(got), len(want), got)
+	}
+
+	// 空输入不能查库报错，也不能返回 nil map（调用方直接下标取值）
+	empty, err := db.FreeSlotsByNode(ctx, nil)
+	if err != nil {
+		t.Fatalf("empty input: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty input = %v, want 空 map", empty)
+	}
+}
