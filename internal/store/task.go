@@ -565,17 +565,18 @@ func (d *DB) StartTask(ctx context.Context, orgID, taskID string) error {
 // 三步（每条任务一个事务，互不影响）：
 //  1. CAS 进 lease_expired（中间态，不是终态）——只有仍处在 assigned/acked/running
 //     且租约确实过期的任务会被选中，所以并发下不会误伤刚续期成功的任务
-//  2. 决定去向：
-//     · attempts >= 能力 lifecycle.maxAttempts → abandoned
+//  2. 决定去向（顺序即优先级）：
+//     · attempts >= 能力 lifecycle.maxAttempts → abandoned（预算用尽，先判，防止无限重投）
+//     · assigned 且 started_at IS NULL（领了单但没执行过）→ pending，与幂等性无关
 //     · 能力声明 idempotent:false（重放不安全）→ abandoned
-//     · 否则 → pending，等下一次派发
+//     · 否则 → pending，并按 RetryBackoff 设退避
 //  3. 释放它占的实例槽位
 func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []string, err error) {
 	if now == 0 {
 		now = Now()
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, org_id, capability_id, status, attempts, node_id
+		`SELECT id, org_id, capability_id, status, attempts, node_id, started_at
 		 FROM tasks
 		 WHERE status IN (?,?,?) AND lease_until IS NOT NULL AND lease_until < ?
 		 ORDER BY lease_until`,
@@ -586,12 +587,13 @@ func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []str
 	type expired struct {
 		id, orgID, capabilityID, status, nodeID string
 		attempts                                int
+		startedAt                               sql.NullInt64
 	}
 	var batch []expired
 	for rows.Next() {
 		var e expired
 		var nodeID sql.NullString
-		if err := rows.Scan(&e.id, &e.orgID, &e.capabilityID, &e.status, &e.attempts, &nodeID); err != nil {
+		if err := rows.Scan(&e.id, &e.orgID, &e.capabilityID, &e.status, &e.attempts, &nodeID, &e.startedAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan expired lease: %w", err)
 		}
@@ -606,7 +608,7 @@ func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []str
 
 	out := []string{}
 	for _, e := range batch {
-		ok, err := d.sweepOne(ctx, e.id, e.orgID, e.capabilityID, e.status, e.attempts, e.nodeID, now)
+		ok, err := d.sweepOne(ctx, e.id, e.orgID, e.capabilityID, e.status, e.attempts, e.nodeID, e.startedAt, now)
 		if err != nil {
 			return out, err
 		}
@@ -618,7 +620,9 @@ func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []str
 }
 
 // sweepOne 回收一条过期租约，返回是否真的回收了（CAS 失败 = 别人先处理了）。
-func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status string, attempts int, nodeID string, now int64) (bool, error) {
+//
+// startedAt 是任务的 started_at：nil 表示**节点领了单但一行代码都没执行过**。
+func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status string, attempts int, nodeID string, startedAt sql.NullInt64, now int64) (bool, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin sweep lease: %w", err)
@@ -658,13 +662,28 @@ func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status s
 
 	to := TaskPending
 	finished := false
-	if !lc.IsIdempotent() {
-		// 重放不安全的能力：宁可放弃也不重复执行
+	reason := "lease_expired: attempts exhausted"
+	switch {
+	case attempts >= lc.MaxAttemptsOrDefault():
+		// ① 重试预算用尽：无论如何都放弃。
+		//
+		// 这条**必须排在"从未开始"之前**：attempts 在派发成功时就 +1，
+		// 一个永远起不来的任务会不断"回 pending → 再派发"。
+		// 若"从未开始"无条件优先，它会无限重投、永不收敛。
 		to = TaskAbandoned
 		finished = true
-	} else if attempts >= lc.MaxAttemptsOrDefault() {
+	case status == TaskAssigned && !startedAt.Valid:
+		// ② 领了单但**一行代码都没执行**：重投绝对安全，与幂等性无关。
+		//
+		// idempotent:false 只在**执行过**时才有意义；从没开始过的任务重投
+		// 不存在副作用。这条证据比能力声明更可靠，所以优先于幂等性判断
+		// ——以前这类任务被白丢，用户看到 abandoned 而节点根本没动过（#144）。
+		to = TaskPending
+	case !lc.IsIdempotent():
+		// ③ 重放不安全的能力：宁可放弃也不重复执行
 		to = TaskAbandoned
 		finished = true
+		reason = "lease_expired: capability is not idempotent"
 	}
 
 	// 状态推进同样走唯一写入点 transitionGuarded（lease_expired → pending | abandoned）
@@ -675,14 +694,17 @@ func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status s
 		// 补终态附带信息（abandoned 的 finished_at 已由 transitionGuarded 写入）
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET error = ? WHERE org_id = ? AND id = ?`,
-			"lease_expired: attempts exhausted", orgID, taskID); err != nil {
+			reason, orgID, taskID); err != nil {
 			return false, fmt.Errorf("annotate abandoned task: %w", err)
 		}
 	} else {
-		// 回 pending：清掉归属，保留 attempts（用于退避与上限判断）
+		// 回 pending：清掉归属，保留 attempts（用于退避与上限判断），
+		// 并按 RetryBackoff 设退避 —— 只清归属不设退避的话，这条任务
+		// 下一秒就会被重新派发，退避形同虚设、坏节点会被反复打。
+		notBefore := now + RetryBackoff(attempts)
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE tasks SET node_id = NULL, instance_id = NULL, lease_until = NULL
-			 WHERE org_id = ? AND id = ?`, orgID, taskID); err != nil {
+			`UPDATE tasks SET node_id = NULL, instance_id = NULL, lease_until = NULL, not_before = ?
+			 WHERE org_id = ? AND id = ?`, notBefore, orgID, taskID); err != nil {
 			return false, fmt.Errorf("requeue task: %w", err)
 		}
 	}

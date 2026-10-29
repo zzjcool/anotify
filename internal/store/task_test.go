@@ -833,3 +833,140 @@ func TestTransitionGuardFailedSentinel(t *testing.T) {
 		t.Fatalf("guarded transition mutated status despite guard failure: %q", got.Status)
 	}
 }
+
+// ---------- #144：巡检不能把「从未开始」的任务按幂等性废弃 ----------
+
+// setupSweepTask 建一个可被巡检回收的任务：节点已领单、租约已过期。
+//
+// idempotent=false 模拟"重放不安全"的能力；started=true 时推到 running
+// （StartTask 会写 started_at，也就是"确实执行过"）。
+func setupSweepTask(t *testing.T, idempotent, started bool) (db *DB, orgID, nodeID string, task *Task) {
+	t.Helper()
+	ctx := context.Background()
+	db = newTestDB(t)
+	orgID, _ = newTestOrg(t, db)
+	capv := mkCap(orgID, "deploy", 1, nil)
+	if !idempotent {
+		no := false
+		capv.Lifecycle = Lifecycle{Idempotent: &no}
+	}
+	if err := db.CreateCapability(ctx, capv); err != nil {
+		t.Fatalf("create cap: %v", err)
+	}
+	node, _ := mkNode(t, db, orgID, "mbp")
+	nodeID = node.ID
+	if _, err := db.ConfirmCapabilities(ctx, orgID, nodeID, []CapabilityRef{{Name: capv.Name, Version: capv.Version}}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if err := db.UpdateNodeStatus(ctx, orgID, nodeID, NodeStatusOnline); err != nil {
+		t.Fatalf("online: %v", err)
+	}
+	if _, err := db.UpsertInstances(ctx, orgID, nodeID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
+		t.Fatalf("instances: %v", err)
+	}
+	task = mkTask(orgID, "trace_sweep", capv)
+	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	instID, err := db.LeaseInstance(ctx, nodeID, task.ID)
+	if err != nil {
+		t.Fatalf("lease instance: %v", err)
+	}
+	// 租约设成过去时刻（过期）
+	if err := db.AssignTask(ctx, orgID, task.ID, nodeID, instID, Now()-10); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if started {
+		if err := db.Transition(ctx, orgID, task.ID, TaskAssigned, TaskAcked); err != nil {
+			t.Fatalf("ack: %v", err)
+		}
+		if err := db.StartTask(ctx, orgID, task.ID); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+	}
+	return db, orgID, nodeID, task
+}
+
+// TestSweepNeverStartedNonIdempotentRequeues 领了单但一行都没执行过的非幂等任务
+// 必须回 pending（#144 核心验收）。
+//
+// 依据：「从没开始过 → 重投绝对安全」比「能力声明 idempotent:false」更可靠，
+// 后者只在真正执行过时才有意义。
+func TestSweepNeverStartedNonIdempotentRequeues(t *testing.T) {
+	db, orgID, _, task := setupSweepTask(t, false, false)
+	ctx := context.Background()
+
+	reclaimed, err := db.SweepExpiredLeases(ctx, Now())
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0] != task.ID {
+		t.Fatalf("reclaimed = %v, want [%s]", reclaimed, task.ID)
+	}
+	got, err := db.GetTask(ctx, orgID, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != TaskPending {
+		t.Fatalf("status = %q, want pending（从未开始不能按幂等性废弃），error=%q", got.Status, got.Error)
+	}
+	if got.StartedAt != nil {
+		t.Fatalf("started_at 不该被写上：%v", *got.StartedAt)
+	}
+	if got.NodeID != nil || got.InstanceID != nil || got.LeaseUntil != nil {
+		t.Fatalf("回 pending 必须清掉归属：node=%v inst=%v lease=%v", got.NodeID, got.InstanceID, got.LeaseUntil)
+	}
+	// 退避必须真的设上，否则下一秒又被派给同一个坏节点
+	if got.NotBefore == nil || *got.NotBefore < Now()+RetryBackoff(1)-2 {
+		t.Fatalf("not_before = %v, want >= now + %ds", got.NotBefore, RetryBackoff(1))
+	}
+}
+
+// TestSweepRunningNonIdempotentAbandons 执行过的非幂等任务仍要废弃——这条不能放宽，
+// 否则会重复执行副作用。
+func TestSweepRunningNonIdempotentAbandons(t *testing.T) {
+	db, orgID, _, task := setupSweepTask(t, false, true)
+	ctx := context.Background()
+
+	if _, err := db.SweepExpiredLeases(ctx, Now()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	got, err := db.GetTask(ctx, orgID, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != TaskAbandoned {
+		t.Fatalf("status = %q, want abandoned（执行过的非幂等任务不能重投）", got.Status)
+	}
+	// 废弃原因要写对：这里不是 attempts 用尽，别写成 "attempts exhausted"
+	if !strings.Contains(got.Error, "not idempotent") {
+		t.Fatalf("error = %q, want 提到 not idempotent", got.Error)
+	}
+}
+
+// TestSweepNeverStartedAttemptsExhaustedAbandons 重试预算用尽后必须收敛。
+//
+// 「从未开始就无条件回 pending」如果排在预算判断前面，一个永远起不来的任务
+// 会无限重投（attempts 在派发成功时就 +1），所以预算判断必须优先。
+func TestSweepNeverStartedAttemptsExhaustedAbandons(t *testing.T) {
+	db, orgID, _, task := setupSweepTask(t, false, false)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET attempts = ? WHERE id = ?`, DefaultMaxAttempts, task.ID); err != nil {
+		t.Fatalf("bump attempts: %v", err)
+	}
+	if _, err := db.SweepExpiredLeases(ctx, Now()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	got, err := db.GetTask(ctx, orgID, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != TaskAbandoned {
+		t.Fatalf("status = %q, want abandoned（预算用尽要收敛，否则无限重投）", got.Status)
+	}
+	if !strings.Contains(got.Error, "attempts exhausted") {
+		t.Fatalf("error = %q, want 提到 attempts exhausted", got.Error)
+	}
+}
