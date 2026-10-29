@@ -2861,6 +2861,61 @@ async function checkWaterfall(page) {
 		steps.trace_mock_t1 > 0 && steps.trace_mock_t1 === steps.trace_mock_t9,
 		`t1(5 任务)=${steps.trace_mock_t1}ms t9(12 任务)=${steps.trace_mock_t9}ms`,
 	);
+
+	// ---- 首屏自适应缩放（fit）----
+	//
+	// 容器是"宽而矮"、图内容是"窄而高"，所以能锁的硬不变量只有三条：
+	//   ① 图完整落在容器内（四边都有余量）→ 防"没 fit，内容被裁掉"
+	//   ② 至少在一个方向上占到容器的 55%  → 防"缩过头，字小到读不了"
+	//   ③ 左右余量基本相等               → 防"按旧尺寸算的 tx"，整体偏移
+	//
+	// 不断言具体缩放比：那是布局函数的输出，改 rankSep/节点数都会变，
+	// 断言它等于某个数只会变成维护负担。
+	await page.goto(new URL("trace.html?traceId=trace_mock_t9&view=graph", page.url()).href, {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	await page
+		.waitForFunction(() => document.querySelectorAll(".wf-node").length > 0, {
+			timeout: 15000,
+		})
+		.catch(() => {});
+	// 等字体就绪后那次补 fit 落地（首帧用的是回退字体度量）
+	await page.waitForTimeout(700);
+	const fitInfo = await page.evaluate(() => {
+		const box = document.querySelector(".flograph");
+		const c = box.getBoundingClientRect();
+		let minX = 1e9;
+		let maxX = -1e9;
+		let minY = 1e9;
+		let maxY = -1e9;
+		for (const n of box.querySelectorAll(".wf-node")) {
+			const r = n.getBoundingClientRect();
+			minX = Math.min(minX, r.left - c.left);
+			maxX = Math.max(maxX, r.right - c.left);
+			minY = Math.min(minY, r.top - c.top);
+			maxY = Math.max(maxY, r.bottom - c.top);
+		}
+		return {
+			w: Math.round(c.width),
+			h: Math.round(c.height),
+			gapL: Math.round(minX),
+			gapR: Math.round(c.width - maxX),
+			gapT: Math.round(minY),
+			gapB: Math.round(c.height - maxY),
+			ratio: Math.max((maxX - minX) / c.width, (maxY - minY) / c.height),
+		};
+	});
+	H.check(
+		"图自动缩放到容器内（不裁切 / 不过度缩小 / 左右居中）",
+		fitInfo.gapL > 0 &&
+			fitInfo.gapR > 0 &&
+			fitInfo.gapT > 0 &&
+			fitInfo.gapB > 0 &&
+			fitInfo.ratio >= 0.55 &&
+			Math.abs(fitInfo.gapL - fitInfo.gapR) <= 60,
+		`容器=${fitInfo.w}x${fitInfo.h} 余量 L${fitInfo.gapL}/R${fitInfo.gapR}/T${fitInfo.gapT}/B${fitInfo.gapB} 占位比=${fitInfo.ratio.toFixed(2)}`,
+	);
 }
 
 // checkFlowChart 在 mock 预览里验证流向图。
