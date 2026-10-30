@@ -27,7 +27,8 @@ services:
       ANOTIFY_ADDR: :8080
       # ANOTIFY_STATIC 留空 = 使用二进制内嵌前端（生产模式）
     volumes:
-      - anotify-data:/home/anotify
+      # 必须与 Dockerfile 的 WORKDIR / VOLUME 一致（/data 已 chown 给 uid 10001）
+      - anotify-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 30s
