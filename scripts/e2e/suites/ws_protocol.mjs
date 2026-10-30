@@ -16,7 +16,6 @@
  * 现在测节点协议。
  */
 import * as H from "../lib/harness.mjs";
-import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import {
 	bringUpNode,
@@ -26,7 +25,7 @@ import {
 	waitForFrame,
 } from "../lib/nodes.mjs";
 
-let server, session, sendKey, orgId, nsId;
+let server, session, sendKey, nsId;
 
 async function defineCapability(name, outputs = [], extra = {}) {
 	const r = await H.req(server.base, "/v1/capabilities", {
@@ -95,16 +94,14 @@ async function main() {
 	session = seeded.session;
 	sendKey = seeded.sendKey;
 
-	const seedRun = spawnSync(H.DEVSEED_BIN, ["-db", server.dbPath, "-username", "wsproto"], {
-		encoding: "utf8",
-	});
-	const seedOut = (seedRun.stdout || "") + (seedRun.stderr || "");
-	orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
-	H.check("拿到 orgId", !!orgId, seedOut.slice(0, 150));
-	if (!orgId) throw new Error("需要 orgId");
-
+	// #204 / 迁移 14：组织层删除（orgs / org_members 没了，devseed 也不再输出 org，
+	// 改成 stderr 的「命名空间就绪: ns_xxx」）。所以：
+	//   ① 原来那句 `H.check("拿到 orgId", ...)` 换成**命名空间口径**的等价断言；
+	//   ② 原来为了拿 orgId 而单独 spawn 一次 devseed 的代码整段删掉 —— 它唯一的
+	//      产物就是 orgId，而 H.seed() 已经在同一个库上用同一个用户名跑过 devseed。
+	//
 	// #162：节点直插库时必须写 namespace_id（迁移 12 起 NOT NULL）。
-	// 取本组织默认命名空间（slug=default）的 id —— 用例里不硬编码 ns_xxx。
+	// 取本部署默认命名空间（slug=default）的 id —— 用例里不硬编码 ns_xxx。
 	nsId = await H.defaultNamespaceId(server.base, session);
 	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
 	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
@@ -141,7 +138,7 @@ async function main() {
 	const cap = await defineCapability("ws.demo", ["go"]);
 	const cap2 = await defineCapability("ws.work", []);
 
-	const node = await bringUpNode(server.base, server.dbPath, orgId, nsId, "ws-node", [cap, cap2], 2);
+	const node = await bringUpNode(server.base, server.dbPath, nsId, "ws-node", [cap, cap2], 2);
 	const welcome = node.frames.find((f) => f.type === "welcome");
 	H.check("收到 welcome", !!welcome);
 	H.eq("welcome.node_id 正确", welcome?.node_id, node.id);
@@ -172,7 +169,7 @@ async function main() {
 
 	// ================= 声明未定义能力 → unknown_capability =================
 	console.log("--- 能力白名单（A3）---");
-	const badNode = seedNodeRows(server.dbPath, orgId, nsId, "ws-badnode", [], 1);
+	const badNode = seedNodeRows(server.dbPath, nsId, "ws-badnode", [], 1);
 	const badConn = await wsConnect(server.base, badNode.token);
 	const badFrames = [];
 	badConn.onFrame((f) => badFrames.push(f));
@@ -287,7 +284,7 @@ async function main() {
 	// ack 派给别人的任务 → invalid_transition
 	node.frames.length = 0;
 	const capOther = await defineCapability("ws.other", []);
-	const otherNode = await bringUpNode(server.base, server.dbPath, orgId, nsId, "ws-other", [capOther], 1);
+	const otherNode = await bringUpNode(server.base, server.dbPath, nsId, "ws-other", [capOther], 1);
 	const evOther = await postEvent({ source: "ws.other", type: "go", payload: {} });
 	// ws.other 没有出口边，所以不会有任务；直接构造一个"不属于本节点"的 taskId
 	node.conn.send({ type: "ack", task_id: "tsk_not_assigned_to_me_000" });

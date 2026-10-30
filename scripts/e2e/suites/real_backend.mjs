@@ -34,7 +34,6 @@
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
@@ -77,8 +76,10 @@ const UI_NODE_NAME = "ui-agent";
 // **只有** `/v1/orgs` 的 404：`partials.js` 的侧栏组织切换器探测该端点，
 // 真后端还没有这套路由（docs/design/namespaces.md），拿不到就隐藏切换器。
 // 除它以外任何 4xx 都是"某个页面用错了端点/漏了参数"，一律算失败。
-// 注：等这个端点真上线（返回 200）后，这一条要删掉 —— 白名单里的死条目会让人
-// 误以为"真后端还没有 /v1/orgs"。
+// 注：#204 / 迁移 14 删掉组织层（orgs / org_members）后，`/v1/orgs` 不会再上线 ——
+// 隔离边界只剩命名空间。但 `web/partials.js` 的 mountScopeSwitcher 仍在探测它
+// （探测不到就隐藏切换器），所以这条白名单必须留着，否则每页都会红。
+// 等前端把「组织」那半边拆掉（单独工单）后，连这条一起删。
 const FOUR_XX_WHITELIST = [{ path: "/v1/orgs", status: 404 }];
 
 // 命名空间资源端点的判定直接复用 `H.isNamespaceEndpoint`（各套件共用口径）。
@@ -140,21 +141,6 @@ function waitChildExit(child, timeoutMs = 15000) {
 			resolve({ code, signal });
 		});
 	});
-}
-
-// primaryOrgOf 按 uid 查主组织（devseed 只把 org 打到 stderr，H.seed 不返回它）。
-function primaryOrgOf(dbPath, uid) {
-	const db = new DatabaseSync(dbPath);
-	try {
-		const row = db
-			.prepare(
-				`SELECT org_id FROM org_members WHERE user_id = ? ORDER BY rowid LIMIT 1`,
-			)
-			.get(uid);
-		return row ? row.org_id : null;
-	} finally {
-		db.close();
-	}
 }
 
 // injectSession 把真会话 cookie 注入浏览器上下文（与 deeplink 套件同一写法）。
@@ -921,8 +907,10 @@ async function main() {
 	// 不写死总数（写死总数等于把内置能力的数量钉进套件）。
 	const capList = allCaps.filter((c) => INSTALLED_CAP_NAMES.includes(c.name));
 	H.eq("GET /v1/capabilities 含 install 的 3 个定义", capList.length, 3);
-	const orgId = primaryOrgOf(server.dbPath, s.uid);
-	H.check("拿到 orgId", !!orgId, String(orgId));
+	// #204 / 迁移 14：组织层删除（orgs / org_members 两张表都没了）。原来这里那句
+	// 「拿到 orgId」（primaryOrgOf 按 uid 查 org_members）换成**命名空间口径**：
+	// main 开头已经断言过「拿到默认命名空间 id」（nsId），节点就播进那个命名空间。
+	// 不需要重复取一次，也不再查任何 org 表。
 
 	// 先把 agent 二进制准备好：`ensureAgentBin()` 走现场 `go build` 时是**同步阻塞**
 	// 的，压在心跳定时器期间会把 rb-ws-node 的心跳一起卡住（看门狗 20s 就关连接）。
@@ -931,7 +919,6 @@ async function main() {
 	wsNode = await N.bringUpNode(
 		server.base,
 		server.dbPath,
-		orgId,
 		nsId,
 		WS_NODE_NAME,
 		capList,

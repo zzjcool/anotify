@@ -18,7 +18,6 @@
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
 import * as N from "../lib/nodes.mjs";
-import { DatabaseSync } from "node:sqlite";
 
 const RP = "localhost";
 const PAGES = [
@@ -64,20 +63,6 @@ let frontendNode = null;
 // 本组织默认命名空间 id（#162）：真实后端的命名空间资源请求必须显式带 namespaceId。
 // 放在模块级是因为页面内直接发的请求（page.evaluate 里的 fetch）也要用它。
 let realNsId = null;
-
-function primaryOrgOf(dbPath, uid) {
-	const db = new DatabaseSync(dbPath);
-	try {
-		const row = db
-			.prepare(
-				"SELECT org_id FROM org_members WHERE user_id = ? ORDER BY rowid LIMIT 1",
-			)
-			.get(uid);
-		return row ? row.org_id : null;
-	} finally {
-		db.close();
-	}
-}
 
 // 收集单页在指定视口下的渲染问题
 async function checkPage(ctx, url, viewportName, viewport) {
@@ -523,15 +508,16 @@ async function main() {
 				toCapability: capB.json?.capability?.id,
 			},
 		});
-		const orgId = primaryOrgOf(server.dbPath, s.uid);
+		// #204 / 迁移 14：组织层删除 —— 原来的「按 uid 查主组织」（primaryOrgOf 查
+		// org_members）整段去掉，节点归属改用**默认命名空间** id（命名空间是唯一
+		// 隔离边界），下面这句「拿到默认命名空间 id」就是它的等价断言。
 		// #162：节点行直插库，迁移 12 起必须写 namespace_id。
-		// 取本组织默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
+		// 取本部署默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
 		realNsId = await H.defaultNamespaceId(server.base, s.session);
 		H.check("拿到默认命名空间 id", !!realNsId, String(realNsId));
 		const node = await N.bringUpNode(
 			server.base,
 			server.dbPath,
-			orgId,
 			realNsId,
 			"frontend-node",
 			[

@@ -16,7 +16,6 @@
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
 import * as N from "../lib/nodes.mjs";
-import { DatabaseSync } from "node:sqlite";
 
 let server, browser;
 
@@ -37,21 +36,6 @@ async function injectSession(ctx, sessionValue, base) {
 			secure: u.protocol === "https:",
 		},
 	]);
-}
-
-// primaryOrgOf 按 uid 查主组织（devseed 只把 org 打到 stderr，H.seed 不返回它）。
-function primaryOrgOf(dbPath, uid) {
-	const db = new DatabaseSync(dbPath);
-	try {
-		const row = db
-			.prepare(
-				`SELECT org_id FROM org_members WHERE user_id = ? ORDER BY rowid LIMIT 1`,
-			)
-			.get(uid);
-		return row ? row.org_id : null;
-	} finally {
-		db.close();
-	}
 }
 
 async function main() {
@@ -115,15 +99,14 @@ async function main() {
 
 	// 节点：声明 review@1 与 deeplink.src@1
 	//
-	// 能力是建在 **s.uid 的主组织** 里的，节点必须播到同一个组织，
-	// 否则 NodesForCapability 查不到（派发会 pruned/no_node）。
-	// H.seed() 不返回 orgId，所以直接按 uid 查 org_members。
-	const orgId = primaryOrgOf(server.dbPath, s.uid);
-	H.check("拿到 orgId", !!orgId, String(orgId));
-	if (!orgId) throw new Error("无法解析 orgId for " + s.uid);
-
+	// 能力是建在**默认命名空间**里的，节点必须播到同一个命名空间，否则
+	// NodesForCapability 查不到（派发会 pruned/no_node）。
+	//
+	// #204 / 迁移 14：组织层删除（orgs / org_members 两张表都没了），隔离边界只剩
+	// 命名空间。原来那句「拿到 orgId」（按 uid 查 org_members）在这里换成等价强度的
+	// **命名空间口径**断言：拿到默认命名空间（slug=default）的 id。
+	//
 	// #162：节点行直插库，迁移 12 起必须写 namespace_id。
-	// 取本组织默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
 	const nsId = await H.defaultNamespaceId(server.base, s.session);
 	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
 	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
@@ -134,7 +117,6 @@ async function main() {
 	const node = await N.bringUpNode(
 		server.base,
 		server.dbPath,
-		orgId,
 		nsId,
 		"deeplink-node",
 		[
