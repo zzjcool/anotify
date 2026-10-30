@@ -147,23 +147,38 @@
       }
 
       // 只把**缺的那个能力**写成 YAML，不是把整份文件吐出来让人自己删。
+      // 生成的 node.yaml 必须能**直接**被 cmd/agent 解析（严格 YAML 解码：
+      // 多一个未知字段就报 "field xxx not found"）。形状以 cmd/agent/config.go 为准：
+      //   顶层 name/server/token/instances
+      //   capabilities[].capability（不是 name）+ run 是**映射**（runner/command/timeoutSec/concurrency）
+      // 以前这里生成的是 `node:` 包一层、`run: bash` 标量、`timeout_sec`，
+      // 贴进 agent 立刻解析失败 —— 命令一条都跑不起来。
       function yamlFor(items) {
         const lines = [
-          "# node.yaml —— 贴进节点配置后重启 agent",
-          "node:",
-          "  name: <这台机器的名字>",
+          "# node.yaml —— 填好 server / token 后：agent -f node.yaml",
+          "# token 来自「节点」页注册节点时返回的一次性令牌",
+          "name: " + (items[0] && items[0].ref
+            ? String(items[0].ref).split("@")[0] + "-node"
+            : "my-node"),
+          "server: https://anotify.example.com",
+          "token: n_请替换为节点令牌",
+          "instances: 1",
           "capabilities:",
         ];
         for (const it of items) {
           const name = String(it.ref || "").split("@")[0];
           const ver = String(it.ref || "").split("@")[1] || "1";
           const r = it.runner || {};
-          lines.push("  - name: " + name);
+          lines.push("  - capability: " + name);
           lines.push("    version: " + ver);
-          lines.push("    run: " + (r.runner || "bash"));
-          if (r.command) lines.push("    command: " + r.command);
-          if (r.timeoutSec) lines.push("    timeout_sec: " + r.timeoutSec);
-          if (r.concurrency) lines.push("    concurrency: " + r.concurrency);
+          lines.push("    run:");
+          lines.push("      runner: " + (r.runner || "bash"));
+          // command 用块标量：带引号/换行的命令按缩进原样保留
+          lines.push("      command: |");
+          const cmd = String(r.command || "echo hello");
+          for (const l of cmd.split("\n")) lines.push("        " + l);
+          if (r.timeoutSec) lines.push("      timeoutSec: " + r.timeoutSec);
+          if (r.concurrency) lines.push("      concurrency: " + r.concurrency);
         }
         return lines.join("\n");
       }
