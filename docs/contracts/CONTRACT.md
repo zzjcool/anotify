@@ -28,7 +28,7 @@
 
 ## 1. 表清单
 
-**12 张新建 + 4 张沿用**，全部 `CREATE TABLE IF NOT EXISTS`。
+**13 张新建 + 4 张沿用**，全部 `CREATE TABLE IF NOT EXISTS`。
 
 | 表 | 归属 | 说明 |
 |---|---|---|
@@ -46,12 +46,13 @@
 | `events` | 命名空间 | 事件日志（链的起点） |
 | `tasks` | 命名空间 | 任务行 = OTel span |
 | `graph_versions` | 命名空间 | 图快照，钉 hash |
+| `playbooks` | 命名空间 | 预案清单（安装时批量写能力/边/源），见 §2.8 |
 
-### 1.1 本文定义的表（12 张）
+### 1.1 本文定义的表（13 张）
 
 `orgs` / `org_members` / `namespaces` / `capability_versions` / `nodes` /
 `node_capabilities` / `node_instances` / `node_pins` / `edges` / `events` / `tasks` /
-`graph_versions`
+`graph_versions` / `playbooks`
 
 ### 1.2 沿用不动的表（4 张）
 
@@ -376,6 +377,55 @@ CREATE TABLE IF NOT EXISTS source_targets (
 
 **I11 第 ② 条**：`source_targets.capability_id` 指向的能力定义必须与源同一命名空间
 （创建与更新两条路径都要校验，违反 `400`）。源不建边，它自己就是起点（见 #110）。
+
+### 2.8 预案（playbooks）
+
+```sql
+-- +migration 13 playbooks
+CREATE TABLE IF NOT EXISTS playbooks (
+    id           TEXT PRIMARY KEY,              -- pb_<base62>
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    slug         TEXT NOT NULL,                 -- pr-review（URL 用，命名空间内唯一）
+    name         TEXT NOT NULL,                 -- PR 审查
+    descr        TEXT NOT NULL DEFAULT '',      -- 说明文字（缩写列名，原因见下）
+    manifest     TEXT NOT NULL,                 -- manifest JSON 原文
+    created_at   INTEGER NOT NULL,
+    UNIQUE (namespace_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_at);
+```
+
+**列名是 `descr` 而不是 `description`**：A2 的禁词正则是**子串**匹配
+（`argv|shell|script`），而 `description` 这个单词里恰好含有被禁子串 —— 写进
+`schema.sql` 会让 `make contract` 失败。列名只活在 store 层，**API/JSON 字段仍是
+`description`**（camelCase，见 `api/openapi.yaml`）。
+
+五条口径：
+
+1. **`manifest` 存用户提交的 JSON 原文**：只做校验（能力名/版本、边的 `fromPort`
+   属于上游 `outputs`、触发 `kind` 合法），**不重新编码、不解释**。`runner` /
+   `paramsSchema` / 自定义键原样往返（I1：中枢不知道「怎么执行」，runner 属于节点侧
+   配置；重新编码等于偷偷改用户的配置）。缺省归一化成
+   `{"capabilities":[],"edges":[],"triggers":[]}`（I9：空是 `[]`）。
+2. **就绪体检是查询时算的推导量，不落库**（I3 同源）：能力定义在不在 / 有没有节点
+   声明 / `edges` 里有没有这条边 / 有没有命中**入口能力**的源。单项状态是四态
+   `ok|missing|no-node|offline`（`no-node` 与 `offline` **必须分开**：前者要去装机器，
+   后者只需把机器连上），总体状态 `ready|blocked|needs-node|partial`。
+3. **安装是单事务，顺序能力 → 边 → 源**：边的两端要有定义才建得了，源要有人可派；
+   任何一步出错整体回滚，不留半套配置。单条边两端缺定义 / `fromPort` 不在上游
+   `outputs` 里 / 同内容能力冲突，都**只 skip 那一条**（原因写进 `notes`），不整体失败。
+4. **删预案不删已装物**：预案是清单，不是所有权。`DELETE /v1/playbooks/{idOrSlug}`
+   只删这一行，已安装的能力定义 / 边 / 源原样保留（要拆就明确去删那些东西——
+   两种语义混进一个删除动作里，迟早误删生产配置）。
+5. **I8 append-only / I11 只碰本命名空间**：安装时已存在的 `(name, version)` 一律
+   **跳过、绝不覆盖**（同内容冲突也只 skip，不产生第二行同内容定义）；写入的能力定义、
+   边、源全部锁在**本次请求命中的那一个命名空间**内（跨命名空间引用 → `400`）。
+   预案也**不提供跨命名空间汇总**：体检结论只能按单个命名空间算（见 §6.2）。
+
+端点、状态码与字段形状见 §6.2 与 `api/openapi.yaml`（后者与 `web/mock.js` 的
+`pbChecks` / `pbView` 逐字段一致，是验收基准）。
 
 ---
 
@@ -883,6 +933,11 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `POST` | `/v1/nodes/{id}/drain` | 排空节点 |
 | `GET`/`POST` | `/v1/namespaces` | 列出 / 新建命名空间（新建时**同事务播种内置能力**） |
 | `PATCH`/`DELETE` | `/v1/namespaces/{id}` | 改名（只改 `name`，`slug` 不可改）/ 删除（阻塞 `409`、最后一个 `400`、`?force=true` 级联） |
+| `GET` | `/v1/playbooks` | 预案列表（每项带就绪体检结论 `status` / `ready` / `total` / `counts`） |
+| `POST` | `/v1/playbooks` | 从 manifest 创建预案（**不安装**；`201`，重名 slug `409`） |
+| `GET` | `/v1/playbooks/{idOrSlug}` | 预案详情（额外带逐项体检 `items`） |
+| `POST` | `/v1/playbooks/{idOrSlug}/install` | 幂等安装（能力 → 边 → 源，单事务，`200`） |
+| `DELETE` | `/v1/playbooks/{idOrSlug}` | 删预案（**不删已装物**；`200` `{"deleted": true}`） |
 
 **JSON 字段一律 camelCase**（I9 同源约束的延伸）。
 
@@ -892,8 +947,9 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 | 端点 | `namespaceId` |
 |---|---|
-| `/v1/capabilities`、`/v1/nodes`、`/v1/nodes/{id}`、`/v1/edges`、`/v1/sources`、`/v1/events`、`/v1/tasks`、`/v1/traces/*`、`/v1/stats` | **必填** |
+| `/v1/capabilities`、`/v1/nodes`、`/v1/nodes/{id}`、`/v1/edges`、`/v1/sources`、`/v1/playbooks*`、`/v1/events`、`/v1/tasks`、`/v1/traces/*`、`/v1/stats` | **必填** |
 | 同上但要跨命名空间汇总（管理员视图） | `namespaceId=*` |
+| `/v1/playbooks*`（5 个端点全部） | **不接受 `*`**（一律 `400`）——预案不提供跨命名空间汇总口径 |
 | `/v1/orgs`、`/v1/admin/*`、`/v1/auth/*` | **不需要**（组织级） |
 
 - 参数位置：`GET` 用 query `namespaceId`；`POST`/`PATCH`/`DELETE` 可放 query 或 body 的
@@ -904,9 +960,16 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 - `namespaceId=*` → 跨命名空间汇总，**只允许读端点**；写端点 / 单对象端点带 `*` → `400`；
   `/v1/stats` 的汇总口径未定义，它的 `*` 同样 `400`
 - 不存在 → `404`；属于别的 org → `403`；跨命名空间引用 → `400`（I11）
-  - **唯一例外：`POST /v1/nodes`**——属于别的组织的命名空间同样返回 `404`
+  - **例外一：`POST /v1/nodes`**——属于别的组织的命名空间同样返回 `404`
     （写端点不能用来探测别人的命名空间 id），响应与「不存在」**逐字节相同**
     （`{"error":"namespace not found"}`，不回显传入的 id）；其余端点仍是 `403`
+  - **例外二：`/v1/playbooks*` 的每一个端点**——同样「别的 org → `404`」，
+    响应体与「不存在」**逐字节相同**（`{"error":"namespace not found"}`，不回显 id）。
+    **同因**：写端点 / 单对象端点不能用来探测别人的命名空间 id 在不在
+    （存在与不存在必须不可区分）。并且这组端点对 `namespaceId=*`
+    **一律 `400`**：预案不提供跨命名空间汇总——体检结论（能力定义 / 边 / 触发器
+    的存在性）只能按**单个**命名空间算，「汇总的 ready 率」是个没有定义的量。
+    这 5 个端点**每一个**都必填 `namespaceId`（见 §2.8）
 - 所有资源在响应里带 `namespaceId`；`/v1/namespaces` 自身不带
 - **节点归属**：机器属于哪个命名空间由**节点令牌**决定（令牌 → 节点行 →
   `nodes.namespace_id`，握手时按 token 解析，见 §10.3），创建后不可改

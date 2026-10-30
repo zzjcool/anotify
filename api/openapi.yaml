@@ -41,6 +41,8 @@ tags:
     description: 能力定义（append-only，每次改动开新版本）
   - name: edges
     description: 出口表（路由的唯一依据）
+  - name: playbooks
+    description: 预案（可安装的流程零件：清单 + 就绪体检 + 幂等安装）
   - name: nodes
     description: 节点（执行者）
   - name: node-stream
@@ -884,6 +886,334 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404":
           description: 源不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ========== 事件中心：预案（playbook）==========
+  #
+  # 预案是**清单，不是所有权**：一份 manifest 说清「跑通这条流程需要哪些能力定义 /
+  # 边 / 触发器」，安装时幂等补齐（能力 → 边 → 源，单事务），删预案**不回滚**已装的
+  # 东西（它们已经独立存在了）。设计见 docs/design/playbooks.md，表的定义见
+  # CONTRACT.md §2.8。
+  #
+  # 与 issue #193 草稿的差异（**验收基准是 web/mock.js 与已写好的前端**，不是草稿）：
+  #   - `status` 是**四态** `ready / blocked / needs-node / partial`
+  #     （不是 `ready|incomplete`）
+  #   - `counts` 是 `{capabilities, edges, triggers}` 三类项的**数量**
+  #     （不是 `ok/no-node/offline/missing` 的分布）
+  #   - `next` 是**第一个非 ok 的检查项对象**（不是一句人话字符串），全 ok 时 `null`
+  # 这三个形状与 `pbChecks` / `pbView`（web/mock.js:1395-1780）逐字段一致。
+  #
+  # 作用域：本组**每个**端点都必填 `namespaceId`（`NamespaceIdStrict`）——
+  # 缺参 400、`*` 400、不存在 404、**别的 org 也是 404**（与「不存在」逐字节相同）。
+  # 预案**不提供**跨命名空间汇总：体检结论只能按单个命名空间算。
+  /playbooks:
+    get:
+      tags: [playbooks]
+      summary: 预案列表（每项带就绪体检结论）
+      description: |
+        每项 = 预案行 + 体检结论（`status` / `next` / `ready` / `total` / `counts`），
+        **不带** `items`（逐项明细在 `GET /playbooks/{idOrSlug}` 里）。
+
+        体检是**查询时算出来的推导量，不落库**（不变量 I3 同源）：能力定义在不在、
+        有没有节点声明、`edges` 里有没有这条边、有没有命中入口能力的源。
+
+        排序按 `(createdAt, id)` **升序**（与 mock 卡片的顺序一致）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceIdStrict"
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '预案列表（空时 `playbooks: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [playbooks, namespaceId]
+                properties:
+                  playbooks:
+                    type: array
+                    description: 空为 `[]`（不变量 I9）
+                    items: { $ref: "#/components/schemas/PlaybookView" }
+                  namespaceId:
+                    type: string
+                    description: 本次作用域（预案没有 `*`，这里恒是具体的命名空间 id）
+        "400":
+          description: |
+            参数非法：缺 `namespaceId`（`namespaceId is required`）；
+            或 `namespaceId=*`（预案不提供跨命名空间汇总口径）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: |
+            命名空间不存在，或属于**别的组织**——两者响应**逐字节相同**
+            （`{"error":"namespace not found"}`，不回显传入的 id）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: 服务端错误（`{"error":"internal error"}`，细节只进服务端日志）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [playbooks]
+      summary: 从 manifest 创建预案（**不安装**）
+      description: |
+        只落一行 `playbooks`（清单本身），**不写**能力定义 / 边 / 源 ——
+        要装是另一个动作（`POST /playbooks/{idOrSlug}/install`）。
+
+        创建期把矛盾说清（都返 `400`，错误信息指出是哪一项违反）：
+        - `slug`：`^[a-z0-9]+(?:-[a-z0-9]+)*$`、长度 ≤ 64、**不 trim**
+          （带空格 / 大写 / 下划线即非法——不把写错的地方静默改对）
+        - `slug` 在**同一命名空间**内唯一（重名 → `409`，不是 `400`）
+        - `name` 必填非空
+        - `manifest`：能力 `name` 非空且不是内置 origin 保留名（`github` / `cron` /
+          `http` / `manual`）、`version > 0`、同一 manifest 内 `(name, version)` 不重复、
+          `paramsSchema`（若给）是 JSON 对象；边的三个字段非空，且 `from` 在本 manifest
+          里声明过时 `fromPort` 必须属于它的 `outputs`（不变量 I2）；触发的 `kind` 合法
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceIdStrict"
+        - { name: orgId, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, name]
+              properties:
+                namespaceId:
+                  type: string
+                  description: 与 query 同义（**query 优先**）；二者给一个，都缺 → 400
+                slug:
+                  type: string
+                  example: pr-review
+                  description: |
+                    URL 用的稳定标识，命名空间内唯一；
+                    规则 `^[a-z0-9]+(?:-[a-z0-9]+)*$`、长度 ≤ 64。
+                name: { type: string, example: PR 审查, description: 展示名，不能为空 }
+                description: { type: string, description: 一句话说明，可省略（缺省是空串） }
+                manifest:
+                  allOf:
+                    - $ref: "#/components/schemas/PlaybookManifest"
+                  description: |
+                    缺省 / `null` → 归一化成
+                    `{"capabilities":[],"edges":[],"triggers":[]}`（空是 `[]`）。
+                    **原文存**：含 `runner` / `paramsSchema` / 自定义键在内，一律只校验、
+                    不重新编码、不解释（不变量 I1）。
+      responses:
+        "201":
+          description: 已创建（返回的 `playbook` 是详情形态，**带** `items`）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [playbook]
+                properties:
+                  playbook: { $ref: "#/components/schemas/PlaybookDetail" }
+        "400":
+          description: |
+            参数非法（`code: invalid_playbook`）：`slug` 缺失或非法 / `name` 缺失 /
+            `manifest` 非法 / 触发 `kind` 非法；或作用域非法（缺 `namespaceId`、`namespaceId=*`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: |
+            命名空间不存在，或属于**别的组织**——两者响应**逐字节相同**
+            （`{"error":"namespace not found"}`，不回显传入的 id）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            同命名空间里已有同名 `slug` 的预案
+            （`{"error":"同命名空间里已有同名 slug 的预案","code":"slug_taken"}`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: 服务端错误（`{"error":"internal error"}`，细节只进服务端日志）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /playbooks/{idOrSlug}:
+    parameters:
+      - name: idOrSlug
+        in: path
+        required: true
+        schema: { type: string }
+        description: |
+          预案的 `id`（`pb_...`）或 `slug`（如 `pr-review`）—— 两种都能定位。
+          别的命名空间的 id/slug 一律 `404`（不变量 I11：不跨命名空间取）。
+      - $ref: "#/components/parameters/NamespaceIdStrict"
+    get:
+      tags: [playbooks]
+      summary: 预案详情（逐项体检结果）
+      description: |
+        详情比列表多一个 `items`：按**依赖顺序**排的逐项检查（能力项 → 边项 → 触发项），
+        每项自带 `status`（`ok` / `missing` / `no-node` / `offline`）。
+        `no-node` 与 `offline` **必须分开**：前者要去写节点配置装机器，后者只需要把机器连上。
+
+        无项时 `items: []`（空是 `[]`，不是 `null`）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: 预案详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [playbook]
+                properties:
+                  playbook: { $ref: "#/components/schemas/PlaybookDetail" }
+        "400":
+          description: 参数非法（缺 `namespaceId`，或 `namespaceId=*`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: |
+            两种情况：命名空间不存在 / 属于别的组织（`{"error":"namespace not found"}`，
+            二者逐字节相同）；或预案不存在（含别命名空间的 id/slug）
+            （`{"error":"预案不存在","code":"not_found"}`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: 服务端错误（`{"error":"internal error"}`，细节只进服务端日志）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [playbooks]
+      summary: 删预案（**不删已安装的能力/边/源**）
+      description: |
+        只删 `playbooks` 里的这一行。预案是**清单，不是所有权**：
+        已经装进去的能力定义 / 边 / 源**原样保留** —— 要拆就明确去删那些东西
+        （把两种语义混进一个删除动作里，迟早误删生产配置）。
+
+        幂等视角：重复删同一个预案，第二次是 `404`（不是 `200`）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean, example: true }
+        "400":
+          description: 参数非法（缺 `namespaceId`，或 `namespaceId=*`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: |
+            命名空间不存在 / 属于别的组织（与「不存在」逐字节相同：
+            `{"error":"namespace not found"}`）；或预案不存在（`code: not_found`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: 服务端错误（`{"error":"internal error"}`，细节只进服务端日志）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /playbooks/{idOrSlug}/install:
+    parameters:
+      - name: idOrSlug
+        in: path
+        required: true
+        schema: { type: string }
+        description: 预案的 `id`（`pb_...`）或 `slug`
+      - $ref: "#/components/parameters/NamespaceIdStrict"
+    post:
+      tags: [playbooks]
+      summary: 幂等安装（能力定义 → 边 → 源，单事务）
+      description: |
+        把 manifest 里声明的零件补进当前命名空间。**顺序硬性**：能力 → 边 → 源
+        （边的两端要有定义才建得了，源要有人可派）；全过程**单事务**，真正的内部
+        错误才整体回滚（单条零件不成立只 skip，见下）。
+
+        幂等：已存在的 `(name, version)` 能力定义 / 已存在的同一条边 / 已存在的源
+        一律进 `skipped`，**绝不覆盖**（能力定义 append-only，不变量 I8）。
+        已经装了源时再装一次不会多出一个触发器 —— 判据是「同名源已存在」或
+        「已有同 kind 且 targets 命中本预案入口能力的源」。
+
+        能装什么装什么：单条边两端缺定义、`fromPort` 不在上游 `outputs` 里（I2）、
+        能力同内容冲突（`UNIQUE(namespace_id, content_hash)`）、源配置非法都**只 skip
+        那一条**，不整体失败，原因写进 `notes`（安装期只能 skip，不返 `400`）。
+
+        入口能力为空 → 该触发 skip（不建没有入口的源）。
+        写入的一切都锁在**本次**命名空间内（不变量 I11）。
+
+        这是**动作**，不改变预案的身份 → `200`（不是 `201`）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: |
+            安装完成（返回刷新后的详情 + 本次 created / skipped / notes）。
+            单条边 / 源不成立**只**进 `skipped`（原因见 `notes`），不整体失败；
+            真正的内部错误才整体回滚（一个零件都不落地，返 `500`）。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [playbook, created, skipped, notes]
+                properties:
+                  playbook:
+                    allOf:
+                      - $ref: "#/components/schemas/PlaybookDetail"
+                    description: 安装**完成后**重新体检过的详情（状态已随安装变化）
+                  created: { $ref: "#/components/schemas/PlaybookInstallSet" }
+                  skipped:
+                    allOf:
+                      - $ref: "#/components/schemas/PlaybookInstallSet"
+                    description: 已存在 / 这一轮装不了的（原因见 `notes`）
+                  notes:
+                    type: array
+                    items: { type: string }
+                    description: skipped 的人话说明；无则 `[]`
+        "400":
+          description: |
+            `400` **只**来自作用域：缺 `namespaceId` / `namespaceId=*`（契约 §6.2）。
+            安装期的源配置非法（如 `cron` 的 `types[0]` 不是合法五段表达式）**不是**
+            `400`：它是 skip + `notes`，不整体回滚（契约 §10 A4）。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: |
+            命名空间不存在 / 属于别的组织（与「不存在」逐字节相同：
+            `{"error":"namespace not found"}`）；或预案不存在（`code: not_found`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: |
+            服务端错误（`{"error":"internal error"}`，细节只进服务端日志）。
+            整个安装是单事务：出错时**一个零件都不会落地**
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2663,6 +2993,37 @@ components:
         所有资源响应的对象里都带 `namespaceId` 回显归属（`/namespaces` 自身不带：
         它是隔离维度本身）。
 
+    # 预案（playbook）专用的命名空间作用域参数。
+    #
+    # **刻意不复用 `NamespaceId`**：那条描述的是命名空间资源的通用口径
+    # （别的 org → `403`、读端点允许 `*` 做跨命名空间汇总），与预案的口径相反。
+    # 预案的 5 个端点全部按「单命名空间」硬约束（契约 §6.2、CONTRACT.md §2.8）。
+    NamespaceIdStrict:
+      name: namespaceId
+      in: query
+      required: true
+      schema: { type: string }
+      description: |
+        **必填**（契约 §6.2）—— 显式指定本次请求作用于哪个命名空间，
+        **永远没有隐式默认**。`GET` **只读** query；`POST` / `DELETE` 可放 query
+        或 body 的 `namespaceId` 字段（**query 优先**、body 兜底，与契约 §6.2 一致）。
+
+        - **缺参 → `400`**（`namespaceId is required`）。
+          绝不回退到默认命名空间：回退等于把调用方写错的地方藏起来
+        - **`namespaceId=*` → `400`（一律）**：预案**不提供跨命名空间汇总**。
+          体检结论（能力定义 / 边 / 触发器的存在性）只能按**单个**命名空间算，
+          「汇总的 ready 率」是个没有定义的量
+        - **不存在 → `404`**
+        - **属于别的组织也 `404`**：响应与「不存在」**逐字节相同** ——
+          `{"error":"namespace not found"}`（不回显传入的 id），
+          所以无法从响应区分「这个 id 存在但不是你的」和「这个 id 不存在」。
+          原因同 `POST /nodes`：写端点 / 单对象端点**不能**被拿来探测别人的
+          命名空间 id 是否存在。（其余命名空间资源的读端点仍是 `403`）
+        - 跨命名空间引用 → `400`（不变量 I11）：安装预案时写入的能力定义、
+          边、源全部落在**这一个**命名空间里
+
+        响应里的对象都带 `namespaceId` 回显归属。
+
   schemas:
 
     # ---------- 命名空间（#162）----------
@@ -3479,6 +3840,316 @@ components:
         createdAt: { type: integer }
         expiresAt: { type: integer }
         lastSeen: { type: integer }
+
+    # ---------- 预案（#193）----------
+    #
+    # 形状的唯一依据是 web/mock.js 的 `pbView` / `pbChecks`（验收基准）与
+    # `internal/store/playbook.go` 的 struct（契约 §5）。与 issue 草稿的差异已在
+    # 每个字段的 description 里点名（`status` 四态 / `counts` 三类数量 / `next` 是对象）。
+    Playbook:
+      type: object
+      description: |
+        预案行（`playbooks` 表）。一份可以直接存下来的**清单**：
+        它说清「跑通这条流程需要哪些能力定义 / 边 / 触发器」，但**不拥有**它们
+        （删预案不会回滚已安装物）。
+
+        `manifest` 是**用户提交的 JSON 原文**：中枢只校验、不重新编码、也不解释 ——
+        `runner` / `paramsSchema` / 自定义键都原样往返（不变量 I1：中枢不知道「怎么执行」，
+        runner 属于节点侧配置）。
+      required: [id, orgId, namespaceId, slug, name, description, manifest, createdAt]
+      properties:
+        id: { type: string, example: pb_1730000000_a1b2c3d4 }
+        orgId: { type: string }
+        namespaceId:
+          type: string
+          description: 预案所属命名空间（恒存在；体检只在这个命名空间里算）
+        slug:
+          type: string
+          example: pr-review
+          description: |
+            URL 用的稳定标识，**命名空间内唯一**（`UNIQUE (namespace_id, slug)`）。
+            规则 `^[a-z0-9]+(?:-[a-z0-9]+)*$`、长度 ≤ 64、**不 trim**。
+            安装时用它派生源名（`<slug>-<kind>-<idx>`），所以它也是幂等的键之一。
+        name: { type: string, example: PR 审查, description: 展示名（必填非空） }
+        description:
+          type: string
+          description: 一句话说明（可省略，缺省是空串）
+        manifest: { $ref: "#/components/schemas/PlaybookManifest" }
+        createdAt: { type: integer, format: int64 }
+
+    PlaybookManifest:
+      type: object
+      additionalProperties: true
+      description: |
+        预案清单。中枢**认得的**只有三个数组，其余键一律原样存、原样返回 ——
+        所以这里的 schema 是**宽松**的（`additionalProperties: true`）：
+        多一个字段不会被当成错误。
+
+        缺省 / `null` → 归一化成
+        `{"capabilities":[],"edges":[],"triggers":[]}`（空是 `[]`）。
+      properties:
+        capabilities:
+          type: array
+          description: 需要的能力定义（无项为 `[]`）
+          items: { $ref: "#/components/schemas/PlaybookManifestCapability" }
+        edges:
+          type: array
+          description: 需要的边（无项为 `[]`）
+          items: { $ref: "#/components/schemas/PlaybookManifestEdge" }
+        triggers:
+          type: array
+          description: 需要的触发器（无项为 `[]`）
+          items: { $ref: "#/components/schemas/PlaybookManifestTrigger" }
+
+    PlaybookManifestCapability:
+      type: object
+      additionalProperties: true
+      required: [name, version]
+      description: |
+        manifest 里声明的一条能力定义。`name` 不能是内置 origin 的保留名
+        （`github` / `cron` / `http` / `manual`），`version` 必须 > 0 ——
+        这些在**创建预案**时就校验（→ 400），而不是等到安装时。
+      properties:
+        name: { type: string, example: analyze-pr }
+        version: { type: integer, example: 1 }
+        outputs:
+          type: array
+          items: { type: string }
+          description: |
+            出口名的**封闭集合**（不变量 I2）；本 manifest 里的边的 `fromPort`
+            必须属于它。无项为 `[]`。
+        paramsSchema:
+          type: object
+          description: JSON Schema 的受控子集；**原样透传**（中枢不求值，不变量 I6）
+        runner:
+          description: |
+            节点侧的运行配置（怎么执行）。**中枢只存不解释**（不变量 I1）：
+            任意 JSON 原样往返，所以这里不限定类型。
+
+    PlaybookManifestEdge:
+      type: object
+      additionalProperties: true
+      required: [from, fromPort, to]
+      description: |
+        manifest 里声明的一条边。三个字段都写**能力名**（不是 id）：
+        安装与体检时在本次命名空间里解析成 `capability_versions.id`（I11：不跨命名空间）。
+      properties:
+        from:
+          type: string
+          description: 上游能力名（本 manifest 声明的，或命名空间里已存在的）
+        fromPort:
+          type: string
+          description: |
+            必须属于上游的 `outputs`（不变量 I2）。
+            `from` 在本 manifest 里声明过时，创建期就校验；否则安装时只能 skip。
+        to: { type: string, description: 下游能力名 }
+
+    PlaybookManifestTrigger:
+      type: object
+      additionalProperties: true
+      required: [kind]
+      description: |
+        manifest 里声明的一个触发器。`kind` 非法（不在 `webhook/github/cron/manual` 里）
+        在**创建预案**时就 400。安装时每个触发建一个源，它的 targets 指向本预案的
+        **入口能力**（没有作为任何边 `to` 的那些能力）；入口能力为空 → 该触发 skip。
+      properties:
+        kind:
+          type: string
+          enum: [webhook, github, cron, manual]
+        types:
+          type: array
+          items: { type: string }
+          description: |
+            事件类型（如 `pull_request.opened`）；`cron` 时 `types[0]` 就是五段表达式
+            本身，安装源时**原样**写进 `config.expr`。无项为 `[]`。
+
+    PlaybookView:
+      allOf:
+        - $ref: "#/components/schemas/Playbook"
+        - type: object
+          description: |
+            列表项 = 预案行 + 就绪体检结论。**不带** `items`（逐项明细在详情里）。
+
+            体检是**查询时算的推导量，不落库**（不变量 I3 同源）。
+          required: [status, next, ready, total, counts]
+          properties:
+            status:
+              type: string
+              enum: [ready, blocked, needs-node, partial]
+              description: |
+                总体状态，**四态**（优先级从高到低）：
+
+                - `blocked`：有能力定义 `missing`（连定义都没有，什么都跑不了）
+                - `needs-node`：定义齐了，但有 `no-node` / `offline`
+                - `partial`：节点齐了，但边或触发器还不是全 `ok`
+                - `ready`：全 `ok`
+
+                与 issue #193 草稿的 `ready|incomplete` 不同：验收基准是 mock `pbChecks`
+                与已写好的前端（`STATUS_KEY` / `STATUS_FALLBACK` 只认这四种）。
+            next:
+              allOf:
+                - $ref: "#/components/schemas/PlaybookCheckItem"
+              nullable: true
+              description: |
+                「最该先做的一件事」= 按依赖顺序（能力 → 边 → 触发）第一个非 `ok` 的项，
+                全 `ok` 时是 `null`。
+
+                是**对象**不是字符串（前端 `nextLine()` 读 `kind/status/ref/label`）；
+                issue 草稿里写的是一句人话，已废弃。
+                （OpenAPI 3.0 里 `$ref` 的兄弟键会被忽略，所以用 `allOf` 包一层才真的 nullable。）
+            ready: { type: integer, description: 通过的项数 }
+            total: { type: integer, description: 体检项总数（= `counts` 三项之和） }
+            counts: { $ref: "#/components/schemas/PlaybookCounts" }
+
+    PlaybookDetail:
+      allOf:
+        - $ref: "#/components/schemas/PlaybookView"
+        - type: object
+          description: 详情 = 列表项 + 逐项体检结果。
+          required: [items]
+          properties:
+            items:
+              type: array
+              description: |
+                逐项检查结果，按**依赖顺序**排：能力项 → 边项 → 触发项。
+                无项时为 `[]`（不变量 I9）。
+              items: { $ref: "#/components/schemas/PlaybookCheckItem" }
+
+    PlaybookCounts:
+      type: object
+      description: |
+        三类检查项的**数量**（卡片上的「能力 3 · 出口 3 · 触发器 1」）。
+
+        注意：这是**分类项数**，不是通过情况分布。每一项到底过没过，看该 item
+        自己的 `status`。issue 草稿里的 `{ok, noNode, offline, missing}` 是过时写法。
+      required: [capabilities, edges, triggers]
+      properties:
+        capabilities: { type: integer, description: manifest 里的能力项数 }
+        edges: { type: integer, description: manifest 里的边项数 }
+        triggers: { type: integer, description: manifest 里的触发项数 }
+
+    PlaybookCheckNode:
+      type: object
+      description: |
+        声明了该能力的节点（**含 draining / offline**：声明是配置事实，
+        排空中的机器仍然声明着它）。
+      required: [name, status]
+      properties:
+        name: { type: string }
+        status:
+          type: string
+          enum: [online, offline, draining]
+
+    PlaybookCheckItem:
+      type: object
+      description: |
+        一项体检结果。`kind` 决定哪些字段会出现（其余字段省略）：
+
+        - `capability`：`ref`（`name@version`）、`outputs`、`capId`、`runner`、`nodes`
+        - `edge`：`label`（`a --port--> b`）、`from` / `fromPort` / `to` /
+          `fromId` / `toId`、或 `blockedByCap`（端点缺定义时）
+        - `trigger`：`label`（`webhook · t1 / t2`）、`entryCaps`、`declaredKind`
+      required: [kind, status]
+      properties:
+        kind:
+          type: string
+          enum: [capability, edge, trigger]
+          description: 检查项类型（三态）
+        status:
+          type: string
+          enum: [ok, missing, no-node, offline]
+          description: |
+            单项状态（四态）：
+
+            - `ok`：满足
+            - `missing`：没有（没定义 / 没这条边 / 没这个源）
+            - `no-node`：定义有了，但**没有任何节点声明**自己能跑它
+              —— 要去写节点配置装机器
+            - `offline`：有节点声明了，但**全部不在线**
+              —— 只需要把机器连上
+
+            `no-node` 与 `offline` 必须分开：两者要做的事完全不同，
+            合成一个「未就绪」会让人做错事。
+        ref:
+          type: string
+          example: analyze-pr@1
+          description: 能力项的引用（`name@version`）
+        label:
+          type: string
+          example: analyze-pr --needs-fix--> lint-fix
+          description: 边项 / 触发项的人读标签
+        outputs:
+          type: array
+          items: { type: string }
+          description: 能力项的出口集合（解析到定义时用定义里的 `outputs`）
+        capId:
+          type: string
+          description: 能力定义 id（解析到定义时才有）
+        runner:
+          description: 清单里声明的 runner 原样带回（任意 JSON；没声明则省略）
+        nodes:
+          type: array
+          description: 声明了该能力的节点（无则省略）
+          items: { $ref: "#/components/schemas/PlaybookCheckNode" }
+        blockedByCap:
+          type: string
+          description: 边项：缺定义的那个端点能力名（先补能力）
+        from: { type: string, description: 边项：上游能力名 }
+        fromPort: { type: string, description: 边项：出口名 }
+        to: { type: string, description: 边项：下游能力名 }
+        fromId: { type: string, description: 边项：解析到的上游定义 id }
+        toId: { type: string, description: 边项：解析到的下游定义 id }
+        entryCaps:
+          type: array
+          items: { type: string }
+          description: |
+            触发项：本预案的**入口能力**名 = manifest 能力里没有作为任何边 `to` 的那些。
+            触发项的判定要求「kind 匹配 **且** 那个源的 targets 命中入口能力」
+            （只看 kind 会把「你有个 webhook 源」当成「这条流程有触发器了」）。
+        declaredKind:
+          type: string
+          enum: [webhook, github, cron, manual]
+          description: 触发项：manifest 里声明的源 kind
+
+    PlaybookInstallSet:
+      type: object
+      description: 安装结果里的一组（**无项一律 `[]`**，不变量 I9）。
+      required: [capabilities, edges, sources]
+      properties:
+        capabilities:
+          type: array
+          items: { type: string }
+          description: 能力引用（`name@version`）；无则 `[]`
+        edges:
+          type: array
+          items: { type: string }
+          description: 边标签（`a --port--> b`）；无则 `[]`
+        sources:
+          type: array
+          items: { type: string }
+          description: |
+            源名 `"<slug>-<kind>-<idx>"`（如 `pr-review-webhook-0`）；无则 `[]`。
+            与 mock 的差异：mock 用「预案名 · kind」，真后端按 slug 派生
+            （`sources` 的唯一键是 `(namespace_id, name)`，slug 在命名空间内唯一
+            → 确定性、可幂等）。`skipped.sources` 里放的是**实际存在的那个源名**。
+
+    PlaybookInstallResult:
+      type: object
+      description: |
+        幂等安装的结果。`created` = 本次新写进去的；`skipped` = 已经存在或这一轮
+        装不了的（判据：能力同名同版本已存在 / 边已存在 / 源同名，或已有同 kind 且
+        targets 命中本预案入口能力的源）。**已存在的定义绝不覆盖**（能力定义
+        append-only，不变量 I8）。
+      required: [created, skipped, notes]
+      properties:
+        created: { $ref: "#/components/schemas/PlaybookInstallSet" }
+        skipped: { $ref: "#/components/schemas/PlaybookInstallSet" }
+        notes:
+          type: array
+          items: { type: string }
+          description: |
+            skipped 的**人话**说明（如「边 X 的上游缺定义」「端口不在上游 outputs 里」）；
+            无则 `[]`。
   responses:
     Error:
       description: 错误

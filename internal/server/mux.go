@@ -298,6 +298,16 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 外部系统（GitHub / 监控告警）不可能带我们的 Cookie。
 	mux.Handle("POST /v1/hooks/{token}", noStore(http.HandlerFunc(srcH.hook)))
 
+	// --- 预案（playbook，#193 / 契约 §6）---
+	// 5 个端点**全部**用 resolveNamespaceCreate：缺参 400 / `*` 400 / 不存在 404 /
+	// 别的 org 也是 404（预案不提供跨命名空间汇总，体检结论只能按单个 ns 算）。
+	pbH := &playbookHandler{db: db, console: consoleH}
+	mux.Handle("GET /v1/playbooks", noStore(sessMW(http.HandlerFunc(pbH.list))))
+	mux.Handle("POST /v1/playbooks", noStore(sessMW(http.HandlerFunc(pbH.create))))
+	mux.Handle("GET /v1/playbooks/{idOrSlug}", noStore(sessMW(http.HandlerFunc(pbH.byKey))))
+	mux.Handle("DELETE /v1/playbooks/{idOrSlug}", noStore(sessMW(http.HandlerFunc(pbH.byKey))))
+	mux.Handle("POST /v1/playbooks/{idOrSlug}/install", noStore(sessMW(http.HandlerFunc(pbH.install))))
+
 	// --- 命名空间自身（#162 / 契约 §6.1）---
 	// 组织级资源：请求**不带** namespaceId（问"这个命名空间属于哪个命名空间"是自指）。
 	// slug 建了不可改（PATCH 只改 name），删除有 force 档（见 namespace_handlers.go）。
