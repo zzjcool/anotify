@@ -596,14 +596,16 @@ func (a *nodeAgent) semaphore(capability string, version, limit int) chan struct
 
 // sendResult 发 result 帧。
 //
-// out 恒 nil（契约 §10 缺口 4 / 不变量 I5）：v1 的 node.yaml 没有「命令 → 出口」的
-// 映射，所以 result 帧里 out 键**缺席**（服务端 Reported()==false，不派下一跳）。
+// out 透传 outcome.Out（契约 I5 三态）：runner 只在「任务成功且 node.yaml 声明了 run.out」
+// 时给它设值 —— 非 nil → 帧里带 "out":"<出口名>"（服务端 Reported()==true，按边
+// from_port 派下一跳）；nil → 帧里**没有** out 键（没回报出口：没声明 run.out，
+// 或任务没成功/超时/取消）。
 func (a *nodeAgent) sendResult(taskID string, out outcome) {
 	frame := &resultFrame{
 		Type:      frameTypeResult,
 		TaskID:    taskID,
 		Status:    out.Status,
-		Out:       nil,
+		Out:       out.Out,
 		Summary:   out.Summary,
 		Artifacts: out.Artifacts,
 		Error:     out.Err,

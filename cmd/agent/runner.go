@@ -49,7 +49,7 @@ type job struct {
 // outcome 是一次执行的结果。
 type outcome struct {
 	Status    string   // statusSucceeded | statusFailed
-	Out       *string  // v1 恒 nil（node.yaml 没有出口映射；out 键缺席 = 没回报出口）
+	Out       *string  // 出口名：仅「成功且 run.out 去空白后非空」时非 nil；其余（未声明/失败/超时/取消）恒 nil
 	Summary   string   // 一行
 	Artifacts []string // 恒非 nil（空返回 []）
 	Err       string   // failed 时非空
@@ -126,8 +126,15 @@ func runJob(ctx context.Context, j job) outcome {
 	res.Summary = oneLine(res.Output, summaryMaxBytes)
 
 	switch {
-	case err == nil:
+	case err == nil && ctx.Err() == nil:
+		// 成功判定要同时看 exit code 与 ctx：命令刚好在超时/取消那一刻 exit 0 时，
+		// 它不是「跑完了」，而是「被我们掐断的」，不能当成功（更不能回报出口）。
 		res.Status = statusSucceeded
+		// 出口名：node.yaml 自己声明的固定字符串（去空白后）。空白 = 未声明 →
+		// 保持 nil（帧里 out 键缺席 = 分支终止）。不做插值/映射/校验。
+		if s := strings.TrimSpace(j.Spec.Out); s != "" {
+			res.Out = &s
+		}
 		if res.Summary == "" {
 			// 命令没有输出（echo -n、true …）：summary 不能是空串，
 			// 否则服务端/前端看起来像「没回报」。

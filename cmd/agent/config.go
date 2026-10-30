@@ -54,6 +54,10 @@ type runSpec struct {
 	TimeoutSec  int               `yaml:"timeoutSec"  json:"timeoutSec,omitempty"`
 	Concurrency int               `yaml:"concurrency" json:"concurrency,omitempty"`
 	Env         map[string]string `yaml:"env"         json:"env,omitempty"`
+	// Out 是**成功时**回报的出口名（喂给中枢的多跳选边，见 playbooks §4）。
+	// 缺省 = 不回报（result 帧里 out 键缺席 → 分支终止）。
+	// 节点侧不做插值/映射/校验：它就是一段固定字符串，合法性由服务端查边时判定。
+	Out string `yaml:"out" json:"out,omitempty"`
 }
 
 // loadConfig 读取并校验一份 node.yaml。
