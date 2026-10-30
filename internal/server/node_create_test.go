@@ -9,7 +9,8 @@ package server
 // 覆盖契约 §6 的 7 条验收：
 //  1. 缺 namespaceId → 400 且点名 namespaceId（不回退默认命名空间）…… TestCreateNodeRequiresNamespace
 //  2. namespaceId=* → 400 ………………………………………………………………… TestCreateNodeRejectsAllNamespaces
-//  3. 跨组织命名空间 → 404 且与「不存在」逐字节相同 ………………………… TestCreateNodeForeignNamespaceIs404
+//  3. 不存在的命名空间 → 404（且不回显 id）；另一个**已存在**的命名空间 → 201 且落在那里
+//     …………………………………………………………………………………… TestCreateNodeNamespaceScope
 //  4. 成功 201 + 令牌只出现一次 ………………………………………………………… TestCreateNodeReturnsTokenOnce
 //  5. 同命名空间重名 → 409 ………………………………………………………………… TestCreateNodeDuplicateNameConflict
 //  6. 令牌真能做 WS 握手（真 httptest 服务器，不用 fake）……………… TestCreateNodeTokenWorksForWSHandshake
@@ -200,58 +201,70 @@ func TestCreateNodeRejectsAllNamespaces(t *testing.T) {
 	}
 }
 
-// TestCreateNodeForeignNamespaceIs404 契约 §6.3 / D2：别的组织的命名空间 → 404，
-// 且响应体与「不存在的命名空间」**逐字节相同**（不回显传入的 id）。
+// TestCreateNodeNamespaceScope 契约 §6.3 / D1：创建节点的命名空间作用域。
 //
-// 为什么读端点是 403（TestNamespaceForbidden，保持不动）而这里必须 404：
-// 创建是写端点，403 等于给了一个「命名空间 id 存在性探测器」——拿候选 id 打一遍，
-// 就能分辨「这 id 是别人的」还是「这 id 不存在」。404 + 同样的文案让两条路径不可区分。
-func TestCreateNodeForeignNamespaceIs404(t *testing.T) {
+// 迁移 14 删除了组织层（#204）之后，**不存在「别人的命名空间」**：本部署内任何已登录
+// 用户都能往任何**存在**的命名空间里建设备。所以原来那条「别的 org 的命名空间 → 404」
+// 的断言改写为两条等价且更强的命名空间口径断言（原用例名字是
+// TestCreateNodeForeignNamespaceIs404，断言数与覆盖点一个都没少）：
+//  1. 不存在的命名空间 id → 404，且响应体不回显传入的 id（防探测：404 除了「不存在」
+//     本身之外不能再泄漏任何东西）；
+//  2. 另一个**真实存在**的命名空间 → 201 且正常建出节点，返回的 node.namespaceId
+//     是那个命名空间、**不是** env.nsID——这才是「作用域真的按请求生效」的证据
+//     （一个写死默认命名空间的实现在旧用例下也能全绿）。
+func TestCreateNodeNamespaceScope(t *testing.T) {
 	env := newConsoleEnv(t)
 	ctx := context.Background()
 
-	other, err := env.db.CreateOrg(ctx, "org-other-"+store.NewOrgID())
-	if err != nil {
-		t.Fatalf("create other org: %v", err)
-	}
-	otherNS, err := env.db.DefaultNamespaceID(ctx, other.ID)
-	if err != nil {
-		t.Fatalf("other org default namespace: %v", err)
-	}
-
-	foreign := env.do(t, http.MethodPost, withNSID("/v1/nodes", otherNS),
-		map[string]any{"name": "intruder"})
-	if foreign.Code != http.StatusNotFound {
-		t.Fatalf("跨组织 namespaceId status = %d, want 404; body=%s",
-			foreign.Code, foreign.Body.String())
-	}
-	// 不泄漏这个命名空间的存在：body 里不能出现它的 id。
-	if strings.Contains(foreign.Body.String(), otherNS) {
-		t.Fatalf("404 响应里回显了别人的命名空间 id: %s", foreign.Body.String())
-	}
-
-	// 对照：不存在的 id 也是 404，而且两个响应体必须一字不差——
-	// 任何差异（哪怕只是多一句提示）都会把 404 变成探测器。
-	missing := env.do(t, http.MethodPost, withNSID("/v1/nodes", "ns_not_a_real_id"),
+	// ① 不存在的命名空间 → 404，且不回显传入的 id。
+	const missingNS = "ns_not_a_real_id"
+	missing := env.do(t, http.MethodPost, withNSID("/v1/nodes", missingNS),
 		map[string]any{"name": "intruder"})
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("不存在的 namespaceId status = %d, want 404; body=%s",
 			missing.Code, missing.Body.String())
 	}
-	if foreign.Body.String() != missing.Body.String() {
-		t.Fatalf("「别人的 ns」与「不存在的 ns」响应体不一致，构成存在性泄漏:\n foreign=%q\n missing=%q",
-			foreign.Body.String(), missing.Body.String())
+	if strings.Contains(missing.Body.String(), missingNS) {
+		t.Fatalf("404 响应里回显了传入的命名空间 id: %s", missing.Body.String())
+	}
+	if msg := mustStr(t, decode(t, missing), "error"); msg != "namespace not found" {
+		t.Fatalf("404 的 error = %q, want %q（不存在的命名空间只有一种回答）", msg, "namespace not found")
 	}
 
-	// 两个命名空间里都没有多出节点。
-	for _, nsID := range []string{env.nsID, otherNS} {
-		nodes, err := env.db.ListNodes(ctx, nsID)
-		if err != nil {
-			t.Fatalf("list nodes(%s): %v", nsID, err)
-		}
-		if len(nodes) != 0 {
-			t.Fatalf("命名空间 %s 里多出了 %d 台节点", nsID, len(nodes))
-		}
+	// 解析失败时绝不能落库：默认命名空间里看不到这台机器。
+	nodes, err := env.db.ListNodes(ctx, env.nsID)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("默认命名空间里多出了 %d 台节点（解析失败却落库了）", len(nodes))
+	}
+
+	// ② 另一个真实存在的命名空间 → 201（本部署内共享），并且真的落在那个空间里。
+	other := env.seedNamespace(t, "other", "另一个命名空间")
+	created := mustCreateNode(t, env.do(t, http.MethodPost, withNSID("/v1/nodes", other.ID),
+		map[string]any{"name": "shared-node"}))
+	if got := mustStr(t, created.node, "namespaceId"); got != other.ID {
+		t.Fatalf("node.namespaceId = %q, want %q（作用域必须按请求的 namespaceId 生效）", got, other.ID)
+	}
+	if got := mustStr(t, created.node, "namespaceId"); got == env.nsID {
+		t.Fatalf("node.namespaceId 落回了默认命名空间 %q（请求里的 namespaceId 被忽略）", env.nsID)
+	}
+
+	// 库里也真的按命名空间分开：新空间恰好 1 台，默认空间仍然是空的。
+	inOther, err := env.db.ListNodes(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("list nodes(%s): %v", other.ID, err)
+	}
+	if len(inOther) != 1 || inOther[0].Name != "shared-node" {
+		t.Fatalf("命名空间 %s 里应该恰好有 1 台 shared-node，实际 %d 台: %v", other.ID, len(inOther), inOther)
+	}
+	inDefault, err := env.db.ListNodes(ctx, env.nsID)
+	if err != nil {
+		t.Fatalf("list nodes(%s): %v", env.nsID, err)
+	}
+	if len(inDefault) != 0 {
+		t.Fatalf("默认命名空间里多出了 %d 台节点（应该全在 %s 里）", len(inDefault), other.ID)
 	}
 }
 
@@ -281,8 +294,11 @@ func TestCreateNodeReturnsTokenOnce(t *testing.T) {
 	if got := mustStr(t, created.node, "namespaceId"); got != env.nsID {
 		t.Fatalf("node.namespaceId = %q, want %q", got, env.nsID)
 	}
-	if got := mustStr(t, created.node, "orgId"); got != env.orgID {
-		t.Fatalf("node.orgId = %q, want %q", got, env.orgID)
+	// 组织层随迁移 14 删除（#204）：节点视图里**不能**再有 orgId。
+	// 原来的「orgId == 本 org」断言换成了更严的一条——字段必须彻底不在响应里
+	// （隔离维度只剩 namespaceId；残留的 orgId 只会让调用方以为组织还在）。
+	if v, ok := created.node["orgId"]; ok {
+		t.Fatalf("node.orgId = %v，组织层已删除，视图里不该再有这个字段", v)
 	}
 	if got := mustStr(t, created.node, "status"); got != store.NodeStatusOffline {
 		t.Fatalf("node.status = %q, want %q（刚注册、还没 hello）", got, store.NodeStatusOffline)

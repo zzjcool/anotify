@@ -28,13 +28,15 @@ type playbookEnv struct {
 	mux        http.Handler
 	db         *store.DB
 	userID     string
-	orgID      string
-	nsID       string // 组织的默认命名空间
+	nsID       string // 本环境的默认命名空间（组织层已删除，命名空间是唯一隔离边界）
 	cookie     *http.Cookie
 	dispatcher *nsTestDispatcher // webhook 入口的假派发器（不发帧、不落库）
 }
 
-// newPlaybookEnv 建库 + 用户 + 组织（含默认命名空间）+ 会话，并挂上与生产一致的路由。
+// newPlaybookEnv 建库 + 用户（含默认命名空间）+ 会话，并挂上与生产一致的路由。
+//
+// 组织层已在迁移 14 删除（#204）：db.RegisterUser 一步建出「用户 + 默认命名空间
+// + 内置能力」，返回值就是那个命名空间。
 func newPlaybookEnv(t *testing.T) *playbookEnv {
 	t.Helper()
 	ctx := context.Background()
@@ -55,18 +57,14 @@ func newPlaybookEnv(t *testing.T) *playbookEnv {
 		t.Fatalf("new service: %v", err)
 	}
 
-	uid, err := db.InsertUser(ctx, "", "pbuser", "PB User")
-	if err != nil {
-		t.Fatalf("insert user: %v", err)
+	u := &store.User{
+		ID: store.NewUserID(), Username: "pbuser", DisplayName: "PB User", CreatedAt: store.Now(),
 	}
-	org, err := db.EnsureOrgForUser(ctx, uid, "pbuser")
+	defNS, err := db.RegisterUser(ctx, u)
 	if err != nil {
-		t.Fatalf("ensure org: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	uid, nsID := u.ID, defNS.ID
 	sess, err := svc.Sessions().Create(uid, "Test · Playbook")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -78,7 +76,6 @@ func newPlaybookEnv(t *testing.T) *playbookEnv {
 	srcH := &sourceHandler{
 		db:               db,
 		commander:        &source.Trigger{Store: db, Dispatcher: disp},
-		resolveOrg:       consoleH.resolveOrg,
 		resolveNamespace: consoleH.resolveNamespace,
 	}
 
@@ -97,7 +94,7 @@ func newPlaybookEnv(t *testing.T) *playbookEnv {
 	mux.Handle("GET /v1/sources", noStore(sessMW(http.HandlerFunc(srcH.sources))))
 
 	return &playbookEnv{
-		mux: mux, db: db, userID: uid, orgID: org.ID, nsID: nsID,
+		mux: mux, db: db, userID: uid, nsID: nsID,
 		cookie:     &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 		dispatcher: disp,
 	}
@@ -137,7 +134,7 @@ func (e *playbookEnv) doAnon(t *testing.T, method, path string, body any) *httpt
 // newNamespace 直接走 store 建一个命名空间（隔离用例的前置）。
 func (e *playbookEnv) newNamespace(t *testing.T, slug, name string) *store.Namespace {
 	t.Helper()
-	ns, err := e.db.CreateNamespace(context.Background(), e.orgID, slug, name)
+	ns, err := e.db.CreateNamespace(context.Background(), slug, name)
 	if err != nil {
 		t.Fatalf("create namespace %q: %v", slug, err)
 	}
@@ -277,12 +274,10 @@ func contains(list []string, s string) bool {
 
 // TestPlaybookRequiresNamespace 契约 §6 / D2：5 个端点全都必填 namespaceId。
 //
-// 缺参 400（且点名 namespaceId）、`*` 400、不存在 404、**别的 org 也是 404**
-// 且与「不存在」逐字节相同（不泄露 id 存在性）。读端点也不例外：
-// 预案没有「默认命名空间」也没有跨命名空间汇总形态。
+// 缺参 400（且点名 namespaceId）、`*` 400、不存在的命名空间 404（不回显 id）。
+// 读端点也不例外：预案没有「默认命名空间」也没有跨命名空间汇总形态。
 func TestPlaybookRequiresNamespace(t *testing.T) {
 	env := newPlaybookEnv(t)
-	ctx := context.Background()
 
 	t.Run("POST 缺 namespaceId", func(t *testing.T) {
 		rr := env.do(t, http.MethodPost, "/v1/playbooks",
@@ -325,30 +320,46 @@ func TestPlaybookRequiresNamespace(t *testing.T) {
 		}
 	})
 
-	t.Run("别的 org 的 ns 是 404 且与不存在逐字节相同", func(t *testing.T) {
-		other, err := env.db.CreateOrg(ctx, "org-other-"+store.NewOrgID())
-		if err != nil {
-			t.Fatalf("create other org: %v", err)
-		}
-		otherNS, err := env.db.DefaultNamespaceID(ctx, other.ID)
-		if err != nil {
-			t.Fatalf("other org default namespace: %v", err)
-		}
-
-		foreign := env.do(t, http.MethodGet, withNSID("/v1/playbooks", otherNS), nil)
-		if foreign.Code != http.StatusNotFound {
-			t.Fatalf("跨组织 namespaceId status = %d, want 404; body=%s", foreign.Code, foreign.Body.String())
-		}
-		if strings.Contains(foreign.Body.String(), otherNS) {
-			t.Fatalf("404 响应里回显了别人的命名空间 id: %s", foreign.Body.String())
-		}
-		missing := env.do(t, http.MethodGet, withNSID("/v1/playbooks", "ns_not_a_real_id"), nil)
+	// 迁移 14 删除组织层后（#204）**不存在「别人的命名空间」**：本部署内任何已登录用户
+	// 都能读写任何存在的命名空间。所以原来的「别的 org 的 ns → 404」用例改写成下面两条
+	// 命名空间口径断言（覆盖点不减、力度更强）：
+	//   ① 不存在的 id → 404 且不回显 id（防探测）；
+	//   ② 另一个**真实存在**的命名空间 → 读写都正常（200 / 201），不再是 403/404 的禁区，
+	//      而且预案真的落在那个空间里（作用域按请求生效，而不是写死默认空间）。
+	t.Run("不存在的 ns 是 404 且不回显 id", func(t *testing.T) {
+		const missingNS = "ns_not_a_real_id"
+		missing := env.do(t, http.MethodGet, withNSID("/v1/playbooks", missingNS), nil)
 		if missing.Code != http.StatusNotFound {
 			t.Fatalf("不存在的 namespaceId status = %d, want 404; body=%s", missing.Code, missing.Body.String())
 		}
-		if foreign.Body.String() != missing.Body.String() {
-			t.Fatalf("「别人的 ns」与「不存在的 ns」响应体不一致，构成存在性泄漏:\n foreign=%q\n missing=%q",
-				foreign.Body.String(), missing.Body.String())
+		if strings.Contains(missing.Body.String(), missingNS) {
+			t.Fatalf("404 响应里回显了传入的命名空间 id: %s", missing.Body.String())
+		}
+		if msg := mustStr(t, decode(t, missing), "error"); msg != "namespace not found" {
+			t.Fatalf("404 的 error = %q, want %q（不存在的命名空间只有一种回答）", msg, "namespace not found")
+		}
+	})
+
+	t.Run("另一个已存在的命名空间是可读写的", func(t *testing.T) {
+		other := env.newNamespace(t, "another", "另一个命名空间")
+
+		// 读：200 且是本空间的空列表 []（既不是 403/404，也不会把本空间的预案串进去）。
+		rr := env.do(t, http.MethodGet, withNSID("/v1/playbooks", other.ID), nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("已存在的 namespaceId status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		if raw := rr.Body.String(); !strings.Contains(raw, `"playbooks":[]`) {
+			t.Fatalf("另一个命名空间的列表不是空数组: %s", raw)
+		}
+
+		// 写：201，而且 playbook.namespaceId 指向那个命名空间（证明作用域真的生效）。
+		pb := env.create(t, other.ID, map[string]any{"slug": "other-plan", "name": "另一个空间的预案"})
+		if pb["namespaceId"] != other.ID {
+			t.Fatalf("playbook.namespaceId = %v, want %s（作用域必须按请求的 namespaceId 生效）",
+				pb["namespaceId"], other.ID)
+		}
+		if pb["namespaceId"] == env.nsID {
+			t.Fatalf("playbook.namespaceId 落回了默认命名空间 %s（请求里的 namespaceId 被忽略）", env.nsID)
 		}
 	})
 }
@@ -379,12 +390,14 @@ func TestPlaybookCreate(t *testing.T) {
 	if !strings.Contains(raw, `"manifest":{"capabilities":[],"edges":[],"triggers":[]}`) {
 		t.Fatalf("缺省 manifest 没被归一化成三个空数组: %s", raw)
 	}
-	// 响应要带 namespaceId / orgId（I10 的可见性）
+	// 响应要带 namespaceId（I10 的可见性）
 	if pb["namespaceId"] != env.nsID {
 		t.Fatalf("playbook.namespaceId = %v, want %s", pb["namespaceId"], env.nsID)
 	}
-	if pb["orgId"] != env.orgID {
-		t.Fatalf("playbook.orgId = %v, want %s", pb["orgId"], env.orgID)
+	// 组织层已随迁移 14 删除（#204）：响应里**不能**再有 orgId。原来的「orgId == 本 org」
+	// 断言换成更严的一条——字段彻底不在（隔离维度只剩 namespaceId，残留 orgId 会让调用方误以为组织还在）。
+	if v, ok := pb["orgId"]; ok {
+		t.Fatalf("playbook.orgId = %v，组织层已删除，视图里不该再有这个字段", v)
 	}
 	if pb["slug"] != "empty-plan" {
 		t.Fatalf("playbook.slug = %v, want empty-plan", pb["slug"])
