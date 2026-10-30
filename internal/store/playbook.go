@@ -26,7 +26,6 @@ import (
 type Playbook struct {
 	ID          string `json:"id"`
 	NamespaceID string `json:"namespaceId"`
-	OrgID       string `json:"orgId"`
 	Slug        string `json:"slug"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -305,7 +304,7 @@ func manifestCapHash(namespaceID string, c ManifestCapability) (string, error) {
 }
 
 // playbookColumns 是统一的列顺序，scanPlaybook 依赖它。
-const playbookColumns = `id, namespace_id, org_id, slug, name, descr, manifest, created_at`
+const playbookColumns = `id, namespace_id, slug, name, descr, manifest, created_at`
 
 // scanPlaybook 执行查询并解析一行（未命中返回 sql.ErrNoRows）。
 func scanPlaybook(r scanner) (*Playbook, error) {
@@ -313,7 +312,7 @@ func scanPlaybook(r scanner) (*Playbook, error) {
 		pb       Playbook
 		manifest string
 	)
-	if err := r.Scan(&pb.ID, &pb.NamespaceID, &pb.OrgID, &pb.Slug, &pb.Name,
+	if err := r.Scan(&pb.ID, &pb.NamespaceID, &pb.Slug, &pb.Name,
 		&pb.Description, &manifest, &pb.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -347,13 +346,6 @@ func (d *DB) CreatePlaybook(ctx context.Context, pb *Playbook) error {
 		return err
 	}
 
-	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证，
-	// 调用方给错 org 也写不出不一致的行）。
-	orgID, err := d.NamespaceOrgID(ctx, pb.NamespaceID)
-	if err != nil {
-		return fmt.Errorf("create playbook: %w", err)
-	}
-	pb.OrgID = orgID
 	pb.Manifest = manifest
 	if pb.CreatedAt == 0 {
 		pb.CreatedAt = Now()
@@ -363,8 +355,8 @@ func (d *DB) CreatePlaybook(ctx context.Context, pb *Playbook) error {
 	}
 
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO playbooks (`+playbookColumns+`) VALUES (?,?,?,?,?,?,?,?)`,
-		pb.ID, pb.NamespaceID, pb.OrgID, pb.Slug, pb.Name, pb.Description,
+		`INSERT INTO playbooks (`+playbookColumns+`) VALUES (?,?,?,?,?,?,?)`,
+		pb.ID, pb.NamespaceID, pb.Slug, pb.Name, pb.Description,
 		string(pb.Manifest), pb.CreatedAt); err != nil {
 		// UNIQUE(namespace_id, slug)：同命名空间里 slug 是身份（409），
 		// 不是"顺手改成 pr-review-2"能糊过去的事。
@@ -1164,7 +1156,6 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 
 		def := &CapabilityVersion{
 			NamespaceID:  pb.NamespaceID,
-			OrgID:        pb.OrgID,
 			Name:         c.Name,
 			Version:      c.Version,
 			ParamsSchema: c.ParamsSchema,
@@ -1197,9 +1188,9 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 		}
 		_, insErr := tx.ExecContext(ctx,
 			`INSERT INTO capability_versions
-			   (id, namespace_id, org_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			def.ID, def.NamespaceID, def.OrgID, def.Name, def.DisplayName, def.Version,
+			   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			def.ID, def.NamespaceID, def.Name, def.DisplayName, def.Version,
 			schema, string(outputsJSON), string(lifecycleJSON), def.Sticky, def.Source,
 			def.ContentHash, def.CreatedAt)
 		if insErr == nil {
@@ -1285,9 +1276,9 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 			continue
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO edges (namespace_id, org_id, from_is_source, from_key, from_port, to_capability, created_at)
-			 VALUES (?,?,?,?,?,?,?)`,
-			pb.NamespaceID, pb.OrgID, 0, from.ID, e.FromPort, to.ID, now); err != nil {
+			`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, created_at)
+			 VALUES (?,?,?,?,?,?)`,
+			pb.NamespaceID, 0, from.ID, e.FromPort, to.ID, now); err != nil {
 			return nil, nil, fmt.Errorf("install playbook: insert edge %s: %w", label, err)
 		}
 		res.Created.Edges = append(res.Created.Edges, label)
@@ -1375,9 +1366,9 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 		}
 		srcID := NewSourceID()
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO sources (id, namespace_id, org_id, name, kind, config, enabled, last_fired_at, next_fire_at, created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			srcID, pb.NamespaceID, pb.OrgID, wantName, t.Kind, string(cfg), 1, nil, nextFire, now); err != nil {
+			`INSERT INTO sources (id, namespace_id, name, kind, config, enabled, last_fired_at, next_fire_at, created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?)`,
+			srcID, pb.NamespaceID, wantName, t.Kind, string(cfg), 1, nil, nextFire, now); err != nil {
 			return nil, nil, fmt.Errorf("install playbook: insert source %s: %w", wantName, err)
 		}
 		for _, capID := range entryIDs {

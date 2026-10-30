@@ -60,13 +60,10 @@ var ErrTransitionGuardFailed = errors.New("transition_guard_failed")
 // Omitempty **不能**加在 Out 上：nil 与 "缺失字段" 在出站 JSON 里虽然都是 null，
 // 但 Reported 才是权威判据（前端/节点都不该靠 out 是否存在来推断）。
 //
-// NamespaceID 是**隔离维度**（I10/I11）：任务属于某个命名空间，读路径一律按它隔离；
-// 行上的 OrgID 仍然保留（统计/日志要用），但写入时由 namespace_id 派生（NamespaceOrgID），
-// 所以不可能写出 `namespace.org_id != org_id` 的行。
+// NamespaceID 是**命名空间隔离维度**：任务属于某个命名空间，读路径一律按它隔离。
 type Task struct {
 	ID           string          `json:"id"`
 	NamespaceID  string          `json:"namespaceId"`
-	OrgID        string          `json:"orgId"`
 	TraceID      string          `json:"traceId"`
 	ParentTaskID *string         `json:"parentTaskId"`
 	Path         []string        `json:"path"`
@@ -95,7 +92,7 @@ type Task struct {
 }
 
 // taskColumns 是统一的列顺序，scanTask 依赖它。
-const taskColumns = `id, namespace_id, org_id, trace_id, parent_task_id, path, capability_id, capability,
+const taskColumns = `id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
 	out, reported, summary, artifacts, error, cap_hash, graph_id,
 	created_at, started_at, finished_at, not_before`
@@ -106,7 +103,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 	var path, params, artifacts string
 	var reported int
 	if err := rows.Scan(
-		&t.ID, &t.NamespaceID, &t.OrgID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
+		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
 		&t.Version, &params, &t.Status, &t.NodeID, &t.InstanceID, &t.LeaseUntil, &t.Attempts,
 		&t.Out, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.GraphID,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore,
@@ -136,8 +133,8 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 //
 // 空入参是 no-op（不是错误）：扇出的每条边都可能被剪枝，最后一条不剩是正常情况。
 //
-// 命名空间（契约 §2.3 / §2.4）：每行必须带 NamespaceID（空 → ErrNamespaceRequired），
-// OrgID 由它派生并覆盖；带 ParentTaskID 时走 I11④——子任务强制继承父任务的命名空间，
+// 命名空间（契约 §2.3 / §2.4）：每行必须带 NamespaceID（空 → ErrNamespaceRequired）；
+// 带 ParentTaskID 时走 I11④——子任务强制继承父任务的命名空间，
 // 显式给了不同值 → *CrossNamespaceError。
 //
 // #140 起内部拆成「开事务 + createTasksTx + 提交」三段，签名/行为/错误文案不变：
@@ -171,22 +168,6 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 	if len(ts) == 0 {
 		return nil
 	}
-	// org_id 一律从 namespaces 行派生（I10）：同一批任务通常同属一个命名空间，
-	// 这里缓存一次查询，不逐行重复查。
-	orgByNamespace := make(map[string]string, 1)
-	resolveOrg := func(namespaceID string) (string, error) {
-		if orgID, ok := orgByNamespace[namespaceID]; ok {
-			return orgID, nil
-		}
-		// 必须走 **tx** 版查询：DSN 是 MaxOpenConns(1)，用 d.NamespaceOrgID
-		// 会和本事务抢同一根连接而自锁。
-		orgID, err := namespaceOrgIDTx(ctx, tx, namespaceID)
-		if err != nil {
-			return "", err
-		}
-		orgByNamespace[namespaceID] = orgID
-		return orgID, nil
-	}
 	for i, t := range ts {
 		if t == nil {
 			return fmt.Errorf("create tasks: nil task at index %d", i)
@@ -204,11 +185,6 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 		if t.NamespaceID == "" || t.NamespaceID == AllNamespaces {
 			return fmt.Errorf("create tasks: task %d: %w", i, ErrNamespaceRequired)
 		}
-		orgID, err := resolveOrg(t.NamespaceID)
-		if err != nil {
-			return fmt.Errorf("create tasks: task %d: %w", i, err)
-		}
-		t.OrgID = orgID // 覆盖调用方给的值：I10 由构造保证（namespace.org_id == org_id）
 		if t.ID == "" {
 			t.ID = NewTaskID()
 		}
@@ -245,12 +221,12 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO tasks
-			   (id, namespace_id, org_id, trace_id, parent_task_id, path, capability_id, capability,
+			   (id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 			    version, params, status, node_id, instance_id, lease_until, attempts,
 			    out, reported, summary, artifacts, error, cap_hash, graph_id,
 			    created_at, started_at, finished_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.ID, t.NamespaceID, t.OrgID, t.TraceID, t.ParentTaskID, string(pathJSON), t.CapabilityID, t.Capability,
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.ID, t.NamespaceID, t.TraceID, t.ParentTaskID, string(pathJSON), t.CapabilityID, t.Capability,
 			t.Version, string(t.Params), t.Status, t.NodeID, t.InstanceID, t.LeaseUntil, t.Attempts,
 			t.Out, reported, t.Summary, string(artifactsJSON), t.Error, t.CapHash, t.GraphID,
 			t.CreatedAt, t.StartedAt, t.FinishedAt,

@@ -548,3 +548,36 @@ CREATE TABLE IF NOT EXISTS playbooks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_at);
+
+-- +migration 14 drop_org_layer
+-- #205（父 #204）：删掉「组织」层，命名空间成为唯一隔离边界。
+--
+-- **破坏性**：`orgs` / `org_members` 两张表消失，10 张表上的 `org_id` 列消失。
+-- 数据本身保留（按 `namespace_id` 原样回灌），消失的只是 org 这一维。
+--
+-- 为什么走表重建：SQLite 没有 DROP COLUMN，更不能改唯一键前缀；
+-- 而 `namespaces` 的唯一键要从 `(org_id, slug)` 变成 `(slug)`，
+-- 其余表的唯一键前缀本来就是 `namespace_id`（迁移 12 起），只是要摘掉 `org_id` 列。
+-- 13 张表的重建逻辑在 migrate.go 的 `migrationHooks[14]`（`migrateDropOrgLayer`）：
+--   ① 幂等守卫：`orgs` 不存在 = 已经迁移过，直接返回（同一版本可能重试多次）
+--   ② `namespaces.slug` 全局去重：老库里多个组织各有一个 `default`，
+--      在 `UNIQUE(slug)` 下会撞车。同 slug 按 `(created_at, id)` 保留最早一行，
+--      其余改名为 `default-2`、`default-3`…（候选名必须全局未占用）
+--   ③ 逐表 stage（`CREATE TABLE <t>_stage AS SELECT <去掉 org_id 的列> FROM <t>`）
+--   ④ 逆拓扑序删旧表（引用者先删），最后 `namespaces` → `org_members` → `orgs`
+--   ⑤ 正拓扑序建新表 + `INSERT ... SELECT` 回灌 + 重建索引 + 删 stage
+--
+-- 唯一性核对：`org_id` 是 `namespace_id` 的函数（`namespace.org_id`），
+-- 去掉它**不会**造出重复行；唯一域从「组织内」变成「全局」的只有 `namespaces.slug`，
+-- 由 ② 处理。逐表核对：capability_versions 两个 UNIQUE、nodes、edges 主键、
+-- sources、events 的部分唯一索引、graph_versions、playbooks 全部已是
+-- `(namespace_id, ...)` 前缀，语义不变。
+--
+-- 索引订正：
+--   - 迁移 4 里 `idx_edges_lookup` 被声明了两次（同名第二次被 IF NOT EXISTS 跳过，
+--     带 from_capability 的那句**从未真正生效**），重建时只保留
+--     `(namespace_id, from_is_source, from_key, from_port)`；
+--   - `idx_sources_org(org_id, created_at)` → `idx_sources_ns(namespace_id, created_at)`
+--     （命名空间过滤 + 时间排序，才是实际查询的形状）。
+--
+-- 本块没有 SQL：全部由 Go hook 完成（需要按 pragma 判断、条件改名与逐表重建）。

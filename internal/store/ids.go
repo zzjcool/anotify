@@ -68,8 +68,7 @@ func NewRecoveryCodeID() string { return newID("rc") }
 func NewMessageID() string { return newID("ntf") }
 
 // 重构新增（契约 §0 的实体）。
-func NewOrgID() string { return newID("org") }
-
+// 组织层已删除（#205 / 迁移 14），不再有 org 前缀的 ID。
 // NewNamespaceID 生成命名空间 ID：ns_<base62>（契约 §2.1.1）。
 func NewNamespaceID() string { return newID("ns") }
 func NewNodeID() string      { return newID("nd") }

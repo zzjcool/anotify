@@ -36,10 +36,9 @@ const NodeNameMaxLen = 63
 // 所以它带 `json:"-"`，任何 API 响应都不会泄漏哈希。
 type Node struct {
 	ID string `json:"id"`
-	// NamespaceID 是**隔离维度**（I10/I11）：机器属于且只属于一个命名空间，
-	// 令牌、能力声明、槽位、粘性钉住都跟着它走；org_id 只是跨命名空间统计的锚点。
+	// NamespaceID 是**隔离维度**（I11）：机器属于且只属于一个命名空间，
+	// 令牌、能力声明、槽位、粘性钉住都跟着它走。
 	NamespaceID    string   `json:"namespaceId"`
-	OrgID          string   `json:"orgId"`
 	Name           string   `json:"name"`
 	Tags           []string `json:"tags"`
 	Status         string   `json:"status"`
@@ -71,9 +70,8 @@ type NodeInstance struct {
 // NamespaceID —— 钉住的是「某个命名空间里的某台机器」。
 type NodePin struct {
 	StickyKey string `json:"stickyKey"`
-	// NamespaceID 必填，org_id 由它派生（I10）。
+	// NamespaceID 必填（钉住的是「某个命名空间里的某台机器」）。
 	NamespaceID string `json:"namespaceId"`
-	OrgID       string `json:"orgId"`
 	NodeID      string `json:"nodeId"`
 	Selector    string `json:"selector"`
 	CreatedAt   int64  `json:"createdAt"`
@@ -215,9 +213,8 @@ func ValidateNodeName(name string) string {
 //
 // n.TokenHash 可预先由调用方设置（用于测试注入已知 token）；为空时自动生成。
 //
-// n.NamespaceID 必填（I10）：机器归属哪个命名空间，决定了它的令牌、能力声明、
-// 槽位与粘性钉住活在哪片隔离域里。n.OrgID 由命名空间派生并**覆盖**——
-// 调用方传错也写不出 `namespace.org_id != org_id` 的行（契约 §2.3）。
+// n.NamespaceID 必填：机器归属哪个命名空间，决定了它的令牌、能力声明、
+// 槽位与粘性钉住活在哪片隔离域里（契约 §2.3）。
 func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) {
 	if n == nil {
 		return "", fmt.Errorf("create node: nil")
@@ -256,18 +253,11 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 	if n.ID == "" {
 		n.ID = NewNodeID()
 	}
-	// org_id 从命名空间派生（I10：`namespace.org_id == org_id` 由构造保证，
-	// 不是由调用方自觉遵守）。
-	orgID, err := d.NamespaceOrgID(ctx, n.NamespaceID)
-	if err != nil {
-		return "", fmt.Errorf("create node: %w", err)
-	}
-	n.OrgID = orgID
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO nodes
-		   (id, namespace_id, org_id, name, tags, status, token_hash, max_instances, max_concurrency, last_seen_at, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		n.ID, n.NamespaceID, n.OrgID, n.Name, string(tagsJSON), n.Status, n.TokenHash,
+		   (id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, last_seen_at, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		n.ID, n.NamespaceID, n.Name, string(tagsJSON), n.Status, n.TokenHash,
 		n.MaxInstances, n.MaxConcurrency, n.LastSeenAt, n.CreatedAt); err != nil {
 		// 同命名空间重名（UNIQUE(namespace_id, name)）要让调用方能判定成 409，
 		// 而不是从一句裸的 constraint failed 里去猜。
@@ -280,7 +270,7 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 }
 
 // nodeColumns 是统一的列顺序，scanNodeRow 依赖它（与迁移 12 的 nodes 定义同序）。
-const nodeColumns = `id, namespace_id, org_id, name, tags, status, token_hash,
+const nodeColumns = `id, namespace_id, name, tags, status, token_hash,
 	max_instances, max_concurrency, last_seen_at, created_at`
 
 // prefixedNodeColumns 给 nodeColumns 的每一列加表别名前缀，供 join 查询使用。
@@ -288,7 +278,7 @@ const nodeColumns = `id, namespace_id, org_id, name, tags, status, token_hash,
 // 为什么必须带前缀：`node_capabilities` 也有 `namespace_id`（#162 加的隔离列），
 // 不限定表名的 `namespace_id` 会让 SQLite 报 ambiguous column name。
 func prefixedNodeColumns(alias string) string {
-	cols := []string{"id", "namespace_id", "org_id", "name", "tags", "status", "token_hash",
+	cols := []string{"id", "namespace_id", "name", "tags", "status", "token_hash",
 		"max_instances", "max_concurrency", "last_seen_at", "created_at"}
 	parts := make([]string, len(cols))
 	for i, c := range cols {
@@ -301,7 +291,7 @@ func prefixedNodeColumns(alias string) string {
 func scanNodeRow(rows *sql.Rows) (*Node, error) {
 	var n Node
 	var tags string
-	if err := rows.Scan(&n.ID, &n.NamespaceID, &n.OrgID, &n.Name, &tags, &n.Status, &n.TokenHash,
+	if err := rows.Scan(&n.ID, &n.NamespaceID, &n.Name, &tags, &n.Status, &n.TokenHash,
 		&n.MaxInstances, &n.MaxConcurrency, &n.LastSeenAt, &n.CreatedAt); err != nil {
 		return nil, fmt.Errorf("scan node: %w", err)
 	}
@@ -319,7 +309,7 @@ func scanNodeRow(rows *sql.Rows) (*Node, error) {
 // 这是唯一一个「还不知道命名空间也能查」的节点查询：token 自带身份。
 // 拿到的行**必须**带 NamespaceID —— 握手后整条连接上的所有操作都靠它定位
 // 命名空间（hello 帧不带 namespace 字段，令牌绑在哪个命名空间就在哪片隔离域生效）；
-// org_id 只是跨命名空间统计的锚点。token 全局唯一，所以本查询不看命名空间。
+// token 全局唯一，所以本查询不看命名空间。
 func (d *DB) GetNodeByTokenHash(ctx context.Context, tokenHash string) (*Node, error) {
 	if tokenHash == "" {
 		return nil, ErrNotFound
@@ -679,7 +669,7 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCa
 	for rows.Next() {
 		var c CapabilityVersion
 		var paramsSchema, outputs, lifecycle, runSpec string
-		if err := rows.Scan(&c.ID, &c.NamespaceID, &c.OrgID, &c.Name, &c.Version, &paramsSchema, &outputs,
+		if err := rows.Scan(&c.ID, &c.NamespaceID, &c.Name, &c.Version, &paramsSchema, &outputs,
 			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt, &runSpec); err != nil {
 			return nil, fmt.Errorf("scan node capability: %w", err)
 		}
@@ -704,10 +694,10 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCa
 }
 
 // prefixedCapabilityColumns 给能力列加表别名前缀，
-// 避免与 join 表的同名列（id/namespace_id/org_id）混淆。
+// 避免与 join 表的同名列（id/namespace_id）混淆。
 // 列顺序必须与下面的 scan 一致（scan 只取展示需要的子集，不含 display_name）。
 func prefixedCapabilityColumns(alias string) string {
-	cols := []string{"id", "namespace_id", "org_id", "name", "version", "params_schema", "outputs",
+	cols := []string{"id", "namespace_id", "name", "version", "params_schema", "outputs",
 		"lifecycle", "sticky", "source", "content_hash", "created_at"}
 	parts := make([]string, len(cols))
 	for i, c := range cols {
@@ -1098,9 +1088,9 @@ func StickyKey(traceID, capabilityID, selector string) string {
 func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
 	var p NodePin
 	err := d.QueryRowContext(ctx,
-		`SELECT sticky_key, namespace_id, org_id, node_id, selector, created_at, last_used_at
+		`SELECT sticky_key, namespace_id, node_id, selector, created_at, last_used_at
 		 FROM node_pins WHERE sticky_key = ?`, stickyKey).
-		Scan(&p.StickyKey, &p.NamespaceID, &p.OrgID, &p.NodeID, &p.Selector, &p.CreatedAt, &p.LastUsedAt)
+		Scan(&p.StickyKey, &p.NamespaceID, &p.NodeID, &p.Selector, &p.CreatedAt, &p.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1112,8 +1102,8 @@ func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
 
 // PutPin 写入（或刷新）粘性钉住。已存在时更新 last_used_at（钉住不换机器）。
 //
-// p.NamespaceID 必填（钉住的是「哪个命名空间里的哪台机器」），p.OrgID 由命名空间
-// 派生并**覆盖**（I10）；p.NodeID 必须是该命名空间内的节点。
+// p.NamespaceID 必填（钉住的是「哪个命名空间里的哪台机器」）；
+// p.NodeID 必须是该命名空间内的节点。
 func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
 	if p == nil || p.StickyKey == "" || p.NodeID == "" {
 		return fmt.Errorf("put pin: sticky_key/node_id required")
@@ -1121,11 +1111,6 @@ func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
 	if p.NamespaceID == "" || p.NamespaceID == AllNamespaces {
 		return fmt.Errorf("put pin: %w", ErrNamespaceRequired)
 	}
-	orgID, err := d.NamespaceOrgID(ctx, p.NamespaceID)
-	if err != nil {
-		return fmt.Errorf("put pin: %w", err)
-	}
-	p.OrgID = orgID
 	now := Now()
 	if p.CreatedAt == 0 {
 		p.CreatedAt = now
@@ -1134,10 +1119,10 @@ func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
 		p.LastUsedAt = now
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO node_pins (sticky_key, namespace_id, org_id, node_id, selector, created_at, last_used_at)
-		 VALUES (?,?,?,?,?,?,?)
+		`INSERT INTO node_pins (sticky_key, namespace_id, node_id, selector, created_at, last_used_at)
+		 VALUES (?,?,?,?,?,?)
 		 ON CONFLICT(sticky_key) DO UPDATE SET last_used_at = excluded.last_used_at`,
-		p.StickyKey, p.NamespaceID, p.OrgID, p.NodeID, p.Selector, p.CreatedAt, p.LastUsedAt); err != nil {
+		p.StickyKey, p.NamespaceID, p.NodeID, p.Selector, p.CreatedAt, p.LastUsedAt); err != nil {
 		return fmt.Errorf("put pin: %w", err)
 	}
 	return nil

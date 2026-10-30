@@ -20,11 +20,11 @@ import (
 //	tasks   按**能力级** TTL：capability_versions.lifecycle.resultTtlSec
 //	        只清理终态（succeeded/failed/canceled/abandoned）且 finished_at 早于
 //	        now - resultTtlSec 的行。未声明 resultTtlSec（0）的能力**不清理**。
-//	events  按**组织级**保留期，且**当前默认禁用**（DefaultEventRetentionSec ==
+//	events  按**部署级**保留期，且**当前默认禁用**（DefaultEventRetentionSec ==
 //	        EventRetentionDisabled）：调用方不显式给出保留期时，整个 events 阶段跳过。
 //	        source='route' 的剪枝行（#142）同样受此约束，不搞特例。
-//	        保留期本身是组织配置（orgs.retention_sec），但**删除粒度是命名空间**
-//	        （#162：events.namespace_id）：同一组织的保留期对所有命名空间生效。
+//	        保留期是部署级配置（org 层删除后不再有 per-org 配置，#205），
+//	        **删除粒度是命名空间**（events.namespace_id）：一份保留期对所有命名空间生效。
 //
 // 三条硬约束（都是为了让清理不反过来打垮库）：
 //
@@ -39,7 +39,7 @@ const EventRetentionDisabled = 0
 
 // DefaultEventRetentionSec 是 events 保留期的默认值：**禁用**（== EventRetentionDisabled）。
 // 为什么默认禁用：删除不可逆，而本版没有开关、没有 per-org 配置，且会静默改变
-// store/stats.go 的「总数 / 今日 / 热力图」口径。orgs.retention_sec 落地后由组织配置开启。
+// store/stats.go 的「总数 / 今日 / 热力图」口径。等部署级保留期配置落地后再开启。
 //
 // 具体含义：`retentionWithDefaults` **不会**把未配置的保留期补成某个正数秒；
 // SweepRetention 在 EventRetentionSec <= 0 时跳过整个 events 阶段并置
@@ -47,10 +47,10 @@ const EventRetentionDisabled = 0
 //
 // **线上恒为禁用**：当前唯一的生产调用方（internal/lease 的 runRetentionSweep）
 // 不注入 EventRetentionSec，也没有 env 开关、没有 Sweeper 字段能把值传下来。
-// `orgs.retention_sec` 列与运维开关都还没落；**已定**：`orgs.retention_sec` 落地后由
-// **组织配置**开启 events 清理（下一轮），本轮不提供运维开关。
+// 部署级保留期配置与运维开关都还没落；**已定**：配置项落地后由
+// **部署配置**开启 events 清理（下一轮），本轮不提供运维开关。
 // 换句话说：EventRetentionSec 现在只有测试与未来的运维入口在用，不要把它读成
-// 「已经支持按 org 配置」。
+// 「已经支持按配置开启」。
 const DefaultEventRetentionSec = EventRetentionDisabled
 
 // DefaultRetentionBatch 是单条 DELETE 的行数上限（先度量后删除）。
@@ -70,10 +70,9 @@ var terminalStatusList = []string{TaskSucceeded, TaskFailed, TaskCanceled, TaskA
 //
 // 为什么按能力版本而不是按命名空间：TTL 是能力定义的一部分（lifecycle.resultTtlSec），
 // 不同能力的结果该留多久本来就不同（日志类很快可丢，评审结论要留）。
-// NamespaceID 是删除时的隔离维度（#162）；OrgID 保留下来只为了日志与统计。
+// NamespaceID 是删除时的隔离维度（#162），也是唯一的隔离维度（#205 删了组织层）。
 type ResultRetentionScope struct {
 	NamespaceID  string `json:"namespaceId"`
-	OrgID        string `json:"orgId"`
 	CapabilityID string `json:"capabilityId"`
 	ResultTTLSec int    `json:"resultTtlSec"`
 }
@@ -96,8 +95,8 @@ type RetentionReport struct {
 	TaskScopes int
 	// TasksDeleted 是本轮删掉的任务行数。
 	TasksDeleted int64
-	// Orgs 是参与事件清理的组织数（事件按命名空间删，这里是去重后的组织个数）。
-	Orgs int
+	// Namespaces 是本轮真正扫过的命名空间数（事件按命名空间逐个删；#205 之后不再有组织）。
+	Namespaces int
 	// EventsDeleted 是本轮删掉的事件行数。
 	EventsDeleted int64
 	// EventsDisabled 表示本轮 events 清理被**禁用**（保留期 <= 0，未配置）。
@@ -134,7 +133,7 @@ type RetentionReport struct {
 func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionScope, error) {
 	statusIn, statusArgs := terminalStatusSQL()
 	rows, err := d.QueryContext(ctx,
-		`SELECT DISTINCT t.namespace_id, t.org_id, t.capability_id, cv.lifecycle
+		`SELECT DISTINCT t.namespace_id, t.capability_id, cv.lifecycle
 		   FROM tasks t
 		   JOIN capability_versions cv ON cv.id = t.capability_id
 		  WHERE t.status IN (`+statusIn+`) AND t.finished_at IS NOT NULL
@@ -146,8 +145,8 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 
 	out := []ResultRetentionScope{}
 	for rows.Next() {
-		var namespaceID, orgID, capabilityID, lifecycleJSON string
-		if err := rows.Scan(&namespaceID, &orgID, &capabilityID, &lifecycleJSON); err != nil {
+		var namespaceID, capabilityID, lifecycleJSON string
+		if err := rows.Scan(&namespaceID, &capabilityID, &lifecycleJSON); err != nil {
 			return nil, fmt.Errorf("scan retention scope: %w", err)
 		}
 		var lc Lifecycle
@@ -157,7 +156,6 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 				slog.Warn("skip capability with invalid lifecycle",
 					"event", "store.retention.bad_lifecycle",
 					"namespace_id", namespaceID,
-					"org_id", orgID,
 					"capability_id", capabilityID,
 					"error", err.Error())
 				continue
@@ -169,7 +167,6 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 		}
 		out = append(out, ResultRetentionScope{
 			NamespaceID:  namespaceID,
-			OrgID:        orgID,
 			CapabilityID: capabilityID,
 			ResultTTLSec: lc.ResultTTLSec,
 		})
@@ -204,7 +201,7 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 // **查询计划**（迁移 12 之后）：子查询的 `namespace_id = ? AND capability_id = ?`
 // 与迁移 12 新建的 `idx_tasks_retention(namespace_id, capability_id, status, finished_at)`
 // 前缀对齐，候选集从「整个命名空间」收窄到「某能力」；迁移 12 之前记录的
-// `idx_tasks_parent(org_id=?)` 整 org 扫 + TEMP B-TREE 排序已不适用。
+// `idx_tasks_parent(namespace_id=?)` 前缀范围扫 + TEMP B-TREE 排序。
 // 仍要记住一条不变的事实：`LIMIT` 只限**删除行数**，**不限扫描/排序行数**
 // ——即使只删 1000 行，子查询仍会把该范围的候选行全部扫一遍再排序；
 // ORDER BY finished_at 能不能免掉排序取决于索引与计划，这里不重新实测、不做断言。
@@ -258,7 +255,7 @@ func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, namespaceID, capabi
 //
 // **查询计划**（迁移 12 之后）：`namespace_id = ? AND created_at < ?` 与迁移 12 新建的
 // `idx_events_retention(namespace_id, created_at)` 对齐，候选集从「整个命名空间」的
-// 全表扫变成索引范围扫；迁移 12 之前记录的 `idx_events_trace(org_id=?)` 整 org 扫
+// 全表扫变成索引范围扫；迁移 12 之前记录的 `idx_events_trace(namespace_id=?)` 范围扫
 // + TEMP B-TREE 排序已不适用。同 DeleteExpiredTerminalTasks：`LIMIT` 只限**删除行数**，
 // 不限**扫描/排序行数**；ORDER BY created_at 是否能免掉排序这里不重新实测。
 //
@@ -287,18 +284,15 @@ func (d *DB) DeleteExpiredEvents(ctx context.Context, namespaceID string, cutoff
 	return n, nil
 }
 
-// ListOrgIDs 列出全部组织 ID（按 id 升序；空返回 [] 而不是 nil）。
+// listRetentionNamespaceIDs 列出全部命名空间 id（按 id 升序；空返回 [] 而不是 nil）。
 //
-// 保留期清理已经改为遍历**命名空间**（见 listRetentionNamespaces），本函数本身
-// 不再是 SweepRetention 的一部分；留着是因为它是本文件对外暴露过的口子，
-// 删掉会让别处的调用/测试跟着改，而这不属于本次改动的范围。
-//
-// 放在本文件而不是 org.go，是为了让 #143 的文件所有权保持单一
-// （契约 §3：org.go 不属于本任务）。
-func (d *DB) ListOrgIDs(ctx context.Context) ([]string, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id FROM orgs ORDER BY id`)
+// 为何按命名空间而不是按 org：隔离维度与索引前缀都是 `namespace_id`（#162），
+// 而 org 层已经删除（#205）。按 org 删会变成跨命名空间的全表扫，也拿不到
+// `idx_events_retention(namespace_id, created_at)` 的前缀。
+func (d *DB) listRetentionNamespaceIDs(ctx context.Context) ([]string, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id FROM namespaces ORDER BY id`)
 	if err != nil {
-		return nil, fmt.Errorf("list org ids: %w", err)
+		return nil, fmt.Errorf("list retention namespaces: %w", err)
 	}
 	defer rows.Close()
 
@@ -306,60 +300,14 @@ func (d *DB) ListOrgIDs(ctx context.Context) ([]string, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan org id: %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate org ids: %w", err)
-	}
-	return out, nil
-}
-
-// retentionNamespace 是保留期清理要遍历的一个命名空间（带所属组织，用于去重统计）。
-type retentionNamespace struct {
-	NamespaceID string
-	OrgID       string
-}
-
-// listRetentionNamespaces 列出全部命名空间（按组织、命名空间升序；空返回 [] 而不是 nil）。
-//
-// 为何不再遍历 `orgs`：命名空间资源的隔离维度与索引前缀都是 `namespace_id`（#162），
-// 而一个组织可能有 N 个命名空间——按 org 删会变成跨命名空间的全表扫，也拿不到
-// `idx_events_retention(namespace_id, created_at)` 的前缀。保留期配置仍是组织级的，
-// 所以行上带上 `org_id` 供报告统计（去重后就是组织数）。
-func (d *DB) listRetentionNamespaces(ctx context.Context) ([]retentionNamespace, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id, org_id FROM namespaces ORDER BY org_id, id`)
-	if err != nil {
-		return nil, fmt.Errorf("list retention namespaces: %w", err)
-	}
-	defer rows.Close()
-
-	out := []retentionNamespace{}
-	for rows.Next() {
-		var ns retentionNamespace
-		if err := rows.Scan(&ns.NamespaceID, &ns.OrgID); err != nil {
 			return nil, fmt.Errorf("scan retention namespace: %w", err)
 		}
-		out = append(out, ns)
+		out = append(out, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate retention namespaces: %w", err)
 	}
 	return out, nil
-}
-
-// distinctOrgCount 数 namespaces 里出现了几个不同组织（输入已按 org_id 排序）。
-func distinctOrgCount(nss []retentionNamespace) int {
-	n := 0
-	prev := ""
-	for _, ns := range nss {
-		if ns.OrgID != prev {
-			n++
-			prev = ns.OrgID
-		}
-	}
-	return n
 }
 
 // SweepRetention 跑一轮保留策略巡检：先按能力清终态任务，再按命名空间清事件。
@@ -376,11 +324,11 @@ func distinctOrgCount(nss []retentionNamespace) int {
 // 想两边严格一致只能把两个 TTL 绑成同一个值，靠删除顺序做不到。
 //
 // events 阶段是**可关的、且默认关**：opts.EventRetentionSec <= 0（含未配置与负值）= 禁用，
-// 此时整个 events 阶段跳过——不 listRetentionNamespaces、不 DELETE、**不返回错误**，只把
-// RetentionReport.EventsDisabled 置位，Orgs / EventsDeleted 保持 0；tasks 阶段照常跑完。
+// 此时整个 events 阶段跳过——不 listRetentionNamespaceIDs、不 DELETE、**不返回错误**，只把
+// RetentionReport.EventsDisabled 置位，Namespaces / EventsDeleted 保持 0；tasks 阶段照常跑完。
 // 为什么默认禁用：删除不可逆，而本版没有开关、没有 per-org 配置，且会静默改变
 // store/stats.go 的「总数 / 今日 / 热力图」口径。开启要由调用方显式注入保留期
-// （orgs.retention_sec 落地后由组织配置开启）。
+// （部署级配置落地后开启）。
 //
 // 预算：每个范围最多 Batches 批、每批 Batch 行；某批没删满说明该范围已清干净，
 // 立刻换下一个范围（不必把预算空跑完）。批量删满预算 = 还有积压 → Truncated 置位，
@@ -435,28 +383,28 @@ func (d *DB) SweepRetention(ctx context.Context, opts RetentionOptions) (Retenti
 		return rep, nil
 	}
 
-	namespaces, err := d.listRetentionNamespaces(ctx)
+	namespaceIDs, err := d.listRetentionNamespaceIDs(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("sweep retention: %w", err)
 	}
-	// 保留期是**组织配置**（orgs.retention_sec），所以这里仍然报组织数（去重后）；
-	// 删除动作按命名空间逐个做（索引与隔离维度都是 namespace_id）。
-	rep.Orgs = distinctOrgCount(namespaces)
+	// 保留期是**部署级配置**（#205 之后不再有 per-org 配置），删除动作按命名空间逐个做
+	// （索引与隔离维度都是 namespace_id）。
+	rep.Namespaces = len(namespaceIDs)
 	eventsCutoff := opts.Now - int64(opts.EventRetentionSec)
-	for _, ns := range namespaces {
+	for _, nsID := range namespaceIDs {
 		if err := ctx.Err(); err != nil {
 			return rep, fmt.Errorf("sweep retention: %w", err)
 		}
 		deleted, saturated, derr := drainRetentionBatches(ctx, opts.Batches, opts.Batch,
 			func(limit int) (int64, error) {
-				return d.DeleteExpiredEvents(ctx, ns.NamespaceID, eventsCutoff, limit)
+				return d.DeleteExpiredEvents(ctx, nsID, eventsCutoff, limit)
 			})
 		rep.EventsDeleted += deleted
 		if saturated {
 			rep.Truncated = true
 		}
 		if derr != nil {
-			return rep, fmt.Errorf("sweep retention: events of namespace %s: %w", ns.NamespaceID, derr)
+			return rep, fmt.Errorf("sweep retention: events of namespace %s: %w", nsID, derr)
 		}
 	}
 	return rep, nil

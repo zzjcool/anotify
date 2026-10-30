@@ -32,7 +32,6 @@ type Edge struct {
 	// NamespaceID 是隔离维度（I11）：边属于某个命名空间，
 	// 同一对能力可以在不同命名空间各有一条边，互不影响。
 	NamespaceID string `json:"namespaceId"`
-	OrgID       string `json:"orgId"`
 
 	// FromIsSource 决定 FromCapability 字段怎么解释（字段名为了兼容而保留）：
 	//
@@ -52,7 +51,7 @@ type Edge struct {
 	CreatedAt      int64  `json:"createdAt"`
 }
 
-// ErrEdgeRejected 表示边被配置期校验拒绝（出口未定义 / 跨组织）。
+// ErrEdgeRejected 表示边被配置期校验拒绝（出口未定义 / 跨命名空间）。
 var ErrEdgeRejected = errors.New("edge_rejected")
 
 // GraphVersion 是 graph_versions 表的一行：按需落版的图快照（契约 §10.2）。
@@ -61,7 +60,6 @@ type GraphVersion struct {
 	// NamespaceID 是隔离维度；注意 content_hash **不含** namespace_id
 	// （快照内容就是 edges 列表，命名空间已经由列表达）。
 	NamespaceID string          `json:"namespaceId"`
-	OrgID       string          `json:"orgId"`
 	ContentHash string          `json:"contentHash"`
 	Snapshot    json.RawMessage `json:"snapshot"`
 	CreatedAt   int64           `json:"createdAt"`
@@ -84,13 +82,6 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	if e.FromCapability == "" || e.FromPort == "" || e.ToCapability == "" {
 		return fmt.Errorf("%w: from/port/to all required", ErrEdgeRejected)
 	}
-	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证）。
-	orgID, err := d.NamespaceOrgID(ctx, e.NamespaceID)
-	if err != nil {
-		return fmt.Errorf("create edge: %w", err)
-	}
-	e.OrgID = orgID
-
 	// I11 第 ① 条（右端）：目标能力必须属于同命名空间。
 	if err := d.checkCapabilityInNamespace(ctx, e.NamespaceID, e.ToCapability, "edges.to_capability"); err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -137,10 +128,10 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		e.CreatedAt = Now()
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO edges (namespace_id, org_id, from_is_source, from_key, from_port, to_capability, created_at)
-		 VALUES (?,?,?,?,?,?,?)
+		`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, created_at)
+		 VALUES (?,?,?,?,?,?)
 		 ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
-		e.NamespaceID, e.OrgID, boolToInt(e.FromIsSource), e.FromCapability, e.FromPort, e.ToCapability, e.CreatedAt); err != nil {
+		e.NamespaceID, boolToInt(e.FromIsSource), e.FromCapability, e.FromPort, e.ToCapability, e.CreatedAt); err != nil {
 		return fmt.Errorf("insert edge: %w", err)
 	}
 	return nil
@@ -181,7 +172,7 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	q := `SELECT namespace_id, org_id, from_is_source, from_key, from_port, to_capability, created_at
+	q := `SELECT namespace_id, from_is_source, from_key, from_port, to_capability, created_at
 	        FROM edges WHERE namespace_id = ?`
 	args := []any{namespaceID}
 	if fromKey != "" {
@@ -198,7 +189,7 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 	for rows.Next() {
 		var e Edge
 		var isSrc int
-		if err := rows.Scan(&e.NamespaceID, &e.OrgID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.NamespaceID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan edge: %w", err)
 		}
 		e.FromIsSource = isSrc == 1
@@ -309,15 +300,11 @@ func (d *DB) EnsureGraphVersion(ctx context.Context, namespaceID string) (*Graph
 		return nil, fmt.Errorf("marshal graph snapshot: %w", err)
 	}
 
-	orgID, err := d.NamespaceOrgID(ctx, namespaceID)
-	if err != nil {
-		return nil, fmt.Errorf("ensure graph version: %w", err)
-	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO graph_versions (id, namespace_id, org_id, content_hash, snapshot, created_at)
-		 VALUES (?,?,?,?,?,?)
+		`INSERT INTO graph_versions (id, namespace_id, content_hash, snapshot, created_at)
+		 VALUES (?,?,?,?,?)
 		 ON CONFLICT(namespace_id, content_hash) DO NOTHING`,
-		NewGraphVersionID(hash), namespaceID, orgID, hash, string(snapJSON), Now()); err != nil {
+		NewGraphVersionID(hash), namespaceID, hash, string(snapJSON), Now()); err != nil {
 		return nil, fmt.Errorf("insert graph version: %w", err)
 	}
 	// 回查：可能是刚插的，也可能是并发下别人先插的（此时用已有的 id）
@@ -334,14 +321,14 @@ func (d *DB) GetGraphVersion(ctx context.Context, namespaceID, id string) (*Grap
 		return nil, ErrNamespaceRequired
 	}
 	return d.scanGraphVersion(ctx,
-		`SELECT id, namespace_id, org_id, content_hash, snapshot, created_at FROM graph_versions
+		`SELECT id, namespace_id, content_hash, snapshot, created_at FROM graph_versions
 		 WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 }
 
 // getGraphVersionByHash 按 (namespace_id, content_hash) 取图版本。
 func (d *DB) getGraphVersionByHash(ctx context.Context, namespaceID, hash string) (*GraphVersion, error) {
 	return d.scanGraphVersion(ctx,
-		`SELECT id, namespace_id, org_id, content_hash, snapshot, created_at FROM graph_versions
+		`SELECT id, namespace_id, content_hash, snapshot, created_at FROM graph_versions
 		 WHERE namespace_id = ? AND content_hash = ?`, namespaceID, hash)
 }
 
@@ -349,7 +336,7 @@ func (d *DB) getGraphVersionByHash(ctx context.Context, namespaceID, hash string
 func (d *DB) scanGraphVersion(ctx context.Context, query string, args ...any) (*GraphVersion, error) {
 	var g GraphVersion
 	var snapshot string
-	err := d.QueryRowContext(ctx, query, args...).Scan(&g.ID, &g.NamespaceID, &g.OrgID, &g.ContentHash, &snapshot, &g.CreatedAt)
+	err := d.QueryRowContext(ctx, query, args...).Scan(&g.ID, &g.NamespaceID, &g.ContentHash, &snapshot, &g.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
