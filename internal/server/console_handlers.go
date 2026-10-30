@@ -737,6 +737,9 @@ type nodeCapView struct {
 	Name        string `json:"name"`
 	Version     int    `json:"version"`
 	DisplayName string `json:"displayName"`
+	// RunSpec 是节点上报的执行方式原文（`{}` = 声明了能力但没声明执行方式）。
+	// 只用于展示与诊断，中枢从不执行它（I1 边界）。
+	RunSpec json.RawMessage `json:"runSpec"`
 }
 
 // nodeView 是 nodes 表的一行 + 控制台需要的派生信息。
@@ -759,11 +762,16 @@ func (h *consoleHandler) viewFor(ctx context.Context, n *store.Node) nodeView {
 	}
 	capViews := make([]nodeCapView, 0, len(caps))
 	for _, c := range caps {
+		runSpec := c.RunSpec
+		if len(runSpec) == 0 {
+			runSpec = json.RawMessage(`{}`) // I9：宁可是空对象，也不要是 null/省略
+		}
 		capViews = append(capViews, nodeCapView{
 			ID:          c.ID,
 			Name:        c.Name,
 			Version:     c.Version,
 			DisplayName: c.DisplayName,
+			RunSpec:     runSpec,
 		})
 	}
 	insts, err := h.db.ListInstances(ctx, n.ID)

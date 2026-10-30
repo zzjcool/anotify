@@ -218,10 +218,16 @@ CREATE TABLE IF NOT EXISTS nodes (
     UNIQUE (org_id, name)
 );
 
--- 节点声明「我有 review@1」——只有名字 + 版本，没有命令、没有出口、没有 kind
+-- 节点声明「我有 review@1」。
+--
+-- 中枢侧只知道**做什么**（能力名 + 版本）；`run_spec` 是节点自己上报的
+-- 「我打算怎么跑」的 JSON 原文，**只存不执行**（见迁移 10 的说明）。
+-- 这一列不参与派发选点，控制台只拿它做展示与诊断。
+-- 没有出口、没有 kind：那些是从能力定义与边表推导出来的。
 CREATE TABLE IF NOT EXISTS node_capabilities (
     node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    run_spec      TEXT NOT NULL DEFAULT '{}', -- 节点上报的执行方式原文；'{}' = 未声明
     PRIMARY KEY (node_id, capability_id)
 );
 
@@ -455,3 +461,20 @@ CREATE        INDEX IF NOT EXISTS idx_src_targets_cap  ON source_targets(capabil
 -- 新模型：入口边左端直接是**来源名**（from_is_source=1 + from_key='github'）。
 -- 这张表要重建（from_capability 在主键里，SQLite 不能直接改列），
 -- 所以 SQL 块留空，逻辑在 store.go 的 migrationHooks[9]。
+
+-- +migration 10 node_capability_run_spec
+-- #168：节点把「我打算怎么跑这个能力」上报上来（node.yaml 的 run 块），
+-- 落成 node_capabilities.run_spec（JSON 原文）。
+--
+-- 为什么需要这一列：node_capabilities 过去只记 name@version，于是控制台
+-- 回答不了「这台机器上的 review 到底是怎么跑的」。节点换了运行时参数、改了超时，
+-- 运维只能登上那台机器去看自己的配置文件。存下来就只为了展示与排障。
+--
+-- 与不变量 I1（中枢不知道「怎么执行」）的关系：run 是**节点自己的事**。
+-- 中枢既不解码也不执行它——不拆参数、不判路径是否存在/可执行、不拼命令行，
+-- 也不把它写进任何下行帧；唯一用途是控制台读出。
+-- 派发选点（NodesForCapability）看不到这一列，行为与加列前完全一致。
+--
+-- 用 Go hook 而不是裸 ALTER：SQLite 没有 ADD COLUMN IF NOT EXISTS，
+-- 而迁移必须幂等（同一版本可能因重试执行多次），逻辑在 migrate.go 的
+-- migrationHooks[10]（migrateNodeCapabilityRunSpec）。

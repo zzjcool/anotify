@@ -532,6 +532,14 @@ func TestNodeDetail(t *testing.T) {
 	if caps, _ := obj["capabilities"].([]any); len(caps) != 1 {
 		t.Fatalf("capabilities = %v", obj["capabilities"])
 	}
+	// 老路径（无 manifest）声明：runSpec 必须是空对象，而不是 null/缺失（#168 / I9）
+	detailCaps, _ := obj["capabilities"].([]any)
+	if cap0, _ := detailCaps[0].(map[string]any); cap0 != nil {
+		runSpec, ok := cap0["runSpec"].(map[string]any)
+		if !ok || len(runSpec) != 0 {
+			t.Fatalf("未声明执行方式时 runSpec 应为 {}，cap=%v", cap0)
+		}
+	}
 
 	// 逐槽细节：两个槽、各自的并发额度、当前都空闲
 	insts, _ := m["instances"].([]any)
@@ -559,6 +567,99 @@ func TestNodeDetail(t *testing.T) {
 	rr = env.do(t, http.MethodGet, "/v1/nodes/nd_doesnotexist", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unknown node status = %d, want 404", rr.Code)
+	}
+}
+
+// TestNodeDetailRunSpec 节点上报的执行方式在控制台读出（#168 必测 8）。
+//
+// 两件事同时钉住：
+//   - 带 run 的能力：`capabilities[].runSpec.command` 原样可读（展示/排障的唯一用途）
+//   - 没声明 run 的能力：`runSpec` 是 `{}`（而不是 null / 缺失）
+//
+// list 与 detail 共用 viewFor，所以两处都必须一致。
+func TestNodeDetailRunSpec(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+	env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "test", 1, nil)
+
+	node := &store.Node{OrgID: env.orgID, Name: "mbp-runspec"}
+	if _, err := env.db.CreateNode(ctx, node); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	run := `{"runner":"bash","command":"./runners/review.sh","timeoutSec":900,"concurrency":2,"env":{"LOG_LEVEL":"info"}}`
+	if _, err := env.db.ConfirmCapabilityDecls(ctx, env.orgID, node.ID, []store.CapabilityDecl{
+		{Name: "review", Version: 1, Run: json.RawMessage(run), RunRequired: true},
+		{Name: "test", Version: 1}, // manifest 里没写这一项
+	}); err != nil {
+		t.Fatalf("confirm decls: %v", err)
+	}
+
+	getCap := func(path string, extract func(map[string]any) []any) map[string]map[string]any {
+		t.Helper()
+		rr := env.do(t, http.MethodGet, path, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body=%s", path, rr.Code, rr.Body.String())
+		}
+		caps := extract(decode(t, rr))
+		byName := map[string]map[string]any{}
+		for _, raw := range caps {
+			c, _ := raw.(map[string]any)
+			if c == nil {
+				t.Fatalf("GET %s: capability is not an object: %v", path, raw)
+			}
+			name, _ := c["name"].(string)
+			byName[name] = c
+		}
+		if len(byName) != 2 {
+			t.Fatalf("GET %s: capabilities = %v, want 2", path, caps)
+		}
+		return byName
+	}
+
+	checks := []struct {
+		path string
+		caps func(map[string]any) []any
+	}{
+		{"/v1/nodes/" + node.ID, func(m map[string]any) []any {
+			obj, _ := m["node"].(map[string]any)
+			caps, _ := obj["capabilities"].([]any)
+			return caps
+		}},
+		{"/v1/nodes", func(m map[string]any) []any {
+			nodes, _ := m["nodes"].([]any)
+			for _, raw := range nodes {
+				if obj, _ := raw.(map[string]any); obj != nil && obj["id"] == node.ID {
+					caps, _ := obj["capabilities"].([]any)
+					return caps
+				}
+			}
+			return nil
+		}},
+	}
+	for _, c := range checks {
+		byName := getCap(c.path, c.caps)
+
+		runSpec, _ := byName["review"]["runSpec"].(map[string]any)
+		if runSpec == nil {
+			t.Fatalf("GET %s: review runSpec 丢了：%v", c.path, byName["review"])
+		}
+		// 原文可读：节点写的是什么，控制台就看得见什么（不改写、不隐藏）
+		if got, _ := runSpec["command"].(string); got != "./runners/review.sh" {
+			t.Fatalf("GET %s: runSpec.command = %v, want ./runners/review.sh", c.path, runSpec["command"])
+		}
+		if got, _ := runSpec["timeoutSec"].(float64); got != 900 {
+			t.Fatalf("GET %s: runSpec.timeoutSec = %v, want 900", c.path, runSpec["timeoutSec"])
+		}
+		if got, _ := runSpec["runner"].(string); got != "bash" {
+			t.Fatalf("GET %s: runSpec.runner = %v, want bash", c.path, runSpec["runner"])
+		}
+
+		// 未声明 → 空对象，不是 null/缺失（前端不用写两套判空）
+		testSpec, ok := byName["test"]["runSpec"].(map[string]any)
+		if !ok || len(testSpec) != 0 {
+			t.Fatalf("GET %s: 未声明执行方式时 runSpec 应为 {}，got %v", c.path, byName["test"]["runSpec"])
+		}
 	}
 }
 
