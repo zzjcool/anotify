@@ -47,8 +47,8 @@ type fakeStore struct {
 	errAssignTask  error
 	// errInsertPrune 让剪枝落库失败（验证「留痕失败不能打断派发」）
 	errInsertPrune error
-	// errIsOrgMember 让成员关系查询失败（验证「鉴权查库失败必须 fail closed」）
-	errIsOrgMember error
+	// errGetUser 让用户查询失败（验证「鉴权查库失败必须 fail closed」）
+	errGetUser error
 }
 
 type assignment struct {
@@ -76,7 +76,6 @@ func (f *fakeStore) addCap(nsID, name string, version int, outputs []string, sch
 	c := &store.CapabilityVersion{
 		ID:           fmt.Sprintf("cap_%s_%s_%d", nsID, name, version),
 		NamespaceID:  nsID,
-		OrgID:        testOrg,
 		Name:         name,
 		Version:      version,
 		Outputs:      outputs,
@@ -306,33 +305,23 @@ func (f *fakeStore) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nod
 
 func (f *fakeStore) EnsureGraphVersion(ctx context.Context, namespaceID string) (*store.GraphVersion, error) {
 	f.graphCalls++
-	return &store.GraphVersion{ID: "grf_fake", NamespaceID: namespaceID, OrgID: testOrg, ContentHash: "graphhash"}, nil
+	return &store.GraphVersion{ID: "grf_fake", NamespaceID: namespaceID, ContentHash: "graphhash"}, nil
 }
 
-// NamespaceOrgID 与真 store 同口径：org_id 由 namespaces 行派生（I10）。
+// GetUserByID 与真 store 同口径：查不到返回 store.ErrNotFound（#204 之后没有组织层，
+// 用户维度校验收窄成「这个人在本部署里存在吗」，见 checkUserScoped）。
 //
-// fake 里所有命名空间都归 testOrg（本包不关心多组织），这样下一跳
-// （只拿得到父任务的 namespace）也能反查出 org 去做跨组织用户校验。
-func (f *fakeStore) NamespaceOrgID(ctx context.Context, namespaceID string) (string, error) {
-	if namespaceID == "" || namespaceID == store.AllNamespaces {
-		return "", store.ErrNamespaceRequired
+// 约定：userID 以 "member" 开头的是本部署的真实用户，其余查无此人
+// （outsider_ / stranger / 空串都走 404 分支）。用 HasPrefix 而不是精确匹配，
+// 是为了保住原来那批用例的写法（member_1 / member_alice）而语义不变。
+func (f *fakeStore) GetUserByID(id string) (*store.User, error) {
+	if f.errGetUser != nil {
+		return nil, f.errGetUser
 	}
-	return testOrg, nil
-}
-
-func (f *fakeStore) IsOrgMember(ctx context.Context, orgID, userID string) (bool, error) {
-	if f.errIsOrgMember != nil {
-		return false, f.errIsOrgMember
+	if !strings.HasPrefix(id, "member") {
+		return nil, store.ErrNotFound
 	}
-	// 空 org 一律判「不是成员」：真库按 org_id 过滤，空值必然查不到。
-	// 这样「忘了传/忘了派生出 org」会立刻退化成 foreign_user 剪枝，
-	// 而不是被 mock 的宽容掩盖过去（见 TestPlanNextHopResolvesOrg）。
-	if orgID == "" {
-		return false, nil
-	}
-	// 约定：userID 以 "member" 开头的是本组织成员，其余是外部用户。
-	// （用 HasPrefix 而不是切片比较：切片下标写错一位就会静默判错，见 TestForeignUser。）
-	return strings.HasPrefix(userID, "member"), nil
+	return &store.User{ID: id, Username: id, DisplayName: id}, nil
 }
 
 // InsertPruneEvent 按 (org_id, trace_id, source, type, payload) 去重，
@@ -362,10 +351,7 @@ func (f *fakeStore) InsertPruneEvent(ctx context.Context, e *store.Event) (bool,
 
 // ---------- 测试夹具 ----------
 
-const testOrg = "org_test"
-
-// testNS 是这些用例用的命名空间（派发四步 ①③⑤ 的隔离维度）。
-// 一个 org 可以有多个命名空间，所以 org 与 ns 是两个独立的维度。
+// testNS 是这些用例用的命名空间（派发四步 ①③⑤ 的唯一隔离维度）。
 const testNS = "ns_test"
 
 // setupFanout 构造：review--fix--> {fix1, fix2, fix3}，三台机器各声明一个。
@@ -391,7 +377,7 @@ func TestDispatchFanout(t *testing.T) {
 	f, d, review, targets := setupFanout(t)
 
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_1", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "trace_1", FromCap: review.ID, Out: "fix",
 		Params: map[string]any{},
 	})
 	if err != nil {
@@ -449,7 +435,7 @@ func TestDispatchPartialPrune(t *testing.T) {
 
 	d := New(f)
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 		Params: map[string]any{}, // 没有 diff
 	})
 	if err != nil {
@@ -473,7 +459,7 @@ func TestDispatchNoEdge(t *testing.T) {
 	d := New(f)
 
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "nobody-listens",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "nobody-listens",
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -497,7 +483,7 @@ func TestDispatchNoReportIsNotPrune(t *testing.T) {
 	d := New(f)
 
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "", // 没回报
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "", // 没回报
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -519,12 +505,12 @@ func TestDispatchValidation(t *testing.T) {
 		t.Error("empty namespace accepted")
 	}
 	// 有 org + namespace，但没有 trace_id
-	if _, err := d.Dispatch(context.Background(), DispatchInput{OrgID: testOrg, NamespaceID: testNS}); err == nil {
+	if _, err := d.Dispatch(context.Background(), DispatchInput{NamespaceID: testNS}); err == nil {
 		t.Error("empty trace_id accepted")
 	}
 	// 无 store
 	empty := &Dispatcher{}
-	if _, err := empty.Dispatch(context.Background(), DispatchInput{OrgID: testOrg, NamespaceID: testNS, TraceID: "t"}); err == nil {
+	if _, err := empty.Dispatch(context.Background(), DispatchInput{NamespaceID: testNS, TraceID: "t"}); err == nil {
 		t.Error("dispatcher without store accepted")
 	}
 }
@@ -544,7 +530,7 @@ func TestDispatchRejectsEmptyNamespace(t *testing.T) {
 	d := New(f)
 
 	_, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "fix",
+		TraceID: "t", FromCap: review.ID, Out: "fix",
 		// NamespaceID 故意留空
 	})
 	if err == nil {
@@ -595,7 +581,7 @@ func TestDispatchIsolatesNamespaces(t *testing.T) {
 
 	// ① 在 nsA 里派发：只建 nsA 的任务
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: nsA, TraceID: "trace_a",
+		NamespaceID: nsA, TraceID: "trace_a",
 		FromCap: reviewA.ID, Out: "fix", Params: map[string]any{},
 	})
 	if err != nil {
@@ -619,7 +605,7 @@ func TestDispatchIsolatesNamespaces(t *testing.T) {
 
 	// ② 反向：在 nsB 里派发只建 nsB 的任务
 	out, err = d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: nsB, TraceID: "trace_b",
+		NamespaceID: nsB, TraceID: "trace_b",
 		FromCap: reviewB.ID, Out: "fix", Params: map[string]any{},
 	})
 	if err != nil {
@@ -644,7 +630,7 @@ func TestDispatchIsolatesNamespaces(t *testing.T) {
 	// nsA 里同名的 review2 能力（不同 id、没有任何边）
 	review2A := f.addCap(nsA, "review2", 1, []string{"deploy"}, `{}`)
 	out, err = d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: nsA, TraceID: "trace_a2",
+		NamespaceID: nsA, TraceID: "trace_a2",
 		FromCap: review2A.ID, Out: "deploy", Params: map[string]any{},
 	})
 	if err != nil {
@@ -680,7 +666,7 @@ func TestDispatchSourceTargetsStayInNamespace(t *testing.T) {
 
 	d := New(f)
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: nsA, TraceID: "trace_src",
+		NamespaceID: nsA, TraceID: "trace_src",
 		Targets: []string{fixA.ID}, Out: "push", Params: map[string]any{},
 	})
 	if err != nil {
@@ -699,7 +685,7 @@ func TestDispatchSourceTargetsStayInNamespace(t *testing.T) {
 
 	// 目标是别的命名空间的能力 → 报错，不建任何行（GetCapabilityByID 按 namespace 查不到）
 	_, err = d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: nsA, TraceID: "trace_src_bad",
+		NamespaceID: nsA, TraceID: "trace_src_bad",
 		Targets: []string{fixB.ID}, Out: "push", Params: map[string]any{},
 	})
 	if err == nil {
@@ -719,7 +705,7 @@ func TestDispatchNoNode(t *testing.T) {
 	d := New(f)
 
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -744,7 +730,7 @@ func TestDispatchLeavesPendingWhenNoCapacity(t *testing.T) {
 
 	d := New(f)
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -777,7 +763,7 @@ func TestDispatchLeaseAndAssignFailureDoesNotLeakSlot(t *testing.T) {
 	f.addNode("nd_fix", target.ID, 1) // 只有一个槽位：泄漏就再也占不到
 	d := New(f)
 
-	in := DispatchInput{OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix"}
+	in := DispatchInput{NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix"}
 
 	f.errAssignTask = errors.New("constraint")
 	if _, err := d.Dispatch(context.Background(), in); err == nil {
@@ -826,7 +812,7 @@ func TestDispatchPicksLeastLoadedNode(t *testing.T) {
 
 	d := New(f)
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -849,7 +835,7 @@ func TestDispatchPathIncludedInChildTask(t *testing.T) {
 
 	d := New(f)
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", ParentTaskID: "tsk_parent",
+		NamespaceID: testNS, TraceID: "t", ParentTaskID: "tsk_parent",
 		FromCap: review.ID, Out: "fix",
 		Path: []string{review.ID},
 	})
@@ -880,7 +866,7 @@ func TestDispatchAckLeaseWindow(t *testing.T) {
 	d := New(f)
 	d.Now = func() int64 { return now }
 	if _, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 	}); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -904,7 +890,7 @@ func TestDispatchStoreErrorsPropagate(t *testing.T) {
 
 	f.errEdges = errors.New("db down")
 	if _, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 	}); err == nil {
 		t.Fatal("edges error was swallowed")
 	}
@@ -912,7 +898,7 @@ func TestDispatchStoreErrorsPropagate(t *testing.T) {
 
 	f.errNodes = errors.New("db down")
 	if _, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 	}); err == nil {
 		t.Fatal("nodes error was swallowed")
 	}
@@ -920,7 +906,7 @@ func TestDispatchStoreErrorsPropagate(t *testing.T) {
 
 	f.errCreateTasks = errors.New("constraint")
 	if _, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 	}); err == nil {
 		t.Fatal("create tasks error was swallowed")
 	}
@@ -942,7 +928,7 @@ func TestDispatchStickyPin(t *testing.T) {
 	params := map[string]any{"worktree": "wt-feature-x"}
 
 	out1, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_sticky", FromCap: review.ID, Out: "fix", Params: params,
+		NamespaceID: testNS, TraceID: "trace_sticky", FromCap: review.ID, Out: "fix", Params: params,
 	})
 	if err != nil {
 		t.Fatalf("first dispatch: %v", err)
@@ -960,7 +946,7 @@ func TestDispatchStickyPin(t *testing.T) {
 
 	// 第二次派发（同 trace、同 selector）：钉到同一台
 	out2, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_sticky", FromCap: review.ID, Out: "fix", Params: params,
+		NamespaceID: testNS, TraceID: "trace_sticky", FromCap: review.ID, Out: "fix", Params: params,
 	})
 	if err != nil {
 		t.Fatalf("second dispatch: %v", err)
@@ -972,7 +958,7 @@ func TestDispatchStickyPin(t *testing.T) {
 
 	// 不同 trace → 不同选择器值 → 不同 pin（但可能仍是同一台，负载相同）
 	out3, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_other", FromCap: review.ID, Out: "fix", Params: params,
+		NamespaceID: testNS, TraceID: "trace_other", FromCap: review.ID, Out: "fix", Params: params,
 	})
 	if err != nil {
 		t.Fatalf("third dispatch: %v", err)
@@ -994,11 +980,11 @@ func TestDispatchStickyFallsBackWhenPinnedNodeGone(t *testing.T) {
 
 	// 预先钉到一个已经不在候选里的节点
 	key := store.StickyKey("trace_x", target.ID, "wt-1")
-	f.pins[key] = &store.NodePin{StickyKey: key, OrgID: testOrg, NamespaceID: testNS, NodeID: "nd_dead", Selector: "wt-1"}
+	f.pins[key] = &store.NodePin{StickyKey: key, NamespaceID: testNS, NodeID: "nd_dead", Selector: "wt-1"}
 
 	d := New(f)
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_x", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "trace_x", FromCap: review.ID, Out: "fix",
 		Params: map[string]any{"worktree": "wt-1"},
 	})
 	if err != nil {
@@ -1173,7 +1159,7 @@ func TestValidateNestedPathError(t *testing.T) {
 // TargetParams 是按目标的**模板**（含 {{x}} / {from} / {var}）。
 func sourceInput(capID string, template map[string]any, payload map[string]any) DispatchInput {
 	return DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t_source",
+		NamespaceID: testNS, TraceID: "t_source",
 		FromCap: "github", FromIsSource: true, Out: "push",
 		Targets:      []string{capID},
 		TargetParams: map[string]map[string]any{capID: template},
@@ -1319,7 +1305,7 @@ func TestDispatchRecursiveDoesNotResolve(t *testing.T) {
 	d := New(f)
 
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t_recursive", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t_recursive", FromCap: review.ID, Out: "fix",
 		Params:  map[string]any{"n": "{{n}}"},
 		Payload: map[string]any{"n": float64(1)}, // 递归路径不该看它
 		Path:    []string{review.ID},
@@ -1539,7 +1525,7 @@ func contains(s, sub string) bool {
 //	· 返回 error → 这次 trace 失败并留错，人能重试    ← 这个
 func TestDispatchUserScopedLookupErrorFailsClosed(t *testing.T) {
 	f := newFakeStore()
-	f.errIsOrgMember = errors.New("db is on fire")
+	f.errGetUser = errors.New("db is on fire")
 	notify := f.addCap(testNS, "notify.phone", 1, nil, `{}`)
 	f.addNode("nd_notify", notify.ID, 1)
 	d := New(f)
@@ -1547,7 +1533,7 @@ func TestDispatchUserScopedLookupErrorFailsClosed(t *testing.T) {
 	d.UserScoped = map[string]bool{"notify.phone": true}
 
 	out, err := d.Dispatch(context.Background(), DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t_member_err",
+		NamespaceID: testNS, TraceID: "t_member_err",
 		FromCap: "github", FromIsSource: true, Out: "push",
 		Targets:      []string{notify.ID},
 		TargetParams: map[string]map[string]any{notify.ID: {"to": "member-1"}},
@@ -1555,8 +1541,12 @@ func TestDispatchUserScopedLookupErrorFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("查库失败必须返回 error（否则等于放行），out=%+v", out)
 	}
-	if !strings.Contains(err.Error(), "check org member") {
-		t.Fatalf("错误要说清是哪一步失败, got %v", err)
+	// 断言强度不变：仍然要求错误里带出「是哪一步、查的是谁」。
+	// 文案随 #204 从 check org member 改成 check user（判据已是用户存在性）。
+	for _, want := range []string{"check user", `"member-1"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误要说清是哪一步失败（缺 %q）, got %v", want, err)
+		}
 	}
 	if out != nil && len(out.Tasks) != 0 {
 		t.Fatalf("查库失败不该建出任务, got %d", len(out.Tasks))

@@ -36,7 +36,6 @@ import (
 
 // DispatchInput 是一次派发的输入。
 type DispatchInput struct {
-	OrgID string
 	// NamespaceID 是这次派发的**隔离维度**（契约 §3 / 设计文档 §5）。
 	//
 	// 派发四步里 ① 查出口表、③ 找节点、⑤ 建任务都按它过滤/落库；② 校参数、
@@ -148,13 +147,11 @@ type Store interface {
 	// 那样会出现第二个改任务归属的地方，与「唯一入口」的约束冲突。
 	SweepExpiredLeases(ctx context.Context, now int64) ([]string, error)
 	EnsureGraphVersion(ctx context.Context, namespaceID string) (*store.GraphVersion, error)
-	// NamespaceOrgID 把命名空间反推回组织。
+	// GetUserByID 查用户是否存在（契约 §10.1.1 的用户维度校验用）。
 	//
-	// 派发里唯一还剩的组织级规则是「params.to 必须是本组织成员」（契约 §10.1.1），
-	// 以及 task.OrgID / 日志。下一跳拿不到 org，但只要知道父任务的 namespace
-	// 就能把它推出来（I10：namespace.org_id 是唯一事实源）。
-	NamespaceOrgID(ctx context.Context, namespaceID string) (string, error)
-	IsOrgMember(ctx context.Context, orgID, userID string) (bool, error)
+	// #204 之后没有组织层，判据从「是不是本组织成员」收窄成「本部署里有没有这个人」：
+	// 命名空间是唯一隔离边界，本部署任何已登录用户都能访问任何存在的命名空间。
+	GetUserByID(id string) (*store.User, error)
 
 	// InsertPruneEvent 落一条剪枝事件（#142）。
 	//
@@ -168,11 +165,11 @@ type Store interface {
 type Dispatcher struct {
 	Store Store
 
-	// UserScoped 是「params.to 必须属于本组织」的能力名集合（契约 §10.1.1）。
+	// UserScoped 是「params.to 必须是本部署里存在的用户」的能力名集合（契约 §10.1.1）。
 	//
 	// 这是 params_schema 管不到的业务规则：schema 只能说「to 是非空字符串」，
-	// 「这个人属于本组织」要单独查 org_members。
-	// 每加一个跨组织（推送/私信）能力，都要在这里补一条。
+	// 「这个人在本部署里存在吗」要单独查 users 表（见 checkUserScoped）。
+	// 每加一个按人投递（推送/私信）能力，都要在这里补一条。
 	UserScoped map[string]bool
 
 	// Now 返回当前 unixepoch 秒（测试可注入）。
@@ -279,10 +276,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 // 抽出来的理由：PlanNextHop 绕过了 Dispatch 直接调 plan，若不校验，
 // Store 为 nil 时会在 plan 里 panic（旧 DispatchNext 走 Dispatch，本来就有这层校验）。
 //
-// 为什么这里不再要求 OrgID：org_id 现在是**派生量**（I10，由 namespaces 行决定），
-// 派发四步的每一次 store 调用都只吃 namespaceID。而下一跳根本拿不到 org
-// （见 PlanNextHop：子任务只继承父任务的 namespace）。OrgID 仍有用的地方
-// （跨组织用户校验、task.OrgID、日志）在 plan 里按需从命名空间反查，见 plan。
+// 为什么这里不要求组织：组织层已在迁移 14 删除，命名空间是唯一隔离维度，
+// 派发四步的每一次 store 调用都只吃 namespaceID（见 PlanNextHop：子任务只继承
+// 父任务的 namespace）。除了 store 的作用域参数，派发不需要任何更粗的归属。
 func (d *Dispatcher) checkInput(in DispatchInput) error {
 	if d.Store == nil {
 		return fmt.Errorf("route: dispatcher has no store")
@@ -322,18 +318,6 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	// ① 上游没回报出口：正常结束的分支，不查表、不剪枝（契约 §7 第 ① 行）。
 	if in.Out == "" {
 		return nil, nil, nil
-	}
-
-	// org_id 是派生量（I10）：根任务由调用方带进来；下一跳只拿得到父任务的
-	// namespace（见 PlanNextHop），这里就反查一次——绝不“猜”默认 org，也不
-	// 拿空 org 去查 org_members（那会把本组织用户的推送静默剪成 foreign_user）。
-	// 只在真的缺了才查：根派发（handler/源/触发器）这条路一次查询也不多付。
-	if in.OrgID == "" {
-		orgID, err := d.Store.NamespaceOrgID(ctx, in.NamespaceID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("route: resolve org for namespace %s: %w", in.NamespaceID, err)
-		}
-		in.OrgID = orgID
 	}
 
 	// ② 查出口表；源（Targets 非空）跳过这一步，直接用配置好的目标
@@ -424,7 +408,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		// 查库失败必须**整个派发失败**（fail closed）：这是"不许推给外组织用户"
 		// 的闸门，放行等于在最该拦住的时候放行。宁可让这一次 trace 失败并留错，
 		// 也不能把消息推给不属于本组织的人。
-		pruned, rec, err := d.checkUserScoped(ctx, in.OrgID, capDef, targetParams)
+		pruned, rec, err := d.checkUserScoped(ctx, capDef, targetParams)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -503,7 +487,6 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		task := &store.Task{
 			ID:           store.NewTaskID(),
 			NamespaceID:  in.NamespaceID, // ⑤ 根任务用入参；子任务由 store I11④ 强制继承父任务
-			OrgID:        in.OrgID,
 			TraceID:      in.TraceID,
 			ParentTaskID: parentPtr(in.ParentTaskID),
 			Path:         path,
@@ -598,7 +581,6 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 			if err := d.Store.PutPin(ctx, &store.NodePin{
 				StickyKey:   key,
 				NamespaceID: in.NamespaceID,
-				OrgID:       in.OrgID,
 				NodeID:      nodeID,
 				Selector:    *stickySelector,
 			}); err != nil {
@@ -733,7 +715,6 @@ func (d *Dispatcher) prune(ctx context.Context, in DispatchInput, out *DispatchO
 	// 于是剪枝会「静默地写失败」——那就又把 #142 要消灭的「查不到的剪枝」还回来了。
 	if _, err := d.Store.InsertPruneEvent(ctx, &store.Event{
 		NamespaceID: in.NamespaceID,
-		OrgID:       in.OrgID,
 		TraceID:     in.TraceID,
 		Source:      PruneEventSource,
 		Type:        PruneEventType(p.Reason),
@@ -800,13 +781,19 @@ func (d *Dispatcher) now() int64 {
 	return store.Now()
 }
 
-// checkUserScoped 校验 params.to 是否属于本组织（契约 §10.1.1）。
+// checkUserScoped 校验 params.to 指向的用户在本部署里存在（契约 §10.1.1）。
 //
-// 返回的 error 必须由调用方**继续往上抛**：查成员关系失败时既不能判"外来用户"
-// （那是把故障当成攻击，消息静默消失），也不能判"通过"（那是 fail open，
-// 消息可能推给外组织用户）。以前这里只返回 (bool, PrunedRecord)，注释写着
-// "向上抛"却无处可抛 —— 于是查库失败等价于放行。
-func (d *Dispatcher) checkUserScoped(ctx context.Context, orgID string, capDef *store.CapabilityVersion, params map[string]any) (bool, PrunedRecord, error) {
+// **#204 之后判据变了（明确写在这里以免误读）**：组织层删除，命名空间成为唯一
+// 隔离边界，本部署任何已登录用户都能访问任何存在的命名空间 —— 所以「把消息推给
+// 外组织用户」这个威胁不存在了。这条规则仍然有意义，只是收窄成「收件人得是个
+// 真人」：推给一个不存在的 userID，任务一定发不出去、而且会静默消失，不如在派发
+// 时就剪掉并留痕（PruneReason 仍叫 foreign_user，wire 值不变）。
+//
+// 返回的 error 必须由调用方**继续往上抛**：查库失败时既不能判"用户不存在"
+// （那是把故障当成攻击，消息静默消失），也不能判"通过"（那是 fail open）。
+// 以前这里只返回 (bool, PrunedRecord)，注释写着"向上抛"却无处可抛 ——
+// 于是查库失败等价于放行。
+func (d *Dispatcher) checkUserScoped(ctx context.Context, capDef *store.CapabilityVersion, params map[string]any) (bool, PrunedRecord, error) {
 	if !d.UserScoped[capDef.Name] {
 		return false, PrunedRecord{}, nil
 	}
@@ -820,17 +807,16 @@ func (d *Dispatcher) checkUserScoped(ctx context.Context, orgID string, capDef *
 			Detail:       fmt.Sprintf("%s requires a non-empty params.to", capDef.Name),
 		}, nil
 	}
-	member, err := d.Store.IsOrgMember(ctx, orgID, to)
-	if err != nil {
-		// 查库失败：既不能剪枝（会静默丢消息），也不能放行（可能推给外组织用户）
-		return false, PrunedRecord{}, fmt.Errorf("route: check org member %q: %w", to, err)
-	}
-	if !member {
-		return true, PrunedRecord{
-			Reason:       ReasonForeignUser,
-			CapabilityID: capDef.ID,
-			Detail:       fmt.Sprintf("params.to=%q is not a member of this org", to),
-		}, nil
+	if _, err := d.Store.GetUserByID(to); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return true, PrunedRecord{
+				Reason:       ReasonForeignUser,
+				CapabilityID: capDef.ID,
+				Detail:       fmt.Sprintf("params.to=%q does not exist in this deployment", to),
+			}, nil
+		}
+		// 查库失败：既不能剪枝（会静默丢消息），也不能放行
+		return false, PrunedRecord{}, fmt.Errorf("route: check user %q: %w", to, err)
 	}
 	return false, PrunedRecord{}, nil
 }
@@ -852,7 +838,6 @@ func (d *Dispatcher) pickNode(ctx context.Context, in DispatchInput, capDef *sto
 			if err := d.Store.PutPin(ctx, &store.NodePin{
 				StickyKey:   key,
 				NamespaceID: pin.NamespaceID, // 刷新沿用库里那条 pin 的命名空间
-				OrgID:       pin.OrgID,
 				NodeID:      pin.NodeID,
 				Selector:    pin.Selector,
 				CreatedAt:   pin.CreatedAt,
@@ -966,7 +951,7 @@ func parentPtr(s string) *string {
 //	Params      = 它的 params（原样传递，不求值）
 //	Path        = 它的 path（环剪枝的累积路径）
 //
-// 为什么第二个参数是 namespaceID 而不是 orgID（契约 §3 第 ⑤ 步）：
+// 为什么第二个参数是 namespaceID（契约 §3 第 ⑤ 步）：
 // 下一跳的子任务**必须继承父任务的命名空间**（I11④ 也由 store.CreateTasks
 // 兜一遍：子任务显式给了不同命名空间就直接报 CrossNamespaceError）。
 // 调用方只能把父任务行上的那个值原样递进来，不能自己挑一个。
@@ -1001,7 +986,6 @@ func (d *Dispatcher) PlanNextHop(ctx context.Context, namespaceID, traceID, pare
 	}
 
 	in := DispatchInput{
-		// org_id 不在这里传：子任务的 OrgID 由 store 从 namespace 派生（I10）。
 		// NamespaceID 在这里只能是父任务的那一个（I11④：不接受调用方另指定）。
 		NamespaceID:  namespaceID,
 		TraceID:      traceID,
@@ -1083,18 +1067,11 @@ func (d *Dispatcher) PublishTasks(ctx context.Context, namespaceID string, tasks
 			continue
 		}
 
-		// plan 出来的任务自带 NamespaceID/OrgID；只在缺失时用入参补上，
+		// plan 出来的任务自带 NamespaceID；只在缺失时用入参补上，
 		// 避免拿空作用域去查库（那样什么都查不到，任务会默默留 pending）。
-		//
-		// #162：隔离维度是命名空间（I10）。org_id 只是派生量，这里补它是为了
-		// 日志与跨组织用户校验；真正决定「谁看得到这条任务」的是 namespace_id。
+		// 命名空间就是唯一隔离维度，也是「谁看得到这条任务」的唯一判据。
 		if t.NamespaceID == "" {
 			t.NamespaceID = namespaceID
-		}
-		if t.OrgID == "" {
-			if orgID, err := d.Store.NamespaceOrgID(ctx, t.NamespaceID); err == nil {
-				t.OrgID = orgID
-			}
 		}
 
 		beforeAttempts := t.Attempts
@@ -1166,7 +1143,7 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	// 写 pin 的地方（见下方 PutPin 段）。
 	// 粘性/负载与命名空间无关（派发第 ④ 步不变），但 pin 要能追溯归属，
 	// 所以把任务自己的 namespace 带进去。
-	nodeID, stickySelector, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, NamespaceID: task.NamespaceID, TraceID: task.TraceID}, capDef, taskParams, nodes)
+	nodeID, stickySelector, err := d.pickNode(ctx, DispatchInput{NamespaceID: task.NamespaceID, TraceID: task.TraceID}, capDef, taskParams, nodes)
 	if err != nil {
 		return false, err
 	}
@@ -1226,13 +1203,12 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 		if err := d.Store.PutPin(ctx, &store.NodePin{
 			StickyKey:   key,
 			NamespaceID: task.NamespaceID,
-			OrgID:       task.OrgID,
 			NodeID:      nodeID,
 			Selector:    *stickySelector,
 		}); err != nil {
 			slog.Warn("put sticky pin after redispatch failed",
 				"event", "route.redispatch.put_pin_failed",
-				"org_id", task.OrgID,
+				"namespace_id", task.NamespaceID,
 				"task_id", task.ID,
 				"trace_id", task.TraceID,
 				"capability_id", task.CapabilityID,

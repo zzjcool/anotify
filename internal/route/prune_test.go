@@ -21,7 +21,7 @@ func TestPruneReasons(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "",
+			NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "",
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -40,7 +40,7 @@ func TestPruneReasons(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+			NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -57,7 +57,7 @@ func TestPruneReasons(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+			NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 			Params: map[string]any{},
 		})
 		if err != nil {
@@ -74,7 +74,7 @@ func TestPruneReasons(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+			NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -92,7 +92,7 @@ func TestPruneReasons(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+			NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 			// "outsider_1" 不是本组织成员（fakeStore 约定 member* 才是）
 			Params: map[string]any{"to": "outsider_1", "title": "x", "body": "y"},
 		})
@@ -116,7 +116,7 @@ func TestPruneReasons(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: fix.ID, Out: "review",
+			NamespaceID: testNS, TraceID: "t", FromCap: fix.ID, Out: "review",
 			// review 已经在路径里
 			Path: []string{review.ID, fix.ID},
 		})
@@ -148,7 +148,7 @@ func TestPrunePathCycle(t *testing.T) {
 	// 注意：调用方把 path 传成「从根到本任务的能力序列」——起点能力也应在里面。
 	// 这里模拟「根事件由 review 的 origin 出口触发」，所以 path 从空开始。
 	out1, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_cycle", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "trace_cycle", FromCap: review.ID, Out: "fix",
 		Path: []string{review.ID},
 	})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestPrunePathCycle(t *testing.T) {
 
 	// 第二圈：fix 回报 review，目标是 review —— 已在路径里 → pruned/path
 	out2, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_cycle",
+		NamespaceID: testNS, TraceID: "trace_cycle",
 		ParentTaskID: out1.Tasks[0].ID,
 		FromCap:      fix.ID, Out: "review",
 		Path: pathAfterFix,
@@ -191,7 +191,7 @@ func TestForeignUser(t *testing.T) {
 
 	// 成员：放行
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t1", FromCap: review.ID, Out: "notify",
+		NamespaceID: testNS, TraceID: "t1", FromCap: review.ID, Out: "notify",
 		Params: map[string]any{"to": "member_alice"},
 	})
 	if err != nil {
@@ -203,7 +203,7 @@ func TestForeignUser(t *testing.T) {
 
 	// 非成员：剪枝
 	out, err = d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t2", FromCap: review.ID, Out: "notify",
+		NamespaceID: testNS, TraceID: "t2", FromCap: review.ID, Out: "notify",
 		Params: map[string]any{"to": "stranger"},
 	})
 	if err != nil {
@@ -226,7 +226,7 @@ func TestForeignUserEmptyTo(t *testing.T) {
 	d := New(f)
 
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "notify",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "notify",
 		Params: map[string]any{}, // 没有 to
 	})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestNonUserScopedCapabilitySkipsMemberCheck(t *testing.T) {
 
 	// params.to 是外人，但 fix 不是用户维度能力 → 照常派发
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 		Params: map[string]any{"to": "stranger"},
 	})
 	if err != nil {

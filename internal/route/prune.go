@@ -17,7 +17,9 @@ const (
 	ReasonParamSchema PruneReason = "param_schema"
 	// ReasonNoNode 有边、参数也对，但没有节点声明该能力。
 	ReasonNoNode PruneReason = "no_node"
-	// ReasonForeignUser params.to 指向的用户不属于本组织（契约 §10.1.1）。
+	// ReasonForeignUser params.to 指向的用户在本部署里不存在（契约 §10.1.1）。
+	// 常量名与 wire 值保留历史拼写（跨版本事件可读），语义已随迁移 14 收窄：
+	// 组织层删除后不再有「外组织用户」，只剩「查无此人」。
 	ReasonForeignUser PruneReason = "foreign_user"
 	// ReasonPath 目标能力已在 path 里（环剪枝）。
 	ReasonPath PruneReason = "path"
@@ -49,7 +51,7 @@ func (p PrunedRecord) String() string {
 // （与 triggers 的 source 区分开：后者是 github/cron/… 这类来源名）。
 //
 // 为什么复用 events 表而不是新表：剪枝就是「这条链在这里断了」的观察记录，
-// 与事件同属一条 trace、同一套 org 维度，没有独立生命周期；
+// 与事件同属一条 trace、同一套命名空间维度，没有独立生命周期；
 // 建新表还要新迁移、新出口、新前端，换来的只是同一件事的第二种存法。
 const PruneEventSource = "route"
 

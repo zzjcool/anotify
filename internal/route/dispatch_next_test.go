@@ -147,8 +147,8 @@ func TestPlanNextHopIsReadOnly(t *testing.T) {
 	if !strings.HasPrefix(task.ID, "tsk_") {
 		t.Errorf("task id = %q, want tsk_ prefix (plan 里就该生成 ID)", task.ID)
 	}
-	if task.OrgID != testOrg || task.TraceID != "trace_plan" {
-		t.Errorf("task org/trace = %q/%q", task.OrgID, task.TraceID)
+	if task.NamespaceID != testNS || task.TraceID != "trace_plan" {
+		t.Errorf("task namespace/trace = %q/%q, want %q/trace_plan", task.NamespaceID, task.TraceID, testNS)
 	}
 	// ⑤ 下一跳子任务继承**父任务的命名空间**（调用方只能把父任务行上的值递进来）
 	if task.NamespaceID != testNS {
@@ -248,13 +248,16 @@ func TestPlanNextHopNotDispatched(t *testing.T) {
 	}
 }
 
-// TestPlanNextHopResolvesOrg 下一跳拿不到 org，只能从父任务的命名空间派生（I10）。
+// TestPlanNextHopUserScopedNotPruned 下一跳只递父任务的命名空间时，
+// 用户维度校验（checkUserScoped）也不能把真实用户的推送误剪成 foreign_user。
 //
-// 派发里唯一还需要 org 的地方是「params.to 必须是本组织成员」（契约 §10.1.1）。
-// 下一跳的输入只有 namespaceID（子任务继承父任务的命名空间），若这里不反查 org，
-// IsOrgMember 会拿空 org 去查——本组织用户的推送会被静默剪成 foreign_user，
-// 链条在 notify 这一步永远断掉（正是 #142 要消灭的那种"查不到的静默失败"）。
-func TestPlanNextHopResolvesOrg(t *testing.T) {
+// 历史：这条用例原来叫 TestPlanNextHopResolvesOrg，守的是「下一跳拿不到 org，
+// 必须从命名空间反查，否则 IsOrgMember 拿空 org 去查 → 静默剪成 foreign_user」。
+// #204 删掉组织层后「反查 org」不存在了，但**同一类静默失败**仍然可能发生：
+// checkUserScoped 若拿不到/查不到用户，就会把这条链在 notify 这步剪断
+// （正是 #142 要消灭的那种「查不到的静默失败」）。所以这条用例保留，
+// 断言改为：任务建出来、命名空间是父任务那个、且没有任何剪枝留痕。
+func TestPlanNextHopUserScopedNotPruned(t *testing.T) {
 	f := newFakeStore()
 	review := f.addCap(testNS, "review", 1, []string{"notify"}, `{"type":"object"}`)
 	phone := f.addCap(testNS, store.NotifyPhoneCapability.Name, store.NotifyPhoneCapability.Version,
@@ -269,10 +272,10 @@ func TestPlanNextHopResolvesOrg(t *testing.T) {
 		t.Fatalf("plan next hop: %v", err)
 	}
 	if len(tasks) != 1 {
-		t.Fatalf("plan returned %d tasks, want 1（org 没派生出来 → to 被误判成 foreign_user）", len(tasks))
+		t.Fatalf("plan returned %d tasks, want 1（to 被误判成 foreign_user → 链路在 notify 断掉）", len(tasks))
 	}
-	if got := tasks[0]; got.NamespaceID != testNS || got.OrgID != testOrg {
-		t.Fatalf("task namespace/org = %q/%q, want %q/%q", got.NamespaceID, got.OrgID, testNS, testOrg)
+	if got := tasks[0]; got.NamespaceID != testNS {
+		t.Fatalf("task namespace = %q, want %q（子任务必须继承父任务的命名空间）", got.NamespaceID, testNS)
 	}
 	if events := pruneEventsFor(f, "trace_org"); len(events) != 0 {
 		t.Fatalf("不该有剪枝留痕: %+v", events)
@@ -294,7 +297,7 @@ func TestPublishTasksAssignsPendingTask(t *testing.T) {
 		t.Fatalf("seed task rows: %v", err)
 	}
 
-	if err := d.PublishTasks(context.Background(), testOrg, tasks); err != nil {
+	if err := d.PublishTasks(context.Background(), testNS, tasks); err != nil {
 		t.Fatalf("publish tasks: %v", err)
 	}
 
@@ -366,7 +369,7 @@ func TestPublishTasksFailureRequeuesAndContinues(t *testing.T) {
 	}
 
 	// 不 panic、不中断，但要把第一个错误交回调用方记日志
-	if err := d.PublishTasks(context.Background(), testOrg, tasks); err == nil {
+	if err := d.PublishTasks(context.Background(), testNS, tasks); err == nil {
 		t.Fatal("publish 失败却返回 nil（调用方就记不到日志了）")
 	}
 	if calls := pub.called(); len(calls) != 2 {
@@ -443,7 +446,7 @@ func TestPublishTasksSkipsCentralCapability(t *testing.T) {
 		t.Fatalf("seed task rows: %v", err)
 	}
 
-	if err := d.PublishTasks(context.Background(), testOrg, tasks); err != nil {
+	if err := d.PublishTasks(context.Background(), testNS, tasks); err != nil {
 		t.Fatalf("中枢能力不算失败，却返回 %v", err)
 	}
 
@@ -509,7 +512,7 @@ func TestPublishTasksWritesStickyPin(t *testing.T) {
 	}
 
 	// ---- 首跳 ----------------
-	if err := d.PublishTasks(context.Background(), testOrg, tasks); err != nil {
+	if err := d.PublishTasks(context.Background(), testNS, tasks); err != nil {
 		t.Fatalf("publish tasks: %v", err)
 	}
 	task := tasks[0]
@@ -534,8 +537,8 @@ func TestPublishTasksWritesStickyPin(t *testing.T) {
 	if pin.Selector != "wt-1" {
 		t.Errorf("pin.selector = %q, want wt-1", pin.Selector)
 	}
-	if pin.OrgID != testOrg {
-		t.Errorf("pin.org_id = %q, want %q", pin.OrgID, testOrg)
+	if pin.NamespaceID != testNS {
+		t.Errorf("pin.namespace_id = %q, want %q（pin 必须记住它属于哪个命名空间）", pin.NamespaceID, testNS)
 	}
 
 	// ---- 巡检重派同一任务：租约过期 → sweep 退回 pending → 再 publish ----
@@ -549,7 +552,7 @@ func TestPublishTasksWritesStickyPin(t *testing.T) {
 		t.Fatalf("用例前提不成立: free(nd_a)=%d, free(nd_b)=%d（nd_a 必须更紧，否则换机器不会发生）",
 			free["nd_a"], free["nd_b"])
 	}
-	if err := f.ExtendLease(context.Background(), testOrg, task.ID, 0); err != nil {
+	if err := f.ExtendLease(context.Background(), testNS, task.ID, 0); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	if _, err := f.SweepExpiredLeases(context.Background(), now+store.AckWaitSec+1); err != nil {
@@ -557,7 +560,7 @@ func TestPublishTasksWritesStickyPin(t *testing.T) {
 	}
 	assertRedispatchable(t, task) // 确认真的回到了「可被重派」的形状
 
-	if err := d.PublishTasks(context.Background(), testOrg, tasks); err != nil {
+	if err := d.PublishTasks(context.Background(), testNS, tasks); err != nil {
 		t.Fatalf("republish task: %v", err)
 	}
 
@@ -617,7 +620,7 @@ func TestPublishTasksPublishFailureWritesNoPin(t *testing.T) {
 		t.Fatalf("seed task rows: %v", err)
 	}
 
-	if err := d.PublishTasks(context.Background(), testOrg, tasks); err == nil {
+	if err := d.PublishTasks(context.Background(), testNS, tasks); err == nil {
 		t.Fatal("publish 失败却返回 nil（调用方就记不到日志了）")
 	}
 	if calls := pub.called(); len(calls) != 1 || calls[0].nodeID != "nd_fix" {
@@ -631,7 +634,7 @@ func TestPublishTasksPublishFailureWritesNoPin(t *testing.T) {
 
 	// 正向对照：推帧恢复后重派成功 → 这时才写 pin
 	d.Publisher = &fakePublisher{}
-	if err := d.PublishTasks(context.Background(), testOrg, tasks); err != nil {
+	if err := d.PublishTasks(context.Background(), testNS, tasks); err != nil {
 		t.Fatalf("republish task: %v", err)
 	}
 	key := store.StickyKey(traceID, target.ID, "wt-2")
