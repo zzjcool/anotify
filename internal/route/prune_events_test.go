@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/store"
@@ -13,7 +14,7 @@ import (
 //
 // 之前 PrunedRecord 只在 HTTP 响应里出现一次，触发完就没了——
 // 「这条分支为什么没跑」事后永远查不到。这里逐个钉死：
-//   - 5 种原因各落恰好一行 events（source='route'、type='pruned.<reason>'）；
+//   - 7 种原因各落恰好一行 events（source='route'、type='pruned.<reason>'）；
 //   - 证据字段（fromCapability / port / targetCapability / detail）都在 payload 里；
 //   - 同一条不重复写、DryRun 不写、「上游没回报出口」不写；
 //   - 落库失败不打断派发（留痕是诊断，不能反过来弄坏业务）。
@@ -39,11 +40,14 @@ func decodePrunePayload(t *testing.T, e *store.Event) PruneEventPayload {
 	return p
 }
 
-// TestDispatchRecordsFivePruneReasons 五种剪枝原因各落**恰好一行** events（#142 验收）。
+// TestDispatchRecordsEveryPruneReason 每一种剪枝原因各落**恰好一行** events（#142 + #114 A9）。
 //
 // 表驱动的理由：漏掉某一种原因是这个 bug 的典型形态（历史上 5 处 append 里
 // 只要有 1 处没走留痕入口，就会出现「有的剪枝查得到、有的查不到」）。
-func TestDispatchRecordsFivePruneReasons(t *testing.T) {
+// #114 新增的 param_missing / param_type 也必须真的落库：它们发生在**解析段**
+// （参数还没进 params_schema），最容易被人当成「校验前的内部细节」而不留痕——
+// 那就正好是「配完了、以为好了、触发却什么都没发生」的静默失败。
+func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
@@ -53,6 +57,11 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 		reason     PruneReason
 		wantPort   string
 		wantTarget bool // true：targetCapability 必须等于被剪枝的能力 id
+		// wantType 只在「想额外钉死字面量 type 字符串」时写：查询入口按 type 筛，
+		// 所以新加的两种原因把 pruned.<reason> 的**字面量**也写进表里。
+		wantType string
+		// wantDetail 是要在 payload.detail 里按子串找到的证据（空 = 只要求非空）。
+		wantDetail string
 	}{
 		{
 			name:   "no_edge：查 edges 0 行",
@@ -132,6 +141,49 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			wantPort:   "review",
 			wantTarget: true,
 		},
+		{
+			// 解析段剪枝（#114）：模板里的引用在 payload 里取不到。
+			// 这一步发生在 params_schema 校验**之前**，但它同样是「链在这里断了」，
+			// 同样要能在 events 表里按 pruned.param_missing 查出来。
+			name:   "param_missing：模板引用的路径取不到",
+			reason: ReasonParamMissing,
+			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
+				loose := f.addCap(testOrg, "loose", 1, nil, `{"type":"object"}`)
+				f.addNode("nd_loose", loose.ID, 1)
+				return DispatchInput{
+					OrgID: testOrg, TraceID: "trace_param_missing",
+					FromCap: "github", FromIsSource: true, Out: "push",
+					Targets:      []string{loose.ID},
+					TargetParams: map[string]map[string]any{loose.ID: {"n": "{{pull_request.title}}"}},
+					Payload:      map[string]any{}, // 这次事件没有 pull_request
+				}, loose.ID
+			},
+			wantPort:   "push",
+			wantTarget: true,
+			wantType:   "pruned.param_missing",
+			wantDetail: "参数 n 取不到 {{pull_request.title}}（payload 里没有这个字段）",
+		},
+		{
+			// 解析段剪枝（#114）：取到了值但转不成 schema 要求的类型。
+			name:   "param_type：取值转不成 schema 要求的类型",
+			reason: ReasonParamType,
+			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
+				strict := f.addCap(testOrg, "strict", 1, nil,
+					`{"type":"object","properties":{"lines":{"type":"integer"}}}`)
+				f.addNode("nd_strict", strict.ID, 1)
+				return DispatchInput{
+					OrgID: testOrg, TraceID: "trace_param_type",
+					FromCap: "github", FromIsSource: true, Out: "push",
+					Targets:      []string{strict.ID},
+					TargetParams: map[string]map[string]any{strict.ID: {"lines": "{{lines}}"}},
+					Payload:      map[string]any{"lines": "abc"},
+				}, strict.ID
+			},
+			wantPort:   "push",
+			wantTarget: true,
+			wantType:   "pruned.param_type",
+			wantDetail: `参数 lines 期望 integer，但求值得到 "abc"，转不了`,
+		},
 	}
 
 	for _, c := range cases {
@@ -157,11 +209,18 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			if e.OrgID != in.OrgID {
 				t.Errorf("org_id = %q, want %q", e.OrgID, in.OrgID)
 			}
-			if e.Source != PruneEventSource {
-				t.Errorf("source = %q, want %q", e.Source, PruneEventSource)
+			// source 是 events 表里的「谁留的痕」，与 triggers 的来源名区分开。
+			// 这里直接断**字面量**：查询/前端按这个字符串筛，常量定义改了而值没改是察觉不到的
+			// （PruneEventSource 的取值本身另由 TestPruneEventTypeMapping 钉住）。
+			if e.Source != "route" {
+				t.Errorf("source = %q, want %q", e.Source, "route")
 			}
 			if want := "pruned." + string(c.reason); e.Type != want {
 				t.Errorf("type = %q, want %q", e.Type, want)
+			}
+			if c.wantType != "" && e.Type != c.wantType {
+				// 字面量再钉一遍：trace 视图按这个字符串筛剪枝行，改一下就查不到了。
+				t.Errorf("type = %q, want 字面量 %q", e.Type, c.wantType)
 			}
 			if e.CreatedAt == 0 {
 				t.Error("created_at = 0，剪枝事件没有时间戳（事后查不到是什么时候剪的）")
@@ -177,6 +236,9 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			}
 			if p.Detail == "" {
 				t.Error("payload.detail 为空（剪枝必须留证据）")
+			}
+			if c.wantDetail != "" && !strings.Contains(p.Detail, c.wantDetail) {
+				t.Errorf("payload.detail = %q, want 含 %q", p.Detail, c.wantDetail)
 			}
 			if c.wantTarget {
 				if p.TargetCapability != wantTarget {
@@ -356,6 +418,7 @@ func TestDispatchPruneRecordFailureDoesNotBreakDispatch(t *testing.T) {
 func TestPruneEventTypeMapping(t *testing.T) {
 	reasons := []PruneReason{
 		ReasonNoEdge, ReasonParamSchema, ReasonNoNode, ReasonForeignUser, ReasonPath,
+		ReasonParamMissing, ReasonParamType,
 	}
 	for _, r := range reasons {
 		want := "pruned." + string(r)

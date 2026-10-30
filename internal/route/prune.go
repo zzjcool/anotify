@@ -21,6 +21,10 @@ const (
 	ReasonForeignUser PruneReason = "foreign_user"
 	// ReasonPath 目标能力已在 path 里（环剪枝）。
 	ReasonPath PruneReason = "path"
+	// ReasonParamMissing 参数引用的路径在 payload/别名表里取不到，且没有 default。
+	ReasonParamMissing PruneReason = "param_missing"
+	// ReasonParamType 参数取值结果转不成目标 params_schema 要求的类型。
+	ReasonParamType PruneReason = "param_type"
 )
 
 // PrunedRecord 是一条剪枝记录：静默（不打断业务），但**一律留痕**。
