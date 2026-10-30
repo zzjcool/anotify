@@ -451,3 +451,87 @@ func TestEventMethodNotAllowed(t *testing.T) {
 		t.Fatalf("status = %d, want 405", resp.StatusCode)
 	}
 }
+
+// TestEventPruneNotInEventStream 剪枝不进事件流，但按 trace 查得到（#142 验收）。
+//
+// 两边都要证：
+//   - 事件流（GET /v1/events 不带 traceId）回答「外部世界发生了什么」，
+//     混进剪枝会把真实事件淹掉；
+//   - 按 trace 查回答「这条链为什么这样」，剪枝必须在那儿——
+//     否则「为什么没跑」依然无解，Issue #142 就没修好。
+func TestEventPruneNotInEventStream(t *testing.T) {
+	f := newEventFixture(t)
+
+	// pull_request.closed 没有对应边 → 一条 no_edge 剪枝
+	resp, out := f.post(t, EventIngestRequest{
+		Source: "github", Type: "pull_request.closed",
+		Payload: json.RawMessage(`{"number":9}`),
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(out.Pruned) != 1 || out.Pruned[0].Reason != string(route.ReasonNoEdge) {
+		t.Fatalf("pruned = %+v, want 一条 no_edge", out.Pruned)
+	}
+
+	// 事件流：只回根事件
+	req, _ := http.NewRequest(http.MethodGet, f.server.URL+"/v1/events?traceId=", nil)
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	streamResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get events: %v", err)
+	}
+	defer streamResp.Body.Close()
+	if streamResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", streamResp.StatusCode)
+	}
+	var stream struct {
+		Events []store.Event `json:"events"`
+	}
+	if err := json.NewDecoder(streamResp.Body).Decode(&stream); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(stream.Events) != 1 {
+		t.Fatalf("事件流 = %d 条, want 1（只有根事件，剪枝不该混进来）", len(stream.Events))
+	}
+	if stream.Events[0].Source == route.PruneEventSource {
+		t.Fatalf("事件流里出现了剪枝行: %+v", stream.Events[0])
+	}
+
+	// trace 视图：剪枝在里面（库层直查，trace 页走的正是这条路径）
+	events, err := f.db.ListEvents(context.Background(), f.orgID, out.TraceID, "", 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("trace %s 的事件 = %d 条, want 2（根事件 + 剪枝）", out.TraceID, len(events))
+	}
+	var prune *store.Event
+	for _, e := range events {
+		if e.Source == route.PruneEventSource {
+			prune = e
+		}
+	}
+	if prune == nil {
+		t.Fatal("按 trace 查不到剪枝行（#142 的核心诉求没实现）")
+	}
+	if prune.Type != route.PruneEventType(route.ReasonNoEdge) {
+		t.Fatalf("剪枝 type = %q, want %q", prune.Type, route.PruneEventType(route.ReasonNoEdge))
+	}
+	var payload route.PruneEventPayload
+	if err := json.Unmarshal(prune.Payload, &payload); err != nil {
+		t.Fatalf("剪枝 payload 不是合法 JSON: %v", err)
+	}
+	if payload.FromCapability != "github" {
+		t.Errorf("payload.fromCapability = %q, want github（入口边时是来源名）", payload.FromCapability)
+	}
+	if payload.Port != "pull_request.closed" {
+		t.Errorf("payload.port = %q, want pull_request.closed", payload.Port)
+	}
+	if payload.Detail == "" {
+		t.Error("payload.detail 为空（要能回答「为什么没跑」）")
+	}
+	if prune.IdemKey != nil {
+		t.Errorf("剪枝带了 idem_key = %v, want NULL", *prune.IdemKey)
+	}
+}

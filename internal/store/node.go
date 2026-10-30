@@ -77,9 +77,67 @@ var (
 )
 
 // CapabilityRef 是节点声明自己具备的能力（只有 name + version，没有命令）。
+//
+// 这是 hello 帧 capabilities 字段的语义（老路径）：中枢只知道「它有哪些能力」，
+// 不知道「它怎么跑」。带 manifest 的节点用 CapabilityDecl（多一个 Run）。
 type CapabilityRef struct {
 	Name    string `json:"capability"`
 	Version int    `json:"version"`
+}
+
+// CapabilityDecl 是节点声明的一条能力：名字 + 版本 + 可选的执行方式。
+//
+// Run == nil 表示这一条**没有声明执行方式**（老 agent 的 capabilities 字段，
+// 或 manifest 里没写这一项）→ run_spec 落 '{}'。
+// Run != nil 表示节点声明了它打算怎么跑（run 的 JSON 原文）——中枢只校验形状、
+// 只存不执行（I1 边界，见 docs/design/playbooks.md §4.2）。
+type CapabilityDecl struct {
+	Name    string
+	Version int
+	Run     json.RawMessage
+	// RunRequired 表示这一条来自 manifest：按契约 run 必填（playbooks.md §4.1），
+	// 缺失即配置错误，不能隐式默认成 bash。
+	RunRequired bool
+}
+
+// NodeCapability 是「某节点声明了这个能力」的一行：能力定义 + 该节点上报的 run_spec。
+//
+// 嵌入 *CapabilityVersion 是为了不动既有调用点的 .Name/.Outputs 等字段访问
+// （派发选点、控制台都只关心能力定义）。
+type NodeCapability struct {
+	*CapabilityVersion
+	// RunSpec 是 run 的 JSON 原文；'{}' = 声明了能力但没声明执行方式。
+	RunSpec json.RawMessage `json:"runSpec"`
+}
+
+// emptyRunSpec 是「声明了能力但没声明执行方式」的落库值。
+const emptyRunSpec = "{}"
+
+// capRunnerBash 是本期唯一支持的执行器类型（playbooks.md §4.1）。
+//
+// 只是**字符串比较**：中枢不调用它、不拼命令行、不检查这个值指向什么。
+const capRunnerBash = "bash"
+
+// CapabilityDeclError 是一份声明的**全部**问题（一次列全，不是只报第一条）。
+//
+// 为什么必须列全、且必须全拒（不留半份声明）：
+//  1. 半装状态会让「为什么这台机器没接这个任务」无法解释 —— 排障成本远高于启动即失败；
+//  2. 这是**配置错误**，应该在节点启动时就炸掉（fail fast），而不是运行期变成一台安静的空闲机器。
+type CapabilityDeclError struct {
+	Problems          []string // 每条自描述，顺序确定
+	UnknownCapability bool     // 至少一条是"能力未定义/名字为空"→ errors.Is(err, ErrUnknownCapability)
+}
+
+// Error 把全部问题拼成一行（; 分隔，顺序确定）。
+func (e *CapabilityDeclError) Error() string { return strings.Join(e.Problems, "; ") }
+
+// Unwrap 让 errors.Is(err, ErrUnknownCapability) 对「混有问题项」的错误也成立：
+// 上层（握手）据此把错误码定成 unknown_capability 而不是 invalid_manifest。
+func (e *CapabilityDeclError) Unwrap() error {
+	if e.UnknownCapability {
+		return ErrUnknownCapability
+	}
+	return nil
 }
 
 // InstanceSpec 是节点申报的并发槽位（hello 帧的 instances 字段，契约 Q5）。
@@ -293,29 +351,102 @@ func (d *DB) TouchNode(ctx context.Context, orgID, nodeID string, at int64) erro
 // ConfirmCapabilities 校验并写入节点声明的能力（契约 Q5 / 不变量 I2 / A3）。
 //
 // 声明的 name@version 必须在中枢已定义，否则返回 ErrUnknownCapability；
-// 写入 node_capabilities 时只存 (node_id, capability_id)——没有命令、没有出口、没有 kind。
+// 写入 node_capabilities 时只存 (node_id, capability_id, run_spec)——
+// 没有命令列、没有出口、没有 kind。
 //
 // 语义是**全量替换**：节点这次声明什么，就把它之前的声明全换掉。
 // （节点升级后不再支持某能力，不该还留在表里被派发选中。）
 // 返回解析出的 capability_id 列表（顺序与入参一致）。
+//
+// 这是**老路径**（hello 不带 manifest）：签名与行为保持不变，run_spec 一律写 '{}'。
+// 带 manifest 的节点走 ConfirmCapabilityDecls，两者共用私有实现
+// confirmCapabilityDecls（校验规则只有一份）。
 func (d *DB) ConfirmCapabilities(ctx context.Context, orgID, nodeID string, caps []CapabilityRef) ([]string, error) {
+	decls := make([]CapabilityDecl, 0, len(caps))
+	for _, ref := range caps {
+		decls = append(decls, CapabilityDecl{Name: ref.Name, Version: ref.Version})
+	}
+	return d.confirmCapabilityDecls(ctx, orgID, nodeID, decls)
+}
+
+// ConfirmCapabilityDecls 是带 run 声明的注册路径（hello 带 manifest）：
+// 逐条校验 run，并把 run_spec 与声明一起全量替换。
+//
+// 校验全拒 + 列全：任何一条不过就整体拒绝（不写任何行），错误里列出**全部**问题项
+// （CapabilityDeclError）。已定义能力项与未定义能力项都会校验 run，
+// 目的是让节点一次启动就把配置问题说清楚，而不是修一条重启一次。
+//
+// 命名空间（#162）落地后要改成按 namespaceID 解析（I11）。
+func (d *DB) ConfirmCapabilityDecls(ctx context.Context, orgID, nodeID string, decls []CapabilityDecl) ([]string, error) {
+	return d.confirmCapabilityDecls(ctx, orgID, nodeID, decls)
+}
+
+// confirmCapabilityDecls 是两个 Confirm 的唯一实现：先校验并收集全部问题，
+// 全过才 DELETE + INSERT（全量替换，run_spec 一起写）。
+func (d *DB) confirmCapabilityDecls(ctx context.Context, orgID, nodeID string, decls []CapabilityDecl) ([]string, error) {
 	if nodeID == "" {
 		return nil, fmt.Errorf("confirm capabilities: empty node_id")
 	}
-	// 先在事务外解析全部能力，任何一个不认识就整体拒绝（不留半份声明）
-	ids := make([]string, 0, len(caps))
-	for _, ref := range caps {
-		if ref.Name == "" {
-			return nil, fmt.Errorf("%w: empty capability name", ErrUnknownCapability)
-		}
-		c, err := d.GetCapability(ctx, orgID, ref.Name, ref.Version)
-		if errors.Is(err, ErrNotFound) {
-			return nil, fmt.Errorf("%w: %s@%d", ErrUnknownCapability, ref.Name, ref.Version)
-		}
+
+	// run_spec 归一：'' → '{}'（没声明执行方式），其它按 JSON 原文存。
+	specs := make([]string, len(decls))
+	present := make([]bool, len(decls))
+	anyRun := false
+	for i, decl := range decls {
+		specs[i], present[i] = runSpecOf(decl.Run)
+		anyRun = anyRun || present[i]
+	}
+
+	// concurrency 越界要对 nodes.max_concurrency：
+	// **只有当至少一条声明带 run 时才查一次**，老路径完全不多查、行为零漂移。
+	maxConcurrency := 0
+	if anyRun {
+		node, err := d.GetNode(ctx, orgID, nodeID)
 		if err != nil {
 			return nil, err
 		}
-		ids = append(ids, c.ID)
+		maxConcurrency = node.MaxConcurrency
+	}
+
+	ids := make([]string, len(decls))
+	var (
+		nameProblems []string // 能力名为空：{ref} 渲染不出来，单独一条
+		unknownRefs  []string // 中枢没定义的能力：合成一条
+		runProblems  []string // 每条声明一行，按声明顺序
+		unknown      bool
+	)
+	for i, decl := range decls {
+		if decl.Name == "" {
+			nameProblems = append(nameProblems,
+				fmt.Sprintf("capability name is empty (version %d)", decl.Version))
+			unknown = true
+			continue // 名字都没有，{ref} 渲染不出来，run 问题无法自描述
+		}
+		ref := fmt.Sprintf("%s@%d", decl.Name, decl.Version)
+		c, err := d.GetCapability(ctx, orgID, decl.Name, decl.Version)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			// 未定义能力也继续校验 run：一次把配置问题说全
+			unknownRefs = append(unknownRefs, ref)
+			unknown = true
+		case err != nil:
+			return nil, err
+		default:
+			ids[i] = c.ID
+		}
+		runProblems = append(runProblems,
+			validateCapabilityRun(ref, specs[i], present[i], decl.RunRequired, maxConcurrency)...)
+	}
+
+	// 顺序必须确定：先「能力不可解析」组（名字为空 → 未定义组一行），再按声明顺序的 run 问题。
+	problems := make([]string, 0, len(nameProblems)+1+len(runProblems))
+	problems = append(problems, nameProblems...)
+	if len(unknownRefs) > 0 {
+		problems = append(problems, "unknown capability: "+strings.Join(unknownRefs, ", "))
+	}
+	problems = append(problems, runProblems...)
+	if len(problems) > 0 {
+		return nil, &CapabilityDeclError{Problems: problems, UnknownCapability: unknown}
 	}
 
 	tx, err := d.BeginTx(ctx, nil)
@@ -327,10 +458,12 @@ func (d *DB) ConfirmCapabilities(ctx context.Context, orgID, nodeID string, caps
 	if _, err := tx.ExecContext(ctx, `DELETE FROM node_capabilities WHERE node_id = ?`, nodeID); err != nil {
 		return nil, fmt.Errorf("clear node capabilities: %w", err)
 	}
-	for _, id := range ids {
+	for i := range decls {
+		// 同一能力重复声明时后者胜（与 hello 合并算法的「后者胜」一致，行为确定）。
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO node_capabilities (node_id, capability_id) VALUES (?,?)
-			 ON CONFLICT(node_id, capability_id) DO NOTHING`, nodeID, id); err != nil {
+			`INSERT INTO node_capabilities (node_id, capability_id, run_spec) VALUES (?,?,?)
+			 ON CONFLICT(node_id, capability_id) DO UPDATE SET run_spec = excluded.run_spec`,
+			nodeID, ids[i], specs[i]); err != nil {
 			return nil, fmt.Errorf("insert node capability: %w", err)
 		}
 	}
@@ -340,10 +473,86 @@ func (d *DB) ConfirmCapabilities(ctx context.Context, orgID, nodeID string, caps
 	return ids, nil
 }
 
-// ListNodeCapabilities 返回节点声明的能力定义（含 outputs，供 kind 推导与派发选点）。
-func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*CapabilityVersion, error) {
+// runSpecOf 把声明的 run 归一到落库形态。
+//
+// 缺失（nil / 空 / null / 全空白）→ '{}' 且 present=false；其它 → JSON 原文且 present=true。
+// 存原文而不是重新编码：run 是节点自己的数据，中枢没有理由改写它
+// （重新编码会动键序与格式，排障时看不出节点实际写的是什么）。
+func runSpecOf(run json.RawMessage) (spec string, present bool) {
+	text := strings.TrimSpace(string(run))
+	if text == "" || text == "null" {
+		return emptyRunSpec, false
+	}
+	return text, true
+}
+
+// validateCapabilityRun 校验一条声明的 run，返回**全部**问题（不是只报第一条）。
+//
+// 规则集就是契约 §3.4 那张表，一条不多一条少：不判路径是否存在/可执行、
+// 不拆参数、不校验 timeout/env 的取值 —— 中枢不解释节点的执行方式（I1 边界）。
+func validateCapabilityRun(ref, spec string, present, required bool, maxConcurrency int) []string {
+	if !present {
+		if required {
+			// 来自 manifest 的条目必须显式写 run（playbooks.md §4.1）：
+			// 不能隐式默认成 bash，否则老配置的语义要靠猜。
+			return []string{ref + ": run is required"}
+		}
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(spec), &obj); err != nil || obj == nil {
+		return []string{ref + ": run must be a JSON object"}
+	}
+
+	problems := make([]string, 0, 3)
+	// runner：必须显式写出且只接受 bash（不 trim、不猜意图）
+	var runner string
+	if raw, ok := obj["runner"]; ok {
+		_ = json.Unmarshal(raw, &runner)
+	}
+	switch runner {
+	case "":
+		problems = append(problems, ref+": run.runner is required (only bash)")
+	case capRunnerBash:
+	default:
+		problems = append(problems, fmt.Sprintf("%s: run.runner %q is not supported (only bash)", ref, runner))
+	}
+	// command：非空字符串（只判「有没有写」，不解析内容）
+	var command string
+	if raw, ok := obj["command"]; ok {
+		_ = json.Unmarshal(raw, &command)
+	}
+	if strings.TrimSpace(command) == "" {
+		problems = append(problems, ref+": run.command is empty")
+	}
+	// concurrency：出现时必须在 [1, nodes.max_concurrency]；
+	// 缺省 = 未声明 = 合法（不写默认值）。
+	if raw, ok := obj["concurrency"]; ok {
+		var num json.Number
+		shown := strings.TrimSpace(string(raw))
+		inRange := false
+		if err := json.Unmarshal(raw, &num); err == nil && num.String() != "" {
+			shown = num.String()
+			if n, conv := num.Int64(); conv == nil && n >= 1 && n <= int64(maxConcurrency) {
+				inRange = true
+			}
+		}
+		if !inRange {
+			problems = append(problems, fmt.Sprintf("%s: run.concurrency %s is out of range [1, %d]",
+				ref, shown, maxConcurrency))
+		}
+	}
+	return problems
+}
+
+// ListNodeCapabilities 返回节点声明的能力定义（含 outputs，供 kind 推导与派发选点）
+// 以及该节点为每个能力上报的 run_spec。
+//
+// RunSpec 只用于展示与诊断（I1 边界）：派发选点走 NodesForCapability，看不到这一列。
+// 顺序不变（name, version），空列表返回 []。
+func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCapability, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+prefixedCapabilityColumns("c")+`
+		`SELECT `+prefixedCapabilityColumns("c")+`, nc.run_spec
 		 FROM node_capabilities nc
 		 JOIN capability_versions c ON c.id = nc.capability_id
 		 WHERE nc.node_id = ?
@@ -352,12 +561,12 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*Capabi
 		return nil, fmt.Errorf("list node capabilities: %w", err)
 	}
 	defer rows.Close()
-	out := []*CapabilityVersion{}
+	out := []*NodeCapability{}
 	for rows.Next() {
 		var c CapabilityVersion
-		var paramsSchema, outputs, lifecycle string
+		var paramsSchema, outputs, lifecycle, runSpec string
 		if err := rows.Scan(&c.ID, &c.OrgID, &c.Name, &c.Version, &paramsSchema, &outputs,
-			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt); err != nil {
+			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt, &runSpec); err != nil {
 			return nil, fmt.Errorf("scan node capability: %w", err)
 		}
 		if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
@@ -372,7 +581,10 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*Capabi
 		if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
 			return nil, fmt.Errorf("decode lifecycle: %w", err)
 		}
-		out = append(out, &c)
+		if strings.TrimSpace(runSpec) == "" {
+			runSpec = emptyRunSpec // 防御：手工改库/老数据不该让页面看到空串
+		}
+		out = append(out, &NodeCapability{CapabilityVersion: &c, RunSpec: json.RawMessage(runSpec)})
 	}
 	return out, rows.Err()
 }

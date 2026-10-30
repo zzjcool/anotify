@@ -139,7 +139,43 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []*store.Event{} // 空列表是 [] 不是 null（I9）
 	}
+	// trace 视图（带 traceId）：根事件必须在第一条（见 traceViewRootFirst 的注释）。
+	// 事件流（不带 traceId）不需要：剪枝行在那条路径上已被 ListEvents 过滤掉。
+	if q.Get("traceId") != "" {
+		events = traceViewRootFirst(events)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+// traceViewRootFirst 把根事件（非剪枝）排到最前，剪枝行留在后面。
+//
+// 为什么需要：控制台 trace 视图的调用方（trace 页）把**第一条事件**当根事件，
+// 用它的 source 去找源配置的拓扑当底图。剪枝行（#142 起 source='route'）
+// 时间上一定晚于根事件，倒序排列就会被排到第一条 —— 页面于是拿到
+// source="route" 当「谁触发的」，找不到源，底图丢失，
+// 被剪枝的分支整片从图上消失（正是 #142 要回答的那个问题）。
+// 同秒时 ListEvents 靠随机 id 破平局，所以不改就是**时好时坏**的 flaky 回归。
+//
+// 排序是**稳定**的：两组内部各自保持 ListEvents 的原有倒序，不重排时间。
+// 不用 SQL 排序的理由：这是「控制台 trace 视图第一条是根事件」这个**视图契约**，
+// 与 store 的通用排序语义无关；塞进 ListEvents 会连带改掉机器入口
+// GET /v1/events?traceId= 的顺序（那是给外部系统的，不该动）。
+func traceViewRootFirst(events []*store.Event) []*store.Event {
+	if len(events) < 2 {
+		return events
+	}
+	out := make([]*store.Event, 0, len(events))
+	for _, e := range events {
+		if e.Source != route.PruneEventSource {
+			out = append(out, e)
+		}
+	}
+	for _, e := range events {
+		if e.Source == route.PruneEventSource {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // ---------- GET /v1/tasks/{id} ----------
@@ -184,6 +220,99 @@ func (h *consoleHandler) task(w http.ResponseWriter, r *http.Request) {
 		chain = []*store.Task{} // 不变量 I9
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"task": task, "chain": chain})
+}
+
+// ---------- GET /v1/traces/{id}（#142）----------
+
+// tracePrune 是 trace 视图里的剪枝摘要（从 source='route' 的事件解析出来）。
+//
+// 字段全部带值、不用 omitempty：trace 页是「一条 trace 的全景」，
+// 固定形状前端就不用为每个字段判空（拿不到的字段就是空串）。
+type tracePrune struct {
+	Reason           string `json:"reason"`
+	FromCapability   string `json:"fromCapability"`
+	Port             string `json:"port"`
+	TargetCapability string `json:"targetCapability"`
+	Detail           string `json:"detail"`
+	CreatedAt        int64  `json:"createdAt"`
+}
+
+// trace 处理 GET /v1/traces/{id} —— 一条 trace 的全景（#142）。
+//
+// 为什么要这个端点：剪枝记录从 #142 起落进了 events（source='route'），
+// 但「这条分支为什么没跑」是一个**一次请求就能答完**的问题：
+// 光有事件流还得自己从 payload 里拼回来，任务链又要另一次往返。
+// 所以一次给齐 events + tasks + pruned。
+//
+// 注意 events 走 ListEvents(orgID, id, "", …)：带 traceId 时它**含**剪枝行
+// （过滤规则在 store 层，handler 不再筛一遍——两处筛就会有两种口径）。
+func (h *consoleHandler) trace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing trace id"})
+		return
+	}
+
+	events, err := h.db.ListEvents(r.Context(), orgID, id, "", 500)
+	if err != nil {
+		slog.Error("list trace events failed", "event", "console.trace.events_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	tasks, err := h.db.ListTasks(r.Context(), orgID, id, "", "", 500)
+	if err != nil {
+		slog.Error("list trace tasks failed", "event", "console.trace.tasks_failed", "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	if events == nil {
+		events = []*store.Event{} // 空列表是 [] 不是 null（I9）
+	}
+	if tasks == nil {
+		tasks = []*store.Task{}
+	}
+
+	// 两个都空 = 这条 trace 在本组织不存在：不区分「trace 没事件」与「trace 不存在」，
+	// 因为 trace_id 只能由事件/任务产生，两者都没有就是没有。
+	if len(events) == 0 && len(tasks) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "trace not found"})
+		return
+	}
+
+	pruned := make([]tracePrune, 0, len(events))
+	for _, e := range events {
+		if e.Source != route.PruneEventSource {
+			continue
+		}
+		var p route.PruneEventPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			// payload 坏了不能把整个 trace 页拉串：跳过这一行，其它照常回
+			continue
+		}
+		pruned = append(pruned, tracePrune{
+			Reason:           strings.TrimPrefix(e.Type, "pruned."),
+			FromCapability:   p.FromCapability,
+			Port:             p.Port,
+			TargetCapability: p.TargetCapability,
+			Detail:           p.Detail,
+			CreatedAt:        e.CreatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"traceId": id,
+		"events":  events,
+		"tasks":   tasks,
+		"pruned":  pruned,
+	})
 }
 
 // ---------- POST /v1/tasks/{id}/cancel ----------
@@ -608,6 +737,9 @@ type nodeCapView struct {
 	Name        string `json:"name"`
 	Version     int    `json:"version"`
 	DisplayName string `json:"displayName"`
+	// RunSpec 是节点上报的执行方式原文（`{}` = 声明了能力但没声明执行方式）。
+	// 只用于展示与诊断，中枢从不执行它（I1 边界）。
+	RunSpec json.RawMessage `json:"runSpec"`
 }
 
 // nodeView 是 nodes 表的一行 + 控制台需要的派生信息。
@@ -630,11 +762,16 @@ func (h *consoleHandler) viewFor(ctx context.Context, n *store.Node) nodeView {
 	}
 	capViews := make([]nodeCapView, 0, len(caps))
 	for _, c := range caps {
+		runSpec := c.RunSpec
+		if len(runSpec) == 0 {
+			runSpec = json.RawMessage(`{}`) // I9：宁可是空对象，也不要是 null/省略
+		}
 		capViews = append(capViews, nodeCapView{
 			ID:          c.ID,
 			Name:        c.Name,
 			Version:     c.Version,
 			DisplayName: c.DisplayName,
+			RunSpec:     runSpec,
 		})
 	}
 	insts, err := h.db.ListInstances(ctx, n.ID)

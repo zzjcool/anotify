@@ -262,6 +262,12 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("create source: empty name")
 	}
+	// 保留来源名（#142）：源名就是事件的 source（入口边左端 / POST /v1/events）。
+	// 叫 route 的源产生的事件会被事件流过滤掉、在 trace 视图里被当成剪枝，
+	// 所以要在**配置期**就报错，而不是等事件静默消失后再去猜。
+	if strings.TrimSpace(s.Name) == "route" {
+		return fmt.Errorf("create source: %w", ErrReservedEventSource)
+	}
 	if !IsValidSourceKind(s.Kind) {
 		return fmt.Errorf("%w: %q", ErrInvalidSourceKind, s.Kind)
 	}
@@ -466,6 +472,15 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	}
 	if s.Kind != cur.Kind {
 		return fmt.Errorf("update source: kind 不可修改（当前 %s）", cur.Kind)
+	}
+	// 改名同样要过保留名水闸：CreateSource 挡住的，UpdateSource 不能放进来
+	// （否则「建完再改名」就能把源变成 route，它的事件会被事件流静默吞掉）。
+	//
+	// 关于空名：UpdateSource 无条件写 name（没有「空 = 不改名」语义，那在
+	// handler 层）；唯一调用方（PATCH /v1/sources/{id}）总是从 GetSource
+	// 带上当前名并只在 req.Name != "" 时覆盖，所以这里不会把空名误判成保留名。
+	if strings.TrimSpace(s.Name) == "route" {
+		return fmt.Errorf("update source: %w", ErrReservedEventSource)
 	}
 	if len(s.Targets) == 0 {
 		return fmt.Errorf("update source: 至少要选一个出口能力")

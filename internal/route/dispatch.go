@@ -9,7 +9,9 @@
 //	⑤ 建任务
 //
 // 前三步都在建任务**之前**，所以剪枝不产生任务行（契约 §4）。
-// 本包不写 SQL：所有查表都走 Store 接口，便于用 mock 覆盖全部分支。
+// 但剪枝**一律留痕**：每一条剪枝都写一行 events（source='route'，#142），
+// 否则「这条边为什么没走」在触发那一刻之后就永远查不到了。
+// 本包不写 SQL：所有查表/落库都走 Store 接口，便于用 mock 覆盖全部分支。
 package route
 
 import (
@@ -115,6 +117,13 @@ type Store interface {
 	SweepExpiredLeases(ctx context.Context, now int64) ([]string, error)
 	EnsureGraphVersion(ctx context.Context, orgID string) (*store.GraphVersion, error)
 	IsOrgMember(ctx context.Context, orgID, userID string) (bool, error)
+
+	// InsertPruneEvent 落一条剪枝事件（#142）。
+	//
+	// 它是 d.prune() 的唯一落库出口：剪枝的「产生」与「留痕」不能分叉，
+	// 否则总会有某个分支只进了 HTTP 响应、没进库——那就又是一个查不到的剪枝。
+	// 语义（幂等、idem_key 恒 NULL）由 store 实现，本包不关心细节。
+	InsertPruneEvent(ctx context.Context, e *store.Event) (bool, error)
 }
 
 // Dispatcher 按派发四步算出要建的任务。
@@ -208,7 +217,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			return nil, fmt.Errorf("route: lookup edges: %w", err)
 		}
 		if len(targets) == 0 {
-			out.Pruned = append(out.Pruned, PrunedRecord{
+			d.prune(ctx, in, out, PrunedRecord{
 				Reason: ReasonNoEdge,
 				Port:   in.Out,
 				Detail: fmt.Sprintf("no edge from %s port %q", in.FromCap, in.Out),
@@ -242,7 +251,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 
 		// 环剪枝：目标已在路径里 → 静默剪枝，但必须留痕
 		if pathContains(in.Path, targetID) {
-			out.Pruned = append(out.Pruned, PrunedRecord{
+			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonPath,
 				CapabilityID: targetID,
 				Port:         in.Out,
@@ -259,7 +268,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 
 		// 参数校验：不过只跳过这一条边，不影响其他边（扇出可部分成功）
 		if msg := validateParams(capDef.ParamsSchema, targetParams); msg != "" {
-			out.Pruned = append(out.Pruned, PrunedRecord{
+			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonParamSchema,
 				CapabilityID: targetID,
 				Port:         in.Out,
@@ -271,7 +280,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		// 跨组织用户校验（params_schema 管不到的业务规则）
 		if pruned, rec := d.checkUserScoped(ctx, in.OrgID, capDef, targetParams); pruned {
 			rec.Port = in.Out // 留痕要有完整证据：哪条边、哪个出口
-			out.Pruned = append(out.Pruned, rec)
+			d.prune(ctx, in, out, rec)
 			continue
 		}
 
@@ -293,7 +302,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			return nil, fmt.Errorf("route: nodes for capability %s: %w", targetID, err)
 		}
 		if len(nodes) == 0 {
-			out.Pruned = append(out.Pruned, PrunedRecord{
+			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonNoNode,
 				CapabilityID: targetID,
 				Port:         in.Out,
@@ -450,6 +459,59 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		out.Tasks = append(out.Tasks, t)
 	}
 	return out, nil
+}
+
+// prune 记录一条剪枝：先进返回值，再留痕落库（#142）。
+//
+// 唯一入口——「产生」与「留痕」不允许分叉（漏一处就是又一个查不到的剪枝），
+// 所以 Dispatch 里 5 个剪枝产生点（no_edge / path / param_schema / foreign_user /
+// no_node）全部走这里，不再直接 append out.Pruned。
+//
+// 三条规则（契约 §4.3）：
+//
+//  1. 返回值语义不变：out.Pruned 照旧给 HTTP 响应（调用方当场就要看到）；
+//  2. DryRun 不落库：试运行不能污染 events（否则用户每试一次就多一条假历史）；
+//  3. 落库失败只记日志，**不向上抛错**——剪枝留痕是诊断，
+//     不能反过来打断派发/建任务。
+func (d *Dispatcher) prune(ctx context.Context, in DispatchInput, out *DispatchOutput, p PrunedRecord) {
+	out.Pruned = append(out.Pruned, p)
+
+	if in.DryRun {
+		return
+	}
+
+	payload, err := json.Marshal(PruneEventPayload{
+		FromCapability:   in.FromCap,
+		Port:             p.Port,
+		TargetCapability: p.CapabilityID,
+		Detail:           p.Detail,
+	})
+	if err != nil {
+		// 四个字段全是 string，理论上不可达；保底不 panic、不中断派发。
+		slog.Warn("marshal prune event payload failed",
+			"event", "route.prune.record_failed",
+			"reason", string(p.Reason),
+			"trace_id", in.TraceID,
+			"error", err.Error())
+		return
+	}
+
+	// 幂等/去重由 store 层负责（同 trace + 同原因 + 同 payload 只落一行）。
+	if _, err := d.Store.InsertPruneEvent(ctx, &store.Event{
+		OrgID:     in.OrgID,
+		TraceID:   in.TraceID,
+		Source:    PruneEventSource,
+		Type:      PruneEventType(p.Reason),
+		Payload:   payload,
+		CreatedAt: d.now(),
+	}); err != nil {
+		slog.Warn("record prune event failed",
+			"event", "route.prune.record_failed",
+			"reason", string(p.Reason),
+			"trace_id", in.TraceID,
+			"capability_id", p.CapabilityID,
+			"error", err.Error())
+	}
 }
 
 // requeueAfterPublishFailure 把「已 assigned 但推不出去」的任务退回 pending。

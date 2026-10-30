@@ -18,6 +18,9 @@ type NodeStore interface {
 	UpdateNodeStatus(ctx context.Context, orgID, nodeID, status string) error
 	TouchNode(ctx context.Context, orgID, nodeID string, at int64) error
 	ConfirmCapabilities(ctx context.Context, orgID, nodeID string, caps []store.CapabilityRef) ([]string, error)
+	// ConfirmCapabilityDecls 是带 run 声明的注册路径（hello 带 manifest）：
+	// 逐条校验 run，并把 run_spec 与声明一起全量替换（契约 §3.3）。
+	ConfirmCapabilityDecls(ctx context.Context, orgID, nodeID string, decls []store.CapabilityDecl) ([]string, error)
 	UpsertInstances(ctx context.Context, orgID, nodeID string, specs []store.InstanceSpec) ([]*store.NodeInstance, error)
 	MarkInstancesDead(ctx context.Context, nodeID string) error
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
@@ -111,7 +114,8 @@ func codeOf(err error) string {
 // applyHello 校验并落库 hello 帧带来的声明（契约 Q5 / 不变量 I2）。
 //
 // 两件事，任一失败都拒绝整帧：
-//  1. 能力声明：name@version 必须在中枢已定义，否则 unknown_capability
+//  1. 能力声明：name@version 必须在中枢已定义，否则 unknown_capability；
+//     带 manifest 时 run 还要合法，否则 invalid_manifest（错误一次列全，全拒不留半份）
 //  2. 实例申报：数量受 nodes.max_instances 硬顶约束，否则 too_many_instances
 //
 // 顺序有讲究：先校能力再落实例——一个声明了不存在能力的节点不该先占住槽位。
@@ -132,14 +136,7 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 	}
 
 	// ① 能力声明
-	refs := make([]store.CapabilityRef, 0, len(f.Capabilities))
-	for _, c := range f.Capabilities {
-		refs = append(refs, store.CapabilityRef{Name: c.Capability, Version: c.Version})
-	}
-	if _, err := st.ConfirmCapabilities(ctx, node.OrgID, node.ID, refs); err != nil {
-		if errors.Is(err, store.ErrUnknownCapability) {
-			return &helloError{code: ErrCodeUnknownCapability, message: err.Error()}
-		}
+	if err := confirmHelloCapabilities(ctx, st, node, f); err != nil {
 		return err
 	}
 
@@ -160,6 +157,110 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 		return err
 	}
 	return nil
+}
+
+// confirmHelloCapabilities 落库 hello 里的能力声明（契约 §2 / §5）。
+//
+// 两条路径，**老路径零漂移**：
+//   - 不带 manifest（老 agent）：原样走 ConfirmCapabilities，run_spec 一律 '{}'，
+//     错误码映射也保持原样（只认 unknown_capability）；
+//   - 带 manifest：先按契约 §2.1 合并成一份声明（run 原文跟着走），再走
+//     ConfirmCapabilityDecls（store 侧一次校验全部条目、全拒不留半份）。
+//
+// 错误码映射**顺序敏感**（契约 §5）：混有未知能力时优先报 unknown_capability
+// （根因），否则才是 invalid_manifest；其它错误（DB 故障等）原样返回 —— 那不是帧的错。
+func confirmHelloCapabilities(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) error {
+	// 老路径：没有 manifest = 只报 name@version，行为与错误码一律不变。
+	if len(f.Manifest) == 0 {
+		refs := make([]store.CapabilityRef, 0, len(f.Capabilities))
+		for _, c := range f.Capabilities {
+			refs = append(refs, store.CapabilityRef{Name: c.Capability, Version: c.Version})
+		}
+		if _, err := st.ConfirmCapabilities(ctx, node.OrgID, node.ID, refs); err != nil {
+			if errors.Is(err, store.ErrUnknownCapability) {
+				return &helloError{code: ErrCodeUnknownCapability, message: err.Error()}
+			}
+			return err
+		}
+		return nil
+	}
+
+	// 新路径：capabilities + manifest 合并成一份带 run 的声明。
+	decls := mergeDeclarations(f.Capabilities, f.Manifest)
+	if _, err := st.ConfirmCapabilityDecls(ctx, node.OrgID, node.ID, decls); err != nil {
+		// 顺序敏感：未知能力（可能混有 run 问题）优先 → unknown_capability。
+		if errors.Is(err, store.ErrUnknownCapability) {
+			return &helloError{code: ErrCodeUnknownCapability, message: err.Error()}
+		}
+		// 纯 run 问题 → invalid_manifest。message 用 err.Error()：
+		// 它已经把**全部**问题项列全（; 分隔），节点侧排障一次到位。
+		var declErr *store.CapabilityDeclError
+		if errors.As(err, &declErr) {
+			return &helloError{code: ErrCodeInvalidManifest, message: err.Error()}
+		}
+		return err
+	}
+	return nil
+}
+
+// mergeDeclarations 把 hello 的两份声明合成一份（契约 §2.1，纯函数、不碰 IO）。
+//
+//	caps:     hello.capabilities —— 只有 name@version，老 agent 的唯一声明来源
+//	manifest: hello.manifest     —— 带 run 原文，信息更全
+//
+// 规则：
+//  1. manifest 建索引，key = name@version（重复时后者胜，行为确定）；
+//  2. 按 caps 顺序输出：命中索引的用 manifest 的 run 且 RunRequired=true；
+//     未命中的是「声明了能力但没声明执行方式」（Run=nil → run_spec 落 '{}'）；
+//  3. 按 manifest 顺序补上 caps 里没有的项（Run 原文，RunRequired=true）。
+//
+// 即 capabilities 的顺序优先，manifest 独有的项追加在后；同一 name@version 只出一条，
+// 且一定用 manifest 的 run —— 两份声明冲突时以 manifest 为准（信息更全）。
+func mergeDeclarations(caps []CapabilityDecl, manifest []ManifestDecl) []store.CapabilityDecl {
+	index := make(map[string]ManifestDecl, len(manifest))
+	order := make([]string, 0, len(manifest))
+	for _, m := range manifest {
+		key := declarationKey(m.Capability, m.Version)
+		if _, seen := index[key]; !seen {
+			order = append(order, key)
+		}
+		index[key] = m // 重复时后者胜
+	}
+
+	out := make([]store.CapabilityDecl, 0, len(caps)+len(order))
+	emitted := make(map[string]struct{}, len(caps)+len(order))
+	for _, c := range caps {
+		key := declarationKey(c.Capability, c.Version)
+		if _, dup := emitted[key]; dup {
+			continue // 同一 name@version 只出一条
+		}
+		emitted[key] = struct{}{}
+		decl := store.CapabilityDecl{Name: c.Capability, Version: c.Version}
+		if m, ok := index[key]; ok {
+			decl.Run = m.Run
+			decl.RunRequired = true
+		}
+		out = append(out, decl)
+	}
+	for _, key := range order {
+		if _, done := emitted[key]; done {
+			continue
+		}
+		emitted[key] = struct{}{}
+		m := index[key]
+		out = append(out, store.CapabilityDecl{
+			Name:        m.Capability,
+			Version:     m.Version,
+			Run:         m.Run,
+			RunRequired: true,
+		})
+	}
+	return out
+}
+
+// declarationKey 是 manifest 索引与去重的 key：name@version。
+func declarationKey(name string, version int) string {
+	return fmt.Sprintf("%s@%d", name, version)
 }
 
 // welcomeFrameFor 构造握手成功的 welcome 帧。

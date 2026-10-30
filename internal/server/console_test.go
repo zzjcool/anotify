@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -64,6 +65,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	sessMW := svc.Sessions().Middleware
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(h.tasks))))
+	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(h.trace))))
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(h.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(h.cancelTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
@@ -530,6 +532,14 @@ func TestNodeDetail(t *testing.T) {
 	if caps, _ := obj["capabilities"].([]any); len(caps) != 1 {
 		t.Fatalf("capabilities = %v", obj["capabilities"])
 	}
+	// 老路径（无 manifest）声明：runSpec 必须是空对象，而不是 null/缺失（#168 / I9）
+	detailCaps, _ := obj["capabilities"].([]any)
+	if cap0, _ := detailCaps[0].(map[string]any); cap0 != nil {
+		runSpec, ok := cap0["runSpec"].(map[string]any)
+		if !ok || len(runSpec) != 0 {
+			t.Fatalf("未声明执行方式时 runSpec 应为 {}，cap=%v", cap0)
+		}
+	}
 
 	// 逐槽细节：两个槽、各自的并发额度、当前都空闲
 	insts, _ := m["instances"].([]any)
@@ -557,6 +567,99 @@ func TestNodeDetail(t *testing.T) {
 	rr = env.do(t, http.MethodGet, "/v1/nodes/nd_doesnotexist", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unknown node status = %d, want 404", rr.Code)
+	}
+}
+
+// TestNodeDetailRunSpec 节点上报的执行方式在控制台读出（#168 必测 8）。
+//
+// 两件事同时钉住：
+//   - 带 run 的能力：`capabilities[].runSpec.command` 原样可读（展示/排障的唯一用途）
+//   - 没声明 run 的能力：`runSpec` 是 `{}`（而不是 null / 缺失）
+//
+// list 与 detail 共用 viewFor，所以两处都必须一致。
+func TestNodeDetailRunSpec(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+	env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "test", 1, nil)
+
+	node := &store.Node{OrgID: env.orgID, Name: "mbp-runspec"}
+	if _, err := env.db.CreateNode(ctx, node); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	run := `{"runner":"bash","command":"./runners/review.sh","timeoutSec":900,"concurrency":2,"env":{"LOG_LEVEL":"info"}}`
+	if _, err := env.db.ConfirmCapabilityDecls(ctx, env.orgID, node.ID, []store.CapabilityDecl{
+		{Name: "review", Version: 1, Run: json.RawMessage(run), RunRequired: true},
+		{Name: "test", Version: 1}, // manifest 里没写这一项
+	}); err != nil {
+		t.Fatalf("confirm decls: %v", err)
+	}
+
+	getCap := func(path string, extract func(map[string]any) []any) map[string]map[string]any {
+		t.Helper()
+		rr := env.do(t, http.MethodGet, path, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body=%s", path, rr.Code, rr.Body.String())
+		}
+		caps := extract(decode(t, rr))
+		byName := map[string]map[string]any{}
+		for _, raw := range caps {
+			c, _ := raw.(map[string]any)
+			if c == nil {
+				t.Fatalf("GET %s: capability is not an object: %v", path, raw)
+			}
+			name, _ := c["name"].(string)
+			byName[name] = c
+		}
+		if len(byName) != 2 {
+			t.Fatalf("GET %s: capabilities = %v, want 2", path, caps)
+		}
+		return byName
+	}
+
+	checks := []struct {
+		path string
+		caps func(map[string]any) []any
+	}{
+		{"/v1/nodes/" + node.ID, func(m map[string]any) []any {
+			obj, _ := m["node"].(map[string]any)
+			caps, _ := obj["capabilities"].([]any)
+			return caps
+		}},
+		{"/v1/nodes", func(m map[string]any) []any {
+			nodes, _ := m["nodes"].([]any)
+			for _, raw := range nodes {
+				if obj, _ := raw.(map[string]any); obj != nil && obj["id"] == node.ID {
+					caps, _ := obj["capabilities"].([]any)
+					return caps
+				}
+			}
+			return nil
+		}},
+	}
+	for _, c := range checks {
+		byName := getCap(c.path, c.caps)
+
+		runSpec, _ := byName["review"]["runSpec"].(map[string]any)
+		if runSpec == nil {
+			t.Fatalf("GET %s: review runSpec 丢了：%v", c.path, byName["review"])
+		}
+		// 原文可读：节点写的是什么，控制台就看得见什么（不改写、不隐藏）
+		if got, _ := runSpec["command"].(string); got != "./runners/review.sh" {
+			t.Fatalf("GET %s: runSpec.command = %v, want ./runners/review.sh", c.path, runSpec["command"])
+		}
+		if got, _ := runSpec["timeoutSec"].(float64); got != 900 {
+			t.Fatalf("GET %s: runSpec.timeoutSec = %v, want 900", c.path, runSpec["timeoutSec"])
+		}
+		if got, _ := runSpec["runner"].(string); got != "bash" {
+			t.Fatalf("GET %s: runSpec.runner = %v, want bash", c.path, runSpec["runner"])
+		}
+
+		// 未声明 → 空对象，不是 null/缺失（前端不用写两套判空）
+		testSpec, ok := byName["test"]["runSpec"].(map[string]any)
+		if !ok || len(testSpec) != 0 {
+			t.Fatalf("GET %s: 未声明执行方式时 runSpec 应为 {}，got %v", c.path, byName["test"]["runSpec"])
+		}
 	}
 }
 
@@ -731,5 +834,233 @@ func TestLegacyNotificationEndpointsRemoved(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Errorf("GET %s = %d, want 200（新端点应正常工作）", path, rr.Code)
 		}
+	}
+}
+
+// ---------- #142：trace 视图 ----------
+
+// TestTraceEndpoint GET /v1/traces/{id} 一次答完「这条链为什么这样」（#142 验收）。
+//
+// 这是「剪枝留痕」的**查询出口**：库里写了 source='route' 的事件，
+// 但如果没人能按 trace 把它拿出来，等于还是查不到。
+func TestTraceEndpoint(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+	capDef := env.seedCapability(t, "review", 1, []string{"fix"})
+
+	const traceID = "trace_prune_demo"
+
+	// 根事件：外部世界发生了什么
+	if _, err := env.db.InsertEvent(ctx, &store.Event{
+		OrgID: env.orgID, TraceID: traceID, Source: "github",
+		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":1}`),
+	}); err != nil {
+		t.Fatalf("insert root event: %v", err)
+	}
+	// 剪枝事件：哪条分支没跑、为什么（source='route' 是 #142 的约定）
+	if _, err := env.db.InsertPruneEvent(ctx, &store.Event{
+		OrgID: env.orgID, TraceID: traceID,
+		Source: route.PruneEventSource,
+		Type:   route.PruneEventType(route.ReasonNoEdge),
+		Payload: json.RawMessage(
+			`{"fromCapability":"github","port":"pull_request.review_requested",` +
+				`"detail":"no edge from github port \"pull_request.review_requested\""}`),
+	}); err != nil {
+		t.Fatalf("insert prune event: %v", err)
+	}
+	// 任务：跑起来了的那条分支
+	task := &store.Task{
+		OrgID: env.orgID, TraceID: traceID, CapabilityID: capDef.ID,
+		Capability: capDef.Name, Version: 1, Params: json.RawMessage(`{"number":1}`),
+		CapHash: capDef.ContentHash, GraphID: "grf_x",
+	}
+	if err := env.db.CreateTasks(ctx, []*store.Task{task}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	rr := env.do(t, http.MethodGet, "/v1/traces/"+traceID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	m := decode(t, rr)
+	if m["traceId"] != traceID {
+		t.Errorf("traceId = %v, want %q", m["traceId"], traceID)
+	}
+
+	events, _ := m["events"].([]any)
+	if len(events) != 2 {
+		t.Fatalf("events = %d 条, want 2（根事件 + 剪枝）", len(events))
+	}
+	var sawRoute bool
+	for _, raw := range events {
+		if ev, _ := raw.(map[string]any); ev["source"] == route.PruneEventSource {
+			sawRoute = true
+		}
+	}
+	if !sawRoute {
+		t.Error("events 里没有 source=route 的剪枝行（trace 视图必须含剪枝）")
+	}
+
+	tasks, _ := m["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %d 条, want 1", len(tasks))
+	}
+
+	pruned, _ := m["pruned"].([]any)
+	if len(pruned) != 1 {
+		t.Fatalf("pruned = %d 条, want 1; body=%s", len(pruned), rr.Body.String())
+	}
+	p, _ := pruned[0].(map[string]any)
+	if p["reason"] != "no_edge" {
+		t.Errorf("pruned[0].reason = %v, want no_edge（type 去掉 pruned. 前缀）", p["reason"])
+	}
+	if p["fromCapability"] != "github" {
+		t.Errorf("pruned[0].fromCapability = %v, want github", p["fromCapability"])
+	}
+	if p["port"] != "pull_request.review_requested" {
+		t.Errorf("pruned[0].port = %v, want pull_request.review_requested", p["port"])
+	}
+	if s, _ := p["detail"].(string); s == "" {
+		t.Error("pruned[0].detail 为空（剪枝必须带证据）")
+	}
+	if createdAt, _ := p["createdAt"].(float64); createdAt == 0 {
+		t.Error("pruned[0].createdAt = 0（要能回答「什么时候剪的」）")
+	}
+
+	// 不存在的 trace → 404（events 与 tasks 都空）
+	rr = env.do(t, http.MethodGet, "/v1/traces/trace_does_not_exist", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("未知 trace status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+	}
+	if m := decode(t, rr); m["error"] != "trace not found" {
+		t.Fatalf("404 body = %v, want trace not found", m["error"])
+	}
+
+	// 无会话 → 401（与其它控制台端点同一套鉴权）
+	rr = env.doNoCookie(t, http.MethodGet, "/v1/traces/"+traceID)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("无会话 status = %d, want 401", rr.Code)
+	}
+}
+
+// TestConsoleEventsTraceViewRootFirst trace 视图的第一条事件必须是根事件（#142 契约增补）。
+//
+// 为什么断言「第一条」：trace 页拿 `evs[0]` 当根事件，用它的 source 去
+// /v1/sources 里找源配置、拿源拓扑当底图。剪枝行（source='route'）时间上
+// 一定晚于根事件 → 倒序排列会顶到第一条 → 页面拿到 source="route"、
+// 找不到源，底图丢失，被剪枝的分支整片消失。
+// 所以这不是「顺序好看」，而是页面能不能工作的硬契约。
+func TestConsoleEventsTraceViewRootFirst(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+
+	const traceID = "trace_root_first"
+
+	// 根事件：外部世界发生了什么（时间更早）
+	if _, err := env.db.InsertEvent(ctx, &store.Event{
+		OrgID: env.orgID, TraceID: traceID, Source: "github",
+		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":1}`),
+		CreatedAt: 1700000000,
+	}); err != nil {
+		t.Fatalf("insert root event: %v", err)
+	}
+	// 剪枝事件：时间更晚，DESC 排序下本来会排第一
+	if _, err := env.db.InsertPruneEvent(ctx, &store.Event{
+		OrgID: env.orgID, TraceID: traceID,
+		Source: route.PruneEventSource,
+		Type:   route.PruneEventType(route.ReasonNoEdge),
+		Payload: json.RawMessage(
+			`{"fromCapability":"github","port":"x","detail":"no edge"}`),
+		CreatedAt: 1700000010,
+	}); err != nil {
+		t.Fatalf("insert prune event: %v", err)
+	}
+
+	rr := env.do(t, http.MethodGet, "/v1/console/events?traceId="+traceID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	m := decode(t, rr)
+	events, _ := m["events"].([]any)
+	if len(events) != 2 {
+		t.Fatalf("events = %d 条, want 2（根事件 + 剪枝）", len(events))
+	}
+	first, _ := events[0].(map[string]any)
+	if first["source"] != "github" {
+		t.Fatalf("events[0].source = %v, want github（trace 页的 evs[0] 必须是根事件，"+
+			"否则它找不到源、底图丢失）", first["source"])
+	}
+	second, _ := events[1].(map[string]any)
+	if second["source"] != route.PruneEventSource {
+		t.Fatalf("events[1].source = %v, want %q（剪枝仍要返回，不能被藏起来）",
+			second["source"], route.PruneEventSource)
+	}
+
+	// 事件流（不带 traceId）不混剪枝——trace 视图的排序改动不能顺手把它带坏
+	rr = env.do(t, http.MethodGet, "/v1/console/events", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("事件流 status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	m = decode(t, rr)
+	stream, _ := m["events"].([]any)
+	if len(stream) == 0 {
+		t.Fatal("事件流为空，want 至少 1 条（根事件）")
+	}
+	for _, raw := range stream {
+		if ev, _ := raw.(map[string]any); ev["source"] == route.PruneEventSource {
+			t.Fatalf("事件流里出现了剪枝行: %v", ev)
+		}
+	}
+}
+
+// TestTraceEndpointCrossOrg trace 视图不能泄漏别的组织的数据（I10，#142 §9.4）。
+//
+// 场景是真实存在的：一个用户同时属于 org1（主组织）和 org2，
+// trace_other_org 只存在于 org2。用 org1 去查必须 404（不区分「不存在」与
+// 「不是你的」，避免探测别人的 traceId）；用 org2 去查必须 200 且内容正确
+// —— 后半段是必须的，否则一个「永远 404」的实现也能骗过前半段。
+func TestTraceEndpointCrossOrg(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+
+	// 第二个组织（同一个用户是它的 owner：成员身份校验能过，租户隔离才被测到）
+	org2, err := env.db.CreateOrg(ctx, "org-second-"+store.NewOrgID())
+	if err != nil {
+		t.Fatalf("create org2: %v", err)
+	}
+	if err := env.db.AddOrgMember(ctx, org2.ID, env.userID, store.OrgRoleOwner); err != nil {
+		t.Fatalf("add org2 member: %v", err)
+	}
+
+	const otherTrace = "trace_other_org"
+	if _, err := env.db.InsertEvent(ctx, &store.Event{
+		OrgID: org2.ID, TraceID: otherTrace, Source: "github",
+		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":2}`),
+	}); err != nil {
+		t.Fatalf("insert org2 event: %v", err)
+	}
+
+	// 用 org1 查 org2 的 trace → 404（不泄漏存在性）
+	rr := env.do(t, http.MethodGet, "/v1/traces/"+otherTrace+"?orgId="+env.orgID, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("跨组织查询 status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+	}
+
+	// 用 org2 查同一条 trace → 200 且是同一串数据
+	// （证明前面那个 404 是租户隔离，不是路由没注册/取数写错）
+	rr = env.do(t, http.MethodGet, "/v1/traces/"+otherTrace+"?orgId="+org2.ID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("同组织查询 status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	m := decode(t, rr)
+	if m["traceId"] != otherTrace {
+		t.Fatalf("traceId = %v, want %q", m["traceId"], otherTrace)
+	}
+	events, _ := m["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("org2 的 events = %d 条, want 1", len(events))
+	}
+	if ev, _ := events[0].(map[string]any); ev["orgId"] != org2.ID {
+		t.Fatalf("返回的 event.orgId = %v, want %q（数据必须来自 org2）", ev["orgId"], org2.ID)
 	}
 }

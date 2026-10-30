@@ -34,7 +34,8 @@ func TestStubSignaturesFrozen(t *testing.T) {
 		_ func(context.Context, string, string, string) error                            = db.UpdateNodeStatus
 		_ func(context.Context, string, string, int64) error                             = db.TouchNode
 		_ func(context.Context, string, string, []CapabilityRef) ([]string, error)       = db.ConfirmCapabilities
-		_ func(context.Context, string) ([]*CapabilityVersion, error)                    = db.ListNodeCapabilities
+		_ func(context.Context, string, string, []CapabilityDecl) ([]string, error)      = db.ConfirmCapabilityDecls
+		_ func(context.Context, string) ([]*NodeCapability, error)                       = db.ListNodeCapabilities
 		_ func(context.Context, string, string) ([]string, error)                        = db.NodesForCapability
 		_ func(context.Context, string, string, []InstanceSpec) ([]*NodeInstance, error) = db.UpsertInstances
 		_ func(context.Context, string) ([]*NodeInstance, error)                         = db.ListInstances
