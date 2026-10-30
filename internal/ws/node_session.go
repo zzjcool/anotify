@@ -83,19 +83,14 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 			fmt.Sprintf("task %s is not assigned to this node", f.TaskID))
 		return nil
 	}
-	// StartTask 内部幂等：已在 running 时直接返回
-	if err := s.h.Store.StartTask(ctx, s.node.OrgID, f.TaskID); err != nil {
+	// 一个事务内完成：→running + started_at + 续租（契约 §2.2，内部幂等：已在 running 时照做不报错）。
+	// 行为变更（有意）：旧实现里「续租失败」只记 warn，现在合并成一个事务后
+	// 失败即整体回滚并回错误帧——不会出现「已 running、租约却没续上」被巡检
+	// 当过期任务回收、节点还在跑而中枢已重派的中间态。
+	now := s.h.now()
+	if err := s.h.Store.ProgressTask(ctx, s.node.OrgID, f.TaskID, now+int64(s.h.leaseTTLSec())); err != nil {
 		s.reportTransitionError(ctx, f.TaskID, err)
 		return nil
-	}
-	// progress 也续命（契约 §3.3：任何上行帧续命）
-	now := s.h.now()
-	if err := s.h.Store.ExtendLease(ctx, s.node.OrgID, f.TaskID, now+int64(s.h.leaseTTLSec())); err != nil {
-		slog.Warn("extend lease on progress failed",
-			"event", "node.ws.progress.extend_failed",
-			"task_id", f.TaskID,
-			"error", err.Error(),
-		)
 	}
 	return nil
 }
@@ -143,16 +138,7 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 		return nil
 	}
 
-	// 释放槽位（任务结束，槽位该空出来）
-	if err := s.h.Store.ReleaseInstanceByTask(ctx, s.node.ID, f.TaskID); err != nil {
-		slog.Warn("release instance after result failed",
-			"event", "node.ws.result.release_failed",
-			"task_id", f.TaskID,
-			"node_id", s.node.ID,
-			"error", err.Error(),
-		)
-	}
-
+	// 槽位释放已并入 ReportResult 事务（契约 §2.3 第 8 条），此处不再单独调用。
 	slog.Info("task finished",
 		"event", "node.ws.result",
 		"task_id", f.TaskID,

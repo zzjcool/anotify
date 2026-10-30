@@ -399,13 +399,35 @@ func (d *DB) transitionGuarded(ctx context.Context, tx *sql.Tx, orgID, taskID, f
 
 // AssignTask 派发：pending → assigned，写 node/instance/lease_until 并 attempts+1。
 //
+// 两次写（改状态、写归属）现在在**一个事务**里（#141）；签名与语义不变。
 // 先 CAS 改状态（迁移表 + 并发抢占），成功后再写归属信息——顺序反过来会出现
 // 「任务已被别人派走，但 node_id 已经被覆盖」的脏数据。
 func (d *DB) AssignTask(ctx context.Context, orgID, taskID, nodeID, instanceID string, leaseUntil int64) error {
-	if err := d.Transition(ctx, orgID, taskID, TaskPending, TaskAssigned); err != nil {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin assign task: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := d.assignTaskTx(ctx, tx, orgID, taskID, nodeID, instanceID, leaseUntil); err != nil {
 		return err
 	}
-	if _, err := d.ExecContext(ctx,
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit assign task: %w", err)
+	}
+	return nil
+}
+
+// assignTaskTx 是派发后半段的共用实现：改状态 + 写归属/attempts。
+//
+// AssignTask（拆开用，仍是单事务）与 LeaseAndAssign（占槽 + 派发一事务）共用它，
+// 保证两条路径写进去的字段与 attempts 时机一字不差。
+// transitionGuarded 传 tx：状态写仍走唯一入口，且不会去抢连接池的那根连接。
+func (d *DB) assignTaskTx(ctx context.Context, tx *sql.Tx, orgID, taskID, nodeID, instanceID string, leaseUntil int64) error {
+	if err := d.transitionGuarded(ctx, tx, orgID, taskID, TaskPending, TaskAssigned, ""); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET node_id = ?, instance_id = ?, lease_until = ?, attempts = attempts + 1
 		 WHERE org_id = ? AND id = ?`,
 		nodeID, nullIfEmpty(instanceID), leaseUntil, orgID, taskID); err != nil {
@@ -464,13 +486,17 @@ func (d *DB) ExtendLeasesForNode(ctx context.Context, orgID, nodeID string, leas
 	return int(n), nil
 }
 
-// ReportResult 记录节点回报的结果并推进到终态。
+// ReportResult 记录节点回报的结果并推进到终态（#141：一个事务内完成）。
 //
 // reported=false 表示帧里缺 out 字段（没回报出口），此时 Out 留 NULL；
 // reported=true 且 out=nil 表示「明确到头」（不变量 I5）。
 //
 // 节点可能没发 progress 帧就直接 result，所以 assigned/acked 先隐式进 running
 // （契约 §3.1「running 由 progress 帧或隐式推进」）。
+//
+// 一个 BEGIN/COMMIT 里完成：隐式 running + started_at + running→终态 +
+// 明细字段 + 释放槽位。拆开时最坏的中间态是「任务已终态、槽位却没释放」——
+// 那一个并发额度会一直占到巡检或重启为止，而现在要么全成要么全不成。
 func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: result status must be succeeded|failed, got %q", ErrInvalidTransition, status)
@@ -479,22 +505,39 @@ func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out
 		// '' 不是合法出口名（契约 §2.5：out NULL 表示没回报，'' 不是合法值）
 		return fmt.Errorf("report result: empty out string is not a valid port (use nil)")
 	}
-	task, err := d.GetTask(ctx, orgID, taskID)
+
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin report result: %w", err)
 	}
-	if IsTerminalStatus(task.Status) {
-		return fmt.Errorf("%w: task %s already %s", ErrInvalidTransition, taskID, task.Status)
+	defer func() { _ = tx.Rollback() }()
+
+	// status 与 node_id 必须用 **tx** 读：DSN 是 MaxOpenConns(1)，走连接池
+	// （d.GetTask）会和本事务抢同一根连接，直接自锁。
+	var (
+		cur    string
+		nodeID sql.NullString
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, node_id FROM tasks WHERE org_id = ? AND id = ?`, orgID, taskID).
+		Scan(&cur, &nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("report result: read task: %w", err)
+	}
+	if IsTerminalStatus(cur) {
+		return fmt.Errorf("%w: task %s already %s", ErrInvalidTransition, taskID, cur)
 	}
 	// 隐式进 running（result 帧本身表示节点已经在执行了）
-	cur := task.Status
 	if cur == TaskAssigned || cur == TaskAcked {
-		if err := d.Transition(ctx, orgID, taskID, cur, TaskRunning); err != nil {
+		if err := d.transitionGuarded(ctx, tx, orgID, taskID, cur, TaskRunning, ""); err != nil {
 			return err
 		}
 		// 节点可能跳过 progress 帧直接 result，这里补 started_at，
 		// 否则任务永远没有开始时间（可观测性缺一块）。
-		if _, err := d.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE org_id = ? AND id = ?`,
 			Now(), orgID, taskID); err != nil {
 			return fmt.Errorf("report result: set started_at: %w", err)
@@ -504,7 +547,7 @@ func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out
 	if cur != TaskRunning {
 		return fmt.Errorf("%w: task %s is %s, cannot report result", ErrInvalidTransition, taskID, cur)
 	}
-	if err := d.Transition(ctx, orgID, taskID, TaskRunning, status); err != nil {
+	if err := d.transitionGuarded(ctx, tx, orgID, taskID, TaskRunning, status, ""); err != nil {
 		return err
 	}
 
@@ -524,13 +567,28 @@ func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out
 	if err != nil {
 		return fmt.Errorf("marshal artifacts: %w", err)
 	}
-	if _, err := d.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks
 		 SET out = ?, reported = ?, summary = ?, artifacts = ?, error = ?,
 		     finished_at = COALESCE(finished_at, ?)
 		 WHERE org_id = ? AND id = ?`,
 		outVal, reportedInt, summary, string(artifactsJSON), errMsg, Now(), orgID, taskID); err != nil {
 		return fmt.Errorf("report result details: %w", err)
+	}
+
+	// 释放槽位：并进同一个事务。
+	// busy_task = taskID 条件必须保留——槽位可能已被巡检回收并给了别的任务，
+	// 不看条件地置 NULL 会把别人的任务踢下槽。
+	// RowsAffected()==0 不算错误（正是「巡检已回收」的合法情况）。
+	if nodeID.String != "" {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE node_instances SET busy_task = NULL, updated_at = ?
+			 WHERE node_id = ? AND busy_task = ?`, Now(), nodeID.String, taskID); err != nil {
+			return fmt.Errorf("report result: release instance: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit report result: %w", err)
 	}
 	return nil
 }
@@ -547,15 +605,90 @@ func (d *DB) MarkRunning(ctx context.Context, orgID, taskID string) error {
 	return d.Transition(ctx, orgID, taskID, task.Status, TaskRunning)
 }
 
-// StartTask 把 assigned/acked 推进到 running，并从 dropped 该槽位的角度补 started_at。
+// StartTask 把 assigned/acked 推进到 running，并补 started_at（#141：一个事务）。
+//
+// 签名与语义不变，只是把「推进状态」与「写 started_at」两次提交压成一次。
 func (d *DB) StartTask(ctx context.Context, orgID, taskID string) error {
-	if err := d.MarkRunning(ctx, orgID, taskID); err != nil {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin start task: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := d.startTaskTx(ctx, tx, orgID, taskID); err != nil {
 		return err
 	}
-	if _, err := d.ExecContext(ctx,
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit start task: %w", err)
+	}
+	return nil
+}
+
+// startTaskTx 在调用方事务内完成 progress 的前两步：推进到 running + 补 started_at。
+//
+// 当前状态必须用 **tx** 查（MaxOpenConns(1)：用 d.GetTask 会和本事务抢同一根
+// 连接而自锁）。running 幂等：重复 progress 帧不报错，也不覆盖已有 started_at。
+// 非 running 时走 transitionGuarded——终态 / lease_expired → running 仍然被拒。
+func (d *DB) startTaskTx(ctx context.Context, tx *sql.Tx, orgID, taskID string) error {
+	var cur string
+	err := tx.QueryRowContext(ctx,
+		`SELECT status FROM tasks WHERE org_id = ? AND id = ?`, orgID, taskID).Scan(&cur)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("start task: read current status: %w", err)
+	}
+	if cur != TaskRunning {
+		if err := d.transitionGuarded(ctx, tx, orgID, taskID, cur, TaskRunning, ""); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE org_id = ? AND id = ?`,
 		Now(), orgID, taskID); err != nil {
-		return fmt.Errorf("start task: %w", err)
+		return fmt.Errorf("start task: set started_at: %w", err)
+	}
+	return nil
+}
+
+// ProgressTask 是 progress 帧的三合一（#141）：→running + started_at + 续租。
+//
+// 一次 Commit 取代过去的 StartTask + ExtendLease 两次提交。与拆分版的区别
+// 只在原子性：不会出现「已经 running、租约却没续上」的中间态（那会被巡检
+// 当成过期任务回收到 pending，节点还在跑、中枢已重派）。
+//
+// 错误语义：任务不存在 → ErrNotFound；终态 / lease_expired → running 非法迁移
+// → ErrInvalidTransition；已在 running → 幂等成功。
+func (d *DB) ProgressTask(ctx context.Context, orgID, taskID string, leaseUntil int64) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin progress task: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := d.startTaskTx(ctx, tx, orgID, taskID); err != nil {
+		return err
+	}
+	// 续租的条件串（assigned/acked/running）必须保留：终态任务不该被续命。
+	// 同事务内刚推进到 running，所以 0 行只可能是状态被另一个写者改走了。
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET lease_until = ?
+		 WHERE org_id = ? AND id = ? AND status IN (?,?,?)`,
+		leaseUntil, orgID, taskID, TaskAssigned, TaskAcked, TaskRunning)
+	if err != nil {
+		return fmt.Errorf("progress task: extend lease: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("progress task rows: %w", err)
+	}
+	if n == 0 {
+		// 口径对齐 ExtendLease：续不到就是不在这三个状态里
+		return fmt.Errorf("%w: task %s is not in assigned|acked|running", ErrNotFound, taskID)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit progress task: %w", err)
 	}
 	return nil
 }

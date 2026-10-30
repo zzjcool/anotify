@@ -159,6 +159,7 @@ func (f *fakeStore) FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[
 	return out, nil
 }
 
+// LeaseInstance 是 fake 的**内部 helper**（不再属于 route.Store）：模拟占一个空闲槽位。
 func (f *fakeStore) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, error) {
 	for _, in := range f.instances[nodeID] {
 		if in.Alive && in.BusyTask == nil {
@@ -244,12 +245,34 @@ func (f *fakeStore) CreateTasks(ctx context.Context, ts []*store.Task) error {
 	return nil
 }
 
+// AssignTask 也是 fake 的内部 helper：记录一次归属写入，可注入错误。
 func (f *fakeStore) AssignTask(ctx context.Context, orgID, taskID, nodeID, instanceID string, leaseUntil int64) error {
 	if f.errAssignTask != nil {
 		return f.errAssignTask
 	}
 	f.assignments = append(f.assignments, assignment{taskID, nodeID, instanceID, leaseUntil})
 	return nil
+}
+
+// LeaseAndAssign 是 route.Store 要求的派发入口（#141）：真实实现里
+// 「占槽位 + pending→assigned + 写归属/attempts」是**一个事务**。
+//
+// fake 没有事务，用「AssignTask 失败就把刚占的槽位放回去」模拟同一语义：
+// 任一步失败后占住的槽位必须看不见（真实实现靠 Rollback 做到）。
+// errAssignTask 的注入位置不变——仍然只在 AssignTask 那一步生效。
+func (f *fakeStore) LeaseAndAssign(ctx context.Context, orgID, taskID, nodeID string, leaseUntil int64) (string, error) {
+	instanceID, err := f.LeaseInstance(ctx, nodeID, taskID)
+	if err != nil {
+		return "", err
+	}
+	if err := f.AssignTask(ctx, orgID, taskID, nodeID, instanceID, leaseUntil); err != nil {
+		// 模拟事务回滚：槽位不泄漏
+		if rbErr := f.ReleaseInstance(ctx, nodeID, instanceID); rbErr != nil {
+			return "", rbErr
+		}
+		return "", err
+	}
+	return instanceID, nil
 }
 
 func (f *fakeStore) EnsureGraphVersion(ctx context.Context, orgID string) (*store.GraphVersion, error) {
@@ -492,6 +515,47 @@ func TestDispatchLeavesPendingWhenNoCapacity(t *testing.T) {
 	}
 	if len(f.assignments) != 0 {
 		t.Fatalf("task assigned despite no capacity")
+	}
+}
+
+// TestDispatchLeaseAndAssignFailureDoesNotLeakSlot LeaseAndAssign 失败时槽位不泄漏（#141）。
+//
+// 派发的「占槽位 + 改状态 + 写归属」现在是一个事务：AssignTask 失败时
+// 占住的槽位随事务回滚消失，所以 Dispatch 里**删掉了**失败后补一次
+// ReleaseInstance 的语句。这里用只有 1 个槽位的节点把这个不变量钉住：
+// 若槽位泄了，第二次派发会拿到 ErrNoCapacity 静默留 pending（不报错）。
+func TestDispatchLeaseAndAssignFailureDoesNotLeakSlot(t *testing.T) {
+	f := newFakeStore()
+	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
+	target := f.addCap(testOrg, "fix", 1, nil, `{}`)
+	f.addEdge(testOrg, review.ID, "fix", target.ID)
+	f.addNode("nd_fix", target.ID, 1) // 只有一个槽位：泄漏就再也占不到
+	d := New(f)
+
+	in := DispatchInput{OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "fix"}
+
+	f.errAssignTask = errors.New("constraint")
+	if _, err := d.Dispatch(context.Background(), in); err == nil {
+		t.Fatal("lease+assign error was swallowed")
+	}
+	if len(f.leasedSlots) != 0 {
+		t.Fatalf("failed lease+assign leaked slot(s): %v", f.leasedSlots)
+	}
+
+	// 同一节点仍能再次占位：槽位没有被那次失败的事务扣掉。
+	f.errAssignTask = nil
+	out, err := d.Dispatch(context.Background(), in)
+	if err != nil {
+		t.Fatalf("redispatch after failed lease+assign: %v", err)
+	}
+	if len(out.Tasks) != 1 {
+		t.Fatalf("want 1 task, got %d", len(out.Tasks))
+	}
+	if out.Tasks[0].Status != store.TaskAssigned {
+		t.Fatalf("task status = %q, want assigned (slot leaked by failed transaction?)", out.Tasks[0].Status)
+	}
+	if len(f.leasedSlots) != 1 {
+		t.Fatalf("leased slots = %d, want 1", len(f.leasedSlots))
 	}
 }
 

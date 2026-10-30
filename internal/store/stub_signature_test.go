@@ -65,6 +65,8 @@ func TestStubSignaturesFrozen(t *testing.T) {
 		_ func(context.Context, int64) ([]string, error)                                               = db.SweepExpiredLeases
 		_ func(context.Context, string, string, string, string, int64) error                           = db.AssignTask
 		_ func(context.Context, string, string, int64) error                                           = db.ExtendLease
+		_ func(context.Context, string, string, string, int64) (string, error)                         = db.LeaseAndAssign
+		_ func(context.Context, string, string, int64) error                                           = db.ProgressTask
 		_ func(context.Context, string, string, string, *string, bool, string, []string, string) error = db.ReportResult
 		_ func(string, string) bool                                                                    = ValidTransition
 		_ func(string) bool                                                                            = IsTerminalStatus

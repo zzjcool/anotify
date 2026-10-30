@@ -306,6 +306,75 @@ func BenchmarkDispatchChain(b *testing.B) {
 	}
 }
 
+// BenchmarkReportResult 度量「节点回报一次结果」的写成本（result 路径）。
+//
+// 这是 issue #141 里被拆得最碎的一条路径：合并前 ReportResult 内部是
+// transition(→running) + started_at + transition(→终态) + details 四次独立提交，
+// 槽位释放还要再单开一次（ReleaseInstanceByTask）；合并后应当只剩一次提交。
+//
+// 装数据一律在计时外：一条 running 的任务需要 pending→assigned→acked→running
+// 加占槽位，四步都不该算进「回报结果」的成本。
+func BenchmarkReportResult(b *testing.B) {
+	env := newBenchEnv(b)
+	nodeID := env.addEntryGraphWithNode(b)
+	ctx := context.Background()
+	out := "fix"
+	artifacts := []string{"run.log", "diff.patch"}
+
+	b.Run("running_to_succeeded", func(b *testing.B) {
+		// testing 可能对同一个子基准调用多次（校准/重跑），每次进来先把上一轮
+		// 调用残留的槽位放掉：否则第一次调用跑完的那个槽位一直 busy，
+		// 下一次调用第一轮就 LeaseInstance → ErrNoCapacity。
+		// （合并事务后 ReportResult 自己会释放，这段就是空操作，留着不影响可比性）
+		if insts, err := env.db.ListInstances(ctx, nodeID); err == nil {
+			for _, in := range insts {
+				if in.BusyTask != nil {
+					if err := env.db.ReleaseInstance(ctx, nodeID, in.ID); err != nil {
+						b.Fatalf("reset slot: %v", err)
+					}
+				}
+			}
+		}
+
+		var prevInst string
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			// 上一轮的槽位：合并后 ReportResult 自己释放，这里是空操作；
+			// 合并前必须显式释放，否则第二轮起 LeaseInstance 直接 ErrNoCapacity，
+			// 基准会静默变成测「没回报成」的成本。
+			if prevInst != "" {
+				if err := env.db.ReleaseInstance(ctx, nodeID, prevInst); err != nil {
+					b.Fatalf("release instance: %v", err)
+				}
+			}
+			t := env.createOne(b, ctx, fmt.Sprintf("trc_rr_%d", i))
+			instID, err := env.db.LeaseInstance(ctx, nodeID, t.ID)
+			if err != nil {
+				b.Fatalf("lease instance: %v", err)
+			}
+			if err := env.db.AssignTask(ctx, env.orgID, t.ID, nodeID, instID, store.Now()+store.LeaseTTLSec); err != nil {
+				b.Fatalf("assign: %v", err)
+			}
+			if err := env.db.Transition(ctx, env.orgID, t.ID, store.TaskAssigned, store.TaskAcked); err != nil {
+				b.Fatalf("setup assigned→acked: %v", err)
+			}
+			if err := env.db.StartTask(ctx, env.orgID, t.ID); err != nil {
+				b.Fatalf("setup acked→running: %v", err)
+			}
+			prevInst = instID
+			b.StartTimer()
+
+			// 计时区内**恰好一次**：节点回报结果。
+			if err := env.db.ReportResult(ctx, env.orgID, t.ID, store.TaskSucceeded,
+				&out, true, "ok", artifacts, ""); err != nil {
+				b.Fatalf("report result: %v", err)
+			}
+		}
+	})
+}
+
 // TestBenchmarksTargetRealPaths 是三个基准的护栏：对真库把基准依赖的路径各跑一遍，
 // 断言**可观测效果**（库里真的多了行、状态真的变了）。
 //
@@ -444,5 +513,45 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	// 图版本必须真落了：graph_id 只有能反查回快照才有复盘价值。
 	if _, err := env.db.GetGraphVersion(ctx, env.orgID, dispatched.GraphID); err != nil {
 		t.Fatalf("get graph version %s: %v", dispatched.GraphID, err)
+	}
+
+	// —— ④ ReportResult：基准只报 ns/op，跑空了也照样打印。这里把
+	// 「回报一次结果」的可观测效果钉死：终态 + 明细落库 + 槽位释放。
+	//
+	// 用 ③ 派出去的那条任务（assigned）→ StartTask（running）→ 回报成功。
+	if err := env.db.StartTask(ctx, env.orgID, dispatched.ID); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	fixOut := "fix"
+	if err := env.db.ReportResult(ctx, env.orgID, dispatched.ID, store.TaskSucceeded,
+		&fixOut, true, "done", []string{"run.log"}, ""); err != nil {
+		t.Fatalf("report result: %v", err)
+	}
+	finished, err := env.db.GetTask(ctx, env.orgID, dispatched.ID)
+	if err != nil {
+		t.Fatalf("get finished task: %v", err)
+	}
+	if finished.Status != store.TaskSucceeded {
+		t.Fatalf("回报后状态应为 succeeded，实际 %q", finished.Status)
+	}
+	if finished.Out == nil || *finished.Out != fixOut || !finished.Reported {
+		t.Fatalf("回报的出口没落库：out=%v reported=%v", finished.Out, finished.Reported)
+	}
+	if finished.Summary != "done" || len(finished.Artifacts) != 1 || finished.Artifacts[0] != "run.log" {
+		t.Fatalf("明细没落库：summary=%q artifacts=%v", finished.Summary, finished.Artifacts)
+	}
+	if finished.FinishedAt == nil {
+		t.Fatalf("终态必须写 finished_at")
+	}
+	// 槽位释放已并进 ReportResult 的同一个事务（#141）：库里读回必须已空。
+	// 没释放的话，基准里那条 ReleaseInstance 就成了安慰剂，ns/op 少算一次写。
+	insts, err := env.db.ListInstances(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("list instances: %v", err)
+	}
+	for _, in := range insts {
+		if in.BusyTask != nil && *in.BusyTask == dispatched.ID {
+			t.Fatalf("回报后槽位 %s 仍被任务 %s 占着（ReleaseInstance 没并进事务？）", in.ID, dispatched.ID)
+		}
 	}
 }
