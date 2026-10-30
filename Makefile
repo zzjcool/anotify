@@ -73,6 +73,9 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	go build ./...
 	go build -trimpath -ldflags="-s -w" -tags embeddist -o anotify ./cmd/server
 	$(MAKE) test
+	@# harness 自测（#215）：/health 的 boot 身份校验是"看不见的"修复——正常跑什么都不打印。
+	@# 而这个缺陷的症状是「套件随机 0通过/0失败」，跟超时/代码 bug 分不开，所以必须有秒级用例钉住它。
+	ANOTIFY_BIN=$(CURDIR)/anotify node scripts/e2e/harness_selftest.mjs
 
 bench: ## 运行全部基准测试（吞吐/分配热点；仅基准不跑单测）
 	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s

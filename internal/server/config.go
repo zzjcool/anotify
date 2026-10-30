@@ -2,6 +2,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 )
@@ -21,6 +23,18 @@ type Config struct {
 	TrustProxy  bool   // 信任 X-Forwarded-For（仅在反代 cloudflared/nginx 后开启）
 	LogLevel    string // 日志级别：debug/info/warn/error，默认 info
 	LogFormat   string // 日志格式：json/text，默认 json
+
+	// BootID 是**本次进程启动**的标识，由 /health 回显。
+	//
+	// 为什么需要它：/health 只回 {"ok":true} 时，调用方无法区分「我起的那个进程」
+	// 和「同一个端口上别人的/上次残留的进程」——两者都返回 200。
+	// e2e 的并行套件、以及"上一次 e2e 的 server 没退干净"这两种场景，
+	// 都会让测试**静默连上别人的后端**，症状是随机的 401 和造数 undefined
+	// （表现为 0通过/0失败，看起来像超时或代码坏了，排查成本极高，见 issue #215）。
+	//
+	// 默认随机生成（每次启动都不同）；显式设 ANOTIFY_BOOT_ID 时用它，
+	// 便于外部在启动前就知道该等哪个实例。
+	BootID string
 }
 
 // FromEnv 从环境变量加载配置。
@@ -41,7 +55,21 @@ func FromEnv() Config {
 		TrustProxy:  get("ANOTIFY_TRUST_PROXY", "") != "",
 		LogLevel:    get("ANOTIFY_LOG_LEVEL", "info"),
 		LogFormat:   get("ANOTIFY_LOG_FORMAT", "json"),
+		BootID:      bootIDFromEnv(),
 	}
+}
+
+// bootIDFromEnv 取 ANOTIFY_BOOT_ID，未设则随机生成 8 字节（16 位十六进制）。
+func bootIDFromEnv() string {
+	if v := os.Getenv("ANOTIFY_BOOT_ID"); v != "" {
+		return v
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// 拿不到随机数不该阻止启动：退化成固定值，身份校验会失效但服务可用。
+		return "unknown"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // Validate 校验关键配置。

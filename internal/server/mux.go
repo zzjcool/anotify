@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -383,11 +384,18 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		enrollH.cancel(w, r, r.PathValue("id"))
 	}))))
 
-	// 健康检查
+	// 健康检查。除 ok 外还回 boot（本次进程启动标识），见 Config.BootID：
+	// 只回 {"ok":true} 时调用方分不清"我起的进程"和"同端口上别人的进程"，
+	// e2e 并行/残留进程会因此静默连错后端（issue #215）。
+	bootID := cfg.BootID
+	if bootID == "" {
+		bootID = "unknown"
+	}
+	healthBody, _ := json.Marshal(map[string]any{"ok": true, "boot": bootID})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write(healthBody)
 	})
 
 	// --- 静态资源（CDN 缓存分级）---

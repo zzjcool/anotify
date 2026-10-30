@@ -7,6 +7,7 @@
  * - startTimer/stopTimer/writeResults: 结构化 JSON 结果输出
  * 断言器 API（ok/bad/check/eq/summary）签名不变，向后兼容。 */
 import { spawn, execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -121,16 +122,52 @@ function crashSuiteName() {
 	return suiteNameHint || "unknown_suite";
 }
 
+// crashReason 收集"崩在哪"（#215）：只记一句通用文案等于没诊断信息，
+// 真正要看到的是 「端口 5954 上跑着别的服务（boot=缺失）」这种。
+//
+// 用 uncaughtExceptionMonitor 而**不是** uncaughtException：
+// 后者一旦有监听器，Node 就不再走默认的"打栈 + 退出"，
+// 于是崩溃会被我们静默吞掉、进程挂着不退出 —— 那就把门禁变成永远不红。
+// Monitor 是只读观察者，不改默认行为。
+let crashReason = "";
+process.on("uncaughtExceptionMonitor", (err) => {
+	crashReason = String((err && err.message) || err || "").split(/\n+/).filter(Boolean).slice(0, 2).join(" ⏎ ").slice(0, 300);
+});
+
+// 光靠 monitor 不够：本仓库所有套件的入口都是
+//   main().catch((e) => { console.error(e); ...; process.exit(1) })
+// 异常被它们自己接住了，Node 不会发 uncaughtException → monitor 永远不触发，
+// 汇总里就只剩「套件异常终止」这句没有任何信息量的话。
+// 所以再拦一层 console.error：抓住"崩之前打印的那一行"。
+// 只在真的崩溃时才会用到它（正常收尾不看 crashReason），不会污染结果。
+const origConsoleError = console.error.bind(console);
+console.error = (...args) => {
+	try {
+		const first = args.find((a) => a !== undefined && a !== null);
+		const text =
+			first instanceof Error ? first.message : String(first ?? "");
+		if (text) {
+			// 只留前两行：第一行往往是"服务启动失败（试 5 个端口均不可用）:"，
+			// 真正有信息量的「端口 5954 上跑着别的服务（boot=缺失）」在第二行。
+			crashReason = text.split(/\n+/).filter(Boolean).slice(0, 2).join(" ⏎ ").slice(0, 300);
+		}
+	} catch {
+		/* 记录失败不影响日志输出 */
+	}
+	origConsoleError(...args);
+};
+
 let crashHookInstalled = false;
 function installCrashResultsHook() {
 	if (crashHookInstalled) return;
 	crashHookInstalled = true;
 	process.on("exit", () => {
 		if (summaryCalled || resultsWritten) return; // 正常收尾，不插手
-		const name = "套件异常终止（未跑到 summary，断言数不完整）";
+		const why = crashReason ? `：${crashReason}` : "";
+		const name = `套件异常终止（未跑到 summary，断言数不完整）${why}`;
 		failCount++;
 		failures.push(name);
-		assertions.push({ name, pass: false, detail: "见本次运行的 stderr 异常栈" });
+		assertions.push({ name, pass: false, detail: crashReason || "见本次运行的 stderr 异常栈" });
 		try {
 			writeResults(crashSuiteName(), stopTimer());
 		} catch {
@@ -540,6 +577,14 @@ export async function startServer({
 
 	// 尝试启动（段内最多 5 次，避免 TIME_WAIT/端口冲突）
 	let lastErr = "";
+	// 本次 startServer 期望的进程身份（issue #215）。
+	//
+	// 只判断 "/health 返回 200" 是不够的：同一个端口上**别人的**服务、或者上一次
+	// e2e 没退干净的 server，也都返回 200。于是套件会静默连上别人的后端，
+	// 症状是随机的 401 + 造数 undefined → 汇总成「0通过/0失败」，
+	// 看起来像超时或代码坏了（本轮为此误判过两次）。
+	// 解决：把 boot id 传给子进程，/health 原样回显，不匹配就不是"我们起的那个"。
+	const expectBoot = `e2e-${randomUUID()}`;
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const p = basePort + attempt;
 		const tmp = mkdtempSync(path.join(tmpdir(), "anotify-e2e-"));
@@ -557,9 +602,13 @@ export async function startServer({
 				ANOTIFY_RP_ORIGIN: origin,
 				ANOTIFY_VAPID_PUBLIC_KEY: process.env.ANOTIFY_VAPID_PUBLIC_KEY || "",
 				ANOTIFY_VAPID_PRIVATE_KEY: process.env.ANOTIFY_VAPID_PRIVATE_KEY || "",
+				// 服务端会在 /health 里回显它（见 Config.BootID / issue #215）
+				ANOTIFY_BOOT_ID: expectBoot,
 			},
 			extraEnv,
 		);
+		// extraEnv 允许覆盖（比如复现实验），以最终 env 为准
+		const bootExpected = env.ANOTIFY_BOOT_ID || expectBoot;
 		installExitHook();
 		const proc = spawn(BIN, [], { env, stdio: ["ignore", "pipe", "pipe"] });
 		LIVE_SERVERS.add(proc);
@@ -572,16 +621,35 @@ export async function startServer({
 		// 等待健康（最多 6s）
 		const deadline = Date.now() + 6000;
 		let up = false;
+		// foreign = 端口上确实有服务，但不是我们起的那个（boot 不匹配）
+		let foreign = "";
 		while (Date.now() < deadline) {
 			// 进程意外退出（bind 失败等）→ 立即换端口重试
 			if (proc.exitCode !== null) { break; }
 			try {
 				const r = await fetch(base + "/health");
-				if (r.ok) { up = true; break; }
+				if (r.ok) {
+					let boot = "";
+					try {
+						boot = ((await r.json()) || {}).boot || "";
+					} catch {
+						/* 不是 JSON：更不可能是我们的服务 */
+					}
+					if (boot === bootExpected) { up = true; break; }
+					// 200 但不是我们 → 立刻放弃这个端口，别把别人的后端当自己的用
+					foreign = `端口 ${p} 上跑着别的服务（/health 的 boot=${boot || "缺失"}，期望 ${bootExpected}）`;
+					break;
+				}
 			} catch {
 				/* not up yet */
 			}
 			await new Promise((r) => setTimeout(r, 200));
+		}
+		if (foreign) {
+			// 把自己刚 spawn 的进程收掉（它多半已因 bind 失败退出）
+			try { proc.kill("SIGKILL"); } catch { /* 已退出 */ }
+			lastErr = `${foreign} —— 上一次 e2e 的 server 没退干净，或另一个 worktree 正在跑同一套件`;
+			continue;
 		}
 		if (up) {
 			// 注册库路径：无会话的请求（/v1/events 走 Bearer API Key）靠它解析默认命名空间。
