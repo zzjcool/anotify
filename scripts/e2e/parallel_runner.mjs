@@ -56,12 +56,13 @@ const CHROME_SUITES = [
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 
 const SUITE_TIMEOUT = 120_000; // 120s per suite（默认）
-// frontend 是唯一一个要跑 249 条断言的套件，光 Chrome 交互就要 ~106s，
-// 默认 120s 只剩十几秒余量 —— 并发跑时必然踩线。给它单独放宽。
+// frontend 是唯一一个要跑几百条断言的套件（现在 346 条，覆盖全部页面 + 交互），
+// 默认 120s 根本不够，必须单独放宽。
 const SUITE_TIMEOUT_OVERRIDE = {
-	// 断言数还会涨（现在 310 条），240s 在并发下只剩十几秒余量，
-	// 加几条动画采样就会被 SIGKILL 掉。留足一倍余量。
-	frontend: 360_000,
+	// 实测数据（#198 时）：单独跑 277s；并发 4 下曾把 360s 的预算跑穿，
+	// 结果是 0通过/0失败（被 SIGKILL），看起来像"套件崩了"，其实是超时。
+	// 给到 600s 留足余量。断言数继续涨的话，正确做法是拆套件而不是再加时间。
+	frontend: 600_000,
 };
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
