@@ -91,7 +91,7 @@ func TestRunJobEnvIdentity(t *testing.T) {
 	}
 }
 
-// TestRunJobSuccess 对应 W3-3：成功判定的全部字段（含 Out 恒 nil、Artifacts 非 nil）。
+// TestRunJobSuccess 对应 W3-3：成功判定的全部字段（未声明 run.out → Out nil、Artifacts 非 nil）。
 func TestRunJobSuccess(t *testing.T) {
 	res := runJob(context.Background(), newRunnerJob("echo first line; echo second line"))
 
@@ -102,7 +102,7 @@ func TestRunJobSuccess(t *testing.T) {
 		t.Fatalf("Err = %q, want empty", res.Err)
 	}
 	if res.Out != nil {
-		t.Fatalf("Out = %q, want nil（v1 不回报出口）", *res.Out)
+		t.Fatalf("Out = %q, want nil（未声明 run.out 就不回报出口）", *res.Out)
 	}
 	if res.Artifacts == nil {
 		t.Fatal("Artifacts = nil, want 非 nil（空列表必须是 []，不是 null）")
@@ -151,6 +151,82 @@ func TestRunJobFailure(t *testing.T) {
 	}
 }
 
+// TestRunJobOutSucceededDeclared 对应契约 §4 #1：成功 + 声明 run.out → 回报该出口名。
+func TestRunJobOutSucceededDeclared(t *testing.T) {
+	j := newRunnerJob("echo done")
+	j.Spec.Out = "ok"
+
+	res := runJob(context.Background(), j)
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want %q (err=%q)", res.Status, statusSucceeded, res.Err)
+	}
+	if res.Out == nil {
+		t.Fatal("Out = nil, want 指向 \"ok\"（成功且声明了 run.out）")
+	}
+	if *res.Out != "ok" {
+		t.Fatalf("Out = %q, want %q", *res.Out, "ok")
+	}
+}
+
+// TestRunJobOutSucceededUndeclared 对应契约 §4 #2：成功但没声明 run.out → Out 仍为
+// nil（帧里 out 键缺席 = 分支终止）。
+func TestRunJobOutSucceededUndeclared(t *testing.T) {
+	res := runJob(context.Background(), newRunnerJob("echo done"))
+
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want %q (err=%q)", res.Status, statusSucceeded, res.Err)
+	}
+	if res.Out != nil {
+		t.Fatalf("Out = %q, want nil（没声明 run.out）", *res.Out)
+	}
+}
+
+// TestRunJobOutFailedNotReported 对应契约 §4 #3：声明了 out 但命令失败 → 绝不回报
+// 出口（不能把失败伪装成走通了某条路）。
+func TestRunJobOutFailedNotReported(t *testing.T) {
+	j := newRunnerJob("echo boom >&2; exit 1")
+	j.Spec.Out = "ok"
+
+	res := runJob(context.Background(), j)
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q, want %q", res.Status, statusFailed)
+	}
+	if !strings.Contains(res.Err, "exit status 1") {
+		t.Fatalf("Err = %q, want 含 %q", res.Err, "exit status 1")
+	}
+	if res.Out != nil {
+		t.Fatalf("Out = %q, want nil（失败不回报出口）", *res.Out)
+	}
+}
+
+// TestRunJobOutWhitespaceTreatedAsUndeclared 对应契约 §4 #4：out 去空白后为空 → 按
+// 未声明处理（绝不把空格当出口名发出去）；非空时回报的是**去空白后**的值。
+func TestRunJobOutWhitespaceTreatedAsUndeclared(t *testing.T) {
+	for _, raw := range []string{"", "  ", "\t\n"} {
+		j := newRunnerJob("true")
+		j.Spec.Out = raw
+
+		res := runJob(context.Background(), j)
+		if res.Status != statusSucceeded {
+			t.Fatalf("out=%q: status = %q, want %q (err=%q)", raw, res.Status, statusSucceeded, res.Err)
+		}
+		if res.Out != nil {
+			t.Fatalf("out=%q: Out = %q, want nil（纯空白按未声明处理）", raw, *res.Out)
+		}
+	}
+
+	// 前后空白被 trim：回报的是干净出口名。
+	j := newRunnerJob("true")
+	j.Spec.Out = "  ok  "
+	res := runJob(context.Background(), j)
+	if res.Out == nil {
+		t.Fatal("Out = nil, want 去空白后的 \"ok\"")
+	}
+	if *res.Out != "ok" {
+		t.Fatalf("Out = %q, want %q（去首尾空白后回报）", *res.Out, "ok")
+	}
+}
+
 // TestRunJobTimeout 对应 W3-5：TimeoutSec=1，命令里有一个会活过超时的孙进程 →
 //   - runJob 必须在 3s 内返回（真的杀了，没等 `sleep 5` 自己结束）；
 //   - Err 含 "timed out"/"after"；
@@ -164,6 +240,7 @@ func TestRunJobTimeout(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "survived.txt")
 	j := newRunnerJob(fmt.Sprintf("( sleep 2; echo survived > %q ) & sleep 5", marker))
 	j.Spec.TimeoutSec = 1
+	j.Spec.Out = "ok" // 加固（契约 §4 #5）：超时即使声明了 out 也绝不回报出口
 
 	start := time.Now()
 	res := runJob(context.Background(), j)
@@ -180,6 +257,10 @@ func TestRunJobTimeout(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "after") {
 		t.Fatalf("Err = %q, want 含超时时长（timed out after ...）", res.Err)
+	}
+	// 加固（契约 §4 #5）：超时不回报出口。
+	if res.Out != nil {
+		t.Fatalf("Out = %q, want nil（超时不回报出口）", *res.Out)
 	}
 
 	// 后台子 shell 本该在 t≈2s 写文件；runJob 在 t≈1s 返回，再观察到 t≈2.5s。
@@ -203,8 +284,11 @@ func TestRunJobCanceled(t *testing.T) {
 		cancel()
 	}()
 
+	j := newRunnerJob(fmt.Sprintf("( sleep 2; echo survived > %q ) & sleep 5", marker))
+	j.Spec.Out = "ok" // 加固（契约 §4 #5）：取消即使声明了 out 也绝不回报出口
+
 	start := time.Now()
-	res := runJob(ctx, newRunnerJob(fmt.Sprintf("( sleep 2; echo survived > %q ) & sleep 5", marker)))
+	res := runJob(ctx, j)
 	elapsed := time.Since(start)
 
 	if elapsed > 3*time.Second {
@@ -215,6 +299,10 @@ func TestRunJobCanceled(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "canceled") {
 		t.Fatalf("Err = %q, want 含 %q", res.Err, "canceled")
+	}
+	// 加固（契约 §4 #5）：取消不回报出口。
+	if res.Out != nil {
+		t.Fatalf("Out = %q, want nil（取消不回报出口）", *res.Out)
 	}
 
 	// 取消时后台孙进程（t≈2s 写文件）也必须一起死。

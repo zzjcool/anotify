@@ -388,11 +388,43 @@ func TestClientAssignAckThenResult(t *testing.T) {
 		t.Errorf("成功的任务 error 必须为空，实际 %#v", res["error"])
 	}
 	if _, present := res["out"]; present {
-		t.Errorf("v1 不回报出口：result 帧不能出现 out 键，实际 %#v", res)
+		t.Errorf("未声明 run.out 时 result 帧不能出现 out 键，实际 %#v", res)
 	}
 	artifacts, ok := res["artifacts"].([]any)
 	if !ok || len(artifacts) != 0 {
 		t.Errorf("artifacts 必须是 []（不是 null），实际 %#v", res["artifacts"])
+	}
+
+	h.stop()
+}
+
+// ---------- 附加：声明了 run.out → result 帧带 out（sendResult 透传的回归锁） ----------
+
+// TestClientReportsOut 证明「node.yaml 声明 run.out 且任务成功」时 result 帧真的带
+// "out":"ok"：runner 设了 outcome.Out，还得靠 sendResult 透传到帧上（两处都得对）。
+func TestClientReportsOut(t *testing.T) {
+	cfg := w4Config(w4Cap("demo.prep", 1, "echo hello-out"))
+	cfg.Capabilities[0].Run.Out = "ok" // 对应 node.yaml 的 run.out: ok
+	h := w4Start(t, cfg, 10, 200*time.Millisecond)
+
+	h.fc.feed(t, &assignFrame{
+		Type:       frameTypeAssign,
+		TaskID:     "tsk_out",
+		Capability: "demo.prep",
+		Version:    1,
+	})
+
+	frames := h.fc.waitFor(t, 5*time.Second, "tsk_out 的 result", w4Cond(frameTypeResult, "tsk_out"))
+	res, _, _ := w4Find(frames, frameTypeResult, "tsk_out")
+	if res["status"] != statusSucceeded {
+		t.Fatalf("status 应为 %s，实际 %v（error=%v）", statusSucceeded, res["status"], res["error"])
+	}
+	got, present := res["out"]
+	if !present {
+		t.Fatalf("声明了 run.out 的 success result 必须带 out 键，实际 %#v", res)
+	}
+	if got != "ok" {
+		t.Fatalf("result.out = %#v, want %q", got, "ok")
 	}
 
 	h.stop()

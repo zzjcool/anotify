@@ -12,7 +12,8 @@ import (
 )
 
 // nodeYAMLFull 是 issue #184 里的完整 node.yaml 形状：name/server/token/instances，
-// 两条能力各带 run（runner/command/timeoutSec/concurrency/env）。
+// 两条能力各带 run（runner/command/timeoutSec/concurrency/env），第一条另带 out
+// （issue #189：成功时回报的出口名）。
 const nodeYAMLFull = `# node.yaml —— 节点侧唯一声明入口
 name: laptop-worker
 server: http://localhost:8080
@@ -28,6 +29,7 @@ capabilities:
       concurrency: 1
       env:
         LOG_LEVEL: info
+      out: ok
   - capability: demo.review
     version: 2
     run:
@@ -88,6 +90,7 @@ func TestConfigLoadIssueYAML(t *testing.T) {
 				TimeoutSec:  30,
 				Concurrency: 1,
 				Env:         map[string]string{"LOG_LEVEL": "info"},
+				Out:         "ok",
 			},
 		},
 		{
@@ -507,7 +510,8 @@ func TestConfigHello(t *testing.T) {
 		}
 	}
 	// run 原文是紧凑 JSON（没有空格），零值字段由 omitempty 省略。
-	const wantRun0 = `{"runner":"bash","command":"echo prep","timeoutSec":30,"concurrency":1,"env":{"LOG_LEVEL":"info"}}`
+	// 字段顺序 = runSpec 结构体顺序（out 在最后）。
+	const wantRun0 = `{"runner":"bash","command":"echo prep","timeoutSec":30,"concurrency":1,"env":{"LOG_LEVEL":"info"},"out":"ok"}`
 	if got := string(h.Manifest[0].Run); got != wantRun0 {
 		t.Errorf("manifest[0].run = %s, want %s", got, wantRun0)
 	}
@@ -586,7 +590,8 @@ capabilities:
 	if !reflect.DeepEqual(h.Instances, wantInstances) {
 		t.Errorf("Instances = %#v, want %#v", h.Instances, wantInstances)
 	}
-	// 零值字段（timeoutSec/concurrency/env）不出现在 run 原文里。
+	// 零值字段（timeoutSec/concurrency/env/out）不出现在 run 原文里 ——
+	// out 的 omitempty 是硬要求（未声明时 run 原文逐字节不变）。
 	const wantRun = `{"runner":"bash","command":"echo prep"}`
 	if got := string(h.Manifest[0].Run); got != wantRun {
 		t.Errorf("manifest[0].run = %s, want %s", got, wantRun)
