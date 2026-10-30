@@ -8,8 +8,9 @@
  *
  * Coverage:
  *   A. en/es × 7 pages (demo mode ?demo=1) — no CJK in rendered innerText
- *      (language-switcher native names "中文"/"日本語" are exempted by
- *       stripping switcher/hint DOM before scanning)
+ *      (language-switcher native names "中文"/"日本語", and the sidebar
+ *       namespace switcher's current namespace name — user data — are
+ *       exempted by stripping them before scanning)
  *   B. en/es × key pages (real-data mode with injected session + posted
  *      notification) — no CJK residue in real-data rendering path
  *   C. ja × key pages — spot-check: greeting/status contain Japanese text
@@ -89,7 +90,10 @@ async function openPage(ctx, url, pageType) {
  * Uses live document.body.innerText (excludes <script> automatically —
  * cloneNode+textContent would leak JS source including zh fallback strings).
  * Strips exempt native-language names (中文 / 日本語) that appear in the
- * language switcher across ALL language versions by design. */
+ * language switcher across ALL language versions by design.
+ *
+ * 同时豁免侧栏命名空间切换器里的**命名空间名字**（用户数据）——
+ * 见 getScannedText 里的注释（#203 之后切换器真的会渲染了）。 */
 async function getScannedText(page) {
 	/* Navigation races: `goto(waitUntil:"load")` resolves before client-side
 	 * redirects / demo-mode boot finish, so the execution context can be torn
@@ -101,6 +105,16 @@ async function getScannedText(page) {
 		try {
 			return await page.evaluate(() => {
 				let text = document.body.innerText || "";
+				/* 豁免**当前命名空间的名字**：它是接口返回的用户数据（devseed 把默认
+				 * 命名空间叫「默认」），en/es 页面上当然仍显示「默认」—— 把用户起的
+				 * 名字翻译掉才是 bug。
+				 * 只豁免这一个数据值（从菜单里当前项取，与触发器同源），**不**豁免
+				 * 整个元素：切换器里若混进了漏翻译的 chrome 字面量，照样会被抓住。 */
+				const checked = document.querySelector(
+					'.scope-item[aria-checked="true"] .scope-item-name',
+				);
+				const nsName = checked ? checked.textContent.trim() : "";
+				if (nsName) text = text.split(nsName).join("");
 				/* Remove exempt native language names that are intentionally shown
 				 * in every language version (switcher shows native names). */
 				text = text.replace(/中文/g, "").replace(/日本語/g, "");
