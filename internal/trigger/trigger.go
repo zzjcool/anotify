@@ -36,8 +36,7 @@ import (
 //
 // *store.DB 满足它。
 //
-// 参数名都是 namespaceID 而不是 orgID：命名空间资源的作用域参数一律是命名空间
-// （org_id 由 store 从 namespaces 行派生，契约 §2.1）。
+// 参数名都是 namespaceID：命名空间是唯一隔离维度，也是唯一作用域参数（契约 §2.1）。
 type Store interface {
 	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
 	ListCapabilities(ctx context.Context, namespaceID string) ([]*store.CapabilityVersion, error)
@@ -72,7 +71,6 @@ func New(st Store, d Dispatcher) *Service {
 
 // IngestRequest 是一次事件摄入请求（对应 POST /v1/events 的 body）。
 type IngestRequest struct {
-	OrgID string `json:"-"`
 	// NamespaceID 是事件落进哪个命名空间（**必填**）。
 	//
 	// 事件属于命名空间（I10）：入口边、trace 列表、统计全按它过滤。
@@ -147,9 +145,6 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 	if req == nil {
 		return nil, fmt.Errorf("ingest: nil request")
 	}
-	if req.OrgID == "" {
-		return nil, fmt.Errorf("ingest: empty org_id")
-	}
 	if req.NamespaceID == "" {
 		// 不回退默认命名空间（契约 §6.2）：回退等于把人写错的地方藏起来。
 		return nil, fmt.Errorf("ingest: empty namespace_id: %w", store.ErrNamespaceRequired)
@@ -175,7 +170,6 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 
 	ev := &store.Event{
 		NamespaceID: req.NamespaceID,
-		OrgID:       req.OrgID,
 		TraceID:     traceID,
 		Source:      req.Source,
 		Type:        req.Type,
@@ -205,7 +199,6 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 	// 却必须存在、而且会出现在能力列表上 —— 源（sources）已经是它的
 	// 完整替代，所以入口边直接以来源名为左端（契约 §2.4）。
 	out, err := s.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:        req.OrgID,
 		NamespaceID:  req.NamespaceID,
 		TraceID:      traceID,
 		FromCap:      req.Source,

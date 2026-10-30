@@ -22,10 +22,6 @@ type EventHandler struct {
 	Store    *store.DB
 	Keys     authn.KeyValidator
 	Triggers *trigger.Service
-
-	// DefaultOrgForUser 在用户没有指定组织时用主组织（单组织用户的常见情形）。
-	// 为 nil 时退化为「必须显式给 orgId」。
-	DefaultOrgForUser func(userID string) (string, error)
 }
 
 // EventIngestRequest 是 POST /v1/events 的请求体（camelCase，契约 §6.2）。
@@ -41,8 +37,6 @@ type EventIngestRequest struct {
 	// 藏成「悄悄写进了 default」，是最难查的那类串数据。
 	// query 上的 namespaceId 是等价的第二来源（body 优先，见 resolveNamespace）。
 	NamespaceID string `json:"namespaceId"`
-	// OrgID 可选：不给时用调用者的主组织。
-	OrgID string `json:"orgId,omitempty"`
 }
 
 // EventIngestResponse 是 POST /v1/events 的响应体。
@@ -120,14 +114,9 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 		return
 	}
 
-	orgID, err := h.resolveOrg(r, userID, req.OrgID)
-	if err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
-		return
-	}
-
 	// 命名空间必填（契约 §6.2）：body 优先、其次 query、缺则 400。
-	namespaceID, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	// 解析里同时过 AuthorizeNamespace 收口（见 resolveNamespace）。
+	namespaceID, ok := h.resolveNamespace(w, r, userID, req.NamespaceID, false)
 	if !ok {
 		return
 	}
@@ -139,7 +128,6 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 	}
 
 	res, err := h.Triggers.Ingest(r.Context(), &trigger.IngestRequest{
-		OrgID:       orgID,
 		NamespaceID: namespaceID,
 		Source:      req.Source,
 		Type:        req.Type,
@@ -205,15 +193,10 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 
 // list 处理 GET /v1/events（按 trace 过滤）。
 //
-// namespaceId 必填；`*` 是本端点允许的**读**语义：遍历本组织的命名空间合并，
+// namespaceId 必填；`*` 是本端点允许的**读**语义：遍历本部署的全部命名空间合并，
 // 再按 created_at desc 截断（契约 §4 / 设计文档 §6.2）。
 func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID string) {
-	orgID, err := h.resolveOrg(r, userID, r.URL.Query().Get("orgId"))
-	if err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
-		return
-	}
-	namespaceID, ok := h.resolveNamespace(w, r, orgID, "", true)
+	namespaceID, ok := h.resolveNamespace(w, r, userID, "", true)
 	if !ok {
 		return
 	}
@@ -226,9 +209,10 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 		}
 	}
 
+	var err error
 	var events []*store.Event
 	if namespaceID == store.AllNamespaces {
-		events, err = h.listAcrossNamespaces(r, orgID, traceID, source, limit)
+		events, err = h.listAcrossNamespaces(r, traceID, source, limit)
 	} else {
 		events, err = h.Store.ListEvents(r.Context(), namespaceID, traceID, source, limit)
 	}
@@ -255,8 +239,8 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 //
 // 不引入 SQL UNION（store 层不接受 `*`）：跨命名空间读是**管理视图**，走 N 次
 // 索引查询已经够快，而把它塞进 store 会让「`*` 只在 HTTP 层解释」这条边界消失。
-func (h *EventHandler) listAcrossNamespaces(r *http.Request, orgID, traceID, source string, limit int) ([]*store.Event, error) {
-	nss, err := h.Store.ListNamespaces(r.Context(), orgID)
+func (h *EventHandler) listAcrossNamespaces(r *http.Request, traceID, source string, limit int) ([]*store.Event, error) {
+	nss, err := h.Store.ListNamespaces(r.Context())
 	if err != nil {
 		return nil, err
 	}
@@ -292,10 +276,14 @@ func sortEventsNewestFirst(events []*store.Event) {
 //
 // 取值顺序：body 已解码的 namespaceId → query 的 namespaceId → 空。
 // 空 → 400（**绝不回退默认命名空间**）；`*` → 只有 allowAll（读端点）才接受；
-// 其余走 GetNamespace(ctx, orgID, id) 校验归属：不存在 404、别的组织 403。
+// 其余走 store.AuthorizeNamespace 收口：不存在 404，未登录 401。
+//
+// **安全收口写在这里，不要散到 handler 里**：今天 AuthorizeNamespace 等价于
+// 「已登录 + 命名空间存在」；将来按命名空间分权限时，**只改 store.AuthorizeNamespace
+// 并新增 namespace_members 表**，本函数的形状不变。
 //
 // 返回 (namespaceID, ok)：ok=false 表示已写过错误响应，调用方直接 return。
-func (h *EventHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, orgID, bodyNS string, allowAll bool) (string, bool) {
+func (h *EventHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, userID, bodyNS string, allowAll bool) (string, bool) {
 	raw := strings.TrimSpace(bodyNS)
 	if raw == "" {
 		raw = strings.TrimSpace(r.URL.Query().Get("namespaceId"))
@@ -311,7 +299,8 @@ func (h *EventHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, 
 		}
 		return store.AllNamespaces, true
 	}
-	if _, err := h.Store.GetNamespace(r.Context(), orgID, raw); err != nil {
+	// 唯一收口：已登录 + 命名空间存在（将来加 namespace_members 只改这一个函数）。
+	if err := h.Store.AuthorizeNamespace(r.Context(), userID, raw); err != nil {
 		writeNamespaceError(w, err)
 		return "", false
 	}
@@ -336,39 +325,14 @@ func writeNamespaceError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusBadRequest, cross.Error())
 	case errors.Is(err, store.ErrNamespaceNotFound):
 		writeError(w, http.StatusNotFound, "namespace not found")
-	case errors.Is(err, store.ErrNamespaceForbidden):
-		writeError(w, http.StatusForbidden, "namespace belongs to another org")
+	case errors.Is(err, store.ErrAuthRequired):
+		writeError(w, http.StatusUnauthorized, "authentication required")
 	case errors.Is(err, store.ErrNamespaceRequired):
 		writeError(w, http.StatusBadRequest, "namespaceId is required")
 	default:
 		return false
 	}
 	return true
-}
-
-// resolveOrg 确定这次请求作用于哪个组织。
-//
-// 显式给了 orgId 时**必须**校验调用者是该组织成员（不变量 I10：
-// 一切租户数据先过 org_id）；没给时用主组织。
-func (h *EventHandler) resolveOrg(r *http.Request, userID, requested string) (string, error) {
-	if requested != "" {
-		ok, err := h.Store.IsOrgMember(r.Context(), requested, userID)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "", errors.New("not a member of the requested org")
-		}
-		return requested, nil
-	}
-	if h.DefaultOrgForUser != nil {
-		return h.DefaultOrgForUser(userID)
-	}
-	orgID, err := h.Store.PrimaryOrgOf(r.Context(), userID)
-	if err != nil {
-		return "", errors.New("no org specified and user has no primary org")
-	}
-	return orgID, nil
 }
 
 // writeJSON 写一个 JSON 响应。
