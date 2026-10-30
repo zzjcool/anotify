@@ -22,63 +22,43 @@ func newTestDBFile(t *testing.T) (db *DB, path string) {
 	return db, path
 }
 
-// newTestOrg 建一个组织 + 一个 owner 用户，返回 (orgID, userID)。
-// 所有新表都带 org_id，测试必须从这里拿，不能随手造字符串。
-func newTestOrg(t *testing.T, db *DB) (orgID, userID string) {
-	t.Helper()
-	ctx := context.Background()
-	u := &User{ID: NewUserID(), Username: "u-" + NewUserID(), DisplayName: "测试用户", CreatedAt: Now()}
-	if err := db.CreateUser(u); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-	o, err := db.CreateOrg(ctx, "org-"+NewUserID())
-	if err != nil {
-		t.Fatalf("create org: %v", err)
-	}
-	if err := db.AddOrgMember(ctx, o.ID, u.ID, OrgRoleOwner); err != nil {
-		t.Fatalf("add org member: %v", err)
-	}
-	return o.ID, u.ID
-}
-
-// newTestNS 建组织（含 default 命名空间 + 内置能力）+ 一个 owner 用户，
+// newTestNS 注册一个用户（= 建用户 + 它的默认命名空间 + 内置能力），
 // 返回 (默认命名空间 id, userID)。
 //
-// 为什么测试基本都用它而不是 newTestOrg：#162 之后命名空间资源的所有 store 调用
-// 作用域参数都是 namespaceID（不是 orgID）。绝大多数用例只关心"这一套资源"，
-// 拿默认命名空间就够了；真要断言组织级（成员/角色）时用 newTestOrg 拿 orgID。
+// 为什么测试基本都用它：#205 之后「组织」这一层不存在了，命名空间是唯一隔离维度，
+// 而注册仍然保证「用户 + 默认命名空间」原子（代码里不存在没有命名空间的用户）。
+// 绝大多数用例只关心"这一套资源"，拿默认命名空间就够了。
 func newTestNS(t *testing.T, db *DB) (namespaceID, userID string) {
 	t.Helper()
-	orgID, userID := newTestOrg(t, db)
-	nsID, err := db.DefaultNamespaceID(context.Background(), orgID)
+	u := &User{ID: NewUserID(), Username: "u-" + NewUserID(), DisplayName: "测试用户", CreatedAt: Now()}
+	ns, err := db.RegisterUser(context.Background(), u)
 	if err != nil {
-		t.Fatalf("default namespace for org %s: %v", orgID, err)
+		t.Fatalf("register user: %v", err)
 	}
-	return nsID, userID
+	return ns.ID, u.ID
 }
 
-// newTestOrgNS 同时返回 orgID 与默认命名空间 id。
-//
-// 给那些**两层都需要**的用例：#162 之后资源写入用 nsID，而 orgID 还出现在
-// 组织级字段（如 Source.OrgID）与跨命名空间断言里。
-func newTestOrgNS(t *testing.T, db *DB) (orgID, namespaceID string) {
+// newTestNSNamed 注册一个用户，并额外建一个指定 slug 的命名空间，
+// 返回 (该 slug 的命名空间 id, userID)。用于跨命名空间（数据隔离）用例。
+func newTestNSNamed(t *testing.T, db *DB, slug string) (namespaceID, userID string) {
 	t.Helper()
-	orgID, _ = newTestOrg(t, db)
-	nsID, err := db.DefaultNamespaceID(context.Background(), orgID)
+	_, userID = newTestNS(t, db)
+	ns, err := db.CreateNamespace(context.Background(), slug, slug)
 	if err != nil {
-		t.Fatalf("default namespace for org %s: %v", orgID, err)
+		t.Fatalf("create namespace %q: %v", slug, err)
 	}
-	return orgID, nsID
+	return ns.ID, userID
 }
 
-// orgIDOfNamespace 从命名空间回查组织（组织级断言用）。
-func orgIDOfNamespace(t *testing.T, db *DB, namespaceID string) string {
+// newTestExtraNS 在**同一个部署**里再建一个命名空间（不建用户），
+// 用于断言"两个命名空间的数据互不影响"。
+func newTestExtraNS(t *testing.T, db *DB, slug string) (namespaceID string) {
 	t.Helper()
-	orgID, err := db.NamespaceOrgID(context.Background(), namespaceID)
+	ns, err := db.CreateNamespace(context.Background(), slug, slug)
 	if err != nil {
-		t.Fatalf("org of namespace %s: %v", namespaceID, err)
+		t.Fatalf("create extra namespace %q: %v", slug, err)
 	}
-	return orgID
+	return ns.ID
 }
 
 // tableExists 判断表是否存在（迁移断言用）。

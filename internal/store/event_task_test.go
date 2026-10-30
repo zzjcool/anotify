@@ -25,7 +25,7 @@ func mkTask(nsID, traceID string, cap *CapabilityVersion, path ...string) *Task 
 	}
 }
 
-// setupTaskFixture 建组织 + 能力 + 一个待派发的任务。
+// setupTaskFixture 建用户（含默认命名空间）+ 能力 + 一个待派发的任务。
 func setupTaskFixture(t *testing.T) (db *DB, nsID string, cap *CapabilityVersion, task *Task) {
 	t.Helper()
 	db = newTestDB(t)
@@ -79,7 +79,7 @@ func expandCapacity(t *testing.T, db *DB, nsID, nodeID string, n int) {
 	}
 }
 
-// mustOnlyNode 返回组织里唯一的节点 ID（setupRunningTask 只建一个）。
+// mustOnlyNode 返回命名空间里唯一的节点 ID（setupRunningTask 只建一个）。
 func mustOnlyNode(t *testing.T, db *DB, nsID string) string {
 	t.Helper()
 	nodes, err := db.ListNodes(context.Background(), nsID)
@@ -200,8 +200,9 @@ func TestEventWithoutIdemKeyAllowsDuplicates(t *testing.T) {
 
 // TestEventIdemKeyScopedPerSourceAndNamespace idem_key 的唯一性是 (命名空间, source, key)。
 //
-// #162 之后 UNIQUE 索引前缀从 org_id 换成 namespace_id：同一个组织里的 prod 与
-// staging 各有独立的投递 ID 空间（否则两条流水线会互相吃掉对方的 webhook 重投）。
+// #205 之后「组织」这一层不存在了，命名空间是唯一隔离维度：UNIQUE 索引前缀就是
+// namespace_id，于是每个命名空间各有独立的投递 ID 空间（否则两条流水线会互相
+// 吃掉对方的 webhook 重投）。
 func TestEventIdemKeyScopedPerSourceAndNamespace(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -209,7 +210,7 @@ func TestEventIdemKeyScopedPerSourceAndNamespace(t *testing.T) {
 	nsB, _ := newTestNS(t, db)
 	key := "same-delivery-id"
 
-	// 同 org、不同 source：允许（各自独立的投递 ID 空间）
+	// 同命名空间、不同 source：允许（各自独立的投递 ID 空间）
 	for _, src := range []string{"github", "gitlab"} {
 		e := &Event{NamespaceID: nsA, TraceID: "t-" + src, Source: src, Type: "push", IdemKey: &key}
 		inserted, err := db.InsertEvent(ctx, e)
@@ -227,7 +228,7 @@ func TestEventIdemKeyScopedPerSourceAndNamespace(t *testing.T) {
 		t.Fatalf("insert nsB: %v", err)
 	}
 	if !inserted {
-		t.Fatal("idem_key leaked across orgs (invariant I10 violated)")
+		t.Fatal("idem_key leaked across namespaces (invariant I10 violated)")
 	}
 }
 
@@ -314,7 +315,7 @@ func TestEventValidation(t *testing.T) {
 		t.Error("InsertEvent without source/type accepted")
 	}
 	if _, err := db.InsertEvent(ctx, &Event{TraceID: "t", Source: "s", Type: "t"}); err == nil {
-		t.Error("InsertEvent without org accepted")
+		t.Error("InsertEvent without namespace accepted")
 	}
 }
 

@@ -7,11 +7,18 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrNotImplemented 是「还没实现的 store 方法」的哨兵（重构期脚手架，#55）。
+//
+// 今天没有任何实现返回它：TestNoStubRemains 用它当门禁——新增方法若是空壳，
+// 必须返回本错误，这样那条用例会在 CI 里立刻点名。
+var ErrNotImplemented = errors.New("store: not implemented")
 
 // DB 包装 *sql.DB。
 type DB struct {

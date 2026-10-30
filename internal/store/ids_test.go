@@ -62,7 +62,7 @@ func TestNewIDPrefixAndUniqueness(t *testing.T) {
 		{"evt_", NewEventID},
 		{"cas_", NewCliAuthID},
 		{"rc_", NewRecoveryCodeID},
-		{"org_", NewOrgID},
+		{"ns_", NewNamespaceID},
 		{"nd_", NewNodeID},
 		{"nins_", NewInstanceID},
 		{"tsk_", NewTaskID},
@@ -102,7 +102,7 @@ func TestNewIDTimeOrdered(t *testing.T) {
 
 // TestCapabilityAndGraphIDShape cap_<UTC>_<hash8>_<rand> / grf_<UTC>_<hash8>_<rand>。
 //
-// 尾部随机后缀不是装饰：同一秒内为不同组织创建同名同内容能力时，
+// 尾部随机后缀不是装饰：同一秒内为不同命名空间创建同名同内容能力时，
 // 时间戳与 hash8 会完全相同，而 id 是 PRIMARY KEY——只有随机后缀能保证唯一。
 func TestCapabilityAndGraphIDShape(t *testing.T) {
 	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -128,7 +128,7 @@ func TestCapabilityAndGraphIDShape(t *testing.T) {
 // TestVersionIDUniqueness 同一秒、同一内容 hash 下生成的 ID 必须互不相同。
 //
 // 这是 TestNodesForCapabilityNamespaceIsolation 撞出来的真实 bug：
-// `cap_<UTC 秒>_<hash8>` 在两组织定义同名同内容能力时一模一样，
+// `cap_<UTC 秒>_<hash8>` 在两个命名空间定义同名同内容能力时一模一样，
 // 而 id 是主键，第二条 INSERT 直接撞 UNIQUE。
 func TestVersionIDUniqueness(t *testing.T) {
 	hash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"

@@ -31,7 +31,7 @@ import (
 // TestRetentionEventsDisabledByDefault）。
 const retentionTestEventSec = 30 * 24 * 60 * 60 // 2592000 秒 = 30 天
 
-// retentionTestDB 建库 + 一个组织（返回它的 default 命名空间 id）。
+// retentionTestDB 建库 + 一个用户（返回它的 default 命名空间 id）。
 func retentionTestDB(t *testing.T) (*DB, string) {
 	t.Helper()
 	db := newTestDB(t)
@@ -181,12 +181,9 @@ func TestRetentionDeletesExpiredTerminalTask(t *testing.T) {
 		t.Fatalf("scopes = %+v, want 1 个 scope", scopes)
 	}
 	got := scopes[0]
-	// scope 的两个维度都要钉死：删除粒度是 namespace（I11），org 只是派生出来的锚点（I10）。
+	// scope 的两个维度都要钉死：删除粒度是 namespace（I11），也是 #205 之后**唯一**的隔离维度。
 	if got.NamespaceID != nsID || got.CapabilityID != cap.ID || got.ResultTTLSec != 60 {
 		t.Fatalf("scope = %+v, want {ns:%s cap:%s ttl:60}", got, nsID, cap.ID)
-	}
-	if want := orgIDOfNamespace(t, db, nsID); got.OrgID != want {
-		t.Fatalf("scope org = %q, want %q（org_id 由命名空间派生）", got.OrgID, want)
 	}
 
 	rep, err := db.SweepRetention(ctx, RetentionOptions{Now: now})
@@ -435,17 +432,18 @@ func TestRetentionBatchLimitAndTruncation(t *testing.T) {
 
 // ---------- §5-7：命名空间隔离 ----------
 
-// TestRetentionNamespaceIsolation 保留期清理的隔离维度是**命名空间**（#162）。
+// TestRetentionNamespaceIsolation 保留期清理的隔离维度是**命名空间**（#162 / #205）。
 //
-// 为什么必须是同一个组织里的两个命名空间：若实现只按 org_id 过滤（迁移 12 之前的口径），
-// 这个用例会失败；两个不同 org 的用例反而拦不住「同 org 串数据」这类最真实的错误。
+// 为什么必须是**同一个部署里的两个命名空间**（而不是两个用户各自的 default）：若实现
+// 按上一层（已删除的组织层）或按用户过滤，这个用例会失败；同一用户的多个命名空间
+// 才是「同一批资源、只差隔离键」的最真实形状。
 func TestRetentionNamespaceIsolation(t *testing.T) {
 	db, nsA := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
 
-	// 同一组织里的另一个命名空间（prod 与 staging 的典型关系）
-	sibling, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
+	// 同一个部署里的另一个命名空间（prod 与 staging 的典型关系）
+	sibling, err := db.CreateNamespace(ctx, "staging", "staging")
 	if err != nil {
 		t.Fatalf("create sibling namespace: %v", err)
 	}
@@ -495,8 +493,9 @@ func TestRetentionNamespaceIsolation(t *testing.T) {
 
 // TestRetentionEventsDisabledByDefault 钉住「默认一条 events 都不删」这条语义。
 //
-// 为什么默认禁用：删除不可逆，而本版没有开关、没有 per-org 配置，且会静默改变
-// store/stats.go 的「总数 / 今日 / 热力图」口径。orgs.retention_sec 落地后由组织配置开启。
+// 为什么默认禁用：删除不可逆，而本版没有开关、没有运维配置入口，且会静默改变
+// store/stats.go 的「总数 / 今日 / 热力图」口径。#205 之后保留期是**部署级**配置
+// （不再有 per-org 的 orgs.retention_sec），落地后由部署配置开启。
 //
 // 这条用例同时证明两件事：
 //  1. events 一行都不删（含 source='route' 的剪枝行、含 400 天前的极老行），
@@ -529,8 +528,8 @@ func TestRetentionEventsDisabledByDefault(t *testing.T) {
 	if rep.EventsDeleted != 0 {
 		t.Fatalf("EventsDeleted = %d, want 0（禁用时一条都不许删）", rep.EventsDeleted)
 	}
-	if rep.Orgs != 0 {
-		t.Fatalf("Orgs = %d, want 0（禁用时压根不该去扫 org）", rep.Orgs)
+	if rep.Namespaces != 0 {
+		t.Fatalf("Namespaces = %d, want 0（禁用时压根不该去扫命名空间）", rep.Namespaces)
 	}
 	// 双向校验：report 说没删 + 库里 3 条都在
 	if n := countRows(t, db, "events", "namespace_id = ?", nsID); n != 3 {
@@ -554,9 +553,9 @@ func TestRetentionEventsDisabledByDefault(t *testing.T) {
 	if !neg.EventsDisabled {
 		t.Fatal("EventRetentionSec=-5: EventsDisabled = false, want true（负数归一成禁用）")
 	}
-	if neg.EventsDeleted != 0 || neg.Orgs != 0 {
-		t.Fatalf("EventRetentionSec=-5: Orgs=%d EventsDeleted=%d, want 0/0",
-			neg.Orgs, neg.EventsDeleted)
+	if neg.EventsDeleted != 0 || neg.Namespaces != 0 {
+		t.Fatalf("EventRetentionSec=-5: Namespaces=%d EventsDeleted=%d, want 0/0",
+			neg.Namespaces, neg.EventsDeleted)
 	}
 	if n := countRows(t, db, "events", "namespace_id = ?", nsID); n != 3 {
 		t.Fatalf("EventRetentionSec=-5 跑完后 events 剩 %d 行, want 3（一行不少）", n)
@@ -687,39 +686,39 @@ func TestRetentionDeleteRejectsNonPositiveLimit(t *testing.T) {
 	mustEventPresent(t, db, nsID, event.ID)
 }
 
-// TestListOrgIDs 空库返回 []（不是 nil），有组织时按 id 升序。
+// TestListRetentionNamespaceIDs 空库返回 []（不是 nil），有命名空间时按 id 升序。
 //
-// ListOrgIDs 是保留期清理的前身接口（现在扫描已改为遍历命名空间），语义仍是
-// **组织** id：断言用 orgIDOfNamespace 回查，不能拿命名空间 id 顶替（两者前缀不同：ns_ / org_）。
-func TestListOrgIDs(t *testing.T) {
+// listRetentionNamespaceIDs 是保留期清理的扫描入口：events 的删除粒度就是命名空间
+// （#205 删掉组织层之后不再有 org 这一层），所以返回的必须是命名空间 id。
+func TestListRetentionNamespaceIDs(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	ids, err := db.ListOrgIDs(ctx)
+	ids, err := db.listRetentionNamespaceIDs(ctx)
 	if err != nil {
-		t.Fatalf("list org ids: %v", err)
+		t.Fatalf("list retention namespace ids: %v", err)
 	}
 	if ids == nil {
-		t.Fatal("ListOrgIDs 返回 nil，需要 []")
+		t.Fatal("listRetentionNamespaceIDs 返回 nil，需要 []")
 	}
 	if len(ids) != 0 {
-		t.Fatalf("空库有 %d 个 org, want 0", len(ids))
+		t.Fatalf("空库有 %d 个命名空间, want 0", len(ids))
 	}
 
-	// newTestOrg 生成的是 org_<随机>，顺序由 id 决定 → 直接按排序后的期望值比对
+	// newTestNS 生成的是 ns_<随机>，顺序由 id 决定 → 直接按排序后的期望值比对
 	var want []string
 	for i := 0; i < 3; i++ {
 		nsID, _ := newTestNS(t, db)
-		want = append(want, orgIDOfNamespace(t, db, nsID))
+		want = append(want, nsID)
 	}
 	sort.Strings(want)
 
-	ids, err = db.ListOrgIDs(ctx)
+	ids, err = db.listRetentionNamespaceIDs(ctx)
 	if err != nil {
-		t.Fatalf("list org ids: %v", err)
+		t.Fatalf("list retention namespace ids: %v", err)
 	}
 	if len(ids) != len(want) {
-		t.Fatalf("有 %d 个 org, want %d", len(ids), len(want))
+		t.Fatalf("有 %d 个命名空间, want %d", len(ids), len(want))
 	}
 	for i := range want {
 		if ids[i] != want[i] {
@@ -849,7 +848,7 @@ func TestRetentionPartialReportOnCancel(t *testing.T) {
 		//   2 scope 循环
 		//   3 tasks 第 1 批前（删 1 行 → 满批）
 		//   4 tasks 第 2 批前（删 0 行 → 该范围结束）
-		//   5 org 循环
+		//   5 命名空间循环
 		//   6 events 第 1 批前（删 1 行 → 满批）
 		//   7 events 第 2 批前  ← after=6：在这里取消
 		ctx := &cancelAfterErrCtx{Context: context.Background(), after: 6}
@@ -889,8 +888,9 @@ func TestRetentionPartialReportOnCancel(t *testing.T) {
 // TestRetentionEventsNamespaceIsolation 与 TestRetentionNamespaceIsolation 对称：
 // 事件清理的隔离依据只有 `namespace_id = ?` 这一个条件，写漏了就会「清 A 顺手把 B 清空」。
 //
-// 注意 rep.Orgs 报的是**去重后的组织数**（保留期是组织配置），而删除粒度是命名空间：
-// 两条事件分别属于两个不同 org 的 default 命名空间 → Orgs=2。
+// 注意 rep.Namespaces 报的是**本轮扫过的命名空间数**（events 的删除粒度是命名空间；
+// #205 删掉组织层之后保留期是部署级配置，不再有 per-org 口径）：
+// 两条事件分别在两个命名空间里 → Namespaces=2。
 func TestRetentionEventsNamespaceIsolation(t *testing.T) {
 	db, nsA := retentionTestDB(t)
 	ctx := context.Background()
@@ -927,8 +927,8 @@ func TestRetentionEventsNamespaceIsolation(t *testing.T) {
 	if rep.EventsDisabled {
 		t.Fatal("EventsDisabled = true, want false（本次显式给了保留期）")
 	}
-	if rep.Orgs != 2 {
-		t.Fatalf("Orgs = %d, want 2", rep.Orgs)
+	if rep.Namespaces != 2 {
+		t.Fatalf("Namespaces = %d, want 2", rep.Namespaces)
 	}
 	if rep.EventsDeleted != 1 {
 		t.Fatalf("EventsDeleted = %d, want 1（A 那条上一轮已删）", rep.EventsDeleted)
@@ -1009,10 +1009,10 @@ func TestRetentionBadLifecycleDoesNotPoisonSweep(t *testing.T) {
 	}
 }
 
-// TestRetentionIndexesUsed 锁住「清理走索引而不是整 org 扫描」。
+// TestRetentionIndexesUsed 锁住「清理走索引而不是整个命名空间扫」。
 //
 // 为什么要断言查询计划：这两条 DELETE 的子查询**语义正确但可以非常慢**——
-// 没有索引时 SQLite 会整 org 扫 + TEMP B-TREE 排序，而 LIMIT 只限删除行数、
+// 没有索引时 SQLite 会整命名空间扫 + TEMP B-TREE 排序，而 LIMIT 只限删除行数、
 // 不限扫描/排序行数。测试全绿也发现不了，只有数据量上来才炸。
 //
 // 断言索引名出现在计划里，而不是断言某个执行计划的字符串全文：

@@ -7,15 +7,18 @@ import (
 	"testing"
 )
 
-// TestEnsureBuiltinCapabilitiesIsIdempotent 验证内置能力播种幂等：
+// TestSeedBuiltinCapabilitiesIsIdempotent 验证内置能力播种幂等：
 // 重复调用不会开新版本（capability_versions 是 append-only，不变量 I8）。
-func TestEnsureBuiltinCapabilitiesIsIdempotent(t *testing.T) {
+//
+// #205 之后播种收口到 SeedBuiltinCapabilities(namespaceID)：能力属于命名空间，
+// 组织那一层已经不存在了。
+func TestSeedBuiltinCapabilitiesIsIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
 	for i := 0; i < 3; i++ {
-		if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+		if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 			t.Fatalf("第 %d 次播种失败: %v", i+1, err)
 		}
 	}
@@ -96,7 +99,7 @@ func TestNotifyPhoneParamsSchemaRequiresTo(t *testing.T) {
 		}
 	}
 	if !hasTo {
-		t.Error("params_schema 必须 required: [to]（否则跨组织校验无从下手）")
+		t.Error("params_schema 必须 required: [to]（否则跨命名空间校验无从下手）")
 	}
 	if _, ok := schema.Properties["title"]; !ok {
 		t.Error("params_schema 应声明 title")
@@ -112,7 +115,7 @@ func TestClaimCentralTasksRunsStateMachine(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("seed builtins: %v", err)
 	}
 	capDef, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
@@ -179,7 +182,7 @@ func TestFinishTaskWritesTristate(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	capDef, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
@@ -258,7 +261,7 @@ func TestNoOriginShellCapabilities(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("seed builtins: %v", err)
 	}
 	for _, name := range []string{"github", "cron", "http", "manual"} {
@@ -355,7 +358,7 @@ func TestBuiltinDisplayNames(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("ensure builtin: %v", err)
 	}
 	for _, bc := range BuiltinCapabilities {
@@ -381,7 +384,7 @@ func TestBuiltinDisplayNameBackfill(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 
 	// 先播种，然后模拟"老库"：把内置能力的显示名清空（就像这列刚加时那样）
-	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("ensure builtin: %v", err)
 	}
 	// notify.phone 是现在唯一的内置能力（起点已不再是能力）
@@ -392,8 +395,8 @@ func TestBuiltinDisplayNameBackfill(t *testing.T) {
 	if err := db.SetCapabilityDisplayName(ctx, nsID, gh.ID, ""); err != nil {
 		t.Fatalf("clear display name: %v", err)
 	}
-	// 再跑一次 Ensure（启动时会对所有组织跑一遍）→ 应该补回来
-	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+	// 再跑一次播种（启动时会对所有命名空间跑一遍）→ 应该补回来
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("re-ensure builtin: %v", err)
 	}
 	gh2, _ := db.GetCapability(ctx, nsID, "notify.phone", 1)
@@ -405,7 +408,7 @@ func TestBuiltinDisplayNameBackfill(t *testing.T) {
 	if err := db.SetCapabilityDisplayName(ctx, nsID, gh.ID, "我们的 PR 入口"); err != nil {
 		t.Fatalf("user rename: %v", err)
 	}
-	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("ensure again: %v", err)
 	}
 	gh3, _ := db.GetCapability(ctx, nsID, "notify.phone", 1)
