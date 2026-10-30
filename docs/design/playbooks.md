@@ -197,13 +197,12 @@ hello {
 
 ```sql
 CREATE TABLE IF NOT EXISTS playbooks (
-    id           TEXT PRIMARY KEY,              -- pkg_<base62>
+    id           TEXT PRIMARY KEY,              -- pb_<base62>
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    slug         TEXT NOT NULL,                 -- pr-review（URL 用）
+    slug         TEXT NOT NULL,                 -- pr-review（URL 用，命名空间内唯一）
     name         TEXT NOT NULL,                 -- PR 审查
-    description  TEXT NOT NULL DEFAULT '',
-    manifest     TEXT NOT NULL,                 -- 上述 JSON
+    descr        TEXT NOT NULL DEFAULT '',      -- 说明文字【注意列名是 descr】
+    manifest     TEXT NOT NULL,                 -- manifest JSON 原文
     created_at   INTEGER NOT NULL,
     UNIQUE (namespace_id, slug)
 );

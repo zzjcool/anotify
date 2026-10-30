@@ -1,5 +1,9 @@
 # A2A 与 Anotify：关系调研
 
+> **历史说明（#204 / 迁移 14）**：本文写于「组织」层仍存在的时期。
+> 组织层已删除，文中 `org_id` / `组织级`/`多租户=组织` 的说法一律按**命名空间**理解。
+
+
 > 调研日期：2026-10-28
 > 依据：A2A 规范 1.0（仓库最新 release `v1.0.1`，2026-05-28；规范站标注 Latest Released `1.0.0`）
 > 本地事实源：`design/wiki/` 十页 + `docs/contracts/CONTRACT.md` + `internal/store/schema.sql`
@@ -111,7 +115,7 @@ AgentInterface { url, protocolBinding, tenant?, protocolVersion }
 | `TaskStatus.message` / status update | task 状态 + trace span | 都是进度/结果上报；A2A 的粒度是 task 级事件，Anotify 的粒度是任务状态机 + span。 |
 | `TaskState` | 任务状态机 | A2A 有 `input-required` / `auth-required` / `rejected`，Anotify 没有；Anotify 有 `abandoned` / `lease_expired`，A2A 没有。映射不是一一对应。 |
 | SSE / push webhook | 节点出站 WS + `notify.*` | 方向不同：A2A 服务端要可达（push 时客户端也要可达）；Anotify 节点只出站，不开入站端口。 |
-| `AgentInterface.tenant` | `org_id` | 都能做多租户路由。A2A 的 tenant 是不透明字符串；Anotify 的 org 是强隔离边界。 |
+| `AgentInterface.tenant` | `namespace_id` | 都能做多租户路由。A2A 的 tenant 是不透明字符串；Anotify 的命名空间是强隔离边界。 |
 | `AgentExtension` | 无对应机制 | A2A 可扩展；Anotify 靠能力定义版本化。A2A 扩展可以承载 Anotify 的契约元数据（见 §6）。 |
 
 ---
