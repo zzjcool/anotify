@@ -478,3 +478,18 @@ CREATE        INDEX IF NOT EXISTS idx_src_targets_cap  ON source_targets(capabil
 -- 用 Go hook 而不是裸 ALTER：SQLite 没有 ADD COLUMN IF NOT EXISTS，
 -- 而迁移必须幂等（同一版本可能因重试执行多次），逻辑在 migrate.go 的
 -- migrationHooks[10]（migrateNodeCapabilityRunSpec）。
+
+-- +migration 11 retention_indexes
+-- #143 follow-up：保留期清理的两条 DELETE 子查询原本是「整 org 扫描 + TEMP B-TREE 排序」，
+-- LIMIT 只限制**删除行数**，不限制**扫描 / 排序行数**——表一大，每批都在整 org 上重排一遍。
+--
+-- 两条索引正好覆盖各自的 WHERE 条件 + ORDER BY：
+--   tasks : org_id + capability_id + status + finished_at
+--   events: org_id + created_at
+-- 它们同时服务事件流与统计（都按 org 过滤、按时间排序），所以不只是给清理用的。
+--
+-- CREATE INDEX IF NOT EXISTS 本身幂等，不需要 Go hook。
+CREATE INDEX IF NOT EXISTS idx_tasks_retention
+    ON tasks (org_id, capability_id, status, finished_at);
+CREATE INDEX IF NOT EXISTS idx_events_retention
+    ON events (org_id, created_at);
