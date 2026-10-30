@@ -14,13 +14,13 @@ import (
 // 顺便充当一份独立的断言——route 那边把 source/type 拼错了，这里就会红。
 
 // mkPruneEvent 造一条剪枝事件（source='route'、type='pruned.<reason>'）。
-func mkPruneEvent(orgID, traceID, reason, payload string) *Event {
+func mkPruneEvent(nsID, traceID, reason, payload string) *Event {
 	return &Event{
-		OrgID:   orgID,
-		TraceID: traceID,
-		Source:  "route",
-		Type:    "pruned." + reason,
-		Payload: json.RawMessage(payload),
+		NamespaceID: nsID,
+		TraceID:     traceID,
+		Source:      "route",
+		Type:        "pruned." + reason,
+		Payload:     json.RawMessage(payload),
 	}
 }
 
@@ -45,9 +45,9 @@ func countEvents(t *testing.T, db *DB, where string, args ...any) int {
 func TestInsertPruneEventIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	first := mkPruneEvent(orgID, "trace_1", "no_edge", prunePayloadNoEdge)
+	first := mkPruneEvent(nsID, "trace_1", "no_edge", prunePayloadNoEdge)
 	inserted, err := db.InsertPruneEvent(ctx, first)
 	if err != nil {
 		t.Fatalf("insert prune event: %v", err)
@@ -63,7 +63,7 @@ func TestInsertPruneEventIdempotent(t *testing.T) {
 	}
 
 	// 同一条再写一次（新的对象、同一个键）→ 不重复写，且不报错
-	again := mkPruneEvent(orgID, "trace_1", "no_edge", prunePayloadNoEdge)
+	again := mkPruneEvent(nsID, "trace_1", "no_edge", prunePayloadNoEdge)
 	inserted, err = db.InsertPruneEvent(ctx, again)
 	if err != nil {
 		t.Fatalf("第二次写同一条剪枝: %v（要求静默去重，不是报错）", err)
@@ -71,7 +71,7 @@ func TestInsertPruneEventIdempotent(t *testing.T) {
 	if inserted {
 		t.Fatal("同一条剪枝写出了第二行（去重失效）")
 	}
-	if n := countEvents(t, db, `org_id = ? AND source = 'route'`, orgID); n != 1 {
+	if n := countEvents(t, db, `namespace_id = ? AND source = 'route'`, nsID); n != 1 {
 		t.Fatalf("剪枝行数 = %d, want 1", n)
 	}
 
@@ -80,9 +80,9 @@ func TestInsertPruneEventIdempotent(t *testing.T) {
 		name string
 		e    *Event
 	}{
-		{"不同原因", mkPruneEvent(orgID, "trace_1", "no_node", prunePayloadNoEdge)},
-		{"不同 trace", mkPruneEvent(orgID, "trace_2", "no_edge", prunePayloadNoEdge)},
-		{"同 trace 同原因但证据不同", mkPruneEvent(orgID, "trace_1", "no_edge",
+		{"不同原因", mkPruneEvent(nsID, "trace_1", "no_node", prunePayloadNoEdge)},
+		{"不同 trace", mkPruneEvent(nsID, "trace_2", "no_edge", prunePayloadNoEdge)},
+		{"同 trace 同原因但证据不同", mkPruneEvent(nsID, "trace_1", "no_edge",
 			`{"fromCapability":"github","port":"pull_request.closed","detail":"另一条边的证据"}`)},
 	}
 	for _, c := range others {
@@ -94,7 +94,7 @@ func TestInsertPruneEventIdempotent(t *testing.T) {
 			t.Fatalf("%s: inserted=false，它应该是一行新剪枝", c.name)
 		}
 	}
-	if n := countEvents(t, db, `org_id = ? AND source = 'route'`, orgID); n != 4 {
+	if n := countEvents(t, db, `namespace_id = ? AND source = 'route'`, nsID); n != 4 {
 		t.Fatalf("剪枝行数 = %d, want 4（首条 + 三种差异）", n)
 	}
 
@@ -104,7 +104,7 @@ func TestInsertPruneEventIdempotent(t *testing.T) {
 	}
 
 	// 落进去的行要能被原样读回（类型与 payload 都不能被改写）
-	got, err := db.ListEvents(ctx, orgID, "trace_2", "", 10)
+	got, err := db.ListEvents(ctx, nsID, "trace_2", "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -133,14 +133,14 @@ func TestInsertPruneEventIdempotent(t *testing.T) {
 func TestInsertPruneEventDefaultsAndValidation(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	t.Run("非法 payload 归成 {}", func(t *testing.T) {
-		e := mkPruneEvent(orgID, "trace_bad", "no_edge", `{not json`)
+		e := mkPruneEvent(nsID, "trace_bad", "no_edge", `{not json`)
 		if _, err := db.InsertPruneEvent(ctx, e); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		got, err := db.ListEvents(ctx, orgID, "trace_bad", "", 10)
+		got, err := db.ListEvents(ctx, nsID, "trace_bad", "", 10)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -154,10 +154,10 @@ func TestInsertPruneEventDefaultsAndValidation(t *testing.T) {
 		e    *Event
 	}{
 		{"nil", nil},
-		{"空 org_id", &Event{TraceID: "t", Source: "route", Type: "pruned.no_edge"}},
-		{"空 source", &Event{OrgID: orgID, TraceID: "t", Type: "pruned.no_edge"}},
-		{"空 type", &Event{OrgID: orgID, TraceID: "t", Source: "route"}},
-		{"空 trace_id", &Event{OrgID: orgID, Source: "route", Type: "pruned.no_edge"}},
+		{"空 namespace_id", &Event{TraceID: "t", Source: "route", Type: "pruned.no_edge"}},
+		{"空 source", &Event{NamespaceID: nsID, TraceID: "t", Type: "pruned.no_edge"}},
+		{"空 type", &Event{NamespaceID: nsID, TraceID: "t", Source: "route"}},
+		{"空 trace_id", &Event{NamespaceID: nsID, Source: "route", Type: "pruned.no_edge"}},
 	}
 	for _, c := range bad {
 		t.Run(c.name+" → error", func(t *testing.T) {
@@ -180,24 +180,24 @@ func TestInsertPruneEventDefaultsAndValidation(t *testing.T) {
 func TestListEventsHidesPrunesFromStream(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	const traceID = "trace_mixed"
 
 	root := &Event{
-		OrgID: orgID, TraceID: traceID, Source: "github", Type: "pull_request.opened",
+		NamespaceID: nsID, TraceID: traceID, Source: "github", Type: "pull_request.opened",
 		Payload: json.RawMessage(`{"number":1}`),
 	}
 	if _, err := db.InsertEvent(ctx, root); err != nil {
 		t.Fatalf("insert root event: %v", err)
 	}
-	prune := mkPruneEvent(orgID, traceID, "no_edge", prunePayloadNoEdge)
+	prune := mkPruneEvent(nsID, traceID, "no_edge", prunePayloadNoEdge)
 	if _, err := db.InsertPruneEvent(ctx, prune); err != nil {
 		t.Fatalf("insert prune event: %v", err)
 	}
 
 	t.Run("事件流（无 traceId、无 source）只回普通事件", func(t *testing.T) {
-		got, err := db.ListEvents(ctx, orgID, "", "", 50)
+		got, err := db.ListEvents(ctx, nsID, "", "", 50)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -210,7 +210,7 @@ func TestListEventsHidesPrunesFromStream(t *testing.T) {
 	})
 
 	t.Run("按 trace 查（trace 视图）回根事件 + 剪枝", func(t *testing.T) {
-		got, err := db.ListEvents(ctx, orgID, traceID, "", 50)
+		got, err := db.ListEvents(ctx, nsID, traceID, "", 50)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -229,7 +229,7 @@ func TestListEventsHidesPrunesFromStream(t *testing.T) {
 	})
 
 	t.Run("显式 source=route 只回剪枝", func(t *testing.T) {
-		got, err := db.ListEvents(ctx, orgID, "", "route", 50)
+		got, err := db.ListEvents(ctx, nsID, "", "route", 50)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -242,7 +242,7 @@ func TestListEventsHidesPrunesFromStream(t *testing.T) {
 	})
 
 	t.Run("显式 source=github 不受剪枝过滤影响", func(t *testing.T) {
-		got, err := db.ListEvents(ctx, orgID, "", "github", 50)
+		got, err := db.ListEvents(ctx, nsID, "", "github", 50)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -260,10 +260,10 @@ func TestListEventsHidesPrunesFromStream(t *testing.T) {
 func TestInsertEventRejectsReservedSource(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	e := &Event{
-		OrgID: orgID, TraceID: "trace_reserved", Source: "route",
+		NamespaceID: nsID, TraceID: "trace_reserved", Source: "route",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":1}`),
 	}
 	inserted, err := db.InsertEvent(ctx, e)
@@ -281,7 +281,7 @@ func TestInsertEventRejectsReservedSource(t *testing.T) {
 	}
 
 	// 剪枝自己走 InsertPruneEvent，**不受**这条拦截影响（它本来就该用 route）
-	if _, err := db.InsertPruneEvent(ctx, mkPruneEvent(orgID, "trace_reserved", "no_edge", prunePayloadNoEdge)); err != nil {
+	if _, err := db.InsertPruneEvent(ctx, mkPruneEvent(nsID, "trace_reserved", "no_edge", prunePayloadNoEdge)); err != nil {
 		t.Fatalf("剪枝落库不该被保留来源名校验波及: %v", err)
 	}
 	if n := countEvents(t, db, `source = 'route'`); n != 1 {

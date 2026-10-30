@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -79,9 +80,195 @@ func (h *consoleHandler) sessionUser(w http.ResponseWriter, r *http.Request) (st
 	return userID, true
 }
 
+// ---------- 命名空间作用域（#162 / 契约 §4） ----------
+
+// listLimitCap 是 store 列表查询的硬上限。
+//
+// 为什么要在 handler 侧也钳一次：store.ListTasks / ListEvents 对 `limit > 500` 的处理是
+// **折回默认值 50**（而不是钳到 500）。跨命名空间汇总时每个命名空间都得取够，
+// 否则 limit=600 会悄悄变成「每个命名空间只回 50 条」，合并后数据离奇地少。
+const listLimitCap = 500
+
+// namespaceIDs 把一次请求的命名空间作用域展开成要逐个查询的 id 列表。
+//
+// ns.All（namespaceId=*）时遍历本组织的全部命名空间，由调用方合并结果后再统一
+// 排序/截断 —— **绝不把 `*` 传进 store**（store 层明确不接受它，见 store.AllNamespaces）。
+func (h *consoleHandler) namespaceIDs(ctx context.Context, orgID string, ns nsScope) ([]string, error) {
+	if !ns.All {
+		return []string{ns.ID}, nil
+	}
+	all, err := h.db.ListNamespaces(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(all))
+	for _, n := range all {
+		ids = append(ids, n.ID)
+	}
+	return ids, nil
+}
+
+// namespaceLabel 是回给前端的 namespaceId。
+//
+// `*` 原样回（跨命名空间汇总）：不伪造成某个具体 id——那会让页面以为
+// 「这些数据都属于某一个命名空间」，比不给更糟。
+func namespaceLabel(ns nsScope) string {
+	if ns.All {
+		return store.AllNamespaces
+	}
+	return ns.ID
+}
+
+// isNamespaceError 判定错误是否属于「命名空间类」（由 writeNamespaceError 翻译）。
+//
+// 只把这一类交出去：其它 store 错误的处理方式保持原样（500 "internal error"，
+// 不把内部错误文案漏给调用方）。
+func isNamespaceError(err error) bool {
+	var cross *store.CrossNamespaceError
+	return errors.As(err, &cross) ||
+		errors.Is(err, store.ErrNamespaceRequired) ||
+		errors.Is(err, store.ErrNamespaceNotFound) ||
+		errors.Is(err, store.ErrNamespaceForbidden) ||
+		errors.Is(err, store.ErrNamespaceExists) ||
+		errors.Is(err, store.ErrLastNamespace)
+}
+
+// handleNamespaceError 把命名空间类错误翻成 HTTP 状态码并返回 true。
+//
+// 跨命名空间引用（I11）→ 400（writeNamespaceError 的 CrossNamespaceError 分支）：
+// 那是**调用方请求错了**，静默忽略会让人以为配置生效了。
+func handleNamespaceError(w http.ResponseWriter, err error) bool {
+	if err == nil || !isNamespaceError(err) {
+		return false
+	}
+	writeNamespaceError(w, err)
+	return true
+}
+
+// mergeTasks 合并多个命名空间的任务列表，按 store 的排序口径
+// （created_at DESC, id DESC）重排后截断到 limit。
+func mergeTasks(limit int, groups ...[]*store.Task) []*store.Task {
+	total := 0
+	for _, g := range groups {
+		total += len(g)
+	}
+	out := make([]*store.Task, 0, total)
+	for _, g := range groups {
+		out = append(out, g...)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt > out[j].CreatedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// mergeEvents 合并多个命名空间的事件列表（created_at DESC, id DESC）后截断。
+func mergeEvents(limit int, groups ...[]*store.Event) []*store.Event {
+	total := 0
+	for _, g := range groups {
+		total += len(g)
+	}
+	out := make([]*store.Event, 0, total)
+	for _, g := range groups {
+		out = append(out, g...)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt > out[j].CreatedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// mergeCapabilities 合并多个命名空间的能力定义（name, version, namespaceId 升序）。
+//
+// 末尾按 namespaceId 破平局：同名同版本的能力在两个命名空间里是两个不同定义，
+// 汇总视图里必须相邻且顺序稳定（否则每次请求顺序都可能变，前端卡片会跳）。
+func mergeCapabilities(groups ...[]*store.CapabilityVersion) []*store.CapabilityVersion {
+	total := 0
+	for _, g := range groups {
+		total += len(g)
+	}
+	out := make([]*store.CapabilityVersion, 0, total)
+	for _, g := range groups {
+		out = append(out, g...)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].Version != out[j].Version {
+			return out[i].Version < out[j].Version
+		}
+		return out[i].NamespaceID < out[j].NamespaceID
+	})
+	return out
+}
+
+// mergeNodes 合并多个命名空间的节点列表（name, id 升序）。
+func mergeNodes(groups ...[]*store.Node) []*store.Node {
+	total := 0
+	for _, g := range groups {
+		total += len(g)
+	}
+	out := make([]*store.Node, 0, total)
+	for _, g := range groups {
+		out = append(out, g...)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// mergeEdges 合并多个命名空间的边（store 的 from/port/to 升序，再按命名空间破平局）。
+func mergeEdges(groups ...[]*store.Edge) []*store.Edge {
+	total := 0
+	for _, g := range groups {
+		total += len(g)
+	}
+	out := make([]*store.Edge, 0, total)
+	for _, g := range groups {
+		out = append(out, g...)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].FromIsSource != out[j].FromIsSource {
+			return !out[i].FromIsSource
+		}
+		if out[i].FromCapability != out[j].FromCapability {
+			return out[i].FromCapability < out[j].FromCapability
+		}
+		if out[i].FromPort != out[j].FromPort {
+			return out[i].FromPort < out[j].FromPort
+		}
+		if out[i].ToCapability != out[j].ToCapability {
+			return out[i].ToCapability < out[j].ToCapability
+		}
+		return out[i].NamespaceID < out[j].NamespaceID
+	})
+	return out
+}
+
 // ---------- GET /v1/tasks ----------
 
-// taskListHandler 处理 GET /v1/tasks（按 trace/node/status 过滤）。
+// tasks 处理 GET /v1/tasks（按 trace/node/status 过滤）。
+//
+// namespaceId 必填（契约 §6.2）：给 `*` 时逐个命名空间查询后合并，
+// 再按 limit 统一截断——跨命名空间的「最近 100 条」不能被拆成
+// 「每个命名空间 100 条」（那就不是 100 条了）。
 func (h *consoleHandler) tasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, "GET")
@@ -94,16 +281,39 @@ func (h *consoleHandler) tasks(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := intParam(q.Get("limit"), 100, 1, 1000)
 
-	tasks, err := h.db.ListTasks(r.Context(), orgID, q.Get("traceId"), q.Get("nodeId"), q.Get("status"), limit)
+	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	if !ok {
+		return
+	}
+	perNS := limit
+	if perNS > listLimitCap {
+		perNS = listLimitCap
+	}
+
+	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
 	if err != nil {
-		slog.Error("list tasks failed", "event", "console.tasks.list_failed", "error", err.Error())
+		slog.Error("list namespaces failed", "event", "console.tasks.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	if tasks == nil {
-		tasks = []*store.Task{} // 空列表是 [] 不是 null（I9）
+	groups := make([][]*store.Task, 0, len(nsIDs))
+	for _, nsID := range nsIDs {
+		got, err := h.db.ListTasks(r.Context(), nsID, q.Get("traceId"), q.Get("nodeId"), q.Get("status"), perNS)
+		if err != nil {
+			if handleNamespaceError(w, err) {
+				return
+			}
+			slog.Error("list tasks failed", "event", "console.tasks.list_failed", "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		groups = append(groups, got)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+	tasks := mergeTasks(limit, groups...) // 空列表是 [] 不是 null（I9）
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tasks":       tasks,
+		"namespaceId": namespaceLabel(ns),
+	})
 }
 
 // ---------- GET /v1/events（控制台读）----------
@@ -127,24 +337,46 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	if !ok {
+		return
+	}
 	q := r.URL.Query()
 	limit := intParam(q.Get("limit"), 100, 1, 1000)
+	perNS := limit
+	if perNS > listLimitCap {
+		perNS = listLimitCap
+	}
 
-	events, err := h.db.ListEvents(r.Context(), orgID, q.Get("traceId"), q.Get("source"), limit)
+	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
 	if err != nil {
-		slog.Error("list events failed", "event", "console.events.list_failed", "error", err.Error())
+		slog.Error("list namespaces failed", "event", "console.events.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	if events == nil {
-		events = []*store.Event{} // 空列表是 [] 不是 null（I9）
+	groups := make([][]*store.Event, 0, len(nsIDs))
+	for _, nsID := range nsIDs {
+		got, err := h.db.ListEvents(r.Context(), nsID, q.Get("traceId"), q.Get("source"), perNS)
+		if err != nil {
+			if handleNamespaceError(w, err) {
+				return
+			}
+			slog.Error("list events failed", "event", "console.events.list_failed", "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		groups = append(groups, got)
 	}
+	events := mergeEvents(limit, groups...) // 空列表是 [] 不是 null（I9）
 	// trace 视图（带 traceId）：根事件必须在第一条（见 traceViewRootFirst 的注释）。
 	// 事件流（不带 traceId）不需要：剪枝行在那条路径上已被 ListEvents 过滤掉。
 	if q.Get("traceId") != "" {
 		events = traceViewRootFirst(events)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events":      events,
+		"namespaceId": namespaceLabel(ns),
+	})
 }
 
 // traceViewRootFirst 把根事件（非剪枝）排到最前，剪枝行留在后面。
@@ -199,8 +431,13 @@ func (h *consoleHandler) task(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing task id"})
 		return
 	}
+	// 单对象读端点：`*` 无定义 → 400（allowAll=false）
+	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
 
-	task, err := h.db.GetTask(r.Context(), orgID, id)
+	task, err := h.db.GetTask(r.Context(), ns.ID, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
@@ -212,7 +449,7 @@ func (h *consoleHandler) task(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 同时返回整条链，详情页一次请求就能画出任务链（省一次往返）
-	chain, err := h.db.ListTasks(r.Context(), orgID, task.TraceID, "", "", 100)
+	chain, err := h.db.ListTasks(r.Context(), ns.ID, task.TraceID, "", "", 100)
 	if err != nil {
 		chain = []*store.Task{task}
 	}
@@ -244,7 +481,7 @@ type tracePrune struct {
 // 光有事件流还得自己从 payload 里拼回来，任务链又要另一次往返。
 // 所以一次给齐 events + tasks + pruned。
 //
-// 注意 events 走 ListEvents(orgID, id, "", …)：带 traceId 时它**含**剪枝行
+// 注意 events 走 ListEvents(namespaceID, id, "", …)：带 traceId 时它**含**剪枝行
 // （过滤规则在 store 层，handler 不再筛一遍——两处筛就会有两种口径）。
 func (h *consoleHandler) trace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -260,14 +497,19 @@ func (h *consoleHandler) trace(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing trace id"})
 		return
 	}
+	// trace 是单对象视图（一条 trace 只属于一个命名空间），`*` 无定义 → 400。
+	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
 
-	events, err := h.db.ListEvents(r.Context(), orgID, id, "", 500)
+	events, err := h.db.ListEvents(r.Context(), ns.ID, id, "", 500)
 	if err != nil {
 		slog.Error("list trace events failed", "event", "console.trace.events_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	tasks, err := h.db.ListTasks(r.Context(), orgID, id, "", "", 500)
+	tasks, err := h.db.ListTasks(r.Context(), ns.ID, id, "", "", 500)
 	if err != nil {
 		slog.Error("list trace tasks failed", "event", "console.trace.tasks_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -308,10 +550,11 @@ func (h *consoleHandler) trace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"traceId": id,
-		"events":  events,
-		"tasks":   tasks,
-		"pruned":  pruned,
+		"traceId":     id,
+		"namespaceId": ns.ID,
+		"events":      events,
+		"tasks":       tasks,
+		"pruned":      pruned,
 	})
 }
 
@@ -333,9 +576,14 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "task id required"})
 		return
 	}
+	// 写端点：`*` → 400（不能在一个“跨命名空间”的任务上执行取消）
+	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
 
-	// 先确认任务存在且属于本组织（GetTask 内部已经过 org_id）
-	task, err := h.db.GetTask(r.Context(), orgID, taskID)
+	// 先确认任务存在且属于本组织、本命名空间（GetTask 内部已按 namespace_id 过滤）
+	task, err := h.db.GetTask(r.Context(), ns.ID, taskID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
 		return
@@ -346,7 +594,7 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.db.CancelTask(r.Context(), orgID, taskID); err != nil {
+	if err := h.db.CancelTask(r.Context(), ns.ID, taskID); err != nil {
 		if errors.Is(err, store.ErrInvalidTransition) {
 			// 终态任务不能再取消——这是客户端可理解的冲突，不是服务端错误
 			writeJSON(w, http.StatusConflict, map[string]string{
@@ -361,7 +609,7 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 读回最新状态返回
-	updated, err := h.db.GetTask(r.Context(), orgID, taskID)
+	updated, err := h.db.GetTask(r.Context(), ns.ID, taskID)
 	if err != nil {
 		updated = task
 		updated.Status = store.TaskCanceled
@@ -372,7 +620,11 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 // ---------- GET/POST /v1/capabilities ----------
 
 // capabilityListRequest 是 POST /v1/capabilities 的请求体（camelCase）。
+//
+// NamespaceID 也可以放在 query 里（query 优先，见 namespaceParam）；
+// body 与 query 都没给 → 400（绝不回退默认命名空间）。
 type capabilityListRequest struct {
+	NamespaceID  string           `json:"namespaceId"`
 	Name         string           `json:"name"`
 	DisplayName  string           `json:"displayName,omitempty"`
 	Version      int              `json:"version,omitempty"`
@@ -413,6 +665,7 @@ func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *h
 		return
 	}
 	var req struct {
+		NamespaceID string `json:"namespaceId"`
 		ID          string `json:"id"`
 		DisplayName string `json:"displayName"`
 	}
@@ -420,26 +673,37 @@ func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
 		return
 	}
+	// 写端点：`*` → 400
+	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	if !ok {
+		return
+	}
 	if strings.TrimSpace(req.ID) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 		return
 	}
-	// 先确认这个能力属于本组织（不变量 I10），顺便拿到更新后的行回给前端
-	if _, err := h.db.GetCapabilityByID(r.Context(), orgID, req.ID); err != nil {
+	// 先确认这个能力属于本命名空间（不变量 I10）——别处的 id 在这里是 404，不泄露存在性
+	if _, err := h.db.GetCapabilityByID(r.Context(), ns.ID, req.ID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "capability not found", "code": "not_found"})
+			return
+		}
+		if handleNamespaceError(w, err) {
 			return
 		}
 		slog.Error("get capability for patch failed", "event", "console.caps.patch_get_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	if err := h.db.SetCapabilityDisplayName(r.Context(), orgID, req.ID, strings.TrimSpace(req.DisplayName)); err != nil {
+	if err := h.db.SetCapabilityDisplayName(r.Context(), ns.ID, req.ID, strings.TrimSpace(req.DisplayName)); err != nil {
+		if handleNamespaceError(w, err) {
+			return
+		}
 		slog.Error("set capability display name failed", "event", "console.caps.patch_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	updated, err := h.db.GetCapabilityByID(r.Context(), orgID, req.ID)
+	updated, err := h.db.GetCapabilityByID(r.Context(), ns.ID, req.ID)
 	if err != nil {
 		slog.Error("reload capability after patch failed", "event", "console.caps.patch_reload_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -453,15 +717,31 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	caps, err := h.db.ListCapabilities(r.Context(), orgID)
+	// 读端点：`*` 允许（跨命名空间汇总）。
+	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	if !ok {
+		return
+	}
+	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
 	if err != nil {
-		slog.Error("list capabilities failed", "event", "console.caps.list_failed", "error", err.Error())
+		slog.Error("list namespaces failed", "event", "console.caps.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	if caps == nil {
-		caps = []*store.CapabilityVersion{}
+	groups := make([][]*store.CapabilityVersion, 0, len(nsIDs))
+	for _, nsID := range nsIDs {
+		got, err := h.db.ListCapabilities(r.Context(), nsID)
+		if err != nil {
+			if handleNamespaceError(w, err) {
+				return
+			}
+			slog.Error("list capabilities failed", "event", "console.caps.list_failed", "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		groups = append(groups, got)
 	}
+	caps := mergeCapabilities(groups...)
 
 	// capNode 是节点在能力视图里的最小投影（够页面显示状态点就行）。
 	// 必须写在 capView 之前：Go 的**局部**类型声明不支持先用后声明。
@@ -495,9 +775,11 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 	// 用 NodesDeclaringCapability 而不是 NodesForCapability：后者是**派发**
 	// 入口，会滤掉 draining 的机器；但"谁声明了这个能力"是配置事实，
 	// 排空中的机器仍然声明着它，页面上必须看得到。
+	//
+	// 命名空间取能力行自己的 NamespaceID（汇总视图下每条能力的归属不同）。
 	declaring := make(map[string][]capNode, len(caps))
 	for _, c := range caps {
-		nodes, err := h.db.NodesDeclaringCapability(r.Context(), orgID, c.ID)
+		nodes, err := h.db.NodesDeclaringCapability(r.Context(), c.NamespaceID, c.ID)
 		if err != nil {
 			slog.Error("nodes declaring capability failed", "event", "console.caps.nodes_failed", "error", err.Error())
 			continue
@@ -529,7 +811,10 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 			ExecutedBy:        executedBy,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"capabilities": views})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"capabilities": views,
+		"namespaceId":  namespaceLabel(ns),
+	})
 }
 
 func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request) {
@@ -546,12 +831,20 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
+	// 写端点：`*` → 400（一条能力定义只能属于一个命名空间）
+	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	if !ok {
+		return
+	}
 
 	version := req.Version
 	if version <= 0 {
 		// 不指定版本时自动开下一个版本（append-only，不变量 I8）
-		next, err := h.db.NextCapabilityVersion(r.Context(), orgID, req.Name)
+		next, err := h.db.NextCapabilityVersion(r.Context(), ns.ID, req.Name)
 		if err != nil {
+			if handleNamespaceError(w, err) {
+				return
+			}
 			slog.Error("next capability version failed", "event", "console.caps.next_failed", "error", err.Error())
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
@@ -568,7 +861,8 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		source = store.CapSourceCustom
 	}
 	c := &store.CapabilityVersion{
-		OrgID:        orgID,
+		NamespaceID:  ns.ID,
+		OrgID:        orgID, // store 会用 namespace.org_id 覆盖它（I10）
 		Name:         req.Name,
 		DisplayName:  strings.TrimSpace(req.DisplayName),
 		Version:      version,
@@ -582,6 +876,10 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := h.db.CreateCapability(r.Context(), c); err != nil {
+		// 命名空间类错误（如 namespace 已不存在）有自己确实的状态码，不能当成 409
+		if handleNamespaceError(w, err) {
+			return
+		}
 		// 「同 name@version 换内容」与「同内容已有」由 store 区分，这里统一按冲突处理
 		slog.Warn("create capability rejected",
 			"event", "console.caps.create_rejected",
@@ -603,6 +901,8 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 
 // edgeRequest 是 POST/DELETE /v1/edges 的请求体。
 type edgeRequest struct {
+	// NamespaceID 是这条边所属的命名空间（query 里也可以给，query 优先）。
+	NamespaceID string `json:"namespaceId"`
 	// FromIsSource 为 true 时 FromCapability 被解释为**来源名**（"github"），
 	// 用于建「入口边」；否则是上游能力 id。
 	FromIsSource   bool   `json:"fromIsSource"`
@@ -630,16 +930,35 @@ func (h *consoleHandler) listEdges(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	edges, err := h.db.ListEdges(r.Context(), orgID, r.URL.Query().Get("fromCapability"))
+	// 读端点：`*` 允许（跨命名空间汇总）。
+	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	if !ok {
+		return
+	}
+	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
 	if err != nil {
-		slog.Error("list edges failed", "event", "console.edges.list_failed", "error", err.Error())
+		slog.Error("list namespaces failed", "event", "console.edges.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	if edges == nil {
-		edges = []*store.Edge{}
+	groups := make([][]*store.Edge, 0, len(nsIDs))
+	for _, nsID := range nsIDs {
+		got, err := h.db.ListEdges(r.Context(), nsID, r.URL.Query().Get("fromCapability"))
+		if err != nil {
+			if handleNamespaceError(w, err) {
+				return
+			}
+			slog.Error("list edges failed", "event", "console.edges.list_failed", "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		groups = append(groups, got)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"edges": edges})
+	edges := mergeEdges(groups...)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"edges":       edges,
+		"namespaceId": namespaceLabel(ns),
+	})
 }
 
 // createEdge 写入一条边。
@@ -663,17 +982,27 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// 写端点：`*` → 400（一条边属于且只属于一个命名空间）
+	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	if !ok {
+		return
+	}
 
-	err := h.db.CreateEdge(r.Context(), &store.Edge{
-		OrgID:          orgID,
+	e := &store.Edge{
+		NamespaceID:    ns.ID,
+		OrgID:          orgID, // store 会用 namespace.org_id 覆盖它（I10）
 		FromIsSource:   req.FromIsSource,
 		FromCapability: req.FromCapability,
 		FromPort:       req.FromPort,
 		ToCapability:   req.ToCapability,
-	})
-	if err != nil {
+	}
+	if err := h.db.CreateEdge(r.Context(), e); err != nil {
+		// I11：两端能力必须同命名空间，跨命名空间引用 → 400
+		if handleNamespaceError(w, err) {
+			return
+		}
 		if errors.Is(err, store.ErrEdgeRejected) {
-			// from_port 不在 outputs 里 / 跨组织 / 能力不存在——都是客户端可修的错误
+			// from_port 不在 outputs 里 / 能力不存在——都是客户端可修的错误
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": err.Error(),
 				"code":  "edge_rejected",
@@ -684,11 +1013,7 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"edge": &store.Edge{
-		OrgID: orgID, FromIsSource: req.FromIsSource,
-		FromCapability: req.FromCapability,
-		FromPort:       req.FromPort, ToCapability: req.ToCapability,
-	}})
+	writeJSON(w, http.StatusOK, map[string]any{"edge": e})
 }
 
 func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
@@ -696,16 +1021,34 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// DELETE 没有 body 是常态，允许从 query 取
+	// DELETE 没有 body 是常态。先把 body 解析成"可选补充"：
+	// namespaceId 可以只放在 body 里，其它四个字段 query 优先、body 兜底。
+	var req edgeRequest
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			// 没 body / body 不是 JSON 都不算错误（参数可以全放 query）
+			req = edgeRequest{}
+		}
+	}
+	// 写端点：`*` → 400
+	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	if !ok {
+		return
+	}
 	q := r.URL.Query()
 	from, port, to := q.Get("fromCapability"), q.Get("fromPort"), q.Get("toCapability")
-	fromIsSource := q.Get("fromIsSource") == "1" || q.Get("fromIsSource") == "true"
-	if from == "" && r.Body != nil {
-		var req edgeRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err == nil {
-			from, port, to = req.FromCapability, req.FromPort, req.ToCapability
-			fromIsSource = req.FromIsSource
-		}
+	if from == "" {
+		from = req.FromCapability
+	}
+	if port == "" {
+		port = req.FromPort
+	}
+	if to == "" {
+		to = req.ToCapability
+	}
+	fromIsSource := req.FromIsSource
+	if v := q.Get("fromIsSource"); v != "" {
+		fromIsSource = v == "1" || v == "true"
 	}
 	if from == "" || port == "" || to == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -713,9 +1056,12 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := h.db.DeleteEdge(r.Context(), orgID, fromIsSource, from, port, to); err != nil {
+	if err := h.db.DeleteEdge(r.Context(), ns.ID, fromIsSource, from, port, to); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "edge not found"})
+			return
+		}
+		if handleNamespaceError(w, err) {
 			return
 		}
 		slog.Error("delete edge failed", "event", "console.edges.delete_failed", "error", err.Error())
@@ -798,20 +1144,39 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	nodes, err := h.db.ListNodes(r.Context(), orgID)
+	// 读端点：`*` 允许（跨命名空间汇总）。
+	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	if !ok {
+		return
+	}
+	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
 	if err != nil {
-		slog.Error("list nodes failed", "event", "console.nodes.list_failed", "error", err.Error())
+		slog.Error("list namespaces failed", "event", "console.nodes.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	if nodes == nil {
-		nodes = []*store.Node{}
+	groups := make([][]*store.Node, 0, len(nsIDs))
+	for _, nsID := range nsIDs {
+		got, err := h.db.ListNodes(r.Context(), nsID)
+		if err != nil {
+			if handleNamespaceError(w, err) {
+				return
+			}
+			slog.Error("list nodes failed", "event", "console.nodes.list_failed", "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		groups = append(groups, got)
 	}
+	nodes := mergeNodes(groups...)
 	views := make([]nodeView, 0, len(nodes))
 	for _, n := range nodes {
 		views = append(views, h.viewFor(r.Context(), n))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": views})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"nodes":       views,
+		"namespaceId": namespaceLabel(ns),
+	})
 }
 
 // nodeByID 处理 GET /v1/nodes/{id}（节点详情）。
@@ -829,7 +1194,12 @@ func (h *consoleHandler) nodeByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodeID := r.PathValue("id")
-	n, err := h.db.GetNode(r.Context(), orgID, nodeID)
+	// 单对象读端点：`*` 无定义 → 400
+	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
+	n, err := h.db.GetNode(r.Context(), ns.ID, nodeID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "node not found"})
 		return
@@ -873,8 +1243,13 @@ func (h *consoleHandler) drainNode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node id required"})
 		return
 	}
+	// 写端点：`*` → 400
+	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
 
-	node, err := h.db.GetNode(r.Context(), orgID, nodeID)
+	node, err := h.db.GetNode(r.Context(), ns.ID, nodeID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "node not found"})
 		return
@@ -884,13 +1259,17 @@ func (h *consoleHandler) drainNode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	if err := h.db.UpdateNodeStatus(r.Context(), orgID, nodeID, store.NodeStatusDraining); err != nil {
+	if err := h.db.UpdateNodeStatus(r.Context(), ns.ID, nodeID, store.NodeStatusDraining); err != nil {
+		if handleNamespaceError(w, err) {
+			return
+		}
 		slog.Error("drain node failed", "event", "console.nodes.drain_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 	node.Status = store.NodeStatusDraining
-	slog.Info("node draining", "event", "console.nodes.draining", "node_id", nodeID, "org_id", orgID)
+	slog.Info("node draining", "event", "console.nodes.draining",
+		"node_id", nodeID, "namespace_id", ns.ID, "org_id", orgID)
 	writeJSON(w, http.StatusOK, map[string]any{"node": node})
 }
 

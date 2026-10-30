@@ -31,20 +31,20 @@ import (
 // TestRetentionEventsDisabledByDefault）。
 const retentionTestEventSec = 30 * 24 * 60 * 60 // 2592000 秒 = 30 天
 
-// retentionTestDB 建库 + 一个组织。
+// retentionTestDB 建库 + 一个组织（返回它的 default 命名空间 id）。
 func retentionTestDB(t *testing.T) (*DB, string) {
 	t.Helper()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
-	return db, orgID
+	nsID, _ := newTestNS(t, db)
+	return db, nsID
 }
 
 // mkRetentionCap 建一个声明了 lifecycle.resultTtlSec 的能力版本。
 //
 // 每个测试用不同的 name：同 name 同 version 换内容会被 append-only 规则拒绝（I8）。
-func mkRetentionCap(t *testing.T, db *DB, orgID, name string, ttlSec int) *CapabilityVersion {
+func mkRetentionCap(t *testing.T, db *DB, nsID, name string, ttlSec int) *CapabilityVersion {
 	t.Helper()
-	c := mkCap(orgID, name, 1, nil)
+	c := mkCap(nsID, name, 1, nil)
 	c.Lifecycle = Lifecycle{ResultTTLSec: ttlSec}
 	if err := db.CreateCapability(context.Background(), c); err != nil {
 		t.Fatalf("create capability %s (ttl=%d): %v", name, ttlSec, err)
@@ -56,19 +56,19 @@ func mkRetentionCap(t *testing.T, db *DB, orgID, name string, ttlSec int) *Capab
 //
 // 状态只能经 Transition 推进（契约 §3 唯一写入点）；finished_at 是时间戳夹具，
 // 测试需要它落在过去才能验证「过期」。
-func mkTerminalTask(t *testing.T, db *DB, orgID string, cap *CapabilityVersion, status string, finishedAt int64) *Task {
+func mkTerminalTask(t *testing.T, db *DB, nsID string, cap *CapabilityVersion, status string, finishedAt int64) *Task {
 	t.Helper()
 	if !IsTerminalStatus(status) {
 		t.Fatalf("mkTerminalTask: %q 不是终态", status)
 	}
 	ctx := context.Background()
-	task := mkTask(orgID, "trace_"+NewTaskID(), cap)
+	task := mkTask(nsID, "trace_"+NewTaskID(), cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	pushToStatus(t, db, orgID, task, status)
-	mustExec(t, db, `UPDATE tasks SET finished_at = ? WHERE org_id = ? AND id = ?`,
-		finishedAt, orgID, task.ID)
+	pushToStatus(t, db, nsID, task, status)
+	mustExec(t, db, `UPDATE tasks SET finished_at = ? WHERE namespace_id = ? AND id = ?`,
+		finishedAt, nsID, task.ID)
 	return task
 }
 
@@ -78,14 +78,14 @@ func mkTerminalTask(t *testing.T, db *DB, orgID string, cap *CapabilityVersion, 
 // 不能走 mkEventAt：InsertEvent 会拒绝保留来源名 'route'（#142 的守卫，
 // 防止用户建一个叫 route 的源，其事件被事件流静默过滤），剪枝自己走
 // InsertPruneEvent 这条专用入口。
-func mkPruneEventAt(t *testing.T, db *DB, orgID, typ string, createdAt int64) *Event {
+func mkPruneEventAt(t *testing.T, db *DB, nsID, typ string, createdAt int64) *Event {
 	t.Helper()
 	e := &Event{
-		OrgID:     orgID,
-		TraceID:   "trc_" + NewEventID(),
-		Source:    "route",
-		Type:      typ,
-		CreatedAt: createdAt,
+		NamespaceID: nsID,
+		TraceID:     "trc_" + NewEventID(),
+		Source:      "route",
+		Type:        typ,
+		CreatedAt:   createdAt,
 	}
 	if _, err := db.InsertPruneEvent(context.Background(), e); err != nil {
 		t.Fatalf("insert prune event (%s): %v", typ, err)
@@ -93,14 +93,14 @@ func mkPruneEventAt(t *testing.T, db *DB, orgID, typ string, createdAt int64) *E
 	return e
 }
 
-func mkEventAt(t *testing.T, db *DB, orgID, source, typ string, createdAt int64) *Event {
+func mkEventAt(t *testing.T, db *DB, nsID, source, typ string, createdAt int64) *Event {
 	t.Helper()
 	e := &Event{
-		OrgID:     orgID,
-		TraceID:   "trc_" + NewEventID(),
-		Source:    source,
-		Type:      typ,
-		CreatedAt: createdAt,
+		NamespaceID: nsID,
+		TraceID:     "trc_" + NewEventID(),
+		Source:      source,
+		Type:        typ,
+		CreatedAt:   createdAt,
 	}
 	inserted, err := db.InsertEvent(context.Background(), e)
 	if err != nil {
@@ -127,34 +127,34 @@ func countRows(t *testing.T, db *DB, table, where string, args ...any) int {
 }
 
 // mustTaskPresent 断言任务行还在。
-func mustTaskPresent(t *testing.T, db *DB, orgID, taskID string) {
+func mustTaskPresent(t *testing.T, db *DB, nsID, taskID string) {
 	t.Helper()
-	if _, err := db.GetTask(context.Background(), orgID, taskID); err != nil {
+	if _, err := db.GetTask(context.Background(), nsID, taskID); err != nil {
 		t.Fatalf("task %s 应该保留，但 GetTask 失败: %v", taskID, err)
 	}
 }
 
 // mustTaskGone 断言任务行已消失（ErrNotFound，而不是别的错误）。
-func mustTaskGone(t *testing.T, db *DB, orgID, taskID string) {
+func mustTaskGone(t *testing.T, db *DB, nsID, taskID string) {
 	t.Helper()
-	_, err := db.GetTask(context.Background(), orgID, taskID)
+	_, err := db.GetTask(context.Background(), nsID, taskID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("task %s 应该被删，GetTask err = %v, want ErrNotFound", taskID, err)
 	}
 }
 
 // mustEventPresent 断言事件行还在。
-func mustEventPresent(t *testing.T, db *DB, orgID, eventID string) {
+func mustEventPresent(t *testing.T, db *DB, nsID, eventID string) {
 	t.Helper()
-	if _, err := db.GetEvent(context.Background(), orgID, eventID); err != nil {
+	if _, err := db.GetEvent(context.Background(), nsID, eventID); err != nil {
 		t.Fatalf("event %s 应该保留，但 GetEvent 失败: %v", eventID, err)
 	}
 }
 
 // mustEventGone 断言事件行已消失。
-func mustEventGone(t *testing.T, db *DB, orgID, eventID string) {
+func mustEventGone(t *testing.T, db *DB, nsID, eventID string) {
 	t.Helper()
-	_, err := db.GetEvent(context.Background(), orgID, eventID)
+	_, err := db.GetEvent(context.Background(), nsID, eventID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("event %s 应该被删，GetEvent err = %v, want ErrNotFound", eventID, err)
 	}
@@ -163,15 +163,15 @@ func mustEventGone(t *testing.T, db *DB, orgID, eventID string) {
 // ---------- §5-1：过期被删 ----------
 
 func TestRetentionDeletesExpiredTerminalTask(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
 
-	expired := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-120)
+	expired := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-120)
 	// finished_at 恰好等于 cutoff（now-60）：用**严格小于**，边界行必须保留——
 	// 否则「刚好到点」的任务会在两轮之间反复消失，语义也没法解释。
-	boundary := mkTerminalTask(t, db, orgID, cap, TaskFailed, now-60)
+	boundary := mkTerminalTask(t, db, nsID, cap, TaskFailed, now-60)
 
 	scopes, err := db.ListResultRetentionScopes(ctx)
 	if err != nil {
@@ -181,8 +181,12 @@ func TestRetentionDeletesExpiredTerminalTask(t *testing.T) {
 		t.Fatalf("scopes = %+v, want 1 个 scope", scopes)
 	}
 	got := scopes[0]
-	if got.OrgID != orgID || got.CapabilityID != cap.ID || got.ResultTTLSec != 60 {
-		t.Fatalf("scope = %+v, want {org:%s cap:%s ttl:60}", got, orgID, cap.ID)
+	// scope 的两个维度都要钉死：删除粒度是 namespace（I11），org 只是派生出来的锚点（I10）。
+	if got.NamespaceID != nsID || got.CapabilityID != cap.ID || got.ResultTTLSec != 60 {
+		t.Fatalf("scope = %+v, want {ns:%s cap:%s ttl:60}", got, nsID, cap.ID)
+	}
+	if want := orgIDOfNamespace(t, db, nsID); got.OrgID != want {
+		t.Fatalf("scope org = %q, want %q（org_id 由命名空间派生）", got.OrgID, want)
 	}
 
 	rep, err := db.SweepRetention(ctx, RetentionOptions{Now: now})
@@ -199,9 +203,9 @@ func TestRetentionDeletesExpiredTerminalTask(t *testing.T) {
 		t.Fatal("Truncated = true, want false（1 条远没到批上限）")
 	}
 
-	mustTaskGone(t, db, orgID, expired.ID)
-	mustTaskPresent(t, db, orgID, boundary.ID)
-	if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 1 {
+	mustTaskGone(t, db, nsID, expired.ID)
+	mustTaskPresent(t, db, nsID, boundary.ID)
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 1 {
 		t.Fatalf("tasks 剩 %d 行, want 1", n)
 	}
 }
@@ -209,13 +213,13 @@ func TestRetentionDeletesExpiredTerminalTask(t *testing.T) {
 // ---------- §5-2：未过期保留 ----------
 
 func TestRetentionKeepsNotYetExpiredTask(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 600)
+	cap := mkRetentionCap(t, db, nsID, "review", 600)
 
 	// 300s 前完成，TTL 600s → cutoff = now-600，不该删
-	fresh := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-300)
+	fresh := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-300)
 
 	rep, err := db.SweepRetention(ctx, RetentionOptions{Now: now})
 	if err != nil {
@@ -227,8 +231,8 @@ func TestRetentionKeepsNotYetExpiredTask(t *testing.T) {
 	if rep.TaskScopes != 1 {
 		t.Fatalf("TaskScopes = %d, want 1（有终态任务就该有 scope）", rep.TaskScopes)
 	}
-	mustTaskPresent(t, db, orgID, fresh.ID)
-	if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 1 {
+	mustTaskPresent(t, db, nsID, fresh.ID)
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 1 {
 		t.Fatalf("tasks 剩 %d 行, want 1", n)
 	}
 }
@@ -236,13 +240,13 @@ func TestRetentionKeepsNotYetExpiredTask(t *testing.T) {
 // ---------- §5-3：幂等 / 可重入 ----------
 
 func TestRetentionIsIdempotent(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
 
 	for i := 0; i < 3; i++ {
-		mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-120-int64(i))
+		mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-120-int64(i))
 	}
 
 	first, err := db.SweepRetention(ctx, RetentionOptions{Now: now})
@@ -252,7 +256,7 @@ func TestRetentionIsIdempotent(t *testing.T) {
 	if first.TasksDeleted != 3 {
 		t.Fatalf("第 1 轮 TasksDeleted = %d, want 3", first.TasksDeleted)
 	}
-	if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 0 {
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 0 {
 		t.Fatalf("第 1 轮后 tasks 剩 %d 行, want 0", n)
 	}
 
@@ -268,7 +272,7 @@ func TestRetentionIsIdempotent(t *testing.T) {
 		if rep.Truncated {
 			t.Fatalf("第 %d 轮 Truncated = true, want false", i)
 		}
-		if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 0 {
+		if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 0 {
 			t.Fatalf("第 %d 轮后 tasks 剩 %d 行, want 0", i, n)
 		}
 	}
@@ -277,27 +281,27 @@ func TestRetentionIsIdempotent(t *testing.T) {
 // ---------- §5-4：非终态保留 ----------
 
 func TestRetentionKeepsNonTerminalTasks(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
 
-	pending := mkTask(orgID, "trace_pending", cap)
+	pending := mkTask(nsID, "trace_pending", cap)
 	if err := db.CreateTasks(ctx, []*Task{pending}); err != nil {
 		t.Fatalf("create pending: %v", err)
 	}
-	running := mkTask(orgID, "trace_running", cap)
+	running := mkTask(nsID, "trace_running", cap)
 	if err := db.CreateTasks(ctx, []*Task{running}); err != nil {
 		t.Fatalf("create running: %v", err)
 	}
-	pushToStatus(t, db, orgID, running, TaskRunning)
+	pushToStatus(t, db, nsID, running, TaskRunning)
 
 	// 故意制造脏数据：非终态行也带一个很老的 finished_at。
 	// 清理只认「终态」这一维，脏 finished_at 不能成为删除依据——
 	// 删掉在跑的任务等于把工作静默丢掉。
 	old := now - 999999
 	for _, id := range []string{pending.ID, running.ID} {
-		mustExec(t, db, `UPDATE tasks SET finished_at = ? WHERE org_id = ? AND id = ?`, old, orgID, id)
+		mustExec(t, db, `UPDATE tasks SET finished_at = ? WHERE namespace_id = ? AND id = ?`, old, nsID, id)
 	}
 
 	scopes, err := db.ListResultRetentionScopes(ctx)
@@ -318,9 +322,9 @@ func TestRetentionKeepsNonTerminalTasks(t *testing.T) {
 	if rep.TaskScopes != 0 {
 		t.Fatalf("TaskScopes = %d, want 0", rep.TaskScopes)
 	}
-	mustTaskPresent(t, db, orgID, pending.ID)
-	mustTaskPresent(t, db, orgID, running.ID)
-	if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 2 {
+	mustTaskPresent(t, db, nsID, pending.ID)
+	mustTaskPresent(t, db, nsID, running.ID)
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 2 {
 		t.Fatalf("tasks 剩 %d 行, want 2", n)
 	}
 }
@@ -328,13 +332,13 @@ func TestRetentionKeepsNonTerminalTasks(t *testing.T) {
 // ---------- §5-5：未声明 TTL 的能力不清理 ----------
 
 func TestRetentionSkipsCapabilitiesWithoutTTL(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
 	// resultTtlSec 未声明（0）= 永不清理
-	cap := mkRetentionCap(t, db, orgID, "review", 0)
+	cap := mkRetentionCap(t, db, nsID, "review", 0)
 
-	task := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-999999)
+	task := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-999999)
 
 	scopes, err := db.ListResultRetentionScopes(ctx)
 	if err != nil {
@@ -357,28 +361,28 @@ func TestRetentionSkipsCapabilitiesWithoutTTL(t *testing.T) {
 	if rep.TaskScopes != 0 {
 		t.Fatalf("TaskScopes = %d, want 0", rep.TaskScopes)
 	}
-	mustTaskPresent(t, db, orgID, task.ID)
+	mustTaskPresent(t, db, nsID, task.ID)
 
 	// 反证：TTL 门禁在 **scope 层**，不在 DELETE 层——
 	// 直接按能力调用删除语句会把这条任务删掉。这保证了「不清理」的原因
 	// 唯一地归因于「该能力没声明 TTL」，而不是删除语句写错了。
-	n, err := db.DeleteExpiredTerminalTasks(ctx, orgID, cap.ID, now-int64(60), 100)
+	n, err := db.DeleteExpiredTerminalTasks(ctx, nsID, cap.ID, now-int64(60), 100)
 	if err != nil {
 		t.Fatalf("direct delete: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("直接调用删除语句删了 %d 行, want 1（TTL 判断应只发生在 scope 层）", n)
 	}
-	mustTaskGone(t, db, orgID, task.ID)
+	mustTaskGone(t, db, nsID, task.ID)
 }
 
 // ---------- §5-6：批上限生效 ----------
 
 func TestRetentionBatchLimitAndTruncation(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
 
 	const (
 		batch = 2
@@ -387,7 +391,7 @@ func TestRetentionBatchLimitAndTruncation(t *testing.T) {
 	// finished_at 递增：最老的在前，用来验证「按 finished_at 排序」真的生效
 	var tasks []*Task
 	for i := 0; i < total; i++ {
-		tasks = append(tasks, mkTerminalTask(t, db, orgID, cap, TaskSucceeded,
+		tasks = append(tasks, mkTerminalTask(t, db, nsID, cap, TaskSucceeded,
 			now-1000+int64(i)*100))
 	}
 
@@ -402,15 +406,15 @@ func TestRetentionBatchLimitAndTruncation(t *testing.T) {
 	if !first.Truncated {
 		t.Fatal("第 1 轮 Truncated = false, want true（预算用尽且仍有积压）")
 	}
-	if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != total-batch {
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != total-batch {
 		t.Fatalf("第 1 轮后 tasks 剩 %d 行, want %d", n, total-batch)
 	}
 	// 删掉的是最老的两条
 	for i := 0; i < batch; i++ {
-		mustTaskGone(t, db, orgID, tasks[i].ID)
+		mustTaskGone(t, db, nsID, tasks[i].ID)
 	}
 	for i := batch; i < total; i++ {
-		mustTaskPresent(t, db, orgID, tasks[i].ID)
+		mustTaskPresent(t, db, nsID, tasks[i].ID)
 	}
 
 	// 第二轮：预算放大 → 把剩余的清空，且不再截断
@@ -424,36 +428,46 @@ func TestRetentionBatchLimitAndTruncation(t *testing.T) {
 	if second.Truncated {
 		t.Fatalf("第 2 轮 Truncated = true, want false（该范围已清空）")
 	}
-	if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 0 {
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 0 {
 		t.Fatalf("第 2 轮后 tasks 剩 %d 行, want 0", n)
 	}
 }
 
-// ---------- §5-7：组织隔离 ----------
+// ---------- §5-7：命名空间隔离 ----------
 
-func TestRetentionOrgIsolation(t *testing.T) {
-	db, orgA := retentionTestDB(t)
+// TestRetentionNamespaceIsolation 保留期清理的隔离维度是**命名空间**（#162）。
+//
+// 为什么必须是同一个组织里的两个命名空间：若实现只按 org_id 过滤（迁移 12 之前的口径），
+// 这个用例会失败；两个不同 org 的用例反而拦不住「同 org 串数据」这类最真实的错误。
+func TestRetentionNamespaceIsolation(t *testing.T) {
+	db, nsA := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	orgB, _ := newTestOrg(t, db)
 
-	capA := mkRetentionCap(t, db, orgA, "review", 60)
-	capB := mkRetentionCap(t, db, orgB, "review", 60)
-
-	aExpired := mkTerminalTask(t, db, orgA, capA, TaskSucceeded, now-120)
-	aFresh := mkTerminalTask(t, db, orgA, capA, TaskSucceeded, now-10)
-	bExpired := mkTerminalTask(t, db, orgB, capB, TaskSucceeded, now-120)
-
-	// 交叉过滤：org 与 capability_id 各自都要生效，否则 A 的清理会带走 B 的数据
-	cutoff := now - int64(60)
-	if n, err := db.DeleteExpiredTerminalTasks(ctx, orgB, capA.ID, cutoff, 100); err != nil || n != 0 {
-		t.Fatalf("跨 org 删除 n=%d err=%v, want 0/nil", n, err)
+	// 同一组织里的另一个命名空间（prod 与 staging 的典型关系）
+	sibling, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
+	if err != nil {
+		t.Fatalf("create sibling namespace: %v", err)
 	}
-	if n, err := db.DeleteExpiredTerminalTasks(ctx, orgA, capB.ID, cutoff, 100); err != nil || n != 0 {
+	nsB := sibling.ID
+
+	capA := mkRetentionCap(t, db, nsA, "review", 60)
+	capB := mkRetentionCap(t, db, nsB, "review", 60)
+
+	aExpired := mkTerminalTask(t, db, nsA, capA, TaskSucceeded, now-120)
+	aFresh := mkTerminalTask(t, db, nsA, capA, TaskSucceeded, now-10)
+	bExpired := mkTerminalTask(t, db, nsB, capB, TaskSucceeded, now-120)
+
+	// 交叉过滤：namespace 与 capability_id 各自都要生效，否则 A 的清理会带走 B 的数据
+	cutoff := now - int64(60)
+	if n, err := db.DeleteExpiredTerminalTasks(ctx, nsB, capA.ID, cutoff, 100); err != nil || n != 0 {
+		t.Fatalf("跨命名空间删除 n=%d err=%v, want 0/nil", n, err)
+	}
+	if n, err := db.DeleteExpiredTerminalTasks(ctx, nsA, capB.ID, cutoff, 100); err != nil || n != 0 {
 		t.Fatalf("跨能力删除 n=%d err=%v, want 0/nil", n, err)
 	}
-	if n := countRows(t, db, "tasks", "org_id = ?", orgA); n != 2 {
-		t.Fatalf("交叉删除后 orgA 有 %d 行, want 2（一行都不该动）", n)
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsA); n != 2 {
+		t.Fatalf("交叉删除后 nsA 有 %d 行, want 2（一行都不该动）", n)
 	}
 
 	rep, err := db.SweepRetention(ctx, RetentionOptions{Now: now})
@@ -461,19 +475,19 @@ func TestRetentionOrgIsolation(t *testing.T) {
 		t.Fatalf("sweep: %v", err)
 	}
 	if rep.TaskScopes != 2 {
-		t.Fatalf("TaskScopes = %d, want 2（两个 org 各一个 scope）", rep.TaskScopes)
+		t.Fatalf("TaskScopes = %d, want 2（两个命名空间各一个 scope）", rep.TaskScopes)
 	}
 	if rep.TasksDeleted != 2 {
 		t.Fatalf("TasksDeleted = %d, want 2", rep.TasksDeleted)
 	}
-	mustTaskGone(t, db, orgA, aExpired.ID)
-	mustTaskPresent(t, db, orgA, aFresh.ID)
-	mustTaskGone(t, db, orgB, bExpired.ID)
-	if n := countRows(t, db, "tasks", "org_id = ?", orgA); n != 1 {
-		t.Fatalf("orgA 剩 %d 行, want 1", n)
+	mustTaskGone(t, db, nsA, aExpired.ID)
+	mustTaskPresent(t, db, nsA, aFresh.ID)
+	mustTaskGone(t, db, nsB, bExpired.ID)
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsA); n != 1 {
+		t.Fatalf("nsA 剩 %d 行, want 1", n)
 	}
-	if n := countRows(t, db, "tasks", "org_id = ?", orgB); n != 0 {
-		t.Fatalf("orgB 剩 %d 行, want 0", n)
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsB); n != 0 {
+		t.Fatalf("nsB 剩 %d 行, want 0", n)
 	}
 }
 
@@ -489,20 +503,20 @@ func TestRetentionOrgIsolation(t *testing.T) {
 //     且 report 能区分「没扫」（EventsDisabled=true）与「扫了但没东西删」；
 //  2. tasks 侧**不受** events 开关影响——能力显式声明 resultTtlSec 就照常清理。
 func TestRetentionEventsDisabledByDefault(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
 
 	const day = int64(24 * 60 * 60)
 	// ① 90 天前（旧「30 天」口径下必然被删）、② 400 天前（更老）、
 	// ③ source='route' 的剪枝行（#142）：旧口径下同样会被删，都不能有特例。
-	e90 := mkEventAt(t, db, orgID, "github", "pull_request.opened", now-90*day)
-	e400 := mkEventAt(t, db, orgID, "github", "push", now-400*day)
-	eRoute := mkPruneEventAt(t, db, orgID, "pruned.no_matching_edge", now-1000*day)
+	e90 := mkEventAt(t, db, nsID, "github", "pull_request.opened", now-90*day)
+	e400 := mkEventAt(t, db, nsID, "github", "push", now-400*day)
+	eRoute := mkPruneEventAt(t, db, nsID, "pruned.no_matching_edge", now-1000*day)
 
 	// 同时造一条过期终态任务（能力 resultTtlSec=60）：tasks 侧必须照常生效
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
-	expired := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-120)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
+	expired := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-120)
 
 	// 默认 options（EventRetentionSec 留 0）= 禁用
 	rep, err := db.SweepRetention(ctx, RetentionOptions{Now: now})
@@ -519,18 +533,18 @@ func TestRetentionEventsDisabledByDefault(t *testing.T) {
 		t.Fatalf("Orgs = %d, want 0（禁用时压根不该去扫 org）", rep.Orgs)
 	}
 	// 双向校验：report 说没删 + 库里 3 条都在
-	if n := countRows(t, db, "events", "org_id = ?", orgID); n != 3 {
+	if n := countRows(t, db, "events", "namespace_id = ?", nsID); n != 3 {
 		t.Fatalf("events 剩 %d 行, want 3（默认禁用时一行都不该少）", n)
 	}
 	for _, e := range []*Event{e90, e400, eRoute} {
-		mustEventPresent(t, db, orgID, e.ID)
+		mustEventPresent(t, db, nsID, e.ID)
 	}
 
 	// tasks 侧独立于 events 的开关：能力显式声明 resultTtlSec 就默认生效
 	if rep.TasksDeleted != 1 {
 		t.Fatalf("TasksDeleted = %d, want 1（tasks 侧不看 events 开关）", rep.TasksDeleted)
 	}
-	mustTaskGone(t, db, orgID, expired.ID)
+	mustTaskGone(t, db, nsID, expired.ID)
 
 	// 负值同样视为禁用（不是「保留 -5 秒」，更不是「删得更狠」）
 	neg, err := db.SweepRetention(ctx, RetentionOptions{Now: now, EventRetentionSec: -5})
@@ -544,7 +558,7 @@ func TestRetentionEventsDisabledByDefault(t *testing.T) {
 		t.Fatalf("EventRetentionSec=-5: Orgs=%d EventsDeleted=%d, want 0/0",
 			neg.Orgs, neg.EventsDeleted)
 	}
-	if n := countRows(t, db, "events", "org_id = ?", orgID); n != 3 {
+	if n := countRows(t, db, "events", "namespace_id = ?", nsID); n != 3 {
 		t.Fatalf("EventRetentionSec=-5 跑完后 events 剩 %d 行, want 3（一行不少）", n)
 	}
 }
@@ -552,12 +566,12 @@ func TestRetentionEventsDisabledByDefault(t *testing.T) {
 // ---------- §5-9：events 保留期可配置 ----------
 
 func TestRetentionEventsCustomRetention(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
 
-	older := mkEventAt(t, db, orgID, "github", "push", now-20)
-	newer := mkEventAt(t, db, orgID, "github", "push", now-5)
+	older := mkEventAt(t, db, nsID, "github", "push", now-20)
+	newer := mkEventAt(t, db, nsID, "github", "push", now-5)
 
 	rep, err := db.SweepRetention(ctx, RetentionOptions{Now: now, EventRetentionSec: 10})
 	if err != nil {
@@ -571,9 +585,9 @@ func TestRetentionEventsCustomRetention(t *testing.T) {
 	if rep.EventsDeleted != 1 {
 		t.Fatalf("EventsDeleted = %d, want 1（10s 保留期只该删 20s 前那条）", rep.EventsDeleted)
 	}
-	mustEventGone(t, db, orgID, older.ID)
-	mustEventPresent(t, db, orgID, newer.ID)
-	if n := countRows(t, db, "events", "org_id = ?", orgID); n != 1 {
+	mustEventGone(t, db, nsID, older.ID)
+	mustEventPresent(t, db, nsID, newer.ID)
+	if n := countRows(t, db, "events", "namespace_id = ?", nsID); n != 1 {
 		t.Fatalf("events 剩 %d 行, want 1", n)
 	}
 }
@@ -614,14 +628,14 @@ func TestTerminalStatusListMatchesIsTerminalStatus(t *testing.T) {
 
 // TestRetentionDeletesAllTerminalStatuses 终态四态都能被清（防止 SQL 里的 IN 漏项）。
 func TestRetentionDeletesAllTerminalStatuses(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
 
 	ids := make([]string, 0, len(terminalStatusList))
 	for _, status := range terminalStatusList {
-		task := mkTerminalTask(t, db, orgID, cap, status, now-120)
+		task := mkTerminalTask(t, db, nsID, cap, status, now-120)
 		ids = append(ids, task.ID)
 	}
 
@@ -633,9 +647,9 @@ func TestRetentionDeletesAllTerminalStatuses(t *testing.T) {
 		t.Fatalf("TasksDeleted = %d, want %d", rep.TasksDeleted, len(ids))
 	}
 	for _, id := range ids {
-		mustTaskGone(t, db, orgID, id)
+		mustTaskGone(t, db, nsID, id)
 	}
-	if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 0 {
+	if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 0 {
 		t.Fatalf("tasks 剩 %d 行, want 0", n)
 	}
 }
@@ -645,23 +659,23 @@ func TestRetentionDeletesAllTerminalStatuses(t *testing.T) {
 // 删全表是最坏的失效方式（不可恢复），宁可不删：调用方传错预算时，
 // 下一轮还会再来，但删掉的数据回不来。
 func TestRetentionDeleteRejectsNonPositiveLimit(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
 
-	task := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-120)
-	event := mkEventAt(t, db, orgID, "github", "push", now-120)
+	task := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-120)
+	event := mkEventAt(t, db, nsID, "github", "push", now-120)
 
 	for _, limit := range []int{0, -1} {
-		n, err := db.DeleteExpiredTerminalTasks(ctx, orgID, cap.ID, now, limit)
+		n, err := db.DeleteExpiredTerminalTasks(ctx, nsID, cap.ID, now, limit)
 		if err != nil {
 			t.Fatalf("DeleteExpiredTerminalTasks(limit=%d) err = %v, want nil", limit, err)
 		}
 		if n != 0 {
 			t.Fatalf("DeleteExpiredTerminalTasks(limit=%d) 删了 %d 行, want 0", limit, n)
 		}
-		n, err = db.DeleteExpiredEvents(ctx, orgID, now, limit)
+		n, err = db.DeleteExpiredEvents(ctx, nsID, now, limit)
 		if err != nil {
 			t.Fatalf("DeleteExpiredEvents(limit=%d) err = %v, want nil", limit, err)
 		}
@@ -669,11 +683,14 @@ func TestRetentionDeleteRejectsNonPositiveLimit(t *testing.T) {
 			t.Fatalf("DeleteExpiredEvents(limit=%d) 删了 %d 行, want 0", limit, n)
 		}
 	}
-	mustTaskPresent(t, db, orgID, task.ID)
-	mustEventPresent(t, db, orgID, event.ID)
+	mustTaskPresent(t, db, nsID, task.ID)
+	mustEventPresent(t, db, nsID, event.ID)
 }
 
 // TestListOrgIDs 空库返回 []（不是 nil），有组织时按 id 升序。
+//
+// ListOrgIDs 是保留期清理的前身接口（现在扫描已改为遍历命名空间），语义仍是
+// **组织** id：断言用 orgIDOfNamespace 回查，不能拿命名空间 id 顶替（两者前缀不同：ns_ / org_）。
 func TestListOrgIDs(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -692,8 +709,8 @@ func TestListOrgIDs(t *testing.T) {
 	// newTestOrg 生成的是 org_<随机>，顺序由 id 决定 → 直接按排序后的期望值比对
 	var want []string
 	for i := 0; i < 3; i++ {
-		orgID, _ := newTestOrg(t, db)
-		want = append(want, orgID)
+		nsID, _ := newTestNS(t, db)
+		want = append(want, orgIDOfNamespace(t, db, nsID))
 	}
 	sort.Strings(want)
 
@@ -713,10 +730,10 @@ func TestListOrgIDs(t *testing.T) {
 
 // TestSweepRetentionHonoursCancelledContext 已取消的 ctx 不得动库，且要带回 partial report。
 func TestSweepRetentionHonoursCancelledContext(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	now := Now()
-	cap := mkRetentionCap(t, db, orgID, "review", 60)
-	task := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-120)
+	cap := mkRetentionCap(t, db, nsID, "review", 60)
+	task := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-120)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -732,7 +749,7 @@ func TestSweepRetentionHonoursCancelledContext(t *testing.T) {
 		t.Fatalf("取消后报告 TasksDeleted=%d EventsDeleted=%d, want 0/0",
 			rep.TasksDeleted, rep.EventsDeleted)
 	}
-	mustTaskPresent(t, db, orgID, task.ID)
+	mustTaskPresent(t, db, nsID, task.ID)
 }
 
 // ---------- §5-15：中途取消 → 返回已删除行数 > 0 的 partial report ----------
@@ -774,14 +791,14 @@ func (c *cancelAfterErrCtx) Err() error {
 // 并且错误要能被 errors.Is(err, context.Canceled) 认出来。
 func TestRetentionPartialReportOnCancel(t *testing.T) {
 	t.Run("tasks 阶段中途取消", func(t *testing.T) {
-		db, orgID := retentionTestDB(t)
+		db, nsID := retentionTestDB(t)
 		now := Now()
-		cap := mkRetentionCap(t, db, orgID, "review", 60)
+		cap := mkRetentionCap(t, db, nsID, "review", 60)
 
 		// finished_at 递增 → 删的批次从最老开始
-		oldest := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-300)
-		middle := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-200)
-		newest := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-120)
+		oldest := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-300)
+		middle := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-200)
+		newest := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-120)
 
 		// Batch=2、Batches=5 时的 Err() 调用点：
 		//   1 SweepRetention 入口
@@ -809,23 +826,23 @@ func TestRetentionPartialReportOnCancel(t *testing.T) {
 				rep.EventsDeleted)
 		}
 		// report 与库内事实双向一致
-		mustTaskGone(t, db, orgID, oldest.ID)
-		mustTaskGone(t, db, orgID, middle.ID)
-		mustTaskPresent(t, db, orgID, newest.ID)
-		if n := countRows(t, db, "tasks", "org_id = ?", orgID); n != 1 {
+		mustTaskGone(t, db, nsID, oldest.ID)
+		mustTaskGone(t, db, nsID, middle.ID)
+		mustTaskPresent(t, db, nsID, newest.ID)
+		if n := countRows(t, db, "tasks", "namespace_id = ?", nsID); n != 1 {
 			t.Fatalf("tasks 剩 %d 行, want 1", n)
 		}
 	})
 
 	t.Run("events 阶段中途取消", func(t *testing.T) {
-		db, orgID := retentionTestDB(t)
+		db, nsID := retentionTestDB(t)
 		now := Now()
-		cap := mkRetentionCap(t, db, orgID, "review", 60)
-		task := mkTerminalTask(t, db, orgID, cap, TaskSucceeded, now-120)
+		cap := mkRetentionCap(t, db, nsID, "review", 60)
+		task := mkTerminalTask(t, db, nsID, cap, TaskSucceeded, now-120)
 
 		// EventRetentionSec=10 且 Batch=1 → 两条过期事件各占一批
-		older := mkEventAt(t, db, orgID, "github", "push", now-30)
-		newer := mkEventAt(t, db, orgID, "github", "push", now-20)
+		older := mkEventAt(t, db, nsID, "github", "push", now-30)
+		newer := mkEventAt(t, db, nsID, "github", "push", now-20)
 
 		// Err() 调用点（Batch=1、Batches=5）：
 		//   1 入口
@@ -858,43 +875,46 @@ func TestRetentionPartialReportOnCancel(t *testing.T) {
 				rep.EventsDeleted)
 		}
 		// 报告与库内事实一致：tasks 阶段完成，events 只删了最老那条
-		mustTaskGone(t, db, orgID, task.ID)
-		mustEventGone(t, db, orgID, older.ID)
-		mustEventPresent(t, db, orgID, newer.ID)
-		if n := countRows(t, db, "events", "org_id = ?", orgID); n != 1 {
+		mustTaskGone(t, db, nsID, task.ID)
+		mustEventGone(t, db, nsID, older.ID)
+		mustEventPresent(t, db, nsID, newer.ID)
+		if n := countRows(t, db, "events", "namespace_id = ?", nsID); n != 1 {
 			t.Fatalf("events 剩 %d 行, want 1", n)
 		}
 	})
 }
 
-// ---------- §5-16：events 跨 org 隔离 ----------
+// ---------- §5-16：events 跨命名空间隔离 ----------
 
-// TestRetentionEventsOrgIsolation 与 TaskRetentionOrgIsolation 对称：
-// 事件清理的隔离依据只有 `org_id = ?` 这一个条件，写漏了就会「清 A 顺手把 B 清空」。
-func TestRetentionEventsOrgIsolation(t *testing.T) {
-	db, orgA := retentionTestDB(t)
+// TestRetentionEventsNamespaceIsolation 与 TestRetentionNamespaceIsolation 对称：
+// 事件清理的隔离依据只有 `namespace_id = ?` 这一个条件，写漏了就会「清 A 顺手把 B 清空」。
+//
+// 注意 rep.Orgs 报的是**去重后的组织数**（保留期是组织配置），而删除粒度是命名空间：
+// 两条事件分别属于两个不同 org 的 default 命名空间 → Orgs=2。
+func TestRetentionEventsNamespaceIsolation(t *testing.T) {
+	db, nsA := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
-	orgB, _ := newTestOrg(t, db)
+	nsB, _ := newTestNS(t, db)
 
 	tooOld := now - retentionTestEventSec - 10
-	aOld := mkEventAt(t, db, orgA, "github", "push", tooOld)
-	aFresh := mkEventAt(t, db, orgA, "github", "push", now-60)
-	bOld := mkEventAt(t, db, orgB, "github", "push", tooOld)
+	aOld := mkEventAt(t, db, nsA, "github", "push", tooOld)
+	aFresh := mkEventAt(t, db, nsA, "github", "push", now-60)
+	bOld := mkEventAt(t, db, nsB, "github", "push", tooOld)
 
 	// ① 只清 A：B 的过期事件一行都不能被带走
-	n, err := db.DeleteExpiredEvents(ctx, orgA, now-retentionTestEventSec, 100)
+	n, err := db.DeleteExpiredEvents(ctx, nsA, now-retentionTestEventSec, 100)
 	if err != nil {
-		t.Fatalf("delete expired events (orgA): %v", err)
+		t.Fatalf("delete expired events (nsA): %v", err)
 	}
 	if n != 1 {
-		t.Fatalf("只清 orgA 删了 %d 行, want 1", n)
+		t.Fatalf("只清 nsA 删了 %d 行, want 1", n)
 	}
-	mustEventGone(t, db, orgA, aOld.ID)
-	mustEventPresent(t, db, orgA, aFresh.ID)
-	mustEventPresent(t, db, orgB, bOld.ID)
-	if n := countRows(t, db, "events", "org_id = ?", orgB); n != 1 {
-		t.Fatalf("orgB 有 %d 条事件, want 1（A 的清理碰了 B）", n)
+	mustEventGone(t, db, nsA, aOld.ID)
+	mustEventPresent(t, db, nsA, aFresh.ID)
+	mustEventPresent(t, db, nsB, bOld.ID)
+	if n := countRows(t, db, "events", "namespace_id = ?", nsB); n != 1 {
+		t.Fatalf("nsB 有 %d 条事件, want 1（A 的清理碰了 B）", n)
 	}
 
 	// ② 整轮 sweep：B 的那条在自己那一轮才被删，计数与库内事实一致。
@@ -913,13 +933,13 @@ func TestRetentionEventsOrgIsolation(t *testing.T) {
 	if rep.EventsDeleted != 1 {
 		t.Fatalf("EventsDeleted = %d, want 1（A 那条上一轮已删）", rep.EventsDeleted)
 	}
-	mustEventGone(t, db, orgB, bOld.ID)
-	mustEventPresent(t, db, orgA, aFresh.ID)
-	if n := countRows(t, db, "events", "org_id = ?", orgA); n != 1 {
-		t.Fatalf("orgA 剩 %d 条事件, want 1", n)
+	mustEventGone(t, db, nsB, bOld.ID)
+	mustEventPresent(t, db, nsA, aFresh.ID)
+	if n := countRows(t, db, "events", "namespace_id = ?", nsA); n != 1 {
+		t.Fatalf("nsA 剩 %d 条事件, want 1", n)
 	}
-	if n := countRows(t, db, "events", "org_id = ?", orgB); n != 0 {
-		t.Fatalf("orgB 剩 %d 条事件, want 0", n)
+	if n := countRows(t, db, "events", "namespace_id = ?", nsB); n != 0 {
+		t.Fatalf("nsB 剩 %d 条事件, want 0", n)
 	}
 }
 
@@ -931,16 +951,16 @@ func TestRetentionEventsOrgIsolation(t *testing.T) {
 // 会让 SweepRetention 在 events 阶段之前整轮中止，于是 tasks 与 events **全部**停止清理，
 // 而且每小时重复失败一次——一条坏数据等于把保留策略关掉。
 func TestRetentionBadLifecycleDoesNotPoisonSweep(t *testing.T) {
-	db, orgID := retentionTestDB(t)
+	db, nsID := retentionTestDB(t)
 	ctx := context.Background()
 	now := Now()
 
-	badCap := mkRetentionCap(t, db, orgID, "broken", 60)
-	goodCap := mkRetentionCap(t, db, orgID, "review", 60)
+	badCap := mkRetentionCap(t, db, nsID, "broken", 60)
+	goodCap := mkRetentionCap(t, db, nsID, "review", 60)
 
-	badTask := mkTerminalTask(t, db, orgID, badCap, TaskSucceeded, now-120)
-	goodTask := mkTerminalTask(t, db, orgID, goodCap, TaskSucceeded, now-120)
-	oldEvent := mkEventAt(t, db, orgID, "github", "push", now-retentionTestEventSec-10)
+	badTask := mkTerminalTask(t, db, nsID, badCap, TaskSucceeded, now-120)
+	goodTask := mkTerminalTask(t, db, nsID, goodCap, TaskSucceeded, now-120)
+	oldEvent := mkEventAt(t, db, nsID, "github", "push", now-retentionTestEventSec-10)
 
 	// 直接改库造坏 lifecycle（生产路径写不出这种值，所以只能直插）
 	mustExec(t, db, `UPDATE capability_versions SET lifecycle = '{bad json' WHERE id = ?`, badCap.ID)
@@ -977,12 +997,12 @@ func TestRetentionBadLifecycleDoesNotPoisonSweep(t *testing.T) {
 	if rep.EventsDeleted != 1 {
 		t.Fatalf("EventsDeleted = %d, want 1（events 阶段必须照常跑）", rep.EventsDeleted)
 	}
-	mustTaskPresent(t, db, orgID, badTask.ID)
-	mustTaskGone(t, db, orgID, goodTask.ID)
-	mustEventGone(t, db, orgID, oldEvent.ID)
+	mustTaskPresent(t, db, nsID, badTask.ID)
+	mustTaskGone(t, db, nsID, goodTask.ID)
+	mustEventGone(t, db, nsID, oldEvent.ID)
 
 	logs := buf.String()
-	for _, want := range []string{"store.retention.bad_lifecycle", orgID, badCap.ID} {
+	for _, want := range []string{"store.retention.bad_lifecycle", nsID, badCap.ID} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("warn 日志缺少 %q；实际日志:\n%s", want, logs)
 		}
@@ -1023,21 +1043,21 @@ func TestRetentionIndexesUsed(t *testing.T) {
 
 	tasksPlan := plan(`DELETE FROM tasks WHERE id IN (
 		   SELECT id FROM tasks
-		    WHERE org_id = ? AND capability_id = ?
+		    WHERE namespace_id = ? AND capability_id = ?
 		      AND finished_at IS NOT NULL
 		      AND status IN ('succeeded','failed')
 		      AND finished_at < ?
 		    ORDER BY finished_at
-		    LIMIT 100)`, "org_x", "cap_x", 0)
+		    LIMIT 100)`, "ns_x", "cap_x", 0)
 	if !strings.Contains(tasksPlan, "idx_tasks_retention") {
 		t.Errorf("任务清理没走 idx_tasks_retention，计划：\n%s", tasksPlan)
 	}
 
 	eventsPlan := plan(`DELETE FROM events WHERE id IN (
 		   SELECT id FROM events
-		    WHERE org_id = ? AND created_at < ?
+		    WHERE namespace_id = ? AND created_at < ?
 		    ORDER BY created_at
-		    LIMIT 100)`, "org_x", 0)
+		    LIMIT 100)`, "ns_x", 0)
 	if !strings.Contains(eventsPlan, "idx_events_retention") {
 		t.Errorf("事件清理没走 idx_events_retention，计划：\n%s", eventsPlan)
 	}

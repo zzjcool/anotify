@@ -19,8 +19,10 @@ type fakeStore struct {
 		ID            string
 		FiredAt, Next int64
 	}
-	inserted  bool
-	insertErr error
+	// getSourceNS 记录 GetSource 收到的命名空间（调度器必须用 src.NamespaceID）。
+	getSourceNS []string
+	inserted    bool
+	insertErr   error
 }
 
 func (f *fakeStore) DueCronSources(ctx context.Context, now int64, limit int) ([]*store.Source, error) {
@@ -33,7 +35,8 @@ func (f *fakeStore) MarkSourceFired(ctx context.Context, id string, firedAt, nex
 	}{id, firedAt, nextFire})
 	return nil
 }
-func (f *fakeStore) GetSource(ctx context.Context, orgID, id string) (*store.Source, error) {
+func (f *fakeStore) GetSource(ctx context.Context, namespaceID, id string) (*store.Source, error) {
+	f.getSourceNS = append(f.getSourceNS, namespaceID)
 	if f.src != nil {
 		return f.src, nil
 	}
@@ -66,7 +69,7 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 	tr := &Trigger{Store: st, Dispatcher: disp}
 
 	src := &store.Source{
-		ID: "src_1", OrgID: "org_1", Name: "每晚体检", Kind: store.SourceKindCron,
+		ID: "src_1", NamespaceID: "ns_1", OrgID: "org_1", Name: "每晚体检", Kind: store.SourceKindCron,
 		Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "cap_a"}, {CapabilityID: "cap_b"}},
 	}
 	res, err := tr.Fire(context.Background(), src, "nightly", "", json.RawMessage(`{"k":"v"}`))
@@ -77,6 +80,14 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 		t.Fatalf("应派发 1 次, got %d", len(disp.got))
 	}
 	in := disp.got[0]
+	// 命名空间随源走：派发与事件都必须是源所在的命名空间（契约 §3）。
+	// 这里特意把 NamespaceID 与 OrgID 设成不同值，拿 org 当 namespace 会立即变红。
+	if in.NamespaceID != src.NamespaceID {
+		t.Errorf("DispatchInput.NamespaceID = %q, want %q（源触发必须带命名空间）", in.NamespaceID, src.NamespaceID)
+	}
+	if res.Event.NamespaceID != src.NamespaceID {
+		t.Errorf("event.NamespaceID = %q, want %q", res.Event.NamespaceID, src.NamespaceID)
+	}
 	// 关键断言：源走 Targets 直连，不查边（FromCap 为空）
 	if len(in.Targets) != 2 || in.Targets[0] != "cap_a" {
 		t.Errorf("Targets 未透传: %v", in.Targets)
@@ -102,7 +113,7 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 func TestFireDisabledSource(t *testing.T) {
 	st := &fakeStore{inserted: true}
 	tr := &Trigger{Store: st, Dispatcher: &fakeDisp{}}
-	src := &store.Source{ID: "s", OrgID: "o", Name: "n", Enabled: false}
+	src := &store.Source{ID: "s", NamespaceID: "ns_1", OrgID: "o", Name: "n", Enabled: false}
 	if _, err := tr.Fire(context.Background(), src, "t", "", nil); err == nil {
 		t.Error("停用的源不该能触发")
 	}
@@ -112,7 +123,7 @@ func TestFireIdempotent(t *testing.T) {
 	st := &fakeStore{inserted: false} // 模拟幂等命中
 	disp := &fakeDisp{}
 	tr := &Trigger{Store: st, Dispatcher: disp}
-	src := &store.Source{ID: "s", OrgID: "o", Name: "n", Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "c"}}}
+	src := &store.Source{ID: "s", NamespaceID: "ns_1", OrgID: "o", Name: "n", Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "c"}}}
 	res, err := tr.Fire(context.Background(), src, "t", "k1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +143,7 @@ func TestSchedulerTickFiresDueCron(t *testing.T) {
 		inserted: true,
 		// scheduler 先用 DueCronSources 拿列表，再 GetSource 拿全量
 		due: []*store.Source{{
-			ID: "src_1", OrgID: "org_1", Name: "cron-1", Kind: store.SourceKindCron,
+			ID: "src_1", NamespaceID: "ns_1", OrgID: "org_1", Name: "cron-1", Kind: store.SourceKindCron,
 			Enabled: true, Config: json.RawMessage(`{"expr":"0 3 * * *"}`),
 			NextFireAt: &next,
 		}},
@@ -142,6 +153,18 @@ func TestSchedulerTickFiresDueCron(t *testing.T) {
 	disp := &fakeDisp{out: &route.DispatchOutput{Tasks: []*store.Task{{ID: "t1"}}}}
 	s := &Scheduler{Store: st, Dispatcher: disp, Now: func() int64 { return now }}
 	s.Tick(context.Background())
+
+	// 回查全量源时用的是行上自带的命名空间（不是 org，也不是默认命名空间）
+	if len(st.getSourceNS) != 1 || st.getSourceNS[0] != "ns_1" {
+		t.Fatalf("GetSource 的命名空间 = %v, want [ns_1]（应传 src.NamespaceID）", st.getSourceNS)
+	}
+	// 派发与事件同样带上这个命名空间
+	if len(disp.got) != 1 || disp.got[0].NamespaceID != "ns_1" {
+		t.Fatalf("派发的 NamespaceID 不是 ns_1: %+v", disp.got)
+	}
+	if len(st.events) != 1 || st.events[0].NamespaceID != "ns_1" {
+		t.Fatalf("事件的 NamespaceID 不是 ns_1: %+v", st.events)
+	}
 
 	if len(st.fired) != 1 {
 		t.Fatalf("应标记 1 次触发, got %d", len(st.fired))
@@ -569,7 +592,7 @@ func TestFirePerTargetParams(t *testing.T) {
 	tr := &Trigger{Store: st, Dispatcher: disp}
 
 	src := &store.Source{
-		ID: "src_1", OrgID: "org_1", Name: "多出口", Kind: store.SourceKindManual,
+		ID: "src_1", NamespaceID: "ns_1", OrgID: "org_1", Name: "多出口", Kind: store.SourceKindManual,
 		Enabled: true,
 		Targets: []store.SourceTarget{
 			{CapabilityID: "cap_analyze", Params: map[string]any{"changedLines": float64(350)}},

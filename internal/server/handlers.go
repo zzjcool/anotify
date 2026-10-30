@@ -315,8 +315,21 @@ func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) 
 
 // ---------- Stats ----------
 
+// statsHandler 提供 /v1/stats（事件总数 / 今日 / 完成率 / 热力图）。
+//
+// 统计是**命名空间级**资源（契约 §6.2）：事件与任务都按 namespace 隔离，
+// "本组织有多少事件"这个数字不存在了——同一套流程在 prod / staging
+// 各有各的统计。所以它和 /v1/sources 等资源端点走**同一套**解析：
+// 先 org（成员身份），再 namespaceId（**必填**，缺 → 400）。
+//
+// 为什么复用 consoleHandler 的两个解析函数而不是自己写一遍：
+// 「缺参 400 / 不存在 404 / 别的 org 403 / `*` 只在读端点」这套规则
+// 只能有一处真相，抄一份必然漂移（漂移的表现是同一个错在两页返回不同状态码）。
 type statsHandler struct {
 	db *store.DB
+	// resolveOrg / resolveNamespace 由 mux.go 注入（consoleHandler 的同名方法）。
+	resolveOrg       func(w http.ResponseWriter, r *http.Request, requested string) (string, bool)
+	resolveNamespace func(w http.ResponseWriter, r *http.Request, orgID, bodyNS string, allowAll bool) (nsScope, bool)
 }
 
 func (h *statsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -325,9 +338,21 @@ func (h *statsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "未登录")
 		return
 	}
+	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
+	if !ok {
+		return
+	}
+	// allowAll=false：`*`（跨命名空间汇总）对统计同样有意义，但它的口径是
+	// "把各命名空间的计数加起来"——store.MessageStats 明确拒绝 `*`
+	// （返回 ErrNamespaceRequired），所以这里直接 400，而不是悄悄汇总一个
+	// 用户没要求的数字。管理员汇总视图留待单独实现（见交付报告的风险项）。
+	scope, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
 	// 热力图取近 371 天（53 周）
 	since := store.Now() - 371*86400
-	s, err := h.db.MessageStats(r.Context(), uid, since)
+	s, err := h.db.MessageStats(r.Context(), scope.ID, uid, since)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

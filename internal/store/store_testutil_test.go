@@ -41,6 +41,46 @@ func newTestOrg(t *testing.T, db *DB) (orgID, userID string) {
 	return o.ID, u.ID
 }
 
+// newTestNS 建组织（含 default 命名空间 + 内置能力）+ 一个 owner 用户，
+// 返回 (默认命名空间 id, userID)。
+//
+// 为什么测试基本都用它而不是 newTestOrg：#162 之后命名空间资源的所有 store 调用
+// 作用域参数都是 namespaceID（不是 orgID）。绝大多数用例只关心"这一套资源"，
+// 拿默认命名空间就够了；真要断言组织级（成员/角色）时用 newTestOrg 拿 orgID。
+func newTestNS(t *testing.T, db *DB) (namespaceID, userID string) {
+	t.Helper()
+	orgID, userID := newTestOrg(t, db)
+	nsID, err := db.DefaultNamespaceID(context.Background(), orgID)
+	if err != nil {
+		t.Fatalf("default namespace for org %s: %v", orgID, err)
+	}
+	return nsID, userID
+}
+
+// newTestOrgNS 同时返回 orgID 与默认命名空间 id。
+//
+// 给那些**两层都需要**的用例：#162 之后资源写入用 nsID，而 orgID 还出现在
+// 组织级字段（如 Source.OrgID）与跨命名空间断言里。
+func newTestOrgNS(t *testing.T, db *DB) (orgID, namespaceID string) {
+	t.Helper()
+	orgID, _ = newTestOrg(t, db)
+	nsID, err := db.DefaultNamespaceID(context.Background(), orgID)
+	if err != nil {
+		t.Fatalf("default namespace for org %s: %v", orgID, err)
+	}
+	return orgID, nsID
+}
+
+// orgIDOfNamespace 从命名空间回查组织（组织级断言用）。
+func orgIDOfNamespace(t *testing.T, db *DB, namespaceID string) string {
+	t.Helper()
+	orgID, err := db.NamespaceOrgID(context.Background(), namespaceID)
+	if err != nil {
+		t.Fatalf("org of namespace %s: %v", namespaceID, err)
+	}
+	return orgID
+}
+
 // tableExists 判断表是否存在（迁移断言用）。
 func tableExists(t *testing.T, db *DB, name string) bool {
 	t.Helper()

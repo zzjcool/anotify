@@ -55,6 +55,10 @@ func TestOpenCreatesAllTables(t *testing.T) {
 		// 契约 §2 的 11 张
 		"orgs", "org_members", "capability_versions", "nodes", "node_capabilities",
 		"node_instances", "node_pins", "edges", "events", "tasks", "graph_versions",
+		// 命名空间（#162）：组织之下的隔离边界
+		"namespaces",
+		// 源（#110）：事件入口
+		"sources", "source_targets",
 		// 沿用：属于人的 4 张 + CLI/恢复码 2 张
 		"users", "passkeys", "sessions", "api_keys",
 		"cli_auth_sessions", "recovery_codes",
@@ -104,7 +108,7 @@ func TestMigrationIdempotent(t *testing.T) {
 		t.Fatalf("version before: %v", err)
 	}
 	ctx := context.Background()
-	orgID, userID := newTestOrg(t, db)
+	orgID, userID := newTestNS(t, db)
 	_ = ctx
 	_ = orgID
 	_ = userID

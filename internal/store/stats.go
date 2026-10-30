@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 )
 
@@ -25,7 +24,11 @@ type Stats struct {
 	Daily         []DayCount `json:"daily"`         // 近 N 天每天事件数（热力图）
 }
 
-// MessageStats 计算某用户所在组织的真实统计。sinceSec 为热力图起始（unixepoch 秒）。
+// MessageStats 计算**某个命名空间**的真实统计。sinceSec 为热力图起始（unixepoch 秒）。
+//
+// #162：事件与任务都属于命名空间，所以统计的作用域是 namespaceID（不是 org）——
+// `/v1/stats` 缺 namespaceId 一律 400，绝不回退默认命名空间（契约 §6.2）。
+// userID 只用于「该用户启用的推送设备数」（设备仍按用户维度）。
 //
 // 口径（#80 事件中心化后的定义）：
 //
@@ -38,29 +41,22 @@ type Stats struct {
 // 为什么从 messages 改为 events/tasks：messages 是旧"通知历史"模型，
 // 事件中心里"发生了什么"是 events、"做完没有"是 tasks。
 // 数值会与旧版本不同（历史通知数 ≠ 事件数），这是口径变化不是 bug。
-func (d *DB) MessageStats(ctx context.Context, userID string, sinceSec int64) (*Stats, error) {
+func (d *DB) MessageStats(ctx context.Context, namespaceID, userID string, sinceSec int64) (*Stats, error) {
 	s := &Stats{Daily: []DayCount{}}
-
-	// 用户 → 组织（事件与任务都按组织隔离，见不变量 I10）
-	orgID, err := d.PrimaryOrgOf(ctx, userID)
-	if errors.Is(err, ErrNotFound) {
-		// 还没组织：返回全零而不是报错（未完成注册的用户也会打开首页）
-		return s, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("stats primary org: %w", err)
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
 	}
 
 	// 总数
 	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM events WHERE org_id=?`, orgID).Scan(&s.Total); err != nil {
+		`SELECT COUNT(*) FROM events WHERE namespace_id=?`, namespaceID).Scan(&s.Total); err != nil {
 		return nil, fmt.Errorf("stats total: %w", err)
 	}
 
 	// 今日（UTC 0 点起）
 	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM events WHERE org_id=? AND created_at >=
-		   (strftime('%s','now','start of day'))`, orgID).Scan(&s.Today); err != nil {
+		`SELECT COUNT(*) FROM events WHERE namespace_id=? AND created_at >=
+		   (strftime('%s','now','start of day'))`, namespaceID).Scan(&s.Today); err != nil {
 		return nil, fmt.Errorf("stats today: %w", err)
 	}
 
@@ -70,8 +66,8 @@ func (d *DB) MessageStats(ctx context.Context, userID string, sinceSec int64) (*
 		   COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END),0),
 		   COUNT(*)
 		 FROM tasks
-		 WHERE org_id=? AND status IN ('succeeded','failed','canceled','abandoned')`,
-		orgID).Scan(&s.Delivered, &s.DeliveryTotal); err != nil {
+		 WHERE namespace_id=? AND status IN ('succeeded','failed','canceled','abandoned')`,
+		namespaceID).Scan(&s.Delivered, &s.DeliveryTotal); err != nil {
 		return nil, fmt.Errorf("stats tasks: %w", err)
 	}
 
@@ -85,8 +81,8 @@ func (d *DB) MessageStats(ctx context.Context, userID string, sinceSec int64) (*
 	rows, err := d.QueryContext(ctx,
 		`SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS day, COUNT(*)
 		 FROM events
-		 WHERE org_id=? AND created_at >= ?
-		 GROUP BY day ORDER BY day`, orgID, sinceSec)
+		 WHERE namespace_id=? AND created_at >= ?
+		 GROUP BY day ORDER BY day`, namespaceID, sinceSec)
 	if err != nil {
 		return nil, fmt.Errorf("stats daily: %w", err)
 	}

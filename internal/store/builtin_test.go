@@ -12,15 +12,15 @@ import (
 func TestEnsureBuiltinCapabilitiesIsIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	for i := 0; i < 3; i++ {
-		if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+		if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 			t.Fatalf("第 %d 次播种失败: %v", i+1, err)
 		}
 	}
 
-	c, err := db.GetCapability(ctx, orgID, "notify.phone", 1)
+	c, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
 	if err != nil {
 		t.Fatalf("get notify.phone: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestEnsureBuiltinCapabilitiesIsIdempotent(t *testing.T) {
 	}
 
 	// 不该出现第二行
-	list, err := db.ListCapabilities(ctx, orgID)
+	list, err := db.ListCapabilities(ctx, nsID)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -110,19 +110,19 @@ func TestNotifyPhoneParamsSchemaRequiresTo(t *testing.T) {
 func TestClaimCentralTasksRunsStateMachine(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 		t.Fatalf("seed builtins: %v", err)
 	}
-	capDef, err := db.GetCapability(ctx, orgID, "notify.phone", 1)
+	capDef, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
 	if err != nil {
 		t.Fatalf("get cap: %v", err)
 	}
 
 	task := &Task{
 		ID:           NewTaskID(),
-		OrgID:        orgID,
+		NamespaceID:  nsID,
 		TraceID:      "tr_central",
 		Path:         []string{capDef.ID},
 		CapabilityID: capDef.ID,
@@ -149,7 +149,7 @@ func TestClaimCentralTasksRunsStateMachine(t *testing.T) {
 	}
 
 	// 落库状态必须是 running（且 started_at 已写）
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -178,18 +178,18 @@ func TestClaimCentralTasksRunsStateMachine(t *testing.T) {
 func TestFinishTaskWritesTristate(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+	nsID, _ := newTestNS(t, db)
+	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	capDef, err := db.GetCapability(ctx, orgID, "notify.phone", 1)
+	capDef, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
 	if err != nil {
 		t.Fatalf("get cap: %v", err)
 	}
 
 	mkRunning := func() string {
 		task := &Task{
-			ID: NewTaskID(), OrgID: orgID, TraceID: "tr",
+			ID: NewTaskID(), NamespaceID: nsID, TraceID: "tr",
 			Path: []string{capDef.ID}, CapabilityID: capDef.ID,
 			Capability: capDef.Name, Version: capDef.Version,
 			Params: []byte(`{"to":"u","title":"t"}`), Status: TaskPending,
@@ -207,30 +207,30 @@ func TestFinishTaskWritesTristate(t *testing.T) {
 	// 态 3：reported=1, out="fix"（虽然 notify.phone 没有出口，但机制要通用）
 	id := mkRunning()
 	port := "fix"
-	if err := db.FinishTask(ctx, orgID, id, TaskSucceeded, &port, true, "done", ""); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, &port, true, "done", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	got, _ := db.GetTask(ctx, orgID, id)
+	got, _ := db.GetTask(ctx, nsID, id)
 	if !got.Reported || got.Out == nil || *got.Out != "fix" {
 		t.Errorf("态3 落库错误: reported=%v out=%v", got.Reported, got.Out)
 	}
 
 	// 态 2：reported=1, out=nil（到头了）
 	id = mkRunning()
-	if err := db.FinishTask(ctx, orgID, id, TaskSucceeded, nil, true, "end", ""); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, nil, true, "end", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	got, _ = db.GetTask(ctx, orgID, id)
+	got, _ = db.GetTask(ctx, nsID, id)
 	if !got.Reported || got.Out != nil {
 		t.Errorf("态2 落库错误: reported=%v out=%v", got.Reported, got.Out)
 	}
 
 	// 态 1：reported=0, out=nil（没回报）
 	id = mkRunning()
-	if err := db.FinishTask(ctx, orgID, id, TaskFailed, nil, false, "", "boom"); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskFailed, nil, false, "", "boom"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	got, _ = db.GetTask(ctx, orgID, id)
+	got, _ = db.GetTask(ctx, nsID, id)
 	if got.Reported || got.Out != nil {
 		t.Errorf("态1 落库错误: reported=%v out=%v", got.Reported, got.Out)
 	}
@@ -240,9 +240,9 @@ func TestFinishTaskWritesTristate(t *testing.T) {
 func TestFinishTaskRejectsInvalidStatus(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	err := db.FinishTask(ctx, orgID, "tsk_x", TaskCanceled, nil, false, "", "")
+	err := db.FinishTask(ctx, nsID, "tsk_x", TaskCanceled, nil, false, "", "")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("want ErrInvalidTransition, got %v", err)
 	}
@@ -256,23 +256,23 @@ func TestFinishTaskRejectsInvalidStatus(t *testing.T) {
 func TestNoOriginShellCapabilities(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 		t.Fatalf("seed builtins: %v", err)
 	}
 	for _, name := range []string{"github", "cron", "http", "manual"} {
-		if _, err := db.GetCapability(ctx, orgID, name, 1); !errors.Is(err, ErrNotFound) {
+		if _, err := db.GetCapability(ctx, nsID, name, 1); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("%s@1 不该再作为能力存在（#110），got err=%v", name, err)
 		}
 	}
 	// 中枢执行的终端能力仍然在（它是真能力）
-	if _, err := db.GetCapability(ctx, orgID, "notify.phone", 1); err != nil {
+	if _, err := db.GetCapability(ctx, nsID, "notify.phone", 1); err != nil {
 		t.Fatalf("notify.phone@1 应仍存在: %v", err)
 	}
 	// 用户现在可以自由使用这些名字（不再保留给空壳）
 	if err := db.CreateCapability(ctx, &CapabilityVersion{
-		OrgID:        orgID,
+		NamespaceID:  nsID,
 		Name:         "github",
 		Version:      1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
@@ -290,10 +290,10 @@ func TestNoOriginShellCapabilities(t *testing.T) {
 func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	sink := &CapabilityVersion{
-		OrgID: orgID, Name: "sink", Version: 1,
+		NamespaceID: nsID, Name: "sink", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{}, Source: CapSourceCustom,
 	}
@@ -304,7 +304,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	// 入口边：左端是来源名，任意事件类型都能建
 	for _, port := range []string{"pull_request.opened", "never.declared.before", "x"} {
 		if err := db.CreateEdge(ctx, &Edge{
-			OrgID:          orgID,
+			NamespaceID:    nsID,
 			FromIsSource:   true,
 			FromCapability: "github",
 			FromPort:       port,
@@ -315,7 +315,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	}
 
 	// 下游能查到（派发第 ① 步的查表）
-	got, err := db.EdgesFrom(ctx, orgID, true, "github", "pull_request.opened")
+	got, err := db.EdgesFrom(ctx, nsID, true, "github", "pull_request.opened")
 	if err != nil {
 		t.Fatalf("edges from: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 
 	// 自定义能力的边仍然严格（I2 没有放松）
 	custom := &CapabilityVersion{
-		OrgID: orgID, Name: "custom", Version: 1,
+		NamespaceID: nsID, Name: "custom", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"only"}, Source: CapSourceCustom,
 	}
@@ -333,7 +333,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 		t.Fatalf("create custom: %v", err)
 	}
 	err = db.CreateEdge(ctx, &Edge{
-		OrgID: orgID, FromCapability: custom.ID,
+		NamespaceID: nsID, FromCapability: custom.ID,
 		FromPort: "not_declared", ToCapability: sink.ID,
 	})
 	if !errors.Is(err, ErrEdgeRejected) {
@@ -341,7 +341,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	}
 
 	// 两种边互不串味：来源名 "github" 与能力边不会互相命中
-	if _, err := db.GetCapability(ctx, orgID, "github", 1); !errors.Is(err, ErrNotFound) {
+	if _, err := db.GetCapability(ctx, nsID, "github", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("不该存在一个叫 github 的能力来混淆入口边")
 	}
 }
@@ -353,13 +353,13 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 func TestBuiltinDisplayNames(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 		t.Fatalf("ensure builtin: %v", err)
 	}
 	for _, bc := range BuiltinCapabilities {
-		got, err := db.GetCapability(ctx, orgID, bc.Name, bc.Version)
+		got, err := db.GetCapability(ctx, nsID, bc.Name, bc.Version)
 		if err != nil {
 			t.Fatalf("get %s@%d: %v", bc.Name, bc.Version, err)
 		}
@@ -378,37 +378,37 @@ func TestBuiltinDisplayNames(t *testing.T) {
 func TestBuiltinDisplayNameBackfill(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	// 先播种，然后模拟"老库"：把内置能力的显示名清空（就像这列刚加时那样）
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 		t.Fatalf("ensure builtin: %v", err)
 	}
 	// notify.phone 是现在唯一的内置能力（起点已不再是能力）
-	gh, err := db.GetCapability(ctx, orgID, "notify.phone", 1)
+	gh, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
 	if err != nil {
 		t.Fatalf("get notify.phone: %v", err)
 	}
-	if err := db.SetCapabilityDisplayName(ctx, orgID, gh.ID, ""); err != nil {
+	if err := db.SetCapabilityDisplayName(ctx, nsID, gh.ID, ""); err != nil {
 		t.Fatalf("clear display name: %v", err)
 	}
 	// 再跑一次 Ensure（启动时会对所有组织跑一遍）→ 应该补回来
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 		t.Fatalf("re-ensure builtin: %v", err)
 	}
-	gh2, _ := db.GetCapability(ctx, orgID, "notify.phone", 1)
+	gh2, _ := db.GetCapability(ctx, nsID, "notify.phone", 1)
 	if gh2.DisplayName != "推送通知" {
 		t.Fatalf("backfill failed: %q", gh2.DisplayName)
 	}
 
 	// 用户改成自己的名字 → 不能被启动流程改回去
-	if err := db.SetCapabilityDisplayName(ctx, orgID, gh.ID, "我们的 PR 入口"); err != nil {
+	if err := db.SetCapabilityDisplayName(ctx, nsID, gh.ID, "我们的 PR 入口"); err != nil {
 		t.Fatalf("user rename: %v", err)
 	}
-	if err := db.EnsureBuiltinCapabilities(ctx, orgID); err != nil {
+	if err := db.EnsureBuiltinCapabilities(ctx, orgIDOfNamespace(t, db, nsID)); err != nil {
 		t.Fatalf("ensure again: %v", err)
 	}
-	gh3, _ := db.GetCapability(ctx, orgID, "notify.phone", 1)
+	gh3, _ := db.GetCapability(ctx, nsID, "notify.phone", 1)
 	if gh3.DisplayName != "我们的 PR 入口" {
 		t.Fatalf("startup overwrote user's display name: %q", gh3.DisplayName)
 	}

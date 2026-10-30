@@ -122,6 +122,12 @@ async function main() {
 	H.check("拿到 orgId", !!orgId, String(orgId));
 	if (!orgId) throw new Error("无法解析 orgId for " + s.uid);
 
+	// #162：节点行直插库，迁移 12 起必须写 namespace_id。
+	// 取本组织默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
+	const nsId = await H.defaultNamespaceId(server.base, s.session);
+	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
+	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
+
 	// 必须**真 WS 握手**：只播 rows 的节点是 offline，
 	// PublishAssign 会失败 → 任务被回滚成 pending（attempts=1），
 	// 于是响应里 tasks=[]。那是正确行为，但测不到详情页。
@@ -129,6 +135,7 @@ async function main() {
 		server.base,
 		server.dbPath,
 		orgId,
+		nsId,
 		"deeplink-node",
 		[
 			{ id: reviewId, name: "review", version: 1 },

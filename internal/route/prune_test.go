@@ -17,11 +17,11 @@ func TestPruneReasons(t *testing.T) {
 
 	t.Run("① 上游没回报不是剪枝", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "",
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -36,11 +36,11 @@ func TestPruneReasons(t *testing.T) {
 
 	t.Run("② no_edge", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "fix",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -50,14 +50,14 @@ func TestPruneReasons(t *testing.T) {
 
 	t.Run("③ param_schema", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-		strict := f.addCap(testOrg, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
-		f.addEdge(testOrg, review.ID, "fix", strict.ID)
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+		strict := f.addCap(testNS, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
+		f.addEdge(testNS, review.ID, "fix", strict.ID)
 		f.addNode("nd_strict", strict.ID, 1)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "fix",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 			Params: map[string]any{},
 		})
 		if err != nil {
@@ -68,13 +68,13 @@ func TestPruneReasons(t *testing.T) {
 
 	t.Run("④ no_node", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-		orphan := f.addCap(testOrg, "orphan", 1, nil, `{}`)
-		f.addEdge(testOrg, review.ID, "fix", orphan.ID)
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+		orphan := f.addCap(testNS, "orphan", 1, nil, `{}`)
+		f.addEdge(testNS, review.ID, "fix", orphan.ID)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "fix",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -84,15 +84,15 @@ func TestPruneReasons(t *testing.T) {
 
 	t.Run("⑤ foreign_user", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-		phone := f.addCap(testOrg, "notify.phone", 1, nil,
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+		phone := f.addCap(testNS, "notify.phone", 1, nil,
 			`{"type":"object","required":["to"],"properties":{"to":{"type":"string"}}}`)
-		f.addEdge(testOrg, review.ID, "fix", phone.ID)
+		f.addEdge(testNS, review.ID, "fix", phone.ID)
 		f.addNode("nd_phone", phone.ID, 1)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "fix",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 			// "outsider_1" 不是本组织成员（fakeStore 约定 member* 才是）
 			Params: map[string]any{"to": "outsider_1", "title": "x", "body": "y"},
 		})
@@ -108,15 +108,15 @@ func TestPruneReasons(t *testing.T) {
 
 	t.Run("⑥ path", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-		fix := f.addCap(testOrg, "fix", 1, []string{"review"}, `{}`)
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+		fix := f.addCap(testNS, "fix", 1, []string{"review"}, `{}`)
 		// fix --review--> review（成环）
-		f.addEdge(testOrg, fix.ID, "review", review.ID)
+		f.addEdge(testNS, fix.ID, "review", review.ID)
 		f.addNode("nd_review", review.ID, 1)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "t", FromCap: fix.ID, Out: "review",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: fix.ID, Out: "review",
 			// review 已经在路径里
 			Path: []string{review.ID, fix.ID},
 		})
@@ -134,11 +134,11 @@ func TestPruneReasons(t *testing.T) {
 func TestPrunePathCycle(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-	fix := f.addCap(testOrg, "fix", 1, []string{"review"}, `{}`)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+	fix := f.addCap(testNS, "fix", 1, []string{"review"}, `{}`)
 	// review --fix--> fix ；fix --review--> review
-	f.addEdge(testOrg, review.ID, "fix", fix.ID)
-	f.addEdge(testOrg, fix.ID, "review", review.ID)
+	f.addEdge(testNS, review.ID, "fix", fix.ID)
+	f.addEdge(testNS, fix.ID, "review", review.ID)
 	f.addNode("nd_review", review.ID, 8)
 	f.addNode("nd_fix", fix.ID, 8)
 
@@ -148,7 +148,7 @@ func TestPrunePathCycle(t *testing.T) {
 	// 注意：调用方把 path 传成「从根到本任务的能力序列」——起点能力也应在里面。
 	// 这里模拟「根事件由 review 的 origin 出口触发」，所以 path 从空开始。
 	out1, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "trace_cycle", FromCap: review.ID, Out: "fix",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_cycle", FromCap: review.ID, Out: "fix",
 		Path: []string{review.ID},
 	})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestPrunePathCycle(t *testing.T) {
 
 	// 第二圈：fix 回报 review，目标是 review —— 已在路径里 → pruned/path
 	out2, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "trace_cycle",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_cycle",
 		ParentTaskID: out1.Tasks[0].ID,
 		FromCap:      fix.ID, Out: "review",
 		Path: pathAfterFix,
@@ -182,16 +182,16 @@ func TestPrunePathCycle(t *testing.T) {
 func TestForeignUser(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"notify"}, `{}`)
-	phone := f.addCap(testOrg, "notify.phone", 1, nil,
+	review := f.addCap(testNS, "review", 1, []string{"notify"}, `{}`)
+	phone := f.addCap(testNS, "notify.phone", 1, nil,
 		`{"type":"object","required":["to"],"properties":{"to":{"type":"string"}}}`)
-	f.addEdge(testOrg, review.ID, "notify", phone.ID)
+	f.addEdge(testNS, review.ID, "notify", phone.ID)
 	f.addNode("nd_phone", phone.ID, 4)
 	d := New(f)
 
 	// 成员：放行
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "t1", FromCap: review.ID, Out: "notify",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "t1", FromCap: review.ID, Out: "notify",
 		Params: map[string]any{"to": "member_alice"},
 	})
 	if err != nil {
@@ -203,7 +203,7 @@ func TestForeignUser(t *testing.T) {
 
 	// 非成员：剪枝
 	out, err = d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "t2", FromCap: review.ID, Out: "notify",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "t2", FromCap: review.ID, Out: "notify",
 		Params: map[string]any{"to": "stranger"},
 	})
 	if err != nil {
@@ -219,14 +219,14 @@ func TestForeignUser(t *testing.T) {
 func TestForeignUserEmptyTo(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"notify"}, `{}`)
-	phone := f.addCap(testOrg, "notify.phone", 1, nil, `{"type":"object"}`) // schema 没要求 to
-	f.addEdge(testOrg, review.ID, "notify", phone.ID)
+	review := f.addCap(testNS, "review", 1, []string{"notify"}, `{}`)
+	phone := f.addCap(testNS, "notify.phone", 1, nil, `{"type":"object"}`) // schema 没要求 to
+	f.addEdge(testNS, review.ID, "notify", phone.ID)
 	f.addNode("nd_phone", phone.ID, 1)
 	d := New(f)
 
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "notify",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "notify",
 		Params: map[string]any{}, // 没有 to
 	})
 	if err != nil {
@@ -242,15 +242,15 @@ func TestForeignUserEmptyTo(t *testing.T) {
 func TestNonUserScopedCapabilitySkipsMemberCheck(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-	target := f.addCap(testOrg, "fix", 1, nil, `{"type":"object"}`)
-	f.addEdge(testOrg, review.ID, "fix", target.ID)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+	target := f.addCap(testNS, "fix", 1, nil, `{"type":"object"}`)
+	f.addEdge(testNS, review.ID, "fix", target.ID)
 	f.addNode("nd_fix", target.ID, 1)
 	d := New(f)
 
 	// params.to 是外人，但 fix 不是用户维度能力 → 照常派发
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "t", FromCap: review.ID, Out: "fix",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
 		Params: map[string]any{"to": "stranger"},
 	})
 	if err != nil {

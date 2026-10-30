@@ -20,10 +20,12 @@ type fakeStore struct {
 }
 
 type finishedCall struct {
-	orgID, taskID, status string
-	out                   *string
-	reported              bool
-	summary, errMsg       string
+	// namespaceID 必须来自 task.NamespaceID（不是 task.OrgID）：中枢执行是全局扫描，
+	// 但终态写入只在任务自己的命名空间内生效。
+	namespaceID, taskID, status string
+	out                         *string
+	reported                    bool
+	summary, errMsg             string
 }
 
 func (f *fakeStore) ClaimCentralTasks(ctx context.Context, limit int) ([]*store.Task, error) {
@@ -34,11 +36,11 @@ func (f *fakeStore) ClaimCentralTasks(ctx context.Context, limit int) ([]*store.
 	return f.claim, nil
 }
 
-func (f *fakeStore) FinishTask(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary, errMsg string) error {
+func (f *fakeStore) FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, reported bool, summary, errMsg string) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
-	f.finished = append(f.finished, finishedCall{orgID, taskID, status, out, reported, summary, errMsg})
+	f.finished = append(f.finished, finishedCall{namespaceID, taskID, status, out, reported, summary, errMsg})
 	return nil
 }
 
@@ -60,13 +62,16 @@ func (f *fakeNotifier) NotifyUser(ctx context.Context, userID string, n push.Not
 
 func newTask(id, cap, params string) *store.Task {
 	return &store.Task{
-		ID:         id,
-		OrgID:      "org_x",
-		TraceID:    "tr_x",
-		Capability: cap,
-		Version:    1,
-		Status:     store.TaskRunning,
-		Params:     []byte(params),
+		ID: id,
+		// NamespaceID 与 OrgID 特意取**不同**的值：一旦 executor 把两者搞混
+		// （比如拿 task.OrgID 去调 FinishTask），断言会立即变红。
+		NamespaceID: "ns_x",
+		OrgID:       "org_x",
+		TraceID:     "tr_x",
+		Capability:  cap,
+		Version:     1,
+		Status:      store.TaskRunning,
+		Params:      []byte(params),
 	}
 }
 
@@ -93,6 +98,10 @@ func TestTickNotifyPhoneSucceeds(t *testing.T) {
 	got := fs.finished[0]
 	if got.status != store.TaskSucceeded {
 		t.Errorf("status = %q, want succeeded", got.status)
+	}
+	// 命名空间必须来自任务行本身（不是 org、不是空、不是默认命名空间）
+	if got.namespaceID != "ns_x" {
+		t.Errorf("FinishTask namespaceID = %q, want ns_x（该用 task.NamespaceID）", got.namespaceID)
 	}
 	// out 三态：notify.phone 是终端能力 → reported=1 且 out=nil（到头了）
 	if !got.reported {
@@ -178,6 +187,39 @@ func TestTickUnknownCentralCapability(t *testing.T) {
 
 	if len(fs.finished) != 1 || fs.finished[0].status != store.TaskFailed {
 		t.Fatalf("未知中枢能力应失败，实际 %+v", fs.finished)
+	}
+}
+
+// TestFinishUsesTaskNamespacePerTask 验证一个批次里的任务各用**自己**的命名空间。
+//
+// ClaimCentralTasks 是全局扫描（跨命名空间领取），所以同一批里会有不同命名空间
+// 的任务。如果 executor 拿显式常量/首个任务的命名空间去调 FinishTask，这条会红。
+// 同时覆盖失败路径：推送失败也得按自己的命名空间写 failed 终态。
+func TestFinishUsesTaskNamespacePerTask(t *testing.T) {
+	okTask := newTask("tsk_ok", "notify.phone", `{"to":"usr_a","title":"ok"}`)
+	okTask.NamespaceID = "ns_one"
+	badTask := newTask("tsk_bad", "notify.phone", `{}`) // 缺 params.to → 失败
+	badTask.NamespaceID = "ns_two"
+
+	fs := &fakeStore{claim: []*store.Task{okTask, badTask}}
+	e := New(fs, &fakeNotifier{sent: 1})
+	e.Tick(context.Background())
+
+	if len(fs.finished) != 2 {
+		t.Fatalf("两个任务都应写终态，实际 %d 次", len(fs.finished))
+	}
+	byTask := map[string]finishedCall{}
+	for _, c := range fs.finished {
+		byTask[c.taskID] = c
+	}
+	if got := byTask["tsk_ok"]; got.namespaceID != "ns_one" {
+		t.Errorf("tsk_ok 的 namespaceID = %q, want ns_one", got.namespaceID)
+	}
+	if got := byTask["tsk_bad"]; got.namespaceID != "ns_two" {
+		t.Errorf("tsk_bad 的 namespaceID = %q, want ns_two", got.namespaceID)
+	}
+	if byTask["tsk_bad"].status != store.TaskFailed {
+		t.Errorf("tsk_bad status = %q, want failed", byTask["tsk_bad"].status)
 	}
 }
 

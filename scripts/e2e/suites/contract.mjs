@@ -92,6 +92,12 @@ async function main() {
 	const uid = (seedOut.match(/^UID=(.*)$/m) || [])[1];
 	orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
 
+	// #162：命名空间资源（能力/节点/边/任务……）现在必须带 namespaceId。
+	// 节点是直插库的（见 lib/nodes.mjs），也要写 namespace_id。这里统一取
+	// 本组织默认命名空间（slug=default）的 id —— **不硬编码 ns_xxx**。
+	const nsId = await H.defaultNamespaceId(server.base, session);
+	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
+
 	const orgs = sqlQuery(`SELECT id, name FROM orgs WHERE id = ?`, orgId || "");
 	const members = sqlQuery(
 		`SELECT org_id, user_id, role FROM org_members WHERE user_id = ?`,
@@ -197,10 +203,16 @@ async function main() {
 				"other-" + Date.now(),
 				now,
 			);
+			// 迁移 12 之后能力行必须归属一个命名空间（namespace_id NOT NULL），
+			// 所以给这个「别的组织」也建一个 default 命名空间再插能力。
+			const foreignNs = "ns_x_" + Date.now();
 			db.prepare(
-				`INSERT INTO capability_versions (id, org_id, name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-				 VALUES (?, ?, 'foreign.cap', 1, '{}', '[]', '{}', '', 'custom', ?, ?)`,
-			).run("cap_foreign_" + Date.now(), otherOrg, "hash_" + Date.now(), now);
+				`INSERT INTO namespaces (id, org_id, slug, name, created_at) VALUES (?, ?, 'default', '默认', ?)`,
+			).run(foreignNs, otherOrg, now);
+			db.prepare(
+				`INSERT INTO capability_versions (id, org_id, namespace_id, name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
+				 VALUES (?, ?, ?, 'foreign.cap', 1, '{}', '[]', '{}', '', 'custom', ?, ?)`,
+			).run("cap_foreign_" + Date.now(), otherOrg, foreignNs, "hash_" + Date.now(), now);
 			const foreignId = db
 				.prepare(`SELECT id FROM capability_versions WHERE org_id = ?`)
 				.get(otherOrg).id;
@@ -216,7 +228,7 @@ async function main() {
 
 	// ================= A8 out 三态 + A7 环剪枝 + A9 租约接管 =================
 	// 这三条需要真实节点跑完整链路。
-	const node = await bringUpNode(server.base, server.dbPath, orgId, "contract-node", [origin, work, fin, fanA, fanB], 4);
+	const node = await bringUpNode(server.base, server.dbPath, orgId, nsId, "contract-node", [origin, work, fin, fanA, fanB], 4);
 	A(6, "节点上线", !!node.id);
 
 	// A6：从 origin 出发 → work（1 个任务）；work 回报 done → 扇出到 fanA+fanB
@@ -329,7 +341,7 @@ async function main() {
 		await addEdge(a, "go", b);
 		await addEdge(b, "back", a);
 
-		const cycNode = await bringUpNode(server.base, server.dbPath, orgId, "contract-cycle", [a, b], 2);
+		const cycNode = await bringUpNode(server.base, server.dbPath, orgId, nsId, "contract-cycle", [a, b], 2);
 		const ev = await postEvent({ source: "c.cycle.src", type: "start", payload: {} });
 		// 第一跳进 a；完成 a 回报 go → b；完成 b 回报 back → a 已在 path → 剪枝
 		const tA = ev.json?.tasks?.[0]?.id;

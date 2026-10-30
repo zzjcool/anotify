@@ -493,3 +493,28 @@ CREATE INDEX IF NOT EXISTS idx_tasks_retention
     ON tasks (org_id, capability_id, status, finished_at);
 CREATE INDEX IF NOT EXISTS idx_events_retention
     ON events (org_id, created_at);
+
+-- +migration 12 namespaces
+-- #162：命名空间（设计 docs/design/namespaces.md，契约 §2.1.1）。
+--
+-- 组织之下多一层硬隔离边界：能力 / 节点 / 边 / 源 / 事件 / 任务 / 图快照
+-- **全部**属于某个命名空间，组织级只剩身份（users / org_members）与密钥（api_keys）。
+--
+-- 为什么不是「只加一列 org_id 的兄弟列」：唯一键与主键的前缀必须换成
+-- namespace_id，否则 `review@1` 在 prod 与 staging 里仍然是同一行、
+-- 同一条边会同时影响两个环境 —— 这正是本 issue 要消灭的耦合。
+-- SQLite 改不了主键 / 唯一键，也加不了带 FK 的列，所以 11 张表的重建逻辑
+-- 在 migrate.go 的 migrationHooks[12]（migrateNamespaces）：
+--   ① 给每个已存在的 org 建 `default` 命名空间
+--   ② 逐表重建（新表 → 搬数据 → 删旧 → 改名 → 重建索引），老数据回填到 default
+--   ③ 给每个命名空间播种内置能力（notify.phone 必须存在，否则 end 节点声明不出来）
+CREATE TABLE IF NOT EXISTS namespaces (
+    id         TEXT PRIMARY KEY,              -- ns_<base62>
+    org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    slug       TEXT NOT NULL,                 -- prod / staging / team-a（稳定，出现在 URL 里）
+    name       TEXT NOT NULL,                 -- 展示名（可改）
+    created_at INTEGER NOT NULL,
+    UNIQUE (org_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);

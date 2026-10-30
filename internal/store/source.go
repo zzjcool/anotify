@@ -47,12 +47,14 @@ var (
 // 它**不是能力**：能力由节点声明、中枢派任务给它；源自己产生事件、不干活。
 // 这个区分是本表存在的理由（见 schema.sql 迁移 7 的注释）。
 type Source struct {
-	ID      string          `json:"id"`
-	OrgID   string          `json:"orgId"`
-	Name    string          `json:"name"`
-	Kind    string          `json:"kind"`
-	Config  json.RawMessage `json:"config"`
-	Enabled bool            `json:"enabled"`
+	ID string `json:"id"`
+	// NamespaceID 是隔离维度（I10/I11）：源属于某个命名空间。
+	NamespaceID string          `json:"namespaceId"`
+	OrgID       string          `json:"orgId"`
+	Name        string          `json:"name"`
+	Kind        string          `json:"kind"`
+	Config      json.RawMessage `json:"config"`
+	Enabled     bool            `json:"enabled"`
 
 	// 调度元数据（只有 cron 有意义；其它 kind 为 nil）
 	LastFiredAt *int64 `json:"lastFiredAt"`
@@ -464,7 +466,7 @@ func NewSourceToken() (string, error) {
 	return "src_" + base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-const sourceColumns = `id, org_id, name, kind, config, enabled, last_fired_at, next_fire_at, created_at`
+const sourceColumns = `id, namespace_id, org_id, name, kind, config, enabled, last_fired_at, next_fire_at, created_at`
 
 func scanSource(r scanner) (*Source, error) {
 	var (
@@ -474,7 +476,7 @@ func scanSource(r scanner) (*Source, error) {
 		last    sql.NullInt64
 		next    sql.NullInt64
 	)
-	if err := r.Scan(&s.ID, &s.OrgID, &s.Name, &s.Kind, &cfg, &enabled,
+	if err := r.Scan(&s.ID, &s.NamespaceID, &s.OrgID, &s.Name, &s.Kind, &cfg, &enabled,
 		&last, &next, &s.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -500,8 +502,8 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if s == nil {
 		return fmt.Errorf("create source: nil")
 	}
-	if s.OrgID == "" {
-		return fmt.Errorf("create source: empty org_id")
+	if s.NamespaceID == "" || s.NamespaceID == AllNamespaces {
+		return ErrNamespaceRequired
 	}
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("create source: empty name")
@@ -530,13 +532,21 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	s.Config = cfg
 
-	// 出口能力必须都存在且同组织（不变量 I10：一切过 org_id）
+	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证）。
+	orgID, err := d.NamespaceOrgID(ctx, s.NamespaceID)
+	if err != nil {
+		return fmt.Errorf("create source: %w", err)
+	}
+	s.OrgID = orgID
+
+	// I11 第 ② 条：出口能力必须属于**同一个命名空间**。
+	// 违反一律报错（400），不静默忽略——静默忽略会让人以为配置生效了。
 	for _, t := range s.Targets {
-		if _, err := d.GetCapabilityByID(ctx, s.OrgID, t.CapabilityID); err != nil {
+		if err := d.checkCapabilityInNamespace(ctx, s.NamespaceID, t.CapabilityID, "source_targets"); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return fmt.Errorf("create source: 出口能力 %s 不存在", t.CapabilityID)
 			}
-			return fmt.Errorf("create source: 查能力 %s: %w", t.CapabilityID, err)
+			return fmt.Errorf("create source: %w", err)
 		}
 	}
 
@@ -562,8 +572,8 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sources (`+sourceColumns+`)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		s.ID, s.OrgID, s.Name, s.Kind, string(s.Config), enabled,
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		s.ID, s.NamespaceID, s.OrgID, s.Name, s.Kind, string(s.Config), enabled,
 		nil, nextFire, s.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %q", ErrSourceNameTaken, s.Name)
@@ -576,8 +586,9 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 			return fmt.Errorf("create source target params: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO source_targets (source_id, capability_id, params, created_at) VALUES (?,?,?,?)`,
-			s.ID, t.CapabilityID, paramsJSON, s.CreatedAt); err != nil {
+			`INSERT INTO source_targets (source_id, capability_id, namespace_id, params, created_at)
+			 VALUES (?,?,?,?,?)`,
+			s.ID, t.CapabilityID, s.NamespaceID, paramsJSON, s.CreatedAt); err != nil {
 			return fmt.Errorf("create source target: %w", err)
 		}
 	}
@@ -587,10 +598,13 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	return nil
 }
 
-// ListSources 列出组织的全部源（含出口列表）。按创建时间倒序。
-func (d *DB) ListSources(ctx context.Context, orgID string) ([]*Source, error) {
+// ListSources 列出**命名空间内**的全部源（含出口列表）。按创建时间倒序。
+func (d *DB) ListSources(ctx context.Context, namespaceID string) ([]*Source, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+sourceColumns+` FROM sources WHERE org_id = ? ORDER BY created_at DESC`, orgID)
+		`SELECT `+sourceColumns+` FROM sources WHERE namespace_id = ? ORDER BY created_at DESC`, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list sources: %w", err)
 	}
@@ -615,9 +629,8 @@ func (d *DB) ListSources(ctx context.Context, orgID string) ([]*Source, error) {
 	trows, err := d.QueryContext(ctx,
 		`SELECT st.source_id, st.capability_id, st.params
 		   FROM source_targets st
-		   JOIN sources s ON s.id = st.source_id
-		  WHERE s.org_id = ?
-		  ORDER BY st.capability_id`, orgID)
+		  WHERE st.namespace_id = ?
+		  ORDER BY st.capability_id`, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list source targets: %w", err)
 	}
@@ -644,9 +657,12 @@ func (d *DB) ListSources(ctx context.Context, orgID string) ([]*Source, error) {
 }
 
 // GetSource 取单个源。
-func (d *DB) GetSource(ctx context.Context, orgID, id string) (*Source, error) {
+func (d *DB) GetSource(ctx context.Context, namespaceID, id string) (*Source, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	row := d.QueryRowContext(ctx,
-		`SELECT `+sourceColumns+` FROM sources WHERE org_id = ? AND id = ?`, orgID, id)
+		`SELECT `+sourceColumns+` FROM sources WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 	s, err := scanSource(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSourceNotFound
@@ -696,7 +712,7 @@ func (d *DB) GetSourceByWebhookToken(ctx context.Context, token string) (*Source
 	if err != nil {
 		return nil, fmt.Errorf("get source by token: %w", err)
 	}
-	return d.GetSource(ctx, s.OrgID, s.ID)
+	return d.GetSource(ctx, s.NamespaceID, s.ID)
 }
 
 // UpdateSource 更新可改字段（name / config / enabled / targets）。
@@ -704,10 +720,18 @@ func (d *DB) GetSourceByWebhookToken(ctx context.Context, token string) (*Source
 // 不可改 kind：换种类等于换语义（cron 表达式对 webhook 无意义），
 // 让用户删了重建，代价很小、心智负担更小。
 func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
-	if s == nil || s.ID == "" || s.OrgID == "" {
-		return fmt.Errorf("update source: missing id/org_id")
+	if s == nil || s.ID == "" {
+		return fmt.Errorf("update source: missing id")
 	}
-	cur, err := d.GetSource(ctx, s.OrgID, s.ID)
+	if s.NamespaceID == "" || s.NamespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	orgID, err := d.NamespaceOrgID(ctx, s.NamespaceID)
+	if err != nil {
+		return fmt.Errorf("update source: %w", err)
+	}
+	s.OrgID = orgID
+	cur, err := d.GetSource(ctx, s.NamespaceID, s.ID)
 	if err != nil {
 		return err
 	}
@@ -733,12 +757,13 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	if err != nil {
 		return err
 	}
+	// I11 第 ② 条同样适用于更新路径（建完再改一样能引入跨命名空间引用）。
 	for _, t := range s.Targets {
-		if _, err := d.GetCapabilityByID(ctx, s.OrgID, t.CapabilityID); err != nil {
+		if err := d.checkCapabilityInNamespace(ctx, s.NamespaceID, t.CapabilityID, "source_targets"); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return fmt.Errorf("update source: 出口能力 %s 不存在", t.CapabilityID)
 			}
-			return err
+			return fmt.Errorf("update source: %w", err)
 		}
 	}
 
@@ -762,8 +787,8 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sources
 		    SET name = ?, config = ?, enabled = ?, next_fire_at = ?
-		  WHERE org_id = ? AND id = ?`,
-		strings.TrimSpace(s.Name), string(cfg), enabled, nextFire, s.OrgID, s.ID); err != nil {
+		  WHERE namespace_id = ? AND id = ?`,
+		strings.TrimSpace(s.Name), string(cfg), enabled, nextFire, s.NamespaceID, s.ID); err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %q", ErrSourceNameTaken, s.Name)
 		}
@@ -779,8 +804,9 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 			return fmt.Errorf("update source: target params: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO source_targets (source_id, capability_id, params, created_at) VALUES (?,?,?,?)`,
-			s.ID, t.CapabilityID, paramsJSON, Now()); err != nil {
+			`INSERT INTO source_targets (source_id, capability_id, namespace_id, params, created_at)
+			 VALUES (?,?,?,?,?)`,
+			s.ID, t.CapabilityID, s.NamespaceID, paramsJSON, Now()); err != nil {
 			return fmt.Errorf("update source: insert target: %w", err)
 		}
 	}
@@ -791,8 +817,11 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 }
 
 // DeleteSource 删除源（source_targets 由外键级联删除）。
-func (d *DB) DeleteSource(ctx context.Context, orgID, id string) error {
-	res, err := d.ExecContext(ctx, `DELETE FROM sources WHERE org_id = ? AND id = ?`, orgID, id)
+func (d *DB) DeleteSource(ctx context.Context, namespaceID, id string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	res, err := d.ExecContext(ctx, `DELETE FROM sources WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 	if err != nil {
 		return fmt.Errorf("delete source: %w", err)
 	}

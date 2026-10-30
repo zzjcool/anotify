@@ -228,21 +228,31 @@ CREATE TABLE IF NOT EXISTS node_pins (
 CREATE TABLE IF NOT EXISTS edges (
     namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    from_capability TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
-    from_port       TEXT NOT NULL,            -- 出口名，必须 ∈ from 的 outputs
+    from_is_source  INTEGER NOT NULL DEFAULT 0,   -- 0=能力边，1=入口边
+    from_key        TEXT NOT NULL,                -- 能力 id 或 来源名（看上面）
+    from_port       TEXT NOT NULL,                -- 出口名，能力边时必须 ∈ from 的 outputs
     to_capability   TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
     created_at      INTEGER NOT NULL,
-    PRIMARY KEY (namespace_id, from_capability, from_port, to_capability)
+    PRIMARY KEY (namespace_id, from_is_source, from_key, from_port, to_capability)
 );
 
-CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(namespace_id, from_capability, from_port);
+CREATE INDEX IF NOT EXISTS idx_edges_lookup
+    ON edges(namespace_id, from_is_source, from_key, from_port);
 ```
 
 **边属于命名空间（I11）**：主键前缀从 `org_id` 换成 `namespace_id`。
 同一对能力可以在**不同命名空间**各有一条边，互不影响。
 
-**一行 = 一条边。同一个 `(from_capability, from_port)` 可以有多行 → 扇出。**
-**两端都是能力定义，不引用任何机器（I7）。**
+**一行 = 一条边。同一个 `(from_key, from_port)` 可以有多行 → 扇出。**
+**右端一定是能力定义，不引用任何机器（I7）。**
+
+左端有两种（`from_is_source` 区分，见 #110）：
+`0` = 能力之间的边（`from_key` 是能力 id，`from_port` 必须 ∈ 该能力的 `outputs`）；
+`1` = **入口边**（`from_key` 是来源名，如 `github`；`from_port` 是事件类型，任意值 —— 外部系统决定）。
+
+**I11 第 ① 条**：`from_is_source=0` 时两端能力的 `namespace_id` 都必须等于边的
+`namespace_id`；把别处的能力 id 填进来在 SQL 层是合法的（外键只保证行存在），
+所以 store 层**必须显式校验**，违反一律 `400`。
 
 ### 2.5 事件与任务
 
@@ -252,13 +262,17 @@ CREATE TABLE IF NOT EXISTS events (
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     trace_id     TEXT NOT NULL,               -- 一个根事件引起的全部工作
-    source     TEXT NOT NULL,                 -- github | cron | watch | http | manual
-    type       TEXT NOT NULL,                 -- pull_request.opened
-    payload    TEXT NOT NULL DEFAULT '{}',    -- 原始 JSON，只存不解释
-    created_at INTEGER NOT NULL
+    source       TEXT NOT NULL,               -- github | cron | watch | http | manual（route = 剪枝保留名）
+    type         TEXT NOT NULL,               -- pull_request.opened
+    payload      TEXT NOT NULL DEFAULT '{}',  -- 原始 JSON，只存不解释
+    idem_key     TEXT,                        -- 幂等键（触发器给；NULL 允许重复）
+    created_at   INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_trace ON events(namespace_id, trace_id);
+-- 幂等键的作用域也是命名空间：同一个 idemKey 在 prod / staging 各收一次是正常的
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idem
+    ON events(namespace_id, source, idem_key) WHERE idem_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS tasks (
     id             TEXT PRIMARY KEY,          -- tsk_<base62>，同时是 OTel span_id
@@ -329,6 +343,39 @@ CREATE TABLE IF NOT EXISTS graph_versions (
 把命名空间混进 hash 会让「同一张图在两个命名空间」变成两条内容不同、实际相同的快照。
 
 **为什么钉图**：trace 要能重建「当时图长什么样」。`edges` 是可变的，`graph_versions` 不可变。
+
+### 2.7 源（事件入口）
+
+```sql
+CREATE TABLE IF NOT EXISTS sources (
+    id           TEXT PRIMARY KEY,            -- src_<base62>
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    kind         TEXT NOT NULL,               -- cron | webhook | github | manual
+    config       TEXT NOT NULL DEFAULT '{}',  -- 按 kind 解释的 JSON（I6：只读配置，不求值）
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    last_fired_at INTEGER,
+    next_fire_at  INTEGER,
+    created_at   INTEGER NOT NULL,
+    UNIQUE (namespace_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS source_targets (
+    source_id     TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    params        TEXT NOT NULL DEFAULT '{}',
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (source_id, capability_id)
+);
+```
+
+**源属于命名空间**：名字的唯一性从「组织」缩小到「命名空间」（`UNIQUE(namespace_id, name)`），
+`source_targets` 的每一行都带 `namespace_id`（从源行取）。
+
+**I11 第 ② 条**：`source_targets.capability_id` 指向的能力定义必须与源同一命名空间
+（创建与更新两条路径都要校验，违反 `400`）。源不建边，它自己就是起点（见 #110）。
 
 ---
 
@@ -833,7 +880,8 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `GET/POST/DELETE` | `/v1/edges` | 出口表 CRUD |
 | `GET` | `/v1/nodes` | 节点列表与在线状态 |
 | `POST` | `/v1/nodes/{id}/drain` | 排空节点 |
-| `GET/POST/PATCH/DELETE` | `/v1/namespaces` | 命名空间 CRUD（详见设计文档 §6） |
+| `GET`/`POST` | `/v1/namespaces` | 列出 / 新建命名空间（新建时**同事务播种内置能力**） |
+| `PATCH`/`DELETE` | `/v1/namespaces/{id}` | 改名（只改 `name`，`slug` 不可改）/ 删除（阻塞 `409`、最后一个 `400`、`?force=true` 级联） |
 
 **JSON 字段一律 camelCase**（I9 同源约束的延伸）。
 
@@ -847,11 +895,18 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | 同上但要跨命名空间汇总（管理员视图） | `namespaceId=*` |
 | `/v1/orgs`、`/v1/admin/*`、`/v1/auth/*` | **不需要**（组织级） |
 
+- 参数位置：`GET` 用 query `namespaceId`；`POST`/`PATCH`/`DELETE` 可放 query 或 body 的
+  `namespaceId`（**query 优先**；例外：机器入口 `POST /v1/events` 是 **body 优先**，
+  只读 query 的写端点是 `POST /v1/tasks/{id}/cancel`、`POST /v1/nodes/{id}/drain`、
+  `DELETE /v1/sources/{id}`）
 - 缺 `namespaceId` → `400`（**不回退到默认命名空间**：回退等于把人写错的地方藏起来）
+- `namespaceId=*` → 跨命名空间汇总，**只允许读端点**；写端点 / 单对象端点带 `*` → `400`；
+  `/v1/stats` 的汇总口径未定义，它的 `*` 同样 `400`
 - 不存在 → `404`；属于别的 org → `403`；跨命名空间引用 → `400`（I11）
-- 所有资源在响应里带 `namespaceId`
-- **节点注册**：`POST /v1/nodes` 的 `namespaceId` 决定机器属于哪个命名空间，
-  **令牌绑在它上面**，创建后不可改（要换就删了重建）
+- 所有资源在响应里带 `namespaceId`；`/v1/namespaces` 自身不带
+- **节点归属**：机器属于哪个命名空间由**节点令牌**决定（令牌 → 节点行 →
+  `nodes.namespace_id`，握手时按 token 解析，见 §10.3），创建后不可改
+  （要换就删了重建）。节点协议帧里不传 `namespaceId`，也不存在「注册节点」的 HTTP 端点。
 
 ---
 

@@ -298,9 +298,13 @@ func TestAdmin_MessagesAndSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("primary org: %v", err)
 	}
+	nsID, err := env.db.DefaultNamespaceID(ctx, orgID)
+	if err != nil {
+		t.Fatalf("default namespace: %v", err)
+	}
 	idem := "admin-test-1"
 	if _, err := env.db.InsertEvent(ctx, &store.Event{
-		ID: store.NewEventID(), OrgID: orgID, Source: "github", Type: "pr_opened",
+		ID: store.NewEventID(), NamespaceID: nsID, Source: "github", Type: "pr_opened",
 		TraceID: "trace_admin_test", IdemKey: &idem,
 		Payload: []byte("{}"), CreatedAt: now.Unix(),
 	}); err != nil {

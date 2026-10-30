@@ -20,7 +20,7 @@
 import * as H from "../lib/harness.mjs";
 import { bringUpNode as bringUpShared } from "../lib/nodes.mjs";
 
-let server, session, sendKey, orgId;
+let server, session, sendKey, orgId, nsId;
 
 // ---------- 配置辅助（真实 HTTP API） ----------
 
@@ -66,8 +66,10 @@ async function postEvent(body) {
 }
 
 // bringUpNode 薄封装：把本套件的 (name, caps, slots) 映射到共享实现的参数。
+// nsId 是本组织默认命名空间（下面从 /v1/namespaces 查出，不硬编码）：
+// 节点属于哪个命名空间决定了 hello 里声明的能力名在哪查。
 async function bringUpNode(name, caps, slots = 1) {
-	return bringUpShared(server.base, server.dbPath, orgId, name, caps, slots);
+	return bringUpShared(server.base, server.dbPath, orgId, nsId, name, caps, slots);
 }
 
 function expectPrune(name, resp, reason) {
@@ -96,6 +98,12 @@ async function main() {
 	orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
 	H.check("拿到 orgId", !!orgId, seedOut.slice(0, 200));
 	if (!orgId) throw new Error("无法从 devseed 输出解析 orgId: " + seedOut.slice(0, 300));
+
+	// #162：节点直插库时必须写 namespace_id（迁移 12 起 NOT NULL）。
+	// 取本组织默认命名空间（slug=default）的 id —— 用例里不硬编码 ns_xxx。
+	nsId = await H.defaultNamespaceId(server.base, session);
+	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
+	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
 
 	// ---------- 建图 + 节点上线 ----------
 	console.log("--- 派发四步 ---");

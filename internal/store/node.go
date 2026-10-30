@@ -31,7 +31,10 @@ const (
 // TokenHash 是 sha256(token)，明文只在创建时返回一次（契约 §10.3）；
 // 所以它带 `json:"-"`，任何 API 响应都不会泄漏哈希。
 type Node struct {
-	ID             string   `json:"id"`
+	ID string `json:"id"`
+	// NamespaceID 是**隔离维度**（I10/I11）：机器属于且只属于一个命名空间，
+	// 令牌、能力声明、槽位、粘性钉住都跟着它走；org_id 只是跨命名空间统计的锚点。
+	NamespaceID    string   `json:"namespaceId"`
 	OrgID          string   `json:"orgId"`
 	Name           string   `json:"name"`
 	Tags           []string `json:"tags"`
@@ -44,8 +47,12 @@ type Node struct {
 }
 
 // NodeInstance 是 node_instances 表的一行（并发槽位，由节点申报）。
+//
+// NamespaceID 从父行（nodes）取，不接受调用方传（契约 §2.3）。
 type NodeInstance struct {
-	ID          string  `json:"id"`
+	ID string `json:"id"`
+	// NamespaceID 是槽位所属命名空间（隔离维度，I10）。
+	NamespaceID string  `json:"namespaceId"`
 	NodeID      string  `json:"nodeId"`
 	Slot        int     `json:"slot"`
 	Concurrency int     `json:"concurrency"`
@@ -55,13 +62,18 @@ type NodeInstance struct {
 }
 
 // NodePin 是 node_pins 表的一行（粘性路由）。
+//
+// StickyKey 全局唯一（sha256 摘要），所以查/删按 key 定位即可；但行上仍要带
+// NamespaceID —— 钉住的是「某个命名空间里的某台机器」。
 type NodePin struct {
-	StickyKey  string `json:"stickyKey"`
-	OrgID      string `json:"orgId"`
-	NodeID     string `json:"nodeId"`
-	Selector   string `json:"selector"`
-	CreatedAt  int64  `json:"createdAt"`
-	LastUsedAt int64  `json:"lastUsedAt"`
+	StickyKey string `json:"stickyKey"`
+	// NamespaceID 必填，org_id 由它派生（I10）。
+	NamespaceID string `json:"namespaceId"`
+	OrgID       string `json:"orgId"`
+	NodeID      string `json:"nodeId"`
+	Selector    string `json:"selector"`
+	CreatedAt   int64  `json:"createdAt"`
+	LastUsedAt  int64  `json:"lastUsedAt"`
 }
 
 // 节点注册 / 派发相关的哨兵错误。
@@ -166,12 +178,16 @@ func HashNodeToken(token string) string {
 // CreateNode 创建节点，返回节点与**只出现一次**的明文 token。
 //
 // n.TokenHash 可预先由调用方设置（用于测试注入已知 token）；为空时自动生成。
+//
+// n.NamespaceID 必填（I10）：机器归属哪个命名空间，决定了它的令牌、能力声明、
+// 槽位与粘性钉住活在哪片隔离域里。n.OrgID 由命名空间派生并**覆盖**——
+// 调用方传错也写不出 `namespace.org_id != org_id` 的行（契约 §2.3）。
 func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) {
 	if n == nil {
 		return "", fmt.Errorf("create node: nil")
 	}
-	if n.OrgID == "" {
-		return "", fmt.Errorf("create node: empty org_id")
+	if n.NamespaceID == "" || n.NamespaceID == AllNamespaces {
+		return "", ErrNamespaceRequired
 	}
 	if n.Name == "" {
 		return "", fmt.Errorf("create node: empty name")
@@ -204,26 +220,47 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 	if n.ID == "" {
 		n.ID = NewNodeID()
 	}
+	// org_id 从命名空间派生（I10：`namespace.org_id == org_id` 由构造保证，
+	// 不是由调用方自觉遵守）。
+	orgID, err := d.NamespaceOrgID(ctx, n.NamespaceID)
+	if err != nil {
+		return "", fmt.Errorf("create node: %w", err)
+	}
+	n.OrgID = orgID
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO nodes
-		   (id, org_id, name, tags, status, token_hash, max_instances, max_concurrency, last_seen_at, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		n.ID, n.OrgID, n.Name, string(tagsJSON), n.Status, n.TokenHash,
+		   (id, namespace_id, org_id, name, tags, status, token_hash, max_instances, max_concurrency, last_seen_at, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		n.ID, n.NamespaceID, n.OrgID, n.Name, string(tagsJSON), n.Status, n.TokenHash,
 		n.MaxInstances, n.MaxConcurrency, n.LastSeenAt, n.CreatedAt); err != nil {
 		return "", fmt.Errorf("insert node: %w", err)
 	}
 	return token, nil
 }
 
-// nodeColumns 是统一的列顺序，scanNode 依赖它。
-const nodeColumns = `id, org_id, name, tags, status, token_hash,
+// nodeColumns 是统一的列顺序，scanNodeRow 依赖它（与迁移 12 的 nodes 定义同序）。
+const nodeColumns = `id, namespace_id, org_id, name, tags, status, token_hash,
 	max_instances, max_concurrency, last_seen_at, created_at`
+
+// prefixedNodeColumns 给 nodeColumns 的每一列加表别名前缀，供 join 查询使用。
+//
+// 为什么必须带前缀：`node_capabilities` 也有 `namespace_id`（#162 加的隔离列），
+// 不限定表名的 `namespace_id` 会让 SQLite 报 ambiguous column name。
+func prefixedNodeColumns(alias string) string {
+	cols := []string{"id", "namespace_id", "org_id", "name", "tags", "status", "token_hash",
+		"max_instances", "max_concurrency", "last_seen_at", "created_at"}
+	parts := make([]string, len(cols))
+	for i, c := range cols {
+		parts[i] = alias + "." + c
+	}
+	return strings.Join(parts, ", ")
+}
 
 // scanNodeRow 从 rows 解析一行。
 func scanNodeRow(rows *sql.Rows) (*Node, error) {
 	var n Node
 	var tags string
-	if err := rows.Scan(&n.ID, &n.OrgID, &n.Name, &tags, &n.Status, &n.TokenHash,
+	if err := rows.Scan(&n.ID, &n.NamespaceID, &n.OrgID, &n.Name, &tags, &n.Status, &n.TokenHash,
 		&n.MaxInstances, &n.MaxConcurrency, &n.LastSeenAt, &n.CreatedAt); err != nil {
 		return nil, fmt.Errorf("scan node: %w", err)
 	}
@@ -238,8 +275,10 @@ func scanNodeRow(rows *sql.Rows) (*Node, error) {
 
 // GetNodeByTokenHash 按 token sha256 取节点（握手鉴权用，契约 §10.3）。
 //
-// 这是唯一一个「不知道 org 也能查」的节点查询：token 自带身份。
-// 拿到 (node_id, org_id) 之后，该连接上所有操作都用这两个值，不再查库。
+// 这是唯一一个「还不知道命名空间也能查」的节点查询：token 自带身份。
+// 拿到的行**必须**带 NamespaceID —— 握手后整条连接上的所有操作都靠它定位
+// 命名空间（hello 帧不带 namespace 字段，令牌绑在哪个命名空间就在哪片隔离域生效）；
+// org_id 只是跨命名空间统计的锚点。token 全局唯一，所以本查询不看命名空间。
 func (d *DB) GetNodeByTokenHash(ctx context.Context, tokenHash string) (*Node, error) {
 	if tokenHash == "" {
 		return nil, ErrNotFound
@@ -259,10 +298,16 @@ func (d *DB) GetNodeByTokenHash(ctx context.Context, tokenHash string) (*Node, e
 	return scanNodeRow(rows)
 }
 
-// GetNode 按 (orgID, id) 取节点（不变量 I10：必须带 org）。
-func (d *DB) GetNode(ctx context.Context, orgID, nodeID string) (*Node, error) {
+// GetNode 按 (namespaceID, id) 取节点（不变量 I10：必须带命名空间）。
+//
+// 节点 id 全局唯一，但读路径仍要过隔离维度：少了它，一个写错的 id 就能
+// 把别的命名空间的机器读出来。
+func (d *DB) GetNode(ctx context.Context, namespaceID, nodeID string) (*Node, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE org_id = ? AND id = ?`, orgID, nodeID)
+		`SELECT `+nodeColumns+` FROM nodes WHERE namespace_id = ? AND id = ?`, namespaceID, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("get node: %w", err)
 	}
@@ -276,10 +321,16 @@ func (d *DB) GetNode(ctx context.Context, orgID, nodeID string) (*Node, error) {
 	return scanNodeRow(rows)
 }
 
-// GetNodeByName 按 (orgID, name) 取节点；未命中返回 ErrNotFound。
-func (d *DB) GetNodeByName(ctx context.Context, orgID, name string) (*Node, error) {
+// GetNodeByName 按 (namespaceID, name) 取节点；未命中返回 ErrNotFound。
+//
+// 名字的唯一性也是命名空间内的（UNIQUE(namespace_id, name)）：prod 与 staging
+// 可以各有一台同名机器。
+func (d *DB) GetNodeByName(ctx context.Context, namespaceID, name string) (*Node, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE org_id = ? AND name = ?`, orgID, name)
+		`SELECT `+nodeColumns+` FROM nodes WHERE namespace_id = ? AND name = ?`, namespaceID, name)
 	if err != nil {
 		return nil, fmt.Errorf("get node by name: %w", err)
 	}
@@ -293,10 +344,13 @@ func (d *DB) GetNodeByName(ctx context.Context, orgID, name string) (*Node, erro
 	return scanNodeRow(rows)
 }
 
-// ListNodes 列出组织内节点（空列表返回 []）。
-func (d *DB) ListNodes(ctx context.Context, orgID string) ([]*Node, error) {
+// ListNodes 列出命名空间内节点（空列表返回 []）。
+func (d *DB) ListNodes(ctx context.Context, namespaceID string) ([]*Node, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE org_id = ? ORDER BY name, id`, orgID)
+		`SELECT `+nodeColumns+` FROM nodes WHERE namespace_id = ? ORDER BY name, id`, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -313,15 +367,18 @@ func (d *DB) ListNodes(ctx context.Context, orgID string) ([]*Node, error) {
 }
 
 // UpdateNodeStatus 改节点状态（online/offline/draining），并刷新 last_seen_at。
-func (d *DB) UpdateNodeStatus(ctx context.Context, orgID, nodeID, status string) error {
+func (d *DB) UpdateNodeStatus(ctx context.Context, namespaceID, nodeID, status string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
 	switch status {
 	case NodeStatusOnline, NodeStatusOffline, NodeStatusDraining:
 	default:
 		return fmt.Errorf("update node status: invalid status %q", status)
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE nodes SET status = ?, last_seen_at = ? WHERE org_id = ? AND id = ?`,
-		status, Now(), orgID, nodeID)
+		`UPDATE nodes SET status = ?, last_seen_at = ? WHERE namespace_id = ? AND id = ?`,
+		status, Now(), namespaceID, nodeID)
 	if err != nil {
 		return fmt.Errorf("update node status: %w", err)
 	}
@@ -336,13 +393,16 @@ func (d *DB) UpdateNodeStatus(ctx context.Context, orgID, nodeID, status string)
 }
 
 // TouchNode 刷新 last_seen_at（任何上行帧都续命，契约 §3.3）。
-func (d *DB) TouchNode(ctx context.Context, orgID, nodeID string, at int64) error {
+func (d *DB) TouchNode(ctx context.Context, namespaceID, nodeID string, at int64) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
 	if at == 0 {
 		at = Now()
 	}
 	if _, err := d.ExecContext(ctx,
-		`UPDATE nodes SET last_seen_at = ? WHERE org_id = ? AND id = ?`,
-		at, orgID, nodeID); err != nil {
+		`UPDATE nodes SET last_seen_at = ? WHERE namespace_id = ? AND id = ?`,
+		at, namespaceID, nodeID); err != nil {
 		return fmt.Errorf("touch node: %w", err)
 	}
 	return nil
@@ -361,12 +421,12 @@ func (d *DB) TouchNode(ctx context.Context, orgID, nodeID string, at int64) erro
 // 这是**老路径**（hello 不带 manifest）：签名与行为保持不变，run_spec 一律写 '{}'。
 // 带 manifest 的节点走 ConfirmCapabilityDecls，两者共用私有实现
 // confirmCapabilityDecls（校验规则只有一份）。
-func (d *DB) ConfirmCapabilities(ctx context.Context, orgID, nodeID string, caps []CapabilityRef) ([]string, error) {
+func (d *DB) ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string, caps []CapabilityRef) ([]string, error) {
 	decls := make([]CapabilityDecl, 0, len(caps))
 	for _, ref := range caps {
 		decls = append(decls, CapabilityDecl{Name: ref.Name, Version: ref.Version})
 	}
-	return d.confirmCapabilityDecls(ctx, orgID, nodeID, decls)
+	return d.confirmCapabilityDecls(ctx, namespaceID, nodeID, decls)
 }
 
 // ConfirmCapabilityDecls 是带 run 声明的注册路径（hello 带 manifest）：
@@ -376,37 +436,40 @@ func (d *DB) ConfirmCapabilities(ctx context.Context, orgID, nodeID string, caps
 // （CapabilityDeclError）。已定义能力项与未定义能力项都会校验 run，
 // 目的是让节点一次启动就把配置问题说清楚，而不是修一条重启一次。
 //
-// 命名空间（#162）落地后要改成按 namespaceID 解析（I11）。
-func (d *DB) ConfirmCapabilityDecls(ctx context.Context, orgID, nodeID string, decls []CapabilityDecl) ([]string, error) {
-	return d.confirmCapabilityDecls(ctx, orgID, nodeID, decls)
+// 能力的解析限定在**该节点所在命名空间**内（I11③）：在 prod 里声明 staging 的
+// review@1 等同于声明一个不存在的能力（ErrUnknownCapability 语义不变）。
+func (d *DB) ConfirmCapabilityDecls(ctx context.Context, namespaceID, nodeID string, decls []CapabilityDecl) ([]string, error) {
+	return d.confirmCapabilityDecls(ctx, namespaceID, nodeID, decls)
 }
 
 // confirmCapabilityDecls 是两个 Confirm 的唯一实现：先校验并收集全部问题，
 // 全过才 DELETE + INSERT（全量替换，run_spec 一起写）。
-func (d *DB) confirmCapabilityDecls(ctx context.Context, orgID, nodeID string, decls []CapabilityDecl) ([]string, error) {
+func (d *DB) confirmCapabilityDecls(ctx context.Context, namespaceID, nodeID string, decls []CapabilityDecl) ([]string, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	if nodeID == "" {
 		return nil, fmt.Errorf("confirm capabilities: empty node_id")
+	}
+
+	// 节点行是唯一真相（I11③ + 契约 §2.3）：
+	//   - 能力定义只在**节点所在命名空间**里按 name@version 解析（不在别处）；
+	//   - node_capabilities.namespace_id 从这一行取，不接受调用方传。
+	node, err := d.GetNode(ctx, namespaceID, nodeID)
+	if err != nil {
+		return nil, err
 	}
 
 	// run_spec 归一：'' → '{}'（没声明执行方式），其它按 JSON 原文存。
 	specs := make([]string, len(decls))
 	present := make([]bool, len(decls))
-	anyRun := false
 	for i, decl := range decls {
 		specs[i], present[i] = runSpecOf(decl.Run)
-		anyRun = anyRun || present[i]
 	}
 
-	// concurrency 越界要对 nodes.max_concurrency：
-	// **只有当至少一条声明带 run 时才查一次**，老路径完全不多查、行为零漂移。
-	maxConcurrency := 0
-	if anyRun {
-		node, err := d.GetNode(ctx, orgID, nodeID)
-		if err != nil {
-			return nil, err
-		}
-		maxConcurrency = node.MaxConcurrency
-	}
+	// concurrency 越界要对 nodes.max_concurrency：节点行上面已经取过
+	// （命名空间隔离与 node_capabilities.namespace_id 都要它），不再多查一次。
+	maxConcurrency := node.MaxConcurrency
 
 	ids := make([]string, len(decls))
 	var (
@@ -423,14 +486,23 @@ func (d *DB) confirmCapabilityDecls(ctx context.Context, orgID, nodeID string, d
 			continue // 名字都没有，{ref} 渲染不出来，run 问题无法自描述
 		}
 		ref := fmt.Sprintf("%s@%d", decl.Name, decl.Version)
-		c, err := d.GetCapability(ctx, orgID, decl.Name, decl.Version)
+		// I11③：只在**本节点所在命名空间**解析能力定义。
+		c, err := d.GetCapability(ctx, node.NamespaceID, decl.Name, decl.Version)
 		switch {
 		case errors.Is(err, ErrNotFound):
-			// 未定义能力也继续校验 run：一次把配置问题说全
+			// 未定义能力（含「只在别的命名空间定义过」）也继续校验 run：一次把配置问题说全
 			unknownRefs = append(unknownRefs, ref)
 			unknown = true
 		case err != nil:
 			return nil, err
+		case c.NamespaceID != node.NamespaceID:
+			// 数据被写坏时才可能走到：宁可 400 说清楚，也不要把别的命名空间的
+			// 能力 id 写进本节点的声明（handler 把这错误一律翻成 400）。
+			return nil, &CrossNamespaceError{
+				What: "node_capabilities.capability_id",
+				Want: node.NamespaceID,
+				Got:  c.NamespaceID,
+			}
 		default:
 			ids[i] = c.ID
 		}
@@ -460,10 +532,11 @@ func (d *DB) confirmCapabilityDecls(ctx context.Context, orgID, nodeID string, d
 	}
 	for i := range decls {
 		// 同一能力重复声明时后者胜（与 hello 合并算法的「后者胜」一致，行为确定）。
+		// namespace_id 从 node 行取（契约 §2.3），不是调用方传的。
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO node_capabilities (node_id, capability_id, run_spec) VALUES (?,?,?)
+			`INSERT INTO node_capabilities (node_id, capability_id, namespace_id, run_spec) VALUES (?,?,?,?)
 			 ON CONFLICT(node_id, capability_id) DO UPDATE SET run_spec = excluded.run_spec`,
-			nodeID, ids[i], specs[i]); err != nil {
+			nodeID, ids[i], node.NamespaceID, specs[i]); err != nil {
 			return nil, fmt.Errorf("insert node capability: %w", err)
 		}
 	}
@@ -565,7 +638,7 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCa
 	for rows.Next() {
 		var c CapabilityVersion
 		var paramsSchema, outputs, lifecycle, runSpec string
-		if err := rows.Scan(&c.ID, &c.OrgID, &c.Name, &c.Version, &paramsSchema, &outputs,
+		if err := rows.Scan(&c.ID, &c.NamespaceID, &c.OrgID, &c.Name, &c.Version, &paramsSchema, &outputs,
 			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt, &runSpec); err != nil {
 			return nil, fmt.Errorf("scan node capability: %w", err)
 		}
@@ -589,10 +662,11 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCa
 	return out, rows.Err()
 }
 
-// prefixedCapabilityColumns 给 capabilityColumns 的每一列加表别名前缀，
-// 避免与 join 表的同名列（id/org_id）混淆。
+// prefixedCapabilityColumns 给能力列加表别名前缀，
+// 避免与 join 表的同名列（id/namespace_id/org_id）混淆。
+// 列顺序必须与下面的 scan 一致（scan 只取展示需要的子集，不含 display_name）。
 func prefixedCapabilityColumns(alias string) string {
-	cols := []string{"id", "org_id", "name", "version", "params_schema", "outputs",
+	cols := []string{"id", "namespace_id", "org_id", "name", "version", "params_schema", "outputs",
 		"lifecycle", "sticky", "source", "content_hash", "created_at"}
 	parts := make([]string, len(cols))
 	for i, c := range cols {
@@ -605,15 +679,21 @@ func prefixedCapabilityColumns(alias string) string {
 //
 // 「可接单」= 节点状态不是 offline/draining。排序按 last_seen_at 新→旧，
 // 让调用方（路由层）能在同分时偏向最近活跃的机器。
-func (d *DB) NodesForCapability(ctx context.Context, orgID, capabilityID string) ([]string, error) {
+//
+// 命名空间（I11③）：只在该命名空间内选机器 —— 同一个 capability_id 只可能
+// 属于一个命名空间（能力 id 全局唯一且声明写入时已校验）。
+func (d *DB) NodesForCapability(ctx context.Context, namespaceID, capabilityID string) ([]string, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
 		`SELECT n.id
 		 FROM node_capabilities nc
 		 JOIN nodes n ON n.id = nc.node_id
-		 WHERE nc.capability_id = ? AND n.org_id = ?
+		 WHERE nc.capability_id = ? AND n.namespace_id = ?
 		   AND n.status IN (?, ?)
 		 ORDER BY COALESCE(n.last_seen_at, 0) DESC, n.id`,
-		capabilityID, orgID, NodeStatusOnline, NodeStatusOffline)
+		capabilityID, namespaceID, NodeStatusOnline, NodeStatusOffline)
 	if err != nil {
 		return nil, fmt.Errorf("nodes for capability: %w", err)
 	}
@@ -639,15 +719,19 @@ func (d *DB) NodesForCapability(ctx context.Context, orgID, capabilityID string)
 //	                          否则运维会以为这个能力没人管了
 //
 // 排序按状态（在线优先）+ 名字，让列表读起来稳定。
-func (d *DB) NodesDeclaringCapability(ctx context.Context, orgID, capabilityID string) ([]*Node, error) {
+// 作用域是该命名空间（I11）：跨命名空间的机器不应出现在这张表里。
+func (d *DB) NodesDeclaringCapability(ctx context.Context, namespaceID, capabilityID string) ([]*Node, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+nodeColumns+`
+		`SELECT `+prefixedNodeColumns("n")+`
 		 FROM node_capabilities nc
 		 JOIN nodes n ON n.id = nc.node_id
-		 WHERE nc.capability_id = ? AND n.org_id = ?
+		 WHERE nc.capability_id = ? AND n.namespace_id = ?
 		 ORDER BY CASE n.status WHEN 'online' THEN 0 WHEN 'draining' THEN 1 ELSE 2 END,
 		          n.name, n.id`,
-		capabilityID, orgID)
+		capabilityID, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("nodes declaring capability: %w", err)
 	}
@@ -669,8 +753,13 @@ func (d *DB) NodesDeclaringCapability(ctx context.Context, orgID, capabilityID s
 //
 // 语义：节点每次 hello 申报的是一份**完整清单**，多余的老槽位删除（节点缩容）。
 // slot 必须唯一且 ≥ 0，concurrency 至少 1。
-func (d *DB) UpsertInstances(ctx context.Context, orgID, nodeID string, specs []InstanceSpec) ([]*NodeInstance, error) {
-	node, err := d.GetNode(ctx, orgID, nodeID)
+//
+// namespace_id 从 node 行取（契约 §2.3），不接受调用方传。
+func (d *DB) UpsertInstances(ctx context.Context, namespaceID, nodeID string, specs []InstanceSpec) ([]*NodeInstance, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	node, err := d.GetNode(ctx, namespaceID, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -721,15 +810,16 @@ func (d *DB) UpsertInstances(ctx context.Context, orgID, nodeID string, specs []
 		if conc <= 0 {
 			conc = 1
 		}
-		// 已有槽位保留 busy_task（重启不该把正在跑的任务丢掉），只更新并发与存活标记
+		// 已有槽位保留 busy_task（重启不该把正在跑的任务丢掉），只更新并发与存活标记。
+		// namespace_id 取 node 行（父行先写入，所以这里一定拿得到）。
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO node_instances (id, node_id, slot, concurrency, busy_task, alive, updated_at)
-			 VALUES (?,?,?,?,NULL,1,?)
+			`INSERT INTO node_instances (id, node_id, namespace_id, slot, concurrency, busy_task, alive, updated_at)
+			 VALUES (?,?,?,?,?,NULL,1,?)
 			 ON CONFLICT(node_id, slot) DO UPDATE SET
 			   concurrency = excluded.concurrency,
 			   alive = 1,
 			   updated_at = excluded.updated_at`,
-			NewInstanceID(), nodeID, s.Slot, conc, now); err != nil {
+			NewInstanceID(), nodeID, node.NamespaceID, s.Slot, conc, now); err != nil {
 			return nil, fmt.Errorf("upsert instance slot %d: %w", s.Slot, err)
 		}
 	}
@@ -783,7 +873,7 @@ func (d *DB) FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]
 
 func (d *DB) ListInstances(ctx context.Context, nodeID string) ([]*NodeInstance, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, node_id, slot, concurrency, busy_task, alive, updated_at
+		`SELECT id, node_id, namespace_id, slot, concurrency, busy_task, alive, updated_at
 		 FROM node_instances WHERE node_id = ? ORDER BY slot`, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("list instances: %w", err)
@@ -793,7 +883,8 @@ func (d *DB) ListInstances(ctx context.Context, nodeID string) ([]*NodeInstance,
 	for rows.Next() {
 		var in NodeInstance
 		var alive int
-		if err := rows.Scan(&in.ID, &in.NodeID, &in.Slot, &in.Concurrency, &in.BusyTask, &alive, &in.UpdatedAt); err != nil {
+		if err := rows.Scan(&in.ID, &in.NodeID, &in.NamespaceID, &in.Slot, &in.Concurrency,
+			&in.BusyTask, &alive, &in.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan instance: %w", err)
 		}
 		in.Alive = alive != 0
@@ -871,7 +962,10 @@ func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, 
 //  4. 写 node/instance/lease_until 并 attempts+1
 //
 // 任一步失败都整体回滚——槽位不泄漏，attempts 也不会被提前 +1。
-func (d *DB) LeaseAndAssign(ctx context.Context, orgID, taskID, nodeID string, leaseUntil int64) (instanceID string, err error) {
+func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (instanceID string, err error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return "", ErrNamespaceRequired
+	}
 	if taskID == "" {
 		// 与 LeaseInstance 的参数校验口径一致：先拒绝，连事务都不开（不占槽）
 		return "", fmt.Errorf("lease and assign: empty task_id")
@@ -912,7 +1006,10 @@ func (d *DB) LeaseAndAssign(ctx context.Context, orgID, taskID, nodeID string, l
 	}
 
 	// ③ 改状态（唯一写入口）+ ④ 写归属/attempts
-	if err := d.assignTaskTx(ctx, tx, orgID, taskID, nodeID, instanceID, leaseUntil); err != nil {
+	// 命名空间（I11）：任务与槽位必须在同一个命名空间里——nodeID 来自
+	// NodesForCapability 的同一命名空间查询，taskID 由调用方按同一命名空间获取，
+	// assignTaskTx 内的 WHERE 还会再过一次 namespace_id。
+	if err := d.assignTaskTx(ctx, tx, namespaceID, taskID, nodeID, instanceID, leaseUntil); err != nil {
 		return "", err
 	}
 
@@ -954,12 +1051,15 @@ func StickyKey(traceID, capabilityID, selector string) string {
 }
 
 // GetPin 按 sticky_key 取粘性钉住；未命中返回 ErrNotFound。
+//
+// sticky_key 全局唯一（派发时按 trace/capability/selector 摘要算出），所以不需要
+// 命名空间参数；但返回的行带 NamespaceID，调用方靠它确认钉住的机器与任务同域。
 func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
 	var p NodePin
 	err := d.QueryRowContext(ctx,
-		`SELECT sticky_key, org_id, node_id, selector, created_at, last_used_at
+		`SELECT sticky_key, namespace_id, org_id, node_id, selector, created_at, last_used_at
 		 FROM node_pins WHERE sticky_key = ?`, stickyKey).
-		Scan(&p.StickyKey, &p.OrgID, &p.NodeID, &p.Selector, &p.CreatedAt, &p.LastUsedAt)
+		Scan(&p.StickyKey, &p.NamespaceID, &p.OrgID, &p.NodeID, &p.Selector, &p.CreatedAt, &p.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -970,10 +1070,21 @@ func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
 }
 
 // PutPin 写入（或刷新）粘性钉住。已存在时更新 last_used_at（钉住不换机器）。
+//
+// p.NamespaceID 必填（钉住的是「哪个命名空间里的哪台机器」），p.OrgID 由命名空间
+// 派生并**覆盖**（I10）；p.NodeID 必须是该命名空间内的节点。
 func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
-	if p == nil || p.StickyKey == "" || p.OrgID == "" || p.NodeID == "" {
-		return fmt.Errorf("put pin: sticky_key/org_id/node_id required")
+	if p == nil || p.StickyKey == "" || p.NodeID == "" {
+		return fmt.Errorf("put pin: sticky_key/node_id required")
 	}
+	if p.NamespaceID == "" || p.NamespaceID == AllNamespaces {
+		return fmt.Errorf("put pin: %w", ErrNamespaceRequired)
+	}
+	orgID, err := d.NamespaceOrgID(ctx, p.NamespaceID)
+	if err != nil {
+		return fmt.Errorf("put pin: %w", err)
+	}
+	p.OrgID = orgID
 	now := Now()
 	if p.CreatedAt == 0 {
 		p.CreatedAt = now
@@ -982,10 +1093,10 @@ func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
 		p.LastUsedAt = now
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO node_pins (sticky_key, org_id, node_id, selector, created_at, last_used_at)
-		 VALUES (?,?,?,?,?,?)
+		`INSERT INTO node_pins (sticky_key, namespace_id, org_id, node_id, selector, created_at, last_used_at)
+		 VALUES (?,?,?,?,?,?,?)
 		 ON CONFLICT(sticky_key) DO UPDATE SET last_used_at = excluded.last_used_at`,
-		p.StickyKey, p.OrgID, p.NodeID, p.Selector, p.CreatedAt, p.LastUsedAt); err != nil {
+		p.StickyKey, p.NamespaceID, p.OrgID, p.NodeID, p.Selector, p.CreatedAt, p.LastUsedAt); err != nil {
 		return fmt.Errorf("put pin: %w", err)
 	}
 	return nil
@@ -1012,12 +1123,17 @@ func (d *DB) DeletePinsForNode(ctx context.Context, nodeID string) error {
 // 明文 token 只在 CreateNode 时返回一次，之后无法复原。开发场景（devseed
 // 反复跑）需要一个"同一个节点、换一把钥匙"的入口，否则只能不断新建节点行，
 // 留下大量永远离线的死节点。
-func (d *DB) SetNodeTokenHash(ctx context.Context, nodeID, tokenHash string) error {
+//
+// 作用域仍是命名空间（I10）：换钥匙也得说清楚换的是哪片隔离域里的节点。
+func (d *DB) SetNodeTokenHash(ctx context.Context, namespaceID, nodeID, tokenHash string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
 	if nodeID == "" || tokenHash == "" {
 		return fmt.Errorf("set node token hash: empty node_id or hash")
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE nodes SET token_hash = ? WHERE id = ?`, tokenHash, nodeID)
+		`UPDATE nodes SET token_hash = ? WHERE namespace_id = ? AND id = ?`, tokenHash, namespaceID, nodeID)
 	if err != nil {
 		return fmt.Errorf("update node token hash: %w", err)
 	}

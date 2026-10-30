@@ -21,8 +21,11 @@ import (
 
 // nodeFixture 是一套跑起来的节点协议环境。
 type nodeFixture struct {
-	db      *store.DB
-	orgID   string
+	db    *store.DB
+	orgID string // 组织 ID（只用于「组织级」断言；store 作用域一律用 nsID）
+	// nsID 是节点所属的**命名空间**（#162）：节点/能力/任务的 store 调用都用它。
+	// 夹具里就是该组织的 default 命名空间（与线上注册路径一致）。
+	nsID    string
 	node    *store.Node
 	token   string
 	srv     *httptest.Server
@@ -53,9 +56,17 @@ func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 		t.Fatalf("add member: %v", err)
 	}
 
-	// 能力定义（节点只能声明已定义的，不变量 I2）
+	// 命名空间：CreateOrg 已在同一事务里建好 default 命名空间并播种内置能力，
+	// 节点注册走的就是它——令牌绑命名空间（设计文档 §2.1），
+	// 所以这个夹具拿到 default 命名空间就够跑全链路了。
+	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("default namespace: %v", err)
+	}
+
+	// 能力定义（节点只能声明已定义的，不变量 I2；解析范围被命名空间收窄）
 	cap1 := &store.CapabilityVersion{
-		OrgID: org.ID, Name: "review", Version: 1,
+		NamespaceID: nsID, Name: "review", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"fix"}, Source: store.CapSourceBuiltin,
 	}
@@ -64,7 +75,7 @@ func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 	}
 
 	// 节点
-	node := &store.Node{OrgID: org.ID, Name: "mbp-" + store.NewUserID(), Tags: []string{"pool"}}
+	node := &store.Node{NamespaceID: nsID, Name: "mbp-" + store.NewUserID(), Tags: []string{"pool"}}
 	token, err := db.CreateNode(ctx, node)
 	if err != nil {
 		t.Fatalf("create node: %v", err)
@@ -79,7 +90,7 @@ func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	return &nodeFixture{db: db, orgID: org.ID, node: node, token: token, srv: srv, handler: h}
+	return &nodeFixture{db: db, orgID: org.ID, nsID: nsID, node: node, token: token, srv: srv, handler: h}
 }
 
 // dial 建立一条节点 WS 连接（不带 token 时为裸连，用于鉴权测试）。
@@ -242,7 +253,7 @@ func TestUnauthorizedNoUpgrade(t *testing.T) {
 	})
 
 	t.Run("draining node → 403", func(t *testing.T) {
-		if err := f.db.UpdateNodeStatus(context.Background(), f.orgID, f.node.ID, store.NodeStatusDraining); err != nil {
+		if err := f.db.UpdateNodeStatus(context.Background(), f.nsID, f.node.ID, store.NodeStatusDraining); err != nil {
 			t.Fatalf("drain node: %v", err)
 		}
 		conn, resp, err := f.dial(t, f.token)
@@ -267,7 +278,7 @@ func TestHandshake(t *testing.T) {
 	)
 
 	// 节点应被标记为 online
-	got, err := f.db.GetNode(context.Background(), f.orgID, f.node.ID)
+	got, err := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
@@ -309,7 +320,7 @@ func TestHelloUnknownCapability(t *testing.T) {
 		t.Fatalf("code = %v, want unknown_capability", frame["code"])
 	}
 	// 节点不该上线
-	got, _ := f.db.GetNode(context.Background(), f.orgID, f.node.ID)
+	got, _ := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if got.Status == store.NodeStatusOnline {
 		t.Fatal("node went online despite declaring an undefined capability")
 	}
@@ -371,7 +382,7 @@ func TestHelloManifestPersistsRunSpec(t *testing.T) {
 	assertRunSpecEqual(t, nodeCapOf(t, caps, "review", 1).RunSpec, run)
 
 	// 节点确实上线了（manifest 合法时握手照常成功）
-	got, err := f.db.GetNode(context.Background(), f.orgID, f.node.ID)
+	got, err := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
@@ -918,12 +929,12 @@ func TestLeaseExtended(t *testing.T) {
 
 	ctx := context.Background()
 	// 建一个 assigned 到本节点的任务
-	cap1, err := f.db.GetCapability(ctx, f.orgID, "review", 1)
+	cap1, err := f.db.GetCapability(ctx, f.nsID, "review", 1)
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
 	task := &store.Task{
-		OrgID: f.orgID, TraceID: "trace_lease", CapabilityID: cap1.ID,
+		NamespaceID: f.nsID, TraceID: "trace_lease", CapabilityID: cap1.ID,
 		Capability: cap1.Name, Version: 1, Params: json.RawMessage(`{}`),
 		CapHash: cap1.ContentHash, GraphID: "grf_x",
 	}
@@ -935,7 +946,7 @@ func TestLeaseExtended(t *testing.T) {
 		t.Fatalf("lease instance: %v", err)
 	}
 	stale := store.Now() - 1000
-	if err := f.db.AssignTask(ctx, f.orgID, task.ID, f.node.ID, instID, stale); err != nil {
+	if err := f.db.AssignTask(ctx, f.nsID, task.ID, f.node.ID, instID, stale); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 
@@ -945,7 +956,7 @@ func TestLeaseExtended(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	var lease int64
 	for time.Now().Before(deadline) {
-		got, err := f.db.GetTask(ctx, f.orgID, task.ID)
+		got, err := f.db.GetTask(ctx, f.nsID, task.ID)
 		if err != nil {
 			t.Fatalf("get task: %v", err)
 		}
@@ -963,7 +974,7 @@ func TestLeaseExtended(t *testing.T) {
 		t.Fatalf("lease_until = %d, want ≈ %d (now+TTL)", lease, want)
 	}
 	// node.last_seen_at 也被刷新
-	node, err := f.db.GetNode(ctx, f.orgID, f.node.ID)
+	node, err := f.db.GetNode(ctx, f.nsID, f.node.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
@@ -1009,16 +1020,16 @@ func TestAckProgressResultFlow(t *testing.T) {
 	task := f.makeAssignedTask(t, "trace_flow")
 
 	send(t, conn, &AckFrame{Type: NodeFrameAck, TaskID: task.ID})
-	waitStatus(t, f.db, f.orgID, task.ID, store.TaskAcked)
+	waitStatus(t, f.db, f.nsID, task.ID, store.TaskAcked)
 
 	send(t, conn, &ProgressFrame{Type: NodeFrameProgress, TaskID: task.ID, Note: "step 2/5"})
-	waitStatus(t, f.db, f.orgID, task.ID, store.TaskRunning)
+	waitStatus(t, f.db, f.nsID, task.ID, store.TaskRunning)
 
 	send(t, conn, &ResultFrame{Type: NodeFrameResult, TaskID: task.ID, Status: store.TaskSucceeded,
 		Summary: "ok", Out: strPtr("fix")})
-	waitStatus(t, f.db, f.orgID, task.ID, store.TaskSucceeded)
+	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
 
-	got, err := f.db.GetTask(ctx, f.orgID, task.ID)
+	got, err := f.db.GetTask(ctx, f.nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -1049,15 +1060,15 @@ func TestResultMissingOutLeavesUnreported(t *testing.T) {
 
 	task := f.makeAssignedTask(t, "trace_missing")
 	send(t, conn, &ProgressFrame{Type: NodeFrameProgress, TaskID: task.ID})
-	waitStatus(t, f.db, f.orgID, task.ID, store.TaskRunning)
+	waitStatus(t, f.db, f.nsID, task.ID, store.TaskRunning)
 
 	// 必须发**不带 out 键**的原始 JSON。
 	// 不能用 ResultFrame 字面量：它的 MarshalJSON 总会写出 "out":null，
 	// 那是「显式到头」而不是「没回报」——正是 I5 要区分的东西。
 	sendRaw(t, conn, `{"type":"result","task_id":"`+task.ID+`","status":"succeeded","summary":"done"}`)
-	waitStatus(t, f.db, f.orgID, task.ID, store.TaskSucceeded)
+	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
 
-	got, err := f.db.GetTask(context.Background(), f.orgID, task.ID)
+	got, err := f.db.GetTask(context.Background(), f.nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -1080,9 +1091,9 @@ func TestResultExplicitNullOutMeansEnd(t *testing.T) {
 	// 直接发 result（跳过 ack/progress，验证隐式 running）。
 	// 显式 "out":null 与「缺 out 键」在线上 JSON 里不同，必须发原始文本才能表达。
 	sendRaw(t, conn, `{"type":"result","task_id":"`+task.ID+`","status":"succeeded","out":null}`)
-	waitStatus(t, f.db, f.orgID, task.ID, store.TaskSucceeded)
+	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
 
-	got, err := f.db.GetTask(context.Background(), f.orgID, task.ID)
+	got, err := f.db.GetTask(context.Background(), f.nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -1102,9 +1113,9 @@ func TestAckOtherNodesTaskRejected(t *testing.T) {
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	ctx := context.Background()
-	cap1, _ := f.db.GetCapability(ctx, f.orgID, "review", 1)
+	cap1, _ := f.db.GetCapability(ctx, f.nsID, "review", 1)
 	task := &store.Task{
-		OrgID: f.orgID, TraceID: "trace_other_node", CapabilityID: cap1.ID,
+		NamespaceID: f.nsID, TraceID: "trace_other_node", CapabilityID: cap1.ID,
 		Capability: cap1.Name, Version: 1, Params: json.RawMessage(`{}`),
 		CapHash: cap1.ContentHash, GraphID: "grf_x",
 	}
@@ -1112,18 +1123,18 @@ func TestAckOtherNodesTaskRejected(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	// 派给另一个节点
-	otherNode := &store.Node{OrgID: f.orgID, Name: "other-" + store.NewUserID()}
+	otherNode := &store.Node{NamespaceID: f.nsID, Name: "other-" + store.NewUserID()}
 	if _, err := f.db.CreateNode(ctx, otherNode); err != nil {
 		t.Fatalf("create other node: %v", err)
 	}
-	if _, err := f.db.UpsertInstances(ctx, f.orgID, otherNode.ID, []store.InstanceSpec{{Slot: 0}}); err != nil {
+	if _, err := f.db.UpsertInstances(ctx, f.nsID, otherNode.ID, []store.InstanceSpec{{Slot: 0}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
 	instID, err := f.db.LeaseInstance(ctx, otherNode.ID, task.ID)
 	if err != nil {
 		t.Fatalf("lease: %v", err)
 	}
-	if err := f.db.AssignTask(ctx, f.orgID, task.ID, otherNode.ID, instID, store.Now()+60); err != nil {
+	if err := f.db.AssignTask(ctx, f.nsID, task.ID, otherNode.ID, instID, store.Now()+60); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 
@@ -1133,7 +1144,7 @@ func TestAckOtherNodesTaskRejected(t *testing.T) {
 		t.Fatalf("code = %v, want invalid_transition", frame["code"])
 	}
 	// 状态没被改
-	got, _ := f.db.GetTask(ctx, f.orgID, task.ID)
+	got, _ := f.db.GetTask(ctx, f.nsID, task.ID)
 	if got.Status != store.TaskAssigned {
 		t.Fatalf("task status = %q, want assigned", got.Status)
 	}
@@ -1182,7 +1193,7 @@ func TestDisconnectMarksNodeOffline(t *testing.T) {
 	hello(t, conn, f.node.ID, nil, []InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	// 确认在线
-	got, _ := f.db.GetNode(context.Background(), f.orgID, f.node.ID)
+	got, _ := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if got.Status != store.NodeStatusOnline {
 		t.Fatalf("status = %q, want online", got.Status)
 	}
@@ -1192,13 +1203,13 @@ func TestDisconnectMarksNodeOffline(t *testing.T) {
 	// 等 cleanup 生效
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		got, err := f.db.GetNode(context.Background(), f.orgID, f.node.ID)
+		got, err := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 		if err == nil && got.Status == store.NodeStatusOffline {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	got, _ = f.db.GetNode(context.Background(), f.orgID, f.node.ID)
+	got, _ = f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if got.Status != store.NodeStatusOffline {
 		t.Fatalf("status = %q after disconnect, want offline", got.Status)
 	}
@@ -1216,7 +1227,7 @@ func TestDisconnectMarksNodeOffline(t *testing.T) {
 func (f *nodeFixture) defineCapability(t *testing.T, name string, version int) {
 	t.Helper()
 	capVer := &store.CapabilityVersion{
-		OrgID: f.orgID, Name: name, Version: version,
+		NamespaceID: f.nsID, Name: name, Version: version,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"fix"}, Source: store.CapSourceBuiltin,
 	}
@@ -1274,7 +1285,7 @@ func assertRunSpecEqual(t *testing.T, got json.RawMessage, want string) {
 // assertNodeNotOnline 断言握手被拒的节点没有上线（也没有被标脏）。
 func assertNodeNotOnline(t *testing.T, f *nodeFixture) {
 	t.Helper()
-	got, err := f.db.GetNode(context.Background(), f.orgID, f.node.ID)
+	got, err := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
@@ -1290,12 +1301,12 @@ func assertNodeNotOnline(t *testing.T, f *nodeFixture) {
 func (f *nodeFixture) makeAssignedTask(t *testing.T, traceID string) *store.Task {
 	t.Helper()
 	ctx := context.Background()
-	cap1, err := f.db.GetCapability(ctx, f.orgID, "review", 1)
+	cap1, err := f.db.GetCapability(ctx, f.nsID, "review", 1)
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
 	task := &store.Task{
-		OrgID: f.orgID, TraceID: traceID, CapabilityID: cap1.ID,
+		NamespaceID: f.nsID, TraceID: traceID, CapabilityID: cap1.ID,
 		Capability: cap1.Name, Version: 1, Params: json.RawMessage(`{}`),
 		CapHash: cap1.ContentHash, GraphID: "grf_x",
 	}
@@ -1306,19 +1317,19 @@ func (f *nodeFixture) makeAssignedTask(t *testing.T, traceID string) *store.Task
 	if err != nil {
 		t.Fatalf("lease instance: %v", err)
 	}
-	if err := f.db.AssignTask(ctx, f.orgID, task.ID, f.node.ID, instID, store.Now()+store.AckWaitSec); err != nil {
+	if err := f.db.AssignTask(ctx, f.nsID, task.ID, f.node.ID, instID, store.Now()+store.AckWaitSec); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 	return task
 }
 
 // waitStatus 等任务到达期望状态（异步处理，需要轮询）。
-func waitStatus(t *testing.T, db *store.DB, orgID, taskID, want string) {
+func waitStatus(t *testing.T, db *store.DB, namespaceID, taskID, want string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
-		got, err := db.GetTask(context.Background(), orgID, taskID)
+		got, err := db.GetTask(context.Background(), namespaceID, taskID)
 		if err == nil {
 			last = got.Status
 			if last == want {

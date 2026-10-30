@@ -59,8 +59,13 @@ var ErrTransitionGuardFailed = errors.New("transition_guard_failed")
 //
 // Omitempty **不能**加在 Out 上：nil 与 "缺失字段" 在出站 JSON 里虽然都是 null，
 // 但 Reported 才是权威判据（前端/节点都不该靠 out 是否存在来推断）。
+//
+// NamespaceID 是**隔离维度**（I10/I11）：任务属于某个命名空间，读路径一律按它隔离；
+// 行上的 OrgID 仍然保留（统计/日志要用），但写入时由 namespace_id 派生（NamespaceOrgID），
+// 所以不可能写出 `namespace.org_id != org_id` 的行。
 type Task struct {
 	ID           string          `json:"id"`
+	NamespaceID  string          `json:"namespaceId"`
 	OrgID        string          `json:"orgId"`
 	TraceID      string          `json:"traceId"`
 	ParentTaskID *string         `json:"parentTaskId"`
@@ -90,7 +95,7 @@ type Task struct {
 }
 
 // taskColumns 是统一的列顺序，scanTask 依赖它。
-const taskColumns = `id, org_id, trace_id, parent_task_id, path, capability_id, capability,
+const taskColumns = `id, namespace_id, org_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
 	out, reported, summary, artifacts, error, cap_hash, graph_id,
 	created_at, started_at, finished_at, not_before`
@@ -101,7 +106,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 	var path, params, artifacts string
 	var reported int
 	if err := rows.Scan(
-		&t.ID, &t.OrgID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
+		&t.ID, &t.NamespaceID, &t.OrgID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
 		&t.Version, &params, &t.Status, &t.NodeID, &t.InstanceID, &t.LeaseUntil, &t.Attempts,
 		&t.Out, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.GraphID,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore,
@@ -131,6 +136,10 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 //
 // 空入参是 no-op（不是错误）：扇出的每条边都可能被剪枝，最后一条不剩是正常情况。
 //
+// 命名空间（契约 §2.3 / §2.4）：每行必须带 NamespaceID（空 → ErrNamespaceRequired），
+// OrgID 由它派生并覆盖；带 ParentTaskID 时走 I11④——子任务强制继承父任务的命名空间，
+// 显式给了不同值 → *CrossNamespaceError。
+//
 // #140 起内部拆成「开事务 + createTasksTx + 提交」三段，签名/行为/错误文案不变：
 // 拆出的 createTasksTx 要能被 ReportResultAndCreateTasks 复用，与终态写入共用一个事务。
 func (d *DB) CreateTasks(ctx context.Context, ts []*Task) error {
@@ -154,21 +163,52 @@ func (d *DB) CreateTasks(ctx context.Context, ts []*Task) error {
 
 // createTasksTx 是 CreateTasks 的事务内版本：在调用方事务里插任务行（#140）。
 //
-// 本体从 CreateTasks 整段搬移，校验顺序（nil / 必填 org-trace-capability / 只能落
-// pending）与错误文案一字未改；BeginTx/Commit/Rollback 归调用方。
+// 本体从 CreateTasks 整段搬移，校验顺序沿用旧版（nil → 必填字段 → 只能落 pending，
+// 前面插入 I11④ 的父任务命名空间继承）；BeginTx/Commit/Rollback 归调用方。
 // 只有和 reportResultTx 共用一个 tx 句柄，「父任务终态 + 下一跳子任务行」才能
 // 同生共死（契约 §1.1）：子任务插入失败时整个事务回滚，父任务不会留在终态。
 func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 	if len(ts) == 0 {
 		return nil
 	}
+	// org_id 一律从 namespaces 行派生（I10）：同一批任务通常同属一个命名空间，
+	// 这里缓存一次查询，不逐行重复查。
+	orgByNamespace := make(map[string]string, 1)
+	resolveOrg := func(namespaceID string) (string, error) {
+		if orgID, ok := orgByNamespace[namespaceID]; ok {
+			return orgID, nil
+		}
+		// 必须走 **tx** 版查询：DSN 是 MaxOpenConns(1)，用 d.NamespaceOrgID
+		// 会和本事务抢同一根连接而自锁。
+		orgID, err := namespaceOrgIDTx(ctx, tx, namespaceID)
+		if err != nil {
+			return "", err
+		}
+		orgByNamespace[namespaceID] = orgID
+		return orgID, nil
+	}
 	for i, t := range ts {
 		if t == nil {
 			return fmt.Errorf("create tasks: nil task at index %d", i)
 		}
-		if t.OrgID == "" || t.TraceID == "" || t.CapabilityID == "" || t.Capability == "" {
-			return fmt.Errorf("create tasks: task %d missing org/trace/capability", i)
+		if t.TraceID == "" || t.CapabilityID == "" || t.Capability == "" {
+			return fmt.Errorf("create tasks: task %d missing namespace/trace/capability", i)
 		}
+		// I11④：子任务的 namespace_id 强制继承父任务的（契约 §2.4）。
+		// 必须在「必填」校验之前：没给 namespace 的子任务直接继承，不算缺字段。
+		if t.ParentTaskID != nil && *t.ParentTaskID != "" {
+			if err := inheritParentNamespaceTx(ctx, tx, t); err != nil {
+				return fmt.Errorf("create tasks: task %d: %w", i, err)
+			}
+		}
+		if t.NamespaceID == "" || t.NamespaceID == AllNamespaces {
+			return fmt.Errorf("create tasks: task %d: %w", i, ErrNamespaceRequired)
+		}
+		orgID, err := resolveOrg(t.NamespaceID)
+		if err != nil {
+			return fmt.Errorf("create tasks: task %d: %w", i, err)
+		}
+		t.OrgID = orgID // 覆盖调用方给的值：I10 由构造保证（namespace.org_id == org_id）
 		if t.ID == "" {
 			t.ID = NewTaskID()
 		}
@@ -205,12 +245,12 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO tasks
-			   (id, org_id, trace_id, parent_task_id, path, capability_id, capability,
+			   (id, namespace_id, org_id, trace_id, parent_task_id, path, capability_id, capability,
 			    version, params, status, node_id, instance_id, lease_until, attempts,
 			    out, reported, summary, artifacts, error, cap_hash, graph_id,
 			    created_at, started_at, finished_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.ID, t.OrgID, t.TraceID, t.ParentTaskID, string(pathJSON), t.CapabilityID, t.Capability,
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.ID, t.NamespaceID, t.OrgID, t.TraceID, t.ParentTaskID, string(pathJSON), t.CapabilityID, t.Capability,
 			t.Version, string(t.Params), t.Status, t.NodeID, t.InstanceID, t.LeaseUntil, t.Attempts,
 			t.Out, reported, t.Summary, string(artifactsJSON), t.Error, t.CapHash, t.GraphID,
 			t.CreatedAt, t.StartedAt, t.FinishedAt,
@@ -221,10 +261,48 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 	return nil
 }
 
-// GetTask 按 (orgID, id) 取任务；未命中返回 ErrNotFound。
-func (d *DB) GetTask(ctx context.Context, orgID, id string) (*Task, error) {
+// inheritParentNamespaceTx 实现 I11④：子任务的 namespace_id 必须与父任务一致（契约 §2.4）。
+//
+// 两档：
+//   - 调用方没给（空）→ 直接继承父任务的，不必让每个调用点自己填；
+//   - 给了但与父任务不同 → *CrossNamespaceError（handler 一律 400，不静默修正）。
+//
+// 父任务行不存在时**既不报错也不改**：那种引用指向的不是「另一个命名空间的对象」，
+// 而是一个不存在的对象。本函数之前也不校验父任务存在性，这个洞不该由 I11 来补
+// （补了反而会让「先建子任务行、后补父任务」的历史数据无法重放）。
+//
+// 前序任务在本批里先插后查，因此父任务即使是同批的前一行也能查到（同事务可见）。
+func inheritParentNamespaceTx(ctx context.Context, tx *sql.Tx, t *Task) error {
+	var parentNS string
+	err := tx.QueryRowContext(ctx,
+		`SELECT namespace_id FROM tasks WHERE id = ?`, *t.ParentTaskID).Scan(&parentNS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read parent namespace: %w", err)
+	}
+	if t.NamespaceID == "" {
+		t.NamespaceID = parentNS
+		return nil
+	}
+	if t.NamespaceID != parentNS {
+		return &CrossNamespaceError{
+			What: "tasks.parent_task_id",
+			Want: parentNS,
+			Got:  t.NamespaceID,
+		}
+	}
+	return nil
+}
+
+// GetTask 按 (namespaceID, id) 取任务；未命中返回 ErrNotFound。
+func (d *DB) GetTask(ctx context.Context, namespaceID, id string) (*Task, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+taskColumns+` FROM tasks WHERE org_id = ? AND id = ?`, orgID, id)
+		`SELECT `+taskColumns+` FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
 	}
@@ -238,14 +316,17 @@ func (d *DB) GetTask(ctx context.Context, orgID, id string) (*Task, error) {
 	return scanTask(rows)
 }
 
-// ListTasks 列出任务，过滤条件为空表示不过滤（traceID/nodeID/status）；
+// ListTasks 列出命名空间内的任务，过滤条件为空表示不过滤（traceID/nodeID/status）；
 // 空列表返回 []。
-func (d *DB) ListTasks(ctx context.Context, orgID, traceID, nodeID, status string, limit int) ([]*Task, error) {
+func (d *DB) ListTasks(ctx context.Context, namespaceID, traceID, nodeID, status string, limit int) ([]*Task, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE org_id = ?`
-	args := []any{orgID}
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE namespace_id = ?`
+	args := []any{namespaceID}
 	if traceID != "" {
 		q += ` AND trace_id = ?`
 		args = append(args, traceID)
@@ -330,8 +411,8 @@ func IsTerminalStatus(status string) bool {
 //  2. CAS：UPDATE ... WHERE id=? AND status=?；RowsAffected()==0 说明并发被抢或任务不存在
 //
 // 写 finished_at：进入终态时落时间戳。
-func (d *DB) Transition(ctx context.Context, orgID, taskID, from, to string) error {
-	return d.transitionTx(ctx, nil, orgID, taskID, from, to)
+func (d *DB) Transition(ctx context.Context, namespaceID, taskID, from, to string) error {
+	return d.transitionTx(ctx, nil, namespaceID, taskID, from, to)
 }
 
 // transitionTx 是改 tasks.status 的**唯一**执行点。
@@ -341,8 +422,8 @@ func (d *DB) Transition(ctx context.Context, orgID, taskID, from, to string) err
 //
 // 全仓（除本函数外）**不得**出现 `UPDATE tasks SET status`——
 // TestStatusWriterIsUnique 会静态检查这一点。
-func (d *DB) transitionTx(ctx context.Context, tx *sql.Tx, orgID, taskID, from, to string) error {
-	return d.transitionGuarded(ctx, tx, orgID, taskID, from, to, "")
+func (d *DB) transitionTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, from, to string) error {
+	return d.transitionGuarded(ctx, tx, namespaceID, taskID, from, to, "")
 }
 
 // transitionGuarded 是 transitionTx 的带守卫版本：extraWhere 会被 AND 到 UPDATE 上，
@@ -353,7 +434,7 @@ func (d *DB) transitionTx(ctx context.Context, tx *sql.Tx, orgID, taskID, from, 
 // 守卫跟 CAS 在同一句里，SQLite 的行锁保证判断与更新原子。
 //
 // extraWhere 只能是本包内的常量片段（不含用户输入），args 里追加对应的参数。
-func (d *DB) transitionGuarded(ctx context.Context, tx *sql.Tx, orgID, taskID, from, to string, extraWhere string, extraArgs ...any) error {
+func (d *DB) transitionGuarded(ctx context.Context, tx *sql.Tx, namespaceID, taskID, from, to string, extraWhere string, extraArgs ...any) error {
 	if !ValidTransition(from, to) {
 		return fmt.Errorf("%w: %s → %s", ErrInvalidTransition, from, to)
 	}
@@ -363,11 +444,11 @@ func (d *DB) transitionGuarded(ctx context.Context, tx *sql.Tx, orgID, taskID, f
 		args []any
 	)
 	if IsTerminalStatus(to) {
-		q = `UPDATE tasks SET status = ?, finished_at = ? WHERE org_id = ? AND id = ? AND status = ?`
-		args = []any{to, Now(), orgID, taskID, from}
+		q = `UPDATE tasks SET status = ?, finished_at = ? WHERE namespace_id = ? AND id = ? AND status = ?`
+		args = []any{to, Now(), namespaceID, taskID, from}
 	} else {
-		q = `UPDATE tasks SET status = ? WHERE org_id = ? AND id = ? AND status = ?`
-		args = []any{to, orgID, taskID, from}
+		q = `UPDATE tasks SET status = ? WHERE namespace_id = ? AND id = ? AND status = ?`
+		args = []any{to, namespaceID, taskID, from}
 	}
 	if extraWhere != "" {
 		q += " AND " + extraWhere
@@ -396,10 +477,10 @@ func (d *DB) transitionGuarded(ctx context.Context, tx *sql.Tx, orgID, taskID, f
 		var qerr error
 		if tx != nil {
 			qerr = tx.QueryRowContext(ctx,
-				`SELECT status FROM tasks WHERE org_id = ? AND id = ?`, orgID, taskID).Scan(&cur)
+				`SELECT status FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, taskID).Scan(&cur)
 		} else {
 			qerr = d.QueryRowContext(ctx,
-				`SELECT status FROM tasks WHERE org_id = ? AND id = ?`, orgID, taskID).Scan(&cur)
+				`SELECT status FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, taskID).Scan(&cur)
 		}
 		if errors.Is(qerr, sql.ErrNoRows) {
 			return ErrNotFound
@@ -421,14 +502,14 @@ func (d *DB) transitionGuarded(ctx context.Context, tx *sql.Tx, orgID, taskID, f
 // 两次写（改状态、写归属）现在在**一个事务**里（#141）；签名与语义不变。
 // 先 CAS 改状态（迁移表 + 并发抢占），成功后再写归属信息——顺序反过来会出现
 // 「任务已被别人派走，但 node_id 已经被覆盖」的脏数据。
-func (d *DB) AssignTask(ctx context.Context, orgID, taskID, nodeID, instanceID string, leaseUntil int64) error {
+func (d *DB) AssignTask(ctx context.Context, namespaceID, taskID, nodeID, instanceID string, leaseUntil int64) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin assign task: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := d.assignTaskTx(ctx, tx, orgID, taskID, nodeID, instanceID, leaseUntil); err != nil {
+	if err := d.assignTaskTx(ctx, tx, namespaceID, taskID, nodeID, instanceID, leaseUntil); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -442,14 +523,14 @@ func (d *DB) AssignTask(ctx context.Context, orgID, taskID, nodeID, instanceID s
 // AssignTask（拆开用，仍是单事务）与 LeaseAndAssign（占槽 + 派发一事务）共用它，
 // 保证两条路径写进去的字段与 attempts 时机一字不差。
 // transitionGuarded 传 tx：状态写仍走唯一入口，且不会去抢连接池的那根连接。
-func (d *DB) assignTaskTx(ctx context.Context, tx *sql.Tx, orgID, taskID, nodeID, instanceID string, leaseUntil int64) error {
-	if err := d.transitionGuarded(ctx, tx, orgID, taskID, TaskPending, TaskAssigned, ""); err != nil {
+func (d *DB) assignTaskTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, nodeID, instanceID string, leaseUntil int64) error {
+	if err := d.transitionGuarded(ctx, tx, namespaceID, taskID, TaskPending, TaskAssigned, ""); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET node_id = ?, instance_id = ?, lease_until = ?, attempts = attempts + 1
-		 WHERE org_id = ? AND id = ?`,
-		nodeID, nullIfEmpty(instanceID), leaseUntil, orgID, taskID); err != nil {
+		 WHERE namespace_id = ? AND id = ?`,
+		nodeID, nullIfEmpty(instanceID), leaseUntil, namespaceID, taskID); err != nil {
 		return fmt.Errorf("assign task: %w", err)
 	}
 	return nil
@@ -467,11 +548,11 @@ func nullIfEmpty(s string) any {
 //
 // 返回受影响行数 0 表示任务不在可续租状态（已终态/被回收），调用方据此判断
 // 是否该给节点回 lease_expired 错误帧。
-func (d *DB) ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error {
+func (d *DB) ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error {
 	res, err := d.ExecContext(ctx,
 		`UPDATE tasks SET lease_until = ?
-		 WHERE org_id = ? AND id = ? AND status IN (?,?,?)`,
-		leaseUntil, orgID, taskID, TaskAssigned, TaskAcked, TaskRunning)
+		 WHERE namespace_id = ? AND id = ? AND status IN (?,?,?)`,
+		leaseUntil, namespaceID, taskID, TaskAssigned, TaskAcked, TaskRunning)
 	if err != nil {
 		return fmt.Errorf("extend lease: %w", err)
 	}
@@ -490,11 +571,11 @@ func (d *DB) ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil i
 // 节点级别的心跳不该只续「一条」任务——它是一条连接的生命信号，
 // 该连接上所有任务的租约一起前进（契约 §3.3「任何上行帧续命」）。
 // 返回续到期的任务数。
-func (d *DB) ExtendLeasesForNode(ctx context.Context, orgID, nodeID string, leaseUntil int64) (int, error) {
+func (d *DB) ExtendLeasesForNode(ctx context.Context, namespaceID, nodeID string, leaseUntil int64) (int, error) {
 	res, err := d.ExecContext(ctx,
 		`UPDATE tasks SET lease_until = ?
-		 WHERE org_id = ? AND node_id = ? AND status IN (?,?,?)`,
-		leaseUntil, orgID, nodeID, TaskAssigned, TaskAcked, TaskRunning)
+		 WHERE namespace_id = ? AND node_id = ? AND status IN (?,?,?)`,
+		leaseUntil, namespaceID, nodeID, TaskAssigned, TaskAcked, TaskRunning)
 	if err != nil {
 		return 0, fmt.Errorf("extend leases for node: %w", err)
 	}
@@ -519,8 +600,8 @@ func (d *DB) ExtendLeasesForNode(ctx context.Context, orgID, nodeID string, leas
 //
 // #140 起它是 ReportResultAndCreateTasks(next=nil) 的薄壳：签名、返回值、错误文案
 // 全部保持不变，只是实现搬进了共用的事务内助手（reportResultTx）。
-func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error {
-	return d.ReportResultAndCreateTasks(ctx, orgID, taskID, status, out, reported, summary, artifacts, errMsg, nil)
+func (d *DB) ReportResult(ctx context.Context, namespaceID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error {
+	return d.ReportResultAndCreateTasks(ctx, namespaceID, taskID, status, out, reported, summary, artifacts, errMsg, nil)
 }
 
 // ReportResultAndCreateTasks 在**一个事务**里完成「终态写入 + 下一跳建任务行」（#140）。
@@ -544,14 +625,14 @@ func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out
 //
 // 状态写入仍只走 transitionGuarded（在 reportResultTx 内，同一个 tx 句柄）；
 // 本函数不新增任何 `UPDATE tasks SET status` 语句。
-func (d *DB) ReportResultAndCreateTasks(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string, next []*Task) error {
+func (d *DB) ReportResultAndCreateTasks(ctx context.Context, namespaceID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string, next []*Task) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin report result: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := d.reportResultTx(ctx, tx, orgID, taskID, status, out, reported, summary, artifacts, errMsg); err != nil {
+	if err := d.reportResultTx(ctx, tx, namespaceID, taskID, status, out, reported, summary, artifacts, errMsg); err != nil {
 		return err
 	}
 	if len(next) > 0 {
@@ -572,7 +653,7 @@ func (d *DB) ReportResultAndCreateTasks(ctx context.Context, orgID, taskID, stat
 // 自己开事务/提交那一段——这样它才能与 createTasksTx 共用一个事务。
 // 参数校验（终态白名单 / 空出口名）也跟着搬进来，保证两条入口的错误文案与哨兵值一致。
 // 状态写入只用 transitionGuarded，且传的是调用方的同一个 tx 句柄。
-func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error {
+func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: result status must be succeeded|failed, got %q", ErrInvalidTransition, status)
 	}
@@ -588,7 +669,7 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, orgID, taskID, stat
 		nodeID sql.NullString
 	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT status, node_id FROM tasks WHERE org_id = ? AND id = ?`, orgID, taskID).
+		`SELECT status, node_id FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, taskID).
 		Scan(&cur, &nodeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
@@ -601,14 +682,14 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, orgID, taskID, stat
 	}
 	// 隐式进 running（result 帧本身表示节点已经在执行了）
 	if cur == TaskAssigned || cur == TaskAcked {
-		if err := d.transitionGuarded(ctx, tx, orgID, taskID, cur, TaskRunning, ""); err != nil {
+		if err := d.transitionGuarded(ctx, tx, namespaceID, taskID, cur, TaskRunning, ""); err != nil {
 			return err
 		}
 		// 节点可能跳过 progress 帧直接 result，这里补 started_at，
 		// 否则任务永远没有开始时间（可观测性缺一块）。
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE org_id = ? AND id = ?`,
-			Now(), orgID, taskID); err != nil {
+			`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE namespace_id = ? AND id = ?`,
+			Now(), namespaceID, taskID); err != nil {
 			return fmt.Errorf("report result: set started_at: %w", err)
 		}
 		cur = TaskRunning
@@ -616,7 +697,7 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, orgID, taskID, stat
 	if cur != TaskRunning {
 		return fmt.Errorf("%w: task %s is %s, cannot report result", ErrInvalidTransition, taskID, cur)
 	}
-	if err := d.transitionGuarded(ctx, tx, orgID, taskID, TaskRunning, status, ""); err != nil {
+	if err := d.transitionGuarded(ctx, tx, namespaceID, taskID, TaskRunning, status, ""); err != nil {
 		return err
 	}
 
@@ -640,8 +721,8 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, orgID, taskID, stat
 		`UPDATE tasks
 		 SET out = ?, reported = ?, summary = ?, artifacts = ?, error = ?,
 		     finished_at = COALESCE(finished_at, ?)
-		 WHERE org_id = ? AND id = ?`,
-		outVal, reportedInt, summary, string(artifactsJSON), errMsg, Now(), orgID, taskID); err != nil {
+		 WHERE namespace_id = ? AND id = ?`,
+		outVal, reportedInt, summary, string(artifactsJSON), errMsg, Now(), namespaceID, taskID); err != nil {
 		return fmt.Errorf("report result details: %w", err)
 	}
 
@@ -660,28 +741,28 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, orgID, taskID, stat
 }
 
 // MarkRunning 把 acked 推进到 running（progress 帧的显式推进）。
-func (d *DB) MarkRunning(ctx context.Context, orgID, taskID string) error {
-	task, err := d.GetTask(ctx, orgID, taskID)
+func (d *DB) MarkRunning(ctx context.Context, namespaceID, taskID string) error {
+	task, err := d.GetTask(ctx, namespaceID, taskID)
 	if err != nil {
 		return err
 	}
 	if task.Status == TaskRunning {
 		return nil // 幂等：多条 progress 帧不该报错
 	}
-	return d.Transition(ctx, orgID, taskID, task.Status, TaskRunning)
+	return d.Transition(ctx, namespaceID, taskID, task.Status, TaskRunning)
 }
 
 // StartTask 把 assigned/acked 推进到 running，并补 started_at（#141：一个事务）。
 //
 // 签名与语义不变，只是把「推进状态」与「写 started_at」两次提交压成一次。
-func (d *DB) StartTask(ctx context.Context, orgID, taskID string) error {
+func (d *DB) StartTask(ctx context.Context, namespaceID, taskID string) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin start task: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := d.startTaskTx(ctx, tx, orgID, taskID); err != nil {
+	if err := d.startTaskTx(ctx, tx, namespaceID, taskID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -695,10 +776,10 @@ func (d *DB) StartTask(ctx context.Context, orgID, taskID string) error {
 // 当前状态必须用 **tx** 查（MaxOpenConns(1)：用 d.GetTask 会和本事务抢同一根
 // 连接而自锁）。running 幂等：重复 progress 帧不报错，也不覆盖已有 started_at。
 // 非 running 时走 transitionGuarded——终态 / lease_expired → running 仍然被拒。
-func (d *DB) startTaskTx(ctx context.Context, tx *sql.Tx, orgID, taskID string) error {
+func (d *DB) startTaskTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID string) error {
 	var cur string
 	err := tx.QueryRowContext(ctx,
-		`SELECT status FROM tasks WHERE org_id = ? AND id = ?`, orgID, taskID).Scan(&cur)
+		`SELECT status FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, taskID).Scan(&cur)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -706,13 +787,13 @@ func (d *DB) startTaskTx(ctx context.Context, tx *sql.Tx, orgID, taskID string) 
 		return fmt.Errorf("start task: read current status: %w", err)
 	}
 	if cur != TaskRunning {
-		if err := d.transitionGuarded(ctx, tx, orgID, taskID, cur, TaskRunning, ""); err != nil {
+		if err := d.transitionGuarded(ctx, tx, namespaceID, taskID, cur, TaskRunning, ""); err != nil {
 			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE org_id = ? AND id = ?`,
-		Now(), orgID, taskID); err != nil {
+		`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE namespace_id = ? AND id = ?`,
+		Now(), namespaceID, taskID); err != nil {
 		return fmt.Errorf("start task: set started_at: %w", err)
 	}
 	return nil
@@ -726,22 +807,22 @@ func (d *DB) startTaskTx(ctx context.Context, tx *sql.Tx, orgID, taskID string) 
 //
 // 错误语义：任务不存在 → ErrNotFound；终态 / lease_expired → running 非法迁移
 // → ErrInvalidTransition；已在 running → 幂等成功。
-func (d *DB) ProgressTask(ctx context.Context, orgID, taskID string, leaseUntil int64) error {
+func (d *DB) ProgressTask(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin progress task: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := d.startTaskTx(ctx, tx, orgID, taskID); err != nil {
+	if err := d.startTaskTx(ctx, tx, namespaceID, taskID); err != nil {
 		return err
 	}
 	// 续租的条件串（assigned/acked/running）必须保留：终态任务不该被续命。
 	// 同事务内刚推进到 running，所以 0 行只可能是状态被另一个写者改走了。
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET lease_until = ?
-		 WHERE org_id = ? AND id = ? AND status IN (?,?,?)`,
-		leaseUntil, orgID, taskID, TaskAssigned, TaskAcked, TaskRunning)
+		 WHERE namespace_id = ? AND id = ? AND status IN (?,?,?)`,
+		leaseUntil, namespaceID, taskID, TaskAssigned, TaskAcked, TaskRunning)
 	if err != nil {
 		return fmt.Errorf("progress task: extend lease: %w", err)
 	}
@@ -761,6 +842,10 @@ func (d *DB) ProgressTask(ctx context.Context, orgID, taskID string, leaseUntil 
 
 // SweepExpiredLeases 扫过期租约（契约 §3.3），返回被回收的任务 ID。
 //
+// **全局扫描，不按命名空间过滤**：租约过期是客观事实，不能因为调用方不知道哪些
+// 命名空间有活任务就漏回收。后续每条写操作都用任务行**自己的** namespace_id 定位
+// （契约 §2.1：命名空间资源的作用域参数一律是 namespace_id）。
+//
 // 三步（每条任务一个事务，互不影响）：
 //  1. CAS 进 lease_expired（中间态，不是终态）——只有仍处在 assigned/acked/running
 //     且租约确实过期的任务会被选中，所以并发下不会误伤刚续期成功的任务
@@ -775,7 +860,7 @@ func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []str
 		now = Now()
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, org_id, capability_id, status, attempts, node_id, started_at
+		`SELECT id, namespace_id, capability_id, status, attempts, node_id, started_at
 		 FROM tasks
 		 WHERE status IN (?,?,?) AND lease_until IS NOT NULL AND lease_until < ?
 		 ORDER BY lease_until`,
@@ -784,15 +869,15 @@ func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []str
 		return nil, fmt.Errorf("scan expired leases: %w", err)
 	}
 	type expired struct {
-		id, orgID, capabilityID, status, nodeID string
-		attempts                                int
-		startedAt                               sql.NullInt64
+		id, namespaceID, capabilityID, status, nodeID string
+		attempts                                      int
+		startedAt                                     sql.NullInt64
 	}
 	var batch []expired
 	for rows.Next() {
 		var e expired
 		var nodeID sql.NullString
-		if err := rows.Scan(&e.id, &e.orgID, &e.capabilityID, &e.status, &e.attempts, &nodeID, &e.startedAt); err != nil {
+		if err := rows.Scan(&e.id, &e.namespaceID, &e.capabilityID, &e.status, &e.attempts, &nodeID, &e.startedAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan expired lease: %w", err)
 		}
@@ -807,7 +892,7 @@ func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []str
 
 	out := []string{}
 	for _, e := range batch {
-		ok, err := d.sweepOne(ctx, e.id, e.orgID, e.capabilityID, e.status, e.attempts, e.nodeID, e.startedAt, now)
+		ok, err := d.sweepOne(ctx, e.id, e.namespaceID, e.capabilityID, e.status, e.attempts, e.nodeID, e.startedAt, now)
 		if err != nil {
 			return out, err
 		}
@@ -820,8 +905,11 @@ func (d *DB) SweepExpiredLeases(ctx context.Context, now int64) (reclaimed []str
 
 // sweepOne 回收一条过期租约，返回是否真的回收了（CAS 失败 = 别人先处理了）。
 //
+// namespaceID 来自任务行自己（扫描时 SELECT 出来的），不是调用方传的：全局巡检
+// 手里没有「一个命名空间」，只能信任行上的事实。
+//
 // startedAt 是任务的 started_at：nil 表示**节点领了单但一行代码都没执行过**。
-func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status string, attempts int, nodeID string, startedAt sql.NullInt64, now int64) (bool, error) {
+func (d *DB) sweepOne(ctx context.Context, taskID, namespaceID, capabilityID, status string, attempts int, nodeID string, startedAt sql.NullInt64, now int64) (bool, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin sweep lease: %w", err)
@@ -833,7 +921,7 @@ func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status s
 	// 走 transitionGuarded：改 tasks.status 的 SQL 保持唯一（契约 §3），
 	// 同时把「租约确实已过期」作为守卫条件并进同一条 UPDATE，
 	// 避免「心跳续期」与「巡检回收」交错时误杀刚续约的任务。
-	err = d.transitionGuarded(ctx, tx, orgID, taskID, status, TaskLeaseExpired,
+	err = d.transitionGuarded(ctx, tx, namespaceID, taskID, status, TaskLeaseExpired,
 		"lease_until IS NOT NULL AND lease_until < ?", now)
 	if errors.Is(err, ErrTransitionGuardFailed) {
 		return false, nil // 心跳赢了，跳过
@@ -886,14 +974,14 @@ func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status s
 	}
 
 	// 状态推进同样走唯一写入点 transitionGuarded（lease_expired → pending | abandoned）
-	if err := d.transitionGuarded(ctx, tx, orgID, taskID, TaskLeaseExpired, to, ""); err != nil {
+	if err := d.transitionGuarded(ctx, tx, namespaceID, taskID, TaskLeaseExpired, to, ""); err != nil {
 		return false, fmt.Errorf("sweep transition to %s: %w", to, err)
 	}
 	if finished {
 		// 补终态附带信息（abandoned 的 finished_at 已由 transitionGuarded 写入）
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE tasks SET error = ? WHERE org_id = ? AND id = ?`,
-			reason, orgID, taskID); err != nil {
+			`UPDATE tasks SET error = ? WHERE namespace_id = ? AND id = ?`,
+			reason, namespaceID, taskID); err != nil {
 			return false, fmt.Errorf("annotate abandoned task: %w", err)
 		}
 	} else {
@@ -903,7 +991,7 @@ func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status s
 		notBefore := now + RetryBackoff(attempts)
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET node_id = NULL, instance_id = NULL, lease_until = NULL, not_before = ?
-			 WHERE org_id = ? AND id = ?`, notBefore, orgID, taskID); err != nil {
+			 WHERE namespace_id = ? AND id = ?`, notBefore, namespaceID, taskID); err != nil {
 			return false, fmt.Errorf("requeue task: %w", err)
 		}
 	}
@@ -924,8 +1012,8 @@ func (d *DB) sweepOne(ctx context.Context, taskID, orgID, capabilityID, status s
 }
 
 // CancelTask 取消任务（pending/assigned/acked/running → canceled）并释放槽位。
-func (d *DB) CancelTask(ctx context.Context, orgID, taskID string) error {
-	task, err := d.GetTask(ctx, orgID, taskID)
+func (d *DB) CancelTask(ctx context.Context, namespaceID, taskID string) error {
+	task, err := d.GetTask(ctx, namespaceID, taskID)
 	if err != nil {
 		return err
 	}
@@ -936,7 +1024,7 @@ func (d *DB) CancelTask(ctx context.Context, orgID, taskID string) error {
 		return fmt.Errorf("%w: task %s is %s (only pending|abandoned allowed)",
 			ErrInvalidTransition, taskID, task.Status)
 	}
-	if err := d.Transition(ctx, orgID, taskID, task.Status, TaskCanceled); err != nil {
+	if err := d.Transition(ctx, namespaceID, taskID, task.Status, TaskCanceled); err != nil {
 		return err
 	}
 	if task.NodeID != nil {
@@ -948,9 +1036,10 @@ func (d *DB) CancelTask(ctx context.Context, orgID, taskID string) error {
 }
 
 // CountTasksByStatus 返回某 trace 下各状态的任务数（供 trace 视图/测试用）。
-func (d *DB) CountTasksByStatus(ctx context.Context, orgID, traceID string) (map[string]int, error) {
-	q := `SELECT status, COUNT(*) FROM tasks WHERE org_id = ?`
-	args := []any{orgID}
+// traceID 为空时统计整个命名空间。
+func (d *DB) CountTasksByStatus(ctx context.Context, namespaceID, traceID string) (map[string]int, error) {
+	q := `SELECT status, COUNT(*) FROM tasks WHERE namespace_id = ?`
+	args := []any{namespaceID}
 	if traceID != "" {
 		q += ` AND trace_id = ?`
 		args = append(args, traceID)
@@ -990,6 +1079,10 @@ func RetryBackoff(attempts int) int64 {
 }
 
 // ListRedispatchable 列出「可以立刻重派」的 pending 任务。
+//
+// **全局扫描，不按命名空间过滤**：重派是巡检的职责，不能因为调用方不知道哪些
+// 命名空间有待派任务就整片饿死。命名空间从行上的 NamespaceID 拿（下游
+// Dispatcher 派发时用它做作用域），不需要调用方传。
 //
 // 三个条件缺一不可：
 //   - status = pending（回滚/新建后等待调度的）
@@ -1036,10 +1129,10 @@ func (d *DB) ListRedispatchable(ctx context.Context, now int64, limit int) ([]*T
 // SetNotBefore 设置任务的退避时间（重派失败时调用）。
 //
 // 只对 pending 任务生效：其他状态设退避没有意义（它们不在调度池里）。
-func (d *DB) SetNotBefore(ctx context.Context, orgID, taskID string, notBefore int64) error {
+func (d *DB) SetNotBefore(ctx context.Context, namespaceID, taskID string, notBefore int64) error {
 	res, err := d.ExecContext(ctx,
-		`UPDATE tasks SET not_before = ? WHERE org_id = ? AND id = ? AND status = ?`,
-		notBefore, orgID, taskID, TaskPending)
+		`UPDATE tasks SET not_before = ? WHERE namespace_id = ? AND id = ? AND status = ?`,
+		notBefore, namespaceID, taskID, TaskPending)
 	if err != nil {
 		return fmt.Errorf("set not_before: %w", err)
 	}
@@ -1049,38 +1142,38 @@ func (d *DB) SetNotBefore(ctx context.Context, orgID, taskID string, notBefore i
 	return nil
 }
 
-// CountOpenTasksSince 只数 createdAt >= since 的未终态任务。
+// CountOpenTasksSince 只数命名空间内 createdAt >= since 的未终态任务。
 //
 // 开发工具要「等本次生产的那批链跑完」，不能把历史遗留的 pending 也算进来
 // ——否则永远等不到 0（那些行不会自己消失）。
-func (d *DB) CountOpenTasksSince(ctx context.Context, orgID string, since int64) (int, error) {
-	if orgID == "" {
-		return 0, fmt.Errorf("count open tasks since: empty org_id")
+func (d *DB) CountOpenTasksSince(ctx context.Context, namespaceID string, since int64) (int, error) {
+	if namespaceID == "" {
+		return 0, fmt.Errorf("count open tasks since: %w", ErrNamespaceRequired)
 	}
 	var n int
 	if err := d.QueryRowContext(ctx,
 		`SELECT count(*) FROM tasks
-		 WHERE org_id = ? AND created_at >= ?
+		 WHERE namespace_id = ? AND created_at >= ?
 		   AND status NOT IN ('succeeded','failed','canceled','abandoned')`,
-		orgID, since).Scan(&n); err != nil {
+		namespaceID, since).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count open tasks since: %w", err)
 	}
 	return n, nil
 }
 
-// CountOpenTasks 返回组织内**未到终态**的任务数。
+// CountOpenTasks 返回命名空间内**未到终态**的任务数。
 //
 // 用途：开发/测试工具想知道「这一批链跑完了没有」。
 // 终态集合与 ValidTransition 的口径保持一致（succeeded/failed/canceled/abandoned）。
-func (d *DB) CountOpenTasks(ctx context.Context, orgID string) (int, error) {
-	if orgID == "" {
-		return 0, fmt.Errorf("count open tasks: empty org_id")
+func (d *DB) CountOpenTasks(ctx context.Context, namespaceID string) (int, error) {
+	if namespaceID == "" {
+		return 0, fmt.Errorf("count open tasks: %w", ErrNamespaceRequired)
 	}
 	var n int
 	if err := d.QueryRowContext(ctx,
 		`SELECT count(*) FROM tasks
-		 WHERE org_id = ? AND status NOT IN ('succeeded','failed','canceled','abandoned')`,
-		orgID).Scan(&n); err != nil {
+		 WHERE namespace_id = ? AND status NOT IN ('succeeded','failed','canceled','abandoned')`,
+		namespaceID).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count open tasks: %w", err)
 	}
 	return n, nil

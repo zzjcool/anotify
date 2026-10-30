@@ -76,18 +76,24 @@ var ErrNodeOffline = fmt.Errorf("node is offline")
 
 // PublishAssign 向节点推送 assign 帧（实现 route.Publisher）。
 //
+// namespaceID 是任务的命名空间（#162）。路由比较走的也是**命名空间**，不是 org：
+// 一个连接 = 一个节点 = 一个命名空间（令牌绑命名空间），所以「任务与节点同命名空间」
+// 是比「同 org」更强、也是唯一正确的约束——同一个 org 里两个命名空间的任务绝不能互推。
+// 历史上这里是 org_id 比较（那时隔离维度就是 org），参数名也跟着叫 orgID。
+//
 // 任务已落库为 assigned，节点不在线时返回 ErrNodeOffline——
 // 让派发方知道「这个任务推不出去了」。调用方可以选择：
 //   - 保持 assigned，等节点重连后由租约巡检回收再派（当前行为）
 //   - 立刻改回 pending（需要额外的事务编排，暂不处理）
-func (h *NodeHub) PublishAssign(ctx context.Context, orgID, nodeID string, task *store.Task) error {
+func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error {
 	s := h.session(nodeID)
 	if s == nil {
 		return ErrNodeOffline
 	}
-	if s.node.OrgID != orgID {
-		// 绝不跨组织推任务（不变量 I10）
-		return fmt.Errorf("node %s belongs to another org", nodeID)
+	if s.node.NamespaceID != namespaceID {
+		// 绝不跨命名空间推任务（不变量 I10/I11）：跨命名空间派发会把一台机器的
+		// 执行能力泄漏给别的隔离域。
+		return fmt.Errorf("node %s belongs to another namespace", nodeID)
 	}
 	return s.send(ctx, assignFrameFor(task))
 }

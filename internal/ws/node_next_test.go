@@ -48,13 +48,17 @@ type fakeNextHop struct {
 	planParent  string
 	planFromCap string
 	planOut     string
-	publishCall []fakePublish
+	// planNamespace 是 PlanNextHop 收到的作用域参数：必须是**父任务的命名空间**
+	// （#162 之前这里传的是 org，出口表会恒 0 行）。
+	planNamespace string
+	publishCall   []fakePublish
 }
 
 // fakePublish 是一次 PublishTasks 调用的快照（在 goroutine 里填，断言侧读）。
 type fakePublish struct {
-	orgID   string
-	taskIDs []string
+	// namespaceID 是 PublishTasks 收到的作用域参数（#162：派发作用域是命名空间）。
+	namespaceID string
+	taskIDs     []string
 	// rowsInDB 是「publish 被调用的那一刻，这些 ID 已在库里」的条数。
 	// 它是「先 commit 后 publish」的直接证据（不是靠调用顺序猜的）。
 	rowsInDB int
@@ -72,11 +76,12 @@ func (f *fakeNextHop) setPlan(tasks ...*store.Task) {
 	f.mu.Unlock()
 }
 
-func (f *fakeNextHop) PlanNextHop(_ context.Context, orgID, traceID, parentTaskID,
+func (f *fakeNextHop) PlanNextHop(_ context.Context, namespaceID, traceID, parentTaskID,
 	fromCapabilityID, out string, _ json.RawMessage, _ []string) ([]*store.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.planCalls++
+	f.planNamespace = namespaceID
 	f.planTrace, f.planParent, f.planFromCap, f.planOut = traceID, parentTaskID, fromCapabilityID, out
 	if f.planErr != nil {
 		return nil, f.planErr
@@ -84,17 +89,17 @@ func (f *fakeNextHop) PlanNextHop(_ context.Context, orgID, traceID, parentTaskI
 	return f.planTasks, nil
 }
 
-func (f *fakeNextHop) PublishTasks(ctx context.Context, orgID string, tasks []*store.Task) error {
+func (f *fakeNextHop) PublishTasks(ctx context.Context, namespaceID string, tasks []*store.Task) error {
 	f.mu.Lock()
 	db, pubErr := f.db, f.publishErr
 	f.mu.Unlock()
 
 	// DB 查询放在锁外：它是被测性质本身（行是否已提交），不是 fake 的状态。
-	call := fakePublish{orgID: orgID}
+	call := fakePublish{namespaceID: namespaceID}
 	for _, t := range tasks {
 		call.taskIDs = append(call.taskIDs, t.ID)
 		if db != nil {
-			if _, err := db.GetTask(ctx, orgID, t.ID); err == nil {
+			if _, err := db.GetTask(ctx, namespaceID, t.ID); err == nil {
 				call.rowsInDB++
 			}
 		}
@@ -134,14 +139,14 @@ func (f *fakeNextHop) waitPublishes(t *testing.T, want int) []fakePublish {
 // pending、ID 已生成、parent/trace/path 都接上父任务（尚未落库）。
 func (f *nodeFixture) nextHopChild(t *testing.T, parent *store.Task, out string) *store.Task {
 	t.Helper()
-	cap1, err := f.db.GetCapability(context.Background(), f.orgID, "review", 1)
+	cap1, err := f.db.GetCapability(context.Background(), f.nsID, "review", 1)
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
 	parentID := parent.ID
 	return &store.Task{
 		ID:           store.NewTaskID(),
-		OrgID:        f.orgID,
+		NamespaceID:  f.nsID,
 		TraceID:      parent.TraceID,
 		ParentTaskID: &parentID,
 		Path:         append(append([]string{}, parent.Path...), out),
@@ -186,10 +191,10 @@ func TestResultPersistsNextHopRowBeforePublish(t *testing.T) {
 	sentResult(t, conn, parent.ID, "fix")
 
 	// ① 父任务照常成功：下一跳 publish 失败不能让它回退/变失败。
-	waitStatus(t, f.db, f.orgID, parent.ID, store.TaskSucceeded)
+	waitStatus(t, f.db, f.nsID, parent.ID, store.TaskSucceeded)
 
 	// ② 子任务行存在（旧实现在这里就是 #140 的空洞：行根本不存在）。
-	got, err := f.db.GetTask(ctx, f.orgID, child.ID)
+	got, err := f.db.GetTask(ctx, f.nsID, child.ID)
 	if err != nil {
 		t.Fatalf("next-hop row missing after result — this is the #140 permanent hole: %v", err)
 	}
@@ -234,8 +239,8 @@ func TestResultPersistsNextHopRowBeforePublish(t *testing.T) {
 	if len(pubs[0].taskIDs) != 1 || pubs[0].taskIDs[0] != child.ID {
 		t.Fatalf("published task IDs = %v, want [%s]", pubs[0].taskIDs, child.ID)
 	}
-	if pubs[0].orgID != f.orgID {
-		t.Errorf("publish org_id = %q, want %q", pubs[0].orgID, f.orgID)
+	if pubs[0].namespaceID != f.nsID {
+		t.Errorf("publish namespace = %q, want %q", pubs[0].namespaceID, f.nsID)
 	}
 	if pubs[0].rowsInDB != 1 {
 		t.Errorf("row was not committed before publish: %d/%d visible", pubs[0].rowsInDB, len(pubs[0].taskIDs))
@@ -269,7 +274,7 @@ func TestResultNextHopChildIsInSameTransaction(t *testing.T) {
 	fake.setPlan(child)
 
 	sentResult(t, conn, parent.ID, "fix")
-	waitStatus(t, f.db, f.orgID, parent.ID, store.TaskSucceeded)
+	waitStatus(t, f.db, f.nsID, parent.ID, store.TaskSucceeded)
 
 	pubs := fake.waitPublishes(t, 1)
 
@@ -283,7 +288,7 @@ func TestResultNextHopChildIsInSameTransaction(t *testing.T) {
 	}
 
 	// ② 库里这条 trace 现在正好 2 行（父 + 1 个子），子任务行 ID == publish 收到的 ID。
-	all, err := f.db.ListTasks(ctx, f.orgID, parent.TraceID, "", "", 50)
+	all, err := f.db.ListTasks(ctx, f.nsID, parent.TraceID, "", "", 50)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -304,10 +309,17 @@ func TestResultNextHopChildIsInSameTransaction(t *testing.T) {
 	// ③ plan 拿到的上下文是父任务那一份（trace/parent/from-cap/out 都接对了）。
 	fake.mu.Lock()
 	gotTrace, gotParent, gotFromCap, gotOut := fake.planTrace, fake.planParent, fake.planFromCap, fake.planOut
+	gotPlanNS := fake.planNamespace
 	fake.mu.Unlock()
 	if gotTrace != parent.TraceID || gotParent != parent.ID || gotFromCap != parent.CapabilityID || gotOut != "fix" {
 		t.Fatalf("plan args = (trace=%q, parent=%q, fromCap=%q, out=%q), want (%q, %q, %q, %q)",
 			gotTrace, gotParent, gotFromCap, gotOut, parent.TraceID, parent.ID, parent.CapabilityID, "fix")
+	}
+	// plan 的作用域是**父任务的命名空间**（#162）：传 org 的话 EdgesFrom 恒 0 行，
+	// 下一跳永远不会被建出来。
+	if gotPlanNS != parent.NamespaceID || gotPlanNS != f.nsID {
+		t.Fatalf("plan namespace = %q, want the parent task's namespace %q (fixture ns %q)",
+			gotPlanNS, parent.NamespaceID, f.nsID)
 	}
 }
 
@@ -340,7 +352,7 @@ func TestResultRollsBackWhenNextHopRowRejected(t *testing.T) {
 	}
 
 	// ② 父任务不在终态（回滚；事务里的 assigned→running 也一起回滚了）。
-	got, err := f.db.GetTask(ctx, f.orgID, parent.ID)
+	got, err := f.db.GetTask(ctx, f.nsID, parent.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -349,7 +361,7 @@ func TestResultRollsBackWhenNextHopRowRejected(t *testing.T) {
 	}
 
 	// ③ 库里这条 trace 仍只有 1 行（子任务没建出来）。
-	all, err := f.db.ListTasks(ctx, f.orgID, parent.TraceID, "", "", 50)
+	all, err := f.db.ListTasks(ctx, f.nsID, parent.TraceID, "", "", 50)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -381,10 +393,10 @@ func TestResultWithoutNextHopUnchanged(t *testing.T) {
 
 	parent := f.makeAssignedTask(t, "trace_140_no_next_hop")
 	sentResult(t, conn, parent.ID, "fix")
-	waitStatus(t, f.db, f.orgID, parent.ID, store.TaskSucceeded)
+	waitStatus(t, f.db, f.nsID, parent.ID, store.TaskSucceeded)
 
 	// ① 结果字段照旧落库（reported + out）。
-	got, err := f.db.GetTask(ctx, f.orgID, parent.ID)
+	got, err := f.db.GetTask(ctx, f.nsID, parent.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -393,7 +405,7 @@ func TestResultWithoutNextHopUnchanged(t *testing.T) {
 	}
 
 	// ② 不建子任务：这条 trace 只有父任务一行。
-	all, err := f.db.ListTasks(ctx, f.orgID, parent.TraceID, "", "", 50)
+	all, err := f.db.ListTasks(ctx, f.nsID, parent.TraceID, "", "", 50)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -432,7 +444,7 @@ func TestResultPlanFailureLeavesNoTerminalState(t *testing.T) {
 	}
 
 	// ② 父任务不在终态（plan 失败 → 连结果都没落库）。
-	got, err := f.db.GetTask(ctx, f.orgID, parent.ID)
+	got, err := f.db.GetTask(ctx, f.nsID, parent.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}

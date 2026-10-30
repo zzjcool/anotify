@@ -74,22 +74,22 @@ func TestTransition(t *testing.T) {
 			from, to := from, to
 			t.Run(from+"_to_"+to, func(t *testing.T) {
 				db := newTestDB(t)
-				orgID, _ := newTestOrg(t, db)
-				cap := mkCap(orgID, "review", 1, nil)
+				nsID, _ := newTestNS(t, db)
+				cap := mkCap(nsID, "review", 1, nil)
 				if err := db.CreateCapability(ctx, cap); err != nil {
 					t.Fatalf("create cap: %v", err)
 				}
-				task := mkTask(orgID, "trace_"+from, cap)
+				task := mkTask(nsID, "trace_"+from, cap)
 				if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 					t.Fatalf("create task: %v", err)
 				}
 				// 把任务推到 from 状态（沿合法路径）
-				pushToStatus(t, db, orgID, task, from)
+				pushToStatus(t, db, nsID, task, from)
 
-				if err := db.Transition(ctx, orgID, task.ID, from, to); err != nil {
+				if err := db.Transition(ctx, nsID, task.ID, from, to); err != nil {
 					t.Fatalf("legal transition %s → %s rejected: %v", from, to, err)
 				}
-				got, err := db.GetTask(ctx, orgID, task.ID)
+				got, err := db.GetTask(ctx, nsID, task.ID)
 				if err != nil {
 					t.Fatalf("get: %v", err)
 				}
@@ -103,12 +103,12 @@ func TestTransition(t *testing.T) {
 	// 表外组合：库里必须原样不动
 	t.Run("illegal", func(t *testing.T) {
 		db := newTestDB(t)
-		orgID, _ := newTestOrg(t, db)
-		cap := mkCap(orgID, "review", 1, nil)
+		nsID, _ := newTestNS(t, db)
+		cap := mkCap(nsID, "review", 1, nil)
 		if err := db.CreateCapability(ctx, cap); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
-		task := mkTask(orgID, "trace_illegal", cap)
+		task := mkTask(nsID, "trace_illegal", cap)
 		if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 			t.Fatalf("create task: %v", err)
 		}
@@ -116,12 +116,12 @@ func TestTransition(t *testing.T) {
 			if to == TaskCanceled {
 				continue
 			}
-			err := db.Transition(ctx, orgID, task.ID, TaskPending, to)
+			err := db.Transition(ctx, nsID, task.ID, TaskPending, to)
 			if !errors.Is(err, ErrInvalidTransition) {
 				t.Errorf("pending → %s err = %v, want ErrInvalidTransition", to, err)
 			}
 		}
-		got, _ := db.GetTask(ctx, orgID, task.ID)
+		got, _ := db.GetTask(ctx, nsID, task.ID)
 		if got.Status != TaskPending {
 			t.Fatalf("illegal transitions mutated status to %q", got.Status)
 		}
@@ -129,7 +129,7 @@ func TestTransition(t *testing.T) {
 }
 
 // pushToStatus 沿合法路径把任务推到目标状态（测试夹具）。
-func pushToStatus(t *testing.T, db *DB, orgID string, task *Task, target string) {
+func pushToStatus(t *testing.T, db *DB, nsID string, task *Task, target string) {
 	t.Helper()
 	ctx := context.Background()
 	path := map[string][]string{
@@ -149,7 +149,7 @@ func pushToStatus(t *testing.T, db *DB, orgID string, task *Task, target string)
 	}
 	cur := TaskPending
 	for _, next := range steps {
-		if err := db.Transition(ctx, orgID, task.ID, cur, next); err != nil {
+		if err := db.Transition(ctx, nsID, task.ID, cur, next); err != nil {
 			t.Fatalf("push %s → %s: %v", cur, next, err)
 		}
 		cur = next
@@ -166,24 +166,24 @@ func TestTerminalImmutable(t *testing.T) {
 		terminal := terminal
 		t.Run(terminal, func(t *testing.T) {
 			db := newTestDB(t)
-			orgID, _ := newTestOrg(t, db)
-			cap := mkCap(orgID, "review", 1, nil)
+			nsID, _ := newTestNS(t, db)
+			cap := mkCap(nsID, "review", 1, nil)
 			if err := db.CreateCapability(ctx, cap); err != nil {
 				t.Fatalf("create cap: %v", err)
 			}
-			task := mkTask(orgID, "trace_term", cap)
+			task := mkTask(nsID, "trace_term", cap)
 			if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 				t.Fatalf("create: %v", err)
 			}
-			pushToStatus(t, db, orgID, task, terminal)
+			pushToStatus(t, db, nsID, task, terminal)
 
 			for _, to := range allStatuses {
-				err := db.Transition(ctx, orgID, task.ID, terminal, to)
+				err := db.Transition(ctx, nsID, task.ID, terminal, to)
 				if !errors.Is(err, ErrInvalidTransition) {
 					t.Errorf("%s → %s err = %v, want ErrInvalidTransition", terminal, to, err)
 				}
 			}
-			got, _ := db.GetTask(ctx, orgID, task.ID)
+			got, _ := db.GetTask(ctx, nsID, task.ID)
 			if got.Status != terminal {
 				t.Fatalf("terminal status mutated to %q", got.Status)
 			}
@@ -193,17 +193,17 @@ func TestTerminalImmutable(t *testing.T) {
 
 // TestTransitionFinishedAt 进入终态时写 finished_at，中间态不写。
 func TestTransitionFinishedAt(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
 
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.FinishedAt != nil {
 		t.Fatal("running task already has finished_at")
 	}
-	if err := db.Transition(ctx, orgID, task.ID, TaskRunning, TaskSucceeded); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskRunning, TaskSucceeded); err != nil {
 		t.Fatalf("succeed: %v", err)
 	}
-	got, _ = db.GetTask(ctx, orgID, task.ID)
+	got, _ = db.GetTask(ctx, nsID, task.ID)
 	if got.FinishedAt == nil {
 		t.Fatal("terminal status did not set finished_at")
 	}
@@ -211,15 +211,15 @@ func TestTransitionFinishedAt(t *testing.T) {
 
 // TestTransitionCASAgainstConcurrency 状态被并发改走时，旧 from 的迁移必须失败。
 func TestTransitionCASAgainstConcurrency(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
 
 	// 第一次推进成功
-	if err := db.Transition(ctx, orgID, task.ID, TaskRunning, TaskSucceeded); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskRunning, TaskSucceeded); err != nil {
 		t.Fatalf("first transition: %v", err)
 	}
 	// 用旧的 from=running 再推一次 → CAS 失败（RowsAffected=0）
-	err := db.Transition(ctx, orgID, task.ID, TaskRunning, TaskFailed)
+	err := db.Transition(ctx, nsID, task.ID, TaskRunning, TaskFailed)
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("second transition with stale from: err = %v, want ErrInvalidTransition", err)
 	}
@@ -228,8 +228,8 @@ func TestTransitionCASAgainstConcurrency(t *testing.T) {
 // TestTransitionNotFound 任务不存在返回 ErrNotFound。
 func TestTransitionNotFound(t *testing.T) {
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
-	err := db.Transition(context.Background(), orgID, "tsk_missing", TaskPending, TaskAssigned)
+	nsID, _ := newTestNS(t, db)
+	err := db.Transition(context.Background(), nsID, "tsk_missing", TaskPending, TaskAssigned)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing task err = %v, want ErrNotFound", err)
 	}
@@ -237,26 +237,26 @@ func TestTransitionNotFound(t *testing.T) {
 
 // TestAssignTask 派发写归属 + attempts+1。
 func TestAssignTask(t *testing.T) {
-	db, orgID, nodeID, _, _ := setupRunningTask(t)
+	db, nsID, nodeID, _, _ := setupRunningTask(t)
 	ctx := context.Background()
-	cap, err := db.GetCapability(ctx, orgID, "review", 1)
+	cap, err := db.GetCapability(ctx, nsID, "review", 1)
 	if err != nil {
 		t.Fatalf("get cap: %v", err)
 	}
-	task := mkTask(orgID, "trace_assign", cap)
+	task := mkTask(nsID, "trace_assign", cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	expandCapacity(t, db, orgID, nodeID, 4)
+	expandCapacity(t, db, nsID, nodeID, 4)
 	inst, err := db.LeaseInstance(ctx, nodeID, task.ID)
 	if err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	lease := Now() + LeaseTTLSec
-	if err := db.AssignTask(ctx, orgID, task.ID, nodeID, inst, lease); err != nil {
+	if err := db.AssignTask(ctx, nsID, task.ID, nodeID, inst, lease); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -276,30 +276,30 @@ func TestAssignTask(t *testing.T) {
 		t.Fatalf("attempts = %d, want 1", got.Attempts)
 	}
 	// 已 assigned 的任务不能再 assign
-	if err := db.AssignTask(ctx, orgID, task.ID, nodeID, inst, lease); err == nil {
+	if err := db.AssignTask(ctx, nsID, task.ID, nodeID, inst, lease); err == nil {
 		t.Fatal("re-assigning an assigned task was accepted")
 	}
 }
 
 // TestExtendLease 心跳续租。
 func TestExtendLease(t *testing.T) {
-	db, orgID, nodeID, _, task := setupRunningTask(t)
+	db, nsID, nodeID, _, task := setupRunningTask(t)
 	ctx := context.Background()
 
 	newLease := Now() + 999
-	if err := db.ExtendLease(ctx, orgID, task.ID, newLease); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, newLease); err != nil {
 		t.Fatalf("extend running lease: %v", err)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.LeaseUntil == nil || *got.LeaseUntil != newLease {
 		t.Fatalf("lease_until = %v, want %d", got.LeaseUntil, newLease)
 	}
 
 	// 终态任务不再续租
-	if err := db.Transition(ctx, orgID, task.ID, TaskRunning, TaskSucceeded); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskRunning, TaskSucceeded); err != nil {
 		t.Fatalf("succeed: %v", err)
 	}
-	if err := db.ExtendLease(ctx, orgID, task.ID, newLease+100); !errors.Is(err, ErrNotFound) {
+	if err := db.ExtendLease(ctx, nsID, task.ID, newLease+100); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("extend terminal lease err = %v, want ErrNotFound", err)
 	}
 	_ = nodeID
@@ -307,30 +307,30 @@ func TestExtendLease(t *testing.T) {
 
 // TestExtendLeasesForNode 心跳批量续期：节点上所有在跑任务一起前进。
 func TestExtendLeasesForNode(t *testing.T) {
-	db, orgID, nodeID, _, _ := setupRunningTask(t)
+	db, nsID, nodeID, _, _ := setupRunningTask(t)
 	ctx := context.Background()
-	cap, err := db.GetCapability(ctx, orgID, "review", 1)
+	cap, err := db.GetCapability(ctx, nsID, "review", 1)
 	if err != nil {
 		t.Fatalf("get cap: %v", err)
 	}
 	// 再推两个任务到 running
-	expandCapacity(t, db, orgID, nodeID, 4)
+	expandCapacity(t, db, nsID, nodeID, 4)
 	for i := 0; i < 2; i++ {
-		x := mkTask(orgID, "trace_multi", cap)
+		x := mkTask(nsID, "trace_multi", cap)
 		if err := db.CreateTasks(ctx, []*Task{x}); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		driveToRunning(t, db, orgID, nodeID, x)
+		driveToRunning(t, db, nsID, nodeID, x)
 	}
 	newLease := Now() + 777
-	n, err := db.ExtendLeasesForNode(ctx, orgID, nodeID, newLease)
+	n, err := db.ExtendLeasesForNode(ctx, nsID, nodeID, newLease)
 	if err != nil {
 		t.Fatalf("extend for node: %v", err)
 	}
 	if n != 3 {
 		t.Fatalf("extended %d leases, want 3", n)
 	}
-	tasks, err := db.ListTasks(ctx, orgID, "", nodeID, "", 50)
+	tasks, err := db.ListTasks(ctx, nsID, "", nodeID, "", 50)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -347,11 +347,11 @@ func TestExtendLeasesForNode(t *testing.T) {
 //
 // 场景：attempts=1 < maxAttempts(默认 3) → 回 pending。
 func TestSweepLeases(t *testing.T) {
-	db, orgID, nodeID, _, task := setupRunningTask(t)
+	db, nsID, nodeID, _, task := setupRunningTask(t)
 	ctx := context.Background()
 
 	// 让租约过期
-	if err := db.ExtendLease(ctx, orgID, task.ID, Now()-10); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, Now()-10); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	reclaimed, err := db.SweepExpiredLeases(ctx, Now())
@@ -361,7 +361,7 @@ func TestSweepLeases(t *testing.T) {
 	if len(reclaimed) != 1 || reclaimed[0] != task.ID {
 		t.Fatalf("reclaimed = %v, want [%s]", reclaimed, task.ID)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -388,36 +388,36 @@ func TestSweepLeases(t *testing.T) {
 func TestSweepLeasesAttemptsExhausted(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 	// maxAttempts=1
-	cap := mkCap(orgID, "review", 1, nil)
+	cap := mkCap(nsID, "review", 1, nil)
 	cap.Lifecycle = Lifecycle{MaxAttempts: 1}
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	node, _ := mkNode(t, db, orgID, "mbp")
-	if _, err := db.ConfirmCapabilities(ctx, orgID, node.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
+	node, _ := mkNode(t, db, nsID, "mbp")
+	if _, err := db.ConfirmCapabilities(ctx, nsID, node.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if err := db.UpdateNodeStatus(ctx, orgID, node.ID, NodeStatusOnline); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, node.ID, NodeStatusOnline); err != nil {
 		t.Fatalf("online: %v", err)
 	}
-	if _, err := db.UpsertInstances(ctx, orgID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
-	task := mkTask(orgID, "trace_exhaust", cap)
+	task := mkTask(nsID, "trace_exhaust", cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	driveToRunning(t, db, orgID, node.ID, task) // attempts 变 1
+	driveToRunning(t, db, nsID, node.ID, task) // attempts 变 1
 
-	if err := db.ExtendLease(ctx, orgID, task.ID, Now()-1); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, Now()-1); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 	if _, err := db.SweepExpiredLeases(ctx, Now()); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -433,36 +433,36 @@ func TestSweepLeasesAttemptsExhausted(t *testing.T) {
 func TestSweepLeasesNonIdempotentAbandons(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 	no := false
-	cap := mkCap(orgID, "deploy", 1, nil)
+	cap := mkCap(nsID, "deploy", 1, nil)
 	cap.Lifecycle = Lifecycle{Idempotent: &no, MaxAttempts: 99}
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	node, _ := mkNode(t, db, orgID, "mbp")
-	if _, err := db.ConfirmCapabilities(ctx, orgID, node.ID, []CapabilityRef{{Name: "deploy", Version: 1}}); err != nil {
+	node, _ := mkNode(t, db, nsID, "mbp")
+	if _, err := db.ConfirmCapabilities(ctx, nsID, node.ID, []CapabilityRef{{Name: "deploy", Version: 1}}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if err := db.UpdateNodeStatus(ctx, orgID, node.ID, NodeStatusOnline); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, node.ID, NodeStatusOnline); err != nil {
 		t.Fatalf("online: %v", err)
 	}
-	if _, err := db.UpsertInstances(ctx, orgID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
-	task := mkTask(orgID, "trace_nonidem", cap)
+	task := mkTask(nsID, "trace_nonidem", cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	driveToRunning(t, db, orgID, node.ID, task)
+	driveToRunning(t, db, nsID, node.ID, task)
 
-	if err := db.ExtendLease(ctx, orgID, task.ID, Now()-1); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, Now()-1); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 	if _, err := db.SweepExpiredLeases(ctx, Now()); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskAbandoned {
 		t.Fatalf("status = %q, want abandoned (idempotent:false 不重放)", got.Status)
 	}
@@ -470,9 +470,9 @@ func TestSweepLeasesNonIdempotentAbandons(t *testing.T) {
 
 // TestSweepLeasesIgnoresLiveLeases 未过期的不动。
 func TestSweepLeasesIgnoresLiveLeases(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
-	if err := db.ExtendLease(ctx, orgID, task.ID, Now()+3600); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, Now()+3600); err != nil {
 		t.Fatalf("extend: %v", err)
 	}
 	reclaimed, err := db.SweepExpiredLeases(ctx, Now())
@@ -482,7 +482,7 @@ func TestSweepLeasesIgnoresLiveLeases(t *testing.T) {
 	if len(reclaimed) != 0 {
 		t.Fatalf("reclaimed live lease: %v", reclaimed)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskRunning {
 		t.Fatalf("live task status changed to %q", got.Status)
 	}
@@ -492,16 +492,16 @@ func TestSweepLeasesIgnoresLiveLeases(t *testing.T) {
 func TestSweepLeasesAssignedExpires(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	cap := mkCap(orgID, "review", 1, nil)
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, nil)
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	node, _ := mkNode(t, db, orgID, "mbp")
-	if _, err := db.UpsertInstances(ctx, orgID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
+	node, _ := mkNode(t, db, nsID, "mbp")
+	if _, err := db.UpsertInstances(ctx, nsID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
-	task := mkTask(orgID, "trace_assigned", cap)
+	task := mkTask(nsID, "trace_assigned", cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestSweepLeasesAssignedExpires(t *testing.T) {
 		t.Fatalf("lease: %v", err)
 	}
 	// 派发但一直不 ack，租约到期
-	if err := db.AssignTask(ctx, orgID, task.ID, node.ID, inst, Now()-1); err != nil {
+	if err := db.AssignTask(ctx, nsID, task.ID, node.ID, inst, Now()-1); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 	reclaimed, err := db.SweepExpiredLeases(ctx, Now())
@@ -520,7 +520,7 @@ func TestSweepLeasesAssignedExpires(t *testing.T) {
 	if len(reclaimed) != 1 {
 		t.Fatalf("assigned task not reclaimed: %v", reclaimed)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskPending {
 		t.Fatalf("status = %q, want pending", got.Status)
 	}
@@ -528,9 +528,9 @@ func TestSweepLeasesAssignedExpires(t *testing.T) {
 
 // TestSweepLeasesIdempotent 重复巡检不会把同一个任务回收两次。
 func TestSweepLeasesIdempotent(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
-	if err := db.ExtendLease(ctx, orgID, task.ID, Now()-1); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, Now()-1); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 	first, err := db.SweepExpiredLeases(ctx, Now())
@@ -551,13 +551,13 @@ func TestSweepLeasesIdempotent(t *testing.T) {
 
 // TestCancelTask 取消 + 释放槽位。
 func TestCancelTask(t *testing.T) {
-	db, orgID, nodeID, _, task := setupRunningTask(t)
+	db, nsID, nodeID, _, task := setupRunningTask(t)
 	ctx := context.Background()
 
-	if err := db.CancelTask(ctx, orgID, task.ID); err != nil {
+	if err := db.CancelTask(ctx, nsID, task.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskCanceled {
 		t.Fatalf("status = %q, want canceled", got.Status)
 	}
@@ -571,19 +571,19 @@ func TestCancelTask(t *testing.T) {
 		}
 	}
 	// 再取消一次 → 终态拒绝
-	if err := db.CancelTask(ctx, orgID, task.ID); !errors.Is(err, ErrInvalidTransition) {
+	if err := db.CancelTask(ctx, nsID, task.ID); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("cancel twice err = %v, want ErrInvalidTransition", err)
 	}
 }
 
 // TestCancelPendingTask pending 也能取消（契约 §3.2 最后一行）。
 func TestCancelPendingTask(t *testing.T) {
-	db, orgID, _, task := setupTaskFixture(t)
+	db, nsID, _, task := setupTaskFixture(t)
 	ctx := context.Background()
-	if err := db.CancelTask(ctx, orgID, task.ID); err != nil {
+	if err := db.CancelTask(ctx, nsID, task.ID); err != nil {
 		t.Fatalf("cancel pending: %v", err)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskCanceled {
 		t.Fatalf("status = %q, want canceled", got.Status)
 	}
@@ -593,16 +593,16 @@ func TestCancelPendingTask(t *testing.T) {
 func TestReportResultFromAssignedImpliesRunning(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	cap := mkCap(orgID, "review", 1, nil)
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, nil)
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	node, _ := mkNode(t, db, orgID, "mbp")
-	if _, err := db.UpsertInstances(ctx, orgID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
+	node, _ := mkNode(t, db, nsID, "mbp")
+	if _, err := db.UpsertInstances(ctx, nsID, node.ID, []InstanceSpec{{Slot: 0}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
-	task := mkTask(orgID, "trace_direct", cap)
+	task := mkTask(nsID, "trace_direct", cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -610,18 +610,18 @@ func TestReportResultFromAssignedImpliesRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lease: %v", err)
 	}
-	if err := db.AssignTask(ctx, orgID, task.ID, node.ID, inst, Now()+LeaseTTLSec); err != nil {
+	if err := db.AssignTask(ctx, nsID, task.ID, node.ID, inst, Now()+LeaseTTLSec); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if err := db.Transition(ctx, orgID, task.ID, TaskAssigned, TaskAcked); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskAssigned, TaskAcked); err != nil {
 		t.Fatalf("ack: %v", err)
 	}
 	// 不推 running，直接 result
 	port := "fix"
-	if err := db.ReportResult(ctx, orgID, task.ID, TaskSucceeded, &port, true, "done", nil, ""); err != nil {
+	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &port, true, "done", nil, ""); err != nil {
 		t.Fatalf("report from acked: %v", err)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskSucceeded {
 		t.Fatalf("status = %q, want succeeded", got.Status)
 	}
@@ -632,18 +632,18 @@ func TestReportResultFromAssignedImpliesRunning(t *testing.T) {
 
 // TestMarkRunningIdempotent 重复 progress 帧不报错。
 func TestMarkRunningIdempotent(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
-	if err := db.MarkRunning(ctx, orgID, task.ID); err != nil {
+	if err := db.MarkRunning(ctx, nsID, task.ID); err != nil {
 		t.Fatalf("MarkRunning on running task: %v", err)
 	}
 }
 
 // TestCountTasksByStatus trace 视图的状态统计。
 func TestCountTasksByStatus(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
-	counts, err := db.CountTasksByStatus(ctx, orgID, "")
+	counts, err := db.CountTasksByStatus(ctx, nsID, "")
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -687,14 +687,14 @@ func TestLeaseConstants(t *testing.T) {
 func TestLifecycleMaxAttemptsFromJSON(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 	no := false
-	cap := mkCap(orgID, "deploy", 1, nil)
+	cap := mkCap(nsID, "deploy", 1, nil)
 	cap.Lifecycle = Lifecycle{MaxAttempts: 5, Idempotent: &no, ResultTTLSec: 120}
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	got, err := db.GetCapability(ctx, orgID, "deploy", 1)
+	got, err := db.GetCapability(ctx, nsID, "deploy", 1)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -791,15 +791,15 @@ func TestStatusWriterIsUnique(t *testing.T) {
 // 构造：扫描时租约已过期，但在 transition 之前心跳把它推到未来。
 // 这里通过「直接续期再巡检」模拟该时序——守卫应当让这次回收失败而不是误杀。
 func TestSweepLeasesGuardAgainstHeartbeatRace(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
 
 	// 租约已过期（巡检会看到它）
-	if err := db.ExtendLease(ctx, orgID, task.ID, Now()-10); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, Now()-10); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 	// 心跳在巡检之前把租约推到未来
-	if err := db.ExtendLease(ctx, orgID, task.ID, Now()+3600); err != nil {
+	if err := db.ExtendLease(ctx, nsID, task.ID, Now()+3600); err != nil {
 		t.Fatalf("heartbeat extend: %v", err)
 	}
 	reclaimed, err := db.SweepExpiredLeases(ctx, Now())
@@ -809,7 +809,7 @@ func TestSweepLeasesGuardAgainstHeartbeatRace(t *testing.T) {
 	if len(reclaimed) != 0 {
 		t.Fatalf("sweep reclaimed a re-leased task: %v", reclaimed)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskRunning {
 		t.Fatalf("status = %q, want running (heartbeat won the race)", got.Status)
 	}
@@ -820,15 +820,15 @@ func TestSweepLeasesGuardAgainstHeartbeatRace(t *testing.T) {
 
 // TestTransitionGuardFailedSentinel 守卫失败用独立哨兵值，便于上层区分。
 func TestTransitionGuardFailedSentinel(t *testing.T) {
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 	ctx := context.Background()
 	// 正常续期，然后带一个不可能满足的守卫
-	err := db.transitionGuarded(ctx, nil, orgID, task.ID, TaskRunning, TaskLeaseExpired,
+	err := db.transitionGuarded(ctx, nil, nsID, task.ID, TaskRunning, TaskLeaseExpired,
 		"lease_until IS NOT NULL AND lease_until < ?", 0)
 	if !errors.Is(err, ErrTransitionGuardFailed) {
 		t.Fatalf("guard failure err = %v, want ErrTransitionGuardFailed", err)
 	}
-	got, _ := db.GetTask(ctx, orgID, task.ID)
+	got, _ := db.GetTask(ctx, nsID, task.ID)
 	if got.Status != TaskRunning {
 		t.Fatalf("guarded transition mutated status despite guard failure: %q", got.Status)
 	}
@@ -840,12 +840,12 @@ func TestTransitionGuardFailedSentinel(t *testing.T) {
 //
 // idempotent=false 模拟"重放不安全"的能力；started=true 时推到 running
 // （StartTask 会写 started_at，也就是"确实执行过"）。
-func setupSweepTask(t *testing.T, idempotent, started bool) (db *DB, orgID, nodeID string, task *Task) {
+func setupSweepTask(t *testing.T, idempotent, started bool) (db *DB, nsID, nodeID string, task *Task) {
 	t.Helper()
 	ctx := context.Background()
 	db = newTestDB(t)
-	orgID, _ = newTestOrg(t, db)
-	capv := mkCap(orgID, "deploy", 1, nil)
+	nsID, _ = newTestNS(t, db)
+	capv := mkCap(nsID, "deploy", 1, nil)
 	if !idempotent {
 		no := false
 		capv.Lifecycle = Lifecycle{Idempotent: &no}
@@ -853,18 +853,18 @@ func setupSweepTask(t *testing.T, idempotent, started bool) (db *DB, orgID, node
 	if err := db.CreateCapability(ctx, capv); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	node, _ := mkNode(t, db, orgID, "mbp")
+	node, _ := mkNode(t, db, nsID, "mbp")
 	nodeID = node.ID
-	if _, err := db.ConfirmCapabilities(ctx, orgID, nodeID, []CapabilityRef{{Name: capv.Name, Version: capv.Version}}); err != nil {
+	if _, err := db.ConfirmCapabilities(ctx, nsID, nodeID, []CapabilityRef{{Name: capv.Name, Version: capv.Version}}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if err := db.UpdateNodeStatus(ctx, orgID, nodeID, NodeStatusOnline); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, nodeID, NodeStatusOnline); err != nil {
 		t.Fatalf("online: %v", err)
 	}
-	if _, err := db.UpsertInstances(ctx, orgID, nodeID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, nodeID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
-	task = mkTask(orgID, "trace_sweep", capv)
+	task = mkTask(nsID, "trace_sweep", capv)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -874,18 +874,18 @@ func setupSweepTask(t *testing.T, idempotent, started bool) (db *DB, orgID, node
 		t.Fatalf("lease instance: %v", err)
 	}
 	// 租约设成过去时刻（过期）
-	if err := db.AssignTask(ctx, orgID, task.ID, nodeID, instID, Now()-10); err != nil {
+	if err := db.AssignTask(ctx, nsID, task.ID, nodeID, instID, Now()-10); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 	if started {
-		if err := db.Transition(ctx, orgID, task.ID, TaskAssigned, TaskAcked); err != nil {
+		if err := db.Transition(ctx, nsID, task.ID, TaskAssigned, TaskAcked); err != nil {
 			t.Fatalf("ack: %v", err)
 		}
-		if err := db.StartTask(ctx, orgID, task.ID); err != nil {
+		if err := db.StartTask(ctx, nsID, task.ID); err != nil {
 			t.Fatalf("start: %v", err)
 		}
 	}
-	return db, orgID, nodeID, task
+	return db, nsID, nodeID, task
 }
 
 // TestSweepNeverStartedNonIdempotentRequeues 领了单但一行都没执行过的非幂等任务
@@ -894,7 +894,7 @@ func setupSweepTask(t *testing.T, idempotent, started bool) (db *DB, orgID, node
 // 依据：「从没开始过 → 重投绝对安全」比「能力声明 idempotent:false」更可靠，
 // 后者只在真正执行过时才有意义。
 func TestSweepNeverStartedNonIdempotentRequeues(t *testing.T) {
-	db, orgID, _, task := setupSweepTask(t, false, false)
+	db, nsID, _, task := setupSweepTask(t, false, false)
 	ctx := context.Background()
 
 	reclaimed, err := db.SweepExpiredLeases(ctx, Now())
@@ -904,7 +904,7 @@ func TestSweepNeverStartedNonIdempotentRequeues(t *testing.T) {
 	if len(reclaimed) != 1 || reclaimed[0] != task.ID {
 		t.Fatalf("reclaimed = %v, want [%s]", reclaimed, task.ID)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -926,13 +926,13 @@ func TestSweepNeverStartedNonIdempotentRequeues(t *testing.T) {
 // TestSweepRunningNonIdempotentAbandons 执行过的非幂等任务仍要废弃——这条不能放宽，
 // 否则会重复执行副作用。
 func TestSweepRunningNonIdempotentAbandons(t *testing.T) {
-	db, orgID, _, task := setupSweepTask(t, false, true)
+	db, nsID, _, task := setupSweepTask(t, false, true)
 	ctx := context.Background()
 
 	if _, err := db.SweepExpiredLeases(ctx, Now()); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -950,7 +950,7 @@ func TestSweepRunningNonIdempotentAbandons(t *testing.T) {
 // 「从未开始就无条件回 pending」如果排在预算判断前面，一个永远起不来的任务
 // 会无限重投（attempts 在派发成功时就 +1），所以预算判断必须优先。
 func TestSweepNeverStartedAttemptsExhaustedAbandons(t *testing.T) {
-	db, orgID, _, task := setupSweepTask(t, false, false)
+	db, nsID, _, task := setupSweepTask(t, false, false)
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx, `UPDATE tasks SET attempts = ? WHERE id = ?`, DefaultMaxAttempts, task.ID); err != nil {
@@ -959,7 +959,7 @@ func TestSweepNeverStartedAttemptsExhaustedAbandons(t *testing.T) {
 	if _, err := db.SweepExpiredLeases(ctx, Now()); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}

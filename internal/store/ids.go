@@ -68,11 +68,14 @@ func NewRecoveryCodeID() string { return newID("rc") }
 func NewMessageID() string { return newID("ntf") }
 
 // 重构新增（契约 §0 的实体）。
-func NewOrgID() string      { return newID("org") }
-func NewNodeID() string     { return newID("nd") }
-func NewInstanceID() string { return newID("nins") }
-func NewSourceID() string   { return newID("src") }
-func NewTaskID() string     { return newID("tsk") }
+func NewOrgID() string { return newID("org") }
+
+// NewNamespaceID 生成命名空间 ID：ns_<base62>（契约 §2.1.1）。
+func NewNamespaceID() string { return newID("ns") }
+func NewNodeID() string      { return newID("nd") }
+func NewInstanceID() string  { return newID("nins") }
+func NewSourceID() string    { return newID("src") }
+func NewTaskID() string      { return newID("tsk") }
 
 // NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。
 //

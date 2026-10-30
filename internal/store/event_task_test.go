@@ -8,12 +8,12 @@ import (
 )
 
 // mkTask 构造一个 pending 任务。
-func mkTask(orgID, traceID string, cap *CapabilityVersion, path ...string) *Task {
+func mkTask(nsID, traceID string, cap *CapabilityVersion, path ...string) *Task {
 	if path == nil {
 		path = []string{}
 	}
 	return &Task{
-		OrgID:        orgID,
+		NamespaceID:  nsID,
 		TraceID:      traceID,
 		Path:         path,
 		CapabilityID: cap.ID,
@@ -26,20 +26,20 @@ func mkTask(orgID, traceID string, cap *CapabilityVersion, path ...string) *Task
 }
 
 // setupTaskFixture 建组织 + 能力 + 一个待派发的任务。
-func setupTaskFixture(t *testing.T) (db *DB, orgID string, cap *CapabilityVersion, task *Task) {
+func setupTaskFixture(t *testing.T) (db *DB, nsID string, cap *CapabilityVersion, task *Task) {
 	t.Helper()
 	db = newTestDB(t)
 	ctx := context.Background()
-	orgID, _ = newTestOrg(t, db)
-	cap = mkCap(orgID, "review", 1, []string{"fix"})
+	nsID, _ = newTestNS(t, db)
+	cap = mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	task = mkTask(orgID, "trace_1", cap)
+	task = mkTask(nsID, "trace_1", cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	return db, orgID, cap, task
+	return db, nsID, cap, task
 }
 
 // driveToRunning 把任务按状态机推到 running（模拟真实节点时序：
@@ -47,20 +47,20 @@ func setupTaskFixture(t *testing.T) (db *DB, orgID string, cap *CapabilityVersio
 //
 // 不能直接对 pending 调 ReportResult：契约 §3.2 里 result 只能从 running 出发，
 // 而 pending 的任务还没有节点持有，拿不到 result 帧。
-func driveToRunning(t *testing.T, db *DB, orgID, nodeID string, task *Task) string {
+func driveToRunning(t *testing.T, db *DB, nsID, nodeID string, task *Task) string {
 	t.Helper()
 	ctx := context.Background()
 	instID, err := db.LeaseInstance(ctx, nodeID, task.ID)
 	if err != nil {
 		t.Fatalf("lease instance: %v", err)
 	}
-	if err := db.AssignTask(ctx, orgID, task.ID, nodeID, instID, Now()+LeaseTTLSec); err != nil {
+	if err := db.AssignTask(ctx, nsID, task.ID, nodeID, instID, Now()+LeaseTTLSec); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if err := db.Transition(ctx, orgID, task.ID, TaskAssigned, TaskAcked); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskAssigned, TaskAcked); err != nil {
 		t.Fatalf("ack: %v", err)
 	}
-	if err := db.StartTask(ctx, orgID, task.ID); err != nil {
+	if err := db.StartTask(ctx, nsID, task.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	return instID
@@ -68,21 +68,21 @@ func driveToRunning(t *testing.T, db *DB, orgID, nodeID string, task *Task) stri
 
 // expandCapacity 把节点扩到 n 个并发槽位（setupRunningTask 默认只申报 1 个，
 // 后续还要推别的任务时必须先扩，否则 LeaseInstance 会 ErrNoCapacity）。
-func expandCapacity(t *testing.T, db *DB, orgID, nodeID string, n int) {
+func expandCapacity(t *testing.T, db *DB, nsID, nodeID string, n int) {
 	t.Helper()
 	specs := make([]InstanceSpec, n)
 	for i := range specs {
 		specs[i] = InstanceSpec{Slot: i, Concurrency: 1}
 	}
-	if _, err := db.UpsertInstances(context.Background(), orgID, nodeID, specs); err != nil {
+	if _, err := db.UpsertInstances(context.Background(), nsID, nodeID, specs); err != nil {
 		t.Fatalf("expand capacity to %d: %v", n, err)
 	}
 }
 
 // mustOnlyNode 返回组织里唯一的节点 ID（setupRunningTask 只建一个）。
-func mustOnlyNode(t *testing.T, db *DB, orgID string) string {
+func mustOnlyNode(t *testing.T, db *DB, nsID string) string {
 	t.Helper()
-	nodes, err := db.ListNodes(context.Background(), orgID)
+	nodes, err := db.ListNodes(context.Background(), nsID)
 	if err != nil {
 		t.Fatalf("list nodes: %v", err)
 	}
@@ -93,32 +93,32 @@ func mustOnlyNode(t *testing.T, db *DB, orgID string) string {
 }
 
 // setupRunningTask 建一个已推到 running 的任务（含节点与槽位）。
-func setupRunningTask(t *testing.T) (db *DB, orgID, nodeID string, cap *CapabilityVersion, task *Task) {
+func setupRunningTask(t *testing.T) (db *DB, nsID, nodeID string, cap *CapabilityVersion, task *Task) {
 	t.Helper()
 	ctx := context.Background()
 	db = newTestDB(t)
-	orgID, _ = newTestOrg(t, db)
-	cap = mkCap(orgID, "review", 1, []string{"fix"})
+	nsID, _ = newTestNS(t, db)
+	cap = mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	node, _ := mkNode(t, db, orgID, "mbp")
+	node, _ := mkNode(t, db, nsID, "mbp")
 	nodeID = node.ID
-	if _, err := db.ConfirmCapabilities(ctx, orgID, nodeID, []CapabilityRef{{Name: cap.Name, Version: cap.Version}}); err != nil {
+	if _, err := db.ConfirmCapabilities(ctx, nsID, nodeID, []CapabilityRef{{Name: cap.Name, Version: cap.Version}}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if err := db.UpdateNodeStatus(ctx, orgID, nodeID, NodeStatusOnline); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, nodeID, NodeStatusOnline); err != nil {
 		t.Fatalf("online: %v", err)
 	}
-	if _, err := db.UpsertInstances(ctx, orgID, nodeID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, nodeID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
-	task = mkTask(orgID, "trace_run", cap)
+	task = mkTask(nsID, "trace_run", cap)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	driveToRunning(t, db, orgID, nodeID, task)
-	return db, orgID, nodeID, cap, task
+	driveToRunning(t, db, nsID, nodeID, task)
+	return db, nsID, nodeID, cap, task
 }
 
 // ---------- #63：events 幂等 ----------
@@ -127,11 +127,11 @@ func setupRunningTask(t *testing.T) (db *DB, orgID, nodeID string, cap *Capabili
 func TestEventIdempotency(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	key := "X-GitHub-Delivery-abc"
 	first := &Event{
-		OrgID: orgID, TraceID: "trace_abc", Source: "github",
+		NamespaceID: nsID, TraceID: "trace_abc", Source: "github",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"n":1}`), IdemKey: &key,
 	}
 	inserted, err := db.InsertEvent(ctx, first)
@@ -147,7 +147,7 @@ func TestEventIdempotency(t *testing.T) {
 
 	// 重投：不同 trace_id 也想插，但必须返回已有的
 	second := &Event{
-		OrgID: orgID, TraceID: "trace_DIFFERENT", Source: "github",
+		NamespaceID: nsID, TraceID: "trace_DIFFERENT", Source: "github",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"n":1}`), IdemKey: &key,
 	}
 	inserted, err = db.InsertEvent(ctx, second)
@@ -165,7 +165,7 @@ func TestEventIdempotency(t *testing.T) {
 	}
 
 	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM events WHERE org_id=?`, orgID).Scan(&n); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM events WHERE namespace_id=?`, nsID).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 1 {
@@ -177,10 +177,10 @@ func TestEventIdempotency(t *testing.T) {
 func TestEventWithoutIdemKeyAllowsDuplicates(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	for i := 0; i < 3; i++ {
-		e := &Event{OrgID: orgID, TraceID: "trace_x", Source: "manual", Type: "click"}
+		e := &Event{NamespaceID: nsID, TraceID: "trace_x", Source: "manual", Type: "click"}
 		inserted, err := db.InsertEvent(ctx, e)
 		if err != nil {
 			t.Fatalf("insert %d: %v", i, err)
@@ -190,7 +190,7 @@ func TestEventWithoutIdemKeyAllowsDuplicates(t *testing.T) {
 		}
 	}
 	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM events WHERE org_id=?`, orgID).Scan(&n); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM events WHERE namespace_id=?`, nsID).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 3 {
@@ -198,17 +198,20 @@ func TestEventWithoutIdemKeyAllowsDuplicates(t *testing.T) {
 	}
 }
 
-// TestEventIdemKeyScopedPerSourceAndOrg idem_key 的唯一性是 (org, source, key)。
-func TestEventIdemKeyScopedPerSourceAndOrg(t *testing.T) {
+// TestEventIdemKeyScopedPerSourceAndNamespace idem_key 的唯一性是 (命名空间, source, key)。
+//
+// #162 之后 UNIQUE 索引前缀从 org_id 换成 namespace_id：同一个组织里的 prod 与
+// staging 各有独立的投递 ID 空间（否则两条流水线会互相吃掉对方的 webhook 重投）。
+func TestEventIdemKeyScopedPerSourceAndNamespace(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgA, _ := newTestOrg(t, db)
-	orgB, _ := newTestOrg(t, db)
+	nsA, _ := newTestNS(t, db)
+	nsB, _ := newTestNS(t, db)
 	key := "same-delivery-id"
 
 	// 同 org、不同 source：允许（各自独立的投递 ID 空间）
 	for _, src := range []string{"github", "gitlab"} {
-		e := &Event{OrgID: orgA, TraceID: "t-" + src, Source: src, Type: "push", IdemKey: &key}
+		e := &Event{NamespaceID: nsA, TraceID: "t-" + src, Source: src, Type: "push", IdemKey: &key}
 		inserted, err := db.InsertEvent(ctx, e)
 		if err != nil {
 			t.Fatalf("insert source %s: %v", src, err)
@@ -217,11 +220,11 @@ func TestEventIdemKeyScopedPerSourceAndOrg(t *testing.T) {
 			t.Fatalf("source %s was deduped against another source", src)
 		}
 	}
-	// 不同 org、同 source、同 key：允许（组织隔离，不变量 I10）
-	e := &Event{OrgID: orgB, TraceID: "t-b", Source: "github", Type: "push", IdemKey: &key}
+	// 不同命名空间、同 source、同 key：允许（命名空间隔离，不变量 I10/I11）
+	e := &Event{NamespaceID: nsB, TraceID: "t-b", Source: "github", Type: "push", IdemKey: &key}
 	inserted, err := db.InsertEvent(ctx, e)
 	if err != nil {
-		t.Fatalf("insert orgB: %v", err)
+		t.Fatalf("insert nsB: %v", err)
 	}
 	if !inserted {
 		t.Fatal("idem_key leaked across orgs (invariant I10 violated)")
@@ -232,25 +235,25 @@ func TestEventIdemKeyScopedPerSourceAndOrg(t *testing.T) {
 func TestEventGetAndList(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	if _, err := db.GetEvent(ctx, orgID, "evt_nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := db.GetEvent(ctx, nsID, "evt_nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetEvent missing err = %v, want ErrNotFound", err)
 	}
-	if _, err := db.GetEventByTrace(ctx, orgID, "trace_nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := db.GetEventByTrace(ctx, nsID, "trace_nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetEventByTrace missing err = %v, want ErrNotFound", err)
 	}
 
-	e1 := &Event{OrgID: orgID, TraceID: "trace_1", Source: "github", Type: "pr.opened", Payload: json.RawMessage(`{"a":1}`)}
+	e1 := &Event{NamespaceID: nsID, TraceID: "trace_1", Source: "github", Type: "pr.opened", Payload: json.RawMessage(`{"a":1}`)}
 	if _, err := db.InsertEvent(ctx, e1); err != nil {
 		t.Fatalf("insert 1: %v", err)
 	}
-	e2 := &Event{OrgID: orgID, TraceID: "trace_2", Source: "cron", Type: "tick"}
+	e2 := &Event{NamespaceID: nsID, TraceID: "trace_2", Source: "cron", Type: "tick"}
 	if _, err := db.InsertEvent(ctx, e2); err != nil {
 		t.Fatalf("insert 2: %v", err)
 	}
 
-	got, err := db.GetEvent(ctx, orgID, e1.ID)
+	got, err := db.GetEvent(ctx, nsID, e1.ID)
 	if err != nil {
 		t.Fatalf("get event: %v", err)
 	}
@@ -261,7 +264,7 @@ func TestEventGetAndList(t *testing.T) {
 		t.Fatalf("payload not preserved: %s", got.Payload)
 	}
 
-	all, err := db.ListEvents(ctx, orgID, "", "", 10)
+	all, err := db.ListEvents(ctx, nsID, "", "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -269,7 +272,7 @@ func TestEventGetAndList(t *testing.T) {
 		t.Fatalf("want 2 events, got %d", len(all))
 	}
 	// 按 trace 过滤
-	byTrace, err := db.ListEvents(ctx, orgID, "trace_1", "", 10)
+	byTrace, err := db.ListEvents(ctx, nsID, "trace_1", "", 10)
 	if err != nil {
 		t.Fatalf("list by trace: %v", err)
 	}
@@ -277,7 +280,7 @@ func TestEventGetAndList(t *testing.T) {
 		t.Fatalf("trace filter wrong: %+v", byTrace)
 	}
 	// by trace helper
-	root, err := db.GetEventByTrace(ctx, orgID, "trace_1")
+	root, err := db.GetEventByTrace(ctx, nsID, "trace_1")
 	if err != nil {
 		t.Fatalf("get by trace: %v", err)
 	}
@@ -286,7 +289,7 @@ func TestEventGetAndList(t *testing.T) {
 	}
 
 	// 空列表是 []
-	empty, err := db.ListEvents(ctx, orgID, "trace_none", "", 10)
+	empty, err := db.ListEvents(ctx, nsID, "trace_none", "", 10)
 	if err != nil {
 		t.Fatalf("list empty: %v", err)
 	}
@@ -299,15 +302,15 @@ func TestEventGetAndList(t *testing.T) {
 func TestEventValidation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	if _, err := db.InsertEvent(ctx, nil); err == nil {
 		t.Error("InsertEvent(nil) accepted")
 	}
-	if _, err := db.InsertEvent(ctx, &Event{OrgID: orgID, Source: "s", Type: "t"}); err == nil {
+	if _, err := db.InsertEvent(ctx, &Event{NamespaceID: nsID, Source: "s", Type: "t"}); err == nil {
 		t.Error("InsertEvent without trace_id accepted (trigger must generate it)")
 	}
-	if _, err := db.InsertEvent(ctx, &Event{OrgID: orgID, TraceID: "t"}); err == nil {
+	if _, err := db.InsertEvent(ctx, &Event{NamespaceID: nsID, TraceID: "t"}); err == nil {
 		t.Error("InsertEvent without source/type accepted")
 	}
 	if _, err := db.InsertEvent(ctx, &Event{TraceID: "t", Source: "s", Type: "t"}); err == nil {
@@ -319,16 +322,16 @@ func TestEventValidation(t *testing.T) {
 
 // TestOutTriState 不变量 I5：未回报 / 回报 NULL / 回报值 三者行为不同（#63 验收）。
 func TestOutTriState(t *testing.T) {
-	db, orgID, nodeID, cap, _ := setupRunningTask(t)
+	db, nsID, nodeID, cap, _ := setupRunningTask(t)
 	ctx := context.Background()
-	expandCapacity(t, db, orgID, nodeID, 8)
+	expandCapacity(t, db, nsID, nodeID, 8)
 
 	// ① reported=0, out=NULL：没回报
-	unreported := mkTask(orgID, "trace_unreported", cap)
+	unreported := mkTask(nsID, "trace_unreported", cap)
 	if err := db.CreateTasks(ctx, []*Task{unreported}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	got, err := db.GetTask(ctx, orgID, unreported.ID)
+	got, err := db.GetTask(ctx, nsID, unreported.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -340,15 +343,15 @@ func TestOutTriState(t *testing.T) {
 	}
 
 	// ② reported=1, out=NULL：明确到头
-	atEnd := mkTask(orgID, "trace_end", cap)
+	atEnd := mkTask(nsID, "trace_end", cap)
 	if err := db.CreateTasks(ctx, []*Task{atEnd}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	driveToRunning(t, db, orgID, mustOnlyNode(t, db, orgID), atEnd)
-	if err := db.ReportResult(ctx, orgID, atEnd.ID, TaskSucceeded, nil, true, "done", nil, ""); err != nil {
+	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), atEnd)
+	if err := db.ReportResult(ctx, nsID, atEnd.ID, TaskSucceeded, nil, true, "done", nil, ""); err != nil {
 		t.Fatalf("report nil out: %v", err)
 	}
-	got, err = db.GetTask(ctx, orgID, atEnd.ID)
+	got, err = db.GetTask(ctx, nsID, atEnd.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -363,16 +366,16 @@ func TestOutTriState(t *testing.T) {
 	}
 
 	// ③ reported=1, out="fix"：走 fix
-	goesToFix := mkTask(orgID, "trace_fix", cap)
+	goesToFix := mkTask(nsID, "trace_fix", cap)
 	if err := db.CreateTasks(ctx, []*Task{goesToFix}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	driveToRunning(t, db, orgID, mustOnlyNode(t, db, orgID), goesToFix)
+	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), goesToFix)
 	port := "fix"
-	if err := db.ReportResult(ctx, orgID, goesToFix.ID, TaskFailed, &port, true, "needs fix", nil, "type error"); err != nil {
+	if err := db.ReportResult(ctx, nsID, goesToFix.ID, TaskFailed, &port, true, "needs fix", nil, "type error"); err != nil {
 		t.Fatalf("report out=fix: %v", err)
 	}
-	got, err = db.GetTask(ctx, orgID, goesToFix.ID)
+	got, err = db.GetTask(ctx, nsID, goesToFix.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -396,26 +399,26 @@ func TestOutTriState(t *testing.T) {
 // TestReportResultMissingOutIsNotNilOut 关键区分：
 // 即使 out=nil，「reported」两态含义完全不同——这里断言 reported 列真的写进去了。
 func TestReportResultMissingOutIsNotNilOut(t *testing.T) {
-	db, orgID, nodeID, cap, _ := setupRunningTask(t)
+	db, nsID, nodeID, cap, _ := setupRunningTask(t)
 	ctx := context.Background()
 
-	a := mkTask(orgID, "trace_a", cap)
-	b := mkTask(orgID, "trace_b", cap)
+	a := mkTask(nsID, "trace_a", cap)
+	b := mkTask(nsID, "trace_b", cap)
 	for _, x := range []*Task{a, b} {
 		if err := db.CreateTasks(ctx, []*Task{x}); err != nil {
 			t.Fatalf("create: %v", err)
 		}
 	}
 	// b 推到 running 才能回报；a 停在 pending 表示「节点根本没上报」
-	expandCapacity(t, db, orgID, nodeID, 8)
-	driveToRunning(t, db, orgID, nodeID, b)
+	expandCapacity(t, db, nsID, nodeID, 8)
+	driveToRunning(t, db, nsID, nodeID, b)
 	// a: 没回报（不调 ReportResult）
 	// b: 回报到头（reported=true, out=nil）
-	if err := db.ReportResult(ctx, orgID, b.ID, TaskSucceeded, nil, true, "", nil, ""); err != nil {
+	if err := db.ReportResult(ctx, nsID, b.ID, TaskSucceeded, nil, true, "", nil, ""); err != nil {
 		t.Fatalf("report: %v", err)
 	}
-	ga, _ := db.GetTask(ctx, orgID, a.ID)
-	gb, _ := db.GetTask(ctx, orgID, b.ID)
+	ga, _ := db.GetTask(ctx, nsID, a.ID)
+	gb, _ := db.GetTask(ctx, nsID, b.ID)
 	if ga.Reported == gb.Reported {
 		t.Fatal("reported column cannot distinguish 没回报 from 回报到头 (I5 broken)")
 	}
@@ -426,10 +429,10 @@ func TestReportResultMissingOutIsNotNilOut(t *testing.T) {
 
 // TestReportResultRejectsEmptyOutString ” 不是合法出口名（契约 §2.5）。
 func TestReportResultRejectsEmptyOutString(t *testing.T) {
-	db, orgID, _, cap, task := setupRunningTask(t)
+	db, nsID, _, cap, task := setupRunningTask(t)
 	ctx := context.Background()
 	empty := ""
-	err := db.ReportResult(ctx, orgID, task.ID, TaskSucceeded, &empty, true, "", nil, "")
+	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &empty, true, "", nil, "")
 	if err == nil {
 		t.Fatal("empty out string accepted (should use nil for 到头)")
 	}
@@ -442,16 +445,16 @@ func TestReportResultRejectsEmptyOutString(t *testing.T) {
 func TestCreateTasksAtomic(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	cap := mkCap(orgID, "review", 1, nil)
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, nil)
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 
-	good1 := mkTask(orgID, "trace_1", cap)
-	good2 := mkTask(orgID, "trace_1", cap)
+	good1 := mkTask(nsID, "trace_1", cap)
+	good2 := mkTask(nsID, "trace_1", cap)
 	// 第 3 个：capability_id 指向不存在的行 → 外键失败
-	bad := mkTask(orgID, "trace_1", cap)
+	bad := mkTask(nsID, "trace_1", cap)
 	bad.CapabilityID = "cap_does_not_exist"
 
 	err := db.CreateTasks(ctx, []*Task{good1, good2, bad})
@@ -459,7 +462,7 @@ func TestCreateTasksAtomic(t *testing.T) {
 		t.Fatal("CreateTasks accepted a broken task")
 	}
 	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM tasks WHERE org_id=?`, orgID).Scan(&n); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM tasks WHERE namespace_id=?`, nsID).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 0 {
@@ -471,19 +474,19 @@ func TestCreateTasksAtomic(t *testing.T) {
 func TestCreateTasksFanout(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	cap := mkCap(orgID, "review", 1, nil)
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, nil)
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	var batch []*Task
 	for i := 0; i < 3; i++ {
-		batch = append(batch, mkTask(orgID, "trace_fanout", cap))
+		batch = append(batch, mkTask(nsID, "trace_fanout", cap))
 	}
 	if err := db.CreateTasks(ctx, batch); err != nil {
 		t.Fatalf("create fanout: %v", err)
 	}
-	tasks, err := db.ListTasks(ctx, orgID, "trace_fanout", "", "", 10)
+	tasks, err := db.ListTasks(ctx, nsID, "trace_fanout", "", "", 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -509,12 +512,12 @@ func TestCreateTasksFanout(t *testing.T) {
 func TestCreateTasksRejectsNonPending(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	cap := mkCap(orgID, "review", 1, nil)
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, nil)
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	task := mkTask(orgID, "trace_1", cap)
+	task := mkTask(nsID, "trace_1", cap)
 	task.Status = TaskSucceeded
 	if err := db.CreateTasks(ctx, []*Task{task}); err == nil {
 		t.Fatal("CreateTasks accepted a task that was not pending")
@@ -534,7 +537,7 @@ func TestCreateTasksEmptyIsNoop(t *testing.T) {
 
 // TestTaskRoundTrip 每个新字段的往返一致性（AGENTS.md §3 要求）。
 func TestTaskRoundTrip(t *testing.T) {
-	db, orgID, cap, _ := setupTaskFixture(t)
+	db, nsID, cap, _ := setupTaskFixture(t)
 	ctx := context.Background()
 
 	node := "nd_round"
@@ -545,7 +548,7 @@ func TestTaskRoundTrip(t *testing.T) {
 	port := "fix"
 	parent := "tsk_parent"
 	task := &Task{
-		OrgID:        orgID,
+		NamespaceID:  nsID,
 		TraceID:      "trace_rt",
 		ParentTaskID: &parent,
 		Path:         []string{"cap_a", "cap_b"},
@@ -571,7 +574,7 @@ func TestTaskRoundTrip(t *testing.T) {
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -626,8 +629,8 @@ func TestTaskRoundTrip(t *testing.T) {
 // TestListTasksEmptyIsArray 不变量 I9。
 func TestListTasksEmptyIsArray(t *testing.T) {
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
-	tasks, err := db.ListTasks(context.Background(), orgID, "", "", "", 10)
+	nsID, _ := newTestNS(t, db)
+	tasks, err := db.ListTasks(context.Background(), nsID, "", "", "", 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -640,31 +643,31 @@ func TestListTasksEmptyIsArray(t *testing.T) {
 func TestListTasksFilters(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	cap := mkCap(orgID, "review", 1, nil)
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, nil)
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	a := mkTask(orgID, "trace_a", cap)
-	b := mkTask(orgID, "trace_b", cap)
+	a := mkTask(nsID, "trace_a", cap)
+	b := mkTask(nsID, "trace_b", cap)
 	if err := db.CreateTasks(ctx, []*Task{a, b}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	byTrace, err := db.ListTasks(ctx, orgID, "trace_a", "", "", 10)
+	byTrace, err := db.ListTasks(ctx, nsID, "trace_a", "", "", 10)
 	if err != nil {
 		t.Fatalf("by trace: %v", err)
 	}
 	if len(byTrace) != 1 || byTrace[0].ID != a.ID {
 		t.Fatalf("trace filter wrong: %+v", byTrace)
 	}
-	byStatus, err := db.ListTasks(ctx, orgID, "", "", TaskPending, 10)
+	byStatus, err := db.ListTasks(ctx, nsID, "", "", TaskPending, 10)
 	if err != nil {
 		t.Fatalf("by status: %v", err)
 	}
 	if len(byStatus) != 2 {
 		t.Fatalf("pending filter got %d, want 2", len(byStatus))
 	}
-	none, err := db.ListTasks(ctx, orgID, "", "", TaskSucceeded, 10)
+	none, err := db.ListTasks(ctx, nsID, "", "", TaskSucceeded, 10)
 	if err != nil {
 		t.Fatalf("by status none: %v", err)
 	}
@@ -673,28 +676,28 @@ func TestListTasksFilters(t *testing.T) {
 	}
 }
 
-// TestTaskOrgIsolation 不变量 I10。
-func TestTaskOrgIsolation(t *testing.T) {
+// TestTaskNamespaceIsolation 不变量 I10/I11：跨命名空间查不到任务。
+func TestTaskNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgA, _ := newTestOrg(t, db)
-	orgB, _ := newTestOrg(t, db)
-	capA := mkCap(orgA, "review", 1, nil)
+	nsA, _ := newTestNS(t, db)
+	nsB, _ := newTestNS(t, db)
+	capA := mkCap(nsA, "review", 1, nil)
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	task := mkTask(orgA, "trace_iso", capA)
+	task := mkTask(nsA, "trace_iso", capA)
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := db.GetTask(ctx, orgB, task.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-org GetTask err = %v, want ErrNotFound", err)
+	if _, err := db.GetTask(ctx, nsB, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-namespace GetTask err = %v, want ErrNotFound", err)
 	}
-	tasksB, err := db.ListTasks(ctx, orgB, "", "", "", 10)
+	tasksB, err := db.ListTasks(ctx, nsB, "", "", "", 10)
 	if err != nil {
 		t.Fatalf("list B: %v", err)
 	}
 	if len(tasksB) != 0 {
-		t.Fatalf("org B sees %d tasks from org A", len(tasksB))
+		t.Fatalf("nsB 看到了 nsA 的 %d 条任务（隔离破了）", len(tasksB))
 	}
 }

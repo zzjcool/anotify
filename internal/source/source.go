@@ -25,7 +25,7 @@ import (
 type Store interface {
 	DueCronSources(ctx context.Context, now int64, limit int) ([]*store.Source, error)
 	MarkSourceFired(ctx context.Context, id string, firedAt, nextFire int64) error
-	GetSource(ctx context.Context, orgID, id string) (*store.Source, error)
+	GetSource(ctx context.Context, namespaceID, id string) (*store.Source, error)
 	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
 }
 
@@ -100,9 +100,10 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 	// 打底只对 cron/manual 生效，webhook/github 的 payload 就是投递体（A13）。
 	payloadMap, _ := eventPayload(src, payload)
 	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:   src.OrgID,
-		TraceID: "dryrun", // 不落库，trace 只是占位（Dispatch 要求非空）
-		Params:  payloadMap,
+		OrgID:       src.OrgID,
+		NamespaceID: src.NamespaceID, // 派发（查边/找节点/建任务）的隔离维度
+		TraceID:     "dryrun",        // 不落库，trace 只是占位（Dispatch 要求非空）
+		Params:      payloadMap,
 		// Payload / VarValues 是参数模板（{{x}} / {from} / {var}）的取值来源。
 		// 试运行必须真解析一遍，用户才能看到 param_missing / param_type。
 		Payload:      payloadMap,
@@ -149,12 +150,13 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	payloadMap, evPayload := eventPayload(src, payload)
 
 	ev := &store.Event{
-		OrgID:     src.OrgID,
-		TraceID:   t.newTraceID(),
-		Source:    src.Name, // 事件来源记源的名字，而不是能力的名字
-		Type:      eventType,
-		Payload:   evPayload,
-		CreatedAt: t.now(),
+		NamespaceID: src.NamespaceID, // 事件属于源所在的命名空间（I10）
+		OrgID:       src.OrgID,
+		TraceID:     t.newTraceID(),
+		Source:      src.Name, // 事件来源记源的名字，而不是能力的名字
+		Type:        eventType,
+		Payload:     evPayload,
+		CreatedAt:   t.now(),
 	}
 	if idemKey != "" {
 		k := idemKey
@@ -178,9 +180,10 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	}
 
 	out, err := t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:   src.OrgID,
-		TraceID: ev.TraceID,
-		Params:  payloadMap,
+		OrgID:       src.OrgID,
+		NamespaceID: src.NamespaceID, // 源触发：命名空间随源走（契约 §3）
+		TraceID:     ev.TraceID,
+		Params:      payloadMap,
 		// Payload / VarValues 是参数模板里的 {{路径}} / {from} / {var} 的取值来源。
 		//
 		// 为什么 Params 也仍是整份 payload：没有配 TargetParams 的出口要靠它
@@ -347,7 +350,9 @@ func (s *Scheduler) Tick(ctx context.Context) {
 		// 确定性幂等键：同一个源、同一个计划时刻只会产生一条事件
 		idem := fmt.Sprintf("cron:%s:%d", src.ID, fireAt)
 
-		full, err := s.Store.GetSource(ctx, src.OrgID, src.ID)
+		// src.NamespaceID 是 DueCronSources 行自带的命名空间（store 扫出来），
+		// GetSource 按它定位：令牌/名称只在命名空间内唯一。
+		full, err := s.Store.GetSource(ctx, src.NamespaceID, src.ID)
 		if err != nil {
 			slog.Error("load source failed",
 				"event", "source.scheduler.load_failed", "source_id", src.ID, "error", err.Error())

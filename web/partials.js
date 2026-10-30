@@ -1062,6 +1062,42 @@
 		}
 	}
 
+	// 默认命名空间引导（#162）。
+	//
+	// 后端对命名空间资源端点**严格要求** namespaceId（缺 → 400，绝不回退默认），
+	// 而 scope 只存在 localStorage 里。于是全新浏览器（或清过缓存、换了设备）
+	// 第一次打开页面时 scope 是空的：每个请求都不带 namespaceId，页面直接空白；
+	// 切过一次命名空间之后就"自己好了"——这种"第二次打开就正常"的 bug 最难排查。
+	//
+	// 这里在缺省时拉一次 /v1/namespaces 取 slug=default 存进 scope。
+	// 失败（老后端没有这个端点 / 未登录 / 网络问题）保持原样，不阻塞页面：
+	// 没这层引导时页面本来就是这个行为，不能因为引导反而更糟。
+	let scopeReady = null;
+	function ensureScope() {
+		if (scope.namespaceId) return Promise.resolve(scope);
+		if (scopeReady) return scopeReady;
+		scopeReady = fetch("/v1/namespaces", { credentials: "include" })
+			.then((r) => (r.ok ? r.json() : null))
+			.then((j) => {
+				const list = (j && (j.namespaces || j)) || [];
+				if (!Array.isArray(list) || !list.length) return scope;
+				const def = list.find((n) => n && n.slug === "default") || list[0];
+				if (def && def.id) {
+					saveScope({
+						orgId: def.orgId || scope.orgId,
+						namespaceId: def.id,
+					});
+				}
+				return scope;
+			})
+			.catch(() => {
+				// 失败不缓存：下一次请求还能再试（后端刚起来时常见）
+				scopeReady = null;
+				return scope;
+			});
+		return scopeReady;
+	}
+
 	/**
 	 * 给命名空间资源自动带上当前 namespaceId。
 	 *
@@ -1082,6 +1118,13 @@
 
 	async function api(path, opts, demo) {
 		const o = opts || {};
+		// 先确保 scope 有命名空间（全新会话首次加载时为空，见 ensureScope）。
+		// 解析不到时它自己降级成"不带参数"，不在这里抛错。
+		try {
+			await ensureScope();
+		} catch (e) {
+			/* 引导失败不影响请求本身 */
+		}
 		try {
 			const res = await fetch(
 				withScope(path),

@@ -43,7 +43,8 @@ const benchCapName = "bench.review"
 // store.Open 的 DSN 显式开了 foreign_keys(ON)，伪造父行会直接 FK 失败。
 type benchEnv struct {
 	db      *store.DB
-	orgID   string
+	orgID   string // 组织级断言用（DispatchInput 已改成 namespaceId）
+	nsID    string // 命名空间资源的唯一作用域参数（#162）
 	capID   string
 	capName string
 }
@@ -62,17 +63,23 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 	}
 	tb.Cleanup(func() { _ = db.Close() })
 
-	// RegisterUserWithOrg 一步建 user + org + owner 关系（org 是 tasks.org_id 的父行）。
+	// RegisterUserWithOrg 一步建 user + org + owner + default 命名空间（含内置能力）。
 	user := &store.User{ID: store.NewUserID(), Username: "u-" + store.NewUserID(), CreatedAt: store.Now()}
 	org, err := db.RegisterUserWithOrg(ctx, user, true)
 	if err != nil {
 		tb.Fatalf("register user with org: %v", err)
 	}
 
+	// 命名空间资源的读写都按 namespaceID（#162）；org_id 由 store 从 namespaces 行派生。
+	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
+	if err != nil {
+		tb.Fatalf("default namespace of org: %v", err)
+	}
+
 	// 能力定义：params_schema 用空对象（怎么传参都过，不会把派发剪枝掉），
 	// outputs 留一个口子让能力形态贴近真实（今后接下游时 from_port 才有封闭集合）。
 	capDef := &store.CapabilityVersion{
-		OrgID: org.ID, Name: benchCapName, Version: 1,
+		NamespaceID: nsID, Name: benchCapName, Version: 1,
 		ParamsSchema: json.RawMessage(`{}`),
 		Outputs:      []string{"fix"},
 		Source:       store.CapSourceCustom,
@@ -81,7 +88,7 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 		tb.Fatalf("create capability: %v", err)
 	}
 
-	return &benchEnv{db: db, orgID: org.ID, capID: capDef.ID, capName: capDef.Name}
+	return &benchEnv{db: db, orgID: org.ID, nsID: nsID, capID: capDef.ID, capName: capDef.Name}
 }
 
 // newTask 造**未落库**的一行 pending 任务（外键父行已由 env 提供）。
@@ -91,7 +98,7 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 // （那是它的真实职责，也该被度量）。
 func (e *benchEnv) newTask(traceID string) *store.Task {
 	return &store.Task{
-		OrgID:        e.orgID,
+		NamespaceID:  e.nsID,
 		TraceID:      traceID,
 		Path:         []string{e.capID},
 		CapabilityID: e.capID,
@@ -124,7 +131,7 @@ func (e *benchEnv) addEntryGraphWithNode(tb testing.TB) string {
 	// 入口边：来源 "github" 的 pull_request.opened → bench.review@1。
 	// FromIsSource=true 时左端是**来源名**，出口是外部系统决定的事件类型。
 	if err := e.db.CreateEdge(ctx, &store.Edge{
-		OrgID:          e.orgID,
+		NamespaceID:    e.nsID,
 		FromIsSource:   true,
 		FromCapability: "github",
 		FromPort:       "pull_request.opened",
@@ -135,15 +142,15 @@ func (e *benchEnv) addEntryGraphWithNode(tb testing.TB) string {
 
 	// 节点默认 offline——NodesForCapability 把 offline 也算「可接单」
 	// （offline 是「还没连上」，不是「拒单」；draining 才是拒单）。
-	node := &store.Node{OrgID: e.orgID, Name: "n-" + store.NewUserID()}
+	node := &store.Node{NamespaceID: e.nsID, Name: "n-" + store.NewUserID()}
 	if _, err := e.db.CreateNode(ctx, node); err != nil {
 		tb.Fatalf("create node: %v", err)
 	}
-	if _, err := e.db.ConfirmCapabilities(ctx, e.orgID, node.ID,
+	if _, err := e.db.ConfirmCapabilities(ctx, e.nsID, node.ID,
 		[]store.CapabilityRef{{Name: e.capName, Version: 1}}); err != nil {
 		tb.Fatalf("confirm capabilities: %v", err)
 	}
-	if _, err := e.db.UpsertInstances(ctx, e.orgID, node.ID,
+	if _, err := e.db.UpsertInstances(ctx, e.nsID, node.ID,
 		[]store.InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
 		tb.Fatalf("upsert instances: %v", err)
 	}
@@ -210,7 +217,7 @@ func BenchmarkTransition(b *testing.B) {
 			b.StartTimer()
 
 			// 计时区内**恰好一次** Transition。
-			if err := env.db.Transition(ctx, env.orgID, t.ID,
+			if err := env.db.Transition(ctx, env.nsID, t.ID,
 				store.TaskPending, store.TaskAssigned); err != nil {
 				b.Fatalf("transition pending→assigned: %v", err)
 			}
@@ -225,18 +232,18 @@ func BenchmarkTransition(b *testing.B) {
 			// 若允许其中一次落进计时区，ns/op 就不再是「一次迁移」的成本。
 			b.StopTimer()
 			t := env.createOne(b, ctx, fmt.Sprintf("trc_tr_s_%d", i))
-			if err := env.db.Transition(ctx, env.orgID, t.ID,
+			if err := env.db.Transition(ctx, env.nsID, t.ID,
 				store.TaskPending, store.TaskAssigned); err != nil {
 				b.Fatalf("setup pending→assigned: %v", err)
 			}
-			if err := env.db.Transition(ctx, env.orgID, t.ID,
+			if err := env.db.Transition(ctx, env.nsID, t.ID,
 				store.TaskAssigned, store.TaskRunning); err != nil {
 				b.Fatalf("setup assigned→running: %v", err)
 			}
 			b.StartTimer()
 
 			// 计时区内**恰好一次**、且是终态写（额外落 finished_at）。
-			if err := env.db.Transition(ctx, env.orgID, t.ID,
+			if err := env.db.Transition(ctx, env.nsID, t.ID,
 				store.TaskRunning, store.TaskSucceeded); err != nil {
 				b.Fatalf("transition running→succeeded: %v", err)
 			}
@@ -285,7 +292,7 @@ func BenchmarkDispatchChain(b *testing.B) {
 		// 就正常返回（out.Tasks 为空）——基准会静默变成测空气。
 		// 这三条断言就是防止这种静默失效：没真派出去就直接失败。
 		out, err := disp.Dispatch(ctx, route.DispatchInput{
-			OrgID:        env.orgID,
+			NamespaceID:  env.nsID,
 			TraceID:      fmt.Sprintf("trc_dsp_%d", i),
 			FromIsSource: true,
 			FromCap:      "github",
@@ -354,20 +361,20 @@ func BenchmarkReportResult(b *testing.B) {
 			if err != nil {
 				b.Fatalf("lease instance: %v", err)
 			}
-			if err := env.db.AssignTask(ctx, env.orgID, t.ID, nodeID, instID, store.Now()+store.LeaseTTLSec); err != nil {
+			if err := env.db.AssignTask(ctx, env.nsID, t.ID, nodeID, instID, store.Now()+store.LeaseTTLSec); err != nil {
 				b.Fatalf("assign: %v", err)
 			}
-			if err := env.db.Transition(ctx, env.orgID, t.ID, store.TaskAssigned, store.TaskAcked); err != nil {
+			if err := env.db.Transition(ctx, env.nsID, t.ID, store.TaskAssigned, store.TaskAcked); err != nil {
 				b.Fatalf("setup assigned→acked: %v", err)
 			}
-			if err := env.db.StartTask(ctx, env.orgID, t.ID); err != nil {
+			if err := env.db.StartTask(ctx, env.nsID, t.ID); err != nil {
 				b.Fatalf("setup acked→running: %v", err)
 			}
 			prevInst = instID
 			b.StartTimer()
 
 			// 计时区内**恰好一次**：节点回报结果。
-			if err := env.db.ReportResult(ctx, env.orgID, t.ID, store.TaskSucceeded,
+			if err := env.db.ReportResult(ctx, env.nsID, t.ID, store.TaskSucceeded,
 				&out, true, "ok", artifacts, ""); err != nil {
 				b.Fatalf("report result: %v", err)
 			}
@@ -405,7 +412,7 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	if err := env.db.CreateTasks(ctx, ts); err != nil {
 		t.Fatalf("create tasks: %v", err)
 	}
-	back, err := env.db.ListTasks(ctx, env.orgID, traceID, "", "", 50)
+	back, err := env.db.ListTasks(ctx, env.nsID, traceID, "", "", 50)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -435,11 +442,11 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 
 	// 真迁一条：pending → assigned，读回状态确实变了（CAS 命中）。
 	task := back[0]
-	if err := env.db.Transition(ctx, env.orgID, task.ID,
+	if err := env.db.Transition(ctx, env.nsID, task.ID,
 		store.TaskPending, store.TaskAssigned); err != nil {
 		t.Fatalf("transition pending→assigned: %v", err)
 	}
-	cur, err := env.db.GetTask(ctx, env.orgID, task.ID)
+	cur, err := env.db.GetTask(ctx, env.nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -451,15 +458,15 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	}
 
 	// 再推到终态：running→succeeded 会额外写 finished_at（第二个子用例测的正是它）。
-	if err := env.db.Transition(ctx, env.orgID, task.ID,
+	if err := env.db.Transition(ctx, env.nsID, task.ID,
 		store.TaskAssigned, store.TaskRunning); err != nil {
 		t.Fatalf("transition assigned→running: %v", err)
 	}
-	if err := env.db.Transition(ctx, env.orgID, task.ID,
+	if err := env.db.Transition(ctx, env.nsID, task.ID,
 		store.TaskRunning, store.TaskSucceeded); err != nil {
 		t.Fatalf("transition running→succeeded: %v", err)
 	}
-	cur, err = env.db.GetTask(ctx, env.orgID, task.ID)
+	cur, err = env.db.GetTask(ctx, env.nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task after terminal transition: %v", err)
 	}
@@ -474,7 +481,7 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	nodeID := env.addEntryGraphWithNode(t)
 	disp := route.New(env.db)
 	out, err := disp.Dispatch(ctx, route.DispatchInput{
-		OrgID:        env.orgID,
+		NamespaceID:  env.nsID,
 		TraceID:      "trc_guard_dispatch",
 		FromIsSource: true,
 		FromCap:      "github",
@@ -502,7 +509,7 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	}
 
 	// 返回值是内存里那份，不能当证据——库里读回才是真的。
-	stored, err := env.db.GetTask(ctx, env.orgID, dispatched.ID)
+	stored, err := env.db.GetTask(ctx, env.nsID, dispatched.ID)
 	if err != nil {
 		t.Fatalf("get dispatched task: %v", err)
 	}
@@ -511,7 +518,7 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	}
 
 	// 图版本必须真落了：graph_id 只有能反查回快照才有复盘价值。
-	if _, err := env.db.GetGraphVersion(ctx, env.orgID, dispatched.GraphID); err != nil {
+	if _, err := env.db.GetGraphVersion(ctx, env.nsID, dispatched.GraphID); err != nil {
 		t.Fatalf("get graph version %s: %v", dispatched.GraphID, err)
 	}
 
@@ -519,15 +526,15 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	// 「回报一次结果」的可观测效果钉死：终态 + 明细落库 + 槽位释放。
 	//
 	// 用 ③ 派出去的那条任务（assigned）→ StartTask（running）→ 回报成功。
-	if err := env.db.StartTask(ctx, env.orgID, dispatched.ID); err != nil {
+	if err := env.db.StartTask(ctx, env.nsID, dispatched.ID); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 	fixOut := "fix"
-	if err := env.db.ReportResult(ctx, env.orgID, dispatched.ID, store.TaskSucceeded,
+	if err := env.db.ReportResult(ctx, env.nsID, dispatched.ID, store.TaskSucceeded,
 		&fixOut, true, "done", []string{"run.log"}, ""); err != nil {
 		t.Fatalf("report result: %v", err)
 	}
-	finished, err := env.db.GetTask(ctx, env.orgID, dispatched.ID)
+	finished, err := env.db.GetTask(ctx, env.nsID, dispatched.ID)
 	if err != nil {
 		t.Fatalf("get finished task: %v", err)
 	}

@@ -36,7 +36,18 @@ import (
 
 // DispatchInput 是一次派发的输入。
 type DispatchInput struct {
-	OrgID        string
+	OrgID string
+	// NamespaceID 是这次派发的**隔离维度**（契约 §3 / 设计文档 §5）。
+	//
+	// 派发四步里 ① 查出口表、③ 找节点、⑤ 建任务都按它过滤/落库；② 校参数、
+	// ④ 挑机器与命名空间无关，完全不变。
+	//
+	// 谁来给：根任务由 handler 给、来源触发由调用方从 src.NamespaceID 传进来、
+	// 下一跳由父任务的 NamespaceID 继承（见 PlanNextHop）。
+	//
+	// 空值是**错误**，不是「回退默认命名空间」（见 checkInput）：回退会让
+	// 「调用方忘了带 namespace」变成「悄悄写进了 default」，是最难查的那类串数据。
+	NamespaceID  string `json:"namespaceId"`
 	TraceID      string
 	ParentTaskID string
 	// FromCap 是上游标识：默认是上游能力定义 ID；
@@ -106,9 +117,16 @@ type Store interface {
 	//
 	// fromIsSource 决定 fromKey 的解释（见 store.Edge.FromIsSource）：
 	// false → 上游能力 id；true → 来源名（入口边）。
-	EdgesFrom(ctx context.Context, orgID string, fromIsSource bool, fromKey, fromPort string) ([]string, error)
-	GetCapabilityByID(ctx context.Context, orgID, id string) (*store.CapabilityVersion, error)
-	NodesForCapability(ctx context.Context, orgID, capabilityID string) ([]string, error)
+	//
+	// 命名空间维度是必须的：同名能力可以在两个命名空间里各有一条**不同的**出口边，
+	// 少这个参数就会把别人的边当自己的（契约 §3 第 ① 步）。
+	EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]string, error)
+	GetCapabilityByID(ctx context.Context, namespaceID, id string) (*store.CapabilityVersion, error)
+	// NodesForCapability 只返回**本命名空间**里声明了该能力的节点（契约 §3 第 ③ 步）。
+	//
+	// 能力 id 全局唯一，所以这里天然只会匹配到一个命名空间的声明；仍然按
+	// namespace_id 过滤一遍，防的是**数据被写坏**（见 store I11）。
+	NodesForCapability(ctx context.Context, namespaceID, capabilityID string) ([]string, error)
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
 	// FreeSlotsByNode 一次拿到多个节点的空闲槽位数（#145：派发不能被 N+1 拖慢）
 	FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]int, error)
@@ -116,20 +134,26 @@ type Store interface {
 	//
 	// 没有空闲槽位返回 store.ErrNoCapacity 且**什么都没写**（事务回滚）；
 	// 其他错误同样带事务回滚，调用方不需要再补一次 ReleaseInstance。
-	LeaseAndAssign(ctx context.Context, orgID, taskID, nodeID string, leaseUntil int64) (string, error)
+	LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (string, error)
 	ReleaseInstance(ctx context.Context, nodeID, instanceID string) error
 	ReleaseInstanceByTask(ctx context.Context, nodeID, taskID string) error
 	GetPin(ctx context.Context, stickyKey string) (*store.NodePin, error)
 	PutPin(ctx context.Context, p *store.NodePin) error
 	CreateTasks(ctx context.Context, ts []*store.Task) error
 	// ExtendLease 把租约推到指定时刻（派发失败回滚时用来"提前过期"）。
-	ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error
+	ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error
 	// SweepExpiredLeases 回收过期租约（契约 §3.3）。
 	//
 	// 派发失败回滚复用它，而不是自己拼一套"退回 pending + 清归属"的 SQL：
 	// 那样会出现第二个改任务归属的地方，与「唯一入口」的约束冲突。
 	SweepExpiredLeases(ctx context.Context, now int64) ([]string, error)
-	EnsureGraphVersion(ctx context.Context, orgID string) (*store.GraphVersion, error)
+	EnsureGraphVersion(ctx context.Context, namespaceID string) (*store.GraphVersion, error)
+	// NamespaceOrgID 把命名空间反推回组织。
+	//
+	// 派发里唯一还剩的组织级规则是「params.to 必须是本组织成员」（契约 §10.1.1），
+	// 以及 task.OrgID / 日志。下一跳拿不到 org，但只要知道父任务的 namespace
+	// 就能把它推出来（I10：namespace.org_id 是唯一事实源）。
+	NamespaceOrgID(ctx context.Context, namespaceID string) (string, error)
 	IsOrgMember(ctx context.Context, orgID, userID string) (bool, error)
 
 	// InsertPruneEvent 落一条剪枝事件（#142）。
@@ -168,9 +192,13 @@ type Dispatcher struct {
 type Publisher interface {
 	// PublishAssign 向 nodeID 推送 assign 帧；节点不在线返回 error。
 	//
+	// 作用域是**命名空间**（不是组织）：一个 WS 连接 = 一个节点 = 一个命名空间，
+	// hub 只把帧推给同命名空间的连接（#162 / I10）。按组织路由会把 staging 的
+	// 任务推给 prod 的机器 —— 这正是命名空间要消灭的那类串台。
+	//
 	// 返回 error 时派发器会把任务退回 pending（并释放槽位），
 	// 让下一次派发能立刻重试——而不是让它卡到租约过期。
-	PublishAssign(ctx context.Context, orgID, nodeID string, task *store.Task) error
+	PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error
 }
 
 // New 构造一个 Dispatcher，默认把 notify.phone 视为用户维度能力。
@@ -250,6 +278,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 //
 // 抽出来的理由：PlanNextHop 绕过了 Dispatch 直接调 plan，若不校验，
 // Store 为 nil 时会在 plan 里 panic（旧 DispatchNext 走 Dispatch，本来就有这层校验）。
+//
+// 为什么这里不再要求 OrgID：org_id 现在是**派生量**（I10，由 namespaces 行决定），
+// 派发四步的每一次 store 调用都只吃 namespaceID。而下一跳根本拿不到 org
+// （见 PlanNextHop：子任务只继承父任务的 namespace）。OrgID 仍有用的地方
+// （跨组织用户校验、task.OrgID、日志）在 plan 里按需从命名空间反查，见 plan。
 func (d *Dispatcher) checkInput(in DispatchInput) error {
 	if d.Store == nil {
 		return fmt.Errorf("route: dispatcher has no store")
@@ -257,8 +290,13 @@ func (d *Dispatcher) checkInput(in DispatchInput) error {
 	if d.Now == nil {
 		d.Now = store.Now
 	}
-	if in.OrgID == "" {
-		return fmt.Errorf("route: empty org_id")
+	// 命名空间必填：这里**不**回退默认命名空间（契约 §3 / §4）。
+	//
+	// 复用 store 的哨兵错误（ErrNamespaceRequired）是有意的：handler 只要
+	// errors.Is(err, store.ErrNamespaceRequired) 就能把这个失败翻成 400，
+	// 不必为「路由层少传了 namespace」再造一个只有它自己认识的错误类型。
+	if in.NamespaceID == "" {
+		return fmt.Errorf("route: empty namespace_id: %w", store.ErrNamespaceRequired)
 	}
 	if in.TraceID == "" {
 		return fmt.Errorf("route: empty trace_id")
@@ -286,13 +324,27 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		return nil, nil, nil
 	}
 
+	// org_id 是派生量（I10）：根任务由调用方带进来；下一跳只拿得到父任务的
+	// namespace（见 PlanNextHop），这里就反查一次——绝不“猜”默认 org，也不
+	// 拿空 org 去查 org_members（那会把本组织用户的推送静默剪成 foreign_user）。
+	// 只在真的缺了才查：根派发（handler/源/触发器）这条路一次查询也不多付。
+	if in.OrgID == "" {
+		orgID, err := d.Store.NamespaceOrgID(ctx, in.NamespaceID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("route: resolve org for namespace %s: %w", in.NamespaceID, err)
+		}
+		in.OrgID = orgID
+	}
+
 	// ② 查出口表；源（Targets 非空）跳过这一步，直接用配置好的目标
 	var targets []string
 	if len(in.Targets) > 0 {
 		targets = in.Targets
 	} else {
 		var err error
-		targets, err = d.Store.EdgesFrom(ctx, in.OrgID, in.FromIsSource, in.FromCap, in.Out)
+		// 只查**本命名空间**的出口表（契约 §3 第 ① 步）：别的命名空间里
+		// 同名能力的边不参与派发。
+		targets, err = d.Store.EdgesFrom(ctx, in.NamespaceID, in.FromIsSource, in.FromCap, in.Out)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route: lookup edges: %w", err)
 		}
@@ -306,15 +358,15 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		}
 	}
 
-	// 图版本只落一次（按需落版，契约 §10.2）
-	graph, err := d.Store.EnsureGraphVersion(ctx, in.OrgID)
+	// 图版本只落一次（按需落版，契约 §10.2）。图版本属于命名空间（edges 按 namespace 重建）。
+	graph, err := d.Store.EnsureGraphVersion(ctx, in.NamespaceID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("route: pin graph version: %w", err)
 	}
 
 	// ③ 逐条边：环剪枝 → 参数 → 跨组织用户 → 找节点
 	for _, targetID := range targets {
-		capDef, err := d.Store.GetCapabilityByID(ctx, in.OrgID, targetID)
+		capDef, err := d.Store.GetCapabilityByID(ctx, in.NamespaceID, targetID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route: load target capability %s: %w", targetID, err)
 		}
@@ -386,8 +438,8 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			continue
 		}
 
-		// 找节点
-		nodes, err := d.Store.NodesForCapability(ctx, in.OrgID, targetID)
+		// 找节点（只在本命名空间的在线节点里找，契约 §3 第 ③ 步）
+		nodes, err := d.Store.NodesForCapability(ctx, in.NamespaceID, targetID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route: nodes for capability %s: %w", targetID, err)
 		}
@@ -442,6 +494,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		path := append(append([]string{}, in.Path...), c.cap.ID)
 		task := &store.Task{
 			ID:           store.NewTaskID(),
+			NamespaceID:  in.NamespaceID, // ⑤ 根任务用入参；子任务由 store I11④ 强制继承父任务
 			OrgID:        in.OrgID,
 			TraceID:      in.TraceID,
 			ParentTaskID: parentPtr(in.ParentTaskID),
@@ -496,7 +549,7 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 		// 占槽位 + pending→assigned + 写归属/attempts = **一次事务**（#141）。
 		// 任何一步失败都回滚，槽位不会泄漏——所以这里**没有**（也不需要）
 		// 失败后补一次 ReleaseInstance 的语句。
-		instanceID, err := d.Store.LeaseAndAssign(ctx, in.OrgID, task.ID, nodeID, lease)
+		instanceID, err := d.Store.LeaseAndAssign(ctx, in.NamespaceID, task.ID, nodeID, lease)
 		if errors.Is(err, store.ErrNoCapacity) {
 			// 有节点声明但暂时没空：不是永久剪枝，任务留 pending 等调度。
 			// （剪枝语义是「这条链在这里断了」，容量不够不是断链。）
@@ -521,8 +574,8 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 		// 这条任务会一直卡到租约过期才被巡检回收（30s 起，重试还要再来一轮）。
 		// 退回 pending 让它能被下一次派发立刻捡起。
 		if d.Publisher != nil {
-			if err := d.Publisher.PublishAssign(ctx, in.OrgID, nodeID, task); err != nil {
-				d.requeueAfterPublishFailure(ctx, in.OrgID, task, nodeID, instanceID)
+			if err := d.Publisher.PublishAssign(ctx, in.NamespaceID, nodeID, task); err != nil {
+				d.requeueAfterPublishFailure(ctx, in.NamespaceID, task, nodeID, instanceID)
 				// 从返回值里剔除：它已退回 pending，不算"派发出去了"。
 				// （仍留在库里，会被后续调度捡起。）
 				published[i] = false
@@ -531,13 +584,15 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 		}
 
 		// 粘性钉住：能力开了 sticky 且是第一次落到这台机器时写 pin
+		// （pin 钉的是「哪个命名空间里的哪台机器」，所以带 NamespaceID）。
 		if stickySelector != nil {
 			key := store.StickyKey(in.TraceID, c.cap.ID, *stickySelector)
 			if err := d.Store.PutPin(ctx, &store.NodePin{
-				StickyKey: key,
-				OrgID:     in.OrgID,
-				NodeID:    nodeID,
-				Selector:  *stickySelector,
+				StickyKey:   key,
+				NamespaceID: in.NamespaceID,
+				OrgID:       in.OrgID,
+				NodeID:      nodeID,
+				Selector:    *stickySelector,
 			}); err != nil {
 				return fmt.Errorf("route: put pin: %w", err)
 			}
@@ -665,14 +720,17 @@ func (d *Dispatcher) prune(ctx context.Context, in DispatchInput, out *DispatchO
 		return
 	}
 
-	// 幂等/去重由 store 层负责（同 trace + 同原因 + 同 payload 只落一行）。
+	// 幂等/去重由 store 层负责（同 namespace + 同 trace + 同原因 + 同 payload 只落一行）。
+	// NamespaceID 必填：events 是命名空间资源，缺它 store 会直接报 ErrNamespaceRequired，
+	// 于是剪枝会「静默地写失败」——那就又把 #142 要消灭的「查不到的剪枝」还回来了。
 	if _, err := d.Store.InsertPruneEvent(ctx, &store.Event{
-		OrgID:     in.OrgID,
-		TraceID:   in.TraceID,
-		Source:    PruneEventSource,
-		Type:      PruneEventType(p.Reason),
-		Payload:   payload,
-		CreatedAt: d.now(),
+		NamespaceID: in.NamespaceID,
+		OrgID:       in.OrgID,
+		TraceID:     in.TraceID,
+		Source:      PruneEventSource,
+		Type:        PruneEventType(p.Reason),
+		Payload:     payload,
+		CreatedAt:   d.now(),
 	}); err != nil {
 		slog.Warn("record prune event failed",
 			"event", "route.prune.record_failed",
@@ -693,7 +751,7 @@ func (d *Dispatcher) prune(ctx context.Context, in DispatchInput, out *DispatchO
 //
 // 这样"清理任务归属"的逻辑只存在一处（sweepOne），不会出现第二份实现。
 // 失败只记日志：最坏情况是等 30s 后巡检自然兜底，结果一样。
-func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, orgID string, task *store.Task, nodeID, instanceID string) {
+func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, namespaceID string, task *store.Task, nodeID, instanceID string) {
 	if err := d.Store.ReleaseInstance(ctx, nodeID, instanceID); err != nil {
 		slog.Warn("release instance after publish failure failed",
 			"event", "route.publish.requeue",
@@ -708,7 +766,7 @@ func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, orgID strin
 	//
 	// 代价是这中间有极短的时间窗任务仍是 assigned（租约已过期），
 	// 但巡检的 CAS 保证只有一个执行者能改它。
-	if err := d.Store.ExtendLease(ctx, orgID, task.ID, 0); err != nil {
+	if err := d.Store.ExtendLease(ctx, namespaceID, task.ID, 0); err != nil {
 		slog.Warn("expire lease after publish failure failed",
 			"event", "route.publish.requeue",
 			"task_id", task.ID, "error", err.Error())
@@ -779,12 +837,13 @@ func (d *Dispatcher) pickNode(ctx context.Context, in DispatchInput, capDef *sto
 		pin, err := d.Store.GetPin(ctx, key)
 		if err == nil && pin != nil && containsStr(candidates, pin.NodeID) {
 			if err := d.Store.PutPin(ctx, &store.NodePin{
-				StickyKey:  key,
-				OrgID:      pin.OrgID,
-				NodeID:     pin.NodeID,
-				Selector:   pin.Selector,
-				CreatedAt:  pin.CreatedAt,
-				LastUsedAt: d.Now(),
+				StickyKey:   key,
+				NamespaceID: pin.NamespaceID, // 刷新沿用库里那条 pin 的命名空间
+				OrgID:       pin.OrgID,
+				NodeID:      pin.NodeID,
+				Selector:    pin.Selector,
+				CreatedAt:   pin.CreatedAt,
+				LastUsedAt:  d.Now(),
 			}); err != nil {
 				return "", nil, fmt.Errorf("route: refresh pin: %w", err)
 			}
@@ -888,10 +947,16 @@ func parentPtr(s string) *string {
 //
 // 这是契约 §4 的**递归应用**——把上一跳的结果当作下一跳的输入：
 //
-//	FromCap = 刚完成的能力
-//	Out     = 它回报的出口名
-//	Params  = 它的 params（原样传递，不求值）
-//	Path    = 它的 path（环剪枝的累积路径）
+//	namespaceID = 父任务的 NamespaceID（store.Task.NamespaceID，必须原样传入）
+//	FromCap     = 刚完成的能力
+//	Out         = 它回报的出口名
+//	Params      = 它的 params（原样传递，不求值）
+//	Path        = 它的 path（环剪枝的累积路径）
+//
+// 为什么第二个参数是 namespaceID 而不是 orgID（契约 §3 第 ⑤ 步）：
+// 下一跳的子任务**必须继承父任务的命名空间**（I11④ 也由 store.CreateTasks
+// 兜一遍：子任务显式给了不同命名空间就直接报 CrossNamespaceError）。
+// 调用方只能把父任务行上的那个值原样递进来，不能自己挑一个。
 //
 // 三种情况不派发，都不是错误（返回空列表 + nil）：
 //   - out == ""：节点没回报出口（reported=0），这条分支自然结束
@@ -907,7 +972,7 @@ func parentPtr(s string) *string {
 // 剪枝留痕（InsertPruneEvent）在 plan 内、事务外，best-effort：若随后的事务
 // 回滚，库里可能留下一条「这条边没走成」的痕迹——那是诊断信息，
 // 比丢掉证据好，可接受（契约 §4）。
-func (d *Dispatcher) PlanNextHop(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) ([]*store.Task, error) {
+func (d *Dispatcher) PlanNextHop(ctx context.Context, namespaceID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) ([]*store.Task, error) {
 	if out == "" {
 		return nil, nil // 没回报出口：不派下一跳（契约 §7 第 ① 行）
 	}
@@ -923,7 +988,9 @@ func (d *Dispatcher) PlanNextHop(ctx context.Context, orgID, traceID, parentTask
 	}
 
 	in := DispatchInput{
-		OrgID:        orgID,
+		// org_id 不在这里传：子任务的 OrgID 由 store 从 namespace 派生（I10）。
+		// NamespaceID 在这里只能是父任务的那一个（I11④：不接受调用方另指定）。
+		NamespaceID:  namespaceID,
 		TraceID:      traceID,
 		ParentTaskID: parentTaskID,
 		FromCap:      fromCapabilityID,
@@ -978,13 +1045,13 @@ func (d *Dispatcher) PlanNextHop(ctx context.Context, orgID, traceID, parentTask
 // 调用方需要知道「行建出来了、帧没发出去」，所以这里用「attempts 涨了却仍回
 // pending」识别出推送回滚（判定规则与 launch 筛 out.Tasks 的规则一致），
 // 造一个错误交给调用方记日志——它不是硬失败，不进任何状态机。
-func (d *Dispatcher) PublishTasks(ctx context.Context, orgID string, tasks []*store.Task) error {
+func (d *Dispatcher) PublishTasks(ctx context.Context, namespaceID string, tasks []*store.Task) error {
 	var firstErr error
 	// record 只做两件事：warn + 记住第一个错误，绝不中断后续任务。
 	record := func(task *store.Task, err error) {
 		slog.Warn("publish next-hop task failed",
 			"event", "route.next_hop.publish_failed",
-			"org_id", orgID,
+			"namespace_id", namespaceID,
 			"task_id", task.ID,
 			"capability", task.Capability,
 			"error", err.Error())
@@ -1003,10 +1070,18 @@ func (d *Dispatcher) PublishTasks(ctx context.Context, orgID string, tasks []*st
 			continue
 		}
 
-		// plan 出来的任务自带 OrgID；只在缺失时用入参补上，
-		// 避免拿空 org_id 去查库（那样什么都查不到，任务会默默留 pending）。
+		// plan 出来的任务自带 NamespaceID/OrgID；只在缺失时用入参补上，
+		// 避免拿空作用域去查库（那样什么都查不到，任务会默默留 pending）。
+		//
+		// #162：隔离维度是命名空间（I10）。org_id 只是派生量，这里补它是为了
+		// 日志与跨组织用户校验；真正决定「谁看得到这条任务」的是 namespace_id。
+		if t.NamespaceID == "" {
+			t.NamespaceID = namespaceID
+		}
 		if t.OrgID == "" {
-			t.OrgID = orgID
+			if orgID, err := d.Store.NamespaceOrgID(ctx, t.NamespaceID); err == nil {
+				t.OrgID = orgID
+			}
 		}
 
 		beforeAttempts := t.Attempts
@@ -1046,8 +1121,14 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 		// 不是 pending 说明已被别人处理（派发/取消/回收），不是错误。
 		return false, nil
 	}
+	// 重派也必须知道隔离维度（它决定节点列表与租约落在哪个命名空间）。
+	// 库里不存在这种行（tasks.namespace_id 是必填）；真出现只能是调用方自己拼了一个，
+	// 那宁可报错也不要拿空 namespace 去查：查不到节点会让任务默默卡在 pending。
+	if task.NamespaceID == "" {
+		return false, fmt.Errorf("route: redispatch task %s: %w", task.ID, store.ErrNamespaceRequired)
+	}
 
-	nodes, err := d.Store.NodesForCapability(ctx, task.OrgID, task.CapabilityID)
+	nodes, err := d.Store.NodesForCapability(ctx, task.NamespaceID, task.CapabilityID)
 	if err != nil {
 		return false, fmt.Errorf("route: redispatch nodes for %s: %w", task.CapabilityID, err)
 	}
@@ -1058,7 +1139,7 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	}
 
 	// 复用派发第 ④ 步的挑机器逻辑（粘性 + 负载）。
-	capDef, err := d.Store.GetCapabilityByID(ctx, task.OrgID, task.CapabilityID)
+	capDef, err := d.Store.GetCapabilityByID(ctx, task.NamespaceID, task.CapabilityID)
 	if err != nil {
 		return false, fmt.Errorf("route: redispatch load capability %s: %w", task.CapabilityID, err)
 	}
@@ -1070,7 +1151,9 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	// stickySelector 非 nil 表示「该能力开了 sticky 且库里还没钉住」，派发成功后**必须**写 pin。
 	// 不能像以前那样用 `_` 丢掉：接力派发（#140）不再经过 launch，这里是它唯一的
 	// 写 pin 的地方（见下方 PutPin 段）。
-	nodeID, stickySelector, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, TraceID: task.TraceID}, capDef, taskParams, nodes)
+	// 粘性/负载与命名空间无关（派发第 ④ 步不变），但 pin 要能追溯归属，
+	// 所以把任务自己的 namespace 带进去。
+	nodeID, stickySelector, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, NamespaceID: task.NamespaceID, TraceID: task.TraceID}, capDef, taskParams, nodes)
 	if err != nil {
 		return false, err
 	}
@@ -1082,7 +1165,7 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	}
 	// 占槽位 + pending→assigned + 写归属/attempts = 一次事务（#141）。
 	// 失败即回滚，槽位不会泄漏，所以不需要再调 ReleaseInstance。
-	instanceID, err := d.Store.LeaseAndAssign(ctx, task.OrgID, task.ID, nodeID, lease)
+	instanceID, err := d.Store.LeaseAndAssign(ctx, task.NamespaceID, task.ID, nodeID, lease)
 	if errors.Is(err, store.ErrNoCapacity) {
 		// 有节点但满了：不是永久失败，下轮再试。
 		return false, nil
@@ -1100,8 +1183,8 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	task.NotBefore = nil
 
 	if d.Publisher != nil {
-		if err := d.Publisher.PublishAssign(ctx, task.OrgID, nodeID, task); err != nil {
-			d.requeueAfterPublishFailure(ctx, task.OrgID, task, nodeID, instanceID)
+		if err := d.Publisher.PublishAssign(ctx, task.NamespaceID, nodeID, task); err != nil {
+			d.requeueAfterPublishFailure(ctx, task.NamespaceID, task, nodeID, instanceID)
 			return false, nil // 推不出去 = 这次没派成，下轮重试
 		}
 	}
@@ -1128,10 +1211,11 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	if stickySelector != nil {
 		key := store.StickyKey(task.TraceID, capDef.ID, *stickySelector)
 		if err := d.Store.PutPin(ctx, &store.NodePin{
-			StickyKey: key,
-			OrgID:     task.OrgID,
-			NodeID:    nodeID,
-			Selector:  *stickySelector,
+			StickyKey:   key,
+			NamespaceID: task.NamespaceID,
+			OrgID:       task.OrgID,
+			NodeID:      nodeID,
+			Selector:    *stickySelector,
 		}); err != nil {
 			slog.Warn("put sticky pin after redispatch failed",
 				"event", "route.redispatch.put_pin_failed",

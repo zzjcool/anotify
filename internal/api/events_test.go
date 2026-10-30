@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +24,7 @@ import (
 type eventFixture struct {
 	db      *store.DB
 	orgID   string
+	nsID    string
 	userID  string
 	apiKey  string
 	handler *EventHandler
@@ -46,13 +49,22 @@ func newEventFixture(t *testing.T) *eventFixture {
 	if err != nil {
 		t.Fatalf("register user with org: %v", err)
 	}
+	// 建组织时同事务播种 default 命名空间（契约 §2.5）：命名空间资源没有隐式默认，
+	// 所以贴纸式地取一次。
+	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("default namespace: %v", err)
+	}
 
 	// 目标能力：review@1（有节点声明 → 会建任务）
 	//
 	// #110：不再需要一个叫 github@1 的"起点能力"。入口边的左端直接是
 	// 来源名 "github"，见下面 CreateEdge 的 FromIsSource。
 	review := &store.CapabilityVersion{
-		OrgID: org.ID, Name: "review", Version: 1,
+		NamespaceID:  nsID,
+		OrgID:        org.ID,
+		Name:         "review",
+		Version:      1,
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["number"],"properties":{"number":{"type":"number"}}}`),
 		Outputs:      []string{"fix"},
 		Source:       store.CapSourceCustom,
@@ -62,6 +74,7 @@ func newEventFixture(t *testing.T) *eventFixture {
 	}
 	// 入口边：来源 "github" 的 pull_request.opened → review
 	if err := db.CreateEdge(ctx, &store.Edge{
+		NamespaceID:    nsID,
 		OrgID:          org.ID,
 		FromIsSource:   true,
 		FromCapability: "github",
@@ -71,15 +84,15 @@ func newEventFixture(t *testing.T) *eventFixture {
 		t.Fatalf("create entry edge: %v", err)
 	}
 	// 节点声明 review 并有 2 个槽位
-	node := &store.Node{OrgID: org.ID, Name: "mbp-" + store.NewUserID()}
+	node := &store.Node{NamespaceID: nsID, OrgID: org.ID, Name: "mbp-" + store.NewUserID()}
 	if _, err := db.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	if _, err := db.ConfirmCapabilities(ctx, org.ID, node.ID,
+	if _, err := db.ConfirmCapabilities(ctx, nsID, node.ID,
 		[]store.CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 		t.Fatalf("confirm capabilities: %v", err)
 	}
-	if _, err := db.UpsertInstances(ctx, org.ID, node.ID,
+	if _, err := db.UpsertInstances(ctx, nsID, node.ID,
 		[]store.InstanceSpec{{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}}); err != nil {
 		t.Fatalf("upsert instances: %v", err)
 	}
@@ -100,7 +113,7 @@ func newEventFixture(t *testing.T) *eventFixture {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	return &eventFixture{db: db, orgID: org.ID, userID: user.ID, apiKey: apiKey, handler: h, server: srv}
+	return &eventFixture{db: db, orgID: org.ID, nsID: nsID, userID: user.ID, apiKey: apiKey, handler: h, server: srv}
 }
 
 // post 发一个 POST /v1/events 请求。
@@ -155,6 +168,39 @@ func (f *eventFixture) postRaw(t *testing.T, body any) (int, []byte) {
 	return resp.StatusCode, raw
 }
 
+// do 发一个任意方法 + 路径（可带 query）的请求，返回状态码与**保留的** body。
+//
+// body 为 nil 时不带请求体（GET/DELETE）；否则按 JSON 编码。
+func (f *eventFixture) do(t *testing.T, method, path string, body any) (int, []byte) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		rdr = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(method, f.server.URL+path, rdr)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp.StatusCode, raw
+}
+
 // ---------- #58 验收：端到端 ----------
 
 // TestEventToDispatch POST /v1/events → 产生 event + 首批 task（#58 验收）。
@@ -162,7 +208,8 @@ func TestEventToDispatch(t *testing.T) {
 	f := newEventFixture(t)
 
 	resp, out := f.post(t, EventIngestRequest{
-		Source: "github", Type: "pull_request.opened",
+		NamespaceID: f.nsID,
+		Source:      "github", Type: "pull_request.opened",
 		Payload: json.RawMessage(`{"number":42}`),
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -193,14 +240,14 @@ func TestEventToDispatch(t *testing.T) {
 	}
 
 	// 库里确实有 event + task
-	events, err := f.db.ListEvents(context.Background(), f.orgID, out.TraceID, "", 10)
+	events, err := f.db.ListEvents(context.Background(), f.nsID, out.TraceID, "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
 	if len(events) != 1 {
 		t.Fatalf("events in db = %d, want 1", len(events))
 	}
-	tasks, err := f.db.ListTasks(context.Background(), f.orgID, out.TraceID, "", "", 10)
+	tasks, err := f.db.ListTasks(context.Background(), f.nsID, out.TraceID, "", "", 10)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -216,7 +263,8 @@ func TestEventToDispatch(t *testing.T) {
 func TestEventIdempotentHTTP(t *testing.T) {
 	f := newEventFixture(t)
 	body := EventIngestRequest{
-		Source: "github", Type: "pull_request.opened",
+		NamespaceID: f.nsID,
+		Source:      "github", Type: "pull_request.opened",
 		IdemKey: "delivery-xyz",
 		Payload: json.RawMessage(`{"number":7}`),
 	}
@@ -240,7 +288,7 @@ func TestEventIdempotentHTTP(t *testing.T) {
 		t.Fatalf("idempotent hit dispatched %d tasks, want 0", len(out2.Tasks))
 	}
 	// 库里只有一个任务
-	tasks, err := f.db.ListTasks(context.Background(), f.orgID, out1.TraceID, "", "", 10)
+	tasks, err := f.db.ListTasks(context.Background(), f.nsID, out1.TraceID, "", "", 10)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -254,7 +302,8 @@ func TestEventNoEdgePruned(t *testing.T) {
 	f := newEventFixture(t)
 
 	resp, out := f.post(t, EventIngestRequest{
-		Source: "github", Type: "pull_request.closed", // 没有对应边
+		NamespaceID: f.nsID,
+		Source:      "github", Type: "pull_request.closed", // 没有对应边
 		Payload: json.RawMessage(`{"number":1}`),
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -279,7 +328,8 @@ func TestEventUnknownSourceAccepted(t *testing.T) {
 	f := newEventFixture(t)
 
 	resp, out := f.post(t, EventIngestRequest{
-		Source: "no.such.origin", Type: "issue.created",
+		NamespaceID: f.nsID,
+		Source:      "no.such.origin", Type: "issue.created",
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200（事件照收，来源可以还没配边）", resp.StatusCode)
@@ -303,7 +353,8 @@ func TestEventParamsSchemaPruned(t *testing.T) {
 	f := newEventFixture(t)
 
 	resp, out := f.post(t, EventIngestRequest{
-		Source: "github", Type: "pull_request.opened",
+		NamespaceID: f.nsID,
+		Source:      "github", Type: "pull_request.opened",
 		Payload: json.RawMessage(`{"title":"no number field"}`), // 缺 required number
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -320,7 +371,7 @@ func TestEventParamsSchemaPruned(t *testing.T) {
 // TestEventAuthRequired 无 key / 错 key → 401/403。
 func TestEventAuthRequired(t *testing.T) {
 	f := newEventFixture(t)
-	body, _ := json.Marshal(EventIngestRequest{Source: "github", Type: "push"})
+	body, _ := json.Marshal(EventIngestRequest{NamespaceID: f.nsID, Source: "github", Type: "push"})
 
 	t.Run("no key → 401", func(t *testing.T) {
 		resp, err := http.Post(f.server.URL+"/v1/events", "application/json", bytes.NewReader(body))
@@ -355,20 +406,45 @@ func TestEventCrossOrgForbidden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other org: %v", err)
 	}
-
-	resp, _ := f.post(t, EventIngestRequest{
-		Source: "github", Type: "push", OrgID: other.ID,
-	})
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (cross-org write must be rejected)", resp.StatusCode)
+	otherNS, err := f.db.DefaultNamespaceID(context.Background(), other.ID)
+	if err != nil {
+		t.Fatalf("default namespace of other org: %v", err)
 	}
-	// 不该有事件落进那个组织
-	events, err := f.db.ListEvents(context.Background(), other.ID, "", "", 10)
+
+	t.Run("别的组织的 orgId → 403", func(t *testing.T) {
+		resp, _ := f.post(t, EventIngestRequest{
+			NamespaceID: f.nsID, Source: "github", Type: "push", OrgID: other.ID,
+		})
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 (cross-org write must be rejected)", resp.StatusCode)
+		}
+	})
+
+	t.Run("别的组织的 namespaceId → 403", func(t *testing.T) {
+		// 组织解析用的是自己的 org（成员关系没问题），但命名空间属于别的组织：
+		// GetNamespace(orgID, otherNS) → ErrNamespaceForbidden → 403（契约 §6.2）。
+		resp, _ := f.post(t, EventIngestRequest{
+			NamespaceID: otherNS, Source: "github", Type: "push",
+		})
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 (namespace belongs to another org)", resp.StatusCode)
+		}
+	})
+
+	// 不该有事件落进那个组织的命名空间
+	events, err := f.db.ListEvents(context.Background(), otherNS, "", "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
 	if len(events) != 0 {
 		t.Fatalf("cross-org write leaked %d events", len(events))
+	}
+	events, err = f.db.ListEvents(context.Background(), f.nsID, "", "", 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("被拒的请求在本组织命名空间里留下了 %d 条事件", len(events))
 	}
 }
 
@@ -377,12 +453,13 @@ func TestEventList(t *testing.T) {
 	f := newEventFixture(t)
 
 	// 先造两条不同 trace 的事件
-	_, a := f.post(t, EventIngestRequest{Source: "github", Type: "pull_request.opened",
+	_, a := f.post(t, EventIngestRequest{NamespaceID: f.nsID, Source: "github", Type: "pull_request.opened",
 		Payload: json.RawMessage(`{"number":1}`)})
-	_, b := f.post(t, EventIngestRequest{Source: "github", Type: "pull_request.opened",
+	_, b := f.post(t, EventIngestRequest{NamespaceID: f.nsID, Source: "github", Type: "pull_request.opened",
 		Payload: json.RawMessage(`{"number":2}`)})
 
-	get := func(query string) (int, map[string]any) {
+	get := func(t *testing.T, query string) (int, map[string]any) {
+		t.Helper()
 		req, _ := http.NewRequest(http.MethodGet, f.server.URL+"/v1/events"+query, nil)
 		req.Header.Set("Authorization", "Bearer "+f.apiKey)
 		resp, err := http.DefaultClient.Do(req)
@@ -398,9 +475,11 @@ func TestEventList(t *testing.T) {
 		}
 		return resp.StatusCode, out
 	}
+	// 列表端点同样必填 namespaceId（契约 §6.2）：测试里显式带上本组织的默认命名空间。
+	base := "?namespaceId=" + f.nsID
 
 	// 全部
-	status, out := get("")
+	status, out := get(t, base)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
@@ -410,7 +489,7 @@ func TestEventList(t *testing.T) {
 	}
 
 	// 按 trace 过滤 → 1 条
-	status, out = get("?traceId=" + a.TraceID)
+	status, out = get(t, base+"&traceId="+a.TraceID)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
@@ -424,7 +503,7 @@ func TestEventList(t *testing.T) {
 	_ = b
 
 	// 不存在的 trace → 空数组（不是 null）
-	status, out = get("?traceId=trace_does_not_exist")
+	status, out = get(t, base+"&traceId=trace_does_not_exist")
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
@@ -464,7 +543,8 @@ func TestEventPruneNotInEventStream(t *testing.T) {
 
 	// pull_request.closed 没有对应边 → 一条 no_edge 剪枝
 	resp, out := f.post(t, EventIngestRequest{
-		Source: "github", Type: "pull_request.closed",
+		NamespaceID: f.nsID,
+		Source:      "github", Type: "pull_request.closed",
 		Payload: json.RawMessage(`{"number":9}`),
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -475,7 +555,8 @@ func TestEventPruneNotInEventStream(t *testing.T) {
 	}
 
 	// 事件流：只回根事件
-	req, _ := http.NewRequest(http.MethodGet, f.server.URL+"/v1/events?traceId=", nil)
+	req, _ := http.NewRequest(http.MethodGet,
+		f.server.URL+"/v1/events?namespaceId="+f.nsID+"&traceId=", nil)
 	req.Header.Set("Authorization", "Bearer "+f.apiKey)
 	streamResp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -499,7 +580,7 @@ func TestEventPruneNotInEventStream(t *testing.T) {
 	}
 
 	// trace 视图：剪枝在里面（库层直查，trace 页走的正是这条路径）
-	events, err := f.db.ListEvents(context.Background(), f.orgID, out.TraceID, "", 10)
+	events, err := f.db.ListEvents(context.Background(), f.nsID, out.TraceID, "", 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -533,5 +614,220 @@ func TestEventPruneNotInEventStream(t *testing.T) {
 	}
 	if prune.IdemKey != nil {
 		t.Errorf("剪枝带了 idem_key = %v, want NULL", *prune.IdemKey)
+	}
+	// 剪枝记录也是事件，必须落在同一个命名空间里（否则 trace 视图会跨命名空间漏水）
+	if prune.NamespaceID != f.nsID {
+		t.Errorf("剪枝行的 namespaceId = %q, want %q", prune.NamespaceID, f.nsID)
+	}
+}
+
+// ---------- #162 验收：命名空间必填（契约 §6.2，绝不回退默认命名空间） ----------
+
+// TestEventNamespaceRequired POST 缺 namespaceId → 400，且**不落库**。
+//
+// 这是 #162 最容易被写错的一条：回退默认命名空间能让所有用例变绿，
+// 但等于把「调用方写错了」藏成「悄悄写进了 default」——是最难查的串数据。
+// 所以除了断言状态码，还要断言库里一条事件都没有。
+func TestEventNamespaceRequired(t *testing.T) {
+	f := newEventFixture(t)
+
+	status, raw := f.postRaw(t, EventIngestRequest{
+		Source: "github", Type: "pull_request.opened",
+		Payload: json.RawMessage(`{"number":1}`),
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400（缺 namespaceId）; body=%s", status, raw)
+	}
+
+	events, err := f.db.ListEvents(context.Background(), f.nsID, "", "", 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("缺 namespaceId 的请求落库了 %d 条事件（回退了默认命名空间？）", len(events))
+	}
+}
+
+// TestEventNamespaceFromQuery body 不带但 query 带 namespaceId → 200。
+//
+// 契约 §4 允许两个来源（query 与 body），body 优先；两者都没有才 400。
+func TestEventNamespaceFromQuery(t *testing.T) {
+	f := newEventFixture(t)
+
+	status, raw := f.do(t, http.MethodPost, "/v1/events?namespaceId="+f.nsID, EventIngestRequest{
+		Source: "github", Type: "pull_request.opened",
+		Payload: json.RawMessage(`{"number":1}`),
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200（query 提供了 namespaceId）; body=%s", status, raw)
+	}
+	events, err := f.db.ListEvents(context.Background(), f.nsID, "", "", 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || events[0].NamespaceID != f.nsID {
+		t.Fatalf("事件没落在解析出的命名空间上: %+v", events)
+	}
+}
+
+// TestEventNamespaceStarRejected `*` 是读端点专用的跨命名空间标记，写端点 → 400。
+func TestEventNamespaceStarRejected(t *testing.T) {
+	f := newEventFixture(t)
+
+	status, raw := f.postRaw(t, EventIngestRequest{
+		NamespaceID: store.AllNamespaces, Source: "github", Type: "push",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400（写端点不接受 namespaceId=*）; body=%s", status, raw)
+	}
+}
+
+// TestEventNamespaceNotFound 不存在的 namespaceId → 404（不是 400、更不是默认命名空间）。
+func TestEventNamespaceNotFound(t *testing.T) {
+	f := newEventFixture(t)
+
+	status, raw := f.postRaw(t, EventIngestRequest{
+		NamespaceID: "ns_does_not_exist", Source: "github", Type: "push",
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", status, raw)
+	}
+}
+
+// TestEventListNamespaceRequired GET 缺 namespaceId → 400（列表端点同样必填）。
+func TestEventListNamespaceRequired(t *testing.T) {
+	f := newEventFixture(t)
+
+	status, raw := f.do(t, http.MethodGet, "/v1/events", nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400（缺 namespaceId）; body=%s", status, raw)
+	}
+}
+
+// TestEventListAllNamespaces namespaceId=* 跨命名空间合并，再按时间截断。
+func TestEventListAllNamespaces(t *testing.T) {
+	f := newEventFixture(t)
+	ctx := context.Background()
+
+	second, err := f.db.CreateNamespace(ctx, f.orgID, "staging", "预发")
+	if err != nil {
+		t.Fatalf("create second namespace: %v", err)
+	}
+
+	// 两个命名空间各一条事件（第二条在 staging 里没有任何边 → 只落库 + 一条 no_edge 剪枝）
+	if status, raw := f.do(t, http.MethodPost, "/v1/events", EventIngestRequest{
+		NamespaceID: f.nsID, Source: "github", Type: "pull_request.opened",
+		Payload: json.RawMessage(`{"number":1}`),
+	}); status != http.StatusOK {
+		t.Fatalf("default ns post status = %d; body=%s", status, raw)
+	}
+	if status, raw := f.do(t, http.MethodPost, "/v1/events", EventIngestRequest{
+		NamespaceID: second.ID, Source: "github", Type: "pull_request.opened",
+		Payload: json.RawMessage(`{"number":2}`),
+	}); status != http.StatusOK {
+		t.Fatalf("staging ns post status = %d; body=%s", status, raw)
+	}
+
+	list := func(query string) []store.Event {
+		t.Helper()
+		status, raw := f.do(t, http.MethodGet, "/v1/events"+query, nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d for %q; body=%s", status, query, raw)
+		}
+		var out struct {
+			Events []store.Event `json:"events"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("decode %q: %v", query, err)
+		}
+		return out.Events
+	}
+
+	// 单命名空间：各 1 条，且 namespaceId 对得上
+	only := list("?namespaceId=" + f.nsID)
+	if len(only) != 1 || only[0].NamespaceID != f.nsID {
+		t.Fatalf("default ns 的事件 = %+v, want 1 条且 namespaceId=%s", only, f.nsID)
+	}
+	only = list("?namespaceId=" + second.ID)
+	if len(only) != 1 || only[0].NamespaceID != second.ID {
+		t.Fatalf("staging ns 的事件 = %+v, want 1 条且 namespaceId=%s", only, second.ID)
+	}
+
+	// namespaceId=*：两个命名空间合并 → 2 条
+	all := list("?namespaceId=" + store.AllNamespaces)
+	if len(all) != 2 {
+		t.Fatalf("namespaceId=* 返回 %d 条, want 2", len(all))
+	}
+	seen := map[string]int{}
+	for _, e := range all {
+		seen[e.NamespaceID]++
+	}
+	if seen[f.nsID] != 1 || seen[second.ID] != 1 {
+		t.Fatalf("合并结果按命名空间分布 = %v, want 每个 1 条", seen)
+	}
+
+	// limit 截断发生在**合并之后**（不是每个命名空间各取 limit）
+	limited := list("?namespaceId=" + store.AllNamespaces + "&limit=1")
+	if len(limited) != 1 {
+		t.Fatalf("namespaceId=* &limit=1 返回 %d 条, want 1（合并后截断）", len(limited))
+	}
+}
+
+// TestEventNamespaceErrorMapping 是错误 → 状态码的直测（#162 验收）。
+//
+// 为什么要直测映射而不只走 HTTP：I11 跨命名空间引用（*store.CrossNamespaceError）
+// 在 /v1/events 这条路上很难自然触发（建边时就被 store 拦下了），
+// 但契约要求 handler 用 errors.As 把它翻成 400——这条映射必须自己被钉住。
+func TestEventNamespaceErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{
+			name: "跨命名空间引用 → 400",
+			err:  fmt.Errorf("ingest: insert event: %w", &store.CrossNamespaceError{What: "edges.to_capability", Want: "ns_a", Got: "ns_b"}),
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "缺 namespaceId → 400",
+			err:  fmt.Errorf("ingest: empty namespace_id: %w", store.ErrNamespaceRequired),
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "命名空间不存在 → 404",
+			err:  fmt.Errorf("get namespace: %w", store.ErrNamespaceNotFound),
+			want: http.StatusNotFound,
+		},
+		{
+			name: "命名空间属于别的组织 → 403",
+			err:  fmt.Errorf("get namespace: %w", store.ErrNamespaceForbidden),
+			want: http.StatusForbidden,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			if !writeNamespaceError(rec, c.err) {
+				t.Fatalf("writeNamespaceError 没认出来: %v", c.err)
+			}
+			if rec.Code != c.want {
+				t.Fatalf("status = %d, want %d", rec.Code, c.want)
+			}
+		})
+	}
+
+	// 非命名空间错误：不写响应，交给调用方按原逻辑处理（不能把 500 也吞成 400）
+	rec := httptest.NewRecorder()
+	if writeNamespaceError(rec, errors.New("db is locked")) {
+		t.Fatal("无关错误不该被命名空间映射处理")
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("无关错误不该写响应体: %s", rec.Body.String())
+	}
+	// nil 错误：什么都不做（ingest 把它串在正常流程里当「是否是这类错误」用）
+	rec = httptest.NewRecorder()
+	if writeNamespaceError(rec, nil) {
+		t.Fatal("nil 错误不该被处理")
 	}
 }

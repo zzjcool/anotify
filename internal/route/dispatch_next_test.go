@@ -37,15 +37,15 @@ type fakePublisher struct {
 }
 
 type publishCall struct {
-	orgID  string
-	nodeID string
-	taskID string
+	namespaceID string
+	nodeID      string
+	taskID      string
 }
 
-func (p *fakePublisher) PublishAssign(ctx context.Context, orgID, nodeID string, task *store.Task) error {
+func (p *fakePublisher) PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.calls = append(p.calls, publishCall{orgID: orgID, nodeID: nodeID, taskID: task.ID})
+	p.calls = append(p.calls, publishCall{namespaceID: namespaceID, nodeID: nodeID, taskID: task.ID})
 	if p.errAll != nil {
 		return p.errAll
 	}
@@ -67,9 +67,9 @@ func (p *fakePublisher) called() []publishCall {
 func setupNextHop(t *testing.T) (*fakeStore, *Dispatcher, *store.CapabilityVersion, *store.CapabilityVersion) {
 	t.Helper()
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{"type":"object"}`)
-	target := f.addCap(testOrg, "fix", 1, nil, `{"type":"object"}`)
-	f.addEdge(testOrg, review.ID, "fix", target.ID)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{"type":"object"}`)
+	target := f.addCap(testNS, "fix", 1, nil, `{"type":"object"}`)
+	f.addEdge(testNS, review.ID, "fix", target.ID)
 	f.addNode("nd_fix", target.ID, 2)
 	return f, New(f), review, target
 }
@@ -77,7 +77,7 @@ func setupNextHop(t *testing.T) (*fakeStore, *Dispatcher, *store.CapabilityVersi
 // mustPlanNextHop 跑一次 PlanNextHop 并要求恰好 1 个任务。
 func mustPlanNextHop(t *testing.T, d *Dispatcher, fromCapID, traceID string) []*store.Task {
 	t.Helper()
-	tasks, err := d.PlanNextHop(context.Background(), testOrg, traceID, "tsk_parent",
+	tasks, err := d.PlanNextHop(context.Background(), testNS, traceID, "tsk_parent",
 		fromCapID, "fix", json.RawMessage(`{"k":"v"}`), []string{fromCapID})
 	if err != nil {
 		t.Fatalf("plan next hop: %v", err)
@@ -116,7 +116,7 @@ func TestPlanNextHopIsReadOnly(t *testing.T) {
 	// 比「事后数行数」更硬：plan 若偷偷建行，这里立刻报错。
 	f.errCreateTasks = errors.New("plan must not create task rows")
 
-	tasks, err := d.PlanNextHop(context.Background(), testOrg, "trace_plan", "tsk_parent",
+	tasks, err := d.PlanNextHop(context.Background(), testNS, "trace_plan", "tsk_parent",
 		review.ID, "fix", json.RawMessage(`{"k":"v"}`), []string{review.ID})
 	if err != nil {
 		t.Fatalf("plan next hop: %v", err)
@@ -149,6 +149,11 @@ func TestPlanNextHopIsReadOnly(t *testing.T) {
 	}
 	if task.OrgID != testOrg || task.TraceID != "trace_plan" {
 		t.Errorf("task org/trace = %q/%q", task.OrgID, task.TraceID)
+	}
+	// ⑤ 下一跳子任务继承**父任务的命名空间**（调用方只能把父任务行上的值递进来）
+	if task.NamespaceID != testNS {
+		t.Errorf("task namespace_id = %q, want %q（子任务必须继承父任务的命名空间）",
+			task.NamespaceID, testNS)
 	}
 	if task.ParentTaskID == nil || *task.ParentTaskID != "tsk_parent" {
 		t.Errorf("parent_task_id = %v, want tsk_parent", task.ParentTaskID)
@@ -190,7 +195,7 @@ func TestPlanNextHopNotDispatched(t *testing.T) {
 		{
 			name: "out 为空：不派发、不剪枝、连出口表都不查",
 			run: func(t *testing.T, d *Dispatcher, review, target *store.CapabilityVersion) ([]*store.Task, error) {
-				return d.PlanNextHop(context.Background(), testOrg, "trace_none", "tsk_parent",
+				return d.PlanNextHop(context.Background(), testNS, "trace_none", "tsk_parent",
 					review.ID, "", json.RawMessage(`{}`), []string{review.ID})
 			},
 			wantPrune: "",
@@ -198,7 +203,7 @@ func TestPlanNextHopNotDispatched(t *testing.T) {
 		{
 			name: "无出口边：pruned/no_edge",
 			run: func(t *testing.T, d *Dispatcher, review, target *store.CapabilityVersion) ([]*store.Task, error) {
-				return d.PlanNextHop(context.Background(), testOrg, "trace_none", "tsk_parent",
+				return d.PlanNextHop(context.Background(), testNS, "trace_none", "tsk_parent",
 					review.ID, "nobody-listens", json.RawMessage(`{}`), []string{review.ID})
 			},
 			wantPrune: ReasonNoEdge,
@@ -206,7 +211,7 @@ func TestPlanNextHopNotDispatched(t *testing.T) {
 		{
 			name: "成环：目标已在 path 里 → pruned/path",
 			run: func(t *testing.T, d *Dispatcher, review, target *store.CapabilityVersion) ([]*store.Task, error) {
-				return d.PlanNextHop(context.Background(), testOrg, "trace_none", "tsk_parent",
+				return d.PlanNextHop(context.Background(), testNS, "trace_none", "tsk_parent",
 					review.ID, "fix", json.RawMessage(`{}`), []string{review.ID, target.ID})
 			},
 			wantPrune: ReasonPath,
@@ -240,6 +245,37 @@ func TestPlanNextHopNotDispatched(t *testing.T) {
 				t.Fatalf("want 1 prune event %q, got %v", PruneEventType(c.wantPrune), events)
 			}
 		})
+	}
+}
+
+// TestPlanNextHopResolvesOrg 下一跳拿不到 org，只能从父任务的命名空间派生（I10）。
+//
+// 派发里唯一还需要 org 的地方是「params.to 必须是本组织成员」（契约 §10.1.1）。
+// 下一跳的输入只有 namespaceID（子任务继承父任务的命名空间），若这里不反查 org，
+// IsOrgMember 会拿空 org 去查——本组织用户的推送会被静默剪成 foreign_user，
+// 链条在 notify 这一步永远断掉（正是 #142 要消灭的那种"查不到的静默失败"）。
+func TestPlanNextHopResolvesOrg(t *testing.T) {
+	f := newFakeStore()
+	review := f.addCap(testNS, "review", 1, []string{"notify"}, `{"type":"object"}`)
+	phone := f.addCap(testNS, store.NotifyPhoneCapability.Name, store.NotifyPhoneCapability.Version,
+		nil, store.NotifyPhoneCapability.ParamsSchema)
+	f.addEdge(testNS, review.ID, "notify", phone.ID)
+	// 中枢能力没有节点执行者（notify.phone 由 executor 领取），不需要 addNode
+
+	d := New(f)
+	tasks, err := d.PlanNextHop(context.Background(), testNS, "trace_org", "tsk_parent",
+		review.ID, "notify", json.RawMessage(`{"to":"member_1","title":"hi"}`), []string{review.ID})
+	if err != nil {
+		t.Fatalf("plan next hop: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("plan returned %d tasks, want 1（org 没派生出来 → to 被误判成 foreign_user）", len(tasks))
+	}
+	if got := tasks[0]; got.NamespaceID != testNS || got.OrgID != testOrg {
+		t.Fatalf("task namespace/org = %q/%q, want %q/%q", got.NamespaceID, got.OrgID, testNS, testOrg)
+	}
+	if events := pruneEventsFor(f, "trace_org"); len(events) != 0 {
+		t.Fatalf("不该有剪枝留痕: %+v", events)
 	}
 }
 
@@ -283,8 +319,9 @@ func TestPublishTasksAssignsPendingTask(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("pushed %d assign frames, want 1", len(calls))
 	}
-	if calls[0].taskID != task.ID || calls[0].nodeID != "nd_fix" || calls[0].orgID != testOrg {
-		t.Fatalf("assign frame 推给了 %+v, want task %s → nd_fix/%s", calls[0], task.ID, testOrg)
+	// #162：推帧按**命名空间**路由（hub 只推给同命名空间的连接）。
+	if calls[0].taskID != task.ID || calls[0].nodeID != "nd_fix" || calls[0].namespaceID != testNS {
+		t.Fatalf("assign frame 推给了 %+v, want task %s → nd_fix/%s", calls[0], task.ID, testNS)
 	}
 
 	// 绝不建行：库里仍然只有 plan 出来的那一行
@@ -301,11 +338,11 @@ func TestPublishTasksAssignsPendingTask(t *testing.T) {
 // 返回错误但不中断其它任务。
 func TestPublishTasksFailureRequeuesAndContinues(t *testing.T) {
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{"type":"object"}`)
-	a := f.addCap(testOrg, "fixA", 1, nil, `{"type":"object"}`)
-	b := f.addCap(testOrg, "fixB", 1, nil, `{"type":"object"}`)
-	f.addEdge(testOrg, review.ID, "fix", a.ID)
-	f.addEdge(testOrg, review.ID, "fix", b.ID)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{"type":"object"}`)
+	a := f.addCap(testNS, "fixA", 1, nil, `{"type":"object"}`)
+	b := f.addCap(testNS, "fixB", 1, nil, `{"type":"object"}`)
+	f.addEdge(testNS, review.ID, "fix", a.ID)
+	f.addEdge(testNS, review.ID, "fix", b.ID)
 	f.addNode("nd_a", a.ID, 1)
 	f.addNode("nd_b", b.ID, 1)
 
@@ -316,7 +353,7 @@ func TestPublishTasksFailureRequeuesAndContinues(t *testing.T) {
 	now := int64(1730000000)
 	d.Now = func() int64 { return now }
 
-	tasks, err := d.PlanNextHop(context.Background(), testOrg, "trace_fail", "tsk_parent",
+	tasks, err := d.PlanNextHop(context.Background(), testNS, "trace_fail", "tsk_parent",
 		review.ID, "fix", json.RawMessage(`{}`), []string{review.ID})
 	if err != nil {
 		t.Fatalf("plan next hop: %v", err)
@@ -381,17 +418,17 @@ func TestPublishTasksFailureRequeuesAndContinues(t *testing.T) {
 // 所以「跳过 publish、任务留 pending」是正确终态，不是失败。
 func TestPublishTasksSkipsCentralCapability(t *testing.T) {
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"notify"}, `{"type":"object"}`)
-	phone := f.addCap(testOrg, store.NotifyPhoneCapability.Name, store.NotifyPhoneCapability.Version,
+	review := f.addCap(testNS, "review", 1, []string{"notify"}, `{"type":"object"}`)
+	phone := f.addCap(testNS, store.NotifyPhoneCapability.Name, store.NotifyPhoneCapability.Version,
 		nil, store.NotifyPhoneCapability.ParamsSchema)
-	f.addEdge(testOrg, review.ID, "notify", phone.ID)
+	f.addEdge(testNS, review.ID, "notify", phone.ID)
 	// 刻意不给 notify.phone 加节点：中枢能力本来就没有节点执行者
 
 	d := New(f)
 	pub := &fakePublisher{}
 	d.Publisher = pub
 
-	tasks, err := d.PlanNextHop(context.Background(), testOrg, "trace_central", "tsk_parent",
+	tasks, err := d.PlanNextHop(context.Background(), testNS, "trace_central", "tsk_parent",
 		review.ID, "notify", json.RawMessage(`{"to":"member_1","title":"hi"}`), []string{review.ID})
 	if err != nil {
 		t.Fatalf("plan next hop: %v", err)
@@ -440,10 +477,10 @@ func TestPublishTasksSkipsCentralCapability(t *testing.T) {
 //  4. 推帧失败的路径不写 pin（见 TestPublishTasksPublishFailureWritesNoPin）。
 func TestPublishTasksWritesStickyPin(t *testing.T) {
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{"type":"object"}`)
-	target := f.addCap(testOrg, "fix", 1, nil, `{"type":"object"}`)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{"type":"object"}`)
+	target := f.addCap(testNS, "fix", 1, nil, `{"type":"object"}`)
 	target.Sticky = "worktree" // sticky 字段是 params 里的键名
-	f.addEdge(testOrg, review.ID, "fix", target.ID)
+	f.addEdge(testNS, review.ID, "fix", target.ID)
 	// 两台节点各 2 个槽位：首跳并列 → 取候选表第一台 nd_a。
 	// nd_a 被占走一个槽后 free(nd_a)=1 < free(nd_b)=2，**没有 pin 的话**
 	// 第二次必然挑 nd_b —— 所以「第二次还在 nd_a」是 pin 生效的硬证据。
@@ -459,7 +496,7 @@ func TestPublishTasksWritesStickyPin(t *testing.T) {
 	const traceID = "trace_sticky_hop2"
 	key := store.StickyKey(traceID, target.ID, "wt-1")
 
-	tasks, err := d.PlanNextHop(context.Background(), testOrg, traceID, "tsk_parent",
+	tasks, err := d.PlanNextHop(context.Background(), testNS, traceID, "tsk_parent",
 		review.ID, "fix", json.RawMessage(`{"worktree":"wt-1"}`), []string{review.ID})
 	if err != nil {
 		t.Fatalf("plan next hop: %v", err)
@@ -556,10 +593,10 @@ func TestPublishTasksWritesStickyPin(t *testing.T) {
 // 证明上面「没 pin」确实是因为失败路径，而不是这段逻辑根本不写。
 func TestPublishTasksPublishFailureWritesNoPin(t *testing.T) {
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{"type":"object"}`)
-	target := f.addCap(testOrg, "fix", 1, nil, `{"type":"object"}`)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{"type":"object"}`)
+	target := f.addCap(testNS, "fix", 1, nil, `{"type":"object"}`)
 	target.Sticky = "worktree"
-	f.addEdge(testOrg, review.ID, "fix", target.ID)
+	f.addEdge(testNS, review.ID, "fix", target.ID)
 	f.addNode("nd_fix", target.ID, 2)
 
 	d := New(f)
@@ -568,7 +605,7 @@ func TestPublishTasksPublishFailureWritesNoPin(t *testing.T) {
 	d.Now = func() int64 { return 1730000000 }
 
 	const traceID = "trace_sticky_fail"
-	tasks, err := d.PlanNextHop(context.Background(), testOrg, traceID, "tsk_parent",
+	tasks, err := d.PlanNextHop(context.Background(), testNS, traceID, "tsk_parent",
 		review.ID, "fix", json.RawMessage(`{"worktree":"wt-2"}`), []string{review.ID})
 	if err != nil {
 		t.Fatalf("plan next hop: %v", err)

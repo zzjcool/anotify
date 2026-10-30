@@ -35,10 +35,13 @@ import (
 // Store 是触发器需要的最小 store 表面（便于测试注入）。
 //
 // *store.DB 满足它。
+//
+// 参数名都是 namespaceID 而不是 orgID：命名空间资源的作用域参数一律是命名空间
+// （org_id 由 store 从 namespaces 行派生，契约 §2.1）。
 type Store interface {
 	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
-	ListCapabilities(ctx context.Context, orgID string) ([]*store.CapabilityVersion, error)
-	EnsureGraphVersion(ctx context.Context, orgID string) (*store.GraphVersion, error)
+	ListCapabilities(ctx context.Context, namespaceID string) ([]*store.CapabilityVersion, error)
+	EnsureGraphVersion(ctx context.Context, namespaceID string) (*store.GraphVersion, error)
 }
 
 // Dispatcher 是派发器（route.Dispatcher 满足这个接口）。
@@ -70,6 +73,12 @@ func New(st Store, d Dispatcher) *Service {
 // IngestRequest 是一次事件摄入请求（对应 POST /v1/events 的 body）。
 type IngestRequest struct {
 	OrgID string `json:"-"`
+	// NamespaceID 是事件落进哪个命名空间（**必填**）。
+	//
+	// 事件属于命名空间（I10）：入口边、trace 列表、统计全按它过滤。
+	// 缺了它就没有「这条事件属于哪套流程」的答案，所以直接报错——
+	// 绝不回退默认命名空间（契约 §6.2）。
+	NamespaceID string `json:"namespaceId"`
 	// Source 是事件来源，如 "github" / "cron" / "watch"。
 	Source string `json:"source"`
 	// Type 是事件类型，如 "pull_request.opened"。**它就是 origin 能力的出口名**。
@@ -141,6 +150,10 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 	if req.OrgID == "" {
 		return nil, fmt.Errorf("ingest: empty org_id")
 	}
+	if req.NamespaceID == "" {
+		// 不回退默认命名空间（契约 §6.2）：回退等于把人写错的地方藏起来。
+		return nil, fmt.Errorf("ingest: empty namespace_id: %w", store.ErrNamespaceRequired)
+	}
 	if req.Source == "" {
 		return nil, fmt.Errorf("ingest: source is required")
 	}
@@ -161,13 +174,14 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 	}
 
 	ev := &store.Event{
-		OrgID:     req.OrgID,
-		TraceID:   traceID,
-		Source:    req.Source,
-		Type:      req.Type,
-		Payload:   payload,
-		IdemKey:   normalizeIdemKey(req.IdemKey),
-		CreatedAt: s.now(),
+		NamespaceID: req.NamespaceID,
+		OrgID:       req.OrgID,
+		TraceID:     traceID,
+		Source:      req.Source,
+		Type:        req.Type,
+		Payload:     payload,
+		IdemKey:     normalizeIdemKey(req.IdemKey),
+		CreatedAt:   s.now(),
 	}
 
 	// ② 幂等写
@@ -192,6 +206,7 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 	// 完整替代，所以入口边直接以来源名为左端（契约 §2.4）。
 	out, err := s.Dispatcher.Dispatch(ctx, route.DispatchInput{
 		OrgID:        req.OrgID,
+		NamespaceID:  req.NamespaceID,
 		TraceID:      traceID,
 		FromCap:      req.Source,
 		FromIsSource: true,
@@ -217,8 +232,8 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 // 新版本 supersede 旧的；触发器不该钉在某个老版本上。
 //
 // 注意不能用 GetCapability(version=0)：那是精确匹配 version=0，永远查不到东西。
-func (s *Service) findOrigin(ctx context.Context, orgID, source string) (*store.CapabilityVersion, error) {
-	all, err := s.Store.ListCapabilities(ctx, orgID)
+func (s *Service) findOrigin(ctx context.Context, namespaceID, source string) (*store.CapabilityVersion, error) {
+	all, err := s.Store.ListCapabilities(ctx, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: list capabilities: %w", err)
 	}
