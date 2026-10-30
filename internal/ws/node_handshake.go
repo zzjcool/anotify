@@ -23,11 +23,11 @@ type NodeStore interface {
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
 	GetTask(ctx context.Context, orgID, id string) (*store.Task, error)
 	Transition(ctx context.Context, orgID, taskID, from, to string) error
-	StartTask(ctx context.Context, orgID, taskID string) error
+	// ProgressTask 一个事务内完成 progress 帧的三件事：→running + started_at + 续租。
+	ProgressTask(ctx context.Context, orgID, taskID string, leaseUntil int64) error
 	ReportResult(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error
 	ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error
 	ExtendLeasesForNode(ctx context.Context, orgID, nodeID string, leaseUntil int64) (int, error)
-	ReleaseInstanceByTask(ctx context.Context, nodeID, taskID string) error
 }
 
 // 握手鉴权失败的错误类型（供 HTTP 层区分 401 / 403）。

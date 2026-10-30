@@ -645,6 +645,71 @@ func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, 
 	return "", ErrNoCapacity
 }
 
+// LeaseAndAssign 是派发的**一个事务**：占槽位 + pending→assigned + 写归属/attempts（#141）。
+//
+// 合并前派发要 3 次提交（LeaseInstance 的占槽 UPDATE 一次、AssignTask 里的
+// Transition 一次、写归属/attempts 一次），中间失败会出现两种
+// 脏状态：槽位占了任务却没派出去（槽位泄漏，要等巡检才收回），或任务已 assigned
+// 而 node_id 还空着（调用方必须自己补 ReleaseInstance 才不留坑）。
+//
+// 顺序与语义都和拆分版一致，只是原子化：
+//  1. 找最早的存活空闲槽位（口径与 LeaseInstance 完全一致）
+//  2. CAS 占位（busy_task IS NULL → taskID）；RowsAffected==0 → ErrNoCapacity
+//  3. transitionGuarded(pending → assigned)（状态写唯一入口）
+//  4. 写 node/instance/lease_until 并 attempts+1
+//
+// 任一步失败都整体回滚——槽位不泄漏，attempts 也不会被提前 +1。
+func (d *DB) LeaseAndAssign(ctx context.Context, orgID, taskID, nodeID string, leaseUntil int64) (instanceID string, err error) {
+	if taskID == "" {
+		// 与 LeaseInstance 的参数校验口径一致：先拒绝，连事务都不开（不占槽）
+		return "", fmt.Errorf("lease and assign: empty task_id")
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin lease and assign: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// ① 空闲槽位：ORDER BY slot 保证确定性，且必须走 tx
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM node_instances
+		 WHERE node_id = ? AND alive = 1 AND busy_task IS NULL
+		 ORDER BY slot LIMIT 1`, nodeID).Scan(&instanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNoCapacity
+	}
+	if err != nil {
+		return "", fmt.Errorf("lease and assign: find free instance: %w", err)
+	}
+
+	// ② CAS 占位：并发 UPDATE 下只有一个能成功。
+	// 本进程内 MaxOpenConns(1) + 事务内单写者让它不可达，但条件必须留着——
+	// 它是放开连接数/跨进程场景下的最后一道闸。
+	res, err := tx.ExecContext(ctx,
+		`UPDATE node_instances SET busy_task = ?, updated_at = ?
+		 WHERE id = ? AND busy_task IS NULL`, taskID, Now(), instanceID)
+	if err != nil {
+		return "", fmt.Errorf("lease and assign: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("lease and assign rows: %w", err)
+	}
+	if n == 0 {
+		return "", ErrNoCapacity
+	}
+
+	// ③ 改状态（唯一写入口）+ ④ 写归属/attempts
+	if err := d.assignTaskTx(ctx, tx, orgID, taskID, nodeID, instanceID, leaseUntil); err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit lease and assign: %w", err)
+	}
+	return instanceID, nil
+}
+
 // ReleaseInstance 释放实例占用（任务结束/回收时调用）。
 func (d *DB) ReleaseInstance(ctx context.Context, nodeID, instanceID string) error {
 	if _, err := d.ExecContext(ctx,

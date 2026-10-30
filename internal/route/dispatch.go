@@ -96,13 +96,16 @@ type Store interface {
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
 	// FreeSlotsByNode 一次拿到多个节点的空闲槽位数（#145：派发不能被 N+1 拖慢）
 	FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]int, error)
-	LeaseInstance(ctx context.Context, nodeID, taskID string) (string, error)
+	// LeaseAndAssign 在一个事务里完成「占槽位 + pending→assigned + 写归属/attempts」（#141）。
+	//
+	// 没有空闲槽位返回 store.ErrNoCapacity 且**什么都没写**（事务回滚）；
+	// 其他错误同样带事务回滚，调用方不需要再补一次 ReleaseInstance。
+	LeaseAndAssign(ctx context.Context, orgID, taskID, nodeID string, leaseUntil int64) (string, error)
 	ReleaseInstance(ctx context.Context, nodeID, instanceID string) error
 	ReleaseInstanceByTask(ctx context.Context, nodeID, taskID string) error
 	GetPin(ctx context.Context, stickyKey string) (*store.NodePin, error)
 	PutPin(ctx context.Context, p *store.NodePin) error
 	CreateTasks(ctx context.Context, ts []*store.Task) error
-	AssignTask(ctx context.Context, orgID, taskID, nodeID, instanceID string, leaseUntil int64) error
 	// ExtendLease 把租约推到指定时刻（派发失败回滚时用来"提前过期"）。
 	ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error
 	// SweepExpiredLeases 回收过期租约（契约 §3.3）。
@@ -374,25 +377,25 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		if err != nil {
 			return nil, err
 		}
-		instanceID, err := d.Store.LeaseInstance(ctx, nodeID, task.ID)
-		if errors.Is(err, store.ErrNoCapacity) {
-			// 有节点声明但暂时没空：不是永久剪枝，任务留 pending 等调度。
-			// （剪枝语义是「这条链在这里断了」，容量不够不是断链。）
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("route: lease instance on %s: %w", nodeID, err)
-		}
+		// 租约必须在 LeaseAndAssign **之前**算好：占槽位 / 改状态 / 写归属是一个事务，
+		// lease_until 是它的入参（#141）。
 		lease := d.Now() + store.LeaseTTLSec
 		// 派发后 20s 内必须 ack，所以初始租约取 min(TTL, AckWait)——
 		// 等 ack 的是 20s 窗口，ack 之后才开始按心跳续 30s（契约 §3.3）。
 		if ackLease := d.Now() + store.AckWaitSec; ackLease < lease {
 			lease = ackLease
 		}
-		if err := d.Store.AssignTask(ctx, in.OrgID, task.ID, nodeID, instanceID, lease); err != nil {
-			// 释放刚占的槽位，任务留 pending
-			_ = d.Store.ReleaseInstance(ctx, nodeID, instanceID)
-			return nil, fmt.Errorf("route: assign task %s: %w", task.ID, err)
+		// 占槽位 + pending→assigned + 写归属/attempts = **一次事务**（#141）。
+		// 任何一步失败都回滚，槽位不会泄漏——所以这里**没有**（也不需要）
+		// 失败后补一次 ReleaseInstance 的语句。
+		instanceID, err := d.Store.LeaseAndAssign(ctx, in.OrgID, task.ID, nodeID, lease)
+		if errors.Is(err, store.ErrNoCapacity) {
+			// 有节点声明但暂时没空：不是永久剪枝，任务留 pending 等调度。
+			// （剪枝语义是「这条链在这里断了」，容量不够不是断链。）
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("route: lease+assign on %s: %w", nodeID, err)
 		}
 		published[i] = true // 成功占用槽位并派发
 		// 读回派发后的状态，让调用方拿到最新值
@@ -402,7 +405,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		task.LeaseUntil = &lease
 		task.Attempts = 1
 
-		// 推 assign 帧。**必须在 AssignTask 之后**：节点收到帧就会开始干活，
+		// 推 assign 帧。**必须在 LeaseAndAssign 之后**：节点收到帧就会开始干活，
 		// 若此时库里还不是 assigned，它回报的 ack/result 会因为状态不匹配被拒。
 		//
 		// 推送失败（节点掉线/连接忙）时要把任务**退回 pending**并释放槽位：
@@ -442,7 +445,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 	out.Tasks = make([]*store.Task, 0, len(tasks))
 	for i, t := range tasks {
 		if !published[i] && t.Status == store.TaskPending && t.Attempts > 0 {
-			continue // 推送失败回滚的那条（attempts 已被 AssignTask +1）
+			continue // 推送失败回滚的那条（attempts 已被 LeaseAndAssign +1）
 		}
 		out.Tasks = append(out.Tasks, t)
 	}
@@ -737,22 +740,20 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 		return false, err
 	}
 
-	instanceID, err := d.Store.LeaseInstance(ctx, nodeID, task.ID)
+	// 租约在调用前算好（LeaseAndAssign 的入参），算法与 Dispatch 一致。
+	lease := d.now() + store.LeaseTTLSec
+	if ackLease := d.now() + store.AckWaitSec; ackLease < lease {
+		lease = ackLease
+	}
+	// 占槽位 + pending→assigned + 写归属/attempts = 一次事务（#141）。
+	// 失败即回滚，槽位不会泄漏，所以不需要再调 ReleaseInstance。
+	instanceID, err := d.Store.LeaseAndAssign(ctx, task.OrgID, task.ID, nodeID, lease)
 	if errors.Is(err, store.ErrNoCapacity) {
 		// 有节点但满了：不是永久失败，下轮再试。
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("route: redispatch lease instance: %w", err)
-	}
-
-	lease := d.now() + store.LeaseTTLSec
-	if ackLease := d.now() + store.AckWaitSec; ackLease < lease {
-		lease = ackLease
-	}
-	if err := d.Store.AssignTask(ctx, task.OrgID, task.ID, nodeID, instanceID, lease); err != nil {
-		_ = d.Store.ReleaseInstance(ctx, nodeID, instanceID)
-		return false, fmt.Errorf("route: redispatch assign: %w", err)
+		return false, fmt.Errorf("route: redispatch lease+assign: %w", err)
 	}
 
 	task.Status = store.TaskAssigned
