@@ -2,17 +2,17 @@ package ws
 
 // #162 命名空间隔离在**节点协议**这一侧的验收测试。
 //
-// 背景：store 层把命名空间资源的作用域参数从 orgID 换成了 namespaceID。
-// 两者都是 string，所以 `Store.Xxx(ctx, s.node.OrgID, …)` 类型上照旧编译通过，
-// 但语义全错——`WHERE namespace_id = 'org_xxx'` 恒 0 行，线上表现为：
-// 心跳续不上租约、ack/progress/result 全部「unknown task」、握手写不进实例。
+// 背景：命名空间资源的作用域参数就是 namespaceID。它是 string，所以拿错一个
+// string 传进去类型上照旧编译通过，但语义全错——`WHERE namespace_id = 'xxx'` 恒 0 行，
+// 线上表现为：心跳续不上租约、ack/progress/result 全部「unknown task」、握手写不进实例。
 //
 // 本文件钉住两条最容易静默失效的性质：
 //  1. 任务帧的作用域是**节点的命名空间**：节点拿不到别的命名空间里的任务（哪怕 taskID 正确）；
 //  2. hub 的派发路由按**命名空间**比较（不是 org）：同 org 不同命名空间一律不推。
 //
-// 为什么要用「同一个 org 里的两个命名空间」而不是两个 org：迁移 12 之前隔离维度
-// 就是 org_id，用两个 org 去验，即使实现完全按 org 过滤也会通过。
+// 为什么要用**同一部署里的两个命名空间**：命名空间是唯一隔离维度（#204 / 迁移 14），
+// 而夹具里两个命名空间共用一个部署/一个用户——如果实现按更粗的东西过滤，
+// 这两个命名空间在它眼里就是同一个，用例会红。
 
 import (
 	"context"
@@ -25,10 +25,10 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// siblingNamespace 在夹具的组织下再建一个命名空间（同 org，第二套流程）。
+// siblingNamespace 在同一部署里再建一个命名空间（第二套流程）。
 func (f *nodeFixture) siblingNamespace(t *testing.T, slug string) *store.Namespace {
 	t.Helper()
-	ns, err := f.db.CreateNamespace(context.Background(), f.orgID, slug, slug)
+	ns, err := f.db.CreateNamespace(context.Background(), slug, slug)
 	if err != nil {
 		t.Fatalf("create namespace %q: %v", slug, err)
 	}

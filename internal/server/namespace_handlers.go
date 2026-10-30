@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -18,12 +19,12 @@ import (
 // 是自指的死循环。资源端点（/v1/sources、/v1/stats ……）才需要 namespaceId，
 // 那部分见 namespace_scope.go 与各资源 handler。
 //
-// 组织维度仍然要过：谁能列出/新建命名空间取决于他是不是该组织的成员（I10），
-// 所以这里复用 consoleHandler.resolveOrg，而不是自己再解析一遍 org。
+// 隔离边界是命名空间本身（组织层已在迁移 14 删除，#204）。
+// 列表/新建是**部署级**操作（本部署任何已登录用户都能做，见 I10 新表述）；
+// 改/删作用于某个具体命名空间，所以那两个端点要过 store.AuthorizeNamespace 收口
+// —— 与资源端点同一处判断，不在这里另写一套。
 type namespaceHandler struct {
 	db *store.DB
-	// resolveOrg 复用 consoleHandler 的组织解析（I10 的唯一入口）
-	resolveOrg func(w http.ResponseWriter, r *http.Request, requested string) (string, bool)
 }
 
 // namespaceSlugRe 是 slug 的合法字符集。
@@ -33,17 +34,13 @@ type namespaceHandler struct {
 // 才能给出 400 而不是 500。两处必须同时改 —— 改这里就等于改 API 契约。
 var namespaceSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
 
-// list 处理 GET /v1/namespaces：列出本组织的命名空间（带资源计数，UI 直接用）。
+// list 处理 GET /v1/namespaces：列出本部署的全部命名空间（带资源计数，UI 直接用）。
 func (h *namespaceHandler) list(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
-	list, err := h.db.ListNamespaces(r.Context(), orgID)
+	list, err := h.db.ListNamespaces(r.Context())
 	if err != nil {
 		slog.Error("list namespaces failed", "event", "console.namespaces.list_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -68,10 +65,6 @@ func (h *namespaceHandler) create(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "POST")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	var req struct {
 		Slug string `json:"slug"`
 		Name string `json:"name"`
@@ -88,7 +81,7 @@ func (h *namespaceHandler) create(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	ns, err := h.db.CreateNamespace(r.Context(), orgID, slug, strings.TrimSpace(req.Name))
+	ns, err := h.db.CreateNamespace(r.Context(), slug, strings.TrimSpace(req.Name))
 	if err != nil {
 		// slug 重复 → 409（writeNamespaceError 里映射）
 		writeNamespaceError(w, err)
@@ -117,10 +110,6 @@ func (h *namespaceHandler) byID(w http.ResponseWriter, r *http.Request) {
 //	slug 是稳定标识（URL、令牌作用域），"我改了但没生效"比"你不能改"难查得多。
 //	静默忽略会让人以为改名成功，直到某天发现 URL 还是旧的。
 func (h *namespaceHandler) rename(w http.ResponseWriter, r *http.Request, id string) {
-	orgID, ok := h.resolveOrg(w, r, "")
-	if !ok {
-		return
-	}
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing namespace id"})
 		return
@@ -144,12 +133,17 @@ func (h *namespaceHandler) rename(w http.ResponseWriter, r *http.Request, id str
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
-	if err := h.db.RenameNamespace(r.Context(), orgID, id, strings.TrimSpace(*req.Name)); err != nil {
+	// 收口：已登录 + 这个命名空间存在（将来按命名空间分权限只改 store 那个函数）。
+	if err := h.db.AuthorizeNamespace(r.Context(), auth.UserIDFromContext(r.Context()), id); err != nil {
+		writeNamespaceError(w, err)
+		return
+	}
+	if err := h.db.RenameNamespace(r.Context(), id, strings.TrimSpace(*req.Name)); err != nil {
 		writeNamespaceError(w, err)
 		return
 	}
 	// 读回最新的行：前端拿到的是"改完之后的样子"，不用自己拼
-	ns, err := h.db.GetNamespace(r.Context(), orgID, id)
+	ns, err := h.db.GetNamespace(r.Context(), id)
 	if err != nil {
 		writeNamespaceError(w, err)
 		return
@@ -168,23 +162,23 @@ func (h *namespaceHandler) rename(w http.ResponseWriter, r *http.Request, id str
 // force 的意思是"我知道里面的机器会全部掉线"。所以默认档必须把阻塞对象列出来，
 // 让人看清自己在拆什么（docs/design/namespaces.md §3.2）。
 func (h *namespaceHandler) remove(w http.ResponseWriter, r *http.Request, id string) {
-	orgID, ok := h.resolveOrg(w, r, "")
-	if !ok {
-		return
-	}
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing namespace id"})
 		return
 	}
 	q := r.URL.Query()
 	force := q.Get("force") == "true" || q.Get("force") == "1"
-	if err := h.db.DeleteNamespace(r.Context(), orgID, id, force); err != nil {
+	if err := h.db.AuthorizeNamespace(r.Context(), auth.UserIDFromContext(r.Context()), id); err != nil {
+		writeNamespaceError(w, err)
+		return
+	}
+	if err := h.db.DeleteNamespace(r.Context(), id, force); err != nil {
 		writeNamespaceError(w, err)
 		return
 	}
 	slog.Info("namespace deleted",
 		"event", "console.namespaces.deleted",
-		"namespace_id", id, "org_id", orgID, "force", force,
+		"namespace_id", id, "force", force,
 	)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }

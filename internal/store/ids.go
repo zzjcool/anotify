@@ -68,8 +68,7 @@ func NewRecoveryCodeID() string { return newID("rc") }
 func NewMessageID() string { return newID("ntf") }
 
 // 重构新增（契约 §0 的实体）。
-func NewOrgID() string { return newID("org") }
-
+// 组织层已删除（#205 / 迁移 14），不再有 org 前缀的 ID。
 // NewNamespaceID 生成命名空间 ID：ns_<base62>（契约 §2.1.1）。
 func NewNamespaceID() string { return newID("ns") }
 func NewNodeID() string      { return newID("nd") }
@@ -83,7 +82,7 @@ func NewPlaybookID() string { return newID("pb") }
 // NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。
 //
 // 形态里有时间戳和内容 hash 前 8 位——但这两者都**不足以保证唯一**：
-//   - 同一秒内为不同组织创建同名同内容能力时，时间戳与 hash8 完全相同
+//   - 同一秒内为不同命名空间创建同名同内容能力时，时间戳与 hash8 完全相同
 //   - 不同内容也可能撞 hash 前 8 位（4 字节，生日碰撞在万级数量就可能出）
 //
 // 而 id 是 PRIMARY KEY，冲突直接报错。所以尾部再加 4 字节随机熵，

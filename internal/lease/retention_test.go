@@ -430,7 +430,7 @@ func TestRetentionOverlapGuard(t *testing.T) {
 //
 // 为什么不复用 fakeRetentionStore：这条测的是「lease 层交给 store 的参数里
 // EventRetentionSec 永远是 0（= 禁用）」——属于**默认值回归**，将来有人给 Sweeper
-// 加个字段（env / orgs 列）把默认改成开启，这条必须立刻红。
+// 加个字段（env / 部署配置）把默认改成开启，这条必须立刻红。
 // 用 mutex 而不是裸字段：SweepRetention 在清理 goroutine 里写，测试 goroutine 读。
 type capturingRetentionStore struct {
 	mu   sync.Mutex
@@ -577,13 +577,13 @@ func countTasks(t *testing.T, db *store.DB, namespaceID string) int {
 // TestRetentionSweepsPerNamespace 巡检驱动的一轮清理必须**按命名空间**各自生效（#162）。
 //
 // 背景：store 的 ResultRetentionScope 现在按（命名空间 × 能力）出 scope，
-// DeleteExpiredTerminalTasks/DeleteExpiredEvents 的作用域参数从 orgID 换成了 namespaceID。
+// DeleteExpiredTerminalTasks/DeleteExpiredEvents 的作用域参数就是 namespaceID。
 // lease 层不自带命名空间（它是全局巡检），但必须把这条维度**完整传下去**——
 // 所以这里用真库造两个命名空间的过期终态任务，断言两边都被清掉。
 //
 // 用真库而不是 fake 的理由：fake 只能证明「调了 SweepRetention」，
-// 证明不了「命名空间维度没在半路被 org_id 顶掉」——而后者正是这次改动最容易回归的地方
-// （orgID 传进 namespace 位置的实现会让删除 0 行，且**不报错**）。
+// 证明不了「命名空间维度没在半路被别的 id 顶掉」——而后者正是这类改动最容易回归的地方
+// （拿错 id 传进 namespace 位置的实现会让删除 0 行，且**不报错**）。
 func TestRetentionSweepsPerNamespace(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(t.TempDir() + "/lease-ns.db")
@@ -592,15 +592,17 @@ func TestRetentionSweepsPerNamespace(t *testing.T) {
 	}
 	defer db.Close()
 
-	org, err := db.CreateOrg(ctx, "org-"+store.NewOrgID())
+	// 组织层已在迁移 14 删除（#204）：直接注册一个用户拿到它的 default 命名空间，
+	// 再建第二个命名空间 —— 这样两个作用域都是真实存在的命名空间，不依赖任何 org。
+	nsRow, err := db.RegisterUser(ctx, &store.User{
+		ID: store.NewUserID(), Username: "u-" + store.NewUserID(),
+		DisplayName: "巡检", CreatedAt: store.Now(),
+	})
 	if err != nil {
-		t.Fatalf("create org: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
-	ns1, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
-	ns2, err := db.CreateNamespace(ctx, org.ID, "staging", "预发")
+	ns1 := nsRow.ID
+	ns2, err := db.CreateNamespace(ctx, "staging", "预发")
 	if err != nil {
 		t.Fatalf("create second namespace: %v", err)
 	}

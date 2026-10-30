@@ -48,12 +48,15 @@ SELECT 3;
 	}
 }
 
-// TestOpenCreatesAllTables 新库应建出 11 张新表 + 保留表。
+// TestOpenCreatesAllTables 新库应建出全部业务表 + 保留表。
+//
+// #205 之后**没有** orgs / org_members：组织层已被迁移 14 删除（见
+// TestMigration14RemovesOrgLayer，那里断言它们不存在）。
 func TestOpenCreatesAllTables(t *testing.T) {
 	db := newTestDB(t)
 	want := []string{
-		// 契约 §2 的 11 张
-		"orgs", "org_members", "capability_versions", "nodes", "node_capabilities",
+		// 契约 §2 的资源表
+		"capability_versions", "nodes", "node_capabilities",
 		"node_instances", "node_pins", "edges", "events", "tasks", "graph_versions",
 		// 命名空间（#162）：组织之下的隔离边界
 		"namespaces",
@@ -244,8 +247,8 @@ func TestLegacyDBUpgrade(t *testing.T) {
 	if _, err := up.SchemaVersion(); err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	// 2. 新表建好
-	for _, name := range []string{"orgs", "tasks", "events", "edges", "capability_versions"} {
+	// 2. 新表建好（组织层已在迁移 14 删除，这里只查业务表）
+	for _, name := range []string{"namespaces", "tasks", "events", "edges", "capability_versions"} {
 		if !tableExists(t, up, name) {
 			t.Errorf("legacy upgrade missing table %s", name)
 		}

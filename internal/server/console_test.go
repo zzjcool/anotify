@@ -21,14 +21,13 @@ type consoleEnv struct {
 	db     *store.DB
 	svc    *auth.Service
 	userID string
-	orgID  string
-	// nsID 是本组织的**默认命名空间**（#162：资源端点必须显式带 namespaceId）。
-	// 不硬编码：从 db 取（slug=default 的那个）。
+	// nsID 是本环境的**默认命名空间**（#162：资源端点必须显式带 namespaceId）。
+	// 组织层已在迁移 14 删除（#204），命名空间是唯一隔离边界。
 	nsID   string
 	cookie *http.Cookie
 }
 
-// newConsoleEnv 建库 + 用户 + 组织 + 会话，挂上与生产一致的 console 路由。
+// newConsoleEnv 建库 + 用户 + 默认命名空间 + 会话，挂上与生产一致的 console 路由。
 func newConsoleEnv(t *testing.T) *consoleEnv {
 	t.Helper()
 	ctx := context.Background()
@@ -49,31 +48,26 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 		t.Fatalf("new service: %v", err)
 	}
 
-	// 用户 + 组织（owner）
+	// 用户（InsertUser 只建用户；组织层已删除，命名空间要显式建）
 	uid, err := db.InsertUser(ctx, "", "consoleuser", "Console User")
 	if err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
-	// 第二个参数是 username（用于生成默认组织名）
-	org, err := db.EnsureOrgForUser(ctx, uid, "consoleuser")
+	// 默认命名空间：建行时同事务播种内置能力（notify.phone 等），资源端点都作用于它。
+	defNS, err := db.CreateNamespace(ctx, "default", "默认")
 	if err != nil {
-		t.Fatalf("ensure org: %v", err)
+		t.Fatalf("create default namespace: %v", err)
 	}
+	nsID := defNS.ID
 	sess, err := svc.Sessions().Create(uid, "Test · CLI")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	// #162：建组织时同事务建了 default 命名空间，资源端点都作用于它。
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
-
 	h := &consoleHandler{db: db, auth: svc}
 	// /v1/stats 也是命名空间级资源（契约 §6.2）：注入同一套解析函数，
 	// 与生产 mux 的接线一致（否则测试测的是一套不存在的错误码映射）。
-	statsH := &statsHandler{db: db, resolveOrg: h.resolveOrg, resolveNamespace: h.resolveNamespace}
+	statsH := &statsHandler{db: db, resolveNamespace: h.resolveNamespace}
 	sessMW := svc.Sessions().Middleware
 	mux := http.NewServeMux()
 	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
@@ -94,7 +88,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(h.drainNode))))
 
 	return &consoleEnv{
-		mux: mux, db: db, svc: svc, userID: uid, orgID: org.ID, nsID: nsID,
+		mux: mux, db: db, svc: svc, userID: uid, nsID: nsID,
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 	}
 }
@@ -113,10 +107,10 @@ func withNSID(path, nsID string) string {
 	return path + sep + "namespaceId=" + nsID
 }
 
-// seedNamespace 在本组织里新建一个命名空间（用于隔离用例）。
+// seedNamespace 在同一部署里新建一个命名空间（用于隔离用例）。
 func (e *consoleEnv) seedNamespace(t *testing.T, slug, name string) *store.Namespace {
 	t.Helper()
-	ns, err := e.db.CreateNamespace(context.Background(), e.orgID, slug, name)
+	ns, err := e.db.CreateNamespace(context.Background(), slug, name)
 	if err != nil {
 		t.Fatalf("create namespace %s: %v", slug, err)
 	}
@@ -166,7 +160,7 @@ func (e *consoleEnv) seedCapability(t *testing.T, name string, version int, outp
 
 // seedCapabilityIn 在指定命名空间里建一个能力定义。
 //
-// OrgID 故意不填：store 从 namespace_id 派生并覆盖（I10 的构造保证）。
+// 作用域只由 NamespaceID 决定（I10：命名空间是唯一隔离维度）。
 func (e *consoleEnv) seedCapabilityIn(
 	t *testing.T, nsID, name string, version int, outputs []string,
 ) *store.CapabilityVersion {
@@ -295,27 +289,19 @@ func TestEdgeCreateAndDelete(t *testing.T) {
 	}
 }
 
-// TestEdgeCrossOrgRejected 跨组织（跨命名空间）的边 → 400（契约 §1.2 / I11）。
-func TestEdgeCrossOrgRejected(t *testing.T) {
+// TestEdgeCrossNamespaceRejected 跨命名空间的边 → 400（契约 §1.2 / I11）。
+//
+// 改写自 TestEdgeCrossOrgRejected：原用例是「A 组织的能力 → B 组织的同一命名空间」，
+// 组织层删除后没有「另一片命名空间」这种东西了，但**这条不变量本身没变**——
+// 所以这里直接改成真正的跨命名空间：同一部署两个命名空间，A 空间的边指向 B 空间的 cap。
+// 断言完全不变（400），覆盖的关系反而更直接。
+func TestEdgeCrossNamespaceRejected(t *testing.T) {
 	env := newConsoleEnv(t)
 	from := env.seedCapability(t, "review", 1, []string{"fix"})
 
-	// 另一个组织（因此是另一片命名空间）里的能力
-	other, err := env.db.CreateOrg(context.Background(), "other-"+store.NewOrgID())
-	if err != nil {
-		t.Fatalf("create other org: %v", err)
-	}
-	otherNS, err := env.db.DefaultNamespaceID(context.Background(), other.ID)
-	if err != nil {
-		t.Fatalf("other org default namespace: %v", err)
-	}
-	foreign := &store.CapabilityVersion{
-		NamespaceID: otherNS, Name: "fix", Version: 1,
-		ParamsSchema: json.RawMessage(`{}`), Source: store.CapSourceBuiltin,
-	}
-	if err := env.db.CreateCapability(context.Background(), foreign); err != nil {
-		t.Fatalf("create foreign capability: %v", err)
-	}
+	// 同一部署里的另一个命名空间，里有同名能力 fix@1
+	ns2 := env.seedNamespace(t, "staging", "Staging")
+	foreign := env.seedCapabilityIn(t, ns2.ID, "fix", 1, nil)
 
 	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
 		NamespaceID:    env.nsID,
@@ -326,56 +312,65 @@ func TestEdgeCrossOrgRejected(t *testing.T) {
 	}
 }
 
-// ---------- #59 验收：组织隔离 ----------
+// ---------- #59 验收：隔离（#204 之后隔离维度 = 命名空间） ----------
 
-// TestOrgIsolation 非成员访问别人的组织 → 403，且数据不泄漏（#59 验收 / I10）。
-func TestOrgIsolation(t *testing.T) {
+// TestNamespaceScopeIsolation 命名空间是唯一隔离边界，orgId 参数不再改变作用域。
+//
+// **改写说明（原用例名 TestOrgIsolation，不允许静默削弱）**：
+// 原用例证明三件事：① `?orgId=<别人的组织>` → 403；② `X-Org-Id: <别人的组织>` → 403；
+// ③ 访问自己的组织 → 200 且不含别人组织的能力。
+// 组织层在迁移 14 删除后 `?orgId=` / `X-Org-Id` **整个消失**（服务端不再读），
+// 「别人的组织」也不存在了，所以 ① ② 里的 403 无对象。改写后证明的是一组更强的东西：
+//
+//	① `?orgId=` 是**无效参数**：带上它不改变作用域（作用域只由 namespaceId 决定）
+//	② 两个命名空间各有独有能力 → 各自列表只看得到自己的（数据不串，双向都验）
+//	③ 未知命名空间 → 404（不再用 403/404 区分「别人的」与「不存在」）
+//	④ 404 响应里既不回显命名空间 id，也不泄漏任何能力名
+func TestNamespaceScopeIsolation(t *testing.T) {
 	env := newConsoleEnv(t)
+	ns2 := env.seedNamespace(t, "staging", "Staging")
 
-	// 另一个组织 + 里面的数据
-	other, err := env.db.CreateOrg(context.Background(), "other-"+store.NewOrgID())
-	if err != nil {
-		t.Fatalf("create other org: %v", err)
-	}
-	otherNS, err := env.db.DefaultNamespaceID(context.Background(), other.ID)
-	if err != nil {
-		t.Fatalf("other org default namespace: %v", err)
-	}
-	foreignCap := &store.CapabilityVersion{
-		NamespaceID: otherNS, Name: "secret-cap", Version: 1,
-		ParamsSchema: json.RawMessage(`{}`), Source: store.CapSourceBuiltin,
-	}
-	if err := env.db.CreateCapability(context.Background(), foreignCap); err != nil {
-		t.Fatalf("create foreign capability: %v", err)
+	mine := env.seedCapabilityIn(t, env.nsID, "mine-only", 1, nil)
+	theirs := env.seedCapabilityIn(t, ns2.ID, "secret-cap", 1, nil)
+	if mine.ID == theirs.ID {
+		t.Fatalf("两个命名空间的能力撞成同一行（%s），隔离没生效", mine.ID)
 	}
 
-	// 用 orgId 参数访问别人的组织 → 403
-	rr := env.do(t, http.MethodGet, "/v1/capabilities?orgId="+other.ID, nil)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (not a member of that org)", rr.Code)
-	}
-	// 响应里不该有任何能力数据
-	if bytes.Contains(rr.Body.Bytes(), []byte("secret-cap")) {
-		t.Fatalf("cross-org read leaked data: %s", rr.Body.String())
-	}
-
-	// 用 X-Org-Id 头同样要 403
-	req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
-	req.AddCookie(env.cookie)
-	req.Header.Set("X-Org-Id", other.ID)
-	rr2 := httptest.NewRecorder()
-	env.mux.ServeHTTP(rr2, req)
-	if rr2.Code != http.StatusForbidden {
-		t.Fatalf("X-Org-Id status = %d, want 403", rr2.Code)
-	}
-
-	// 访问自己的组织 → 200，且只能看到自己的能力
-	rr = env.do(t, http.MethodGet, env.withNS("/v1/capabilities?orgId="+env.orgID), nil)
+	// ① + ②（正向）：带一个无意义的 orgId 也不改变作用域，只看到本命名空间的能力
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/capabilities?orgId="+ns2.ID), nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("own org status = %d", rr.Code)
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
 	if bytes.Contains(rr.Body.Bytes(), []byte("secret-cap")) {
-		t.Fatalf("own-org read leaked foreign capability: %s", rr.Body.String())
+		t.Fatalf("命名空间隔离被 orgId 顶掉/泄漏了另一个空间的能力: %s", rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("mine-only")) {
+		t.Fatalf("自己的命名空间里应有 mine-only: %s", rr.Body.String())
+	}
+
+	// ②（反向）：读 ns2 只看到 ns2 的
+	rr = env.do(t, http.MethodGet, withNSID("/v1/capabilities", ns2.ID), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("staging status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("secret-cap")) {
+		t.Fatalf("staging 里应有 secret-cap: %s", rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("mine-only")) {
+		t.Fatalf("staging 读到了另一个命名空间的 mine-only: %s", rr.Body.String())
+	}
+
+	// ③ 未知命名空间 → 404
+	rr = env.do(t, http.MethodGet, withNSID("/v1/capabilities?orgId="+ns2.ID, "ns_doesnotexist"), nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("未知命名空间 status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+	}
+	// ④ 404 不泄漏
+	if bytes.Contains(rr.Body.Bytes(), []byte("ns_doesnotexist")) {
+		t.Fatalf("404 响应回显了命名空间 id: %s", rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("secret-cap")) || bytes.Contains(rr.Body.Bytes(), []byte("mine-only")) {
+		t.Fatalf("404 响应泄漏了能力名: %s", rr.Body.String())
 	}
 }
 
@@ -450,9 +445,11 @@ func (e *consoleEnv) mustGetCapability(t *testing.T, name string, version int) *
 func TestCapabilityListIncludesKind(t *testing.T) {
 	env := newConsoleEnv(t)
 	review := env.seedCapability(t, "review", 1, []string{"fix"}) // 有出口
-	// notify.phone 现在是**内置能力**（#83），由 EnsureOrgForUser 播种。
+	// notify.phone 现在是**内置能力**（#83），由建命名空间时同事务播种
+	// （store.SeedBuiltinCapabilitiesTx，入口是 RegisterUser / CreateNamespace；
+	//  组织层删除后已没有 EnsureOrgForUser）。
 	// 不要再自己 seed 一份——那会因为内容不同而撞 append-only 约束
-	// （capability_versions 的 (org_id,name,version) 唯一 + I8）。
+	// （capability_versions 的 UNIQUE(namespace_id, name, version) + I8）。
 	end := env.mustGetCapability(t, "notify.phone", 1)
 	env.seedCapability(t, "trigger", 1, []string{"go"}) // 无节点声明
 
@@ -1093,50 +1090,40 @@ func TestConsoleEventsTraceViewRootFirst(t *testing.T) {
 	}
 }
 
-// TestTraceEndpointCrossOrg trace 视图不能泄漏别的组织的数据（I10，#142 §9.4）。
+// TestTraceEndpointNamespaceScoped trace 视图按命名空间隔离（I10 / #142 §9.4）。
 //
-// 场景是真实存在的：一个用户同时属于 org1（主组织）和 org2，
-// trace_other_org 只存在于 org2。用 org1 去查必须 404（不区分「不存在」与
-// 「不是你的」，避免探测别人的 traceId）；用 org2 去查必须 200 且内容正确
-// —— 后半段是必须的，否则一个「永远 404」的实现也能骗过前半段。
-func TestTraceEndpointCrossOrg(t *testing.T) {
+// **改写说明（原用例名 TestTraceEndpointCrossOrg）**：原用例证明「用 org1 查 org2 的
+// trace → 404（不泄漏存在性），用 org2 查 → 200 且数据正确」——后半段是必须的，
+// 否则一个「永远 404」的实现也能骗过前半段。组织层删除后「org1/org2」换成
+// 「命名空间 A / 命名空间 B」，**证明结构一模一样且更强**：
+// trace 只存在于 B，用 A 查必须 404；用 B 查必须 200 且 event 的 namespaceId 就是 B
+// （原用例断言的是 event.orgId，该字段已随迁移 14 删除）。
+func TestTraceEndpointNamespaceScoped(t *testing.T) {
 	env := newConsoleEnv(t)
 	ctx := context.Background()
 
-	// 第二个组织（同一个用户是它的 owner：成员身份校验能过，租户隔离才被测到）
-	org2, err := env.db.CreateOrg(ctx, "org-second-"+store.NewOrgID())
-	if err != nil {
-		t.Fatalf("create org2: %v", err)
-	}
-	if err := env.db.AddOrgMember(ctx, org2.ID, env.userID, store.OrgRoleOwner); err != nil {
-		t.Fatalf("add org2 member: %v", err)
-	}
+	// 同一部署里的第二个命名空间（同一用户，无需成员关系——本部署内共享）
+	ns2 := env.seedNamespace(t, "second", "第二空间")
 
-	const otherTrace = "trace_other_org"
-	// 组织建好就有它的 default 命名空间；trace 落在那里
-	org2NS, err := env.db.DefaultNamespaceID(ctx, org2.ID)
-	if err != nil {
-		t.Fatalf("org2 default namespace: %v", err)
-	}
+	const otherTrace = "trace_other_ns"
 	if _, err := env.db.InsertEvent(ctx, &store.Event{
-		NamespaceID: org2NS, TraceID: otherTrace, Source: "github",
+		NamespaceID: ns2.ID, TraceID: otherTrace, Source: "github",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":2}`),
 	}); err != nil {
-		t.Fatalf("insert org2 event: %v", err)
+		t.Fatalf("insert ns2 event: %v", err)
 	}
 
-	// 用 org1（+ 它的命名空间）查 org2 的 trace → 404（不泄漏存在性）
-	rr := env.do(t, http.MethodGet, env.withNS("/v1/traces/"+otherTrace+"?orgId="+env.orgID), nil)
+	// 用 A（+ 它的命名空间）查 B 的 trace → 404（不泄漏存在性）
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/traces/"+otherTrace), nil)
 	if rr.Code != http.StatusNotFound {
-		t.Fatalf("跨组织查询 status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("跨命名空间查询 status = %d, want 404; body=%s", rr.Code, rr.Body.String())
 	}
 
-	// 用 org2 查同一条 trace → 200 且是同一串数据
-	// （证明前面那个 404 是租户隔离，不是路由没注册/取数写错）
-	rr = env.do(t, http.MethodGet,
-		withNSID("/v1/traces/"+otherTrace+"?orgId="+org2.ID, org2NS), nil)
+	// 用 B 查同一条 trace → 200 且是同一串数据
+	// （证明前面那个 404 是命名空间隔离，不是路由没注册/取数写错）
+	rr = env.do(t, http.MethodGet, withNSID("/v1/traces/"+otherTrace, ns2.ID), nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("同组织查询 status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("同命名空间查询 status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
 	m := decode(t, rr)
 	if m["traceId"] != otherTrace {
@@ -1144,10 +1131,10 @@ func TestTraceEndpointCrossOrg(t *testing.T) {
 	}
 	events, _ := m["events"].([]any)
 	if len(events) != 1 {
-		t.Fatalf("org2 的 events = %d 条, want 1", len(events))
+		t.Fatalf("ns2 的 events = %d 条, want 1", len(events))
 	}
-	if ev, _ := events[0].(map[string]any); ev["orgId"] != org2.ID {
-		t.Fatalf("返回的 event.orgId = %v, want %q（数据必须来自 org2）", ev["orgId"], org2.ID)
+	if ev, _ := events[0].(map[string]any); ev["namespaceId"] != ns2.ID {
+		t.Fatalf("返回的 event.namespaceId = %v, want %q（数据必须来自 ns2）", ev["namespaceId"], ns2.ID)
 	}
 }
 
@@ -1216,36 +1203,43 @@ func TestNamespaceNotFound(t *testing.T) {
 	}
 }
 
-// TestNamespaceForbidden 别的组织的 namespaceId → 403（存在，但不是你的）。
+// TestNamespaceUnknownIsNotFound 不存在的 namespaceId → 404，且不泄漏任何东西。
 //
-// 必须与 404 分开：404 表示「没有这个命名空间」，403 表示「有，但属于别的组织」。
-// 混成一个状态码会让调用方分不清是参数写错还是权限问题。
-func TestNamespaceForbidden(t *testing.T) {
+// **改写说明（原用例名 TestNamespaceForbidden）**：原用例证明「别的组织的命名空间
+// → 403（存在但不是你的），并与 404 明确区分」。组织层在迁移 14 删除后，
+// **「有，但属于别人」这个中间态不存在了**：存在 → 200，不存在 → 404。
+// 403 分支没有对象，所以这里换成三条等价或更强的断言：
+//
+//	① 未知命名空间 → 404（原用例后半段的对照断言，保留）
+//	② 404 响应既不回显该 id、也不泄漏任何能力名（原用例「不泄漏」的意图，保留）
+//	③ **正向对照**：另一个真实存在的命名空间 → 200 且看得到它自己的能力
+//	   （证明 404 是「不存在」而不是「没权限」——否则一个永远 404 的实现也能骗过 ①）
+func TestNamespaceUnknownIsNotFound(t *testing.T) {
 	env := newConsoleEnv(t)
-	ctx := context.Background()
+	ns2 := env.seedNamespace(t, "other-space", "另一个空间")
+	env.seedCapabilityIn(t, ns2.ID, "other-only", 1, nil)
 
-	other, err := env.db.CreateOrg(ctx, "org-other-"+store.NewOrgID())
-	if err != nil {
-		t.Fatalf("create other org: %v", err)
-	}
-	otherNS, err := env.db.DefaultNamespaceID(ctx, other.ID)
-	if err != nil {
-		t.Fatalf("other org default namespace: %v", err)
-	}
-
-	rr := env.do(t, http.MethodGet, withNSID("/v1/capabilities", otherNS), nil)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403（别的组织的命名空间）; body=%s", rr.Code, rr.Body.String())
-	}
-	// 不泄漏这个命名空间的存在与内容
-	if bytes.Contains(rr.Body.Bytes(), []byte(otherNS)) {
-		t.Fatalf("403 响应里回显了别人的命名空间 id: %s", rr.Body.String())
-	}
-
-	// 对照：不存在的 id 是 404，两者确实被区分开
-	rr = env.do(t, http.MethodGet, withNSID("/v1/capabilities", "ns_not_a_real_id"), nil)
+	// ① 未知命名空间 → 404
+	const ghost = "ns_not_a_real_id"
+	rr := env.do(t, http.MethodGet, withNSID("/v1/capabilities", ghost), nil)
 	if rr.Code != http.StatusNotFound {
-		t.Fatalf("不存在的 namespaceId status = %d, want 404", rr.Code)
+		t.Fatalf("不存在的 namespaceId status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+	}
+	// ② 不泄漏
+	if bytes.Contains(rr.Body.Bytes(), []byte(ghost)) {
+		t.Fatalf("404 响应回显了命名空间 id: %s", rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("other-only")) {
+		t.Fatalf("404 响应泄漏了能力名: %s", rr.Body.String())
+	}
+
+	// ③ 正向对照：真实存在的另一个命名空间 → 200 且看得到自己的能力
+	rr = env.do(t, http.MethodGet, withNSID("/v1/capabilities", ns2.ID), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("存在的命名空间 status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("other-only")) {
+		t.Fatalf("正向对照失败：读不到该命名空间自己的能力: %s", rr.Body.String())
 	}
 }
 

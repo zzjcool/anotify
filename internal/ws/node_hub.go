@@ -76,10 +76,9 @@ var ErrNodeOffline = fmt.Errorf("node is offline")
 
 // PublishAssign 向节点推送 assign 帧（实现 route.Publisher）。
 //
-// namespaceID 是任务的命名空间（#162）。路由比较走的也是**命名空间**，不是 org：
+// namespaceID 是任务的命名空间（#162）。路由比较走的也是**命名空间**：
 // 一个连接 = 一个节点 = 一个命名空间（令牌绑命名空间），所以「任务与节点同命名空间」
-// 是比「同 org」更强、也是唯一正确的约束——同一个 org 里两个命名空间的任务绝不能互推。
-// 历史上这里是 org_id 比较（那时隔离维度就是 org），参数名也跟着叫 orgID。
+// 是唯一正确的约束——两个命名空间的任务绝不能互推（组织层已在迁移 14 删除）。
 //
 // 任务已落库为 assigned，节点不在线时返回 ErrNodeOffline——
 // 让派发方知道「这个任务推不出去了」。调用方可以选择：

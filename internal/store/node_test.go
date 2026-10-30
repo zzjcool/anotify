@@ -65,20 +65,16 @@ func TestNodeCreateAndGet(t *testing.T) {
 		t.Fatalf("get node by token hash: %v", err)
 	}
 	// 令牌全局唯一 → by-token 查询不看命名空间；但它**必须**把行的 namespace_id
-	// 与 org_id 都扫出来（握手后整条连接靠 NamespaceID 定位隔离域），
-	// 且两者满足 I10：namespace.org_id == org_id。
+	// 扫出来（握手后整条连接靠 NamespaceID 定位隔离域，I11）。
 	if byToken.ID != n.ID || byToken.NamespaceID != nsID {
 		t.Fatalf("token lookup returned wrong node (namespace): %+v", byToken)
-	}
-	if want := orgIDOfNamespace(t, db, nsID); byToken.OrgID != want {
-		t.Fatalf("token lookup org = %q, want %q（org_id 必须由命名空间派生，I10）", byToken.OrgID, want)
 	}
 	if _, err := db.GetNodeByTokenHash(ctx, HashNodeToken("ant_node_wrong")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong token err = %v, want ErrNotFound", err)
 	}
 }
 
-// TestNodeNamespaceIsolation 不变量 I10/I11：跨命名空间查不到节点。
+// TestNodeNamespaceIsolation 不变量 I11：跨命名空间查不到节点。
 func TestNodeNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -90,7 +86,8 @@ func TestNodeNamespaceIsolation(t *testing.T) {
 		t.Fatalf("cross-namespace GetNode err = %v, want ErrNotFound", err)
 	}
 	// 同名节点可存在于不同命名空间（UNIQUE 是 (namespace_id, name)）：
-	// 这正是 #162 换掉 UNIQUE(org_id, name) 的直接后果——prod 与 staging 可以各有一台 mbp-16。
+	// 这正是 #162 把唯一键前缀从「组织」换成 namespace_id 的直接后果——
+	// prod 与 staging 可以各有一台 mbp-16。
 	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsB, Name: "shared-name"}); err != nil {
 		t.Fatalf("same name in another namespace should be allowed: %v", err)
 	}
@@ -98,14 +95,11 @@ func TestNodeNamespaceIsolation(t *testing.T) {
 	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsA, Name: "shared-name"}); err == nil {
 		t.Fatal("duplicate node name in same namespace accepted")
 	}
-	// 同组织、不同命名空间也要允许：org 不再是唯一键前缀（否则新建命名空间里
-	// 连一台与默认命名空间同名的机器都登记不了）。
-	nsA2, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
-	if err != nil {
-		t.Fatalf("create second namespace in same org: %v", err)
-	}
-	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsA2.ID, Name: "shared-name"}); err != nil {
-		t.Fatalf("same name in a sibling namespace of the same org should be allowed: %v", err)
+	// 同一个库里另建的命名空间也要允许：唯一键前缀只有 namespace_id（否则新建的
+	// 命名空间里连一台与默认命名空间同名的机器都登记不了）。
+	nsA2 := newTestExtraNS(t, db, "staging")
+	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsA2, Name: "shared-name"}); err != nil {
+		t.Fatalf("same name in another namespace of the same deployment should be allowed: %v", err)
 	}
 	// token 是全局唯一的，所以 by-token 查询返回的是持有者所在命名空间
 	byToken, err := db.GetNodeByTokenHash(ctx, HashNodeToken(token))
@@ -114,9 +108,6 @@ func TestNodeNamespaceIsolation(t *testing.T) {
 	}
 	if byToken.NamespaceID != nsA {
 		t.Fatalf("token resolved to namespace %q, want %q", byToken.NamespaceID, nsA)
-	}
-	if want := orgIDOfNamespace(t, db, nsA); byToken.OrgID != want {
-		t.Fatalf("token resolved to org %q, want %q", byToken.OrgID, want)
 	}
 }
 
@@ -877,10 +868,11 @@ func TestNodesForCapability(t *testing.T) {
 	}
 }
 
-// TestNodesForCapabilityNamespaceIsolation 别的命名空间的节点不能出现在候选里（I10/I11）。
+// TestNodesForCapabilityNamespaceIsolation 别的命名空间的节点不能出现在候选里（I11）。
 //
-// 两个维度都要验：跨组织（两个 default 命名空间）与**同组织的兄弟命名空间**——
-// 后者才是 #162 真正新增的隔离面（同一 org 里 prod 的节点不能接 staging 的任务）。
+// 两个维度都要验：两套独立的「用户 + 默认命名空间」（两个 default 命名空间）与
+// 同一部署里另建的命名空间——后者是唯一隔离维度落在 namespace_id 上的核心面
+// （prod 的节点不能接 staging 的任务，哪怕它们住在同一个库里）。
 func TestNodesForCapabilityNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -916,20 +908,17 @@ func TestNodesForCapabilityNamespaceIsolation(t *testing.T) {
 		t.Fatalf("cross-namespace lookup returned %d nodes", len(got))
 	}
 
-	// 同一组织的兄弟命名空间：同样不行。这是「换掉 org 维度」的核心回归——
-	// 若只按 org 过滤，这里会返回 nsA 的那台机器。
-	sibling, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
-	if err != nil {
-		t.Fatalf("create sibling namespace: %v", err)
-	}
-	sibCap := mkCap(sibling.ID, "review", 1, []string{"fix"})
+	// 同一个库里另建的命名空间：同样不行。这是「唯一隔离维度是 namespace_id」的
+	// 核心回归——若实现按别的维度过滤（例如已经删掉的组织层），这里会返回 nsA 的那台机器。
+	sibling := newTestExtraNS(t, db, "staging")
+	sibCap := mkCap(sibling, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, sibCap); err != nil {
 		t.Fatalf("create sibling cap: %v", err)
 	}
-	if got, err := db.NodesForCapability(ctx, sibling.ID, sibCap.ID); err != nil {
+	if got, err := db.NodesForCapability(ctx, sibling, sibCap.ID); err != nil {
 		t.Fatalf("sibling lookup: %v", err)
 	} else if len(got) != 0 {
-		t.Fatalf("同 org 的兄弟命名空间看到了 %d 台别处的机器（I11 破了）", len(got))
+		t.Fatalf("同库的另一个命名空间看到了 %d 台别处的机器（I11 破了）", len(got))
 	}
 }
 
@@ -974,12 +963,9 @@ func TestNodePins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPin: %v", err)
 	}
-	// 钉住同时记 namespace_id 与 org_id（I10：org_id 由命名空间派生，不许调用方传）
+	// 钉住记的是 namespace_id（唯一隔离维度，由调用方显式传，不存在派生自组织层的字段）
 	if got.NodeID != n.ID || got.Selector != "worktree:wt-a" || got.NamespaceID != nsID {
 		t.Fatalf("pin round-trip mismatch: %+v", got)
-	}
-	if want := orgIDOfNamespace(t, db, nsID); got.OrgID != want {
-		t.Fatalf("pin org = %q, want %q（org_id 必须由命名空间派生）", got.OrgID, want)
 	}
 
 	// 重复 PutPin 不换机器，只刷新 last_used_at
@@ -1014,7 +1000,15 @@ func TestPutPinValidation(t *testing.T) {
 		t.Error("PutPin(nil) accepted")
 	}
 	if err := db.PutPin(ctx, &NodePin{StickyKey: "k"}); err == nil {
-		t.Error("PutPin without org/node accepted")
+		t.Error("PutPin without namespace/node accepted")
+	}
+	// 有 node 但没命名空间：必须是 ErrNamespaceRequired（钉住必须落在某个命名空间里）
+	if err := db.PutPin(ctx, &NodePin{StickyKey: "k", NodeID: "nd_x"}); !errors.Is(err, ErrNamespaceRequired) {
+		t.Errorf("PutPin without namespace err = %v, want ErrNamespaceRequired", err)
+	}
+	// 通配符不是写入作用域
+	if err := db.PutPin(ctx, &NodePin{StickyKey: "k", NamespaceID: AllNamespaces, NodeID: "nd_x"}); !errors.Is(err, ErrNamespaceRequired) {
+		t.Errorf("PutPin on %q err = %v, want ErrNamespaceRequired", AllNamespaces, err)
 	}
 }
 

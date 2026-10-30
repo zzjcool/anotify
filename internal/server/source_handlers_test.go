@@ -272,7 +272,7 @@ func TestSourcesDryRunRequiresNamespace(t *testing.T) {
 		t.Fatalf("缺 namespaceId status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
 	}
 
-	// 2) body.namespaceId 给了但属于别的 org 之外……先测正常路径：带 namespaceId → 200
+	// 2) 带上本命名空间 → 200（正向路径：作用域解析通过）
 	rr = env.do(t, http.MethodPost, "/v1/sources/dry-run", map[string]any{"namespaceId": env.nsID, "source": draft})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("带 namespaceId status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
@@ -361,22 +361,17 @@ func TestValidateTargetParamsConfigTimeRules(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	uid, err := db.InsertUser(ctx, "", "srcval", "Src Val")
+	// 用户与默认命名空间一步建出（组织层已在迁移 14 删除：#204）。
+	u := &store.User{ID: store.NewUserID(), Username: "srcval", DisplayName: "Src Val", CreatedAt: store.Now()}
+	defNS, err := db.RegisterUser(ctx, u)
 	if err != nil {
-		t.Fatalf("insert user: %v", err)
-	}
-	org, err := db.EnsureOrgForUser(ctx, uid, "srcval")
-	if err != nil {
-		t.Fatalf("ensure org: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
 	// #162 之后能力是命名空间资源：CreateCapability 要 namespaceID（I11 第②条）。
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	nsID := defNS.ID
 
 	capDef := &store.CapabilityVersion{
-		OrgID: org.ID, NamespaceID: nsID, Name: "analyze", Version: 1,
+		NamespaceID: nsID, Name: "analyze", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}}}`),
 		Source:       store.CapSourceCustom,
 	}
@@ -488,23 +483,18 @@ func TestValidateTargetParamsRequiredWithPlaceholder(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	uid, err := db.InsertUser(ctx, "", "srcreq", "Src Req")
+	// 用户与默认命名空间一步建出（组织层已在迁移 14 删除：#204）。
+	u := &store.User{ID: store.NewUserID(), Username: "srcreq", DisplayName: "Src Req", CreatedAt: store.Now()}
+	defNS, err := db.RegisterUser(ctx, u)
 	if err != nil {
-		t.Fatalf("insert user: %v", err)
-	}
-	org, err := db.EnsureOrgForUser(ctx, uid, "srcreq")
-	if err != nil {
-		t.Fatalf("ensure org: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
 	// #162 之后能力是命名空间资源：CreateCapability 要 namespaceID（I11 第②条）。
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	nsID := defNS.ID
 
 	// required 两个键、都是 string：剔掉占位符的实现会在第一条用例上误拒
 	capDef := &store.CapabilityVersion{
-		OrgID: org.ID, NamespaceID: nsID, Name: "notify", Version: 1,
+		NamespaceID: nsID, Name: "notify", Version: 1,
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["to","title"],
 			"properties":{"to":{"type":"string"},"title":{"type":"string"}}}`),
 		Source: store.CapSourceCustom,
@@ -698,13 +688,14 @@ func TestMergeSourceConfig(t *testing.T) {
 // 唯一位置是 HTTP 状态码和 body。方法级测试（上面的 TestValidateTargetParams…）
 // 直接喂 params，永远看不到「PATCH 把 vars 抹掉之后再校验」这条路径。
 //
-// resolveOrg 是唯一的注入点（真实实现要会话中间件），替成一个固定 org 即可；
+// resolveNamespace 是唯一的注入点（真实实现要会话中间件），替成一个固定命名空间即可；
 // 其余全是生产代码路径：解析请求体 → 校验 → 落库 → 重读 → 组装视图。
+//
+// 组织层已在迁移 14 删除（#204）：没有「固定 org」这回事了，隔离边界只剩命名空间。
 type sourceHTTPEnv struct {
 	db    *store.DB
 	ctx   context.Context
 	h     *sourceHandler
-	orgID string
 	nsID  string
 	capID string
 }
@@ -729,22 +720,16 @@ func newSourceHTTPEnvWithSchema(t *testing.T, paramsSchema string) *sourceHTTPEn
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	uid, err := db.InsertUser(ctx, "", "srchttp", "Src HTTP")
+	// 用户与默认命名空间一步建出（组织层已在迁移 14 删除：#204）。
+	u := &store.User{ID: store.NewUserID(), Username: "srchttp", DisplayName: "Src HTTP", CreatedAt: store.Now()}
+	defNS, err := db.RegisterUser(ctx, u)
 	if err != nil {
-		t.Fatalf("insert user: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
-	org, err := db.EnsureOrgForUser(ctx, uid, "srchttp")
-	if err != nil {
-		t.Fatalf("ensure org: %v", err)
-	}
-
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	nsID := defNS.ID
 
 	capDef := &store.CapabilityVersion{
-		OrgID: org.ID, NamespaceID: nsID, Name: "analyze", Version: 1,
+		NamespaceID: nsID, Name: "analyze", Version: 1,
 		ParamsSchema: json.RawMessage(paramsSchema),
 		Source:       store.CapSourceCustom,
 	}
@@ -754,16 +739,13 @@ func newSourceHTTPEnvWithSchema(t *testing.T, paramsSchema string) *sourceHTTPEn
 
 	h := &sourceHandler{
 		db: db,
-		resolveOrg: func(w http.ResponseWriter, r *http.Request, requested string) (string, bool) {
-			return org.ID, true
-		},
 		// 这些用例测的是参数校验与 config 合并，作用域固定成默认命名空间即可；
 		// 命名空间解析本身由 namespace_handlers_test.go 覆盖。
-		resolveNamespace: func(w http.ResponseWriter, r *http.Request, orgID, bodyNS string, allowAll bool) (nsScope, bool) {
+		resolveNamespace: func(w http.ResponseWriter, r *http.Request, bodyNS string, allowAll bool) (nsScope, bool) {
 			return nsScope{ID: nsID}, true
 		},
 	}
-	return &sourceHTTPEnv{db: db, ctx: ctx, h: h, orgID: org.ID, nsID: nsID, capID: capDef.ID}
+	return &sourceHTTPEnv{db: db, ctx: ctx, h: h, nsID: nsID, capID: capDef.ID}
 }
 
 // expand 把用例模板里的占位符换成本环境的真实 ID / 唯一源名。

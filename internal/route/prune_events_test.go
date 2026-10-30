@@ -69,7 +69,7 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
 				review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 				return DispatchInput{
-					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_no_edge",
+					NamespaceID: testNS, TraceID: "trace_no_edge",
 					FromCap: review.ID, Out: "fix",
 				}, ""
 			},
@@ -84,7 +84,7 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				f.addEdge(testNS, review.ID, "fix", strict.ID)
 				f.addNode("nd_strict", strict.ID, 1)
 				return DispatchInput{
-					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_param_schema",
+					NamespaceID: testNS, TraceID: "trace_param_schema",
 					FromCap: review.ID, Out: "fix", Params: map[string]any{},
 				}, strict.ID
 			},
@@ -99,7 +99,7 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				orphan := f.addCap(testNS, "orphan", 1, nil, `{}`)
 				f.addEdge(testNS, review.ID, "fix", orphan.ID)
 				return DispatchInput{
-					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_no_node",
+					NamespaceID: testNS, TraceID: "trace_no_node",
 					FromCap: review.ID, Out: "fix",
 				}, orphan.ID
 			},
@@ -116,7 +116,7 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				f.addEdge(testNS, review.ID, "notify", phone.ID)
 				f.addNode("nd_phone", phone.ID, 4)
 				return DispatchInput{
-					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_foreign_user",
+					NamespaceID: testNS, TraceID: "trace_foreign_user",
 					FromCap: review.ID, Out: "notify",
 					Params: map[string]any{"to": "outsider_1"},
 				}, phone.ID
@@ -133,7 +133,7 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				f.addEdge(testNS, fix.ID, "review", review.ID) // fix --review--> review（成环）
 				f.addNode("nd_review", review.ID, 1)
 				return DispatchInput{
-					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_path",
+					NamespaceID: testNS, TraceID: "trace_path",
 					FromCap: fix.ID, Out: "review",
 					Path: []string{review.ID, fix.ID},
 				}, review.ID
@@ -151,7 +151,7 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				loose := f.addCap(testNS, "loose", 1, nil, `{"type":"object"}`)
 				f.addNode("nd_loose", loose.ID, 1)
 				return DispatchInput{
-					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_param_missing",
+					NamespaceID: testNS, TraceID: "trace_param_missing",
 					FromCap: "github", FromIsSource: true, Out: "push",
 					Targets:      []string{loose.ID},
 					TargetParams: map[string]map[string]any{loose.ID: {"n": "{{pull_request.title}}"}},
@@ -172,7 +172,7 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 					`{"type":"object","properties":{"lines":{"type":"integer"}}}`)
 				f.addNode("nd_strict", strict.ID, 1)
 				return DispatchInput{
-					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_param_type",
+					NamespaceID: testNS, TraceID: "trace_param_type",
 					FromCap: "github", FromIsSource: true, Out: "push",
 					Targets:      []string{strict.ID},
 					TargetParams: map[string]map[string]any{strict.ID: {"lines": "{{lines}}"}},
@@ -206,9 +206,6 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				t.Fatalf("%s 落了 %d 行剪枝事件, want 恰好 1 行", c.reason, len(got))
 			}
 			e := got[0]
-			if e.OrgID != in.OrgID {
-				t.Errorf("org_id = %q, want %q", e.OrgID, in.OrgID)
-			}
 			// events 是命名空间资源：剪枝留痕漏了 namespace 会直接写不进去
 			// （store 报 ErrNamespaceRequired，剪枝静默消失）。
 			if e.NamespaceID != in.NamespaceID {
@@ -285,7 +282,7 @@ func TestDispatchPruneNotDuplicated(t *testing.T) {
 	d := New(f)
 
 	in := DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_dup",
+		NamespaceID: testNS, TraceID: "trace_dup",
 		FromCap: review.ID, Out: "fix", Params: map[string]any{},
 	}
 	for round := 1; round <= 2; round++ {
@@ -316,7 +313,7 @@ func TestDispatchDryRunWritesNoPruneEvent(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_dry_no_edge",
+			NamespaceID: testNS, TraceID: "trace_dry_no_edge",
 			FromCap: review.ID, Out: "fix", DryRun: true,
 		})
 		if err != nil {
@@ -339,7 +336,7 @@ func TestDispatchDryRunWritesNoPruneEvent(t *testing.T) {
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_dry_param",
+			NamespaceID: testNS, TraceID: "trace_dry_param",
 			FromCap: review.ID, Out: "fix", Params: map[string]any{}, DryRun: true,
 		})
 		if err != nil {
@@ -365,7 +362,7 @@ func TestDispatchNoOutWritesNoPruneEvent(t *testing.T) {
 	d := New(f)
 
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_no_out",
+		NamespaceID: testNS, TraceID: "trace_no_out",
 		FromCap: review.ID, Out: "",
 	})
 	if err != nil {
@@ -400,7 +397,7 @@ func TestDispatchPruneRecordFailureDoesNotBreakDispatch(t *testing.T) {
 	d := New(f)
 
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_insert_fail",
+		NamespaceID: testNS, TraceID: "trace_insert_fail",
 		FromCap: review.ID, Out: "notify", Params: map[string]any{},
 	})
 	if err != nil {

@@ -18,15 +18,16 @@ export function sha256(s) {
 
 // seedNodeRows 往库里插一行节点（token 已知），可选声明能力与实例。
 //
-// namespaceId 必传：迁移 12（#162）之后 nodes / node_capabilities / node_instances
-// 都多了 namespace_id TEXT NOT NULL，唯一键也从 UNIQUE(org_id, name) 换成了
-// UNIQUE(namespace_id, name)。节点属于哪个命名空间必须由调用方给**查出来的** id
-// （`await H.defaultNamespaceId(base, session)`）——用例里写死 ns_xxx 等换库全红。
+// namespaceId 必传：nodes / node_capabilities / node_instances 都是命名空间资源
+// （namespace_id TEXT NOT NULL，唯一键 UNIQUE(namespace_id, name)）。节点属于哪个
+// 命名空间必须由调用方给**查出来的** id（`await H.defaultNamespaceId(base, session)`）
+// ——用例里写死 ns_xxx 等换库全红。
+//
+// **#204 / 迁移 14**：组织层删除，nodes 表不再有 org_id 列，所以这里没有 orgId 参数。
 //
 // 返回 { id, token }。token 是明文，DB 里只存 sha256。
 export function seedNodeRows(
 	dbPath,
-	orgId,
 	namespaceId,
 	name,
 	capabilityIds = [],
@@ -44,9 +45,9 @@ export function seedNodeRows(
 	const db = new DatabaseSync(dbPath);
 	try {
 		db.prepare(
-			`INSERT INTO nodes (id, org_id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
-			 VALUES (?, ?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
-		).run(nodeId, orgId, namespaceId, name, sha256(token), now);
+			`INSERT INTO nodes (id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
+			 VALUES (?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
+		).run(nodeId, namespaceId, name, sha256(token), now);
 		for (const capId of capabilityIds) {
 			db.prepare(
 				`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?, ?, ?)`,
@@ -80,12 +81,13 @@ export function nodeHello(nodeId, caps = [], slots = 1, protocol = 1) {
 // namespaceId 决定节点归属于哪个命名空间（hello 帧里的能力名只在这个命名空间内解析，
 // 见契约 §2.1）；必须与建能力/边时用的命名空间一致，否则派发会找不到节点。
 //
+// 签名里**没有 orgId**（#204 / 迁移 14：组织层删除，令牌只绑命名空间）。
+//
 // 返回 { id, token, conn, frames }。frames 是已收到的所有帧（含 welcome）。
 // 握手失败时抛出，带上服务端下发的 error 帧便于定位。
 export async function bringUpNode(
 	serverBase,
 	dbPath,
-	orgId,
 	namespaceId,
 	name,
 	caps = [],
@@ -93,7 +95,6 @@ export async function bringUpNode(
 ) {
 	const node = seedNodeRows(
 		dbPath,
-		orgId,
 		namespaceId,
 		name,
 		caps.map((c) => c.id),

@@ -22,9 +22,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -36,8 +34,7 @@ import (
 //
 // *store.DB 满足它。
 //
-// 参数名都是 namespaceID 而不是 orgID：命名空间资源的作用域参数一律是命名空间
-// （org_id 由 store 从 namespaces 行派生，契约 §2.1）。
+// 参数名都是 namespaceID：命名空间是唯一隔离维度，也是唯一作用域参数（契约 §2.1）。
 type Store interface {
 	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
 	ListCapabilities(ctx context.Context, namespaceID string) ([]*store.CapabilityVersion, error)
@@ -72,7 +69,6 @@ func New(st Store, d Dispatcher) *Service {
 
 // IngestRequest 是一次事件摄入请求（对应 POST /v1/events 的 body）。
 type IngestRequest struct {
-	OrgID string `json:"-"`
 	// NamespaceID 是事件落进哪个命名空间（**必填**）。
 	//
 	// 事件属于命名空间（I10）：入口边、trace 列表、统计全按它过滤。
@@ -99,56 +95,25 @@ type IngestResult struct {
 	Inserted bool `json:"inserted"`
 	// Dispatch 是首轮派发的结果（幂等命中时为空——事件已经处理过了）。
 	Dispatch *route.DispatchOutput `json:"dispatch,omitempty"`
-	// OriginCapability 是匹配到的起点能力（source@version），nil 表示没找到定义。
-	OriginCapability *store.CapabilityVersion `json:"-"`
 }
-
-// ErrUnknownOrigin 表示 source 没有对应的 origin 能力定义。
-//
-// 这是**调用方的错误**，不是"事件先存后补"的场景：
-// 没有起源能力的事件永远派不出去，存下来只是占库位。
-// 所以 HTTP 层应该返回 422 并告诉用户有哪些可用的 source，
-// 而不是 200 + 空 origin（那会让人以为成功了，实际什么都没发生）。
-var ErrUnknownOrigin = errors.New("unknown origin capability for source")
-
-// UnknownOriginError 携带可用 source 列表，供 HTTP 层写进错误信息。
-//
-// 用户看到 "未知来源 github-ee；可用：github、cron、http、manual"
-// 远比看到 "unknown origin capability for source" 有用——
-// 前者直接告诉下一步该填什么。
-type UnknownOriginError struct {
-	Source    string
-	Available []string
-}
-
-func (e *UnknownOriginError) Error() string {
-	if len(e.Available) == 0 {
-		return fmt.Sprintf("unknown origin %q; no capabilities defined yet", e.Source)
-	}
-	return fmt.Sprintf("unknown origin %q; available: %s",
-		e.Source, strings.Join(e.Available, ", "))
-}
-
-// Unwrap 让 errors.Is(err, ErrUnknownOrigin) 仍然成立。
-func (e *UnknownOriginError) Unwrap() error { return ErrUnknownOrigin }
 
 // Ingest 把一次外部变化变成事件行，并触发第一次派发（契约 §2.5 / §10.1）。
 //
 // 顺序（先落库，再派发）：
 //
-//  1. 确定 trace_id：给了就用，没给由触发器生成
-//  2. 幂等写 events（带 idemKey 时冲突返回已有行，不是 409）
-//  3. 幂等命中 → 直接返回（事件已处理过，不重复派发）
-//  4. 查 source 对应的 origin 能力定义（source@latest）
-//  5. 用 (origin_capability_id, type) 作为出口名调 Dispatch
+//  1. 校验必填：namespace_id / source / type（缺 namespaceId 不回退默认，契约 §6.2）
+//  2. 确定 trace_id：给了就用，没给由触发器生成
+//  3. 幂等写 events（带 idemKey 时冲突返回已有行，不是 409）
+//  4. 幂等命中 → 直接返回（事件已处理过，不重复派发）
+//  5. 首轮派发：入口边的左端就是**来源名**，出口名就是事件 type（契约 §2.4）
 //
-// 第 4 步找不到定义时返回 ErrUnknownOrigin：事件已入库，只是没法派发。
+// 注意：**「来源没有入口边」不是错误**（#110）。事件照收（200），派发结果里记一条
+// pruned/no_edge —— 这样「为什么没触发」是可以回答的。旧模型里那种
+// 「source 必须对应一个 origin 能力，否则 422 + 可用来源列表」已经整条删除
+// （源 sources 取代了 origin 能力，见第 5 步的注释）。
 func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult, error) {
 	if req == nil {
 		return nil, fmt.Errorf("ingest: nil request")
-	}
-	if req.OrgID == "" {
-		return nil, fmt.Errorf("ingest: empty org_id")
 	}
 	if req.NamespaceID == "" {
 		// 不回退默认命名空间（契约 §6.2）：回退等于把人写错的地方藏起来。
@@ -175,7 +140,6 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 
 	ev := &store.Event{
 		NamespaceID: req.NamespaceID,
-		OrgID:       req.OrgID,
 		TraceID:     traceID,
 		Source:      req.Source,
 		Type:        req.Type,
@@ -205,7 +169,6 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 	// 却必须存在、而且会出现在能力列表上 —— 源（sources）已经是它的
 	// 完整替代，所以入口边直接以来源名为左端（契约 §2.4）。
 	out, err := s.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:        req.OrgID,
 		NamespaceID:  req.NamespaceID,
 		TraceID:      traceID,
 		FromCap:      req.Source,
@@ -223,52 +186,6 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 	}
 	result.Dispatch = out
 	return result, nil
-}
-
-// findOrigin 找 source 对应的 origin 能力定义（取该 name 的最高版本）。
-//
-// 约定：事件来源 github 对应能力 github@<latest>。
-// 取最高版本的理由：capability_versions 是 append-only（不变量 I8），
-// 新版本 supersede 旧的；触发器不该钉在某个老版本上。
-//
-// 注意不能用 GetCapability(version=0)：那是精确匹配 version=0，永远查不到东西。
-func (s *Service) findOrigin(ctx context.Context, namespaceID, source string) (*store.CapabilityVersion, error) {
-	all, err := s.Store.ListCapabilities(ctx, namespaceID)
-	if err != nil {
-		return nil, fmt.Errorf("ingest: list capabilities: %w", err)
-	}
-	var best *store.CapabilityVersion
-	for _, c := range all {
-		if c.Name != source {
-			continue
-		}
-		if best == nil || c.Version > best.Version {
-			best = c
-		}
-	}
-	if best == nil {
-		// 把**能当起点**的能力名列给调用方——这是"下一步该做什么"的信息。
-		//
-		// 不能把中枢执行的终端能力（notify.phone）列进去：它没有节点、
-		// outputs 为空，按 DeriveKind 也会被算成 origin，但拿它当事件来源
-		// 毫无意义（source=notify.phone 的事件该派给谁？）。
-		// 列错了比不列更糟——用户会照着提示填一个错的值。
-		available := make([]string, 0, len(all))
-		seen := map[string]bool{}
-		for _, c := range all {
-			if seen[c.Name] {
-				continue
-			}
-			if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok && !bc.Origin {
-				continue // 中枢执行的内置能力（notify.phone）：不能当起点
-			}
-			seen[c.Name] = true
-			available = append(available, c.Name)
-		}
-		sort.Strings(available)
-		return nil, &UnknownOriginError{Source: source, Available: available}
-	}
-	return best, nil
 }
 
 // normalizeIdemKey 把空白串视为「没有幂等键」。

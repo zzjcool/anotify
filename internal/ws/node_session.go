@@ -176,7 +176,7 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	var next []*store.Task
 	if s.h.NextHop != nil && f.Status == store.TaskSucceeded && out != nil {
 		// 出口表/能力/节点都按命名空间隔离：作用域必须是**父任务的命名空间**
-		// （即 task.NamespaceID，不是节点的 org）。传错的话 EdgesFrom 恒 0 行，
+		// （即 task.NamespaceID，不是节点的 id）。传错的话 EdgesFrom 恒 0 行，
 		// 链路会在父任务成功后静默停掉。
 		next, err = s.h.NextHop.PlanNextHop(ctx, task.NamespaceID, task.TraceID, task.ID,
 			task.CapabilityID, *out, task.Params, task.Path)

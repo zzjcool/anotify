@@ -81,19 +81,6 @@ func TestStubSignaturesFrozen(t *testing.T) {
 		_ func(context.Context, string) (*GraphVersion, error)                  = db.EnsureGraphVersion
 		_ func(context.Context, string, string) (*GraphVersion, error)          = db.GetGraphVersion
 	)
-
-	// ── org.go ─────────────────────────────────────
-	var (
-		_ func(context.Context, string) (*Org, error)         = db.CreateOrg
-		_ func(context.Context, string) (*Org, error)         = db.GetOrg
-		_ func(context.Context, string, string, string) error = db.AddOrgMember
-		_ func(context.Context, string, string) (bool, error) = db.IsOrgMember
-		_ func(context.Context, string) ([]*Org, error)       = db.ListOrgsByUser
-		_ func(context.Context, string) ([]*OrgMember, error) = db.ListOrgMembers
-		_ func(context.Context, string) (string, error)       = db.PrimaryOrgOf
-		_ func(context.Context, *User, bool) (*Org, error)    = db.RegisterUserWithOrg
-		_ func(context.Context, string, string) (*Org, error) = db.EnsureOrgForUser
-	)
 }
 
 // TestNoStubRemains #55 完成后，store 包不应再有任何 ErrNotImplemented 空壳。
@@ -197,7 +184,7 @@ func TestIsTerminalStatus(t *testing.T) {
 func TestTaskStructJSONShape(t *testing.T) {
 	typ := reflect.TypeOf(Task{})
 	want := []string{
-		"id", "namespaceId", "orgId", "traceId", "parentTaskId", "path", "capabilityId", "capability",
+		"id", "namespaceId", "traceId", "parentTaskId", "path", "capabilityId", "capability",
 		"version", "params", "status", "nodeId", "instanceId", "leaseUntil", "attempts",
 		"out", "reported", "summary", "artifacts", "error", "capHash", "graphId",
 		"createdAt", "startedAt", "finishedAt",

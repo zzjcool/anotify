@@ -14,32 +14,40 @@ import (
 )
 
 // adminTestEnv 装配管理后台测试环境：内存 DB + admin/member 两个用户 + 各自会话 cookie。
+//
+// 组织层已在迁移 14 删除（#204）：建用户不再伴随「组织」，而是 db.RegisterUser
+// 一步建出「用户 + 默认命名空间 + 内置能力」（同一事务）。管理后台的统计口径
+// 也随之下沉到命名空间级别，所以这里把 admin 拿到的默认命名空间记在 adminNSID 上，
+// 需要「往库里塞一条真实事件」的用例直接用它。
 type adminTestEnv struct {
 	mux          http.Handler
 	db           *store.DB
 	adminID      string
 	memberID     string
+	adminNSID    string
 	adminCookie  *http.Cookie
 	memberCookie *http.Cookie
 }
 
 func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	t.Helper()
+	ctx := context.Background()
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// admin 用户
-	adminU := &store.User{ID: store.NewUserID(), Username: "admin", Role: store.RoleAdmin, CreatedAt: store.Now()}
-	if err := db.CreateUser(adminU); err != nil {
-		t.Fatalf("create admin: %v", err)
+	// admin 用户：注册即建出默认命名空间（返回值就是它，见 store.RegisterUser）
+	adminU := &store.User{ID: store.NewUserID(), Username: "admin", DisplayName: "管理员", Role: store.RoleAdmin, CreatedAt: store.Now()}
+	adminNS, err := db.RegisterUser(ctx, adminU)
+	if err != nil {
+		t.Fatalf("register admin: %v", err)
 	}
 	// member 用户
-	memberU := &store.User{ID: store.NewUserID(), Username: "member", CreatedAt: store.Now()}
-	if err := db.CreateUser(memberU); err != nil {
-		t.Fatalf("create member: %v", err)
+	memberU := &store.User{ID: store.NewUserID(), Username: "member", DisplayName: "成员", CreatedAt: store.Now()}
+	if _, err := db.RegisterUser(ctx, memberU); err != nil {
+		t.Fatalf("register member: %v", err)
 	}
 
 	sm := auth.NewSessionManager(db, 0, false)
@@ -48,14 +56,6 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	})
 	if err != nil {
 		t.Fatalf("new auth svc: %v", err)
-	}
-
-	// 用户需要所属组织：统计口径按组织（events/tasks 都挂 org_id）
-	if _, err := db.EnsureOrgForUser(context.Background(), adminU.ID, adminU.Username); err != nil {
-		t.Fatalf("ensure org for admin: %v", err)
-	}
-	if _, err := db.EnsureOrgForUser(context.Background(), memberU.ID, memberU.Username); err != nil {
-		t.Fatalf("ensure org for member: %v", err)
 	}
 
 	adminSess, _ := sm.Create(adminU.ID, "admin · test")
@@ -70,7 +70,7 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	mux.Handle("/v1/admin/", noStore(adminMW))
 
 	return &adminTestEnv{
-		mux: mux, db: db, adminID: adminU.ID, memberID: memberU.ID,
+		mux: mux, db: db, adminID: adminU.ID, memberID: memberU.ID, adminNSID: adminNS.ID,
 		adminCookie:  &http.Cookie{Name: auth.SessionCookieName, Value: adminSess.ID},
 		memberCookie: &http.Cookie{Name: auth.SessionCookieName, Value: memberSess.ID},
 	}
@@ -293,15 +293,8 @@ func TestAdmin_MessagesAndSessions(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// 建一条事件（挂在 admin 的主组织下）
-	orgID, err := env.db.PrimaryOrgOf(ctx, env.adminID)
-	if err != nil {
-		t.Fatalf("primary org: %v", err)
-	}
-	nsID, err := env.db.DefaultNamespaceID(ctx, orgID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	// 建一条事件（挂在 admin 注册时建出的默认命名空间下）
+	nsID := env.adminNSID
 	idem := "admin-test-1"
 	if _, err := env.db.InsertEvent(ctx, &store.Event{
 		ID: store.NewEventID(), NamespaceID: nsID, Source: "github", Type: "pr_opened",

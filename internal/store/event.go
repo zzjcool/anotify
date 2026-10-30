@@ -14,9 +14,8 @@ import (
 // Payload 只存不解释（不变量 I6：中枢不解释任何用户提供的逻辑）。
 type Event struct {
 	ID string `json:"id"`
-	// NamespaceID 是隔离维度（I10）：事件属于某个命名空间，trace 列表与统计都按它过滤。
+	// NamespaceID 是命名空间隔离维度：事件属于某个命名空间，trace 列表与统计都按它过滤。
 	NamespaceID string          `json:"namespaceId"`
-	OrgID       string          `json:"orgId"`
 	TraceID     string          `json:"traceId"`
 	Source      string          `json:"source"`
 	Type        string          `json:"type"`
@@ -26,7 +25,7 @@ type Event struct {
 }
 
 // eventColumns 是统一的列顺序，scanEvent 依赖它。
-const eventColumns = `id, namespace_id, org_id, trace_id, source, type, payload, idem_key, created_at`
+const eventColumns = `id, namespace_id, trace_id, source, type, payload, idem_key, created_at`
 
 // ErrReservedEventSource 表示有人把「保留来源名」当普通来源用。
 //
@@ -78,22 +77,16 @@ func (d *DB) InsertEvent(ctx context.Context, e *Event) (inserted bool, err erro
 	if e.ID == "" {
 		e.ID = NewEventID()
 	}
-	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证）。
-	orgID, nerr := d.NamespaceOrgID(ctx, e.NamespaceID)
-	if nerr != nil {
-		return false, fmt.Errorf("insert event: %w", nerr)
-	}
-	e.OrgID = orgID
 
-	// 幂等写：不能写 `ON CONFLICT(org_id, source, idem_key)`——SQLite 的
+	// 幂等写：不能写 `ON CONFLICT(namespace_id, source, idem_key)`——SQLite 的
 	// upsert 目标必须是完整唯一约束或主键，而这里用的是**部分**唯一索引
 	// （`WHERE idem_key IS NOT NULL`），指定列会报
 	// 「ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint」。
 	// 用 INSERT OR IGNORE 让任何唯一冲突都静默跳过，再由 RowsAffected 判断是否插入。
 	res, err := d.ExecContext(ctx,
-		`INSERT OR IGNORE INTO events (id, namespace_id, org_id, trace_id, source, type, payload, idem_key, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		e.ID, e.NamespaceID, e.OrgID, e.TraceID, e.Source, e.Type, payload, e.IdemKey, e.CreatedAt)
+		`INSERT OR IGNORE INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		e.ID, e.NamespaceID, e.TraceID, e.Source, e.Type, payload, e.IdemKey, e.CreatedAt)
 	if err != nil {
 		return false, fmt.Errorf("insert event: %w", err)
 	}
@@ -121,7 +114,7 @@ func (d *DB) InsertEvent(ctx context.Context, e *Event) (inserted bool, err erro
 
 // InsertPruneEvent 幂等写入一条剪枝事件（source='route'，#142）。
 //
-// 已存在同一条（org_id, trace_id, source, type, payload）时不重复写，返回 (false, nil)。
+// 已存在同一条（namespace_id, trace_id, source, type, payload）时不重复写，返回 (false, nil)。
 // idem_key 恒为 NULL：剪枝是观察记录，不是一次投递，不占幂等键语义
 // （也不能复用 InsertEvent 的 INSERT OR IGNORE——那条路径靠部分唯一索引生效，
 // 剪枝没有 idem_key，冲突永远不会被识别）。
@@ -155,20 +148,15 @@ func (d *DB) InsertPruneEvent(ctx context.Context, e *Event) (inserted bool, err
 	// 与实际执行 insert 的 SELECT 保持一致：NULL 是硬编码的，
 	// 这里同步置空，避免调用方拿到一个「幂等键不为空」的幻象。
 	e.IdemKey = nil
-	orgID, nerr := d.NamespaceOrgID(ctx, e.NamespaceID)
-	if nerr != nil {
-		return false, fmt.Errorf("insert prune event: %w", nerr)
-	}
-	e.OrgID = orgID
 
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO events (id, namespace_id, org_id, trace_id, source, type, payload, idem_key, created_at)
-		 SELECT ?,?,?,?,?,?,?,NULL,?
+		`INSERT INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
+		 SELECT ?,?,?,?,?,?,NULL,?
 		 WHERE NOT EXISTS (
 		     SELECT 1 FROM events
 		      WHERE namespace_id = ? AND trace_id = ? AND source = ? AND type = ? AND payload = ?
 		 )`,
-		e.ID, e.NamespaceID, e.OrgID, e.TraceID, e.Source, e.Type, payload, e.CreatedAt,
+		e.ID, e.NamespaceID, e.TraceID, e.Source, e.Type, payload, e.CreatedAt,
 		e.NamespaceID, e.TraceID, e.Source, e.Type, payload)
 	if err != nil {
 		return false, fmt.Errorf("insert prune event: %w", err)
@@ -199,7 +187,7 @@ func (d *DB) scanEvent(ctx context.Context, query string, args ...any) (*Event, 
 	var e Event
 	var payload string
 	err := d.QueryRowContext(ctx, query, args...).Scan(
-		&e.ID, &e.NamespaceID, &e.OrgID, &e.TraceID, &e.Source, &e.Type, &payload, &e.IdemKey, &e.CreatedAt)
+		&e.ID, &e.NamespaceID, &e.TraceID, &e.Source, &e.Type, &payload, &e.IdemKey, &e.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -267,7 +255,7 @@ func (d *DB) ListEvents(ctx context.Context, namespaceID, traceID, source string
 	for rows.Next() {
 		var e Event
 		var payload string
-		if err := rows.Scan(&e.ID, &e.NamespaceID, &e.OrgID, &e.TraceID, &e.Source, &e.Type, &payload, &e.IdemKey, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.NamespaceID, &e.TraceID, &e.Source, &e.Type, &payload, &e.IdemKey, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event row: %w", err)
 		}
 		e.Payload = json.RawMessage(payload)

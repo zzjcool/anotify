@@ -21,10 +21,9 @@ import (
 
 // nodeFixture 是一套跑起来的节点协议环境。
 type nodeFixture struct {
-	db    *store.DB
-	orgID string // 组织 ID（只用于「组织级」断言；store 作用域一律用 nsID）
-	// nsID 是节点所属的**命名空间**（#162）：节点/能力/任务的 store 调用都用它。
-	// 夹具里就是该组织的 default 命名空间（与线上注册路径一致）。
+	db *store.DB
+	// nsID 是节点所属的**命名空间**：节点/能力/任务的 store 调用都用它。
+	// 夹具里就是用户注册时同事务建的 default 命名空间（与线上注册路径一致）。
 	nsID    string
 	node    *store.Node
 	token   string
@@ -43,26 +42,15 @@ func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	// 组织 + 用户（组织是 org_id 的来源）
+	// 用户 + default 命名空间（RegisterUser 同事务：建用户 + 建 default + 播种内置能力）
+	// 组织层已在迁移 14 删除（#204）：命名空间是唯一隔离边界。
 	u := &store.User{ID: store.NewUserID(), Username: "u-" + store.NewUserID(), CreatedAt: store.Now()}
-	if err := db.CreateUser(u); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-	org, err := db.CreateOrg(ctx, "org-"+store.NewUserID())
+	nsRow, err := db.RegisterUser(ctx, u)
 	if err != nil {
-		t.Fatalf("create org: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
-	if err := db.AddOrgMember(ctx, org.ID, u.ID, store.OrgRoleOwner); err != nil {
-		t.Fatalf("add member: %v", err)
-	}
-
-	// 命名空间：CreateOrg 已在同一事务里建好 default 命名空间并播种内置能力，
-	// 节点注册走的就是它——令牌绑命名空间（设计文档 §2.1），
-	// 所以这个夹具拿到 default 命名空间就够跑全链路了。
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	// 节点令牌绑命名空间（设计文档 §2.1），所以拿到 default 命名空间就够跑全链路了。
+	nsID := nsRow.ID
 
 	// 能力定义（节点只能声明已定义的，不变量 I2；解析范围被命名空间收窄）
 	cap1 := &store.CapabilityVersion{
@@ -90,7 +78,7 @@ func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	return &nodeFixture{db: db, orgID: org.ID, nsID: nsID, node: node, token: token, srv: srv, handler: h}
+	return &nodeFixture{db: db, nsID: nsID, node: node, token: token, srv: srv, handler: h}
 }
 
 // dial 建立一条节点 WS 连接（不带 token 时为裸连，用于鉴权测试）。

@@ -27,9 +27,11 @@ func (d *DB) AdminCount(ctx context.Context) (int64, error) {
 }
 
 // UserWithStats 是管理后台用户列表的一行：用户基础信息 + 该用户的实体计数。
+//
+// #205：`MessageCount`（该用户所属组织的事件数）随组织层一起删除 ——
+// 现在「用户 → 事件」没有任何对应关系（事件属于命名空间），硬留只能造假数。
 type UserWithStats struct {
 	User
-	MessageCount int64 `json:"messageCount"`
 	DeviceCount  int64 `json:"deviceCount"`
 	KeyCount     int64 `json:"keyCount"`
 	SessionCount int64 `json:"sessionCount"`
@@ -40,9 +42,6 @@ type UserWithStats struct {
 func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at,
-		        (SELECT COUNT(*) FROM events e
-		           JOIN org_members om ON om.org_id = e.org_id
-		          WHERE om.user_id = u.id),
 		        (SELECT COUNT(*) FROM devices   d WHERE d.user_id = u.id),
 		        (SELECT COUNT(*) FROM api_keys  k WHERE k.user_id = u.id),
 		        (SELECT COUNT(*) FROM sessions  s WHERE s.user_id = u.id)
@@ -57,7 +56,7 @@ func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 		var u UserWithStats
 		var disabled int
 		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.CreatedAt,
-			&u.MessageCount, &u.DeviceCount, &u.KeyCount, &u.SessionCount); err != nil {
+			&u.DeviceCount, &u.KeyCount, &u.SessionCount); err != nil {
 			return nil, fmt.Errorf("scan user with stats: %w", err)
 		}
 		u.Disabled = disabled != 0
@@ -68,28 +67,32 @@ func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 
 // SystemStats 是管理后台的系统级总览统计。
 type SystemStats struct {
-	UserCount       int64        `json:"userCount"`       // 用户总数
-	AdminCount      int64        `json:"adminCount"`      // 超管数
-	ActiveUserCount int64        `json:"activeUserCount"` // 近 7 天有消息上报的用户数
-	MessageCount    int64        `json:"messageCount"`    // 消息总数
-	TodayMessages   int64        `json:"todayMessages"`   // 今日消息数
-	DeviceCount     int64        `json:"deviceCount"`     // 接收设备总数
-	EnabledDevices  int64        `json:"enabledDevices"`  // 启用设备数
-	KeyCount        int64        `json:"keyCount"`        // API Key 总数
-	SessionCount    int64        `json:"sessionCount"`    // 活跃会话数
-	DeliveredCount  int64        `json:"deliveredCount"`  // 已送达投递数（sent/delivered/acked）
-	DeliveryTotal   int64        `json:"deliveryTotal"`   // 投递尝试总数
-	Daily           []DayCount   `json:"daily"`           // 近 N 天每天全站消息数
-	TopUsers        []UserMetric `json:"topUsers"`        // 消息数 Top N 用户
+	UserCount      int64        `json:"userCount"`      // 用户总数
+	AdminCount     int64        `json:"adminCount"`     // 超管数
+	MessageCount   int64        `json:"messageCount"`   // 消息总数
+	TodayMessages  int64        `json:"todayMessages"`  // 今日消息数
+	DeviceCount    int64        `json:"deviceCount"`    // 接收设备总数
+	EnabledDevices int64        `json:"enabledDevices"` // 启用设备数
+	KeyCount       int64        `json:"keyCount"`       // API Key 总数
+	SessionCount   int64        `json:"sessionCount"`   // 活跃会话数
+	DeliveredCount int64        `json:"deliveredCount"` // 已送达投递数（sent/delivered/acked）
+	DeliveryTotal  int64        `json:"deliveryTotal"`  // 投递尝试总数
+	Daily          []DayCount   `json:"daily"`          // 近 N 天每天全站消息数
+	TopUsers       []UserMetric `json:"topUsers"`       // 最近活跃 Top N 用户（见 ListTopUsers）
 }
 
 // UserMetric 是 TopN 用户指标（仪表盘 Top 活跃用户）。
+//
+// #205：`MessageCount`（按 org_members 算的事件数）随组织层删除；活跃度改用
+// 会话的最近活跃时间（`sessions.last_seen` 的最大值）——这是现在唯一存在的
+// per-user 活动事实，且不会因为「没有组织」而失去定义。
 type UserMetric struct {
-	UserID       string `json:"userId"`
-	Username     string `json:"username"`
-	DisplayName  string `json:"displayName"`
-	MessageCount int64  `json:"messageCount"`
-	DeviceCount  int64  `json:"deviceCount"`
+	UserID      string `json:"userId"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	DeviceCount int64  `json:"deviceCount"`
+	// LastSeenAt 是该用户最近一次会话活跃时刻（unixepoch 秒；0 = 从没登录过）。
+	LastSeenAt int64 `json:"lastSeenAt"`
 }
 
 // SystemStats 计算全站总览统计。sinceSec 为热力图起始（unixepoch 秒）。
@@ -104,11 +107,8 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 	}{
 		{&s.UserCount, `SELECT COUNT(*) FROM users`, nil, "user count"},
 		{&s.AdminCount, `SELECT COUNT(*) FROM users WHERE role = ?`, []any{RoleAdmin}, "admin count"},
-		{&s.ActiveUserCount,
-			`SELECT COUNT(DISTINCT om.user_id) FROM events e
-			   JOIN org_members om ON om.org_id = e.org_id
-			  WHERE e.created_at >= strftime('%s','now','-7 days')`,
-			nil, "active user count"},
+		// #205：过去 7 天有活动的用户数曾经靠 org_members JOIN events 算，
+		// 组织层删除后「用户 → 事件」没有对应关系，这个口径不再可计算，字段一并删除。
 		// MessageCount 字段名保留（前端/接口契约不变），语义已是"事件数"。
 		// 改名会让管理后台 API 变成破坏性变更，收益不足。
 		{&s.MessageCount, `SELECT COUNT(*) FROM events`, nil, "event count"},
@@ -163,17 +163,14 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		return nil, fmt.Errorf("system stats daily rows: %w", err)
 	}
 
-	// Top 10 活跃用户（按所属组织的事件数降序）
+	// Top 10 活跃用户：按「最近一次会话活跃」降序（#205 之后不再有 per-org 事件计数）
 	trows, err := d.QueryContext(ctx,
 		`SELECT u.id, u.username, u.display_name,
-		        (SELECT COUNT(*) FROM events e
-		           JOIN org_members om2 ON om2.org_id = e.org_id
-		          WHERE om2.user_id = u.id),
-		        (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id)
+		        (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id),
+		        COALESCE((SELECT MAX(s.last_seen) FROM sessions s WHERE s.user_id = u.id), 0)
 		 FROM users u
-		 ORDER BY (SELECT COUNT(*) FROM events e2
-		             JOIN org_members om3 ON om3.org_id = e2.org_id
-		            WHERE om3.user_id = u.id) DESC
+		 ORDER BY COALESCE((SELECT MAX(s2.last_seen) FROM sessions s2 WHERE s2.user_id = u.id), 0) DESC,
+		          u.created_at ASC
 		 LIMIT 10`)
 	if err != nil {
 		return nil, fmt.Errorf("system stats top users: %w", err)
@@ -181,7 +178,7 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 	defer trows.Close()
 	for trows.Next() {
 		var u UserMetric
-		if err := trows.Scan(&u.UserID, &u.Username, &u.DisplayName, &u.MessageCount, &u.DeviceCount); err != nil {
+		if err := trows.Scan(&u.UserID, &u.Username, &u.DisplayName, &u.DeviceCount, &u.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("system stats top users scan: %w", err)
 		}
 		s.TopUsers = append(s.TopUsers, u)
@@ -220,27 +217,27 @@ func (d *DB) UpdateUserDisabled(ctx context.Context, id string, disabled bool) (
 }
 
 // AdminGlobalMessages 是管理后台全局消息流的一行（跨用户）。
-// AdminGlobalEvent 是全站事件流的一行（跨组织）。
+// AdminGlobalEvent 是全站事件流的一行（跨命名空间 —— #205 之后没有组织这一层）。
 //
 // 替代旧 AdminGlobalMessage：事件中心里"发生了什么"是 events，
 // 不再是"给某人推过的消息"。
 type AdminGlobalEvent struct {
-	ID        string `json:"id"`
-	OrgID     string `json:"orgId"`
-	Source    string `json:"source"`
-	Type      string `json:"type"`
-	TraceID   string `json:"traceId"`
-	IdemKey   string `json:"idemKey"`
-	CreatedAt int64  `json:"createdAt"`
+	ID          string `json:"id"`
+	NamespaceID string `json:"namespaceId"`
+	Source      string `json:"source"`
+	Type        string `json:"type"`
+	TraceID     string `json:"traceId"`
+	IdemKey     string `json:"idemKey"`
+	CreatedAt   int64  `json:"createdAt"`
 }
 
-// ListGlobalEvents 列出全站最近事件（跨组织，按 created_at DESC）。limit 上限 500。
+// ListGlobalEvents 列出全站最近事件（跨命名空间，按 created_at DESC）。limit 上限 500。
 func (d *DB) ListGlobalEvents(ctx context.Context, limit int) ([]*AdminGlobalEvent, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, org_id, source, type, trace_id, idem_key, created_at
+		`SELECT id, namespace_id, source, type, trace_id, idem_key, created_at
 		 FROM events
 		 ORDER BY created_at DESC
 		 LIMIT ?`, limit)
@@ -251,7 +248,7 @@ func (d *DB) ListGlobalEvents(ctx context.Context, limit int) ([]*AdminGlobalEve
 	out := []*AdminGlobalEvent{} // 不变量 I9：空列表是 [] 不是 null
 	for rows.Next() {
 		var e AdminGlobalEvent
-		if err := rows.Scan(&e.ID, &e.OrgID, &e.Source, &e.Type, &e.TraceID, &e.IdemKey, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.NamespaceID, &e.Source, &e.Type, &e.TraceID, &e.IdemKey, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan global event: %w", err)
 		}
 		out = append(out, &e)

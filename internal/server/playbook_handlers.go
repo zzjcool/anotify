@@ -21,17 +21,17 @@ import (
 // 这里只做三件事：作用域解析、请求体解码、错误映射。
 type playbookHandler struct {
 	db *store.DB
-	// console 复用 resolveOrg / resolveNamespaceCreate / namespaceLabel：
-	// org 与命名空间的判定规则只允许有一份实现，抄一份必然漂移。
+	// console 复用 resolveNamespace / namespaceLabel：
+	// 命名空间的判定规则只允许有一份实现，抄一份必然漂移。
 	console *consoleHandler
 }
 
-// 预案端点的作用域口径（契约 §6 / D2）：5 个端点**全部**用 resolveNamespaceCreate。
+// 预案端点的作用域口径（契约 §6 / D2）：5 个端点**全部**走 resolveNamespace(allowAll=false)。
 //
 // 与读端点的 `*` 汇总不同，预案**没有**跨命名空间形态：体检结论（status / ready /
 // total）是按单个命名空间算的推导量，把几个命名空间混在一起算没有意义。
-// 「别的 org」按 404 而不是 403：预案全是写端点（创建 / 安装 / 删除），
-// 403 会变成「命名空间 id 存在性探测器」（响应体与「不存在」逐字节相同）。
+// 不存在一律 404（组织层已在迁移 14 删除，不再有「别人的命名空间」可区分，
+// 也就不需要为写端点单独准备一套防探测映射）。
 
 // playbookCreateRequest 是 POST /v1/playbooks 的请求体（契约 §6）。
 //
@@ -52,12 +52,8 @@ func (h *playbookHandler) list(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET, POST")
 		return
 	}
-	orgID, ok := h.console.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	// 读端点也走 resolveNamespaceCreate：预案没有 `*` 形态（见文件头）。
-	ns, ok := h.console.resolveNamespaceCreate(w, r, orgID, "")
+	ns, ok := h.console.resolveNamespace(w, r, "", false)
 	if !ok {
 		return
 	}
@@ -79,24 +75,20 @@ func (h *playbookHandler) create(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET, POST")
 		return
 	}
-	orgID, ok := h.console.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	var req playbookCreateRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
 		return
 	}
 	// namespaceId：query 优先、body 兜底（namespaceParam 在 resolveNamespaceCreate 内部）。
-	ns, ok := h.console.resolveNamespaceCreate(w, r, orgID, req.NamespaceID)
+	ns, ok := h.console.resolveNamespace(w, r, req.NamespaceID, false)
 	if !ok {
 		return
 	}
 
 	pb := &store.Playbook{
 		NamespaceID: ns.ID,
-		// org_id 由 store 从命名空间派生（I10），这里不填。
+		// 隔离维度只有命名空间（I10），没有其它归属字段要填。
 		Slug:        req.Slug,
 		Name:        req.Name,
 		Description: req.Description,
@@ -121,14 +113,10 @@ func (h *playbookHandler) create(w http.ResponseWriter, r *http.Request) {
 
 // byKey 处理 GET / DELETE /v1/playbooks/{idOrSlug}（id 与 slug 都能定位）。
 func (h *playbookHandler) byKey(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.console.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	idOrSlug := r.PathValue("idOrSlug")
 	switch r.Method {
 	case http.MethodGet:
-		ns, ok := h.console.resolveNamespaceCreate(w, r, orgID, "")
+		ns, ok := h.console.resolveNamespace(w, r, "", false)
 		if !ok {
 			return
 		}
@@ -140,7 +128,7 @@ func (h *playbookHandler) byKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"playbook": detail})
 
 	case http.MethodDelete:
-		ns, ok := h.console.resolveNamespaceCreate(w, r, orgID, playbookBodyNamespace(w, r))
+		ns, ok := h.console.resolveNamespace(w, r, playbookBodyNamespace(w, r), false)
 		if !ok {
 			return
 		}
@@ -163,11 +151,7 @@ func (h *playbookHandler) install(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "POST")
 		return
 	}
-	orgID, ok := h.console.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
-	ns, ok := h.console.resolveNamespaceCreate(w, r, orgID, playbookBodyNamespace(w, r))
+	ns, ok := h.console.resolveNamespace(w, r, playbookBodyNamespace(w, r), false)
 	if !ok {
 		return
 	}
@@ -243,7 +227,7 @@ func writePlaybookError(w http.ResponseWriter, err error, event string) {
 			"code":  "invalid_playbook",
 		})
 	default:
-		// 命名空间类（不存在 / 别的 org / 跨命名空间引用）交给既有映射：
+		// 命名空间类（不存在 / 跨命名空间引用）交给既有映射：
 		// 状态码只有一处真相（writeNamespaceError），这里再抄一份必然分叉。
 		if handleNamespaceError(w, err) {
 			return

@@ -48,9 +48,8 @@ var (
 // 这个区分是本表存在的理由（见 schema.sql 迁移 7 的注释）。
 type Source struct {
 	ID string `json:"id"`
-	// NamespaceID 是隔离维度（I10/I11）：源属于某个命名空间。
+	// NamespaceID 是命名空间隔离维度：源属于某个命名空间。
 	NamespaceID string          `json:"namespaceId"`
-	OrgID       string          `json:"orgId"`
 	Name        string          `json:"name"`
 	Kind        string          `json:"kind"`
 	Config      json.RawMessage `json:"config"`
@@ -466,7 +465,7 @@ func NewSourceToken() (string, error) {
 	return "src_" + base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-const sourceColumns = `id, namespace_id, org_id, name, kind, config, enabled, last_fired_at, next_fire_at, created_at`
+const sourceColumns = `id, namespace_id, name, kind, config, enabled, last_fired_at, next_fire_at, created_at`
 
 func scanSource(r scanner) (*Source, error) {
 	var (
@@ -476,7 +475,7 @@ func scanSource(r scanner) (*Source, error) {
 		last    sql.NullInt64
 		next    sql.NullInt64
 	)
-	if err := r.Scan(&s.ID, &s.NamespaceID, &s.OrgID, &s.Name, &s.Kind, &cfg, &enabled,
+	if err := r.Scan(&s.ID, &s.NamespaceID, &s.Name, &s.Kind, &cfg, &enabled,
 		&last, &next, &s.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -532,13 +531,6 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	s.Config = cfg
 
-	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证）。
-	orgID, err := d.NamespaceOrgID(ctx, s.NamespaceID)
-	if err != nil {
-		return fmt.Errorf("create source: %w", err)
-	}
-	s.OrgID = orgID
-
 	// I11 第 ② 条：出口能力必须属于**同一个命名空间**。
 	// 违反一律报错（400），不静默忽略——静默忽略会让人以为配置生效了。
 	for _, t := range s.Targets {
@@ -572,8 +564,8 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sources (`+sourceColumns+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		s.ID, s.NamespaceID, s.OrgID, s.Name, s.Kind, string(s.Config), enabled,
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		s.ID, s.NamespaceID, s.Name, s.Kind, string(s.Config), enabled,
 		nil, nextFire, s.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %q", ErrSourceNameTaken, s.Name)
@@ -726,11 +718,6 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	if s.NamespaceID == "" || s.NamespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
-	orgID, err := d.NamespaceOrgID(ctx, s.NamespaceID)
-	if err != nil {
-		return fmt.Errorf("update source: %w", err)
-	}
-	s.OrgID = orgID
 	cur, err := d.GetSource(ctx, s.NamespaceID, s.ID)
 	if err != nil {
 		return err
@@ -831,7 +818,7 @@ func (d *DB) DeleteSource(ctx context.Context, namespaceID, id string) error {
 	return nil
 }
 
-// DueCronSources 取出「到点该触发」的 cron 源（跨组织，调度器用）。
+// DueCronSources 取出「到点该触发」的 cron 源（跨命名空间，调度器用）。
 //
 // now 由调用方传入（便于测试注入）；只取 enabled=1 的。
 func (d *DB) DueCronSources(ctx context.Context, now int64, limit int) ([]*Source, error) {

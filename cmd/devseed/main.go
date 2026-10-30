@@ -71,17 +71,20 @@ func main() {
 			role = store.RoleAdmin
 		}
 		u := &store.User{ID: store.NewUserID(), Username: *username, DisplayName: *username, Role: role, CreatedAt: store.Now()}
-		if err := db.CreateUser(u); err != nil {
+		// 注册即得 default 命名空间（契约 A1，同事务）—— seed 工具也走同一条规则，别绕开。
+		// 组织层已在迁移 14 删除（#204），命名空间是唯一隔离边界。
+		if _, err := db.RegisterUser(ctx, u); err != nil {
 			log.Fatal(err)
 		}
 		uid = u.ID
 	}
-	// 注册即得组织（契约 A1）。seed 工具也走同一条规则，别绕开。
-	org, err := db.EnsureOrgForUser(ctx, uid, *username)
+	// 示例数据落在本部署最早的命名空间上（DefaultNamespaceID 是迁移/后台任务的入口，
+	// 不是 HTTP 路径：HTTP 缺 namespaceId 一律 400，绝不回退）。
+	nsID, err := db.DefaultNamespaceID(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("组织就绪: %s (%s)", org.Name, org.ID)
+	log.Printf("命名空间就绪: %s", nsID)
 
 	km := auth.NewKeyManager(db)
 	sendPlain, _, err := km.CreateKey(uid, "dev-send", []string{"notify:send"})
@@ -109,7 +112,7 @@ func main() {
 
 	if *demo {
 		// 注意：必须在 sendPlain 生成之后——事件通过 HTTP + API Key 投递
-		if err := runDemo(ctx, db, org.ID, *demoURL, sendPlain, *demoFollow); err != nil {
+		if err := runDemo(ctx, db, nsID, *demoURL, sendPlain, *demoFollow); err != nil {
 			log.Fatalf("-demo 失败: %v", err)
 		}
 	}

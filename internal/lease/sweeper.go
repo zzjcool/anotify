@@ -55,14 +55,14 @@ type Sweeper struct {
 	// **事实：生产路径上这个调度是接上的。** New 里用类型断言自动接线
 	// （Store 同时实现 RetentionStore 就启用），而 internal/server/mux.go 传进来的
 	// 正是 *store.DB——所以 lease.New(*store.DB) 会让清理调度在进程里真的跑起来。
-	// **本轮没有运维 kill switch**：没有 env 开关、没有 orgs 列开关，关闭只能改代码
+	// **本轮没有运维 kill switch**：没有 env 开关、没有保留期配置开关，关闭只能改代码
 	// （不调用 New，或把本字段置 nil）。是否加开关待上级拍板。
 	//
 	// **但 events 保留期默认禁用**（store.DefaultEventRetentionSec ==
 	// store.EventRetentionDisabled == 0，0 表示禁用、不是「保留 0 秒」）：本版没有开关、
-	// 也没有 per-org 配置，lease 层**从不**给 store.RetentionOptions 填 EventRetentionSec，
+	// 也没有 per-namespace 配置，lease 层**从不**给 store.RetentionOptions 填 EventRetentionSec，
 	// store 见到 <=0 就跳过整个 events 阶段并置 EventsDisabled=true——所以本版升级后
-	// **不会删任何 events**；等 orgs.retention_sec 落地后由组织配置开启。
+	// **不会删任何 events**；等部署级保留期配置 retention_sec 落地后由部署配置开启。
 	// tasks 侧则按能力声明生效：默认安装（库里只有内置能力）下不删——
 	// 内置能力（store.BuiltinCapabilities）的 lifecycle 没声明 resultTtlSec（0 = 永不清理）；
 	// 但一旦有自定义能力声明了 resultTtlSec > 0（经 POST /v1/capabilities 落库），
@@ -165,7 +165,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 //
 // ①② 反过来的话，本轮刚被回收的任务要等下一轮（5s）才重派，白白多等一个周期。
 //
-// ③ 必须异步且放到 ①② 之后：无索引时单轮清理是「整 org 扫描 + TEMP B-TREE 排序」
+// ③ 必须异步且放到 ①② 之后：无索引时单轮清理是「整库扫描 + TEMP B-TREE 排序」
 // （契约 §6 实测计划），可能跑很久；同步执行会把同一条 goroutine 上的租约回收/重派
 // 一起堵住（Tick 与 Run 共用 goroutine，ticker 还会丢 tick）。
 func (s *Sweeper) Tick(ctx context.Context) {

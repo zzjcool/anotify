@@ -92,6 +92,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	9:  migrateEdgesFromSource,
 	10: migrateNodeCapabilityRunSpec,
 	12: migrateNamespaces,
+	14: migrateDropOrgLayer,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -233,6 +234,12 @@ func migrateEdgesFromSource(tx *sql.Tx) error {
 }
 
 // migrateNamespaces 迁移 12：命名空间隔离（#162）。
+//
+// 【历史快照】本函数（以及它引用的 nsRebuilds / ensureDefaultNamespacesTx /
+// seedBuiltinsForAllNamespacesTx）描述的是**迁移 12 那个时点的 schema**：
+// orgs 还在、业务表还带 org_id。迁移 14（migrateDropOrgLayer）之后这些列与表都不存在了，
+// 所以运行时代码（建命名空间 / 播种 / 回填）**不得**再调用这里的辅助，
+// 只能由迁移链在老库上按顺序重放。
 //
 // 三件事，缺一条就是线上事故：
 //  1. 给每个已存在的 org 建 `default` 命名空间（代码里不存在「没有命名空间」的分支）

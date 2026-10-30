@@ -40,18 +40,20 @@ func (d *nsTestDispatcher) Dispatch(_ context.Context, in route.DispatchInput) (
 }
 
 // nsTestEnv 是命名空间 / 源 / 统计相关端点的测试环境（真 SQLite + 真会话中间件）。
+//
+// 组织层已随迁移 14 删除（#204）：这里的夹具也就没有“组织”这一层，
+// 只有「用户 + 它注册时自带的 default 命名空间」，隔离边界就是命名空间本身。
 type nsTestEnv struct {
 	mux        http.Handler
 	db         *store.DB
 	userID     string
-	orgID      string
-	nsID       string // 组织的默认命名空间
+	nsID       string // 用户注册时自带的 default 命名空间
 	otherNSID  string // 第二个命名空间（需要时由 t.Helper 建）
 	cookie     *http.Cookie
 	dispatcher *nsTestDispatcher
 }
 
-// newNSTestEnv 建库 + 用户 + 组织（含默认命名空间）+ 会话，并挂上与生产一致的路由。
+// newNSTestEnv 建库 + 用户（含注册自带的 default 命名空间）+ 会话，并挂上与生产一致的路由。
 func newNSTestEnv(t *testing.T) *nsTestEnv {
 	t.Helper()
 	ctx := context.Background()
@@ -72,19 +74,19 @@ func newNSTestEnv(t *testing.T) *nsTestEnv {
 		t.Fatalf("new service: %v", err)
 	}
 
-	uid, err := db.InsertUser(ctx, "", "nsuser", "NS User")
+	// RegisterUser 在一个事务里建好「用户 + default 命名空间 + 内置能力」：
+	// 契约 §2.1 要求不存在没有命名空间的用户，所以 register 返回的就是它的命名空间。
+	uid := store.NewUserID()
+	defaultNS, err := db.RegisterUser(ctx, &store.User{
+		ID:          uid,
+		Username:    "u-" + uid,
+		DisplayName: "NS User",
+		CreatedAt:   store.Now(),
+	})
 	if err != nil {
-		t.Fatalf("insert user: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
-	org, err := db.EnsureOrgForUser(ctx, uid, "nsuser")
-	if err != nil {
-		t.Fatalf("ensure org: %v", err)
-	}
-	// 建组织时必须同事务建好 default 命名空间（契约 §2.1：不存在没有命名空间的 org）
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	nsID := defaultNS.ID
 	sess, err := svc.Sessions().Create(uid, "Test · NS")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -95,13 +97,11 @@ func newNSTestEnv(t *testing.T) *nsTestEnv {
 	srcH := &sourceHandler{
 		db:               db,
 		commander:        &source.Trigger{Store: db, Dispatcher: disp},
-		resolveOrg:       consoleH.resolveOrg,
 		resolveNamespace: consoleH.resolveNamespace,
 	}
-	nsH := &namespaceHandler{db: db, resolveOrg: consoleH.resolveOrg}
+	nsH := &namespaceHandler{db: db}
 	statsH := &statsHandler{
 		db:               db,
-		resolveOrg:       consoleH.resolveOrg,
 		resolveNamespace: consoleH.resolveNamespace,
 	}
 
@@ -123,7 +123,7 @@ func newNSTestEnv(t *testing.T) *nsTestEnv {
 	mux.Handle("POST /v1/hooks/{token}", noStore(http.HandlerFunc(srcH.hook)))
 
 	return &nsTestEnv{
-		mux: mux, db: db, userID: uid, orgID: org.ID, nsID: nsID,
+		mux: mux, db: db, userID: uid, nsID: nsID,
 		cookie:     &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 		dispatcher: disp,
 	}
@@ -163,7 +163,7 @@ func (e *nsTestEnv) doAnon(t *testing.T, method, path string, body any) *httptes
 // newNamespace 直接走 store 建一个命名空间（测试前置）。
 func (e *nsTestEnv) newNamespace(t *testing.T, slug, name string) *store.Namespace {
 	t.Helper()
-	ns, err := e.db.CreateNamespace(context.Background(), e.orgID, slug, name)
+	ns, err := e.db.CreateNamespace(context.Background(), slug, name)
 	if err != nil {
 		t.Fatalf("create namespace %q: %v", slug, err)
 	}
@@ -230,7 +230,7 @@ func TestNamespaceListIncludesResourceCounts(t *testing.T) {
 	body := nsDecode(t, rr)
 	list, _ := body["namespaces"].([]any)
 	if len(list) != 1 {
-		t.Fatalf("namespaces = %v, want 1 个（组织自带 default）", body["namespaces"])
+		t.Fatalf("namespaces = %v, want 1 个（注册时自带的 default）", body["namespaces"])
 	}
 	ns, _ := list[0].(map[string]any)
 
@@ -250,13 +250,13 @@ func TestNamespaceListIncludesResourceCounts(t *testing.T) {
 	if n, _ := ns["sourceCount"].(float64); n != 1 {
 		t.Fatalf("sourceCount = %v, want 1", ns["sourceCount"])
 	}
-	// 命名空间自身是组织级资源：行里不该再出现 namespaceId（那等于自指）
+	// 命名空间自身是部署级资源：行里不该再出现 namespaceId（那等于自指）
 	if _, ok := ns["namespaceId"]; ok {
 		t.Fatalf("namespace 行不该带 namespaceId：%v", ns)
 	}
 }
 
-// TestNamespaceListRequiresSession 命名空间列表是组织级数据，必须登录。
+// TestNamespaceListRequiresSession 命名空间列表是部署级数据，必须登录。
 func TestNamespaceListRequiresSession(t *testing.T) {
 	env := newNSTestEnv(t)
 	rr := env.doAnon(t, http.MethodGet, "/v1/namespaces", nil)
@@ -282,7 +282,7 @@ func TestNamespaceCreateRejectsInvalidSlug(t *testing.T) {
 	}
 }
 
-// TestNamespaceCreateDuplicateSlugConflicts 同组织内 slug 重复 → 409（UNIQUE(org_id, slug)）。
+// TestNamespaceCreateDuplicateSlugConflicts slug 重复 → 409（迁移 14 把唯一键从 (org_id, slug) 改成全局 UNIQUE(slug)）。
 func TestNamespaceCreateDuplicateSlugConflicts(t *testing.T) {
 	env := newNSTestEnv(t)
 	rr := env.do(t, http.MethodPost, "/v1/namespaces", map[string]any{"slug": "staging", "name": "预发"})
@@ -344,7 +344,7 @@ func TestNamespacePatchRenamesNameOnly(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("带 slug 的 PATCH status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
 	}
-	got, err := env.db.GetNamespace(context.Background(), env.orgID, ns.ID)
+	got, err := env.db.GetNamespace(context.Background(), ns.ID)
 	if err != nil {
 		t.Fatalf("get namespace: %v", err)
 	}
@@ -359,7 +359,8 @@ func TestNamespacePatchRenamesNameOnly(t *testing.T) {
 	}
 }
 
-// TestNamespacePatchUnknownIs404 不存在的 id → 404；别的组织的 id → 403。
+// TestNamespacePatchUnknownIs404 不存在的 id → 404（组织层删除后没有「别人的命名空间」，
+// 所以 404 就是「不存在」：探测与正常访问的回答本来就一致，没有第二套映射）。
 func TestNamespacePatchUnknownIs404(t *testing.T) {
 	env := newNSTestEnv(t)
 	rr := env.do(t, http.MethodPatch, "/v1/namespaces/ns_doesnotexist", map[string]any{"name": "x"})
@@ -368,7 +369,7 @@ func TestNamespacePatchUnknownIs404(t *testing.T) {
 	}
 }
 
-// TestNamespaceDeleteLastIs400 不允许删最后一个命名空间（契约 §2.1：不存在没有命名空间的组织）。
+// TestNamespaceDeleteLastIs400 不允许删最后一个命名空间（契约 §2.1：不存在没有命名空间的部署）。
 func TestNamespaceDeleteLastIs400(t *testing.T) {
 	env := newNSTestEnv(t)
 	rr := env.do(t, http.MethodDelete, "/v1/namespaces/"+env.nsID+"?force=true", nil)
@@ -376,7 +377,7 @@ func TestNamespaceDeleteLastIs400(t *testing.T) {
 		t.Fatalf("status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
 	}
 	// 删失败之后命名空间必须还在（不能删一半）
-	if _, err := env.db.GetNamespace(context.Background(), env.orgID, env.nsID); err != nil {
+	if _, err := env.db.GetNamespace(context.Background(), env.nsID); err != nil {
 		t.Fatalf("default namespace 应该还在：%v", err)
 	}
 }
@@ -407,7 +408,7 @@ func TestNamespaceDeleteBlockedListsBlocking(t *testing.T) {
 		t.Fatalf("blocking = %v, want 含 sources=1", blocking)
 	}
 	// 阻塞后命名空间还在
-	if _, err := env.db.GetNamespace(context.Background(), env.orgID, ns.ID); err != nil {
+	if _, err := env.db.GetNamespace(context.Background(), ns.ID); err != nil {
 		t.Fatalf("被阻塞的删除不该删掉任何东西：%v", err)
 	}
 
@@ -416,29 +417,41 @@ func TestNamespaceDeleteBlockedListsBlocking(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("force status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
-	if _, err := env.db.GetNamespace(context.Background(), env.orgID, ns.ID); err == nil {
+	if _, err := env.db.GetNamespace(context.Background(), ns.ID); err == nil {
 		t.Fatal("force=true 之后命名空间应该被删掉")
 	}
 }
 
-// TestNamespaceDeleteForeignOrgIs403 别的组织的命名空间 → 403（不是 404，也不是删得掉）。
-func TestNamespaceDeleteForeignOrgIs403(t *testing.T) {
+// TestNamespaceDeleteUnknownIs404 不存在的 id → 404；而一个**真实存在**的命名空间照常能删。
+//
+// 本用例改写自 TestNamespaceDeleteForeignOrgIs403（组织层已随迁移 14 删除，#204）：
+//
+//	改写前证明什么：跨组织越权被拦在 403 —— 别人的 org 里的命名空间，
+//	  即使 id 猜对了也删不掉（安全边界是 org_members）。
+//	改写后证明什么：一套部署 = 一个团队，本部署内任何已登录用户都能访问任何
+//	  **存在**的命名空间，所以唯一的失败原因是「不存在」→ 404；而 404 不是
+//	  权限拒绝的马甲 —— 紧接着对另一个真实存在的命名空间做完全相同的 DELETE
+//	  会返回 200 且行真的消失，说明那 404 只源于目标不存在。
+//
+// 为什么不能直接删掉这条：它是「删错了目标也不会误删到别人的东西」的守卫，
+// 换成命名空间口径后守卫的对象变成「不存在 vs 存在」两种回答不可混淆。
+func TestNamespaceDeleteUnknownIs404(t *testing.T) {
 	env := newNSTestEnv(t)
-	other, err := env.db.CreateOrg(context.Background(), "Other Org")
-	if err != nil {
-		t.Fatalf("create other org: %v", err)
-	}
-	foreign, err := env.db.CreateNamespace(context.Background(), other.ID, "prod", "别人的生产")
-	if err != nil {
-		t.Fatalf("create foreign namespace: %v", err)
+
+	rr := env.do(t, http.MethodDelete, "/v1/namespaces/ns_doesnotexist?force=true", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", rr.Code, rr.Body.String())
 	}
 
-	rr := env.do(t, http.MethodDelete, "/v1/namespaces/"+foreign.ID, nil)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (body=%s)", rr.Code, rr.Body.String())
+	// 同样的请求打到一个真实存在的命名空间上必须成功：否则上面的 404 可能只是
+	// 「一律拒绝」的马甲，而不是「这个 id 不存在」。
+	other := env.newNamespace(t, "staging", "预发")
+	rr = env.do(t, http.MethodDelete, "/v1/namespaces/"+other.ID+"?force=true", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("删真实存在的命名空间 status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
-	if _, err := env.db.GetNamespace(context.Background(), other.ID, foreign.ID); err != nil {
-		t.Fatalf("别人的命名空间不能被删：%v", err)
+	if _, err := env.db.GetNamespace(context.Background(), other.ID); err == nil {
+		t.Fatal("staging 命名空间应该已被删掉")
 	}
 }
 

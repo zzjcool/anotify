@@ -20,8 +20,8 @@ type fakeStore struct {
 }
 
 type finishedCall struct {
-	// namespaceID 必须来自 task.NamespaceID（不是 task.OrgID）：中枢执行是全局扫描，
-	// 但终态写入只在任务自己的命名空间内生效。
+	// namespaceID 必须来自 task.NamespaceID：中枢执行是全局扫描，
+	// 但终态写入只在任务自己的命名空间内生效（命名空间是唯一隔离维度，#204）。
 	namespaceID, taskID, status string
 	out                         *string
 	reported                    bool
@@ -63,10 +63,9 @@ func (f *fakeNotifier) NotifyUser(ctx context.Context, userID string, n push.Not
 func newTask(id, cap, params string) *store.Task {
 	return &store.Task{
 		ID: id,
-		// NamespaceID 与 OrgID 特意取**不同**的值：一旦 executor 把两者搞混
-		// （比如拿 task.OrgID 去调 FinishTask），断言会立即变红。
+		// NamespaceID 是唯一作用域参数：一旦 executor 拿错值去调 FinishTask，
+		// 下面 `namespaceID == "ns_x"` 的断言会立即变红。
 		NamespaceID: "ns_x",
-		OrgID:       "org_x",
 		TraceID:     "tr_x",
 		Capability:  cap,
 		Version:     1,

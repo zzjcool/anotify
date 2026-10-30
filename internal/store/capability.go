@@ -60,10 +60,9 @@ func (l Lifecycle) MaxAttemptsOrDefault() int {
 // 没有 Kind 字段——kind 由 DeriveKind 推导，不落库（不变量 I3）。
 type CapabilityVersion struct {
 	ID string `json:"id"`
-	// NamespaceID 是**隔离维度**（I10/I11）：能力定义属于命名空间，
+	// NamespaceID 是**隔离维度**（I11）：能力定义属于命名空间，
 	// 同一个 name@version 在 prod 与 staging 是两个不同的定义。
 	NamespaceID string `json:"namespaceId"`
-	OrgID       string `json:"orgId"`
 	Name        string `json:"name"`
 	// DisplayName 是**纯展示**标签（用户自己取的名字，如「分析 PR」）。
 	// 空串表示没取，前端回落到 name@version。
@@ -83,9 +82,9 @@ type CapabilityVersion struct {
 //
 // 参与：name（能力身份）、params_schema（键排序后）、outputs（排序后）、lifecycle、sticky。
 // 不参与：version / id / created_at —— 「同内容不同版本」要能被识别成同内容，
-// 否则 UNIQUE(org_id, content_hash) 永远不冲突，幂等创建就失效了。
+// 否则 UNIQUE(namespace_id, content_hash) 永远不冲突，幂等创建就失效了。
 //
-// 为什么 name 必须参与：`UNIQUE(org_id, content_hash)` 是**全组织内**唯一的。
+// 为什么 name 必须参与：`UNIQUE(namespace_id, content_hash)` 是**命名空间内**唯一的。
 // 若 name 不参与，`fix1` 与 `fix2`（schema/outputs 恰好相同但名字不同）
 // 会被当成「同一份内容」，第二个 CreateCapability 会把 fix2 的行改写成 fix1——
 // 两个不同能力被默默合并成一个，edges 两端指向同一个 capability_id。
@@ -181,7 +180,7 @@ func sortJSON(v any) any {
 // 同内容（content_hash 相同）不产生第二行：返回 nil 且把 c 填成已有那行——
 // 这是「幂等创建」，不是错误。
 //
-// 注意 UNIQUE(org_id, name, version) 仍然生效：同一 name 的同版本不允许
+// 注意 UNIQUE(namespace_id, name, version) 仍然生效：同一 name 的同版本不允许
 // 用**不同内容**覆盖（那是改定义，不是追加版本）。
 func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	if c == nil {
@@ -240,19 +239,11 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 		schema = "{}"
 	}
 
-	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证，
-	// 调用方给错 org 也写不出不一致的行）。
-	orgID, err := d.NamespaceOrgID(ctx, c.NamespaceID)
-	if err != nil {
-		return fmt.Errorf("create capability: %w", err)
-	}
-	c.OrgID = orgID
-
 	_, err = d.ExecContext(ctx,
 		`INSERT INTO capability_versions
-		   (id, namespace_id, org_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.NamespaceID, c.OrgID, c.Name, c.DisplayName, c.Version, schema, string(outputsJSON),
+		   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.NamespaceID, c.Name, c.DisplayName, c.Version, schema, string(outputsJSON),
 		string(lifecycleJSON), c.Sticky, c.Source, hash, c.CreatedAt)
 	if err == nil {
 		c.ContentHash = hash
@@ -284,7 +275,7 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 		return nil
 	}
 	if errors.Is(gerr, ErrNotFound) || gerr == nil {
-		// 不是 content_hash 冲突，那就是 (org_id, name, version) 冲突
+		// 不是 content_hash 冲突，那就是 (namespace_id, name, version) 冲突
 		if _, e2 := d.GetCapability(ctx, c.NamespaceID, c.Name, c.Version); e2 == nil {
 			return fmt.Errorf("create capability %s@%d: version already exists with different content (append-only, 见不变量 I8)", c.Name, c.Version)
 		}
@@ -306,7 +297,7 @@ func (d *DB) getCapabilityByHash(ctx context.Context, namespaceID, hash string) 
 }
 
 // capabilityColumns 是统一的列顺序，scanCapability 依赖它。
-const capabilityColumns = `id, namespace_id, org_id, name, display_name, version, params_schema,
+const capabilityColumns = `id, namespace_id, name, display_name, version, params_schema,
 	outputs, lifecycle, sticky, source, content_hash, created_at`
 
 // scanCapability 执行查询并解析一行；未命中返回 ErrNotFound。
@@ -314,7 +305,7 @@ func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*Ca
 	var c CapabilityVersion
 	var paramsSchema, outputs, lifecycle string
 	err := d.QueryRowContext(ctx, query, args...).Scan(
-		&c.ID, &c.NamespaceID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
+		&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 		&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -349,7 +340,7 @@ func (d *DB) GetCapability(ctx context.Context, namespaceID, name string, versio
 }
 
 // GetCapabilityByID 按 ID 取能力定义；未命中返回 ErrNotFound。
-// 必须同时校验 namespace_id（不变量 I10）：能力 id 全局唯一，但读路径仍要过隔离维度。
+// 必须同时校验 namespace_id（命名空间隔离）：能力 id 全局唯一，但读路径仍要过隔离维度。
 func (d *DB) GetCapabilityByID(ctx context.Context, namespaceID, id string) (*CapabilityVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -361,7 +352,7 @@ func (d *DB) GetCapabilityByID(ctx context.Context, namespaceID, id string) (*Ca
 // SetCapabilityDisplayName 只更新 display_name 一列。
 //
 // **不碰 content_hash**：显示名不参与 hash 计算（见 capHashInput 注释），
-// 所以改它不会产生新版本，也不会让 UNIQUE(org_id, content_hash) 冲突。
+// 所以改它不会产生新版本，也不会让 UNIQUE(namespace_id, content_hash) 冲突。
 //
 // 这是这张表上唯一的 UPDATE。其余字段全都 append-only（不变量 I8）——
 // display_name 是装饰字段，不属于"能力定义"，改它不影响任何旧 trace 的解释。
@@ -385,7 +376,7 @@ func (d *DB) SetCapabilityDisplayName(ctx context.Context, namespaceID, id, disp
 	return nil
 }
 
-// ListCapabilities 列出组织内全部能力定义（按 name、version 升序；空列表返回 []）。
+// ListCapabilities 列出命名空间内全部能力定义（按 name、version 升序；空列表返回 []）。
 func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*CapabilityVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -402,7 +393,7 @@ func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*Capab
 		var c CapabilityVersion
 		var paramsSchema, outputs, lifecycle string
 		if err := rows.Scan(
-			&c.ID, &c.NamespaceID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
+			&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan capability row: %w", err)

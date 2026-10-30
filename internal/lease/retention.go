@@ -11,16 +11,16 @@ package lease
 // **调度默认接线（写事实，不是「默认关闭」）**：`lease.New(*store.DB)` 里用类型断言
 // 自动接线（编译期 `var _ RetentionStore = (*store.DB)(nil)` 钉死签名不许漂移），
 // 而 `internal/server/mux.go` 传进来的正是 `*store.DB`，所以**生产上这个调度一直在跑**。
-// **本轮没有任何运维 kill switch**：没有 env 开关，也没有 orgs 列开关；想关只能改代码
+// **本轮没有任何运维 kill switch**：没有 env 开关，也没有保留期配置开关；想关只能改代码
 // （不调用 New，或把 Sweeper.Retention 置 nil）。这是已登记的缺口，是否加开关待上级拍板。
 //
 // **但「调度在跑」≠「会删 events」——events 保留期默认禁用**：
 // `store.DefaultEventRetentionSec == store.EventRetentionDisabled == 0`
-// （0 表示**禁用**，不是「保留 0 秒」）。本版**没有开关、也没有 per-org 配置**：lease 层
+// （0 表示**禁用**，不是「保留 0 秒」）。本版**没有开关、也没有 per-namespace 配置**：lease 层
 // 从不给 store.RetentionOptions 填 EventRetentionSec（见 runRetentionSweep），store 见到
 // `EventRetentionSec <= 0` 就跳过整个 events 阶段并把 report.EventsDisabled 置 true。
-// 所以**本版升级后不会删任何 events**；将来 `orgs.retention_sec` 落地后，才由组织配置开启。
-// 理由：events 删除不可逆，而本轮既无开关、也无 per-org 配置，还会静默改变
+// 所以**本版升级后不会删任何 events**；将来部署级保留期配置 `retention_sec` 落地后，才由部署配置开启。
+// 理由：events 删除不可逆，而本轮既无开关、也无 per-namespace 配置，还会静默改变
 // store/stats.go 的「总数 / 今日 / 热力图」口径。
 //
 // **首轮立即执行（lastRetention 初值 0 = 还没跑过）**：升级后的第一个 5s tick 就会真的
@@ -68,13 +68,13 @@ var _ RetentionStore = (*store.DB)(nil)
 // 积压当天能排空」的折中。
 const DefaultRetentionInterval = time.Hour
 
-// eventRetentionLogState 是日志里 events 保留期的**固定说法**：禁用（等 orgs.retention_sec）。
+// eventRetentionLogState 是日志里 events 保留期的**固定说法**：禁用（等部署级保留期配置 retention_sec）。
 //
 // 为什么固定成一个常量：本版 lease 层**从不**给 store.RetentionOptions.EventRetentionSec
 // 赋值（保持零值 0），而 store 把 0 解释为 EventRetentionDisabled = 禁用。各处日志若各写各的
 // （"0"、"off"、"n/a"），运维会把「events 一条没删」误读成「扫了但没东西可删」。
 // 也别改写成 event_retention_sec=0——那个 0 会被读成「保留 0 秒」。
-const eventRetentionLogState = "disabled（等 orgs.retention_sec）"
+const eventRetentionLogState = "disabled（等部署级保留期配置 retention_sec）"
 
 // maybeSweepRetention 是保留策略的**门禁 + 启动**（Tick 内部调用）：只判断「是否到点」
 // 并把清理 goroutine 起来，本函数（连同 Tick）立刻返回。
@@ -90,13 +90,13 @@ const eventRetentionLogState = "disabled（等 orgs.retention_sec）"
 //     为零——内置能力没声明 resultTtlSec；有自定义能力声明了 resultTtlSec>0 时，该能力下
 //     的过期终态任务会被按 TTL 删，不可逆），**events 阶段整段跳过**（一条都不删）。
 //     首轮还会打一条 Info（lease.sweeper.retention_enabled），里面写清 events 的真实状态
-//     （disabled，等 orgs.retention_sec）：否则只靠「真删了东西才打日志」，运维无法区分
+//     （disabled，等部署级保留期配置 retention_sec）：否则只靠「真删了东西才打日志」，运维无法区分
 //     「清理跑过但没东西可删」和「清理根本没开」，更分不清「events 被禁用」和「events 零命中」。
 //  3. 先写回 lastRetention 再启动：失败也记时刻。否则失败后每条 tick（5s）
 //     都会重试，库抖动时反而变成高频打库，把「自愈」变成「雪崩」。
 //  4. 重叠守卫：上一轮还没跑完（retentionBusy）→ 跳过本轮，不排队也不叠加。
 //     低频门是 1 小时，正常不会撞上；守卫防的是「上一轮跑了超过一个周期」——
-//     无索引时单轮是整 org 扫描 + TEMP B-TREE 排序（契约 §6），确实可能很慢。
+//     无索引时单轮是整库扫描 + TEMP B-TREE 排序（契约 §6），确实可能很慢。
 //     跳过时不推进 lastRetention：这一轮什么都没做，下一 tick 还会再试。
 //  5. 启动方式：retentionWG.Add → go runRetentionSweep；ctx 取消后 store 层自己检查
 //     ctx.Err() 提前返回，这里不额外加逻辑。失败只记日志，绝不影响下一轮巡检
@@ -146,14 +146,14 @@ func (s *Sweeper) maybeSweepRetention(ctx context.Context, now int64) {
 // runRetentionSweep 在独立 goroutine 里跑一轮真正的清理（maybeSweepRetention 启动）。
 //
 // 为什么必须独立于 Tick 的 goroutine：Tick 与 Run 共用同一条 goroutine，同步跑清理会把
-// 租约回收/重派一起堵住、ticker 还会丢 tick；而无索引时单轮清理是「整 org 扫描 +
+// 租约回收/重派一起堵住、ticker 还会丢 tick；而无索引时单轮清理是「整库扫描 +
 // TEMP B-TREE 排序」（契约 §6），一轮可能很久。
 //
 // Now 在 goroutine 里重新取：以「真正开始跑的时刻」算 cutoff，比 Tick 里那个可能已经
 // 过去若干秒的 now 更准（Tick 与执行之间隔着调度延迟，甚至上一次卡住的轮次）。
 //
 // **这里永远不给 EventRetentionSec 赋值**（保持零值 0 = 禁用）：本版没有 events 保留期的
-// 开关，也没有 per-org 配置，只有 `orgs.retention_sec` 落地后才由组织配置开启。0 让 store
+// 开关，也没有 per-namespace 配置，只有部署级保留期配置 `retention_sec` 落地后才由部署配置开启。0 让 store
 // 跳过整个 events 阶段（report.EventsDisabled = true），因此升级后不会删任何 events。
 // 回归断言：retention_test.go 的 TestRetentionNeverEnablesEventSweep 会盯住这一点。
 func (s *Sweeper) runRetentionSweep(ctx context.Context) {
@@ -162,9 +162,9 @@ func (s *Sweeper) runRetentionSweep(ctx context.Context) {
 	defer s.retentionBusy.Store(false)
 
 	// RetentionOptions 里**故意不填 EventRetentionSec**（保持零值 0 = 禁用，0 不是「保留 0 秒」）：
-	// 本版没有 events 保留期的开关，也没有 per-org 配置；store 见到 <=0 就跳过整个 events
+	// 本版没有 events 保留期的开关，也没有 per-namespace 配置；store 见到 <=0 就跳过整个 events
 	// 阶段并置 EventsDisabled=true。给它填值就等于「升级后不可逆地删 events」，要开启必须等
-	// orgs.retention_sec 落地后由组织配置决定——别在 lease 层加字段改默认。
+	// 部署级保留期配置 retention_sec 落地后由部署配置决定——别在 lease 层加字段改默认。
 	report, err := s.Retention.SweepRetention(ctx, store.RetentionOptions{
 		Now:     s.now(),
 		Batch:   s.retentionBatch(),
@@ -183,7 +183,7 @@ func (s *Sweeper) runRetentionSweep(ctx context.Context) {
 				"events_deleted", report.EventsDeleted,
 				"events_disabled", report.EventsDisabled,
 				"task_scopes", report.TaskScopes,
-				"orgs", report.Orgs,
+				"namespaces", report.Namespaces,
 				"truncated", report.Truncated,
 			)
 			return
@@ -195,7 +195,7 @@ func (s *Sweeper) runRetentionSweep(ctx context.Context) {
 			"events_deleted", report.EventsDeleted,
 			"events_disabled", report.EventsDisabled,
 			"task_scopes", report.TaskScopes,
-			"orgs", report.Orgs,
+			"namespaces", report.Namespaces,
 			"truncated", report.Truncated,
 		)
 		return // 不给巡检停摆：下一条 tick 照常回收租约/重派
@@ -210,7 +210,7 @@ func (s *Sweeper) runRetentionSweep(ctx context.Context) {
 			"events_deleted", report.EventsDeleted,
 			"events_disabled", report.EventsDisabled,
 			"task_scopes", report.TaskScopes,
-			"orgs", report.Orgs,
+			"namespaces", report.Namespaces,
 			"truncated", report.Truncated,
 		)
 	}

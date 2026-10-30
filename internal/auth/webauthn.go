@@ -205,32 +205,42 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 	if errors.Is(err, store.ErrNotFound) {
 		user = tmp
 		user.CreatedAt = store.Now()
-		// 首个注册的用户自动成为超级管理员：建用户前查 count，为 0 则 role=admin。
+		// 首个注册的用户自动成为超级管理员：**建用户之前**查 count，为 0 则 role=admin。
 		// 注意：SQLite 单写（SetMaxOpenConns(1)）使该查询与随后的 INSERT 串行化，
 		// 不会出现两个并发注册都看到 count=0 的情况。
-		if n, cerr := s.db.UserCount(r.Context()); cerr == nil && n == 0 {
-			user.Role = store.RoleAdmin
-		} else if cerr != nil {
+		//
+		// 角色必须在这里显式定好再交给 RegisterUser：它只在 Role 为空时兜底成 RoleMember，
+		// 不会替我们判断「首个用户」——「建用户之前查 count」这个时机是它看不到的。
+		count, cerr := s.db.UserCount(r.Context())
+		if cerr != nil {
 			return "", nil, fmt.Errorf("auth: 首用户判定失败: %w", cerr)
 		}
-		if err := s.db.CreateUser(user); err != nil {
-			return "", nil, err
-		}
-		// 注册即得组织（契约 A1）：没有组织就不违反「代码里不存在没有组织的分支」。
-		// 建组织失败不是致命错（用户已建好），记日志让 EnsureOrgForUser 后续补。
-		if org, oerr := s.db.EnsureOrgForUser(r.Context(), user.ID, user.Username); oerr != nil {
-			slog.Error("register: ensure org failed",
-				"event", "auth.register.org_failed",
-				"user_id", user.ID,
-				"error", oerr.Error(),
-			)
+		if count == 0 {
+			user.Role = store.RoleAdmin
 		} else {
-			slog.Info("register: org ready",
-				"event", "auth.register.org_ready",
-				"user_id", user.ID,
-				"org_id", org.ID,
-			)
+			user.Role = store.RoleMember
 		}
+		// 建用户 + `default` 命名空间 + 播种内置能力，**在同一个事务里**完成（#204 A1 / #207）。
+		//
+		// 与旧实现的语义差别（是加强，不是放宽）：旧路径是「CreateUser 先建好用户，
+		// 再 EnsureOrgForUser 补救」，补救失败时用户已经落库，只能记日志、留一个没有
+		// 命名空间的半成品（此后所有资源端点无处安放，而没人会发现）。RegisterUser 是
+		// 原子的：建命名空间或播种失败会整体回滚，不会留下半成品用户 —— 所以这里把失败
+		// 当成**致命错**返回给调用方让它重试注册，而不是继续往下签发一个空壳账号。
+		ns, nerr := s.db.RegisterUser(r.Context(), user)
+		if nerr != nil {
+			slog.Error("register: register user with namespace failed",
+				"event", "auth.register.namespace_failed",
+				"user_id", user.ID,
+				"error", nerr.Error(),
+			)
+			return "", nil, fmt.Errorf("auth: 注册失败（已回滚，未建用户）: %w", nerr)
+		}
+		slog.Info("register: namespace ready",
+			"event", "auth.register.namespace_ready",
+			"user_id", user.ID,
+			"namespace_id", ns.ID,
+		)
 		if user.Role == store.RoleAdmin {
 			slog.Info("first user promoted to admin",
 				"event", "auth.register.first_admin",

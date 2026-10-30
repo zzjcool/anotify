@@ -174,7 +174,7 @@ func TestPlaybookManifestRoundTrip(t *testing.T) {
 
 func TestPlaybookCreateGetListDelete(t *testing.T) {
 	db := newTestDB(t)
-	orgID, nsID := newTestOrgNS(t, db)
+	nsID, _ := newTestNS(t, db)
 	ctx := context.Background()
 
 	// 空列表是 []（不是 null）
@@ -199,15 +199,16 @@ func TestPlaybookCreateGetListDelete(t *testing.T) {
 	if byID.ID != bySlug.ID || byID.Slug != "nightly-audit" || byID.Name != "预案 nightly-audit" {
 		t.Fatalf("按 id / slug 取到的不一致：%+v vs %+v", byID, bySlug)
 	}
-	if byID.OrgID != orgID {
-		t.Fatalf("orgId 应从命名空间派生：want %s got %s", orgID, byID.OrgID)
+	// 每个预案都归属一个命名空间（#205 之后这是唯一的隔离维度）
+	if byID.NamespaceID != nsID {
+		t.Fatalf("namespaceId 应等于创建时的命名空间：want %s got %s", nsID, byID.NamespaceID)
 	}
 	if !strings.HasPrefix(byID.ID, "pb_") {
 		t.Fatalf("预案 id 应是 pb_ 前缀，got %s", byID.ID)
 	}
 
 	// 另一个命名空间取不到（I11）
-	other, err := db.CreateNamespace(ctx, orgID, "staging", "预发")
+	other, err := db.CreateNamespace(ctx, "staging", "预发")
 	if err != nil {
 		t.Fatalf("create second namespace: %v", err)
 	}

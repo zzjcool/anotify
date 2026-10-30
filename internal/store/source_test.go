@@ -522,7 +522,7 @@ func TestSourceConfigPayloadParsing(t *testing.T) {
 func TestSourceConfigKeepsVars(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, nsID := newTestOrgNS(t, db)
+	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.vars", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
@@ -532,7 +532,7 @@ func TestSourceConfigKeepsVars(t *testing.T) {
 
 	// cron：vars + payload 都要活过建源
 	src := &Source{
-		OrgID: orgID, NamespaceID: nsID, Name: "带变量的定时源", Kind: SourceKindCron,
+		NamespaceID: nsID, Name: "带变量的定时源", Kind: SourceKindCron,
 		Config: json.RawMessage(`{"expr":"0 3 * * *",
 			"vars":[{"name":"a","from":"pull_request.title"}],
 			"payload":{"env":"prod"}}`),
@@ -598,7 +598,7 @@ func TestSourceConfigKeepsVars(t *testing.T) {
 	// manual：payload + vars（含旧形态常量）同样要保留
 	manualWant := []VarDef{{Name: "env", Value: "prod", HasValue: true}}
 	msrc := &Source{
-		OrgID: orgID, NamespaceID: nsID, Name: "手动带参", Kind: SourceKindManual,
+		NamespaceID: nsID, Name: "手动带参", Kind: SourceKindManual,
 		Config:  json.RawMessage(`{"vars":[{"name":"env","value":"prod"}],"payload":{"sha":"deadbeef"}}`),
 		Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
@@ -618,7 +618,7 @@ func TestSourceConfigKeepsVars(t *testing.T) {
 
 	// webhook：只保留 token/event/vars，payload 不保留（投递体才是 payload）
 	wsrc := &Source{
-		OrgID: orgID, NamespaceID: nsID, Name: "带变量的钩子", Kind: SourceKindWebhook,
+		NamespaceID: nsID, Name: "带变量的钩子", Kind: SourceKindWebhook,
 		Config:  json.RawMessage(`{"vars":[{"name":"a","from":"x"}],"payload":{"env":"prod"}}`),
 		Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
@@ -684,13 +684,13 @@ func TestValidateSourceConfigPayloadOnlyForKeepingKinds(t *testing.T) {
 	// 4) 落到库上：建源/改源都不因非对象 payload 被拒，且库里不残留 payload
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, nsID := newTestOrgNS(t, db)
+	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.payload-kind", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 	src := &Source{
-		OrgID: orgID, NamespaceID: nsID, Name: "带坏 payload 的钩子", Kind: SourceKindWebhook,
+		NamespaceID: nsID, Name: "带坏 payload 的钩子", Kind: SourceKindWebhook,
 		Config:  json.RawMessage(`{"token":"src_x","payload":[1,2]}`),
 		Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
@@ -718,8 +718,8 @@ func TestValidateSourceConfigPayloadOnlyForKeepingKinds(t *testing.T) {
 
 	// 模拟历史行：老版本把非对象 payload 写进了 webhook 的 config
 	if _, err := db.ExecContext(ctx,
-		`UPDATE sources SET config = ? WHERE org_id = ? AND id = ?`,
-		`{"token":"src_x","payload":[1,2]}`, orgID, src.ID); err != nil {
+		`UPDATE sources SET config = ? WHERE namespace_id = ? AND id = ?`,
+		`{"token":"src_x","payload":[1,2]}`, nsID, src.ID); err != nil {
 		t.Fatalf("造历史行: %v", err)
 	}
 
@@ -776,13 +776,13 @@ func TestValidateSourceConfigRejectsBadVars(t *testing.T) {
 	// 落到 CreateSource 也仍然是可判的哨兵错误（不是被包成普通 error）
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, nsID := newTestOrgNS(t, db)
+	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.badvars", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 	err := db.CreateSource(ctx, &Source{
-		OrgID: orgID, NamespaceID: nsID, Name: "坏变量", Kind: SourceKindManual, Enabled: true,
+		NamespaceID: nsID, Name: "坏变量", Kind: SourceKindManual, Enabled: true,
 		Config:  json.RawMessage(`{"vars":[{"name":"a","from":"x"},{"name":"a","from":"y"}]}`),
 		Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	})
@@ -792,7 +792,7 @@ func TestValidateSourceConfigRejectsBadVars(t *testing.T) {
 	if !strings.Contains(err.Error(), "a") {
 		t.Fatalf("CreateSource 的错误消息里应有变量名, got %v", err)
 	}
-	if list, _ := db.ListSources(ctx, orgID); len(list) != 0 {
+	if list, _ := db.ListSources(ctx, nsID); len(list) != 0 {
 		t.Fatalf("被拒的源还是落库了: %d 个", len(list))
 	}
 }

@@ -20,24 +20,17 @@ import (
 	"testing"
 )
 
-// mkSiblingNamespace 在同一个组织里再建一个命名空间（默认命名空间之外的「第二套流程」）。
+// mkSiblingNamespace 在同一个部署里再建一个命名空间（默认命名空间之外的「第二套流程」）。
 //
-// 为什么测试要用**同 org 的兄弟命名空间**而不是「另一个 org」：迁移 12 之前
-// 隔离维度是 org_id，用两个 org 去验隔离，即使实现完全按 org 过滤也会通过；
-// 只有同一个 org 里的两个命名空间才能把 #162 的新隔离面钉死。
-func mkSiblingNamespace(t *testing.T, db *DB, slug string) (*Namespace, string) {
+// 为什么测试要用**同一部署里的兄弟命名空间**：迁移 14 之后命名空间是**唯一**隔离维度，
+// 用两个命名空间才能把隔离面钉死；组织这一层已经不存在了（#204 / #205）。
+func mkSiblingNamespace(t *testing.T, db *DB, slug string) *Namespace {
 	t.Helper()
-	ctx := context.Background()
-	// 找一个已存在的 org（默认命名空间属于它）
-	var orgID string
-	if err := db.QueryRow(`SELECT id FROM orgs ORDER BY created_at, id LIMIT 1`).Scan(&orgID); err != nil {
-		t.Fatalf("probe org: %v", err)
-	}
-	ns, err := db.CreateNamespace(ctx, orgID, slug, slug)
+	ns, err := db.CreateNamespace(context.Background(), slug, slug)
 	if err != nil {
 		t.Fatalf("create namespace %q: %v", slug, err)
 	}
-	return ns, orgID
+	return ns
 }
 
 // TestNamespaceCreateSeedsBuiltins 新建命名空间必须**同事务**播种内置能力。
@@ -49,14 +42,10 @@ func TestNamespaceCreateSeedsBuiltins(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	orgID := orgIDOfNamespace(t, db, nsID)
 
-	sandbox, err := db.CreateNamespace(ctx, orgID, "sandbox", "沙箱")
+	sandbox, err := db.CreateNamespace(ctx, "sandbox", "沙箱")
 	if err != nil {
 		t.Fatalf("create sandbox namespace: %v", err)
-	}
-	if sandbox.OrgID != orgID {
-		t.Fatalf("namespace org = %q, want %q", sandbox.OrgID, orgID)
 	}
 
 	got, err := db.GetCapability(ctx, sandbox.ID, "notify.phone", 1)
@@ -69,9 +58,6 @@ func TestNamespaceCreateSeedsBuiltins(t *testing.T) {
 	}
 	if got.NamespaceID != sandbox.ID {
 		t.Fatalf("notify.phone 落到了命名空间 %q, want %q", got.NamespaceID, sandbox.ID)
-	}
-	if got.OrgID != orgID {
-		t.Fatalf("notify.phone org = %q, want %q（org_id 由命名空间派生）", got.OrgID, orgID)
 	}
 
 	// 每个命名空间一份：默认命名空间与 sandbox 是**两行**，不是共享同一行。
@@ -103,16 +89,27 @@ func TestNamespaceCreateSeedsBuiltins(t *testing.T) {
 func TestNamespaceCRUD(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
+	// ---------- 列表：新库里还没有命名空间，返回 [] 不是 nil（不变量 I9）----------
+	empty, err := db.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("list namespaces on empty db: %v", err)
+	}
+	if empty == nil {
+		t.Fatal("ListNamespaces 返回 nil，需要 []（不变量 I9）")
+	}
+	if len(empty) != 0 {
+		t.Fatalf("新库返回 %d 个命名空间，want 0", len(empty))
+	}
+
 	nsID, _ := newTestNS(t, db)
-	orgID := orgIDOfNamespace(t, db, nsID)
 
 	// ---------- 列表：默认命名空间 + 计数 ----------
-	list, err := db.ListNamespaces(ctx, orgID)
+	list, err := db.ListNamespaces(ctx)
 	if err != nil {
 		t.Fatalf("list namespaces: %v", err)
 	}
 	if len(list) != 1 {
-		t.Fatalf("新组织应有 1 个命名空间（default），got %d: %+v", len(list), list)
+		t.Fatalf("注册一个用户后应有 1 个命名空间（default），got %d: %+v", len(list), list)
 	}
 	def := list[0]
 	if def.ID != nsID || def.Slug != DefaultNamespaceSlug {
@@ -128,34 +125,18 @@ func TestNamespaceCRUD(t *testing.T) {
 			def.NodeCount, def.SourceCount, def.EdgeCount)
 	}
 
-	// 空列表是 [] 不是 nil（不变量 I9）
-	empty, err := db.ListNamespaces(ctx, "org_does_not_exist")
-	if err != nil {
-		t.Fatalf("list for unknown org: %v", err)
-	}
-	if empty == nil {
-		t.Fatal("ListNamespaces 返回 nil，需要 []（不变量 I9）")
-	}
-	if len(empty) != 0 {
-		t.Fatalf("未知组织返回 %d 个命名空间，want 0", len(empty))
-	}
-
 	// ---------- 建：slug 校验 ----------
 	for _, bad := range []string{"", "  ", "Upper", "-lead", "under_score", "中文", strings.Repeat("a", 40)} {
-		if _, err := db.CreateNamespace(ctx, orgID, bad, "坏 slug"); err == nil {
+		if _, err := db.CreateNamespace(ctx, bad, "坏 slug"); err == nil {
 			t.Errorf("CreateNamespace(slug=%q) 应该被拒绝", bad)
 		}
 		// 非法 slug 不是「重名」：两者混淆会让 handler 回错状态码（400 vs 409）
-		if _, err := db.CreateNamespace(ctx, orgID, bad, "坏 slug"); errors.Is(err, ErrNamespaceExists) {
+		if _, err := db.CreateNamespace(ctx, bad, "坏 slug"); errors.Is(err, ErrNamespaceExists) {
 			t.Errorf("CreateNamespace(slug=%q) 被报成了 ErrNamespaceExists（应为非法 slug）", bad)
 		}
 	}
-	// 组织不存在 → ErrNotFound（不能让命名空间挂在不存在的 org 上）
-	if _, err := db.CreateNamespace(ctx, "org_nope", "ok-slug", "x"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("CreateNamespace(unknown org) err = %v, want ErrNotFound", err)
-	}
 
-	staging, err := db.CreateNamespace(ctx, orgID, "staging", "预发布")
+	staging, err := db.CreateNamespace(ctx, "staging", "预发布")
 	if err != nil {
 		t.Fatalf("create staging: %v", err)
 	}
@@ -163,32 +144,41 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatalf("新建命名空间字段不对: %+v", staging)
 	}
 
-	// 同组织 slug 重复 → ErrNamespaceExists（UNIQUE(org_id, slug)）
-	if _, err := db.CreateNamespace(ctx, orgID, "staging", "又一个"); !errors.Is(err, ErrNamespaceExists) {
+	// slug 全局唯一（迁移 14：UNIQUE(slug)）→ 重复一律 ErrNamespaceExists
+	if _, err := db.CreateNamespace(ctx, "staging", "又一份 staging"); !errors.Is(err, ErrNamespaceExists) {
 		t.Fatalf("重复 slug err = %v, want ErrNamespaceExists", err)
 	}
-	// 别的组织可以用同一个 slug（slug 只在组织内唯一）
+	// 第二个注册用户的默认 slug 必须让位（否则撞 UNIQUE(slug)）
 	otherNS, _ := newTestNS(t, db)
-	if _, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, otherNS), "staging", "别的组织的 staging"); err != nil {
-		t.Fatalf("slug 不该跨组织唯一: %v", err)
+	other, err := db.GetNamespace(ctx, otherNS)
+	if err != nil {
+		t.Fatalf("get second default namespace: %v", err)
+	}
+	if other.Slug != "default-2" {
+		t.Fatalf("第二个用户的默认命名空间 slug = %q, want default-2（slug 全局唯一）", other.Slug)
+	}
+	// 手动抢 default 一样被拒
+	if _, err := db.CreateNamespace(ctx, DefaultNamespaceSlug, "抢默认"); !errors.Is(err, ErrNamespaceExists) {
+		t.Fatalf("显式抢 default slug err = %v, want ErrNamespaceExists", err)
 	}
 
-	// ---------- 取：三态 ----------
-	if got, err := db.GetNamespace(ctx, orgID, staging.ID); err != nil || got.Slug != "staging" {
+	// ---------- 取：命中 / 不存在 ----------
+	if got, err := db.GetNamespace(ctx, staging.ID); err != nil || got.Slug != "staging" {
 		t.Fatalf("GetNamespace = %+v, %v", got, err)
 	}
-	if _, err := db.GetNamespace(ctx, orgID, "ns_does_not_exist"); !errors.Is(err, ErrNamespaceNotFound) {
+	if _, err := db.GetNamespace(ctx, "ns_does_not_exist"); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Fatalf("GetNamespace(missing) err = %v, want ErrNamespaceNotFound", err)
 	}
-	if _, err := db.GetNamespace(ctx, orgIDOfNamespace(t, db, otherNS), staging.ID); !errors.Is(err, ErrNamespaceForbidden) {
-		t.Fatalf("GetNamespace(别的 org) err = %v, want ErrNamespaceForbidden（403 而不是 404）", err)
+	// 空 id 与 "*" 一律 ErrNamespaceRequired（绝不回退默认命名空间）
+	if _, err := db.GetNamespace(ctx, ""); !errors.Is(err, ErrNamespaceRequired) {
+		t.Fatalf("GetNamespace(\"\") err = %v, want ErrNamespaceRequired", err)
 	}
 
 	// ---------- 改名：只改 name，slug 不动 ----------
-	if err := db.RenameNamespace(ctx, orgID, staging.ID, "预发布环境"); err != nil {
+	if err := db.RenameNamespace(ctx, staging.ID, "预发布环境"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	renamed, err := db.GetNamespace(ctx, orgID, staging.ID)
+	renamed, err := db.GetNamespace(ctx, staging.ID)
 	if err != nil {
 		t.Fatalf("get renamed: %v", err)
 	}
@@ -199,23 +189,11 @@ func TestNamespaceCRUD(t *testing.T) {
 	if renamed.Slug != "staging" {
 		t.Fatalf("rename 改了 slug: %q, want staging", renamed.Slug)
 	}
-	if err := db.RenameNamespace(ctx, orgID, staging.ID, "  "); err == nil {
+	if err := db.RenameNamespace(ctx, staging.ID, "  "); err == nil {
 		t.Error("RenameNamespace(空名) 应该被拒绝")
 	}
-	if err := db.RenameNamespace(ctx, orgIDOfNamespace(t, db, otherNS), staging.ID, "偷改"); !errors.Is(err, ErrNamespaceForbidden) {
-		t.Errorf("跨组织改名 err = %v, want ErrNamespaceForbidden", err)
-	}
-
-	// ---------- 删：最后一个不许删 ----------
-	// 新组织只有 default → ErrLastNamespace（哪怕里面是空的：删了就没有
-	// 「这套流程属于哪里」了，代码里不存在没有命名空间的 org）。
-	soloNS, _ := newTestNS(t, db)
-	soloOrg := orgIDOfNamespace(t, db, soloNS)
-	if err := db.DeleteNamespace(ctx, soloOrg, soloNS, true); !errors.Is(err, ErrLastNamespace) {
-		t.Fatalf("删最后一个命名空间 err = %v, want ErrLastNamespace", err)
-	}
-	if _, err := db.GetNamespace(ctx, soloOrg, soloNS); err != nil {
-		t.Fatalf("被拒的删除还是把最后一个命名空间删掉了: %v", err)
+	if err := db.RenameNamespace(ctx, "ns_does_not_exist", "偷改"); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Errorf("改名不存在的命名空间 err = %v, want ErrNamespaceNotFound", err)
 	}
 
 	// ---------- 删：非空且 !force → 409 + 列出阻塞对象 ----------
@@ -245,7 +223,7 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatalf("create task in staging: %v", err)
 	}
 
-	err = db.DeleteNamespace(ctx, orgID, staging.ID, false)
+	err = db.DeleteNamespace(ctx, staging.ID, false)
 	var blocked *NamespaceBlockedError
 	if !errors.As(err, &blocked) {
 		t.Fatalf("非空命名空间删除 err = %v (%T), want *NamespaceBlockedError", err, err)
@@ -273,10 +251,10 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatalf("ensure graph version in staging: %v", err)
 	}
 
-	if err := db.DeleteNamespace(ctx, orgID, staging.ID, true); err != nil {
+	if err := db.DeleteNamespace(ctx, staging.ID, true); err != nil {
 		t.Fatalf("force delete: %v", err)
 	}
-	if _, err := db.GetNamespace(ctx, orgID, staging.ID); !errors.Is(err, ErrNamespaceNotFound) {
+	if _, err := db.GetNamespace(ctx, staging.ID); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Fatalf("删完还查得到命名空间: %v", err)
 	}
 	// 五张表 + 子表都得清空（用 namespace_id 直接数，避免依赖读路径先报错）
@@ -293,8 +271,8 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatal("删 staging 顺手清空了默认命名空间")
 	}
 
-	// 同名 slug 可以重建（UNIQUE(org_id, slug) 随行一起释放）
-	if _, err := db.CreateNamespace(ctx, orgID, "staging", "预发布（重建）"); err != nil {
+	// 同名 slug 可以重建（UNIQUE(slug) 随行一起释放）
+	if _, err := db.CreateNamespace(ctx, "staging", "预发布（重建）"); err != nil {
 		t.Fatalf("删除后同名 slug 应可重建: %v", err)
 	}
 }
@@ -385,7 +363,7 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsA, _ := newTestNS(t, db)
-	staging, orgID := mkSiblingNamespace(t, db, "staging")
+	staging := mkSiblingNamespace(t, db, "staging")
 	nsB := staging.ID
 
 	// 两边各一套定义（同名不同行）
@@ -398,15 +376,15 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 			t.Fatalf("create %s@%d: %v", c.Name, c.Version, err)
 		}
 	}
-	// 每行都带着自己的命名空间与派生的 org（I10）
+	// 每行都带着自己的命名空间
 	for _, c := range []*CapabilityVersion{upA, sinkA} {
-		if c.NamespaceID != nsA || c.OrgID != orgID {
-			t.Fatalf("capability %s 落错命名空间/组织: %+v", c.Name, c)
+		if c.NamespaceID != nsA {
+			t.Fatalf("capability %s 落错命名空间: %+v", c.Name, c)
 		}
 	}
 	for _, c := range []*CapabilityVersion{upB, sinkB} {
-		if c.NamespaceID != nsB || c.OrgID != orgID {
-			t.Fatalf("capability %s 落错命名空间/组织: %+v", c.Name, c)
+		if c.NamespaceID != nsB {
+			t.Fatalf("capability %s 落错命名空间: %+v", c.Name, c)
 		}
 	}
 
@@ -525,9 +503,6 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 	if got.NamespaceID != nsA {
 		t.Fatalf("子任务 namespace = %q, want 继承父任务的 %q", got.NamespaceID, nsA)
 	}
-	if got.OrgID != orgID {
-		t.Fatalf("子任务 org = %q, want %q", got.OrgID, orgID)
-	}
 }
 
 // TestNamespaceRoundTrips 往返一致性（AGENTS.md §3）：七张表存什么读什么。
@@ -539,9 +514,8 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	orgID := orgIDOfNamespace(t, db, nsID)
 
-	sandbox, err := db.CreateNamespace(ctx, orgID, "sandbox", "沙箱")
+	sandbox, err := db.CreateNamespace(ctx, "sandbox", "沙箱")
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
@@ -556,8 +530,8 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
-	if gotCap.NamespaceID != ns || gotCap.OrgID != orgID {
-		t.Fatalf("capability namespace/org = %q/%q, want %q/%q", gotCap.NamespaceID, gotCap.OrgID, ns, orgID)
+	if gotCap.NamespaceID != ns {
+		t.Fatalf("capability namespace = %q, want %q", gotCap.NamespaceID, ns)
 	}
 
 	// node
@@ -585,8 +559,8 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get source: %v", err)
 	}
-	if gotSrc.NamespaceID != ns || gotSrc.OrgID != orgID {
-		t.Fatalf("source namespace/org = %q/%q, want %q/%q", gotSrc.NamespaceID, gotSrc.OrgID, ns, orgID)
+	if gotSrc.NamespaceID != ns {
+		t.Fatalf("source namespace = %q, want %q", gotSrc.NamespaceID, ns)
 	}
 	// source_targets 的 namespace_id 从父行（source）取
 	if n := countRows(t, db, "source_targets", "source_id = ? AND namespace_id = ?", src.ID, ns); n != 1 {
@@ -602,8 +576,8 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get event: %v", err)
 	}
-	if gotEv.NamespaceID != ns || gotEv.OrgID != orgID {
-		t.Fatalf("event namespace/org = %q/%q, want %q/%q", gotEv.NamespaceID, gotEv.OrgID, ns, orgID)
+	if gotEv.NamespaceID != ns {
+		t.Fatalf("event namespace = %q, want %q", gotEv.NamespaceID, ns)
 	}
 
 	// task
@@ -615,8 +589,8 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if gotTask.NamespaceID != ns || gotTask.OrgID != orgID {
-		t.Fatalf("task namespace/org = %q/%q, want %q/%q", gotTask.NamespaceID, gotTask.OrgID, ns, orgID)
+	if gotTask.NamespaceID != ns {
+		t.Fatalf("task namespace = %q, want %q", gotTask.NamespaceID, ns)
 	}
 
 	// edge
@@ -629,7 +603,7 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list edges: %v", err)
 	}
-	if len(edges) != 1 || edges[0].NamespaceID != ns || edges[0].OrgID != orgID {
+	if len(edges) != 1 || edges[0].NamespaceID != ns {
 		t.Fatalf("edge 往返不一致: %+v", edges)
 	}
 
@@ -642,8 +616,8 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get graph version: %v", err)
 	}
-	if gotGV.NamespaceID != ns || gotGV.OrgID != orgID {
-		t.Fatalf("graph_version namespace/org = %q/%q, want %q/%q", gotGV.NamespaceID, gotGV.OrgID, ns, orgID)
+	if gotGV.NamespaceID != ns {
+		t.Fatalf("graph_version namespace = %q, want %q", gotGV.NamespaceID, ns)
 	}
 	// 对照组：默认命名空间里这些资源一个都看不到（写进 sandbox 的东西不能漏过来）
 	if list, err := db.ListCapabilities(ctx, nsID); err != nil {
@@ -657,39 +631,50 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	}
 }
 
-// TestCreateOrgCreatesDefaultNamespace 建组织 = 建组织 + default 命名空间 + 播种（契约 §2.5）。
+// TestRegisterUserCreatesDefaultNamespace 注册 = 建用户 + default 命名空间 + 播种（契约 §2.5）。
 //
-// 代码里不存在「没有命名空间的分支」：组织建好了却没有命名空间，之后所有资源端点
-// 都无处安放。所以 CreateOrg 必须同事务做完三件事。
-func TestCreateOrgCreatesDefaultNamespace(t *testing.T) {
+// 代码里不存在「没有命名空间的分支」：用户建好了却没有命名空间，之后所有资源端点
+// 都无处安放。所以 RegisterUser 必须同事务做完三件事；组织这一层已经删除（#205）。
+func TestRegisterUserCreatesDefaultNamespace(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	org, err := db.CreateOrg(ctx, "acme-"+NewUserID())
+	u := &User{ID: NewUserID(), Username: "acme-" + NewUserID(), DisplayName: "注册用户", CreatedAt: Now()}
+	ns, err := db.RegisterUser(ctx, u)
 	if err != nil {
-		t.Fatalf("create org: %v", err)
-	}
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("新组织没有默认命名空间: %v", err)
-	}
-	ns, err := db.GetNamespace(ctx, org.ID, nsID)
-	if err != nil {
-		t.Fatalf("get default namespace: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
 	if ns.Slug != DefaultNamespaceSlug {
 		t.Fatalf("默认命名空间 slug = %q, want %q", ns.Slug, DefaultNamespaceSlug)
 	}
-	if _, err := db.GetCapability(ctx, nsID, "notify.phone", 1); err != nil {
+	if _, err := db.GetCapability(ctx, ns.ID, "notify.phone", 1); err != nil {
 		t.Fatalf("默认命名空间没有播种内置能力: %v", err)
 	}
-
-	// DefaultNamespaceID 的两条错误分支
-	if _, err := db.DefaultNamespaceID(ctx, ""); !errors.Is(err, ErrNamespaceRequired) {
-		t.Errorf("DefaultNamespaceID(\"\") err = %v, want ErrNamespaceRequired", err)
+	// 用户与命名空间都真的落库了
+	if got, err := db.GetUserByUsername(u.Username); err != nil || got.ID != u.ID {
+		t.Fatalf("注册后查不到用户: %+v, %v", got, err)
 	}
-	if _, err := db.DefaultNamespaceID(ctx, "org_nope"); !errors.Is(err, ErrNamespaceNotFound) {
-		t.Errorf("DefaultNamespaceID(未知组织) err = %v, want ErrNamespaceNotFound", err)
+	// 再注册一个 → 第二个 default 让位成 default-2（slug 全局唯一）
+	u2 := &User{ID: NewUserID(), Username: "acme-" + NewUserID(), CreatedAt: Now()}
+	ns2, err := db.RegisterUser(ctx, u2)
+	if err != nil {
+		t.Fatalf("register second user: %v", err)
+	}
+	if ns2.Slug != "default-2" {
+		t.Fatalf("第二个默认命名空间 slug = %q, want default-2", ns2.Slug)
+	}
+
+	// DefaultNamespaceID 的两条分支：有命名空间 → 最早那个；空库 → ErrNamespaceNotFound
+	first, err := db.DefaultNamespaceID(ctx)
+	if err != nil {
+		t.Fatalf("default namespace id: %v", err)
+	}
+	if first != ns.ID {
+		t.Fatalf("DefaultNamespaceID = %q, want 最早注册的 %q", first, ns.ID)
+	}
+	emptyDB := newTestDB(t)
+	if _, err := emptyDB.DefaultNamespaceID(ctx); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Errorf("空库 DefaultNamespaceID err = %v, want ErrNamespaceNotFound", err)
 	}
 }
 
@@ -793,11 +778,11 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 		defer up.Close()
 		ctx := context.Background()
 
-		nsID, err := up.DefaultNamespaceID(ctx, legacyOrgID)
+		nsID, err := up.DefaultNamespaceID(ctx)
 		if err != nil {
 			t.Fatalf("迁移 12 没给老组织建默认命名空间: %v", err)
 		}
-		ns, err := up.GetNamespace(ctx, legacyOrgID, nsID)
+		ns, err := up.GetNamespace(ctx, nsID)
 		if err != nil {
 			t.Fatalf("get default namespace: %v", err)
 		}
@@ -843,8 +828,8 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 			return
 		}
 
-		// ② 每行的 namespace_id 都指向该 org 的默认命名空间，且 org_id 没被改写
-		// （只挑同时有 id 与 org_id 的**一级**资源表；子表没有 org_id，见下面单独断言）
+		// ② 每行的 namespace_id 都指向默认命名空间
+		// （只挑一级资源表；子表的 namespace_id 从父行继承，见下面单独断言）
 		topRows := []struct{ table, id string }{
 			{"capability_versions", legacyCapID},
 			{"nodes", legacyNodeID},
@@ -854,21 +839,18 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 			{"edges", ""}, // edges 没有 id 列，按主键定位（见循环内的特殊处理）
 		}
 		for _, r := range topRows {
-			var gotNS, gotOrg string
-			q := `SELECT namespace_id, org_id FROM ` + r.table + ` WHERE id = ?`
+			var gotNS string
+			q := `SELECT namespace_id FROM ` + r.table + ` WHERE id = ?`
 			args := []any{r.id}
 			if r.table == "edges" {
-				q = `SELECT namespace_id, org_id FROM edges WHERE from_key = ? AND to_capability = ?`
+				q = `SELECT namespace_id FROM edges WHERE from_key = ? AND to_capability = ?`
 				args = []any{legacyCapID, legacyCapID}
 			}
-			if err := up.QueryRow(q, args...).Scan(&gotNS, &gotOrg); err != nil {
+			if err := up.QueryRow(q, args...).Scan(&gotNS); err != nil {
 				t.Fatalf("read legacy %s: %v", r.table, err)
 			}
 			if gotNS != nsID {
 				t.Errorf("老 %s 行的 namespace_id = %q, want %q（必须回填到默认命名空间）", r.table, gotNS, nsID)
-			}
-			if gotOrg != legacyOrgID {
-				t.Errorf("老 %s 行的 org_id = %q, want %q（迁移不该改写 org_id）", r.table, gotOrg, legacyOrgID)
 			}
 		}
 		// 子表的 namespace_id 从父行取（不是按 org 猜）
@@ -938,7 +920,7 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 		}
 		defer up.Close()
 		ctx := context.Background()
-		nsID, err := up.DefaultNamespaceID(ctx, legacyOrgID)
+		nsID, err := up.DefaultNamespaceID(ctx)
 		if err != nil {
 			t.Fatalf("默认命名空间: %v", err)
 		}

@@ -23,7 +23,6 @@ import (
 // 「一次 POST 能落出一条 event 并派发出首批 task」这条端到端链路。
 type eventFixture struct {
 	db      *store.DB
-	orgID   string
 	nsID    string
 	userID  string
 	apiKey  string
@@ -42,19 +41,14 @@ func newEventFixture(t *testing.T) *eventFixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	// 用户 + 组织（RegisterUserWithOrg 一步到位，owner 关系会自动建）。
-	// 第二个参数是 firstUserAdmin：库是空的，这个用户就是管理员。
+	// 用户 + default 命名空间（RegisterUser 一步到位，同事务播种内置能力）。
+	// 组织层已在迁移 14 删除（#204）：命名空间是唯一隔离边界。
 	user := &store.User{ID: store.NewUserID(), Username: "u-" + store.NewUserID(), CreatedAt: store.Now()}
-	org, err := db.RegisterUserWithOrg(ctx, user, true)
+	nsRow, err := db.RegisterUser(ctx, user)
 	if err != nil {
-		t.Fatalf("register user with org: %v", err)
+		t.Fatalf("register user: %v", err)
 	}
-	// 建组织时同事务播种 default 命名空间（契约 §2.5）：命名空间资源没有隐式默认，
-	// 所以贴纸式地取一次。
-	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
-	}
+	nsID := nsRow.ID
 
 	// 目标能力：review@1（有节点声明 → 会建任务）
 	//
@@ -62,7 +56,6 @@ func newEventFixture(t *testing.T) *eventFixture {
 	// 来源名 "github"，见下面 CreateEdge 的 FromIsSource。
 	review := &store.CapabilityVersion{
 		NamespaceID:  nsID,
-		OrgID:        org.ID,
 		Name:         "review",
 		Version:      1,
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["number"],"properties":{"number":{"type":"number"}}}`),
@@ -75,7 +68,6 @@ func newEventFixture(t *testing.T) *eventFixture {
 	// 入口边：来源 "github" 的 pull_request.opened → review
 	if err := db.CreateEdge(ctx, &store.Edge{
 		NamespaceID:    nsID,
-		OrgID:          org.ID,
 		FromIsSource:   true,
 		FromCapability: "github",
 		FromPort:       "pull_request.opened",
@@ -84,7 +76,7 @@ func newEventFixture(t *testing.T) *eventFixture {
 		t.Fatalf("create entry edge: %v", err)
 	}
 	// 节点声明 review 并有 2 个槽位
-	node := &store.Node{NamespaceID: nsID, OrgID: org.ID, Name: "mbp-" + store.NewUserID()}
+	node := &store.Node{NamespaceID: nsID, Name: "mbp-" + store.NewUserID()}
 	if _, err := db.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
@@ -113,7 +105,7 @@ func newEventFixture(t *testing.T) *eventFixture {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	return &eventFixture{db: db, orgID: org.ID, nsID: nsID, userID: user.ID, apiKey: apiKey, handler: h, server: srv}
+	return &eventFixture{db: db, nsID: nsID, userID: user.ID, apiKey: apiKey, handler: h, server: srv}
 }
 
 // post 发一个 POST /v1/events 请求。
@@ -398,53 +390,99 @@ func TestEventAuthRequired(t *testing.T) {
 	})
 }
 
-// TestEventCrossOrgForbidden 指定别人的 orgId → 403（不变量 I10）。
-func TestEventCrossOrgForbidden(t *testing.T) {
+// TestEventNamespaceAuthorization 事件入口的命名空间收口（#204 / 不变量 I10、I11）。
+//
+// **改写说明（不允许静默削弱，原用例名 TestEventCrossOrgForbidden）**：
+// 原用例证明两件事：① 指定别人的 orgId → 403；② 指定别人组织的 namespaceId → 403。
+// 组织层在迁移 14 删除后「别人的命名空间」这个概念不存在了（#204 安全语义：
+// 本部署任何已登录用户都可以访问任何存在的命名空间），所以 403 分支整体消失。
+// 但**必须证明的隔离性质不但没消失，反而更多了**，于是这里换成更强的组合：
+//
+//	① 未知命名空间 → 404（不再用 403/404 区分「别人的」和「不存在的」——没有别人了）
+//	② 另一个真实存在的命名空间：写入**成功**（新语义），但事件只落在那个命名空间，
+//	   绝不落到自己那个 —— 证明 namespaceId 真的被当成隔离维度，不是被忽略/被顶掉
+//	③ 缺 namespaceId → 400（绝不回退默认命名空间）
+//	④ namespaceId=* 在写端点 → 400（`*` 只用于读汇总）
+//
+// ②③④ 是原用例没有的；① 替换掉原来的两条 403（对应关系写在下面各子用例里）。
+func TestEventNamespaceAuthorization(t *testing.T) {
 	f := newEventFixture(t)
-	// 另一个组织（当前用户不是成员）
-	other, err := f.db.CreateOrg(context.Background(), "other-"+store.NewOrgID())
+	ctx := context.Background()
+
+	// 同一部署里的第二个命名空间（不是「别人的」——本部署没有这个概念）
+	otherNS, err := f.db.CreateNamespace(ctx, "other-space", "另一个空间")
 	if err != nil {
-		t.Fatalf("create other org: %v", err)
-	}
-	otherNS, err := f.db.DefaultNamespaceID(context.Background(), other.ID)
-	if err != nil {
-		t.Fatalf("default namespace of other org: %v", err)
+		t.Fatalf("create other namespace: %v", err)
 	}
 
-	t.Run("别的组织的 orgId → 403", func(t *testing.T) {
+	// ① 未知命名空间 → 404（替换原「别的组织 namespaceId → 403」）
+	t.Run("未知 namespaceId → 404", func(t *testing.T) {
 		resp, _ := f.post(t, EventIngestRequest{
-			NamespaceID: f.nsID, Source: "github", Type: "push", OrgID: other.ID,
+			NamespaceID: "ns_does_not_exist_xxx", Source: "github", Type: "push",
 		})
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("status = %d, want 403 (cross-org write must be rejected)", resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404（不存在与「别人的」已无区别）", resp.StatusCode)
 		}
 	})
 
-	t.Run("别的组织的 namespaceId → 403", func(t *testing.T) {
-		// 组织解析用的是自己的 org（成员关系没问题），但命名空间属于别的组织：
-		// GetNamespace(orgID, otherNS) → ErrNamespaceForbidden → 403（契约 §6.2）。
-		resp, _ := f.post(t, EventIngestRequest{
-			NamespaceID: otherNS, Source: "github", Type: "push",
+	// ② 写入另一个存在的命名空间：允许，但必须落在那个命名空间，不能串到自己这边
+	t.Run("写另一个存在的命名空间 → 200 且只落在那个命名空间", func(t *testing.T) {
+		resp, body := f.post(t, EventIngestRequest{
+			NamespaceID: otherNS.ID, Source: "github", Type: "push",
 		})
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("status = %d, want 403 (namespace belongs to another org)", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200（本部署内命名空间共享）; body=%+v", resp.StatusCode, body)
+		}
+		got, lerr := f.db.ListEvents(ctx, otherNS.ID, "", "", 10)
+		if lerr != nil {
+			t.Fatalf("list events: %v", lerr)
+		}
+		if len(got) != 1 {
+			t.Fatalf("别的命名空间里应有 1 条事件, got %d", len(got))
+		}
+		// 关键：不能串到自己的命名空间（namespaceId 必须真的被当隔离维度用）
+		mine, lerr := f.db.ListEvents(ctx, f.nsID, "", "", 10)
+		if lerr != nil {
+			t.Fatalf("list own events: %v", lerr)
+		}
+		if len(mine) != 0 {
+			t.Fatalf("写别的命名空间串到了自己的命名空间: %d 条事件", len(mine))
 		}
 	})
 
-	// 不该有事件落进那个组织的命名空间
-	events, err := f.db.ListEvents(context.Background(), otherNS, "", "", 10)
-	if err != nil {
-		t.Fatalf("list events: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("cross-org write leaked %d events", len(events))
-	}
-	events, err = f.db.ListEvents(context.Background(), f.nsID, "", "", 10)
-	if err != nil {
-		t.Fatalf("list events: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("被拒的请求在本组织命名空间里留下了 %d 条事件", len(events))
+	// ③ 缺 namespaceId → 400（绝不回退默认命名空间）
+	t.Run("缺 namespaceId → 400", func(t *testing.T) {
+		status, raw := f.postRaw(t, EventIngestRequest{
+			Source: "github", Type: "push",
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400（不回退默认命名空间）; body=%s", status, raw)
+		}
+	})
+
+	// ④ 写端点不接受 `*`
+	t.Run("namespaceId=* 在写端点 → 400", func(t *testing.T) {
+		status, raw := f.postRaw(t, EventIngestRequest{
+			NamespaceID: "*", Source: "github", Type: "push",
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400（`*` 只用于读汇总）; body=%s", status, raw)
+		}
+	})
+
+	// 收尾：被拒的请求一条事件都没留下（原用例的「不泄漏」意图保留）
+	for _, ns := range []string{f.nsID, otherNS.ID} {
+		got, lerr := f.db.ListEvents(ctx, ns, "", "", 10)
+		if lerr != nil {
+			t.Fatalf("list events: %v", lerr)
+		}
+		want := 0
+		if ns == otherNS.ID {
+			want = 1 // 只有 ② 那一条成功的
+		}
+		if len(got) != want {
+			t.Fatalf("ns %s 有 %d 条事件, want %d（被拒的请求不该留痕）", ns, len(got), want)
+		}
 	}
 }
 
@@ -709,7 +747,7 @@ func TestEventListAllNamespaces(t *testing.T) {
 	f := newEventFixture(t)
 	ctx := context.Background()
 
-	second, err := f.db.CreateNamespace(ctx, f.orgID, "staging", "预发")
+	second, err := f.db.CreateNamespace(ctx, "staging", "预发")
 	if err != nil {
 		t.Fatalf("create second namespace: %v", err)
 	}
@@ -800,9 +838,12 @@ func TestEventNamespaceErrorMapping(t *testing.T) {
 			want: http.StatusNotFound,
 		},
 		{
-			name: "命名空间属于别的组织 → 403",
-			err:  fmt.Errorf("get namespace: %w", store.ErrNamespaceForbidden),
-			want: http.StatusForbidden,
+			// #204 删掉组织层后 ErrNamespaceForbidden 不存在了（没有「别人的命名空间」），
+			// 收口换来的是「未登录」这一条：AuthorizeNamespace 在 userID 为空/用户不存在时
+			// 返回 ErrAuthRequired。这条分支同样必须被钉住，否则收口一旦漏判就是静默放行。
+			name: "未登录（收口 ErrAuthRequired）→ 401",
+			err:  fmt.Errorf("authorize namespace: %w", store.ErrAuthRequired),
+			want: http.StatusUnauthorized,
 		},
 	}
 	for _, c := range cases {

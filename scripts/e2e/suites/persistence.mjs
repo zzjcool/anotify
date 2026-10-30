@@ -14,53 +14,29 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import * as H from "../lib/harness.mjs";
+import { seedNodeRows } from "../lib/nodes.mjs";
 
-function sha256(s) {
-	return createHash("sha256").update(s).digest("hex");
-}
-
-// seedNodeRows 直接播种节点（无 HTTP 端点，属运维动作）。
+// seedNodeRows 直接用共享的造节点辅助（lib/nodes.mjs）。
 //
-// namespaceId 必传：迁移 12（#162）之后 nodes / node_capabilities / node_instances
-// 都有 namespace_id TEXT NOT NULL。用 H.defaultNamespaceId() 查出来的 id，不硬编码。
-function seedNodeRows(dbPath, orgId, namespaceId, name, capIds, slots) {
-	if (!namespaceId) throw new Error("seedNodeRows: 需要 namespaceId，不要硬编码 ns_xxx");
-	const token = "{{SECRET_2wqrnjqp}}" + randomUUID().replace(/-/g, "");
-	const nodeId = "nd_ps_" + randomUUID().replace(/-/g, "").slice(0, 18);
-	const now = Math.floor(Date.now() / 1000);
-	const db = new DatabaseSync(dbPath);
-	try {
-		db.prepare(
-			`INSERT INTO nodes (id, org_id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
-			 VALUES (?, ?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
-		).run(nodeId, orgId, namespaceId, name, sha256(token), now);
-		for (const c of capIds) {
-			db.prepare(
-				`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?, ?, ?)`,
-			).run(nodeId, c, namespaceId);
-		}
-		for (let i = 0; i < slots; i++) {
-			db.prepare(
-				`INSERT INTO node_instances (id, node_id, slot, concurrency, alive, updated_at, namespace_id)
-				 VALUES (?, ?, ?, 1, 1, ?, ?)`,
-			).run(`nins_ps_${nodeId}_${i}`, nodeId, i, now, namespaceId);
-		}
-	} finally {
-		db.close();
-	}
-	return { id: nodeId, token };
-}
+// 本文件原来自己拷了一份，插 nodes 时写 `org_id` 列 —— #204 / 迁移 14 删掉组织层后
+// nodes 已经没有这一列（节点只属于命名空间），那份拷贝必然插不进去。与其两边各维护
+// 一份 DDL，不如直接用共享实现（签名：seedNodeRows(dbPath, namespaceId, name, capIds, slots)，
+// namespaceId 用 H.defaultNamespaceId() 查出来的 id，不硬编码 ns_xxx）。
 
 // queryTasks 直接读库断言（跨重启后核对落盘状态最可靠）。
-function queryTasks(dbPath, orgId) {
+//
+// #204 / 迁移 14：tasks 表上没有 org_id 了，隔离边界是 namespace_id —— 过滤条件改为
+// `namespace_id = ?`（参数是默认命名空间 id，不再是 orgId）。
+function queryTasks(dbPath, namespaceId) {
 	const db = new DatabaseSync(dbPath);
 	try {
 		return db
-			.prepare(`SELECT id, status, out, reported, summary, attempts FROM tasks WHERE org_id = ? ORDER BY created_at`)
-			.all(orgId);
+			.prepare(
+				`SELECT id, status, out, reported, summary, attempts FROM tasks WHERE namespace_id = ? ORDER BY created_at`,
+			)
+			.all(namespaceId);
 	} finally {
 		db.close();
 	}
@@ -75,7 +51,6 @@ async function main() {
 	const extraEnv = { ANOTIFY_DB: dbPath };
 
 	let phase1 = null;
-	let orgId = null;
 	let traceId = null;
 	let session = null;
 	let sendKey = null;
@@ -93,16 +68,14 @@ async function main() {
 		session = seeded.session;
 		sendKey = seeded.sendKey;
 
-		const { spawnSync } = await import("node:child_process");
-		const seedRun = spawnSync(H.DEVSEED_BIN, ["-db", dbPath, "-username", "persist"], {
-			encoding: "utf8",
-		});
-		const seedOut = (seedRun.stdout || "") + (seedRun.stderr || "");
-		orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
-		H.check("建库拿到 orgId", !!orgId, seedOut.slice(0, 150));
-
+		// #204 / 迁移 14：组织层删除（orgs / org_members 没了），devseed 也不再输出 org
+		// （改成 stderr 的「命名空间就绪: ns_xxx」）。所以：
+		//   ① 原来的 `H.check("建库拿到 orgId", ...)` 换成**命名空间口径**的等价断言；
+		//   ② 原来为了拿 orgId 而单独 spawn 一次 devseed 的代码删掉 —— 它唯一的产物就是
+		//      orgId，H.seed() 已经在同一个库上用同一个用户名跑过 devseed。
+		//
 		// #162：节点直插库要写 namespace_id（迁移 12 起 NOT NULL）。
-		// 取本组织默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
+		// 取本部署默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
 		const nsId = await H.defaultNamespaceId(server.base, session);
 		H.check("拿到默认命名空间 id", !!nsId, String(nsId));
 		if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
@@ -134,7 +107,7 @@ async function main() {
 			})).status,
 			200,
 		);
-		seedNodeRows(dbPath, orgId, nsId, "persist-node", [target.id], 2);
+		seedNodeRows(dbPath, nsId, "persist-node", [target.id], 2);
 
 		// 发事件 → 应该有 1 个任务
 		const ev = await H.req(server.base, "/v1/events", {
@@ -146,7 +119,7 @@ async function main() {
 		H.check("拿到 traceId", !!traceId);
 
 		// 节点不在线（只播种了 DB 行，没走 WS），所以任务应留 pending
-		const before = queryTasks(dbPath, orgId);
+		const before = queryTasks(dbPath, nsId);
 		H.eq("重启前有 1 个任务", before.length, 1);
 		H.eq("任务状态 pending（节点未上线）", before[0].status, "pending");
 		phase1 = { taskId: before[0].id };
@@ -181,7 +154,7 @@ async function main() {
 		H.eq("重启后事件 traceId 一致", evList.json?.events?.[0]?.traceId, traceId);
 
 		// 2. 任务仍在，状态机结果保持
-		const after = queryTasks(dbPath, orgId);
+		const after = queryTasks(dbPath, nsId);
 		H.eq("重启后任务数量不变", after.length, 1);
 		H.eq("重启后任务状态仍是 succeeded", after[0].status, "succeeded");
 

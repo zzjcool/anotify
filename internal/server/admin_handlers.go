@@ -20,24 +20,26 @@ type adminHandler struct {
 
 // adminUserOut 是管理后台用户列表的安全公开视图（不含密钥材料）。
 type adminUserOut struct {
-	ID           string `json:"id"`
-	Username     string `json:"username"`
-	DisplayName  string `json:"displayName"`
-	Role         string `json:"role"`
-	Disabled     bool   `json:"disabled"`
-	CreatedAt    int64  `json:"createdAt"`
-	MessageCount int64  `json:"messageCount"`
-	DeviceCount  int64  `json:"deviceCount"`
-	KeyCount     int64  `json:"keyCount"`
-	SessionCount int64  `json:"sessionCount"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+	Disabled    bool   `json:"disabled"`
+	CreatedAt   int64  `json:"createdAt"`
+	// #204 / #205：per-user 的 messageCount 随组织层一起删除 —— 组织没了之后
+	// 「这个用户有多少事件」没有对应关系（事件属于命名空间，而用户与命名空间之间
+	// 不再有归属关系）。留着只能造假数，所以字段整个去掉而不是填 0。
+	DeviceCount  int64 `json:"deviceCount"`
+	KeyCount     int64 `json:"keyCount"`
+	SessionCount int64 `json:"sessionCount"`
 }
 
 func toAdminUserOut(u *store.UserWithStats) adminUserOut {
 	return adminUserOut{
 		ID: u.ID, Username: u.Username, DisplayName: u.DisplayName,
 		Role: u.Role, Disabled: u.Disabled, CreatedAt: u.CreatedAt,
-		MessageCount: u.MessageCount, DeviceCount: u.DeviceCount,
-		KeyCount: u.KeyCount, SessionCount: u.SessionCount,
+		DeviceCount: u.DeviceCount,
+		KeyCount:    u.KeyCount, SessionCount: u.SessionCount,
 	}
 }
 

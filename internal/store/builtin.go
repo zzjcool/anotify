@@ -109,38 +109,39 @@ var BuiltinCapabilities = []BuiltinCapability{
 	// 用户视角的「事件从哪来」完全由 sources 承担。
 }
 
-// EnsureBuiltinCapabilities 给一个组织的**所有命名空间**补齐内置能力（幂等）。
+// BackfillBuiltinCapabilities 给本部署**所有命名空间**补齐内置能力（幂等），
+// 返回处理过的命名空间数。启动时跑一遍。
 //
 // 语义在 #162 之后从「一个组织一份」变成「每个命名空间一份」：能力属于命名空间，
-// `notify.phone` 在 prod 与 staging 是两行不同的定义（各自 namespace_id）。
+// `notify.phone` 在 prod 与 staging 是两行不同的定义（各自 namespace_id）；
+// 迁移 14 之后连组织都没有了，所以这里直接遍历 namespaces。
 //
 // 为什么不只在新命名空间播种：内置能力清单会随版本升级增加（比如以后加
 // notify.webhook）。那时已有命名空间也需要补上——启动时全量跑一遍比"只在
 // 创建时播种"可靠（少一条路径就是一次线上事故）。
-func (d *DB) EnsureBuiltinCapabilities(ctx context.Context, orgID string) error {
-	if orgID == "" {
-		return fmt.Errorf("ensure builtin capabilities: empty org_id")
-	}
-	namespaces, err := d.ListNamespaces(ctx, orgID)
+func (d *DB) BackfillBuiltinCapabilities(ctx context.Context) (int, error) {
+	namespaces, err := d.ListNamespaces(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	n := 0
 	for _, ns := range namespaces {
-		if err := d.SeedBuiltinCapabilities(ctx, ns.ID, orgID); err != nil {
-			return err
+		if err := d.SeedBuiltinCapabilities(ctx, ns.ID); err != nil {
+			return n, fmt.Errorf("backfill builtin capabilities for namespace %s: %w", ns.ID, err)
 		}
+		n++
 	}
-	return nil
+	return n, nil
 }
 
 // SeedBuiltinCapabilities 给一个命名空间播种内置能力（自带事务的便捷包装）。
-func (d *DB) SeedBuiltinCapabilities(ctx context.Context, namespaceID, orgID string) error {
+func (d *DB) SeedBuiltinCapabilities(ctx context.Context, namespaceID string) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin seed builtin capabilities: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := SeedBuiltinCapabilitiesTx(ctx, tx, namespaceID, orgID); err != nil {
+	if err := SeedBuiltinCapabilitiesTx(ctx, tx, namespaceID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -149,15 +150,15 @@ func (d *DB) SeedBuiltinCapabilities(ctx context.Context, namespaceID, orgID str
 // SeedBuiltinCapabilitiesTx 在调用方事务内给一个命名空间播种全部内置能力。
 //
 // 两条必须都走这条路：
-//  1. 新建命名空间（/ 建组织时的 default）—— 否则新命名空间里连一个
+//  1. 新建命名空间（注册 / 建命名空间的 default）—— 否则新命名空间里连一个
 //     end 节点（notify.phone）都声明不出来，推送直接失效；
 //  2. 内置能力升版 —— 遍历所有命名空间各插一行（append-only，不改旧行）。
-func SeedBuiltinCapabilitiesTx(ctx context.Context, tx *sql.Tx, namespaceID, orgID string) error {
+func SeedBuiltinCapabilitiesTx(ctx context.Context, tx *sql.Tx, namespaceID string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
 	for _, bc := range BuiltinCapabilities {
-		if err := seedOneBuiltinTx(ctx, tx, namespaceID, orgID, bc); err != nil {
+		if err := seedOneBuiltinTx(ctx, tx, namespaceID, bc); err != nil {
 			return err
 		}
 	}
@@ -168,7 +169,7 @@ func SeedBuiltinCapabilitiesTx(ctx context.Context, tx *sql.Tx, namespaceID, org
 //
 // 已有行只补**空**的 display_name：预设名是给老库用的（这一列是后加的），
 // 而用户改过的名字不能被启动流程改回去。
-func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID, orgID string, bc BuiltinCapability) error {
+func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID string, bc BuiltinCapability) error {
 	var existingID, existingDisplay string
 	err := tx.QueryRowContext(ctx,
 		`SELECT id, display_name FROM capability_versions
@@ -194,7 +195,6 @@ func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID, orgID string
 	}
 	c := &CapabilityVersion{
 		NamespaceID:  namespaceID,
-		OrgID:        orgID,
 		Name:         bc.Name,
 		DisplayName:  bc.DisplayName,
 		Version:      bc.Version,
@@ -221,41 +221,12 @@ func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID, orgID string
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO capability_versions
-		   (id, namespace_id, org_id, name, display_name, version, params_schema, outputs,
+		   (id, namespace_id, name, display_name, version, params_schema, outputs,
 		    lifecycle, sticky, source, content_hash, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		NewCapabilityID(hash), namespaceID, orgID, c.Name, c.DisplayName, c.Version, schema,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		NewCapabilityID(hash), namespaceID, c.Name, c.DisplayName, c.Version, schema,
 		string(outputsJSON), string(lifecycleJSON), c.Sticky, CapSourceBuiltin, hash, Now()); err != nil {
 		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
-	}
-	return nil
-}
-
-// seedBuiltinsForAllNamespacesTx 给每个命名空间播种内置能力（迁移 12 用）。
-func seedBuiltinsForAllNamespacesTx(tx *sql.Tx) error {
-	rows, err := tx.Query(`SELECT id, org_id FROM namespaces ORDER BY org_id, created_at, id`)
-	if err != nil {
-		return fmt.Errorf("list namespaces for builtin seeding: %w", err)
-	}
-	type nsRow struct{ id, orgID string }
-	var list []nsRow
-	for rows.Next() {
-		var r nsRow
-		if err := rows.Scan(&r.id, &r.orgID); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan namespace row: %w", err)
-		}
-		list = append(list, r)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("iterate namespaces: %w", err)
-	}
-	rows.Close()
-	for _, r := range list {
-		if err := SeedBuiltinCapabilitiesTx(context.Background(), tx, r.id, r.orgID); err != nil {
-			return err
-		}
 	}
 	return nil
 }

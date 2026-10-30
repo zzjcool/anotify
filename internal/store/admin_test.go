@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -118,38 +119,40 @@ func TestUserCount(t *testing.T) {
 	}
 }
 
-// TestListUsersWithStats 验证用户列表含各用户实体计数。
+// TestListUsersWithStats 验证用户列表含各用户的实体计数。
+//
+// #205：`MessageCount`（该用户所属组织的事件数）随组织层一起删除 ——「用户 → 事件」
+// 没有任何对应关系（事件属于命名空间），所以这里改为钉住真实存在的 per-user 计数
+// （设备数 / 会话数）。
 func TestListUsersWithStats(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
+	// 注册（= 用户 + 默认命名空间）而不是裸 CreateUser：走真实路径。
 	u1 := &User{ID: NewUserID(), Username: "alice", Role: RoleAdmin, CreatedAt: Now()}
 	u2 := &User{ID: NewUserID(), Username: "bob", CreatedAt: Now()}
-	db.CreateUser(u1)
-	db.CreateUser(u2)
+	if _, err := db.RegisterUser(ctx, u1); err != nil {
+		t.Fatalf("register alice: %v", err)
+	}
+	if _, err := db.RegisterUser(ctx, u2); err != nil {
+		t.Fatalf("register bob: %v", err)
+	}
 
-	// 给 alice 的组织建 2 条事件（统计口径已从 messages 改为 events）
-	org1, err := db.EnsureOrgForUser(ctx, u1.ID, u1.Username)
-	if err != nil {
-		t.Fatalf("ensure org for alice: %v", err)
-	}
-	if _, err := db.EnsureOrgForUser(ctx, u2.ID, u2.Username); err != nil {
-		t.Fatalf("ensure org for bob: %v", err)
-	}
-	ns1, err := db.DefaultNamespaceID(ctx, org1.ID)
-	if err != nil {
-		t.Fatalf("default namespace: %v", err)
+	// alice：2 台设备 + 1 个会话；bob：什么都没有 → 计数必须各自对得上
+	for i := 0; i < 2; i++ {
+		if err := db.UpsertDevice(ctx, &Device{
+			ID: NewDeviceID(), UserID: u1.ID, Name: "dev", Enabled: true, EventScope: "all",
+			Endpoint: fmt.Sprintf("https://push.example.com/alice/%d", i),
+			P256dh:   "p", Auth: "a",
+		}); err != nil {
+			t.Fatalf("upsert device %d: %v", i, err)
+		}
 	}
 	now := Now()
-	for i, k := range []string{"k1", "k2"} {
-		idem := k
-		if _, err := db.InsertEvent(ctx, &Event{
-			ID: NewEventID(), NamespaceID: ns1, Source: "github", Type: "pr_opened",
-			TraceID: "trace_" + k, IdemKey: &idem, Payload: []byte("{}"),
-			CreatedAt: now + int64(i),
-		}); err != nil {
-			t.Fatalf("insert event %s: %v", k, err)
-		}
+	if err := db.CreateSession(&Session{
+		ID: NewSessionID(), UserID: u1.ID, CreatedAt: now, ExpiresAt: now + 3600, LastSeen: now,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
 	}
 
 	users, err := db.ListUsersWithStats(ctx)
@@ -166,11 +169,13 @@ func TestListUsersWithStats(t *testing.T) {
 	if users[0].Role != RoleAdmin {
 		t.Errorf("alice role 应为 admin, got %q", users[0].Role)
 	}
-	if users[0].MessageCount != 2 {
-		t.Errorf("alice messageCount 应为 2, got %d", users[0].MessageCount)
+	if users[0].DeviceCount != 2 || users[1].DeviceCount != 0 {
+		t.Errorf("deviceCount 应为 alice=2 bob=0, got alice=%d bob=%d",
+			users[0].DeviceCount, users[1].DeviceCount)
 	}
-	if users[1].MessageCount != 0 {
-		t.Errorf("bob messageCount 应为 0, got %d", users[1].MessageCount)
+	if users[0].SessionCount != 1 || users[1].SessionCount != 0 {
+		t.Errorf("sessionCount 应为 alice=1 bob=0, got alice=%d bob=%d",
+			users[0].SessionCount, users[1].SessionCount)
 	}
 }
 
@@ -181,31 +186,23 @@ func TestSystemStats(t *testing.T) {
 
 	u1 := &User{ID: NewUserID(), Username: "alice", Role: RoleAdmin, CreatedAt: Now()}
 	u2 := &User{ID: NewUserID(), Username: "bob", CreatedAt: Now()}
-	db.CreateUser(u1)
-	db.CreateUser(u2)
 
-	// 各 2 条事件（统计口径已从 messages 改为 events）
-	org1, err := db.EnsureOrgForUser(ctx, u1.ID, u1.Username)
+	// 注册得到各自的 default 命名空间（#205：组织层已删，事件只挂在命名空间上）
+	ns1, err := db.RegisterUser(ctx, u1)
 	if err != nil {
-		t.Fatalf("ensure org for alice: %v", err)
+		t.Fatalf("register alice: %v", err)
 	}
-	org2, err := db.EnsureOrgForUser(ctx, u2.ID, u2.Username)
+	ns2, err := db.RegisterUser(ctx, u2)
 	if err != nil {
-		t.Fatalf("ensure org for bob: %v", err)
-	}
-	nsOf := func(orgID string) string {
-		ns, err := db.DefaultNamespaceID(ctx, orgID)
-		if err != nil {
-			t.Fatalf("default namespace of %s: %v", orgID, err)
-		}
-		return ns
+		t.Fatalf("register bob: %v", err)
 	}
 	now := Now()
-	seed := func(orgID, prefix string) {
+	// 各 2 条事件（统计口径已从 messages 改为 events）
+	seed := func(namespaceID, prefix string) {
 		for i := 0; i < 2; i++ {
 			idem := prefix + string(rune('0'+i))
 			if _, err := db.InsertEvent(ctx, &Event{
-				ID: NewEventID(), NamespaceID: nsOf(orgID), Source: "github", Type: "pr_opened",
+				ID: NewEventID(), NamespaceID: namespaceID, Source: "github", Type: "pr_opened",
 				TraceID: "trace_" + idem, IdemKey: &idem, Payload: []byte("{}"),
 				CreatedAt: now + int64(i),
 			}); err != nil {
@@ -213,8 +210,16 @@ func TestSystemStats(t *testing.T) {
 			}
 		}
 	}
-	seed(org1.ID, "a")
-	seed(org2.ID, "b")
+	seed(ns1.ID, "a")
+	seed(ns2.ID, "b")
+
+	// TopUsers 的活跃度口径是「最近会话活跃时刻」（#205：不再有 per-org 事件计数）：
+	// 给 bob 造一个活跃会话 → 它必须排在从未登录过的 alice 前面。
+	if err := db.CreateSession(&Session{
+		ID: NewSessionID(), UserID: u2.ID, CreatedAt: now, ExpiresAt: now + 3600, LastSeen: now,
+	}); err != nil {
+		t.Fatalf("create session for bob: %v", err)
+	}
 
 	s, serr := db.SystemStats(ctx, Now()-86400)
 	if serr != nil {
@@ -232,16 +237,21 @@ func TestSystemStats(t *testing.T) {
 	if s.TodayMessages != 4 {
 		t.Errorf("TodayMessages 应为 4, got %d", s.TodayMessages)
 	}
-	// 两人各 2 条事件，top1 可能是任一
-	if len(s.TopUsers) == 0 || s.TopUsers[0].UserID != u1.ID && s.TopUsers[0].UserID != u2.ID {
-		// 两人都是 2 条，top1 可能是任一；只检查总数
-	}
+	// TopUsers 按最近活跃降序：bob 有会话（LastSeenAt=now），alice 从未登录（0）。
 	if len(s.TopUsers) < 2 {
-		t.Errorf("TopUsers 应至少 2 个, got %d", len(s.TopUsers))
+		t.Fatalf("TopUsers 应至少 2 个, got %d", len(s.TopUsers))
+	}
+	if s.TopUsers[0].UserID != u2.ID || s.TopUsers[0].LastSeenAt != now {
+		t.Errorf("TopUsers[0] 应为最近活跃的 bob（lastSeenAt=%d）, got %s lastSeenAt=%d",
+			now, s.TopUsers[0].UserID, s.TopUsers[0].LastSeenAt)
+	}
+	if s.TopUsers[1].UserID != u1.ID || s.TopUsers[1].LastSeenAt != 0 {
+		t.Errorf("TopUsers[1] 应为从未登录的 alice（lastSeenAt=0）, got %s lastSeenAt=%d",
+			s.TopUsers[1].UserID, s.TopUsers[1].LastSeenAt)
 	}
 }
 
-// TestListGlobalEvents 验证全站事件流（跨组织，按时间倒序）。
+// TestListGlobalEvents 验证全站事件流（跨命名空间，按时间倒序）。
 //
 // 替代旧的 TestListGlobalMessages：事件中心里"发生了什么"是 events，
 // 不再有"推给某人的消息"这个实体。
@@ -279,10 +289,10 @@ func TestListGlobalEvents(t *testing.T) {
 	if events[0].Source != "manual" {
 		t.Errorf("应按 created_at DESC 排序，首条 got %q", events[0].Source)
 	}
-	// 全站事件流按 org 呈现（管理后台是跨组织的），但落库维度是命名空间：
-	// org_id 必须等于该命名空间派生的 org（I10），不是命名空间 id。
-	if want := orgIDOfNamespace(t, db, nsID); events[0].OrgID != want {
-		t.Errorf("orgId 应为 %q, got %q", want, events[0].OrgID)
+	// 全站事件流是跨命名空间的（管理后台视角），但每行都带自己的 namespaceId：
+	// 它必须等于写事件时用的那个命名空间。
+	if events[0].NamespaceID != nsID {
+		t.Errorf("namespaceId 应为 %q, got %q", nsID, events[0].NamespaceID)
 	}
 	if events[0].TraceID == "" {
 		t.Error("traceId 不该为空")

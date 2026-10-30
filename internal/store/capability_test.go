@@ -169,17 +169,17 @@ func TestCapabilitySchemaKeyOrderInsensitive(t *testing.T) {
 
 // TestCapabilityDifferentContentDifferentHash 不同内容必须不同 hash。
 func TestCapabilityDifferentContentDifferentHash(t *testing.T) {
-	base := mkCap("org_x", "review", 1, []string{"fix"})
+	base := mkCap("ns_x", "review", 1, []string{"fix"})
 	h1, err := NormalizeCapability(base)
 	if err != nil {
 		t.Fatalf("normalize base: %v", err)
 	}
 
 	variants := []*CapabilityVersion{
-		{NamespaceID: "org_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"clean"}},
-		{NamespaceID: "org_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Sticky: "worktree"},
-		{NamespaceID: "org_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Lifecycle: Lifecycle{MaxAttempts: 5}},
-		{NamespaceID: "org_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"string"}`), Outputs: []string{"fix"}},
+		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"clean"}},
+		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Sticky: "worktree"},
+		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Lifecycle: Lifecycle{MaxAttempts: 5}},
+		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"string"}`), Outputs: []string{"fix"}},
 	}
 	for i, v := range variants {
 		h, err := NormalizeCapability(v)
@@ -194,12 +194,12 @@ func TestCapabilityDifferentContentDifferentHash(t *testing.T) {
 
 // TestCapabilityNormalizeIncludesName name 必须参与 hash：不同名字的能力不能被合并成同一行。
 //
-// 这是全组织内 UNIQUE(org_id, content_hash) 的直接后果：若 name 不参与，
+// 这是命名空间内 UNIQUE(namespace_id, content_hash) 的直接后果：若 name 不参与，
 // `fix1` 与 `fix2`（schema/outputs 恰好相同）会被当成同一份内容，
 // 第二个 CreateCapability 会被幂等逻辑改写成第一个——两个能力默默合并。
 func TestCapabilityNormalizeIncludesName(t *testing.T) {
-	a := mkCap("org_x", "fix1", 1, []string{"done"})
-	b := mkCap("org_x", "fix2", 1, []string{"done"})
+	a := mkCap("ns_x", "fix1", 1, []string{"done"})
+	b := mkCap("ns_x", "fix2", 1, []string{"done"})
 	ha, err := NormalizeCapability(a)
 	if err != nil {
 		t.Fatalf("normalize a: %v", err)
@@ -213,7 +213,7 @@ func TestCapabilityNormalizeIncludesName(t *testing.T) {
 	}
 
 	// 同 name 不同 version 仍然共享同一个 hash（幂等创建的基础）
-	v2 := mkCap("org_x", "fix1", 2, []string{"done"})
+	v2 := mkCap("ns_x", "fix1", 2, []string{"done"})
 	hv2, err := NormalizeCapability(v2)
 	if err != nil {
 		t.Fatalf("normalize v2: %v", err)
@@ -270,11 +270,12 @@ func TestCapabilityVersionAppendOnly(t *testing.T) {
 	}
 }
 
-// TestCapabilityNamespaceIsolation 不变量 I10/I11：跨命名空间查不到能力定义。
+// TestCapabilityNamespaceIsolation 不变量 I11：跨命名空间查不到能力定义。
 //
 // 默认命名空间里不再是「空」，而是自带内置能力（notify.phone@1）——所以隔离的正确断言
-// 不是「B 一条都没有」，而是「B 里一行都不属于 A 写的那份定义」。这里同时验组织维
-// （两个 newTestNS 是两个 org）与**同 org 的兄弟命名空间**（#162 真正新增的隔离面）。
+// 不是「B 一条都没有」，而是「B 里一行都不属于 A 写的那份定义」。这里同时验两套独立资源
+// （两个 newTestNS = 两个 default 命名空间）与**同一个库里另建的命名空间**（#162 真正
+// 新增的隔离面）。
 func TestCapabilityNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -292,37 +293,31 @@ func TestCapabilityNamespaceIsolation(t *testing.T) {
 		t.Fatalf("cross-namespace GetCapability err = %v, want ErrNotFound", err)
 	}
 
-	// 同 org 的兄弟命名空间：同名能力各自一份，B 的那份不能被 A 的看见（反之亦然）
-	sibling, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
-	if err != nil {
-		t.Fatalf("create sibling namespace: %v", err)
-	}
-	sibCap := mkCap(sibling.ID, "review", 1, []string{"fix"})
+	// 同一个库里另建的命名空间：同名能力各自一份，那边的那份不能被这边的看见（反之亦然）
+	sibling := newTestExtraNS(t, db, "staging")
+	sibCap := mkCap(sibling, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, sibCap); err != nil {
 		t.Fatalf("create sibling capability: %v", err)
 	}
 	if sibCap.ID == c.ID {
-		t.Fatal("同 org 的两个命名空间写出了同一个 capability id（namespace 没进唯一键）")
+		t.Fatal("两个命名空间写出了同一个 capability id（namespace 没进唯一键）")
 	}
-	if got, err := db.GetCapability(ctx, sibling.ID, "review", 1); err != nil {
+	if got, err := db.GetCapability(ctx, sibling, "review", 1); err != nil {
 		t.Fatalf("sibling GetCapability: %v", err)
-	} else if got.ID != sibCap.ID || got.NamespaceID != sibling.ID {
+	} else if got.ID != sibCap.ID || got.NamespaceID != sibling {
 		t.Fatalf("sibling GetCapability 返回了错的行: %+v", got)
 	}
 
-	for _, ns := range []string{nsA, nsB, sibling.ID} {
+	for _, ns := range []string{nsA, nsB, sibling} {
 		list, err := db.ListCapabilities(ctx, ns)
 		if err != nil {
 			t.Fatalf("list %s: %v", ns, err)
 		}
 		for _, got := range list {
-			// 每一行都必须自带本命名空间 id（I10：org_id 由 namespace 派生）
+			// 每一行都必须自带本命名空间 id（I11：命名空间是唯一隔离维度）
 			if got.NamespaceID != ns {
 				t.Fatalf("ListCapabilities(%s) 返回了别的命名空间的行: %s@%d (%s)",
 					ns, got.Name, got.Version, got.NamespaceID)
-			}
-			if want := orgIDOfNamespace(t, db, ns); got.OrgID != want {
-				t.Fatalf("capability org = %q, want %q（org_id 必须由命名空间派生）", got.OrgID, want)
 			}
 		}
 		if len(list) == 0 {
@@ -572,18 +567,13 @@ func TestEdgeRejectsPortNotInOutputs(t *testing.T) {
 // 把另一个命名空间的 id 填进来在 SQL 层是合法的（外键只保证行存在，不保证同属一处），
 // 所以必须显式校验 → *CrossNamespaceError（handler 一律 400，不静默忽略）。
 //
-// 为什么用**同一个 org 的两个命名空间**而不是两个 org：后者在迁移 12 之前的
-// org_id 维度上也能拦住，拦不住「同 org 串数据」这个真实错误。
+// 为什么用**同一个库里另建的命名空间**而不是两个 newTestNS：后者在「两套独立资源」
+// 这个维度上也能拦住，拦不住「同一个库里串数据」这个真实错误。
 func TestEdgeRejectsCrossNamespace(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsA, _ := newTestNS(t, db)
-
-	sibling, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
-	if err != nil {
-		t.Fatalf("create sibling namespace: %v", err)
-	}
-	nsB := sibling.ID
+	nsB := newTestExtraNS(t, db, "staging")
 
 	upA := mkCap(nsA, "review", 1, []string{"fix"})
 	sinkA := mkCap(nsA, "fix", 1, nil)
@@ -608,7 +598,7 @@ func TestEdgeRejectsCrossNamespace(t *testing.T) {
 	}
 
 	// ① 右端在别的命名空间
-	err = db.CreateEdge(ctx, &Edge{
+	err := db.CreateEdge(ctx, &Edge{
 		NamespaceID: nsA, FromCapability: upA.ID, FromPort: "fix", ToCapability: foreign.ID,
 	})
 	assertCross("to_capability", err, nsA, nsB)
@@ -801,7 +791,7 @@ func TestCapabilityDisplayName(t *testing.T) {
 		t.Fatalf("rename created a new version: %d rows of analyze-pr", versions)
 	}
 
-	// ④ 别的命名空间改不动（不变量 I10/I11）
+	// ④ 别的命名空间改不动（不变量 I11）
 	otherNS, _ := newTestNS(t, db)
 	if err := db.SetCapabilityDisplayName(ctx, otherNS, c.ID, "偷改"); err == nil {
 		t.Fatal("cross-namespace display name update should fail")

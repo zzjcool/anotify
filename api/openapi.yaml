@@ -16,7 +16,9 @@ info:
     约定：
       - 所有 JSON 字段 **camelCase**
       - 空列表返回 `[]` 而不是 `null`（不变量 I9）
-      - 一切租户数据先过 `orgId`（不变量 I10）；显式传 `orgId` 时必须校验成员身份
+      - **命名空间是唯一隔离边界**（不变量 I10）：命名空间资源端点必须显式给 `namespaceId`，
+        缺参 `400`、不存在 `404`；**跨命名空间引用一律 `400`**（不变量 I11）。
+        组织层已在迁移 14 删除，`orgId` / `X-Org-Id` 不再是任何端点的参数
 
     ## 迁移中的旧端点
 
@@ -141,12 +143,17 @@ paths:
                   type: string
                   description: |
                     **必填**（本字段或 query 二者给一个；body 优先）。事件落进哪个命名空间。
-                    不存在 → 404；属于别的组织 → 403；`*` → 400（写端点）。
+                    不存在 → 404；未登录 → 401；`*` → 400（写端点）。
                 source:
                   type: string
                   description: |
                     事件来源，与能力名一致。内置起点（github / cron / http / manual）
-                    开箱可用；也可使用自定义能力名。找不到则返回 422。
+                    开箱可用；也可使用自定义能力名——它就是入口边的左端（契约 §2.4）。
+
+                    **找不到入口边不是错误**（#110）：事件照收（`200`），派发结果里
+                    记一条 `pruned[].reason = no_edge`，用来回答「为什么没触发」。
+                    旧模型那种「来源必须对应一个 origin 能力，否则 422 + 可用来源列表」
+                    已整条删除。
                   example: github
                 type:
                   type: string
@@ -161,28 +168,7 @@ paths:
                 payload:
                   type: object
                   description: 原始负载，只存不解释（不求值、不改写）
-                orgId:
-                  type: string
-                  description: 可选；省略时用调用者的主组织
       responses:
-        "422":
-          description: |
-            来源未匹配到任何起点能力。事件已入库，但不会派发。
-            响应带 `available`（可用来源列表）与 `eventId`（如实告知已入库）。
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [error, source, available]
-                properties:
-                  error: { type: string }
-                  source: { type: string }
-                  available:
-                    type: array
-                    items: { type: string }
-                  eventId:
-                    type: string
-                    description: 已入库的事件 ID（便于排查/清理孤儿行）
         "200":
           description: 事件已受理（含幂等命中）
           content:
@@ -209,7 +195,6 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: orgId, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
       responses:
         "200":
@@ -229,7 +214,14 @@ paths:
   /auth/me:
     get:
       tags: [auth]
-      summary: 当前会话的用户 + 主组织
+      summary: 当前会话的用户
+      description: |
+        返回**扁平**的用户字段（`id` / `username` / `displayName` / `role` /
+        `disabled` / `createdAt`），不是 `{user: ...}` 包装。
+
+        #204 之后不再返回组织：组织层已在迁移 14 删除。用户与命名空间之间没有
+        归属关系（本部署内所有已登录用户都能访问所有命名空间），所以这里没有
+        「我的命名空间」可回 —— 命名空间列表请用 `GET /v1/namespaces`。
       security:
         - cookieAuth: []
       responses:
@@ -237,16 +229,7 @@ paths:
           description: 当前用户
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  user: { $ref: "#/components/schemas/User" }
-                  org:
-                    type: object
-                    description: 主组织（注册即得，不变量 A1）
-                    properties:
-                      id: { type: string }
-                      name: { type: string }
+              schema: { $ref: "#/components/schemas/User" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /auth/passkeys:
@@ -344,7 +327,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: 统计数字（口径见 description）
@@ -386,7 +368,6 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: orgId, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
       responses:
         "200":
@@ -435,7 +416,6 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: '一条 trace 的全景（空列表为 `[]`）'
@@ -478,7 +458,6 @@ paths:
         - { name: traceId, in: query, schema: { type: string } }
         - { name: nodeId, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { $ref: "#/components/schemas/TaskStatus" } }
-        - { name: orgId, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
       responses:
         "200":
@@ -512,7 +491,6 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: "任务详情 + 整条链（链为空时 chain 为 []）"
@@ -545,7 +523,6 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: 已取消
@@ -585,7 +562,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: '源列表（空时 `sources: []`）'
@@ -614,7 +590,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -906,7 +881,7 @@ paths:
   # 这三个形状与 `pbChecks` / `pbView`（web/mock.js:1395-1780）逐字段一致。
   #
   # 作用域：本组**每个**端点都必填 `namespaceId`（`NamespaceIdStrict`）——
-  # 缺参 400、`*` 400、不存在 404、**别的 org 也是 404**（与「不存在」逐字节相同）。
+  # 缺参 400、`*` 400、不存在 404（组织层删除后没有「别人的命名空间」可区分）。
   # 预案**不提供**跨命名空间汇总：体检结论只能按单个命名空间算。
   /playbooks:
     get:
@@ -924,7 +899,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceIdStrict"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: '预案列表（空时 `playbooks: []`）'
@@ -950,8 +924,9 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在，或属于**别的组织**——两者响应**逐字节相同**
-            （`{"error":"namespace not found"}`，不回显传入的 id）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）。
+            组织层已在迁移 14 删除（#204），**没有「有、但属于别人」这个中间态**：
+            存在就 `200`，不存在就 `404`，所以这里不再有 `403` 分支
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -980,7 +955,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceIdStrict"
-        - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -1027,8 +1001,9 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在，或属于**别的组织**——两者响应**逐字节相同**
-            （`{"error":"namespace not found"}`，不回显传入的 id）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）。
+            组织层已在迁移 14 删除（#204），**没有「有、但属于别人」这个中间态**：
+            存在就 `200`，不存在就 `404`，所以这里不再有 `403` 分支
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1067,7 +1042,6 @@ paths:
       security:
         - cookieAuth: []
       parameters:
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: 预案详情
@@ -1085,8 +1059,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            两种情况：命名空间不存在 / 属于别的组织（`{"error":"namespace not found"}`，
-            二者逐字节相同）；或预案不存在（含别命名空间的 id/slug）
+            两种情况：命名空间不存在（`{"error":"namespace not found"}`，
+            不回显传入的 id）；或预案不存在（含别命名空间的 id/slug）
             （`{"error":"预案不存在","code":"not_found"}`）
           content:
             application/json:
@@ -1108,7 +1082,6 @@ paths:
       security:
         - cookieAuth: []
       parameters:
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: 已删除
@@ -1126,8 +1099,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在 / 属于别的组织（与「不存在」逐字节相同：
-            `{"error":"namespace not found"}`）；或预案不存在（`code: not_found`）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）；
+            或预案不存在（`code: not_found`）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1169,7 +1142,6 @@ paths:
       security:
         - cookieAuth: []
       parameters:
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: |
@@ -1205,8 +1177,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在 / 属于别的组织（与「不存在」逐字节相同：
-            `{"error":"namespace not found"}`）；或预案不存在（`code: not_found`）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）；
+            或预案不存在（`code: not_found`）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1281,7 +1253,6 @@ paths:
       security:
         - cookieAuth: []
       parameters:
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: '命名空间列表（空时 `namespaces: []`）'
@@ -1311,7 +1282,6 @@ paths:
       security:
         - cookieAuth: []
       parameters:
-        - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -1461,7 +1431,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: '能力列表（空时 `capabilities: []`）'
@@ -1494,7 +1463,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -1534,7 +1502,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -1573,7 +1540,6 @@ paths:
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: fromCapability, in: query, schema: { type: string } }
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: '边列表（空时 `edges: []`）'
@@ -1605,7 +1571,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -1639,7 +1604,6 @@ paths:
         - { name: fromCapability, in: query, required: true, schema: { type: string } }
         - { name: fromPort, in: query, required: true, schema: { type: string } }
         - { name: toCapability, in: query, required: true, schema: { type: string } }
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: 已删除
@@ -1665,7 +1629,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: '节点列表（空时 `nodes: []`）'
@@ -1691,11 +1654,10 @@ paths:
         错误体点名 `namespaceId`（写端点绝不回退默认命名空间）。`namespaceId=*`
         在写端点无定义 → `400`。
 
-        **属于别的组织的命名空间 → `404`（本端点刻意不区分「不存在」与「别人的」）**：
-        命名空间不存在 → `404`；存在但属于别的组织 → **同样 `404`**，响应逐字节相同
-        （`{"error":"namespace not found"}`，不回显传入的 id）。写端点不能用来探测
-        别的组织有哪些命名空间 id —— 这是契约 §6.2「属于别的 org → `403`」的
-        **显式例外**，其余命名空间资源端点保持 `403`。
+        **命名空间不存在 → `404`**：响应 `{"error":"namespace not found"}`，不回显
+        传入的 id。组织层在迁移 14 删除后没有「别人的命名空间」这一态 —— 存在就
+        `200`/`201`，不存在就 `404`，所以不再有 403 分支，也不需要为写端点单独
+        准备一套「防 id 探测」的映射（`#185` / 契约 D2 已随组织层删除而失效）。
 
         **令牌明文只在这里出现一次**：响应里的 `token`（`ant_node_...`）是明文，
         库里只存 `sha256`（`token_hash`）；此后任何读接口（`GET /v1/nodes`、
@@ -1714,7 +1676,6 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         description: |
           允许空对象：缺 `namespaceId` 由 handler 报 `400`（错误体点名 `namespaceId`），
@@ -1774,9 +1735,10 @@ paths:
         # 这个 404 必须自带说明——它与「命名空间不存在」共用同一个响应体，且是 §6.2 的显式例外。
         "404":
           description: |
-            **命名空间不存在，或存在但属于别的组织** —— 两者响应逐字节相同
-            （`{"error":"namespace not found"}`，不回显传入的 id；本端点刻意不区分，
-            避免用写端点探测别人的命名空间 id，契约 §6.2 的显式例外）。
+            **命名空间不存在**（`{"error":"namespace not found"}`，不回显传入的 id）。
+            组织层已在迁移 14 删除（#204）：「有、但属于别人」这一态不存在了，所以
+            `#185` 那套「写端点跨组织也报 404、响应逐字节相同、以免被当作 id 探测器」
+            的显式例外随之失效——不存在一律 `404`，存在一律成功。
             响应形状同 `#/components/responses/NotFound`。
           content:
             application/json:
@@ -1803,7 +1765,6 @@ paths:
       security:
         - cookieAuth: []
       parameters:
-        - { name: orgId, in: query, schema: { type: string } }
         - $ref: "#/components/parameters/NamespaceId"
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -1859,7 +1820,6 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
           description: 已排空
@@ -2963,7 +2923,7 @@ components:
     # /edges、/sources、/sources/{id}、/sources/{id}/fire、/sources/{id}/dry-run、
     # /sources/dry-run、/events、/tasks、/tasks/{id}、/tasks/{id}/cancel、/traces/{id}、
     # /console/events、/stats。
-    # 组织级端点（/orgs、/admin/*、/auth/*、/keys、/devices）与 /namespaces 自身、
+    # 部署级端点（/admin/*、/auth/*、/keys、/devices）与 /namespaces 自身、
     # /hooks/{token}、/node/stream 不加（它们的命名空间不是从这里来的）。
     NamespaceId:
       name: namespaceId
@@ -2976,10 +2936,13 @@ components:
 
         - 缺参 → `400`（`namespaceId is required`），**绝不回退到默认命名空间**：
           回退等于把调用方写错的地方藏起来
-        - 不存在 → `404`；存在但属于别的组织 → `403`
-        - **例外**：`POST /nodes`（注册节点）对「存在但属于别的组织」返回 `404`
-          （响应与「不存在」逐字节相同：`{"error":"namespace not found"}`，不回显 id），
-          因为写端点不能用来探测别人的命名空间 id；其余命名空间资源端点仍是 `403`
+        - 不存在 → `404`（`{"error":"namespace not found"}`，不回显传入的 id）
+        - 未登录 / 用户不存在 → `401`
+        - **没有 `403`**：组织层已在迁移 14 删除（#204），本部署内不再有
+          「有、但属于别人」这一态 —— 存在就 `200`，不存在就 `404`。
+          原先 `POST /nodes` 与 `/playbooks*` 那套「跨组织也报 404、且与『不存在』
+          逐字节相同，以免写端点被当作命名空间 id 探测器」的显式例外
+          （`#185` / 契约 D2）已随之失效，写读同一份口径
         - `namespaceId=*`：跨命名空间汇总（管理员视图），**只允许读端点**（列表类）；
           写端点、单对象端点（`/tasks/{id}`、`/nodes/{id}`、`/sources/{id}`、
           `/traces/{id}`）以及口径未定义的 `/stats` 带 `*` → `400`
@@ -2996,7 +2959,7 @@ components:
     # 预案（playbook）专用的命名空间作用域参数。
     #
     # **刻意不复用 `NamespaceId`**：那条描述的是命名空间资源的通用口径
-    # （别的 org → `403`、读端点允许 `*` 做跨命名空间汇总），与预案的口径相反。
+    # （读端点允许 `*` 做跨命名空间汇总），与预案「只按单命名空间」的口径相反。
     # 预案的 5 个端点全部按「单命名空间」硬约束（契约 §6.2、CONTRACT.md §2.8）。
     NamespaceIdStrict:
       name: namespaceId
@@ -3013,12 +2976,10 @@ components:
         - **`namespaceId=*` → `400`（一律）**：预案**不提供跨命名空间汇总**。
           体检结论（能力定义 / 边 / 触发器的存在性）只能按**单个**命名空间算，
           「汇总的 ready 率」是个没有定义的量
-        - **不存在 → `404`**
-        - **属于别的组织也 `404`**：响应与「不存在」**逐字节相同** ——
-          `{"error":"namespace not found"}`（不回显传入的 id），
-          所以无法从响应区分「这个 id 存在但不是你的」和「这个 id 不存在」。
-          原因同 `POST /nodes`：写端点 / 单对象端点**不能**被拿来探测别人的
-          命名空间 id 是否存在。（其余命名空间资源的读端点仍是 `403`）
+        - **不存在 → `404`**：`{"error":"namespace not found"}`（不回显传入的 id）
+        - **没有 `403`**：组织层已在迁移 14 删除（#204），不存在「属于别的组织」
+          这一态，所以也不需要为「防 id 探测」单独做一套不可区分的响应 ——
+          存在与不存在本来就只有两种结果
         - 跨命名空间引用 → `400`（不变量 I11）：安装预案时写入的能力定义、
           边、源全部落在**这一个**命名空间里
 
@@ -3036,10 +2997,9 @@ components:
         `capabilityCount` / `nodeCount` / `sourceCount` / `edgeCount` 只在
         `GET /namespaces`（列表）里是真计数；单对象响应（`POST` / `PATCH`）里
         这四个字段恒为 `0`（未做计数查询）。
-      required: [id, orgId, slug, name, createdAt, capabilityCount, nodeCount, sourceCount, edgeCount]
+      required: [id, slug, name, createdAt, capabilityCount, nodeCount, sourceCount, edgeCount]
       properties:
         id: { type: string, example: ns_1730000000_a1b2c3d4 }
-        orgId: { type: string }
         slug:
           type: string
           example: default
@@ -3086,7 +3046,6 @@ components:
       type: object
       properties:
         id: { type: string, example: cap_1730000000_a1b2c3d4 }
-        orgId: { type: string }
         namespaceId:
           type: string
           description: 能力定义所属命名空间（恒存在；同名同版本在不同命名空间里是不同定义）
@@ -3158,7 +3117,7 @@ components:
           type: string
           description: |
             **必填**（本字段或 query 二者给一个；query 优先）。
-            能力定义所属命名空间；不存在 → 404，别的 org → 403，`*` → 400（写端点）。
+            能力定义所属命名空间；不存在 → 404，未登录 → 401，`*` → 400（写端点）。
         name: { type: string, example: review }
         displayName:
           type: string
@@ -3180,7 +3139,6 @@ components:
     Edge:
       type: object
       properties:
-        orgId: { type: string }
         namespaceId:
           type: string
           description: 边所属命名空间（恒存在；主键前缀就是它）
@@ -3226,7 +3184,6 @@ components:
       type: object
       properties:
         id: { type: string, example: tsk_1730000000_abcd1234 }
-        orgId: { type: string }
         namespaceId:
           type: string
           description: 任务所属命名空间（恒存在；子任务继承父任务）
@@ -3412,10 +3369,9 @@ components:
 
     Source:
       type: object
-      required: [id, orgId, namespaceId, name, kind, enabled, targets, createdAt]
+      required: [id, namespaceId, name, kind, enabled, targets, createdAt]
       properties:
         id: { type: string, example: "src_..." }
-        orgId: { type: string }
         namespaceId:
           type: string
           description: 源所属命名空间（恒存在；名字的唯一性也是按命名空间算的）
@@ -3556,7 +3512,6 @@ components:
       type: object
       properties:
         id: { type: string, example: evt_1730000000_abcd1234 }
-        orgId: { type: string }
         namespaceId:
           type: string
           description: 事件落进的命名空间（恒存在；trace 与任务都跟着它走）
@@ -3651,7 +3606,6 @@ components:
       type: object
       properties:
         id: { type: string }
-        orgId: { type: string }
         namespaceId:
           type: string
           description: |
@@ -3856,10 +3810,9 @@ components:
         `manifest` 是**用户提交的 JSON 原文**：中枢只校验、不重新编码、也不解释 ——
         `runner` / `paramsSchema` / 自定义键都原样往返（不变量 I1：中枢不知道「怎么执行」，
         runner 属于节点侧配置）。
-      required: [id, orgId, namespaceId, slug, name, description, manifest, createdAt]
+      required: [id, namespaceId, slug, name, description, manifest, createdAt]
       properties:
         id: { type: string, example: pb_1730000000_a1b2c3d4 }
-        orgId: { type: string }
         namespaceId:
           type: string
           description: 预案所属命名空间（恒存在；体检只在这个命名空间里算）
@@ -4174,7 +4127,10 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: 无权访问（不是该组织成员 / 命名空间属于别的组织）
+      description: |
+        权限不足（与「命名空间存不存在」无关 —— 那类是 `404`）。三种来源：
+        账号角色不够（`/v1/admin/*` 需要管理员）、API Key 缺少所需 scope
+        （如 `notify:send`）、节点令牌指向的命名空间已被删除（WS 握手）。
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
