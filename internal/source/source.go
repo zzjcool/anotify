@@ -100,7 +100,6 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 	// 打底只对 cron/manual 生效，webhook/github 的 payload 就是投递体（A13）。
 	payloadMap, _ := eventPayload(src, payload)
 	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:       src.OrgID,
 		NamespaceID: src.NamespaceID, // 派发（查边/找节点/建任务）的隔离维度
 		TraceID:     "dryrun",        // 不落库，trace 只是占位（Dispatch 要求非空）
 		Params:      payloadMap,
@@ -151,7 +150,6 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 
 	ev := &store.Event{
 		NamespaceID: src.NamespaceID, // 事件属于源所在的命名空间（I10）
-		OrgID:       src.OrgID,
 		TraceID:     t.newTraceID(),
 		Source:      src.Name, // 事件来源记源的名字，而不是能力的名字
 		Type:        eventType,
@@ -180,7 +178,6 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	}
 
 	out, err := t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:       src.OrgID,
 		NamespaceID: src.NamespaceID, // 源触发：命名空间随源走（契约 §3）
 		TraceID:     ev.TraceID,
 		Params:      payloadMap,

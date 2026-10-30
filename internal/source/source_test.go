@@ -69,7 +69,7 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 	tr := &Trigger{Store: st, Dispatcher: disp}
 
 	src := &store.Source{
-		ID: "src_1", NamespaceID: "ns_1", OrgID: "org_1", Name: "每晚体检", Kind: store.SourceKindCron,
+		ID: "src_1", NamespaceID: "ns_1", Name: "每晚体检", Kind: store.SourceKindCron,
 		Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "cap_a"}, {CapabilityID: "cap_b"}},
 	}
 	res, err := tr.Fire(context.Background(), src, "nightly", "", json.RawMessage(`{"k":"v"}`))
@@ -81,7 +81,8 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 	}
 	in := disp.got[0]
 	// 命名空间随源走：派发与事件都必须是源所在的命名空间（契约 §3）。
-	// 这里特意把 NamespaceID 与 OrgID 设成不同值，拿 org 当 namespace 会立即变红。
+	// 命名空间是唯一的隔离维度（org 层已随迁移 14 删除），源带的 ns 必须原样传下去；
+	// 少了它或换成别的维度（如默认命名空间）这里立即变红。
 	if in.NamespaceID != src.NamespaceID {
 		t.Errorf("DispatchInput.NamespaceID = %q, want %q（源触发必须带命名空间）", in.NamespaceID, src.NamespaceID)
 	}
@@ -113,7 +114,7 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 func TestFireDisabledSource(t *testing.T) {
 	st := &fakeStore{inserted: true}
 	tr := &Trigger{Store: st, Dispatcher: &fakeDisp{}}
-	src := &store.Source{ID: "s", NamespaceID: "ns_1", OrgID: "o", Name: "n", Enabled: false}
+	src := &store.Source{ID: "s", NamespaceID: "ns_1", Name: "n", Enabled: false}
 	if _, err := tr.Fire(context.Background(), src, "t", "", nil); err == nil {
 		t.Error("停用的源不该能触发")
 	}
@@ -123,7 +124,7 @@ func TestFireIdempotent(t *testing.T) {
 	st := &fakeStore{inserted: false} // 模拟幂等命中
 	disp := &fakeDisp{}
 	tr := &Trigger{Store: st, Dispatcher: disp}
-	src := &store.Source{ID: "s", NamespaceID: "ns_1", OrgID: "o", Name: "n", Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "c"}}}
+	src := &store.Source{ID: "s", NamespaceID: "ns_1", Name: "n", Enabled: true, Targets: []store.SourceTarget{{CapabilityID: "c"}}}
 	res, err := tr.Fire(context.Background(), src, "t", "k1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +144,7 @@ func TestSchedulerTickFiresDueCron(t *testing.T) {
 		inserted: true,
 		// scheduler 先用 DueCronSources 拿列表，再 GetSource 拿全量
 		due: []*store.Source{{
-			ID: "src_1", NamespaceID: "ns_1", OrgID: "org_1", Name: "cron-1", Kind: store.SourceKindCron,
+			ID: "src_1", NamespaceID: "ns_1", Name: "cron-1", Kind: store.SourceKindCron,
 			Enabled: true, Config: json.RawMessage(`{"expr":"0 3 * * *"}`),
 			NextFireAt: &next,
 		}},
@@ -154,7 +155,7 @@ func TestSchedulerTickFiresDueCron(t *testing.T) {
 	s := &Scheduler{Store: st, Dispatcher: disp, Now: func() int64 { return now }}
 	s.Tick(context.Background())
 
-	// 回查全量源时用的是行上自带的命名空间（不是 org，也不是默认命名空间）
+	// 回查全量源时用的是行上自带的命名空间（不是默认命名空间兜底）
 	if len(st.getSourceNS) != 1 || st.getSourceNS[0] != "ns_1" {
 		t.Fatalf("GetSource 的命名空间 = %v, want [ns_1]（应传 src.NamespaceID）", st.getSourceNS)
 	}
@@ -208,7 +209,7 @@ func TestFirePassesPayloadAndVars(t *testing.T) {
 	tr := &Trigger{Store: st, Dispatcher: disp}
 
 	src := &store.Source{
-		ID: "src_1", OrgID: "org_1", Name: "hook", Kind: store.SourceKindWebhook,
+		ID: "src_1", Name: "hook", Kind: store.SourceKindWebhook,
 		Enabled: true,
 		Config: json.RawMessage(`{"vars":[` +
 			`{"name":"prTitle","from":"pull_request.title"},` +
@@ -269,7 +270,7 @@ func TestFireConfigPayloadIsBaseConfigPayload(t *testing.T) {
 	tr := &Trigger{Store: st, Dispatcher: disp}
 
 	src := &store.Source{
-		ID: "src_1", OrgID: "org_1", Name: "man", Kind: store.SourceKindManual,
+		ID: "src_1", Name: "man", Kind: store.SourceKindManual,
 		Enabled: true,
 		Config:  json.RawMessage(`{"payload":{"env":"prod","team":"old","region":"cn"}}`),
 		Targets: []store.SourceTarget{{CapabilityID: "cap_a"}},
@@ -304,7 +305,7 @@ func TestSchedulerTickCronPayloadIncludesConfig(t *testing.T) {
 	st := &fakeStore{
 		inserted: true,
 		due: []*store.Source{{
-			ID: "src_1", OrgID: "org_1", Name: "cron-1", Kind: store.SourceKindCron,
+			ID: "src_1", Name: "cron-1", Kind: store.SourceKindCron,
 			Enabled: true,
 			// config.payload 是用户写的打底数据（config.vars 同理，两者都要保留）
 			Config:     json.RawMessage(`{"expr":"0 3 * * *","payload":{"requestedBy":"ops"}}`),
@@ -342,7 +343,7 @@ func TestSchedulerTickCronPayloadSystemFields(t *testing.T) {
 	st := &fakeStore{
 		inserted: true,
 		due: []*store.Source{{
-			ID: "src_1", OrgID: "org_1", Name: "cron-1", Kind: store.SourceKindCron,
+			ID: "src_1", Name: "cron-1", Kind: store.SourceKindCron,
 			Enabled:    true,
 			Config:     json.RawMessage(`{"expr":"0 3 * * *"}`),
 			NextFireAt: &next,
@@ -378,7 +379,7 @@ func TestSchedulerTickCronPayloadUserFieldsWin(t *testing.T) {
 	st := &fakeStore{
 		inserted: true,
 		due: []*store.Source{{
-			ID: "src_1", OrgID: "org_1", Name: "cron-1", Kind: store.SourceKindCron,
+			ID: "src_1", Name: "cron-1", Kind: store.SourceKindCron,
 			Enabled: true,
 			// 四个键全部与系统字段同名（firedAt 是数字）+ 一个独占键
 			Config: json.RawMessage(`{"expr":"0 3 * * *","payload":{` +
@@ -436,7 +437,7 @@ func TestFireWebhookIgnoresConfigPayload(t *testing.T) {
 			tr := &Trigger{Store: st, Dispatcher: disp}
 
 			src := &store.Source{
-				ID: "src_1", OrgID: "org_1", Name: "hook", Kind: kind,
+				ID: "src_1", Name: "hook", Kind: kind,
 				Enabled: true,
 				// 历史行残留：早期 ValidateSourceConfig 各 kind 都保存 payload
 				Config: json.RawMessage(`{"token":"tok","event":"push",` +
@@ -531,7 +532,7 @@ func TestDryRunPassesPayloadAndVars(t *testing.T) {
 	tr := &Trigger{Store: st, Dispatcher: disp}
 
 	src := &store.Source{
-		ID: "src_1", OrgID: "org_1", Name: "man", Kind: store.SourceKindManual,
+		ID: "src_1", Name: "man", Kind: store.SourceKindManual,
 		Config: json.RawMessage(`{"vars":[{"name":"who","from":"user.login"}],` +
 			`"payload":{"env":"prod"}}`),
 		Targets: []store.SourceTarget{{CapabilityID: "cap_a"}},
@@ -592,7 +593,7 @@ func TestFirePerTargetParams(t *testing.T) {
 	tr := &Trigger{Store: st, Dispatcher: disp}
 
 	src := &store.Source{
-		ID: "src_1", NamespaceID: "ns_1", OrgID: "org_1", Name: "多出口", Kind: store.SourceKindManual,
+		ID: "src_1", NamespaceID: "ns_1", Name: "多出口", Kind: store.SourceKindManual,
 		Enabled: true,
 		Targets: []store.SourceTarget{
 			{CapabilityID: "cap_analyze", Params: map[string]any{"changedLines": float64(350)}},
