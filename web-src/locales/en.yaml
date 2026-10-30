@@ -1231,10 +1231,37 @@ nodes:
     title: Nodes
   howto:
     title: How to connect a node
-    desc: Node registration is an operator action (not self-service), so run it on the server. The token is returned only once.
-    step1: Register the node on the server (declare which capabilities it can run)
-    step2: Start it on the node machine with the token; it connects back over WS
+    desc: 'Registration happens on this page: the token is shown once, and the authoritative config lives only in node.yaml on that machine.'
+    step1: 'Click "Register node" above for a one-time token, then save the node.yaml it gives you on that machine'
+    step2: 'Fill in capabilities (what that machine really runs), then start it on the node machine'
   view_events: View events
+  register:
+    btn: 'Register node'
+    title: 'Register a node'
+    desc: 'The hub stores only the token sha256, so the plaintext token is shown exactly once, right after registration.'
+    name: 'Node name'
+    name_ph: 'e.g. my-mbp'
+    name_hint: 'Lowercase letters, digits, dot (.), underscore (_) or hyphen (-) — 1–63 characters, starting with a letter or digit'
+    instances: 'Instances (optional)'
+    instances_hint: 'How many instances to run on this machine — the value is written verbatim into instances: in node.yaml. The hub caps it at 20 (default 1).'
+    submit: 'Register'
+    cancel: 'Cancel'
+    submitting: 'Registering…'
+    close: 'Close'
+    done: 'Node "{name}" is registered'
+    warn_once: 'This token is shown only once — it cannot be retrieved after you close this. If you lose it, delete the node and register it again.'
+    token_title: 'One-time token'
+    copy_token: 'Copy token'
+    yaml_title: 'node.yaml (ready to paste)'
+    copy_yaml: 'Copy YAML'
+    yaml_hint: 'Save it as node.yaml, replace capabilities with what this machine really runs, then run agent -f node.yaml'
+    err:
+      empty_name: 'Enter a node name first'
+      invalid_name: 'Invalid name: lowercase letters, digits, dot (.), underscore (_) or hyphen (-) only, 1–63 characters, starting with a letter or digit'
+      name_taken: 'This namespace already has a node named {name}'
+      not_found: 'This namespace no longer exists (it may have been deleted). Refresh and try again.'
+      forbidden: 'You do not have permission to register nodes in this namespace'
+      failed: 'Registration failed: '
 sources:
   detail: "Details"
   open_detail: "Open details"

@@ -43,6 +43,27 @@
         opacity: 1;
         transform: translateX(-50%) translateY(0);
       }
+      /* 注册结果块的两条提示：警告（令牌只出现一次）与错误行。
+       * 只用 tokens 变量，不硬编码色值；缺的 Tailwind 工具类也不去改
+       * tailwind.css（那是已提交产物），统一在这里加语义类。 */
+      .reg-warn {
+        border: 1px solid var(--line-strong);
+        background: var(--warn-soft);
+        border-radius: 10px;
+        padding: 0.6rem 0.85rem;
+        color: var(--warn-300);
+        font-size: 0.78rem;
+        line-height: 1.55;
+      }
+      .reg-err {
+        border: 1px solid var(--line-strong);
+        background: var(--error-soft);
+        border-radius: 10px;
+        padding: 0.55rem 0.85rem;
+        color: var(--error-300);
+        font-size: 0.78rem;
+        line-height: 1.55;
+      }
     </style>
 {{end}}
 
@@ -64,7 +85,108 @@
               >
                 {{t "nodes.refresh"}}
               </button>
+              <button
+                id="node-register-btn"
+                type="button"
+                class="btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium"
+              >
+                {{t "nodes.register.btn"}}
+              </button>
             </div>
+          </div>
+        </div>
+
+        <!-- 注册表单（issue #198）：初始隐藏，点「注册节点」展开。 -->
+        <div id="register-panel" class="card rounded-2xl p-5 hidden" hidden>
+          <h3 class="text-sm font-medium text-zinc-300">{{t "nodes.register.title"}}</h3>
+          <p class="mb-4 mt-2 text-xs leading-relaxed text-zinc-500">
+            {{t "nodes.register.desc"}}
+          </p>
+          <div class="space-y-4">
+            <div>
+              <label class="mb-1 block text-xs text-zinc-400" for="reg-name"
+                >{{t "nodes.register.name"}}</label
+              >
+              <input
+                id="reg-name"
+                class="input w-full text-sm"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="{{t "nodes.register.name_ph"}}"
+              />
+              <p class="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                {{t "nodes.register.name_hint"}}
+              </p>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-zinc-400" for="reg-instances"
+                >{{t "nodes.register.instances"}}</label
+              >
+              <input
+                id="reg-instances"
+                class="input w-full text-sm"
+                type="number"
+                min="1"
+                max="20"
+                value="1"
+              />
+              <p class="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                {{t "nodes.register.instances_hint"}}
+              </p>
+            </div>
+            <div id="reg-error" class="reg-err hidden" hidden></div>
+            <div class="flex flex-wrap items-center gap-3">
+              <button
+                id="reg-submit"
+                type="button"
+                class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
+              >
+                {{t "nodes.register.submit"}}
+              </button>
+              <button id="reg-cancel" type="button" class="btn-ghost rounded-xl px-4 py-2 text-sm">
+                {{t "nodes.register.cancel"}}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 注册结果（issue #198）：令牌只出现一次，所以是独立一块而不是 toast。 -->
+        <div id="reg-result" class="card rounded-2xl p-5 hidden" hidden>
+          <h3 id="reg-result-title" class="text-sm font-medium text-zinc-200"></h3>
+          <div id="reg-warning" class="reg-warn mt-3"></div>
+
+          <div class="mt-4">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs text-zinc-400">{{t "nodes.register.token_title"}}</span>
+              <button id="reg-token-copy" type="button" class="copy-btn">
+                {{t "nodes.register.copy_token"}}
+              </button>
+            </div>
+            <div class="code-block">
+              <div class="code-body"><code id="reg-token" class="mono"></code></div>
+            </div>
+          </div>
+
+          <div class="mt-4">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs text-zinc-400">{{t "nodes.register.yaml_title"}}</span>
+              <button id="reg-yaml-copy" type="button" class="copy-btn">
+                {{t "nodes.register.copy_yaml"}}
+              </button>
+            </div>
+            <div class="code-block">
+              <pre class="code-body"><code id="reg-yaml"></code></pre>
+            </div>
+            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.yaml_hint"}}
+            </p>
+          </div>
+
+          <div class="mt-4">
+            <button id="reg-close" type="button" class="btn-ghost rounded-xl px-4 py-2 text-sm">
+              {{t "nodes.register.close"}}
+            </button>
           </div>
         </div>
 
@@ -86,10 +208,8 @@
             {{t "nodes.howto.desc"}}
           </p>
           <pre class="code-block"><code># {{t "nodes.howto.step1"}}
-anotify node create --name my-mbp --capabilities review@1,fix@1
-
 # {{t "nodes.howto.step2"}}
-anotify node run --token &lt;token-from-step-1&gt;</code></pre>
+agent -f node.yaml</code></pre>
         </div>
       </div>
       <div id="toast" class="toast"></div>
@@ -342,6 +462,223 @@ anotify node run --token &lt;token-from-step-1&gt;</code></pre>
         }
       }
 
-      document.addEventListener("DOMContentLoaded", loadAll);
+      /* ---------- 注册节点（issue #198） ---------- */
+      //
+      // 令牌只在 POST /v1/nodes 的 201 响应体里出现一次（中枢只存 sha256），
+      // 所以这块有三条纪律：
+      //   1) 令牌绝不写 localStorage / 日志，只活在 #reg-token 与 #reg-yaml 里；
+      //   2) 关掉结果块、或再点一次「注册节点」，都要把 textContent 真的清空——
+      //      只做 CSS 隐藏等于把凭证留在页面上；
+      //   3) 提交失败（尤其 409 重名）时结果块保持隐藏，绝不能把上一个令牌露出来。
+      const REG_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+      // 中枢单节点实例硬顶：store.DefaultMaxInstances = 20。
+      // 超过它 hello 会被 too_many_instances 拒（internal/ws/node_handshake.go），
+      // 节点永远上不了线——所以 UI 必须跟这个上限，不能只当"建议值"。
+      const REG_MAX_INSTANCES = 20;
+      // JS 侧的中文兜底文案；权威文案在四语 locale 的 nodes.register.err.invalid_name。
+      const REG_NAME_RULE =
+        "名字不合法：只能用小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头";
+
+      function regEl(id) {
+        return document.getElementById(id);
+      }
+
+      // hidden 属性与 .hidden 类同步切：两者都真的不渲染，
+      // 同步是为了不留「看着没了、其实还在」的中间态。
+      function regHide(id, on) {
+        const node = regEl(id);
+        if (!node) return;
+        node.hidden = !!on;
+        node.classList.toggle("hidden", !!on);
+      }
+
+      function regError(msg) {
+        const box = regEl("reg-error");
+        box.textContent = msg || "";
+        regHide("reg-error", !msg);
+      }
+
+      // 清空结果块。令牌是从 DOM 里**删掉**的（textContent = ""），不是藏起来。
+      function regClearResult() {
+        regEl("reg-token").textContent = "";
+        regEl("reg-yaml").textContent = "";
+        regEl("reg-result-title").textContent = "";
+        regEl("reg-warning").textContent = "";
+        regHide("reg-result", true);
+      }
+
+      function regResetInputs() {
+        regEl("reg-name").value = "";
+        regEl("reg-instances").value = "1";
+      }
+
+      // node.yaml 生成。形状以 #197 修好的 playbook.html yamlFor() + cmd/agent/config.go 为准：
+      //   顶层只有 name/server/token/instances/capabilities，**没有** node: 包装；
+      //   capabilities 下给一条**注释**示例（真后端会拒未定义能力），其中 run 必须是
+      //   映射（`run:` 单独一行、runner 缩进在其下）。写成 `run: bash` 标量或
+      //   `timeout_sec` 会让 agent 立刻解析失败 —— 退回去等于功能坏掉。
+      function yamlForNode(node, token, instances) {
+        return [
+          "# node.yaml —— 节点侧唯一声明入口",
+          "# 1) 把 capabilities 换成这台机器真会跑的能力（下面有示例注释）",
+          "# 2) 然后执行：agent -f node.yaml",
+          "# token 只显示这一次（中枢只存 sha256），丢了就删掉节点重新注册",
+          "name: " + ((node && node.name) || ""),
+          // server 用当前 origin：用户从哪个地址打开页面，节点就回连哪个中枢。
+          "server: " + location.origin,
+          "token: " + (token || ""),
+          "instances: " + instances,
+          "capabilities:",
+          "  # 一条能力声明长这样（去掉 # 后换成你的能力名与命令）：",
+          "  # - capability: analyze-pr",
+          "  #   version: 1",
+          "  #   run:",
+          "  #     runner: bash",
+          "  #     command: |",
+          "  #       echo replace-me",
+          "  #     timeoutSec: 30",
+        ].join("\n");
+      }
+
+      // 错误映射：先说人话，状态码只是细分。
+      // 401 不在这里分支：Anotify.api() 已自行跳登录页，走到这里落兜底就行。
+      function regErrorText(err, name) {
+        const status = err && err.status;
+        if (status === 409) {
+          return t(
+            "nodes.register.err.name_taken",
+            "这个命名空间里已经有叫 {name} 的节点",
+          ).replace("{name}", name);
+        }
+        if (status === 400) {
+          return t("nodes.register.err.invalid_name", REG_NAME_RULE);
+        }
+        if (status === 404) {
+          return t(
+            "nodes.register.err.not_found",
+            "当前命名空间不存在（可能已被删除），刷新后重试",
+          );
+        }
+        if (status === 403) {
+          return t("nodes.register.err.forbidden", "没有权限在这个命名空间注册节点");
+        }
+        return (
+          t("nodes.register.err.failed", "注册失败：") +
+          ((err && (err.detail || err.message)) || "")
+        );
+      }
+
+      function showRegisterResult(node, token, name, instances) {
+        regEl("reg-result-title").textContent = t(
+          "nodes.register.done",
+          "节点「{name}」已注册",
+        ).replace("{name}", (node && node.name) || name);
+        regEl("reg-warning").textContent = t(
+          "nodes.register.warn_once",
+          "令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。",
+        );
+        regEl("reg-token").textContent = token;
+        regEl("reg-yaml").textContent = yamlForNode(node, token, instances);
+        regHide("register-panel", true);
+        regHide("reg-result", false);
+      }
+
+      async function submitRegister() {
+        const btn = regEl("reg-submit");
+        // 双击 / 回车连发的第二下直接忽略：否则第一下刚拿到令牌，
+        // 第二下拿 409 回来又把结果块洗掉。
+        if (btn.disabled) return;
+        const name = (regEl("reg-name").value || "").trim();
+        const parsed = parseInt(regEl("reg-instances").value, 10);
+        // instances 会**原样写进 node.yaml**，所以必须夹到中枢硬顶 [1,20]：
+        // 后端注册时只校验非负（不落库），真正的上限在握手时生效——超了节点
+        // 永远连不上，那时页面早已显示"注册成功"，用户完全没有线索。
+        // 下限取 1 是为了对齐 cmd/agent 的 slots()（<=0 一律记 1 个槽位），
+        // 否则 YAML 里的 instances: 0 与实际槽位数不一致。
+        const instances = !isNaN(parsed)
+          ? Math.min(Math.max(parsed, 1), REG_MAX_INSTANCES)
+          : 1;
+
+        regError("");
+        // 名字空 / 不合规则：本地就拦住，不发请求。
+        if (!name) {
+          regError(t("nodes.register.err.empty_name", "先填节点名"));
+          return;
+        }
+        if (!REG_NAME_RE.test(name)) {
+          regError(t("nodes.register.err.invalid_name", REG_NAME_RULE));
+          return;
+        }
+
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = t("nodes.register.submitting", "注册中…");
+        try {
+          // namespaceId 由 Anotify.api() 自动注入（/v1/nodes 在 NS_PATHS 里），
+          // 手写 query 只会让后端读到重复参数。
+          const res = await Anotify.api(API + "/nodes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, instances }),
+          });
+          showRegisterResult(res && res.node, (res && res.token) || "", name, instances);
+          regResetInputs();
+          // 列表里要出现刚注册的那台（offline）：注册成功 ≠ 已上线。
+          loadAll();
+        } catch (err) {
+          // 失败时结果块必须保持隐藏：重名（409）绝不能顺带露出上一个令牌。
+          regClearResult();
+          regError(regErrorText(err, name));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = label;
+        }
+      }
+
+      function openRegister() {
+        // 顺序有讲究：先把上一个结果块（含令牌）清掉，再展开表单——
+        // 「再点一次注册节点 → 上一个令牌块消失」靠的就是这里。
+        regClearResult();
+        regError("");
+        regHide("register-panel", false);
+      }
+
+      function closeRegister() {
+        regHide("register-panel", true);
+        regClearResult();
+        regError("");
+      }
+
+      // 复制按钮统一走 window.Anotify.copyText(btn, getTextFn)：
+      // 它自己把按钮文字临时改成「已复制 ✓」，令牌只在内存里过一手。
+      function regWireCopy(btnId, textId) {
+        const btn = regEl(btnId);
+        btn.addEventListener("click", () => {
+          const text = regEl(textId).textContent;
+          if (!text) return;
+          window.Anotify.copyText(btn, () => text);
+        });
+      }
+
+      function initRegister() {
+        regEl("node-register-btn").addEventListener("click", openRegister);
+        regEl("reg-submit").addEventListener("click", submitRegister);
+        regEl("reg-cancel").addEventListener("click", closeRegister);
+        regEl("reg-close").addEventListener("click", closeRegister);
+        regWireCopy("reg-token-copy", "reg-token");
+        regWireCopy("reg-yaml-copy", "reg-yaml");
+        // 回车提交（没有 <form>，避免默认 submit 把页面刷掉）。
+        regEl("reg-name").addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submitRegister();
+          }
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        initRegister();
+        loadAll();
+      });
     </script>
 {{end}}

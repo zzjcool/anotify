@@ -1231,10 +1231,37 @@ nodes:
     title: 节点列表
   howto:
     title: 如何接入一台节点
-    desc: 节点注册是运维动作（不是自助服务），所以要在服务器上执行。token 只在创建时返回一次。
-    step1: 在服务器上注册节点（声明它能跑哪些能力）
-    step2: 在节点机器上用 token 启动，它会用 WS 连回中枢
+    desc: '注册就在这个页面上：令牌只显示一次，权威配置只活在这台机器的 node.yaml 里。'
+    step1: '点上方「注册节点」拿一次性令牌，把页面给出的 node.yaml 存到这台机器'
+    step2: '填好 capabilities（这台机器真会跑的能力），然后在节点机器上启动它'
   view_events: 查看事件
+  register:
+    btn: '注册节点'
+    title: '注册一台节点'
+    desc: '中枢只存令牌的 sha256，所以明文令牌只在注册成功后显示一次。'
+    name: '节点名'
+    name_ph: '例如 my-mbp'
+    name_hint: '小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
+    instances: '实例数（可选）'
+    instances_hint: '这台机器上并行跑几个实例：它会原样写进 node.yaml 的 instances。中枢硬顶 20，默认 1。'
+    submit: '注册'
+    cancel: '取消'
+    submitting: '注册中…'
+    close: '关闭'
+    done: '节点「{name}」已注册'
+    warn_once: '令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。'
+    token_title: '一次性令牌'
+    copy_token: '复制令牌'
+    yaml_title: 'node.yaml（可直接粘）'
+    copy_yaml: '复制 YAML'
+    yaml_hint: '存成 node.yaml，把 capabilities 换成这台机器真会跑的能力，再执行 agent -f node.yaml'
+    err:
+      empty_name: '先填节点名'
+      invalid_name: '名字不合法：只能用小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
+      name_taken: '这个命名空间里已经有叫 {name} 的节点'
+      not_found: '当前命名空间不存在（可能已被删除），刷新后重试'
+      forbidden: '没有权限在这个命名空间注册节点'
+      failed: '注册失败：'
 sources:
   detail: "详情"
   open_detail: "打开详情"
