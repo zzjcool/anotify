@@ -5,6 +5,15 @@
 >
 > **无历史包袱**：库清空重建，不迁移、不双写、不兼容。
 > 现有 `internal/store` 的 10 张表全部作废，按本文重建。
+>
+> **⚠️ 修订（#204 / 迁移 14）：组织层已删除。** 命名空间成为**唯一隔离边界**，
+> `orgs` / `org_members` 两张表与所有 `org_id` 列都已移除，`orgId` / `X-Org-Id`
+> 不再是任何端点的参数。本文中带 `org_id` 的 DDL 段落保留为**历史记录**
+> （它们是迁移前的形状，迁移 14 的等价物见 `internal/store/migrate14.go`）；
+> **规范性内容以 §0 不变量、§2 端点表、§6 命名空间章节为准**，这三处已按新语义改写。
+> 数据隔离维度：组织 → 命名空间 两级 ⇒ **命名空间一级**；
+> 「谁能看某个命名空间」：该组织成员 ⇒ **本部署任何已登录用户**；
+> API key 作用范围：个人 key 全组织 ⇒ **个人 key 全部署**。
 
 ---
 
@@ -21,7 +30,7 @@
 | **I7** | **图里只有能力，没有机器**；`edges` 两端都是 `capability_id` | 换节点要改图 |
 | **I8** | **一个能力定义 = 一个不可变版本**（append-only，钉 hash） | 旧 trace 无法解释 |
 | **I9** | **空列表返回 `[]` 不返回 `null`** | 前端误判「未连接」 |
-| **I10** | **一切租户数据先过 `org_id`**；命名空间资源还必须过 `namespace_id`，且两者必须一致（`namespace.org_id == org_id`） | 跨组织 / 跨命名空间泄漏 |
+| **I10** | **命名空间是唯一隔离边界**：命名空间资源端点必须显式给 `namespaceId`，并在处理器内过 `store.AuthorizeNamespace` 收口——**今天它等价于「命名空间存在且调用方已登录」**；缺参 `400`、不存在 `404`、未登录 `401`；**跨命名空间引用一律 `400`**（见 I11）。本部署内不再有「别人的命名空间」这一态 | 跨命名空间泄漏 / 越权访问 |
 | **I11** | **跨命名空间不引用**：`edges` 两端、`source_targets` 目标、`node_capabilities` 声明、子任务继承，全部锁在同一个 `namespace_id` 内；违反一律 `400` | 预发的图能把任务派到生产的拓扑上 |
 
 ---
@@ -32,10 +41,10 @@
 
 | 表 | 归属 | 说明 |
 |---|---|---|
-| `orgs` | — | 组织（Tailscale tailnet 模型） |
-| `org_members` | — | 用户 ↔ 组织（多对多） |
-| `namespaces` | 组织 | 组织内的隔离单位（配置 + 运行面），见 §2.1.1 |
-| `users` | 人 | 跨组织共享身份 |
+| ~~`orgs`~~ | — | ~~组织（Tailscale tailnet 模型）~~ **迁移 14 已删除** |
+| ~~`org_members`~~ | — | ~~用户 ↔ 组织（多对多）~~ **迁移 14 已删除** |
+| `namespaces` | **隔离边界（唯一一层）** | 隔离单位（配置 + 运行面），见 §2.1.1 |
+| `users` | 人 | 全部署共享身份 |
 | `passkeys` / `sessions` / `api_keys` | 人 | 认证（沿用现有实现，字段不变） |
 | `capability_versions` | 命名空间 | 能力定义，append-only，钉 hash |
 | `nodes` | 命名空间 | 一台机器 |
@@ -50,14 +59,15 @@
 
 ### 1.1 本文定义的表（13 张）
 
-`orgs` / `org_members` / `namespaces` / `capability_versions` / `nodes` /
+`namespaces` / `capability_versions` / `nodes` /
 `node_capabilities` / `node_instances` / `node_pins` / `edges` / `events` / `tasks` /
 `graph_versions` / `playbooks`
 
 ### 1.2 沿用不动的表（4 张）
 
 `users` / `passkeys` / `sessions` / `api_keys` —— 字段和现有 `schema.sql` 一致，
-本文不重写 DDL。改动只有一处：**所有属于组织的数据都要带 `org_id`**，这四张表属于人，不带。
+本文不重写 DDL。**迁移 14 之后**：组织层已删除，这四张表本来就不带 `org_id`
+（用户直接享有「本部署内访问全部命名空间」的权限，见 I10 新表述）。
 
 另 `cli_auth_sessions` / `recovery_codes` 是 CLI 授权与恢复码，与本次重构无关，**原样保留**。
 
@@ -93,7 +103,9 @@ CREATE TABLE IF NOT EXISTS org_members (
 CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
 ```
 
-**首次注册自动建组织**：注册事务内 `INSERT orgs` + `INSERT org_members(role='owner')`。
+**首次注册自动建 `default` 命名空间**（迁移 14 之后）：注册事务内建用户 +
+建 `default` 命名空间 + 播种内置能力（`store.RegisterUser`，同一事务）。
+原文的 `INSERT orgs` + `INSERT org_members(role='owner')` 随组织层一起删除。
 **代码里不存在「没有组织」的分支。**
 
 #### 2.1.1 命名空间
@@ -116,8 +128,8 @@ CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);
 
 **隔离什么**：**全部资源** —— `capability_versions` / `nodes` / `node_capabilities` /
 `node_instances` / `node_pins` / `edges` / `sources` / `events` / `tasks` / `graph_versions`。
-**不隔离什么**：只有身份与密钥 —— `users` / `org_members`，以及 `api_keys`
-（密钥可额外绑定一个命名空间来限制作用域，见设计文档 §2.3）。
+**不隔离什么**：只有身份与密钥 —— `users`，以及 `api_keys`
+（密钥可额外绑定一个命名空间来限制作用域，见设计文档 §2.3；`org_members` 已随组织层删除）。
 
 **能力隔离后，节点协议不需要改**：命名空间放在**节点令牌**里，不在 `hello` 帧里。
 节点令牌 → 节点行 → `namespace_id`，所以 `hello` 里的 `capabilities: ["review@1"]`
@@ -125,11 +137,18 @@ CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);
 
 **内置能力必须按命名空间播种**：新建命名空间时同事务插内置能力（否则新命名空间里
 连 `notify.phone` 都没有），内置能力升版时遍历所有命名空间各插一行。
-**建组织时同事务建 `default` 命名空间**（slug `default`，名「默认」）。
+**首次注册时同事务建 `default` 命名空间**（slug `default`，名「默认」）——
+迁移 14 之后注册走 `store.RegisterUser`，建用户 + 建 `default` 命名空间 + 播种
+在**同一个事务**里完成，不再留「用户建好了但命名空间没建」的半成品。
 **代码里不存在「没有命名空间」的分支。**
 
-**`namespace_id` 与 `org_id` 同时存在**（I10 的字面要求），但两者是包含关系：
-`namespace.org_id` 就是这一行的 `org_id`。写入时由 store 层校验一致，**读路径一律用 `namespace_id`**。
+**上面的 DDL 是迁移 14 之前的形状**（`org_id` + `UNIQUE(org_id, slug)`）。
+迁移 14 之后：`namespaces` 去掉 `org_id`，唯一键改为 **`UNIQUE(slug)`**
+（slug 在全部署唯一；老库里跨组织重复的 slug 按 `default` / `default-2` … 去重），
+`orgs` / `org_members` 两表删除。等价 DDL 见 `internal/store/migrate14.go`。
+
+**隔离维度只有一层**：`namespace_id`（I10 原文要求「`namespace.org_id == org_id`」
+的那条一致性校验随组织层一起消失——已经没有第二层可比对了）。
 
 ### 2.2 能力定义（中枢侧，append-only）
 
@@ -493,7 +512,7 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 ## 4. 派发四步（唯一路由算法）
 
 ```text
-输入：org_id, namespace_id, 上游 (capability_id, out), params, trace_id, path, parent_task_id
+输入：namespace_id, 上游 (capability_id, out), params, trace_id, path, parent_task_id
 
 ① 查表
    SELECT to_capability FROM edges
@@ -950,7 +969,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `/v1/capabilities`、`/v1/nodes`、`/v1/nodes/{id}`、`/v1/edges`、`/v1/sources`、`/v1/playbooks*`、`/v1/events`、`/v1/tasks`、`/v1/traces/*`、`/v1/stats` | **必填** |
 | 同上但要跨命名空间汇总（管理员视图） | `namespaceId=*` |
 | `/v1/playbooks*`（5 个端点全部） | **不接受 `*`**（一律 `400`）——预案不提供跨命名空间汇总口径 |
-| `/v1/orgs`、`/v1/admin/*`、`/v1/auth/*` | **不需要**（组织级） |
+| `/v1/admin/*`、`/v1/auth/*` | **不需要**（部署级；组织层已删除，`/v1/orgs` 从来不存在，将来也不会加） |
 
 - 参数位置：`GET` 用 query `namespaceId`；`POST`/`PATCH`/`DELETE` 可放 query 或 body 的
   `namespaceId`（**query 优先**；例外：机器入口 `POST /v1/events` 是 **body 优先**，
@@ -959,17 +978,15 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 - 缺 `namespaceId` → `400`（**不回退到默认命名空间**：回退等于把人写错的地方藏起来）
 - `namespaceId=*` → 跨命名空间汇总，**只允许读端点**；写端点 / 单对象端点带 `*` → `400`；
   `/v1/stats` 的汇总口径未定义，它的 `*` 同样 `400`
-- 不存在 → `404`；属于别的 org → `403`；跨命名空间引用 → `400`（I11）
-  - **例外一：`POST /v1/nodes`**——属于别的组织的命名空间同样返回 `404`
-    （写端点不能用来探测别人的命名空间 id），响应与「不存在」**逐字节相同**
-    （`{"error":"namespace not found"}`，不回显传入的 id）；其余端点仍是 `403`
-  - **例外二：`/v1/playbooks*` 的每一个端点**——同样「别的 org → `404`」，
-    响应体与「不存在」**逐字节相同**（`{"error":"namespace not found"}`，不回显 id）。
-    **同因**：写端点 / 单对象端点不能用来探测别人的命名空间 id 在不在
-    （存在与不存在必须不可区分）。并且这组端点对 `namespaceId=*`
-    **一律 `400`**：预案不提供跨命名空间汇总——体检结论（能力定义 / 边 / 触发器
-    的存在性）只能按**单个**命名空间算，「汇总的 ready 率」是个没有定义的量。
-    这 5 个端点**每一个**都必填 `namespaceId`（见 §2.8）
+- 不存在 → `404`；未登录 / 用户不存在 → `401`；跨命名空间引用 → `400`（I11）
+  - **没有 `403`。** 组织层删除（迁移 14）后「有，但属于别人」这个中间态不存在了：
+    存在就 `200`，不存在就 `404`。原先为写端点单独准备的「跨组织也报 `404`、
+    响应逐字节相同、以免当命名空间 id 探测器」那套映射（`#185` / 契约 D2）
+    随之失效——不存在一律 `404`，探测者拿到的回答和正常调用本来就没有差别。
+  - **`/v1/playbooks*` 的 5 个端点对 `namespaceId=*` 一律 `400`**：预案不提供
+    跨命名空间汇总——体检结论（能力定义 / 边 / 触发器的存在性）只能按**单个**
+    命名空间算，「汇总的 ready 率」是个没有定义的量。这 5 个端点**每一个**都必填
+    `namespaceId`（见 §2.8）
 - 所有资源在响应里带 `namespaceId`；`/v1/namespaces` 自身不带
 - **节点归属**：机器属于哪个命名空间由**节点令牌**决定（令牌 → 节点行 →
   `nodes.namespace_id`，握手时按 token 解析，见 §10.3），创建后不可改
@@ -1021,7 +1038,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `internal/ws`（notification/ack 帧） | **改**：换成 §6.1 的节点协议 |
 | `internal/route`（`ScopeMatch`/`TagMatch`） | **删**：路由改为查 `edges` |
 | `internal/push` | **保留**：`notify.phone` 变成一个 `end` 能力 |
-| `internal/auth` | **改**：加 `org_id` 维度 |
+| `internal/auth` | **改**：注册走 `store.RegisterUser`（建用户 + 默认命名空间，同事务） |
 | `internal/api/notify.go` | **改**：`POST /v1/notify` → 产 `events` 行 |
 | `internal/server/mux.go` | **改**：按 §6.2 重新注册 |
 | `api/openapi.yaml` | **重写**：现有 50 个 operation 收缩到本模型 |
@@ -1032,7 +1049,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 | # | 断言 | 怎么测 |
 |---|---|---|
-| A1 | 注册即得组织 | 新用户注册后 `org_members` 有 1 行 role=owner |
+| A1 | 注册即得命名空间 | 新用户注册后 `namespaces` 里有他的 `default` 一行且内置能力已播种（`store.RegisterUser` 同事务；组织层已在迁移 14 删除） |
 | A2 | 无 argv 可存 | `grep -ri 'argv\|shell\|script' internal/store/schema.sql` = 0 |
 | A3 | 能力必须先定义 | 节点声明未定义能力 → 注册被拒，错误码 `unknown_capability` |
 | A4 | `kind` 不落库 | `grep -E '^\s*kind\s' internal/store/schema.sql` = 0（注意别被 `capability` 误命中） |
@@ -1076,13 +1093,20 @@ CREATE UNIQUE INDEX idx_events_idem ON events(org_id, source, idem_key)
 `devices` 属于用户、不属于组织，所以**必须在派发时补一道校验**，否则 A 组织能推给 B 组织的用户：
 
 ```sql
--- notify.phone 派发前
-SELECT 1 FROM org_members WHERE org_id = :current_org AND user_id = :params_to;
+-- notify.phone 派发前（迁移 14 之后）
+SELECT 1 FROM users WHERE id = :params_to;
 -- 0 行 → pruned / reason=foreign_user，不建任务
 ```
 
 这是 `params_schema` 管不到的部分：schema 只能校验「`to` 是个非空字符串」，
-**「这个人属于本组织」是业务规则，要单独查**。同类规则以后每加一个跨组织能力都要补一次。
+**「这个名字在本部署里是不是个真人」是业务规则，要单独查**。
+
+**判据变了（#204）**：原来是「`params_to` 必须是 `org_members` 里本组织的成员」，
+现在组织层删除、本部署任何已登录用户都能访问任何命名空间，所以「把消息推给外组织
+用户」这个威胁不存在了；规则收窄成「收件人必须存在」。剪枝原因常量与 wire 值仍是
+`foreign_user`（历史拼写保留，事件流可读），语义已写在
+`internal/route/dispatch.go` 的 `checkUserScoped` 注释里。
+同类规则以后每加一个按人投递的能力都要补一次。
 
 ### 10.2 Q3：`graph_versions` 的写入时机
 
@@ -1107,14 +1131,17 @@ SELECT 1 FROM org_members WHERE org_id = :current_org AND user_id = :params_to;
 |:--|:--|:--|
 | 验签 | 本地算签名，不碰 DB | 每次查 `nodes.token_hash` |
 | 吊销 | **做不到立即失效**，只能靠短 TTL + 刷新 | 改一行立刻生效 |
-| `org_id` 携带 | 写进 claim | 查表得到 |
+| 命名空间携带 | 写进 claim | 查表得到（`nodes.namespace_id`），并在握手时过 `AuthorizeNamespaceForNode` 收口 |
 | 泄露后的处置 | 等 TTL 过期 | 立即吊销 |
 | 实现 | 需要签名/验证 + 刷新逻辑 | 一个索引查询 |
 
 **决定：opaque token + 查表。** 理由：
 1. **节点要有「立即踢掉」的能力**——一台机器丢了，改一行就该断，不该等 TTL。
 2. WS 连接是长连接，JWT 的短 TTL 在这里反而是负担（要么频繁刷新，要么长 TTL 失去意义）。
-3. 验签成本可以忽略：`hello` 时查一次，之后靠连接对象持有 `node_id`/`org_id`，不是每帧都查。
+3. 验签成本可以忽略：`hello` 时查一次，之后靠连接对象持有 `node_id`/`namespace_id`，不是每帧都查。
+   注意「连接持有」不等于「永不复查」：命名空间可能在连接存续期间被删除，所以握手时会过一次
+   `store.AuthorizeNamespaceForNode`（#207）；令牌一旦签发就不再追溯成员关系变化，这一点写在
+   该函数的注释里。
 
 token 形态与现有 `api_keys` 一致：`ant_<label>_<base64url(24B)>`，DB 只存 `sha256`，明文只在创建时返回一次。
 明文令牌的**唯一发放点**是 `POST /v1/nodes`：响应里出现一次，之后任何读接口（`GET /v1/nodes`、
