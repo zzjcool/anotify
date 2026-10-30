@@ -59,9 +59,12 @@ func (l Lifecycle) MaxAttemptsOrDefault() int {
 // Outputs 是出口名的唯一来源，同时是 edges.from_port 的封闭集合（不变量 I2）。
 // 没有 Kind 字段——kind 由 DeriveKind 推导，不落库（不变量 I3）。
 type CapabilityVersion struct {
-	ID    string `json:"id"`
-	OrgID string `json:"orgId"`
-	Name  string `json:"name"`
+	ID string `json:"id"`
+	// NamespaceID 是**隔离维度**（I10/I11）：能力定义属于命名空间，
+	// 同一个 name@version 在 prod 与 staging 是两个不同的定义。
+	NamespaceID string `json:"namespaceId"`
+	OrgID       string `json:"orgId"`
+	Name        string `json:"name"`
 	// DisplayName 是**纯展示**标签（用户自己取的名字，如「分析 PR」）。
 	// 空串表示没取，前端回落到 name@version。
 	// 它不参与路由、不参与 content_hash —— 改它不该产生新版本。
@@ -184,8 +187,8 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	if c == nil {
 		return fmt.Errorf("create capability: nil")
 	}
-	if c.OrgID == "" {
-		return fmt.Errorf("create capability: empty org_id")
+	if c.NamespaceID == "" || c.NamespaceID == AllNamespaces {
+		return ErrNamespaceRequired
 	}
 	if c.Name == "" {
 		return fmt.Errorf("create capability: empty name")
@@ -237,11 +240,19 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 		schema = "{}"
 	}
 
+	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证，
+	// 调用方给错 org 也写不出不一致的行）。
+	orgID, err := d.NamespaceOrgID(ctx, c.NamespaceID)
+	if err != nil {
+		return fmt.Errorf("create capability: %w", err)
+	}
+	c.OrgID = orgID
+
 	_, err = d.ExecContext(ctx,
 		`INSERT INTO capability_versions
-		   (id, org_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.OrgID, c.Name, c.DisplayName, c.Version, schema, string(outputsJSON),
+		   (id, namespace_id, org_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.NamespaceID, c.OrgID, c.Name, c.DisplayName, c.Version, schema, string(outputsJSON),
 		string(lifecycleJSON), c.Sticky, c.Source, hash, c.CreatedAt)
 	if err == nil {
 		c.ContentHash = hash
@@ -252,7 +263,7 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	}
 
 	// 冲突：要么是同内容（幂等，返回已有行），要么是同 name@version 换内容（真错）。
-	existing, gerr := d.getCapabilityByHash(ctx, c.OrgID, hash)
+	existing, gerr := d.getCapabilityByHash(ctx, c.NamespaceID, hash)
 	if gerr == nil && existing != nil {
 		// 同内容已存在 → 幂等返回已有行。
 		//
@@ -264,7 +275,7 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 		// 这里只 UPDATE 装饰字段，不违反 append-only（I8）：
 		// 能力定义本身（name/schema/outputs/lifecycle/sticky）一个字节都没动。
 		if want := strings.TrimSpace(c.DisplayName); want != "" && want != existing.DisplayName {
-			if uerr := d.SetCapabilityDisplayName(ctx, c.OrgID, existing.ID, want); uerr != nil {
+			if uerr := d.SetCapabilityDisplayName(ctx, c.NamespaceID, existing.ID, want); uerr != nil {
 				return fmt.Errorf("update display name on idempotent create: %w", uerr)
 			}
 			existing.DisplayName = want
@@ -274,7 +285,7 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	}
 	if errors.Is(gerr, ErrNotFound) || gerr == nil {
 		// 不是 content_hash 冲突，那就是 (org_id, name, version) 冲突
-		if _, e2 := d.GetCapability(ctx, c.OrgID, c.Name, c.Version); e2 == nil {
+		if _, e2 := d.GetCapability(ctx, c.NamespaceID, c.Name, c.Version); e2 == nil {
 			return fmt.Errorf("create capability %s@%d: version already exists with different content (append-only, 见不变量 I8)", c.Name, c.Version)
 		}
 	}
@@ -284,23 +295,26 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	return fmt.Errorf("insert capability: %w", err)
 }
 
-// getCapabilityByHash 按 (org_id, content_hash) 取已有版本。
-func (d *DB) getCapabilityByHash(ctx context.Context, orgID, hash string) (*CapabilityVersion, error) {
+// getCapabilityByHash 按 (namespace_id, content_hash) 取已有版本。
+//
+// 唯一键在 #162 之后是 UNIQUE(namespace_id, content_hash)：同内容的幂等判定
+// 只在**命名空间内**成立（prod 与 staging 可以各有一份同样的定义）。
+func (d *DB) getCapabilityByHash(ctx context.Context, namespaceID, hash string) (*CapabilityVersion, error) {
 	return d.scanCapability(ctx,
-		`SELECT `+capabilityColumns+` FROM capability_versions WHERE org_id = ? AND content_hash = ?`,
-		orgID, hash)
+		`SELECT `+capabilityColumns+` FROM capability_versions WHERE namespace_id = ? AND content_hash = ?`,
+		namespaceID, hash)
 }
 
 // capabilityColumns 是统一的列顺序，scanCapability 依赖它。
-const capabilityColumns = `id, org_id, name, display_name, version, params_schema, outputs, lifecycle,
-	sticky, source, content_hash, created_at`
+const capabilityColumns = `id, namespace_id, org_id, name, display_name, version, params_schema,
+	outputs, lifecycle, sticky, source, content_hash, created_at`
 
 // scanCapability 执行查询并解析一行；未命中返回 ErrNotFound。
 func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*CapabilityVersion, error) {
 	var c CapabilityVersion
 	var paramsSchema, outputs, lifecycle string
 	err := d.QueryRowContext(ctx, query, args...).Scan(
-		&c.ID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
+		&c.ID, &c.NamespaceID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 		&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -325,17 +339,23 @@ func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*Ca
 }
 
 // GetCapability 按 name + version 取能力定义；未命中返回 ErrNotFound。
-func (d *DB) GetCapability(ctx context.Context, orgID, name string, version int) (*CapabilityVersion, error) {
+func (d *DB) GetCapability(ctx context.Context, namespaceID, name string, version int) (*CapabilityVersion, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	return d.scanCapability(ctx,
 		`SELECT `+capabilityColumns+` FROM capability_versions
-		 WHERE org_id = ? AND name = ? AND version = ?`, orgID, name, version)
+		 WHERE namespace_id = ? AND name = ? AND version = ?`, namespaceID, name, version)
 }
 
 // GetCapabilityByID 按 ID 取能力定义；未命中返回 ErrNotFound。
-// 必须同时校验 org_id（不变量 I10：一切租户数据先过 org_id）。
-func (d *DB) GetCapabilityByID(ctx context.Context, orgID, id string) (*CapabilityVersion, error) {
+// 必须同时校验 namespace_id（不变量 I10）：能力 id 全局唯一，但读路径仍要过隔离维度。
+func (d *DB) GetCapabilityByID(ctx context.Context, namespaceID, id string) (*CapabilityVersion, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	return d.scanCapability(ctx,
-		`SELECT `+capabilityColumns+` FROM capability_versions WHERE org_id = ? AND id = ?`, orgID, id)
+		`SELECT `+capabilityColumns+` FROM capability_versions WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 }
 
 // SetCapabilityDisplayName 只更新 display_name 一列。
@@ -345,13 +365,13 @@ func (d *DB) GetCapabilityByID(ctx context.Context, orgID, id string) (*Capabili
 //
 // 这是这张表上唯一的 UPDATE。其余字段全都 append-only（不变量 I8）——
 // display_name 是装饰字段，不属于"能力定义"，改它不影响任何旧 trace 的解释。
-func (d *DB) SetCapabilityDisplayName(ctx context.Context, orgID, id, displayName string) error {
-	if orgID == "" || id == "" {
-		return fmt.Errorf("set display name: empty org_id or id")
+func (d *DB) SetCapabilityDisplayName(ctx context.Context, namespaceID, id, displayName string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces || id == "" {
+		return ErrNamespaceRequired
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE capability_versions SET display_name = ? WHERE org_id = ? AND id = ?`,
-		displayName, orgID, id)
+		`UPDATE capability_versions SET display_name = ? WHERE namespace_id = ? AND id = ?`,
+		displayName, namespaceID, id)
 	if err != nil {
 		return fmt.Errorf("set display name: %w", err)
 	}
@@ -366,10 +386,13 @@ func (d *DB) SetCapabilityDisplayName(ctx context.Context, orgID, id, displayNam
 }
 
 // ListCapabilities 列出组织内全部能力定义（按 name、version 升序；空列表返回 []）。
-func (d *DB) ListCapabilities(ctx context.Context, orgID string) ([]*CapabilityVersion, error) {
+func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*CapabilityVersion, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
 		`SELECT `+capabilityColumns+` FROM capability_versions
-		 WHERE org_id = ? ORDER BY name, version`, orgID)
+		 WHERE namespace_id = ? ORDER BY name, version`, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list capabilities: %w", err)
 	}
@@ -379,7 +402,7 @@ func (d *DB) ListCapabilities(ctx context.Context, orgID string) ([]*CapabilityV
 		var c CapabilityVersion
 		var paramsSchema, outputs, lifecycle string
 		if err := rows.Scan(
-			&c.ID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
+			&c.ID, &c.NamespaceID, &c.OrgID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan capability row: %w", err)
@@ -402,17 +425,57 @@ func (d *DB) ListCapabilities(ctx context.Context, orgID string) ([]*CapabilityV
 }
 
 // NextCapabilityVersion 返回某 name 的下一个版本号（无定义时返回 1）。
-func (d *DB) NextCapabilityVersion(ctx context.Context, orgID, name string) (int, error) {
+func (d *DB) NextCapabilityVersion(ctx context.Context, namespaceID, name string) (int, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return 0, ErrNamespaceRequired
+	}
 	var maxV sql.NullInt64
 	if err := d.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM capability_versions WHERE org_id = ? AND name = ?`,
-		orgID, name).Scan(&maxV); err != nil {
+		`SELECT MAX(version) FROM capability_versions WHERE namespace_id = ? AND name = ?`,
+		namespaceID, name).Scan(&maxV); err != nil {
 		return 0, fmt.Errorf("next capability version: %w", err)
 	}
 	if !maxV.Valid {
 		return 1, nil
 	}
 	return int(maxV.Int64) + 1, nil
+}
+
+// CapabilityNamespace 返回能力定义所属的命名空间 id（I11 四处校验共用）。
+//
+// 为什么按 id 全局查一次：能力 id 是全局主键，但「别的命名空间的 id 被填进来」
+// 在 SQL 层是合法的（外键只保证行存在，不保证同命名空间）——
+// 结构防的是"写不出来"，防不了"写错了"，所以 I11 必须显式校验。
+func (d *DB) CapabilityNamespace(ctx context.Context, capabilityID string) (string, error) {
+	if capabilityID == "" {
+		return "", ErrNotFound
+	}
+	var ns string
+	err := d.QueryRowContext(ctx,
+		`SELECT namespace_id FROM capability_versions WHERE id = ?`, capabilityID).Scan(&ns)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("lookup capability namespace: %w", err)
+	}
+	return ns, nil
+}
+
+// checkCapabilityInNamespace 是 I11 的公共校验：能力定义必须属于 wantNS。
+//
+// what 用来说明违反的是哪条引用（"edges.to_capability" / "source_targets" /
+// "node_capabilities"），让人一眼看出是哪一端写错了。
+// 未命中返回 ErrNotFound（handler 翻 404），跨命名空间返回 *CrossNamespaceError（handler 翻 400）。
+func (d *DB) checkCapabilityInNamespace(ctx context.Context, wantNS, capabilityID, what string) error {
+	ns, err := d.CapabilityNamespace(ctx, capabilityID)
+	if err != nil {
+		return err
+	}
+	if ns != wantNS {
+		return &CrossNamespaceError{What: what, Want: wantNS, Got: ns}
+	}
+	return nil
 }
 
 // HasOutput 判定出口名是否属于该能力定义（不变量 I2 / A5 的封闭集合检查）。

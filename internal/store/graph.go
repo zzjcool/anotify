@@ -29,7 +29,10 @@ func isOriginCapability(c *CapabilityVersion) bool {
 // 一行 = 一条边；同一 (FromCapability, FromPort) 可有多行 → 扇出（不变量 I7：
 // 两端都是 capability_id，图里没有机器）。
 type Edge struct {
-	OrgID string `json:"orgId"`
+	// NamespaceID 是隔离维度（I11）：边属于某个命名空间，
+	// 同一对能力可以在不同命名空间各有一条边，互不影响。
+	NamespaceID string `json:"namespaceId"`
+	OrgID       string `json:"orgId"`
 
 	// FromIsSource 决定 FromCapability 字段怎么解释（字段名为了兼容而保留）：
 	//
@@ -54,7 +57,10 @@ var ErrEdgeRejected = errors.New("edge_rejected")
 
 // GraphVersion 是 graph_versions 表的一行：按需落版的图快照（契约 §10.2）。
 type GraphVersion struct {
-	ID          string          `json:"id"`
+	ID string `json:"id"`
+	// NamespaceID 是隔离维度；注意 content_hash **不含** namespace_id
+	// （快照内容就是 edges 列表，命名空间已经由列表达）。
+	NamespaceID string          `json:"namespaceId"`
 	OrgID       string          `json:"orgId"`
 	ContentHash string          `json:"contentHash"`
 	Snapshot    json.RawMessage `json:"snapshot"`
@@ -63,24 +69,37 @@ type GraphVersion struct {
 
 // CreateEdge 新增一条边。
 //
-// 配置期校验（契约 §6.2 / 不变量 I2 / A5）：
+// 配置期校验（契约 §6.2 / 不变量 I2 / A5 / I11）：
 //   - from_port 必须 ∈ from 能力的 outputs（封闭集合，不能凭空发明出口）
-//   - 两端能力必须同组织（不放跨组织边，契约 §1.2）
+//   - 两端能力必须同**命名空间**（I11 第 ① 条：跨命名空间引用一律拒绝）
 //
-// 违反返回 ErrEdgeRejected。重复边幂等（PK 冲突视为已存在）。
+// 违反返回 ErrEdgeRejected / *CrossNamespaceError。重复边幂等（PK 冲突视为已存在）。
 func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	if e == nil {
 		return fmt.Errorf("create edge: nil")
 	}
-	if e.OrgID == "" || e.FromCapability == "" || e.FromPort == "" || e.ToCapability == "" {
-		return fmt.Errorf("%w: org/from/port/to all required", ErrEdgeRejected)
+	if e.NamespaceID == "" || e.NamespaceID == AllNamespaces {
+		return ErrNamespaceRequired
 	}
-	to, err := d.GetCapabilityByID(ctx, e.OrgID, e.ToCapability)
+	if e.FromCapability == "" || e.FromPort == "" || e.ToCapability == "" {
+		return fmt.Errorf("%w: from/port/to all required", ErrEdgeRejected)
+	}
+	// org_id 从命名空间派生（I10：namespace.org_id == org_id 由构造保证）。
+	orgID, err := d.NamespaceOrgID(ctx, e.NamespaceID)
 	if err != nil {
-		return fmt.Errorf("%w: to capability %q: %v", ErrEdgeRejected, e.ToCapability, err)
+		return fmt.Errorf("create edge: %w", err)
 	}
-	if to.OrgID != e.OrgID {
-		return fmt.Errorf("%w: cross-org edge not allowed", ErrEdgeRejected)
+	e.OrgID = orgID
+
+	// I11 第 ① 条（右端）：目标能力必须属于同命名空间。
+	if err := d.checkCapabilityInNamespace(ctx, e.NamespaceID, e.ToCapability, "edges.to_capability"); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("%w: to capability %q: %v", ErrEdgeRejected, e.ToCapability, err)
+		}
+		return err
+	}
+	if _, err := d.GetCapabilityByID(ctx, e.NamespaceID, e.ToCapability); err != nil {
+		return fmt.Errorf("%w: to capability %q: %v", ErrEdgeRejected, e.ToCapability, err)
 	}
 
 	if e.FromIsSource {
@@ -93,14 +112,19 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		//
 		// 也要校验来源名不比能力名更容易撞车：来源名非空即可。
 	} else {
-		from, err := d.GetCapabilityByID(ctx, e.OrgID, e.FromCapability)
+		// I11 第 ① 条（左端）：上游能力也必须属于同命名空间。
+		//
+		// 能力 id 全局唯一，把别处的 id 填进来在 SQL 层是合法的
+		// （外键只保证行存在），所以这里必须显式校验。
+		if err := d.checkCapabilityInNamespace(ctx, e.NamespaceID, e.FromCapability, "edges.from_capability"); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("%w: from capability %q: %v", ErrEdgeRejected, e.FromCapability, err)
+			}
+			return err
+		}
+		from, err := d.GetCapabilityByID(ctx, e.NamespaceID, e.FromCapability)
 		if err != nil {
 			return fmt.Errorf("%w: from capability %q: %v", ErrEdgeRejected, e.FromCapability, err)
-		}
-		// 双保险：GetCapabilityByID 已经带了 org 过滤，这里再断言一次
-		// （防止将来有人改成不带 org 的查询而不自知）
-		if from.OrgID != e.OrgID {
-			return fmt.Errorf("%w: cross-org edge not allowed", ErrEdgeRejected)
 		}
 		// 出口封闭集合（不变量 I2）：from_port 必须属于该能力的 outputs。
 		if !from.HasOutput(e.FromPort) {
@@ -113,10 +137,10 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		e.CreatedAt = Now()
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO edges (org_id, from_is_source, from_key, from_port, to_capability, created_at)
-		 VALUES (?,?,?,?,?,?)
-		 ON CONFLICT(org_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
-		e.OrgID, boolToInt(e.FromIsSource), e.FromCapability, e.FromPort, e.ToCapability, e.CreatedAt); err != nil {
+		`INSERT INTO edges (namespace_id, org_id, from_is_source, from_key, from_port, to_capability, created_at)
+		 VALUES (?,?,?,?,?,?,?)
+		 ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
+		e.NamespaceID, e.OrgID, boolToInt(e.FromIsSource), e.FromCapability, e.FromPort, e.ToCapability, e.CreatedAt); err != nil {
 		return fmt.Errorf("insert edge: %w", err)
 	}
 	return nil
@@ -131,11 +155,14 @@ func boolToInt(b bool) int {
 }
 
 // DeleteEdge 删除一条边。边不存在返回 ErrNotFound。
-func (d *DB) DeleteEdge(ctx context.Context, orgID string, fromIsSource bool, fromKey, fromPort, toCapability string) error {
+func (d *DB) DeleteEdge(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort, toCapability string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
 	res, err := d.ExecContext(ctx,
 		`DELETE FROM edges
-		 WHERE org_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ? AND to_capability = ?`,
-		orgID, boolToInt(fromIsSource), fromKey, fromPort, toCapability)
+		 WHERE namespace_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ? AND to_capability = ?`,
+		namespaceID, boolToInt(fromIsSource), fromKey, fromPort, toCapability)
 	if err != nil {
 		return fmt.Errorf("delete edge: %w", err)
 	}
@@ -149,11 +176,14 @@ func (d *DB) DeleteEdge(ctx context.Context, orgID string, fromIsSource bool, fr
 	return nil
 }
 
-// ListEdges 列出组织的边（fromCapability 非空时按它过滤）；空列表返回 []。
-func (d *DB) ListEdges(ctx context.Context, orgID, fromKey string) ([]*Edge, error) {
-	q := `SELECT org_id, from_is_source, from_key, from_port, to_capability, created_at
-	        FROM edges WHERE org_id = ?`
-	args := []any{orgID}
+// ListEdges 列出**命名空间内**的边（fromCapability 非空时按它过滤）；空列表返回 []。
+func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edge, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	q := `SELECT namespace_id, org_id, from_is_source, from_key, from_port, to_capability, created_at
+	        FROM edges WHERE namespace_id = ?`
+	args := []any{namespaceID}
 	if fromKey != "" {
 		q += ` AND from_key = ?`
 		args = append(args, fromKey)
@@ -168,7 +198,7 @@ func (d *DB) ListEdges(ctx context.Context, orgID, fromKey string) ([]*Edge, err
 	for rows.Next() {
 		var e Edge
 		var isSrc int
-		if err := rows.Scan(&e.OrgID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.NamespaceID, &e.OrgID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan edge: %w", err)
 		}
 		e.FromIsSource = isSrc == 1
@@ -178,16 +208,19 @@ func (d *DB) ListEdges(ctx context.Context, orgID, fromKey string) ([]*Edge, err
 }
 
 // EdgesFrom 是派发第 ① 步的**唯一**查表入口（契约 §4）：
-// 返回 (orgID, fromKey, fromPort) 的全部下游 capability_id。
+// 返回 (namespaceID, fromKey, fromPort) 的全部下游 capability_id。
 //
 // fromIsSource 决定 fromKey 是能力 id 还是来源名（见 Edge.FromIsSource）。
 //
 // 除了 route 包，其他包不得再写 `FROM edges`（见 #56 的验收：全仓只允许 1 处）。
-func (d *DB) EdgesFrom(ctx context.Context, orgID string, fromIsSource bool, fromKey, fromPort string) ([]string, error) {
+func (d *DB) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]string, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
 		`SELECT to_capability FROM edges
-		 WHERE org_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ?
-		 ORDER BY to_capability`, orgID, boolToInt(fromIsSource), fromKey, fromPort)
+		 WHERE namespace_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ?
+		 ORDER BY to_capability`, namespaceID, boolToInt(fromIsSource), fromKey, fromPort)
 	if err != nil {
 		return nil, fmt.Errorf("lookup edges: %w", err)
 	}
@@ -245,8 +278,11 @@ func graphContentHash(edges []*Edge) (string, error) {
 //
 // 只在「被派发用到过」时留版——从没被任何一次派发用过的图，事后没人会去查它。
 // 用 INSERT ... ON CONFLICT DO NOTHING 后回查，保证同一份图只有一行。
-func (d *DB) EnsureGraphVersion(ctx context.Context, orgID string) (*GraphVersion, error) {
-	edges, err := d.ListEdges(ctx, orgID, "")
+func (d *DB) EnsureGraphVersion(ctx context.Context, namespaceID string) (*GraphVersion, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	edges, err := d.ListEdges(ctx, namespaceID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -273,15 +309,19 @@ func (d *DB) EnsureGraphVersion(ctx context.Context, orgID string) (*GraphVersio
 		return nil, fmt.Errorf("marshal graph snapshot: %w", err)
 	}
 
+	orgID, err := d.NamespaceOrgID(ctx, namespaceID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure graph version: %w", err)
+	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO graph_versions (id, org_id, content_hash, snapshot, created_at)
-		 VALUES (?,?,?,?,?)
-		 ON CONFLICT(org_id, content_hash) DO NOTHING`,
-		NewGraphVersionID(hash), orgID, hash, string(snapJSON), Now()); err != nil {
+		`INSERT INTO graph_versions (id, namespace_id, org_id, content_hash, snapshot, created_at)
+		 VALUES (?,?,?,?,?,?)
+		 ON CONFLICT(namespace_id, content_hash) DO NOTHING`,
+		NewGraphVersionID(hash), namespaceID, orgID, hash, string(snapJSON), Now()); err != nil {
 		return nil, fmt.Errorf("insert graph version: %w", err)
 	}
 	// 回查：可能是刚插的，也可能是并发下别人先插的（此时用已有的 id）
-	gv, err := d.getGraphVersionByHash(ctx, orgID, hash)
+	gv, err := d.getGraphVersionByHash(ctx, namespaceID, hash)
 	if err != nil {
 		return nil, fmt.Errorf("read graph version after upsert: %w", err)
 	}
@@ -289,24 +329,27 @@ func (d *DB) EnsureGraphVersion(ctx context.Context, orgID string) (*GraphVersio
 }
 
 // GetGraphVersion 按 ID 取图快照。
-func (d *DB) GetGraphVersion(ctx context.Context, orgID, id string) (*GraphVersion, error) {
+func (d *DB) GetGraphVersion(ctx context.Context, namespaceID, id string) (*GraphVersion, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	return d.scanGraphVersion(ctx,
-		`SELECT id, org_id, content_hash, snapshot, created_at FROM graph_versions
-		 WHERE org_id = ? AND id = ?`, orgID, id)
+		`SELECT id, namespace_id, org_id, content_hash, snapshot, created_at FROM graph_versions
+		 WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 }
 
-// getGraphVersionByHash 按 (org_id, content_hash) 取图版本。
-func (d *DB) getGraphVersionByHash(ctx context.Context, orgID, hash string) (*GraphVersion, error) {
+// getGraphVersionByHash 按 (namespace_id, content_hash) 取图版本。
+func (d *DB) getGraphVersionByHash(ctx context.Context, namespaceID, hash string) (*GraphVersion, error) {
 	return d.scanGraphVersion(ctx,
-		`SELECT id, org_id, content_hash, snapshot, created_at FROM graph_versions
-		 WHERE org_id = ? AND content_hash = ?`, orgID, hash)
+		`SELECT id, namespace_id, org_id, content_hash, snapshot, created_at FROM graph_versions
+		 WHERE namespace_id = ? AND content_hash = ?`, namespaceID, hash)
 }
 
 // scanGraphVersion 执行查询并解析一行；未命中返回 ErrNotFound。
 func (d *DB) scanGraphVersion(ctx context.Context, query string, args ...any) (*GraphVersion, error) {
 	var g GraphVersion
 	var snapshot string
-	err := d.QueryRowContext(ctx, query, args...).Scan(&g.ID, &g.OrgID, &g.ContentHash, &snapshot, &g.CreatedAt)
+	err := d.QueryRowContext(ctx, query, args...).Scan(&g.ID, &g.NamespaceID, &g.OrgID, &g.ContentHash, &snapshot, &g.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

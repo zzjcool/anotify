@@ -12,8 +12,8 @@ import (
 // 保留策略（保留期过期清理，issue #143）。
 //
 // 为什么需要这层：`events` / `tasks` 在此之前**只进不出**——没有任何 DELETE。
-// 表与索引无限增长，最终把查询和写入一起拖垮；多租户下任意一个 org 的洪峰
-// 都会永久留在库里，拖慢所有 org。这才是「量大了会出问题」的真实原因。
+// 表与索引无限增长，最终把查询和写入一起拖垮；多租户下任意一个命名空间的洪峰
+// 都会永久留在库里，拖慢所有命名空间。这才是「量大了会出问题」的真实原因。
 //
 // 两条清理规则（docs/design/nats-transport.md §7.4 / §16.6）：
 //
@@ -23,11 +23,13 @@ import (
 //	events  按**组织级**保留期，且**当前默认禁用**（DefaultEventRetentionSec ==
 //	        EventRetentionDisabled）：调用方不显式给出保留期时，整个 events 阶段跳过。
 //	        source='route' 的剪枝行（#142）同样受此约束，不搞特例。
+//	        保留期本身是组织配置（orgs.retention_sec），但**删除粒度是命名空间**
+//	        （#162：events.namespace_id）：同一组织的保留期对所有命名空间生效。
 //
 // 三条硬约束（都是为了让清理不反过来打垮库）：
 //
-//  1. **按 org / 能力分批**：单条 DELETE 只删 Batch 行。一次大删除会长时间持锁，
-//     把同 org（SQLite 单写）甚至别的 org 的写入全堵住。
+//  1. **按命名空间 / 能力分批**：单条 DELETE 只删 Batch 行。一次大删除会长时间持锁，
+//     把同库（SQLite 单写）甚至别的命名空间的写入全堵住。
 //  2. **幂等 + 可重入**：多轮跑、中途被打断、两个进程同时跑，结果都一样；
 //     删多删少只取决于「此刻谁过期了」。
 //  3. **可度量**：每轮返回 RetentionReport，日志里能看见删了多少、是否被预算截断。
@@ -54,7 +56,7 @@ const DefaultEventRetentionSec = EventRetentionDisabled
 // DefaultRetentionBatch 是单条 DELETE 的行数上限（先度量后删除）。
 const DefaultRetentionBatch = 1000
 
-// DefaultRetentionBatches 是每个范围（org×能力 / org）每轮最多跑几批。
+// DefaultRetentionBatches 是每个范围（命名空间×能力 / 命名空间）每轮最多跑几批。
 //
 // 默认 5 → 每个范围每轮最多删 5×1000 行。积压靠多轮（每小时一轮）自然排空，
 // 避免一轮把锁占满；被预算截断时 RetentionReport.Truncated 置位。
@@ -64,14 +66,16 @@ const DefaultRetentionBatches = 5
 // retention_test.go 会对照 IsTerminalStatus 校验两者不漂移。
 var terminalStatusList = []string{TaskSucceeded, TaskFailed, TaskCanceled, TaskAbandoned}
 
-// ResultRetentionScope 是一个「按 TTL 清理终态任务」的范围：某 org 下某能力版本。
+// ResultRetentionScope 是一个「按 TTL 清理终态任务」的范围：某命名空间下的某能力版本。
 //
-// 为什么按能力版本而不是按 org：TTL 是能力定义的一部分（lifecycle.resultTtlSec），
+// 为什么按能力版本而不是按命名空间：TTL 是能力定义的一部分（lifecycle.resultTtlSec），
 // 不同能力的结果该留多久本来就不同（日志类很快可丢，评审结论要留）。
+// NamespaceID 是删除时的隔离维度（#162）；OrgID 保留下来只为了日志与统计。
 type ResultRetentionScope struct {
-	OrgID        string
-	CapabilityID string
-	ResultTTLSec int
+	NamespaceID  string `json:"namespaceId"`
+	OrgID        string `json:"orgId"`
+	CapabilityID string `json:"capabilityId"`
+	ResultTTLSec int    `json:"resultTtlSec"`
 }
 
 // RetentionOptions 是一轮保留策略巡检的参数。
@@ -88,11 +92,11 @@ type RetentionOptions struct {
 
 // RetentionReport 汇总一轮清理的结果（日志与测试用；「先度量后删除」）。
 type RetentionReport struct {
-	// TaskScopes 是参与本轮的（org×能力）范围数。
+	// TaskScopes 是参与本轮的（命名空间×能力）范围数。
 	TaskScopes int
 	// TasksDeleted 是本轮删掉的任务行数。
 	TasksDeleted int64
-	// Orgs 是参与事件清理的组织数。
+	// Orgs 是参与事件清理的组织数（事件按命名空间删，这里是去重后的组织个数）。
 	Orgs int
 	// EventsDeleted 是本轮删掉的事件行数。
 	EventsDeleted int64
@@ -105,7 +109,7 @@ type RetentionReport struct {
 
 // ---------- 实现 ----------
 
-// ListResultRetentionScopes 列出需要按 TTL 清理终态任务的范围（org × 能力版本）。
+// ListResultRetentionScopes 列出需要按 TTL 清理终态任务的范围（命名空间 × 能力版本）。
 //
 // 只要三类行：终态四态、finished_at 已落（非终态不该有 finished_at，脏数据同理跳过）、
 // 以及所属能力版本声明了 resultTtlSec > 0。
@@ -114,21 +118,14 @@ type RetentionReport struct {
 // json1 扩展是否被编译进驱动取决于构建（pure-Go 驱动的可选项），而这条路径
 // 必须在任何构建下都成立。兼容性优先于「一条 SQL 搞定」的简洁。
 //
-// 输出按 (org_id, capability_id) 排序：调用方（SweepRetention）靠它保证多轮之间
+// 输出按 (namespace_id, capability_id) 排序：调用方（SweepRetention）靠它保证多轮之间
 // 的处理顺序确定，也让测试与日志可复现。
 //
-// **实测查询计划**（sqlite 3.53 `EXPLAIN QUERY PLAN`，review-1 记录；驱动 modernc
-// 自带 sqlite ≈3.46，计划方向一致）：
-//
-//	|--SEARCH t USING INDEX idx_tasks_lease (status=?)   ← 索引只吃 status 前缀，跨 org 全表扫终态行
-//	|--SEARCH cv USING INDEX sqlite_autoindex_capability_versions_1 (id=?)
-//	|--USE TEMP B-TREE FOR DISTINCT
-//	`--USE TEMP B-TREE FOR ORDER BY
-//
-// 也就是说：本查询的成本 ∝ **全库终态任务行数**（不只本 org），并且每轮都要做一次
-// DISTINCT 排序 + 一次 ORDER BY 排序。没有 `tasks(org_id, capability_id, status, finished_at)`
-// 索引可用不算 bug（本轮硬约束禁改 schema），但要知道它是全轮里最贵的一步之一。
-// follow-up：加 `tasks(org_id, capability_id, status, finished_at)` 索引后这条能收窄到索引扫描。
+// **查询计划**（迁移 12 之后）：scope 的筛选条件与迁移 12 新建的
+// `idx_tasks_retention(namespace_id, capability_id, status, finished_at)` 前缀完全对齐，
+// 所以候选集能收窄到一个命名空间（+ 能力）而不是全库终态行；迁移 12 之前记录的计划
+// 是「idx_tasks_lease(status=?) 全库扫终态行 + 两次 TEMP B-TREE」，不再适用。
+// DISTINCT + ORDER BY 仍可能用到临时 B 树（计划未重新实测，不在此处断言）。
 //
 // **坏 lifecycle 不毒丸**：单条 scope 的 lifecycle 解析失败时 warn + 跳过该 scope，
 // 其余 scope 与 events 阶段照常跑。老库 / 人工改库 / e2e 直插都能造出坏 JSON，
@@ -137,11 +134,11 @@ type RetentionReport struct {
 func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionScope, error) {
 	statusIn, statusArgs := terminalStatusSQL()
 	rows, err := d.QueryContext(ctx,
-		`SELECT DISTINCT t.org_id, t.capability_id, cv.lifecycle
+		`SELECT DISTINCT t.namespace_id, t.org_id, t.capability_id, cv.lifecycle
 		   FROM tasks t
 		   JOIN capability_versions cv ON cv.id = t.capability_id
 		  WHERE t.status IN (`+statusIn+`) AND t.finished_at IS NOT NULL
-		  ORDER BY t.org_id, t.capability_id`, statusArgs...)
+		  ORDER BY t.namespace_id, t.capability_id`, statusArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("list retention scopes: %w", err)
 	}
@@ -149,8 +146,8 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 
 	out := []ResultRetentionScope{}
 	for rows.Next() {
-		var orgID, capabilityID, lifecycleJSON string
-		if err := rows.Scan(&orgID, &capabilityID, &lifecycleJSON); err != nil {
+		var namespaceID, orgID, capabilityID, lifecycleJSON string
+		if err := rows.Scan(&namespaceID, &orgID, &capabilityID, &lifecycleJSON); err != nil {
 			return nil, fmt.Errorf("scan retention scope: %w", err)
 		}
 		var lc Lifecycle
@@ -159,6 +156,7 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 				// 见方法注释「坏 lifecycle 不毒丸」：跳过这一条，不要整轮失败。
 				slog.Warn("skip capability with invalid lifecycle",
 					"event", "store.retention.bad_lifecycle",
+					"namespace_id", namespaceID,
 					"org_id", orgID,
 					"capability_id", capabilityID,
 					"error", err.Error())
@@ -170,6 +168,7 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 			continue
 		}
 		out = append(out, ResultRetentionScope{
+			NamespaceID:  namespaceID,
 			OrgID:        orgID,
 			CapabilityID: capabilityID,
 			ResultTTLSec: lc.ResultTTLSec,
@@ -181,18 +180,18 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 	// SQL 已经排过序，这里再排一次只是把「顺序确定」写进 Go 侧契约，
 	// 不依赖 SQLite 对 DISTINCT + ORDER BY 的实现细节。
 	//
-	// 这里不需要再按 (org_id, capability_id) 去重：SELECT 已经 DISTINCT，而
-	// capability_versions.id 是主键（JOIN 一侧一对一），所以 (org, 能力) 天然唯一。
+	// 这里不需要再按 (namespace_id, capability_id) 去重：SELECT 已经 DISTINCT，而
+	// capability_versions.id 是主键（JOIN 一侧一对一），所以 (命名空间, 能力) 天然唯一。
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].OrgID != out[j].OrgID {
-			return out[i].OrgID < out[j].OrgID
+		if out[i].NamespaceID != out[j].NamespaceID {
+			return out[i].NamespaceID < out[j].NamespaceID
 		}
 		return out[i].CapabilityID < out[j].CapabilityID
 	})
 	return out, nil
 }
 
-// DeleteExpiredTerminalTasks 删除某 (org, 能力) 下 finished_at 早于 cutoff 的终态任务，
+// DeleteExpiredTerminalTasks 删除某 (命名空间, 能力) 下 finished_at 早于 cutoff 的终态任务，
 // 单次最多 limit 行，返回实际删除行数。
 //
 // 限批形式必须是 `DELETE ... WHERE id IN (SELECT id ... LIMIT ?)`：
@@ -202,51 +201,44 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 // 为什么按 finished_at 排序：一批删不完时下一轮从更老的开始，
 // 积压再大也不会出现「新过期的一直被删、最老的一直留着」。
 //
-// **实测查询计划**（sqlite 3.53 `EXPLAIN QUERY PLAN`，review-1 记录）：
+// **查询计划**（迁移 12 之后）：子查询的 `namespace_id = ? AND capability_id = ?`
+// 与迁移 12 新建的 `idx_tasks_retention(namespace_id, capability_id, status, finished_at)`
+// 前缀对齐，候选集从「整个命名空间」收窄到「某能力」；迁移 12 之前记录的
+// `idx_tasks_parent(org_id=?)` 整 org 扫 + TEMP B-TREE 排序已不适用。
+// 仍要记住一条不变的事实：`LIMIT` 只限**删除行数**，**不限扫描/排序行数**
+// ——即使只删 1000 行，子查询仍会把该范围的候选行全部扫一遍再排序；
+// ORDER BY finished_at 能不能免掉排序取决于索引与计划，这里不重新实测、不做断言。
 //
-//	DELETE FROM tasks ... id IN (SELECT ... WHERE org_id=? AND capability_id=? ... ORDER BY finished_at LIMIT ?)
-//	|--SEARCH tasks USING COVERING INDEX sqlite_autoindex_tasks_1 (id=?)
-//	`--LIST SUBQUERY 1
-//	   |--SEARCH tasks USING INDEX idx_tasks_parent (org_id=?)   ← 整 org 扫，不按 capability 收窄
-//	   `--USE TEMP B-TREE FOR ORDER BY                           ← 每批全量排序
-//
-// 两个必须记住的事实：
-//  1. `LIMIT` 只限**删除行数**，**不限扫描/排序行数**——即使只删 1000 行，
-//     子查询仍会把该 org 的候选行全部扫一遍再排序。
-//  2. 当前**没有** `tasks(org_id, capability_id, status, finished_at)` 索引，
-//     也无法复用 `idx_tasks_lease(status, lease_until)` 前缀（它是 status 前缀，跨 org）。
-//
-// 所以单批成本 ∝ 该 org 已过期行数（首轮积压时最大），单轮最坏 ≈
-// （scope 数 + org 数）× Batches × Batch 行的扫描排序。因此 lease 侧必须异步跑（不堵 5s 巡检）。
-// follow-up（本轮 schema 禁改，不能加）：加 `tasks(org_id, capability_id, status, finished_at)` 索引。
+// 所以单批成本 ∝ 该 (命名空间, 能力) 已过期行数（首轮积压时最大），单轮最坏 ≈
+// （scope 数 + 命名空间数）× Batches × Batch 行。因此 lease 侧必须异步跑（不堵 5s 巡检）。
 //
 // **已知残留**：`finished_at IS NOT NULL` 意味着「终态但 finished_at 为 NULL」的脏行
 // **永不被回收**（生产写路径不会造出这种行，但历史库可能有）。不改行为，只记档：
 // 这类行会被当成「无过期时刻」，宁可留着也不按未知时刻删。
 //
 // limit <= 0 直接返回 0 而不删任何行：调用方传错时「少删」远好于「删全表」。
-func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, orgID, capabilityID string, cutoff int64, limit int) (int64, error) {
+func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, namespaceID, capabilityID string, cutoff int64, limit int) (int64, error) {
 	if limit <= 0 {
 		return 0, nil
 	}
 	statusIn, statusArgs := terminalStatusSQL()
 	args := make([]any, 0, 5+len(statusArgs))
-	args = append(args, orgID, capabilityID)
+	args = append(args, namespaceID, capabilityID)
 	args = append(args, statusArgs...)
 	args = append(args, cutoff, limit)
 
 	res, err := d.ExecContext(ctx,
 		`DELETE FROM tasks WHERE id IN (
 		   SELECT id FROM tasks
-		    WHERE org_id = ? AND capability_id = ?
+		    WHERE namespace_id = ? AND capability_id = ?
 		      AND finished_at IS NOT NULL
 		      AND status IN (`+statusIn+`)
 		      AND finished_at < ?
 		    ORDER BY finished_at
 		    LIMIT ?)`, args...)
 	if err != nil {
-		return 0, fmt.Errorf("delete expired tasks (org %s, capability %s): %w",
-			orgID, capabilityID, err)
+		return 0, fmt.Errorf("delete expired tasks (namespace %s, capability %s): %w",
+			namespaceID, capabilityID, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
@@ -255,7 +247,7 @@ func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, orgID, capabilityID
 	return n, nil
 }
 
-// DeleteExpiredEvents 删除某 org 下 created_at 早于 cutoff 的事件，单次最多 limit 行。
+// DeleteExpiredEvents 删除某命名空间下 created_at 早于 cutoff 的事件，单次最多 limit 行。
 //
 // **只在调用方显式给出保留期时才被调用**：本函数自身不看配置，门禁在
 // SweepRetention（EventRetentionSec <= 0 = 禁用，默认就是禁用）。直接调用它
@@ -264,36 +256,29 @@ func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, orgID, capabilityID
 // **不按 source 过滤**：source='route' 的剪枝行（#142）与外部事件受同一份保留期约束。
 // 剪枝行同样是「只进不出」的增长来源，给它开特例等于把泄漏留在库里。
 //
-// **实测查询计划**（sqlite 3.53 `EXPLAIN QUERY PLAN`，review-1 记录）：
+// **查询计划**（迁移 12 之后）：`namespace_id = ? AND created_at < ?` 与迁移 12 新建的
+// `idx_events_retention(namespace_id, created_at)` 对齐，候选集从「整个命名空间」的
+// 全表扫变成索引范围扫；迁移 12 之前记录的 `idx_events_trace(org_id=?)` 整 org 扫
+// + TEMP B-TREE 排序已不适用。同 DeleteExpiredTerminalTasks：`LIMIT` 只限**删除行数**，
+// 不限**扫描/排序行数**；ORDER BY created_at 是否能免掉排序这里不重新实测。
 //
-//	DELETE FROM events ... id IN (SELECT ... WHERE org_id=? AND created_at<? ORDER BY created_at LIMIT ?)
-//	|--SEARCH events USING COVERING INDEX sqlite_autoindex_events_1 (id=?)
-//	`--LIST SUBQUERY 1
-//	   |--SEARCH events USING INDEX idx_events_trace (org_id=?)   ← 整 org 扫
-//	   `--USE TEMP B-TREE FOR ORDER BY                            ← 每批全量排序
-//
-// 同 DeleteExpiredTerminalTasks：`LIMIT` 只限**删除行数**，不限**扫描/排序行数**；
-// 当前**没有** `events(org_id, created_at)` 索引，单批成本 ∝ 该 org 已过期行数，
-// 单轮最坏 ≈（scope 数 + org 数）× Batches × Batch 行的扫描排序。
-// follow-up（本轮 schema 禁改，不能加）：加 `events(org_id, created_at)` 索引。
-//
-// **语义变化（重要）**：删 events 行会同时回收 `idx_events_idem(org_id, source, idem_key)`
+// **语义变化（重要）**：删 events 行会同时回收 `idx_events_idem(namespace_id, source, idem_key)`
 // 的去重窗口——`idem_key` 的「收过就不重做」从**永久**缩成**保留期**（由组织配置决定；
 // 未配置时该清理不发生，去重窗口仍是永久）。
 // 超期重投不会命中旧行，会新建 trace 并重新派整条链；对上游重投语义来说这通常是可接受的
 // （同一个投递 ID 隔很久重放本就少见），但它是行为变化，不是纯存储优化。本轮不改这个行为。
-func (d *DB) DeleteExpiredEvents(ctx context.Context, orgID string, cutoff int64, limit int) (int64, error) {
+func (d *DB) DeleteExpiredEvents(ctx context.Context, namespaceID string, cutoff int64, limit int) (int64, error) {
 	if limit <= 0 {
 		return 0, nil
 	}
 	res, err := d.ExecContext(ctx,
 		`DELETE FROM events WHERE id IN (
 		   SELECT id FROM events
-		    WHERE org_id = ? AND created_at < ?
+		    WHERE namespace_id = ? AND created_at < ?
 		    ORDER BY created_at
-		    LIMIT ?)`, orgID, cutoff, limit)
+		    LIMIT ?)`, namespaceID, cutoff, limit)
 	if err != nil {
-		return 0, fmt.Errorf("delete expired events (org %s): %w", orgID, err)
+		return 0, fmt.Errorf("delete expired events (namespace %s): %w", namespaceID, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
@@ -303,6 +288,10 @@ func (d *DB) DeleteExpiredEvents(ctx context.Context, orgID string, cutoff int64
 }
 
 // ListOrgIDs 列出全部组织 ID（按 id 升序；空返回 [] 而不是 nil）。
+//
+// 保留期清理已经改为遍历**命名空间**（见 listRetentionNamespaces），本函数本身
+// 不再是 SweepRetention 的一部分；留着是因为它是本文件对外暴露过的口子，
+// 删掉会让别处的调用/测试跟着改，而这不属于本次改动的范围。
 //
 // 放在本文件而不是 org.go，是为了让 #143 的文件所有权保持单一
 // （契约 §3：org.go 不属于本任务）。
@@ -327,7 +316,53 @@ func (d *DB) ListOrgIDs(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// SweepRetention 跑一轮保留策略巡检：先按能力清终态任务，再按组织清事件。
+// retentionNamespace 是保留期清理要遍历的一个命名空间（带所属组织，用于去重统计）。
+type retentionNamespace struct {
+	NamespaceID string
+	OrgID       string
+}
+
+// listRetentionNamespaces 列出全部命名空间（按组织、命名空间升序；空返回 [] 而不是 nil）。
+//
+// 为何不再遍历 `orgs`：命名空间资源的隔离维度与索引前缀都是 `namespace_id`（#162），
+// 而一个组织可能有 N 个命名空间——按 org 删会变成跨命名空间的全表扫，也拿不到
+// `idx_events_retention(namespace_id, created_at)` 的前缀。保留期配置仍是组织级的，
+// 所以行上带上 `org_id` 供报告统计（去重后就是组织数）。
+func (d *DB) listRetentionNamespaces(ctx context.Context) ([]retentionNamespace, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id, org_id FROM namespaces ORDER BY org_id, id`)
+	if err != nil {
+		return nil, fmt.Errorf("list retention namespaces: %w", err)
+	}
+	defer rows.Close()
+
+	out := []retentionNamespace{}
+	for rows.Next() {
+		var ns retentionNamespace
+		if err := rows.Scan(&ns.NamespaceID, &ns.OrgID); err != nil {
+			return nil, fmt.Errorf("scan retention namespace: %w", err)
+		}
+		out = append(out, ns)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retention namespaces: %w", err)
+	}
+	return out, nil
+}
+
+// distinctOrgCount 数 namespaces 里出现了几个不同组织（输入已按 org_id 排序）。
+func distinctOrgCount(nss []retentionNamespace) int {
+	n := 0
+	prev := ""
+	for _, ns := range nss {
+		if ns.OrgID != prev {
+			n++
+			prev = ns.OrgID
+		}
+	}
+	return n
+}
+
+// SweepRetention 跑一轮保留策略巡检：先按能力清终态任务，再按命名空间清事件。
 //
 // 顺序是「先任务后事件」：任务行引用能力与图快照，事件是链的根。这个顺序**只**保证
 // 一件事——**中断**（进程被杀 / ctx 取消）时残留的方向恒定：下游（tasks）只会比根
@@ -341,7 +376,7 @@ func (d *DB) ListOrgIDs(ctx context.Context) ([]string, error) {
 // 想两边严格一致只能把两个 TTL 绑成同一个值，靠删除顺序做不到。
 //
 // events 阶段是**可关的、且默认关**：opts.EventRetentionSec <= 0（含未配置与负值）= 禁用，
-// 此时整个 events 阶段跳过——不 ListOrgIDs、不 DELETE、**不返回错误**，只把
+// 此时整个 events 阶段跳过——不 listRetentionNamespaces、不 DELETE、**不返回错误**，只把
 // RetentionReport.EventsDisabled 置位，Orgs / EventsDeleted 保持 0；tasks 阶段照常跑完。
 // 为什么默认禁用：删除不可逆，而本版没有开关、没有 per-org 配置，且会静默改变
 // store/stats.go 的「总数 / 今日 / 热力图」口径。开启要由调用方显式注入保留期
@@ -378,48 +413,50 @@ func (d *DB) SweepRetention(ctx context.Context, opts RetentionOptions) (Retenti
 		cutoff := opts.Now - int64(sc.ResultTTLSec)
 		deleted, saturated, derr := drainRetentionBatches(ctx, opts.Batches, opts.Batch,
 			func(limit int) (int64, error) {
-				return d.DeleteExpiredTerminalTasks(ctx, sc.OrgID, sc.CapabilityID, cutoff, limit)
+				return d.DeleteExpiredTerminalTasks(ctx, sc.NamespaceID, sc.CapabilityID, cutoff, limit)
 			})
 		rep.TasksDeleted += deleted
 		if saturated {
 			rep.Truncated = true
 		}
 		if derr != nil {
-			return rep, fmt.Errorf("sweep retention: tasks of capability %s (org %s): %w",
-				sc.CapabilityID, sc.OrgID, derr)
+			return rep, fmt.Errorf("sweep retention: tasks of capability %s (namespace %s): %w",
+				sc.CapabilityID, sc.NamespaceID, derr)
 		}
 	}
 
-	// ② 事件：按组织级保留期（**默认禁用**）
+	// ② 事件：按组织级保留期（**默认禁用**），删除粒度是命名空间
 	//
 	// 保留期 <= 0 = 未配置 = 禁用：整个 events 阶段跳过。这里刻意**不**返回错误——
-	// 默认配置走的就是这条路，报错会让巡检每小时记一次假警。也不调 ListOrgIDs：
-	// 既然一行都不删，就没必要每轮去扫一遍 orgs 表。
+	// 默认配置走的就是这条路，报错会让巡检每小时记一次假警。也不查 namespaces：
+	// 既然一行都不删，就没必要每轮去扫一遍。
 	if opts.EventRetentionSec <= 0 {
 		rep.EventsDisabled = true
 		return rep, nil
 	}
 
-	orgIDs, err := d.ListOrgIDs(ctx)
+	namespaces, err := d.listRetentionNamespaces(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("sweep retention: %w", err)
 	}
-	rep.Orgs = len(orgIDs)
+	// 保留期是**组织配置**（orgs.retention_sec），所以这里仍然报组织数（去重后）；
+	// 删除动作按命名空间逐个做（索引与隔离维度都是 namespace_id）。
+	rep.Orgs = distinctOrgCount(namespaces)
 	eventsCutoff := opts.Now - int64(opts.EventRetentionSec)
-	for _, orgID := range orgIDs {
+	for _, ns := range namespaces {
 		if err := ctx.Err(); err != nil {
 			return rep, fmt.Errorf("sweep retention: %w", err)
 		}
 		deleted, saturated, derr := drainRetentionBatches(ctx, opts.Batches, opts.Batch,
 			func(limit int) (int64, error) {
-				return d.DeleteExpiredEvents(ctx, orgID, eventsCutoff, limit)
+				return d.DeleteExpiredEvents(ctx, ns.NamespaceID, eventsCutoff, limit)
 			})
 		rep.EventsDeleted += deleted
 		if saturated {
 			rep.Truncated = true
 		}
 		if derr != nil {
-			return rep, fmt.Errorf("sweep retention: events of org %s: %w", orgID, derr)
+			return rep, fmt.Errorf("sweep retention: events of namespace %s: %w", ns.NamespaceID, derr)
 		}
 	}
 	return rep, nil

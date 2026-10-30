@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,45 +109,82 @@ var BuiltinCapabilities = []BuiltinCapability{
 	// 用户视角的「事件从哪来」完全由 sources 承担。
 }
 
-// EnsureBuiltinCapabilities 为一个组织补齐所有内置能力（幂等）。
+// EnsureBuiltinCapabilities 给一个组织的**所有命名空间**补齐内置能力（幂等）。
 //
-// 幂等性靠 capability_versions 的 UNIQUE(org_id, name, version)：
-// 已存在就跳过，不会因为重复调用而开新版本。
+// 语义在 #162 之后从「一个组织一份」变成「每个命名空间一份」：能力属于命名空间，
+// `notify.phone` 在 prod 与 staging 是两行不同的定义（各自 namespace_id）。
 //
-// 为什么不放进注册流程而是单独调用：内置能力可能随版本升级新增
-// （比如以后加 notify.webhook），那时已有组织也需要补上——
-// 启动时对全部组织跑一遍比"只在注册时播种"更可靠。
+// 为什么不只在新命名空间播种：内置能力清单会随版本升级增加（比如以后加
+// notify.webhook）。那时已有命名空间也需要补上——启动时全量跑一遍比"只在
+// 创建时播种"可靠（少一条路径就是一次线上事故）。
 func (d *DB) EnsureBuiltinCapabilities(ctx context.Context, orgID string) error {
 	if orgID == "" {
 		return fmt.Errorf("ensure builtin capabilities: empty org_id")
 	}
-	for _, bc := range BuiltinCapabilities {
-		if err := d.ensureOneBuiltin(ctx, orgID, bc); err != nil {
+	namespaces, err := d.ListNamespaces(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	for _, ns := range namespaces {
+		if err := d.SeedBuiltinCapabilities(ctx, ns.ID, orgID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// ensureOneBuiltin 播种一个内置能力（若该 org 还没有这个 name@version）。
-func (d *DB) ensureOneBuiltin(ctx context.Context, orgID string, bc BuiltinCapability) error {
-	// 已存在就跳过**内容**（append-only，不变量 I8），但显示名要补齐。
-	//
-	// 这是为了让**已有组织**也拿到内置能力预置的显示名：这个字段是后加的，
-	// 老库里的内置能力行 display_name 还是空串。如果这里直接 return，
-	// 那些组织的能力页会一直显示 github@1 —— 而「内置的名字
-	// 由我们预置好」这个承诺就对老用户失效了。
-	//
-	// 只补空值，不覆盖用户改过的名字：用户把「GitHub webhook」改成
-	// 「我们的 PR 入口」以后，不能被启动流程改回去。
-	if existing, err := d.GetCapability(ctx, orgID, bc.Name, bc.Version); err == nil {
-		if bc.DisplayName != "" && existing.DisplayName == "" {
-			if uerr := d.SetCapabilityDisplayName(ctx, orgID, existing.ID, bc.DisplayName); uerr != nil {
+// SeedBuiltinCapabilities 给一个命名空间播种内置能力（自带事务的便捷包装）。
+func (d *DB) SeedBuiltinCapabilities(ctx context.Context, namespaceID, orgID string) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin seed builtin capabilities: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := SeedBuiltinCapabilitiesTx(ctx, tx, namespaceID, orgID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SeedBuiltinCapabilitiesTx 在调用方事务内给一个命名空间播种全部内置能力。
+//
+// 两条必须都走这条路：
+//  1. 新建命名空间（/ 建组织时的 default）—— 否则新命名空间里连一个
+//     end 节点（notify.phone）都声明不出来，推送直接失效；
+//  2. 内置能力升版 —— 遍历所有命名空间各插一行（append-only，不改旧行）。
+func SeedBuiltinCapabilitiesTx(ctx context.Context, tx *sql.Tx, namespaceID, orgID string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	for _, bc := range BuiltinCapabilities {
+		if err := seedOneBuiltinTx(ctx, tx, namespaceID, orgID, bc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedOneBuiltinTx 在某个命名空间里播种一个内置能力（已存在则只补显示名）。
+//
+// 已有行只补**空**的 display_name：预设名是给老库用的（这一列是后加的），
+// 而用户改过的名字不能被启动流程改回去。
+func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID, orgID string, bc BuiltinCapability) error {
+	var existingID, existingDisplay string
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, display_name FROM capability_versions
+		  WHERE namespace_id = ? AND name = ? AND version = ?`,
+		namespaceID, bc.Name, bc.Version).Scan(&existingID, &existingDisplay)
+	if err == nil {
+		if bc.DisplayName != "" && existingDisplay == "" {
+			if _, uerr := tx.ExecContext(ctx,
+				`UPDATE capability_versions SET display_name = ? WHERE id = ?`,
+				bc.DisplayName, existingID); uerr != nil {
 				return fmt.Errorf("backfill display name for builtin %s@%d: %w", bc.Name, bc.Version, uerr)
 			}
 		}
 		return nil
-	} else if !errors.Is(err, ErrNotFound) {
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("probe builtin capability %s@%d: %w", bc.Name, bc.Version, err)
 	}
 
@@ -154,11 +192,8 @@ func (d *DB) ensureOneBuiltin(ctx context.Context, orgID string, bc BuiltinCapab
 	if outputs == nil {
 		outputs = []string{} // 不变量 I9：空列表是 [] 不是 null
 	}
-
-	// 直接交给 CreateCapability：它内部算 content_hash、生成 ID、
-	// 并把「同内容幂等」与「同名版本换内容」区分开。
-	// 这里不重复实现 hash——两份实现必然漂移。
 	c := &CapabilityVersion{
+		NamespaceID:  namespaceID,
 		OrgID:        orgID,
 		Name:         bc.Name,
 		DisplayName:  bc.DisplayName,
@@ -168,8 +203,59 @@ func (d *DB) ensureOneBuiltin(ctx context.Context, orgID string, bc BuiltinCapab
 		Lifecycle:    Lifecycle{},
 		Source:       CapSourceBuiltin,
 	}
-	if err := d.CreateCapability(ctx, c); err != nil {
+	hash, err := NormalizeCapability(c)
+	if err != nil {
 		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	schema := string(c.ParamsSchema)
+	if schema == "" {
+		schema = "{}"
+	}
+	outputsJSON, err := json.Marshal(outputs)
+	if err != nil {
+		return fmt.Errorf("marshal builtin outputs: %w", err)
+	}
+	lifecycleJSON, err := json.Marshal(c.Lifecycle)
+	if err != nil {
+		return fmt.Errorf("marshal builtin lifecycle: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO capability_versions
+		   (id, namespace_id, org_id, name, display_name, version, params_schema, outputs,
+		    lifecycle, sticky, source, content_hash, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		NewCapabilityID(hash), namespaceID, orgID, c.Name, c.DisplayName, c.Version, schema,
+		string(outputsJSON), string(lifecycleJSON), c.Sticky, CapSourceBuiltin, hash, Now()); err != nil {
+		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	return nil
+}
+
+// seedBuiltinsForAllNamespacesTx 给每个命名空间播种内置能力（迁移 12 用）。
+func seedBuiltinsForAllNamespacesTx(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT id, org_id FROM namespaces ORDER BY org_id, created_at, id`)
+	if err != nil {
+		return fmt.Errorf("list namespaces for builtin seeding: %w", err)
+	}
+	type nsRow struct{ id, orgID string }
+	var list []nsRow
+	for rows.Next() {
+		var r nsRow
+		if err := rows.Scan(&r.id, &r.orgID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan namespace row: %w", err)
+		}
+		list = append(list, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate namespaces: %w", err)
+	}
+	rows.Close()
+	for _, r := range list {
+		if err := SeedBuiltinCapabilitiesTx(context.Background(), tx, r.id, r.orgID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -270,18 +356,20 @@ func (d *DB) ClaimCentralTasks(ctx context.Context, limit int) ([]*Task, error) 
 	// 所以走 pending → assigned → running：assigned 在这里只表示"被中枢认领"）。
 	claimed := make([]*Task, 0, len(candidates))
 	for _, t := range candidates {
-		if err := d.transitionGuarded(ctx, nil, t.OrgID, t.ID, TaskPending, TaskAssigned, ""); err != nil {
+		// 作用域是行自己的 namespace_id（#162：任务的隔离维度是命名空间，
+		// 中枢任务也属于某个命名空间）。
+		if err := d.transitionGuarded(ctx, nil, t.NamespaceID, t.ID, TaskPending, TaskAssigned, ""); err != nil {
 			if errors.Is(err, ErrTransitionGuardFailed) || errors.Is(err, ErrInvalidTransition) {
 				continue // 别人先领了
 			}
 			return claimed, fmt.Errorf("claim central task %s: %w", t.ID, err)
 		}
-		if err := d.transitionGuarded(ctx, nil, t.OrgID, t.ID, TaskAssigned, TaskRunning, ""); err != nil {
+		if err := d.transitionGuarded(ctx, nil, t.NamespaceID, t.ID, TaskAssigned, TaskRunning, ""); err != nil {
 			return claimed, fmt.Errorf("start central task %s: %w", t.ID, err)
 		}
 		if _, err := d.ExecContext(ctx,
-			`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE org_id = ? AND id = ?`,
-			Now(), t.OrgID, t.ID); err != nil {
+			`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE namespace_id = ? AND id = ?`,
+			Now(), t.NamespaceID, t.ID); err != nil {
 			return claimed, fmt.Errorf("stamp central task start: %w", err)
 		}
 		t.Status = TaskRunning
@@ -294,7 +382,7 @@ func (d *DB) ClaimCentralTasks(ctx context.Context, limit int) ([]*Task, error) 
 //
 // 与 ReportResult 的区别：ReportResult 是**节点**回报路径（要求任务有
 // node_id 归属、会校验租约）。中枢任务没有归属，所以走这条。
-func (d *DB) FinishTask(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary, errMsg string) error {
+func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, reported bool, summary, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: finish status must be succeeded|failed, got %q", ErrInvalidTransition, status)
 	}
@@ -309,7 +397,7 @@ func (d *DB) FinishTask(ctx context.Context, orgID, taskID, status string, out *
 	defer func() { _ = tx.Rollback() }()
 
 	// running → succeeded|failed（走唯一写入口，守卫 status=running）
-	if err := d.transitionGuarded(ctx, tx, orgID, taskID, TaskRunning, status, ""); err != nil {
+	if err := d.transitionGuarded(ctx, tx, namespaceID, taskID, TaskRunning, status, ""); err != nil {
 		return fmt.Errorf("finish central task %s: %w", taskID, err)
 	}
 
@@ -322,8 +410,8 @@ func (d *DB) FinishTask(ctx context.Context, orgID, taskID, status string, out *
 		outVal = *out
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET out = ?, reported = ?, summary = ?, error = ? WHERE org_id = ? AND id = ?`,
-		outVal, rep, summary, errMsg, orgID, taskID); err != nil {
+		`UPDATE tasks SET out = ?, reported = ?, summary = ?, error = ? WHERE namespace_id = ? AND id = ?`,
+		outVal, rep, summary, errMsg, namespaceID, taskID); err != nil {
 		return fmt.Errorf("write central task result: %w", err)
 	}
 	return tx.Commit()

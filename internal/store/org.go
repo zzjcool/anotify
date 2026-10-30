@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 )
 
 // ErrNotImplemented 表示该 store 方法尚未实现（重构期脚手架，#2 填充）。
@@ -34,27 +33,41 @@ type OrgMember struct {
 	JoinedAt int64  `json:"joinedAt"`
 }
 
-// CreateOrg 创建组织。
+// CreateOrg 创建组织，**并在同一事务内**建 `default` 命名空间 + 播种内置能力。
+//
+// 为什么必须原子：代码里不存在「没有命名空间」的分支（契约 §2.1.1）。
+// 组织建好了却没有命名空间，会让后续所有资源端点无处安放 —— 只能靠"稍后补"，
+// 而"稍后补"在失败时没人会发现。所以建组织 = 建组织 + 建默认命名空间 + 播种。
 func (d *DB) CreateOrg(ctx context.Context, name string) (*Org, error) {
 	if name == "" {
 		return nil, fmt.Errorf("create org: empty name")
 	}
-	o := &Org{ID: NewOrgID(), Name: name, CreatedAt: Now()}
-	if _, err := d.ExecContext(ctx,
-		`INSERT INTO orgs (id, name, created_at) VALUES (?, ?, ?)`,
-		o.ID, o.Name, o.CreatedAt); err != nil {
-		return nil, fmt.Errorf("insert org: %w", err)
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin create org: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	o, err := d.CreateOrgTx(ctx, tx, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit create org: %w", err)
 	}
 	return o, nil
 }
 
-// CreateOrgTx 在调用方事务内创建组织，供注册（用户 + 组织 + 成员必须原子）使用。
+// CreateOrgTx 在调用方事务内创建组织 + 它的 `default` 命名空间（含内置能力播种），
+// 供注册（用户 + 组织 + 成员 + 命名空间必须原子）使用。
 func (d *DB) CreateOrgTx(ctx context.Context, tx *sql.Tx, name string) (*Org, error) {
 	o := &Org{ID: NewOrgID(), Name: name, CreatedAt: Now()}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO orgs (id, name, created_at) VALUES (?, ?, ?)`,
 		o.ID, o.Name, o.CreatedAt); err != nil {
 		return nil, fmt.Errorf("insert org: %w", err)
+	}
+	if _, err := CreateDefaultNamespaceTx(ctx, tx, o.ID); err != nil {
+		return nil, fmt.Errorf("create default namespace for org %s: %w", o.ID, err)
 	}
 	return o, nil
 }
@@ -270,21 +283,8 @@ func (d *DB) EnsureOrgForUser(ctx context.Context, userID, username string) (*Or
 		return nil, fmt.Errorf("commit ensure org: %w", err)
 	}
 
-	// 新组织播种内置能力（notify.phone 等）。
-	//
-	// 放在 commit 之后而不是事务内：EnsureBuiltinCapabilities 复用了
-	// CreateCapability（它内部会算 hash、处理唯一约束），在事务里嵌套
-	// 会让错误语义变复杂。播种失败不该让建组织失败——组织建好了，
-	// 内置能力可以在启动时补（见 backfillBuiltins）。
-	if err := d.EnsureBuiltinCapabilities(ctx, org.ID); err != nil {
-		// 只记日志，不阻断：缺内置能力会导致 notify.phone 派发时 pruned/no_node，
-		// 但用户仍可正常使用其他功能，且下次启动会补。
-		slog.Warn("seed builtin capabilities failed",
-			"event", "org.builtin.seed_failed",
-			"org_id", org.ID,
-			"error", err.Error(),
-		)
-	}
+	// 内置能力已在 CreateOrgTx 里**同事务**播种（#162：命名空间与内置能力必须原子，
+	// 否则新命名空间里连 notify.phone 都没有）。这里不再补播。
 	return org, nil
 }
 

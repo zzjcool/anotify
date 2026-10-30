@@ -91,6 +91,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	8:  migrateSourceTargetParams,
 	9:  migrateEdgesFromSource,
 	10: migrateNodeCapabilityRunSpec,
+	12: migrateNamespaces,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -229,6 +230,344 @@ func migrateEdgesFromSource(tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+// migrateNamespaces 迁移 12：命名空间隔离（#162）。
+//
+// 三件事，缺一条就是线上事故：
+//  1. 给每个已存在的 org 建 `default` 命名空间（代码里不存在「没有命名空间」的分支）
+//  2. 重建 11 张资源表：加 namespace_id（带 FK 级联）+ 唯一键/主键前缀换成 namespace_id
+//  3. 给每个命名空间播种内置能力（否则新命名空间里 notify.phone 缺席 → end 节点声明不出来）
+//
+// 为什么必须重建而不是 ALTER：
+//   - SQLite 不能改主键/唯一约束（`UNIQUE(org_id, name, version)` → `(namespace_id, ...)`）
+//   - SQLite 不能给已有表 ADD COLUMN 时带 REFERENCES（级联删命名空间靠它）
+//
+// 外键：整个重建过程用 `PRAGMA defer_foreign_keys=TRUE` 把检查推迟到提交时刻。
+// 那条 PRAGMA 允许出现在事务里（`foreign_keys` 不允许，它是 no-op），
+// 而重建中途必然出现「父表已换、子表还没换」的瞬间；提交时终态一致即可。
+//
+// 幂等：以 capability_versions.namespace_id 是否存在作为「已迁移」判据。
+func migrateNamespaces(tx *sql.Tx) error {
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = TRUE`); err != nil {
+		return fmt.Errorf("defer foreign keys: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS namespaces (
+		id         TEXT PRIMARY KEY,
+		org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+		slug       TEXT NOT NULL,
+		name       TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		UNIQUE (org_id, slug)
+	)`); err != nil {
+		return fmt.Errorf("create namespaces: %w", err)
+	}
+	if _, err := tx.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at)`); err != nil {
+		return fmt.Errorf("create idx_namespaces_org: %w", err)
+	}
+
+	// 已迁移过？新表有 namespace_id 列，旧表没有。
+	if has, err := hasColumn(tx, "capability_versions", "namespace_id"); err != nil {
+		return err
+	} else if has {
+		return nil
+	}
+
+	// ① 每个 org 一个 default 命名空间（老数据全部落到它下面）。
+	if err := ensureDefaultNamespacesTx(tx); err != nil {
+		return err
+	}
+
+	// ② 逐表重建（顺序：父表在前，子表的 namespace_id 从父行取）。
+	for _, t := range nsRebuilds {
+		if err := rebuildForNamespaces(tx, t); err != nil {
+			return err
+		}
+	}
+
+	// ③ 每个命名空间播种内置能力（含迁移前就存在的 default）。
+	return seedBuiltinsForAllNamespacesTx(tx)
+}
+
+// nsRebuild 是一张表的重建方案。
+type nsRebuild struct {
+	table string
+	// create 是建 `<table>_ns` 的完整 DDL（列顺序必须与 copy 的列列表配合）。
+	create string
+	// cols 是搬数据时显式列出的列（新旧表同名）。
+	cols []string
+	// nsExpr 是 namespace_id 的取值表达式（在旧表别名 t 上求值）。
+	nsExpr string
+	// indexes 是重建后要恢复的索引（DROP TABLE 会连带删掉旧索引）。
+	indexes []string
+}
+
+// defaultNSExpr 取「该行 org 的默认命名空间」——老数据的 namespace_id 全部回填到它。
+const defaultNSExpr = `(SELECT ns.id FROM namespaces ns WHERE ns.org_id = t.org_id ORDER BY ns.created_at, ns.id LIMIT 1)`
+
+var nsRebuilds = []nsRebuild{
+	{
+		table: "capability_versions",
+		create: `CREATE TABLE capability_versions_ns (
+			id            TEXT PRIMARY KEY,
+			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			name          TEXT NOT NULL,
+			display_name  TEXT NOT NULL DEFAULT '',
+			version       INTEGER NOT NULL,
+			params_schema TEXT NOT NULL,
+			outputs       TEXT NOT NULL,
+			lifecycle     TEXT NOT NULL DEFAULT '{}',
+			sticky        TEXT NOT NULL DEFAULT '',
+			source        TEXT NOT NULL,
+			content_hash  TEXT NOT NULL,
+			created_at    INTEGER NOT NULL,
+			UNIQUE (namespace_id, name, version),
+			UNIQUE (namespace_id, content_hash)
+		)`,
+		cols:   []string{"id", "org_id", "name", "display_name", "version", "params_schema", "outputs", "lifecycle", "sticky", "source", "content_hash", "created_at"},
+		nsExpr: defaultNSExpr,
+		indexes: []string{
+			`CREATE INDEX IF NOT EXISTS idx_cap_name_ver ON capability_versions(namespace_id, name, version)`,
+		},
+	},
+	{
+		table: "nodes",
+		create: `CREATE TABLE nodes_ns (
+			id              TEXT PRIMARY KEY,
+			namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			name            TEXT NOT NULL,
+			tags            TEXT NOT NULL DEFAULT '[]',
+			status          TEXT NOT NULL DEFAULT 'offline',
+			token_hash      TEXT NOT NULL,
+			max_instances   INTEGER NOT NULL DEFAULT 20,
+			max_concurrency INTEGER NOT NULL DEFAULT 8,
+			last_seen_at    INTEGER,
+			created_at      INTEGER NOT NULL,
+			UNIQUE (namespace_id, name)
+		)`,
+		cols:   []string{"id", "org_id", "name", "tags", "status", "token_hash", "max_instances", "max_concurrency", "last_seen_at", "created_at"},
+		nsExpr: defaultNSExpr,
+	},
+	{
+		table: "node_capabilities",
+		create: `CREATE TABLE node_capabilities_ns (
+			node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			run_spec      TEXT NOT NULL DEFAULT '{}',
+			PRIMARY KEY (node_id, capability_id)
+		)`,
+		cols:   []string{"node_id", "capability_id", "run_spec"},
+		nsExpr: `(SELECT nd.namespace_id FROM nodes nd WHERE nd.id = t.node_id)`,
+		indexes: []string{
+			`CREATE INDEX IF NOT EXISTS idx_nodecap_cap ON node_capabilities(capability_id)`,
+		},
+	},
+	{
+		table: "node_instances",
+		create: `CREATE TABLE node_instances_ns (
+			id           TEXT PRIMARY KEY,
+			node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			slot         INTEGER NOT NULL,
+			concurrency  INTEGER NOT NULL DEFAULT 1,
+			busy_task    TEXT,
+			alive        INTEGER NOT NULL DEFAULT 1,
+			updated_at   INTEGER NOT NULL,
+			UNIQUE (node_id, slot)
+		)`,
+		cols:   []string{"id", "node_id", "slot", "concurrency", "busy_task", "alive", "updated_at"},
+		nsExpr: `(SELECT nd.namespace_id FROM nodes nd WHERE nd.id = t.node_id)`,
+	},
+	{
+		table: "node_pins",
+		create: `CREATE TABLE node_pins_ns (
+			sticky_key   TEXT PRIMARY KEY,
+			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			selector     TEXT NOT NULL,
+			created_at   INTEGER NOT NULL,
+			last_used_at INTEGER NOT NULL
+		)`,
+		cols:   []string{"sticky_key", "org_id", "node_id", "selector", "created_at", "last_used_at"},
+		nsExpr: `(SELECT nd.namespace_id FROM nodes nd WHERE nd.id = t.node_id)`,
+	},
+	{
+		table: "edges",
+		create: `CREATE TABLE edges_ns (
+			namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			from_is_source  INTEGER NOT NULL DEFAULT 0,
+			from_key        TEXT NOT NULL,
+			from_port       TEXT NOT NULL,
+			to_capability   TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+			created_at      INTEGER NOT NULL,
+			PRIMARY KEY (namespace_id, from_is_source, from_key, from_port, to_capability)
+		)`,
+		cols:   []string{"org_id", "from_is_source", "from_key", "from_port", "to_capability", "created_at"},
+		nsExpr: defaultNSExpr,
+		indexes: []string{
+			`CREATE INDEX IF NOT EXISTS idx_edges_lookup
+			   ON edges(namespace_id, from_is_source, from_key, from_port)`,
+		},
+	},
+	{
+		table: "sources",
+		create: `CREATE TABLE sources_ns (
+			id            TEXT PRIMARY KEY,
+			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			name          TEXT NOT NULL,
+			kind          TEXT NOT NULL,
+			config        TEXT NOT NULL DEFAULT '{}',
+			enabled       INTEGER NOT NULL DEFAULT 1,
+			last_fired_at INTEGER,
+			next_fire_at  INTEGER,
+			created_at    INTEGER NOT NULL,
+			UNIQUE (namespace_id, name)
+		)`,
+		cols:   []string{"id", "org_id", "name", "kind", "config", "enabled", "last_fired_at", "next_fire_at", "created_at"},
+		nsExpr: defaultNSExpr,
+		indexes: []string{
+			`CREATE INDEX IF NOT EXISTS idx_sources_org ON sources(org_id, created_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_sources_due ON sources(enabled, next_fire_at)`,
+		},
+	},
+	{
+		table: "source_targets",
+		create: `CREATE TABLE source_targets_ns (
+			source_id     TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+			capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			params        TEXT NOT NULL DEFAULT '{}',
+			created_at    INTEGER NOT NULL,
+			PRIMARY KEY (source_id, capability_id)
+		)`,
+		cols:   []string{"source_id", "capability_id", "params", "created_at"},
+		nsExpr: `(SELECT s.namespace_id FROM sources s WHERE s.id = t.source_id)`,
+		indexes: []string{
+			`CREATE INDEX IF NOT EXISTS idx_src_targets_cap ON source_targets(capability_id)`,
+		},
+	},
+	{
+		table: "events",
+		create: `CREATE TABLE events_ns (
+			id           TEXT PRIMARY KEY,
+			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			trace_id     TEXT NOT NULL,
+			source       TEXT NOT NULL,
+			type         TEXT NOT NULL,
+			payload      TEXT NOT NULL DEFAULT '{}',
+			idem_key     TEXT,
+			created_at   INTEGER NOT NULL
+		)`,
+		cols:   []string{"id", "org_id", "trace_id", "source", "type", "payload", "idem_key", "created_at"},
+		nsExpr: defaultNSExpr,
+		indexes: []string{
+			`CREATE INDEX IF NOT EXISTS idx_events_trace ON events(namespace_id, trace_id)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idem ON events(namespace_id, source, idem_key)
+			   WHERE idem_key IS NOT NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_events_retention ON events(namespace_id, created_at)`,
+		},
+	},
+	{
+		table: "tasks",
+		create: `CREATE TABLE tasks_ns (
+			id             TEXT PRIMARY KEY,
+			namespace_id   TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id         TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			trace_id       TEXT NOT NULL,
+			parent_task_id TEXT,
+			path           TEXT NOT NULL DEFAULT '[]',
+			capability_id  TEXT NOT NULL REFERENCES capability_versions(id),
+			capability     TEXT NOT NULL,
+			version        INTEGER NOT NULL,
+			params         TEXT NOT NULL DEFAULT '{}',
+			status         TEXT NOT NULL DEFAULT 'pending',
+			node_id        TEXT,
+			instance_id    TEXT,
+			lease_until    INTEGER,
+			attempts       INTEGER NOT NULL DEFAULT 0,
+			out            TEXT,
+			reported       INTEGER NOT NULL DEFAULT 0,
+			summary        TEXT NOT NULL DEFAULT '',
+			artifacts      TEXT NOT NULL DEFAULT '[]',
+			error          TEXT NOT NULL DEFAULT '',
+			cap_hash       TEXT NOT NULL,
+			graph_id       TEXT NOT NULL,
+			created_at     INTEGER NOT NULL,
+			started_at     INTEGER,
+			finished_at    INTEGER,
+			not_before     INTEGER
+		)`,
+		cols:   []string{"id", "org_id", "trace_id", "parent_task_id", "path", "capability_id", "capability", "version", "params", "status", "node_id", "instance_id", "lease_until", "attempts", "out", "reported", "summary", "artifacts", "error", "cap_hash", "graph_id", "created_at", "started_at", "finished_at", "not_before"},
+		nsExpr: defaultNSExpr,
+		indexes: []string{
+			`CREATE INDEX IF NOT EXISTS idx_tasks_trace ON tasks(namespace_id, trace_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(namespace_id, parent_task_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_lease ON tasks(status, lease_until)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_node ON tasks(node_id, status)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_retention
+			   ON tasks(namespace_id, capability_id, status, finished_at)`,
+		},
+	},
+	{
+		table: "graph_versions",
+		create: `CREATE TABLE graph_versions_ns (
+			id           TEXT PRIMARY KEY,
+			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			content_hash TEXT NOT NULL,
+			snapshot     TEXT NOT NULL,
+			created_at   INTEGER NOT NULL,
+			UNIQUE (namespace_id, content_hash)
+		)`,
+		cols:   []string{"id", "org_id", "content_hash", "snapshot", "created_at"},
+		nsExpr: defaultNSExpr,
+	},
+}
+
+// rebuildForNamespaces 重建一张表：新表 → 搬数据（回填 namespace_id）→ 删旧 → 改名 → 建索引。
+func rebuildForNamespaces(tx *sql.Tx, t nsRebuild) error {
+	exists, err := hasTable(tx, t.table)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil // 防御：表不存在说明无事可做（正常路径不会发生）
+	}
+	newName := t.table + "_ns"
+	_ = newName
+	colList := strings.Join(t.cols, ", ")
+	stmts := []string{
+		t.create,
+		fmt.Sprintf(`INSERT INTO %s_ns (%s, namespace_id)
+			SELECT %s, %s FROM %s t`,
+			t.table, colList, prefixedCols(t.cols), t.nsExpr, t.table),
+		fmt.Sprintf(`DROP TABLE %s`, t.table),
+		fmt.Sprintf(`ALTER TABLE %s_ns RENAME TO %s`, t.table, t.table),
+	}
+	stmts = append(stmts, t.indexes...)
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("rebuild %s for namespaces: %w", t.table, err)
+		}
+	}
+	return nil
+}
+
+// prefixedCols 给列名加旧表别名前缀（`id` → `t.id`），避免 SELECT 里子查询撞名。
+func prefixedCols(cols []string) string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = "t." + c
+	}
+	return strings.Join(out, ", ")
 }
 
 // migrate 应用所有未记账的迁移，并返回本次实际应用的版本数。

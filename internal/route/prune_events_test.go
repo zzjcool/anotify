@@ -58,9 +58,9 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			name:   "no_edge：查 edges 0 行",
 			reason: ReasonNoEdge,
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
-				review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
+				review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 				return DispatchInput{
-					OrgID: testOrg, TraceID: "trace_no_edge",
+					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_no_edge",
 					FromCap: review.ID, Out: "fix",
 				}, ""
 			},
@@ -70,12 +70,12 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			name:   "param_schema：参数不过目标能力 schema",
 			reason: ReasonParamSchema,
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
-				review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-				strict := f.addCap(testOrg, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
-				f.addEdge(testOrg, review.ID, "fix", strict.ID)
+				review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+				strict := f.addCap(testNS, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
+				f.addEdge(testNS, review.ID, "fix", strict.ID)
 				f.addNode("nd_strict", strict.ID, 1)
 				return DispatchInput{
-					OrgID: testOrg, TraceID: "trace_param_schema",
+					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_param_schema",
 					FromCap: review.ID, Out: "fix", Params: map[string]any{},
 				}, strict.ID
 			},
@@ -86,11 +86,11 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			name:   "no_node：有边有参数但没节点声明该能力",
 			reason: ReasonNoNode,
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
-				review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-				orphan := f.addCap(testOrg, "orphan", 1, nil, `{}`)
-				f.addEdge(testOrg, review.ID, "fix", orphan.ID)
+				review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+				orphan := f.addCap(testNS, "orphan", 1, nil, `{}`)
+				f.addEdge(testNS, review.ID, "fix", orphan.ID)
 				return DispatchInput{
-					OrgID: testOrg, TraceID: "trace_no_node",
+					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_no_node",
 					FromCap: review.ID, Out: "fix",
 				}, orphan.ID
 			},
@@ -101,13 +101,13 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			name:   "foreign_user：params.to 不是本组织成员",
 			reason: ReasonForeignUser,
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
-				review := f.addCap(testOrg, "review", 1, []string{"notify"}, `{}`)
-				phone := f.addCap(testOrg, "notify.phone", 1, nil,
+				review := f.addCap(testNS, "review", 1, []string{"notify"}, `{}`)
+				phone := f.addCap(testNS, "notify.phone", 1, nil,
 					`{"type":"object","required":["to"],"properties":{"to":{"type":"string"}}}`)
-				f.addEdge(testOrg, review.ID, "notify", phone.ID)
+				f.addEdge(testNS, review.ID, "notify", phone.ID)
 				f.addNode("nd_phone", phone.ID, 4)
 				return DispatchInput{
-					OrgID: testOrg, TraceID: "trace_foreign_user",
+					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_foreign_user",
 					FromCap: review.ID, Out: "notify",
 					Params: map[string]any{"to": "outsider_1"},
 				}, phone.ID
@@ -119,12 +119,12 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			name:   "path：目标已在路径里（环剪枝）",
 			reason: ReasonPath,
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
-				review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-				fix := f.addCap(testOrg, "fix", 1, []string{"review"}, `{}`)
-				f.addEdge(testOrg, fix.ID, "review", review.ID) // fix --review--> review（成环）
+				review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+				fix := f.addCap(testNS, "fix", 1, []string{"review"}, `{}`)
+				f.addEdge(testNS, fix.ID, "review", review.ID) // fix --review--> review（成环）
 				f.addNode("nd_review", review.ID, 1)
 				return DispatchInput{
-					OrgID: testOrg, TraceID: "trace_path",
+					OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_path",
 					FromCap: fix.ID, Out: "review",
 					Path: []string{review.ID, fix.ID},
 				}, review.ID
@@ -156,6 +156,11 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 			e := got[0]
 			if e.OrgID != in.OrgID {
 				t.Errorf("org_id = %q, want %q", e.OrgID, in.OrgID)
+			}
+			// events 是命名空间资源：剪枝留痕漏了 namespace 会直接写不进去
+			// （store 报 ErrNamespaceRequired，剪枝静默消失）。
+			if e.NamespaceID != in.NamespaceID {
+				t.Errorf("namespace_id = %q, want %q", e.NamespaceID, in.NamespaceID)
 			}
 			if e.Source != PruneEventSource {
 				t.Errorf("source = %q, want %q", e.Source, PruneEventSource)
@@ -208,14 +213,14 @@ func TestDispatchRecordsFivePruneReasons(t *testing.T) {
 func TestDispatchPruneNotDuplicated(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-	strict := f.addCap(testOrg, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
-	f.addEdge(testOrg, review.ID, "fix", strict.ID)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+	strict := f.addCap(testNS, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
+	f.addEdge(testNS, review.ID, "fix", strict.ID)
 	f.addNode("nd_strict", strict.ID, 1)
 	d := New(f)
 
 	in := DispatchInput{
-		OrgID: testOrg, TraceID: "trace_dup",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_dup",
 		FromCap: review.ID, Out: "fix", Params: map[string]any{},
 	}
 	for round := 1; round <= 2; round++ {
@@ -242,11 +247,11 @@ func TestDispatchDryRunWritesNoPruneEvent(t *testing.T) {
 
 	t.Run("no_edge 也只在返回值里出现", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "trace_dry_no_edge",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_dry_no_edge",
 			FromCap: review.ID, Out: "fix", DryRun: true,
 		})
 		if err != nil {
@@ -262,14 +267,14 @@ func TestDispatchDryRunWritesNoPruneEvent(t *testing.T) {
 
 	t.Run("param_schema 也不落库", func(t *testing.T) {
 		f := newFakeStore()
-		review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
-		strict := f.addCap(testOrg, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
-		f.addEdge(testOrg, review.ID, "fix", strict.ID)
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+		strict := f.addCap(testNS, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
+		f.addEdge(testNS, review.ID, "fix", strict.ID)
 		f.addNode("nd_strict", strict.ID, 1)
 		d := New(f)
 
 		out, err := d.Dispatch(ctx, DispatchInput{
-			OrgID: testOrg, TraceID: "trace_dry_param",
+			OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_dry_param",
 			FromCap: review.ID, Out: "fix", Params: map[string]any{}, DryRun: true,
 		})
 		if err != nil {
@@ -291,11 +296,11 @@ func TestDispatchDryRunWritesNoPruneEvent(t *testing.T) {
 func TestDispatchNoOutWritesNoPruneEvent(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeStore()
-	review := f.addCap(testOrg, "review", 1, []string{"fix"}, `{}`)
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 	d := New(f)
 
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "trace_no_out",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_no_out",
 		FromCap: review.ID, Out: "",
 	})
 	if err != nil {
@@ -319,18 +324,18 @@ func TestDispatchPruneRecordFailureDoesNotBreakDispatch(t *testing.T) {
 	f := newFakeStore()
 	f.errInsertPrune = errors.New("db is on fire")
 
-	review := f.addCap(testOrg, "review", 1, []string{"notify"}, `{}`)
+	review := f.addCap(testNS, "review", 1, []string{"notify"}, `{}`)
 	// 一条边被剪（参数不过），另一条边正常建任务：扇出部分成功
-	strict := f.addCap(testOrg, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
-	ok := f.addCap(testOrg, "ok", 1, nil, `{"type":"object"}`)
-	f.addEdge(testOrg, review.ID, "notify", strict.ID)
-	f.addEdge(testOrg, review.ID, "notify", ok.ID)
+	strict := f.addCap(testNS, "strict", 1, nil, `{"type":"object","required":["diff"]}`)
+	ok := f.addCap(testNS, "ok", 1, nil, `{"type":"object"}`)
+	f.addEdge(testNS, review.ID, "notify", strict.ID)
+	f.addEdge(testNS, review.ID, "notify", ok.ID)
 	f.addNode("nd_strict", strict.ID, 1)
 	f.addNode("nd_ok", ok.ID, 1)
 	d := New(f)
 
 	out, err := d.Dispatch(ctx, DispatchInput{
-		OrgID: testOrg, TraceID: "trace_insert_fail",
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "trace_insert_fail",
 		FromCap: review.ID, Out: "notify", Params: map[string]any{},
 	})
 	if err != nil {
