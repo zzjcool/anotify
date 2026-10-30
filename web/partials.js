@@ -708,7 +708,7 @@
 				title: "",
 				subtitle: "",
 				username: "zheng",
-				// "org" = 这一页确实不随命名空间切换（今天是密钥 / 安全 / 管理
+				// "deployment" = 这一页确实不随命名空间切换（今天是密钥 / 安全 / 管理
 				// 三页；能力与节点已随命名空间）。页面必须标出来，否则用户切了
 				// 命名空间发现列表没变，只会以为功能坏了。
 				scopeLevel: "",
@@ -858,15 +858,15 @@
 					(() => {
 						const h = el("h1", { class: "text-base font-semibold text-white" });
 						h.append(o.title);
-						if (o.scopeLevel === "org") {
+						if (o.scopeLevel === "deployment") {
 							h.append(
 								el("span", {
 									class: "scope-badge",
 									title: t(
-										"scope.org_level_hint",
-										"这一页是组织级的，不随命名空间切换",
+										"scope.deployment_wide_hint",
+										"这一页的内容不随命名空间切换变化",
 									),
-									text: t("scope.org_level", "组织级"),
+									text: t("scope.deployment_wide", "全部署通用"),
 								}),
 							);
 						}

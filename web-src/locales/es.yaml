@@ -247,7 +247,8 @@ scope:
   new_ns: "Nuevo espacio de nombres"
   new_ns_prompt: "Slug del nuevo espacio (minúsculas / dígitos / guiones)"
   new_ns_failed: "Error al crear"
-  org_level: "Nivel de organización"
+  deployment_wide: "Todo el despliegue"
+  deployment_wide_hint: "Esta página es común a todo el despliegue y no cambia al cambiar de espacio de nombres"
 graph:
   zoom_in: Acercar
   replay: Repetir la animación

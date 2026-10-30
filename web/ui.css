@@ -259,7 +259,7 @@ body {
 	outline-offset: 2px;
 }
 
-/* 组织级页面（API Keys / 安全 / 管理）的提示徽标：切命名空间它们不会变 */
+/* 全部署通用页面（API Keys / 安全 / 管理）的提示徽标：切命名空间它们不会变 */
 .scope-badge {
 	display: inline-flex;
 	align-items: center;

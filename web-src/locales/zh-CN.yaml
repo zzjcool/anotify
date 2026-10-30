@@ -247,7 +247,8 @@ scope:
   new_ns: "新建命名空间"
   new_ns_prompt: "新命名空间 slug（小写字母 / 数字 / 连字符）"
   new_ns_failed: "创建失败"
-  org_level: "组织级"
+  deployment_wide: "全部署通用"
+  deployment_wide_hint: "这一页的内容不随命名空间切换变化"
 graph:
   zoom_in: 放大
   replay: 重播动画
