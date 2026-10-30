@@ -68,7 +68,9 @@ const MANIFEST = {
 	triggers: [{ kind: "webhook", types: ["pull_request.opened"] }],
 };
 
-// 真 agent 的那台节点（B 部分从 UI 注册出来的）名。
+// A 部分那台节点（真 WS 握手；lib/nodes.mjs 播种 + hello/welcome）与
+// B 部分从 UI 注册出来、由真 cmd/agent 连上的那台节点，名字分开，断言不串。
+const WS_NODE_NAME = "rb-ws-node";
 const UI_NODE_NAME = "ui-agent";
 
 // ---------- 反例白名单 ----------
@@ -344,7 +346,7 @@ const PAGES = [
 			return !!box && box.children.length > 0;
 		},
 		expect: async (page, txt) => {
-			H.check("节点页：含节点名", txt.includes(ctxWSNName()), txt.slice(0, 300));
+			H.check("节点页：含节点名", txt.includes(WS_NODE_NAME), txt.slice(0, 300));
 			H.check(
 				"节点页：这台节点显示为在线（状态点 st-online）",
 				(await page.evaluate(
@@ -422,23 +424,19 @@ const PAGES = [
 			});
 			H.check(
 				"事件页：节点筛选下拉里有这台节点",
-				nodeOpts.some((o) => String(o).includes(ctxWSNName())),
+				nodeOpts.some((o) => String(o).includes(WS_NODE_NAME)),
 				JSON.stringify(nodeOpts),
 			);
+			// 这套件不产生事件（不 fire 源），所以真后端下页面必须是"还没有事件"，
+			// 而不是"演示数据"或空白。
 			H.check(
-				"事件页：没有事件时给出空态提示",
-				txt.length > 0,
-				txt.slice(0, 120),
+				"事件页：真后端下是空态（还没有事件）",
+				/还没有事件|No events yet/.test(txt),
+				txt.slice(0, 200),
 			);
 		},
 	},
 ];
-
-// A 部分的 WS 节点名（只在节点类断言里用，写成函数是为了让 PAGES 定义保持纯数据）
-let WS_NODE_NAME = "rb-ws-node";
-function ctxWSNName() {
-	return WS_NODE_NAME;
-}
 
 async function runPageChecks(ctxData, nsId) {
 	for (const spec of PAGES) {
@@ -579,7 +577,6 @@ async function runUiArtifactChecks(ctxData, nsId) {
 	await injectSession(ctx, ctxData.session, server.base);
 	const page = await ctx.newPage();
 	const v1 = watchV1(page);
-	let yamlPath = "";
 
 	try {
 		await page.goto(server.base + "/nodes.html", {
@@ -668,7 +665,7 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			patched.items >= 1,
 			`解出 ${patched.items} 条；解开后：\n${patched.text}`,
 		);
-		yamlPath = path.join(tmpDir, "node.yaml");
+		const yamlPath = path.join(tmpDir, "node.yaml");
 		writeFileSync(yamlPath, patched.text);
 
 		const agentBin = ensureAgentBin();
@@ -841,6 +838,20 @@ async function main() {
 		wsNode.frames.some((f) => f.type === "welcome"),
 		JSON.stringify(wsNode.frames).slice(0, 300),
 	);
+	// 节点**必须**持续发上行帧：服务端看门狗超过 2×心跳（2×10s＝20s）没有上行帧
+	// 就直接关连接（internal/ws/node_handler.go watchdog）→ 节点掉成 offline。
+	// lib/nodes.mjs 的裸 WS 客户端不会自己发心跳，而本套件在并行/变异场景下会跑
+	// 30s 以上 —— 不补心跳的话，失败原因会变成"跑得慢"，而不是真的有问题。
+	const heartbeat = setInterval(() => {
+		try {
+			wsNode.conn.send({
+				type: "heartbeat",
+				ts: Math.floor(Date.now() / 1000),
+			});
+		} catch {
+			/* 连接已关：由断言负责报错，这里不抛 */
+		}
+	}, 5000);
 
 	browser = await chromium.launch({ channel: "chrome", headless: true });
 
@@ -852,6 +863,7 @@ async function main() {
 	await runUiArtifactChecks(s, nsId);
 
 	const passed = H.summary(SUITE);
+	clearInterval(heartbeat);
 	await browser.close();
 	if (wsNode?.conn) wsNode.conn.close();
 	server.stop();
