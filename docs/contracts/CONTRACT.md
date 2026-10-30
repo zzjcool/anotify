@@ -184,11 +184,14 @@ CREATE TABLE IF NOT EXISTS nodes (
   * 要服务两个命名空间就注册两次 → 两个节点行、两个令牌。
   * 一个 WS 连接 = 一个节点 = 一个命名空间。 */
 
--- 节点声明「我有 review@1」——只有名字 + 版本，没有 argv、没有出口、没有 kind
+-- 节点声明「我有 review@1」——名字 + 版本，外加节点**自报的执行方式**（run_spec）。
+-- 没有 argv、没有出口、没有 kind：run_spec 是节点自己的数据（JSON 原文），
+-- 中枢**只存不执行**（I1），也不拿它参与派发选点。
 -- 只能声明**本命名空间**定义的能力（I11，handler 校验）
 CREATE TABLE IF NOT EXISTS node_capabilities (
     node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    run_spec      TEXT NOT NULL DEFAULT '{}',   -- 节点上报的执行方式原文；'{}' = 未声明
     PRIMARY KEY (node_id, capability_id)
 );
 
@@ -566,7 +569,12 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 // ── 节点 → 中枢 ──────────────────────────────
 { "type": "hello",     "node_id": "nd_x", "protocol": 1,
   "capabilities": [ {"capability":"review","version":1},
-                    {"capability":"test","version":1} ] }
+                    {"capability":"test","version":1} ],
+  // manifest 可选：声明「这个能力我怎么跑」。只存不执行（I1），中枢永不执行 command。
+  // 与 capabilities 同时出现时以 manifest 为准；manifest 没写的项 run_spec 落 '{}'。
+  "manifest": [ {"capability":"review","version":1,
+                  "run":{"runner":"bash","command":"./runners/review.sh",
+                         "timeoutSec":900,"concurrency":2,"env":{"LOG_LEVEL":"info"}}} ] }
 
 { "type": "heartbeat", "ts": 1730000000 }
 
@@ -603,6 +611,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | code | 何时 |
 |---|---|
 | `unknown_capability` | 节点声明了中枢没有的 `name@version` |
+| `invalid_manifest` | 节点上报的能力 manifest 不合法（run 缺失/runner 不支持/command 为空/concurrency 越界） |
 | `bad_frame` | JSON 解析失败 |
 | `unknown_type` | 未知帧类型 |
 | `invalid_transition` | 状态机拒绝 |

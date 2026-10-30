@@ -41,6 +41,10 @@ const (
 	ErrCodeNodeDraining = "node_draining"
 	// ErrCodeTooManyInstances 节点申报的实例数超过中枢允许的上限（契约 Q5）。
 	ErrCodeTooManyInstances = "too_many_instances"
+	// ErrCodeInvalidManifest 节点上报的 manifest 不合法（run 缺失 / runner 不支持 /
+	// command 为空 / concurrency 越界）。与 too_many_instances 同构：每种握手拒绝原因一个码，
+	// 节点侧不必解析人类可读的 message。
+	ErrCodeInvalidManifest = "invalid_manifest"
 	// ErrCodeUnauthorized 握手鉴权失败（HTTP 层用，不会作为帧下发）。
 	ErrCodeUnauthorized = "unauthorized"
 )
@@ -51,11 +55,25 @@ const (
 //
 // Capabilities 只有 name + version —— 没有命令、没有出口（不变量 I1/I2）。
 // Instances 由节点申报（契约 §10 Q5），中枢 upsert 到 node_instances。
+//
+// # Manifest 与 Capabilities 的优先级（issue #168，语义必须写死）
+//
+//   - 缺省 Manifest（老 agent）= 老行为：只报 name@version，run_spec 落 '{}'。
+//   - Capabilities 与 Manifest 同时出现时**以 manifest 为准**：manifest 信息更全
+//     （它带 run），同一 name@version 只落一条，用 manifest 里那份 run。
+//   - manifest 里没写的 capabilities 项 = 「声明了能力但没声明执行方式」：
+//     能力照旧声明（参与派发选点），run_spec 落 '{}'。
+//   - **不改 protocol 版本号**：manifest 是同版本内新增的**可选**字段，
+//     Go 的 json 解码对缺省字段宽容，老节点不受影响。
+//
+// manifest 里的 run 是节点**自己的执行方式**：中枢只校验形状、只存不执行（I1 边界，
+// docs/design/playbooks.md §4.2），所以这里用 json.RawMessage 原样承载。
 type HelloFrame struct {
 	Type         string           `json:"type"`
 	NodeID       string           `json:"node_id"`
 	Protocol     int              `json:"protocol"`
 	Capabilities []CapabilityDecl `json:"capabilities"`
+	Manifest     []ManifestDecl   `json:"manifest,omitempty"` // 新增，可选
 	Instances    []InstanceDecl   `json:"instances"`
 	Labels       map[string]any   `json:"labels,omitempty"`
 }
@@ -64,6 +82,19 @@ type HelloFrame struct {
 type CapabilityDecl struct {
 	Capability string `json:"capability"`
 	Version    int    `json:"version"`
+}
+
+// ManifestDecl 是 manifest 的一条：能力 + 它**怎么跑**的声明原文。
+//
+// Run 用 json.RawMessage 原样承载、**不解析结构**：中枢只校验形状、只存不执行
+// （I1 边界，docs/design/playbooks.md §4.2）。runner 以后会长出新形状
+// （agent 的 prompt/model/tools），在这里定死字段等于每加一种执行器改一次协议。
+// 字段名用 capability（与 hello.capabilities[].capability 一致），
+// 节点实现者不需要为同一个概念记两个名字（playbooks §4.2 的 name 是缩写示意）。
+type ManifestDecl struct {
+	Capability string          `json:"capability"`
+	Version    int             `json:"version"`
+	Run        json.RawMessage `json:"run"`
 }
 
 // InstanceDecl 是节点申报的并发槽位。

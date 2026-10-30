@@ -85,11 +85,12 @@ func parseMigrations(src string) (migrationSet, error) {
 // 约定：hook 返回 error 时整个迁移回滚；hook 必须**幂等**——
 // 同一版本在同一个事务内可能因重试被执行多次。
 var migrationHooks = map[int]func(*sql.Tx) error{
-	2: migrateLegacyColumns,
-	3: fixLegacyMessageColumns,
-	5: migrateNewModelColumns,
-	8: migrateSourceTargetParams,
-	9: migrateEdgesFromSource,
+	2:  migrateLegacyColumns,
+	3:  fixLegacyMessageColumns,
+	5:  migrateNewModelColumns,
+	8:  migrateSourceTargetParams,
+	9:  migrateEdgesFromSource,
+	10: migrateNodeCapabilityRunSpec,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -134,6 +135,26 @@ func migrateSourceTargetParams(tx *sql.Tx) error {
 	if _, err := tx.Exec(
 		`ALTER TABLE source_targets ADD COLUMN params TEXT NOT NULL DEFAULT '{}'`); err != nil {
 		return fmt.Errorf("add column source_targets.params: %w", err)
+	}
+	return nil
+}
+
+// migrateNodeCapabilityRunSpec 迁移 10：给 node_capabilities 加 run_spec 列（#168）。
+//
+// run_spec 是节点上报的「我打算怎么跑这个能力」的 JSON 原文，
+// '{}' = 声明了能力但没声明执行方式（老 agent / manifest 里没写这一项）。
+// 默认 '{}'：老数据统统落到「没声明」，行为不变——中枢只存不执行（I1 边界）。
+func migrateNodeCapabilityRunSpec(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "node_capabilities", "run_spec")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`ALTER TABLE node_capabilities ADD COLUMN run_spec TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return fmt.Errorf("add column node_capabilities.run_spec: %w", err)
 	}
 	return nil
 }
