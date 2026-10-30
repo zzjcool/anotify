@@ -52,6 +52,8 @@ const CHROME_SUITES = [
 	"auth_flow",
 	"ux_regression_19_23",
 	"recovery_next",
+	// #201：真后端（不用 mock）+ 真浏览器的体检套件
+	"real_backend",
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 

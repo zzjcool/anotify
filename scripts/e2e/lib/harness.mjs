@@ -208,6 +208,10 @@ const NS_REQUIRED_PREFIXES = [
 	"/v1/tasks",
 	"/v1/traces",
 	"/v1/stats",
+	// 预案（#193 起）也是命名空间资源：5 个端点全部走 resolveNamespaceCreate
+	// （见 internal/server/playbook_handlers.go 的文件头）。这里漏一行的症状是
+	// 「req() 静默少带一个参数 → 真后端一律 400」，而 400 的原因只有后端日志里有。
+	"/v1/playbooks",
 ];
 
 // isNamespaceEndpoint 判断路径是否属于「必填 namespaceId」的命名空间资源端点。
@@ -404,6 +408,8 @@ export const SUITE_PORTS = {
 	reply_e2e: 6750,
 	ux_regression_19_23: 6800,
 	recovery_next: 6850,
+	// #201：真后端 + 真浏览器套件（页面级请求体检 + 起真 cmd/agent）
+	real_backend: 6900,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。

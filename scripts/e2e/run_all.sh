@@ -53,7 +53,12 @@ go build -o .e2e-bin/devseed ./cmd/devseed || {
 	echo "❌ devseed 构建失败"
 	exit 1
 }
-export ANOTIFY_BIN="$ROOT/.e2e-bin/anotify" DEVSEED_BIN="$ROOT/.e2e-bin/devseed"
+# real_backend 套件（#201）要真起 cmd/agent：UI 生成的 node.yaml 交给真消费者解析。
+go build -o .e2e-bin/agent ./cmd/agent || {
+	echo "❌ agent 构建失败"
+	exit 1
+}
+export ANOTIFY_BIN="$ROOT/.e2e-bin/anotify" DEVSEED_BIN="$ROOT/.e2e-bin/devseed" AGENT_BIN="$ROOT/.e2e-bin/agent"
 echo "  ✅ 二进制就绪"
 
 # 3. 委托 Node 并行执行器
