@@ -27,7 +27,22 @@ var (
 
 	rlRecoveryLoginIP   = newFixedWindow(rlRecoveryLoginIPPerMin, time.Minute)
 	rlRecoveryLoginUser = newFixedWindow(rlRecoveryLoginUserPerMin, time.Minute)
+
+	// rlHookIP 保护公开的 webhook 入口（见 rlHookPerMin 的注释）。
+	rlHookIP = newFixedWindow(rlHookPerMin, time.Minute)
 )
+
+// rlHookPerMin 是 /v1/hooks/{token} 的阈值（每分钟每 IP）。
+//
+// 为什么这个端点必须有：它是**唯一不需要登录的公开写端点**（token 即凭据）。
+// 拿到（或猜到）一个 token 就能直接触发派发；没有限流时，一个 token 泄露
+// 等于把中枢的派发能力无上限地交给外网。按 IP 限流挡不住分布式攻击，
+// 但能挡住最常见的一种：单机脚本 / 爬虫把 hook 当免费 API 刷。
+//
+// 60/min 的选择：手工调试（curl 连着点几次）不会碰到，脚本化高频投递会。
+// 故意**不按 token 限流**：token 是攻击者手里可以换的东西（多个源各一个），
+// 按 token 限流等于被换 token 直接绕过。
+const rlHookPerMin = 60
 
 // 限速阈值常量（见 cli-auth-plan §0）.
 const (

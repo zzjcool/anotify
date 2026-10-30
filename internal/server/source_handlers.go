@@ -759,6 +759,11 @@ func (h *sourceHandler) hook(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "POST")
 		return
 	}
+	// 限流放在**查 token 之前**：这个端点不需要登录，任何人都能打；
+	// 先限流能顺带保护 DB 查询，也不给"用响应时间探测 token 是否存在"留窗口。
+	if rateLimited(w, rlHookIP, clientIP(r)) {
+		return
+	}
 	token := r.PathValue("token")
 	if token == "" {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
