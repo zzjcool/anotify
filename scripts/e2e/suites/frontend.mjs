@@ -3424,13 +3424,34 @@ async function checkPlaybooks(page, base) {
 		detail.caps >= 2 && detail.nodes >= 2 && detail.edges >= 1 && detail.trgs >= 1,
 		`定义=${detail.caps} 节点=${detail.nodes} 出口=${detail.edges} 触发器=${detail.trgs}`,
 	);
-	H.check(
-		"缺节点的能力给出可直接粘的 node.yaml（只含缺的那几个）",
+	// 断言的是**能直接粘进 cmd/agent 的形状**，不是"看起来像 YAML"。
+	//
+	// 这里曾经断言 includes("run: bash") —— 而那句话正是错的：agent 要的是
+	// `run:` 是映射（`runner: bash` 缩进在下面），`run: bash` 这种标量会被
+	// 严格解码直接拒掉（yaml: field not found）。所以旧断言把 bug 钉成了期望值。
+	// 现在改成逐项对齐 cmd/agent/config.go：顶层 server/token/instances、
+	// capabilities[].capability（不是 name）、run 下的 runner/command/timeoutSec。
+	const yamlOk =
 		detail.yaml.includes("archive-logs") &&
-			!detail.yaml.includes("report.send") &&
-			detail.yaml.includes("run: bash") &&
-			detail.hasCopyYaml,
-		`含 archive-logs=${detail.yaml.includes("archive-logs")} 混进 report.send=${detail.yaml.includes("report.send")} 有复制按钮=${detail.hasCopyYaml}`,
+		!detail.yaml.includes("report.send") &&
+		// agent 的键名是 capability（不是 name），缩进在列表项下面
+		/^\s+- capability: \S+/m.test(detail.yaml) &&
+		// run 必须是**映射**：单独一行 run:，runner 缩进在其下
+		/^\s+run:\s*$/m.test(detail.yaml) &&
+		/^\s+runner: bash/m.test(detail.yaml) &&
+		/^\s+command: \|/m.test(detail.yaml) &&
+		// 顶层三件：agent 没它们连不上
+		/^server: \S/m.test(detail.yaml) &&
+		/^token: \S/m.test(detail.yaml) &&
+		/^instances: \d+/m.test(detail.yaml) &&
+		// 反例：旧的错误形状必须消失（node: 包装、run 标量、timeout_sec）
+		!/^node:/m.test(detail.yaml) &&
+		!/^\s+run: bash\s*$/m.test(detail.yaml) &&
+		!detail.yaml.includes("timeout_sec");
+	H.check(
+		"缺节点的能力给出可直接粘的 node.yaml（只含缺的那几个、且形状合 cmd/agent）",
+		yamlOk && detail.hasCopyYaml,
+		`含 archive-logs=${detail.yaml.includes("archive-logs")} 混进 report.send=${detail.yaml.includes("report.send")} 形状合规=${yamlOk} 有复制按钮=${detail.hasCopyYaml} — ${JSON.stringify(detail.yaml.slice(0, 200))}`,
 	);
 
 	// ---- 「补齐」不能假装修好节点 ----
