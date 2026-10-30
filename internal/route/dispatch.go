@@ -420,7 +420,15 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		}
 
 		// 跨组织用户校验（params_schema 管不到的业务规则）
-		if pruned, rec := d.checkUserScoped(ctx, in.OrgID, capDef, targetParams); pruned {
+		//
+		// 查库失败必须**整个派发失败**（fail closed）：这是"不许推给外组织用户"
+		// 的闸门，放行等于在最该拦住的时候放行。宁可让这一次 trace 失败并留错，
+		// 也不能把消息推给不属于本组织的人。
+		pruned, rec, err := d.checkUserScoped(ctx, in.OrgID, capDef, targetParams)
+		if err != nil {
+			return nil, nil, err
+		}
+		if pruned {
 			rec.Port = in.Out // 留痕要有完整证据：哪条边、哪个出口
 			d.prune(ctx, in, out, rec)
 			continue
@@ -793,9 +801,14 @@ func (d *Dispatcher) now() int64 {
 }
 
 // checkUserScoped 校验 params.to 是否属于本组织（契约 §10.1.1）。
-func (d *Dispatcher) checkUserScoped(ctx context.Context, orgID string, capDef *store.CapabilityVersion, params map[string]any) (bool, PrunedRecord) {
+//
+// 返回的 error 必须由调用方**继续往上抛**：查成员关系失败时既不能判"外来用户"
+// （那是把故障当成攻击，消息静默消失），也不能判"通过"（那是 fail open，
+// 消息可能推给外组织用户）。以前这里只返回 (bool, PrunedRecord)，注释写着
+// "向上抛"却无处可抛 —— 于是查库失败等价于放行。
+func (d *Dispatcher) checkUserScoped(ctx context.Context, orgID string, capDef *store.CapabilityVersion, params map[string]any) (bool, PrunedRecord, error) {
 	if !d.UserScoped[capDef.Name] {
-		return false, PrunedRecord{}
+		return false, PrunedRecord{}, nil
 	}
 	to, _ := params["to"].(string)
 	if to == "" {
@@ -805,21 +818,21 @@ func (d *Dispatcher) checkUserScoped(ctx context.Context, orgID string, capDef *
 			Reason:       ReasonForeignUser,
 			CapabilityID: capDef.ID,
 			Detail:       fmt.Sprintf("%s requires a non-empty params.to", capDef.Name),
-		}
+		}, nil
 	}
 	member, err := d.Store.IsOrgMember(ctx, orgID, to)
 	if err != nil {
-		// 查库失败不能当成剪枝（会静默丢消息），向上抛
-		return false, PrunedRecord{}
+		// 查库失败：既不能剪枝（会静默丢消息），也不能放行（可能推给外组织用户）
+		return false, PrunedRecord{}, fmt.Errorf("route: check org member %q: %w", to, err)
 	}
 	if !member {
 		return true, PrunedRecord{
 			Reason:       ReasonForeignUser,
 			CapabilityID: capDef.ID,
 			Detail:       fmt.Sprintf("params.to=%q is not a member of this org", to),
-		}
+		}, nil
 	}
-	return false, PrunedRecord{}
+	return false, PrunedRecord{}, nil
 }
 
 // pickNode 挑一台节点：粘性钉住优先，否则按负载（空闲槽位最多）挑。
