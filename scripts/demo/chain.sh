@@ -21,7 +21,7 @@ PORT=${PORT:-7890}
 BASE="http://localhost:$PORT"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/anotify-chain.XXXXXX")
 PIDS=()
-TOTAL=${TOTAL_STEPS:-9}
+TOTAL=${TOTAL_STEPS:-8}
 STEP=0
 
 say()   { STEP=$((STEP + 1)); printf '\n\033[1;36m▶ %d/%d %s\033[0m\n' "$STEP" "$TOTAL" "$*"; }
@@ -108,34 +108,47 @@ NS=$(printf '%s' "$NS_JSON" | jq -r '(.namespaces // .)[] | select(.slug=="defau
 [ -n "$NS" ] && [ "$NS" != "null" ] || fail "拿不到默认命名空间：$NS_JSON"
 info "namespaceId=$NS"
 
-# ---------- 5. 能力 ----------
-say "建 3 个能力（demo.prep / demo.build / demo.report）"
-mkcap() {
-	local name=$1
-	local body
-	body=$(printf '{"name":"%s","version":1,"outputs":["ok"],"paramsSchema":{"type":"object"},"source":"custom"}' "$name")
-	local json; json=$(api POST "/v1/capabilities?namespaceId=$NS" "$body"); expect 200 "建能力 $name"
-	printf '%s' "$json" | jq -r '.capability.id'
-}
-PREP=$(mkcap demo.prep); [ -n "$PREP" ] && [ "$PREP" != null ] || fail "demo.prep 没有 id"
-BUILD=$(mkcap demo.build)
-REPORT=$(mkcap demo.report)
-info "prep=$PREP build=$BUILD report=$REPORT"
+# ---------- 5. 预案：创建 + 安装 ----------
+say "建预案并安装（3 能力 + 2 边 + 1 webhook 触发）"
+# manifest 的形状与 mock / docs/design/playbooks.md 一致：
+# capabilities[] 每条带 runner（节点侧怎么写执行方式，中枢只存不解释）
+PB_MANIFEST='{
+  "capabilities": [
+    {"name":"demo.prep","version":1,"outputs":["ok"],"runner":{"runner":"bash","command":"echo prep","timeoutSec":20}},
+    {"name":"demo.build","version":1,"outputs":["ok"],"runner":{"runner":"bash","command":"echo build","timeoutSec":20}},
+    {"name":"demo.report","version":1,"outputs":["ok"],"runner":{"runner":"bash","command":"echo report","timeoutSec":20}}
+  ],
+  "edges": [
+    {"from":"demo.prep","fromPort":"ok","to":"demo.build"},
+    {"from":"demo.build","fromPort":"ok","to":"demo.report"}
+  ],
+  "triggers": [{"kind":"webhook","types":["chain.hook"]}]
+}'
+PB_BODY=$(jq -nc --arg ns "$NS" --argjson m "$PB_MANIFEST" \
+	'{namespaceId:$ns,slug:"chain-demo",name:"链路 demo",description:"prep → build → report",manifest:$m}')
+PB_JSON=$(api POST "/v1/playbooks?namespaceId=$NS" "$PB_BODY"); expect 201 "建预案"
+PB=$(printf '%s' "$PB_JSON" | jq -r '.playbook.id // empty')
+[ -n "$PB" ] || fail "预案没有 id：$PB_JSON"
+info "预案 $PB，装之前 status=$(printf '%s' "$PB_JSON" | jq -r '.playbook.status') ready=$(printf '%s' "$PB_JSON" | jq -r '.playbook.ready')/$(printf '%s' "$PB_JSON" | jq -r '.playbook.total')"
 
-# ---------- 6. 边 ----------
-say "连 2 条边（prep:ok→build, build:ok→report）"
-api POST "/v1/edges?namespaceId=$NS" "$(printf '{"fromCapability":"%s","fromPort":"ok","toCapability":"%s"}' "$PREP" "$BUILD")" >/dev/null; expect 200 "边 prep→build"
-api POST "/v1/edges?namespaceId=$NS" "$(printf '{"fromCapability":"%s","fromPort":"ok","toCapability":"%s"}' "$BUILD" "$REPORT")" >/dev/null; expect 200 "边 build→report"
+INSTALL1=$(api POST "/v1/playbooks/$PB/install?namespaceId=$NS"); expect 200 "安装预案"
+GOT=$(printf '%s' "$INSTALL1" | jq -r '"\(.created.capabilities|length)/\(.created.edges|length)/\(.created.sources|length)"')
+info "第一次安装 created = $GOT（能力/边/源）"
+[ "$GOT" = "3/2/1" ] || fail "安装结果不是 3/2/1：$GOT —— $INSTALL1"
 
-# ---------- 7. webhook 源 ----------
-say "建 webhook 源（指向 demo.prep）"
-SRC_JSON=$(api POST "/v1/sources?namespaceId=$NS" "$(printf '{"name":"chain-hook","kind":"webhook","enabled":true,"targets":["%s"]}' "$PREP")")
-expect 201 "建 webhook 源"
-HOOK=$(printf '%s' "$SRC_JSON" | jq -r '.source.hookUrl // .hookUrl // empty')
-[ -n "$HOOK" ] || fail "源没有返回 hookUrl：$SRC_JSON"
+INSTALL2=$(api POST "/v1/playbooks/$PB/install?namespaceId=$NS"); expect 200 "重复安装"
+AGAIN=$(printf '%s' "$INSTALL2" | jq -r '[(.created.capabilities // []),(.created.edges // []),(.created.sources // [])] | add | length')
+[ "$AGAIN" = "0" ] || fail "安装不幂等：第二次仍创建了 $AGAIN 项 —— $INSTALL2"
+info "第二次安装 created 全空（幂等 ✓）"
+
+# ---------- 6. webhook 入口 ----------
+say "取安装出来的 webhook 入口"
+SRC_JSON=$(api GET "/v1/sources?namespaceId=$NS"); expect 200 "列出源"
+HOOK=$(printf '%s' "$SRC_JSON" | jq -r '[.sources[]? | select(.kind=="webhook") | .hookUrl] | first // empty')
+[ -n "$HOOK" ] || fail "装完没有 webhook 源：$SRC_JSON"
 info "hookUrl=$HOOK"
 
-# ---------- 8. 3 个节点 + 3 个 agent ----------
+# ---------- 7. 3 个节点 + 3 个 agent ----------
 say "注册 3 个节点并启动 3 个 agent"
 mkdir -p "$WORK/out"
 # 注意：下面三个 command 用**单引号**传入，$ANOTIFY_PARAM_TITLE 是给 agent 侧
@@ -181,7 +194,15 @@ online() {
 wait_until "3 个节点 online" 30 online
 info "3 个节点均 online"
 
-# ---------- 9. 触发 + 断言 ----------
+# 预案的就绪状态必须随真实数据变化：节点没起来时是 incomplete，全上线后才是 ready。
+pb_ready() {
+	api GET "/v1/playbooks/$PB?namespaceId=$NS" | jq -e '.playbook.status=="ready"' >/dev/null 2>&1
+}
+wait_until "预案体检变 ready" 20 pb_ready
+PB_VIEW=$(api GET "/v1/playbooks/$PB?namespaceId=$NS")
+info "预案 $PB status=$(printf '%s' "$PB_VIEW" | jq -r '.playbook.status') ready=$(printf '%s' "$PB_VIEW" | jq -r '.playbook.ready')/$(printf '%s' "$PB_VIEW" | jq -r '.playbook.total')"
+
+# ---------- 8. 触发 + 断言 ----------
 say "触发 webhook，断言 3 跳全成功"
 TRIG=$(curl -sS -w $'\n%{http_code}' -X POST -H 'content-type: application/json' \
 	-d '{"type":"chain.hook","payload":{"title":"hello"}}' "$BASE$HOOK")
