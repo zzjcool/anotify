@@ -445,9 +445,11 @@ func (e *consoleEnv) mustGetCapability(t *testing.T, name string, version int) *
 func TestCapabilityListIncludesKind(t *testing.T) {
 	env := newConsoleEnv(t)
 	review := env.seedCapability(t, "review", 1, []string{"fix"}) // 有出口
-	// notify.phone 现在是**内置能力**（#83），由 EnsureOrgForUser 播种。
+	// notify.phone 现在是**内置能力**（#83），由建命名空间时同事务播种
+	// （store.SeedBuiltinCapabilitiesTx，入口是 RegisterUser / CreateNamespace；
+	//  组织层删除后已没有 EnsureOrgForUser）。
 	// 不要再自己 seed 一份——那会因为内容不同而撞 append-only 约束
-	// （capability_versions 的 (org_id,name,version) 唯一 + I8）。
+	// （capability_versions 的 UNIQUE(namespace_id, name, version) + I8）。
 	end := env.mustGetCapability(t, "notify.phone", 1)
 	env.seedCapability(t, "trigger", 1, []string{"go"}) // 无节点声明
 
