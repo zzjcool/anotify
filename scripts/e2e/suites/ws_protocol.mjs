@@ -106,6 +106,63 @@ async function main() {
 	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
 	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
 
+	// ================= 造数入口校验（#210） =================
+	// 背景：造数辅助把参数**直插 sqlite**。capabilityIds 里混进 undefined 时，
+	// 过去会一路绑进 node_capabilities，崩在造数深处：
+	//   TypeError: Provided value cannot be bound to SQLite parameter 2.
+	// 套件崩在 await 里不写 JSON 结果 → 汇总显示「0通过/0失败」，和超时/环境
+	// 问题没法区分，排查成本极高。
+	// 这里钉死：① 入口立刻抛；② 消息里带**下标与值**；③ 不静默跳过无效项、
+	// 校验失败时也不留半行脏数据。
+	console.log("--- 造数入口校验（#210）---");
+	{
+		const grab = async (fn) => {
+			try {
+				await fn();
+				return null;
+			} catch (e) {
+				return e.message;
+			}
+		};
+		// capabilityIds 里的 undefined：必须抛在入口，不能等到绑库
+		const badCap = await grab(() =>
+			seedNodeRows(server.dbPath, nsId, "ws-badseed", ["cap_placeholder", undefined], 1),
+		);
+		H.check(
+			"#210 capabilityIds[1] 是 undefined → 入口立刻抛且带下标",
+			/capabilityIds\[1\] 是 undefined/.test(badCap || ""),
+			String(badCap),
+		);
+		// 空串同样不该被当成「有效 id」静默放过
+		const emptyCap = await grab(() =>
+			seedNodeRows(server.dbPath, nsId, "ws-badseed", [""], 1),
+		);
+		H.check(
+			'#210 capabilityIds[0] 是 "" → 入口立刻抛（不静默跳过）',
+			/capabilityIds\[0\] 是 ""/.test(emptyCap || ""),
+			String(emptyCap),
+		);
+		// bringUpNode 的 caps[].id 就是 #210 那次真正的源头（上游建能力失败）
+		const badCaps = await grab(() =>
+			bringUpNode(server.base, server.dbPath, nsId, "ws-badnode2", [
+				{ id: undefined, name: "ws.demo", version: 1 },
+			]),
+		);
+		H.check(
+			"#210 caps[0].id 是 undefined → 入口立刻抛且带下标",
+			/caps\[0\]\.id 是 undefined/.test(badCaps || ""),
+			String(badCaps),
+		);
+		// 入口校验必须在**开库写库之前**：失败不能留下半行节点
+		const dbChk = new DatabaseSync(server.dbPath);
+		try {
+			const dirty = dbChk.prepare("SELECT id FROM nodes WHERE name = ?").get("ws-badseed");
+			H.check("#210 校验失败不留半行脏数据", !dirty, JSON.stringify(dirty));
+		} finally {
+			dbChk.close();
+		}
+	}
+
 	// ================= 握手鉴权 =================
 	console.log("--- 握手鉴权 ---");
 
