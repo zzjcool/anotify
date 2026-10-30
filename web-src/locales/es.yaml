@@ -1231,10 +1231,39 @@ nodes:
     title: Nodos
   howto:
     title: Cómo conectar un nodo
-    desc: El registro de nodos es una acción de operador (no autoservicio), así que ejecútala en el servidor. El token se devuelve una sola vez.
-    step1: Registra el nodo en el servidor (declara qué capacidades puede ejecutar)
-    step2: Arráncalo en la máquina del nodo con el token; se conecta de vuelta por WS
+    desc: 'El registro ocurre en esta página: el token se muestra una vez y la configuración autoritativa solo vive en el node.yaml de esa máquina.'
+    step1: 'Pulsa «Registrar nodo» arriba para obtener un token de un solo uso y guarda en esa máquina el node.yaml que te da'
+    step2: 'Rellena capabilities (lo que esa máquina ejecuta de verdad) y arráncalo en la máquina del nodo'
   view_events: Ver eventos
+  register:
+    btn: 'Registrar nodo'
+    title: 'Registrar un nodo'
+    desc: 'El hub solo guarda el sha256 del token, así que el token en claro se muestra una única vez, justo tras registrarlo.'
+    name: 'Nombre del nodo'
+    name_ph: 'p. ej. my-mbp'
+    name_hint: 'Minúsculas, dígitos, punto (.), guion bajo (_) o guion (-): de 1 a 63 caracteres, empezando por letra o dígito'
+    instances: 'Instancias (opcional)'
+    instances_hint: 'Cuántas instancias correr en esta máquina (por defecto 1). Solo orientativo: el nodo informa sus ranuras reales al conectarse.'
+    submit: 'Registrar'
+    cancel: 'Cancelar'
+    submitting: 'Registrando…'
+    close: 'Cerrar'
+    done: 'El nodo «{name}» está registrado'
+    warn_once: 'Este token se muestra una sola vez: no se puede recuperar después de cerrar. Si lo pierdes, elimina el nodo y regístralo de nuevo.'
+    token_title: 'Token de un solo uso'
+    copy_token: 'Copiar token'
+    yaml_title: 'node.yaml (listo para pegar)'
+    copy_yaml: 'Copiar YAML'
+    yaml_hint: 'Guárdalo como node.yaml, sustituye capabilities por lo que esta máquina ejecuta de verdad y lanza agent -f node.yaml'
+    copied: 'Copiado'
+    copy_failed: 'No se pudo copiar; selecciona el texto y cópialo a mano'
+    err:
+      empty_name: 'Escribe primero un nombre de nodo'
+      invalid_name: 'Nombre no válido: solo minúsculas, dígitos, punto (.), guion bajo (_) o guion (-), de 1 a 63 caracteres, empezando por letra o dígito'
+      name_taken: 'Este espacio de nombres ya tiene un nodo llamado {name}'
+      not_found: 'Este espacio de nombres ya no existe (puede haberse eliminado). Actualiza e inténtalo de nuevo.'
+      forbidden: 'No tienes permiso para registrar nodos en este espacio de nombres'
+      failed: 'Error al registrar: '
 sources:
   detail: "Detalles"
   open_detail: "Abrir detalles"

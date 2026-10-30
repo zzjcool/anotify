@@ -12,6 +12,8 @@
  *  F. connect.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证 demo 徽章亮 + 三灯显「—」（尚未实现）
  *  G. index.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证演示数据状态徽章按真实 agentState 渲染
  *     （回归防护：旧协议字段 status 残留曾致 normalize 全部降级 working）
+ *  H. nodes.html 注册节点（#198）：表单 → 一次性令牌 → 可直接粘的 node.yaml；
+ *     再点入口必须把令牌真从 DOM 清掉，重名只报重名不给令牌（mock 全流程 + 真后端一次注册）
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
@@ -1228,6 +1230,108 @@ async function main() {
 		for (const p of PAGES) {
 			await checkPage(ctx, server.base + "/" + p, vp.name, vp);
 		}
+		await ctx.close();
+	}
+
+	// ---- H. 节点页真后端注册：POST /v1/nodes → 一次性令牌 + 可直接粘的 node.yaml ----
+	//
+	// mock 里的注册只能证明"UI 接对了接口形状"；这里要证明它和**真 handler**
+	// 也对得上：201 响应体里的明文令牌要真的落到 #reg-token，而 node.yaml 里
+	// 的 server 必须是这个中枢的 origin（否则 agent 连不上）。
+	// 本套件 DB 是套件私有的，注册出的节点残留无副作用，不加删除逻辑。
+	console.log("--- 节点页真实注册（一次性令牌 + node.yaml）---");
+	{
+		const s = H.seed(server.dbPath, "node_reg");
+		const ctx = await newCtx();
+		await injectSession(ctx, s.session, server.base);
+		const page = await ctx.newPage();
+		await page.goto(server.base + "/nodes.html", {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		// 等注册入口挂载（新 DOM，缺了就是功能没接上，下面会明确报错）
+		await page
+			.waitForSelector("#node-register-btn", { timeout: 10000 })
+			.catch(() => {});
+		await page.waitForTimeout(1200);
+
+		const hasEntry = await page.evaluate(
+			() => !!document.getElementById("node-register-btn"),
+		);
+		H.check(
+			"真后端：节点页有注册节点入口",
+			hasEntry === true,
+			`#node-register-btn=${hasEntry}`,
+		);
+		if (hasEntry) {
+			const regName = "ui-reg-" + Date.now();
+			await page.click("#node-register-btn");
+			await page.fill("#reg-name", regName);
+			await page.fill("#reg-instances", "2");
+			await page.click("#reg-submit");
+			// 真后端是本地进程，但 201 后还要 loadAll() 刷新列表，等结果块出现最直接
+			await page
+				.waitForFunction(
+					() => {
+						const r = document.getElementById("reg-result");
+						return !!r && !r.classList.contains("hidden");
+					},
+					null,
+					{ timeout: 15000 },
+				)
+				.catch(() => {});
+			await page.waitForTimeout(300);
+
+			const r = await page.evaluate(() => ({
+				resultHidden: (() => {
+					const e = document.getElementById("reg-result");
+					if (!e) return true;
+					return e.classList.contains("hidden") || e.hidden === true;
+				})(),
+				errorText: (document.getElementById("reg-error") || {}).textContent || "",
+				token: (document.getElementById("reg-token") || {}).textContent || "",
+				yaml: (document.getElementById("reg-yaml") || {}).textContent || "",
+				origin: location.origin,
+				listText: (document.getElementById("nodes-list") || {}).textContent || "",
+			}));
+			const token = r.token.trim();
+			H.check(
+				"真后端：提交成功 → 一次性令牌块出现",
+				r.resultHidden === false && token.length > 8,
+				`结果块隐藏=${r.resultHidden} 令牌长度=${token.length} 错误行=${JSON.stringify(r.errorText.slice(0, 120))}`,
+			);
+			H.check(
+				"真后端：node.yaml 带对 server / name / token",
+				r.yaml.includes("server: " + r.origin) &&
+					r.yaml.includes("name: " + regName) &&
+					token.length > 0 &&
+					r.yaml.includes("token: " + token),
+				JSON.stringify({
+					server: r.origin,
+					名字: regName,
+					令牌长度: token.length,
+					YAML: r.yaml.slice(0, 200),
+				}),
+			);
+			const listed = await page
+				.waitForFunction(
+					(n) =>
+						((document.getElementById("nodes-list") || {}).textContent || "").includes(
+							n,
+						),
+					regName,
+					{ timeout: 10000 },
+				)
+				.then(() => true)
+				.catch(() => false);
+			H.check(
+				"真后端：注册后节点列表出现新节点",
+				listed === true,
+				`列表里找不到 ${regName} — ${JSON.stringify(r.listText.replace(/\s+/g, " ").slice(0, 200))}`,
+			);
+		}
+
+		await page.close();
 		await ctx.close();
 	}
 
@@ -3133,6 +3237,177 @@ async function checkNodeDetail(page, base) {
 	);
 }
 
+// checkNodeRegister 验证「注册节点」这条纯 UI 链路（#198）。
+//
+// 为什么这条链路值得单独锁：令牌只在 201 响应体里出现一次（中枢只存
+// sha256），一旦前端把它弄丢/渲染错，用户拿到的就是一份**看起来能用、
+// 粘进去 agent 起不来**的 node.yaml —— 而且没有第二次机会。所以断言的不是
+// "有个令牌块"，而是"这块里的 YAML 能直接粘"（逐项对齐 cmd/agent/config.go，
+// 同 checkPlaybooks 里 #197 修好的写法）：
+//   ① 入口按钮存在、表单/令牌块默认都藏着
+//   ② 提交成功 → 令牌块出现，node.yaml 逐项形状合规（run 必须是映射）
+//   ③ 再点一次入口 → 上一个令牌块**真的从 DOM 清掉**（不是视觉隐藏）
+//   ④ 重名 → 只说重名，绝不给令牌
+//   ⑤ 列表刷新后新节点真的出现（否则用户以为没注册上）
+async function checkNodeRegister(page, base) {
+	// 页面上判定"藏起来了"：Tailwind 的 hidden 类或 hidden 属性都算
+	// （契约 §2.1 用的是 class="hidden"，这里两种实现方式都接受，不押风格）
+	const probe = () => {
+		const hiddenOf = (id) => {
+			const e = document.getElementById(id);
+			if (!e) return null;
+			return e.classList.contains("hidden") || e.hidden === true;
+		};
+		return {
+			hasBtn: !!document.getElementById("node-register-btn"),
+			hasPanel: !!document.getElementById("register-panel"),
+			hasResult: !!document.getElementById("reg-result"),
+			panelHidden: hiddenOf("register-panel"),
+			resultHidden: hiddenOf("reg-result"),
+			errorHidden: hiddenOf("reg-error"),
+			origin: location.origin,
+			token: (document.getElementById("reg-token") || {}).textContent || "",
+			yaml: (document.getElementById("reg-yaml") || {}).textContent || "",
+			errorText: (document.getElementById("reg-error") || {}).textContent || "",
+			listText: (document.getElementById("nodes-list") || {}).textContent || "",
+		};
+	};
+
+	// ---- ① 入口 + 初始态 ----
+	const init = await page.evaluate(probe);
+	H.check(
+		"节点页有注册节点入口，默认不显示表单与令牌块",
+		init.hasBtn === true &&
+			init.hasPanel === true &&
+			init.hasResult === true &&
+			init.panelHidden === true &&
+			init.resultHidden === true,
+		JSON.stringify({
+			入口: init.hasBtn,
+			表单块: init.hasPanel,
+			结果块: init.hasResult,
+			表单初始隐藏: init.panelHidden,
+			结果初始隐藏: init.resultHidden,
+		}),
+	);
+	if (!init.hasBtn || !init.hasPanel || !init.hasResult) {
+		// 后面的点击全会抛（元素不存在），到此为止，让上面的失败自己说话
+		H.check(
+			"注册节点：表单/令牌块 DOM 齐全，才能继续验证提交链路",
+			false,
+			"缺 #node-register-btn / #register-panel / #reg-result 之一",
+		);
+		return;
+	}
+
+	// ---- ② 点入口 → 表单出现 ----
+	await page.click("#node-register-btn");
+	await page.waitForTimeout(300);
+	const opened = await page.evaluate(probe);
+	H.check(
+		"点「注册节点」→ 表单出现",
+		opened.panelHidden === false,
+		`表单隐藏=${opened.panelHidden}`,
+	);
+
+	// ---- ③ 填表提交 → 一次性令牌块出现 ----
+	const regName = "ui-reg-" + Date.now();
+	await page.fill("#reg-name", regName);
+	await page.fill("#reg-instances", "2");
+	await page.click("#reg-submit");
+	// mock 有 120–300ms 随机延迟，多等一轮；失败时 #reg-error 会给出原因
+	await page.waitForTimeout(1200);
+
+	const reg = await page.evaluate(probe);
+	const token = reg.token.trim();
+	H.check(
+		"提交成功 → 一次性令牌块出现",
+		reg.resultHidden === false && token.length > 8,
+		`结果块隐藏=${reg.resultHidden} 令牌长度=${token.length} 错误行=${JSON.stringify(reg.errorText)}`,
+	);
+
+	// ---- ④ node.yaml 逐项形状（硬锁：能直接粘进 agent） ----
+	const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const yaml = reg.yaml;
+	const yamlToken = (yaml.match(/^token: (\S+)\s*$/m) || [])[1] || "";
+	const yamlWant = {
+		"name 行": new RegExp("^name: " + escapeRe(regName) + "\\s*$", "m").test(yaml),
+		"server 行": /^server: \S+/m.test(yaml) && yaml.includes("server: " + reg.origin),
+		"token 行": /^token: \S+/m.test(yaml) && yamlToken === token,
+		"instances: 2": /^instances: 2\s*$/m.test(yaml),
+		"capabilities 是空映射": /^capabilities:[ \t]*$/m.test(yaml),
+		// 行内匹配一律用 [ \t] 不用 \s：\s 含换行，`run:\s*\S` 会跨行咬到
+		// 下一行的 `#`，把合规 YAML 误判成 `run: bash`（自测里真被这条坑过）
+		"run 是映射（单独一行）": /^[ \t]*#?[ \t]*run:[ \t]*$/m.test(yaml),
+		"runner: bash 缩进在 run 下": /^[ \t]*#?[ \t]*runner: bash/m.test(yaml),
+	};
+	const yamlBad = {
+		"run 后面跟了标量（#197 的坑）": /^[ \t]*#?[ \t]*run:[ \t]*\S/m.test(yaml),
+		"有 node: 包装": /^node:/m.test(yaml),
+		"用了 timeout_sec（agent 要 timeoutSec）": yaml.includes("timeout_sec"),
+	};
+	const yamlOk =
+		Object.values(yamlWant).every(Boolean) &&
+		!Object.values(yamlBad).some(Boolean);
+	H.check(
+		"令牌块里的 node.yaml 是能直接粘的完整配置",
+		yamlOk,
+		`${JSON.stringify({ ...yamlWant, ...yamlBad })} — ${JSON.stringify(yaml.slice(0, 200))}`,
+	);
+
+	// ---- ⑤ 列表刷新 → 新节点出现（offline 也算，注册完还没连上来） ----
+	const listed = await page
+		.waitForFunction(
+			(n) =>
+				((document.getElementById("nodes-list") || {}).textContent || "").includes(n),
+			regName,
+			{ timeout: 8000 },
+		)
+		.then(() => true)
+		.catch(() => false);
+	H.check(
+		"注册成功后节点列表刷新出现新节点",
+		listed === true,
+		`列表里找不到 ${regName} — ${JSON.stringify(reg.listText.replace(/\s+/g, " ").slice(0, 200))}`,
+	);
+
+	// ---- ⑥ 再点一次入口 → 上一个令牌块必须真的消失 ----
+	await page.click("#node-register-btn");
+	await page.waitForTimeout(400);
+	const cleared = await page.evaluate(probe);
+	H.check(
+		"再点一次「注册节点」→ 上一个令牌块消失",
+		cleared.resultHidden === true &&
+			cleared.token === "" &&
+			cleared.yaml === "",
+		JSON.stringify({
+			"结果块隐藏": cleared.resultHidden,
+			"令牌文本长度": cleared.token.length,
+			"YAML 文本长度": cleared.yaml.length,
+		}),
+	);
+
+	// ---- ⑦ 重名提交 → 只报重名，不给令牌（mock 里已有 laptop-worker） ----
+	await page.fill("#reg-name", "laptop-worker");
+	await page.fill("#reg-instances", "1");
+	await page.click("#reg-submit");
+	await page.waitForTimeout(1200);
+	const dup = await page.evaluate(probe);
+	H.check(
+		"重名提交 → 显示重名提示且不显示令牌",
+		dup.errorHidden === false &&
+			dup.errorText.includes("laptop-worker") &&
+			dup.resultHidden === true &&
+			dup.token === "",
+		JSON.stringify({
+			错误行可见: dup.errorHidden === false,
+			错误行文本: dup.errorText.slice(0, 120),
+			结果块隐藏: dup.resultHidden,
+			令牌文本长度: dup.token.length,
+		}),
+	);
+}
+
 // 组织 / 命名空间切换器（设计见 docs/design/namespaces.md）
 //
 // 这套断言盯的是"隔离真的发生了"，而不是"控件画出来了"：
@@ -3929,6 +4204,10 @@ async function runMockCoverage() {
 			await page.goto(`${base}/nodes.html`, { waitUntil: "load", timeout: 20000 });
 			await page.waitForTimeout(1200);
 			await checkNodeDetail(page, base);
+			// checkNodeDetail 会跳到 node.html；注册流程要从干净的列表页开始
+			await page.goto(`${base}/nodes.html`, { waitUntil: "load", timeout: 20000 });
+			await page.waitForTimeout(1200);
+			await checkNodeRegister(page, base);
 		}
 		if (p === "events.html") {
 			await checkEventsFilter(page, base);

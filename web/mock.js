@@ -2150,9 +2150,84 @@
 		});
 	}
 
+	// 一次性明文令牌（注册节点时下发）。
+	//
+	// 真后端只把 sha256 存进 nodes.token_hash，明文**只在 201 响应体里出现这一次**，
+	// 之后从任何接口都取不回来（契约 §10.3 / D3）。所以 mock 也每次现随机生成、
+	// 绝不写进 state —— 否则前端「关掉令牌块就再也拿不到」这件事在预览里是假的。
+	// 前缀 n_mock_ 让「这是 mock 造的」一眼可见，不会被误贴进真机的 node.yaml。
+	function mockNodeToken() {
+		const chunk = () =>
+			Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+		return ("n_mock_" + chunk() + chunk()).slice(0, 46);
+	}
+
 	on("GET", /^\/v1\/nodes$/, (ctx) =>
 		json({ nodes: inNs(state.nodes, nsScope(ctx.query)).map(nodeView) }),
 	);
+
+	// 注册节点：POST /v1/nodes。
+	//
+	// 为什么 mock 要和真 handler（internal/server/console_handlers.go 的 createNode）
+	// 同形状，而不是「随便回个 200」：前端注册成功后，令牌块与可直接粘的 node.yaml
+	// 全靠这个 201 响应体里的 { node, token }。形状对不上就会出现「mock 里跑得通、
+	// 接上真后端白屏」——#198 要的正是「纯 UI 把节点跑起来」，预览分支必须可信。
+	//
+	// 照着真后端抄的三条语义：
+	//   1) 令牌只出现一次（见 mockNodeToken）；
+	//   2) 名字规则与 store.ValidateNodeName 一致：/^[a-z0-9][a-z0-9._-]{0,62}$/，
+	//      空/非法都归 400 invalid_name；**不 trim**（真后端也不 trim，" mbp" 这种
+	//      带空白的名字必须当场拒绝，而不是静默改对后落库）；
+	//   3) 同命名空间重名 → 409 name_taken（真后端靠 UNIQUE(namespace_id, name)）。
+	//
+	// instances 是要点：真后端只校验非负、**不落库**，槽位是节点在 hello 帧里申报的。
+	// 所以新节点 instances 是空数组，不预创建 N 个槽位——否则页面会显示「这台机器
+	// 已经有 2 个槽位」，而实际上根本没有进程连上来。
+	on("POST", /^\/v1\/nodes$/, (ctx) => {
+		const b = ctx.body || {};
+		// 非字符串（数字/对象/缺省）一律当空名：真后端会把这类 JSON body 直接拒掉。
+		const name = typeof b.name === "string" ? b.name : "";
+		if (name.trim() === "") {
+			return err(400, "name 必填（节点名不能为空或全为空白字符）", {
+				code: "invalid_name",
+			});
+		}
+		if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) {
+			return err(
+				400,
+				"name「" +
+					name +
+					"」不合法：只能包含小写字母、数字、点（.）、下划线（_）、短横线（-），长度 1..63，且必须以字母或数字开头",
+				{ code: "invalid_name" },
+			);
+		}
+		// 命名空间：与 mock 其它接口一样宽松，缺省 = 默认命名空间（`namespaceId=*`
+		// 是只读汇总语义，写端点落回默认命名空间）。
+		const namespaceId = nsScope(ctx.query) || NS;
+		if (
+			state.nodes.some((n) => n.namespaceId === namespaceId && n.name === name)
+		) {
+			return err(409, "同名节点已存在", { code: "name_taken" });
+		}
+		const node = {
+			id: uid("nd"),
+			orgId: ORG,
+			namespaceId: namespaceId,
+			name: name,
+			// 刚注册还没连上来：offline、没见过、没有槽位。
+			status: "offline",
+			lastSeenAt: null,
+			createdAt: now(),
+			// 与既有演示节点同值的硬顶（真后端由 store 的 DefaultMax* 兜底）。
+			maxInstances: 20,
+			maxConcurrency: 8,
+			tags: [],
+			capabilities: [],
+			instances: [],
+		};
+		state.nodes.push(node);
+		return json({ node: nodeView(node), token: mockNodeToken() }, 201);
+	});
 
 	// 节点详情：比列表多给每个槽位的具体情况（哪个槽在跑哪个任务）。
 	// 与真实 handler（consoleHandler.nodeByID）同形状。
