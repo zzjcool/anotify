@@ -988,3 +988,57 @@ func TestRetentionBadLifecycleDoesNotPoisonSweep(t *testing.T) {
 		}
 	}
 }
+
+// TestRetentionIndexesUsed 锁住「清理走索引而不是整 org 扫描」。
+//
+// 为什么要断言查询计划：这两条 DELETE 的子查询**语义正确但可以非常慢**——
+// 没有索引时 SQLite 会整 org 扫 + TEMP B-TREE 排序，而 LIMIT 只限删除行数、
+// 不限扫描/排序行数。测试全绿也发现不了，只有数据量上来才炸。
+//
+// 断言索引名出现在计划里，而不是断言某个执行计划的字符串全文：
+// SQLite 版本升级时计划文案会变，索引名不会。
+func TestRetentionIndexesUsed(t *testing.T) {
+	db, _ := retentionTestDB(t)
+	ctx := context.Background()
+
+	plan := func(q string, args ...any) string {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+q, args...)
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		defer rows.Close()
+		var sb strings.Builder
+		for rows.Next() {
+			var id, parent, notUsed int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+				t.Fatalf("scan plan: %v", err)
+			}
+			sb.WriteString(detail)
+			sb.WriteString("\n")
+		}
+		return sb.String()
+	}
+
+	tasksPlan := plan(`DELETE FROM tasks WHERE id IN (
+		   SELECT id FROM tasks
+		    WHERE org_id = ? AND capability_id = ?
+		      AND finished_at IS NOT NULL
+		      AND status IN ('succeeded','failed')
+		      AND finished_at < ?
+		    ORDER BY finished_at
+		    LIMIT 100)`, "org_x", "cap_x", 0)
+	if !strings.Contains(tasksPlan, "idx_tasks_retention") {
+		t.Errorf("任务清理没走 idx_tasks_retention，计划：\n%s", tasksPlan)
+	}
+
+	eventsPlan := plan(`DELETE FROM events WHERE id IN (
+		   SELECT id FROM events
+		    WHERE org_id = ? AND created_at < ?
+		    ORDER BY created_at
+		    LIMIT 100)`, "org_x", 0)
+	if !strings.Contains(eventsPlan, "idx_events_retention") {
+		t.Errorf("事件清理没走 idx_events_retention，计划：\n%s", eventsPlan)
+	}
+}
