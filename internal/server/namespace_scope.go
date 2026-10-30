@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -30,7 +31,7 @@ type nsScope struct {
 // namespaceParam 取请求里的 namespaceId。
 //
 // query 优先，其次用调用方已解码的 body 字段（POST/PATCH/DELETE 的 body 里也可以带）。
-// 两者都没有 → 空串（由 resolveNamespace 变成 400）。
+// 两者都没有 → 空串（由 namespaceScope 变成 400）。
 func namespaceParam(r *http.Request, bodyNS string) string {
 	if v := strings.TrimSpace(r.URL.Query().Get("namespaceId")); v != "" {
 		return v
@@ -38,34 +39,86 @@ func namespaceParam(r *http.Request, bodyNS string) string {
 	return strings.TrimSpace(bodyNS)
 }
 
-// resolveNamespace 解析并校验 namespaceId。
+var (
+	// errNamespaceParamMissing / errNamespaceAllNotAllowed 是「调用方参数写错」的两条，
+	// 消息即响应文案（必须与今天逐字一致，见契约 §6.2）。
+	errNamespaceParamMissing  = errors.New("namespaceId is required（命名空间资源端点必须显式指定，不回退默认命名空间）")
+	errNamespaceAllNotAllowed = errors.New("namespaceId=* 只能用于跨命名空间汇总的读操作")
+)
+
+// namespaceScope 是 resolveNamespace / resolveNamespaceCreate 的**唯一**规则实现。
+//
+// 规则只有一份的理由：「缺参 400 / `*` 视端点 400 / 不存在 404 / 别的 org 403」这套判断
+// 一旦在多个 handler 里各抄一遍，副本迟早分叉，最后表现为「同一个 namespaceId 在
+// A 端点 404、在 B 端点 403」——调用方无从适配。这里只返回 error，**不写响应**，
+// 由调用方挑自己的错误映射（读端点 403、写端点 404，见 resolveNamespaceCreate）。
+func (h *consoleHandler) namespaceScope(ctx context.Context, r *http.Request, orgID, bodyNS string, allowAll bool) (nsScope, error) {
+	raw := namespaceParam(r, bodyNS)
+	if raw == "" {
+		return nsScope{}, errNamespaceParamMissing
+	}
+	if raw == store.AllNamespaces {
+		if !allowAll {
+			return nsScope{}, errNamespaceAllNotAllowed
+		}
+		return nsScope{All: true}, nil
+	}
+	if _, err := h.db.GetNamespace(ctx, orgID, raw); err != nil {
+		return nsScope{}, err
+	}
+	return nsScope{ID: raw}, nil
+}
+
+// resolveNamespace 解析并校验 namespaceId（读端点与既有写端点用）。
+//
+// 行为与抽 namespaceScope 之前**完全一致**：缺参 400 / `*`（allowAll=false）400 /
+// 不存在 404 / 别的 org 403。签名也保持不变——statsHandler 以方法值注入它。
 //
 // allowAll=false 时（写端点、单对象端点）`*` 直接 400：把"跨命名空间"用在
 // 写入或单对象读取上没有定义（写一条边属于哪个命名空间？）。
 //
 // 返回 (scope, ok)；ok=false 表示已经写过错误响应，调用方直接 return。
 func (h *consoleHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, orgID, bodyNS string, allowAll bool) (nsScope, bool) {
-	raw := namespaceParam(r, bodyNS)
-	if raw == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "namespaceId is required（命名空间资源端点必须显式指定，不回退默认命名空间）",
-		})
+	ns, err := h.namespaceScope(r.Context(), r, orgID, bodyNS, allowAll)
+	if err != nil {
+		writeNamespaceScopeError(w, err, false)
 		return nsScope{}, false
 	}
-	if raw == store.AllNamespaces {
-		if !allowAll {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "namespaceId=* 只能用于跨命名空间汇总的读操作",
-			})
-			return nsScope{}, false
-		}
-		return nsScope{All: true}, true
+	return ns, true
+}
+
+// resolveNamespaceCreate 解析并校验 namespaceId，**只给 POST /v1/nodes 用**。
+//
+// 规则与 resolveNamespace 同一份（namespaceScope），只有一处口径不同：
+// 「别的 org」按 **404**，响应体与「不存在」逐字节相同（`{"error":"namespace not found"}`）。
+// 理由：创建节点是写端点，若跨组织报 403 就等于给了一个**命名空间 id 存在性探测器**
+// ——任何人拿候选 id 打一遍这个端点，就能分辨「这个 id 是别人的」还是「这个 id 不存在」
+// （issue #185 / 契约 D2）。读端点保持 403（现有断言不削弱），两者都保留。
+func (h *consoleHandler) resolveNamespaceCreate(w http.ResponseWriter, r *http.Request, orgID, bodyNS string) (nsScope, bool) {
+	ns, err := h.namespaceScope(r.Context(), r, orgID, bodyNS, false)
+	if err != nil {
+		writeNamespaceScopeError(w, err, true)
+		return nsScope{}, false
 	}
-	if _, err := h.db.GetNamespace(r.Context(), orgID, raw); err != nil {
+	return ns, true
+}
+
+// writeNamespaceScopeError 把 namespaceScope 的 error 统一映射成响应。
+//
+// foreignAsNotFound=true 时 `store.ErrNamespaceForbidden` → 404 `namespace not found`
+// （与「不存在」逐字节相同，见 resolveNamespaceCreate 的注释）。其余错误——包括
+// 不存在、跨命名空间引用、数据库故障——原样交给 writeNamespaceError（该函数一字未改，
+// 其它端点的 403 语义因此保持原样）。
+func writeNamespaceScopeError(w http.ResponseWriter, err error, foreignAsNotFound bool) {
+	switch {
+	case errors.Is(err, errNamespaceParamMissing), errors.Is(err, errNamespaceAllNotAllowed):
+		// 文案就是响应体：这两条是「调用方参数写错」，改一个字都会破坏既有契约。
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case foreignAsNotFound && errors.Is(err, store.ErrNamespaceForbidden):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "namespace not found"})
+	default:
 		writeNamespaceError(w, err)
-		return nsScope{}, false
 	}
-	return nsScope{ID: raw}, true
 }
 
 // writeNamespaceError 把 store 的命名空间错误翻成 HTTP 状态码。

@@ -88,6 +88,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
+	mux.Handle("POST /v1/nodes", noStore(sessMW(http.HandlerFunc(h.createNode))))
 	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(h.nodes))))
 	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(h.nodeByID))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(h.drainNode))))
@@ -841,7 +842,7 @@ func TestMethodNotAllowed(t *testing.T) {
 		want   []string
 	}{
 		{http.MethodPost, "/v1/tasks", []string{"GET"}},
-		{http.MethodPost, "/v1/nodes", []string{"GET"}},
+		{http.MethodPut, "/v1/nodes", []string{"GET", "POST"}},
 		{http.MethodPut, "/v1/capabilities", []string{"GET", "POST"}},
 		{http.MethodPut, "/v1/edges", []string{"GET", "POST", "DELETE"}},
 	}

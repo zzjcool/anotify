@@ -879,6 +879,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `POST` | `/v1/capabilities` | 定义新能力（自动算 hash、开版本） |
 | `GET/POST/DELETE` | `/v1/edges` | 出口表 CRUD |
 | `GET` | `/v1/nodes` | 节点列表与在线状态 |
+| `POST` | `/v1/nodes` | 注册节点（`namespaceId` 必填；返回**只出现一次**的明文令牌，库里只存 sha256） |
 | `POST` | `/v1/nodes/{id}/drain` | 排空节点 |
 | `GET`/`POST` | `/v1/namespaces` | 列出 / 新建命名空间（新建时**同事务播种内置能力**） |
 | `PATCH`/`DELETE` | `/v1/namespaces/{id}` | 改名（只改 `name`，`slug` 不可改）/ 删除（阻塞 `409`、最后一个 `400`、`?force=true` 级联） |
@@ -903,10 +904,15 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 - `namespaceId=*` → 跨命名空间汇总，**只允许读端点**；写端点 / 单对象端点带 `*` → `400`；
   `/v1/stats` 的汇总口径未定义，它的 `*` 同样 `400`
 - 不存在 → `404`；属于别的 org → `403`；跨命名空间引用 → `400`（I11）
+  - **唯一例外：`POST /v1/nodes`**——属于别的组织的命名空间同样返回 `404`
+    （写端点不能用来探测别人的命名空间 id），响应与「不存在」**逐字节相同**
+    （`{"error":"namespace not found"}`，不回显传入的 id）；其余端点仍是 `403`
 - 所有资源在响应里带 `namespaceId`；`/v1/namespaces` 自身不带
 - **节点归属**：机器属于哪个命名空间由**节点令牌**决定（令牌 → 节点行 →
   `nodes.namespace_id`，握手时按 token 解析，见 §10.3），创建后不可改
-  （要换就删了重建）。节点协议帧里不传 `namespaceId`，也不存在「注册节点」的 HTTP 端点。
+  （要换就删了重建）。节点协议帧里不传 `namespaceId`；注册入口是 `POST /v1/nodes`
+  （`namespaceId` 必填，query 或 body、**query 优先**；跨组织 → `404`；缺参 → `400`、
+  `*` → `400`）。令牌即归属（token → `nodes.namespace_id`），创建后不可改。
 
 ---
 
@@ -1048,6 +1054,8 @@ SELECT 1 FROM org_members WHERE org_id = :current_org AND user_id = :params_to;
 3. 验签成本可以忽略：`hello` 时查一次，之后靠连接对象持有 `node_id`/`org_id`，不是每帧都查。
 
 token 形态与现有 `api_keys` 一致：`ant_<label>_<base64url(24B)>`，DB 只存 `sha256`，明文只在创建时返回一次。
+明文令牌的**唯一发放点**是 `POST /v1/nodes`：响应里出现一次，之后任何读接口（`GET /v1/nodes`、
+`GET /v1/nodes/{id}`）都不回 `token` / `token_hash`。
 
 ### 10.4 Q7：命名空间隔离到什么粒度
 
