@@ -18,54 +18,12 @@ import (
 
 // consoleHandler 是控制台 API 的处理器（契约 §6.2 的 8 个新端点）。
 //
-// 组织维度：所有端点先确定 org_id，并且**必须**校验调用者是该组织成员
-// （不变量 I10「一切租户数据先过 org_id」）。org 的来源见 resolveOrg。
+// 隔离边界：命名空间（不变量 I10 —— 组织层已在迁移 14 删除）。
+// 每个命名空间资源端点都要解析 namespaceId，解析时过 store.AuthorizeNamespace
+// 收口（见 namespace_scope.go 的 namespaceScope）。
 type consoleHandler struct {
 	db   *store.DB
 	auth *auth.Service
-}
-
-// ---------- 组织解析（I10 的唯一入口） ----------
-
-// resolveOrg 确定这次请求作用于哪个组织，并校验调用者有权限。
-//
-// 三种来源，优先级从高到低：
-//
-//  1. query/body 里的 orgId —— 必须校验成员身份
-//  2. X-Org-Id 头          —— 必须校验成员身份
-//  3. 调用者的主组织        —— 天然有权限（是它的成员）
-//
-// 返回 (orgID, ok)；ok=false 表示已经写过错误响应，调用方直接 return。
-func (h *consoleHandler) resolveOrg(w http.ResponseWriter, r *http.Request, requested string) (string, bool) {
-	userID, ok := h.sessionUser(w, r)
-	if !ok {
-		return "", false
-	}
-	if requested == "" {
-		requested = r.Header.Get("X-Org-Id")
-	}
-	if requested == "" {
-		orgID, err := h.db.PrimaryOrgOf(r.Context(), userID)
-		if err != nil {
-			writeJSON(w, http.StatusForbidden, map[string]string{
-				"error": "no org specified and user has no primary org",
-			})
-			return "", false
-		}
-		return orgID, true
-	}
-	member, err := h.db.IsOrgMember(r.Context(), requested, userID)
-	if err != nil {
-		slog.Error("org membership check failed", "event", "console.org.check_failed", "error", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return "", false
-	}
-	if !member {
-		// 不区分「组织不存在」与「你不是成员」——避免探测组织 ID
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not a member of this org"})
-		return "", false
-	}
-	return requested, true
 }
 
 // sessionUser 从会话中间件注入的 context 里取用户 ID。
@@ -92,13 +50,13 @@ const listLimitCap = 500
 
 // namespaceIDs 把一次请求的命名空间作用域展开成要逐个查询的 id 列表。
 //
-// ns.All（namespaceId=*）时遍历本组织的全部命名空间，由调用方合并结果后再统一
+// ns.All（namespaceId=*）时遍历本部署的全部命名空间，由调用方合并结果后再统一
 // 排序/截断 —— **绝不把 `*` 传进 store**（store 层明确不接受它，见 store.AllNamespaces）。
-func (h *consoleHandler) namespaceIDs(ctx context.Context, orgID string, ns nsScope) ([]string, error) {
+func (h *consoleHandler) namespaceIDs(ctx context.Context, ns nsScope) ([]string, error) {
 	if !ns.All {
 		return []string{ns.ID}, nil
 	}
-	all, err := h.db.ListNamespaces(ctx, orgID)
+	all, err := h.db.ListNamespaces(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +87,7 @@ func isNamespaceError(err error) bool {
 	return errors.As(err, &cross) ||
 		errors.Is(err, store.ErrNamespaceRequired) ||
 		errors.Is(err, store.ErrNamespaceNotFound) ||
-		errors.Is(err, store.ErrNamespaceForbidden) ||
+		errors.Is(err, store.ErrAuthRequired) ||
 		errors.Is(err, store.ErrNamespaceExists) ||
 		errors.Is(err, store.ErrLastNamespace)
 }
@@ -275,14 +233,10 @@ func (h *consoleHandler) tasks(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	q := r.URL.Query()
 	limit := intParam(q.Get("limit"), 100, 1, 1000)
 
-	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	ns, ok := h.resolveNamespace(w, r, "", true)
 	if !ok {
 		return
 	}
@@ -291,7 +245,7 @@ func (h *consoleHandler) tasks(w http.ResponseWriter, r *http.Request) {
 		perNS = listLimitCap
 	}
 
-	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
+	nsIDs, err := h.namespaceIDs(r.Context(), ns)
 	if err != nil {
 		slog.Error("list namespaces failed", "event", "console.tasks.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -334,11 +288,7 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
-	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	ns, ok := h.resolveNamespace(w, r, "", true)
 	if !ok {
 		return
 	}
@@ -349,7 +299,7 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 		perNS = listLimitCap
 	}
 
-	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
+	nsIDs, err := h.namespaceIDs(r.Context(), ns)
 	if err != nil {
 		slog.Error("list namespaces failed", "event", "console.events.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -423,17 +373,13 @@ func (h *consoleHandler) task(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing task id"})
 		return
 	}
 	// 单对象读端点：`*` 无定义 → 400（allowAll=false）
-	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	ns, ok := h.resolveNamespace(w, r, "", false)
 	if !ok {
 		return
 	}
@@ -489,17 +435,13 @@ func (h *consoleHandler) trace(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing trace id"})
 		return
 	}
 	// trace 是单对象视图（一条 trace 只属于一个命名空间），`*` 无定义 → 400。
-	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	ns, ok := h.resolveNamespace(w, r, "", false)
 	if !ok {
 		return
 	}
@@ -567,10 +509,6 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "POST")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	taskID := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
 	taskID = strings.TrimSuffix(taskID, "/cancel")
 	if taskID == "" {
@@ -578,7 +516,7 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 写端点：`*` → 400（不能在一个“跨命名空间”的任务上执行取消）
-	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	ns, ok := h.resolveNamespace(w, r, "", false)
 	if !ok {
 		return
 	}
@@ -661,10 +599,6 @@ func (h *consoleHandler) capabilities(w http.ResponseWriter, r *http.Request) {
 // 所以这是一个**装饰字段的可变更新**，不是能力定义的修改。
 // 能力定义本身仍然 append-only。
 func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	var req struct {
 		NamespaceID string `json:"namespaceId"`
 		ID          string `json:"id"`
@@ -675,7 +609,7 @@ func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *h
 		return
 	}
 	// 写端点：`*` → 400
-	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
 	if !ok {
 		return
 	}
@@ -714,16 +648,12 @@ func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *h
 }
 
 func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	// 读端点：`*` 允许（跨命名空间汇总）。
-	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	ns, ok := h.resolveNamespace(w, r, "", true)
 	if !ok {
 		return
 	}
-	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
+	nsIDs, err := h.namespaceIDs(r.Context(), ns)
 	if err != nil {
 		slog.Error("list namespaces failed", "event", "console.caps.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -819,10 +749,6 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 }
 
 func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	var req capabilityListRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
@@ -833,7 +759,7 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// 写端点：`*` → 400（一条能力定义只能属于一个命名空间）
-	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
 	if !ok {
 		return
 	}
@@ -863,7 +789,6 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	}
 	c := &store.CapabilityVersion{
 		NamespaceID:  ns.ID,
-		OrgID:        orgID, // store 会用 namespace.org_id 覆盖它（I10）
 		Name:         req.Name,
 		DisplayName:  strings.TrimSpace(req.DisplayName),
 		Version:      version,
@@ -927,16 +852,12 @@ func (h *consoleHandler) edges(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *consoleHandler) listEdges(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	// 读端点：`*` 允许（跨命名空间汇总）。
-	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	ns, ok := h.resolveNamespace(w, r, "", true)
 	if !ok {
 		return
 	}
-	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
+	nsIDs, err := h.namespaceIDs(r.Context(), ns)
 	if err != nil {
 		slog.Error("list namespaces failed", "event", "console.edges.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -968,10 +889,6 @@ func (h *consoleHandler) listEdges(w http.ResponseWriter, r *http.Request) {
 //  1. store 层：from_port ∈ from_capability.outputs、两端同组织（契约 I2 / §1.2）
 //  2. 这里把 store 的拒绝翻译成 400（而不是 500）
 func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	var req edgeRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
@@ -984,14 +901,13 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 写端点：`*` → 400（一条边属于且只属于一个命名空间）
-	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
 	if !ok {
 		return
 	}
 
 	e := &store.Edge{
 		NamespaceID:    ns.ID,
-		OrgID:          orgID, // store 会用 namespace.org_id 覆盖它（I10）
 		FromIsSource:   req.FromIsSource,
 		FromCapability: req.FromCapability,
 		FromPort:       req.FromPort,
@@ -1018,10 +934,6 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	// DELETE 没有 body 是常态。先把 body 解析成"可选补充"：
 	// namespaceId 可以只放在 body 里，其它四个字段 query 优先、body 兜底。
 	var req edgeRequest
@@ -1032,7 +944,7 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 写端点：`*` → 400
-	ns, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
 	if !ok {
 		return
 	}
@@ -1153,18 +1065,15 @@ type createNodeRequest struct {
 // 这样「空 body + 无 query namespaceId」报的是 namespaceId 缺失（调用方要知道该补什么），
 // 而不是被空 body 的 EOF 抢先变成 "invalid JSON body"。
 //
-// 命名空间用 resolveNamespaceCreate 而非 resolveNamespace：同样是缺参 400 / `*` 400，
-// 但「别的 org」按 404（写端点不能用来探测别人的命名空间 id，issue #185 / 契约 D2）。
+// 命名空间走与读端点同一份口径（resolveNamespace，allowAll=false）：缺参 400 /
+// `*` 400 / 不存在 404。组织层删除后不再有「别人的命名空间」，所以原先为写端点
+// 单独准备的「跨组织也报 404 以免当 id 探测器」这套映射（#185 / 契约 D2）已无对象。
 //
 // 令牌只在 201 响应体里出现这**一次**，库里只有 sha256（契约 §10.3 / D3）；
 // 日志里绝不打印它——日志会被收集、转发、贴进工单。
 func (h *consoleHandler) createNode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, "POST")
-		return
-	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
 		return
 	}
 
@@ -1176,8 +1085,8 @@ func (h *consoleHandler) createNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// 写端点：缺参 400、`*` 无定义 400、不存在/别的 org 404。
-	ns, ok := h.resolveNamespaceCreate(w, r, orgID, req.NamespaceID)
+	// 写端点：缺参 400、`*` 无定义 400、不存在 404（组织层删除后不存在「别人的」）。
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
 	if !ok {
 		return
 	}
@@ -1198,7 +1107,7 @@ func (h *consoleHandler) createNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if handleNamespaceError(w, err) {
-		// 防御：命名空间在解析之后被删掉了（CreateNode 的 org 派生会报 NotFound）。
+		// 防御：命名空间在解析之后被删掉了（CreateNode 会报 NotFound）。
 		return
 	}
 	if err != nil {
@@ -1209,7 +1118,7 @@ func (h *consoleHandler) createNode(w http.ResponseWriter, r *http.Request) {
 	}
 	// 事件日志只记 id（token 绝不进日志）。
 	slog.Info("node created", "event", "console.nodes.created",
-		"node_id", n.ID, "namespace_id", ns.ID, "org_id", orgID)
+		"node_id", n.ID, "namespace_id", ns.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"node":  h.viewFor(r.Context(), n),
 		"token": token,
@@ -1222,16 +1131,12 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	// 读端点：`*` 允许（跨命名空间汇总）。
-	ns, ok := h.resolveNamespace(w, r, orgID, "", true)
+	ns, ok := h.resolveNamespace(w, r, "", true)
 	if !ok {
 		return
 	}
-	nsIDs, err := h.namespaceIDs(r.Context(), orgID, ns)
+	nsIDs, err := h.namespaceIDs(r.Context(), ns)
 	if err != nil {
 		slog.Error("list namespaces failed", "event", "console.nodes.namespaces_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -1271,13 +1176,9 @@ func (h *consoleHandler) nodeByID(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	nodeID := r.PathValue("id")
 	// 单对象读端点：`*` 无定义 → 400
-	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	ns, ok := h.resolveNamespace(w, r, "", false)
 	if !ok {
 		return
 	}
@@ -1315,10 +1216,6 @@ func (h *consoleHandler) drainNode(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, "POST")
 		return
 	}
-	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
-	if !ok {
-		return
-	}
 	nodeID := strings.TrimPrefix(r.URL.Path, "/v1/nodes/")
 	nodeID = strings.TrimSuffix(nodeID, "/drain")
 	if nodeID == "" {
@@ -1326,7 +1223,7 @@ func (h *consoleHandler) drainNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 写端点：`*` → 400
-	ns, ok := h.resolveNamespace(w, r, orgID, "", false)
+	ns, ok := h.resolveNamespace(w, r, "", false)
 	if !ok {
 		return
 	}
@@ -1351,7 +1248,7 @@ func (h *consoleHandler) drainNode(w http.ResponseWriter, r *http.Request) {
 	}
 	node.Status = store.NodeStatusDraining
 	slog.Info("node draining", "event", "console.nodes.draining",
-		"node_id", nodeID, "namespace_id", ns.ID, "org_id", orgID)
+		"node_id", nodeID, "namespace_id", ns.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"node": node})
 }
 

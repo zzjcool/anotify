@@ -125,11 +125,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	consoleH := &consoleHandler{db: db, auth: authSvc}
 
 	// 统计（/v1/stats）是**命名空间级**资源（契约 §6.2）：
-	// 它需要和资源端点**同一套** org / namespace 解析，所以复用 consoleH 的两个
-	// 解析函数（注入而不是内联：错误码映射只有一处真相，抄一份必然漂移）。
+	// 它需要和资源端点**同一套**命名空间解析，所以复用 consoleH 的解析函数
+	// （注入而不是内联：错误码映射只有一处真相，抄一份必然漂移）。
 	statsH := &statsHandler{
 		db:               db,
-		resolveOrg:       consoleH.resolveOrg,
 		resolveNamespace: consoleH.resolveNamespace,
 	}
 
@@ -198,7 +197,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	} else if n > 0 {
 		slog.Info("builtin capabilities ready",
 			"event", "server.builtin.backfill",
-			"orgs", n,
+			"namespaces", n,
 		)
 	}
 
@@ -226,7 +225,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 			backoff := store.RetryBackoff(task.Attempts)
 			if backoff > 0 {
 				// 作用域是任务自己的命名空间（#162）：SetNotBefore 的 WHERE 是
-				// `namespace_id = ? AND id = ?`，传 orgID 会一行也更新不到 → 退避永远
+				// `namespace_id = ? AND id = ?`，传错 id 会一行也更新不到 → 退避永远
 				// 设不上（返回 ErrNotFound）→ 没节点的任务每 5s 被重扫一次、日志刷屏。
 				if serr := db.SetNotBefore(sctx, task.NamespaceID, task.ID, store.Now()+backoff); serr != nil {
 					slog.Warn("set retry backoff failed",
@@ -282,7 +281,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	srcH := &sourceHandler{
 		db:               db,
 		commander:        srcTrigger,
-		resolveOrg:       consoleH.resolveOrg,
 		resolveNamespace: consoleH.resolveNamespace,
 	}
 	mux.Handle("GET /v1/sources", noStore(sessMW(http.HandlerFunc(srcH.sources))))
@@ -300,7 +298,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	// --- 预案（playbook，#193 / 契约 §6）---
 	// 5 个端点**全部**用 resolveNamespaceCreate：缺参 400 / `*` 400 / 不存在 404 /
-	// 别的 org 也是 404（预案不提供跨命名空间汇总，体检结论只能按单个 ns 算）。
+	// 不存在 404（预案不提供跨命名空间汇总，体检结论只能按单个 ns 算）。
 	pbH := &playbookHandler{db: db, console: consoleH}
 	mux.Handle("GET /v1/playbooks", noStore(sessMW(http.HandlerFunc(pbH.list))))
 	mux.Handle("POST /v1/playbooks", noStore(sessMW(http.HandlerFunc(pbH.create))))
@@ -311,7 +309,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// --- 命名空间自身（#162 / 契约 §6.1）---
 	// 组织级资源：请求**不带** namespaceId（问"这个命名空间属于哪个命名空间"是自指）。
 	// slug 建了不可改（PATCH 只改 name），删除有 force 档（见 namespace_handlers.go）。
-	nsH := &namespaceHandler{db: db, resolveOrg: consoleH.resolveOrg}
+	nsH := &namespaceHandler{db: db}
 	mux.Handle("GET /v1/namespaces", noStore(sessMW(http.HandlerFunc(nsH.list))))
 	mux.Handle("POST /v1/namespaces", noStore(sessMW(http.HandlerFunc(nsH.create))))
 	mux.Handle("PATCH /v1/namespaces/{id}", noStore(sessMW(http.HandlerFunc(nsH.byID))))
