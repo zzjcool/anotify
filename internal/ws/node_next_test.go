@@ -213,8 +213,9 @@ func TestResultPersistsNextHopRowBeforePublish(t *testing.T) {
 	if got.TraceID != parent.TraceID {
 		t.Errorf("child trace_id = %q, want %q", got.TraceID, parent.TraceID)
 	}
-	if got.OrgID != f.orgID {
-		t.Errorf("child org_id = %q, want %q", got.OrgID, f.orgID)
+	// 子任务必须继承父任务的命名空间（I11④）；组织层已删除，没有更粗的归属可比。
+	if got.NamespaceID != parent.NamespaceID {
+		t.Errorf("child namespace_id = %q, want %q（必须继承父任务）", got.NamespaceID, parent.NamespaceID)
 	}
 
 	// ③ 补偿路径的机器事实：巡检（store.ListRedispatchable → lease sweeper →
