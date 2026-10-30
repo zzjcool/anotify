@@ -104,7 +104,7 @@ BEGIN;
 -- ① 去重：确定性主键撞车 = 已经交付过
 INSERT INTO tasks (...) VALUES (...) ON CONFLICT(id) DO NOTHING;
 -- ② 预算：整条 trace 的任务数上限（wiki 的 G4 max_tasks）
-SELECT COUNT(*) FROM tasks WHERE org_id=? AND trace_id=?;
+SELECT COUNT(*) FROM tasks WHERE namespace_id=? AND trace_id=?;
 -- ③ 归属 + 租约
 UPDATE tasks SET status='assigned', node_id=?, lease_until=?, assigned_at=?
  WHERE id=? AND status='pending';
@@ -143,7 +143,7 @@ COMMIT;
 ## 3. Subject 命名
 
 ```
-anotify.cap.<org_id>.<capability_id>     下行 · 能力派发     （订阅方用 queue group = capability_id）
+anotify.cap.<namespace_id>.<capability_id>     下行 · 能力派发     （订阅方用 queue group = capability_id）
 anotify.node.<node_id>.direct            下行 · 定向         （sticky 派发、cancel）
 anotify.up.<node_id>                     上行 · 节点回报     （claim / result 用 request-reply）
 ```
@@ -151,7 +151,9 @@ anotify.up.<node_id>                     上行 · 节点回报     （claim / r
 设计要点：
 
 - **不含协议版本号**。版本在 envelope 里（`v`），subject 保持稳定，便于 ACL 长期生效。
-- `org_id` 必须在 subject 里（不是冗余），因为它是 **subject 级 ACL 的唯一依据** —— 这是 I10 从"每处手写 `WHERE org_id`"升级为"连接层强制"的机会。
+- `namespace_id` 必须在 subject 里（不是冗余），因为它是 **subject 级 ACL 的唯一依据** —— 这是把
+  "每处手写 `WHERE namespace_id`" 升级为"连接层强制"的机会。
+  > 早期本文写的是 `org_id`；组织层已在 #204 / 迁移 14 删除，subject 的租户分段改为命名空间。
 - 保留前缀：`anotify.cap.` / `anotify.node.` / `anotify.up.` 不得作为节点名或能力名。
 
 ---
