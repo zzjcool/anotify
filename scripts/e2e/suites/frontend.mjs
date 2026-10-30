@@ -4458,6 +4458,122 @@ async function checkFlowChart(page, base) {
 	}
 }
 
+// ---------- #209：keys / security / admin 的页头徽标 ----------
+//
+// 这三页的内容不随命名空间切换（api_keys 的作用域 = 整个部署），所以页头传
+// `scopeLevel: "deployment"`，由 mountLayout 追加一枚 `.scope-badge`。
+// 断言盯的是「管道还在、话还说对了」，不是「DOM 里有个 span」：
+//   ① 页头 h1（title + 徽标）里不能再出现「组织」——#203/#207 删掉的那层
+//      不能借徽标回潮（旧文案正是「组织级」）；
+//   ② 徽标文案逐字 = 「全部署通用」，title 必须点明「不随命名空间切换变化」
+//      —— 徽标存在的理由就是这句话，两个都不能丢；
+//   ③ 三页文案互相一致 → 证明是 partials.js 一条管道渲染的，不是三处各自
+//      硬编码（硬编码迟早漂，漂了没人发现）；
+//   ④ 对照 index.html 必须没有徽标 → 证明没把它撒到全站（撒了就成了噪音，
+//      用户会以为每页都不随命名空间变）。
+const DEPLOYMENT_WIDE_PAGES = ["keys.html", "security.html", "admin.html"];
+const DEPLOYMENT_WIDE_LABEL = "全部署通用";
+
+async function checkDeploymentWideBadge(ctx, base) {
+	const labels = [];
+
+	for (const name of DEPLOYMENT_WIDE_PAGES) {
+		// 独立 page + 独立监听：这三页在 mock 模式下的「mock 未实现」console 告警
+		// 是既知状态，绝不能进 runMockCoverage 的 missing 数组 —— 那会把
+		// 「mock 覆盖了页面用到的全部接口」这条既有断言误伤成红。
+		// 这里只收 pageerror / console error 当诊断信息，不参与判定
+		// （这三页的其余行为由别的断言盯着）。
+		const page = await ctx.newPage();
+		const pageErrors = [];
+		const consoleErrors = [];
+		page.on("pageerror", (e) => pageErrors.push(String((e && e.message) || e)));
+		page.on("console", (m) => {
+			if (m.type() === "error") consoleErrors.push(m.text());
+		});
+
+		await page.goto(`${base}/${name}`, { waitUntil: "load", timeout: 20000 });
+		// 等 mountLayout 挂完（#sidebar 是它的锚点）再等页头 h1 出现。
+		// 不 sleep 大数，也不等 .scope-badge —— 徽标缺失本身就是断言要报的事，
+		// 等它出现会把「徽标没了」变成超时，反而丢掉实际文本。
+		await H.waitForAppReady(page, "workspace", { dataAnchor: "header h1" });
+
+		const got = await page.evaluate(() => {
+			// 全站唯一的 h1 由 mountLayout 造（web/partials.js），页内容里没有 h1
+			const header = document.querySelector("header");
+			const h1 =
+				(header && header.querySelector("h1")) || document.querySelector("h1");
+			const badge = h1 && h1.querySelector(".scope-badge");
+			return {
+				path: location.pathname,
+				lang: document.documentElement.lang || "",
+				h1: h1 ? (h1.innerText || "").replace(/\s+/g, " ").trim() : null,
+				badgeCount: document.querySelectorAll(".scope-badge").length,
+				label: badge ? (badge.textContent || "").trim() : null,
+				hint: badge ? badge.getAttribute("title") || "" : null,
+			};
+		});
+		await page.close();
+
+		if (got.label) labels.push(got.label);
+
+		// 一页一条断言，四条要求全中才算过；detail 里把实际文本全带上，
+		// 红了不用再手动开浏览器猜是哪一项。
+		const onPage = got.path.endsWith(`/${name}`); // 被重定向到 login.html 会在这里现形
+		const headerNoOrg = !!got.h1 && !got.h1.includes("组织");
+		const badgeThere = !!got.label;
+		const labelOk = got.label === DEPLOYMENT_WIDE_LABEL;
+		const hintOk =
+			!!got.hint && got.hint.includes("不随命名空间") && !got.hint.includes("组织");
+
+		console.log(
+			`  · ${name} 页头「${got.h1 || "（无 h1）"}」徽标「${got.label || "（无）"}」`,
+		);
+		H.check(
+			`${name} 页头徽标「${DEPLOYMENT_WIDE_LABEL}」且不再出现「组织」`,
+			onPage && headerNoOrg && badgeThere && labelOk && hintOk,
+			JSON.stringify({
+				落在: got.path,
+				页面语言: got.lang,
+				页头: got.h1,
+				徽标: got.label,
+				徽标title: got.hint,
+				徽标数: got.badgeCount,
+				pageerror: pageErrors.slice(0, 2),
+				已知console告警: consoleErrors.slice(0, 2),
+			}),
+		);
+	}
+
+	// 三页逐字一致 = 同一条管道（partials.js）渲染，不是三处硬编码
+	H.check(
+		"三页徽标文案彼此一致（同一条 partials.js 管道）",
+		labels.length === DEPLOYMENT_WIDE_PAGES.length &&
+			new Set(labels).size === 1 &&
+			labels[0] === DEPLOYMENT_WIDE_LABEL,
+		`实际 ${JSON.stringify(labels)}`,
+	);
+
+	// 对照：徽标只属于那三页，没被撒到全站
+	const ctl = await ctx.newPage();
+	await ctl.goto(`${base}/index.html`, { waitUntil: "load", timeout: 20000 });
+	await H.waitForAppReady(ctl, "workspace", { dataAnchor: "header h1" });
+	const ctlGot = await ctl.evaluate(() => {
+		const header = document.querySelector("header");
+		const h1 =
+			(header && header.querySelector("h1")) || document.querySelector("h1");
+		return {
+			badgeCount: document.querySelectorAll(".scope-badge").length,
+			h1: h1 ? (h1.innerText || "").replace(/\s+/g, " ").trim() : null,
+		};
+	});
+	await ctl.close();
+	H.check(
+		"对照：index.html 页头没有这枚徽标（没撒到全站）",
+		!!ctlGot.h1 && ctlGot.badgeCount === 0,
+		`index.html 页头「${ctlGot.h1 || "（无 h1）"}」.scope-badge=${ctlGot.badgeCount}`,
+	);
+}
+
 // runMockCoverage 检查 web/mock.js 覆盖了页面用到的全部接口。
 async function runMockCoverage() {
 	const { spawn } = await import("node:child_process");
@@ -4574,6 +4690,10 @@ async function runMockCoverage() {
 		}
 		await page.close();
 	}
+
+	// keys / security / admin 的「全部署通用」徽标（#209）：放在 missing /
+	// realRequests 两条汇总断言之前收尾，用的是独立 page + 独立监听。
+	await checkDeploymentWideBadge(ctx, base);
 
 	await ctx.close();
 	await browser.close();

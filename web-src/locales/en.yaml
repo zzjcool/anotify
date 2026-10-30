@@ -247,7 +247,8 @@ scope:
   new_ns: "New namespace"
   new_ns_prompt: "New namespace slug (lowercase letters / digits / hyphens)"
   new_ns_failed: "Create failed"
-  org_level: "Org-wide"
+  deployment_wide: "Deployment-wide"
+  deployment_wide_hint: "This page is the same across the whole deployment — it does not change with the namespace"
 graph:
   zoom_in: Zoom in
   replay: Replay the animation

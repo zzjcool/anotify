@@ -247,7 +247,8 @@ scope:
   new_ns: "ネームスペースを作成"
   new_ns_prompt: "新しいネームスペースの slug（小文字・数字・ハイフン）"
   new_ns_failed: "作成に失敗しました"
-  org_level: "組織レベル"
+  deployment_wide: "デプロイ全体で共通"
+  deployment_wide_hint: "このページはデプロイ全体で共通で、名前空間の切り替えでは変わりません"
 graph:
   zoom_in: 拡大
   replay: アニメーションを再生し直す
