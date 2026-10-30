@@ -8,13 +8,14 @@
  *   - `/v1/playbooks` 没进 `partials.js` 的 `NS_PATHS` → 真后端 400 →「载入失败」（#196）
  *   - 「复制 YAML」给出的 node.yaml 与 `cmd/agent` 格式不符 → 贴进去必解析失败（#197）
  *
- * 两次都是靠人工 playwright 才发现的。本套件只做两件 mock 做不到的事：
+ * 两次都是靠人工 playwright 才发现的。本套件只做三件 mock 做不到的事：
  *
  *  A. 真后端页面健康：起真 server（临时库）+ 真会话 cookie，逐页打开
  *     index / playbooks / playbook?id= / nodes / capabilities / sources / events，
  *     每页断言
- *       ① 整页生命周期内 `/v1/*` 没有 4xx（白名单**只有** `/v1/orgs` 的 404：
- *          侧栏组织切换器的能力探测；别的任何 4xx 都算失败）
+ *       ① 整页生命周期内 `/v1/*` 没有 4xx/5xx —— **没有任何白名单**。
+ *          组织幽灵 UI 删掉后（#203）没有任何页面会请求 `/v1/orgs`，
+ *          留一条死白名单只会让人误以为"真后端还没有 /v1/orgs"
  *       ② 没有 `pageerror`
  *       ③ 预期内容真的渲染出来了（数据是这套件自己用真 API 造的）
  *       ④ **每个命名空间资源请求都带 `namespaceId`** —— 这条直接把 `NS_PATHS`
@@ -25,6 +26,11 @@
  *     文件 → 真起 `cmd/agent`（不是 mock，也不是文本正则）→ 节点在 `GET /v1/nodes`
  *     变 `online` 且声明的 run 被中枢接受 → SIGTERM 后退出码 0、节点回到 offline。
  *     真实消费者解析不了 = 直接红（#197 那一类）。
+ *
+ *  C. 命名空间切换器真的能切（#203）：两个命名空间各建一个**不同名字**的能力，
+ *     在真浏览器里点一下切过去 → 页面请求真的带上新 `namespaceId`、能力列表真的
+ *     换成新命名空间的那条、整个过程（含 reload）没有一条 `/v1/*` 4xx/5xx。
+ *     这条在 mock 上永远是绿的：mock 缺参时回退默认命名空间，切错了也看不出来。
  *
  * 纪律：
  *   - 不用 mock、不改 `frontend.mjs`；A 部分的数据全部走真 API + 真 WS 握手。
@@ -73,13 +79,20 @@ const MANIFEST = {
 const WS_NODE_NAME = "rb-ws-node";
 const UI_NODE_NAME = "ui-agent";
 
-// ---------- 反例白名单 ----------
-// **只有** `/v1/orgs` 的 404：`partials.js` 的侧栏组织切换器探测该端点，
-// 真后端还没有这套路由（docs/design/namespaces.md），拿不到就隐藏切换器。
-// 除它以外任何 4xx 都是"某个页面用错了端点/漏了参数"，一律算失败。
-// 注：等这个端点真上线（返回 200）后，这一条要删掉 —— 白名单里的死条目会让人
-// 误以为"真后端还没有 /v1/orgs"。
-const FOUR_XX_WHITELIST = [{ path: "/v1/orgs", status: 404 }];
+// ---------- 反例白名单：没有 ----------
+// 这里**曾经**有一条 `/v1/orgs` 的 404 白名单（侧栏组织切换器探测该端点，真后端
+// 没有这套路由）。#203 把组织幽灵 UI 删掉之后，没有任何页面会请求 `/v1/orgs`，
+// 死条目留着只会让人误以为"真后端还没有 /v1/orgs"，所以整条摘掉、也不留等价物
+// —— 现在**任何** 4xx/5xx 都算失败（要收紧，不要放松）。
+
+// ---------- C 部分：命名空间切换（两个命名空间各一个不同名字的能力） ----------
+//
+// 两个命名空间里各建一个**名字不同**的能力，靠数据本身区分"到底切过去没有"：
+// 只断言"列表渲染出来了"是不够的（切失败时旧列表还在，照样有内容）。
+const NS2_SLUG = "rb-alt";
+const NS2_NAME = "备用命名空间（切换验证）";
+const CAP_MAIN = "rb-main-cap";
+const CAP_ALT = "rb-alt-cap";
 
 // 命名空间资源端点的判定直接复用 `H.isNamespaceEndpoint`（各套件共用口径）。
 //
@@ -224,6 +237,27 @@ function watchV1(page) {
 	return v1;
 }
 
+// v1Settled 判断「已经发出的 /v1 请求是不是都落地了」（拿到响应，或明确失败）。
+//
+// 为什么需要：切命名空间靠 `location.reload()`，而 reload 会**中止**那些还在途的
+// 请求 —— 它们变成 requestfailed。那不是产品 bug，是我们自己制造的噪音，
+// 却正好会被「切换全过程没有 requestfailed」那条断言抓住（假红）。
+// 所以起跳前先等到没有在途请求：等的是条件，不是固定时长。
+function v1Settled(v1) {
+	const tally = (list) => {
+		const m = new Map();
+		for (const r of list) {
+			const k = r.method + " " + r.path;
+			m.set(k, (m.get(k) || 0) + 1);
+		}
+		return m;
+	};
+	const want = tally(v1.reqs);
+	const got = tally([...v1.resps, ...v1.fails]);
+	for (const [k, n] of want) if ((got.get(k) || 0) < n) return false;
+	return true;
+}
+
 const fmtList = (list, n = 6) => {
 	const shown = list.slice(0, n).map((x) => JSON.stringify(x));
 	return shown.length < list.length
@@ -236,18 +270,17 @@ const fmtList = (list, n = 6) => {
 // 第③条是本套件的核心：真后端对命名空间资源端点**严格要求** namespaceId
 // （缺 → 400，绝不回退默认值）。页面漏加的症状，在 mock 上是"什么都没发生"。
 function checkPageHealth(label, v1, nsId) {
-	// ① /v1/* 没有未白名单的错误响应（4xx/**5xx**）且没有网络层失败的请求
+	// ① /v1/* 没有任何 4xx/**5xx**，也没有网络层失败的请求
 	//
-	// 5xx 一起算：这条断言的名字虽然叫"挡住 4xx"，但 500（DB 报错、命名空间解析
-	// panic）同样意味着"页面这条链路是坏的"，放它过去等于给自己留个后门。
-	const bad = v1.resps.filter(
-		(r) =>
-			r.status >= 400 &&
-			!FOUR_XX_WHITELIST.some((w) => w.path === r.path && w.status === r.status),
-	);
+	// 5xx 一起算：500（DB 报错、命名空间解析 panic）同样意味着"页面这条链路是
+	// 坏的"，放它过去等于给自己留个后门。
+	//
+	// 白名单是**空**的（#203 摘掉了最后一条 `/v1/orgs`）：组织幽灵 UI 删掉后没有
+	// 任何页面会请求那个端点，留着只会让下一个人以为"真后端还没有 /v1/orgs"。
+	const bad = v1.resps.filter((r) => r.status >= 400);
 	const offenders = [...bad, ...v1.fails];
 	H.check(
-		`${label}：/v1/* 没有失败响应（白名单只有 /v1/orgs 的 404）`,
+		`${label}：/v1/* 没有 4xx/5xx（没有任何白名单）`,
 		// 非空前提：一个响应都没收到（页面根本没走真数据 / 请求全失败）不能算通过
 		v1.resps.length > 0 && offenders.length === 0,
 		v1.resps.length === 0
@@ -856,6 +889,347 @@ async function runUiArtifactChecks(ctxData, nsId) {
 	}
 }
 
+// ---------- C 部分：真浏览器切命名空间 ----------
+//
+// issue #203 的直接验收：侧栏切换器必须**真的**把页面的数据范围换掉。
+// mock 套件看不到这条 —— mock 在 namespaceId 缺失/切错时会回退到默认命名空间，
+// 于是"切了没生效"在 mock 上是绿的。这里用真后端（缺参严格 400）+ 真浏览器，
+// 并在断言层面钉三层：
+//   ① 数据侧先证明两边**本来就不一样**（否则"页面变了"可能是恒真）；
+//   ② 切换后页面的每一个命名空间资源请求都带新 id（漏写 scope 的直接症状）；
+//   ③ 整个切换过程（含 reload）没有一条 `/v1/*` 4xx/5xx、没有 requestfailed、
+//      没有 pageerror —— 白名单已经摘掉，这一条现在是实话。
+async function runNamespaceSwitchChecks(ctxData, nsId) {
+	console.log("--- C. 真浏览器切命名空间（能力归属 + 全程无 4xx） ---");
+
+	// ① 默认命名空间里建 CAP_MAIN（namespaceId 放 body，与契约 §6.2 一致）
+	const capMain = await H.req(server.base, "/v1/capabilities", {
+		session: ctxData.session,
+		method: "POST",
+		body: { namespaceId: nsId, name: CAP_MAIN, outputs: ["ok"] },
+	});
+	H.check(
+		`默认命名空间建出能力 ${CAP_MAIN}（200/201）`,
+		capMain.status === 200 || capMain.status === 201,
+		`${capMain.status} ${String(capMain.text).slice(0, 160)}`,
+	);
+
+	// ② 建第二个命名空间：id 由后端生成，绝不硬编码（命名空间 id 是建库时生成的）
+	const createdNs = await H.req(server.base, "/v1/namespaces", {
+		session: ctxData.session,
+		method: "POST",
+		body: { slug: NS2_SLUG, name: NS2_NAME },
+	});
+	H.eq("POST /v1/namespaces（第二个命名空间）→ 201", createdNs.status, 201);
+	const ns2 = createdNs.json?.namespace?.id || "";
+	H.check(
+		"拿到第二个命名空间 id（下面所有切换断言都靠它）",
+		!!ns2,
+		JSON.stringify(createdNs.json).slice(0, 200),
+	);
+	if (!ns2) return; // 没 id 无从切换：上面的红已经说清了原因，别再刷噪音
+
+	// ③ 第二个命名空间里建 CAP_ALT
+	const capAlt = await H.req(server.base, "/v1/capabilities", {
+		session: ctxData.session,
+		method: "POST",
+		body: { namespaceId: ns2, name: CAP_ALT, outputs: ["ok"] },
+	});
+	H.check(
+		`第二个命名空间建出能力 ${CAP_ALT}（200/201）`,
+		capAlt.status === 200 || capAlt.status === 201,
+		`${capAlt.status} ${String(capAlt.text).slice(0, 160)}`,
+	);
+
+	// ④ API 侧基线：两边数据**本来就不同**（否则下面的切换断言是恒真的废话）
+	const listMain = await H.req(server.base, "/v1/capabilities", {
+		session: ctxData.session,
+		namespaceId: nsId,
+	});
+	const namesMain = (listMain.json?.capabilities || []).map((c) => c.name);
+	const listAlt = await H.req(server.base, "/v1/capabilities", {
+		session: ctxData.session,
+		namespaceId: ns2,
+	});
+	const namesAlt = (listAlt.json?.capabilities || []).map((c) => c.name);
+	H.check(
+		`API 基线：默认命名空间含 ${CAP_MAIN}、不含 ${CAP_ALT}`,
+		namesMain.includes(CAP_MAIN) && !namesMain.includes(CAP_ALT),
+		JSON.stringify(namesMain),
+	);
+	H.check(
+		`API 基线：第二个命名空间含 ${CAP_ALT}、不含 ${CAP_MAIN}`,
+		namesAlt.includes(CAP_ALT) && !namesAlt.includes(CAP_MAIN),
+		JSON.stringify(namesAlt),
+	);
+
+	// ⑤ 真浏览器：全新 context（localStorage 空 → 走 ensureScope 的首次路径）
+	const ctx = await browser.newContext();
+	await H.mockExternalCdn(ctx);
+	await injectSession(ctx, ctxData.session, server.base);
+	const page = await ctx.newPage();
+	const v1 = watchV1(page);
+
+	// 页内读状态（切换器形状 + 能力列表文本）。
+	// 每次 evaluate 都可能撞上 reload（执行上下文销毁）→ 由调用处 catch 后
+	// 当成"还没准备好"交给 pollUntil 下一轮重试，不在这里睡时间。
+	const readState = () =>
+		page.evaluate(() => {
+			const ns = document.querySelector(".scope-ns");
+			const list = document.getElementById("caps-list");
+			return {
+				subs: Array.from(document.querySelectorAll(".scope-item-sub")).map(
+					(e) => (e.textContent || "").trim(),
+				),
+				ids: Array.from(document.querySelectorAll(".scope-item")).map(
+					(e) => e.getAttribute("data-ns-id") || "",
+				),
+				checkedIds: Array.from(
+					document.querySelectorAll('.scope-item[aria-checked="true"]'),
+				).map((e) => e.getAttribute("data-ns-id") || ""),
+				groupTitles: Array.from(
+					document.querySelectorAll(".scope-menu .scope-group span"),
+				).map((e) => (e.textContent || "").trim()),
+				avatars: document.querySelectorAll(".scope-menu .scope-avatar").length,
+				nsText: ns ? (ns.textContent || "").trim() : "",
+				capsText: list ? list.innerText || "" : "",
+			};
+		});
+
+	// openMenuAndPick：点开触发器 → 点某条命名空间（点击即 saveScope + reload）
+	//
+	// 两次点击都可能因为「页面正在导航」而抛（reload 是点击的副作用），所以**不**
+	// 在这里判失败 —— 交给后面「页面是不是真的切过去了」的轮询断言：
+	// 那种红能一眼看出发生了什么；这里只把错误文案带出去当详情。
+	const openMenuAndPick = async (id) => {
+		let err = "";
+		await page.click(".scope-trigger").catch((e) => {
+			err = String(e.message || e).slice(0, 120);
+		});
+		await page
+			.waitForFunction(
+				() => {
+					const m = document.querySelector(".scope-menu");
+					return !!m && !m.classList.contains("hidden");
+				},
+				null,
+				{ timeout: 5000 },
+			)
+			.catch(() => {});
+		await page.click(`.scope-item[data-ns-id="${id}"]`).catch((e) => {
+			err = err || String(e.message || e).slice(0, 120);
+		});
+		return err;
+	};
+
+	try {
+		await page.goto(server.base + "/capabilities.html", {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await H.waitForAppReady(page, "workspace");
+
+		// 等切换器挂载（.scope-item 渲染）+ 能力列表有行（真数据真的回来了）
+		const mounted = await page
+			.waitForFunction(
+				() => {
+					const list = document.getElementById("caps-list");
+					return (
+						!!list &&
+						list.children.length > 0 &&
+						document.querySelectorAll(".scope-item").length > 0
+					);
+				},
+				null,
+				{ timeout: 15000 },
+			)
+			.then(() => true)
+			.catch(() => false);
+		H.check(
+			"能力页：切换器挂载出来（.scope-item 与能力列表都已渲染）",
+			mounted,
+			"15s 内没等到 .scope-item 与 #caps-list 同时就绪",
+		);
+		// 挂载都没成，后面的点击/切换断言全是噪音（同因刷屏），直接收手：
+		// 上面那条红已经把根本原因说清了。
+		if (!mounted) return;
+
+		// ⑥ 切换器列出了两个命名空间、且只有命名空间一个维度（组织维度已消失）
+		const before = await readState().catch(() => null);
+		H.check(
+			`切换器列出 2 个命名空间（default + ${NS2_SLUG}）`,
+			!!before &&
+				before.subs.length === 2 &&
+				before.subs.includes("default") &&
+				before.subs.includes(NS2_SLUG),
+			JSON.stringify(before && before.subs),
+		);
+		// e2e 靠 data-ns-id 定位条目（下面的点击就是），没它就无法按 id 切
+		H.check(
+			"每条命名空间条目都带 data-ns-id（切换靠它定位，不靠中文名）",
+			!!before && before.ids.length === 2 && before.ids.includes(ns2),
+			JSON.stringify(before && before.ids),
+		);
+		H.check(
+			"切换器只有命名空间一个维度（1 个分节、0 个组织头像）",
+			!!before && before.groupTitles.length === 1 && before.avatars === 0,
+			JSON.stringify(
+				before && { groups: before.groupTitles, avatars: before.avatars },
+			),
+		);
+		H.check(
+			"切换前当前项是默认命名空间（.scope-ns 含 default）",
+			!!before && before.nsText.includes("default"),
+			before && before.nsText,
+		);
+
+		// ⑦ 起跳：先等已发出的 /v1 请求都落地（见 v1Settled 的注释），
+		//    再记住 reqs 分界 —— 分界之后就是"切换之后"的全部请求。
+		await pollUntil(() => v1Settled(v1), { timeoutMs: 8000, intervalMs: 50 });
+		const boundary = v1.reqs.length;
+		const pickErr = await openMenuAndPick(ns2);
+
+		// reload 落地 + 新命名空间的数据渲染出来（reload 期间 evaluate 抛错 → 下一轮）
+		const after = await pollUntil(
+			async () => {
+				try {
+					const st = await readState();
+					if (!st.nsText.includes(NS2_SLUG)) return null;
+					if (!st.capsText.includes(CAP_ALT)) return null;
+					return st;
+				} catch {
+					return null; // 执行上下文已被销毁（导航中）
+				}
+			},
+			{ timeoutMs: 15000, intervalMs: 100 },
+		);
+		H.check(
+			`点一下切到 ${NS2_SLUG}：页面重新加载并渲染新命名空间的能力`,
+			!!after,
+			`超时 15s：.scope-ns 含 ${NS2_SLUG} 且 #caps-list 含 ${CAP_ALT} 没同时成立；点击报错：${pickErr || "无"}`,
+		);
+
+		// ⑧ 切换后 GET /v1/capabilities 返回的**是**新命名空间的：页面文本 + API 复核
+		const capsText = after ? after.capsText : "";
+		H.check(
+			`切换后能力列表含 ${CAP_ALT}、不含 ${CAP_MAIN}（数据真的换了）`,
+			capsText.includes(CAP_ALT) && !capsText.includes(CAP_MAIN),
+			capsText.slice(0, 400),
+		);
+		H.check(
+			"切换后当前项标记落在新命名空间上（aria-checked=true 只有它一条）",
+			!!after && after.checkedIds.length === 1 && after.checkedIds[0] === ns2,
+			JSON.stringify(after && after.checkedIds),
+		);
+		const recheck = await H.req(server.base, "/v1/capabilities", {
+			session: ctxData.session,
+			namespaceId: ns2,
+		});
+		const namesRecheck = (recheck.json?.capabilities || []).map((c) => c.name);
+		H.check(
+			`复核 API：${NS2_SLUG} 的能力名集合含 ${CAP_ALT}、不含 ${CAP_MAIN}`,
+			namesRecheck.includes(CAP_ALT) && !namesRecheck.includes(CAP_MAIN),
+			JSON.stringify(namesRecheck),
+		);
+
+		// 分界之后：每个命名空间资源请求都必须带**新** id（漏写 scope 的直接症状）
+		const nsAfter = v1.reqs
+			.slice(boundary)
+			.filter((r) => H.isNamespaceEndpoint(r.path));
+		const wrongNs = nsAfter.filter((r) => r.namespaceId !== ns2);
+		H.check(
+			`切换后 ${nsAfter.length} 个命名空间资源请求全部带新 namespaceId（${NS2_SLUG}）`,
+			nsAfter.length > 0 && wrongNs.length === 0,
+			nsAfter.length === 0
+				? "切换后一条命名空间资源请求都没发出来（页面没重新取数）"
+				: `不符：${fmtList(wrongNs)}`,
+		);
+		const capAfter = nsAfter.filter((r) => r.path === "/v1/capabilities");
+		H.check(
+			"切换后页面确实用新 namespaceId 重新取了能力（GET /v1/capabilities）",
+			capAfter.some((r) => r.method === "GET" && r.namespaceId === ns2),
+			capAfter.length === 0 ? "切换后没有能力请求" : fmtList(capAfter),
+		);
+
+		// 整个切换过程（含 reload）：没有 4xx/5xx、没有网络层失败、没有 pageerror
+		const badResps = v1.resps.filter((r) => r.status >= 400);
+		H.check(
+			`切换全过程（含 reload）${v1.resps.length} 个 /v1 响应没有 4xx/5xx`,
+			v1.resps.length > 0 && badResps.length === 0,
+			badResps.length === 0
+				? "一个 /v1 响应都没收到（请求全失败或页面没走真数据）"
+				: `失败响应：${fmtList(badResps)}`,
+		);
+		H.check(
+			"切换全过程没有 /v1 请求在网络层失败（requestfailed）",
+			v1.fails.length === 0,
+			fmtList(v1.fails),
+		);
+		H.check(
+			"切换全过程没有 JS pageerror",
+			v1.errs.length === 0,
+			String(v1.errs[0] || "").slice(0, 200),
+		);
+
+		// 选择必须落盘（刷页面/下一个页面靠它；只改内存等于切了个寂寞）
+		const stored = await page
+			.evaluate(() => {
+				try {
+					return localStorage.getItem("anotify.scope") || "";
+				} catch {
+					return "";
+				}
+			})
+			.catch(() => "");
+		H.check(
+			"切换后的选择落盘（localStorage.anotify.scope 含新命名空间 id）",
+			stored.includes(ns2),
+			stored.slice(0, 200),
+		);
+
+		// ⑨ 反向切回默认命名空间：切换器不是单向的。
+		// 正向都没切过去时这条必然也是红的（同因刷屏）—— 收手，让根因留在前面那条。
+		if (!after) return;
+		await pollUntil(() => v1Settled(v1), { timeoutMs: 8000, intervalMs: 50 });
+		const boundaryBack = v1.reqs.length;
+		const pickErrBack = await openMenuAndPick(nsId);
+		const back = await pollUntil(
+			async () => {
+				try {
+					const st = await readState();
+					if (!st.nsText.includes("default")) return null;
+					if (!st.capsText.includes(CAP_MAIN)) return null;
+					return st;
+				} catch {
+					return null;
+				}
+			},
+			{ timeoutMs: 15000, intervalMs: 100 },
+		);
+		H.check(
+			`反向切回默认命名空间：页面重新出现 ${CAP_MAIN} 且不再有 ${CAP_ALT}`,
+			!!back && !back.capsText.includes(CAP_ALT),
+			back
+				? back.capsText.slice(0, 400)
+				: `超时 15s：.scope-ns 含 default 且 #caps-list 含 ${CAP_MAIN} 没同时成立；点击报错：${pickErrBack || "无"}`,
+		);
+		const nsBack = v1.reqs
+			.slice(boundaryBack)
+			.filter((r) => H.isNamespaceEndpoint(r.path));
+		const wrongBack = nsBack.filter((r) => r.namespaceId !== nsId);
+		H.check(
+			`反向切换后 ${nsBack.length} 个命名空间资源请求全部指回默认命名空间`,
+			nsBack.length > 0 && wrongBack.length === 0,
+			nsBack.length === 0
+				? "反向切换后一条命名空间资源请求都没有"
+				: `不符：${fmtList(wrongBack)}`,
+		);
+	} finally {
+		await page.close();
+		await ctx.close();
+	}
+}
+
 // ---------- 主流程 ----------
 async function main() {
 	H.startTimer();
@@ -964,6 +1338,9 @@ async function main() {
 
 	// ---------- B. UI 产物 → 真 agent ----------
 	await runUiArtifactChecks(s, nsId);
+
+	// ---------- C. 真浏览器切命名空间（#203） ----------
+	await runNamespaceSwitchChecks(s, nsId);
 
 	const passed = H.summary(SUITE);
 	clearInterval(heartbeat);
