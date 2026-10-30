@@ -10,6 +10,12 @@
 //	⑤ 建任务
 //
 // 前三步都在建任务**之前**，所以剪枝不产生任务行（契约 §4）。
+//
+// 实现上分成两段：①–③（含构造 pending 任务）是 **plan**——只读，不落库、
+// 不占槽位、不推帧；④–⑤ 是 **launch**——占槽位 + 推 assign 帧。拆开是 #140 的要求：
+// 下一跳的「父任务终态 + 子任务建行」必须在同一个事务里，而 publish 是网络操作、
+// 不能进事务，所以 plan 必须能在事务之前单独跑（见 PlanNextHop / PublishTasks）。
+//
 // 但剪枝**一律留痕**：每一条剪枝都写一行 events（source='route'，#142），
 // 否则「这条边为什么没走」在触发那一刻之后就永远查不到了。
 // 本包不写 SQL：所有查表/落库都走 Store 接口，便于用 mock 覆盖全部分支。
@@ -184,6 +190,20 @@ func DefaultUserScoped() map[string]bool {
 	}
 }
 
+// candidate 是一条「已通过全部判定、等待建任务/派发」的目标。
+//
+// 它是 plan 与 launch 之间的唯一交接物：plan 只算候选（纯读），launch 只负责
+// 占槽位/推帧。#140 要求「终态 + 建行」同事务、publish 在事务外，
+// 所以这两半必须能分开调用（事务之前只能跑 plan 那一半）。
+type candidate struct {
+	cap    *store.CapabilityVersion
+	params map[string]any
+	nodes  []string
+	// central 表示这个能力由**中枢自己执行**，不找节点。
+	// 典型是 notify.phone：没人会写一个"发推送节点"。
+	central bool
+}
+
 // Dispatch 执行派发四步（契约 §4），返回要建的任务或剪枝记录。
 //
 // 顺序（前三步都在建任务之前）：
@@ -194,25 +214,76 @@ func DefaultUserScoped() map[string]bool {
 //	③ node_capabilities 查节点；0 行 → pruned/no_node
 //	④ 按负载或粘性钉住挑一台；挑不到容量就先把任务留 pending（不剪枝）
 //	⑤ 事务内批量建任务 + 逐条派发
+//
+// 实现是 plan（①②③ + 试运行早退 + 构造 pending 任务，只读）→ CreateTasks →
+// launch（④⑤ 占槽位/推帧）三段。对外签名、返回值语义、剪枝留痕、日志与拆分前一致。
 func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchOutput, error) {
+	if err := d.checkInput(in); err != nil {
+		return nil, err
+	}
+
+	out := &DispatchOutput{Tasks: []*store.Task{}, Pruned: []PrunedRecord{}}
+
+	tasks, cands, err := d.plan(ctx, in, out)
+	if err != nil {
+		return nil, err
+	}
+	// 没有候选（链到头 / 全被剪枝）或试运行：plan 已把结果
+	//（剪枝记录 / 试运行任务）填进 out，这里直接返回。
+	if len(cands) == 0 || in.DryRun {
+		return out, nil
+	}
+
+	// 先落库（原子），再派发。落库失败什么都没发生；
+	// 派发失败的任务留在 pending，等后续调度（不会丢任务）。
+	if err := d.Store.CreateTasks(ctx, tasks); err != nil {
+		return nil, fmt.Errorf("route: create tasks: %w", err)
+	}
+
+	if err := d.launch(ctx, in, tasks, cands, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// checkInput 是 Dispatch 与 PlanNextHop 共用的前置校验。
+//
+// 抽出来的理由：PlanNextHop 绕过了 Dispatch 直接调 plan，若不校验，
+// Store 为 nil 时会在 plan 里 panic（旧 DispatchNext 走 Dispatch，本来就有这层校验）。
+func (d *Dispatcher) checkInput(in DispatchInput) error {
 	if d.Store == nil {
-		return nil, fmt.Errorf("route: dispatcher has no store")
+		return fmt.Errorf("route: dispatcher has no store")
 	}
 	if d.Now == nil {
 		d.Now = store.Now
 	}
 	if in.OrgID == "" {
-		return nil, fmt.Errorf("route: empty org_id")
+		return fmt.Errorf("route: empty org_id")
 	}
 	if in.TraceID == "" {
-		return nil, fmt.Errorf("route: empty trace_id")
+		return fmt.Errorf("route: empty trace_id")
 	}
+	return nil
+}
 
-	out := &DispatchOutput{Tasks: []*store.Task{}, Pruned: []PrunedRecord{}}
-
+// plan 是派发的**只读**前半段：① 出口早退 + ② 查出口表 + ③ 逐条边判定
+// （环/参数/跨组织用户/找节点）+ DryRun 早退 + 构造 pending 任务。
+//
+// 它**不落库、不占槽位、不推帧**（任务只有 ID/字段，尚未写进 tasks 表）。
+// 唯一的写入是两处既有副作用，都不属于「派发结果」：
+//   - EnsureGraphVersion：按需落一次图版本（契约 §10.2）；
+//   - InsertPruneEvent：剪枝留痕（#142，best-effort、事务外，见 d.prune）。
+//
+// 为什么 plan 能同步跑（#140）：plan 全是只读查询（出口表/能力/节点），
+// 把真正的网络操作（publish）留在后台就够了。而「必须先有计划才能进
+// 『父任务终态 + 子任务建行』的事务」，所以 plan 挪到了节点的读循环里同步执行。
+//
+// 返回的 tasks 与 cands **一一对应、顺序一致**（launch 依赖这个不变量）。
+// DryRun 时把试运行任务填进 out.Tasks，并返回 (nil, nil, nil)。
+func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOutput) (tasks []*store.Task, cands []candidate, err error) {
 	// ① 上游没回报出口：正常结束的分支，不查表、不剪枝（契约 §7 第 ① 行）。
 	if in.Out == "" {
-		return out, nil
+		return nil, nil, nil
 	}
 
 	// ② 查出口表；源（Targets 非空）跳过这一步，直接用配置好的目标
@@ -223,7 +294,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		var err error
 		targets, err = d.Store.EdgesFrom(ctx, in.OrgID, in.FromIsSource, in.FromCap, in.Out)
 		if err != nil {
-			return nil, fmt.Errorf("route: lookup edges: %w", err)
+			return nil, nil, fmt.Errorf("route: lookup edges: %w", err)
 		}
 		if len(targets) == 0 {
 			d.prune(ctx, in, out, PrunedRecord{
@@ -231,31 +302,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 				Port:   in.Out,
 				Detail: fmt.Sprintf("no edge from %s port %q", in.FromCap, in.Out),
 			})
-			return out, nil
+			return nil, nil, nil
 		}
 	}
 
 	// 图版本只落一次（按需落版，契约 §10.2）
 	graph, err := d.Store.EnsureGraphVersion(ctx, in.OrgID)
 	if err != nil {
-		return nil, fmt.Errorf("route: pin graph version: %w", err)
+		return nil, nil, fmt.Errorf("route: pin graph version: %w", err)
 	}
 
 	// ③ 逐条边：环剪枝 → 参数 → 跨组织用户 → 找节点
-	type candidate struct {
-		cap    *store.CapabilityVersion
-		params map[string]any
-		nodes  []string
-		// central 表示这个能力由**中枢自己执行**，不找节点。
-		// 典型是 notify.phone：没人会写一个"发推送节点"。
-		central bool
-	}
-	var candidates []candidate
-
 	for _, targetID := range targets {
 		capDef, err := d.Store.GetCapabilityByID(ctx, in.OrgID, targetID)
 		if err != nil {
-			return nil, fmt.Errorf("route: load target capability %s: %w", targetID, err)
+			return nil, nil, fmt.Errorf("route: load target capability %s: %w", targetID, err)
 		}
 
 		// 环剪枝：目标已在路径里 → 静默剪枝，但必须留痕
@@ -319,7 +380,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		// node_capabilities 查询必然是 0 行，于是 pruned/no_node，
 		// 推送永远发不出去。这是「内置能力」与「自定义能力」唯一的分岔点。
 		if bc, ok := store.IsBuiltinCapability(capDef.Name, capDef.Version); ok && bc.Central {
-			candidates = append(candidates, candidate{
+			cands = append(cands, candidate{
 				cap: capDef, params: targetParams, central: true,
 			})
 			continue
@@ -328,7 +389,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		// 找节点
 		nodes, err := d.Store.NodesForCapability(ctx, in.OrgID, targetID)
 		if err != nil {
-			return nil, fmt.Errorf("route: nodes for capability %s: %w", targetID, err)
+			return nil, nil, fmt.Errorf("route: nodes for capability %s: %w", targetID, err)
 		}
 		if len(nodes) == 0 {
 			d.prune(ctx, in, out, PrunedRecord{
@@ -340,24 +401,24 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			continue
 		}
 
-		candidates = append(candidates, candidate{cap: capDef, params: targetParams, nodes: nodes})
+		cands = append(cands, candidate{cap: capDef, params: targetParams, nodes: nodes})
 	}
 
-	if len(candidates) == 0 {
-		return out, nil
+	if len(cands) == 0 {
+		return nil, nil, nil
 	}
 
 	// DryRun 在这里返回：判定已经做完（目标存在、参数过、节点在线），
 	// 但**不占槽位、不建任务、不推送**。这正好是"试运行"要的信息。
 	if in.DryRun {
-		for _, c := range candidates {
+		for _, c := range cands {
 			// 预览里带**解析后**的参数：用户改完模板点"试运行"，最想知道的
 			// 就是「{{x}} 到底取到了什么」。用的正是真派发那份 c.params
 			// （求值/校验已经做完），不在这里重新解析一次——否则预览与真跑
 			// 会分叉成两套判定。
 			paramsJSON, err := marshalParams(c.params)
 			if err != nil {
-				return nil, fmt.Errorf("route: marshal params: %w", err)
+				return nil, nil, fmt.Errorf("route: marshal params: %w", err)
 			}
 			out.Tasks = append(out.Tasks, &store.Task{
 				CapabilityID: c.cap.ID,
@@ -367,17 +428,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 				Status:       store.TaskPending,
 			})
 		}
-		return out, nil
+		return nil, nil, nil
 	}
 
-	// ④ 挑机器 + ⑤ 建任务
-	// 先把 task 全建出来（拿到 ID），再逐条挑机器占槽位，最后一次性落库。
-	// 顺序理由：占槽位需要 task_id，而落库失败要能回滚已占的槽位。
-	tasks := make([]*store.Task, 0, len(candidates))
-	for _, c := range candidates {
+	// 构造 pending 任务：只算字段（ID 在这里生成），**不落库**。
+	// marshalParams 会把空/null 归一成 {}，避免下游把 nil 当成"没有参数"。
+	tasks = make([]*store.Task, 0, len(cands))
+	for _, c := range cands {
 		paramsJSON, err := marshalParams(c.params)
 		if err != nil {
-			return nil, fmt.Errorf("route: marshal params: %w", err)
+			return nil, nil, fmt.Errorf("route: marshal params: %w", err)
 		}
 		path := append(append([]string{}, in.Path...), c.cap.ID)
 		task := &store.Task{
@@ -397,16 +457,20 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		tasks = append(tasks, task)
 	}
 
-	// 先落库（原子），再派发。落库失败什么都没发生；
-	// 派发失败的任务留在 pending，等后续调度（不会丢任务）。
-	if err := d.Store.CreateTasks(ctx, tasks); err != nil {
-		return nil, fmt.Errorf("route: create tasks: %w", err)
-	}
+	return tasks, cands, nil
+}
 
+// launch 是派发的后半段：④ 挑机器/占槽位 + ⑤ 推 assign 帧，最后算出 out.Tasks。
+//
+// 入参 tasks 必须**已落库**（Dispatch 里由 CreateTasks 完成），且与 cands 一一对应。
+// 返回值语义与拆分前完全一致：
+//   - 容量不足留在 pending 的 → **出现在 out.Tasks 里**（任务确实建出来了，在等调度）；
+//   - 推帧失败被退回 pending 的 → **不出现在 out.Tasks 里**（它没派出去，是回滚）。
+func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*store.Task, cands []candidate, out *DispatchOutput) error {
 	published := make([]bool, len(tasks))
 	centralTasks := make([]*store.Task, 0)
 	for i, task := range tasks {
-		c := candidates[i]
+		c := cands[i]
 
 		// 中枢执行的候选：不挑节点、不占槽位、不设租约。
 		// 任务保持 pending，由中枢执行器（internal/executor）领取并推进状态机。
@@ -419,7 +483,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		// 挑一台：粘性优先，否则负载最小
 		nodeID, stickySelector, err := d.pickNode(ctx, in, c.cap, c.params, c.nodes)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		// 租约必须在 LeaseAndAssign **之前**算好：占槽位 / 改状态 / 写归属是一个事务，
 		// lease_until 是它的入参（#141）。
@@ -439,7 +503,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("route: lease+assign on %s: %w", nodeID, err)
+			return fmt.Errorf("route: lease+assign on %s: %w", nodeID, err)
 		}
 		published[i] = true // 成功占用槽位并派发
 		// 读回派发后的状态，让调用方拿到最新值
@@ -475,7 +539,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 				NodeID:    nodeID,
 				Selector:  *stickySelector,
 			}); err != nil {
-				return nil, fmt.Errorf("route: put pin: %w", err)
+				return fmt.Errorf("route: put pin: %w", err)
 			}
 		}
 	}
@@ -493,7 +557,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 		}
 		out.Tasks = append(out.Tasks, t)
 	}
-	return out, nil
+	return nil
 }
 
 // formatParamMissing 组装 param_missing 的 detail。
@@ -569,7 +633,7 @@ func marshalParams(params map[string]any) (json.RawMessage, error) {
 // prune 记录一条剪枝：先进返回值，再留痕落库（#142）。
 //
 // 唯一入口——「产生」与「留痕」不允许分叉（漏一处就是又一个查不到的剪枝），
-// 所以 Dispatch 里 7 个剪枝产生点（no_edge / path / param_missing / param_type /
+// 所以 plan 里 7 个剪枝产生点（no_edge / path / param_missing / param_type /
 // param_schema / foreign_user / no_node）全部走这里，不再直接 append out.Pruned。
 //
 // 三条规则（契约 §4.3）：
@@ -820,7 +884,7 @@ func parentPtr(s string) *string {
 	return &s
 }
 
-// DispatchNext 实现 ws.NextHopDispatcher：任务回报 out 后派发下一跳。
+// PlanNextHop 只算「下一跳要建哪些任务」：**只读**，不落库、不占槽位、不推帧。
 //
 // 这是契约 §4 的**递归应用**——把上一跳的结果当作下一跳的输入：
 //
@@ -829,13 +893,23 @@ func parentPtr(s string) *string {
 //	Params  = 它的 params（原样传递，不求值）
 //	Path    = 它的 path（环剪枝的累积路径）
 //
-// 三种情况不派发，都不是错误：
+// 三种情况不派发，都不是错误（返回空列表 + nil）：
 //   - out == ""：节点没回报出口（reported=0），这条分支自然结束
 //   - 查表 0 行：pruned/no_edge，链到头了
 //   - 目标是 origin 能力且已在 path 里：pruned/path，成环
-func (d *Dispatcher) DispatchNext(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) error {
+//
+// 返回的任务是 pending、ID 已生成，但**尚未落库**：调用方要把它们交给
+// 「写父任务终态 + 建子任务行」的同一个事务（store.ReportResultAndCreateTasks），
+// 事务提交后再调 PublishTasks 推帧。这也是 #140 的形状：
+// 行先以 pending + node_id NULL 落库，publish 在事务外（网络操作不能进事务）。
+// 为什么 plan 可以同步跑在读循环里：它全是只读查询（出口表/能力/节点）。
+//
+// 剪枝留痕（InsertPruneEvent）在 plan 内、事务外，best-effort：若随后的事务
+// 回滚，库里可能留下一条「这条边没走成」的痕迹——那是诊断信息，
+// 比丢掉证据好，可接受（契约 §4）。
+func (d *Dispatcher) PlanNextHop(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) ([]*store.Task, error) {
 	if out == "" {
-		return nil // 没回报出口：不派下一跳（契约 §7 第 ① 行）
+		return nil, nil // 没回报出口：不派下一跳（契约 §7 第 ① 行）
 	}
 
 	var paramMap map[string]any
@@ -848,9 +922,7 @@ func (d *Dispatcher) DispatchNext(ctx context.Context, orgID, traceID, parentTas
 		paramMap = map[string]any{}
 	}
 
-	// path 已经包含 fromCapabilityID（父任务建的时候写进去的），
-	// 直接沿用即可——Dispatch 会把目标能力追加到末尾。
-	_, err := d.Dispatch(ctx, DispatchInput{
+	in := DispatchInput{
 		OrgID:        orgID,
 		TraceID:      traceID,
 		ParentTaskID: parentTaskID,
@@ -858,8 +930,101 @@ func (d *Dispatcher) DispatchNext(ctx context.Context, orgID, traceID, parentTas
 		Out:          out,
 		Params:       paramMap,
 		Path:         path,
-	})
-	return err
+	}
+	// 旧 DispatchNext 走 Dispatch，本来就有这层校验；绕过 Dispatch 时要补上。
+	if err := d.checkInput(in); err != nil {
+		return nil, err
+	}
+
+	// planOut 只用来承接 plan 的剪枝留痕（plan 的签名要求有个 out）；
+	// 剪枝已由 plan 包留痕落库，这里不回给调用方。
+	planOut := &DispatchOutput{Tasks: []*store.Task{}, Pruned: []PrunedRecord{}}
+	tasks, _, err := d.plan(ctx, in, planOut)
+	if err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+// PublishTasks 对**已落库**的 pending 任务执行「挑机器 + 占槽位 + 推 assign 帧」。
+//
+// 它绝不建行、绝不新增建任务路径：任务行的唯一出口是 Dispatch 或
+// PlanNextHop + 调用方的事务。这里只做「让已存在的 pending 行跑起来」，
+// 状态推进也只能走 LeaseAndAssign（pending→assigned 的既有入口）。
+//
+// 为什么直接复用 RedispatchTask：它已经是「NodesForCapability + pickNode(粘性/负载)
+// + LeaseAndAssign + PublishAssign + 推失败退回 pending」的既有实现，语义与派发
+// 第 ④ 步完全一致。另写一份只会让「派发」与「重派」两条路径慢慢走偏。
+//
+// 为什么 publish 不能进事务：它是网络操作（写 WS 帧），握着 SQLite 写事务等
+// 一个可能掉线的节点，会把整库的写入卡住；而且帧已经发出去了、事务再回滚，
+// 两边就永久不一致。
+//
+// 为什么 publish 丢了也不丢任务（#140 的补偿路径）：任务行已经以
+// pending + node_id NULL 落库。推帧失败时 RedispatchTask 会走
+// requeueAfterPublishFailure 退回 pending；即使本 goroutine 随进程消失、
+// 或进程在「事务提交」与「publish」之间退出，store.ListRedispatchable
+// （internal/lease 的 sweeper 每 5s tick，Redispatch = Dispatcher.RedispatchTask）
+// 也会把它捞回来重派。「建行进事务 + publish 在事务外」正是依赖这条兜底才成立。
+//
+// 中枢能力（store.IsBuiltinCapability(...).Central，如 notify.phone）**跳过**：
+// 它们没有节点执行者，由 internal/executor 从 pending 里领取（ClaimCentralTasks）。
+// 任务留 pending 是正确终态，不是失败。
+//
+// 逐条独立：一条失败不拦住其它条；返回第一个错误仅供调用方记日志。
+//
+// 关于「推帧失败」要不要算错误：RedispatchTask 把推不出去当成「这次没派成」
+// 而**不**返回 error（任务已退回 pending，sweeper 会兜底重派）。但 #140 的
+// 调用方需要知道「行建出来了、帧没发出去」，所以这里用「attempts 涨了却仍回
+// pending」识别出推送回滚（判定规则与 launch 筛 out.Tasks 的规则一致），
+// 造一个错误交给调用方记日志——它不是硬失败，不进任何状态机。
+func (d *Dispatcher) PublishTasks(ctx context.Context, orgID string, tasks []*store.Task) error {
+	var firstErr error
+	// record 只做两件事：warn + 记住第一个错误，绝不中断后续任务。
+	record := func(task *store.Task, err error) {
+		slog.Warn("publish next-hop task failed",
+			"event", "route.next_hop.publish_failed",
+			"org_id", orgID,
+			"task_id", task.ID,
+			"capability", task.Capability,
+			"error", err.Error())
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	for _, t := range tasks {
+		if t == nil {
+			continue
+		}
+
+		// 中枢执行的能力：不找节点、不占槽位，任务留 pending 给执行器领取。
+		if bc, ok := store.IsBuiltinCapability(t.Capability, t.Version); ok && bc.Central {
+			continue
+		}
+
+		// plan 出来的任务自带 OrgID；只在缺失时用入参补上，
+		// 避免拿空 org_id 去查库（那样什么都查不到，任务会默默留 pending）。
+		if t.OrgID == "" {
+			t.OrgID = orgID
+		}
+
+		beforeAttempts := t.Attempts
+		ok, err := d.RedispatchTask(ctx, t)
+		if err != nil {
+			record(t, err)
+			continue
+		}
+		if ok {
+			continue
+		}
+		// 占过槽位（attempts 涨了）却又回到 pending：只有「推帧失败被退回」
+		// 会留下这个形状（容量不足/没节点都不会碰 attempts）。
+		if t.Attempts > beforeAttempts && t.Status == store.TaskPending {
+			record(t, fmt.Errorf("route: publish assign for task %s failed, requeued to pending", t.ID))
+		}
+	}
+	return firstErr
 }
 
 // RedispatchTask 尝试把一条已存在的 pending 任务重新派给节点。
@@ -902,7 +1067,10 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	if len(task.Params) > 0 {
 		_ = json.Unmarshal(task.Params, &taskParams)
 	}
-	nodeID, _, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, TraceID: task.TraceID}, capDef, taskParams, nodes)
+	// stickySelector 非 nil 表示「该能力开了 sticky 且库里还没钉住」，派发成功后**必须**写 pin。
+	// 不能像以前那样用 `_` 丢掉：接力派发（#140）不再经过 launch，这里是它唯一的
+	// 写 pin 的地方（见下方 PutPin 段）。
+	nodeID, stickySelector, err := d.pickNode(ctx, DispatchInput{OrgID: task.OrgID, TraceID: task.TraceID}, capDef, taskParams, nodes)
 	if err != nil {
 		return false, err
 	}
@@ -935,6 +1103,44 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 		if err := d.Publisher.PublishAssign(ctx, task.OrgID, nodeID, task); err != nil {
 			d.requeueAfterPublishFailure(ctx, task.OrgID, task, nodeID, instanceID)
 			return false, nil // 推不出去 = 这次没派成，下轮重试
+		}
+	}
+
+	// 粘性钉住：这是 launch 第 ④⑤ 步里 PutPin 那一段的**同构副本**。
+	//
+	// 为什么必须在这里再写一遍：接力派发（#140）改走
+	// PlanNextHop + PublishTasks → RedispatchTask 之后**不再经过 launch**，
+	// 若不在这里接住 pickNode 返回的 selector，接力链上就永远不会有 pin——
+	// 而 pickNode 只在「库里还没有 pin」时才返回 selector（已钉住返回 nil），
+	// 于是 hop≥2 的 sticky 静默失效：第二次派发/巡检重派会按负载换机器，
+	// 同一 trace 的同一 worktree 落到另一台节点上（对 sticky="worktree" 这类
+	// 能力是结果可能不正确，不只是慢）。
+	//
+	// 位置与 launch 一致，两条都是硬要求：
+	//   - 必须在 PublishAssign **成功之后**：上面那个 return false 的分支
+	//     （推帧失败退回 pending）绝不能写 pin，否则重派会被钉死在一台
+	//     刚刚推不出去的机器上；
+	//   - Publisher == nil（只落库不推送）时也要写，与 launch 同口径。
+	//
+	// 写失败只记日志、不影响返回值：帧已经发出去了，这里报错也无法反悔；
+	// 后果仅是这条 trace 的粘性退化为「按负载挑」（下一跳可能换机器），
+	// 不影响任务本身已经派发成功的事实。
+	if stickySelector != nil {
+		key := store.StickyKey(task.TraceID, capDef.ID, *stickySelector)
+		if err := d.Store.PutPin(ctx, &store.NodePin{
+			StickyKey: key,
+			OrgID:     task.OrgID,
+			NodeID:    nodeID,
+			Selector:  *stickySelector,
+		}); err != nil {
+			slog.Warn("put sticky pin after redispatch failed",
+				"event", "route.redispatch.put_pin_failed",
+				"org_id", task.OrgID,
+				"task_id", task.ID,
+				"trace_id", task.TraceID,
+				"capability_id", task.CapabilityID,
+				"node_id", nodeID,
+				"error", err.Error())
 		}
 	}
 	return true, nil
