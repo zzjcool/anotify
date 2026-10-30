@@ -65,6 +65,11 @@ async function postEvent(body) {
 	return H.req(server.base, "/v1/events", { key: sendKey, body });
 }
 
+// withNSIdQ 给路径显式加 namespaceId（覆盖 harness 自动补的默认命名空间）。
+function withNSIdQ(path, nid) {
+	return path + (path.includes("?") ? "&" : "?") + "namespaceId=" + nid;
+}
+
 function sqlQuery(q, ...args) {
 	const db = new DatabaseSync(server.dbPath);
 	try {
@@ -205,6 +210,7 @@ async function main() {
 	//   ③ B 空间的边指向 A 空间的 cap → 400（I11 跨命名空间不引用）
 	//   ④ 未知命名空间 → 404（不再用 403/404 区分「别人的」与「不存在」）
 	let isoNS;
+	let isoTrace = null;
 	{
 		const created = await H.req(server.base, "/v1/namespaces", {
 			session,
@@ -221,8 +227,7 @@ async function main() {
 	if (isoNS?.id) {
 		const nsB = isoNS.id;
 		const nsA = nsId;
-		const withNSId = (path, nid) =>
-			path + (path.includes("?") ? "&" : "?") + "namespaceId=" + nid;
+		const withNSId = withNSIdQ;
 		const sameNamed = (r) =>
 			(r.json?.capabilities || []).filter((c) => c.name === "same.name").map((c) => c.id);
 
@@ -268,8 +273,12 @@ async function main() {
 			String(listA.text).slice(0, 160),
 		);
 
-		// ---- ② 事件/任务不跨命名空间 ----
-		const isoTrace = "trace_iso_" + Date.now();
+		// ---- ② 事件不跨命名空间（任务那半段放在节点上线之后，见下方 A6 段）----
+		//
+		// 这里只验**事件**：此刻节点还没上线，A 空间这条事件会 pruned/no_node
+		// （不建任务），所以拿「产生了任务」当正向对照会假红。事件的落库与
+		// namespace_id 无关，可以现在就验；任务的隔离放在 A6 建出真任务之后再验。
+		isoTrace = "trace_iso_" + Date.now();
 		const evA = await postEvent({
 			source: "c.origin",
 			type: "go",
@@ -277,22 +286,20 @@ async function main() {
 			namespaceId: nsA,
 			payload: {},
 		});
-		A(
-			10,
-			"A 空间的事件产生任务（正向对照）",
-			(evA.json?.tasks || []).length >= 1,
-			String(evA.text).slice(0, 160),
-		);
-		const tasksInB = await H.req(
+		A(10, "A 空间的事件已落库（正向对照）", evA.json?.inserted === true, String(evA.text).slice(0, 160));
+		const eventsInA = await H.req(
 			server.base,
-			withNSId("/v1/tasks?traceId=" + isoTrace, nsB),
+			withNSId("/v1/console/events?traceId=" + isoTrace, nsA),
 			{ session },
 		);
+		// 断言 >= 1 而不是 === 1：这条 trace 下除了摄入的那条事件，还可能有一条
+		// 剪枝留痕（此刻节点没上线 → pruned/no_node，落进 events 表 source='route'）。
+		// 隔离要证的是「B 一条都看不到」，不是「A 恰好一条」。
 		A(
 			10,
-			"B 空间查不到 A 空间的任务",
-			tasksInB.status === 200 && (tasksInB.json?.tasks || []).length === 0,
-			String(tasksInB.text).slice(0, 160),
+			"A 空间能查到自己的事件",
+			eventsInA.status === 200 && (eventsInA.json?.events || []).length >= 1,
+			String(eventsInA.text).slice(0, 160),
 		);
 		const eventsInB = await H.req(
 			server.base,
@@ -379,6 +386,30 @@ async function main() {
 			fanTasks.length === 3 &&
 				JSON.stringify(fanCaps) === JSON.stringify(["c.fan.a", "c.fan.b", "c.fin"]),
 			JSON.stringify(fanCaps),
+		);
+	}
+
+	// A10（续）任务隔离：此时节点已上线、A 空间真的有任务了 —— 拿这条真任务验
+	// 「B 空间查不到」，同时用「A 空间查得到」做正向对照（避免空转的假绿）。
+	if (isoNS?.id) {
+		const realTrace = ev1.json.traceId;
+		const tInA = await H.req(server.base, "/v1/tasks?traceId=" + realTrace, { session });
+		A(
+			10,
+			"A 空间有自己的任务（正向对照）",
+			tInA.status === 200 && (tInA.json?.tasks || []).length >= 1,
+			String(tInA.text).slice(0, 160),
+		);
+		const tInB = await H.req(
+			server.base,
+			withNSIdQ("/v1/tasks?traceId=" + realTrace, isoNS.id),
+			{ session },
+		);
+		A(
+			10,
+			"B 空间查不到 A 空间的任务",
+			tInB.status === 200 && (tInB.json?.tasks || []).length === 0,
+			String(tInB.text).slice(0, 160),
 		);
 	}
 
