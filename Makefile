@@ -17,7 +17,7 @@ BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
 # 但把 Makefile 映射成"shell 语言"的分析器会把它当 shell 解析并报语法错。
 VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
 
-.PHONY: help build fe sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -119,6 +119,9 @@ integration: ## 集成测试（需服务已在 PORT 运行）
 
 e2e: ## 【固化门禁】全量端到端测试（并行模式，不含单测）
 	./scripts/e2e/run_all.sh
+
+demo-chain: ## 多跳链路 demo（起 server + 3 个节点 + webhook 触发；验证主流程跑通）
+	./scripts/demo/chain.sh
 
 e2e-parallel: ## 全量端到端测试（显式并行模式）
 	./scripts/e2e/run_all.sh
