@@ -118,7 +118,7 @@ func seedDemo(ctx context.Context, db *store.DB, namespaceID, nodeName string) (
 			continue
 		}
 		c := &store.CapabilityVersion{
-			NamespaceID:  namespaceID, // 作用域参数：org_id 由 store 从命名空间行派生（I10）
+			NamespaceID:  namespaceID, // 作用域参数就是命名空间（I10：唯一隔离维度）
 			Name:         d.Name,
 			Version:      1,
 			ParamsSchema: json.RawMessage(`{"type":"object"}`),
@@ -191,14 +191,14 @@ func seedDemo(ctx context.Context, db *store.DB, namespaceID, nodeName string) (
 type demoWorker struct {
 	conn     *websocket.Conn
 	nodeID   string
-	orgID    string
+	nsID     string
 	done     chan struct{}
 	assigns  int
 	onAssign func(capability, taskID string, out *string)
 }
 
 // dialWorker 连上 /v1/node/stream 并完成 hello。
-func dialWorker(ctx context.Context, base, token, nodeID, orgID string) (*demoWorker, []store.CapabilityRef, error) {
+func dialWorker(ctx context.Context, base, token, nodeID, nsID string) (*demoWorker, []store.CapabilityRef, error) {
 	url := strings.Replace(base, "http://", "ws://", 1)
 	url = strings.Replace(url, "https://", "wss://", 1)
 	url = strings.TrimSuffix(url, "/") + "/v1/node/stream"
@@ -233,7 +233,7 @@ func dialWorker(ctx context.Context, base, token, nodeID, orgID string) (*demoWo
 		conn.Close(websocket.StatusInternalError, "hello write failed")
 		return nil, nil, fmt.Errorf("send hello: %w", err)
 	}
-	return &demoWorker{conn: conn, nodeID: nodeID, orgID: orgID, done: make(chan struct{})}, caps, nil
+	return &demoWorker{conn: conn, nodeID: nodeID, nsID: nsID, done: make(chan struct{})}, caps, nil
 }
 
 // run 读帧直到 ctx 结束。assign 帧会 ack + 回报 result。
@@ -388,12 +388,8 @@ func mustJSON(v any) json.RawMessage {
 // runDemo 是 -demo 的入口：建图 → 起节点 → 发事件 → 等链跑完 → 断开。
 //
 // 全程走真实路径（trigger.Ingest + 真 WS 握手），所以数据是真跑出来的。
-func runDemo(ctx context.Context, db *store.DB, orgID, baseURL, apiKey string, followSec int) error {
-	// 示例数据全部落在组织的默认命名空间（命名空间资源没有隐式默认，所以显式取一次）。
-	nsID, err := db.DefaultNamespaceID(ctx, orgID)
-	if err != nil {
-		return fmt.Errorf("取默认命名空间失败: %w", err)
-	}
+func runDemo(ctx context.Context, db *store.DB, nsID, baseURL, apiKey string, followSec int) error {
+	// 示例数据全部落在调用方给的命名空间（命名空间资源没有隐式默认，所以调用方显式取一次）。
 	log.Printf("▶ 造示例数据：建图 + 注册节点（namespace %s）…", nsID)
 	nodeID, token, err := seedDemo(ctx, db, nsID, "demo-worker")
 	if err != nil {
@@ -404,7 +400,7 @@ func runDemo(ctx context.Context, db *store.DB, orgID, baseURL, apiKey string, f
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(followSec+30)*time.Second)
 	defer cancel()
 
-	w, caps, err := dialWorker(ctx, baseURL, token, nodeID, orgID)
+	w, caps, err := dialWorker(ctx, baseURL, token, nodeID, nsID)
 	if err != nil {
 		return fmt.Errorf("节点上线失败（%s 是否在跑？）: %w", baseURL, err)
 	}
