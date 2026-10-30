@@ -29,6 +29,10 @@ let failCount = 0;
 const failures = [];
 const assertions = [];
 let timerStart = 0;
+let summaryCalled = false; // summary() 跑到过 = 套件正常收尾
+let resultsWritten = false;
+// 崩溃兜底用的套件名提示（argv 文件名取不到时才用得上）。
+let suiteNameHint = "";
 
 export function ok(name) {
 	passCount++;
@@ -52,6 +56,7 @@ export function eq(name, actual, expected) {
 	check(name, a === e, `期望 ${e} 实际 ${a}`);
 }
 export function summary(suiteName) {
+	summaryCalled = true;
 	console.log(`\n[${suiteName}] ${passCount} 通过 / ${failCount} 失败`);
 	if (failures.length) {
 		console.log("失败项:");
@@ -77,6 +82,8 @@ export function stopTimer() {
 	return timerStart ? Date.now() - timerStart : 0;
 }
 export function writeResults(suiteName, durationMs) {
+	resultsWritten = true;
+	if (suiteName) suiteNameHint = suiteName;
 	const dir = process.env.E2E_RESULTS_DIR ||
 		path.join(ROOT, ".e2e-bin", "results");
 	mkdirSync(dir, { recursive: true });
@@ -90,6 +97,48 @@ export function writeResults(suiteName, durationMs) {
 	};
 	writeFileSync(path.join(dir, `${suiteName}.json`), JSON.stringify(result, null, 2));
 }
+
+// ---------- 崩溃也要留结果（#210） ----------
+//
+// 问题：套件崩在 await 里（典型：#210 的造数失败 → undefined 绑 sqlite）时，
+// 只要没走到 summary()，results/<suite>.json 就不会生成，并行汇总里只剩一个空洞的
+// 「0通过/0失败」——和超时 / 环境 / 资源不够完全没法区分（本轮已经为它误判过一次）。
+//
+// 修法：进程退出时如果没跑到 summary()，就先把失败记上、把**部分结果**落盘。
+// 汇总于是变成「0通过/1失败 — 套件异常终止（未跑到 summary）…」，而不是 0/0。
+//
+// 两点必须守住：
+//   ① 崩了就是**红**，不能因为「已通过的断言都还绿」而变成 pass-warning；
+//      否则崩溃会被当成「清理阶段异常」静默放行（那才是真丢信号）。
+//   ② exit 钩子里只能做同步事：不调 console（管道写入在 exit 时可能丢），
+//      只 writeFileSync。
+function crashSuiteName() {
+	// 以套件文件名为准（并行执行器就是按这个名字读 results/*.json）；
+	// startServer 的 suiteName 只在没有 argv 时兜底。
+	const argv1 = process.argv[1] || "";
+	const base = path.basename(argv1).replace(/\.mjs$/, "");
+	if (base && base !== "-") return base;
+	return suiteNameHint || "unknown_suite";
+}
+
+let crashHookInstalled = false;
+function installCrashResultsHook() {
+	if (crashHookInstalled) return;
+	crashHookInstalled = true;
+	process.on("exit", () => {
+		if (summaryCalled || resultsWritten) return; // 正常收尾，不插手
+		const name = "套件异常终止（未跑到 summary，断言数不完整）";
+		failCount++;
+		failures.push(name);
+		assertions.push({ name, pass: false, detail: "见本次运行的 stderr 异常栈" });
+		try {
+			writeResults(crashSuiteName(), stopTimer());
+		} catch {
+			/* 落盘失败也没别的办法了：至少 stderr 里还有异常栈 */
+		}
+	});
+}
+installCrashResultsHook();
 
 // ---------- 事件等待（替代固定 sleep） ----------
 // waitForAppReady 按 pageType 等待 JS 挂载完成的稳定锚点。

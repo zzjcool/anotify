@@ -349,6 +349,15 @@ async function main() {
 		console.log(
 			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败  ${durStr}${warnTag}`,
 		);
+		// 红套件把**第一条失败原因**直接打出来（#210）。
+		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」
+		// 让人误判成超时/环境问题，实际是造数时把 undefined 绑进了 sqlite。
+		// 一行足够定位，剩下的看 results/<suite>.json。
+		if (s.status === "fail" || s.status === "timeout") {
+			const json = readJsonResult(s.suite);
+			const first = json?.failures?.[0];
+			if (first) console.log(`      ↳ ${String(first).slice(0, 300)}`);
+		}
 	}
 
 	if (agg.warningSuites.length > 0) {
