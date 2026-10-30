@@ -20,7 +20,7 @@
 import * as H from "../lib/harness.mjs";
 import { bringUpNode as bringUpShared } from "../lib/nodes.mjs";
 
-let server, session, sendKey, orgId, nsId;
+let server, session, sendKey, nsId;
 
 // ---------- 配置辅助（真实 HTTP API） ----------
 
@@ -66,10 +66,11 @@ async function postEvent(body) {
 }
 
 // bringUpNode 薄封装：把本套件的 (name, caps, slots) 映射到共享实现的参数。
-// nsId 是本组织默认命名空间（下面从 /v1/namespaces 查出，不硬编码）：
+// nsId 是默认命名空间（下面从 /v1/namespaces 查出，不硬编码）：
 // 节点属于哪个命名空间决定了 hello 里声明的能力名在哪查。
+// **没有 orgId**：组织层已在迁移 14 删除（#204），令牌只绑命名空间。
 async function bringUpNode(name, caps, slots = 1) {
-	return bringUpShared(server.base, server.dbPath, orgId, nsId, name, caps, slots);
+	return bringUpShared(server.base, server.dbPath, nsId, name, caps, slots);
 }
 
 function expectPrune(name, resp, reason) {
@@ -95,15 +96,13 @@ async function main() {
 		{ encoding: "utf8" },
 	);
 	const seedOut = (seedRun.stdout || "") + (seedRun.stderr || "");
-	orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
-	H.check("拿到 orgId", !!orgId, seedOut.slice(0, 200));
-	if (!orgId) throw new Error("无法从 devseed 输出解析 orgId: " + seedOut.slice(0, 300));
-
-	// #162：节点直插库时必须写 namespace_id（迁移 12 起 NOT NULL）。
-	// 取本组织默认命名空间（slug=default）的 id —— 用例里不硬编码 ns_xxx。
+	// #162：节点直插库时必须写 namespace_id（NOT NULL）。
+	// 取默认命名空间（slug=default）的 id —— 用例里不硬编码 ns_xxx。
+	// **不再从 devseed 输出解析 orgId**：组织层已在迁移 14 删除（#204）。
 	nsId = await H.defaultNamespaceId(server.base, session);
 	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
 	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
+	H.check("拿到 UID（devseed 仍然输出）", /^UID=/m.test(seedOut), seedOut.slice(0, 200));
 
 	// ---------- 建图 + 节点上线 ----------
 	console.log("--- 派发四步 ---");
@@ -282,15 +281,100 @@ async function main() {
 	H.eq("幂等：同一 traceId", i2.json?.traceId, i1.json?.traceId);
 	H.eq("幂等：第二次不重复派发", i2.json?.tasks?.length, 0);
 
-	// ---------- A10 组织隔离 ----------
-	console.log("--- A10 组织隔离 ---");
-	const crossOrg = await H.req(server.base, "/v1/capabilities?orgId=org_bogus_xxxxxxxx", { session });
-	H.eq("跨组织读 → 403", crossOrg.status, 403);
-	H.check(
-		"跨组织读不泄漏数据",
-		!(crossOrg.text || "").includes("cycle.a"),
-		String(crossOrg.text).slice(0, 120),
-	);
+	// ---------- A10 命名空间隔离 ----------
+	//
+	// **改写说明（原两条断言不得静默削弱）**：
+	// 原断言：`GET /v1/capabilities?orgId=org_bogus_xxxxxxxx` → 403，且响应不含 `cycle.a`。
+	// 它证明「读别人的组织被拒 + 不泄漏」。`?orgId=` 随组织层删除（迁移 14）而消失，
+	// 组织间隔离也不再是语义（#204：本部署内任何已登录用户都能访问任何存在的命名空间）。
+	// 所以不能直接删，改写为更强的一组（原用例只有负向断言，下面补上正向隔离证明）：
+	//   ① 两个命名空间各建同名能力 cycle.a → 各自列表里只有自己那条（同名不同定义）
+	//   ② B 空间的边指向 A 空间的 cap → 400（I11 跨命名空间不引用）
+	//   ③ A 空间产生的事件在 B 空间查不到（数据不串）
+	//   ④ 未知命名空间 → 404，且不泄漏能力名
+	console.log("--- A10 命名空间隔离 ---");
+	const isoCreated = await H.req(server.base, "/v1/namespaces", {
+		session,
+		body: { slug: "iso" + Date.now().toString(36), name: "隔离验证" },
+	});
+	H.eq("A10 建第二个命名空间", isoCreated.status, 201);
+	const nsB = isoCreated.json?.namespace?.id;
+	if (nsB) {
+		const withNSId = (path, nid) =>
+			path + (path.includes("?") ? "&" : "?") + "namespaceId=" + nid;
+
+		// ① 两个命名空间各建同名能力 cycle.a
+		const sameB = (
+			await H.req(server.base, withNSId("/v1/capabilities", nsB), {
+				session,
+				body: { name: "cycle.a", outputs: ["go"], paramsSchema: { type: "object" } },
+			})
+		).json?.capability;
+		H.check("A10 在第二个命名空间建同名能力 cycle.a", !!sameB?.id, String(sameB?.id));
+		H.check(
+			"A10 同名能力是两个不同定义（命名空间隔离的前提）",
+			!!sameB?.id && sameB.id !== a.id,
+			`${sameB?.id} vs ${a.id}`,
+		);
+
+		const listA = await H.req(server.base, withNSId("/v1/capabilities", nsId), { session });
+		const listB = await H.req(server.base, withNSId("/v1/capabilities", nsB), { session });
+		const cycleAIdsIn = (r) =>
+			(r.json?.capabilities || []).filter((c) => c.name === "cycle.a").map((c) => c.id);
+		H.check(
+			"A10 A 空间列表里 cycle.a 只有自己那条",
+			JSON.stringify(cycleAIdsIn(listA)) === JSON.stringify([a.id]),
+			JSON.stringify(cycleAIdsIn(listA)),
+		);
+		H.check(
+			"A10 B 空间列表里 cycle.a 只有自己那条",
+			JSON.stringify(cycleAIdsIn(listB)) === JSON.stringify([sameB.id]),
+			JSON.stringify(cycleAIdsIn(listB)),
+		);
+		// 负向（原「不泄漏」意图保留）：A 的列表不能出现只在 B 里存在的定义
+		H.check(
+			"A10 A 空间列表不含 B 空间的能力定义",
+			!(listA.json?.capabilities || []).some((c) => c.id === sameB.id),
+			String(listA.text).slice(0, 160),
+		);
+
+		// ② 跨命名空间引用 → 400（I11）
+		const crossEdge = await H.req(server.base, "/v1/edges", {
+			session,
+			body: {
+				namespaceId: nsB,
+				fromCapability: sameB.id,
+				fromPort: "go",
+				toCapability: a.id,
+			},
+		});
+		H.eq("A10 跨命名空间建边 → 400", crossEdge.status, 400);
+
+		// ③ 事件不跨命名空间：A 空间刚跑过 cycle 事件，B 空间按同一 trace 查必须为空
+		const eventsInB = await H.req(
+			server.base,
+			withNSId("/v1/console/events?traceId=" + (cyc.json?.traceId || "none"), nsB),
+			{ session },
+		);
+		H.check(
+			"A10 B 空间查不到 A 空间的事件",
+			eventsInB.status === 200 && (eventsInB.json?.events || []).length === 0,
+			String(eventsInB.text).slice(0, 160),
+		);
+
+		// ④ 未知命名空间 → 404，且不泄漏
+		const ghost = await H.req(
+			server.base,
+			withNSId("/v1/capabilities", "ns_bogus_xxxxxxxx"),
+			{ session },
+		);
+		H.eq("A10 未知命名空间读 → 404", ghost.status, 404);
+		H.check(
+			"A10 404 不泄漏数据",
+			!(ghost.text || "").includes("cycle.a"),
+			String(ghost.text).slice(0, 120),
+		);
+	}
 
 	// ---------- A5 出口封闭 ----------
 	console.log("--- A5 出口封闭 ---");

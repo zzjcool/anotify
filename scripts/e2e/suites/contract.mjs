@@ -5,14 +5,15 @@
  * 的 `scripts/check_contract.py` 在 `make ci` 里守住，这里不重复。
  *
  * 本套件覆盖：
- *   A1  注册即得组织
+ *   A1  注册即得 default 命名空间（组织层已在迁移 14 删除）
  *   A3  能力必须先定义（未定义能力不能被声明/派发）
  *   A5  出口封闭（from_port ∈ outputs）
  *   A6  扇出（一个出口多条边 → 多个任务）
  *   A7  成环剪枝（path 命中 → pruned/path）
  *   A8  out 三态（缺失 / null / 字符串）
  *   A9  租约接管（节点掉线后任务被回收重派）
- *   A10 组织隔离（跨组织读写被拒且不泄漏）
+ *   A10 命名空间隔离（同名能力互不可见 / 事件与任务不串 / 跨命名空间引用 400 /
+ *       未知命名空间 404）
  *   A11 版本并存（同名多版本可共存，各自 hash 不同）
  *   A12 空列表返回 []（不是 null）
  *
@@ -23,7 +24,7 @@ import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { bringUpNode } from "../lib/nodes.mjs";
 
-let server, session, sendKey, orgId;
+let server, session, sendKey;
 const results = [];
 
 // A(name, cond, detail) 记录一条契约断言（带 A 编号，便于对照契约）。
@@ -90,25 +91,33 @@ async function main() {
 	});
 	const seedOut = (seedRun.stdout || "") + (seedRun.stderr || "");
 	const uid = (seedOut.match(/^UID=(.*)$/m) || [])[1];
-	orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
 
-	// #162：命名空间资源（能力/节点/边/任务……）现在必须带 namespaceId。
+	// #162：命名空间资源（能力/节点/边/任务……）必须带 namespaceId。
 	// 节点是直插库的（见 lib/nodes.mjs），也要写 namespace_id。这里统一取
-	// 本组织默认命名空间（slug=default）的 id —— **不硬编码 ns_xxx**。
+	// 默认命名空间（slug=default）的 id —— **不硬编码 ns_xxx**。
 	const nsId = await H.defaultNamespaceId(server.base, session);
 	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
 
-	const orgs = sqlQuery(`SELECT id, name FROM orgs WHERE id = ?`, orgId || "");
-	const members = sqlQuery(
-		`SELECT org_id, user_id, role FROM org_members WHERE user_id = ?`,
-		uid || "",
+	// A1 随 #204 改写：原断言是「注册即得**组织**（orgs 1 行 + org_members owner）」。
+	// 组织层已在迁移 14 删除，注册保证的是「用户 + 一个 default 命名空间 + 内置能力播种」
+	// 同事务原子完成（store.RegisterUser）。这里断言同一件事的新形态，且**更强**：
+	// 不只看行数，还看内置能力确实被播种了（否则新命名空间里连 notify.phone 都没有）。
+	const nss = sqlQuery(`SELECT id, slug FROM namespaces ORDER BY rowid`);
+	const builtins = sqlQuery(
+		`SELECT name FROM capability_versions WHERE namespace_id = ? AND source = 'builtin'`,
+		nsId || "",
 	);
-	A(1, "注册即得组织", orgs.length === 1, JSON.stringify({ orgs, orgId }));
 	A(
 		1,
-		"组织里有 owner 成员",
-		members.length === 1 && members[0].role === "owner",
-		JSON.stringify(members),
+		"注册即得 default 命名空间",
+		nss.length === 1 && nss[0].slug === "default" && nss[0].id === nsId,
+		JSON.stringify({ nss, nsId }),
+	);
+	A(
+		1,
+		"default 命名空间已播种内置能力",
+		builtins.some((b) => b.name === "notify.phone"),
+		JSON.stringify(builtins.map((b) => b.name)),
 	);
 
 	// ================= A3 能力必须先定义 =================
@@ -177,58 +186,162 @@ async function main() {
 		A(12, `${key} 空列表是 [] 不是 null`, r.status === 200 && isArray, raw.slice(0, 100));
 	}
 	{
-		// capabilities 一定有数据，改用「按不存在的组织」→ 403（不是空列表）；
-		// 真正的空列表用 nodes（新库无节点）
+		// capabilities 一定有数据（至少内置能力 + 上面建的那些），改用 nodes 验空列表
+		// （新库无节点）。组织层删除后也没有「按不存在的组织查」这条路了。
 		const r = await H.req(server.base, "/v1/nodes", { session });
 		A(12, "nodes 空列表是 [] 不是 null", r.status === 200 && (r.text || "").includes("[]"), (r.text || "").slice(0, 100));
 	}
 
-	// ================= A10 组织隔离 =================
-	const crossRead = await H.req(server.base, "/v1/capabilities?orgId=org_not_mine_xxx", { session });
-	A(10, "跨组织读 → 403", crossRead.status === 403, String(crossRead.status));
-	A(
-		10,
-		"跨组织读不泄漏能力名",
-		!(crossRead.text || "").includes("c.origin"),
-		String(crossRead.text).slice(0, 120),
-	);
-	// 跨组织写：建边时两端不同组织应被拒（用另一个组织的能力）
+	// ================= A10 命名空间隔离 =================
+	//
+	// **改写说明（原两条断言不得静默削弱，逐条对照见 PR 正文）**：
+	// 原断言：`GET /v1/capabilities?orgId=org_not_mine_xxx` → 403，且响应不含 `c.origin`。
+	// 它证明「读别人的组织被拒 + 不泄漏」。`?orgId=` 随组织层删除（迁移 14）而消失，
+	// 「组织间隔离」也不再是语义（#204：本部署内任何已登录用户都能访问任何存在的命名空间）。
+	// 所以这两条**不能直接删**，改写为一组更强的东西 —— 原用例只有负向断言，
+	// 下面补上了正向隔离证明（证明隔离真的生效，而不只是"拒绝了某个参数"）：
+	//   ① 两个命名空间各建**同名**能力 same.name → 各自列表里只有自己那条
+	//   ② A 空间产生的事件/任务，在 B 空间查不到（B 里查 A → 空；A 里查 A → 有，正向对照）
+	//   ③ B 空间的边指向 A 空间的 cap → 400（I11 跨命名空间不引用）
+	//   ④ 未知命名空间 → 404（不再用 403/404 区分「别人的」与「不存在」）
+	let isoNS;
 	{
-		const db = new DatabaseSync(server.dbPath);
-		try {
-			const otherOrg = "org_x_" + Date.now();
-			const now = Math.floor(Date.now() / 1000);
-			db.prepare(`INSERT INTO orgs (id, name, created_at) VALUES (?, ?, ?)`).run(
-				otherOrg,
-				"other-" + Date.now(),
-				now,
-			);
-			// 迁移 12 之后能力行必须归属一个命名空间（namespace_id NOT NULL），
-			// 所以给这个「别的组织」也建一个 default 命名空间再插能力。
-			const foreignNs = "ns_x_" + Date.now();
-			db.prepare(
-				`INSERT INTO namespaces (id, org_id, slug, name, created_at) VALUES (?, ?, 'default', '默认', ?)`,
-			).run(foreignNs, otherOrg, now);
-			db.prepare(
-				`INSERT INTO capability_versions (id, org_id, namespace_id, name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-				 VALUES (?, ?, ?, 'foreign.cap', 1, '{}', '[]', '{}', '', 'custom', ?, ?)`,
-			).run("cap_foreign_" + Date.now(), otherOrg, foreignNs, "hash_" + Date.now(), now);
-			const foreignId = db
-				.prepare(`SELECT id FROM capability_versions WHERE org_id = ?`)
-				.get(otherOrg).id;
-			const crossEdge = await H.req(server.base, "/v1/edges", {
+		const created = await H.req(server.base, "/v1/namespaces", {
+			session,
+			body: { slug: "iso" + Date.now().toString(36), name: "隔离验证" },
+		});
+		isoNS = created.json?.namespace;
+		A(
+			10,
+			"建第二个命名空间成功",
+			created.status === 201 && !!isoNS?.id,
+			`${created.status} ${String(created.text).slice(0, 120)}`,
+		);
+	}
+	if (isoNS?.id) {
+		const nsB = isoNS.id;
+		const nsA = nsId;
+		const withNSId = (path, nid) =>
+			path + (path.includes("?") ? "&" : "?") + "namespaceId=" + nid;
+		const sameNamed = (r) =>
+			(r.json?.capabilities || []).filter((c) => c.name === "same.name").map((c) => c.id);
+
+		// ---- ① 两个命名空间各建同名能力 ----
+		const sameA = (
+			await H.req(server.base, withNSId("/v1/capabilities", nsA), {
 				session,
-				body: { fromCapability: origin.id, fromPort: "go", toCapability: foreignId },
-			});
-			A(10, "跨组织建边 → 400", crossEdge.status === 400, String(crossEdge.status));
-		} finally {
-			db.close();
-		}
+				body: { name: "same.name", paramsSchema: { type: "object" } },
+			})
+		).json?.capability;
+		const sameB = (
+			await H.req(server.base, withNSId("/v1/capabilities", nsB), {
+				session,
+				body: { name: "same.name", paramsSchema: { type: "object" } },
+			})
+		).json?.capability;
+		A(
+			10,
+			"两个命名空间的 same.name 是两个不同定义",
+			!!sameA?.id && !!sameB?.id && sameA.id !== sameB.id,
+			`${sameA?.id} vs ${sameB?.id}`,
+		);
+
+		const listA = await H.req(server.base, withNSId("/v1/capabilities", nsA), { session });
+		const listB = await H.req(server.base, withNSId("/v1/capabilities", nsB), { session });
+		A(
+			10,
+			"A 空间列表里 same.name 只有自己那条",
+			sameA && JSON.stringify(sameNamed(listA)) === JSON.stringify([sameA.id]),
+			JSON.stringify(sameNamed(listA)),
+		);
+		A(
+			10,
+			"B 空间列表里 same.name 只有自己那条",
+			sameB && JSON.stringify(sameNamed(listB)) === JSON.stringify([sameB.id]),
+			JSON.stringify(sameNamed(listB)),
+		);
+		// 负向（原「不泄漏」意图）：A 的列表不能出现只在 B 里存在的定义 id
+		A(
+			10,
+			"A 空间列表不含 B 空间的能力定义",
+			!sameB || !(listA.json?.capabilities || []).some((c) => c.id === sameB.id),
+			String(listA.text).slice(0, 160),
+		);
+
+		// ---- ② 事件/任务不跨命名空间 ----
+		const isoTrace = "trace_iso_" + Date.now();
+		const evA = await postEvent({
+			source: "c.origin",
+			type: "go",
+			traceId: isoTrace,
+			namespaceId: nsA,
+			payload: {},
+		});
+		A(
+			10,
+			"A 空间的事件产生任务（正向对照）",
+			(evA.json?.tasks || []).length >= 1,
+			String(evA.text).slice(0, 160),
+		);
+		const tasksInB = await H.req(
+			server.base,
+			withNSId("/v1/tasks?traceId=" + isoTrace, nsB),
+			{ session },
+		);
+		A(
+			10,
+			"B 空间查不到 A 空间的任务",
+			tasksInB.status === 200 && (tasksInB.json?.tasks || []).length === 0,
+			String(tasksInB.text).slice(0, 160),
+		);
+		const eventsInB = await H.req(
+			server.base,
+			withNSId("/v1/console/events?traceId=" + isoTrace, nsB),
+			{ session },
+		);
+		A(
+			10,
+			"B 空间查不到 A 空间的事件",
+			eventsInB.status === 200 && (eventsInB.json?.events || []).length === 0,
+			String(eventsInB.text).slice(0, 160),
+		);
+
+		// ---- ③ 跨命名空间引用 → 400（I11）----
+		// B 空间里建一条边，右端指向 A 空间的 same.name
+		const crossEdge = await H.req(server.base, "/v1/edges", {
+			session,
+			body: {
+				namespaceId: nsB,
+				fromCapability: sameB.id,
+				fromPort: "go",
+				toCapability: sameA.id,
+			},
+		});
+		A(
+			10,
+			"跨命名空间建边 → 400",
+			crossEdge.status === 400,
+			`${crossEdge.status} ${String(crossEdge.text).slice(0, 120)}`,
+		);
+
+		// ---- ④ 未知命名空间 → 404，且不泄漏 ----
+		const ghost = await H.req(
+			server.base,
+			withNSId("/v1/capabilities", "ns_not_mine_" + Date.now()),
+			{ session },
+		);
+		A(10, "未知命名空间读 → 404", ghost.status === 404, String(ghost.status));
+		A(
+			10,
+			"404 不泄漏能力名",
+			!(ghost.text || "").includes("c.origin"),
+			String(ghost.text).slice(0, 120),
+		);
 	}
 
 	// ================= A8 out 三态 + A7 环剪枝 + A9 租约接管 =================
 	// 这三条需要真实节点跑完整链路。
-	const node = await bringUpNode(server.base, server.dbPath, orgId, nsId, "contract-node", [origin, work, fin, fanA, fanB], 4);
+	const node = await bringUpNode(server.base, server.dbPath, nsId, "contract-node", [origin, work, fin, fanA, fanB], 4);
 	A(6, "节点上线", !!node.id);
 
 	// A6：从 origin 出发 → work（1 个任务）；work 回报 done → 扇出到 fanA+fanB
@@ -341,7 +454,7 @@ async function main() {
 		await addEdge(a, "go", b);
 		await addEdge(b, "back", a);
 
-		const cycNode = await bringUpNode(server.base, server.dbPath, orgId, nsId, "contract-cycle", [a, b], 2);
+		const cycNode = await bringUpNode(server.base, server.dbPath, nsId, "contract-cycle", [a, b], 2);
 		const ev = await postEvent({ source: "c.cycle.src", type: "start", payload: {} });
 		// 第一跳进 a；完成 a 回报 go → b；完成 b 回报 back → a 已在 path → 剪枝
 		const tA = ev.json?.tasks?.[0]?.id;
