@@ -410,7 +410,7 @@ func restoreForOrgLayer(tx *sql.Tx, t orgLayerRebuild) error {
 // `namespaces` 时撞 UNIQUE。
 //
 // 规则（确定、可复现）：
-//   - 同一个 slug 按 `(created_at, id)` 保留**最早**那一行，slug 不变；
+//   - 同一个 slug 按 `(created_at, rowid)` 保留**最早**那一行，slug 不变；
 //   - 其余行改名为 `<slug>-2`、`<slug>-3`…（长度上限 31，见 namespaceSlugPattern）；
 //   - 候选名不能是任何**已有** slug（避免把 default 抢成另一个命名空间的原名）。
 //
@@ -425,7 +425,7 @@ func dedupeNamespaceSlugsTx(tx *sql.Tx) error {
 	}
 
 	type nsSlug struct{ id, slug string }
-	rows, err := tx.Query(`SELECT id, slug FROM namespaces ORDER BY slug, created_at, id`)
+	rows, err := tx.Query(`SELECT id, slug FROM namespaces ORDER BY slug, created_at, rowid`)
 	if err != nil {
 		return fmt.Errorf("list namespaces for slug dedupe: %w", err)
 	}

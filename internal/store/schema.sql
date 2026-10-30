@@ -561,7 +561,7 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 -- 13 张表的重建逻辑在 migrate.go 的 `migrationHooks[14]`（`migrateDropOrgLayer`）：
 --   ① 幂等守卫：`orgs` 不存在 = 已经迁移过，直接返回（同一版本可能重试多次）
 --   ② `namespaces.slug` 全局去重：老库里多个组织各有一个 `default`，
---      在 `UNIQUE(slug)` 下会撞车。同 slug 按 `(created_at, id)` 保留最早一行，
+--      在 `UNIQUE(slug)` 下会撞车。同 slug 按 `(created_at, rowid)` 保留最早一行，
 --      其余改名为 `default-2`、`default-3`…（候选名必须全局未占用）
 --   ③ 逐表 stage（`CREATE TABLE <t>_stage AS SELECT <去掉 org_id 的列> FROM <t>`）
 --   ④ 逆拓扑序删旧表（引用者先删），最后 `namespaces` → `org_members` → `orgs`

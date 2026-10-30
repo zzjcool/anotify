@@ -98,14 +98,18 @@ var namespaceSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
 
 const nsColumns = `id, slug, name, created_at`
 
-// DefaultNamespaceID 返回本部署**最早**的命名空间 id。
+// DefaultNamespaceID 返回本部署**最早插入**的命名空间 id。
 //
 // 用途：**迁移与后台任务**（老数据回填、全局巡检），不是 HTTP 请求路径。
 // HTTP 端点缺 namespaceId 一律 400，绝不回退到这里（契约 §6.2）。
+//
+// 排序用 rowid 而不是 (created_at, id)：created_at 是**秒级**时间戳，同一秒内
+// 建两个命名空间（注册 + 立刻建一个）会撞在一起，只能靠插入顺序（rowid）才是
+// 确定的「最早」—— 与旧 PrimaryOrgOf 的取法一致。
 func (d *DB) DefaultNamespaceID(ctx context.Context) (string, error) {
 	var id string
 	err := d.QueryRowContext(ctx,
-		`SELECT id FROM namespaces ORDER BY created_at, id LIMIT 1`).Scan(&id)
+		`SELECT id FROM namespaces ORDER BY rowid LIMIT 1`).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNamespaceNotFound
 	}
@@ -143,7 +147,7 @@ func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 		        (SELECT count(*) FROM sources s WHERE s.namespace_id = n.id),
 		        (SELECT count(*) FROM edges e WHERE e.namespace_id = n.id)
 		   FROM namespaces n
-		  ORDER BY n.created_at, n.id`)
+		  ORDER BY n.created_at, n.rowid`)
 	if err != nil {
 		return nil, fmt.Errorf("list namespaces: %w", err)
 	}
