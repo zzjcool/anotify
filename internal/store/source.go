@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -146,6 +147,171 @@ var GitHubEvents = []string{
 	"workflow_run",
 }
 
+// varNamePattern 是变量名的合法形态（配置期校验用）。
+//
+// 与参数模板占位符正则可取的字符集对齐（点号留给 payload 路径），所以变量名
+// 里不许有点：`{{a.b}}` 才会稳定地被理解成「payload 路径」而不是「变量 a 的 b」。
+var varNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// VarDef 是源声明的一个变量：给 payload 里的某个路径（或一个常量）取个短名字，
+// 之后参数模板里就能写 {{name}} / {var:"name"}。
+//
+// 为什么存「名字 + 来源」而不是「名字 + 取值」：源拿到的事件 payload 每次投递
+// 都不一样（webhook 的请求体本身就是 payload），变量只能在**触发时**求值。
+// From 是 payload 的点号路径；Value/HasValue 是旧形态 {name,value} 的常量支持
+// （HasValue 单独一个字段是因为常量允许是 null，nil 分不清「没写」和「写了 null」）。
+type VarDef struct {
+	Name, From string
+	Value      any
+	HasValue   bool
+}
+
+// UnmarshalJSON 认两种形态：{name,from}（引用 payload 路径）与 {name,value}（常量）。
+//
+// 为什么手写而不是给字段加 tag：`value` 可以合法地是 null，而 `Value == nil`
+// 无法区分「没写 value」和「写了 value:null」——两者语义完全不同（后者是常量
+// null，前者是没声明来源，配置期必须报错）。要知道键**是否存在**，只能下去读
+// map[string]json.RawMessage。
+func (d *VarDef) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return errors.New("变量项必须是对象")
+	}
+	if raw == nil { // `null` 解进 map 不报错，但一个键都没有
+		return errors.New("变量项必须是对象")
+	}
+	*d = VarDef{}
+	if v, ok := raw["name"]; ok {
+		if err := json.Unmarshal(v, &d.Name); err != nil {
+			return errors.New("变量名必须是字符串")
+		}
+	}
+	if v, ok := raw["from"]; ok {
+		if err := json.Unmarshal(v, &d.From); err != nil {
+			return errors.New("变量的 from 必须是字符串")
+		}
+	}
+	if v, ok := raw["value"]; ok {
+		d.HasValue = true
+		if err := json.Unmarshal(v, &d.Value); err != nil {
+			return errors.New("变量的 value 无法解析")
+		}
+	}
+	return nil
+}
+
+// VarDefs 解析源声明的变量（config.vars 数组）。
+//
+// 坏数据（空 config / 非法 JSON / vars 不是数组）返回 nil：读侧容忍，一条手改
+// 坏的数据不该让整个源列表打不开（与 unmarshalTargetParams 同一口径）。触发时
+// 取不到的变量会变成 param_missing 剪枝，该被看见的仍然会被看见。
+func (s *Source) VarDefs() []VarDef {
+	if s == nil || len(s.Config) == 0 {
+		return nil
+	}
+	var cfg struct {
+		Vars []VarDef `json:"vars"`
+	}
+	if err := json.Unmarshal(s.Config, &cfg); err != nil {
+		return nil
+	}
+	if len(cfg.Vars) == 0 {
+		return nil
+	}
+	return cfg.Vars
+}
+
+// VarNames 返回变量名列表（顺序与 config.vars 一致）。
+//
+// 只给「声明了哪些变量」：参数模板校验要判断 {var:"x"} 是否已声明，
+// 它不需要（也不该）关心每个变量从哪取值。
+func (s *Source) VarNames() []string {
+	defs := s.VarDefs()
+	out := make([]string, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, d.Name)
+	}
+	return out
+}
+
+// ConfigPayload 返回 cron/manual 源用来给事件打底的 config.payload。
+//
+// 必须是 JSON 对象：数组/标量/null 一律 nil（读侧容忍；会保留它的 kind 在配置期已经
+// 拒过一次，webhook/github 则根本不保留 payload）。
+func (s *Source) ConfigPayload() map[string]any {
+	if s == nil || len(s.Config) == 0 {
+		return nil
+	}
+	var cfg struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(s.Config, &cfg); err != nil {
+		return nil
+	}
+	m, ok := decodeJSONObject(cfg.Payload)
+	if !ok {
+		return nil
+	}
+	return m
+}
+
+// decodeJSONObject 把 raw 解成 JSON 对象；不存在/不是对象（含 null、数组、标量）→ false。
+func decodeJSONObject(raw json.RawMessage) (map[string]any, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var probe any
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, false
+	}
+	m, ok := probe.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	return m, true
+}
+
+// ValidateVarDefs 校验变量声明："" 表示合法，否则是给用户看的中文错误。
+//
+// 这些检查必须在**配置期**做完：变量名拼错、from 与 value 同时写、路径写成
+// `a..b`，到触发时都只会变成「参数取不到」的剪枝——用户配完以为好了、实际
+// 一次都不生效。配置期 400 是唯一能把问题当场说清楚的位置。
+func ValidateVarDefs(defs []VarDef) string {
+	seen := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		// 名字按**原样**校验（不 trim 后再过正则）：` a ` 这种带空白名字能过
+		// 形式校验，却在触发时永远匹配不上 {var:"a"}，属于静默失效。
+		name := d.Name
+		if strings.TrimSpace(name) == "" {
+			return "每个变量都要有名字"
+		}
+		if !varNamePattern.MatchString(name) {
+			return fmt.Sprintf("变量名「%s」不合法（只能是字母/数字/下划线，且不以数字开头）", name)
+		}
+		if seen[name] {
+			return fmt.Sprintf("变量名「%s」重复", name)
+		}
+		seen[name] = true
+
+		from := strings.TrimSpace(d.From)
+		if from != "" && d.HasValue {
+			return fmt.Sprintf("变量「%s」不能同时有 from 和 value", name)
+		}
+		if from == "" && !d.HasValue {
+			return fmt.Sprintf("变量「%s」需要 from（payload 路径）", name)
+		}
+		if from == "" { // 常量：没有路径可查
+			continue
+		}
+		// 只接受点号分段的 payload 路径：空段（`a..b`）与首尾的点都会让
+		// GetPath 永远取不到值，是纯粹的输入错误，不该等到触发时才发现。
+		if strings.Contains(from, "..") || strings.HasPrefix(from, ".") || strings.HasSuffix(from, ".") {
+			return fmt.Sprintf("变量「%s」的 from 路径不合法：「%s」", name, from)
+		}
+	}
+	return ""
+}
+
 // ParseCronConfig 解析并校验 cron 配置。
 func ParseCronConfig(raw json.RawMessage) (CronConfig, error) {
 	var c CronConfig
@@ -168,7 +334,58 @@ func ParseCronConfig(raw json.RawMessage) (CronConfig, error) {
 }
 
 // ValidateSourceConfig 按 kind 校验配置，顺带补默认值。
+//
+// kind 专属字段在这里生成/规范化，但 `vars`（变量声明，kind 无关）与
+// cron/manual 的 `payload`（事件打底数据）必须**原样保留**：整份重写 config
+// 会把用户写的这两个字段静默抹掉，等于变量/打底数据从来没存下来过，而且
+// 没有任何报错可以追。所以做法是：先把 config 读成键值表，按 kind 规范出
+// 专属字段，再把 vars/payload 原样放回。
 func ValidateSourceConfig(kind string, raw json.RawMessage) (json.RawMessage, error) {
+	if !IsValidSourceKind(kind) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidSourceKind, kind)
+	}
+
+	// 用户写的 config 先读成键值表。解析失败当空 map：token 等字段由服务端补，
+	// 坏 JSON 不该在这里变成一个不带 ErrInvalidSourceConfig 的内部错误。
+	fields := map[string]json.RawMessage{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			fields = map[string]json.RawMessage{}
+		}
+	}
+
+	// vars 是 kind 无关的变量声明：逐项形式校验（错误消息带变量名，前端能
+	// 直接指出是哪一项），通过后原样放回（不重新编码，保持用户写的形态）。
+	if rawVars, ok := fields["vars"]; ok {
+		var items []json.RawMessage
+		if err := json.Unmarshal(rawVars, &items); err != nil {
+			return nil, fmt.Errorf("%w: config.vars 必须是数组", ErrInvalidSourceConfig)
+		}
+		defs := make([]VarDef, 0, len(items))
+		for _, item := range items {
+			var d VarDef
+			if err := json.Unmarshal(item, &d); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrInvalidSourceConfig, err)
+			}
+			defs = append(defs, d)
+		}
+		if msg := ValidateVarDefs(defs); msg != "" {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidSourceConfig, msg)
+		}
+	}
+
+	// payload 只有在**会被保留**的 kind（cron/manual）上才有意义，所以也只有它们
+	// 需要对象性校验：数组/标量/null 都不是「事件打底数据」，放进去只会在触发时
+	// 变成一句莫名的报错，不如配置期直接拒。webhook/github 的 payload 直接丢弃
+	// （投递体才是真正的 payload），连校验都不做——否则历史行里残留一个坏 payload，
+	// 任何一次 PATCH 都会莫名 400。校验与保留必须共用同一个判据。
+	if rawPayload, ok := fields["payload"]; ok && keepsConfigPayload(kind) {
+		if _, isObj := decodeJSONObject(rawPayload); !isObj {
+			return nil, fmt.Errorf("%w: config.payload 必须是 JSON 对象", ErrInvalidSourceConfig)
+		}
+	}
+
+	out := map[string]json.RawMessage{}
 	switch kind {
 	case SourceKindCron:
 		c, err := ParseCronConfig(raw)
@@ -187,7 +404,9 @@ func ValidateSourceConfig(kind string, raw json.RawMessage) (json.RawMessage, er
 		if err != nil {
 			return nil, err
 		}
-		return b, nil
+		if err := json.Unmarshal(b, &out); err != nil {
+			return nil, err
+		}
 	case SourceKindWebhook, SourceKindGitHub:
 		// github 就是一个"知道载荷长什么样"的 webhook：投递路径、
 		// token、签名处理完全相同，差别只在前端能给字段清单和一键配置。
@@ -203,11 +422,36 @@ func ValidateSourceConfig(kind string, raw json.RawMessage) (json.RawMessage, er
 			}
 			c.Token = t
 		}
-		return json.Marshal(c)
+		b, err := json.Marshal(c)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(b, &out); err != nil {
+			return nil, err
+		}
 	case SourceKindManual:
-		return json.RawMessage(`{}`), nil
+		// manual 没有 kind 专属字段，配置里只有 payload/vars（下面统一放回）。
 	}
-	return nil, fmt.Errorf("%w: %q", ErrInvalidSourceKind, kind)
+
+	// vars 各 kind 都保留；payload 只有 cron/manual 保留（webhook/github 的
+	// payload 是投递进来的请求体，存在 config 里没有意义，也不该被当成打底数据）。
+	if rawVars, ok := fields["vars"]; ok {
+		out["vars"] = rawVars
+	}
+	if rawPayload, ok := fields["payload"]; ok && keepsConfigPayload(kind) {
+		out["payload"] = rawPayload
+	}
+	return json.Marshal(out)
+}
+
+// keepsConfigPayload 报告该 kind 是否会把 config.payload **原样保留**下来。
+//
+// cron/manual 的 payload 是用户建源时写的「事件打底数据」，要存要读；webhook/github
+// 的 payload 是投递进来的请求体，config 里留它没有意义、一律丢弃。校验（对象性）与
+// 保留必须用这一个判据，否则会出现「校验了却丢掉」：历史 webhook 行里残留一个非对象
+// payload 时，任何一次 PATCH 都会莫名 400。
+func keepsConfigPayload(kind string) bool {
+	return kind == SourceKindCron || kind == SourceKindManual
 }
 
 // NewSourceToken 生成 webhook 的路径 token：src_<base62(16B)>。

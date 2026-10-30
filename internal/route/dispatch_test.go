@@ -1162,6 +1162,345 @@ func TestValidateNestedPathError(t *testing.T) {
 	}
 }
 
+// ---------- #114：源参数模板求值（Payload / VarValues → 实际参数） ----------
+
+// sourceInput 组一次「源首次派发」的输入：Targets 非空 → 不查边，
+// TargetParams 是按目标的**模板**（含 {{x}} / {from} / {var}）。
+func sourceInput(capID string, template map[string]any, payload map[string]any) DispatchInput {
+	return DispatchInput{
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "t_source",
+		FromCap: "github", FromIsSource: true, Out: "push",
+		Targets:      []string{capID},
+		TargetParams: map[string]map[string]any{capID: template},
+		Payload:      payload,
+	}
+}
+
+// decodeTaskParams 把任务的 params 解成 map（断言用）。
+func decodeTaskParams(t *testing.T, task *store.Task) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(task.Params, &m); err != nil {
+		t.Fatalf("task params %q 解析失败: %v", string(task.Params), err)
+	}
+	return m
+}
+
+// TestDispatchResolvesParamTemplate 源路径的 `{{n}}` 被解析成 payload 里的值（契约 §4 第 11 项）。
+//
+// 关键的不是"拿到了 42"，而是**没有产生 param_schema 剪枝**：模板里的
+// `"{{n}}"` 在求值前是个字符串，若先拿它去撞 integer schema，会被误拒。
+func TestDispatchResolvesParamTemplate(t *testing.T) {
+	f := newFakeStore()
+	loose := f.addCap(testNS, "loose", 1, nil,
+		`{"type":"object","properties":{"n":{"type":"integer"}}}`)
+	f.addNode("nd_loose", loose.ID, 1)
+	d := New(f)
+
+	out, err := d.Dispatch(context.Background(), sourceInput(loose.ID,
+		map[string]any{"n": "{{n}}"},
+		map[string]any{"n": float64(42)},
+	))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Pruned) != 0 {
+		t.Fatalf("含占位符的参数被误拒: %v", out.Pruned)
+	}
+	if len(out.Tasks) != 1 {
+		t.Fatalf("want 1 task, got %d", len(out.Tasks))
+	}
+	got := decodeTaskParams(t, out.Tasks[0])
+	if got["n"] != float64(42) {
+		t.Fatalf("params.n = %#v, want 42（整值引用保留原类型）", got["n"])
+	}
+}
+
+// TestDispatchParamTemplateMissing 引用取不到 → param_missing（契约 §4 第 12 项）。
+func TestDispatchParamTemplateMissing(t *testing.T) {
+	f := newFakeStore()
+	loose := f.addCap(testNS, "loose", 1, nil, `{"type":"object"}`)
+	f.addNode("nd_loose", loose.ID, 1)
+	d := New(f)
+
+	// payload 里没有 pull_request，且没写 default → 该目标整条剪枝
+	out, err := d.Dispatch(context.Background(), sourceInput(loose.ID,
+		map[string]any{"n": "{{pull_request.title}}"},
+		map[string]any{},
+	))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Tasks) != 0 {
+		t.Fatalf("取不到取值点却建了任务: %d", len(out.Tasks))
+	}
+	if len(out.Pruned) != 1 || out.Pruned[0].Reason != ReasonParamMissing {
+		t.Fatalf("want 1 条 param_missing, got %v", out.Pruned)
+	}
+	detail := out.Pruned[0].Detail
+	// 文案逐字冻结（契约 §2.2）；前缀是能力名，所以用子串断言
+	if !strings.Contains(detail, "参数 n 取不到 {{pull_request.title}}（payload 里没有这个字段）") {
+		t.Fatalf("detail = %q, want 含字段名与原始引用文本", detail)
+	}
+	if out.Pruned[0].CapabilityID != loose.ID {
+		t.Fatalf("剪枝记录挂在 %q, want %q", out.Pruned[0].CapabilityID, loose.ID)
+	}
+}
+
+// TestDispatchParamTemplateTypeError 取到了值但转不了 → param_type（契约 §4 第 13 项）。
+func TestDispatchParamTemplateTypeError(t *testing.T) {
+	f := newFakeStore()
+	strict := f.addCap(testNS, "strict", 1, nil,
+		`{"type":"object","properties":{"lines":{"type":"integer"}}}`)
+	f.addNode("nd_strict", strict.ID, 1)
+	d := New(f)
+
+	out, err := d.Dispatch(context.Background(), sourceInput(strict.ID,
+		map[string]any{"lines": "{{lines}}"},
+		map[string]any{"lines": "abc"},
+	))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Tasks) != 0 {
+		t.Fatalf("类型转不了却建了任务: %d", len(out.Tasks))
+	}
+	if len(out.Pruned) != 1 || out.Pruned[0].Reason != ReasonParamType {
+		t.Fatalf("want 1 条 param_type, got %v", out.Pruned)
+	}
+	detail := out.Pruned[0].Detail
+	if !strings.Contains(detail, "参数 lines 期望 integer，但求值得到 \"abc\"，转不了") {
+		t.Fatalf("detail = %q, want 期望类型 + 实际值", detail)
+	}
+}
+
+// TestDispatchParamTemplateMixed 字面量与引用混在同一份模板里，两者都落地（契约 §4 第 14 项）。
+func TestDispatchParamTemplateMixed(t *testing.T) {
+	f := newFakeStore()
+	target := f.addCap(testNS, "deploy", 1, nil,
+		`{"type":"object","properties":{"env":{"type":"string"},"n":{"type":"integer"}}}`)
+	f.addNode("nd_deploy", target.ID, 1)
+	d := New(f)
+
+	out, err := d.Dispatch(context.Background(), sourceInput(target.ID,
+		map[string]any{"env": "prod", "n": "{{n}}"},
+		map[string]any{"n": float64(3)},
+	))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Pruned) != 0 || len(out.Tasks) != 1 {
+		t.Fatalf("tasks=%d pruned=%v, want 1 task 0 prune", len(out.Tasks), out.Pruned)
+	}
+	got := decodeTaskParams(t, out.Tasks[0])
+	if got["env"] != "prod" {
+		t.Errorf("字面量丢失: env = %#v", got["env"])
+	}
+	if got["n"] != float64(3) {
+		t.Errorf("引用未落地: n = %#v", got["n"])
+	}
+}
+
+// TestDispatchRecursiveDoesNotResolve 能力→能力递归派发**不**解析参数（契约 §2.5）。
+//
+// 递归路径不带 TargetParams，参数原样传给下一跳：即使上游结果里恰好有
+// `{{n}}` 这样的文本，也不会被当成模板再展开一次（*单趟* 是硬边界）。
+func TestDispatchRecursiveDoesNotResolve(t *testing.T) {
+	f := newFakeStore()
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+	target := f.addCap(testNS, "fix", 1, nil, `{"type":"object"}`)
+	f.addEdge(testNS, review.ID, "fix", target.ID)
+	f.addNode("nd_fix", target.ID, 1)
+	d := New(f)
+
+	out, err := d.Dispatch(context.Background(), DispatchInput{
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "t_recursive", FromCap: review.ID, Out: "fix",
+		Params:  map[string]any{"n": "{{n}}"},
+		Payload: map[string]any{"n": float64(1)}, // 递归路径不该看它
+		Path:    []string{review.ID},
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Tasks) != 1 {
+		t.Fatalf("want 1 task, got %d (pruned=%v)", len(out.Tasks), out.Pruned)
+	}
+	got := decodeTaskParams(t, out.Tasks[0])
+	if got["n"] != "{{n}}" {
+		t.Fatalf("递归派发把参数当模板展开了: n = %#v, want 原文 \"{{n}}\"", got["n"])
+	}
+}
+
+// TestDispatchParamMissingDetailSources 未命中的三种引用形态在 detail 里可区分（契约 §4 第 16 项）。
+//
+// 用户看到 `$v` 就知道是变量声明那边的问题，看到 `payload.a.b` 就知道是
+// payload 结构不对——两者病因不同，混成一句话就查不下去了。
+func TestDispatchParamMissingDetailSources(t *testing.T) {
+	cases := []struct {
+		name     string
+		template map[string]any
+		want     string
+	}{
+		{
+			name:     "占位符回显原文",
+			template: map[string]any{"title": "{{x}}"},
+			want:     "参数 title 取不到 {{x}}（payload 里没有这个字段）",
+		},
+		{
+			name:     "from 映射报 payload 路径",
+			template: map[string]any{"title": map[string]any{"from": "a.b"}},
+			want:     "参数 title 取不到 payload.a.b（payload 里没有这个字段）",
+		},
+		{
+			name:     "var 映射报变量名",
+			template: map[string]any{"title": map[string]any{"var": "v"}},
+			want:     "参数 title 取不到变量 $v（源未声明该变量，或它指向的字段在 payload 里没有）",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeStore()
+			loose := f.addCap(testNS, "loose", 1, nil, `{"type":"object"}`)
+			f.addNode("nd_loose", loose.ID, 1)
+			d := New(f)
+
+			out, err := d.Dispatch(context.Background(), sourceInput(loose.ID, c.template, nil))
+			if err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+			if len(out.Pruned) != 1 || out.Pruned[0].Reason != ReasonParamMissing {
+				t.Fatalf("want 1 条 param_missing, got %v", out.Pruned)
+			}
+			if detail := out.Pruned[0].Detail; !strings.Contains(detail, c.want) {
+				t.Fatalf("detail = %q, want 含 %q", detail, c.want)
+			}
+		})
+	}
+
+	// 多个未命中用「；」串起来：一条目标只落一条记录，但病因不能丢
+	t.Run("多条未命中用分号连接", func(t *testing.T) {
+		f := newFakeStore()
+		loose := f.addCap(testNS, "loose", 1, nil, `{"type":"object"}`)
+		f.addNode("nd_loose", loose.ID, 1)
+		d := New(f)
+
+		out, err := d.Dispatch(context.Background(), sourceInput(loose.ID,
+			map[string]any{"a": "{{x}}", "b": "{{y}}"}, nil))
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if len(out.Pruned) != 1 {
+			t.Fatalf("一条目标只该落一条记录, got %v", out.Pruned)
+		}
+		detail := out.Pruned[0].Detail
+		if !strings.Contains(detail, "；") || !strings.Contains(detail, "参数 a 取不到 {{x}}") ||
+			!strings.Contains(detail, "参数 b 取不到 {{y}}") {
+			t.Fatalf("detail = %q, want 两条 miss 用「；」连接", detail)
+		}
+	})
+}
+
+// TestParamPruneDetailExact param_missing / param_type 的 detail 是**整串**冻结的（契约 §8.1 A2）。
+//
+// 上面几个用例按子串断言正文，只能证明「病因写清楚了」；子串断言漏得掉整个
+// `能力名@版本 ` 前缀——而前缀恰恰是扇出场景里唯一能回答「哪个目标」的字段
+// （一条 trace 同时喂多个目标，各目标自己求值、各自可能剪枝）。
+// 所以这里用**等值**断言把「前缀 + 冻结正文」一起钉死，改一个字就红。
+func TestParamPruneDetailExact(t *testing.T) {
+	cases := []struct {
+		name     string
+		capName  string
+		schema   string
+		template map[string]any
+		payload  map[string]any
+		reason   PruneReason
+		want     string
+	}{
+		{
+			name:     "param_missing：前缀 + 取不到 {{x}} 的正文",
+			capName:  "loose",
+			schema:   `{"type":"object"}`,
+			template: map[string]any{"n": "{{x}}"},
+			payload:  nil, // payload 里没有这个字段
+			reason:   ReasonParamMissing,
+			want:     "loose@1 参数 n 取不到 {{x}}（payload 里没有这个字段）",
+		},
+		{
+			name:     "param_type：前缀 + 期望类型与实际值的正文",
+			capName:  "strict",
+			schema:   `{"type":"object","properties":{"lines":{"type":"integer"}}}`,
+			template: map[string]any{"lines": "{{lines}}"},
+			payload:  map[string]any{"lines": "abc"},
+			reason:   ReasonParamType,
+			want:     `strict@1 参数 lines 期望 integer，但求值得到 "abc"，转不了`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeStore()
+			target := f.addCap(testNS, c.capName, 1, nil, c.schema)
+			f.addNode("nd_target", target.ID, 1)
+			d := New(f)
+
+			out, err := d.Dispatch(context.Background(), sourceInput(target.ID, c.template, c.payload))
+			if err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+			if len(out.Pruned) != 1 {
+				t.Fatalf("want 1 条剪枝记录, got %v", out.Pruned)
+			}
+			if got := out.Pruned[0].Reason; got != c.reason {
+				t.Fatalf("reason = %q, want %q", got, c.reason)
+			}
+			if got := out.Pruned[0].Detail; got != c.want {
+				t.Fatalf("detail 不是冻结文案：\n got  %q\n want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestDispatchDryRunPreviewUsesResolvedParams 试运行的预览参数是**解析后**的值。
+//
+// 用户改完模板点"试运行"，最想知道的就是 `{{n}}` 到底取到了什么；
+// 预览里给回原文就等于什么都没说。
+func TestDispatchDryRunPreviewUsesResolvedParams(t *testing.T) {
+	f := newFakeStore()
+	loose := f.addCap(testNS, "loose", 1, nil,
+		`{"type":"object","properties":{"n":{"type":"integer"}}}`)
+	f.addNode("nd_loose", loose.ID, 1)
+	d := New(f)
+
+	in := sourceInput(loose.ID, map[string]any{"n": "{{n}}"}, map[string]any{"n": float64(7)})
+	in.DryRun = true
+	out, err := d.Dispatch(context.Background(), in)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Tasks) != 1 {
+		t.Fatalf("want 1 preview task, got %d", len(out.Tasks))
+	}
+	if out.Tasks[0].Status != store.TaskPending {
+		t.Errorf("预览任务状态 = %q, want pending", out.Tasks[0].Status)
+	}
+	if got := decodeTaskParams(t, out.Tasks[0]); got["n"] != float64(7) {
+		t.Fatalf("预览参数 = %#v, want 解析后的 7", got)
+	}
+}
+
+// TestParamDetailFormattersNilCap 能力定义缺失时 detail 只省前缀，不 panic。
+//
+// 剪枝留痕一定不能因为格式化细节把派发打断（它是诊断，不是业务）。
+func TestParamDetailFormattersNilCap(t *testing.T) {
+	miss := formatParamMissing(nil, []ParamMiss{{Field: "title", Ref: "{{x}}"}})
+	if !strings.Contains(miss, "参数 title 取不到 {{x}}（payload 里没有这个字段）") {
+		t.Fatalf("detail = %q", miss)
+	}
+	typ := formatParamType(nil, ParamTypeErr{Field: "n", Want: "integer", Got: "abc"})
+	if !strings.Contains(typ, "参数 n 期望 integer，但求值得到 \"abc\"，转不了") {
+		t.Fatalf("detail = %q", typ)
+	}
+}
+
 // ---------- 小工具 ----------
 
 func keysOf[V any](m map[string]V) []string {

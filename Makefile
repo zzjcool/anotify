@@ -63,7 +63,7 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4）+ openapi 与 mu
 	@echo "✅ 契约静态断言（A2/A4 + openapi 一致性）通过"
 
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试（不含 e2e / integration）
-	@unformatted=$$(find . -name '*.go' ! -path './vendor/*' -exec gofmt -l {} +); \
+	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
 		printf '%s\n' "未通过 gofmt，请执行 gofmt -w：" "$$unformatted"; \
 		exit 1; \

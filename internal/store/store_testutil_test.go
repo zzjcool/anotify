@@ -57,6 +57,20 @@ func newTestNS(t *testing.T, db *DB) (namespaceID, userID string) {
 	return nsID, userID
 }
 
+// newTestOrgNS 同时返回 orgID 与默认命名空间 id。
+//
+// 给那些**两层都需要**的用例：#162 之后资源写入用 nsID，而 orgID 还出现在
+// 组织级字段（如 Source.OrgID）与跨命名空间断言里。
+func newTestOrgNS(t *testing.T, db *DB) (orgID, namespaceID string) {
+	t.Helper()
+	orgID, _ = newTestOrg(t, db)
+	nsID, err := db.DefaultNamespaceID(context.Background(), orgID)
+	if err != nil {
+		t.Fatalf("default namespace for org %s: %v", orgID, err)
+	}
+	return orgID, nsID
+}
+
 // orgIDOfNamespace 从命名空间回查组织（组织级断言用）。
 func orgIDOfNamespace(t *testing.T, db *DB, namespaceID string) string {
 	t.Helper()

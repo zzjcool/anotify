@@ -264,20 +264,23 @@ func TestNonUserScopedCapabilitySkipsMemberCheck(t *testing.T) {
 // TestPruneReasonValues 原因字符串必须与契约 §7 完全一致（机器可读契约）。
 func TestPruneReasonValues(t *testing.T) {
 	want := map[PruneReason]string{
-		ReasonNoEdge:      "no_edge",
-		ReasonParamSchema: "param_schema",
-		ReasonNoNode:      "no_node",
-		ReasonForeignUser: "foreign_user",
-		ReasonPath:        "path",
+		ReasonNoEdge:       "no_edge",
+		ReasonParamSchema:  "param_schema",
+		ReasonParamMissing: "param_missing",
+		ReasonParamType:    "param_type",
+		ReasonNoNode:       "no_node",
+		ReasonForeignUser:  "foreign_user",
+		ReasonPath:         "path",
 	}
 	for r, s := range want {
 		if string(r) != s {
 			t.Errorf("reason %v != %q (contract §7 spelling)", r, s)
 		}
 	}
-	// 一共五种（①「上游没回报」不是剪枝，不该有对应常量）
-	if len(want) != 5 {
-		t.Fatalf("want exactly 5 prune reasons, got %d", len(want))
+	// 一共七种（①「上游没回报」不是剪枝，不该有对应常量；
+	// param_missing / param_type 是 #114 新增的取值/类型剪枝）
+	if len(want) != 7 {
+		t.Fatalf("want exactly 7 prune reasons, got %d", len(want))
 	}
 }
 

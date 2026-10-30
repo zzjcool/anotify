@@ -19,8 +19,8 @@ import (
 // 为什么 namespace_id 与 org_id 同时存在（I10）：
 //   - `org_id` 是跨命名空间粗过滤与统计的锚点；
 //   - `namespace_id` 才是**读路径**的隔离维度。
-//   两者是包含关系：`namespace.org_id` 就是行上的 `org_id`。写入时由 store 层
-//   从 `namespaces` 行派生 org_id（见 NamespaceOrgID），所以不可能写出不一致的行。
+//     两者是包含关系：`namespace.org_id` 就是行上的 `org_id`。写入时由 store 层
+//     从 `namespaces` 行派生 org_id（见 NamespaceOrgID），所以不可能写出不一致的行。
 const (
 	// DefaultNamespaceSlug 是每个组织自带的命名空间（建组织时同事务创建）。
 	DefaultNamespaceSlug = "default"
