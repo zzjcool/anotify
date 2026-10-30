@@ -130,6 +130,9 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 // CreateTasks 在单个事务内批量建任务：扇出必须原子（要么全成要么全不成）。
 //
 // 空入参是 no-op（不是错误）：扇出的每条边都可能被剪枝，最后一条不剩是正常情况。
+//
+// #140 起内部拆成「开事务 + createTasksTx + 提交」三段，签名/行为/错误文案不变：
+// 拆出的 createTasksTx 要能被 ReportResultAndCreateTasks 复用，与终态写入共用一个事务。
 func (d *DB) CreateTasks(ctx context.Context, ts []*Task) error {
 	if len(ts) == 0 {
 		return nil
@@ -140,6 +143,25 @@ func (d *DB) CreateTasks(ctx context.Context, ts []*Task) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := d.createTasksTx(ctx, tx, ts); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit create tasks: %w", err)
+	}
+	return nil
+}
+
+// createTasksTx 是 CreateTasks 的事务内版本：在调用方事务里插任务行（#140）。
+//
+// 本体从 CreateTasks 整段搬移，校验顺序（nil / 必填 org-trace-capability / 只能落
+// pending）与错误文案一字未改；BeginTx/Commit/Rollback 归调用方。
+// 只有和 reportResultTx 共用一个 tx 句柄，「父任务终态 + 下一跳子任务行」才能
+// 同生共死（契约 §1.1）：子任务插入失败时整个事务回滚，父任务不会留在终态。
+func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
+	if len(ts) == 0 {
+		return nil
+	}
 	for i, t := range ts {
 		if t == nil {
 			return fmt.Errorf("create tasks: nil task at index %d", i)
@@ -195,9 +217,6 @@ func (d *DB) CreateTasks(ctx context.Context, ts []*Task) error {
 		); err != nil {
 			return fmt.Errorf("insert task %d (%s): %w", i, t.Capability, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit create tasks: %w", err)
 	}
 	return nil
 }
@@ -497,7 +516,63 @@ func (d *DB) ExtendLeasesForNode(ctx context.Context, orgID, nodeID string, leas
 // 一个 BEGIN/COMMIT 里完成：隐式 running + started_at + running→终态 +
 // 明细字段 + 释放槽位。拆开时最坏的中间态是「任务已终态、槽位却没释放」——
 // 那一个并发额度会一直占到巡检或重启为止，而现在要么全成要么全不成。
+//
+// #140 起它是 ReportResultAndCreateTasks(next=nil) 的薄壳：签名、返回值、错误文案
+// 全部保持不变，只是实现搬进了共用的事务内助手（reportResultTx）。
 func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error {
+	return d.ReportResultAndCreateTasks(ctx, orgID, taskID, status, out, reported, summary, artifacts, errMsg, nil)
+}
+
+// ReportResultAndCreateTasks 在**一个事务**里完成「终态写入 + 下一跳建任务行」（#140）。
+//
+// 为什么必须同一个事务：旧实现是「终态先提交，下一跳在后台 goroutine 里查出口表
+// 再建行」。进程在两者之间退出，就会留下父任务 succeeded + out=fix、子任务行不存在
+// 的**永久空洞**——trace 看起来一切正常，链却永远停了（ListRedispatchable 只捞
+// `status='pending' AND node_id IS NULL`，捞不到一条根本不存在的行）。
+//
+// 事务内顺序：先终态写（reportResultTx），后插子任务（createTasksTx）；next 为空
+// 等价于旧的 ReportResult 行为。**子任务插入失败 → 整体回滚**：父任务不会留在终态，
+// 不会出现「父 succeeded、子任务不存在」的空洞（宁可让父任务留在 running 被巡检退回
+// 重派、重复执行一次幂等能力，也胜于永久断链）。
+//
+// 补偿路径（崩溃点回归，契约 §0 第 3 条）：本事务 COMMIT 之后，即使调用方的 publish
+// 丢失 / 进程退出 / 返回错误，next 里的行已经落库并且是 `status='pending'` +
+// `node_id IS NULL` + `attempts=0` —— 这正是 store.ListRedispatchable 的筛选条件，
+// internal/lease 的巡检 sweeper（每 5s tick，Redispatch = Dispatcher.RedispatchTask）
+// 会把它们捞回来重新派发。所以「终态 + 子任务行」一次提交就够了，publish 不需要也不该
+// 进事务（网络操作不能进事务）。
+//
+// 状态写入仍只走 transitionGuarded（在 reportResultTx 内，同一个 tx 句柄）；
+// 本函数不新增任何 `UPDATE tasks SET status` 语句。
+func (d *DB) ReportResultAndCreateTasks(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string, next []*Task) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin report result: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := d.reportResultTx(ctx, tx, orgID, taskID, status, out, reported, summary, artifacts, errMsg); err != nil {
+		return err
+	}
+	if len(next) > 0 {
+		// 下一跳建行：与终态同一个事务（见本函数文档里的补偿路径与回滚语义）
+		if err := d.createTasksTx(ctx, tx, next); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit report result: %w", err)
+	}
+	return nil
+}
+
+// reportResultTx 是 ReportResult 的事务内版本：调用方负责 BeginTx/Commit/Rollback。
+//
+// 本体从 ReportResult 整段搬移（#140），逻辑、错误文案、SQL 一字未改；唯一去掉的是
+// 自己开事务/提交那一段——这样它才能与 createTasksTx 共用一个事务。
+// 参数校验（终态白名单 / 空出口名）也跟着搬进来，保证两条入口的错误文案与哨兵值一致。
+// 状态写入只用 transitionGuarded，且传的是调用方的同一个 tx 句柄。
+func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: result status must be succeeded|failed, got %q", ErrInvalidTransition, status)
 	}
@@ -506,19 +581,13 @@ func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out
 		return fmt.Errorf("report result: empty out string is not a valid port (use nil)")
 	}
 
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin report result: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	// status 与 node_id 必须用 **tx** 读：DSN 是 MaxOpenConns(1)，走连接池
 	// （d.GetTask）会和本事务抢同一根连接，直接自锁。
 	var (
 		cur    string
 		nodeID sql.NullString
 	)
-	err = tx.QueryRowContext(ctx,
+	err := tx.QueryRowContext(ctx,
 		`SELECT status, node_id FROM tasks WHERE org_id = ? AND id = ?`, orgID, taskID).
 		Scan(&cur, &nodeID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -586,9 +655,6 @@ func (d *DB) ReportResult(ctx context.Context, orgID, taskID, status string, out
 			 WHERE node_id = ? AND busy_task = ?`, Now(), nodeID.String, taskID); err != nil {
 			return fmt.Errorf("report result: release instance: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit report result: %w", err)
 	}
 	return nil
 }

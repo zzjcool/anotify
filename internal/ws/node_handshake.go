@@ -28,7 +28,20 @@ type NodeStore interface {
 	Transition(ctx context.Context, orgID, taskID, from, to string) error
 	// ProgressTask 一个事务内完成 progress 帧的三件事：→running + started_at + 续租。
 	ProgressTask(ctx context.Context, orgID, taskID string, leaseUntil int64) error
-	ReportResult(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary string, artifacts []string, errMsg string) error
+	// ReportResultAndCreateTasks 在**一个事务**里完成「父任务终态写入 + 下一跳子任务建行」
+	// （#140）。next 为空 == 旧的 ReportResult 行为。
+	//
+	// 为什么必须同一个事务：拆成两步（先提交终态、后台 goroutine 再建行）时，
+	// 进程在中间退出就会留下「父任务 succeeded + out=fix、子任务行不存在」的永久空洞——
+	// ListRedispatchable 只捞已存在的 pending 行，捞不到一条不存在的行，链永久停。
+	// 子任务插入失败 → 整体回滚（父任务不留在终态）。
+	//
+	// 补偿路径：本事务提交后，next 里的行已是 pending + node_id IS NULL + attempts=0，
+	// 即使调用方的 publish 丢失/失败/随进程消失，store.ListRedispatchable
+	// （internal/lease sweeper，每 5s tick，Redispatch = Dispatcher.RedispatchTask）
+	// 会把它捞回来重派。所以 publish 不需要也不该进事务。
+	ReportResultAndCreateTasks(ctx context.Context, orgID, taskID, status string, out *string,
+		reported bool, summary string, artifacts []string, errMsg string, next []*store.Task) error
 	ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error
 	ExtendLeasesForNode(ctx context.Context, orgID, nodeID string, leaseUntil int64) (int, error)
 }
