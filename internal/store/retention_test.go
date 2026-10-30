@@ -73,6 +73,26 @@ func mkTerminalTask(t *testing.T, db *DB, orgID string, cap *CapabilityVersion, 
 }
 
 // mkEventAt 在指定时刻写一条事件。
+// mkPruneEventAt 造一条**剪枝记录**（source='route'）。
+//
+// 不能走 mkEventAt：InsertEvent 会拒绝保留来源名 'route'（#142 的守卫，
+// 防止用户建一个叫 route 的源，其事件被事件流静默过滤），剪枝自己走
+// InsertPruneEvent 这条专用入口。
+func mkPruneEventAt(t *testing.T, db *DB, orgID, typ string, createdAt int64) *Event {
+	t.Helper()
+	e := &Event{
+		OrgID:     orgID,
+		TraceID:   "trc_" + NewEventID(),
+		Source:    "route",
+		Type:      typ,
+		CreatedAt: createdAt,
+	}
+	if _, err := db.InsertPruneEvent(context.Background(), e); err != nil {
+		t.Fatalf("insert prune event (%s): %v", typ, err)
+	}
+	return e
+}
+
 func mkEventAt(t *testing.T, db *DB, orgID, source, typ string, createdAt int64) *Event {
 	t.Helper()
 	e := &Event{
@@ -478,7 +498,7 @@ func TestRetentionEventsDisabledByDefault(t *testing.T) {
 	// ③ source='route' 的剪枝行（#142）：旧口径下同样会被删，都不能有特例。
 	e90 := mkEventAt(t, db, orgID, "github", "pull_request.opened", now-90*day)
 	e400 := mkEventAt(t, db, orgID, "github", "push", now-400*day)
-	eRoute := mkEventAt(t, db, orgID, "route", "pruned", now-1000*day)
+	eRoute := mkPruneEventAt(t, db, orgID, "pruned.no_matching_edge", now-1000*day)
 
 	// 同时造一条过期终态任务（能力 resultTtlSec=60）：tasks 侧必须照常生效
 	cap := mkRetentionCap(t, db, orgID, "review", 60)
