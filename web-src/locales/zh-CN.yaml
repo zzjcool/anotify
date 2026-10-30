@@ -239,12 +239,11 @@ index:
     loading: 正在加载事件…
     empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
 scope:
-  switcher_label: "切换组织或命名空间"
-  section_org: "组织"
+  switcher_label: "切换命名空间"
   section_ns: "命名空间"
-  org: "组织"
   ns: "命名空间"
   none: "（还没有命名空间）"
+  empty_hint: "还没有命名空间，先建一个再开始。"
   new_ns: "新建命名空间"
   new_ns_prompt: "新命名空间 slug（小写字母 / 数字 / 连字符）"
   new_ns_failed: "创建失败"

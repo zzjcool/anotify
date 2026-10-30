@@ -239,12 +239,11 @@ index:
     loading: イベントを読み込み中…
     empty: イベントはまだありません。webhook や cron トリガーを繋ぐと、ここに流れが表示されます。
 scope:
-  switcher_label: "組織またはネームスペースを切り替え"
-  section_org: "組織"
+  switcher_label: "ネームスペースを切り替え"
   section_ns: "ネームスペース"
-  org: "組織"
   ns: "ネームスペース"
   none: "（ネームスペースがありません）"
+  empty_hint: "ネームスペースがありません。まず 1 つ作成してください。"
   new_ns: "ネームスペースを作成"
   new_ns_prompt: "新しいネームスペースの slug（小文字・数字・ハイフン）"
   new_ns_failed: "作成に失敗しました"

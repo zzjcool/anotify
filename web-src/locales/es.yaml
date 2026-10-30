@@ -239,12 +239,11 @@ index:
     loading: Cargando eventos…
     empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
 scope:
-  switcher_label: "Cambiar de organización o espacio de nombres"
-  section_org: "Organización"
+  switcher_label: "Cambiar de espacio de nombres"
   section_ns: "Espacio de nombres"
-  org: "Organización"
   ns: "Espacio de nombres"
   none: "(sin espacios de nombres)"
+  empty_hint: "Aún no hay espacios de nombres. Crea uno para empezar."
   new_ns: "Nuevo espacio de nombres"
   new_ns_prompt: "Slug del nuevo espacio (minúsculas / dígitos / guiones)"
   new_ns_failed: "Error al crear"

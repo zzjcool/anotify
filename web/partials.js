@@ -493,57 +493,35 @@
 	/* ---------- 布局挂载：在 body 开头注入「侧栏 + 主栏容器」 ----------
 	 * 页面把主内容放在 <div id="page-main"></div> 里，本函数把它包进布局。
 	 */
-	// 侧栏顶部的「组织 / 命名空间」切换器。
+	// 侧栏顶部的「命名空间」切换器。
 	//
 	// 一个触发器 + 一个分节菜单。**刻意不用原生 <select>**：原生下拉在暗色
 	// 界面里就是系统控件的样子（白底、方角、系统字体、没有悬浮反馈），
-	// 两个并排放在侧栏顶部，跟整套设计像两个时代的拼贴。
+	// 放在侧栏顶部，跟整套设计像两个时代的拼贴。
 	//
-	// 只有后端提供 /v1/orgs 才显示：真实后端还没有这套端点
-	// （设计见 docs/design/namespaces.md），拿不到就保持隐藏，
-	// 页面行为一点不变 —— 不需要为 mock 和真后端分叉代码路径。
-	async function mountScopeSwitcher(box) {
-		let orgs = [];
+	// 命名空间是侧栏唯一的维度（#203）。组织那一层是幽灵 UI：组织端点
+	// （orgs）在真后端根本不存在，探测 404 之后整个切换器永远不渲染，用户被
+	// 锁死在 `default`。现在只认 `GET /v1/namespaces`（不带组织参数）；拿不到
+	// （未登录 / 老后端没有该端点）就保持隐藏，页面行为一点不变 —— 不需要为
+	// mock 和真后端分叉代码路径。
+	async function mountNamespaceSwitcher(box) {
+		let list = [];
 		try {
-			const r = await fetch("/v1/orgs", { credentials: "include" });
+			const r = await fetch("/v1/namespaces", { credentials: "include" });
 			if (!r.ok) return;
-			orgs = (await r.json()).orgs || [];
+			list = (await r.json()).namespaces || [];
 		} catch (e) {
 			return;
 		}
-		if (!orgs.length) return;
 
-		// 存着的选择可能已经失效（换了组织、删了命名空间），统一回落到第一个
-		const pick = (list, want, fallback) =>
-			list.some((x) => x.id === want) ? want : fallback;
-		const initial = (name) =>
-			String(name || "?")
-				.trim()
-				.slice(0, 1)
-				.toUpperCase();
+		// 存着的选择可能已经失效（换了账号、删了这个命名空间），回落到第一个
+		const nsId = list.some((n) => n.id === scope.namespaceId)
+			? scope.namespaceId
+			: (list[0] || {}).id || "";
 
-		const loadNamespaces = async (id) => {
-			try {
-				const r = await fetch(`/v1/namespaces?orgId=${encodeURIComponent(id)}`, {
-					credentials: "include",
-				});
-				if (!r.ok) return [];
-				return (await r.json()).namespaces || [];
-			} catch (e) {
-				return [];
-			}
-		};
+		const nsOf = () => list.find((n) => n.id === nsId) || list[0] || null;
 
-		let orgId = pick(orgs, scope.orgId, orgs[0].id);
-		let namespaces = await loadNamespaces(orgId);
-		let nsId = pick(namespaces, scope.namespaceId, (namespaces[0] || {}).id || "");
-
-		const orgOf = () => orgs.find((o) => o.id === orgId) || orgs[0];
-		const nsOf = () => namespaces.find((n) => n.id === nsId) || namespaces[0] || null;
-
-		/* ---- 触发器：头像 + 组织（弱）/ 命名空间（强）+ 箭头 ---- */
-		const avatar = el("span", { class: "scope-avatar" });
-		const orgText = el("span", { class: "scope-org" });
+		/* ---- 触发器：# + 命名空间 + 箭头（没有第二个维度了） ---- */
 		const nsText = el("span", { class: "scope-ns" });
 		const trigger = el(
 			"button",
@@ -552,10 +530,10 @@
 				class: "scope-trigger",
 				"aria-haspopup": "menu",
 				"aria-expanded": "false",
-				"aria-label": t("scope.switcher_label", "切换组织或命名空间"),
+				"aria-label": t("scope.switcher_label", "切换命名空间"),
 			},
-			avatar,
-			el("span", { class: "scope-text" }, orgText, nsText),
+			el("span", { class: "scope-hash", text: "#" }),
+			el("span", { class: "scope-text" }, nsText),
 			icon(["M6 9l6 6 6-6"], "h-3.5 w-3.5 scope-chevron"),
 		);
 
@@ -565,61 +543,95 @@
 			"aria-orientation": "vertical",
 		});
 
-		// 一条可选项。lead = 左侧图标位（组织用头像，命名空间用 #）
-		const item = (opts) => {
+		// 一条可选项。lead 固定是 #：侧栏只有命名空间这一个维度，
+		// 不再有组织头像那种第二种 lead。
+		const item = (ns) => {
+			const checked = ns.id === nsId;
 			const b = el(
 				"button",
 				{
 					type: "button",
 					class: "scope-item",
 					role: "menuitemradio",
-					"aria-checked": opts.checked ? "true" : "false",
+					"aria-checked": checked ? "true" : "false",
+					// e2e 靠它定位条目（比中文名稳），别删
+					"data-ns-id": ns.id,
 				},
-				opts.lead,
-				el("span", { class: "scope-item-name", text: opts.name }),
-				opts.sub ? el("span", { class: "scope-item-sub", text: opts.sub }) : null,
-				opts.checked ? icon(["M20 6L9 17l-5-5"], "h-3.5 w-3.5 scope-check") : null,
+				el("span", { class: "scope-hash", text: "#" }),
+				el("span", { class: "scope-item-name", text: ns.name }),
+				el("span", { class: "scope-item-sub", text: ns.slug }),
+				checked ? icon(["M20 6L9 17l-5-5"], "h-3.5 w-3.5 scope-check") : null,
 			);
 			b.addEventListener("click", () => {
-				saveScope(opts.pick);
+				saveScope({ namespaceId: ns.id });
 				location.reload();
 			});
 			return b;
 		};
 
+		// 新建：body 只发 { slug, name }。组织已经不是前端概念，多带一个组织字段
+		// 只是后端读不到的无效值（org 由 query / X-Org-Id / 主组织决定）。
+		async function createNamespace() {
+			const slug = String(
+				window.prompt(
+					t("scope.new_ns_prompt", "新命名空间 slug（小写字母 / 数字 / 连字符）"),
+					"",
+				) || "",
+			).trim();
+			if (!slug) return;
+			try {
+				const r = await fetch("/v1/namespaces", {
+					method: "POST",
+					credentials: "include",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ slug, name: slug }),
+				});
+				const j = await r.json().catch(() => ({}));
+				if (!r.ok) {
+					window.alert(j.error || t("scope.new_ns_failed", "创建失败"));
+					return;
+				}
+				saveScope({ namespaceId: j.namespace.id });
+				location.reload();
+			} catch (e) {
+				window.alert(t("scope.new_ns_failed", "创建失败"));
+			}
+		}
+
+		const plus = el("button", {
+			type: "button",
+			class: "scope-group-btn",
+			title: t("scope.new_ns", "新建命名空间"),
+			"aria-label": t("scope.new_ns", "新建命名空间"),
+			text: "+",
+		});
+		plus.addEventListener("click", createNamespace);
+
+		// 空态：一个命名空间都没有时**替代**列表，绝不渲染空下拉 ——
+		// 空下拉只会让人以为界面坏了，看不出「先新建一个」这个下一步。
+		const emptyCta = el("button", {
+			type: "button",
+			class: "scope-empty-cta",
+			text: t("scope.new_ns", "新建命名空间"),
+		});
+		emptyCta.addEventListener("click", createNamespace);
+		const empty = el(
+			"div",
+			{ class: "scope-empty" },
+			el("p", {
+				class: "scope-empty-text",
+				text: t("scope.empty_hint", "还没有命名空间，先建一个再开始。"),
+			}),
+			emptyCta,
+		);
+
 		const paint = () => {
-			const o = orgOf();
 			const n = nsOf();
-			avatar.textContent = initial(o && o.name);
-			orgText.textContent = (o && o.name) || "";
 			nsText.textContent = n
 				? `${n.name} · ${n.slug}`
 				: t("scope.none", "（还没有命名空间）");
 
 			menu.textContent = "";
-			menu.append(el("div", { class: "scope-group", text: t("scope.section_org", "组织") }));
-			for (const g of orgs) {
-				menu.append(
-					item({
-						name: g.name,
-						lead: el("span", { class: "scope-avatar", text: initial(g.name) }),
-						checked: g.id === orgId,
-						// 换组织：命名空间列表整个换掉，所以清空让它回落到
-						// 新组织的第一个命名空间（重载后再解析）。
-						pick: { orgId: g.id, namespaceId: "" },
-					}),
-				);
-			}
-			menu.append(el("div", { class: "scope-divider" }));
-
-			const plus = el("button", {
-				type: "button",
-				class: "scope-group-btn",
-				title: t("scope.new_ns", "新建命名空间"),
-				"aria-label": t("scope.new_ns", "新建命名空间"),
-				text: "+",
-			});
-			plus.addEventListener("click", createNamespace);
 			menu.append(
 				el(
 					"div",
@@ -628,27 +640,11 @@
 					plus,
 				),
 			);
-
-			if (!namespaces.length) {
-				menu.append(
-					el("div", {
-						class: "scope-item-sub",
-						style: "padding: 6px 8px",
-						text: t("scope.none", "（还没有命名空间）"),
-					}),
-				);
+			if (!list.length) {
+				menu.append(empty);
+				return;
 			}
-			for (const ns of namespaces) {
-				menu.append(
-					item({
-						name: ns.name,
-						sub: ns.slug,
-						lead: el("span", { class: "scope-hash", text: "#" }),
-						checked: ns.id === nsId,
-						pick: { orgId, namespaceId: ns.id },
-					}),
-				);
-			}
+			for (const ns of list) menu.append(item(ns));
 		};
 
 		const onDocClick = (ev) => {
@@ -673,33 +669,6 @@
 				if (first) first.focus();
 			}
 		};
-
-		async function createNamespace() {
-			const slug = String(
-				window.prompt(
-					t("scope.new_ns_prompt", "新命名空间 slug（小写字母 / 数字 / 连字符）"),
-					"",
-				) || "",
-			).trim();
-			if (!slug) return;
-			try {
-				const r = await fetch("/v1/namespaces", {
-					method: "POST",
-					credentials: "include",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ orgId, slug, name: slug }),
-				});
-				const j = await r.json().catch(() => ({}));
-				if (!r.ok) {
-					window.alert(j.error || t("scope.new_ns_failed", "创建失败"));
-					return;
-				}
-				saveScope({ orgId, namespaceId: j.namespace.id });
-				location.reload();
-			} catch (e) {
-				window.alert(t("scope.new_ns_failed", "创建失败"));
-			}
-		}
 
 		trigger.addEventListener("click", (ev) => {
 			ev.stopPropagation();
@@ -727,7 +696,9 @@
 		box.append(el("div", { class: "scope-block" }, trigger, menu));
 		box.classList.remove("hidden");
 		paint();
-		saveScope({ orgId, namespaceId: nsId });
+		// 纠正落盘的选择：存着的那条可能已不存在，写回真正生效的 id
+		// （空列表时写空串，语义 = "确实没有命名空间"，别留一个不存在的 id）。
+		saveScope({ namespaceId: nsId });
 	}
 
 	function mountLayout(opts) {
@@ -737,9 +708,9 @@
 				title: "",
 				subtitle: "",
 				username: "zheng",
-				// "org" = 这一页是组织级的（能力 / 节点 / 密钥 / 管理），
-				// 不随命名空间切换。页面必须标出来，否则用户切了命名空间
-				// 发现列表没变，只会以为功能坏了。
+				// "org" = 这一页确实不随命名空间切换（今天是密钥 / 安全 / 管理
+				// 三页；能力与节点已随命名空间）。页面必须标出来，否则用户切了
+				// 命名空间发现列表没变，只会以为功能坏了。
 				scopeLevel: "",
 			},
 			opts || {},
@@ -777,7 +748,7 @@
 		}
 
 		const scopeBox = el("div", { id: "scope-switcher", class: "hidden" });
-		mountScopeSwitcher(scopeBox);
+		mountNamespaceSwitcher(scopeBox);
 
 		const sidebar = el(
 			"aside",
@@ -1023,15 +994,15 @@
 	// 需登录的页面（工作台各页）；login.html 等公开页不设此标记
 	const isAuthedPage = !/login\.html$/.test(location.pathname);
 
-	/* ---------- 组织 / 命名空间（当前范围） ---------- */
+	/* ---------- 命名空间（当前范围） ---------- */
 	//
-	// 命名空间是组织之下的隔离单位（docs/design/namespaces.md）：
-	// sources / edges / events / tasks / stats 属于命名空间，
-	// capabilities / nodes 属于组织。
+	// 命名空间是隔离单位（docs/design/namespaces.md）：sources / edges / events /
+	// tasks / stats / capabilities / nodes / playbooks 全都属于命名空间。
+	// 组织那一层在 UI 上已经不存在了（#203），前端手里只有 namespaceId。
 	//
 	// 选择记在 localStorage：刷新、切页面、深链都保持同一个范围。
 	const SCOPE_KEY = "anotify.scope";
-	// 这些端点前缀需要 namespaceId（其余是组织级，带了反而误导）
+	// 这些端点前缀需要 namespaceId（其余端点与命名空间无关，带了反而误导）
 	const NS_PATHS = [
 		"/v1/edges",
 		"/v1/sources",
@@ -1085,12 +1056,7 @@
 				const list = (j && (j.namespaces || j)) || [];
 				if (!Array.isArray(list) || !list.length) return scope;
 				const def = list.find((n) => n && n.slug === "default") || list[0];
-				if (def && def.id) {
-					saveScope({
-						orgId: def.orgId || scope.orgId,
-						namespaceId: def.id,
-					});
-				}
+				if (def && def.id) saveScope({ namespaceId: def.id });
 				return scope;
 			})
 			.catch(() => {
@@ -1104,8 +1070,8 @@
 	/**
 	 * 给命名空间资源自动带上当前 namespaceId。
 	 *
-	 * 只在**确实选过命名空间**时才加：真实后端还没有 /v1/orgs，
-	 * 拿不到范围时保持原样，页面行为完全不变（不需要分叉代码路径）。
+	 * 只在**确实选过命名空间**时才加：解析不到范围时保持原样，
+	 * 页面行为完全不变（不需要分叉代码路径）。
 	 */
 	function withScope(path) {
 		if (!scope.namespaceId) return path;
