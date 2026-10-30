@@ -39,14 +39,20 @@ RUN go build -trimpath -ldflags="-s -w" -tags embeddist -o /anotify ./cmd/server
 
 # ---- 运行 ----
 FROM alpine:3.20
-RUN adduser -D -u 10001 anotify
-WORKDIR /home/anotify
+# 数据目录必须在切到非 root 用户**之前**建好并 chown：
+# 否则 /data 归 root、权限 755，uid 10001 写不进自己的库——
+# 容器能起来但一建 sqlite 就 permission denied（VOLUME 挂载时
+# Docker 复制的是镜像里的属主，root:root）。
+RUN adduser -D -u 10001 anotify \
+    && mkdir -p /data \
+    && chown anotify:anotify /data
+WORKDIR /data
 COPY --from=build /anotify /usr/local/bin/anotify
 # 单二进制内嵌前端；仅需挂载数据目录持久化 sqlite
 ENV ANOTIFY_ADDR=:8080 \
     ANOTIFY_STATIC= \
-    ANOTIFY_DB=/home/anotify/anotify.db
+    ANOTIFY_DB=/data/anotify.db
 EXPOSE 8080
 USER anotify
-VOLUME ["/home/anotify"]
+VOLUME ["/data"]
 ENTRYPOINT ["anotify"]
