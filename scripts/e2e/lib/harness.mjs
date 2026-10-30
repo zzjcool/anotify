@@ -202,6 +202,9 @@ const NS_REQUIRED_PREFIXES = [
 	"/v1/edges",
 	"/v1/sources",
 	"/v1/events",
+	// 控制台的事件流是 events 的另一个入口（同一张表、同一套作用域），
+	// 前缀匹配不会覆盖到它，必须单列。
+	"/v1/console/events",
 	"/v1/tasks",
 	"/v1/traces",
 	"/v1/stats",
@@ -528,7 +531,11 @@ export async function startServer({
 		if (up) {
 			// 注册库路径：无会话的请求（/v1/events 走 Bearer API Key）靠它解析默认命名空间。
 			// 同一个 base 重新拉起服务（重试/重启）时旧缓存必须作废：库换了，ns id 也换了。
-			nsDbByBase.set(base, dbPath);
+			// 服务真正用的库：调用方可能用 extraEnv.ANOTIFY_DB 指回老库
+			// （persistence 套件的"重启后数据还在"就是这条路）。
+			// 记成上面那个新 mkdtemp 的话，兜底会去查一个服务从未打开过的空库，
+			// 于是 namespaces 查不到 → 不带 namespaceId → 机器入口 400。
+			nsDbByBase.set(base, extraEnv.ANOTIFY_DB || dbPath);
 			nsCache.delete(base);
 			nsSessionByBase.delete(base);
 			return {
