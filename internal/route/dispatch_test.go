@@ -47,6 +47,8 @@ type fakeStore struct {
 	errAssignTask  error
 	// errInsertPrune 让剪枝落库失败（验证「留痕失败不能打断派发」）
 	errInsertPrune error
+	// errIsOrgMember 让成员关系查询失败（验证「鉴权查库失败必须 fail closed」）
+	errIsOrgMember error
 }
 
 type assignment struct {
@@ -319,6 +321,9 @@ func (f *fakeStore) NamespaceOrgID(ctx context.Context, namespaceID string) (str
 }
 
 func (f *fakeStore) IsOrgMember(ctx context.Context, orgID, userID string) (bool, error) {
+	if f.errIsOrgMember != nil {
+		return false, f.errIsOrgMember
+	}
 	// 空 org 一律判「不是成员」：真库按 org_id 过滤，空值必然查不到。
 	// 这样「忘了传/忘了派生出 org」会立刻退化成 foreign_user 剪枝，
 	// 而不是被 mock 的宽容掩盖过去（见 TestPlanNextHopResolvesOrg）。
@@ -1519,4 +1524,41 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestDispatchUserScopedLookupErrorFailsClosed 查成员关系失败时**整个派发失败**。
+//
+// 这条守的是一个 fail-open 漏洞：checkUserScoped 以前只返回 (bool, PrunedRecord)，
+// 注释写着「查库失败…向上抛」，但签名里根本没有 error —— 于是 IsOrgMember 出错时
+// 等价于"校验通过"，消息会推给不属于本组织的 params.to。
+//
+// 三种处理里只有一种是对的：
+//
+//	· 当成剪枝 → 消息静默消失（用户以为发了）
+//	· 当成通过 → 可能推给外组织用户（安全边界破了）
+//	· 返回 error → 这次 trace 失败并留错，人能重试    ← 这个
+func TestDispatchUserScopedLookupErrorFailsClosed(t *testing.T) {
+	f := newFakeStore()
+	f.errIsOrgMember = errors.New("db is on fire")
+	notify := f.addCap(testNS, "notify.phone", 1, nil, `{}`)
+	f.addNode("nd_notify", notify.ID, 1)
+	d := New(f)
+	// 写明这条能力是 user-scoped：不依赖 DefaultUserScoped 的当前取值
+	d.UserScoped = map[string]bool{"notify.phone": true}
+
+	out, err := d.Dispatch(context.Background(), DispatchInput{
+		OrgID: testOrg, NamespaceID: testNS, TraceID: "t_member_err",
+		FromCap: "github", FromIsSource: true, Out: "push",
+		Targets:      []string{notify.ID},
+		TargetParams: map[string]map[string]any{notify.ID: {"to": "member-1"}},
+	})
+	if err == nil {
+		t.Fatalf("查库失败必须返回 error（否则等于放行），out=%+v", out)
+	}
+	if !strings.Contains(err.Error(), "check org member") {
+		t.Fatalf("错误要说清是哪一步失败, got %v", err)
+	}
+	if out != nil && len(out.Tasks) != 0 {
+		t.Fatalf("查库失败不该建出任务, got %d", len(out.Tasks))
+	}
 }
