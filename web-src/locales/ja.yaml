@@ -1243,7 +1243,7 @@ nodes:
     name_ph: '例: my-mbp'
     name_hint: '小文字・数字・ドット（.）・アンダースコア（_）・ハイフン（-）のみ、1〜63 文字、先頭は英数字'
     instances: 'インスタンス数（任意）'
-    instances_hint: 'このマシンで並行して動かすインスタンス数（既定 1）。あくまで目安で、実際は接続時の申告が優先されます。'
+    instances_hint: 'このマシンで並行して動かすインスタンス数。node.yaml の instances にそのまま書き込まれます。ハブの上限は 20、既定 1。'
     submit: '登録'
     cancel: 'キャンセル'
     submitting: '登録中…'
@@ -1255,8 +1255,6 @@ nodes:
     yaml_title: 'node.yaml（そのまま貼れます）'
     copy_yaml: 'YAML をコピー'
     yaml_hint: 'node.yaml として保存し、capabilities をこのマシンで実際に動かす能力に置き換えてから agent -f node.yaml を実行します'
-    copied: 'コピーしました'
-    copy_failed: 'コピーできませんでした。手動で選択してコピーしてください'
     err:
       empty_name: '先にノード名を入力してください'
       invalid_name: '名前が不正です。小文字・数字・ドット（.）・アンダースコア（_）・ハイフン（-）のみ、1〜63 文字、先頭は英数字にしてください'

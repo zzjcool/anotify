@@ -1243,7 +1243,7 @@ nodes:
     name_ph: '例如 my-mbp'
     name_hint: '小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
     instances: '实例数（可选）'
-    instances_hint: '这台机器上并行跑几个实例，默认 1；只是建议值，实际以节点连上来时申报的为准'
+    instances_hint: '这台机器上并行跑几个实例：它会原样写进 node.yaml 的 instances。中枢硬顶 20，默认 1。'
     submit: '注册'
     cancel: '取消'
     submitting: '注册中…'
@@ -1255,8 +1255,6 @@ nodes:
     yaml_title: 'node.yaml（可直接粘）'
     copy_yaml: '复制 YAML'
     yaml_hint: '存成 node.yaml，把 capabilities 换成这台机器真会跑的能力，再执行 agent -f node.yaml'
-    copied: '已复制'
-    copy_failed: '复制失败，请手动选中复制'
     err:
       empty_name: '先填节点名'
       invalid_name: '名字不合法：只能用小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'

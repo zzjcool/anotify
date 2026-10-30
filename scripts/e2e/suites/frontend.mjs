@@ -3249,6 +3249,10 @@ async function checkNodeDetail(page, base) {
 //   ③ 再点一次入口 → 上一个令牌块**真的从 DOM 清掉**（不是视觉隐藏）
 //   ④ 重名 → 只说重名，绝不给令牌
 //   ⑤ 列表刷新后新节点真的出现（否则用户以为没注册上）
+//   …另外还锁 instances 上界（中枢硬顶 20）与本地拦截（空名/非法名不发请求）。
+//
+// base 由调用方在进入前先 goto 干净页面；这里保留参数只为与
+// checkNodeCaps / checkNodeDetail 同签名（都用 page + base 两个参数）。
 async function checkNodeRegister(page, base) {
 	// 页面上判定"藏起来了"：Tailwind 的 hidden 类或 hidden 属性都算
 	// （契约 §2.1 用的是 class="hidden"，这里两种实现方式都接受，不押风格）
@@ -3388,22 +3392,112 @@ async function checkNodeRegister(page, base) {
 	);
 
 	// ---- ⑦ 重名提交 → 只报重名，不给令牌（mock 里已有 laptop-worker） ----
+	//
+	// 必须在「令牌还留在 DOM 上」的残留态下验证，否则这条是空转：⑥ 已经把
+	// #reg-token 清空了，catch 分支里即使漏了 regClearResult() 也照样绿。
+	// 于是这里手工把结果块与表单同时摆出来（一次成功注册之后才会有的危险态）。
+	await page.evaluate(() => {
+		const setText = (id, text) => {
+			const e = document.getElementById(id);
+			if (e) e.textContent = text;
+		};
+		const show = (id) => {
+			const e = document.getElementById(id);
+			if (!e) return;
+			e.classList.remove("hidden");
+			e.hidden = false;
+		};
+		setText("reg-token", "residual-token-must-be-cleared");
+		setText("reg-yaml", "name: residual");
+		show("register-panel");
+		show("reg-result");
+	});
 	await page.fill("#reg-name", "laptop-worker");
 	await page.fill("#reg-instances", "1");
 	await page.click("#reg-submit");
 	await page.waitForTimeout(1200);
 	const dup = await page.evaluate(probe);
 	H.check(
-		"重名提交 → 显示重名提示且不显示令牌",
+		"重名提交 → 显示重名提示且把残留令牌清空",
 		dup.errorHidden === false &&
 			dup.errorText.includes("laptop-worker") &&
 			dup.resultHidden === true &&
-			dup.token === "",
+			dup.token === "" &&
+			dup.yaml === "",
 		JSON.stringify({
 			错误行可见: dup.errorHidden === false,
 			错误行文本: dup.errorText.slice(0, 120),
 			结果块隐藏: dup.resultHidden,
 			令牌文本长度: dup.token.length,
+			YAML文本长度: dup.yaml.length,
+		}),
+	);
+
+	// ---- ⑧ instances 上界：中枢单节点硬顶 20，UI 必须夹住 ----
+	//
+	// 这条防的是"UI 显示注册成功、节点永远连不上"：instances 会原样写进
+	// node.yaml，而中枢 nodes.max_instances 默认 20，超了 hello 会被
+	// too_many_instances 拒（internal/ws/node_handshake.go），节点永远 offline。
+	await page.click("#node-register-btn");
+	await page.waitForTimeout(300);
+	const maxAttr = await page.getAttribute("#reg-instances", "max");
+	H.check(
+		"注册表单的实例数上限就是中枢硬顶 20",
+		String(maxAttr) === "20",
+		`max=${JSON.stringify(maxAttr)}`,
+	);
+	await page.fill("#reg-name", regName + "-cap");
+	await page.fill("#reg-instances", "40");
+	await page.click("#reg-submit");
+	await page.waitForTimeout(1200);
+	const capped = await page.evaluate(probe);
+	const cappedInstances = (capped.yaml.match(/^instances: (\d+)\s*$/m) || [])[1] || "";
+	H.check(
+		"实例数填 40 被夹到 20（否则节点永远连不上）",
+		capped.resultHidden === false && cappedInstances === "20",
+		`结果块隐藏=${capped.resultHidden} YAML 里的 instances=${JSON.stringify(cappedInstances)} 错误行=${JSON.stringify(capped.errorText.slice(0, 80))}`,
+	);
+
+	// ---- ⑨ 本地拦截：空名 / 非法名不该发请求 ----
+	//
+	// 之前这两条分支零覆盖：REG_NAME_RE 若被改成过严（挡掉后端本来合法的名字）
+	// 或干脆失效（把空名发出去），不会有任何断言变红。
+	await page.click("#node-register-btn");
+	await page.waitForTimeout(300);
+	await page.evaluate(() => {
+		window.__nodePosts = 0;
+		const orig = window.fetch;
+		if (window.__nodeFetchPatched) return;
+		window.fetch = function (...args) {
+			const url = String(args[0] || "");
+			const opt = args[1] || {};
+			if (url.includes("/v1/nodes") && String(opt.method || "").toUpperCase() === "POST") {
+				window.__nodePosts += 1;
+			}
+			return orig.apply(this, args);
+		};
+		window.__nodeFetchPatched = true;
+	});
+	await page.fill("#reg-name", "");
+	await page.click("#reg-submit");
+	await page.waitForTimeout(400);
+	const emptyName = await page.evaluate(probe);
+	await page.fill("#reg-name", "Bad Name");
+	await page.click("#reg-submit");
+	await page.waitForTimeout(400);
+	const badName = await page.evaluate(probe);
+	const postCount = await page.evaluate(() => window.__nodePosts || 0);
+	H.check(
+		"空名 / 非法名在本地就拦住，一次 POST 都没发",
+		emptyName.errorHidden === false &&
+			badName.errorHidden === false &&
+			emptyName.errorText.trim() !== "" &&
+			badName.errorText.trim() !== "" &&
+			postCount === 0,
+		JSON.stringify({
+			空名错误可见: emptyName.errorHidden === false,
+			非法名错误可见: badName.errorHidden === false,
+			POST次数: postCount,
 		}),
 	);
 }

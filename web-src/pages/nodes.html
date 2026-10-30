@@ -128,7 +128,7 @@
                 class="input w-full text-sm"
                 type="number"
                 min="1"
-                max="64"
+                max="20"
                 value="1"
               />
               <p class="mt-1 text-[11px] leading-relaxed text-zinc-500">
@@ -471,7 +471,11 @@ agent -f node.yaml</code></pre>
       //      只做 CSS 隐藏等于把凭证留在页面上；
       //   3) 提交失败（尤其 409 重名）时结果块保持隐藏，绝不能把上一个令牌露出来。
       const REG_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
-      // 名字规则在本地校验、400 与 name_hint 三处都要说清楚，所以只写一份。
+      // 中枢单节点实例硬顶：store.DefaultMaxInstances = 20。
+      // 超过它 hello 会被 too_many_instances 拒（internal/ws/node_handshake.go），
+      // 节点永远上不了线——所以 UI 必须跟这个上限，不能只当"建议值"。
+      const REG_MAX_INSTANCES = 20;
+      // JS 侧的中文兜底文案；权威文案在四语 locale 的 nodes.register.err.invalid_name。
       const REG_NAME_RULE =
         "名字不合法：只能用小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头";
 
@@ -586,8 +590,14 @@ agent -f node.yaml</code></pre>
         if (btn.disabled) return;
         const name = (regEl("reg-name").value || "").trim();
         const parsed = parseInt(regEl("reg-instances").value, 10);
-        // instances 只是建议值（后端不落库），NaN / 负数归 1，不拦提交。
-        const instances = !isNaN(parsed) && parsed >= 0 ? parsed : 1;
+        // instances 会**原样写进 node.yaml**，所以必须夹到中枢硬顶 [1,20]：
+        // 后端注册时只校验非负（不落库），真正的上限在握手时生效——超了节点
+        // 永远连不上，那时页面早已显示"注册成功"，用户完全没有线索。
+        // 下限取 1 是为了对齐 cmd/agent 的 slots()（<=0 一律记 1 个槽位），
+        // 否则 YAML 里的 instances: 0 与实际槽位数不一致。
+        const instances = !isNaN(parsed)
+          ? Math.min(Math.max(parsed, 1), REG_MAX_INSTANCES)
+          : 1;
 
         regError("");
         // 名字空 / 不合规则：本地就拦住，不发请求。

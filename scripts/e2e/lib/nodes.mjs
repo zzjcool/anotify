@@ -1,8 +1,9 @@
 /* 节点播种 + 上线的共享辅助（routing / ws_protocol 共用）。
  *
- * 为什么节点要直接写库：`CreateNode` 是 store 层 API，**没有 HTTP 端点**——
- * 节点注册是运维动作（`anotify node create`），不是自助服务。
- * 所以 e2e 必须有一个后门来造节点。
+ * 为什么节点要直接写库：直接写库才能**指定明文 token**（`CreateNode` 只在
+ * 201/返回时给一次明文，库里只有 sha256），而这里需要在握手时用同一个 token。
+ * 注：`POST /v1/nodes` 自 #185 起已存在（节点页 #198 起也能从 UI 注册），
+ * 但那条路拿到的 token 要跨进程传，不适合当作 e2e 的播种手段。
  *
  * 但**上线**必须走真实 WS 握手（hello → welcome）：只有握手成功，
  * 服务端的 NodeHub 才会注册这条连接，派发器才推得到 assign 帧。

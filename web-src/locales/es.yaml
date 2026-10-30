@@ -1243,7 +1243,7 @@ nodes:
     name_ph: 'p. ej. my-mbp'
     name_hint: 'Minúsculas, dígitos, punto (.), guion bajo (_) o guion (-): de 1 a 63 caracteres, empezando por letra o dígito'
     instances: 'Instancias (opcional)'
-    instances_hint: 'Cuántas instancias correr en esta máquina (por defecto 1). Solo orientativo: el nodo informa sus ranuras reales al conectarse.'
+    instances_hint: 'Cuántas instancias correr en esta máquina: el valor se escribe tal cual en instances: del node.yaml. El hub lo limita a 20 (por defecto 1).'
     submit: 'Registrar'
     cancel: 'Cancelar'
     submitting: 'Registrando…'
@@ -1255,8 +1255,6 @@ nodes:
     yaml_title: 'node.yaml (listo para pegar)'
     copy_yaml: 'Copiar YAML'
     yaml_hint: 'Guárdalo como node.yaml, sustituye capabilities por lo que esta máquina ejecuta de verdad y lanza agent -f node.yaml'
-    copied: 'Copiado'
-    copy_failed: 'No se pudo copiar; selecciona el texto y cópialo a mano'
     err:
       empty_name: 'Escribe primero un nombre de nodo'
       invalid_name: 'Nombre no válido: solo minúsculas, dígitos, punto (.), guion bajo (_) o guion (-), de 1 a 63 caracteres, empezando por letra o dígito'

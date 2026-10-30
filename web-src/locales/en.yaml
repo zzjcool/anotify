@@ -1243,7 +1243,7 @@ nodes:
     name_ph: 'e.g. my-mbp'
     name_hint: 'Lowercase letters, digits, dot (.), underscore (_) or hyphen (-) — 1–63 characters, starting with a letter or digit'
     instances: 'Instances (optional)'
-    instances_hint: 'How many instances to run on this machine (default 1). Advisory only — the node reports its real slots when it connects.'
+    instances_hint: 'How many instances to run on this machine — the value is written verbatim into instances: in node.yaml. The hub caps it at 20 (default 1).'
     submit: 'Register'
     cancel: 'Cancel'
     submitting: 'Registering…'
@@ -1255,8 +1255,6 @@ nodes:
     yaml_title: 'node.yaml (ready to paste)'
     copy_yaml: 'Copy YAML'
     yaml_hint: 'Save it as node.yaml, replace capabilities with what this machine really runs, then run agent -f node.yaml'
-    copied: 'Copied'
-    copy_failed: 'Copy failed — select the text and copy it manually'
     err:
       empty_name: 'Enter a node name first'
       invalid_name: 'Invalid name: lowercase letters, digits, dot (.), underscore (_) or hyphen (-) only, 1–63 characters, starting with a letter or digit'

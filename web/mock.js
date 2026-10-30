@@ -2201,6 +2201,11 @@
 				{ code: "invalid_name" },
 			);
 		}
+		// instances 负数在真 handler 里是 400（不落库但仍校验非负）。
+		// 既然上面写了"与真 handler 同形状"，这一条也不能漏。
+		if (typeof b.instances === "number" && b.instances < 0) {
+			return err(400, "instances must be >= 0");
+		}
 		// 命名空间：与 mock 其它接口一样宽松，缺省 = 默认命名空间（`namespaceId=*`
 		// 是只读汇总语义，写端点落回默认命名空间）。
 		const namespaceId = nsScope(ctx.query) || NS;
