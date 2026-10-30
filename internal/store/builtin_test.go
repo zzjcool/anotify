@@ -416,3 +416,75 @@ func TestBuiltinDisplayNameBackfill(t *testing.T) {
 		t.Fatalf("startup overwrote user's display name: %q", gh3.DisplayName)
 	}
 }
+
+// TestBackfillBuiltinCapabilitiesCoversEveryNamespace 启动时的补种必须覆盖**每一个**命名空间。
+//
+// 为什么单独钉这条：#205 之后播种的作用域从「每个 org 一份」变成「每个命名空间一份」，
+// 而 BackfillBuiltinCapabilities 是唯一的「启动时把漏掉的补上」的路径（server 启动时调用）。
+// 漏掉一个命名空间不会有任何报错——那个命名空间里就再也声明不出 end 节点，
+// 推送在那片区域静默失效。旧用例只覆盖单命名空间（SeedBuiltinCapabilities），
+// 遍历路径没有测试。
+func TestBackfillBuiltinCapabilitiesCoversEveryNamespace(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsA, _ := newTestNS(t, db)              // 注册时已播种
+	nsB := newTestExtraNS(t, db, "sandbox") // 建命名空间时也播种
+	// 造出「半升级」状态：某个命名空间的内置能力被删了（老库 / 人工清理都可能）
+	mustExec(t, db, `DELETE FROM capability_versions WHERE namespace_id = ? AND source = ?`, nsB, CapSourceBuiltin)
+	if n := countRows(t, db, "capability_versions", "namespace_id = ? AND source = ?", nsB, CapSourceBuiltin); n != 0 {
+		t.Fatalf("fixture 没清干净: %d 行内置能力", n)
+	}
+
+	n, err := db.BackfillBuiltinCapabilities(ctx)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n < 2 {
+		t.Fatalf("backfill 只扫了 %d 个命名空间, want >= 2（漏扫 = 那边没有内置能力）", n)
+	}
+	// 两个命名空间都必须有内置能力，而且是各自一份（不是共享同一行）
+	var idA, idB string
+	for _, c := range []struct {
+		ns string
+		id *string
+	}{{nsA, &idA}, {nsB, &idB}} {
+		got, err := db.GetCapability(ctx, c.ns, "notify.phone", 1)
+		if err != nil {
+			t.Fatalf("命名空间 %s 补种后仍没有 notify.phone: %v", c.ns, err)
+		}
+		if got.Source != CapSourceBuiltin || got.NamespaceID != c.ns {
+			t.Fatalf("notify.phone = {%s, %s}, want {builtin, %s}", got.Source, got.NamespaceID, c.ns)
+		}
+		*c.id = got.ID
+	}
+	if idA == idB {
+		t.Fatal("两个命名空间共享同一个内置能力行（播种没按命名空间隔离）")
+	}
+
+	// 幂等：再跑一次不报错、不重复插、计数不变
+	n2, err := db.BackfillBuiltinCapabilities(ctx)
+	if err != nil {
+		t.Fatalf("第二次 backfill: %v", err)
+	}
+	if n2 != n {
+		t.Fatalf("第二次 backfill 扫了 %d 个命名空间, want %d", n2, n)
+	}
+	for _, ns := range []string{nsA, nsB} {
+		rows := countRows(t, db, "capability_versions", "namespace_id = ? AND name = ? AND version = ?", ns, "notify.phone", 1)
+		if rows != 1 {
+			t.Fatalf("命名空间 %s 有 %d 行 notify.phone@1, want 1（重复播种）", ns, rows)
+		}
+	}
+}
+
+// TestBackfillBuiltinCapabilitiesEmptyDeployment 空库（还没注册用户）不该报错。
+func TestBackfillBuiltinCapabilitiesEmptyDeployment(t *testing.T) {
+	db := newTestDB(t)
+	n, err := db.BackfillBuiltinCapabilities(context.Background())
+	if err != nil {
+		t.Fatalf("空库 backfill: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("空库扫了 %d 个命名空间, want 0", n)
+	}
+}
