@@ -143,12 +143,17 @@ paths:
                   type: string
                   description: |
                     **必填**（本字段或 query 二者给一个；body 优先）。事件落进哪个命名空间。
-                    不存在 → 404；属于别的组织 → 403；`*` → 400（写端点）。
+                    不存在 → 404；未登录 → 401；`*` → 400（写端点）。
                 source:
                   type: string
                   description: |
                     事件来源，与能力名一致。内置起点（github / cron / http / manual）
-                    开箱可用；也可使用自定义能力名。找不到则返回 422。
+                    开箱可用；也可使用自定义能力名——它就是入口边的左端（契约 §2.4）。
+
+                    **找不到入口边不是错误**（#110）：事件照收（`200`），派发结果里
+                    记一条 `pruned[].reason = no_edge`，用来回答「为什么没触发」。
+                    旧模型那种「来源必须对应一个 origin 能力，否则 422 + 可用来源列表」
+                    已整条删除。
                   example: github
                 type:
                   type: string
@@ -164,24 +169,6 @@ paths:
                   type: object
                   description: 原始负载，只存不解释（不求值、不改写）
       responses:
-        "422":
-          description: |
-            来源未匹配到任何起点能力。事件已入库，但不会派发。
-            响应带 `available`（可用来源列表）与 `eventId`（如实告知已入库）。
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [error, source, available]
-                properties:
-                  error: { type: string }
-                  source: { type: string }
-                  available:
-                    type: array
-                    items: { type: string }
-                  eventId:
-                    type: string
-                    description: 已入库的事件 ID（便于排查/清理孤儿行）
         "200":
           description: 事件已受理（含幂等命中）
           content:
@@ -937,8 +924,9 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在，或属于**别的组织**——两者响应**逐字节相同**
-            （`{"error":"namespace not found"}`，不回显传入的 id）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）。
+            组织层已在迁移 14 删除（#204），**没有「有、但属于别人」这个中间态**：
+            存在就 `200`，不存在就 `404`，所以这里不再有 `403` 分支
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1013,8 +1001,9 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在，或属于**别的组织**——两者响应**逐字节相同**
-            （`{"error":"namespace not found"}`，不回显传入的 id）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）。
+            组织层已在迁移 14 删除（#204），**没有「有、但属于别人」这个中间态**：
+            存在就 `200`，不存在就 `404`，所以这里不再有 `403` 分支
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1070,8 +1059,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            两种情况：命名空间不存在 / 属于别的组织（`{"error":"namespace not found"}`，
-            二者逐字节相同）；或预案不存在（含别命名空间的 id/slug）
+            两种情况：命名空间不存在（`{"error":"namespace not found"}`，
+            不回显传入的 id）；或预案不存在（含别命名空间的 id/slug）
             （`{"error":"预案不存在","code":"not_found"}`）
           content:
             application/json:
@@ -1110,8 +1099,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在 / 属于别的组织（与「不存在」逐字节相同：
-            `{"error":"namespace not found"}`）；或预案不存在（`code: not_found`）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）；
+            或预案不存在（`code: not_found`）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1188,8 +1177,8 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: |
-            命名空间不存在 / 属于别的组织（与「不存在」逐字节相同：
-            `{"error":"namespace not found"}`）；或预案不存在（`code: not_found`）
+            命名空间不存在（`{"error":"namespace not found"}`，不回显传入的 id）；
+            或预案不存在（`code: not_found`）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1746,9 +1735,10 @@ paths:
         # 这个 404 必须自带说明——它与「命名空间不存在」共用同一个响应体，且是 §6.2 的显式例外。
         "404":
           description: |
-            **命名空间不存在，或存在但属于别的组织** —— 两者响应逐字节相同
-            （`{"error":"namespace not found"}`，不回显传入的 id；本端点刻意不区分，
-            避免用写端点探测别人的命名空间 id，契约 §6.2 的显式例外）。
+            **命名空间不存在**（`{"error":"namespace not found"}`，不回显传入的 id）。
+            组织层已在迁移 14 删除（#204）：「有、但属于别人」这一态不存在了，所以
+            `#185` 那套「写端点跨组织也报 404、响应逐字节相同、以免被当作 id 探测器」
+            的显式例外随之失效——不存在一律 `404`，存在一律成功。
             响应形状同 `#/components/responses/NotFound`。
           content:
             application/json:
@@ -2946,10 +2936,13 @@ components:
 
         - 缺参 → `400`（`namespaceId is required`），**绝不回退到默认命名空间**：
           回退等于把调用方写错的地方藏起来
-        - 不存在 → `404`；存在但属于别的组织 → `403`
-        - **例外**：`POST /nodes`（注册节点）对「存在但属于别的组织」返回 `404`
-          （响应与「不存在」逐字节相同：`{"error":"namespace not found"}`，不回显 id），
-          因为写端点不能用来探测别人的命名空间 id；其余命名空间资源端点仍是 `403`
+        - 不存在 → `404`（`{"error":"namespace not found"}`，不回显传入的 id）
+        - 未登录 / 用户不存在 → `401`
+        - **没有 `403`**：组织层已在迁移 14 删除（#204），本部署内不再有
+          「有、但属于别人」这一态 —— 存在就 `200`，不存在就 `404`。
+          原先 `POST /nodes` 与 `/playbooks*` 那套「跨组织也报 404、且与『不存在』
+          逐字节相同，以免写端点被当作命名空间 id 探测器」的显式例外
+          （`#185` / 契约 D2）已随之失效，写读同一份口径
         - `namespaceId=*`：跨命名空间汇总（管理员视图），**只允许读端点**（列表类）；
           写端点、单对象端点（`/tasks/{id}`、`/nodes/{id}`、`/sources/{id}`、
           `/traces/{id}`）以及口径未定义的 `/stats` 带 `*` → `400`
@@ -2983,12 +2976,10 @@ components:
         - **`namespaceId=*` → `400`（一律）**：预案**不提供跨命名空间汇总**。
           体检结论（能力定义 / 边 / 触发器的存在性）只能按**单个**命名空间算，
           「汇总的 ready 率」是个没有定义的量
-        - **不存在 → `404`**
-        - **属于别的组织也 `404`**：响应与「不存在」**逐字节相同** ——
-          `{"error":"namespace not found"}`（不回显传入的 id），
-          所以无法从响应区分「这个 id 存在但不是你的」和「这个 id 不存在」。
-          原因同 `POST /nodes`：写端点 / 单对象端点**不能**被拿来探测别人的
-          命名空间 id 是否存在。（其余命名空间资源的读端点仍是 `403`）
+        - **不存在 → `404`**：`{"error":"namespace not found"}`（不回显传入的 id）
+        - **没有 `403`**：组织层已在迁移 14 删除（#204），不存在「属于别的组织」
+          这一态，所以也不需要为「防 id 探测」单独做一套不可区分的响应 ——
+          存在与不存在本来就只有两种结果
         - 跨命名空间引用 → `400`（不变量 I11）：安装预案时写入的能力定义、
           边、源全部落在**这一个**命名空间里
 
@@ -4136,7 +4127,10 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: 无权访问（不是该组织成员 / 命名空间属于别的组织）
+      description: |
+        权限不足（与「命名空间存不存在」无关 —— 那类是 `404`）。三种来源：
+        账号角色不够（`/v1/admin/*` 需要管理员）、API Key 缺少所需 scope
+        （如 `notify:send`）、节点令牌指向的命名空间已被删除（WS 握手）。
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
