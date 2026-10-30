@@ -3488,65 +3488,152 @@ async function checkNodeRegister(page, base) {
 	);
 }
 
-// 组织 / 命名空间切换器（设计见 docs/design/namespaces.md）
+// 命名空间切换器（设计见 docs/design/namespaces.md）
 //
 // 这套断言盯的是"隔离真的发生了"，而不是"控件画出来了"：
-// 切到 staging 后源列表必须变少、刷新后必须还在 staging、
-// 组织级页面（能力）必须不受影响且明确标注。
+// 切到 staging 后源列表必须变少、页面请求必须带**新**的 namespaceId、
+// 刷新后必须还在 staging、能力与节点也必须跟着命名空间走。
+// 组织那一层在 UI 上已经不存在了（#203），所以这里不再有"组织分节"。
 async function checkScope(page) {
+	// 页内 fetch 钩子（#203）：mock 在 window.fetch 层就把 /v1/* 拦下了
+	// （web/mock.js:3141），请求根本不出浏览器 —— page.on("request") 在 mock 页面里
+	// 一条都抓不到（实测 0 条）。所以"切换后请求真的带新 namespaceId"只能从页内记录。
+	//
+	// 必须用 getter/setter：mock.js 是 `window.fetch = …` **赋值**，普通覆盖会被它盖掉。
+	// init script 每次导航都会重新执行 → __v1reqs 天然按"本次加载"清空。
+	await page.addInitScript(() => {
+		window.__v1reqs = [];
+		const native = window.fetch.bind(window);
+		let inner = null;
+		// 归一到 pathname（与 mock.js 的判定一致）：Request 对象 / 绝对 URL 也要能
+		// 认出是 /v1/*，否则会漏到 native 变成真实网络请求，mock 预览就漏出去了。
+		const pathOf = (input) => {
+			const url = typeof input === "string" ? input : (input && input.url) || "";
+			try {
+				return new URL(String(url), location.href).pathname;
+			} catch {
+				return String(url).split("?")[0];
+			}
+		};
+		const record = (input) => {
+			const url = typeof input === "string" ? input : (input && input.url) || "";
+			try {
+				const u = new URL(String(url), location.href);
+				if (u.pathname.startsWith("/v1/"))
+					window.__v1reqs.push(u.pathname + u.search);
+			} catch {
+				/* 相对/非法 URL 忽略 */
+			}
+		};
+		const dispatch = (input, init) => {
+			if (!pathOf(input).startsWith("/v1/")) return native(input, init);
+			record(input);
+			return inner ? inner(input, init) : native(input, init);
+		};
+		Object.defineProperty(window, "fetch", {
+			configurable: true,
+			get: () => dispatch,
+			set: (fn) => {
+				inner = fn; // mock.js 装上自己的 wrapper 时接住它
+			},
+		});
+	});
+
 	await page.goto(new URL("sources.html", page.url()).href, {
 		waitUntil: "load",
 		timeout: 20000,
 	});
 	await page.waitForTimeout(1700);
 
-	// ① 触发器 + 分节菜单（组织 / 命名空间两节，且能新建）
+	// ⓪ 基线：切换前页面请求确实带**当前**命名空间。
+	// 没有这条，"切换后带新 id"的断言会因为观测机制没装上而恒假（或者因为
+	// 数组永远是空而假绿），属于自证式的假断言。mock 的默认命名空间是 prod
+	// （ensureScope 取不到 slug=default 时回落第一条）。
+	const baselineOk = await page
+		.waitForFunction(
+			() =>
+				(window.__v1reqs || []).some(
+					(r) => r.startsWith("/v1/sources") && r.includes("namespaceId=ns_mock_prod"),
+				),
+			{ timeout: 15000 },
+		)
+		.then(() => true)
+		.catch(() => false);
+	const baseline = await page.evaluate(() => (window.__v1reqs || []).slice());
+	H.check(
+		"（基线）切换前页面请求带当前命名空间 namespaceId=ns_mock_prod",
+		baselineOk &&
+			baseline.some(
+				(r) => r.startsWith("/v1/sources") && r.includes("namespaceId=ns_mock_prod"),
+			),
+		`页内记录 ${baseline.length} 条 /v1/*，其中 sources=${JSON.stringify(baseline.filter((r) => r.startsWith("/v1/sources"))).slice(0, 200)}`,
+	);
+
+	// ① 侧栏切换器只剩"命名空间"一个维度（组织那套幽灵 UI 已删，#203）
 	const sw = await page.evaluate(() => {
 		const box = document.querySelector("#scope-switcher");
 		const trig = document.querySelector(".scope-trigger");
 		if (!box || !trig) return { ok: false };
 		trig.click();
 		const menu = document.querySelector(".scope-menu");
+		// 分节标题只取 `.scope-group span`：同一节里还有新建的 "+" 按钮，
+		// 取 group.textContent 会得到 "命名空间+"
 		const groups = Array.from(menu.querySelectorAll(".scope-group")).map((g) =>
-			g.textContent.replace("+", "").trim(),
+			((g.querySelector("span") || {}).textContent || "").trim(),
 		);
-		const subs = Array.from(menu.querySelectorAll(".scope-item-sub")).map((x) =>
-			x.textContent.trim(),
-		);
+		const items = Array.from(menu.querySelectorAll(".scope-item"));
+		const text = (el, sel) => ((el.querySelector(sel) || {}).textContent || "").trim();
 		const opened = {
 			shows: !menu.classList.contains("hidden"),
 			expanded: trig.getAttribute("aria-expanded"),
 			groups,
-			orgItems: menu.querySelectorAll('.scope-item .scope-avatar').length,
-			subs,
+			// 组织头像 / 组织条目都不该再有：切换器里只有一个维度
+			avatars: menu.querySelectorAll(".scope-avatar").length,
+			menuHasOrg: menu.innerText.includes("组织"),
+			count: items.length,
+			subs: items.map((x) => text(x, ".scope-item-sub")),
+			names: items.map((x) => text(x, ".scope-item-name")),
+			ids: items.map((x) => x.getAttribute("data-ns-id") || ""),
+			roles: items.map((x) => x.getAttribute("role") || ""),
 			plus: !!menu.querySelector(".scope-group-btn"),
-			// 触发器本身要能看出"当前在哪个组织 / 哪个命名空间"
-			org: (trig.querySelector(".scope-org") || {}).textContent || "",
+			// 触发器本身要能看出当前在哪个命名空间
 			ns: (trig.querySelector(".scope-ns") || {}).textContent || "",
-			role: (menu.querySelector(".scope-item") || {}).getAttribute
-				? menu.querySelector(".scope-item").getAttribute("role")
-				: "",
 			checked: menu.querySelectorAll('.scope-item[aria-checked="true"]').length,
+			collapsed: "",
 		};
 		trig.click(); // 关掉，别影响后面的操作
+		opened.collapsed = trig.getAttribute("aria-expanded");
 		return opened;
 	});
 	H.check(
-		"侧栏切换器是一个触发器 + 分节菜单（不是两个原生 select）",
+		"侧栏切换器只有一个维度：命名空间（没有组织分节 / 组织头像）",
 		sw.ok !== false &&
 			sw.shows &&
 			sw.expanded === "true" &&
-			sw.groups.length === 2 &&
-			sw.groups[0] === "组织" &&
-			sw.groups[1] === "命名空间" &&
-			sw.orgItems >= 2 &&
-			sw.subs.includes("staging") &&
+			sw.groups.length === 1 &&
+			sw.groups[0] === "命名空间" &&
+			sw.avatars === 0 &&
+			sw.menuHasOrg === false &&
 			sw.plus &&
-			sw.org.length > 0 &&
-			sw.ns.length > 0 &&
-			sw.role === "menuitemradio" &&
-			sw.checked === 2,
-		`分节=${JSON.stringify(sw.groups)} 组织项=${sw.orgItems} 命名空间=${JSON.stringify(sw.subs)} 当前=${sw.org}/${sw.ns} role=${sw.role} 勾选=${sw.checked}`,
+			sw.ns.includes("prod"),
+		`分节=${JSON.stringify(sw.groups)} 菜单里\"组织\"=${sw.menuHasOrg} 头像=${sw.avatars} 分组+ =${sw.plus} 当前=${sw.ns}`,
+	);
+	H.check(
+		"命名空间列了 3 条、每条都能按 data-ns-id 定位、且只有当前项被勾选",
+		sw.count === 3 &&
+			JSON.stringify(sw.subs) === JSON.stringify(["prod", "staging", "sandbox"]) &&
+			sw.names.length === 3 &&
+			sw.names.every((n) => n.length > 0) &&
+			sw.ids.length === 3 &&
+			sw.ids.every((id) => id.length > 0) &&
+			sw.roles.every((r) => r === "menuitemradio") &&
+			sw.checked === 1,
+		`条数=${sw.count} slug=${JSON.stringify(sw.subs)} 名=${JSON.stringify(sw.names)} 勾选=${sw.checked} role=${JSON.stringify(sw.roles)}`,
+	);
+	H.check(
+		"aria-expanded 跟着菜单开合（打开 true / 关闭 false）",
+		sw.expanded === "true" && sw.collapsed === "false",
+		`打开=${sw.expanded} 关闭=${sw.collapsed}`,
 	);
 
 	// ② 数据真的按命名空间隔离（含 `*` 通配）
@@ -3613,6 +3700,59 @@ async function checkScope(page) {
 		"切换命名空间会换掉列表内容（不是只有下拉变了）",
 		afterSwitch.cards < before && afterSwitch.ns.includes("staging"),
 		`切前 ${before} 张 → 切后 ${afterSwitch.cards} 张，当前=${afterSwitch.ns}`,
+	);
+
+	// ③-b 切换后页面请求真的带**新**的 namespaceId（#203 硬要求 2）
+	//
+	// 这条补的是 mock 的盲区：mock 对缺失的 namespaceId 会回退到默认命名空间，
+	// 所以"切了但请求没带新 id"在页面上看不出任何症状 —— 只有从请求侧能抓住。
+	const stagingReqOk = await page
+		.waitForFunction(
+			() =>
+				(window.__v1reqs || []).some(
+					(r) =>
+						r.startsWith("/v1/sources") &&
+						r.includes("namespaceId=ns_mock_staging"),
+				),
+			{ timeout: 15000 },
+		)
+		.then(() => true)
+		.catch(() => false);
+	const switched = await page.evaluate(() => (window.__v1reqs || []).slice());
+	// 命名空间资源前缀白名单 = partials.js 的 NS_PATHS（9 个）：
+	// 这些端点缺 namespaceId 后端会 400，属于"必须带"的一类。
+	const NS_PREFIXES = [
+		"/v1/sources",
+		"/v1/edges",
+		"/v1/events",
+		"/v1/console/events",
+		"/v1/tasks",
+		"/v1/stats",
+		"/v1/capabilities",
+		"/v1/nodes",
+		"/v1/playbooks",
+	];
+	const isNsReq = (r) =>
+		NS_PREFIXES.some(
+			(p) => r === p || r.startsWith(p + "?") || r.startsWith(p + "/"),
+		);
+	const nsReqs = switched.filter(isNsReq);
+	const staleProd = switched.filter((r) => r.includes("namespaceId=ns_mock_prod"));
+	const missingNs = nsReqs.filter((r) => !/[?&]namespaceId=/.test(r));
+	H.check(
+		"切换后请求带新的 namespaceId（staging），旧的 prod 一条不剩",
+		stagingReqOk &&
+			nsReqs.some(
+				(r) =>
+					r.startsWith("/v1/sources") && r.includes("namespaceId=ns_mock_staging"),
+			) &&
+			staleProd.length === 0,
+		`带 staging=${stagingReqOk} 残留 prod=${JSON.stringify(staleProd).slice(0, 160)}`,
+	);
+	H.check(
+		"切换后每个命名空间资源请求都带 namespaceId（缺参后端直接 400）",
+		nsReqs.length > 0 && missingNs.length === 0,
+		`命名空间资源请求 ${nsReqs.length} 条，缺 namespaceId 的 ${missingNs.length} 条=${JSON.stringify(missingNs).slice(0, 200)}`,
 	);
 
 	// ④ 刷新后仍停在上次选的命名空间（选择要持久）
@@ -3701,6 +3841,138 @@ async function checkScope(page) {
 
 	// 复位，避免影响后面用 prod 数据的断言
 	await page.evaluate(() => localStorage.removeItem("anotify.scope"));
+}
+
+// waitUntilNode 轮询一个 **node 侧**的条件。
+//
+// dialog（prompt / alert）事件只在 Playwright 侧可见，page.waitForFunction 看不到，
+// 而"点一下再睡 500ms"在并发跑时既慢又不稳。等的是条件，不是时长。
+async function waitUntilNode(fn, timeoutMs = 8000, intervalMs = 50) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		if (await fn()) return true;
+		if (Date.now() >= deadline) return false;
+		await new Promise((r) => setTimeout(r, intervalMs));
+	}
+}
+
+// checkScopeEmptyState 验证「一个命名空间都没有」时侧栏不是空下拉，而是空态 + 新建入口（#203）。
+//
+// 为什么要另开一页：page.addInitScript 对**那个 page** 永久生效，把 /v1/namespaces 桩成
+// 空表会污染后面还要用的 page（checkPlaybooks 等）。
+//
+// 为什么必须在页内钩 fetch：mock 在 window.fetch 层就拦下了 /v1/*（web/mock.js:3141），
+// page.route 根本看不到这些请求 —— 只能在自己的 init script 里套一层。
+// 必须用 getter/setter：mock.js 是 `window.fetch = …` **赋值**，普通覆盖会被它盖掉。
+async function checkScopeEmptyState(page) {
+	const p2 = await page.context().newPage();
+	try {
+		await p2.addInitScript(() => {
+			const native = window.fetch.bind(window);
+			let inner = null;
+			const dispatch = (input, init) => {
+				const url = typeof input === "string" ? input : (input && input.url) || "";
+				let path = String(url).split("?")[0];
+				try {
+					path = new URL(String(url), location.href).pathname;
+				} catch {
+					/* 相对 / 非法 URL 用上面的兜底 */
+				}
+				const method = String(
+					(init && init.method) || (input && input.method) || "GET",
+				).toUpperCase();
+				// 非 /v1/ 直达网络（镜像 mock 自己的行为，避免与 mock 的 wrapper 递归）
+				if (!path.startsWith("/v1/")) return native(input, init);
+				if (method === "GET" && path === "/v1/namespaces")
+					return Promise.resolve(
+						new Response(JSON.stringify({ namespaces: [] }), {
+							status: 200,
+							headers: { "content-type": "application/json" },
+						}),
+					);
+				return inner ? inner(input, init) : native(input, init);
+			};
+			Object.defineProperty(window, "fetch", {
+				configurable: true,
+				get: () => dispatch,
+				set: (fn) => {
+					inner = fn; // mock.js 装上自己的 wrapper 时接住它
+				},
+			});
+		});
+
+		await p2.goto(new URL("index.html", page.url()).href, {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await p2
+			.waitForFunction(
+				() => {
+					const box = document.querySelector("#scope-switcher");
+					return !!(box && !box.classList.contains("hidden"));
+				},
+				{ timeout: 15000 },
+			)
+			.catch(() => {});
+
+		const empty = await p2.evaluate(() => {
+			const box = document.querySelector("#scope-switcher");
+			if (!box) return { ok: false };
+			const visible =
+				!box.classList.contains("hidden") && box.getBoundingClientRect().height > 0;
+			const trig = box.querySelector(".scope-trigger");
+			if (trig) trig.click(); // 空态在菜单里，要先展开才看得见 / 点得到
+			const menu = box.querySelector(".scope-menu");
+			const emp = menu && menu.querySelector(".scope-empty");
+			const text = (sel) =>
+				(((emp && emp.querySelector(sel)) || {}).textContent || "").trim();
+			return {
+				ok: true,
+				visible,
+				menuOpen: !!menu && !menu.classList.contains("hidden"),
+				items: menu ? menu.querySelectorAll(".scope-item").length : -1,
+				hasEmpty: !!emp,
+				emptyText: text(".scope-empty-text"),
+				ctaText: text(".scope-empty-cta"),
+				// 分组头的 + 是第二个新建入口，空态下也必须还在
+				plus: !!(menu && menu.querySelector(".scope-group-btn")),
+				ns: ((box.querySelector(".scope-ns") || {}).textContent || "").trim(),
+			};
+		});
+		H.check(
+			"没有命名空间时侧栏不是空下拉，而是空态文案 + 新建入口",
+			empty.ok !== false &&
+				empty.visible &&
+				empty.menuOpen &&
+				empty.items === 0 &&
+				empty.hasEmpty &&
+				empty.emptyText.length > 0 &&
+				empty.ctaText.length > 0 &&
+				empty.plus,
+			`可见=${empty.visible} 条目=${empty.items} 空态=${empty.hasEmpty} 文案=${empty.emptyText} CTA=${empty.ctaText} 分组+ =${empty.plus} 触发器=${empty.ns}`,
+		);
+
+		// 空态的 CTA 必须真的走新建流程（弹 slug 输入），不能是个死按钮。
+		// 只数 prompt 次数：列表是桩成空的，真建也建不出来，不断言后续。
+		let prompts = 0;
+		p2.on("dialog", async (d) => {
+			prompts += 1;
+			try {
+				await d.dismiss();
+			} catch {
+				/* 已经自己关了 */
+			}
+		});
+		await p2.click(".scope-empty-cta");
+		const prompted = await waitUntilNode(() => prompts > 0);
+		H.check(
+			"空态的「新建命名空间」按钮真的走新建流程（弹出 slug 输入）",
+			prompted && prompts === 1,
+			`prompt 次数=${prompts}`,
+		);
+	} finally {
+		await p2.close();
+	}
 }
 
 // checkPlaybooks 验证「预案」的体检界面。
@@ -4296,6 +4568,8 @@ async function runMockCoverage() {
 			await checkWaterfall(page);
 			// 放最后：这套检查会切命名空间、还会跳页，不能夹在别的检查中间
 			await checkScope(page);
+			// 空态另开一页验证（把 /v1/namespaces 桩成空表，不能污染上面这个 page）
+			await checkScopeEmptyState(page);
 			await checkPlaybooks(page, base);
 		}
 		await page.close();

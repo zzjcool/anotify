@@ -239,12 +239,11 @@ index:
     loading: Loading events…
     empty: No events yet. Once a webhook or cron trigger is wired up, the stream shows here.
 scope:
-  switcher_label: "Switch organization or namespace"
-  section_org: "Organization"
+  switcher_label: "Switch namespace"
   section_ns: "Namespace"
-  org: "Org"
   ns: "Namespace"
   none: "(no namespace yet)"
+  empty_hint: "No namespaces yet. Create one to get started."
   new_ns: "New namespace"
   new_ns_prompt: "New namespace slug (lowercase letters / digits / hyphens)"
   new_ns_failed: "Create failed"
