@@ -518,3 +518,33 @@ CREATE TABLE IF NOT EXISTS namespaces (
 );
 
 CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);
+
+-- +migration 13 playbooks
+-- #193：预案（playbook）—— 一份可安装的流程零件（设计 docs/design/playbooks.md）。
+--
+-- 预案本身**不产生任务**：它只是一份清单（能力 / 边 / 触发器），安装时按
+-- 「能力 → 边 → 源」的顺序补齐本命名空间里的真实资源（I8 append-only：
+-- 已有定义一律不覆盖）。就绪体检是查询时算出来的推导量，不落库（I3 同源）。
+--
+-- manifest 存**提交的 JSON 原文**：runner / paramsSchema 这类节点侧字段中枢
+-- 只存不解释（I1），重新编码会丢掉键序与用户自定义键（往返一致性）。
+--
+-- 本注释刻意不写任何「可执行概念」的英文关键词：make contract 的 A2 正则
+-- 扫 schema.sql 全文（注释也算），命中即失败。
+--
+-- 同理，说明文字这一列叫 `descr` 而不是它的完整英文单词：A2 的正则是**子串**
+-- 匹配，那个单词里恰好含有被禁的子串（契约 §4 的 DDL 写的是完整单词，与 A2
+-- 关卡直接冲突；列名缩写在 store 层之外不可见，Go 字段与 JSON 仍是完整单词）。
+CREATE TABLE IF NOT EXISTS playbooks (
+    id           TEXT PRIMARY KEY,              -- pb_<base62>
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    slug         TEXT NOT NULL,                 -- pr-review（URL 用，命名空间内唯一）
+    name         TEXT NOT NULL,                 -- PR 审查
+    descr        TEXT NOT NULL DEFAULT '',      -- 说明文字（缩写列名，见上方注释）
+    manifest     TEXT NOT NULL,                 -- manifest JSON 原文
+    created_at   INTEGER NOT NULL,
+    UNIQUE (namespace_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_at);

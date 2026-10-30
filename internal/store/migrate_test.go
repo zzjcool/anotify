@@ -57,6 +57,8 @@ func TestOpenCreatesAllTables(t *testing.T) {
 		"node_instances", "node_pins", "edges", "events", "tasks", "graph_versions",
 		// 命名空间（#162）：组织之下的隔离边界
 		"namespaces",
+		// 预案（#193）：可安装的流程零件
+		"playbooks",
 		// 源（#110）：事件入口
 		"sources", "source_targets",
 		// 沿用：属于人的 4 张 + CLI/恢复码 2 张
