@@ -64,6 +64,12 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// 断言数还会涨（现在 310 条），240s 在并发下只剩十几秒余量，
 	// 加几条动画采样就会被 SIGKILL 掉。留足一倍余量。
 	frontend: 360_000,
+	// real_backend（#201）：绿的时候只要 4~5s（并行实测 4.5s、单跑 7.5s），
+	// 但它是**故意**会红的那种套件 —— 每个页面都有 goto 15s + 就绪 10s 的失败路径，
+	// 真回归时这些超时会串行累加（7 页 × 25s + B 部分 ~55s ≈ 230s）。
+	// 咬死默认 120s 的话，真回归会先被 SIGKILL 变成「超时」，断言文本全丢、
+	// 只剩"这个套件挂了"，等于把诊断信息扔了。240s 覆盖最坏路径又不拖累绿路径。
+	real_backend: 240_000,
 };
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");

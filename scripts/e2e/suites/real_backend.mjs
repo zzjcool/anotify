@@ -32,7 +32,7 @@
  *   - 端口走 `H.SUITE_PORTS.real_backend`（段内独占，不与其它套件重叠）。
  */
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -75,32 +75,41 @@ const UI_NODE_NAME = "ui-agent";
 
 // ---------- 反例白名单 ----------
 // **只有** `/v1/orgs` 的 404：`partials.js` 的侧栏组织切换器探测该端点，
-// 真后端还没有这套端点（docs/design/namespaces.md），拿不到就隐藏切换器。
+// 真后端还没有这套路由（docs/design/namespaces.md），拿不到就隐藏切换器。
 // 除它以外任何 4xx 都是"某个页面用错了端点/漏了参数"，一律算失败。
+// 注：等这个端点真上线（返回 200）后，这一条要删掉 —— 白名单里的死条目会让人
+// 误以为"真后端还没有 /v1/orgs"。
 const FOUR_XX_WHITELIST = [{ path: "/v1/orgs", status: 404 }];
 
-// 命名空间资源端点（请求必须带 namespaceId）。
+// 命名空间资源端点的判定直接复用 `H.isNamespaceEndpoint`（各套件共用口径）。
 //
-// `H.isNamespaceEndpoint` 是各 HTTP 套件共用的口径，但它**不含** `/v1/playbooks`
-// —— #193 新增的命名空间资源。本套件的价值就在页面级请求的**全量**体检，
-// 所以在这里补齐；漏项的症状正是 #196（预案页永远"载入失败"）。
-const EXTRA_NS_PATHS = ["/v1/playbooks"];
-function isNamespaceScoped(pathname) {
-	if (H.isNamespaceEndpoint(pathname)) return true;
-	return EXTRA_NS_PATHS.some(
-		(p) => pathname === p || pathname.startsWith(p + "/"),
-	);
-}
+// 这条口径本轮**补过一次**：`/v1/playbooks` 是 #193 起的命名空间资源，但
+// harness 的 `NS_REQUIRED_PREFIXES` 一直漏着它 —— 后果是 `H.req()` 静默少带
+// `namespaceId`，真后端一律 400（#196 的同类问题）。改动在 lib 层，所以它
+// 影响所有套件（`make e2e` 全量验证过没波及其它 19 个）。
 
 let server;
 let browser;
 let wsNode = null; // A 部分的真 WS 握手节点（套件结束要 close）
+let agentBin = ""; // 真 cmd/agent 二进制（main 里提前备好，B 部分直接用）
 let agentProc = null;
 let tmpDir = null;
 
 // ---------- 小工具 ----------
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
+}
+
+// maskToken 把节点令牌从"要进 CI 日志"的文本里抹掉。
+//
+// 产品侧的纪律是"令牌绝不进日志"（中枢只存 sha256，见 console_handlers.go 的
+// CreateNode 注释），e2e 的失败详情同样不该破例：临时库跑完即删，但 CI 日志会
+// 留存/转发。失败诊断只需要知道"令牌存在且被 agent 读到了"，不需要它的值。
+function maskToken(text) {
+	return String(text == null ? "" : text)
+		.replace(/^(\s*token:\s*)\S+/gm, "$1<masked>")
+		.replace(/ant_node_[\w-]+/g, "ant_node_<masked>")
+		.replace(/anotify_session=[\w.~-]+/g, "anotify_session=<masked>");
 }
 
 // pollUntil 轮询到 fn 返回真值。**不是**"睡固定时间"：等的是条件，
@@ -166,11 +175,16 @@ async function injectSession(ctx, sessionValue, base) {
 // ---------- 页面级请求观测 ----------
 //
 // 每个页面单独注册监听器（一页一个 context，互不串味）：
-//   reqs  — 所有 /v1/* 请求（path / search / namespaceId）
-//   resps — 所有 /v1/* 响应（path / status）
-//   errs  — pageerror
+//   reqs   — 所有 /v1/* 请求（path / search / namespaceId）
+//   resps  — 所有 /v1/* 响应（path / status）
+//   fails  — 网络层失败的 /v1 请求（连不上、被 abort）
+//   errs   — pageerror
+//
+// 为什么要收 fails：`page.on("response")` **不会**为失败请求触发。后端在中途挂掉
+// 时，页面里的 /v1 请求全部 requestfailed → resps 为空 → "没有 4xx" 恒真。
+// 那种页面必须红，所以失败请求要单独收。
 function watchV1(page) {
-	const v1 = { reqs: [], resps: [], errs: [] };
+	const v1 = { reqs: [], resps: [], fails: [], errs: [] };
 	const parse = (u) => {
 		try {
 			return new URL(u);
@@ -197,6 +211,15 @@ function watchV1(page) {
 			status: res.status(),
 		});
 	});
+	page.on("requestfailed", (req) => {
+		const u = parse(req.url());
+		if (!u || !u.pathname.startsWith("/v1")) return;
+		v1.fails.push({
+			method: req.method(),
+			path: u.pathname,
+			error: (req.failure() || {}).errorText || "request failed",
+		});
+	});
 	page.on("pageerror", (e) => v1.errs.push(String(e)));
 	return v1;
 }
@@ -213,16 +236,23 @@ const fmtList = (list, n = 6) => {
 // 第③条是本套件的核心：真后端对命名空间资源端点**严格要求** namespaceId
 // （缺 → 400，绝不回退默认值）。页面漏加的症状，在 mock 上是"什么都没发生"。
 function checkPageHealth(label, v1, nsId) {
-	// ① /v1/* 无未白名单的 4xx
-	const fourXx = v1.resps.filter((r) => r.status >= 400 && r.status < 500);
-	const offenders = fourXx.filter(
+	// ① /v1/* 没有未白名单的错误响应（4xx/**5xx**）且没有网络层失败的请求
+	//
+	// 5xx 一起算：这条断言的名字虽然叫"挡住 4xx"，但 500（DB 报错、命名空间解析
+	// panic）同样意味着"页面这条链路是坏的"，放它过去等于给自己留个后门。
+	const bad = v1.resps.filter(
 		(r) =>
+			r.status >= 400 &&
 			!FOUR_XX_WHITELIST.some((w) => w.path === r.path && w.status === r.status),
 	);
+	const offenders = [...bad, ...v1.fails];
 	H.check(
-		`${label}：/v1/* 没有未白名单的 4xx（白名单只有 /v1/orgs 的 404）`,
-		offenders.length === 0,
-		`未白名单 4xx：${fmtList(offenders)}；全部 /v1 响应：${fmtList(v1.resps, 12)}`,
+		`${label}：/v1/* 没有失败响应（白名单只有 /v1/orgs 的 404）`,
+		// 非空前提：一个响应都没收到（页面根本没走真数据 / 请求全失败）不能算通过
+		v1.resps.length > 0 && offenders.length === 0,
+		v1.resps.length === 0
+			? "一个 /v1 响应都没收到（请求全失败或页面没走真数据）"
+			: `失败请求：${fmtList(offenders)}；全部 /v1 响应：${fmtList(v1.resps, 12)}`,
 	);
 
 	// ② 没有 pageerror
@@ -233,7 +263,7 @@ function checkPageHealth(label, v1, nsId) {
 	);
 
 	// ③ 每个命名空间资源请求都带 namespaceId
-	const nsReqs = v1.reqs.filter((r) => isNamespaceScoped(r.path));
+	const nsReqs = v1.reqs.filter((r) => H.isNamespaceEndpoint(r.path));
 	const missing = nsReqs.filter((r) => !r.namespaceId);
 	H.check(
 		`${label}：${nsReqs.length} 个命名空间资源请求全部带 namespaceId`,
@@ -244,11 +274,14 @@ function checkPageHealth(label, v1, nsId) {
 	);
 
 	// ④ namespaceId 指向**默认**命名空间（不是别的、不是 `*`）
+	// 同样带非空前提：空集合上"全都对"是废话（③ 一旦被改动，这条就成装饰）
 	const wrong = nsReqs.filter((r) => r.namespaceId && r.namespaceId !== nsId);
 	H.check(
 		`${label}：namespaceId 指向默认命名空间`,
-		wrong.length === 0,
-		`实际：${fmtList(wrong)}；期望 ${nsId}`,
+		nsReqs.length > 0 && wrong.length === 0,
+		nsReqs.length === 0
+			? "没有命名空间资源请求可判"
+			: `实际：${fmtList(wrong)}；期望 ${nsId}`,
 	);
 }
 
@@ -275,10 +308,16 @@ const PAGES = [
 				),
 				txt.slice(0, 200),
 			);
+			// 内容断言用**结构**而不是文案：页面文案随 4 种语言构建变化（zh/en/ja/es），
+			// 拿中文/英文正则去锁，只会在别的语言构建下变成误红或恒真。
+			const eventBox = await page.evaluate(() => {
+				const b = document.getElementById("index-events");
+				return b ? { children: b.children.length, text: b.innerText || "" } : null;
+			});
 			H.check(
-				"首页：事件流是真后端的空态（还没有事件）",
-				/还没有事件|No events yet/.test(txt),
-				txt.slice(0, 200),
+				"首页：事件流区块有内容（真后端返回后渲染过）",
+				!!eventBox && eventBox.children > 0 && eventBox.text.trim().length > 0,
+				JSON.stringify(eventBox),
 			);
 		},
 	},
@@ -427,12 +466,21 @@ const PAGES = [
 				nodeOpts.some((o) => String(o).includes(WS_NODE_NAME)),
 				JSON.stringify(nodeOpts),
 			);
-			// 这套件不产生事件（不 fire 源），所以真后端下页面必须是"还没有事件"，
-			// 而不是"演示数据"或空白。
+			// 这套件不产生事件（不 fire 源），所以真后端下列表应该只有**一条**空态卡。
+			// 同 index：断结构不断文案（文案随语言构建变）。
+			const listShape = await page.evaluate(() => {
+				const box = document.getElementById("ev-list");
+				return box
+					? {
+							children: box.children.length,
+							text: (box.innerText || "").trim().slice(0, 80),
+						}
+					: null;
+			});
 			H.check(
-				"事件页：真后端下是空态（还没有事件）",
-				/还没有事件|No events yet/.test(txt),
-				txt.slice(0, 200),
+				"事件页：无事件时只渲染一条空态（不是空白、不是演示数据）",
+				!!listShape && listShape.children === 1 && listShape.text.length > 0,
+				JSON.stringify(listShape),
 			);
 		},
 	},
@@ -446,13 +494,15 @@ async function runPageChecks(ctxData, nsId) {
 		const page = await ctx.newPage();
 		const v1 = watchV1(page);
 		try {
+			// 超时值是为了"真坏时快速红"而不是"等足够久"：正常渲染 <2s，
+			// 7 个页面的失败路径串行累加不能把套件预算（240s）吃光。
 			await page.goto(server.base + spec.url(ctxData), {
 				waitUntil: "load",
-				timeout: 20000,
+				timeout: 15000,
 			});
 			await H.waitForAppReady(page, "workspace");
 			await page
-				.waitForFunction(spec.ready, null, { timeout: 15000 })
+				.waitForFunction(spec.ready, null, { timeout: 10000 })
 				.catch((e) =>
 					H.bad(
 						`${spec.name}：等待页面数据就绪`,
@@ -525,12 +575,12 @@ function uncommentCapabilitySample(yamlText, capName) {
 		}
 		// 块标量之外的纯说明注释：解开会把文件弄坏，直接丢（它本来就是注释）
 		if (commented && !looksLikeYaml(body)) continue;
-		// 列表项首键换成真能力名（页面示例里是 analyze-pr；这里不依赖它叫什么）
-		if (!renamed && /^\s*- [A-Za-z_][\w-]*:/.test(body)) {
-			body = body.replace(
-				/^(\s*)- [A-Za-z_][\w-]*:.*$/,
-				`$1- capability: ${capName}`,
-			);
+		// **只换能力名**，键名与缩进一律不动：页面示例里写的就是 analyze-pr，
+		// 这里换名字只是为了"名字变了也不脆"。
+		// 顺手把键名/缩进改对是不可接受的 —— 那会把 #197 那类"产物键名/缩进写错"
+		// 的 bug 一起改好，套件永远绿（上面 ③ 的断言就是为这件事先钉一层）。
+		if (!renamed && /^\s*- capability: /.test(body)) {
+			body = body.replace(/^(\s*- capability: )\S+/, `$1${capName}`);
 			renamed = true;
 		}
 		// 进入块标量（`command: |` / `>`；带 chomping 修饰符也认）
@@ -547,8 +597,32 @@ function uncommentCapabilitySample(yamlText, capName) {
 	return { text, items };
 }
 
+// AGENT_SOURCES 是"这个二进制代表哪份代码"的判据（判新旧用）。
+const AGENT_SOURCES = [
+	"cmd/agent/main.go",
+	"cmd/agent/config.go",
+	"cmd/agent/client.go",
+	"cmd/agent/runner.go",
+];
+
+// ensureAgentBin 返回一个**和当前源码一致**的 agent 二进制。
+//
+// run_all.sh 每次都会重新构建并导出 AGENT_BIN，所以 `make e2e` 这条路上永远新鲜。
+// 但单独跑本套件时 `.e2e-bin/agent` 可能是上一次留下的旧二进制 —— 改了 cmd/agent
+// 还拿它去跑就是假绿。所以：不存在、或比任一 agent 源文件旧，就现场构建一份。
 function ensureAgentBin() {
-	if (existsSync(AGENT_BIN)) return AGENT_BIN;
+	if (existsSync(AGENT_BIN)) {
+		const binMs = statSync(AGENT_BIN).mtimeMs;
+		const stale = AGENT_SOURCES.some((rel) => {
+			try {
+				return statSync(path.join(H.ROOT_DIR, rel)).mtimeMs > binMs;
+			} catch {
+				return false;
+			}
+		});
+		if (!stale) return AGENT_BIN;
+		console.log(`  · .e2e-bin/agent 比源码旧，现场重建`);
+	}
 	const out = path.join(tmpDir, "agent");
 	execFileSync("go", ["build", "-o", out, "./cmd/agent"], {
 		cwd: H.ROOT_DIR,
@@ -658,17 +732,33 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			pageYaml.slice(0, 300),
 		);
 
-		// ③ 解开 capabilities 示例 → 真能力 → 写盘（DONE 之前由 agent 判对错）
+		// ③ 先钉"页面示例本身的形状"：键名必须叫 capability、缩进必须是 2。
+		//
+		// 这一步**不能**省给后面的解注释代劳：#197 的五处不符里就有「键名写成 name」
+		// 和「列表项顶到第 0 列」—— 如果解注释时顺手把键名/缩进改对了，这两类
+		// bug 就永远不会让套件红（假绿）。所以：形状先断言，解注释只换能力名。
+		const sampleItem = (pageYaml.match(/^  # - (\S+): (\S+)\s*$/m) || [])[1] || "";
+		H.check(
+			"node.yaml 示例：capabilities 列表项的键名是 capability（不是 name）",
+			sampleItem === "capability",
+			`实际键名 ${JSON.stringify(sampleItem)}；示例块：\n${pageYaml.split("capabilities:")[1] || ""}`,
+		);
+		H.check(
+			"node.yaml 示例：列表项缩进是 2 个空格（顶到第 0 列是 #197 的旧形状）",
+			/^  # - capability: \S+$/m.test(pageYaml),
+			`示例块：\n${pageYaml.split("capabilities:")[1] || ""}`,
+		);
+
+		// ④ 解开 capabilities 示例 → 真能力 → 写盘（对错由真 agent 判）
 		const patched = uncommentCapabilitySample(pageYaml, ENTRY_CAP);
 		H.check(
-			"node.yaml：capabilities 示例块能解出一条能力声明",
-			patched.items >= 1,
+			"node.yaml：解开示例后得到一条真能力声明（缩进 2）",
+			patched.items >= 1 && /^  - capability: \S+$/m.test(patched.text),
 			`解出 ${patched.items} 条；解开后：\n${patched.text}`,
 		);
 		const yamlPath = path.join(tmpDir, "node.yaml");
 		writeFileSync(yamlPath, patched.text);
 
-		const agentBin = ensureAgentBin();
 		agentProc = spawn(agentBin, ["-f", yamlPath, "-grace", "2"], {
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -690,11 +780,14 @@ async function runUiArtifactChecks(ctxData, nsId) {
 		if (!online) {
 			// 失败时把 agent 的日志等回来再断言：否则 stderr 可能还在管道里，
 			// 失败详情只剩"退出码 1"三个字，等于把排查成本转嫁给下一个人。
+			// 这里的 sleep 只等管道 flush（150ms），不承担任何断言语义。
 			const early = await waitChildExit(agentProc, 5000);
 			await sleep(150);
 			H.bad(
 				"真 cmd/agent 用页面给的 YAML 起来，节点变 online",
-				`agent 退出码=${early.code} 信号=${early.signal}；agent 日志：\n${agentLog.slice(-1500)}\n喂进去的 node.yaml：\n${patched.text}`,
+				maskToken(
+					`agent 退出码=${early.code} 信号=${early.signal}；agent 日志：\n${agentLog.slice(-1500)}\n喂进去的 node.yaml：\n${patched.text}`,
+				),
 			);
 		} else {
 			H.ok("真 cmd/agent 用页面给的 YAML 起来，节点变 online");
@@ -721,31 +814,36 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			);
 		}
 
-		// ⑥ SIGTERM → 优雅退出，退出码 0
-		H.check(
-			"agent 收到 SIGTERM 前仍在运行（不是早就崩了）",
-			agentProc.exitCode === null,
-			`exitCode=${agentProc.exitCode}`,
-		);
-		agentProc.kill("SIGTERM");
-		const exited = await waitChildExit(agentProc, 15000);
-		H.eq("agent SIGTERM 退出码 = 0", exited.code, 0);
-		H.check(
-			"agent 是以正常信号收尾（不是被 SIGKILL）",
-			exited.signal === null || exited.signal === undefined,
-			`signal=${exited.signal}`,
-		);
+		// ⑥ SIGTERM → 优雅退出，退出码 0；⑦ 断开后节点回 offline
+		//
+		// 只在"agent 真的起来了"之后才断言这两步：agent 本来就崩了（配置解析失败）
+		// 的情况下，再报"没在运行"/"退出码不是 0"只是三条同因噪音，
+		// 会把根因（上面那条红）淹掉。
+		if (online) {
+			H.check(
+				"agent 收到 SIGTERM 前仍在运行（不是早就崩了）",
+				agentProc.exitCode === null,
+				`exitCode=${agentProc.exitCode}`,
+			);
+			agentProc.kill("SIGTERM");
+			const exited = await waitChildExit(agentProc, 15000);
+			H.eq("agent SIGTERM 退出码 = 0", exited.code, 0);
+			H.check(
+				"agent 是以正常信号收尾（不是被 SIGKILL）",
+				exited.signal === null || exited.signal === undefined,
+				`signal=${exited.signal}`,
+			);
 
-		// ⑦ 断开后节点回到 offline（服务端清理）
-		const offline = await waitNodeStatus(ctxData.session, UI_NODE_NAME, "offline", {
-			timeoutMs: 15000,
-			intervalMs: 100,
-		});
-		H.check(
-			"agent 退出后节点回到 offline",
-			!!offline,
-			offline ? "" : "15s 内没变 offline",
-		);
+			const offline = await waitNodeStatus(ctxData.session, UI_NODE_NAME, "offline", {
+				timeoutMs: 15000,
+				intervalMs: 100,
+			});
+			H.check(
+				"agent 退出后节点回到 offline",
+				!!offline,
+				offline ? "" : "15s 内没变 offline",
+			);
+		}
 
 		// 这一页的请求同样过一遍 A 部分的四条硬断言（注册节点 = 真 POST /v1/nodes）
 		checkPageHealth("nodes.html（注册链路）", v1, nsId);
@@ -825,6 +923,11 @@ async function main() {
 	H.eq("GET /v1/capabilities 含 install 的 3 个定义", capList.length, 3);
 	const orgId = primaryOrgOf(server.dbPath, s.uid);
 	H.check("拿到 orgId", !!orgId, String(orgId));
+
+	// 先把 agent 二进制准备好：`ensureAgentBin()` 走现场 `go build` 时是**同步阻塞**
+	// 的，压在心跳定时器期间会把 rb-ws-node 的心跳一起卡住（看门狗 20s 就关连接）。
+	agentBin = ensureAgentBin();
+
 	wsNode = await N.bringUpNode(
 		server.base,
 		server.dbPath,
@@ -868,7 +971,11 @@ async function main() {
 	if (wsNode?.conn) wsNode.conn.close();
 	server.stop();
 	rmSync(tmpDir, { recursive: true, force: true });
-	process.exit(passed ? 0 : 1);
+	// 不用 process.exit()：它可能截断 stdout（失败详情/失败项清单正好在尾部，
+	// 那些恰恰是排障要看的）。设 exitCode 让进程自然退出；再挂一个 unref 的兜底
+	// 定时器，万一还有句柄没释放也不会挂死。
+	process.exitCode = passed ? 0 : 1;
+	setTimeout(() => process.exit(process.exitCode), 3000).unref();
 }
 
 main().catch(async (e) => {
