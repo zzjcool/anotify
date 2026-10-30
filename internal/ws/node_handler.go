@@ -53,19 +53,40 @@ type NodeHandler struct {
 	// 为 nil 时自动创建一个（handler 自己持有，不共享）。
 	Hub *NodeHub
 
-	// NextHop 在任务成功回报 out 后派发下一跳（契约 §4 的递归应用）。
+	// NextHop 在任务成功回报 out 后接力派发下一跳（契约 §4 的递归应用）。
 	//
 	// 为 nil 时**不派下一跳**——链路就停在当前任务（测试/仅配置场景）。
-	// 非 nil 时若派发失败只记日志，不把错误回给节点：
-	// 任务本身已经成功完成了，下一跳的失败不该让它变成失败。
+	//
+	// #140 把一次「派发」拆成 plan 与 publish 两段，两段的失败处理**故意不同**：
+	//
+	//   - plan 是只读查询（出口表/能力/节点），在**读循环里同步**跑。它是
+	//     「父任务终态 + 子任务行同一个事务」的前提——必须先知道要建哪些子任务行
+	//     才能把它们一起交给 ReportResultAndCreateTasks。plan 失败 = 这次结果
+	//     没能落库（DB 故障，与今日 ReportResult 失败等价），所以不提交终态、
+	//     回错误帧；父任务仍 running，租约到期后巡检退回 pending 重派，可恢复。
+	//   - publish 是网络操作（挑机器 + 占槽位 + 推 assign 帧），在**后台 goroutine**
+	//     里跑（不能进事务：握着 SQLite 写事务等一个可能掉线的节点会把整库写入卡住，
+	//     且帧发出去后事务再回滚就永久不一致）。publish 失败/丢失**不回给节点**：
+	//     父任务已经成功完了，子任务行也已落库为 pending + node_id NULL，
+	//     由 store.ListRedispatchable / lease sweeper 兜底重派。
 	NextHop NextHopDispatcher
 }
 
-// NextHopDispatcher 派发下一跳（由 route.Dispatcher 实现）。
+// NextHopDispatcher 接力派发下一跳（由 route.Dispatcher 实现）。
 //
 // 抽成接口是为了让 ws 包不依赖 route 包（避免循环依赖）。
+// 两条方法是 #140 的核心切分（见 NodeHandler.NextHop 的说明）：
+//   - PlanNextHop 只算不落库（同步，事务前）
+//   - PublishTasks 只推已落库的行（异步，事务后，绝不建行）
 type NextHopDispatcher interface {
-	DispatchNext(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) error
+	// PlanNextHop 只算「下一跳要建哪些任务」：只读，不落库、不占槽位、不推帧。
+	// 返回的任务是 pending、ID 已生成但尚未落库，由调用方放进父任务终态的事务里。
+	PlanNextHop(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID,
+		out string, params json.RawMessage, path []string) ([]*store.Task, error)
+
+	// PublishTasks 对**已落库**的 pending 任务执行「挑机器 + 占槽位 + 推 assign 帧」。
+	// 绝不建行；逐条独立，返回第一个错误仅供调用方记日志。
+	PublishTasks(ctx context.Context, orgID string, tasks []*store.Task) error
 }
 
 // hub 返回 Hub，必要时惰性创建。
