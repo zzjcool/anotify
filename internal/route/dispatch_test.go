@@ -37,12 +37,16 @@ type fakeStore struct {
 	assignments  []assignment
 	leasedSlots  map[string]string // instanceID → taskID
 	graphCalls   int
+	// pruneEvents 是 InsertPruneEvent 收到的剪枝事件（#142）
+	pruneEvents []*store.Event
 
 	// 可注入的错误
 	errEdges       error
 	errNodes       error
 	errCreateTasks error
 	errAssignTask  error
+	// errInsertPrune 让剪枝落库失败（验证「留痕失败不能打断派发」）
+	errInsertPrune error
 }
 
 type assignment struct {
@@ -257,6 +261,26 @@ func (f *fakeStore) IsOrgMember(ctx context.Context, orgID, userID string) (bool
 	// 约定：userID 以 "member" 开头的是本组织成员，其余是外部用户。
 	// （用 HasPrefix 而不是切片比较：切片下标写错一位就会静默判错，见 TestForeignUser。）
 	return strings.HasPrefix(userID, "member"), nil
+}
+
+// InsertPruneEvent 按 (org_id, trace_id, source, type, payload) 去重，
+// 与真 store 的「存在性判断」同口径（#142）。
+//
+// 同口径很重要：否则 mock 里能看到 2 行、真库里只有 1 行，
+// 测试会为一种不存在的存储行为背书。
+func (f *fakeStore) InsertPruneEvent(ctx context.Context, e *store.Event) (bool, error) {
+	if f.errInsertPrune != nil {
+		return false, f.errInsertPrune
+	}
+	for _, got := range f.pruneEvents {
+		if got.OrgID == e.OrgID && got.TraceID == e.TraceID &&
+			got.Source == e.Source && got.Type == e.Type &&
+			string(got.Payload) == string(e.Payload) {
+			return false, nil
+		}
+	}
+	f.pruneEvents = append(f.pruneEvents, e)
+	return true, nil
 }
 
 // ---------- 测试夹具 ----------

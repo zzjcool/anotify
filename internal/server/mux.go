@@ -251,6 +251,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 控制台端点：登录会话 + 组织维度校验
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(consoleH.tasks))))
 	mux.Handle("GET /v1/tasks/{id}", noStore(sessMW(http.HandlerFunc(consoleH.task))))
+	// trace 视图（#142）：一条 trace 的全景（events + tasks + pruned）。
+	// 剪枝从 #142 起落进了 events（source='route'），这个端点是「为什么没跑」的查询出口。
+	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(consoleH.trace))))
 	// 控制台读事件流：走会话 Cookie（机器入口的 GET /v1/events 走 Bearer Key）。
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(consoleH.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))

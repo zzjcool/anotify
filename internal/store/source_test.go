@@ -295,3 +295,109 @@ func TestDueCronSources(t *testing.T) {
 		t.Errorf("到点应取出 1 个, got %d", len(due))
 	}
 }
+
+// TestCreateSourceRejectsReservedName 源名不许叫 route（#142 §9.2）。
+//
+// 源名就是它产生事件的 source（入口边左端 / POST /v1/events）。
+// 叫 route 的源产生的事件会被事件流静默过滤、在 trace 视图里被当成剪枝，
+// 所以必须在**配置期**就拒绝，而不是等事件消失后再去猜。
+func TestCreateSourceRejectsReservedName(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+	capA := mkCap(orgID, "demo.reserved", 1, []string{"ok"})
+	if err := db.CreateCapability(ctx, capA); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"route", "  route  "} {
+		err := db.CreateSource(ctx, &Source{
+			OrgID: orgID, Name: name, Kind: SourceKindManual, Enabled: true,
+			Targets: []SourceTarget{{CapabilityID: capA.ID}},
+		})
+		if err == nil {
+			t.Fatalf("CreateSource(name=%q) 应该被拒绝", name)
+		}
+		if !errors.Is(err, ErrReservedEventSource) {
+			t.Fatalf("CreateSource(name=%q) 错误不可判: %v", name, err)
+		}
+	}
+	// 一行都没建出来（拒绝发生在落库前）
+	list, err := db.ListSources(ctx, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("被拒的源还是落库了: %d 个", len(list))
+	}
+
+	// 名字里包含 route 但不等于 route 的源照常可建（不能误伤）
+	if err := db.CreateSource(ctx, &Source{
+		OrgID: orgID, Name: "route 备份", Kind: SourceKindManual, Enabled: true,
+		Targets: []SourceTarget{{CapabilityID: capA.ID}},
+	}); err != nil {
+		t.Fatalf("名字只是含有 route 的源被误伤: %v", err)
+	}
+}
+
+// TestUpdateSourceRejectsReservedName 已有源不许改名为 route（#142 §9.2 延伸）。
+//
+// 只在 CreateSource 拦是不够的：先建一个正常源、再 PATCH 改名成 route，
+// 就绕过了那道水闸，该源的事件照样会被事件流静默吞掉。
+func TestUpdateSourceRejectsReservedName(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgID, _ := newTestOrg(t, db)
+	capA := mkCap(orgID, "demo.rename", 1, []string{"ok"})
+	if err := db.CreateCapability(ctx, capA); err != nil {
+		t.Fatal(err)
+	}
+
+	src := &Source{
+		OrgID: orgID, Name: "原来的名字", Kind: SourceKindManual, Enabled: true,
+		Targets: []SourceTarget{{CapabilityID: capA.ID}},
+	}
+	if err := db.CreateSource(ctx, src); err != nil {
+		t.Fatalf("建源: %v", err)
+	}
+
+	for _, name := range []string{"route", "  route  "} {
+		cur, err := db.GetSource(ctx, orgID, src.ID)
+		if err != nil {
+			t.Fatalf("get source: %v", err)
+		}
+		cur.Name = name
+		err = db.UpdateSource(ctx, cur)
+		if err == nil {
+			t.Fatalf("UpdateSource(name=%q) 应该被拒绝", name)
+		}
+		if !errors.Is(err, ErrReservedEventSource) {
+			t.Fatalf("UpdateSource(name=%q) 错误不可判: %v", name, err)
+		}
+		// 改动不应该落库（名字保持原样）
+		after, err := db.GetSource(ctx, orgID, src.ID)
+		if err != nil {
+			t.Fatalf("get source after reject: %v", err)
+		}
+		if after.Name != "原来的名字" {
+			t.Fatalf("被拒的改名还是生效了：name = %q", after.Name)
+		}
+	}
+
+	// 名字只是含有 route 的照常能改（不能误伤）
+	cur, err := db.GetSource(ctx, orgID, src.ID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	cur.Name = "route 备份"
+	if err := db.UpdateSource(ctx, cur); err != nil {
+		t.Fatalf("名字只是含有 route 的改名被误伤: %v", err)
+	}
+	after, err := db.GetSource(ctx, orgID, src.ID)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if after.Name != "route 备份" {
+		t.Fatalf("正常改名没生效：name = %q", after.Name)
+	}
+}
