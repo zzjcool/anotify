@@ -64,6 +64,26 @@ const (
 	summaryMaxBytes = 200
 )
 
+// waitDelay 是 cmd.WaitDelay 的取值：Wait 收尾的**兜底**，不是超时本体（超时本体
+// 仍由 cmd.Cancel 杀进程组负责）。
+//
+// 它是什么：Go 1.20+ 的 exec.Cmd 字段。Wait 除了等子进程退出，还要等 stdout/stderr
+// 的复制 goroutine 读到**管道 EOF**；如果命令把自己**脱离进程组**（`setsid sleep 3 &`）
+// 而那个孤儿继承了管道，杀进程组杀不到它，Wait 就被它拖住（契约 §11.2 F2 实测：
+// timeoutSec=1 的命令 3.0s 才返回）。设了 WaitDelay 后，只要「ctx 已 done / 子进程
+// 已被 kill 过」而 I/O 管道仍未关闭，再过 waitDelay 就强行关管道、让 Wait 返回
+// （返回 exec.ErrWaitDelay；下面的判定顺序仍然先看 ctx.Err()，所以 Err 还是
+// "timed out after ..."）。
+//
+// 为什么是 1s 而不是契约建议的 3s：WaitDelay 的计时器在 **ctx done 或 Wait 观察到
+// 子进程已退出**（两者**先到者**）那一刻启动（os/exec 的 watchCtx（exec.go:818）与
+// awaitGoroutines（exec.go:985）里那两处 time.NewTimer(c.WaitDelay)），而不是更早，
+// 所以最坏耗时为「超时时长 + waitDelay」。3s 兜底意味着
+// 1s 超时的任务要 4s 才返回——而 `setsid sleep 3` 的孤儿 3s 就自己退出了，兜底永远
+// 轮不到先触发（实测仍是 3.0s，等于没修）。1s 同时远大于「杀组后管道排空」所需的
+// 毫秒级时间，不会误伤正常命令的输出。
+const waitDelay = time.Second
+
 // runJob 执行一次任务。**不 panic**：所有失败都写进 outcome.Err（client 侧照常
 // 回 result 帧）。
 //
@@ -112,6 +132,9 @@ func runJob(ctx context.Context, j job) outcome {
 	// Cancel 只在 Start 成功后才会被调用，所以 cmd.Process 一定非 nil；
 	// 组里已经没有进程时内核返回 ESRCH，那是正常情况，不当错误。
 	cmd.Cancel = func() error { return killProcessGroup(cmd.Process.Pid) }
+	// 兜底：杀组杀不到「自己脱离了进程组、却还占着输出管道」的孤儿，没有
+	// WaitDelay 时 Wait 会一直等它（详见 waitDelay 的注释）。
+	cmd.WaitDelay = waitDelay
 
 	if err := cmd.Start(); err != nil {
 		// 明确区分「起不来」（sh 缺失、权限…）与「跑完失败」。

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,11 +17,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/zzjcool/anotify/internal/ws"
 )
 
-// 本文件覆盖契约 §5 的 W4 必测矩阵：用内存 fake nodeConn 驱动 serveNode，
-// **不连真 WebSocket、不联网**。
+// 本文件覆盖契约 §5 的 W4 必测矩阵 + §11.1/§11.3 的返工项（F1/F3/F4）。
+//
+// 两条腿走路：
+//   - 内存 fake nodeConn（快、确定）：调度细节（ack 顺序、cancel、信号量、params 透传）；
+//   - httptest + coder/websocket 起**真**连接（§11.1 的 F1 回归锚）：优雅退出时 result
+//     到底能不能发出去。这一条**不能**交给 fake：fake 的读语义是本文件自己写的，
+//     而 F1 恰恰死在真库的读语义上（Conn.Read(ctx) 取消 ctx = c.close()）。
 //
 // 命名一律带 w4 前缀：同包的 config_test.go / protocol_test.go / runner_test.go
 // 是别人的文件，helper 名不能撞。
@@ -47,13 +55,17 @@ func newW4Conn() *w4Conn {
 	}
 }
 
-// postCancelReadWindow 是「ctx 已取消后还愿意交付已到达帧」的窗口。
+// read 的语义**对齐真库**：读的 ctx 一取消就等于「连接没了」。
 //
-// 真连接同样会出现「帧已经到了、读的取消还没来得及生效」这种时序；这个窗口把
-// 那条路变得可测：draining 期间收到的 assign 必须不 ack（如果没有窗口，读往往直接
-// 因为 ctx 取消而返回，那条分支就永远踩不到）。
-const postCancelReadWindow = 150 * time.Millisecond
-
+// coder/websocket 的 Conn.Read(ctx) 走 setupReadTimeout → context.AfterFunc(ctx,
+// func() { c.close() })（conn.go:188-200），所以取消读 ctx 是「关连接」，不是「读超时」；
+// 这里也立刻返回 ctx.Err()。
+//
+// 历史上这里有过一个 postCancelReadWindow（取消后还再交付 150ms 内到达的帧），
+// 那是**假的**：它把「父 ctx 取消并不影响读」这个错误前提固化成了测试语义，
+// 于是 F1（SIGINT 一来连接被库关掉、grace 期的 result 全丢）在 fake 上永远绿。
+// 现在契约要求读循环用连接自己的 ctx（a.base），本 fake 的 ctx 也就是 a.base，
+// 因此「取消后读不到帧」= 收尾，与真库一致。
 func (c *w4Conn) read(ctx context.Context) ([]byte, error) {
 	select {
 	case data := <-c.in:
@@ -61,12 +73,6 @@ func (c *w4Conn) read(ctx context.Context) ([]byte, error) {
 	case <-c.closed:
 		return nil, errors.New("fake conn closed")
 	case <-ctx.Done():
-		// 已经取消：再给已到达的帧一个窗口。
-		select {
-		case data := <-c.in:
-			return c.deliver(data), nil
-		case <-time.After(postCancelReadWindow):
-		}
 		return nil, ctx.Err()
 	}
 }
@@ -693,4 +699,421 @@ func TestClientConnectionClosed(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "connection closed: ") {
 		t.Fatalf("错误文案应以 connection closed 开头（契约 §3.4.7），实际 %q", err.Error())
 	}
+}
+
+// ---------- F3：心跳间隔（契约 §3.4.2 / §11.3） ----------
+
+// TestHeartbeatInterval 钉住 `max(1s, heartbeatSec/2)`，缺省/非正数按 10s 算。
+func TestHeartbeatInterval(t *testing.T) {
+	cases := []struct {
+		sec  int
+		want time.Duration
+	}{
+		{1, time.Second},      // max(1s, 0.5s) → 下限 1s 生效
+		{10, 5 * time.Second}, // 就是一半
+		{0, 5 * time.Second},  // 缺省 10s → 一半
+		{-1, 5 * time.Second}, // 非正数同样按缺省 10s（不是「1s 下限」）
+	}
+	for _, tc := range cases {
+		if got := heartbeatInterval(tc.sec); got != tc.want {
+			t.Errorf("heartbeatInterval(%d) = %s，期望 %s（契约 §3.4.2: max(1s, heartbeatSec/2)）",
+				tc.sec, got, tc.want)
+		}
+	}
+}
+
+// ---------- F4：ack 立刻（不等信号量，契约 §11.3） ----------
+
+// TestClientAckBeforeSemaphore：taskLimit=1 时连派两单，两条 ack 都必须**早于**
+// 首单的 result。ack 是租约开始计时的信号，拖住它会让中枢以为节点没收到
+// （契约 §3.4.3）；排队的只能是执行，不能是 ack。
+func TestClientAckBeforeSemaphore(t *testing.T) {
+	// instances=1 + concurrency 缺省 → taskLimit=1：两单必然串行。
+	cfg := w4Config(w4Cap("demo.prep", 1, "sleep 0.3; echo first"))
+	h := w4Start(t, cfg, 10, 2*time.Second)
+
+	for _, id := range []string{"tsk_first", "tsk_second"} {
+		h.fc.feed(t, &assignFrame{
+			Type:       frameTypeAssign,
+			TaskID:     id,
+			Capability: "demo.prep",
+			Version:    1,
+		})
+	}
+
+	frames := h.fc.waitFor(t, 10*time.Second, "两条 ack 与首单 result", func(frames []map[string]any) bool {
+		return w4Has(frames, frameTypeAck, "tsk_first") &&
+			w4Has(frames, frameTypeAck, "tsk_second") &&
+			w4Has(frames, frameTypeResult, "tsk_first")
+	})
+
+	_, ackFirst, _ := w4Find(frames, frameTypeAck, "tsk_first")
+	_, ackSecond, _ := w4Find(frames, frameTypeAck, "tsk_second")
+	_, resFirst, _ := w4Find(frames, frameTypeResult, "tsk_first")
+	if ackFirst > resFirst || ackSecond > resFirst {
+		t.Fatalf("ack 排队等了信号量（ack@%d/%d，首单 result@%d）: %s",
+			ackFirst, ackSecond, resFirst, w4Describe(frames))
+	}
+	if ackSecond < ackFirst {
+		t.Fatalf("ack 顺序应与派单顺序一致（first@%d, second@%d）", ackFirst, ackSecond)
+	}
+
+	// 两单都要真跑完：否则上面的顺序断言可以靠「第二单根本没执行」蒙过去。
+	frames = h.fc.waitFor(t, 10*time.Second, "第二单 result", w4Cond(frameTypeResult, "tsk_second"))
+	for _, id := range []string{"tsk_first", "tsk_second"} {
+		res, _, _ := w4Find(frames, frameTypeResult, id)
+		if res["status"] != statusSucceeded {
+			t.Fatalf("%s 应 succeeded，实际 %v（error=%v）", id, res["status"], res["error"])
+		}
+	}
+
+	h.stop()
+}
+
+// ---------- 真 WebSocket：F1 回归锚（契约 §11.1） ----------
+//
+// 下面这组用例**必须**跑在真连接上：F1（SIGINT 一来连接被库关掉 → grace 期的
+// result 全丢 → 中枢只能等租约到期重派 → 重复执行）只存在于 coder/websocket 的
+// 读语义里（Conn.Read(ctx) 挂 context.AfterFunc(ctx, c.close)）。fake nodeConn
+// 的读语义是本文件自己写的，用它测 F1 = 自己证明自己。
+
+// w4Hub 是跑在 httptest.Server 上的假中枢：在一条真 WS 连接上完成
+// hello → welcome →（可选）assign → 一直读，收到的上行帧按序记录。
+type w4Hub struct {
+	srv    *httptest.Server
+	hbSec  int          // welcome 里给的 heartbeat_sec
+	assign *assignFrame // welcome 之后立刻派这一单（nil = 不派）
+
+	mu      sync.Mutex
+	conn    *websocket.Conn
+	accepts int
+	path    string
+	auth    string
+	frames  []map[string]any
+	at      []time.Time // frames 的同下标到达时刻
+	err     error       // hub 侧的故障（第一个）
+}
+
+func w4StartHub(t *testing.T, hbSec int, assign *assignFrame) *w4Hub {
+	t.Helper()
+	h := &w4Hub{hbSec: hbSec, assign: assign}
+	h.srv = httptest.NewServer(http.HandlerFunc(h.serve))
+	t.Cleanup(func() {
+		// 兜底：handler 可能还卡在 Read 上（被测实现没关连接时），先 CloseNow 再
+		// srv.Close，否则 httptest 会一直等 handler 返回。
+		h.mu.Lock()
+		c := h.conn
+		h.mu.Unlock()
+		if c != nil {
+			_ = c.CloseNow()
+		}
+		h.srv.Close()
+	})
+	return h
+}
+
+// serve 是假中枢的服务端脚本（单条连接）。
+func (h *w4Hub) serve(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	h.accepts++
+	h.path = r.URL.Path
+	h.auth = r.Header.Get("Authorization")
+	h.mu.Unlock()
+
+	c, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		h.fail(fmt.Sprintf("accept: %v", err))
+		return
+	}
+	h.mu.Lock()
+	h.conn = c
+	h.mu.Unlock()
+
+	ctx := context.Background()
+
+	// 1) hello 必须是第一帧（契约 §3.4.1）。
+	_, raw, err := c.Read(ctx)
+	if err != nil {
+		h.fail(fmt.Sprintf("读 hello 失败: %v", err))
+		return
+	}
+	frame := w4DecodeHubFrame(h, raw)
+	if frame["type"] != frameTypeHello {
+		h.fail(fmt.Sprintf("第一帧不是 hello，是 %v", frame["type"]))
+		return
+	}
+	h.push(frame)
+
+	// 2) welcome（心跳设小：真连接上 idle 语义与 fake 不同）。
+	if err := w4HubWrite(ctx, c, &welcomeFrame{
+		Type:         frameTypeWelcome,
+		NodeID:       "nod_ws",
+		Protocol:     ws.ProtocolVersion,
+		HeartbeatSec: h.hbSec,
+		LeaseTTLSec:  30,
+	}); err != nil {
+		h.fail(fmt.Sprintf("写 welcome 失败: %v", err))
+		return
+	}
+
+	// 3) 可选派单。
+	if h.assign != nil {
+		if err := w4HubWrite(ctx, c, h.assign); err != nil {
+			h.fail(fmt.Sprintf("写 assign 失败: %v", err))
+			return
+		}
+	}
+
+	// 4) 一直读到连接结束（对端正常关闭也是读错误，不是故障）。
+	for {
+		_, raw, err := c.Read(ctx)
+		if err != nil {
+			return
+		}
+		h.push(w4DecodeHubFrame(h, raw))
+	}
+}
+
+func (h *w4Hub) push(frame map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.frames = append(h.frames, frame)
+	h.at = append(h.at, time.Now())
+}
+
+func (h *w4Hub) fail(msg string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.err == nil {
+		h.err = errors.New(msg)
+	}
+}
+
+func (h *w4Hub) snapshot() ([]map[string]any, []time.Time, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	frames := make([]map[string]any, len(h.frames))
+	copy(frames, h.frames)
+	at := make([]time.Time, len(h.at))
+	copy(at, h.at)
+	return frames, at, h.err
+}
+
+// request 返回握手请求的 path / Authorization（钉住 dialNode 的线上形状）。
+func (h *w4Hub) request() (path, auth string, accepts int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.path, h.auth, h.accepts
+}
+
+// waitFrame 轮询到对端收到满足 cond 的帧序列（超时报出已收帧与 hub 侧故障）。
+func (h *w4Hub) waitFrame(t *testing.T, timeout time.Duration, what string, cond func([]map[string]any) bool) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		frames, _, herr := h.snapshot()
+		if cond(frames) {
+			return frames
+		}
+		if herr != nil {
+			t.Fatalf("等 %s 时假中枢报错: %v（已收帧: %s）", what, herr, w4Describe(frames))
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等 %s 超时（%s）；假中枢已收帧: %s", what, timeout, w4Describe(frames))
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// frameAt 返回已收帧里第 i 帧到达对端的时刻（用来证明它是在 cancel **之后**到的）。
+func (h *w4Hub) frameAt(i int) time.Time {
+	_, at, _ := h.snapshot()
+	if i < 0 || i >= len(at) {
+		return time.Time{}
+	}
+	return at[i]
+}
+
+// w4DecodeHubFrame 把上行帧解成 map（断言用；tag 属于 internal/ws，不在测试里重写）。
+func w4DecodeHubFrame(h *w4Hub, raw []byte) map[string]any {
+	var frame map[string]any
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		h.fail(fmt.Sprintf("上行帧不是 JSON（%q）: %v", raw, err))
+		return map[string]any{}
+	}
+	return frame
+}
+
+// w4HubWrite 从假中枢写一帧下行帧。
+func w4HubWrite(ctx context.Context, c *websocket.Conn, f any) error {
+	data, err := encodeFrame(f)
+	if err != nil {
+		return err
+	}
+	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return c.Write(wctx, websocket.MessageText, data)
+}
+
+// w4RealWSConfig 写一份真 node.yaml 并 loadConfig（顺带覆盖 server→streamURL 的映射）。
+func w4RealWSConfig(t *testing.T, serverURL, command string) *nodeConfig {
+	t.Helper()
+	body := fmt.Sprintf(`name: ws-node
+server: %s
+token: tok_ws
+instances: 1
+capabilities:
+  - capability: demo.prep
+    version: 1
+    run:
+      runner: bash
+      command: %q
+      timeoutSec: 10
+`, serverURL, command)
+	path := filepath.Join(t.TempDir(), "node.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("写 node.yaml 失败: %v", err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	return cfg
+}
+
+// w4ServeRealWS 用本包的 dialNode + serveNode 跑一条真连接（契约 §11.1）。
+func w4ServeRealWS(t *testing.T, ctx context.Context, cfg *nodeConfig, grace time.Duration) <-chan error {
+	t.Helper()
+	url, err := cfg.streamURL()
+	if err != nil {
+		t.Fatalf("streamURL: %v", err)
+	}
+	conn, err := dialNode(ctx, url, cfg.Token)
+	if err != nil {
+		t.Fatalf("dialNode: %v", err)
+	}
+	// 兜底：用例中途 Fatal 时也要解开连接，否则 serveNode 的读 goroutine 会悬着。
+	t.Cleanup(func() { _ = conn.close() })
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	done := make(chan error, 1)
+	go func() { done <- serveNode(ctx, cfg, conn, logger, grace) }()
+	return done
+}
+
+// w4WaitServe 等 serveNode 返回，并断言必须是 nil（正常退出）。
+func w4WaitServe(t *testing.T, done <-chan error, timeout time.Duration) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveNode 正常退出必须返回 nil，实际 %v", err)
+		}
+	case <-time.After(timeout):
+		t.Fatalf("serveNode 未在 %s 内返回", timeout)
+	}
+}
+
+// TestServeNodeRealWSAssignAckResult 是真连接上的正常路径（契约 §11.1）：
+// hello → welcome → assign → ack + result（succeeded、summary=ok）。
+func TestServeNodeRealWSAssignAckResult(t *testing.T) {
+	hub := w4StartHub(t, 1, &assignFrame{
+		Type:        frameTypeAssign,
+		TaskID:      "tsk_ws",
+		Capability:  "demo.prep",
+		Version:     1,
+		Params:      map[string]any{"title": "ws"},
+		LeaseUntil:  time.Now().Add(time.Minute).Unix(),
+		MaxDuration: 10,
+	})
+	// 命令形状与 node.yaml 里的一模一样（sleep 0.3 让「在跑」这个状态真的存在）。
+	cfg := w4RealWSConfig(t, hub.srv.URL, "sleep 0.3; echo ok")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := w4ServeRealWS(t, ctx, cfg, 2*time.Second)
+
+	hub.waitFrame(t, 5*time.Second, "hello", w4Cond(frameTypeHello, ""))
+	if path, auth, _ := hub.request(); path != "/v1/node/stream" || auth != "Bearer "+cfg.Token {
+		t.Fatalf("连线形状不对：path=%q auth=%q（应为 /v1/node/stream + Bearer 令牌）", path, auth)
+	}
+
+	frames := hub.waitFrame(t, 10*time.Second, "tsk_ws 的 result", w4Cond(frameTypeResult, "tsk_ws"))
+	_, ackIdx, ok := w4Find(frames, frameTypeAck, "tsk_ws")
+	if !ok {
+		t.Fatalf("真连接上没收到 ack: %s", w4Describe(frames))
+	}
+	res, resIdx, ok := w4Find(frames, frameTypeResult, "tsk_ws")
+	if !ok {
+		t.Fatalf("真连接上没收到 result: %s", w4Describe(frames))
+	}
+	if ackIdx > resIdx {
+		t.Fatalf("ack 必须先于 result（ack@%d, result@%d）", ackIdx, resIdx)
+	}
+	if res["status"] != statusSucceeded {
+		t.Fatalf("result.status 应为 %s，实际 %v（error=%v）", statusSucceeded, res["status"], res["error"])
+	}
+	if res["summary"] != "ok" {
+		t.Errorf("result.summary 应为命令输出首行 ok，实际 %#v", res["summary"])
+	}
+
+	// 正常收尾：父 ctx 取消（模拟 SIGTERM）后 serveNode 必须返回 nil。
+	cancel()
+	w4WaitServe(t, done, 15*time.Second)
+}
+
+// TestServeNodeRealWSGracefulShutdownKeepsResult 是 **F1 的回归锚**（契约 §11.1）：
+// 任务跑完之前 SIGINT（父 ctx 取消，grace=2s），真连接上**必须真的收到** result。
+//
+// 把 client.go 里的 readLoop(a.base) 改回 readLoop(ctx) 会让这条红：父 ctx 取消
+// → 库的 setupReadTimeout 直接 c.close() → drain 期间任务跑完了也发不出 result。
+func TestServeNodeRealWSGracefulShutdownKeepsResult(t *testing.T) {
+	hub := w4StartHub(t, 1, &assignFrame{
+		Type:        frameTypeAssign,
+		TaskID:      "tsk_ws_grace",
+		Capability:  "demo.prep",
+		Version:     1,
+		Params:      map[string]any{},
+		LeaseUntil:  time.Now().Add(time.Minute).Unix(),
+		MaxDuration: 10,
+	})
+	cfg := w4RealWSConfig(t, hub.srv.URL, "sleep 0.3; echo ok")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := w4ServeRealWS(t, ctx, cfg, 2*time.Second)
+
+	// 等到 ack：证明 assign 真的被读到了，且命令（sleep 0.3）已经在跑还没结束。
+	hub.waitFrame(t, 5*time.Second, "tsk_ws_grace 的 ack", w4Cond(frameTypeAck, "tsk_ws_grace"))
+
+	cancelAt := time.Now()
+	cancel() // 模拟 SIGINT：任务跑到一半，连接不能跟着死
+
+	// 核心断言：对端**真的收到** result（不是「发了但发不出去」）。
+	frames := hub.waitFrame(t, 10*time.Second, "退出期跑完任务的 result",
+		w4Cond(frameTypeResult, "tsk_ws_grace"))
+	res, resIdx, ok := w4Find(frames, frameTypeResult, "tsk_ws_grace")
+	if !ok {
+		t.Fatalf("grace 期间跑完的任务没把 result 发到对端: %s", w4Describe(frames))
+	}
+	if res["status"] != statusSucceeded {
+		t.Fatalf("退出期跑完的任务应 succeeded（不该被当成「退出即杀」），实际 %v（error=%v）",
+			res["status"], res["error"])
+	}
+	if res["summary"] != "ok" {
+		t.Errorf("result.summary 应为 ok，实际 %#v", res["summary"])
+	}
+	// 这一帧必须是在取消**之后**才到对端：否则用例没真正覆盖「退出期发送」。
+	if got := hub.frameAt(resIdx); got.Before(cancelAt) {
+		t.Fatalf("result 在取消之前就到对端了（收到于 %s，取消于 %s），这条用例没测到退出期发送",
+			got.Format(time.RFC3339Nano), cancelAt.Format(time.RFC3339Nano))
+	}
+	// 全程只有一条连接：result 是**同一条**连接上发出来的，不是重连出来的。
+	if _, _, accepts := hub.request(); accepts != 1 {
+		t.Fatalf("应只有 1 次握手，实际 %d 次（result 必须走原连接）", accepts)
+	}
+
+	w4WaitServe(t, done, 15*time.Second)
 }

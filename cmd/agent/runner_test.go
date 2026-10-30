@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -312,6 +313,58 @@ func TestRunJobCanceled(t *testing.T) {
 			t.Fatal("取消后后台孙进程仍然活着并写了标记文件：进程组没被彻底杀掉")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestRunJobWaitDelay 对应契约 §11.2（F2）：命令把自己**脱离进程组**（setsid 建
+// 新会话），却继承了 stdout/stderr 管道。杀进程组管不到这个孤儿，而 exec 的 Wait
+// 默认要等到**管道 EOF**（= 孤儿自己退出），于是 timeoutSec=1 的任务被拖到 ≈3s。
+//
+// cmd.WaitDelay 是兜底（不是超时本体）：ctx 已 done、Cancel 已经杀过进程组，管道
+// 却还没关闭时，WaitDelay 到点就强行关管道让 Wait 返回。
+func TestRunJobWaitDelay(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("系统没有 setsid（util-linux）：造不出「脱离进程组但仍占着管道」的场景；Linux CI 上必须有该命令")
+	}
+
+	j := newRunnerJob("setsid sleep 3 & sleep 10")
+	j.Spec.TimeoutSec = 1
+
+	start := time.Now()
+	res := runJob(context.Background(), j)
+	elapsed := time.Since(start)
+
+	// 没有 WaitDelay 时 ≈3.0s（Wait 在等 setsid 出来的 sleep 3 关管道）。
+	if elapsed >= 2500*time.Millisecond {
+		t.Fatalf("runJob 用了 %s，want < 2.5s：Wait 还在等脱离进程组的孤儿关管道（缺 cmd.WaitDelay）", elapsed)
+	}
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q, want %q (err=%q)", res.Status, statusFailed, res.Err)
+	}
+	if !strings.Contains(res.Err, "timed out") {
+		t.Fatalf("Err = %q, want 含 %q", res.Err, "timed out")
+	}
+}
+
+// TestRunJobWaitDelayKeepsTailOutput：WaitDelay 不能变成「第二个超时」——命令自己
+// 退出后，同进程组里的后台子 shell 还会继续写（此时管道仍未 EOF），这点尾巴必须
+// 仍然被捕获，且退出码 0 不能被 WaitDelay 判成错误（ErrWaitDelay）。
+func TestRunJobWaitDelayKeepsTailOutput(t *testing.T) {
+	j := newRunnerJob(`( sleep 0.3; printf 'tail-ok\n' ) & printf 'head-ok\n'`)
+
+	start := time.Now()
+	res := runJob(context.Background(), j)
+	elapsed := time.Since(start)
+
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want %q (err=%q output=%q)", res.Status, statusSucceeded, res.Err, res.Output)
+	}
+	if !strings.Contains(res.Output, "head-ok") || !strings.Contains(res.Output, "tail-ok") {
+		t.Fatalf("Output = %q, want 含 head-ok 与 0.3s 后才写的 tail-ok（WaitDelay 不该吞掉正常输出）", res.Output)
+	}
+	// 正常收尾不该等满 WaitDelay：0.3s 的尾巴应该近似原速返回。
+	if elapsed >= 2*time.Second {
+		t.Fatalf("runJob 用了 %s，正常命令不该被 WaitDelay 拖慢", elapsed)
 	}
 }
 

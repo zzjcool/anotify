@@ -22,13 +22,25 @@ import (
 // 一处来源（run.command），参数只走环境变量（见 runner.go）。
 //
 // 并发模型（契约 §3.4）：
-//   - 读：单 goroutine（serveNode 的读循环），一帧一帧处理；
+//   - 读：单 goroutine（serveNode 起的读循环），一帧一帧处理；
 //   - 写：全部经 send 串行化（coder/websocket 不允许并发写）；
 //   - 执行：每任务一个 goroutine，按能力用信号量限流（容量 cfg.taskLimit）；
 //   - 任务表（task_id → cancel）由 mutex 保护，供 cancel 帧查找。
 //
+// # 两个 ctx 的分工（契约 §11.1 / F1，别改回去）
+//
+// 父 ctx（runNode 的入参，SIGINT/SIGTERM 取消它）只表达「本进程要退出」；连接自己
+// 的 ctx 是 a.base = context.WithCancel(context.WithoutCancel(parent))，读写与在跑任务
+// 都用它。原因在真库里是致命的：coder/websocket 的 Conn.Read(ctx) 会挂
+// context.AfterFunc(ctx, func() { c.close() })（conn.go 的 setupReadTimeout），
+// **取消读的 ctx 等于立刻关掉底层连接**。若拿父 ctx 去读，SIGINT 一到连接就没了，
+// grace 期间跑完的任务发不出 result（use of closed network connection）→ 结果全丢 →
+// 服务端只能等租约到期重派 → 同一任务重复执行。
+//
 // 可测性：连接被抽象成 nodeConn（read/write/close 三方法），runNode 只是
-// dialNode + serveNode；测试用内存 fake 驱动 serveNode，不连真 WebSocket。
+// dialNode + serveNode。测试两条腿走路：内存 fake 覆盖调度细节（快、确定），
+// httptest + coder/websocket 起真连接覆盖「库的真实语义」（F1 的回归锚——
+// 这条用 fake 是测不出来的，fake 的读语义是我们自己写的）。
 
 const (
 	// handshakeTimeout 是「发出 hello 之后等 welcome」的上限（契约 §3.4.1）。
@@ -134,6 +146,10 @@ func runNode(ctx context.Context, cfg *nodeConfig, log *slog.Logger, grace time.
 //   - nil：ctx 被取消（SIGINT/SIGTERM）→ 优雅退出（先等在跑任务，最多 grace）；
 //   - fmt.Errorf("connection closed: %w", err)：连接断开（契约 §3.4.7）；
 //   - 其他：握手失败（含 handshake rejected）。
+//
+// 结构（契约 §11.1）：读循环在 goroutine 里，主 goroutine 只裁决「退出信号 vs
+// 连接断开」。读循环用 a.base 而不是父 ctx，所以父 ctx 取消**不会**把连接关掉，
+// drain 期间在跑任务仍能把 result 发出去。
 func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, log *slog.Logger, grace time.Duration) error {
 	if cfg == nil {
 		return errors.New("serveNode: nil node config")
@@ -146,7 +162,9 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, log *slog.Lo
 	}
 
 	a := newNodeAgent(ctx, cfg, conn, log)
-	// 收尾：先断「连接自己的」ctx（兜住残留写与残留任务），再关连接。
+	// 收尾兜底（幂等，两个分支里已做过的事不会重复做）：先关连接——send 看到
+	// closed 就不会再碰连接，残留写被 writeMu 挡在外面；再断「连接自己的」ctx，
+	// 兜住残留任务。
 	defer a.cancel()
 	defer a.closeConn()
 
@@ -167,33 +185,58 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, log *slog.Lo
 		"lease_ttl_sec", welcome.LeaseTTLSec,
 	)
 
-	// 心跳：跟父 ctx 一起停（退出过程中不再发心跳，收尾写帧走 base）。
-	hbCtx, hbCancel := context.WithCancel(ctx)
+	// 心跳挂在**连接** ctx（a.base）上，不是父 ctx：drain 期间在跑任务还要把 result
+	// 发出去，连接必须活着，心跳也跟着活着（服务端 idle 判定才不会把这段算成静默）。
+	hbCtx, hbCancel := context.WithCancel(a.base)
 	var hbWG sync.WaitGroup
 	hbWG.Add(1)
 	go func() {
 		defer hbWG.Done()
 		a.heartbeatLoop(hbCtx, heartbeatInterval(welcome.HeartbeatSec))
 	}()
+	// 心跳必须在关连接**之前**停：否则 Close 之后再写一帧，只是白记一条 warn。
+	stopHeartbeat := func() { hbCancel(); hbWG.Wait() }
 
-	readErr := a.readLoop(ctx)
-	hbCancel()
-	hbWG.Wait()
+	// 读循环放 goroutine：主 goroutine 只做「谁先来」的裁决，不再自己阻塞在读上。
+	// 缓冲 1：主 goroutine 走了退出分支后，读 goroutine 也能落地不泄漏。
+	readErrCh := make(chan error, 1)
+	go func() { readErrCh <- a.readLoop(a.base) }()
 
-	if readErr != nil {
+	select {
+	case <-ctx.Done():
+		// SIGINT/SIGTERM：先 draining（不再接新任务），再给在跑任务最多 grace 收尾。
+		// 这一步有意义的前提就是读循环用的是 a.base——父 ctx 取消不会关连接，
+		// 所以这里跑完的任务的 result 还发得出去（F1）。
+		a.log.Info("shutdown signal: draining",
+			"event", "agent.shutdown.drain", "grace", grace)
+		a.drain(grace)
+		stopHeartbeat()
+		a.closeConn()
+		// 收尾期的读错误是「我们自己把连接关了」，不是故障：忽略（记 debug 备查）。
+		if err := <-readErrCh; err != nil {
+			a.log.Debug("read loop ended during shutdown",
+				"event", "agent.read.shutdown", "error", err.Error())
+		}
+		return nil
+	case readErr := <-readErrCh:
 		// 连接断了：result 反正发不出去。直接收掉在跑任务（别留孤儿进程组），
 		// v1 不重连（契约 §3.4.7 + §10 缺口 3）。
 		a.cancelAll()
+		stopHeartbeat()
+		if readErr == nil {
+			// readLoop 返回 nil 只可能因为它自己的 ctx 被取消；走到这条分支说明
+			// 连接在退出流程之外断了，仍按断开处理（宁可让进程管理器重启，
+			// 也不静默退出——静默退出等于节点凭空消失）。
+			// 文案不能再套 "connection closed: " 前缀——errNodeConnClosed 自己就是
+			// "connection closed"，套上去会打出「connection closed: connection closed」。
+			readErr = errors.New("connection closed without error")
+		}
 		a.log.Warn("connection closed",
 			"event", "agent.connection.closed",
 			"error", readErr.Error(),
 		)
 		return readErr
 	}
-
-	// ctx 取消：先 draining（不再接新任务），再给在跑任务最多 grace 收尾。
-	a.drain(grace)
-	return nil
 }
 
 // heartbeatInterval 是契约 §3.4.2 的 max(1s, heartbeatSec/2)；缺省/非正数按 10s 算。
@@ -237,7 +280,11 @@ type nodeAgent struct {
 	tasks  map[string]*taskCancel
 
 	// wg 追踪所有任务 goroutine：优雅退出要等它们（最多 grace）。
-	wg sync.WaitGroup
+	//
+	// wgMu 只在两件事上持有：reserveTask 做 Add、drain 置 draining。两件事
+	// 互斥，就排除了 Add 与 Wait 并发（sync.WaitGroup 的硬要求）。
+	wgMu sync.Mutex
+	wg   sync.WaitGroup
 
 	// draining 置位后不再接新任务（不 ack，让中枢的租约到期回收）。
 	draining atomic.Bool
@@ -276,7 +323,9 @@ func (a *nodeAgent) isDraining() bool {
 // send 串行化地写一帧。
 //
 // 用的 ctx 是 base（连接自己的），不是父 ctx：优雅退出时在跑任务的 result 必须
-// 还发得出去。单帧写超时兜住「对端不读」的僵死。
+// 还发得出去。frameWriteTimeout 兜住「对端不读」的僵死，但代价要说清楚：真库的
+// setupWriteTimeout 在写 ctx 取消时同样走 c.close()，**写超时 = 关掉整条连接**
+// （不是跳过这一帧继续写），随后由读循环读到错误收尸——连接本来就僵了，关掉是对的。
 func (a *nodeAgent) send(f any) error {
 	data, err := encodeFrame(f)
 	if err != nil {
@@ -314,6 +363,10 @@ func (a *nodeAgent) closeConn() {
 //
 // 期间收到 error 帧 = 中枢拒绝（令牌/能力/manifest 不合规），必须作为**失败**返回：
 // 契约 §3.4.1 的错误文案是运维唯一能看懂的线索，逐字固定。
+//
+// 读的 ctx 用**父 ctx**（契约 §11.1 第 3 条）：握手阶段还没有要保全的 result，
+// 父 ctx 取消时直接放弃握手是对的（调用方把 ctx.Err() 当「正常退出」处理）。
+// 一旦握手成功，读就必须换成 a.base（见 readLoop）。
 func (a *nodeAgent) handshake(ctx context.Context) (*welcomeFrame, error) {
 	if err := a.send(a.cfg.hello()); err != nil {
 		return nil, fmt.Errorf("send hello: %w", err)
@@ -357,15 +410,21 @@ func (a *nodeAgent) handshake(ctx context.Context) (*welcomeFrame, error) {
 
 // ---------- 读循环 ----------
 
-// readLoop 读下行帧直到连接断开或父 ctx 取消。
+// readLoop 读下行帧直到连接断开。
 //
-// 返回 nil = 父 ctx 取消（优雅退出）；其他 err = 连接断了（契约 §3.4.7 的错误文案）。
+// ctx 必须是**连接自己的** ctx（a.base），不能是父进程 ctx：真库里取消读的 ctx
+// 会触发 c.close()，等于把连接连根拔掉（F1）。父 ctx 的取消由 serveNode 裁决。
+//
+// 返回 nil = 连接 ctx 被取消（收尾期自己关连接，不是故障）；
+// 其他 err = 连接断了（契约 §3.4.7 的错误文案）。
 func (a *nodeAgent) readLoop(ctx context.Context) error {
 	for {
 		data, err := a.conn.read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil // 本进程要退出（SIGINT/SIGTERM）：不是故障
+				// 连接 ctx 被取消：只可能是收尾（drain 超时后的 cancelAll / 进程收尾）。
+				// 这时读到的错是「我们自己关的」，不算故障（契约 §11.1 第 4 条）。
+				return nil
 			}
 			return fmt.Errorf("connection closed: %w", err)
 		}
@@ -403,18 +462,28 @@ func (a *nodeAgent) readLoop(ctx context.Context) error {
 //
 // ack 必须在读循环里同步发（不能等排到信号量）：ack 是租约开始计时的信号，
 // 拖住它会让中枢以为节点没收到。执行本身放 goroutine，读循环不被长任务卡住。
+//
+// 名额（wg 计数）在 ack **之前**就占好，理由两条：
+//  1. ack = 承诺执行；占不到名额就不该 ack（不 ack → 租约到期回收，契约 §3.4.6）。
+//  2. 读循环现在是独立 goroutine，drain 的 wg.Wait 与新任务的 wg.Add 会真的并发；
+//     reserveTask 用一把锁把 Add 挡在 draining 置位之前（见 reserveTask）。
 func (a *nodeAgent) handleAssign(f *assignFrame) {
 	if a.isDraining() {
 		// 契约 §3.4.6：draining 期间**不 ack**——ack 等于承诺执行，中枢会等一个
 		// 永远不会来的 result；不 ack 则租约到期后自然回收重派。
-		a.log.Warn("draining: assign ignored",
-			"event", "agent.assign.draining",
-			"task_id", f.TaskID, "capability", f.Capability, "version", f.Version)
+		a.ignoreAssign(f)
+		return
+	}
+	if !a.reserveTask() {
+		// isDraining 与 reserveTask 之间退出流程刚好开始：与「draining 期间收到」同待遇。
+		a.ignoreAssign(f)
 		return
 	}
 
 	if err := a.send(&ackFrame{Type: frameTypeAck, TaskID: f.TaskID}); err != nil {
 		// ack 都发不出去，连接已经在坏了；result 也发不出去，只能记日志。
+		// 已占的名额没有 goroutine 会跑，还回去，否则 drain 会白等到 grace 到点。
+		a.releaseTask()
 		a.log.Warn("ack failed",
 			"event", "agent.ack.failed", "task_id", f.TaskID, "error", err.Error())
 		return
@@ -429,6 +498,32 @@ func (a *nodeAgent) handleAssign(f *assignFrame) {
 	a.startTask(f, spec)
 }
 
+// ignoreAssign 记下「这单没接」：没 ack → 中枢靠租约到期回收重派。
+func (a *nodeAgent) ignoreAssign(f *assignFrame) {
+	a.log.Warn("draining: assign ignored",
+		"event", "agent.assign.draining",
+		"task_id", f.TaskID, "capability", f.Capability, "version", f.Version)
+}
+
+// reserveTask 占一个任务 goroutine 名额（wg 计数 +1）。
+//
+// 为何要一把锁：读循环是独立 goroutine 之后，drain 的 wg.Wait 与新任务的
+// wg.Add 会真的并发，而 sync.WaitGroup 的 Add 与 Wait 并发是 data race
+// （计数已归零时还会 panic）。drain 在同一把锁里置位 draining 再 Wait，
+// 于是「能 Add」一定发生在 Wait 之前。
+func (a *nodeAgent) reserveTask() bool {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	if a.draining.Load() {
+		return false
+	}
+	a.wg.Add(1)
+	return true
+}
+
+// releaseTask 归还 reserveTask 占下的名额（任务没起来时用）。
+func (a *nodeAgent) releaseTask() { a.wg.Done() }
+
 // startUnrunnable 收回「没有 run 映射」的派单：result failed。
 func (a *nodeAgent) startUnrunnable(f *assignFrame) {
 	errText := fmt.Sprintf("no run spec for %s@%d", f.Capability, f.Version)
@@ -436,7 +531,7 @@ func (a *nodeAgent) startUnrunnable(f *assignFrame) {
 		"event", "agent.assign.no_run_spec",
 		"task_id", f.TaskID, "capability", f.Capability, "version", f.Version)
 
-	a.wg.Add(1)
+	// 名额已在 handleAssign 里占好（reserveTask）：这里只负责还。
 	go func() {
 		defer a.wg.Done()
 		a.sendResult(f.TaskID, outcome{
@@ -473,7 +568,7 @@ func (a *nodeAgent) startTask(f *assignFrame, spec *runSpec) {
 		MaxDuration: f.MaxDuration,
 	}
 
-	a.wg.Add(1)
+	// 名额已在 handleAssign 里占好（reserveTask）：这里只负责还。
 	go func() {
 		defer a.wg.Done()
 		defer a.untrackTask(f.TaskID, handle)
@@ -650,7 +745,11 @@ func (a *nodeAgent) heartbeatLoop(ctx context.Context, interval time.Duration) {
 // 超时不强求结果：到点就取消剩余任务（杀进程组），契约 §3.4.6 只要求
 // 「等在跑任务最多 grace」——进程退出时不该被一个卡死的任务永远拖住。
 func (a *nodeAgent) drain(grace time.Duration) {
+	// 与 reserveTask 互斥地置位 draining：置位之后不再有 wg.Add，
+	// 下面的 wg.Wait 才是安全的（见 reserveTask 的注释）。
+	a.wgMu.Lock()
 	a.draining.Store(true)
+	a.wgMu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
