@@ -15,7 +15,7 @@ import (
 // *store.DB 满足它。
 //
 // 作用域参数一律是 **namespaceID**（#162）：命名空间资源（节点/能力/任务）的
-// 所有读写都按命名空间隔离，org_id 不再是作用域参数（store 从 namespaces 行派生）。
+// 所有读写都按命名空间隔离，命名空间就是唯一作用域参数。
 // 它从哪来：token → nodes.token_hash → 那一行的 namespace_id（令牌绑命名空间），
 // 所以 hello 帧不需要也不该带命名空间字段（设计文档 §2.1）。
 //
@@ -23,6 +23,10 @@ import (
 // 不需要作用域参数。
 type NodeStore interface {
 	GetNodeByTokenHash(ctx context.Context, tokenHash string) (*store.Node, error)
+	// AuthorizeNamespaceForNode 是节点侧的安全收口（#207）：令牌已经把命名空间钉死，
+	// 这里只判它仍然存在。**不要**在 ws 包内自己写存在性判断——
+	// 将来加 namespace_members 时，收口位置不变（见 store.AuthorizeNamespaceForNode）。
+	AuthorizeNamespaceForNode(ctx context.Context, namespaceID string) error
 	UpdateNodeStatus(ctx context.Context, namespaceID, nodeID, status string) error
 	TouchNode(ctx context.Context, namespaceID, nodeID string, at int64) error
 	ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string, caps []store.CapabilityRef) ([]string, error)
@@ -62,16 +66,25 @@ var (
 	ErrBadToken = errors.New("invalid node token")
 	// ErrNodeDraining 节点在排空，拒绝接入新连接。
 	ErrNodeDraining = errors.New("node is draining")
+	// ErrNamespaceGone 令牌指向的命名空间已被删除（#207）。与 ErrBadToken 同样是 403：
+	// 对节点侧不区分「令牌无效」和「命名空间没了」—— 两者对客户端都是「这个令牌不能用了」。
+	ErrNamespaceGone = errors.New("node namespace no longer exists")
 )
 
 // AuthenticateNode 在 **Upgrade 之前**完成握手鉴权（契约 §6.1 / §10.3）。
 //
 // token 是 **opaque**（不是 JWT）：查 nodes.token_hash（sha256）得到节点那一行。
-// 行上的 (node_id, namespace_id, org_id) 就是这条连接的全部身份：
-// **namespace_id 是后续所有 store 调用的作用域**（令牌绑命名空间），
-// org_id 只是日志/统计的锚点。拿到这些值之后，该连接上所有帧都用它们，**不再查库**。
+// 行上的 (node_id, namespace_id) 就是这条连接的全部身份：
+// **namespace_id 是后续所有 store 调用的作用域**（令牌绑命名空间）。
+// 拿到这些值之后，该连接上所有帧都用它们，**不再查库**。
 //
-// 返回的错误：ErrMissingToken → 401；ErrBadToken / ErrNodeDraining → 403。
+// **命名空间收口（#207）**：token 合法之后还要过 store.AuthorizeNamespaceForNode——
+// 令牌签发时命名空间是存在的，但命名空间可能已经被删（迁移后没有任何 FK 能
+// 挡住一条活着的连接），旧令牌必须立刻失效。收口放在这里而不是 handler 里，
+// 是为了让「HTTP 会话路径」和「节点令牌路径」共用 store 包内的同一处判断。
+//
+// 返回的错误：ErrMissingToken → 401；ErrBadToken / ErrNodeDraining → 403；
+// 令牌指向的命名空间已不存在 → ErrNamespaceGone → 403。
 // 关键：鉴权失败时**绝不能**返回 101（升级成功后才发现没权限，
 // 会让客户端以为连上了）。
 func AuthenticateNode(ctx context.Context, st NodeStore, r *http.Request) (*store.Node, error) {
@@ -88,6 +101,13 @@ func AuthenticateNode(ctx context.Context, st NodeStore, r *http.Request) (*stor
 	}
 	if node.Status == store.NodeStatusDraining {
 		return nil, ErrNodeDraining
+	}
+	// 安全收口：命名空间仍存在吗（#207）。错误一律 fail closed。
+	if err := st.AuthorizeNamespaceForNode(ctx, node.NamespaceID); err != nil {
+		if errors.Is(err, store.ErrNamespaceNotFound) {
+			return nil, ErrNamespaceGone
+		}
+		return nil, fmt.Errorf("authorize node namespace: %w", err)
 	}
 	return node, nil
 }
@@ -110,7 +130,7 @@ func HTTPStatusForAuthError(err error) int {
 	switch {
 	case errors.Is(err, ErrMissingToken):
 		return http.StatusUnauthorized
-	case errors.Is(err, ErrBadToken), errors.Is(err, ErrNodeDraining):
+	case errors.Is(err, ErrBadToken), errors.Is(err, ErrNodeDraining), errors.Is(err, ErrNamespaceGone):
 		return http.StatusForbidden
 	default:
 		return http.StatusInternalServerError

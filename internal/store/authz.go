@@ -50,6 +50,47 @@ func (d *DB) AuthorizeNamespace(ctx context.Context, userID, namespaceID string)
 	return nil
 }
 
+// AuthorizeNamespaceForNode 是 AuthorizeNamespace 的**机器主体**版本（#207 阶段 2）。
+//
+// 为什么需要单独一个入口：WS 节点握手的主体不是登录用户，而是 opaque 节点令牌。
+// 令牌本身已经把命名空间钉死（`nodes.token_hash` → 那一行的 `namespace_id`，
+// 见 internal/ws/node_handshake.go），所以「已登录」这一环由令牌证明，
+// 这里只需要判断那个命名空间**仍然存在**（命名空间被删后，旧令牌必须立刻失效，
+// 而不是继续拿着一个已消失的隔离边界当作用域跑任务）。
+//
+// 与 AuthorizeNamespace 的关系：两者是同一个安全收口的两条主体路径，
+// 判断都收敛在 store 包内，**不要**在 internal/ws 里自己写存在性判断。
+// 将来新增 `namespace_members` 时：用户路径改 AuthorizeNamespace（按成员表判），
+// 机器路径保持「令牌合法 ⇒ 该命名空间下的机器已获授权」——节点令牌是
+// 按命名空间签发的，成员关系改变不追溯已有令牌，这一点必须显式保持。
+//
+// 返回：namespaceID 空 / `*` → ErrNamespaceRequired；命名空间不存在 → ErrNamespaceNotFound。
+func (d *DB) AuthorizeNamespaceForNode(ctx context.Context, namespaceID string) error {
+	exists, err := d.namespaceExists(ctx, namespaceID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrNamespaceNotFound
+	}
+	return nil
+}
+
+// namespaceExists 是「这个命名空间存在吗」的**唯一**实现，两条主体路径共用。
+// 用 EXISTS 而不是 count(*)：只关心有没有，且 id 是主键查找。
+func (d *DB) namespaceExists(ctx context.Context, namespaceID string) (bool, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return false, ErrNamespaceRequired
+	}
+	var exists int
+	if err := d.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM namespaces WHERE id = ?)`, namespaceID).
+		Scan(&exists); err != nil {
+		return false, fmt.Errorf("check namespace %s exists: %w", namespaceID, err)
+	}
+	return exists != 0, nil
+}
+
 // AuthorizeNamespaceTx 是 AuthorizeNamespace 的事务版（写路径在事务内收口用）。
 func AuthorizeNamespaceTx(ctx context.Context, tx *sql.Tx, userID, namespaceID string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {

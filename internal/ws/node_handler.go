@@ -84,7 +84,8 @@ type NextHopDispatcher interface {
 	// 返回的任务是 pending、ID 已生成但尚未落库，由调用方放进父任务终态的事务里。
 	//
 	// namespaceID 是**父任务的命名空间**（#162）：出口表/能力/节点都按命名空间隔离，
-	// 传节点的 org 会让出口表查不到边、链路静默停在父任务。
+	// 传节点的命名空间也不会错，但**两者必须一致**：任务和节点都在同一个
+	// 命名空间里（I11），这里用任务的命名空间更直接——传错会出路，但不会错作用域。
 	PlanNextHop(ctx context.Context, namespaceID, traceID, parentTaskID, fromCapabilityID,
 		out string, params json.RawMessage, path []string) ([]*store.Task, error)
 
@@ -212,7 +213,7 @@ func jsonSafe(s string) string {
 type nodeSession struct {
 	h    *NodeHandler
 	conn *websocket.Conn
-	node *store.Node // 握手时确定；之后所有帧都用它的 ID/NamespaceID（org 只用于日志）
+	node *store.Node // 握手时确定；之后所有帧都用它的 ID/NamespaceID
 
 	writeMu sync.Mutex
 
@@ -294,7 +295,7 @@ func (s *nodeSession) run(ctx context.Context) {
 		slog.Info("node connection closed",
 			"event", "node.ws.closed",
 			"node_id", s.node.ID,
-			"org_id", s.node.OrgID,
+			"namespace_id", s.node.NamespaceID,
 			"error", err.Error(),
 		)
 	}
@@ -378,7 +379,7 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 	slog.Info("node connected",
 		"event", "node.ws.hello",
 		"node_id", s.node.ID,
-		"org_id", s.node.OrgID,
+		"namespace_id", s.node.NamespaceID,
 		"capabilities", len(f.Capabilities),
 		"instances", len(f.Instances),
 	)
@@ -392,7 +393,7 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 func (s *nodeSession) handleHeartbeat(ctx context.Context, f *HeartbeatFrame) error {
 	now := s.h.now()
 	// 作用域参数是**命名空间**（#162）：节点属于且只属于一个命名空间，
-	// 传 org_id 会让 `WHERE namespace_id = 'org_xxx'` 恒 0 行——心跳续不上租约，
+	// 传别的 id 会让 `WHERE namespace_id = ?` 恒 0 行——心跳续不上租约，
 	// 节点上所有在跑任务会被巡检当过期回收。
 	if err := s.h.Store.TouchNode(ctx, s.node.NamespaceID, s.node.ID, now); err != nil {
 		return fmt.Errorf("touch node: %w", err)

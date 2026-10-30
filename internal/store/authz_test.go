@@ -85,3 +85,44 @@ func TestAuthorizeNamespace(t *testing.T) {
 		t.Errorf("删掉后 err = %v, want ErrNamespaceNotFound", err)
 	}
 }
+
+// TestAuthorizeNamespaceForNode 钉住**机器主体**那条路径（#207）。
+//
+// WS 节点握手没有登录用户：令牌本身已经把命名空间钉死（token → nodes.namespace_id），
+// 所以「已登录」由令牌证明，收口只需要判命名空间**仍然存在**。
+// 收口必须只有一个：将来加 namespace_members 时，用户路径改 AuthorizeNamespace，
+// 机器路径保持"令牌合法 ⇒ 该命名空间的机器已获授权"（这一条显式写死，防止被顺手改掉）。
+func TestAuthorizeNamespaceForNode(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	// ① 存在的命名空间 → 通过（不看用户：机器主体没有用户）
+	if err := db.AuthorizeNamespaceForNode(ctx, nsID); err != nil {
+		t.Fatalf("AuthorizeNamespaceForNode(existing) err = %v, want nil", err)
+	}
+
+	// ② 没带命名空间 / "*" → ErrNamespaceRequired（不能拿汇总标记当作用域）
+	for _, ns := range []string{"", AllNamespaces} {
+		if err := db.AuthorizeNamespaceForNode(ctx, ns); !errors.Is(err, ErrNamespaceRequired) {
+			t.Errorf("AuthorizeNamespaceForNode(ns=%q) err = %v, want ErrNamespaceRequired", ns, err)
+		}
+	}
+
+	// ③ 命名空间不存在 → ErrNamespaceNotFound。
+	//    这是 WS 握手最要紧的一条：命名空间被删后，旧令牌必须立刻失效，
+	//    否则一条活着的连接可以继续用一个已经消失的隔离边界当作用域跑任务。
+	if err := db.AuthorizeNamespaceForNode(ctx, "ns_does_not_exist"); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Errorf("AuthorizeNamespaceForNode(unknown ns) err = %v, want ErrNamespaceNotFound", err)
+	}
+
+	// ④ 删除命名空间后立刻失效（真实删除路径，不只是伪造 id）
+	//    先多建一个，否则 DeleteNamespace 会因「不允许删除最后一个命名空间」被拒。
+	newTestExtraNS(t, db, "spare")
+	if err := db.DeleteNamespace(ctx, nsID, true); err != nil {
+		t.Fatalf("DeleteNamespace err = %v", err)
+	}
+	if err := db.AuthorizeNamespaceForNode(ctx, nsID); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Errorf("AuthorizeNamespaceForNode(已删除的 ns) err = %v, want ErrNamespaceNotFound", err)
+	}
+}
