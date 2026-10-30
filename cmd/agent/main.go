@@ -24,6 +24,11 @@
 //	-f      node.yaml 路径（默认 ./node.yaml）
 //	-grace  优雅退出等待秒数（默认 20；<=0 表示退出时不等在跑任务）
 //
+// -grace 的边界（运维必读）：它**只覆盖在跑任务的收尾**，**不包含关闭连接本身**
+// （关连接是收尾之后的下一步），极端情况下进程总耗时会比 grace 略长一点。
+// 所以 -grace 应当小于进程管理器的 stop 超时（如 docker stop 默认 10s），否则
+// 来不及收尾就被 SIGKILL，等于白等。
+//
 // 退出码：0 = 收到 SIGINT/SIGTERM 正常收尾（含 -h 看帮助）；1 = 参数/配置错误、
 // 握手被拒、连接断开。v1 不做断线退避重连：连接断了就退出，重启交给进程管理器。
 package main
@@ -45,6 +50,8 @@ const (
 	defaultConfigPath = "./node.yaml"
 	// defaultGraceSec 是 -grace 的缺省值（秒）：留 20 秒给在跑任务收尾，
 	// 够一般的通知脚本跑完，又不会让 docker stop / systemd 等太久。
+	// 注意 20 只算在跑任务的收尾、不含关连接本身（见上面包的注释），且 -grace
+	// 应小于进程管理器的 stop 超时（docker stop 默认只有 10s，那种环境要调小）。
 	defaultGraceSec = 20
 )
 
@@ -67,7 +74,9 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.SetOutput(stderr)
 
 	configPath := fs.String("f", defaultConfigPath, "node.yaml 路径")
-	graceSec := fs.Int("grace", defaultGraceSec, "优雅退出等待秒数（<=0 表示不等在跑任务）")
+	graceSec := fs.Int("grace", defaultGraceSec,
+		"优雅退出等待秒数（<=0 表示不等在跑任务）；只覆盖在跑任务的收尾、"+
+			"不含关连接本身，应小于进程管理器的 stop 超时（如 docker stop 默认 10s）")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -144,7 +153,8 @@ func run(args []string, stderr io.Writer) error {
 
 	// 信号：SIGINT（Ctrl-C）与 SIGTERM（systemd、docker stop、进程管理器）走同一条
 	// 优雅退出路径——runNode 内部先置 draining，再给在跑任务最多 grace 收尾，
-	// 最后正常关闭连接（服务端据此区分「下线」与「掉线」）。
+	// 最后正常关闭连接（服务端据此区分「下线」与「掉线」）。grace 计的只是中间那步
+	// 收尾，关连接不计入（所以总耗时可能比 grace 略长）。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

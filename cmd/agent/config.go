@@ -48,6 +48,10 @@ type capabilityConfig struct {
 // 字段是节点自己的执行方式声明，中枢只校验形状、只存不执行（I1）。yaml 与 json
 // 双 tag：yaml 读本地配置，json 用于 manifest 里的 run 原文（线上帧字段名以
 // internal/ws 的 json tag 为准，这里是数组内嵌的 raw JSON，所以自己带 tag）。
+//
+// Concurrency 本地只校验 >= 0：中枢那条 nodes.max_concurrency（默认 8）是节点
+// 无从得知的硬顶——超了握手会被 invalid_manifest 拒（error.message 会给出区间），
+// 不需要在这里猜一个上限。
 type runSpec struct {
 	Runner      string            `yaml:"runner"      json:"runner"`
 	Command     string            `yaml:"command"     json:"command"`
