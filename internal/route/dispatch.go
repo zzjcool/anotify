@@ -3,7 +3,8 @@
 // 它是本仓库唯一一个知道「怎么从出口表走到任务」的地方：
 //
 //	① edges 查表 → N 行
-//	② 校参数（各自 params_schema）+ 环剪枝 + 跨组织用户校验
+//	② 解析参数模板（param_missing / param_type）+ 校参数（各自 params_schema）
+//	   + 环剪枝 + 跨组织用户校验
 //	③ node_capabilities 查节点
 //	④ 按负载（或粘性钉住）挑一台
 //	⑤ 建任务
@@ -20,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -48,6 +50,12 @@ type DispatchInput struct {
 	//
 	// 某目标没有条目时回退到 Params（保持对 events / 普通派发的兼容）。
 	TargetParams map[string]map[string]any
+
+	// Payload 是本次事件的原始 payload（源路径用来解析参数模板里的 {{路径}}）。
+	// 能力→能力递归派发时为 nil（那里不做解析）。
+	Payload map[string]any
+	// VarValues 是源声明变量（config.vars）的求值结果（别名表），供 {{name}} 引用。
+	VarValues map[string]any
 
 	// DryRun 为 true 时只算"会派发什么、会剪枝什么"，**不落库、不推送**。
 	//
@@ -181,7 +189,8 @@ func DefaultUserScoped() map[string]bool {
 // 顺序（前三步都在建任务之前）：
 //
 //	① edges 查表 → N 行；0 行 → pruned/no_edge，结束
-//	② 逐条边校验：环剪枝(path) → 参数(param_schema) → 跨组织用户(foreign_user)
+//	② 逐条边校验：环剪枝(path) → 解析参数模板(param_missing / param_type)
+//	   → 参数(param_schema) → 跨组织用户(foreign_user)
 //	③ node_capabilities 查节点；0 行 → pruned/no_node
 //	④ 按负载或粘性钉住挑一台；挑不到容量就先把任务留 pending（不剪枝）
 //	⑤ 事务内批量建任务 + 逐条派发
@@ -260,10 +269,30 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			continue
 		}
 
-		// 该目标实际使用的参数：优先 TargetParams，回退到公共 Params
+		// 该目标实际使用的参数：优先 TargetParams（**求值后**的值），回退到公共 Params。
+		//
+		// 求值只发生在这里 —— 也就是「源的首次派发」这个唯一的出口。能力→能力
+		// 递归派发（DispatchNext）不带 TargetParams，因此不会对上游结果再解析
+		// 一次（契约 §2.5）。
 		targetParams := in.Params
 		if tp, ok := in.TargetParams[targetID]; ok && tp != nil {
-			targetParams = tp
+			resolved, misses, typeErr := ResolveParams(tp, in.Payload, in.VarValues, capDef.ParamsSchema)
+			// 先判 missing 再判 typeErr：缺字段时不拿"类型转不了"盖住真正的病因
+			if len(misses) > 0 {
+				d.prune(ctx, in, out, PrunedRecord{
+					Reason: ReasonParamMissing, CapabilityID: targetID, Port: in.Out,
+					Detail: formatParamMissing(capDef, misses),
+				})
+				continue
+			}
+			if typeErr != nil {
+				d.prune(ctx, in, out, PrunedRecord{
+					Reason: ReasonParamType, CapabilityID: targetID, Port: in.Out,
+					Detail: formatParamType(capDef, *typeErr),
+				})
+				continue
+			}
+			targetParams = resolved
 		}
 
 		// 参数校验：不过只跳过这一条边，不影响其他边（扇出可部分成功）
@@ -322,10 +351,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 	// 但**不占槽位、不建任务、不推送**。这正好是"试运行"要的信息。
 	if in.DryRun {
 		for _, c := range candidates {
+			// 预览里带**解析后**的参数：用户改完模板点"试运行"，最想知道的
+			// 就是「{{x}} 到底取到了什么」。用的正是真派发那份 c.params
+			// （求值/校验已经做完），不在这里重新解析一次——否则预览与真跑
+			// 会分叉成两套判定。
+			paramsJSON, err := marshalParams(c.params)
+			if err != nil {
+				return nil, fmt.Errorf("route: marshal params: %w", err)
+			}
 			out.Tasks = append(out.Tasks, &store.Task{
 				CapabilityID: c.cap.ID,
 				Capability:   c.cap.Name,
 				Version:      c.cap.Version,
+				Params:       paramsJSON,
 				Status:       store.TaskPending,
 			})
 		}
@@ -337,12 +375,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 	// 顺序理由：占槽位需要 task_id，而落库失败要能回滚已占的槽位。
 	tasks := make([]*store.Task, 0, len(candidates))
 	for _, c := range candidates {
-		paramsJSON, err := json.Marshal(c.params)
+		paramsJSON, err := marshalParams(c.params)
 		if err != nil {
 			return nil, fmt.Errorf("route: marshal params: %w", err)
-		}
-		if len(paramsJSON) == 0 || string(paramsJSON) == "null" {
-			paramsJSON = []byte("{}")
 		}
 		path := append(append([]string{}, in.Path...), c.cap.ID)
 		task := &store.Task{
@@ -354,7 +389,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 			CapabilityID: c.cap.ID,
 			Capability:   c.cap.Name,
 			Version:      c.cap.Version,
-			Params:       json.RawMessage(paramsJSON),
+			Params:       paramsJSON,
 			Status:       store.TaskPending,
 			CapHash:      c.cap.ContentHash,
 			GraphID:      graph.ID,
@@ -461,11 +496,81 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 	return out, nil
 }
 
+// formatParamMissing 组装 param_missing 的 detail。
+//
+// 一条目标一条记录，多个未命中用「；」连接；Ref 已由 ResolveParams 渲染成
+// {{x}} / payload.a.b / $var 三种形态，据此区分「payload 结构不对」与
+// 「变量/别名的出处不对」：前者是 payload 里没这个字段，后者是变量没声明
+// 或它指向的字段不在 payload 里——两种病因完全不同，混成一句话就查不下去了。
+//
+// 文案逐字照契约 §2.2，前缀挂能力名，与 param_schema 的
+// `%s@%d params_schema: %s` 风格一致。capDef 可能为 nil（测试/异常路径），
+// 此时只省掉前缀，不 panic。
+//
+// 前缀**不能省**：扇出时一条 trace 里多个目标各自求值，没有前缀就答不出
+// 「是哪个目标的参数出了问题」。所以 dispatch_test.go 里除了按子串断言正文，
+// 还有一条**等值**断言把 `能力名@版本 ` 前缀一起钉死（契约 §8.1 A2）。
+func formatParamMissing(capDef *store.CapabilityVersion, misses []ParamMiss) string {
+	parts := make([]string, 0, len(misses))
+	for _, m := range misses {
+		if strings.HasPrefix(m.Ref, "$") {
+			// {var:"name"}：显式引用变量，**只**查别名表（不会回退 payload 路径）
+			parts = append(parts, fmt.Sprintf(
+				"参数 %s 取不到变量 %s（源未声明该变量，或它指向的字段在 payload 里没有）",
+				m.Field, m.Ref))
+			continue
+		}
+		// {{x}} / {from:"a.b"}：Ref 已经是 {{x}} 或 payload.a.b
+		parts = append(parts, fmt.Sprintf(
+			"参数 %s 取不到 %s（payload 里没有这个字段）", m.Field, m.Ref))
+	}
+	return capDetailPrefix(capDef) + strings.Join(parts, "；")
+}
+
+// formatParamType 组装 param_type 的 detail（契约 §2.2）。
+//
+// Got 是**转换前**的原值，用 JSON 表示：`"abc"` 带引号才能和字符串 `abc`
+// 之外的类型（数字/布尔/对象）区分开；Marshal 失败（不可达）退回 %v。
+func formatParamType(capDef *store.CapabilityVersion, e ParamTypeErr) string {
+	got := fmt.Sprintf("%v", e.Got)
+	if b, err := json.Marshal(e.Got); err == nil {
+		got = string(b)
+	}
+	return capDetailPrefix(capDef) + fmt.Sprintf(
+		"参数 %s 期望 %s，但求值得到 %s，转不了", e.Field, e.Want, got)
+}
+
+// capDetailPrefix 是剪枝 detail 的能力前缀（`name@version `）。
+//
+// 有了它，一条多出口扇出的剪枝记录才能回答「是哪个目标的参数出了问题」；
+// capDef 为 nil 时返回空串（宁可少一段前缀，也不能 panic 在派发热路径上）。
+func capDetailPrefix(capDef *store.CapabilityVersion) string {
+	if capDef == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s@%d ", capDef.Name, capDef.Version)
+}
+
+// marshalParams 把一份参数序列化成任务里的 params（null/空 → "{}"）。
+//
+// 真派发与 DryRun 预览**共用**它：否则预览里的参数形状（null vs {}）
+// 会和真跑的不一样，白让用户怀疑一次。
+func marshalParams(params map[string]any) (json.RawMessage, error) {
+	b, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 || string(b) == "null" {
+		b = []byte("{}")
+	}
+	return json.RawMessage(b), nil
+}
+
 // prune 记录一条剪枝：先进返回值，再留痕落库（#142）。
 //
 // 唯一入口——「产生」与「留痕」不允许分叉（漏一处就是又一个查不到的剪枝），
-// 所以 Dispatch 里 5 个剪枝产生点（no_edge / path / param_schema / foreign_user /
-// no_node）全部走这里，不再直接 append out.Pruned。
+// 所以 Dispatch 里 7 个剪枝产生点（no_edge / path / param_missing / param_type /
+// param_schema / foreign_user / no_node）全部走这里，不再直接 append out.Pruned。
 //
 // 三条规则（契约 §4.3）：
 //

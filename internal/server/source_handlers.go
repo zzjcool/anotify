@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,15 +97,35 @@ type sourceTargetView struct {
 	ParamsSchema json.RawMessage `json:"paramsSchema,omitempty"`
 }
 
-// validateTargetParams 逐个出口用该能力的 params_schema 校验参数。
+// validateTargetParams 逐个出口做两件事：校验参数模板的**形式**，再用该能力的
+// params_schema 校验**字面量**（契约 §2.4）。
+//
+// 两件事必须分开：
+//
+//  1. 形式校验（route.ValidateParamTemplates）：占位符闭合、路径形态、as 枚举、
+//     from/var 互斥、{var} 必须已声明。全是"看一眼就能确定错"的输入问题，
+//     配置期 400 是唯一能把话说清楚的位置（推到触发时就只剩一条剪枝）。
+//  2. 类型校验（route.ValidateLiteralParams）：**只对字面量**做。含占位符的值类型
+//     要求值后才知道，`"{{n}}"` 硬塞给 integer schema 会被误拒；映射声明
+//     {from}/{var} 同理。它们的类型错由触发期的 param_type 报。
+//
+// 第 2 条**不能**用「剔掉占位符/映射后再拿字面子集跑 route.ValidateParams」实现（契约
+// §8.5 A14）：那样 schema 的 required 会误伤合法配置——能力 schema 的
+// required:["to","title"] 遇上 `{"to":"{{pr.user.login}}","title":"PR 已合并"}`，
+// 剔完只剩 title，于是报 missing required "to" 400，而派发时求值后完全合法
+// （dry-run 能过、点保存却 400，最伤信任）。正确的口径在 route 包里：required 按
+// **模板键集合**判（键在即满足），只有完全解析得出的值才逐字段校验。
 //
 // 为什么必须在建源时就校验，而不是等触发时让它被剪枝：
 // 用户填完表单点保存，就该知道"channel 必须是 slack/email"；
 // 等到触发才发现，只会看到"事件入库但没派出去"，而那时人已经离开页面了。
 //
-// 用的是 route.ValidateParams —— 与派发期**同一个函数**。两边口径必须一致，
-// 否则会出现"建源说没问题、触发被剪枝"这种最让人困惑的情况。
-func (h *sourceHandler) validateTargetParams(ctx context.Context, orgID string, targets []store.SourceTarget) error {
+// 用的是 route 包的函数 —— 与派发期同一套口径，否则会出现
+// "建源说没问题、触发被剪枝"这种最让人困惑的情况。
+//
+// declaredVars 是源声明的变量名（config.vars）：`{var:"name"}` 是显式引用，
+// 拼错必须当场 400（issue 的"坑①"）；`{{name}}` 不要求声明（它可以是 payload 路径）。
+func (h *sourceHandler) validateTargetParams(ctx context.Context, orgID string, targets []store.SourceTarget, declaredVars []string) error {
 	for _, tg := range targets {
 		if len(tg.Params) == 0 {
 			continue // 没配参数：交给派发期的 schema 校验（可能该能力本来就不要参数）
@@ -116,7 +137,15 @@ func (h *sourceHandler) validateTargetParams(ctx context.Context, orgID string, 
 			}
 			return err
 		}
-		if msg := route.ValidateParams(capDef.ParamsSchema, tg.Params); msg != "" {
+		// ① 形式校验先于一切取值判断：半截占位符（"PR {{title"）绝不能被当字面量存下来
+		if msg := route.ValidateParamTemplates(tg.Params, declaredVars); msg != "" {
+			return fmt.Errorf("%s@%d 的参数不合法：%s", capDef.Name, capDef.Version, msg)
+		}
+		// ② 能确定的字面量当场按 schema 判（契约 §8.5 A14）：顶层 required 按**模板键
+		// 集合**判（键在就满足，值是不是占位符不看）、只对完全解析得出的值逐字段校验、
+		// 含占位符 / 映射声明的子树整体跳过（派发期 ValidateParams 兜底）。
+		// 与派发期同一个 schema 引擎，只是输入换成了模板并让 required/未解析子树让路。
+		if msg := route.ValidateLiteralParams(capDef.ParamsSchema, tg.Params); msg != "" {
 			return fmt.Errorf("%s@%d 的参数不合法：%s", capDef.Name, capDef.Version, msg)
 		}
 	}
@@ -244,8 +273,16 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 		Enabled: enabled,
 		Targets: toStoreTargets(req.Targets),
 	}
+	// 变量声明先过配置期校验（契约 §2.4）：非法名 / 重名 / from+value 并存 /
+	// 路径写成 `a..b`，这些在触发时只会变成"参数取不到"的剪枝。
+	// 本行必须在 validateTargetParams **之前**：后者要用变量名判断
+	// `{var:"name"}` 是否已声明。
+	if msg := store.ValidateVarDefs(src.VarDefs()); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+		return
+	}
 	// 先校验参数再落库：填错了立刻告诉用户，别等触发时被剪枝
-	if err := h.validateTargetParams(r.Context(), orgID, src.Targets); err != nil {
+	if err := h.validateTargetParams(r.Context(), orgID, src.Targets, src.VarNames()); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -266,6 +303,77 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"source": views[0]})
 }
 
+// inheritedConfigKeys 是 PATCH 语义下需要从旧配置继承的键。
+//
+// 只有这两个：它们由**另一个入口**写入（变量声明走源详情/接口，事件打底数据
+// 走 cron/manual 的高级表单），控制台改 expr/token 的那次保存不会带上它们。
+// 别的键（expr/tz/token/event）都是「这次保存就是它的全部真相」，照常覆盖。
+var inheritedConfigKeys = []string{"vars", "payload"}
+
+// isJSONNull 判断 raw 是否就是 JSON 的 null（PATCH 请求里的 {"config": null}）。
+//
+// 解码成 json.RawMessage 的 null **不是** nil 切片，而是字面量 "null"，所以
+// `req.Config != nil` 拦不住它，得单独看一眼（契约 §8.5 A18）。
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// mergeSourceConfig 在 PATCH 语义下合并 config：新配置未带某键时继承旧值。
+//
+// 为什么不是整份替换：config.vars / config.payload 是“另一个入口”写入的声明，
+// 控制台保存 expr/token 时不会带上它们；整份替换等于静默丢数据（设计 A.5 也点名了这个坑）。
+// 显式传 "vars": [] 或 "payload": {} 才是真的清空。
+func mergeSourceConfig(cur, next json.RawMessage) json.RawMessage {
+	// next 为空 / 非法 JSON：没有可合并的新配置，按“本次不改 config”处理。
+	if !json.Valid(next) {
+		return cur
+	}
+	// 只有 JSON 对象才谈得上“某个键有没有带”：null / 数组 / 标量都不是 config，
+	// 在合并这一步我们不擅自解释它（否则 null 会被当成“保留 vars、清掉其余”，
+	// 那是猜出来的语义）。
+	if trimmed := bytes.TrimSpace(next); len(trimmed) == 0 || trimmed[0] != '{' {
+		return cur
+	}
+	// 用 map[string]json.RawMessage 而不是 struct：config 里将来可能长出新键，
+	// 解成 struct 会把未知键整个丢掉（这正是要避免的静默丢数据）。
+	// RawMessage 保住原始字节，不做“读出来再写回去”的重编码。
+	nextFields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(next, &nextFields); err != nil {
+		// next 不是 JSON 对象（数组 / 标量 / null）：不是能合并的 config，
+		// 交回旧配置，别在合并这一步擅自决定语义。
+		return cur
+	}
+	curFields := map[string]json.RawMessage{}
+	if len(cur) > 0 && json.Valid(cur) {
+		// 旧配置坏掉时当“没有旧配置”：不能让一次合并把请求也弄失败。
+		_ = json.Unmarshal(cur, &curFields)
+	}
+
+	merged := make(map[string]json.RawMessage, len(nextFields)+len(inheritedConfigKeys))
+	for k, v := range nextFields {
+		merged[k] = v
+	}
+	inherited := false
+	for _, k := range inheritedConfigKeys {
+		if _, has := merged[k]; has {
+			continue // next 显式带了（哪怕 [] / {}）：尊重调用方的清空意图
+		}
+		if v, ok := curFields[k]; ok {
+			merged[k] = v
+			inherited = true
+		}
+	}
+	if !inherited {
+		// 没有可继承的键：原样交回 next，避免一次无谓的重编码
+		return next
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return next
+	}
+	return out
+}
+
 func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string) {
 	orgID, ok := h.resolveOrg(w, r, "")
 	if !ok {
@@ -284,8 +392,16 @@ func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string
 	if req.Name != "" {
 		cur.Name = strings.TrimSpace(req.Name)
 	}
-	if req.Config != nil {
-		cur.Config = req.Config
+	// config 显式传 JSON null 视为「本次不改 config」（契约 §8.5 A18）：
+	// mergeSourceConfig 恰好也原样返回旧配置，但这条语义必须在这里写死——
+	// 否则以后有人顺手把 null 当"清空 config"实现，一次带 null 的保存就会
+	// 连带抹掉 config.vars / config.payload（正是 A6 那个坑）。
+	if req.Config != nil && !isJSONNull(req.Config) {
+		// 不能整份替换：req.Config 通常只带 expr/token，整份替换会把
+		// config.vars / config.payload 静默抹掉，紧接着下面用被清空的
+		// VarNames() 校验既有 targets，含 {var:"x"} 的源连改个 cron
+		// 表达式都会 400（issue #114 A6）。merge 保留“没带的键”。
+		cur.Config = mergeSourceConfig(cur.Config, req.Config)
 	}
 	if req.Enabled != nil {
 		cur.Enabled = *req.Enabled
@@ -293,7 +409,20 @@ func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string
 	if len(req.Targets) > 0 {
 		cur.Targets = toStoreTargets(req.Targets)
 	}
-	if err := h.validateTargetParams(r.Context(), orgID, cur.Targets); err != nil {
+	// 变量声明与参数模板都要用**合并后的** cur.Config 校验：PATCH 只带
+	// 部分字段时 req.Config 可能是 nil，读它会把"用户没改变量"误判成
+	// "变量全没了"。
+	//
+	// cur.Config 确实是“本次请求之后的最终配置”——但前提是上面那次赋值走了
+	// mergeSourceConfig（没带的 vars/payload 从旧配置继承）。若哪天有人把合并
+	// 换回整份替换，这两行校验就会拿被清空的配置去验既有 targets，于是
+	// {var:"x"} 变成“未声明的变量”：改 cron 表达式也会 400。
+	// 回归用例见 source_handlers_test.go 的 TestPatchSourceKeepsConfigVarsHTTP。
+	if msg := store.ValidateVarDefs(cur.VarDefs()); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+		return
+	}
+	if err := h.validateTargetParams(r.Context(), orgID, cur.Targets, cur.VarNames()); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

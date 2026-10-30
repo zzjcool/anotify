@@ -404,7 +404,10 @@ CREATE TABLE IF NOT EXISTS graph_versions (
    → N 行（N=0 则记 pruned/no_edge，结束）
 
 ② 校参数（对每个 to_capability）
-   读 to 的 params_schema，校验 params
+   读 to 的 params_schema
+   源首次派发：先把参数模板里的 {{路径}} 单趟取值（§5.5）并按 schema 转类型
+                取不到 → pruned/param_missing；转不了 → pruned/param_type（都不建任务）
+   再用解析后的值校验 params_schema
    失败 → 记 pruned/param_schema，不建任务（continue）
 
 ③ 找节点
@@ -543,14 +546,31 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 `Dispatch` 在步骤 ② 的循环里按当前目标取参数，没有条目时回退到公共 `Params`
 （保持对 `/v1/events` 与普通边的兼容）。
 
-**两处校验，同一个函数**（`route.ValidateParams`）：
+**两处校验，同一份 schema**（触发期 `route.ValidateParams` / 配置期 `route.ValidateLiteralParams`）：
 
-| 时机 | 目的 |
-|---|---|
-| 建源 / 改源 | 用户填完表单立刻知道填错了，不用等到触发 |
-| 触发派发 | 兜底（数据可能被手改过） |
+| 时机 | 用哪个函数 | 目的 |
+|---|---|---|
+| 建源 / 改源 | `route.ValidateLiteralParams` | 用户填完表单立刻知道填错了，不用等到触发 |
+| 触发派发 | `route.ValidateParams` | 兜底（数据可能被手改过），此时所有值都已求值 |
 
 两边口径必须一致——否则会出现「建源说没问题、触发被剪枝」这种最让人困惑的情况。
+
+**配置期只跑它能判定的部分**：自 #114 起，配置期**不再**「剔掉占位符后拿子集跑 `ValidateParams`」
+（那会因为丢了键信息，把 `{"to":"{{a}}","title":"hi"}` 误拒成 `missing required field "to"`），
+改用 `route.ValidateLiteralParams(schema, template)`——**同一份 `params_schema`**，四条口径：
+
+1. **顶层 `required` 按模板键集合判定**：键**写了**就算满足，**不看它的值**是否已经求得出
+   （值是占位符 / 映射声明都算满足）。只判**顶层**，嵌套对象的 `required` 跟着第 2 条走。
+2. **逐字段**校验：**完全解析得出**的字面量用**派发期同一个**校验器（`validateValue`）判，
+   路径是 `params.<key>`——`{"n":"abc"}` 对 `integer` 这种当场能判的错，配置期就报。
+3. 含**未解析**内容（完整占位符 / 映射声明 `{from}`·`{var}`，含**嵌套**）的子树**整体跳过**，
+   留派发期的 `ValidateParams` 兜底（那时才知道类型）。
+4. 对象级约束（`minProperties` / `maxProperties`）配置期**不判**——模板的键集合不等于求值后的
+   键集合，判它只会误伤；`additionalProperties: false` 仍判（键名本来就不依赖求值）。
+
+例：schema `required: [to, title]` + `{"to": "{{pull_request.user.login}}", "title": "hi"}`
+**必须能保存**：`to` 的键在 → `required` 满足；`to` 的值含占位符 → 跳过类型校验；
+`title` 是字面量 → 照常逐字段校验。它到派发期才按真实取值判类型（或按 `param_missing` 剪枝）。
 
 **cron 语义**：
 
@@ -558,6 +578,187 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 - `dom` 与 `dow` 都受限时是 **OR**（标准 crontab 语义）
 - 幂等键 `cron:<sourceID>:<计划时刻>`：进程重启不会重复触发同一时刻
 - 表达式永不成立（如 2 月 30 日）时返回零值，调度器记日志并跳过
+
+### 5.5 源变量与参数引用（单趟替换，不做模板引擎）
+
+源的每个出口能力带自己的参数（§5.4）。参数的**每个值**可以是字面量，也可以是**引用**：
+
+| 形态 | 写法 | 语义 |
+|---|---|---|
+| 字面量 | `{"env": "prod"}`、`{"lines": 42}`、`{"flag": true}` | 原样传，**不做任何转换** |
+| 整值引用 | `{"lines": "{{pull_request.additions}}"}` | 单趟取到一个值，**保留原类型**（数字还是数字） |
+| 混写 | `{"title": "PR #{{pull_request.number}}: {{pull_request.title}}"}` | 逐处替换后拼成一段文本，结果**一律字符串** |
+| 映射声明（旧形态） | `{"title": {"from": "pull_request.title", "default": "(无标题)", "as": "string"}}` | 恰好含 `from` 或 `var` 之一（`default` / `as` 可选） |
+| 别名引用（旧形态） | `{"title": {"var": "author"}}` | 只查别名表，**不**回退 payload 路径 |
+
+**映射声明的判定**：对象里**恰好**含 `from`（payload 点号路径）或 `var`（别名）**之一** +
+可选的 `default` / `as`；`from` 与 `var` **互斥**（同时出现 = 配置期 `400`）。
+**多一个键就按字面量对象处理**——用户真想传 `{"from": 1}` 这种数据时不该被误判成映射，
+行为可预期比「聪明」重要。
+
+**配置期的判定顺序**（A15，顺序即口径，配置期与派发期必须用**同一个** `IsMapping`）：
+
+1. 先看 `from` 与 `var` 是否**并存** → 并存就是互斥错 `400`（与它整体算不算映射无关）；
+2. 再用 `IsMapping` 判它是不是映射声明；
+3. **不是映射声明就按字面量对象放过**——配置期也不拦。派发期同样当字面量原样传，
+   不会出现「配置期拒了、派发期明明能传」的口径分裂（A15）。
+
+所以 `{"from": 1}`（`from` 的值不是字符串）、`{"from":"a","x":2}`（多一个键）**都能存**，
+它们只是字面量对象。配置期对**对象形态**只有三种会 `400`：
+
+| 输入 | 结果 |
+|---|---|
+| `{"from":"a","var":"b"}`（`from` + `var` 并存） | `400`：互斥（只能选一个） |
+| `{"var":"titel"}`（`{var}` 引用的别名**没声明**） | `400`：消息含变量名（拼错必须当场发现） |
+| `{"default": 1, "as": "string"}`（写全了可选键，却没有 `from`/`var`） | `400`：提示缺 `from` 或 `var` |
+
+> 第三种为什么要报：一个对象只由**映射声明的可选键**组成、却没有主体，几乎一定是漏写了；
+> 按字面量放过会得到一个永远传不进 `from` 的对象，用户还以为映射生效了。
+> 反过来，只要对象里出现**任何**非 `default`/`as` 的键，它就是用户数据的字面量对象，一个都不拦。
+
+#### 解析顺序（别名优先，`{var}` 不回落）
+
+1. **先查别名表** `config.vars`（`[{name, from}]`）：`{{name}}` 等价于它指向的那个路径；
+   名字冲突时**别名优先**——别名本来就是为了改写 / 缩短而存在的。
+2. **未命中再当 payload 点号路径**（`pull_request.user.login`）。`{var:"name"}` 是**显式**
+   别名引用，**只查别名表**，不回退 payload 路径。
+3. **路径语法**只有两条：点号分段 + 数组十进制下标（`items.0.name`）。只查 map 自有键；
+   下标必须在界内且是纯十进制正整数——`"0.0"` / `"-1"` / `"1e2"` 一律 miss。**取不到不抛错**
+   （payload 来自外部，形状不受控），交给「未命中」分支处理。
+4. **`{{$name}}` 已不再识别**：占位符正则以 `[A-Za-z_]` 起始、**不含 `$`**，所以 `{{$x}}`
+   匹配不到任何完整占位符，而会落进闭合检查的「数量相等但残留」一档 → **配置期 `400`**
+   （「占位符不合法（只支持 {{点号路径}}：不允许运算符、括号、函数或 $）」，见下节）。
+   老配置请改成 `{{name}}`（同名键的别名语义不变），新的参数引用一律不写 `$`（设计文档 D.4）。
+   存量配置里已经存下的 `{{$name}}` 在**派发期**按字面量原样透传（不改历史行为）。
+5. **取值来源 = 事件 payload**；cron / manual 用 `config.payload` **打底**，**用户字段覆盖同名键**
+   （包括 cron 的系统字段 `source` / `kind` / `firedAt`：用户显式写的配置不该被静默盖掉，设计 §3.3）。
+   **webhook / github 不合并 `config.payload`**：投递体本身就是 payload（历史行里残留的 `payload` 键
+   不被复活，A13）。
+
+> `{{$x}}` 被拒与旧的 `$` 剥除兼容**不矛盾**：`{"from": "$name"}` 这种对象形态的 `from` 路径
+> 仍会把前导 `$` 剥掉再查（老文档把变量写成 `$name`），那是**映射声明的路径写法**；
+> `{{$x}}` 是**占位符语法**，语法层就不认 `$`。
+
+#### I6 边界（判定权威）
+
+**占位符正则（必须带捕获组）**：
+
+```text
+\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}
+```
+
+→ 语法上**就没有运算符 / 括号 / 函数 / 条件的位置**。这是**结构性**保证，不靠运行时检查。
+
+| 允许 | 禁止 |
+|---|---|
+| `{{path.to.value}}` 单趟取值（`strings.Replace` 语义） | 对**替换结果**再扫描（递归展开 = 模板引擎） |
+| 整值引用保留原类型（number / boolean / object 原样） | 条件 `{{#if x}}`、循环 `{{#each xs}}` |
+| 混写 → 结果一律字符串（不再解析） | 函数 `{{f(x)}}`、运算 `{{a + b}}` |
+| 对象形态 `{from}` / `{var}`（向后兼容） | 过滤器、正则 / JSONPath、默认值表达式 |
+| 字面量原样传 | 任何形式的用户逻辑求值 |
+
+**判定「是不是递归展开」的唯一问题：替换结果还会被再扫描一次吗？**
+
+> payload 是 `{"a": "{{b}}", "b": "B"}` 时，解 `"{{a}}"` 得到的是 **`"{{b}}"`**，
+> **不是** `"B"`；混写 `"x={{a}}"` 得到 `"x={{b}}"`。中枢只替换**一趟**，
+> `{{b}}` 是被搬运的**数据**，不是待执行的模板。
+
+**半截占位符必须在配置期挡住**：`"PR {{title"`、`"{{#if x}}"`、`"{{x + 1}}"`、`"{{f(x)}}"`
+都不能「因为正则匹配不到就当字面量存下来」——那样用户会以为条件 / 运算生效了。
+所以校验顺序是**先做闭合检查**，**闭合检查先于「是否含占位符」判断**，再做后面的形式校验。
+闭合检查分三档，**两类错误消息必须分开**（原因不同，混成一句话就查不下去了）：
+
+| 输入形态 | 判定 | 结果 |
+|---|---|---|
+| 只含 `}}`、**不含** `{{`（如 `{"a":{"b":1}}` 当普通字符串参数） | 就是字面量 | **放行**（能保存） |
+| `{{` 与 `}}` 数量**不等**且含 `{{`（`"PR {{title"`、`"{{a}}{{b}} + 1{{"`） | 占位符没有闭合 | `400`：`参数 %s：占位符没有闭合（{{ 与 }} 数量不一致）` |
+| 数量**相等**但仍有残留（`{{x + 1}}`、`{{f(x)}}`、`{{#if x}}`、`{{#each xs}}`、`{{.a}}`、`{{$x}}`） | 占位符不合法 | `400`：`参数 %s：占位符不合法（只支持 {{点号路径}}：不允许运算符、括号、函数或 $）` |
+
+第三档的判定方式：把所有**完整占位符**（能匹配上面那条正则的）从原文里抹掉，剩下的文本里
+若还含 `{{` 或 `}}`，说明那段「看起来像占位符的东西」其实不是合法占位符。
+第二档只看数量、不看内容，所以 `"PR {{title"` 这种半截写法也逃不掉。
+
+#### 类型
+
+| 情况 | 依据 |
+|---|---|
+| 整值引用 `"{{x}}"` | **保留原类型**，再按目标 `params_schema` 的类型转换（`"42"` + `integer` → `42`） |
+| 混写 `"PR #{{n}}"` | 结果必字符串，按 `params_schema` 转换；转不了 → `param_type` |
+| 对象形态 `{from}` / `{var}` | `as` 优先，否则 `params_schema` |
+| 纯字面量 | **不转换**，尊重用户写的（类型不对由 `ValidateParams` 报 `param_schema`） |
+
+- 目标类型取值集：`string` / `number` / `integer` / `boolean` / `array` / `object`；
+- 旧形态的 `as` 只允许 `string` / `number` / `boolean` / `json`（其余配置期 `400`）；
+- 转换口径与 `web/mock.js` 的 `coerceValue` **结果一致、但拦截阶段与 reason 不同**：
+  两边都接受 `boolean` 的 `true` / `false` / `"true"` / `"false"` / `1` / `0`，也都不接受 NaN / Inf；
+  差别在 `integer`：mock 的 `coerceValue` 对 `"4.5"` **不拒**（它只做数字化，给出 `4.5`），
+  靠它自己的 `validateParams` 以 `expected integer`（`param_schema` 口径）挡下；
+  后端在 `CoerceValue` 里**直接拒**（返回 `(nil,false)`）→ `param_type`。
+  **两边都不会把非法值派出去**，差别只在 reason / 拦截阶段（`param_schema` vs `param_type`）；
+  拿 mock 当参考实现时注意这一点；
+- **转不了就是失败**，绝不静默退回原值——退回会让用户看到「expected integer, got string」，
+  却不知道是 payload 里那个字段本身不是数字。
+
+#### 未命中与类型错误（一律可观测）
+
+| 情况 | 行为 |
+|---|---|
+| 命中 | 用取到的值 |
+| 未命中 + 有 `default`（只有对象形态有） | 用 `default` |
+| 未命中 + 无 `default` | 该目标**整条剪枝**，`reason=param_missing` |
+| 类型转不了 | 该目标**整条剪枝**，`reason=param_type` |
+
+**`null` 一律算未命中**（A16）：不论 `nil` 来自别名表（`config.vars` 里 `{name,value}` 的常量
+声明成 `null`，或 `from` 路径指向的字段值是 `null`），还是 payload 里的**显式 `null`**，
+都按「取不到」处理——对象形态有 `default` 就用 `default`，没有就 `param_missing`。
+**混写里不得把未命中静默拼成空串**：`"PR #{{n}}"` 在 `n` 为 `null` 时不会产出 `"PR #"`，
+而是整条目标按 `param_missing` 剪枝（拼成空串等于伪造了一份数据，且用户永远查不到原因）。
+`{var}` 与 `{{x}}` 在这一条上**完全一致**（§8.1 A7：两边都不把 `nil` 当「取到了 null」）。
+
+**为什么整条剪枝而不是跳过这个字段**：跳过会让 `param_schema` 报「x is required」，
+用户看着配置里明明写了 x 却被说必填——真实原因（payload 里没这个字段）完全没体现。
+
+`detail` 必须能看见**用户写的原文**，并按引用来源区分（三条 miss 用 `；` 连接）。
+
+形态是「**能力前缀 `能力名@版本 ` + 下面这段正文**」：正文**逐字**冻结，测试**按子串与等值各钉一条**
+（子串钉正文，等值钉前缀——扇出时只有前缀能回答「是哪个目标的参数出了问题」，
+如 `review@1 参数 title 取不到 {{pull_request.title}}（payload 里没有这个字段）`）：
+
+| 来源 | 正文（逐字） |
+|---|---|
+| `{{x}}` | `参数 title 取不到 {{pull_request.title}}（payload 里没有这个字段）` |
+| `{from}` | `参数 title 取不到 payload.pull_request.title（payload 里没有这个字段）` |
+| `{var}` | `参数 title 取不到变量 $title（源未声明该变量，或它指向的字段在 payload 里没有）` |
+| 类型 | `参数 lines 期望 integer，但求值得到 "abc"，转不了` |
+
+#### 配置期 vs 触发期
+
+| 时机 | 做什么 | 不做什么 |
+|---|---|---|
+| 建源 / 改源（`400`） | ① `config.vars` 形式校验（名字合法 / 不重名 / `from` 与 `value` 恰有其一 / `from` 路径形态）；② 参数模板**形式**校验（`route.ValidateParamTemplates`）：**占位符闭合检查（两档消息分开，见 I6 边界）→ 是否含占位符**、路径形态（非空、不含 `..`、不以 `.` 开头/结尾）、`as` 枚举、`from` 与 `var` 互斥、`{var}` 引用的别名**必须已声明**、不是映射声明的对象按字面量放过（A15）；③ `route.ValidateLiteralParams` 对**能完全解析的字面量逐字段**校验（规则见 §5.4：`required` 按模板键集合、未解析子树跳过、对象级约束不判） | 不对含占位符 / 映射声明的子树跑 schema 校验（类型要触发时才知道）；不判对象级 `min/maxProperties` |
+| 触发派发（剪枝） | 取值 → 类型转换 → **同一个** `route.ValidateParams`（全量），失败按 `param_missing` / `param_type` / `param_schema` 剪枝 | 任何静默跳过 |
+
+- `{{name}}` **不要求声明**——它可能就是 payload 路径；拼错在**触发时**以 `param_missing` 报出，并原样回显用户的引用文本。
+- `{var:"name"}` 是**显式**引用，拼错必须在**配置期就 400**，错误消息含变量名。
+- `DryRun` 与 `Fire` 走**同一套**解析（dry-run 也要能看到 `param_missing` / `param_type`）。
+- `config.payload` **只在 cron / manual** 作为事件 payload 打底；webhook / github 用投递体，不合并
+  （避免历史行里遗留的 `payload` 键被复活，A13）。
+- **`config.payload` 的「必须是 JSON 对象」只对会保留它的 kind 校验**（A17）：cron / manual 上
+  非对象（数组 / 标量 / `null`）→ `400`；**webhook / github 直接丢弃这个键**，残留的坏值不会
+  因为这次保存而 `400`（那个键对它们没有意义，`config.payload` 不是它们的 payload）。
+- **`PATCH` 的 config 合并语义**（A6 / A18）：`"config": null` 视为「**本次不改 config**」（no-op）；
+  `config` 里**未带** `vars` / `payload` 键时从**当前配置继承**（这两个键由别的入口写入，控制台
+  改 `expr` / `token` 时不会带上它们），显式传 `"vars": []` / `"payload": {}` **才是清空**。
+  没有这条，「改个 cron 表达式」会把变量表静默抹掉，紧接着既有的 `{var:"x"}` 全部变成未声明 → 400。
+- 解析只作用于**源的首次派发**（`DispatchInput.TargetParams` 有值的出口）；
+  能力 → 能力的递归派发原样传递，不解析。
+
+#### 为什么不做模板引擎
+
+求值器一开，立刻多出三类攻击面：**模板注入**（`{{` 嵌套 / 递归展开）、
+**表达式 DoS**（超长 / 深嵌套）、**语义漂移**（用户以为支持条件 / 运算 / 函数）；
+而收益只是「省掉一次节点侧拼装」。节点本来就知道数据形状，拼接是它的活。
+所以中枢的能力上限就是**声明式取值**（I6）。
 
 ## 6. 协议
 
@@ -660,6 +861,8 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 |---|---|---|
 | `unknown_capability` | 注册/派发 | 能力名+版本在中枢无定义 |
 | `no_edge` | 路由 | `edges` 查表 0 行 |
+| `param_missing` | 路由 | 参数引用的路径在 payload / 别名表里取不到（含 payload 里的显式 `null`），且没有 `default`（§5.5） |
+| `param_type` | 路由 | 取值结果转不成目标 `params_schema` 要求的类型（§5.5） |
 | `param_schema` | 路由 | 参数不过目标能力 `params_schema` |
 | `path` | 路由 | 目标能力已在 `path` 里（环剪枝） |
 | `no_node` | 路由 | 没有节点声明该能力 |
@@ -672,13 +875,16 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 |---|---|---|---|
 | ① | 上游没回报这个出口 | **不是** | `reported=0` 或 `out` 指向别的出口——正常结束的分支，压根没查表 |
 | ② | `no_edge` | 是 | 查表 0 行 |
-| ③ | `param_schema` | 是 | 参数不过目标能力 schema |
-| ④ | `no_node` | 是 | 有边、参数也对，但没有节点声明该能力 |
-| ⑤ | `foreign_user` | 是 | `params.to` 指向的用户不属于本组织 |
-| ⑥ | `path` | 是 | 目标能力已在路径里（环剪枝） |
+| ③ | `param_missing` | 是 | 参数引用的路径取不到且无 `default`（§5.5） |
+| ④ | `param_type` | 是 | 取值结果转不成目标 schema 要求的类型（§5.5） |
+| ⑤ | `param_schema` | 是 | 参数不过目标能力 schema |
+| ⑥ | `no_node` | 是 | 有边、参数也对，但没有节点声明该能力 |
+| ⑦ | `foreign_user` | 是 | `params.to` 指向的用户不属于本组织 |
+| ⑧ | `path` | 是 | 目标能力已在路径里（环剪枝） |
 
-**②~⑥ 五种记 `pruned` + `reason`；① 不是剪枝。**
+**②~⑧ 七种记 `pruned` + `reason`；① 不是剪枝。**
 剪枝是静默的（不打断业务），但**一律留痕**——trace 上能看到 `reason` 和随附证据。
+剪枝落库为 `events.type = pruned.<reason>`（`source=route`），如 `pruned.param_missing`。
 
 ---
 

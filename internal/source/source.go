@@ -77,6 +77,10 @@ type FireResult struct {
 // 触发不会给出不同判定 —— 那种"试运行说能跑、真点却剪枝"的差异会直接
 // 摧毁用户对这套配置的信任。
 //
+// payload 的合并规则（打底 + 覆盖，且打底只对 cron/manual 生效，见
+// eventPayload）与变量求值同样与 Fire 一致：不一致的话，试运行看到的
+// `{{x}}` 取值就与真触发不同，试运行也就失去了意义。
+//
 // 不检查 src.Enabled：停用状态下也应该能试运行，否则用户没法先验证
 // 再启用。
 func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType string, payload json.RawMessage) (*route.DispatchOutput, error) {
@@ -92,10 +96,17 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 	if len(src.Targets) == 0 {
 		return nil, fmt.Errorf("source: %s 没有出口能力（source_targets 为空）", src.Name)
 	}
+	// payloadMap = config.payload 打底 + 本次事件 payload 覆盖（契约 §2.5）；
+	// 打底只对 cron/manual 生效，webhook/github 的 payload 就是投递体（A13）。
+	payloadMap, _ := eventPayload(src, payload)
 	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:        src.OrgID,
-		TraceID:      "dryrun", // 不落库，trace 只是占位（Dispatch 要求非空）
-		Params:       extractParams(payload),
+		OrgID:   src.OrgID,
+		TraceID: "dryrun", // 不落库，trace 只是占位（Dispatch 要求非空）
+		Params:  payloadMap,
+		// Payload / VarValues 是参数模板（{{x}} / {from} / {var}）的取值来源。
+		// 试运行必须真解析一遍，用户才能看到 param_missing / param_type。
+		Payload:      payloadMap,
+		VarValues:    route.ResolveVars(src.VarDefs(), payloadMap),
 		Targets:      src.TargetIDs(),
 		TargetParams: src.TargetParamsMap(),
 		Out:          eventType,
@@ -108,6 +119,11 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 //
 // eventType 是这次事件的类型（写进 events.type）。它同时会作为
 // 派发的 port 记录在剪枝信息里，便于排查"为什么没派出去"。
+//
+// payload 先与 config.payload 合并（打底 + 覆盖；打底只对 cron/manual 生效），
+// 再作为参数模板的取值来源：`[Payload]` 给 `{{x}}` / `{from}` 查路径，`[VarValues]` 是
+// `config.vars` 求出的别名表，给 `{{name}}` / `{var}` 用。两个都传下去，
+// Dispatcher 才能把 TargetParams 里的模板解析成真正的参数（#114）。
 //
 // idemKey 为空时允许重复触发（manual 手工点两次就是两次，符合直觉）；
 // cron 必须给确定性 key（cron:<sourceID>:<计划时刻>），否则进程重启后
@@ -126,12 +142,18 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 		payload = json.RawMessage(`{}`)
 	}
 
+	// 事件 payload = config.payload 打底 + 本次 payload 覆盖同名键（契约 §2.5）；
+	// 打底只对 cron/manual 生效，webhook/github 直接用投递体（A13）。
+	// 写进 events 的字节也用合并后的 map 重新 marshal：否则"剪枝说取不到 x"
+	// 与"事件体里明明有 x"会互相矛盾，事后无法复盘。
+	payloadMap, evPayload := eventPayload(src, payload)
+
 	ev := &store.Event{
 		OrgID:     src.OrgID,
 		TraceID:   t.newTraceID(),
 		Source:    src.Name, // 事件来源记源的名字，而不是能力的名字
 		Type:      eventType,
-		Payload:   payload,
+		Payload:   evPayload,
 		CreatedAt: t.now(),
 	}
 	if idemKey != "" {
@@ -158,7 +180,13 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	out, err := t.Dispatcher.Dispatch(ctx, route.DispatchInput{
 		OrgID:   src.OrgID,
 		TraceID: ev.TraceID,
-		Params:  extractParams(payload),
+		Params:  payloadMap,
+		// Payload / VarValues 是参数模板里的 {{路径}} / {from} / {var} 的取值来源。
+		//
+		// 为什么 Params 也仍是整份 payload：没有配 TargetParams 的出口要靠它
+		// 拿参数（公共回退语义不变）；配了的那份是**模板**，由 Dispatcher 求值。
+		Payload:   payloadMap,
+		VarValues: route.ResolveVars(src.VarDefs(), payloadMap),
 		// Targets 非空 → Dispatcher 跳过 edges 查表，直接派给这些能力
 		Targets: src.TargetIDs(),
 		// 每个出口各自的参数模板：各能力的 params_schema 不同，
@@ -189,6 +217,60 @@ func extractParams(payload json.RawMessage) map[string]any {
 		return map[string]any{}
 	}
 	return m
+}
+
+// eventPayload 算出本次事件的 payload：config.payload 打底，事件 payload
+// 覆盖同名键（契约 §2.5）。
+//
+// **打底只对 cron / manual 生效**（A13）：这两种源的事件体是源自己造的，
+// config.payload 就是它的默认值。webhook / github 的事件体来自外部投递，
+// 投递体本身就是 payload —— 历史行里残留的 `payload` 键（早期
+// ValidateSourceConfig 各 kind 都保留）绝不能被复活成事件字段：那样同一次
+// 投递在两版实现下会产出不同的 payload，事后复盘无从对齐。
+// 未知 kind 同样按"不合并"处理：宁可少合并，也不要凭空造字段。
+//
+// 两个返回值一定要成对使用：map 供参数求值 / 任务 params，字节供写进
+// events。两者必须同源，否则「剪枝说取不到 x」和「事件体里明明有 x」
+// 会互相矛盾，事后根本查不清到底发生了什么。
+//
+// 没有打底数据（不是 cron/manual，或 ConfigPayload 为 nil，即没配 / 不是
+// JSON 对象）时直接返回事件 payload 本身：不重新 marshal，保留调用方给的
+// 原始字节。
+func eventPayload(src *store.Source, payload json.RawMessage) (map[string]any, json.RawMessage) {
+	m := extractParams(payload)
+	if !usesConfigPayload(src.Kind) {
+		return m, payload
+	}
+	base := src.ConfigPayload()
+	if len(base) == 0 {
+		return m, payload
+	}
+	merged := make(map[string]any, len(base)+len(m))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range m {
+		merged[k] = v // 事件 payload 覆盖同名键
+	}
+	// 值都来自 JSON 反序列化，marshal 不会失败；失败时退回原始字节。
+	if b, err := json.Marshal(merged); err == nil {
+		return merged, b
+	}
+	return merged, payload
+}
+
+// usesConfigPayload 判断这种源是否用 config.payload 给事件体打底。
+//
+// 只有 cron / manual 才算（A13）：它们的 config.payload 就是源自己的默认
+// 事件体。webhook / github 的 payload 来自外部投递；未知 kind 也按保守
+// 处理（不合并）。
+func usesConfigPayload(kind string) bool {
+	switch kind {
+	case store.SourceKindCron, store.SourceKindManual:
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------- cron 调度器 ----------
@@ -272,11 +354,18 @@ func (s *Scheduler) Tick(ctx context.Context) {
 			continue
 		}
 
-		payload, _ := json.Marshal(map[string]any{
+		// cron 的事件体：三个系统字段打底，config.payload 的用户字段覆盖
+		// 同名键（契约 §2.5）——用户声明的字段得能盖住系统默认值，否则
+		// "config.payload 里写了 source" 这件事会静默不生效。
+		payloadMap := map[string]any{
 			"source":  src.Name,
 			"kind":    store.SourceKindCron,
 			"firedAt": fireAt,
-		})
+		}
+		for k, v := range full.ConfigPayload() {
+			payloadMap[k] = v
+		}
+		payload, _ := json.Marshal(payloadMap)
 		res, err := trig.Fire(ctx, full, src.Name, idem, payload)
 		if err != nil {
 			slog.Error("cron fire failed",
