@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -25,6 +26,9 @@ const (
 	DefaultMaxInstances   = 20
 	DefaultMaxConcurrency = 8
 )
+
+// NodeNameMaxLen 是节点名的长度上限（1..63，与 slug 同口径的字符集）。
+const NodeNameMaxLen = 63
 
 // Node 是 nodes 表的一行（一台机器）。
 //
@@ -86,6 +90,11 @@ var (
 	ErrNoCapacity = errors.New("no_capacity")
 	// ErrNodeDraining 节点在排空（不再接新任务）。
 	ErrNodeDraining = errors.New("node_draining")
+	// ErrNodeExists 同命名空间内节点重名（HTTP 409）。
+	//
+	// 由表约束 UNIQUE(namespace_id, name) 触发，**不是**预查——预查会给并发注册
+	// 留下 TOCTOU 窗口：两台同名的机器都能查空，然后一台插入失败变成 500。
+	ErrNodeExists = errors.New("store: node name already exists")
 )
 
 // CapabilityRef 是节点声明自己具备的能力（只有 name + version，没有命令）。
@@ -175,6 +184,33 @@ func HashNodeToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// nodeNamePattern 是节点名的合法形状（契约 D6）：1..63 个字符，只允许小写字母、
+// 数字、点、下划线、短横线，且必须以字母或数字开头。
+var nodeNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+
+// ValidateNodeName 校验节点名："" 表示合法，否则是给用户看的中文错误（含 "name"）。
+//
+// 规则严格按 nodeNamePattern（契约 D6），**不 trim**：`" mbp-16"` 这种带空白的输入
+// 必须当场拒绝，而不是静默改对后落库——名字是运维用来认机器的主键，改一个字符
+// 就可能变成另一台机器的名字。
+//
+// 与 ValidateVarDefs（internal/store/source.go）遵循同一约定（"" = 合法）。
+// 注意：CreateNode **不**调用它——devseed 与老测试直接走 store 层，行为保持原样；
+// 唯一调用点是 HTTP 写端点（POST /v1/nodes）。
+func ValidateNodeName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "name 必填（节点名不能为空或全为空白字符）"
+	}
+	if len(name) > NodeNameMaxLen {
+		return fmt.Sprintf("name 长度不能超过 %d 个字符（当前 %d 个）", NodeNameMaxLen, len(name))
+	}
+	if !nodeNamePattern.MatchString(name) {
+		return fmt.Sprintf("name 「%s」不合法：只能包含小写字母、数字、点（.）、下划线（_）、"+
+			"短横线（-），长度 1..%d，且必须以字母或数字开头", name, NodeNameMaxLen)
+	}
+	return ""
+}
+
 // CreateNode 创建节点，返回节点与**只出现一次**的明文 token。
 //
 // n.TokenHash 可预先由调用方设置（用于测试注入已知 token）；为空时自动生成。
@@ -233,6 +269,11 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		n.ID, n.NamespaceID, n.OrgID, n.Name, string(tagsJSON), n.Status, n.TokenHash,
 		n.MaxInstances, n.MaxConcurrency, n.LastSeenAt, n.CreatedAt); err != nil {
+		// 同命名空间重名（UNIQUE(namespace_id, name)）要让调用方能判定成 409，
+		// 而不是从一句裸的 constraint failed 里去猜。
+		if isUniqueViolation(err) {
+			return "", fmt.Errorf("%w: %q", ErrNodeExists, n.Name)
+		}
 		return "", fmt.Errorf("insert node: %w", err)
 	}
 	return token, nil

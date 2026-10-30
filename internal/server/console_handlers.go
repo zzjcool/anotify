@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -1071,7 +1072,7 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-// ---------- GET /v1/nodes + GET /v1/nodes/{id} + POST /v1/nodes/{id}/drain ----------
+// ---------- GET /v1/nodes + POST /v1/nodes + GET /v1/nodes/{id} + POST /v1/nodes/{id}/drain ----------
 
 // nodeCapView 是"节点声明的能力"在控制台视图里的投影。
 //
@@ -1132,6 +1133,87 @@ func (h *consoleHandler) viewFor(ctx context.Context, n *store.Node) nodeView {
 		}
 	}
 	return nodeView{Node: n, Capabilities: capViews, Instances: len(insts), Busy: busy}
+}
+
+// createNodeRequest 是 POST /v1/nodes 的请求体。
+//
+// Instances 只做非负校验、**不落库**（契约 Q5/D5）：实例是节点在 hello 帧里**申报**的，
+// 不是中枢预创建的；`nodes.max_instances` 是安全硬顶，不能被一个「建议值」静默改写。
+// 字段保留是为了让客户端能把同一份节点配置原样发过来。
+type createNodeRequest struct {
+	NamespaceID string   `json:"namespaceId"`
+	Name        string   `json:"name"`
+	Tags        []string `json:"tags,omitempty"`
+	Instances   int      `json:"instances,omitempty"`
+}
+
+// createNode 处理 POST /v1/nodes（注册节点，返回只出现一次的明文令牌）。
+//
+// 顺序不是随意的：**先解析 body、再解析命名空间**。空 body 当「全字段为零值」继续走，
+// 这样「空 body + 无 query namespaceId」报的是 namespaceId 缺失（调用方要知道该补什么），
+// 而不是被空 body 的 EOF 抢先变成 "invalid JSON body"。
+//
+// 命名空间用 resolveNamespaceCreate 而非 resolveNamespace：同样是缺参 400 / `*` 400，
+// 但「别的 org」按 404（写端点不能用来探测别人的命名空间 id，issue #185 / 契约 D2）。
+//
+// 令牌只在 201 响应体里出现这**一次**，库里只有 sha256（契约 §10.3 / D3）；
+// 日志里绝不打印它——日志会被收集、转发、贴进工单。
+func (h *consoleHandler) createNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, "POST")
+		return
+	}
+	orgID, ok := h.resolveOrg(w, r, r.URL.Query().Get("orgId"))
+	if !ok {
+		return
+	}
+
+	var req createNodeRequest
+	// 空 body（或只有空白）→ io.EOF → 当成零值结构继续走；只有非空但坏 JSON 才 400。
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+			return
+		}
+	}
+	// 写端点：缺参 400、`*` 无定义 400、不存在/别的 org 404。
+	ns, ok := h.resolveNamespaceCreate(w, r, orgID, req.NamespaceID)
+	if !ok {
+		return
+	}
+	if msg := store.ValidateNodeName(req.Name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid_name"})
+		return
+	}
+	if req.Instances < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "instances must be >= 0"})
+		return
+	}
+
+	// 唯一性交给表约束 UNIQUE(namespace_id, name)：不预查（预查会给并发注册留 TOCTOU 窗口）。
+	n := &store.Node{NamespaceID: ns.ID, Name: req.Name, Tags: req.Tags}
+	token, err := h.db.CreateNode(r.Context(), n)
+	if errors.Is(err, store.ErrNodeExists) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "同名节点已存在", "code": "name_taken"})
+		return
+	}
+	if handleNamespaceError(w, err) {
+		// 防御：命名空间在解析之后被删掉了（CreateNode 的 org 派生会报 NotFound）。
+		return
+	}
+	if err != nil {
+		slog.Error("create node failed", "event", "console.nodes.create_failed",
+			"namespace_id", ns.ID, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	// 事件日志只记 id（token 绝不进日志）。
+	slog.Info("node created", "event", "console.nodes.created",
+		"node_id", n.ID, "namespace_id", ns.ID, "org_id", orgID)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"node":  h.viewFor(r.Context(), n),
+		"token": token,
+	})
 }
 
 // nodes 处理 GET /v1/nodes（列表 + 在线状态）。

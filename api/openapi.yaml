@@ -1353,6 +1353,112 @@ paths:
                     description: 本次作用域（`*` 表示跨命名空间汇总）
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [nodes]
+      summary: 注册节点（返回一次性令牌）
+      description: |
+        **`namespaceId` 必填**：query 或 body，**query 优先**；两处都没有 → `400`，
+        错误体点名 `namespaceId`（写端点绝不回退默认命名空间）。`namespaceId=*`
+        在写端点无定义 → `400`。
+
+        **属于别的组织的命名空间 → `404`（本端点刻意不区分「不存在」与「别人的」）**：
+        命名空间不存在 → `404`；存在但属于别的组织 → **同样 `404`**，响应逐字节相同
+        （`{"error":"namespace not found"}`，不回显传入的 id）。写端点不能用来探测
+        别的组织有哪些命名空间 id —— 这是契约 §6.2「属于别的 org → `403`」的
+        **显式例外**，其余命名空间资源端点保持 `403`。
+
+        **令牌明文只在这里出现一次**：响应里的 `token`（`ant_node_...`）是明文，
+        库里只存 `sha256`（`token_hash`）；此后任何读接口（`GET /v1/nodes`、
+        `GET /v1/nodes/{id}`）都不回 `token` / `token_hash`。令牌即归属：
+        token → 节点行 → `nodes.namespace_id`，创建后不可改（契约 §10.3）。
+
+        `instances` 只是**槽位建议值，不落库**：不创建 `node_instances` 行，也不改
+        `nodes.max_instances`（`max_instances` 是安全硬顶，不能被一个建议值静默改写）。
+        真正的槽位以节点 `hello` 帧的申报为准（契约 Q5）；字段保留是为了让客户端能把
+        同一份节点配置原样发过来。只校验非负。
+
+        `name` 规则：`^[a-z0-9][a-z0-9._-]{0,62}$`（1..63 字符，只允许 `[a-z0-9._-]`，
+        以字母/数字开头）；**不 trim**（带空白即非法 —— 不把写错的输入静默改对）。
+        同一命名空间内重名 → `409`（`code: name_taken`）；不同命名空间可以同名。
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
+        - { name: orgId, in: query, schema: { type: string } }
+      requestBody:
+        description: |
+          允许空对象：缺 `namespaceId` 由 handler 报 `400`（错误体点名 `namespaceId`），
+          不会先报 "invalid JSON body"。
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                namespaceId:
+                  type: string
+                  description: 可选（query 优先）；query 与 body 都没有 → 400
+                name:
+                  type: string
+                  example: mbp-16
+                  description: |
+                    `^[a-z0-9][a-z0-9._-]{0,62}$`（1..63 字符，以字母/数字开头，
+                    只允许 `[a-z0-9._-]`，**不 trim**）
+                tags:
+                  type: array
+                  items: { type: string }
+                  description: 自由标签，与节点视图同形
+                instances:
+                  type: integer
+                  minimum: 0
+                  description: |
+                    槽位**建议值，不落库**：不创建 `node_instances` 行，也不改
+                    `nodes.max_instances`；真正的槽位以节点 `hello` 帧的申报为准（契约 Q5）
+      responses:
+        "201":
+          description: '节点已创建（`token` 是**一次性明文令牌**，此后任何读接口都不再出现）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node, token]
+                properties:
+                  node: { $ref: "#/components/schemas/NodeView" }
+                  token:
+                    type: string
+                    description: |
+                      一次性明文令牌（`ant_node_<base64url(24B)>`）。库里只存 `sha256`，
+                      这是它唯一一次出现在响应里；丢了只能删了重建节点。
+                    example: ant_node_MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG1u
+        "400":
+          description: |
+            请求参数非法（命中任一条即 400）：缺 `namespaceId`（错误体点名 `namespaceId`，
+            **不回退默认命名空间**）/ `namespaceId=*`（写端点无定义）/ `name` 缺失或非法
+            （`code: invalid_name`）/ `instances` 为负（`instances must be >= 0`）/
+            请求体不是合法 JSON
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        # OAS 3.0 里 `$ref` 的兄弟键（如 description）会被忽略，故此处 inline 写，不 $ref：
+        # 这个 404 必须自带说明——它与「命名空间不存在」共用同一个响应体，且是 §6.2 的显式例外。
+        "404":
+          description: |
+            **命名空间不存在，或存在但属于别的组织** —— 两者响应逐字节相同
+            （`{"error":"namespace not found"}`，不回显传入的 id；本端点刻意不区分，
+            避免用写端点探测别人的命名空间 id，契约 §6.2 的显式例外）。
+            响应形状同 `#/components/responses/NotFound`。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: |
+            同一命名空间内同名节点已存在
+            （`{"error":"同名节点已存在","code":"name_taken"}`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /nodes/{id}:
     get:
@@ -2541,6 +2647,9 @@ components:
         - 缺参 → `400`（`namespaceId is required`），**绝不回退到默认命名空间**：
           回退等于把调用方写错的地方藏起来
         - 不存在 → `404`；存在但属于别的组织 → `403`
+        - **例外**：`POST /nodes`（注册节点）对「存在但属于别的组织」返回 `404`
+          （响应与「不存在」逐字节相同：`{"error":"namespace not found"}`，不回显 id），
+          因为写端点不能用来探测别人的命名空间 id；其余命名空间资源端点仍是 `403`
         - `namespaceId=*`：跨命名空间汇总（管理员视图），**只允许读端点**（列表类）；
           写端点、单对象端点（`/tasks/{id}`、`/nodes/{id}`、`/sources/{id}`、
           `/traces/{id}`）以及口径未定义的 `/stats` 带 `*` → `400`

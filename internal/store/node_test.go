@@ -1197,3 +1197,115 @@ func TestFreeSlotsByNode(t *testing.T) {
 		t.Fatalf("empty input = %v, want 空 map", empty)
 	}
 }
+
+// TestNodeCreateDuplicateName 重名映射成哨兵错误（#185 / 契约 D7）。
+//
+// 判定必须来自表约束 UNIQUE(namespace_id, name) 而不是预查：
+// handler 拿到 ErrNodeExists 就回 409，TOCTOU 窗口由唯一索引兜住。
+// 同时钉住唯一性的**范围**——命名空间内，跨命名空间可以同名。
+func TestNodeCreateDuplicateName(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsA, _ := newTestNS(t, db)
+	nsB, _ := newTestNS(t, db)
+
+	first, _ := mkNode(t, db, nsA, "mbp-16")
+
+	// 同命名空间重名 → ErrNodeExists（handler 据此回 409）
+	_, err := db.CreateNode(ctx, &Node{NamespaceID: nsA, Name: "mbp-16"})
+	if !errors.Is(err, ErrNodeExists) {
+		t.Fatalf("duplicate name err = %v, want ErrNodeExists", err)
+	}
+	// 错误消息要能指出是哪台机器重名（排障用），但不能泄漏令牌/哈希
+	if !strings.Contains(err.Error(), "mbp-16") {
+		t.Fatalf("duplicate name err = %q, want 含冲突名字", err)
+	}
+	if strings.Contains(err.Error(), "ant_node_") {
+		t.Fatalf("duplicate name err 泄漏了 token: %q", err)
+	}
+
+	// 失败的插入不能留下残行，也不能覆盖原来那台机器
+	nodes, err := db.ListNodes(ctx, nsA)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("namespace A has %d nodes, want 1: %+v", len(nodes), nodes)
+	}
+	got, err := db.GetNode(ctx, nsA, first.ID)
+	if err != nil {
+		t.Fatalf("original node gone after rejected insert: %v", err)
+	}
+	if got.Name != "mbp-16" || got.TokenHash != first.TokenHash {
+		t.Fatalf("original node mutated by rejected insert: %+v", got)
+	}
+
+	// 唯一性是命名空间内的：另一个命名空间同名应当成功（prod 与 staging 各有 mbp-16）
+	tokenB, err := db.CreateNode(ctx, &Node{NamespaceID: nsB, Name: "mbp-16"})
+	if err != nil {
+		t.Fatalf("same name in another namespace rejected: %v", err)
+	}
+	if !strings.HasPrefix(tokenB, "ant_node_") {
+		t.Fatalf("token in ns B = %q, want ant_node_ 前缀", tokenB)
+	}
+	byName, err := db.GetNodeByName(ctx, nsB, "mbp-16")
+	if err != nil {
+		t.Fatalf("get node by name in ns B: %v", err)
+	}
+	if byName.ID == first.ID {
+		t.Fatalf("cross-namespace create returned the original node id %q", first.ID)
+	}
+}
+
+// TestValidateNodeName 钉住节点名规则（契约 D6）：1..63 字符、[a-z0-9._-]、
+// 必须字母或数字开头、**不 trim**（带空白即非法）。
+func TestValidateNodeName(t *testing.T) {
+	if NodeNameMaxLen != 63 {
+		t.Fatalf("NodeNameMaxLen = %d, want 63（契约 D6）", NodeNameMaxLen)
+	}
+	name63 := strings.Repeat("a", NodeNameMaxLen)
+	name64 := strings.Repeat("a", NodeNameMaxLen+1)
+
+	valid := []struct {
+		desc  string
+		input string
+	}{
+		{"单个字母", "a"},
+		{"单个数字", "0"},
+		{"主机名", "mbp-16"},
+		{"下划线与点", "demo_worker.v2"},
+		{"63 字符（上限）", name63},
+		{"a..b 属于合法字符集（不判点号语义）", "a..b"},
+	}
+	for _, c := range valid {
+		if msg := ValidateNodeName(c.input); msg != "" {
+			t.Errorf("%s: ValidateNodeName(%q) = %q, want 合法", c.desc, c.input, msg)
+		}
+	}
+
+	invalid := []struct {
+		desc  string
+		input string
+	}{
+		{"空串", ""},
+		{"全空白", "   "},
+		{"大写", "UPPER"},
+		{"含空格", "has space"},
+		{"短横线开头", "-lead"},
+		{"点开头", ".dot"},
+		{"64 字符（超上限）", name64},
+		{"中文", "中文节点"},
+		{"前导空白（不 trim）", " mbp-16"},
+		{"下划线开头", "_lead"},
+	}
+	for _, c := range invalid {
+		msg := ValidateNodeName(c.input)
+		if msg == "" {
+			t.Errorf("%s: ValidateNodeName(%q) = \"\", want 非空错误（应拒绝）", c.desc, c.input)
+			continue
+		}
+		if !strings.Contains(msg, "name") {
+			t.Errorf("%s: 错误消息 %q 未点名字段 name", c.desc, msg)
+		}
+	}
+}

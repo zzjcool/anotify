@@ -307,6 +307,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("PATCH /v1/namespaces/{id}", noStore(sessMW(http.HandlerFunc(nsH.byID))))
 	mux.Handle("DELETE /v1/namespaces/{id}", noStore(sessMW(http.HandlerFunc(nsH.byID))))
 
+	mux.Handle("POST /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.createNode))))
 	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.nodes))))
 	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(consoleH.nodeByID))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(consoleH.drainNode))))
