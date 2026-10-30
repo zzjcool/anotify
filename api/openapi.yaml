@@ -177,10 +177,17 @@ paths:
     get:
       tags: [events]
       summary: 事件列表（按 trace 过滤）
+      description: |
+        事件流（**不带** `traceId`）回答「外部世界发生了什么」：
+        **不含** `source=route` 的剪枝行（剪枝是中枢内部的诊断记录，不是外部事件）。
+
+        带 `traceId` 时是 trace 视图：**含**剪枝行（最新在前）。
+        显式给 `source` 时听调用方的（`source=route` 能单独拉出剪枝）。
       security:
         - bearerAuth: []
       parameters:
         - { name: traceId, in: query, schema: { type: string } }
+        - { name: source, in: query, schema: { type: string } }
         - { name: orgId, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
       responses:
@@ -320,10 +327,18 @@ paths:
         - `GET /console/events` 是控制台入口，会话 Cookie + 组织成员身份
 
         两者语义不同（一个要 scope，一个要成员身份），所以不共用一个 handler。
+
+        **剪枝行的可见性**：事件流（不带 `traceId`）**不含** `source=route` 的剪枝行；
+        带 `traceId` 时**含**剪枝行（最新在前）。显式给 `source` 时听调用方的。
+
+        **顺序（视图契约）**：带 `traceId` 时**根事件（非剪枝）一定排在最前**
+        （`events[0]`）—— trace 页用第一条事件的 source 去 `GET /sources` 找源拓扑当底图，
+        剪枝行顶替根事件会让底图丢失。
       security:
         - cookieAuth: []
       parameters:
         - { name: traceId, in: query, schema: { type: string } }
+        - { name: source, in: query, schema: { type: string } }
         - { name: orgId, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
       responses:
@@ -340,6 +355,56 @@ paths:
                     items: { $ref: "#/components/schemas/Event" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ========== 事件中心：trace 视图 ==========
+  #
+  # 「一条链为什么这样」一次请求答完：events（含剪枝）+ tasks + pruned。
+  # 剪枝记录从 #142 起落进 events（source='route'、type='pruned.<reason>'），
+  # 所以它既能在 events 里看到原始行，也被解析成 pruned 列表。
+  /traces/{id}:
+    get:
+      tags: [events]
+      summary: 单条 trace 全景（events + tasks + pruned）
+      description: |
+        一条 trace 的完整链路：
+        - `events`：该 trace 的全部事件，**含** `source=route` 的剪枝行（最新在前）
+        - `tasks`：该 trace 的任务链
+        - `pruned`：从 `source=route` 的事件解析出的剪枝记录（`type` 去掉 `pruned.` 前缀即 `reason`）
+
+        `events` 与 `tasks` 都为空时返回 404（该 trace 在本组织不存在）。
+        空列表一律是 `[]` 而不是 `null`。
+
+        **顺序**：`events` 按最新在前（`created_at DESC`），**不保证** `events[0]` 是根事件
+        —— 剪枝行的时间一定晚于根事件，可能顶在最前。要根事件请按 `source != "route"`
+        挑，或者直接读 `pruned`（这才是「为什么没跑」的答案）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '一条 trace 的全景（空列表为 `[]`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [traceId, events, tasks, pruned]
+                properties:
+                  traceId: { type: string }
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/Event" }
+                  tasks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Task" }
+                  pruned:
+                    type: array
+                    items: { $ref: "#/components/schemas/PrunedTraceRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: 'trace 不存在（`{"error":"trace not found"}`）' }
 
   # ========== 事件中心：任务 ==========
   /tasks:
@@ -2498,6 +2563,27 @@ components:
         capabilityId: { type: string }
         port: { type: string }
         detail: { type: string, description: 给人看的证据 }
+
+    PrunedTraceRecord:
+      type: object
+      description: |
+        trace 视图里的剪枝记录（由 `source=route` 的事件解析出来）。
+        `reason` 是事件 `type` 去掉 `pruned.` 前缀；
+        字段恒存在（不省略空值），前端不必逐个判空。
+      required: [reason, fromCapability, port, targetCapability, detail, createdAt]
+      properties:
+        reason:
+          type: string
+          enum: [no_edge, param_schema, no_node, foreign_user, path]
+        fromCapability:
+          type: string
+          description: 上游标识；入口边时是来源名（github / cron / …）
+        port: { type: string, description: 上游回报的出口名 }
+        targetCapability:
+          type: string
+          description: 被剪枝的目标能力 id；`no_edge` 时为空
+        detail: { type: string, description: 给人看的证据 }
+        createdAt: { type: integer, format: int64 }
 
     Node:
       type: object

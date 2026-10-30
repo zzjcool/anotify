@@ -499,6 +499,10 @@ func (h *sourceHandler) writeSourceErr(w http.ResponseWriter, err error, op stri
 		})
 	case errors.Is(err, store.ErrInvalidSourceConfig):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, store.ErrReservedEventSource):
+		// 保留名是**调用方的输入问题**，不是服务端故障：必须 400，
+		// 落到 default 的 500 会让用户以为中枢坏了（而改个名字就好）。
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
 		slog.Error("source "+op+" failed",
 			"event", "console.sources."+op+"_failed", "error", err.Error())
