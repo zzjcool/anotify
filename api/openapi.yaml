@@ -1065,6 +1065,30 @@ paths:
         | 没有 `out` 键 | `reported=0, out=NULL` | 没回报出口 → 不派下一跳 |
         | `"out": null` | `reported=1, out=NULL` | 明确到头了 |
         | `"out": "fix"` | `reported=1, out='fix'` | 走 fix 出口 |
+
+        ### hello 的可选 `manifest`：节点声明「我怎么跑」
+
+        `hello` 除了 `capabilities: [{capability, version}]`（老字段，语义不变），
+        还可以带一个**可选**的 `manifest` 数组：
+
+        ```jsonc
+        { "manifest": [
+            { "capability": "review", "version": 1,
+              "run": { "runner": "bash", "command": "./runners/review.sh",
+                       "timeoutSec": 900, "concurrency": 2,
+                       "env": { "LOG_LEVEL": "info" } } } ] }
+        ```
+
+        - 缺省 `manifest` = 老行为：只报 `name@version`，`runSpec` 存 `{}`。
+        - `capabilities` 与 `manifest` 同时出现时**以 manifest 为准**（信息更全）；
+          manifest 里没写的 `capabilities` 项仍然是声明，只是 `runSpec` 为 `{}`。
+        - `run` 在 manifest 条目里**必填**；`runner` 本期只接受 `bash`，
+          `command` 非空，`concurrency` 必须在 `[1, nodes.max_concurrency]`。
+          不合法时握手失败，`error.code = invalid_manifest`，`message` 列出**全部**问题项
+          （与 `unknown_capability` 同构：每种拒绝原因一个码）。
+        - **只存不执行**（不变量 I1）：`run` 落到 `node_capabilities.run_spec` 后
+          仅用于控制台展示与排障（`GET /nodes/{id}` 的 `capabilities[].runSpec`）。
+          中枢不解码、不拆参数、不判路径存在/可执行、不拼命令行，也不把它写进 `assign`。
       security:
         - nodeToken: []
       responses:
@@ -2497,7 +2521,7 @@ components:
           properties:
             capabilities:
               type: array
-              description: '这台节点声明自己具备的能力（来自节点 hello 帧，中枢只记能力名，命令不上传）'
+              description: '这台节点声明自己具备的能力（来自节点 hello 帧）：中枢只记能力名 + 节点自报的 `runSpec`（只存不执行，见 `/node/stream`）'
               items:
                 type: object
                 required: [id, name, version]
@@ -2508,6 +2532,16 @@ components:
                   displayName:
                     type: string
                     description: '纯展示标签，空串表示没取（前端回落 name@version）'
+                  runSpec:
+                    type: object
+                    additionalProperties: true
+                    description: |
+                      节点自己声明的执行方式原文（hello 帧 `manifest[].run`，见 `/node/stream`）。
+                      `{}` = 声明了能力但没声明执行方式（老节点，或 manifest 里没写这一项）。
+
+                      **中枢只存不执行**（不变量 I1）：不解码、不拆参数、不判路径存在/可执行、
+                      不拼命令行，也不写进任何下行帧；唯一用途是控制台展示与排障。
+                      这一列也不参与派发选点（`NodesForCapability` 看不到它）。
             instances: { type: integer, description: 申报的槽位总数 }
             busy: { type: integer, description: 正在占用的槽位数 }
 
