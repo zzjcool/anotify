@@ -11,7 +11,8 @@ import (
 
 // 命名空间（namespace）：**唯一**的隔离边界（#204 / #205）。
 //
-// 设计见 docs/design/namespaces.md，契约 §2.1.1 / 不变量 I10、I11。
+// 设计见 docs/design/namespaces.md，契约 §2.1.1 / 不变量 I11。
+// （I10「一切租户数据先过 org_id」随组织层一起作废，重写留给阶段 3。）
 //
 // 一句话：能力 / 节点 / 边 / 源 / 事件 / 任务 / 图快照**全部**属于某个命名空间。
 // 组织（org）这一层已经删除（迁移 14）：一套部署 = 一个团队，`namespace_id`
@@ -341,21 +342,36 @@ func uniqueNamespaceSlugTx(ctx context.Context, tx *sql.Tx, base string) (string
 
 // createDefaultNamespaceTx 在调用方事务内建一个 `default*` 命名空间（**不播种**，
 // 播种由调用方决定顺序：注册要求「用户 + 命名空间 + 内置能力」全在一个事务里）。
+//
+// slug 全局唯一（迁移 14）后多了一个竞争点：两个并发注册都可能看到 `default` 空位，
+// 后写者会撞 UNIQUE(slug)。撞了就**重算一次 slug**（`default-2`、`default-3`…），
+// 不把裸的约束错误抛给调用方（那会变成一个莫名其妙的 500）。
+// 重试在同一事务内是安全的：SQLite 的唯一约束失败只回滚那一条语句（ABORT），
+// 事务仍可用 —— 与 InstallPlaybook 里「唯一冲突不是真错误」同一处理方式。
 func createDefaultNamespaceTx(ctx context.Context, tx *sql.Tx) (*Namespace, error) {
-	slug, err := uniqueNamespaceSlugTx(ctx, tx, DefaultNamespaceSlug)
-	if err != nil {
-		return nil, err
+	const attempts = 3
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		slug, err := uniqueNamespaceSlugTx(ctx, tx, DefaultNamespaceSlug)
+		if err != nil {
+			return nil, err
+		}
+		ns := &Namespace{
+			ID:        NewNamespaceID(),
+			Slug:      slug,
+			Name:      DefaultNamespaceName,
+			CreatedAt: Now(),
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO namespaces (id, slug, name, created_at) VALUES (?,?,?,?)`,
+			ns.ID, ns.Slug, ns.Name, ns.CreatedAt); err != nil {
+			if isUniqueConstraintError(err) {
+				lastErr = err
+				continue // 有人抢先占了这个 slug，换一个再来
+			}
+			return nil, fmt.Errorf("insert default namespace: %w", err)
+		}
+		return ns, nil
 	}
-	ns := &Namespace{
-		ID:        NewNamespaceID(),
-		Slug:      slug,
-		Name:      DefaultNamespaceName,
-		CreatedAt: Now(),
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO namespaces (id, slug, name, created_at) VALUES (?,?,?,?)`,
-		ns.ID, ns.Slug, ns.Name, ns.CreatedAt); err != nil {
-		return nil, fmt.Errorf("insert default namespace: %w", err)
-	}
-	return ns, nil
+	return nil, fmt.Errorf("insert default namespace: slug still taken after %d attempts: %w", attempts, lastErr)
 }

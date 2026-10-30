@@ -270,7 +270,7 @@ func TestCapabilityVersionAppendOnly(t *testing.T) {
 	}
 }
 
-// TestCapabilityNamespaceIsolation 不变量 I10/I11：跨命名空间查不到能力定义。
+// TestCapabilityNamespaceIsolation 不变量 I11：跨命名空间查不到能力定义。
 //
 // 默认命名空间里不再是「空」，而是自带内置能力（notify.phone@1）——所以隔离的正确断言
 // 不是「B 一条都没有」，而是「B 里一行都不属于 A 写的那份定义」。这里同时验两套独立资源
@@ -314,7 +314,7 @@ func TestCapabilityNamespaceIsolation(t *testing.T) {
 			t.Fatalf("list %s: %v", ns, err)
 		}
 		for _, got := range list {
-			// 每一行都必须自带本命名空间 id（I10/I11：命名空间是唯一隔离维度）
+			// 每一行都必须自带本命名空间 id（I11：命名空间是唯一隔离维度）
 			if got.NamespaceID != ns {
 				t.Fatalf("ListCapabilities(%s) 返回了别的命名空间的行: %s@%d (%s)",
 					ns, got.Name, got.Version, got.NamespaceID)
@@ -791,7 +791,7 @@ func TestCapabilityDisplayName(t *testing.T) {
 		t.Fatalf("rename created a new version: %d rows of analyze-pr", versions)
 	}
 
-	// ④ 别的命名空间改不动（不变量 I10/I11）
+	// ④ 别的命名空间改不动（不变量 I11）
 	otherNS, _ := newTestNS(t, db)
 	if err := db.SetCapabilityDisplayName(ctx, otherNS, c.ID, "偷改"); err == nil {
 		t.Fatal("cross-namespace display name update should fail")

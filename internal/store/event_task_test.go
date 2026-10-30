@@ -221,14 +221,14 @@ func TestEventIdemKeyScopedPerSourceAndNamespace(t *testing.T) {
 			t.Fatalf("source %s was deduped against another source", src)
 		}
 	}
-	// 不同命名空间、同 source、同 key：允许（命名空间隔离，不变量 I10/I11）
+	// 不同命名空间、同 source、同 key：允许（命名空间隔离，不变量 I11）
 	e := &Event{NamespaceID: nsB, TraceID: "t-b", Source: "github", Type: "push", IdemKey: &key}
 	inserted, err := db.InsertEvent(ctx, e)
 	if err != nil {
 		t.Fatalf("insert nsB: %v", err)
 	}
 	if !inserted {
-		t.Fatal("idem_key leaked across namespaces (invariant I10 violated)")
+		t.Fatal("idem_key leaked across namespaces (invariant I11 violated)")
 	}
 }
 
@@ -677,7 +677,7 @@ func TestListTasksFilters(t *testing.T) {
 	}
 }
 
-// TestTaskNamespaceIsolation 不变量 I10/I11：跨命名空间查不到任务。
+// TestTaskNamespaceIsolation 不变量 I11：跨命名空间查不到任务。
 func TestTaskNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

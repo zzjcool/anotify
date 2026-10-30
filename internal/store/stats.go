@@ -32,7 +32,7 @@ type Stats struct {
 //
 // 口径（#80 事件中心化后的定义）：
 //
-//	Total     = 该组织的事件总数（events 表）
+//	Total     = 该命名空间的事件总数（events 表）
 //	Today     = 今日事件数（UTC 0 点起）
 //	Delivered/DeliveryTotal = 任务成功数 / 已结束任务数（tasks 的终态统计）
 //	DeviceCount = 该用户启用的推送设备数（devices 仍按 user 维度）

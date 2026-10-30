@@ -54,7 +54,7 @@ type Node struct {
 // NamespaceID 从父行（nodes）取，不接受调用方传（契约 §2.3）。
 type NodeInstance struct {
 	ID string `json:"id"`
-	// NamespaceID 是槽位所属命名空间（隔离维度，I10）。
+	// NamespaceID 是槽位所属命名空间（隔离维度，I11）。
 	NamespaceID string  `json:"namespaceId"`
 	NodeID      string  `json:"nodeId"`
 	Slot        int     `json:"slot"`
@@ -329,7 +329,7 @@ func (d *DB) GetNodeByTokenHash(ctx context.Context, tokenHash string) (*Node, e
 	return scanNodeRow(rows)
 }
 
-// GetNode 按 (namespaceID, id) 取节点（不变量 I10：必须带命名空间）。
+// GetNode 按 (namespaceID, id) 取节点（不变量 I11：必须带命名空间）。
 //
 // 节点 id 全局唯一，但读路径仍要过隔离维度：少了它，一个写错的 id 就能
 // 把别的命名空间的机器读出来。
@@ -1150,7 +1150,7 @@ func (d *DB) DeletePinsForNode(ctx context.Context, nodeID string) error {
 // 反复跑）需要一个"同一个节点、换一把钥匙"的入口，否则只能不断新建节点行，
 // 留下大量永远离线的死节点。
 //
-// 作用域仍是命名空间（I10）：换钥匙也得说清楚换的是哪片隔离域里的节点。
+// 作用域仍是命名空间（I11）：换钥匙也得说清楚换的是哪片隔离域里的节点。
 func (d *DB) SetNodeTokenHash(ctx context.Context, namespaceID, nodeID, tokenHash string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired

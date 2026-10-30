@@ -22,8 +22,14 @@ import (
 //   - 每个 stage 表先 `DROP TABLE IF EXISTS`；
 //   - 去重只在真正存在重复时才 UPDATE，第二次执行时没有重复行，天然无操作。
 func migrateDropOrgLayer(tx *sql.Tx) error {
-	// 重建期间外键检查延到提交：新表的父行（namespaces / capability_versions…）
-	// 可能比子行晚插入（顺序按下表正拓扑，但阶段表回灌仍按表逐个来）。
+	// 重建期间外键检查延到提交。
+	//
+	// 注意它**不是**「回灌顺序」的需要：回灌本来就按父表在前（orgLayerRebuilds 的顺序）。
+	// 它的实际收益是**失败点集中且不静默**——老库里若存在历史孤儿行
+	// （例如 tasks.capability_id 指向已删的能力），开启 defer 时失败发生在 commit 的
+	// `FOREIGN KEY constraint failed`，整个迁移完整回滚；不开则可能在某一句话
+	// INSERT 处失败，报错位置更靠后、更难判断是哪一行数据脏。升级老库前建议先跑
+	// `PRAGMA foreign_key_check`。
 	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = TRUE`); err != nil {
 		return fmt.Errorf("defer foreign keys: %w", err)
 	}
@@ -321,9 +327,16 @@ var orgLayerRebuilds = []orgLayerRebuild{
 
 // orgLayerDropOrder 是**删表的逆拓扑序**：引用者一定排在它引用的表前面。
 //
-// 为什么顺序在这里是正确性问题而不只是整洁问题：SQLite 在 DROP TABLE 时（外键开启）
-// 会对该表做一次隐式 DELETE，`ON DELETE CASCADE` 会把还没搬走的子行删掉；
-// 先删子表就让这次隐式 DELETE 无事可做。最后才是 namespaces → org_members → orgs。
+// 顺序为什么是正确性问题（实测，不是推测）：
+//
+//  1. **先 stage 完再删**，所以 DROP 父表的隐式 DELETE（外键开启时会触发
+//     `ON DELETE CASCADE`）级联删掉的是已经搬进 `<t>_stage` 的副本，不影响结果；
+//     但只要有**任何一张还没删的表**的外键子句还指向已删的表，后续的 DROP TABLE
+//     会直接报 `no such table: main.<已删表>` —— SQLite 每次 prepare 都会解析整张
+//     schema。所以「引用者先删」是硬要求。
+//  2. 父表本身仍然要最后删：先删 `namespaces` 再去删子表，第 1 条就会命中。
+//
+// 最后才是 namespaces → org_members → orgs。
 var orgLayerDropOrder = []string{
 	"node_capabilities",   // → nodes, capability_versions
 	"node_instances",      // → nodes
@@ -354,7 +367,10 @@ func stageForOrgLayer(tx *sql.Tx, t orgLayerRebuild) error {
 	colList := strings.Join(t.cols, ", ")
 	stmts := []string{
 		fmt.Sprintf(`DROP TABLE IF EXISTS %s_stage`, t.table),
-		fmt.Sprintf(`CREATE TABLE %s_stage AS SELECT %s FROM %s`, t.table, colList, t.table),
+		// ORDER BY rowid：让 stage 的行序等于**旧表的插入顺序**，回灌后新表的 rowid
+		// 顺序与旧表一致。DefaultNamespaceID 用 `ORDER BY rowid` 取「最早插入的那个」，
+		// 它的语义就建立在这条顺序上（不依赖 SQLite 未承诺的扫描顺序）。
+		fmt.Sprintf(`CREATE TABLE %s_stage AS SELECT %s FROM %s ORDER BY rowid`, t.table, colList, t.table),
 	}
 	for _, q := range stmts {
 		if _, err := tx.Exec(q); err != nil {

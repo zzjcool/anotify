@@ -563,8 +563,10 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 --   ② `namespaces.slug` 全局去重：老库里多个组织各有一个 `default`，
 --      在 `UNIQUE(slug)` 下会撞车。同 slug 按 `(created_at, rowid)` 保留最早一行，
 --      其余改名为 `default-2`、`default-3`…（候选名必须全局未占用）
---   ③ 逐表 stage（`CREATE TABLE <t>_stage AS SELECT <去掉 org_id 的列> FROM <t>`）
---   ④ 逆拓扑序删旧表（引用者先删），最后 `namespaces` → `org_members` → `orgs`
+--   ③ 逐表 stage（`CREATE TABLE <t>_stage AS SELECT <去掉 org_id 的列> FROM <t> ORDER BY rowid`；
+--      固定行序，迁移后新表的 rowid 与旧表同序 —— `DefaultNamespaceID` 依赖它取「最早插入」）
+--   ④ 逆拓扑序删旧表（引用者先删：任何残余表的外键子句指向已删表，下一句 DROP 就会
+--      报 `no such table`），最后 `namespaces` → `org_members` → `orgs`
 --   ⑤ 正拓扑序建新表 + `INSERT ... SELECT` 回灌 + 重建索引 + 删 stage
 --
 -- 唯一性核对：`org_id` 是 `namespace_id` 的函数（`namespace.org_id`），

@@ -65,7 +65,7 @@ func TestNodeCreateAndGet(t *testing.T) {
 		t.Fatalf("get node by token hash: %v", err)
 	}
 	// 令牌全局唯一 → by-token 查询不看命名空间；但它**必须**把行的 namespace_id
-	// 扫出来（握手后整条连接靠 NamespaceID 定位隔离域，I10/I11）。
+	// 扫出来（握手后整条连接靠 NamespaceID 定位隔离域，I11）。
 	if byToken.ID != n.ID || byToken.NamespaceID != nsID {
 		t.Fatalf("token lookup returned wrong node (namespace): %+v", byToken)
 	}
@@ -74,7 +74,7 @@ func TestNodeCreateAndGet(t *testing.T) {
 	}
 }
 
-// TestNodeNamespaceIsolation 不变量 I10/I11：跨命名空间查不到节点。
+// TestNodeNamespaceIsolation 不变量 I11：跨命名空间查不到节点。
 func TestNodeNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -868,7 +868,7 @@ func TestNodesForCapability(t *testing.T) {
 	}
 }
 
-// TestNodesForCapabilityNamespaceIsolation 别的命名空间的节点不能出现在候选里（I10/I11）。
+// TestNodesForCapabilityNamespaceIsolation 别的命名空间的节点不能出现在候选里（I11）。
 //
 // 两个维度都要验：两套独立的「用户 + 默认命名空间」（两个 default 命名空间）与
 // 同一部署里另建的命名空间——后者是唯一隔离维度落在 namespace_id 上的核心面

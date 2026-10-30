@@ -260,7 +260,7 @@ func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, namespaceID, capabi
 // 不限**扫描/排序行数**；ORDER BY created_at 是否能免掉排序这里不重新实测。
 //
 // **语义变化（重要）**：删 events 行会同时回收 `idx_events_idem(namespace_id, source, idem_key)`
-// 的去重窗口——`idem_key` 的「收过就不重做」从**永久**缩成**保留期**（由组织配置决定；
+// 的去重窗口——`idem_key` 的「收过就不重做」从**永久**缩成**保留期**（由部署配置决定；
 // 未配置时该清理不发生，去重窗口仍是永久）。
 // 超期重投不会命中旧行，会新建 trace 并重新派整条链；对上游重投语义来说这通常是可接受的
 // （同一个投递 ID 隔很久重放本就少见），但它是行为变化，不是纯存储优化。本轮不改这个行为。
@@ -317,8 +317,8 @@ func (d *DB) listRetentionNamespaceIDs(ctx context.Context) ([]string, error) {
 // （events）先少，不会反过来。它**不保证**整轮扫完不留中间态。
 //
 // 为什么不保证：两张表的 TTL 口径本来就不同——tasks 是**能力级** `resultTtlSec`，
-// events 是**组织级**（**当前默认禁用**，见 DefaultEventRetentionSec）。一旦 events 侧
-// 被组织配置开启，一轮**完整跑完**就会留下「tasks.trace_id 指向已删 events 行」的记录：
+// events 是**部署级**（**当前默认禁用**，见 DefaultEventRetentionSec）。一旦 events 侧
+// 被部署配置开启，一轮**完整跑完**就会留下「tasks.trace_id 指向已删 events 行」的记录：
 // schema 没有跨表外键，不会报错，代价只是少了那一行「发生了什么」。
 // 这是**预期状态**（父事件已删而子任务仍在，就是跨表 TTL 差异的正常结果），不是数据损坏；
 // 想两边严格一致只能把两个 TTL 绑成同一个值，靠删除顺序做不到。
@@ -373,7 +373,7 @@ func (d *DB) SweepRetention(ctx context.Context, opts RetentionOptions) (Retenti
 		}
 	}
 
-	// ② 事件：按组织级保留期（**默认禁用**），删除粒度是命名空间
+	// ② 事件：按部署级保留期（**默认禁用**），删除粒度是命名空间
 	//
 	// 保留期 <= 0 = 未配置 = 禁用：整个 events 阶段跳过。这里刻意**不**返回错误——
 	// 默认配置走的就是这条路，报错会让巡检每小时记一次假警。也不查 namespaces：

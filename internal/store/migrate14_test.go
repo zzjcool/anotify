@@ -10,7 +10,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,6 +53,89 @@ func tableRowCounts(t *testing.T, db *DB) map[string]int {
 		out[table] = countRows(t, db, table, "1 = 1")
 	}
 	return out
+}
+
+// tableContentDigest 对若干列的全部行做 sha256（按列排序，结果稳定）。
+//
+// 用来断言「迁移只是去掉 org_id，行内容一个字节都没变」。
+func tableContentDigest(t *testing.T, db *DB, table string, cols []string) string {
+	t.Helper()
+	order := strings.Join(cols, ", ")
+	q := `SELECT ` + strings.Join(cols, ", ") + ` FROM ` + table + ` ORDER BY ` + order
+	rows, err := db.Query(q)
+	if err != nil {
+		t.Fatalf("digest %s: %v", table, err)
+	}
+	defer rows.Close()
+	h := sha256.New()
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("digest scan %s: %v", table, err)
+		}
+		fmt.Fprintf(h, "%v\n", vals)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("digest rows %s: %v", table, err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// TestMigration14ColumnReconciliation 迁移 14 的列清单必须等于「v13 真实列 − org_id」。
+//
+// 为什么必须有这一条（实测得出的教训）：回灌 SQL 的列清单和 stage 的 SELECT 用的是
+// **同一个** cols，漏一列不会报错 —— 新表那一列会安静地取 DEFAULT。
+// 把 nodes.cols 里的 tags 删掉后，迁移照样成功、行数照样相等，只是 tags 全变成 []。
+// 这类回归只能靠「拿老库的真实列清单逐表对账」拦住。
+func TestMigration14ColumnReconciliation(t *testing.T) {
+	path := legacyPre12DB(t, false)
+	db13 := openAtVersion(t, path, 13)
+	defer func() { _ = db13.Close() }()
+
+	for _, rb := range orgLayerRebuilds {
+		actual := columnNames(t, db13, rb.table) // 迁移 13 时点的真实列
+		want := map[string]bool{}
+		for name := range actual {
+			if name == "org_id" {
+				continue // 迁移 14 就是要摘掉它
+			}
+			want[name] = true
+		}
+		got := map[string]bool{}
+		for _, c := range rb.cols {
+			if got[c] {
+				t.Errorf("%s: cols 里 %q 重复", rb.table, c)
+			}
+			got[c] = true
+			if !want[c] {
+				t.Errorf("%s: cols 里的 %q 在 v13 里不存在（拼错列名会让回灌失败）", rb.table, c)
+			}
+		}
+		for name := range want {
+			if !got[name] {
+				t.Errorf("%s: 漏了列 %q —— 回灌会静默取 DEFAULT（丢数据）", rb.table, name)
+			}
+		}
+		if len(rb.cols) != len(want) {
+			t.Errorf("%s: cols 数量 %d, v13 去掉 org_id 后 %d", rb.table, len(rb.cols), len(want))
+		}
+		// 新表 DDL 里声明的列也必须与 cols 一致（防止 create 与 cols 各自漂移）
+		for _, line := range strings.Split(rb.create, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "CREATE") || strings.HasPrefix(trimmed, ")") ||
+				strings.HasPrefix(trimmed, "UNIQUE") || strings.HasPrefix(trimmed, "PRIMARY KEY") {
+				continue
+			}
+			name := strings.Fields(trimmed)[0]
+			if !got[name] {
+				t.Errorf("%s: 新表 DDL 声明了 %q，但 cols 里没有（回灌不会填它）", rb.table, name)
+			}
+		}
+	}
 }
 
 // TestMigration14RemovesOrgLayer 新库（= 迁移链跑完）里不该再有任何 org 痕迹。
@@ -129,7 +215,12 @@ func TestMigration14Idempotent(t *testing.T) {
 	}
 	before := tableRowCounts(t, db)
 
-	// ① 同一个事务内连续跑两次 hook（「同一版本可能因重试执行多次」）
+	// ① 同一个事务内连续跑两次 hook：「同一版本可能因重试执行多次」。
+	//
+	// 注意这一条钉住的是**幂等守卫本身**（第二次调用在 hasTable(orgs)==false 处返回），
+	// 不是「重建逻辑可重入」——真正的重放安全来自「整块迁移在一个事务里，失败即全量回滚」，
+	// 那条由 migrate_test.go 的 TestMigrationFailureRollsBack 与手工验证（老库孤儿行
+	// 导致 commit 失败 → 回滚 → 修数据后重放成功）覆盖。
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -190,6 +281,15 @@ func TestMigration14PreservesRows(t *testing.T) {
 		t.Fatal("阶段 A 就看不到 org 痕迹，夹具不对")
 	}
 	before := tableRowCounts(t, db13)
+	// 内容摘要：行数相等不等于数据没坏（列漏了/顺序错了都可能行数不变）
+	digestCols := map[string][]string{}
+	for _, rb := range orgLayerRebuilds {
+		digestCols[rb.table] = rb.cols
+	}
+	beforeDigest := map[string]string{}
+	for _, table := range []string{"capability_versions", "nodes", "node_capabilities", "node_pins", "edges", "sources", "events", "tasks", "graph_versions", "playbooks"} {
+		beforeDigest[table] = tableContentDigest(t, db13, table, digestCols[table])
+	}
 	if err := db13.Close(); err != nil {
 		t.Fatalf("close stage A: %v", err)
 	}
@@ -204,6 +304,12 @@ func TestMigration14PreservesRows(t *testing.T) {
 	for table, want := range before {
 		if after[table] != want {
 			t.Errorf("升级后 %s 行数 %d → %d（迁移 14 丢了数据）", table, want, after[table])
+		}
+	}
+	for table, want := range beforeDigest {
+		if got := tableContentDigest(t, up, table, digestCols[table]); got != want {
+			t.Errorf("升级后 %s 的行内容变了（摘要 %s → %s）：迁移 14 只该去掉 org_id，不该改数据",
+				table, want[:12], got[:12])
 		}
 	}
 	// org 痕迹消失

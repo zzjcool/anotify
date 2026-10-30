@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 )
 
@@ -75,6 +74,3 @@ func AuthorizeNamespaceTx(ctx context.Context, tx *sql.Tx, userID, namespaceID s
 	}
 	return nil
 }
-
-// IsNamespaceNotFound 便于 HTTP 层判定（errors.Is 等价，保留给读起来更顺的调用点）。
-func IsNamespaceNotFound(err error) bool { return errors.Is(err, ErrNamespaceNotFound) }
