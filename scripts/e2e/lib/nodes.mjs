@@ -17,8 +17,25 @@ export function sha256(s) {
 
 // seedNodeRows 往库里插一行节点（token 已知），可选声明能力与实例。
 //
+// namespaceId 必传：迁移 12（#162）之后 nodes / node_capabilities / node_instances
+// 都多了 namespace_id TEXT NOT NULL，唯一键也从 UNIQUE(org_id, name) 换成了
+// UNIQUE(namespace_id, name)。节点属于哪个命名空间必须由调用方给**查出来的** id
+// （`await H.defaultNamespaceId(base, session)`）——用例里写死 ns_xxx 等换库全红。
+//
 // 返回 { id, token }。token 是明文，DB 里只存 sha256。
-export function seedNodeRows(dbPath, orgId, name, capabilityIds = [], slots = 1) {
+export function seedNodeRows(
+	dbPath,
+	orgId,
+	namespaceId,
+	name,
+	capabilityIds = [],
+	slots = 1,
+) {
+	if (!namespaceId) {
+		throw new Error(
+			"seedNodeRows: 需要 namespaceId（用 H.defaultNamespaceId(base, session) 取，不要硬编码）",
+		);
+	}
 	const token = "{{SECRET_dg3rvnxb}}" + randomUUID().replace(/-/g, "");
 	const nodeId = "nd_e2e_" + randomUUID().replace(/-/g, "").slice(0, 20);
 	const now = Math.floor(Date.now() / 1000);
@@ -26,19 +43,19 @@ export function seedNodeRows(dbPath, orgId, name, capabilityIds = [], slots = 1)
 	const db = new DatabaseSync(dbPath);
 	try {
 		db.prepare(
-			`INSERT INTO nodes (id, org_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
-			 VALUES (?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
-		).run(nodeId, orgId, name, sha256(token), now);
+			`INSERT INTO nodes (id, org_id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
+			 VALUES (?, ?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
+		).run(nodeId, orgId, namespaceId, name, sha256(token), now);
 		for (const capId of capabilityIds) {
 			db.prepare(
-				`INSERT INTO node_capabilities (node_id, capability_id) VALUES (?, ?)`,
-			).run(nodeId, capId);
+				`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?, ?, ?)`,
+			).run(nodeId, capId, namespaceId);
 		}
 		for (let i = 0; i < slots; i++) {
 			db.prepare(
-				`INSERT INTO node_instances (id, node_id, slot, concurrency, alive, updated_at)
-				 VALUES (?, ?, ?, 1, 1, ?)`,
-			).run(`nins_e2e_${nodeId}_${i}`, nodeId, i, now);
+				`INSERT INTO node_instances (id, node_id, slot, concurrency, alive, updated_at, namespace_id)
+				 VALUES (?, ?, ?, 1, 1, ?, ?)`,
+			).run(`nins_e2e_${nodeId}_${i}`, nodeId, i, now, namespaceId);
 		}
 	} finally {
 		db.close();
@@ -59,10 +76,28 @@ export function nodeHello(nodeId, caps = [], slots = 1, protocol = 1) {
 
 // bringUpNode 播种节点 + 真实 WS 握手 + 等 welcome。
 //
+// namespaceId 决定节点归属于哪个命名空间（hello 帧里的能力名只在这个命名空间内解析，
+// 见契约 §2.1）；必须与建能力/边时用的命名空间一致，否则派发会找不到节点。
+//
 // 返回 { id, token, conn, frames }。frames 是已收到的所有帧（含 welcome）。
 // 握手失败时抛出，带上服务端下发的 error 帧便于定位。
-export async function bringUpNode(serverBase, dbPath, orgId, name, caps = [], slots = 1) {
-	const node = seedNodeRows(dbPath, orgId, name, caps.map((c) => c.id), slots);
+export async function bringUpNode(
+	serverBase,
+	dbPath,
+	orgId,
+	namespaceId,
+	name,
+	caps = [],
+	slots = 1,
+) {
+	const node = seedNodeRows(
+		dbPath,
+		orgId,
+		namespaceId,
+		name,
+		caps.map((c) => c.id),
+		slots,
+	);
 	const conn = await wsConnect(serverBase, node.token);
 
 	const frames = [];

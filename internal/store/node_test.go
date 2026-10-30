@@ -10,9 +10,9 @@ import (
 )
 
 // mkNode 建一台节点。
-func mkNode(t *testing.T, db *DB, orgID, name string) (*Node, string) {
+func mkNode(t *testing.T, db *DB, nsID, name string) (*Node, string) {
 	t.Helper()
-	n := &Node{OrgID: orgID, Name: name, Tags: []string{"pool-a"}}
+	n := &Node{NamespaceID: nsID, Name: name, Tags: []string{"pool-a"}}
 	token, err := db.CreateNode(context.Background(), n)
 	if err != nil {
 		t.Fatalf("create node %s: %v", name, err)
@@ -24,9 +24,9 @@ func mkNode(t *testing.T, db *DB, orgID, name string) (*Node, string) {
 func TestNodeCreateAndGet(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	n, token := mkNode(t, db, orgID, "mbp-16")
+	n, token := mkNode(t, db, nsID, "mbp-16")
 	if token == "" {
 		t.Fatal("CreateNode returned empty token")
 	}
@@ -45,7 +45,7 @@ func TestNodeCreateAndGet(t *testing.T) {
 		t.Fatal("node token stored in plaintext")
 	}
 
-	got, err := db.GetNode(ctx, orgID, n.ID)
+	got, err := db.GetNode(ctx, nsID, n.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
@@ -64,40 +64,59 @@ func TestNodeCreateAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get node by token hash: %v", err)
 	}
-	if byToken.ID != n.ID || byToken.OrgID != orgID {
-		t.Fatalf("token lookup returned wrong node: %+v", byToken)
+	// 令牌全局唯一 → by-token 查询不看命名空间；但它**必须**把行的 namespace_id
+	// 与 org_id 都扫出来（握手后整条连接靠 NamespaceID 定位隔离域），
+	// 且两者满足 I10：namespace.org_id == org_id。
+	if byToken.ID != n.ID || byToken.NamespaceID != nsID {
+		t.Fatalf("token lookup returned wrong node (namespace): %+v", byToken)
+	}
+	if want := orgIDOfNamespace(t, db, nsID); byToken.OrgID != want {
+		t.Fatalf("token lookup org = %q, want %q（org_id 必须由命名空间派生，I10）", byToken.OrgID, want)
 	}
 	if _, err := db.GetNodeByTokenHash(ctx, HashNodeToken("ant_node_wrong")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong token err = %v, want ErrNotFound", err)
 	}
 }
 
-// TestNodeOrgIsolation 不变量 I10：跨组织查不到节点。
-func TestNodeOrgIsolation(t *testing.T) {
+// TestNodeNamespaceIsolation 不变量 I10/I11：跨命名空间查不到节点。
+func TestNodeNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgA, _ := newTestOrg(t, db)
-	orgB, _ := newTestOrg(t, db)
+	nsA, _ := newTestNS(t, db)
+	nsB, _ := newTestNS(t, db)
 
-	n, token := mkNode(t, db, orgA, "shared-name")
-	if _, err := db.GetNode(ctx, orgB, n.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-org GetNode err = %v, want ErrNotFound", err)
+	n, token := mkNode(t, db, nsA, "shared-name")
+	if _, err := db.GetNode(ctx, nsB, n.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-namespace GetNode err = %v, want ErrNotFound", err)
 	}
-	// 同名节点可存在于不同组织（UNIQUE 是 (org_id, name)）
-	if _, err := db.CreateNode(ctx, &Node{OrgID: orgB, Name: "shared-name"}); err != nil {
-		t.Fatalf("same name in another org should be allowed: %v", err)
+	// 同名节点可存在于不同命名空间（UNIQUE 是 (namespace_id, name)）：
+	// 这正是 #162 换掉 UNIQUE(org_id, name) 的直接后果——prod 与 staging 可以各有一台 mbp-16。
+	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsB, Name: "shared-name"}); err != nil {
+		t.Fatalf("same name in another namespace should be allowed: %v", err)
 	}
-	// 同组织同名拒绝
-	if _, err := db.CreateNode(ctx, &Node{OrgID: orgA, Name: "shared-name"}); err == nil {
-		t.Fatal("duplicate node name in same org accepted")
+	// 同命名空间同名拒绝
+	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsA, Name: "shared-name"}); err == nil {
+		t.Fatal("duplicate node name in same namespace accepted")
 	}
-	// token 是全局唯一的，所以 by-token 查询返回的是持有者所在组织
+	// 同组织、不同命名空间也要允许：org 不再是唯一键前缀（否则新建命名空间里
+	// 连一台与默认命名空间同名的机器都登记不了）。
+	nsA2, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
+	if err != nil {
+		t.Fatalf("create second namespace in same org: %v", err)
+	}
+	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsA2.ID, Name: "shared-name"}); err != nil {
+		t.Fatalf("same name in a sibling namespace of the same org should be allowed: %v", err)
+	}
+	// token 是全局唯一的，所以 by-token 查询返回的是持有者所在命名空间
 	byToken, err := db.GetNodeByTokenHash(ctx, HashNodeToken(token))
 	if err != nil {
 		t.Fatalf("by token: %v", err)
 	}
-	if byToken.OrgID != orgA {
-		t.Fatalf("token resolved to org %q, want %q", byToken.OrgID, orgA)
+	if byToken.NamespaceID != nsA {
+		t.Fatalf("token resolved to namespace %q, want %q", byToken.NamespaceID, nsA)
+	}
+	if want := orgIDOfNamespace(t, db, nsA); byToken.OrgID != want {
+		t.Fatalf("token resolved to org %q, want %q", byToken.OrgID, want)
 	}
 }
 
@@ -105,10 +124,10 @@ func TestNodeOrgIsolation(t *testing.T) {
 func TestNodeCapabilityUnknown(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	_, err := db.ConfirmCapabilities(ctx, orgID, n.ID, []CapabilityRef{{Name: "review", Version: 1}})
+	_, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}})
 	if !errors.Is(err, ErrUnknownCapability) {
 		t.Fatalf("declare undefined capability: err = %v, want ErrUnknownCapability", err)
 	}
@@ -122,11 +141,11 @@ func TestNodeCapabilityUnknown(t *testing.T) {
 	}
 
 	// 定义了之后就能声明
-	c := mkCap(orgID, "review", 1, []string{"fix"})
+	c := mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, c); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	ids, err := db.ConfirmCapabilities(ctx, orgID, n.ID, []CapabilityRef{{Name: "review", Version: 1}})
+	ids, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}})
 	if err != nil {
 		t.Fatalf("declare defined capability: %v", err)
 	}
@@ -135,7 +154,7 @@ func TestNodeCapabilityUnknown(t *testing.T) {
 	}
 
 	// 版本不存在也要拒绝（review@2 没定义）
-	if _, err := db.ConfirmCapabilities(ctx, orgID, n.ID, []CapabilityRef{{Name: "review", Version: 2}}); !errors.Is(err, ErrUnknownCapability) {
+	if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 2}}); !errors.Is(err, ErrUnknownCapability) {
 		t.Fatalf("undefined version err = %v, want ErrUnknownCapability", err)
 	}
 }
@@ -144,17 +163,17 @@ func TestNodeCapabilityUnknown(t *testing.T) {
 func TestNodeCapabilitiesReplacedOnRehello(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	review := mkCap(orgID, "review", 1, []string{"fix"})
-	testCap := mkCap(orgID, "test", 1, nil)
+	review := mkCap(nsID, "review", 1, []string{"fix"})
+	testCap := mkCap(nsID, "test", 1, nil)
 	for _, c := range []*CapabilityVersion{review, testCap} {
 		if err := db.CreateCapability(ctx, c); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
 	}
-	if _, err := db.ConfirmCapabilities(ctx, orgID, n.ID, []CapabilityRef{
+	if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{
 		{Name: "review", Version: 1}, {Name: "test", Version: 1},
 	}); err != nil {
 		t.Fatalf("first hello: %v", err)
@@ -168,7 +187,7 @@ func TestNodeCapabilitiesReplacedOnRehello(t *testing.T) {
 	}
 
 	// 第二次只声明 review（节点升级后不再支持 test）
-	if _, err := db.ConfirmCapabilities(ctx, orgID, n.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
+	if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 		t.Fatalf("second hello: %v", err)
 	}
 	caps, err = db.ListNodeCapabilities(ctx, n.ID)
@@ -210,15 +229,15 @@ func mustSameJSON(t *testing.T, label string, want, got json.RawMessage) {
 func TestNodeCapabilityRunSpecRoundTrip(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	review := mkCap(orgID, "review", 1, []string{"fix"})
+	review := mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, review); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	run := `{"runner":"bash","command":"./runners/review.sh","timeoutSec":900,"concurrency":2,"env":{"LOG_LEVEL":"info"}}`
-	ids, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID, []CapabilityDecl{mkDecl("review", 1, run)})
+	ids, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID, []CapabilityDecl{mkDecl("review", 1, run)})
 	if err != nil {
 		t.Fatalf("confirm decls: %v", err)
 	}
@@ -248,10 +267,10 @@ func TestNodeCapabilityRunSpecRoundTrip(t *testing.T) {
 	}
 
 	// I1：run_spec 不参与选点
-	if err := db.UpdateNodeStatus(ctx, orgID, n.ID, NodeStatusOnline); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, n.ID, NodeStatusOnline); err != nil {
 		t.Fatalf("online: %v", err)
 	}
-	got, err := db.NodesForCapability(ctx, orgID, review.ID)
+	got, err := db.NodesForCapability(ctx, nsID, review.ID)
 	if err != nil {
 		t.Fatalf("NodesForCapability: %v", err)
 	}
@@ -264,13 +283,13 @@ func TestNodeCapabilityRunSpecRoundTrip(t *testing.T) {
 func TestNodeCapabilitiesOldPathRunSpecEmpty(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	if err := db.CreateCapability(ctx, mkCap(orgID, "review", 1, []string{"fix"})); err != nil {
+	if err := db.CreateCapability(ctx, mkCap(nsID, "review", 1, []string{"fix"})); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	if _, err := db.ConfirmCapabilities(ctx, orgID, n.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
+	if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 		t.Fatalf("old path confirm: %v", err)
 	}
 	caps, err := db.ListNodeCapabilities(ctx, n.ID)
@@ -291,16 +310,16 @@ func TestNodeCapabilitiesOldPathRunSpecEmpty(t *testing.T) {
 func TestNodeCapabilityDeclsListAllProblems(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	// 节点默认 max_concurrency = 8，下面用 9 触发越界
-	fresh, _ := mkNode(t, db, orgID, "fresh")
-	withOld, _ := mkNode(t, db, orgID, "with-old")
-	if err := db.CreateCapability(ctx, mkCap(orgID, "review", 1, []string{"fix"})); err != nil {
+	fresh, _ := mkNode(t, db, nsID, "fresh")
+	withOld, _ := mkNode(t, db, nsID, "with-old")
+	if err := db.CreateCapability(ctx, mkCap(nsID, "review", 1, []string{"fix"})); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	// withOld 先成功声明一份，用来断言「被拒的提交不会把旧声明删掉」
-	if _, err := db.ConfirmCapabilityDecls(ctx, orgID, withOld.ID,
+	if _, err := db.ConfirmCapabilityDecls(ctx, nsID, withOld.ID,
 		[]CapabilityDecl{mkDecl("review", 1, `{"runner":"bash","command":"./ok.sh"}`)}); err != nil {
 		t.Fatalf("baseline declaration: %v", err)
 	}
@@ -312,7 +331,7 @@ func TestNodeCapabilityDeclsListAllProblems(t *testing.T) {
 		mkDecl("lint-fix", 1, `{"runner":"python","command":""}`),
 	}
 	for _, node := range []*Node{fresh, withOld} {
-		_, err := db.ConfirmCapabilityDecls(ctx, orgID, node.ID, bad)
+		_, err := db.ConfirmCapabilityDecls(ctx, nsID, node.ID, bad)
 		if err == nil {
 			t.Fatalf("node %s: bad declaration accepted", node.Name)
 		}
@@ -372,9 +391,9 @@ func TestNodeCapabilityDeclsListAllProblems(t *testing.T) {
 func TestNodeCapabilityDeclRunRequired(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
-	if err := db.CreateCapability(ctx, mkCap(orgID, "review", 1, []string{"fix"})); err != nil {
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
+	if err := db.CreateCapability(ctx, mkCap(nsID, "review", 1, []string{"fix"})); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -383,7 +402,7 @@ func TestNodeCapabilityDeclRunRequired(t *testing.T) {
 		if run != "" {
 			decl.Run = json.RawMessage(run)
 		}
-		_, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID, []CapabilityDecl{decl})
+		_, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID, []CapabilityDecl{decl})
 		if err == nil {
 			t.Fatalf("RunRequired with run=%q accepted", run)
 		}
@@ -397,7 +416,7 @@ func TestNodeCapabilityDeclRunRequired(t *testing.T) {
 	}
 
 	// run 不是 JSON object → 拒绝
-	_, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID,
+	_, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID,
 		[]CapabilityDecl{{Name: "review", Version: 1, Run: json.RawMessage(`"bash"`), RunRequired: true}})
 	if err == nil || !strings.Contains(err.Error(), "review@1: run must be a JSON object") {
 		t.Fatalf("non-object run: err = %v", err)
@@ -413,12 +432,12 @@ func TestNodeCapabilityDeclRunRequired(t *testing.T) {
 func TestNodeCapabilityDeclConcurrencyBounds(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n := &Node{OrgID: orgID, Name: "small", MaxConcurrency: 3}
+	nsID, _ := newTestNS(t, db)
+	n := &Node{NamespaceID: nsID, Name: "small", MaxConcurrency: 3}
 	if _, err := db.CreateNode(ctx, n); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	if err := db.CreateCapability(ctx, mkCap(orgID, "review", 1, []string{"fix"})); err != nil {
+	if err := db.CreateCapability(ctx, mkCap(nsID, "review", 1, []string{"fix"})); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -427,12 +446,12 @@ func TestNodeCapabilityDeclConcurrencyBounds(t *testing.T) {
 		`{"runner":"bash","command":"./r.sh","concurrency":1}`, // 下界
 		`{"runner":"bash","command":"./r.sh","concurrency":3}`, // = max
 	} {
-		if _, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID, []CapabilityDecl{mkDecl("review", 1, run)}); err != nil {
+		if _, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID, []CapabilityDecl{mkDecl("review", 1, run)}); err != nil {
 			t.Fatalf("run %s rejected: %v", run, err)
 		}
 	}
 
-	_, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID,
+	_, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID,
 		[]CapabilityDecl{mkDecl("review", 1, `{"runner":"bash","command":"./r.sh","concurrency":4}`)})
 	if err == nil {
 		t.Fatal("concurrency max+1 accepted")
@@ -449,15 +468,15 @@ func TestNodeCapabilityDeclConcurrencyBounds(t *testing.T) {
 func TestNodeCapabilityDeclsReplaceDropsRunSpec(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
-	for _, c := range []*CapabilityVersion{mkCap(orgID, "review", 1, []string{"fix"}), mkCap(orgID, "test", 1, nil)} {
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
+	for _, c := range []*CapabilityVersion{mkCap(nsID, "review", 1, []string{"fix"}), mkCap(nsID, "test", 1, nil)} {
 		if err := db.CreateCapability(ctx, c); err != nil {
 			t.Fatalf("create capability: %v", err)
 		}
 	}
 
-	if _, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID, []CapabilityDecl{
+	if _, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID, []CapabilityDecl{
 		mkDecl("review", 1, `{"runner":"bash","command":"./review.sh","timeoutSec":900}`),
 		mkDecl("test", 1, `{"runner":"bash","command":"./test.sh"}`),
 	}); err != nil {
@@ -468,7 +487,7 @@ func TestNodeCapabilityDeclsReplaceDropsRunSpec(t *testing.T) {
 	}
 
 	// 节点升级后不再支持 test：声明里没有它 → 那一行（连同 run_spec）必须消失
-	if _, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID, []CapabilityDecl{
+	if _, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID, []CapabilityDecl{
 		mkDecl("review", 1, `{"runner":"bash","command":"./review-v2.sh"}`),
 	}); err != nil {
 		t.Fatalf("second declaration: %v", err)
@@ -495,14 +514,14 @@ func TestNodeCapabilityDeclsReplaceDropsRunSpec(t *testing.T) {
 func TestNodeCapabilityDeclsNoRunForOldStyleCaps(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
-	for _, c := range []*CapabilityVersion{mkCap(orgID, "review", 1, nil), mkCap(orgID, "test", 1, nil)} {
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
+	for _, c := range []*CapabilityVersion{mkCap(nsID, "review", 1, nil), mkCap(nsID, "test", 1, nil)} {
 		if err := db.CreateCapability(ctx, c); err != nil {
 			t.Fatalf("create capability: %v", err)
 		}
 	}
-	if _, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID, []CapabilityDecl{
+	if _, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID, []CapabilityDecl{
 		mkDecl("review", 1, `{"runner":"bash","command":"./review.sh"}`),
 		{Name: "test", Version: 1}, // 来自 capabilities 的老式声明
 	}); err != nil {
@@ -531,12 +550,12 @@ func TestNodeCapabilityDeclsNoRunForOldStyleCaps(t *testing.T) {
 func TestNodeCapabilityRunSpecMigration(t *testing.T) {
 	db, path := newTestDBFile(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "legacy")
-	if err := db.CreateCapability(ctx, mkCap(orgID, "review", 1, nil)); err != nil {
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "legacy")
+	if err := db.CreateCapability(ctx, mkCap(nsID, "review", 1, nil)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	if _, err := db.ConfirmCapabilityDecls(ctx, orgID, n.ID,
+	if _, err := db.ConfirmCapabilityDecls(ctx, nsID, n.ID,
 		[]CapabilityDecl{mkDecl("review", 1, `{"runner":"bash","command":"./r.sh"}`)}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
@@ -587,13 +606,20 @@ func TestNodeCapabilityRunSpecMigration(t *testing.T) {
 //
 // run_spec（#168）是节点**自己上报的**执行方式 JSON 原文，中枢只存不执行：
 // 它是数据列，不是可执行概念（没有 argv / 单独的 command / shell / script 列）。
-func TestNodeCapabilitiesNoArgvColumn(t *testing.T) {
+// TestNodeCapabilitiesNoHarnessColumns node_capabilities 只有
+// (node_id, capability_id, namespace_id, run_spec)：没有命令列、没有出口、没有 kind
+// （不变量 I1 / I3）。
+//
+// run_spec（#168）是节点**自己上报的**执行方式 JSON 原文，中枢只存不执行：
+// 它是数据列，不是可执行概念（没有 argv / 单独的 command / shell / script 列）。
+// namespace_id 是 #162 的隔离列（子表从父行 node 取，契约 §2.3），不是新增的"怎么跑"信息。
+func TestNodeCapabilitiesNoHarnessColumns(t *testing.T) {
 	db := newTestDB(t)
 	cols := columnNames(t, db, "node_capabilities")
-	if len(cols) != 3 {
-		t.Fatalf("node_capabilities has %d columns %v, want exactly 3 (node_id, capability_id, run_spec)", len(cols), cols)
+	if len(cols) != 4 {
+		t.Fatalf("node_capabilities has %d columns %v, want exactly 4 (node_id, capability_id, namespace_id, run_spec)", len(cols), cols)
 	}
-	for _, want := range []string{"node_id", "capability_id", "run_spec"} {
+	for _, want := range []string{"node_id", "capability_id", "namespace_id", "run_spec"} {
 		if !cols[want] {
 			t.Fatalf("node_capabilities columns %v missing %q", cols, want)
 		}
@@ -609,14 +635,14 @@ func TestNodeCapabilitiesNoArgvColumn(t *testing.T) {
 func TestNodeMaxInstances(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n := &Node{OrgID: orgID, Name: "small", MaxInstances: 2}
+	nsID, _ := newTestNS(t, db)
+	n := &Node{NamespaceID: nsID, Name: "small", MaxInstances: 2}
 	if _, err := db.CreateNode(ctx, n); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 
 	// 正好 2 个：允许
-	insts, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 4}, {Slot: 1, Concurrency: 4}})
+	insts, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 4}, {Slot: 1, Concurrency: 4}})
 	if err != nil {
 		t.Fatalf("2 instances (at limit): %v", err)
 	}
@@ -625,7 +651,7 @@ func TestNodeMaxInstances(t *testing.T) {
 	}
 
 	// 3 个：拒绝
-	_, err = db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{
+	_, err = db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{
 		{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}, {Slot: 2, Concurrency: 1},
 	})
 	if !errors.Is(err, ErrTooManyInstances) {
@@ -645,16 +671,16 @@ func TestNodeMaxInstances(t *testing.T) {
 func TestNodeInstancesUpsertAndShrink(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{
 		{Slot: 0, Concurrency: 2}, {Slot: 1, Concurrency: 2}, {Slot: 2, Concurrency: 2},
 	}); err != nil {
 		t.Fatalf("declare 3: %v", err)
 	}
 	// 缩到 1 个
-	insts, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 8}})
+	insts, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 8}})
 	if err != nil {
 		t.Fatalf("shrink to 1: %v", err)
 	}
@@ -671,11 +697,11 @@ func TestNodeInstancesUpsertAndShrink(t *testing.T) {
 	}
 
 	// 重复 slot 拒绝
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: 0}, {Slot: 0}}); err == nil {
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: 0}, {Slot: 0}}); err == nil {
 		t.Fatal("duplicate slot accepted")
 	}
 	// 负数 slot 拒绝
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: -1}}); err == nil {
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: -1}}); err == nil {
 		t.Fatal("negative slot accepted")
 	}
 }
@@ -684,10 +710,10 @@ func TestNodeInstancesUpsertAndShrink(t *testing.T) {
 func TestUpsertInstancesKeepsBusyTask(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
 		t.Fatalf("declare: %v", err)
 	}
 	instID, err := db.LeaseInstance(ctx, n.ID, "tsk_busy")
@@ -695,7 +721,7 @@ func TestUpsertInstancesKeepsBusyTask(t *testing.T) {
 		t.Fatalf("lease: %v", err)
 	}
 	// 重连 hello
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
 		t.Fatalf("re-declare: %v", err)
 	}
 	insts, err := db.ListInstances(ctx, n.ID)
@@ -714,10 +740,10 @@ func TestUpsertInstancesKeepsBusyTask(t *testing.T) {
 func TestLeaseInstanceAndRelease(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{
 		{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1},
 	}); err != nil {
 		t.Fatalf("declare: %v", err)
@@ -767,10 +793,10 @@ func TestLeaseInstanceAndRelease(t *testing.T) {
 func TestLeaseInstanceDeadSlotIgnored(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: 0}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: 0}}); err != nil {
 		t.Fatalf("declare: %v", err)
 	}
 	if err := db.MarkInstancesDead(ctx, n.ID); err != nil {
@@ -780,7 +806,7 @@ func TestLeaseInstanceDeadSlotIgnored(t *testing.T) {
 		t.Fatalf("lease on dead instance err = %v, want ErrNoCapacity", err)
 	}
 	// 重新 hello 让槽位复活
-	if _, err := db.UpsertInstances(ctx, orgID, n.ID, []InstanceSpec{{Slot: 0}}); err != nil {
+	if _, err := db.UpsertInstances(ctx, nsID, n.ID, []InstanceSpec{{Slot: 0}}); err != nil {
 		t.Fatalf("re-declare: %v", err)
 	}
 	if _, err := db.LeaseInstance(ctx, n.ID, "tsk_y"); err != nil {
@@ -792,24 +818,24 @@ func TestLeaseInstanceDeadSlotIgnored(t *testing.T) {
 func TestNodesForCapability(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	review := mkCap(orgID, "review", 1, []string{"fix"})
+	review := mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, review); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	n1, _ := mkNode(t, db, orgID, "n1")
-	n2, _ := mkNode(t, db, orgID, "n2")
-	n3, _ := mkNode(t, db, orgID, "n3")
+	n1, _ := mkNode(t, db, nsID, "n1")
+	n2, _ := mkNode(t, db, nsID, "n2")
+	n3, _ := mkNode(t, db, nsID, "n3")
 	for _, n := range []*Node{n1, n2, n3} {
-		if _, err := db.ConfirmCapabilities(ctx, orgID, n.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
+		if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 			t.Fatalf("confirm: %v", err)
 		}
-		if err := db.UpdateNodeStatus(ctx, orgID, n.ID, NodeStatusOnline); err != nil {
+		if err := db.UpdateNodeStatus(ctx, nsID, n.ID, NodeStatusOnline); err != nil {
 			t.Fatalf("online: %v", err)
 		}
 	}
-	got, err := db.NodesForCapability(ctx, orgID, review.ID)
+	got, err := db.NodesForCapability(ctx, nsID, review.ID)
 	if err != nil {
 		t.Fatalf("NodesForCapability: %v", err)
 	}
@@ -818,10 +844,10 @@ func TestNodesForCapability(t *testing.T) {
 	}
 
 	// 排空一台 → 不再被选中
-	if err := db.UpdateNodeStatus(ctx, orgID, n2.ID, NodeStatusDraining); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, n2.ID, NodeStatusDraining); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	got, err = db.NodesForCapability(ctx, orgID, review.ID)
+	got, err = db.NodesForCapability(ctx, nsID, review.ID)
 	if err != nil {
 		t.Fatalf("NodesForCapability after drain: %v", err)
 	}
@@ -835,11 +861,11 @@ func TestNodesForCapability(t *testing.T) {
 	}
 
 	// 没有节点的能力 → 空列表
-	other := mkCap(orgID, "nobody", 1, nil)
+	other := mkCap(nsID, "nobody", 1, nil)
 	if err := db.CreateCapability(ctx, other); err != nil {
 		t.Fatalf("create other: %v", err)
 	}
-	none, err := db.NodesForCapability(ctx, orgID, other.ID)
+	none, err := db.NodesForCapability(ctx, nsID, other.ID)
 	if err != nil {
 		t.Fatalf("NodesForCapability none: %v", err)
 	}
@@ -851,40 +877,59 @@ func TestNodesForCapability(t *testing.T) {
 	}
 }
 
-// TestNodesForCapabilityOrgIsolation 别的组织的节点不能出现在候选里。
-func TestNodesForCapabilityOrgIsolation(t *testing.T) {
+// TestNodesForCapabilityNamespaceIsolation 别的命名空间的节点不能出现在候选里（I10/I11）。
+//
+// 两个维度都要验：跨组织（两个 default 命名空间）与**同组织的兄弟命名空间**——
+// 后者才是 #162 真正新增的隔离面（同一 org 里 prod 的节点不能接 staging 的任务）。
+func TestNodesForCapabilityNamespaceIsolation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgA, _ := newTestOrg(t, db)
-	orgB, _ := newTestOrg(t, db)
+	nsA, _ := newTestNS(t, db)
+	nsB, _ := newTestNS(t, db)
 
-	// 两个组织各定义同名能力（各自独立的版本行）
-	capA := mkCap(orgA, "review", 1, []string{"fix"})
-	capB := mkCap(orgB, "review", 1, []string{"fix"})
+	// 两个命名空间各定义同名能力（各自独立的版本行，UNIQUE 前缀是 namespace_id）
+	capA := mkCap(nsA, "review", 1, []string{"fix"})
+	capB := mkCap(nsB, "review", 1, []string{"fix"})
 	for _, c := range []*CapabilityVersion{capA, capB} {
 		if err := db.CreateCapability(ctx, c); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
 	}
-	nA, _ := mkNode(t, db, orgA, "a-node")
-	if _, err := db.ConfirmCapabilities(ctx, orgA, nA.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
+	nA, _ := mkNode(t, db, nsA, "a-node")
+	if _, err := db.ConfirmCapabilities(ctx, nsA, nA.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if err := db.UpdateNodeStatus(ctx, orgA, nA.ID, NodeStatusOnline); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsA, nA.ID, NodeStatusOnline); err != nil {
 		t.Fatalf("online: %v", err)
 	}
 
-	// orgB 查自己的能力：看不到 orgA 的节点
-	if got, err := db.NodesForCapability(ctx, orgB, capB.ID); err != nil {
-		t.Fatalf("orgB lookup: %v", err)
+	// nsB 查自己的能力：看不到 nsA 的节点
+	if got, err := db.NodesForCapability(ctx, nsB, capB.ID); err != nil {
+		t.Fatalf("nsB lookup: %v", err)
 	} else if len(got) != 0 {
-		t.Fatalf("orgB sees %d nodes from orgA", len(got))
+		t.Fatalf("nsB sees %d nodes from nsA", len(got))
 	}
-	// 用 orgB 的 org_id 查 orgA 的 capability_id：也必须是空
-	if got, err := db.NodesForCapability(ctx, orgB, capA.ID); err != nil {
+	// 用 nsB 的命名空间查 nsA 的 capability_id：必须是空（能力 id 全局唯一，隔离靠 namespace_id）
+	if got, err := db.NodesForCapability(ctx, nsB, capA.ID); err != nil {
 		t.Fatalf("cross lookup: %v", err)
 	} else if len(got) != 0 {
-		t.Fatalf("cross-org lookup returned %d nodes", len(got))
+		t.Fatalf("cross-namespace lookup returned %d nodes", len(got))
+	}
+
+	// 同一组织的兄弟命名空间：同样不行。这是「换掉 org 维度」的核心回归——
+	// 若只按 org 过滤，这里会返回 nsA 的那台机器。
+	sibling, err := db.CreateNamespace(ctx, orgIDOfNamespace(t, db, nsA), "staging", "staging")
+	if err != nil {
+		t.Fatalf("create sibling namespace: %v", err)
+	}
+	sibCap := mkCap(sibling.ID, "review", 1, []string{"fix"})
+	if err := db.CreateCapability(ctx, sibCap); err != nil {
+		t.Fatalf("create sibling cap: %v", err)
+	}
+	if got, err := db.NodesForCapability(ctx, sibling.ID, sibCap.ID); err != nil {
+		t.Fatalf("sibling lookup: %v", err)
+	} else if len(got) != 0 {
+		t.Fatalf("同 org 的兄弟命名空间看到了 %d 台别处的机器（I11 破了）", len(got))
 	}
 }
 
@@ -892,8 +937,8 @@ func TestNodesForCapabilityOrgIsolation(t *testing.T) {
 func TestNodePins(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
 	key := StickyKey("trace_1", "cap_review", "worktree:wt-a")
 	if len(key) != 64 {
@@ -921,7 +966,7 @@ func TestNodePins(t *testing.T) {
 		t.Fatalf("GetPin missing err = %v, want ErrNotFound", err)
 	}
 
-	pin := &NodePin{StickyKey: key, OrgID: orgID, NodeID: n.ID, Selector: "worktree:wt-a"}
+	pin := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: n.ID, Selector: "worktree:wt-a"}
 	if err := db.PutPin(ctx, pin); err != nil {
 		t.Fatalf("PutPin: %v", err)
 	}
@@ -929,14 +974,18 @@ func TestNodePins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPin: %v", err)
 	}
-	if got.NodeID != n.ID || got.Selector != "worktree:wt-a" || got.OrgID != orgID {
+	// 钉住同时记 namespace_id 与 org_id（I10：org_id 由命名空间派生，不许调用方传）
+	if got.NodeID != n.ID || got.Selector != "worktree:wt-a" || got.NamespaceID != nsID {
 		t.Fatalf("pin round-trip mismatch: %+v", got)
+	}
+	if want := orgIDOfNamespace(t, db, nsID); got.OrgID != want {
+		t.Fatalf("pin org = %q, want %q（org_id 必须由命名空间派生）", got.OrgID, want)
 	}
 
 	// 重复 PutPin 不换机器，只刷新 last_used_at
 	before := got.LastUsedAt
 	if err := db.PutPin(ctx, &NodePin{
-		StickyKey: key, OrgID: orgID, NodeID: n.ID, Selector: "worktree:wt-a", LastUsedAt: before + 100,
+		StickyKey: key, NamespaceID: nsID, NodeID: n.ID, Selector: "worktree:wt-a", LastUsedAt: before + 100,
 	}); err != nil {
 		t.Fatalf("PutPin again: %v", err)
 	}
@@ -973,14 +1022,14 @@ func TestPutPinValidation(t *testing.T) {
 func TestNodeStatusTransitions(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
 	for _, st := range []string{NodeStatusOnline, NodeStatusDraining, NodeStatusOffline} {
-		if err := db.UpdateNodeStatus(ctx, orgID, n.ID, st); err != nil {
+		if err := db.UpdateNodeStatus(ctx, nsID, n.ID, st); err != nil {
 			t.Fatalf("set %s: %v", st, err)
 		}
-		got, err := db.GetNode(ctx, orgID, n.ID)
+		got, err := db.GetNode(ctx, nsID, n.ID)
 		if err != nil {
 			t.Fatalf("get: %v", err)
 		}
@@ -988,10 +1037,10 @@ func TestNodeStatusTransitions(t *testing.T) {
 			t.Fatalf("status = %q, want %q", got.Status, st)
 		}
 	}
-	if err := db.UpdateNodeStatus(ctx, orgID, n.ID, "bogus"); err == nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, n.ID, "bogus"); err == nil {
 		t.Fatal("invalid status accepted")
 	}
-	if err := db.UpdateNodeStatus(ctx, orgID, "nd_missing", NodeStatusOnline); !errors.Is(err, ErrNotFound) {
+	if err := db.UpdateNodeStatus(ctx, nsID, "nd_missing", NodeStatusOnline); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing node err = %v, want ErrNotFound", err)
 	}
 }
@@ -1000,13 +1049,13 @@ func TestNodeStatusTransitions(t *testing.T) {
 func TestTouchNode(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	n, _ := mkNode(t, db, orgID, "mbp")
+	nsID, _ := newTestNS(t, db)
+	n, _ := mkNode(t, db, nsID, "mbp")
 
-	if err := db.TouchNode(ctx, orgID, n.ID, 12345); err != nil {
+	if err := db.TouchNode(ctx, nsID, n.ID, 12345); err != nil {
 		t.Fatalf("touch: %v", err)
 	}
-	got, err := db.GetNode(ctx, orgID, n.ID)
+	got, err := db.GetNode(ctx, nsID, n.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -1019,16 +1068,16 @@ func TestTouchNode(t *testing.T) {
 func TestNodeEmptyListIsArray(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	nodes, err := db.ListNodes(ctx, orgID)
+	nodes, err := db.ListNodes(ctx, nsID)
 	if err != nil {
 		t.Fatalf("list nodes: %v", err)
 	}
 	if nodes == nil {
 		t.Fatal("ListNodes returned nil (need [])")
 	}
-	n, _ := mkNode(t, db, orgID, "mbp")
+	n, _ := mkNode(t, db, nsID, "mbp")
 	insts, err := db.ListInstances(ctx, n.ID)
 	if err != nil {
 		t.Fatalf("list instances: %v", err)
@@ -1049,13 +1098,13 @@ func TestNodeEmptyListIsArray(t *testing.T) {
 func TestNodeTagsRoundTrip(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
-	n := &Node{OrgID: orgID, Name: "tagged", Tags: []string{"mbp", "apple-silicon", "pool-a"}}
+	n := &Node{NamespaceID: nsID, Name: "tagged", Tags: []string{"mbp", "apple-silicon", "pool-a"}}
 	if _, err := db.CreateNode(ctx, n); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	got, err := db.GetNode(ctx, orgID, n.ID)
+	got, err := db.GetNode(ctx, nsID, n.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -1095,16 +1144,16 @@ func TestNewNodeTokenUnique(t *testing.T) {
 func TestFreeSlotsByNode(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	mk := func(name string, slots int) *Node {
-		n, _ := mkNode(t, db, orgID, name)
+		n, _ := mkNode(t, db, nsID, name)
 		if slots > 0 {
 			specs := make([]InstanceSpec, slots)
 			for i := range specs {
 				specs[i] = InstanceSpec{Slot: i, Concurrency: 1}
 			}
-			if _, err := db.UpsertInstances(ctx, orgID, n.ID, specs); err != nil {
+			if _, err := db.UpsertInstances(ctx, nsID, n.ID, specs); err != nil {
 				t.Fatalf("instances for %s: %v", name, err)
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,12 @@ type EventIngestRequest struct {
 	IdemKey string          `json:"idemKey,omitempty"`
 	TraceID string          `json:"traceId,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
+	// NamespaceID 是事件落进哪个命名空间（**必填**，契约 §6.2）。
+	//
+	// 缺了就是 400 —— 绝不回退默认命名空间：回退等于把「调用方写错了」
+	// 藏成「悄悄写进了 default」，是最难查的那类串数据。
+	// query 上的 namespaceId 是等价的第二来源（body 优先，见 resolveNamespace）。
+	NamespaceID string `json:"namespaceId"`
 	// OrgID 可选：不给时用调用者的主组织。
 	OrgID string `json:"orgId,omitempty"`
 }
@@ -119,6 +126,12 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 		return
 	}
 
+	// 命名空间必填（契约 §6.2）：body 优先、其次 query、缺则 400。
+	namespaceID, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	if !ok {
+		return
+	}
+
 	var idemKey *string
 	if req.IdemKey != "" {
 		k := req.IdemKey
@@ -126,18 +139,29 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 	}
 
 	res, err := h.Triggers.Ingest(r.Context(), &trigger.IngestRequest{
-		OrgID:   orgID,
-		Source:  req.Source,
-		Type:    req.Type,
-		IdemKey: idemKey,
-		TraceID: req.TraceID,
-		Payload: req.Payload,
+		OrgID:       orgID,
+		NamespaceID: namespaceID,
+		Source:      req.Source,
+		Type:        req.Type,
+		IdemKey:     idemKey,
+		TraceID:     req.TraceID,
+		Payload:     req.Payload,
 	})
+
+	// 命名空间相关失败（I11 跨命名空间引用、缺参、不存在、别的组织）
+	// 一律先翻成对应状态码：它们是**调用方**的问题，不是 5xx。
+	if writeNamespaceError(w, err) {
+		return
+	}
 
 	// 事件已入库但派发/起源失败：仍然返回 200（对发送方而言事件收下了），
 	// 但把问题写进响应的 origin 字段与日志——重投也还是同一条事件，不该让它 5xx。
 	if res == nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		msg := "ingest failed"
+		if err != nil {
+			msg = err.Error()
+		}
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -180,10 +204,17 @@ func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID str
 }
 
 // list 处理 GET /v1/events（按 trace 过滤）。
+//
+// namespaceId 必填；`*` 是本端点允许的**读**语义：遍历本组织的命名空间合并，
+// 再按 created_at desc 截断（契约 §4 / 设计文档 §6.2）。
 func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID string) {
 	orgID, err := h.resolveOrg(r, userID, r.URL.Query().Get("orgId"))
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	namespaceID, ok := h.resolveNamespace(w, r, orgID, "", true)
+	if !ok {
 		return
 	}
 	traceID := r.URL.Query().Get("traceId")
@@ -195,8 +226,16 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 		}
 	}
 
-	events, err := h.Store.ListEvents(r.Context(), orgID, traceID, source, limit)
+	var events []*store.Event
+	if namespaceID == store.AllNamespaces {
+		events, err = h.listAcrossNamespaces(r, orgID, traceID, source, limit)
+	} else {
+		events, err = h.Store.ListEvents(r.Context(), namespaceID, traceID, source, limit)
+	}
 	if err != nil {
+		if writeNamespaceError(w, err) {
+			return
+		}
 		slog.Error("list events failed", "event", "events.list.failed", "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -206,6 +245,105 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 		events = []*store.Event{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+// listAcrossNamespaces 是 namespaceId=* 的实现：逐个命名空间查、合并、按
+// created_at desc（同秒按 id desc，与 store.ListEvents 的稳定序一致）截断到 limit。
+//
+// 为什么要合并后再截断：直接对每个命名空间各取 limit 再拼起来会返回 limit×N 行，
+// 而且最新的一条可能在最后一个命名空间里——那等于「汇总视图」不汇总。
+//
+// 不引入 SQL UNION（store 层不接受 `*`）：跨命名空间读是**管理视图**，走 N 次
+// 索引查询已经够快，而把它塞进 store 会让「`*` 只在 HTTP 层解释」这条边界消失。
+func (h *EventHandler) listAcrossNamespaces(r *http.Request, orgID, traceID, source string, limit int) ([]*store.Event, error) {
+	nss, err := h.Store.ListNamespaces(r.Context(), orgID)
+	if err != nil {
+		return nil, err
+	}
+	merged := []*store.Event{}
+	for _, ns := range nss {
+		part, err := h.Store.ListEvents(r.Context(), ns.ID, traceID, source, limit)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, part...)
+	}
+	sortEventsNewestFirst(merged)
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+// sortEventsNewestFirst 按 created_at desc、id desc 排序（最新在前）。
+//
+// 与 store.ListEvents 的 ORDER BY 同语义：跨命名空间合并后必须重新排一次，
+// 否则结果是「按命名空间分组」而不是「按时间」——汇总视图就失去意义。
+func sortEventsNewestFirst(events []*store.Event) {
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].CreatedAt != events[j].CreatedAt {
+			return events[i].CreatedAt > events[j].CreatedAt
+		}
+		return events[i].ID > events[j].ID
+	})
+}
+
+// resolveNamespace 解析并校验这次请求作用于哪个命名空间（契约 §6.2）。
+//
+// 取值顺序：body 已解码的 namespaceId → query 的 namespaceId → 空。
+// 空 → 400（**绝不回退默认命名空间**）；`*` → 只有 allowAll（读端点）才接受；
+// 其余走 GetNamespace(ctx, orgID, id) 校验归属：不存在 404、别的组织 403。
+//
+// 返回 (namespaceID, ok)：ok=false 表示已写过错误响应，调用方直接 return。
+func (h *EventHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, orgID, bodyNS string, allowAll bool) (string, bool) {
+	raw := strings.TrimSpace(bodyNS)
+	if raw == "" {
+		raw = strings.TrimSpace(r.URL.Query().Get("namespaceId"))
+	}
+	if raw == "" {
+		writeError(w, http.StatusBadRequest, "namespaceId is required（命名空间资源端点必须显式指定，不回退默认命名空间）")
+		return "", false
+	}
+	if raw == store.AllNamespaces {
+		if !allowAll {
+			writeError(w, http.StatusBadRequest, "namespaceId=* 只能用于跨命名空间汇总的读操作")
+			return "", false
+		}
+		return store.AllNamespaces, true
+	}
+	if _, err := h.Store.GetNamespace(r.Context(), orgID, raw); err != nil {
+		writeNamespaceError(w, err)
+		return "", false
+	}
+	return raw, true
+}
+
+// writeNamespaceError 把 store 的命名空间错误翻成 HTTP 状态码；returns true 表示已写响应。
+//
+// 跨命名空间引用（I11）一律 400 —— 不是静默忽略，也不是 500：它是**调用方的请求
+// 错了**，静默忽略会让人以为配置生效了。这段映射与 internal/server 的同名逻辑
+// 语义一致（那份在 console handler 里，api 包不跨包依赖 server，故本地复刻）。
+//
+// err == nil 时返回 false（什么都没写），这样调用方可以把它当成「是否是这类错误」
+// 的判定直接串在正常流程里（见 ingest）。
+func writeNamespaceError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	var cross *store.CrossNamespaceError
+	switch {
+	case errors.As(err, &cross):
+		writeError(w, http.StatusBadRequest, cross.Error())
+	case errors.Is(err, store.ErrNamespaceNotFound):
+		writeError(w, http.StatusNotFound, "namespace not found")
+	case errors.Is(err, store.ErrNamespaceForbidden):
+		writeError(w, http.StatusForbidden, "namespace belongs to another org")
+	case errors.Is(err, store.ErrNamespaceRequired):
+		writeError(w, http.StatusBadRequest, "namespaceId is required")
+	default:
+		return false
+	}
+	return true
 }
 
 // resolveOrg 确定这次请求作用于哪个组织。

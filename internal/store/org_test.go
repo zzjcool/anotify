@@ -10,7 +10,8 @@ import (
 func TestOrgCreateAndMember(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, userID := newTestOrg(t, db)
+	nsID, userID := newTestNS(t, db)
+	orgID := orgIDOfNamespace(t, db, nsID)
 
 	o, err := db.GetOrg(ctx, orgID)
 	if err != nil {
@@ -49,7 +50,8 @@ func TestOrgCreateAndMember(t *testing.T) {
 func TestOrgRoles(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, userID := newTestOrg(t, db)
+	nsID, userID := newTestNS(t, db)
+	orgID := orgIDOfNamespace(t, db, nsID)
 
 	role, ok, err := db.OrgRoleOf(ctx, orgID, userID)
 	if err != nil || !ok || role != OrgRoleOwner {
@@ -77,7 +79,8 @@ func TestOrgRoles(t *testing.T) {
 func TestPrimaryOrgOf(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	firstOrg, userID := newTestOrg(t, db)
+	firstNS, userID := newTestNS(t, db)
+	firstOrg := orgIDOfNamespace(t, db, firstNS)
 	second, err := db.CreateOrg(ctx, "second-"+NewUserID())
 	if err != nil {
 		t.Fatalf("create second org: %v", err)
@@ -102,7 +105,8 @@ func TestPrimaryOrgOf(t *testing.T) {
 func TestListOrgsByUser(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, userID := newTestOrg(t, db)
+	nsID, userID := newTestNS(t, db)
+	orgID := orgIDOfNamespace(t, db, nsID)
 	orgs, err := db.ListOrgsByUser(ctx, userID)
 	if err != nil {
 		t.Fatalf("ListOrgsByUser: %v", err)

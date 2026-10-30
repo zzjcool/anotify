@@ -33,7 +33,8 @@ const (
 //
 // 职责边界：
 //   - 握手与鉴权在 Upgrade **之前**（node_handshake.go 的 AuthenticateNode）
-//   - 连接上的一切帧都用握手拿到的 (node_id, org_id)，不再查库
+//   - 连接上的一切帧都用握手拿到的 (node_id, namespace_id)，不再查库
+//     （命名空间随令牌走：令牌 → node 行 → namespace_id，见设计文档 §2.1）
 //   - 心跳与租约续期（本文件）
 //   - 结果帧推进状态机（node_session.go）
 type NodeHandler struct {
@@ -81,12 +82,17 @@ type NodeHandler struct {
 type NextHopDispatcher interface {
 	// PlanNextHop 只算「下一跳要建哪些任务」：只读，不落库、不占槽位、不推帧。
 	// 返回的任务是 pending、ID 已生成但尚未落库，由调用方放进父任务终态的事务里。
-	PlanNextHop(ctx context.Context, orgID, traceID, parentTaskID, fromCapabilityID,
+	//
+	// namespaceID 是**父任务的命名空间**（#162）：出口表/能力/节点都按命名空间隔离，
+	// 传节点的 org 会让出口表查不到边、链路静默停在父任务。
+	PlanNextHop(ctx context.Context, namespaceID, traceID, parentTaskID, fromCapabilityID,
 		out string, params json.RawMessage, path []string) ([]*store.Task, error)
 
 	// PublishTasks 对**已落库**的 pending 任务执行「挑机器 + 占槽位 + 推 assign 帧」。
 	// 绝不建行；逐条独立，返回第一个错误仅供调用方记日志。
-	PublishTasks(ctx context.Context, orgID string, tasks []*store.Task) error
+	//
+	// namespaceID 同样是任务的命名空间（挑机器只在该命名空间的节点里挑）。
+	PublishTasks(ctx context.Context, namespaceID string, tasks []*store.Task) error
 }
 
 // hub 返回 Hub，必要时惰性创建。
@@ -206,7 +212,7 @@ func jsonSafe(s string) string {
 type nodeSession struct {
 	h    *NodeHandler
 	conn *websocket.Conn
-	node *store.Node // 握手时确定；之后所有帧都用它的 ID/OrgID
+	node *store.Node // 握手时确定；之后所有帧都用它的 ID/NamespaceID（org 只用于日志）
 
 	writeMu sync.Mutex
 
@@ -385,10 +391,13 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 // 该连接上的任务一起续命（契约 §3.3「任何上行帧续命」）。
 func (s *nodeSession) handleHeartbeat(ctx context.Context, f *HeartbeatFrame) error {
 	now := s.h.now()
-	if err := s.h.Store.TouchNode(ctx, s.node.OrgID, s.node.ID, now); err != nil {
+	// 作用域参数是**命名空间**（#162）：节点属于且只属于一个命名空间，
+	// 传 org_id 会让 `WHERE namespace_id = 'org_xxx'` 恒 0 行——心跳续不上租约，
+	// 节点上所有在跑任务会被巡检当过期回收。
+	if err := s.h.Store.TouchNode(ctx, s.node.NamespaceID, s.node.ID, now); err != nil {
 		return fmt.Errorf("touch node: %w", err)
 	}
-	if _, err := s.h.Store.ExtendLeasesForNode(ctx, s.node.OrgID, s.node.ID, now+int64(s.h.leaseTTLSec())); err != nil {
+	if _, err := s.h.Store.ExtendLeasesForNode(ctx, s.node.NamespaceID, s.node.ID, now+int64(s.h.leaseTTLSec())); err != nil {
 		return fmt.Errorf("extend leases: %w", err)
 	}
 	return nil
@@ -440,7 +449,7 @@ func (s *nodeSession) cleanup(ctx context.Context) {
 			"error", err.Error(),
 		)
 	}
-	if err := s.h.Store.UpdateNodeStatus(ctx, s.node.OrgID, s.node.ID, store.NodeStatusOffline); err != nil {
+	if err := s.h.Store.UpdateNodeStatus(ctx, s.node.NamespaceID, s.node.ID, store.NodeStatusOffline); err != nil {
 		slog.Warn("mark node offline failed",
 			"event", "node.ws.cleanup.status",
 			"node_id", s.node.ID,

@@ -59,6 +59,9 @@ const VIEWPORTS = [
 let server, browser;
 // 真实数据用例需要上线节点（节点掉线后要 close，避免句柄泄漏）
 let frontendNode = null;
+// 本组织默认命名空间 id（#162）：真实后端的命名空间资源请求必须显式带 namespaceId。
+// 放在模块级是因为页面内直接发的请求（page.evaluate 里的 fetch）也要用它。
+let realNsId = null;
 
 function primaryOrgOf(dbPath, uid) {
 	const db = new DatabaseSync(dbPath);
@@ -519,10 +522,15 @@ async function main() {
 			},
 		});
 		const orgId = primaryOrgOf(server.dbPath, s.uid);
+		// #162：节点行直插库，迁移 12 起必须写 namespace_id。
+		// 取本组织默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
+		realNsId = await H.defaultNamespaceId(server.base, s.session);
+		H.check("拿到默认命名空间 id", !!realNsId, String(realNsId));
 		const node = await N.bringUpNode(
 			server.base,
 			server.dbPath,
 			orgId,
+			realNsId,
 			"frontend-node",
 			[
 				{ id: capA.json?.capability?.id, name: "frontend.src", version: 1 },
@@ -992,14 +1000,21 @@ async function main() {
 				H.check("合法参数保存成功（弹窗关闭）", closed === true);
 
 				// 回读：参数真的存下来了
-				const saved = await page3.evaluate(async (name) => {
-					const r = await fetch("/v1/sources", { credentials: "include" });
+				//
+				// #162：页面里直接发的请求也要带 namespaceId（后端缺参一律 400）。
+				// 这里传套件解析出的默认命名空间 id，不从 localStorage 的 scope 猜，
+				// 否则这条断言会因为“页面停在哪个命名空间”而飘。
+				const saved = await page3.evaluate(async ({ name, ns }) => {
+					const r = await fetch(
+						"/v1/sources?namespaceId=" + encodeURIComponent(ns),
+						{ credentials: "include" },
+					);
 					const j = await r.json();
 					const src = (j.sources || []).find((x) => x.name === name);
 					if (!src) return null;
 					const tc = (src.targetCaps || [])[0] || {};
 					return { params: tc.params, hasSchema: !!tc.paramsSchema };
-				}, "e2e-param-src");
+				}, { name: "e2e-param-src", ns: realNsId });
 				H.check(
 					"参数已持久化",
 					saved && saved.params && saved.params.channel === "slack",

@@ -13,21 +13,29 @@ import (
 // NodeStore 是节点协议需要的最小 store 表面（便于测试注入）。
 //
 // *store.DB 满足它。
+//
+// 作用域参数一律是 **namespaceID**（#162）：命名空间资源（节点/能力/任务）的
+// 所有读写都按命名空间隔离，org_id 不再是作用域参数（store 从 namespaces 行派生）。
+// 它从哪来：token → nodes.token_hash → 那一行的 namespace_id（令牌绑命名空间），
+// 所以 hello 帧不需要也不该带命名空间字段（设计文档 §2.1）。
+//
+// 例外：MarkInstancesDead / ListInstances 以 node_id 定位（node_id 全局唯一），
+// 不需要作用域参数。
 type NodeStore interface {
 	GetNodeByTokenHash(ctx context.Context, tokenHash string) (*store.Node, error)
-	UpdateNodeStatus(ctx context.Context, orgID, nodeID, status string) error
-	TouchNode(ctx context.Context, orgID, nodeID string, at int64) error
-	ConfirmCapabilities(ctx context.Context, orgID, nodeID string, caps []store.CapabilityRef) ([]string, error)
+	UpdateNodeStatus(ctx context.Context, namespaceID, nodeID, status string) error
+	TouchNode(ctx context.Context, namespaceID, nodeID string, at int64) error
+	ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string, caps []store.CapabilityRef) ([]string, error)
 	// ConfirmCapabilityDecls 是带 run 声明的注册路径（hello 带 manifest）：
 	// 逐条校验 run，并把 run_spec 与声明一起全量替换（契约 §3.3）。
-	ConfirmCapabilityDecls(ctx context.Context, orgID, nodeID string, decls []store.CapabilityDecl) ([]string, error)
-	UpsertInstances(ctx context.Context, orgID, nodeID string, specs []store.InstanceSpec) ([]*store.NodeInstance, error)
+	ConfirmCapabilityDecls(ctx context.Context, namespaceID, nodeID string, decls []store.CapabilityDecl) ([]string, error)
+	UpsertInstances(ctx context.Context, namespaceID, nodeID string, specs []store.InstanceSpec) ([]*store.NodeInstance, error)
 	MarkInstancesDead(ctx context.Context, nodeID string) error
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
-	GetTask(ctx context.Context, orgID, id string) (*store.Task, error)
-	Transition(ctx context.Context, orgID, taskID, from, to string) error
+	GetTask(ctx context.Context, namespaceID, id string) (*store.Task, error)
+	Transition(ctx context.Context, namespaceID, taskID, from, to string) error
 	// ProgressTask 一个事务内完成 progress 帧的三件事：→running + started_at + 续租。
-	ProgressTask(ctx context.Context, orgID, taskID string, leaseUntil int64) error
+	ProgressTask(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error
 	// ReportResultAndCreateTasks 在**一个事务**里完成「父任务终态写入 + 下一跳子任务建行」
 	// （#140）。next 为空 == 旧的 ReportResult 行为。
 	//
@@ -40,10 +48,10 @@ type NodeStore interface {
 	// 即使调用方的 publish 丢失/失败/随进程消失，store.ListRedispatchable
 	// （internal/lease sweeper，每 5s tick，Redispatch = Dispatcher.RedispatchTask）
 	// 会把它捞回来重派。所以 publish 不需要也不该进事务。
-	ReportResultAndCreateTasks(ctx context.Context, orgID, taskID, status string, out *string,
+	ReportResultAndCreateTasks(ctx context.Context, namespaceID, taskID, status string, out *string,
 		reported bool, summary string, artifacts []string, errMsg string, next []*store.Task) error
-	ExtendLease(ctx context.Context, orgID, taskID string, leaseUntil int64) error
-	ExtendLeasesForNode(ctx context.Context, orgID, nodeID string, leaseUntil int64) (int, error)
+	ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error
+	ExtendLeasesForNode(ctx context.Context, namespaceID, nodeID string, leaseUntil int64) (int, error)
 }
 
 // 握手鉴权失败的错误类型（供 HTTP 层区分 401 / 403）。
@@ -58,8 +66,10 @@ var (
 
 // AuthenticateNode 在 **Upgrade 之前**完成握手鉴权（契约 §6.1 / §10.3）。
 //
-// token 是 **opaque**（不是 JWT）：查 nodes.token_hash（sha256）得到 (node_id, org_id)。
-// 拿到这两个值之后，该连接上所有帧都用它们，**不再查库**。
+// token 是 **opaque**（不是 JWT）：查 nodes.token_hash（sha256）得到节点那一行。
+// 行上的 (node_id, namespace_id, org_id) 就是这条连接的全部身份：
+// **namespace_id 是后续所有 store 调用的作用域**（令牌绑命名空间），
+// org_id 只是日志/统计的锚点。拿到这些值之后，该连接上所有帧都用它们，**不再查库**。
 //
 // 返回的错误：ErrMissingToken → 401；ErrBadToken / ErrNodeDraining → 403。
 // 关键：鉴权失败时**绝不能**返回 101（升级成功后才发现没权限，
@@ -132,6 +142,9 @@ func codeOf(err error) string {
 //  2. 实例申报：数量受 nodes.max_instances 硬顶约束，否则 too_many_instances
 //
 // 顺序有讲究：先校能力再落实例——一个声明了不存在能力的节点不该先占住槽位。
+//
+// 作用域一律用 node.NamespaceID：hello 帧不带命名空间（一个字节不改），
+// 节点属于哪个命名空间完全由令牌决定（设计文档 §2.1）。
 func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) error {
 	// 协议版本
 	if f.Protocol != 0 && f.Protocol != ProtocolVersion {
@@ -158,7 +171,7 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 	for _, in := range f.Instances {
 		specs = append(specs, store.InstanceSpec{Slot: in.Slot, Concurrency: in.Concurrency})
 	}
-	if _, err := st.UpsertInstances(ctx, node.OrgID, node.ID, specs); err != nil {
+	if _, err := st.UpsertInstances(ctx, node.NamespaceID, node.ID, specs); err != nil {
 		if errors.Is(err, store.ErrTooManyInstances) {
 			return &helloError{code: ErrCodeTooManyInstances, message: err.Error()}
 		}
@@ -166,7 +179,7 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 	}
 
 	// ③ 上线
-	if err := st.UpdateNodeStatus(ctx, node.OrgID, node.ID, store.NodeStatusOnline); err != nil {
+	if err := st.UpdateNodeStatus(ctx, node.NamespaceID, node.ID, store.NodeStatusOnline); err != nil {
 		return err
 	}
 	return nil
@@ -189,7 +202,7 @@ func confirmHelloCapabilities(ctx context.Context, st NodeStore, node *store.Nod
 		for _, c := range f.Capabilities {
 			refs = append(refs, store.CapabilityRef{Name: c.Capability, Version: c.Version})
 		}
-		if _, err := st.ConfirmCapabilities(ctx, node.OrgID, node.ID, refs); err != nil {
+		if _, err := st.ConfirmCapabilities(ctx, node.NamespaceID, node.ID, refs); err != nil {
 			if errors.Is(err, store.ErrUnknownCapability) {
 				return &helloError{code: ErrCodeUnknownCapability, message: err.Error()}
 			}
@@ -200,7 +213,7 @@ func confirmHelloCapabilities(ctx context.Context, st NodeStore, node *store.Nod
 
 	// 新路径：capabilities + manifest 合并成一份带 run 的声明。
 	decls := mergeDeclarations(f.Capabilities, f.Manifest)
-	if _, err := st.ConfirmCapabilityDecls(ctx, node.OrgID, node.ID, decls); err != nil {
+	if _, err := st.ConfirmCapabilityDecls(ctx, node.NamespaceID, node.ID, decls); err != nil {
 		// 顺序敏感：未知能力（可能混有 run 问题）优先 → unknown_capability。
 		if errors.Is(err, store.ErrUnknownCapability) {
 			return &helloError{code: ErrCodeUnknownCapability, message: err.Error()}

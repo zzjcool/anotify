@@ -695,13 +695,17 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `/v1/orgs`、`/v1/admin/*`、`/v1/auth/*` | **不需要**（组织级） |
 
 - 参数位置：`GET` 用 query `namespaceId`；`POST`/`PATCH`/`DELETE` 可放 query 或 body 的
-  `namespaceId`（**query 优先**）
+  `namespaceId`（**query 优先**；例外：机器入口 `POST /v1/events` 是 **body 优先**，
+  只读 query 的写端点是 `POST /v1/tasks/{id}/cancel`、`POST /v1/nodes/{id}/drain`、
+  `DELETE /v1/sources/{id}`）
 - 缺 `namespaceId` → `400`（**不回退到默认命名空间**：回退等于把人写错的地方藏起来）
-- `namespaceId=*` → 跨命名空间汇总，**只允许读端点**；写端点 / 单对象端点带 `*` → `400`
+- `namespaceId=*` → 跨命名空间汇总，**只允许读端点**；写端点 / 单对象端点带 `*` → `400`；
+  `/v1/stats` 的汇总口径未定义，它的 `*` 同样 `400`
 - 不存在 → `404`；属于别的 org → `403`；跨命名空间引用 → `400`（I11）
-- 所有资源在响应里带 `namespaceId`
-- **节点注册**：`POST /v1/nodes` 的 `namespaceId` 决定机器属于哪个命名空间，
-  **令牌绑在它上面**，创建后不可改（要换就删了重建）
+- 所有资源在响应里带 `namespaceId`；`/v1/namespaces` 自身不带
+- **节点归属**：机器属于哪个命名空间由**节点令牌**决定（令牌 → 节点行 →
+  `nodes.namespace_id`，握手时按 token 解析，见 §10.3），创建后不可改
+  （要换就删了重建）。节点协议帧里不传 `namespaceId`，也不存在「注册节点」的 HTTP 端点。
 
 ---
 

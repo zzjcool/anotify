@@ -127,7 +127,7 @@ func TestCapabilityAndGraphIDShape(t *testing.T) {
 
 // TestVersionIDUniqueness 同一秒、同一内容 hash 下生成的 ID 必须互不相同。
 //
-// 这是 TestNodesForCapabilityOrgIsolation 撞出来的真实 bug：
+// 这是 TestNodesForCapabilityNamespaceIsolation 撞出来的真实 bug：
 // `cap_<UTC 秒>_<hash8>` 在两组织定义同名同内容能力时一模一样，
 // 而 id 是主键，第二条 INSERT 直接撞 UNIQUE。
 func TestVersionIDUniqueness(t *testing.T) {

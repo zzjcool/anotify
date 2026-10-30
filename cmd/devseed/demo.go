@@ -87,12 +87,15 @@ var demoEvents = []demoEvent{
 
 // seedDemo 建图 + 注册节点，返回节点明文 token（worker 要用）。
 //
+// 全部资源落在 namespaceID 里（devseed 不选命名空间，永远用组织的默认命名空间）：
+// 能力 / 边 / 节点 / 节点声明都是命名空间资源，没有任何一个能"隐式默认"。
+//
 // 幂等：能力「同内容已存在」直接复用；边重复视为已建；节点同名复用并轮换 token。
-func seedDemo(ctx context.Context, db *store.DB, orgID, nodeName string) (nodeID, token string, err error) {
+func seedDemo(ctx context.Context, db *store.DB, namespaceID, nodeName string) (nodeID, token string, err error) {
 	ids := make(map[string]string, len(demoCapabilities)+8)
 
-	// 内置起点（注册组织时已播种，这里只查 id）
-	existing, err := db.ListCapabilities(ctx, orgID)
+	// 内置起点（建组织/建命名空间时已播种，这里只查 id）
+	existing, err := db.ListCapabilities(ctx, namespaceID)
 	if err != nil {
 		return "", "", fmt.Errorf("list capabilities: %w", err)
 	}
@@ -115,7 +118,7 @@ func seedDemo(ctx context.Context, db *store.DB, orgID, nodeName string) (nodeID
 			continue
 		}
 		c := &store.CapabilityVersion{
-			OrgID:        orgID,
+			NamespaceID:  namespaceID, // 作用域参数：org_id 由 store 从命名空间行派生（I10）
 			Name:         d.Name,
 			Version:      1,
 			ParamsSchema: json.RawMessage(`{"type":"object"}`),
@@ -136,7 +139,10 @@ func seedDemo(ctx context.Context, db *store.DB, orgID, nodeName string) (nodeID
 			return "", "", fmt.Errorf("edge %s->%s: 能力缺失（from=%v to=%v）", e.from, e.to, okF, okT)
 		}
 		if err := db.CreateEdge(ctx, &store.Edge{
-			OrgID: orgID, FromCapability: from, FromPort: e.port, ToCapability: to,
+			NamespaceID:    namespaceID,
+			FromCapability: from,
+			FromPort:       e.port,
+			ToCapability:   to,
 		}); err != nil {
 			return "", "", fmt.Errorf("create edge %s -%s-> %s: %w", e.from, e.port, e.to, err)
 		}
@@ -148,17 +154,17 @@ func seedDemo(ctx context.Context, db *store.DB, orgID, nodeName string) (nodeID
 	// 永远离线、永远连不上的死节点，节点页很快就没法看了。
 	// 明文 token 只在创建时返回一次，但这里可以自己生成 token 再写 hash
 	// （CreateNode 支持预置 TokenHash），所以复用行完全可行。
-	if n, err := db.GetNodeByName(ctx, orgID, nodeName); err == nil && n != nil {
+	if n, err := db.GetNodeByName(ctx, namespaceID, nodeName); err == nil && n != nil {
 		t, hash, err := store.NewNodeToken()
 		if err != nil {
 			return "", "", err
 		}
-		if err := db.SetNodeTokenHash(ctx, n.ID, hash); err != nil {
+		if err := db.SetNodeTokenHash(ctx, n.NamespaceID, n.ID, hash); err != nil {
 			return "", "", fmt.Errorf("refresh node token: %w", err)
 		}
 		nodeID, token = n.ID, t
 	} else {
-		n := &store.Node{OrgID: orgID, Name: nodeName}
+		n := &store.Node{NamespaceID: namespaceID, Name: nodeName}
 		t, err := db.CreateNode(ctx, n)
 		if err != nil {
 			return "", "", fmt.Errorf("create node: %w", err)
@@ -168,7 +174,7 @@ func seedDemo(ctx context.Context, db *store.DB, orgID, nodeName string) (nodeID
 
 	// 节点声明能力。必须走 ConfirmCapabilities（全量替换）——
 	// 它顺带校验能力存在性（不变量 I2：节点不能声明不存在的 @版本）。
-	if _, err := db.ConfirmCapabilities(ctx, orgID, nodeID, []store.CapabilityRef{
+	if _, err := db.ConfirmCapabilities(ctx, namespaceID, nodeID, []store.CapabilityRef{
 		{Name: "analyze-pr", Version: 1},
 		{Name: "apply-fix", Version: 1},
 		{Name: "deploy-preview", Version: 1},
@@ -324,13 +330,17 @@ func ptr(s string) *string { return &s }
 // 才能把 assign 帧真的推给节点，而那个 hub 活在 server 进程的内存里。
 // devseed 是独立进程，自己 new 一个 hub 只会把帧推给空气。
 // 走 HTTP 就是"像个真实的 webhook 发送方"——这也正是示例数据的意义。
-func ingestDemo(ctx context.Context, baseURL, apiKey string) (int, error) {
+//
+// body 必须带 namespaceId：POST /v1/events 缺它就是 400（契约 §6.2，
+// 不回退默认命名空间），事件会一条都进不去。
+func ingestDemo(ctx context.Context, baseURL, apiKey, namespaceID string) (int, error) {
 	n := 0
 	for _, e := range demoEvents {
 		body := map[string]any{
-			"source":  e.Source,
-			"type":    e.Type,
-			"payload": e.Payload,
+			"namespaceId": namespaceID,
+			"source":      e.Source,
+			"type":        e.Type,
+			"payload":     e.Payload,
 		}
 		if e.IdemKey != "" {
 			body["idemKey"] = e.IdemKey
@@ -379,8 +389,13 @@ func mustJSON(v any) json.RawMessage {
 //
 // 全程走真实路径（trigger.Ingest + 真 WS 握手），所以数据是真跑出来的。
 func runDemo(ctx context.Context, db *store.DB, orgID, baseURL, apiKey string, followSec int) error {
-	log.Printf("▶ 造示例数据：建图 + 注册节点…")
-	nodeID, token, err := seedDemo(ctx, db, orgID, "demo-worker")
+	// 示例数据全部落在组织的默认命名空间（命名空间资源没有隐式默认，所以显式取一次）。
+	nsID, err := db.DefaultNamespaceID(ctx, orgID)
+	if err != nil {
+		return fmt.Errorf("取默认命名空间失败: %w", err)
+	}
+	log.Printf("▶ 造示例数据：建图 + 注册节点（namespace %s）…", nsID)
+	nodeID, token, err := seedDemo(ctx, db, nsID, "demo-worker")
 	if err != nil {
 		return err
 	}
@@ -408,7 +423,7 @@ func runDemo(ctx context.Context, db *store.DB, orgID, baseURL, apiKey string, f
 	// 只关心**本次投递产生**的任务：库里可能还有以前遗留的未终态行
 	// （比如上次 devseed 提前断开留下的 pending），那些不该让这里一直等。
 	since := store.Now()
-	n, err := ingestDemo(ctx, baseURL, apiKey)
+	n, err := ingestDemo(ctx, baseURL, apiKey, nsID)
 	if err != nil {
 		return err
 	}
@@ -431,7 +446,7 @@ func runDemo(ctx context.Context, db *store.DB, orgID, baseURL, apiKey string, f
 			log.Printf("  节点执行了 %d 个任务（等待超时），断开", w.assigns)
 			return nil
 		case <-tick.C:
-			open, err := db.CountOpenTasksSince(ctx, orgID, since)
+			open, err := db.CountOpenTasksSince(ctx, nsID, since)
 			if err != nil {
 				continue
 			}

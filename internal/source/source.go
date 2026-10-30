@@ -25,7 +25,7 @@ import (
 type Store interface {
 	DueCronSources(ctx context.Context, now int64, limit int) ([]*store.Source, error)
 	MarkSourceFired(ctx context.Context, id string, firedAt, nextFire int64) error
-	GetSource(ctx context.Context, orgID, id string) (*store.Source, error)
+	GetSource(ctx context.Context, namespaceID, id string) (*store.Source, error)
 	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
 }
 
@@ -94,7 +94,8 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 	}
 	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
 		OrgID:        src.OrgID,
-		TraceID:      "dryrun", // 不落库，trace 只是占位（Dispatch 要求非空）
+		NamespaceID:  src.NamespaceID, // 派发（查边/找节点/建任务）的隔离维度
+		TraceID:      "dryrun",        // 不落库，trace 只是占位（Dispatch 要求非空）
 		Params:       extractParams(payload),
 		Targets:      src.TargetIDs(),
 		TargetParams: src.TargetParamsMap(),
@@ -127,12 +128,13 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	}
 
 	ev := &store.Event{
-		OrgID:     src.OrgID,
-		TraceID:   t.newTraceID(),
-		Source:    src.Name, // 事件来源记源的名字，而不是能力的名字
-		Type:      eventType,
-		Payload:   payload,
-		CreatedAt: t.now(),
+		NamespaceID: src.NamespaceID, // 事件属于源所在的命名空间（I10）
+		OrgID:       src.OrgID,
+		TraceID:     t.newTraceID(),
+		Source:      src.Name, // 事件来源记源的名字，而不是能力的名字
+		Type:        eventType,
+		Payload:     payload,
+		CreatedAt:   t.now(),
 	}
 	if idemKey != "" {
 		k := idemKey
@@ -156,9 +158,10 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	}
 
 	out, err := t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		OrgID:   src.OrgID,
-		TraceID: ev.TraceID,
-		Params:  extractParams(payload),
+		OrgID:       src.OrgID,
+		NamespaceID: src.NamespaceID, // 源触发：命名空间随源走（契约 §3）
+		TraceID:     ev.TraceID,
+		Params:      extractParams(payload),
 		// Targets 非空 → Dispatcher 跳过 edges 查表，直接派给这些能力
 		Targets: src.TargetIDs(),
 		// 每个出口各自的参数模板：各能力的 params_schema 不同，
@@ -265,7 +268,9 @@ func (s *Scheduler) Tick(ctx context.Context) {
 		// 确定性幂等键：同一个源、同一个计划时刻只会产生一条事件
 		idem := fmt.Sprintf("cron:%s:%d", src.ID, fireAt)
 
-		full, err := s.Store.GetSource(ctx, src.OrgID, src.ID)
+		// src.NamespaceID 是 DueCronSources 行自带的命名空间（store 扫出来），
+		// GetSource 按它定位：令牌/名称只在命名空间内唯一。
+		full, err := s.Store.GetSource(ctx, src.NamespaceID, src.ID)
 		if err != nil {
 			slog.Error("load source failed",
 				"event", "source.scheduler.load_failed", "source_id", src.ID, "error", err.Error())

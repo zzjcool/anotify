@@ -33,6 +33,10 @@ tags:
     description: 任务（派发出来的执行单元）
   - name: sources
     description: 源（origin）—— 事件的入口实例：cron / webhook / manual
+  - name: namespaces
+    description: 命名空间（组织之下的隔离层：能力/节点/源/事件/任务都按它隔离）
+  - name: stats
+    description: 命名空间级统计
   - name: capabilities
     description: 能力定义（append-only，每次改动开新版本）
   - name: edges
@@ -115,8 +119,14 @@ paths:
           静默 200 会让调用方以为成功。响应带 `available` 列出可用的来源
         - `source` 匹配的是**能力名**。内置起点 `github`/`cron`/`http`/`manual`
           开箱可用，无需先定义；也可自定义能力（如 `jira@1`）后使用
+
+        鉴权是 Bearer 机器入口，所以 `namespaceId` **主要放 body**（body 优先、其次 query，
+        两者都缺 → `400`）；事件落进哪个命名空间是调用方必须明确的事实，
+        不存在隐式默认，也不接受 `*`（写端点）。
       security:
         - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
       requestBody:
         required: true
         content:
@@ -125,6 +135,11 @@ paths:
               type: object
               required: [source, type]
               properties:
+                namespaceId:
+                  type: string
+                  description: |
+                    **必填**（本字段或 query 二者给一个；body 优先）。事件落进哪个命名空间。
+                    不存在 → 404；属于别的组织 → 403；`*` → 400（写端点）。
                 source:
                   type: string
                   description: |
@@ -183,9 +198,13 @@ paths:
 
         带 `traceId` 时是 trace 视图：**含**剪枝行（最新在前）。
         显式给 `source` 时听调用方的（`source=route` 能单独拉出剪枝）。
+
+        `namespaceId` **必填**；`*` 允许（跨命名空间汇总：各命名空间分别查询后
+        合并，再按 `limit` 统一截断）。响应里的每条事件自带自己的 `namespaceId`。
       security:
         - bearerAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
         - { name: orgId, in: query, schema: { type: string } }
@@ -301,17 +320,39 @@ paths:
         "200": { description: 已注册 }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
-  # ========== 统计 ==========
+  # ========== 统计（命名空间级）==========
+  #
+  # 统计不再是组织级：「本组织有多少事件」这个数字不存在了，同一套流程在
+  # prod / staging 各有各的统计（契约 §6.2）。
   /stats:
     get:
-      tags: [notify]
-      summary: "[旧模型] 通知统计"
-      deprecated: true
+      tags: [stats]
+      summary: 命名空间级统计（事件总数 / 今日 / 任务完成率 / 热力图）
+      description: |
+        统计是**命名空间级**资源（契约 §6.2）：事件与任务都按命名空间隔离，
+        「本组织有多少事件」这个数字不存在了 —— 同一套流程在 prod / staging
+        各有各的统计。
+
+        - `namespaceId` **必填**（缺 → `400`）
+        - 与其它读端点不同，`namespaceId=*`（跨命名空间汇总）在本端点**不支持**：
+          汇总口径未定义，传 `*` → `400`（不悄悄给一个用户没要求的数字）
+        - `deviceCount` 仍按**用户**维度（推送设备是用户的东西，不是命名空间的）
+        - 没有数据时 `daily` 是 `[]` 而不是 `null`（不变量 I9）
       security:
         - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
+        - { name: orgId, in: query, schema: { type: string } }
       responses:
-        "200": { description: 统计数字 }
+        "200":
+          description: 统计数字（口径见 description）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stats" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
 
   # ========== 事件中心：控制台读取 ==========
@@ -328,6 +369,9 @@ paths:
 
         两者语义不同（一个要 scope，一个要成员身份），所以不共用一个 handler。
 
+        `namespaceId` **必填**（契约 §6.2）；`*` 允许（跨命名空间汇总的管理视图，
+        各命名空间分别查询后合并，再按 `limit` 统一截断）。
+
         **剪枝行的可见性**：事件流（不带 `traceId`）**不含** `source=route` 的剪枝行；
         带 `traceId` 时**含**剪枝行（最新在前）。显式给 `source` 时听调用方的。
 
@@ -337,6 +381,7 @@ paths:
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
         - { name: orgId, in: query, schema: { type: string } }
@@ -348,11 +393,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events]
+                required: [events, namespaceId]
                 properties:
                   events:
                     type: array
                     items: { $ref: "#/components/schemas/Event" }
+                  namespaceId:
+                    type: string
+                    description: 本次作用域（`*` 表示跨命名空间汇总）
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -377,10 +425,14 @@ paths:
         **顺序**：`events` 按最新在前（`created_at DESC`），**不保证** `events[0]` 是根事件
         —— 剪枝行的时间一定晚于根事件，可能顶在最前。要根事件请按 `source != "route"`
         挑，或者直接读 `pruned`（这才是「为什么没跑」的答案）。
+
+        `namespaceId` **必填**，且**不接受 `*`**：一条 trace 只属于一个命名空间，
+        「跨命名空间的一条 trace」没有定义（带 `*` → `400`）。
       security:
         - cookieAuth: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
@@ -389,9 +441,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [traceId, events, tasks, pruned]
+                required: [traceId, namespaceId, events, tasks, pruned]
                 properties:
                   traceId: { type: string }
+                  namespaceId:
+                    type: string
+                    description: 这条 trace 所属的命名空间（单对象视图，恒为具体 id）
                   events:
                     type: array
                     items: { $ref: "#/components/schemas/Event" }
@@ -411,9 +466,13 @@ paths:
     get:
       tags: [tasks]
       summary: 任务列表（按 trace / node / status 过滤）
+      description: |
+        `namespaceId` **必填**（契约 §6.2）；`*` 允许（跨命名空间汇总的管理视图，
+        各命名空间分别查询后合并，再按 `limit` 统一截断）。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: nodeId, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { $ref: "#/components/schemas/TaskStatus" } }
@@ -426,11 +485,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tasks]
+                required: [tasks, namespaceId]
                 properties:
                   tasks:
                     type: array
                     items: { $ref: "#/components/schemas/Task" }
+                  namespaceId:
+                    type: string
+                    description: 本次作用域（`*` 表示跨命名空间汇总）
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -441,10 +503,13 @@ paths:
       description: |
         深链（点通知跳 `message.html?id=tsk_xxx`）只有任务 ID，不知道它属于哪条 trace，
         所以需要按 ID 取单任务。响应同时带上整条链，详情页一次请求即可画出任务链。
+
+        `namespaceId` **必填**，且**不接受 `*`**（单对象端点）。
       security:
         - cookieAuth: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
@@ -470,10 +535,14 @@ paths:
       description: |
         把任务推进到 `canceled`（终态）。终态不可再变，
         对已终态的任务再取消返回 409。
+
+        `namespaceId` **必填**，**只从 query 读取**（请求体不解析），
+        且不接受 `*`（写端点）。
       security:
         - cookieAuth: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
@@ -484,6 +553,7 @@ paths:
                 type: object
                 properties:
                   task: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
@@ -506,9 +576,13 @@ paths:
 
         与「能力 + 边」的区别：源不建边。用户不需要理解 `kind=origin`、
         也不需要为每种事件类型手建一条边。
+
+        `namespaceId` **必填**；`*` 允许（跨命名空间汇总）。每个源对象自带
+        `namespaceId`，跨命名空间时 `targetCaps` 按**源自己**的命名空间解析。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
@@ -531,10 +605,13 @@ paths:
         - `targets` 至少一个：没有出口的源产生的事件永远派不出去，直接 400
         - `kind=cron` 时 `config.expr` 必须是合法五段表达式（`61 * * * *` → 400）
         - `kind=webhook` 时服务端自动生成 `token`，返回的 `hookUrl` 可直接贴给外部系统
-        - 同组织内 `name` 唯一（重名 → 409）
+        - 同一个命名空间内 `name` 唯一（重名 → 409）
+        - `namespaceId` **必填**（query 或 body，query 优先）；缺 → 400
+        - 每个出口能力必须与源**同命名空间**（跨命名空间引用 → 400，不变量 I11）
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
@@ -567,6 +644,7 @@ paths:
   /sources/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
+      - $ref: "#/components/parameters/NamespaceId"
     get:
       tags: [sources]
       summary: 取单个源
@@ -594,6 +672,9 @@ paths:
       description: |
         `kind` **不可修改**：换种类等于换语义（cron 表达式对 webhook 无意义）。
         需要换种类时请删除后重建。
+
+        `namespaceId` **必填**（query 或 body，query 优先）；它不能用来"搬家"：
+        改不到另一个命名空间里去。
       security:
         - cookieAuth: []
       requestBody:
@@ -660,8 +741,14 @@ paths:
         那种"试运行说能跑、真点却剪枝"的差异会直接摧毁用户对配置的信任。
 
         不检查 `enabled`：停用状态下也该能先验证再启用。
+
+        `namespaceId` **必填**：推演"会派给哪些节点/能力"全部在某个命名空间里，
+        所以它同样必需（不接受 `*`）。取值：query 优先，其次 body `namespaceId`，
+        再次草稿里的 `source.namespaceId`。草稿的命名空间以参数为准（不信 body 里的手写值）。
       security:
         - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
       requestBody:
         required: true
         content:
@@ -670,9 +757,12 @@ paths:
               type: object
               required: [source]
               properties:
+                namespaceId:
+                  type: string
+                  description: 与 query 同义（query 优先）
                 source:
                   type: object
-                  description: 与创建源时的请求体同形（草稿，无需 id）
+                  description: 与创建源时的请求体同形（草稿，无需 id；其 `namespaceId` 也可作为取值来源）
                 payload:
                   type: object
                   description: 用哪份 payload 试算；缺省为空对象
@@ -707,10 +797,13 @@ paths:
   /sources/{id}/dry-run:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
+      - $ref: "#/components/parameters/NamespaceId"
     post:
       tags: [sources]
       summary: 试运行（已保存的源）
-      description: 同 `/sources/dry-run`，只是用库里已保存的源。
+      description: |
+        同 `/sources/dry-run`，只是用库里已保存的源。
+        `namespaceId` **必填**（query 或 body，query 优先），不接受 `*`。
       security:
         - cookieAuth: []
       requestBody:
@@ -720,6 +813,9 @@ paths:
             schema:
               type: object
               properties:
+                namespaceId:
+                  type: string
+                  description: 与 query 同义（query 优先）
                 type: { type: string }
                 payload: { type: object }
       responses:
@@ -742,6 +838,7 @@ paths:
   /sources/{id}/fire:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
+      - $ref: "#/components/parameters/NamespaceId"
     post:
       tags: [sources]
       summary: 手动触发一次（调试 / manual 源的正常用法）
@@ -749,6 +846,8 @@ paths:
         写一条事件并立即派发给源的出口能力。
         `type` 缺省用源的名字；带 `payload` 时其内容作为任务 params 传下去
         （原样传递，不做模板替换——不变量 I6）。
+
+        `namespaceId` **必填**（query 或 body，query 优先）；不接受 `*`（触发是写操作）。
       security:
         - cookieAuth: []
       requestBody:
@@ -758,6 +857,9 @@ paths:
             schema:
               type: object
               properties:
+                namespaceId:
+                  type: string
+                  description: 与 query 同义（query 优先）
                 type: { type: string }
                 payload: { type: object }
       responses:
@@ -793,6 +895,9 @@ paths:
         **不需要 Cookie / API Key**：鉴权就是 URL 里的 token。
         外部系统（GitHub / 监控告警）不可能带我们的会话。
 
+        **也不需要 `namespaceId`**：命名空间从 token 解析出来（源行自带
+        `namespace_id`）—— 外部系统根本不知道它，也不应该知道。
+
         - token 无效或源已停用 → 404（不区分两者，避免探测 token 有效性）
         - `type` 缺省用源的名字；可用 body.type 区分不同事件
         - 空 body 允许（有些系统只发 ping）
@@ -822,6 +927,187 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  # ========== 命名空间自身（#162 / 契约 §6.1、设计文档 §6.1）==========
+  #
+  # **/v1/namespaces 是组织级资源**：请求**不带** namespaceId，响应里的 namespace
+  # 对象也**不带** namespaceId（问「这个命名空间属于哪个命名空间」是自指）。
+  # 资源端点（/sources、/stats ……）才需要 namespaceId，见 NamespaceId 参数。
+  /namespaces:
+    get:
+      tags: [namespaces]
+      summary: 列出本组织的命名空间（带资源计数，UI 直接用）
+      description: |
+        每个命名空间带 `capabilityCount` / `nodeCount` / `sourceCount` / `edgeCount`，
+        控制台侧栏与命名空间页直接用，不必再逐页拉一次。
+
+        空列表是 `[]` 不是 `null`（不变量 I9）。本端点**不需要** `namespaceId`。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '命名空间列表（空时 `namespaces: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [namespaces]
+                properties:
+                  namespaces:
+                    type: array
+                    items: { $ref: "#/components/schemas/Namespace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [namespaces]
+      summary: 新建命名空间（同事务播种内置能力）
+      description: |
+        - `slug` 是**稳定标识**（出现在 URL 与节点令牌作用域里）：1~31 字符，
+          只允许小写字母、数字、连字符，且以字母或数字开头；不合法 → `400`
+          （`code: invalid_slug`）。slug 建了不可改（改名只改 `name`）
+        - `name` 省略/空串时回落成 `slug`（不会出现没有展示名的命名空间）
+        - 同组织 slug 重复 → `409`
+        - 新命名空间在**同一事务**里拿到内置能力（`notify.phone` 等）：没有它们
+          连一个 end 节点都声明不出来，推送直接失效
+        - 本端点**不需要** `namespaceId`（命名空间是组织级资源）
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: orgId, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug]
+              properties:
+                slug:
+                  type: string
+                  example: staging
+                  description: 稳定标识；建了不可改
+                name:
+                  type: string
+                  example: 预发
+                  description: 展示名（可改）；省略则用 slug
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [namespace]
+                properties:
+                  namespace: { $ref: "#/components/schemas/Namespace" }
+        "400":
+          description: '非法 slug（`code: invalid_slug`）或请求体不是合法 JSON'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: 同组织 slug 已存在（`{"error":"namespace slug already exists"}`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /namespaces/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    patch:
+      tags: [namespaces]
+      summary: 改名（只改展示名 name；slug 不可改）
+      description: |
+        `slug` 是稳定标识（出现在 URL 与节点令牌作用域里），**建了不可改**：
+        请求里带非空 `slug` 一律 `400`（`code: slug_immutable`）——不是静默忽略：
+        「我改了但没生效」比「你不能改」难查得多。要换 slug 请删了重建。
+
+        `name` **必填**且不能是空串/纯空白（→ `400`）。
+        本端点**不需要** `namespaceId`。
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: 预发 }
+                slug:
+                  type: string
+                  description: 不要传（只用于触发 400 `slug_immutable`）
+      responses:
+        "200":
+          description: 已改名（返回改完之后的命名空间）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [namespace]
+                properties:
+                  namespace: { $ref: "#/components/schemas/Namespace" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [namespaces]
+      summary: 删除命名空间（阻塞 409 / 最后一个 400 / force 级联）
+      description: |
+        三档结果：
+
+        - 不带 `force`：里面还有 sources / edges / tasks / nodes → **409**，
+          响应带 `blocking`（形如 `["sources=2","edges=5"]`），让人看清在拆什么
+        - **最后一个**命名空间 → **400**（带不带 `force` 都一样）：删了组织就没有
+          「这套流程属于哪里」了，代码里不存在「没有命名空间」的分支
+        - `?force=true`（或 `force=1`）→ 级联删除（连机器、能力、事件、任务、
+          图快照一起删），`200`
+
+        `force` 的含义是「我知道里面的机器会全部掉线」——所以默认档必须先把阻塞
+        对象列出来，不能当「清理配置」做。本端点**不需要** `namespaceId`。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: force, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: string
+                    description: 被删除的命名空间 id
+        "400":
+          description: 不允许删除最后一个命名空间（带不带 force 都一样）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 命名空间非空（未带 force），响应带阻塞对象清单
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, blocking]
+                properties:
+                  error: { type: string }
+                  blocking:
+                    type: array
+                    items: { type: string }
+                    example: ["sources=2", "edges=5"]
+
   # ========== 事件中心：能力 ==========
   /capabilities:
     get:
@@ -832,9 +1118,12 @@ paths:
         - 没有任何节点声明 → `origin`
         - 有节点声明且 `outputs` 全空 → `end`
         - 有节点声明且 `outputs` 有非空项 → `pipe`
+
+        `namespaceId` **必填**；`*` 允许（跨命名空间汇总，每条能力自带自己的 `namespaceId`）。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
@@ -843,11 +1132,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [capabilities]
+                required: [capabilities, namespaceId]
                 properties:
                   capabilities:
                     type: array
                     items: { $ref: "#/components/schemas/CapabilityWithKind" }
+                  namespaceId:
+                    type: string
+                    description: 本次作用域（`*` 表示跨命名空间汇总）
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
     post:
@@ -858,9 +1150,13 @@ paths:
         - 不指定 `version` 时自动开下一个版本
         - 同名同版本但内容不同 → 409（版本不能被改写）
         - 内容相同（含 name）→ 幂等返回已有定义
+
+        `namespaceId` **必填**（query 或 body，query 优先）：一条能力定义只属于一个命名空间，
+        同名同版本在**不同命名空间**里是两个独立定义（不冲突）。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
@@ -895,9 +1191,12 @@ paths:
         - 传空串表示清掉显示名（前端回落到 `name@version`）
 
         这是这张表上**唯一**的 UPDATE。其余字段仍然 append-only（不变量 I8）。
+
+        `namespaceId` **必填**（query 或 body，query 优先）；`id` 必须属于该命名空间。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
@@ -907,6 +1206,9 @@ paths:
               type: object
               required: [id]
               properties:
+                namespaceId:
+                  type: string
+                  description: 与 query 同义（query 优先）
                 id: { type: string, description: 能力的 capability_versions.id }
                 displayName: { type: string, description: 空串 = 清除显示名 }
       responses:
@@ -927,9 +1229,12 @@ paths:
     get:
       tags: [edges]
       summary: 出口表列表
+      description: |
+        `namespaceId` **必填**；`*` 允许（跨命名空间汇总）。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: fromCapability, in: query, schema: { type: string } }
         - { name: orgId, in: query, schema: { type: string } }
       responses:
@@ -939,22 +1244,30 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [edges]
+                required: [edges, namespaceId]
                 properties:
                   edges:
                     type: array
                     items: { $ref: "#/components/schemas/Edge" }
+                  namespaceId:
+                    type: string
+                    description: 本次作用域（`*` 表示跨命名空间汇总）
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [edges]
       summary: 新增一条边
       description: |
-        配置期两条硬校验（违反即 400，`code: edge_rejected`）：
-        1. `fromPort` 必须属于 `fromCapability.outputs`（**出口是封闭集合**，不变量 I2）
-        2. 两端能力必须**同组织**（不允许跨组织边）
+        配置期三条硬校验（违反即 400）：
+        1. `fromPort` 必须属于上游的 `outputs`（**出口是封闭集合**，不变量 I2）
+        2. 两端能力必须**同命名空间**（跨命名空间引用 → 400，不变量 I11）
+        3. `namespaceId` **必填**（query 或 body，query 优先）：一条边属于且只属于一个命名空间
+
+        `fromIsSource=true` 时 `fromCapability` 被解释为**来源名**（如 `github`，建入口边），
+        此时只校验右端能力在本命名空间；来源名不跨命名空间解析。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       requestBody:
         required: true
@@ -971,7 +1284,7 @@ paths:
                 properties:
                   edge: { $ref: "#/components/schemas/Edge" }
         "400":
-          description: 出口不在 outputs 里 / 跨组织 / 能力不存在（`edge_rejected`）
+          description: 出口不在 outputs 里 / 跨命名空间引用 / 能力不存在（`edge_rejected`）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -979,9 +1292,13 @@ paths:
     delete:
       tags: [edges]
       summary: 删除一条边
+      description: |
+        `namespaceId` **必填**（query 或 body，query 优先）；其余四个定位参数 query 优先、
+        body 兜底（`fromIsSource` 也接受 query 的 `1` / `true`）。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: fromCapability, in: query, required: true, schema: { type: string } }
         - { name: fromPort, in: query, required: true, schema: { type: string } }
         - { name: toCapability, in: query, required: true, schema: { type: string } }
@@ -1003,9 +1320,14 @@ paths:
     get:
       tags: [nodes]
       summary: 节点列表（含在线状态、声明的能力、实例占用）
+      description: |
+        `namespaceId` **必填**；`*` 允许（跨命名空间汇总，每台节点自带自己的 `namespaceId`）。
+
+        节点属于**命名空间**（不是一个节点跨多个命名空间）：切命名空间时列表整页重取。
       security:
         - cookieAuth: []
       parameters:
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
@@ -1014,11 +1336,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [nodes]
+                required: [nodes, namespaceId]
                 properties:
                   nodes:
                     type: array
                     items: { $ref: "#/components/schemas/NodeView" }
+                  namespaceId:
+                    type: string
+                    description: 本次作用域（`*` 表示跨命名空间汇总）
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -1030,10 +1355,13 @@ paths:
         比列表多给 `instances` 的**逐槽细节**：哪个槽在跑哪个任务。
         列表只给数量 —— 列表页不需要 N×M 行，详情页要能回答
         "这台机器现在卡在哪个槽上"。
+
+        `namespaceId` **必填**，且**不接受 `*`**（单对象端点）。
       security:
         - cookieAuth: []
       parameters:
         - { name: orgId, in: query, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "200":
@@ -1052,6 +1380,9 @@ paths:
                       type: object
                       properties:
                         id: { type: string }
+                        namespaceId:
+                          type: string
+                          description: 槽位所属命名空间（从父行 nodes 取）
                         nodeId: { type: string }
                         slot: { type: integer }
                         concurrency: { type: integer }
@@ -1078,10 +1409,13 @@ paths:
       description: |
         只把 `status` 改成 `draining`（派发时会被过滤掉），
         **不主动取消**已在跑的任务——取消是破坏性操作，排空是渐进退役。
+
+        `namespaceId` **必填**，**只从 query 读取**（请求体不解析），不接受 `*`（写端点）。
       security:
         - cookieAuth: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
         - { name: orgId, in: query, schema: { type: string } }
       responses:
         "200":
@@ -2178,7 +2512,90 @@ components:
       description: |
         节点专用 opaque token（`ant_node_...`），只存 sha256。
         与 `bearerAuth`（用户 API Key）是两套凭据。
+
+  parameters:
+    # 可复用的命名空间作用域参数（契约 §6.2 / docs/design/namespaces.md §6.2）。
+    #
+    # 只挂在**命名空间资源**上：/capabilities、/nodes、/nodes/{id}、/nodes/{id}/drain、
+    # /edges、/sources、/sources/{id}、/sources/{id}/fire、/sources/{id}/dry-run、
+    # /sources/dry-run、/events、/tasks、/tasks/{id}、/tasks/{id}/cancel、/traces/{id}、
+    # /console/events、/stats。
+    # 组织级端点（/orgs、/admin/*、/auth/*、/keys、/devices）与 /namespaces 自身、
+    # /hooks/{token}、/node/stream 不加（它们的命名空间不是从这里来的）。
+    NamespaceId:
+      name: namespaceId
+      in: query
+      required: true
+      schema: { type: string }
+      description: |
+        **必填**。本次请求作用于哪个命名空间（契约 §6.2）—— 显式，或者显式全部，
+        **永远没有隐式默认**。
+
+        - 缺参 → `400`（`namespaceId is required`），**绝不回退到默认命名空间**：
+          回退等于把调用方写错的地方藏起来
+        - 不存在 → `404`；存在但属于别的组织 → `403`
+        - `namespaceId=*`：跨命名空间汇总（管理员视图），**只允许读端点**（列表类）；
+          写端点、单对象端点（`/tasks/{id}`、`/nodes/{id}`、`/sources/{id}`、
+          `/traces/{id}`）以及口径未定义的 `/stats` 带 `*` → `400`
+        - 跨命名空间引用 → `400`（不变量 I11）：边两端能力、源的目标能力、子任务的父链
+          都必须与本次作用域同一个命名空间
+        - `POST`/`PATCH` 的写端点也可以把它放在请求体的 `namespaceId` 字段里：
+          `POST /events` 是 **body 优先**，其余写端点是 **query 优先**；
+          只读 query 的写端点（`/tasks/{id}/cancel`、`/nodes/{id}/drain`、
+          `DELETE /sources/{id}`）见各自 operation 说明
+
+        所有资源响应的对象里都带 `namespaceId` 回显归属（`/namespaces` 自身不带：
+        它是隔离维度本身）。
+
   schemas:
+
+    # ---------- 命名空间（#162）----------
+    Namespace:
+      type: object
+      description: |
+        命名空间对象。**不带** `namespaceId`：它是隔离维度本身，不是「某个命名空间
+        里的资源」（给命名空间加 namespaceId 是自指）。
+
+        `capabilityCount` / `nodeCount` / `sourceCount` / `edgeCount` 只在
+        `GET /namespaces`（列表）里是真计数；单对象响应（`POST` / `PATCH`）里
+        这四个字段恒为 `0`（未做计数查询）。
+      required: [id, orgId, slug, name, createdAt, capabilityCount, nodeCount, sourceCount, edgeCount]
+      properties:
+        id: { type: string, example: ns_1730000000_a1b2c3d4 }
+        orgId: { type: string }
+        slug:
+          type: string
+          example: default
+          description: 稳定标识（URL / 令牌作用域）；建了不可改
+        name: { type: string, example: 默认, description: 展示名，可改 }
+        createdAt: { type: integer, format: int64 }
+        capabilityCount: { type: integer, description: 能力定义数（仅列表端点计算） }
+        nodeCount: { type: integer, description: 节点数（仅列表端点计算） }
+        sourceCount: { type: integer, description: 源数（仅列表端点计算） }
+        edgeCount: { type: integer, description: 边数（仅列表端点计算） }
+
+    Stats:
+      type: object
+      description: |
+        命名空间级统计（`GET /stats`）。#80 之后的口径：`total` / `today` / `daily`
+        是**事件**数，`delivered` / `deliveryTotal` 是**任务**终态统计，
+        `deviceCount` 是当前用户的推送设备数（设备仍按用户维度）。
+      required: [total, today, delivered, deliveryTotal, deviceCount, daily]
+      properties:
+        total: { type: integer, description: 该命名空间的事件总数 }
+        today: { type: integer, description: 今日（UTC 0 点起）事件数 }
+        delivered: { type: integer, description: 成功任务数 }
+        deliveryTotal: { type: integer, description: 已结束任务数（完成率的分母） }
+        deviceCount: { type: integer, description: 当前用户已启用的推送设备数 }
+        daily:
+          type: array
+          description: 近 ~371 天每天的事件数（热力图）；无数据时是 `[]`
+          items:
+            type: object
+            required: [day, count]
+            properties:
+              day: { type: string, example: "2026-08-10" }
+              count: { type: integer }
 
     # ---------- 事件中心 ----------
     Kind:
@@ -2193,6 +2610,9 @@ components:
       properties:
         id: { type: string, example: cap_1730000000_a1b2c3d4 }
         orgId: { type: string }
+        namespaceId:
+          type: string
+          description: 能力定义所属命名空间（恒存在；同名同版本在不同命名空间里是不同定义）
         name: { type: string, example: review }
         displayName:
           type: string
@@ -2257,6 +2677,11 @@ components:
       type: object
       required: [name]
       properties:
+        namespaceId:
+          type: string
+          description: |
+            **必填**（本字段或 query 二者给一个；query 优先）。
+            能力定义所属命名空间；不存在 → 404，别的 org → 403，`*` → 400（写端点）。
         name: { type: string, example: review }
         displayName:
           type: string
@@ -2279,6 +2704,9 @@ components:
       type: object
       properties:
         orgId: { type: string }
+        namespaceId:
+          type: string
+          description: 边所属命名空间（恒存在；主键前缀就是它）
         fromCapability: { type: string }
         fromPort:
           type: string
@@ -2290,6 +2718,15 @@ components:
       type: object
       required: [fromCapability, fromPort, toCapability]
       properties:
+        namespaceId:
+          type: string
+          description: |
+            **必填**（本字段或 query 二者给一个；query 优先）。边所属命名空间；
+            两端能力必须与它同命名空间（I11，跨命名空间引用 → 400）。
+        fromIsSource:
+          type: boolean
+          default: false
+          description: true 时 fromCapability 被解释为来源名（建入口边）
         fromCapability: { type: string }
         fromPort: { type: string }
         toCapability: { type: string }
@@ -2313,6 +2750,9 @@ components:
       properties:
         id: { type: string, example: tsk_1730000000_abcd1234 }
         orgId: { type: string }
+        namespaceId:
+          type: string
+          description: 任务所属命名空间（恒存在；子任务继承父任务）
         traceId: { type: string, description: 一个根事件引起的全部工作 }
         parentTaskId:
           type: string
@@ -2360,9 +2800,14 @@ components:
       type: object
       required: [name, kind, targets]
       properties:
+        namespaceId:
+          type: string
+          description: |
+            **必填**（本字段或 query 二者给一个；query 优先）。源所属命名空间；
+            每个出口能力必须与它同命名空间（I11，跨命名空间引用 → 400）。
         name:
           type: string
-          description: 用户可读名，同组织内唯一（如「每晚体检」）
+          description: 用户可读名，**同一个命名空间内**唯一（如「每晚体检」）
         kind:
           type: string
           enum: [cron, webhook, github, manual]
@@ -2417,10 +2862,13 @@ components:
 
     Source:
       type: object
-      required: [id, orgId, name, kind, enabled, targets, createdAt]
+      required: [id, orgId, namespaceId, name, kind, enabled, targets, createdAt]
       properties:
         id: { type: string, example: "src_..." }
         orgId: { type: string }
+        namespaceId:
+          type: string
+          description: 源所属命名空间（恒存在；名字的唯一性也是按命名空间算的）
         name: { type: string }
         kind:
           type: string
@@ -2511,6 +2959,9 @@ components:
       properties:
         id: { type: string, example: evt_1730000000_abcd1234 }
         orgId: { type: string }
+        namespaceId:
+          type: string
+          description: 事件落进的命名空间（恒存在；trace 与任务都跟着它走）
         traceId: { type: string }
         source: { type: string, example: github }
         type: { type: string, example: pull_request.opened }
@@ -2590,6 +3041,11 @@ components:
       properties:
         id: { type: string }
         orgId: { type: string }
+        namespaceId:
+          type: string
+          description: |
+            机器所属命名空间（恒存在）。创建时确定，**创建后不可改**：
+            令牌也绑在这个命名空间上，要换就删了重建。
         name: { type: string, example: mbp-16 }
         tags:
           type: array
@@ -2782,3 +3238,27 @@ components:
             type: object
             properties:
               error: { type: string }
+    # 四个通用错误响应：check_openapi.py 只校验 security / path 集合，
+    # 但这些 $ref 在外部调用方（与渲染器）眼里必须能解析。
+    BadRequest:
+      description: |
+        请求参数非法（缺参 / `namespaceId is required` / 跨命名空间引用 I11 /
+        非法 slug 等）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: 未登录 / 凭据无效
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: 无权访问（不是该组织成员 / 命名空间属于别的组织）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: 资源不存在（含命名空间不存在）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

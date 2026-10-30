@@ -184,9 +184,13 @@ type Dispatcher struct {
 type Publisher interface {
 	// PublishAssign 向 nodeID 推送 assign 帧；节点不在线返回 error。
 	//
+	// 作用域是**命名空间**（不是组织）：一个 WS 连接 = 一个节点 = 一个命名空间，
+	// hub 只把帧推给同命名空间的连接（#162 / I10）。按组织路由会把 staging 的
+	// 任务推给 prod 的机器 —— 这正是命名空间要消灭的那类串台。
+	//
 	// 返回 error 时派发器会把任务退回 pending（并释放槽位），
 	// 让下一次派发能立刻重试——而不是让它卡到租约过期。
-	PublishAssign(ctx context.Context, orgID, nodeID string, task *store.Task) error
+	PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error
 }
 
 // New 构造一个 Dispatcher，默认把 notify.phone 视为用户维度能力。
@@ -534,7 +538,7 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 		// 这条任务会一直卡到租约过期才被巡检回收（30s 起，重试还要再来一轮）。
 		// 退回 pending 让它能被下一次派发立刻捡起。
 		if d.Publisher != nil {
-			if err := d.Publisher.PublishAssign(ctx, in.OrgID, nodeID, task); err != nil {
+			if err := d.Publisher.PublishAssign(ctx, in.NamespaceID, nodeID, task); err != nil {
 				d.requeueAfterPublishFailure(ctx, in.NamespaceID, task, nodeID, instanceID)
 				// 从返回值里剔除：它已退回 pending，不算"派发出去了"。
 				// （仍留在库里，会被后续调度捡起。）
@@ -935,13 +939,13 @@ func (d *Dispatcher) PlanNextHop(ctx context.Context, namespaceID, traceID, pare
 // 调用方需要知道「行建出来了、帧没发出去」，所以这里用「attempts 涨了却仍回
 // pending」识别出推送回滚（判定规则与 launch 筛 out.Tasks 的规则一致），
 // 造一个错误交给调用方记日志——它不是硬失败，不进任何状态机。
-func (d *Dispatcher) PublishTasks(ctx context.Context, orgID string, tasks []*store.Task) error {
+func (d *Dispatcher) PublishTasks(ctx context.Context, namespaceID string, tasks []*store.Task) error {
 	var firstErr error
 	// record 只做两件事：warn + 记住第一个错误，绝不中断后续任务。
 	record := func(task *store.Task, err error) {
 		slog.Warn("publish next-hop task failed",
 			"event", "route.next_hop.publish_failed",
-			"org_id", orgID,
+			"namespace_id", namespaceID,
 			"task_id", task.ID,
 			"capability", task.Capability,
 			"error", err.Error())
@@ -960,10 +964,18 @@ func (d *Dispatcher) PublishTasks(ctx context.Context, orgID string, tasks []*st
 			continue
 		}
 
-		// plan 出来的任务自带 OrgID；只在缺失时用入参补上，
-		// 避免拿空 org_id 去查库（那样什么都查不到，任务会默默留 pending）。
+		// plan 出来的任务自带 NamespaceID/OrgID；只在缺失时用入参补上，
+		// 避免拿空作用域去查库（那样什么都查不到，任务会默默留 pending）。
+		//
+		// #162：隔离维度是命名空间（I10）。org_id 只是派生量，这里补它是为了
+		// 日志与跨组织用户校验；真正决定「谁看得到这条任务」的是 namespace_id。
+		if t.NamespaceID == "" {
+			t.NamespaceID = namespaceID
+		}
 		if t.OrgID == "" {
-			t.OrgID = orgID
+			if orgID, err := d.Store.NamespaceOrgID(ctx, t.NamespaceID); err == nil {
+				t.OrgID = orgID
+			}
 		}
 
 		beforeAttempts := t.Attempts
@@ -1065,7 +1077,7 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	task.NotBefore = nil
 
 	if d.Publisher != nil {
-		if err := d.Publisher.PublishAssign(ctx, task.OrgID, nodeID, task); err != nil {
+		if err := d.Publisher.PublishAssign(ctx, task.NamespaceID, nodeID, task); err != nil {
 			d.requeueAfterPublishFailure(ctx, task.NamespaceID, task, nodeID, instanceID)
 			return false, nil // 推不出去 = 这次没派成，下轮重试
 		}

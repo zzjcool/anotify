@@ -31,14 +31,23 @@ type sourceHandler struct {
 	commander *source.Trigger
 	// resolveOrg 复用 consoleHandler 的组织解析（I10 的唯一入口）
 	resolveOrg func(w http.ResponseWriter, r *http.Request, requested string) (string, bool)
+	// resolveNamespace 复用 consoleHandler 的命名空间解析（契约 §6.2 的唯一入口）。
+	//
+	// 源是**命名空间资源**（sources / source_targets 都带 namespace_id）：
+	// 除 POST /v1/hooks/{token}（外部入口，token 自己就是凭据）
+	// 外，每个方法都必须解析 namespaceId —— 缺一律 400，绝不回退默认命名空间。
+	resolveNamespace func(w http.ResponseWriter, r *http.Request, orgID, bodyNS string, allowAll bool) (nsScope, bool)
 }
 
 // sourceRequest 是创建/更新源的请求体。
 type sourceRequest struct {
-	Name    string          `json:"name"`
-	Kind    string          `json:"kind"`
-	Config  json.RawMessage `json:"config"`
-	Enabled *bool           `json:"enabled"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// NamespaceID 是这个源属于哪个命名空间（**必填**，也可以放 query）。
+	// 契约 §4 的取值顺序：query namespaceId → body namespaceId → 空（→ 400）。
+	NamespaceID string          `json:"namespaceId"`
+	Config      json.RawMessage `json:"config"`
+	Enabled     *bool           `json:"enabled"`
 	// Targets 支持两种写法，兼容简单调用方：
 	//   ["cap_a", "cap_b"]                                ← 只要 ID，无参数
 	//   [{"capabilityId":"cap_a","params":{"x":1}}, ...]   ← 带参数
@@ -104,12 +113,16 @@ type sourceTargetView struct {
 //
 // 用的是 route.ValidateParams —— 与派发期**同一个函数**。两边口径必须一致，
 // 否则会出现"建源说没问题、触发被剪枝"这种最让人困惑的情况。
-func (h *sourceHandler) validateTargetParams(ctx context.Context, orgID string, targets []store.SourceTarget) error {
+//
+// 能力按**源的命名空间**查（I11 第②条）：跨命名空间引用能力时，
+// GetCapabilityByID 在本命名空间里查不到 → 400，与 store.CreateSource
+// 的 checkCapabilityInNamespace 同一个结论（这里先拦住，报错文案更好读）。
+func (h *sourceHandler) validateTargetParams(ctx context.Context, namespaceID string, targets []store.SourceTarget) error {
 	for _, tg := range targets {
 		if len(tg.Params) == 0 {
 			continue // 没配参数：交给派发期的 schema 校验（可能该能力本来就不要参数）
 		}
-		capDef, err := h.db.GetCapabilityByID(ctx, orgID, tg.CapabilityID)
+		capDef, err := h.db.GetCapabilityByID(ctx, namespaceID, tg.CapabilityID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return fmt.Errorf("出口能力 %s 不存在", tg.CapabilityID)
@@ -170,13 +183,18 @@ func (h *sourceHandler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	list, err := h.db.ListSources(r.Context(), orgID)
+	// 列表是**读**端点，允许 namespaceId=* （管理员跨命名空间汇总）。
+	scope, ok := h.resolveNamespace(w, r, orgID, "", true)
+	if !ok {
+		return
+	}
+	list, err := h.listSources(r.Context(), orgID, scope)
 	if err != nil {
 		slog.Error("list sources failed", "event", "console.sources.list_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	views, err := h.views(r.Context(), orgID, list)
+	views, err := h.views(r.Context(), list)
 	if err != nil {
 		slog.Error("build source views failed", "event", "console.sources.views_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -186,17 +204,46 @@ func (h *sourceHandler) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sources": views})
 }
 
+// listSources 按命名空间作用域取源。
+//
+// scope.All（namespaceId=*）时遍历本组织的每个命名空间分别取，再按
+// ListNamespaces 的顺序（created_at, id）拼接：合并结果必须是**确定性的**，
+// 否则同一份数据每次刷新条序不同，前端的分页与对比都无法做。
+func (h *sourceHandler) listSources(ctx context.Context, orgID string, scope nsScope) ([]*store.Source, error) {
+	if !scope.All {
+		return h.db.ListSources(ctx, scope.ID)
+	}
+	namespaces, err := h.db.ListNamespaces(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	out := []*store.Source{}
+	for _, ns := range namespaces {
+		part, err := h.db.ListSources(ctx, ns.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
 func (h *sourceHandler) get(w http.ResponseWriter, r *http.Request, id string) {
 	orgID, ok := h.resolveOrg(w, r, "")
 	if !ok {
 		return
 	}
-	src, err := h.db.GetSource(r.Context(), orgID, id)
+	// 单对象读：`*` 没有定义（一个源属于哪个命名空间？）→ 400
+	scope, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
+	src, err := h.db.GetSource(r.Context(), scope.ID, id)
 	if err != nil {
 		h.writeSourceErr(w, err, "get")
 		return
 	}
-	views, err := h.views(r.Context(), orgID, []*store.Source{src})
+	views, err := h.views(r.Context(), []*store.Source{src})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -212,6 +259,11 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 	var req sourceRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	// 写入端点：`*` 不允许（写一条源属于哪个命名空间？）→ 400
+	scope, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	if !ok {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -237,15 +289,16 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 	src := &store.Source{
-		OrgID:   orgID,
-		Name:    strings.TrimSpace(req.Name),
-		Kind:    req.Kind,
-		Config:  req.Config,
-		Enabled: enabled,
-		Targets: toStoreTargets(req.Targets),
+		NamespaceID: scope.ID,
+		OrgID:       orgID,
+		Name:        strings.TrimSpace(req.Name),
+		Kind:        req.Kind,
+		Config:      req.Config,
+		Enabled:     enabled,
+		Targets:     toStoreTargets(req.Targets),
 	}
 	// 先校验参数再落库：填错了立刻告诉用户，别等触发时被剪枝
-	if err := h.validateTargetParams(r.Context(), orgID, src.Targets); err != nil {
+	if err := h.validateTargetParams(r.Context(), scope.ID, src.Targets); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -254,11 +307,11 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 重新读一次：创建时算出来的 nextFireAt 只在库里，不在入参对象上
-	fresh, err := h.db.GetSource(r.Context(), orgID, src.ID)
+	fresh, err := h.db.GetSource(r.Context(), scope.ID, src.ID)
 	if err == nil {
 		src = fresh
 	}
-	views, err := h.views(r.Context(), orgID, []*store.Source{src})
+	views, err := h.views(r.Context(), []*store.Source{src})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -271,14 +324,19 @@ func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string
 	if !ok {
 		return
 	}
-	cur, err := h.db.GetSource(r.Context(), orgID, id)
-	if err != nil {
-		h.writeSourceErr(w, err, "update")
-		return
-	}
+	// 先解 body 再解命名空间：body 里的 namespaceId 是 §4 规定的第二优先取值。
 	var req sourceRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	scope, ok := h.resolveNamespace(w, r, orgID, req.NamespaceID, false)
+	if !ok {
+		return
+	}
+	cur, err := h.db.GetSource(r.Context(), scope.ID, id)
+	if err != nil {
+		h.writeSourceErr(w, err, "update")
 		return
 	}
 	if req.Name != "" {
@@ -293,7 +351,7 @@ func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string
 	if len(req.Targets) > 0 {
 		cur.Targets = toStoreTargets(req.Targets)
 	}
-	if err := h.validateTargetParams(r.Context(), orgID, cur.Targets); err != nil {
+	if err := h.validateTargetParams(r.Context(), scope.ID, cur.Targets); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -302,11 +360,11 @@ func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string
 		h.writeSourceErr(w, err, "update")
 		return
 	}
-	fresh, err := h.db.GetSource(r.Context(), orgID, id)
+	fresh, err := h.db.GetSource(r.Context(), scope.ID, id)
 	if err == nil {
 		cur = fresh
 	}
-	views, err := h.views(r.Context(), orgID, []*store.Source{cur})
+	views, err := h.views(r.Context(), []*store.Source{cur})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -319,7 +377,11 @@ func (h *sourceHandler) delete(w http.ResponseWriter, r *http.Request, id string
 	if !ok {
 		return
 	}
-	if err := h.db.DeleteSource(r.Context(), orgID, id); err != nil {
+	scope, ok := h.resolveNamespace(w, r, orgID, "", false)
+	if !ok {
+		return
+	}
+	if err := h.db.DeleteSource(r.Context(), scope.ID, id); err != nil {
 		h.writeSourceErr(w, err, "delete")
 		return
 	}
@@ -339,8 +401,22 @@ func (h *sourceHandler) fire(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// 先解 body（带自定义 payload，也可能带 namespaceId），再解析命名空间。
+	var body struct {
+		NamespaceID string          `json:"namespaceId"`
+		Type        string          `json:"type"`
+		Payload     json.RawMessage `json:"payload"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+
+	// 触发是**写**操作（建事件 + 派任务）→ `*` 不允许。
+	scope, ok := h.resolveNamespace(w, r, orgID, body.NamespaceID, false)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
-	src, err := h.db.GetSource(r.Context(), orgID, id)
+	src, err := h.db.GetSource(r.Context(), scope.ID, id)
 	if err != nil {
 		h.writeSourceErr(w, err, "fire")
 		return
@@ -351,13 +427,6 @@ func (h *sourceHandler) fire(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	// 允许调用方带自定义 payload；不带就给一个最小体
-	var body struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
 
 	eventType := body.Type
 	if eventType == "" {
@@ -409,13 +478,26 @@ func (h *sourceHandler) dryRun(w http.ResponseWriter, r *http.Request) {
 		Payload json.RawMessage `json:"payload"`
 		// Source 只在 /dry-run（无 id）时使用：前端把弹窗里的草稿原样发来
 		Source *store.Source `json:"source"`
+		// NamespaceID 与 source.namespaceId 都可作为 body 取值来源（契约 §4）
+		NamespaceID string `json:"namespaceId"`
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+
+	bodyNS := body.NamespaceID
+	if bodyNS == "" && body.Source != nil {
+		bodyNS = body.Source.NamespaceID
+	}
+	// 试运行不落库，但它要推演"会派给哪些节点/能力"，那些都在某个命名空间里，
+	// 所以同样必填（缺 → 400，`*` → 400：试运行一个跨命名空间的派发没有意义）。
+	scope, ok := h.resolveNamespace(w, r, orgID, bodyNS, false)
+	if !ok {
+		return
+	}
 
 	// 有 id 走已保存的源；没有就用请求体里的草稿
 	var src *store.Source
 	if id := r.PathValue("id"); id != "" {
-		got, err := h.db.GetSource(r.Context(), orgID, id)
+		got, err := h.db.GetSource(r.Context(), scope.ID, id)
 		if err != nil {
 			h.writeSourceErr(w, err, "dry_run")
 			return
@@ -427,7 +509,10 @@ func (h *sourceHandler) dryRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		src = body.Source
-		src.OrgID = orgID // 草稿的组织以会话为准，不信请求体
+		// 草稿的命名空间/组织以会话与参数为准，不信请求体里的手写值：
+		// 否则能用一个 body 推到别的命名空间去试运行（跳且不利）。
+		src.NamespaceID = scope.ID
+		src.OrgID = orgID
 	}
 
 	out, err := h.commander.DryRun(r.Context(), src, body.Type, body.Payload)
@@ -444,19 +529,35 @@ func (h *sourceHandler) dryRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // views 批量组装返回视图（出口能力信息 + webhook URL）。
-func (h *sourceHandler) views(ctx context.Context, orgID string, list []*store.Source) ([]sourceView, error) {
-	// 一次取全量能力，避免每个源都查一遍
-	caps, err := h.db.ListCapabilities(ctx, orgID)
-	if err != nil {
-		return nil, err
-	}
-	byID := make(map[string]*store.CapabilityVersion, len(caps))
-	for _, c := range caps {
-		byID[c.ID] = c
+//
+// 目标能力按**源自己的** namespace_id 查（I11：出口能力必须同命名空间）：
+// 跨命名空间汇总（namespaceId=*）时不同源的 `lint@1` 是**不同定义**，
+// 用会话的 org 一把梭会拼出"同名不同内容"的错误视图。
+// 同一命名空间只查一次（N 个源不会变成 N 次能力全量查询）。
+func (h *sourceHandler) views(ctx context.Context, list []*store.Source) ([]sourceView, error) {
+	byNamespace := make(map[string]map[string]*store.CapabilityVersion)
+	capsIn := func(namespaceID string) (map[string]*store.CapabilityVersion, error) {
+		if m, ok := byNamespace[namespaceID]; ok {
+			return m, nil
+		}
+		caps, err := h.db.ListCapabilities(ctx, namespaceID)
+		if err != nil {
+			return nil, err
+		}
+		m := make(map[string]*store.CapabilityVersion, len(caps))
+		for _, c := range caps {
+			m[c.ID] = c
+		}
+		byNamespace[namespaceID] = m
+		return m, nil
 	}
 
 	out := make([]sourceView, 0, len(list))
 	for _, s := range list {
+		byID, err := capsIn(s.NamespaceID)
+		if err != nil {
+			return nil, err
+		}
 		v := sourceView{Source: s, TargetCaps: []sourceTargetView{}}
 		for _, t := range s.Targets {
 			if c, ok := byID[t.CapabilityID]; ok {
@@ -519,6 +620,11 @@ func (h *sourceHandler) writeSourceErr(w http.ResponseWriter, err error, op stri
 //
 // 事件类型：默认取源的名字；调用方可以用 body.type 覆盖，
 // 这样同一入口能区分不同事件（如 GitHub 的 opened / synchronize）。
+//
+// **这个入口不需要 namespaceId**（契约 §6.2 的例外）：它是外部系统用的路径，
+// 鉴权就是 URL 里的 token，而 token 全局唯一 —— 源行自己带着 namespace_id，
+// 后续（写事件 / 派发 / 建任务）全部用 `src.NamespaceID`，不靠请求参数。
+// 要求外部系统先知道 namespaceId 才能调 webhook 是没道理的（GitHub 不会）。
 func (h *sourceHandler) hook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, "POST")

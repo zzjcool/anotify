@@ -298,6 +298,9 @@ func inheritParentNamespaceTx(ctx context.Context, tx *sql.Tx, t *Task) error {
 
 // GetTask 按 (namespaceID, id) 取任务；未命中返回 ErrNotFound。
 func (d *DB) GetTask(ctx context.Context, namespaceID, id string) (*Task, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	rows, err := d.QueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 	if err != nil {
@@ -316,6 +319,9 @@ func (d *DB) GetTask(ctx context.Context, namespaceID, id string) (*Task, error)
 // ListTasks 列出命名空间内的任务，过滤条件为空表示不过滤（traceID/nodeID/status）；
 // 空列表返回 []。
 func (d *DB) ListTasks(ctx context.Context, namespaceID, traceID, nodeID, status string, limit int) ([]*Task, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}

@@ -136,11 +136,15 @@ func TestListUsersWithStats(t *testing.T) {
 	if _, err := db.EnsureOrgForUser(ctx, u2.ID, u2.Username); err != nil {
 		t.Fatalf("ensure org for bob: %v", err)
 	}
+	ns1, err := db.DefaultNamespaceID(ctx, org1.ID)
+	if err != nil {
+		t.Fatalf("default namespace: %v", err)
+	}
 	now := Now()
 	for i, k := range []string{"k1", "k2"} {
 		idem := k
 		if _, err := db.InsertEvent(ctx, &Event{
-			ID: NewEventID(), OrgID: org1.ID, Source: "github", Type: "pr_opened",
+			ID: NewEventID(), NamespaceID: ns1, Source: "github", Type: "pr_opened",
 			TraceID: "trace_" + k, IdemKey: &idem, Payload: []byte("{}"),
 			CreatedAt: now + int64(i),
 		}); err != nil {
@@ -189,12 +193,19 @@ func TestSystemStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure org for bob: %v", err)
 	}
+	nsOf := func(orgID string) string {
+		ns, err := db.DefaultNamespaceID(ctx, orgID)
+		if err != nil {
+			t.Fatalf("default namespace of %s: %v", orgID, err)
+		}
+		return ns
+	}
 	now := Now()
 	seed := func(orgID, prefix string) {
 		for i := 0; i < 2; i++ {
 			idem := prefix + string(rune('0'+i))
 			if _, err := db.InsertEvent(ctx, &Event{
-				ID: NewEventID(), OrgID: orgID, Source: "github", Type: "pr_opened",
+				ID: NewEventID(), NamespaceID: nsOf(orgID), Source: "github", Type: "pr_opened",
 				TraceID: "trace_" + idem, IdemKey: &idem, Payload: []byte("{}"),
 				CreatedAt: now + int64(i),
 			}); err != nil {
@@ -238,20 +249,20 @@ func TestListGlobalEvents(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	orgID, _ := newTestOrg(t, db)
+	nsID, _ := newTestNS(t, db)
 	now := Now()
 	for i, src := range []string{"github", "cron", "manual"} {
 		src := src
 		idem := "k" + src
 		if _, err := db.InsertEvent(ctx, &Event{
-			ID:        NewEventID(),
-			OrgID:     orgID,
-			Source:    src,
-			Type:      "test",
-			TraceID:   "trace_" + src,
-			IdemKey:   &idem,
-			Payload:   []byte("{}"),
-			CreatedAt: now + int64(i),
+			ID:          NewEventID(),
+			NamespaceID: nsID,
+			Source:      src,
+			Type:        "test",
+			TraceID:     "trace_" + src,
+			IdemKey:     &idem,
+			Payload:     []byte("{}"),
+			CreatedAt:   now + int64(i),
 		}); err != nil {
 			t.Fatalf("insert event %s: %v", src, err)
 		}
@@ -268,8 +279,10 @@ func TestListGlobalEvents(t *testing.T) {
 	if events[0].Source != "manual" {
 		t.Errorf("应按 created_at DESC 排序，首条 got %q", events[0].Source)
 	}
-	if events[0].OrgID != orgID {
-		t.Errorf("orgId 应为 %q, got %q", orgID, events[0].OrgID)
+	// 全站事件流按 org 呈现（管理后台是跨组织的），但落库维度是命名空间：
+	// org_id 必须等于该命名空间派生的 org（I10），不是命名空间 id。
+	if want := orgIDOfNamespace(t, db, nsID); events[0].OrgID != want {
+		t.Errorf("orgId 应为 %q, got %q", want, events[0].OrgID)
 	}
 	if events[0].TraceID == "" {
 		t.Error("traceId 不该为空")

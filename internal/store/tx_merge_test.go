@@ -33,18 +33,18 @@ const pinnedStartAt = int64(1_700_000_000)
 //
 // 每台机器只申报 1 个槽位：容量 = 1，于是「槽位有没有泄漏」这类断言
 // 只需要「能不能再派一条」就能观测到，不必去数槽位。
-func mkTxMergeNode(t *testing.T, db *DB, orgID string, cap *CapabilityVersion, name string) string {
+func mkTxMergeNode(t *testing.T, db *DB, nsID string, cap *CapabilityVersion, name string) string {
 	t.Helper()
 	ctx := context.Background()
-	node, _ := mkNode(t, db, orgID, name)
-	if _, err := db.ConfirmCapabilities(ctx, orgID, node.ID,
+	node, _ := mkNode(t, db, nsID, name)
+	if _, err := db.ConfirmCapabilities(ctx, nsID, node.ID,
 		[]CapabilityRef{{Name: cap.Name, Version: cap.Version}}); err != nil {
 		t.Fatalf("confirm capabilities on %s: %v", name, err)
 	}
-	if err := db.UpdateNodeStatus(ctx, orgID, node.ID, NodeStatusOnline); err != nil {
+	if err := db.UpdateNodeStatus(ctx, nsID, node.ID, NodeStatusOnline); err != nil {
 		t.Fatalf("online %s: %v", name, err)
 	}
-	if _, err := db.UpsertInstances(ctx, orgID, node.ID,
+	if _, err := db.UpsertInstances(ctx, nsID, node.ID,
 		[]InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
 		t.Fatalf("instances %s: %v", name, err)
 	}
@@ -52,9 +52,9 @@ func mkTxMergeNode(t *testing.T, db *DB, orgID string, cap *CapabilityVersion, n
 }
 
 // mkTxMergeTask 建一条 pending 任务（对照组与合并组各一条，字段完全一样）。
-func mkTxMergeTask(t *testing.T, db *DB, orgID, traceID string, cap *CapabilityVersion) *Task {
+func mkTxMergeTask(t *testing.T, db *DB, nsID, traceID string, cap *CapabilityVersion) *Task {
 	t.Helper()
-	task := mkTask(orgID, traceID, cap)
+	task := mkTask(nsID, traceID, cap)
 	if err := db.CreateTasks(context.Background(), []*Task{task}); err != nil {
 		t.Fatalf("create task %s: %v", traceID, err)
 	}
@@ -65,17 +65,17 @@ func mkTxMergeTask(t *testing.T, db *DB, orgID, traceID string, cap *CapabilityV
 //
 // 租约显式传参而不是用 Now()+LeaseTTLSec：两条对照任务的 lease_until 必须**同一个数值**，
 // 否则「合并 vs 拆开」的 lease_until 比对里混进了时钟差，那条断言等于没比。
-func driveToAckedWithLease(t *testing.T, db *DB, orgID, nodeID string, task *Task, lease int64) string {
+func driveToAckedWithLease(t *testing.T, db *DB, nsID, nodeID string, task *Task, lease int64) string {
 	t.Helper()
 	ctx := context.Background()
 	instID, err := db.LeaseInstance(ctx, nodeID, task.ID)
 	if err != nil {
 		t.Fatalf("lease instance for %s: %v", task.ID, err)
 	}
-	if err := db.AssignTask(ctx, orgID, task.ID, nodeID, instID, lease); err != nil {
+	if err := db.AssignTask(ctx, nsID, task.ID, nodeID, instID, lease); err != nil {
 		t.Fatalf("assign %s: %v", task.ID, err)
 	}
-	if err := db.Transition(ctx, orgID, task.ID, TaskAssigned, TaskAcked); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskAssigned, TaskAcked); err != nil {
 		t.Fatalf("ack %s: %v", task.ID, err)
 	}
 	return instID
@@ -83,10 +83,10 @@ func driveToAckedWithLease(t *testing.T, db *DB, orgID, nodeID string, task *Tas
 
 // driveToRunningWithLease 在 acked 之上再推一步到 running（StartTask 写 started_at），
 // 也就是真实的 ack → progress 时序。
-func driveToRunningWithLease(t *testing.T, db *DB, orgID, nodeID string, task *Task, lease int64) string {
+func driveToRunningWithLease(t *testing.T, db *DB, nsID, nodeID string, task *Task, lease int64) string {
 	t.Helper()
-	instID := driveToAckedWithLease(t, db, orgID, nodeID, task, lease)
-	if err := db.StartTask(context.Background(), orgID, task.ID); err != nil {
+	instID := driveToAckedWithLease(t, db, nsID, nodeID, task, lease)
+	if err := db.StartTask(context.Background(), nsID, task.ID); err != nil {
 		t.Fatalf("start %s: %v", task.ID, err)
 	}
 	return instID
@@ -101,23 +101,23 @@ func driveToRunningWithLease(t *testing.T, db *DB, orgID, nodeID string, task *T
 //  4. 旧 ws handler 里**单独一步**释放槽位（ReleaseInstanceByTask）
 //
 // 故意保留「4 次独立提交」的原样，因为要证明的正是「合并成 1 次后读回一模一样」。
-func reportResultSplit(t *testing.T, db *DB, orgID, taskID, nodeID, status string,
+func reportResultSplit(t *testing.T, db *DB, nsID, taskID, nodeID, status string,
 	out *string, reported bool, summary string, artifacts []string, errMsg string) {
 	t.Helper()
 	ctx := context.Background()
 
-	task, err := db.GetTask(ctx, orgID, taskID)
+	task, err := db.GetTask(ctx, nsID, taskID)
 	if err != nil {
 		t.Fatalf("split: get task: %v", err)
 	}
 	cur := task.Status
 	if cur == TaskAssigned || cur == TaskAcked {
-		if err := db.Transition(ctx, orgID, taskID, cur, TaskRunning); err != nil {
+		if err := db.Transition(ctx, nsID, taskID, cur, TaskRunning); err != nil {
 			t.Fatalf("split: %s → running: %v", cur, err)
 		}
 		if _, err := db.ExecContext(ctx,
-			`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE org_id = ? AND id = ?`,
-			Now(), orgID, taskID); err != nil {
+			`UPDATE tasks SET started_at = COALESCE(started_at, ?) WHERE namespace_id = ? AND id = ?`,
+			Now(), nsID, taskID); err != nil {
 			t.Fatalf("split: set started_at: %v", err)
 		}
 		cur = TaskRunning
@@ -125,7 +125,7 @@ func reportResultSplit(t *testing.T, db *DB, orgID, taskID, nodeID, status strin
 	if cur != TaskRunning {
 		t.Fatalf("split: task %s is %q, cannot report", taskID, cur)
 	}
-	if err := db.Transition(ctx, orgID, taskID, TaskRunning, status); err != nil {
+	if err := db.Transition(ctx, nsID, taskID, TaskRunning, status); err != nil {
 		t.Fatalf("split: running → %s: %v", status, err)
 	}
 
@@ -148,8 +148,8 @@ func reportResultSplit(t *testing.T, db *DB, orgID, taskID, nodeID, status strin
 		`UPDATE tasks
 		 SET out = ?, reported = ?, summary = ?, artifacts = ?, error = ?,
 		     finished_at = COALESCE(finished_at, ?)
-		 WHERE org_id = ? AND id = ?`,
-		outVal, reportedInt, summary, string(artifactsJSON), errMsg, Now(), orgID, taskID); err != nil {
+		 WHERE namespace_id = ? AND id = ?`,
+		outVal, reportedInt, summary, string(artifactsJSON), errMsg, Now(), nsID, taskID); err != nil {
 		t.Fatalf("split: details: %v", err)
 	}
 	// 旧实现里这一步在 ws handler（调用方），不在 store 内
@@ -298,27 +298,27 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 		start := start
 		t.Run("from_"+start, func(t *testing.T) {
 			db := newTestDB(t)
-			orgID, _ := newTestOrg(t, db)
-			capv := mkCap(orgID, "review", 1, []string{"fix"})
+			nsID, _ := newTestNS(t, db)
+			capv := mkCap(nsID, "review", 1, []string{"fix"})
 			if err := db.CreateCapability(ctx, capv); err != nil {
 				t.Fatalf("create cap: %v", err)
 			}
 			// 两条等价任务各占一台机器：合并组与对照组的槽位互相独立，
 			// 后面才能分别断言「两条路径的槽位都真的释放了」。
-			nodeMerged := mkTxMergeNode(t, db, orgID, capv, "mbp-merged")
-			nodeSplit := mkTxMergeNode(t, db, orgID, capv, "mbp-split")
-			taskMerged := mkTxMergeTask(t, db, orgID, "trace_merged", capv)
-			taskSplit := mkTxMergeTask(t, db, orgID, "trace_split", capv)
+			nodeMerged := mkTxMergeNode(t, db, nsID, capv, "mbp-merged")
+			nodeSplit := mkTxMergeNode(t, db, nsID, capv, "mbp-split")
+			taskMerged := mkTxMergeTask(t, db, nsID, "trace_merged", capv)
+			taskSplit := mkTxMergeTask(t, db, nsID, "trace_split", capv)
 
 			lease := Now() + 3600
 			var instMerged, instSplit string
 			switch start {
 			case TaskAcked:
-				instMerged = driveToAckedWithLease(t, db, orgID, nodeMerged, taskMerged, lease)
-				instSplit = driveToAckedWithLease(t, db, orgID, nodeSplit, taskSplit, lease)
+				instMerged = driveToAckedWithLease(t, db, nsID, nodeMerged, taskMerged, lease)
+				instSplit = driveToAckedWithLease(t, db, nsID, nodeSplit, taskSplit, lease)
 			case TaskRunning:
-				instMerged = driveToRunningWithLease(t, db, orgID, nodeMerged, taskMerged, lease)
-				instSplit = driveToRunningWithLease(t, db, orgID, nodeSplit, taskSplit, lease)
+				instMerged = driveToRunningWithLease(t, db, nsID, nodeMerged, taskMerged, lease)
+				instSplit = driveToRunningWithLease(t, db, nsID, nodeSplit, taskSplit, lease)
 			default:
 				t.Fatalf("unknown start status %q", start)
 			}
@@ -333,7 +333,7 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 				// acked 起点：起点必须**没有** started_at，
 				// 否则「隐式进 running 补 started_at」这条逻辑根本没被触发。
 				for _, id := range []string{taskMerged.ID, taskSplit.ID} {
-					before, err := db.GetTask(ctx, orgID, id)
+					before, err := db.GetTask(ctx, nsID, id)
 					if err != nil {
 						t.Fatalf("get %s: %v", id, err)
 					}
@@ -348,19 +348,19 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 			const summary = "改好了"
 
 			// 合并路径：一次 ReportResult（内部单事务，且内含释放槽位）
-			if err := db.ReportResult(ctx, orgID, taskMerged.ID, TaskSucceeded,
+			if err := db.ReportResult(ctx, nsID, taskMerged.ID, TaskSucceeded,
 				&out, true, summary, artifacts, ""); err != nil {
 				t.Fatalf("merged ReportResult: %v", err)
 			}
 			// 对照组：拆开的多事务序列（旧实现逐条重放）
-			reportResultSplit(t, db, orgID, taskSplit.ID, nodeSplit, TaskSucceeded,
+			reportResultSplit(t, db, nsID, taskSplit.ID, nodeSplit, TaskSucceeded,
 				&out, true, summary, artifacts, "")
 
-			merged, err := db.GetTask(ctx, orgID, taskMerged.ID)
+			merged, err := db.GetTask(ctx, nsID, taskMerged.ID)
 			if err != nil {
 				t.Fatalf("get merged task: %v", err)
 			}
-			split, err := db.GetTask(ctx, orgID, taskSplit.ID)
+			split, err := db.GetTask(ctx, nsID, taskSplit.ID)
 			if err != nil {
 				t.Fatalf("get split task: %v", err)
 			}
@@ -433,20 +433,20 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 func TestLeaseAndAssignMatchesSplitWrites(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
-	capv := mkCap(orgID, "review", 1, []string{"fix"})
+	nsID, _ := newTestNS(t, db)
+	capv := mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, capv); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	nodeMerged := mkTxMergeNode(t, db, orgID, capv, "mbp-merged")
-	nodeSplit := mkTxMergeNode(t, db, orgID, capv, "mbp-split")
-	taskMerged := mkTxMergeTask(t, db, orgID, "trace_merged", capv)
-	taskSplit := mkTxMergeTask(t, db, orgID, "trace_split", capv)
+	nodeMerged := mkTxMergeNode(t, db, nsID, capv, "mbp-merged")
+	nodeSplit := mkTxMergeNode(t, db, nsID, capv, "mbp-split")
+	taskMerged := mkTxMergeTask(t, db, nsID, "trace_merged", capv)
+	taskSplit := mkTxMergeTask(t, db, nsID, "trace_split", capv)
 
 	lease := Now() + 3600
 
 	// 合并路径：一次调用写完槽位 + 状态 + 归属
-	instMerged, err := db.LeaseAndAssign(ctx, orgID, taskMerged.ID, nodeMerged, lease)
+	instMerged, err := db.LeaseAndAssign(ctx, nsID, taskMerged.ID, nodeMerged, lease)
 	if err != nil {
 		t.Fatalf("LeaseAndAssign: %v", err)
 	}
@@ -455,15 +455,15 @@ func TestLeaseAndAssignMatchesSplitWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lease instance: %v", err)
 	}
-	if err := db.AssignTask(ctx, orgID, taskSplit.ID, nodeSplit, instSplit, lease); err != nil {
+	if err := db.AssignTask(ctx, nsID, taskSplit.ID, nodeSplit, instSplit, lease); err != nil {
 		t.Fatalf("assign task: %v", err)
 	}
 
-	merged, err := db.GetTask(ctx, orgID, taskMerged.ID)
+	merged, err := db.GetTask(ctx, nsID, taskMerged.ID)
 	if err != nil {
 		t.Fatalf("get merged task: %v", err)
 	}
-	split, err := db.GetTask(ctx, orgID, taskSplit.ID)
+	split, err := db.GetTask(ctx, nsID, taskSplit.ID)
 	if err != nil {
 		t.Fatalf("get split task: %v", err)
 	}
@@ -529,39 +529,39 @@ func TestLeaseAndAssignMatchesSplitWrites(t *testing.T) {
 func TestProgressTaskMatchesSplitWrites(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
-	capv := mkCap(orgID, "review", 1, []string{"fix"})
+	nsID, _ := newTestNS(t, db)
+	capv := mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, capv); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	nodeMerged := mkTxMergeNode(t, db, orgID, capv, "mbp-merged")
-	nodeSplit := mkTxMergeNode(t, db, orgID, capv, "mbp-split")
-	taskMerged := mkTxMergeTask(t, db, orgID, "trace_merged", capv)
-	taskSplit := mkTxMergeTask(t, db, orgID, "trace_split", capv)
+	nodeMerged := mkTxMergeNode(t, db, nsID, capv, "mbp-merged")
+	nodeSplit := mkTxMergeNode(t, db, nsID, capv, "mbp-split")
+	taskMerged := mkTxMergeTask(t, db, nsID, "trace_merged", capv)
+	taskSplit := mkTxMergeTask(t, db, nsID, "trace_split", capv)
 
 	lease := Now() + 3600
-	driveToAckedWithLease(t, db, orgID, nodeMerged, taskMerged, lease)
-	driveToAckedWithLease(t, db, orgID, nodeSplit, taskSplit, lease)
+	driveToAckedWithLease(t, db, nsID, nodeMerged, taskMerged, lease)
+	driveToAckedWithLease(t, db, nsID, nodeSplit, taskSplit, lease)
 
 	progressedLease := Now() + 1800
 
 	// 合并路径：一次 ProgressTask（→running + started_at + 续租，一个事务）
-	if err := db.ProgressTask(ctx, orgID, taskMerged.ID, progressedLease); err != nil {
+	if err := db.ProgressTask(ctx, nsID, taskMerged.ID, progressedLease); err != nil {
 		t.Fatalf("ProgressTask: %v", err)
 	}
 	// 对照组：旧的两步
-	if err := db.StartTask(ctx, orgID, taskSplit.ID); err != nil {
+	if err := db.StartTask(ctx, nsID, taskSplit.ID); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
-	if err := db.ExtendLease(ctx, orgID, taskSplit.ID, progressedLease); err != nil {
+	if err := db.ExtendLease(ctx, nsID, taskSplit.ID, progressedLease); err != nil {
 		t.Fatalf("extend lease: %v", err)
 	}
 
-	merged, err := db.GetTask(ctx, orgID, taskMerged.ID)
+	merged, err := db.GetTask(ctx, nsID, taskMerged.ID)
 	if err != nil {
 		t.Fatalf("get merged task: %v", err)
 	}
-	split, err := db.GetTask(ctx, orgID, taskSplit.ID)
+	split, err := db.GetTask(ctx, nsID, taskSplit.ID)
 	if err != nil {
 		t.Fatalf("get split task: %v", err)
 	}
@@ -593,24 +593,24 @@ func TestProgressTaskMatchesSplitWrites(t *testing.T) {
 	t.Run("keeps_started_at_and_is_idempotent", func(t *testing.T) {
 		ctx := context.Background()
 		db2 := newTestDB(t)
-		org2, _ := newTestOrg(t, db2)
-		cap2 := mkCap(org2, "review", 1, []string{"fix"})
+		ns2, _ := newTestNS(t, db2)
+		cap2 := mkCap(ns2, "review", 1, []string{"fix"})
 		if err := db2.CreateCapability(ctx, cap2); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
-		nodeID := mkTxMergeNode(t, db2, org2, cap2, "mbp")
-		task := mkTxMergeTask(t, db2, org2, "trace_again", cap2)
+		nodeID := mkTxMergeNode(t, db2, ns2, cap2, "mbp")
+		task := mkTxMergeTask(t, db2, ns2, "trace_again", cap2)
 
 		lease1 := Now() + 3600
-		driveToAckedWithLease(t, db2, org2, nodeID, task, lease1)
+		driveToAckedWithLease(t, db2, ns2, nodeID, task, lease1)
 		// 人为把 started_at 钉成过去的固定值：COALESCE 语义要求它**不被覆盖**
 		mustExec(t, db2, `UPDATE tasks SET started_at = ? WHERE id = ?`, pinnedStartAt, task.ID)
 
 		firstLease := Now() + 1800
-		if err := db2.ProgressTask(ctx, org2, task.ID, firstLease); err != nil {
+		if err := db2.ProgressTask(ctx, ns2, task.ID, firstLease); err != nil {
 			t.Fatalf("first ProgressTask: %v", err)
 		}
-		got, err := db2.GetTask(ctx, org2, task.ID)
+		got, err := db2.GetTask(ctx, ns2, task.ID)
 		if err != nil {
 			t.Fatalf("get task: %v", err)
 		}
@@ -627,10 +627,10 @@ func TestProgressTaskMatchesSplitWrites(t *testing.T) {
 
 		// 第二条 progress 帧：状态已是 running，必须幂等（不报错）且仍续租
 		secondLease := firstLease + 60
-		if err := db2.ProgressTask(ctx, org2, task.ID, secondLease); err != nil {
+		if err := db2.ProgressTask(ctx, ns2, task.ID, secondLease); err != nil {
 			t.Fatalf("第二条 progress 帧必须幂等，却报错: %v", err)
 		}
-		got2, err := db2.GetTask(ctx, org2, task.ID)
+		got2, err := db2.GetTask(ctx, ns2, task.ID)
 		if err != nil {
 			t.Fatalf("get task after second progress: %v", err)
 		}
@@ -658,32 +658,32 @@ func TestProgressTaskMatchesSplitWrites(t *testing.T) {
 func TestLeaseAndAssignGuardFailureDoesNotLeakSlot(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
-	orgID, _ := newTestOrg(t, db)
-	capv := mkCap(orgID, "review", 1, []string{"fix"})
+	nsID, _ := newTestNS(t, db)
+	capv := mkCap(nsID, "review", 1, []string{"fix"})
 	if err := db.CreateCapability(ctx, capv); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
-	nodeID := mkTxMergeNode(t, db, orgID, capv, "mbp")
-	nonPending := mkTxMergeTask(t, db, orgID, "trace_nonpending", capv)
+	nodeID := mkTxMergeNode(t, db, nsID, capv, "mbp")
+	nonPending := mkTxMergeTask(t, db, nsID, "trace_nonpending", capv)
 	// 先把任务挪出 pending（不占槽位，只改状态）：派发入口只接受 pending
-	if err := db.Transition(ctx, orgID, nonPending.ID, TaskPending, TaskAssigned); err != nil {
+	if err := db.Transition(ctx, nsID, nonPending.ID, TaskPending, TaskAssigned); err != nil {
 		t.Fatalf("prep: pending → assigned: %v", err)
 	}
 
 	lease := Now() + 3600
-	if _, err := db.LeaseAndAssign(ctx, orgID, nonPending.ID, nodeID, lease); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := db.LeaseAndAssign(ctx, nsID, nonPending.ID, nodeID, lease); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("非 pending 任务 LeaseAndAssign err = %v, want ErrInvalidTransition", err)
 	}
 
 	// 槽位没有泄漏：这台机器只有 1 个槽位，再派一条 pending 任务必须成功
-	okTask := mkTxMergeTask(t, db, orgID, "trace_ok", capv)
-	if _, err := db.LeaseAndAssign(ctx, orgID, okTask.ID, nodeID, lease); err != nil {
+	okTask := mkTxMergeTask(t, db, nsID, "trace_ok", capv)
+	if _, err := db.LeaseAndAssign(ctx, nsID, okTask.ID, nodeID, lease); err != nil {
 		t.Fatalf("守卫失败后容量不可用（槽位泄漏了）: %v", err)
 	}
 	assertSlotOfTask(t, db, nodeID, okTask.ID)
 
 	// 失败那条任务必须一个字都没被写（整事务回滚）：状态、归属、attempts 都不变
-	failed, err := db.GetTask(ctx, orgID, nonPending.ID)
+	failed, err := db.GetTask(ctx, nsID, nonPending.ID)
 	if err != nil {
 		t.Fatalf("get non-pending task: %v", err)
 	}
@@ -706,16 +706,16 @@ func TestLeaseAndAssignGuardFailureDoesNotLeakSlot(t *testing.T) {
 // 悄悄改掉已经结束的任务、或者释放别人的槽位。
 func TestReportResultRejectsTerminalTaskWithoutTouchingSlot(t *testing.T) {
 	ctx := context.Background()
-	db, orgID, nodeID, _, task := setupRunningTask(t)
+	db, nsID, nodeID, _, task := setupRunningTask(t)
 
 	// 直接推进到终态（Transition 只管状态，不碰槽位）→ 制造「终态但槽位还占着」
-	if err := db.Transition(ctx, orgID, task.ID, TaskRunning, TaskSucceeded); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskRunning, TaskSucceeded); err != nil {
 		t.Fatalf("transition to succeeded: %v", err)
 	}
 	assertSlotOfTask(t, db, nodeID, task.ID) // 前置：槽位此时仍被该任务占着
 
 	out := "fix"
-	err := db.ReportResult(ctx, orgID, task.ID, TaskSucceeded, &out, true, "再来一次", []string{"x"}, "")
+	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, true, "再来一次", []string{"x"}, "")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态任务 ReportResult err = %v, want ErrInvalidTransition", err)
 	}
@@ -723,7 +723,7 @@ func TestReportResultRejectsTerminalTaskWithoutTouchingSlot(t *testing.T) {
 	// 槽位状态一点都不能被改动
 	assertSlotOfTask(t, db, nodeID, task.ID)
 	// 结果字段也不能被第二次报告覆盖
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -742,16 +742,16 @@ func TestReportResultRejectsTerminalTaskWithoutTouchingSlot(t *testing.T) {
 // 丢掉这个条件就会把别人正在跑的任务的槽位清空 → 同一台机器超并发执行。
 func TestReportResultDoesNotReleaseForeignSlot(t *testing.T) {
 	ctx := context.Background()
-	db, orgID, nodeID, _, task := setupRunningTask(t)
+	db, nsID, nodeID, _, task := setupRunningTask(t)
 
 	const foreignTask = "tsk_someone_else"
 	mustExec(t, db, `UPDATE node_instances SET busy_task = ? WHERE node_id = ?`, foreignTask, nodeID)
 
 	out := "fix"
-	if err := db.ReportResult(ctx, orgID, task.ID, TaskSucceeded, &out, true, "done", nil, ""); err != nil {
+	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, true, "done", nil, ""); err != nil {
 		t.Fatalf("ReportResult: %v", err)
 	}
-	got, err := db.GetTask(ctx, orgID, task.ID)
+	got, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -775,12 +775,12 @@ func TestReportResultDoesNotReleaseForeignSlot(t *testing.T) {
 // 会被迟到的 progress 帧续上租约，前端就从「已完成」变成「跑着」。
 func TestProgressTaskRejectsTerminalTask(t *testing.T) {
 	ctx := context.Background()
-	db, orgID, _, _, task := setupRunningTask(t)
+	db, nsID, _, _, task := setupRunningTask(t)
 
-	if err := db.Transition(ctx, orgID, task.ID, TaskRunning, TaskSucceeded); err != nil {
+	if err := db.Transition(ctx, nsID, task.ID, TaskRunning, TaskSucceeded); err != nil {
 		t.Fatalf("transition to succeeded: %v", err)
 	}
-	before, err := db.GetTask(ctx, orgID, task.ID)
+	before, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -788,12 +788,12 @@ func TestProgressTaskRejectsTerminalTask(t *testing.T) {
 		t.Fatalf("前置不成立：running → succeeded 后 lease_until 不该是 NULL")
 	}
 
-	err = db.ProgressTask(ctx, orgID, task.ID, Now()+9999)
+	err = db.ProgressTask(ctx, nsID, task.ID, Now()+9999)
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态任务 ProgressTask err = %v, want ErrInvalidTransition（不能静默成功）", err)
 	}
 
-	after, err := db.GetTask(ctx, orgID, task.ID)
+	after, err := db.GetTask(ctx, nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task after progress: %v", err)
 	}

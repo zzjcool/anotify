@@ -31,9 +31,15 @@ type Store interface {
 	// 判定条件：status=pending 且 capability 是内置 Central 能力。
 	// 领到后推进到 running（跳过 assigned/acked：没有节点参与，那两个
 	// 状态是"等节点接单/开始"的意思，对中枢执行没有意义）。
+	//
+	// **全局扫描**：中枢任务没有节点，而命名空间不参与「谁能执行」的判定，
+	// 所以不按命名空间过滤；领到后每条任务自己带 NamespaceID，后续写入都按它。
 	ClaimCentralTasks(ctx context.Context, limit int) ([]*store.Task, error)
 	// FinishTask 把 running 任务推进到终态并写回报。
-	FinishTask(ctx context.Context, orgID, taskID, status string, out *string, reported bool, summary, errMsg string) error
+	//
+	// namespaceID 必须来自 task.NamespaceID：中枢执行是全局的，但每条任务的
+	// 终态写入仍只在它自己的命名空间内生效（I10）。
+	FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, reported bool, summary, errMsg string) error
 	// CentralCapabilityNames 返回中枢执行的能力名（用于挑选待办）。
 	CentralCapabilityNames() []string
 }
@@ -111,7 +117,7 @@ func (e *Executor) Tick(ctx context.Context) {
 			)
 			// 执行失败要落成 failed 终态，不能静默留在 running——
 			// 否则任务会卡到租约巡检，而中枢任务没有租约。
-			if ferr := e.Store.FinishTask(ctx, task.OrgID, task.ID,
+			if ferr := e.Store.FinishTask(ctx, task.NamespaceID, task.ID,
 				store.TaskFailed, nil, false, "", err.Error()); ferr != nil {
 				slog.Error("mark central task failed",
 					"event", "executor.mark_failed",
@@ -166,7 +172,7 @@ func (e *Executor) runNotifyPhone(ctx context.Context, task *store.Task) error {
 	// out 三态（不变量 I5）：notify.phone 是终端能力，没有出口，
 	// 所以回报 reported=1 且 out=nil，表示"已回报，到头了"。
 	summary := fmt.Sprintf("pushed to %d device(s)", sent)
-	if err := e.Store.FinishTask(ctx, task.OrgID, task.ID,
+	if err := e.Store.FinishTask(ctx, task.NamespaceID, task.ID,
 		store.TaskSucceeded, nil, true, summary, ""); err != nil {
 		return fmt.Errorf("mark notify.phone succeeded: %w", err)
 	}

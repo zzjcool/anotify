@@ -243,9 +243,19 @@ func migrateEdgesFromSource(tx *sql.Tx) error {
 //   - SQLite 不能改主键/唯一约束（`UNIQUE(org_id, name, version)` → `(namespace_id, ...)`）
 //   - SQLite 不能给已有表 ADD COLUMN 时带 REFERENCES（级联删命名空间靠它）
 //
-// 外键：整个重建过程用 `PRAGMA defer_foreign_keys=TRUE` 把检查推迟到提交时刻。
-// 那条 PRAGMA 允许出现在事务里（`foreign_keys` 不允许，它是 no-op），
-// 而重建中途必然出现「父表已换、子表还没换」的瞬间；提交时终态一致即可。
+// 重建过程有两个坑，都会**静默丢行**，所以两个 PRAGMA 都是必须的：
+//
+//  1. `foreign_keys=ON` 时 `DROP TABLE` 会先隐式 DELETE 全部行，而那条 DELETE
+//     会触发子表的 `ON DELETE CASCADE` —— 于是"删父表"顺手清空了还没搬走的子表行。
+//     `PRAGMA foreign_keys=OFF` 在事务里是 no-op，所以改用**先改名再删**：
+//     `ALTER TABLE t RENAME TO t_old` → 建新 t → 搬数据 → `DROP TABLE t_old`。
+//     子表的外键子句仍然指向 `t`（见第 2 点），而 `t_old` 没有子表 → 删它不级联。
+//
+//  2. SQLite ≥3.25 的 RENAME 会**重写其它表里的外键引用**（把 references t 改成 t_old）。
+//     `PRAGMA legacy_alter_table=ON` 关掉这个行为，子表继续指向 `t`。
+//
+//     外键检查本身再用 `PRAGMA defer_foreign_keys=TRUE` 推迟到提交时刻：
+//     重建中途必然出现"父表已换、子表还没换"的瞬间，提交时终态一致即可。
 //
 // 幂等：以 capability_versions.namespace_id 是否存在作为「已迁移」判据。
 func migrateNamespaces(tx *sql.Tx) error {
@@ -279,9 +289,20 @@ func migrateNamespaces(tx *sql.Tx) error {
 		return err
 	}
 
-	// ② 逐表重建（顺序：父表在前，子表的 namespace_id 从父行取）。
+	// ② 三段式重建：搬进 stage（回填 namespace_id）→ 删旧表 → 建新表回灌。
+	//    namespace_id 必须在**旧表还在**的时候回填（子表要沿 node_id/source_id 找父行）。
 	for _, t := range nsRebuilds {
-		if err := rebuildForNamespaces(tx, t); err != nil {
+		if err := stageForNamespaces(tx, t); err != nil {
+			return err
+		}
+	}
+	for _, name := range nsDropOrder {
+		if err := dropOldForNamespaces(tx, name); err != nil {
+			return err
+		}
+	}
+	for _, t := range nsRebuilds {
+		if err := restoreForNamespaces(tx, t); err != nil {
 			return err
 		}
 	}
@@ -306,10 +327,20 @@ type nsRebuild struct {
 // defaultNSExpr 取「该行 org 的默认命名空间」——老数据的 namespace_id 全部回填到它。
 const defaultNSExpr = `(SELECT ns.id FROM namespaces ns WHERE ns.org_id = t.org_id ORDER BY ns.created_at, ns.id LIMIT 1)`
 
+// nsOfNodeExpr / nsOfSourceExpr 是**子表**的回填写法：子表自己没有 org_id，
+// 沿父行（nodes / sources）找它的 org，再取该 org 的默认命名空间。
+//
+// 注意这里必须用父表的 org_id 而不是 `nd.namespace_id`：stage 阶段读的是**旧表**，
+// 那时 nodes/sources 还没有 namespace_id 列（迁移正是要加它）。
+const (
+	nsOfNodeExpr   = `(SELECT ns.id FROM nodes nd, namespaces ns WHERE nd.id = t.node_id AND ns.org_id = nd.org_id ORDER BY ns.created_at, ns.id LIMIT 1)`
+	nsOfSourceExpr = `(SELECT ns.id FROM sources s, namespaces ns WHERE s.id = t.source_id AND ns.org_id = s.org_id ORDER BY ns.created_at, ns.id LIMIT 1)`
+)
+
 var nsRebuilds = []nsRebuild{
 	{
 		table: "capability_versions",
-		create: `CREATE TABLE capability_versions_ns (
+		create: `CREATE TABLE capability_versions (
 			id            TEXT PRIMARY KEY,
 			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -334,7 +365,7 @@ var nsRebuilds = []nsRebuild{
 	},
 	{
 		table: "nodes",
-		create: `CREATE TABLE nodes_ns (
+		create: `CREATE TABLE nodes (
 			id              TEXT PRIMARY KEY,
 			namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -353,7 +384,7 @@ var nsRebuilds = []nsRebuild{
 	},
 	{
 		table: "node_capabilities",
-		create: `CREATE TABLE node_capabilities_ns (
+		create: `CREATE TABLE node_capabilities (
 			node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
 			capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
 			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
@@ -361,14 +392,14 @@ var nsRebuilds = []nsRebuild{
 			PRIMARY KEY (node_id, capability_id)
 		)`,
 		cols:   []string{"node_id", "capability_id", "run_spec"},
-		nsExpr: `(SELECT nd.namespace_id FROM nodes nd WHERE nd.id = t.node_id)`,
+		nsExpr: nsOfNodeExpr,
 		indexes: []string{
 			`CREATE INDEX IF NOT EXISTS idx_nodecap_cap ON node_capabilities(capability_id)`,
 		},
 	},
 	{
 		table: "node_instances",
-		create: `CREATE TABLE node_instances_ns (
+		create: `CREATE TABLE node_instances (
 			id           TEXT PRIMARY KEY,
 			node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
 			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
@@ -380,11 +411,11 @@ var nsRebuilds = []nsRebuild{
 			UNIQUE (node_id, slot)
 		)`,
 		cols:   []string{"id", "node_id", "slot", "concurrency", "busy_task", "alive", "updated_at"},
-		nsExpr: `(SELECT nd.namespace_id FROM nodes nd WHERE nd.id = t.node_id)`,
+		nsExpr: nsOfNodeExpr,
 	},
 	{
 		table: "node_pins",
-		create: `CREATE TABLE node_pins_ns (
+		create: `CREATE TABLE node_pins (
 			sticky_key   TEXT PRIMARY KEY,
 			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -394,11 +425,11 @@ var nsRebuilds = []nsRebuild{
 			last_used_at INTEGER NOT NULL
 		)`,
 		cols:   []string{"sticky_key", "org_id", "node_id", "selector", "created_at", "last_used_at"},
-		nsExpr: `(SELECT nd.namespace_id FROM nodes nd WHERE nd.id = t.node_id)`,
+		nsExpr: nsOfNodeExpr,
 	},
 	{
 		table: "edges",
-		create: `CREATE TABLE edges_ns (
+		create: `CREATE TABLE edges (
 			namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
 			from_is_source  INTEGER NOT NULL DEFAULT 0,
@@ -417,7 +448,7 @@ var nsRebuilds = []nsRebuild{
 	},
 	{
 		table: "sources",
-		create: `CREATE TABLE sources_ns (
+		create: `CREATE TABLE sources (
 			id            TEXT PRIMARY KEY,
 			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -439,7 +470,7 @@ var nsRebuilds = []nsRebuild{
 	},
 	{
 		table: "source_targets",
-		create: `CREATE TABLE source_targets_ns (
+		create: `CREATE TABLE source_targets (
 			source_id     TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
 			capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
 			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
@@ -448,14 +479,14 @@ var nsRebuilds = []nsRebuild{
 			PRIMARY KEY (source_id, capability_id)
 		)`,
 		cols:   []string{"source_id", "capability_id", "params", "created_at"},
-		nsExpr: `(SELECT s.namespace_id FROM sources s WHERE s.id = t.source_id)`,
+		nsExpr: nsOfSourceExpr,
 		indexes: []string{
 			`CREATE INDEX IF NOT EXISTS idx_src_targets_cap ON source_targets(capability_id)`,
 		},
 	},
 	{
 		table: "events",
-		create: `CREATE TABLE events_ns (
+		create: `CREATE TABLE events (
 			id           TEXT PRIMARY KEY,
 			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -477,7 +508,7 @@ var nsRebuilds = []nsRebuild{
 	},
 	{
 		table: "tasks",
-		create: `CREATE TABLE tasks_ns (
+		create: `CREATE TABLE tasks (
 			id             TEXT PRIMARY KEY,
 			namespace_id   TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id         TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -518,7 +549,7 @@ var nsRebuilds = []nsRebuild{
 	},
 	{
 		table: "graph_versions",
-		create: `CREATE TABLE graph_versions_ns (
+		create: `CREATE TABLE graph_versions (
 			id           TEXT PRIMARY KEY,
 			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
 			org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -532,8 +563,11 @@ var nsRebuilds = []nsRebuild{
 	},
 }
 
-// rebuildForNamespaces 重建一张表：新表 → 搬数据（回填 namespace_id）→ 删旧 → 改名 → 建索引。
-func rebuildForNamespaces(tx *sql.Tx, t nsRebuild) error {
+// stageForNamespaces 把一张表的数据 + 回填后的 namespace_id 搬进无约束的 `<t>_stage`。
+//
+// 为什么用 `CREATE TABLE ... AS SELECT` 而不是带类型的建表：stage 只是过一手数据，
+// 不需要约束/类型（SQLite 本就是动态类型）。少了约束，删旧表时的级联删除就碰不到它。
+func stageForNamespaces(tx *sql.Tx, t nsRebuild) error {
 	exists, err := hasTable(tx, t.table)
 	if err != nil {
 		return err
@@ -541,24 +575,81 @@ func rebuildForNamespaces(tx *sql.Tx, t nsRebuild) error {
 	if !exists {
 		return nil // 防御：表不存在说明无事可做（正常路径不会发生）
 	}
-	newName := t.table + "_ns"
-	_ = newName
+	stmts := []string{
+		fmt.Sprintf(`DROP TABLE IF EXISTS %s_stage`, t.table),
+		fmt.Sprintf(`CREATE TABLE %s_stage AS
+			SELECT %s, %s AS namespace_id FROM %s t`,
+			t.table, prefixedCols(t.cols), t.nsExpr, t.table),
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("stage %s for namespaces: %w", t.table, err)
+		}
+	}
+	return nil
+}
+
+// dropOldForNamespaces 删掉旧表。
+//
+// 按 nsRebuilds 的**逆序**删（子表在前）：父表的隐式 DELETE 会级联删子表行，
+// 而那些子表本来也要删；先删子表能让级联无事可做，也避免任何顺序假设。
+func dropOldForNamespaces(tx *sql.Tx, table string) error {
+	exists, err := hasTable(tx, table)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE %s`, table)); err != nil {
+		return fmt.Errorf("drop old %s for namespaces: %w", table, err)
+	}
+	return nil
+}
+
+// restoreForNamespaces 按新定义建表，从 stage 回灌数据，重建索引，最后删 stage。
+func restoreForNamespaces(tx *sql.Tx, t nsRebuild) error {
+	exists, err := hasTable(tx, t.table+"_stage")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
 	colList := strings.Join(t.cols, ", ")
 	stmts := []string{
 		t.create,
-		fmt.Sprintf(`INSERT INTO %s_ns (%s, namespace_id)
-			SELECT %s, %s FROM %s t`,
-			t.table, colList, prefixedCols(t.cols), t.nsExpr, t.table),
-		fmt.Sprintf(`DROP TABLE %s`, t.table),
-		fmt.Sprintf(`ALTER TABLE %s_ns RENAME TO %s`, t.table, t.table),
+		fmt.Sprintf(`INSERT INTO %s (%s, namespace_id)
+			SELECT %s, namespace_id FROM %s_stage`,
+			t.table, colList, colList, t.table),
+		fmt.Sprintf(`DROP TABLE %s_stage`, t.table),
 	}
 	stmts = append(stmts, t.indexes...)
 	for _, q := range stmts {
 		if _, err := tx.Exec(q); err != nil {
-			return fmt.Errorf("rebuild %s for namespaces: %w", t.table, err)
+			return fmt.Errorf("restore %s for namespaces: %w", t.table, err)
 		}
 	}
 	return nil
+}
+
+// nsDropOrder 是**删旧表的顺序**：必须先删所有引用者，再删被引用者。
+//
+// 为什么不能随便删：SQLite 每次 prepare 都会解析整个 schema，只要还剩一张表
+// 的外键子句指向已经删掉的表，连 `DROP TABLE` 自己都会报
+// 「no such table: main.<parent>」。所以顺序 = 依赖图的逆拓扑序（能力/节点最后删）。
+var nsDropOrder = []string{
+	"node_capabilities",   // → nodes, capability_versions
+	"node_instances",      // → nodes
+	"node_pins",           // → nodes
+	"source_targets",      // → sources, capability_versions
+	"edges",               // → capability_versions
+	"tasks",               // → capability_versions
+	"sources",             // → orgs
+	"nodes",               // → orgs
+	"capability_versions", // → orgs
+	"events",              // → orgs
+	"graph_versions",      // → orgs
 }
 
 // prefixedCols 给列名加旧表别名前缀（`id` → `t.id`），避免 SELECT 里子查询撞名。

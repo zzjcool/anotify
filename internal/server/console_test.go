@@ -22,6 +22,9 @@ type consoleEnv struct {
 	svc    *auth.Service
 	userID string
 	orgID  string
+	// nsID 是本组织的**默认命名空间**（#162：资源端点必须显式带 namespaceId）。
+	// 不硬编码：从 db 取（slug=default 的那个）。
+	nsID   string
 	cookie *http.Cookie
 }
 
@@ -61,15 +64,27 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 		t.Fatalf("create session: %v", err)
 	}
 
+	// #162：建组织时同事务建了 default 命名空间，资源端点都作用于它。
+	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("default namespace: %v", err)
+	}
+
 	h := &consoleHandler{db: db, auth: svc}
+	// /v1/stats 也是命名空间级资源（契约 §6.2）：注入同一套解析函数，
+	// 与生产 mux 的接线一致（否则测试测的是一套不存在的错误码映射）。
+	statsH := &statsHandler{db: db, resolveOrg: h.resolveOrg, resolveNamespace: h.resolveNamespace}
 	sessMW := svc.Sessions().Middleware
 	mux := http.NewServeMux()
+	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(h.tasks))))
+	mux.Handle("GET /v1/tasks/{id}", noStore(sessMW(http.HandlerFunc(h.task))))
 	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(h.trace))))
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(h.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(h.cancelTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
+	mux.Handle("PATCH /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
 	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
@@ -78,9 +93,33 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(h.drainNode))))
 
 	return &consoleEnv{
-		mux: mux, db: db, svc: svc, userID: uid, orgID: org.ID,
+		mux: mux, db: db, svc: svc, userID: uid, orgID: org.ID, nsID: nsID,
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 	}
+}
+
+// withNS 给路径带上默认命名空间（#162：资源端点缺 namespaceId → 400）。
+func (e *consoleEnv) withNS(path string) string {
+	return withNSID(path, e.nsID)
+}
+
+// withNSID 给路径带上指定命名空间（`*` 也走它，方便写「写端点用 * → 400」的用例）。
+func withNSID(path, nsID string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "namespaceId=" + nsID
+}
+
+// seedNamespace 在本组织里新建一个命名空间（用于隔离用例）。
+func (e *consoleEnv) seedNamespace(t *testing.T, slug, name string) *store.Namespace {
+	t.Helper()
+	ns, err := e.db.CreateNamespace(context.Background(), e.orgID, slug, name)
+	if err != nil {
+		t.Fatalf("create namespace %s: %v", slug, err)
+	}
+	return ns
 }
 
 // do 发一个带会话 Cookie 的请求。
@@ -118,11 +157,21 @@ func decode(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	return m
 }
 
-// seedCapability 建一个能力定义，返回它。
+// seedCapability 建一个能力定义（默认命名空间），返回它。
 func (e *consoleEnv) seedCapability(t *testing.T, name string, version int, outputs []string) *store.CapabilityVersion {
 	t.Helper()
+	return e.seedCapabilityIn(t, e.nsID, name, version, outputs)
+}
+
+// seedCapabilityIn 在指定命名空间里建一个能力定义。
+//
+// OrgID 故意不填：store 从 namespace_id 派生并覆盖（I10 的构造保证）。
+func (e *consoleEnv) seedCapabilityIn(
+	t *testing.T, nsID, name string, version int, outputs []string,
+) *store.CapabilityVersion {
+	t.Helper()
 	c := &store.CapabilityVersion{
-		OrgID: e.orgID, Name: name, Version: version,
+		NamespaceID: nsID, Name: name, Version: version,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      outputs, Source: store.CapSourceBuiltin,
 	}
@@ -150,7 +199,7 @@ func TestEmptyListIsArray(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			rr := env.do(t, http.MethodGet, c.path, nil)
+			rr := env.do(t, http.MethodGet, env.withNS(c.path), nil)
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 			}
@@ -183,6 +232,7 @@ func TestEdgePortNotInOutputs(t *testing.T) {
 	to := env.seedCapability(t, "fix", 1, nil)
 
 	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
+		NamespaceID:    env.nsID,
 		FromCapability: from.ID,
 		FromPort:       "clean", // 不在 outputs 里（只有 fix）
 		ToCapability:   to.ID,
@@ -204,14 +254,18 @@ func TestEdgeCreateAndDelete(t *testing.T) {
 
 	// 建
 	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
+		NamespaceID:    env.nsID,
 		FromCapability: from.ID, FromPort: "fix", ToCapability: to.ID,
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
+	if edgeObj, _ := decode(t, rr)["edge"].(map[string]any); edgeObj["namespaceId"] != env.nsID {
+		t.Fatalf("创建响应里 edge.namespaceId = %v, want %v", edgeObj["namespaceId"], env.nsID)
+	}
 
 	// 列
-	rr = env.do(t, http.MethodGet, "/v1/edges", nil)
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/edges"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list status = %d", rr.Code)
 	}
@@ -220,15 +274,19 @@ func TestEdgeCreateAndDelete(t *testing.T) {
 	if len(edges) != 1 {
 		t.Fatalf("edges = %d, want 1", len(edges))
 	}
+	// 边必须标清自己属于哪个命名空间（跨命名空间汇总时靠它区分）
+	if obj, _ := edges[0].(map[string]any); obj["namespaceId"] != env.nsID {
+		t.Fatalf("edge.namespaceId = %v, want %v", obj["namespaceId"], env.nsID)
+	}
 
 	// 删
-	path := "/v1/edges?fromCapability=" + from.ID + "&fromPort=fix&toCapability=" + to.ID
+	path := env.withNS("/v1/edges?fromCapability=" + from.ID + "&fromPort=fix&toCapability=" + to.ID)
 	rr = env.do(t, http.MethodDelete, path, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body=%s", rr.Code, rr.Body.String())
 	}
 	// 再列应为空
-	rr = env.do(t, http.MethodGet, "/v1/edges", nil)
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/edges"), nil)
 	m = decode(t, rr)
 	edges, _ = m["edges"].([]any)
 	if len(edges) != 0 {
@@ -236,18 +294,22 @@ func TestEdgeCreateAndDelete(t *testing.T) {
 	}
 }
 
-// TestEdgeCrossOrgRejected 跨组织的边 → 400（契约 §1.2）。
+// TestEdgeCrossOrgRejected 跨组织（跨命名空间）的边 → 400（契约 §1.2 / I11）。
 func TestEdgeCrossOrgRejected(t *testing.T) {
 	env := newConsoleEnv(t)
 	from := env.seedCapability(t, "review", 1, []string{"fix"})
 
-	// 另一个组织的能力
+	// 另一个组织（因此是另一片命名空间）里的能力
 	other, err := env.db.CreateOrg(context.Background(), "other-"+store.NewOrgID())
 	if err != nil {
 		t.Fatalf("create other org: %v", err)
 	}
+	otherNS, err := env.db.DefaultNamespaceID(context.Background(), other.ID)
+	if err != nil {
+		t.Fatalf("other org default namespace: %v", err)
+	}
 	foreign := &store.CapabilityVersion{
-		OrgID: other.ID, Name: "fix", Version: 1,
+		NamespaceID: otherNS, Name: "fix", Version: 1,
 		ParamsSchema: json.RawMessage(`{}`), Source: store.CapSourceBuiltin,
 	}
 	if err := env.db.CreateCapability(context.Background(), foreign); err != nil {
@@ -255,10 +317,11 @@ func TestEdgeCrossOrgRejected(t *testing.T) {
 	}
 
 	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
+		NamespaceID:    env.nsID,
 		FromCapability: from.ID, FromPort: "fix", ToCapability: foreign.ID,
 	})
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (cross-org edge); body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("status = %d, want 400 (cross-namespace edge); body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -273,8 +336,12 @@ func TestOrgIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other org: %v", err)
 	}
+	otherNS, err := env.db.DefaultNamespaceID(context.Background(), other.ID)
+	if err != nil {
+		t.Fatalf("other org default namespace: %v", err)
+	}
 	foreignCap := &store.CapabilityVersion{
-		OrgID: other.ID, Name: "secret-cap", Version: 1,
+		NamespaceID: otherNS, Name: "secret-cap", Version: 1,
 		ParamsSchema: json.RawMessage(`{}`), Source: store.CapSourceBuiltin,
 	}
 	if err := env.db.CreateCapability(context.Background(), foreignCap); err != nil {
@@ -302,7 +369,7 @@ func TestOrgIsolation(t *testing.T) {
 	}
 
 	// 访问自己的组织 → 200，且只能看到自己的能力
-	rr = env.do(t, http.MethodGet, "/v1/capabilities?orgId="+env.orgID, nil)
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/capabilities?orgId="+env.orgID), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("own org status = %d", rr.Code)
 	}
@@ -332,7 +399,7 @@ func TestCapabilityCreate(t *testing.T) {
 
 	// 第一次：不给 version → 自动 1
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
-		Name: "review", Outputs: []string{"fix"},
+		NamespaceID: env.nsID, Name: "review", Outputs: []string{"fix"},
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
@@ -345,6 +412,10 @@ func TestCapabilityCreate(t *testing.T) {
 	if capObj["contentHash"] == "" || capObj["contentHash"] == nil {
 		t.Fatal("contentHash was not computed")
 	}
+	if capObj["namespaceId"] != env.nsID {
+		t.Fatalf("capability.namespaceId = %v, want %v（资源响应必须带归属）",
+			capObj["namespaceId"], env.nsID)
+	}
 	// kind：没有节点声明 → origin
 	if m["kind"] != "origin" {
 		t.Fatalf("kind = %v, want origin (no node declares it)", m["kind"])
@@ -352,7 +423,7 @@ func TestCapabilityCreate(t *testing.T) {
 
 	// 同名换内容 → 自动开版本 2
 	rr = env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
-		Name: "review", Outputs: []string{"fix", "clean"},
+		NamespaceID: env.nsID, Name: "review", Outputs: []string{"fix", "clean"},
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("second create status = %d, body=%s", rr.Code, rr.Body.String())
@@ -367,7 +438,7 @@ func TestCapabilityCreate(t *testing.T) {
 // mustGetCapability 取一个已播种的能力（不存在则失败）。
 func (e *consoleEnv) mustGetCapability(t *testing.T, name string, version int) *store.CapabilityVersion {
 	t.Helper()
-	c, err := e.db.GetCapability(context.Background(), e.orgID, name, version)
+	c, err := e.db.GetCapability(context.Background(), e.nsID, name, version)
 	if err != nil {
 		t.Fatalf("capability %s@%d not seeded: %v", name, version, err)
 	}
@@ -385,17 +456,17 @@ func TestCapabilityListIncludesKind(t *testing.T) {
 	env.seedCapability(t, "trigger", 1, []string{"go"}) // 无节点声明
 
 	// 声明 review 与 notify.phone 给一台节点
-	node := &store.Node{OrgID: env.orgID, Name: "mbp"}
+	node := &store.Node{NamespaceID: env.nsID, Name: "mbp"}
 	if _, err := env.db.CreateNode(context.Background(), node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	if _, err := env.db.ConfirmCapabilities(context.Background(), env.orgID, node.ID,
+	if _, err := env.db.ConfirmCapabilities(context.Background(), env.nsID, node.ID,
 		[]store.CapabilityRef{{Name: "review", Version: 1}, {Name: "notify.phone", Version: 1}},
 	); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
 
-	rr := env.do(t, http.MethodGet, "/v1/capabilities", nil)
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/capabilities"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
@@ -427,7 +498,7 @@ func TestCapabilitySameVersionDifferentContentRejected(t *testing.T) {
 	env.seedCapability(t, "review", 1, []string{"fix"})
 
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
-		Name: "review", Version: 1, Outputs: []string{"totally-different"},
+		NamespaceID: env.nsID, Name: "review", Version: 1, Outputs: []string{"totally-different"},
 	})
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 (version cannot change content); body=%s", rr.Code, rr.Body.String())
@@ -443,7 +514,7 @@ func TestTaskListAndCancel(t *testing.T) {
 	capDef := env.seedCapability(t, "review", 1, []string{"fix"})
 
 	task := &store.Task{
-		OrgID: env.orgID, TraceID: "trace_x", CapabilityID: capDef.ID,
+		NamespaceID: env.nsID, TraceID: "trace_x", CapabilityID: capDef.ID,
 		Capability: capDef.Name, Version: 1, Params: json.RawMessage(`{}`),
 		CapHash: capDef.ContentHash, GraphID: "grf_x",
 	}
@@ -452,7 +523,7 @@ func TestTaskListAndCancel(t *testing.T) {
 	}
 
 	// 列
-	rr := env.do(t, http.MethodGet, "/v1/tasks?traceId=trace_x", nil)
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/tasks?traceId=trace_x"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -463,14 +534,16 @@ func TestTaskListAndCancel(t *testing.T) {
 	}
 	if obj, _ := tasks[0].(map[string]any); obj["id"] != task.ID {
 		t.Fatalf("wrong task returned")
+	} else if obj["namespaceId"] != env.nsID {
+		t.Fatalf("task.namespaceId = %v, want %v", obj["namespaceId"], env.nsID)
 	}
 
 	// 取消
-	rr = env.do(t, http.MethodPost, "/v1/tasks/"+task.ID+"/cancel", nil)
+	rr = env.do(t, http.MethodPost, env.withNS("/v1/tasks/"+task.ID+"/cancel"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("cancel status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	got, err := env.db.GetTask(ctx, env.orgID, task.ID)
+	got, err := env.db.GetTask(ctx, env.nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -479,7 +552,7 @@ func TestTaskListAndCancel(t *testing.T) {
 	}
 
 	// 再取消一次 → 409（终态不可变）
-	rr = env.do(t, http.MethodPost, "/v1/tasks/"+task.ID+"/cancel", nil)
+	rr = env.do(t, http.MethodPost, env.withNS("/v1/tasks/"+task.ID+"/cancel"), nil)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("second cancel status = %d, want 409", rr.Code)
 	}
@@ -488,7 +561,7 @@ func TestTaskListAndCancel(t *testing.T) {
 // TestCancelUnknownTask 取消不存在的任务 → 404。
 func TestCancelUnknownTask(t *testing.T) {
 	env := newConsoleEnv(t)
-	rr := env.do(t, http.MethodPost, "/v1/tasks/tsk_doesnotexist/cancel", nil)
+	rr := env.do(t, http.MethodPost, env.withNS("/v1/tasks/tsk_doesnotexist/cancel"), nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rr.Code)
 	}
@@ -504,20 +577,20 @@ func TestNodeDetail(t *testing.T) {
 	ctx := context.Background()
 	env.seedCapability(t, "review", 1, []string{"fix"})
 
-	node := &store.Node{OrgID: env.orgID, Name: "mbp-detail"}
+	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-detail"}
 	if _, err := env.db.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	if _, err := env.db.ConfirmCapabilities(ctx, env.orgID, node.ID,
+	if _, err := env.db.ConfirmCapabilities(ctx, env.nsID, node.ID,
 		[]store.CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if _, err := env.db.UpsertInstances(ctx, env.orgID, node.ID,
+	if _, err := env.db.UpsertInstances(ctx, env.nsID, node.ID,
 		[]store.InstanceSpec{{Slot: 0, Concurrency: 3}, {Slot: 1, Concurrency: 2}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
 
-	rr := env.do(t, http.MethodGet, "/v1/nodes/"+node.ID, nil)
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/nodes/"+node.ID), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -564,7 +637,7 @@ func TestNodeDetail(t *testing.T) {
 	}
 
 	// 不存在的节点 → 404（不是 200 空对象）
-	rr = env.do(t, http.MethodGet, "/v1/nodes/nd_doesnotexist", nil)
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/nodes/nd_doesnotexist"), nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unknown node status = %d, want 404", rr.Code)
 	}
@@ -583,12 +656,12 @@ func TestNodeDetailRunSpec(t *testing.T) {
 	env.seedCapability(t, "review", 1, []string{"fix"})
 	env.seedCapability(t, "test", 1, nil)
 
-	node := &store.Node{OrgID: env.orgID, Name: "mbp-runspec"}
+	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-runspec"}
 	if _, err := env.db.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 	run := `{"runner":"bash","command":"./runners/review.sh","timeoutSec":900,"concurrency":2,"env":{"LOG_LEVEL":"info"}}`
-	if _, err := env.db.ConfirmCapabilityDecls(ctx, env.orgID, node.ID, []store.CapabilityDecl{
+	if _, err := env.db.ConfirmCapabilityDecls(ctx, env.nsID, node.ID, []store.CapabilityDecl{
 		{Name: "review", Version: 1, Run: json.RawMessage(run), RunRequired: true},
 		{Name: "test", Version: 1}, // manifest 里没写这一项
 	}); err != nil {
@@ -621,12 +694,12 @@ func TestNodeDetailRunSpec(t *testing.T) {
 		path string
 		caps func(map[string]any) []any
 	}{
-		{"/v1/nodes/" + node.ID, func(m map[string]any) []any {
+		{env.withNS("/v1/nodes/" + node.ID), func(m map[string]any) []any {
 			obj, _ := m["node"].(map[string]any)
 			caps, _ := obj["capabilities"].([]any)
 			return caps
 		}},
-		{"/v1/nodes", func(m map[string]any) []any {
+		{env.withNS("/v1/nodes"), func(m map[string]any) []any {
 			nodes, _ := m["nodes"].([]any)
 			for _, raw := range nodes {
 				if obj, _ := raw.(map[string]any); obj != nil && obj["id"] == node.ID {
@@ -669,20 +742,20 @@ func TestNodeListAndDrain(t *testing.T) {
 	ctx := context.Background()
 	capDef := env.seedCapability(t, "review", 1, []string{"fix"})
 
-	node := &store.Node{OrgID: env.orgID, Name: "mbp-1"}
+	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-1"}
 	if _, err := env.db.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	if _, err := env.db.ConfirmCapabilities(ctx, env.orgID, node.ID,
+	if _, err := env.db.ConfirmCapabilities(ctx, env.nsID, node.ID,
 		[]store.CapabilityRef{{Name: "review", Version: 1}}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if _, err := env.db.UpsertInstances(ctx, env.orgID, node.ID,
+	if _, err := env.db.UpsertInstances(ctx, env.nsID, node.ID,
 		[]store.InstanceSpec{{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}}); err != nil {
 		t.Fatalf("instances: %v", err)
 	}
 
-	rr := env.do(t, http.MethodGet, "/v1/nodes", nil)
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/nodes"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -694,6 +767,9 @@ func TestNodeListAndDrain(t *testing.T) {
 	obj, _ := nodes[0].(map[string]any)
 	if obj["name"] != "mbp-1" {
 		t.Fatalf("name = %v", obj["name"])
+	}
+	if obj["namespaceId"] != env.nsID {
+		t.Fatalf("node.namespaceId = %v, want %v", obj["namespaceId"], env.nsID)
 	}
 	// capabilities 是**对象**而不是 "name@version" 字符串：节点页要用
 	// 显示名（displayName）和稳定的 id（标签点进能力详情）。
@@ -720,11 +796,11 @@ func TestNodeListAndDrain(t *testing.T) {
 	}
 
 	// 排空
-	rr = env.do(t, http.MethodPost, "/v1/nodes/"+node.ID+"/drain", nil)
+	rr = env.do(t, http.MethodPost, env.withNS("/v1/nodes/"+node.ID+"/drain"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("drain status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	got, err := env.db.GetNode(ctx, env.orgID, node.ID)
+	got, err := env.db.GetNode(ctx, env.nsID, node.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
@@ -732,7 +808,7 @@ func TestNodeListAndDrain(t *testing.T) {
 		t.Fatalf("status = %q, want draining", got.Status)
 	}
 	// 排空后不再被派发选中
-	nodeIDs, err := env.db.NodesForCapability(ctx, env.orgID, capDef.ID)
+	nodeIDs, err := env.db.NodesForCapability(ctx, env.nsID, capDef.ID)
 	if err != nil {
 		t.Fatalf("nodes for capability: %v", err)
 	}
@@ -746,7 +822,7 @@ func TestNodeListAndDrain(t *testing.T) {
 // TestDrainUnknownNode 排空不存在的节点 → 404。
 func TestDrainUnknownNode(t *testing.T) {
 	env := newConsoleEnv(t)
-	rr := env.do(t, http.MethodPost, "/v1/nodes/nd_doesnotexist/drain", nil)
+	rr := env.do(t, http.MethodPost, env.withNS("/v1/nodes/nd_doesnotexist/drain"), nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rr.Code)
 	}
@@ -827,7 +903,7 @@ func TestLegacyNotificationEndpointsRemoved(t *testing.T) {
 
 	// 新的事件中心端点仍在
 	for _, path := range []string{"/v1/console/events", "/v1/tasks", "/v1/capabilities"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req := httptest.NewRequest(http.MethodGet, env.withNS(path), nil)
 		req.AddCookie(env.cookie)
 		rr := httptest.NewRecorder()
 		env.mux.ServeHTTP(rr, req)
@@ -852,14 +928,14 @@ func TestTraceEndpoint(t *testing.T) {
 
 	// 根事件：外部世界发生了什么
 	if _, err := env.db.InsertEvent(ctx, &store.Event{
-		OrgID: env.orgID, TraceID: traceID, Source: "github",
+		NamespaceID: env.nsID, TraceID: traceID, Source: "github",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":1}`),
 	}); err != nil {
 		t.Fatalf("insert root event: %v", err)
 	}
 	// 剪枝事件：哪条分支没跑、为什么（source='route' 是 #142 的约定）
 	if _, err := env.db.InsertPruneEvent(ctx, &store.Event{
-		OrgID: env.orgID, TraceID: traceID,
+		NamespaceID: env.nsID, TraceID: traceID,
 		Source: route.PruneEventSource,
 		Type:   route.PruneEventType(route.ReasonNoEdge),
 		Payload: json.RawMessage(
@@ -870,7 +946,7 @@ func TestTraceEndpoint(t *testing.T) {
 	}
 	// 任务：跑起来了的那条分支
 	task := &store.Task{
-		OrgID: env.orgID, TraceID: traceID, CapabilityID: capDef.ID,
+		NamespaceID: env.nsID, TraceID: traceID, CapabilityID: capDef.ID,
 		Capability: capDef.Name, Version: 1, Params: json.RawMessage(`{"number":1}`),
 		CapHash: capDef.ContentHash, GraphID: "grf_x",
 	}
@@ -878,7 +954,7 @@ func TestTraceEndpoint(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	rr := env.do(t, http.MethodGet, "/v1/traces/"+traceID, nil)
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/traces/"+traceID), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -886,7 +962,10 @@ func TestTraceEndpoint(t *testing.T) {
 	if m["traceId"] != traceID {
 		t.Errorf("traceId = %v, want %q", m["traceId"], traceID)
 	}
-
+	if m["namespaceId"] != env.nsID {
+		t.Errorf("namespaceId = %v, want %q（trace 视图要标的它属于哪个命名空间）",
+			m["namespaceId"], env.nsID)
+	}
 	events, _ := m["events"].([]any)
 	if len(events) != 2 {
 		t.Fatalf("events = %d 条, want 2（根事件 + 剪枝）", len(events))
@@ -928,7 +1007,7 @@ func TestTraceEndpoint(t *testing.T) {
 	}
 
 	// 不存在的 trace → 404（events 与 tasks 都空）
-	rr = env.do(t, http.MethodGet, "/v1/traces/trace_does_not_exist", nil)
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/traces/trace_does_not_exist"), nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("未知 trace status = %d, want 404; body=%s", rr.Code, rr.Body.String())
 	}
@@ -958,7 +1037,7 @@ func TestConsoleEventsTraceViewRootFirst(t *testing.T) {
 
 	// 根事件：外部世界发生了什么（时间更早）
 	if _, err := env.db.InsertEvent(ctx, &store.Event{
-		OrgID: env.orgID, TraceID: traceID, Source: "github",
+		NamespaceID: env.nsID, TraceID: traceID, Source: "github",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":1}`),
 		CreatedAt: 1700000000,
 	}); err != nil {
@@ -966,7 +1045,7 @@ func TestConsoleEventsTraceViewRootFirst(t *testing.T) {
 	}
 	// 剪枝事件：时间更晚，DESC 排序下本来会排第一
 	if _, err := env.db.InsertPruneEvent(ctx, &store.Event{
-		OrgID: env.orgID, TraceID: traceID,
+		NamespaceID: env.nsID, TraceID: traceID,
 		Source: route.PruneEventSource,
 		Type:   route.PruneEventType(route.ReasonNoEdge),
 		Payload: json.RawMessage(
@@ -976,7 +1055,7 @@ func TestConsoleEventsTraceViewRootFirst(t *testing.T) {
 		t.Fatalf("insert prune event: %v", err)
 	}
 
-	rr := env.do(t, http.MethodGet, "/v1/console/events?traceId="+traceID, nil)
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/console/events?traceId="+traceID), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -997,7 +1076,7 @@ func TestConsoleEventsTraceViewRootFirst(t *testing.T) {
 	}
 
 	// 事件流（不带 traceId）不混剪枝——trace 视图的排序改动不能顺手把它带坏
-	rr = env.do(t, http.MethodGet, "/v1/console/events", nil)
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/console/events"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("事件流 status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -1033,22 +1112,28 @@ func TestTraceEndpointCrossOrg(t *testing.T) {
 	}
 
 	const otherTrace = "trace_other_org"
+	// 组织建好就有它的 default 命名空间；trace 落在那里
+	org2NS, err := env.db.DefaultNamespaceID(ctx, org2.ID)
+	if err != nil {
+		t.Fatalf("org2 default namespace: %v", err)
+	}
 	if _, err := env.db.InsertEvent(ctx, &store.Event{
-		OrgID: org2.ID, TraceID: otherTrace, Source: "github",
+		NamespaceID: org2NS, TraceID: otherTrace, Source: "github",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":2}`),
 	}); err != nil {
 		t.Fatalf("insert org2 event: %v", err)
 	}
 
-	// 用 org1 查 org2 的 trace → 404（不泄漏存在性）
-	rr := env.do(t, http.MethodGet, "/v1/traces/"+otherTrace+"?orgId="+env.orgID, nil)
+	// 用 org1（+ 它的命名空间）查 org2 的 trace → 404（不泄漏存在性）
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/traces/"+otherTrace+"?orgId="+env.orgID), nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("跨组织查询 status = %d, want 404; body=%s", rr.Code, rr.Body.String())
 	}
 
 	// 用 org2 查同一条 trace → 200 且是同一串数据
 	// （证明前面那个 404 是租户隔离，不是路由没注册/取数写错）
-	rr = env.do(t, http.MethodGet, "/v1/traces/"+otherTrace+"?orgId="+org2.ID, nil)
+	rr = env.do(t, http.MethodGet,
+		withNSID("/v1/traces/"+otherTrace+"?orgId="+org2.ID, org2NS), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("同组织查询 status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -1062,5 +1147,352 @@ func TestTraceEndpointCrossOrg(t *testing.T) {
 	}
 	if ev, _ := events[0].(map[string]any); ev["orgId"] != org2.ID {
 		t.Fatalf("返回的 event.orgId = %v, want %q（数据必须来自 org2）", ev["orgId"], org2.ID)
+	}
+}
+
+// ---------- #162：namespaceId 必填（契约 §6.2） ----------
+
+// TestNamespaceRequired 资源端点缺 namespaceId → 400。
+//
+// 关键在「**不回退默认命名空间**」：回退等于把调用方写错的地方藏起来
+// （页面看起来结了果，其实读的是另一个命名空间的数据）。
+func TestNamespaceRequired(t *testing.T) {
+	env := newConsoleEnv(t)
+	env.seedCapability(t, "review", 1, []string{"fix"})
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		// 列表 / 统计类读端点
+		{http.MethodGet, "/v1/capabilities"},
+		{http.MethodGet, "/v1/tasks"},
+		{http.MethodGet, "/v1/nodes"},
+		{http.MethodGet, "/v1/edges"},
+		{http.MethodGet, "/v1/console/events"},
+		{http.MethodGet, "/v1/stats"},
+		// 单对象读端点
+		{http.MethodGet, "/v1/tasks/tsk_whatever"},
+		{http.MethodGet, "/v1/nodes/nd_whatever"},
+		{http.MethodGet, "/v1/traces/trace_whatever"},
+		// 写端点
+		{http.MethodPost, "/v1/tasks/tsk_whatever/cancel"},
+		{http.MethodPost, "/v1/nodes/nd_whatever/drain"},
+	}
+	for _, c := range cases {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			rr := env.do(t, c.method, c.path, nil)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400（缺 namespaceId 必须报错，不能回退默认命名空间）; body=%s",
+					rr.Code, rr.Body.String())
+			}
+			m := decode(t, rr)
+			msg, _ := m["error"].(string)
+			if !strings.Contains(msg, "namespaceId") {
+				t.Fatalf("error = %q, want 明确提到 namespaceId", msg)
+			}
+			// 也不能顺手把数据发出来（默认命名空间里确实有 review@1）
+			if bytes.Contains(rr.Body.Bytes(), []byte("review")) {
+				t.Fatalf("400 响应里带出了资源数据（是不是回退了默认命名空间？）: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestNamespaceNotFound 不存在的 namespaceId → 404（不是 200 空列表）。
+func TestNamespaceNotFound(t *testing.T) {
+	env := newConsoleEnv(t)
+	paths := []string{
+		"/v1/capabilities", "/v1/tasks", "/v1/nodes", "/v1/edges", "/v1/console/events",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			rr := env.do(t, http.MethodGet, withNSID(path, "ns_doesnotexist"), nil)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestNamespaceForbidden 别的组织的 namespaceId → 403（存在，但不是你的）。
+//
+// 必须与 404 分开：404 表示「没有这个命名空间」，403 表示「有，但属于别的组织」。
+// 混成一个状态码会让调用方分不清是参数写错还是权限问题。
+func TestNamespaceForbidden(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+
+	other, err := env.db.CreateOrg(ctx, "org-other-"+store.NewOrgID())
+	if err != nil {
+		t.Fatalf("create other org: %v", err)
+	}
+	otherNS, err := env.db.DefaultNamespaceID(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("other org default namespace: %v", err)
+	}
+
+	rr := env.do(t, http.MethodGet, withNSID("/v1/capabilities", otherNS), nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403（别的组织的命名空间）; body=%s", rr.Code, rr.Body.String())
+	}
+	// 不泄漏这个命名空间的存在与内容
+	if bytes.Contains(rr.Body.Bytes(), []byte(otherNS)) {
+		t.Fatalf("403 响应里回显了别人的命名空间 id: %s", rr.Body.String())
+	}
+
+	// 对照：不存在的 id 是 404，两者确实被区分开
+	rr = env.do(t, http.MethodGet, withNSID("/v1/capabilities", "ns_not_a_real_id"), nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("不存在的 namespaceId status = %d, want 404", rr.Code)
+	}
+}
+
+// TestNamespaceAllWriteRejected `namespaceId=*` 只能用在跨命名空间汇总的读端点。
+//
+// 写在 `*` 上没有定义（"写一条边属于哪个命名空间？"），单对象读也没有
+// （"这个任务属于哪个命名空间？"），一律 400。
+func TestNamespaceAllWriteRejected(t *testing.T) {
+	env := newConsoleEnv(t)
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   any
+	}{
+		{"POST capabilities", http.MethodPost, "/v1/capabilities",
+			capabilityListRequest{Name: "review"}},
+		{"PATCH capabilities", http.MethodPatch, "/v1/capabilities",
+			map[string]any{"id": "cap_x", "displayName": "x"}},
+		{"POST edges", http.MethodPost, "/v1/edges",
+			edgeRequest{FromCapability: "cap_a", FromPort: "p", ToCapability: "cap_b"}},
+		{"DELETE edges", http.MethodDelete,
+			"/v1/edges?fromCapability=cap_a&fromPort=p&toCapability=cap_b", nil},
+		{"cancel task", http.MethodPost, "/v1/tasks/tsk_x/cancel", nil},
+		{"drain node", http.MethodPost, "/v1/nodes/nd_x/drain", nil},
+		{"GET task", http.MethodGet, "/v1/tasks/tsk_x", nil},
+		{"GET node", http.MethodGet, "/v1/nodes/nd_x", nil},
+		{"GET trace", http.MethodGet, "/v1/traces/trace_x", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rr := env.do(t, c.method, withNSID(c.path, "*"), c.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400（`*` 只能用于跨命名空间汇总的读）; body=%s",
+					rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestCapabilityNamespaceIsolation 同一组织两个命名空间的能力列表互不可见（契约 §6.2）。
+//
+// 同名的 `review@1` 在两个命名空间里是**两个不同定义**：这正是命名空间存在的理由
+// （见 docs/design/namespaces.md §1「两个团队都要 lint@1」）。
+func TestCapabilityNamespaceIsolation(t *testing.T) {
+	env := newConsoleEnv(t)
+	ns2 := env.seedNamespace(t, "staging", "Staging")
+
+	first := env.seedCapabilityIn(t, env.nsID, "review", 1, []string{"fix"})
+	second := env.seedCapabilityIn(t, ns2.ID, "review", 1, []string{"fix"})
+	if first.ID == second.ID {
+		t.Fatalf("两个命名空间里的 review@1 是同一行（%s），隔离没生效", first.ID)
+	}
+	env.seedCapabilityIn(t, ns2.ID, "deploy", 1, nil)
+
+	// collect 收集 (name → 出现过的 namespaceId 集合)，并顺带逐条校验归属
+	collect := func(t *testing.T, rr *httptest.ResponseRecorder) (map[string]map[string]bool, map[string]any) {
+		t.Helper()
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		m := decode(t, rr)
+		caps, ok := m["capabilities"].([]any)
+		if !ok {
+			t.Fatalf("capabilities 不是数组: %s", rr.Body.String())
+		}
+		seen := map[string]map[string]bool{}
+		for _, raw := range caps {
+			obj, _ := raw.(map[string]any)
+			name, _ := obj["name"].(string)
+			nsID, _ := obj["namespaceId"].(string)
+			if nsID == "" {
+				t.Fatalf("能力 %q 的响应里没带 namespaceId: %v", name, obj)
+			}
+			if seen[name] == nil {
+				seen[name] = map[string]bool{}
+			}
+			seen[name][nsID] = true
+		}
+		return seen, m
+	}
+
+	// 默认命名空间：只看得到自己的
+	seen, m := collect(t, env.do(t, http.MethodGet, env.withNS("/v1/capabilities"), nil))
+	if m["namespaceId"] != env.nsID {
+		t.Fatalf("顶层 namespaceId = %v, want %v", m["namespaceId"], env.nsID)
+	}
+	if seen["deploy"][ns2.ID] {
+		t.Fatalf("别的命名空间的能力 deploy 出现在默认命名空间列表里: %v", seen["deploy"])
+	}
+	for name, byNS := range seen {
+		for nsID := range byNS {
+			if nsID != env.nsID {
+				t.Fatalf("能力 %q 的 namespaceId = %v, want %v", name, nsID, env.nsID)
+			}
+		}
+	}
+
+	// staging：只看得到自己的
+	seen, m = collect(t, env.do(t, http.MethodGet, withNSID("/v1/capabilities", ns2.ID), nil))
+	if m["namespaceId"] != ns2.ID {
+		t.Fatalf("顶层 namespaceId = %v, want %v", m["namespaceId"], ns2.ID)
+	}
+	if !seen["deploy"][ns2.ID] {
+		t.Fatalf("staging 里看不到自己的 deploy: %v", seen)
+	}
+	for name, byNS := range seen {
+		for nsID := range byNS {
+			if nsID != ns2.ID {
+				t.Fatalf("能力 %q 的 namespaceId = %v, want %v", name, nsID, ns2.ID)
+			}
+		}
+	}
+
+	// `*`：两边都在，各条带自己的 namespaceId；顶层是 "*"（不伪造成某个具体 id）
+	seen, m = collect(t, env.do(t, http.MethodGet, withNSID("/v1/capabilities", "*"), nil))
+	if m["namespaceId"] != "*" {
+		t.Fatalf("汇总视图顶层 namespaceId = %v, want \"*\"（不能伪造成某一个命名空间）", m["namespaceId"])
+	}
+	if !seen["review"][env.nsID] || !seen["review"][ns2.ID] {
+		t.Fatalf("`*` 没有把两个命名空间的 review 都汇总出来: %v", seen["review"])
+	}
+	if !seen["deploy"][ns2.ID] {
+		t.Fatalf("`*` 汇总里缺 staging 的 deploy: %v", seen)
+	}
+
+	// 别的命名空间的能力 id 在这里是 404（不泄露存在性，也改不动别人的定义）
+	onlyDefault := env.seedCapabilityIn(t, env.nsID, "only-default", 1, nil)
+	rr := env.do(t, http.MethodPatch, withNSID("/v1/capabilities", ns2.ID),
+		map[string]any{"id": onlyDefault.ID, "displayName": "偷改别人的"})
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("跨命名空间 PATCH status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestListAcrossNamespaces namespaceId=* 对任务/事件做跨命名空间汇总。
+//
+// 汇总口径：**先逐个命名空间查，再合并排序，最后按 limit 统一截断**。
+// 不能退化成「每个命名空间各取 limit 条」（那就不是 limit 条了）。
+func TestListAcrossNamespaces(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+	ns2 := env.seedNamespace(t, "staging2", "Staging 2")
+
+	capA := env.seedCapabilityIn(t, env.nsID, "review", 1, []string{"fix"})
+	capB := env.seedCapabilityIn(t, ns2.ID, "review", 1, []string{"fix"})
+
+	mkTask := func(nsID string, capDef *store.CapabilityVersion, trace string, createdAt int64) *store.Task {
+		t.Helper()
+		tk := &store.Task{
+			NamespaceID: nsID, TraceID: trace, CapabilityID: capDef.ID,
+			Capability: capDef.Name, Version: 1, Params: json.RawMessage(`{}`),
+			CapHash: capDef.ContentHash, GraphID: "grf_x", CreatedAt: createdAt,
+		}
+		if err := env.db.CreateTasks(ctx, []*store.Task{tk}); err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+		return tk
+	}
+	taskA := mkTask(env.nsID, capA, "trace_ns_a", 1700000100)
+	taskB := mkTask(ns2.ID, capB, "trace_ns_b", 1700000200)
+
+	// 单个命名空间只看得到自己的任务
+	rr := env.do(t, http.MethodGet, env.withNS("/v1/tasks"), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	m := decode(t, rr)
+	tasks, _ := m["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("默认命名空间的任务 = %d 条, want 1（不能混进别的命名空间）", len(tasks))
+	}
+	if obj, _ := tasks[0].(map[string]any); obj["id"] != taskA.ID {
+		t.Fatalf("取到的任务不属于默认命名空间: %v", obj["id"])
+	}
+
+	// `*`：合并两条，按 created_at 倒序（新的在前），各条带自己的 namespaceId
+	rr = env.do(t, http.MethodGet, withNSID("/v1/tasks", "*"), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("汇总 status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	m = decode(t, rr)
+	if m["namespaceId"] != "*" {
+		t.Fatalf("汇总视图顶层 namespaceId = %v, want \"*\"", m["namespaceId"])
+	}
+	tasks, _ = m["tasks"].([]any)
+	if len(tasks) != 2 {
+		t.Fatalf("汇总任务 = %d 条, want 2", len(tasks))
+	}
+	firstTask, _ := tasks[0].(map[string]any)
+	secondTaskObj, _ := tasks[1].(map[string]any)
+	if firstTask["id"] != taskB.ID || secondTaskObj["id"] != taskA.ID {
+		t.Fatalf("汇总排序不对: %v, %v（want 新的在前）", firstTask["id"], secondTaskObj["id"])
+	}
+	if firstTask["namespaceId"] != ns2.ID || secondTaskObj["namespaceId"] != env.nsID {
+		t.Fatalf("汇总结果里的 namespaceId 不对: %v / %v",
+			firstTask["namespaceId"], secondTaskObj["namespaceId"])
+	}
+
+	// 合并后**统一截断**：limit=1 只回一条，且是最新的那条
+	rr = env.do(t, http.MethodGet, withNSID("/v1/tasks?limit=1", "*"), nil)
+	m = decode(t, rr)
+	tasks, _ = m["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("limit=1 的汇总 = %d 条, want 1（截断必须在合并之后做）", len(tasks))
+	}
+	if obj, _ := tasks[0].(map[string]any); obj["id"] != taskB.ID {
+		t.Fatalf("limit=1 取到的不是最新任务: %v", obj["id"])
+	}
+
+	// 事件同理
+	if _, err := env.db.InsertEvent(ctx, &store.Event{
+		NamespaceID: env.nsID, TraceID: "trace_ns_a", Source: "github",
+		Type: "pull_request.opened", Payload: json.RawMessage(`{}`), CreatedAt: 1700000100,
+	}); err != nil {
+		t.Fatalf("insert event a: %v", err)
+	}
+	if _, err := env.db.InsertEvent(ctx, &store.Event{
+		NamespaceID: ns2.ID, TraceID: "trace_ns_b", Source: "github",
+		Type: "pull_request.opened", Payload: json.RawMessage(`{}`), CreatedAt: 1700000200,
+	}); err != nil {
+		t.Fatalf("insert event b: %v", err)
+	}
+
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/console/events"), nil)
+	m = decode(t, rr)
+	events, _ := m["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("默认命名空间的事件 = %d 条, want 1", len(events))
+	}
+
+	rr = env.do(t, http.MethodGet, withNSID("/v1/console/events", "*"), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("事件汇总 status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	m = decode(t, rr)
+	if m["namespaceId"] != "*" {
+		t.Fatalf("事件汇总顶层 namespaceId = %v, want \"*\"", m["namespaceId"])
+	}
+	events, _ = m["events"].([]any)
+	if len(events) != 2 {
+		t.Fatalf("汇总事件 = %d 条, want 2", len(events))
+	}
+	for _, raw := range events {
+		ev, _ := raw.(map[string]any)
+		nsID, _ := ev["namespaceId"].(string)
+		if nsID != env.nsID && nsID != ns2.ID {
+			t.Fatalf("汇总事件的 namespaceId = %q, want %q 或 %q", nsID, env.nsID, ns2.ID)
+		}
 	}
 }

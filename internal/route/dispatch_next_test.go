@@ -37,15 +37,15 @@ type fakePublisher struct {
 }
 
 type publishCall struct {
-	orgID  string
-	nodeID string
-	taskID string
+	namespaceID string
+	nodeID      string
+	taskID      string
 }
 
-func (p *fakePublisher) PublishAssign(ctx context.Context, orgID, nodeID string, task *store.Task) error {
+func (p *fakePublisher) PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.calls = append(p.calls, publishCall{orgID: orgID, nodeID: nodeID, taskID: task.ID})
+	p.calls = append(p.calls, publishCall{namespaceID: namespaceID, nodeID: nodeID, taskID: task.ID})
 	if p.errAll != nil {
 		return p.errAll
 	}
@@ -319,8 +319,9 @@ func TestPublishTasksAssignsPendingTask(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("pushed %d assign frames, want 1", len(calls))
 	}
-	if calls[0].taskID != task.ID || calls[0].nodeID != "nd_fix" || calls[0].orgID != testOrg {
-		t.Fatalf("assign frame 推给了 %+v, want task %s → nd_fix/%s", calls[0], task.ID, testOrg)
+	// #162：推帧按**命名空间**路由（hub 只推给同命名空间的连接）。
+	if calls[0].taskID != task.ID || calls[0].nodeID != "nd_fix" || calls[0].namespaceID != testNS {
+		t.Fatalf("assign frame 推给了 %+v, want task %s → nd_fix/%s", calls[0], task.ID, testNS)
 	}
 
 	// 绝不建行：库里仍然只有 plan 出来的那一行

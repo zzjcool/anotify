@@ -23,24 +23,30 @@ function sha256(s) {
 }
 
 // seedNodeRows 直接播种节点（无 HTTP 端点，属运维动作）。
-function seedNodeRows(dbPath, orgId, name, capIds, slots) {
+//
+// namespaceId 必传：迁移 12（#162）之后 nodes / node_capabilities / node_instances
+// 都有 namespace_id TEXT NOT NULL。用 H.defaultNamespaceId() 查出来的 id，不硬编码。
+function seedNodeRows(dbPath, orgId, namespaceId, name, capIds, slots) {
+	if (!namespaceId) throw new Error("seedNodeRows: 需要 namespaceId，不要硬编码 ns_xxx");
 	const token = "{{SECRET_2wqrnjqp}}" + randomUUID().replace(/-/g, "");
 	const nodeId = "nd_ps_" + randomUUID().replace(/-/g, "").slice(0, 18);
 	const now = Math.floor(Date.now() / 1000);
 	const db = new DatabaseSync(dbPath);
 	try {
 		db.prepare(
-			`INSERT INTO nodes (id, org_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
-			 VALUES (?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
-		).run(nodeId, orgId, name, sha256(token), now);
+			`INSERT INTO nodes (id, org_id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
+			 VALUES (?, ?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
+		).run(nodeId, orgId, namespaceId, name, sha256(token), now);
 		for (const c of capIds) {
-			db.prepare(`INSERT INTO node_capabilities (node_id, capability_id) VALUES (?, ?)`).run(nodeId, c);
+			db.prepare(
+				`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?, ?, ?)`,
+			).run(nodeId, c, namespaceId);
 		}
 		for (let i = 0; i < slots; i++) {
 			db.prepare(
-				`INSERT INTO node_instances (id, node_id, slot, concurrency, alive, updated_at)
-				 VALUES (?, ?, ?, 1, 1, ?)`,
-			).run(`nins_ps_${nodeId}_${i}`, nodeId, i, now);
+				`INSERT INTO node_instances (id, node_id, slot, concurrency, alive, updated_at, namespace_id)
+				 VALUES (?, ?, ?, 1, 1, ?, ?)`,
+			).run(`nins_ps_${nodeId}_${i}`, nodeId, i, now, namespaceId);
 		}
 	} finally {
 		db.close();
@@ -95,6 +101,12 @@ async function main() {
 		orgId = (seedOut.match(/\((org_[A-Za-z0-9]+)\)/) || [])[1];
 		H.check("建库拿到 orgId", !!orgId, seedOut.slice(0, 150));
 
+		// #162：节点直插库要写 namespace_id（迁移 12 起 NOT NULL）。
+		// 取本组织默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
+		const nsId = await H.defaultNamespaceId(server.base, session);
+		H.check("拿到默认命名空间 id", !!nsId, String(nsId));
+		if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
+
 		// 定义能力与出口
 		const origin = (
 			await H.req(server.base, "/v1/capabilities", {
@@ -122,7 +134,7 @@ async function main() {
 			})).status,
 			200,
 		);
-		seedNodeRows(dbPath, orgId, "persist-node", [target.id], 2);
+		seedNodeRows(dbPath, orgId, nsId, "persist-node", [target.id], 2);
 
 		// 发事件 → 应该有 1 个任务
 		const ev = await H.req(server.base, "/v1/events", {

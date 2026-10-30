@@ -9,6 +9,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -189,8 +190,158 @@ export async function waitForAppReady(page, pageType, opts = {}) {
 	}
 }
 
+// ---------- 命名空间（命名空间资源端点必须显式带 namespaceId） ----------
+//
+// 契约 §6.2：/v1/capabilities、/v1/nodes、/v1/edges、/v1/sources、/v1/events、
+// /v1/tasks、/v1/traces/*、/v1/stats 的 namespaceId 是**必填**参数，缺了就 400
+// （后端**绝不**回退默认命名空间——回退等于把人写错的地方藏起来）。
+// 组织级端点（/v1/orgs、/v1/admin/*、/v1/auth/* 等）反过来不需要也不该带。
+const NS_REQUIRED_PREFIXES = [
+	"/v1/capabilities",
+	"/v1/nodes",
+	"/v1/edges",
+	"/v1/sources",
+	"/v1/events",
+	"/v1/tasks",
+	"/v1/traces",
+	"/v1/stats",
+];
+
+// isNamespaceEndpoint 判断路径是否属于「必填 namespaceId」的命名空间资源端点。
+// 按整段前缀匹配：/v1/nodes 是命名空间资源，而 /v1/node/stream 是 WS 端点
+// （命名空间由节点令牌决定，见契约 §2.1），两者不能混。
+export function isNamespaceEndpoint(p) {
+	const pathname = String(p || "").split("?")[0];
+	return NS_REQUIRED_PREFIXES.some(
+		(prefix) => pathname === prefix || pathname.startsWith(prefix + "/"),
+	);
+}
+
+// 默认命名空间解析结果按 base 进程内缓存：一次 suite 只真正取一次。
+// 只缓存**成功**结果——后端还没上线 /v1/namespaces 时下次请求要能重试。
+const nsCache = new Map(); // base → 默认命名空间 id
+const nsInflight = new Map(); // base → 解析中的 Promise（并发请求不重复打）
+const nsSessionByBase = new Map(); // base → 最近一次见到的会话（给只有 API Key 的请求兜底）
+const nsSessionByDb = new Map(); // dbPath → 会话（seed() 登记；服务重启后同一个库还能用同一会话解析）
+const nsDbByBase = new Map(); // base → SQLite 路径（startServer 注册；无会话时按库查）
+const nsWarned = new Set(); // base → 已经提示过「解析不到默认命名空间」
+
+// defaultNamespaceId(base, session) → 本组织默认命名空间（slug=default）的 id。
+//
+// 用例里**不许**硬编码 ns_xxx：命名空间 id 是建库时生成的，抄进用例就等着换库全红。
+// 需要第二个命名空间做隔离断言时用 POST /v1/namespaces 建，拿响应里的 id。
+export async function defaultNamespaceId(base, session) {
+	if (session) nsSessionByBase.set(base, session);
+	const hit = nsCache.get(base);
+	if (hit) return hit;
+	let inflight = nsInflight.get(base);
+	if (!inflight) {
+		// 会话来源三选一：本次调用的 → 这个 base 见过的 → seed() 登记过的同一个库的。
+		// 最后一条是为「只有 API Key 的请求」准备的：/v1/events 是机器入口，
+		// 没有会话 Cookie，但它要的命名空间跟这个库的会话看到的是同一个。
+		const sess =
+			session ||
+			nsSessionByBase.get(base) ||
+			nsSessionByDb.get(nsDbByBase.get(base) || "");
+		inflight = resolveDefaultNamespaceId(base, sess).finally(() =>
+			nsInflight.delete(base),
+		);
+		nsInflight.set(base, inflight);
+	}
+	const id = await inflight;
+	if (id) nsCache.set(base, id);
+	return id;
+}
+
+// resolveDefaultNamespaceId 是 defaultNamespaceId 的实际解析，两条路：
+//
+//   ① GET /v1/namespaces（契约 §6.1）——唯一事实源，默认命名空间是 slug=default。
+//   ② 兜底：/v1/events 是**机器入口**（Bearer API Key，没有会话 Cookie），拿不到
+//      /v1/namespaces。这时按 startServer 注册的库路径查 namespaces 表。仍然只是
+//      「查出来的 id」，不是硬编码；用例侧看不出差别。
+async function resolveDefaultNamespaceId(base, session) {
+	if (session) {
+		try {
+			const res = await fetch(base + "/v1/namespaces", {
+				headers: { Cookie: "anotify_session=" + session },
+				redirect: "manual",
+			});
+			if (res.ok) {
+				const j = await res.json().catch(() => null);
+				const list = j?.namespaces || (Array.isArray(j) ? j : []);
+				const def = list.find((n) => n?.slug === "default") || list[0];
+				if (def?.id) return def.id;
+			}
+		} catch {
+			/* 端点还没上线 / 服务刚重启：落到下面的兜底 */
+		}
+	}
+	const dbPath = nsDbByBase.get(base);
+	if (dbPath) {
+		try {
+			const db = new DatabaseSync(dbPath);
+			try {
+				const row = db
+					.prepare(
+						`SELECT id FROM namespaces WHERE slug = 'default' ORDER BY created_at LIMIT 1`,
+					)
+					.get();
+				if (row?.id) return row.id;
+			} finally {
+				db.close();
+			}
+		} catch {
+			/* namespaces 表还不存在（后端未升级）：视为解析不到 */
+		}
+	}
+	return null;
+}
+
+// withNamespaceQuery 给命名空间资源端点补上 namespaceId（契约 §6.2 的必填参数）。
+//
+// 为什么在**出口**统一注入，而不是逐个用例手写：套件里这类调用上百处，靠人记得
+// 加参数必然漏，而漏掉的表现是「某天 400 了」，排查成本极高。
+//
+// 调用方显式表态时**不覆盖**：
+//   1) 路径里已经带 namespaceId（含 namespaceId=*：跨命名空间汇总用）；
+//   2) body 对象里自带 namespaceId（后端取值顺序 query → body，意图明确就别抢）；
+//   3) opts.namespaceId === null（显式声明「就是不带」，用于断言缺参 400）。
+// 要指向非默认命名空间：opts.namespaceId = "<ns_id>"（id 来自 POST /v1/namespaces）。
+async function withNamespaceQuery(base, p, opts) {
+	if (!isNamespaceEndpoint(p)) return p;
+	if (opts.namespaceId === null) return p;
+	if (/[?&]namespaceId=/.test(p)) return p;
+	if (
+		opts.body &&
+		typeof opts.body === "object" &&
+		Object.prototype.hasOwnProperty.call(opts.body, "namespaceId")
+	) {
+		return p;
+	}
+	const explicit =
+		typeof opts.namespaceId === "string" && opts.namespaceId
+			? opts.namespaceId
+			: null;
+	const id = explicit || (await defaultNamespaceId(base, opts.session));
+	if (!id) {
+		// 解析不到就保持原样（后端还没升级 /v1/namespaces 时不至于把套件提前打红），
+		// 但要说一次，否则严格后端下只会看到一片 400 而不知道原因。
+		if (!nsWarned.has(base)) {
+			nsWarned.add(base);
+			console.warn(
+				`  ⚠️ ${base}：解析不到默认命名空间，命名空间资源请求将不带 namespaceId（后端严格后会 400）`,
+			);
+		}
+		return p;
+	}
+	return (
+		p + (p.includes("?") ? "&" : "?") + "namespaceId=" + encodeURIComponent(id)
+	);
+}
+
 // ---------- HTTP 客户端 ----------
-// req(base, path, {method, key, session, body, raw}) → {status, json, text, headers}
+// req(base, path, {method, key, session, body, namespaceId}) → {status, json, text, headers}
+// namespaceId 一般不用传：命名空间资源端点会自动补默认命名空间（见 withNamespaceQuery）。
 export async function req(base, p, opts = {}) {
 	const headers = Object.assign({}, opts.headers);
 	if (opts.key) headers["Authorization"] = "Bearer " + opts.key;
@@ -204,7 +355,9 @@ export async function req(base, p, opts = {}) {
 			headers["Content-Type"] = headers["Content-Type"] || "application/json";
 		}
 	}
-	const res = await fetch(base + p, {
+	// 契约 §6.2 的必填参数在这里统一注入（namespaceId 走 query，后端以 query 为准）。
+	const target = await withNamespaceQuery(base, p, opts);
+	const res = await fetch(base + target, {
 		method: opts.method || (body ? "POST" : "GET"),
 		headers,
 		body,
@@ -373,6 +526,11 @@ export async function startServer({
 			await new Promise((r) => setTimeout(r, 200));
 		}
 		if (up) {
+			// 注册库路径：无会话的请求（/v1/events 走 Bearer API Key）靠它解析默认命名空间。
+			// 同一个 base 重新拉起服务（重试/重启）时旧缓存必须作废：库换了，ns id 也换了。
+			nsDbByBase.set(base, dbPath);
+			nsCache.delete(base);
+			nsSessionByBase.delete(base);
 			return {
 				base,
 				port: p,
@@ -426,11 +584,16 @@ export function seed(dbPath, username = "e2e") {
 		{ encoding: "utf8" },
 	);
 	const get = (k) => (out.match(new RegExp(`^${k}=(.*)$`, "m")) || [])[1];
+	const session = get("SESSION");
+	// 登记这个库的会话：#162 之后资源请求要带 namespaceId，而 /v1/events 这类
+	// 机器入口只带 API Key（没有 Cookie）。留着会话，解析默认命名空间时就能走
+	// 契约端点 GET /v1/namespaces，而不是退化成查库。
+	if (session) nsSessionByDb.set(dbPath, session);
 	return {
 		uid: get("UID"),
 		sendKey: get("SEND_KEY"),
 		recvKey: get("RECV_KEY"),
-		session: get("SESSION"),
+		session,
 	};
 }
 

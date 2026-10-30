@@ -101,19 +101,19 @@ func TestCronNeverFires(t *testing.T) {
 func TestSourceCRUD(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	capA := mkCap(orgID, "demo.target", 1, []string{"ok"})
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.target", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 
 	src := &Source{
-		OrgID:   orgID,
-		Name:    "每晚体检",
-		Kind:    SourceKindCron,
-		Config:  json.RawMessage(`{"expr":"0 3 * * *"}`),
-		Enabled: true,
-		Targets: []SourceTarget{{CapabilityID: capA.ID}},
+		NamespaceID: nsID,
+		Name:        "每晚体检",
+		Kind:        SourceKindCron,
+		Config:      json.RawMessage(`{"expr":"0 3 * * *"}`),
+		Enabled:     true,
+		Targets:     []SourceTarget{{CapabilityID: capA.ID}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestSourceCRUD(t *testing.T) {
 	}
 
 	// 往返一致性：存什么读什么
-	got, err := db.GetSource(ctx, orgID, src.ID)
+	got, err := db.GetSource(ctx, nsID, src.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestSourceCRUD(t *testing.T) {
 	}
 
 	// 列表
-	list, err := db.ListSources(ctx, orgID)
+	list, err := db.ListSources(ctx, nsID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,10 +148,10 @@ func TestSourceCRUD(t *testing.T) {
 	}
 
 	// 删除
-	if err := db.DeleteSource(ctx, orgID, src.ID); err != nil {
+	if err := db.DeleteSource(ctx, nsID, src.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.GetSource(ctx, orgID, src.ID); !errors.Is(err, ErrSourceNotFound) {
+	if _, err := db.GetSource(ctx, nsID, src.ID); !errors.Is(err, ErrSourceNotFound) {
 		t.Errorf("删后应 ErrSourceNotFound, got %v", err)
 	}
 }
@@ -159,15 +159,15 @@ func TestSourceCRUD(t *testing.T) {
 func TestSourceValidation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	capA := mkCap(orgID, "demo.t2", 1, []string{"ok"})
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.t2", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 
 	// 没有出口 → 拒绝（否则事件永远派不出去）
 	err := db.CreateSource(ctx, &Source{
-		OrgID: orgID, Name: "无出口", Kind: SourceKindManual, Targets: nil,
+		NamespaceID: nsID, Name: "无出口", Kind: SourceKindManual, Targets: nil,
 	})
 	if err == nil {
 		t.Error("没有出口能力的源应被拒绝")
@@ -175,7 +175,7 @@ func TestSourceValidation(t *testing.T) {
 
 	// 未知 kind
 	err = db.CreateSource(ctx, &Source{
-		OrgID: orgID, Name: "怪种类", Kind: "nope", Targets: []SourceTarget{{CapabilityID: capA.ID}},
+		NamespaceID: nsID, Name: "怪种类", Kind: "nope", Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	})
 	if !errors.Is(err, ErrInvalidSourceKind) {
 		t.Errorf("应 ErrInvalidSourceKind, got %v", err)
@@ -183,7 +183,7 @@ func TestSourceValidation(t *testing.T) {
 
 	// 非法 cron 表达式
 	err = db.CreateSource(ctx, &Source{
-		OrgID: orgID, Name: "坏表达式", Kind: SourceKindCron,
+		NamespaceID: nsID, Name: "坏表达式", Kind: SourceKindCron,
 		Config:  json.RawMessage(`{"expr":"61 * * * *"}`),
 		Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	})
@@ -192,11 +192,11 @@ func TestSourceValidation(t *testing.T) {
 	}
 
 	// 重名
-	ok := &Source{OrgID: orgID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
+	ok := &Source{NamespaceID: nsID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
 	if err := db.CreateSource(ctx, ok); err != nil {
 		t.Fatal(err)
 	}
-	dup := &Source{OrgID: orgID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
+	dup := &Source{NamespaceID: nsID, Name: "重名", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
 	if err := db.CreateSource(ctx, dup); !errors.Is(err, ErrSourceNameTaken) {
 		t.Errorf("重名应 ErrSourceNameTaken, got %v", err)
 	}
@@ -205,14 +205,14 @@ func TestSourceValidation(t *testing.T) {
 func TestSourceWebhookToken(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	capA := mkCap(orgID, "demo.t3", 1, []string{"ok"})
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.t3", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 
 	src := &Source{
-		OrgID: orgID, Name: "hook", Kind: SourceKindWebhook,
+		NamespaceID: nsID, Name: "hook", Kind: SourceKindWebhook,
 		Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
@@ -235,7 +235,7 @@ func TestSourceWebhookToken(t *testing.T) {
 	}
 	// 停用后 token 不再有效（停用的源不该接受事件）
 	if err := db.UpdateSource(ctx, &Source{
-		ID: src.ID, OrgID: orgID, Name: src.Name, Kind: src.Kind,
+		ID: src.ID, NamespaceID: nsID, Name: src.Name, Kind: src.Kind,
 		Config: src.Config, Enabled: false, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}); err != nil {
 		t.Fatal(err)
@@ -248,19 +248,19 @@ func TestSourceWebhookToken(t *testing.T) {
 func TestSourceKindImmutable(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	capA := mkCap(orgID, "demo.t4", 1, []string{"ok"})
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.t4", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 
-	src := &Source{OrgID: orgID, Name: "keep", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
+	src := &Source{NamespaceID: nsID, Name: "keep", Kind: SourceKindManual, Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}}}
 	if err := db.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)
 	}
 	// 试图把 manual 改成 cron
 	err := db.UpdateSource(ctx, &Source{
-		ID: src.ID, OrgID: orgID, Name: "keep", Kind: SourceKindCron,
+		ID: src.ID, NamespaceID: nsID, Name: "keep", Kind: SourceKindCron,
 		Config: json.RawMessage(`{"expr":"0 3 * * *"}`), Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	})
 	if err == nil {
@@ -271,20 +271,20 @@ func TestSourceKindImmutable(t *testing.T) {
 func TestDueCronSources(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	capA := mkCap(orgID, "demo.t5", 1, []string{"ok"})
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.t5", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 
 	src := &Source{
-		OrgID: orgID, Name: "due", Kind: SourceKindCron,
+		NamespaceID: nsID, Name: "due", Kind: SourceKindCron,
 		Config: json.RawMessage(`{"expr":"0 3 * * *"}`), Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := db.GetSource(ctx, orgID, src.ID)
+	got, _ := db.GetSource(ctx, nsID, src.ID)
 
 	// 还没到点 → 不应被取出
 	if due, _ := db.DueCronSources(ctx, *got.NextFireAt-60, 10); len(due) != 0 {
@@ -304,15 +304,15 @@ func TestDueCronSources(t *testing.T) {
 func TestCreateSourceRejectsReservedName(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	capA := mkCap(orgID, "demo.reserved", 1, []string{"ok"})
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.reserved", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, name := range []string{"route", "  route  "} {
 		err := db.CreateSource(ctx, &Source{
-			OrgID: orgID, Name: name, Kind: SourceKindManual, Enabled: true,
+			NamespaceID: nsID, Name: name, Kind: SourceKindManual, Enabled: true,
 			Targets: []SourceTarget{{CapabilityID: capA.ID}},
 		})
 		if err == nil {
@@ -323,7 +323,7 @@ func TestCreateSourceRejectsReservedName(t *testing.T) {
 		}
 	}
 	// 一行都没建出来（拒绝发生在落库前）
-	list, err := db.ListSources(ctx, orgID)
+	list, err := db.ListSources(ctx, nsID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestCreateSourceRejectsReservedName(t *testing.T) {
 
 	// 名字里包含 route 但不等于 route 的源照常可建（不能误伤）
 	if err := db.CreateSource(ctx, &Source{
-		OrgID: orgID, Name: "route 备份", Kind: SourceKindManual, Enabled: true,
+		NamespaceID: nsID, Name: "route 备份", Kind: SourceKindManual, Enabled: true,
 		Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}); err != nil {
 		t.Fatalf("名字只是含有 route 的源被误伤: %v", err)
@@ -347,14 +347,14 @@ func TestCreateSourceRejectsReservedName(t *testing.T) {
 func TestUpdateSourceRejectsReservedName(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	orgID, _ := newTestOrg(t, db)
-	capA := mkCap(orgID, "demo.rename", 1, []string{"ok"})
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.rename", 1, []string{"ok"})
 	if err := db.CreateCapability(ctx, capA); err != nil {
 		t.Fatal(err)
 	}
 
 	src := &Source{
-		OrgID: orgID, Name: "原来的名字", Kind: SourceKindManual, Enabled: true,
+		NamespaceID: nsID, Name: "原来的名字", Kind: SourceKindManual, Enabled: true,
 		Targets: []SourceTarget{{CapabilityID: capA.ID}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
@@ -362,7 +362,7 @@ func TestUpdateSourceRejectsReservedName(t *testing.T) {
 	}
 
 	for _, name := range []string{"route", "  route  "} {
-		cur, err := db.GetSource(ctx, orgID, src.ID)
+		cur, err := db.GetSource(ctx, nsID, src.ID)
 		if err != nil {
 			t.Fatalf("get source: %v", err)
 		}
@@ -375,7 +375,7 @@ func TestUpdateSourceRejectsReservedName(t *testing.T) {
 			t.Fatalf("UpdateSource(name=%q) 错误不可判: %v", name, err)
 		}
 		// 改动不应该落库（名字保持原样）
-		after, err := db.GetSource(ctx, orgID, src.ID)
+		after, err := db.GetSource(ctx, nsID, src.ID)
 		if err != nil {
 			t.Fatalf("get source after reject: %v", err)
 		}
@@ -385,7 +385,7 @@ func TestUpdateSourceRejectsReservedName(t *testing.T) {
 	}
 
 	// 名字只是含有 route 的照常能改（不能误伤）
-	cur, err := db.GetSource(ctx, orgID, src.ID)
+	cur, err := db.GetSource(ctx, nsID, src.ID)
 	if err != nil {
 		t.Fatalf("get source: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestUpdateSourceRejectsReservedName(t *testing.T) {
 	if err := db.UpdateSource(ctx, cur); err != nil {
 		t.Fatalf("名字只是含有 route 的改名被误伤: %v", err)
 	}
-	after, err := db.GetSource(ctx, orgID, src.ID)
+	after, err := db.GetSource(ctx, nsID, src.ID)
 	if err != nil {
 		t.Fatalf("get source: %v", err)
 	}

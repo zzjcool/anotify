@@ -2,6 +2,7 @@ package lease
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -501,5 +502,133 @@ func TestRetentionNeverEnablesEventSweep(t *testing.T) {
 	if opts.Batch != store.DefaultRetentionBatch || opts.Batches != store.DefaultRetentionBatches {
 		t.Fatalf("Batch/Batches 应回落到默认常量 %d/%d，实际 %d/%d",
 			store.DefaultRetentionBatch, store.DefaultRetentionBatches, opts.Batch, opts.Batches)
+	}
+}
+
+// ---------- #162 验收：保留期清理按命名空间生效 ----------
+
+// mkNsCapability 在一个命名空间里建一个声明了 lifecycle.resultTtlSec 的能力版本。
+func mkNsCapability(t *testing.T, db *store.DB, namespaceID, name string, ttlSec int) *store.CapabilityVersion {
+	t.Helper()
+	c := &store.CapabilityVersion{
+		NamespaceID:  namespaceID,
+		Name:         name,
+		Version:      1,
+		ParamsSchema: json.RawMessage(`{"type":"object"}`),
+		Source:       store.CapSourceCustom,
+		Lifecycle:    store.Lifecycle{ResultTTLSec: ttlSec},
+	}
+	if err := db.CreateCapability(context.Background(), c); err != nil {
+		t.Fatalf("create capability %s in %s: %v", name, namespaceID, err)
+	}
+	return c
+}
+
+// mkFinishedTask 用真实状态机把任务推到 succeeded，再把 finished_at 设到指定时刻。
+//
+// 只能经 Transition 推进（状态机唯一写入口）；finished_at 是时间戳夹具，
+// 测试需要它落在过去才能验证「过期」。
+func mkFinishedTask(t *testing.T, db *store.DB, namespaceID string, cap *store.CapabilityVersion, finishedAt int64) *store.Task {
+	t.Helper()
+	ctx := context.Background()
+	task := &store.Task{
+		NamespaceID:  namespaceID,
+		TraceID:      "trace_" + store.NewTaskID(),
+		Path:         []string{},
+		CapabilityID: cap.ID,
+		Capability:   cap.Name,
+		Version:      cap.Version,
+		Params:       json.RawMessage(`{}`),
+		GraphID:      "grf_lease_test",
+	}
+	if err := db.CreateTasks(ctx, []*store.Task{task}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	chain := [][2]string{
+		{store.TaskPending, store.TaskAssigned},
+		{store.TaskAssigned, store.TaskAcked},
+		{store.TaskAcked, store.TaskRunning},
+		{store.TaskRunning, store.TaskSucceeded},
+	}
+	for _, step := range chain {
+		if err := db.Transition(ctx, namespaceID, task.ID, step[0], step[1]); err != nil {
+			t.Fatalf("transition %s → %s: %v", step[0], step[1], err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE tasks SET finished_at = ? WHERE namespace_id = ? AND id = ?`,
+		finishedAt, namespaceID, task.ID); err != nil {
+		t.Fatalf("stub finished_at: %v", err)
+	}
+	return task
+}
+
+// countTasks 数某个命名空间里的任务行。
+func countTasks(t *testing.T, db *store.DB, namespaceID string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM tasks WHERE namespace_id = ?`, namespaceID).Scan(&n); err != nil {
+		t.Fatalf("count tasks in %s: %v", namespaceID, err)
+	}
+	return n
+}
+
+// TestRetentionSweepsPerNamespace 巡检驱动的一轮清理必须**按命名空间**各自生效（#162）。
+//
+// 背景：store 的 ResultRetentionScope 现在按（命名空间 × 能力）出 scope，
+// DeleteExpiredTerminalTasks/DeleteExpiredEvents 的作用域参数从 orgID 换成了 namespaceID。
+// lease 层不自带命名空间（它是全局巡检），但必须把这条维度**完整传下去**——
+// 所以这里用真库造两个命名空间的过期终态任务，断言两边都被清掉。
+//
+// 用真库而不是 fake 的理由：fake 只能证明「调了 SweepRetention」，
+// 证明不了「命名空间维度没在半路被 org_id 顶掉」——而后者正是这次改动最容易回归的地方
+// （orgID 传进 namespace 位置的实现会让删除 0 行，且**不报错**）。
+func TestRetentionSweepsPerNamespace(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(t.TempDir() + "/lease-ns.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	org, err := db.CreateOrg(ctx, "org-"+store.NewOrgID())
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	ns1, err := db.DefaultNamespaceID(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("default namespace: %v", err)
+	}
+	ns2, err := db.CreateNamespace(ctx, org.ID, "staging", "预发")
+	if err != nil {
+		t.Fatalf("create second namespace: %v", err)
+	}
+
+	const ttlSec = 60
+	now := int64(1_700_000_000)
+	expired := now - 3600 // 早于 now - ttl
+	fresh := now - 10     // 未过期
+
+	cap1 := mkNsCapability(t, db, ns1, "retained", ttlSec)
+	cap2 := mkNsCapability(t, db, ns2.ID, "retained", ttlSec)
+	cap3 := mkNsCapability(t, db, ns2.ID, "retained-fresh", ttlSec)
+
+	mkFinishedTask(t, db, ns1, cap1, expired)    // 应被删
+	mkFinishedTask(t, db, ns2.ID, cap2, expired) // 应被删（另一个命名空间）
+	mkFinishedTask(t, db, ns2.ID, cap3, fresh)   // 不该被删（未过期）
+
+	sw := New(db)
+	sw.Now = func() int64 { return now }
+	sw.RetentionInterval = time.Second
+	sw.Tick(ctx) // 首轮立即执行清理（lastRetention == 0）
+	sw.retentionWG.Wait()
+
+	if got := countTasks(t, db, ns1); got != 0 {
+		t.Fatalf("默认命名空间里过期终态任务应被清掉，剩 %d 行", got)
+	}
+	// ns2 里两条：过期的那条被删，未过期的那条留下 → 正好 1 行
+	if got := countTasks(t, db, ns2.ID); got != 1 {
+		t.Fatalf("staging 命名空间应只剩 1 行（未过期的），实际 %d 行", got)
 	}
 }

@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,8 +17,10 @@ import (
 
 // fixture 是一套带真 SQLite 的触发器环境。
 type fixture struct {
-	db         *store.DB
-	orgID      string
+	db    *store.DB
+	orgID string
+	// nsID 是组织的默认命名空间：事件/能力/边都落在它里（事件必须显式带命名空间）。
+	nsID       string
 	svc        *Service
 	dispatcher *fakeDispatcher
 }
@@ -68,6 +71,11 @@ func newFixture(t *testing.T, originCaps ...string) *fixture {
 	if err != nil {
 		t.Fatalf("create org: %v", err)
 	}
+	// 建组织时同事务播种 default 命名空间 + 内置能力（契约 §2.5）。
+	nsID, err := db.DefaultNamespaceID(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("default namespace: %v", err)
+	}
 
 	// #110：不再需要"起点能力"。事件的来源由 source 名承担，
 	// 派发靠入口边（from_is_source=1）。这里建几条入口边，
@@ -75,6 +83,7 @@ func newFixture(t *testing.T, originCaps ...string) *fixture {
 	//
 	// 注意：测试关心的是"入口边被正确查询"，不是"能力存在"。
 	sink := &store.CapabilityVersion{
+		NamespaceID:  nsID,
 		OrgID:        org.ID,
 		Name:         "sink",
 		Version:      1,
@@ -92,6 +101,7 @@ func newFixture(t *testing.T, originCaps ...string) *fixture {
 	_ = directInputs
 	for _, name := range originCaps {
 		if err := db.CreateEdge(ctx, &store.Edge{
+			NamespaceID:    nsID,
 			OrgID:          org.ID,
 			FromIsSource:   true,
 			FromCapability: name,
@@ -105,7 +115,7 @@ func newFixture(t *testing.T, originCaps ...string) *fixture {
 	disp := &fakeDispatcher{}
 	svc := New(db, disp)
 	// 真实 trace_id 便于断言前缀
-	return &fixture{db: db, orgID: org.ID, svc: svc, dispatcher: disp}
+	return &fixture{db: db, orgID: org.ID, nsID: nsID, svc: svc, dispatcher: disp}
 }
 
 // ---------- #58 验收：幂等 ----------
@@ -117,7 +127,7 @@ func TestEventIdempotent(t *testing.T) {
 	key := "delivery-abc-123"
 
 	first, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "pull_request.opened",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "pull_request.opened",
 		IdemKey: &key,
 		Payload: json.RawMessage(`{"number":42}`),
 	})
@@ -129,7 +139,7 @@ func TestEventIdempotent(t *testing.T) {
 	}
 
 	second, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "pull_request.opened",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "pull_request.opened",
 		IdemKey: &key,
 		Payload: json.RawMessage(`{"number":42}`),
 	})
@@ -147,10 +157,16 @@ func TestEventIdempotent(t *testing.T) {
 	if second.Event.TraceID != first.Event.TraceID {
 		t.Fatalf("trace_id differs: %s vs %s", first.Event.TraceID, second.Event.TraceID)
 	}
+	// 命名空间跟着请求走（事件行上的 namespaceId 是隔离维度）
+	if first.Event.NamespaceID != f.nsID {
+		t.Fatalf("event.NamespaceID = %q, want %q（IngestRequest.NamespaceID 必须落库）",
+			first.Event.NamespaceID, f.nsID)
+	}
 
 	// 库里只有一行
 	var count int
-	if err := f.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE org_id = ? AND source = ?`, f.orgID, "github").Scan(&count); err != nil {
+	if err := f.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE namespace_id = ? AND source = ?`, f.nsID, "github").Scan(&count); err != nil {
 		t.Fatalf("count events: %v", err)
 	}
 	if count != 1 {
@@ -170,7 +186,7 @@ func TestNoIdemKeyAllowsDuplicates(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		res, err := f.svc.Ingest(ctx, &IngestRequest{
-			OrgID: f.orgID, Source: "github", Type: "push",
+			OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push",
 			Payload: json.RawMessage(`{}`),
 		})
 		if err != nil {
@@ -203,7 +219,7 @@ func TestEmptyIdemKeyTreatedAsAbsent(t *testing.T) {
 	empty := "   "
 
 	res, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "push", IdemKey: &empty,
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push", IdemKey: &empty,
 	})
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
@@ -213,7 +229,7 @@ func TestEmptyIdemKeyTreatedAsAbsent(t *testing.T) {
 	}
 	// 再来一条也不冲突
 	res2, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "push", IdemKey: &empty,
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push", IdemKey: &empty,
 	})
 	if err != nil {
 		t.Fatalf("second ingest: %v", err)
@@ -230,13 +246,13 @@ func TestIdemKeyScopedToSource(t *testing.T) {
 	key := "same-key-different-source"
 
 	r1, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "push", IdemKey: &key,
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push", IdemKey: &key,
 	})
 	if err != nil {
 		t.Fatalf("github ingest: %v", err)
 	}
 	r2, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "cron", Type: "push", IdemKey: &key,
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "cron", Type: "push", IdemKey: &key,
 	})
 	if err != nil {
 		t.Fatalf("cron ingest: %v", err)
@@ -249,35 +265,90 @@ func TestIdemKeyScopedToSource(t *testing.T) {
 	}
 }
 
-// TestIdemKeyScopedToOrg 同一 idemKey 在不同组织下互不影响（I10：一切过 org_id）。
+// TestIdemKeyScopedToOrg 同一 idemKey 在不同组织下互不影响（I10：一切过命名空间）。
 func TestIdemKeyScopedToOrg(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	// 第二个组织
+	// 第二个组织（自带的 default 命名空间是幂等窗口的隔离锚点）
 	other, err := f.db.CreateOrg(ctx, "other-"+store.NewOrgID())
 	if err != nil {
 		t.Fatalf("create other org: %v", err)
 	}
 	otherID := other.ID
-	// 给新组织也建 github 能力（否则找不到 origin）
+	otherNS, err := f.db.DefaultNamespaceID(ctx, otherID)
+	if err != nil {
+		t.Fatalf("default namespace of other org: %v", err)
+	}
+	// 给新组织也建 github 能力（否则入口查不到东西）
 	if err := f.db.CreateCapability(ctx, &store.CapabilityVersion{
-		OrgID: otherID, Name: "github", Version: 1,
+		NamespaceID: otherNS, OrgID: otherID, Name: "github", Version: 1,
 		ParamsSchema: json.RawMessage(`{}`), Source: store.CapSourceBuiltin,
 	}); err != nil {
 		t.Fatalf("create capability for other org: %v", err)
 	}
 
 	key := "shared-key"
-	r1, err := f.svc.Ingest(ctx, &IngestRequest{OrgID: f.orgID, Source: "github", Type: "push", IdemKey: &key})
+	r1, err := f.svc.Ingest(ctx, &IngestRequest{OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push", IdemKey: &key})
 	if err != nil {
 		t.Fatalf("org1 ingest: %v", err)
 	}
-	r2, err := f.svc.Ingest(ctx, &IngestRequest{OrgID: otherID, Source: "github", Type: "push", IdemKey: &key})
+	r2, err := f.svc.Ingest(ctx, &IngestRequest{OrgID: otherID, NamespaceID: otherNS, Source: "github", Type: "push", IdemKey: &key})
 	if err != nil {
 		t.Fatalf("org2 ingest: %v", err)
 	}
 	if !r1.Inserted || !r2.Inserted {
 		t.Fatal("same idemKey across orgs must not collide (I10)")
+	}
+}
+
+// TestIdemKeyScopedToNamespace **同一组织**的两个命名空间里，同一 idemKey 互不影响。
+//
+// 这是 #162 的核心语义（唯一索引是 (namespace_id, source, idem_key)）：
+// 同一个 GitHub 投递 ID 在 prod 与 staging 是两条不同的事件。
+// 旧实现按 org_id 做幂等，这条会直接红（第二条被当幂等命中而静默丢掉）。
+func TestIdemKeyScopedToNamespace(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	second, err := f.db.CreateNamespace(ctx, f.orgID, "staging", "预发")
+	if err != nil {
+		t.Fatalf("create second namespace: %v", err)
+	}
+
+	key := "same-delivery-id"
+	r1, err := f.svc.Ingest(ctx, &IngestRequest{
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push", IdemKey: &key,
+	})
+	if err != nil {
+		t.Fatalf("default ns ingest: %v", err)
+	}
+	r2, err := f.svc.Ingest(ctx, &IngestRequest{
+		OrgID: f.orgID, NamespaceID: second.ID, Source: "github", Type: "push", IdemKey: &key,
+	})
+	if err != nil {
+		t.Fatalf("staging ns ingest: %v", err)
+	}
+	if !r1.Inserted || !r2.Inserted {
+		t.Fatal("同一 idemKey 在两个命名空间里必须各自插入（幂等窗口按命名空间）")
+	}
+	if r1.Event.ID == r2.Event.ID {
+		t.Fatal("两个命名空间产生了同一个 event_id")
+	}
+	if r2.Event.NamespaceID != second.ID {
+		t.Fatalf("event.namespaceId = %q, want %q", r2.Event.NamespaceID, second.ID)
+	}
+	// 库里按命名空间各一行
+	var n1, n2 int
+	if err := f.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE namespace_id = ? AND idem_key = ?`, f.nsID, key).Scan(&n1); err != nil {
+		t.Fatalf("count default ns: %v", err)
+	}
+	if err := f.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE namespace_id = ? AND idem_key = ?`, second.ID, key).Scan(&n2); err != nil {
+		t.Fatalf("count staging ns: %v", err)
+	}
+	if n1 != 1 || n2 != 1 {
+		t.Fatalf("events per namespace = %d/%d, want 1/1", n1, n2)
 	}
 }
 
@@ -289,7 +360,7 @@ func TestTraceIDFromTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "push",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push",
 	})
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
@@ -347,7 +418,7 @@ func TestExplicitTraceIDHonored(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "push",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push",
 		TraceID: "trace_caller_supplied",
 	})
 	if err != nil {
@@ -386,14 +457,14 @@ func TestCronIdempotentAcrossFire(t *testing.T) {
 	key := CronIdemKey("nightly", fire)
 
 	r1, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "cron", Type: "tick",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "cron", Type: "tick",
 		IdemKey: &key, TraceID: CronTraceID("nightly", fire),
 	})
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	r2, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "cron", Type: "tick",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "cron", Type: "tick",
 		IdemKey: &key, TraceID: CronTraceID("nightly", fire),
 	})
 	if err != nil {
@@ -408,7 +479,7 @@ func TestCronIdempotentAcrossFire(t *testing.T) {
 	// 下一分钟是新事件
 	nextKey := CronIdemKey("nightly", fire+60)
 	r3, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "cron", Type: "tick", IdemKey: &nextKey,
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "cron", Type: "tick", IdemKey: &nextKey,
 	})
 	if err != nil {
 		t.Fatalf("third: %v", err)
@@ -429,7 +500,7 @@ func TestEntryEdgeUsesSourceName(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "pull_request.opened",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "pull_request.opened",
 		Payload: json.RawMessage(`{"number":42,"title":"fix bug"}`),
 	})
 	if err != nil {
@@ -454,6 +525,14 @@ func TestEntryEdgeUsesSourceName(t *testing.T) {
 	}
 	if in.OrgID != f.orgID {
 		t.Fatalf("OrgID = %q", in.OrgID)
+	}
+	// 派发必须带命名空间：route 对空 NamespaceID 直接报错（不回退默认命名空间），
+	// 而且查边/找节点/建任务全按它过滤。
+	if in.NamespaceID != f.nsID {
+		t.Fatalf("NamespaceID = %q, want %q（派发必须带命名空间）", in.NamespaceID, f.nsID)
+	}
+	if res.Event.NamespaceID != f.nsID {
+		t.Fatalf("event.NamespaceID = %q, want %q", res.Event.NamespaceID, f.nsID)
 	}
 	// 来源不是能力，不参与「A→B→A」环检测
 	if len(in.Path) != 0 {
@@ -482,7 +561,7 @@ func TestUnknownSourceNoEntryEdge(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "jira", Type: "issue.created",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "jira", Type: "issue.created",
 	})
 	if err != nil {
 		t.Fatalf("ingest 不该因来源未配置而失败: %v", err)
@@ -523,7 +602,7 @@ func TestDispatchFailureKeepsEvent(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := f.svc.Ingest(ctx, &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "push",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push",
 	})
 	if err == nil {
 		t.Fatal("expected dispatch error to propagate")
@@ -558,7 +637,7 @@ func TestPayloadPassThrough(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t)
 			_, err := f.svc.Ingest(context.Background(), &IngestRequest{
-				OrgID: f.orgID, Source: "github", Type: "push",
+				OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push",
 				Payload: json.RawMessage(c.payload),
 			})
 			if err != nil {
@@ -583,7 +662,7 @@ func TestPayloadPassThrough(t *testing.T) {
 func TestInvalidPayloadDefaultsToEmpty(t *testing.T) {
 	f := newFixture(t)
 	res, err := f.svc.Ingest(context.Background(), &IngestRequest{
-		OrgID: f.orgID, Source: "github", Type: "push",
+		OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push",
 		Payload: json.RawMessage(`{not json`),
 	})
 	if err != nil {
@@ -603,8 +682,10 @@ func TestIngestValidation(t *testing.T) {
 	}{
 		{name: "nil request", req: nil},
 		{name: "no org", req: &IngestRequest{Source: "github", Type: "push"}},
-		{name: "no source", req: &IngestRequest{OrgID: f.orgID, Type: "push"}},
-		{name: "no type", req: &IngestRequest{OrgID: f.orgID, Source: "github"}},
+		// 命名空间必填：缺了就是错误，不静默回退默认命名空间（契约 §6.2）
+		{name: "no namespace", req: &IngestRequest{OrgID: f.orgID, Source: "github", Type: "push"}},
+		{name: "no source", req: &IngestRequest{OrgID: f.orgID, NamespaceID: f.nsID, Type: "push"}},
+		{name: "no type", req: &IngestRequest{OrgID: f.orgID, NamespaceID: f.nsID, Source: "github"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -612,6 +693,12 @@ func TestIngestValidation(t *testing.T) {
 				t.Fatal("invalid request accepted")
 			}
 		})
+	}
+	// 缺命名空间必须能认出来（哨兵错误，不依赖字符串匹配）
+	if _, err := f.svc.Ingest(context.Background(), &IngestRequest{
+		OrgID: f.orgID, Source: "github", Type: "push",
+	}); !errors.Is(err, store.ErrNamespaceRequired) {
+		t.Fatalf("缺 namespace 的错误应可 errors.Is(store.ErrNamespaceRequired)，实际 %v", err)
 	}
 	// 校验失败不该产生事件
 	var count int
@@ -639,7 +726,7 @@ func TestConcurrentIngestSameIdemKey(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			res, err := f.svc.Ingest(ctx, &IngestRequest{
-				OrgID: f.orgID, Source: "github", Type: "push", IdemKey: &key,
+				OrgID: f.orgID, NamespaceID: f.nsID, Source: "github", Type: "push", IdemKey: &key,
 			})
 			if err != nil {
 				// 并发下 SQLite 可能返回 busy；这不是被测行为

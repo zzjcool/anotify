@@ -12,8 +12,15 @@ import (
 
 // handleTaskFrame 处理 ack / progress / result 三种任务帧（契约 §6.1）。
 //
-// 三种帧都必须先 hello（身份确定后才有 org 维度可用），
+// 三种帧都必须先 hello（身份确定后才有命名空间维度可用），
 // 且都会续命（由 readLoop 的 touch 统一处理）。
+//
+// 作用域规则（#162）：
+//   - 取任务用**节点的**命名空间（s.node.NamespaceID）——节点只能看见自己隔离域里的任务；
+//   - 拿到任务之后一律用**任务自己的** task.NamespaceID（任务行是作用域的事实源）。
+//
+// 两者正常情况下相等；分成两步写的原因：若哪天两者不等（数据异常），
+// 用 task.NamespaceID 写状态迁移至少还能对上行，不会因作用域错而恒 0 行。
 func (s *nodeSession) handleTaskFrame(ctx context.Context, frame any) error {
 	switch f := frame.(type) {
 	case *AckFrame:
@@ -34,7 +41,7 @@ func (s *nodeSession) handleAck(ctx context.Context, f *AckFrame) error {
 		s.sendError(ctx, ErrCodeBadFrame, "ack requires task_id")
 		return nil
 	}
-	task, err := s.h.Store.GetTask(ctx, s.node.OrgID, f.TaskID)
+	task, err := s.h.Store.GetTask(ctx, s.node.NamespaceID, f.TaskID)
 	if errors.Is(err, store.ErrNotFound) {
 		s.sendError(ctx, ErrCodeBadFrame, fmt.Sprintf("unknown task %q", f.TaskID))
 		return nil
@@ -48,13 +55,13 @@ func (s *nodeSession) handleAck(ctx context.Context, f *AckFrame) error {
 			fmt.Sprintf("task %s is not assigned to this node", f.TaskID))
 		return nil
 	}
-	if err := s.h.Store.Transition(ctx, s.node.OrgID, f.TaskID, store.TaskAssigned, store.TaskAcked); err != nil {
+	if err := s.h.Store.Transition(ctx, task.NamespaceID, f.TaskID, store.TaskAssigned, store.TaskAcked); err != nil {
 		s.reportTransitionError(ctx, f.TaskID, err)
 		return nil
 	}
 	// ack 成功即开始计时：把租约推到 now + TTL（不再受 20s ack 窗口约束）
 	now := s.h.now()
-	if err := s.h.Store.ExtendLease(ctx, s.node.OrgID, f.TaskID, now+int64(s.h.leaseTTLSec())); err != nil {
+	if err := s.h.Store.ExtendLease(ctx, task.NamespaceID, f.TaskID, now+int64(s.h.leaseTTLSec())); err != nil {
 		slog.Warn("extend lease on ack failed",
 			"event", "node.ws.ack.extend_failed",
 			"task_id", f.TaskID,
@@ -70,7 +77,7 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 		s.sendError(ctx, ErrCodeBadFrame, "progress requires task_id")
 		return nil
 	}
-	task, err := s.h.Store.GetTask(ctx, s.node.OrgID, f.TaskID)
+	task, err := s.h.Store.GetTask(ctx, s.node.NamespaceID, f.TaskID)
 	if errors.Is(err, store.ErrNotFound) {
 		s.sendError(ctx, ErrCodeBadFrame, fmt.Sprintf("unknown task %q", f.TaskID))
 		return nil
@@ -88,7 +95,7 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 	// 失败即整体回滚并回错误帧——不会出现「已 running、租约却没续上」被巡检
 	// 当过期任务回收、节点还在跑而中枢已重派的中间态。
 	now := s.h.now()
-	if err := s.h.Store.ProgressTask(ctx, s.node.OrgID, f.TaskID, now+int64(s.h.leaseTTLSec())); err != nil {
+	if err := s.h.Store.ProgressTask(ctx, task.NamespaceID, f.TaskID, now+int64(s.h.leaseTTLSec())); err != nil {
 		s.reportTransitionError(ctx, f.TaskID, err)
 		return nil
 	}
@@ -125,7 +132,7 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 			fmt.Sprintf("result status must be succeeded|failed, got %q", f.Status))
 		return nil
 	}
-	task, err := s.h.Store.GetTask(ctx, s.node.OrgID, f.TaskID)
+	task, err := s.h.Store.GetTask(ctx, s.node.NamespaceID, f.TaskID)
 	if errors.Is(err, store.ErrNotFound) {
 		s.sendError(ctx, ErrCodeBadFrame, fmt.Sprintf("unknown task %q", f.TaskID))
 		return nil
@@ -168,7 +175,10 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	// 已经成功、子任务行已落库，绝不能回退（见 ⑥）。
 	var next []*store.Task
 	if s.h.NextHop != nil && f.Status == store.TaskSucceeded && out != nil {
-		next, err = s.h.NextHop.PlanNextHop(ctx, s.node.OrgID, task.TraceID, task.ID,
+		// 出口表/能力/节点都按命名空间隔离：作用域必须是**父任务的命名空间**
+		// （即 task.NamespaceID，不是节点的 org）。传错的话 EdgesFrom 恒 0 行，
+		// 链路会在父任务成功后静默停掉。
+		next, err = s.h.NextHop.PlanNextHop(ctx, task.NamespaceID, task.TraceID, task.ID,
 			task.CapabilityID, *out, task.Params, task.Path)
 		if err != nil {
 			s.reportTransitionError(ctx, f.TaskID, err)
@@ -181,7 +191,7 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	// 拆成两次提交时，进程在中间退出就会留下「父任务 succeeded + out=fix、
 	// 子任务行不存在」的永久空洞。同一个 BEGIN/COMMIT 里，子任务插入失败则整体回滚
 	// ——父任务不留在终态（宁可让父任务被巡检退回重派、幂等重执行一次，也胜于断链）。
-	if err := s.h.Store.ReportResultAndCreateTasks(ctx, s.node.OrgID, f.TaskID, f.Status, out, reported,
+	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status, out, reported,
 		f.Summary, f.Artifacts, f.Error, next); err != nil {
 		s.reportTransitionError(ctx, f.TaskID, err)
 		return nil
@@ -209,7 +219,7 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	//
 	// 幂等兜底见上方的补偿路径：行已 pending + node_id NULL，sweeper 会捞。
 	if len(next) > 0 {
-		s.publishNext(ctx, task.ID, next)
+		s.publishNext(ctx, task.NamespaceID, task.ID, next)
 	}
 	return nil
 }
@@ -229,12 +239,13 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 // 补偿路径：行已是 pending + node_id NULL + attempts=0，即使本 goroutine 随进程
 // 消失、或 PublishTasks 返回错误，store.ListRedispatchable（internal/lease sweeper
 // 每 5s tick，Redispatch = Dispatcher.RedispatchTask）也会把它捞回重派。
-func (s *nodeSession) publishNext(ctx context.Context, parentTaskID string, tasks []*store.Task) {
+// namespaceID 是父任务的命名空间（子任务行由 store 强制继承父任务的命名空间，I11④）。
+func (s *nodeSession) publishNext(ctx context.Context, namespaceID, parentTaskID string, tasks []*store.Task) {
 	go func() {
 		// 用 WithoutCancel：连接断开不该让已经完成的任务丢失下一跳。
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		if err := s.h.NextHop.PublishTasks(bg, s.node.OrgID, tasks); err != nil {
+		if err := s.h.NextHop.PublishTasks(bg, namespaceID, tasks); err != nil {
 			slog.Warn("publish next hop failed",
 				"event", "node.ws.result.next_hop_failed",
 				"parent_task_id", parentTaskID,

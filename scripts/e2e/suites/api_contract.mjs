@@ -281,6 +281,93 @@ async function main() {
 		JSON.stringify(taskList.json),
 	);
 
+	// ---------- 命名空间（#162 / 契约 §6.2 + I11）----------
+	//
+	// 只钉住「隔离语义」必须有的三条：缺参 400、两个命名空间互相看不到对方的数据、
+	// 跨命名空间引用被拒（I11①）。其余用例结构不动 —— 这是硬隔离边界，
+	// 这三条一松，后面所有「按命名空间过滤」的断言都失去意义。
+	{
+		// 1. 缺 namespaceId → 400（后端**不回退**默认命名空间）
+		const noNs = await H.req(B, "/v1/capabilities", {
+			session,
+			namespaceId: null, // 显式不注入（见 harness withNamespaceQuery）
+		});
+		H.eq("缺 namespaceId → 400", noNs.status, 400);
+		H.check(
+			"缺 namespaceId 的错误提示点名参数",
+			String(noNs.text || "").toLowerCase().includes("namespace"),
+			String(noNs.text).slice(0, 120),
+		);
+
+		// 2. 第二个命名空间用 API 建（不硬编码 id），然后双向验隔离
+		const created = await H.req(B, "/v1/namespaces", {
+			session,
+			method: "POST",
+			body: { slug: "iso-" + Date.now(), name: "隔离验证" },
+		});
+		H.check(
+			"POST /v1/namespaces → 2xx",
+			created.status === 200 || created.status === 201,
+			`${created.status} ${String(created.text).slice(0, 120)}`,
+		);
+		const otherNs = (created.json?.namespace || created.json)?.id;
+		H.check("新命名空间有 id", !!otherNs, String(otherNs));
+		if (otherNs) {
+			const defNs = await H.defaultNamespaceId(B, session);
+			// 两边各建一个同名以外的能力，再互相查
+			const capOther = await H.req(B, "/v1/capabilities", {
+				session,
+				method: "POST",
+				namespaceId: otherNs,
+				body: { name: "iso.only_other", outputs: ["x"], paramsSchema: { type: "object" } },
+			});
+			H.eq("在新命名空间里建能力 → 200", capOther.status, 200);
+			const capDefault = await H.req(B, "/v1/capabilities", {
+				session,
+				method: "POST",
+				namespaceId: defNs,
+				body: { name: "iso.only_default", outputs: ["x"], paramsSchema: { type: "object" } },
+			});
+			H.eq("在默认命名空间里建能力 → 200", capDefault.status, 200);
+
+			const listDefault = await H.req(B, "/v1/capabilities", {
+				session,
+				namespaceId: defNs,
+			});
+			const namesDefault = (listDefault.json?.capabilities || []).map((c) => c.name);
+			H.check(
+				"默认命名空间看不到另一个命名空间的能力",
+				namesDefault.includes("iso.only_default") &&
+					!namesDefault.includes("iso.only_other"),
+				JSON.stringify(namesDefault),
+			);
+
+			const listOther = await H.req(B, "/v1/capabilities", {
+				session,
+				namespaceId: otherNs,
+			});
+			const namesOther = (listOther.json?.capabilities || []).map((c) => c.name);
+			H.check(
+				"另一个命名空间也看不到默认命名空间的能力",
+				namesOther.includes("iso.only_other") &&
+					!namesOther.includes("iso.only_default"),
+				JSON.stringify(namesOther),
+			);
+
+			// 3. 跨命名空间引用 → 400（I11①：边的两端必须同命名空间）
+			const crossEdge = await H.req(B, "/v1/edges", {
+				session,
+				namespaceId: defNs,
+				body: {
+					fromCapability: capDefault.json?.capability?.id,
+					fromPort: "x",
+					toCapability: capOther.json?.capability?.id,
+				},
+			});
+			H.eq("跨命名空间建边 → 400", crossEdge.status, 400);
+		}
+	}
+
 	// ---------- 静态/缓存 ----------
 	H.eq("/ → 200", (await H.req(B, "/")).status, 200);
 	const idxHeaders = (await H.req(B, "/index.html")).headers;
