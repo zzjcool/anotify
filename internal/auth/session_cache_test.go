@@ -97,18 +97,6 @@ func setLastSeen(t *testing.T, db *store.DB, sessionID string, v int64) {
 	}
 }
 
-// totalChanges 返回本连接累计修改行数。
-// TouchSession 是唯一的写点，所以「前后差值」就是实际落库的 UPDATE 次数
-// （SQLite 的 UPDATE 即使写入相同的值也会计入 total_changes，因此计数不会漏）。
-func totalChanges(t *testing.T, db *store.DB) int64 {
-	t.Helper()
-	var n int64
-	if err := db.QueryRow(`SELECT total_changes()`).Scan(&n); err != nil {
-		t.Fatalf("total_changes: %v", err)
-	}
-	return n
-}
-
 // waitLastSeen 轮询等 last_seen 涨到 atLeast（触摸是异步写，测试必须等它落地）。
 // 超时即视为「永久不写」——这正是节流不能犯的错，所以直接 t.Fatalf。
 func waitLastSeen(t *testing.T, db *store.DB, sessionID string, atLeast int64) int64 {
@@ -305,7 +293,11 @@ func TestSessionUserLookupErrorFailsClosed(t *testing.T) {
 // TestTouchSessionThrottleAndNoLostUpdate 的判据（节流只允许「少写」）：
 //
 //	(a) 320 次并发请求实际落库次数必须远小于请求数，且 ≥ 1
-//	    ——用 SQLite total_changes() 精确计数（UPDATE 即使写同值也计数，不会漏）；
+//	    ——用 SessionManager.TouchWriteCount()（节流放行计数）而不是 SQLite 的
+//	    total_changes()。原因：total_changes() 是**按连接**统计的，store 连接池
+//	    自 #240 起不再是 1，查计数的连接可能不是执行 UPDATE 的那条 → 计数随机为 0，
+//	    制造假红（已实测：同一用例 1 次 ok / 2 次 FAIL）。换仪表不是放宽断言：
+//	    上下界一个都没动，而且「真的写进 DB 了」另外由 (b) 的 DB 读回断言兜底；
 //	(b) last_seen 单调不减，最终值 ≥ 请求发生的那一秒（写的是「新时间」而不是「旧值」）；
 //	(c) goroutine 数不爆炸：每请求 spawn 一个异步写的实现会在这里看到 ~320 个；
 //	(d) -race 下无数据竞争（由 `go test -race` 保证）。
@@ -328,7 +320,7 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		time.Sleep(50 * time.Millisecond) // 让预热 goroutine 收尾（goroutine 计数基线更稳）
 
 		beforeGoroutines := runtime.NumGoroutine()
-		beforeChanges := totalChanges(t, db)
+		beforeWrites := m.TouchWriteCount()
 		start := time.Now()
 
 		// 采样器：并发期间反复读 last_seen，用于断言「单调不减」。
@@ -387,10 +379,17 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 			t.Fatalf("并发请求里有 %d 个没放行（例如 %d）", len(failures), failures[0])
 		}
 
-		writes := totalChanges(t, db) - beforeChanges
+		writes := int64(m.TouchWriteCount() - beforeWrites)
 		maxWrites := int64(elapsed.Seconds()) + 2 // 每个整秒窗口最多 1 次写
 		if writes < 1 {
-			t.Fatalf("节流不能变成「永久不写」: %d 次请求后实际写库 0 次", 320)
+			t.Fatalf("节流不能变成「永久不写」: %d 次请求后节流放行写库 0 次", 320)
+		}
+		// (b') 与「不永久不写」等价的**DB 级**证据：写入确实落库且写的是新时间。
+		// 这一条不依赖任何计数仪表，直接把「last_seen 真的前进了」读回来。
+		// startSecond 是并发窗口开始的那一秒，最终值必须 ≥ 它（不是旧值、不是冻住）。
+		startSecond := start.Unix()
+		if got := waitLastSeen(t, db, s.ID, startSecond); got < startSecond {
+			t.Fatalf("并发窗口开始后 last_seen 没有前进（永久冻住）：got %d, want >= %d", got, startSecond)
 		}
 		if writes > maxWrites {
 			t.Fatalf("节流失效：%v 内写库 %d 次（上限 %d，请求数 320）", elapsed, writes, maxWrites)
@@ -462,14 +461,16 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		}
 		waitLastSeen(t, db, s.ID, initial+1) // 等第一次 touch 落地
 
-		beforeChanges := totalChanges(t, db)
+		// 用 TouchWriteCount 而不是 total_changes()：后者按连接统计，连接池 >1 时
+		// 会漏计（见 concurrent 子用例顶部的注释）。这里断言的是精确的 0，比原来更严。
+		beforeWrites := m.TouchWriteCount()
 		time.Sleep(150 * time.Millisecond) // 缓存已过 TTL，但节流窗口远未到
 		if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
 			t.Fatalf("TTL 过期后的请求应放行, got %d body=%s", got.code, got.body)
 		}
 		time.Sleep(100 * time.Millisecond) // 给「本不该 spawn 的异步写」一点时间暴露
-		if writes := totalChanges(t, db) - beforeChanges; writes != 0 {
-			t.Fatalf("缓存刷新不应重置节流窗口：这次 miss 竟然写库 %d 次", writes)
+		if writes := m.TouchWriteCount() - beforeWrites; writes != 0 {
+			t.Fatalf("缓存刷新不应重置节流窗口：这次 miss 竟然放行写库 %d 次", writes)
 		}
 		if entries, _, misses := m.CacheStats(); entries != 1 || misses != 2 {
 			t.Fatalf("应已原地刷新回缓存: entries=%d misses=%d (want 1/2)", entries, misses)

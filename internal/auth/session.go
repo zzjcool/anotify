@@ -71,6 +71,9 @@ type SessionManager struct {
 	cache  map[string]*sessEntry // key: sessionID；nil 表示缓存关闭
 	hits   atomic.Uint64
 	misses atomic.Uint64
+
+	// touchWrites 统计「节流放行了多少次 last_seen 写库」（观测 + 测试用，见 TouchWriteCount）。
+	touchWrites atomic.Uint64
 }
 
 // NewSessionManager 构造会话管理器（缓存 TTL / 节流间隔用默认值）。

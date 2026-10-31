@@ -209,6 +209,8 @@ func (m *SessionManager) authSession(sessionID string) (string, *sessEntry, erro
 
 // touchSession 节流刷新 last_seen。
 //
+// touchWrites 只做计数（见 SessionManager.TouchWriteCount），不参与判定。
+//
 // 判据（#241）：节流只允许「少写」，不允许「写旧值」或「永久不写」。
 //   - 只有「距上次落库 ≥ touchInterval」并且 CAS 抢到写权的那**一个** goroutine 才落库，
 //     且写的是本次请求拿到的 now（不会写回更早的时间戳）；
@@ -223,6 +225,7 @@ func (m *SessionManager) touchSession(sessionID string, e *sessEntry) {
 		// 缓存关闭（或条目写满被拒）→ 保持旧行为：每请求同步刷新。
 		// 这里刻意同步而不是异步：不能让「缓存是否命中」改变 last_seen 的可见时机，
 		// 否则运维排查「最近活跃」时会看到两种时延语义。
+		m.touchWrites.Add(1)
 		_ = m.db.TouchSession(sessionID, now)
 		return
 	}
@@ -238,9 +241,25 @@ func (m *SessionManager) touchSession(sessionID string, e *sessEntry) {
 		// 本窗口的写权已被别的 goroutine 抢走：什么都不做，避免每请求一个 goroutine。
 		return
 	}
+	m.touchWrites.Add(1)
 	go func() {
 		// 写失败忽略：last_seen 只是活跃统计（会话列表的「最近使用」），不参与鉴权判定，
 		// 丢了这次刷新只影响统计精度；反过来把统计写失败上抛成 5xx 才是真的降级。
 		_ = m.db.TouchSession(sessionID, now)
 	}()
 }
+
+// TouchWriteCount 返回「节流放行了多少次 last_seen 写库」的累计计数。
+//
+// 为什么需要它（而不是在测试/运维侧数 SQLite 的 total_changes()）：
+// `SELECT total_changes()` 是**按连接**统计的。store 的连接池从 #240 起不再固定为 1，
+// 于是「执行 UPDATE 的连接」与「查 total_changes() 的连接」可能不是同一条，
+// 计数就会随机变成 0 —— 那是测量工具的问题，不是节流的问题，但会让用例变得
+// 偶发假红（本仓库踩过：同一条用例 1 次 ok / 2 次 FAIL）。
+// 在写入发起处自增计数，与连接池形状无关，也顺带把「发起但写失败」计入（更严格）。
+//
+// 「真的落库了」由另一条独立断言保证：测试会等异步写落地后从 DB 读回 last_seen
+// 并断言它 >= 请求发生的那一秒。两个证据合起来才完整：
+//   - 本计数 = 节流放行了几次（上界/下界）
+//   - DB 里的 last_seen = 写确实生效、且写的是新时间（不是旧值、不是永久冻住）
+func (m *SessionManager) TouchWriteCount() uint64 { return m.touchWrites.Load() }
