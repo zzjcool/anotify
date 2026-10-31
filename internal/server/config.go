@@ -24,6 +24,13 @@ type Config struct {
 	LogLevel    string // 日志级别：debug/info/warn/error，默认 info
 	LogFormat   string // 日志格式：json/text，默认 json
 
+	// Pprof 打开 /debug/pprof/*（性能评估用，默认关闭）。
+	//
+	// 为什么要有开关而不是始终开：pprof 端点会泄露 goroutine 栈与堆分布，
+	// 生产环境不该默认暴露。评估/排障时用 ANOTIFY_PPROF=1 打开，
+	// 采样完就关（pprof 的 CPU 采样本身有 ~5% 开销）。
+	Pprof bool
+
 	// BootID 是**本次进程启动**的标识，由 /health 回显。
 	//
 	// 为什么需要它：/health 只回 {"ok":true} 时，调用方无法区分「我起的那个进程」
@@ -56,6 +63,7 @@ func FromEnv() Config {
 		LogLevel:    get("ANOTIFY_LOG_LEVEL", "info"),
 		LogFormat:   get("ANOTIFY_LOG_FORMAT", "json"),
 		BootID:      bootIDFromEnv(),
+		Pprof:       get("ANOTIFY_PPROF", "") != "",
 	}
 }
 

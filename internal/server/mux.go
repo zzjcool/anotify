@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"time"
 
@@ -397,6 +398,19 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(healthBody)
 	})
+
+	// 性能评估（ANOTIFY_PPROF=1）：/debug/pprof/*
+	//
+	// 手动挂载而不是 `import _ "net/http/pprof"`：后者会注册到 DefaultServeMux，
+	// 而本服务的请求根本不走 DefaultServeMux —— 那样打开开关也采不到任何东西。
+	if cfg.Pprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		slog.Warn("pprof 已开启（性能评估用）", "event", "server.pprof.enabled")
+	}
 
 	// --- 静态资源（CDN 缓存分级）---
 	mux.Handle("/", resolveStatic(cfg))
