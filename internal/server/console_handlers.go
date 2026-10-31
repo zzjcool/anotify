@@ -330,7 +330,10 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	limit := intParam(q.Get("limit"), 100, 1, 1000)
+	// #236：这里曾是 1000，但 store 对 `limit > 500` 会兜底成 50（不是钳到 500），
+	// 于是 `limit=501..1000` 会悄悄变成「每个命名空间 50 条」。收到真实硬顶
+	// listLimitCap（= 500），并把生效值回显进响应——要多少给多少、给了多少都可观测。
+	limit := intParam(q.Get("limit"), 100, 1, listLimitCap)
 	perNS := limit
 	if perNS > listLimitCap {
 		perNS = listLimitCap
@@ -364,6 +367,7 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"events":      events,
 		"namespaceId": namespaceLabel(ns),
+		"limit":       limit, // 生效值（已夹到 listLimitCap，#236）
 	})
 }
 

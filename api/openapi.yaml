@@ -195,7 +195,7 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         "200":
           description: '事件列表（空时 `events: []`）'
@@ -203,11 +203,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events]
+                required: [events, limit]
                 properties:
                   events:
                     type: array
                     items: { $ref: "#/components/schemas/Event" }
+                  limit:
+                    type: integer
+                    description: 生效值（服务端硬顶 500）——调用方据此分辨「要到了」与「被截断」
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   # ========== 认证：当前用户与凭据 ==========
@@ -368,7 +371,7 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         "200":
           description: 事件列表（空时 events 为 []）
@@ -376,7 +379,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events, namespaceId]
+                required: [events, namespaceId, limit]
                 properties:
                   events:
                     type: array
@@ -384,6 +387,9 @@ paths:
                   namespaceId:
                     type: string
                     description: 本次作用域（`*` 表示跨命名空间汇总）
+                  limit:
+                    type: integer
+                    description: 生效值（服务端硬顶 500）——调用方据此分辨「要到了」与「被截断」
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 

@@ -960,6 +960,16 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 **JSON 字段一律 camelCase**（I9 同源约束的延伸）。
 
+#### 事件列表的 `limit` 与游标分页
+
+- 「看多少」只有一个数：**硬顶 `500`**。`GET /v1/events` 与 `GET /v1/console/events` 的
+  `limit` 上限都是 `500`（store 的列表查询也以 `500` 为界）。
+- 两个端点的响应**都回显生效值** `limit`（整数）：超硬顶被钳到 `500`，缺省/非法回 `100`。
+  「要到了」与「被截断」必须可分辨——**不静默降级**（`limit=501..1000` 曾静默退回旧默认值 `50`，`#236` 的病根）。
+- `GET /v1/console/events` 支持游标分页：请求带 `before=<不透明游标>`（取自上一页响应的 `nextCursor`），
+  响应带 `nextCursor`（为空表示没有更旧的行）；游标格式非法 → `400`，不静默忽略。
+  机器入口 `GET /v1/events` **不**提供游标（保持现状）。
+
 #### 命名空间参数怎么带
 
 **显式，或者显式全部 —— 永远没有隐式默认。**

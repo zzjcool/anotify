@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -906,4 +907,129 @@ func TestEventNamespaceErrorMapping(t *testing.T) {
 	if writeNamespaceError(rec, nil) {
 		t.Fatal("nil 错误不该被处理")
 	}
+}
+
+// ---------- #236 验收：limit 口径统一（硬顶 500 + 回显生效值） ----------
+
+// seedEvents 直接往库里灌 n 条事件（**不走** dispatcher）。
+//
+// 为什么要绕开 POST：这里要证明的是「列表端点的 limit 口径」，需要的是足够长的
+// 事件流（> 硬顶），而派发链路（边/节点/任务）与它无关、只会让夹具变脆。
+// created_at 递增：顺序确定，才能断言「返回的是最新的一批」。
+func (f *eventFixture) seedEvents(t *testing.T, n int) {
+	t.Helper()
+	ctx := context.Background()
+	base := store.Now() - int64(n)
+	for i := 0; i < n; i++ {
+		e := &store.Event{
+			NamespaceID: f.nsID,
+			TraceID:     "trace_seed_" + strconv.Itoa(i),
+			Source:      "github",
+			Type:        "push",
+			Payload:     json.RawMessage(`{"n":` + strconv.Itoa(i) + `}`),
+			CreatedAt:   base + int64(i),
+		}
+		if _, err := f.db.InsertEvent(ctx, e); err != nil {
+			t.Fatalf("seed event %d: %v", i, err)
+		}
+	}
+}
+
+// listEvents 发 GET /v1/events，返回 (状态码, 事件, 响应里的 limit 字段)。
+//
+// limit 用指针接：字段**缺失**与「值恰好是默认值」必须能区分开——#236 要证明
+// 的正是「生效值被回显」，字段缺失时不能悄悄当成通过。
+func (f *eventFixture) listEvents(t *testing.T, query string) (int, []store.Event, *int) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, f.server.URL+"/v1/events"+query, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Logf("非 200：status=%d body=%s", resp.StatusCode, raw)
+		return resp.StatusCode, nil, nil
+	}
+	var out struct {
+		Events []store.Event `json:"events"`
+		Limit  *int          `json:"limit"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp.StatusCode, out.Events, out.Limit
+}
+
+// TestEventListLimitCapHandlerClamps GET /v1/events 的 limit 收口（#236）。
+//
+// 病根：store.ListEvents 对 `limit > 500` **折回默认值 50**（不是钳到 500），
+// 而 handler 曾把 1000 当上限往下传 ⇒ `limit=501..1000` 返回 50 条。
+// 这里钉住三件事：
+//   - 超上限被钳到 500（不是 50，也不是原样）；
+//   - 响应**回显生效值** `limit`（调用方才能分辨「要到了」与「被截断」）；
+//   - 缺省 / 非法 / ≤0 仍回 100（沿用宽松语义，不新增 400）。
+func TestEventListLimitCapHandlerClamps(t *testing.T) {
+	f := newEventFixture(t)
+	const seeded = 520 // > 硬顶 500：能同时观察「钳到 500」与「500 < 520」
+	f.seedEvents(t, seeded)
+
+	cases := []struct {
+		name  string
+		query string // 追加在 ?namespaceId=<ns> 之后的片段
+		want  int
+	}{
+		{"limit=1000 → 硬顶 500", "&limit=1000", 500},
+		{"limit=501（刚过上限）→ 500", "&limit=501", 500},
+		{"limit=520（超过已灌数）→ 500", "&limit=520", 500},
+		{"limit=500（正好硬顶）→ 500", "&limit=500", 500},
+		{"limit=100 → 100", "&limit=100", 100},
+		{"limit 缺省 → 100", "", 100},
+		{"limit=abc（非整数）→ 100", "&limit=abc", 100},
+		{"limit=0 → 100", "&limit=0", 100},
+		{"limit=-5 → 100", "&limit=-5", 100},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			status, events, echoed := f.listEvents(t, "?namespaceId="+f.nsID+c.query)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200", status)
+			}
+			if len(events) != c.want {
+				t.Fatalf("返回 %d 条, want %d（#236：超上限必须钳到 500，不能折回 50）", len(events), c.want)
+			}
+			if echoed == nil {
+				t.Fatal("响应里没有 limit 字段：生效值必须回显（#236）")
+			}
+			if *echoed != c.want {
+				t.Fatalf("响应 limit = %d, want %d（回显的是**生效值**）", *echoed, c.want)
+			}
+			// 钳到 500 时必须是**最新**的 500 条，不是随便 500 条
+			if len(events) > 0 && c.want >= seeded {
+				if events[0].CreatedAt < events[len(events)-1].CreatedAt {
+					t.Fatal("事件不是 created_at DESC（最新在前）")
+				}
+			}
+		})
+	}
+
+	// namespaceId=* 走 listAcrossNamespaces：同一套 limit 口径（传下去的已夹住），
+	// 否则跨命名空间汇总会重演 #236（每个命名空间各回 50 条）。
+	t.Run("namespaceId=* + limit=1000 → 500", func(t *testing.T) {
+		status, events, echoed := f.listEvents(t, "?namespaceId="+store.AllNamespaces+"&limit=1000")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if len(events) != 500 {
+			t.Fatalf("namespaceId=* 返回 %d 条, want 500", len(events))
+		}
+		if echoed == nil || *echoed != 500 {
+			t.Fatalf("响应 limit = %v, want 500", echoed)
+		}
+	})
 }
