@@ -105,3 +105,24 @@ taskset -c 8-11  ...   # C：资源与泄漏 / 前端
 
 - 同数据量下读 RPS 摆动 **3.3–4.2×**，怀疑 SQLite page cache（默认 2MB）小于工作集，
   但**缺 pager 命中证据**（未验证）。若后续要压这个数，先量 `PRAGMA cache_size` 与命中率。
+
+## 测量纪律：先确认你跑的是**这棵代码**编出的二进制
+
+这不是理论风险——本轮真的发生过：验证 #255 的「重复执行 2→0」时，
+直接跑 `scripts/perf/b/s5-lease-dup.sh` 得到「仍然重复执行 2 次」，差点据此判定修复无效。
+真相是 `scripts/perf/b/lib.sh` **默认不重建**（只要 `$PB_BIN` 里已有可执行文件就直接用），
+而 `$PB_BIN` 里躺着的是**修复前**编的二进制。
+
+```bash
+# 对比修复前后时，必须显式要求重建（或清掉缓存目录）
+PB_REBUILD=1 bash scripts/perf/b/s5-lease-dup.sh
+rm -rf /tmp/perfB/bin && bash scripts/perf/b/s5-lease-dup.sh
+```
+
+**自查三件事**（做任何"前后对比"之前）：
+
+1. 二进制 mtime 是否晚于你要验证的那个 commit
+2. `git rev-parse --short HEAD` 与你要验证的分支是否一致（worktree 之间很容易串）
+3. 数字如果"没变化"，**先怀疑二进制没换**，再怀疑修复无效
+
+同理适用于 `-race` 与 profile：**旧二进制 + 新结论 = 最危险的组合**。
