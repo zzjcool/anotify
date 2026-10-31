@@ -68,7 +68,9 @@ HOOKURL=$(curl -s -X POST -H "Cookie: anotify_session=$SESSION" -H 'content-type
   "$BASE/v1/sources" | jq -r '.source.hookUrl // empty')
 [ -n "$HOOKURL" ] || { echo "hookUrl 未取到（CAP=$CAP）" >&2; exit 1; }
 printf '{"type":"perf.hook","payload":{"i":1}}' > "$ROOT/logs/hook-$LABEL.json"
-printf '{"type":"perf.write","namespaceId":"%s","payload":{"i":1}}' "$NS" > "$ROOT/logs/evt-$LABEL.json"
+# source 是事件流的起点能力名（api.EventIngestRequest.Source），必填；缺了会 400。
+# 用一个**已存在**的能力名，让这条路径跑成完整成功写（200），而不是 400 半途返回。
+printf '{"source":"notify.phone","type":"perf.write","namespaceId":"%s","payload":{"i":1}}' "$NS" > "$ROOT/logs/evt-$LABEL.json"
 
 echo "== $LABEL ==  NS=$NS  hook=$HOOKURL" | tee "$OUT/summary.txt"
 
@@ -86,11 +88,19 @@ restart info
     -header "Authorization: Bearer $SEND_KEY" >"$OUT/rss-load.log" 2>&1 ) &
 LP=$!
 : > "$OUT/rss.log"
+# 固定采样次数（不是「while 进程还活着」）：压测进程是 taskset 起的子 shell，
+# 用 kill -0 判活有时一开始就失败（只采到 1 个点，p50 就退化成一个快照）。
+# 1.5s 预热 + 24×0.5s = 13.5s，稳定落在 15s 的压测窗口内。
 sleep 1.5
-while kill -0 $LP 2>/dev/null; do rss_mb >> "$OUT/rss.log"; sleep 0.5; done
-wait $LP 2>/dev/null
+# 硬编码 24 次而不是 `$(seq 1 24)`：本脚本用 `set -u`，任何取不到输出的命令替换
+# 都会让循环退化成 1 次（samples=1、p50 退化成单点快照）。采样点必须可预测。
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
+  rss_mb >> "$OUT/rss.log"
+  sleep 0.5
+done
+wait $LP 2>/dev/null || true
 {
-  echo "samples=$(wc -l < "$OUT/rss.log")"
+  echo "samples=$(grep -c '' "$OUT/rss.log")"
   sort -n "$OUT/rss.log" | awk 'BEGIN{n=0}{a[n++]=$1}END{if(n==0){print "EMPTY";exit}
     printf "RSS_min=%.1fMB  RSS_p50=%.1fMB  RSS_max=%.1fMB\n", a[0], a[int(n/2)], a[n-1]}'
 } | tee "$OUT/rss-mb.log"
