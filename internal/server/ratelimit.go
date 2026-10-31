@@ -194,10 +194,26 @@ func (g *pollGuard) allow(sessionID string) bool {
 
 // trustProxyHeaders 控制是否信任 X-Forwarded-For。默认 false（直连源站不可信），
 // 由 NewApp 根据 Config.TrustProxy 设置。仅在反代（cloudflared/nginx）后开启。
+//
+// **这个开关直接决定「按 IP 限流」的强度**，见 clientIP 的注释。
 var trustProxyHeaders bool
 
 // clientIP 从请求提取客户端 IP。
 // 默认用 RemoteAddr（去端口）；仅当 trustProxyHeaders=true 时取 X-Forwarded-For 第一段。
+//
+// # 可信度（按 IP 限流的前提，务必先读这一段再依赖 IP 维）
+//
+//   - trustProxyHeaders=false（默认）：取 TCP 对端地址，**不可伪造**。IP 维是硬的。
+//     代价：部署在反代/NAT 之后时，所有调用方共用一个出口 IP，等于共用一份额度
+//     （issue #245 §4「未确认」点名的部署假设）。
+//   - trustProxyHeaders=true（ANOTIFY_TRUST_PROXY 非空）：取 X-Forwarded-For 第一段，
+//     而**这个头是客户端可以随便写的**。若前面没有一层可信反代负责覆写它，
+//     攻击者每次请求换一个假 IP 就能拿到无限额度 —— 此时 IP 维**形同虚设**，
+//     真正起作用的只剩 token 维。
+//
+// 所以：启用 ANOTIFY_TRUST_PROXY 的前提是「一定有一层会**覆写**（而不是追加）
+// X-Forwarded-For 的反代」。做不到这一点时宁可不开，接受「反代后共用额度」这个
+// 已知限制（我们的默认额度是 1200/min/IP，比旧值宽 20 倍，共用也不至于打死批量投递）。
 func clientIP(r *http.Request) string {
 	if trustProxyHeaders {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
@@ -243,6 +259,10 @@ func rateLimited(w http.ResponseWriter, rl *fixedWindow, key string) bool {
 // 反过来（先 token）唯一的好处是 token 喷洒时能更早地对单个 token 生效，
 // 但那类请求本来就会被 IP 维在下一步拒掉，日志与成本上没有差别。
 func rateLimitedHook(w http.ResponseWriter, r *http.Request) bool {
+	// IP 维：强度取决于 trustProxyHeaders（见 clientIP 的长注释）。
+	// 默认（不信任 XFF）时用的是 TCP 对端地址，客户端伪造不了；
+	// 开了 ANOTIFY_TRUST_PROXY 而前面又没有会覆写该头的反代时，这一维会被假 IP 绕过，
+	// 此时真正的防线是下面的 token 维 —— 两维并存就是为了让「绕过一维」不至于全盘失守。
 	if rlHookIP != nil {
 		if ok, retryAfter := rlHookIP.allowWithRetry(clientIP(r)); !ok {
 			writeRateLimited(w, "hook:ip", retryAfter)

@@ -287,6 +287,17 @@ func (m *KeyManager) CacheStats() (entries int, hits, misses uint64) {
 	return m.cache.stats()
 }
 
+// CacheClearCount 返回「因容量到顶而整表清空」的次数。
+//
+// 为什么要暴露这个数：它是「4096 条上限被打到」的唯一可观测信号。长期为 0 说明
+// 上限够用；持续增长说明活 key 数远超预期，该调大上限（或换共享缓存）了。
+func (m *KeyManager) CacheClearCount() uint64 {
+	if m.cache == nil {
+		return 0
+	}
+	return m.cache.clears.Load()
+}
+
 // HasScope 判断 scopes 是否包含目标 scope。
 func HasScope(scopes []string, target string) bool {
 	for _, s := range scopes {

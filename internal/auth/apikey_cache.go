@@ -16,11 +16,23 @@ import (
 
 // 已验证 API Key 结果缓存的硬上限。
 //
-// 为什么是「硬上限 + 满了不写入」而不是 LRU 驱逐：缓存里只有**校验通过**的条目
-// （负结果一律不缓存），所以数量上界≈活 key 数。若改成驱逐，攻击者可以用一批
-// 自己合法持有的 key 反复挤压，把别人的热 key 挤出去，反而退化成低命中率 +
-// 持续 argon2 重算；而「满了就不写」只会让新 key 退回原路径（正确性不受影响）。
-// 4096 条 × 约 120B/条 不到 1MB，相对单次 argon2 的 64MB 可以忽略。
+// # 内存上界
+//
+// 4096 条 × 约 150B/条（结构体 + map 桶开销）≈ **0.6 MB** 上限。相对单次 argon2
+// 的 64 MB 分配可以忽略，但**必须有**：没有上限时，「合法的 key 很多」或「多轮换」
+// 也能把进程内存顶上去，而这本身就是一个不需要攻击的 OOM 通道。
+//
+// # 满了怎么办：先清过期，还满就**整表清空**
+//
+// 为什么不做「满了就不写」：那会让「后来才出现的 key」永远进不了缓存——一旦缓存
+// 被一批冷 key 占满，新 key 的每个请求都要重算 31ms 的 argon2，而且**永远不会自愈**
+// （没有淘汰就腾不出位置）。
+// 为什么不做 LRU：LRU 要多一份链表/计数并按访问序重排，复杂度全落在最热的读路径上；
+// 而这里的衰减代价只是「一次全量重算」（最坏 4096×31ms，摊在后续请求上），
+// 一次性、可预测、且不会重复发生。整表清空腾出空间后缓存立刻重新长回热集。
+//
+// 注意：**负结果一律不缓存**（见 ValidateKey），所以攻击者用随机 key 喷洒**灌不满**
+// 这张表——只有真正校验通过的 key 才有资格占位。这是「容量上限」之外的第一道保险。
 const maxKeyCacheEntries = 4096
 
 // defaultKeyCacheTTL 是缓存条目的默认存活时间。
@@ -89,6 +101,8 @@ type keyCache struct {
 	gen    atomic.Uint64
 	hits   atomic.Uint64
 	misses atomic.Uint64
+	// clears 是「因容量到顶而整表清空」的次数（观测用：正常部署应长期为 0）。
+	clears atomic.Uint64
 	secret [32]byte // HMAC 密钥（仅本进程内存）
 }
 
@@ -173,15 +187,22 @@ func (c *keyCache) forget(digest [32]byte) {
 
 // put 写入（或覆盖）一条条目，返回是否真的写进去了。
 //
-// 容量到顶时先清一次过期项；仍然满则放弃本次写入（不驱逐有效条目，见
-// maxKeyCacheEntries 的说明）。同摘要的覆盖不受容量限制——那是刷新，不增长。
+// 容量到顶时两级处理（见 maxKeyCacheEntries）：
+//  1. 先清「已过期 / 已换代」的条目 —— 大多数情况下这就够了；
+//  2. 仍然满 → **整表清空**（一次性重算代价，换内存有界）。
+//
+// 同摘要的覆盖（刷新）不受容量限制——那是更新既有条目，不增长。
+// 返回值只表示「这次有没有写进去」，调用方不依赖它做正确性判断。
 func (c *keyCache) put(digest [32]byte, e *keyEntry, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.entries[digest]; !exists && len(c.entries) >= maxKeyCacheEntries {
 		c.sweepExpiredLocked(now)
 		if len(c.entries) >= maxKeyCacheEntries {
-			return false
+			// 整表清空：比「不写入」更公平（新 key 也能进来），
+			// 也比 LRU 简单（读路径上不引入任何额外记账）。
+			clear(c.entries)
+			c.clears.Add(1)
 		}
 	}
 	c.entries[digest] = e

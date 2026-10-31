@@ -497,50 +497,65 @@ func TestAPIKeyCacheDisabledAlwaysHitsDB(t *testing.T) {
 	}
 }
 
-// TestKeyCacheCapacityLimit 容量硬上限：满了先清过期项；仍然满就**不写入**
-// （而不是驱逐有效条目）。
+// TestKeyCacheCapacityLimit 容量上限的三条性质（#227，root 裁决口径）：
+//
+//  1. 上限是硬的：条目数永远不超过 maxKeyCacheEntries（内存有界，无界增长不可接受）；
+//  2. 满且无过期项 → **整表清空**后写入（而不是「拒绝写入」——那会让新 key 永远进不来）；
+//  3. 有可清项时先走「清过期」，不是每次都整表清空（避免无谓的全量重算）。
+//
+// 外加一条不属于容量但同属表结构的性质：同摘要覆盖是刷新，不增长条目数。
 func TestKeyCacheCapacityLimit(t *testing.T) {
 	now := time.Now()
 	c, err := newKeyCache()
 	if err != nil {
 		t.Fatalf("newKeyCache: %v", err)
 	}
-	fill := func(n int, ttl time.Duration) {
+	// seed 决定这一批摘要的形状；只动前 4 字节，与 extra（动末字节）不撞车。
+	fill := func(n int, ttl time.Duration, seed int) {
 		for i := 0; i < n; i++ {
 			var d [32]byte
-			d[0], d[1], d[2], d[3] = byte(i), byte(i>>8), byte(i>>16), byte(i>>24)
+			d[0], d[1], d[2], d[3] = byte(i+seed), byte(i>>8), byte(i>>16), byte(i>>24)
 			e := &keyEntry{userID: "u", keyID: "k", expiresAt: now.Add(ttl)}
 			e.lastTouched.Store(now.UnixNano())
 			c.put(d, e, now)
 		}
 	}
-	// 全部塞成「长期有效」的条目，把容量占满。
-	fill(maxKeyCacheEntries, time.Hour)
+	newEntry := func(uid string) *keyEntry {
+		e := &keyEntry{userID: uid, keyID: "k-" + uid, expiresAt: now.Add(time.Hour)}
+		e.lastTouched.Store(now.UnixNano())
+		return e
+	}
+
+	// ---- 性质 1 + 2：填满 → 无过期项 → 整表清空后写入 ----
+	fill(maxKeyCacheEntries, time.Hour, 0)
 	if n := len(c.entries); n != maxKeyCacheEntries {
 		t.Fatalf("应填满到上限 %d, got %d", maxKeyCacheEntries, n)
 	}
-	// 末字节置位，保证与 fill() 那批摘要（只动前 4 字节）不撞车。
 	var extra [32]byte
 	extra[31] = 0xFF
-	e := &keyEntry{userID: "u2", keyID: "k2", expiresAt: now.Add(time.Hour)}
-	e.lastTouched.Store(now.UnixNano())
-	if ok := c.put(extra, e, now); ok {
-		t.Fatalf("容量已满且无过期项时不应写入")
+	e := newEntry("u2")
+	if ok := c.put(extra, e, now); !ok {
+		t.Fatalf("整表清空后应当写入成功")
 	}
-	if n := len(c.entries); n != maxKeyCacheEntries {
-		t.Fatalf("满容量不放写入不得改变条目数, got %d", n)
+	if n := len(c.entries); n != 1 {
+		t.Fatalf("整表清空后应只剩刚写入的 1 条, got %d", n)
 	}
-	if _, ok := c.entries[extra]; ok {
-		t.Fatalf("被拒绝写入的条目不应出现在缓存里")
+	if _, ok := c.entries[extra]; !ok {
+		t.Fatalf("清空后新条目必须写入")
 	}
-	// 同摘要覆盖不受容量限制：那是刷新已有条目，不增长条目数。
+	if got := c.clears.Load(); got != 1 {
+		t.Fatalf("整表清空次数应为 1, got %d", got)
+	}
+
+	// ---- 同摘要覆盖 = 刷新，不增长 ----
+	c.invalidateAll()
+	fill(maxKeyCacheEntries, time.Hour, 0)
 	var existing [32]byte
 	for k := range c.entries {
 		existing = k
 		break
 	}
-	refreshed := &keyEntry{userID: "u3", keyID: "k3", expiresAt: now.Add(2 * time.Hour)}
-	refreshed.lastTouched.Store(now.UnixNano())
+	refreshed := newEntry("u3")
 	if ok := c.put(existing, refreshed, now); !ok {
 		t.Fatalf("满容量下覆盖已有摘要（刷新）应成功")
 	}
@@ -550,7 +565,11 @@ func TestKeyCacheCapacityLimit(t *testing.T) {
 	if got := c.entries[existing]; got != refreshed {
 		t.Fatalf("覆盖后应指向新条目")
 	}
-	// 惰性清扫：把一半条目变成过期，再写应当成功。
+	if got := c.clears.Load(); got != 1 {
+		t.Fatalf("覆盖刷新不该触发整表清空, clears=%d", got)
+	}
+
+	// ---- 性质 3：有可清项时先清过期，不整表清空 ----
 	c.mu.Lock()
 	half := 0
 	for _, v := range c.entries {
@@ -566,6 +585,20 @@ func TestKeyCacheCapacityLimit(t *testing.T) {
 	}
 	if n := len(c.entries); n > maxKeyCacheEntries {
 		t.Fatalf("条目数不得超过上限, got %d", n)
+	}
+	if got := c.clears.Load(); got != 1 {
+		t.Fatalf("有可清项时不该走整表清空, clears=%d", got)
+	}
+
+	// ---- 换代条目也算「可清项」（否则换代后整表等于永久占位） ----
+	c.invalidateAll()
+	fill(maxKeyCacheEntries, time.Hour, 0)
+	c.bumpGeneration()
+	if ok := c.put(extra, e, now); !ok {
+		t.Fatalf("换代后应能写入")
+	}
+	if got := c.clears.Load(); got != 1 {
+		t.Fatalf("换代条目应被 sweep 清掉而不是整表清空, clears=%d", got)
 	}
 }
 
@@ -670,5 +703,113 @@ func TestAPIKeyRevokeKeyBumpsGeneration(t *testing.T) {
 	}
 	if _, _, err := km.ValidateKey(plaintext); err == nil {
 		t.Fatalf("revoke 后必须立刻拒绝")
+	}
+}
+
+// TestAPIKeyNegativeResultNeverCachedNoDoS 锁住「**只有验证成功的结果才进缓存**」
+// （#227，root 裁决 ①）。
+//
+// 为什么这条是安全项而不是性能项：如果失败结果也进缓存，攻击者用随机 key 刷请求
+// 就变成「每次失败写一条缓存」——内存无界增长，不需要任何凭据就能把进程打死
+// （一种很便宜的 DoS）。而且这些垃圾条目会顺带把真 key 挤出去。
+//
+// 判据用三种不同的失败形状各刷 100 次（同一前缀但随机段不同 / 前缀不存在 /
+// 完全不是 ant_ 开头），断言缓存条目数**始终为 0**、命中数为 0。
+func TestAPIKeyNegativeResultNeverCachedNoDoS(t *testing.T) {
+	db := openKeyTestDB(t)
+	km := NewKeyManager(db)
+	uid := mustUser(t, db, "neg-no-dos")
+	plaintext, rec := mustKey(t, km, uid, []string{ScopeNotifySend})
+
+	// 次数不必一样：只有 ① 会真的跑 argon2（31ms/次），刷 30 次已经足够证明
+	// 「失败不入表」；②③ 在第一道校验就返回，刷 100 次几乎不花时间。
+	cases := []struct {
+		name  string
+		iters int
+		build func(i int) string
+	}{
+		// ① 同前缀、不同随机段：最像「猜 key」的攻击形状（能过前缀查库，只是 argon2 比对不过）。
+		{"same-prefix", 30, func(i int) string { return rec.Prefix + "AAAAAAAAAAAAAAAAAAAAAAAA"[:16] + string(rune('a'+i%26)) }},
+		// ② 前缀在库里查不到：连 argon2 都不会跑。
+		{"no-such-prefix", 100, func(i int) string { return "ant_send_" + strings.Repeat("Z", 8) + string(rune('a'+i%26)) }},
+		// ③ 完全不像 key：第一道 HasPrefix 就拒。
+		{"junk", 100, func(i int) string { return "sk_live_" + strings.Repeat("Q", 12) + string(rune('a'+i%26)) }},
+	}
+	for _, c := range cases {
+		for i := 0; i < c.iters; i++ {
+			if _, _, err := km.ValidateKey(c.build(i)); err == nil {
+				t.Fatalf("%s: 伪造 key 必须被拒", c.name)
+			}
+		}
+	}
+
+	entries, hits, _ := km.CacheStats()
+	if entries != 0 {
+		t.Fatalf("失败结果绝不能进缓存：%s 刷了 300 次后条目数应为 0, got %d", "negative", entries)
+	}
+	if hits != 0 {
+		t.Fatalf("不该有任何命中, got %d", hits)
+	}
+
+	// 真 key 仍然工作（失败的喷洒没有把表撑满/污染）。
+	if _, _, err := km.ValidateKey(plaintext); err != nil {
+		t.Fatalf("真 key 应仍可校验: %v", err)
+	}
+	if entries, _, _ := km.CacheStats(); entries != 1 {
+		t.Fatalf("只有真 key 该占 1 条, got %d", entries)
+	}
+}
+
+// TestAPIKeyGenerationBumpInvalidatesAllEntries 锁住「一次 bump 让**所有**旧条目
+// 立刻不再命中」，而不只是「新条目 gen 更高」（#227，root 裁决补充）。
+//
+// 为什么要单独一条：只看单条 key 的用例（TestAPIKeyCacheGenerationBumpInvalidates）
+// 无法区分「全表失效」和「刚好那条失效」。这里同时缓存 5 把不同的 key，
+// bump 之后逐条断言 lookup 返回 nil —— 一条都不许漏。
+func TestAPIKeyGenerationBumpInvalidatesAllEntries(t *testing.T) {
+	db := openKeyTestDB(t)
+	km := NewKeyManager(db)
+	uid := mustUser(t, db, "gen-all")
+
+	const n = 5
+	plaintexts := make([]string, 0, n)
+	digests := make([][32]byte, 0, n)
+	for i := 0; i < n; i++ {
+		p, rec := mustKey(t, km, uid, []string{ScopeNotifySend})
+		if _, _, err := km.ValidateKey(p); err != nil {
+			t.Fatalf("第 %d 把 key 首次校验应成功: %v", i, err)
+		}
+		plaintexts = append(plaintexts, p)
+		digests = append(digests, km.cache.digestOf(rec.Prefix, p))
+	}
+	if entries, _, _ := km.CacheStats(); entries != n {
+		t.Fatalf("应有 %d 条缓存, got %d", n, entries)
+	}
+	// bump 之前全部命中。
+	now := time.Now()
+	for i, d := range digests {
+		if e := km.cache.lookup(d, now); e == nil {
+			t.Fatalf("bump 前第 %d 条应命中", i)
+		}
+	}
+
+	km.BumpGeneration()
+
+	// bump 之后**一条都不许命中**（这是本条用例的核心断言）。
+	for i, d := range digests {
+		if e := km.cache.lookup(d, now); e != nil {
+			t.Fatalf("bump 后第 %d 条仍然命中（generation 失效没覆盖全表）", i)
+		}
+	}
+	// 而且能重新回源、重新入缓存（失效不是「永久不可用」）。
+	for i, p := range plaintexts {
+		if _, _, err := km.ValidateKey(p); err != nil {
+			t.Fatalf("bump 后第 %d 把 key 回源应成功: %v", i, err)
+		}
+	}
+	for i, d := range digests {
+		if e := km.cache.lookup(d, now); e == nil {
+			t.Fatalf("回源后第 %d 条应重新入缓存（新的 gen）", i)
+		}
 	}
 }
