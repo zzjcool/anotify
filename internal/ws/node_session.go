@@ -35,6 +35,24 @@ func (s *nodeSession) handleTaskFrame(ctx context.Context, frame any) error {
 	}
 }
 
+// rejectForeignExecution 是 #222 的 fencing 面：同一任务只许一条**活着的连接**推进状态。
+//
+// 为什么放在「任务是不是派给本节点」之前：跨连接的重复执行是更根本的错误，
+// 而且要让执行者看到 lease_expired（协议语义：这条任务已经不归你了，丢掉本地副本），
+// 而不是 invalid_transition（那会让人以为是帧写错了）。
+// 命中时回 error 帧并返回 true：调用方直接结束，**不推进任何状态**。
+//
+// 归 nil（没人在飞）或就是本连接 → 放行。
+func (s *nodeSession) rejectForeignExecution(ctx context.Context, taskID string) bool {
+	cur := s.h.hub().owner(taskID)
+	if cur == nil || cur == s {
+		return false
+	}
+	s.sendError(ctx, ErrCodeLeaseExpired,
+		fmt.Sprintf("task %s is being executed by another connection", taskID))
+	return true
+}
+
 // handleAck 处理接单：assigned → acked。
 func (s *nodeSession) handleAck(ctx context.Context, f *AckFrame) error {
 	if f.TaskID == "" {
@@ -48,6 +66,9 @@ func (s *nodeSession) handleAck(ctx context.Context, f *AckFrame) error {
 	}
 	if err != nil {
 		return fmt.Errorf("load task for ack: %w", err)
+	}
+	if s.rejectForeignExecution(ctx, f.TaskID) {
+		return nil
 	}
 	// 只接受派给本节点的任务（防节点 ack 别人的任务）
 	if task.NodeID == nil || *task.NodeID != s.node.ID {
@@ -68,6 +89,8 @@ func (s *nodeSession) handleAck(ctx context.Context, f *AckFrame) error {
 			"error", err.Error(),
 		)
 	}
+	// 归属用**库里的** attempts 校正一次：publish 时记的世代可能已经过期（#222）。
+	s.own(f.TaskID, task.Attempts)
 	return nil
 }
 
@@ -85,6 +108,9 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 	if err != nil {
 		return fmt.Errorf("load task for progress: %w", err)
 	}
+	if s.rejectForeignExecution(ctx, f.TaskID) {
+		return nil
+	}
 	if task.NodeID == nil || *task.NodeID != s.node.ID {
 		s.sendError(ctx, ErrCodeInvalidTransition,
 			fmt.Sprintf("task %s is not assigned to this node", f.TaskID))
@@ -99,6 +125,8 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 		s.reportTransitionError(ctx, f.TaskID, err)
 		return nil
 	}
+	// 用库里的 attempts 校正归属世代（publish 时记的可能过期，#222）。
+	s.own(f.TaskID, task.Attempts)
 	return nil
 }
 
@@ -139,6 +167,9 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	}
 	if err != nil {
 		return fmt.Errorf("load task for result: %w", err)
+	}
+	if s.rejectForeignExecution(ctx, f.TaskID) {
+		return nil
 	}
 	if task.NodeID == nil || *task.NodeID != s.node.ID {
 		s.sendError(ctx, ErrCodeInvalidTransition,
@@ -193,9 +224,16 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	// ——父任务不留在终态（宁可让父任务被巡检退回重派、幂等重执行一次，也胜于断链）。
 	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status, out, reported,
 		f.Summary, f.Artifacts, f.Error, next); err != nil {
+		// 终态没落库。若拒绝是「这条任务已经不归我们了」（被巡检回收/已重派/已过期），
+		// 就不该再替它续租，也不该继续占着 hub 的在飞位（#218/#222）。
+		if errors.Is(err, store.ErrInvalidTransition) || errors.Is(err, store.ErrNotFound) {
+			s.forget(f.TaskID)
+		}
 		s.reportTransitionError(ctx, f.TaskID, err)
 		return nil
 	}
+	// 终态已落库：本连接与这条任务再无关系（不再续租、不再占在飞位）。
+	s.forget(f.TaskID)
 	// 补偿路径（#140 成立的前提，别删）：走到这里时 next 里的行已经和终态一起
 	// COMMIT，形状是 status='pending' + node_id IS NULL + attempts=0 —— 正是
 	// store.ListRedispatchable 的三个筛选条件。所以即使下面 ⑥ 的 goroutine 随进程
@@ -258,8 +296,9 @@ func (s *nodeSession) publishNext(ctx context.Context, namespaceID, parentTaskID
 
 // reportTransitionError 把状态机拒绝翻译成协议错误帧。
 //
-// 两条关键映射：
+// 三条关键映射：
 //   - 租约已失效 → lease_expired（节点该丢弃本地任务）
+//   - params 超限 → params_too_large（审查 m5，见下）
 //   - 其他非法迁移 → invalid_transition
 func (s *nodeSession) reportTransitionError(ctx context.Context, taskID string, err error) {
 	switch {
@@ -268,6 +307,11 @@ func (s *nodeSession) reportTransitionError(ctx context.Context, taskID string, 
 	case errors.Is(err, store.ErrNotFound):
 		s.sendError(ctx, ErrCodeInvalidTransition,
 			fmt.Sprintf("task %s not found (may have been reclaimed)", taskID))
+	case errors.Is(err, store.ErrParamsTooLarge):
+		// 审查 m5：params 超限不该伪装成状态机拒绝。典型触发是「下一跳子任务 params
+		// 太大 → 父任务终态整体回滚」，而 invalid_transition 会把病因埋掉（节点只会
+		// 重跑同一份昂贵工作）。文案带原来的 err.Error()：taskID/体积/上限/修法全在里头。
+		s.sendError(ctx, ErrCodeParamsTooLarge, err.Error())
 	default:
 		s.sendError(ctx, ErrCodeInvalidTransition, err.Error())
 	}

@@ -29,6 +29,21 @@ const (
 	defaultWriteTimeout = 10 * time.Second
 )
 
+// 帧体积上限（#221）。两个上限解决两个不同的问题，都需要。
+const (
+	// NodeReadLimitHard 是服务端单帧**硬**读上限（4 MiB）：交给 coder/websocket，
+	// 超过它由库直接 1009 关连接。
+	//
+	// 为什么必须显式设：库的默认值是 32768B。不设时一个带 40KB manifest 的 hello
+	// 会在服务端读取阶段就被 1009 关掉，节点**永远**上不了线（且节点侧只看到断连，
+	// 没有任何可诊断信息）。agent 侧对下行帧也设了 1MiB 读上限，方向对称。
+	NodeReadLimitHard = 4 << 20
+	// NodeFrameSoftLimit 是服务端**逐帧**软上限（1 MiB，与 agent 侧 nodeReadLimit 对齐）。
+	// 超过它：先回 error 帧 `frame_too_large`（可诊断），再用 1009 带文案关连接，
+	// 而不是让库在硬上限处静默 1009。
+	NodeFrameSoftLimit = 1 << 20
+)
+
 // NodeHandler 处理 GET /v1/node/stream：节点连接的生命周期驱动。
 //
 // 职责边界：
@@ -46,6 +61,11 @@ type NodeHandler struct {
 
 	// AcceptOptions 可覆盖 WS 升级选项。
 	AcceptOptions *websocket.AcceptOptions
+
+	// MaxFrameBytes 覆盖逐帧软上限（0 → NodeFrameSoftLimit）。测试里会调到很小值。
+	MaxFrameBytes int
+	// ReadLimit 覆盖硬读上限（0 → NodeReadLimitHard）。
+	ReadLimit int
 
 	// Now 返回当前 unixepoch 秒（测试可注入）。
 	Now func() int64
@@ -96,7 +116,7 @@ type NextHopDispatcher interface {
 	PublishTasks(ctx context.Context, namespaceID string, tasks []*store.Task) error
 }
 
-// hub 返回 Hub，必要时惰性创建。
+// hub 返回 Hub，必要时惰性创建（供直接写 `&NodeHandler{Store: …}` 的调用方用）。
 func (h *NodeHandler) hub() *NodeHub {
 	if h.Hub == nil {
 		h.Hub = NewNodeHub()
@@ -105,9 +125,15 @@ func (h *NodeHandler) hub() *NodeHub {
 }
 
 // NewNodeHandler 构造默认配置的节点协议 handler。
+//
+// Hub 在这里就建好（而不是留给 hub() 惰性创建）：hub() 会被每条连接的读循环、看门狗和
+// cleanup goroutine 并发调用，惰性赋值 `h.Hub = NewNodeHub()` 是一个真实的 data race
+// （`go test -race` 会报）。生产装配（internal/server/mux.go）本来就会用共享的 hub
+// 覆盖这个字段，所以提前建一个不带来任何行为差异。
 func NewNodeHandler(st NodeStore) *NodeHandler {
 	return &NodeHandler{
 		Store: st,
+		Hub:   NewNodeHub(),
 		AcceptOptions: &websocket.AcceptOptions{
 			// 自托管场景：节点可能从不同源连接。鉴权由 opaque token 保证
 			// （token 本身就是凭据，不依赖 Origin）。
@@ -136,6 +162,22 @@ func (h *NodeHandler) now() int64 {
 		return h.Now()
 	}
 	return store.Now()
+}
+
+// maxFrameBytes 返回生效的逐帧软上限。
+func (h *NodeHandler) maxFrameBytes() int {
+	if h.MaxFrameBytes > 0 {
+		return h.MaxFrameBytes
+	}
+	return NodeFrameSoftLimit
+}
+
+// readLimit 返回生效的单帧硬读上限（0 → NodeReadLimitHard），交给 coder/websocket.SetReadLimit。
+func (h *NodeHandler) readLimit() int {
+	if h.ReadLimit > 0 {
+		return h.ReadLimit
+	}
+	return NodeReadLimitHard
 }
 
 // deadAfter 是判死窗口：> 2×心跳。
@@ -174,6 +216,13 @@ func (h *NodeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.CloseNow() //nolint:errcheck // 关闭错误无处理价值
+
+	// #221 握手闸门：Accept 之后**立刻**设读上限，赶在任何一帧之前。
+	//
+	// 不设的后果（issue 实测）：coder/websocket 默认 32768B，一条 40KB 的 hello
+	// （manifest 里带长 command）在库的读取层就炸成 1009，节点永远上不了线；
+	// 而服务端日志只有一句「连接关了」，没有任何指向体积的线索。
+	conn.SetReadLimit(int64(h.readLimit()))
 
 	ns := &nodeSession{h: h, conn: conn, node: node}
 	ns.run(r.Context())
@@ -222,6 +271,15 @@ type nodeSession struct {
 	mu           sync.Mutex
 	lastUpstream time.Time
 	helloDone    bool
+
+	// leaseMu 保护「本连接名下的任务」与「连接为什么结束」（#218 / #222）。
+	// 与上面那把 mu 分开：那把是「活着吗」的热路径，这把是策略状态的写少读少路径。
+	// 具体语义见 node_session_lease.go。
+	leaseMu   sync.Mutex
+	owned     map[string]int // taskID → 库里的 attempts（派发世代）
+	endMarked bool
+	endClean  bool
+	endReason string
 }
 
 // touch 记录一次上行活动（任何上行帧都续命，契约 §3.3）。
@@ -261,11 +319,26 @@ func (s *nodeSession) send(ctx context.Context, f any) error {
 	if err != nil {
 		return err
 	}
+	return s.sendBytes(ctx, data)
+}
+
+// sendBytes 写一帧已经编码好的载荷。
+//
+// 单独出来是为了让 PublishAssign 能「先量体积再决定发不发」（#221）：
+// 超限的 assign 帧绝不能进连接，而量体积必须在编码之后、写之前。
+func (s *nodeSession) sendBytes(ctx context.Context, data []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	wctx, cancel := context.WithTimeout(ctx, defaultWriteTimeout)
 	defer cancel()
 	return s.conn.Write(wctx, websocket.MessageText, data)
+}
+
+// closeWith 带写锁地关连接（Close 会写 close 帧，必须与 send 串行化）。
+func (s *nodeSession) closeWith(code websocket.StatusCode, reason string) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_ = s.conn.Close(code, reason)
 }
 
 // sendError 下发一个 error 帧（不关连接）。
@@ -291,14 +364,24 @@ func (s *nodeSession) run(ctx context.Context) {
 	// 之后才发；否则节点收到 welcome 会以为已经接入成功，
 	// 而实际上它的能力声明稍后可能被拒。
 	err := s.readLoop(ctx)
-	if err != nil && !isNormalClose(err) {
-		slog.Info("node connection closed",
-			"event", "node.ws.closed",
-			"node_id", s.node.ID,
-			"namespace_id", s.node.NamespaceID,
-			"error", err.Error(),
-		)
-	}
+	// 读循环结束后补齐「为什么结束」：看门狗/被顶掉/帧超限三条路径已经**先标**过，
+	// 这里只补空（first wins）——不得把看门狗标的 unclean 改回 clean。
+	s.endFromReadError(err)
+	// **clean 与 unclean 都打这条日志**：perf/e2e 脚本按 `"node.ws.closed"` 计数断连
+	// （scripts/perf/b/s4-payload.sh、s5-lease-dup.sh、s6-reconnect.sh）。
+	// 只在 unclean 时打会让「对端正常收尾」（1000）变成一条日志都没有；
+	// 相反，kill -9 / RST（无 close 帧）现在是 unclean（见 classifyReadError 的裁决依据），
+	// 统计「意外掉线」时要按 clean=false 过滤。
+	// 判据仍只有一处：classifyReadError（node_session_lease.go）。
+	_, clean, reason := s.endState()
+	slog.Info("node connection closed",
+		"event", "node.ws.closed",
+		"node_id", s.node.ID,
+		"namespace_id", s.node.NamespaceID,
+		"clean", clean,
+		"reason", reason,
+		"error", errString(err),
+	)
 	s.cleanup(context.WithoutCancel(ctx))
 }
 
@@ -308,6 +391,16 @@ func (s *nodeSession) readLoop(ctx context.Context) error {
 		typ, raw, err := s.conn.Read(ctx)
 		if err != nil {
 			return err
+		}
+		// #221 入帧闸门：逐帧软上限。比硬上限低，为的是能**先回一帧可诊断的 error**
+		// 再用 1009 带文案关连接（硬上限处是库直接静默 1009，节点侧看不到原因）。
+		// 这条路径按 unclean 处理：对端活着，只是它的帧炸了。
+		if limit := s.h.maxFrameBytes(); limit > 0 && len(raw) > limit {
+			msg := fmt.Sprintf("frame too large: %d bytes (limit %d bytes)", len(raw), limit)
+			s.sendError(ctx, ErrCodeFrameTooLarge, msg)
+			s.markEnd(false, msg)
+			s.closeWith(websocket.StatusMessageTooBig, msg)
+			return fmt.Errorf("frame too large: %d > %d bytes", len(raw), limit)
 		}
 		if typ != websocket.MessageText {
 			// 协议只走文本帧（JSON）
@@ -358,20 +451,25 @@ func (s *nodeSession) handle(ctx context.Context, frame any) error {
 // handleHello 处理握手后的第一帧。
 func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 	if err := applyHello(ctx, s.h.Store, s.node, f); err != nil {
-		var he *helloError
-		if errors.As(err, &he) {
-			s.sendError(ctx, he.code, he.message)
-			// hello 失败 = 这个节点不该继续连着（能力不合法 / 实例超顶）
-			return fmt.Errorf("hello rejected: %s", he.message)
-		}
-		s.sendError(ctx, ErrCodeBadFrame, err.Error())
-		return fmt.Errorf("hello failed: %w", err)
+		return s.failHello(ctx, err)
 	}
 	s.markHello()
 	s.touch()
 	// 握手成功 → 成为该节点的当前连接（后连的顶掉旧的）。
 	// 必须在 welcome 之前注册：节点收到 welcome 后可能立刻开始等 assign。
 	s.h.hub().Register(s.node.ID, s)
+	// 注册之后**再写一次** node 级状态（审查 n1：M2 修好后的残留 TOCTOU）。
+	//
+	// 为什么必须写在 Register 之后：Register 之后 current() 才返回本连接，旧连接
+	// cleanup 的判据（cur == nil || cur == s）就会跳过它的 node 级写；而 Register
+	// **之前**写的话，旧连接完全可能在我写完、还没 Register 的窗口里（此时
+	// current() 还是 nil）把 alive/online 覆盖成 0/offline，而我之后再也不会重写
+	// → 节点「在线却接不到活」且不自愈（#218 的症状）。
+	// 能力校验仍留在 applyHello 里（必须在 Register 之前，否则一个能力非法的节点
+	// 会先顶掉在线的旧连接）；这里只重写两份幂等的 node 级状态。
+	if err := reassertNodeState(ctx, s.h.Store, s.node, f); err != nil {
+		return s.failHello(ctx, err)
+	}
 	// welcome 是握手成功的信号：节点据此配置心跳节奏（间隔/TTL 以服务端为准）。
 	if err := s.send(ctx, welcomeFrameFor(s.node)); err != nil {
 		return err
@@ -386,19 +484,45 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 	return nil
 }
 
-// handleHeartbeat 处理心跳：刷新 last_seen_at 并把该节点所有在跑任务的租约推到 now+TTL。
+// failHello 把 hello 失败翻译成协议错误帧，并返回「结束连接」的错误。
 //
-// 「续期」推的是**节点上全部**在跑任务，不是一条：心跳是一条连接的生命信号，
-// 该连接上的任务一起续命（契约 §3.3「任何上行帧续命」）。
+// hello 失败 = 这个节点不该继续连着（能力不合法 / 实例超顶 / 状态写不进去），
+// 返回错误会让读循环结束 → cleanup 跑正常的关连接收尾。
+func (s *nodeSession) failHello(ctx context.Context, err error) error {
+	var he *helloError
+	if errors.As(err, &he) {
+		s.sendError(ctx, he.code, he.message)
+		return fmt.Errorf("hello rejected: %s", he.message)
+	}
+	s.sendError(ctx, ErrCodeBadFrame, err.Error())
+	return fmt.Errorf("hello failed: %w", err)
+}
+
+// handleHeartbeat 处理心跳：刷新 last_seen_at，并**只续本连接名下**那些在飞任务的租约。
+//
+// #218 的根修在这里（改动前的写法是 ExtendLeasesForNode，按 **node** 续）：
+// 一条连接只能替它自己派出去、还没结束的任务续命。按节点批续会把**上一代进程遗留的
+// 孤儿任务**（重启后仍 assigned/acked 的行）也一直续着 → 巡检永远认为它们还活着 →
+// 任务永久卡 acked、槽位永久被占、pending 一条都派不出去。
+//
+// 名下没任务就不调续租（不能退化成按节点续）。
 func (s *nodeSession) handleHeartbeat(ctx context.Context, f *HeartbeatFrame) error {
 	now := s.h.now()
 	// 作用域参数是**命名空间**（#162）：节点属于且只属于一个命名空间，
-	// 传别的 id 会让 `WHERE namespace_id = ?` 恒 0 行——心跳续不上租约，
-	// 节点上所有在跑任务会被巡检当过期回收。
+	// 传别的 id 会让 `WHERE namespace_id = ?` 恒 0 行——心跳续不上租约。
 	if err := s.h.Store.TouchNode(ctx, s.node.NamespaceID, s.node.ID, now); err != nil {
 		return fmt.Errorf("touch node: %w", err)
 	}
-	if _, err := s.h.Store.ExtendLeasesForNode(ctx, s.node.NamespaceID, s.node.ID, now+int64(s.h.leaseTTLSec())); err != nil {
+	owners := s.ownedOwners()
+	if len(owners) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(owners))
+	for _, o := range owners {
+		ids = append(ids, o.TaskID)
+	}
+	if _, err := s.h.Store.ExtendLeasesForTasks(ctx, s.node.NamespaceID, s.node.ID, ids,
+		now+int64(s.h.leaseTTLSec())); err != nil {
 		return fmt.Errorf("extend leases: %w", err)
 	}
 	return nil
@@ -425,10 +549,11 @@ func (s *nodeSession) watchdog(ctx context.Context, cancel context.CancelFunc) {
 					"node_id", s.node.ID,
 					"idle", s.idleFor().String(),
 				)
+				// 先标后关（first wins）：我们主动掐的连接**不证明对端进程死了**
+				// （SIGSTOP / 半开 TCP 都长这模样）→ unclean → 名下任务 abandoned，绝不重派（#222）。
+				s.markEnd(false, fmt.Sprintf("heartbeat timeout (idle %s)", s.idleFor()))
 				// 主动关闭：策略违规（协议要求按心跳周期上报）
-				s.writeMu.Lock()
-				_ = s.conn.Close(websocket.StatusPolicyViolation, "heartbeat timeout")
-				s.writeMu.Unlock()
+				s.closeWith(websocket.StatusPolicyViolation, "heartbeat timeout")
 				cancel()
 				return
 			}
@@ -436,51 +561,106 @@ func (s *nodeSession) watchdog(ctx context.Context, cancel context.CancelFunc) {
 	}
 }
 
-// cleanup 连接结束时的收尾：标记实例掉线、节点离线、清空钉住。
+// cleanup 连接结束时的收尾（#218 + #222，**顺序是硬要求**）。
 //
-// 注意：**不回收任务**。任务归属由租约巡检（SweepExpiredLeases）统一处理，
-// 那是唯一入口；这里只把「连接不在了」这个事实记下来。
+// ① 先从 hub 摘掉（Unregister）：否则派发器会把 assign 推给一条已断的连接。
+// ② 只有**此刻仍是**当前连接时才动 node 级状态（MarkInstancesDead + offline）。
+// 它不依赖 ③（纯 node 级写），所以紧跟 ① 做——中间的窗口越短越好，理由见下。
+// ③ 把「执行者不在了」落库（ResolveLostTasks）：clean → 立刻回 pending（不等 30s 租约）；
+// unclean → abandoned + executor_lost 诊断，**绝不重派**（#222 at-most-once）。
+// ④ 才放开 hub 的在飞登记（releaseAll）：先放开的话，正在巡检的派发器可以抢在
+// ③ 的 DB 释放之前把同一任务派出去 → 双执行。
+// ② → ③ → ④ 的先后不能换：② 是 node 级、③④ 是任务级，改顺序只会重现窗口或双执行。
 func (s *nodeSession) cleanup(ctx context.Context) {
-	// 先从 hub 摘掉：否则派发器会把 assign 推给一条已断的连接。
-	s.h.hub().Unregister(s.node.ID, s)
-	if err := s.h.Store.MarkInstancesDead(ctx, s.node.ID); err != nil {
-		slog.Warn("mark instances dead failed",
-			"event", "node.ws.cleanup.instances",
-			"node_id", s.node.ID,
-			"error", err.Error(),
-		)
-	}
-	if err := s.h.Store.UpdateNodeStatus(ctx, s.node.NamespaceID, s.node.ID, store.NodeStatusOffline); err != nil {
-		slog.Warn("mark node offline failed",
-			"event", "node.ws.cleanup.status",
-			"node_id", s.node.ID,
-			"error", err.Error(),
-		)
-	}
-}
+	hub := s.h.hub()
+	// ① 先摘连接：派发器不能再往这条死连接上推帧。
+	// 返回值**故意不用**（见 ②）：它回答的是「摘的那一刻是不是当前连接」，
+	// 而我们真正要回答的是「现在是不是」。
+	hub.Unregister(s.node.ID, s)
 
-// isNormalClose 判定读错误是否属于「正常断开」。
-func isNormalClose(err error) bool {
-	if err == nil {
-		return true
+	// ② node 级状态（alive / online）只在「没有**更新的连接**接替了我」时写。
+	//
+	// 为什么必须重新问一次 hub，而不是用 ① 的返回值（审查 M2）：
+	// 改动前 ② 排在 ③ 之后，而 ③ 是**每条任务一个事务**——于是 ① 与 ② 之间有一个
+	// 长度正比于在飞任务数的窗口。新连接完全可能在这段时间完成 hello
+	// （UpsertInstances alive=1 + online）并 Register，而旧连接手里仍是 ① 的 true，
+	// 于是 ② 把新连接刚写好的 alive/online 改回 dead/offline。而且**不会自愈**：
+	// TouchNode 只写 last_seen_at；alive=1 全仓只有 hello 的 UpsertInstances 写；
+	// FreeSlotsByNode 要求 alive=1、NodesForCapability 要求 online
+	// → 节点「显示在线却永远接不到活」，就是 #218 的症状（测得 18 个在飞任务时 6/6 复现）。
+	//
+	// 把 ② 提到 ③ 之前把窗口从「正比于在飞任务数」压到几条指令，但**仍然**要复查：
+	// 并发下「摘的时候是当前」与「现在还是当前」是两件事。
+	//
+	// 判据是 `cur == nil || cur == s`，不是字面的 `cur == s`：
+	// ① 已经把自己从 conns 里摘掉了，所以此刻 current 只可能是
+	//   - nil（没有人接替我）→ 这一次断开是真的，应该标 dead/offline；
+	//   - 另一条连接（新连接顶掉了我）→ 绝不能动，否则就是把它的 alive/online 改回去。
+	// 写成 `cur == s` 会把 nil 也算成「不是当前连接」→ 节点永远不下线（TestDisconnectMarksNodeOffline 红）。
+	if cur := hub.current(s.node.ID); cur == nil || cur == s {
+		if err := s.h.Store.MarkInstancesDead(ctx, s.node.ID); err != nil {
+			slog.Warn("mark instances dead failed",
+				"event", "node.ws.cleanup.instances",
+				"node_id", s.node.ID,
+				"error", err.Error(),
+			)
+		}
+		if err := s.h.Store.UpdateNodeStatus(ctx, s.node.NamespaceID, s.node.ID, store.NodeStatusOffline); err != nil {
+			slog.Warn("mark node offline failed",
+				"event", "node.ws.cleanup.status",
+				"node_id", s.node.ID,
+				"error", err.Error(),
+			)
+		}
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
+
+	owners := s.ownedOwners() // ③ 之前快照：之后 own/disown 属于别的帧
+	if len(owners) > 0 {
+		_, clean, reason := s.endState()
+		if reason == "" {
+			reason = "connection closed"
+		}
+		policy := s.lostPolicy()
+		if requeued, abandoned, err := s.h.Store.ResolveLostTasks(ctx, s.node.NamespaceID, s.node.ID,
+			owners, policy, reason, s.h.now()); err != nil {
+			slog.Warn("resolve lost tasks failed",
+				"event", "node.ws.cleanup.tasks_failed",
+				"node_id", s.node.ID,
+				"tasks", len(owners),
+				"clean", clean,
+				"error", err.Error(),
+			)
+		} else if requeued > 0 || abandoned > 0 {
+			slog.Info("released tasks of a closed connection",
+				"event", "node.ws.cleanup.tasks",
+				"node_id", s.node.ID,
+				"clean", clean,
+				"requeued", requeued,
+				"abandoned", abandoned,
+				"reason", reason,
+			)
+		}
 	}
-	status := websocket.CloseStatus(err)
-	switch status {
-	case websocket.StatusNormalClosure, websocket.StatusGoingAway, websocket.StatusPolicyViolation:
-		return true
-	}
-	return false
+	// ④ 落库释放之后才放开在飞登记（反了就是双执行，见函数头）
+	hub.releaseAll(s)
 }
 
 // kill 主动断开这条连接（被新连接顶掉时调用）。
 //
 // 用 NormalClosure 而不是 PolicyViolation：这是正常的「换连接」，
 // 不是协议违规。节点看到 1000 会直接重连，看到 1008 可能会退避更久。
+//
+// 但**对我们自己而言**这是 unclean（先标后关）：旧进程很可能还在跑它手上的命令，
+// 把它的任务重派出去就是并发执行两遍（#222）。
 func (s *nodeSession) kill(reason string) {
-	s.writeMu.Lock()
-	_ = s.conn.Close(websocket.StatusNormalClosure, reason)
-	s.writeMu.Unlock()
+	s.markEnd(false, "superseded by a newer connection: "+reason)
+	s.closeWith(websocket.StatusNormalClosure, reason)
+}
+
+// errString 把可能为 nil 的错误转成日志字段（nil → ""）。
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

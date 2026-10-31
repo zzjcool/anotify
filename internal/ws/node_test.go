@@ -908,7 +908,11 @@ func TestHeartbeatKeepsAlive(t *testing.T) {
 	}
 }
 
-// TestLeaseExtended 心跳把 lease_until 推到 now+TTL（#70 验收）。
+// TestLeaseExtended 心跳把**本连接名下的**任务的 lease_until 推到 now+TTL（#70 验收）。
+//
+// #218 起租约的粒度是「连接名下的任务」，不再按节点：所以这里必须真的把任务派给
+// 这条连接（PublishAssign 登记归属）——否则心跳压根不应该续它（负向情形见
+// node_lease_test.go 的 TestHeartbeatRenewsOnlyOwnedTasks）。
 func TestLeaseExtended(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
@@ -936,6 +940,14 @@ func TestLeaseExtended(t *testing.T) {
 	stale := store.Now() - 1000
 	if err := f.db.AssignTask(ctx, f.nsID, task.ID, f.node.ID, instID, stale); err != nil {
 		t.Fatalf("assign: %v", err)
+	}
+	// 派给这条连接（登记归属与派发世代）；assign 帧本身不关心，客户端读不读都行。
+	assigned, err := f.db.GetTask(ctx, f.nsID, task.ID)
+	if err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	if err := f.handler.hub().PublishAssign(ctx, f.nsID, f.node.ID, assigned); err != nil {
+		t.Fatalf("publish assign: %v", err)
 	}
 
 	// 发心跳，租约应被推到 now+30

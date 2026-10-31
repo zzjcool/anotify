@@ -47,6 +47,21 @@ const (
 	ErrCodeInvalidManifest = "invalid_manifest"
 	// ErrCodeUnauthorized 握手鉴权失败（HTTP 层用，不会作为帧下发）。
 	ErrCodeUnauthorized = "unauthorized"
+	// ErrCodeFrameTooLarge 上行帧超过服务端软上限（#221）。
+	//
+	// 下发它是为了**可诊断**：没有它时 coder/websocket 会在硬上限处静默
+	// 用 1009 关连接，节点侧只看到「连接断了」，不知道是自己的帧太大。
+	// 节点收到这个码可以把大 result/artifacts 截断重发。
+	ErrCodeFrameTooLarge = "frame_too_large"
+	// ErrCodeParamsTooLarge 任务 params 超过 store.MaxTaskParamsBytes（#221 / 审查 m5）。
+	//
+	// 典型场景：一条**下一跳子任务**的 params 超限。store 侧的闸门在
+	// createTasksTx 里，所以子任务被拒会让**父任务的终态整体回滚**（同一个事务）——
+	// 父任务留在 running → 租约过期重派 → 节点把同一份昂贵工作再跑一遍 → 返回同样的
+	// 超限子任务，直到 attempts 用尽变 abandoned。
+	// 把这种错误映射成 invalid_transition 就把「你的 params 太大」这个病因埋了；
+	// 给它一个独立的码，节点/运维一眼能看出是参数体积问题（应该是去分片或改用引用）。
+	ErrCodeParamsTooLarge = "params_too_large"
 )
 
 // 上行帧（节点 → 中枢）──────────────────────────────

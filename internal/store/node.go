@@ -937,6 +937,45 @@ func (d *DB) MarkInstancesDead(ctx context.Context, nodeID string) error {
 	return nil
 }
 
+// ReclaimStaleSlots 清掉「槽位指向的任务已经不在这台机器上跑了」的钉子（#218 兜底）。
+//
+// 为什么需要它：`busy_task` 的语义是「这个槽位现在被哪条任务占着」。正常路径下
+// 它由 result / 巡检回收 / 连接结束时的主动释放（ResolveLostTasks）清掉。但中枢
+// 在「已派发、未回收」的窗口里被 kill -9（或旧版本升级上来）时，没人再清它，
+// 槽位就永久卡住——节点显示 online 却再也接不到任何任务。
+//
+// 所以节点每次 hello 时做一次幂等修复：**只清**那种任务已经不归本节点在飞的槽位
+// （任务已终态 / 已回 pending 等重派 / 已被改派到别的节点），仍在 assigned/acked/running
+// 且属于本节点的任务一行都不动（不抢跑租约巡检）。
+//
+// 返回清掉的槽位数。
+func (d *DB) ReclaimStaleSlots(ctx context.Context, namespaceID, nodeID string, now int64) (int, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return 0, ErrNamespaceRequired
+	}
+	if now == 0 {
+		now = Now()
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE node_instances SET busy_task = NULL, updated_at = ?
+		  WHERE node_id = ? AND namespace_id = ? AND busy_task IS NOT NULL
+		    AND NOT EXISTS (
+		      SELECT 1 FROM tasks t
+		       WHERE t.id = node_instances.busy_task
+		         AND t.namespace_id = ?
+		         AND t.node_id = node_instances.node_id
+		         AND t.status IN (?,?,?))`,
+		now, nodeID, namespaceID, namespaceID, TaskAssigned, TaskAcked, TaskRunning)
+	if err != nil {
+		return 0, fmt.Errorf("reclaim stale slots: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("reclaim stale slots rows: %w", err)
+	}
+	return int(n), nil
+}
+
 // LeaseInstance 把任务占到一个空闲实例上（CAS：busy_task IS NULL → taskID）。
 //
 // 「实际并发 = min(实例 concurrency, 实现级 concurrency, nodes.max_concurrency)」
