@@ -6,19 +6,23 @@
  *  V1  GET /v1/events?limit=501..1000 不再返回 50 条（#236 根因：store 对 >500 兜底成 50），
  *      返回 ≤500 条且**回显生效值** limit。
  *  V2  GET /v1/console/events?limit=1000 同理（≤500，回显）。
- *  V3  console events 支持 before=<cursor> 游标分页：一路翻到最旧，无重复、无遗漏。
- *  V4  events 页有分页导航，URL 带 ?before=，刷新/分享后回到同一窗口。
+ *  V3  console events 支持 before=<cursor> 游标分页：1000 条事件能一路翻到**第 10 页**，
+ *      无重复、无遗漏，且拼起来的 id 序列与「按 created_at DESC, id DESC」的期望**逐条相等**。
+ *  V4  events 页有分页导航，URL 带 ?before=，刷新/分享后回到同一窗口（UI 也走满 10 页）。
  *  V5  events / index 不加载 dagre/flograph/graphs/traceview（-150.7KB / -4 请求），
  *      trace 页仍然四个都在（顺序 dagre→flograph→graphs→traceview）且能画图。
  *
- * 套件结构（顺序有讲究，见下面 §造数）：
- *   A. 造一条**真实任务**的 trace（V5 的 trace 页要有内容）+ 249 条直插库的合成事件
- *      → 事件流恰好 250 条，于是 V1/V3 的页边界是确定值（100/100/50）。
- *   B. 后端游标分页（HTTP，会话 Cookie，250 条）。
- *   C. events 页 UI 分页（Chrome，250 条 → 3 页）。
+ * 套件结构：
+ *   A. 造数：1 条走真 POST（派发出任务，trace 页才有内容）+ 999 条直插库的合成事件
+ *      → 事件流正好 1000 条，「10 页 × 100」这个边界是干净的确定值。
+ *      同时构造期望顺序 expectedIds（真实事件在最前，其后按插入序），并与库里
+ *      created_at DESC 的查询结果比一次 —— 期望值不靠猜。
+ *   B. 后端游标分页：1000 条 → 恰好 10 页，逐页 100 条，10 页拼起来 === expectedIds
+ *      逐条相等；另有 limit=37 的短页扫描（1000 条 / 37 → 最后一页 1 行）钉住
+ *      「不足整页 ⇒ nextCursor 为空」这条收敛边界。
+ *   C. events 页 UI：连点「更旧」9 次走满 10 页，末页行数/按钮/摘要/URL 换窗口全查。
  *   D. 资源分层（同一 Chrome 会话，events/index/trace 三页的 resource 清单）。
- *   E. 再把库撑到 550 条，验 #236 的 limit 硬顶（limit=501/1000 要能看到 500 条：
- *      库里只有 250 条时「返回 500 条」根本无从判定，所以这一段必须排在 B/C 之后）。
+ *   E. #236 的 limit 硬顶（库里 1000 条 > 500，limit=501 刚好能看到夹取）。
  */
 import { chromium } from "playwright-core";
 import { DatabaseSync } from "node:sqlite";
@@ -26,8 +30,12 @@ import * as H from "../lib/harness.mjs";
 import * as N from "../lib/nodes.mjs";
 
 const PAGE_SIZE = 100; // 契约 §3.4：events 页页大小
-const TOTAL_EVENTS = 250; // B/C 的数据规模 → 100/100/50，第 3 页就是最后一页
-const BOOST_EVENTS = 300; // E 段把库撑到 550 条，才能验 limit=501 → 500
+const TOTAL_EVENTS = 1000; // 事件流总条数（真实 1 + 合成 999）→ 10 页 × 100
+const SYNTHETIC_EVENTS = TOTAL_EVENTS - 1;
+const EXPECTED_PAGES = TOTAL_EVENTS / PAGE_SIZE; // 10（整除，第 10 页也是满页）
+const SHORT_LIMIT = 37; // 短页扫描：故意不整除，钉住「不足整页 ⇒ 末页收敛」
+const SHORT_PAGES = Math.ceil(TOTAL_EVENTS / SHORT_LIMIT); // 28
+const SHORT_LAST_ROWS = TOTAL_EVENTS % SHORT_LIMIT; // 1
 // 契约 §4：四个图脚本只在 trace / source 两页加载。
 //
 // 注意**指纹**：静态资源经 `make fe` 改名为 `<stem>.<hash8>.js`
@@ -71,10 +79,10 @@ async function injectSession(ctx, sessionValue, base) {
 	]);
 }
 
-// ---------- 造数：直插库（250 次 POST 太慢，也会污染事件流口径） ----------
+// ---------- 造数：直插库（1000 次 POST 太慢，也会污染事件流口径） ----------
 //
 // 为什么直插而不是循环 POST /v1/events：
-//   ① 250 次 HTTP + 每次派发尝试要好几秒，套件会被 120s 预算吃掉；
+//   ① 1000 次 HTTP + 每次派发尝试要几十秒，套件会被 120s 预算吃掉；
 //   ② POST 会尝试派发任务、可能写剪枝事件（source='route'），事件流条数就不再是
 //      「我插入的条数」那种可预期的东西。
 //
@@ -82,14 +90,17 @@ async function injectSession(ctx, sessionValue, base) {
 // 不再是 org_id）：id / namespace_id / trace_id / source / type / payload / idem_key / created_at。
 //
 // created_at 严格递减、id 编号递增（ORDER BY created_at DESC, id DESC 的稳定序），
-// trace_id 每条唯一 —— UI 断言要靠「首行 trace_id」来判定翻页真的换了窗口
+// trace_id 每条唯一 —— UI 断言要靠「首行/末行 trace_id」来判定翻页真的换了窗口
 // （卡片上不渲染事件 id，只渲染 source → type 和 trace_id）。
+//
+// 返回**插入顺序**（新 → 旧）的 id 数组：调用方用它拼期望顺序，不靠公式反推。
 function insertSyntheticEvents(dbPath, namespaceId, { count, firstIndex, newestAt }) {
+	const ids = [];
 	const db = new DatabaseSync(dbPath);
 	try {
 		// 服务在跑（WAL），写事务会和服务端抢写锁：等不到就报 SQLITE_BUSY 而不是立刻失败。
 		db.exec("PRAGMA busy_timeout=5000");
-		// 一条事务插完：250 次独立事务会写 250 次 WAL，慢且无必要。
+		// 一条事务插完：1000 次独立事务会写 1000 次 WAL，慢且无必要。
 		db.exec("BEGIN IMMEDIATE");
 		const stmt = db.prepare(
 			`INSERT INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
@@ -98,12 +109,9 @@ function insertSyntheticEvents(dbPath, namespaceId, { count, firstIndex, newestA
 		for (let i = 0; i < count; i++) {
 			const idx = firstIndex + i;
 			const suffix = String(idx).padStart(4, "0");
-			stmt.run(
-				"evt_e2e_" + suffix,
-				namespaceId,
-				"tr_e2e_" + suffix,
-				newestAt - i,
-			);
+			const id = "evt_e2e_" + suffix;
+			stmt.run(id, namespaceId, "tr_e2e_" + suffix, newestAt - i);
+			ids.push(id);
 		}
 		db.exec("COMMIT");
 	} catch (e) {
@@ -116,11 +124,11 @@ function insertSyntheticEvents(dbPath, namespaceId, { count, firstIndex, newestA
 	} finally {
 		db.close();
 	}
+	return ids;
 }
 
 // streamRows 读「事件流口径」的行（不含 source='route' 剪枝行，与 store.ListEvents
-// 不带 traceId 时的剪枝规则一致）。期望值从库里查，而不是把 250 写死在断言里 ——
-// 写死的话任何造数偏差都会变成「断言看起来是对的，其实比的是错的数」。
+// 不带 traceId 时的剪枝规则一致），顺序就是契约里的事件序。
 function streamRows(dbPath, namespaceId) {
 	const db = new DatabaseSync(dbPath);
 	try {
@@ -153,6 +161,17 @@ async function listInfo(page) {
 				(document.getElementById("ev-summary") || {}).textContent?.trim() || "",
 			hasOlder: !!document.getElementById("ev-older"),
 			hasNewer: !!document.getElementById("ev-newer"),
+		};
+	});
+}
+
+// 首行/末行的 trace_id（卡片按 DESC 渲染，首行 = 本页最新一条）。
+async function listEdgeTraces(page) {
+	return page.evaluate(() => {
+		const all = [...document.querySelectorAll("#ev-list .card div.mono.truncate")];
+		return {
+			first: all.length ? all[0].textContent.trim() : "",
+			last: all.length ? all[all.length - 1].textContent.trim() : "",
 		};
 	});
 }
@@ -193,22 +212,57 @@ function loadedGraphLibs(names) {
 	return GRAPH_LIBS.filter((lib) => seen.has(lib));
 }
 
+// firstDiff 给出两条 id 序列第一处不一致的位置（逐条相等的断言要能直接定位）。
+function firstDiff(actual, expected) {
+	const n = Math.min(actual.length, expected.length);
+	for (let i = 0; i < n; i++) {
+		if (actual[i] !== expected[i]) {
+			return { index: i, actual: actual[i], expected: expected[i] };
+		}
+	}
+	if (actual.length === expected.length) return null;
+	return { index: n, actual: actual[n], expected: expected[n], lengthOnly: true };
+}
+
+// scanCursorPages 从第一页开始用响应里的 nextCursor 一路翻到底。
+// 返回每页 { events, nextCursor, limit }；maxPages 是死循环护栏（不是断言值）。
+async function scanCursorPages(fetchPage, limit, maxPages) {
+	const pages = [];
+	let before = "";
+	for (let i = 0; ; i++) {
+		if (i > maxPages) {
+			throw new Error(`翻页超过 ${maxPages} 页仍未结束（nextCursor 一直非空？）`);
+		}
+		const res = await fetchPage(
+			"limit=" + limit + (before ? "&before=" + encodeURIComponent(before) : ""),
+		);
+		const events = res.json?.events || [];
+		const nextCursor = res.json?.nextCursor ?? null;
+		pages.push({ status: res.status, events, nextCursor, limit: res.json?.limit });
+		// 契约 §3.2：nextCursor 为 "" ⇔ 没有更旧的了。
+		if (!nextCursor) break;
+		before = nextCursor;
+	}
+	return pages;
+}
+
 async function main() {
 	H.startTimer();
 	console.log("=== SUITE: events_paging（#234 / #235 / #236）===");
 	server = await H.startServer({ suiteName: "events_paging", rpId: "localhost" });
 	const s = H.seed(server.dbPath, "events_paging");
 	const base = server.base;
+	// 控制台事件流入口（会话 Cookie）。
+	const fetchPage = (qs) => H.req(base, "/v1/console/events?" + qs, { session: s.session });
 
 	const nsId = await H.defaultNamespaceId(base, s.session);
 	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
 	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
 
-	// ---------- A. 造一条有真实任务的 trace（V5 的 trace 页要有内容） ----------
+	// ---------- A. 造数：真实任务 trace + 999 条合成事件 = 1000 条 ----------
 	// 配方同 deeplink.mjs：能力 + 入口边 + 真 WS 节点，事件才会派发出任务。
-	// 事件本身 source='e2e.paging.src'（不是 'route'），因此它也会出现在事件流里
-	// —— 下面合成事件插 249 条，加起来正好 250 条。
-	console.log("--- 造数：真实任务 trace + 合成事件 ---");
+	// 事件本身 source='e2e.paging.src'（不是 'route'），因此它也会出现在事件流里。
+	console.log("--- A. 造数：真实任务 trace + 合成事件 = 1000 条 ---");
 	const cap = await H.req(base, "/v1/capabilities", {
 		session: s.session,
 		method: "POST",
@@ -233,6 +287,25 @@ async function main() {
 	});
 	H.eq("建入口边 e2e.paging.src --go--> e2e.paging → 200", edge.status, 200);
 
+	// V5 的 source 半边：source.html 也是「图页面」（#234 改了两页），需要一个**真源**
+	// 才打得开详情页。建一个 cron 源，出口就是上面那个能力。
+	const srcCreate = await H.req(base, "/v1/sources", {
+		session: s.session,
+		method: "POST",
+		body: {
+			name: "e2e.paging.cron",
+			kind: "cron",
+			config: { expr: "0 3 * * *", tz: "Asia/Shanghai" },
+			targets: [capId],
+		},
+	});
+	const sourceId = srcCreate.json?.source?.id;
+	H.check(
+		"建 cron 源 e2e.paging.cron（出口 e2e.paging）→ 201（source.html 的 V5 半边需要真源）",
+		srcCreate.status === 201 && typeof sourceId === "string" && sourceId.length > 0,
+		JSON.stringify({ status: srcCreate.status, sourceId, body: srcCreate.text?.slice(0, 200) }),
+	);
+
 	const node = await N.bringUpNode(
 		base,
 		server.dbPath,
@@ -242,7 +315,6 @@ async function main() {
 	);
 	nodeConn = node.conn;
 
-	const nowSec = Math.floor(Date.now() / 1000);
 	const realEv = await H.req(base, "/v1/events", {
 		key: s.sendKey, // 机器入口要 notify:send（recvKey 一律 403，不是端点坏了）
 		body: {
@@ -253,82 +325,134 @@ async function main() {
 	});
 	H.eq("POST /v1/events（sendKey）→ 200", realEv.status, 200);
 	const traceId = realEv.json?.traceId;
-	H.check("真实事件建出任务（trace 页有内容）", (realEv.json?.tasks || []).length >= 1, JSON.stringify({
-		tasks: realEv.json?.tasks,
-		pruned: realEv.json?.pruned,
-		origin: realEv.json?.origin,
-	}));
+	H.check(
+		"真实事件建出任务（trace 页有内容）",
+		(realEv.json?.tasks || []).length >= 1,
+		JSON.stringify({
+			tasks: realEv.json?.tasks,
+			pruned: realEv.json?.pruned,
+			origin: realEv.json?.origin,
+		}),
+	);
 	H.check("拿到真实 traceId", typeof traceId === "string" && traceId.length > 0, String(traceId));
 
-	// 合成事件：比真实事件旧 10s 起，严格递减，绝不与真实事件撞 created_at。
-	insertSyntheticEvents(server.dbPath, nsId, {
-		count: TOTAL_EVENTS - 1,
+	// 真实事件的入库值（created_at / id）**不猜**：此刻事件流里只有它，limit=1 拿到的就是它。
+	const newest = await fetchPage("limit=1");
+	const realEvent = newest.json?.events?.[0];
+	H.check(
+		"真实事件是当前最新一条（console limit=1 拿到它）",
+		!!realEvent?.id && realEvent?.traceId === traceId,
+		JSON.stringify({ id: realEvent?.id, traceId: realEvent?.traceId, createdAt: realEvent?.createdAt }),
+	);
+	if (!realEvent?.id) throw new Error("拿不到真实事件的入库行：" + newest.text?.slice(0, 200));
+
+	// 合成事件：比真实事件旧 10s 起（严格递减），绝不与真实事件撞 created_at。
+	const syntheticIds = insertSyntheticEvents(server.dbPath, nsId, {
+		count: SYNTHETIC_EVENTS,
 		firstIndex: 1,
-		newestAt: nowSec - 10,
+		newestAt: realEvent.createdAt - 10,
 	});
+	// 期望顺序 = 「真实事件（最新）」+ 合成事件的插入序（插入序就是 created_at 降序）。
+	const expectedIds = [realEvent.id, ...syntheticIds];
 	const rows = streamRows(server.dbPath, nsId);
 	const total = rows.length;
-	H.eq(`事件流恰好 ${TOTAL_EVENTS} 条（真实 1 + 合成 ${TOTAL_EVENTS - 1}）`, total, TOTAL_EVENTS);
-	if (total <= PAGE_SIZE) throw new Error(`事件流只有 ${total} 条，分页断言无意义`);
-
-	// ---------- B. #235 游标分页（HTTP，会话 Cookie） ----------
-	console.log("--- B. /v1/console/events 游标分页 ---");
-	const fetchPage = (qs) =>
-		H.req(base, "/v1/console/events?" + qs, { session: s.session });
-
-	const p1 = await fetchPage("limit=" + PAGE_SIZE);
-	H.eq("第 1 页 status 200", p1.status, 200);
-	H.eq("第 1 页 100 条", p1.json?.events?.length ?? -1, PAGE_SIZE);
-	H.eq("第 1 页回显 limit=100", p1.json?.limit, PAGE_SIZE);
-	const cursor1 = p1.json?.nextCursor || "";
-	H.check("第 1 页 nextCursor 非空", cursor1.length > 0, JSON.stringify({ nextCursor: cursor1 }));
-
-	const p2 = await fetchPage(
-		"limit=" + PAGE_SIZE + "&before=" + encodeURIComponent(cursor1),
-	);
-	H.eq("第 2 页 100 条", p2.json?.events?.length ?? -1, PAGE_SIZE);
-	const cursor2 = p2.json?.nextCursor || "";
-	H.check("第 2 页 nextCursor 非空", cursor2.length > 0, JSON.stringify({ nextCursor: cursor2 }));
-
-	const p3 = await fetchPage(
-		"limit=" + PAGE_SIZE + "&before=" + encodeURIComponent(cursor2),
-	);
-	const lastPageExpected = total - 2 * PAGE_SIZE; // 250 → 50
-	H.eq(`第 3 页 ${lastPageExpected} 条（最后一页）`, p3.json?.events?.length ?? -1, lastPageExpected);
-	H.eq("第 3 页 nextCursor 为空（已到最旧）", p3.json?.nextCursor, "");
-
-	// 无重复、无遗漏：三页并集必须正好等于库里事件流的全部 id。
-	const pageIds = [p1, p2, p3].flatMap((p) => (p.json?.events || []).map((e) => e.id));
-	const union = new Set(pageIds);
-	H.check("三页 id 无重复", union.size === pageIds.length, `三页共 ${pageIds.length} 行，去重后 ${union.size}`);
-	const allIds = new Set(rows.map((r) => r.id));
+	H.eq(`事件流恰好 ${TOTAL_EVENTS} 条（真实 1 + 合成 ${SYNTHETIC_EVENTS}）`, total, TOTAL_EVENTS);
 	H.check(
-		`三页并集 == 库里全部 ${total} 个 id（无遗漏）`,
-		union.size === allIds.size && [...allIds].every((id) => union.has(id)),
-		JSON.stringify({ union: union.size, all: allIds.size }),
+		"期望顺序（真实事件在前 + 插入序）与库里 created_at DESC 序一致",
+		JSON.stringify(rows.map((r) => r.id)) === JSON.stringify(expectedIds),
+		JSON.stringify(firstDiff(rows.map((r) => r.id), expectedIds)),
 	);
+	if (total !== TOTAL_EVENTS) throw new Error(`事件流 ${total} 条，与预期的 ${TOTAL_EVENTS} 不一致`);
 
-	// 每页内部 DESC（created_at 严格不增），且页间不断档。
-	const pages = [p1, p2, p3].map((p) => p.json?.events || []);
+	// ---------- B. #235 游标分页：1000 条 → 恰好 10 页 ----------
+	console.log("--- B. /v1/console/events 游标分页（1000 条 → 10 页）---");
+	const pages = await scanCursorPages(fetchPage, PAGE_SIZE, EXPECTED_PAGES + 5);
+	H.eq(`游标翻页恰好 ${EXPECTED_PAGES} 页（第 10 页之后 nextCursor 为空）`, pages.length, EXPECTED_PAGES);
+	H.check(
+		`逐页 ${PAGE_SIZE} 条（第 1..10 页都是满页）`,
+		pages.every((p) => p.events.length === PAGE_SIZE),
+		JSON.stringify(pages.map((p) => p.events.length)),
+	);
+	H.check(
+		`每页都回显生效值 limit=${PAGE_SIZE}`,
+		pages.every((p) => p.limit === PAGE_SIZE),
+		JSON.stringify(pages.map((p) => p.limit)),
+	);
+	const pagedIds = pages.flatMap((p) => p.events.map((e) => e.id));
+	const apiPage10FirstId = pages[EXPECTED_PAGES - 1].events[0]?.id;
+	const apiPage10LastId = pages[EXPECTED_PAGES - 1].events.at(-1)?.id;
+	H.check(
+		`10 页拼起来与 expectedIds 逐条相等（共 ${TOTAL_EVENTS} 条，created_at 排序期望一致）`,
+		firstDiff(pagedIds, expectedIds) === null,
+		JSON.stringify(firstDiff(pagedIds, expectedIds)),
+	);
+	H.check(
+		`10 页之间无重复（${TOTAL_EVENTS} 行 / 去重后 ${TOTAL_EVENTS}）`,
+		pagedIds.length === TOTAL_EVENTS && new Set(pagedIds).size === TOTAL_EVENTS,
+		JSON.stringify({ rows: pagedIds.length, unique: new Set(pagedIds).size }),
+	);
+	// 第 10 页证据（直接写进日志，收队时不用重跑）：
+	console.log(
+		`  ↳ API 第 ${EXPECTED_PAGES} 页：行数=${pages[EXPECTED_PAGES - 1].events.length}` +
+			` 首 id=${apiPage10FirstId} 末 id=${apiPage10LastId}` +
+			` nextCursor=${JSON.stringify(pages[EXPECTED_PAGES - 1].nextCursor)}`,
+	);
+	H.eq(
+		"第 10 页 nextCursor 为空（peek 补丁生效：不再多给一个空页）",
+		pages[EXPECTED_PAGES - 1].nextCursor,
+		"",
+	);
+	// 每页内部 created_at 不增，且页间不断档（DESC 全序）。
 	const descOk =
-		pages.every((evs) => evs.every((e, i) => i === 0 || evs[i - 1].createdAt >= e.createdAt)) &&
-		pages.every((evs, i) => i === 0 || (pages[i - 1].at(-1).createdAt >= evs[0].createdAt));
-	H.check("每页 createdAt 不增且页间连续（DESC 全序）", descOk, JSON.stringify(
-		pages.map((evs) => evs.slice(0, 1).concat(evs.slice(-1)).map((e) => e.createdAt)),
-	));
+		pages.every((p) => p.events.every((e, i) => i === 0 || p.events[i - 1].createdAt >= e.createdAt)) &&
+		pages.every((p, i) => i === 0 || pages[i - 1].events.at(-1).createdAt >= p.events[0].createdAt);
+	H.check("每页 createdAt 不增且页间连续（DESC 全序）", descOk);
+
+	// 不足整页的收敛边界：limit=37（1000 不整除）→ 28 页，最后一页 1 行。
+	const shortPages = await scanCursorPages(fetchPage, SHORT_LIMIT, SHORT_PAGES + 5);
+	H.eq(`limit=${SHORT_LIMIT} 扫到底共 ${SHORT_PAGES} 页（ceil(1000/37)）`, shortPages.length, SHORT_PAGES);
+	H.eq(
+		`limit=${SHORT_LIMIT} 最后一页只有 ${SHORT_LAST_ROWS} 行（1000 % 37，不足整页 ⇒ 收敛）`,
+		shortPages.at(-1).events.length,
+		SHORT_LAST_ROWS,
+	);
+	H.eq(`limit=${SHORT_LIMIT} 末页 nextCursor 为空`, shortPages.at(-1).nextCursor, "");
+	const shortIds = shortPages.flatMap((p) => p.events.map((e) => e.id));
+	H.check(
+		`limit=${SHORT_LIMIT} 扫到底无重复无遗漏（逐条一致 + 去重 ${TOTAL_EVENTS}）`,
+		firstDiff(shortIds, expectedIds) === null && new Set(shortIds).size === TOTAL_EVENTS,
+		JSON.stringify({
+			diff: firstDiff(shortIds, expectedIds),
+			rows: shortIds.length,
+			unique: new Set(shortIds).size,
+		}),
+	);
 
 	// 非法游标一律 400 —— 不静默降级回第一页（那正是 #236 那类「悄悄换窗口」的病根）。
 	const badCursor = await fetchPage("limit=" + PAGE_SIZE + "&before=" + encodeURIComponent("这不是游标"));
 	H.eq("坏游标 before → 400", badCursor.status, 400);
 	H.eq("坏游标 error 文案", badCursor.json?.error, "invalid before cursor");
 
-	// V2：limit=1000 收到硬顶 500，回显生效值。
-	const big = await fetchPage("limit=1000");
-	H.eq("console limit=1000 → 库里全部行数（≤500 硬顶）", big.json?.events?.length ?? -1, total);
-	H.eq("console limit=1000 回显生效值", big.json?.limit, 500);
+	// V2（强形态）：库里 1000 条时，控制台端点（会话 Cookie）limit=1000 真的钳到 500，
+	// 而且给的是**最新 500 条**（首尾 id 对齐 expectedIds 前缀）—— 不是「库里不足 500
+	// 所以看起来对」。
+	const consoleFull = await fetchPage("limit=1000&namespaceId=" + encodeURIComponent(nsId));
+	H.eq("console limit=1000 → 500 条（硬顶）", consoleFull.json?.events?.length ?? -1, 500);
+	H.eq("console limit=1000 回显生效值", consoleFull.json?.limit, 500);
+	H.check(
+		"V2 强形态：钳到的最新 500 条 == expectedIds[0..499]（首尾 id 逐条对齐）",
+		consoleFull.json?.events?.[0]?.id === expectedIds[0] &&
+			consoleFull.json?.events?.at(-1)?.id === expectedIds[499],
+		JSON.stringify({
+			first: consoleFull.json?.events?.[0]?.id,
+			last: consoleFull.json?.events?.at(-1)?.id,
+			expectedFirst: expectedIds[0],
+			expectedLast: expectedIds[499],
+		}),
+	);
 
-	// ---------- C/D. Chrome：events 页分页 + 资源分层 ----------
-	console.log("--- C. events 页 UI 分页（Chrome 1280×800）---");
+	// ---------- C/D. Chrome：events 页走满 10 页 + 资源分层 ----------
+	console.log("--- C. events 页 UI 分页（Chrome 1280×800，连点 9 次到第 10 页）---");
 	browser = await chromium.launch({ channel: "chrome", headless: true });
 	const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 	await H.mockExternalCdn(ctx);
@@ -349,6 +473,12 @@ async function main() {
 
 	// V5（events 页）：非图页面不加载四个图脚本。
 	const eventsResources = await resourceNames(page);
+	// 先守住「清单真的是非空的」：清单为空时，下面的**否定**断言会真空为真。
+	H.check(
+		"events.html resource 清单非空（否定断言的前置守卫，防真空通过）",
+		eventsResources.length > 5,
+		JSON.stringify({ n: eventsResources.length, resources: eventsResources.map(libBaseName) }),
+	);
 	const eventsLoaded = loadedGraphLibs(eventsResources);
 	H.check(
 		"events.html 不加载 dagre/flograph/graphs/traceview（V5）",
@@ -356,47 +486,57 @@ async function main() {
 		JSON.stringify({ loaded: eventsLoaded, resources: eventsResources.map(libBaseName) }),
 	);
 
-	// 第 2 页
-	await page.click("#ev-older");
-	await waitForList(page, PAGE_SIZE, firstTrace1);
-	info = await listInfo(page);
-	H.eq("第 2 页 100 行", info.count, PAGE_SIZE);
-	const before2 = beforeOf(page.url());
-	H.check("第 2 页 URL 带 before=", before2.length > 0, page.url());
-	H.check("第 2 页有「较新」按钮", info.hasNewer, JSON.stringify(info));
-	const firstTrace2 = info.firstTrace;
+	// 连点「更旧」9 次 → 第 2..10 页，每次等首行 trace_id 变化（禁止固定 sleep）。
+	const uiCounts = [];
+	let prevTrace = firstTrace1;
+	let hasNewerOnPage2 = false;
+	const clickStart = Date.now();
+	for (let p = 2; p <= EXPECTED_PAGES; p++) {
+		await page.click("#ev-older");
+		await waitForList(page, PAGE_SIZE, prevTrace);
+		info = await listInfo(page);
+		uiCounts.push(info.count);
+		if (p === 2) hasNewerOnPage2 = info.hasNewer;
+		prevTrace = info.firstTrace;
+	}
+	const clickMs = Date.now() - clickStart;
+	console.log(
+		`  ↳ UI 连点「更旧」${EXPECTED_PAGES - 1} 次耗时 ${clickMs}ms（每页等首行 trace_id 变化，无固定 sleep）`,
+	);
+	H.check(
+		`连点「更旧」${EXPECTED_PAGES - 1} 次 → 第 2..10 页每页 ${PAGE_SIZE} 行`,
+		uiCounts.length === EXPECTED_PAGES - 1 && uiCounts.every((c) => c === PAGE_SIZE),
+		JSON.stringify({ counts: uiCounts, clickMs }),
+	);
+	H.check("第 2 页有「较新」按钮", hasNewerOnPage2, JSON.stringify({ hasNewerOnPage2 }));
 
-	// 第 3 页（250 条 → 最后 50 条，已到最旧）
-	await page.click("#ev-older");
-	await waitForList(page, lastPageExpected, firstTrace2);
-	info = await listInfo(page);
-	H.eq(`第 3 页 ${lastPageExpected} 行`, info.count, lastPageExpected);
-	H.check("第 3 页「更旧」按钮消失（已到最旧）", !info.hasOlder, JSON.stringify(info));
-	H.check("摘要有「已到最旧」", info.summary.includes("已到最旧"), info.summary);
-	H.check("第 3 页有「较新」按钮", info.hasNewer, JSON.stringify(info));
-	const before3 = beforeOf(page.url());
-	H.check("第 3 页 URL 带 before=", before3.length > 0, page.url());
-	const firstTrace3 = info.firstTrace;
+	// 第 10 页：满页、已到最旧、与 API 第 10 页同一窗口。
+	const page10 = await listInfo(page);
+	const edges10 = await listEdgeTraces(page);
+	const apiPage10 = pages[EXPECTED_PAGES - 1].events;
+	H.eq(`第 ${EXPECTED_PAGES} 页 ${PAGE_SIZE} 行`, page10.count, PAGE_SIZE);
+	H.check(`第 ${EXPECTED_PAGES} 页「更旧」按钮消失（已到最旧）`, !page10.hasOlder, JSON.stringify(page10));
+	H.check(`第 ${EXPECTED_PAGES} 页摘要有「已到最旧」`, page10.summary.includes("已到最旧"), page10.summary);
+	H.check(`第 ${EXPECTED_PAGES} 页有「较新」按钮`, page10.hasNewer, JSON.stringify(page10));
+	H.eq("第 10 页首行 trace_id 与 API 第 10 页首条一致", edges10.first, apiPage10[0]?.traceId);
+	H.eq("第 10 页末行 trace_id 与 API 第 10 页末条一致", edges10.last, apiPage10.at(-1)?.traceId);
+	const before10 = beforeOf(page.url());
+	H.check("第 10 页 URL 带 before=", before10.length > 0, page.url());
+	console.log(
+		`  ↳ UI 第 ${EXPECTED_PAGES} 页：行数=${page10.count} #ev-older存在=${page10.hasOlder}` +
+			` 首行 trace=${edges10.first} 末行 trace=${edges10.last} 摘要="${page10.summary}"`,
+	);
 
-	// 「较新」回退一页：行数回到 100，URL 的 before 与第 2 页一致
-	await page.click("#ev-newer");
-	await waitForList(page, PAGE_SIZE, firstTrace3);
-	info = await listInfo(page);
-	H.eq("点「较新」→ 回到 100 行", info.count, PAGE_SIZE);
-	H.eq("点「较新」→ URL before 与第 2 页一致", beforeOf(page.url()), before2);
-
-	// 再往前翻回第 3 页，然后把该 URL 直接打开（V4：刷新/分享后位置不丢）
-	await page.click("#ev-older");
-	await waitForList(page, lastPageExpected, firstTrace2);
-	await page.goto(base + "/events.html?before=" + encodeURIComponent(before3), {
+	// V4：把第 10 页的 URL 直接打开（刷新/分享）→ 仍在同一窗口。
+	await page.goto(base + "/events.html?before=" + encodeURIComponent(before10), {
 		waitUntil: "load",
 		timeout: 20000,
 	});
 	await H.waitForAppReady(page, "workspace");
-	await waitForList(page, lastPageExpected);
+	await waitForList(page, PAGE_SIZE);
 	info = await listInfo(page);
-	H.eq("直接打开 ?before= 的第 3 页 URL → 50 行", info.count, lastPageExpected);
-	H.eq("刷新后首行 trace_id 不变（同一窗口，V4）", info.firstTrace, firstTrace3);
+	H.eq("直接打开第 10 页 URL → 100 行", info.count, PAGE_SIZE);
+	H.eq("刷新后首行 trace_id 不变（第 10 页同一窗口，V4）", info.firstTrace, edges10.first);
 	H.check("刷新后「较新」按钮隐藏（游标栈为空，契约 §3.4）", !info.hasNewer, JSON.stringify(info));
 	H.check("刷新后仍显示「已到最旧」", info.summary.includes("已到最旧"), info.summary);
 
@@ -413,6 +553,11 @@ async function main() {
 	await page.goto(base + "/index.html", { waitUntil: "load", timeout: 20000 });
 	await H.waitForAppReady(page, "workspace");
 	const indexResources = await resourceNames(page);
+	H.check(
+		"index.html resource 清单非空（否定断言的前置守卫，防真空通过）",
+		indexResources.length > 5,
+		JSON.stringify({ n: indexResources.length }),
+	);
 	const indexLoaded = loadedGraphLibs(indexResources);
 	H.check(
 		"index.html 不加载四个图脚本（V5：-150.7KB / -4 请求）",
@@ -468,16 +613,57 @@ async function main() {
 	H.check("trace 页渲染出该 traceId", traceBody.includes(traceId), traceBody.slice(0, 160));
 	H.check("trace 页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
 
-	// ---------- E. #236 limit 硬顶（需要 ≥500 行，所以排在 B/C 之后） ----------
-	console.log("--- E. /v1/events limit 硬顶与生效值回显 ---");
-	insertSyntheticEvents(server.dbPath, nsId, {
-		count: BOOST_EVENTS,
-		firstIndex: TOTAL_EVENTS, // 编号继续递增
-		newestAt: nowSec - 1000, // 比现有最旧的那条还旧，保持全局严格递减
+	// V5 的另一半：#234 改的是两页（trace + source）。source.html 也必须在图脚本上齐全。
+	errs.length = 0;
+	await page.goto(base + "/source.html?id=" + encodeURIComponent(sourceId), {
+		waitUntil: "load",
+		timeout: 20000,
 	});
-	const boosted = streamRows(server.dbPath, nsId).length;
-	H.eq(`撑到 ${TOTAL_EVENTS + BOOST_EVENTS} 条（limit=501 需要库里 >500）`, boosted, TOTAL_EVENTS + BOOST_EVENTS);
+	await H.waitForAppReady(page, "workspace");
+	await page
+		.waitForFunction(() => (document.getElementById("head-name") || {}).textContent?.trim(), null, {
+			timeout: 10000,
+		})
+		.catch(() => {});
+	const sourceResources = await resourceNames(page);
+	H.check(
+		"source.html resource 清单非空（否定/正向断言的前置守卫）",
+		sourceResources.length > 5,
+		JSON.stringify({ n: sourceResources.length }),
+	);
+	const sourceLoaded = loadedGraphLibs(sourceResources);
+	H.check(
+		"source.html 四个图脚本都被请求了",
+		sourceLoaded.length === GRAPH_LIBS.length,
+		JSON.stringify({ loaded: sourceLoaded, resources: sourceResources.map(libBaseName) }),
+	);
+	const sourceLibOrder = (
+		await page.evaluate(() =>
+			[...document.querySelectorAll("script[src]")].map((s) => s.getAttribute("src")),
+		)
+	)
+		.map((src) => libBaseName(src || ""))
+		.filter((b) => b.includes("dagre") || b === "flograph.js" || b === "graphs.js" || b === "traceview.js");
+	H.check(
+		"source.html 图脚本顺序 dagre→flograph→graphs→traceview",
+		JSON.stringify(sourceLibOrder) === JSON.stringify(GRAPH_LIBS),
+		JSON.stringify({ sourceLibOrder }),
+	);
+	const sourceGlobals = await page.evaluate(() => ({
+		graphs: typeof window.AnotifyGraphs,
+		flow: typeof window.FlowGraph,
+		name: (document.getElementById("head-name") || {}).textContent?.trim() || "",
+	}));
+	H.check(
+		"source 页图脚本真的执行了（AnotifyGraphs / FlowGraph 就绪）",
+		sourceGlobals.graphs === "object" && sourceGlobals.flow === "object",
+		JSON.stringify(sourceGlobals),
+	);
+	H.check("source 页渲染出该源名称", sourceGlobals.name.includes("e2e.paging.cron"), JSON.stringify(sourceGlobals));
+	H.check("source 页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
 
+	// ---------- E. #236 limit 硬顶（库里 1000 条 > 500，天然满足） ----------
+	console.log("--- E. /v1/events limit 硬顶与生效值回显 ---");
 	// 机器入口：Bearer API Key（notify:send），namespaceId 显式带上。
 	const machine = (limit) =>
 		H.req(
