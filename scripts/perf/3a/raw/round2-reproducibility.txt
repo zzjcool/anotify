@@ -1,0 +1,5 @@
+round2-worktree-binary=7b9f69cd7162c258a8a3841ecaf582332186ee3e57a420f357328306c6c399cb
+round2-archive-binary=7b9f69cd7162c258a8a3841ecaf582332186ee3e57a420f357328306c6c399cb
+git-status-porcelain:
+?? .pi-legion/
+?? scripts/perf/3a/

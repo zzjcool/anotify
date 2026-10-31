@@ -1,0 +1,23 @@
+stat1_tasks=7
+== shape=none
+# SQL: SELECT id, namespace_id, trace_id, parent_task_id, path, capability_id, capability, 	version, params, status, node_id, instance_id, lease_until, attempts, 	out, reported, summary, artifacts, error, cap_hash, graph_id, 	created_at, started_at, finished_at, not_before FROM tasks WHERE namespace_id = 'ns_BByjB73QYJMbGKjciq' ORDER BY created_at DESC, id DESC LIMIT 200
+QUERY PLAN
+`--SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)
+latency_ms	none	median=3.523	values= 0.003585 0.003723 0.003224 0.003872 0.003462 0.004014 0.003290 0.003329 0.002823 0.003268 0.003329 0.002860 0.002990 0.005491 0.006109 0.003708 0.004418 0.003903 0.002860 0.004287
+== shape=pending
+# SQL: SELECT id, namespace_id, trace_id, parent_task_id, path, capability_id, capability, 	version, params, status, node_id, instance_id, lease_until, attempts, 	out, reported, summary, artifacts, error, cap_hash, graph_id, 	created_at, started_at, finished_at, not_before FROM tasks WHERE namespace_id = 'ns_BByjB73QYJMbGKjciq' AND status = 'pending' ORDER BY created_at DESC, id DESC LIMIT 200
+QUERY PLAN
+`--SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)
+latency_ms	pending	median=5.205	values= 0.004266 0.003226 0.003708 0.003490 0.003928 0.004084 0.005747 0.005422 0.003645 0.006209 0.006048 0.005652 0.005675 0.005433 0.005502 0.003743 0.005640 0.004223 0.005850 0.004988
+== shape=canceled
+# SQL: SELECT id, namespace_id, trace_id, parent_task_id, path, capability_id, capability, 	version, params, status, node_id, instance_id, lease_until, attempts, 	out, reported, summary, artifacts, error, cap_hash, graph_id, 	created_at, started_at, finished_at, not_before FROM tasks WHERE namespace_id = 'ns_BByjB73QYJMbGKjciq' AND status = 'canceled' ORDER BY created_at DESC, id DESC LIMIT 200
+QUERY PLAN
+|--SEARCH tasks USING INDEX idx_tasks_lease (status=?)
+`--USE TEMP B-TREE FOR ORDER BY
+latency_ms	canceled	median=0.994	values= 0.000997 0.001055 0.001377 0.000905 0.001117 0.000916 0.001365 0.000844 0.000976 0.001190 0.000930 0.000889 0.001015 0.001215 0.000894 0.003019 0.001151 0.000954 0.000991 0.000854
+== shape=traceId
+# SQL: SELECT id, namespace_id, trace_id, parent_task_id, path, capability_id, capability, 	version, params, status, node_id, instance_id, lease_until, attempts, 	out, reported, summary, artifacts, error, cap_hash, graph_id, 	created_at, started_at, finished_at, not_before FROM tasks WHERE namespace_id = 'ns_BByjB73QYJMbGKjciq' AND trace_id = 'tr_0' ORDER BY created_at DESC, id DESC LIMIT 200
+QUERY PLAN
+|--SEARCH tasks USING INDEX idx_tasks_trace (namespace_id=? AND trace_id=?)
+`--USE TEMP B-TREE FOR ORDER BY
+latency_ms	traceId	median=1.236	values= 0.001120 0.001182 0.001255 0.001242 0.001220 0.001012 0.001300 0.001328 0.001035 0.000983 0.001315 0.001342 0.001088 0.001493 0.001230 0.001308 0.001127 0.001449 0.001123 0.001362

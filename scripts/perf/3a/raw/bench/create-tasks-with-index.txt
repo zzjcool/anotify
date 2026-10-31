@@ -1,0 +1,21 @@
+goos: linux
+goarch: amd64
+pkg: github.com/zzjcool/anotify/internal/store
+cpu: AMD Ryzen 5 4600H with Radeon Graphics         
+BenchmarkCreateTasks/n=1-4         	   10000	    106331 ns/op	    2581 B/op	      44 allocs/op
+BenchmarkCreateTasks/n=1-4         	   10000	    115271 ns/op	    2579 B/op	      43 allocs/op
+BenchmarkCreateTasks/n=1-4         	   10000	    114450 ns/op	    2579 B/op	      43 allocs/op
+BenchmarkCreateTasks/n=1-4         	   10000	    118144 ns/op	    2577 B/op	      43 allocs/op
+BenchmarkCreateTasks/n=1-4         	    9760	    124901 ns/op	    2581 B/op	      43 allocs/op
+BenchmarkCreateTasks/n=5-4         	    3175	    378865 ns/op	   11321 B/op	     183 allocs/op
+BenchmarkCreateTasks/n=5-4         	    2624	    412060 ns/op	   11321 B/op	     183 allocs/op
+BenchmarkCreateTasks/n=5-4         	    2582	    456701 ns/op	   11323 B/op	     184 allocs/op
+BenchmarkCreateTasks/n=5-4         	    2656	    472717 ns/op	   11321 B/op	     183 allocs/op
+BenchmarkCreateTasks/n=5-4         	    2858	    484040 ns/op	   11323 B/op	     184 allocs/op
+BenchmarkCreateTasks/n=20-4        	     878	   1531032 ns/op	   44095 B/op	     708 allocs/op
+BenchmarkCreateTasks/n=20-4        	     739	   1666030 ns/op	   44145 B/op	     708 allocs/op
+BenchmarkCreateTasks/n=20-4        	     661	   1700233 ns/op	   44211 B/op	     708 allocs/op
+BenchmarkCreateTasks/n=20-4        	     630	   1926952 ns/op	   44157 B/op	     708 allocs/op
+BenchmarkCreateTasks/n=20-4        	     633	   1908433 ns/op	   44100 B/op	     708 allocs/op
+PASS
+ok  	github.com/zzjcool/anotify/internal/store	22.138s

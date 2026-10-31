@@ -1,0 +1,7 @@
+config=C（索引 + 语句缓存 + 驱动升级）
+git rev-parse HEAD=215718df6f2ebcfeeafc95e79f8b1d42b5d0035e
+worktree-tree-fingerprint=853627d6ca0a4fbc04eaf272537f131dbd0f29bb37425c3ebda294312d76a58b  # sha256(HEAD + git diff + 每个未跟踪文件内容)
+driver-in-go.mod=modernc.org/sqlite v1.45.0  # A/B 是 v1.34.5
+binary=/tmp/perf-3a/bin/anotify-after
+binary-sha256=706143420d4f7dbc3cc24b043c1c3fca1ed833ed6d7522b7c1d4beb7658d4627
+linked-driver=v1.45.0

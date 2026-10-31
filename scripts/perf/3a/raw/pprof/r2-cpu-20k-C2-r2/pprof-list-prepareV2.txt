@@ -1,0 +1,28 @@
+Total: 70.48s
+ROUTINE ======================== modernc.org/sqlite.(*conn).prepareV2 in modernc.org/sqlite@v1.45.0/conn.go
+         0      200ms (flat, cum)  0.28% of Total
+         .          .    506:func (c *conn) prepareV2(zSQL *uintptr) (pstmt uintptr, err error) {
+         .          .    507:	var ppstmt, pptail uintptr
+         .          .    508:
+         .          .    509:	defer func() {
+         .          .    510:		c.free(ppstmt)
+         .          .    511:		c.free(pptail)
+         .          .    512:	}()
+         .          .    513:
+         .          .    514:	if ppstmt, err = c.malloc(int(ptrSize)); err != nil {
+         .          .    515:		return 0, err
+         .          .    516:	}
+         .          .    517:
+         .          .    518:	if pptail, err = c.malloc(int(ptrSize)); err != nil {
+         .          .    519:		return 0, err
+         .          .    520:	}
+         .          .    521:
+         .          .    522:	for {
+         .          .    523:		// https://gitlab.com/cznic/sqlite/-/issues/236
+         .          .    524:		// trc("Xsqlite3_prepare_v2(`%s`)", libc.GoString(*zSQL))
+         .      200ms    525:		switch rc := sqlite3.Xsqlite3_prepare_v2(c.tls, c.db, *zSQL, -1, ppstmt, pptail); rc {
+         .          .    526:		case sqlite3.SQLITE_OK:
+         .          .    527:			*zSQL = *(*uintptr)(unsafe.Pointer(pptail))
+         .          .    528:			return *(*uintptr)(unsafe.Pointer(ppstmt)), nil
+         .          .    529:		case sqliteLockedSharedcache:
+         .          .    530:			if err := c.retry(0); err != nil {

@@ -1,0 +1,39 @@
+File: anotify-after
+Build ID: 58fa2609fb7363dbcd43743bab8e8806b93aec27
+Type: cpu
+Time: 2026-11-01 02:02:13 CST
+Duration: 20.15s, Total samples = 69.61s (345.54%)
+Showing nodes accounting for 38.09s, 54.72% of 69.61s total
+Dropped 912 nodes (cum <= 0.35s)
+Showing top 30 nodes out of 217
+      flat  flat%   sum%        cum   cum%
+     4.75s  6.82%  6.82%     11.40s 16.38%  modernc.org/sqlite/lib._sqlite3VdbeExec
+     2.82s  4.05% 10.87%      4.36s  6.26%  modernc.org/libc.Xpthread_mutex_unlock
+     2.52s  3.62% 14.50%      2.52s  3.62%  internal/runtime/syscall.Syscall6
+     2.06s  2.96% 17.45%      9.14s 13.13%  encoding/json.structEncoder.encode
+     2.03s  2.92% 20.37%      2.54s  3.65%  internal/sync.(*Mutex).Lock (inline)
+     1.84s  2.64% 23.01%      4.13s  5.93%  database/sql.convertAssignRows
+     1.76s  2.53% 25.54%      4.07s  5.85%  modernc.org/libc.Xpthread_mutex_lock
+     1.59s  2.28% 27.83%      1.61s  2.31%  internal/sync.(*Mutex).Unlock (inline)
+     1.47s  2.11% 29.94%     10.93s 15.70%  runtime.mallocgc
+     1.45s  2.08% 32.02%      1.62s  2.33%  encoding/json.appendString[go.shape.string]
+     1.34s  1.93% 33.95%      1.34s  1.93%  runtime.nextFreeFast (inline)
+     1.30s  1.87% 35.81%      1.30s  1.87%  runtime.memmove
+     1.30s  1.87% 37.68%      1.30s  1.87%  runtime.nanotime (inline)
+     1.26s  1.81% 39.49%      2.41s  3.46%  runtime.mallocgcTiny
+     1.02s  1.47% 40.96%      1.02s  1.47%  runtime.memclrNoHeapPointers
+     0.94s  1.35% 42.31%      4.99s  7.17%  runtime.mallocgcSmallScanNoHeader
+     0.80s  1.15% 43.46%     29.67s 42.62%  modernc.org/sqlite.(*rows).Next
+     0.80s  1.15% 44.61%      0.81s  1.16%  strings.ToUpper
+     0.77s  1.11% 45.71%      0.78s  1.12%  modernc.org/libc.Xmemcpy
+     0.77s  1.11% 46.82%      2.28s  3.28%  runtime.scanobject
+     0.70s  1.01% 47.82%      0.75s  1.08%  reflect.Value.Field
+     0.70s  1.01% 48.83%      0.72s  1.03%  runtime.(*mspan).writeHeapBitsSmall
+     0.63s  0.91% 49.73%      1.49s  2.14%  bytes.(*Buffer).WriteString
+     0.63s  0.91% 50.64%      0.95s  1.36%  runtime.findObject
+     0.51s  0.73% 51.37%      3.61s  5.19%  modernc.org/sqlite/lib._columnMem
+     0.50s  0.72% 52.09%      0.50s  0.72%  time.runtimeNow
+     0.48s  0.69% 52.78%      3.37s  4.84%  runtime.slicebytetostring
+     0.47s  0.68% 53.45%      2.97s  4.27%  modernc.org/sqlite/lib._sqlite3BtreeTableMoveto
+     0.44s  0.63% 54.09%      4.57s  6.57%  database/sql.(*Rows).scanLocked
+     0.44s  0.63% 54.72%      4.72s  6.78%  modernc.org/sqlite/lib.Xsqlite3_mutex_enter (inline)

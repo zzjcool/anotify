@@ -1,0 +1,38 @@
+Total: 73.16s
+ROUTINE ======================== modernc.org/sqlite.(*conn).prepareV2 in modernc.org/sqlite@v1.34.5/sqlite.go
+         0      1.30s (flat, cum)  1.78% of Total
+         .          .   1299:func (c *conn) prepareV2(zSQL *uintptr) (pstmt uintptr, err error) {
+         .          .   1300:	var ppstmt, pptail uintptr
+         .          .   1301:
+         .          .   1302:	defer func() {
+         .          .   1303:		c.free(ppstmt)
+         .          .   1304:		c.free(pptail)
+         .          .   1305:	}()
+         .          .   1306:
+         .          .   1307:	if ppstmt, err = c.malloc(int(ptrSize)); err != nil {
+         .          .   1308:		return 0, err
+         .          .   1309:	}
+         .          .   1310:
+         .          .   1311:	if pptail, err = c.malloc(int(ptrSize)); err != nil {
+         .          .   1312:		return 0, err
+         .          .   1313:	}
+         .          .   1314:
+         .          .   1315:	for {
+         .      1.29s   1316:		switch rc := sqlite3.Xsqlite3_prepare_v2(c.tls, c.db, *zSQL, -1, ppstmt, pptail); rc {
+         .          .   1317:		case sqlite3.SQLITE_OK:
+         .          .   1318:			*zSQL = *(*uintptr)(unsafe.Pointer(pptail))
+         .       10ms   1319:			return *(*uintptr)(unsafe.Pointer(ppstmt)), nil
+         .          .   1320:		case sqliteLockedSharedcache:
+         .          .   1321:			if err := c.retry(0); err != nil {
+         .          .   1322:				return 0, err
+         .          .   1323:			}
+         .          .   1324:		default:
+ROUTINE ======================== modernc.org/sqlite.(*conn).prepareV2.func1 in modernc.org/sqlite@v1.34.5/sqlite.go
+         0       10ms (flat, cum) 0.014% of Total
+         .          .   1302:	defer func() {
+         .       10ms   1303:		c.free(ppstmt)
+         .          .   1304:		c.free(pptail)
+         .          .   1305:	}()
+         .          .   1306:
+         .          .   1307:	if ppstmt, err = c.malloc(int(ptrSize)); err != nil {
+         .          .   1308:		return 0, err
