@@ -434,21 +434,31 @@ async function main() {
 	H.eq("坏游标 error 文案", badCursor.json?.error, "invalid before cursor");
 
 	// V2（强形态）：库里 1000 条时，控制台端点（会话 Cookie）limit=1000 真的钳到 500，
-	// 而且给的是**最新 500 条**（首尾 id 对齐 expectedIds 前缀）—— 不是「库里不足 500
+	// 而且给的是**最新 500 条**（整段与 expectedIds 前缀**逐条**相等）—— 不是「库里不足 500
 	// 所以看起来对」。
+	//
+	// 为什么逐条而不是只比首尾：首尾对齐只能证明首行/末行在期望位置上，中间被换序、
+	// 被插进别的行、或重复了同一条都发现不了。断言名/提交信息说的是「最新 500 条」，
+	// 那就得整段比。
 	const consoleFull = await fetchPage("limit=1000&namespaceId=" + encodeURIComponent(nsId));
 	H.eq("console limit=1000 → 500 条（硬顶）", consoleFull.json?.events?.length ?? -1, 500);
 	H.eq("console limit=1000 回显生效值", consoleFull.json?.limit, 500);
+	const consoleFullIds = (consoleFull.json?.events || []).map((e) => e.id);
+	const expectedTop500 = expectedIds.slice(0, 500);
+	const top500Diff = firstDiff(consoleFullIds, expectedTop500);
 	H.check(
-		"V2 强形态：钳到的最新 500 条 == expectedIds[0..499]（首尾 id 逐条对齐）",
-		consoleFull.json?.events?.[0]?.id === expectedIds[0] &&
-			consoleFull.json?.events?.at(-1)?.id === expectedIds[499],
-		JSON.stringify({
-			first: consoleFull.json?.events?.[0]?.id,
-			last: consoleFull.json?.events?.at(-1)?.id,
-			expectedFirst: expectedIds[0],
-			expectedLast: expectedIds[499],
-		}),
+		"V2 强形态：钳到的最新 500 条与 expectedIds[0..499] 逐条相等（整段比较，不只是首尾）",
+		top500Diff === null,
+		JSON.stringify(
+			top500Diff ?? {
+				rows: consoleFullIds.length,
+				first: consoleFullIds[0],
+				last: consoleFullIds.at(-1),
+			},
+		),
+	);
+	console.log(
+		`  ↳ console limit=1000：钳到 ${consoleFullIds.length} 条 首 id=${consoleFullIds[0]} 末 id=${consoleFullIds.at(-1)}`,
 	);
 
 	// ---------- C/D. Chrome：events 页走满 10 页 + 资源分层 ----------

@@ -195,7 +195,15 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+        # 机器入口的 limit **没有** minimum：实现是 `n > 0` 才采纳、否则回 100
+        # （见 internal/api/events.go 的 list），`limit=0` / 负数 = 回退默认值，不是夹到 1。
+        # 所以这里不能写 minimum: 1 —— 那会把一个服务端接受、且回显 100 的请求标成非法。
+        - name: limit
+          in: query
+          description: |
+            缺省 / 非整数 / `<= 0` → `100`（**回退默认值**，不是夹到下限 1）；
+            `> 500` → 钳到 `500`。响应回显生效值。
+          schema: { type: integer, default: 100, maximum: 500 }
       responses:
         "200":
           description: '事件列表（空时 `events: []`）'
@@ -384,7 +392,11 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+        # minimum: 1 是**真**的机器可读约束：实现是 intParam(..., 100, 1, 500)，
+        # `limit <= 0` 会被夹到 1 并回显 1（不是回退默认 100）。
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 500 }
         - name: before
           in: query
           schema: { type: string }
