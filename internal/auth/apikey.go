@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 
@@ -34,13 +35,49 @@ const (
 const keyRandomLen = 24
 
 // KeyManager 管理 API Key 的签发与校验。
+//
+// 为什么要有缓存（issue #227）：ValidateKey 原始路径每请求一次 DB 前缀查询 + 一次
+// argon2id(m=64MB,t=1,p=4) 重算 + 一次写事务，4 核上把 Bearer 路径压在 ~35 RPS、
+// -c 8 时 RSS ≈1GB。已验证结论在 TTL 内不可能变（被 revoke 走 RevokeKey 会同步失效），
+// 所以可以安全复用。
 type KeyManager struct {
 	db *store.DB
+	// cacheTTL 是缓存条目存活时间；与 cache 一起由构造器决定是否启用缓存。
+	cacheTTL time.Duration
+	// cache 为 nil 表示缓存关闭（所有请求走完整校验）。用 nil 而不是空的 cache 对象，
+	// 让「关缓存」在热路径上只是一次指针比较，不需要额外布尔字段，也不可能被误用。
+	cache *keyCache
 }
 
-// NewKeyManager 构造 Key 管理器。
+// NewKeyManager 构造 Key 管理器（默认 TTL，缓存开启）。
+// 签名保持不变：调用点（webauthn.go / devseed）不需要改。
 func NewKeyManager(db *store.DB) *KeyManager {
-	return &KeyManager{db: db}
+	return NewKeyManagerTuned(db, defaultKeyCacheTTL)
+}
+
+// NewKeyManagerTuned 构造一个可调缓存 TTL 的 Key 管理器。
+//
+// cacheTTL < 0 表示**关闭缓存**（所有请求走完整校验，含每请求写 last_used_at，
+// 即完全保持旧行为）；cacheTTL == 0 视作「未指定」，回落到默认 TTL——这与 env
+// 语义对齐（ANOTIFY_APIKEY_CACHE_TTL 的 0/空 = 用默认，-1/off = 关），
+// 也让接线层漏做归一化时不会意外把性能优化关掉。
+func NewKeyManagerTuned(db *store.DB, cacheTTL time.Duration) *KeyManager {
+	if cacheTTL == 0 {
+		cacheTTL = defaultKeyCacheTTL
+	}
+	m := &KeyManager{db: db, cacheTTL: cacheTTL}
+	if cacheTTL > 0 {
+		cache, err := newKeyCache()
+		if err != nil {
+			// 取不到 HMAC 密钥就**关缓存**，绝不退化到裸哈希：
+			// 退化是静默的安全降级，关缓存只是少了优化。
+			logCacheDisabled(err)
+			m.cacheTTL = -1
+		} else {
+			m.cache = cache
+		}
+	}
+	return m
 }
 
 // scopeLabel 从 scopes 推断 Key 的用途标签（用于生成 ant_<label>_ 前缀）。
@@ -128,14 +165,47 @@ func (m *KeyManager) CreateKey(userID, name string, scopes []string) (plaintext 
 }
 
 // ValidateKey 校验一个明文 Key，返回所属 userID 与 scopes。
-// 采用前缀定位 + argon2id 常量时间比对。校验失败统一返回错误（不区分原因以防枚举）。
+//
+// 判定顺序是安全边界，不允许调换：
+//  1. 没有 ant_ 前缀 → 直接拒绝，且**不进缓存**（连 HMAC 都不算，避免拿垃圾输入打表）；
+//  2. 缓存键 = HMAC(进程密钥, 前缀‖0x00‖明文) → 查表，命中且未过期、generation 匹配
+//     → **再做一次常量时间比对**（verifier）通过才放行；
+//  3. 未命中 → 原路径：前缀查记录 → !Enabled 拒绝 → verifyKey(argon2 常量时间比对)
+//     → 成功才写缓存。
+//
+// **负结果一律不缓存**（查不到 / 校验失败 / 已停用）：否则攻击者拿随机 key 喷洒
+// 就能把进程内存顶到上限，还顺手把热 key 挤出有效集合。
+// 校验失败统一返回错误（不区分原因以防枚举）。
 func (m *KeyManager) ValidateKey(plaintext string) (userID string, scopes []string, err error) {
 	if !strings.HasPrefix(plaintext, "ant_") {
 		return "", nil, errors.New("auth: key 无效")
 	}
-	prefix := plaintext
-	if len(prefix) > 16 {
-		prefix = prefix[:16]
+	now := time.Now()
+	prefix := keyPrefixOf(plaintext)
+	// digest 与 genAtRead 必须提到 cache 判断之外：未命中路径写缓存时要用它们。
+	// **genAtRead 必须是读 DB 之前的快照**：如果读库之后才取 gen，则「读库 → revoke →
+	// 写缓存」这个窗口里写进去的条目会带着 revoke 之前的状态活到 TTL，脏读窗口
+	// 就重新出现了。
+	var digest [32]byte
+	var genAtRead uint64
+	if m.cache != nil {
+		digest = m.cache.digestOf(prefix, plaintext)
+		genAtRead = m.cache.generation()
+		if e := m.cache.lookup(digest, now); e != nil {
+			// 命中不等于放行：必须再过一次定长常量时间比对。
+			// 这一步把「map 里拿到一条记录」与「这条记录确实属于这次请求」分开验证，
+			// 代价是一次 HMAC（~300ns），相对 argon2 的 31ms 可以忽略。
+			got := m.cache.verifierOf(plaintext)
+			if constTimeEqual(got[:], e.verifier[:]) {
+				m.cache.hits.Add(1)
+				m.touchThrottled(e, now)
+				return e.userID, cloneScopes(e.scopes), nil
+			}
+			// 条目与请求不匹配（碰撞 / 写坏 / 竞态）：丢弃并按未命中处理，
+			// 绝不能「反正 map 说命中就放行」。
+			m.cache.forget(digest)
+		}
+		m.cache.misses.Add(1)
 	}
 	rec, err := m.db.GetAPIKeyByPrefix(prefix)
 	if err != nil {
@@ -148,9 +218,73 @@ func (m *KeyManager) ValidateKey(plaintext string) (userID string, scopes []stri
 	if err != nil || !ok {
 		return "", nil, errors.New("auth: key 无效")
 	}
-	// 刷新最近使用时间（忽略错误）。
+	// 刷新最近使用时间（忽略错误）。这里是完整校验路径，写一次是原行为。
 	_ = m.db.TouchAPIKey(rec.ID, store.Now())
+	if m.cache != nil {
+		// gen 必须是**读 DB 之前**的快照（见函数开头 genAtRead），否则「读库之后、
+		// 写缓存之前」发生的 revoke 会被这条条目盖过去，脏读窗口重新出现。
+		e := &keyEntry{
+			userID:    rec.UserID,
+			scopes:    cloneScopes(rec.Scopes), // 缓存自己留一份副本
+			keyID:     rec.ID,
+			expiresAt: now.Add(m.cacheTTL),
+			gen:       genAtRead,
+			verifier:  m.cache.verifierOf(plaintext),
+		}
+		e.lastTouched.Store(now.UnixNano())
+		m.cache.put(digest, e, now) // 容量满时内部放弃写入，不影响本次鉴权
+	}
+	// 未命中路径返回 DB 解码出的新切片（与缓存里的副本互不影响）。
 	return rec.UserID, rec.Scopes, nil
+}
+
+// RevokeKey 停用一条 API Key，并在 DB 写成功之后**同步**清掉它的缓存条目。
+//
+// 顺序不能反：DB 失败却清了缓存，只是白丢一次性能；反之「清了缓存但 DB 没改」
+// 会让缓存与 DB 分叉（当前进程里看起来失效、重启后又活了）。所以先写库，
+// 成功才失效。失效做两件事：
+//   - 按 keyID 定向删（把这条 key 的条目立刻拿掉）；
+//   - bump 全局 generation（让**其它**可能读到旧状态的条目一起作废）。
+//
+// 第二件事是为了一个具体的坑：ValidateKey 是「先读 DB 后写缓存」，如果 revoke
+// 恰好落在某个并发请求的两次操作之间，那条条目会带着 revoke 之前的状态活到 TTL 结束。
+// generation 让这种条目在下一��校验时立刻变成未命中（见 ValidateKey 的 genAtRead）。
+func (m *KeyManager) RevokeKey(id string) error {
+	if err := m.db.RevokeAPIKey(id); err != nil {
+		return err
+	}
+	if m.cache != nil {
+		m.cache.bumpGeneration()
+		m.cache.invalidateKeyID(id)
+	}
+	return nil
+}
+
+// BumpGeneration 让整表缓存立刻失效。
+//
+// 给「不经过 RevokeKey 的写路径」用：改 scopes、删 key、手工改库后想立刻生效，
+// 调它比等 TTL 干净。它不碰 DB，只让本进程的缓存作废（下一次请求回源）。
+func (m *KeyManager) BumpGeneration() {
+	if m.cache != nil {
+		m.cache.bumpGeneration()
+	}
+}
+
+// InvalidateAll 清空已验证结果缓存（运维/测试用；例如批量改库后强制回源）。
+func (m *KeyManager) InvalidateAll() {
+	if m.cache != nil {
+		m.cache.bumpGeneration()
+		m.cache.invalidateAll()
+	}
+}
+
+// CacheStats 返回当前缓存条目数（含尚未惰性清扫的过期项）与累计命中/未命中次数。
+// 缓存关闭时全为 0。
+func (m *KeyManager) CacheStats() (entries int, hits, misses uint64) {
+	if m.cache == nil {
+		return 0, 0, 0
+	}
+	return m.cache.stats()
 }
 
 // HasScope 判断 scopes 是否包含目标 scope。
