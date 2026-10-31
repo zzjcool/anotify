@@ -152,6 +152,17 @@
 <div id="toast" class="toast card rounded-xl px-4 py-2 text-sm"></div>
 {{end}}
 
+{{define "graph-libs"}}
+    <!-- 图渲染四件套：只在本页与 trace.html 加载（base.html 里这个槽位默认是空的）。
+         全部 defer —— 本页的绘图调用在 load() 里 await 完 fetch 后的 requestAnimationFrame 中
+         （renderFlowCard），远晚于 defer 的执行时机，所以库一定已就绪。
+         顺序不能改：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView。 -->
+    <script defer src="/vendor/dagre.min.js"></script>
+    <script defer src="/flograph.js"></script>
+    <script defer src="/graphs.js"></script>
+    <script defer src="/traceview.js"></script>
+{{end}}
+
 {{define "script"}}
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
