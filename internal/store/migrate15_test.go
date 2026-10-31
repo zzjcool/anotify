@@ -309,7 +309,10 @@ func indexDDL(t *testing.T, db *DB, index string) string {
 }
 
 // schemaShape 把库的结构拉平成 `type|name|tbl_name|ddl` 的排序切片
-// （排除 sqlite_ 内部对象：sqlite_autoindex_* / sqlite_sequence 等由实现决定，不是 schema）。
+// （排除 sqlite_ 内部对象：sqlite_autoindex_* / sqlite_sequence 等。前者的形状由表 DDL 里的
+//
+//	PK/UNIQUE 唯一决定、后者只是一个计数器表，都不能被迁移直接改写，所以不参与本轮比对——
+//	它们的差异会以「表 DDL 不同」的形式暴露，仍在门禁覆盖内）。
 func schemaShape(t *testing.T, db *DB) []string {
 	t.Helper()
 	rows, err := db.Query(`SELECT type, name, tbl_name, coalesce(sql, '')

@@ -179,6 +179,11 @@ func TestPoolWriteTxIsImmediateAndDoesNotBlockReaders(t *testing.T) {
 	defer func() { _ = tx.Rollback() }()
 
 	// ① 读者不受写锁影响。
+	//
+	// 这条断言能成立的前提是**池 > 1**（上面已经 t.Setenv 钉住默认池）：池=1 时读者拿不到
+	// 自己的连接，红的原因会是「连接被占」而不是「SQLite 读写互斥」。也就是说它只证明
+	// WAL 的「写不挡读」，不证明 `_txlock=immediate` 生效（后者由 ② 与
+	// TestPoolConcurrentWritesNoLockErrors 负责）。
 	readCtx, cancelRead := context.WithTimeout(ctx, 3*time.Second)
 	defer cancelRead()
 	var n int
