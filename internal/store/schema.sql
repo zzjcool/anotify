@@ -671,3 +671,37 @@ CREATE INDEX IF NOT EXISTS idx_tasks_ns_created ON tasks(namespace_id, created_a
 --      统计本身属于「运行期数据」而不是「schema 形状」，两个库的统计本来就可能不同
 --      （行数不同），把它算进形状比对反而是错的。
 ANALYZE tasks;
+
+-- +migration 17 pending_backlog_index
+-- #228 派发背压：信号是「最老的 pending 任务等了多久」
+-- （store.OldestPendingCreatedAt → `SELECT MIN(created_at) FROM tasks WHERE status='pending'`）。
+--
+-- 为什么必须专门建这条**部分**索引（不是「顺手加一条」）：
+--   无本索引时那条 MIN() 的计划是
+--     SEARCH tasks USING INDEX idx_tasks_lease (status=?)
+--   ——「按 status 取出全部 pending 行，再逐行回表取 created_at」。
+--   **积压越多这条查询越贵，正好在最需要它的时候最贵**：背压信号只在积压时才重要，
+--   而它的成本恰与积压量线性相关——信号本身会先一步拖垮要救的那个进程。
+--
+--   部分索引 `WHERE status='pending'` 只覆盖 pending 行（终态行不进索引，体积只随积压量增长），
+--   首列就是 MIN() 的目标列 created_at，于是退化成一次「索引最左端 seek」：
+--   O(log n)，成本与积压行数无关。
+--
+-- 不写 Go hook（对比迁移 15 的 migrateEdgeLookupIndex）：idx_tasks_pending_created_at
+-- 是本批**新造的名字**，任何历史库（≤ v16）里都不可能存在，也就没有「名字撞上但列/谓词不对」
+-- 的漂移；`IF NOT EXISTS` 已覆盖「同一版本重试」的幂等要求（同一条语句跑第二遍是 no-op）。
+--
+-- 统计（实测，不是推测）：SQLite 的 min/max 优化要看到**本索引自己的** sqlite_stat1 条目
+-- 才会选它；没有条目时它宁可选 idx_tasks_lease 的 `status=?` seek（= 本块要消掉的那条坏计划）。
+-- 本块没有（也不该有）Go hook，而迁移 16 的 `ANALYZE tasks` 跑在本块**之前**、写不出本索引的
+-- 条目——所以「条目谁来补」必须写在这里，否则大库升级后这条索引就是死的：
+--   · 老库升级：`Open` 在迁移**之后**还会跑 `PRAGMA optimize=0x2`，实测把
+--     `tasks.idx_tasks_pending_created_at` 的 stat1 条目补了出来（v16 库 + 200 行 → 升级后
+--     EQP 立刻变成 `SEARCH tasks USING COVERING INDEX idx_tasks_pending_created_at`）。
+--   · 全新库：本块与迁移 16 的 ANALYZE 都在**空表**上跑（空表 ANALYZE 一行不写），所以
+--     「灌满数据但还没重开」的那个窗口里规划器仍是盲的（实测走 idx_tasks_lease），
+--     下一次 `Open` 补上条目后生效。
+-- 两条路径都有用例钉住：pending_backlog_test.go 的 TestPendingBacklogIndexQueryPlan /
+-- TestPendingBacklogIndexUsedAfterLegacyUpgrade（**不**自己跑 ANALYZE，统计全由产品路径产生）。
+CREATE INDEX IF NOT EXISTS idx_tasks_pending_created_at
+    ON tasks(created_at) WHERE status = 'pending';

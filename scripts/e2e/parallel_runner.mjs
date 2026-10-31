@@ -39,6 +39,8 @@ const HTTP_SUITES = [
 	"security",
 	"edge_cases",
 	"passkeys",
+	// 批次 5（#229 保留期 / #228 背压）：503 入口、清理幂等性
+	"capacity",
 ];
 const CHROME_SUITES = [
 	"i18n",

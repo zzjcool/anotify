@@ -11,6 +11,37 @@ import (
 	"time"
 )
 
+// 保留期 / 背压的默认值（#229 / #228）。
+//
+// 为什么必须是可被引用的常量而不是散落的字面量：解析层、接线层的启动日志、
+// 以及测试都要引用同一个事实。默认值一旦出现第二份副本（比如一处写 30、
+// 一处写 30*86400），改动时就只会改一半，症状是「配置明明改过但线上没生效」。
+const (
+	// defaultEventRetentionDays 是 events 的默认保留天数（#229，用户拍板 30 天）。
+	defaultEventRetentionDays = 30
+	// defaultPendingMaxAgeSec 是派发背压的默认阈值（#228）：最老 pending 任务的等待秒数。
+	defaultPendingMaxAgeSec = 120
+
+	// maxEventRetentionDays / maxPendingMaxAgeSec 是**防溢出上限**（不是产品策略）。
+	//
+	// 超上限时**钳到上限**（而不是回落默认）——两条路径（env 解析 / 直接写 Config）语义必须一致：
+	//   - 保留期：填一个天文数字的人想的是「几乎永不删」，回落成 30 天等于**加速删**，方向反了；
+	//   - 背压阈值：填一个天文数字的人想的是「几乎不触发」，回落成 120 秒等于**变严**，也反了。
+	// 钳到上限（100 年 / 7 天）既保住「他想要的方向」，又保证乘法绝不回绕。
+	// 非数字这类**看不懂**的输入仍然回落默认（见 retentionDaysFromEnv）。
+	//
+	// 为什么需要它们：两个值都会被乘上一个常数后变成 `int` / `time.Duration`：
+	//   EventRetentionDays * 86400            → int
+	//   PendingMaxAgeSec   * time.Second      → time.Duration（int64 纳秒，上限 ≈ 292 年）
+	// `strconv.Atoi` 在 64 位上可以吃下到 9.2e18，乘完会**回绕**。回绕的方向极其危险：
+	//   - 保留天数回绕成一个小正数 → cutoff = now - 小正数 → 一次删掉几乎全库（不可逆）；
+	//   - 背压阈值回绕成 290ms 左右 → 全站新事件立刻开始 503。
+	// 手滑多打几个 0 是很常见的事故来源，所以这里**按「非法值回落默认」处理**
+	// （与既有的「写错一个 env 不该把防线关掉」同一原则），而不是让它回绕。
+	maxEventRetentionDays = 36500     // 100 年：再长就等于永久保留，不如显式配 0
+	maxPendingMaxAgeSec   = 7 * 86400 // 7 天：超过这个量级已经不是「背压」，是「长期停机」
+)
+
 // Config 服务配置（全部可用环境变量覆盖）。
 type Config struct {
 	Addr        string // 监听地址，默认 :8080
@@ -75,6 +106,30 @@ type Config struct {
 	// 代价只是吞吐。
 	SessionCacheTTL time.Duration
 	APIKeyCacheTTL  time.Duration
+
+	// EventRetentionDays 是 events 的保留天数（#229）。0 = **永久保留**（不清理）。
+	//
+	// 语义（解析见 retentionDaysFromEnv）：
+	//   - 未设置 / 空     → 默认 30 天；
+	//   - "0"             → 0 = 永久保留（events 会持续增长，启动日志会 WARN）；
+	//   - 负数            → 0（同样是永久保留；解析层不报错，由接线层打 WARN 留痕）；
+	//   - 非数字（手滑）  → 默认 30 天（写错一个 env 不该改变保留策略的方向：
+	//     宁可照默认多留 30 天，也不要因为一个拼写错误变成永久保留）。
+	//
+	// 为什么要给运维这个旋钮：events 是「只进不出」的增长来源，30 天是默认折中；
+	// 合规要求长期留存时可以调大，0 是显式承担容量风险的运维选择
+	// （注意 auto_vacuum=0：清理让文件「平台化」而不是变小，见 store/retention.go）。
+	EventRetentionDays int
+
+	// PendingMaxAgeSec 是派发背压阈值（#228）：最老 pending 任务的等待秒数**超过**它，
+	// 新事件入口返回 503。0 = 不启用（永远放行）。
+	//
+	// 语义（解析见 pendingMaxAgeFromEnv）：未设置 / 空 → 120；"0" → 0（不启用）；
+	// 负数 → 0（不启用）；非数字 → 120（手滑不改变默认保护）。
+	//
+	// 判定口径刻意是**等待时长**而不是 pending 行数：行数随命名空间数 / 能力数 / 流量口径
+	// 漂移，跨部署不可比；「最老的 pending 等了多久」才与部署规模无关。
+	PendingMaxAgeSec int
 }
 
 // hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
@@ -115,6 +170,101 @@ func hookRateFromEnv(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// retentionDaysFromEnv 读取 ANOTIFY_EVENT_RETENTION_DAYS（events 保留天数，#229）。
+//
+// 语义（契约 §1.3.1）：
+//   - 未设置 / 空    → def（30 天）
+//   - "0"            → 0 = **永久保留**（不清理）
+//   - 负数           → 0（同样归一到永久保留）
+//   - 非数字（手滑） → def（30 天）
+//
+// 负数与非法值都不在这里报错、也不在这里打日志：解析层只负责给出一个**确定的数**，
+// 「负数被解释成永久保留」这类需要留痕的判断交给接线层（mux.go）打 WARN。
+// 理由：FromEnv 在每次进程启动（以及测试）里都会被调用，把留痕塞进解析层会让同一条
+// 告警出现在它不该出现的地方，而真正的运维可见性靠启动日志那一次就够。
+//
+// 非法值刻意回落默认而不是 0：0 是「永久保留」这种不可逆方向的显式选择，
+// 一个拼写错误绝不能把保留期变成永久。
+func retentionDaysFromEnv(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def // 手滑不改变默认策略
+	}
+	if n <= 0 {
+		return 0 // "0" 是显式选择永久保留；负数一并归一
+	}
+	if n > maxEventRetentionDays {
+		return maxEventRetentionDays // 溢出保护：钳到上限，理由见 maxEventRetentionDays 的注释
+	}
+	return n
+}
+
+// pendingMaxAgeFromEnv 读取 ANOTIFY_PENDING_MAX_AGE_SEC（派发背压阈值，#228）。
+//
+// 语义（契约 §1.3.1）：未设置 / 空 → def（120）；"0" → 0（**不启用**）；
+// 负数 → 0（不启用）；非数字 → def（120）。
+//
+// 0 与负数都归一到「不启用」而不是「阈值为 0 秒 = 永远超阈」：后者会把全站新事件
+// 挡在门外，是本旋钮最危险的失效方向。运维写 -1 的意图几乎必然是「关掉它」。
+func pendingMaxAgeFromEnv(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def // 手滑不改变默认保护
+	}
+	if n <= 0 {
+		return 0
+	}
+	if n > maxPendingMaxAgeSec {
+		return maxPendingMaxAgeSec // 溢出保护：钳到上限，理由见 maxEventRetentionDays 的注释
+	}
+	return n
+}
+
+// EventRetentionSec 把天数换成 store.RetentionOptions.EventRetentionSec 的口径（秒）。
+//
+// 0 保持 0（= store.EventRetentionDisabled = **永久保留**），**不要**在这里把它变成
+// 「保留 0 秒」或某个正数默认值：store 侧 <= 0 的含义是「跳过整个 events 阶段」，
+// 补成默认值会让「不配置就不删 events」这条保证失效。
+// 负数同样归一到 0（FromEnv 已经归一过，这里是防直接写结构体的调用方）。
+func (c Config) EventRetentionSec() int {
+	if c.EventRetentionDays <= 0 {
+		return 0
+	}
+	const secPerDay = 24 * 60 * 60
+	days := c.EventRetentionDays
+	// 直接写 Config 结构体的调用方（测试、内嵌部署）可能绕过 FromEnv 的钳制，
+	// 所以这里再钳一次。超出上限按上限算（而不是归零）：归零 = 永久保留，
+	// 那不是「配了个很大的数」的人想要的语义。
+	if days > maxEventRetentionDays {
+		days = maxEventRetentionDays
+	}
+	return days * secPerDay
+}
+
+// PendingMaxAge 把秒换成 time.Duration 并**钳位**（防 time.Duration 溢出）。
+//
+// 为什么不在 mux.go 里直接 time.Duration(sec) * time.Second：那是一次乘法，
+// int64 纳秒上限约 9.22e9 秒，超大值会回绕成很小的数 → 全站立刻开始 503。
+// 钳到 maxPendingMaxAgeSec（7 天）：超过这个量级已经不是背压，是长期停机。
+func (c Config) PendingMaxAge() time.Duration {
+	n := c.PendingMaxAgeSec
+	if n <= 0 {
+		return 0
+	}
+	if n > maxPendingMaxAgeSec {
+		n = maxPendingMaxAgeSec
+	}
+	return time.Duration(n) * time.Second
 }
 
 // cacheTTLFromEnv 读取一个缓存 TTL 环境变量。
@@ -173,6 +323,11 @@ func FromEnv() Config {
 		// 鉴权热路径缓存（#241 / #227）：0=用默认、负数=关缓存。
 		SessionCacheTTL: cacheTTLFromEnv("ANOTIFY_SESSION_CACHE_TTL", 0),
 		APIKeyCacheTTL:  cacheTTLFromEnv("ANOTIFY_APIKEY_CACHE_TTL", 0),
+
+		// events 保留期（#229，默认 30 天，0 = 永久保留）与派发背压阈值
+		// （#228，默认 120 秒，0 = 不启用）。
+		EventRetentionDays: retentionDaysFromEnv("ANOTIFY_EVENT_RETENTION_DAYS", defaultEventRetentionDays),
+		PendingMaxAgeSec:   pendingMaxAgeFromEnv("ANOTIFY_PENDING_MAX_AGE_SEC", defaultPendingMaxAgeSec),
 	}
 }
 

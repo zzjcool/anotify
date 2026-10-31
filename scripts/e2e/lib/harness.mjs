@@ -497,6 +497,9 @@ export const SUITE_PORTS = {
 	// #201：真后端 + 真浏览器套件（页面级请求体检 + 起真 cmd/agent）
 	real_backend: 6900,
 	events_paging: 6950,
+	// 批次 5（#229 保留期 / #228 背压）：入口返回码变了，必须进 e2e 门禁。
+	// 端口不能与 events_paging 共用 6950（两边同时加的，撞了）：段起始改成 7000。
+	capacity: 7000,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。

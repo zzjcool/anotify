@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -425,12 +427,12 @@ func TestRetentionOverlapGuard(t *testing.T) {
 	}
 }
 
-// capturingRetentionStore 是变更单 A3 要求的 capturing fake：把每次收到的
-// store.RetentionOptions 原样存下来（而不是只留「最后一次」）。
+// capturingRetentionStore 是 capturing fake：把每次收到的 store.RetentionOptions
+// 原样存下来（而不是只留「最后一次」）。
 //
-// 为什么不复用 fakeRetentionStore：这条测的是「lease 层交给 store 的参数里
-// EventRetentionSec 永远是 0（= 禁用）」——属于**默认值回归**，将来有人给 Sweeper
-// 加个字段（env / 部署配置）把默认改成开启，这条必须立刻红。
+// 为什么不复用 fakeRetentionStore：这里测的是「lease 层把 Sweeper.RetentionEventSec
+// **原样**交给 store」——既要断言零值 0 透传（= 永久保留），也要断言 30 天原值透传。
+// 留一个能看历史轮的 fake，才能在同一条测试里比较两种配置的结果。
 // 用 mutex 而不是裸字段：SweepRetention 在清理 goroutine 里写，测试 goroutine 读。
 type capturingRetentionStore struct {
 	mu   sync.Mutex
@@ -459,49 +461,206 @@ func (c *capturingRetentionStore) capturedOpts() []store.RetentionOptions {
 	return append([]store.RetentionOptions(nil), c.opts...)
 }
 
-// 变更单 A3（本单真正的验收）：**lease 层永远不会自己开启 events 清理**。
+// TestRetentionEventSecPlumbing 是 #229 的接线回归：lease 层把 `Sweeper.RetentionEventSec`
+// **原样**交给 store.RetentionOptions.EventRetentionSec（既不吞掉，也不补默认）。
 //
-// 做法：capturing fake 记下收到的 store.RetentionOptions，跑一轮 Tick + retentionWG.Wait()，
-// 然后断言 EventRetentionSec == 0（0 = store.EventRetentionDisabled = 禁用，不是「保留 0 秒」），
-// 同时 Now 真有值、Batch/Batches 回落到 store 默认常量（证明其余参数没被顺手写坏）。
+// 两种取值都必须钉住：
 //
-// 为什么值得单独一条：events 删除不可逆，本版刻意不给 Sweeper 加 EventRetentionSec 开关，
-// 那「升级不删 events」的唯一保证就是「lease 交给 store 的 EventRetentionSec 恒为 0」。
-func TestRetentionNeverEnablesEventSweep(t *testing.T) {
-	var fakeNow int64 = 1_700_000_000
-	cs := &capturingRetentionStore{}
-	sw := New(cs)
-	sw.Now = func() int64 { return fakeNow }
+//	零值 0        → 透传 0 = store.EventRetentionDisabled = **永久保留**
+//	                （老保证仍然成立：不配置就不删 events）
+//	30*86400      → 原样透传（部署配置 ANOTIFY_EVENT_RETENTION_DAYS=30 的效果）
+//
+// 为什么值得单独一条：events 删除不可逆，而这条路是「配置有没有真的生效」的唯一接缝——
+// 少了这条，mux 注入了、日志也打了，但 lease 忘了传下去，症状是「配置显示 30 天，
+// 事实上一条都不删」，没有任何报错。
+func TestRetentionEventSecPlumbing(t *testing.T) {
+	const thirtyDays = 30 * 86400
 
-	sw.Tick(context.Background())
-	sw.retentionWG.Wait() // 异步：等这轮清理跑完，再看它收到了什么
+	cases := []struct {
+		name string
+		sec  int
+		want int
+	}{
+		{"零值 = 永久保留（不配置就不删 events）", 0, 0},
+		{"默认 30 天原样透传", thirtyDays, thirtyDays},
+		// 负值原样透传：归一成 EventRetentionDisabled 是 store 层 retentionWithDefaults
+		// 的职责（它把 <0 归一到 0），lease 层不该再复制一份归一逻辑——两边都不是
+		// 「保留负数秒」，store 见到 <= 0 就跳过整段 events。
+		{"负值原样透传（由 store 归一成禁用）", -1, -1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var fakeNow int64 = 1_700_000_000
+			cs := &capturingRetentionStore{}
+			sw := New(cs)
+			sw.Now = func() int64 { return fakeNow }
+			sw.RetentionEventSec = c.sec
 
-	got := cs.capturedOpts()
-	if len(got) != 1 {
-		t.Fatalf("一轮 Tick 应向 store 发起 1 次清理，实际 %d 次", len(got))
+			sw.Tick(context.Background())
+			sw.retentionWG.Wait() // 异步：等这轮清理跑完，再看它收到了什么
+
+			got := cs.capturedOpts()
+			if len(got) != 1 {
+				t.Fatalf("一轮 Tick 应向 store 发起 1 次清理，实际 %d 次", len(got))
+			}
+			opts := got[0]
+			if opts.EventRetentionSec != c.want {
+				t.Fatalf("RetentionEventSec=%d 应透传为 EventRetentionSec=%d，实际 %d",
+					c.sec, c.want, opts.EventRetentionSec)
+			}
+			// 其余参数没被顺手写坏（Now 真有值、Batch/Batches 回落到默认常量）。
+			if opts.Now != fakeNow {
+				t.Fatalf("Now 应是注入的 %d，实际 %d", fakeNow, opts.Now)
+			}
+			if opts.Batch != store.DefaultRetentionBatch || opts.Batches != store.DefaultRetentionBatches {
+				t.Fatalf("Batch/Batches 应回落到默认常量 %d/%d，实际 %d/%d",
+					store.DefaultRetentionBatch, store.DefaultRetentionBatches, opts.Batch, opts.Batches)
+			}
+		})
 	}
-	opts := got[0]
-	if opts.EventRetentionSec != 0 {
-		t.Fatalf("lease 层不该注入 events 保留期（0 = 禁用），实际 EventRetentionSec=%d",
-			opts.EventRetentionSec)
+
+	// 保留原有两层含义的断言：
+	//
+	//  1. 0 在 store 侧的含义是「禁用/永久保留」，不是「保留 0 秒」——所以零值透传
+	//     恰好等于「不配置就不删 events」；
+	//  2. store 的默认常量必须恒为 EventRetentionDisabled：如果有人把它改成正数，
+	//     「lease 零值 0 → 不删 events」这条链就会在零值那一格悄悄变成「删」。
+	if store.EventRetentionDisabled != 0 {
+		t.Fatalf("store.EventRetentionDisabled 必须是 0（= 不清理），实际 %d", store.EventRetentionDisabled)
 	}
-	// 与冻结常量对一下：0 的含义是 EventRetentionDisabled，避免哪天常量被改成别的值。
-	if opts.EventRetentionSec != store.EventRetentionDisabled {
-		t.Fatalf("EventRetentionSec 应等于 store.EventRetentionDisabled（%d），实际 %d",
-			store.EventRetentionDisabled, opts.EventRetentionSec)
-	}
-	// 「lease 不注入 ⇒ 禁用」这条链依赖 store 侧的「0 = 禁用」默认值：
-	// 如果有人把 store 默认改回正数，上面的断言照样绿，但线上就会开始删 events。
 	if store.DefaultEventRetentionSec != store.EventRetentionDisabled {
-		t.Fatalf("store 默认 events 保留期必须是禁用（%d），实际 %d——lease 不注入就会变成「默认开启」",
+		t.Fatalf("store 默认 events 保留期必须是禁用（%d），实际 %d——lease 零值透传就会变成「默认开启」",
 			store.EventRetentionDisabled, store.DefaultEventRetentionSec)
 	}
-	if opts.Now != fakeNow {
-		t.Fatalf("Now 应是注入的 %d，实际 %d", fakeNow, opts.Now)
+}
+
+// TestRetentionCatchUpWhenTruncated 是 #229 / A5 的追赶机制验收。
+//
+// 规则：上一轮被批数预算截断（report.Truncated）→ 下一轮的低频门改用追赶周期
+// （默认 30s），而不是常态的 1 小时；某轮不再截断 → 回到 1 小时。
+//
+// 为什么必须有这条：只在 1 小时一轮下跑，单命名空间每天最多删 ~48 万行，
+// 而 30 ev/s 的写入 ~518 万行/天——「保留期开着」不等于「能跟上」，
+// 少了追赶就是永远删不完（且日志一切正常，最容易被当成「已解决」）。
+func TestRetentionCatchUpWhenTruncated(t *testing.T) {
+	const hour = int64(DefaultRetentionInterval / time.Second)
+	if got := DefaultRetentionCatchUpInterval; got != 30*time.Second {
+		t.Fatalf("追赶周期默认值应是 30s，实际 %v", got)
 	}
-	if opts.Batch != store.DefaultRetentionBatch || opts.Batches != store.DefaultRetentionBatches {
-		t.Fatalf("Batch/Batches 应回落到默认常量 %d/%d，实际 %d/%d",
-			store.DefaultRetentionBatch, store.DefaultRetentionBatches, opts.Batch, opts.Batches)
+
+	// ① Truncated=true：30s（而不是 1 小时）后必须再跑一轮。
+	t.Run("截断后 30s 追赶", func(t *testing.T) {
+		var fakeNow int64 = 1_700_000_000
+		fs := &fakeRetentionStore{report: store.RetentionReport{Truncated: true, EventsDeleted: 20000}}
+		sw := New(fs)
+		sw.Now = func() int64 { return fakeNow }
+		if got := sw.retentionCatchUpInterval(); got != DefaultRetentionCatchUpInterval {
+			t.Fatalf("零值应回落到 %v，实际 %v", DefaultRetentionCatchUpInterval, got)
+		}
+
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		if fs.retentionCall != 1 {
+			t.Fatalf("首轮应立即执行 1 次，实际 %d", fs.retentionCall)
+		}
+		// 截断结果通过 atomic 交给 Tick 侧（Tick 下一次开头才取快照）。
+		if !sw.retentionTruncated.Load() {
+			t.Fatal("store 报 Truncated=true 时应记录截断（否则不会追赶）")
+		}
+
+		fakeNow += 29 // 差 1 秒不到追赶周期
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		if fs.retentionCall != 1 {
+			t.Fatalf("未满追赶周期（30s）不该重跑，实际 %d 次", fs.retentionCall)
+		}
+
+		fakeNow++ // 正好 30s
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		if fs.retentionCall != 2 {
+			t.Fatalf("截断后满 30s 应再跑一轮（共 2 次），实际 %d 次", fs.retentionCall)
+		}
+		if !sw.lastRetentionTruncated {
+			t.Fatal("Tick 应在频率门处把截断状态取成本地快照（lastRetentionTruncated）")
+		}
+	})
+
+	// ② Truncated=false：30s 后不许重跑，要等到常态的 1 小时。
+	t.Run("未截断保持 1 小时", func(t *testing.T) {
+		var fakeNow int64 = 1_700_000_000
+		fs := &fakeRetentionStore{report: store.RetentionReport{EventsDeleted: 100}}
+		sw := New(fs)
+		sw.Now = func() int64 { return fakeNow }
+
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		if fs.retentionCall != 1 {
+			t.Fatalf("首轮应立即执行 1 次，实际 %d", fs.retentionCall)
+		}
+		if sw.retentionTruncated.Load() {
+			t.Fatal("未截断时不该记录截断")
+		}
+
+		fakeNow += 30
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		if fs.retentionCall != 1 {
+			t.Fatalf("未截断时 30s 不该重跑，实际 %d 次", fs.retentionCall)
+		}
+
+		fakeNow += hour - 30 // 累计正好 1 小时
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		if fs.retentionCall != 2 {
+			t.Fatalf("未截断时满 1 小时应再跑一轮（共 2 次），实际 %d 次", fs.retentionCall)
+		}
+	})
+
+	// ③ 显式配置的追赶周期覆盖默认值（部署可调，不必改代码）。
+	t.Run("显式追赶周期", func(t *testing.T) {
+		var fakeNow int64 = 1_700_000_000
+		fs := &fakeRetentionStore{report: store.RetentionReport{Truncated: true}}
+		sw := New(fs)
+		sw.Now = func() int64 { return fakeNow }
+		sw.RetentionCatchUpInterval = 5 * time.Second
+
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		fakeNow += 5 // 满显式配置的追赶周期
+		sw.Tick(context.Background())
+		sw.retentionWG.Wait()
+		if fs.retentionCall != 2 {
+			t.Fatalf("显式追赶周期 5s 后应再跑一轮（共 2 次），实际 %d 次", fs.retentionCall)
+		}
+	})
+}
+
+// TestEventRetentionLogState 钉住日志里 events 保留期的两种说法（#229 / A1）。
+//
+// 为什么这也要测：`event_retention` 是运维唯一能区分「events 永久保留」与
+// 「扫了但没东西可删」的字段。写成裸 0 会被读成「保留 0 秒」，写成 "off"/"n/a" 则
+// 无法判断到底是不是配置生效。取值只允许两种，且必须自解释。
+func TestEventRetentionLogState(t *testing.T) {
+	const permanent = "permanent（不清理，events 会持续增长）"
+
+	cases := []struct {
+		name string
+		sec  int
+		want string
+	}{
+		{"0 = 永久保留", 0, permanent},
+		{"负数归一到永久保留", -1, permanent},
+		{"默认 30 天", 30 * 86400, "enabled（30d）"},
+		{"一天", 86400, "enabled（1d）"},
+		{"非整天按天取整", 90*86400 + 123, "enabled（90d）"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := eventRetentionLogState(c.sec); got != c.want {
+				t.Errorf("eventRetentionLogState(%d) = %q, want %q", c.sec, got, c.want)
+			}
+		})
 	}
 }
 
@@ -632,5 +791,117 @@ func TestRetentionSweepsPerNamespace(t *testing.T) {
 	// ns2 里两条：过期的那条被删，未过期的那条留下 → 正好 1 行
 	if got := countTasks(t, db, ns2.ID); got != 1 {
 		t.Fatalf("staging 命名空间应只剩 1 行（未过期的），实际 %d 行", got)
+	}
+}
+
+// ---------- 审计字段：失败 / 取消路径也必须带 events_retention_sec 与 elapsed_ms ----------
+
+// logBuf 是并发安全的日志缓冲（清理 goroutine 写，测试 goroutine 读）。
+type logBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *logBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// captureSweepLog 把默认 slog 换成写进 buffer 的 TextHandler，并返回 buffer。
+func captureSweepLog(t *testing.T) *logBuf {
+	t.Helper()
+	buf := &logBuf{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// findSweepLine 返回第一条 event 字段**精确等于** event 的日志行；找不到直接失败。
+//
+// 必须精确匹配而不是子串：`event=lease.sweeper.retention` 是
+// `event=lease.sweeper.retention_enabled` 的前缀，用 Contains 会抓到错的那一条
+// （首轮那条没有 elapsed_ms —— 曾因此误报过一次）。
+func findSweepLine(t *testing.T, logs, event string) string {
+	t.Helper()
+	for _, line := range strings.Split(logs, "\n") {
+		idx := strings.Index(line, "event="+event)
+		if idx < 0 {
+			continue
+		}
+		rest := line[idx+len("event=")+len(event):]
+		if rest == "" || rest[0] == ' ' {
+			return line
+		}
+	}
+	t.Fatalf("日志里没有 event=%s：\n%s", event, logs)
+	return ""
+}
+
+// TestRetentionAuditFieldsOnFailureAndCancel 钉住契约 §1.3.2 的审计字段（A2）。
+//
+// 为什么失败路径也要有：`lease.sweeper.retention` 只在「真删了东西或被截断」时才打，
+// 而排障时最需要的一问恰恰是「按什么保留期删的、跑了多久才挂的」——只打 error 等于
+// 把已经删掉的那部分计数丢掉（store 层返回的是 partial report）。
+//
+// 反过来，这条测试也防止「失败时提前 return，把审计字段漏掉」这种回归——
+// 删掉失败分支的两个字段，全套其它测试**仍然全绿**（e2e 只走成功路径）。
+func TestRetentionAuditFieldsOnFailureAndCancel(t *testing.T) {
+	cases := []struct {
+		name  string
+		err   error
+		event string
+	}{
+		{"库错误 → ERROR retention_failed", errors.New("db is locked"), "lease.sweeper.retention_failed"},
+		{"ctx 取消 → INFO retention_cancelled", context.Canceled, "lease.sweeper.retention_cancelled"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			logs := captureSweepLog(t)
+			fs := &fakeRetentionStore{retErr: c.err}
+			sw := New(fs)
+			sw.RetentionEventSec = 30 * 86400 // 30 天：审计字段要能把这个值原样带出来
+
+			sw.Tick(context.Background())
+			sw.retentionWG.Wait()
+
+			line := findSweepLine(t, logs.String(), c.event)
+			for _, want := range []string{
+				"events_retention_sec=2592000",
+				"elapsed_ms=",
+				"events_deleted=0",
+				"truncated=false",
+			} {
+				if !strings.Contains(line, want) {
+					t.Fatalf("审计日志缺 %q：\n%s", want, line)
+				}
+			}
+		})
+	}
+}
+
+// TestRetentionAuditFieldsOnSuccess 成功路径的同一组字段（成功/失败口径必须一致，
+// 否则做日志对比时会以为「成功那轮没带保留期」）。
+func TestRetentionAuditFieldsOnSuccess(t *testing.T) {
+	logs := captureSweepLog(t)
+	fs := &fakeRetentionStore{report: store.RetentionReport{EventsDeleted: 42}}
+	sw := New(fs)
+	sw.RetentionEventSec = 7 * 86400
+
+	sw.Tick(context.Background())
+	sw.retentionWG.Wait()
+
+	line := findSweepLine(t, logs.String(), "lease.sweeper.retention")
+	for _, want := range []string{"events_retention_sec=604800", "elapsed_ms=", "events_deleted=42"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("审计日志缺 %q：\n%s", want, line)
+		}
 	}
 }

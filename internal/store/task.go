@@ -1497,3 +1497,37 @@ func (d *DB) CountOpenTasks(ctx context.Context, namespaceID string) (int, error
 	}
 	return n, nil
 }
+
+// OldestPendingCreatedAt 返回当前 status='pending' 的任务里最早的 created_at
+// （unixepoch 秒）；一条 pending 都没有 → 0。
+//
+// 为什么这是背压的信号（#228）：pending 行数随命名空间数 / 流量口径漂移，
+// 「最老的 pending 等了多久」是唯一与部署规模无关的量。
+//
+// 三个刻意的「不做」，每一条都有代价，改动前先读契约 §5：
+//   - 不加 namespace_id 过滤：背压是**部署级**决策（一个命名空间的洪峰不许拖垮别的）。
+//   - 不加 not_before 过滤：SetNotBefore 是「重派退避」，退避中的任务**仍然是积压**
+//     （mux.go 的 Redispatch 在 ErrNoCapacity 时正是写 not_before），
+//     加了它等于把 #228 的实测场景（积压 8 行/秒）整个漏掉。
+//   - 空集不返回 sql.ErrNoRows：MIN() 在空集上返回**一行 NULL**，不是零行。
+//
+// 成本：迁移 17 的部分索引 idx_tasks_pending_created_at（WHERE status='pending'，
+// 首列 created_at）把这条查询退化成一次「索引最左端 seek」，与积压行数无关。
+// 没有那条索引时计划是 idx_tasks_lease + 逐行回表——积压越多越贵。
+//
+// 一个必须知道的边界（实测，证据见 pending_backlog_test.go 的计划用例）：SQLite 的
+// min/max 优化要看到该索引自己的 sqlite_stat1 条目才会选它。所以「全新库灌满数据、
+// 尚未重开」的那个窗口里，规划器选的仍是 idx_tasks_lease；重开一次（Open 末尾的
+// `PRAGMA optimize=0x2`）就会补上条目、计划切成部分索引。老库升级同理——迁移 17 跑在
+// Open 内部，等 Open 返回时条目已经在，升级完即生效。
+func (d *DB) OldestPendingCreatedAt(ctx context.Context) (int64, error) {
+	var oldest sql.NullInt64
+	if err := d.QueryRowContext(ctx,
+		`SELECT MIN(created_at) FROM tasks WHERE status = 'pending'`).Scan(&oldest); err != nil {
+		return 0, fmt.Errorf("oldest pending created_at: %w", err)
+	}
+	if !oldest.Valid {
+		return 0, nil // 一条 pending 都没有（空集上 MIN() 是 NULL，不是 ErrNoRows）
+	}
+	return oldest.Int64, nil
+}
