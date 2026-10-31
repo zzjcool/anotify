@@ -1102,7 +1102,6 @@ events:
   empty: イベントはまだありません。POST /v1/events で送信してください。
   demo_badge: デモモード — バックエンド未接続
   demo_hint: バックエンド未接続のため、実際のイベントはまだありません。
-  count: '{n} 件のイベント'
   view_chain: チェーンを表示
   filter:
     trace: Trace ID

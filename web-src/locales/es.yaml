@@ -1102,7 +1102,6 @@ events:
   empty: Aún no hay eventos. Envía uno con POST /v1/events.
   demo_badge: Modo demo — backend no conectado
   demo_hint: Backend no conectado, aún no hay eventos reales.
-  count: '{n} eventos'
   view_chain: Ver cadena
   filter:
     trace: Trace ID

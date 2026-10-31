@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -440,5 +441,193 @@ func TestConsoleEventsCursorDegradesAtLimitCap(t *testing.T) {
 	if *page.NextCursor == "" {
 		t.Fatalf("limit=%d 时多看不了下一行，按旧判据（行数 >= limit）应当给游标；给空游标会\n"+
 			"掩盖「store 只返回了 500 条、可能还有更旧的」的歧义", listLimitCap)
+	}
+}
+
+// TestConsoleEventsLimitZeroClampsToOne 钉住一个**既有**差异：console 的 limit=0 / -5 → 1 条。
+//
+// 两个端点对 0 的语义不同（契约 §6.2 已按端点分开写，这里把它变成可执行判据）：
+//   - `/v1/events`（机器入口）：`n > 0` 才采纳，否则回落到默认 100（internal/api 的解析）；
+//   - `/v1/console/events`（控制台）：走 `intParam(q.Get("limit"), 100, 1, listLimitCap)`，
+//     **min 夹取**把 0 / 负数抬到下限 1。
+//
+// 为什么要专门测：两个端点共用「回显生效值」的承诺，但 0 的答案一个是 100、一个是 1。
+// 若有人把 console 改成机器入口的写法（0 → 100），前端「本页 N 条」会在翻页时突然从 1 变成
+// 100 而没有任何用例报警。
+func TestConsoleEventsLimitZeroClampsToOne(t *testing.T) {
+	env := newConsoleEnv(t)
+	seeded := seedConsoleEvents(t, env.db, env.nsID, "zero", 5, 1700000000, 1)
+	newest := seeded[len(seeded)-1] // 灌数按 created_at 递增：末条最新
+
+	for _, q := range []string{"limit=0", "limit=-5"} {
+		t.Run(q, func(t *testing.T) {
+			page := env.getEventsPage(t, env.withNS("/v1/console/events?"+q))
+			if *page.Limit != 1 {
+				t.Fatalf("%s 回显 limit = %d, want 1（intParam 的 min 夹取；不是回退默认 100）",
+					q, *page.Limit)
+			}
+			if len(page.Events) != 1 {
+				t.Fatalf("%s 返回 %d 条, want 1", q, len(page.Events))
+			}
+			// 夹到 1 也要给「最新的一条」，不是随手一条、更不是空页
+			if page.Events[0].ID != newest.ID {
+				t.Fatalf("%s 返回的第一条 = %s, want %s（最新）", q, page.Events[0].ID, newest.ID)
+			}
+			// 库里还有 4 条更旧的 ⇒ 分页判据与 limit 口径无关：必须给游标
+			if *page.NextCursor == "" {
+				t.Fatalf("%s 只返回 1/5 条，nextCursor 却是空的", q)
+			}
+		})
+	}
+}
+
+// TestConsoleEventsTraceViewCursorPagingWithPrunedRows 是「游标必须在 traceViewRootFirst
+// 之前算」那条注释（console_handlers.go）的可执行版本。
+//
+// 为什么会丢行/重行：带 traceId 时 ListEvents 的原始序是 created_at DESC，而剪枝行时间上
+// 晚于外部事件 ⇒ 第一页**原始**的前几行常常是剪枝行；traceViewRootFirst 会把非剪枝行提到最前。
+// 游标若在重排**之后**取末行，拿到的就是本页时间**最新**的剪枝行 —— 下一页从它往前翻，
+// 本页已被顶到后面那些「更旧但已返回」的行会被再来一遍（并集重复），真正的更旧行还可能被跳过。
+//
+// 夹具刻意让同一页里同时出现「剪枝行（更新）+ 非剪枝行（更旧）」：
+//
+//	A 根事件   @0  (source=github)          ← trace 里最早的一条
+//	B 剪枝     @10
+//	C 剪枝     @20
+//	E 剪枝     @30
+//	D 外部事件 @40 (source=github，同 trace)
+//	F 剪枝     @50                          ← 最新的行
+//
+// limit=2 ⇒ 第 1 页原始取 3 条 [F50, D40, E30] → 截 2 条 [F50, D40] → 重排 [D40, F50]。
+// 正确的游标取自 D40（原始末行）；错取成重排末行 F50 的话，第 2 页会把 D40 再发一次。
+func TestConsoleEventsTraceViewCursorPagingWithPrunedRows(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+	const traceID = "trace_cursor_pruned"
+
+	// 根事件：trace 里**最早**的一条（GetEventByTrace 也是按 created_at 取最小）。
+	root := &store.Event{
+		NamespaceID: env.nsID, TraceID: traceID, Source: "github",
+		Type: "pull_request.opened", Payload: json.RawMessage(`{"n":0}`),
+		CreatedAt: 1700000000,
+	}
+	if _, err := env.db.InsertEvent(ctx, root); err != nil {
+		t.Fatalf("insert root event: %v", err)
+	}
+	// 同 trace 的第二条外部事件（时间更晚）：让第一页里也有一条非剪枝行可被顶到最前。
+	extra := &store.Event{
+		NamespaceID: env.nsID, TraceID: traceID, Source: "github",
+		Type: "pull_request.synchronize", Payload: json.RawMessage(`{"n":1}`),
+		CreatedAt: 1700000040,
+	}
+	if _, err := env.db.InsertEvent(ctx, extra); err != nil {
+		t.Fatalf("insert second external event: %v", err)
+	}
+	// 剪枝行：payload 互不相同（InsertPruneEvent 按 (ns,trace,source,type,payload) 去重）。
+	pruneAt := []int64{1700000010, 1700000020, 1700000030, 1700000050}
+	prunes := make([]*store.Event, 0, len(pruneAt))
+	for i, at := range pruneAt {
+		p := &store.Event{
+			NamespaceID: env.nsID, TraceID: traceID,
+			Source:    route.PruneEventSource,
+			Type:      route.PruneEventType(route.ReasonNoEdge),
+			Payload:   json.RawMessage(fmt.Sprintf(`{"port":"out-%d"}`, i)),
+			CreatedAt: at,
+		}
+		inserted, err := env.db.InsertPruneEvent(ctx, p)
+		if err != nil {
+			t.Fatalf("insert prune event %d: %v", i, err)
+		}
+		if !inserted {
+			t.Fatalf("剪枝行 %d 没落库（payload 重复？）：夹具不成立", i)
+		}
+		prunes = append(prunes, p)
+	}
+
+	// 逐页翻到底。这里**不能**复用 collectPages：它断言「每页严格 created_at DESC」，
+	// 而 trace 视图的第一页正是重排过的 —— 页内顺序不再是纯 DESC。
+	cursor := ""
+	pages := make([][]store.Event, 0, 4)
+	for i := 0; ; i++ {
+		if i > 10 {
+			t.Fatalf("翻页没有收敛（游标没前进？），已翻 %d 页", i)
+		}
+		q := "/v1/console/events?limit=2&traceId=" + traceID
+		if cursor != "" {
+			q += "&before=" + cursor // URL 安全 base64：不需要再转义
+		}
+		page := env.getEventsPage(t, env.withNS(q))
+		if *page.Limit != 2 {
+			t.Fatalf("第 %d 页回显 limit = %d, want 2", i+1, *page.Limit)
+		}
+		// (a) 每一页都必须有数据：游标算错时最容易出现的症状就是「翻到空页」。
+		if len(page.Events) == 0 {
+			t.Fatalf("第 %d 页返回 0 条（游标把行翻丢了 / 多了一个空页）", i+1)
+		}
+		if len(page.Events) > 2 {
+			t.Fatalf("第 %d 页返回 %d 条, 超过 limit=2", i+1, len(page.Events))
+		}
+		pages = append(pages, page.Events)
+		if *page.NextCursor == "" {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	// 6 条 / limit=2 ⇒ 3 页（2/2/2）：页数不对说明有页被并进去或跳过了。
+	if len(pages) != 3 {
+		t.Fatalf("翻了 %d 页, want 3（%d 条 / limit=2）", len(pages), len(pruneAt)+2)
+	}
+
+	// (c) 第一页的第一条必须是**非剪枝行** —— 这正是 traceViewRootFirst 的视图契约：
+	// trace 页拿 events[0].source 去 GET /sources 找源拓扑，第一条绝不能是 route（否则底图丢失）。
+	// 夹具里第一页的原始序是 [剪枝 F@50, 外部 D@40]，重排后 [D@40, F@50]：
+	// 第一条比第二条**更旧**，「页内不再是纯 DESC」本身就是重排发生了的证据。
+	if first := pages[0][0]; first.ID != extra.ID || first.Source == route.PruneEventSource {
+		t.Fatalf("第一页第一条 = %s(source=%s), want %s(source=github)",
+			first.ID, first.Source, extra.ID)
+	}
+	if len(pages[0]) != 2 || pages[0][1].ID != prunes[3].ID ||
+		pages[0][1].Source != route.PruneEventSource {
+		t.Fatalf("第一页第二行应当是被顶到后面的剪枝 F(%s)，实际 %d 条：%+v",
+			prunes[3].ID, len(pages[0]), pages[0])
+	}
+	if pages[0][0].CreatedAt >= pages[0][1].CreatedAt {
+		t.Fatalf("第一页没有被重排（%d → %d）：原始序是剪枝 %d 在前、外部事件 %d 在后",
+			pages[0][0].CreatedAt, pages[0][1].CreatedAt,
+			prunes[3].CreatedAt, extra.CreatedAt)
+	}
+
+	// 最后一页里根事件同样排第一（同页还有更晚的剪枝行 B@10）。
+	last := pages[len(pages)-1]
+	if len(last) != 2 || last[0].ID != root.ID || last[0].Source == route.PruneEventSource {
+		t.Fatalf("最后一页 = %+v, want 第一条是根事件 %s（非剪枝）", last, root.ID)
+	}
+
+	// (b) 并集 == 该 trace 的全部事件，且无重复、无遗漏。
+	want := map[string]bool{root.ID: true, extra.ID: true}
+	for _, p := range prunes {
+		want[p.ID] = true
+	}
+	seen := map[string]int{}
+	for _, p := range pages {
+		for _, e := range p {
+			seen[e.ID]++
+		}
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("翻到 %d 条不同事件, want %d（丢行或多行）", len(seen), len(want))
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Fatalf("id %s 出现了 %d 次（游标在页边界重复：是不是从重排后的末行算的？）", id, n)
+		}
+		if !want[id] {
+			t.Fatalf("翻到了不属于这条 trace 的事件 %s", id)
+		}
+	}
+	for id := range want {
+		if seen[id] == 0 {
+			t.Fatalf("id %s 一页都没翻到（游标丢行）", id)
+		}
 	}
 }

@@ -1102,7 +1102,6 @@ events:
   empty: 还没有事件。用 POST /v1/events 提交第一个。
   demo_badge: 演示模式：后端未连接
   demo_hint: 后端未连接，暂无真实事件。
-  count: '{n} 条事件'
   view_chain: 查看链路
   filter:
     trace: Trace ID

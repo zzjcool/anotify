@@ -911,15 +911,18 @@ func TestEventNamespaceErrorMapping(t *testing.T) {
 
 // ---------- #236 验收：limit 口径统一（硬顶 500 + 回显生效值） ----------
 
-// seedEvents 直接往库里灌 n 条事件（**不走** dispatcher）。
+// seedEvents 直接往库里灌 n 条事件（**不走** dispatcher），返回按 created_at 升序的事件。
 //
 // 为什么要绕开 POST：这里要证明的是「列表端点的 limit 口径」，需要的是足够长的
 // 事件流（> 硬顶），而派发链路（边/节点/任务）与它无关、只会让夹具变脆。
 // created_at 递增：顺序确定，才能断言「返回的是最新的一批」。
-func (f *eventFixture) seedEvents(t *testing.T, n int) {
+// 返回灌入的事件（而不是只返 n）：断言要拿「最新一条（及其 id）」和「最新 want 条的集合」，
+// 光靠条数无法区分「最新的 500 条」与「随便 500 条」。
+func (f *eventFixture) seedEvents(t *testing.T, n int) []*store.Event {
 	t.Helper()
 	ctx := context.Background()
 	base := store.Now() - int64(n)
+	out := make([]*store.Event, 0, n)
 	for i := 0; i < n; i++ {
 		e := &store.Event{
 			NamespaceID: f.nsID,
@@ -932,7 +935,9 @@ func (f *eventFixture) seedEvents(t *testing.T, n int) {
 		if _, err := f.db.InsertEvent(ctx, e); err != nil {
 			t.Fatalf("seed event %d: %v", i, err)
 		}
+		out = append(out, e)
 	}
+	return out
 }
 
 // listEvents 发 GET /v1/events，返回 (状态码, 事件, 响应里的 limit 字段)。
@@ -976,8 +981,18 @@ func (f *eventFixture) listEvents(t *testing.T, query string) (int, []store.Even
 //   - 缺省 / 非法 / ≤0 仍回 100（沿用宽松语义，不新增 400）。
 func TestEventListLimitCapHandlerClamps(t *testing.T) {
 	f := newEventFixture(t)
-	const seeded = 520 // > 硬顶 500：能同时观察「钳到 500」与「500 < 520」
-	f.seedEvents(t, seeded)
+	const seeded = 520                      // > 硬顶 500：能同时观察「钳到 500」与「500 < 520」
+	seededEvents := f.seedEvents(t, seeded) // created_at 升序：末条最新
+	newest := seededEvents[len(seededEvents)-1]
+	// newestSet(want) = 「最新 want 条」的 id 集合：用来区分「最新的 500 条」与「随便 500 条」。
+	// 只比长度是区分不了的（旧版就是这么漏掉的：条件恒假，断言从没执行过）。
+	newestSet := func(want int) map[string]bool {
+		set := make(map[string]bool, want)
+		for _, e := range seededEvents[len(seededEvents)-want:] {
+			set[e.ID] = true
+		}
+		return set
+	}
 
 	cases := []struct {
 		name  string
@@ -1009,10 +1024,36 @@ func TestEventListLimitCapHandlerClamps(t *testing.T) {
 			if *echoed != c.want {
 				t.Fatalf("响应 limit = %d, want %d（回显的是**生效值**）", *echoed, c.want)
 			}
-			// 钳到 500 时必须是**最新**的 500 条，不是随便 500 条
-			if len(events) > 0 && c.want >= seeded {
-				if events[0].CreatedAt < events[len(events)-1].CreatedAt {
-					t.Fatal("事件不是 created_at DESC（最新在前）")
+			// 返回的必须是**最新**的一批：第一条就是最新灌进去的那条。
+			// （旧版这里是个**恒假条件**——用例表的 want 只会是 500 或 100，而库里灌了 520 条，
+			// 「want 达到已灌数」永远不成立——等于从没执行过；断言死掉的后果是
+			// 「返回最早的 500 条」也能绿。）
+			if len(events) == 0 {
+				t.Fatalf("返回 0 条, want %d", c.want)
+			}
+			if events[0].ID != newest.ID {
+				t.Fatalf("返回的第一条 = %s(@%d), want %s(@%d)（最新灌进去的那条）",
+					events[0].ID, events[0].CreatedAt, newest.ID, newest.CreatedAt)
+			}
+			// 到达硬顶时：返回集合必须**等于**「最新 want 条」的集合（Set 比对，不是比长度）。
+			if c.want >= eventListLimitCap {
+				want := newestSet(c.want)
+				got := make(map[string]bool, len(events))
+				for _, e := range events {
+					got[e.ID] = true
+				}
+				if len(got) != len(want) {
+					t.Fatalf("返回 %d 个不同 id, want %d", len(got), len(want))
+				}
+				for id := range want {
+					if !got[id] {
+						t.Fatalf("返回集合缺最新 %d 条里的 %s（取到的不是最新的一批）", c.want, id)
+					}
+				}
+				for id := range got {
+					if !want[id] {
+						t.Fatalf("返回集合里多了 %s：它不在最新 %d 条里（取到的是旧的一批）", id, c.want)
+					}
 				}
 			}
 		})
@@ -1030,6 +1071,10 @@ func TestEventListLimitCapHandlerClamps(t *testing.T) {
 		}
 		if echoed == nil || *echoed != 500 {
 			t.Fatalf("响应 limit = %v, want 500", echoed)
+		}
+		// 合并 + 截断后仍必须是「最新 500 条」（两个命名空间合并的路径同样不能取旧的一批）。
+		if len(events) == 0 || events[0].ID != newest.ID {
+			t.Fatalf("namespaceId=* 的第一条不是最新那条 %s", newest.ID)
 		}
 	})
 }
