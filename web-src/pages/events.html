@@ -200,6 +200,16 @@
       let nextCursor = "";
       let cursorStack = [];
 
+      // loading 是**请求中的闸门**（in-flight 守卫）。
+      //
+      // 为什么需要：上面四份状态是页级共享的，而 loadAll() 被刷新、筛选、
+      // 三个翻页按钮、清筛选多处调用。没有闸门时快速双击「更旧 →」会这样：
+      //   ① 两次点击读到同一对 (pageCursor, nextCursor)
+      //   ② 各自 push(pageCursor) → **同一个游标被压栈两次**
+      //   ③ 之后第一次点「← 较新」只是原地重载同一页（看起来“点了没反应”）
+      // 栈是会话内回退的**唯一**来源，压重了就凭空多出一层假历史。
+      let loading = false;
+
       let demoMode = false;
 
       function toast(msg) {
@@ -424,6 +434,10 @@
           t("events.filter.clear", "清除筛选"),
         );
         clear.addEventListener("click", () => {
+          // 同样要查闸门：下面几行会先改 pageCursor/cursorStack 再调 loadAll()，
+          // 若请求在飞就会被吞掉 —— 结果是“窗口没重载、锚点却已清空”，
+          // 下一次点「更旧」会从首页锚点跳着翻，跳过一整页。宁可整下忽略。
+          if (loading) return;
           document.getElementById("ev-source").value = "";
           nodeSel.value = "";
           document.getElementById("ev-trace").value = "";
@@ -474,9 +488,15 @@
         history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
       }
 
+      // 三个翻页入口都要自己查一次闸门：它们改的是**共享分页状态**，
+      // 而改动发生在 loadAll() 之前。只守 loadAll() 的话，双击时
+      // push/pop 还是会各跑两遍（正是上面注释里说的“同一游标压栈两次”）。
+      // 「刷新」按钮和筛选下拉也走 loadAll()，由它自己的闸门拦住。
+
       // 「更旧 →」：把当前锚点压栈（首页压空串，代表“回首页”），再以
       // nextCursor 为新锚点写 URL 并加载。nextCursor == "" 时按钮本来就不渲染。
       function goOlder() {
+        if (loading) return;
         if (!nextCursor) return;
         cursorStack.push(pageCursor);
         pageCursor = nextCursor;
@@ -487,6 +507,7 @@
       // 「← 较新」：弹栈回退。栈空时按钮不渲染，这里再兜一层防意外调用。
       // 刷新后栈必然为空 → 按钮隐藏，不报错（契约 §3.4）。
       function goNewer() {
+        if (loading) return;
         if (!cursorStack.length) return;
         pageCursor = cursorStack.pop();
         writeUrlBefore(pageCursor);
@@ -496,6 +517,7 @@
       // 「回到最新」：清掉 before 回首页，同时清空回退栈
       //（栈里全是“更旧”方向的锚点，留着会让「← 较新」指向不存在的历史）。
       function goLatest() {
+        if (loading) return;
         pageCursor = "";
         cursorStack = [];
         writeUrlBefore("");
@@ -523,56 +545,88 @@
         for (const [id, label, fn] of btns) {
           const b = el("button", "btn-ghost rounded px-3 py-2 text-xs", label);
           b.id = id;
+          // 请求在飞时按钮置灰。注意：真正的防线是 goOlder/goNewer/goLatest
+          // 里的闸门 —— 翻页按钮是上一轮加载时就渲染好的，此刻已经在页面上，
+          // 置灰只在这轮重绘到 finally 重绘之间那一瞬生效（外加给测试一个
+          // 可断言的信号：disabled 与 loading 同源）。
+          b.disabled = loading;
           b.addEventListener("click", fn);
           nav.appendChild(b);
         }
       }
 
       async function loadAll() {
-        // 每次加载前重填下拉：「源类型」变了以后，「源」下拉必须跟着只列
-        // 该类型下的源。只调一次 init 的话，用户切类型后源下拉还是旧的
-        // 全集，能选出「类型=cron + 源=GitHub PR」这种必然为空的组合。
-        fillSelects();
-
-        const trace = document.getElementById("ev-trace").value.trim();
-        const nodeId = document.getElementById("ev-node").value;
+        // 闸门：同一时刻只允许一个加载在飞。
+        //
+        // 挡住的是所有入口（「刷新」按钮 onclick="loadAll()"、筛选下拉、
+        // 回车搜索、清筛选、三个翻页按钮）—— 它们都会改共享游标状态，
+        // 并发跑就会出现“两个请求抢着写 pageCursor/nextCursor，栈里多一层”。
+        if (loading) return;
+        loading = true;
         try {
-          await ensureNodeTraces(nodeId);
-        } catch (e) {
-          nodeTraceIds = null;
-        }
-        // limit 必须显式带上：不传时页大小由服务端默认值决定，页面就不可控。
-        let qs = "?limit=" + PAGE_SIZE;
-        if (pageCursor) qs += "&before=" + encodeURIComponent(pageCursor);
-        if (trace) qs += "&traceId=" + encodeURIComponent(trace);
-        // 走**控制台**端点（会话 Cookie 鉴权）。
-        // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
-        // 浏览器页面拿不到也拿不对这个凭据。
-        const r = await fetchApiResult(API + "/console/events" + qs);
+          // 每次加载前重填下拉：「源类型」变了以后，「源」下拉必须跟着只列
+          // 该类型下的源。只调一次 init 的话，用户切类型后源下拉还是旧的
+          // 全集，能选出「类型=cron + 源=GitHub PR」这种必然为空的组合。
+          fillSelects();
 
-        // 游标失效（400 “invalid before cursor”）：提示 + 清掉 before 回最新。
-        // 不会死循环：goLatest() 会把 pageCursor 清空，而本分支要求
-        // pageCursor 非空才会进，所以重载后的那次请求不可能再走到这里。
-        if (r.status === 400 && pageCursor) {
-          toast(t("events.page.invalid_cursor", "游标已失效，已回到最新"));
-          goLatest();
-          return;
-        }
+          const trace = document.getElementById("ev-trace").value.trim();
+          const nodeId = document.getElementById("ev-node").value;
+          try {
+            await ensureNodeTraces(nodeId);
+          } catch (e) {
+            nodeTraceIds = null;
+          }
+          // limit 必须显式带上：不传时页大小由服务端默认值决定，页面就不可控。
+          // 抽成小函数是因为下面「游标失效」那条分支要按清空后的状态再拼一次。
+          const buildQuery = () => {
+            let qs = "?limit=" + PAGE_SIZE;
+            if (pageCursor) qs += "&before=" + encodeURIComponent(pageCursor);
+            if (trace) qs += "&traceId=" + encodeURIComponent(trace);
+            return qs;
+          };
+          // 走**控制台**端点（会话 Cookie 鉴权）。
+          // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
+          // 浏览器页面拿不到也拿不对这个凭据。
+          let r = await fetchApiResult(API + "/console/events" + buildQuery());
 
-        if (r.data) {
-          // 一页一次：**替换** EVENTS 而不是累加 —— 累加会让每页条数失控，
-          // 也会让「本页 N 条」的语义变成“已加载 N 条”。
-          EVENTS = r.data.events || [];
-          nextCursor = r.data.nextCursor || "";
-          demoMode = false;
-        } else {
-          // 后端未连接 / 其它 HTTP 失败：降级成演示态，不白屏、不抛未捕获异常。
-          EVENTS = [];
-          nextCursor = "";
-          demoMode = true;
+          // 游标失效（400 “invalid before cursor”）：提示 + 清掉 before 回最新，
+          // 并且**在这一轮里**直接补一次首页请求。
+          //
+          // 不能像原来那样调 goLatest()：它内部的 loadAll() 会被上面的闸门吞掉
+          // （此刻 loading 还是 true），页面就停在失效的旧窗口上，只剩一个 toast。
+          // 也不会死循环：补发的这次不带 before，服务端不可能再判游标失效。
+          if (r.status === 400 && pageCursor) {
+            toast(t("events.page.invalid_cursor", "游标已失效，已回到最新"));
+            pageCursor = "";
+            cursorStack = [];
+            writeUrlBefore("");
+            r = await fetchApiResult(API + "/console/events" + buildQuery());
+          }
+
+          if (r.data) {
+            // 一页一次：**替换** EVENTS 而不是累加 —— 累加会让每页条数失控，
+            // 也会让「本页 N 条」的语义变成“已加载 N 条”。
+            EVENTS = r.data.events || [];
+            nextCursor = r.data.nextCursor || "";
+            demoMode = false;
+          } else {
+            // 后端未连接 / 其它 HTTP 失败：降级成演示态，不白屏、不抛未捕获异常。
+            EVENTS = [];
+            nextCursor = "";
+            demoMode = true;
+          }
+          // 重绘必须发生在 loading = false **之前**（都在 try 内）：
+          // renderNav() 是按 loading 决定按钮 disabled 的，顺序反了就会
+          // 画出“永远禁用”的导航。
+          renderList();
+          renderNav();
+        } finally {
+          // 正常结束 / 提前 return / 抛异常，三条路径都必须放开闸门，
+          // 否则一次失败就把整个页面的加载永久卡死。
+          // 放开后重绘一次导航，把按钮从 disabled 恢复成可点。
+          loading = false;
+          renderNav();
         }
-        renderList();
-        renderNav();
       }
 
       // renderSummary 写摘要行：本页条数 + 是否已到最旧 + 演示徽章。
