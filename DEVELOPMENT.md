@@ -383,6 +383,7 @@ make ci
 | 安全 | `scripts/e2e/suites/security.mjs` | scope 越权/Key 篡改/哈希不可逆/SQL 注入/路径穿越 |
 | 前端 | `scripts/e2e/suites/frontend.mjs` | 6 页渲染 + 路由守卫 + 真实数据 |
 | 边界 | `scripts/e2e/suites/edge_cases.mjs` | 并发 seq/Unicode/超大体/畸形输入 |
+| 容量与背压 | `scripts/e2e/suites/capacity.mjs` | #229 保留期（默认 30 天 / 0=永久）与 #228 背压：超阈 503 + `Retry-After` + 机器可读 body、任务不丢、读端点不受影响、积压清掉后自愈；过期事件被清、窗口内保留 |
 
 ### 测试底座
 
@@ -461,6 +462,45 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 `scripts/e2e/run_all.sh` 只在 `internal/server/dist` 不存在或 `web/partials.js` 缺失时才跑 `make fe`，否则直接用现有 dist 编译二进制。改了 `web/`（partials.js/sw.js/tokens.css 等）或 `web-src/`（layouts/pages/locales，sitegen 会重新渲染进 `web/*.html` + i18n JS）后直接 `make e2e`，跑的是陈旧 embed，表现为“改的逻辑像没生效、新断言莫名挂、旧行为还在”。修复：跑门禁前先 `rm -rf internal/server/dist`（让 run_all.sh 强制重建），或先 `make fe` 再 `make e2e`。验证产物链路是否新：`grep -c <新特征字符串> internal/server/dist/*` 应 >0。**教训**：改任何会被 embed 的前端源后，跑门禁前必须确认 dist 产物是新的，别信 run_all.sh 的“已存在就跳过”；这是源→指纹→embed 三段链路里最易断的一环。
 
+### `auto_vacuum=0`：删了不等于变小，且「开保留期」不等于「跟得上写入」
+
+#229 两条一起踩过：
+
+1. **删了不还盘**：`PRAGMA auto_vacuum = 0`（本仓 DSN 没设），DELETEd 的页只进 freelist。
+   实测 26,000 行全删掉，文件字节一个不变（5,185,536 → 5,185,536），`freelist` 从 0 涨到 1178；
+   再灌同样多的行只多花 1.6%（freelist 被复用）。**所以「稳态」是页数到顶不再涨，不是文件变小。**
+   运维看「磁盘没变小」会以为保留期没生效，文档/告警里必须写清。
+2. **单轮预算 × 轮次必须 ≥ 写入量**：旧配置 5 批×1000 行、每小时一轮 = 12 万行/天，
+   而 30 ev/s 的写入（一条 ingest 落 **2 行** events：本体 + `pruned.*` 剪枝留痕）是 518 万行/天
+   —— **差 43 倍，保留期开着也永远删不完**。修法：`DefaultRetentionBatches` 5→20 + 上一轮
+   `truncated` 时把下一轮周期从 1 小时切成 30s（`lease.DefaultRetentionCatchUpInterval`）。
+   注意每批仍是独立的 1000 行短事务，写锁持有量不变；放大的是「单轮几批」。
+   **记住**：`LIMIT` 只限删除行数、不限扫描/排序行数，单批成本仍 ∝ 该范围已过期行数。
+   实测单轮 20,000 行 / 242ms。测量与容量测算见 `docs/perf/capacity-and-backpressure.md`。
+
+### 背压信号：不要用 pending 行数，也不要过滤 `not_before`
+
+#228：pending 行数随命名空间数/能力数/流量口径漂移，跨部署不可比 → 用
+`now - MIN(created_at) WHERE status='pending'`。**但别顺手加 `not_before` 过滤**：
+`SetNotBefore` 是「重派退避」，而写它的正是 `ErrNoCapacity`（派不出去）那条路径
+（`internal/server/mux.go` 的 `Redispatch`）—— 加了等于把要治的场景整个漏掉。
+另：这条查询每采样周期都跑，必须配部分索引
+`idx_tasks_pending_created_at ON tasks(created_at) WHERE status='pending'`（迁移 17），
+否则积压越多它越贵 —— 正好在最需要它的时候最贵。
+再另：判定要在**请求路径之外**（后台降采样 0.2 次/秒 + `atomic` 读），否则等于把 #242
+刚优化掉的 per-request 开销又加回来。
+
+### 保护必须有出口：孤儿 pending 会让背压永久拒绝
+
+#228 复审才发现的一条：信号是 `MIN(created_at) WHERE status='pending'`，而库里一旦有
+**永远派不出去**的 pending（能力升级后无人声明该版本 / 节点下线后无人声明 / 任务建出来后
+再没有能跑它的节点），`RedispatchTask` 只会一直返回 false 且**全仓没有 abandon 路径** ——
+于是一条孤儿任务就能把整个部署的新事件入口钉死在 503 上，永不恢复。
+修法：连续超阈超过安全阀窗口（默认 30 分钟）就 **fail-open**（停止拒绝 + `ERROR
+server.backpressure.stuck`），信号回落自动复位且**重新具备**拒绝能力。
+**教训**：任何「长期生效的保护」都要有「保护本身坏掉时怎么退出去」的设计，
+且退出方向要选**保持可用**那一侧（整站写不进来比队列继续涨更糟）。
+
 ## 9. 常用命令速查
 
 ```bash
@@ -482,3 +522,10 @@ go run ./cmd/devseed -db ./anotify.db -username demo  # 播种测试用户
 ## 10. 环境变量
 
 见 `README.md` 的环境变量表。关键：`ANOTIFY_VAPID_*_KEY`（推送必需）、`ANOTIFY_RP_ID`/`ANOTIFY_RP_ORIGIN`（Passkey，必须=访问域名）、`ANOTIFY_STATIC`（空=embed，`./web`=开发）。
+
+容量相关（#229 / #228，详见 `docs/perf/capacity-and-backpressure.md`）：
+
+| 变量 | 默认 | 语义 |
+| --- | --- | --- |
+| `ANOTIFY_EVENT_RETENTION_DAYS` | `30` | events 保留天数；**`0` = 永久保留**（启动日志 `server.retention.permanent` 会 WARN：磁盘随写入线性增长） |
+| `ANOTIFY_PENDING_MAX_AGE_SEC` | `120` | 最老 pending 任务等待秒数**超过**它 → 三个新事件入口（`POST /v1/events`、`POST /v1/hooks/{token}`、`POST /v1/sources/{id}/fire`）返回 `503` + `Retry-After`。**`0` = 不启用**（小部署别被自己的保护坑到）。超阈持续 30 分钟会 fail-open（孤儿 pending，见 §8） |

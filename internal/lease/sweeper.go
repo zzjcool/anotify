@@ -55,14 +55,14 @@ type Sweeper struct {
 	// **事实：生产路径上这个调度是接上的。** New 里用类型断言自动接线
 	// （Store 同时实现 RetentionStore 就启用），而 internal/server/mux.go 传进来的
 	// 正是 *store.DB——所以 lease.New(*store.DB) 会让清理调度在进程里真的跑起来。
-	// **本轮没有运维 kill switch**：没有 env 开关、没有保留期配置开关，关闭只能改代码
-	// （不调用 New，或把本字段置 nil）。是否加开关待上级拍板。
+	// **没有针对调度本身的运维 kill switch**（想把整个调度关掉只能改代码：不调用 New，
+	// 或把本字段置 nil）——但**events 要不要删**是另一个开关，见下面的 RetentionEventSec。
 	//
-	// **但 events 保留期默认禁用**（store.DefaultEventRetentionSec ==
-	// store.EventRetentionDisabled == 0，0 表示禁用、不是「保留 0 秒」）：本版没有开关、
-	// 也没有 per-namespace 配置，lease 层**从不**给 store.RetentionOptions 填 EventRetentionSec，
-	// store 见到 <=0 就跳过整个 events 阶段并置 EventsDisabled=true——所以本版升级后
-	// **不会删任何 events**；等部署级保留期配置 retention_sec 落地后由部署配置开启。
+	// **events 保留期（#229）**：由 `RetentionEventSec` 控制，默认 30 天（部署配置
+	// ANOTIFY_EVENT_RETENTION_DAYS 经 mux 注入）；`0` = **永久保留**
+	// （== store.EventRetentionDisabled；store 见到 <= 0 就跳过整个 events 阶段并置
+	// EventsDisabled=true，所以「不配置就不删 events」仍然成立，只是它现在由字段零值承载，
+	// 而不再由「lease 层永不注入」承载）。
 	// tasks 侧则按能力声明生效：默认安装（库里只有内置能力）下不删——
 	// 内置能力（store.BuiltinCapabilities）的 lifecycle 没声明 resultTtlSec（0 = 永不清理）；
 	// 但一旦有自定义能力声明了 resultTtlSec > 0（经 POST /v1/capabilities 落库），
@@ -71,20 +71,48 @@ type Sweeper struct {
 	// 非 nil 时清理是**异步**的：Tick 只判断是否到点，真正的 DELETE 在独立 goroutine 里跑，
 	// 慢清理不会拖住 5s 的租约回收/重派（见 retention.go 的 maybeSweepRetention）。
 	Retention RetentionStore
-	// RetentionInterval 是保留策略的执行周期；0 → DefaultRetentionInterval（1 小时）。
+	// RetentionInterval 是保留策略的常态执行周期；0 → DefaultRetentionInterval（1 小时）。
 	// 巡检 tick 是 5s，两者不同频：每 5s 便宜地看一眼是否到点，到点才真删。
+	// 注意「常态」二字：上一轮被批数预算截断时走 RetentionCatchUpInterval（默认 30s）。
 	RetentionInterval time.Duration
 	// RetentionBatch 是单条 DELETE 的行数上限；0 → store.DefaultRetentionBatch。
 	RetentionBatch int
-	// RetentionBatches 是每个清理范围每轮最多跑几批；0 → store.DefaultRetentionBatches。
+	// RetentionBatches 是每个清理范围每轮最多跑几批；0 → store.DefaultRetentionBatches
+	// （20 → 每范围每轮最多 20×1000 行）。它是「单轮预算」，与轮次频率不是一回事。
 	RetentionBatches int
+
+	// RetentionEventSec 是 events 保留秒数（#229）；<= 0 = 永久保留（跳过 events 阶段）。
+	// 由部署配置（ANOTIFY_EVENT_RETENTION_DAYS）经 mux 注入（`cfg.EventRetentionSec()`，
+	// 默认 30*86400）；**这是本批新增的开关**，而它的**零值 0 = 永久保留**，
+	// 所以「不配置就不删 events」这条老保证仍然成立。
+	// 不要在这里补默认值：补了就变成「不显式配置=删 30 天前的事件」，那是不可逆的方向。
+	RetentionEventSec int
+
+	// RetentionCatchUpInterval 是「上一轮被批数预算截断」时的追赶周期，0 → 30s
+	// （DefaultRetentionCatchUpInterval）。
+	//
+	// 为什么需要：只在 1 小时一轮下跑，单命名空间每天最多删 ~48 万行，而 30 ev/s
+	// 的写入是 ~518 万行/天——保留期开着也永远删不完（#229 / A5）。截断后改 30s 一轮，
+	// 余量近 10 倍；追平（某轮不再截断）自动回到 1 小时。
+	RetentionCatchUpInterval time.Duration
 
 	// lastRetention 是上次执行保留策略的时刻（unixepoch 秒）；
 	// 0 = 还没跑过 → 首轮 tick 立即执行（先排一次 tasks 侧积压；
-	// events 阶段本版总是被跳过，见 Retention 字段注释）。
+	// events 侧按 RetentionEventSec 生效，见 Retention 字段注释）。
 	// 只在 Tick 里读写（单 goroutine），故不加锁；清理 goroutine 不碰它。
 	// 同包测试会直接置 0 来逼开低频门（如重叠守卫用例）。
 	lastRetention int64
+
+	// lastRetentionTruncated 是「上一轮是否被批数预算截断」的 Tick 侧快照（= 要不要追赶）。
+	//
+	// 为何是两份字段而不是一份：写入方是**清理 goroutine**（它才知道 report.Truncated），
+	// 所以真实值走 atomic 的 retentionTruncated；这个 bool 只在 Tick 的 goroutine 里
+	// 读写（每次 Tick 开头用 retentionTruncated.Load() 刷新快照），避免数据竞争。
+	lastRetentionTruncated bool
+
+	// retentionTruncated 是清理 goroutine → Tick goroutine 的 atomic 交接位
+	// （含义同 lastRetentionTruncated；只在「本轮成功且被截断」时置 true）。
+	retentionTruncated atomic.Bool
 
 	// retentionBusy 是重叠守卫：true = 上一轮清理还在跑，本轮直接跳过
 	// （不排队、不叠加；两轮并发只会互相抢 SQLite 的写锁）。
@@ -109,8 +137,9 @@ func New(st Store) *Sweeper {
 	// 自动接线保留策略（#143）：*store.DB 同时实现 RetentionStore。
 	// 用断言而不是显式赋值，是为了让**不需要**清理的调用方（不实现 RetentionStore 的
 	// 测试 fake）什么都不做也能拿到 nil（no-op），且不必改 server 层的组装代码。
-	// 注意：生产路径传的就是 *store.DB，所以线上这个调度总是接上的；但 events 保留期
-	// 默认禁用（见 Retention 字段注释），本版不会删 events。
+	// 注意：生产路径传的就是 *store.DB，所以线上这个调度总是接上的。
+	// **events 保留期不在这里给默认值**：RetentionEventSec 保持零值 0 = 永久保留，
+	// 要删 events 必须由部署配置显式注入（mux.go 把 cfg.EventRetentionSec() 赋给它）。
 	if rs, ok := st.(RetentionStore); ok {
 		s.Retention = rs
 	}
@@ -161,7 +190,8 @@ func (s *Sweeper) Run(ctx context.Context) {
 //
 //	① 回收过期租约（assigned/acked/running → lease_expired → pending|abandoned）
 //	② 重派到期的 pending 任务
-//	③ 保留清理（#143）——**异步**，低频门自己控频（默认 1 小时一轮）
+//	③ 保留清理（#143）——**异步**，低频门自己控频（默认 1 小时一轮；上一轮被预算
+//	   截断则改用追赶周期 30s，见 retention.go）
 //
 // ①② 反过来的话，本轮刚被回收的任务要等下一轮（5s）才重派，白白多等一个周期。
 //

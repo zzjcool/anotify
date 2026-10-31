@@ -50,6 +50,40 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		"path", cfg.DBPath,
 	)
 
+	// events 保留期（#229）：默认 30 天，0 = 永久保留。
+	//
+	// 为什么启动时必须打这一条：events 清理**不可逆**，而「默认 30 天」是一个真实的
+	// 产品决策（用户拍板）。运维必须在重启后就能从日志里读到「这台机器会删 30 天前的
+	// 事件」或者「这台机器永不删事件、磁盘会一直涨」——两种后果完全不同，不能只留在文档里。
+	//
+	// 数字口径（`scripts/perf/c/s6-capacity.sh` a 段实测，与批次 4 的 s2-retention.sh
+	// 同量级）：一条空 payload 的 ingest 在磁盘上是 **679.9 B**（含派发剪枝留痕的额外行，
+	// 一条 ingest 落 2 行 events），1KB payload 是 **1908.7 B**。按 38 ev/s 算，
+	// 30 天窗口 ≈ 62.4 GiB（空 payload）/ 175.1 GiB（1KB）。
+	// 完整的容量表与复现口径见 docs/perf/capacity-and-backpressure.md。
+	//
+	// 注意 `days=0` 有两个来源（env 未设 + 显式 0 / 负数都会被归一），日志里不能谎称
+	// 「你设的是 0」——那会让「保留期被悄悄关掉」这条路径无法追查，所以 hint 里明写。
+	if cfg.EventRetentionSec() > 0 {
+		slog.Info("event retention configured",
+			"event", "server.retention.configured",
+			"days", cfg.EventRetentionDays,
+			"events_retention_sec", cfg.EventRetentionSec(),
+			"est_bytes_per_event", 679.9,
+			"est_bytes_per_event_1kb_payload", 1908.7,
+			"note", "events 超过保留期会被分批删除（不可逆）；idem_key 去重窗口缩成保留期同长；auto_vacuum=0 → 文件是平台化而不是变小",
+		)
+	} else {
+		slog.Warn("event retention disabled: events are kept forever",
+			"event", "server.retention.permanent",
+			"days", 0,
+			"est_bytes_per_event", 679.9,
+			"note", "events 永久保留：磁盘会随写入量线性增长，必须自行做容量监控与告警（auto_vacuum=0，删了也不会还盘）",
+			"hint", "ANOTIFY_EVENT_RETENTION_DAYS 未设置时默认 30；显式设 0 **或负数**都会落到这条分支（解析层把负数归一到 0），所以「没配」与「配错成负数」在这里长得一样——请确认部署配置",
+			"est_30d_bytes_at_38ev_per_sec_gib", 62.4,
+		)
+	}
+
 	// 3. 认证（WebAuthn + API Key）
 	authSvc, err := auth.NewService(db, auth.Config{
 		RPDisplayName: cfg.RPDisplay,
@@ -126,6 +160,29 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		Keys:     keyValidator,
 		Triggers: trigger.New(db, dispatcher),
 	}
+
+	// 派发背压（#228）：判定信号 = **最老 pending 任务的等待时长**，超阈时**新事件入口**返回 503。
+	//
+	// 设计约束（请求路径不查 DB / 阈值 0 = 不启用 / 只拒新事件不动已入库任务 / 持续超阈
+	// 过久要 fail-open）全部写在 internal/server/backpressure.go 的文件头，改动前先读那里。
+	//
+	// 编译期断言：*store.DB 必须实现 pendingAgeSource（backpressure.go 里的窄接口）。
+	// 少了这一行，store 侧 OldestPendingCreatedAt 签名一漂移，背压就会**静默失效**——
+	// 症状是「配了阈值但永远不拒」，与「确实没有积压」在日志上无法区分。
+	var _ pendingAgeSource = (*store.DB)(nil)
+	bp := newBackpressureGuard(db, backpressureOptions{
+		// PendingMaxAge 而不是 time.Duration(sec)*time.Second：后者在超大值上会回绕
+		// 成很小的数（= 全站立刻 503），钳位在 Config.PendingMaxAge 里。
+		MaxAge: cfg.PendingMaxAge(),
+	})
+	// MaxAge <= 0 时 Run 立即返回（不启用的部署一个 goroutine、一次采样都不该多付）。
+	go bp.Run(ctx)
+	slog.Info("dispatch backpressure configured",
+		"event", "server.backpressure.configured",
+		"pending_max_age_sec", int(cfg.PendingMaxAge()/time.Second),
+		"enabled", cfg.PendingMaxAge() > 0,
+		"note", "0 = 不启用；超阈时 POST /v1/events · POST /v1/hooks/{token} · POST /v1/sources/{id}/fire 返回 503+Retry-After，读端点不受影响",
+	)
 
 	// 控制台 API（#59）：8 个新端点，全部走组织维度（I10）
 	consoleH := &consoleHandler{db: db, auth: authSvc}
@@ -235,6 +292,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	slog.Info("source scheduler wired", "event", "server.source.ready")
 
 	sweeper := lease.New(db)
+	// events 保留期（#229）：把部署配置注入巡检。默认 30 天（cfg.EventRetentionSec() 已换算成秒）；
+	// 0 = 永久保留（store 侧 EventRetentionDisabled → 整个 events 阶段跳过）。
+	//
+	// 注意 0 在这里的含义是「永久保留」而**不是**「保留 0 秒」——lease 侧不再替调用方补默认值，
+	// 补了就会让「不显式配置 = 删 30 天前的事件」变成不可逆的默认行为。
+	sweeper.RetentionEventSec = cfg.EventRetentionSec()
 	sweeper.Redispatch = func(sctx context.Context, task *store.Task) (bool, error) {
 		ok, err := dispatcher.RedispatchTask(sctx, task)
 		if err != nil {
@@ -277,7 +340,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	// --- 事件中心（#58 / #59）---
 	// 事件入口用 API Key（机器调用），与控制台用会话是两套鉴权。
-	mux.Handle("POST /v1/events", noStore(eventH))
+	mux.Handle("POST /v1/events", noStore(bp.Wrap(eventH)))
 	mux.Handle("GET /v1/events", noStore(eventH))
 	// 控制台端点：登录会话 + 组织维度校验
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(consoleH.tasks))))
@@ -309,13 +372,15 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
 	mux.Handle("PATCH /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
 	mux.Handle("DELETE /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
-	mux.Handle("POST /v1/sources/{id}/fire", noStore(sessMW(http.HandlerFunc(srcH.fire))))
+	// fire 走 sessMW **里面**再包背压：未登录的请求先被 401 挡掉，
+	// 不让外部从 503/200 的差别里读出「中枢现在积压了吗」。
+	mux.Handle("POST /v1/sources/{id}/fire", noStore(sessMW(bp.Wrap(http.HandlerFunc(srcH.fire)))))
 	mux.Handle("POST /v1/sources/{id}/dry-run", noStore(sessMW(http.HandlerFunc(srcH.dryRun))))
 	// 草稿试运行：还没保存的配置也能先验一遍（弹窗里改完就想试）
 	mux.Handle("POST /v1/sources/dry-run", noStore(sessMW(http.HandlerFunc(srcH.dryRun))))
 	// webhook 入口**不需要会话**：鉴权是 URL 里的 token。
 	// 外部系统（GitHub / 监控告警）不可能带我们的 Cookie。
-	mux.Handle("POST /v1/hooks/{token}", noStore(http.HandlerFunc(srcH.hook)))
+	mux.Handle("POST /v1/hooks/{token}", noStore(bp.Wrap(http.HandlerFunc(srcH.hook))))
 
 	// --- 预案（playbook，#193 / 契约 §6）---
 	// 5 个端点**全部**用 resolveNamespaceCreate：缺参 400 / `*` 400 / 不存在 404 /

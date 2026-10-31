@@ -20,8 +20,9 @@ import (
 //	tasks   按**能力级** TTL：capability_versions.lifecycle.resultTtlSec
 //	        只清理终态（succeeded/failed/canceled/abandoned）且 finished_at 早于
 //	        now - resultTtlSec 的行。未声明 resultTtlSec（0）的能力**不清理**。
-//	events  按**部署级**保留期，且**当前默认禁用**（DefaultEventRetentionSec ==
-//	        EventRetentionDisabled）：调用方不显式给出保留期时，整个 events 阶段跳过。
+//	events  按**部署级**保留期：调用方不显式给出保留期时（EventRetentionSec <= 0），
+//	        整个 events 阶段跳过（DefaultEventRetentionSec == EventRetentionDisabled）；
+//	        部署配置 ANOTIFY_EVENT_RETENTION_DAYS 默认 **30 天**，由 internal/lease 注入。
 //	        source='route' 的剪枝行（#142）同样受此约束，不搞特例。
 //	        保留期是部署级配置（org 层删除后不再有 per-org 配置，#205），
 //	        **删除粒度是命名空间**（events.namespace_id）：一份保留期对所有命名空间生效。
@@ -37,20 +38,20 @@ import (
 // EventRetentionDisabled 表示「不清理 events」。0 在这里是**禁用**，不是「保留 0 秒」。
 const EventRetentionDisabled = 0
 
-// DefaultEventRetentionSec 是 events 保留期的默认值：**禁用**（== EventRetentionDisabled）。
-// 为什么默认禁用：删除不可逆，而本版没有开关、没有 per-org 配置，且会静默改变
-// store/stats.go 的「总数 / 今日 / 热力图」口径。等部署级保留期配置落地后再开启。
+// DefaultEventRetentionSec 是 events 保留期的**store 层**默认值：禁用（== EventRetentionDisabled）。
+//
+// 它只回答一个问题：「调用方没给值时 store 要不要删 events」。而**部署默认**是另一件事：
+// ANOTIFY_EVENT_RETENTION_DAYS（server.Config.EventRetentionDays）默认 **30 天**，
+// 由 internal/lease 的 Sweeper.RetentionEventSec 显式注入到 RetentionOptions。
+// store 这里保持「禁用」是刻意的：底层默认绝不能自己发起不可逆的删除；「默认删 30 天前
+// 的事件」这个产品决策由部署层显式表达，才能被启动日志告知、被配置关掉。
 //
 // 具体含义：`retentionWithDefaults` **不会**把未配置的保留期补成某个正数秒；
 // SweepRetention 在 EventRetentionSec <= 0 时跳过整个 events 阶段并置
 // RetentionReport.EventsDisabled——「压根没扫」与「扫了但没东西删」必须能区分开。
 //
-// **线上恒为禁用**：当前唯一的生产调用方（internal/lease 的 runRetentionSweep）
-// 不注入 EventRetentionSec，也没有 env 开关、没有 Sweeper 字段能把值传下来。
-// 部署级保留期配置与运维开关都还没落；**已定**：配置项落地后由
-// **部署配置**开启 events 清理（下一轮），本轮不提供运维开关。
-// 换句话说：EventRetentionSec 现在只有测试与未来的运维入口在用，不要把它读成
-// 「已经支持按配置开启」。
+// 两种「0」含义一致：store 层没配置（本默认值）与运维显式配
+// `ANOTIFY_EVENT_RETENTION_DAYS=0`，都是**永久保留**（events 会持续增长，启动日志 WARN）。
 const DefaultEventRetentionSec = EventRetentionDisabled
 
 // DefaultRetentionBatch 是单条 DELETE 的行数上限（先度量后删除）。
@@ -58,9 +59,15 @@ const DefaultRetentionBatch = 1000
 
 // DefaultRetentionBatches 是每个范围（命名空间×能力 / 命名空间）每轮最多跑几批。
 //
-// 默认 5 → 每个范围每轮最多删 5×1000 行。积压靠多轮（每小时一轮）自然排空，
-// 避免一轮把锁占满；被预算截断时 RetentionReport.Truncated 置位。
-const DefaultRetentionBatches = 5
+// 默认 20 → 每个范围每轮最多删 20×1000 = 20,000 行。
+//
+// 为何从 5 提到 20（#229 / A5）：5×1000 行 × 1 小时一轮 = 12 万行/天，而 30 ev/s 的
+// 写入（约 2 行/事件）是 ~518 万行/天——预算差一个数量级，保留期开着也永远删不完。
+// 提到 20 只是**单轮预算**的手调，不是「一次大事务」：每批仍是一次独立的、1000 行的
+// 短事务（写锁持有量没变），只是单轮多跑几批；「多久一轮」由 lease 层控制
+// （常态 1 小时；上一轮被本预算截断时改 30s 追赶，见 internal/lease/retention.go）。
+// 被预算截断时 RetentionReport.Truncated 置位——这正是追赶的触发信号。
+const DefaultRetentionBatches = 20
 
 // terminalStatusList 是「结果已经落定、可以被保留期清理」的四态。
 // retention_test.go 会对照 IsTerminalStatus 校验两者不漂移。
@@ -260,8 +267,9 @@ func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, namespaceID, capabi
 // 不限**扫描/排序行数**；ORDER BY created_at 是否能免掉排序这里不重新实测。
 //
 // **语义变化（重要）**：删 events 行会同时回收 `idx_events_idem(namespace_id, source, idem_key)`
-// 的去重窗口——`idem_key` 的「收过就不重做」从**永久**缩成**保留期**（由部署配置决定；
-// 未配置时该清理不发生，去重窗口仍是永久）。
+// 的去重窗口——`idem_key` 的「收过就不重做」从**永久**缩成**保留期**（部署配置
+// ANOTIFY_EVENT_RETENTION_DAYS，默认 30 天；显式配 0 = 永久保留时该清理不发生，
+// 去重窗口仍是永久）。
 // 超期重投不会命中旧行，会新建 trace 并重新派整条链；对上游重投语义来说这通常是可接受的
 // （同一个投递 ID 隔很久重放本就少见），但它是行为变化，不是纯存储优化。本轮不改这个行为。
 func (d *DB) DeleteExpiredEvents(ctx context.Context, namespaceID string, cutoff int64, limit int) (int64, error) {
@@ -317,22 +325,24 @@ func (d *DB) listRetentionNamespaceIDs(ctx context.Context) ([]string, error) {
 // （events）先少，不会反过来。它**不保证**整轮扫完不留中间态。
 //
 // 为什么不保证：两张表的 TTL 口径本来就不同——tasks 是**能力级** `resultTtlSec`，
-// events 是**部署级**（**当前默认禁用**，见 DefaultEventRetentionSec）。一旦 events 侧
-// 被部署配置开启，一轮**完整跑完**就会留下「tasks.trace_id 指向已删 events 行」的记录：
+// events 是**部署级**（默认 30 天，见 server.Config.EventRetentionDays；store 侧默认
+// 禁用见 DefaultEventRetentionSec）。events 侧开着时，一轮**完整跑完**就会留下
+// 「tasks.trace_id 指向已删 events 行」的记录：
 // schema 没有跨表外键，不会报错，代价只是少了那一行「发生了什么」。
 // 这是**预期状态**（父事件已删而子任务仍在，就是跨表 TTL 差异的正常结果），不是数据损坏；
 // 想两边严格一致只能把两个 TTL 绑成同一个值，靠删除顺序做不到。
 //
-// events 阶段是**可关的、且默认关**：opts.EventRetentionSec <= 0（含未配置与负值）= 禁用，
+// events 阶段是**可关的**：opts.EventRetentionSec <= 0（含未配置与运维显式配 0）= 永久保留，
 // 此时整个 events 阶段跳过——不 listRetentionNamespaceIDs、不 DELETE、**不返回错误**，只把
 // RetentionReport.EventsDisabled 置位，Namespaces / EventsDeleted 保持 0；tasks 阶段照常跑完。
-// 为什么默认禁用：删除不可逆，而本版没有开关、没有 per-org 配置，且会静默改变
-// store/stats.go 的「总数 / 今日 / 热力图」口径。开启要由调用方显式注入保留期
-// （部署级配置落地后开启）。
+// 为什么 store 层默认关：删除不可逆，且会静默改变 store/stats.go 的「总数 / 今日 / 热力图」
+// 口径。开启必须由调用方显式注入保留期（部署配置 ANOTIFY_EVENT_RETENTION_DAYS 默认 30 天，
+// 经 internal/lease 注入；这是有意的分层，别把两层的默认值混成一个）。
 //
 // 预算：每个范围最多 Batches 批、每批 Batch 行；某批没删满说明该范围已清干净，
 // 立刻换下一个范围（不必把预算空跑完）。批量删满预算 = 还有积压 → Truncated 置位，
-// 交给下一轮（默认一小时后）继续排空，避免一轮长时间持写锁。
+// 交给下一轮继续排空（常态一小时后；被截断时 lease 层会用 30s 的追赶周期），
+// 避免一轮长时间持写锁。
 //
 // 错误语义：返回**已完成的 partial report** + 包装错误（不是零值 report）——
 // 一轮可能删了一部分才被打断，把这些计数丢掉就等于「删了但没人知道」。
