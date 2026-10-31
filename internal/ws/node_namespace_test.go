@@ -159,8 +159,9 @@ func TestPublishAssignRoutesByNamespace(t *testing.T) {
 	if !strings.Contains(err.Error(), "another namespace") {
 		t.Fatalf("error = %v, want it to say the node belongs to another namespace", err)
 	}
-	// 读超时表达「没有帧」。放在最后：读超时会关掉这条客户端连接。
-	if m, ok := tryReadFrame(conn, 300*time.Millisecond); ok {
-		t.Fatalf("node received a frame for a cross-namespace publish: %v", m)
-	}
+	// 读超时表达「没有帧」。放在最后：读超时会关掉这条客户端连接
+	// （conn.go:188-199），之后不能再做依赖会话存活的断言。
+	// 用 assertNoFrame 而不是裸的「等一会儿看有没有东西来」：后者在连接早死时永真。
+	// 主语是**任何**帧（与改前一致）：跨命名空间派发一旦漏出去，漏出去的必然是一条 assign。
+	assertNoFrame(t, conn, 300*time.Millisecond, "跨命名空间派发不许发帧")
 }

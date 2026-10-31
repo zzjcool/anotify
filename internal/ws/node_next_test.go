@@ -247,13 +247,12 @@ func TestResultPersistsNextHopRowBeforePublish(t *testing.T) {
 		t.Errorf("row was not committed before publish: %d/%d visible", pubs[0].rowsInDB, len(pubs[0].taskIDs))
 	}
 
-	// ⑤ 节点没收到 error 帧：父任务已成功，下一跳的失败不该回给节点。
-	// 用「读超时」表达「没有帧」。放在最后：coder/websocket 的读超时会关掉这条
-	// 客户端连接，之后的断言都不能再用 conn。
+	// ⑤ 节点收不到任何帧（原意：下一跳的失败不该回给节点 ⇒ 不能有 error 帧；子任务既然
+	// 没派出去 ⇒ 也不能有 assign 帧）。主语与改前一致 = 任何帧。
+	// 放在最后：coder/websocket 的读超时会关掉这条客户端连接（conn.go:188-199），
+	// 之后的断言都不能再用 conn。
 	// （若这一条偶发不稳，把它去掉也不削弱 ②③ 的结论——那三条才是 #140 的验收。）
-	if m, ok := tryReadFrame(conn, 500*time.Millisecond); ok {
-		t.Fatalf("node received a frame after publish failure: %v (next-hop failure must not be reported to the node)", m)
-	}
+	assertNoFrame(t, conn, 500*time.Millisecond, "下一跳 publish 失败不该回给节点")
 }
 
 // ---------- 必测 2：正常路径「同生共死」 ----------
@@ -371,8 +370,10 @@ func TestResultRollsBackWhenNextHopRowRejected(t *testing.T) {
 	}
 
 	// ④ PublishTasks 从未被调用：不能推一条库里不存在的任务。
-	// 给后台 goroutine 一点时间去「犯错」——实现错了这里就会数到 1。
-	time.Sleep(200 * time.Millisecond)
+	// 不需要 sleep：上游已经 readUntil 到 error 帧 ⇒ 服务端这一帧的 handleResult
+	// 已经走完 rolled-back 分支并返回（error 帧就是它里面写出来的），而 publishNext
+	// 只在 ReportResultAndCreateTasks **提交成功之后**才被调用（node_session.go:260）。
+	// 原先的 time.Sleep(200ms) 是空窗口：goroutine 慢了就是假绿，删掉是严格增强。
 	if planCalls, pubs := fake.snapshot(); len(pubs) != 0 {
 		t.Fatalf("PublishTasks was called %d time(s) (%v) for a row that never committed", len(pubs), pubs[0].taskIDs)
 	} else if planCalls != 1 {
@@ -414,10 +415,9 @@ func TestResultWithoutNextHopUnchanged(t *testing.T) {
 		t.Fatalf("trace has %d rows without NextHop, want 1", len(all))
 	}
 
-	// ③ 没有 error 帧（放最后：读超时会关掉这条客户端连接）。
-	if m, ok := tryReadFrame(conn, 500*time.Millisecond); ok {
-		t.Fatalf("node received an unexpected frame: %v", m)
-	}
+	// ③ 一个帧都没有（原意：老路径既不报错、也不再派活）。主语与改前一致 = 任何帧。
+	// 放最后：读超时会关掉这条客户端连接（conn.go:188-199）。
+	assertNoFrame(t, conn, 500*time.Millisecond, "没设 NextHop 时不许再有下行帧")
 }
 
 // ---------- 补充：plan 失败 → 不提交终态（契约 §1.3 第 3 步） ----------
@@ -454,7 +454,9 @@ func TestResultPlanFailureLeavesNoTerminalState(t *testing.T) {
 	}
 
 	// ③ 一条 publish 都没有（没计划就没有行，也就没有可推的东西）。
-	time.Sleep(200 * time.Millisecond)
+	// 不需要 sleep：① 已 readUntil 到 error 帧 ⇒ handleResult 的 plan 失败分支
+	// 已经返回（没有提交，也就没有行），而 publishNext 只在提交成功后调用
+	// （node_session.go:260）。原先的 time.Sleep(200ms) 只能假绿。
 	if _, pubs := fake.snapshot(); len(pubs) != 0 {
 		t.Fatalf("PublishTasks called %d time(s) despite a failed plan", len(pubs))
 	}
