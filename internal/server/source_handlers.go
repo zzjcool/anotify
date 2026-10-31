@@ -729,7 +729,8 @@ func (h *sourceHandler) hook(w http.ResponseWriter, r *http.Request) {
 	}
 	// 限流放在**查 token 之前**：这个端点不需要登录，任何人都能打；
 	// 先限流能顺带保护 DB 查询，也不给"用响应时间探测 token 是否存在"留窗口。
-	if rateLimited(w, rlHookIP, clientIP(r)) {
+	// 双维度（IP + token）的实现见 ratelimit.go 的 rateLimitedHook。
+	if rateLimitedHook(w, r) {
 		return
 	}
 	token := r.PathValue("token")

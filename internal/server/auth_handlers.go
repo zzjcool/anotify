@@ -166,7 +166,17 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c, err := r.Cookie(auth.SessionCookieName); err == nil {
-		_ = h.svc.Sessions().Revoke(c.Value)
+		if rerr := h.svc.Sessions().Revoke(c.Value); rerr != nil {
+			// 不能把 500 抛给用户（Cookie 已经要清了，抛错只会让前端卡在“点了没反应”），
+			// 但**绝不能静默吞**：会话行还在库里，谁拿到那个 Cookie 值谁就还能继续用。
+			// 留 Error 级证据让运维能发现（#241 审查发现）。
+			// 只记 session id 的前缀：它本身就是一条 bearer 凭据，不能因日志泄露。
+			slog.Error("logout: 会话删除失败（Cookie 已清但会话行可能仍存在）",
+				"event", "auth.logout.revoke_failed",
+				"session_prefix", sessionIDPrefix(c.Value),
+				"error", rerr.Error(),
+			)
+		}
 	}
 	h.svc.Sessions().ClearCookie(w)
 	slog.Info("logout",
@@ -195,6 +205,14 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 		"id": u.ID, "username": u.Username, "displayName": u.DisplayName,
 		"role": u.Role, "disabled": u.Disabled, "createdAt": u.CreatedAt,
 	})
+}
+
+// sessionIDPrefix 取会话 id 的前缀，用于日志（会话 id 本身是 bearer 凭据，不能整条落日志）。
+func sessionIDPrefix(id string) string {
+	if len(id) > 12 {
+		return id[:12] + "…"
+	}
+	return id
 }
 
 func (h *authHandler) sessions(w http.ResponseWriter, r *http.Request) {

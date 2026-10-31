@@ -302,7 +302,10 @@ func (h *keysHandler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) {
-	if err := h.db.RevokeAPIKey(id); err != nil {
+	// 走 KeyManager.RevokeKey 而不是直接 db.RevokeAPIKey：前者在 DB 写成功后
+	// **同步**让该 key 的验证缓存失效（#227）。直接调 db 会绕过失效 → 被吊销的 key
+	// 还能继续用最多一个缓存 TTL（60s），那是真正的安全回归。
+	if err := h.keys.RevokeKey(id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}

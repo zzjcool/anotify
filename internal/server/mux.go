@@ -57,6 +57,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		RPOrigins:     []string{cfg.RPOrigin},
 		SessionTTL:    7 * 24 * time.Hour,
 		SecureCookie:  cfg.RPOrigin != "" && len(cfg.RPOrigin) > 8 && cfg.RPOrigin[:5] == "https",
+		// 鉴权热路径缓存（#227 / #241）：额度由 env 决定，0=默认、负数=关闭。
+		// 两条缓存必须分开传入（失效策略不同，见各自构造器注释）。
+		SessionCacheTTL: cfg.SessionCacheTTL,
+		KeyCacheTTL:     cfg.APIKeyCacheTTL,
 	})
 	if err != nil {
 		slog.Error("auth service init failed",
@@ -143,6 +147,21 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	// 限速器信任代理头开关（仅在反代后开启）
 	trustProxyHeaders = cfg.TrustProxy
+
+	// hooks 入口双维度限流（#245）：额度由 env 决定。
+	//
+	// 必须在挂路由**之前**完成：包级限速器默认是 60/min（旧值），若只在服务处理请求时
+	// 惰性重建，第一波请求就会先吃旧额度（正好是 issue #245 描述的那个 bug）。
+	// perToken/perIP 为负数表示**关闭该维度**（显式运维选择，configureHookRateLimit 会打 WARN）。
+	{
+		perToken, perIP := cfg.hookRateLimits()
+		configureHookRateLimit(perToken, perIP)
+		slog.Info("hook rate limit configured",
+			"event", "server.hook_rate.configured",
+			"per_min_token", perToken,
+			"per_min_ip", perIP,
+		)
+	}
 
 	mux := http.NewServeMux()
 	// --- 动态 API（no-store）---
