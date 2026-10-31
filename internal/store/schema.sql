@@ -641,8 +641,27 @@ CREATE INDEX IF NOT EXISTS idx_tasks_ns_created ON tasks(namespace_id, created_a
 -- 升级路径上唯一必然有数据的时点（线上部署全是 v15 库）。放在这里，老库升级完立刻
 -- 就有统计，不需要人工跑 ANALYZE，也不会留下一个「索引已建、统计为空」的窗口。
 --
--- 代价（换算出来的，不是拍的）：迁移窗口内多一次全表统计扫描，一次性。实测本机
---   2 万行 ~57ms、10 万行 ~0.3s；新库（空表）ANALYZE 不写任何 stat1 行，等于 no-op。
+-- 为什么只 ANALYZE tasks 而不是整库 ANALYZE（reviewer 3A 第二轮复审 minor-5）：
+--   本语句跑在迁移 16 的**单事务**里，而 store.go 自己写着「单个写事务必须远短于 5s」
+--   （busy_timeout=5000 是进程内写队列的硬上限）。整库 ANALYZE 的成本随**整库**增长，且
+--   全程持有写锁：实测 10 万 tasks + 20 万 events 上 `ANALYZE`（整库）446ms，
+--   而 `ANALYZE tasks`（单表）258ms——写锁持有时间砍掉近一半，大库升级时也不会把
+--   「扫整库」压在 busy_timeout 的窗口里。
+--   端到端窗口不变：`Open` 末尾的 `PRAGMA optimize=0x2` 会在本迁移事务**提交之后**把其余表
+--   （events 等）的统计补上（实测 50 万行规模：2538.5 vs 2548.8ms，在两轮噪声内）。
+--   但 tasks 是本迁移唯一改动的表，它的统计必须在这里**确定性地**写出来——`optimize` 是
+--   可选优化（失败只 slog.Warn，不让 Open 失败，见 store.go），不能当保证用。
+--
+-- 代价（换算出来的，不是拍的）：迁移窗口内多一次 **tasks 单表**统计扫描，一次性。实测本机
+--   2 万行 ~57ms、10 万 tasks（+20 万 events）~0.26s。
+--   注意：tasks 为**空表**时（新库升级路径）`ANALYZE tasks` 不给 tasks 写任何 stat1 条目
+--   ——不是「写了等于没写」，而是**一行都不写**。旧版注释写的「新库（空表）ANALYZE 不写任何
+--   stat1 行，等于 no-op」是错的，当时那句是**整库** `ANALYZE`：空库跑完 sqlite_stat1 里其实
+--   会多出 2 行——events.idx_events_idem = "0 0 0 0"（部分索引，空表也写）、
+--   schema_version = "15"（迁移 16 执行时它已经记了 15 条账）。改成 `ANALYZE tasks` 之后，
+--   空库跑完 stat1 是 **0 行**（实测）——也就是说这条语句在空库上确实完全 no-op。
+--   所以新库那一次对 tasks 是纯粹的 no-op：tasks 的统计要等数据灌进来之后，由 Open 末尾的
+--   optimize 补上——那正是它存在的理由（「先建库、后灌数据」）。
 --
 -- 注意两件事：
 --   ① **不要**在迁移里再改索引形状（形状已冻结，见上面的列序说明），这里只是补统计；
@@ -651,4 +670,4 @@ CREATE INDEX IF NOT EXISTS idx_tasks_ns_created ON tasks(namespace_id, created_a
 --      所以它**不会**让「新库/老库形状一致」这道门禁变红——不是漏测，是刻意排除。
 --      统计本身属于「运行期数据」而不是「schema 形状」，两个库的统计本来就可能不同
 --      （行数不同），把它算进形状比对反而是错的。
-ANALYZE;
+ANALYZE tasks;

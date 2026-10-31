@@ -16,6 +16,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -599,15 +600,17 @@ func TestMigration16ListTasksStatsFromProductOpen(t *testing.T) {
 	}
 }
 
-// TestMigration16UpgradeFromV15BackfillsStats：老库升级路径必须**自己**把统计补出来。
+// TestMigration16UpgradeFromV15BackfillsStats：老库升级路径（产品入口 Open）必须把统计补出来。
 //
-// 这是迁移 16 里那句 `ANALYZE;` 的**唯一**门禁。上面几条计划用例都显式跑过一次 ANALYZE
-// （因为它们要断言的是「有统计之后规划器怎么选」），所以它们无法区分「统计是迁移建的」
-// 还是「统计是测试建的」——把 schema.sql 里那句 ANALYZE 删掉，它们仍然全绿。
-// 而线上走的就是这条路：v15 老库里已经躺着几万行任务，升级时建索引的同时必须补统计，
-// 否则 MAJOR-1 立刻复发（实测 2 万行 14~26ms，随行数线性增长）。
+// 注意它**不是**迁移 16 里那句 `ANALYZE tasks` 的门禁（第二轮复审指出：旧注释自称「唯一门禁」，
+// 与事实不符）。它走的是 Open，而 Open 在迁移**之后**还有 `PRAGMA optimize=0x2`——把 schema.sql
+// 里那句 ANALYZE 删掉，这条照样绿（统计改由 optimize 写）。它守的是**端到端**语义：
+// 「线上 v15 库升级完、进程正常起来之后，规划器手里有没有统计」——那才是用户能感知的东西。
+// 迁移语句本身的独立门禁是 TestMigration16AnalyzesTasksInMigration（绕过 Open 直接跑 migrate）。
+// 上面几条计划用例则都显式跑过一次 ANALYZE（要断言的是「有统计之后规划器怎么选」），
+// 同样区分不了「统计是迁移建的」还是「统计是测试建的」。
 //
-// 所以这条用例**不跑任何 ANALYZE**，只做「造 v15 库 + 写数据 + Open」，
+// 所以这条用例**自己不跑任何 ANALYZE**，只做「造 v15 库 + 写数据 + Open」，
 // 然后直接看：stat1 有没有、是不是全量的、稀有 status 有没有走 status 索引。
 func TestMigration16UpgradeFromV15BackfillsStats(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v15_filled.db")
@@ -689,6 +692,129 @@ func TestMigration16UpgradeFromV15BackfillsStats(t *testing.T) {
 	if strings.Contains(strings.ToUpper(noFilterPlan), "TEMP B-TREE") {
 		t.Errorf("老库升级后无过滤的计划里有 TEMP B-TREE：ORDER BY 没被索引满足:\n%s", noFilterPlan)
 	}
+}
+
+// TestMigration16AnalyzesTasksInMigration：迁移 16 里那句 `ANALYZE tasks` 必须**自己**
+// 把 tasks 的统计写出来，不能靠 Open 末尾的 PRAGMA optimize 兜着。
+//
+// 为什么需要这条独立门禁：TestMigration16UpgradeFromV15BackfillsStats 走的是产品入口 Open，
+// 而 Open 在迁移**之后**还会跑 `PRAGMA optimize=0x2`——把 schema.sql 里那句 ANALYZE 删掉，
+// 它照样绿（统计是 optimize 写的），也就是「删了迁移语句，全部用例仍绿」。
+// 所以这里**绕过 Open**：直接对着裸 *sql.DB 调 migrate()，中间没有任何 optimize、也没有
+// 任何测试自己发的 ANALYZE。读到 tasks 的 stat1 条目，就只可能来自迁移 16 本身。
+func TestMigration16AnalyzesTasksInMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v15_analyze.db")
+	db15 := openAtVersion(t, path, 15)
+	if v := mustMaxVersion(t, db15); v != 15 {
+		t.Fatalf("夹具版本 = %d, want 15", v)
+	}
+	nsID, capID := m16TaskFixture(t, db15)
+	const taskRows = 2400
+	tx, err := db15.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for i := 0; i < taskRows; i++ {
+		status := TaskPending
+		if i < 5 {
+			status = TaskCanceled
+		}
+		if _, err := tx.Exec(m16InsertStatusTaskSQL,
+			fmt.Sprintf("tsk_m16_an_%05d", i), nsID,
+			fmt.Sprintf("trc_m16_an_%05d", i), fmt.Sprintf("nod_m16_an_%02d", i%50),
+			capID, status, 1700000000+i/3); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("insert task %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// 灌数据是在建库（空表）**之后**：空表 ANALYZE 不写 stat1，所以此刻 tasks 应该是零条目。
+	// 先把这件事钉住，下面读到条目时才能一口咬定「是迁移 16 写的」。
+	if before := stat1RowsOn(t, db15, "tasks"); len(before) != 0 {
+		t.Fatalf("v15 夹具里 tasks 已经有 stat1 条目 %v：夹具不干净，「迁移写出了统计」这条断言会失效", before)
+	}
+	if err := db15.Close(); err != nil {
+		t.Fatalf("close v15 db: %v", err)
+	}
+
+	// 裸连接，**不跑** Open（Open 会跑 optimize，把归因搞错）。DSN 只留 busy_timeout。
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open bare sql.DB: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+	if applied, err := migrate(raw, nil); err != nil {
+		t.Fatalf("在裸连接上跑迁移: %v", err)
+	} else if applied < 1 {
+		t.Fatalf("裸连接上应用的迁移数 = %d, want ≥1（v15 → tip）", applied)
+	}
+	var version int
+	if err := raw.QueryRow(`SELECT max(version) FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if want := testTipVersion(t); version != want {
+		t.Fatalf("裸连接上跑完迁移后版本 = %d, want %d", version, want)
+	}
+
+	// ① 迁移自己写出了 tasks 的统计（没有任何 optimize 参与）。
+	stats := stat1RowsOn(t, raw, "tasks")
+	t.Logf("sqlite_stat1（只跑了 migrate、没跑 Open）: %v", stats)
+	if len(stats) == 0 {
+		t.Fatalf("迁移跑完 sqlite_stat1 里没有 tasks 的任何条目：schema.sql 迁移 16 的 `ANALYZE tasks` " +
+			"没生效/被删了？这条路（老库升级）上它是**确定性**保证，不能靠 Open 的 optimize 兜着")
+	}
+	// ② 具体到 #237 新造的这条索引（MAJOR-1 靠它的统计选对计划）。
+	if _, ok := stats[tasksListIndexName]; !ok {
+		t.Fatalf("迁移跑完 sqlite_stat1 里没有 %s 的条目（只有 %v）：ANALYZE tasks 没覆盖到新索引",
+			tasksListIndexName, stats)
+	}
+	// ③ 全量而不是采样：单命名空间下「每个前缀值平均多少行」就是全表行数。
+	if want := fmt.Sprintf("%d %d ", taskRows, taskRows); !strings.HasPrefix(stats[tasksListIndexName], want) {
+		t.Errorf("%s 的 stat1 = %q，want 前缀 %q：统计看起来是**采样**的而不是全量的",
+			tasksListIndexName, stats[tasksListIndexName], want)
+	}
+}
+
+// stat1Querier 让「升级前（*DB）」与「升级后（裸 *sql.DB）」两处用同一套 stat1 断言。
+type stat1Querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// stat1RowsOn 返回 sqlite_stat1 里 tbl 的全部条目（idx → stat）。
+// sqlite_stat1 还没被建出来时返回空 map（“没有统计”与“表不存在”等价）。
+// 表级行（idx 为 NULL）的键是“”，因为本文件只关心「某条索引有没有统计」。
+func stat1RowsOn(t *testing.T, q stat1Querier, tbl string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	var hasTable int
+	if err := q.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE name = 'sqlite_stat1'`).Scan(&hasTable); err != nil {
+		t.Fatalf("probe sqlite_stat1: %v", err)
+	}
+	if hasTable == 0 {
+		return out
+	}
+	rows, err := q.Query(`SELECT idx, stat FROM sqlite_stat1 WHERE tbl = ? ORDER BY idx`, tbl)
+	if err != nil {
+		t.Fatalf("read sqlite_stat1: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var idx sql.NullString
+		var stat string
+		if err := rows.Scan(&idx, &stat); err != nil {
+			t.Fatalf("scan sqlite_stat1: %v", err)
+		}
+		out[idx.String] = stat
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate sqlite_stat1: %v", err)
+	}
+	return out
 }
 
 // TestMigration16ListTasksFilteredSQLShape 是**新增那几条计划用例**的护栏。
