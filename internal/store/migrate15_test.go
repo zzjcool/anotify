@@ -8,6 +8,7 @@ package store
 //  2. 动态：历史库里「同名索引、列不同」的漂移要被迁移 15 拉正，且新库/老库形状一致。
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -16,11 +17,16 @@ import (
 	"testing"
 )
 
-// schemaIndexDecl 匹配索引声明：CREATE [UNIQUE] INDEX [IF NOT EXISTS] <name>。
+// schemaIndexDecl 匹配索引声明：CREATE [UNIQUE] INDEX [IF NOT EXISTS] [schema.]<name>。
 //
 // 只用来收集**名字**（形状由动态用例负责）。加 (?i) 是因为 SQLite 关键字大小写不敏感，
 // 库里现有语句混用了 `CREATE        INDEX` 这种对齐写法（中间多个空格）。
-var schemaIndexDecl = regexp.MustCompile(`(?i)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)`)
+//
+// 三种写法都要认，否则门禁能被绕过（同一索引名用不同写法各声明一次就数不出 2 次）：
+//   - `idx_x` / `"idx_x"` / 反引号包裹 / `[idx_x]`（SQLite 的四种标识符写法）
+//   - `main.idx_x`（schema 限定名）
+var schemaIndexDecl = regexp.MustCompile("(?i)CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?" +
+	"(?:[A-Za-z_][A-Za-z0-9_]*\\s*\\.\\s*)?[\"`\\[]?([A-Za-z_][A-Za-z0-9_]*)[\"`\\]]?")
 
 // TestSchemaIndexDeclarationsUnique 静态门禁：同一个索引名在 schema.sql 里只能声明一次。
 //
@@ -60,26 +66,26 @@ func TestSchemaIndexDeclarationsUnique(t *testing.T) {
 // from_capability 从迁移 9 起就不存在（edges 的左端改成了 from_is_source + from_key）。
 // 注释里保留历史说明是允许的（那是文档），但任何会真的执行的语句引用它都是死句或错误。
 func TestSchemaNoExecutableDroppedColumnReference(t *testing.T) {
-	executablePrefixes := []string{"CREATE", "ALTER", "INSERT", "SELECT", "UPDATE", "DELETE"}
-	for i, line := range strings.Split(schemaSQL, "\n") {
-		trimmed := strings.TrimSpace(line)
-		isExecutable := false
-		upper := strings.ToUpper(trimmed)
-		for _, p := range executablePrefixes {
-			if strings.HasPrefix(upper, p) {
-				isExecutable = true
-				break
-			}
-		}
-		if !isExecutable {
+	// 先剥掉注释（历史说明允许提到那个列名），再按 `;` 切语句检查。
+	//
+	// 为什么不能按「行首关键字」判断：仓库里的 DDL 会把列清单换行写
+	// （见 migrate.go / migrate14.go 里的 `CREATE INDEX ...\n   ON edges(...)`），
+	// 第二行行首是 `ON`，死声明换个排版就能绕过门禁。
+	noComments := sqlLineComment.ReplaceAllString(schemaSQL, "")
+	for i, stmt := range strings.Split(noComments, ";") {
+		code := strings.TrimSpace(stmt)
+		if code == "" {
 			continue
 		}
-		if strings.Contains(strings.ToLower(line), "from_capability") {
-			t.Errorf("schema.sql:%d 可执行语句引用了已删除的列 from_capability（迁移 9 起不存在）: %s",
-				i+1, trimmed)
+		if strings.Contains(strings.ToLower(code), "from_capability") {
+			t.Errorf("schema.sql 第 %d 段可执行语句引用了已删除的列 from_capability（迁移 9 起不存在）: %.120s",
+				i+1, strings.Join(strings.Fields(code), " "))
 		}
 	}
 }
+
+// sqlLineComment 匹配 `--` 到行尾（schema.sql 只用行注释）。
+var sqlLineComment = regexp.MustCompile(`--[^\n]*`)
 
 // TestMigration15NormalizesEdgeLookupIndex 迁移 15 的三条硬要求：
 // 新库形状正确、历史库漂移被拉正、hook 幂等。
@@ -93,28 +99,8 @@ func TestMigration15NormalizesEdgeLookupIndex(t *testing.T) {
 		}
 	})
 
-	// driftedV14 造一个停在迁移 14、但索引形状被改坏的库，返回路径（库已关闭）。
-	driftedV14 := func(t *testing.T) string {
-		t.Helper()
-		path := filepath.Join(t.TempDir(), "drift.db")
-		db14 := openAtVersion(t, path, 14)
-		// 模拟历史漂移：同名索引、列不同（正是 IF NOT EXISTS 拦不住的那种）。
-		mustExec(t, db14, `DROP INDEX `+edgeLookupIndexName)
-		mustExec(t, db14, `CREATE INDEX idx_edges_lookup ON edges(namespace_id, from_port)`)
-		if got := mustIndexColumns(t, db14, edgeLookupIndexName); sameColumnOrder(got, want) {
-			t.Fatalf("漂移形状没造出来：列序仍是 %v", got)
-		}
-		if v := mustMaxVersion(t, db14); v != 14 {
-			t.Fatalf("漂移库版本 = %d, want 14", v)
-		}
-		if err := db14.Close(); err != nil {
-			t.Fatalf("close v14 db: %v", err)
-		}
-		return path
-	}
-
 	t.Run("历史库漂移被拉正", func(t *testing.T) {
-		path := driftedV14(t)
+		path := driftV14DB(t)
 		db, err := Open(path) // 升级 14 → 15
 		if err != nil {
 			t.Fatalf("升级漂移库: %v", err)
@@ -130,7 +116,7 @@ func TestMigration15NormalizesEdgeLookupIndex(t *testing.T) {
 	})
 
 	t.Run("幂等", func(t *testing.T) {
-		path := driftedV14(t)
+		path := driftV14DB(t)
 		db, err := Open(path)
 		if err != nil {
 			t.Fatalf("升级漂移库: %v", err)
@@ -163,6 +149,40 @@ func TestMigration15NormalizesEdgeLookupIndex(t *testing.T) {
 			t.Fatalf("schema_version 里 15 记了 %d 次, want 1", n)
 		}
 	})
+
+	t.Run("索引缺失时被建出来", func(t *testing.T) {
+		// 第三态：索引根本不存在（例如有人手工 DROP 掉）。这条路径当前没有别的用例覆盖，
+		// 而「缺失 → 直接 CREATE」与「存在但漂移 → DROP + CREATE」是两条不同的分支。
+		path := v14DB(t, "missing.db", func(db14 *DB) {
+			mustExec(t, db14, `DROP INDEX `+edgeLookupIndexName)
+		})
+		db, err := Open(path)
+		if err != nil {
+			t.Fatalf("升级缺索引的 v14 库: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+		if got := mustIndexColumns(t, db, edgeLookupIndexName); !sameColumnOrder(got, want) {
+			t.Fatalf("缺索引的库升级后 %s 列序 = %v, want %v", edgeLookupIndexName, got, want)
+		}
+	})
+
+	t.Run("漂移修复后 sqlite_master 文本与新库相同", func(t *testing.T) {
+		// 形状一致不只是「列序一致」：SQLite 把 CREATE 原文存进 sqlite_master.sql，
+		// 迁移 15 重建时若缩进与迁移 14 不同，两个库的 sqlite_master 就会分叉
+		// （语义相同、文本不同），下游任何按 DDL 文本比对的审计/重建工具都会报差异。
+		fresh, _ := newTestDBFile(t)
+		wantDDL := indexDDL(t, fresh, edgeLookupIndexName)
+
+		db, err := Open(driftV14DB(t))
+		if err != nil {
+			t.Fatalf("升级漂移库: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+		if got := indexDDL(t, db, edgeLookupIndexName); got != wantDDL {
+			t.Fatalf("漂移修复后的索引 DDL 与新库不同（列序相同但 sqlite_master 会分叉）:\n got=%q\nwant=%q",
+				got, wantDDL)
+		}
+	})
 }
 
 // TestMigration15ShapeParityFreshVsUpgraded 新库与「v14 截断库再升级」的形状必须逐行相等。
@@ -187,23 +207,37 @@ func TestMigration15ShapeParityFreshVsUpgraded(t *testing.T) {
 	freshShape := schemaShape(t, fresh)
 	upgradedShape := schemaShape(t, upgraded)
 
-	if len(freshShape) != len(upgradedShape) {
-		t.Fatalf("形状条数 新库 %d ≠ 升级库 %d", len(freshShape), len(upgradedShape))
+	assertShapeEqual(t, "v14 升级库", freshShape, upgradedShape)
+
+	// 同一门禁必须覆盖「真被迁移 15 DROP+重建过」的库——那才是 #238 在线上会做的事。
+	drifted, err := Open(driftV14DB(t))
+	if err != nil {
+		t.Fatalf("升级漂移库: %v", err)
+	}
+	defer func() { _ = drifted.Close() }()
+	assertShapeEqual(t, "漂移修复库", freshShape, schemaShape(t, drifted))
+}
+
+// assertShapeEqual 逐行比较两份 shape（条数一致、内容一致）。
+func assertShapeEqual(t *testing.T, label string, want, got []string) {
+	t.Helper()
+	if len(want) != len(got) {
+		t.Fatalf("%s 形状条数 = %d, want %d", label, len(got), len(want))
 	}
 	diff := map[string]int{}
-	for _, s := range upgradedShape {
+	for _, s := range got {
 		diff[s]++
 	}
-	for _, s := range freshShape {
+	for _, s := range want {
 		if diff[s] > 0 {
 			diff[s]--
 			continue
 		}
-		t.Errorf("升级库缺少形状（新库有）: %s", s)
+		t.Errorf("%s 缺少形状（新库有）: %s", label, s)
 	}
 	for s, n := range diff {
 		if n > 0 {
-			t.Errorf("升级库多出形状（新库没有，%d 条）: %s", n, s)
+			t.Errorf("%s 多出形状（新库没有，%d 条）: %s", label, n, s)
 		}
 	}
 }
@@ -229,6 +263,49 @@ func mustIndexColumns(t *testing.T, db *DB, index string) []string {
 		t.Fatalf("索引 %s 不存在", index)
 	}
 	return cols
+}
+
+// v14DB 造一个停在迁移 14 的库，mutate 可以先把它的结构改坏，返回路径（库已关闭）。
+func v14DB(t *testing.T, name string, mutate func(*DB)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	db14 := openAtVersion(t, path, 14)
+	if mutate != nil {
+		mutate(db14)
+	}
+	if v := mustMaxVersion(t, db14); v != 14 {
+		t.Fatalf("%s 版本 = %d, want 14", name, v)
+	}
+	if err := db14.Close(); err != nil {
+		t.Fatalf("close %s: %v", name, err)
+	}
+	return path
+}
+
+// driftV14DB 造一个「停在迁移 14、但索引列序被改坏」的库——正是 IF NOT EXISTS 拦不住的漂移。
+func driftV14DB(t *testing.T) string {
+	t.Helper()
+	return v14DB(t, "drift.db", func(db14 *DB) {
+		mustExec(t, db14, `DROP INDEX `+edgeLookupIndexName)
+		mustExec(t, db14, `CREATE INDEX idx_edges_lookup ON edges(namespace_id, from_port)`)
+		if got := mustIndexColumns(t, db14, edgeLookupIndexName); sameColumnOrder(got, edgeLookupIndexColumns) {
+			t.Fatalf("漂移形状没造出来：列序仍是 %v", got)
+		}
+	})
+}
+
+// indexDDL 读 sqlite_master 里该索存的原始 DDL 文本（SQLite 会去掉 IF NOT EXISTS，其余原样保留）。
+func indexDDL(t *testing.T, db *DB, index string) string {
+	t.Helper()
+	var s sql.NullString
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&s); err != nil {
+		t.Fatalf("read ddl of %s: %v", index, err)
+	}
+	if !s.Valid {
+		t.Fatalf("索引 %s 的 sqlite_master.sql 是 NULL", index)
+	}
+	return s.String
 }
 
 // schemaShape 把库的结构拉平成 `type|name|tbl_name|ddl` 的排序切片

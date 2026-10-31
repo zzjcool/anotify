@@ -50,7 +50,9 @@ func Open(path string) (*DB, error) {
 	return openWith(path, nil)
 }
 
-// OpenWithConns 与 Open 相同，但显式指定连接池上限（测试/压测用；<=0 同 Open）。
+// OpenWithConns 与 Open 相同，但显式指定连接池上限（测试/压测用）。
+// n <= 0 时用 defaultMaxOpenConns —— 注意这与 Open 不同：Open 会读
+// ANOTIFY_DB_MAX_CONNS，而显式注入的 n 不会再回落到环境变量。
 func OpenWithConns(path string, maxConns int) (*DB, error) {
 	return openWithOptions(path, nil, maxConns)
 }
@@ -76,6 +78,11 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 	// `:memory:` 的特殊语义：SQLite 的内存库是**每连接一份**，
 	// 连接池 >1 时第二条连接会看到一个全新的空库（迁移都白跑了）。
 	// 所以内存库恒为单连接——这不是性能开关，是语义约束。
+	//
+	// 判据是**精确字符串** `":memory:"`（本函数唯一支持的内存库写法）。
+	// 谁要是引入 `file::memory:?...` / `""` 之类的其它「每连接一份」写法，
+	// 这条守卫会静默失效、池保持 N，症状是「迁移跑在一条连接、查询走另一条空库」的
+	// 空表而不是报错——加新写法时必须同时处理这里。
 	if path == ":memory:" && maxConns > 1 {
 		maxConns = 1
 	}
@@ -86,7 +93,12 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 		dsn = "file:" + path
 	}
 	dsn += "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
+	// 写事务一律 BEGIN IMMEDIATE（见 openWithOptions 注释第 2 点）。
 	dsn += "&_txlock=immediate"
+	// 注意 busy_timeout(5000) 现在也是**进程内写队列的上限**：池 >1 之后，第二个写者
+	// 排在 SQLite 的 busy handler 里（5s 硬上限），而不是 database/sql 的连接队列（无超时）。
+	// 所以单个写事务必须远短于 5s（现有写路径都是小事务/批次分片）；真出现长写事务要
+	// 显式调大 busy_timeout，否则后来者会拿到 database is locked。
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

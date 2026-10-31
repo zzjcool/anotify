@@ -168,6 +168,7 @@ func TestPoolReadsRunInParallel(t *testing.T) {
 // 若 DSN 丢了 `_txlock=immediate`（回到 deferred），第二个 `db.Begin()` 会立刻成功，
 // 本用例会在「不该拿到写锁」那条断言上红。
 func TestPoolWriteTxIsImmediateAndDoesNotBlockReaders(t *testing.T) {
+	t.Setenv(maxConnsEnv, "") // 钉住默认池：池=1 时「并发读者」这条断言会因为拿不到连接而变味
 	db, _ := newTestDBFile(t)
 	ctx := context.Background()
 
@@ -229,6 +230,7 @@ func TestPoolWriteTxIsImmediateAndDoesNotBlockReaders(t *testing.T) {
 // 这是 #240 修复的**安全边界**：池放宽到 8 之后，如果写路径还靠 deferred 事务，
 // 这里会稳定出现 `database is locked`（读后升级写无法等待）。
 func TestPoolConcurrentWritesNoLockErrors(t *testing.T) {
+	t.Setenv(maxConnsEnv, "") // 同上：多连接是这个用例的前提（池=1 时它退化成单连接串行）
 	db, _ := newTestDBFile(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)

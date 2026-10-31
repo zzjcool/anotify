@@ -30,9 +30,23 @@ const edgeLookupIndexName = "idx_edges_lookup"
 
 // edgeLookupIndexColumns 是 idx_edges_lookup 唯一权威的列序。
 //
-// 与 edges 的主键前缀一致（namespace_id, from_is_source, from_key, from_port）：
-// 派发时的查询就是「某命名空间里，某个起点 + 出口名的边」，这个前缀能整段命中。
+// 与 edges 的主键前缀逐字对齐（namespace_id, from_is_source, from_key, from_port）。
+// 需要说明的是：#238 的 EXPLAIN 证据显示派发查边实际走的是
+// `COVERING INDEX sqlite_autoindex_edges_1`（PK 自动索引，前四列与 WHERE 对齐且覆盖
+// to_capability），所以这条索引**本身是冗余的**——保留它是因为契约按「唯一权威形状」
+// 冻结（删索引是另一条 issue 的事，删了会牵动迁移 12/14 的既有定义）。
+// 本迁移只负责「同名索引不许带着别的列序存在」。
 var edgeLookupIndexColumns = []string{"namespace_id", "from_is_source", "from_key", "from_port"}
+
+// edgeLookupIndexDDL 是重建该索引时**唯一**使用的语句。
+//
+// 缩进刻意与迁移 14（`orgLayerRebuilds` 里 edges 的 indexes 项）逐字节一致：
+// SQLite 会把 CREATE 语句原文存进 sqlite_master.sql（只把 IF NOT EXISTS 去掉），
+// 所以只要这段文本不同，「漂移修复后的库」与「全新库」就会在 sqlite_master 上分叉——
+// 语义一样、文本不一样，`TestMigration15ShapeParity*` 会把它判成形状不一致。
+// 改这段文本前先看迁移 14 的同名字面量。
+const edgeLookupIndexDDL = `CREATE INDEX IF NOT EXISTS idx_edges_lookup
+			   ON edges(namespace_id, from_is_source, from_key, from_port)`
 
 // migrateEdgeLookupIndex 是迁移 15 的 hook：把 idx_edges_lookup 拉回权威形状。
 func migrateEdgeLookupIndex(tx *sql.Tx) error {
@@ -48,8 +62,7 @@ func migrateEdgeLookupIndex(tx *sql.Tx) error {
 		}
 	}
 	// 收口语句：形状已正确时是 no-op；索引缺失或刚被删掉时建出权威形状。
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_edges_lookup
-	   ON edges(namespace_id, from_is_source, from_key, from_port)`); err != nil {
+	if _, err := tx.Exec(edgeLookupIndexDDL); err != nil {
 		return fmt.Errorf("create index %s: %w", edgeLookupIndexName, err)
 	}
 	return nil
@@ -63,7 +76,7 @@ func migrateEdgeLookupIndex(tx *sql.Tx) error {
 func indexColumns(tx *sql.Tx, index string) (cols []string, exists bool, err error) {
 	var n int
 	if err := tx.QueryRow(
-		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = 'edges'`, index,
 	).Scan(&n); err != nil {
 		return nil, false, fmt.Errorf("probe index %s: %w", index, err)
 	}
