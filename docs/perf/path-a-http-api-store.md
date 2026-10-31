@@ -8,12 +8,12 @@
 ## 0. 一句话结论
 
 在 4 核（`taskset -c 0-3`）口径下，**无 DB 的 `/health` 能到 24k–28.8k RPS，而任何一个带会话的读端点只有它的 0.3%–11%，
-写入口更低到 0.11%**。三层原因按影响从大到小：
+机器入口更低到 0.11%（`GET /v1/events` 走 Bearer），写入口（`POST /v1/events` 走 Bearer）0.13%–0.14%**。三层原因按影响从大到小：
 
 1. **`store.Open` 把 SQLite 连接池钉成 1 条**（`internal/store/store.go:46 SetMaxOpenConns(1)`）：
    所有读请求在同一连接上排队，并发 1→64 吞吐只放大 1.24–1.55 倍（`/health` 是 4.23 倍）；
    混合读写时**写被读饿死（-93%）**，且这类实现里根本没有 `SQLITE_BUSY`，只有队列。
-2. **API Key 鉴权每请求重算一次 argon2id（m=64MB, t=1, p=4）**（`internal/auth/apikey.go:131`）：
+2. **API Key 鉴权每请求重算一次 argon2id（m=64MB, t=1, p=4）**（`internal/auth/apikey.go:132`）：
    机器入口被钉在 ~32–41 RPS、CPU 4 核打满、每请求分配 64MB（c=16 时 inuse 768–960MB）。
 3. **列表端点的 N+1 查询**：`/v1/nodes` 每节点 2 次额外查询（`console_handlers.go:1016 viewFor`）→
    100 节点 79–85 RPS（`/health` 的 0.30%），p50 91–385ms。
@@ -29,7 +29,7 @@
 | [#242](https://github.com/zzjcool/anotify/issues/242) | 每条 SQL 每请求重新 prepare/parse | 中 | `prepareV2` 占 CPU 26.1%–26.4% ≈39–43µs/条；20s 解析十几万次 |
 | [#243](https://github.com/zzjcool/anotify/issues/243) | 大响应无 gzip + 全量排序 + payload 重复压缩 | 中 | `limit=500` = 209KB / 7.66 CPU 秒每千请求 / 209 RPS；可压 10.3× |
 | [#245](https://github.com/zzjcool/anotify/issues/245) | `/v1/hooks/{token}` 是 1 RPS/IP 天花板 + 429 双份日志 | 中 | 成功数恒为 60/10s，99.9% 是 429；429 双份日志 75MB/10s |
-| [#239](https://github.com/zzjcool/anotify/issues/239) | `/v1/nodes` 每请求 2N+1 次串行查询 | **高** | 20→100 节点 p50 ×4.87（理论 ×4.90）；100 节点 79–85 RPS |
+| [#239](https://github.com/zzjcool/anotify/issues/239) | `/v1/nodes` 每请求 2N+1 次串行查询（**已 CLOSED，并入 #223**） | **高** | 20→100 节点 p50 ×4.87（理论 ×4.90）；100 节点 79–85 RPS |
 
 与别路重复、**只在对应 issue 上补证据、不另开**的：
 
@@ -55,7 +55,7 @@
 ### 1.1 为什么结论一律用「比值」而不是绝对值
 
 - #217 的基线（46,691.9 RPS）是**12 核不 pin、单跑**量的；本轮 server + loadgen 挤在 4 核里，
-  同一条命令实测 **20.0k–28.8k RPS**（43%–62%），且随另外两路的负载漂移（采样期 `loadavg(1m)` 在 **2.9–18.4** 之间）。
+  同一条命令实测 **14.9k–28.8k RPS**（四条不同时段的夹逼参照，最低 14,975.7、最高 28,841.7），且随另外两路的负载漂移（采样期 `loadavg(1m)` 在 **2.9–18.4** 之间）。
 - 三个 worker 的参照带：`/health -c 32` = **14.9k–28.8k**（同一二进制、同一命令行！）。
 - 所以：**绝对值只作量级参考，所有结论用「目标端点 ÷ 同块 `/health` 参照」的比值**，比值在 ±9% 内可复现。
 - 另外：`/health` 本身是**客户端受限**的（服务端只占 1.64–1.69/4 核），它不是「服务端天花板」，
@@ -72,7 +72,7 @@
 
 - **基线在不同时段能跑到 24.0k–28.8k**（机器安静时 28.8k），与 #217 的 46.7k 差距来自「4 核 pin + 三路并行」，不是回归。
 - 服务端 CPU 恒定 1.64–1.69 核 ⇒ **吞吐被 loadgen 卡住**，`/health` 的真实服务端能力高于此值。
-- `/health` 路径无 DB、无锁（`mux.go:395` 预 marshaled 固定字节）——**它仍是访问日志 + HTTP 栈的成本**（见 issue 08，日志 A/B）。
+- `/health` 路径无 DB、无锁（`mux.go:395` 预 marshaled 固定字节）——**它仍是访问日志中间件 + HTTP 栈的成本**（实测访问日志对它开销 ≈0%，见 §5.2）。
 
 ## 3. 读路径（S2）：带会话的三个列表端点 + 机器入口
 
@@ -89,7 +89,7 @@
 | `/v1/nodes`（100 节点） | Cookie | 81.4 | 79.2 | — | **0.30–0.32%** | 17.1–18.3 | 190ms |
 
 （`/health` 同场次参照 14.9k–28.8k；`/v1/console/events?limit=100` 与 `/v1/events?limit=100` 是**同一条 SQL、同一份数据**，
-差的 23–29 倍全部来自鉴权方式。）
+差的 23–29 倍主要来自鉴权（argon2 占该路径 ≈94% 的 CPU 样本；机器入口还多 2 空格缩进 JSON，字节 +29.4%）。）
 
 ### 3.2 串行瓶颈的取证（`SetMaxOpenConns(1)` 成立）
 
@@ -128,8 +128,8 @@ auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
 
 | 项 | Cookie（控制台） | Bearer（机器入口） | 倍数 |
 |---|---|---|---|
-| RPS（c=16/32） | 917.7 / 895.9 | **31.6 / 39.0** | **慢 23–29×** |
-| CPU 秒/千请求 | 1.7–1.8 | **102–126** | 60–76× |
+| RPS（c=16 / c=8） | 917.7 / 895.9 | **31.6 / 39.0** | **慢 23–29×** |
+| CPU 秒/千请求 | 1.66–1.69 | **102–126** | 60–76× |
 | 服务端 CPU | 1.4–1.5 核 | **4.00 核（打满）** | CPU 受限 |
 | 每请求分配 | ~813KB（大响应档） | **64MB**（`argon2.initBlocks`） | c=16 时 inuse **768–960MB** |
 
@@ -179,7 +179,8 @@ auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
 | 同时跑 | **809.4 RPS（-2.3%）** / 18.43ms | **79.5 RPS（-93.0%，÷14.3）** / **48.57ms（×14.3）** |
 
 - 小库对照（行数 ÷46）跌幅相同（写 1,168 → 62–85 RPS）⇒ **跌幅与数据量无关**，就是单连接被读占满。
-- goroutine 栈（47 个）：**20 个阻塞在 `database/sql.(*DB).conn`**（GetSession 6 / GetUserByID 4 / AuthorizeNamespace 4 / TouchSession 1 / GetSource 1 / EnsureGraphVersion 1），同一瞬间只有 **1** 个在跑 SQLite。
+- goroutine 栈（47 个）：**20 个阻塞在 `database/sql.(*DB).conn`**，其中 17 个能归到具体调用（GetSession 6 / GetUserByID 4 / AuthorizeNamespace 4 / TouchSession 1 / GetSource 1 / EnsureGraphVersion 1），
+另 3 个停在进出 conn 的间隔里（栈上没有 store 调用帧）；同一瞬间只有 **1** 个在跑 SQLite。
 - **`database is locked` = 0，`SQLITE_BUSY` = 0**（3.08M 行服务端日志）；271 条 5xx 全部落在压测收尾窗（`context canceled`），**稳态窗口 0 条**。
   ⇒ `SetMaxOpenConns(1)` 把「锁冲突」换成了「应用层排队」：**这类实现里不要去找锁，要找队列**。
 
@@ -191,7 +192,12 @@ auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
 | 会落盘的 INFO 路径（404） | **1.0864（info 吞吐 -8.0%）** | 0.0779 vs 0.0667（+16.8%） | ~187 B |
 
 - profile 佐证：`middleware.go:95 slog.Info` cum **3.23s（11.4%）** vs warn 档 **0.07s（0.26%）**。
-- 判定：**8% < 15% 门槛，不单独开 issue**；但在真实端点（CPU/请求 1.25–4.6ms）里它只占 0.2%–0.7%，属于可接受成本。
+- **429 路径单独采了一份 profile**（`/tmp/perf-a/logs/fix-hook429.cpu.pprof`，`ANOTIFY_LOG_LEVEL=error`、c=16、15s、窗口内 ≈334k 请求）：
+  单请求 ≈**78µs CPU**，`time.Now` 23.84%（分散在 net/http 内部、`accessLog` 14.68% 份额、`fixedWindow.allow` 11.61% 份额）、写响应 `syscall.Write` ≈20.6%、
+  `accessLog` 自身增量 ≈7.6%（19.18% cum 减它包住的 `ServeMux` 11.59%）、`rateLimited` 8.71%。**没有 DB 参与**（被限流提前拒绝）。
+  这份 profile 是为了补 #245 的「profile 摘要」而采的（初次提交时该节是占位符，见 §8）。
+- 判定：**不单独开 issue**。依据是同一批实测里它远小于其它固定开销：真实端点 CPU/请求 1.25–4.6ms，日志 ~187B/请求 折算下来只占 0.2%–0.7%；
+  它只在「除了 HTTP 栈什么都不做」的 `/health` 上比例才显眼，而 `/health` 恰好被降级成 DEBUG 了。
   真正的问题是**被限流放大后的 429 双份日志**（见 issue 07）。
 
 ## 6. 未确认项
@@ -206,12 +212,12 @@ auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
 - 连接池放开后 `database/sql` 对 `*sql.Stmt` 的绑定行为与净收益（需改代码才能测，属后续调优）。
 - mutex/block profile 不可得：Go 1.25 里 `blockprofilerate`/mutex fraction 默认 0，`/debug/pprof/{block,mutex}` 不读 `?rate=`，
   开它需要进程内插桩（违反「不改产品代码」），已用 goroutine 栈 + c=1 对比 + CPU cum 替代。
-- 顺手发现的**观测性 bug（非性能，未开 issue）**：`internal/server/middleware.go:71` 把**微秒**值写进了名为 `latency_ms` 的字段，
+- 顺手发现的**观测性 bug（非性能，未开 issue）**：`internal/server/middleware.go:67` 取的是 `…Microseconds()`、`:76` 却把它写进名为 `latency_ms` 的字段，
   日志里 0.256ms 的请求记成 `latency_ms: 256`。建议另开一条 bug。
 
 ## 7. 复现附录
 
-见每条 issue 的「复现命令」一节（原样可跑）。总体骨架：
+见每条 issue 的「复现命令」一节（原样可跑）。前提：Go 1.25、`curl`、`jq`（取 capability/hookUrl）、`sqlite3`（只看索引/计划时）、`ANOTIFY_PPROF=1`（取 profile 时）。总体骨架：
 
 ```bash
 WT=<worktree 根>; mkdir -p /tmp/perf-a/logs; cd $WT
@@ -219,7 +225,7 @@ make fe
 go build -trimpath -tags embeddist -o /tmp/perf-a/anotify ./cmd/server
 go build -o /tmp/perf-a/loadgen ./scripts/perf/loadgen
 DB=$(mktemp -d)/a.db
-go run ./cmd/devseed -db "$DB" -username perf | tee /tmp/perf-a/logs/devseed.log
+go run ./cmd/devseed -db "$DB" -username perf 2>&1 | tee /tmp/perf-a/logs/devseed.log  # 必须 2>&1：ns_ 走 stderr
 SESSION=$(grep -o 'SESSION=[^ ]*' /tmp/perf-a/logs/devseed.log | cut -d= -f2)
 SEND=$(grep -o 'SEND_KEY=[^ ]*' /tmp/perf-a/logs/devseed.log | cut -d= -f2)
 NS=$(grep -o 'ns_[A-Za-z0-9]*' /tmp/perf-a/logs/devseed.log | head -1)
@@ -230,3 +236,43 @@ taskset -c 0-3 /tmp/perf-a/loadgen -url "http://127.0.0.1:7900/v1/console/events
   -c 32 -d 5s -header "Cookie: anotify_session=$SESSION"
 # 收尾：kill $(cat /tmp/perf-a/server.pid)   ← 不要用 pkill -f
 ```
+
+## 8. 独立审查记录（对抗式）
+
+本报告与 6 条 issue 在发布**前**由一个**未参与测量**的独立子节点做过一次对抗式审查（只读，不跑压测），
+判定 **FAIL**，7 条必改 + 16 条建议。已全部处理：
+
+| 必改 | 问题 | 处理 |
+|---|---|---|
+| 1 | #245 的 profile 摘要是占位命令 + 无法追溯的百分比 | 重新采了 429 路径的 15s profile，原文贴进 #245 §3 与本报告 §5.2 |
+| 2 | #245 的 5 处 `文件:行` 有 4 处错（含一处越过文件末尾） | 逐条改成 `ratelimit.go:45/32/78/170/174`、`source_handlers.go:732` |
+| 3 | 6 条 issue + 报告 §7 的复现命令 `$NS` 恒为空（`devseed` 的 `ns_…` 走 **stderr**，`tee` 接不到） | 全部改成 `2>&1 | tee`；并用改好的 #240 脚本**原样跑了一遍**验证 |
+| 4 | #245 标题 15 MB/10s 与正文 75.1 矛盾 | 标题改「75 MB/10s @c=16」，并保留 20.6/53.4/75.1 三档 |
+| 5 | #241 标题 27%–34% 把下限抬高 2 倍（events 只有 12.7%） | 标题改「12.7%–34.0%」 |
+| 6 | #224 评论「811GB 在 26s 内」时间口径错（`alloc_space` 是进程累计） | 改成「进程累计 811GB ≈ 12.7k 次 argon2 ≈350–400s」 |
+| 7 | #245 复现步骤 ③ 是省略号 + 缺 `mkdir -p` | 补成完整的两端口 `ANOTIFY_LOG_LEVEL` A/B 命令 |
+
+建议项也一并修了（行号 131→132、71→67/76、`:16/32` 标签错、`1.7–1.8`→`1.66–1.69`、
+§1.1 参照带自相矛盾、去掉无出处的「15% 门槛」、goroutine 分解与总数口径、`event.go:257`→`:261`、
+#237 评论补上 `EXPLAIN` 的出处与「migration 12 之后索引是 `(namespace_id, parent_task_id)`」的说明、
+#241 补原始 loadgen 输出、#240 混入 `S1ref` 的说明、`jq`/`sqlite3` 前提）。
+
+审查自身的复算：**20 个抽样数字全部可追溯**（含 3 个中位数、1 个 CPU 秒/千请求、4 个百分比比值、1 个 µs/条 SQL），
+其中 6 个做了独立复算一致；`go build ./...` 与 `go vet ./internal/store/ ./internal/auth/ ./internal/server/` 均 exit 0。
+
+## 9. 复跑验证（同一脚本、更安静的机器）
+
+审阅后按 issue 里**改好的复现命令原样跑了一遍**（新库、新端口、`make fe` 重新构建，脚本退出码 0），
+时间落在别路压测已结束的窗口（当时 `/proc/loadavg` ≈2，这一列没有逐次记录，只用于说明「机器更闲」，不是精确对照）：
+
+| 端点（c=32，5s） | 首轮（loadavg 9.4–18.4，3 次中位） | 复跑（loadavg ≈2，**取第 1 轮**原始块；用 3 次中位重算的比值括号内附上） | 首轮比值 | 复跑比值 |
+|---|---|---|---|---|
+| `/health` | 24,057 | **28,798 / 27,462** | 100% | 100% |
+| `/v1/tasks?limit=100` | 1,851 | **3,104**（中位 3,050 ⇒ 11.1%） | 11.3% | **10.8%（11.1%）** |
+| `/v1/capabilities` | 1,477 | **2,584**（中位 ⇒ 9.0%） | 8.1% | **9.0%** |
+| `/v1/console/events?limit=100` | 441 | **1,060**（中位 ⇒ 3.8%） | 2.5% | **3.7%（3.8%）** |
+| 阻塞在 `database/sql.(*DB).conn` 的 goroutine（grep 计数） | 30–32 | **38**（其间还叠着 1 个 loadgen 在跑） | — | — |
+| `database is locked` / 真 5xx（稳态窗） | 0 / 0 | **0 / 0** | — | — |
+
+**结论**：绝对值随机器负载漂 1.6–2.4 倍，**比值稳定在 ±1.5 个百分点内** —— 再次印证 §1.1 的口径：
+这套数字只能用比值读，不能用绝对值读；同时证明 issue 里的复现命令确实「原样可跑」。
