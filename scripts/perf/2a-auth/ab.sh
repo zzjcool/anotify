@@ -46,7 +46,12 @@ restart() { # $1=log level  $2...=额外 env
 stop() { [ -f "$PIDF" ] && { kill "$(cat "$PIDF")" 2>/dev/null; rm -f "$PIDF"; }; sleep 0.4; }
 trap stop EXIT
 
-rss_mb() { awk '/VmRSS/{printf "%.1f", $2/1024}' "/proc/$(cat "$PIDF")/status" 2>/dev/null; }
+# 注意 printf 必须带 \n：没有换行的话 24 次采样会被拼成一行，
+# awk/grep 就只看到 1 个点（samples=1、p50 退化成单点快照）——本脚本踩过这个坑。
+rss_mb() { awk '/VmRSS/{printf "%.1f\n", $2/1024}' "/proc/$(cat "$PIDF")/status" 2>/dev/null; }
+# VmHWM = 该进程生命周期内的**峰值** RSS，由内核维护，不需要采样，
+# 比「每 0.5s 抓一次」更能抓到瞬时峰值（argon2 那种秒级脉冲很容易被采样错过）。
+rss_peak_mb() { awk '/VmHWM/{printf "%.1f\n", $2/1024}' "/proc/$(cat "$PIDF")/status" 2>/dev/null; }
 
 # ---------- 种子 ----------
 DB="$(mktemp -d /tmp/perf-2a/db.XXXXXX)/a.db"
@@ -79,7 +84,7 @@ restart info
 taskset -c "$CPUS" "$LOADGEN" -url "$BASE/v1/events" -method POST -c 8 -d 10s \
   -body-file "$ROOT/logs/evt-$LABEL.json" -header 'content-type: application/json' \
   -header "Authorization: Bearer $SEND_KEY" 2>&1 | tee "$OUT/bearer.log"
-echo "RSS_MB_after_bearer=$(rss_mb)" | tee -a "$OUT/bearer.log"
+echo "RSS_MB_after_bearer=$(rss_mb)  PEAK_RSS_MB_bearer=$(rss_peak_mb)" | tee -a "$OUT/bearer.log"
 
 # ---------- ② RSS 采样：c=8 Bearer 持续 15s，中途每 0.5s 采一次 ----------
 restart info
@@ -103,6 +108,9 @@ wait $LP 2>/dev/null || true
   echo "samples=$(grep -c '' "$OUT/rss.log")"
   sort -n "$OUT/rss.log" | awk 'BEGIN{n=0}{a[n++]=$1}END{if(n==0){print "EMPTY";exit}
     printf "RSS_min=%.1fMB  RSS_p50=%.1fMB  RSS_max=%.1fMB\n", a[0], a[int(n/2)], a[n-1]}'
+  # VmHWM 只统计本次 restart 之后的窗口（第 ② 步之前刚 restart 过）。
+  echo "PEAK_RSS_MB=$(rss_peak_mb)"
+  echo "requests=$(grep -o '总请求 *[0-9]*' "$OUT/rss-load.log" | head -1 | tr -dc 0-9)"
 } | tee "$OUT/rss-mb.log"
 
 # ---------- ③ 读路径（#241 主指标）：带 Cookie, c=32, 15s ----------
