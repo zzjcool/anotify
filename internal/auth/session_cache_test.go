@@ -28,7 +28,7 @@ func newSessionTestDB(t *testing.T) *store.DB {
 }
 
 // seedSession 建一个用户 + 一个会话。
-// last_seen 故意写成「1 小时前」：节流测试要靠它确定性地等待异步写入落地
+// last_seen 故意写成「1 小时前」：节流测试要靠它确定性地观察一次刷新落地
 // （写进去的值必然 > 旧值，waitLastSeen(initial+1) 才能证明「真的写了一次」）。
 func seedSession(t *testing.T, db *store.DB, username string, disabled bool, expiresAt int64) (*store.User, *store.Session) {
 	t.Helper()
@@ -97,7 +97,9 @@ func setLastSeen(t *testing.T, db *store.DB, sessionID string, v int64) {
 	}
 }
 
-// waitLastSeen 轮询等 last_seen 涨到 atLeast（触摸是异步写，测试必须等它落地）。
+// waitLastSeen 轮询等 last_seen 涨到 atLeast。
+// 触摸现在是**同步**写（见 touchSession 的注释：异步 goroutine 会与 db.Close 竞态），
+// 所以正常情况下第一次轮询就返回；保留轮询是为了不把「同步」这件事焊进断言。
 // 超时即视为「永久不写」——这正是节流不能犯的错，所以直接 t.Fatalf。
 func waitLastSeen(t *testing.T, db *store.DB, sessionID string, atLeast int64) int64 {
 	t.Helper()
@@ -299,7 +301,7 @@ func TestSessionUserLookupErrorFailsClosed(t *testing.T) {
 //	    制造假红（已实测：同一用例 1 次 ok / 2 次 FAIL）。换仪表不是放宽断言：
 //	    上下界一个都没动，而且「真的写进 DB 了」另外由 (b) 的 DB 读回断言兜底；
 //	(b) last_seen 单调不减，最终值 ≥ 请求发生的那一秒（写的是「新时间」而不是「旧值」）；
-//	(c) goroutine 数不爆炸：每请求 spawn 一个异步写的实现会在这里看到 ~320 个；
+//	(c) goroutine 数不爆炸：每请求 spawn 一个 goroutine 的实现会在这里看到 ~320 个；
 //	(d) -race 下无数据竞争（由 `go test -race` 保证）。
 //
 // 不允许的两种退化：写旧值（last_seen 回退）、永久不写（窗口过后仍不落库）。
@@ -317,7 +319,6 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		}
 		// initial 是「1 小时前」的旧值，所以 initial+1 只有真的写进去才会满足。
 		waitLastSeen(t, db, s.ID, initial+1)
-		time.Sleep(50 * time.Millisecond) // 让预热 goroutine 收尾（goroutine 计数基线更稳）
 
 		beforeGoroutines := runtime.NumGoroutine()
 		beforeWrites := m.TouchWriteCount()
@@ -373,7 +374,6 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		elapsed := time.Since(start)
 		close(stopSampler)
 		samplerWG.Wait()
-		time.Sleep(200 * time.Millisecond) // 等最后一次异步写入落地
 
 		if len(failures) != 0 {
 			t.Fatalf("并发请求里有 %d 个没放行（例如 %d）", len(failures), failures[0])
@@ -411,7 +411,7 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 			t.Fatalf("最终 last_seen=%d 应 >= 请求起始秒 %d", final, start.Unix())
 		}
 
-		// goroutine 不爆炸：每请求 spawn 一个异步写的实现会多出几百个。
+		// goroutine 不爆炸：每请求 spawn 一个 goroutine 的实现会多出几百个。
 		if after := runtime.NumGoroutine(); after > beforeGoroutines+50 {
 			t.Fatalf("goroutine 疑似爆炸：before=%d after=%d（320 请求）", beforeGoroutines, after)
 		}
@@ -468,7 +468,6 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
 			t.Fatalf("TTL 过期后的请求应放行, got %d body=%s", got.code, got.body)
 		}
-		time.Sleep(100 * time.Millisecond) // 给「本不该 spawn 的异步写」一点时间暴露
 		if writes := m.TouchWriteCount() - beforeWrites; writes != 0 {
 			t.Fatalf("缓存刷新不应重置节流窗口：这次 miss 竟然放行写库 %d 次", writes)
 		}
