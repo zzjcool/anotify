@@ -340,9 +340,15 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	// 于是 `limit=501..1000` 会悄悄变成「每个命名空间 50 条」。收到真实硬顶
 	// listLimitCap（= 500），并把生效值回显进响应——要多少给多少、给了多少都可观测。
 	limit := intParam(q.Get("limit"), 100, 1, listLimitCap)
+	// 「多看一行」（#235 收尾）：取 perNS = limit+1 行是为了**确认**还有没有更旧的行，
+	// 而不是拿「行数 == limit」去猜（那样库里正好整页时，用户点「更旧」会先看到一个空页）。
+	//
+	// 但 perNS 必须 ≤ listLimitCap：store 的列表查询对 `limit > 500` 会兜底成 50，
+	// 传 501 会把整页悄悄变成 50 条（#236 的病根）。因此 `limit == listLimitCap`（500）时
+	// perNS == limit，取不到那多出来的一行 —— 见下面的退化判据。
 	perNS := limit
-	if perNS > listLimitCap {
-		perNS = listLimitCap
+	if perNS < listLimitCap {
+		perNS = limit + 1
 	}
 
 	// 游标分页（#235）：`before` 是上一页响应的 `nextCursor`，给了就只取比它**更旧**的行。
@@ -387,13 +393,26 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 		}
 		groups = append(groups, got)
 	}
-	events := mergeEvents(limit, groups...) // 空列表是 [] 不是 null（I9）
-	// nextCursor 必须在 traceViewRootFirst **之前**从合并后的 DESC 列表末尾算：
+	events := mergeEvents(perNS, groups...) // 空列表是 [] 不是 null（I9）
+	// 合并后拿到至多 perNS 行（单命名空间快路径也按 perNS 截断）：比 limit 多出来的一行
+	// 只用于**判定**「还有更旧的行」，不发给客户端。
+	hasMore := len(events) > limit
+	if !hasMore && limit >= listLimitCap {
+		// 已知上限（退化）：limit == listLimitCap 时 perNS == limit，取不到「多一行」，
+		// 只能回到旧判据（行数 >= limit ⇒ 给游标）。于是「库里正好 500 条 + limit=500」
+		// 仍会多给一个游标（用户多看一个空页）。要拍平它得突破 store 的 500 硬顶，
+		// 那是 #236 的另一件事，不在这里顺手改。
+		hasMore = len(events) >= limit
+	}
+	if len(events) > limit {
+		events = events[:limit]
+	}
+	// nextCursor 必须在 traceViewRootFirst **之前**、且从**截断后**的末行算：
 	// 那一步会把剪枝行排到最后，重排后的末行不再是「本页最旧的行」，
 	// 拿它当游标会跳过或重复事件（trace 视图里剪枝行时间上晚于根事件）。
-	// 判据与契约一致：行数 < 生效 limit ⇒ 没有更旧的了，给空串。
+	// 判据与契约§3.2 一致：hasMore 为假 ⇒ 服务端已确认没有更旧的行，给空串。
 	nextCursor := ""
-	if len(events) >= limit && len(events) > 0 {
+	if hasMore {
 		last := events[len(events)-1]
 		nextCursor = encodeEventCursor(last.CreatedAt, last.ID)
 	}

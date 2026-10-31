@@ -16,7 +16,8 @@ import (
 // 不另造一套 —— 这里要证明的是「同一个 handler 在带/不带 before 时说的话一致」。
 //
 // 判据全部落在**可观测事实**上：并集无重复、无遗漏、每页内部 created_at DESC、
-// nextCursor 为空 ⇔ 行数不足一页、坏游标 → 400。
+// nextCursor 为空 ⇔ **服务端已确认**没有更旧的行（多看一行；`limit=500` 时退化为旧判据，
+// 见 TestConsoleEventsCursorDegradesAtLimitCap）、坏游标 → 400。
 
 // eventsPage 是 /v1/console/events 响应的形状（只取本套件关心的字段）。
 //
@@ -121,7 +122,8 @@ func (e *consoleEnv) collectPages(t *testing.T, path, nsID string, limit int) []
 		if *page.NextCursor == "" {
 			return pages
 		}
-		// 不满一页却给了游标：契约说 nextCursor == "" ⇔ 行数 < 生效 limit
+		// 不满一页却给了游标：行数 < 生效 limit 就一定没有更旧的行了
+		// （反方向不成立：满页也可能已经到底，那正是下面「多看一行」要分辨的）
 		if len(page.Events) < limit {
 			t.Fatalf("第 %d 页只有 %d 条（< limit=%d）却给了 nextCursor=%q",
 				i+1, len(page.Events), limit, *page.NextCursor)
@@ -150,7 +152,9 @@ func flattenPages(pages [][]store.Event) ([]store.Event, map[string]int) {
 //   - 三页并集 == 库里全部 250 条，**无重复、无遗漏**（游标在页边界不丢行，这是
 //     「同 created_at 只按时间比较」最容易踩的坑）；
 //   - 每页内部严格 created_at DESC；
-//   - 满页给游标、不满页不给（nextCursor 语义与「行数 < limit」严格对应）。
+//   - 不满一页不给游标；最后一页（50 条）游标为空。满页是否给游标看「还有没有下一行」
+//     （服务端多看一行确认，见 TestConsoleEventsNoEmptyPageOnExactFullPage /
+//     TestConsoleEventsLastPageOneRow 两条边界）。
 func TestConsoleEventsCursorPaging(t *testing.T) {
 	env := newConsoleEnv(t)
 	seeded := seedConsoleEvents(t, env.db, env.nsID, "page", 250, 1700000000, 1)
@@ -344,23 +348,97 @@ func TestConsoleEventsCursorAcrossNamespaces(t *testing.T) {
 	}
 }
 
-// TestConsoleEventsNextCursorOnFullPageWithoutMore 是 nextCursor 的边界形态：
-// 行数 == limit 但库里已经没有更旧的行时，接口仍给游标（判据是「行数 < limit」，
-// 不是「还有没有下一行」）；再翻一次得到空页 + 空游标 —— 不能死循环、不能重复。
-func TestConsoleEventsNextCursorOnFullPageWithoutMore(t *testing.T) {
+// TestConsoleEventsNoEmptyPageOnExactFullPage 是「多看一行」的核心用例（#235 收尾）：
+// 库里正好 200 条、页大小 100 时，第 2 页（第 101..200 条）必须给 `nextCursor == ""`。
+//
+// 旧实现只按「行数 >= limit ⇒ 给游标」判「还有更旧的」，于是第 2 页满 100 条就误报
+// 「还有更旧的」，用户点「更旧」会先看到**一个空页**，再确认「已到最旧」。
+// 契约 §3.2 的意图是「nextCursor 为空 ⇔ 真的没有更旧的行」，所以这里断言的是
+// 「第 2 页满页但游标为空」——满页与「还有更旧」不是同一件事。
+func TestConsoleEventsNoEmptyPageOnExactFullPage(t *testing.T) {
 	env := newConsoleEnv(t)
-	seedConsoleEvents(t, env.db, env.nsID, "edge", 100, 1700000000, 1)
+	seedConsoleEvents(t, env.db, env.nsID, "exact", 200, 1700000000, 1)
+
+	first := env.getEventsPage(t, env.withNS("/v1/console/events?limit=100"))
+	if len(first.Events) != 100 {
+		t.Fatalf("第 1 页 %d 条, want 100", len(first.Events))
+	}
+	if *first.NextCursor == "" {
+		t.Fatal("第 1 页之后还有 100 条更旧的行，却给了空 nextCursor")
+	}
+
+	second := env.getEventsPage(t, env.withNS("/v1/console/events?limit=100&before="+*first.NextCursor))
+	if len(second.Events) != 100 {
+		t.Fatalf("第 2 页 %d 条, want 100（库里正好 200 条）", len(second.Events))
+	}
+	// 旧实现这里是非空 → 前端会多显示一个「更旧」，点了只得到空页。
+	if *second.NextCursor != "" {
+		t.Fatalf("第 2 页已是最后一页（200/200），nextCursor = %q，want \"\"（否则用户要多看一个空页）",
+			*second.NextCursor)
+	}
+
+	// 反向确认：接口**确实**没有更旧的行了（空游标不是「查询出错悄悄返回空」）。
+	// 用第 2 页末行的 (created_at,id) 手工造一个游标再翻，应当得到 0 条。
+	last := second.Events[len(second.Events)-1]
+	beyond := env.getEventsPage(t, env.withNS("/v1/console/events?limit=100&before="+
+		encodeEventCursor(last.CreatedAt, last.ID)))
+	if len(beyond.Events) != 0 || *beyond.NextCursor != "" {
+		t.Fatalf("越过最旧一行后 events=%d nextCursor=%q, want 0 和 \"\"",
+			len(beyond.Events), *beyond.NextCursor)
+	}
+}
+
+// TestConsoleEventsLastPageOneRow 是「多看一行」的另一侧边界：201 条 / limit=100。
+//
+// 第 2 页满 100 条时**确实**还有 1 条更旧的 ⇒ 必须给游标；第 3 页只有 1 条且游标为空。
+// 这条与上一条互为对照：只断言「满页不给游标」会掩盖「其实还有一行」的漏行 bug。
+func TestConsoleEventsLastPageOneRow(t *testing.T) {
+	env := newConsoleEnv(t)
+	seedConsoleEvents(t, env.db, env.nsID, "one", 201, 1700000000, 1)
 
 	first := env.getEventsPage(t, env.withNS("/v1/console/events?limit=100"))
 	if len(first.Events) != 100 || *first.NextCursor == "" {
-		t.Fatalf("满页（100/100）events=%d nextCursor=%q, want 100 和 非空",
+		t.Fatalf("第 1 页 events=%d nextCursor=%q, want 100 和 非空",
 			len(first.Events), *first.NextCursor)
 	}
-	next := env.getEventsPage(t, env.withNS("/v1/console/events?limit=100&before="+*first.NextCursor))
-	if len(next.Events) != 0 {
-		t.Fatalf("最后一页之后再翻返回 %d 条, want 0", len(next.Events))
+	second := env.getEventsPage(t, env.withNS("/v1/console/events?limit=100&before="+*first.NextCursor))
+	if len(second.Events) != 100 {
+		t.Fatalf("第 2 页 %d 条, want 100", len(second.Events))
 	}
-	if *next.NextCursor != "" {
-		t.Fatalf("空页给了 nextCursor=%q, want \"\"（否则前端会一直显示「更旧」）", *next.NextCursor)
+	// 第 2 页满页，且库里还剩第 201 条 ⇒ 游标必须非空（多看一行才看得见的那一条）。
+	if *second.NextCursor == "" {
+		t.Fatal("后面还有 1 条更旧的行（201 条中的第 201 条），却给了空 nextCursor（漏行）")
+	}
+	third := env.getEventsPage(t, env.withNS("/v1/console/events?limit=100&before="+*second.NextCursor))
+	if len(third.Events) != 1 {
+		t.Fatalf("第 3 页 %d 条, want 1", len(third.Events))
+	}
+	if *third.NextCursor != "" {
+		t.Fatalf("第 3 页（最后 1 条）nextCursor = %q, want \"\"", *third.NextCursor)
+	}
+}
+
+// TestConsoleEventsCursorDegradesAtLimitCap 记录一个**已知上限**（不需要修，只防回归）。
+//
+// 「多看一行」要 `perNS = limit+1`，但 store 的列表查询对 `limit > 500` 会兜底成 50
+// （#236 的病根，不能改），所以 `perNS` 必须 ≤ listLimitCap：`limit == 500` 时
+// `perNS == limit`，取不到那多出来的一行 ⇒ 只能退化成旧判据（行数 >= limit ⇒ 给游标）。
+// 因此「库里正好 500 条 + limit=500」仍会多给一个游标（用户会多看一个空页），
+// 这是硬顶带来的已知限制，而不是漏改。
+func TestConsoleEventsCursorDegradesAtLimitCap(t *testing.T) {
+	env := newConsoleEnv(t)
+	seedConsoleEvents(t, env.db, env.nsID, "capfull", listLimitCap, 1700000000, 1)
+
+	page := env.getEventsPage(t, env.withNS(fmt.Sprintf("/v1/console/events?limit=%d", listLimitCap)))
+	if *page.Limit != listLimitCap {
+		t.Fatalf("响应 limit = %d, want %d", *page.Limit, listLimitCap)
+	}
+	if len(page.Events) != listLimitCap {
+		t.Fatalf("返回 %d 条, want %d", len(page.Events), listLimitCap)
+	}
+	// 已知退化：拿不到「多一行」，无法确认，只能按旧判据给游标。
+	if *page.NextCursor == "" {
+		t.Fatalf("limit=%d 时多看不了下一行，按旧判据（行数 >= limit）应当给游标；给空游标会\n"+
+			"掩盖「store 只返回了 500 条、可能还有更旧的」的歧义", listLimitCap)
 	}
 }
