@@ -434,5 +434,14 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// --- 静态资源（CDN 缓存分级）---
 	mux.Handle("/", resolveStatic(cfg))
 
-	return &App{Handler: accessLog(mux), DB: db, AuthSvc: authSvc}
+	// 顺序不能掉：gzip 在 accessLog **外侧**。
+	//
+	// 原因不在性能，而在一个静默的类型断言：ratelimit.go 的 writeRateLimited 把限流
+	// 维度递给最外层日志时写的是 `if sw, ok := w.(*statusWriter)`。gzip 若套在
+	// accessLog 内侧，handler 收到的 w 就变成 *gzipResponseWriter，这条断言静默失败
+	// → #245 修好的「429 日志带 retry_after / rate_limit」当场回归，且没有测试会红
+	// （回归用例：gzip_test.go 的 TestGzipJSONKeepsStatusWriter）。
+	// 当前顺序下：handler → *statusWriter → gzipResponseWriter → 底层 conn，
+	// Hijack 逐层透传，WS 升级（/v1/node/stream）与访问日志均不受影响。
+	return &App{Handler: gzipJSON(accessLog(mux)), DB: db, AuthSvc: authSvc}
 }

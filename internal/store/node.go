@@ -693,6 +693,133 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCa
 	return out, rows.Err()
 }
 
+// InstanceStat 是一台节点的槽位汇总（只读投影，供批量视图用）。
+//
+// 口径与 ListInstances 完全一致：Total 是**行数**（不看 alive —— 掉线的槽位
+// 仍然是节点申报过的槽位，控制台页面上要显示它，与旧实现 len(insts) 对齐）。
+type InstanceStat struct {
+	Total int // node_instances 行数（与 ListInstances 同口径：不看 alive）
+	Busy  int // busy_task IS NOT NULL 的行数
+}
+
+// ListCapabilitiesByNode 批量取多台节点声明的能力（替代每节点一次 ListNodeCapabilities）。
+//
+// 为什么需要它：控制台列表页对每台节点各查一次能力，SQL 条数随节点数线性增长
+// （#223：N=100 时整页 201 条串行 SQL）。这里合并成一次 IN 查询，条数与 N 无关。
+//
+// 语义必须与 ListNodeCapabilities **逐字一致**（否则列表页与详情页会对同一台机器
+// show 出不同的能力/顺序/runSpec）：
+//   - 每节点内顺序仍是 c.name, c.version 升序（ORDER BY 带上 node_id 不破坏这一点）
+//   - params_schema / outputs / lifecycle 的反序列化、Outputs nil → []、
+//     run_spec 空串 → emptyRunSpec 全部照抄单节点实现
+//   - 没有能力的节点**不出现在** map 里（调用方按 nil → 空切片处理）
+//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重（IN 里重复没有意义，只会
+//     让参数列表变长）
+func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[string][]*NodeCapability, error) {
+	out := make(map[string][]*NodeCapability, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	seen := make(map[string]struct{}, len(nodeIDs))
+	args := make([]any, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		args = append(args, id)
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := d.QueryContext(ctx,
+		`SELECT nc.node_id, `+prefixedCapabilityColumns("c")+`, nc.run_spec
+		 FROM node_capabilities nc
+		 JOIN capability_versions c ON c.id = nc.capability_id
+		 WHERE nc.node_id IN (`+placeholders+`)
+		 ORDER BY nc.node_id, c.name, c.version`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list node capabilities by node: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID string
+		var c CapabilityVersion
+		var paramsSchema, outputs, lifecycle, runSpec string
+		if err := rows.Scan(&nodeID, &c.ID, &c.NamespaceID, &c.Name, &c.Version, &paramsSchema,
+			&outputs, &lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt, &runSpec); err != nil {
+			return nil, fmt.Errorf("scan node capability by node: %w", err)
+		}
+		if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
+			return nil, fmt.Errorf("decode params_schema: %w", err)
+		}
+		if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
+			return nil, fmt.Errorf("decode outputs: %w", err)
+		}
+		if c.Outputs == nil {
+			c.Outputs = []string{}
+		}
+		if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
+			return nil, fmt.Errorf("decode lifecycle: %w", err)
+		}
+		if strings.TrimSpace(runSpec) == "" {
+			runSpec = emptyRunSpec // 防御：手工改库/老数据不该让页面看到空串
+		}
+		out[nodeID] = append(out[nodeID], &NodeCapability{
+			CapabilityVersion: &c, RunSpec: json.RawMessage(runSpec),
+		})
+	}
+	return out, rows.Err()
+}
+
+// InstanceStatsByNode 批量取多台节点的槽位总数/占用数（替代每节点一次 ListInstances）。
+//
+// 这里不返回槽位明细：列表页只要两个数字，把 N×M 行拉回来再在 Go 里数
+// 是把内存和 GC 也一起做成 N+1（详情页仍然走 ListInstances）。
+//
+// 语义与旧实现对齐（len(insts) / busy_task 非空计数）：
+//   - Total 不看 alive（掉线的槽位照样是申报过的槽位）
+//   - 没有槽位的节点**不出现在** map 里（调用方按零值处理）
+//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重
+func (d *DB) InstanceStatsByNode(ctx context.Context, nodeIDs []string) (map[string]InstanceStat, error) {
+	out := make(map[string]InstanceStat, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	seen := make(map[string]struct{}, len(nodeIDs))
+	args := make([]any, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		args = append(args, id)
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := d.QueryContext(ctx,
+		`SELECT node_id, COUNT(id), COUNT(busy_task)
+		 FROM node_instances
+		 WHERE node_id IN (`+placeholders+`)
+		 GROUP BY node_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("instance stats by node: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID string
+		var stat InstanceStat
+		if err := rows.Scan(&nodeID, &stat.Total, &stat.Busy); err != nil {
+			return nil, fmt.Errorf("scan instance stats: %w", err)
+		}
+		out[nodeID] = stat
+	}
+	return out, rows.Err()
+}
+
 // prefixedCapabilityColumns 给能力列加表别名前缀，
 // 避免与 join 表的同名列（id/namespace_id）混淆。
 // 列顺序必须与下面的 scan 一致（scan 只取展示需要的子集，不含 display_name）。
