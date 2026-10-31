@@ -133,12 +133,18 @@ func TestMergeTasksSingleGroupKeepsStoreOrder(t *testing.T) {
 	if out := mergeTasks(10); out == nil {
 		t.Fatalf("空分组返回 nil（I9 要求 []）")
 	}
-	if got := taskIDs(mergeTasks(10, in)); !eqStrings(got, []string{"t3", "t2", "t1"}) {
-		t.Fatalf("单组 limit 截断后顺序 = %v", got)
+	// 单组必须真的截断（量 2 条，而不是给一个大于长度的 limit 走个过场）
+	if got := taskIDs(mergeTasks(2, in)); !eqStrings(got, []string{"t3", "t2"}) {
+		t.Fatalf("单组 limit=2 结果 = %v, want [t3 t2]", got)
 	}
 	a := []*store.Task{task("a2", 200), task("a1", 100)}
 	b := []*store.Task{task("b3", 300), task("b1", 100)}
 	if got, want := taskIDs(mergeTasks(10, a, b)), []string{"b3", "a2", "b1", "a1"}; !eqStrings(got, want) {
 		t.Fatalf("跨命名空间合并顺序 = %v, want %v", got, want)
+	}
+	// 跨组的 limit 截断是另一条独立逻辑（先归并重排、再截断），必须单独钉：
+	// 变异「跨组截断失效」此前是全绿的（mergeEvents 有断言、mergeTasks 漏了）。
+	if got := taskIDs(mergeTasks(2, a, b)); !eqStrings(got, []string{"b3", "a2"}) {
+		t.Fatalf("跨命名空间 limit=2 结果 = %v, want [b3 a2]", got)
 	}
 }

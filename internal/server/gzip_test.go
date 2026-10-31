@@ -188,6 +188,41 @@ func TestGzipJSON(t *testing.T) {
 			wantStatus: http.StatusOK, wantGzip: true, wantVary: true,
 			wantVaryExtra: "Origin", wantContentEncoding: "gzip", wantNoContentLength: true,
 		},
+		{
+			// HEAD 不压（没有 body），但**必须**带 Vary：缓存会用 HEAD 的响应头
+			// 去更新已存的 GET 响应（RFC 9111 §4.3.5），缺了就把分桶维度丢了。
+			name: "HEAD_v1_不压但带Vary", method: http.MethodHead, path: "/v1/events",
+			acceptEnc: "gzip", status: http.StatusOK,
+			contentType: "application/json", body: bigBody,
+
+			wantStatus: http.StatusOK, wantGzip: false, wantVary: true,
+		},
+		{
+			// 304 无 body，但它验证的那份 200 是带 Vary 的：304 不带就会让缓存
+			// 下次自己决定拿哪个变体。
+			name: "GET_v1_304_无body但带Vary", method: http.MethodGet, path: "/v1/events",
+			acceptEnc: "gzip", status: http.StatusNotModified,
+			contentType: "application/json",
+
+			wantStatus: http.StatusNotModified, wantGzip: false, wantVary: true,
+		},
+		{
+			// `*` **不**当 gzip：我们是“省带宽”的一方，不能押注客户端真能解。
+			// 这条钉的是有意选择，不是漏写。
+			name: "GET_v1_AcceptEncoding星号_不压", method: http.MethodGet, path: "/v1/events",
+			acceptEnc: "*", status: http.StatusOK,
+			contentType: "application/json", body: bigBody,
+
+			wantStatus: http.StatusOK, wantGzip: false, wantVary: true,
+		},
+		{
+			// 声明了 200 + JSON 却一个字节没写：是“空响应”，仍要带 Vary。
+			name: "GET_v1_空body_200_带Vary不压", method: http.MethodGet, path: "/v1/events",
+			acceptEnc: "gzip", status: http.StatusOK,
+			contentType: "application/json",
+
+			wantStatus: http.StatusOK, wantGzip: false, wantVary: true,
+		},
 	}
 
 	for _, tc := range cases {

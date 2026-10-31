@@ -31,8 +31,15 @@ type statusWriter struct {
 	rlScope    string
 }
 
+// WriteHeader 记状态码并透传。
+//
+// 只认**第一次** WriteHeader：net/http 的语义就是「第一次赢」（后续会记一行
+// superfluous 并忽略），而旧实现无论第几次都覆盖 status，导致访问日志把
+// 「201 之后又写了个 500」的响应记成 500（响应体其实是 201）。
 func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
+	if w.status == 0 {
+		w.status = code
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
@@ -60,6 +67,14 @@ func (w *statusWriter) Flush() {
 		f.Flush()
 	}
 }
+
+// Unwrap 让 http.ResponseController 能穿到真正的连接（Go 1.20+ 的透传约定）。
+//
+// 为什么需要它：本仓的中间件链是 `gzipJSON(accessLog(mux))`，handler 拿到的永远是
+// *statusWriter；ResponseController 遇到不认它的 writer 就报 ErrNotSupported，
+// SetWriteDeadline / EnableFullDuplex 这类能力就全没了。补上 Unwrap 后这些能力
+// 能逐层穿透（statusWriter → gzipResponseWriter → 底层）。
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // accessLog 是请求级日志中间件，包在最外层覆盖所有路由。
 // 记录 method/path(剥离 query)/status/latency_ms/ip/request_id/user_id。
@@ -159,16 +174,20 @@ var gzipWriterPool = sync.Pool{
 // 这种情形下不缓冲、不压缩，只补个头就透传（见 gzipResponseWriter.canCompress）。
 func gzipJSON(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/v1/") {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead || !strings.HasPrefix(r.URL.Path, "/v1/") {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// HEAD 也要包一层：它没有 body，但它的**头**会被缓存拿去更新已存的 GET 响应
+		// （RFC 9111 §4.3.5），缺 Vary: Accept-Encoding 会丢掉分桶维度。
+		// 所以 HEAD 只做“补 Vary + 透传”，永远不压（canCompress=false）。
+		canCompress := r.Method == http.MethodGet && acceptsGzip(r.Header.Get("Accept-Encoding"))
 		gw := &gzipResponseWriter{
 			ResponseWriter: w,
-			canCompress:    acceptsGzip(r.Header.Get("Accept-Encoding")),
+			canCompress:    canCompress,
 			// 小响应（绝大多数 /v1/ 控制面响应）在 512B 内就结束：给个在手容量
 			// 免掉 append 反复扩张；**不**预分配到 gzipMinBytes —— 大 body 走的是
-			// Write 里的零拷贝分支（先定局再直写），根本用不上 w.buf。
+			// Write 里的“先定局再直写”分支（免掉一次 w.buf 整块拷贝），用不上 w.buf。
 			buf: make([]byte, 0, 512),
 		}
 		// 收尾必须挂 defer：handler 写一半就 return（或 panic 到 server 兜底）时
@@ -227,6 +246,11 @@ func (w *gzipResponseWriter) WriteHeader(code int) {
 	}
 	if !bodyAllowed(code) {
 		// 204/304 没有 body：没有可压的字节，攒着只多一层延迟，立刻定局透传。
+		// 但仍要补 Vary：304 是“你缓存里的那份仍然有效”，它在语义上必须带与 200
+		// 相同的分桶维度，否则缓存下次就可能拿错变体。
+		if isCompressibleContentType(w.Header().Get("Content-Type")) {
+			appendVaryAcceptEncoding(w.Header())
+		}
 		w.decided, w.wroteHeader = true, true
 		w.ResponseWriter.WriteHeader(code)
 		return
@@ -319,6 +343,9 @@ func (w *gzipResponseWriter) finish() {
 			return
 		}
 		// 没攒够阈值：不压，但攒下的字节照样要发出去。
+		// 注意 status != 0 时也要进这一步：handler 已经声明了 200 + Content-Type
+		// 却没写 body 时，它是“一个空的 JSON 响应”，应该拿上 Vary（同一条 URL
+		// 的变体仍随 Accept-Encoding 变化），而不是被当成“什么都没发生”。
 		w.commit(false)
 	}
 	if w.gz != nil {
@@ -347,8 +374,9 @@ func (w *gzipResponseWriter) commit(compress bool) {
 		appendVaryAcceptEncoding(h)
 	}
 	if compress {
-		// 压完长度未知：必须删掉 Content-Length 改走 chunked，
-		// 否则客户端会按原文字长去截压缩流，解压必然失败。
+		// 旧 Content-Length 是**原文**长度，必须删：留着它客户端会按原文字长去截
+		// 压缩流，解压必然失败。删掉之后由 net/http 重新决定——压缩体塞得进 2KiB
+		// bufio 时它会算出**压缩后**的正确 CL，更大的响应则走 chunked。
 		h.Del("Content-Length")
 		h.Set("Content-Encoding", "gzip")
 	}

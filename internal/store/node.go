@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -702,35 +703,69 @@ type InstanceStat struct {
 	Busy  int // busy_task IS NOT NULL 的行数
 }
 
-// ListCapabilitiesByNode 批量取多台节点声明的能力（替代每节点一次 ListNodeCapabilities）。
+// nodeIDBatchSize 是一条 IN 查询里最多塞多少个 node_id。
 //
-// 为什么需要它：控制台列表页对每台节点各查一次能力，SQL 条数随节点数线性增长
-// （#223：N=100 时整页 201 条串行 SQL）。这里合并成一次 IN 查询，条数与 N 无关。
-//
-// 语义必须与 ListNodeCapabilities **逐字一致**（否则列表页与详情页会对同一台机器
-// show 出不同的能力/顺序/runSpec）：
-//   - 每节点内顺序仍是 c.name, c.version 升序（ORDER BY 带上 node_id 不破坏这一点）
-//   - params_schema / outputs / lifecycle 的反序列化、Outputs nil → []、
-//     run_spec 空串 → emptyRunSpec 全部照抄单节点实现
-//   - 没有能力的节点**不出现在** map 里（调用方按 nil → 空切片处理）
-//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重（IN 里重复没有意义，只会
-//     让参数列表变长）
-func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[string][]*NodeCapability, error) {
-	out := make(map[string][]*NodeCapability, len(nodeIDs))
-	if len(nodeIDs) == 0 {
-		return out, nil
-	}
+// SQLite 的宿主参数个数有上限（老版本是 999），而 `/v1/nodes?namespaceId=*` 的节点数
+// **没有上限**（store.ListNodes 不分页）。不分批的话，节点一多就整页 500 —— 旧实现是
+// 每节点一条单参数查，不会有这个问题，所以这里必须分批把那个退路补回来。
+const nodeIDBatchSize = 400
+
+// uniqueNodeIDs 去重（IN 里重复只让参数列表变长，没有语义价值）。
+func uniqueNodeIDs(nodeIDs []string) []string {
+	out := make([]string, 0, len(nodeIDs))
 	seen := make(map[string]struct{}, len(nodeIDs))
-	args := make([]any, 0, len(nodeIDs))
 	for _, id := range nodeIDs {
 		if _, dup := seen[id]; dup {
 			continue
 		}
 		seen[id] = struct{}{}
-		args = append(args, id)
+		out = append(out, id)
 	}
-	if len(args) == 0 {
-		return out, nil
+	return out
+}
+
+// ListCapabilitiesByNode 批量取多台节点声明的能力（替代每节点一次 ListNodeCapabilities）。
+//
+// 为什么需要它：控制台列表页对每台节点各查一次能力，SQL 条数随节点数线性增长
+// （#223：N=100 时整页 201 条串行 SQL）。这里合并成 IN 查询，条数与 N 无关
+// （每 nodeIDBatchSize 个 id 一条，节点数正常时就是 1 条）。
+//
+// 语义必须与 ListNodeCapabilities **逐字一致**（否则列表页与详情页会对同一台机器
+// 给出不同的能力/顺序/runSpec）：
+//   - 每节点内顺序仍是 c.name, c.version 升序（ORDER BY 带上 node_id 不破坏这一点）
+//   - params_schema / outputs / lifecycle 的反序列化、Outputs nil → []、
+//     run_spec 空串 → emptyRunSpec 全部照抄单节点实现
+//   - 没有能力的节点**不出现在** map 里（调用方按 nil → 空切片处理）
+//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重
+//
+// 降级粒度（审查 minor-3）：单行 JSON 坏掉时**只丢这台节点**的能力（等价于旧实现
+// 「这台节点的 ListNodeCapabilities 返回 error → caps=nil」），并留一条 WARN；
+// 绝不因为一行坏数据把整页所有节点的能力都清空。
+func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[string][]*NodeCapability, error) {
+	ids := uniqueNodeIDs(nodeIDs)
+	out := make(map[string][]*NodeCapability, len(ids))
+	broken := make(map[string]struct{})
+	for start := 0; start < len(ids); start += nodeIDBatchSize {
+		end := start + nodeIDBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := d.listCapabilitiesChunk(ctx, ids[start:end], out, broken); err != nil {
+			return nil, err
+		}
+	}
+	// 一台节点只要有一行坏数据，就整台降级（与旧实现的 per-node 语义一致）。
+	for id := range broken {
+		delete(out, id)
+	}
+	return out, nil
+}
+
+// listCapabilitiesChunk 是 ListCapabilitiesByNode 的一批。
+func (d *DB) listCapabilitiesChunk(ctx context.Context, ids []string, out map[string][]*NodeCapability, broken map[string]struct{}) error {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
 	rows, err := d.QueryContext(ctx,
@@ -740,7 +775,7 @@ func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[
 		 WHERE nc.node_id IN (`+placeholders+`)
 		 ORDER BY nc.node_id, c.name, c.version`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list node capabilities by node: %w", err)
+		return fmt.Errorf("list node capabilities by node: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -749,19 +784,19 @@ func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[
 		var paramsSchema, outputs, lifecycle, runSpec string
 		if err := rows.Scan(&nodeID, &c.ID, &c.NamespaceID, &c.Name, &c.Version, &paramsSchema,
 			&outputs, &lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt, &runSpec); err != nil {
-			return nil, fmt.Errorf("scan node capability by node: %w", err)
+			return fmt.Errorf("scan node capability by node: %w", err)
 		}
-		if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
-			return nil, fmt.Errorf("decode params_schema: %w", err)
-		}
-		if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
-			return nil, fmt.Errorf("decode outputs: %w", err)
-		}
-		if c.Outputs == nil {
-			c.Outputs = []string{}
-		}
-		if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
-			return nil, fmt.Errorf("decode lifecycle: %w", err)
+		if err := decodeCapabilityJSON(&c, paramsSchema, outputs, lifecycle); err != nil {
+			// 坏数据只降级这一台（见 ListCapabilitiesByNode 的降级粒度注释）：
+			// 静默 continue 会让页面少一条能力却没人知道，所以必须留声。
+			slog.Warn("skip node capability with invalid JSON",
+				"event", "store.node_capabilities.bad_json",
+				"node_id", nodeID,
+				"capability_id", c.ID,
+				"error", err.Error(),
+			)
+			broken[nodeID] = struct{}{}
+			continue
 		}
 		if strings.TrimSpace(runSpec) == "" {
 			runSpec = emptyRunSpec // 防御：手工改库/老数据不该让页面看到空串
@@ -770,7 +805,27 @@ func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[
 			CapabilityVersion: &c, RunSpec: json.RawMessage(runSpec),
 		})
 	}
-	return out, rows.Err()
+	return rows.Err()
+}
+
+// decodeCapabilityJSON 反序列化能力定义里的三列 JSON。
+//
+// 抽出来只为让批量路径与单节点路径共用同一份解码规则（空值判据、nil→[] 都在这里），
+// 把「两处各写一遍」的漂移风险消掉。
+func decodeCapabilityJSON(c *CapabilityVersion, paramsSchema, outputs, lifecycle string) error {
+	if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
+		return fmt.Errorf("decode params_schema: %w", err)
+	}
+	if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
+		return fmt.Errorf("decode outputs: %w", err)
+	}
+	if c.Outputs == nil {
+		c.Outputs = []string{}
+	}
+	if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
+		return fmt.Errorf("decode lifecycle: %w", err)
+	}
+	return nil
 }
 
 // InstanceStatsByNode 批量取多台节点的槽位总数/占用数（替代每节点一次 ListInstances）。
@@ -781,43 +836,45 @@ func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[
 // 语义与旧实现对齐（len(insts) / busy_task 非空计数）：
 //   - Total 不看 alive（掉线的槽位照样是申报过的槽位）
 //   - 没有槽位的节点**不出现在** map 里（调用方按零值处理）
-//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重
+//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重；按 nodeIDBatchSize 分批
 func (d *DB) InstanceStatsByNode(ctx context.Context, nodeIDs []string) (map[string]InstanceStat, error) {
-	out := make(map[string]InstanceStat, len(nodeIDs))
-	if len(nodeIDs) == 0 {
-		return out, nil
-	}
-	seen := make(map[string]struct{}, len(nodeIDs))
-	args := make([]any, 0, len(nodeIDs))
-	for _, id := range nodeIDs {
-		if _, dup := seen[id]; dup {
-			continue
+	ids := uniqueNodeIDs(nodeIDs)
+	out := make(map[string]InstanceStat, len(ids))
+	for start := 0; start < len(ids); start += nodeIDBatchSize {
+		end := start + nodeIDBatchSize
+		if end > len(ids) {
+			end = len(ids)
 		}
-		seen[id] = struct{}{}
-		args = append(args, id)
-	}
-	if len(args) == 0 {
-		return out, nil
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
-	rows, err := d.QueryContext(ctx,
-		`SELECT node_id, COUNT(id), COUNT(busy_task)
-		 FROM node_instances
-		 WHERE node_id IN (`+placeholders+`)
-		 GROUP BY node_id`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("instance stats by node: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var nodeID string
-		var stat InstanceStat
-		if err := rows.Scan(&nodeID, &stat.Total, &stat.Busy); err != nil {
-			return nil, fmt.Errorf("scan instance stats: %w", err)
+		args := make([]any, end-start)
+		for i, id := range ids[start:end] {
+			args[i] = id
 		}
-		out[nodeID] = stat
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+		err := func() error {
+			rows, err := d.QueryContext(ctx,
+				`SELECT node_id, COUNT(id), COUNT(busy_task)
+				 FROM node_instances
+				 WHERE node_id IN (`+placeholders+`)
+				 GROUP BY node_id`, args...)
+			if err != nil {
+				return fmt.Errorf("instance stats by node: %w", err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var nodeID string
+				var stat InstanceStat
+				if err := rows.Scan(&nodeID, &stat.Total, &stat.Busy); err != nil {
+					return fmt.Errorf("scan instance stats: %w", err)
+				}
+				out[nodeID] = stat
+			}
+			return rows.Err()
+		}()
+		if err != nil {
+			return nil, err
+		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // prefixedCapabilityColumns 给能力列加表别名前缀，
