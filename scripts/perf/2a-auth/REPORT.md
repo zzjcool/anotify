@@ -56,18 +56,33 @@ p50 从 **203–233 ms** 降到 **3.4–5.0 ms**。
 缓存关掉后 after 精确复现了 before 的 ~1 GB / ~34 RPS —— 证明那 64 MB/请求的分配确实是这个
 缓存消掉的，剩下的 RSS 是「38 倍请求量」的正常工作内存，不是认证。
 
-### 命中缓存的单请求成本（`internal/auth` bench，`-benchtime 20x -benchmem`）
+### 命中缓存的单请求成本（`internal/auth` bench，`-benchmem`）
+
+```bash
+go test ./internal/auth/ -run XXX -bench 'BenchmarkValidateKeyCacheHit$'  -benchtime 2s  -benchmem -count 3
+go test ./internal/auth/ -run XXX -bench 'BenchmarkValidateKeyCacheMiss$' -benchtime 3x  -benchmem -count 2
+```
 
 | 路径 | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| **缓存命中** | **3,391** | **64** | **2** |
-| 缓存未命中（argon2id 全量） | 31,407,779 | 67,120,790 | 122 |
+| **缓存命中** | **5,805 / 5,802 / 5,942** | **1,209** | **19** |
+| 缓存未命中（argon2id 全量） | **31,271,037 / 33,827,158** | **67,122,994** | 139–142 |
 
-**加速 9,263×；内存 64 B vs 67.1 MB（约 10⁶ 倍）。**
-命中路径恒定为 0 次 DB 往返、0 次 argon2；64 B / 2 allocs = `[]byte(plaintext)` 48B + scopes 副本 16B。
+**加速约 5,400×；内存 1.2 KB vs 67.1 MB（约 5.5 万倍）。**
+命中路径恒定为 **0 次 DB 往返、0 次 argon2**。
 
-> 本机 `time.Now()` 实测约 **2.6 µs/次**（无 vDSO），命中路径唯一一次取时钟就占了 3.4µs 里的大头；
-> 缓存逻辑本身约 250–300 ns。生产机（`time.Now` ~50ns）预期命中在 **~300 ns** 量级。
+> **本节数字在审查后更正过一次，留痕说明**：初版写的是 `3,391 ns / 64 B / 2 allocs`，
+> 那是**加 HMAC 之前**（裸 `sha256` 做键）的测量值。改成
+> `HMAC(进程密钥, 前缀‖明文)` + 独立 verifier 之后，一次命中要做 **2 次 HMAC**
+> （`hmac.New` 各带一个 hash 对象），于是变成 `1,209 B / 19 allocs`。
+> 这是有意的安全换性能：多花约 1 KB、17 次小分配，换掉一个可离线验证的裸哈希。
+> 未命中行的 allocs 也从 122 变成 139–142（多出的来自两次 HMAC 的输入切片与 `hmac.New`）。
+> 定性结论（0 DB、0 argon2、内存差 4–5 个数量级）不受影响。
+>
+> ns/op 绝对值受当时机器负载影响很大：本机 `time.Now()` 实测约 **2.6 µs/次**（无 vDSO），
+> 一次命中只取一次时钟，就占了 5.8 µs 里的一大半；两次 HMAC 约 0.6 µs，
+> 缓存逻辑本身（map + 读锁 + 克隆 scopes）约 0.3 µs。
+> 生产机（`time.Now` ~50 ns）预期命中在 **~1 µs** 量级。
 
 ## 3. #241 · 读路径 RPS（`GET /v1/tasks?namespaceId=…&limit=100`，带 Cookie，`-c 32`，15s）
 
@@ -147,3 +162,13 @@ bash scripts/perf/2a-auth/rss-vs-concurrency.sh /tmp/perf-2a/bin/anotify-after  
 bash scripts/perf/2a-auth/ab.sh /tmp/perf-2a/bin/anotify-before before
 bash scripts/perf/2a-auth/ab.sh /tmp/perf-2a/bin/anotify-after  after
 ```
+
+---
+
+## 7. 审查后的更正与已知残留
+
+| 项 | 说明 |
+|---|---|
+| bench 数字 | 初版命中成本（3,391 ns / 64 B / 2 allocs）是「加 HMAC 之前」的值，已在 §2 更正为 1,209 B / 19 allocs。结论方向不变。 |
+| 会话节流用例的仪表 | 原用 SQLite `SELECT total_changes()` 数写库次数。**`total_changes()` 是按连接统计的**，而 store 连接池自 #240 起是 8（`ANOTIFY_DB_MAX_CONNS`，默认 8）——「执行 UPDATE 的连接」与「查计数的连接」可能不是同一条。实测并发下 458 次真 UPDATE 只被观测到 84–92 次（漏计约 80%），于是用例偶发报「0 次写库」。**不是实现 bug、也不是断言问题**：换成 `SessionManager.TouchWriteCount()`（在写入发起处自增，与连接池形状无关），并**新增**一条 DB 级断言（等异步写落地后从库里读回 `last_seen`，要求 `>= 并发窗口开始的那一秒`）——上下界一个都没放宽。`-count=20` 全绿。 |
+| gen 快照时机 | 审查指出「`genAtRead` 必须在读 DB 之前」这条论证原先只活在注释里（把快照挪到 argon2 之后，全仓测试仍绿）。已补 `TestAPIKeyRevokeDuringCacheMissNotResurrected`，并做变异验证（把 gen 改成写缓存时取 → 该用例立即变红）。**残留**：若把快照挪到「紧跟读 DB 之后」，窗口只有微秒级，该用例抓不到——已在测试注释里写明，不假装它被测住。 |

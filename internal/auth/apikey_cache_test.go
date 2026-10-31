@@ -813,3 +813,53 @@ func TestAPIKeyGenerationBumpInvalidatesAllEntries(t *testing.T) {
 		}
 	}
 }
+
+// TestAPIKeyRevokeDuringCacheMissNotResurrected 锁住「缓存未命中路径的 gen 快照
+// 必须在**读 DB 之前**」（#227，审查发现的测试缺口）。
+//
+// 这条 bug 的形状很隐蔽：ValidateKey 未命中的流程是
+//
+//	(1) 读 DB（此时 key 还是 enabled）→ (2) argon2 31ms → (3) 写缓存
+//
+// 如果 gen 在 (3) 才取，那么「(1) 之后、(3) 之前」发生的 revoke 就会被这条条目
+// 盖过去：条目带着**revoke 之后**的 gen，看起来是新鲜的，于是后续请求全部命中 →
+// 一把已吊销的 key 还能继续用满一个 TTL（60s）。安全论证原来只活在代码注释里。
+//
+// 本用例在 (2) 的 31ms 窗口内触发 RevokeKey，然后断言「RevokeKey 返回之后的
+// 任何一次 ValidateKey 都必须失败」。
+//
+// 覆盖边界（诚实说明）：它能咬住「gen 在 argon2 之后/写缓存时才取」这个现实会
+// 发生的写法（窗口 31ms）；对「gen 紧跟读 DB 之后就取」的写法窗口只有微秒级，
+// 本用例大概率抓不到 —— 那种写法由代码里的 genAtRead 注释与这条用例共同守（
+// 评审已记录为已知残留，不假装它被测住了）。
+func TestAPIKeyRevokeDuringCacheMissNotResurrected(t *testing.T) {
+	db := openKeyTestDB(t)
+	km := NewKeyManager(db)
+	uid := mustUser(t, db, "revoke-race")
+
+	const attempts = 8
+	for attempt := 0; attempt < attempts; attempt++ {
+		plaintext, rec := mustKey(t, km, uid, []string{ScopeNotifySend})
+		// 清空缓存，强制下一次校验走「读 DB + argon2」的未命中路径。
+		km.InvalidateAll()
+
+		inflight := make(chan error, 1)
+		go func() { _, _, err := km.ValidateKey(plaintext); inflight <- err }()
+
+		// 等它读完 DB、进到 argon2（此时 key 在库里仍是 enabled）。
+		time.Sleep(5 * time.Millisecond)
+		if err := km.RevokeKey(rec.ID); err != nil {
+			t.Fatalf("第 %d 轮 revoke: %v", attempt, err)
+		}
+
+		// in-flight 那一发允许成功：它读库时 key 确实还有效（只是它稍后写回的
+		// 缓存条目必须**不可用**）。
+		<-inflight
+
+		// 核心断言：revoke 之后，任何后续校验都必须被拒。
+		if _, _, err := km.ValidateKey(plaintext); err == nil {
+			t.Fatalf("第 %d 轮：RevokeKey 返回后仍能通过 —— in-flight 的未命中请求把「吊销前」"+
+				"的结论用「吊销后」的 gen 写回了缓存（gen 快照时机错）", attempt)
+		}
+	}
+}
