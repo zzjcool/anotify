@@ -158,6 +158,10 @@
               {{t "events.loading"}}
             </div>
           </div>
+          <!-- 分页导航：按钮由 renderNav() 按状态生成。
+               放在 #ev-list **之外**——列表容器会被 replaceChildren() 整体重建，
+               而且 e2e 用 #ev-list .card 数事件条数，导航混进去会被算成事件。 -->
+          <div id="ev-nav" class="mt-3 flex flex-wrap items-center gap-2"></div>
         </div>
 
       </div>
@@ -182,6 +186,19 @@
         subtitle: t("events.subtitle", "外部世界的变化 → 任务链 → 结果"),
       });
       let EVENTS = [];
+
+      // ==================== 分页状态 ====================
+      //
+      // 服务端一次只回一页，而本页历史上一律只请求首页 → 1000 条事件里
+      // 最多 100 条可达（#235）。现在按游标翻页，四份状态必须分清：
+      //   PAGE_SIZE  —— 页大小，必须显式当 limit 发给服务端
+      //   pageCursor —— 本页锚点（= URL 里的 ?before=），请求用它
+      //   nextCursor —— 服务端回的「更旧」游标（"" ⇔ 没有更旧的行）
+      //   cursorStack—— 本会话内的回退栈，「← 较新」弹它（刷新后必然为空）
+      const PAGE_SIZE = 100;
+      let pageCursor = "";
+      let nextCursor = "";
+      let cursorStack = [];
 
       let demoMode = false;
 
@@ -217,6 +234,19 @@
         }
       }
 
+      // fetchApiResult：同 fetchApi，但把 HTTP 状态码一起带回来。
+      //
+      // 为什么需要：游标失效时服务端回 400（契约 §3.3「不静默降级」），
+      // 页面要提示并回到最新；而网络错误 / 后端未连接只需要降级成 demoMode。
+      // fetchApi 把两者都吞成 null 就分不出来了（Anotify.api 抛的 err 上带 status）。
+      async function fetchApiResult(path) {
+        try {
+          return { data: await Anotify.api(path, { demo: null }), status: 200 };
+        } catch (e) {
+          return { data: null, status: (e && e.status) || 0 };
+        }
+      }
+
       // ==================== DOM 构建工具 ====================
       //
       // 全程用 createElement + textContent，**不用 innerHTML**。
@@ -244,6 +274,10 @@
       // 否则所有事件都会落到「未归类」。
       async function init() {
         const f = readUrlFilters();
+
+        // URL 带 ?before= 时**直接**按该游标加载：刷新 / 分享必须落在同一窗口。
+        // 不能先加载首页再跳过去 —— 那会多打一次请求，还会闪一下最新的事件。
+        pageCursor = f.before;
 
         const [srcData, nodeData] = await Promise.all([
           fetchApi(API + "/sources").catch(() => null),
@@ -290,6 +324,8 @@
           source: q.get("source") || "",
           node: q.get("node") || "",
           trace: q.get("traceId") || "",
+          // before = 当前窗口的锚点。首页不带它（刷新 / 分享靠它落回同一页）。
+          before: q.get("before") || "",
         };
       }
 
@@ -392,7 +428,10 @@
           nodeSel.value = "";
           document.getElementById("ev-trace").value = "";
           nodeTraceIds = null;
-          // 清掉 URL 参数，否则刷新又回来了
+          // 清掉 URL 参数，否则刷新又回来了。before 也要一起清：
+          // 筛选全清了就该回到最新一页，否则会停在一个不再有筛选语义的旧窗口上。
+          pageCursor = "";
+          cursorStack = [];
           history.replaceState(null, "", location.pathname);
           // 只刷新事件列表：源/节点列表没变，没必要重拉
           loadAll();
@@ -416,6 +455,79 @@
         nodeTraceIds = new Set(tasks.map((x) => x.traceId).filter(Boolean));
       }
 
+      // ==================== 分页导航 ====================
+      //
+      // 请求形态（契约 §3.4）：
+      //   GET /v1/console/events?limit=100[&before=<opaque>][&traceId=<...>]
+      // 游标虽然是不透明的 base64url（不含 + / =），拼 URL 前仍然 encodeURIComponent。
+
+      // writeUrlBefore 把本页锚点写回 URL。
+      //
+      // 用 replaceState 而不是 pushState：翻页不应该产生浏览器历史 ——
+      // 否则后退键会被页码吃掉，用户得按十几次才退得出去。
+      // 只动 before 一个参数：source / node / traceId / group 语义必须保持不变。
+      function writeUrlBefore(cursor) {
+        const q = new URLSearchParams(location.search);
+        if (cursor) q.set("before", cursor);
+        else q.delete("before");
+        const qs = q.toString();
+        history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+      }
+
+      // 「更旧 →」：把当前锚点压栈（首页压空串，代表“回首页”），再以
+      // nextCursor 为新锚点写 URL 并加载。nextCursor == "" 时按钮本来就不渲染。
+      function goOlder() {
+        if (!nextCursor) return;
+        cursorStack.push(pageCursor);
+        pageCursor = nextCursor;
+        writeUrlBefore(pageCursor);
+        loadAll();
+      }
+
+      // 「← 较新」：弹栈回退。栈空时按钮不渲染，这里再兜一层防意外调用。
+      // 刷新后栈必然为空 → 按钮隐藏，不报错（契约 §3.4）。
+      function goNewer() {
+        if (!cursorStack.length) return;
+        pageCursor = cursorStack.pop();
+        writeUrlBefore(pageCursor);
+        loadAll();
+      }
+
+      // 「回到最新」：清掉 before 回首页，同时清空回退栈
+      //（栈里全是“更旧”方向的锚点，留着会让「← 较新」指向不存在的历史）。
+      function goLatest() {
+        pageCursor = "";
+        cursorStack = [];
+        writeUrlBefore("");
+        loadAll();
+      }
+
+      // renderNav 重建分页导航行：三个按钮各自按状态显隐。
+      function renderNav() {
+        const nav = document.getElementById("ev-nav");
+        nav.replaceChildren();
+        // 没有任何按钮时整块隐藏，不留一条空白的 12px 间距。
+        nav.classList.toggle("hidden", true);
+        if (demoMode) return; // 演示态没有真实分页，不显示任何翻页按钮
+
+        const btns = [];
+        // 有回退栈才能往回走（刷新后为空 → 隐藏）
+        if (cursorStack.length) btns.push(["ev-newer", t("events.page.newer", "← 较新"), goNewer]);
+        // 服务端说还有更旧的行
+        if (nextCursor) btns.push(["ev-older", t("events.page.older", "更旧 →"), goOlder]);
+        // URL 里有 before 才有“不在最新一页”这回事
+        if (pageCursor) btns.push(["ev-latest", t("events.page.latest", "回到最新"), goLatest]);
+
+        if (!btns.length) return;
+        nav.classList.remove("hidden");
+        for (const [id, label, fn] of btns) {
+          const b = el("button", "btn-ghost rounded px-3 py-2 text-xs", label);
+          b.id = id;
+          b.addEventListener("click", fn);
+          nav.appendChild(b);
+        }
+      }
+
       async function loadAll() {
         // 每次加载前重填下拉：「源类型」变了以后，「源」下拉必须跟着只列
         // 该类型下的源。只调一次 init 的话，用户切类型后源下拉还是旧的
@@ -429,28 +541,61 @@
         } catch (e) {
           nodeTraceIds = null;
         }
-        const qs = trace ? "?traceId=" + encodeURIComponent(trace) : "";
+        // limit 必须显式带上：不传时页大小由服务端默认值决定，页面就不可控。
+        let qs = "?limit=" + PAGE_SIZE;
+        if (pageCursor) qs += "&before=" + encodeURIComponent(pageCursor);
+        if (trace) qs += "&traceId=" + encodeURIComponent(trace);
         // 走**控制台**端点（会话 Cookie 鉴权）。
         // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
         // 浏览器页面拿不到也拿不对这个凭据。
-        const data = await fetchApi(API + "/console/events" + qs);
-        if (data) {
-          EVENTS = data.events || [];
+        const r = await fetchApiResult(API + "/console/events" + qs);
+
+        // 游标失效（400 “invalid before cursor”）：提示 + 清掉 before 回最新。
+        // 不会死循环：goLatest() 会把 pageCursor 清空，而本分支要求
+        // pageCursor 非空才会进，所以重载后的那次请求不可能再走到这里。
+        if (r.status === 400 && pageCursor) {
+          toast(t("events.page.invalid_cursor", "游标已失效，已回到最新"));
+          goLatest();
+          return;
+        }
+
+        if (r.data) {
+          // 一页一次：**替换** EVENTS 而不是累加 —— 累加会让每页条数失控，
+          // 也会让「本页 N 条」的语义变成“已加载 N 条”。
+          EVENTS = r.data.events || [];
+          nextCursor = r.data.nextCursor || "";
           demoMode = false;
         } else {
+          // 后端未连接 / 其它 HTTP 失败：降级成演示态，不白屏、不抛未捕获异常。
           EVENTS = [];
+          nextCursor = "";
           demoMode = true;
         }
         renderList();
+        renderNav();
+      }
+
+      // renderSummary 写摘要行：本页条数 + 是否已到最旧 + 演示徽章。
+      //
+      // 用「本页 N 条」而不是原来的「N 条事件」：翻页后 EVENTS 只是一页，
+      // 说“共 N 条”会误导（1000 条事件的第 3 页也只会显示 100 条）。
+      function renderSummary() {
+        const summary = document.getElementById("ev-summary");
+        if (demoMode) {
+          // 演示态保持原有徽章语义（后端未连接 ≠ 零条事件）
+          summary.textContent = t("events.demo_badge", "演示模式：后端未连接");
+          return;
+        }
+        let text = t("events.page.window", "本页 {n} 条").replace("{n}", EVENTS.length);
+        // nextCursor == "" ⇔ 服务端说没有更旧的行了
+        if (!nextCursor) text += " · " + t("events.page.end", "已到最旧");
+        summary.textContent = text;
       }
 
       // renderList 用纯 DOM 重建事件列表。
       function renderList() {
         const list = document.getElementById("ev-list");
-        const summary = document.getElementById("ev-summary");
-        summary.textContent = demoMode
-          ? t("events.demo_badge", "演示模式：后端未连接")
-          : t("events.count", "{n} 条事件").replace("{n}", EVENTS.length);
+        renderSummary();
 
         list.replaceChildren();
 
@@ -482,11 +627,17 @@
         }
 
         if (!visible.length) {
+          // 已翻页窗外 + 有客户端筛选 → 提示还能继续向更旧翻页或回最新；
+          // 首页（无 before）时保持原文案不变。
+          const pagedAway = !!pageCursor;
+          const filtered = !!(nodeTraceIds || kindFilter || srcFilter);
           list.appendChild(
             el(
               "div",
               "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-              t("events.filter.empty", "当前筛选条件下没有事件。"),
+              pagedAway && filtered
+                ? t("events.page.no_match", "当前页没有匹配项，可继续向更旧翻页或回到最新")
+                : t("events.filter.empty", "当前筛选条件下没有事件。"),
             ),
           );
           renderActiveFilters();

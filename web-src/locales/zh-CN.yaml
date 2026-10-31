@@ -1133,6 +1133,14 @@ events:
     other: 未归类
     count: '{n} 条'
     more: 展开其余 {n} 条
+  page:
+    newer: ← 较新
+    older: 更旧 →
+    latest: 回到最新
+    window: '本页 {n} 条'
+    end: 已到最旧
+    no_match: 当前页没有匹配项，可继续向更旧翻页或回到最新
+    invalid_cursor: 游标已失效，已回到最新
 caps:
   title: 能力
   subtitle: 能力是"做什么"（不含"怎么做"）。出口（事件进来后往哪走）已独立成页。
