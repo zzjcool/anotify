@@ -434,21 +434,12 @@ func TestCreateNodeTokenWorksForWSHandshake(t *testing.T) {
 	nodeID := mustStr(t, created.node, "id")
 
 	// 2) 真服务器：`/` 挂控制台 mux，再叠上节点 WS 端点（"GET /v1/node/stream" 更具体，优先生效）。
-	srvMux := http.NewServeMux()
-	srvMux.Handle("/", env.mux)
-	srvMux.Handle("GET /v1/node/stream", noStore(ws.NewNodeHandler(env.db)))
-	srv := httptest.NewServer(srvMux)
-	t.Cleanup(srv.Close)
-
-	streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/node/stream"
+	//
+	// 收尾顺序由夹具钉死（settle → srv.Close → db.Close，见 wsfixture_test.go / #259）：
+	// httptest.Server.Close() 不等已劫持的 WS 连接，cleanup 的同步写库必须早于关库。
+	f := newNodeStreamFixture(t, env)
 	dial := func(token string) (*websocket.Conn, *http.Response, error) {
-		opts := &websocket.DialOptions{}
-		if token != "" {
-			opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + token}}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return websocket.Dial(ctx, streamURL, opts)
+		return f.dial(t, token)
 	}
 
 	// 3) 正确令牌：必须真的 Upgrade（101）。

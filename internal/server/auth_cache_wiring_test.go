@@ -36,11 +36,14 @@ func newWiringEnv(t *testing.T) *wiringEnv {
 	t.Helper()
 	ctx := context.Background()
 
-	db, err := store.Open(t.TempDir() + "/wiring.db")
+	// 收尾走 closeDBForTempDir（#259）：关库钉在 t.TempDir 的 RemoveAll 之前，
+	// 并断言没有 goroutine 在关库窗口里用库（失败即报「收尾竞态」）。
+	dir := t.TempDir()
+	db, err := store.Open(dir + "/wiring.db")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { closeDBForTempDir(t, db, dir) })
 
 	svc, err := auth.NewService(db, auth.Config{
 		RPDisplayName: "Anotify Wiring Test",

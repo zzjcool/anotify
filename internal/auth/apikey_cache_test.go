@@ -16,15 +16,18 @@ import (
 // openKeyTestDB 打开一个**真 store**（文件型 SQLite，落在临时目录）。
 // 用真实 DB 而不是桩：缓存的正确性论证依赖「DB 里到底被查了几次」，
 // 桩会把这个证据变成对桩的假设。
+//
+// 收尾同 newSessionTestDB（#259）：走 closeDBForTempDir，把关库钉在 t.TempDir 的
+// RemoveAll **之前**，并断言关库那一刻没有 goroutine 还握着连接、也没有 WAL 残留。
 func openKeyTestDB(t *testing.T) *store.DB {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "a.db"))
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "a.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	// sql.DB.Close 幂等（二次调用返回 nil），所以测试体内提前 Close 也不会与
-	// 这里的 cleanup 冲突。
-	t.Cleanup(func() { _ = db.Close() })
+	// 测试体内提前 Close 过的库再 Close 返回 nil（幂等），所以三条收尾断言依然成立。
+	t.Cleanup(func() { closeDBForTempDir(t, db, dir) })
 	return db
 }
 

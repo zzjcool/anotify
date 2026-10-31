@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/authn"
@@ -16,6 +18,37 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/trigger"
 )
+
+// closeDBForTempDir 是夹具的确定性收口（#259，同 internal/auth / internal/server 的判据）：
+// 关库前 InUse==0、关库后 OpenConnections==0、目录里无 *.db-wal|*.db-shm。
+//
+// 为什么断言而不是只 Close：CI 上出现过 `TempDir RemoveAll cleanup: ... directory not empty`
+// （失败现场只剩一个 `*.db-shm`）——那是「关库之后还有活着的 SQLite 连接重建 WAL 文件」。
+// 只做 db.Close() 的话，这个竞态会在 t.TempDir 的 RemoveAll 里随机炸掉某个用例；
+// 在这里断言就变成确定性的「收尾竞态」失败，并且点名是哪个条件不成立。
+func closeDBForTempDir(t *testing.T, db *store.DB, dir string) {
+	t.Helper()
+	// 断言失败会走 t.Fatalf（跳过余下语句）：defer 兜底关库，避免失败路径上再制造一层 TempDir 噪声。
+	defer func() { _ = db.Close() }()
+	if n := db.Stats().InUse; n != 0 {
+		t.Fatalf("收尾竞态：%d 条 DB 连接仍被 goroutine 持有（应在 db.Close 前等它们返回）", n)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("收尾竞态：db.Close 失败（有 goroutine 在关库窗口里用库？）: %v", err)
+	}
+	if n := db.Stats().OpenConnections; n != 0 {
+		t.Fatalf("收尾竞态：db.Close 返回后仍有 %d 条连接没释放（有并发使用者）", n)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读临时目录失败: %v", err)
+	}
+	for _, e := range entries {
+		if name := e.Name(); strings.HasSuffix(name, ".db-wal") || strings.HasSuffix(name, ".db-shm") {
+			t.Fatalf("收尾竞态：db.Close 后仍残留 WAL 文件 %s（有连接在 RemoveAll 期间重建文件）", name)
+		}
+	}
+}
 
 // eventFixture 是一套带真 SQLite + 真 Dispatcher 的事件入口环境。
 //
@@ -35,11 +68,13 @@ func newEventFixture(t *testing.T) *eventFixture {
 	t.Helper()
 	ctx := context.Background()
 
-	db, err := store.Open(t.TempDir() + "/events.db")
+	// 收尾走 closeDBForTempDir（#259）：关库钉在 t.TempDir 的 RemoveAll 之前，并断言无并发使用者。
+	dir := t.TempDir()
+	db, err := store.Open(dir + "/events.db")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { closeDBForTempDir(t, db, dir) })
 
 	// 用户 + default 命名空间（RegisterUser 一步到位，同事务播种内置能力）。
 	// 组织层已在迁移 14 删除（#204）：命名空间是唯一隔离边界。

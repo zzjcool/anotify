@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,11 +34,15 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	t.Helper()
 	ctx := context.Background()
 
-	db, err := store.Open(t.TempDir() + "/console.db")
+	// 目录由本函数持有（不内联 t.TempDir()）：收口时要把「库关干净」与「目录里没有
+	// WAL 残留」一起断言（#259）。t.TempDir 的 RemoveAll 由它自己注册的 cleanup 负责，
+	// 而 closeDBForTempDir 在其后注册 ⇒ LIFO 下先关库、再删目录。
+	dir := t.TempDir()
+	db, err := store.Open(dir + "/console.db")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { closeDBForTempDir(t, db, dir) })
 
 	svc, err := auth.NewService(db, auth.Config{
 		RPDisplayName: "Anotify Test",
@@ -90,6 +96,55 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	return &consoleEnv{
 		mux: mux, db: db, svc: svc, userID: uid, nsID: nsID,
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+	}
+}
+
+// closeDBForTempDir 是 newConsoleEnv 的确定性收口（只本包用，不跨包抽象；#259）。
+//
+// 三条断言都是「收尾竞态」的机器判据，不是新的产品行为：
+//  1. 关库之前仍有 goroutine 持有连接 ⇒ 它随时可能发起一次写库，与 db.Close() 打架；
+//  2. db.Close() 之后连接数仍不为零 ⇒ 有连接是在 Close 期间被借出的（Close 只关空闲连接）；
+//  3. 目录里残留 -wal/-shm ⇒ 正是 #259 的失败签名（TempDir 里只剩 console.db-shm），
+//     接着的 RemoveAll 就会撞上「directory not empty」。
+//
+// 换句话说：db.Close 之后的并发写者只会看到 `database is closed`（postclose_guard_test.go
+// 的护栏会把它判红），这里把同一个竞态在收尾点上提前逮住。
+func closeDBForTempDir(t *testing.T, db *store.DB, dir string) {
+	t.Helper()
+	// 任何一条断言失败都会走 t.Fatalf（跳过本函数余下语句）：用 defer 兜底关库，
+	// 免得失败路径上把库留开着、又在 t.TempDir 的 RemoveAll 里制造第二层噪声。
+	defer func() { _ = db.Close() }()
+
+	// ① 先问「还有谁在用」：in-use 连接意味着某条 goroutine 正在一次查询/事务里。
+	if inUse := db.Stats().InUse; inUse != 0 {
+		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: InUse=%d dir=%s（后台写者会在关库后看到 `%s`）",
+			inUse, dir, dbClosedMarker))
+		t.Fatalf("收尾竞态：%d 条 DB 连接仍被 goroutine 持有（cleanup 必须等所有会话退出后再关库）", inUse)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("收尾竞态：db.Close 失败（有 goroutine 在关库窗口里用库？）: %v", err)
+	}
+
+	// ② Close 之后仍有连接 → 说明它是 Close 期间被借出的（归还时才真正关闭）。
+	if open := db.Stats().OpenConnections; open != 0 {
+		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: OpenConnections=%d dir=%s（Close 只关空闲连接）",
+			open, dir))
+		t.Fatalf("收尾竞态：db.Close 后仍有 %d 条连接未关（并发写者只会看到 `%s`）", open, dbClosedMarker)
+	}
+
+	// ③ 干净关闭会删掉 -wal/-shm；留下就说明有连接在关库之后又碰了库（或没能关掉）。
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读临时目录 %s: %v", dir, err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".db-wal") || strings.HasSuffix(name, ".db-shm") {
+			reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: 残留 WAL=%s dir=%s（有连接在 RemoveAll 期间重建文件，写者只会看到 `%s`）",
+				name, dir, dbClosedMarker))
+			t.Fatalf("收尾竞态：db.Close 后仍残留 WAL 文件 %s（并发写者只会看到 `%s`）", name, dbClosedMarker)
+		}
 	}
 }
 

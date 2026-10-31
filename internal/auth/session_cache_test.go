@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -17,14 +19,66 @@ import (
 
 // newSessionTestDB 打开一个文件型 SQLite（会话缓存测试需要能中途 db.Close()，
 // 用文件库可以直接把「DB 不可用」当成「有没有真的查库」的探针）。
+//
+// 收尾走 closeDBForTempDir（#259）：关库这件事必须**确定性**地跑在 t.TempDir 的
+// RemoveAll 之前，并且在关库那一刻断言「没有任何 goroutine 还握着连接」。
 func newSessionTestDB(t *testing.T) *store.DB {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "sessions.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() }) // 幂等：中途 Close 过的库再 Close 返回 nil
+	// 注册顺序是硬要求：t.TempDir() 的 RemoveAll 先注册 ⇒ LIFO 下**后**执行，
+	// 于是「关库 + 断言」稳在 RemoveAll 之前（#259 的红正是 RemoveAll 与活连接并发）。
+	t.Cleanup(func() { closeDBForTempDir(t, db, dir) })
 	return db
+}
+
+// closeDBForTempDir 收口一个临时目录里的库：关库 → 断言不留连接、不留 WAL 文件。
+//
+// 为什么必须断言（#259 的失败签名）：
+//
+//	/tmp/TestSessionInvalidateUser.../001/sessions.db-shm（32KB，其余文件都已被删）
+//
+// RemoveAll 删到一半时，某个仍活着的 SQLite 连接重建了 -shm ⇒ `directory not empty`。
+// 关库前 InUse != 0 / 关库后 OpenConnections != 0 / 目录里还有 *.db-wal|*.db-shm，
+// 三者任一成立都说明「有 goroutine 在关库窗口里用库」——那是竞态，不是偶发。
+//
+// 注意本包有 3 处**中途** db.Close() 的用例（要证明 fail-closed / 零 DB 往返），
+// 收口时池子早已关掉，因此这里的三条断言对它们同样成立。
+func closeDBForTempDir(t *testing.T, db *store.DB, dir string) {
+	t.Helper()
+	// 断言失败会走 t.Fatalf（跳过余下语句）：defer 兜底关库，避免失败路径上再制造一层 TempDir 噪声。
+	defer func() { _ = db.Close() }()
+	if n := db.Stats().InUse; n != 0 {
+		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: InUse=%d dir=%s（后台写者会在关库后看到 `%s`）",
+			n, dir, dbClosedMarker))
+		t.Fatalf("收尾竞态：%d 条 DB 连接仍被 goroutine 持有（应在 db.Close 前等它们返回）", n)
+	}
+	if err := db.Close(); err != nil { // 幂等：中途 Close 过的库再 Close 返回 nil
+		t.Fatalf("收尾竞态：db.Close 失败（有 goroutine 在关库窗口里用库？）: %v", err)
+	}
+	if n := db.Stats().OpenConnections; n != 0 {
+		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: OpenConnections=%d dir=%s（Close 只关空闲连接）",
+			n, dir))
+		t.Fatalf("收尾竞态：db.Close 返回后仍有 %d 条连接没释放（有并发使用者）", n)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读临时目录失败: %v", err)
+	}
+	var leftovers []string
+	for _, e := range entries {
+		if name := e.Name(); strings.HasSuffix(name, ".db-wal") || strings.HasSuffix(name, ".db-shm") {
+			leftovers = append(leftovers, name)
+		}
+	}
+	if len(leftovers) > 0 {
+		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: 残留 WAL=%v dir=%s（有连接在 RemoveAll 期间重建文件，写者只会看到 `%s`）",
+			leftovers, dir, dbClosedMarker))
+		t.Fatalf("收尾竞态：db.Close 后仍残留 WAL 文件 %v（有连接在 RemoveAll 期间重建文件；并发写者只会看到 `database is closed`）", leftovers)
+	}
 }
 
 // seedSession 建一个用户 + 一个会话。
@@ -143,6 +197,9 @@ func TestSessionCacheHitSkipsDB(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
+	// 这一次是缓存命中 ⇒ 一个 DB 都不碰。注意：会话路径把 DB 错误映射成
+	// 「auth: 会话无效」，所以「退化成回源」不会在日志里留下 database is closed——
+	// 这条断言（仍然 200）本身就是证据；关库后的可见性由 closeDBForTempDir 兜住。
 	got = runSessionMW(m, s.ID)
 	if got.code != http.StatusOK || got.userID != u.ID {
 		t.Fatalf("缓存热时 DB 关闭仍应放行（证明 0 次 DB 往返）: code=%d uid=%q body=%s", got.code, got.userID, got.body)
@@ -554,6 +611,7 @@ func TestSessionInvalidateUser(t *testing.T) {
 		}
 	}
 	// 别人的缓存条目还在 → 仍然放行（证明失效范围正确）。
+	// 缓存命中不碰 DB ⇒ 故意不划窗口：真的回源（=真的误伤）时护栏会直接咬住。
 	if got := runSessionMW(m, other.ID); got.code != http.StatusOK {
 		t.Fatalf("其它用户不该被误伤, got code=%d body=%s", got.code, got.body)
 	}
