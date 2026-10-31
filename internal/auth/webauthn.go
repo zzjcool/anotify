@@ -62,6 +62,16 @@ type Config struct {
 	RPOrigins     []string // 如 ["http://localhost:5699"]
 	SessionTTL    time.Duration
 	SecureCookie  bool
+
+	// SessionCacheTTL 是会话验证结果的进程内缓存存活时间（#241）。
+	//   >0 → 原值；0 → 用 auth 包的默认值（10s）；<0 → 关闭缓存（全走 DB）。
+	// 为什么缓存 TTL 要能从外面调：它直接等价于「超管禁用用户后多久真正生效」
+	// （并且所有失效钩子都在本进程内），部署方需要能根据合规要求自己选。
+	SessionCacheTTL time.Duration
+
+	// KeyCacheTTL 是 API Key 验证结果的进程内缓存存活时间（#227）。
+	// 语义同上。revoke 由 KeyManager.RevokeKey 同步失效，TTL 只兜「绕过本进程的写路径」。
+	KeyCacheTTL time.Duration
 }
 
 // NewService 构造认证服务。
@@ -80,8 +90,8 @@ func NewService(db *store.DB, cfg Config) (*Service, error) {
 	s := &Service{
 		wa:         wa,
 		db:         db,
-		sess:       NewSessionManager(db, cfg.SessionTTL, cfg.SecureCookie),
-		keys:       NewKeyManager(db),
+		sess:       NewSessionManagerTuned(db, cfg.SessionTTL, cfg.SecureCookie, cfg.SessionCacheTTL),
+		keys:       NewKeyManagerTuned(db, cfg.KeyCacheTTL),
 		challenges: make(map[string]*sessionEntry),
 	}
 	return s, nil

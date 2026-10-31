@@ -290,6 +290,11 @@ func (h *adminHandler) applyDisabledChange(r *http.Request, id string, disabled 
 	if n == 0 {
 		return &adminErr{404, "用户不存在"}
 	}
+	// 会话缓存失效（#241）：必须在 DB 写成功之后。
+	// 不失效的话「禁用」要等一个 cacheTTL（默认 10s）才真正生效——虽然仍安全
+	// （是有界的），但超管的预期是“点了就下”。反向（先失效后写库）更糟：写库失败时
+	// 缓存已没，下一次请求重新缓存到的仍是「未禁用」，看起来像改了没生效。
+	h.svc.Sessions().InvalidateUser(id)
 	slog.Info("admin: user disabled changed",
 		"event", "admin.user.disabled_changed",
 		"actor_id", actorID,
