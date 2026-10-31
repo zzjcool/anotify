@@ -16,6 +16,14 @@ import (
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+
+	// retryAfter / rlScope 是限流器写 429 时塞进来的回边信息（见 writeRateLimited）。
+	//
+	// 为什么不直接改 http.ResponseWriter 签名：限流器在 handler 深处，
+	// 把日志需要的上下文沿调用链手递太脏；statusWriter 本来就在最外层，
+	// 用类型断言“有就写”是最小侵入。默认零值 = “不是限流器产生的 429”。
+	retryAfter int
+	rlScope    string
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -90,6 +98,12 @@ func accessLog(next http.Handler) http.Handler {
 		case sw.status >= 500:
 			slog.Error("request", args...)
 		case sw.status == 429 || sw.status == 401 || sw.status == 403:
+			// 429 的日志**只在这里写一条**（限流器内不再自己写）：
+			// 双写会在打满时把日志盘刷爆（issue #245：c=16 时 75MB/10s）。
+			// retry_after / rate_limit 让运维仍然能分清是哪个维度拒的。
+			if sw.status == 429 && (sw.retryAfter > 0 || sw.rlScope != "") {
+				args = append(args, "retry_after", sw.retryAfter, "rate_limit", sw.rlScope)
+			}
 			slog.Warn("request", args...)
 		default:
 			slog.Info("request", args...)

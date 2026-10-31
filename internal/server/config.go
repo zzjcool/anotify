@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // Config 服务配置（全部可用环境变量覆盖）。
@@ -42,6 +45,104 @@ type Config struct {
 	// 默认随机生成（每次启动都不同）；显式设 ANOTIFY_BOOT_ID 时用它，
 	// 便于外部在启动前就知道该等哪个实例。
 	BootID string
+
+	// HookRatePerMin / HookRatePerIPPerMin 是 POST /v1/hooks/{token} 的双维度限流额度
+	// （每分钟），见 ratelimit.go 的 rateLimitedHook。
+	//
+	// 为什么两维：这个端点的 token 是攻击者手里可以换的东西，只按 token 限流等于
+	// 换个 token 就绕过；只按 IP 限流则会把「一个出口 IP + 批量告警」按 60/min 卡死
+	// （issue #245：批量告警从第 61 条起全 429）。两维都过才放行。
+	//
+	// 取值语义（解析见 hookRateFromEnv / hookRateLimits）：
+	//   - 空 / "0" / 非法值 → 用默认（600 每 token、1200 每 IP）；
+	//   - 负数（如 -1，或字面的 "off"）→ **关闭该维度**（显式运维选择，
+	//     configureHookRateLimit 会打 WARN 留痕）；
+	//   - 正数 → 原样使用。
+	HookRatePerMin      int
+	HookRatePerIPPerMin int
+
+	// SessionCacheTTL / APIKeyCacheTTL 是 #241 / #227 引入的两个进程内缓存
+	// 的存活时间（两条独立的缓存，失效策略不同，故意不合并）。
+	//
+	// 语义（解析见 cacheTTLFromEnv）：
+	//   - 未设置 / 空 / "0"   → 用 auth 包的默认值（会话 10s、API Key 60s）；
+	//   - "off" / "-1" / ...   → **关闭该缓存**（所有请求走完整 DB / argon2 校验）；
+	//   - "30s" / "30"         → 原值（纯数字按秒）。
+	//
+	// 为什么要给运维这个旋钮：这两个 TTL 同时是「超管禁用用户 / 吊销 Key 之后，
+	// 本进程还要多久才一定不再放行」的上界（正常路径有同步失效钩子，TTL 兜的是
+	// 绕过钩子的写路径，例如运维直接改库）。合规要求严格时可以调到 1s 或直接关掉，
+	// 代价只是吞吐。
+	SessionCacheTTL time.Duration
+	APIKeyCacheTTL  time.Duration
+}
+
+// hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
+//
+// 为什么要单开一个 helper：Config 不只由 FromEnv 构造（测试、内嵌部署会直接写结构体），
+// 字段零值必须等同“用默认”，否则漏填就把防线关掉了。
+// 保留负数原样返回：那是“关闭该维度”的信号，不能在解析层被吃掉。
+func (c Config) hookRateLimits() (perToken, perIP int) {
+	return hookRateOrDefault(c.HookRatePerMin, defaultHookRatePerMin),
+		hookRateOrDefault(c.HookRatePerIPPerMin, defaultHookRatePerIPPerMin)
+}
+
+// hookRateOrDefault：0/未填 → 默认值；负数原样透传（= 关闭信号的载体）。
+func hookRateOrDefault(v, def int) int {
+	if v == 0 {
+		return def
+	}
+	return v
+}
+
+// hookRateFromEnv 读取一个 hook 限流额度环境变量。
+//
+// 语义（契约 §2.2）：
+//   - 未设置 / 空 / "0" / 非法值 → def（宁愿用默认，也不能因为写错一个 env 把防线关掉）；
+//   - 负数（如 "-1"）或 "off"/"false"/"disable" → 负数（关闭该维度，由 configureHookRateLimit 打 WARN）；
+//   - 正数 → 原值。
+func hookRateFromEnv(key string, def int) int {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch raw {
+	case "", "0":
+		return def
+	case "off", "false", "disable", "disabled", "none":
+		return -1
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n == 0 {
+		// 非法值不关闭限流：宁可少一个可配项，也不能让手滑变成降级。
+		return def
+	}
+	return n
+}
+
+// cacheTTLFromEnv 读取一个缓存 TTL 环境变量。
+//
+// 语义：
+//   - 未设置 / 空 / "0"        → def（默认值）
+//   - "off"/"false"/"disable"/"-1" → -1（关闭该缓存；调用方据此走完整校验路径）
+//   - 其它 → 按 Go duration 解析（"500ms"/"2m"），解析不了再按「纯整数秒」解析
+//   - 仍然解析不了（手滑）      → def
+//
+// 非法值回落到默认而不是关闭缓存：写错一个 env 不该把性能优化整个关掉；
+// 缓存本身不承担正确性（失效有同步钩子 + TTL 上界），所以保守方向是「照常开」。
+func cacheTTLFromEnv(key string, def time.Duration) time.Duration {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch raw {
+	case "", "0":
+		return def
+	case "off", "false", "disable", "disabled", "none", "-1":
+		return -1
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	// 纯数字按秒（"30" == 30s），排障时不用记单位。
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return def
 }
 
 // FromEnv 从环境变量加载配置。
@@ -64,6 +165,14 @@ func FromEnv() Config {
 		LogFormat:   get("ANOTIFY_LOG_FORMAT", "json"),
 		BootID:      bootIDFromEnv(),
 		Pprof:       get("ANOTIFY_PPROF", "") != "",
+
+		// hooks 入口双维度限流（issue #245）：每 token 600/min、每 IP 1200/min 为默认。
+		HookRatePerMin:      hookRateFromEnv("ANOTIFY_HOOK_RATE_PER_MIN", defaultHookRatePerMin),
+		HookRatePerIPPerMin: hookRateFromEnv("ANOTIFY_HOOK_RATE_PER_IP_PER_MIN", defaultHookRatePerIPPerMin),
+
+		// 鉴权热路径缓存（#241 / #227）：0=用默认、负数=关缓存。
+		SessionCacheTTL: cacheTTLFromEnv("ANOTIFY_SESSION_CACHE_TTL", 0),
+		APIKeyCacheTTL:  cacheTTLFromEnv("ANOTIFY_APIKEY_CACHE_TTL", 0),
 	}
 }
 
