@@ -259,3 +259,47 @@ func schemaShape(t *testing.T, db *DB) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestMigration15LegacyUpgradeKeepsIndex 真实老库升级路径：v11 时代 → 一路升到最新。
+//
+// 上面那条漂移用例是「手工造坏形状」；这条走的是**真实历史**：迁移 12 重建 edges
+// （加 namespace_id）、迁移 14 摘掉 org_id，每一次重建都会重建同名索引。
+// 要点是升级后索引仍然只有一个、且形状是权威形状——历史库不会停在中途的形状上。
+func TestMigration15LegacyUpgradeKeepsIndex(t *testing.T) {
+	path := legacyPre12DB(t, false)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级 v11 老库: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if v := mustMaxVersion(t, db); v != len(mustMigrations(t)) {
+		t.Fatalf("升级后版本 = %d, want %d", v, len(mustMigrations(t)))
+	}
+	if got := mustIndexColumns(t, db, edgeLookupIndexName); !sameColumnOrder(got, edgeLookupIndexColumns) {
+		t.Fatalf("v11 老库升级后 %s 列序 = %v, want %v", edgeLookupIndexName, got, edgeLookupIndexColumns)
+	}
+	// 同名索引只能有一个（名字在 edges 上唯一），且没有第二条死声明留下的残影。
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='index' AND tbl_name='edges' AND name=?`,
+		edgeLookupIndexName).Scan(&n); err != nil {
+		t.Fatalf("count index: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("edges 上名为 %s 的索引有 %d 条, want 1", edgeLookupIndexName, n)
+	}
+	// 老库的业务行不能因为迁移 15 丢失（edges 一行不少）。
+	if got := countRows(t, db, "edges", "1 = 1"); got != 1 {
+		t.Fatalf("edges 行数 = %d, want 1（迁移 15 只动索引，不该动数据）", got)
+	}
+}
+
+// mustMigrations 解析 schema.sql 得到迁移列表（测试侧取「最新版本号」用）。
+func mustMigrations(t *testing.T) migrationSet {
+	t.Helper()
+	set, err := parseMigrations(schemaSQL)
+	if err != nil {
+		t.Fatalf("parse schema.sql: %v", err)
+	}
+	return set
+}
