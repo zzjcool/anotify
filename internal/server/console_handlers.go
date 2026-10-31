@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -320,6 +322,10 @@ func (h *consoleHandler) tasks(w http.ResponseWriter, r *http.Request) {
 //
 // mux 里两条路由靠方法区分不了（都是 GET），所以控制台的这条挂在
 // /v1/console/events 下，避免和机器入口抢占同一路径。
+//
+// 支持游标分页（#235）：`before=<上一页的 nextCursor>` 取更旧的一页，
+// 响应回 `nextCursor`（空串 = 没有更旧的了）。游标编码只在本文件
+// （encodeEventCursor / decodeEventCursor），机器入口不加游标（契约 §3.3）。
 func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, "GET")
@@ -339,6 +345,21 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 		perNS = listLimitCap
 	}
 
+	// 游标分页（#235）：`before` 是上一页响应的 `nextCursor`，给了就只取比它**更旧**的行。
+	// 解析失败一律 400 —— 不静默降级（把它当「没有游标」就回第一页，翻页会莫名跳回
+	// 最新，这正是 #236 那类「悄悄换一个窗口」的病根，不能在新参数上重犯）。
+	rawBefore := q.Get("before")
+	var beforeAt int64
+	var beforeID string
+	if rawBefore != "" {
+		at, id, cerr := decodeEventCursor(rawBefore)
+		if cerr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid before cursor"})
+			return
+		}
+		beforeAt, beforeID = at, id
+	}
+
 	nsIDs, err := h.namespaceIDs(r.Context(), ns)
 	if err != nil {
 		slog.Error("list namespaces failed", "event", "console.events.namespaces_failed", "error", err.Error())
@@ -347,18 +368,35 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 	}
 	groups := make([][]*store.Event, 0, len(nsIDs))
 	for _, nsID := range nsIDs {
-		got, err := h.db.ListEvents(r.Context(), nsID, q.Get("traceId"), q.Get("source"), perNS)
-		if err != nil {
-			if handleNamespaceError(w, err) {
+		var got []*store.Event
+		var lerr error
+		if rawBefore != "" {
+			// 每个命名空间各自按同一游标查（游标是 (created_at,id) 全局序，不命名空间局部）
+			got, lerr = h.db.ListEventsBefore(r.Context(), nsID, q.Get("traceId"), q.Get("source"), beforeAt, beforeID, perNS)
+		} else {
+			// 首屏路径不变（不带游标就不多一个谓词，SQL 文本也不变）
+			got, lerr = h.db.ListEvents(r.Context(), nsID, q.Get("traceId"), q.Get("source"), perNS)
+		}
+		if lerr != nil {
+			if handleNamespaceError(w, lerr) {
 				return
 			}
-			slog.Error("list events failed", "event", "console.events.list_failed", "error", err.Error())
+			slog.Error("list events failed", "event", "console.events.list_failed", "error", lerr.Error())
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}
 		groups = append(groups, got)
 	}
 	events := mergeEvents(limit, groups...) // 空列表是 [] 不是 null（I9）
+	// nextCursor 必须在 traceViewRootFirst **之前**从合并后的 DESC 列表末尾算：
+	// 那一步会把剪枝行排到最后，重排后的末行不再是「本页最旧的行」，
+	// 拿它当游标会跳过或重复事件（trace 视图里剪枝行时间上晚于根事件）。
+	// 判据与契约一致：行数 < 生效 limit ⇒ 没有更旧的了，给空串。
+	nextCursor := ""
+	if len(events) >= limit && len(events) > 0 {
+		last := events[len(events)-1]
+		nextCursor = encodeEventCursor(last.CreatedAt, last.ID)
+	}
 	// trace 视图（带 traceId）：根事件必须在第一条（见 traceViewRootFirst 的注释）。
 	// 事件流（不带 traceId）不需要：剪枝行在那条路径上已被 ListEvents 过滤掉。
 	if q.Get("traceId") != "" {
@@ -368,7 +406,44 @@ func (h *consoleHandler) events(w http.ResponseWriter, r *http.Request) {
 		"events":      events,
 		"namespaceId": namespaceLabel(ns),
 		"limit":       limit, // 生效值（已夹到 listLimitCap，#236）
+		"nextCursor":  nextCursor,
 	})
+}
+
+// encodeEventCursor 把 (createdAt, id) 编成 URL 安全的不透明游标（#235 契约 §3.2）。
+//
+// base64.RawURLEncoding：不带 padding，字符集只有 [A-Za-z0-9_-]，
+// 直接放 query 里不用再转义（标准 base64 的 `+`/`/`/`=` 都要 encode）。
+// 里面就是 `<createdAt>:<id>`，**客户端不该解析它** —— 不透明才有换编码的自由。
+func encodeEventCursor(createdAt int64, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(createdAt, 10) + ":" + id))
+}
+
+// decodeEventCursor 解出游标；任何不合法的输入都返回错误（调用方翻成 400）。
+//
+// 校验项：base64 能解、能按**第一个** `:` 切开、createdAt 是 int64 ≥ 0、id 非空。
+// 严格是有意义的：`before` 是客户端回传的值，宽松解释一个坏游标（比如把 id 当成
+// 空串）会让「更旧」退化成「更旧或相同」，翻页出现重复行而难以归因。
+func decodeEventCursor(raw string) (int64, string, error) {
+	payload, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return 0, "", fmt.Errorf("decode base64: %w", err)
+	}
+	at, id, ok := strings.Cut(string(payload), ":")
+	if !ok {
+		return 0, "", fmt.Errorf("missing ':' separator")
+	}
+	n, err := strconv.ParseInt(at, 10, 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("parse createdAt: %w", err)
+	}
+	if n < 0 {
+		return 0, "", fmt.Errorf("createdAt must be >= 0, got %d", n)
+	}
+	if id == "" {
+		return 0, "", fmt.Errorf("empty id")
+	}
+	return n, id, nil
 }
 
 // traceViewRootFirst 把根事件（非剪枝）排到最前，剪枝行留在后面。

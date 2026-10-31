@@ -365,6 +365,11 @@ paths:
         **顺序（视图契约）**：带 `traceId` 时**根事件（非剪枝）一定排在最前**
         （`events[0]`）—— trace 页用第一条事件的 source 去 `GET /sources` 找源拓扑当底图，
         剪枝行顶替根事件会让底图丢失。
+
+        **游标分页（#235）**：`before` = 上一页的 `nextCursor`，只取更旧的一页；
+        `nextCursor` 为空 ⇔ 本页行数 < 生效 `limit`（已到最旧）。
+        游标是不透明字符串（内部就是 `<createdAt>:<id>` 的 URL-safe base64），
+        客户端**不应解析**，原样回传即可。
       security:
         - cookieAuth: []
       parameters:
@@ -372,6 +377,13 @@ paths:
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+        - name: before
+          in: query
+          schema: { type: string }
+          description: |
+            不透明游标，取自上一页响应的 `nextCursor`；返回「比它更旧」的一页。
+            格式非法 → `400` `{"error":"invalid before cursor"}`（**不静默降级**回第一页）。
+            省略 = 第一页（最新）。
       responses:
         "200":
           description: 事件列表（空时 events 为 []）
@@ -379,7 +391,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events, namespaceId, limit]
+                required: [events, namespaceId, limit, nextCursor]
                 properties:
                   events:
                     type: array
@@ -390,6 +402,9 @@ paths:
                   limit:
                     type: integer
                     description: 生效值（服务端硬顶 500）——调用方据此分辨「要到了」与「被截断」
+                  nextCursor:
+                    type: string
+                    description: 下一页的游标；为空表示没有更旧的行（不透明，原样回传即可）
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
