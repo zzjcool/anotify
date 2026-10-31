@@ -397,6 +397,39 @@ func assertLegacyRowValues(t *testing.T, db *DB) {
 	}
 }
 
+// TestEngineCompatFixtureStopsAtMigration13 钉住 fixture 的**起点版本**。
+//
+// 与 TestEngineCompatFixtureWrittenByOlderEngine（血统：写库引擎版本更旧）互补：
+// 那条证明「库是旧引擎写的」，这条证明「库停在旧 schema 版本」。两条都过，
+// migrate_engine_compat_test.go 里的升级用例才真的在测「引擎换代 × schema 升级」重叠的那段路。
+//
+// 为什么必须停在 13：fixture 的价值就是让**当前引擎**去跑迁移 14/15/16
+// （14 = 13 张表逐个重建、15 = 条件 DROP/重建索引、16 = 本批的新索引）。
+// fixture 若被谁升级到 tip（比如拿错了一份副本提交上来），升级用例就退化成
+// 「新引擎打开一个新库」——照样全绿，但什么都没测到。
+func TestEngineCompatFixtureStopsAtMigration13(t *testing.T) {
+	path := legacyEngineFixturePath(t)
+
+	// 直接开库读，**不跑迁移**（这里要的是 fixture 本身的状态）。
+	// DSN 只加 busy_timeout，不设 journal_mode：避免把这份副本改成别的日志模式，
+	// 这条用例对 fixture 只做只读访问。
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("打开 fixture（不跑迁移）: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+
+	var got int
+	if err := raw.QueryRow(`SELECT max(version) FROM schema_version`).Scan(&got); err != nil {
+		t.Fatalf("读 fixture 的 schema_version: %v", err)
+	}
+	if got != 13 {
+		t.Fatalf("fixture 的 max(version) = %d, want 13（迁移 14/15/16 必须留给当前引擎在 Open 时跑；"+
+			"fixture 被升级过的话，跨引擎用例就测不到「老库升级」了）", got)
+	}
+	t.Logf("fixture 起点版本 = v%d（迁移 14/15/16 由当前引擎在 Open 时执行）", got)
+}
+
 // TestEngineCompatLegacyEngineGetsTasksListIndex 断言：旧引擎写的老库升级后，
 // 迁移 16 的新索引真的建出来了，且列序是冻结形状。
 //

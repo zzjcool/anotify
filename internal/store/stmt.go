@@ -99,6 +99,13 @@ func (c *stmtCache) get(q string) *sql.Stmt {
 }
 
 // full 报告是否已达上限（超限后新 SQL 一律走直查，不再 prepare 缓存）。
+//
+// 它是 cachedStmt 里的**预判**，不是唯一的闸门：为的是「明知存不进去就别去
+// prepare 了」（prepare 要借连接、要 parse，做了白准备）。真正的兜底在 store()：
+// 它在写锁里又查了一次 len，所以并发下 full() 返回 false、等真到 store() 时
+// 已经被别人塞满，也依旧只是「关掉自己这条 + 返回 nil → 调用方退回直查」，
+// 绝不会突破 maxCachedStmts。两处检查保留，是因为它们防的是两件事：
+// 这一处省白做的 prepare，store() 那一处守住不变式。
 func (c *stmtCache) full() bool {
 	c.mu.RLock()
 	n := len(c.m)
@@ -147,6 +154,14 @@ func (c *stmtCache) store(q string, st *sql.Stmt) *sql.Stmt {
 //
 // 只在「命中缓存但语句本身用不了」时调用（连接/库被关）。比较指针再删，
 // 避免把并发期间别人刚换上去的新语句误删。
+//
+// 它的定位是**清表 + 防御**，不是正确性必需项（审查 3A 在 go1.25.0 +
+// modernc.org/sqlite v1.45.0 上实测）：库被 Close 之后，命中缓存语句拿到的
+// 错误与走直查**逐字相同**（`sql: database is closed`），错误面因此不需要 evict
+// 来「修」。evict 真正换来的东西是两件：① 死句柄不会长期占着缓存条目
+// （maxCachedStmts 是有限的）；② 只死了语句、库还活着的形状（连接被池回收/
+// 超时淘汰时 database/sql 会关掉该连接上的语句副本）能自愈——那次查询退化成
+// 直查并成功，下一次再重新 prepare 一条新句柄。
 func (c *stmtCache) evict(q string, st *sql.Stmt) {
 	c.mu.Lock()
 	if c.m[q] == st {
@@ -204,8 +219,19 @@ func (d *DB) cachedQueryRowContext(ctx context.Context, q string, args ...any) *
 // 就会出现这种死锁形状：8 条连接全被「持有 rows 的 goroutine」占着，
 // 而它们下一步读新的 SQL 需要这把锁 → 借连接的人等连接、持连接的等锁。
 // 所以流程是：读锁查表 → 锁外 prepare → 写锁落表（表里已有就先到的生效，自己这条关掉）。
-// 代价是极端并发下同一条 SQL 可能被 prepare 两次（第二次立刻被关掉），
-// 与「每条 SQL 每个请求 prepare 一次」相比仍然是数量级的差异。
+//
+// 代价是**冷启动时**同一条 SQL 会被多 prepare 几次：多出来的份数 = 并发首命中者的数量
+// （审查 3A 在本 worktree 上用计数驱动实测，N 个 goroutine 同时首命中同一条 SQL）：
+//
+//	并发首命中者  8 → driver.Conn.PrepareContext 15 次
+//	并发首命中者 32 → driver.Conn.PrepareContext 38 次
+//	并发首命中者 64 → driver.Conn.PrepareContext 71 次
+//
+// 也就是「池上限 + 少量并发重复」，一次冷启动之后就收敛，与请求数无关。
+// 缓存**条数恒为 1、不会抖动**：后到的 prepare 被 store() 直接关掉，
+// 而 store() 对已存在的键只「忽略」、从不「替换」——不存在互相踢掉、
+// 下一轮又要重新 prepare 的活锁形状，也不会泄漏句柄。
+// 与「每条 SQL 每个请求 prepare 一次」相比，这仍是数量级的差异。
 func (d *DB) cachedStmt(ctx context.Context, q string) *sql.Stmt {
 	if st := d.stmts.get(q); st != nil {
 		return st
@@ -228,15 +254,46 @@ func (d *DB) cachedStmt(ctx context.Context, q string) *sql.Stmt {
 // 只有这一类才值得「踢掉缓存 + 退回直查」：SQL 错误重跑一遍不会变好，
 // context 取消/超时重跑只会立刻再失败一次。
 //
-// "statement is closed" / "database is closed" 只能按文本匹配：
-// database/sql 把它们定义为包内私有错误（errStmtClosed / errDBClosed），没有导出哨兵。
+// "statement is closed" / "database is closed" 只能按文本匹配：database/sql 把它们定义为
+// 包内私有错误（errStmtClosed / errDBClosed，都是 `errors.New(...)` 每次新建的普通错误），
+// 没有导出哨兵，errors.Is 匹配不到。
 func stmtUnusable(err error) bool {
 	if err == nil {
 		return false
 	}
+	// 这三条有导出哨兵：errors.Is 精确匹配，不受文本变化影响。
 	if errors.Is(err, driver.ErrBadConn) || errors.Is(err, sql.ErrConnDone) || errors.Is(err, sql.ErrTxDone) {
 		return true
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "statement is closed") || strings.Contains(msg, "database is closed")
+	for _, prefix := range stmtUnusablePrefixes {
+		// **前缀**匹配而不是子串匹配：见 stmtUnusablePrefixes 的注释（子串有一个
+		// 真实的假阳性，用例 TestStmtCacheUnusableDoesNotMatchSqlLogicErrors 钉住它）。
+		if strings.HasPrefix(msg, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// stmtUnusablePrefixes 是「缓存里这条语句本身不能用了」的**精确前缀**表。
+//
+// 两条都是 database/sql 的原文（$GOROOT/src/database/sql/sql.go 里 errStmtClosed /
+// errDBClosed 的 errors.New 文本），本 worktree 的用例会打印实测值：
+//
+//	已关闭的 *sql.Stmt.QueryContext → `sql: statement is closed`
+//	已关闭的 *sql.DB 上的语句命中 → `sql: database is closed`
+//
+// 为什么必须按前缀而不是子串（审查 3A 构造出的真实假阳性）：SQLite 的错误文本里
+// 也会出现被引号包住的**表名**，于是「表不存在」这类普通 SQL 错误会命中子串——
+//
+//	SELECT * FROM "database is closed"
+//	→ SQL logic error: no such table: database is closed (1)
+//
+// 子串匹配会把这条稳定的 SQL bug 误判成「语句句柄失效」，于是每次执行都白 evict
+// 一条缓存、再退回直查重跑一次；更糟的是「缓存里那条语句被当成坏句柄」这件事
+// 完全不可观测。前缀匹配把判定收回到 database/sql 的标准文本上。
+var stmtUnusablePrefixes = [...]string{
+	"sql: statement is closed", // errStmtClosed：命中的 *sql.Stmt 已被 Close
+	"sql: database is closed",  // errDBClosed：库已 Close，语句跟着失效
 }

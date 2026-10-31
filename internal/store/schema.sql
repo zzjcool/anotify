@@ -626,3 +626,29 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 --   也就不存在「名字撞上但列不对」的漂移；`IF NOT EXISTS` 已经覆盖了「同一版本重试」
 --   的幂等要求（同一条语句跑第二遍是 no-op）。少一个 DDL 来源，就少一处新库/老库文本分叉。
 CREATE INDEX IF NOT EXISTS idx_tasks_ns_created ON tasks(namespace_id, created_at, id);
+
+-- 为什么紧接着要 ANALYZE（reviewer 3A · MAJOR-1 的返工，实测驱动的一条，不是形式主义）：
+--   没有 sqlite_stat1 时规划器**不知道 status 的基数**，于是给带等值过滤的列表查询
+--     WHERE namespace_id = ? AND status = ? ORDER BY created_at DESC, id DESC
+--   挑了看起来「更全能」的新索引，实际是「按命名空间全扫」：
+--     有索引无统计  status=canceled → SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)
+--     无本索引      status=canceled → SEARCH tasks USING INDEX idx_tasks_lease (status=?) + TEMP B-TREE
+--   2 万行、同一命名空间上实测 0.15~0.2ms → 14~26ms，且**随命名空间行数线性增长**。
+--   补上统计后规划器立刻改回 idx_tasks_lease（0.17~0.24ms），无过滤/常见值那条仍是
+--   idx_tasks_ns_created——也就是 #237 的收益不受影响。
+--
+-- 为什么放在迁移里：ANALYZE 是对**已有数据**的一次性统计，而「索引刚建好」正是老库
+-- 升级路径上唯一必然有数据的时点（线上部署全是 v15 库）。放在这里，老库升级完立刻
+-- 就有统计，不需要人工跑 ANALYZE，也不会留下一个「索引已建、统计为空」的窗口。
+--
+-- 代价（换算出来的，不是拍的）：迁移窗口内多一次全表统计扫描，一次性。实测本机
+--   2 万行 ~57ms、10 万行 ~0.3s；新库（空表）ANALYZE 不写任何 stat1 行，等于 no-op。
+--
+-- 注意两件事：
+--   ① **不要**在迁移里再改索引形状（形状已冻结，见上面的列序说明），这里只是补统计；
+--   ② ANALYZE 写的 sqlite_stat1 / sqlite_stat4 是 `sqlite_` 前缀**内部表**，会被
+--      schemaShape（migrate15_test.go）的 `name NOT LIKE 'sqlite_%'` 过滤掉，
+--      所以它**不会**让「新库/老库形状一致」这道门禁变红——不是漏测，是刻意排除。
+--      统计本身属于「运行期数据」而不是「schema 形状」，两个库的统计本来就可能不同
+--      （行数不同），把它算进形状比对反而是错的。
+ANALYZE;

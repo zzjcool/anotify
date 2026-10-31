@@ -461,8 +461,17 @@ func TestStmtCacheDoesNotCachePrepareFailure(t *testing.T) {
 	}
 }
 
-// TestStmtCacheErrorTextMatchesDirectQuery 钉住「语义完全一致」里的错误面：
-// 同一条坏 SQL，直查与缓存版返回的错误文本逐字相同（调用点的 fmt.Errorf 包装也因此一字不改）。
+// TestStmtCacheErrorTextMatchesDirectQuery 钉住「缓存版遇到坏 SQL 时，错误文本与直查逐字相同」。
+//
+// 覆盖面要说清楚（别读成「两条路径在驱动这一层等价」）：当前驱动（v1.45.0 的 newStmt 会
+// 预编译）上，坏 SQL 在 cachedStmt 的 PrepareContext 就失败 → cachedStmt 返回 nil →
+// **退回直查**。所以「文本逐字相同」是**回退路径**的产物，不是「缓存里那条语句抛出了
+// 同一条错误」（后者根本执行不到）。
+// 这条用例真正的价值就是把那条回退钉住：一旦有人把「prepare 失败 → 退直查」改成
+// 「prepare 失败 → 立刻返回自定义错误」，文本就会漂、调用点上已有的
+// `fmt.Errorf("...: %w")` 包装也会叠成双层。
+// 「缓存语句在执行时抛错」那一面不在本用例覆盖范围内，见
+// TestStmtCacheUnusableDoesNotMatchSqlLogicErrors（用注入驱动把错误造在语句执行层）。
 func TestStmtCacheErrorTextMatchesDirectQuery(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -503,8 +512,16 @@ func TestStmtCacheZeroValueWorks(t *testing.T) {
 	}
 }
 
-// TestStmtCacheUnusableStmtFallsBack 钉住「命中失败时回退直查且不 panic」：
-// 库被关掉后缓存里的语句全部失效，两次调用都必须返回错误（第二次连 prepare 都不成）。
+// TestStmtCacheUnusableStmtFallsBack 钉住「库关掉之后缓存版不会 panic、不会吞错误」：
+// 缓存里的语句全部失效，两次调用都必须返回错误（第二次连 prepare 都不成）。
+//
+// ⚠️ 别把下面那句 `len() == 0` 读成「Row 版也会 evict」（很容易误读，所以写明）：
+// 缓存被清空**全部来自 Query 版**。cachedQueryRowContext 拿到的是 *sql.Row，错误延迟到
+// Scan 才暴露，本层看不见 —— 那一分支的结构上**没有** evict 的机会（它连判定都拿不到）。
+// 同一个循环体里先跑的 cachedQueryContext 拿到 `sql: database is closed`（前缀匹配命中）
+// → evict → 退回直查拿标准错误，这才是 len 归零的原因。
+// 「Row 版不会 evict」本身也被约束住了：库关后第二次调用依旧报错（不是成功），
+// 因为它的 prepare 也不可能成功。
 func TestStmtCacheUnusableStmtFallsBack(t *testing.T) {
 	ctx := context.Background()
 	db, _ := newTestDBFile(t)
@@ -519,6 +536,8 @@ func TestStmtCacheUnusableStmtFallsBack(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	for i := 0; i < 2; i++ {
+		// 行内顺序是有意义的：先 Query 版（看得到错误 → 判定 → evict → 退直查），
+		// 再 Row 版（延迟错误，不 evict；此轮它的 prepare 已经不可能成功）。
 		if _, err := db.cachedQueryContext(ctx, `SELECT count(*) FROM events`); err == nil {
 			t.Fatalf("第 %d 次：库已关闭，cachedQueryContext 应返回错误", i+1)
 		}
@@ -528,8 +547,191 @@ func TestStmtCacheUnusableStmtFallsBack(t *testing.T) {
 		}
 	}
 	if got := db.stmts.len(); got != 0 {
-		t.Fatalf("失效语句应被踢出缓存，实际还剩 %d 条", got)
+		t.Fatalf("失效语句应被踢出缓存（清空来自上面循环里的 Query 版），实际还剩 %d 条", got)
 	}
+}
+
+// ---------- stmtUnusable 的边界：SQL 逻辑错误不得被误判成「句柄失效」 ----------
+
+// TestStmtCacheUnusableDoesNotMatchSqlLogicErrors 钉住 stmtUnusable 的**判定边界**。
+//
+// 背景（审查 3A 构造出的真实假阳性）：旧实现用 strings.Contains 做**子串**匹配，
+// 而 SQLite 的错误文本里会原样带上被引号包住的表名，于是——
+//
+//	SELECT * FROM "database is closed"
+//	→ SQL logic error: no such table: database is closed (1)
+//	                            ^^^^^^^^^^^^^^^^^^^ 子串命中 → 误判「语句失效」
+//
+// 后果是两条都不好察觉的：
+//   - 缓存里那条**好语句**被当成坏句柄踢掉（下一次要重新 prepare）；
+//   - 查询被退回直查**重跑一遍**，把「一条稳定的 SQL bug」变成「每次多跑一条查询」。
+//
+// 现在改成对 database/sql 的两条标准文本做**前缀**匹配（见 stmt.go stmtUnusablePrefixes）。
+//
+// 三段断言，分别对应那条判定的三个可观测面：
+//
+//	① 真 SQLite 造出的带引号表名错误：stmtUnusable == false，
+//	   且缓存版返回的错误文本与直查逐字相同（调用点的 `fmt.Errorf("...: %w")` 不用改）；
+//	② 注入驱动（错误造在**语句执行层**，才是判定点）：SQL 逻辑错误文本 →
+//	   错误原样冒出来、缓存条目**还在**（没 evict、没回退重跑）；
+//	③ 对照组：真正的 `sql: statement is closed` → evict + 退回直查并成功。
+//	   这两条一起把「前缀匹配」的边界钉死：多认一个字或退回子串匹配，② 立刻变红。
+func TestStmtCacheUnusableDoesNotMatchSqlLogicErrors(t *testing.T) {
+	ctx := context.Background()
+
+	// ---------- ① 真 SQLite 的错误文本 ----------
+	db := newTestDB(t)
+	for _, q := range []string{
+		`SELECT * FROM "database is closed"`,
+		`SELECT * FROM "statement is closed"`,
+	} {
+		_, directErr := db.QueryContext(ctx, q)
+		_, cachedErr := db.cachedQueryContext(ctx, q)
+		if directErr == nil || cachedErr == nil {
+			t.Fatalf("%s：应报「表不存在」：直查 %v / 缓存 %v", q, directErr, cachedErr)
+		}
+		if directErr.Error() != cachedErr.Error() {
+			t.Fatalf("%s：错误文本不一致：\n直查 %q\n缓存 %q", q, directErr.Error(), cachedErr.Error())
+		}
+		if stmtUnusable(directErr) {
+			t.Fatalf("%s 的实测错误 %q 被判成「句柄失效」——这是子串匹配的假阳性："+
+				"表名恰好是那句话，不是 database/sql 的 errStmtClosed/errDBClosed", q, directErr.Error())
+		}
+		t.Logf("① %s → stmtUnusable=false；错误原文 = %q", q, directErr.Error())
+	}
+	if got := db.stmts.len(); got != 0 {
+		t.Fatalf("坏 SQL 不该进缓存，实际 %d 条", got)
+	}
+
+	// ---------- ②③ 判定点：错误真的从「已缓存的语句」抛出来 ----------
+	// 为什么需要注入：v1.45.0 的 newStmt 会预编译，所以上面的坏 SQL 在 PrepareContext
+	// 就失败、根本进不了缓存 —— 「命中缓存语句 → 执行报错 → 判定」这条路径上
+	// 看不到 SQL 逻辑错误。注入驱动把错误造在 driver.Stmt.QueryContext，
+	// 即与生产完全同一个判定点（见 stmt.go cachedQueryContext 的 stmtUnusable 分支）。
+	t.Run("②SQL 逻辑错误：不判失效、不 evict、错误原样返回", func(t *testing.T) {
+		path, nsID := newCountingGateDB(t)
+		const logicErr = `SQL logic error: no such table: database is closed (1)`
+		d := openInjectedStmtErrDB(t, path, logicErr)
+
+		for i := 0; i < 2; i++ {
+			rows, err := d.cachedQueryContext(ctx, gateSQL, nsID)
+			if rows != nil {
+				_ = rows.Close()
+				t.Fatalf("第 %d 次：SQL 逻辑错误必须原样返回，不该有 rows", i+1)
+			}
+			if err == nil {
+				t.Fatalf("第 %d 次：注入的 SQL 逻辑错误必须冒出来（判断成失效时它会被回退直查吞掉）", i+1)
+			}
+			if err.Error() != logicErr {
+				t.Fatalf("第 %d 次：错误被包装了：%q, want %q（本层不加包装，调用点自己的 fmt.Errorf 才加）",
+					i+1, err.Error(), logicErr)
+			}
+			if got := d.stmts.len(); got != 1 {
+				t.Fatalf("第 %d 次：SQL 逻辑错误被当成句柄失效了（缓存条数 = %d, want 1）——"+
+					"误判会白 evict 一条好语句并多直查一次", i+1, got)
+			}
+		}
+		t.Logf("② 注入 %q → 两次调用都原样返回错误、缓存条目未被动（旧子串实现会在这里变成无错 + 缓存 0 条）", logicErr)
+	})
+
+	t.Run("③对照：真 statement is closed → evict + 退回直查并成功", func(t *testing.T) {
+		path, nsID := newCountingGateDB(t)
+		const closedErrText = "sql: statement is closed"
+		d := openInjectedStmtErrDB(t, path, closedErrText)
+
+		// 第一次：语句级报「已关闭」→ stmtUnusable 判真 → evict → 退回直查 → 0 行的库拿到真结果。
+		rows, err := d.cachedQueryContext(ctx, gateSQL, nsID)
+		if got := scanCount(t, rows, err); got != 0 {
+			t.Fatalf("退回直查的结果 = %d, want 0（空的 events 表）", got)
+		}
+		if n := d.stmts.len(); n != 0 {
+			t.Fatalf("命中「%s」应 evict 掉那条语句，缓存条数 = %d, want 0", closedErrText, n)
+		}
+
+		// 第二次：缓存已空 → 重新 prepare（这条新语句又被注入成「已关闭」）→ 再次 evict + 退直查。
+		// 关键性质：仍然**成功**返回，没把失效锁成持久失败。
+		rows, err = d.cachedQueryContext(ctx, gateSQL, nsID)
+		if got := scanCount(t, rows, err); got != 0 {
+			t.Fatalf("第二次退回直查的结果 = %d, want 0", got)
+		}
+		t.Logf("③ 注入 %q → 判失效、evict、退回直查成功（两次都不 panic、不吞成错）", closedErrText)
+	})
+}
+
+// stmtErrDriver 在**语句级** QueryContext 上注入一条固定错误（prepare 与连接级查询全部放行）。
+//
+// 它只服务上面 ②③ 两个子测试：把错误造在「已缓存的语句执行时」——那是 stmtUnusable
+// 唯一会被调用的地方，而真 SQLite 的坏 SQL 在 v1.45.0 上根本到不了那里（预编译阶段就失败）。
+type stmtErrDriver struct {
+	inner driver.Driver
+	msg   string
+}
+
+func (d *stmtErrDriver) Open(name string) (driver.Conn, error) {
+	c, err := d.inner.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &stmtErrConn{Conn: c, msg: d.msg}, nil
+}
+
+type stmtErrConn struct {
+	driver.Conn
+	msg string
+}
+
+func (c *stmtErrConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	pc, ok := c.Conn.(driver.ConnPrepareContext)
+	if !ok {
+		st, err := c.Conn.Prepare(query)
+		if err != nil {
+			return nil, err
+		}
+		return &stmtErrStmt{Stmt: st, msg: c.msg}, nil
+	}
+	st, err := pc.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return &stmtErrStmt{Stmt: st, msg: c.msg}, nil
+}
+
+type stmtErrStmt struct {
+	driver.Stmt
+	msg string
+}
+
+// QueryContext 一律返回注入的错误：这就是「缓存里那条语句执行时报错」的形状。
+func (s *stmtErrStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	return nil, errors.New(s.msg)
+}
+
+// QueryContext 是**连接级**查询（= 文本直查），必须放行给真驱动。
+//
+// 少了它，database/sql 对直查会走「prepare + 语句级 Query」旁路，而那条旁路也被
+// 注入成失败——于是就分不清「回退真的发生了」和「回退也被注入挡住了」，
+// ③ 对照组要的「退回直查就成功」也就无从观测（本文件第一版就是这么红的）。
+func (c *stmtErrConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	qc, ok := c.Conn.(driver.QueryerContext)
+	if !ok {
+		return nil, fmt.Errorf("注入夹具失效：底层驱动没有实现 driver.QueryerContext（直查就测不到了）")
+	}
+	return qc.QueryContext(ctx, query, args)
+}
+
+// openInjectedStmtErrDB 用注入驱动打开 path（驱动名每次唯一：sql.Register 对同名会 panic）。
+func openInjectedStmtErrDB(t *testing.T, path, msg string) *DB {
+	t.Helper()
+	name := fmt.Sprintf("sqlite-stmterr-%d", countingDriverSeq.Add(1))
+	sql.Register(name, &stmtErrDriver{inner: &sqlite.Driver{}, msg: msg})
+	sqlDB, err := sql.Open(name, "file:"+path+gateDSNPragmas)
+	if err != nil {
+		t.Fatalf("open stmt-error db: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	sqlDB.SetMaxOpenConns(defaultMaxOpenConns)
+	sqlDB.SetMaxIdleConns(defaultMaxOpenConns)
+	return &DB{DB: sqlDB, stmts: newStmtCache()}
 }
 
 // ---------- 基准：改前/改后在同一份代码里可复现 ----------

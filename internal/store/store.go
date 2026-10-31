@@ -120,6 +120,33 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 		_ = db.Close()
 		return nil, err
 	}
+	// 统计信息维护（reviewer 3A · MAJOR-1）：SQLite 官方推荐的「启动时/关闭前」姿势——
+	// 它只在**统计缺失或过期**（某条索引在 sqlite_stat1 里没有条目 / 行数涨跌超过 10 倍 /
+	// 本连接用过统计）时才真的跑 ANALYZE，统计新鲜时是一次纯检查，成本趋近 0。
+	//
+	// 补掉的是两种「库很干净、规划器却是盲的」情形：
+	//   ① 新库空表建好之后再灌到几万行——建库时 ANALYZE 扫的是空表，等于没写统计；
+	//   ② 老库跑久了统计随时间漂移（行数涨了一个量级，旧的 stat1 就完全误导）。
+	//
+	// 为什么是 `=0x2` 而不是裸 `PRAGMA optimize`（**本行与冻结计划的一处刻意偏差，实测驱动**）：
+	//   裸写等价于 mask 0x0fffe，其中 0x10 位会把每次 ANALYZE 降级成
+	//   `analysis_limit = min(analysis_limit, SQLITE_DEFAULT_OPTIMIZE_LIMIT=2000)` 的**采样**分析
+	//   （见 sqlite 源码 pragma.c 的 "0x00010 Run all ANALYZE operations using an analysis_limit"
+	//   那段注释）。采样只按样本算「每个前缀值平均多少行」，不会按全表重新放大，于是 2 万行、
+	//   单一命名空间的数据被记成 idx_tasks_ns_created="20000 2001 3 1"（真值 20000）——
+	//   「按命名空间扫」被低估 10 倍，规划器又把 status= 稀有值 的列表查询抢回新索引，
+	//   实测 20k 行仍 13~15ms（全量 ANALYZE 后是 0.17ms）。去掉 0x10（= 只传 0x2）保留全部
+	//   「该不该分析」的判定规则，但分析本身是全量的：实测 stat1 与手工 ANALYZE 完全一致。
+	//   若要回退成裸 `PRAGMA optimize`，把下面这行的 `=0x2` 删掉即可（代价见上）。
+	//
+	// 与形状门禁的关系：本语句写的 sqlite_stat1 / sqlite_stat4 是 `sqlite_` 前缀内部表，
+	// schemaShape（migrate15_test.go）用 `name NOT LIKE 'sqlite_%'` 把它们过滤掉了——
+	// 所以它**不会**破坏「新库/老库形状逐行一致」那道门禁（统计是运行期数据，不是 schema 形状）。
+	// 走 db.Exec 而不是 d.stmts：此刻 DB 还没构造出来，且这条 SQL 一生只跑一次。
+	if _, err := db.Exec(`PRAGMA optimize=0x2`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("optimize sqlite stats: %w", err)
+	}
 	return &DB{DB: db, stmts: newStmtCache()}, nil
 }
 
