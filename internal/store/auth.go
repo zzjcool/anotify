@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -252,9 +253,14 @@ func (d *DB) CreateSession(s *Session) error {
 }
 
 // GetSession 按 ID 查会话。
+//
+// 走语句缓存（#242）：这是每个已登录请求都要打的点，SQL 文本恒定，
+// 复用一个 *sql.Stmt 就不必每次重新 `newStmt`（见 stmt.go 的实测结论：
+// v1.34.5 上 parse 本身仍会发生，收益要等驱动升到 ≥v1.45.0）。
+// 本函数没有 ctx 参数（public 签名不动），用 Background。
 func (d *DB) GetSession(id string) (*Session, error) {
 	var s Session
-	err := d.QueryRow(
+	err := d.cachedQueryRowContext(context.Background(),
 		`SELECT id, user_id, device_name, created_at, expires_at, last_seen FROM sessions WHERE id = ?`, id,
 	).Scan(&s.ID, &s.UserID, &s.DeviceName, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -286,7 +292,7 @@ func (d *DB) DeleteSession(id string) error {
 
 // ListSessionsByUser 列出某用户的所有会话。
 func (d *DB) ListSessionsByUser(userID string) ([]*Session, error) {
-	rows, err := d.Query(
+	rows, err := d.cachedQueryContext(context.Background(),
 		`SELECT id, user_id, device_name, created_at, expires_at, last_seen FROM sessions WHERE user_id = ? ORDER BY created_at DESC`, userID,
 	)
 	if err != nil {

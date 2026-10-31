@@ -40,6 +40,10 @@ const maxConnsEnv = "ANOTIFY_DB_MAX_CONNS"
 // DB 包装 *sql.DB。
 type DB struct {
 	*sql.DB
+	// stmts 是只读路径的 per-DB 语句缓存（#242，见 stmt.go）。
+	// 用值类型而非指针：零值就是一个能用的空缓存，包内直造的测试 DB
+	// （`&DB{DB: sqlDB}`）不会因为忘了初始化而静默退化成直查。
+	stmts stmtCache
 }
 
 // Open 打开（并迁移）一个 SQLite 数据库。path 可为 ":memory:"。
@@ -116,7 +120,7 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 		_ = db.Close()
 		return nil, err
 	}
-	return &DB{db}, nil
+	return &DB{DB: db, stmts: newStmtCache()}, nil
 }
 
 // maxConnsFromEnv 读 ANOTIFY_DB_MAX_CONNS；非法值回落到默认（不静默改成 0，

@@ -33,8 +33,9 @@ func (d *DB) AuthorizeNamespace(ctx context.Context, userID, namespaceID string)
 	}
 	// 一次往返判两件事：用户存在吗、命名空间存在吗。
 	// 用 EXISTS 而不是 count(*)：只关心有没有，且两者都是主键查找。
+	// 语句缓存（#242）：这是每个带命名空间的请求都要打的鉴权收口，SQL 文本恒定。
 	var nsExists, userExists int
-	err := d.QueryRowContext(ctx,
+	err := d.cachedQueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM namespaces WHERE id = ?),
 		        EXISTS(SELECT 1 FROM users WHERE id = ?)`,
 		namespaceID, userID).Scan(&nsExists, &userExists)
@@ -83,7 +84,7 @@ func (d *DB) namespaceExists(ctx context.Context, namespaceID string) (bool, err
 		return false, ErrNamespaceRequired
 	}
 	var exists int
-	if err := d.QueryRowContext(ctx,
+	if err := d.cachedQueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM namespaces WHERE id = ?)`, namespaceID).
 		Scan(&exists); err != nil {
 		return false, fmt.Errorf("check namespace %s exists: %w", namespaceID, err)
