@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,17 +30,46 @@ type nodeFixture struct {
 	token   string
 	srv     *httptest.Server
 	handler *NodeHandler
+
+	// settleGroup 跟踪「还有几条 ServeHTTP 没返回」。handler 返回 ⇒ 该连接的
+	// nodeSession.cleanup（**同步**写库）已经跑完 ⇒ 才可以关库（#255，见 newNodeFixture）。
+	settleGroup settleGroup
+
+	// trackMu 保护 tracked（客户端连接登记簿）。
+	// dial 成功即登记；settle 时统一 CloseNow——服务端 readLoop 拿到 EOF 才会走 cleanup，
+	// 于是「等 handler 返回」是有界操作。
+	trackMu sync.Mutex
+	tracked []*websocket.Conn
 }
 
 // newNodeFixture 建组织 + 节点 + 能力，并起一个真 HTTP server 挂 NodeHandler。
+//
+// cleanup 的**注册顺序**是硬要求（t.Cleanup 是 LIFO ⇒ 反向执行）：
+//
+//	db.Close   （最先注册 → 最后跑）
+//	srv.Close
+//	settle     （最后注册 → 最先跑）：seal → 关 tracked 连接 → 等所有 ServeHTTP 返回
+//
+// 于是「handler 返回」（nodeSession.cleanup 的同步写库已在其中完成）**先于** db.Close()。
+// 反过来（旧夹具只有 db.Close → srv.Close）就会撞上 #255 的竞态：
+// httptest.Server.Close() **不等待**已劫持（WebSocket）连接——net/http/httptest
+// server.go 的 `case http.StateHijacked, http.StateClosed` 把它从 s.wg 摘掉——
+// 于是 db.Close() 与 cleanup 的 MarkInstancesDead / UpdateNodeStatus / ResolveLostTasks
+// 并发 → `WARN ... error="sql: database is closed"`；残留的 SQLite 连接还会在
+// t.TempDir 的 RemoveAll 里重建 -wal/-shm → 随机某个用例红在
+// `TempDir RemoveAll cleanup: ... directory not empty`（CI 里是 TestHelloUnknownCapability）。
 func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 	t.Helper()
 	ctx := context.Background()
+	f := &nodeFixture{settleGroup: newSettleGroup()}
+
 	// store.Open 自己会加 file: 前缀与 PRAGMA 参数，这里只传纯路径。
 	db, err := store.Open(t.TempDir() + "/node.db")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	f.db = db
+	// ① 最先注册：所有会话退完之后才关库（LIFO 下最后执行）。
 	t.Cleanup(func() { _ = db.Close() })
 
 	// 用户 + default 命名空间（RegisterUser 同事务：建用户 + 建 default + 播种内置能力）
@@ -74,11 +104,21 @@ func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 		o(h)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("GET /v1/node/stream", h)
+	// 挂 wrapper（不是裸 h）：handler 的进入/返回都要过 settleGroup，
+	// 否则「所有 handler 都返回了吗」无从得知。
+	mux.Handle("GET /v1/node/stream", f.guarded(h))
 	srv := httptest.NewServer(mux)
+	f.srv = srv
+	// ② srv.Close 只管 HTTP 层：劫持的连接它不等（见函数头）。
 	t.Cleanup(srv.Close)
+	// ③ 最后注册（LIFO 最先跑）：让所有会话在 srv.Close / db.Close 之前退干净。
+	t.Cleanup(func() { f.settle(t) })
 
-	return &nodeFixture{db: db, nsID: nsID, node: node, token: token, srv: srv, handler: h}
+	f.nsID = nsID
+	f.node = node
+	f.token = token
+	f.handler = h
+	return f
 }
 
 // dial 建立一条节点 WS 连接（不带 token 时为裸连，用于鉴权测试）。
@@ -92,6 +132,10 @@ func (f *nodeFixture) dial(t *testing.T, token string) (*websocket.Conn, *http.R
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, resp, err := websocket.Dial(ctx, url, opts)
+	if err == nil && conn != nil {
+		// 连上了才登记：settle 用这张表把「等 handler 返回」变成有界操作。
+		f.track(conn)
+	}
 	return conn, resp, err
 }
 
@@ -108,6 +152,130 @@ func (f *nodeFixture) mustDial(t *testing.T) *websocket.Conn {
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
 	return conn
+}
+
+// ---------- 夹具收尾：确定性 happens-before（#255） ----------
+
+// settleLimit 是等所有会话退出的上限。超时即判「会话没退」——这是失败，不是 flake。
+const settleLimit = 15 * time.Second
+
+// newSettleGroup 造一个可用的 settleGroup（done 必须已初始化）。
+func newSettleGroup() settleGroup {
+	return settleGroup{done: make(chan struct{})}
+}
+
+// settleGroup 是「进入/返回」计数器，语义上像 sync.WaitGroup，但有一处关键区别：
+// **seal 之后所有 enter 一律被拒**。
+//
+// 为什么不能用裸 sync.WaitGroup：它的 Add 与 Wait 并发是非法用法（计数归零后再 Add
+// 并与 Wait 重叠会 panic / 永久挂住），而这里的「+1」来自 http.Server 的连接 goroutine，
+// 与测试 goroutine 的 Wait 之间**没有任何同步点**——正是那一面误用。
+// 换成 mu + sealed 后，「检查 sealed」与「pending++」是一步原子操作：seal 返回时计数
+// 只可能单调降到 0，不会反弹 ⇒ 等它有确定上界。
+type settleGroup struct {
+	mu      sync.Mutex
+	sealed  bool
+	pending int
+	done    chan struct{}
+	closed  bool // done 已关闭（防重复 close panic）
+}
+
+// enter 登记一次 handler 进入；已 seal（收尾已开始）→ 返回 false，调用方必须拒绝服务。
+func (g *settleGroup) enter() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.sealed {
+		return false
+	}
+	g.pending++
+	return true
+}
+
+// exit 登记一次 handler 返回；最后一个返回且已 seal → 关闭 done。
+func (g *settleGroup) exit() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.pending > 0 {
+		g.pending--
+	}
+	g.closeIfSettledLocked()
+}
+
+// seal 封盘：此后 enter 一律被拒；返回的 channel 在「所有已进入的 handler 都返回」时关闭。
+func (g *settleGroup) seal() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sealed = true
+	g.closeIfSettledLocked()
+	return g.done
+}
+
+// pendingCount 报告还有几条 handler 没返回（超时诊断用）。
+func (g *settleGroup) pendingCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pending
+}
+
+// closeIfSettledLocked 在「已封盘 + 计数归零」时关闭 done（调用方必须持锁）。
+func (g *settleGroup) closeIfSettledLocked() {
+	if !g.sealed || g.pending > 0 || g.closed {
+		return
+	}
+	g.closed = true
+	close(g.done)
+}
+
+// track 登记一条客户端连接（dial 成功后调用；settle 时统一关闭）。
+func (f *nodeFixture) track(conn *websocket.Conn) {
+	f.trackMu.Lock()
+	f.tracked = append(f.tracked, conn)
+	f.trackMu.Unlock()
+}
+
+// guarded 把 NodeHandler 包成 settleGroup 的进/出口。
+//
+// defer exit() 的位置就是 happens-before 的关键：NodeHandler.ServeHTTP 内部的
+// `ns.run()` → `cleanup()` 是在**同一 goroutine 同步**写库的，所以 exit() 一定在
+// 那些写库之后执行 ⇒ 「pending 归零」等价于「这些连接要写的库写全做完了」。
+func (f *nodeFixture) guarded(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !f.settleGroup.enter() {
+			// 收尾已经开始：不放新会话进来，否则永远等不清。
+			http.Error(w, "test fixture already settled", http.StatusServiceUnavailable)
+			return
+		}
+		defer f.settleGroup.exit()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// settle 是夹具的确定性收尾（t.Cleanup 注册，LIFO 下先于 srv.Close / db.Close 跑）。
+//
+// 三步：① seal（不再接新会话）② CloseNow 所有 tracked 客户端连接（服务端 readLoop
+// 拿到 EOF 才会走 cleanup）③ 等 pending 归零（channel 截止，**零 time.Sleep / 零轮询**）。
+// 超时就直接报错并打出「还剩几条会话没退」：这是夹具没等干净的**确证失败**，
+// 不该把症状甩给后面的用例（旧夹具的偶发 / 随机红正是这么来的）。
+func (f *nodeFixture) settle(t *testing.T) {
+	t.Helper()
+	done := f.settleGroup.seal()
+
+	f.trackMu.Lock()
+	conns := append([]*websocket.Conn(nil), f.tracked...)
+	f.trackMu.Unlock()
+	for _, c := range conns {
+		_ = c.CloseNow()
+	}
+
+	timer := time.NewTimer(settleLimit)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		t.Errorf("ws 夹具收尾超时：%d 条会话在 %s 内没有退出（已强制关闭 %d 条客户端连接）；"+
+			"handler 返回必须早于 db.Close()（#255）",
+			f.settleGroup.pendingCount(), settleLimit, len(conns))
+	}
 }
 
 // readUntil 读到指定 type 的帧（跳过中间的 welcome 等）。
@@ -127,6 +295,21 @@ func readUntil(t *testing.T, conn *websocket.Conn, want string) map[string]any {
 }
 
 // tryReadFrame 带超时读一帧；超时返回 (nil, false)。
+//
+// 陷阱（#255，已用库源码钉住）：读超时会**关掉整条连接**。
+// coder/websocket@v1.8.15 conn.go:188-199 的 setupReadTimeout：
+//
+//	stop := context.AfterFunc(ctx, func() { c.clearReadTimeout(); c.close() })
+//
+// 即 Read(ctx) 的 ctx 到期 → c.close() → 客户端发 FIN → 服务端 readLoop 拿到 EOF →
+// nodeSession.cleanup → hub.Unregister（hub.current(nodeID) 立刻变 nil）。
+// 这条链与测试 goroutine **赛跑**，所以：
+//   - 正向断言（等一帧）可以用它；
+//   - 负向断言（「等一会儿看有没有帧」）只能在用例的**最后一步**用，且此后不得再
+//     对这条连接/这个会话做任何断言（否则断言在跟 cleanup 抢跑）；
+//   - 负向帧断言的正解是 assertNoFrame（node_frame_assert_test.go）：只在
+//     「窗口用尽且连接在窗口内还活着」（context.DeadlineExceeded）时通过，连接早死
+//     （net.ErrClosed / EOF）会失败——既不永真，也不把后续断言变成竞态。
 func tryReadFrame(conn *websocket.Conn, d time.Duration) (map[string]any, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()

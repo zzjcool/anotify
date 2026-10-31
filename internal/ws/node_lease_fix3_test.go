@@ -311,16 +311,12 @@ func TestPublishAssignFailsWhenGenerationUnreadable(t *testing.T) {
 		t.Fatalf("PublishAssign error = %v, want it to name the failed read (authoritative attempts)", err)
 	}
 
-	// ① 对端收不到 assign 帧：帧一旦发出去，这条连接就会去执行它。
-	if frame, ok := tryReadFrame(conn, 500*time.Millisecond); ok {
-		t.Fatalf("peer received %v after a failed generation read, want no frame at all", frame)
-	}
-
-	// ② 没有登记在飞位（否则这条 taskID 会被永久挡住）。
+	// ① 主证据：hub 的内存机器事实先断言（帧的负向断言只能放最后，理由见 ③）。
+	// 没有登记在飞位（否则这条 taskID 会被永久挡住）。
 	if cur := f.handler.hub().owner(task.ID); cur != nil {
 		t.Fatalf("task %s is registered as in-flight even though no frame was sent", task.ID)
 	}
-	// ③ 也没有登记归属（否则这条连接会替一条没派出去的任务续租）。
+	// ② 也没有登记归属（否则这条连接会替一条没派出去的任务续租）。
 	sess := f.handler.hub().current(f.node.ID)
 	if sess == nil {
 		t.Fatal("node has no current connection any more")
@@ -328,6 +324,12 @@ func TestPublishAssignFailsWhenGenerationUnreadable(t *testing.T) {
 	if owners := sess.ownedOwners(); len(owners) != 0 {
 		t.Fatalf("session owns %v after a failed generation read, want none", owners)
 	}
+
+	// ③ 帧的负向断言：对端**一个帧都不该收到**（主语与改前一致，只是不再把「连接已死」
+	// 当成通过；见 assertNoFrame 的 doc）。
+	// **放在最后一步**：assertNoFrame 的窗口用尽时，库会关掉这条客户端连接
+	// （conn.go:188-199），之后不能再做任何「会话还在不在」的断言。
+	assertNoFrame(t, conn, 500*time.Millisecond, "世代读不到时不许发帧")
 }
 
 // TestPublishAssignSkipsTerminalTask 钉住 n3 的终态判断：给一条**已经终态**的任务派发
@@ -361,11 +363,7 @@ func TestPublishAssignSkipsTerminalTask(t *testing.T) {
 	if err := f.handler.hub().PublishAssign(ctx, f.nsID, f.node.ID, row); err != nil {
 		t.Fatalf("PublishAssign on a terminal task = %v, want nil（任务本身已有结论，不该制造错误）", err)
 	}
-	// ① 不发帧：给终态任务派发等于让节点白跑一遍。
-	if frame, ok := tryReadFrame(conn, 500*time.Millisecond); ok {
-		t.Fatalf("peer received %v for a task that is already %q, want no frame at all", frame, row.Status)
-	}
-	// ② 不登记在飞位 / 归属（否则永远清不掉）。
+	// ① 主证据：不登记在飞位 / 不登记归属（否则永远清不掉）。
 	if cur := f.handler.hub().owner(task.ID); cur != nil {
 		t.Fatalf("terminal task %s is registered as in-flight", task.ID)
 	}
@@ -376,6 +374,18 @@ func TestPublishAssignSkipsTerminalTask(t *testing.T) {
 	if owners := sess.ownedOwners(); len(owners) != 0 {
 		t.Fatalf("session owns %v after publishing a terminal task, want none", owners)
 	}
+
+	// ② 帧的负向断言：给终态任务派发等于让节点白跑一遍。
+	//
+	// 为什么不能用「等 500ms 看有没有东西来」验负向：coder/websocket 的读超时会在
+	// ctx 到期时**关掉整条连接**（conn.go:188-199：`context.AfterFunc(ctx, func(){ c.close() })`），
+	// 于是一次「等一会儿」同时坏两件事：
+	//   (a) 连接死了也读不到帧 ⇒ 断言可能**永真**（什么都没证明）；
+	//   (b) 窗口结束时连接一定已经死了 ⇒ 之后任何「会话还在不在」的断言都变成与服务端
+	//       cleanup / hub.Unregister 的竞态——#255 的 CI 红就是这么来的（这次只是
+	//       current()==nil 输掉了这场赛跑）。
+	// 所以：状态断言提到前面当主证据，帧的负向断言用 assertNoFrame 放**最后一步**。
+	assertNoFrame(t, conn, 500*time.Millisecond, "给已经终态的任务派发不许发帧")
 }
 
 // ---------- n4：release 必须校验 owner ----------
