@@ -287,7 +287,9 @@ CREATE TABLE IF NOT EXISTS edges (
 
 CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(org_id, from_is_source, from_key, from_port);
 
-CREATE INDEX IF NOT EXISTS idx_edges_lookup ON edges(org_id, from_capability, from_port);
+-- 此处曾重复声明同一个索引名 idx_edges_lookup（列里带 from_capability）：
+-- 上一句已建过同名索引，这句被 IF NOT EXISTS 永久短路、从未生效；
+-- from_capability 列从迁移 9 起就不存在，已删（由迁移 15 收口到唯一形状）。
 
 -- ── 事件与任务（契约 §2.5）──────────────────────────────
 CREATE TABLE IF NOT EXISTS events (
@@ -583,3 +585,19 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 --     （命名空间过滤 + 时间排序，才是实际查询的形状）。
 --
 -- 本块没有 SQL：全部由 Go hook 完成（需要按 pragma 判断、条件改名与逐表重建）。
+
+-- +migration 15 edge_lookup_index
+-- #238：把 idx_edges_lookup 收口到唯一权威形状
+-- `(namespace_id, from_is_source, from_key, from_port)`。
+--
+-- 为什么需要它：`CREATE INDEX IF NOT EXISTS` 只认**名字**，不认列。历史库可能
+-- 留着「同名索引、列不同」的漂移——迁移 4 里那句带 from_capability 的重复声明
+-- 在被删之前一直是死句，而 9/12/14 三次重建各自建过同名索引，任何一个中途停下的
+-- 历史库都可能停在非权威形状上。漂移的索引对查询没有帮助，还会让新库与老库
+-- 形状不一致。
+--
+-- 判据：`pragma_index_info` 读出的列序与权威列序不一致才 DROP，然后一律
+-- `CREATE INDEX IF NOT EXISTS` 收口——形状已正确时这一步是 no-op（幂等，
+-- 同一事务里重复执行结果相同，不会无脑重建索引）。
+--
+-- 本块没有 SQL：逻辑在 migrate15.go 的 `migrateEdgeLookupIndex`。
