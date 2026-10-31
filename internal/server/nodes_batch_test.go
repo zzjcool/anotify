@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -352,5 +353,62 @@ func TestBatchListCapabilitiesByNodeOrdering(t *testing.T) {
 	}
 	if _, ok := got[empty.ID]; ok {
 		t.Fatalf("没能力的节点出现在 map 里: %v", got)
+	}
+}
+
+// TestViewsForBadJSONDegradesOnlyThatNode 一行坏数据只降级它自己那台节点。
+//
+// 这条是审查 minor-3 的回归钉子：批量查（一条 SQL 取回整页节点）天然会把"某一行
+// 解码失败"升级成"整批返回 error"，而旧的 per-node 实现只让出错的那台少能力。
+// 若不钉住，坏一行数据（手工改库 / 老数据）会让整页 100 台机器的能力全部消失，
+// 且看起来像"这些机器都没声明能力"。
+func TestViewsForBadJSONDegradesOnlyThatNode(t *testing.T) {
+	ctx := context.Background()
+	db := openBatchDB(t)
+	nsID := batchNamespace(t, ctx, db)
+	h := &consoleHandler{db: db}
+
+	// 两台节点声明**不同**的能力：capability_versions 是共享行，若共用同一个能力，
+	// 弄坏它的 params_schema 会把两台都弄坏 —— 那就测不出"只降级一台"。
+	batchCap(t, ctx, db, nsID, "review", 1)
+	batchCap(t, ctx, db, nsID, "analyze-pr", 1)
+	good := batchNode(t, ctx, db, nsID, "node-good")
+	bad := batchNode(t, ctx, db, nsID, "node-bad")
+	batchDeclareCaps(t, ctx, db, nsID, good.ID, store.CapabilityRef{Name: "review", Version: 1})
+	batchDeclareCaps(t, ctx, db, nsID, bad.ID, store.CapabilityRef{Name: "analyze-pr", Version: 1})
+
+	// 只弄坏 bad 声明的那条能力的 params_schema（让它解码失败）。
+	if _, err := db.ExecContext(ctx,
+		`UPDATE capability_versions SET params_schema = 'not-json' WHERE name = 'analyze-pr'`); err != nil {
+		t.Fatalf("corrupt params_schema: %v", err)
+	}
+
+	// 抓日志：坏行必须是"有声音的降级"（slog.Warn + 固定 event 名），不是静默 continue。
+	var logBuf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	views := h.viewsFor(ctx, []*store.Node{good, bad})
+	if len(views) != 2 {
+		t.Fatalf("viewsFor 返回 %d 台，want 2", len(views))
+	}
+	if got := len(views[0].Capabilities); got != 1 {
+		t.Fatalf("好节点被连坐降级：capabilities = %d 条，want 1（坏数据只该影响它自己那台）", got)
+	}
+	if got := len(views[1].Capabilities); got != 0 {
+		t.Fatalf("坏节点 capabilities = %d 条，want 0（与旧 viewFor 同口径：该台整台降级）", got)
+	}
+	// 与单台入口保持一致：坏节点走 viewFor 也是 0 条。
+	if got := len(h.viewFor(ctx, bad).Capabilities); got != 0 {
+		t.Fatalf("viewFor(坏节点) capabilities = %d 条，want 0", got)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "store.node_capabilities.bad_json") {
+		t.Fatalf("坏行没有留下 WARN 日志（event=store.node_capabilities.bad_json），实际日志=%q", logs)
+	}
+	if !strings.Contains(logs, bad.ID) {
+		t.Fatalf("WARN 日志里没有 node_id=%s，无法定位是哪台机器：%q", bad.ID, logs)
 	}
 }

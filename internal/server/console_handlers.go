@@ -112,7 +112,7 @@ func handleNamespaceError(w http.ResponseWriter, err error) bool {
 // 跨命名空间（`*`）仍然必须归并重排 —— 那才是这个函数存在的理由。
 func mergeTasks(limit int, groups ...[]*store.Task) []*store.Task {
 	if len(groups) <= 1 {
-		return truncateSingleGroup(groups, limit, []*store.Task{})
+		return truncateSingleGroup(groups, limit)
 	}
 	total := 0
 	for _, g := range groups {
@@ -141,7 +141,7 @@ func mergeTasks(limit int, groups ...[]*store.Task) []*store.Task {
 // sort.SliceStable 一遍 500 个元素（含 reflect 交换）是每请求白付的 CPU。
 func mergeEvents(limit int, groups ...[]*store.Event) []*store.Event {
 	if len(groups) <= 1 {
-		return truncateSingleGroup(groups, limit, []*store.Event{})
+		return truncateSingleGroup(groups, limit)
 	}
 	total := 0
 	for _, g := range groups {
@@ -166,11 +166,11 @@ func mergeEvents(limit int, groups ...[]*store.Event) []*store.Event {
 // truncateSingleGroup 是「只有一个命名空间」时的快路径：直接把该组（截断到 limit）
 // 交回去，不再合并/重排。
 //
-// 两个前提（少一个都不能用）：① store 的 SQL 已经按 created_at DESC, id DESC 排好；
-// ② 只有一个分组时不存在跨组归并。空组要归一成非 nil 空切片（不变量 I9：空列表给
-// []，不给 null）—— 这也是它与“直接 return groups[0]”的唯一差别，别省掉。
-func truncateSingleGroup[T any](groups [][]T, limit int, empty []T) []T {
-	out := empty
+// 两个前提（少一个都不能用）：① store 的 SQL 已经按调用方要的顺序排好；
+// ② 只有一个分组时不存在跨组归并。空组要归一成**非 nil** 空切片（不变量 I9：
+// 空列表给 []，不给 null）—— 这也是它与“直接 return groups[0]”的唯一差别，别省掉。
+func truncateSingleGroup[T any](groups [][]T, limit int) []T {
+	out := make([]T, 0)
 	if len(groups) == 1 && groups[0] != nil {
 		out = groups[0]
 	}
@@ -206,7 +206,13 @@ func mergeCapabilities(groups ...[]*store.CapabilityVersion) []*store.Capability
 }
 
 // mergeNodes 合并多个命名空间的节点列表（name, id 升序）。
+//
+// 单命名空间同样走快路径：store.ListNodes 的 SQL 已经是 `ORDER BY name, id`，
+// 比较器 (Name, ID) 与之逐字段等价（#243 那类“每请求白排”的同类开销）。
 func mergeNodes(groups ...[]*store.Node) []*store.Node {
+	if len(groups) <= 1 {
+		return truncateSingleGroup(groups, 0) // 节点列表不截断
+	}
 	total := 0
 	for _, g := range groups {
 		total += len(g)
