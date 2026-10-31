@@ -106,7 +106,14 @@ func handleNamespaceError(w http.ResponseWriter, err error) bool {
 
 // mergeTasks 合并多个命名空间的任务列表，按 store 的排序口径
 // （created_at DESC, id DESC）重排后截断到 limit。
+//
+// 单命名空间走快路径：store.ListTasks 的 SQL 已经是 `ORDER BY created_at DESC,
+// id DESC`，groups 只有一个元素时再排一遍是纯浪费（#243 同一类每请求固定开销）。
+// 跨命名空间（`*`）仍然必须归并重排 —— 那才是这个函数存在的理由。
 func mergeTasks(limit int, groups ...[]*store.Task) []*store.Task {
+	if len(groups) <= 1 {
+		return truncateSingleGroup(groups, limit, []*store.Task{})
+	}
 	total := 0
 	for _, g := range groups {
 		total += len(g)
@@ -128,7 +135,14 @@ func mergeTasks(limit int, groups ...[]*store.Task) []*store.Task {
 }
 
 // mergeEvents 合并多个命名空间的事件列表（created_at DESC, id DESC）后截断。
+//
+// 单命名空间的快路径（#243）：`limit=500` 的事件流是热点，而绝大多数请求只作用于
+// 一个命名空间 —— store.ListEvents 出来就已经是 created_at DESC, id DESC，再
+// sort.SliceStable 一遍 500 个元素（含 reflect 交换）是每请求白付的 CPU。
 func mergeEvents(limit int, groups ...[]*store.Event) []*store.Event {
+	if len(groups) <= 1 {
+		return truncateSingleGroup(groups, limit, []*store.Event{})
+	}
 	total := 0
 	for _, g := range groups {
 		total += len(g)
@@ -143,6 +157,23 @@ func mergeEvents(limit int, groups ...[]*store.Event) []*store.Event {
 		}
 		return out[i].ID > out[j].ID
 	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// truncateSingleGroup 是「只有一个命名空间」时的快路径：直接把该组（截断到 limit）
+// 交回去，不再合并/重排。
+//
+// 两个前提（少一个都不能用）：① store 的 SQL 已经按 created_at DESC, id DESC 排好；
+// ② 只有一个分组时不存在跨组归并。空组要归一成非 nil 空切片（不变量 I9：空列表给
+// []，不给 null）—— 这也是它与“直接 return groups[0]”的唯一差别，别省掉。
+func truncateSingleGroup[T any](groups [][]T, limit int, empty []T) []T {
+	out := empty
+	if len(groups) == 1 && groups[0] != nil {
+		out = groups[0]
+	}
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
