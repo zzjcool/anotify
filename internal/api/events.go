@@ -340,15 +340,17 @@ func writeNamespaceError(w http.ResponseWriter, err error) bool {
 // 带 Cache-Control: no-store：事件与任务数据是用户私有且实时变化的，
 // 中间缓存会把一个组织的响应喂给另一个组织。
 //
+// 故意**不缩进**：客户端是 JSON parser 不是人眼，缩进对可解析性零收益，
+// 只是让 /v1/events 这类大响应白白多出 29.4% 体积（#243 实测 54,163B → 41,855B）。
+// 要看人读的格式化输出，拿 jq 管道一下就行。
+//
 // 原本在 api/notify.go 里，随旧通知终端模型（#80）搬到本文件：
 // 事件中心只剩这一个 API 包，helper 不该再挂在已删除的文件名下。
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // writeError 写一个 {"error": msg} 响应。
