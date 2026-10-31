@@ -102,7 +102,7 @@ DB 往返账（每请求）：
 |---|---|---|
 | 会话缓存命中（10s 窗口内） | GetSession + GetUserByID + 同步 TouchSession = **3 次** | **0 次** |
 | 会话缓存未命中 | 3 次 | **2 次**（随后入缓存） |
-| `TouchSession` | **每请求 1 次同步写事务** | **每会话每 60s 1 次异步写**（实测 320 请求 / 2.02s → 写 2 次） |
+| `TouchSession` | **每请求 1 次同步写事务** | **每会话每 60s 1 次**（同步、节流；实测 320 请求 / 2.02s → 写 2 次） |
 | 下游 `AuthorizeNamespace` | 1 次 | 1 次（属 #240，本批未动） |
 
 ## 4. #245 · `/v1/hooks/{token}`
@@ -170,5 +170,6 @@ bash scripts/perf/2a-auth/ab.sh /tmp/perf-2a/bin/anotify-after  after
 | 项 | 说明 |
 |---|---|
 | bench 数字 | 初版命中成本（3,391 ns / 64 B / 2 allocs）是「加 HMAC 之前」的值，已在 §2 更正为 1,209 B / 19 allocs。结论方向不变。 |
-| 会话节流用例的仪表 | 原用 SQLite `SELECT total_changes()` 数写库次数。**`total_changes()` 是按连接统计的**，而 store 连接池自 #240 起是 8（`ANOTIFY_DB_MAX_CONNS`，默认 8）——「执行 UPDATE 的连接」与「查计数的连接」可能不是同一条。实测并发下 458 次真 UPDATE 只被观测到 84–92 次（漏计约 80%），于是用例偶发报「0 次写库」。**不是实现 bug、也不是断言问题**：换成 `SessionManager.TouchWriteCount()`（在写入发起处自增，与连接池形状无关），并**新增**一条 DB 级断言（等异步写落地后从库里读回 `last_seen`，要求 `>= 并发窗口开始的那一秒`）——上下界一个都没放宽。`-count=20` 全绿。 |
+| 会话节流用例的仪表 | 原用 SQLite `SELECT total_changes()` 数写库次数。**`total_changes()` 是按连接统计的**，而 store 连接池自 #240 起是 8（`ANOTIFY_DB_MAX_CONNS`，默认 8）——「执行 UPDATE 的连接」与「查计数的连接」可能不是同一条。实测并发下 458 次真 UPDATE 只被观测到 84–92 次（漏计约 80%），于是用例偶发报「0 次写库」。**不是实现 bug、也不是断言问题**：换成 `SessionManager.TouchWriteCount()`（在写入发起处自增，与连接池形状无关），并**新增**一条 DB 级断言（从库里读回 `last_seen`，要求 `>= 并发窗口开始的那一秒`）——上下界一个都没放宽。`-count=20` 全绿。 |
+| `TouchSession` 的异步 goroutine | 初版是 `go func(){ TouchSession }()`。独立验证者发现它**生命周期在请求之后、没有可等待出口**，与 `db.Close()` 天然竞态：sqlite driver 在 Close 临界窗口新建连接会重跑 `_pragma=journal_mode(WAL)`，把 `-wal/-shm` 落在 `t.TempDir` 的 RemoveAll 遍历之后 → `unlinkat: directory not empty`，实测约 1/6 全量运行让 `make ci` 偶发红。已回退成**同步节流写**（代价：每会话每 60s 一条 UPDATE，约 0.1–0.3ms；收益：关闭顺序确定、测试不再赌时序、生产退出路径也不再有悬挂写）。 |
 | gen 快照时机 | 审查指出「`genAtRead` 必须在读 DB 之前」这条论证原先只活在注释里（把快照挪到 argon2 之后，全仓测试仍绿）。已补 `TestAPIKeyRevokeDuringCacheMissNotResurrected`，并做变异验证（把 gen 改成写缓存时取 → 该用例立即变红）。**残留**：若把快照挪到「紧跟读 DB 之后」，窗口只有微秒级，该用例抓不到——已在测试注释里写明，不假装它被测住。 |

@@ -212,11 +212,28 @@ func (m *SessionManager) authSession(sessionID string) (string, *sessEntry, erro
 // touchWrites 只做计数（见 SessionManager.TouchWriteCount），不参与判定。
 //
 // 判据（#241）：节流只允许「少写」，不允许「写旧值」或「永久不写」。
-//   - 只有「距上次落库 ≥ touchInterval」并且 CAS 抢到写权的那**一个** goroutine 才落库，
+//   - 只有「距上次落库 ≥ touchInterval」并且 CAS 抢到写权的那**一个**请求才落库，
 //     且写的是本次请求拿到的 now（不会写回更早的时间戳）；
-//   - 每个请求都 spawn 一个 goroutine 是 goroutine 爆炸，所以窗口内的请求一个都不 spawn；
+//   - 窗口内的请求一个都不写（更不会每请求 spawn 一个 goroutine）；
 //   - 缓存条目在 cacheTTL 过期后原地刷新（保留 lastTouch），所以活跃会话不会因为
 //     缓存刷新而反复重置窗口——节流窗口一过必然会有请求写进去，不存在「永久不写」。
+//
+// # 为什么这里是**同步**写，而不是 `go func(){ TouchSession() }()`
+//
+// 一开始写成了 fire-and-forget goroutine，被独立验证者抓到一个真 bug，回退成同步：
+// 那个 goroutine 的生命周期**在请求之后**，没有任何可等待的出口。于是
+// `db.Close()` 与它天然竞态——goroutine 若在 Close 的临界窗口里走到 `db.conn()`，
+// sqlite driver 会新建连接并执行 DSN 上的 `_pragma=journal_mode(WAL)`，
+// 于是在数据目录里重新生成 `-wal`/`-shm` 文件。后果有两个：
+//   - 测试侧（已实测）：`t.Cleanup(db.Close)` 先跑、`t.TempDir` 的 RemoveAll 后跑，
+//     文件被落在遍历之后 → `unlinkat: directory not empty`，让 `make ci` 偶发红
+//     （复现率约 1/6 全量运行，定向单跑 1000 次都不出——典型的关闭期竞态）；
+//   - 生产侧：进程优雅退出时同样可能有一笔写落到已关闭的库上。
+//
+// 换成同步的代价可以算出来：每会话每 60s 一次单条 `UPDATE ... WHERE id=?`（约 0.1–0.3ms），
+// 摊到 60s 的请求里是 300× 以上的写缩减，#241 要的收益（不再每请求一次写事务）已经拿到；
+// 而好处是**没有任何跨越请求生命周期的 goroutine**：关闭顺序确定、测试确定、
+// 不再需要「等异步写落地」的 sleep 赌时序。
 //
 // last_seen 只有秒精度，因此节流粒度天然是整秒：touchInterval < 1s 时按 1s 生效。
 func (m *SessionManager) touchSession(sessionID string, e *sessEntry) {
@@ -242,11 +259,10 @@ func (m *SessionManager) touchSession(sessionID string, e *sessEntry) {
 		return
 	}
 	m.touchWrites.Add(1)
-	go func() {
-		// 写失败忽略：last_seen 只是活跃统计（会话列表的「最近使用」），不参与鉴权判定，
-		// 丢了这次刷新只影响统计精度；反过来把统计写失败上抛成 5xx 才是真的降级。
-		_ = m.db.TouchSession(sessionID, now)
-	}()
+	// 写失败忽略：last_seen 只是活跃统计（会话列表的「最近使用」），不参与鉴权判定，
+	// 丢了这次刷新只影响统计精度；反过来把统计写失败上抛成 5xx 才是真的降级。
+	// 同步执行，理由见上面「为什么这里是同步写」。
+	_ = m.db.TouchSession(sessionID, now)
 }
 
 // TouchWriteCount 返回「节流放行了多少次 last_seen 写库」的累计计数。
@@ -258,8 +274,8 @@ func (m *SessionManager) touchSession(sessionID string, e *sessEntry) {
 // 偶发假红（本仓库踩过：同一条用例 1 次 ok / 2 次 FAIL）。
 // 在写入发起处自增计数，与连接池形状无关，也顺带把「发起但写失败」计入（更严格）。
 //
-// 「真的落库了」由另一条独立断言保证：测试会等异步写落地后从 DB 读回 last_seen
-// 并断言它 >= 请求发生的那一秒。两个证据合起来才完整：
+// 「真的落库了」由另一条独立断言保证：测试从 DB 读回 last_seen
+// 并断言它 >= 请求发生的那一秒（同步写，所以读回即见）。两个证据合起来才完整：
 //   - 本计数 = 节流放行了几次（上界/下界）
 //   - DB 里的 last_seen = 写确实生效、且写的是新时间（不是旧值、不是永久冻住）
 func (m *SessionManager) TouchWriteCount() uint64 { return m.touchWrites.Load() }
