@@ -1009,42 +1009,72 @@ type nodeView struct {
 	Busy         int           `json:"busy"`
 }
 
+// viewsFor 批量组装控制台视图（返回顺序与入参 nodes 一致）。
+//
+// 为什么要批量（#223）：旧的 viewFor 每台节点跑 2 条 SQL（ListNodeCapabilities +
+// ListInstances），列表页 N=100 就是 201 条**串行** SQL（连接池上限 1），
+// 64 台机器只能跑出 104 RPS / p50 76ms。这里把整批 id 合并成一个去重列表，
+// 固定 2 条批量查 —— SQL 条数与节点数无关。
+//
+// 语义必须与旧实现完全一致：
+//   - capabilities 按 (name, version) 升序（排序由 store 的批量查保证）
+//   - 没有能力 / 没有槽位 → `[]` 与 0（不变量 I9：不给 null）
+//   - 批量查失败**降级**而不是整页 500：列表页宁可少一半信息，也要让运维
+//     看见剩下的机器（旧行为如此，改成本地失败会把可用性降低）
+//
+// 日志事件名沿用 console.nodes.caps_failed / insts_failed：排障时按事件名
+// 统计的告警与看板不因这次优化失配。
+func (h *consoleHandler) viewsFor(ctx context.Context, nodes []*store.Node) []nodeView {
+	views := make([]nodeView, len(nodes))
+	if len(nodes) == 0 {
+		return views
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, n.ID)
+	}
+	// 两次批量查彼此独立：能力查失败不该连带丢掉槽位统计（反之亦然）。
+	capsByNode, err := h.db.ListCapabilitiesByNode(ctx, ids)
+	if err != nil {
+		slog.Error("list node capabilities failed", "event", "console.nodes.caps_failed", "error", err.Error())
+		capsByNode = nil
+	}
+	statsByNode, err := h.db.InstanceStatsByNode(ctx, ids)
+	if err != nil {
+		slog.Error("list node instances failed", "event", "console.nodes.insts_failed", "error", err.Error())
+		statsByNode = nil
+	}
+	for i, n := range nodes {
+		caps := capsByNode[n.ID]
+		capViews := make([]nodeCapView, 0, len(caps))
+		for _, c := range caps {
+			runSpec := c.RunSpec
+			if len(runSpec) == 0 {
+				runSpec = json.RawMessage(`{}`) // I9：宁可是空对象，也不要是 null/省略
+			}
+			capViews = append(capViews, nodeCapView{
+				ID:          c.ID,
+				Name:        c.Name,
+				Version:     c.Version,
+				DisplayName: c.DisplayName,
+				RunSpec:     runSpec,
+			})
+		}
+		stat := statsByNode[n.ID] // 没申报槽位的节点查不到 → 零值
+		views[i] = nodeView{Node: n, Capabilities: capViews, Instances: stat.Total, Busy: stat.Busy}
+	}
+	return views
+}
+
 // viewFor 组装一台节点的控制台视图。
 //
 // 列表与详情**共用**它：这类"两处各拼一套字段"的分叉最后一定表现为
 // "同一个东西两个页面不一样"（图例、全屏入口都踩过）。
+//
+// 单节点入口（createNode / nodeByID）直接走 viewsFor 的同一份代码，
+// 避免批量版与单台版漂移成两套拼装逻辑。
 func (h *consoleHandler) viewFor(ctx context.Context, n *store.Node) nodeView {
-	caps, err := h.db.ListNodeCapabilities(ctx, n.ID)
-	if err != nil {
-		slog.Error("list node capabilities failed", "event", "console.nodes.caps_failed", "error", err.Error())
-		caps = nil
-	}
-	capViews := make([]nodeCapView, 0, len(caps))
-	for _, c := range caps {
-		runSpec := c.RunSpec
-		if len(runSpec) == 0 {
-			runSpec = json.RawMessage(`{}`) // I9：宁可是空对象，也不要是 null/省略
-		}
-		capViews = append(capViews, nodeCapView{
-			ID:          c.ID,
-			Name:        c.Name,
-			Version:     c.Version,
-			DisplayName: c.DisplayName,
-			RunSpec:     runSpec,
-		})
-	}
-	insts, err := h.db.ListInstances(ctx, n.ID)
-	if err != nil {
-		slog.Error("list node instances failed", "event", "console.nodes.insts_failed", "error", err.Error())
-		insts = nil
-	}
-	busy := 0
-	for _, in := range insts {
-		if in.BusyTask != nil {
-			busy++
-		}
-	}
-	return nodeView{Node: n, Capabilities: capViews, Instances: len(insts), Busy: busy}
+	return h.viewsFor(ctx, []*store.Node{n})[0]
 }
 
 // createNodeRequest 是 POST /v1/nodes 的请求体。
@@ -1156,10 +1186,8 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 		groups = append(groups, got)
 	}
 	nodes := mergeNodes(groups...)
-	views := make([]nodeView, 0, len(nodes))
-	for _, n := range nodes {
-		views = append(views, h.viewFor(r.Context(), n))
-	}
+	// 一次批量组装：整页固定 2 条派生查询（旧实现是 2×N 条串行）。
+	views := h.viewsFor(r.Context(), nodes)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nodes":       views,
 		"namespaceId": namespaceLabel(ns),
