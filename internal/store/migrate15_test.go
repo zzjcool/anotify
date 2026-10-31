@@ -107,8 +107,10 @@ func TestMigration15NormalizesEdgeLookupIndex(t *testing.T) {
 		}
 		defer func() { _ = db.Close() }()
 
-		if v := mustMaxVersion(t, db); v != 15 {
-			t.Fatalf("升级后版本 = %d, want 15", v)
+		// want 不写死编号：这里要断言的是「升到了**最新**版本」，而最新版本是
+		// schema.sql 的函数（每加一个迁移都要改这里的话，改的还只是噪音）。
+		if v, want := mustMaxVersion(t, db), testTipVersion(t); v != want {
+			t.Fatalf("升级后版本 = %d, want %d", v, want)
 		}
 		if got := mustIndexColumns(t, db, edgeLookupIndexName); !sameColumnOrder(got, want) {
 			t.Fatalf("升级后 %s 列序 = %v, want %v（漂移没被拉正）", edgeLookupIndexName, got, want)

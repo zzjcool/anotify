@@ -183,10 +183,13 @@ func (d *DB) getEventByIdemKey(ctx context.Context, namespaceID, source, idemKey
 }
 
 // scanEvent 执行查询并解析一行；未命中返回 ErrNotFound。
+//
+// 语句缓存（#242）：GetEvent / GetEventByTrace / getEventByIdemKey 共用本函数，
+// 三者的 SQL 文本都是常量。
 func (d *DB) scanEvent(ctx context.Context, query string, args ...any) (*Event, error) {
 	var e Event
 	var payload string
-	err := d.QueryRowContext(ctx, query, args...).Scan(
+	err := d.cachedQueryRowContext(ctx, query, args...).Scan(
 		&e.ID, &e.NamespaceID, &e.TraceID, &e.Source, &e.Type, &payload, &e.IdemKey, &e.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -246,7 +249,7 @@ func (d *DB) ListEvents(ctx context.Context, namespaceID, traceID, source string
 	q += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
 
-	rows, err := d.QueryContext(ctx, q, args...)
+	rows, err := d.cachedQueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}

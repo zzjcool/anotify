@@ -1,0 +1,39 @@
+File: anotify-index
+Build ID: 2bce6371c54f73482efc790437b3e4c524469496
+Type: cpu
+Time: 2026-11-01 02:00:55 CST
+Duration: 20.15s, Total samples = 71.26s (353.72%)
+Showing nodes accounting for 52.65s, 73.88% of 71.26s total
+Dropped 840 nodes (cum <= 0.36s)
+Showing top 30 nodes out of 175
+      flat  flat%   sum%        cum   cum%
+    14.18s 19.90% 19.90%     14.18s 19.90%  runtime.procyield
+     6.68s  9.37% 29.27%      6.68s  9.37%  runtime.nanotime (inline)
+     5.30s  7.44% 36.71%     25.67s 36.02%  internal/sync.(*Mutex).lockSlow
+     5.01s  7.03% 43.74%     30.69s 43.07%  internal/sync.(*Mutex).Lock (inline)
+     4.73s  6.64% 50.38%      5.57s  7.82%  internal/sync.(*Mutex).Unlock (inline)
+     2.26s  3.17% 53.55%      8.61s 12.08%  modernc.org/sqlite/lib._sqlite3VdbeExec
+     2.01s  2.82% 56.37%     32.10s 45.05%  modernc.org/sqlite/lib.mutexFromPtr
+     1.41s  1.98% 58.35%      1.41s  1.98%  internal/runtime/syscall.Syscall6
+     0.80s  1.12% 59.47%      1.82s  2.55%  database/sql.convertAssignRows
+     0.79s  1.11% 60.58%      3.70s  5.19%  encoding/json.structEncoder.encode
+     0.76s  1.07% 61.65%      0.76s  1.07%  runtime.nextFreeFast (inline)
+     0.74s  1.04% 62.69%      0.81s  1.14%  encoding/json.appendString[go.shape.string]
+     0.59s  0.83% 63.51%      0.83s  1.16%  internal/sync.(*Mutex).unlockSlow
+     0.59s  0.83% 64.34%      5.22s  7.33%  runtime.mallocgc
+     0.59s  0.83% 65.17%      0.59s  0.83%  runtime.memmove
+     0.59s  0.83% 66.00%      0.59s  0.83%  strings.ToUpper
+     0.58s  0.81% 66.81%      1.39s  1.95%  runtime.mallocgcTiny
+     0.52s  0.73% 67.54%      2.56s  3.59%  runtime.mallocgcSmallScanNoHeader
+     0.48s  0.67% 68.21%      0.49s  0.69%  modernc.org/libc.Xmemcpy
+     0.47s  0.66% 68.87%      0.47s  0.66%  runtime.memclrNoHeapPointers
+     0.46s  0.65% 69.52%     50.65s 71.08%  modernc.org/sqlite.(*rows).Next
+     0.45s  0.63% 70.15%      0.49s  0.69%  runtime.(*mspan).writeHeapBitsSmall
+     0.41s  0.58% 70.73%      1.11s  1.56%  runtime.scanobject
+     0.36s  0.51% 71.23%      4.48s  6.29%  modernc.org/sqlite/lib._sqlite3BtreeTableMoveto
+     0.34s  0.48% 71.71%      3.63s  5.09%  modernc.org/sqlite/lib.(*mutex).enter
+     0.34s  0.48% 72.19%     19.74s 27.70%  modernc.org/sqlite/lib.mutexEnter
+     0.33s  0.46% 72.65%      3.19s  4.48%  modernc.org/sqlite/lib.(*mutex).leave
+     0.31s  0.44% 73.08%     14.63s 20.53%  modernc.org/sqlite/lib._columnMem
+     0.30s  0.42% 73.51%      0.49s  0.69%  runtime.findObject
+     0.27s  0.38% 73.88%     20.01s 28.08%  modernc.org/sqlite/lib.Xsqlite3_mutex_enter (inline)

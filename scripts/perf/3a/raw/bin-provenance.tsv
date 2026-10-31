@@ -1,0 +1,4 @@
+config	commit	binary	sha256_16	bytes	build_tags	trimpath	driver
+base	3433eef8ccd1b36764cff430997bc6e9e73158d6	bin/anotify-base	2f3624df4b072c92	23999101	embeddist,	true	v1.34.5
+index	dfcf97b5f6c0f2ed103be7ab06f966c1d9519db4	bin/anotify-index	e98fc34b9dce3485	24003213	embeddist,	true	v1.34.5
+after	worktree-HEAD:215718df6f2ebcfeeafc95e79f8b1d42b5d0035e	bin/anotify-after	706143420d4f7dbc	24258098	embeddist,	true	v1.45.0

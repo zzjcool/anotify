@@ -601,3 +601,73 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 -- 同一事务里重复执行结果相同，不会无脑重建索引）。
 --
 -- 本块没有 SQL：逻辑在 migrate15.go 的 `migrateEdgeLookupIndex`。
+
+-- +migration 16 tasks_list_index
+-- #237：任务列表（GET /v1/tasks → ListTasks）缺一条「过滤 + 排序」都能用上的索引，
+-- 于是每次先按某个 (namespace_id, ...) 前缀索引扫完整个命名空间的任务，再落 TEMP B-TREE
+-- 排序（实测走的是 idx_tasks_parent / idx_tasks_trace；2 万任务 p95 36ms，成本随行数线性增长）。
+--
+-- 为什么列序是 (namespace_id, created_at, id)：
+--   ① 第一列 namespace_id 对齐 ListTasks 的必选过滤条件 `WHERE namespace_id = ?`；
+--   ② 后两列就是 `ORDER BY created_at DESC, id DESC` 的排序键，索引自身有序；
+--   ③ 第三列 id 是**同秒破平**用的：tasks.created_at 只到秒（Now() 返回秒），
+--      同一秒内建的多条任务光靠前两列分不出先后，仍会落 TEMP B-TREE。
+--
+-- 为什么不用 (namespace_id, created_at DESC, id DESC)：
+--   SQLite 能**反向扫**一条 ASC 索引来满足降序 ORDER BY——实测 2 万行 LIMIT 200 的计划是
+--   `SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)`，没有 TEMP B-TREE。
+--   而 ASC 形状对 created_at 的**范围**查询（时间窗、保留期清理、与 events 侧对齐）
+--   同样可用，两种方向都免排序；索引文本也更简单。降序索引则只对「全降序」这一种形状有用。
+--
+-- 本迁移不写 Go hook（对比迁移 15 的 migrateEdgeLookupIndex）：
+--   迁移 15 需要 hook，是因为 idx_edges_lookup 这个**名字在历史上被重建过多次**，
+--   老库里可能残留「同名索引、列不同」的漂移，只有读 pragma 的 Go 代码能纠正它。
+--   而 idx_tasks_ns_created 是本批**新造的名字**，任何历史库（≤ v15）里都不可能存在，
+--   也就不存在「名字撞上但列不对」的漂移；`IF NOT EXISTS` 已经覆盖了「同一版本重试」
+--   的幂等要求（同一条语句跑第二遍是 no-op）。少一个 DDL 来源，就少一处新库/老库文本分叉。
+CREATE INDEX IF NOT EXISTS idx_tasks_ns_created ON tasks(namespace_id, created_at, id);
+
+-- 为什么紧接着要 ANALYZE（reviewer 3A · MAJOR-1 的返工，实测驱动的一条，不是形式主义）：
+--   没有 sqlite_stat1 时规划器**不知道 status 的基数**，于是给带等值过滤的列表查询
+--     WHERE namespace_id = ? AND status = ? ORDER BY created_at DESC, id DESC
+--   挑了看起来「更全能」的新索引，实际是「按命名空间全扫」：
+--     有索引无统计  status=canceled → SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)
+--     无本索引      status=canceled → SEARCH tasks USING INDEX idx_tasks_lease (status=?) + TEMP B-TREE
+--   2 万行、同一命名空间上实测 0.15~0.2ms → 14~26ms，且**随命名空间行数线性增长**。
+--   补上统计后规划器立刻改回 idx_tasks_lease（0.17~0.24ms），无过滤/常见值那条仍是
+--   idx_tasks_ns_created——也就是 #237 的收益不受影响。
+--
+-- 为什么放在迁移里：ANALYZE 是对**已有数据**的一次性统计，而「索引刚建好」正是老库
+-- 升级路径上唯一必然有数据的时点（线上部署全是 v15 库）。放在这里，老库升级完立刻
+-- 就有统计，不需要人工跑 ANALYZE，也不会留下一个「索引已建、统计为空」的窗口。
+--
+-- 为什么只 ANALYZE tasks 而不是整库 ANALYZE（reviewer 3A 第二轮复审 minor-5）：
+--   本语句跑在迁移 16 的**单事务**里，而 store.go 自己写着「单个写事务必须远短于 5s」
+--   （busy_timeout=5000 是进程内写队列的硬上限）。整库 ANALYZE 的成本随**整库**增长，且
+--   全程持有写锁：实测 10 万 tasks + 20 万 events 上 `ANALYZE`（整库）446ms，
+--   而 `ANALYZE tasks`（单表）258ms——写锁持有时间砍掉近一半，大库升级时也不会把
+--   「扫整库」压在 busy_timeout 的窗口里。
+--   端到端窗口不变：`Open` 末尾的 `PRAGMA optimize=0x2` 会在本迁移事务**提交之后**把其余表
+--   （events 等）的统计补上（实测 50 万行规模：2538.5 vs 2548.8ms，在两轮噪声内）。
+--   但 tasks 是本迁移唯一改动的表，它的统计必须在这里**确定性地**写出来——`optimize` 是
+--   可选优化（失败只 slog.Warn，不让 Open 失败，见 store.go），不能当保证用。
+--
+-- 代价（换算出来的，不是拍的）：迁移窗口内多一次 **tasks 单表**统计扫描，一次性。实测本机
+--   2 万行 ~57ms、10 万 tasks（+20 万 events）~0.26s。
+--   注意：tasks 为**空表**时（新库升级路径）`ANALYZE tasks` 不给 tasks 写任何 stat1 条目
+--   ——不是「写了等于没写」，而是**一行都不写**。旧版注释写的「新库（空表）ANALYZE 不写任何
+--   stat1 行，等于 no-op」是错的，当时那句是**整库** `ANALYZE`：空库跑完 sqlite_stat1 里其实
+--   会多出 2 行——events.idx_events_idem = "0 0 0 0"（部分索引，空表也写）、
+--   schema_version = "15"（迁移 16 执行时它已经记了 15 条账）。改成 `ANALYZE tasks` 之后，
+--   空库跑完 stat1 是 **0 行**（实测）——也就是说这条语句在空库上确实完全 no-op。
+--   所以新库那一次对 tasks 是纯粹的 no-op：tasks 的统计要等数据灌进来之后，由 Open 末尾的
+--   optimize 补上——那正是它存在的理由（「先建库、后灌数据」）。
+--
+-- 注意两件事：
+--   ① **不要**在迁移里再改索引形状（形状已冻结，见上面的列序说明），这里只是补统计；
+--   ② ANALYZE 写的 sqlite_stat1 / sqlite_stat4 是 `sqlite_` 前缀**内部表**，会被
+--      schemaShape（migrate15_test.go）的 `name NOT LIKE 'sqlite_%'` 过滤掉，
+--      所以它**不会**让「新库/老库形状一致」这道门禁变红——不是漏测，是刻意排除。
+--      统计本身属于「运行期数据」而不是「schema 形状」，两个库的统计本来就可能不同
+--      （行数不同），把它算进形状比对反而是错的。
+ANALYZE tasks;

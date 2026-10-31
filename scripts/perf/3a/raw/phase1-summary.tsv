@@ -1,0 +1,13 @@
+config	commit	binary	sha256_16	bytes	build_tags	trimpath	driver
+base	3433eef8ccd1b36764cff430997bc6e9e73158d6	bin/anotify-base	2f3624df4b072c92	23999101	embeddist,	true	v1.34.5
+index	dfcf97b5f6c0f2ed103be7ab06f966c1d9519db4	bin/anotify-index	e98fc34b9dce3485	24003213	embeddist,	true	v1.34.5
+db-size	20k-A	24870912	bytes	schema=15	index=absent
+db-size	20k-B	25870336	bytes	schema=16	index=present(namespace_id,created_at,id)
+db-size	100k-A	51638272	bytes	schema=15	index=absent
+db-size	100k-B	56668160	bytes	schema=16	index=present(namespace_id,created_at,id)
+db-size	20k-C	25870336	bytes	schema=16	index=present(namespace_id,created_at,id)
+db-sha256	20k-A	b259b109bb6c0ec3
+db-sha256	20k-B	c013fcad95c7252b
+db-sha256	20k-C	c013fcad95c7252b
+read-smoke	20k-A	2f3624df4b07	http=200	rows=200	db_rows=20001
+read-smoke	20k-B	e98fc34b9dce	http=200	rows=200	db_rows=20001

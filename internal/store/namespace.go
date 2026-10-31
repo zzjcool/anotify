@@ -126,7 +126,7 @@ func (d *DB) GetNamespace(ctx context.Context, id string) (*Namespace, error) {
 		return nil, ErrNamespaceRequired
 	}
 	var ns Namespace
-	err := d.QueryRowContext(ctx,
+	err := d.cachedQueryRowContext(ctx,
 		`SELECT `+nsColumns+` FROM namespaces WHERE id = ?`, id).
 		Scan(&ns.ID, &ns.Slug, &ns.Name, &ns.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -141,7 +141,7 @@ func (d *DB) GetNamespace(ctx context.Context, id string) (*Namespace, error) {
 // ListNamespaces 列出本部署的全部命名空间，带各类资源计数（UI 列表直接用）。
 // 空列表返回 []（不变量 I9）。
 func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
-	rows, err := d.QueryContext(ctx,
+	rows, err := d.cachedQueryContext(ctx,
 		`SELECT n.id, n.slug, n.name, n.created_at,
 		        (SELECT count(*) FROM capability_versions c WHERE c.namespace_id = n.id),
 		        (SELECT count(*) FROM nodes nd WHERE nd.namespace_id = n.id),

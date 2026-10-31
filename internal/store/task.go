@@ -374,7 +374,7 @@ func (d *DB) GetTask(ctx context.Context, namespaceID, id string) (*Task, error)
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	rows, err := d.QueryContext(ctx,
+	rows, err := d.cachedQueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
@@ -415,7 +415,9 @@ func (d *DB) ListTasks(ctx context.Context, namespaceID, traceID, nodeID, status
 	q += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
 
-	rows, err := d.QueryContext(ctx, q, args...)
+	// 语句缓存（#242）：这里是 /v1/tasks 的热点——可选过滤只有 3 个（trace/node/status），
+	// 文本种类数 = 2^3，天然有界，所以按最终 SQL 文本当缓存键是安全的。
+	rows, err := d.cachedQueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -40,6 +41,10 @@ const maxConnsEnv = "ANOTIFY_DB_MAX_CONNS"
 // DB 包装 *sql.DB。
 type DB struct {
 	*sql.DB
+	// stmts 是只读路径的 per-DB 语句缓存（#242，见 stmt.go）。
+	// 用值类型而非指针：零值就是一个能用的空缓存，包内直造的测试 DB
+	// （`&DB{DB: sqlDB}`）不会因为忘了初始化而静默退化成直查。
+	stmts stmtCache
 }
 
 // Open 打开（并迁移）一个 SQLite 数据库。path 可为 ":memory:"。
@@ -116,7 +121,52 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 		_ = db.Close()
 		return nil, err
 	}
-	return &DB{db}, nil
+	// 统计信息维护（reviewer 3A · MAJOR-1）：SQLite 官方推荐的「启动时/关闭前」姿势——
+	// 它只在**统计缺失或过期**时才真的跑 ANALYZE，统计新鲜时是一次纯检查，成本趋近 0。
+	//
+	// 本批它**只承诺一件事**：把「库很干净、规划器却是盲的」里那条**够得到**的补上——
+	//   ① 新库空表建好之后再灌到几万行：建库时 ANALYZE 扫的是空表（迁移 16 的
+	//      `ANALYZE tasks` 在空表上一行 stat1 都不写），等于没写统计；重开一次 Open，
+	//      mask 0x2 的判定规则是「表上有索引、但 sqlite_stat1 里没有该表的条目」——
+	//      与会话无关、也不需要行数变化（实测：新库灌完 2400 行，重开一次 Open 就补出全量统计），
+	//      正是这一刻，于是补出全量统计。
+	//
+	// ② 「统计随行数漂移、optimize 会顺手刷新」**不成立，本批不承诺**（第二轮复审实测）：
+	//   mask 0x2 在 Open 时刻**够不到**运行期漂移。「行数涨 10 倍后复查」那条规则需要
+	//   `0x10000` 位，**且**该连接查询过该表（sqlite 的判定是「本次会话用过的表、行数估计与
+	//   stat1 差 10 倍以上」），而 Open 时还没跑任何查询。实测 100 → 2100 行（21×）后重开，
+	//   stat1 里仍是 100。真要做运行期刷新，得周期性在运行期跑 optimize——那是另一个 issue，
+	//   不在本批范围。
+	//
+	// 为什么是 `=0x2` 而不是裸 `PRAGMA optimize`（**本行与冻结计划的一处刻意偏差，实测驱动**）：
+	//   裸写等价于 mask 0x0fffe，其中 0x10 位会把每次 ANALYZE 降级成
+	//   `analysis_limit = min(analysis_limit, SQLITE_DEFAULT_OPTIMIZE_LIMIT=2000)` 的**采样**分析
+	//   （见 sqlite 源码 pragma.c 的 "0x00010 Run all ANALYZE operations using an analysis_limit"
+	//   那段注释）。采样只按样本算「每个前缀值平均多少行」，不会按全表重新放大，于是 2 万行、
+	//   单一命名空间的数据被记成 idx_tasks_ns_created="20000 2001 3 1"（真值 20000）——
+	//   「按命名空间扫」被低估 10 倍，规划器又把 status= 稀有值 的列表查询抢回新索引，
+	//   实测 20k 行仍 13~15ms（全量 ANALYZE 后是 0.17ms）。去掉 0x10（= 只传 0x2）保留全部
+	//   「该不该分析」的判定规则，但分析本身是全量的：实测 stat1 与手工 ANALYZE 完全一致。
+	//   若要回退成裸 `PRAGMA optimize`，把下面这行的 `=0x2` 删掉即可（代价见上）。
+	//
+	// 与形状门禁的关系：本语句写的 sqlite_stat1 / sqlite_stat4 是 `sqlite_` 前缀内部表，
+	// schemaShape（migrate15_test.go）用 `name NOT LIKE 'sqlite_%'` 把它们过滤掉了——
+	// 所以它**不会**破坏「新库/老库形状逐行一致」那道门禁（统计是运行期数据，不是 schema 形状）。
+	// 走 db.Exec 而不是 d.stmts：此刻 DB 还没构造出来，且这条 SQL 一生只跑一次。
+	// 失败**不致命**（第二轮复审 minor-1：实测这里曾因 `database is locked (5)` 让 Open 4.7s 后
+	// 整体失败）：本语句是**可选优化**，它挂掉只影响「规划器可能暂时选不到最优索引」——
+	// 查询结果一律正确，功能不变。ANALYZE 是纯优化，把「统计没刷新」升级成「服务起不来」
+	// 不划算。所以只记一条 warning。
+	//
+	// 对比：迁移 16 里那句 `ANALYZE tasks` 是升级路径上的**确定性**保证（写在迁移事务内，
+	// 失败就该让迁移失败、整体回滚）——两者定位不同，别混。
+	// 也不要给它加重试循环：只会把启动变慢，而且下一次 Open 会再试一遍。
+	if _, err := db.Exec(`PRAGMA optimize=0x2`); err != nil {
+		slog.Warn("store: sqlite 统计维护失败（不影响正确性，只是规划器可能暂时选不到最优索引）",
+			"event", "store.open.optimize_failed",
+			"error", err.Error())
+	}
+	return &DB{DB: db, stmts: newStmtCache()}, nil
 }
 
 // maxConnsFromEnv 读 ANOTIFY_DB_MAX_CONNS；非法值回落到默认（不静默改成 0，

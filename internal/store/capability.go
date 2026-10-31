@@ -304,7 +304,9 @@ const capabilityColumns = `id, namespace_id, name, display_name, version, params
 func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*CapabilityVersion, error) {
 	var c CapabilityVersion
 	var paramsSchema, outputs, lifecycle string
-	err := d.QueryRowContext(ctx, query, args...).Scan(
+	// 语句缓存（#242）：scanCapability 被 GetCapability / GetCapabilityByID /
+	// getCapabilityByHash 共用，三者的 SQL 文本都是常量（拼的只是列名/条件名）。
+	err := d.cachedQueryRowContext(ctx, query, args...).Scan(
 		&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 		&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 	)
@@ -381,7 +383,7 @@ func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*Capab
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	rows, err := d.QueryContext(ctx,
+	rows, err := d.cachedQueryContext(ctx,
 		`SELECT `+capabilityColumns+` FROM capability_versions
 		 WHERE namespace_id = ? ORDER BY name, version`, namespaceID)
 	if err != nil {

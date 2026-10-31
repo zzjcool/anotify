@@ -1,0 +1,10 @@
+sql3-insert	with-index	pass=1	20000rows	139.0ms
+sql3-insert	without-index	pass=1	20000rows	131.2ms
+sql3-insert	with-index	pass=2	20000rows	130.5ms
+sql3-insert	without-index	pass=2	20000rows	133.9ms
+sql3-insert	with-index	pass=3	20000rows	144.4ms
+sql3-insert	without-index	pass=3	20000rows	123.7ms
+sql3-insert	with-index	pass=4	20000rows	129.0ms
+sql3-insert	without-index	pass=4	20000rows	124.1ms
+sql3-insert	with-index	pass=5	20000rows	137.8ms
+sql3-insert	without-index	pass=5	20000rows	123.4ms

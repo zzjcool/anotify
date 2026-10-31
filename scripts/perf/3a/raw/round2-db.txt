@@ -1,0 +1,3 @@
+20k-C2	stat1_tasks=7	sha256=4dfcfc503a6cd80e	bytes=72728576
+20k-B2	stat1_tasks=7	sha256=4dfcfc503a6cd80e	bytes=72728576
+100k-C2	stat1_tasks=7	sha256=d5e7eaa9f1000d02	bytes=56668160

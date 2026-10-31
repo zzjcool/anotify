@@ -1,0 +1,1 @@
+         0     0% 82.82%      1.30s  1.78%  modernc.org/sqlite.(*conn).prepareV2

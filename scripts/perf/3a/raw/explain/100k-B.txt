@@ -1,0 +1,10 @@
+# db=/tmp/perf-3a/db/100k-B/perf.db  schema=16  index=present(namespace_id,created_at,id)
+# SQL: SELECT id, namespace_id, trace_id, parent_task_id, path, capability_id, capability, 	version, params, status, node_id, instance_id, lease_until, attempts, 	out, reported, summary, artifacts, error, cap_hash, graph_id, 	created_at, started_at, finished_at, not_before FROM tasks WHERE namespace_id = 'ns_BByjBH4DmXMzk4rGHc' ORDER BY created_at DESC, id DESC LIMIT 200
+QUERY PLAN
+`--SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)
+# 无过滤（真实请求会带 namespaceId + limit，这里是同一形状）
+QUERY PLAN
+`--SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)
+# count(*) 形状（页面上限用）
+QUERY PLAN
+`--SEARCH tasks USING COVERING INDEX idx_tasks_ns_created (namespace_id=?)
