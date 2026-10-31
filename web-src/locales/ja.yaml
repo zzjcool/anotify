@@ -1102,7 +1102,6 @@ events:
   empty: イベントはまだありません。POST /v1/events で送信してください。
   demo_badge: デモモード — バックエンド未接続
   demo_hint: バックエンド未接続のため、実際のイベントはまだありません。
-  count: '{n} 件のイベント'
   view_chain: チェーンを表示
   filter:
     trace: Trace ID
@@ -1133,6 +1132,14 @@ events:
     other: 未分類
     count: '{n} 件'
     more: 残り {n} 件を表示
+  page:
+    newer: ← 新しい
+    older: 古い →
+    latest: 最新へ戻る
+    window: 'このページ {n} 件'
+    end: 最古に到達
+    no_match: このページに一致なし。古いページへ進むか最新へ戻れます
+    invalid_cursor: カーソルが無効です。最新へ戻りました
 caps:
   title: ケイパビリティ
   subtitle: ケイパビリティは「何をするか」（「どうやるか」ではない）。出口（イベントの行き先）は独立したページになりました。

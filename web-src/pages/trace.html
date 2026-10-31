@@ -89,6 +89,17 @@
 </div>
 {{end}}
 
+{{define "graph-libs"}}
+    <!-- 图渲染四件套：只在本页与 source.html 加载（base.html 里这个槽位默认是空的）。
+         全部 defer —— 本页的绘图入口是下面的 DOMContentLoaded 监听器，defer 脚本在
+         解析完成后、DOMContentLoaded 之前按序执行完，所以 load() 里 TraceView 一定已就绪。
+         顺序不能改：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView。 -->
+    <script defer src="/vendor/dagre.min.js"></script>
+    <script defer src="/flograph.js"></script>
+    <script defer src="/graphs.js"></script>
+    <script defer src="/traceview.js"></script>
+{{end}}
+
 {{define "script"}}
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;

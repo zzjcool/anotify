@@ -52,6 +52,8 @@ const CHROME_SUITES = [
 	"auth_flow",
 	"ux_regression_19_23",
 	"recovery_next",
+	// 批次 4B：events 页游标分页 + 资源分层（playwright）
+	"events_paging",
 	// #201：真后端（不用 mock）+ 真浏览器的体检套件
 	"real_backend",
 ];

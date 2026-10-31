@@ -24,6 +24,18 @@ type EventHandler struct {
 	Triggers *trigger.Service
 }
 
+// eventListLimitCap 是事件列表一次能返回的最大条数（#236）。
+//
+// **handler 必须先夹住**，不能把调用方给的数字原样传给 store：
+// store.ListEvents 的夹取规则是 `limit <= 0 || limit > 500 { limit = 50 }`
+// （internal/store/event.go，那一行由 #55 引入）——它对**超出上限**的处理是折回
+// 历史默认值 50，而不是钳到 500。于是 `limit=501..1000` 会悄悄返回 50 条：
+// 比要求的少一个数量级，响应里还没有任何迹象（#236 的根因就是这个误合并）。
+//
+// 在 handler 侧钳到真实硬顶、并把生效值回显进响应，两个问题一起消掉：
+// 调用方拿到的行数永远是「它要的、或硬顶」，且知道到底生效了多少。
+const eventListLimitCap = 500
+
 // EventIngestRequest 是 POST /v1/events 的请求体（camelCase，契约 §6.2）。
 type EventIngestRequest struct {
 	Source  string          `json:"source"`
@@ -202,10 +214,16 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 	}
 	traceID := r.URL.Query().Get("traceId")
 	source := r.URL.Query().Get("source")
+	// limit：缺省 100；给了正整数就 min(n, eventListLimitCap)；非整数 / n <= 0 仍回 100
+	// （沿用本端点一向的宽松语义，不为此新增 400）。
+	// 夹取不能省：store 对 `> 500` 会折回 50（#236），见 eventListLimitCap 的注释。
 	limit := 100
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 1000 {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
 			limit = n
+			if limit > eventListLimitCap {
+				limit = eventListLimitCap
+			}
 		}
 	}
 
@@ -228,7 +246,9 @@ func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID strin
 	if events == nil {
 		events = []*store.Event{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	// limit 是**生效值**（已夹到 eventListLimitCap）：回显它，调用方才能区分
+	// 「就要到这么多」与「被硬顶截断了」（#236）。
+	writeJSON(w, http.StatusOK, map[string]any{"events": events, "limit": limit})
 }
 
 // listAcrossNamespaces 是 namespaceId=* 的实现：逐个命名空间查、合并、按

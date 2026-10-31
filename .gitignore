@@ -41,3 +41,6 @@ web/i18n.*.js
 *.swp
 .idea/
 .vscode/
+
+# === legion 编排运行时（契约/报告等，不入库）===
+.pi-legion/

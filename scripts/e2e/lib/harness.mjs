@@ -496,6 +496,7 @@ export const SUITE_PORTS = {
 	recovery_next: 6850,
 	// #201：真后端 + 真浏览器套件（页面级请求体检 + 起真 cmd/agent）
 	real_backend: 6900,
+	events_paging: 6950,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。

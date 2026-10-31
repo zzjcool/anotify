@@ -92,7 +92,7 @@
             </div>
             <div class="flex flex-wrap items-center gap-3">
               <button
-                onclick="loadAll()"
+                onclick="requestReload()"
                 class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
               >
                 {{t "events.refresh"}}
@@ -108,21 +108,21 @@
                  窄屏时会被拆到两行，看起来像标签和控件没关系 -->
             <div class="flex flex-col gap-1">
               <label class="text-[11px] text-zinc-400" for="ev-kind">{{t "events.filter.kind"}}</label>
-              <select id="ev-kind" class="input w-48 text-xs" onchange="loadAll()">
+              <select id="ev-kind" class="input w-48 text-xs" onchange="requestReload()">
                 <option value="">{{t "events.filter.all_kinds"}}</option>
               </select>
             </div>
 
             <div class="flex flex-col gap-1">
               <label class="text-[11px] text-zinc-400" for="ev-source">{{t "events.filter.source"}}</label>
-              <select id="ev-source" class="input w-48 text-xs" onchange="loadAll()">
+              <select id="ev-source" class="input w-48 text-xs" onchange="requestReload()">
                 <option value="">{{t "events.filter.all_sources"}}</option>
               </select>
             </div>
 
             <div class="flex flex-col gap-1">
               <label class="text-[11px] text-zinc-400" for="ev-node">{{t "events.filter.node"}}</label>
-              <select id="ev-node" class="input w-48 text-xs" onchange="loadAll()">
+              <select id="ev-node" class="input w-48 text-xs" onchange="requestReload()">
                 <option value="">{{t "events.filter.all_nodes"}}</option>
               </select>
             </div>
@@ -133,12 +133,12 @@
                 id="ev-trace"
                 class="input mono w-48 text-xs"
                 placeholder="trace_..."
-                onkeydown="if(event.key==='Enter')loadAll()"
+                onkeydown="if(event.key==='Enter')requestReload()"
               />
             </div>
 
             <button
-              onclick="loadAll()"
+              onclick="requestReload()"
               class="btn-primary rounded-lg px-3 py-2 text-xs"
             >
               {{t "events.filter.apply"}}
@@ -158,6 +158,10 @@
               {{t "events.loading"}}
             </div>
           </div>
+          <!-- 分页导航：按钮由 renderNav() 按状态生成。
+               放在 #ev-list **之外**——列表容器会被 replaceChildren() 整体重建，
+               而且 e2e 用 #ev-list .card 数事件条数，导航混进去会被算成事件。 -->
+          <div id="ev-nav" class="mt-3 flex flex-wrap items-center gap-2"></div>
         </div>
 
       </div>
@@ -182,6 +186,52 @@
         subtitle: t("events.subtitle", "外部世界的变化 → 任务链 → 结果"),
       });
       let EVENTS = [];
+
+      // ==================== 分页状态 ====================
+      //
+      // 服务端一次只回一页，而本页历史上一律只请求首页 → 1000 条事件里
+      // 最多 100 条可达（#235）。现在按游标翻页，四份状态必须分清：
+      //   PAGE_SIZE  —— 页大小，必须显式当 limit 发给服务端
+      //   pageCursor —— 本页锚点（= URL 里的 ?before=），请求用它
+      //   nextCursor —— 服务端回的「更旧」游标（"" ⇔ 没有更旧的行）
+      //   cursorStack—— 本会话内的回退栈，「← 较新」弹它（刷新后必然为空）
+      const PAGE_SIZE = 100;
+      let pageCursor = "";
+      let nextCursor = "";
+      let cursorStack = [];
+
+      // loading 是**请求中的闸门**（in-flight 守卫）。
+      //
+      // 为什么需要：上面四份状态是页级共享的，而 loadAll() 被刷新、筛选、
+      // 三个翻页按钮、清筛选多处调用。没有闸门时快速双击「更旧 →」会这样：
+      //   ① 两次点击读到同一对 (pageCursor, nextCursor)
+      //   ② 各自 push(pageCursor) → **同一个游标被压栈两次**
+      //   ③ 之后第一次点「← 较新」只是原地重载同一页（看起来“点了没反应”）
+      // 栈是会话内回退的**唯一**来源，压重了就凭空多出一层假历史。
+      let loading = false;
+
+      // pendingReload 是「被闸门拦下的**筛选 / 刷新**意图」，等这一轮落地后补一次。
+      //
+      // 为什么要区分来源：闸门挡下的两类操作性质完全不同，不能一把吞掉。
+      //   ① 翻页三入口（goOlder/goNewer/goLatest）与「清除筛选」改的是**共享游标状态**
+      //      （pageCursor / cursorStack）。它们各自先查闸门、被拦就整下丢弃 ——
+      //      补发会把一个已经过期的游标压进栈，凭空多一层假历史。
+      //   ② 筛选 / 刷新只读 DOM 控件值，请求在飞时被吞掉会留下
+      //      「控件值变了、列表还是旧筛选结果」的撕裂状态（用户以为筛选坏了）。
+      //      所以这一类改走 requestReload：被拦时记下「落地后再来一次」，
+      //      由 loadAll 的 finally 补发 —— 补发读的是**那一刻**的控件值，正是用户想要的。
+      let pendingReload = false;
+
+      // requestReload 是「筛选 / 刷新」类入口的统一入口：下拉 onchange、
+      // Trace 输入框回车、「筛选」按钮、「刷新」按钮。
+      // 翻页入口**不走这里**（它们要的是丢弃，见上）。
+      function requestReload() {
+        if (loading) {
+          pendingReload = true;
+          return;
+        }
+        loadAll();
+      }
 
       let demoMode = false;
 
@@ -217,6 +267,19 @@
         }
       }
 
+      // fetchApiResult：同 fetchApi，但把 HTTP 状态码一起带回来。
+      //
+      // 为什么需要：游标失效时服务端回 400（契约 §3.3「不静默降级」），
+      // 页面要提示并回到最新；而网络错误 / 后端未连接只需要降级成 demoMode。
+      // fetchApi 把两者都吞成 null 就分不出来了（Anotify.api 抛的 err 上带 status）。
+      async function fetchApiResult(path) {
+        try {
+          return { data: await Anotify.api(path, { demo: null }), status: 200 };
+        } catch (e) {
+          return { data: null, status: (e && e.status) || 0 };
+        }
+      }
+
       // ==================== DOM 构建工具 ====================
       //
       // 全程用 createElement + textContent，**不用 innerHTML**。
@@ -244,6 +307,10 @@
       // 否则所有事件都会落到「未归类」。
       async function init() {
         const f = readUrlFilters();
+
+        // URL 带 ?before= 时**直接**按该游标加载：刷新 / 分享必须落在同一窗口。
+        // 不能先加载首页再跳过去 —— 那会多打一次请求，还会闪一下最新的事件。
+        pageCursor = f.before;
 
         const [srcData, nodeData] = await Promise.all([
           fetchApi(API + "/sources").catch(() => null),
@@ -290,6 +357,8 @@
           source: q.get("source") || "",
           node: q.get("node") || "",
           trace: q.get("traceId") || "",
+          // before = 当前窗口的锚点。首页不带它（刷新 / 分享靠它落回同一页）。
+          before: q.get("before") || "",
         };
       }
 
@@ -388,11 +457,20 @@
           t("events.filter.clear", "清除筛选"),
         );
         clear.addEventListener("click", () => {
+          // 同样要查闸门：下面几行会先改 pageCursor/cursorStack 再调 loadAll()，
+          // 若请求在飞就会被吞掉 —— 结果是“窗口没重载、锚点却已清空”，
+          // 下一次点「更旧」会从首页锚点跳着翻，跳过一整页。宁可整下忽略。
+          // 所以这里**刻意不走** requestReload：筛选可以补一次，游标操作不行
+          // （补发时游标已被清掉，等于替用户选了一个他没要的窗口）。
+          if (loading) return;
           document.getElementById("ev-source").value = "";
           nodeSel.value = "";
           document.getElementById("ev-trace").value = "";
           nodeTraceIds = null;
-          // 清掉 URL 参数，否则刷新又回来了
+          // 清掉 URL 参数，否则刷新又回来了。before 也要一起清：
+          // 筛选全清了就该回到最新一页，否则会停在一个不再有筛选语义的旧窗口上。
+          pageCursor = "";
+          cursorStack = [];
           history.replaceState(null, "", location.pathname);
           // 只刷新事件列表：源/节点列表没变，没必要重拉
           loadAll();
@@ -416,41 +494,200 @@
         nodeTraceIds = new Set(tasks.map((x) => x.traceId).filter(Boolean));
       }
 
-      async function loadAll() {
-        // 每次加载前重填下拉：「源类型」变了以后，「源」下拉必须跟着只列
-        // 该类型下的源。只调一次 init 的话，用户切类型后源下拉还是旧的
-        // 全集，能选出「类型=cron + 源=GitHub PR」这种必然为空的组合。
-        fillSelects();
+      // ==================== 分页导航 ====================
+      //
+      // 请求形态（契约 §3.4）：
+      //   GET /v1/console/events?limit=100[&before=<opaque>][&traceId=<...>]
+      // 游标虽然是不透明的 base64url（不含 + / =），拼 URL 前仍然 encodeURIComponent。
 
-        const trace = document.getElementById("ev-trace").value.trim();
-        const nodeId = document.getElementById("ev-node").value;
+      // writeUrlBefore 把本页锚点写回 URL。
+      //
+      // 用 replaceState 而不是 pushState：翻页不应该产生浏览器历史 ——
+      // 否则后退键会被页码吃掉，用户得按十几次才退得出去。
+      // 只动 before 一个参数：source / node / traceId / group 语义必须保持不变。
+      function writeUrlBefore(cursor) {
+        const q = new URLSearchParams(location.search);
+        if (cursor) q.set("before", cursor);
+        else q.delete("before");
+        const qs = q.toString();
+        history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+      }
+
+      // 三个翻页入口都要自己查一次闸门：它们改的是**共享分页状态**，
+      // 而改动发生在 loadAll() 之前。只守 loadAll() 的话，双击时
+      // push/pop 还是会各跑两遍（正是上面注释里说的“同一游标压栈两次”）。
+      // 被拦时它们是**整下丢弃**（不置 pendingReload）：补发会拿过期游标压栈。
+      // 而「刷新」按钮和筛选下拉走 requestReload()，被拦时置 pendingReload、落地后补一次。
+
+      // 「更旧 →」：把当前锚点压栈（首页压空串，代表“回首页”），再以
+      // nextCursor 为新锚点写 URL 并加载。nextCursor == "" 时按钮本来就不渲染。
+      function goOlder() {
+        if (loading) return;
+        if (!nextCursor) return;
+        cursorStack.push(pageCursor);
+        pageCursor = nextCursor;
+        writeUrlBefore(pageCursor);
+        loadAll();
+      }
+
+      // 「← 较新」：弹栈回退。栈空时按钮不渲染，这里再兜一层防意外调用。
+      // 刷新后栈必然为空 → 按钮隐藏，不报错（契约 §3.4）。
+      function goNewer() {
+        if (loading) return;
+        if (!cursorStack.length) return;
+        pageCursor = cursorStack.pop();
+        writeUrlBefore(pageCursor);
+        loadAll();
+      }
+
+      // 「回到最新」：清掉 before 回首页，同时清空回退栈
+      //（栈里全是“更旧”方向的锚点，留着会让「← 较新」指向不存在的历史）。
+      function goLatest() {
+        if (loading) return;
+        pageCursor = "";
+        cursorStack = [];
+        writeUrlBefore("");
+        loadAll();
+      }
+
+      // renderNav 重建分页导航行：三个按钮各自按状态显隐。
+      function renderNav() {
+        const nav = document.getElementById("ev-nav");
+        nav.replaceChildren();
+        // 没有任何按钮时整块隐藏，不留一条空白的 12px 间距。
+        nav.classList.toggle("hidden", true);
+        if (demoMode) return; // 演示态没有真实分页，不显示任何翻页按钮
+
+        const btns = [];
+        // 有回退栈才能往回走（刷新后为空 → 隐藏）
+        if (cursorStack.length) btns.push(["ev-newer", t("events.page.newer", "← 较新"), goNewer]);
+        // 服务端说还有更旧的行
+        if (nextCursor) btns.push(["ev-older", t("events.page.older", "更旧 →"), goOlder]);
+        // URL 里有 before 才有“不在最新一页”这回事
+        if (pageCursor) btns.push(["ev-latest", t("events.page.latest", "回到最新"), goLatest]);
+
+        if (!btns.length) return;
+        nav.classList.remove("hidden");
+        for (const [id, label, fn] of btns) {
+          const b = el("button", "btn-ghost rounded px-3 py-2 text-xs", label);
+          b.id = id;
+          // 请求在飞时按钮置灰。注意：真正的防线是 goOlder/goNewer/goLatest
+          // 里的闸门 —— 翻页按钮是上一轮加载时就渲染好的，此刻已经在页面上，
+          // 置灰只在这轮重绘到 finally 重绘之间那一瞬生效（外加给测试一个
+          // 可断言的信号：disabled 与 loading 同源）。
+          b.disabled = loading;
+          b.addEventListener("click", fn);
+          nav.appendChild(b);
+        }
+      }
+
+      async function loadAll() {
+        // 闸门：同一时刻只允许一个加载在飞。
+        //
+        // 挡住的是所有入口（requestReload 类的筛选 / 刷新、清筛选、三个翻页按钮）
+        // —— 它们都会改共享游标状态，并发跑就会出现“两个请求抢着写
+        // pageCursor/nextCursor，栈里多一层”。
+        // 被挡下的意图怎么处理由**入口**决定：筛选 / 刷新在 requestReload 里
+        // 置 pendingReload（由 finally 补一次），翻页 / 清筛选整下丢弃。
+        if (loading) return;
+        loading = true;
         try {
-          await ensureNodeTraces(nodeId);
-        } catch (e) {
-          nodeTraceIds = null;
+          // 每次加载前重填下拉：「源类型」变了以后，「源」下拉必须跟着只列
+          // 该类型下的源。只调一次 init 的话，用户切类型后源下拉还是旧的
+          // 全集，能选出「类型=cron + 源=GitHub PR」这种必然为空的组合。
+          fillSelects();
+
+          const trace = document.getElementById("ev-trace").value.trim();
+          const nodeId = document.getElementById("ev-node").value;
+          try {
+            await ensureNodeTraces(nodeId);
+          } catch (e) {
+            nodeTraceIds = null;
+          }
+          // limit 必须显式带上：不传时页大小由服务端默认值决定，页面就不可控。
+          // 抽成小函数是因为下面「游标失效」那条分支要按清空后的状态再拼一次。
+          const buildQuery = () => {
+            let qs = "?limit=" + PAGE_SIZE;
+            if (pageCursor) qs += "&before=" + encodeURIComponent(pageCursor);
+            if (trace) qs += "&traceId=" + encodeURIComponent(trace);
+            return qs;
+          };
+          // 走**控制台**端点（会话 Cookie 鉴权）。
+          // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
+          // 浏览器页面拿不到也拿不对这个凭据。
+          let r = await fetchApiResult(API + "/console/events" + buildQuery());
+
+          // 游标失效（400 “invalid before cursor”）：提示 + 清掉 before 回最新，
+          // 并且**在这一轮里**直接补一次首页请求。
+          //
+          // 不能像原来那样调 goLatest()：它内部的 loadAll() 会被上面的闸门吞掉
+          // （此刻 loading 还是 true），页面就停在失效的旧窗口上，只剩一个 toast。
+          // 也不会死循环：补发的这次不带 before，服务端不可能再判游标失效。
+          if (r.status === 400 && pageCursor) {
+            toast(t("events.page.invalid_cursor", "游标已失效，已回到最新"));
+            pageCursor = "";
+            cursorStack = [];
+            writeUrlBefore("");
+            r = await fetchApiResult(API + "/console/events" + buildQuery());
+          }
+
+          if (r.data) {
+            // 一页一次：**替换** EVENTS 而不是累加 —— 累加会让每页条数失控，
+            // 也会让「本页 N 条」的语义变成“已加载 N 条”。
+            EVENTS = r.data.events || [];
+            nextCursor = r.data.nextCursor || "";
+            demoMode = false;
+          } else {
+            // 后端未连接 / 其它 HTTP 失败：降级成演示态，不白屏、不抛未捕获异常。
+            EVENTS = [];
+            nextCursor = "";
+            demoMode = true;
+          }
+          // 重绘必须发生在 loading = false **之前**（都在 try 内）：
+          // renderNav() 是按 loading 决定按钮 disabled 的，顺序反了就会
+          // 画出“永远禁用”的导航。
+          renderList();
+          renderNav();
+        } finally {
+          // 正常结束 / 提前 return / 抛异常，三条路径都必须放开闸门，
+          // 否则一次失败就把整个页面的加载永久卡死。
+          loading = false;
+
+          // 补发被闸门拦下的「筛选 / 刷新」。
+          //
+          // 单次语义：这里**只消费一次**标志（先清再补），补发的那一轮若又攒到新的
+          // 筛选意图，它的 finally 会再补一次 —— 于是「连改三次筛选」最终一定收敛到
+          // **最后一次**的控件值，而不会无限重发（没有新意图就不会再补）。
+          // 必须在 loading = false 之后调：否则补发的这一次会被自己的闸门吃掉。
+          const catchUp = pendingReload;
+          pendingReload = false;
+          if (catchUp) loadAll();
+          // 重绘放最后：补发时 loading 已经又被置真，按钮该显示为禁用态。
+          renderNav();
         }
-        const qs = trace ? "?traceId=" + encodeURIComponent(trace) : "";
-        // 走**控制台**端点（会话 Cookie 鉴权）。
-        // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
-        // 浏览器页面拿不到也拿不对这个凭据。
-        const data = await fetchApi(API + "/console/events" + qs);
-        if (data) {
-          EVENTS = data.events || [];
-          demoMode = false;
-        } else {
-          EVENTS = [];
-          demoMode = true;
+      }
+
+      // renderSummary 写摘要行：本页条数 + 是否已到最旧 + 演示徽章。
+      //
+      // 用「本页 N 条」而不是原来的「N 条事件」：翻页后 EVENTS 只是一页，
+      // 说“共 N 条”会误导（1000 条事件的第 3 页也只会显示 100 条）。
+      function renderSummary() {
+        const summary = document.getElementById("ev-summary");
+        if (demoMode) {
+          // 演示态保持原有徽章语义（后端未连接 ≠ 零条事件）
+          summary.textContent = t("events.demo_badge", "演示模式：后端未连接");
+          return;
         }
-        renderList();
+        let text = t("events.page.window", "本页 {n} 条").replace("{n}", EVENTS.length);
+        // nextCursor == "" ⇔ 服务端说没有更旧的行了
+        if (!nextCursor) text += " · " + t("events.page.end", "已到最旧");
+        summary.textContent = text;
       }
 
       // renderList 用纯 DOM 重建事件列表。
       function renderList() {
         const list = document.getElementById("ev-list");
-        const summary = document.getElementById("ev-summary");
-        summary.textContent = demoMode
-          ? t("events.demo_badge", "演示模式：后端未连接")
-          : t("events.count", "{n} 条事件").replace("{n}", EVENTS.length);
+        renderSummary();
 
         list.replaceChildren();
 
@@ -482,11 +719,17 @@
         }
 
         if (!visible.length) {
+          // 已翻页窗外 + 有客户端筛选 → 提示还能继续向更旧翻页或回最新；
+          // 首页（无 before）时保持原文案不变。
+          const pagedAway = !!pageCursor;
+          const filtered = !!(nodeTraceIds || kindFilter || srcFilter);
           list.appendChild(
             el(
               "div",
               "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-              t("events.filter.empty", "当前筛选条件下没有事件。"),
+              pagedAway && filtered
+                ? t("events.page.no_match", "当前页没有匹配项，可继续向更旧翻页或回到最新")
+                : t("events.filter.empty", "当前筛选条件下没有事件。"),
             ),
           );
           renderActiveFilters();

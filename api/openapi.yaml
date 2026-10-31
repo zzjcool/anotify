@@ -195,7 +195,15 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        # 机器入口的 limit **没有** minimum：实现是 `n > 0` 才采纳、否则回 100
+        # （见 internal/api/events.go 的 list），`limit=0` / 负数 = 回退默认值，不是夹到 1。
+        # 所以这里不能写 minimum: 1 —— 那会把一个服务端接受、且回显 100 的请求标成非法。
+        - name: limit
+          in: query
+          description: |
+            缺省 / 非整数 / `<= 0` → `100`（**回退默认值**，不是夹到下限 1）；
+            `> 500` → 钳到 `500`。响应回显生效值。
+          schema: { type: integer, default: 100, maximum: 500 }
       responses:
         "200":
           description: '事件列表（空时 `events: []`）'
@@ -203,11 +211,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events]
+                required: [events, limit]
                 properties:
                   events:
                     type: array
                     items: { $ref: "#/components/schemas/Event" }
+                  limit:
+                    type: integer
+                    description: 生效值（服务端硬顶 500）——调用方据此分辨「要到了」与「被截断」
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   # ========== 认证：当前用户与凭据 ==========
@@ -353,6 +364,11 @@ paths:
 
         两者语义不同（一个要 scope，一个要成员身份），所以不共用一个 handler。
 
+        **`limit` 口径**（与 `GET /events` 不同；这是**既有**差异，不是本批引入）：
+        缺省 / 非整数 → `100`；`≤0` → 夹到下限 `1`（不是回退到默认值）；`> 500` → 钳到 `500`。
+        机器入口 `GET /events` 是 `n > 0` 才采纳、否则回 `100`，所以两个端点的 `limit=0`
+        语义不同 —— 改一边的解析前先确认另一边没被顺手带坏。响应一律回显**生效值**。
+
         `namespaceId` **必填**（契约 §6.2）；`*` 允许（跨命名空间汇总的管理视图，
         各命名空间分别查询后合并，再按 `limit` 统一截断）。
 
@@ -362,13 +378,32 @@ paths:
         **顺序（视图契约）**：带 `traceId` 时**根事件（非剪枝）一定排在最前**
         （`events[0]`）—— trace 页用第一条事件的 source 去 `GET /sources` 找源拓扑当底图，
         剪枝行顶替根事件会让底图丢失。
+
+        **游标分页（#235）**：`before` = 上一页的 `nextCursor`，只取更旧的一页；
+        `nextCursor` 为空 ⇔ **没有更旧的行**（服务端每页多看一行确认，所以库里正好整页时
+        也返回满页 + 空 `nextCursor`，不会再给一个多余的空页）。
+        已知上限：`limit=500`（= 硬顶）时取不到那多出来的一行，退化为「行数 ≥ limit ⇒ 给游标」
+        的近似判据 —— 此时库里正好 500 条会多给一个空页（store 的 500 硬顶使然，见契约 §6.2）。
+        游标是不透明字符串（内部就是 `<createdAt>:<id>` 的 URL-safe base64），
+        客户端**不应解析**，原样回传即可。
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        # minimum: 1 是**真**的机器可读约束：实现是 intParam(..., 100, 1, 500)，
+        # `limit <= 0` 会被夹到 1 并回显 1（不是回退默认 100）。
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 500 }
+        - name: before
+          in: query
+          schema: { type: string }
+          description: |
+            不透明游标，取自上一页响应的 `nextCursor`；返回「比它更旧」的一页。
+            格式非法 → `400` `{"error":"invalid before cursor"}`（**不静默降级**回第一页）。
+            省略 = 第一页（最新）。
       responses:
         "200":
           description: 事件列表（空时 events 为 []）
@@ -376,7 +411,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events, namespaceId]
+                required: [events, namespaceId, limit, nextCursor]
                 properties:
                   events:
                     type: array
@@ -384,6 +419,12 @@ paths:
                   namespaceId:
                     type: string
                     description: 本次作用域（`*` 表示跨命名空间汇总）
+                  limit:
+                    type: integer
+                    description: 生效值（服务端硬顶 500）——调用方据此分辨「要到了」与「被截断」
+                  nextCursor:
+                    type: string
+                    description: 下一页的游标；为空表示没有更旧的行（不透明，原样回传即可）
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 

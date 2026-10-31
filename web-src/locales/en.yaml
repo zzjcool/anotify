@@ -1102,7 +1102,6 @@ events:
   empty: No events yet. Submit one with POST /v1/events.
   demo_badge: Demo mode — backend not connected
   demo_hint: Backend not connected, no real events yet.
-  count: '{n} events'
   view_chain: View chain
   filter:
     trace: Trace ID
@@ -1133,6 +1132,14 @@ events:
     other: Uncategorized
     count: '{n} events'
     more: Show {n} more
+  page:
+    newer: ← Newer
+    older: Older →
+    latest: Back to latest
+    window: '{n} on this page'
+    end: Oldest reached
+    no_match: No matches on this page — page older or jump back to latest
+    invalid_cursor: 'Cursor expired — back to latest'
 caps:
   title: Capabilities
   subtitle: A capability is "what to do" (not "how"). Edges — where events go next — have their own page.

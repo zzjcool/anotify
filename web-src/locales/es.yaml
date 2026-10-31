@@ -1102,7 +1102,6 @@ events:
   empty: Aún no hay eventos. Envía uno con POST /v1/events.
   demo_badge: Modo demo — backend no conectado
   demo_hint: Backend no conectado, aún no hay eventos reales.
-  count: '{n} eventos'
   view_chain: Ver cadena
   filter:
     trace: Trace ID
@@ -1133,6 +1132,14 @@ events:
     other: Sin clasificar
     count: '{n} eventos'
     more: Mostrar {n} más
+  page:
+    newer: ← Más recientes
+    older: Más antiguos →
+    latest: Volver a lo más reciente
+    window: '{n} en esta página'
+    end: Se alcanzó lo más antiguo
+    no_match: 'Sin coincidencias en esta página: avanza a más antiguos o vuelve a lo más reciente'
+    invalid_cursor: 'Cursor no válido: se volvió a lo más reciente'
 caps:
   title: Capacidades
   subtitle: Una capacidad es "qué hacer" (no "cómo"). Las aristas — a dónde van los eventos — tienen su propia página.

@@ -39,18 +39,33 @@
       {{end}}
     </div>
     {{end}}
+    <!-- 这两个必须**同步**加载（既不能 defer，也不能 async）：每个页面的内联脚本
+         一被解析就调 t()（来自 i18n.<lang>.js 的 window.AnotifyI18n）和 Anotify
+         （来自 partials.js，例如 mountLayout()）。defer 脚本要等文档解析完才执行，
+         等到那时内联脚本早就跑过了 —— 会拿到 undefined。 -->
     <script src="/i18n.{{.Lang}}.js"></script>
     <script src="/partials.js"></script>
-    <!-- 图渲染：dagre 只算布局坐标，节点用 HTML/SVG 画。
-         放在 layout 里而不是各页面：整个产品只有一套图渲染，页面不该各自引入。
+    <!-- 图渲染库的**页面级槽位**（默认空）：dagre 只算布局坐标，节点用 HTML/SVG 画。
+         槽位放在 layout 里是因为整个产品只有一套图渲染实现，页面不该各自复制引入逻辑；
+         但只有真正画图的页面才往里面填。
 
-         **不能加 defer**：页面自己的内联脚本就在下面（layout 末尾的 script block），
-         它会在 DOMContentLoaded 里直接调 AnotifyGraphs；defer 的脚本要等
-         文档解析完才按序执行，那时内联脚本早就跑了，会拿到 undefined。 -->
-    <script src="/vendor/dagre.min.js"></script>
-    <script src="/flograph.js"></script>
-    <script src="/graphs.js"></script>
-    <script src="/traceview.js"></script>
+         关于 defer 的执行时机（这是被旧注释写错过的地方，按 HTML 规范）：defer 脚本在
+         文档解析完成后、DOMContentLoaded 事件触发**之前**，按文档顺序依次执行；而非
+         defer 的内联脚本是在解析到它时立即执行的。所以「defer 库 + 后面的内联脚本」
+         并不冲突：内联脚本先跑，defer 库随后、在 DOMContentLoaded 之前跑完。
+
+         本产品只有 trace.html 和 source.html 画图，且两处绘图调用点都在更晚的阶段：
+           · trace.html —— document.addEventListener("DOMContentLoaded", load)，load() 里才调
+             window.TraceView.mount()；内联脚本解析期并不碰 TraceView。
+           · source.html —— load() 里 await 完 fetch 取到 SRC/CAPS/EDGES 后才 renderBody()，
+             renderFlowCard() 再把 AnotifyGraphs.capabilityFlow() 放进 requestAnimationFrame 里画。
+         两处都发生在 DOMContentLoaded 之后，所以这两页用 defer 引入是安全的
+         （顺序仍不能乱：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView）。
+
+         为什么其余页面不加载它们：这四个文件合计 150.7KB（dagre 49.6 + flograph 57.0 +
+         graphs 30.1 + traceview 14.0）+ 4 个请求，对根本不画图的页面的首屏是纯成本。
+         一个只有 trace/source 用得上的库，不该让全站每个页面为它付首屏预算。 -->
+    {{block "graph-libs" .}}{{end}}
     {{block "script" .}}{{end}}
   </body>
 </html>
