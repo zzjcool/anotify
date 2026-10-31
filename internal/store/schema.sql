@@ -601,3 +601,28 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 -- 同一事务里重复执行结果相同，不会无脑重建索引）。
 --
 -- 本块没有 SQL：逻辑在 migrate15.go 的 `migrateEdgeLookupIndex`。
+
+-- +migration 16 tasks_list_index
+-- #237：任务列表（GET /v1/tasks → ListTasks）缺一条「过滤 + 排序」都能用上的索引，
+-- 于是每次先按某个 (namespace_id, ...) 前缀索引扫完整个命名空间的任务，再落 TEMP B-TREE
+-- 排序（实测走的是 idx_tasks_parent / idx_tasks_trace；2 万任务 p95 36ms，成本随行数线性增长）。
+--
+-- 为什么列序是 (namespace_id, created_at, id)：
+--   ① 第一列 namespace_id 对齐 ListTasks 的必选过滤条件 `WHERE namespace_id = ?`；
+--   ② 后两列就是 `ORDER BY created_at DESC, id DESC` 的排序键，索引自身有序；
+--   ③ 第三列 id 是**同秒破平**用的：tasks.created_at 只到秒（Now() 返回秒），
+--      同一秒内建的多条任务光靠前两列分不出先后，仍会落 TEMP B-TREE。
+--
+-- 为什么不用 (namespace_id, created_at DESC, id DESC)：
+--   SQLite 能**反向扫**一条 ASC 索引来满足降序 ORDER BY——实测 2 万行 LIMIT 200 的计划是
+--   `SEARCH tasks USING INDEX idx_tasks_ns_created (namespace_id=?)`，没有 TEMP B-TREE。
+--   而 ASC 形状对 created_at 的**范围**查询（时间窗、保留期清理、与 events 侧对齐）
+--   同样可用，两种方向都免排序；索引文本也更简单。降序索引则只对「全降序」这一种形状有用。
+--
+-- 本迁移不写 Go hook（对比迁移 15 的 migrateEdgeLookupIndex）：
+--   迁移 15 需要 hook，是因为 idx_edges_lookup 这个**名字在历史上被重建过多次**，
+--   老库里可能残留「同名索引、列不同」的漂移，只有读 pragma 的 Go 代码能纠正它。
+--   而 idx_tasks_ns_created 是本批**新造的名字**，任何历史库（≤ v15）里都不可能存在，
+--   也就不存在「名字撞上但列不对」的漂移；`IF NOT EXISTS` 已经覆盖了「同一版本重试」
+--   的幂等要求（同一条语句跑第二遍是 no-op）。少一个 DDL 来源，就少一处新库/老库文本分叉。
+CREATE INDEX IF NOT EXISTS idx_tasks_ns_created ON tasks(namespace_id, created_at, id);
