@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -55,7 +56,14 @@ type NodeStore interface {
 	ReportResultAndCreateTasks(ctx context.Context, namespaceID, taskID, status string, out *string,
 		reported bool, summary string, artifacts []string, errMsg string, next []*store.Task) error
 	ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error
-	ExtendLeasesForNode(ctx context.Context, namespaceID, nodeID string, leaseUntil int64) (int, error)
+	// ExtendLeasesForTasks 是心跳的真正入口（#218 根修）：**只续本连接名下的这批任务**。
+	// 旧的 ExtendLeasesForNode（按节点批续）不在这个接口里了——生产路径上不该再有人能调到它。
+	ExtendLeasesForTasks(ctx context.Context, namespaceID, nodeID string, taskIDs []string, leaseUntil int64) (int, error)
+	// ResolveLostTasks 在连接结束时把它名下的任务交还给调度（clean → pending / unclean → abandoned）。
+	ResolveLostTasks(ctx context.Context, namespaceID, nodeID string, owners []store.TaskOwner,
+		policy store.LostPolicy, reason string, now int64) (requeued, abandoned int, err error)
+	// ReclaimStaleSlots 清掉「槽位指向的任务已经不在这台机器上跑了」的钉子（#218 兜底）。
+	ReclaimStaleSlots(ctx context.Context, namespaceID, nodeID string, now int64) (int, error)
 }
 
 // 握手鉴权失败的错误类型（供 HTTP 层区分 401 / 403）。
@@ -187,22 +195,66 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 	}
 
 	// ② 实例申报
-	specs := make([]store.InstanceSpec, 0, len(f.Instances))
-	for _, in := range f.Instances {
-		specs = append(specs, store.InstanceSpec{Slot: in.Slot, Concurrency: in.Concurrency})
-	}
-	if _, err := st.UpsertInstances(ctx, node.NamespaceID, node.ID, specs); err != nil {
+	if _, err := st.UpsertInstances(ctx, node.NamespaceID, node.ID, instanceSpecs(f)); err != nil {
 		if errors.Is(err, store.ErrTooManyInstances) {
 			return &helloError{code: ErrCodeTooManyInstances, message: err.Error()}
 		}
 		return err
 	}
 
-	// ③ 上线
+	// ③ 槽位兜底（#218）：清掉「槽位指向的任务已经不在这台机器上跑了」的钉子。
+	//
+	// 为什么在 hello 里做（而且是幂等的一刷）：UpsertInstances 刻意保留 busy_task
+	// （“重启不该把正在跑的任务丢掉”），但中枢被 kill -9 / 旧版本升级上来时没人清它，
+	// 槽位就永久卡住（节点显示 online 却再也接不到任务）。hello 是唯一「进程刚起来」的确定信号。
+	//
+	// best-effort：失败只 warn，**绝不拒绝 hello**（节点能上线才有机会被派发）。
+	// 顺序在 UpdateNodeStatus(online) 之前：先把钉子清掉，再宣布自己可接单。
+	if _, err := st.ReclaimStaleSlots(ctx, node.NamespaceID, node.ID, store.Now()); err != nil {
+		slog.Warn("reclaim stale slots failed",
+			"event", "node.ws.hello.reclaim_failed",
+			"node_id", node.ID,
+			"error", err.Error(),
+		)
+	}
+
+	// ④ 上线
 	if err := st.UpdateNodeStatus(ctx, node.NamespaceID, node.ID, store.NodeStatusOnline); err != nil {
 		return err
 	}
 	return nil
+}
+
+// instanceSpecs 把 hello 帧的实例申报转成 store 的形状（两处调用共用，避免漂移）。
+func instanceSpecs(f *HelloFrame) []store.InstanceSpec {
+	specs := make([]store.InstanceSpec, 0, len(f.Instances))
+	for _, in := range f.Instances {
+		specs = append(specs, store.InstanceSpec{Slot: in.Slot, Concurrency: in.Concurrency})
+	}
+	return specs
+}
+
+// reassertNodeState 把「这个节点现在在线、这些槽位活着」再写一遍（审查 n1）。
+//
+// 调用时机必须是 hub.Register **之后**、welcome **之前**（见 handleHello）。
+// 为什么：applyHello 里的两条 node 级写（UpsertInstances alive=1 + online）发生在
+// Register 之前，而那正是旧连接 cleanup 的 ② 唯一可能看见 current()==nil 的窗口——
+// 旧连接完全可能把 alive/online 又写回 0/offline，而新连接之后再也不会重写
+// （TouchNode 只写 last_seen_at，alive=1 只有 hello 写）→ 节点「在线却接不到活」
+// 且不自愈（#218 的症状）。
+//
+// 为什么写在 Register 之后就能收住：Register 之后 current() 不再返回 nil，
+// 旧连接 cleanup 的判据（cur == nil || cur == s）看到的是我 → 跳过 node 级写入。
+// 这一次重写是幂等的：UpsertInstances 只把 alive/并发写回 1，**保留 busy_task**
+// （正在跑的任务不会因为重连丢掉槽位）。
+func reassertNodeState(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) error {
+	if _, err := st.UpsertInstances(ctx, node.NamespaceID, node.ID, instanceSpecs(f)); err != nil {
+		if errors.Is(err, store.ErrTooManyInstances) {
+			return &helloError{code: ErrCodeTooManyInstances, message: err.Error()}
+		}
+		return err
+	}
+	return st.UpdateNodeStatus(ctx, node.NamespaceID, node.ID, store.NodeStatusOnline)
 }
 
 // confirmHelloCapabilities 落库 hello 里的能力声明（契约 §2 / §5）。

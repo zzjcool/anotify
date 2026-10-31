@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // 九态任务状态机（契约 §3.1）。
@@ -40,6 +41,96 @@ const (
 	//
 	// 第 1/2/3 次失败 → 10s / 60s / 300s；超出序列则一直用最后一个。
 	RetryBackoffSec = "10,60,300"
+)
+
+// MaxTaskParamsBytes 是单条任务 params 的硬上限（120 KiB = 122880 字节，#221）。
+//
+// 依据：节点当前把**整个 params** 塞进子进程的环境变量
+// （`ANOTIFY_PARAMS=<json>`，见 cmd/agent/runner.go），而 Linux 对**单个** env/argv 串
+// 的硬上限是 `MAX_ARG_STRLEN = 32 页 = 131072`，超过就 `execve` 直接 E2BIG
+// （实测边界：body 131047 通过 / 131119 `fork/exec: argument list too long`）。
+// 留 ~8KiB 余量（`ANOTIFY_PARAMS=` 前缀 + 其它 argv）后取 120KiB。
+//
+// 这是**传输层**的限制，不是业务限制：节点侧改用 stdin/临时文件传 params 之后，
+// 这里可以和下行帧读上限一起放大（届时同步改 internal/ws 的帧软上限）。
+//
+// 已知余量不足的场景（审查 m7，本轮**不做**，属节点侧改动）：节点把 params 反序列化后
+// 再用 `json.Marshal` 写进 env，Go 会把 `<`/`>`/`&` 转义成 `\u00xx`（1 → 6 字节），
+// 所以「全量是 `<` 的 payload」即使原始 JSON 只有 22KB，重编码后也可以膨胀到 130KB+。
+// 也就是说本上限只能拦住「没转义膨胀」的那一类；要彻底解决必须改节点的传参方式。
+const MaxTaskParamsBytes = 120 << 10
+
+// ErrParamsTooLarge 是 params 超限的哨兵（errors.Is 可用，#221）。
+var ErrParamsTooLarge = errors.New("params_too_large")
+
+// ParamsTooLargeError 带「谁的、多大、上限多少」，让入口（HTTP/WS/日志）都能诊断。
+//
+// 为什么不用一句 fmt.Errorf：它要在三处被认出来 —— 建任务时（createTasksTx）、
+// 推 assign 帧时（ws.PublishAssign）、以及 route 的重派失败日志。
+// 有类型 + Unwrap 才能一路 errors.Is/As 到顶层，不被字符串匹配绑死。
+type ParamsTooLargeError struct {
+	// TaskID 是任务 ID；建新任务时可能还不知道（空串 → 文案里写 `<new>`）。
+	TaskID string
+	// Size 是 params 的实际字节数。
+	Size int
+	// Limit 是生效的上限（字节）。
+	Limit int
+}
+
+func (e *ParamsTooLargeError) Error() string {
+	id := e.TaskID
+	if id == "" {
+		id = "<new>"
+	}
+	return fmt.Sprintf("params too large: task %s carries %d bytes, limit is %d bytes "+
+		"(nodes receive params through an env var and the kernel caps a single entry at "+
+		"MAX_ARG_STRLEN=131072, so the effective limit is kept ~8KiB below it "+
+		"— shrink the payload or pass a file/blob reference)", id, e.Size, e.Limit)
+}
+
+// Unwrap 让 errors.Is(err, ErrParamsTooLarge) 成立。
+func (e *ParamsTooLargeError) Unwrap() error { return ErrParamsTooLarge }
+
+// CheckTaskParamsSize 校验一条任务的 params 体积（#221）。
+//
+// 空（nil / len==0）放过：没有参数的调用是常态，不该为它构造对象。
+// 超限返回 *ParamsTooLargeError，调用方据此拒绝**整批**建行（createTasksTx 在一个事务里，
+// 一条不合格就整体回滚，不留半份）。
+func CheckTaskParamsSize(taskID string, params json.RawMessage) error {
+	if len(params) == 0 {
+		return nil
+	}
+	if len(params) > MaxTaskParamsBytes {
+		return &ParamsTooLargeError{TaskID: taskID, Size: len(params), Limit: MaxTaskParamsBytes}
+	}
+	return nil
+}
+
+// TaskOwner 是一条「连接名下的任务」+ 它的派发世代（fencing token，#218/#222）。
+//
+// Attempts 是**派发时**看到的 attempts（`LeaseAndAssign` 每次派发 +1，单调递增）。
+// 连接结束时用它做 CAS：库里的 attempts 已经变了 ⇒ 这条任务在我不在的时候被
+// 巡检回收并重派过，**不能再由我改它的状态**（否则会把新执行者的活踢掉）。
+type TaskOwner struct {
+	TaskID   string
+	Attempts int
+}
+
+// LostPolicy 决定「一条连接结束、其名下任务失去执行者」时怎么处理（#222 at-most-once）。
+type LostPolicy int
+
+const (
+	// LostRequeue：执行者**确定已消失**（对端正常关闭 / socket 被内核关掉 / 中枢退出）
+	// → 立刻回 pending（not_before=NULL，不等 30s 租约）+ 释放槽位。
+	LostRequeue LostPolicy = iota
+	// LostAbandon：执行者**可能还活着**（心跳超时、被新连接顶掉、上行帧超限）
+	// → abandoned + 诊断 error，**绝不重派**。
+	//
+	// 这是 #222 的核心取舍：中枢没有任何手段杀掉一个假死进程手上的子进程，
+	// 所以「不知道就重试」= 让同一个任务被两个进程并发执行（部署/转账/发通知会做两遍）。
+	// 宁可让用户看到 abandoned + executor_lost，也不要静默重复执行；
+	// 要自动重试就把能力声明为幂等并让执行体本身可重入（或重放那条 trace）。
+	LostAbandon
 )
 
 // ErrInvalidTransition 表示状态机拒绝该迁移（契约 §3.2 表外的一切组合）。
@@ -203,6 +294,12 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 		}
 		if t.Params == nil {
 			t.Params = json.RawMessage("{}")
+		}
+		// #221：入帧闸门。超限的 params 是**100% 必失败**的（节点把它塞 env，
+		// 内核 MAX_ARG_STRLEN 卡在 131072），且失败点在「起子进程」那一步，重试也没用。
+		// 所以在建行时就拒——整批一个事务，一条不合格就一条都不建。
+		if err := CheckTaskParamsSize(t.ID, t.Params); err != nil {
+			return fmt.Errorf("create tasks: task %d: %w", i, err)
 		}
 		if t.Artifacts == nil {
 			t.Artifacts = []string{}
@@ -542,10 +639,13 @@ func (d *DB) ExtendLease(ctx context.Context, namespaceID, taskID string, leaseU
 	return nil
 }
 
-// ExtendLeasesForNode 把节点上所有在跑任务的租约推到 leaseUntil（心跳批量续期）。
+// ExtendLeasesForNode 把节点上所有在跑任务的租约推到 leaseUntil（按节点的批量续期）。
 //
-// 节点级别的心跳不该只续「一条」任务——它是一条连接的生命信号，
-// 该连接上所有任务的租约一起前进（契约 §3.3「任何上行帧续命」）。
+// Deprecated: 这正是 #218 的病灶——续租按 **node** 而不是按「哪条连接/哪个执行体」，
+// 于是重启后的新连接会替上一代进程遗留的孤儿任务续命，租约永不过期、槽位永久钉死。
+// 生产路径已改走 ExtendLeasesForTasks（只续本连接名下的任务）；本方法保留给
+// store 包内的既有用例与「需要按节点批量续期」的历史调用方，**不要**在新代码里用。
+//
 // 返回续到期的任务数。
 func (d *DB) ExtendLeasesForNode(ctx context.Context, namespaceID, nodeID string, leaseUntil int64) (int, error) {
 	res, err := d.ExecContext(ctx,
@@ -560,6 +660,247 @@ func (d *DB) ExtendLeasesForNode(ctx context.Context, namespaceID, nodeID string
 		return 0, fmt.Errorf("extend leases for node rows: %w", err)
 	}
 	return int(n), nil
+}
+
+// ExtendLeasesForTasks 只续「本连接名下的这批任务」的租约（#218 的根修）。
+//
+// 与 ExtendLeasesForNode 的区别就是 #218 的病根：一条 WS 连接只该替
+// **它自己派出去、还没结束**的任务续命。按 node 续期时，重启后的新连接会替
+// 上一代进程遗留的孤儿任务一直推 lease_until → 巡检永远认为它们还活着 →
+// 任务永久卡 acked、槽位永久被占、pending 一条都派不出去。
+//
+// 条件：`namespace_id + node_id + id IN (…) + status IN (assigned,acked,running)`。
+// node_id 条件不能省——同一个 taskID 可能已经被重派到别的节点上，不能替它续。
+// 返回真正续到期的行数（0 行是正常的：任务已终态/已被巡检回收）。
+func (d *DB) ExtendLeasesForTasks(ctx context.Context, namespaceID, nodeID string, taskIDs []string, leaseUntil int64) (int, error) {
+	if len(taskIDs) == 0 {
+		return 0, nil
+	}
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return 0, ErrNamespaceRequired
+	}
+	// 去重（同一个 taskID 不会占两行，但调用方可能重复登记）
+	seen := make(map[string]struct{}, len(taskIDs))
+	ids := make([]string, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	// 分块：SQLite 的绑定变量数有上限（旧版 999），一批心跳不该被任务数卡住。
+	const chunk = 200
+	total := 0
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		part := ids[start:end]
+		placeholders := make([]string, len(part))
+		args := make([]any, 0, len(part)+5)
+		args = append(args, leaseUntil, namespaceID, nodeID)
+		for i, id := range part {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		args = append(args, TaskAssigned, TaskAcked, TaskRunning)
+		res, err := d.ExecContext(ctx,
+			`UPDATE tasks SET lease_until = ?
+			  WHERE namespace_id = ? AND node_id = ? AND id IN (`+strings.Join(placeholders, ",")+`)
+			    AND status IN (?,?,?)`, args...)
+		if err != nil {
+			return total, fmt.Errorf("extend leases for tasks: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("extend leases for tasks rows: %w", err)
+		}
+		total += int(n)
+	}
+	return total, nil
+}
+
+// ResolveLostTasks 处理「一条连接结束，它名下的任务失去执行者」（#218 槽位钉死 / #222 护栏）。
+//
+// 这是 cleanup 的**主动释放**路径，与租约巡检（SweepExpiredLeases）的区别：
+//   - 巡检要等 lease_until 过期（最坏 30s + 5s 巡检周期），且它不知道执行者是死是活；
+//   - 这里是「连接刚刚真的断了」，立刻可以决策，而且调用方**知道断的方式**
+//     （policy）：对端正常关闭 → 执行者已消失 → 重排；心跳超时/被顶掉 → 可能还活着 → 放弃。
+//
+// 每条任务一个事务（互不影响），CAS 双守卫：`node_id = ? AND attempts = ?`，
+// 防止把「我不在的时候被巡检回收并重派」的任务状态改回去（那会把新执行者的活踢掉）。
+//
+// 安全例外：`status == assigned && started_at IS NULL`（领了单但一行代码都没跑）
+// **无条件回 pending**，与 policy 无关——没有副作用可以重复执行。这正是 #221 里
+// 「1MiB payload 把连接打死 → 任务停在 assigned → 槽位钉死」那条路径的解药。
+//
+// 返回值：真正重排/放弃的条数（跳过的不计）。
+func (d *DB) ResolveLostTasks(ctx context.Context, namespaceID, nodeID string, owners []TaskOwner, policy LostPolicy, reason string, now int64) (requeued, abandoned int, err error) {
+	if len(owners) == 0 {
+		return 0, 0, nil
+	}
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return 0, 0, ErrNamespaceRequired
+	}
+	if now == 0 {
+		now = Now()
+	}
+	for _, o := range owners {
+		if o.TaskID == "" {
+			continue
+		}
+		rq, ab, err := d.resolveLostOne(ctx, namespaceID, nodeID, o, policy, reason, now)
+		if err != nil {
+			return requeued, abandoned, err
+		}
+		if rq {
+			requeued++
+		}
+		if ab {
+			abandoned++
+		}
+	}
+	return requeued, abandoned, nil
+}
+
+// resolveLostOne 是 ResolveLostTasks 的单条实现（一个事务）。
+//
+// 状态写只走 transitionGuarded（两侧迁移都走），所以本函数不出现
+// `UPDATE tasks SET status` 字面量（TestStatusWriterIsUnique 会静态检查）。
+func (d *DB) resolveLostOne(ctx context.Context, namespaceID, nodeID string, o TaskOwner, policy LostPolicy, reason string, now int64) (requeued, abandoned bool, err error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return false, false, fmt.Errorf("begin resolve lost task %s: %w", o.TaskID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 用 tx 读（DSN MaxOpenConns(1)，走连接池会和本事务抢同一根连接 → 自锁）
+	var (
+		cur          string
+		rowNode      sql.NullString
+		attempts     int
+		startedAt    sql.NullInt64
+		capabilityID string
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, node_id, attempts, started_at, capability_id
+		   FROM tasks WHERE namespace_id = ? AND id = ?`,
+		namespaceID, o.TaskID).Scan(&cur, &rowNode, &attempts, &startedAt, &capabilityID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil // 任务不存在（被清理/从未落库）
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("resolve lost task %s: read: %w", o.TaskID, err)
+	}
+	// 已经不在我名下了（被巡检回收/已重派/已改派）→ 一行都不动
+	if rowNode.String != nodeID || attempts != o.Attempts {
+		return false, false, nil
+	}
+	switch cur {
+	case TaskAssigned, TaskAcked, TaskRunning:
+	default:
+		return false, false, nil // 终态/lease_expired/pending：不归本路径管
+	}
+
+	// ① 当前状态 → lease_expired（中间态，不是终态）。
+	// 守卫把「仍归我 + 世代未变」并进同一条 UPDATE，与巡检/重派并发时不会误伤。
+	if err := d.transitionGuarded(ctx, tx, namespaceID, o.TaskID, cur, TaskLeaseExpired,
+		"node_id = ? AND attempts = ?", nodeID, o.Attempts); err != nil {
+		if errors.Is(err, ErrTransitionGuardFailed) || errors.Is(err, ErrNotFound) ||
+			errors.Is(err, ErrInvalidTransition) {
+			return false, false, nil // 并发下别人先动过了，不是错误
+		}
+		return false, false, fmt.Errorf("resolve lost task %s: mark lease_expired: %w", o.TaskID, err)
+	}
+
+	// ② 决定去向：与租约巡检（sweepOne）**同一套重试安全判据**，不是第二套。
+	//
+	// 审查 M1 修的就是这里：改动前只看 policy，于是同一个状态在两条路径上得到相反结论——
+	// 非幂等能力 + 已开始 + clean 结束会被回 pending 重放（正是 #222 要拦的），
+	// attempts 用尽的任务也会被重派（重试预算被打穿）。
+	//
+	// 顺序即优先级（与 sweepOne 一致，不得调整）：
+	//   ① attempts 用尽 → abandoned：必须排在最前，否则「从未开始」会无限重投；
+	//   ② 领了单但没跑 → pending：没有副作用可重复，与幂等性、policy 都无关；
+	//   ③ 能力声明 idempotent:false → abandoned：宁可放弃也不重放（#222 at-most-once）；
+	//   ④ 剩下才由 policy 决定：unclean 结束（执行者可能还活着）→ abandoned。
+	var lifecycleJSON string
+	qerr := tx.QueryRowContext(ctx,
+		`SELECT lifecycle FROM capability_versions WHERE id = ?`, capabilityID).Scan(&lifecycleJSON)
+	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
+		return false, false, fmt.Errorf("resolve lost task %s: read capability lifecycle: %w", o.TaskID, qerr)
+	}
+	var lc Lifecycle
+	if lifecycleJSON != "" {
+		if err := json.Unmarshal([]byte(lifecycleJSON), &lc); err != nil {
+			return false, false, fmt.Errorf("resolve lost task %s: decode capability lifecycle: %w", o.TaskID, err)
+		}
+	}
+	to := TaskPending
+	cause := ""
+	switch {
+	case attempts >= lc.MaxAttemptsOrDefault():
+		to, cause = TaskAbandoned, "attempts exhausted"
+	case cur == TaskAssigned && !startedAt.Valid:
+		// 安全例外：领了单但一行代码都没跑（#221 那条不用 kill agent 也能钉死的路径）
+		to = TaskPending
+	case !lc.IsIdempotent():
+		to, cause = TaskAbandoned, "capability is not idempotent"
+	case policy == LostAbandon:
+		to = TaskAbandoned
+	}
+	if err := d.transitionGuarded(ctx, tx, namespaceID, o.TaskID, TaskLeaseExpired, to, ""); err != nil {
+		return false, false, fmt.Errorf("resolve lost task %s: mark %s: %w", o.TaskID, to, err)
+	}
+
+	if to == TaskAbandoned {
+		msg := "executor_lost: " + reason
+		if cause != "" {
+			// 把「为什么不是重排」写在同一句里：预算用尽 / 能力非幂等是另一种病因，
+			// 与「连接怎么断的」是两回事，缺一个都排不下去。
+			msg += " (" + cause + ")"
+		}
+		// 清掉租约与槽位引用：终态行不再持有任何「在飞」证据（node_id 保留，
+		// 与 succeeded/failed 一样留作「曾经在哪台机器上跑」的溯源）。
+		// 不清的话 UI/运维会看到一条 abandoned 任务仍显示 lease_until，误以为它还活着。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET error = ?, instance_id = NULL, lease_until = NULL
+			  WHERE namespace_id = ? AND id = ?`,
+			msg, namespaceID, o.TaskID); err != nil {
+			return false, false, fmt.Errorf("resolve lost task %s: annotate abandoned: %w", o.TaskID, err)
+		}
+		abandoned = true
+	} else {
+		// 清归属 + 清租约 + not_before=NULL（**立刻**可重派：执行者已经不在了）。
+		// 重试预算由同一函数 ②① 的 maxAttempts 判断兜住（attempts 每次派发 +1）。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET node_id = NULL, instance_id = NULL, lease_until = NULL, not_before = NULL
+			  WHERE namespace_id = ? AND id = ?`, namespaceID, o.TaskID); err != nil {
+			return false, false, fmt.Errorf("resolve lost task %s: requeue: %w", o.TaskID, err)
+		}
+		requeued = true
+	}
+
+	// ③ 释放它占的槽位（CAS busy_task = taskID：槽位可能已被巡检回收并给了别的任务）
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE node_instances SET busy_task = NULL, updated_at = ?
+		  WHERE node_id = ? AND busy_task = ?`, now, nodeID, o.TaskID); err != nil {
+		return false, false, fmt.Errorf("resolve lost task %s: release instance: %w", o.TaskID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, false, fmt.Errorf("commit resolve lost task %s: %w", o.TaskID, err)
+	}
+	return requeued, abandoned, nil
 }
 
 // ReportResult 记录节点回报的结果并推进到终态（#141：一个事务内完成）。
