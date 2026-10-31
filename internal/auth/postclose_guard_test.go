@@ -1,7 +1,8 @@
 package auth
 
 // 本文件是 #259 的**回归护栏**：把「关库之后还有人在写库」从偶发红变成机器可检的不变量。
-// 结构照搬 internal/ws/postclose_guard_test.go（#255 同一类病症），只多了一条**探针豁免**。
+// 结构照搬 internal/ws/postclose_guard_test.go（#255 同一类病症），另加一条夹具侧的
+// 确定性判据上报（reportPostCloseRace，见下方「两道判据」）。
 //
 // #259 的 CI 红长这样：
 //
@@ -12,8 +13,10 @@ package auth
 // 而 store.Open / db.Close() 本身是干净的（400 次开关探针零遗留），所以必然是
 // 「db.Close() 与某个仍在跑的 DB 使用者并发」。并发使用者的症状日志是
 // `sql: database is closed`（database/sql 对已 Close 的池返回的固定文案）——
-// internal/auth 的产品代码里只有 SessionManager.Middleware 会把它写进日志
-// （`WARN session invalid ... reason=<err>`，reason 就在 error 字符串里）。
+// internal/auth 的产品代码里会写裸 DB 错误的地方只有两处：SessionManager.Middleware
+// （`WARN session invalid ... reason=<err>`，但会话路径会先映射成 errSessionInvalid，
+// 见下）与 webauthn 注册失败（webauthn.go 的 `slog.Error("register: register user with
+// namespace failed", "error", nerr.Error())`）。
 //
 // 于是护栏的判据是：**整包跑完不许出现过一条含 `database is closed` 的日志**，
 // 命中就让 TestMain 把退出码改红并打印样例。这不是新增产品行为，也没有放宽任何断言：

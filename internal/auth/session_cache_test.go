@@ -49,6 +49,8 @@ func newSessionTestDB(t *testing.T) *store.DB {
 // 收口时池子早已关掉，因此这里的三条断言对它们同样成立。
 func closeDBForTempDir(t *testing.T, db *store.DB, dir string) {
 	t.Helper()
+	// 断言失败会走 t.Fatalf（跳过余下语句）：defer 兜底关库，避免失败路径上再制造一层 TempDir 噪声。
+	defer func() { _ = db.Close() }()
 	if n := db.Stats().InUse; n != 0 {
 		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: InUse=%d dir=%s（后台写者会在关库后看到 `%s`）",
 			n, dir, dbClosedMarker))
@@ -195,8 +197,9 @@ func TestSessionCacheHitSkipsDB(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
-	// 这一次是缓存命中 ⇒ 一个 DB 都不碰、不打日志 ⇒ **不进**豁免窗口：
-	// 万一它退化成回源，护栏会在窗口外直接咬住那条 database is closed。
+	// 这一次是缓存命中 ⇒ 一个 DB 都不碰。注意：会话路径把 DB 错误映射成
+	// 「auth: 会话无效」，所以「退化成回源」不会在日志里留下 database is closed——
+	// 这条断言（仍然 200）本身就是证据；关库后的可见性由 closeDBForTempDir 兜住。
 	got = runSessionMW(m, s.ID)
 	if got.code != http.StatusOK || got.userID != u.ID {
 		t.Fatalf("缓存热时 DB 关闭仍应放行（证明 0 次 DB 往返）: code=%d uid=%q body=%s", got.code, got.userID, got.body)

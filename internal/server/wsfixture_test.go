@@ -34,7 +34,6 @@ import (
 // nodeStreamFixture 是「控制台路由 + 真节点 WS 端点」的最小夹具：
 // env.mux 挂在 `/`，`GET /v1/node/stream` 更具体所以优先生效（与生产 mux 同形）。
 type nodeStreamFixture struct {
-	env *consoleEnv
 	srv *httptest.Server
 
 	// settleGroup 跟踪「还有几条 ServeHTTP 没返回」。handler 返回 ⇒ 该连接的
@@ -61,7 +60,7 @@ type nodeStreamFixture struct {
 // db.Close()，而 db.Close() 又先于 t.TempDir 的 RemoveAll。
 func newNodeStreamFixture(t *testing.T, env *consoleEnv) *nodeStreamFixture {
 	t.Helper()
-	f := &nodeStreamFixture{env: env, settleGroup: newSettleGroup()}
+	f := &nodeStreamFixture{settleGroup: newSettleGroup()}
 
 	srvMux := http.NewServeMux()
 	srvMux.Handle("/", env.mux)

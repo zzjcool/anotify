@@ -18,7 +18,11 @@ func TestAC3_SecretNotInLogs(t *testing.T) {
 	var logBuf bytes.Buffer
 	// 捕获 slog 输出到 logBuf（DEBUG 级别，最宽松）
 	handler := slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	// 必须恢复：TestMain 装的 postclose 护栏（#259）也挂在 slog.Default 上，
+	// 不恢复就会让**本用例之后的整包**都绕过护栏（含 WS 用例）。
+	old := slog.Default()
 	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(old) })
 
 	env := newEnrollE2EEnv(t)
 
@@ -105,7 +109,9 @@ func TestAC3_SecretNotInLogs(t *testing.T) {
 func TestAC3_CLIAuthSecretNotInLogs(t *testing.T) {
 	var logBuf bytes.Buffer
 	handler := slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	old := slog.Default()
 	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(old) })
 
 	env := newEnrollE2EEnv(t)
 
@@ -153,7 +159,9 @@ func TestAC3_CLIAuthSecretNotInLogs(t *testing.T) {
 func TestAC1_StructuredJSONOutput(t *testing.T) {
 	var logBuf bytes.Buffer
 	handler := slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	old := slog.Default()
 	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(old) })
 
 	slog.Info("test event", "event", "test.event", "key", "value")
 
@@ -175,7 +183,9 @@ func TestAC1_StructuredJSONOutput(t *testing.T) {
 func TestAC4_LevelFiltering(t *testing.T) {
 	var logBuf bytes.Buffer
 	handler := slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	old := slog.Default()
 	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(old) })
 
 	slog.Info("info message should be filtered")
 	slog.Warn("warn message should appear")

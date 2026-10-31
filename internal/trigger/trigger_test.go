@@ -25,6 +25,8 @@ import (
 // 在这里断言就变成确定性的「收尾竞态」失败，并且点名是哪个条件不成立。
 func closeDBForTempDir(t *testing.T, db *store.DB, dir string) {
 	t.Helper()
+	// 断言失败会走 t.Fatalf（跳过余下语句）：defer 兜底关库，避免失败路径上再制造一层 TempDir 噪声。
+	defer func() { _ = db.Close() }()
 	if n := db.Stats().InUse; n != 0 {
 		t.Fatalf("收尾竞态：%d 条 DB 连接仍被 goroutine 持有（应在 db.Close 前等它们返回）", n)
 	}

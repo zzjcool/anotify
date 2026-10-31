@@ -4,23 +4,32 @@ package server
 // 机器可检的不变量。机制照搬 internal/ws/postclose_guard_test.go（#255/#258），
 // 这里只换成 server 包名 + 本包的夹具名（internal/server/wsfixture_test.go）。
 //
-// 失败签名（#259，内部复现）：
+// 失败签名（#259，本机 /tmp 遗留）：
 //
 //	/tmp/TestNodeListAndDrain1104048964/001/ 失败后只剩 console.db-shm(32KB)
-//	WARN mark instances dead failed ... error="sql: database is closed"
+//	WARN mark instances dead failed ... error="mark instances dead: sql: database is closed"
+//	WARN mark node offline failed  ... error="update node status: sql: database is closed"
 //
-// `httptest.Server.Close()` **不等待**已劫持（WebSocket）连接（net/http/httptest
+// ⚠️ 归因的诚实边界：受害用例 `TestNodeListAndDrain` 本身**不开 WS**（newConsoleEnv
+// 只用 httptest.NewRecorder + 同步 ServeHTTP），所以「它目录里的 -shm 就是 WS cleanup
+// 写的」无法从单次现场直接证明（受害测试是随机的）。**可证明的是**：本包唯一的异步
+// DB 写者就是 WS——`httptest.Server.Close()` 不等待已劫持连接（net/http/httptest
 // server.go 的 `case http.StateHijacked, http.StateClosed` 会把连接从 s.wg 摘掉），
 // 而 nodeSession.cleanup（internal/ws/node_handler.go）在 handler goroutine 里**同步**
-// 写库（MarkInstancesDead / UpdateNodeStatus / ResolveLostTasks）；db.Close() 与它
-// 并发就成了那条 WARN，残留的 SQLite 连接还会在 t.TempDir 的 RemoveAll 期间重建
-// -wal/-shm → 随机某个用例红在「directory not empty」/「残留 console.db-shm」。
+// 写库（MarkInstancesDead / UpdateNodeStatus / ResolveLostTasks）。db.Close() 与它并发
+// 就成了上面两条 WARN，残留连接还会在 t.TempDir 的 RemoveAll 期间重建 -wal/-shm。
 //
 // 夹具侧的正解在 wsfixture_test.go 的 nodeStreamFixture.settle（handler 返回 →
-// 才关库）。本文件负责**证明**它没退化：整包跑完只要出现过一条 `sql: database is closed`，
-// TestMain 就让包变红并打印样例。
+// 才关库）。本文件负责**证明**它没退化：整包跑完只要出现过一条 `database is closed`
+// （或夹具的确定性判据命中并上报），TestMain 就让包变红并打印样例。
 //
 // 注意：这不是新增产品行为，也没有放宽任何断言——它只是把那条偶发红换成确定性红。
+//
+// 已知盲区（照实写出来，别让读者以为它是万能的）：
+//   - 只看得到经 slog.Default() 打的日志。`logger.With(...)` 绑定的 attrs 会在
+//     WithAttrs 里被内层 handler 预格式化，本包装看不到它们（当前产品代码没有这种用法）；
+//   - 因此 server 包的主判据仍是 console_test.go 里 closeDBForTempDir 的三条确定性断言
+//     （InUse==0 / OpenConnections==0 / 无 -wal|-shm），日志旁路是第二道网。
 
 import (
 	"context"
@@ -151,6 +160,13 @@ func formatGuardRecord(r slog.Record) string {
 	return b.String()
 }
 
+// reportPostCloseRace 由夹具在**确定性判据**命中时调用（见 console_test.go 的
+// closeDBForTempDir），把「已检测到收尾竞态」这一事实交给 TestMain 统一汇总：
+// 命中即打印样例并 exit=1，避免「断言只在某个用例的日志里、整包看起来还是绿的」。
+func reportPostCloseRace(sample string) {
+	postCloseGuard.hit(sample)
+}
+
 // TestMain 是整包的唯一入口：装护栏 → 跑包 → 有命中就把退出码改红。
 //
 // 语义保持：① m.Run() 之后立刻把 slog.Default 恢复成原来的（此后不该再有被测代码
@@ -187,7 +203,8 @@ func TestMain(m *testing.M) {
 		}
 		fmt.Fprintf(os.Stderr,
 			"[postclose-guard] 期望：nodeStreamFixture.settle 在 db.Close() 之前等所有 ServeHTTP 返回"+
-				"（internal/server/wsfixture_test.go）；这条护栏不是新增产品行为，是 #259 那条偶发红的不变量化\n\n")
+				"（internal/server/wsfixture_test.go），且 closeDBForTempDir 的三条确定性判据全过"+
+				"（internal/server/console_test.go）；这条护栏不是新增产品行为，是 #259 那条偶发红的不变量化\n\n")
 		os.Exit(1)
 	}
 	os.Exit(code)

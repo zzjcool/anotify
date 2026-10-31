@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,16 +111,25 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 // 的护栏会把它判红），这里把同一个竞态在收尾点上提前逮住。
 func closeDBForTempDir(t *testing.T, db *store.DB, dir string) {
 	t.Helper()
+	// 任何一条断言失败都会走 t.Fatalf（跳过本函数余下语句）：用 defer 兜底关库，
+	// 免得失败路径上把库留开着、又在 t.TempDir 的 RemoveAll 里制造第二层噪声。
+	defer func() { _ = db.Close() }()
 
 	// ① 先问「还有谁在用」：in-use 连接意味着某条 goroutine 正在一次查询/事务里。
 	if inUse := db.Stats().InUse; inUse != 0 {
+		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: InUse=%d dir=%s（后台写者会在关库后看到 `%s`）",
+			inUse, dir, dbClosedMarker))
 		t.Fatalf("收尾竞态：%d 条 DB 连接仍被 goroutine 持有（cleanup 必须等所有会话退出后再关库）", inUse)
 	}
 
-	_ = db.Close()
+	if err := db.Close(); err != nil {
+		t.Fatalf("收尾竞态：db.Close 失败（有 goroutine 在关库窗口里用库？）: %v", err)
+	}
 
 	// ② Close 之后仍有连接 → 说明它是 Close 期间被借出的（归还时才真正关闭）。
 	if open := db.Stats().OpenConnections; open != 0 {
+		reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: OpenConnections=%d dir=%s（Close 只关空闲连接）",
+			open, dir))
 		t.Fatalf("收尾竞态：db.Close 后仍有 %d 条连接未关（并发写者只会看到 `%s`）", open, dbClosedMarker)
 	}
 
@@ -131,6 +141,8 @@ func closeDBForTempDir(t *testing.T, db *store.DB, dir string) {
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasSuffix(name, ".db-wal") || strings.HasSuffix(name, ".db-shm") {
+			reportPostCloseRace(fmt.Sprintf("closeDBForTempDir: 残留 WAL=%s dir=%s（有连接在 RemoveAll 期间重建文件，写者只会看到 `%s`）",
+				name, dir, dbClosedMarker))
 			t.Fatalf("收尾竞态：db.Close 后仍残留 WAL 文件 %s（并发写者只会看到 `%s`）", name, dbClosedMarker)
 		}
 	}
