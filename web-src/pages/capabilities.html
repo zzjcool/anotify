@@ -2,75 +2,21 @@
 
 {{define "style"}}
     <style>
-      /* ---------- paramsSchema 可视化编辑 ---------- */
-      .schema-form {
-        border: 1px solid var(--line);
-        border-radius: 0.5rem;
-        padding: 0.5rem;
-        background: rgba(255, 255, 255, 0.015);
-      }
-      /* 一行一个字段：名字 + 类型 + 删除。必填/枚举/范围在展开行里。 */
-      .sf-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.9fr) auto auto;
-        gap: 0.35rem;
-        align-items: center;
-        padding: 0.2rem 0;
-      }
-      .sf-input {
-        width: 100%;
-        min-width: 0;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid var(--line);
-        border-radius: 0.35rem;
-        padding: 0.2rem 0.4rem;
-        font-size: 0.7rem;
-        color: var(--text);
-      }
-      .sf-input:focus {
-        outline: none;
-        border-color: var(--accent);
-      }
-      .sf-del {
-        color: #f87171;
-        font-size: 0.7rem;
-        padding: 0 0.3rem;
-        cursor: pointer;
-      }
-      /* 字段的附加选项（必填 / 枚举 / 范围）折叠在下面 */
-      .sf-opts {
-        grid-column: 1 / -1;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem;
-        padding: 0 0 0.35rem 0.15rem;
-        font-size: 0.65rem;
-        color: var(--muted);
-      }
-      .sf-opts input[type="text"] {
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid var(--line);
-        border-radius: 0.3rem;
-        padding: 0.1rem 0.3rem;
-        font-size: 0.65rem;
-        color: var(--text);
-      }
-      .schema-fields {
-        display: flex;
-        flex-direction: column;
-        gap: 0.15rem;
-      }
-      .sf-empty {
-        color: var(--faint);
-        font-size: 0.7rem;
-        padding: 0.25rem 0;
-      }
-
+      /* ---------- 列表行 ---------- */
+      /* 三列：信息 | 部署状态 | digest + 部署按钮。
+         「部署状态」单独成列是刻意的：能力定义本身看不出它到底在机器上跑没跑，
+         以前要反查到节点页才知道 —— 而这两件事恰恰是用户最先问的。 */
       .cap-row {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1fr) auto auto;
         gap: 1rem;
         align-items: center;
+      }
+      /* 窄屏塌成一列，否则三列挤在一起谁也看不清 */
+      @media (max-width: 720px) {
+        .cap-row {
+          grid-template-columns: minmax(0, 1fr);
+        }
       }
       /* kind 徽章：origin / pipe / end 三色 */
       /* 内置能力标记：灰底、低对比，提示"名字保留、不可删" */
@@ -125,6 +71,87 @@
         width: 11rem;
         min-width: 0;
       }
+
+      /* ---------- 列表行 · 部署状态 ---------- */
+      /* 徽章既可能是 <span>（没有明细可看）也可能是 <button>（点开明细）。
+         button 要抹掉浏览器默认边框，否则徽章外面会多一圈。 */
+      .cap-dep-badge {
+        border: 0;
+        font-family: inherit;
+      }
+      /* is-expandable：点击展开明细（不是"打开态"——展开与否由明细块自己管） */
+      .cap-dep-badge.is-expandable {
+        cursor: pointer;
+      }
+      /* 部署按钮：给个稳定类名，和改名按钮（同为 btn-ghost）区分开 ——
+         两者都长得像幽灵按钮，靠 .cap-deploy 才能可靠地选到它。 */
+      .cap-deploy {
+        white-space: nowrap;
+      }
+      .cap-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0.35rem;
+      }
+      /* 明细：默认不占位（display:none 而不是 hidden 类，
+         因为本类的 display 会覆盖 tailwind 的 .hidden） */
+      .cap-dep-detail {
+        display: none;
+        margin-top: 0.6rem;
+        padding-top: 0.6rem;
+        border-top: 1px solid var(--line);
+        flex-direction: column;
+        gap: 0.3rem;
+      }
+      .cap-dep-detail.open {
+        display: flex;
+      }
+      .cap-dep-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .cap-dep-digest {
+        font-family: var(--mono, monospace);
+        font-size: 10px;
+        color: var(--faint);
+      }
+      /* 明细行里的「状态词 + digest + reason」。不复用 .dep-node-meta：
+         那个类带 margin-left:auto（部署面板里要把 digest 推到行右端），
+         放在明细行里会把整段推到最右边，而且名字也不达意。 */
+      .cap-dep-state {
+        display: inline-flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .cap-dep-reason {
+        font-size: 10px;
+        color: var(--faint);
+      }
+
+      /* 部署状态点：ui.css 的 .st-* 只有在线/离线/排空中三色，
+         部署的 applied/pending/failed/local 需要自己的配色，配色只用 token。 */
+      .st-applied {
+        background: var(--success);
+      }
+      .st-failed {
+        background: var(--error);
+      }
+      /* pending 与 local 都是黄色（等节点上线 / 等本地构建），色值相同。
+         两条规则合成一条，但**每个选择器各占一行** —— check-classes 只认
+         行首的 `.name`，把 .st-local 写到逗号后面会让守卫认不出这个类。 */
+      .st-pending,
+      .st-local {
+        background: var(--warn);
+      }
+
       .toast {
         position: fixed;
         bottom: 1.5rem;
@@ -158,6 +185,166 @@
       .modal-backdrop.open {
         display: flex;
       }
+      /* 弹层面板：内容可能很长（9 个模板 / 一屏机器），整块滚动而不是撑破视口。 */
+      .modal-panel {
+        width: 100%;
+        max-width: 44rem;
+        max-height: 88dvh;
+        overflow-y: auto;
+        padding: 1.5rem;
+        background: var(--panel-modal);
+        border-radius: 1rem;
+      }
+
+      /* ---------- 新建能力 · 选模板 ---------- */
+      /* 两列卡片：一屏能看到 4~6 个模板，扫一眼就知道有哪些起点。 */
+      .tpl-cards {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.5rem;
+      }
+      @media (max-width: 640px) {
+        .tpl-cards {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      .tpl-group {
+        margin-bottom: 1rem;
+      }
+      .tpl-group-title {
+        margin-bottom: 0.4rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .tpl-card {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 0.7rem 0.85rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface-2);
+        color: var(--text);
+        cursor: pointer;
+        transition: border-color 0.15s;
+      }
+      .tpl-card:hover {
+        border-color: var(--faint);
+      }
+      .tpl-desc {
+        margin-top: 0.3rem;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .tpl-meta {
+        font-family: var(--mono, monospace);
+        font-size: 10px;
+        color: var(--faint);
+      }
+      .tpl-hint {
+        font-size: 11px;
+        color: var(--faint);
+        line-height: 1.7;
+      }
+      /* 顶部三格（名字 / 显示名 / 超时）：一屏可见，避免"填完一屏才发现还有一屏"。
+         不用 Tailwind 的 grid-cols-3（产物里没有这个类）。 */
+      .tpl-top {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+      @media (max-width: 640px) {
+        .tpl-top {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      .tpl-field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      .tpl-label {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .tpl-req {
+        margin-left: 0.2rem;
+        color: var(--warn);
+      }
+
+      /* ---------- 部署面板 ---------- */
+      .dep-taglist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+      }
+      .dep-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .dep-node {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface-2);
+        cursor: pointer;
+        transition: border-color 0.15s;
+      }
+      .dep-node:hover {
+        border-color: var(--faint);
+      }
+      /* 勾选态整行亮起来：勾选是后续动作（下发）的作用域，
+         必须一眼看清哪几台被选中，而不是只看那个小方框。 */
+      .dep-node:has(input:checked) {
+        border-color: var(--faint);
+        background: var(--code-bg);
+      }
+      .dep-node-name {
+        font-size: 12px;
+        color: var(--text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dep-node-meta {
+        margin-left: auto;
+        font-family: var(--mono, monospace);
+        font-size: 10px;
+        color: var(--faint);
+        white-space: nowrap;
+      }
+      .dep-res-title {
+        margin-bottom: 0.3rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .dep-res-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* 逐台结果的颜色只表达语义：绿=已下发，黄=排队等节点上线。 */
+      .dep-res-ok {
+        color: var(--success);
+      }
+      .dep-res-wait {
+        color: var(--warn);
+      }
+      .dep-res-err {
+        font-family: var(--mono, monospace);
+        font-size: 10px;
+        color: var(--faint);
+      }
     </style>
 {{end}}
 
@@ -174,6 +361,7 @@
             </div>
             <div class="flex flex-wrap items-center gap-3">
               <button
+                type="button"
                 onclick="openCapModal()"
                 class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
               >
@@ -215,82 +403,110 @@
       </div>
       <div id="toast" class="toast"></div>
 
-      <!-- 新建能力弹层 -->
+      <!-- 新建能力弹层：两步（选模板 → 填表单 / 看脚本）。
+           以前是一屏手写 paramsSchema + 输出名 —— 用户得先懂 JSON Schema
+           才能定义能力。现在模板把「参数契约」和「脚本正文」一起带出来，
+           用户只需要回答"叫什么、填哪些参数"。 -->
       <div id="cap-modal" class="modal-backdrop">
-        <div class="card w-full max-w-lg rounded-2xl !bg-[var(--panel-modal)] p-6">
-          <h3 class="mb-4 text-lg font-medium text-white">{{t "caps.new"}}</h3>
-          <div class="space-y-4">
-            <!-- 顺序是刻意的：先问"这是干什么的"（人能回答），
-                 再问"它在系统里叫什么"（技术名，节点声明要用）。
-                 以前只问后者，于是用户建完能力后界面上一片
-                 analyze-pr@1，还得再回来改名。 -->
-            <div>
-              <label class="mb-1 block text-xs text-zinc-400" for="cap-display-name">{{t "caps.form.display_name"}}</label>
-              <input
-                id="cap-display-name"
-                class="input w-full text-sm"
-                placeholder="{{t "caps.form.display_name_ph"}}"
-              />
-              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.display_name_hint"}}</p>
+        <div class="card modal-panel">
+          <h3 class="mb-4 text-lg font-medium text-white">{{t "caps.tpl.title"}}</h3>
+
+          <!-- 步骤 1：选模板 -->
+          <div id="tpl-step">
+            <p class="tpl-hint mb-3">{{t "caps.tpl.intro"}}</p>
+            <div id="tpl-groups"></div>
+          </div>
+
+          <!-- 步骤 2：动态表单 + 只读脚本 + 改脚本 -->
+          <div id="tpl-form-step" class="hidden">
+            <!-- 三格固定（名字 / 显示名 / 超时）：一屏可见 -->
+            <div class="tpl-top">
+              <div>
+                <label class="tpl-label" for="cap-name">{{t "caps.form.name"}}<span class="tpl-req">*</span></label>
+                <input id="cap-name" class="input w-full text-sm" placeholder="review" />
+                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.name_hint"}}</p>
+              </div>
+              <div>
+                <label class="tpl-label" for="cap-display-name">{{t "caps.form.display_name"}}</label>
+                <input
+                  id="cap-display-name"
+                  class="input w-full text-sm"
+                  placeholder="{{t "caps.form.display_name_ph"}}"
+                />
+                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.display_name_hint"}}</p>
+              </div>
+              <div>
+                <label class="tpl-label" for="cap-timeout">{{t "caps.form.timeout"}}</label>
+                <input id="cap-timeout" type="number" min="0" max="86400" class="input w-full text-sm" />
+                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.timeout_hint"}}</p>
+              </div>
             </div>
-            <div>
-              <label class="mb-1 block text-xs text-zinc-400" for="cap-name">{{t "caps.form.name"}}</label>
-              <input id="cap-name" class="input w-full text-sm" placeholder="review" />
-              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.name_hint"}}</p>
+
+            <!-- 模板要求的预装命令：机器上缺了部署会失败，所以放在参数上方显眼处 -->
+            <p id="tpl-requires" class="tpl-hint mt-3"></p>
+
+            <div class="mt-4">
+              <h4 class="mb-2 text-sm font-medium text-zinc-300">{{t "caps.tpl.params"}}</h4>
+              <div id="tpl-fields" class="space-y-3"></div>
             </div>
-            <div>
-              <label class="mb-1 block text-xs text-zinc-400" for="cap-outputs">{{t "caps.form.outputs"}}</label>
-              <input id="cap-outputs" class="input w-full text-sm" placeholder="fix, comment" />
-              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.outputs_hint"}}</p>
-            </div>
-            <div>
-              <div class="mb-1 flex items-center justify-between gap-2">
-                <label class="block text-xs text-zinc-400" for="cap-schema">{{t "caps.form.schema"}}</label>
-                <!-- 两种模式：可视化（默认）和 JSON 原文。
-                     懂 schema 的人直接写 JSON 更快；不懂的人不该被迫手写 JSON。 -->
+
+            <div class="mt-4">
+              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h4 class="text-sm font-medium text-zinc-300">{{t "caps.tpl.script"}}</h4>
+                <!-- 默认只读：模板脚本是"能跑的东西"，先让人看清它要做什么，
+                     想改的人再切到编辑 —— 而不是一进去就给一个空编辑器。 -->
                 <div class="seg-switch">
-                  <button type="button" id="schema-mode-form" class="seg-item seg-item-active">
-                    {{t "caps.form.schema_mode_form"}}
+                  <button type="button" id="script-mode-view" class="seg-item seg-item-active">
+                    {{t "caps.tpl.script_view"}}
                   </button>
-                  <button type="button" id="schema-mode-json" class="seg-item">
-                    {{t "caps.form.schema_mode_json"}}
+                  <button type="button" id="script-mode-edit" class="seg-item">
+                    {{t "caps.tpl.script_edit"}}
                   </button>
                 </div>
               </div>
-
-              <!-- 可视化编辑区 -->
-              <div id="schema-form" class="schema-form">
-                <div class="schema-fields" id="schema-fields"></div>
-                <div class="mt-2 flex flex-wrap items-center gap-3">
-                  <button type="button" id="schema-add-field" class="btn-ghost rounded px-2 py-1 text-[11px]">
-                    + {{t "caps.form.schema_add_field"}}
-                  </button>
-                  <label class="flex items-center gap-1.5 text-[11px] text-zinc-400">
-                    <input type="checkbox" id="schema-no-extra" />
-                    {{t "caps.form.schema_no_extra"}}
-                  </label>
-                </div>
-                <p class="mt-2 text-[11px] text-zinc-500">
-                  {{t "caps.form.schema_form_hint"}}
-                </p>
-              </div>
-
-              <!-- JSON 编辑区（默认隐藏） -->
-              <div id="schema-json" class="hidden">
-                <textarea id="cap-schema" class="input mono w-full text-xs" rows="8">{"type":"object"}</textarea>
-                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.schema_hint"}}</p>
-              </div>
-
-              <!-- 可视化表达不了的 key：必须显式告知，绝不能静默丢掉 -->
-              <p id="schema-preserved" class="mt-1 hidden text-[11px] text-amber-400"></p>
+              <pre id="script-pre" class="yaml-box mono"></pre>
+              <textarea id="script-input" class="input mono w-full text-xs hidden" rows="12"></textarea>
+              <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
             </div>
           </div>
+
           <div class="mt-6 flex justify-end gap-2">
-            <button onclick="closeCapModal()" class="btn-ghost rounded-lg px-4 py-2 text-sm">
+            <button id="tpl-back" type="button" class="btn-ghost hidden rounded-lg px-4 py-2 text-sm">
+              ← {{t "caps.tpl.back"}}
+            </button>
+            <button type="button" onclick="closeCapModal()" class="btn-ghost rounded-lg px-4 py-2 text-sm">
               {{t "caps.form.cancel"}}
             </button>
-            <button onclick="createCapability()" class="btn-primary rounded-lg px-4 py-2 text-sm">
+            <button id="cap-submit" type="button" onclick="createCapability()" class="btn-primary rounded-lg px-4 py-2 text-sm">
               {{t "caps.form.submit"}}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 部署面板：选机器 → 下发 → 逐台结果。
+           这里的"选中"是纯前端手势，提交只发 nodeIds（契约 §2.4）——
+           tag / 状态点都只是帮人选的辅助。 -->
+      <div id="deploy-modal" class="modal-backdrop">
+        <div class="card modal-panel">
+          <h3 id="deploy-title" class="text-lg font-medium text-white"></h3>
+          <p class="tpl-hint mt-1 mb-3">{{t "caps.deploy.subtitle"}}</p>
+
+          <div id="deploy-tags-wrap" class="mb-3 hidden">
+            <p class="tpl-hint mb-1">{{t "caps.deploy.tag_pick"}}</p>
+            <div id="deploy-tags" class="dep-taglist"></div>
+          </div>
+
+          <p class="tpl-hint mb-1">{{t "caps.deploy.pick_hint"}}</p>
+          <div id="deploy-nodes" class="space-y-1"></div>
+          <div id="deploy-results" class="mt-3 hidden"></div>
+
+          <div class="mt-6 flex justify-end gap-2">
+            <button type="button" onclick="closeDeployModal()" class="btn-ghost rounded-lg px-4 py-2 text-sm">
+              {{t "caps.deploy.close"}}
+            </button>
+            <button id="deploy-submit" type="button" onclick="submitDeploy()" class="btn-primary rounded-lg px-4 py-2 text-sm">
+              {{t "caps.deploy.push"}}
             </button>
           </div>
         </div>
@@ -311,11 +527,49 @@
       // item.id 对齐（"capabilities"），侧栏才会高亮当前项。
       Anotify.mountLayout({
         active: "capabilities",
-        title: t("capabilities.title", "能力"),
-        subtitle: t("capabilities.subtitle", "能干什么（由节点声明）"),
+        // key 用 caps.title / caps.subtitle：之前这里写的是 capabilities.title /
+        // capabilities.subtitle —— 四个 locale 里都没这两个 key，于是 en/ja/es 的
+        // 侧栏标题一直是中文兜底，而且 subtitle 的兜底文案「由节点声明」已经过时
+        // （本 epic 改成控制台声明 + 部署）。
+        title: t("caps.title", "能力"),
+        // subtitle 是侧栏标题下面那行 11px 小字，不能塞页面 H2 的长文案
+        // （caps.subtitle 是一整段解释）——单独给一个短 key。
+        subtitle: t("caps.sidebar", "控制台定义，节点执行"),
       });
 
+      // ==================== 页面状态 ====================
       let CAPS = [];
+      let NODES = [];
+      // DEPS 是**一次**取回的全部部署行（不按能力逐条拉：那是 N+1 请求）；
+      // DEP_BY_CAP 只是它按 capabilityId 的分组索引。
+      let DEPS = [];
+      // 部署接口是否可用。失败时列表显示「—」而不是「未部署」：
+      // "不知道"和"确定没有"是两件不同的事，前者不该让人以为点一下部署就能修好。
+      // DEPS_OK / NODES_OK / CAPS_OK：三路请求各自是否成功。
+      // 三者的失败态必须分开表达："不知道"（接口挂了）和"确定没有"（0 行）
+      // 是两件不同的事，前者不该让人以为点一下部署就能修好。
+      let DEPS_OK = true;
+      let NODES_OK = true;
+      let CAPS_OK = true;
+      let DEP_BY_CAP = new Map();
+
+      let TPLS = [];
+      let TPLS_LOADED = false;
+      let TPL_SEL = null; // 当前选中的模板
+      // SCRIPT_TEXT 是脚本正文的唯一真相：只读区（pre）和编辑区（textarea）都读它。
+      // 提交时直接用它 —— 模板脚本是字面量（后端不做插值），任何改写都必须是用户显式做的。
+      let SCRIPT_TEXT = "";
+      let SCRIPT_MODE = "view"; // view | edit
+      // TIMEOUT_DIRTY：用户是否手改过 #cap-timeout。没改过就跟着模板默认值走，
+      // 改过才在换模板时保留用户填的数字。
+      let TIMEOUT_DIRTY = false;
+
+      let DEPLOY_CAP = null; // 部署面板当前对应的能力
+      let DEPLOY_CBS = new Map(); // nodeId → checkbox
+
+      const STATUS_CLASS = { online: "online", offline: "offline", draining: "draining" };
+      // 部署状态 → 状态点类（页内定义，ui.css 的 .st-* 只有在线/离线/排空中）
+      const DEP_DOT = { applied: "applied", pending: "pending", failed: "failed", local: "local" };
 
       function toast(msg) {
         const el = document.getElementById("toast");
@@ -337,351 +591,39 @@
         return n;
       }
 
-      // 弹窗开关。也是上一版重构时被连带删掉的（它们和出口表函数相邻，
-      // 我按行号范围删 JS 时把它们一起削了）。
-      function openCapModal() {
-        // 重置表单：否则上一次填的字段会残留到下一次新建
-        document.getElementById("cap-name").value = "";
-        document.getElementById("cap-display-name").value = "";
-        document.getElementById("cap-outputs").value = "";
-        setSchema({ type: "object", properties: {} });
-        document.getElementById("cap-modal").classList.add("open");
-      }
-      function closeCapModal() {
-        document.getElementById("cap-modal").classList.remove("open");
-      }
-
-      // createCapability 提交新建能力。
+      // scopeNS 读当前命名空间。
       //
-      // 注意：上一版重构（PR #99）误删了这个函数，只剩调用 —— 点"保存"会
-      // 抛 "createCapability is not defined"。这里补回来，并改成走
-      // collectSchema()（可视化 / JSON 两种模式统一出口）。
-      async function createCapability() {
-        const name = document.getElementById("cap-name").value.trim();
-        const displayName = document.getElementById("cap-display-name").value.trim();
-        const outputsRaw = document.getElementById("cap-outputs").value.trim();
-
-        if (!name) {
-          toast(t("caps.form.err_name", "请填写能力名"));
-          return;
-        }
-
-        let paramsSchema;
+      // Anotify.api 只对 web/partials.js 的 NS_PATHS 自动加 namespaceId，
+      // /v1/deployments 还不在那个表里（它归 partials.js 的所有者改），
+      // 所以在页面这边显式带上：读不到就省略，靠后端默认行为。
+      function scopeNS() {
         try {
-          paramsSchema = collectSchema();
+          const s = JSON.parse(localStorage.getItem("anotify.scope") || "{}");
+          return (s && s.namespaceId) || "";
         } catch (e) {
-          toast(t("caps.form.err_schema", "paramsSchema 不是合法 JSON") + ": " + e.message);
-          return;
-        }
-        const outputs = outputsRaw
-          ? outputsRaw.split(",").map((x) => x.trim()).filter(Boolean)
-          : [];
-
-        try {
-          await Anotify.api(API + "/capabilities", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, displayName, outputs, paramsSchema }),
-          });
-          toast(t("caps.form.created", "能力已创建"));
-          closeCapModal();
-          loadAll();
-        } catch (err) {
-          // 409 = 同 name@version 换内容（append-only，不变量 I8）
-          toast(t("caps.form.create_failed", "创建失败：") + (err.detail || err.message));
+          return "";
         }
       }
 
-      // ==================== paramsSchema 可视化编辑 ====================
-      //
-      // 设计要点：
-      //
-      //   1. 单一数据源是**对象**（schemaObj）。JSON 模式只是它的文本表示：
-      //      切到 JSON → JSON.stringify；切回可视化 → JSON.parse 后渲染。
-      //      解析失败就不切，并提示哪里错了。
-      //
-      //   2. 只生成**后端真正支持的关键字**（internal/route/validate.go:19-31）。
-      //      生成 $ref / oneOf / if-then-else 会让用户以为设了约束、
-      //      实际后端静默忽略 —— 那比不提供可视化更糟。
-      //
-      //   3. 用户手写在 JSON 里、可视化表达不了的东西（如 patternProperties）
-      //      **绝不能静默丢掉**。做法：schemaObj 始终保留完整对象，
-      //      可视化只增删它自己认识的键；不认识的键原样留着并显式提示。
-
-      let schemaMode = "form"; // form | json
-      // schemaObj 是权威数据。可视化操作都在它上面做。
-      let schemaObj = { type: "object", properties: {} };
-      // preservedKeys：当前 schema 里可视化表达不了的顶层 key
-      let preservedKeys = [];
-
-      const TYPES = ["string", "number", "integer", "boolean", "object", "array"];
-
-      function schemaSwitch(mode) {
-        if (mode === schemaMode) return;
-
-        if (mode === "json") {
-          // 可视化 → JSON：把对象序列化进 textarea
-          document.getElementById("cap-schema").value = JSON.stringify(schemaObj, null, 2);
-        } else {
-          // JSON → 可视化：先解析，失败就不切（保住用户输入）
-          const raw = document.getElementById("cap-schema").value.trim() || "{}";
-          let parsed;
-          try {
-            parsed = JSON.parse(raw);
-          } catch (e) {
-            toast(t("caps.form.err_schema", "paramsSchema 不是合法 JSON") + ": " + e.message);
-            return;
-          }
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            toast(t("caps.form.err_schema_obj", "paramsSchema 必须是一个 JSON 对象"));
-            return;
-          }
-          schemaObj = parsed;
+      // depsURL 拼 /v1/deployments 的查询串（namespaceId + 任意过滤条件）。
+      function depsURL(extra) {
+        const p = new URLSearchParams();
+        const ns = scopeNS();
+        if (ns) p.set("namespaceId", ns);
+        for (const k of Object.keys(extra || {})) {
+          const v = extra[k];
+          if (v) p.set(k, v);
         }
-
-        schemaMode = mode;
-        document.getElementById("schema-mode-form").classList.toggle("seg-item-active", mode === "form");
-        document.getElementById("schema-mode-json").classList.toggle("seg-item-active", mode === "json");
-        document.getElementById("schema-form").classList.toggle("hidden", mode !== "form");
-        document.getElementById("schema-json").classList.toggle("hidden", mode !== "json");
-        if (mode === "form") renderSchemaForm();
+        const q = p.toString();
+        return API + "/deployments" + (q ? "?" + q : "");
       }
 
-      // renderSchemaForm 把 schemaObj 渲染成字段列表
-      function renderSchemaForm() {
-        const box = document.getElementById("schema-fields");
-        box.replaceChildren();
-
-        const props = schemaObj.properties || {};
-        const required = Array.isArray(schemaObj.required) ? schemaObj.required : [];
-        const names = Object.keys(props);
-
-        // 记录可视化表达不了的顶层 key（type / properties / required /
-        // additionalProperties 之外的都是）
-        const known = ["type", "properties", "required", "additionalProperties"];
-        preservedKeys = Object.keys(schemaObj).filter((k) => !known.includes(k));
-        const pEl = document.getElementById("schema-preserved");
-        if (preservedKeys.length) {
-          pEl.classList.remove("hidden");
-          pEl.textContent =
-            t("caps.form.schema_preserved", "以下内容可视化编辑不了，会原样保留：") +
-            " " +
-            preservedKeys.join(", ");
-        } else {
-          pEl.classList.add("hidden");
-        }
-
-        document.getElementById("schema-no-extra").checked =
-          schemaObj.additionalProperties === false;
-
-        if (!names.length) {
-          box.appendChild(
-            el("div", "sf-empty", t("caps.form.schema_no_fields", "还没有字段。点下面的按钮添加。")),
-          );
-          return;
-        }
-
-        for (const name of names) {
-          box.appendChild(schemaFieldRow(name, props[name] || {}, required.includes(name)));
-        }
-      }
-
-      // schemaFieldRow 渲染一个字段的可编辑行
-      function schemaFieldRow(name, def, isRequired) {
-        const wrap = el("div", "");
-
-        const row = el("div", "sf-row");
-
-        // 字段名（改名要同步 key，所以失去焦点时迁移）
-        const nameIn = document.createElement("input");
-        nameIn.className = "sf-input";
-        nameIn.value = name;
-        nameIn.placeholder = t("caps.form.schema_field_name", "字段名");
-        nameIn.addEventListener("change", () => {
-          const newName = nameIn.value.trim();
-          if (!newName || newName === name) {
-            nameIn.value = name;
-            return;
-          }
-          const props = schemaObj.properties || {};
-          if (Object.hasOwn(props, newName)) {
-            toast(t("caps.form.schema_dup", "字段名重复") + ": " + newName);
-            nameIn.value = name;
-            return;
-          }
-          // 保留插入顺序：重建 properties
-          const next = {};
-          for (const k of Object.keys(props)) {
-            next[k === name ? newName : k] = props[k];
-          }
-          schemaObj.properties = next;
-          // required 里的名字也要跟着改
-          if (Array.isArray(schemaObj.required)) {
-            schemaObj.required = schemaObj.required.map((x) => (x === name ? newName : x));
-          }
-          renderSchemaForm();
-        });
-        row.appendChild(nameIn);
-
-        // 类型
-        const typeSel = document.createElement("select");
-        typeSel.className = "sf-input";
-        for (const ty of TYPES) typeSel.appendChild(new Option(ty, ty));
-        typeSel.value = def.type || "string";
-        typeSel.addEventListener("change", () => {
-          def.type = typeSel.value;
-          // 换类型后旧的范围约束可能不适用，清掉避免生成矛盾 schema
-          for (const k of ["minimum", "maximum", "minLength", "maxLength", "enum"]) {
-            delete def[k];
-          }
-          renderSchemaForm();
-        });
-        row.appendChild(typeSel);
-
-        // 必填
-        const reqWrap = document.createElement("label");
-        reqWrap.className = "flex items-center gap-1 text-[10px] text-zinc-400";
-        const reqCb = document.createElement("input");
-        reqCb.type = "checkbox";
-        reqCb.checked = isRequired;
-        reqCb.addEventListener("change", () => {
-          if (!Array.isArray(schemaObj.required)) schemaObj.required = [];
-          if (reqCb.checked) {
-            if (!schemaObj.required.includes(name)) schemaObj.required.push(name);
-          } else {
-            schemaObj.required = schemaObj.required.filter((x) => x !== name);
-          }
-          if (!schemaObj.required.length) delete schemaObj.required;
-        });
-        reqWrap.appendChild(reqCb);
-        reqWrap.appendChild(document.createTextNode("*"));
-        reqWrap.title = t("caps.form.schema_required", "必填");
-        row.appendChild(reqWrap);
-
-        // 删除
-        const del = el("button", "sf-del", "✕");
-        del.type = "button";
-        del.addEventListener("click", () => {
-          delete schemaObj.properties[name];
-          if (Array.isArray(schemaObj.required)) {
-            schemaObj.required = schemaObj.required.filter((x) => x !== name);
-            if (!schemaObj.required.length) delete schemaObj.required;
-          }
-          renderSchemaForm();
-        });
-        row.appendChild(del);
-
-        wrap.appendChild(row);
-
-        // 附加选项：枚举 / 范围
-        const opts = el("div", "sf-opts");
-
-        if (def.type === "string" || def.type === "number" || def.type === "integer") {
-          const enumIn = document.createElement("input");
-          enumIn.type = "text";
-          enumIn.placeholder = t("caps.form.schema_enum", "枚举值，逗号分隔（可留空）");
-          enumIn.value = (def.enum || []).join(", ");
-          enumIn.addEventListener("change", () => {
-            const vals = enumIn.value
-              .split(",")
-              .map((x) => x.trim())
-              .filter(Boolean);
-            if (vals.length) {
-              // number/integer 的枚举要转成数字，否则后端类型校验不过
-              def.enum =
-                def.type === "string"
-                  ? vals
-                  : vals.map((x) => Number(x)).filter((x) => !Number.isNaN(x));
-            } else {
-              delete def.enum;
-            }
-          });
-          opts.appendChild(enumIn);
-        }
-
-        if (def.type === "number" || def.type === "integer") {
-          for (const [key, ph] of [
-            ["minimum", "min"],
-            ["maximum", "max"],
-          ]) {
-            const inp = document.createElement("input");
-            inp.type = "text";
-            inp.placeholder = ph;
-            inp.size = 6;
-            inp.value = def[key] != null ? String(def[key]) : "";
-            inp.addEventListener("change", () => {
-              const v = inp.value.trim();
-              if (v === "") delete def[key];
-              else if (!Number.isNaN(Number(v))) def[key] = Number(v);
-              else inp.value = "";
-            });
-            opts.appendChild(inp);
-          }
-        }
-
-        if (def.type === "string") {
-          for (const [key, ph] of [
-            ["minLength", "minLen"],
-            ["maxLength", "maxLen"],
-          ]) {
-            const inp = document.createElement("input");
-            inp.type = "text";
-            inp.placeholder = ph;
-            inp.size = 6;
-            inp.value = def[key] != null ? String(def[key]) : "";
-            inp.addEventListener("change", () => {
-              const v = inp.value.trim();
-              if (v === "") delete def[key];
-              else if (!Number.isNaN(Number(v))) def[key] = Number(v);
-              else inp.value = "";
-            });
-            opts.appendChild(inp);
-          }
-        }
-
-        if (opts.childNodes.length) wrap.appendChild(opts);
-        return wrap;
-      }
-
-      // addSchemaField 加一个空字段（名字自动避重）
-      function addSchemaField() {
-        if (!schemaObj.properties) schemaObj.properties = {};
-        let i = 1;
-        let name = "field" + i;
-        while (Object.hasOwn(schemaObj.properties, name)) {
-          i++;
-          name = "field" + i;
-        }
-        schemaObj.properties[name] = { type: "string" };
-        renderSchemaForm();
-      }
-
-      // collectSchema 返回最终要提交的 schema 对象。
-      //
-      // JSON 模式下以 textarea 的原文为准（用户可能在那边写了可视化
-      // 表达不了的东西）；视觉模式以 schemaObj 为准。
-      function collectSchema() {
-        if (schemaMode === "json") {
-          const raw = document.getElementById("cap-schema").value.trim() || "{}";
-          return JSON.parse(raw); // 抛错由调用方处理
-        }
-        // 可视化模式：同步 additionalProperties 开关后再序列化
-        const noExtra = document.getElementById("schema-no-extra").checked;
-        if (noExtra) schemaObj.additionalProperties = false;
-        else delete schemaObj.additionalProperties;
-        if (schemaObj.type == null) schemaObj.type = "object";
-        return schemaObj;
-      }
-
-      // setSchema 把已有 schema 灌进编辑器（编辑已有能力时用）
-      function setSchema(obj) {
-        schemaObj = obj && typeof obj === "object" ? obj : { type: "object", properties: {} };
-        schemaMode = "form";
-        document.getElementById("schema-mode-form").classList.add("seg-item-active");
-        document.getElementById("schema-mode-json").classList.remove("seg-item-active");
-        document.getElementById("schema-form").classList.remove("hidden");
-        document.getElementById("schema-json").classList.add("hidden");
-        renderSchemaForm();
+      // shortDigest 取 digest 的短形式：`sha256:` 之后的前 12 位十六进制。
+      // 展示整串在列表里没有信息量，短形式已经足够人眼比对。
+      function shortDigest(d) {
+        const s = String(d || "");
+        const hex = s.indexOf("sha256:") === 0 ? s.slice(7) : s;
+        return hex.slice(0, 12);
       }
 
       // 所有请求走 Anotify.api（内置 401 → 登录守卫）
@@ -693,105 +635,185 @@
         }
       }
 
-      async function loadAll() {
-        // 出口（边）已经搬到 edges.html，这个页面只关心能力定义
-        const capsData = await apiGet(API + "/capabilities");
-        CAPS = (capsData && capsData.capabilities) || [];
-        renderCaps();
+      // ==================== 部署行取值（字段容错）====================
+      // 后端字段是 camelCase，但契约要求前端对 snake_case 也容错：
+      // 少一个字段只该让某一行显示不全，不该整块白屏。
+      function depId(r) {
+        return r.id || r.deployId || r.deploy_id || "";
+      }
+      function depNodeId(r) {
+        return r.nodeId || r.node_id || "";
+      }
+      function depCapId(r) {
+        return r.capabilityId || r.capability_id || "";
+      }
+      function depState(r) {
+        return String(r.state || r.status || "").toLowerCase();
+      }
+      function depDigest(r) {
+        return r.digest || r.artifactDigest || r.artifact_digest || "";
+      }
+      function nodeNameOf(nodeId) {
+        const n = NODES.find((x) => x.id === nodeId);
+        if (n && n.name) return n.name;
+        return String(nodeId || "").slice(0, 8);
       }
 
-      const KIND_LABELS = {
-        origin: "origin",
-        pipe: "pipe",
-        end: "end",
-      };
+      // ==================== 加载 ====================
+      async function loadAll() {
+        // 这个顺序是刻意的：部署列表要自己拼 namespaceId，必须等前一轮请求把 scope 落盘。
+        //
+        // depsURL() 是在求值阶段**同步**读 localStorage["anotify.scope"] 的，而这个键
+        // 只有等 Anotify.api() 内部的 await ensureScope() 才会写进去（web/partials.js）。
+        // 三路并行时 depsURL() 会在 scope 落盘之前就读到空值 → 全新会话首帧的
+        // /v1/deployments 不带 namespaceId，严格校验的后端直接 400，于是部署列永远是
+        // 「—」而且没人重试。所以：先跑两个落在 NS_PATHS 里的接口（api() 会顺手
+        // ensureScope 把 scope 落盘），再拼 depsURL()。**不要改回三路并行。**
+        const [capsRes, nodesRes] = await Promise.all([
+          apiGet(API + "/capabilities"),
+          apiGet(API + "/nodes"),
+        ]);
+        // 部署状态**一次**取全部再按 capabilityId 分组 —— 逐能力拉会变成 N+1 请求。
+        const depsRes = await apiGet(depsURL());
 
-      /**
-       * openRename 内联改显示名。
-       *
-       * 为什么内联而不是弹窗：改一个标签而已，弹层太重 —— 用户要
-       * "看到它 → 改掉它 → 继续看下一行"，中间不该跳出一个遮罩。
-       *
-       * 走 PATCH /v1/capabilities（只改 display_name 一列）：
-       * 显示名不参与 content_hash，所以**不会产生新版本**，
-       * 也不会让旧 trace 变得无法解释（I8 说的是能力定义 append-only）。
-       */
-      function openRename(c, btn) {
-        const wrap = btn.parentElement;
-        if (!wrap || wrap.querySelector(".rename-input")) return; // 已打开
+        CAPS_OK = capsRes !== null && capsRes !== undefined;
+        NODES_OK = nodesRes !== null && nodesRes !== undefined;
+        CAPS = (capsRes && capsRes.capabilities) || [];
+        NODES = (nodesRes && nodesRes.nodes) || [];
 
-        const input = el("input", "input rename-input px-2 py-0.5 text-[12px]");
-        input.value = (c.displayName || "").trim();
-        input.placeholder = t("caps.rename_ph", "给它取个名字，例如「分析 PR」");
-        input.maxLength = 60;
+        DEPS_OK = depsRes !== null && depsRes !== undefined;
+        const rows = !DEPS_OK
+          ? []
+          : Array.isArray(depsRes)
+            ? depsRes
+            : depsRes.deployments || [];
+        DEPS = rows.filter((r) => r && typeof r === "object");
 
-        const save = el("button", "btn-primary rounded px-2 py-0.5 text-[11px]", t("caps.save", "保存"));
-        const cancel = el("button", "btn-ghost rounded px-2 py-0.5 text-[11px]", t("caps.cancel", "取消"));
-
-        btn.style.display = "none";
-        wrap.appendChild(input);
-        wrap.appendChild(save);
-        wrap.appendChild(cancel);
-        input.focus();
-        input.select();
-
-        function close() {
-          input.remove();
-          save.remove();
-          cancel.remove();
-          btn.style.display = "";
+        DEP_BY_CAP = new Map();
+        for (const r of DEPS) {
+          const id = depCapId(r);
+          if (!id) continue;
+          const list = DEP_BY_CAP.get(id);
+          if (list) list.push(r);
+          else DEP_BY_CAP.set(id, [r]);
         }
 
-        async function commit() {
-          const v = input.value.trim();
-          save.disabled = true;
-          try {
-            // Anotify.api(path, opts, demo) —— body 要自己 JSON.stringify，
-            // 并显式声明 Content-Type（与 sources.html 的调用一致）。
-            const res = await Anotify.api(API + "/capabilities", {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ id: c.id, displayName: v }),
-            });
-            const updated = (res && res.capability) || null;
-            if (updated) c.displayName = updated.displayName;
-            close();
-            renderCaps();
-          } catch (e) {
-            save.disabled = false;
-            // 错误要带服务端信息 —— 不然用户看到"保存失败"不知道哪错了
-            let msg = t("caps.rename_failed", "改名失败");
-            const raw = String((e && e.message) || e || "");
-            try {
-              const parsed = JSON.parse(raw);
-              if (parsed && parsed.error) msg += "：" + parsed.error;
-            } catch (_) {
-              if (raw) msg += "：" + raw;
-            }
-            toast(msg);
-          }
-        }
+        renderCaps();
+        // 面板开着就跟着刷新：下发/撤销后，节点行上的 digest 和撤销按钮要跟上
+        if (DEPLOY_CAP) renderDeployPanel();
+      }
 
-        save.addEventListener("click", commit);
-        cancel.addEventListener("click", close);
-        input.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter") commit();
-          if (ev.key === "Escape") close();
-        });
+      // ==================== 列表 ====================
+      // deployInfoFor 汇总一个能力的部署状态。
+      //
+      // 优先级（同时命中取先出现的，契约 §4.2）：
+      //   failed > pending > local > 全 applied > 0 行（未部署）> 接口失败（—）
+      // 失败排最前是因为它需要人动手；pending 次之（等着就行）。
+      function deployInfoFor(capId) {
+        if (!DEPS_OK) {
+          return {
+            cls: "status-off",
+            text: t("caps.deploy.status_unknown", "—"),
+            rows: [],
+            expandable: false,
+          };
+        }
+        const rows = DEP_BY_CAP.get(capId) || [];
+        if (!rows.length) {
+          return {
+            cls: "status-off",
+            text: t("caps.deploy.status_none", "未部署"),
+            rows: rows,
+            expandable: false,
+          };
+        }
+        const count = (s) => rows.filter((r) => depState(r) === s).length;
+        const failed = count("failed");
+        const pending = count("pending");
+        const local = count("local");
+        if (failed) {
+          return {
+            cls: "status-error",
+            text: t("caps.deploy.status_failed", "{n} 台失败").replace("{n}", failed),
+            rows: rows,
+            expandable: true,
+          };
+        }
+        if (pending) {
+          return {
+            cls: "status-warn",
+            text: t("caps.deploy.status_pending", "部署中 {n}").replace("{n}", pending),
+            rows: rows,
+            expandable: false,
+          };
+        }
+        if (local) {
+          return {
+            cls: "status-warn",
+            text: t("caps.deploy.status_local", "{n} 台本地变体").replace("{n}", local),
+            rows: rows,
+            expandable: true,
+          };
+        }
+        const applied = count("applied");
+        if (applied === rows.length) {
+          return {
+            cls: "status-success",
+            text: t("caps.deploy.status_applied", "已部署 {n} 台").replace("{n}", applied),
+            rows: rows,
+            expandable: false,
+          };
+        }
+        // 有部署行但状态既不是失败、也没全 applied（后端将来加了新 state）：
+        // 这和「接口挂了」一样属于「不知道」，所以说「—」而不是「未部署」——
+        // 本文件的口径是「0 行才算未部署」。明细可展开，让人自己看是什么状态。
+        return {
+          cls: "status-off",
+          text: t("caps.deploy.status_unknown", "—"),
+          rows: rows,
+          expandable: true,
+        };
+      }
+
+      // depDetailBlock 是徽章点开后的明细：每台一行「状态点 + 节点名 + 状态 + digest + reason」。
+      // 默认收起（display:none）：一行失败信息不该把整个列表撑开。
+      function depDetailBlock(rows) {
+        const box = el("div", "cap-dep-detail");
+        for (const r of rows) {
+          const line = el("div", "cap-dep-line");
+          const st = depState(r);
+          line.appendChild(el("span", "st-dot st-" + (DEP_DOT[st] || "offline")));
+          line.appendChild(el("span", "", nodeNameOf(depNodeId(r))));
+          // 状态词是协议里的原词（applied/failed/local），不翻译：它和日志、
+          // 后端的 reason 是同一套词汇，翻译了反而对不上。
+          line.appendChild(el("span", "cap-dep-state", st || "?"));
+          const dg = shortDigest(depDigest(r));
+          if (dg) line.appendChild(el("span", "cap-dep-digest", dg));
+          if (r.reason) line.appendChild(el("span", "cap-dep-reason", String(r.reason)));
+          box.appendChild(line);
+        }
+        return box;
       }
 
       function renderCaps() {
         const list = document.getElementById("caps-list");
         const summary = document.getElementById("caps-summary");
-        summary.textContent = t("caps.count", "{n} 个能力").replace("{n}", CAPS.length);
+        // 计数只在真的拿到列表时才给：接口挂了还写「0 个能力」，会和下面那行
+        // 「载入失败」自相矛盾（0 是「确定没有」，故障不是）。
+        summary.textContent = CAPS_OK
+          ? t("caps.count", "{n} 个能力").replace("{n}", CAPS.length)
+          : "";
         list.replaceChildren();
 
         if (!CAPS.length) {
+          // 故障 ≠ 没有：接口挂了不能显示「还没有能力」，那会让人以为点一下就能建
           list.appendChild(
             el(
               "div",
               "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-              t("caps.empty", "还没有能力。定义一个，节点才能声明它。"),
+              CAPS_OK
+                ? t("caps.empty", "还没有能力。定义一个，节点才能声明它。")
+                : t("caps.load_failed", "能力列表载入失败，请刷新重试"),
             ),
           );
           return;
@@ -909,39 +931,736 @@
           }
           left.appendChild(decl);
 
-          const right = el("div", "text-right");
-          right.appendChild(
-            code(
-              (c.contentHash || "").slice(0, 10),
-              "text-[10px] text-zinc-600",
-            ),
+          // ---- 中列：部署状态 ----
+          // 徽章可点开明细（failed/local）时用 <button>，没有明细可看时用 <span>
+          // —— 一个点了没反应的按钮比不可点更糟。
+          const mid = el("div", "");
+          const info = deployInfoFor(c.id);
+          let badge;
+          if (info.expandable) {
+            badge = el("button", "status-badge cap-dep-badge is-expandable " + info.cls, info.text);
+            badge.type = "button";
+            badge.title = t("caps.deploy.col", "部署状态");
+            badge.addEventListener("click", () => {
+              const box = card.querySelector(".cap-dep-detail");
+              if (box) box.classList.toggle("open");
+            });
+          } else {
+            badge = el("span", "status-badge cap-dep-badge " + info.cls, info.text);
+            badge.title = t("caps.deploy.col", "部署状态");
+          }
+          mid.appendChild(badge);
+
+          // ---- 右列：digest + 部署按钮 ----
+          const right = el("div", "cap-right");
+          right.appendChild(code((c.contentHash || "").slice(0, 10), "text-[10px] text-zinc-600"));
+          const depBtn = el(
+            "button",
+            "cap-deploy btn-ghost rounded-lg px-2.5 py-1 text-[11px]",
+            t("caps.deploy.btn", "部署"),
           );
+          depBtn.type = "button";
+          depBtn.addEventListener("click", () => openDeployModal(c));
+          right.appendChild(depBtn);
 
           row.appendChild(left);
+          row.appendChild(mid);
           row.appendChild(right);
           card.appendChild(row);
+          // 明细块先建好但保持收起（点徽章才展开），这样展开不需要重新渲染整行
+          if (info.expandable) card.appendChild(depDetailBlock(info.rows));
           list.appendChild(card);
         }
       }
 
-      // capName 把能力 ID 翻成 "name@version"；查不到就退回 ID。
-      // store.Edge 只存 ID（没有冗余 name 列），所以必须自己映射。
-      function capName(id) {
-        const c = CAPS.find((x) => x.id === id);
-        return c ? c.name + "@" + c.version : id;
+      /**
+       * openRename 内联改显示名。
+       *
+       * 为什么内联而不是弹窗：改一个标签而已，弹层太重 —— 用户要
+       * "看到它 → 改掉它 → 继续看下一行"，中间不该跳出一个遮罩。
+       *
+       * 走 PATCH /v1/capabilities（只改 display_name 一列）：
+       * 显示名不参与 content_hash，所以**不会产生新版本**，
+       * 也不会让旧 trace 变得无法解释（I8 说的是能力定义 append-only）。
+       */
+      function openRename(c, btn) {
+        const wrap = btn.parentElement;
+        if (!wrap || wrap.querySelector(".rename-input")) return; // 已打开
+
+        const input = el("input", "input rename-input px-2 py-0.5 text-[12px]");
+        input.value = (c.displayName || "").trim();
+        input.placeholder = t("caps.rename_ph", "给它取个名字，例如「分析 PR」");
+        input.maxLength = 60;
+
+        const save = el("button", "btn-primary rounded px-2 py-0.5 text-[11px]", t("caps.save", "保存"));
+        const cancel = el("button", "btn-ghost rounded px-2 py-0.5 text-[11px]", t("caps.cancel", "取消"));
+
+        btn.style.display = "none";
+        wrap.appendChild(input);
+        wrap.appendChild(save);
+        wrap.appendChild(cancel);
+        input.focus();
+        input.select();
+
+        function close() {
+          input.remove();
+          save.remove();
+          cancel.remove();
+          btn.style.display = "";
+        }
+
+        async function commit() {
+          const v = input.value.trim();
+          save.disabled = true;
+          try {
+            // Anotify.api(path, opts, demo) —— body 要自己 JSON.stringify，
+            // 并显式声明 Content-Type（与 sources.html 的调用一致）。
+            const res = await Anotify.api(API + "/capabilities", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: c.id, displayName: v }),
+            });
+            const updated = (res && res.capability) || null;
+            if (updated) c.displayName = updated.displayName;
+            close();
+            renderCaps();
+          } catch (e) {
+            save.disabled = false;
+            // 错误要带服务端信息 —— 不然用户看到"保存失败"不知道哪错了
+            let msg = t("caps.rename_failed", "改名失败");
+            const raw = String((e && e.message) || e || "");
+            try {
+              const parsed = JSON.parse(raw);
+              if (parsed && parsed.error) msg += "：" + parsed.error;
+            } catch (_) {
+              if (raw) msg += "：" + raw;
+            }
+            toast(msg);
+          }
+        }
+
+        save.addEventListener("click", commit);
+        cancel.addEventListener("click", close);
+        input.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") commit();
+          if (ev.key === "Escape") close();
+        });
+      }
+
+      // ==================== 新建能力 · 弹层 ====================
+      function openCapModal() {
+        // 重置表单：否则上一次填的字段会残留到下一次新建
+        document.getElementById("cap-name").value = "";
+        document.getElementById("cap-display-name").value = "";
+        document.getElementById("cap-timeout").value = "";
+        // 脏标记也要清：新一次新建又没被人碰过，超时应该重新跟模板走
+        TIMEOUT_DIRTY = false;
+        TPL_SEL = null;
+        SCRIPT_TEXT = "";
+        tplGoStep(1);
+        document.getElementById("cap-modal").classList.add("open");
+        loadTemplates();
+      }
+      function closeCapModal() {
+        document.getElementById("cap-modal").classList.remove("open");
+      }
+
+      // tplGoStep 切步骤。名字/显示名/超时不在这里清 ——
+      // 「换模板」要保留已经填过的东西，否则改个模板就得重填一遍。
+      function tplGoStep(step) {
+        document.getElementById("tpl-step").classList.toggle("hidden", step !== 1);
+        document.getElementById("tpl-form-step").classList.toggle("hidden", step !== 2);
+        // 步骤 1 还没有模板，提交必然失败：干脆不给这个按钮
+        document.getElementById("cap-submit").classList.toggle("hidden", step !== 2);
+        document.getElementById("tpl-back").classList.toggle("hidden", step === 1);
+      }
+
+      async function loadTemplates() {
+        if (TPLS_LOADED) return; // 模板是静态清单，一次会话取一次就够
+        const box = document.getElementById("tpl-groups");
+        box.replaceChildren(el("div", "tpl-hint", t("caps.tpl.loading", "正在载入模板…")));
+        let res;
+        try {
+          // 这里不用 apiGet：模板载入失败要带上后端的错误串（err.detail），
+          // 否则用户只看到一句「模板载入失败：」不知道是网络还是接口没实现。
+          res = await Anotify.api(API + "/capability-templates", {});
+        } catch (e) {
+          box.replaceChildren(
+            el(
+              "div",
+              "tpl-hint",
+              t("caps.tpl.load_failed", "模板载入失败：") + ((e && (e.detail || e.message)) || ""),
+            ),
+          );
+          return;
+        }
+        // 容错：响应可能是数组，也可能包在 {templates:[...]} 里
+        TPLS = Array.isArray(res) ? res : (res && res.templates) || [];
+        TPLS_LOADED = true;
+        renderTpls();
+      }
+
+      function renderTpls() {
+        const box = document.getElementById("tpl-groups");
+        box.replaceChildren();
+        if (!TPLS.length) {
+          box.appendChild(el("div", "tpl-hint", t("caps.tpl.empty", "没有可用模板。")));
+          return;
+        }
+
+        // 先 script 后 agent（契约 §4.1），组内顺序完全按接口返回，不重排。
+        // 后端以后加了新 category 也要能显示出来，不能静默吞掉。
+        const groups = [];
+        const seen = new Set();
+        const known = [
+          ["script", t("caps.tpl.cat_script", "脚本")],
+          ["agent", t("caps.tpl.cat_agent", "Agent")],
+        ];
+        for (const [cat, label] of known) {
+          const items = TPLS.filter((x) => (x.category || "") === cat);
+          if (!items.length) continue;
+          groups.push([label, items]);
+          seen.add(cat);
+        }
+        const extra = [];
+        for (const x of TPLS) {
+          const cat = x.category || "";
+          if (!seen.has(cat) && extra.indexOf(cat) < 0) extra.push(cat);
+        }
+        for (const cat of extra) {
+          groups.push([cat, TPLS.filter((x) => (x.category || "") === cat)]);
+        }
+
+        for (const [label, items] of groups) {
+          const wrap = el("div", "tpl-group");
+          wrap.appendChild(el("h4", "tpl-group-title", label));
+          const cards = el("div", "tpl-cards");
+          for (const tpl of items) cards.appendChild(tplCard(tpl));
+          wrap.appendChild(cards);
+          box.appendChild(wrap);
+        }
+      }
+
+      function tplCard(tpl) {
+        const card = el("button", "tpl-card");
+        card.type = "button";
+
+        const head = el("div", "flex flex-wrap items-center justify-between gap-2");
+        head.appendChild(el("span", "text-[13px] text-zinc-200", tpl.displayName || tpl.id || "?"));
+        head.appendChild(el("span", "tpl-meta", tpl.id || ""));
+        card.appendChild(head);
+
+        if (tpl.description) card.appendChild(el("p", "tpl-desc", tpl.description));
+
+        // 预装命令与默认超时：这两项决定了「能不能在这台机器上跑」，
+        // 选模板时就得看见，而不是部署失败了才发现缺 curl/jq。
+        const reqs = tpl.requires || [];
+        card.appendChild(
+          el(
+            "div",
+            "tpl-meta",
+            requiresText(reqs) +
+              " · " +
+              t("caps.tpl.timeout_default", "默认 {n} 秒").replace("{n}", tpl.timeoutSec || 0),
+          ),
+        );
+
+        card.addEventListener("click", () => pickTemplate(tpl));
+        return card;
+      }
+
+      function pickTemplate(tpl) {
+        TPL_SEL = tpl;
+        SCRIPT_TEXT = tpl.script || "";
+
+        // 超时：用户没手改过就跟着模板默认值走，手改过才保留。
+        // 只判断“输入框是否为空”是不够的：从 script.http（120）换到
+        // agent.claude（3600）时框里还留着 120，而用户从没碰过它。
+        const timeoutEl = document.getElementById("cap-timeout");
+        if (!TIMEOUT_DIRTY) timeoutEl.value = String(tpl.timeoutSec || 0);
+
+        document.getElementById("script-pre").textContent = SCRIPT_TEXT;
+        document.getElementById("script-input").value = SCRIPT_TEXT;
+        scriptModeSet("view");
+
+        renderTplFields(tpl);
+        renderTplRequires(tpl);
+        tplGoStep(2);
+      }
+
+      // requiresText 渲染「需要预装：curl, jq」。文案里的 {list} 是占位符（契給 §5），
+      // 手写 replace —— 没有依赖就换另一句，不拼接半句。
+      function requiresText(reqs) {
+        if (!reqs || !reqs.length) return t("caps.tpl.no_requires", "无预装依赖");
+        return t("caps.tpl.requires", "需要预装：{list}").replace("{list}", reqs.join(", "));
+      }
+
+      function renderTplRequires(tpl) {
+        document.getElementById("tpl-requires").textContent = requiresText(tpl.requires || []);
+      }
+
+      // renderTplFields 按模板字段渲染表单。
+      //
+      // 字段值**不参与** paramsSchema（schema 由字段定义推导，见 paramsSchemaFor）：
+      // 它只是让用户看清这个能力要填什么。模板设计成「字段 → ANOTIFY_PARAM_* 环境变量」，
+      // 所以脚本正文对所有能力都是同一份，不需要插值。
+      function renderTplFields(tpl) {
+        const box = document.getElementById("tpl-fields");
+        box.replaceChildren();
+        const fields = tpl.fields || [];
+        if (!fields.length) {
+          box.appendChild(el("div", "tpl-hint", t("caps.tpl.no_params", "这个模板没有参数")));
+          return;
+        }
+        for (const f of fields) box.appendChild(tplField(f));
+      }
+
+      function tplField(f) {
+        const wrap = el("div", "tpl-field");
+        const label = el("label", "tpl-label", f.label || f.key);
+        label.htmlFor = "tpl-f-" + f.key;
+        if (f.required) {
+          const star = el("span", "tpl-req", "*");
+          star.title = t("caps.tpl.required", "必填");
+          label.appendChild(star);
+        }
+        wrap.appendChild(label);
+
+        let ctl;
+        if (f.type === "select") {
+          ctl = document.createElement("select");
+          ctl.className = "select w-full text-sm";
+          for (const o of f.options || []) ctl.appendChild(new Option(o, o));
+        } else if (f.type === "text") {
+          ctl = document.createElement("textarea");
+          ctl.className = "input w-full text-xs";
+          ctl.rows = 3;
+        } else if (f.type === "number") {
+          ctl = document.createElement("input");
+          ctl.type = "number";
+          ctl.className = "input w-full text-sm";
+        } else {
+          ctl = document.createElement("input");
+          ctl.type = "text";
+          ctl.className = "input w-full text-sm";
+        }
+        ctl.id = "tpl-f-" + f.key;
+        if (f.default != null && f.default !== "") ctl.value = String(f.default);
+        wrap.appendChild(ctl);
+
+        if (f.help) wrap.appendChild(el("p", "tpl-hint", f.help));
+        return wrap;
+      }
+
+      // scriptModeSet 切「只读 / 改脚本」。
+      // 从编辑态切回只读时以 textarea 为准（用户刚改的内容必须留在 pre 里，
+      // 否则会看着自己的修改凭空消失）。
+      function scriptModeSet(mode) {
+        SCRIPT_MODE = mode === "edit" ? "edit" : "view";
+        const pre = document.getElementById("script-pre");
+        const ta = document.getElementById("script-input");
+        if (SCRIPT_MODE === "edit") {
+          ta.value = SCRIPT_TEXT;
+          ta.classList.remove("hidden");
+          pre.classList.add("hidden");
+        } else {
+          SCRIPT_TEXT = ta.value;
+          pre.textContent = SCRIPT_TEXT;
+          ta.classList.add("hidden");
+          pre.classList.remove("hidden");
+        }
+        document
+          .getElementById("script-mode-view")
+          .classList.toggle("seg-item-active", SCRIPT_MODE === "view");
+        document
+          .getElementById("script-mode-edit")
+          .classList.toggle("seg-item-active", SCRIPT_MODE === "edit");
+      }
+
+      // paramsSchemaFor 从模板字段推导参数契约。
+      //
+      // 必须与 internal/artifact/templates.go:paramsSchemaFor **一字不差**：
+      //   type=number → {"type":"number"}
+      //   type=select → {"type":"string","enum":[...options]}
+      //   其它（string/text）→ {"type":"string"}
+      //   required 收集后按字典序排序；为空则省略该键
+      // 多写 default/minimum/pattern 这类后端不认的关键字更糟：它让人以为设了
+      // 约束，而实际被静默忽略（契约 §3）。
+      function paramsSchemaFor(fields) {
+        const props = {};
+        const required = [];
+        for (const f of fields || []) {
+          const p = {};
+          if (f.type === "number") p.type = "number";
+          else if (f.type === "select") {
+            p.type = "string";
+            p.enum = (f.options || []).slice();
+          } else p.type = "string";
+          props[f.key] = p;
+          if (f.required) required.push(f.key);
+        }
+        required.sort();
+        const schema = { type: "object", properties: props };
+        if (required.length) schema.required = required;
+        return schema;
+      }
+
+      // createCapability 提交新建能力。
+      //
+      // body 形状见契约 §2.2：run.files 里是 run.sh 正文，entrypoint 固定 run.sh。
+      // 模板脚本是字面量（后端不做插值），所以提交的就是用户在只读区看到的那份。
+      const CAP_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
+      async function createCapability() {
+        const tpl = TPL_SEL;
+        if (!tpl) {
+          // 步骤 1 里的提交按钮已经隐藏，走到这里说明状态被打乱了
+          toast(t("caps.tpl.empty", "没有可用模板。"));
+          return;
+        }
+
+        const name = document.getElementById("cap-name").value.trim();
+        if (!CAP_NAME_RE.test(name)) {
+          toast(t("caps.form.err_invalid_name", "能力名格式不对"));
+          return;
+        }
+
+        // 超时：空 = 用模板默认；0 = 不设本地超时（合法值，不要当成"没填"）
+        const rawTimeout = String(document.getElementById("cap-timeout").value || "").trim();
+        const timeoutSec = rawTimeout === "" ? Number(tpl.timeoutSec || 0) : Number(rawTimeout);
+        if (!Number.isInteger(timeoutSec) || timeoutSec < 0 || timeoutSec > 86400) {
+          toast(t("caps.form.err_timeout", "超时必须是 0~86400 之间的整数"));
+          return;
+        }
+
+        // 字段名必须是 snake_case：它会变成 ANOTIFY_PARAM_<UPPER>，
+        // 非 snake_case 在后端是 invalid_field。这里先拦，省一次往返。
+        // 规则与 internal/artifact/templates.go:isSnakeCase 一致 —— 首字符不能是下划线
+        // （`_foo` 这种放过去后端照样拒）。
+        for (const f of tpl.fields || []) {
+          if (!/^[a-z0-9][a-z0-9_]*$/.test(f.key || "")) {
+            toast(t("caps.form.create_failed", "创建失败：") + "invalid_field: " + f.key);
+            return;
+          }
+        }
+
+        const script = SCRIPT_TEXT;
+        // 无条件校验，而且**不 trim**：后端是 strings.HasPrefix(body, "#!")、
+        // mock 是 body.startsWith("#!")，两边都不看空白。这里比后端宽就等于
+        // “前端放行、后端拒收”——那种错只在提交后才看到。
+        // 九个内置模板的正文都以 #! 开头，无条件校验不会误伤。
+        if (!/^#!/.test(script)) {
+          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"));
+          return;
+        }
+
+        const displayName =
+          document.getElementById("cap-display-name").value.trim() || tpl.displayName || "";
+
+        const body = {
+          name: name,
+          displayName: displayName,
+          paramsSchema: paramsSchemaFor(tpl.fields),
+          outputs: tpl.outputs || [],
+          run: {
+            entrypoint: "run.sh",
+            files: { "run.sh": script },
+            timeoutSec: timeoutSec,
+            env: {},
+          },
+          requires: tpl.requires || [],
+        };
+        // body 里也带一份 namespaceId：/v1/capabilities 在 NS_PATHS 里，
+        // query 一定带上，但显式再给一份不依赖那个表。
+        const ns = scopeNS();
+        if (ns) body.namespaceId = ns;
+
+        try {
+          const res = await Anotify.api(API + "/capabilities", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          // digest 可能在顶层，也可能在 capability.digest，也可能没有
+          const digest = (res && (res.digest || (res.capability && res.capability.digest))) || "";
+          toast(
+            digest
+              ? t("caps.tpl.created_digest", "能力已创建（{digest}）").replace(
+                  "{digest}",
+                  shortDigest(digest),
+                )
+              : t("caps.tpl.created", "能力已创建"),
+          );
+          closeCapModal();
+          loadAll();
+        } catch (err) {
+          // err.detail 是后端错误串（invalid_name: … / capability_conflict），原样展示
+          toast(t("caps.form.create_failed", "创建失败：") + (err.detail || err.message));
+        }
+      }
+
+      // ==================== 部署面板 ====================
+      function openDeployModal(c) {
+        if (!c) return;
+        DEPLOY_CAP = c;
+        document.getElementById("deploy-title").textContent = t(
+          "caps.deploy.title",
+          "部署 {name}",
+        ).replace("{name}", c.name + "@" + c.version);
+        // 关掉时清空、打开时也清空：残留上一次的「已排队」会让人以为这次也发了
+        document.getElementById("deploy-results").replaceChildren();
+        document.getElementById("deploy-results").classList.add("hidden");
+        renderDeployPanel();
+        document.getElementById("deploy-modal").classList.add("open");
+      }
+
+      function closeDeployModal() {
+        DEPLOY_CAP = null;
+        DEPLOY_CBS = new Map();
+        document.getElementById("deploy-modal").classList.remove("open");
+        document.getElementById("deploy-results").replaceChildren();
+        document.getElementById("deploy-results").classList.add("hidden");
+      }
+
+      // depForNode 找这台机器上「本能力」的部署行。
+      // 一个 (能力, 节点) 只该有一行；真有多行时取第一行，撤销也只撤这一条。
+      function depForNode(nodeId) {
+        const capId = DEPLOY_CAP && DEPLOY_CAP.id;
+        for (const r of DEPS) {
+          if (depNodeId(r) === nodeId && depCapId(r) === capId) return r;
+        }
+        return null;
+      }
+
+      function renderDeployPanel() {
+        const box = document.getElementById("deploy-nodes");
+        const tagsWrap = document.getElementById("deploy-tags-wrap");
+        const tagsBox = document.getElementById("deploy-tags");
+        box.replaceChildren();
+        tagsBox.replaceChildren();
+        DEPLOY_CBS = new Map();
+
+        if (!NODES_OK) {
+          // 节点列表读不到时不能说「还没有节点」—— 那是让人去重新注册机器的错建议
+          tagsWrap.classList.add("hidden");
+          box.appendChild(
+            el("div", "tpl-hint", t("caps.deploy.nodes_failed", "节点列表读不到，稍后重试")),
+          );
+          return;
+        }
+
+        if (!NODES.length) {
+          tagsWrap.classList.add("hidden");
+          box.appendChild(
+            el("div", "tpl-hint", t("caps.deploy.no_nodes", "这个命名空间还没有节点")),
+          );
+          return;
+        }
+
+        // tag 批量选：tag 去重后渲染成 .filter-tab。
+        // 点一个 tag 只是「帮人勾选」——提交仍然只发 nodeIds（契约 §2.4），
+        // 所以这里不存在"按 tag 部署"的隐式语义。没有 tag 就整块隐藏。
+        const tags = [];
+        for (const n of NODES) {
+          for (const tg of n.tags || []) if (tags.indexOf(tg) < 0) tags.push(tg);
+        }
+        tagsWrap.classList.toggle("hidden", tags.length === 0);
+
+        for (const n of NODES) {
+          const item = el("div", "dep-item");
+
+          const label = el("label", "dep-node");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.dataset.node = n.id;
+          label.appendChild(cb);
+          label.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[n.status] || "offline")));
+          label.appendChild(el("span", "dep-node-name", n.name || "?"));
+          const dep = depForNode(n.id);
+          if (!DEPS_OK) {
+            // 状态未知 ≠ 没部署过
+            label.appendChild(
+              el("span", "dep-node-meta", t("caps.deploy.status_unknown", "—")),
+            );
+          } else if (dep) {
+            label.appendChild(
+              el(
+                "span",
+                "dep-node-meta",
+                t("caps.deploy.node_digest", "已部署 {digest}").replace(
+                  "{digest}",
+                  shortDigest(depDigest(dep)),
+                ),
+              ),
+            );
+          } else {
+            label.appendChild(el("span", "dep-node-meta", t("caps.deploy.node_none", "未部署")));
+          }
+          item.appendChild(label);
+
+          if (dep) {
+            const undo = el(
+              "button",
+              "btn-danger rounded-lg px-2.5 py-1 text-[11px]",
+              t("caps.deploy.undo", "撤销"),
+            );
+            undo.type = "button";
+            // 撤销按钮不在 <label> 里（在它旁边）：label 包住的控件点了会切换勾选，
+            // 撤销误触发一次勾选是很坏的体验。
+            undo.addEventListener("click", () => undoDeploy(depId(dep), undo));
+            item.appendChild(undo);
+          }
+
+          box.appendChild(item);
+          DEPLOY_CBS.set(n.id, cb);
+        }
+
+        for (const tg of tags) {
+          const tab = el("button", "filter-tab", tg);
+          tab.type = "button";
+          tab.addEventListener("click", () => {
+            const on = !tab.classList.contains("active");
+            tab.classList.toggle("active", on);
+            for (const n of NODES) {
+              if ((n.tags || []).indexOf(tg) < 0) continue;
+              const cb = DEPLOY_CBS.get(n.id);
+              if (cb) cb.checked = on;
+            }
+          });
+          tagsBox.appendChild(tab);
+        }
+      }
+
+      function selectedNodeIds() {
+        const ids = [];
+        for (const n of NODES) {
+          const cb = DEPLOY_CBS.get(n.id);
+          if (cb && cb.checked) ids.push(n.id);
+        }
+        return ids;
+      }
+
+      async function submitDeploy() {
+        const cap = DEPLOY_CAP;
+        if (!cap) return;
+        const nodeIds = selectedNodeIds();
+        if (!nodeIds.length) {
+          toast(t("caps.deploy.none_selected", "请先选择机器"));
+          return;
+        }
+
+        const btn = document.getElementById("deploy-submit");
+        btn.disabled = true;
+        btn.textContent = t("caps.deploy.pushing", "下发中…");
+        try {
+          // 请求体只带 capabilityId + nodeIds（不带 digest / tags）：
+          // 服务端取该能力的最新产物，前端不该决定版本。
+          const body = { capabilityId: cap.id, nodeIds: nodeIds };
+          const ns = scopeNS();
+          if (ns) body.namespaceId = ns;
+          const res = await Anotify.api(depsURL(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          // 响应形状（以 internal/server/deploy_handlers.go:createDeployments 为准）：
+          //   { artifact: {…}, deployments: [{nodeId,nodeName,deployId,pushed,error}] }
+          // 注意键名是 **deployments** 不是 results —— 早先按 results 读会永远拿到空数组，
+          // 逐台结果一条都不显示（看起来像"请求成功了但什么都没发生"）。
+          // 数组 / {results} 仍保留兜底，方便 mock 与将来的形状演进。
+          const results = Array.isArray(res)
+            ? res
+            : (res && (res.deployments || res.results)) || [];
+          renderDeployResults(results);
+          // 重新拉一遍：已部署 digest、撤销按钮、列表徽章都要跟着变。
+          // 面板重建由 loadAll() 自己负责（那里已经判断了 DEPLOY_CAP），
+          // 不在这里再调一次 renderDeployPanel() —— 那会把面板重建两遍、
+          // 勾选态也被清两次。
+          await loadAll();
+        } catch (err) {
+          toast(t("caps.deploy.err", "下发失败：") + (err.detail || err.message));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = t("caps.deploy.push", "部署");
+        }
+      }
+
+      // renderDeployResults 逐台回显。
+      // pushed=true → 绿「已下发」；pushed=false → 黄「已排队（节点离线）」+ error 原样展示
+      // （error 是后端的原词，翻译了就查不到对应日志）。
+      function renderDeployResults(results) {
+        const box = document.getElementById("deploy-results");
+        box.replaceChildren();
+        if (!results || !results.length) {
+          box.classList.add("hidden");
+          return;
+        }
+        box.classList.remove("hidden");
+        box.appendChild(el("div", "dep-res-title", t("caps.deploy.result_title", "下发结果")));
+        for (const r of results) {
+          const pushed = r.pushed === true || r.ok === true;
+          const err = r.error ? String(r.error) : "";
+          const line = el("div", "dep-res-row");
+          line.appendChild(el("span", "st-dot st-" + (pushed ? "applied" : "pending")));
+          line.appendChild(el("span", "dep-node-name", nodeNameOf(r.nodeId || r.node_id)));
+          // 文案不替 error 断言原因：只有 error 确实是 node_offline 才说
+          // 「已排队（节点离线）」；node_not_found 之类说「已排队」+ 原样的 error。
+          let label;
+          if (pushed) label = t("caps.deploy.pushed", "已下发");
+          // 离线的判定放宽成「error 里带 offline」（大小写无关）：
+          // 后端 ws.ErrNodeOffline 的文案是 "node is offline"，mock 用的是 "node_offline"，
+          // 以后换了措辞也不至于把「已排队（节点离线）」退化成中性文案。
+          else if (/offline/i.test(err)) label = t("caps.deploy.queued", "已排队（节点离线）");
+          else label = t("caps.deploy.queued_other", "已排队");
+          line.appendChild(el("span", pushed ? "dep-res-ok" : "dep-res-wait", label));
+          if (err) line.appendChild(el("span", "dep-res-err", err));
+          box.appendChild(line);
+        }
+      }
+
+      // undoDeploy 撤销一条部署。
+      //
+      // 204 空 body 也是成功：Anotify.api 在 ok 但空 body 时 res.json() 会抛
+      // SyntaxError，而这个错误**没有 .status**（契约 §2.5）。
+      // 所以判定方式是「有 status = 真失败；没 status = 空 body = 成功」。
+      async function undoDeploy(id, btn) {
+        if (!id) return;
+        // in-flight 保护：连点两下时第二条 DELETE 会 404（行已经删了）→ 弹「撤销失败」，
+        // 和第一下成功的「已撤销」自相矛盾。请求期间先禁用按钮。
+        if (btn) btn.disabled = true;
+        try {
+          await Anotify.api(depsURL({ id: id }), { method: "DELETE" });
+        } catch (e) {
+          if (e && e.status) {
+            toast(t("caps.deploy.undo_failed", "撤销失败：") + (e.detail || e.message));
+            return;
+          }
+          // 无 status → 空 body，按成功处理
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+        toast(t("caps.deploy.undone", "已撤销"));
+        // 面板重建同样由 loadAll() 负责（见 loadAll 末尾），这里不重复调用
+        await loadAll();
       }
 
       // ---------- 编辑器事件绑定 ----------
-      document.getElementById("schema-mode-form").addEventListener("click", () => {
-        schemaSwitch("form");
+      document.getElementById("tpl-back").addEventListener("click", () => {
+        tplGoStep(1);
       });
-      document.getElementById("schema-mode-json").addEventListener("click", () => {
-        schemaSwitch("json");
+      document.getElementById("script-mode-view").addEventListener("click", () => {
+        scriptModeSet("view");
       });
-      document.getElementById("schema-add-field").addEventListener("click", addSchemaField);
-      document.getElementById("schema-no-extra").addEventListener("change", (e) => {
-        if (e.target.checked) schemaObj.additionalProperties = false;
-        else delete schemaObj.additionalProperties;
+      document.getElementById("script-mode-edit").addEventListener("click", () => {
+        scriptModeSet("edit");
+      });
+      // 编辑区改一个字就先同步进 SCRIPT_TEXT，切回只读时 pre 才是最新的
+      document.getElementById("script-input").addEventListener("input", (e) => {
+        SCRIPT_TEXT = e.target.value;
+      });
+      // 超时被手改过之后就置脏：换模板时不再用模板默认值覆盖用户填的数字
+      document.getElementById("cap-timeout").addEventListener("input", () => {
+        TIMEOUT_DIRTY = true;
       });
 
       document.addEventListener("DOMContentLoaded", loadAll);

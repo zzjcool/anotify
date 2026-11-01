@@ -1142,12 +1142,15 @@ events:
     invalid_cursor: 游标已失效，已回到最新
 caps:
   title: 能力
+  sidebar: '控制台定义，节点执行'
   subtitle: 能力是"做什么"（不含"怎么做"）。出口（事件进来后往哪走）已独立成页。
   new: 定义能力
   loading: 正在加载能力…
+  load_failed: '能力列表载入失败，请刷新重试'
   empty: 还没有能力。定义一个，节点才能声明它。
   count: '{n} 个能力'
   no_outputs: 无出口（终端能力）
+  source_builtin: '内置'
   declared_by: 声明节点
   no_node: 没有节点声明
   no_node_hint: 这个能力跑不起来 —— 得先在节点上声明它
@@ -1161,6 +1164,57 @@ caps:
   rename_ph: 给它取个名字，例如「分析 PR」
   rename_failed: 改名失败
   renamed: 已更新名字
+  tpl:
+    title: '新建能力'
+    intro: '先选一个模板。模板只是一段预置脚本，字段和脚本正文选中后都能改。'
+    cat_script: '脚本'
+    cat_agent: 'Agent'
+    requires: '需要预装：{list}'
+    no_requires: '无预装依赖'
+    timeout_default: '默认 {n} 秒'
+    back: '换模板'
+    params: '参数'
+    no_params: '这个模板没有参数'
+    required: '必填'
+    script: '生成的脚本'
+    script_view: '只读'
+    script_edit: '改脚本'
+    script_hint: '脚本会被直接 exec（不经 shell），第一行必须是 #! shebang。'
+    script_shebang_err: '脚本第一行必须以 #! 开头'
+    loading: '正在载入模板…'
+    load_failed: '模板载入失败：'
+    empty: '后端没有返回任何模板'
+    created: '能力已创建'
+    created_digest: '已创建 · digest {digest}'
+  deploy:
+    col: '部署'
+    status_applied: '已部署 {n} 台'
+    status_pending: '部署中 {n}'
+    status_failed: '{n} 台失败'
+    status_local: '{n} 台本地变体'
+    status_none: '未部署'
+    status_unknown: '—'
+    btn: '部署'
+    title: '部署「{name}」'
+    subtitle: '勾机器或按 tag 批量选，然后点部署。'
+    pick_hint: '选机器'
+    tag_pick: '按 tag 选'
+    node_digest: '已部署 {digest}'
+    node_none: '未部署'
+    push: '部署'
+    pushing: '部署中…'
+    close: '关闭'
+    undo: '撤销'
+    undone: '已撤销'
+    undo_failed: '撤销失败：'
+    pushed: '已下发'
+    queued: '已排队（节点离线）'
+    queued_other: '已排队'
+    nodes_failed: '节点列表读不到，稍后重试'
+    result_title: '下发结果'
+    none_selected: '至少选一台机器'
+    no_nodes: '这个命名空间还没有节点'
+    err: '部署失败：'
   list:
     title: 能力列表
   form:
@@ -1191,6 +1245,10 @@ caps:
     schema_preserved: 以下内容可视化编辑不了，会原样保留：
     schema_form_hint: 只使用后端支持的关键字（type / properties / required / enum / 范围）。嵌套对象和数组请切到 JSON 模式。
     err_schema_obj: paramsSchema 必须是一个 JSON 对象
+    timeout: '超时（秒）'
+    timeout_hint: '0 = 不设本地超时，交给中枢租约'
+    err_invalid_name: '能力名只能用小写字母、数字、点、下划线、短横线，1–63 个字符，且以字母或数字开头'
+    err_timeout: '超时必须是 0–86400 的整数'
   edges:
     title: 出口表
     new: 新增边
@@ -1238,9 +1296,9 @@ nodes:
     title: 节点列表
   howto:
     title: 如何接入一台节点
-    desc: '注册就在这个页面上：令牌只显示一次，权威配置只活在这台机器的 node.yaml 里。'
-    step1: '点上方「注册节点」拿一次性令牌，把页面给出的 node.yaml 存到这台机器'
-    step2: '填好 capabilities（这台机器真会跑的能力），然后在节点机器上启动它'
+    desc: '注册就在这个页面上：令牌只显示一次，机器上跑一行 docker 命令就能起来，不需要任何配置文件。'
+    step1: '点上方「注册节点」拿一次性令牌，把页面给出的命令贴到这台机器上执行'
+    step2: '机器上线后到「能力」页点部署，它就有活了'
   view_events: 查看事件
   register:
     btn: '注册节点'
@@ -1250,7 +1308,7 @@ nodes:
     name_ph: '例如 my-mbp'
     name_hint: '小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
     instances: '实例数（可选）'
-    instances_hint: '这台机器上并行跑几个实例：它会原样写进 node.yaml 的 instances。中枢硬顶 20，默认 1。'
+    instances_hint: '这台机器上并行跑几个实例（建议值，中枢会夹到 20）。真正的槽位数由 agent 上线握手时申报。'
     submit: '注册'
     cancel: '取消'
     submitting: '注册中…'
@@ -1259,9 +1317,11 @@ nodes:
     warn_once: '令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。'
     token_title: '一次性令牌'
     copy_token: '复制令牌'
-    yaml_title: 'node.yaml（可直接粘）'
-    copy_yaml: '复制 YAML'
-    yaml_hint: '存成 node.yaml，把 capabilities 换成这台机器真会跑的能力，再执行 agent -f node.yaml'
+    yaml_title: '在机器上执行这一行'
+    copy_yaml: '复制命令'
+    yaml_hint: '命令里的 token 只出现这一次，丢了这个节点就得删掉重新注册。'
+    cmd_intro: '把下面这行命令贴到机器上执行（不需要任何配置文件）：'
+    cmd_after: '机器上线后在「能力」页点部署，它就有活了。'
     err:
       empty_name: '先填节点名'
       invalid_name: '名字不合法：只能用小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
@@ -1435,6 +1495,7 @@ edges:
   empty: 出口表为空：事件进来后没有任何出口可走。
   nomatch: 没有匹配的边。
   created: 边已创建
+  fanout: '扇出 ×{n}'
   removed: 边已删除
   err_port: 请填写出口名
   err_self: 不能让能力连到自己
@@ -1599,3 +1660,14 @@ pb:
     create_source: 创建源
   yaml:
     hint: 下面是要补进节点的那一段（只含缺的能力）。粘进 node.yaml 后重启 agent，节点上线就会自动声明。
+
+node:
+  artifacts:
+    title: '已缓存的产物'
+    empty: '这台机器还没有部署任何能力'
+    load_failed: '产物列表载入失败'
+    state_applied: '已应用'
+    state_pending: '下发中'
+    state_failed: '失败'
+    state_local: '本地变体'
+    digest: 'digest'
