@@ -2389,11 +2389,6 @@
 
 	// ===== 部署（CONTRACT-protocol §7 / §11） =====
 	//
-	// 形状对齐契约：
-	//   {deployments:[{id, nodeId, nodeName, capabilityId, capabilityName,
-	//                  version, digest, state, reason, updatedAt}]}
-	// nodeName / capabilityName / version 是中枢 join 出来的**展示字段**：
-	// 前端只拿到 id 时也能显示「哪台机器上的哪个能力」，否则列表里全是 id。
 	// depView 按 **store.Deployment 的真实 JSON tag** 输出
 	//（internal/store/deployment.go:47）：
 	//   id / namespaceId / nodeId / artifactId / capabilityId / capability(名字) /
@@ -2446,7 +2441,10 @@
 		);
 		// 一台都没匹配上 → 400 no_target_node（真后端同款）
 		if (!picked.length) {
-			return err(400, "no node matched the selector");
+			return json(
+				{ error: "no node matched the selector", code: "no_target_node" },
+				400,
+			);
 		}
 		// digest 缺省取该能力最新产物（契约 §11）。没有产物就是「还没编译」——
 		// 真后端也会拒；这里给一个确定性假值，好让演示能走完整个面板。
