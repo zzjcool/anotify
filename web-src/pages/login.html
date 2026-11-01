@@ -632,7 +632,9 @@
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            throw new Error(data.error || "HTTP " + res.status);
+            const err = new Error(data.error || "HTTP " + res.status);
+            err.status = res.status; // 供 classifyFailure 判断 4xx / 5xx
+            throw err;
           }
           return res.json();
         }
@@ -693,6 +695,22 @@
           } else {
             go();
           }
+        }
+
+        // 把请求失败分成三类：网络不可达 / 服务端 5xx（都算"后端没连上"）、
+        // 客户端 4xx（**是后端明确拒绝**，必须如实报给用户）。
+        //
+        // 为什么必须分：早先注册流程只看 `String(e).includes("HTTP")`，
+        // 于是"用户名已存在"（400）也会被当成"后端未连接，已进入演示模式"——
+        // 用户看到的是假故障，真错误被吞掉（#273）。登录/恢复码同理。
+        function classifyFailure(e) {
+          const msg = String((e && e.message) || e || "");
+          // postJSON 抛的是 Error(服务端 error 文案)，状态码不总在字符串里；
+          // 有 err.status 就用它，没有再退回解析 "HTTP xxx"。
+          const status = (e && e.status) || Number(((/HTTP (\d{3})/.exec(msg) || [])[1]) || 0);
+          if (status) return status >= 500 ? "server" : "rejected";
+          if (/Failed to fetch|NetworkError|load failed/i.test(msg)) return "offline";
+          return "other";
         }
 
         function demoEnter(name) {
@@ -776,8 +794,8 @@
               )
             ) {
               /* 已区分：取消 / 超时 / 无认证器 */
-            } else if (String(e).includes("Failed to fetch")) {
-              demoEnter("zheng");
+            } else if (classifyFailure(e) !== "other" && classifyFailure(e) !== "rejected") {
+              demoEnter("zheng"); // 网络不可达或 5xx
             } else {
               showStatus(
                 t("login.status.login_failed", "登录失败：").replace(
@@ -877,11 +895,18 @@
           } catch (e) {
             const env = await currentAuthEnv();
             const elapsed = ceremony ? performance.now() - ceremony.started : -1;
-            if (
-              String(e).includes("HTTP") ||
-              String(e).includes("Failed to fetch")
-            ) {
-              demoEnter(username);
+            const kind = classifyFailure(e);
+            if (kind === "offline" || kind === "server") {
+              demoEnter(username); // 真·后端不可用
+            } else if (kind === "rejected") {
+              // 后端明确拒绝（用户名已存在 / 校验失败 / RP 不匹配…）：如实显示，不进退演示模式
+              showStatus(
+                t("login.status.signup_failed", "注册失败：").replace(
+                  "{msg}",
+                  String((e && e.message) || e),
+                ),
+                "error",
+              );
             } else if (
               ceremony &&
               showCeremonyError(
@@ -978,7 +1003,8 @@
               : "security.html?from=recovery";
             navigate(dest, 500);
           } catch (e) {
-            if (String(e).includes("Failed to fetch")) {
+            const kind = classifyFailure(e);
+            if (kind === "offline" || kind === "server") {
               demoEnter(username);
             } else {
               showStatus(

@@ -672,6 +672,7 @@
 
     let NOTIFICATIONS = [];
     let usingDemo = false;
+    let demoReason = ""; // 「演示数据」徽章的补充原因（诊断用，见 #273）
     let STATS = null; // /v1/stats 真实统计（热力图 + KPI）
 
     async function load() {
@@ -686,7 +687,20 @@
           connected = true;
         }
       } catch (e) {
-        connected = false; // 401 已由 api() 跳登录；这里是真·网络/服务未连接
+        connected = false; // 401 已由 api() 跳登录
+        // 把真实原因带出来：早先这里一律显示「后端未连接」，于是
+        // 400（缺/错的 namespaceId）、404（端点改名）、5xx 全都长得像「后端挂了」，
+        // 排查时被误导过（#273）。徽章上带一眼能看懂的原因。
+        const msg = String((e && e.message) || e || "");
+        // api() 会把状态码挂在 err.status 上（比解析 "HTTP xxx" 字符串可靠）
+        const code = (e && e.status) || (/HTTP (\d{3})/.exec(msg) || [])[1];
+        demoReason = code
+          ? (Number(code) >= 500 ? "服务端错误 HTTP " + code : "请求被拒绝 HTTP " + code)
+          : /Failed to fetch|NetworkError|load failed/i.test(msg)
+            ? "连不上服务端"
+            : msg
+              ? "请求失败"
+              : "";
       }
       usingDemo = !connected;
       NOTIFICATIONS = (connected ? items : DEMO_NOTIFICATIONS)
@@ -698,9 +712,21 @@
       } catch {
         STATS = null;
       }
-      document
-        .getElementById("demo-badge")
-        .classList.toggle("hidden", !usingDemo);
+      const badgeEl = document.getElementById("demo-badge");
+      badgeEl.classList.toggle("hidden", !usingDemo);
+      // 不新增 i18n key（四语言的 key 集合由 e2e 严格校验），也不动既有文案：
+      // 只追加一个 data 属性标记的小段说明，重复渲染时原地更新。
+      let reasonEl = badgeEl.querySelector("[data-demo-reason]");
+      if (usingDemo && demoReason) {
+        if (!reasonEl) {
+          reasonEl = document.createElement("span");
+          reasonEl.setAttribute("data-demo-reason", "");
+          badgeEl.appendChild(reasonEl);
+        }
+        reasonEl.textContent = " · " + demoReason;
+      } else if (reasonEl) {
+        reasonEl.remove();
+      }
       // 问候语跟当前登录用户对齐（#21）；qs ?u= 仅作兜底
       try {
         const me = await window.Anotify.loadMe();
