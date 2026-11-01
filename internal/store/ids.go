@@ -79,6 +79,12 @@ func NewTaskID() string      { return newID("tsk") }
 // NewPlaybookID 生成预案 ID：pb_<base62>（#193，与 mock / 设计稿的 pb_ 前缀一致）。
 func NewPlaybookID() string { return newID("pb") }
 
+// NewArtifactID 生成能力产物 ID：af_<base62>（console-declares epic）。
+func NewArtifactID() string { return newID("af") }
+
+// NewDeploymentID 生成部署 ID：dp_<base62>（console-declares epic）。
+func NewDeploymentID() string { return newID("dp") }
+
 // NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。
 //
 // 形态里有时间戳和内容 hash 前 8 位——但这两者都**不足以保证唯一**：

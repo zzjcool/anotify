@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
@@ -707,6 +708,14 @@ type capabilityListRequest struct {
 	Sticky       string           `json:"sticky,omitempty"`
 	Lifecycle    *store.Lifecycle `json:"lifecycle,omitempty"`
 	Source       string           `json:"source,omitempty"`
+
+	// Run 是这个能力的**实现**（可选）。有 run → 编译成一份产物并落 artifacts，
+	// 之后就能在控制台点「部署」。没有 run → 纯定义（例如占位节点、内置能力）。
+	//
+	// v2 的语义变化：执行方式属于能力定义，不再由节点在 node.yaml 里自报。
+	Run *capabilityRunInput `json:"run,omitempty"`
+	// Requires 是机器上必须预装的外部命令（部署时探测，缺了部署失败）。
+	Requires []string `json:"requires,omitempty"`
 }
 
 // capabilities 处理 GET（列表）/ POST（定义新能力）。
@@ -936,6 +945,22 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		c.Lifecycle = *req.Lifecycle
 	}
 
+	// 产物必须在**建能力之前**编好并校验：一份 run 写错的请求不该留下一个
+	// 只建了一半的能力（append-only 的能力表里，那会成为一条永远改不掉、也
+	// 永远跑不起来的定义）。
+	var compiled *artifact.Artifact
+	if req.Run != nil {
+		built, err := buildArtifact(c, req.Run, req.Requires)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+				"code":  "invalid_artifact",
+			})
+			return
+		}
+		compiled = built
+	}
+
 	if err := h.db.CreateCapability(r.Context(), c); err != nil {
 		// 命名空间类错误（如 namespace 已不存在）有自己确实的状态码，不能当成 409
 		if handleNamespaceError(w, err) {
@@ -951,11 +976,29 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"capability": c,
-		// 新建时该能力还没有节点声明（declared=false），但内置能力要走特例
+		// 新建时还不可能有节点声明（declared=false），但内置能力要走特例
 		"kind": route.KindForCapability(c, false),
-	})
+	}
+	if compiled != nil {
+		saved, digest, err := storeArtifact(r.Context(), h.db, ns.ID, compiled)
+		if err != nil {
+			// 能力已经建好了（append-only，无法回滚），产物落库失败只能如实报错：
+			// 用户看到的应该是「能力建了但产物没存，请重试」，而不是一个假的 200。
+			slog.Error("store artifact failed",
+				"event", "console.caps.artifact_failed",
+				"namespace_id", ns.ID, "name", c.Name, "version", c.Version, "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "capability created but artifact could not be stored: " + err.Error(),
+				"code":  "artifact_store_failed",
+			})
+			return
+		}
+		resp["artifact"] = saved
+		resp["digest"] = digest
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---------- GET/POST/DELETE /v1/edges ----------
@@ -1131,9 +1174,6 @@ type nodeCapView struct {
 	Name        string `json:"name"`
 	Version     int    `json:"version"`
 	DisplayName string `json:"displayName"`
-	// RunSpec 是节点上报的执行方式原文（`{}` = 声明了能力但没声明执行方式）。
-	// 只用于展示与诊断，中枢从不执行它（I1 边界）。
-	RunSpec json.RawMessage `json:"runSpec"`
 }
 
 // nodeView 是 nodes 表的一行 + 控制台需要的派生信息。
@@ -1183,16 +1223,11 @@ func (h *consoleHandler) viewsFor(ctx context.Context, nodes []*store.Node) []no
 		caps := capsByNode[n.ID]
 		capViews := make([]nodeCapView, 0, len(caps))
 		for _, c := range caps {
-			runSpec := c.RunSpec
-			if len(runSpec) == 0 {
-				runSpec = json.RawMessage(`{}`) // I9：宁可是空对象，也不要是 null/省略
-			}
 			capViews = append(capViews, nodeCapView{
 				ID:          c.ID,
 				Name:        c.Name,
 				Version:     c.Version,
 				DisplayName: c.DisplayName,
-				RunSpec:     runSpec,
 			})
 		}
 		stat := statsByNode[n.ID] // 没申报槽位的节点查不到 → 零值

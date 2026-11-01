@@ -94,6 +94,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	12: migrateNamespaces,
 	14: migrateDropOrgLayer,
 	15: migrateEdgeLookupIndex,
+	18: migrateCapabilityToDeploy,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。

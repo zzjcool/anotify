@@ -478,7 +478,7 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 		"event", "node.ws.hello",
 		"node_id", s.node.ID,
 		"namespace_id", s.node.NamespaceID,
-		"capabilities", len(f.Capabilities),
+		"applied", len(f.Applied),
 		"instances", len(f.Instances),
 	)
 	return nil
