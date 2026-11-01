@@ -1,0 +1,112 @@
+# Anotify · 本地开发环境（源码构建 + 可选 Cloudflare 命名隧道）
+#
+# 与仓库根的 docker-compose.yml 的区别：
+#   - 那份是**部署**用：拉 GHCR 官方镜像、只跑一个服务、不带隧道
+#   - 这份是**开发**用：从源码构建（含 devseed 播种工具）、带隧道 sidecar、
+#     默认只监听 127.0.0.1（避免和已部署实例/他人服务抢端口）
+#
+# 用法：
+#   make dev-env            # 一次性：生成 .env.dev（含真实 VAPID 密钥）
+#   make dev-up             # 构建并启动（本地 8080）
+#   make dev-up TUNNEL=1    # 同时启动 cloudflared 命名隧道 → anotify-dev.openaaas.org
+#   make dev-seed           # 播种 demo 用户（幂等）
+#   make dev-demo           # 播种 + 真跑一条完整事件链（能力图/节点/派发）
+#   make dev-logs           # 跟踪日志
+#   make dev-down           # 停止（数据卷保留）
+#   make dev-reset          # 停止并删除数据卷（重新开始）
+#
+# 端口：默认 8080（宿主机）。已部署的 dogfood 实例在 18080，两者不冲突。
+
+name: anotify-dev
+
+services:
+  anotify:
+    # 不指定 target = Dockerfile 最后一个阶段（生产 runtime，只带 server 二进制）
+    build:
+      context: .
+    image: anotify-dev:local
+    container_name: anotify-dev
+    restart: unless-stopped
+    # 默认只绑回环：隧道在同一个 docker 网络里走 anotify:8080，不需要对外开端口。
+    # 想让局域网直连就设 ANOTIFY_DEV_BIND=0.0.0.0。
+    ports:
+      - "${ANOTIFY_DEV_BIND:-127.0.0.1}:${ANOTIFY_DEV_PORT:-8080}:8080"
+    env_file:
+      - .env.dev # VAPID / RP 等（由 make dev-env 生成，已在 .gitignore）
+    environment:
+      ANOTIFY_ADDR: :8080
+      ANOTIFY_DB: /data/anotify.db
+      ANOTIFY_LOG_LEVEL: ${ANOTIFY_LOG_LEVEL:-debug}
+      # 开发环境开 pprof：性能排查用（生产默认关闭）
+      ANOTIFY_PPROF: ${ANOTIFY_PPROF:-1}
+    volumes:
+      - anotify-dev-data:/data
+    healthcheck:
+      # 镜像里没有 curl（alpine 精简），用二进制自带的 /health + wget
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # 一次性播种：创建 demo 用户（幂等，重复跑不会重复建）
+  seed:
+    # 用 build 阶段（golang 镜像 + 已编译的 /devseed）：播种工具不进运行镜像
+    build:
+      context: .
+      target: build
+    image: anotify-dev-tools:local
+    profiles: ["tools"]
+    entrypoint: ["/devseed"]
+    command: ["-db", "/data/anotify.db", "-username", "demo", "-admin"]
+    volumes:
+      - anotify-dev-data:/data
+    depends_on:
+      anotify:
+        condition: service_healthy
+
+  # 真跑一条完整链路：能力图 + 注册节点（真 WS 握手）+ 发事件 + 节点接单回报
+  demo:
+    build:
+      context: .
+      target: build
+    image: anotify-dev-tools:local
+    profiles: ["tools"]
+    entrypoint: ["/devseed"]
+    command:
+      - "-db"
+      - "/data/anotify.db"
+      - "-username"
+      - "demo"
+      - "-admin"
+      - "-demo"
+      - "-demo-url"
+      - "http://anotify:8080" # 走 compose 内网，域名/端口都不影响
+    volumes:
+      - anotify-dev-data:/data
+    depends_on:
+      anotify:
+        condition: service_healthy
+
+  # Cloudflare 命名隧道：把 anotify-dev.openaaas.org 指到本服务的 8080。
+  #
+  # 启用条件（两者都要）：
+  #   1. .env.dev 里填了 CLOUDFLARE_TUNNEL_TOKEN
+  #   2. 用 --profile tunnel 启动（make dev-up TUNNEL=1）
+  #
+  # 域名 → 服务的映射在 Cloudflare 侧配置（见 docs/dev-docker.md）：
+  #   Public hostname: anotify-dev.openaaas.org  →  http://anotify:8080
+  # 这里不用 --url（那是临时隧道，域名随机、且不能绑自定义域名）。
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: anotify-dev-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN}"]
+    depends_on:
+      anotify:
+        condition: service_healthy
+
+volumes:
+  anotify-dev-data:
+    name: anotify-dev-data

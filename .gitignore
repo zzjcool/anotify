@@ -6,6 +6,7 @@ subscriptions.json
 *.db-shm
 .env.local
 .env
+/.env.dev
 
 # === 依赖 ===
 node_modules/

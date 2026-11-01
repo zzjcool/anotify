@@ -35,7 +35,8 @@ COPY . .
 # 用指纹产物覆盖（go:embed 在编译期读取 internal/server/dist；
 # web/*.html 已由源码 COPY 进来，但 fe 阶段才是权威产物，故用 fe 覆盖）
 COPY --from=fe /app/internal/server/dist ./internal/server/dist
-RUN go build -trimpath -ldflags="-s -w" -tags embeddist -o /anotify ./cmd/server
+RUN go build -trimpath -ldflags="-s -w" -tags embeddist -o /anotify ./cmd/server \
+    && go build -trimpath -ldflags="-s -w" -o /devseed ./cmd/devseed
 
 # ---- 运行 ----
 FROM alpine:3.20
@@ -56,3 +57,5 @@ EXPOSE 8080
 USER anotify
 VOLUME ["/data"]
 ENTRYPOINT ["anotify"]
+# devseed 只在 build 阶段产出（不复制进 runtime）：本地开发用它播种，
+# 生产镜像刻意只带 server 一个二进制。见 docker-compose.dev.yml 的 seed/demo 服务。
