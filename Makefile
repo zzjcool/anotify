@@ -47,11 +47,14 @@ build: fe ## 构建单二进制（内嵌指纹后的前端）
 test: ## 运行全部单元测试（不含 make e2e / make integration）
 	go test ./... -count=1
 
-# contract: 契约 §9 的静态断言（A2 / A4）。这几条不依赖运行期，放在 CI 里最快。
+# contract: 契约 §9 的静态断言。这几条不依赖运行期，放在 CI 里最快。
 #
-# A2（不变量 I1）：schema 里不得出现可执行的命令/脚本概念
-# A4（不变量 I3）：kind 是推导量，**不得**落库
-contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4）+ openapi 与 mux 一致性
+# A2（I1）：schema 里不得出现可执行的命令/脚本概念
+# A4（I3）：kind 是推导量，**不得**落库
+# A5（I1）：中枢侧任何包不得 import os/exec —— 执行只发生在节点
+# A6（I1）：artifacts / deployments 必须有 digest 列（内容寻址）
+# A7（I1）：cmd/agent 不得触碰 node_capabilities（归属只能由部署派生）
+contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ openapi 与 mux 一致性
 	@set -e; \
 	if grep -riE 'argv|shell|script' internal/store/schema.sql >/dev/null; then \
 		echo "❌ A2 失败：schema.sql 里出现 argv/shell/script（不变量 I1）"; \
@@ -60,7 +63,7 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4）+ openapi 与 mu
 	fi
 	@python3 scripts/check_contract.py
 	@python3 scripts/check_openapi.py
-	@echo "✅ 契约静态断言（A2/A4 + openapi 一致性）通过"
+	@echo "✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性）通过"
 
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试（不含 e2e / integration）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
