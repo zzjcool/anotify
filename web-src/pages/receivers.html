@@ -46,9 +46,6 @@
               >0</span
             >
           </button>
-          <span id="demo-badge" class="demo-badge hidden ml-2">
-            <span class="dot dot-warn"></span>{{t "receivers.demo_badge"}}
-          </span>
         </div>
 
         <!-- ========== 通道 1：推送订阅 ========== -->
@@ -297,7 +294,7 @@
           final: t("receivers.scope.final", "只收最终结果"),
         };
         let DEVICES = [];
-        let usingDemo = false;
+        let loadError = null;
 
         // Per-platform "not receiving?" checklist (shown by device platform for self-help)
         const PLATFORM_TROUBLESHOOT = {
@@ -327,38 +324,6 @@
           ],
         };
 
-        const DEMO_DEVICES = [
-          {
-            id: "dev_demo1",
-            nameKey: "receivers.demo.device1",
-            platform: "ios",
-            enabled: true,
-            eventScope: "all",
-            tags: [t("receivers.demo.tag_phone", "手机")],
-            lastDelivered: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 2),
-            browser: "iOS Safari",
-          },
-          {
-            id: "dev_demo2",
-            nameKey: "receivers.demo.device2",
-            platform: "mac",
-            enabled: true,
-            eventScope: "all",
-            tags: [t("receivers.demo.tag_work", "工作")],
-            lastDelivered: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 18),
-            browser: "macOS Safari",
-          },
-          {
-            id: "dev_demo3",
-            nameKey: "receivers.demo.device3",
-            platform: "win",
-            enabled: false,
-            eventScope: "final",
-            tags: [],
-            lastDelivered: t("common.time.days_ago", "{n} 天前").replace("{n}", 3),
-            browser: "Chrome",
-          },
-        ];
 
         function normalizeDevice(d) {
           const meta = PLATFORM_META[d.platform] || PLATFORM_META.other;
@@ -407,9 +372,9 @@
             if (!Array.isArray(items)) items = null;
           } catch (e) {
             items = null;
+            loadError = e; // 载入失败：渲染错误态，不伪造设备（#273）
           }
-          usingDemo = !items;
-          DEVICES = (items || DEMO_DEVICES).map(normalizeDevice);
+          DEVICES = (items || []).map(normalizeDevice);
           // 查本机当前浏览器的 push 订阅，把 endpoint 匹配的设备标为「本机」。
           // 这样状态卡/设备列表能正确识别本机设备（而非永远显示“未开启”）。
           try {
@@ -426,9 +391,6 @@
           } catch {
             /* SW 未就绪或无订阅，忽略 */
           }
-          document
-            .getElementById("demo-badge")
-            .classList.toggle("hidden", !usingDemo);
           renderDevices();
           renderCurrentDevice();
         }
@@ -637,6 +599,13 @@
         function renderDevices() {
           const list = document.getElementById("device-list");
           document.getElementById("push-count").textContent = DEVICES.length;
+          if (loadError) {
+            // 载入失败就如实说，不伪造设备（演示数据只在 make mock 的 /mock.js 里）
+            list.replaceChildren(
+              window.Anotify.loadErrorNode(loadError, () => load()),
+            );
+            return;
+          }
           if (DEVICES.length === 0) {
             list.replaceChildren(
               el("div", {
@@ -819,7 +788,6 @@
           Object.assign(d, patch);
           renderDevices();
           renderCurrentDevice();
-          if (usingDemo) return;
           try {
             await api(`/v1/devices/${encodeURIComponent(d.id)}`, {
               method: "PATCH",
@@ -843,7 +811,6 @@
           DEVICES = DEVICES.filter((x) => x !== d);
           renderDevices();
           renderCurrentDevice();
-          if (usingDemo) return;
           try {
             await api(`/v1/devices/${encodeURIComponent(d.id)}`, {
               method: "DELETE",
@@ -940,28 +907,14 @@
               const data = await api("/v1/vapid-public-key");
               publicKey = data.publicKey || data.key;
             } catch (e) {
+              // 拿不到 VAPID 公钥 = 后端不可用：如实报错，**不伪造设备**（#273）
               pairMsg(
                 t(
                   "receivers.pair.no_backend",
-                  "后端未连接，无法获取 VAPID 公钥（演示模式仅登记设备，不真正订阅）。",
+                  "后端未连接，拿不到 VAPID 公钥，无法订阅推送。请检查服务后重试。",
                 ),
-                "warn",
+                "error",
               );
-              DEVICES.push({
-                id: "dev_" + Math.random().toString(36).slice(2, 8),
-                name,
-                platform: detectPlatform(),
-                enabled: true,
-                eventScope: "final",
-                tags: [],
-                lastDelivered: "—",
-                browser: PLATFORM_META[detectPlatform()].label,
-                isCurrent: true,
-              });
-              renderDevices();
-              renderCurrentDevice();
-              closePair();
-              toast(t("receivers.toast.added_demo", "已登记（演示）"), "warn");
               return;
             }
             if (!publicKey) throw new Error(t("receivers.pair.empty_vapid", "VAPID 公钥为空"));

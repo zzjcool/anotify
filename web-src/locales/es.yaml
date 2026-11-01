@@ -1,4 +1,10 @@
 common:
+  load_failed_prefix: 'Error al cargar: '
+  retry: 'Reintentar'
+  backend_offline: 'no se puede conectar al servidor'
+  server_error: 'error del servidor HTTP {code}'
+  request_rejected: 'solicitud rechazada HTTP {code}'
+  request_failed: 'la solicitud falló'
   brand:
     name: Anotify
     tagline: Notifica cuando tu agente termina
@@ -113,6 +119,10 @@ common:
     error: Error
     summary: Resumen
 index:
+  load:
+    failed: 'Error al cargar: '
+    retry: 'Reintentar'
+    bad_shape: 'Formato de respuesta inesperado'
   title: Resumen
   subtitle: Tus notificaciones de un vistazo
   greeting:
@@ -209,6 +219,8 @@ index:
     no_devices_block: No hay receptores. Activa notificaciones o añade un dispositivo en Receptores primero.
     cancel: Cancelar
   notif:
+    reported: 'Reportado'
+    unreported: 'Sin reportar'
     empty: No hay notificaciones con este estado
     delivered: '{d}/{t} dispositivos entregados'
     count: Mostrando {n}
@@ -388,6 +400,8 @@ login:
     webauthn: Estándar WebAuthn
     no_third_party: Sin cuentas de terceros
   status:
+    offline: 'No se puede conectar al servidor. Verifica que esté en ejecución y reintenta.'
+    server_error: 'Error del servidor (HTTP 5xx). Reintenta más tarde o revisa el log.'
     demo: Backend no conectado — modo demo activado (datos de ejemplo).
     login_success: Sesión iniciada — entrando al espacio…
     signup_success: Cuenta creada — entrando al espacio…
@@ -1094,6 +1108,8 @@ admin:
     action: Acción fallida
     network: Error de red
 events:
+  load_failed_hint: 'Error al cargar: no se puede conectar al servidor, reintenta.'
+  load_failed: 'Error al cargar: no se puede conectar al servidor, reintenta'
   title: Flujo de eventos
   subtitle: Cambios del mundo exterior → cadenas de tareas → resultados. Haz clic en un evento para ver su cadena completa.
   refresh: Actualizar

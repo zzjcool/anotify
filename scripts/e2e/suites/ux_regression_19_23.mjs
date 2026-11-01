@@ -345,9 +345,7 @@ async function main() {
 			devices: (
 				document.getElementById("kpi-devices")?.textContent || ""
 			).trim(),
-			demo: !document
-				.getElementById("demo-badge")
-				?.classList.contains("hidden"),
+
 		}));
 		H.check(
 			"#23 0 设备时送达率不是假 100%",

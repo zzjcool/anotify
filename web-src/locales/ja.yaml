@@ -1,4 +1,10 @@
 common:
+  load_failed_prefix: '読み込みに失敗：'
+  retry: '再試行'
+  backend_offline: 'サーバーに接続できません'
+  server_error: 'サーバーエラー HTTP {code}'
+  request_rejected: 'リクエスト拒否 HTTP {code}'
+  request_failed: 'リクエスト失敗'
   brand:
     name: Anotify
     tagline: エージェント完了通知
@@ -113,6 +119,10 @@ common:
     error: エラー
     summary: 結果サマリ
 index:
+  load:
+    failed: '読み込みに失敗：'
+    retry: '再試行'
+    bad_shape: 'レスポンス形式が不正'
   title: 概要
   subtitle: 通知の概要
   greeting:
@@ -209,6 +219,8 @@ index:
     no_devices_block: 受信デバイスがありません。先に「通知受信」で本機通知をオンにするかデバイスを追加してください。
     cancel: キャンセル
   notif:
+    reported: '報告済み'
+    unreported: '未報告'
     empty: このステータスの通知はありません
     delivered: '{d}/{t} 台に配信済み'
     count: '{n} 件表示'
@@ -388,6 +400,8 @@ login:
     webauthn: WebAuthn 標準
     no_third_party: サードパーティアカウント不要
   status:
+    offline: 'サーバーに接続できません。起動しているか確認して再試行してください。'
+    server_error: 'サーバーエラー（HTTP 5xx）。しばらくしてから再試行してください。'
     demo: バックエンド未接続 — デモモードに入りました（サンプルデータ）。
     login_success: ログイン成功 — ワークスペースに入ります…
     signup_success: 登録完了 — ワークスペースに入ります…
@@ -1094,6 +1108,8 @@ admin:
     action: 操作に失敗
     network: ネットワークエラー
 events:
+  load_failed_hint: '読み込みに失敗：サーバーに接続できません。再試行してください。'
+  load_failed: '読み込みに失敗：サーバーに接続できません。再試行してください'
   title: イベントストリーム
   subtitle: 外部世界の変化 → タスクチェーン → 結果。イベントをクリックするとチェーン全体を表示します。
   refresh: 更新

@@ -1468,8 +1468,48 @@
 		return out;
 	}
 
+	/**
+	 * loadErrorNode 渲染「载入失败 + 重试」，是一个 DOM 节点，调用方自己塞进合适的位置。
+	 *
+	 * 为什么要有它：页面**绝不**在后端失败时伪造数据（#273）。演示数据只有 make mock
+	 * 那条路——cmd/fe-preview 给每个 HTML 注入 /mock.js，由它在 fetch 层应答，
+	 * 页面代码不需要知道"演示数据"的存在。真实部署下把失败画成示例数据，
+	 * 只会让人把「服务挂了」看成「功能如此」。
+	 *
+	 * err 约定：fetch 层会带 status（见 api()）；网络错误没有 status。
+	 */
+	function loadErrorNode(err, onRetry) {
+		const msg = String((err && err.message) || err || "");
+		const status = (err && err.status) || 0;
+		// 文案全部走 t()：错误态也得翻译，否则 es/ja 页面上会漏出中文
+		// （i18n_coverage 的 "no CJK residue" 就是抓这个的）。
+		const reason = status
+			? status >= 500
+				? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
+				: t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
+			: /Failed to fetch|NetworkError|load failed/i.test(msg)
+				? t("common.backend_offline", "连不上服务端")
+				: msg || t("common.request_failed", "请求失败");
+		const box = document.createElement("div");
+		box.className = "flex flex-col items-center gap-3 px-6 py-10 text-center";
+		const p = document.createElement("p");
+		p.className = "text-sm text-zinc-400";
+		p.textContent = t("common.load_failed_prefix", "载入失败：") + reason;
+		box.appendChild(p);
+		if (typeof onRetry === "function") {
+			const btn = document.createElement("button");
+			btn.type = "button";
+			btn.className = "btn-secondary rounded-lg px-3 py-1.5 text-xs font-medium";
+			btn.textContent = t("common.retry", "重试");
+			btn.addEventListener("click", onRetry);
+			box.appendChild(btn);
+		}
+		return box;
+	}
+
 	window.Anotify = {
 		el,
+		loadErrorNode,
 		icon,
 		capLabel,
 		mountLayout,

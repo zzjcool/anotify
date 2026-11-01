@@ -3,14 +3,14 @@
  *
  * 覆盖 case：
  *  A. 路由守卫：未登录访问 index/receivers/keys/security/message/connect → 自动跳 login.html
- *  B. 已登录访问 index → 不显示「演示数据」徽章（demo-badge 隐藏），渲染真实数据（哪怕空）
+ *  B. 已登录访问 index → 渲染真实数据（哪怕空）；演示模式已移除（#273），无 demo-badge
  *  C. login.html 是公开页：未登录正常渲染、不跳转
  *  D. 全部页面（index/login/receivers/keys/security/docs/message/connect）在 桌面1280 + 移动390 两视口：
  *     无 JS pageerror、无横向溢出、能滚动到底
- *     （/v1/* 的 401/404 是预期降级，不算失败；demo-badge 显示是后端未连接的预期行为）
+ *     （/v1/* 的 401/404 是预期降级，不算失败；后端不可用时页面显示「载入失败 + 重试」）
  *  E. connect.html 独立页：侧栏导航直连 + active 高亮 + 6 区块 + 无裸 i18n key
  *  F. connect.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证 demo 徽章亮 + 三灯显「—」（尚未实现）
- *  G. index.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证演示数据状态徽章按真实 agentState 渲染
+ *  G. index.html 错误态：page.route 拦截 /v1/* 模拟后端宕机，验证渲染「载入失败 + 重试」且不伪造数据
  *     （回归防护：旧协议字段 status 残留曾致 normalize 全部降级 working）
  *  H. nodes.html 注册节点（#198）：表单 → 一次性令牌 → 可直接粘的 node.yaml；
  *     再点入口必须把令牌真从 DOM 清掉，重名只报重名不给令牌（mock 全流程 + 真后端一次注册）
@@ -1023,16 +1023,16 @@ async function main() {
 			await page3.close();
 		}
 
-		// demo-badge 应隐藏（有真实数据，非演示模式）
-		const badgeHidden = await page.evaluate(() => {
-			const b = document.getElementById("demo-badge");
-			if (!b) return "missing";
-			return b.classList.contains("hidden");
-		});
+		// 演示模式已整体移除（#273）：不再有 demo-badge，页面要么渲染真实数据、
+		// 要么渲染「载入失败 + 重试」。这条断言防的是"演示数据又偷偷回来"。
+		const demoLeftovers = await page.evaluate(() => ({
+			badge: !!document.getElementById("demo-badge"),
+			text: (document.body.textContent || "").includes("演示数据"),
+		}));
 		H.check(
-			"已登录 index 不显示「演示数据」徽章",
-			badgeHidden === true,
-			`badgeHidden=${badgeHidden}`,
+			"index 不再有演示模式残留（#demo-badge 已移除）",
+			demoLeftovers.badge === false && demoLeftovers.text === false,
+			JSON.stringify(demoLeftovers),
 		);
 
 		// 真实通知应出现在列表中
@@ -1047,79 +1047,61 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- G. index.html 演示态：后端宕机 → 演示数据状态正确（回归：旧字段 status 曾致全部降级 working）----
-	console.log("--- index 演示态（后端宕机）---");
+	// ---- G. index.html 后端宕机 → 如实报「载入失败 + 重试」，**不伪造数据**（#273）----
+	console.log("--- index 后端宕机（错误态 + 重试）---");
 	{
 		const s = H.seed(server.dbPath, "demo_test");
 		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
-		// 拦截 /v1/* 模拟后端宕机：api() 网络错误（非 401）→ 不跳登录，回退演示数据
+		// 拦截 /v1/* 模拟后端宕机（网络错误，非 401 → 不跳登录）
 		await ctx.route("**/v1/**", (route) => route.abort());
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/index.html", {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await H.waitForAppReady(page, "workspace", {
-			dataAnchor: "#notif-list .notif-row",
-		});
+		await H.waitForAppReady(page, "workspace");
 
-		// 演示徽章亮
-		const demoBadgeVisible = await page.evaluate(() => {
-			const b = document.getElementById("demo-badge");
-			return !!b && !b.classList.contains("hidden");
-		});
-		H.check("index 演示态显示「演示数据」徽章", demoBadgeVisible);
-
-		// 演示数据 8 条：done×5 / error×2 / interrupted×1 / working×0
-		// （旧残留：demo 数据用旧协议字段 status，normalize 只读 agentState，全部降级 working）
-		const badgeCounts = await page.evaluate(() => ({
-			success: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-success",
-			).length,
-			error: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-error",
-			).length,
-			warn: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-warn",
-			).length,
-			info: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-info",
-			).length,
-		}));
-		H.check(
-			"演示态徽章 done×5",
-			badgeCounts.success === 5,
-			JSON.stringify(badgeCounts),
-		);
-		H.check(
-			"演示态徽章 error×2",
-			badgeCounts.error === 2,
-			JSON.stringify(badgeCounts),
-		);
-		H.check(
-			"演示态徽章 interrupted×1（warn）",
-			badgeCounts.warn === 1,
-			JSON.stringify(badgeCounts),
-		);
-		H.check(
-			"演示态无 working 降级（info×0）",
-			badgeCounts.info === 0,
-			JSON.stringify(badgeCounts),
-		);
-
-		// 汇总行 okCnt 按真实状态统计（旧 bug：全部 working → 0 条成功）
-		const summaryOk = await page.evaluate(() => {
-			const m = document
-				.getElementById("summary-line")
-				?.textContent.match(/(\d+)/g);
-			return m ? m.map(Number) : null;
+		// 错误态出现：列表位置渲染「载入失败…」+ 重试按钮
+		const errState = await page.evaluate(() => {
+			const list = document.getElementById("notif-list");
+			const btn = list && list.querySelector("button");
+			return {
+				hasList: !!list,
+				text: (list && list.textContent) || "",
+				hasRetry: !!btn,
+				retryText: btn ? btn.textContent.trim() : "",
+				badge: !!document.getElementById("demo-badge"),
+				rows: document.querySelectorAll("#notif-list .notif-row").length,
+			};
 		});
 		H.check(
-			"演示态汇总行「8 条通知，5 条成功」",
-			!!summaryOk && summaryOk[0] === 8 && summaryOk[1] === 5,
-			JSON.stringify(summaryOk),
+			"后端宕机时 index 渲染「载入失败」而不是演示数据",
+			/载入失败|Failed to load|読み込みに失敗|Error al cargar/.test(errState.text),
+			JSON.stringify(errState).slice(0, 200),
 		);
+		H.check("错误态提供「重试」按钮", errState.hasRetry, JSON.stringify(errState));
+		H.check(
+			"错误态不伪造任何任务行（不渲染演示数据）",
+			errState.rows === 0,
+			`rows=${errState.rows}`,
+		);
+		H.check("演示徽章已不存在（#273）", errState.badge === false, "");
+
+		// 恢复后端 → 点重试 → 真实数据出现（证明"重试"是真的重取，不是装饰）
+		await ctx.unroute("**/v1/**");
+		await page.evaluate(() => {
+			const btn = document.querySelector("#notif-list button");
+			if (btn) btn.click();
+		});
+		await page.waitForFunction(
+			() => document.querySelectorAll("#notif-list .notif-row").length > 0,
+			{ timeout: 15000 },
+		);
+		const afterRetry = await page.evaluate(
+			() => document.querySelectorAll("#notif-list .notif-row").length,
+		);
+		H.check("点重试后真实任务出现", afterRetry > 0, `rows=${afterRetry}`);
 
 		await page.close();
 		await ctx.close();

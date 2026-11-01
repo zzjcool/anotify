@@ -1978,13 +1978,29 @@
 		const sc = nsScope(ctx.query);
 		const evs = inNs(state.events, sc);
 		const tks = inNs(state.tasks, sc);
-		const done = tks.filter((t) => t.status === "succeeded").length;
-		const failed = tks.filter((t) => t.status === "failed").length;
+		const ok = tks.filter((t) => t.status === "succeeded").length;
+		// 形状必须与真实 API 对齐（internal/store/stats.go）：
+		//   total / today / delivered / deliveryTotal / deviceCount / daily
+		// 早先这里是 totalTasks/totalEvents/… 那一套，页面读 STATS.total 永远是 0 ——
+		// 演示模式删掉后 mock 是唯一的假数据来源，形状漂移会直接变成"KPI 全 0"（#273）。
+		const today = new Date().toISOString().slice(0, 10);
+		const devices = state.devices || [];
 		return json({
+			total: tks.length,
+			today: tks.filter((t) => {
+				const d =
+					typeof t.createdAt === "number"
+						? new Date(t.createdAt * 1000)
+						: new Date(t.createdAt || 0);
+				return d.toISOString().slice(0, 10) === today;
+			}).length,
+			delivered: tks.filter((t) => t.reported).length,
+			deliveryTotal: tks.length,
+			deviceCount: devices.filter((d) => d.enabled !== false).length,
+			// 汇总字段（页面暂未用，但别丢：调试时有用）
 			totalEvents: evs.length,
-			totalTasks: tks.length,
-			succeeded: done,
-			failed: failed,
+			succeeded: ok,
+			failed: tks.filter((t) => t.status === "failed").length,
 			running: tks.filter((t) =>
 				["assigned", "acked", "running"].includes(t.status),
 			).length,
@@ -1993,10 +2009,18 @@
 			nodesTotal: state.nodes.length,
 			// 热力图：最近 7 天每天的任务数
 			daily: Array.from({ length: 7 }, (_, i) => {
-				const day = now() - (6 - i) * 86400;
+				const day = new Date(Date.now() - (6 - i) * 86400e3)
+					.toISOString()
+					.slice(0, 10);
 				return {
-					ts: day - (day % 86400),
-					count: Math.max(0, 3 + ((i * 7) % 5) - 2),
+					day,
+					count: tks.filter((t) => {
+						const d =
+							typeof t.createdAt === "number"
+								? new Date(t.createdAt * 1000)
+								: new Date(t.createdAt || 0);
+						return d.toISOString().slice(0, 10) === day;
+					}).length,
 				};
 			}),
 		});
