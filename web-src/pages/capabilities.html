@@ -1563,8 +1563,14 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
-          // 响应可能是 {results:[…]} 也可能是数组，两种都接
-          const results = Array.isArray(res) ? res : (res && res.results) || [];
+          // 响应形状（以 internal/server/deploy_handlers.go:createDeployments 为准）：
+          //   { artifact: {…}, deployments: [{nodeId,nodeName,deployId,pushed,error}] }
+          // 注意键名是 **deployments** 不是 results —— 早先按 results 读会永远拿到空数组，
+          // 逐台结果一条都不显示（看起来像"请求成功了但什么都没发生"）。
+          // 数组 / {results} 仍保留兜底，方便 mock 与将来的形状演进。
+          const results = Array.isArray(res)
+            ? res
+            : (res && (res.deployments || res.results)) || [];
           renderDeployResults(results);
           // 重新拉一遍：已部署 digest、撤销按钮、列表徽章都要跟着变。
           // 面板重建由 loadAll() 自己负责（那里已经判断了 DEPLOY_CAP），
@@ -1601,7 +1607,10 @@
           // 「已排队（节点离线）」；node_not_found 之类说「已排队」+ 原样的 error。
           let label;
           if (pushed) label = t("caps.deploy.pushed", "已下发");
-          else if (err === "node_offline") label = t("caps.deploy.queued", "已排队（节点离线）");
+          // 离线的判定放宽成「error 里带 offline」（大小写无关）：
+          // 后端 ws.ErrNodeOffline 的文案是 "node is offline"，mock 用的是 "node_offline"，
+          // 以后换了措辞也不至于把「已排队（节点离线）」退化成中性文案。
+          else if (/offline/i.test(err)) label = t("caps.deploy.queued", "已排队（节点离线）");
           else label = t("caps.deploy.queued_other", "已排队");
           line.appendChild(el("span", pushed ? "dep-res-ok" : "dep-res-wait", label));
           if (err) line.appendChild(el("span", "dep-res-err", err));

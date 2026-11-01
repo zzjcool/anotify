@@ -690,14 +690,17 @@
 			const node = byId(nodeId);
 			const c = capByName(name);
 			if (!node || !c) return;
+			const digest = mockDigest(name + "@" + c.version);
 			state.deployments.push({
 				id: uid("dep"),
 				namespaceId: NS,
 				nodeId: node.id,
+				artifactId: "art_" + digest.slice(7, 15),
 				capabilityId: c.id,
-				digest: mockDigest(name + "@" + c.version),
+				digest,
 				state: depState,
 				reason: reason || "",
+				createdAt: now() - 3600,
 				updatedAt: now() - 600,
 			});
 		};
@@ -2391,19 +2394,28 @@
 	//                  version, digest, state, reason, updatedAt}]}
 	// nodeName / capabilityName / version 是中枢 join 出来的**展示字段**：
 	// 前端只拿到 id 时也能显示「哪台机器上的哪个能力」，否则列表里全是 id。
+	// depView 按 **store.Deployment 的真实 JSON tag** 输出
+	//（internal/store/deployment.go:47）：
+	//   id / namespaceId / nodeId / artifactId / capabilityId / capability(名字) /
+	//   version / digest / state / reason / createdAt / updatedAt
+	//
+	// 刻意**不**带 nodeName / capabilityName：真后端只给 id 与 capability 名，
+	// 节点名要前端自己用 /v1/nodes 映射。mock 里多给这两个字段会让页面走一条
+	// 生产环境不存在的好走的路，等真跑起来才发现名字全是 id。
 	const depView = (d) => {
-		const node = state.nodes.find((n) => n.id === d.nodeId);
 		const c = state.capabilities.find((x) => x.id === d.capabilityId);
 		return {
 			id: d.id,
+			namespaceId: d.namespaceId,
 			nodeId: d.nodeId,
-			nodeName: node ? node.name : d.nodeId,
+			artifactId: d.artifactId || "art_" + String(d.digest || "").slice(7, 15),
 			capabilityId: d.capabilityId,
-			capabilityName: c ? c.name : d.capabilityId,
+			capability: c ? c.name : d.capabilityId,
 			version: c ? c.version : 0,
 			digest: d.digest,
 			state: d.state,
 			reason: d.reason || "",
+			createdAt: d.createdAt || d.updatedAt || now(),
 			updatedAt: d.updatedAt || now(),
 		};
 	};
@@ -2426,18 +2438,23 @@
 		const c = state.capabilities.find((x) => x.id === b.capabilityId);
 		if (!c) return err(400, "capability not found");
 		const nodeIds = Array.isArray(b.nodeIds) ? b.nodeIds.map(String) : [];
-		if (!nodeIds.length) return err(400, "nodeIds is required");
+		// 真后端两个选择器取并集（nodeIds ∪ tags）；UI 只发 nodeIds，这里也留 tags 支持，
+		// 免得以后后端改了、mock 却没跟上。
+		const wantTags = Array.isArray(b.tags) ? b.tags.map(String) : [];
+		const picked = state.nodes.filter(
+			(n) => nodeIds.includes(n.id) || (wantTags.length && (n.tags || []).some((tg) => wantTags.includes(tg))),
+		);
+		// 一台都没匹配上 → 400 no_target_node（真后端同款）
+		if (!picked.length) {
+			return err(400, "no node matched the selector");
+		}
 		// digest 缺省取该能力最新产物（契约 §11）。没有产物就是「还没编译」——
 		// 真后端也会拒；这里给一个确定性假值，好让演示能走完整个面板。
 		const digest = b.digest || c.digest || mockDigest(c.name + "@" + c.version);
 
 		const results = [];
-		for (const nodeId of nodeIds) {
-			const node = state.nodes.find((n) => n.id === nodeId);
-			if (!node) {
-				results.push({ nodeId, deployId: "", pushed: false, error: "node_not_found" });
-				continue;
-			}
+		for (const node of picked) {
+			const nodeId = node.id;
 			// UNIQUE(node_id, artifact_id)：同一台机器再部署同一能力是**更新那一行**
 			// （重新排队等节点确认），不是插一条新行 —— 否则列表里会出现重复。
 			let row = state.deployments.find(
@@ -2453,25 +2470,44 @@
 					id: uid("dep"),
 					namespaceId: nsId,
 					nodeId,
+					artifactId: "art_" + String(digest).slice(7, 15),
 					capabilityId: c.id,
 					digest,
 					state: "pending",
 					reason: "",
+					createdAt: now(),
 					updatedAt: now(),
 				};
 				state.deployments.push(row);
 			}
 			// 节点离线 → **行照样创建**（等它上线由重连对账补推），
 			// 但 pushed=false：契约 §11 要求逐台如实回报，不能假装成功。
+			// error 文案用后端原词 "node is offline"（internal/ws/node_hub.go:164 的
+			// ErrNodeOffline），前端按 /offline/i 判定，别在这里改成 snake_case。
 			const online = node.status === "online";
 			results.push({
 				nodeId,
+				nodeName: node.name,
 				deployId: row.id,
 				pushed: online,
-				error: online ? "" : "node_offline",
+				error: online ? "" : "node is offline",
 			});
 		}
-		return json({ results }, 201);
+		// 响应形状对齐真后端：{artifact, deployments:[…]}（不是 {results}）
+		return json(
+			{
+				artifact: {
+					id: "art_" + String(digest).slice(7, 15),
+					namespaceId: nsId,
+					capabilityId: c.id,
+					digest,
+					spec: { name: c.name, version: c.version },
+					createdAt: now(),
+				},
+				deployments: results,
+			},
+			200,
+		);
 	});
 
 	// 撤销：真后端推 remove 帧后**直接删行**（不留 removed 态，契约 §7）
