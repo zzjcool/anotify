@@ -1468,8 +1468,75 @@
 		return out;
 	}
 
+	/**
+	 * PUSH_UI_ENABLED 控制「手机推送」这套能力的 UI 可见性。
+	 *
+	 * 产品节奏：推送还没到上线时候——能力 `notify.phone`（通知消息，kind=end）
+	 * 和「接收设备」页（receivers.html）先对用户隐藏。后端能力、边、历史任务**都不受影响**，
+	 * 所以放行时把这里改成 true 即可，不需要改后端、不需要数据迁移。
+	 *
+	 * 隐藏是**在 UI 层做**（不是删能力）：一旦某个命名空间已经建了指向 notify.phone 的边，
+	 * 后端照常派发；这里只是不把它列出来、也不让新的入口出现。
+	 */
+	const PUSH_UI_ENABLED = false;
+
+	const HIDDEN_CAP_NAMES = new Set(["notify.phone"]);
+
+	// filterCaps 过滤掉「暂未开放」的能力，**只在"发现/选择"的地方调用**
+	// （能力页列表、各处的目标/出口选择器）。
+	//
+	// 为什么不做成 api() 的全局过滤：边、源、预案里可能**已经引用**了被隐藏的能力，
+	// 那些页面要拿它的 paramsSchema 渲染参数表单；全局过滤会让它们渲染成"未知能力"
+	// 甚至直接崩（source 详情就是这么炸的）。隐藏的是"入口"，不是"数据"。
+	function filterCaps(list) {
+		if (PUSH_UI_ENABLED || !Array.isArray(list)) return list;
+		return list.filter((c) => !(c && HIDDEN_CAP_NAMES.has(c.name)));
+	}
+
+	/**
+	 * loadErrorNode 渲染「载入失败 + 重试」，是一个 DOM 节点，调用方自己塞进合适的位置。
+	 *
+	 * 为什么要有它：页面**绝不**在后端失败时伪造数据（#273）。演示数据只有 make mock
+	 * 那条路——cmd/fe-preview 给每个 HTML 注入 /mock.js，由它在 fetch 层应答，
+	 * 页面代码不需要知道"演示数据"的存在。真实部署下把失败画成示例数据，
+	 * 只会让人把「服务挂了」看成「功能如此」。
+	 *
+	 * err 约定：fetch 层会带 status（见 api()）；网络错误没有 status。
+	 */
+	function loadErrorNode(err, onRetry) {
+		const msg = String((err && err.message) || err || "");
+		const status = (err && err.status) || 0;
+		// 文案全部走 t()：错误态也得翻译，否则 es/ja 页面上会漏出中文
+		// （i18n_coverage 的 "no CJK residue" 就是抓这个的）。
+		const reason = status
+			? status >= 500
+				? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
+				: t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
+			: /Failed to fetch|NetworkError|load failed/i.test(msg)
+				? t("common.backend_offline", "连不上服务端")
+				: msg || t("common.request_failed", "请求失败");
+		const box = document.createElement("div");
+		box.className = "flex flex-col items-center gap-3 px-6 py-10 text-center";
+		const p = document.createElement("p");
+		p.className = "text-sm text-zinc-400";
+		p.textContent = t("common.load_failed_prefix", "载入失败：") + reason;
+		box.appendChild(p);
+		if (typeof onRetry === "function") {
+			const btn = document.createElement("button");
+			btn.type = "button";
+			btn.className = "btn-secondary rounded-lg px-3 py-1.5 text-xs font-medium";
+			btn.textContent = t("common.retry", "重试");
+			btn.addEventListener("click", onRetry);
+			box.appendChild(btn);
+		}
+		return box;
+	}
+
 	window.Anotify = {
 		el,
+		loadErrorNode,
+		pushUIEnabled: PUSH_UI_ENABLED,
+		filterCaps,
 		icon,
 		capLabel,
 		mountLayout,

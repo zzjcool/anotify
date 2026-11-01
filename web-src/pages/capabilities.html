@@ -696,7 +696,11 @@
       async function loadAll() {
         // 出口（边）已经搬到 edges.html，这个页面只关心能力定义
         const capsData = await apiGet(API + "/capabilities");
-        CAPS = (capsData && capsData.capabilities) || [];
+        // 手机推送暂未开放（web/partials.js 的 PUSH_UI_ENABLED）：从列表里隐去，
+        // 但后端能力还在，已有引用它的边/源仍能正常渲染。
+        CAPS = window.Anotify.filterCaps(
+          (capsData && capsData.capabilities) || [],
+        );
         renderCaps();
       }
 

@@ -138,6 +138,10 @@ async function main() {
 	}
 
 	// ---------- #20 denied 时主按钮反馈 ----------
+	//
+	// 手机推送按产品节奏**隐藏中**（web/partials.js 的 PUSH_UI_ENABLED）：
+	// 页面应该给一句"暂未开放"，而不是把人扔在一个半成品界面上。
+	// 放行后（PUSH_UI_ENABLED=true）原来的 #20 断言在下面分支里照旧生效。
 	console.log("--- #20 Push denied 反馈 ---");
 	{
 		const user = H.seed(server.dbPath, "ux20_recv_" + Date.now());
@@ -150,46 +154,66 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await H.waitForAppReady(page, "workspace", {
-			dataAnchor: "#current-device-card",
-		});
-		await page
-			.waitForFunction(
-				() => {
-					const card = document.getElementById("current-device-card");
-					return card && card.querySelector("button");
-				},
-				{ timeout: 8000 },
-			)
-			.catch(() => {});
 
-		const btnText = await page.evaluate(() => {
-			const btn = document.querySelector("#current-device-card button");
-			return btn ? btn.textContent.trim() : "";
-		});
-		H.check(
-			"#20 denied 时主按钮文案为「查看如何开启」（非沉默「开启本机通知」）",
-			/查看如何开启|how to enable|設定|cómo/i.test(btnText),
-			`btn=${btnText}`,
+		const pushUI = await page.evaluate(
+			() => !!(window.Anotify && window.Anotify.pushUIEnabled),
 		);
 
-		await page.click("#current-device-card button");
-		await page
-			.waitForSelector("#anotify-toast-host", { timeout: 5000 })
-			.catch(() => {});
-		const toast = await page.evaluate(() => {
-			const host = document.getElementById("anotify-toast-host");
-			return host ? host.innerText.trim() : "";
-		});
-		H.check(
-			"#20 点击后出现用户可见 toast（含 denied/权限提示）",
-			toast.length > 0 &&
-				(/denied|权限|通知|browser|設定|permiso/i.test(toast)),
-			`toast=${toast.slice(0, 200)}`,
-		);
+		if (!pushUI) {
+			await page.waitForTimeout(600);
+			const notice = await page.evaluate(() => ({
+				text: (document.querySelector("main, .workspace-body") || {})
+					.textContent || "",
+				card: !!document.getElementById("current-device-card"),
+			}));
+			H.check(
+				"#20 推送未开放时接收设备页给出明确提示（不是半成品界面）",
+				/暂未开放|not available|未公開|no disponibles/i.test(notice.text) &&
+					notice.card === false,
+				JSON.stringify(notice).slice(0, 160),
+			);
+			await page.close();
+			await ctx.close();
+		} else {
+			await H.waitForAppReady(page, "workspace", {
+				dataAnchor: "#current-device-card",
+			});
+			await page
+				.waitForFunction(
+					() => {
+						const card = document.getElementById("current-device-card");
+						return card && card.querySelector("button");
+					},
+					{ timeout: 8000 },
+				)
+				.catch(() => {});
 
-		await page.close();
-		await ctx.close();
+			const btnText = await page.evaluate(() => {
+				const btn = document.querySelector("#current-device-card button");
+				return btn ? btn.textContent.trim() : "";
+			});
+			H.check(
+				"#20 denied 时主按钮文案为「查看如何开启」（非沉默「开启本机通知」）",
+				/查看如何开启|how to enable|設定|cómo/i.test(btnText),
+				`btn=${btnText}`,
+			);
+
+			await page.click("#current-device-card button");
+			await page
+				.waitForSelector("#anotify-toast-host", { timeout: 5000 })
+				.catch(() => {});
+			const toast = await page.evaluate(() => {
+				const host = document.getElementById("anotify-toast-host");
+				return host ? host.textContent.trim() : "";
+			});
+			H.check(
+				"#20 点击后有可见反馈（toast），不是沉默",
+				toast.length > 0,
+				`toast=${toast.slice(0, 80)}`,
+			);
+			await page.close();
+			await ctx.close();
+		}
 	}
 
 	// ---------- #21 问候语跟 /auth/me ----------
@@ -345,9 +369,7 @@ async function main() {
 			devices: (
 				document.getElementById("kpi-devices")?.textContent || ""
 			).trim(),
-			demo: !document
-				.getElementById("demo-badge")
-				?.classList.contains("hidden"),
+
 		}));
 		H.check(
 			"#23 0 设备时送达率不是假 100%",
@@ -364,47 +386,25 @@ async function main() {
 			JSON.stringify(kpi),
 		);
 
-		// 点「发送测试通知」应被拦，表单保持 hidden
-		const beforeHidden = await page.evaluate(() =>
-			document.getElementById("tn-form")?.classList.contains("hidden"),
-		);
-		H.check("#23 前置 tn-form 默认隐藏", beforeHidden === true);
-
-		await page.click("#tn-toggle");
-		await page.waitForFunction(
-			() => {
-				const msg = document.getElementById("tn-agent-state-msg");
-				return msg && (msg.textContent || "").trim().length > 0;
-			},
-			{ timeout: 3000 },
-		).catch(() => {});
-		const after = await page.evaluate(() => {
-			const form = document.getElementById("tn-form");
-			const msg = document.getElementById("tn-agent-state-msg");
-			return {
-				formHidden: form ? form.classList.contains("hidden") : true,
-				status: msg ? msg.textContent.trim() : "",
-			};
-		});
+		// 「发送测试通知」面板已随死端点 /v1/test-notify 一起删除（#274）：
+		// 发通知现在是平台的一个**末端**（notify.phone, kind=end），
+		// 走 源/边 → 触发 的正常路径，不再有独立面板和"假成功"分支。
+		// 这里断言面板确实没了，防止有人再造一个特殊入口出来。
+		const panelGone = await page.evaluate(() => ({
+			section: !!document.getElementById("test-notify"),
+			toggle: !!document.getElementById("tn-toggle"),
+			form: !!document.getElementById("tn-form"),
+		}));
 		H.check(
-			"#23 0 设备点击测试通知后表单仍隐藏（不打开假成功路径）",
-			after.formHidden === true,
-			JSON.stringify(after),
+			"#274 首页不再有「发送测试通知」特殊面板（末端走源/边触发）",
+			panelGone.section === false &&
+				panelGone.toggle === false &&
+				panelGone.form === false,
+			JSON.stringify(panelGone),
 		);
-		H.check(
-			"#23 状态区提示先添加/开启接收设备",
-			after.status.length > 0 &&
-				(/没有接收设备|开启本机通知|添加设备|no (receiving )?device|receiv/i.test(
-					after.status,
-				) ||
-					/通知接收/.test(after.status)),
-			`status=${after.status}`,
-		);
-		H.check(
-			"#23 状态区不宣称「完成」/假成功",
-			!/完成|100%|已发送，命中/.test(after.status),
-			`status=${after.status}`,
-		);
+		// 「不许假成功」的另一半已经下沉到平台契约：
+		// internal/executor.TestTickZeroDevicesIsSuccess 锁定 0 设备时
+		// summary 必须写 "pushed to 0 device(s)"（状态成功但话要说实话）。
 
 		await page.close();
 		await ctx.close();

@@ -233,7 +233,8 @@
         loadAll();
       }
 
-      let demoMode = false;
+      let loadFailed = false; // 最近一次载入是否失败（失败就渲染错误态，不伪造数据）
+      let loadErrorStatus = 0; // 失败时的 HTTP 状态（0 = 网络不可达）
 
       function toast(msg) {
         const el = document.getElementById("toast");
@@ -258,10 +259,11 @@
 
       // fetchApi：全部走 Anotify.api —— 它内置了 401 → 跳登录的守卫。
       // 直接裸 fetch 会绕过守卫：401 时页面只是空白，用户不知道自己被登出了。
-      // 传入 demo 值让"后端未就绪"降级成演示数据而不是抛错。
+      // 失败就返回 null，由调用方渲染「载入失败 + 重试」——**不伪造数据**（#273）。
+      // 演示数据只在 make mock 那条路（/mock.js 在 fetch 层应答）。
       async function fetchApi(path) {
         try {
-          return await Anotify.api(path, { demo: null });
+          return await Anotify.api(path);
         } catch (e) {
           return null;
         }
@@ -270,11 +272,11 @@
       // fetchApiResult：同 fetchApi，但把 HTTP 状态码一起带回来。
       //
       // 为什么需要：游标失效时服务端回 400（契约 §3.3「不静默降级」），
-      // 页面要提示并回到最新；而网络错误 / 后端未连接只需要降级成 demoMode。
+      // 页面要提示并回到最新；而网络错误 / 后端未连接则渲染错误态。
       // fetchApi 把两者都吞成 null 就分不出来了（Anotify.api 抛的 err 上带 status）。
       async function fetchApiResult(path) {
         try {
-          return { data: await Anotify.api(path, { demo: null }), status: 200 };
+          return { data: await Anotify.api(path), status: 200 };
         } catch (e) {
           return { data: null, status: (e && e.status) || 0 };
         }
@@ -556,7 +558,7 @@
         nav.replaceChildren();
         // 没有任何按钮时整块隐藏，不留一条空白的 12px 间距。
         nav.classList.toggle("hidden", true);
-        if (demoMode) return; // 演示态没有真实分页，不显示任何翻页按钮
+        if (loadFailed) return; // 载入失败时没有真实分页，不显示翻页按钮
 
         const btns = [];
         // 有回退栈才能往回走（刷新后为空 → 隐藏）
@@ -636,12 +638,13 @@
             // 也会让「本页 N 条」的语义变成“已加载 N 条”。
             EVENTS = r.data.events || [];
             nextCursor = r.data.nextCursor || "";
-            demoMode = false;
+            loadFailed = false;
           } else {
-            // 后端未连接 / 其它 HTTP 失败：降级成演示态，不白屏、不抛未捕获异常。
+            // 后端未连接 / 其它 HTTP 失败：渲染错误态 + 重试，**不伪造数据**（#273）。
             EVENTS = [];
             nextCursor = "";
-            demoMode = true;
+            loadFailed = true;
+            loadErrorStatus = r.status || 0;
           }
           // 重绘必须发生在 loading = false **之前**（都在 try 内）：
           // renderNav() 是按 loading 决定按钮 disabled 的，顺序反了就会
@@ -667,15 +670,18 @@
         }
       }
 
-      // renderSummary 写摘要行：本页条数 + 是否已到最旧 + 演示徽章。
+      // renderSummary 写摘要行：本页条数 + 是否已到最旧（失败时说明失败原因）。
       //
       // 用「本页 N 条」而不是原来的「N 条事件」：翻页后 EVENTS 只是一页，
       // 说“共 N 条”会误导（1000 条事件的第 3 页也只会显示 100 条）。
       function renderSummary() {
         const summary = document.getElementById("ev-summary");
-        if (demoMode) {
-          // 演示态保持原有徽章语义（后端未连接 ≠ 零条事件）
-          summary.textContent = t("events.demo_badge", "演示模式：后端未连接");
+        if (loadFailed) {
+          // 后端不可用 ≠ 零条事件：如实说明，不画示例数据（#273）
+          summary.textContent = t(
+            "events.load_failed",
+            "载入失败：连不上服务端，请重试",
+          );
           return;
         }
         let text = t("events.page.window", "本页 {n} 条").replace("{n}", EVENTS.length);
@@ -688,6 +694,12 @@
       function renderList() {
         const list = document.getElementById("ev-list");
         renderSummary();
+        if (loadFailed) {
+          list.replaceChildren(
+            window.Anotify.loadErrorNode({ status: loadErrorStatus }, () => loadAll()),
+          );
+          return;
+        }
 
         list.replaceChildren();
 
@@ -695,8 +707,8 @@
           const empty = el(
             "div",
             "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-            demoMode
-              ? t("events.demo_hint", "后端未连接，暂无真实事件。")
+            loadFailed
+              ? t("events.load_failed_hint", "载入失败：连不上服务端，请重试。")
               : t("events.empty", "还没有事件。用 POST /v1/events 提交第一个。"),
           );
           list.appendChild(empty);
@@ -876,18 +888,6 @@
         return card;
       }
 
-      // 演示数据：后端未连接时给一个可看的样例，避免空白页。
-      function demoEvents() {
-        return [
-          {
-            id: "evt_demo",
-            source: "github",
-            type: "pull_request.opened",
-            traceId: "trace_demo_0001",
-            createdAt: Math.floor(Date.now() / 1000) - 120,
-          },
-        ];
-      }
 
       // 不需要显式 requireAuth：fetchApi 走 Anotify.api，
       // 未登录时它自己会把用户送到 login.html?next=events.html。

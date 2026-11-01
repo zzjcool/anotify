@@ -317,12 +317,16 @@ const PAGES = [
 		},
 		expect: async (page, txt) => {
 			H.check(
-				"首页：没有退化成演示态（真后端活着，#demo-badge 隐藏）",
-				await page.evaluate(
-					() =>
-						!!document.getElementById("demo-badge") &&
-						document.getElementById("demo-badge").classList.contains("hidden"),
-				),
+				"首页：没有演示模式残留（#demo-badge 已移除，#273）",
+				await page.evaluate(() => !document.getElementById("demo-badge")),
+				txt.slice(0, 200),
+			);
+			H.check(
+				"首页：渲染的是真实数据（不是「载入失败」错误态）",
+				await page.evaluate(() => {
+					const t = document.getElementById("notif-list")?.textContent || "";
+					return !/载入失败|Failed to load|読み込みに失敗|Error al cargar/.test(t);
+				}),
 				txt.slice(0, 200),
 			);
 			// 内容断言用**结构**而不是文案：页面文案随 4 种语言构建变化（zh/en/ja/es），

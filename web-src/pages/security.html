@@ -716,84 +716,10 @@
   const { el, t, mountPullRefresh, b64urlToBuf, bufToB64url } = window.Anotify;
   const API = "/v1";
 
-  const DEMO_PASSKEYS = [
-    {
-      id: "pk_1",
-      nameKey: "security.demo.pk1_name",
-      typeKey: "security.demo.pk1_type",
-      icon: "🔑",
-      devicesKey: "security.demo.pk1_devices",
-      created: "2026-06-12",
-      lastUsed: t("security.demo.current", "当前"),
-      current: true,
-    },
-    {
-      id: "pk_2",
-      nameKey: "security.demo.pk2_name",
-      typeKey: "security.demo.pk2_type",
-      icon: "🖥️",
-      devicesKey: "security.demo.pk2_devices",
-      created: "2026-07-03",
-      lastUsed: t("common.time.days_ago", "{n} 天前").replace("{n}", 5),
-      current: false,
-    },
-    {
-      id: "pk_3",
-      nameKey: "security.demo.pk3_name",
-      typeKey: "security.demo.pk3_type",
-      icon: "🛡️",
-      devicesKey: "security.demo.pk3_devices",
-      created: "2026-07-20",
-      lastUsed: t("common.time.weeks_ago", "{n} 周前").replace("{n}", 2),
-      current: false,
-    },
-  ];
-  const DEMO_SESSIONS = [
-    {
-      id: "s_1",
-      device: 'MacBook Pro 16"',
-      browser: "Chrome · macOS",
-      icon: "💻",
-      passkeyKey: "security.demo.s1_passkey",
-      locationKey: "security.demo.location_shanghai",
-      current: true,
-      lastActive: t("security.current_session", "当前会话"),
-    },
-    {
-      id: "s_2",
-      device: "iPhone 15",
-      browser: "Safari · iOS",
-      icon: "📱",
-      passkeyKey: "security.demo.s1_passkey",
-      locationKey: "security.demo.location_shanghai",
-      current: false,
-      lastActive: t("common.time.hours_ago", "{n} 小时前").replace("{n}", 2),
-    },
-    {
-      id: "s_3",
-      device: t("security.demo.dev_ipad", "iPad Air"),
-      browser: "Safari · iPadOS",
-      icon: "📱",
-      passkeyKey: "security.demo.s1_passkey",
-      locationKey: "security.demo.location_shanghai",
-      current: false,
-      lastActive: t("security.demo.last_active_ipad", "昨日 21:40"),
-    },
-    {
-      id: "s_4",
-      device: t("security.demo.dev_meeting_pc", "会议室 PC"),
-      browser: "Edge · Windows",
-      icon: "🖥️",
-      passkeyKey: "security.demo.s4_passkey",
-      locationKey: "security.demo.location_office",
-      current: false,
-      lastActive: t("common.time.days_ago", "{n} 天前").replace("{n}", 5),
-    },
-  ];
 
   let PASSKEYS = [];
   let SESSIONS = [];
-  let demoMode = { passkeys: false, sessions: false };
+  let loadFailed = { passkeys: false, sessions: false };
 
   // toast 显示消息。err=true 时按错误处理：同时打 console.error、停留更久、显示复制按钮。
   function toast(msg, err = false) {
@@ -878,8 +804,8 @@
     return "🖥️";
   }
 
-  // 后端未就绪时静默降级到演示数据（不抛 console 错误）
-  // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；其他非 200 才降级演示数据。
+  // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；
+  // 其他失败记入 loadFailed，渲染「载入失败 + 重试」——**不伪造数据**（#273）。
   async function fetchApi(path, options) {
     try {
       const res = await fetch(
@@ -912,15 +838,11 @@
         lastUsed: fmtTime(p.lastUsedAt),
         current: !!p.current,
       }));
-      demoMode.passkeys = false;
+      loadFailed.passkeys = false;
     } else {
-      PASSKEYS = DEMO_PASSKEYS.slice();
-      PASSKEYS.forEach((p) => {
-        if (p.nameKey) p.name = t(p.nameKey, p.name || "");
-        if (p.typeKey) p.type = t(p.typeKey, p.type || "");
-        if (p.devicesKey) p.devices = t(p.devicesKey, p.devices || "");
-      });
-      demoMode.passkeys = true;
+      // 失败就是失败：不伪造数据（演示数据只在 make mock 的 /mock.js 里，见 #273）
+      PASSKEYS = [];
+      loadFailed.passkeys = true;
     }
     renderPasskeys();
   }
@@ -949,14 +871,10 @@
             : fmtTime(s.lastSeen || s.lastActive),
         };
       });
-      demoMode.sessions = false;
+      loadFailed.sessions = false;
     } else {
-      SESSIONS = DEMO_SESSIONS.slice();
-      SESSIONS.forEach((s) => {
-        if (s.passkeyKey) s.passkey = t(s.passkeyKey, s.passkey || "");
-        if (s.locationKey) s.location = t(s.locationKey, s.location || "");
-      });
-      demoMode.sessions = true;
+      SESSIONS = [];
+      loadFailed.sessions = true;
     }
     renderSessions();
   }
@@ -1083,7 +1001,7 @@
     );
     if (!name || !name.trim() || name.trim() === p.name) return;
     const newName = name.trim();
-    if (demoMode.passkeys) {
+    if (loadFailed.passkeys) {
       p.name = newName;
       renderPasskeys();
       toast(
@@ -1136,7 +1054,7 @@
       )
     )
       return;
-    if (demoMode.passkeys) {
+    if (loadFailed.passkeys) {
       PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
       renderPasskeys();
       toast(t("security.toast.deleted_demo", "已删除（演示模式，仅本地生效）"));
@@ -1193,7 +1111,7 @@
     }
     // 情况 2：后端未连接（fetchApi 拿到 null 进了 demo 模式）——
     // 这才是「演示模式」的真正含义：不是 HTTPS/生物识别的问题，是后端没起来。
-    if (demoMode.passkeys) {
+    if (loadFailed.passkeys) {
       alert(
         t(
           "security.alert.backend_down",
@@ -1381,7 +1299,7 @@
       )
     )
       return;
-    if (demoMode.sessions) {
+    if (loadFailed.sessions) {
       SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
       renderSessions();
       toast(t("security.toast.revoked_demo", "已吊销（演示模式，仅本地生效）"));
@@ -1669,7 +1587,7 @@
 
   async function openEnrollModal() {
     // demo 模式拦截
-    if (demoMode.passkeys) {
+    if (loadFailed.passkeys) {
       showEnrollState("failed");
       const box = document.getElementById("enroll-failed-icon-box");
       box.style.background = "var(--error-soft)";

@@ -1,4 +1,10 @@
 common:
+  load_failed_prefix: 'Failed to load: '
+  retry: 'Retry'
+  backend_offline: 'cannot reach the server'
+  server_error: 'server error HTTP {code}'
+  request_rejected: 'request rejected HTTP {code}'
+  request_failed: 'request failed'
   brand:
     name: Anotify
     tagline: Get notified when your agents finish
@@ -113,6 +119,10 @@ common:
     error: Error
     summary: Summary
 index:
+  load:
+    failed: 'Failed to load: '
+    retry: 'Retry'
+    bad_shape: 'Unexpected response shape'
   title: Overview
   subtitle: Your notifications at a glance
   greeting:
@@ -209,6 +219,8 @@ index:
     no_devices_block: No receivers yet. Turn on notifications or add a device under Receivers first.
     cancel: Cancel
   notif:
+    reported: 'Reported'
+    unreported: 'Not reported'
     empty: No notifications with this status
     delivered: '{d}/{t} devices delivered'
     count: Showing {n}
@@ -388,6 +400,8 @@ login:
     webauthn: WebAuthn standard
     no_third_party: No third-party accounts
   status:
+    offline: 'Cannot reach the server. Check that it is running, then retry.'
+    server_error: 'Server error (HTTP 5xx). Retry later or check the server log.'
     demo: Backend not connected — entered demo mode (sample data).
     login_success: Signed in — entering workspace…
     signup_success: Account created — entering workspace…
@@ -409,6 +423,7 @@ login:
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
 receivers:
+  unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
   title: Receivers
   demo_badge: Demo data
   channel:
@@ -1094,6 +1109,8 @@ admin:
     action: Action failed
     network: Network error
 events:
+  load_failed_hint: 'Failed to load: cannot reach the server, please retry.'
+  load_failed: 'Failed to load: cannot reach the server, please retry'
   title: Event Stream
   subtitle: Changes in the outside world → task chains → results. Click any event to inspect its full chain.
   refresh: Refresh
