@@ -1180,6 +1180,9 @@ caps:
     script_view: 'Read-only'
     script_edit: 'Edit script'
     script_hint: 'The script is executed directly (no shell), so the first line must be a #! shebang.'
+    schema_advanced: "Parameter contract (advanced)"
+    schema_toggle: "Edit JSON"
+    schema_hint: "Leave empty to derive it from the template fields. A controlled subset of JSON Schema is supported (type/properties/required/enum/minLength/pattern…)."
     script_shebang_err: 'The script must start with #!'
     loading: 'Loading templates…'
     load_failed: 'Failed to load templates: '
@@ -1317,6 +1320,9 @@ nodes:
     warn_once: 'This token is shown only once — it cannot be retrieved after you close this. If you lose it, delete the node and register it again.'
     token_title: 'One-time token'
     copy_token: 'Copy token'
+    cmd_title: "Start with one command (recommended)"
+    copy_cmd: "Copy command"
+    yaml_intro: "Or install the agent binary directly and use this node.yaml (four fields only: name / server / token / instances):"
     yaml_title: 'Run this on the machine'
     copy_yaml: 'Copy command'
     yaml_hint: 'The token in this command is shown only once — lose it and you have to delete the node and register again.'

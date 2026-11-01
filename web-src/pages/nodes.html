@@ -170,22 +170,40 @@
 
           <div class="mt-4">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs text-zinc-400">{{t "nodes.register.cmd_title"}}</span>
+              <button id="reg-cmd-copy" type="button" class="copy-btn">
+                {{t "nodes.register.copy_cmd"}}
+              </button>
+            </div>
+            <!-- 首选：一条能直接粘的 docker 命令。节点侧不需要任何配置文件，
+                 令牌只以 -e ANOTIFY_TOKEN 的形式出现。 -->
+            <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.cmd_intro"}}
+            </p>
+            <div class="code-block">
+              <pre class="code-body"><code id="reg-cmd"></code></pre>
+            </div>
+            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.cmd_after"}}
+            </p>
+          </div>
+
+          <div class="mt-4">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
               <span class="text-xs text-zinc-400">{{t "nodes.register.yaml_title"}}</span>
               <button id="reg-yaml-copy" type="button" class="copy-btn">
                 {{t "nodes.register.copy_yaml"}}
               </button>
             </div>
-            <!-- 成功面板给的是**一条能直接粘的 docker 命令**，不再是 node.yaml：
-                 节点侧不需要任何配置文件，令牌就走 -e ANOTIFY_TOKEN。 -->
+            <!-- 备选：直接把 agent 二进制装在机器上。四件 bootstrap（name/server/token/
+                 instances）是 v2 **唯一**保留的本地配置 —— 能力和它们的实现都已经不在
+                 机器上了，由控制台部署。 -->
             <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.cmd_intro"}}
+              {{t "nodes.register.yaml_intro"}}
             </p>
             <div class="code-block">
               <pre class="code-body"><code id="reg-yaml"></code></pre>
             </div>
-            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.cmd_after"}}
-            </p>
           </div>
 
           <div class="mt-4">
@@ -506,6 +524,7 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
       // 清空结果块。令牌是从 DOM 里**删掉**的（textContent = ""），不是藏起来。
       function regClearResult() {
         regEl("reg-token").textContent = "";
+        regEl("reg-cmd").textContent = "";
         regEl("reg-yaml").textContent = "";
         regEl("reg-result-title").textContent = "";
         regEl("reg-warning").textContent = "";
@@ -531,6 +550,23 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
           (token || "") +
           " " +
           AGENT_IMAGE
+        );
+      }
+
+      // node.yaml 是**直接装 agent 二进制**那条路的配置：v2 只剩 bootstrap 四件。
+      //
+      // 为什么两条路都给：docker 一行命令门槛最低，但「机器上已经有 Go/Python 生态、
+      // 不想装 docker」也完全合理；而且这份 YAML 是**可审计**的（能进 git、能 diff），
+      // 只给 docker 命令会让这类用户没有出口。
+      //
+      // 键名与 cmd/agent/config.go 的 yaml tag 一一对应（name/server/token/instances），
+      // 多一个键就是未知字段 → agent 启动直接失败。
+      function agentNodeYaml(token, name, instances, server) {
+        return (
+          "name: " + (name || "") + "\n" +
+          "server: " + (server || "") + "\n" +
+          "token: " + (token || "") + "\n" +
+          "instances: " + (instances || 1) + "\n"
         );
       }
 
@@ -562,6 +598,14 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
         );
       }
 
+      // instancesFromPanel 读注册面板上用户填的槽位数（提交后面板会被隐藏，
+      // 所以值必须从输入框读，而不是从"当前值"重新推）。
+      function instancesFromPanel() {
+        const parsed = parseInt(regEl("reg-instances").value, 10);
+        if (isNaN(parsed)) return 1;
+        return Math.min(Math.max(parsed, 1), REG_MAX_INSTANCES);
+      }
+
       function showRegisterResult(node, token, name) {
         regEl("reg-result-title").textContent = t(
           "nodes.register.done",
@@ -572,8 +616,14 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
           "令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。",
         );
         regEl("reg-token").textContent = token;
-        // 命令里的 <token> 用 201 响应体里的真令牌替换：用户复制就能跑
-        regEl("reg-yaml").textContent = agentDockerCmd(token);
+        // 两个块都用 201 响应体里的真令牌填：用户复制就能跑
+        regEl("reg-cmd").textContent = agentDockerCmd(token);
+        regEl("reg-yaml").textContent = agentNodeYaml(
+          token,
+          (node && node.name) || name,
+          instancesFromPanel(),
+          window.location.origin,
+        );
         regHide("register-panel", true);
         regHide("reg-result", false);
       }
@@ -661,6 +711,7 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
         regEl("reg-cancel").addEventListener("click", closeRegister);
         regEl("reg-close").addEventListener("click", closeRegister);
         regWireCopy("reg-token-copy", "reg-token");
+        regWireCopy("reg-cmd-copy", "reg-cmd");
         regWireCopy("reg-yaml-copy", "reg-yaml");
         // 回车提交（没有 <form>，避免默认 submit 把页面刷掉）。
         regEl("reg-name").addEventListener("keydown", (e) => {

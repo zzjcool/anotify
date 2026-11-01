@@ -1180,6 +1180,9 @@ caps:
     script_view: '読み取り専用'
     script_edit: 'スクリプトを編集'
     script_hint: 'スクリプトは（シェルを介さず）直接 exec されるため、1 行目は #! で始める必要があります。'
+    schema_advanced: "パラメータ契約（上級）"
+    schema_toggle: "JSON を編集"
+    schema_hint: "空欄のままにすると、テンプレートの項目から導出した契約を使います。JSON Schema のサブセット（type/properties/required/enum/minLength/pattern…）に対応。"
     script_shebang_err: 'スクリプトの 1 行目は #! で始めてください'
     loading: 'テンプレートを読み込み中…'
     load_failed: 'テンプレートの読み込みに失敗しました: '
@@ -1317,6 +1320,9 @@ nodes:
     warn_once: 'トークンの表示は今回だけです。閉じたあとは取得できません。紛失した場合はノードを削除して登録し直してください。'
     token_title: 'ワンタイムトークン'
     copy_token: 'トークンをコピー'
+    cmd_title: "1 行のコマンドで起動（推奨）"
+    copy_cmd: "コマンドをコピー"
+    yaml_intro: "またはエージェントのバイナリを直接インストールし、この node.yaml を使ってください（項目は 4 つだけ：name / server / token / instances）："
     yaml_title: 'マシン上でこの行を実行'
     copy_yaml: 'コマンドをコピー'
     yaml_hint: 'このコマンドのトークンは一度しか表示されません。失うとノードを削除して再登録が必要です。'

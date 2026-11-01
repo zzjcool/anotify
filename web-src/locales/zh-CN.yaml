@@ -1180,6 +1180,9 @@ caps:
     script_view: '只读'
     script_edit: '改脚本'
     script_hint: '脚本会被直接 exec（不经 shell），第一行必须是 #! shebang。'
+    schema_advanced: "参数契约（高级）"
+    schema_toggle: "手写 JSON"
+    schema_hint: "留空则用模板字段推导出的契约。支持 JSON Schema 的受控子集（type/properties/required/enum/minLength/pattern…）。"
     script_shebang_err: '脚本第一行必须以 #! 开头'
     loading: '正在载入模板…'
     load_failed: '模板载入失败：'
@@ -1317,6 +1320,9 @@ nodes:
     warn_once: '令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。'
     token_title: '一次性令牌'
     copy_token: '复制令牌'
+    cmd_title: "一行命令启动（推荐）"
+    copy_cmd: "复制命令"
+    yaml_intro: "或者把 agent 二进制直接装在机器上，用这份 node.yaml（只有四项：名字 / 中枢地址 / 令牌 / 槽位数）："
     yaml_title: '在机器上执行这一行'
     copy_yaml: '复制命令'
     yaml_hint: '命令里的 token 只出现这一次，丢了这个节点就得删掉重新注册。'

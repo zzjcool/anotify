@@ -1180,6 +1180,9 @@ caps:
     script_view: 'Solo lectura'
     script_edit: 'Editar script'
     script_hint: 'El script se ejecuta directamente (sin shell), así que la primera línea debe ser un shebang #!.'
+    schema_advanced: "Contrato de parámetros (avanzado)"
+    schema_toggle: "Editar JSON"
+    schema_hint: "Déjalo vacío para derivarlo de los campos de la plantilla. Se admite un subconjunto controlado de JSON Schema (type/properties/required/enum/minLength/pattern…)."
     script_shebang_err: 'El script debe empezar por #!'
     loading: 'Cargando plantillas…'
     load_failed: 'No se pudieron cargar las plantillas: '
@@ -1317,6 +1320,9 @@ nodes:
     warn_once: 'Este token se muestra una sola vez: no se puede recuperar después de cerrar. Si lo pierdes, elimina el nodo y regístralo de nuevo.'
     token_title: 'Token de un solo uso'
     copy_token: 'Copiar token'
+    cmd_title: "Arrancar con un solo comando (recomendado)"
+    copy_cmd: "Copiar comando"
+    yaml_intro: "O instala el binario del agente directamente y usa este node.yaml (solo cuatro campos: name / server / token / instances):"
     yaml_title: 'Ejecuta esta línea en la máquina'
     copy_yaml: 'Copiar comando'
     yaml_hint: 'El token de este comando se muestra una sola vez: si lo pierdes, borra el nodo y vuelve a registrarlo.'

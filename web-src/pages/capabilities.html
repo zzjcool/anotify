@@ -468,6 +468,25 @@
               <textarea id="script-input" class="input mono w-full text-xs hidden" rows="12"></textarea>
               <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
             </div>
+
+            <!-- 高级出口：手写 paramsSchema。
+                 模板字段能表达 string/number/select，但表达不了 pattern、
+                 minLength、additionalProperties:false 这些。以前整页都能手写，
+                 收成模板后必须留一个出口，否则「自定义脚本 + 自定义参数」这类
+                 真实用法会写不出来。留空 = 用模板推导的那份。 -->
+            <div class="mt-4">
+              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h4 class="text-sm font-medium text-zinc-300">{{t "caps.tpl.schema_advanced"}}</h4>
+                <button type="button" id="schema-toggle" class="btn-ghost rounded-lg px-3 py-1 text-xs">
+                  {{t "caps.tpl.schema_toggle"}}
+                </button>
+              </div>
+              <div id="schema-wrap" class="hidden">
+                <textarea id="cap-schema" class="input mono w-full text-xs" rows="10"></textarea>
+                <p class="tpl-hint mt-1">{{t "caps.tpl.schema_hint"}}</p>
+                <p id="schema-error" class="tpl-hint mt-1 hidden"></p>
+              </div>
+            </div>
           </div>
 
           <div class="mt-6 flex justify-end gap-2">
@@ -1144,6 +1163,9 @@
       function tplCard(tpl) {
         const card = el("button", "tpl-card");
         card.type = "button";
+        // data-tpl 让 e2e / 调试能按模板 id 定位；没有它就只能在文案里找中文，
+        // 一旦改文案整条用例就断。
+        card.setAttribute("data-tpl", tpl.id || "");
 
         const head = el("div", "flex flex-wrap items-center justify-between gap-2");
         head.appendChild(el("span", "text-[13px] text-zinc-200", tpl.displayName || tpl.id || "?"));
@@ -1217,6 +1239,11 @@
 
       function tplField(f) {
         const wrap = el("div", "tpl-field");
+        // data-field / data-required 是契约性标记：字段名必须与模板的 key 一致
+        // （它会变成 ANOTIFY_PARAM_<UPPER>），e2e 靠它验证「字段由模板驱动」
+        // 而不是前端写死的第二份副本。
+        wrap.setAttribute("data-field", f.key || "");
+        if (f.required) wrap.setAttribute("data-required", "1");
         const label = el("label", "tpl-label", f.label || f.key);
         label.htmlFor = "tpl-f-" + f.key;
         if (f.required) {
@@ -1275,6 +1302,15 @@
         document
           .getElementById("script-mode-edit")
           .classList.toggle("seg-item-active", SCRIPT_MODE === "edit");
+      }
+
+      // setSchemaError 在高级参数区下方显示/清空错误提示。
+      // 用 textContent 而不是 innerHTML：错误信息里可能带用户输入（XSS 面）。
+      function setSchemaError(msg) {
+        const el = document.getElementById("schema-error");
+        if (!el) return;
+        el.textContent = msg || "";
+        el.classList.toggle("hidden", !msg);
       }
 
       // paramsSchemaFor 从模板字段推导参数契约。
@@ -1357,10 +1393,34 @@
         const displayName =
           document.getElementById("cap-display-name").value.trim() || tpl.displayName || "";
 
+        // 高级出口优先：填了就用它，留空用模板推导的。
+        // 解析失败必须**当场拦住**：发给后端的非法 JSON 只会换来一个 400，
+        // 而用户还得自己猜是哪一行多了个逗号。
+        let paramsSchema = paramsSchemaFor(tpl.fields);
+        const schemaEl = document.getElementById("cap-schema");
+        const schemaWrap = document.getElementById("schema-wrap");
+        const schemaShown = schemaWrap && !schemaWrap.classList.contains("hidden");
+        if (schemaShown && schemaEl && schemaEl.value.trim() !== "") {
+          try {
+            const parsed = JSON.parse(schemaEl.value);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+              throw new Error("paramsSchema 必须是 JSON 对象");
+            }
+            paramsSchema = parsed;
+            setSchemaError("");
+          } catch (e) {
+            setSchemaError(String((e && e.message) || e));
+            toast(t("caps.form.create_failed", "创建失败：") + String((e && e.message) || e));
+            return;
+          }
+        } else {
+          setSchemaError("");
+        }
+
         const body = {
           name: name,
           displayName: displayName,
-          paramsSchema: paramsSchemaFor(tpl.fields),
+          paramsSchema: paramsSchema,
           outputs: tpl.outputs || [],
           run: {
             entrypoint: "run.sh",
@@ -1661,6 +1721,25 @@
       // 超时被手改过之后就置脏：换模板时不再用模板默认值覆盖用户填的数字
       document.getElementById("cap-timeout").addEventListener("input", () => {
         TIMEOUT_DIRTY = true;
+      });
+
+      // 高级出口（手写 paramsSchema）：
+      // 打开时**用模板推导的那份预填**，让人从"现在是什么"开始改，
+      // 而不是从空白开始猜格式。留空 = 回到推导值（提交时判断）。
+      document.getElementById("schema-toggle").addEventListener("click", () => {
+        const wrap = document.getElementById("schema-wrap");
+        const el = document.getElementById("cap-schema");
+        const opening = wrap.classList.contains("hidden");
+        if (opening && el.value.trim() === "") {
+          try {
+            el.value = JSON.stringify(paramsSchemaFor((TPL_SEL && TPL_SEL.fields) || []), null, 2);
+          } catch {
+            el.value = "{\n  \"type\": \"object\"\n}";
+          }
+        }
+        wrap.classList.toggle("hidden", !opening);
+        setSchemaError("");
+        if (opening) el.focus();
       });
 
       document.addEventListener("DOMContentLoaded", loadAll);

@@ -1358,13 +1358,16 @@ main().catch(async (e) => {
 // 逐个确认 mock 有对应实现（返回 501 = 未实现）。
 // ---------------------------------------------------------------------------
 
-// checkSchemaEditor 验证 paramsSchema 的可视化编辑器（#92）。
+// checkCapabilityTemplates 验证「新建能力」的模板化流程（console-declares epic）。
 //
-// 这条最关键的断言不是"能加字段"，而是**不丢数据**：
-// 用户手写在 JSON 里、可视化表达不了的东西（patternProperties / $schema）
-// 切到可视化时必须提示并保留，绝不能被静默吞掉。
-// 另一个关键是非法 JSON 时不能切模式（否则用户的输入就没了）。
-async function checkSchemaEditor(page) {
+// 这替代了旧的 checkSchemaEditor：以前是一屏手写 paramsSchema + 出口名，
+// 用户得先懂 JSON Schema；现在是「选模板 → 填表单 → 看生成的脚本」。
+//
+// 但**表达力不能因此下降**，所以钉三条：
+//   ① 九个模板都在，字段由模板驱动（不是写死在前端的第二份副本）
+//   ② 只读脚本 → 可编辑脚本（脚本模式的出口）
+//   ③ 高级参数契约可以手写 JSON，且**非法 JSON 必须当场拦住**（不能等到后端 400）
+async function checkCapabilityTemplates(page) {
 	const base = page.url().replace(/\/edge[s]?\.html.*$|\/capabilities\.html.*$/, "");
 	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
 	await page.waitForTimeout(1600);
@@ -1379,108 +1382,152 @@ async function checkSchemaEditor(page) {
 	if (!opened) return;
 	await page.waitForTimeout(500);
 
-	// 默认应该是可视化模式
-	const initial = await page.evaluate(() => ({
-		formVisible: !document.getElementById("schema-form").classList.contains("hidden"),
-		jsonVisible: !document.getElementById("schema-json").classList.contains("hidden"),
+	// ① 步骤 1：九个模板，按 script / agent 分组
+	const tplStep = await page.evaluate(() => ({
+		stepVisible: !document.getElementById("tpl-step").classList.contains("hidden"),
+		formHidden: document.getElementById("tpl-form-step").classList.contains("hidden"),
+		tiles: document.querySelectorAll("[data-tpl]").length,
+		groups: document.querySelectorAll(".tpl-group").length,
+		ids: Array.from(document.querySelectorAll("[data-tpl]")).map((e) =>
+			e.getAttribute("data-tpl"),
+		),
 	}));
-	H.check("schema 默认是可视化模式", initial.formVisible && !initial.jsonVisible,
-		`form=${initial.formVisible} json=${initial.jsonVisible}`);
-
-	// 加字段
-	await page.click("#schema-add-field");
-	await page.waitForTimeout(150);
-	await page.click("#schema-add-field");
-	await page.waitForTimeout(250);
-	const added = await page.evaluate(() => document.querySelectorAll(".sf-row").length);
-	H.check("可视化模式能加字段", added === 2, `rows=${added}`);
-
-	// 切到 JSON 看生成的结构
-	await page.click("#schema-mode-json");
-	await page.waitForTimeout(300);
-	const gen = await page.evaluate(() => {
-		try {
-			return JSON.parse(document.getElementById("cap-schema").value);
-		} catch {
-			// 解析失败 = 不是合法 JSON，回 null 给下面的断言判断
-			return null;
-		}
-	});
-	H.check("切到 JSON 后是合法 JSON", gen != null);
-	H.check("生成的是 object schema", gen && gen.type === "object", JSON.stringify(gen && gen.type));
+	H.check("弹窗先给模板选择（不是一屏 JSON）", tplStep.stepVisible && tplStep.formHidden,
+		JSON.stringify(tplStep));
+	H.check("九个内置模板都在", tplStep.tiles === 9, `tiles=${tplStep.tiles}`);
+	H.check("模板按类别分组", tplStep.groups >= 2, `groups=${tplStep.groups}`);
 	H.check(
-		"生成的 properties 有刚加的字段",
-		gen && gen.properties && Object.keys(gen.properties).length === 2,
-		JSON.stringify(gen && gen.properties && Object.keys(gen.properties)),
-	);
-	H.check(
-		"没有生成后端不支持的 key（$ref/oneOf/if-then-else）",
-		gen && !["$ref", "oneOf", "anyOf", "allOf", "if"].some((k) => k in gen),
-		JSON.stringify(gen && Object.keys(gen)),
+		"模板 id 与契约一致（agent 靠模板而不是新执行器类型）",
+		["script.blank", "script.http", "script.git", "script.test", "script.notify",
+			"agent.claude", "agent.codex", "agent.pi", "agent.custom"].every((id) =>
+			tplStep.ids.includes(id),
+		),
+		JSON.stringify(tplStep.ids),
 	);
 
-	// 手写含"可视化表达不了"的 key，切回可视化 → 必须提示且保留
-	await page.evaluate(() => {
-		document.getElementById("cap-schema").value = JSON.stringify(
-			{
-				type: "object",
-				properties: { channel: { type: "string", enum: ["slack", "email"] } },
-				required: ["channel"],
-				patternProperties: { "^x-": { type: "string" } },
-			},
-			null,
-			2,
-		);
-	});
-	await page.click("#schema-mode-form");
+	// 选 agent.claude：它带 prompt 必填 + model/tools
+	await page.click('[data-tpl="agent.claude"]');
 	await page.waitForTimeout(400);
 
-	const preserved = await page.evaluate(() => {
-		const pEl = document.getElementById("schema-preserved");
+	const form = await page.evaluate(() => ({
+		formVisible: !document.getElementById("tpl-form-step").classList.contains("hidden"),
+		stepHidden: document.getElementById("tpl-step").classList.contains("hidden"),
+		fieldKeys: Array.from(document.querySelectorAll("#tpl-fields [data-field]")).map((e) =>
+			e.getAttribute("data-field"),
+		),
+		required: Array.from(document.querySelectorAll("#tpl-fields [data-required='1']")).map((e) =>
+			e.getAttribute("data-field"),
+		),
+		script: (document.getElementById("script-pre") || {}).textContent || "",
+		requires: (document.getElementById("tpl-requires") || {}).textContent || "",
+		scriptInputHidden: document.getElementById("script-input").classList.contains("hidden"),
+	}));
+	H.check("选模板后进入表单步骤", form.formVisible && form.stepHidden);
+	H.check(
+		"字段由模板驱动（prompt/model/tools 都在）",
+		["prompt", "model", "tools"].every((k) => form.fieldKeys.includes(k)),
+		JSON.stringify(form.fieldKeys),
+	);
+	H.check(
+		"必填标记只落在 prompt 上",
+		form.required.length === 1 && form.required[0] === "prompt",
+		JSON.stringify(form.required),
+	);
+	H.check(
+		"只读脚本就是模板正文（直接 exec，靠 shebang）",
+		/^#!/.test(form.script.trim()) && /claude/.test(form.script),
+		form.script.slice(0, 120),
+	);
+	H.check(
+		"预装依赖被显式告知（缺了部署会失败）",
+		/\bclaude\b/.test(form.requires),
+		form.requires,
+	);
+	H.check("默认是只读脚本（不是一进去就给空编辑器）", form.scriptInputHidden === true);
+
+	// ② 脚本模式：切到可编辑，改一个字，再切回来
+	await page.click("#script-mode-edit");
+	await page.waitForTimeout(250);
+	const editMode = await page.evaluate(() => ({
+		visible: !document.getElementById("script-input").classList.contains("hidden"),
+		preHidden: document.getElementById("script-pre").classList.contains("hidden"),
+		value: document.getElementById("script-input").value,
+	}));
+	H.check("切到脚本模式后 textarea 可见、只读块隐藏",
+		editMode.visible && editMode.preHidden, JSON.stringify(editMode));
+	H.check("脚本模式下预填的就是模板正文", /^#!/.test(editMode.value.trim()));
+
+	await page.evaluate(() => {
+		const el = document.getElementById("script-input");
+		el.value = "#!/bin/bash\nset -euo pipefail\necho edited-by-e2e\n";
+		el.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	await page.click("#script-mode-view");
+	await page.waitForTimeout(250);
+	const afterEdit = await page.evaluate(
+		() => document.getElementById("script-pre").textContent || "",
+	);
+	H.check("改过的脚本能在只读模式看到（没有丢）", /edited-by-e2e/.test(afterEdit),
+		afterEdit.slice(0, 120));
+
+	// ③ 高级参数契约：预填 → 非法 JSON 被当场拦住
+	await page.click("#schema-toggle");
+	await page.waitForTimeout(250);
+	const adv = await page.evaluate(() => {
+		const wrap = document.getElementById("schema-wrap");
+		let parsed = null;
+		try {
+			parsed = JSON.parse(document.getElementById("cap-schema").value);
+		} catch {
+			parsed = null;
+		}
 		return {
-			notified: pEl && !pEl.classList.contains("hidden"),
-			text: pEl ? pEl.textContent.trim() : "",
-			rows: document.querySelectorAll(".sf-row").length,
+			visible: !wrap.classList.contains("hidden"),
+			parsed,
 		};
 	});
-	H.check("可视化表达不了的 key 有明确提示", preserved.notified === true, preserved.text);
-	H.check("提示里点名了 patternProperties", /patternProperties/.test(preserved.text), preserved.text);
-	H.check("能渲染的部分照常渲染", preserved.rows === 1, `rows=${preserved.rows}`);
+	H.check("高级参数区可展开", adv.visible === true);
+	H.check(
+		"预填的是模板推导的契约（不是空白）",
+		adv.parsed && adv.parsed.type === "object" && adv.parsed.required?.includes("prompt"),
+		JSON.stringify(adv.parsed),
+	);
 
-	// 再切回 JSON：那个 key 必须还在
-	await page.click("#schema-mode-json");
-	await page.waitForTimeout(300);
-	const kept = await page.evaluate(() => {
+	await page.evaluate(() => {
+		document.getElementById("cap-schema").value = "{ broken";
+		document.getElementById("cap-name").value = "e2e.broken";
+	});
+	await page.click("#cap-submit");
+	await page.waitForTimeout(400);
+	const blocked = await page.evaluate(() => ({
+		err: (document.getElementById("schema-error") || {}).textContent || "",
+		errHidden: document.getElementById("schema-error").classList.contains("hidden"),
+		modalStillOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+	}));
+	H.check("非法参数 JSON 被当场拦住（不发给后端）",
+		blocked.errHidden === false && blocked.err.length > 0, JSON.stringify(blocked));
+	H.check("拦住时不关闭弹窗（否则用户输入丢了）", blocked.modalStillOpen === true);
+
+	// 表达力兜底：能塞进模板表达不了的 key（pattern），并被接受
+	await page.evaluate(() => {
+		document.getElementById("cap-schema").value = JSON.stringify({
+			type: "object",
+			properties: { branch: { type: "string", pattern: "^[a-z0-9-]+$" } },
+			required: ["branch"],
+		});
+	});
+	const accepted = await page.evaluate(() => {
 		try {
 			return JSON.parse(document.getElementById("cap-schema").value);
 		} catch {
-			// 解析失败 = 不是合法 JSON，回 null 给下面的断言判断
 			return null;
 		}
 	});
 	H.check(
-		"逐键往返不丢数据（patternProperties 还在）",
-		kept && kept.patternProperties && kept.patternProperties["^x-"],
-		JSON.stringify(kept && kept.patternProperties),
+		"高级模式能表达模板字段表达不了的约束（pattern）",
+		accepted && accepted.properties?.branch?.pattern === "^[a-z0-9-]+$",
+		JSON.stringify(accepted && accepted.properties),
 	);
-	H.check(
-		"enum 往返不丢",
-		kept && kept.properties && JSON.stringify(kept.properties.channel?.enum) === '["slack","email"]',
-		JSON.stringify(kept && kept.properties && kept.properties.channel),
-	);
-
-	// 非法 JSON：不能切模式（否则用户输入丢了）
-	await page.evaluate(() => {
-		document.getElementById("cap-schema").value = "{ broken";
-	});
-	await page.click("#schema-mode-form");
-	await page.waitForTimeout(400);
-	const bad = await page.evaluate(() => ({
-		stillJson: !document.getElementById("schema-json").classList.contains("hidden"),
-		text: document.getElementById("cap-schema").value,
-	}));
-	H.check("非法 JSON 时不切换到可视化", bad.stillJson === true);
-	H.check("非法 JSON 时保留用户输入", bad.text === "{ broken", JSON.stringify(bad.text));
 }
 
 // checkEdgesPage 验证出口表已经独立成页（#93）。
@@ -3317,6 +3364,11 @@ async function checkNodeRegister(page, base) {
 	);
 
 	// ---- ④ node.yaml 逐项形状（硬锁：能直接粘进 agent） ----
+	//
+	// **v2 变了**：node.yaml 只剩 bootstrap 四件（name/server/token/instances）。
+	// 能力和它的执行方式都不在机器上了 —— 它们由控制台的产物部署下来。
+	// 所以这里从「必须含 capabilities/run」翻成「必须**不含** capabilities/run」：
+	// 多一个键就是未知字段，agent 会直接启动失败。
 	const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const yaml = reg.yaml;
 	const yamlToken = (yaml.match(/^token: (\S+)\s*$/m) || [])[1] || "";
@@ -3325,14 +3377,13 @@ async function checkNodeRegister(page, base) {
 		"server 行": /^server: \S+/m.test(yaml) && yaml.includes("server: " + reg.origin),
 		"token 行": /^token: \S+/m.test(yaml) && yamlToken === token,
 		"instances: 2": /^instances: 2\s*$/m.test(yaml),
-		"capabilities 是空映射": /^capabilities:[ \t]*$/m.test(yaml),
-		// 行内匹配一律用 [ \t] 不用 \s：\s 含换行，`run:\s*\S` 会跨行咬到
-		// 下一行的 `#`，把合规 YAML 误判成 `run: bash`（自测里真被这条坑过）
-		"run 是映射（单独一行）": /^[ \t]*#?[ \t]*run:[ \t]*$/m.test(yaml),
-		"runner: bash 缩进在 run 下": /^[ \t]*#?[ \t]*runner: bash/m.test(yaml),
+		"只有四行（bootstrap 四件）":
+			yaml.trim().split(/\r?\n/).filter((l) => l.trim() !== "").length === 4,
 	};
 	const yamlBad = {
-		"run 后面跟了标量（#197 的坑）": /^[ \t]*#?[ \t]*run:[ \t]*\S/m.test(yaml),
+		"capabilities 键（v2 已删）": /^capabilities:/m.test(yaml),
+		"run 键（执行方式归产物）": /^[ \t]*run:/m.test(yaml),
+		"runner 键（v2 不再有 runner 枚举）": /^[ \t]*runner:/m.test(yaml),
 		"有 node: 包装": /^node:/m.test(yaml),
 		"用了 timeout_sec（agent 要 timeoutSec）": yaml.includes("timeout_sec"),
 	};
@@ -3340,7 +3391,7 @@ async function checkNodeRegister(page, base) {
 		Object.values(yamlWant).every(Boolean) &&
 		!Object.values(yamlBad).some(Boolean);
 	H.check(
-		"令牌块里的 node.yaml 是能直接粘的完整配置",
+		"令牌块里的 node.yaml 是 v2 的 bootstrap 四件（不再有 capabilities/run）",
 		yamlOk,
 		`${JSON.stringify({ ...yamlWant, ...yamlBad })} — ${JSON.stringify(yaml.slice(0, 200))}`,
 	);
@@ -4659,7 +4710,7 @@ async function runMockCoverage() {
 		await page.waitForTimeout(1200);
 		// 流向图的形状断言放在带 mock 数据的 sources.html 上
 		if (p === "capabilities.html") {
-			await checkSchemaEditor(page);
+			await checkCapabilityTemplates(page);
 			await checkEdgesPage(page);
 			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
 			await checkDeclaredBy(page);
