@@ -219,7 +219,7 @@ dev-tunnel-setup: ## 一次性：建命名隧道 + 配 DNS + 写本地 ingress�
 	  printf '%s\n' \
 	    "# .dev-tunnel/config.yml —— 本地开发隧道的 ingress（make dev-tunnel-setup 生成，不入库）" \
 	    "tunnel: $$TID" \
-	    "credentials-file: /etc/cloudflared/$$TID.json" \
+	    "credentials-file: /etc/cloudflared/credentials.json" \
 	    "no-autoupdate: true" \
 	    "" \
 	    "ingress:" \
