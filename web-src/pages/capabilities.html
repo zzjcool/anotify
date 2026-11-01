@@ -1603,13 +1603,13 @@
           const line = el("div", "dep-res-row");
           line.appendChild(el("span", "st-dot st-" + (pushed ? "applied" : "pending")));
           line.appendChild(el("span", "dep-node-name", nodeNameOf(r.nodeId || r.node_id)));
-          // 文案不替 error 断言原因：只有 error 确实是 node_offline 才说
-          // 「已排队（节点离线）」；node_not_found 之类说「已排队」+ 原样的 error。
+          // 文案不替 error 断言原因：「节点离线」这个结论只在 error 真提到 offline 时才给，
+          // 其它原因（例如同一台机器重复部署返回的 store 错误）说中性的「已排队」+ 原样 error。
           let label;
           if (pushed) label = t("caps.deploy.pushed", "已下发");
-          // 离线的判定放宽成「error 里带 offline」（大小写无关）：
-          // 后端 ws.ErrNodeOffline 的文案是 "node is offline"，mock 用的是 "node_offline"，
-          // 以后换了措辞也不至于把「已排队（节点离线）」退化成中性文案。
+          // 判定按「error 里带 offline」（大小写无关）：后端 ws.ErrNodeOffline 的文案是
+          // "node is offline"（internal/ws/node_hub.go:164），不认 snake_case 的 "node_offline"；
+          // 放宽成子串匹配后，措辞再变也不至于把「已排队（节点离线）」退化成中性文案。
           else if (/offline/i.test(err)) label = t("caps.deploy.queued", "已排队（节点离线）");
           else label = t("caps.deploy.queued_other", "已排队");
           line.appendChild(el("span", pushed ? "dep-res-ok" : "dep-res-wait", label));
