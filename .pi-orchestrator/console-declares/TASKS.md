@@ -28,10 +28,10 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 **文件所有权**：`internal/artifact/**`（新建）
 **验收**：`go test ./internal/artifact/...` 全绿；覆盖 §4 全部校验规则 + digest 确定性 + 9 个模板渲染
 
-- [ ] `artifact.go` — 类型、`Parse`、`Validate`、`Digest`、`CanonicalJSON`
-- [ ] `templates.go` — 9 个内置模板 + `Render(templateID, fields) (Artifact, error)`
-- [ ] `artifact_test.go` — 校验规则表驱动测试（每条规则一个反例）
-- [ ] `templates_test.go` — 每个模板渲染出的产物都能 `Parse` 通过
+- [x] `artifact.go` — 类型、`Parse`、`Validate`、`Digest`、`CanonicalJSON`
+- [x] `templates.go` — 9 个内置模板 + `Render(templateID, fields) (Artifact, error)`
+- [x] `artifact_test.go` — 校验规则表驱动测试（每条规则一个反例）
+- [x] `templates_test.go` — 每个模板渲染出的产物都能 `Parse` 通过
 
 ## T2 · 协议 + store
 
@@ -39,13 +39,13 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 **文件所有权**：`internal/ws/**`、`internal/store/{schema.sql,migrate15.go,node.go,artifact.go,deployment.go}`、`cmd/agent/{protocol.go,config.go}`
 **验收**：`go test ./internal/{ws,store}/...` 全绿
 
-- [ ] 协议：hello 删 `capabilities`/`manifest`、加 `applied`；新增 `deploy`/`apply`；assign 加 `digest`/`trace_id`；`ProtocolVersion=2`
-- [ ] store：`schema.sql` 加 `artifacts`/`deployments`；`migrate15.go` 重建 `node_capabilities`（去 `run_spec`）
-- [ ] store：`ReconcileApplied`（hello 全量对账 → 重建 `node_capabilities`）
-- [ ] store：`CreateDeployment` / `ListDeployments` / `DeleteDeployment` / `MarkDeployResult`
-- [ ] store：`CreateArtifact` / `ListArtifacts` / `LatestArtifact`
-- [ ] ws：`node_handshake` 走 `ReconcileApplied`；`node_session` 处理 `apply` 帧；`node_hub` 加 `PublishDeploy`
-- [ ] route：`NodesForCapability` 一行不改（回归测试钉住）
+- [x] 协议：hello 删 `capabilities`/`manifest`、加 `applied`；新增 `deploy`/`apply`；assign 加 `digest`/`trace_id`；`ProtocolVersion=2`
+- [x] store：`schema.sql` 加 `artifacts`/`deployments`；`migrate15.go` 重建 `node_capabilities`（去 `run_spec`）
+- [x] store：`ReconcileApplied`（hello 全量对账 → 重建 `node_capabilities`）
+- [x] store：`CreateDeployment` / `ListDeployments` / `DeleteDeployment` / `MarkDeployResult`
+- [x] store：`CreateArtifact` / `ListArtifacts` / `LatestArtifact`
+- [x] ws：`node_handshake` 走 `ReconcileApplied`；`node_session` 处理 `apply` 帧；`node_hub` 加 `PublishDeploy`
+- [x] route：`NodesForCapability` 一行不改（回归测试钉住）
 
 ## T3 · server API
 
@@ -53,11 +53,11 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 **文件所有权**：`internal/server/{console_handlers.go,mux.go,deploy_handlers.go}`、`api/openapi.yaml`
 **验收**：`go test ./internal/server/...` 全绿 + `make contract` 通过
 
-- [ ] `GET /v1/capability-templates`
-- [ ] `POST /v1/capabilities` 支持 `run` + `requires`，编译产物 + 落 `artifacts`
-- [ ] `GET /v1/artifacts`
-- [ ] `POST/GET/DELETE /v1/deployments`（含选择器展开、掉线节点仍建行）
-- [ ] openapi 同步（`make contract` 会校验 mux 一致性）
+- [x] `GET /v1/capability-templates`
+- [x] `POST /v1/capabilities` 支持 `run` + `requires`，编译产物 + 落 `artifacts`
+- [x] `GET /v1/artifacts`
+- [x] `POST/GET/DELETE /v1/deployments`（含选择器展开、掉线节点仍建行）
+- [x] openapi 同步（`make contract` 会校验 mux 一致性）
 
 ## T4 · agent 纯执行
 
@@ -105,10 +105,10 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 **文件所有权**：`docs/contracts/CONTRACT.md`、`Makefile`、`scripts/check_contract.py`、`docs/design/playbooks.md`、`DEVELOPMENT.md`
 **verify**：`make contract && make ci`
 
-- [ ] CONTRACT.md：I1 改写为「执行边界」版本；新增 §6.3 部署协议
-- [ ] `Makefile` / `check_contract.py`：新增 A5/A6/A7 三条断言
+- [x] CONTRACT.md：I1 改写为「执行边界」版本；新增 §6.3 部署协议
+- [x] `Makefile` / `check_contract.py`：新增 A5/A6/A7 三条断言
 - [ ] `playbooks.md`：manifest/run 章节重画为 artifact/deploy
-- [ ] `schema.sql` 注释：`node_capabilities` 标注「只从 deployments 派生，不得手写」
+- [x] `schema.sql` 注释：`node_capabilities` 标注「只从 deployments 派生，不得手写」
 
 ## 门禁
 
