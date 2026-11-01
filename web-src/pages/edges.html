@@ -257,7 +257,10 @@
           Anotify.api(API + "/capabilities", { demo: null }).catch(() => null),
         ]);
         EDGES = (edgesData && edgesData.edges) || [];
-        CAPS = (capsData && capsData.capabilities) || [];
+        // 手机推送暂未开放：不提供「新建边指向它」的入口（已存在的边照常显示）。
+        CAPS = window.Anotify.filterCaps(
+          (capsData && capsData.capabilities) || [],
+        );
         refreshSourceNames();
         fillCapFilter();
         render();

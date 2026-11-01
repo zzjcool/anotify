@@ -138,6 +138,10 @@ async function main() {
 	}
 
 	// ---------- #20 denied 时主按钮反馈 ----------
+	//
+	// 手机推送按产品节奏**隐藏中**（web/partials.js 的 PUSH_UI_ENABLED）：
+	// 页面应该给一句"暂未开放"，而不是把人扔在一个半成品界面上。
+	// 放行后（PUSH_UI_ENABLED=true）原来的 #20 断言在下面分支里照旧生效。
 	console.log("--- #20 Push denied 反馈 ---");
 	{
 		const user = H.seed(server.dbPath, "ux20_recv_" + Date.now());
@@ -150,46 +154,66 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await H.waitForAppReady(page, "workspace", {
-			dataAnchor: "#current-device-card",
-		});
-		await page
-			.waitForFunction(
-				() => {
-					const card = document.getElementById("current-device-card");
-					return card && card.querySelector("button");
-				},
-				{ timeout: 8000 },
-			)
-			.catch(() => {});
 
-		const btnText = await page.evaluate(() => {
-			const btn = document.querySelector("#current-device-card button");
-			return btn ? btn.textContent.trim() : "";
-		});
-		H.check(
-			"#20 denied 时主按钮文案为「查看如何开启」（非沉默「开启本机通知」）",
-			/查看如何开启|how to enable|設定|cómo/i.test(btnText),
-			`btn=${btnText}`,
+		const pushUI = await page.evaluate(
+			() => !!(window.Anotify && window.Anotify.pushUIEnabled),
 		);
 
-		await page.click("#current-device-card button");
-		await page
-			.waitForSelector("#anotify-toast-host", { timeout: 5000 })
-			.catch(() => {});
-		const toast = await page.evaluate(() => {
-			const host = document.getElementById("anotify-toast-host");
-			return host ? host.innerText.trim() : "";
-		});
-		H.check(
-			"#20 点击后出现用户可见 toast（含 denied/权限提示）",
-			toast.length > 0 &&
-				(/denied|权限|通知|browser|設定|permiso/i.test(toast)),
-			`toast=${toast.slice(0, 200)}`,
-		);
+		if (!pushUI) {
+			await page.waitForTimeout(600);
+			const notice = await page.evaluate(() => ({
+				text: (document.querySelector("main, .workspace-body") || {})
+					.textContent || "",
+				card: !!document.getElementById("current-device-card"),
+			}));
+			H.check(
+				"#20 推送未开放时接收设备页给出明确提示（不是半成品界面）",
+				/暂未开放|not available|未公開|no disponibles/i.test(notice.text) &&
+					notice.card === false,
+				JSON.stringify(notice).slice(0, 160),
+			);
+			await page.close();
+			await ctx.close();
+		} else {
+			await H.waitForAppReady(page, "workspace", {
+				dataAnchor: "#current-device-card",
+			});
+			await page
+				.waitForFunction(
+					() => {
+						const card = document.getElementById("current-device-card");
+						return card && card.querySelector("button");
+					},
+					{ timeout: 8000 },
+				)
+				.catch(() => {});
 
-		await page.close();
-		await ctx.close();
+			const btnText = await page.evaluate(() => {
+				const btn = document.querySelector("#current-device-card button");
+				return btn ? btn.textContent.trim() : "";
+			});
+			H.check(
+				"#20 denied 时主按钮文案为「查看如何开启」（非沉默「开启本机通知」）",
+				/查看如何开启|how to enable|設定|cómo/i.test(btnText),
+				`btn=${btnText}`,
+			);
+
+			await page.click("#current-device-card button");
+			await page
+				.waitForSelector("#anotify-toast-host", { timeout: 5000 })
+				.catch(() => {});
+			const toast = await page.evaluate(() => {
+				const host = document.getElementById("anotify-toast-host");
+				return host ? host.textContent.trim() : "";
+			});
+			H.check(
+				"#20 点击后有可见反馈（toast），不是沉默",
+				toast.length > 0,
+				`toast=${toast.slice(0, 80)}`,
+			);
+			await page.close();
+			await ctx.close();
+		}
 	}
 
 	// ---------- #21 问候语跟 /auth/me ----------

@@ -652,6 +652,40 @@ async function main() {
 			});
 			await page3.waitForTimeout(1200);
 
+			// 造一个**自带字符串参数**的出口能力再测参数面板。
+			//
+			// 以前这段是蹭 notify.phone 的 schema（to/title/body 都是 string）：
+			// 手机推送按产品节奏从 UI 隐去后（web/partials.js 的 PUSH_UI_ENABLED），
+			// 可选出口就变成了"前面用例留下的什么能力"——有没有参数全看运气。
+			// 用例要自给自足，别依赖别人留下的状态。
+			await page3.evaluate(async () => {
+				// 必须建在**当前页面所在的命名空间**里：这套用例前面的步骤可能切过命名空间，
+				// 建到别处的话选择器里根本看不到（targets 会只剩别的空间里的那几个）。
+				let ns = "";
+				try {
+					ns = (JSON.parse(localStorage.getItem("anotify.scope") || "{}") || {})
+						.namespaceId || "";
+				} catch (e) {
+					/* 没存过就用 mock 默认 */
+				}
+				const r = await fetch("/v1/capabilities", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						name: "e2e-params",
+						version: 1,
+						namespaceId: ns || undefined,
+						paramsSchema: {
+							type: "object",
+							properties: { note: { type: "string" } },
+						},
+					}),
+				});
+				return r.status;
+			});
+			await page3.reload({ waitUntil: "load" });
+			await page3.waitForTimeout(800);
+
 			// 侧栏必须存在且当前项高亮为「源」
 			const nav = await page3.evaluate(() => {
 				const links = Array.from(document.querySelectorAll(".side-link"));
@@ -782,12 +816,49 @@ async function main() {
 				// 第二个参数是**匹配位置**，于是"哪个字段取不到"会报成
 				// 「样本里没有：0、27」这种看不懂的数字。
 				{
+					// 先确保至少选中一个有参数的出口：参数面板按勾选的出口渲染，
+					// 而"默认选哪个"会随能力集合变化（例如手机推送能力按产品节奏隐藏后，
+					// 默认出口就换人了）。显式勾第一个"有参数"的出口，断言才稳定。
+					await page3.evaluate(() => {
+						const opts = Array.from(
+							document.querySelectorAll("#f-targets .target-opt"),
+						);
+						const opt =
+							opts.find((l) => /e2e-params/.test(l.textContent)) ||
+							opts.find((l) => /个参数|param/i.test(l.textContent));
+						if (opt) {
+							const cb = opt.querySelector("input.target-cap");
+							if (cb && !cb.checked) {
+								cb.checked = true;
+								cb.dispatchEvent(new Event("change", { bubbles: true }));
+							}
+						}
+					});
+					await page3.waitForTimeout(300);
+					const diag = await page3.evaluate(() => ({
+						fields: document.querySelectorAll("[data-param-field]").length,
+						targets: document.querySelectorAll("#f-targets input.target-cap").length,
+						checked: document.querySelectorAll("#f-targets input.target-cap:checked").length,
+						ns: document.querySelector(".scope-ns")?.textContent || "",
+					}));
+					H.check(
+						"出口参数面板渲染出可编辑字段",
+						diag.fields > 0,
+						JSON.stringify(diag),
+					);
+
 					const preview = async (v) =>
 						page3.evaluate((val) => {
-							const f = Array.from(document.querySelectorAll("[data-param-field]")).find(
-								(x) => x.querySelector("[data-param]").dataset.ptype === "string",
-							) || document.querySelectorAll("[data-param-field]")[1];
+							const fields = Array.from(
+								document.querySelectorAll("[data-param-field]"),
+							);
+							const f =
+								fields.find(
+									(x) => x.querySelector("[data-param]")?.dataset.ptype === "string",
+								) || fields[0];
+							if (!f) return { pv: "no-field", text: "" };
 							const i = f.querySelector("[data-param]");
+							if (!i) return { pv: "no-input", text: "" };
 							i.value = val;
 							i.dispatchEvent(new Event("input", { bubbles: true }));
 							const tip = f.querySelector(".param-tip");
@@ -3093,7 +3164,13 @@ async function checkNodeCaps(page, base) {
 async function checkDeclaredBy(page) {
 	const info = await page.evaluate(async () => {
 		const api = await (await fetch("/v1/capabilities")).json();
-		const caps = api.capabilities || [];
+		// 用页面同一套过滤：暂未开放的能力（手机推送）后端仍在、UI 隐去，
+		// 期望值必须按"页面上能看到的"算，否则永远差一行。
+		const all = api.capabilities || [];
+		const caps =
+			window.Anotify && window.Anotify.filterCaps
+				? window.Anotify.filterCaps(all)
+				: all;
 		const rows = Array.from(document.querySelectorAll(".cap-row"));
 		return {
 			hasLabel: rows.some((r) => /声明节点/.test(r.textContent)),
@@ -3105,6 +3182,9 @@ async function checkDeclaredBy(page) {
 				.map((c) => c.displayName || c.name),
 			dots: document.querySelectorAll(".cap-row .st-dot").length,
 			warnRows: rows.filter((r) => r.querySelector(".text-amber-400")).length,
+			// 手机推送能力（唯一的 hub 能力）按产品节奏隐藏时，hub 行为 0；
+			// pushUI 记录了这是"隐藏"还是"真没有"，断言据此区分。
+			pushUI: !!(window.Anotify && window.Anotify.pushUIEnabled),
 			hubRowText: rows
 				.filter((r) => r.textContent.includes("中枢执行"))
 				.map((r) => r.textContent.replace(/\s+/g, "")),
@@ -3118,8 +3198,11 @@ async function checkDeclaredBy(page) {
 	);
 	H.check(
 		"中枢执行的能力不误报「跑不起来」",
-		info.hub > 0 && info.hubRowText.length === info.hub,
-		`hub=${info.hub} rows=${info.hubRowText.length}`,
+		// 一边一个：hub 能力必须**有对应行**（不能画成"跑不起来"）。
+		// 手机推送隐藏期间 hub=0，此时只能要求"没有多出来的中枢行"；
+		// 一旦 pushUI 打开（PUSH_UI_ENABLED=true），hub>0 重新变成硬要求。
+		info.hubRowText.length === info.hub && (!info.pushUI || info.hub > 0),
+		`hub=${info.hub} rows=${info.hubRowText.length} pushUI=${info.pushUI}`,
 	);
 	H.check(
 		"没有节点声明的能力给出警告（不是静默）",
@@ -3767,7 +3850,17 @@ async function checkScope(page) {
 		const n = async (ns) => {
 			const c = await (await fetch(`/v1/capabilities?namespaceId=${ns}`)).json();
 			const d = await (await fetch(`/v1/nodes?namespaceId=${ns}`)).json();
-			return { caps: (c.capabilities || []).length, nodes: (d.nodes || []).length };
+			const list = c.capabilities || [];
+			// visible = 页面实际会渲染的条数（暂未开放的能力被 UI 隐去）
+			const visible =
+				window.Anotify && window.Anotify.filterCaps
+					? window.Anotify.filterCaps(list).length
+					: list.length;
+			return {
+				caps: list.length,
+				visible,
+				nodes: (d.nodes || []).length,
+			};
 		};
 		return {
 			prod: await n("ns_mock_prod"),
@@ -3817,7 +3910,9 @@ async function checkScope(page) {
 	}));
 	H.check(
 		"能力页跟着命名空间变（不再有「组织级」页面 / 徽标）",
-		!capPage.badge && capPage.rows === caps.staging.caps && capPage.ns.includes("staging"),
+		!capPage.badge &&
+			capPage.rows === caps.staging.visible &&
+			capPage.ns.includes("staging"),
 		`徽标=${capPage.badge} 行=${capPage.rows} 期望=${caps.staging.caps} 当前=${capPage.ns}`,
 	);
 

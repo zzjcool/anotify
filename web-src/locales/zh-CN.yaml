@@ -423,6 +423,7 @@ login:
     signup_success_short: 注册成功！正在进入工作台…
     need_username_short: 先给自己起个用户名。
 receivers:
+  unavailable: '手机推送暂未开放，上线后这里会显示你的接收设备。'
   title: 通知接收
   demo_badge: 演示数据
   channel:

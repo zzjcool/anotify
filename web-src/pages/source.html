@@ -256,6 +256,8 @@
             Anotify.api(API + "/edges", { demo: null }).catch(() => ({ edges: [] })),
           ]);
           SRC = (srcData && srcData.source) || null;
+          // CAPS 保留**全量**：已有目标可能引用暂未开放的能力（要拿它的 paramsSchema
+          // 渲染参数表单）。隐藏只发生在"发现/选择"的地方（能力页、源/边的选择器）。
           CAPS = (capData && capData.capabilities) || [];
           EDGES = (edgeData && edgeData.edges) || [];
         } catch (e) {

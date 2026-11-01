@@ -181,9 +181,11 @@
           <a href="keys.html" class="btn-ghost rounded-xl px-4 py-2 text-sm"
             >{{t "connect.help.keys"}}</a
           >
+          <!-- 手机推送暂未开放（partials.js 的 PUSH_UI_ENABLED）：这个入口先不显示 -->
           <a
             href="receivers.html"
-            class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            id="help-receivers"
+            class="btn-ghost rounded-xl px-4 py-2 text-sm hidden"
             >{{t "connect.help.receivers"}}</a
           >
         </div>
@@ -202,6 +204,12 @@
         copyText(btn, () => btn.dataset.copyText);
       });
     });
+
+    // 手机推送暂未开放：开关在 web/partials.js（PUSH_UI_ENABLED）。
+    // 默认为 false → 入口保持 hidden；放行时改那一个常量即可。
+    if (window.Anotify.pushUIEnabled) {
+      document.getElementById("help-receivers")?.classList.remove("hidden");
+    }
 
     /* ---------- 页面组装 ---------- */
     mountLayout({

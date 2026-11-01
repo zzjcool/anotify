@@ -423,6 +423,7 @@ login:
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
 receivers:
+  unavailable: 'Las notificaciones push aún no están disponibles. Tus dispositivos aparecerán aquí cuando se publiquen.'
   title: Destinatarios
   demo_badge: Datos demo
   channel:

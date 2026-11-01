@@ -423,6 +423,7 @@ login:
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
 receivers:
+  unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
   title: Receivers
   demo_badge: Demo data
   channel:

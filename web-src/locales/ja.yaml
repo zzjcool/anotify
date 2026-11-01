@@ -423,6 +423,7 @@ login:
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
 receivers:
+  unavailable: 'プッシュ通知は未公開です。公開後にここへ受信デバイスが表示されます。'
   title: 通知先
   demo_badge: デモデータ
   channel:

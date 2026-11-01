@@ -984,6 +984,21 @@
           .addEventListener("click", subscribeCurrent);
 
         /* ================= 启动 ================= */
+        // 手机推送暂未开放（开关在 web/partials.js 的 PUSH_UI_ENABLED）。
+        // 直接输 URL 也要挡住：这里给一句明确的话，而不是让人对着半成品页面点。
+        if (!window.Anotify.pushUIEnabled) {
+          const notice = el("div", {
+            class: "card p-8 text-center text-sm text-zinc-400",
+            text: t(
+              "receivers.unavailable",
+              "手机推送暂未开放，上线后这里会显示你的接收设备。",
+            ),
+          });
+          document
+            .querySelector(".workspace-body, main")
+            ?.replaceChildren(notice);
+          return;
+        }
         load();
         /* 下拉刷新：重新拉取设备列表 */
         mountPullRefresh(load);
