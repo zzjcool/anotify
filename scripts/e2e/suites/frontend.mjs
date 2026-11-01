@@ -3465,6 +3465,18 @@ async function checkNodeRegister(page, base) {
 		!/node\.yaml/.test(cmd),
 		cmd.slice(0, 200),
 	);
+	// 填了 2 个槽位就必须带出去：不带 = 用 agent 缺省（1 个），
+	// 症状是「机器闲着但任务排队」，而用户明明在面板上填了 2。
+	H.check(
+		"docker 命令带 ANOTIFY_INSTANCES=2（面板填的槽位数不能被吞掉）",
+		cmd.includes("ANOTIFY_INSTANCES=2"),
+		cmd.slice(0, 220),
+	);
+	H.check(
+		"docker 命令带 ANOTIFY_NAME=<注册的节点名>（否则中枢只看到主机名）",
+		cmd.includes("ANOTIFY_NAME=" + regName),
+		cmd.slice(0, 220),
+	);
 
 	// ---- ⑤ 列表刷新 → 新节点出现（offline 也算，注册完还没连上来） ----
 	const listed = await page

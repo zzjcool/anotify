@@ -539,20 +539,28 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
       // 节点侧镜像：与 cmd/agent 的官方跑法一致，agent 从 ANOTIFY_TOKEN 环境变量读令牌。
       const AGENT_IMAGE = "ghcr.io/zzjcool/anotify-agent:latest";
 
-      // 成功面板给的是**一行能直接粘的 docker 命令**，不再是 node.yaml：节点侧不需要
-      // 任何配置文件，令牌只以 -e ANOTIFY_TOKEN=<token> 的形式出现。
+      // 成功面板给的是**一行能直接粘的 docker 命令**：容器里没有 node.yaml 可指，
+      // 四件 bootstrap 全部走 -e（cmd/agent/config.go:configFromEnv 认这几个名字）。
       //
-      // 注意返回值里内联的是**真实令牌**，所以它只能写进 #reg-yaml 的 textContent，
+      // 注意返回值里内联的是**真实令牌**，所以它只能写进 #reg-cmd 的 textContent，
       // 不许落到 localStorage / console / 日志（见上面那三条纪律）。
-      function agentDockerCmd(token, server) {
-        // 必须带 ANOTIFY_SERVER：容器里 agent 猜不到中枢地址，猜错的表现是
+      function agentDockerCmd(token, server, name, instances) {
+        // ANOTIFY_SERVER 必带：容器里 agent 猜不到中枢地址，猜错的表现是
         // 「启动成功但一直连不上」，比启动失败难查十倍。
-        return (
+        let cmd =
           "docker run -d --restart=always " +
           "-e ANOTIFY_SERVER=" + (server || "") + " " +
-          "-e ANOTIFY_TOKEN=" + (token || "") + " " +
-          AGENT_IMAGE
-        );
+          "-e ANOTIFY_TOKEN=" + (token || "") + " ";
+        // 名字与槽位数只在用户真的填了「非缺省」时才带：命令越短越不容易贴错，
+        // 而缺省值（主机名 / 1 个槽位）由 agent 自己兜。
+        if (name) cmd += "-e ANOTIFY_NAME=" + name + " ";
+        // 槽位数是**节点自己的资源声明**（契约 D5）：中枢只能少用、不能多用。
+        // 不带这一项 = 用 agent 的缺省（1 个槽位），用户填了 4 却只跑 1 个
+        // 会表现成「机器闲着但任务排队」，所以填了就必须带上。
+        if (instances && Number(instances) > 1) {
+          cmd += "-e ANOTIFY_INSTANCES=" + instances + " ";
+        }
+        return cmd + AGENT_IMAGE;
       }
 
       // node.yaml 是**直接装 agent 二进制**那条路的配置：v2 只剩 bootstrap 四件。
@@ -619,7 +627,12 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
         );
         regEl("reg-token").textContent = token;
         // 两个块都用 201 响应体里的真令牌填：用户复制就能跑
-        regEl("reg-cmd").textContent = agentDockerCmd(token, window.location.origin);
+        regEl("reg-cmd").textContent = agentDockerCmd(
+          token,
+          window.location.origin,
+          (node && node.name) || name,
+          instancesFromPanel(),
+        );
         regEl("reg-yaml").textContent = agentNodeYaml(
           token,
           (node && node.name) || name,
