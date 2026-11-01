@@ -222,6 +222,10 @@
 		tasks: [],
 		keys: [],
 		devices: [],
+		// 产物与部署（CONTRACT-protocol §9）：真后端是两张表，mock 里
+		// 只要够页面用。deployments 的行由 initDeployments() 造假数据。
+		artifacts: [],
+		deployments: [],
 	};
 
 	// 辅助：按名字取能力（返回最高版本）
@@ -229,6 +233,236 @@
 		const list = state.capabilities.filter((c) => c.name === name);
 		if (!list.length) return null;
 		return list.reduce((a, b) => (b.version > a.version ? b : a));
+	}
+
+	// ===== 能力模板（CONTRACT-artifact §8）=====
+	//
+	// 9 个内置模板：5 个 script + 4 个 agent。字段（key/label/type/required/
+	// options/help）必须和真后端 `internal/artifact/templates.go` 一字不差 ——
+	// 控制台要按字段**推导 paramsSchema**，字段错了演示出来的参数契约就是假的。
+	//
+	// script 正文这里做了精简（真后端给的是完整正文）：模板脚本在控制台里
+	// 是原样展示 + 允许改的东西，精简不影响页面行为，但保留 shebang 和
+	// ANOTIFY_PARAM_* 的用法，好让「改脚本」演示出来的东西仍然像真的。
+	function mockTemplates() {
+		const agentPrompt = (label, help) => ({
+			key: "prompt",
+			label: label || "提示词",
+			type: "text",
+			required: true,
+			default: "",
+			help: help || "",
+		});
+		const sh = (body) => ["#!/bin/bash", "set -euo pipefail", 'cd "$ANOTIFY_WORKDIR"', ""]
+			.concat(body)
+			.concat([""])
+			.join("\n");
+
+		return [
+			{
+				id: "script.blank",
+				displayName: "空白脚本",
+				category: "script",
+				description: "从零开始写一段 bash。参数通过 ANOTIFY_PARAM_* 环境变量读取。",
+				fields: [],
+				script: sh([
+					'echo "capability: $ANOTIFY_CAPABILITY"',
+					'echo "digest:     $ANOTIFY_DIGEST"',
+					'echo "params:     $ANOTIFY_PARAMS"',
+				]),
+				requires: [],
+				outputs: [],
+				timeoutSec: 900,
+			},
+			{
+				id: "script.http",
+				displayName: "HTTP 请求",
+				category: "script",
+				description: "按参数发一个 HTTP 请求，输出响应体。",
+				fields: [
+					{ key: "url", label: "URL", type: "string", required: true, default: "", help: "完整地址，含 scheme" },
+					{
+						key: "method",
+						label: "方法",
+						type: "select",
+						required: false,
+						default: "POST",
+						options: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+						help: "",
+					},
+					{ key: "body", label: "请求体", type: "text", required: false, default: "", help: "JSON 文本；留空发送 {}" },
+				],
+				script: sh([
+					'curl -fsS -X "${ANOTIFY_PARAM_METHOD:-POST}" \\',
+					"  -H 'content-type: application/json' \\",
+					'  --data "${ANOTIFY_PARAM_BODY:-{}}" \\',
+					'  "$ANOTIFY_PARAM_URL"',
+				]),
+				requires: ["curl"],
+				outputs: [],
+				timeoutSec: 120,
+			},
+			{
+				id: "script.git",
+				displayName: "拉取 Git 仓库",
+				category: "script",
+				description: "浅克隆一个仓库到工作目录并输出最近一次提交。",
+				fields: [
+					{ key: "repo", label: "仓库地址", type: "string", required: true, default: "", help: "https 或 ssh 地址" },
+					{ key: "ref", label: "分支 / 标签", type: "string", required: false, default: "", help: "留空用默认分支" },
+				],
+				script: sh([
+					"args=(--depth 1)",
+					'if [ -n "${ANOTIFY_PARAM_REF:-}" ]; then',
+					'  args+=(--branch "$ANOTIFY_PARAM_REF")',
+					"fi",
+					'git clone "${args[@]}" "$ANOTIFY_PARAM_REPO" work',
+					"cd work",
+					"git log -1 --stat",
+				]),
+				requires: ["git"],
+				outputs: [],
+				timeoutSec: 900,
+			},
+			{
+				id: "script.test",
+				displayName: "跑测试",
+				category: "script",
+				description: "在工作目录里执行一条测试命令。退出码非 0 视为任务失败。",
+				fields: [
+					{ key: "command", label: "测试命令", type: "string", required: true, default: "make test", help: "" },
+				],
+				script: sh(['bash -c "$ANOTIFY_PARAM_COMMAND"']),
+				requires: [],
+				outputs: [],
+				timeoutSec: 1800,
+			},
+			{
+				id: "script.notify",
+				displayName: "回调 Webhook",
+				category: "script",
+				description: "把标题和正文 POST 到一个 webhook 地址。",
+				fields: [
+					{ key: "webhook_url", label: "Webhook 地址", type: "string", required: true, default: "", help: "" },
+					{ key: "title", label: "标题", type: "string", required: false, default: "", help: "" },
+					{ key: "body", label: "正文", type: "text", required: false, default: "", help: "" },
+				],
+				script: sh([
+					"payload=$(jq -n \\",
+					'  --arg t "${ANOTIFY_PARAM_TITLE:-}" \\',
+					'  --arg b "${ANOTIFY_PARAM_BODY:-}" \\',
+					"  '{title: \$t, body: \$b}')",
+					'curl -fsS -X POST -H \'content-type: application/json\' --data "$payload" \\',
+					'  "$ANOTIFY_PARAM_WEBHOOK_URL"',
+				]),
+				requires: ["curl", "jq"],
+				outputs: [],
+				timeoutSec: 120,
+			},
+			{
+				id: "agent.claude",
+				displayName: "Claude Code",
+				category: "agent",
+				description: "用 Claude Code 执行一段提示词。密钥留在机器上（机器需已装 llm 与登录态）。",
+				fields: [
+					agentPrompt(),
+					{ key: "model", label: "模型", type: "string", required: false, default: "", help: "留空用默认" },
+					{ key: "tools", label: "允许的工具", type: "string", required: false, default: "", help: "逗号分隔，留空用默认" },
+				],
+				script: sh([
+					"args=(--print)",
+					'if [ -n "${ANOTIFY_PARAM_MODEL:-}" ]; then',
+					'  args+=(--model "$ANOTIFY_PARAM_MODEL")',
+					"fi",
+					'if [ -n "${ANOTIFY_PARAM_TOOLS:-}" ]; then',
+					'  args+=(--allowedTools "$ANOTIFY_PARAM_TOOLS")',
+					"fi",
+					'claude "${args[@]}" "$ANOTIFY_PARAM_PROMPT"',
+				]),
+				requires: ["claude"],
+				outputs: [],
+				timeoutSec: 3600,
+			},
+			{
+				id: "agent.codex",
+				displayName: "Codex",
+				category: "agent",
+				description: "用 Codex CLI 执行一段提示词。密钥留在机器上。",
+				fields: [agentPrompt()],
+				script: sh(['codex exec "$ANOTIFY_PARAM_PROMPT"']),
+				requires: ["codex"],
+				outputs: [],
+				timeoutSec: 3600,
+			},
+			{
+				id: "agent.pi",
+				displayName: "PI",
+				category: "agent",
+				description: "用 PI 执行一段提示词。密钥留在机器上。",
+				fields: [
+					agentPrompt(),
+					{ key: "model", label: "模型", type: "string", required: false, default: "", help: "留空用默认" },
+				],
+				script: sh([
+					'if [ -n "${ANOTIFY_PARAM_MODEL:-}" ]; then',
+					'  pi --print -m "$ANOTIFY_PARAM_MODEL" -p "$ANOTIFY_PARAM_PROMPT"',
+					"else",
+					'  pi --print -p "$ANOTIFY_PARAM_PROMPT"',
+					"fi",
+				]),
+				requires: ["pi"],
+				outputs: [],
+				timeoutSec: 3600,
+			},
+			{
+				id: "agent.custom",
+				displayName: "自定义 Agent CLI",
+				category: "agent",
+				description: "调用任意已安装在机器上的 Agent 命令行。",
+				fields: [
+					{
+						key: "agent_command",
+						label: "命令名",
+						type: "string",
+						required: true,
+						default: "",
+						help: "例如 aider / amp / cursor-agent",
+					},
+					agentPrompt(),
+				],
+				script: sh(['"$ANOTIFY_PARAM_AGENT_COMMAND" "$ANOTIFY_PARAM_PROMPT"']),
+				requires: [],
+				outputs: [],
+				timeoutSec: 3600,
+			},
+		];
+	}
+
+	// mock 的 digest：从正文算一个**稳定**的假 sha256。
+	//
+	// 同一份输入永远同一个值 —— 这样「改脚本 → digest 变了 → 节点上是本地变体」
+	// 这条链路在演示里也讲得通；用随机值会让每次刷新都变成另一个 digest。
+	function mockDigest(seed) {
+		const s = String(seed || "");
+		let h1 = 0x811c9dc5 >>> 0;
+		let h2 = 0x1000193 >>> 0;
+		for (let i = 0; i < s.length; i++) {
+			const c = s.charCodeAt(i);
+			h1 = ((h1 ^ c) * 0x01000193) >>> 0;
+			h2 = (h2 + c * 31 + i * 7) >>> 0;
+		}
+		const hex = (n) => n.toString(16).padStart(8, "0");
+		const parts = [
+			h1,
+			h2,
+			(h1 ^ h2) >>> 0,
+			(h1 + h2) >>> 0,
+			(h1 * 3) >>> 0,
+			(h2 * 7) >>> 0,
+			(h1 ^ 0x5bf03635) >>> 0,
+			(h2 ^ 0x9e3779b9) >>> 0,
+		];
+		return "sha256:" + parts.map(hex).join("");
 	}
 
 	// ===== kind 推导 =====
@@ -442,6 +676,40 @@
 				instances: [{ id: "nins_mock_2", index: 0, concurrency: 1, busy: 0 }],
 			},
 		];
+	})();
+
+	// ---------- 初始部署 ----------
+	//
+	// 造出四种状态各来几行，好让「能力页的部署列」与「节点页的已缓存产物」
+	// 在演示里能看到真形态（而不是一排「未部署」）：
+	//   applied 绿 / pending 黄 / failed 红（带 reason）/ local 黄（本地变体）
+	(function initDeployments() {
+		state.deployments = [];
+		const byId = (id) => state.nodes.find((n) => n.id === id) || null;
+		const seed = (nodeId, name, depState, reason) => {
+			const node = byId(nodeId);
+			const c = capByName(name);
+			if (!node || !c) return;
+			state.deployments.push({
+				id: uid("dep"),
+				namespaceId: NS,
+				nodeId: node.id,
+				capabilityId: c.id,
+				digest: mockDigest(name + "@" + c.version),
+				state: depState,
+				reason: reason || "",
+				updatedAt: now() - 600,
+			});
+		};
+		seed("nd_mock_laptop", "analyze-pr", "applied");
+		seed("nd_mock_laptop", "lint-fix", "applied");
+		// 手改过产物 → 中枢永不覆盖，只能标黄
+		seed("nd_mock_laptop", "apply-fix", "local");
+		// 常见失败：机器上没装 curl（reason 是机器可读短码 + 说明）
+		seed("nd_mock_laptop", "report.send", "failed", "missing_requirement:curl");
+		// ci-runner 离线 → 行照样创建，等它上线再由重连对账补推
+		seed("nd_mock_ci", "run-tests", "pending");
+		seed("nd_mock_ops", "rollback", "applied");
 	})();
 
 	// ---------- 初始源 ----------
@@ -2043,6 +2311,12 @@
 		return json({ task: clone(task) });
 	});
 
+	// ===== 能力模板（CONTRACT-artifact §8 / CONTRACT-protocol §11） =====
+	//
+	// 只读清单，没有副作用。控制台拿它渲染「选模板」那一步，再按字段
+	// 推导 paramsSchema —— 所以这个接口必须和真后端同形状。
+	on("GET", /^\/v1\/capability-templates$/, () => json({ templates: mockTemplates() }));
+
 	// ===== 能力与边 =====
 	on("GET", /^\/v1\/capabilities$/, (ctx) =>
 		json({
@@ -2053,6 +2327,11 @@
 	on("POST", /^\/v1\/capabilities$/, (ctx) => {
 		const b = ctx.body || {};
 		if (!b.name) return err(400, "name is required");
+		// 名字规则与 internal/artifact/artifact.go 的 namePattern 一致：
+		// 前后端都要拦，不然演示里能建出真后端拒收的名字。
+		if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(b.name)) {
+			return err(400, "invalid_name: 只能包含小写字母、数字、点、下划线、短横线，1–63 字符");
+		}
 		// 能力归属命名空间（缺省 = 当前范围）。真实后端这里必须是必填，
 		// mock 宽松的理由见 nsScope 的注释。
 		b.namespaceId = b.namespaceId || nsScope(ctx.query) || NS;
@@ -2061,8 +2340,37 @@
 			? Math.max(...existing.map((c) => c.version)) + 1
 			: 1;
 		const c = cap(b.name, b.version || nextVer, b.outputs || [], b.paramsSchema);
+		if (b.displayName) c.displayName = String(b.displayName).trim();
+
+		// run（新增，CONTRACT-artifact §2）：入口文件 + 文件正文 + 超时 + env。
+		// 有它才编译产物、算 digest；没有它就是「只定义了参数契约」的老用法。
+		// mock 也走一遍 shebang 校验：控制台的「改脚本」必须能立刻看到这条错。
+		const run = b.run || null;
+		if (run && run.files) {
+			const entry = run.entrypoint || "run.sh";
+			const body = String((run.files || {})[entry] || "");
+			if (!body.startsWith("#!")) {
+				return err(400, "entrypoint_no_shebang: 入口文件必须以 #! 开头（节点直接 exec，不经 shell）");
+			}
+			c.requires = Array.isArray(b.requires) ? b.requires.slice() : [];
+			c.run = {
+				entrypoint: entry,
+				files: run.files,
+				timeoutSec: run.timeoutSec || 0,
+				env: run.env || {},
+			};
+			// digest 不存进文件，始终由内容算出来（CONTRACT-artifact §3）
+			c.digest = mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run }));
+			state.artifacts.push({
+				id: uid("art"),
+				namespaceId: c.namespaceId,
+				capabilityId: c.id,
+				digest: c.digest,
+				createdAt: now(),
+			});
+		}
 		state.capabilities.push(c);
-		return json({ capability: capView(c) }, 201);
+		return json({ capability: capView(c), kind: kindOf(c), digest: c.digest || "" }, 201);
 	});
 
 	// PATCH 只改 display_name（装饰字段），不产生新版本。
@@ -2074,6 +2382,110 @@
 		if (!c) return err(404, "capability not found");
 		c.displayName = String(b.displayName || "").trim();
 		return json({ capability: capView(c) });
+	});
+
+	// ===== 部署（CONTRACT-protocol §7 / §11） =====
+	//
+	// 形状对齐契约：
+	//   {deployments:[{id, nodeId, nodeName, capabilityId, capabilityName,
+	//                  version, digest, state, reason, updatedAt}]}
+	// nodeName / capabilityName / version 是中枢 join 出来的**展示字段**：
+	// 前端只拿到 id 时也能显示「哪台机器上的哪个能力」，否则列表里全是 id。
+	const depView = (d) => {
+		const node = state.nodes.find((n) => n.id === d.nodeId);
+		const c = state.capabilities.find((x) => x.id === d.capabilityId);
+		return {
+			id: d.id,
+			nodeId: d.nodeId,
+			nodeName: node ? node.name : d.nodeId,
+			capabilityId: d.capabilityId,
+			capabilityName: c ? c.name : d.capabilityId,
+			version: c ? c.version : 0,
+			digest: d.digest,
+			state: d.state,
+			reason: d.reason || "",
+			updatedAt: d.updatedAt || now(),
+		};
+	};
+
+	on("GET", /^\/v1\/deployments$/, (ctx) => {
+		const sc = nsScope(ctx.query);
+		const capId = ctx.query.get("capabilityId") || "";
+		const nodeId = ctx.query.get("nodeId") || "";
+		let list = inNs(state.deployments, sc);
+		if (capId) list = list.filter((d) => d.capabilityId === capId);
+		if (nodeId) list = list.filter((d) => d.nodeId === nodeId);
+		// 与后端同样按「最近更新优先」排：面板上刚推的那条应该在最上面
+		list = list.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+		return json({ deployments: list.map(depView) });
+	});
+
+	on("POST", /^\/v1\/deployments$/, (ctx) => {
+		const b = ctx.body || {};
+		const nsId = b.namespaceId || nsScope(ctx.query) || NS;
+		const c = state.capabilities.find((x) => x.id === b.capabilityId);
+		if (!c) return err(400, "capability not found");
+		const nodeIds = Array.isArray(b.nodeIds) ? b.nodeIds.map(String) : [];
+		if (!nodeIds.length) return err(400, "nodeIds is required");
+		// digest 缺省取该能力最新产物（契约 §11）。没有产物就是「还没编译」——
+		// 真后端也会拒；这里给一个确定性假值，好让演示能走完整个面板。
+		const digest = b.digest || c.digest || mockDigest(c.name + "@" + c.version);
+
+		const results = [];
+		for (const nodeId of nodeIds) {
+			const node = state.nodes.find((n) => n.id === nodeId);
+			if (!node) {
+				results.push({ nodeId, deployId: "", pushed: false, error: "node_not_found" });
+				continue;
+			}
+			// UNIQUE(node_id, artifact_id)：同一台机器再部署同一能力是**更新那一行**
+			// （重新排队等节点确认），不是插一条新行 —— 否则列表里会出现重复。
+			let row = state.deployments.find(
+				(d) => d.nodeId === nodeId && d.capabilityId === c.id,
+			);
+			if (row) {
+				row.digest = digest;
+				row.state = "pending";
+				row.reason = "";
+				row.updatedAt = now();
+			} else {
+				row = {
+					id: uid("dep"),
+					namespaceId: nsId,
+					nodeId,
+					capabilityId: c.id,
+					digest,
+					state: "pending",
+					reason: "",
+					updatedAt: now(),
+				};
+				state.deployments.push(row);
+			}
+			// 节点离线 → **行照样创建**（等它上线由重连对账补推），
+			// 但 pushed=false：契约 §11 要求逐台如实回报，不能假装成功。
+			const online = node.status === "online";
+			results.push({
+				nodeId,
+				deployId: row.id,
+				pushed: online,
+				error: online ? "" : "node_offline",
+			});
+		}
+		return json({ results }, 201);
+	});
+
+	// 撤销：真后端推 remove 帧后**直接删行**（不留 removed 态，契约 §7）
+	//
+	// 回 **204 空 body**（不是 200+JSON）：契约 §11 没规定状态码，而前端
+	// `Anotify.api()` 对 ok 但空 body 的响应会抛 SyntaxError（`res.json()` 解析失败，
+	// 且**没有** `.status`）。故意让演示走这条更难的路径 —— 否则「204 也算成功」
+	// 那段判据在 mock/预览里永远没人执行，等真后端回 204 才发现是坏的。
+	on("DELETE", /^\/v1\/deployments$/, (ctx) => {
+		const id = ctx.query.get("id") || "";
+		const before = state.deployments.length;
+		state.deployments = state.deployments.filter((d) => d.id !== id);
+		if (state.deployments.length === before) return err(404, "deployment not found");
+		return new Response(null, { status: 204 });
 	});
 
 	on("GET", /^\/v1\/edges$/, (ctx) =>
@@ -3203,8 +3615,14 @@
 			}
 		}
 
-		// 没实现的接口：明确说出来，而不是静默返回 {} 让页面莫名其妙地空
-		console.warn("[mock] 未实现的接口:", method, pathOnly);
+		// 没实现的接口：明确说出来，而不是静默返回 {} 让页面莫名其妙地空。
+		//
+		// 这条 warn 的**措辞是门禁契约的一部分**：scripts/e2e 的 fe-preview 套件只在
+		// console **文本**里搜 "mock 未实现" 这个子串，用它判定「页面调的接口 mock 有没有实现」。
+		// 所以这里**不能加 "[mock] " 前缀** —— `"[mock] 未实现：…".includes("mock 未实现")` 是 false
+		//（`] ` 卡在中间），断言会永远绿。旧文案 "[mock] 未实现的接口:" 也是同一个毛病；
+		// 501 响应体里的那行是对的，但响应体从不进 console（Anotify.api 只 throw，页面也不打日志）。
+		console.warn("mock 未实现：" + method + " " + pathOnly);
 		return err(501, "mock 未实现：" + method + " " + pathOnly);
 	};
 
