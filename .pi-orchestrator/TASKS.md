@@ -224,3 +224,46 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 **产出**：5 commits（9ab9011 后端 → 3f2317c 前端 → 33c20e9 修 consume bug → 097d77a kind guard → f8359b8 initiatorName 语义）
 
 **遗留风险**：complete 真实 attestation 成功路径无法在无浏览器认证器的 e2e 覆盖（tester 已标注）。
+
+## 性能评估与五批修复（已完成 2026-10-31）
+
+**起因**：用户要求「对各环境做性能评估 + bug 探查」，最多 3 路 centurion 并行，每个瓶颈开一条带上下文的 issue。
+
+**评估层**：三路并行（A HTTP/存储 · B WS/多跳 · C 资源/泄漏/前端），产出 **25 条 issue + 3 份报告**
+（`docs/perf/path-a-http-api-store.md`、`scripts/perf/b/REPORT.md`、`docs/perf/c-report.md`），
+配套零依赖压测器 `scripts/perf/loadgen`（本机装不上 hey/wrk/vegeta）+ `ANOTIFY_PPROF` 手动挂载 pprof。
+
+**修复层**：五批，每批独立子树 + 独立审查，协调者**自己复跑前后数字**后才合并。
+
+- [x] 批次 1 正确性（#218 #222 #221）：租约归属到**具体执行**（task+instance+boot id）、`attempts` CAS、`LostAbandon` 宁可 abandoned 也不重复执行
+- [x] 批次 2A 鉴权（#227 #245 #241）：argon2 缓存（HMAC 键 + 独立 verifier + generation 全表失效 + 容量上限）、会话缓存、hooks **双维 AND 限流**
+- [x] 批次 2B 存储（#240 #238）：连接池 1→8 + `_txlock=immediate`（`:memory:` 恒 1）、迁移 15 索引收口
+- [x] 批次 3A 查询（#242 #237）：语句句柄缓存 + 驱动 v1.45.0（消掉每次执行内部 parse）、迁移 16 索引 + `ANALYZE` + `PRAGMA optimize=0x2`
+- [x] 批次 3B 响应（#223 #243）：`/v1/nodes` 批量查（N+1 → 常数条）、JSON gzip
+- [x] 批次 4A 静态（#231 #232 #233）：进程内一次性 gzip + ETag/304、`classify()` 判真实产物名
+- [x] 批次 4B 前端（#234 #235 #236）：图库按页加载、events 游标分页、`limit` 死区消除
+- [x] 批次 5 容量（#229 #228）：保留期默认 30 天、背压超阈 503 + fail-open 安全阀
+
+**关键数字**（同场次前后对比，绝对值不可跨场次比较）：
+
+| 项 | 前 | 后 |
+|---|---|---|
+| `/v1/tasks` p95（100k 行） | 9836.3 ms | **123.0 ms（80×）** |
+| Bearer 鉴权热路径 | 46.7 RPS | **19,727 RPS（422×）** |
+| 带会话读端点 | 基线 | **+97%**（连接池）、CPU/请求 **−51%**（语句缓存） |
+| `/v1/nodes` N=100 | 135 RPS / p50 58ms | **438 RPS / p50 17.1ms** |
+| 大响应 `limit=500` | 183,453 B | **20,053 B（−89%）** |
+| 首屏 14 子资源 | 402,534 B | **145,436 B（2.77×）** |
+| 重复执行（sleep 60 场景） | 2 | **0** |
+
+**门禁**：`make e2e` **1660 断言 / 0 失败**（起点 1548，五批新增 112 条）；`make ci` 连跑全绿。
+
+**修复过程中新发现的 8 条 issue**（都不是评估发现的，而是"真跑起来并核对数字"才暴露的）：
+
+`#249` latency_ms 装的是微秒 · `#252` 测试夹具钉单连接 + 冗余索引 · `#254` 禁用用户不禁 API Key ·
+`#259` 收尾竞态（TempDir/db.Close）· `#264` 索引写放大 · `#265` 统计漂移不自动刷新 ·
+`#268` `sw.js` 引用未指纹图标 · `#270` pending 无 abandon 路径
+
+**方法学沉淀**（`scripts/perf/README.md`）：
+绝对值不可跨场次比较（漂 1.6–2.4×）、`SetMaxOpenConns(1)` 下永远不会 `SQLITE_BUSY`、
+**前后对比赛前必须确认跑的是当前代码编出的二进制**（本轮真因旧二进制误判过一次）。
