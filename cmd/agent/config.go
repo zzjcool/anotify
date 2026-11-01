@@ -1,73 +1,55 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/ws"
 	"gopkg.in/yaml.v3"
 )
 
-// 本文件是 node.yaml 的**配置层**：解码、校验，以及把配置翻译成 hello 帧里的
-// capabilities / manifest / instances 声明。
+// 本文件是 node.yaml 的**配置层**：解码、校验，以及把配置翻译成 hello 帧。
 //
-// 边界（契约 I1）：命令只来自本地 node.yaml 的 run.command —— 中枢不下发命令、
-// 也不解释执行方式。本文件**不拼接命令、不做 {{param}} 插值**：run.command 原样
-// 交给 runner 的 `sh -c`，参数只走环境变量（见 runner.go）。
+// node.yaml 只剩 bootstrap 四件（契约 §1 / 裁决 D4）：
 //
-// 帧类型不在这里定义：helloFrame / capabilityDecl / manifestDecl / instanceDecl
-// 是 protocol.go（W2）复用的 internal/ws 类型别名。这里只从 internal/ws 取两个
-// **常量**（帧类型名与协议版本），不碰帧结构。
+//	name: buildbox-1
+//	server: https://anotify.example.com
+//	token: nt_xxxxx
+//	instances: 4          # 并发槽位数（可选，缺省 1）
+//
+// **能力不在机器上声明了**。能力由控制台唯一定义、编译成产物（internal/artifact），
+// 经 deploy 帧下发到本机缓存（见 cache.go / apply.go）。节点启动、重连时只是如实
+// 上报「我缓存了哪些产物」（hello.applied），而「这个能力归谁」的唯一写者是中枢的
+// 部署表。
+//
+// 这条边界就是 D4：node_capabilities 从「节点自报的能力事实」降级为「已部署产物
+// 的派生索引」。节点不能再单方面声称「我会跑 X」——否则中枢数据库会静默撒谎
+// （页面显示能跑，真派下来却 failed）。
 
-// nodeConfig 是 node.yaml 的全部内容（节点侧唯一声明入口）。
+// nodeConfig 是 node.yaml 的全部内容（节点侧唯一的 bootstrap 声明入口）。
 //
-// 节点与中枢解耦、部署在用户侧，所以它的能力必须由这份本地配置声明
-// （docs/design/playbooks.md §4）。
+// 节点与中枢解耦、部署在用户侧，所以「连哪、用哪个令牌、开几个槽位」必须由本地
+// 配置声明；而「跑什么」不在这里——那是中枢部署下来的产物（见上面的注释）。
 type nodeConfig struct {
-	Name         string             `yaml:"name"`
-	Server       string             `yaml:"server"`
-	Token        string             `yaml:"token"`
-	Instances    int                `yaml:"instances"`
-	Capabilities []capabilityConfig `yaml:"capabilities"`
-}
-
-// capabilityConfig 是一条能力声明：能力名 + 版本 + 它**怎么跑**。
-type capabilityConfig struct {
-	Capability string   `yaml:"capability"`
-	Version    int      `yaml:"version"`
-	Run        *runSpec `yaml:"run"`
-}
-
-// runSpec 是 node.yaml 的 run 块（#168 的形状），同时也是 manifest 里的 run 原文。
-//
-// 字段是节点自己的执行方式声明，中枢只校验形状、只存不执行（I1）。yaml 与 json
-// 双 tag：yaml 读本地配置，json 用于 manifest 里的 run 原文（线上帧字段名以
-// internal/ws 的 json tag 为准，这里是数组内嵌的 raw JSON，所以自己带 tag）。
-//
-// Concurrency 本地只校验 >= 0：中枢那条 nodes.max_concurrency（默认 8）是节点
-// 无从得知的硬顶——超了握手会被 invalid_manifest 拒（error.message 会给出区间），
-// 不需要在这里猜一个上限。
-type runSpec struct {
-	Runner      string            `yaml:"runner"      json:"runner"`
-	Command     string            `yaml:"command"     json:"command"`
-	TimeoutSec  int               `yaml:"timeoutSec"  json:"timeoutSec,omitempty"`
-	Concurrency int               `yaml:"concurrency" json:"concurrency,omitempty"`
-	Env         map[string]string `yaml:"env"         json:"env,omitempty"`
-	// Out 是**成功时**回报的出口名（喂给中枢的多跳选边，见 playbooks §4）。
-	// 缺省 = 不回报（result 帧里 out 键缺席 → 分支终止）。
-	// 节点侧不做插值/映射/校验：它就是一段固定字符串，合法性由服务端查边时判定。
-	Out string `yaml:"out" json:"out,omitempty"`
+	Name   string `yaml:"name"`
+	Server string `yaml:"server"`
+	Token  string `yaml:"token"`
+	// Instances 是并发槽位数。<=0 归一为 1（见 slots），
+	// 它是节点**自己**的资源声明，中枢只能少用、不能多用（契约 D5）。
+	Instances int `yaml:"instances"`
 }
 
 // loadConfig 读取并校验一份 node.yaml。
 //
 // 所有错误都以**文件路径**为前缀（用户同时维护多份 node.yaml 时，报错必须自己
-// 说清是哪一份）。未知字段是错误：拼错的字段名静默失效比启动失败更难查。
+// 说清是哪一份）。未知字段是错误：拼错的字段名静默失效比启动失败更难查——
+// 这条同时也是一道迁移护栏：v1 的 `capabilities:` 现在就是未知字段，老配置会在
+// 启动时被明确拒绝，而不是静默连上去却永远接不到单。
 func loadConfig(path string) (*nodeConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -93,7 +75,7 @@ func loadConfig(path string) (*nodeConfig, error) {
 //
 // node.yaml 是手写的，逐条报错会变成「改一行跑一次」的猜谜。
 func (c *nodeConfig) validate() error {
-	problems := make([]string, 0, 8)
+	problems := make([]string, 0, 4)
 
 	// server：必须能解析出 host、且能映射到 ws/wss（不让用户猜 scheme）。
 	if _, err := c.streamURL(); err != nil {
@@ -104,52 +86,6 @@ func (c *nodeConfig) validate() error {
 	}
 	if c.Instances < 0 {
 		problems = append(problems, "instances must be >= 0")
-	}
-	if len(c.Capabilities) == 0 {
-		problems = append(problems, "at least one capability is required")
-	}
-
-	seen := make(map[string]struct{}, len(c.Capabilities))
-	for i, cc := range c.Capabilities {
-		ref := cc.Capability
-		if strings.TrimSpace(ref) == "" {
-			// 名字都没有时 {ref} 渲染不出来，用 #<index> 自描述
-			// （与中枢侧 confirmCapabilityDecls 的口径一致）。
-			problems = append(problems, fmt.Sprintf("#%d: capability is required", i))
-			ref = fmt.Sprintf("#%d", i)
-		}
-		if cc.Version < 1 {
-			problems = append(problems, fmt.Sprintf("%s: version must be >= 1", ref))
-		}
-		full := fmt.Sprintf("%s@%d", ref, cc.Version)
-		if _, dup := seen[full]; dup {
-			problems = append(problems, "duplicate capability "+full)
-		}
-		seen[full] = struct{}{}
-
-		if cc.Run == nil {
-			problems = append(problems, full+": run is required")
-			continue
-		}
-		switch cc.Run.Runner {
-		case "":
-			problems = append(problems, full+": run.runner is required (only bash)")
-		case "bash":
-			// 本期唯一执行器（playbooks §4.1：必须显式写，不隐式默认成 bash）。
-		default:
-			problems = append(problems,
-				fmt.Sprintf("%s: run.runner %q is not supported (only bash)", full, cc.Run.Runner))
-		}
-		if strings.TrimSpace(cc.Run.Command) == "" {
-			problems = append(problems, full+": run.command is empty")
-		}
-		// 0 = 缺省（归一为 1，见 slots/slotConcurrency/taskLimit）；负数才是错误。
-		if cc.Run.Concurrency < 0 {
-			problems = append(problems, full+": run.concurrency must be >= 0")
-		}
-		if cc.Run.TimeoutSec < 0 {
-			problems = append(problems, full+": run.timeoutSec must be >= 0")
-		}
 	}
 
 	if len(problems) == 0 {
@@ -194,66 +130,39 @@ func (c *nodeConfig) streamURL() (string, error) {
 	return u.String(), nil
 }
 
-// hello 把配置翻译成 hello 帧的声明部分。
+// hello 把 bootstrap 配置 + 本机缓存索引翻译成 hello 帧（契约 §3）。
 //
-// 顺序即 yaml 顺序（同一个 node.yaml 每次启动发出的帧都一致，便于排障）。
-// node_id 留空：由服务端按令牌认（node.yaml 不提供 node_id）。
-// manifest[].run 是 runSpec 的**紧凑 JSON 原文**：中枢只存不执行，所以这里发给
-// 服务端的形状与本地配置一一对应（zero 值字段由 omitempty 省略）。
-func (c *nodeConfig) hello() *helloFrame {
-	caps := make([]capabilityDecl, 0, len(c.Capabilities))
-	manifest := make([]manifestDecl, 0, len(c.Capabilities))
-	for _, cc := range c.Capabilities {
-		caps = append(caps, capabilityDecl{Capability: cc.Capability, Version: cc.Version})
-
-		var run json.RawMessage
-		if cc.Run != nil {
-			// runSpec 只有标量/map[string]string，json.Marshal 不会失败；万一失败
-			// 就留 nil（服务端会以 run is required 拒绝），好过发出半截 run。
-			if b, err := json.Marshal(*cc.Run); err == nil {
-				run = b
-			}
-		}
-		manifest = append(manifest, manifestDecl{
-			Capability: cc.Capability,
-			Version:    cc.Version,
-			Run:        run,
-		})
-	}
-
+// applied 是**从哪里来**的关键：它不是「我能跑什么」，而是「我缓存了什么」。
+// 中枢拿到它只做一件事——和 deployments 对账（对上了 → applied；digest 不一致
+// → local 本地变体），绝不会因为出现一条 applied 就把能力归属给这台机器。
+//
+// 参数由调用方从 cache 取（`c.cache.applied()`），而不是在这里构造 cache：
+// 这样 config 层保持纯函数、可离线单测（配置解析与缓存落盘是两件事）。
+func (c *nodeConfig) hello(applied []appliedDecl) *helloFrame {
 	slots := c.slots()
 	perSlot := c.slotConcurrency()
 	instances := make([]instanceDecl, 0, slots)
 	for slot := 0; slot < slots; slot++ {
 		instances = append(instances, instanceDecl{Slot: slot, Concurrency: perSlot})
 	}
+	// 空列表纪律：hello.applied 必须是 []，不是 null（服务端/前端把 null 当异常）。
+	if applied == nil {
+		applied = []appliedDecl{}
+	}
 
 	return &helloFrame{
-		Type:         ws.NodeFrameHello,
-		Protocol:     ws.ProtocolVersion,
-		NodeID:       "",
-		Capabilities: caps,
-		Manifest:     manifest,
-		Instances:    instances,
-		Labels:       nil,
+		Type:      ws.NodeFrameHello,
+		Protocol:  ws.ProtocolVersion,
+		NodeID:    "",
+		Instances: instances,
+		Applied:   applied,
 	}
-}
-
-// lookup 按 name@version 找本节点声明的 run 块。
-//
-// 第二个返回值 false 表示「没有可用的 run」（既包括没声明这个能力，也包括声明了
-// 但没写 run）：两种情况节点都无法执行，client 侧一律 ack 后回 result failed。
-func (c *nodeConfig) lookup(capability string, version int) (*runSpec, bool) {
-	for i := range c.Capabilities {
-		cc := &c.Capabilities[i]
-		if cc.Capability == capability && cc.Version == version {
-			return cc.Run, cc.Run != nil
-		}
-	}
-	return nil, false
 }
 
 // slots 是并发槽位数：instances 缺省（<=0）归一为 1。
+//
+// 归一在**读取处**表达，不改写用户结构体：配置文件里没写就是没写，
+// 结构体的零值仍然忠实反映「用户没声明」，只有使用它的地方才按缺省语义算。
 func (c *nodeConfig) slots() int {
 	if c.Instances <= 0 {
 		return 1
@@ -261,38 +170,38 @@ func (c *nodeConfig) slots() int {
 	return c.Instances
 }
 
-// slotConcurrency 是每个槽位里能并跑几个任务：全部 run.concurrency 的 max，
-// 缺省（<=0）记 1。
+// slotConcurrency 是单个槽位里能并跑几个任务。
+//
+// v1 这个值来自 node.yaml 里各能力的 run.concurrency（节点自报执行方式的一部分）；
+// v2 执行方式归产物、节点不再声明它，所以一个槽位就只放一个任务——**并发上限
+// 完全由节点启动参数（instances）决定**，中枢推不动（契约 D5）。
 func (c *nodeConfig) slotConcurrency() int {
-	best := 0
-	for _, cc := range c.Capabilities {
-		if cc.Run == nil {
-			continue
-		}
-		n := cc.Run.Concurrency
-		if n <= 0 {
-			n = 1
-		}
-		if n > best {
-			best = n
-		}
-	}
-	if best <= 0 {
-		return 1
-	}
-	return best
+	return 1
 }
 
-// taskLimit 是某个能力的并发上限：槽位数 × 该能力声明的 concurrency。
+// taskLimit 是单个能力的并发上限 = 槽位数 × 每槽并发 = slots()。
 //
-// rs == nil（沿用不到 run 块）时退化成一个槽位一个任务 = slots()。
-func (c *nodeConfig) taskLimit(rs *runSpec) int {
-	if rs == nil {
-		return c.slots()
+// 用「每能力一个信号量」而不是一个全局信号量：一个慢能力不该把别的能力堵死；
+// 而节点整体的并发上限靠 instances（槽位数）在启动参数里收口。
+func (c *nodeConfig) taskLimit() int {
+	return c.slots() * c.slotConcurrency()
+}
+
+// defaultDataDir 是节点数据目录的缺省值：~/.anotify。
+//
+// 布局（契约 §5 + T4 任务卡）：
+//
+//	<data-dir>/artifacts/<digest>/capability.yaml   产物原文
+//	<data-dir>/artifacts/<digest>/files/<rel-path> 展开的文件
+//	<data-dir>/index/<name>@<version>              单行文本：digest
+//	<data-dir>/work/<task_id>/                     每次任务独立工作目录
+//
+// 用用户主目录而不是 /tmp：产物是**要留着的**（断电重启后靠 hello.applied 对账），
+// 放 /tmp 会被系统清理，节点重启就变成「什么都不会跑」。
+func defaultDataDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home dir for the default data dir: %w", err)
 	}
-	n := rs.Concurrency
-	if n <= 0 {
-		n = 1
-	}
-	return c.slots() * n
+	return filepath.Join(home, ".anotify"), nil
 }
