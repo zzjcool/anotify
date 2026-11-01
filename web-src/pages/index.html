@@ -685,6 +685,10 @@
         if (data && Array.isArray(data.tasks)) {
           items = data.tasks;
           connected = true;
+        } else {
+          // 200 但形状不符（例如反代吐了 HTML 错误页、或接口改了返回结构）：
+          // 这条**不抛异常**，早先会静默落到演示模式且徽章没有任何原因（#273）。
+          demoReason = "响应格式不符";
         }
       } catch (e) {
         connected = false; // 401 已由 api() 跳登录
