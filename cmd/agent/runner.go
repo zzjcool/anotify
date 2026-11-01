@@ -33,16 +33,21 @@ import (
 //     并以 ANOTIFY_WORKDIR 暴露给脚本。
 //  3. **执行内容来自产物，不来自 node.yaml**。node.yaml 只剩 bootstrap（见 config.go）。
 //
-// # 出口名（out）的来源是契约空白
+// # 出口名（out）的来源：一个文件
 //
 // v1 的 `run.out` 是 node.yaml 里一个固定字符串，任务成功就回报它。v2 的产物只有
-// `spec.outputs[]`（**集合**：edges.from_port 的封闭集合），没有「这一次跑的是哪一个」
-// 的字段，契约里也没有定义脚本→节点的回报通道（没有 ANOTIFY_OUT 之类的约定）。
+// `spec.outputs[]`（**集合**：edges.from_port 的封闭集合），「这一次跑的是哪一个」
+// 是**运行期**才知道的，所以必须由脚本告诉节点。
 //
-// 所以 v2 节点**恒不回报出口**（result 帧里 out 键缺席 → 服务端按「分支终止」处理）。
-// 这不会让任务本身失败，但多跳链路会在第一个任务处停住。plumbing 全部保留
-// （outcome.Out / sendResult / resultFrame 的 out 三态），等契约定义载体后，
-// 在这里补一处读取即可（一行）。
+// 约定（CONTRACT-artifact §6.1）：
+//   - 节点把 `$ANOTIFY_OUT_FILE`（= <workdir>/.anotify-out）交给脚本
+//   - 脚本在**成功时**把出口名写进去（一行，最多 64 字节）
+//   - 节点读它、trim、校验 ∈ spec.outputs，然后作为 result.out 回报
+//   - 文件不存在 → 不回报（out 键缺席 = 「这次到头了，没选下一跳」）
+//   - 写了但不在 spec.outputs 里 → 整次执行判 **failed**（出口是封闭集合，不变量 I2）
+//
+// 为什么不复用 `sh -c` 时代的 `run.out`：那个是「这个能力成功就等于这个出口」，
+// 无法表达「同一个能力按参数走不同分支」，而分支恰恰是图的价值所在。
 //
 // # 进程组与 WaitDelay（v1 的成果，全部保留）
 //
@@ -125,6 +130,11 @@ type execPlan struct {
 	entrypoint string        // 入口文件的绝对路径（直接 exec，靠 shebang 选解释器）
 	env        []string      // 完整环境变量（父环境剔除 ANOTIFY_* + 产物 env + 契约变量）
 	timeout    time.Duration // 0 = 不设本地超时（交给中枢租约）
+	// outFile 是脚本回报「这次走了哪个出口」的唯一通道（见文件头）。
+	outFile string
+	// allowedOutputs 是产物声明的出口集合（spec.outputs）。脚本写的出口名必须在里面，
+	// 否则整次执行判失败 —— 出口是封闭集合（不变量 I2），不允许节点临时发明一个。
+	allowedOutputs []string
 }
 
 // runJob 执行一次任务。**不 panic**：所有失败都写进 outcome.Err（client 侧照常
@@ -175,9 +185,17 @@ func runJob(ctx context.Context, j job) outcome {
 		// 成功判定要同时看 exit code 与 ctx：命令刚好在超时/取消那一刻 exit 0 时，
 		// 它不是「跑完了」，而是「被我们掐断的」，不能当成功。
 		res.Status = statusSucceeded
-		// 出口名：v2 无来源（见文件头「出口名（out）的来源是契约空白」）→ 恒 nil，
-		// 于是 result 帧里 out 键缺席 = 服务端按分支终止处理。
-		if res.Summary == "" {
+		// 出口名来自脚本写的那个文件（见文件头）。读失败/没写 = 不回报（分支终止）；
+		// 写了但不在 spec.outputs 里 = 整次执行失败（封闭集合，I2）。
+		out, outErr := readOutcomeOut(plan)
+		switch {
+		case outErr != nil:
+			res.Status = statusFailed
+			res.Err = outErr.Error()
+		case out != nil:
+			res.Out = out
+		}
+		if res.Status == statusSucceeded && res.Summary == "" {
 			// 命令没有输出（echo -n、true …）：summary 不能是空串，
 			// 否则服务端/前端看起来像「没回报」。
 			res.Summary = "exit 0"
@@ -312,6 +330,9 @@ func prepareExecution(j job) (execPlan, error) {
 		entrypoint: entrypoint,
 		env:        env,
 		timeout:    effectiveTimeout(j),
+		outFile:    filepath.Join(workDir, outFileName),
+		// 出口集合来自产物：它是 edges.from_port 的封闭集合（不变量 I2）。
+		allowedOutputs: append([]string(nil), j.Artifact.Spec.Outputs...),
 	}, nil
 }
 
@@ -491,6 +512,8 @@ func buildEnv(base []string, j job, workDir string) ([]string, error) {
 	env["ANOTIFY_WORKDIR"] = workDir
 	env["ANOTIFY_TRACE_ID"] = j.TraceID
 	env["ANOTIFY_DIGEST"] = j.Digest
+	// 出口回报通道（CONTRACT-artifact §6.1）：脚本把出口名写进这个文件。
+	env[envOutFile] = filepath.Join(workDir, outFileName)
 
 	// 每个顶层参数一份 ANOTIFY_PARAM_<NAME>。按 key 排序后再生成：归一化之后
 	// 可能撞名（my-param / my_param → MY_PARAM），排序保证同一份 params 每次
@@ -653,4 +676,50 @@ func killProcessGroup(pid int) error {
 		return err
 	}
 	return nil
+}
+
+// 出口回报通道的常量（CONTRACT-artifact §6.1）。
+const (
+	// envOutFile 是交给脚本的出口文件路径。
+	envOutFile = "ANOTIFY_OUT_FILE"
+	// outFileName 是这个文件在工作目录里的名字。用点开头 + 固定名字：
+	// 用户在脚本里 `ls` 时它不碍事，也不会跟常见的 out.json 撞。
+	outFileName = ".anotify-out"
+	// outcomeOutMaxBytes 是出口名的长度上限（与 artifact 包的 outputPattern 同量级）。
+	outcomeOutMaxBytes = 64
+)
+
+// readOutcomeOut 读取脚本写下的出口名。
+//
+// 三种返回值语义（对应 result 帧 out 域的三态，不变量 I5）：
+//
+//	nil, nil        → 文件不存在/为空 = 这次不选下一跳（帧里 out 键缺席）
+//	&name, nil      → 回报这个出口
+//	nil, err        → 写了但不合法 → 整次执行判失败（不静默降级成「不回报」，
+//	                  否则一个拼错的出口名会表现为「链路莫名断掉」）
+func readOutcomeOut(plan execPlan) (*string, error) {
+	if plan.outFile == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(plan.outFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // 没写 = 不回报
+		}
+		return nil, fmt.Errorf("read %s: %w", outFileName, err)
+	}
+	name := strings.TrimSpace(string(raw))
+	if name == "" {
+		return nil, nil
+	}
+	if len(name) > outcomeOutMaxBytes {
+		return nil, fmt.Errorf("out %q is longer than %d bytes", name, outcomeOutMaxBytes)
+	}
+	// 出口是**封闭集合**（不变量 I2）：必须是产物声明的 outputs 之一。
+	for _, allowed := range plan.allowedOutputs {
+		if allowed == name {
+			return &name, nil
+		}
+	}
+	return nil, fmt.Errorf("out %q is not declared in spec.outputs %v", name, plan.allowedOutputs)
 }

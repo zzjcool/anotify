@@ -386,10 +386,24 @@ func (h *deployHandler) deleteDeployment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// remove 必须带上产物：DeployFrame 没有 capability/version 字段，节点靠
+	// 产物里的 metadata 才知道要摘掉哪一条索引（契约 CONTRACT-protocol §4）。
+	// 拿不到产物不阻断撤销（行已经删了），但要把原因记下来 —— 静默不推会让
+	// 「撤销成功」变成一句谎话。
+	var removeArtifact json.RawMessage
+	if art, aerr := h.db.GetArtifact(r.Context(), ns.ID, dp.ArtifactID); aerr == nil {
+		removeArtifact = json.RawMessage(art.Spec)
+	} else {
+		slog.Warn("remove: artifact gone, node won't be told",
+			"event", "console.deployments.remove_no_artifact",
+			"deployment_id", dp.ID, "artifact_id", dp.ArtifactID, "error", aerr.Error())
+	}
+
 	if err := h.publish(ns.ID, dp.NodeID, &ws.DeployFrame{
 		Type:     ws.NodeFrameDeploy,
 		DeployID: dp.ID,
 		Action:   ws.DeployActionRemove,
+		Artifact: removeArtifact,
 	}); err != nil {
 		slog.Warn("publish remove failed",
 			"event", "console.deployments.remove_push_failed",

@@ -590,6 +590,8 @@ func TestBuildEnv(t *testing.T) {
 	want := []string{
 		"ANOTIFY_CAPABILITY=demo.prep@7",
 		"ANOTIFY_DIGEST=sha256:" + strings.Repeat("a", 64),
+		// 出口回报通道（CONTRACT-artifact §6.1）：v2 新增，脚本写它来选下一跳。
+		"ANOTIFY_OUT_FILE=/tmp/work/tsk_build/.anotify-out",
 		`ANOTIFY_PARAMS={"n":2,"title":"t"}`,
 		"ANOTIFY_PARAM_N=2",
 		"ANOTIFY_PARAM_TITLE=t",
@@ -637,6 +639,7 @@ func TestBuildEnvInjectsWorkDir(t *testing.T) {
 	want := []string{
 		"ANOTIFY_CAPABILITY=c@1",
 		"ANOTIFY_DIGEST=",
+		"ANOTIFY_OUT_FILE=/data/work/t/.anotify-out",
 		"ANOTIFY_PARAMS={}",
 		"ANOTIFY_TASK_ID=t",
 		"ANOTIFY_TRACE_ID=",
@@ -771,4 +774,113 @@ func slicesContain(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestOutcomeOutFromFile 钉住出口名的唯一来源（CONTRACT-artifact §6.1）。
+//
+// 三态与 result 帧的 out 域一一对应（不变量 I5）：
+//
+//	没写文件   → 不回报（nil）
+//	写了对的   → 回报它
+//	写了错的   → 整次执行判失败（出口是封闭集合，不变量 I2，不许临时发明）
+func TestOutcomeOutFromFile(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		write   bool
+		wantOut string
+		wantErr string
+	}{
+		{name: "没写文件", write: false},
+		{name: "空文件", content: "", write: true},
+		{name: "全是空白", content: "  \n\t\n", write: true},
+		{name: "合法出口", content: "needs-fix\n", write: true, wantOut: "needs-fix"},
+		{name: "首尾空白被裁掉", content: "  clean  ", write: true, wantOut: "clean"},
+		{name: "未声明的出口", content: "bogus", write: true, wantErr: "not declared"},
+		{name: "太长", content: strings.Repeat("x", outcomeOutMaxBytes+1), write: true, wantErr: "longer than"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outFile := filepath.Join(dir, outFileName)
+			if tc.write {
+				if err := os.WriteFile(outFile, []byte(tc.content), 0o644); err != nil {
+					t.Fatalf("write out file: %v", err)
+				}
+			}
+			plan := execPlan{
+				outFile:        outFile,
+				allowedOutputs: []string{"clean", "needs-fix"},
+			}
+
+			got, err := readOutcomeOut(plan)
+			switch {
+			case tc.wantErr != "":
+				if err == nil {
+					t.Fatalf("期望错误含 %q，实际通过（out=%v）", tc.wantErr, got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("期望错误含 %q，实际：%v", tc.wantErr, err)
+				}
+			case err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tc.wantOut == "":
+				if got != nil {
+					t.Fatalf("期望不回报出口，实际 %q", *got)
+				}
+			default:
+				if got == nil || *got != tc.wantOut {
+					t.Fatalf("期望出口 %q，实际 %v", tc.wantOut, got)
+				}
+			}
+		})
+	}
+}
+
+// TestOutcomeOutNoPlanChannel 兼容路径：没有通道时永远不回报（standalone 之外的防御）。
+func TestOutcomeOutNoPlanChannel(t *testing.T) {
+	got, err := readOutcomeOut(execPlan{})
+	if err != nil || got != nil {
+		t.Fatalf("期望 (nil, nil)，实际 (%v, %v)", got, err)
+	}
+}
+
+// TestRunJobReportsOut 端到端：脚本写 ANOTIFY_OUT_FILE → outcome.Out 被填上。
+//
+// 这是多跳链路的生命线：少了它，第一个任务之后整条链就停住。
+func TestRunJobReportsOut(t *testing.T) {
+	art := testScriptArtifact("demo.out", 1, bashScript(`printf 'needs-fix\n' > "$ANOTIFY_OUT_FILE"`))
+	art.Spec.Outputs = []string{"clean", "needs-fix"}
+
+	res := runJob(context.Background(), job{
+		TaskID: "tsk_out", Capability: "demo.out", Version: 1,
+		Artifact: art, WorkRoot: t.TempDir(),
+	})
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q（err=%q）", res.Status, res.Err)
+	}
+	if res.Out == nil || *res.Out != "needs-fix" {
+		t.Fatalf("out = %v，期望 needs-fix", res.Out)
+	}
+}
+
+// TestRunJobRejectsUndeclaredOut 脚本写了一个产物没声明的出口 → 任务失败，
+// 而不是「静默当成没回报」（那会让链路莫名断掉且查不出原因）。
+func TestRunJobRejectsUndeclaredOut(t *testing.T) {
+	art := testScriptArtifact("demo.out", 1, bashScript(`printf 'bogus\n' > "$ANOTIFY_OUT_FILE"`))
+	art.Spec.Outputs = []string{"clean"}
+
+	res := runJob(context.Background(), job{
+		TaskID: "tsk_out_bad", Capability: "demo.out", Version: 1,
+		Artifact: art, WorkRoot: t.TempDir(),
+	})
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q，期望 failed", res.Status)
+	}
+	if res.Out != nil {
+		t.Fatalf("失败的执行不得回报出口，实际 %q", *res.Out)
+	}
+	if !strings.Contains(res.Err, "not declared") {
+		t.Fatalf("err = %q，期望含 not declared", res.Err)
+	}
 }

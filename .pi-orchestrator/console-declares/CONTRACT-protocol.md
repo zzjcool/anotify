@@ -56,12 +56,17 @@ type AppliedDecl struct {
 
 ## 4. deploy（新增，下行）
 
+`action=remove` **也必须带 artifact**：帧里没有 capability/version 字段，节点靠产物里的
+`metadata.{name,version}` 才知道要摘掉哪一条缓存索引。缺 artifact 时节点回
+`apply{failed, reason="invalid_artifact"}`（不猜名字去删）。
+
+
 ```go
 type DeployFrame struct {
     Type     string          `json:"type"`     // "deploy"
     DeployID string          `json:"deploy_id"`
     Action   string          `json:"action"`   // "apply" | "remove"
-    Artifact json.RawMessage `json:"artifact"` // action=apply 时必填，格式见 CONTRACT-artifact §2
+    Artifact json.RawMessage `json:"artifact"` // **两种 action 都必填**，格式见 CONTRACT-artifact §2
 }
 ```
 

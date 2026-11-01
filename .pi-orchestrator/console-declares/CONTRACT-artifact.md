@@ -114,7 +114,7 @@ digest = "sha256:" + hex(sha256(canonicalJSON(Artifact)))
 跑一个任务时：
 
 ```
-/tmp/anotify/<task_id>/                          ← 每次任务独立工作目录（新）
+<data-dir>/work/<task_id>/                       ← 每次任务独立工作目录（默认 data-dir = ~/.anotify）
 ```
 
 | 项 | 契约 |
@@ -139,10 +139,41 @@ digest = "sha256:" + hex(sha256(canonicalJSON(Artifact)))
 | `ANOTIFY_WORKDIR` | 本次任务的独立工作目录 | **新增** |
 | `ANOTIFY_TRACE_ID` | 链路 ID | **新增**（旧协议 assign 帧没这个字段，本期补） |
 | `ANOTIFY_DIGEST` | 本次跑的产物 digest | **新增**（排障用） |
+| `ANOTIFY_OUT_FILE` | 出口回报文件路径（`<workdir>/.anotify-out`） | **新增**，见 §6.1 |
 
 **参数命名规范**：能力参数 key **一律 snake_case**。
 理由：`paramEnvName` 只做「大写 + 非字母数字换下划线」，`prNumber` 会变成 `$ANOTIFY_PARAM_PRNUMBER`（不是 `PR_NUMBER`），很难猜。
 控制台表单层强制 snake_case 校验；服务端 `POST /v1/capabilities` 对参数 key 做同样校验。
+
+### 6.1 出口名（out）的回报通道
+
+v1 的 `run.out` 是 node.yaml 里一个**固定**字符串，任务成功就回报它。这在 v2 里不够：
+产物只有 `spec.outputs[]`（**集合**），而「这一次跑的是哪一个」是**运行期**才知道的。
+
+约定（这是唯一的回报通道）：
+
+| 脚本行为 | 节点行为 | result 帧 |
+|---|---|---|
+| 不写 `$ANOTIFY_OUT_FILE` | 不回报 | `out` 键缺席（分支终止） |
+| 写一行、trim 后在 `spec.outputs` 里 | 回报它 | `"out": "<name>"` |
+| 写一行、但不在 `spec.outputs` 里 | **整次执行判 failed** | `status=failed`，`error` 说明原因 |
+| 文件读不出来（权限等） | 判 failed | 同上 |
+
+为什么「写了错的」要判失败而不是静默忽略：出口是**封闭集合**（不变量 I2）。
+静默吃掉一个拼错的出口名，症状会表现为「链路莫名断在这里」，而且没有任何痕迹。
+
+示例：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+cd "$ANOTIFY_WORKDIR"
+if grep -q FIXME src/*; then
+  printf 'needs-fix\n' > "$ANOTIFY_OUT_FILE"
+else
+  printf 'clean\n'    > "$ANOTIFY_OUT_FILE"
+fi
+```
 
 ## 7. 本地变体（Local Variant）
 
