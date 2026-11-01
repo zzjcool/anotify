@@ -1209,13 +1209,55 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- D. 全部页面 × 2 视口渲染检查（未登录态，验证纯渲染；受保护页会跳 login，跳后渲染 login 也算无 JS 错误）----
-	console.log("--- 全页面 × 双视口渲染 ---");
+	// ---- D. 全部页面 × 2 视口渲染检查 ----
+	//
+	// **这里必须分两种身份跑**（原来是全匿名，等于对受保护页零覆盖）：
+	// 未登录访问 capabilities.html / nodes.html 会被守卫跳到 login.html，
+	// 于是 pageerror 与横向溢出检查量到的是**登录页**，而新建能力弹窗、
+	// 部署面板、节点产物块这些真东西一个都没进过浏览器。
+	// 症状是「UI 改崩了但套件全绿」——比红更危险。
+	//
+	// 所以：公开页走匿名（顺带证明它们不需要登录），受保护页走已登录会话。
+	console.log("--- 全页面 × 双视口渲染（公开页匿名 / 受保护页已登录）---");
+	const authSeed = H.seed(server.dbPath, "frontend_pages");
 	for (const vp of VIEWPORTS) {
-		const ctx = await newCtx();
+		const ctxAnon = await newCtx();
+		const ctxAuth = await newCtx();
+		await injectSession(ctxAuth, authSeed.session, server.base);
 		for (const p of PAGES) {
-			await checkPage(ctx, server.base + "/" + p, vp.name, vp);
+			const guarded = GUARDED.includes(p);
+			await checkPage(
+				guarded ? ctxAuth : ctxAnon,
+				server.base + "/" + p,
+				vp.name + (guarded ? "（已登录）" : "（未登录）"),
+				vp,
+			);
 		}
+		await ctxAnon.close();
+		await ctxAuth.close();
+	}
+
+	// D2：已登录时受保护页**真的停在原页**（不是又被跳到 login）。
+	// 上一步只证明「没 JS 错误/没溢出」，如果守卫把已登录用户也踢走，
+	// 上一步会静默地把 login.html 又量一遍 —— 依然是假绿。
+	{
+		const ctx = await newCtx();
+		await injectSession(ctx, authSeed.session, server.base);
+		const page = await ctx.newPage();
+		for (const p of ["capabilities.html", "nodes.html", "edges.html"]) {
+			await page.goto(server.base + "/" + p, { waitUntil: "load", timeout: 15000 });
+			await page.waitForTimeout(600);
+			const info = await page.evaluate(() => ({
+				url: location.pathname,
+				hasSidebar: !!document.getElementById("sidebar"),
+			}));
+			H.check(
+				`已登录访问 ${p} 停在原页（不是又被送去 login）`,
+				info.url.endsWith(p) && info.hasSidebar,
+				JSON.stringify(info),
+			);
+		}
+		await page.close();
 		await ctx.close();
 	}
 
