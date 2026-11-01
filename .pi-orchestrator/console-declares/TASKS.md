@@ -112,7 +112,7 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 
 ## 落地结果（2026-11-01）
 
-`make ci` 全绿；`make e2e` 23 套件 / **1764 断言 / 0 失败**（改前 1653）。
+`make ci` 全绿；`make e2e` 23 套件 / **1768 断言 / 0 失败**（改前 1653）。
 
 ### 执行中发现并修掉的真 bug（都不是测试问题）
 
@@ -124,6 +124,7 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 | P2 | 协议不匹配错误码是 `bad_frame`，契约写 `protocol_mismatch` | 新增 `ErrCodeProtocolMismatch` |
 | P3 | 模板空列表序列化成 `null`（违反 I9） | `Templates()` 保证非 nil |
 | P2 | 8 并发时 `fork/exec` 拿 `ETXTBSY`（fork 的子进程继承了另一 goroutine 正在写的 fd） | `forkLock` 让「写文件」与 `cmd.Start` 互斥 |
+| **P1** | 控制台承诺的 `docker run -e ANOTIFY_TOKEN=...` **根本跑不起来**：`cmd/agent` 只认 node.yaml、从不读环境变量，仓库里也没有 agent 镜像 | 新增环境变量 bootstrap + `Dockerfile.agent` + `make docker-agent`；docker 命令补 `ANOTIFY_SERVER` |
 
 ### 契约修订（执行中发现的空白）
 
