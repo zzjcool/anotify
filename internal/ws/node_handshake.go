@@ -36,6 +36,10 @@ type NodeStore interface {
 	// 旧路径 ConfirmCapabilities / ConfirmCapabilityDecls 已删：能力归属不再由节点
 	// 自报，只能由控制台的部署产生。未知能力（中枢没定义过）仍整帧拒绝。
 	ReconcileApplied(ctx context.Context, namespaceID, nodeID string, applied []store.AppliedRef) ([]string, error)
+	// MarkDeployResult 落一条来自 apply 帧的部署结果（只碰 state/reason/updated_at）。
+	//
+	// 行不存在返回 store.ErrNotFound：撤销与回报天然会撞车，调用方按「节点晚了一步」处理。
+	MarkDeployResult(ctx context.Context, namespaceID, deployID, state, reason string) error
 	UpsertInstances(ctx context.Context, namespaceID, nodeID string, specs []store.InstanceSpec) ([]*store.NodeInstance, error)
 	MarkInstancesDead(ctx context.Context, nodeID string) error
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
@@ -180,7 +184,7 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 	// 协议版本
 	if f.Protocol != 0 && f.Protocol != ProtocolVersion {
 		return &helloError{
-			code:    ErrCodeBadFrame,
+			code:    ErrCodeProtocolMismatch,
 			message: fmt.Sprintf("unsupported protocol %d (server speaks %d)", f.Protocol, ProtocolVersion),
 		}
 	}

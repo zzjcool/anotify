@@ -39,6 +39,11 @@ const (
 	ErrCodeUnknownType       = "unknown_type"
 	ErrCodeInvalidTransition = "invalid_transition"
 	ErrCodeLeaseExpired      = "lease_expired"
+	// ErrCodeProtocolMismatch 节点 speak 的协议版本与服务端不同。
+	//
+	// 与 bad_frame 分开的理由：这是**版本不兼容**，不是「帧写坏了」。节点/运维
+	// 看到这个码应该去升级二进制，而不是去查 JSON 结构（契约 §1）。
+	ErrCodeProtocolMismatch = "protocol_mismatch"
 	// ErrCodeNodeDraining 节点在排空，不再接新任务。
 	ErrCodeNodeDraining = "node_draining"
 	// ErrCodeTooManyInstances 节点申报的实例数超过中枢允许的上限（契约 Q5）。

@@ -439,10 +439,14 @@ func (s *nodeSession) handle(ctx context.Context, frame any) error {
 		return s.handleHeartbeat(ctx, f)
 
 	default:
-		// 其余帧（ack/progress/result）要求先 hello
+		// 其余帧（ack/progress/result/apply）要求先 hello
 		if !s.hasHello() {
 			s.sendError(ctx, ErrCodeBadFrame, "send hello before other frames")
 			return nil
+		}
+		// apply 是配置帧，其余是任务帧：分开走，别让「任务帧」的语义含糊。
+		if _, ok := frame.(*ApplyFrame); ok {
+			return s.handleConfigFrame(ctx, frame)
 		}
 		return s.handleTaskFrame(ctx, frame)
 	}

@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
@@ -945,20 +944,17 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		c.Lifecycle = *req.Lifecycle
 	}
 
-	// 产物必须在**建能力之前**编好并校验：一份 run 写错的请求不该留下一个
+	// 产物必须在**建能力之前**先校验一遍：一份 run 写错的请求不该留下一个
 	// 只建了一半的能力（append-only 的能力表里，那会成为一条永远改不掉、也
-	// 永远跑不起来的定义）。
-	var compiled *artifact.Artifact
+	// 永远跑不起来的定义）。这里只做校验、不落库 —— 落库要用 c 归一后的版本重建。
 	if req.Run != nil {
-		built, err := buildArtifact(c, req.Run, req.Requires)
-		if err != nil {
+		if _, err := buildArtifact(c, req.Run, req.Requires); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": err.Error(),
 				"code":  "invalid_artifact",
 			})
 			return
 		}
-		compiled = built
 	}
 
 	if err := h.db.CreateCapability(r.Context(), c); err != nil {
@@ -981,8 +977,24 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		// 新建时还不可能有节点声明（declared=false），但内置能力要走特例
 		"kind": route.KindForCapability(c, false),
 	}
-	if compiled != nil {
-		saved, digest, err := storeArtifact(r.Context(), h.db, ns.ID, compiled)
+	if req.Run != nil {
+		// **用 c 归一后的版本重建产物**：store.CreateCapability 在「同内容已有该能力」时
+		// 会把版本归一到原版本（append-only 幂等），此时请求里的版本号是过期的。
+		// 用过期版本建产物会写出一个元数据与能力定义不一致的产物 —— digest 也会错。
+		built, err := buildArtifact(c, req.Run, req.Requires)
+		if err != nil {
+			// 建能力前的预校验已经过了，这里再失败说明归一化改变了内容（不应该发生）：
+			// 如实报错，不写产物，也不假装成功。
+			slog.Error("rebuild artifact after normalization failed",
+				"event", "console.caps.artifact_rebuild_failed",
+				"namespace_id", ns.ID, "name", c.Name, "version", c.Version, "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "capability created but artifact could not be rebuilt: " + err.Error(),
+				"code":  "artifact_store_failed",
+			})
+			return
+		}
+		saved, digest, err := storeArtifact(r.Context(), h.db, ns.ID, c.ID, built)
 		if err != nil {
 			// 能力已经建好了（append-only，无法回滚），产物落库失败只能如实报错：
 			// 用户看到的应该是「能力建了但产物没存，请重试」，而不是一个假的 200。

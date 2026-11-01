@@ -256,12 +256,15 @@ func Templates() []Template {
 	out := make([]Template, len(templates))
 	copy(out, templates)
 	for i := range out {
-		out[i].Fields = append([]Field(nil), templates[i].Fields...)
+		// 空列表一律给 []（不变量 I9）：`null` 会让前端把「没有字段」误判成
+		// 「字段没加载出来」，而且控制台是直接 JSON.parse 后遍历的。
+		out[i].Fields = append(make([]Field, 0, len(templates[i].Fields)), templates[i].Fields...)
 		for j := range out[i].Fields {
-			out[i].Fields[j].Options = append([]string(nil), templates[i].Fields[j].Options...)
+			out[i].Fields[j].Options = append(make([]string, 0, len(templates[i].Fields[j].Options)),
+				templates[i].Fields[j].Options...)
 		}
-		out[i].Requires = append([]string(nil), templates[i].Requires...)
-		out[i].Outputs = append([]string(nil), templates[i].Outputs...)
+		out[i].Requires = append(make([]string, 0, len(templates[i].Requires)), templates[i].Requires...)
+		out[i].Outputs = append(make([]string, 0, len(templates[i].Outputs)), templates[i].Outputs...)
 	}
 	return out
 }

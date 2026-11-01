@@ -190,6 +190,13 @@ fi
 
 模板 = **代码生成器的输入**，不是执行器类型。v1 只有一种执行器（bash 脚本）。
 
+**参数契约由 `fields` 推导，不单独声明**：`paramsSchemaFor(fields)` 生成
+`{type:"object", required:[...], properties:{key:{type, enum?}}}`。
+字段与 schema 因此永远不可能漂移 —— 这是「模板层零插值」之外的第二个不变量：
+**模板不做文本替换，字段值在运行时经 `ANOTIFY_PARAM_*` 进入脚本**。
+
+空列表纪律（不变量 I9）：`fields` / `requires` / `outputs` 一律序列化成 `[]`，不是 `null`。
+
 ```go
 type Template struct {
     ID          string      `json:"id"`          // agent.claude
@@ -199,7 +206,6 @@ type Template struct {
     Fields      []Field     `json:"fields"`      // 表单字段
     Script      string      `json:"script"`      // Go 模板，渲染出 entrypoint 内容
     Requires    []string    `json:"requires"`    // 预检：机器上必须有
-    Params      string      `json:"params"`      // 渲染进 params 的 JSON Schema 模板
     Outputs     []string    `json:"outputs"`
 }
 type Field struct {

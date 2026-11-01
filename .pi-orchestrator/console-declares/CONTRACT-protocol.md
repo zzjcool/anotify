@@ -4,7 +4,9 @@
 
 ## 1. 协议版本
 
-`ProtocolVersion = 2`（从 1 升）。协议不匹配的 hello 一律 `protocol_mismatch`，老客户端必须升级。
+`ProtocolVersion = 2`（从 1 升）。协议不匹配的 hello 一律 `protocol_mismatch`
+（**不是** `bad_frame`：这是版本不兼容，不是帧写坏了——看到它应该去升级二进制），
+老客户端必须升级。
 
 ## 2. 帧清单（11 种）
 
@@ -140,16 +142,48 @@ type AssignFrame struct {
 
 ## 8. `node_capabilities` 的语义变更（D4）
 
+> **修订（实现落地时定稿，2026-11-01）**：下面这段原来写的是「由
+> `deployments ⋈ artifacts WHERE state IN ('applied','local')` 派生」。实现定稿改为
+> **直接由 `hello.applied[]` 派生**，理由见本节末尾的「为什么不是严格部署派生」。
+
+
+
 从「节点自报的能力事实」降级为 **「已部署且节点确认的产物的派生索引」**。
 
-```sql
--- 派生规则：每次 reconcile 都全量重建
+```text
+-- 派生规则：每次 hello 都全量重建（ReconcileApplied，单事务）
 DELETE FROM node_capabilities WHERE node_id = ?;
 INSERT INTO node_capabilities (node_id, capability_id, namespace_id)
-  SELECT d.node_id, a.capability_id, d.namespace_id
-    FROM deployments d JOIN artifacts a ON a.id = d.artifact_id
-   WHERE d.node_id = ? AND d.state IN ('applied', 'local');
+  -- 逐条来自 hello.applied[]，name@version 必须在**本命名空间**已定义
+  -- （任一未定义 → 整帧 unknown_capability，一行不写）
+  VALUES (?, ?, node.namespace_id) × N;
+-- 顺带对账 observed 列（只碰 state/reason/updated_at）：
+UPDATE deployments SET state = 'applied' | 'local', reason = ?, updated_at = ?
+ WHERE node_id = ? AND artifact_id = ?;
 ```
+
+**为什么不是严格部署派生**（这是评审提出的问题，裁决记录在此）：
+
+严格版要求 `node_capabilities` 完全由 `deployments` 连表得出。放弃它的理由是
+**两张表回答的不是同一个问题**：
+
+| 表 | 回答的问题 |
+|---|---|
+| `node_capabilities` | 「这台机器**现在能跑什么**」← 运行期事实，只有节点知道 |
+| `deployments` | 「控制台**希望**它有什么 / 上次部署结果如何」← 期望态 |
+
+一个节点可能因为三条与部署无关的原因拥有某份产物：手改了产物（本地变体）、
+在部署被撤销后仍缓存着、或者用 `anotify-agent run` 手工装过。这些情况下它**确实
+能跑**，而 `node_capabilities` 是派发选点的唯一输入——漏掉它们会让调度把这些
+任务判成 `no_node`（明明有机器能跑）。
+
+安全担忧（「节点能不能自己给自己发能力」）由另外三层挡住，不靠这一条：
+1. 能力名必须在**本命名空间**已定义（否则整帧拒绝，不变量 I2）；
+2. 中枢**永远不下发命令**，节点只能跑它已经缓存的那份内容寻址产物；
+3. `local` 状态在控制台上标黄，运维看得见「这台跟期望不一致」。
+
+代价：撤销部署后，节点上那份缓存仍参与派发，直到它重启或产物被 GC。
+这是**有意的**——撤销是收回「以后不再部署」，不是「立刻停机」。
 
 - `run_spec` 列**删除**（migration 15 重建表）
 - `NodesForCapability` SQL **一行不改** → 派发链路零改动（这是 D4 的全部价值）

@@ -469,7 +469,12 @@ func buildArtifact(c *store.CapabilityVersion, run *capabilityRunInput, requires
 }
 
 // storeArtifact 把产物落库（按 digest 幂等）。
-func storeArtifact(ctx context.Context, db *store.DB, nsID string, a *artifact.Artifact) (*store.Artifact, string, error) {
+//
+// capabilityID 由调用方直接给（**不要**在这里用 name@version 反查）：
+// store.CreateCapability 的 content-hash 幂等会把"同内容换个版本号"归一到原版本，
+// 于是请求里的版本号与落库的版本号可能不一致 —— 用请求的版本去反查会 ErrNotFound，
+// 把一个本该成功的请求变成 500（e2e 抓到的 P1）。
+func storeArtifact(ctx context.Context, db *store.DB, nsID, capabilityID string, a *artifact.Artifact) (*store.Artifact, string, error) {
 	digest, err := artifact.Digest(a)
 	if err != nil {
 		return nil, "", fmt.Errorf("digest artifact: %w", err)
@@ -478,16 +483,9 @@ func storeArtifact(ctx context.Context, db *store.DB, nsID string, a *artifact.A
 	if err != nil {
 		return nil, "", fmt.Errorf("canonical json: %w", err)
 	}
-
-	// capability_id 从能力名 + 版本反查：调用方刚创建完，这里必能查到。
-	capVer, err := db.GetCapability(ctx, nsID, a.Metadata.Name, a.Metadata.Version)
-	if err != nil {
-		return nil, "", err
-	}
-
 	saved, err := db.CreateArtifact(ctx, &store.Artifact{
 		NamespaceID:  nsID,
-		CapabilityID: capVer.ID,
+		CapabilityID: capabilityID,
 		Digest:       digest,
 		Spec:         spec,
 	})

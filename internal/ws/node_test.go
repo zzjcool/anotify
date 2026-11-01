@@ -718,6 +718,9 @@ func TestHelloAppliedDigestMarksLocal(t *testing.T) {
 // v2 改了 hello 的形状（删 capabilities/manifest、加 applied），一个 v1 节点上来
 // 只会在 unknown_capability / bad_frame 之间反复横跳，症状远比「版本不匹配」难查。
 // 所以在协议层直接拒绝，并给出可操作的错误文本（两个版本号都写出来）。
+//
+// 错误码用 protocol_mismatch 而不是 bad_frame（契约 §1）：这是**版本不兼容**，
+// 不是「帧写坏了」。看到这个码应该去升级二进制，而不是查 JSON 结构。
 func TestHelloProtocolVersion1Rejected(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
@@ -729,8 +732,8 @@ func TestHelloProtocolVersion1Rejected(t *testing.T) {
 	})
 
 	frame := readErrorFrame(t, conn)
-	if frame["code"] != ErrCodeBadFrame {
-		t.Fatalf("code = %v, want %q", frame["code"], ErrCodeBadFrame)
+	if frame["code"] != ErrCodeProtocolMismatch {
+		t.Fatalf("code = %v, want %q", frame["code"], ErrCodeProtocolMismatch)
 	}
 	msg, _ := frame["message"].(string)
 	if !strings.Contains(msg, "unsupported protocol 1") {
