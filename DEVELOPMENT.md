@@ -2,6 +2,38 @@
 
 > 新 Agent / 贡献者上手必读。本文档把架构决策、开发流程、测试方法、踩过的坑全部固化，确保任何人（或 AI Agent）接手都能快速进入开发状态。
 
+## 0.5 能力是怎么定义和部署的（console-declares，v2）
+
+一句话：**控制台是唯一的创作面，节点是纯执行面。**
+
+```
+控制台「新建能力」→ 选模板（9 个）→ 填表单 → 编译成一份【能力产物】
+     产物 = 参数契约 + 入口文件 + 全部文件内容 + 超时 + env + 依赖命令
+     digest = sha256(canonical JSON)          ← 内容寻址，永远答得出「跑的是哪一版」
+        ↓ 点「部署」，选机器
+中枢 → deploy 帧 → 节点：校验 → 探 requires → 原子落盘 → 回 apply 帧 → 重发 hello
+        ↓ 派发
+assign 帧 = {capability, version, params, digest, trace_id, 租约}   ← 仍然不含命令
+节点按 digest 找缓存 → 在 <data-dir>/work/<task_id>/ 里直接 exec 入口（不经 shell）
+```
+
+几条必须记住的：
+
+- **`node.yaml` 只剩四件**：`name / server / token / instances`。多一个键就是未知字段，
+  agent 直接启动失败（`cmd/agent/config.go`）。
+- **能力归属只有一个写者**：控制台的部署。节点在 hello 里只能陈述「我缓存了什么」
+  （`applied[]`），不能给自己发能力。
+- **出口名靠一个文件**：脚本把出口名写进 `$ANOTIFY_OUT_FILE`，节点校验它 ∈
+  `spec.outputs` 后回报；写了未声明的出口 → 整次执行判失败（封闭集合，不变量 I2）。
+  见 `CONTRACT-artifact.md` §6.1。
+- **I1 是「执行边界」不是「字节级无命令」**：中枢不得 `os/exec`，节点执行的一切必须
+  内容寻址 + 不可变 + 可审计 + 受**节点启动参数**（并发/资源/网络，中枢推不动）约束。
+  `make contract` 的 A5/A6/A7 三条机检它。
+- **产物可以脱离中枢单跑**：`anotify-agent run ./capability.yaml -p k=v`。
+  这是「拷到别的机器直接能跑」的落地，也是不信任中枢时的逃生舱。
+
+权威契约：`.pi-orchestrator/console-declares/`。
+
 ## 1. 项目是什么
 
 Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件 Hook 上报，后端用 Web Push 把结果推送到用户所有设备（iOS/Mac/PC/Android）。Passkey 无密码登录，单 Go 二进制 + SQLite，易自托管。
