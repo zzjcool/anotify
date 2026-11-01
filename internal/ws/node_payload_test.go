@@ -22,34 +22,61 @@ import (
 
 // ---------- W5（#221）：>32KiB 的 hello 必须能上线 ----------
 
-// TestBigHelloFrameAccepted hello 带 40KB 的 manifest command → 握手成功。
+// TestBigHelloFrameAccepted hello 带 >32KiB 载荷 → 握手成功。
 //
 // 旧代码：服务端从没调过 SetReadLimit，库的默认单帧上限是 32768B，
 // 于是在服务端读阶段就被 1009 关掉 → 节点永远上不了线，日志里只有一句「连接关了」。
+//
+// 为什么载荷换了：旧用例用 40KB 的 manifest.command 造大帧。v2 的 hello 没有
+// manifest（执行方式属于产物），但**这条回归与帧内容无关** —— 它钉的是服务端必须
+// 显式设读上限，所以载荷换成 v2 里真正会变大的东西：一台装了几百份产物的节点，
+// applied[] 天然是几十 KB。这比原来的形状更接近真实故障面（节点越多部署越容易撞上限）。
 func TestBigHelloFrameAccepted(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
 
-	// 40KB 的 command：远大于库默认的 32768B 读上限。
-	run := `{"runner":"bash","command":"` + strings.Repeat("x", 40<<10) + `"}`
-	if len(run) <= 32768 {
-		t.Fatalf("precondition broken: hello payload is %d bytes, want > 32768 (库默认读上限)", len(run))
+	// 400 条 applied：帧体积必然超过库默认的 32768B 读上限。
+	const n = 400
+	applied := make([]AppliedDecl, 0, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("probe-%03d", i)
+		f.defineCapability(t, name, 1)
+		applied = append(applied, AppliedDecl{
+			Capability: name, Version: 1,
+			Digest: fmt.Sprintf("sha256:%064d", i),
+		})
 	}
-	helloManifest(t, conn, f.node.ID,
-		[]CapabilityDecl{{Capability: "review", Version: 1}},
-		[]ManifestDecl{{Capability: "review", Version: 1, Run: json.RawMessage(run)}},
-		[]InstanceDecl{{Slot: 0, Concurrency: 1}},
-	)
+	frame := &HelloFrame{
+		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
+		Applied: applied, Instances: []InstanceDecl{{Slot: 0, Concurrency: 1}},
+	}
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("marshal hello: %v", err)
+	}
+	if len(raw) <= 32768 {
+		t.Fatalf("precondition broken: hello payload is %d bytes, want > 32768 (库默认读上限)", len(raw))
+	}
+	helloFrame(t, conn, frame)
 
-	// 握手真的完成了：节点上线 + run_spec 原样落库（没有被截断/丢弃）。
+	// 握手真的完成了：节点上线，且整份载荷都落库了（没有被截断/丢弃）。
 	got, err := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
 	if got.Status != store.NodeStatusOnline {
-		t.Fatalf("node status = %q after a 40KB hello, want online", got.Status)
+		t.Fatalf("node status = %q after a %d-byte hello, want online", got.Status, len(raw))
 	}
-	assertRunSpecEqual(t, nodeCapOf(t, listNodeCaps(t, f.db, f.node.ID), "review", 1).RunSpec, run)
+	caps := listNodeCaps(t, f.db, f.node.ID)
+	if len(caps) != n {
+		t.Fatalf("超大 hello 落库后的归属 = %d 条, want %d（载荷被截断/丢弃了）", len(caps), n)
+	}
+	if c := nodeCapOf(t, caps, "probe-000", 1); c == nil {
+		t.Fatal("probe-000 没落库")
+	}
+	if c := nodeCapOf(t, caps, fmt.Sprintf("probe-%03d", n-1), 1); c == nil {
+		t.Fatalf("probe-%03d 没落库（尾部被截断）", n-1)
+	}
 }
 
 // ---------- W6（#221）：超软上限的上行帧要可诊断 ----------
@@ -93,7 +120,7 @@ func TestFrameTooLargeIsDiagnosable(t *testing.T) {
 func TestPublishRejectsOversizedParams(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	ctx := context.Background()

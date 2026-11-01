@@ -178,7 +178,7 @@ func TestHelloReclaimsStaleSlots(t *testing.T) {
 	}
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}})
 
 	insts, err := f.db.ListInstances(ctx, f.node.ID)
@@ -218,7 +218,7 @@ func TestInflightReleasedAfterResult(t *testing.T) {
 	ctx := context.Background()
 	f := newNodeFixture(t)
 	connA := f.mustDial(t)
-	hello(t, connA, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, connA, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 	nodeB, connB := f.secondNode(t)
 
@@ -273,7 +273,7 @@ func TestCleanEndAllowsRedispatch(t *testing.T) {
 	nodeB, connB := f.secondNode(t)
 
 	connA := f.mustDial(t)
-	hello(t, connA, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, connA, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_clean_redispatch")
@@ -328,7 +328,7 @@ func TestHeartbeatLeaseFailureClosesConnection(t *testing.T) {
 		h.Store = &failingExtendStore{NodeStore: h.Store, err: errors.New("simulated store outage")}
 	})
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	// 必须有一条「本连接名下」的任务，否则心跳根本不调续租（#218 的口径）。
@@ -463,7 +463,7 @@ func TestSupersededCleanupKeepsNewConnectionOnline(t *testing.T) {
 	connB := f.mustDial(t)
 	send(t, connB, &HelloFrame{
 		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
-		Capabilities: caps, Instances: insts,
+		Applied: caps, Instances: insts,
 	})
 	if code := websocket.CloseStatus(readUntilClosed(t, connA, 8*time.Second)); code != websocket.StatusNormalClosure {
 		t.Fatalf("superseded connection closed with status %v, want 1000 (换连接不是协议违规)", code)
@@ -499,7 +499,7 @@ func TestPublishAssignUsesAuthoritativeAttempts(t *testing.T) {
 	f.handler.LeaseTTLSec = 5
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_m3_gen")
@@ -545,7 +545,7 @@ func TestResultOversizedNextHopParamsIsDiagnosable(t *testing.T) {
 	fake.setDB(f.db)
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	parent := f.makeAssignedTask(t, "trace_m5_params")
@@ -632,12 +632,12 @@ func waitNodeStatus(t *testing.T, f *nodeFixture, want string) {
 }
 
 // m2Slots 造 inflight 个单并发槽位 + 一份 review@1 能力声明（M2 的两个用例共用）。
-func m2Slots(inflight int) ([]InstanceDecl, []CapabilityDecl) {
+func m2Slots(inflight int) ([]InstanceDecl, []AppliedDecl) {
 	insts := make([]InstanceDecl, 0, inflight)
 	for i := 0; i < inflight; i++ {
 		insts = append(insts, InstanceDecl{Slot: i, Concurrency: 1})
 	}
-	return insts, []CapabilityDecl{{Capability: "review", Version: 1}}
+	return insts, []AppliedDecl{{Capability: "review", Version: 1}}
 }
 
 // inflightTasks 建 n 条任务、全部派给这条连接并 ack 完（= n 个在飞任务）。

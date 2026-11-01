@@ -49,7 +49,7 @@ func TestAckedNonIdempotentCleanEndAbandons(t *testing.T) {
 
 	conn := f.mustDial(t)
 	hello(t, conn, f.node.ID,
-		[]CapabilityDecl{{Capability: "review", Version: 1}, {Capability: "notify", Version: 1}},
+		[]AppliedDecl{{Capability: "review", Version: 1}, {Capability: "notify", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTaskWithCapability(t, "trace_n5_nonidem", "notify", 1)
@@ -96,7 +96,7 @@ func TestAckedNonIdempotentCleanEndAbandons(t *testing.T) {
 func TestKilledAgentAbandonsInflightTask(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_kill9")
@@ -221,7 +221,7 @@ func TestHelloReassertKeepsNodeOnline(t *testing.T) {
 	connB := f.mustDial(t)
 	send(t, connB, &HelloFrame{
 		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
-		Capabilities: caps, Instances: insts,
+		Applied: caps, Instances: insts,
 	})
 	waitGate(t, gate.statusAfterWrite, "新连接 applyHello 的 UpdateNodeStatus(online)")
 
@@ -299,7 +299,7 @@ func TestPublishAssignFailsWhenGenerationUnreadable(t *testing.T) {
 		h.Store = &failingGetTaskStore{NodeStore: h.Store, err: errors.New("simulated read outage")}
 	})
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_n2_readfail")
@@ -342,7 +342,7 @@ func TestPublishAssignSkipsTerminalTask(t *testing.T) {
 	ctx := context.Background()
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_n3_terminal")

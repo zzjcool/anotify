@@ -32,7 +32,7 @@ func TestHeartbeatRenewsOnlyOwnedTasks(t *testing.T) {
 	f.handler.HeartbeatSec = 1
 	f.handler.LeaseTTLSec = 5 // 与默认的 30 区分开：泄漏到孤儿行上一眼可见
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}})
 
 	// orphan：库里已 assigned 到本节点，但**不属于任何活着的连接**
@@ -82,7 +82,7 @@ func TestUncleanEndAbandonsStartedTask(t *testing.T) {
 	f.handler.HeartbeatSec = 1 // 判死窗口 = 2×1s
 	f.handler.LeaseTTLSec = 5
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_unclean")
@@ -119,7 +119,7 @@ func TestUncleanEndAbandonsStartedTask(t *testing.T) {
 func TestCleanEndRequeuesStartedTask(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_clean")
@@ -164,7 +164,7 @@ func TestAssignedNotStartedRequeuedOnUncleanEnd(t *testing.T) {
 	f.handler.HeartbeatSec = 1
 	f.handler.LeaseTTLSec = 5
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_assigned_only")
@@ -199,7 +199,7 @@ func TestAssignedNotStartedRequeuedOnUncleanEnd(t *testing.T) {
 func TestSameTaskNotExecutedByTwoConnections(t *testing.T) {
 	f := newNodeFixture(t)
 	connA := f.mustDial(t)
-	hello(t, connA, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, connA, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 	nodeB, connB := f.secondNode(t)
 
@@ -259,7 +259,7 @@ func (f *nodeFixture) secondNode(t *testing.T) (*store.Node, *websocket.Conn) {
 		t.Fatalf("dial second node: %v (status %d)", err, statusOf(resp))
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	hello(t, conn, node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 	return node, conn
 }
