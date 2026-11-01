@@ -544,11 +544,13 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
       //
       // 注意返回值里内联的是**真实令牌**，所以它只能写进 #reg-yaml 的 textContent，
       // 不许落到 localStorage / console / 日志（见上面那三条纪律）。
-      function agentDockerCmd(token) {
+      function agentDockerCmd(token, server) {
+        // 必须带 ANOTIFY_SERVER：容器里 agent 猜不到中枢地址，猜错的表现是
+        // 「启动成功但一直连不上」，比启动失败难查十倍。
         return (
-          "docker run -d --restart=always -e ANOTIFY_TOKEN=" +
-          (token || "") +
-          " " +
+          "docker run -d --restart=always " +
+          "-e ANOTIFY_SERVER=" + (server || "") + " " +
+          "-e ANOTIFY_TOKEN=" + (token || "") + " " +
           AGENT_IMAGE
         );
       }
@@ -617,7 +619,7 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
         );
         regEl("reg-token").textContent = token;
         // 两个块都用 201 响应体里的真令牌填：用户复制就能跑
-        regEl("reg-cmd").textContent = agentDockerCmd(token);
+        regEl("reg-cmd").textContent = agentDockerCmd(token, window.location.origin);
         regEl("reg-yaml").textContent = agentNodeYaml(
           token,
           (node && node.name) || name,

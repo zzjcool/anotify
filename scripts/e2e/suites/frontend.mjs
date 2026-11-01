@@ -3305,6 +3305,7 @@ async function checkNodeRegister(page, base) {
 			origin: location.origin,
 			token: (document.getElementById("reg-token") || {}).textContent || "",
 			yaml: (document.getElementById("reg-yaml") || {}).textContent || "",
+			cmd: (document.getElementById("reg-cmd") || {}).textContent || "",
 			errorText: (document.getElementById("reg-error") || {}).textContent || "",
 			listText: (document.getElementById("nodes-list") || {}).textContent || "",
 		};
@@ -3394,6 +3395,33 @@ async function checkNodeRegister(page, base) {
 		"令牌块里的 node.yaml 是 v2 的 bootstrap 四件（不再有 capabilities/run）",
 		yamlOk,
 		`${JSON.stringify({ ...yamlWant, ...yamlBad })} — ${JSON.stringify(yaml.slice(0, 200))}`,
+	);
+
+	// ---- ④b 一行 docker 命令（首选路径，必须真的能跑） ----
+	//
+	// 这条不是"文案好看"的检查：cmd/agent 的 configFromEnv 只认 ANOTIFY_TOKEN 非空，
+	// 而容器里没有 node.yaml 可指 —— 少了 ANOTIFY_SERVER 会得到「启动成功但一直
+	// 连不上」，是所有故障里最难查的一种。所以三条都必须逐字对上。
+	const cmd = reg.cmd;
+	H.check(
+		"注册成功给了一行能直接粘的 docker 命令",
+		/docker run/.test(cmd) && cmd.includes(token) && token.length > 8,
+		cmd.slice(0, 200),
+	);
+	H.check(
+		"docker 命令带 ANOTIFY_SERVER=<当前 origin>（容器里猜不到中枢地址）",
+		cmd.includes("ANOTIFY_SERVER=" + reg.origin),
+		`origin=${reg.origin} cmd=${cmd.slice(0, 200)}`,
+	);
+	H.check(
+		"docker 命令带 ANOTIFY_TOKEN=<真令牌>",
+		cmd.includes("ANOTIFY_TOKEN=" + token),
+		cmd.slice(0, 200),
+	);
+	H.check(
+		"docker 命令不含配置文件（容器里没有 node.yaml 可指）",
+		!/node\.yaml/.test(cmd),
+		cmd.slice(0, 200),
 	);
 
 	// ---- ⑤ 列表刷新 → 新节点出现（offline 也算，注册完还没连上来） ----

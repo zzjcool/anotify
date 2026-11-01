@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/ws"
@@ -42,6 +43,74 @@ type nodeConfig struct {
 	// Instances 是并发槽位数。<=0 归一为 1（见 slots），
 	// 它是节点**自己**的资源声明，中枢只能少用、不能多用（契约 D5）。
 	Instances int `yaml:"instances"`
+}
+
+// 环境变量名（**容器/编排友好**的 bootstrap 入口）。
+//
+// 为什么要有这一套：控制台的「加机器」面板给的是一行 docker 命令，容器里没有
+// node.yaml 可指；而把四件配置挂进镜像等于每个环境打一份镜像。
+// 环境变量是那条路径唯一现实的载体。
+//
+// 优先级：显式 `-f` > 环境变量 > `./node.yaml`（见 loadConfigFrom）。
+// 谁都不给时仍然按老路径找 ./node.yaml —— 二进制装在机器上的人不受影响。
+const (
+	envServer    = "ANOTIFY_SERVER"
+	envToken     = "ANOTIFY_TOKEN"
+	envName      = "ANOTIFY_NAME"
+	envInstances = "ANOTIFY_INSTANCES"
+)
+
+// loadConfigFrom 按「显式文件 > 环境变量 > 缺省路径」选一份配置。
+//
+// explicit 是用户**显式**传的 -f（不是缺省值）：只要他点名了某个文件，就只认
+// 那个文件，读不到就报错 —— 绝不悄悄回落到环境变量，否则「我改的文件没生效」
+// 会变成一个完全无声的故障。
+func loadConfigFrom(explicit string, getenv func(string) string) (*nodeConfig, error) {
+	if strings.TrimSpace(explicit) != "" {
+		return loadConfig(explicit)
+	}
+	if cfg, ok := configFromEnv(getenv); ok {
+		if err := cfg.validate(); err != nil {
+			return nil, fmt.Errorf("环境变量: %w", err)
+		}
+		return cfg, nil
+	}
+	return loadConfig(defaultConfigPath)
+}
+
+// configFromEnv 从环境变量拼一份配置。
+//
+// 判据是 **ANOTIFY_TOKEN 非空**：它是唯一不可推导的一项（server 可以缺省成
+// 本机、name 可以由主机名兜底，令牌无从猜测）。没给令牌 = 「没打算走这条路」，
+// 返回 false 让调用方回落到 node.yaml。
+func configFromEnv(getenv func(string) string) (*nodeConfig, bool) {
+	token := strings.TrimSpace(getenv(envToken))
+	if token == "" {
+		return nil, false
+	}
+	cfg := &nodeConfig{
+		Server: strings.TrimSpace(getenv(envServer)),
+		Token:  token,
+		Name:   strings.TrimSpace(getenv(envName)),
+	}
+	if cfg.Server == "" {
+		// 容器里最合理的缺省是「回到它自己的宿主机」，但那个地址 agent 猜不到，
+		// 而猜错的表现是「启动成功但一直连不上」，极难查。所以留空交给 validate
+		// 明确报错，而不是给一个看起来能用、实际连到别处的值。
+		cfg.Server = ""
+	}
+	if raw := strings.TrimSpace(getenv(envInstances)); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			// 不在这里报错：让 validate 统一汇报，保持「一次列全」的口径。
+			// 用一个一定会失败的标记（负数非法，validate 已有这条），
+			// 而不是静默当成 0 —— 那会让 `ANOTIFY_INSTANCES=abc` 变成「1 个槽位」。
+			cfg.Instances = -1
+			return cfg, true
+		}
+		cfg.Instances = n
+	}
+	return cfg, true
 }
 
 // loadConfig 读取并校验一份 node.yaml。

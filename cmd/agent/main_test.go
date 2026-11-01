@@ -127,8 +127,12 @@ func TestGraceDuration(t *testing.T) {
 	}
 }
 
-// TestParseFlagsDefaults 锁定缺省值：-f=./node.yaml、-grace=20、-data-dir 为空
+// TestParseFlagsDefaults 锁定缺省值：-f 空（= 未显式指定）、-grace=20、-data-dir 空
 // （空 = 用 ~/.anotify，见 resolveDataDir）。
+//
+// **-f 的缺省从 ./node.yaml 改成了空串**：空串表示「用户没说」，真正的回落顺序
+// 由 loadConfigFrom 决定（显式 -f > 环境变量 > ./node.yaml）。用空串才能区分
+// 「用户点名了某个文件但读不到」（必须报错）和「用户什么都没说」（可以走环境变量）。
 func TestParseFlagsDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -136,8 +140,8 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseFlags(nil) 意外失败: %v", err)
 	}
-	if opts.configPath != "./node.yaml" {
-		t.Errorf("缺省 -f = %q, want ./node.yaml", opts.configPath)
+	if opts.configPath != "" {
+		t.Errorf("缺省 -f = %q，want 空串（未显式指定）", opts.configPath)
 	}
 	if opts.grace != 20*time.Second {
 		t.Errorf("缺省 -grace = %v, want 20s", opts.grace)

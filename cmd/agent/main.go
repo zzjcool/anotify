@@ -134,7 +134,12 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	configPath := fs.String("f", defaultConfigPath, "node.yaml 路径")
+	// 缺省空串 = 没显式指文件。真正的回落顺序在 loadConfigFrom：
+	// 显式 -f > 环境变量（ANOTIFY_TOKEN 存在即生效）> ./node.yaml。
+	// 用一个空缺省值而不是 defaultConfigPath，是为了能区分
+	// 「用户点名了这个文件」和「用户什么都没说」——前者读不到必须报错，
+	// 绝不能悄悄改成从环境变量读。
+	configPath := fs.String("f", "", "node.yaml 路径（不给则先看 ANOTIFY_TOKEN 等环境变量，再退到 ./node.yaml）")
 	graceSec := fs.Int("grace", defaultGraceSec,
 		"优雅退出等待秒数（<=0 表示不等在跑任务）；只覆盖在跑任务的收尾、"+
 			"不含关连接本身，应小于进程管理器的 stop 超时（如 docker stop 默认 10s）")
@@ -212,11 +217,11 @@ func run(args []string, stderr io.Writer) error {
 		return err
 	}
 
-	cfg, err := loadConfig(opts.configPath)
+	cfg, err := loadConfigFrom(opts.configPath, os.Getenv)
 	if err != nil {
 		// loadConfig 的错误已经带文件路径前缀（config.go），这里不再套一层路径，
 		// 免得同一条路径在报错里出现两次。
-		log.Error("node.yaml 加载失败",
+		log.Error("配置加载失败",
 			"event", "agent.config.failed",
 			"path", opts.configPath,
 			"error", err.Error(),

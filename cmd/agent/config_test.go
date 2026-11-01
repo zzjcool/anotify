@@ -404,3 +404,106 @@ func TestDefaultDataDir(t *testing.T) {
 		t.Errorf("defaultDataDir() = %q, want 绝对路径", got)
 	}
 }
+
+// ---------- 环境变量 bootstrap（容器/编排路径） ----------
+//
+// 控制台「加机器」给的那行 docker 命令只带 -e，容器里没有 node.yaml 可指。
+// 这组用例钉住：那条命令**真的能起来**，而不是一个好看的字符串。
+
+// envMap 把 map 变成 getenv 函数（测试用，避免污染进程环境）。
+func envMap(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+// TestConfigFromEnv 令牌在就生效，四件都能从环境变量来。
+func TestConfigFromEnv(t *testing.T) {
+	cfg, ok := configFromEnv(envMap(map[string]string{
+		envServer:    "https://anotify.example.com",
+		envToken:     "nt_abc",
+		envName:      "buildbox-1",
+		envInstances: "4",
+	}))
+	if !ok {
+		t.Fatal("有 ANOTIFY_TOKEN 却没走环境变量路径")
+	}
+	if cfg.Server != "https://anotify.example.com" || cfg.Token != "nt_abc" ||
+		cfg.Name != "buildbox-1" || cfg.Instances != 4 {
+		t.Fatalf("解析结果不对: %+v", cfg)
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("这份配置应该合法: %v", err)
+	}
+}
+
+// TestConfigFromEnvNeedsToken 没有令牌 = 没打算走这条路（返回 false 让它回落）。
+//
+// 为什么不「报错说缺 token」：二进制装在机器上的人根本没有环境变量，
+// 对他们来说「没有 ANOTIFY_TOKEN」是常态，报错会把 ./node.yaml 这条路堵死。
+func TestConfigFromEnvNeedsToken(t *testing.T) {
+	if _, ok := configFromEnv(envMap(map[string]string{envServer: "https://x"})); ok {
+		t.Fatal("没有 ANOTIFY_TOKEN 却判定走环境变量")
+	}
+}
+
+// TestConfigFromEnvBadInstances 非法槽位数必须变成**可诊断的错误**，不是静默当 1。
+func TestConfigFromEnvBadInstances(t *testing.T) {
+	cfg, ok := configFromEnv(envMap(map[string]string{envToken: "nt_x", envInstances: "abc"}))
+	if !ok {
+		t.Fatal("有令牌就走这条路")
+	}
+	err := cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), "instances") {
+		t.Fatalf("期望 instances 相关错误，实际: %v", err)
+	}
+}
+
+// TestConfigFromEnvMissingServer 缺 server 必须报错（猜一个会表现为「连不上」）。
+func TestConfigFromEnvMissingServer(t *testing.T) {
+	cfg, ok := configFromEnv(envMap(map[string]string{envToken: "nt_x"}))
+	if !ok {
+		t.Fatal("有令牌就走这条路")
+	}
+	err := cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), "server is required") {
+		t.Fatalf("期望 server 必填报错，实际: %v", err)
+	}
+}
+
+// TestLoadConfigFromPrecedence 显式 -f 永远压过环境变量，且读不到就报错。
+//
+// 这条是「我改的文件没生效」的唯一防线：如果显式 -f 失败时悄悄回落到环境变量，
+// 用户会看到 agent 正常启动、连的却是另一次配置里的中枢。
+func TestLoadConfigFromPrecedence(t *testing.T) {
+	env := envMap(map[string]string{
+		envServer: "https://from-env.example.com",
+		envToken:  "nt_env",
+	})
+
+	// ① 显式 -f 指向不存在的文件 → 报错（不回落到环境变量）
+	if _, err := loadConfigFrom("/nonexistent/node.yaml", env); err == nil {
+		t.Fatal("显式 -f 指向不存在的文件却没报错（可能悄悄回落到了环境变量）")
+	}
+
+	// ② 显式 -f 指向真实文件 → 用文件，无视环境变量
+	dir := t.TempDir()
+	p := filepath.Join(dir, "node.yaml")
+	if err := os.WriteFile(p, []byte("name: from-file\nserver: https://file.example.com\ntoken: nt_file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfigFrom(p, env)
+	if err != nil {
+		t.Fatalf("读文件失败: %v", err)
+	}
+	if cfg.Token != "nt_file" || cfg.Server != "https://file.example.com" {
+		t.Fatalf("显式 -f 应该压过环境变量，实际: %+v", cfg)
+	}
+
+	// ③ 没给 -f → 环境变量生效
+	cfg, err = loadConfigFrom("", env)
+	if err != nil {
+		t.Fatalf("环境变量路径失败: %v", err)
+	}
+	if cfg.Token != "nt_env" {
+		t.Fatalf("没给 -f 时应该走环境变量，实际 token=%q", cfg.Token)
+	}
+}

@@ -141,6 +141,14 @@ e2e-one: ## 只跑某个 E2E 套件：make e2e-one S=auth_flow
 docker: ## 构建 Docker 镜像
 	docker build -t anotify .
 
+# docker-agent 构建节点侧镜像。控制台「加机器」面板给的那行命令就是它的用法：
+#   docker run -d --restart=always -e ANOTIFY_SERVER=... -e ANOTIFY_TOKEN=... anotify-agent
+#
+# 与中枢镜像分开是刻意的：agent 不需要 web/dist（少一个量级的体积），
+# 而且它跑在**用户的**机器上，不该把中枢的前端产物运过去。
+docker-agent: ## 构建节点侧 Docker 镜像
+	docker build -f Dockerfile.agent -t anotify-agent .
+
 docker-run: ## 运行 Docker 容器（需传入 VAPID 环境变量）
 	docker run --rm -p $(PORT):8080 \
 	  -e ANOTIFY_VAPID_PUBLIC_KEY=$$ANOTIFY_VAPID_PUBLIC_KEY \
