@@ -362,47 +362,25 @@ async function main() {
 			JSON.stringify(kpi),
 		);
 
-		// 点「发送测试通知」应被拦，表单保持 hidden
-		const beforeHidden = await page.evaluate(() =>
-			document.getElementById("tn-form")?.classList.contains("hidden"),
-		);
-		H.check("#23 前置 tn-form 默认隐藏", beforeHidden === true);
-
-		await page.click("#tn-toggle");
-		await page.waitForFunction(
-			() => {
-				const msg = document.getElementById("tn-agent-state-msg");
-				return msg && (msg.textContent || "").trim().length > 0;
-			},
-			{ timeout: 3000 },
-		).catch(() => {});
-		const after = await page.evaluate(() => {
-			const form = document.getElementById("tn-form");
-			const msg = document.getElementById("tn-agent-state-msg");
-			return {
-				formHidden: form ? form.classList.contains("hidden") : true,
-				status: msg ? msg.textContent.trim() : "",
-			};
-		});
+		// 「发送测试通知」面板已随死端点 /v1/test-notify 一起删除（#274）：
+		// 发通知现在是平台的一个**末端**（notify.phone, kind=end），
+		// 走 源/边 → 触发 的正常路径，不再有独立面板和"假成功"分支。
+		// 这里断言面板确实没了，防止有人再造一个特殊入口出来。
+		const panelGone = await page.evaluate(() => ({
+			section: !!document.getElementById("test-notify"),
+			toggle: !!document.getElementById("tn-toggle"),
+			form: !!document.getElementById("tn-form"),
+		}));
 		H.check(
-			"#23 0 设备点击测试通知后表单仍隐藏（不打开假成功路径）",
-			after.formHidden === true,
-			JSON.stringify(after),
+			"#274 首页不再有「发送测试通知」特殊面板（末端走源/边触发）",
+			panelGone.section === false &&
+				panelGone.toggle === false &&
+				panelGone.form === false,
+			JSON.stringify(panelGone),
 		);
-		H.check(
-			"#23 状态区提示先添加/开启接收设备",
-			after.status.length > 0 &&
-				(/没有接收设备|开启本机通知|添加设备|no (receiving )?device|receiv/i.test(
-					after.status,
-				) ||
-					/通知接收/.test(after.status)),
-			`status=${after.status}`,
-		);
-		H.check(
-			"#23 状态区不宣称「完成」/假成功",
-			!/完成|100%|已发送，命中/.test(after.status),
-			`status=${after.status}`,
-		);
+		// 「不许假成功」的另一半已经下沉到平台契约：
+		// internal/executor.TestTickZeroDevicesIsSuccess 锁定 0 设备时
+		// summary 必须写 "pushed to 0 device(s)"（状态成功但话要说实话）。
 
 		await page.close();
 		await ctx.close();
