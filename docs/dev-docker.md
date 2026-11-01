@@ -52,57 +52,72 @@ make dev-tunnel-quick    # 临时隧道（随机 trycloudflare.com 域名，验�
 
 ## 3. 固定域名：`anotify-dev.openaaas.org`
 
-### 为什么必须是"命名隧道"
+### 本机已配置好（2026-11-01）
 
-`cloudflared tunnel --url http://localhost:8080` 是**临时隧道**：域名随机（`xxx.trycloudflare.com`）、
-重启就变，而且**不能绑自定义域名**。要固定域名必须用**命名隧道**（有 ID + token，域名路由存在 Cloudflare 侧）。
+| 项 | 值 |
+|---|---|
+| 隧道名 | `anotify-dev` |
+| 隧道 ID | `7e6fdf7b-e8dc-4214-a1f4-6d14f7fbc65a` |
+| DNS | `anotify-dev.openaaas.org` CNAME → `<隧道ID>.cfargotunnel.com`（Cloudflare 自动建） |
+| 凭据 | `~/.cloudflared/7e6fdf7b-e8dc-4214-a1f4-6d14f7fbc65a.json`（400，勿外传） |
+| 本地 ingress | `.dev-tunnel/config.yml`（不入库）：`anotify-dev.openaaas.org` → `http://anotify:8080` |
+| 启动 | `make dev-up TUNNEL=1` |
 
-### 步骤（一次性）
+实测（公网）：
 
-1. **建隧道**
-   Cloudflare Dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel**（类型 Cloudflared）→ 起名如 `anotify-dev`。
+```
+GET https://anotify-dev.openaaas.org/health  → {"boot":"73de3f9a4a94730d","ok":true}
+GET https://anotify-dev.openaaas.org/        → 200, 47,793 B（gzip 12,075 B）
+POST /v1/auth/register/options               → rp.id = anotify-dev.openaaas.org  ✅ Passkey 可用
+```
 
-2. **配 Public hostname**（在同一页的 Public Hostname 标签）
-   - Subdomain: `anotify-dev`
-   - Domain: `openaaas.org`
-   - Path: 留空
-   - Service: **Type `HTTP`，URL `anotify:8080`**
+### 换机器 / 重建隧道
 
-   > 这里写的是 **compose 里的服务名 `anotify`**，不是 `localhost`——cloudflared 和 anotify 在同一个
-   > docker 网络里，`localhost` 指的是 cloudflared 自己那个容器。
-   >
-   > DNS 记录由 Cloudflare 自动创建（`anotify-dev.openaaas.org` CNAME 到 `<tunnel-id>.cfargotunnel.com`），
-   > 不需要手工加。
+```bash
+cloudflared tunnel login                     # 浏览器授权，产出 ~/.cloudflared/cert.pem
+make dev-tunnel-setup                        # 建隧道 + 配 DNS + 写 .dev-tunnel/config.yml
+make dev-up TUNNEL=1
+```
 
-3. **把 token 写进 `.env.dev`**
+`make dev-tunnel-setup` 默认 `TUNNEL=anotify-dev DOMAIN=anotify-dev.openaaas.org`，可覆盖。
 
-   ```bash
-   CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoi...
-   ```
+### 两种隧道模式
 
-4. **带隧道启动**
+| 模式 | 配置文件 | 启动 | ingress 位置 |
+|---|---|---|---|
+| **A 凭据 + 本地 ingress**（默认，上面这套） | `.dev-tunnel/config.yml` | `make dev-up TUNNEL=1` | 本地文件 |
+| B token（Dashboard 建的隧道） | `.env.dev` 的 `CLOUDFLARE_TUNNEL_TOKEN` | `docker compose --env-file .env.dev -f docker-compose.dev.yml --profile tunnel-token up -d` | Dashboard |
 
-   ```bash
-   make dev-up TUNNEL=1
-   ```
+A 模式的两个注意点（都是踩过的坑）：
 
-   起来后 `https://anotify-dev.openaaas.org/health` 应返回 `{"boot":"...","ok":true}`。
+1. **凭据挂载要挂文件，不能把整个目录只读挂进来再往里叠文件**——只读目录里建挂载点会失败
+   （`make mountpoint ... read-only file system`）。所以 compose 里是两条独立的文件挂载。
+2. **cloudflared 官方镜像以 nonroot 运行，而隧道凭据权限是 400**（属主是宿主机用户）→ 容器里读不了。
+   本地开发用 `user: "0:0"` 跑这个容器最省事（它只读挂载、不写任何东西）。
+
+另外 `.env.dev` 里的变量要参与 compose 插值，必须用 `--env-file .env.dev`（`env_file:` 只给容器注入、不参与插值）——
+`make` 的 `DEV_COMPOSE` 已经带上了。
+
+### service 必须写 compose 服务名
+
+ingress 的 `service:` 是 `http://anotify:8080`，**不是 `localhost:8080`**——cloudflared 和 anotify
+在同一个 docker 网络里，`localhost` 指的是 cloudflared 自己那个容器。写错了就是 502。
 
 ### 通过隧道访问时 Passkey 才可用
 
-`.env.dev` 里已经配好：
+`.env.dev` 已配：
 
 ```bash
 ANOTIFY_RP_ID=anotify-dev.openaaas.org
 ANOTIFY_RP_ORIGIN=https://anotify-dev.openaaas.org
 ```
 
-WebAuthn 要求 **RP_ID 与浏览器地址栏域名严格一致**，所以：
+WebAuthn 要求 **RP_ID 与浏览器地址栏域名严格一致**：
 
-- 走 `https://anotify-dev.openaaas.org` → 可注册/登录 Passkey ✅
+- 走 `https://anotify-dev.openaaas.org` → 可注册/登录 Passkey ✅（已用 `register/options` 验证 rp.id 匹配）
 - 走 `http://localhost:8080` → RP_ID 不匹配，Passkey 不可用（用 session cookie 进）
 
-**改了域名就要同步改这两个值并重启**，否则注册会报 `RP ID 不匹配`。
+**换域名就要同步改这两个值并重启**，否则注册会报 `RP ID 不匹配`。
 
 ## 4. 排错
 

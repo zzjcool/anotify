@@ -90,18 +90,40 @@ services:
 
   # Cloudflare 命名隧道：把 anotify-dev.openaaas.org 指到本服务的 8080。
   #
-  # 启用条件（两者都要）：
-  #   1. .env.dev 里填了 CLOUDFLARE_TUNNEL_TOKEN
-  #   2. 用 --profile tunnel 启动（make dev-up TUNNEL=1）
+  # 两种模式，按需选一种（都用 --profile tunnel 启动）：
   #
-  # 域名 → 服务的映射在 Cloudflare 侧配置（见 docs/dev-docker.md）：
-  #   Public hostname: anotify-dev.openaaas.org  →  http://anotify:8080
-  # 这里不用 --url（那是临时隧道，域名随机、且不能绑自定义域名）。
+  #  A. 凭据 + 本地 ingress（默认，`make dev-tunnel-setup` 生成）
+  #     cloudflared 读 .dev-tunnel/config.yml，ingress 写在本地文件里：
+  #         anotify-dev.openaaas.org  →  http://anotify:8080
+  #     需要 ~/.cloudflared/<tunnel-id>.json（cloudflared tunnel create 产出）。
+  #
+  #  B. token 模式（在 Cloudflare Dashboard 里建的隧道）
+  #     .env.dev 填 CLOUDFLARE_TUNNEL_TOKEN，并给服务加 profile tunnel-token：
+  #         docker compose -f docker-compose.dev.yml --profile tunnel-token up -d
+  #     此时 ingress（Public hostname）配在 Dashboard，不在本地文件里。
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: anotify-dev-tunnel
     restart: unless-stopped
     profiles: ["tunnel"]
+    # 官方镜像默认以 nonroot 运行，而 tunnel 凭据文件权限是 400（属主是宿主机用户）：
+    # 本地开发用 root 跑这一容器最省事（它只读挂载，不写任何东西）。
+    user: "0:0"
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    volumes:
+      # 两个文件各自挂载（不能把整个目录只读挂进来再往里叠文件：只读目录里建挂载点会失败）
+      - "${CLOUDFLARE_TUNNEL_CREDENTIALS:-${HOME}/.cloudflared/credentials.json}:/etc/cloudflared/credentials.json:ro"
+      - "./.dev-tunnel/config.yml:/etc/cloudflared/config.yml:ro"
+    depends_on:
+      anotify:
+        condition: service_healthy
+
+  # B 模式的隧道（token）
+  cloudflared-token:
+    image: cloudflare/cloudflared:latest
+    container_name: anotify-dev-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel-token"]
     command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN}"]
     depends_on:
       anotify:
