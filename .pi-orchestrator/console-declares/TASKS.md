@@ -66,13 +66,13 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 **依赖**：T1、T2
 **verify**：`go build ./... && go test ./cmd/agent/...`
 
-- [ ] `cache.go` — `~/.anotify/artifacts/<digest>/` 落盘、`index/<name>@<ver>` 索引、digest 校验
-- [ ] `apply.go` — 处理 `deploy` 帧：校验 → 探 `requires` → 原子落盘 → 回 `apply` 帧
-- [ ] `runner.go` — **去掉 `sh -c`**，改直接 exec entrypoint；`ANOTIFY_WORKDIR` 每任务独立目录
-- [ ] `runner.go` — 新增 `ANOTIFY_TRACE_ID` / `ANOTIFY_DIGEST`
-- [ ] `main.go` — `anotify-agent run ./x.yaml -p k=v` standalone 模式（不连中枢）
-- [ ] hello 发 `applied[]`；删 `capabilities`/`manifest` 构造
-- [ ] `config.go` — 删 `capabilities[]`/`runSpec`（node.yaml 只留 name/server/token/instances）
+- [x] `cache.go` — `~/.anotify/artifacts/<digest>/` 落盘、`index/<name>@<ver>` 索引、digest 校验
+- [x] `apply.go` — 处理 `deploy` 帧：校验 → 探 `requires` → 原子落盘 → 回 `apply` 帧
+- [x] `runner.go` — **去掉 `sh -c`**，改直接 exec entrypoint；`ANOTIFY_WORKDIR` 每任务独立目录
+- [x] `runner.go` — 新增 `ANOTIFY_TRACE_ID` / `ANOTIFY_DIGEST`
+- [x] `main.go` — `anotify-agent run ./x.yaml -p k=v` standalone 模式（不连中枢）
+- [x] hello 发 `applied[]`；删 `capabilities`/`manifest` 构造
+- [x] `config.go` — 删 `capabilities[]`/`runSpec`（node.yaml 只留 name/server/token/instances）
 
 ## T5 · 控制台 UI
 
@@ -81,12 +81,12 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 **依赖**：T3 的 API 形状（契约已冻结，可并行开工）
 **verify**：`make fe && node scripts/check-classes.mjs`
 
-- [ ] 能力页：模板选择器（9 个）+ 动态表单 + 只读脚本预览 + 「脚本模式」textarea
-- [ ] 能力页：每个能力的部署状态（applied/failed/local 三色 + 逐台原因）
-- [ ] 部署面板：勾机器 / 按 tag 选择 → 部署 → 逐台结果
-- [ ] 节点页：已缓存产物列表 + digest + 本地变体黄标
-- [ ] i18n 四语言 key 齐全（`make e2e` 的 i18n_coverage 会抓）
-- [ ] **顺手修 `edges.html:541` 的 `JSON.stringify` bug**（现在建边必然 400）
+- [x] 能力页：模板选择器（9 个）+ 动态表单 + 只读脚本预览 + 「脚本模式」textarea
+- [x] 能力页：每个能力的部署状态（applied/failed/local 三色 + 逐台原因）
+- [x] 部署面板：勾机器 / 按 tag 选择 → 部署 → 逐台结果
+- [x] 节点页：已缓存产物列表 + digest + 本地变体黄标
+- [x] i18n 四语言 key 齐全（`make e2e` 的 i18n_coverage 会抓）
+- [x] **顺手修 `edges.html:541` 的 `JSON.stringify` bug**（现在建边必然 400）
 
 ## T6 · e2e
 
@@ -94,10 +94,10 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 **文件所有权**：`scripts/e2e/suites/{ws_protocol,capacity,real_backend}.mjs`、`scripts/e2e/lib/{nodes,wsclient}.mjs`
 **verify**：`make e2e`
 
-- [ ] `ws_protocol.mjs`：hello 新形状、deploy/apply 帧、协议版本 2
-- [ ] `capacity.mjs`：部署 → 派发链路（不再靠 hello 声明能力）
-- [ ] `real_backend.mjs`：真 agent 起来 → 控制台部署 → 任务成功
-- [ ] 新增断言数不得少于被删的断言数
+- [x] `ws_protocol.mjs`：hello 新形状、deploy/apply 帧、协议版本 2
+- [x] `capacity.mjs`：部署 → 派发链路（不再靠 hello 声明能力）
+- [x] `real_backend.mjs`：真 agent 起来 → 控制台部署 → 任务成功
+- [x] 新增断言数不得少于被删的断言数（1653 → 1764）
 
 ## T7 · I1 改写 + 断言 + 文档
 
@@ -107,8 +107,36 @@ T4 agent 纯执行      T5 控制台 UI     T6 e2e
 
 - [x] CONTRACT.md：I1 改写为「执行边界」版本；新增 §6.3 部署协议
 - [x] `Makefile` / `check_contract.py`：新增 A5/A6/A7 三条断言
-- [ ] `playbooks.md`：manifest/run 章节重画为 artifact/deploy
+- [x] `playbooks.md`：manifest/run 章节重画为 artifact/deploy
 - [x] `schema.sql` 注释：`node_capabilities` 标注「只从 deployments 派生，不得手写」
+
+## 落地结果（2026-11-01）
+
+`make ci` 全绿；`make e2e` 23 套件 / **1764 断言 / 0 失败**（改前 1653）。
+
+### 执行中发现并修掉的真 bug（都不是测试问题）
+
+| 级别 | bug | 修法 |
+|---|---|---|
+| P0 | 中枢从没处理过上行 `apply` 帧（`node_session` 缺分支）→ **部署失败永远停在 pending**，「这台机器没装 claude」到不了控制台 | 补 `handleConfigFrame`/`handleApply` + 5 条库断言测试 |
+| P1 | 同内容换版本建能力 → **500**（store 的 content-hash 幂等把版本归一回原版本，随后按请求版本反查产物 `ErrNotFound`） | 用归一后的 `c.ID/c.Version` 重建产物 |
+| P0 | `edges.html` 建边必然 400（body 未 `JSON.stringify`）→ **控制台此前根本无法建图** | 一行修复 |
+| P2 | 协议不匹配错误码是 `bad_frame`，契约写 `protocol_mismatch` | 新增 `ErrCodeProtocolMismatch` |
+| P3 | 模板空列表序列化成 `null`（违反 I9） | `Templates()` 保证非 nil |
+| P2 | 8 并发时 `fork/exec` 拿 `ETXTBSY`（fork 的子进程继承了另一 goroutine 正在写的 fd） | `forkLock` 让「写文件」与 `cmd.Start` 互斥 |
+
+### 契约修订（执行中发现的空白）
+
+1. **`result.out` 在 v2 没有来源** → 定稿 `ANOTIFY_OUT_FILE` 约定（脚本写一行，节点校验 ∈ `spec.outputs`）。
+2. **`deploy{action:remove}` 无法定位能力** → 定稿两种 action 都必填 `artifact`。
+3. **`node_capabilities` 派生规则** → 从「严格 deployments 连表」改为「直接来自 `hello.applied[]`」，理由见 CONTRACT-protocol §8。
+
+### 已知遗留（不阻塞）
+
+- 产物目录 GC（`remove` 只摘索引，目录保留）
+- 失败任务工作目录的 24h 清理
+- `paramsSchema` 可完全绕过模板手写（已提供），但没有「schema 与字段双向同步」的 UI
+- `nodeCapView.displayName` 恒空（既有 bug，`prefixedCapabilityColumns` 没 select display_name）
 
 ## 门禁
 
