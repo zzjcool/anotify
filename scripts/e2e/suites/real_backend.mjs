@@ -21,11 +21,16 @@
  *       ④ **每个命名空间资源请求都带 `namespaceId`** —— 这条直接把 `NS_PATHS`
  *          漏项锁死（漏项的症状就是 400 或"切了命名空间列表不变"，两者都不报错）
  *
- *  B. UI 产物能被真实消费者解析：`nodes.html` 走「注册节点」→ 从 DOM 取一次性令牌
- *     与生成的 node.yaml → 把 capabilities 段的示例解开成一条**真能力** → 写临时
- *     文件 → 真起 `cmd/agent`（不是 mock，也不是文本正则）→ 节点在 `GET /v1/nodes`
- *     变 `online` 且声明的 run 被中枢接受 → SIGTERM 后退出码 0、节点回到 offline。
- *     真实消费者解析不了 = 直接红（#197 那一类）。
+ *  B. UI 产物能被真实消费者解析 + v2 部署链路能跑通：`nodes.html` 走「注册节点」→
+ *     从 DOM 取一次性令牌 → 按 **bootstrap 四件**（name/server/token/instances）
+ *     写 node.yaml → 真起 `cmd/agent`（不是 mock，也不是文本正则）→ 节点变 `online`
+ *     → 用控制台 API 建能力（带 run）并 `POST /v1/deployments` 推到这台机器 →
+ *     断言两条部署都变 `applied` 且节点呈现的能力**完全由部署派生**（D4）→
+ *     触发源 → A 写 `$ANOTIFY_OUT_FILE` 走出 `go` → 中枢建出**下一跳 B 的任务** →
+ *     `GET /v1/tasks/{id}` 的 summary/out/chain 都对 → `anotify-agent run` 不连中枢
+ *     也能跑同一份产物 → SIGTERM 退出码 0、节点回到 offline。
+ *     任何一环断了都是红：真实消费者解析不了（#197 那类）、部署没落地、
+ *     出口通道哑掉（多跳静默消失）、agent 起不来/收不干净。
  *
  *  C. 命名空间切换器真的能切（#203）：两个命名空间各建一个**不同名字**的能力，
  *     在真浏览器里点一下切过去 → 页面请求真的带上新 `namespaceId`、能力列表真的
@@ -37,7 +42,7 @@
  *   - 不睡等时间：一律等条件（waitForFunction / 轮询到状态变化）。
  *   - 端口走 `H.SUITE_PORTS.real_backend`（段内独占，不与其它套件重叠）。
  */
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -77,6 +82,12 @@ const MANIFEST = {
 // B 部分从 UI 注册出来、由真 cmd/agent 连上的那台节点，名字分开，断言不串。
 const WS_NODE_NAME = "rb-ws-node";
 const UI_NODE_NAME = "ui-agent";
+
+// B 部分（v2 部署链路）用的名字。单独一组常量：它们是**这次部署**造出来的
+// 能力与来源名，改写 A/C 部分时不该被顺手改掉（那些断言全靠数据本身区分）。
+const CHAIN_SOURCE = "rb-deploy-src";
+const CHAIN_CAP_A = "rb-chain-a";
+const CHAIN_CAP_B = "rb-chain-b";
 
 // ---------- 反例白名单：没有 ----------
 // 这里**曾经**有一条 `/v1/orgs` 的 404 白名单（侧栏组织切换器探测该端点，真后端
@@ -539,80 +550,31 @@ async function runPageChecks(ctxData, nsId) {
 	}
 }
 
-// ---------- B 部分：UI 产物交给真实消费者（cmd/agent） ----------
+// ---------- B 部分：注册节点 → 控制台部署产物 → 真 cmd/agent 跑任务 ----------
 //
-// 关键设计：**不自己写 capabilities 段**。页面生成的那份 node.yaml 里，
-// capabilities 下面是一条**注释示例**（用户照着改）。这里把这条示例原样
-// "解开"成真 YAML，只把能力名换成命名空间里真有的 analyze-pr，其它一字不改
-// —— 于是这段 YAML 就是"用户照抄页面示例"的真实产物。
-// 如果页面把 run 写成标量 / 键名不是 capability / timeout_sec 拼错，
-// 严格解码的 agent 立刻失败（#197 那类），套件必红。
+// v2（console-declares）之后这里的分工变了，是**本套件的重点**：
 //
-// 两条实现纪律（都是踩过的坑）：
-//   ① 注释前缀 `"  # "` 要换成 **两个空格**，不是删掉：页面里 `  # - capability`
-//      想表达的就是 `  - capability`（缩进 2）。直接删 4 个字符会把整条列表项
-//      顶到第 0 列，YAML 立刻变成另一个意思。
-//   ② 不能"凡是不像 YAML 的行就丢"：块标量（`command: |`）的内容行整天不像 YAML
-//      （`echo replace-me`）。所以要记着"当前是否在块标量里"，在里面的行原样保留；
-//      只有块标量之外的纯说明文字（`# 一条能力声明长这样…`）才丢。
-function uncommentCapabilitySample(yamlText, capName) {
-	const lines = String(yamlText || "").split("\n");
-	const out = [];
-	let inCaps = false;
-	let renamed = false;
-	let blockIndent = -1; // >=0 = 正在块标量里，内容行的缩进必须大于它
-	const indentOf = (s) => (s.match(/^ */) || [""])[0].length;
-	const looksLikeYaml = (s) => /^\s*(-\s|[A-Za-z_][\w-]*:)/.test(s);
-
-	for (const line of lines) {
-		if (/^capabilities:\s*$/.test(line)) {
-			inCaps = true;
-			out.push(line);
-			continue;
-		}
-		if (!inCaps) {
-			out.push(line);
-			continue;
-		}
-		// capabilities 块内：`  # xxx` → `  xxx`（见纪律①）
-		const commented = line.startsWith("  # ") || line.trim() === "#";
-		let body = commented ? "  " + (line.trim() === "#" ? "" : line.slice(4)) : line;
-
-		// 块标量内容：缩进比 `key: |` 深，原样保留（哪怕它看着不像 YAML）
-		if (blockIndent >= 0 && body.trim() !== "") {
-			if (indentOf(body) > blockIndent) {
-				out.push(body);
-				continue;
-			}
-			blockIndent = -1;
-		}
-		if (body.trim() === "") {
-			if (!commented) out.push(body);
-			continue;
-		}
-		// 块标量之外的纯说明注释：解开会把文件弄坏，直接丢（它本来就是注释）
-		if (commented && !looksLikeYaml(body)) continue;
-		// **只换能力名**，键名与缩进一律不动：页面示例里写的就是 analyze-pr，
-		// 这里换名字只是为了"名字变了也不脆"。
-		// 顺手把键名/缩进改对是不可接受的 —— 那会把 #197 那类"产物键名/缩进写错"
-		// 的 bug 一起改好，套件永远绿（上面 ③ 的断言就是为这件事先钉一层）。
-		if (!renamed && /^\s*- capability: /.test(body)) {
-			body = body.replace(/^(\s*- capability: )\S+/, `$1${capName}`);
-			renamed = true;
-		}
-		// 进入块标量（`command: |` / `>`；带 chomping 修饰符也认）
-		if (/^\s*[A-Za-z_][\w-]*:\s*[|>][+-]?\s*$/.test(body)) {
-			blockIndent = indentOf(body);
-		}
-		out.push(body);
-	}
-
-	const text = out.join("\n").replace(/\n+$/, "\n");
-	const items = text
-		.split("\n")
-		.filter((l) => /^\s*- capability:/.test(l)).length;
-	return { text, items };
-}
+//   v1：node.yaml 里写 capabilities[]（含 run.command），节点自报「我会跑什么」，
+//       中枢只做白名单校验。于是「页面显示的」与「机器真能跑的」是两份真相。
+//   v2：node.yaml 只剩 bootstrap 四件（name / server / token / instances）。
+//       能力由控制台的部署决定：POST /v1/capabilities 带 run →
+//       编译成内容寻址的产物（digest）→ POST /v1/deployments →
+//       deploy 帧下发 → 节点落盘缓存并向 hello.applied 如实上报。
+//
+// 所以 B 部分改成三段，每段都钉住 v2 的一条硬约束：
+//
+//   ① **页面产物 → 真消费者**：从 nodes.html 的「注册节点」面板拿一次性令牌
+//      （真流程、真 POST /v1/nodes），把 node.yaml 按 v2 写成**只有四件**，
+//      交给真 cmd/agent。它解析得了 = 契约 §1 的形状没走样。
+//   ② **部署链路**：用控制台 API 建两个能力（A 写出口文件、B 收下一跳），
+//      部署到这台真节点 → 断言 deployments 变 applied（节点落盘后 hello 对账），
+//      且节点呈现的能力**完全由部署派生**（D4：不再自报）。
+//   ③ **出口通道（v2 的生命线）**：A 的脚本 `printf 'go\n' > "$ANOTIFY_OUT_FILE"`
+//      → 中枢按 `out=go` 走边建出 B 的任务 → 两个任务都 succeeded。
+//      这条断了，多跳链路就整条哑掉，而且**没有任何报错**（只是没有下一跳）。
+//
+// 外加一条 standalone：同一份产物 YAML 落到临时文件 → `anotify-agent run`
+// 不连中枢直接跑，断言 stdout 与退出码（「产物可移植」的落地证明）。
 
 // AGENT_SOURCES 是"这个二进制代表哪份代码"的判据（判新旧用）。
 const AGENT_SOURCES = [
@@ -661,8 +623,51 @@ async function waitNodeStatus(session, name, want, opts = {}) {
 	);
 }
 
+// writeNodeYaml 按 **bootstrap 四件**写 node.yaml（契约 §1 / 裁决 D4）。
+//
+// 为什么套件要自己写这份文件、而不是把页面生成的那份原样喂给 agent：
+// v2 把「机器上声明能力」整个删掉了 —— 页面里那段 capabilities 示例（T5 改造前
+// 还在）对 v2 的 agent 是**未知字段**，会被 `dec.KnownFields(true)` 直接拒绝。
+// 那条拒绝是有意的护栏（老配置启动失败，好过静默连上去却永远接不到单），
+// 所以这里只写四件：能力从这一刻起只能由控制台的部署授予。
+function writeNodeYaml(file, { name, server, token, instances }) {
+	const text = [
+		"name: " + name,
+		"server: " + server,
+		"token: " + token,
+		"instances: " + instances,
+	].join("\n") + "\n";
+	writeFileSync(file, text);
+	return text;
+}
+
+// listDeployments 读部署行（契约 §11 GET /v1/deployments）。
+async function listDeployments(session, filter = {}) {
+	const q = Object.entries(filter)
+		.map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+		.join("&");
+	const r = await H.req(server.base, "/v1/deployments" + (q ? "?" + q : ""), { session });
+	return r.status === 200 ? r.json?.deployments || [] : [];
+}
+
+// waitDeploymentsApplied 等这台节点的部署行**全部**变 applied。
+//
+// 部署结果不是同步返回的：中枢推 deploy 帧 → 节点落盘缓存 → 重发 hello.applied →
+// 中枢对账才把行改成 applied。所以这里等条件（轮询 + 超时），不 sleep 固定时长。
+async function waitDeploymentsApplied(session, nodeId, wantCount, timeoutMs = 20000) {
+	return pollUntil(
+		async () => {
+			const rows = await listDeployments(session, { nodeId });
+			return rows.length === wantCount && rows.every((r) => r.state === "applied")
+				? rows
+				: null;
+		},
+		{ timeoutMs, intervalMs: 100 },
+	);
+}
+
 async function runUiArtifactChecks(ctxData, nsId) {
-	console.log("--- B. UI 产物 → 真 cmd/agent ---");
+	console.log("--- B. 注册节点 → 部署产物 → 真 agent 跑任务 ---");
 	const ctx = await browser.newContext();
 	await H.mockExternalCdn(ctx);
 	await injectSession(ctx, ctxData.session, server.base);
@@ -686,7 +691,7 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			)
 			.catch(() => {});
 
-		// ① 走真 UI：点「注册节点」→ 填名字 → 提交
+		// ① 走真 UI：点「注册节点」→ 填名字 → 提交（真 POST /v1/nodes）
 		await page.click("#node-register-btn");
 		await page.fill("#reg-name", UI_NODE_NAME);
 		await page.click("#reg-submit");
@@ -699,7 +704,8 @@ async function runUiArtifactChecks(ctxData, nsId) {
 					if (!res || !tok || !yaml) return null;
 					if (res.classList.contains("hidden")) return null;
 					const token = tok.textContent.trim();
-					return token.length > 8 ? { token, yaml: yaml.textContent } : null;
+					const instances = (document.getElementById("reg-instances") || {}).value || "";
+					return token.length > 8 ? { token, yaml: yaml.textContent, instances } : null;
 				},
 				null,
 				{ timeout: 15000 },
@@ -709,6 +715,7 @@ async function runUiArtifactChecks(ctxData, nsId) {
 
 		const token = (shown && shown.token) || "";
 		const pageYaml = (shown && shown.yaml) || "";
+		const instances = Number((shown && shown.instances) || 1) || 1;
 		H.check(
 			"注册节点：一次性令牌出现在 DOM 里",
 			token.length > 8,
@@ -724,7 +731,9 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			pageYaml.slice(0, 120),
 		);
 
-		// ② 页面的产物逐项对齐 cmd/agent/config.go 的顶层字段
+		// ② 页面产物逐项对齐 cmd/agent/config.go 的 bootstrap 四件。
+		//    这四条与 v1 时代**一字未改**——四件是 v2 保留下来的全部内容，
+		//    改坏的代价是老配置文件全部解析失败。
 		const origin = await page.evaluate(() => location.origin);
 		H.check(
 			"node.yaml：name 行与提交的名字一致",
@@ -749,36 +758,27 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			pageYaml.slice(0, 300),
 		);
 
-		// ③ 先钉"页面示例本身的形状"：键名必须叫 capability、缩进必须是 2。
-		//
-		// 这一步**不能**省给后面的解注释代劳：#197 的五处不符里就有「键名写成 name」
-		// 和「列表项顶到第 0 列」—— 如果解注释时顺手把键名/缩进改对了，这两类
-		// bug 就永远不会让套件红（假绿）。所以：形状先断言，解注释只换能力名。
-		const sampleItem = (pageYaml.match(/^  # - (\S+): (\S+)\s*$/m) || [])[1] || "";
-		H.check(
-			"node.yaml 示例：capabilities 列表项的键名是 capability（不是 name）",
-			sampleItem === "capability",
-			`实际键名 ${JSON.stringify(sampleItem)}；示例块：\n${pageYaml.split("capabilities:")[1] || ""}`,
-		);
-		H.check(
-			"node.yaml 示例：列表项缩进是 2 个空格（顶到第 0 列是 #197 的旧形状）",
-			/^  # - capability: \S+$/m.test(pageYaml),
-			`示例块：\n${pageYaml.split("capabilities:")[1] || ""}`,
-		);
-
-		// ④ 解开 capabilities 示例 → 真能力 → 写盘（对错由真 agent 判）
-		const patched = uncommentCapabilitySample(pageYaml, ENTRY_CAP);
-		H.check(
-			"node.yaml：解开示例后得到一条真能力声明（缩进 2）",
-			patched.items >= 1 && /^  - capability: \S+$/m.test(patched.text),
-			`解出 ${patched.items} 条；解开后：\n${patched.text}`,
-		);
+		// ③ 写盘：**只有四件**（能力不在机器上声明了）
 		const yamlPath = path.join(tmpDir, "node.yaml");
-		writeFileSync(yamlPath, patched.text);
-
-		agentProc = spawn(agentBin, ["-f", yamlPath, "-grace", "2"], {
-			stdio: ["ignore", "pipe", "pipe"],
+		const nodeYaml = writeNodeYaml(yamlPath, {
+			name: UI_NODE_NAME,
+			server: origin,
+			token,
+			instances,
 		});
+		H.check(
+			"喂给 agent 的 node.yaml 只有 bootstrap 四件（无 capabilities 段）",
+			!/^\s*capabilities:/m.test(nodeYaml),
+			nodeYaml,
+		);
+
+		// ④ 真 agent 起来（-data-dir 落临时目录：不污染 ~/.anotify，
+		//    也不会读到上一次跑剩下的缓存 —— 那会让 hello.applied 带上脏数据）
+		agentProc = spawn(
+			agentBin,
+			["-f", yamlPath, "-grace", "2", "-data-dir", path.join(tmpDir, "agent-data")],
+			{ stdio: ["ignore", "pipe", "pipe"] },
+		);
 		let agentLog = "";
 		agentProc.stdout.on("data", (d) => {
 			agentLog += d;
@@ -787,8 +787,7 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			agentLog += d;
 		});
 
-		// ④ 真 agent 连上来 → 节点 online
-		//    stopWhen：agent 已经退出（配置解析失败等）就不可能再 online，别等到超时
+		// stopWhen：agent 已经退出（配置解析失败等）就不可能再 online，别等到超时
 		const online = await waitNodeStatus(ctxData.session, UI_NODE_NAME, "online", {
 			timeoutMs: 20000,
 			intervalMs: 100,
@@ -801,42 +800,267 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			const early = await waitChildExit(agentProc, 5000);
 			await sleep(150);
 			H.bad(
-				"真 cmd/agent 用页面给的 YAML 起来，节点变 online",
+				"真 cmd/agent 用 bootstrap 四件起来，节点变 online",
 				maskToken(
-					`agent 退出码=${early.code} 信号=${early.signal}；agent 日志：\n${agentLog.slice(-1500)}\n喂进去的 node.yaml：\n${patched.text}`,
+					`agent 退出码=${early.code} 信号=${early.signal}；agent 日志：\n${agentLog.slice(-1500)}\n喂进去的 node.yaml：\n${nodeYaml}`,
 				),
 			);
 		} else {
-			H.ok("真 cmd/agent 用页面给的 YAML 起来，节点变 online");
+			H.ok("真 cmd/agent 用 bootstrap 四件起来，节点变 online");
 		}
 
-		// ⑤ 中枢接受了它的 run 声明（manifest 真的解析成功，不是"连上就算"）
 		if (online) {
-			const caps = online.capabilities || [];
-			const cap = caps.find((c) => c.name === ENTRY_CAP && c.version === 1);
-			H.check(
-				"节点声明的真能力被中枢接受（含 run 声明）",
-				!!cap,
-				JSON.stringify(caps),
+			// ================= ⑤ 部署链路（v2 的正确路径） =================
+			//
+			// 这是本套件的核心：能力**不再由节点自报**，而是控制台建能力（带 run →
+			// 编译成产物）→ 部署到这台机器 → 中枢推 deploy 帧 → 节点落盘并回报。
+			console.log("--- B2. 控制台建能力 + 部署到这台真节点 ---");
+			const mkCap = async (name, outputs, script) => {
+				const r = await H.req(server.base, "/v1/capabilities", {
+					session: ctxData.session,
+					body: {
+						namespaceId: nsId,
+						name,
+						outputs,
+						run: { entrypoint: "run.sh", files: { "run.sh": script } },
+					},
+				});
+				H.check(
+					`建能力 ${name}（带 run → 编译产物 + digest）`,
+					r.status === 200 && /^sha256:[0-9a-f]{64}$/.test(r.json?.digest || ""),
+					`${r.status} ${String(r.text).slice(0, 160)}`,
+				);
+				return {
+					id: r.json?.capability?.id,
+					name,
+					version: r.json?.capability?.version,
+					digest: r.json?.digest,
+				};
+			};
+			// A：把出口名写进 $ANOTIFY_OUT_FILE —— v2 唯一的下一跳通道
+			const capA = await mkCap(
+				CHAIN_CAP_A,
+				["go"],
+				"#!/bin/bash\nset -euo pipefail\nprintf 'go\\n' > \"$ANOTIFY_OUT_FILE\"\necho A-ran\n",
 			);
-			H.check(
-				"run 声明往返一致（runner=bash）",
-				!!cap && cap.runSpec && cap.runSpec.runner === "bash",
-				JSON.stringify(cap && cap.runSpec),
+			// B：下一跳，把上一跳的参数打出来（证明参数真的传过来了）
+			const capB = await mkCap(
+				CHAIN_CAP_B,
+				[],
+				"#!/bin/bash\nset -euo pipefail\necho \"B-got $ANOTIFY_PARAM_FROM\"\n",
 			);
-			H.check(
-				"节点的 instances 与 YAML 一致",
-				online.instances === 1,
-				`instances=${online.instances}`,
-			);
-		}
+			const nodeId = online.id;
 
-		// ⑥ SIGTERM → 优雅退出，退出码 0；⑦ 断开后节点回 offline
-		//
-		// 只在"agent 真的起来了"之后才断言这两步：agent 本来就崩了（配置解析失败）
-		// 的情况下，再报"没在运行"/"退出码不是 0"只是三条同因噪音，
-		// 会把根因（上面那条红）淹掉。
-		if (online) {
+			const depA = await H.req(server.base, "/v1/deployments", {
+				session: ctxData.session,
+				body: { namespaceId: nsId, capabilityId: capA.id, nodeIds: [nodeId] },
+			});
+			H.eq("POST /v1/deployments（A）→ 200", depA.status, 200);
+			H.eq(
+				"在线节点：A 的部署 pushed=true（真的推出去了）",
+				(depA.json?.deployments || [])[0]?.pushed,
+				true,
+			);
+			const depB = await H.req(server.base, "/v1/deployments", {
+				session: ctxData.session,
+				body: { namespaceId: nsId, capabilityId: capB.id, nodeIds: [nodeId] },
+			});
+			H.eq("POST /v1/deployments（B）→ 200", depB.status, 200);
+			H.eq(
+				"在线节点：B 的部署 pushed=true",
+				(depB.json?.deployments || [])[0]?.pushed,
+				true,
+			);
+
+			const appliedRows = await waitDeploymentsApplied(ctxData.session, nodeId, 2);
+			H.check(
+				"两条部署都变 applied（节点落盘缓存 + hello.applied 对账）",
+				!!appliedRows,
+				`实际：${JSON.stringify(
+					(await listDeployments(ctxData.session, { nodeId })).map((r) => [
+						r.capability,
+						r.state,
+						(r.reason || "").slice(0, 80),
+					]),
+				)}；agent 日志尾部：\n${maskToken(agentLog.slice(-800))}`,
+			);
+			H.eq(
+				"applied 行的 digest 与中枢编译出来的一致",
+				(appliedRows || []).map((r) => r.digest).sort(),
+				[capA.digest, capB.digest].sort(),
+			);
+
+			// ⑥ 归属只由部署派生（D4）：节点此刻呈现的能力**正好**是刚部署的这两个。
+			//    多一个 = 中枢在撒谎（节点上并没有）；少一个 = 部署没落到派生索引里，
+			//    两种情况的症状都是「页面看起来能跑，派下去却没人接」。
+			const nodesNow = await H.req(server.base, "/v1/nodes", { session: ctxData.session });
+			const selfNode = (nodesNow.json?.nodes || []).find((n) => n.id === nodeId);
+			const derived = (selfNode?.capabilities || [])
+				.map((c) => `${c.name}@${c.version}`)
+				.sort();
+			H.eq(
+				"节点呈现的能力完全由部署派生（A + B，没有别的）",
+				derived,
+				[`${CHAIN_CAP_A}@${capA.version}`, `${CHAIN_CAP_B}@${capB.version}`].sort(),
+			);
+
+			// ================= ⑦ 触发 → 多跳（出口文件是 v2 的生命线） =================
+			console.log("--- B3. 触发 → 多跳（ANOTIFY_OUT_FILE 通道）---");
+			const edge = await H.req(server.base, "/v1/edges", {
+				session: ctxData.session,
+				body: {
+					namespaceId: nsId,
+					fromCapability: capA.id,
+					fromPort: "go",
+					toCapability: capB.id,
+				},
+			});
+			H.check("建边：A 的 go 出口 → B", edge.status === 200, `${edge.status} ${String(edge.text).slice(0, 160)}`);
+			const entry = await H.req(server.base, "/v1/edges", {
+				session: ctxData.session,
+				body: {
+					namespaceId: nsId,
+					fromIsSource: true,
+					fromCapability: CHAIN_SOURCE,
+					fromPort: "go",
+					toCapability: capA.id,
+				},
+			});
+			H.check(
+				"建入口边：来源 " + CHAIN_SOURCE + " 的 go → A",
+				entry.status === 200,
+				`${entry.status} ${String(entry.text).slice(0, 160)}`,
+			);
+
+			const ev = await H.req(server.base, "/v1/events", {
+				key: ctxData.sendKey,
+				body: { source: CHAIN_SOURCE, type: "go", payload: { from: "src" } },
+			});
+			H.eq("触发源 → 建出 1 个任务", (ev.json?.tasks || []).length, 1);
+			H.eq("首个任务落在 A 上", (ev.json?.tasks || [])[0]?.capability, CHAIN_CAP_A);
+
+			// 两个任务都跑到终态才算完（A succeeded → 中枢按 out 建 B 的任务 → B succeeded）
+			const tasksDone = await pollUntil(
+				async () => {
+					const r = await H.req(server.base, "/v1/tasks", { session: ctxData.session });
+					if (r.status !== 200) return null;
+					const list = r.json?.tasks || [];
+					return list.length >= 2 &&
+						list.every((t) => t.status === "succeeded" || t.status === "failed")
+						? list
+						: null;
+				},
+				{ timeoutMs: 20000, intervalMs: 100 },
+			);
+			const taskA = (tasksDone || []).find((t) => t.capability === CHAIN_CAP_A);
+			const taskB = (tasksDone || []).find((t) => t.capability === CHAIN_CAP_B);
+			H.check(
+				"两个任务都跑到终态（A 与它的下一跳 B）",
+				!!tasksDone && !!taskA && !!taskB,
+				`实际：${JSON.stringify(
+					(tasksDone || []).map((t) => [t.capability, t.status, (t.summary || "").slice(0, 40)]),
+				)}；agent 日志尾部：\n${maskToken(agentLog.slice(-800))}`,
+			);
+			H.eq("A 任务 succeeded", taskA?.status, "succeeded");
+			H.eq(
+				"A 通过 $ANOTIFY_OUT_FILE 回报 out=go（唯一的下一跳通道）",
+				taskA?.out,
+				"go",
+			);
+			H.check(
+				"A 的 summary 是脚本 stdout（真执行过，不是空跑）",
+				/A-ran/.test(taskA?.summary || ""),
+				String(taskA?.summary),
+			);
+			H.check(
+				"B 的任务被真的建出来了（多跳没断在出口上）",
+				!!taskB,
+				JSON.stringify((tasksDone || []).map((t) => [t.capability, t.status])),
+			);
+			H.eq("B 任务 succeeded", taskB?.status, "succeeded");
+			H.check(
+				"B 的 summary 带上上一跳的参数（ANOTIFY_PARAM_FROM）",
+				/B-got src/.test(taskB?.summary || ""),
+				String(taskB?.summary),
+			);
+			if (taskB) {
+				const detail = await H.req(server.base, `/v1/tasks/${encodeURIComponent(taskB.id)}`, {
+					session: ctxData.session,
+				});
+				H.eq(
+					"GET /v1/tasks/{B} 的 chain 是 2 跳（详情页一次画完整条链）",
+					(detail.json?.chain || []).length,
+					2,
+				);
+				H.eq(
+					"B 的 parentTaskId 指向 A（父子关系落在库里）",
+					detail.json?.task?.parentTaskId,
+					taskA?.id,
+				);
+			}
+
+			// ================= ⑧ standalone：同一份产物，不连中枢直接跑 =================
+			//
+			// 「产物可移植」是这套模型的落地证明：中枢推下来能跑，拷到别的机器上
+			// 直接 `anotify-agent run` 也能跑。这条路径不读 node.yaml、不建索引。
+			console.log("--- B4. standalone（anotify-agent run）---");
+			const artsA = await H.req(
+				server.base,
+				`/v1/artifacts?capabilityId=${encodeURIComponent(capA.id)}`,
+				{ session: ctxData.session },
+			);
+			const artSpec = JSON.parse(
+				Buffer.from(artsA.json?.artifacts?.[0]?.spec || "", "base64").toString("utf8"),
+			);
+			const artFile = path.join(tmpDir, "standalone.yaml");
+			// canonical JSON 就是合法 YAML（1.2）—— 写 JSON 等价于写 YAML，
+			// 而且与中枢里那份**字节等价**，不会因为缩进风格变了 digest。
+			writeFileSync(artFile, JSON.stringify(artSpec, null, 2) + "\n");
+			// --data-dir 落在套件临时目录：standalone 失败时会保留工作目录做现场，
+			// 指到 tmpDir 才不会在系统临时目录里越积越多（也保证每次跑都是干净的）。
+			const standalone = spawnSync(
+				agentBin,
+				["run", artFile, "-p", "from=src", "-data-dir", path.join(tmpDir, "standalone-data")],
+				{ encoding: "utf8", timeout: 30000 },
+			);
+			H.eq("standalone：退出码透传脚本的 0", standalone.status, 0);
+			H.check(
+				"standalone：stdout 就是脚本输出（不连中枢也真跑了）",
+				/A-ran/.test(standalone.stdout || ""),
+				JSON.stringify((standalone.stdout || "").slice(0, 200)),
+			);
+			// 退出码必须**原样透传**：脚本怎么退，agent 就怎么退（排查线上问题的前提）
+			const failCap = await mkCap(
+				"rb-chain-exit7",
+				[],
+				"#!/bin/bash\nset -euo pipefail\necho before-exit\nexit 7\n",
+			);
+			const artsF = await H.req(
+				server.base,
+				`/v1/artifacts?capabilityId=${encodeURIComponent(failCap.id)}`,
+				{ session: ctxData.session },
+			);
+			const failSpec = JSON.parse(
+				Buffer.from(artsF.json?.artifacts?.[0]?.spec || "", "base64").toString("utf8"),
+			);
+			const failFile = path.join(tmpDir, "standalone-exit7.yaml");
+			writeFileSync(failFile, JSON.stringify(failSpec, null, 2) + "\n");
+			const sFail = spawnSync(
+				agentBin,
+				["run", failFile, "-data-dir", path.join(tmpDir, "standalone-data2")],
+				{ encoding: "utf8", timeout: 30000 },
+			);
+			H.eq("standalone：脚本 exit 7 → agent 退出码 7（原样透传）", sFail.status, 7);
+			H.check(
+				"standalone：失败前已经跑过的输出照样在 stdout（现场不丢）",
+				/before-exit/.test(sFail.stdout || ""),
+				JSON.stringify((sFail.stdout || "").slice(0, 200)),
+			);
+
+			// ================= ⑨ 优雅退出 =================
+			//
+			// 只在"agent 真的起来了"之后才断言：agent 本来就崩了的情况下，
+			// 再报"没在运行"/"退出码不是 0"只是三条同因噪音，会把根因淹掉。
 			H.check(
 				"agent 收到 SIGTERM 前仍在运行（不是早就崩了）",
 				agentProc.exitCode === null,
