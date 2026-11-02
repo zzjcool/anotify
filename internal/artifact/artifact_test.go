@@ -374,3 +374,62 @@ func TestCode(t *testing.T) {
 		t.Fatalf("Code = %q", got)
 	}
 }
+
+// TestDigestIsStableAcrossParse 是内容寻址的地基：
+//
+//	Digest(Parse(CanonicalJSON(a))) == Digest(a)
+//
+// 这条不成立的话，中枢算出来的 digest 与**任何人从存下来的 spec 重算**的结果
+// 都会不同：节点 apply 回来就被判成 local（"本地变体"），明明内容一模一样。
+//
+// 曾经真的破过：Parse 会把 spec.params 归一成 key 有序，而 CanonicalJSON 直接
+// 吐调用方给的原始字节。所以 UI 用 `{type, properties}` 这个常见顺序建的每个
+// 能力，digest 都与重算值不符 —— 而两端都是合法 sha256，肉眼看不出来。
+func TestDigestIsStableAcrossParse(t *testing.T) {
+	cases := []struct {
+		name   string
+		params string // 故意用**非** canonical 的 key 顺序
+	}{
+		{"未排序的 params", `{"type":"object","properties":{"note":{"type":"string","title":"说明"}}}`},
+		{"嵌套数组与深层对象", `{"type":"object","required":["a"],"properties":{"a":{"type":"array","items":{"type":"object","properties":{"x":{"type":"string"}}}}}}`},
+		{"空 params", ``},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := validArtifact(t)
+			if tc.params != "" {
+				a.Spec.Params = json.RawMessage(tc.params)
+			}
+			d1, err := Digest(a)
+			if err != nil {
+				t.Fatalf("Digest: %v", err)
+			}
+
+			canon, err := CanonicalJSON(a)
+			if err != nil {
+				t.Fatalf("CanonicalJSON: %v", err)
+			}
+			reparsed, err := Parse(canon)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			d2, err := Digest(reparsed)
+			if err != nil {
+				t.Fatalf("Digest(reparsed): %v", err)
+			}
+			if d1 != d2 {
+				t.Fatalf("digest 不可重算：原=%s 重算=%s\n（内容寻址失效：节点会被判成 local）", d1, d2)
+			}
+
+			// 再走一轮也必须稳定（幂等）
+			canon2, _ := CanonicalJSON(reparsed)
+			again, err := Parse(canon2)
+			if err != nil {
+				t.Fatalf("Parse 第二轮: %v", err)
+			}
+			if d3, _ := Digest(again); d3 != d1 {
+				t.Fatalf("第二轮 digest 漂移：%s vs %s", d1, d3)
+			}
+		})
+	}
+}
