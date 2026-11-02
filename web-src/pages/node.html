@@ -7,178 +7,297 @@
 
          为什么单独一页：节点列表要能扫（"有几台、活着吗、能跑什么"），
          而"这台机器现在的并发槽卡在哪个任务上、最近跑了什么"是点进去才
-         关心的事。塞进列表卡片会让列表没法读。 */
-      .np-head {
+         关心的事。塞进列表卡片会让列表没法读。
+
+         样式纪律（UI v2）：卡片 / 按钮 / 徽章 / 空态 / 骨架一律用 ui.css 的
+         组件类，这里只留本页独有的排版；颜色只走 tokens.css 的 token
+         （--text/--muted/--faint/--surface-*/--line/--accent/--st-*），
+         硬编码色值零容忍。类名一律 .np-* 前缀，不新增 Tailwind 工具类。 */
+
+      /* 正文纵向堆叠：卡与卡之间 16px（.page 的 gap 只管页头与正文之间） */
+      .np-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      .np-back {
+        display: inline-block;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .np-back:hover {
+        color: var(--accent);
+      }
+
+      /* 节点 id：等宽 + 极弱色。要和 agent 日志、中枢日志逐字符对照，
+         所以允许折行但不断词、不做 10px 灰（对比度低于 3:1 看不见）。 */
+      .np-id {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--faint);
+        word-break: break-all;
+      }
+
+      .np-badges {
         display: flex;
         flex-wrap: wrap;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 1rem;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
       }
+      .np-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      /* 分区头：标题 + 右侧计数。列表行要贴着卡片边缘（行分隔线通栏），
+         所以 padding 只给在头上和体上，不给在卡上。 */
+      .np-sec-head {
+        padding: 16px 20px 10px;
+      }
+      /* 行贴着卡片底边：裁掉圆角外的 hover 底色（.card 自己没有 overflow） */
+      .np-list-card {
+        overflow: hidden;
+      }
+      .np-sec-body {
+        padding: 0 20px 16px;
+      }
+
       /* 键值对：grid 保证多行之间标签列对齐（flex 做不到） */
       .np-kv {
         display: grid;
         grid-template-columns: 7.5rem 1fr;
-        gap: 0.5rem 1rem;
+        gap: 8px 16px;
         align-items: baseline;
+        margin-top: 12px;
       }
       .np-kv dt {
-        font-size: 0.72rem;
+        font-size: 11.5px;
         color: var(--faint);
       }
       .np-kv dd {
-        font-size: 0.8rem;
+        font-size: 13px;
         color: var(--text);
         min-width: 0;
         word-break: break-word;
       }
-      /* 单个并发槽位一行 */
-      .np-slot {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.3rem 0.5rem;
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.03);
-        font-size: 0.75rem;
-      }
-      .np-slot.is-busy {
-        background: rgba(99, 102, 241, 0.12);
-      }
-      .np-slot-num {
-        font-family: var(--mono, monospace);
-        font-size: 0.7rem;
-        color: var(--faint);
-        min-width: 3.2rem;
-      }
-      /* 最近执行的一行 */
-      .np-task {
+
+      .np-chips {
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem;
-        padding: 0.45rem 0.6rem;
-        border-radius: 10px;
-        background: rgba(255, 255, 255, 0.03);
+        gap: 6px;
+        margin-top: 12px;
       }
-      .np-task-main {
+
+      /* 列表行的两段式：上行「名字 + 状态」，下行 digest / reason。
+         行本身用 ui.css 的 .list-row，这里只补内部排版。 */
+      .np-row-head {
         display: flex;
-        flex-wrap: wrap;
         align-items: center;
-        gap: 0.5rem;
+        gap: 8px;
         min-width: 0;
       }
-      .np-task-meta {
+      .np-row-sub {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 0.6rem;
-        font-size: 0.7rem;
-        color: var(--faint);
-        font-family: var(--mono, monospace);
-        white-space: nowrap;
+        gap: 8px;
+        margin-top: 2px;
       }
-      /* 任务状态色：只染文字，和链路图上"状态靠颜色"的编码一致 */
-      .np-st-succeeded {
-        color: #22c55e;
-      }
-      .np-st-failed,
-      .np-st-abandoned {
-        color: #f87171;
-      }
-      .np-st-running,
-      .np-st-assigned,
-      .np-st-acked {
-        color: #60a5fa;
-      }
-      .np-st-pending,
-      .np-st-canceled,
-      .np-st-lease_expired {
-        color: var(--faint);
-      }
-      .np-empty {
-        font-size: 0.75rem;
-        color: var(--faint);
-      }
-      /* 已缓存产物的一行：左边「能力名@版本 + digest」，右边状态徽章 + reason。
-         上面的 .np-task 说的是「跑过什么」，这行说的是「手上躺着哪份东西」，
-         两者字段不同，所以不复用同一个类。 */
-      .np-art {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem;
-        padding: 0.45rem 0.6rem;
-        border-radius: 10px;
-        /* 行底色只走 token（不硬编码 rgba 字面量），与能力页部署面板的节点行同色 */
-        background: var(--surface-2);
-      }
-      .np-art-main {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 0.5rem;
-        min-width: 0;
-      }
-      .np-art-name {
-        font-size: 0.75rem;
-        color: var(--text);
-      }
-      /* digest 必须等宽：这一串是要跟中枢日志、agent 输出逐字符对照的 */
-      .np-art-digest {
-        font-family: var(--mono, monospace);
-        font-size: 0.7rem;
+      .np-digest {
+        font-family: var(--font-mono);
+        font-size: 11px;
         color: var(--faint);
         letter-spacing: 0.02em;
       }
-      .np-art-meta {
+      /* reason 是后端给的机器串（如 missing_requirement:claude），原样展示、不翻译 */
+      .np-art-reason {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--warn-300);
+        overflow-wrap: anywhere;
+      }
+
+      /* 任务状态：只染文字。九态一一映射 tokens.css 的 --st-*，
+         和链路图 / 事件流是同一套色板（以前这九个色值是在这里硬编码的）。 */
+      .np-state {
+        font-size: 11px;
+      }
+      .np-st-pending {
+        color: var(--st-pending);
+      }
+      .np-st-assigned {
+        color: var(--st-assigned);
+      }
+      .np-st-acked {
+        color: var(--st-acked);
+      }
+      .np-st-running {
+        color: var(--st-running);
+      }
+      .np-st-succeeded {
+        color: var(--st-succeeded);
+      }
+      .np-st-failed {
+        color: var(--st-failed);
+      }
+      .np-st-canceled {
+        color: var(--st-canceled);
+      }
+      .np-st-abandoned {
+        color: var(--st-abandoned);
+      }
+      .np-st-lease_expired {
+        color: var(--st-lease_expired);
+      }
+
+      /* 任务行右侧：耗时 / 时间 / 链路入口。等宽数字避免相邻行抖动。 */
+      .np-task-meta {
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+      }
+      .np-link {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .np-link:hover {
+        color: var(--accent-strong);
+        text-decoration: underline;
+      }
+
+      /* 槽位占用条：一格一个槽，busy 用品牌色（与节点列表页同一套编码） */
+      .np-slot-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+        margin-bottom: 12px;
+      }
+      .np-slot-dot {
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: var(--r-xs);
+        background: var(--surface-3);
+      }
+      .np-slot-dot.is-busy {
+        background: var(--accent);
+      }
+
+      /* 单个槽位一行：紧凑列表，不套卡片 */
+      .np-slot {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 0.5rem;
-        min-width: 0;
-        font-size: 0.7rem;
+        gap: 10px;
+        padding: 7px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .np-slot:last-child {
+        border-bottom: 0;
+      }
+      .np-slot.is-busy {
+        color: var(--text);
+      }
+      .np-slot-num {
+        min-width: 3.2rem;
+        font-family: var(--font-mono);
+        font-size: 11px;
         color: var(--faint);
       }
-      /* reason 是后端给的机器串（如 missing_requirement:claude），原样展示、不翻译 */
-      .np-art-reason {
-        font-family: var(--mono, monospace);
-        font-size: 0.68rem;
-        color: var(--warn-300);
-        overflow-wrap: anywhere;
+      .np-slot-link {
+        color: var(--st-assigned);
+        text-decoration: none;
+      }
+      .np-slot-link:hover {
+        text-decoration: underline;
+      }
+      .np-slot-idle {
+        color: var(--faint);
+      }
+
+      /* 首屏骨架只定义尺寸，闪动/底色来自 ui.css 的 .skeleton */
+      .np-sk-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .np-sk-title {
+        display: inline-block;
+        width: 180px;
+        max-width: 60vw;
+        height: 22px;
+        vertical-align: middle;
+      }
+      .np-sk-line {
+        width: 100%;
+        height: 12px;
+      }
+      .np-sk-line-sm {
+        width: 46%;
+        height: 12px;
+      }
+      .np-sk-line-lg {
+        width: 32%;
+        height: 18px;
+      }
+
+      .np-empty-icon {
+        width: 22px;
+        height: 22px;
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-3xl space-y-6">
-    <div class="reveal visible">
-      <div class="np-head">
-        <div class="min-w-0">
-          <a href="nodes.html" class="text-sm text-zinc-500 hover:text-zinc-300"
-            >← {{t "nodepage.back"}}</a
-          >
-          <h2 id="head-name" class="mt-2 font-display text-3xl text-white">
-            {{t "nodepage.loading"}}
-          </h2>
-          <div id="head-badges" class="mt-2 flex flex-wrap items-center gap-2"></div>
-        </div>
-        <div id="head-actions" class="flex flex-wrap items-center gap-2"></div>
+  <div class="page page-narrow">
+    <!-- 页头：返回链接 + 名字（JS 填）+ 状态徽章 + 页级动作。
+         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §1）。
+         `.page-sub` 全页只出现一次：centurion 的顶栏检测到它就不再重复画副标题。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <a href="nodes.html" class="np-back">← {{t "nodepage.back"}}</a>
+        <h2 id="head-name" class="page-title">
+          <span class="skeleton np-sk-title" aria-label="{{t "nodepage.loading"}}"></span>
+        </h2>
+        <p id="head-sub" class="page-sub np-id"></p>
+        <div id="head-badges" class="np-badges"></div>
       </div>
+      <div id="head-actions" class="page-actions"></div>
     </div>
 
-    <div id="node-body" class="space-y-6">
-      <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
-        {{t "nodepage.loading"}}
+    <!-- 正文 100% 由 JS 生成（renderBody）：首屏这里只是骨架。
+         骨架里刻意**不含** .np-slot / .np-task / .out-chip 这些「数据已就绪」
+         锚点，也不含任何文案 —— e2e 等的是 #head-name 有真实名字（骨架里的
+         span 没有 textContent），随后才读正文断言，不能被骨架骗成已就绪。
+         数据到（或失败、或要重试）时整块 replaceChildren。 -->
+    <div id="node-body" class="np-stack">
+      <div class="card card-pad" aria-hidden="true">
+        <div class="np-sk-stack">
+          <div class="skeleton np-sk-line-lg"></div>
+          <div class="skeleton np-sk-line"></div>
+          <div class="skeleton np-sk-line"></div>
+          <div class="skeleton np-sk-line-sm"></div>
+        </div>
+      </div>
+      <div class="card card-pad" aria-hidden="true">
+        <div class="np-sk-stack">
+          <div class="skeleton np-sk-line-lg"></div>
+          <div class="skeleton np-sk-line"></div>
+          <div class="skeleton np-sk-line-sm"></div>
+        </div>
       </div>
     </div>
   </div>
 </div>
-
-<div id="toast" class="toast card rounded-xl px-4 py-2 text-sm"></div>
 {{end}}
 
 {{define "script"}}
@@ -198,16 +317,38 @@
 
       const STATUS_CLASS = { online: "online", offline: "offline", draining: "draining" };
 
+      // 九态白名单：后端加了新状态也别拼出个没有样式的类名
+      const TASK_STATES = [
+        "pending",
+        "assigned",
+        "acked",
+        "running",
+        "succeeded",
+        "failed",
+        "canceled",
+        "abandoned",
+        "lease_expired",
+      ];
+
       const QS = new URLSearchParams(location.search);
       const NODE_ID = QS.get("id") || "";
 
       let NODE = null;
       let INSTS = [];
-      let TASKS = [];
+      // TASKS / DEPS 用 null 专指「接口失败」，和空数组的「一行都没有」
+      // 是两种不同的结论 —— 混在一起就会把故障说成「还没有」。
+      let TASKS = null;
       let CAPS = new Map();
-      // 部署记录（已缓存的产物）。null 专指「接口失败」，和空数组的
-      // 「一行都没有」是两种不同的结论 —— 混在一起就会把故障说成未部署。
       let DEPS = null;
+
+      const bodyEl = () => document.getElementById("node-body");
+      // 首屏骨架的 HTML 快照：重试时把它放回去，别把「重试中」画成「没有数据」
+      const BODY_SKELETON = bodyEl().innerHTML;
+
+      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）。
+      // 页内不再自己维护 #toast 节点 —— 那份副本在 #page-main 里，
+      // z-index / 位置各页一套，还挡点击。
+      const toast = (msg, kind) => Anotify.toast(msg, kind);
 
       function el(tag, cls, text) {
         const n = document.createElement(tag);
@@ -215,26 +356,14 @@
         if (text != null) n.textContent = String(text);
         return n;
       }
-      function code(text, cls) {
-        const n = el("code", "mono " + (cls || ""));
-        n.textContent = String(text == null ? "" : text);
-        return n;
-      }
+
+      // 容错读取：接口失败返回 null（次要区块不该拖垮整页），主请求走 try/catch
       async function apiGet(path) {
         try {
           return await Anotify.api(path, { demo: null });
         } catch (e) {
           return null;
         }
-      }
-
-      function toast(msg) {
-        const node = document.getElementById("toast");
-        if (!node) return;
-        node.textContent = msg;
-        node.classList.add("show");
-        clearTimeout(node._timer);
-        node._timer = setTimeout(() => node.classList.remove("show"), 2800);
       }
 
       function fmtTime(ts) {
@@ -256,6 +385,11 @@
         const s = b - a;
         if (s < 60) return (Math.round(s * 10) / 10).toFixed(1) + "s";
         return Math.floor(s / 60) + "m" + Math.round(s % 60) + "s";
+      }
+
+      // 数字字段兜底：缺字段时给「—」，绝不让 undefined 出现在页面上
+      function num(v) {
+        return v == null || v === "" || Number.isNaN(Number(v)) ? "—" : String(v);
       }
 
       function capLabel(id, fallbackName, fallbackVersion) {
@@ -299,7 +433,6 @@
 
       // 部署状态 → 徽章 class + 文案 key（契约 §4.4 那张表，四条一一对应）。
       // status-off 给 pending 是刻意的：pending 不是错误、也不该抢眼。
-      // fb 与 locale 的 zh-CN 值逐字对齐：真缺 key 时同一状态不能变成另一种说法。
       const ART_STATE = {
         applied: {
           cls: "status-badge status-success",
@@ -343,315 +476,343 @@
       }
 
       function statusText(st) {
-        return t("nodes.status." + st, st);
+        return t("nodes.status." + st, st || "—");
       }
       function taskStateText(st) {
         // 任务状态文案复用 message 页那份（message.task_state.*）：
         // 同一个概念不该有两套翻译，四语言都已就绪。
-        return t("message.task_state." + st, st);
+        return t("message.task_state." + st, st || "—");
+      }
+
+      // ---------- 卡片骨架（只用 ui.css 的组件类 + 本页排版类） ----------
+
+      function secHead(title, sub) {
+        const head = el("div", "card-head np-sec-head");
+        head.appendChild(el("div", "card-title", title));
+        if (sub) head.appendChild(el("div", "card-sub", sub));
+        return head;
+      }
+
+      // 区块内的空态：.empty 兜底（只有一句说明时不给假动作按钮）
+      function emptyNote(text) {
+        const box = el("div", "empty");
+        box.appendChild(el("p", "card-sub", text));
+        return box;
       }
 
       // ---------- 渲染 ----------
 
-      function renderMissing() {
-        document.getElementById("head-name").textContent = t(
-          "nodepage.not_found",
-          "节点不存在",
-        );
-        const body = document.getElementById("node-body");
-        body.replaceChildren(
-          el(
-            "div",
-            "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-            NODE_ID
-              ? t("nodepage.not_found_hint", "这个 id 没有对应的节点，可能已被删除。")
-              : t("nodepage.missing_id", "缺少节点 id（URL 应该有 ?id=nd_…）"),
+      // 页级空态 / 未找到：.empty（图标 + 标题 + 说明 + 回列表动作）
+      function renderEmpty(head, title, desc) {
+        const nameEl = document.getElementById("head-name");
+        nameEl.textContent = head;
+        document.getElementById("head-sub").textContent = "";
+        document.getElementById("head-badges").replaceChildren();
+        document.getElementById("head-actions").replaceChildren();
+
+        const box = el("div", "empty");
+        box.appendChild(
+          Anotify.icon(
+            [
+              "M12 9v4",
+              "M12 17h.01",
+              "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z",
+            ],
+            "np-empty-icon",
           ),
+        );
+        box.appendChild(el("div", "card-title", title));
+        if (desc) box.appendChild(el("p", "card-sub", desc));
+        const cta = el("a", "btn btn-ghost btn-sm", t("nodepage.back", "返回节点列表"));
+        cta.href = "nodes.html";
+        box.appendChild(cta);
+
+        const card = el("div", "card");
+        card.appendChild(box);
+        bodyEl().replaceChildren(card);
+      }
+
+      // 加载失败：一律用 partials.js 的 loadErrorNode（它自己翻译、自己带重试），
+      // 页面不拼错误文案，也不会把 [object Object] 印到屏幕上。
+      function renderLoadError(err) {
+        const card = el("div", "card");
+        card.appendChild(Anotify.loadErrorNode(err, () => load()));
+        bodyEl().replaceChildren(card);
+      }
+
+      // 404 / 响应里没有 node：这不是「加载失败」，是「这台机器没了」，
+      // 所以不给重试，只给一条回列表的路。
+      function renderNotFound() {
+        renderEmpty(
+          t("nodepage.not_found", "节点不存在"),
+          t("nodepage.not_found", "节点不存在"),
+          t("nodepage.not_found_hint", "这个 id 没有对应的节点，可能已被删除。"),
         );
       }
 
       function renderHead() {
-        document.getElementById("head-name").textContent = NODE.name || "?";
+        const nameEl = document.getElementById("head-name");
+        nameEl.textContent = NODE.name || t("nodepage.title", "节点详情");
+        document.title = nameEl.textContent + " · Anotify";
+        document.getElementById("head-sub").textContent = NODE.id || "";
 
         const badges = document.getElementById("head-badges");
         badges.replaceChildren();
-        const st = el("span", "flex items-center gap-1 text-[11px] text-zinc-400");
+        const st = el("span", "np-status");
         st.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[NODE.status] || "offline")));
-        st.appendChild(document.createTextNode(statusText(NODE.status)));
+        st.appendChild(el("span", null, statusText(NODE.status)));
         badges.appendChild(st);
-        badges.appendChild(code(NODE.id, "text-[10px] text-zinc-600"));
 
-        const actions = document.getElementById("head-actions");
-        actions.replaceChildren();
+        const acts = document.getElementById("head-actions");
+        acts.replaceChildren();
 
-        const refresh = el(
-          "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[12px]",
-          t("nodes.refresh", "刷新"),
-        );
+        const refresh = el("button", "btn btn-ghost btn-sm", t("nodes.refresh", "刷新"));
+        refresh.type = "button";
         refresh.addEventListener("click", () => load());
-        actions.appendChild(refresh);
+        acts.appendChild(refresh);
 
-        const ev = el(
-          "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[12px]",
-          t("nodes.view_events", "查看事件"),
-        );
+        const ev = el("button", "btn btn-ghost btn-sm", t("nodes.view_events", "查看事件"));
+        ev.type = "button";
         ev.addEventListener("click", () => {
           location.href = "events.html?node=" + encodeURIComponent(NODE.id);
         });
-        actions.appendChild(ev);
+        acts.appendChild(ev);
 
         if (NODE.status !== "draining") {
-          const drain = el(
-            "button",
-            "btn-ghost rounded-lg px-3 py-1.5 text-[12px]",
-            t("nodes.drain", "排空"),
-          );
+          const drain = el("button", "btn btn-ghost btn-sm", t("nodes.drain", "排空"));
+          drain.type = "button";
           drain.addEventListener("click", () => drainNode(NODE));
-          actions.appendChild(drain);
+          acts.appendChild(drain);
         } else {
-          actions.appendChild(
-            el("span", "text-[11px] text-amber-400", t("nodes.draining_hint", "排空中")),
-          );
+          acts.appendChild(el("span", "badge badge-warn", t("nodes.draining_hint", "排空中")));
         }
       }
 
-      function card(title) {
-        const c = el("div", "card rounded-2xl p-5");
-        c.appendChild(
-          el("div", "text-[11px] uppercase tracking-wider text-zinc-500 mb-3", title),
+      // ---- 基本信息 ----
+      function basicCard() {
+        const card = el("div", "card card-pad");
+        card.appendChild(el("div", "card-title", t("nodepage.basic", "基本信息")));
+
+        const dl = el("dl", "np-kv");
+        const row = (k, v) => {
+          dl.appendChild(el("dt", null, k));
+          dl.appendChild(el("dd", null, v));
+        };
+        row(t("nodepage.status", "状态"), statusText(NODE.status));
+        row(t("nodepage.last_seen", "最近心跳"), fmtTime(NODE.lastSeenAt));
+        row(t("nodepage.created", "创建时间"), fmtTime(NODE.createdAt));
+        row(
+          t("nodepage.limits", "上限"),
+          t("nodepage.limits_val", "实例 {i} · 并发 {c}")
+            .replace("{i}", num(NODE.maxInstances))
+            .replace("{c}", num(NODE.maxConcurrency)),
         );
-        return c;
+        const tags = (NODE.tags || []).filter(Boolean);
+        row(t("nodepage.tags", "标签"), tags.length ? tags.join(" · ") : t("nodepage.no_tags", "无"));
+
+        card.appendChild(dl);
+        return card;
+      }
+
+      // ---- 声明的能力 ----
+      //
+      // 节点**只声明**能力名 + 版本，命令与 argv 留在本机不上传 ——
+      // 所以这一块就是"这台机器能干什么"的全部。
+      function capsCard() {
+        const card = el("div", "card card-pad");
+        card.appendChild(el("div", "card-title", t("nodepage.caps", "声明的能力")));
+
+        const caps = NODE.capabilities || [];
+        if (!caps.length) {
+          card.appendChild(emptyNote(t("nodes.no_caps", "未声明能力")));
+          return card;
+        }
+
+        const wrap = el("div", "np-chips");
+        for (const c of caps) {
+          const exact = c.name + "@" + c.version;
+          const chip = el("span", "out-chip is-link", c.displayName || exact);
+          chip.title = exact;
+          chip.addEventListener("click", () => {
+            location.href = "capabilities.html?focus=" + encodeURIComponent(c.id);
+          });
+          wrap.appendChild(chip);
+        }
+        card.appendChild(wrap);
+        return card;
+      }
+
+      // ---- 已缓存的产物 ----
+      //
+      // 上一块说的是「这台机器**声明**能干什么」，这一块说的是「它手上**真的有**
+      // 哪几份产物」。部署是三段式的（定义能力 → 构建产物 → 下发到机器），任何
+      // 一段没走完都表现为这里少一行或状态不对，所以状态与 reason 都原样展示。
+      function artifactRow(d) {
+        const row = el("div", "list-row");
+
+        const main = el("div", "list-main");
+        main.appendChild(el("span", "list-title", depLabel(d)));
+        const sub = el("div", "np-row-sub");
+        const fullDigest = String(depField(d, "digest", "digest") || "");
+        const short = shortDigest(fullDigest);
+        if (short) {
+          const dig = el("span", "np-digest", short);
+          // 页面上只给前 12 位；完整值挂 title，对照日志时不用另查接口。
+          dig.title = t("node.artifacts.digest", "digest") + " " + fullDigest;
+          sub.appendChild(dig);
+        }
+        const reason = depField(d, "reason", "reason");
+        if (reason) sub.appendChild(el("span", "np-art-reason", reason));
+        if (sub.childNodes.length) main.appendChild(sub);
+        row.appendChild(main);
+
+        const side = el("div", "list-side");
+        const state = String(depField(d, "state", "state") || "");
+        const def = ART_STATE[state];
+        if (def) {
+          side.appendChild(el("span", def.cls, t(def.key, def.fb)));
+        } else {
+          // 未识别的状态原样给出，不假装它是那四种之一
+          side.appendChild(el("span", "status-badge status-off", state || "—"));
+        }
+        row.appendChild(side);
+        return row;
+      }
+
+      function artifactsCard() {
+        const card = el("div", "card np-list-card");
+        card.appendChild(secHead(t("node.artifacts.title", "已缓存的产物")));
+
+        if (DEPS === null) {
+          // 接口失败 ≠ 没有部署：写成「还没有部署」会骗用户去重新部署一遍。
+          card.appendChild(emptyNote(t("node.artifacts.load_failed", "产物列表载入失败")));
+          return card;
+        }
+        if (!DEPS.length) {
+          card.appendChild(emptyNote(t("node.artifacts.empty", "这台机器还没有部署任何能力")));
+          return card;
+        }
+
+        const list = el("div", "list");
+        for (const d of DEPS) list.appendChild(artifactRow(d));
+        card.appendChild(list);
+        return card;
+      }
+
+      // ---- 并发槽位 ----
+      //
+      // 列表页只给"几个在用/共几个"，这里给每个槽的实际情况：
+      // 这台机器到底卡在哪个槽上。
+      function slotRow(x) {
+        const row = el("div", "np-slot" + (x.busyTask ? " is-busy" : ""));
+        row.appendChild(
+          el("span", "np-slot-num", t("nodepage.slot_n", "#{n}").replace("{n}", num(x.slot))),
+        );
+        row.appendChild(
+          el("span", null, t("nodepage.concurrency", "并发 {n}").replace("{n}", num(x.concurrency))),
+        );
+
+        if (x.busyTask) {
+          const link = el(
+            "a",
+            "np-slot-link",
+            t("nodepage.busy_task", "正在跑 {id}").replace("{id}", x.busyTask),
+          );
+          link.href = "#";
+          link.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            const hit = (TASKS || []).find((tk) => tk.id === x.busyTask);
+            if (hit && hit.traceId)
+              location.href = "trace.html?traceId=" + encodeURIComponent(hit.traceId);
+          });
+          row.appendChild(link);
+        } else {
+          row.appendChild(el("span", "np-slot-idle", t("nodepage.idle", "空闲")));
+        }
+        return row;
+      }
+
+      function slotsCard() {
+        const busy = INSTS.filter((x) => x.busyTask).length;
+        const card = el("div", "card");
+        card.appendChild(
+          secHead(
+            t("nodepage.slots", "并发槽位"),
+            t("nodes.slots", "槽位 {busy}/{total}")
+              .replace("{busy}", String(busy))
+              .replace("{total}", String(INSTS.length)),
+          ),
+        );
+
+        const wrap = el("div", "np-sec-body");
+        if (!INSTS.length) {
+          wrap.appendChild(
+            emptyNote(t("nodepage.no_slots", "还没有申报槽位（节点上线握手时申报）")),
+          );
+          card.appendChild(wrap);
+          return card;
+        }
+
+        const bar = el("div", "np-slot-bar");
+        for (const x of INSTS) {
+          bar.appendChild(el("span", "np-slot-dot" + (x.busyTask ? " is-busy" : "")));
+        }
+        wrap.appendChild(bar);
+
+        for (const x of [...INSTS].sort((a, b) => a.slot - b.slot)) {
+          wrap.appendChild(slotRow(x));
+        }
+        card.appendChild(wrap);
+        return card;
+      }
+
+      // ---- 最近执行 ----
+      function taskRow(tk) {
+        const row = el("div", "list-row np-task");
+
+        const main = el("div", "list-main");
+        const head = el("div", "np-row-head");
+        head.appendChild(el("span", "list-title", capLabel(tk.capabilityId, tk.capability, tk.version)));
+        const st = String(tk.status || "pending");
+        const stateCls = TASK_STATES.indexOf(st) >= 0 ? " np-st-" + st : "";
+        head.appendChild(el("span", "np-state" + stateCls, taskStateText(st)));
+        main.appendChild(head);
+        row.appendChild(main);
+
+        const side = el("div", "list-side np-task-meta");
+        const dur = fmtDur(tk.startedAt, tk.finishedAt);
+        if (dur) side.appendChild(el("span", null, dur));
+        side.appendChild(el("span", null, fmtTime(tk.createdAt)));
+        const trace = el("a", "np-link", t("nodepage.open_trace", "查看链路"));
+        trace.href = "trace.html?traceId=" + encodeURIComponent(tk.traceId || "");
+        side.appendChild(trace);
+        row.appendChild(side);
+
+        return row;
+      }
+
+      function tasksCard() {
+        const card = el("div", "card np-list-card");
+        card.appendChild(secHead(t("nodepage.recent", "最近执行")));
+
+        if (TASKS === null) {
+          // 读不到 ≠ 没跑过：别让故障显示成「这机器很闲」
+          card.appendChild(emptyNote(t("nodepage.tasks_load_failed", "任务列表载入失败")));
+          return card;
+        }
+        if (!TASKS.length) {
+          card.appendChild(emptyNote(t("nodepage.no_tasks", "还没有在这台机器上执行过的任务")));
+          return card;
+        }
+
+        const list = el("div", "list");
+        for (const tk of TASKS) list.appendChild(taskRow(tk));
+        card.appendChild(list);
+        return card;
       }
 
       function renderBody() {
-        const body = document.getElementById("node-body");
-        body.replaceChildren();
-
-        // ---- 基本信息 ----
-        const info = card(t("nodepage.basic", "基本信息"));
-        const dl = el("dl", "np-kv");
-        const rows = [
-          [t("nodepage.status", "状态"), statusText(NODE.status)],
-          [t("nodepage.last_seen", "最近心跳"), fmtTime(NODE.lastSeenAt)],
-          [t("nodepage.created", "创建时间"), fmtTime(NODE.createdAt)],
-          [
-            t("nodepage.limits", "上限"),
-            t("nodepage.limits_val", "实例 {i} · 并发 {c}")
-              .replace("{i}", NODE.maxInstances)
-              .replace("{c}", NODE.maxConcurrency),
-          ],
-          [
-            t("nodepage.tags", "标签"),
-            (NODE.tags || []).length ? NODE.tags.join(" · ") : t("nodepage.no_tags", "无"),
-          ],
-        ];
-        for (const [k, v] of rows) {
-          dl.appendChild(el("dt", null, k));
-          dl.appendChild(el("dd", null, v));
-        }
-        info.appendChild(dl);
-        body.appendChild(info);
-
-        // ---- 声明的能力 ----
-        //
-        // 节点**只声明**能力名 + 版本，命令与 argv 留在本机不上传 ——
-        // 所以这一块就是"这台机器能干什么"的全部。
-        const capsCard = card(t("nodepage.caps", "声明的能力"));
-        const caps = NODE.capabilities || [];
-        if (!caps.length) {
-          capsCard.appendChild(
-            el("div", "np-empty", t("nodes.no_caps", "未声明能力")),
-          );
-        } else {
-          const wrap = el("div", "flex flex-wrap gap-1.5");
-          for (const c of caps) {
-            const exact = c.name + "@" + c.version;
-            const chip = el("span", "out-chip is-link", c.displayName || exact);
-            chip.title = exact;
-            chip.addEventListener("click", () => {
-              location.href = "capabilities.html?focus=" + encodeURIComponent(c.id);
-            });
-            wrap.appendChild(chip);
-          }
-          capsCard.appendChild(wrap);
-        }
-        body.appendChild(capsCard);
-
-        // ---- 已缓存的产物 ----
-        //
-        // 上一块说的是「这台机器**声明**能干什么」，这一块说的是「它手上**真的有**
-        // 哪几份产物」。部署是三段式的（定义能力 → 构建产物 → 下发到机器），任何
-        // 一段没走完都表现为这里少一行或状态不对，所以状态与 reason 都原样展示。
-        const artCard = card(t("node.artifacts.title", "已缓存的产物"));
-        if (DEPS === null) {
-          // 接口失败 ≠ 没有部署：写成「还没有部署」会骗用户去重新部署一遍。
-          artCard.appendChild(
-            el(
-              "div",
-              "np-empty",
-              t(
-                "node.artifacts.load_failed",
-                "读取失败：拿不到这台机器的部署记录，稍后刷新重试",
-              ),
-            ),
-          );
-        } else if (!DEPS.length) {
-          artCard.appendChild(
-            el("div", "np-empty", t("node.artifacts.empty", "这台机器还没有部署任何能力")),
-          );
-        } else {
-          const list = el("div", "space-y-1.5");
-          for (const d of DEPS) {
-            const row = el("div", "np-art");
-            const main = el("div", "np-art-main");
-            main.appendChild(el("span", "np-art-name", depLabel(d)));
-            const fullDigest = String(depField(d, "digest", "digest") || "");
-            const short = shortDigest(fullDigest);
-            if (short) {
-              const dig = el("span", "np-art-digest", short);
-              // 页面上只给前 12 位；完整值挂 title，对照日志时不用另查接口。
-              dig.title = t("node.artifacts.digest", "产物摘要") + " " + fullDigest;
-              main.appendChild(dig);
-            }
-            row.appendChild(main);
-
-            const meta = el("div", "np-art-meta");
-            const state = String(depField(d, "state", "state") || "");
-            const def = ART_STATE[state];
-            if (def) {
-              meta.appendChild(el("span", def.cls, t(def.key, def.fb)));
-            } else {
-              // 未识别的状态原样给出，不假装它是那四种之一
-              meta.appendChild(el("span", "status-badge status-off", state || "—"));
-            }
-            const reason = depField(d, "reason", "reason");
-            if (reason) meta.appendChild(el("span", "np-art-reason", reason));
-            row.appendChild(meta);
-
-            list.appendChild(row);
-          }
-          artCard.appendChild(list);
-        }
-        body.appendChild(artCard);
-
-        // ---- 并发槽位 ----
-        //
-        // 列表页只给"几个在用/共几个"，这里给每个槽的实际情况：
-        // 这台机器到底卡在哪个槽上。
-        const slotCard = card(t("nodepage.slots", "并发槽位"));
-        const busy = INSTS.filter((x) => x.busyTask).length;
-        slotCard.appendChild(
-          el(
-            "div",
-            "text-[12px] text-zinc-400 mb-3",
-            t("nodes.slots", "槽位 {busy}/{total}")
-              .replace("{busy}", busy)
-              .replace("{total}", INSTS.length),
-          ),
-        );
-        if (!INSTS.length) {
-          slotCard.appendChild(
-            el(
-              "div",
-              "np-empty",
-              t("nodepage.no_slots", "还没有申报槽位（节点上线握手时申报）"),
-            ),
-          );
-        } else {
-          const bar = el("div", "slot-bar mb-3");
-          for (const x of INSTS) {
-            bar.appendChild(el("span", "slot" + (x.busyTask ? " busy" : "")));
-          }
-          slotCard.appendChild(bar);
-
-          const list = el("div", "space-y-1.5");
-          for (const x of INSTS.sort((a, b) => a.slot - b.slot)) {
-            const row = el("div", "np-slot" + (x.busyTask ? " is-busy" : ""));
-            row.appendChild(
-              el("span", "np-slot-num", t("nodepage.slot_n", "#{n}").replace("{n}", x.slot)),
-            );
-            row.appendChild(
-              el(
-                "span",
-                "text-[11px] text-zinc-500",
-                t("nodepage.concurrency", "并发 {n}").replace("{n}", x.concurrency),
-              ),
-            );
-            if (x.busyTask) {
-              const link = el(
-                "a",
-                "text-[11px] text-indigo-400",
-                t("nodepage.busy_task", "正在跑 {id}").replace("{id}", x.busyTask),
-              );
-              link.href = "#";
-              link.addEventListener("click", (ev) => {
-                ev.preventDefault();
-                const hit = TASKS.find((tk) => tk.id === x.busyTask);
-                if (hit) location.href = "trace.html?traceId=" + encodeURIComponent(hit.traceId);
-              });
-              row.appendChild(link);
-            } else {
-              row.appendChild(
-                el("span", "text-[11px] text-zinc-600", t("nodepage.idle", "空闲")),
-              );
-            }
-            list.appendChild(row);
-          }
-          slotCard.appendChild(list);
-        }
-        body.appendChild(slotCard);
-
-        // ---- 最近执行 ----
-        const taskCard = card(t("nodepage.recent", "最近执行"));
-        if (!TASKS.length) {
-          taskCard.appendChild(
-            el(
-              "div",
-              "np-empty",
-              t("nodepage.no_tasks", "还没有在这台机器上执行过的任务"),
-            ),
-          );
-        } else {
-          const list = el("div", "space-y-1.5");
-          for (const tk of TASKS) {
-            const row = el("div", "np-task");
-            const main = el("div", "np-task-main");
-            main.appendChild(
-              el(
-                "span",
-                "text-[12px] text-zinc-200",
-                capLabel(tk.capabilityId, tk.capability, tk.version),
-              ),
-            );
-            main.appendChild(
-              el(
-                "span",
-                "text-[11px] np-st-" + (tk.status || "pending"),
-                taskStateText(tk.status),
-              ),
-            );
-            row.appendChild(main);
-
-            const meta = el("div", "np-task-meta");
-            const dur = fmtDur(tk.startedAt, tk.finishedAt);
-            if (dur) meta.appendChild(el("span", null, dur));
-            meta.appendChild(el("span", null, fmtTime(tk.createdAt)));
-            const trace = el(
-              "a",
-              "text-indigo-400",
-              t("nodepage.open_trace", "查看链路"),
-            );
-            trace.href = "trace.html?traceId=" + encodeURIComponent(tk.traceId);
-            meta.appendChild(trace);
-            row.appendChild(meta);
-
-            list.appendChild(row);
-          }
-          taskCard.appendChild(list);
-        }
-        body.appendChild(taskCard);
+        bodyEl().replaceChildren(basicCard(), capsCard(), artifactsCard(), slotsCard(), tasksCard());
       }
 
       // ---------- 动作 ----------
@@ -669,26 +830,59 @@
           toast(t("nodes.drain_done", "已排空"));
           load();
         } catch (err) {
-          toast(t("nodes.drain_failed", "排空失败：") + err.message);
+          toast(t("nodes.drain_failed", "排空失败：") + err.message, "error");
         }
       }
 
+      // ---------- 载入 ----------
+
       async function load() {
         if (!NODE_ID) {
-          renderMissing();
+          const pageTitle = t("nodepage.title", "节点详情");
+          renderEmpty(
+            pageTitle,
+            pageTitle,
+            t("nodepage.missing_id", "缺少节点 id（URL 应该有 ?id=nd_…）"),
+          );
           return;
         }
+
+        // 重试路径也先回到骨架：上一次的旧数据不该继续显示
+        bodyEl().innerHTML = BODY_SKELETON;
+
+        let detail;
+        try {
+          detail = await Anotify.api(API + "/nodes/" + encodeURIComponent(NODE_ID));
+        } catch (err) {
+          if (err && err.status === 404) {
+            renderNotFound();
+            return;
+          }
+          // 网络 / 5xx：交给 loadErrorNode，它带「重试」（onRetry = load）
+          renderLoadError(err);
+          return;
+        }
+
+        if (!detail || !detail.node) {
+          renderNotFound();
+          return;
+        }
+
+        // 次要区块（任务 / 能力表）容错：它们挂了不该把整页变成错误页。
         // 能力表单独拉一份：任务的 capabilityId 未必在"这台节点现在声明的
         // 能力"里（换过机器、或能力已从节点上撤掉），只查 NODE.capabilities
         // 会退化成 run-tests@1 这种技术名。
-        const [detail, tasksRes, capsRes] = await Promise.all([
-          apiGet(API + "/nodes/" + encodeURIComponent(NODE_ID)),
+        const [tasksRes, capsRes] = await Promise.all([
           apiGet(API + "/tasks?nodeId=" + encodeURIComponent(NODE_ID) + "&limit=20"),
           apiGet(API + "/capabilities"),
         ]);
-        if (!detail || !detail.node) {
-          renderMissing();
-          return;
+
+        NODE = detail.node;
+        INSTS = Array.isArray(detail.instances) ? detail.instances : [];
+        TASKS = tasksRes && Array.isArray(tasksRes.tasks) ? tasksRes.tasks : null;
+        CAPS = new Map((NODE.capabilities || []).map((c) => [c.id, c]));
+        for (const c of (capsRes && capsRes.capabilities) || []) {
+          if (!CAPS.has(c.id)) CAPS.set(c.id, c);
         }
 
         // 部署列表**单独一轮请求**，顺序是刻意的，别改回四路并行：
@@ -701,15 +895,8 @@
         const deployRes = await apiGet(
           API + "/deployments?nodeId=" + encodeURIComponent(NODE_ID) + scopeQuery(),
         );
-
-        NODE = detail.node;
-        INSTS = detail.instances || [];
-        TASKS = (tasksRes && tasksRes.tasks) || [];
-        CAPS = new Map((NODE.capabilities || []).map((c) => [c.id, c]));
-        for (const c of (capsRes && capsRes.capabilities) || []) {
-          if (!CAPS.has(c.id)) CAPS.set(c.id, c);
-        }
         DEPS = deployRes == null ? null : depRows(deployRes);
+
         renderHead();
         renderBody();
       }

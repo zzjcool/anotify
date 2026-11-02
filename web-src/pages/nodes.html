@@ -2,278 +2,467 @@
 
 {{define "style"}}
     <style>
-      .node-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 1rem;
-        align-items: start;
+      /* ---------- 节点列表行 ----------
+         叠加在 ui.css 的 .list-row 上：只调纵向对齐/间距，边框、圆角、hover
+         全部沿用 .card + .list-row。颜色一律 var(--*)，零硬编码色值。 */
+      .nd-row {
+        align-items: flex-start;
+        gap: 14px;
+        padding: 12px 16px;
       }
-      /* 槽位占用条 */
-      .slot-bar {
+      .nd-row-main {
         display: flex;
-        gap: 2px;
-        flex-wrap: wrap;
+        flex-direction: column;
+        gap: 6px;
+        flex: 1 1 auto;
+        min-width: 0;
       }
-      .slot {
+      .nd-row-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      /* 名字就是进详情页的入口：列表负责扫，详情负责看。 */
+      .nd-name {
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
+        max-width: 100%;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+        text-decoration: none;
+        /* 节点名是 1–63 个 [a-z0-9._-] 字符，可能没有空格可断：390 宽下
+           必须允许任意位置换行，否则横向溢出（e2e 双视口检查会红）。 */
+        overflow-wrap: anywhere;
+      }
+      .nd-name:hover {
+        color: var(--accent-strong);
+      }
+      .nd-status {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* 节点自报的标签（后端 tags）。节点契约里没有 platform 字段，
+         所以「平台」这一格显示的就是它自己的标签，不编造数据。 */
+      .nd-tags {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .nd-tag {
+        font-size: 10.5px;
+        padding: 0.05rem 0.4rem;
+        border-radius: var(--r-full);
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      .nd-caps {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      /* 「声明能力」标签：e2e 锁定这是一个 span 且文本恰为 nodes.caps_label 的译文。 */
+      .nd-caps-label {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* 能力 chip。e2e 锁 span.out-chip（数量 / 有底色 / title=name@version），
+         所以类名保留 out-chip；视觉按设计系统的标签口径（accent-soft 底 +
+         accent 描边 + 全圆角），不再吃 .out-chip 的 mono 灰。 */
+      .nd-cap {
+        font-family: var(--font-sans);
+        font-size: 0.7rem;
+        padding: 0.1rem 0.5rem;
+        border-radius: var(--r-full);
+        border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+      }
+      .nd-cap.is-link:hover {
+        background: var(--surface-3);
+        color: var(--accent-strong);
+      }
+      .nd-meta {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .nd-slots {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .nd-slot-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+      }
+      .nd-slot {
         width: 0.55rem;
         height: 0.55rem;
         border-radius: 2px;
-        background: rgba(255, 255, 255, 0.1);
+        background: var(--surface-3);
       }
-      .slot.busy {
-        background: #6366f1;
+      /* 忙的槽位：原来写死了一个不在 token 表里的紫色，现在改 token。 */
+      .nd-slot.busy {
+        background: var(--accent);
       }
-      .toast {
-        position: fixed;
-        bottom: 1.5rem;
-        left: 50%;
-        transform: translateX(-50%) translateY(20px);
-        background: var(--panel-overlay);
+      .nd-side {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+        flex: none;
+      }
+      .nd-acts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+      /* 窄屏：右侧那列（心跳 + 动作）掉到名字下面，否则 390 宽会挤成一团。 */
+      @media (max-width: 640px) {
+        .nd-row {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        .nd-side {
+          align-items: flex-start;
+        }
+        .nd-acts {
+          justify-content: flex-start;
+        }
+      }
+      .nd-list-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      /* ---------- 首屏骨架（独立容器，数据到后整体移除） ---------- */
+      .nd-skel-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      .nd-skel-row:last-child {
+        border-bottom: 0;
+      }
+      .nd-skel-lines {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .nd-skel-name {
+        height: 12px;
+        width: 34%;
+      }
+      .nd-skel-meta {
+        height: 10px;
+        width: 62%;
+      }
+      .nd-skel-act {
+        width: 96px;
+        height: 24px;
+      }
+
+      /* ---------- 注册面板 / 结果块 ---------- */
+      .nd-sub {
+        margin-top: 6px;
+      }
+      .nd-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 14px;
+        margin-top: 14px;
+      }
+      .nd-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+      }
+      .nd-actions-end {
+        justify-content: flex-end;
+        margin-top: 16px;
+      }
+      /* 两条提示：令牌只出现一次的警告 / 错误行。只用 token 变量。 */
+      .nd-warn {
+        margin-top: 12px;
         border: 1px solid var(--line-strong);
-        color: var(--text);
-        font-size: 0.82rem;
-        padding: 0.6rem 1rem;
-        border-radius: 10px;
-        opacity: 0;
-        pointer-events: none;
-        transition: all 0.3s ease;
-        z-index: 100;
-      }
-      .toast.show {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
-      }
-      /* 注册结果块的两条提示：警告（令牌只出现一次）与错误行。
-       * 只用 tokens 变量，不硬编码色值；缺的 Tailwind 工具类也不去改
-       * tailwind.css（那是已提交产物），统一在这里加语义类。 */
-      .reg-warn {
-        border: 1px solid var(--line-strong);
-        background: var(--warn-soft);
         border-radius: 10px;
         padding: 0.6rem 0.85rem;
+        background: var(--warn-soft);
         color: var(--warn-300);
-        font-size: 0.78rem;
+        font-size: 12px;
         line-height: 1.55;
       }
-      .reg-err {
+      .nd-err {
         border: 1px solid var(--line-strong);
-        background: var(--error-soft);
         border-radius: 10px;
         padding: 0.55rem 0.85rem;
+        background: var(--error-soft);
         color: var(--error-300);
-        font-size: 0.78rem;
+        font-size: 12px;
         line-height: 1.55;
+      }
+      .nd-block-stack {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 16px;
+        margin-top: 16px;
+      }
+      .nd-block {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+        min-width: 0;
+      }
+      .nd-block-desc {
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .nd-howto-acts {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .nd-empty-icon {
+        display: flex;
+        color: var(--faint);
+      }
+
+      /* 屏读专用（#toast 的 aria-live 文本镜像：视觉 toast 由 Anotify.toast 负责）。 */
+      .nd-sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-      <div class="mx-auto max-w-6xl space-y-8">
-        <div class="reveal visible">
-          <div class="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 class="font-display text-3xl text-white">{{t "nodes.title"}}</h2>
-              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-                {{t "nodes.subtitle"}}
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-3">
-              <button
-                onclick="loadAll()"
-                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
-              >
-                {{t "nodes.refresh"}}
-              </button>
-              <button
-                id="node-register-btn"
-                type="button"
-                class="btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium"
-              >
-                {{t "nodes.register.btn"}}
-              </button>
-            </div>
-          </div>
+  <div class="page">
+    <!-- 页头：标题 + 一句说明 + 页级动作。
+         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §1）。
+         `.page-sub` 全页只出现一次：mountLayout 检测到它就不再重复画副标题。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "nodes.title"}}</h2>
+        <p class="page-sub">{{t "nodes.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <button id="nodes-refresh" type="button" class="btn btn-ghost">
+          {{t "nodes.refresh"}}
+        </button>
+        <!-- 全页唯一的注册入口：空态里的 CTA 通过 data-action 委托到这里，
+             不另造一个同名按钮（e2e 直接点 #node-register-btn）。 -->
+        <button id="node-register-btn" type="button" class="btn btn-primary">
+          {{t "nodes.register.btn"}}
+        </button>
+      </div>
+    </div>
+
+    <!-- 注册表单：初始 hidden（e2e 首帧断言「表单与结果都藏着」）。
+         与 #reg-result 是**同一个状态机**的两个状态，任何时刻只显示一个，
+         见 JS 的 regShow()。hidden 挂在裸 div 上（.card 不设 display，不冲突）。 -->
+    <div id="register-panel" class="card card-pad hidden" hidden>
+      <div class="card-title">{{t "nodes.register.title"}}</div>
+      <p class="card-sub nd-sub">{{t "nodes.register.desc"}}</p>
+      <div class="nd-form">
+        <div class="field">
+          <label class="field-label" for="reg-name">{{t "nodes.register.name"}}</label>
+          <input
+            id="reg-name"
+            class="input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="{{t "nodes.register.name_ph"}}"
+          />
+          <p class="field-hint">{{t "nodes.register.name_hint"}}</p>
         </div>
-
-        <!-- 注册表单（issue #198）：初始隐藏，点「注册节点」展开。 -->
-        <div id="register-panel" class="card rounded-2xl p-5 hidden" hidden>
-          <h3 class="text-sm font-medium text-zinc-300">{{t "nodes.register.title"}}</h3>
-          <p class="mb-4 mt-2 text-xs leading-relaxed text-zinc-500">
-            {{t "nodes.register.desc"}}
-          </p>
-          <div class="space-y-4">
-            <div>
-              <label class="mb-1 block text-xs text-zinc-400" for="reg-name"
-                >{{t "nodes.register.name"}}</label
-              >
-              <input
-                id="reg-name"
-                class="input w-full text-sm"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="{{t "nodes.register.name_ph"}}"
-              />
-              <p class="mt-1 text-[11px] leading-relaxed text-zinc-500">
-                {{t "nodes.register.name_hint"}}
-              </p>
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-zinc-400" for="reg-instances"
-                >{{t "nodes.register.instances"}}</label
-              >
-              <input
-                id="reg-instances"
-                class="input w-full text-sm"
-                type="number"
-                min="1"
-                max="20"
-                value="1"
-              />
-              <p class="mt-1 text-[11px] leading-relaxed text-zinc-500">
-                {{t "nodes.register.instances_hint"}}
-              </p>
-            </div>
-            <div id="reg-error" class="reg-err hidden" hidden></div>
-            <div class="flex flex-wrap items-center gap-3">
-              <button
-                id="reg-submit"
-                type="button"
-                class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-              >
-                {{t "nodes.register.submit"}}
-              </button>
-              <button id="reg-cancel" type="button" class="btn-ghost rounded-xl px-4 py-2 text-sm">
-                {{t "nodes.register.cancel"}}
-              </button>
-            </div>
-          </div>
+        <div class="field">
+          <label class="field-label" for="reg-instances">{{t "nodes.register.instances"}}</label>
+          <!-- max=20 是中枢单节点硬顶（store.DefaultMaxInstances）：超了握手会被
+               too_many_instances 拒，节点永远上不了线，而页面早已显示"注册成功"。 -->
+          <input id="reg-instances" class="input" type="number" min="1" max="20" value="1" />
+          <p class="field-hint">{{t "nodes.register.instances_hint"}}</p>
         </div>
+        <!-- 错误行：与表单同屏（面板不收起），用户的输入原样保留 ——
+             重名时改个名字再提交就行，不必重填。 -->
+        <div id="reg-error" class="nd-err hidden" hidden role="alert"></div>
+        <div class="nd-actions">
+          <button id="reg-submit" type="button" class="btn btn-primary">
+            {{t "nodes.register.submit"}}
+          </button>
+          <button id="reg-cancel" type="button" class="btn btn-ghost">
+            {{t "nodes.register.cancel"}}
+          </button>
+        </div>
+      </div>
+    </div>
 
-        <!-- 注册结果（issue #198）：令牌只出现一次，所以是独立一块而不是 toast。 -->
-        <div id="reg-result" class="card rounded-2xl p-5 hidden" hidden>
-          <h3 id="reg-result-title" class="text-sm font-medium text-zinc-200"></h3>
-          <div id="reg-warning" class="reg-warn mt-3"></div>
+    <!-- 注册结果：令牌只在 201 响应体里出现一次（中枢只存 sha256），
+         所以是独立一块而不是 toast。四段产物（令牌 / docker / yaml / 原生装）
+         统一 .code-block + .code-head（标题 + 复制）+ .code-body。 -->
+    <div id="reg-result" class="card card-pad hidden" hidden>
+      <div id="reg-result-title" class="card-title"></div>
+      <div id="reg-warning" class="nd-warn"></div>
 
-          <div class="mt-4">
-            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span class="text-xs text-zinc-400">{{t "nodes.register.token_title"}}</span>
+      <div class="nd-block-stack">
+        <div class="nd-block">
+          <div class="code-block">
+            <div class="code-head">
+              <span>{{t "nodes.register.token_title"}}</span>
               <button id="reg-token-copy" type="button" class="copy-btn">
                 {{t "nodes.register.copy_token"}}
               </button>
             </div>
-            <div class="code-block">
-              <div class="code-body"><code id="reg-token" class="mono"></code></div>
-            </div>
+            <div class="code-body"><code id="reg-token" class="mono"></code></div>
           </div>
+        </div>
 
-          <div class="mt-4">
-            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span class="text-xs text-zinc-400">{{t "nodes.register.cmd_title"}}</span>
+        <div class="nd-block">
+          <!-- 首选：一条能直接粘的 docker 命令。节点侧不需要任何配置文件，
+               令牌只以 -e ANOTIFY_TOKEN 的形式出现。 -->
+          <p class="nd-block-desc">{{t "nodes.register.cmd_intro"}}</p>
+          <div class="code-block">
+            <div class="code-head">
+              <span>{{t "nodes.register.cmd_title"}}</span>
               <button id="reg-cmd-copy" type="button" class="copy-btn">
                 {{t "nodes.register.copy_cmd"}}
               </button>
             </div>
-            <!-- 首选：一条能直接粘的 docker 命令。节点侧不需要任何配置文件，
-                 令牌只以 -e ANOTIFY_TOKEN 的形式出现。 -->
-            <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.cmd_intro"}}
-            </p>
-            <div class="code-block">
-              <pre class="code-body"><code id="reg-cmd"></code></pre>
-            </div>
-            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.cmd_after"}}
-            </p>
+            <pre class="code-body"><code id="reg-cmd" class="mono"></code></pre>
           </div>
+          <p class="nd-block-desc">{{t "nodes.register.cmd_after"}}</p>
+        </div>
 
-          <div class="mt-4">
-            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span class="text-xs text-zinc-400">{{t "nodes.register.yaml_title"}}</span>
+        <div class="nd-block">
+          <!-- 备选：直接把 agent 二进制装在机器上。四件 bootstrap（name/server/
+               token/instances）是 v2 **唯一**保留的本地配置 —— 能力和它们的实现
+               都已经不在机器上了，由控制台部署。 -->
+          <p class="nd-block-desc">{{t "nodes.register.yaml_intro"}}</p>
+          <div class="code-block">
+            <div class="code-head">
+              <span>{{t "nodes.register.yaml_title"}}</span>
               <button id="reg-yaml-copy" type="button" class="copy-btn">
                 {{t "nodes.register.copy_yaml"}}
               </button>
             </div>
-            <!-- 备选：直接把 agent 二进制装在机器上。四件 bootstrap（name/server/token/
-                 instances）是 v2 **唯一**保留的本地配置 —— 能力和它们的实现都已经不在
-                 机器上了，由控制台部署。 -->
-            <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.yaml_intro"}}
-            </p>
-            <div class="code-block">
-              <pre class="code-body"><code id="reg-yaml"></code></pre>
-            </div>
+            <pre class="code-body"><code id="reg-yaml" class="mono"></code></pre>
           </div>
+        </div>
 
-          <div class="mt-4">
-            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span class="text-xs text-zinc-400">{{t "nodes.register.install_title"}}</span>
+        <div class="nd-block">
+          <!-- 原生装（#281）：docker 那条路看不到宿主机文件 —— 想在**自己的项目
+               目录**里跑能力（make test / git status / 就地改文件）就只能在宿主机上跑。 -->
+          <p class="nd-block-desc">{{t "nodes.register.install_intro"}}</p>
+          <div class="code-block">
+            <div class="code-head">
+              <span>{{t "nodes.register.install_title"}}</span>
               <button id="reg-install-copy" type="button" class="copy-btn">
                 {{t "nodes.register.copy_install"}}
               </button>
             </div>
-            <!-- 原生装（#281）：docker 那条路看不到宿主机文件 —— 想在**自己的项目目录**
-                 里跑能力（make test / git status / 就地改文件）就只能在宿主机上跑。 -->
-            <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.install_intro"}}
-            </p>
-            <div class="code-block">
-              <pre class="code-body"><code id="reg-install"></code></pre>
-            </div>
-            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.install_after"}}
-            </p>
+            <pre class="code-body"><code id="reg-install" class="mono"></code></pre>
           </div>
-
-          <div class="mt-4">
-            <button id="reg-close" type="button" class="btn-ghost rounded-xl px-4 py-2 text-sm">
-              {{t "nodes.register.close"}}
-            </button>
-          </div>
-        </div>
-
-        <div class="reveal visible">
-          <div class="mb-3 flex items-center justify-between">
-            <h3 class="text-sm font-medium text-zinc-300">{{t "nodes.list.title"}}</h3>
-            <span id="nodes-summary" class="text-xs text-zinc-500"></span>
-          </div>
-          <div id="nodes-list" class="space-y-3">
-            <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
-              {{t "nodes.loading"}}
-            </div>
-          </div>
-        </div>
-
-        <div class="card rounded-2xl p-5">
-          <h3 class="mb-2 text-sm font-medium text-zinc-300">{{t "nodes.howto.title"}}</h3>
-          <p class="mb-3 text-xs leading-relaxed text-zinc-500">
-            {{t "nodes.howto.desc"}}
-          </p>
-          <!-- 中枢地址不再让用户抄：页面自己知道 origin。示例命令全部由 JS 渲染
-               （renderHowto），这里只留骨架 —— 写死在 HTML 里就必须留一个
-               「<中枢地址>」占位符让人手填，而人填的那份十有八九和浏览器地址栏
-               不一致（容器里连不上的典型原因）。
-
-               令牌同理：按钮点一下就在本页注册一台节点，三条命令里的令牌与
-               中枢地址立刻换成真值（用户反馈：令牌应该在页面上就能生成）。 -->
-          <div class="mb-4 flex flex-wrap items-center gap-3">
-            <button
-              id="howto-token-btn"
-              type="button"
-              class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-            >
-              {{t "nodes.howto.gen_token"}}
-            </button>
-            <span class="text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.howto.gen_hint"}}
-            </span>
-          </div>
-          <!-- 三块命令/配置 + 令牌：JS 渲染，见 renderHowto()。 -->
-          <div id="howto-blocks" class="space-y-4"></div>
+          <p class="nd-block-desc">{{t "nodes.register.install_after"}}</p>
         </div>
       </div>
-      <div id="toast" class="toast"></div>
+
+      <div class="nd-actions nd-actions-end">
+        <button id="reg-close" type="button" class="btn btn-ghost">
+          {{t "nodes.register.close"}}
+        </button>
+      </div>
+    </div>
+
+    <!-- 节点列表。
+         三态：骨架（首屏） / 行 / 空态或失败态，都由 JS 收敛到 #nodes-list 里。
+         **骨架不能放进 #nodes-list**：e2e 用 `#nodes-list` 子元素数 > 0 判「数据就绪」
+         （real_backend.mjs:416），骨架算子元素会让就绪信号提前成立。
+         #nodes-list 的每个直接子元素都是 div（e2e 用 `#nodes-list > div` 取行）。 -->
+    <div class="nd-list-head">
+      <div class="card-title">{{t "nodes.list.title"}}</div>
+      <span id="nodes-summary" class="nd-meta"></span>
+    </div>
+
+    <div id="nodes-skel" class="list card" aria-hidden="true">
+      <div class="nd-skel-row">
+        <div class="nd-skel-lines">
+          <div class="skeleton nd-skel-name"></div>
+          <div class="skeleton nd-skel-meta"></div>
+        </div>
+        <div class="skeleton nd-skel-act"></div>
+      </div>
+      <div class="nd-skel-row">
+        <div class="nd-skel-lines">
+          <div class="skeleton nd-skel-name"></div>
+          <div class="skeleton nd-skel-meta"></div>
+        </div>
+        <div class="skeleton nd-skel-act"></div>
+      </div>
+      <div class="nd-skel-row">
+        <div class="nd-skel-lines">
+          <div class="skeleton nd-skel-name"></div>
+          <div class="skeleton nd-skel-meta"></div>
+        </div>
+        <div class="skeleton nd-skel-act"></div>
+      </div>
+    </div>
+
+    <!-- 真实列表：数据到之前整块 hidden。hidden 挂在裸 div 上 —— .list 的
+         display:flex 会盖掉 .hidden，两者不能同元素。 -->
+    <div id="nodes-list-wrap" class="hidden">
+      <div id="nodes-list" class="list card"></div>
+    </div>
+
+    <!-- 如何接入：中枢地址与令牌都由页面就地生成。
+         示例命令全部由 JS 渲染（renderHowto），HTML 里不写死 —— 写死就必须留一个
+         「中枢地址」占位符让人手抄，而人抄的那份十有八九和地址栏不一致。
+         这一块必须保持 `div.card`（e2e 用 `div.card:has(#howto-blocks)` 找它）。 -->
+    <div class="card card-pad">
+      <div class="card-title">{{t "nodes.howto.title"}}</div>
+      <p class="card-sub nd-sub">{{t "nodes.howto.desc"}}</p>
+      <div class="nd-howto-acts">
+        <button id="howto-token-btn" type="button" class="btn btn-primary">
+          {{t "nodes.howto.gen_token"}}
+        </button>
+        <span class="nd-meta">{{t "nodes.howto.gen_hint"}}</span>
+      </div>
+      <!-- 四块命令/配置 + 令牌：JS 渲染，见 renderHowto()。 -->
+      <div id="howto-blocks" class="nd-block-stack"></div>
+    </div>
+  </div>
+
+  <!-- 屏读镜像：视觉 toast 走 Anotify.toast（全站一个 #anotify-toast-host），
+       这里只把同一句话写进 aria-live 区域 —— 读屏用户也能听到错误，
+       同时也保住 frontend.mjs ⑩b 对 #toast 文本的断言。不是自绘浮层。 -->
+  <div id="toast" class="nd-sr" role="status" aria-live="polite"></div>
 </div>
 {{end}}
 
@@ -295,32 +484,19 @@
 
       let NODES = [];
 
-      function toast(msg) {
-        const el = document.getElementById("toast");
-        el.textContent = msg;
-        el.classList.add("show");
-        clearTimeout(el._timer);
-        el._timer = setTimeout(() => el.classList.remove("show"), 2600);
-      }
-
       function el(tag, cls, text) {
         const n = document.createElement(tag);
         if (cls) n.className = cls;
         if (text != null) n.textContent = String(text);
         return n;
       }
-      function code(text, cls) {
-        const n = el("code", "mono " + (cls || ""));
-        n.textContent = String(text == null ? "" : text);
-        return n;
-      }
 
-      async function apiGet(path) {
-        try {
-          return await Anotify.api(path, { demo: null });
-        } catch (e) {
-          return null;
-        }
+      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）：
+      // 页内不再自己维护 .toast 浮层。#toast 只是 aria-live 文本镜像（见 HTML 注释）。
+      function toast(msg, kind) {
+        Anotify.toast(msg, kind);
+        const live = document.getElementById("toast");
+        if (live) live.textContent = msg;
       }
 
       function fmtTime(ts) {
@@ -336,181 +512,226 @@
         return d.toISOString().slice(0, 16).replace("T", " ");
       }
 
+      // 状态点类：线上/离线/排空中。e2e 用 `#nodes-list .st-online` 判在线
+      // （real_backend.mjs:424），而类名是 `"st-dot st-" + STATUS_CLASS[...]` 拼出来的 ——
+      // 页面源码里搜不到字面量 st-online 不代表它不在渲染结果里。
       const STATUS_CLASS = { online: "online", offline: "offline", draining: "draining" };
 
+      /* ---------- 加载 / 渲染 ---------- */
+      //
+      // 骨架只在第一次数据落地前存在：拿到结果（行 / 空态 / 失败）就整体撤掉，
+      // 同时把装着真实列表的容器显示出来。
+      function revealList() {
+        const skel = document.getElementById("nodes-skel");
+        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
+        const wrap = document.getElementById("nodes-list-wrap");
+        if (wrap) wrap.classList.remove("hidden");
+      }
+
       async function loadAll() {
-        const data = await apiGet(API + "/nodes");
-        NODES = (data && data.nodes) || [];
-        render();
+        try {
+          // 失败必须走失败态（loadErrorNode + 重试），绝不画成"还没有节点" ——
+          // 那会让用户以为数据被清空了。演示数据由 mock.js 在 fetch 层应答。
+          const data = await Anotify.api(API + "/nodes");
+          NODES = (data && data.nodes) || [];
+          render();
+        } catch (err) {
+          renderLoadError(err);
+        }
       }
 
       function render() {
+        revealList();
         const list = document.getElementById("nodes-list");
-        const summary = document.getElementById("nodes-summary");
-        const online = NODES.filter((n) => n.status === "online").length;
-        summary.textContent = t("nodes.count", "{online}/{total} 在线")
-          .replace("{online}", online)
-          .replace("{total}", NODES.length);
-
+        if (!list) return;
         list.replaceChildren();
 
-        if (!NODES.length) {
-          list.appendChild(
-            el(
-              "div",
-              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-              t("nodes.empty", "还没有节点。按下面的步骤注册第一台，它上线后才会接活。"),
-            ),
-          );
-          return;
+        const online = NODES.filter((n) => n.status === "online").length;
+        const summary = document.getElementById("nodes-summary");
+        if (summary) {
+          summary.textContent = t("nodes.count", "{online}/{total} 在线")
+            .replace("{online}", online)
+            .replace("{total}", NODES.length);
         }
 
-        for (const n of NODES) list.appendChild(nodeCard(n));
+        if (!NODES.length) {
+          list.appendChild(emptyState());
+          return;
+        }
+        for (const n of NODES) list.appendChild(nodeRow(n));
       }
 
-      function nodeCard(n) {
-        const card = el("div", "card rounded-2xl p-4");
-        const row = el("div", "node-row");
-        const left = el("div", "min-w-0");
+      function renderLoadError(err) {
+        revealList();
+        const list = document.getElementById("nodes-list");
+        if (!list) return;
+        list.replaceChildren();
+        list.appendChild(Anotify.loadErrorNode(err, () => loadAll()));
+      }
 
-        // 名称 + 状态点
-        const head = el("div", "flex flex-wrap items-center gap-2");
-        // 名字就是进详情页的入口（列表负责扫，详情负责看）。
-        const nameWrap = document.createElement("a");
-        nameWrap.className =
-          "flex items-center text-[13px] text-zinc-200 hover:text-white";
-        nameWrap.href = "node.html?id=" + encodeURIComponent(n.id);
-        nameWrap.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[n.status] || "offline")));
-        nameWrap.appendChild(document.createTextNode(n.name || "?"));
-        head.appendChild(nameWrap);
-        head.appendChild(
-          el("span", "text-[11px] text-zinc-500", t("nodes.status." + n.status, n.status)),
+      // 空态：图标 + 标题 + 说明 + 动作（契约 §2 的 .empty 口径）。
+      const EMPTY_ICON =
+        '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor"' +
+        ' stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<rect x="3" y="4" width="18" height="7" rx="1.5"></rect>' +
+        '<rect x="3" y="13" width="18" height="7" rx="1.5"></rect>' +
+        '<path d="M7 7.5h.01M7 16.5h.01"></path></svg>';
+
+      function emptyState() {
+        const box = el("div", "empty");
+        const icon = el("div", "nd-empty-icon");
+        icon.innerHTML = EMPTY_ICON;
+        box.appendChild(icon);
+        box.appendChild(el("div", "card-title", t("nodes.emptyTitle", "还没有节点")));
+        box.appendChild(
+          el(
+            "p",
+            "card-sub",
+            t("nodes.empty", "这个命名空间里还没有节点。按下面的步骤注册第一台，它上线后才会接活。"),
+          ),
         );
-        left.appendChild(head);
+        // 不另造 id：#node-register-btn 必须全页唯一，CTA 用 data-action 委托到同一处理。
+        const act = el("button", "btn btn-primary btn-sm", t("nodes.register.btn", "注册节点"));
+        act.type = "button";
+        act.setAttribute("data-action", "register");
+        box.appendChild(act);
+        return box;
+      }
 
-        // 声明的能力
+      // 一行一台节点：状态点 + 名字 + 标签 + 能力 + 槽位 + 心跳 + 操作。
+      function nodeRow(n) {
+        const row = el("div", "list-row nd-row");
+        const main = el("div", "nd-row-main");
+
+        // ---- 名字（详情页入口）+ 状态 + 标签 ----
+        const head = el("div", "nd-row-head");
+        // 名字就是进详情页的入口（e2e 从 `a[href^="node.html?id="]` 点进去）。
+        const nameLink = el("a", "nd-name");
+        nameLink.href = "node.html?id=" + encodeURIComponent(n.id);
+        nameLink.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[n.status] || "offline")));
+        nameLink.appendChild(document.createTextNode(n.name || "?"));
+        head.appendChild(nameLink);
+        head.appendChild(el("span", "nd-status", t("nodes.status." + n.status, n.status)));
+
+        // 节点自报的 tags。节点契约里没有 platform 字段（store.Node），
+        // 所以这里显示它真正的标签，而不是编一个"平台"出来。
+        const tags = n.tags || [];
+        if (tags.length) {
+          const tagWrap = el("div", "nd-tags");
+          for (const tag of tags) tagWrap.appendChild(el("span", "nd-tag", tag));
+          head.appendChild(tagWrap);
+        }
+        main.appendChild(head);
+
+        // ---- 声明的能力 ----
         //
-        // 节点**只声明**「我会哪些能力」（能力名 + 版本），命令与 argv
-        // 留在本机、不上传 —— 这是整套设计的安全边界。所以这一块展示的
-        // 就是"这台机器能干什么"，是节点页的主要信息。
-        //
-        // 标签优先用用户取的显示名（「分析 PR」比 analyze-pr@1 好读），
-        // 悬停给出精确身份 name@version，点了去能力详情。
-        // 超过 8 个折叠成 "+N"，避免一台机器声明几十个能力时把卡片撑爆。
+        // 节点**只声明**「我会哪些能力」（能力名 + 版本），命令与 argv 留在本机、
+        // 不上传 —— 这是整套设计的安全边界。所以这一块展示的就是"这台机器能干什么"。
+        // 标签优先用用户取的显示名（「分析 PR」比 analyze-pr@1 好读），悬停给出
+        // 精确身份 name@version，点了去能力详情。超过 8 个折叠成 "+N"。
         const CAP_COLLAPSE = 8;
         const capList = n.capabilities || [];
-        const caps = el("div", "mt-2 flex flex-wrap items-center gap-1.5");
-        caps.appendChild(
-          el("span", "text-[11px] text-zinc-600", t("nodes.caps_label", "声明能力")),
-        );
+        const caps = el("div", "nd-caps");
+        caps.appendChild(el("span", "nd-caps-label", t("nodes.caps_label", "声明能力")));
         if (!capList.length) {
-          caps.appendChild(
-            el("span", "text-[11px] text-zinc-600", t("nodes.no_caps", "未声明能力")),
-          );
-          left.appendChild(caps);
+          caps.appendChild(el("span", "nd-meta", t("nodes.no_caps", "未声明能力")));
         } else {
           const chipFor = (c) => {
             const exact = c.name + "@" + c.version;
-            const chip = el("span", "out-chip", c.displayName || exact);
+            const chip = el("span", "out-chip is-link nd-cap", c.displayName || exact);
             chip.title = exact;
             if (c.id) {
-              chip.classList.add("is-link");
               chip.addEventListener("click", () => {
                 location.href = "capabilities.html?focus=" + encodeURIComponent(c.id);
               });
             }
             return chip;
           };
-          const box = el("div", "flex flex-wrap gap-1");
           const shown = Math.min(capList.length, CAP_COLLAPSE);
-          for (let i = 0; i < shown; i++) box.appendChild(chipFor(capList[i]));
-          caps.appendChild(box);
+          for (let i = 0; i < shown; i++) caps.appendChild(chipFor(capList[i]));
           if (capList.length > shown) {
             const more = el(
               "button",
-              "out-chip is-link",
+              "out-chip is-link nd-cap",
               t("nodes.caps_more", "+{n} 个").replace("{n}", capList.length - shown),
             );
             more.type = "button";
             more.addEventListener("click", () => {
               for (let i = shown; i < capList.length; i++) {
-                box.appendChild(chipFor(capList[i]));
+                caps.insertBefore(chipFor(capList[i]), more);
               }
               more.remove();
             });
             caps.appendChild(more);
           }
-          left.appendChild(caps);
         }
+        main.appendChild(caps);
 
-        // 槽位占用
+        // ---- 槽位占用 ----
         const slots = n.instances || 0;
         const busy = n.busy || 0;
-        const slotWrap = el("div", "mt-2 flex items-center gap-2");
-        slotWrap.appendChild(
+        const slotLine = el("div", "nd-slots");
+        slotLine.appendChild(
           el(
             "span",
-            "text-[11px] text-zinc-500",
+            "nd-meta",
             t("nodes.slots", "槽位 {busy}/{total}")
               .replace("{busy}", busy)
               .replace("{total}", slots),
           ),
         );
         if (slots > 0) {
-          const bar = el("div", "slot-bar");
+          const bar = el("div", "nd-slot-bar");
           for (let i = 0; i < slots; i++) {
-            bar.appendChild(el("span", "slot" + (i < busy ? " busy" : "")));
+            bar.appendChild(el("span", "nd-slot" + (i < busy ? " busy" : "")));
           }
-          slotWrap.appendChild(bar);
+          slotLine.appendChild(bar);
         }
-        left.appendChild(slotWrap);
+        main.appendChild(slotLine);
 
-        // 右侧：最后心跳 + drain
-        const right = el("div", "text-right");
-        right.appendChild(
-          el("div", "text-[11px] text-zinc-500", t("nodes.last_seen", "心跳 ") + fmtTime(n.lastSeenAt)),
+        // ---- 右侧：心跳 + 操作 ----
+        const side = el("div", "nd-side");
+        side.appendChild(
+          el(
+            "div",
+            "nd-meta",
+            t("nodes.last_seen", "心跳") + " " + fmtTime(n.lastSeenAt),
+          ),
         );
-        // 跳到事件流，只看这个节点处理过的事件。
-        //
-        // 这里传的是节点 **id**（不是名字）：事件流那边会拿它去查
-        // GET /v1/tasks?nodeId=，再按 traceId 反查事件。
-        const evBtn = el(
-          "button",
-          "btn-ghost mt-2 mr-2 rounded px-2 py-1 text-[11px]",
-          t("nodes.view_events", "查看事件"),
-        );
+        const acts = el("div", "nd-acts");
+        // 跳到事件流，只看这个节点处理过的事件。传的是节点 **id**（不是名字）：
+        // 事件流那边会拿它去查 GET /v1/tasks?nodeId=，再按 traceId 反查事件。
+        const evBtn = el("button", "btn btn-quiet btn-sm", t("nodes.view_events", "查看事件"));
+        evBtn.type = "button";
         evBtn.addEventListener("click", () => {
           location.href = "events.html?node=" + encodeURIComponent(n.id);
         });
-        right.appendChild(evBtn);
+        acts.appendChild(evBtn);
 
         if (n.status !== "draining") {
-          const btn = el(
-            "button",
-            "btn-ghost mt-2 rounded px-2 py-1 text-[11px]",
-            t("nodes.drain", "排空"),
-          );
-          btn.addEventListener("click", () => drain(n));
-          right.appendChild(btn);
+          const drainBtn = el("button", "btn btn-quiet btn-sm", t("nodes.drain", "排空"));
+          drainBtn.type = "button";
+          drainBtn.addEventListener("click", () => drain(n));
+          acts.appendChild(drainBtn);
         } else {
-          right.appendChild(
-            el("div", "mt-2 text-[11px] text-amber-400", t("nodes.draining_hint", "排空中")),
+          acts.appendChild(
+            el("span", "status-badge status-warn", t("nodes.draining_hint", "排空中")),
           );
         }
+        side.appendChild(acts);
 
-        row.appendChild(left);
-        row.appendChild(right);
-        card.appendChild(row);
-        return card;
+        row.appendChild(main);
+        row.appendChild(side);
+        return row;
       }
 
       // drain 排空节点：只改 status，**不取消**在跑的任务。
       // 排空是渐进退役（跑完手上这单就不再接新活），取消是破坏性操作。
       async function drain(n) {
-        const msg = t("nodes.drain_confirm", "排空 {name}？它跑完手上的任务后不再接新任务。").replace(
-          "{name}",
-          n.name || "",
-        );
+        const msg = t(
+          "nodes.drain_confirm",
+          "排空 {name}？它跑完手上的任务后不再接新任务。",
+        ).replace("{name}", n.name || "");
         if (!confirm(msg)) return;
         try {
           await Anotify.api(API + "/nodes/" + encodeURIComponent(n.id) + "/drain", {
@@ -519,7 +740,7 @@
           toast(t("nodes.drain_done", "已排空"));
           loadAll();
         } catch (err) {
-          toast(t("nodes.drain_failed", "排空失败：") + err.message);
+          toast(t("nodes.drain_failed", "排空失败：") + ((err && err.message) || ""), "error");
         }
       }
 
@@ -553,21 +774,34 @@
         node.classList.toggle("hidden", !!on);
       }
 
+      /* 面板状态机：一次只显示一个。
+       *
+       * e2e 首帧断言 #register-panel 与 #reg-result 都藏着（frontend.mjs
+       * checkNodeRegister ①），所以可见性收敛到 regShow 一处：
+       *   panel  → 表单（点「注册节点」/ 提交出错后回到这里）
+       *   result → 令牌与四段产物（提交成功后）
+       *   none   → 都收起（取消 / 关闭）
+       * 三块各自的 hidden 仍然写在元素上，regShow 是唯一写它的地方。 */
+      function regShow(state) {
+        regHide("register-panel", state !== "panel");
+        regHide("reg-result", state !== "result");
+      }
+
       function regError(msg) {
         const box = regEl("reg-error");
+        if (!box) return;
         box.textContent = msg || "";
         regHide("reg-error", !msg);
       }
 
       // 清空结果块。令牌是从 DOM 里**删掉**的（textContent = ""），不是藏起来。
+      // 可见性不在这里管（regShow 负责），这里只负责"内容不留痕"。
       function regClearResult() {
-        regEl("reg-token").textContent = "";
-        regEl("reg-cmd").textContent = "";
-        regEl("reg-yaml").textContent = "";
-        regEl("reg-install").textContent = "";
-        regEl("reg-result-title").textContent = "";
-        regEl("reg-warning").textContent = "";
-        regHide("reg-result", true);
+        const ids = ["reg-token", "reg-cmd", "reg-yaml", "reg-install", "reg-result-title", "reg-warning"];
+        for (const id of ids) {
+          const node = regEl(id);
+          if (node) node.textContent = "";
+        }
       }
 
       function regResetInputs() {
@@ -688,10 +922,11 @@
       }
 
       function showRegisterResult(node, token, name) {
+        const finalName = (node && node.name) || name;
         regEl("reg-result-title").textContent = t(
           "nodes.register.done",
           "节点「{name}」已注册",
-        ).replace("{name}", (node && node.name) || name);
+        ).replace("{name}", finalName);
         regEl("reg-warning").textContent = t(
           "nodes.register.warn_once",
           "令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。",
@@ -701,13 +936,13 @@
         regEl("reg-cmd").textContent = agentDockerCmd(
           token,
           window.location.origin,
-          (node && node.name) || name,
+          finalName,
           instancesFromPanel(),
         );
         // node.yaml 只剩 bootstrap 四项（工作目录在能力定义里配，见 agentNodeYaml）。
         regEl("reg-yaml").textContent = agentNodeYaml(
           token,
-          (node && node.name) || name,
+          finalName,
           instancesFromPanel(),
           window.location.origin,
         );
@@ -715,11 +950,10 @@
         regEl("reg-install").textContent = agentInstallCmd(
           token,
           window.location.origin,
-          (node && node.name) || name,
+          finalName,
           instancesFromPanel(),
         );
-        regHide("register-panel", true);
-        regHide("reg-result", false);
+        regShow("result");
       }
 
       async function submitRegister() {
@@ -740,11 +974,14 @@
 
         regError("");
         // 名字空 / 不合规则：本地就拦住，不发请求。
+        // 这一支**不动**面板可见性，也不动用户已填的内容（改一个字符就能重提）。
         if (!name) {
+          regShow("panel");
           regError(t("nodes.register.err.empty_name", "先填节点名"));
           return;
         }
         if (!REG_NAME_RE.test(name)) {
+          regShow("panel");
           regError(t("nodes.register.err.invalid_name", REG_NAME_RULE));
           return;
         }
@@ -761,12 +998,16 @@
             body: JSON.stringify({ name, instances }),
           });
           showRegisterResult(res && res.node, (res && res.token) || "", name);
+          // 注册成功后面板收起：输入归位，下次打开是干净的。
           regResetInputs();
           // 列表里要出现刚注册的那台（offline）：注册成功 ≠ 已上线。
           loadAll();
         } catch (err) {
           // 失败时结果块必须保持隐藏：重名（409）绝不能顺带露出上一个令牌。
+          // 用户的输入**原样保留** —— 422/409 都是「改个名字再提交」，重填一遍
+          // 只会让人以为页面把他的输入丢了。
           regClearResult();
+          regShow("panel");
           regError(regErrorText(err, name));
         } finally {
           btn.disabled = false;
@@ -775,15 +1016,17 @@
       }
 
       function openRegister() {
-        // 顺序有讲究：先把上一个结果块（含令牌）清掉，再展开表单——
+        // 顺序有讲究：先把上一个结果块（含令牌）从 DOM 里清掉，再展开表单——
         // 「再点一次注册节点 → 上一个令牌块消失」靠的就是这里。
         regClearResult();
+        regShow("panel");
         regError("");
-        regHide("register-panel", false);
+        const nameInput = regEl("reg-name");
+        if (nameInput) nameInput.focus();
       }
 
       function closeRegister() {
-        regHide("register-panel", true);
+        regShow("none");
         regClearResult();
         regError("");
       }
@@ -792,6 +1035,7 @@
       // 它自己把按钮文字临时改成「已复制 ✓」，令牌只在内存里过一手。
       function regWireCopy(btnId, textId) {
         const btn = regEl(btnId);
+        if (!btn) return;
         btn.addEventListener("click", () => {
           const text = regEl(textId).textContent;
           if (!text) return;
@@ -801,6 +1045,7 @@
 
       function initRegister() {
         regEl("node-register-btn").addEventListener("click", openRegister);
+        regEl("nodes-refresh").addEventListener("click", () => loadAll());
         regEl("reg-submit").addEventListener("click", submitRegister);
         regEl("reg-cancel").addEventListener("click", closeRegister);
         regEl("reg-close").addEventListener("click", closeRegister);
@@ -817,6 +1062,16 @@
         });
       }
 
+      // 列表里的空态 CTA：委托到 openRegister，不另造一个 #node-register-btn。
+      function initListActions() {
+        const list = document.getElementById("nodes-list");
+        if (!list) return;
+        list.addEventListener("click", (e) => {
+          const hit = e.target.closest && e.target.closest('[data-action="register"]');
+          if (hit) openRegister();
+        });
+      }
+
       /* ---------- 「如何接入」卡片（令牌与中枢地址就地生成） ---------- */
       //
       // 用户反馈的三条都在这一块里落地：
@@ -829,22 +1084,20 @@
       let HOWTO_TOKEN = "";
       let HOWTO_NAME = "";
 
-      // howtoBlock 造一块「标题 + 复制按钮 + 代码块」，返回节点与 code 元素。
+      // howtoBlock 造一块「说明 + 代码块（标题 + 复制按钮）」，返回节点与 code 元素。
       // 为什么复制按钮与代码块绑在一起：用户要复制的粒度是**一条命令**，
       // 一块一个按钮才能一下复制对。
       function howtoBlock(codeId, title, copyLabel, intro) {
-        const wrap = el("div");
-        const head = el("div", "mb-2 flex flex-wrap items-center justify-between gap-2");
-        head.appendChild(el("span", "text-xs text-zinc-400", title));
+        const wrap = el("div", "nd-block");
+        if (intro) wrap.appendChild(el("p", "nd-block-desc", intro));
+        const block = el("div", "code-block");
+        const head = el("div", "code-head");
+        head.appendChild(el("span", null, title));
         const copy = el("button", "copy-btn", copyLabel);
         copy.type = "button";
         copy.id = codeId + "-copy";
         head.appendChild(copy);
-        wrap.appendChild(head);
-        if (intro) {
-          wrap.appendChild(el("p", "mb-2 text-[11px] leading-relaxed text-zinc-500", intro));
-        }
-        const block = el("div", "code-block");
+        block.appendChild(head);
         const body = el("pre", "code-body");
         const code = el("code", "mono");
         code.id = codeId;
@@ -985,7 +1238,7 @@
         } catch (err) {
           // 失败只说人话（复用注册面板那套错误映射），令牌继续显示占位符。
           renderHowto();
-          toast(regErrorText(err, HOWTO_NAME));
+          toast(regErrorText(err, HOWTO_NAME), "error");
         } finally {
           btn.disabled = false;
           btn.textContent = label;
@@ -995,7 +1248,7 @@
       function initHowto() {
         const btn = regEl("howto-token-btn");
         if (btn) btn.addEventListener("click", generateHowtoToken);
-        // 首帧就把三块命令画出来（中枢地址已经是真值，只是令牌还是占位符）：
+        // 首帧就把四块命令画出来（中枢地址已经是真值，只是令牌还是占位符）：
         // 空卡片会让用户以为这页坏了。
         renderHowto();
       }
@@ -1003,6 +1256,7 @@
       document.addEventListener("DOMContentLoaded", () => {
         initRegister();
         initHowto();
+        initListActions();
         loadAll();
       });
     </script>
