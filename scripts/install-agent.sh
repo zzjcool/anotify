@@ -7,7 +7,7 @@
 # 做什么：
 #   1. 从 GitHub Release 下对应平台的 anotify-agent 二进制
 #   2. 装到 /usr/local/bin（可用 --prefix 改）
-#   3. 写 ~/.anotify/node.yaml（四件 bootstrap + workDirs）
+#   3. 写 ~/.anotify/node.yaml（bootstrap 四件：name/server/token/instances）
 #   4. 生成 systemd 用户服务（Linux）——**可选**，--no-systemd 关掉
 #
 # 为什么给原生装：docker 那条路门槛最低，但容器里**看不到宿主机文件**——
@@ -16,8 +16,9 @@
 #
 # 安全（必读）：agent 的执行权限 = 运行它的用户权限。
 #   - 用普通用户跑，不要 root（脚本会拒绝 root，除非显式 --allow-root）
-#   - workDirs 是「能力工作目录」的白名单：控制台只能从这里面选目录，
-#     选到范围外任务会失败。不配置 = 一个目录都不许（能力只能跑在临时目录里）
+#   - **节点上没有"工作目录"配置**：能力跑在哪个目录由能力定义（run.workDir）决定，
+#     空 = 每次任务一个独立临时目录。所以这台机器上不存在"节点级白名单"这种别扭东西，
+#     但代价是「能力说在哪跑就在哪跑」—— 这也正是 agent 不该用 root 跑的原因
 #
 # 退出码：0 成功；非 0 失败并给出可执行的下一步。
 set -eu
@@ -30,9 +31,6 @@ SERVER=""
 TOKEN=""
 NAME=""
 INSTANCES=""
-WORK_DIRS=""
-# 能力级工作目录：一行一个 "能力名<US>路径"（用 US 分隔，避免路径里的冒号打架）
-CAP_WORK_DIRS=""
 WITH_SYSTEMD="yes"
 ALLOW_ROOT="no"
 
@@ -53,8 +51,6 @@ usage() {
   --server=https://...    中枢地址（必填；原生装猜不到，猜错会表现成"连不上"）
   --name=box-1            节点名（缺省用主机名）
   --instances=2           并发槽位数（缺省 1）
-  --work-dir=<能力>:<路径>  给某个能力指定工作目录（可重复；能力级优先）
-  --work-dirs=/a:/b       兜底前缀白名单（任意能力都可用的目录；缺省空 = 一个都不许）
   --prefix=/opt           安装前缀（二进制落到 <prefix>/bin）
   --no-systemd            不生成 systemd 用户服务，只装二进制与配置
   --allow-root            允许以 root 运行（不推荐：agent 的权限 = 它的用户权限）
@@ -68,17 +64,6 @@ for arg in "$@"; do
 	--server=*) SERVER="${arg#*=}" ;;
 	--name=*) NAME="${arg#*=}" ;;
 	--instances=*) INSTANCES="${arg#*=}" ;;
-	--work-dirs=*) WORK_DIRS="${arg#*=}" ;;
-	--work-dir=*)
-		# 形态 <能力名>:<绝对路径>。能力名里不会有冒号（[a-z0-9._-]），
-		# 所以按**第一个**冒号切；路径里带冒号也不会被截断。
-		pair="${arg#--work-dir=}"
-		cap="${pair%%:*}"
-		dir="${pair#*:}"
-		[ -n "$cap" ] && [ -n "$dir" ] || die "--work-dir 需要 <能力名>:<绝对路径>，收到：$pair"
-		[ -n "$CAP_WORK_DIRS" ] && CAP_WORK_DIRS="${CAP_WORK_DIRS}
-${cap}$(printf '\037')${dir}" || CAP_WORK_DIRS="${cap}$(printf '\037')${dir}"
-		;;
 	--prefix=*)
 		# ${arg#*=/opt} 是错的写法（模式里带 /opt 永远匹配不上，结果把整串当路径）；
 		# 这里显式去掉前缀，并容忍结尾多余的斜杠。
@@ -209,7 +194,7 @@ if ! install_bin "$BIN_DIR"; then
 	esac
 fi
 
-# 配置。workDirs 只在给了的时候才写：不写 = 一个目录都不许（能力只能跑在临时目录）。
+# 配置。bootstrap 四件：连哪、用哪个令牌、叫什么、开几个槽位。
 cfg="${DATA_DIR}/node.yaml"
 {
 	printf '# 由 install-agent.sh 生成（%s）\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -217,33 +202,6 @@ cfg="${DATA_DIR}/node.yaml"
 	printf 'token: %s\n' "$TOKEN"
 	[ -n "$NAME" ] && printf 'name: %s\n' "$NAME"
 	[ -n "$INSTANCES" ] && printf 'instances: %s\n' "$INSTANCES"
-	# 工作目录（契约 §2.3.1）：分**能力级**与**兜底**两种。
-	#   --work-dir=script.echo:/home/me/proj  → workDirs: { script.echo: ... }
-	#   --work-dirs=/a:/b                      → workDirs: { "*": ... }（兼容旧列表语义）
-	if [ -n "$CAP_WORK_DIRS" ] || [ -n "$WORK_DIRS" ]; then
-		printf 'workDirs:\n'
-		if [ -n "$CAP_WORK_DIRS" ]; then
-			# 必须给**结尾换行**：`while read` 在"没有换行的最后一行"上返回非 0，
-			# 循环体不会执行 —— 少一行配置的后果是「那个能力的任务全部失败」。
-			printf '%s\n' "$CAP_WORK_DIRS" | while IFS= read -r line; do
-				[ -n "$line" ] || continue
-				cap="${line%%$(printf '\037')*}"
-				dir="${line#*$(printf '\037')}"
-				printf '  %s: %s\n' "$cap" "$dir"
-			done
-		fi
-		if [ -n "$WORK_DIRS" ]; then
-			# 兜底白名单在 yaml 里是**一个列表**（`"*": [路径…]`）——
-			# 单个字符串的写法只表达一个目录，多个必须用列表。
-			set -- $(printf '%s' "$WORK_DIRS" | tr ':' ' ')
-			if [ "$#" -eq 1 ]; then
-				printf '  "*": %s\n' "$1"
-			else
-				printf '  "*":\n'
-				for d in "$@"; do [ -n "$d" ] && printf '    - %s\n' "$d"; done
-			fi
-		fi
-	fi
 } >"$cfg"
 chmod 600 "$cfg"
 printf '已写配置：%s（权限 600：里面有令牌）\n' "$cfg"

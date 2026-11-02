@@ -29,8 +29,9 @@ import (
 //     解释；v2 的产物自带入口文件（带 shebang），直接 `exec <entrypoint>` 即可。
 //     没有 shell 就没有插值、没有拼接、没有引号转义——参数只走环境变量。
 //  2. **每个任务一个工作目录**。v1 所有任务共享 agent 的 cwd，8 并发会互相踩
-//     （同一个 ./out.json、同一个 git clone 目标）。现在 cwd = <data-dir>/work/<task_id>，
-//     并以 ANOTIFY_WORKDIR 暴露给脚本。
+//     （同一个 ./out.json、同一个 git clone 目标）。现在产物文件总展开在
+//     <data-dir>/work/<task_id>；cwd 默认就是它，除非能力定义里声明了 run.workDir
+//     （那就用那个目录，见 resolveChdir）。
 //  3. **执行内容来自产物，不来自 node.yaml**。node.yaml 只剩 bootstrap（见 config.go）。
 //
 // # 出口名（out）的来源：一个文件
@@ -73,17 +74,9 @@ type job struct {
 	TraceID     string             // assign.trace_id → ANOTIFY_TRACE_ID（旧协议没有这个字段，v2 补上）
 	MaxDuration int                // assign.max_duration_sec：>=1 时作为兜底超时
 	WorkRoot    string             // <data-dir>/work：每任务在其下建独立目录
-	// WorkDir 是控制台为该能力指定的工作目录（assign.work_dir，迁移 19）。
-	// 空 = 用上面那个每任务独立目录。
-	//
-	// 它来自中枢，**必须**通过本机的授权校验才能用（见 resolveChdir）：
-	// 直接 chdir 到中枢给的路径 = 把宿主机任意目录的读写权交给中枢。
-	WorkDir string
-	// WorkDirs 是本机的工作目录授权（nodeConfig.WorkDirs）：
-	//   - 能力级条目（workDirs[<能力名>]）**压过**上面的 WorkDir
-	//   - "*" 下的兜底白名单（旧语义）用来校验上面的 WorkDir
-	// 零值 = 一个目录都不许。
-	WorkDirs WorkDirMap
+	// 注意这里**没有** WorkDir 字段：cwd 的唯一来源是产物里的 spec.run.workDir
+	// （见 resolveChdir）。中枢下发的 work_dir 与节点侧的 workDirs 白名单都已作废——
+	// 两份事实必然分叉，而分叉的症状是「控制台改了却没生效」。
 	// TimeoutOverride 是秒级的超时覆盖（只有 standalone 的 --timeout 会用）。
 	// 人站在终端前跑一次时，「我想先给它 30 秒试试」应该压过产物里写死的 900。
 	TimeoutOverride int
@@ -138,7 +131,7 @@ const waitDelay = time.Second
 // 就是句空话。
 type execPlan struct {
 	workDir    string        // 本次任务的独立工作目录（产物文件展开在这里，也是 ANOTIFY_TASKDIR）
-	cwd        string        // 进程的工作目录；默认同 workDir，控制台指定且通过白名单时是那个目录
+	cwd        string        // 进程的工作目录；默认同 workDir，能力声明了 run.workDir 时是那个目录（已解链）
 	entrypoint string        // 入口文件的绝对路径（直接 exec，靠 shebang 选解释器）
 	env        []string      // 完整环境变量（父环境剔除 ANOTIFY_* + 产物 env + 契约变量）
 	timeout    time.Duration // 0 = 不设本地超时（交给中枢租约）
@@ -333,7 +326,7 @@ func prepareExecution(j job) (execPlan, error) {
 	if err != nil {
 		return execPlan{}, err
 	}
-	// cwd 可能是控制台指定的目录（要过本机白名单），也可能就是 taskDir。
+	// cwd 可能来自能力定义里的 run.workDir（见 resolveChdir）。
 	cwd, err := resolveChdir(j, workDir)
 	if err != nil {
 		return execPlan{}, err
@@ -517,20 +510,17 @@ func buildEnv(base []string, j job, workDir, cwd string) ([]string, error) {
 		paramsJSON = b
 	}
 	// 能力名与版本以**产物**为准（assign 可能只给了 digest）：脚本要知道自己是谁，
-	// 而这个「谁」必须是真正在跑的那一份。取法集中在 capabilityOf：运行期按能力
-	// 查 workDirs 用的必须是同一个名字（见 resolveChdir）。
-	capability, version := capabilityOf(j), j.Version
-	if j.Artifact != nil {
-		version = j.Artifact.Metadata.Version
-	}
+	// 而这个「谁」必须是真正在跑的那一份。同一个 "name@version" 也用于错误文案
+	// （见 resolveChdir），两处必须同源（capabilityRef）。
 	env["ANOTIFY_TASK_ID"] = j.TaskID
-	env["ANOTIFY_CAPABILITY"] = fmt.Sprintf("%s@%d", capability, version)
+	env["ANOTIFY_CAPABILITY"] = capabilityRef(j)
 	env["ANOTIFY_PARAMS"] = string(paramsJSON)
 	// 三个新增变量**始终存在**（可能是空串）：脚本可以无条件引用，
 	// 用 `${ANOTIFY_TRACE_ID:-}` 也照样成立；「键不存在」会让 set -u 的脚本直接炸。
+	//
 	// ANOTIFY_WORKDIR 历史上就**等于**进程的 cwd（脚本里普遍写着 cd "$ANOTIFY_WORKDIR"），
-	// 指定了工作目录之后这条不变式必须继续成立，否则那些脚本会跑回任务目录。
-	// 产物文件所在的任务目录另给一个 ANOTIFY_TASKDIR（新增，只增不改）。
+	// 能力声明了 run.workDir 之后这条不变式必须继续成立，否则那些脚本会跑回任务目录。
+	// 产物文件所在的任务目录另给一个 ANOTIFY_TASKDIR（只增不改）。
 	env["ANOTIFY_WORKDIR"] = cwd
 	env["ANOTIFY_TASKDIR"] = workDir
 	env["ANOTIFY_TRACE_ID"] = j.TraceID
@@ -747,76 +737,83 @@ func readOutcomeOut(plan execPlan) (*string, error) {
 	return nil, fmt.Errorf("out %q is not declared in spec.outputs %v", name, plan.allowedOutputs)
 }
 
-// resolveChdir 决定这次执行的工作目录（迁移 19 → 能力级 workDirs）。
+// resolveChdir 决定这次执行的 cwd。**唯一的来源是能力定义里的 run.workDir**。
 //
-// 解析顺序（唯一实现，契约 §2.3.1）：
+//	run.workDir 为空  → 本次任务目录（与这个能力出现之前逐字节一致）
+//	run.workDir 非空  → 那个目录（解符号链接后用解链后的路径执行）
 //
-//	① node.yaml 里有 workDirs[<能力名>] → 用它，**忽略**中枢 assign 帧里的 work_dir。
-//	   中枢表达的是意图，机器上的 yaml 才是事实——否则控制台写什么就生效什么，
-//	   本机授权也就没意义了。仍然做安全检查：绝对路径、存在、是目录、解符号链接。
-//	② 否则有兜底白名单（"*" / 旧列表）→ 用中枢的 work_dir，但必须落在某个前缀内。
-//	   帧里没给 work_dir → 用本次任务目录（加 work_dir 之前的行为，逐字节一致）。
-//	③ 否则（连兜底白名单也没有）→ 帧里有 work_dir = 失败；没有 = 任务目录。
+// 节点侧不再有任何白名单/映射（node.yaml 的 workDirs、ANOTIFY_WORK_DIRS、中枢下发
+// 的 work_dir 全部作废）：「这个能力要在哪个目录里跑」是能力定义的一部分，跟入口
+// 文件、超时一样。定义它的地方只能有一个，否则就是两份会分叉的事实，而分叉的症状
+// 是「控制台改了却没生效」，极难查。
 //
-// 失败必须**失败**而不是"悄悄退回默认目录"：用户明确要求「在这个项目里跑 make test」，
-// 退回默认目录的后果是命令在一个空目录里跑、报一个看起来莫名其妙的错，
-// 而真正的原因（目录没被授权 / 本机没这个目录）被完全掩盖。
+// 安全边界也随之换了位置：能力定义由控制台写、由中枢部署，节点只是执行者。所以
+// 这里不再做「要不要放行」的判断，只做**可用性**判断——并且把「这台机器上没这个
+// 目录」当成**任务失败**而不是降级：
 //
-// 安全要点：
-//   - 来自中枢的路径必须过兜底白名单（机器主人的授权声明）
-//   - 白名单比对前要**解开符号链接**：否则 /allowed/link → /etc 就是一个白名单绕过
-//   - 前缀匹配按路径分段（/a/b 不能匹配 /a/bc）
+//	静默退回任务目录会把「机器上没建这个目录」伪装成「脚本莫名报错」——脚本在一个
+//	空目录里找不到工具链配置，报出来的错跟真实原因毫无关系。
+//
+// 失败文案必须写清三件事：哪个能力（X@Y）、哪个路径、下一步该干什么（在控制台改，
+// 或先在机器上建好这个目录）。
 func resolveChdir(j job, taskDir string) (string, error) {
-	capability := capabilityOf(j)
-
-	// ① 能力级目录：本机为这个能力写死了目录 → 直接用，不看中枢的 work_dir。
-	// 它不需要过兜底白名单（这条配置本身就是授权），但仍要真实可用。
-	if dir, ok := j.WorkDirs.For(capability); ok {
-		return checkWorkDir(dir, fmt.Sprintf("workDirs[%q]", capability))
-	}
-
-	raw := strings.TrimSpace(j.WorkDir)
-	if raw == "" {
+	if j.Artifact == nil {
+		// 没有产物时 prepareExecution 已经在前边挡掉了；这里防御性维持旧行为。
 		return taskDir, nil
 	}
-	if !filepath.IsAbs(raw) {
-		return "", fmt.Errorf("work_dir 必须是绝对路径：%q", raw)
+	// 目录声明来自产物（能力定义）：节点只执行，不维护第二份目录事实。
+	declared := strings.TrimSpace(j.Artifact.Spec.Run.WorkDir)
+	if declared == "" {
+		return taskDir, nil
 	}
-	clean := filepath.Clean(raw)
-
-	// 解开符号链接再做授权判断，并用解链后的路径执行：判断的和使用的必须是同一个路径。
-	real := clean
-	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
-		real = resolved
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("work_dir %q 无法解析：%w", clean, err)
+	// 产物在 artifact.Parse 时已经校验过（绝对路径、无 NUL、无 ".." 段），这里是
+	// 执行前的第二道：产物也可能来自缓存里的文件（离线 / 手改），防线不该只有上游一道。
+	if !filepath.IsAbs(declared) {
+		return "", workDirError(j, declared, "不是绝对路径（留空 = 每次任务一个独立目录）", nil)
 	}
+	clean := filepath.Clean(declared)
 
-	allow := j.WorkDirs.Allowlist()
-	if !dirAllowed(allow, real) {
-		// 错误信息要能让用户直接知道**该在 yaml 里写什么**：既列出当前允许的前缀，
-		// 也给出「按能力配置」的具名写法（那才是推荐做法）。
-		return "", fmt.Errorf("work_dir %q 不在本机的 workDirs 白名单内（允许：%s）；"+
-			"也可以按能力配置：workDirs: {%s: <目录>}",
-			clean, allowedDirsText(allow), capabilityLabel(capability))
+	// 解链后再 stat、也用解链后的路径当 cwd：判断的和使用的必须是同一个路径
+	// （项目目录常常是软链，不解链会让日志/ANOTIFY_WORKDIR 与实际执行目录不是同一个字符串）。
+	real, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", workDirError(j, clean, "不存在", err)
+		}
+		return "", workDirError(j, clean, "无法解析", err)
 	}
-
 	st, err := os.Stat(real)
 	if err != nil {
-		return "", fmt.Errorf("work_dir %q 不可用：%w", clean, err)
+		if os.IsNotExist(err) {
+			return "", workDirError(j, clean, "不存在", err)
+		}
+		return "", workDirError(j, clean, "无法访问", err)
 	}
 	if !st.IsDir() {
-		return "", fmt.Errorf("work_dir %q 不是目录", clean)
+		return "", workDirError(j, clean, "不是目录", nil)
 	}
 	return real, nil
 }
 
+// workDirError 统一「能力声明的工作目录不可用」的错误文案。
+//
+// 三个要素缺一不可，否则运维看到的就是一句无从下手的错：
+//   - 能力 X@Y + 路径：一眼看出是谁、哪条路径（这不是脚本的锅）
+//   - 原因（不存在 / 不是目录 / 无法解析 / 不是绝对路径）
+//   - 这是**能力定义**里的 run.workDir：指到用户真正能改的那个地方（控制台），
+//     而不是让他在 node.yaml 里翻半天（那里已经没有目录配置了）
+func workDirError(j job, path, reason string, cause error) error {
+	msg := fmt.Sprintf("能力 %s 声明的工作目录 %s %s"+
+		"（这是能力定义里的 run.workDir；在控制台改或先在机器上建好这个目录）",
+		capabilityRef(j), path, reason)
+	if cause != nil {
+		return fmt.Errorf("%s: %w", msg, cause)
+	}
+	return errors.New(msg)
+}
+
 // capabilityOf 是本次执行的**能力名**：以产物为准（assign 可能只给了 digest），
 // 与 buildEnv 里 ANOTIFY_CAPABILITY 同源。
-//
-// 为什么必须同源：运行期按能力查 workDirs 用的是这个字符串，而脚本看到的身份来自
-// ANOTIFY_CAPABILITY。两处取法一旦分叉，就会变成「日志说在跑 script.echo，实际
-// 用的是 build.repo 的目录」——这种错查起来极贵。
 func capabilityOf(j job) string {
 	if j.Artifact != nil {
 		return strings.TrimSpace(j.Artifact.Metadata.Name)
@@ -824,71 +821,14 @@ func capabilityOf(j job) string {
 	return strings.TrimSpace(j.Capability)
 }
 
-// capabilityLabel 是错误信息里用的能力名占位（空时给个能照抄的模板）。
-func capabilityLabel(capability string) string {
-	if capability == "" {
-		return "<能力名>"
-	}
-	return capability
-}
-
-// checkWorkDir 校验一个**本机自己写下的**目录（能力级 workDirs[<能力名>]）。
+// capabilityRef 是能力身份 "name@version"（= ANOTIFY_CAPABILITY / 错误文案里的 X@Y）。
 //
-// 它不需要过白名单——这条配置本身就是机器主人的授权。但仍然要：绝对路径、解符号
-// 链接、存在、是目录。因为目录被删了或被换成文件时，任务必须 failed 并说清是
-// node.yaml 里哪一条指错了，而不是让脚本在一个不存在的地方跑（那会变成一堆
-// 「工具链找不到配置文件」式的莫名其妙错误）。
-func checkWorkDir(raw, label string) (string, error) {
-	dir := strings.TrimSpace(raw)
-	if !filepath.IsAbs(dir) {
-		return "", fmt.Errorf("%s 必须是绝对路径：%q", label, raw)
+// 取法集中在这里：跑在哪个目录（resolveChdir 的报错）与脚本看到的身份一旦分叉，
+// 就会变成「日志说在跑 script.echo，出错的却是 build.repo」这种极贵的谜题。
+func capabilityRef(j job) string {
+	version := j.Version
+	if j.Artifact != nil {
+		version = j.Artifact.Metadata.Version
 	}
-	clean := filepath.Clean(dir)
-	real, err := filepath.EvalSymlinks(clean)
-	if err != nil {
-		return "", fmt.Errorf("%s 的目录 %q 不可用：%w", label, clean, err)
-	}
-	st, err := os.Stat(real)
-	if err != nil {
-		return "", fmt.Errorf("%s 的目录 %q 不可用：%w", label, clean, err)
-	}
-	if !st.IsDir() {
-		return "", fmt.Errorf("%s 的目录 %q 不是目录", label, clean)
-	}
-	return real, nil
-}
-
-// dirAllowed 判断 dir 是否落在白名单里的某个前缀下（按路径分段匹配）。
-//
-// 白名单条目同样先解符号链接：机器主人写 /home/me/proj，而它其实是 /data/proj
-// 的软链时，不解链会让「授权了却永远用不了」。
-func dirAllowed(allow []string, dir string) bool {
-	for _, raw := range allow {
-		a := strings.TrimSpace(raw)
-		if a == "" {
-			continue
-		}
-		a = filepath.Clean(a)
-		if resolved, err := filepath.EvalSymlinks(a); err == nil {
-			a = resolved
-		}
-		if dir == a || strings.HasPrefix(dir, a+string(os.PathSeparator)) {
-			return true
-		}
-	}
-	return false
-}
-
-// allowedDirsText 把白名单渲染成一句可读的错误说明（空时明确说"没有配置"）。
-func allowedDirsText(allow []string) string {
-	clean := make([]string, 0, len(allow))
-	for _, a := range allow {
-		if s := strings.TrimSpace(a); s != "" {
-			clean = append(clean, s)
-		}
-	}
-	if len(clean) == 0 {
-		return "未配置任何目录（node.yaml 的 workDirs / ANOTIFY_WORK_DIRS）"
-	}
-	return strings.Join(clean, ", ")
+	return fmt.Sprintf("%s@%d", capabilityOf(j), version)
 }

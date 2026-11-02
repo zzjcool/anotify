@@ -166,7 +166,7 @@ func (d *DB) LatestArtifact(ctx context.Context, namespaceID, capabilityID strin
 // 同一节点对同一能力部署一个新 digest 时，旧 digest 的行保留（它是历史），
 // 但只有新行参与 node_capabilities 派生 —— 由 ReconcileApplied 按节点实际
 // 缓存的 digest 决定哪一行是 applied。
-func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, artifactID, workDir string) (*Deployment, error) {
+func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, artifactID string) (*Deployment, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -174,11 +174,11 @@ func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, artifact
 	id := NewDeploymentID()
 
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, work_dir, created_at, updated_at)
-		 SELECT ?, ?, ?, a.id, a.digest, ?, '', ?, ?, ?
+		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
+		 SELECT ?, ?, ?, a.id, a.digest, ?, '', ?, ?
 		   FROM artifacts a WHERE a.id = ? AND a.namespace_id = ?
-		 ON CONFLICT(node_id, artifact_id) DO UPDATE SET work_dir = excluded.work_dir`,
-		id, namespaceID, nodeID, DeploymentPending, workDir, now, now, artifactID, namespaceID); err != nil {
+		 ON CONFLICT(node_id, artifact_id) DO NOTHING`,
+		id, namespaceID, nodeID, DeploymentPending, now, now, artifactID, namespaceID); err != nil {
 		return nil, fmt.Errorf("create deployment: %w", err)
 	}
 	return d.GetDeploymentByNodeArtifact(ctx, namespaceID, nodeID, artifactID)
@@ -198,7 +198,7 @@ func (d *DB) GetDeployment(ctx context.Context, namespaceID, id string) (*Deploy
 
 const deploymentSelect = `
 SELECT d.id, d.namespace_id, d.node_id, d.artifact_id, d.digest, d.state, d.reason,
-       d.work_dir, d.created_at, d.updated_at, a.capability_id, c.name, c.version
+       d.created_at, d.updated_at, a.capability_id, c.name, c.version
   FROM deployments d
   JOIN artifacts a ON a.id = d.artifact_id
   JOIN capability_versions c ON c.id = a.capability_id`
@@ -207,7 +207,7 @@ func (d *DB) scanDeployment(ctx context.Context, query string, args ...any) (*De
 	var dp Deployment
 	err := d.QueryRowContext(ctx, query, args...).Scan(
 		&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.ArtifactID, &dp.Digest,
-		&dp.State, &dp.Reason, &dp.WorkDir, &dp.CreatedAt, &dp.UpdatedAt,
+		&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
 		&dp.CapabilityID, &dp.Capability, &dp.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -254,7 +254,7 @@ func (d *DB) ListDeployments(ctx context.Context, namespaceID string, f Deployme
 		var dp Deployment
 		if err := rows.Scan(
 			&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.ArtifactID, &dp.Digest,
-			&dp.State, &dp.Reason, &dp.WorkDir, &dp.CreatedAt, &dp.UpdatedAt,
+			&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
 			&dp.CapabilityID, &dp.Capability, &dp.Version); err != nil {
 			return nil, fmt.Errorf("scan deployment: %w", err)
 		}
@@ -349,34 +349,3 @@ func (d *DB) PendingDeploymentsForNode(ctx context.Context, namespaceID, nodeID 
 const deploymentRetryAfter = 30 * time.Second
 
 var _ = deploymentRetryAfter // 保留给后续 sweeper 使用，避免误删常量
-
-// DeploymentWorkDir 返回「某节点上某能力的工作目录」（迁移 19 的 work_dir）。
-//
-// 查不到就返回空字符串、**不报错**：没有部署记录是完全正常的状态（手工造的任务、
-// 迁移前就存在的 pending、部署被删掉之后残留的任务），调用方只该把它当成
-// "用默认的每任务目录"。
-//
-// 为什么按 capability_id 而不是 artifact_id：任务行携带的是 (capability, version)，
-// 派发时手上没有 artifact id。同一节点上同一能力通常只有一条部署记录；
-// 真有多条（历史版本）时取最近更新的那条 —— 它才是"当前生效的那份"。
-func (d *DB) DeploymentWorkDir(ctx context.Context, namespaceID, nodeID, capabilityID string) (string, error) {
-	if namespaceID == "" || namespaceID == AllNamespaces || nodeID == "" || capabilityID == "" {
-		return "", nil
-	}
-	var wd string
-	err := d.QueryRowContext(ctx,
-		`SELECT d.work_dir
-		   FROM deployments d
-		   JOIN artifacts a ON a.id = d.artifact_id
-		  WHERE d.namespace_id = ? AND d.node_id = ? AND a.capability_id = ?
-		  ORDER BY d.updated_at DESC, d.id DESC
-		  LIMIT 1`,
-		namespaceID, nodeID, capabilityID).Scan(&wd)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("deployment work dir: %w", err)
-	}
-	return wd, nil
-}

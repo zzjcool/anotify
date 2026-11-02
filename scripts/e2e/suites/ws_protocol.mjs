@@ -485,38 +485,6 @@ async function main() {
 	await addEdge(cap, "go", cap2);
 	await addEntryEdge("ws.demo", "go", cap2);
 
-	// 先把 cap2 部署到这台节点、并指定工作目录（迁移 19）：下面要断言 assign 帧
-	// **真的带上了** work_dir。这是"中枢提议 → 节点白名单授权"里的前半句，
-	// 而它的失败形态特别隐蔽（帧里少一个字段，节点安安静静跑在默认目录里）。
-	//
-	// 注意 cap2 是"纯定义"（没有 run），v2 之后它没有产物 → 部署必然 404。
-	// 所以先给它补一版带 run 的（同名 → 版本 +1，派发时取最新版）。
-	const cap2run = await defineCapabilityWithRun(
-		"ws.work",
-		[],
-		"#!/bin/bash\nset -euo pipefail\necho ok\n",
-	);
-	// 只要它现在有产物就行（版本号怎么变是 append-only 语义的事，不在这里假设）
-	H.check(
-		"ws.work 现在有可部署产物（否则下面 404）",
-		/^sha256:[0-9a-f]{64}$/.test(String(cap2run.digest || "")),
-		String(cap2run.digest),
-	);
-	const wdDep = await H.req(server.base, "/v1/deployments", {
-		session,
-		body: { capabilityId: cap2run.id, nodeIds: [node.id], workDir: "/srv/ws-demo" },
-	});
-	H.eq("部署时带 workDir → 200", wdDep.status, 200);
-	node.conn.send({
-		type: "apply",
-		deploy_id: (wdDep.json?.deployments || [])[0]?.deployId,
-		capability: cap2run.name,
-		version: cap2run.version,
-		digest: cap2run.digest,
-		state: "applied",
-		reason: "",
-	});
-
 	const ev = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	H.eq("事件派发建出 1 个任务", ev.json?.tasks?.length, 1);
 	const taskId = ev.json?.tasks?.[0]?.id;
@@ -537,14 +505,17 @@ async function main() {
 			!raw.includes("argv") && !raw.includes("shell") && !raw.includes("command"),
 			raw.slice(0, 160),
 		);
-		// 部署里配了 workDir → 帧必须带 work_dir（迁移 19）。少这个字段的后果是
-		// 任务安静地在默认临时目录里跑，用户以为"我明明配了项目目录"。
-		H.eq("assign.work_dir 就是部署里配的目录", assign?.work_dir, "/srv/ws-demo");
+		// 工作目录**不在协议里**（#289）：它属于能力定义（产物 run.workDir），
+		// 节点执行时从缓存产物读。帧里再出现 work_dir 就是又开了一个来源。
+		H.check(
+			"assign 帧不带 work_dir（目录归能力定义）",
+			!Object.prototype.hasOwnProperty.call(assign || {}, "work_dir"),
+			JSON.stringify(Object.keys(assign || {})),
+		);
 
 		// 字段集合是协议契约：多一个少一个都要在这里显式改，不能悄悄漂移。
-		// （带 work_dir 时是 8 个；omitempty 保证没配置时不出现。）
 		const fields = Object.keys(assign).sort();
-		H.eq("assign 帧字段集合固定（8 个，含 work_dir）", fields.length, 8);
+		H.eq("assign 帧字段集合固定（7 个）", fields.length, 7);
 	}
 
 	// ack：assigned → acked

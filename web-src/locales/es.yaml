@@ -1215,8 +1215,6 @@ caps:
     none_selected: 'Selecciona al menos una máquina'
     no_nodes: 'Este espacio de nombres aún no tiene nodos'
     err: 'Fallo al desplegar: '
-    workdir: Directorio de trabajo (opcional)
-    workdir_hint: 'Vacío = un directorio nuevo por tarea. Esto es una **intención**: en el nodo mandan los workDirs por capacidad; este valor se usa solo si el nodo no tiene entrada para esa capacidad. Si no hay ninguno, la tarea falla (sin volver al directorio por defecto).'
   list:
     title: Capacidades
   form:
@@ -1251,6 +1249,8 @@ caps:
     timeout_hint: '0 = sin límite local, lo controla el lease del hub'
     err_invalid_name: 'El nombre debe tener 1–63 caracteres en minúsculas, dígitos, punto, guion bajo o guion, empezando por letra o dígito'
     err_timeout: 'El tiempo límite debe ser un entero entre 0 y 86400'
+    workdir: Directorio de trabajo
+    workdir_hint: 'Ruta absoluta que empieza por /; si no existe, la tarea falla directamente (no se vuelve a un directorio por defecto). Vacío = un directorio nuevo por tarea.'
   edges:
     title: Aristas
     new: Nueva arista
@@ -1311,9 +1311,9 @@ nodes:
     step1: Pulsa «Generar token» arriba para obtener un token de un solo uso
     step2: 'Elige una: contenedor (no ve los archivos del host) o instalación nativa (para ejecutar capacidades dentro de tu propio proyecto)'
     docker: 'Contenedor: no ve los archivos del host; las capacidades solo corren dentro del contenedor'
-    native: 'Nativa: corre como tu usuario en el host; qué directorios puede tocar se configura por capacidad en workDirs de node.yaml'
+    native: 'Nativa: corre como tu usuario en el host; en qué directorio corre cada capacidad lo decide el directorio de trabajo de su definición'
     yaml_title: node.yaml (para la instalación nativa)
-    yaml_intro: 'Usa esta configuración si instalas el binario del agente directamente. Los directorios que puede usar cada capacidad van en workDirs, con el nombre de la capacidad como clave:'
+    yaml_intro: 'Usa esta configuración si instalas el binario del agente directamente. Solo los cuatro campos bootstrap — las capacidades y sus directorios de trabajo se definen en la consola:'
     install_title: Comando de instalación nativa
     step3: Cuando el nodo esté en línea, despliega una capacidad en la página «Capacidades» y tendrá trabajo
   view_events: Ver eventos
@@ -1336,7 +1336,7 @@ nodes:
     copy_token: 'Copiar token'
     cmd_title: "Arrancar con un solo comando (recomendado)"
     copy_cmd: "Copiar comando"
-    yaml_intro: "O instala el binario del agente directamente y usa este node.yaml (los cuatro campos bootstrap — name / server / token / instances — más workDirs por capacidad):"
+    yaml_intro: "O instala el binario del agente directamente y usa este node.yaml (solo los cuatro campos bootstrap — name / server / token / instances; el directorio de trabajo se define en la capacidad):"
     yaml_title: 'Ejecuta esta línea en la máquina'
     copy_yaml: 'Copiar comando'
     yaml_hint: 'El token de este comando se muestra una sola vez: si lo pierdes, borra el nodo y vuelve a registrarlo.'
@@ -1349,16 +1349,11 @@ nodes:
       not_found: 'Este espacio de nombres ya no existe (puede haberse eliminado). Actualiza e inténtalo de nuevo.'
       forbidden: 'No tienes permiso para registrar nodos en este espacio de nombres'
       failed: 'Error al registrar: '
-    workdirs: Directorios de trabajo (opcional)
-    workdirs_hint: 'Estos directorios pasan a workDirs["*"] (prefijo de reserva) en node.yaml. Para fijar una capacidad a otro directorio, añade una línea por capacidad en el yaml.'
     install_title: Instalación nativa (en el host)
     install_intro: Un contenedor no ve los archivos del host. Para ejecutar capacidades dentro de tu propio proyecto (make test, git status, editar archivos in situ), instálalo en el host con este comando.
-    install_after: 'Instala el binario, escribe ~/.anotify/node.yaml (modo 600, contiene el token) y genera un servicio de usuario systemd. Tras instalarlo, edita workDirs de ese yaml por capacidad y reinicia el servicio. Ojo: el comando contiene el token, así que queda en el historial del shell.'
+    install_after: 'Instala el binario, escribe ~/.anotify/node.yaml (modo 600, contiene el token) y genera un servicio de usuario systemd. Ojo: el comando contiene el token, así que queda en el historial del shell.'
     copy_install: Copiar comando
-    yaml_workdirs_comment: 'Directorios de trabajo: las claves son nombres de capacidad, "*" es el prefijo de reserva. Sin esto = ninguno permitido (las capacidades solo corren en directorios temporales)'
-    yaml_workdirs_extra: 'Otros directorios: {dirs} (añade una línea con el formato de abajo para la capacidad que deba usarlos)'
-    yaml_workdirs_bycap: 'Por capacidad (tiene prioridad sobre "*" y anula el directorio que elijas en la consola para esa capacidad):'
-    yaml_workdirs_cap_ph: '<capacidad>'
+    yaml_workdir_note: 'El directorio de trabajo se define en la capacidad (página Capacidades, run.workDir) y baja con el despliegue; este yaml no lo necesita.'
 sources:
   detail: "Detalles"
   open_detail: "Abrir detalles"

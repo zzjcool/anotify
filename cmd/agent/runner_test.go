@@ -629,8 +629,9 @@ func TestBuildEnv(t *testing.T) {
 	}
 }
 
-// TestBuildEnvInjectsWorkDir：ANOTIFY_WORKDIR 必须是**这次任务**的工作目录
-// （脚本靠它 cd / 存中间产物）。
+// TestBuildEnvInjectsWorkDir：ANOTIFY_WORKDIR 必须等于**进程 cwd**（脚本靠它
+// cd / 存中间产物）；ANOTIFY_TASKDIR 则是产物文件所在的任务目录——能力声明了
+// run.workDir 之后两者会分开（见 workdir_test.go 的端到端用例）。
 func TestBuildEnvInjectsWorkDir(t *testing.T) {
 	j := job{TaskID: "t", Capability: "c", Version: 1}
 	got, err := buildEnv(nil, j, "/data/work/t", "/data/work/t")

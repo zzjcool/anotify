@@ -766,4 +766,8 @@ CREATE INDEX IF NOT EXISTS idx_deploy_artifact ON deployments(artifact_id);
 -- 安全：这一列是**控制台写的**，也就是说它来自中枢。节点侧必须自己做白名单校验
 -- （cmd/agent 的 workDirs），绝不能因为"中枢写了这个路径"就直接 chdir 过去 ——
 -- 那等于把宿主机的任意目录读写权交给中枢。
+-- 【已废弃 #289】工作目录改为**能力定义**里的 run.workDir（产物的一部分，随 digest 走）。
+--
+-- 这一列不再被任何代码读写，保留它只是为了让老库不需要 DROP COLUMN（SQLite 改表风险
+-- 大于收益，而且这列有 DEFAULT ''，留着不会影响任何写入）。新库建表也不再包含它。
 ALTER TABLE deployments ADD COLUMN work_dir TEXT NOT NULL DEFAULT '';

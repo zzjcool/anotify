@@ -1,18 +1,21 @@
 package main
 
-// 能力工作目录（迁移 19 → 能力级）在节点侧的验收。
+// 能力工作目录在节点侧的验收。
 //
-// 这是**安全边界**的落点，用例的重点不在"能跑"，而在"越界必须失败且原因可读"：
-// work_dir 来自中枢，节点必须按本机授权（node.yaml 的 workDirs / ANOTIFY_WORK_DIRS）
-// 放行。放行错了 = 谁改了中枢，谁就能让本机以 agent 身份在任意目录读写。
+// 这里的规则只有一条，但它是**产品决策**的落点：工作目录只有一个来源——
+// 能力定义里的 `spec.run.workDir`。节点侧的 node.yaml `workDirs`、
+// `ANOTIFY_WORK_DIRS`、中枢下发的 `work_dir` 全部作废（删掉了，不是改成兜底）。
 //
-// 解析顺序（契约 §2.3.1）：
+// 于是要钉住的是三种情况：
 //
-//	① workDirs[<能力名>] 存在 → 用它（压过中枢的 work_dir）
-//	② 否则兜底白名单（"*" / 旧列表）非空 → 用中枢的 work_dir，必须落在某个前缀内
-//	③ 否则 → 帧里没 work_dir 就用任务目录；有就失败
+//	① 没声明（空）  → cwd = 本次任务目录，与这个能力出现之前**逐字节一致**
+//	② 声明了        → cwd = 那个目录（解符号链接后），且那里真的能写文件
+//	③ 声明了但不可用 → 任务 **failed**，错误写清「哪个能力 / 哪个路径 / 该去改什么」
 //
-// 每条关键断言下面都写明了「去掉修复会红成什么样」——没有这条注释的断言，
+// ③ 必须失败而不是退回任务目录：静默退回会把「机器上没建这个目录」伪装成
+// 「脚本莫名报错」——脚本在空目录里找不到工具链配置，报出来的错跟真实原因无关。
+//
+// 每条关键断言下面都写了「去掉修复会红成什么样」——没有这条注释的断言，
 // 没法证明它真的在守东西。
 
 import (
@@ -45,114 +48,92 @@ func mkdirs(t *testing.T, dirs ...string) {
 	}
 }
 
-// TestResolveChdirDefaultsToTaskDir：控制台没指定 → 用本次任务目录（旧行为不变）。
+// jobWithWorkDir 造一个「产物里声明了 run.workDir」的 job。
+//
+// 直接改产物结构体（而不是写 YAML 再 Parse）是为了能精确造出「解析层本来会拒绝」
+// 的畸形输入（相对路径），那正是执行层第二道防线要挡的东西。
+func jobWithWorkDir(t *testing.T, body, workDir string) job {
+	t.Helper()
+	j := newRunnerJob(t, body)
+	j.Artifact.Spec.Run.WorkDir = workDir
+	j.Digest = mustDigest(t, j.Artifact) // 产物改了，digest 跟着变（只是日志字段）
+	return j
+}
+
+// TestResolveChdirDefaultsToTaskDir：能力没声明工作目录 → 用本次任务目录。
+//
+// 这是**旧行为**（这个能力出现之前所有任务的 cwd），必须逐字节保持：
+// 去掉「空 = taskDir」这条会让每个没声明目录的能力都 failed。
 func TestResolveChdirDefaultsToTaskDir(t *testing.T) {
-	got, err := resolveChdir(job{}, "/data/work/tsk_1")
+	j := job{Artifact: testScriptArtifact("demo.prep", 1, bashScript("true"))}
+	got, err := resolveChdir(j, "/data/work/tsk_1")
 	if err != nil {
 		t.Fatalf("resolveChdir: %v", err)
 	}
 	if got != "/data/work/tsk_1" {
-		t.Fatalf("空 work_dir 应回落到任务目录，得到 %q", got)
+		t.Fatalf("空 workDir 应回落到任务目录，得到 %q", got)
+	}
+
+	// 历史上「中枢给了 work_dir」也会走到这里；节点已经不看那个字段了（job 里
+	// 根本没有它），这条断言守的是「节点侧没有任何别的目录来源」。
+	if got, err := resolveChdir(job{}, "/data/work/tsk_2"); err != nil || got != "/data/work/tsk_2" {
+		t.Fatalf("没有产物时也应回落到任务目录，得到 (%q, %v)", got, err)
 	}
 }
 
-// TestResolveChdirAllowed：兜底白名单内的目录被采用（含它下面的子目录）。
-func TestResolveChdirAllowed(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "proj")
-	sub := filepath.Join(proj, "sub")
-	mkdirs(t, proj, sub)
+// TestResolveChdirUsesDeclaredDir：声明了 → 用它（解链后）。
+func TestResolveChdirUsesDeclaredDir(t *testing.T) {
+	proj := t.TempDir()
+	j := jobWithWorkDir(t, "true", proj)
 
-	allow := workDirsFrom(nil, []string{root})
-	for _, want := range []string{proj, sub} {
-		got, err := resolveChdir(job{WorkDir: want, WorkDirs: allow}, "/data/work/tsk_1")
-		if err != nil {
-			t.Fatalf("resolveChdir(%s): %v", want, err)
-		}
-		if got != realDir(t, want) {
-			t.Fatalf("cwd = %q, want %q", got, realDir(t, want))
-		}
-	}
-}
-
-// TestResolveChdirFallbackOnlyKeepsOldBehavior：只有兜底白名单（"*" 或旧列表）时，
-// 行为必须与能力级出现之前**逐条一致**。旧部署不会因为新特性改变语义。
-func TestResolveChdirFallbackOnlyKeepsOldBehavior(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "proj")
-	mkdirs(t, proj)
-	allow := workDirsFrom(nil, []string{root})
-	taskDir := "/data/work/tsk_1"
-
-	// ① 帧里有 work_dir，且在前缀内 → 用它。
-	//    去掉 dirAllowed 的调用（改成无条件采用）时这条仍绿，但下面 ③ 会红。
-	got, err := resolveChdir(job{Capability: "script.echo", WorkDir: proj, WorkDirs: allow}, taskDir)
+	got, err := resolveChdir(j, "/data/work/tsk_1")
 	if err != nil {
-		t.Fatalf("白名单内应放行: %v", err)
+		t.Fatalf("resolveChdir: %v", err)
 	}
+	// 去掉「非空就用产物目录」会红：got 会是任务目录。
 	if got != realDir(t, proj) {
-		t.Fatalf("cwd = %q, want %q", got, realDir(t, proj))
-	}
-
-	// ② 帧里没有 work_dir → 任务目录（与加 work_dir 之前完全一致）。
-	got, err = resolveChdir(job{Capability: "script.echo", WorkDirs: allow}, taskDir)
-	if err != nil {
-		t.Fatalf("空 work_dir + 兜底白名单: %v", err)
-	}
-	if got != taskDir {
-		t.Fatalf("cwd = %q, want %q（没给 work_dir 时不该被兜底白名单影响）", got, taskDir)
-	}
-
-	// ③ 帧里 work_dir 越界 → 失败，且**不退回**任务目录。
-	//    去掉白名单校验会红在这条：它会返回一个 cwd 而不是错误。
-	outside := t.TempDir()
-	if got, err := resolveChdir(job{Capability: "script.echo", WorkDir: outside, WorkDirs: allow}, taskDir); err == nil {
-		t.Fatalf("越界应失败，却返回 cwd=%q", got)
-	} else if !strings.Contains(err.Error(), "不在本机的 workDirs 白名单内") {
-		t.Fatalf("错误串应说明白名单，实际：%v", err)
-	}
-
-	// ④ 只有 "*" 的配置**不许**被当成「能力级目录」：
-	//    For 必须 false，否则每个能力都会被钉死在兜底目录上（而不是用中枢给的子目录）。
-	if dir, ok := allow.For("script.echo"); ok {
-		t.Fatalf(`只配了 "*" 时 For(%q) 必须 false，却返回 %q`, "script.echo", dir)
+		t.Fatalf("cwd = %q, want %q（能力声明的目录）", got, realDir(t, proj))
 	}
 }
 
-// TestResolveChdirRejects：越界 / 相对 / 不存在 / 不是目录 / 空白名单 一律失败，
-// 且**绝不**退回任务目录（那会把"没授权"伪装成"跑了但报错很奇怪"）。
+// TestResolveChdirRejects：不可用的目录一律失败，且**绝不**退回任务目录
+// （那会把「机器上没建目录」伪装成「脚本莫名报错」）。
 func TestResolveChdirRejects(t *testing.T) {
 	root := t.TempDir()
-	allowed := filepath.Join(root, "allowed")
-	outside := filepath.Join(root, "outside")
-	mkdirs(t, allowed, outside)
-	file := filepath.Join(allowed, "a.txt")
+	missing := filepath.Join(root, "nope")
+	file := filepath.Join(root, "a.txt")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	allow := workDirsFrom(nil, []string{allowed})
 
 	cases := []struct {
 		name string
-		j    job
-		want string // 错误里必须出现的关键词
+		dir  string
+		want []string // 错误里必须出现的片段
 	}{
-		{"白名单外", job{WorkDir: outside, WorkDirs: allow}, "不在本机的 workDirs 白名单内"},
-		{"白名单为空", job{WorkDir: allowed}, "未配置任何目录"},
-		{"相对路径", job{WorkDir: "proj", WorkDirs: allow}, "必须是绝对路径"},
-		{"不存在", job{WorkDir: filepath.Join(allowed, "nope"), WorkDirs: allow}, "不可用"},
-		{"是文件不是目录", job{WorkDir: file, WorkDirs: allow}, "不是目录"},
-		// 前缀匹配必须按路径分段：/a/bc 不能被 /a/b 放行
-		{"前缀相似但不是子目录", job{WorkDir: outside + "x", WorkDirs: workDirsFrom(nil, []string{outside})}, "不在本机的 workDirs 白名单内"},
+		// 任务卡钉死的文案：能力 X@Y + 路径 + 「不存在」+ 「这是能力定义里的 run.workDir」
+		{"目录不存在", missing, []string{"不存在", missing, "run.workDir"}},
+		{"是文件不是目录", file, []string{"不是目录", file}},
+		// 产物解析层会拒绝相对路径；这条是执行层的防御（产物也可能来自缓存文件）。
+		{"相对路径", "proj", []string{"不是绝对路径", "proj"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveChdir(tc.j, "/data/work/tsk_1")
+			got, err := resolveChdir(jobWithWorkDir(t, "true", tc.dir), "/data/work/tsk_1")
 			if err == nil {
-				t.Fatalf("应该拒绝，却返回了 cwd=%q", got)
+				t.Fatalf("应该失败，却返回 cwd=%q", got)
 			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("错误串应包含 %q，实际：%v", tc.want, err)
+			// 去掉存在性/目录检查会红：错误不会出现，任务会在一个不存在的地方 exec，
+			// 报错指向脚本而不是能力定义。
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("错误串应包含 %q，实际：%v", want, err)
+				}
+			}
+			// 错误里必须有能力身份（X@Y）：一个节点上跑着几十个能力，不说清是哪一个
+			// 等于让人去猜。去掉 capabilityRef 会红在这里。
+			if !strings.Contains(err.Error(), "demo.prep@1") {
+				t.Fatalf("错误串应含能力身份 demo.prep@1，实际：%v", err)
 			}
 			if got != "" {
 				t.Fatalf("被拒绝时不该返回目录，得到 %q", got)
@@ -161,157 +142,12 @@ func TestResolveChdirRejects(t *testing.T) {
 	}
 }
 
-// TestResolveChdirSymlinkEscape：白名单内放一个指向外部的软链 → 必须被拒。
+// TestResolveChdirSymlinkResolved：声明的路径是软链 → 用解链后的真路径。
 //
-// 这是最容易被忽略的绕过方式：`ln -s /etc /allowed/etc` 之后，
-// 只做字符串前缀匹配的实现会把 /allowed/etc 当成"在 /allowed 底下"。
-func TestResolveChdirSymlinkEscape(t *testing.T) {
-	root := t.TempDir()
-	allowed := filepath.Join(root, "allowed")
-	outside := filepath.Join(root, "outside")
-	mkdirs(t, allowed, outside)
-	link := filepath.Join(allowed, "escape")
-	if err := os.Symlink(outside, link); err != nil {
-		t.Skipf("symlink 不可用：%v", err)
-	}
-
-	got, err := resolveChdir(job{WorkDir: link, WorkDirs: workDirsFrom(nil, []string{allowed})}, "/data/work/tsk_1")
-	if err == nil {
-		t.Fatalf("软链逃逸必须被拒，却返回 cwd=%q", got)
-	}
-	if !strings.Contains(err.Error(), "不在本机的 workDirs 白名单内") {
-		t.Fatalf("错误串应说明白名单，实际：%v", err)
-	}
-}
-
-// TestResolveChdirCapabilityOverridesConsoleWorkDir：本机为这个能力配了目录 →
-// 中枢的 work_dir 被**忽略**（哪怕它在白名单外、甚至根本不存在）。
-//
-// 这就是「机器上的 yaml 才是事实」：中枢表达意图，授权在节点。
-func TestResolveChdirCapabilityOverridesConsoleWorkDir(t *testing.T) {
-	host := t.TempDir()
-	// 中枢想去的地方：没建，也不在兜底白名单里。
-	consoleWant := filepath.Join(t.TempDir(), "console-wants-here")
-	// 注意兜底白名单里**没有** host：能力级条目是独立授权，不该再被 "*" 的前缀卡一遍。
-	j := job{
-		Capability: "script.echo",
-		WorkDir:    consoleWant,
-		WorkDirs:   workDirsFrom(map[string][]string{"script.echo": {host}}, []string{"/srv/projects"}),
-	}
-
-	got, err := resolveChdir(j, "/data/work/tsk_1")
-	if err != nil {
-		t.Fatalf("能力级目录应直接用，却报错：%v", err)
-	}
-	// 去掉分支①（能力级优先）会红：中枢 work_dir 不在白名单 → 返回错误而不是 host。
-	if got != realDir(t, host) {
-		t.Fatalf("cwd = %q, want %q（能力级目录必须压过中枢 work_dir）", got, realDir(t, host))
-	}
-}
-
-// TestResolveChdirOtherCapabilityDoesNotApply：别的能力配了目录，不该影响这个能力。
-//
-// 查表必须是**精确匹配 + 原样 key**：脚本生成的 key 就是产物名（[a-z0-9._-]），
-// 任何归一化（大小写/下划线）都会让「配了却不生效」变成查不出来的谜。
-func TestResolveChdirOtherCapabilityDoesNotApply(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "proj")
-	mkdirs(t, proj)
-	j := job{
-		Capability: "build.repo",
-		WorkDir:    proj,
-		WorkDirs: workDirsFrom(map[string][]string{
-			"script.echo": {t.TempDir()}, // 不是本能力
-		}, []string{root}),
-	}
-
-	got, err := resolveChdir(j, "/data/work/tsk_1")
-	if err != nil {
-		t.Fatalf("应走兜底白名单: %v", err)
-	}
-	// 去掉「按能力名精确查表」会红：若把 script.echo 的目录当成本次目录，
-	// got 会是那个临时目录而不是中枢给的 proj。
-	if got != realDir(t, proj) {
-		t.Fatalf("cwd = %q, want %q（只应按本能力名查表）", got, realDir(t, proj))
-	}
-	// 反向自证：改成 script.echo 就该命中能力级条目。
-	j.Capability = "script.echo"
-	j.Artifact = nil
-	if _, ok := j.WorkDirs.For("script.echo"); !ok {
-		t.Fatal(`For("script.echo") 应为 true（yaml 里明明配了）`)
-	}
-}
-
-// TestResolveChdirCapabilityNameFromArtifact：能力名以**产物**为准，与
-// ANOTIFY_CAPABILITY 同源（assign 帧里的名字只是旁证）。
-func TestResolveChdirCapabilityNameFromArtifact(t *testing.T) {
-	host := t.TempDir()
-	j := job{
-		Capability: "console.alias", // 与产物不一致：产物名才是真的
-		Artifact:   testScriptArtifact("demo.prep", 1, bashScript("true")),
-		WorkDirs:   workDirsFrom(map[string][]string{"demo.prep": {host}}, nil),
-	}
-
-	got, err := resolveChdir(j, "/data/work/tsk_1")
-	if err != nil {
-		t.Fatalf("resolveChdir: %v", err)
-	}
-	// 去掉 capabilityOf（直接拿 j.Capability 查表）会红：查不到 demo.prep → 回落到
-	// 任务目录（帧里没 work_dir）→ got 会是 /data/work/tsk_1。
-	if got != realDir(t, host) {
-		t.Fatalf("cwd = %q, want %q（必须用产物里的能力名查表）", got, realDir(t, host))
-	}
-}
-
-// TestResolveChdirCapabilityDirInvalid：能力级目录**本身**坏掉时必须 failed，
-// 而且错误要点名 node.yaml 里的哪一条；绝不退回中枢给的目录（那会把配置错误藏起来）。
-func TestResolveChdirCapabilityDirInvalid(t *testing.T) {
-	root := t.TempDir()
-	file := filepath.Join(root, "a.txt")
-	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// 中枢给的目录是**合格**的（在兜底白名单内）：它仍然不能成为退路。
-	elsewhere := filepath.Join(root, "elsewhere")
-	mkdirs(t, elsewhere)
-
-	cases := []struct {
-		name string
-		dir  string
-		want []string // 错误里必须出现的片段
-	}{
-		{"不存在", filepath.Join(root, "nope"), []string{`workDirs["demo.prep"]`, "不可用"}},
-		{"是文件不是目录", file, []string{`workDirs["demo.prep"]`, "不是目录"}},
-		{"相对路径", "proj", []string{`workDirs["demo.prep"]`, "必须是绝对路径"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			j := job{
-				Capability: "demo.prep",
-				WorkDir:    elsewhere,
-				WorkDirs:   workDirsFrom(map[string][]string{"demo.prep": {tc.dir}}, []string{root}),
-			}
-			got, err := resolveChdir(j, "/data/work/tsk_1")
-			if err == nil {
-				t.Fatalf("应该失败，却返回 cwd=%q", got)
-			}
-			// 去掉 checkWorkDir 的存在性/目录检查会红在前两条：错误不会出现，
-			// 任务会在一个不存在的地方 exec，报错指向脚本而不是 node.yaml。
-			for _, want := range tc.want {
-				if !strings.Contains(err.Error(), want) {
-					t.Fatalf("错误串应包含 %q，实际：%v", want, err)
-				}
-			}
-			if got != "" {
-				t.Fatalf("失败时不该返回目录，得到 %q", got)
-			}
-		})
-	}
-}
-
-// TestResolveChdirSymlinkCapabilityDir：能力级配置写成软链 → 解链后执行
-// （判断的和使用的必须是同一个路径；项目目录常常是软链）。
-func TestResolveChdirSymlinkCapabilityDir(t *testing.T) {
+// 判断的和使用的必须是同一个路径：不解链会让 ANOTIFY_WORKDIR / 日志里的目录
+// 与实际执行目录不是同一个字符串（项目目录常常是软链，例如 /home/me/proj →
+// /data/proj）。去掉 EvalSymlinks 会红在这里（返回的是 link 本身）。
+func TestResolveChdirSymlinkResolved(t *testing.T) {
 	root := t.TempDir()
 	realProj := filepath.Join(root, "real-project")
 	mkdirs(t, realProj)
@@ -320,132 +156,148 @@ func TestResolveChdirSymlinkCapabilityDir(t *testing.T) {
 		t.Skipf("symlink 不可用：%v", err)
 	}
 
-	j := job{
-		Capability: "script.echo",
-		WorkDirs:   workDirsFrom(map[string][]string{"script.echo": {link}}, nil),
-	}
-	got, err := resolveChdir(j, "/data/work/tsk_1")
+	got, err := resolveChdir(jobWithWorkDir(t, "true", link), "/data/work/tsk_1")
 	if err != nil {
 		t.Fatalf("软链指向真目录时不该失败: %v", err)
 	}
-	// 返回未解链的 link 会红：调用方会把 cwd 报给中枢、也写进 ANOTIFY_WORKDIR，
-	// 那和实际执行目录不是一个字符串。
 	if got != realProj {
 		t.Fatalf("cwd = %q, want 解链后的 %q", got, realProj)
 	}
-}
-
-// TestRunJobUsesConfiguredWorkDir：端到端跑一次（兜底白名单路径），验证
-//   - 进程 cwd 就是控制台指定的目录
-//   - ANOTIFY_WORKDIR == cwd（历史不变式）
-//   - ANOTIFY_TASKDIR 仍指向任务目录（产物文件在那儿）
-//   - 产物文件**没有**被写进用户的项目目录
-func TestRunJobUsesConfiguredWorkDir(t *testing.T) {
-	proj := t.TempDir()
-
-	j := newRunnerJob(t, `
-printf 'cwd=%s\n' "$(pwd)"
-printf 'workdir=%s\n' "$ANOTIFY_WORKDIR"
-printf 'taskdir=%s\n' "$ANOTIFY_TASKDIR"
-`)
-	j.WorkDir = proj
-	j.WorkDirs = workDirsFrom(nil, []string{filepath.Dir(proj)})
-
-	res := runJob(t.Context(), j)
-	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q, err = %q\nout: %s", res.Status, res.Err, res.Output)
-	}
-	out := res.Output
-	wantDir := realDir(t, proj)
-	for _, want := range []string{
-		"cwd=" + wantDir,
-		"workdir=" + wantDir,
-		"taskdir=" + workDirOf(j),
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("输出里缺少 %q：\n%s", want, out)
-		}
-	}
-
-	// 项目目录必须干净：产物文件只落在任务目录里。
-	entries, err := os.ReadDir(proj)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Fatalf("用户目录被产物污染了：%v（产物应只落在 ANOTIFY_TASKDIR）", names)
+	if got != realDir(t, link) {
+		t.Fatalf("cwd = %q, want %q（解链后两者必须相等）", got, realDir(t, link))
 	}
 }
 
-// TestRunJobUsesCapabilityWorkDir：端到端 —— cwd 是 node.yaml 给这个能力的目录，
-// 中枢帧里的 work_dir（一个不存在的地方）完全不生效。
-func TestRunJobUsesCapabilityWorkDir(t *testing.T) {
+// TestRunJobWorkDirEndToEnd：端到端跑一次，验证
+//   - 进程 cwd 就是能力声明的目录
+//   - 那个目录里**真的能写文件**（不是个只读/假目录）
+//   - $ANOTIFY_WORKDIR == cwd（历史不变式，脚本里普遍写着 cd "$ANOTIFY_WORKDIR"）
+//   - $ANOTIFY_TASKDIR 仍指向任务目录（产物文件在那儿）
+//   - 产物文件**没有**被写进用户的目录
+func TestRunJobWorkDirEndToEnd(t *testing.T) {
 	proj := t.TempDir()
-	consoleWant := filepath.Join(t.TempDir(), "console-wants-here")
 
-	j := newRunnerJob(t, `
+	j := jobWithWorkDir(t, `
 printf 'cwd=%s\n' "$(pwd)"
 printf 'workdir=%s\n' "$ANOTIFY_WORKDIR"
 printf 'taskdir=%s\n' "$ANOTIFY_TASKDIR"
-`)
-	j.WorkDir = consoleWant
-	j.WorkDirs = workDirsFrom(map[string][]string{"demo.prep": {proj}}, nil)
+printf 'artifact=%s\n' "$(ls run.sh)"   # 产物文件在任务目录里，这里该看不到
+echo written > "$(pwd)/proof.txt"
+`, proj)
 
 	res := runJob(t.Context(), j)
-	// 去掉能力级分支会红满：中枢的 work_dir 不在白名单（白名单为空）→ failed。
 	if res.Status != statusSucceeded {
 		t.Fatalf("status = %q, err = %q\nout: %s", res.Status, res.Err, res.Output)
 	}
 	wantDir := realDir(t, proj)
 	for _, want := range []string{
 		"cwd=" + wantDir,
-		"workdir=" + wantDir, // ANOTIFY_WORKDIR == cwd 的历史不变式继续成立
+		"workdir=" + wantDir, // 去掉 buildEnv 里 ANOTIFY_WORKDIR=cwd 会红
 		"taskdir=" + workDirOf(j),
 	} {
 		if !strings.Contains(res.Output, want) {
 			t.Fatalf("输出里缺少 %q：\n%s", want, res.Output)
 		}
 	}
-
-	// 用户目录仍然干净：产物文件只在任务目录里展开。
-	entries, err := os.ReadDir(proj)
-	if err != nil {
-		t.Fatal(err)
+	// 产物在任务目录，不在用户目录：列 run.sh 必须失败（ls 报错 → artifact= 空）。
+	if strings.Contains(res.Output, "artifact=run.sh") {
+		t.Fatalf("产物文件跑到了用户目录里：\n%s", res.Output)
 	}
-	if len(entries) != 0 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Fatalf("用户目录被产物污染了：%v", names)
+
+	// 「真的能写」：脚本写下的文件确实落在用户目录里。
+	if b, err := os.ReadFile(filepath.Join(proj, "proof.txt")); err != nil {
+		t.Fatalf("用户目录里没有写出的文件（cwd 可能不是它）：%v", err)
+	} else if strings.TrimSpace(string(b)) != "written" {
+		t.Fatalf("proof.txt 内容 = %q", string(b))
 	}
 }
 
-// TestRunJobFailsWhenWorkDirNotAllowed：越界的 work_dir 必须让任务 failed，
-// 而且错误原因要能看懂（运维据此知道是"没授权"，不是"脚本挂了"）。
-func TestRunJobFailsWhenWorkDirNotAllowed(t *testing.T) {
-	proj := t.TempDir()
-	j := newRunnerJob(t, `echo should-not-run`)
-	j.WorkDir = proj
-	j.WorkDirs = workDirsFrom(nil, []string{filepath.Join(os.TempDir(), "somewhere-else")})
+// TestRunJobTaskDirWhenNoWorkDir：没声明目录时端到端仍是任务目录，且
+// ANOTIFY_WORKDIR == cwd == ANOTIFY_TASKDIR（旧行为完整保留）。
+func TestRunJobTaskDirWhenNoWorkDir(t *testing.T) {
+	j := newRunnerJob(t, `
+printf 'cwd=%s\n' "$(pwd)"
+printf 'workdir=%s\n' "$ANOTIFY_WORKDIR"
+printf 'taskdir=%s\n' "$ANOTIFY_TASKDIR"
+printf 'artifact=%s\n' "$(ls run.sh)"
+`)
+	// 中枢历史上会下发 work_dir；job 里已经没有这个字段了，这里显式确认：
+	// 产物的 workDir 留空时，即使节点上「碰巧」还有别的目录配置也不会生效。
+	j.Artifact.Spec.Run.WorkDir = ""
+
+	res := runJob(t.Context(), j)
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, err = %q\nout: %s", res.Status, res.Err, res.Output)
+	}
+	wantDir := workDirOf(j)
+	for _, want := range []string{
+		"cwd=" + wantDir,
+		"workdir=" + wantDir,
+		"taskdir=" + wantDir,
+		"artifact=run.sh",
+	} {
+		if !strings.Contains(res.Output, want) {
+			t.Fatalf("输出里缺少 %q：\n%s", want, res.Output)
+		}
+	}
+	// 成功后会删掉任务目录，res.WorkDir 仍要指得出它（排障用）。
+	if res.WorkDir != wantDir {
+		t.Fatalf("res.WorkDir = %q, want %q", res.WorkDir, wantDir)
+	}
+}
+
+// TestRunJobFailsWhenWorkDirMissing：目录不存在 → 任务 failed，脚本**不执行**，
+// 错误串说得清「能力 / 路径 / 不存在」。
+//
+// 去掉「不可用就失败」而退回任务目录会红：status 会变成 succeeded、
+// 输出里会出现 should-not-run。
+func TestRunJobFailsWhenWorkDirMissing(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-created-yet")
+	j := jobWithWorkDir(t, "echo should-not-run", missing)
+
+	res := runJob(t.Context(), j)
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q, want failed（目录不存在不能静默退回任务目录）", res.Status)
+	}
+	for _, want := range []string{"不存在", missing, "run.workDir", "demo.prep@1"} {
+		if !strings.Contains(res.Err, want) {
+			t.Fatalf("失败原因应包含 %q，实际：%q", want, res.Err)
+		}
+	}
+	if strings.Contains(res.Output, "should-not-run") {
+		t.Fatalf("目录不可用时脚本不该被执行，却看到了输出：%s", res.Output)
+	}
+}
+
+// TestRunJobFailsWhenWorkDirIsFile：声明的是文件 → failed。
+func TestRunJobFailsWhenWorkDirIsFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "a.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	j := jobWithWorkDir(t, "echo should-not-run", file)
 
 	res := runJob(t.Context(), j)
 	if res.Status != statusFailed {
 		t.Fatalf("status = %q, want failed", res.Status)
 	}
-	if !strings.Contains(res.Err, "workDirs 白名单") {
-		t.Fatalf("失败原因应说明白名单，实际：%q", res.Err)
-	}
-	// 错误里要给出**可照抄的下一步**：按能力配置的写法（那是推荐做法）。
-	// 去掉这段提示会红：运维只知道"不在白名单"，不知道该改哪一行。
-	if !strings.Contains(res.Err, `workDirs: {demo.prep: <目录>}`) {
-		t.Fatalf("失败原因应给出按能力配置的示例，实际：%q", res.Err)
+	if !strings.Contains(res.Err, "不是目录") || !strings.Contains(res.Err, file) {
+		t.Fatalf("失败原因应说明「%s 不是目录」，实际：%q", file, res.Err)
 	}
 	if strings.Contains(res.Output, "should-not-run") {
-		t.Fatalf("越界时脚本不该被执行，却看到了输出：%s", res.Output)
+		t.Fatalf("目录不可用时脚本不该被执行，却看到了输出：%s", res.Output)
+	}
+}
+
+// TestRunJobFailsWhenWorkDirRelative：相对路径（解析层本会拒绝，执行层兜底）→ failed。
+func TestRunJobFailsWhenWorkDirRelative(t *testing.T) {
+	j := jobWithWorkDir(t, "echo should-not-run", "relative/proj")
+
+	res := runJob(t.Context(), j)
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q, want failed（相对路径的含义取决于 agent 的 cwd，不能用）", res.Status)
+	}
+	if !strings.Contains(res.Err, "不是绝对路径") {
+		t.Fatalf("失败原因应说明必须是绝对路径，实际：%q", res.Err)
 	}
 }

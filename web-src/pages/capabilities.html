@@ -442,6 +442,24 @@
               </div>
             </div>
 
+            <!-- 工作目录是**能力定义**的一部分（run.workDir），不是部署参数、
+                 也不是节点上的本地配置：同一份能力定义部署到哪台机器都在那个
+                 目录里跑。留空 = 每次任务一个独立目录。
+                 这里**不校验**路径合法性：什么算合法路径的定义留在后端一处
+                 （绝对路径 / 不含 .. / 不含 NUL / ≤1024 字节），前端只 trim。 -->
+            <div class="mt-3">
+              <label class="tpl-label" for="cap-workdir">{{t "caps.form.workdir"}}</label>
+              <input
+                id="cap-workdir"
+                class="input mono w-full text-sm"
+                oninput="syncWorkdirEcho()"
+                placeholder="/home/me/project（留空 = 每次任务一个独立目录）"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.workdir_hint"}}</p>
+            </div>
+
             <!-- 模板要求的预装命令：机器上缺了部署会失败，所以放在参数上方显眼处 -->
             <p id="tpl-requires" class="tpl-hint mt-3"></p>
 
@@ -467,6 +485,11 @@
               <pre id="script-pre" class="yaml-box mono"></pre>
               <textarea id="script-input" class="input mono w-full text-xs hidden" rows="12"></textarea>
               <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
+              <!-- 工作目录也是 run 的一部分，跟着只读脚本一起展示：留空显示「—」
+                   （= 每次任务一个独立目录），填了就显示绝对路径。 -->
+              <p class="tpl-hint mt-1">
+                {{t "caps.form.workdir"}}<code id="cap-workdir-echo" class="mono ml-1"></code>
+              </p>
             </div>
 
             <!-- 高级出口：手写 paramsSchema。
@@ -514,18 +537,6 @@
           <div id="deploy-tags-wrap" class="mb-3 hidden">
             <p class="tpl-hint mb-1">{{t "caps.deploy.tag_pick"}}</p>
             <div id="deploy-tags" class="dep-taglist"></div>
-          </div>
-
-          <div class="mb-3">
-            <p class="tpl-hint mb-1">{{t "caps.deploy.workdir"}}</p>
-            <input
-              id="deploy-workdir"
-              class="input w-full text-sm"
-              placeholder="/home/me/project（留空 = 每次任务一个独立目录）"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <p id="deploy-workdir-hint" class="tpl-hint mt-1">{{t "caps.deploy.workdir_hint"}}</p>
           </div>
 
           <p class="tpl-hint mb-1">{{t "caps.deploy.pick_hint"}}</p>
@@ -1089,6 +1100,8 @@
         document.getElementById("cap-name").value = "";
         document.getElementById("cap-display-name").value = "";
         document.getElementById("cap-timeout").value = "";
+        document.getElementById("cap-workdir").value = "";
+        syncWorkdirEcho();
         // 脏标记也要清：新一次新建又没被人碰过，超时应该重新跟模板走
         TIMEOUT_DIRTY = false;
         TPL_SEL = null;
@@ -1099,6 +1112,16 @@
       }
       function closeCapModal() {
         document.getElementById("cap-modal").classList.remove("open");
+      }
+
+      // syncWorkdirEcho 把工作目录回显到只读区（脚本旁边）。
+      // 留空显示「—」而不是空白：空白看起来像「没这个字段」，而这行存在的意义
+      // 正是告诉人「工作目录属于能力定义」（空 = 每次任务一个独立目录）。
+      function syncWorkdirEcho() {
+        const inp = document.getElementById("cap-workdir");
+        const echo = document.getElementById("cap-workdir-echo");
+        if (!inp || !echo) return;
+        echo.textContent = inp.value.trim() || "—";
       }
 
       // tplGoStep 切步骤。名字/显示名/超时不在这里清 ——
@@ -1397,6 +1420,9 @@
           }
         }
 
+        // 工作目录（能力定义的一部分）：只 trim，合法性判定留在后端一处。
+        const workDir = String(document.getElementById("cap-workdir").value || "").trim();
+
         const script = SCRIPT_TEXT;
         // 无条件校验，而且**不 trim**：后端是 strings.HasPrefix(body, "#!")、
         // mock 是 body.startsWith("#!")，两边都不看空白。这里比后端宽就等于
@@ -1406,6 +1432,16 @@
           toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"));
           return;
         }
+
+        const run = {
+          entrypoint: "run.sh",
+          files: { "run.sh": script },
+          timeoutSec: timeoutSec,
+          env: {},
+        };
+        // 工作目录跟其它 run 字段放一起（不属于部署参数）：
+        // 空就不带 —— 等于「每次任务一个独立目录」，后端按缺省处理。
+        if (workDir) run.workDir = workDir;
 
         const displayName =
           document.getElementById("cap-display-name").value.trim() || tpl.displayName || "";
@@ -1439,12 +1475,7 @@
           displayName: displayName,
           paramsSchema: paramsSchema,
           outputs: tpl.outputs || [],
-          run: {
-            entrypoint: "run.sh",
-            files: { "run.sh": script },
-            timeoutSec: timeoutSec,
-            env: {},
-          },
+          run: run,
           requires: tpl.requires || [],
         };
         // body 里也带一份 namespaceId：/v1/capabilities 在 NS_PATHS 里，
@@ -1487,15 +1518,6 @@
         // 关掉时清空、打开时也清空：残留上一次的「已排队」会让人以为这次也发了
         document.getElementById("deploy-results").replaceChildren();
         document.getElementById("deploy-results").classList.add("hidden");
-        // 回填：同一个能力在不同机器上的目录可能不同，取第一条非空值做默认提示
-        // （用户改了就会覆盖所有选中机器 —— 这是部署面板的语义：一次对一组机器下同一份期望）。
-        const wdEl = document.getElementById("deploy-workdir");
-        if (wdEl) {
-          const existing = DEPS.find(
-            (r) => depCapId(r) === c.id && (r.workDir || r.work_dir || "").trim(),
-          );
-          wdEl.value = existing ? String(existing.workDir || existing.work_dir) : "";
-        }
         renderDeployPanel();
         document.getElementById("deploy-modal").classList.add("open");
       }
@@ -1641,13 +1663,8 @@
         try {
           // 请求体只带 capabilityId + nodeIds（不带 digest / tags）：
           // 服务端取该能力的最新产物，前端不该决定版本。
+          // 工作目录不在部署参数里（它属于能力定义，见 createCapability）。
           const body = { capabilityId: cap.id, nodeIds: nodeIds };
-          // 工作目录（迁移 19）：空 = 用默认的每任务独立目录，行为与之前完全一致。
-          // 前端**不校验**它是不是绝对路径（后端会校验并给 code=invalid_work_dir），
-          // 这里只做 trim —— 把「什么算合法路径」的定义留在后端一处。
-          const wdEl = document.getElementById("deploy-workdir");
-          const workDir = wdEl ? wdEl.value.trim() : "";
-          if (workDir) body.workDir = workDir;
           const ns = scopeNS();
           if (ns) body.namespaceId = ns;
           const res = await Anotify.api(depsURL(), {

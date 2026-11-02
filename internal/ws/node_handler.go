@@ -139,15 +139,9 @@ func (h *NodeHandler) hub() *NodeHub {
 // （`go test -race` 会报）。生产装配（internal/server/mux.go）本来就会用共享的 hub
 // 覆盖这个字段，所以提前建一个不带来任何行为差异。
 func NewNodeHandler(st NodeStore) *NodeHandler {
-	hub := NewNodeHub()
-	// 自动接线「能力的工作目录」解析（迁移 19）：*store.DB 同时实现 WorkDirResolver。
-	// 用断言而不是显式赋值，是为了让不需要它的调用方（测试 fake）什么都不做也能拿到 nil。
-	if wd, ok := st.(WorkDirResolver); ok {
-		hub.WorkDirs = wd
-	}
 	return &NodeHandler{
 		Store: st,
-		Hub:   hub,
+		Hub:   NewNodeHub(),
 		AcceptOptions: &websocket.AcceptOptions{
 			// 自托管场景：节点可能从不同源连接。鉴权由 opaque token 保证
 			// （token 本身就是凭据，不依赖 Origin）。

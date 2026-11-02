@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -55,6 +56,12 @@ const (
 	MaxFilePathLen = 255
 	// MaxNameLen 是能力名长度上限（与节点名同口径）。
 	MaxNameLen = 63
+	// MaxWorkDirLen 是 run.workDir 的长度上限。
+	//
+	// PATH_MAX 在 Linux 上是 4096，但那是**含相对路径解析后**的中转缓冲；
+	// 一份能力的人读声明写到 1024 字符已远超任何真实项目目录，再长基本是
+	// 复制粘贴事故，早报错比让节点在 chdir 时报 ENAMETOOLONG 好查。
+	MaxWorkDirLen = 1024
 )
 
 var (
@@ -98,6 +105,15 @@ type Run struct {
 	TimeoutSec int `json:"timeoutSec,omitempty" yaml:"timeoutSec,omitempty"`
 	// Env 是产物自带的环境变量；ANOTIFY_ 前缀保留给契约变量。
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
+	// WorkDir 是能力声明的执行目录（绝对路径）。空 = 每次任务一个独立目录。
+	//
+	// 为什么放在产物里而不是节点配置里："这个能力要在哪个目录里跑" 是能力的
+	// 一部分（跟入口文件、超时一样决定它怎么跑），定义它的地方只有一个——控制台
+	// 的能力定义。节点侧再留一份白名单/映射，就会出现两份会分叉的事实，而分叉的
+	// 症状是 "控制台改了却没生效"，极难查。
+	//
+	// 字段顺序参与 digest，所以只能加在最后（插中间会让所有已有产物的 digest 失效）。
+	WorkDir string `json:"workDir,omitempty" yaml:"workDir,omitempty"`
 }
 
 // Error 汇总一份产物上的全部问题。
@@ -289,6 +305,12 @@ func validateRun(run *Run) []string {
 			MaxTimeoutSec, run.TimeoutSec))
 	}
 
+	// workDir 在这里只做**静态**校验（能不能表达成一个安全的绝对路径）；
+	// 目录存不存在、是不是目录只有节点知道，那是执行层的失败（见 cmd/agent）。
+	if msg := validateWorkDir(run.WorkDir); msg != "" {
+		p = append(p, msg)
+	}
+
 	envKeys := make([]string, 0, len(run.Env))
 	for k := range run.Env {
 		envKeys = append(envKeys, k)
@@ -330,6 +352,38 @@ func validateFilePath(name string) string {
 		}
 		if seg == "." || seg == ".." {
 			return fmt.Sprintf("文件路径 %q 含 %q 路径段", name, seg)
+		}
+	}
+	return ""
+}
+
+// validateWorkDir 校验 run.workDir，返回 "<错误码>: <说明>"，空串表示合法。
+//
+// 空值是合法的（= 每次任务一个独立目录），除此之外要求一个**绝对的、没有
+// `..` 段的** POSIX 路径：
+//
+//   - 绝对路径：节点会直接拿它当 cwd，相对路径的含义取决于 agent 进程的 cwd，
+//     那是运维看不见的上下文，等于让能力跑在一个随机目录里；
+//   - 不含 `..`：声明里出现上跳段几乎都是拼接事故；把它挡在定义期，节点就不必
+//     去猜用户到底想去哪儿（也避免了"声明 /a/../etc 却能绕过审计"这类怪事）；
+//   - 不含 NUL：NUL 会被 exec/chdir 的底层 syscall 截断，是典型的路径伪造手法。
+func validateWorkDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if len(dir) > MaxWorkDirLen {
+		return fmt.Sprintf("invalid_work_dir: run.workDir 有 %d 字节，上限 %d", len(dir), MaxWorkDirLen)
+	}
+	if strings.ContainsRune(dir, 0) {
+		return fmt.Sprintf("invalid_work_dir: run.workDir %q 含 NUL 字节", dir)
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Sprintf("work_dir_not_absolute: run.workDir 必须是绝对路径，实际 %q"+
+			"（留空 = 每次任务一个独立目录）", dir)
+	}
+	for _, seg := range strings.Split(dir, "/") {
+		if seg == ".." {
+			return fmt.Sprintf("invalid_work_dir: run.workDir %q 含 \"..\" 路径段", dir)
 		}
 	}
 	return ""

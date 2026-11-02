@@ -185,7 +185,7 @@ func TestCreateDeploymentIdempotent(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	node, art, _ := dpDeployFixture(t, db, nsID)
 
-	first, err := db.CreateDeployment(ctx, nsID, node.ID, art.ID, "")
+	first, err := db.CreateDeployment(ctx, nsID, node.ID, art.ID)
 
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
@@ -200,7 +200,7 @@ func TestCreateDeploymentIdempotent(t *testing.T) {
 	}
 
 	// 控制台又点了一次部署（幂等）
-	again, err := db.CreateDeployment(ctx, nsID, node.ID, art.ID, "")
+	again, err := db.CreateDeployment(ctx, nsID, node.ID, art.ID)
 
 	if err != nil {
 		t.Fatalf("重复部署应幂等，got err: %v", err)
@@ -217,7 +217,7 @@ func TestCreateDeploymentIdempotent(t *testing.T) {
 
 	// 同节点换一份产物（新 digest）是**另一行**：旧行是历史，不该被覆盖
 	art2 := dpArtifact(t, db, nsID, art.CapabilityID, dpDigest("a7"), `{"v":2}`)
-	other, err := db.CreateDeployment(ctx, nsID, node.ID, art2.ID, "")
+	other, err := db.CreateDeployment(ctx, nsID, node.ID, art2.ID)
 
 	if err != nil {
 		t.Fatalf("deploy new artifact: %v", err)
@@ -238,7 +238,7 @@ func TestDeleteDeploymentRemovesRow(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	node, art, cap := dpDeployFixture(t, db, nsID)
 
-	dp, err := db.CreateDeployment(ctx, nsID, node.ID, art.ID, "")
+	dp, err := db.CreateDeployment(ctx, nsID, node.ID, art.ID)
 
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
@@ -290,7 +290,7 @@ func TestListDeploymentsFilters(t *testing.T) {
 	var pairs []pair
 	for _, n := range []*Node{n1, n2} {
 		for _, a := range []*Artifact{artA, artB} {
-			if _, err := db.CreateDeployment(ctx, nsID, n.ID, a.ID, ""); err != nil {
+			if _, err := db.CreateDeployment(ctx, nsID, n.ID, a.ID); err != nil {
 				t.Fatalf("create deployment: %v", err)
 			}
 			pairs = append(pairs, pair{node: n.ID, art: a.ID})
@@ -327,57 +327,5 @@ func TestListDeploymentsFilters(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestDeploymentWorkDir 覆盖迁移 19 的 work_dir：存什么读什么 + 没有部署时返回空。
-func TestDeploymentWorkDir(t *testing.T) {
-	ctx := context.Background()
-	db := newTestDB(t)
-	nsID, _ := newTestNS(t, db)
-	node, art, _ := dpDeployFixture(t, db, nsID)
-	nodeID, artID := node.ID, art.ID
-
-	// ① 没有部署记录 → 空串、不报错（"没有部署"是正常状态，不该让派发失败）
-	got, err := db.DeploymentWorkDir(ctx, nsID, nodeID, art.CapabilityID)
-	if err != nil {
-		t.Fatalf("无部署时应返回空、不报错：%v", err)
-	}
-	if got != "" {
-		t.Fatalf("无部署时 work_dir = %q, want 空", got)
-	}
-
-	// ② 建一条带 work_dir 的部署 → 读回来一致
-	dp, err := db.CreateDeployment(ctx, nsID, nodeID, artID, "/home/me/proj")
-	if err != nil {
-		t.Fatalf("create deployment: %v", err)
-	}
-	if dp.WorkDir != "/home/me/proj" {
-		t.Fatalf("返回的 deployment.workDir = %q", dp.WorkDir)
-	}
-	got, err = db.DeploymentWorkDir(ctx, nsID, nodeID, art.CapabilityID)
-	if err != nil || got != "/home/me/proj" {
-		t.Fatalf("work_dir 读回来 = %q (err=%v), want /home/me/proj", got, err)
-	}
-
-	// ③ 重新部署同一份产物可以改目录（用户换目录是正常操作）
-	if _, err := db.CreateDeployment(ctx, nsID, nodeID, artID, "/srv/app"); err != nil {
-		t.Fatalf("re-deploy: %v", err)
-	}
-	if got, _ := db.DeploymentWorkDir(ctx, nsID, nodeID, art.CapabilityID); got != "/srv/app" {
-		t.Fatalf("改目录后 work_dir = %q, want /srv/app", got)
-	}
-
-	// ④ 清空 = 回到默认的每任务目录（不是 NULL，也不是残留旧值）
-	if _, err := db.CreateDeployment(ctx, nsID, nodeID, artID, ""); err != nil {
-		t.Fatalf("clear work dir: %v", err)
-	}
-	if got, _ := db.DeploymentWorkDir(ctx, nsID, nodeID, art.CapabilityID); got != "" {
-		t.Fatalf("清空后 work_dir = %q, want 空", got)
-	}
-
-	// ⑤ 跨命名空间一律查不到（不变量 I11：不许拿别的命名空间的部署影响本命名空间）
-	if got, err := db.DeploymentWorkDir(ctx, "ns_not_mine", nodeID, art.CapabilityID); err != nil || got != "" {
-		t.Fatalf("跨命名空间应查不到：got=%q err=%v", got, err)
 	}
 }
