@@ -30,6 +30,8 @@ web/ja/
 web/i18n.*.js
 
 # === 编排/调试临时产物（开发过程用，不入库）===
+# pi-async 的运行时产物（任务输出 / 状态）；会话里随时生成，别提交
+.pi/async/
 .pi-orchestrator/worktrees/
 .pi-orchestrator/tasks/
 .pi-orchestrator/out/
