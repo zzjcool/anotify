@@ -242,6 +242,44 @@ CREATE TABLE IF NOT EXISTS node_pins (
 );
 ```
 
+### 2.3.1 工作目录（work dirs）
+
+能力默认跑在**每次任务一个独立目录**里（`<data-dir>/work/<task_id>`），产物文件展开在此，
+互不干扰。有些能力必须跑在**用户的真实目录**里（`make test`、`git status`、就地改文件），
+于是有了 capability 级的工作目录。
+
+两个来源，职责不同：
+
+| 来源 | 位置 | 语义 |
+|---|---|---|
+| **中枢意图** | `deployments.work_dir`（迁移 19）→ `assign.work_dir` | 「我希望这个能力在这台机器上跑在哪个目录」。只是请求，不带权限 |
+| **机器事实** | 节点 `node.yaml` 的 `workDirs` | 「这台机器允许这些能力用这些目录」。**权威**，中枢改不动 |
+
+`node.yaml` 的形态（能力级；`"*"` 是旧扁平白名单的等价物）：
+
+```yaml
+workDirs:
+  script.echo: /home/me/project     # 能力级：这个能力只用这个目录
+  build.repo: /srv/app
+  "*": /srv/projects                # 兜底前缀白名单（可省略）
+```
+
+**解析顺序（节点侧，唯一实现）**：
+
+1. `workDirs[<capability>]` 存在 → 用它，**忽略** `assign.work_dir`（机器事实压过中枢意图）
+2. 否则 `workDirs["*"]`（或旧的列表写法）→ 用 `assign.work_dir`，且必须落在该前缀内
+3. 否则 `assign.work_dir` 非空 → **失败**；为空 → 用任务目录
+
+**失败不降级**：越界时任务 `failed`，`error` 写明原因与允许的目录。退回默认目录会把
+「没授权」伪装成「脚本莫名报错」。
+
+**安全**：中枢能写 `deployments.work_dir`，但**没有**权限越过节点侧的 `workDirs`。
+否则「谁改了中枢，谁就能让本机以 agent 身份在任意目录读写」——原生装下这是整机沦陷。
+路径比对前解符号链接（`ln -s /etc <allowed>/etc` 必须被拒），前缀按路径分段。
+
+**环境变量**：`$ANOTIFY_WORKDIR` 恒等于进程 cwd（历史不变式）；产物文件所在的任务目录
+另给 `$ANOTIFY_TASKDIR`。
+
 ### 2.4 出口表（路由唯一依据）
 
 ```sql
@@ -944,7 +982,9 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
   "capability": "review", "version": 1,
   "params": { "diff": "..." },
   "lease_until": 1730000030,
-  "max_duration_sec": 3600 }
+  "max_duration_sec": 3600,
+  // work_dir 可选：中枢的**意图**（见 §2.3.1）。节点上的 yaml 才是事实。
+  "work_dir": "/home/me/project" }
 
 { "type": "cancel",    "task_id": "tsk_x", "reason": "superseded" }
 

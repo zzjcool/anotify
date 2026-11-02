@@ -3477,27 +3477,45 @@ async function checkNodeRegister(page, base) {
 		`结果块隐藏=${reg.resultHidden} 令牌长度=${token.length} 错误行=${JSON.stringify(reg.errorText)}`,
 	);
 
-	// ---- ③.5 「如何接入」静态卡片必须同时给出两条路（#283） ----
-	// 这里锁的是**文字**，因为它就是用户看到的全部：只写 docker 会让人以为
-	// 原生装不存在；示例命令少了 ANOTIFY_SERVER 会让人贴上去永远连不上。
+	// ---- ③.5 「如何接入」卡片：中枢地址自己填，令牌可就地生成 ----
+	//
+	// 这里锁的是**渲染后的文字**，因为用户看到的就是它：
+	//   ① 不能再出现「<中枢地址>」这种让人手抄的占位符（用户反馈：页面自己知道 origin）；
+	//   ② 真 origin 必须已经拼进命令里 —— 否则用户还是得自己找地址；
+	//   ③ 要有「生成令牌」按钮 —— 令牌应在页面上就能拿到，不用先去注册面板。
+	// 两条路都要给：只写 docker 会让人以为「原生装不存在」（#283）。
 	const howto = await page.evaluate(() => {
-		const pre = document.querySelector("pre.code-block");
-		return pre ? pre.textContent : "";
+		const host = document.getElementById("howto-blocks");
+		const card = document.querySelector("div.card:has(#howto-blocks)");
+		return {
+			code: host ? host.textContent : "",
+			cardText: card ? card.textContent : "",
+			hasBtn: !!document.getElementById("howto-token-btn"),
+			hasOriginPlaceholder: (host ? host.textContent : "").includes("<中枢地址>"),
+			origin: location.origin,
+		};
 	});
 	H.check(
 		"接入说明同时给出 docker 与原生装两条路",
-		/docker run/.test(howto) && /install-agent\.sh/.test(howto),
-		String(howto).slice(0, 120),
+		/docker run/.test(howto.code) && /install-agent\.sh/.test(howto.code),
+		String(howto.code).slice(0, 120),
 	);
 	H.check(
-		"接入说明的 docker 示例带 ANOTIFY_SERVER（只给 token 连不上中枢）",
-		/ANOTIFY_SERVER=/.test(howto) && /ANOTIFY_TOKEN=/.test(howto),
-		/ANOTIFY_SERVER=/.test(howto) ? "ok" : "缺 ANOTIFY_SERVER",
+		"接入说明的 docker 示例带 ANOTIFY_SERVER=<当前 origin>（不再让用户手填中枢地址）",
+		/ANOTIFY_SERVER=/.test(howto.code) &&
+			/ANOTIFY_TOKEN=/.test(howto.code) &&
+			howto.code.includes("ANOTIFY_SERVER=" + howto.origin),
+		`origin=${howto.origin} code=${String(howto.code).slice(0, 160)}`,
 	);
 	H.check(
-		"接入说明提到 --work-dirs（原生装的工作目录白名单）",
-		/--work-dirs/.test(howto),
-		String(howto).slice(0, 120),
+		"接入说明里没有「<中枢地址>」占位符（中枢地址由页面自己填）",
+		howto.hasOriginPlaceholder === false,
+		JSON.stringify({ 占位符: howto.hasOriginPlaceholder }),
+	);
+	H.check(
+		"接入说明有「生成令牌」按钮（令牌在页面上就能拿）",
+		howto.hasBtn === true,
+		JSON.stringify({ 按钮: howto.hasBtn }),
 	);
 
 	// ---- ④ node.yaml 逐项形状（硬锁：能直接粘进 agent） ----
@@ -3542,19 +3560,32 @@ async function checkNodeRegister(page, base) {
 	const yamlOk =
 		Object.values(yamlWant).every(Boolean) &&
 		!Object.values(yamlBad).some(Boolean);
-	// ---- ④.5 原生安装命令（#281）：docker 看不到宿主机文件，这条路能 ----
-	// 断言它真的有：安装脚本 URL、令牌、中枢地址，以及（只在用户填了白名单时）
-	// 的 --work-dirs。少任何一项，用户复制出去都跑不起来。
+	// ---- ④.5 工作目录：yaml 里是**能力级**的，原生装命令不再带全局 --work-dirs ----
+	//
+	// 口径变了（用户反馈）：目录按能力名配在 node.yaml 的 workDirs 里（CONTRACT
+	// §2.3.1），而不是在安装命令上传一个全局 --work-dirs —— 后者只能表达
+	// 「这些目录全给所有能力」，恰好是最危险的授权方式。
+	// yaml 里必须真的出现 workDirs 与用户填的路径（否则配了等于没配）：
+	// 面板填的是兜底前缀，所以落在 "*" 这一行上。
 	H.check(
-		"工作目录白名单出现在三处（yaml / 原生装 / docker 挂载）",
+		"工作目录写进 yaml 的 workDirs（兜底前缀 "*"）",
 		(reg.yaml || "").includes("workDirs:") &&
-			(reg.yaml || "").includes(wdPath) &&
-			(reg.install || "").includes("--work-dirs=" + wdPath) &&
-			(reg.cmd || "").includes("-e ANOTIFY_WORK_DIRS=" + wdPath) &&
+			(reg.yaml || "").includes('"*": ' + wdPath),
+		JSON.stringify({
+			yamlWorkDirs: (reg.yaml || "").includes("workDirs:"),
+			yamlPath: (reg.yaml || "").includes(wdPath),
+		}),
+	);
+	H.check(
+		"原生安装命令不再带全局 --work-dirs（目录按能力名写在 yaml 里）",
+		!(reg.install || "").includes("--work-dirs"),
+		String(reg.install || "").slice(0, 200),
+	);
+	H.check(
+		"docker 那条路仍是挂载 + ANOTIFY_WORK_DIRS（容器里必须 -v 才看得到）",
+		(reg.cmd || "").includes("-e ANOTIFY_WORK_DIRS=" + wdPath) &&
 			(reg.cmd || "").includes("-v " + wdPath + ":" + wdPath),
 		JSON.stringify({
-			yaml: (reg.yaml || "").includes(wdPath),
-			install: (reg.install || "").includes("--work-dirs="),
 			cmdEnv: (reg.cmd || "").includes("ANOTIFY_WORK_DIRS="),
 			cmdVol: (reg.cmd || "").includes("-v " + wdPath),
 		}),
@@ -3752,6 +3783,126 @@ async function checkNodeRegister(page, base) {
 			空名错误可见: emptyName.errorHidden === false,
 			非法名错误可见: badName.errorHidden === false,
 			POST次数: postCount,
+		}),
+	);
+
+	// ---- ⑩ 「如何接入」卡片里的「生成令牌」：令牌就地拿，yaml 是能力级 workDirs ----
+	//
+	// 这条链路与注册面板是**两条独立入口**（用户反馈：令牌应该页面上就能生成，
+	// 不该先绕去填表单）。断言四件事：
+	//   ① 点一下 → #howto-token 里出现真令牌，且三条命令/配置都带上它；
+	//   ② docker 命令与 yaml 里的中枢地址就是当前 origin（不用手抄）；
+	//   ③ yaml 是能力级 workDirs：**每个可见能力**都有一行「能力名: 目录」；
+	//   ④ 令牌只活在 DOM 里（不进 localStorage / URL）。
+	//
+	// 能力集合必须从接口取（再走页面同一个 filterCaps）——mock 与真后端的能力
+	// 不同名，写死一个名字的断言只会在 mock 里绿。
+	const visibleCaps = await page.evaluate(async () => {
+		const r = await fetch("/v1/capabilities");
+		const j = await r.json();
+		const list = (j && j.capabilities) || [];
+		const visible =
+			window.Anotify && window.Anotify.filterCaps
+				? window.Anotify.filterCaps(list)
+				: list;
+		return visible.map((c) => c && c.name).filter(Boolean);
+	});
+	await page.click("#howto-token-btn");
+	// mock 有 120–300ms 随机延迟，多等一轮
+	await page.waitForTimeout(1500);
+	const hw = await page.evaluate(() => ({
+		token: (document.getElementById("howto-token") || {}).textContent || "",
+		cmd: (document.getElementById("howto-cmd") || {}).textContent || "",
+		yaml: (document.getElementById("howto-yaml") || {}).textContent || "",
+		install: (document.getElementById("howto-install") || {}).textContent || "",
+		origin: location.origin,
+		ls: JSON.stringify(Object.keys(localStorage)),
+		href: location.href,
+	}));
+	const hwToken = hw.token.trim();
+	H.check(
+		"点「生成令牌」→ 卡片里出现真令牌",
+		hwToken.length > 8,
+		`令牌长度=${hwToken.length} 卡片文本=${JSON.stringify(hw.token.slice(0, 40))}`,
+	);
+	H.check(
+		"生成后 docker / yaml / 原生装三处都带上了真令牌",
+		hw.cmd.includes("ANOTIFY_TOKEN=" + hwToken) &&
+			hw.yaml.includes("token: " + hwToken) &&
+			hw.install.includes("--token=" + hwToken),
+		JSON.stringify({
+			cmd: hw.cmd.includes(hwToken),
+			yaml: hw.yaml.includes(hwToken),
+			install: hw.install.includes(hwToken),
+		}),
+	);
+	H.check(
+		"生成后中枢地址取当前 origin（用户不用手填）",
+		hw.cmd.includes("ANOTIFY_SERVER=" + hw.origin) &&
+			hw.yaml.includes("server: " + hw.origin),
+		`origin=${hw.origin}`,
+	);
+	// 能力级 workDirs：每个可见能力一行，键就是能力名。
+	// 这几行是**注释**的（能力级条目会压过控制台指定的目录），所以正则允许 `#` 前缀。
+	const capMissing = visibleCaps.filter(
+		(n) => !new RegExp("^#?\\s*" + escapeRe(n) + ":", "m").test(hw.yaml),
+	);
+	H.check(
+		"生成的 yaml 是能力级 workDirs（每个可见能力一行）",
+		hw.yaml.includes("workDirs:") &&
+			visibleCaps.length > 0 &&
+			capMissing.length === 0,
+		`caps=${visibleCaps.length} missing=${capMissing.slice(0, 3).join(",")} yaml=${JSON.stringify(hw.yaml.slice(0, 200))}`,
+	);
+	H.check(
+		"令牌只活在 DOM 里（不进 localStorage / URL）",
+		!hw.ls.includes(hwToken) && !hw.href.includes(hwToken),
+		JSON.stringify({ localStorage: hw.ls.slice(0, 80), href: hw.href.replace(/\?.*/, "") }),
+	);
+
+	// ---- ⑩b 生成失败 → toast 说人话，旧令牌必须清掉 ----
+	//
+	// 为什么要在页内包一层 fetch 而不是 page.route：mock 在 window.fetch 层就把
+	// /v1/* 拦下了（web/mock.js），请求根本不出浏览器 —— 网络层拦截看到的永远是 0 条。
+	// 失败时最危险的状态是「上一次的真令牌还留在页面上」：用户会以为它就是这次生成的。
+	const genFail = await page.evaluate(async () => {
+		const prevToken =
+			(document.getElementById("howto-token") || {}).textContent || "";
+		const orig = window.fetch;
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (url.includes("/v1/nodes") && method === "POST") {
+				return Promise.resolve(
+					new Response('{"error":"boom"}', {
+						status: 500,
+						headers: { "content-type": "application/json" },
+					}),
+				);
+			}
+			return orig.apply(this, arguments);
+		};
+		document.getElementById("howto-token-btn").click();
+		await new Promise((r) => setTimeout(r, 1200));
+		window.fetch = orig;
+		const toastEl = document.getElementById("toast");
+		return {
+			prevToken: prevToken.trim(),
+			toast: toastEl ? toastEl.textContent : "",
+			token: (document.getElementById("howto-token") || {}).textContent || "",
+			disabled: !!(document.getElementById("howto-token-btn") || {}).disabled,
+		};
+	});
+	H.check(
+		"生成失败 → toast 报错，旧令牌从 DOM 清掉，按钮恢复可点",
+		genFail.toast.trim() !== "" &&
+			genFail.prevToken.length > 8 &&
+			!genFail.token.includes(genFail.prevToken) &&
+			genFail.disabled === false,
+		JSON.stringify({
+			toast: genFail.toast.slice(0, 60),
+			旧令牌残留: genFail.token.includes(genFail.prevToken),
+			按钮仍禁用: genFail.disabled,
 		}),
 	);
 }

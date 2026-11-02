@@ -508,3 +508,274 @@ func TestLoadConfigFromPrecedence(t *testing.T) {
 		t.Fatalf("没给 -f 时应该走环境变量，实际 token=%q", cfg.Token)
 	}
 }
+
+// ---------- workDirs：能力级 + 旧列表（契约 §2.3.1） ----------
+//
+// 四种 yaml 形态**都已存在于真实部署里**（install-agent.sh 会生成其中三种），
+// 所以这里逐字节地钉住解析结果：脚本写的 yaml 与 agent 读的 yaml 是同一份东西，
+// 两边分叉的症状是「安装成功，却每个任务都 failed」。
+
+// yamlWithWorkDirs 把 workDirs 片段拼进一份最小的合法 node.yaml。
+func yamlWithWorkDirs(workDirs string) string {
+	return `name: n
+server: http://localhost:8080
+token: ntk_x
+workDirs:
+` + workDirs
+}
+
+// TestConfigWorkDirsShapes：四种写法 + 混写，全部解析成同一套语义。
+func TestConfigWorkDirsShapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		cap   map[string]string // 期望的能力级条目（key → 目录）
+		allow []string          // 期望的兜底白名单（"*"）
+	}{
+		{
+			// ① 能力级 + ② 兜底（值都是字符串）：install-agent.sh 只给 --work-dir 与单个
+			// --work-dirs 时生成的就是这个形状。
+			name: "能力级与兜底都是字符串",
+			body: `  script.echo: /home/me/proj
+  build.repo: /srv/app
+  "*": /srv/projects
+`,
+			cap:   map[string]string{"script.echo": "/home/me/proj", "build.repo": "/srv/app"},
+			allow: []string{"/srv/projects"},
+		},
+		{
+			// ③ 兜底是**列表**（--work-dirs=/srv/shared:/srv/other 生成这个）：
+			// 最容易被漏的一种，漏了就等于「安装脚本装出来的机器一个任务都跑不起来」。
+			name: "兜底是列表",
+			body: `  script.echo: /home/me/proj
+  "*":
+    - /srv/shared
+    - /srv/other
+`,
+			cap:   map[string]string{"script.echo": "/home/me/proj"},
+			allow: []string{"/srv/shared", "/srv/other"},
+		},
+		{
+			// ④ 旧的纯列表写法：等价于全部塞进 "*"。
+			name: "旧列表写法",
+			body: `  - /home/me/project
+  - /srv/apps
+`,
+			cap:   nil,
+			allow: []string{"/home/me/project", "/srv/apps"},
+		},
+		{
+			// 混写：列表里既有目录又有「能力名: 目录」条目。
+			name: "列表里混能力级条目",
+			body: `  - /srv/shared
+  - script.echo: /home/me/proj
+`,
+			cap:   map[string]string{"script.echo": "/home/me/proj"},
+			allow: []string{"/srv/shared"},
+		},
+		{
+			// 流式写法（yaml 里手写成一行）也要通：用户会照文档缩略。
+			name: "流式映射",
+			body: `  {script.echo: /home/me/proj, "*": [/srv/a, /srv/b]}
+`,
+			cap:   map[string]string{"script.echo": "/home/me/proj"},
+			allow: []string{"/srv/a", "/srv/b"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadNodeConfig(t, yamlWithWorkDirs(tc.body))
+
+			// 能力级：逐个 key 精确命中；没配的能力必须 false（不许拿 "*" 冒充）。
+			for _, name := range []string{"script.echo", "build.repo"} {
+				want, wantOK := tc.cap[name]
+				got, ok := cfg.WorkDirs.For(name)
+				if ok != wantOK || got != want {
+					t.Errorf("For(%q) = (%q, %v), want (%q, %v)", name, got, ok, want, wantOK)
+				}
+			}
+			// "*" 永远不是能力名：For("*") 必须 false，否则兜底白名单会被当成
+			// 「每个能力的固定目录」（能力级语义就串味了）。
+			if dir, ok := cfg.WorkDirs.For("*"); ok {
+				t.Errorf(`For("*") = (%q, true), want false`, dir)
+			}
+
+			allow := cfg.WorkDirs.Allowlist()
+			if len(allow) != len(tc.allow) {
+				t.Fatalf("Allowlist() = %#v, want %#v", allow, tc.allow)
+			}
+			for i := range tc.allow {
+				if allow[i] != tc.allow[i] {
+					t.Fatalf("Allowlist() = %#v, want %#v", allow, tc.allow)
+				}
+			}
+		})
+	}
+}
+
+// TestConfigWorkDirsKeyIsVerbatim：能力名按**原样**查表，不做大小写/下划线规整。
+//
+// 脚本生成的 key 就是产物 metadata.name（[a-z0-9._-]）。任何归一化都会让
+// 「yaml 里写了 script.echo，脚本却跑在别处」变成一个查不出来的谜。
+func TestConfigWorkDirsKeyIsVerbatim(t *testing.T) {
+	cfg := mustLoadNodeConfig(t, yamlWithWorkDirs("  Script.Echo: /srv/a\n"))
+
+	if got, ok := cfg.WorkDirs.For("Script.Echo"); !ok || got != "/srv/a" {
+		t.Fatalf(`For("Script.Echo") = (%q, %v), want (/srv/a, true)`, got, ok)
+	}
+	if got, ok := cfg.WorkDirs.For("script.echo"); ok {
+		t.Fatalf(`For("script.echo") = (%q, true), want false（不许大小写归一）`, got)
+	}
+	if got, ok := cfg.WorkDirs.For("script_echo"); ok {
+		t.Fatalf(`For("script_echo") = (%q, true), want false（不许下划线归一）`, got)
+	}
+}
+
+// TestConfigWorkDirsEmpty：没写 / 写了空 → 零值（一个目录都不许），不是「全放行」。
+func TestConfigWorkDirsEmpty(t *testing.T) {
+	for name, body := range map[string]string{
+		"没写 workDirs": "name: n\nserver: http://localhost:8080\ntoken: ntk_x\n",
+		"空值":          "name: n\nserver: http://localhost:8080\ntoken: ntk_x\nworkDirs:\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := mustLoadNodeConfig(t, body)
+			if got := cfg.WorkDirs.Allowlist(); len(got) != 0 {
+				t.Fatalf("Allowlist() = %#v, want 空", got)
+			}
+			if got, ok := cfg.WorkDirs.For("script.echo"); ok {
+				t.Fatalf("For() = (%q, true), want false", got)
+			}
+		})
+	}
+}
+
+// TestConfigWorkDirsValidateErrors：每条报错都要点名「哪个能力/哪一项」，
+// 并且一次列全（汇总式），否则改 5 行 workDirs 会变成跑 5 次。
+func TestConfigWorkDirsValidateErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "能力级相对路径",
+			body: "  script.echo: proj\n",
+			want: []string{`workDirs["script.echo"]`, "必须是绝对路径", "proj"},
+		},
+		{
+			name: "能力名为空",
+			body: `  "": /srv/a` + "\n",
+			want: []string{"workDirs 的能力名不能为空"},
+		},
+		{
+			name: "能力级值为空",
+			body: `  script.echo: ""` + "\n",
+			want: []string{`workDirs["script.echo"]`, "目录不能为空"},
+		},
+		{
+			name: "能力级写了多个目录",
+			body: "  script.echo:\n    - /srv/a\n    - /srv/b\n",
+			want: []string{`workDirs["script.echo"]`, "只能给一个目录", "兜底多个前缀"},
+		},
+		{
+			name: "兜底列表第 2 项相对路径",
+			body: "  \"*\":\n    - /srv/a\n    - rel/b\n",
+			want: []string{"第 2 项", "必须是绝对路径", "rel/b"},
+		},
+		{
+			name: "一次列全：能力级 + 兜底都错",
+			body: "  script.echo: rel\n  \"*\":\n    - also/rel\n",
+			want: []string{`workDirs["script.echo"]`, "第 1 项", "also/rel"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNodeYAML(t, yamlWithWorkDirs(tc.body))
+			_, err := loadConfig(path)
+			if err == nil {
+				t.Fatal("loadConfig: want error, got nil")
+			}
+			if !strings.HasPrefix(err.Error(), path) {
+				t.Errorf("error %q is not prefixed with the config path %q", err, path)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestConfigWorkDirsMalformed：形状不对时给一句人话（而不是 yaml 库的内部错误）。
+func TestConfigWorkDirsMalformed(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"单值", "workDirs: /srv/a\n", "必须是「能力名 → 目录」的映射或目录列表"},
+		{
+			// 值既不是字符串也不是列表（这里是个映射）：说清是哪一条，别只报「类型错」。
+			name: "能力级的值是映射",
+			body: yamlWithWorkDirs("  script.echo:\n    a: /x\n"),
+			want: `workDirs["script.echo"]`,
+		},
+		{
+			// 同一个能力写两遍时谁赢取决于实现细节——比报错糟得多。
+			name: "能力重复",
+			body: yamlWithWorkDirs("  script.echo: /a\n  script.echo: /b\n"),
+			want: `能力 "script.echo" 配置了两次`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNodeYAML(t, tc.body)
+			_, err := loadConfig(path)
+			if err == nil {
+				t.Fatal("loadConfig: want error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestConfigWorkDirsFromEnvIsFallbackOnly：ANOTIFY_WORK_DIRS 只有**兜底**语义
+// （等价 workDirs."*"），不发明 ANOTIFY_WORK_DIR_<CAP> 这种变量。
+func TestConfigWorkDirsFromEnvIsFallbackOnly(t *testing.T) {
+	cfg, ok := configFromEnv(envMap(map[string]string{
+		envServer:   "https://anotify.example.com",
+		envToken:    "nt_x",
+		envWorkDirs: "/srv/a:/srv/b::", // 空元素要丢弃，不能变成「允许空路径」
+	}))
+	if !ok {
+		t.Fatal("有令牌就走环境变量这条路")
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("这份配置应该合法: %v", err)
+	}
+	allow := cfg.WorkDirs.Allowlist()
+	if len(allow) != 2 || allow[0] != "/srv/a" || allow[1] != "/srv/b" {
+		t.Fatalf("Allowlist() = %#v, want [/srv/a /srv/b]", allow)
+	}
+	// 环境变量**没有**能力级语义：任何能力都必须走兜底那条路。
+	// 若哪天有人给环境变量加上「按能力」的猜测，这条会红。
+	if got, ok := cfg.WorkDirs.For("script.echo"); ok {
+		t.Fatalf("For() = (%q, true), want false（环境变量只表达兜底）", got)
+	}
+
+	// 相对路径在环境变量里同样要报错（并且点名是哪一项）。
+	bad, ok := configFromEnv(envMap(map[string]string{envToken: "nt_x", envWorkDirs: "rel/dir"}))
+	if !ok {
+		t.Fatal("有令牌就走这条路")
+	}
+	if err := bad.validate(); err == nil {
+		t.Fatal("相对路径必须报错")
+	} else if !strings.Contains(err.Error(), "第 1 项") || !strings.Contains(err.Error(), "必须是绝对路径") {
+		t.Fatalf("错误应点名第 1 项且说明绝对路径，实际: %v", err)
+	}
+}

@@ -628,9 +628,10 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		MaxDuration: f.MaxDuration,
 		WorkRoot:    a.cache.workRoot(),
 		// 控制台要求的「在这个目录里跑」。空 = 默认的每任务目录；
-		// 非空时由 runner 按本机白名单校验，通不过就失败（不会静默退回默认目录）。
-		WorkDir:         f.WorkDir,
-		AllowedWorkDirs: a.cfg.WorkDirs,
+		// 非空时由 runner 按本机授权校验（能力级 workDirs[<能力名>] 优先），
+		// 通不过就失败（不会静默退回默认目录）。
+		WorkDir:  f.WorkDir,
+		WorkDirs: a.cfg.WorkDirs,
 	}
 
 	// 名额已在 handleAssign 里占好（reserveTask）：这里只负责还。
