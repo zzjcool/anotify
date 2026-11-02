@@ -1,0 +1,256 @@
+/* ============================================================
+   ANOTIFY · 设计令牌 v2（UI-V2-CONTRACT.md §3 的逐条实现）
+   ------------------------------------------------------------
+   两套主题：
+     :root                      → dark（默认）
+     :root[data-theme="light"]  → light
+   <html data-theme="dark|light"> 由 layouts 的 pre-paint 内联脚本写入，
+   脚本必须同步执行（不能 defer），否则首帧会闪。
+
+   硬约束（改这里之前先读契约 §3）：
+   ① 页面/组件不允许硬编码色值，一律 var(--…)；图表状态色只走 --st-*。
+   ② 旧名（--surface-1/2、--accent-1..4、--success-soft…）必须继续存在，
+      大量旧组件还在引用。
+   ③ 语义色只表达状态，小面积；配色比例 70% 中性 / 20% accent / 10% 语义。
+   ④ Tailwind 的 dark: 变体不可用（tailwind.config.js 未配 darkMode）。
+
+   §3 值 = 契约冻结值，不要随手调。
+   “v2 扩展” = 契约未列、但实现侧需要收敛而补的令牌（命名不与契约冲突）。
+   ============================================================ */
+
+:root {
+	color-scheme: dark;
+
+	/* ── 背景 / 表面（契约 §3.1）─────────────────────
+	   关键变化：dark 的表面从「白 alpha」改成「实底」。
+	   旧模型 --surface-1: rgba(255,255,255,.02) 在 #050508 上
+	   只有 ~1.02:1 的对比，卡片等于没画；且亮色模式下会变成脏灰。 */
+	--bg: #08080e;
+	--bg-raise: #0c0c13;
+	--surface-1: #101018;
+	--surface-2: #15151f;
+	--surface-3: #1b1b27;
+
+	--line: rgba(255, 255, 255, 0.07);
+	--line-strong: rgba(255, 255, 255, 0.14);
+
+	/* ── 文字 ───────────────────────────────────────── */
+	--text: #edeef5;
+	--muted: #a2a6b6;
+	--faint: #6e7284;
+
+	/* ── 品牌（唯一 accent）────────────────────────── */
+	--accent: #8b8bfd;
+	--accent-strong: #a6a6ff;
+	--accent-soft: rgba(139, 139, 253, 0.14);
+
+	/* 数据可视化梯度（热力图 5 级，旧名保留）*/
+	--accent-1: rgba(139, 139, 253, 0.22);
+	--accent-2: rgba(139, 139, 253, 0.42);
+	--accent-3: rgba(139, 139, 253, 0.68);
+	--accent-4: #8b8bfd;
+
+	/* ── 语义 ──────────────────────────────────────── */
+	--success: #34d399;
+	--error: #fb7185;
+	--warn: #fbbf24;
+	--info: var(--accent);
+
+	--success-soft: rgba(52, 211, 153, 0.12);
+	--error-soft: rgba(251, 113, 133, 0.12);
+	--warn-soft: rgba(251, 191, 36, 0.12);
+
+	/* 300 级亮色阶：徽章文字 / 需要更亮的小面积文字 */
+	--success-300: #6ee7b7;
+	--error-300: #fda4af;
+	--warn-300: #fcd34d;
+
+	/* ── 浮层 / 代码 ────────────────────────────────── */
+	--panel-overlay: #14141e;
+	--panel-modal: #0d0d15;
+	--code-bg: #0b0b13;
+	--code-text: #d7d9e6;
+	--on-solid: #0a0a10;
+
+	/* ── 阴影（三档，亮色另给）────────────────────── */
+	--shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+	--shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+	--shadow-3: 0 24px 64px -16px rgba(0, 0, 0, 0.7);
+
+	/* ── 图表状态色 9 态（graphs.js 与 .wf-bar / .st-* 的唯一来源）──
+	   暗色沿用现状 9 色；旧代码里这 9 色在 ui.css 与 graphs.js 各存一份。 */
+	--st-pending: #71717a;
+	--st-assigned: #3b82f6;
+	--st-acked: #06b6d4;
+	--st-running: #22c55e;
+	--st-succeeded: #10b981;
+	--st-failed: #ef4444;
+	--st-canceled: #a1a1aa;
+	--st-abandoned: #f97316;
+	--st-lease_expired: #eab308;
+
+	/* ── 尺寸（契约 §3.2）──────────────────────────── */
+	--r-xs: 6px;
+	--r-sm: 8px;
+	--r-md: 12px;
+	--r-lg: 16px;
+	--r-xl: 20px;
+	--r-full: 999px;
+
+	/* ── 动效（契约 §3.2）──────────────────────────── */
+	--dur-fast: 120ms;
+	--dur: 200ms;
+	--dur-slow: 320ms;
+	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+	/* ── 外壳尺寸（契约 §3.2）──────────────────────── */
+	--sidebar-w: 264px;
+	--sidebar-w-collapsed: 76px;
+	--topbar-h: 64px;
+
+	/* ── z-index（契约 §3.2，别再加新的层）─────────── */
+	--z-header: 20;
+	--z-overlay: 30;
+	--z-sidebar: 40;
+	--z-menu: 60;
+	--z-toast: 80;
+	--z-modal: 90;
+
+	/* ── 字体（契约 §3.2）──────────────────────────── */
+	--font-sans: "Inter", system-ui, -apple-system, "PingFang SC",
+		"Microsoft YaHei", sans-serif;
+	--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+	/* 品牌衬线：只用于 h2 主标题与欢迎语（契约 §8）*/
+	--font-display: "Fraunces", "Iowan Old Style", Georgia, serif;
+
+	/* ============ 以下为 v2 扩展（契约未列，实现侧建议采用）============
+	   理由：现状 28 种字号 / 22 种圆角 / 13 档 padding 各写各的。
+	   收敛成 6 档字号 + 6 档圆角，新增组件只准用这些。 */
+
+	/* 字号阶梯（px 值就是实际渲染值，行高写死在 token 里避免任意值丢行高）*/
+	--fs-display: 34px; /* 欢迎语 / 登录大标题（配 --font-display）*/
+	--fs-h1: 28px; /* 页面主标题 .page-title */
+	--fs-h2: 20px; /* 卡片组标题 */
+	--fs-h3: 16px; /* 卡片标题 .card-title */
+	--fs-body: 14px; /* 正文 */
+	--fs-sm: 13px; /* 次要正文 / 列表行副标题 */
+	--fs-xs: 12px; /* 辅助 / 标签 */
+	--fs-micro: 11px; /* 极小面积：时间戳、表头、kbd */
+	--lh-display: 1.15;
+	--lh-title: 1.25;
+	--lh-body: 1.5;
+	--lh-tight: 1.35;
+
+	/* 间距节奏（区块 24 / 卡内 20 / 行 56）*/
+	--gap-block: 24px;
+	--gap-card: 20px;
+	--gap-card-lg: 24px;
+	--pad-page: 32px;
+	--pad-page-mobile: 20px;
+	--row-h: 56px; /* 紧凑列表行（契约 §8：52–60）*/
+	--row-h-dense: 48px;
+	--control-h: 36px; /* 输入/按钮统一高度 */
+	--control-h-sm: 30px;
+	--side-item-h: 38px;
+
+	/* 页面容器宽度：全站统一 1200，不再 6xl/7xl/3xl 各写一套 */
+	--w-page: 1200px;
+	--w-page-narrow: 760px; /* 详情页（node/source/trace/message）*/
+
+	/* 焦点环：键盘可见性统一入口，组件不要各写 outline */
+	--ring: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent);
+	--ring-error: 0 0 0 3px color-mix(in srgb, var(--error) 26%, transparent);
+
+	/* 页面氛围光：body::before 的两团极淡 accent，用来打破「纯黑空场」*/
+	--glow-a: color-mix(in srgb, var(--accent) 10%, transparent);
+	--glow-b: color-mix(in srgb, var(--accent) 5%, transparent);
+	/* 顶栏毛玻璃底：color-mix(bg 82%)，与 --line 一起构成外壳分层 */
+	--header-bg: color-mix(in srgb, var(--bg) 82%, transparent);
+	/* 热力图空格：比 surface-2 深一档，否则在实底卡上几乎看不见 */
+	--hm-empty: #171722;
+	/* 卡片内一道极淡的顶部高光，替代旧代码里到处出现的 inset 白 alpha */
+	--elevate: inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+}
+
+/* ============================================================
+   亮色主题：契约 §3.1 逐条值
+   注意 alpha-white 表面模型在这里全部换成实底 + 深 alpha 线。
+   ============================================================ */
+:root[data-theme="light"] {
+	color-scheme: light;
+
+	--bg: #f7f8fc;
+	--bg-raise: #ffffff;
+	--surface-1: #ffffff;
+	--surface-2: #f4f5fa;
+	--surface-3: #eceef6;
+
+	--line: rgba(17, 19, 28, 0.08);
+	--line-strong: rgba(17, 19, 28, 0.15);
+
+	--text: #11131c;
+	--muted: #5b6070;
+	--faint: #8b90a1;
+
+	--accent: #5b5bd6;
+	--accent-strong: #4a4ac4;
+	--accent-soft: rgba(91, 91, 214, 0.1);
+
+	--accent-1: rgba(91, 91, 214, 0.16);
+	--accent-2: rgba(91, 91, 214, 0.34);
+	--accent-3: rgba(91, 91, 214, 0.6);
+	--accent-4: #5b5bd6;
+
+	--success: #059669;
+	--error: #e11d48;
+	--warn: #b45309;
+	--info: var(--accent);
+
+	--success-soft: rgba(5, 150, 105, 0.1);
+	--error-soft: rgba(225, 29, 72, 0.09);
+	--warn-soft: rgba(180, 83, 9, 0.1);
+
+	/* 亮色下「300 级」要变成 700 级：亮色底上亮色文字不可读 */
+	--success-300: #047857;
+	--error-300: #be123c;
+	--warn-300: #b45309;
+
+	--panel-overlay: #ffffff;
+	--panel-modal: #ffffff;
+	--code-bg: #f2f3f8;
+	--code-text: #2a2e3d;
+	--on-solid: #ffffff;
+
+	--shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+	--shadow-2: 0 8px 24px -10px rgba(16, 24, 40, 0.18);
+	--shadow-3: 0 24px 64px -20px rgba(16, 24, 40, 0.24);
+
+	/* 亮色压深一档（契约 §3.1 示例值）*/
+	--st-pending: #52525b;
+	--st-assigned: #2563eb;
+	--st-acked: #0891b2;
+	--st-running: #16a34a;
+	--st-succeeded: #059669;
+	--st-failed: #dc2626;
+	--st-canceled: #71717a;
+	--st-abandoned: #ea580c;
+	--st-lease_expired: #ca8a04;
+
+	--ring: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+	--glow-a: color-mix(in srgb, var(--accent) 7%, transparent);
+	--glow-b: color-mix(in srgb, var(--accent) 4%, transparent);
+	--header-bg: color-mix(in srgb, var(--bg) 84%, transparent);
+	--hm-empty: #e9ebf3;
+	/* 亮色下顶部高光没意义，改成一道向内收的极淡阴影边界 */
+	--elevate: inset 0 1px 0 0 rgba(255, 255, 255, 0.9);
+}
+
+/* 高对比 / 减少动效：契约 §8「prefers-reduced-motion 全部停」的兜底。
+   组件层还会各自覆盖，这里是最后一次保险。 */
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--dur-fast: 0ms;
+		--dur: 0ms;
+		--dur-slow: 0ms;
+	}
+}

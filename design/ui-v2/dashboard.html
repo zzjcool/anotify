@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#08080e" />
+		<title>Anotify · 总览（UI v2 视觉稿）</title>
+		<link rel="icon" href="data:," />
+		<!-- 设计侧原型：design/ 允许 Play CDN；产品页用构建产物 tailwind.css -->
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&display=swap"
+			rel="stylesheet"
+		/>
+		<link rel="stylesheet" href="./tokens.css" />
+		<link rel="stylesheet" href="./ui-v2.css" />
+		<script src="https://cdn.tailwindcss.com"></script>
+		<style>
+			/* 本页专用：热力图右栏与横向滚动容器 */
+			.hm-band {
+				display: grid;
+				grid-template-columns: minmax(0, 1fr) 236px;
+				gap: 24px;
+				align-items: center;
+			}
+			.hm-caption {
+				display: flex;
+				gap: 14px;
+				flex-wrap: wrap;
+				margin-top: 10px;
+				font-size: var(--fs-micro);
+				color: var(--faint);
+			}
+			.hm-caption b {
+				color: var(--muted);
+				font-weight: 600;
+				font-variant-numeric: tabular-nums;
+			}
+			.hm-scroll {
+				overflow-x: auto;
+				padding-bottom: 4px;
+			}
+			.hm-months {
+				position: relative;
+				height: 14px;
+			}
+			.hm-months span {
+				position: absolute;
+				top: 0;
+				font-size: 9px;
+				line-height: 1;
+				color: var(--faint);
+				white-space: nowrap;
+			}
+			.hm-rail {
+				display: grid;
+				gap: 14px;
+				padding-left: 20px;
+				border-left: 1px solid var(--line);
+			}
+			.hm-rail .k {
+				font-size: var(--fs-micro);
+				color: var(--faint);
+			}
+			.hm-rail .v {
+				font-size: 20px;
+				font-weight: 600;
+				letter-spacing: -0.02em;
+				font-variant-numeric: tabular-nums;
+			}
+			.step {
+				display: grid;
+				grid-template-columns: 20px minmax(0, 1fr);
+				gap: 10px;
+				align-items: start;
+				font-size: var(--fs-xs);
+				line-height: 1.5;
+				color: var(--muted);
+			}
+			.step b {
+				display: grid;
+				place-items: center;
+				width: 20px;
+				height: 20px;
+				border-radius: var(--r-full);
+				background: var(--surface-2);
+				border: 1px solid var(--line);
+				color: var(--muted);
+				font-size: 10px;
+				font-weight: 600;
+			}
+			.foot {
+				padding: 18px var(--pad-page) 28px;
+				text-align: center;
+				font-size: var(--fs-micro);
+				color: var(--faint);
+			}
+			@media (max-width: 900px) {
+				.hm-band {
+					grid-template-columns: minmax(0, 1fr);
+				}
+				.hm-rail {
+					grid-template-columns: repeat(3, minmax(0, 1fr));
+					padding-left: 0;
+					padding-top: 14px;
+					border-left: 0;
+					border-top: 1px solid var(--line);
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<svg
+			aria-hidden="true"
+			style="position: absolute; width: 0; height: 0; overflow: hidden"
+		>
+			<defs>
+				<symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="3" y="3" width="7" height="9" rx="1.5" />
+					<rect x="14" y="3" width="7" height="5" rx="1.5" />
+					<rect x="14" y="12" width="7" height="9" rx="1.5" />
+					<rect x="3" y="16" width="7" height="5" rx="1.5" />
+				</symbol>
+				<symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+				</symbol>
+				<symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M13 2 3 14h8l-1 8 10-12h-8z" />
+				</symbol>
+				<symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path
+						d="M21 8v8a2 2 0 0 1-1 1.73l-7 4a2 2 0 0 1-2 0l-7-4A2 2 0 0 1 3 16V8a2 2 0 0 1 1-1.73l7-4a2 2 0 0 1 2 0l7 4A2 2 0 0 1 21 8z"
+					/>
+					<path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
+				</symbol>
+				<symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M6 3v12" />
+					<circle cx="18" cy="6" r="3" />
+					<circle cx="6" cy="18" r="3" />
+					<path d="M18 9a9 9 0 0 1-9 9" />
+				</symbol>
+				<symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+					<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+				</symbol>
+				<symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="2" y="3" width="20" height="7" rx="2" />
+					<rect x="2" y="14" width="20" height="7" rx="2" />
+					<path d="M6 6.5h.01M6 17.5h.01" />
+				</symbol>
+				<symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="7.5" cy="15.5" r="4.5" />
+					<path d="m10.5 12.5 9-9 3 3-3 3-2-2-3 3" />
+				</symbol>
+				<symbol id="i-book-open" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z" />
+					<path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z" />
+				</symbol>
+				<symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+				</symbol>
+				<symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+					<circle cx="4" cy="12" r="2" />
+					<circle cx="12" cy="5" r="2" />
+					<circle cx="20" cy="14" r="2" />
+				</symbol>
+				<symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+					<path d="M13.7 21a2 2 0 0 1-3.4 0" />
+				</symbol>
+				<symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="4" />
+					<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+				</symbol>
+				<symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+				</symbol>
+				<symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="2" y="3" width="20" height="14" rx="2" />
+					<path d="M8 21h8M12 17v4" />
+				</symbol>
+				<symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m6 9 6 6 6-6" />
+				</symbol>
+				<symbol id="i-chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m9 18 6-6-6-6" />
+				</symbol>
+				<symbol id="i-chev-left" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m15 18-6-6 6-6" />
+				</symbol>
+				<symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M3 6h18M3 12h18M3 18h18" />
+				</symbol>
+				<symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="9" />
+					<path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z" />
+				</symbol>
+				<symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="9" y="9" width="12" height="12" rx="2" />
+					<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+				</symbol>
+				<symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 5v14M5 12h14" />
+				</symbol>
+				<symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6" />
+				</symbol>
+				<symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m4 12 5 5L20 6" />
+				</symbol>
+				<symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="9" />
+					<path d="M12 8v5M12 16h.01" />
+				</symbol>
+				<symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M18 6 6 18M6 6l12 12" />
+				</symbol>
+				<symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+					<path d="m16 17 5-5-5-5M21 12H9" />
+				</symbol>
+				<symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 19V5M5 12l7-7 7 7" />
+				</symbol>
+				<symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 5v14M19 12l-7 7-7-7" />
+				</symbol>
+				<symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="9" />
+					<path d="M12 7v5l3 2" />
+				</symbol>
+				<symbol id="i-git" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="6" r="3" />
+					<circle cx="6" cy="18" r="3" />
+					<circle cx="18" cy="18" r="3" />
+					<path d="M12 9v3a6 6 0 0 1-6 6M12 12a6 6 0 0 0 6 6" />
+				</symbol>
+			</defs>
+		</svg>
+
+		<div class="shell" id="app-shell" data-collapsed="false" data-drawer="false">
+			<aside class="sidebar" id="sidebar" aria-label="主导航">
+				<div class="side-brand">
+					<span class="brand-mark" aria-hidden="true">
+						<svg><use href="#i-bell" /></svg>
+					</span>
+					<span class="brand-word">Anotify</span>
+					<button
+						class="side-collapse"
+						id="sidebar-collapse"
+						type="button"
+						aria-expanded="true"
+						aria-controls="sidebar"
+						title="折叠侧栏"
+						data-tip="折叠侧栏"
+					>
+						<svg><use href="#i-chev-left" /></svg>
+					</button>
+				</div>
+				<nav class="side-nav">
+					<div class="side-group">
+						<div class="side-label">Workspace</div>
+						<a class="side-link active" href="#" aria-current="page" data-tip="总览">
+							<svg><use href="#i-grid" /></svg><span class="side-text">总览</span>
+						</a>
+						<a class="side-link" href="#" data-tip="事件流">
+							<svg><use href="#i-activity" /></svg><span class="side-text">事件流</span>
+							<span class="side-count">3</span>
+						</a>
+						<a class="side-link" href="#" data-tip="源">
+							<svg><use href="#i-zap" /></svg><span class="side-text">源</span>
+						</a>
+						<a class="side-link" href="#" data-tip="能力">
+							<svg><use href="#i-box" /></svg><span class="side-text">能力</span>
+						</a>
+						<a class="side-link" href="#" data-tip="出口">
+							<svg><use href="#i-branch" /></svg><span class="side-text">出口</span>
+						</a>
+						<a class="side-link" href="#" data-tip="预案">
+							<svg><use href="#i-book" /></svg><span class="side-text">预案</span>
+						</a>
+						<a class="side-link" href="#" data-tip="节点">
+							<svg><use href="#i-server" /></svg><span class="side-text">节点</span>
+						</a>
+					</div>
+					<div class="side-group">
+						<div class="side-label">Resources</div>
+						<a class="side-link" href="#" data-tip="API Key">
+							<svg><use href="#i-key" /></svg><span class="side-text">API Key</span>
+						</a>
+						<a class="side-link" href="#" data-tip="API 文档">
+							<svg><use href="#i-book-open" /></svg><span class="side-text">API 文档</span>
+						</a>
+						<a class="side-link" href="#" data-tip="安全与登录">
+							<svg><use href="#i-shield" /></svg><span class="side-text">安全与登录</span>
+						</a>
+						<a class="side-link" href="#" data-tip="管理后台">
+							<svg><use href="#i-sliders" /></svg><span class="side-text">管理后台</span>
+						</a>
+					</div>
+				</nav>
+				<div class="side-foot">
+					<button class="lang-trigger" type="button" data-tip="语言：中文">
+						<svg><use href="#i-globe" /></svg>
+						<span class="side-text">中文</span>
+						<svg class="chev"><use href="#i-chev-down" /></svg>
+					</button>
+					<button class="side-user" type="button">
+						<span class="avatar avatar-accent">d</span>
+						<span class="side-user-main">
+							<span class="side-user-name" id="sidebar-username">demo</span>
+							<span class="side-user-role">工作区所有者</span>
+						</span>
+						<svg class="side-user-chev"><use href="#i-chev-down" /></svg>
+					</button>
+				</div>
+			</aside>
+			<div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+			<div class="shell-main">
+				<header class="topbar">
+					<button
+						class="icon-btn"
+						id="menu-btn"
+						type="button"
+						aria-label="打开菜单"
+						aria-expanded="false"
+						aria-controls="sidebar"
+					>
+						<svg><use href="#i-menu" /></svg>
+					</button>
+					<div class="topbar-main">
+						<h1>总览 <span class="scope-badge badge badge-neutral">prod</span></h1>
+						<p class="topbar-sub">你的通知一览</p>
+					</div>
+					<div class="topbar-actions">
+						<button class="icon-btn" id="collapse-top" type="button" aria-label="折叠侧栏" title="折叠侧栏">
+							<svg><use href="#i-chev-left" /></svg>
+						</button>
+						<button
+							class="icon-btn"
+							id="theme-toggle"
+							type="button"
+							aria-label="切换主题：跟随系统"
+							title="主题：跟随系统"
+						>
+							<svg id="theme-icon"><use href="#i-monitor" /></svg>
+						</button>
+						<button class="icon-btn" type="button" aria-label="通知">
+							<svg><use href="#i-bell" /></svg>
+							<span class="dot-unread"></span>
+						</button>
+						<div class="topbar-divider"></div>
+						<div class="menu-anchor">
+							<button class="avatar-btn" id="topbar-avatar" type="button" aria-haspopup="menu" aria-expanded="false">
+								<span class="avatar avatar-accent" style="width: 26px; height: 26px">d</span>
+								<svg class="chev"><use href="#i-chev-down" /></svg>
+							</button>
+							<div class="menu" id="avatar-menu" role="menu" hidden style="right: 0; top: 42px; min-width: 240px">
+								<div class="menu-head">
+									<span class="name">demo</span>
+									<span class="mail">demo@example.com</span>
+								</div>
+								<button class="menu-item" role="menuitem" type="button">
+									<svg><use href="#i-shield" /></svg>安全与登录
+								</button>
+								<button class="menu-item" role="menuitem" type="button">
+									<svg><use href="#i-sliders" /></svg>管理后台
+								</button>
+								<div class="menu-sep"></div>
+								<button class="menu-item is-danger" role="menuitem" type="button">
+									<svg><use href="#i-logout" /></svg>退出登录
+								</button>
+							</div>
+						</div>
+					</div>
+				</header>
+
+				<main>
+					<div id="page-main">
+						<div class="page">
+							<!-- ============ 问候 + 摘要 ============ -->
+							<div class="page-head">
+								<div>
+									<h2 class="page-title" id="greeting">晚上好，demo</h2>
+									<p class="page-sub" id="summary-line">
+										最近 30 天收到 1,284 条通知，其中 1,266 条已送达；今天 36 条里有 2 条失败待处理。
+									</p>
+								</div>
+								<div class="page-actions">
+									<a class="btn btn-ghost" href="#">查看事件流</a>
+									<a class="btn btn-primary" href="#"><svg><use href="#i-plus" /></svg>接入 Agent</a>
+								</div>
+							</div>
+
+							<!-- ============ 4 KPI ============ -->
+							<div class="kpi-grid">
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon"><svg><use href="#i-activity" /></svg></span>
+										<span class="stat-label">本周事件</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value" id="kpi-total">328</span>
+										<span class="stat-delta up"><svg><use href="#i-up" /></svg>12.4%</span>
+									</div>
+									<svg class="stat-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 27 L15 23 L30 25 L45 18 L60 20 L75 12 L90 15 L105 9 L120 11 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 27 L15 23 L30 25 L45 18 L60 20 L75 12 L90 15 L105 9 L120 11" />
+									</svg>
+								</div>
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon is-success"><svg><use href="#i-check" /></svg></span>
+										<span class="stat-label">送达率</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value" id="kpi-rate">98.6<span class="unit">%</span></span>
+										<span class="stat-delta up"><svg><use href="#i-up" /></svg>0.8%</span>
+									</div>
+									<svg class="stat-spark is-success" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 18 L15 16 L30 19 L45 14 L60 15 L75 11 L90 13 L105 10 L120 11 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 18 L15 16 L30 19 L45 14 L60 15 L75 11 L90 13 L105 10 L120 11" />
+									</svg>
+								</div>
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon is-warn"><svg><use href="#i-server" /></svg></span>
+										<span class="stat-label">在线节点</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value" id="kpi-today">6<span class="unit">/ 7</span></span>
+										<span class="stat-delta down"><svg><use href="#i-down" /></svg>1 离线</span>
+									</div>
+									<svg class="stat-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 10 L15 10 L30 12 L45 12 L60 14 L75 14 L90 16 L105 16 L120 18 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 10 L15 10 L30 12 L45 12 L60 14 L75 14 L90 16 L105 16 L120 18" />
+									</svg>
+								</div>
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon"><svg><use href="#i-clock" /></svg></span>
+										<span class="stat-label">平均时延</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value" id="kpi-devices">1.8<span class="unit">s</span></span>
+										<span class="stat-delta up"><svg><use href="#i-down" /></svg>0.3s</span>
+									</div>
+									<svg class="stat-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 24 L15 22 L30 23 L45 19 L60 21 L75 17 L90 18 L105 15 L120 16 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 24 L15 22 L30 23 L45 19 L60 21 L75 17 L90 18 L105 15 L120 16" />
+									</svg>
+								</div>
+							</div>
+
+							<!-- ============ 通知活动热力图 ============ -->
+							<section class="card card-pad">
+								<div class="card-head">
+									<div>
+										<h2 class="card-title">通知活动</h2>
+										<p class="card-sub">近 12 个月每日任务数 · 悬停看当天条数</p>
+									</div>
+									<div class="card-actions">
+										<div class="row" style="gap: 4px">
+											<span class="hm-legend-cell"></span>
+											<span class="hm-legend-cell" style="background: var(--accent-1)"></span>
+											<span class="hm-legend-cell" style="background: var(--accent-2)"></span>
+											<span class="hm-legend-cell" style="background: var(--accent-3)"></span>
+											<span class="hm-legend-cell" style="background: var(--accent-4)"></span>
+											<span class="t-micro" style="margin-left: 4px">少 → 多</span>
+										</div>
+									</div>
+								</div>
+								<div class="hm-band" style="margin-top: 18px">
+									<div class="hm-scroll">
+										<div class="heatmap" style="grid-template-columns: 28px auto">
+											<div></div>
+											<div class="hm-months" id="hm-months"></div>
+											<div class="hm-days">
+												<span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
+											</div>
+											<div class="hm-grid" id="hm" style="--hm-cell: 11px; --hm-gap: 3px"></div>
+										</div>
+										<div class="hm-caption" style="margin-left: 28px">
+											<span>近 30 天 <b>428</b> 条</span>
+											<span>日均 <b>13</b> 条</span>
+											<span>今天 <b>36</b> 条</span>
+											<span class="row" style="gap: 4px"><i class="dot dot-succeeded"></i>刚更新</span>
+										</div>
+									</div>
+									<div class="hm-rail">
+										<div>
+											<div class="k">全年任务</div>
+											<div class="v">4,812</div>
+										</div>
+										<div>
+											<div class="k">最长连续</div>
+											<div class="v">27 天</div>
+										</div>
+										<div>
+											<div class="k">最高单日</div>
+											<div class="v">96</div>
+										</div>
+										<div class="t-micro" style="line-height: 1.5">深浅只表示数量，不表示状态；状态色留给 --st-*。</div>
+									</div>
+								</div>
+							</section>
+
+							<!-- ============ 最近任务 + 右栏 ============ -->
+							<div class="split split-fill" style="grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr)">
+								<section class="card card-pad card-fill">
+									<div class="card-head">
+										<div>
+											<h2 class="card-title">最近任务</h2>
+											<p class="card-sub">按开始时间倒序 · 点击查看 trace</p>
+										</div>
+										<div class="card-actions">
+											<div class="tabs" style="border: 0">
+												<button class="tab active" type="button">全部</button>
+												<button class="tab" type="button">失败</button>
+											</div>
+										</div>
+									</div>
+									<div class="list" style="margin-top: 8px">
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_8f2a1c</span><span class="badge badge-success">succeeded</span></div>
+												<div class="list-meta"><span>deploy.preview</span><span class="sep"></span><span>mac-mini-01</span><span class="sep"></span><span>1.8s</span></div>
+											</div>
+											<div class="list-side"><span>2 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_1c9d02</span><span class="badge badge-warn">running</span></div>
+												<div class="list-meta"><span>alert.oncall</span><span class="sep"></span><span>mac-mini-03</span><span class="sep"></span><span>已跑 42s</span></div>
+											</div>
+											<div class="list-side"><span>3 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_77b3ee</span><span class="badge badge-error">failed</span></div>
+												<div class="list-meta"><span>run.tests</span><span class="sep"></span><span>ci-runner-2</span><span class="sep"></span><span class="st-text failed">exit 1</span></div>
+											</div>
+											<div class="list-side"><span>4 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_2ad04f</span><span class="badge badge-success">succeeded</span></div>
+												<div class="list-meta"><span>lint.fix</span><span class="sep"></span><span>ci-runner-1</span><span class="sep"></span><span>0.9s</span></div>
+											</div>
+											<div class="list-side"><span>5 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_90e1b7</span><span class="badge badge-warn">lease_expired</span></div>
+												<div class="list-meta"><span>notify.slack</span><span class="sep"></span><span>gateway</span><span class="sep"></span><span>已重派 1 次</span></div>
+											</div>
+											<div class="list-side"><span>6 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_5c22a8</span><span class="badge badge-success">succeeded</span></div>
+												<div class="list-meta"><span>report.send</span><span class="sep"></span><span>mac-mini-02</span><span class="sep"></span><span>2.4s</span></div>
+											</div>
+											<div class="list-side"><span>8 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_31ff90</span><span class="badge badge-neutral">canceled</span></div>
+												<div class="list-meta"><span>analyze.pr</span><span class="sep"></span><span>mac-mini-01</span><span class="sep"></span><span>手动取消</span></div>
+											</div>
+											<div class="list-side"><span>11 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+										<div class="list-row is-clickable">
+											<span class="list-lead"><svg><use href="#i-git" /></svg></span>
+											<div class="list-main">
+												<div class="list-title"><span class="mono">task_bb7d13</span><span class="badge badge-success">succeeded</span></div>
+												<div class="list-meta"><span>apply.fix</span><span class="sep"></span><span>mac-mini-03</span><span class="sep"></span><span>3.1s</span></div>
+											</div>
+											<div class="list-side"><span>13 分钟前</span><svg class="chev"><use href="#i-chev-right" /></svg></div>
+										</div>
+									</div>
+									<div class="card-foot">
+										<span>已显示 8 / 30 条 · 队列 0</span>
+										<button class="btn btn-ghost btn-sm" type="button"><svg><use href="#i-refresh" /></svg>加载更多</button>
+									</div>
+								</section>
+
+								<div class="stack" style="gap: var(--gap-block)">
+									<!-- 最近事件 -->
+									<section class="card card-pad">
+										<div class="card-head">
+											<div>
+												<h2 class="card-title">最近事件</h2>
+												<p class="card-sub">最近 5 条 · 因果视角</p>
+											</div>
+											<div class="card-actions">
+												<a class="btn btn-quiet btn-sm" href="#">全部<svg><use href="#i-chev-right" /></svg></a>
+											</div>
+										</div>
+										<div class="list" style="margin-top: 10px">
+											<div class="list-row is-clickable">
+												<i class="dot dot-succeeded"></i>
+												<div class="list-main">
+													<div class="list-title"><span class="mono" style="font-size: var(--fs-xs)">ev_3f21a9</span></div>
+													<div class="list-meta"><span>github · push_request</span></div>
+												</div>
+												<div class="list-side"><span>2m</span></div>
+											</div>
+											<div class="list-row is-clickable">
+												<i class="dot dot-running"></i>
+												<div class="list-main">
+													<div class="list-title"><span class="mono" style="font-size: var(--fs-xs)">ev_9a10c4</span></div>
+													<div class="list-meta"><span>cron · registry_sync</span></div>
+												</div>
+												<div class="list-side"><span>5m</span></div>
+											</div>
+											<div class="list-row is-clickable">
+												<i class="dot dot-failed"></i>
+												<div class="list-main">
+													<div class="list-title"><span class="mono" style="font-size: var(--fs-xs)">ev_51b7de</span></div>
+													<div class="list-meta"><span>webhook · run_requested</span></div>
+												</div>
+												<div class="list-side"><span>9m</span></div>
+											</div>
+											<div class="list-row is-clickable">
+												<i class="dot dot-succeeded"></i>
+												<div class="list-main">
+													<div class="list-title"><span class="mono" style="font-size: var(--fs-xs)">ev_2c88f1</span></div>
+													<div class="list-meta"><span>manual · apply_requested</span></div>
+												</div>
+												<div class="list-side"><span>14m</span></div>
+											</div>
+											<div class="list-row is-clickable">
+												<i class="dot dot-abandoned"></i>
+												<div class="list-main">
+													<div class="list-title"><span class="mono" style="font-size: var(--fs-xs)">ev_6e04a2</span></div>
+													<div class="list-meta"><span>github · issue_opened</span></div>
+												</div>
+												<div class="list-side"><span>21m</span></div>
+											</div>
+										</div>
+									</section>
+
+									<!-- 接入 Agent -->
+									<section class="card card-pad" id="quickstart">
+										<div class="card-head">
+											<div>
+												<h2 class="card-title">接入你的 Agent</h2>
+												<p class="card-sub">一台机器一条命令，装成系统守护进程</p>
+											</div>
+										</div>
+										<div class="stack" style="margin-top: 14px; gap: 12px">
+											<div class="step"><b>1</b><span>在工作区创建 API Key（<span class="mono">ak_…</span>）</span></div>
+											<div class="step"><b>2</b><span>在目标机器执行下面这条命令</span></div>
+											<div class="code-block">
+												<div class="code-head">
+													<span class="mono">bash</span>
+													<button class="copy-btn" type="button"><svg><use href="#i-copy" /></svg>复制</button>
+												</div>
+												<pre class="code-body">curl -fsSL https://notify.local/agent-login.sh | sh</pre>
+											</div>
+											<div class="step"><b>3</b><span>节点出现在「节点」页后，能力自动上报，无需重启</span></div>
+											<a class="btn btn-primary btn-block" href="#">打开接入向导</a>
+										</div>
+									</section>
+								</div>
+							</div>
+						</div>
+					</div>
+				</main>
+				<footer class="foot">Anotify · 总览 · UI v2 视觉稿（design/ui-v2/dashboard.html）</footer>
+			</div>
+		</div>
+
+		<div class="toast-host" id="anotify-toast-host"></div>
+
+		<script>
+			(function () {
+				var root = document.documentElement;
+				var shell = document.getElementById("app-shell");
+				var THEME_KEY = "anotify-theme";
+				var modes = ["auto", "dark", "light"];
+				var icons = { auto: "#i-monitor", dark: "#i-moon", light: "#i-sun" };
+				var labels = { auto: "跟随系统", dark: "暗色", light: "亮色" };
+				function systemTheme() {
+					return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+				}
+				function apply(mode) {
+					var resolved = mode === "auto" ? systemTheme() : mode;
+					root.dataset.theme = resolved;
+					root.style.colorScheme = resolved;
+					var meta = document.querySelector('meta[name="theme-color"]');
+					if (meta) meta.content = resolved === "light" ? "#f7f8fc" : "#08080e";
+					try { localStorage.setItem(THEME_KEY, mode); } catch (e) {}
+					var icon = document.getElementById("theme-icon");
+					if (icon) icon.innerHTML = '<use href="' + icons[mode] + '"/>';
+					var btn = document.getElementById("theme-toggle");
+					if (btn) btn.title = "主题：" + labels[mode];
+				}
+				var mode = new URLSearchParams(location.search).get("theme") || "auto";
+				if (modes.indexOf(mode) < 0) mode = "auto";
+				apply(mode);
+				document.getElementById("theme-toggle").addEventListener("click", function () {
+					mode = modes[(modes.indexOf(mode) + 1) % modes.length];
+					apply(mode);
+				});
+
+				function setCollapsed(v) {
+					shell.dataset.collapsed = String(v);
+					var c = document.getElementById("sidebar-collapse");
+					if (c) c.setAttribute("aria-expanded", String(!v));
+				}
+				["sidebar-collapse", "collapse-top"].forEach(function (id) {
+					var b = document.getElementById(id);
+					if (b) b.addEventListener("click", function () { setCollapsed(shell.dataset.collapsed !== "true"); });
+				});
+
+				var overlay = document.getElementById("sidebar-overlay");
+				var menuBtn = document.getElementById("menu-btn");
+				function setDrawer(open) {
+					shell.dataset.drawer = String(open);
+					overlay.classList.toggle("is-open", open);
+					menuBtn.setAttribute("aria-expanded", String(open));
+					document.body.style.overflow = open ? "hidden" : "";
+				}
+				menuBtn.addEventListener("click", function () { setDrawer(shell.dataset.drawer !== "true"); });
+				overlay.addEventListener("click", function () { setDrawer(false); });
+
+				document.addEventListener("keydown", function (e) {
+					if (e.key === "Escape") {
+						setDrawer(false);
+						var am = document.getElementById("avatar-menu");
+						if (am) am.hidden = true;
+					}
+				});
+				var avatar = document.getElementById("topbar-avatar");
+				var avatarMenu = document.getElementById("avatar-menu");
+				avatar.addEventListener("click", function (e) {
+					e.stopPropagation();
+					avatarMenu.hidden = !avatarMenu.hidden;
+					avatar.setAttribute("aria-expanded", String(!avatarMenu.hidden));
+				});
+				document.addEventListener("click", function () {
+					avatarMenu.hidden = true;
+					avatar.setAttribute("aria-expanded", "false");
+				});
+				document.querySelectorAll(".side-link").forEach(function (a) {
+					a.addEventListener("click", function (e) {
+						e.preventDefault();
+						if (window.matchMedia("(max-width: 1023px)").matches) setDrawer(false);
+					});
+				});
+
+				/* ---------- 热力图：53 周 × 7 天，确定性数据 ---------- */
+				var WEEKS = 53;
+				var seed = 20261102;
+				function rnd() {
+					seed = (seed * 16807) % 2147483647;
+					return seed / 2147483647;
+				}
+				var grid = document.getElementById("hm");
+				var frag = document.createDocumentFragment();
+				var months = document.getElementById("hm-months");
+				var names = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+				var CELL = 14; /* 11px 格 + 3px gap */
+				var DAY = 86400000;
+				/* 起点：53 周前的周一，保证末列是本周 */
+				var today = new Date();
+				var start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+				start = new Date(start.getTime() - (start.getDay() === 0 ? 6 : start.getDay() - 1) * DAY);
+				start = new Date(start.getTime() - (WEEKS - 1) * 7 * DAY);
+				var lastMonth = -1;
+				for (var w = 0; w < WEEKS; w++) {
+					var colDate = new Date(start.getTime() + w * 7 * DAY);
+					var m = colDate.getMonth();
+					if (m !== lastMonth) {
+						lastMonth = m;
+						var label = document.createElement("span");
+						label.textContent = names[m];
+						label.style.left = w * CELL + "px";
+						months.appendChild(label);
+					}
+					for (var d = 0; d < 7; d++) {
+						var v = Math.pow(rnd(), 2.2);
+						var lvl = Math.min(4, Math.floor(v * 5));
+						if (d === 5 || d === 6) lvl = Math.min(2, lvl);
+						var c = document.createElement("span");
+						c.className = "hm-cell";
+						c.dataset.level = String(lvl);
+						c.title = lvl === 0 ? "无任务" : lvl * 6 + " 条任务";
+						if (w === WEEKS - 1 && d === (today.getDay() === 0 ? 6 : today.getDay() - 1)) {
+							c.className += " hm-today";
+							c.dataset.level = "3";
+						}
+						frag.appendChild(c);
+					}
+				}
+				grid.appendChild(frag);
+				months.style.width = WEEKS * CELL - 3 + "px";
+			})();
+		</script>
+	</body>
+</html>

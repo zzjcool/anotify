@@ -1,0 +1,1370 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#08080e" />
+		<link rel="icon" href="data:," />
+		<title>Anotify · UI v2 组件画廊</title>
+		<!--
+			设计侧原型（design/ 允许 Play CDN）。产品页不要引 CDN。
+			契约 §3/§4/§5 的类名逐一对应，颜色全部走 tokens.css。
+		-->
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&display=swap"
+			rel="stylesheet"
+		/>
+		<link rel="stylesheet" href="./tokens.css" />
+		<link rel="stylesheet" href="./ui-v2.css" />
+		<script src="https://cdn.tailwindcss.com"></script>
+		<style>
+			/* —— 只属于画廊页的展示壳，不属于产品组件 —— */
+			.g-id {
+				font-family: var(--font-mono);
+				font-size: var(--fs-micro);
+				color: var(--faint);
+				border: 1px solid var(--line);
+				border-radius: var(--r-full);
+				padding: 1px 7px;
+			}
+			.g-note {
+				display: flex;
+				gap: 8px;
+				align-items: flex-start;
+				padding: 10px 12px;
+				border-radius: var(--r-sm);
+				background: var(--accent-soft);
+				border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+				font-size: var(--fs-xs);
+				line-height: 1.5;
+				color: var(--muted);
+			}
+			.g-note svg {
+				width: 14px;
+				height: 14px;
+				color: var(--accent);
+				flex: 0 0 auto;
+				margin-top: 2px;
+			}
+			.g-row {
+				display: flex;
+				flex-wrap: wrap;
+				align-items: center;
+				gap: 10px;
+			}
+			.g-stack {
+				display: grid;
+				gap: 14px;
+			}
+			.g-cols {
+				display: grid;
+				gap: 16px;
+				grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+			}
+			.g-cap {
+				font-family: var(--font-mono);
+				font-size: var(--fs-micro);
+				color: var(--faint);
+				overflow-wrap: anywhere;
+			}
+			.g-mini {
+				display: grid;
+				gap: 10px;
+				padding: 14px;
+				border-radius: var(--r-md);
+				background: var(--surface-2);
+				border: 1px solid var(--line);
+			}
+			.g-swatch {
+				height: 34px;
+				border-radius: var(--r-xs);
+				border: 1px solid var(--line);
+				display: grid;
+				place-items: end center;
+				padding-bottom: 3px;
+				font-family: var(--font-mono);
+				font-size: 9px;
+				color: var(--text);
+			}
+			.g-table .table-wrap {
+				max-height: 260px;
+			}
+			.g-typo-ab {
+				display: grid;
+				gap: 4px;
+				padding: 16px;
+				border-radius: var(--r-md);
+				border: 1px dashed var(--line-strong);
+				background: var(--surface-2);
+			}
+			.g-typo-ab .a {
+				font-family: var(--font-display);
+				font-size: 30px;
+				line-height: 1.2;
+				letter-spacing: -0.015em;
+			}
+			.g-typo-ab .b {
+				font-family: var(--font-sans);
+				font-size: 28px;
+				line-height: 1.15;
+				font-weight: 600;
+				letter-spacing: -0.03em;
+			}
+			#modal-demo {
+				position: static;
+				display: grid;
+				place-items: start;
+				padding: 0;
+				background: none;
+				backdrop-filter: none;
+			}
+			#modal-demo .modal-panel {
+				box-shadow: var(--shadow-2);
+			}
+			.foot {
+				padding: 18px var(--pad-page) 28px;
+				text-align: center;
+				font-size: var(--fs-micro);
+				color: var(--faint);
+			}
+		</style>
+	</head>
+	<body>
+		<!-- ============ 图标 sprite（stroke 由 CSS 控制，颜色 currentColor）============ -->
+		<svg
+			aria-hidden="true"
+			style="position: absolute; width: 0; height: 0; overflow: hidden"
+		>
+			<defs>
+				<symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="3" y="3" width="7" height="9" rx="1.5" />
+					<rect x="14" y="3" width="7" height="5" rx="1.5" />
+					<rect x="14" y="12" width="7" height="9" rx="1.5" />
+					<rect x="3" y="16" width="7" height="5" rx="1.5" />
+				</symbol>
+				<symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+				</symbol>
+				<symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M13 2 3 14h8l-1 8 10-12h-8z" />
+				</symbol>
+				<symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path
+						d="M21 8v8a2 2 0 0 1-1 1.73l-7 4a2 2 0 0 1-2 0l-7-4A2 2 0 0 1 3 16V8a2 2 0 0 1 1-1.73l7-4a2 2 0 0 1 2 0l7 4A2 2 0 0 1 21 8z"
+					/>
+					<path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
+				</symbol>
+				<symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M6 3v12" />
+					<circle cx="18" cy="6" r="3" />
+					<circle cx="6" cy="18" r="3" />
+					<path d="M18 9a9 9 0 0 1-9 9" />
+				</symbol>
+				<symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+					<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+				</symbol>
+				<symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="2" y="3" width="20" height="7" rx="2" />
+					<rect x="2" y="14" width="20" height="7" rx="2" />
+					<path d="M6 6.5h.01M6 17.5h.01" />
+				</symbol>
+				<symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="7.5" cy="15.5" r="4.5" />
+					<path d="m10.5 12.5 9-9 3 3-3 3-2-2-3 3" />
+				</symbol>
+				<symbol id="i-book-open" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z" />
+					<path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z" />
+				</symbol>
+				<symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+				</symbol>
+				<symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+					<circle cx="4" cy="12" r="2" />
+					<circle cx="12" cy="5" r="2" />
+					<circle cx="20" cy="14" r="2" />
+				</symbol>
+				<symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+					<path d="M13.7 21a2 2 0 0 1-3.4 0" />
+				</symbol>
+				<symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="4" />
+					<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+				</symbol>
+				<symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+				</symbol>
+				<symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="2" y="3" width="20" height="14" rx="2" />
+					<path d="M8 21h8M12 17v4" />
+				</symbol>
+				<symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m6 9 6 6 6-6" />
+				</symbol>
+				<symbol id="i-chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m9 18 6-6-6-6" />
+				</symbol>
+				<symbol id="i-chev-left" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m15 18-6-6 6-6" />
+				</symbol>
+				<symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M3 6h18M3 12h18M3 18h18" />
+				</symbol>
+				<symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="9" />
+					<path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z" />
+				</symbol>
+				<symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="8" r="4" />
+					<path d="M4 21a8 8 0 0 1 16 0" />
+				</symbol>
+				<symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<rect x="9" y="9" width="12" height="12" rx="2" />
+					<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+				</symbol>
+				<symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 5v14M5 12h14" />
+				</symbol>
+				<symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6" />
+				</symbol>
+				<symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+					<path d="M15 3h6v6M10 14 21 3" />
+				</symbol>
+				<symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="9" />
+					<path d="M12 16v-4M12 8h.01" />
+				</symbol>
+				<symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="m4 12 5 5L20 6" />
+				</symbol>
+				<symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="12" cy="12" r="9" />
+					<path d="M12 8v5M12 16h.01" />
+				</symbol>
+				<symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M18 6 6 18M6 6l12 12" />
+				</symbol>
+				<symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M4 13h4l2 3h4l2-3h4" />
+					<path d="M5.5 5h13l2.5 8v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4z" />
+				</symbol>
+				<symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+					<path d="m16 17 5-5-5-5M21 12H9" />
+				</symbol>
+				<symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 19V5M5 12l7-7 7 7" />
+				</symbol>
+				<symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M12 5v14M19 12l-7 7-7-7" />
+				</symbol>
+				<symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<circle cx="11" cy="11" r="7" />
+					<path d="m20 20-3.5-3.5" />
+				</symbol>
+				<symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path d="M3 6h18v12H3z" />
+					<path d="m3 7 9 6 9-6" />
+				</symbol>
+			</defs>
+		</svg>
+
+		<div class="shell" id="app-shell" data-collapsed="false" data-drawer="false">
+			<!-- ==================== 侧栏（§4.1）==================== -->
+			<aside class="sidebar" id="sidebar" aria-label="主导航">
+				<div class="side-brand">
+					<span class="brand-mark" aria-hidden="true">
+						<svg><use href="#i-bell" /></svg>
+					</span>
+					<span class="brand-word">Anotify</span>
+					<button
+						class="side-collapse"
+						id="sidebar-collapse"
+						type="button"
+						aria-expanded="true"
+						aria-controls="sidebar"
+						title="折叠侧栏"
+						data-tip="折叠侧栏"
+					>
+						<svg><use href="#i-chev-left" /></svg>
+					</button>
+				</div>
+
+				<nav class="side-nav">
+					<div class="side-group">
+						<div class="side-label">Workspace</div>
+						<a class="side-link active" href="#" aria-current="page" data-tip="总览">
+							<svg><use href="#i-grid" /></svg><span class="side-text">总览</span>
+						</a>
+						<a class="side-link" href="#" data-tip="事件流">
+							<svg><use href="#i-activity" /></svg><span class="side-text">事件流</span>
+							<span class="side-count">3</span>
+						</a>
+						<a class="side-link" href="#" data-tip="源">
+							<svg><use href="#i-zap" /></svg><span class="side-text">源</span>
+						</a>
+						<a class="side-link" href="#" data-tip="能力">
+							<svg><use href="#i-box" /></svg><span class="side-text">能力</span>
+						</a>
+						<a class="side-link" href="#" data-tip="出口">
+							<svg><use href="#i-branch" /></svg><span class="side-text">出口</span>
+						</a>
+						<a class="side-link" href="#" data-tip="预案">
+							<svg><use href="#i-book" /></svg><span class="side-text">预案</span>
+						</a>
+						<a class="side-link" href="#" data-tip="节点">
+							<svg><use href="#i-server" /></svg><span class="side-text">节点</span>
+						</a>
+					</div>
+					<div class="side-group">
+						<div class="side-label">Resources</div>
+						<a class="side-link" href="#" data-tip="API Key">
+							<svg><use href="#i-key" /></svg><span class="side-text">API Key</span>
+						</a>
+						<a class="side-link" href="#" data-tip="API 文档">
+							<svg><use href="#i-book-open" /></svg><span class="side-text">API 文档</span>
+						</a>
+						<a class="side-link" href="#" data-tip="安全与登录">
+							<svg><use href="#i-shield" /></svg><span class="side-text">安全与登录</span>
+						</a>
+						<a class="side-link" href="#" data-tip="管理后台">
+							<svg><use href="#i-sliders" /></svg><span class="side-text">管理后台</span>
+						</a>
+					</div>
+				</nav>
+
+				<div class="side-foot">
+					<button class="lang-trigger" type="button" data-tip="语言：中文">
+						<svg><use href="#i-globe" /></svg>
+						<span class="side-text">中文</span>
+						<svg class="chev"><use href="#i-chev-down" /></svg>
+					</button>
+					<button class="side-user" type="button">
+						<span class="avatar avatar-accent">d</span>
+						<span class="side-user-main">
+							<span class="side-user-name" id="sidebar-username">demo</span>
+							<span class="side-user-role">工作区所有者</span>
+						</span>
+						<svg class="side-user-chev"><use href="#i-chev-down" /></svg>
+					</button>
+				</div>
+			</aside>
+			<div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+			<div class="shell-main">
+				<!-- ==================== 顶栏（§4.2）==================== -->
+				<header class="topbar">
+					<button
+						class="icon-btn"
+						id="menu-btn"
+						type="button"
+						aria-label="打开菜单"
+						aria-expanded="false"
+						aria-controls="sidebar"
+					>
+						<svg><use href="#i-menu" /></svg>
+					</button>
+					<div class="topbar-main">
+						<h1>组件画廊<span class="badge badge-accent">v2</span></h1>
+						<p class="topbar-sub">UI-V2-CONTRACT §3–§5 的视觉实现</p>
+					</div>
+					<div class="topbar-actions">
+						<button
+							class="icon-btn"
+							id="collapse-top"
+							type="button"
+							aria-label="折叠侧栏"
+							title="折叠侧栏"
+							data-tip="折叠侧栏"
+						>
+							<svg><use href="#i-chev-left" /></svg>
+						</button>
+						<button
+							class="icon-btn"
+							id="theme-toggle"
+							type="button"
+							aria-label="切换主题：跟随系统"
+							title="主题：跟随系统"
+						>
+							<svg id="theme-icon"><use href="#i-monitor" /></svg>
+						</button>
+						<button class="icon-btn" type="button" aria-label="通知">
+							<svg><use href="#i-bell" /></svg>
+							<span class="dot-unread"></span>
+						</button>
+						<div class="topbar-divider"></div>
+						<div class="menu-anchor">
+							<button
+								class="avatar-btn"
+								id="topbar-avatar"
+								type="button"
+								aria-haspopup="menu"
+								aria-expanded="false"
+							>
+								<span class="avatar avatar-accent" style="width: 26px; height: 26px">d</span>
+								<svg class="chev"><use href="#i-chev-down" /></svg>
+							</button>
+							<div class="menu" id="avatar-menu" role="menu" hidden style="right: 0; top: 42px; min-width: 240px">
+								<div class="menu-head">
+									<span class="name">demo</span>
+									<span class="mail">demo@example.com</span>
+								</div>
+								<button class="menu-item" role="menuitem" type="button">
+									<svg><use href="#i-shield" /></svg>安全与登录
+								</button>
+								<button class="menu-item" role="menuitem" type="button">
+									<svg><use href="#i-sliders" /></svg>管理后台
+								</button>
+								<button class="menu-item" role="menuitem" type="button">
+									<svg><use href="#i-book-open" /></svg>API 文档
+									<span class="kbd">?</span>
+								</button>
+								<div class="menu-sep"></div>
+								<button class="menu-item is-danger" role="menuitem" type="button">
+									<svg><use href="#i-logout" /></svg>退出登录
+								</button>
+							</div>
+						</div>
+					</div>
+				</header>
+
+				<main id="page-main">
+					<div class="page">
+						<!-- ============ 页头 ============ -->
+						<div class="page-head">
+							<div>
+								<h2 class="page-title">组件画廊</h2>
+								<p class="page-sub">
+									UI v2 的组件语言与外壳。左侧栏 264 / 76 可折叠，顶栏含三态主题与头像菜单；
+									颜色全部来自 <span class="mono">tokens.css</span>，两套主题同时可查。
+								</p>
+							</div>
+							<div class="page-actions">
+								<div class="seg-switch" id="theme-seg" role="group" aria-label="主题">
+									<button class="seg-item" type="button" data-mode="auto">跟随系统</button>
+									<button class="seg-item active" type="button" data-mode="dark">暗色</button>
+									<button class="seg-item" type="button" data-mode="light">亮色</button>
+								</div>
+								<div class="seg-switch" id="side-seg" role="group" aria-label="侧栏">
+									<button class="seg-item active" type="button" data-col="false">展开</button>
+									<button class="seg-item" type="button" data-col="true">折叠</button>
+								</div>
+							</div>
+						</div>
+
+						<!-- ============ 01 统计卡 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">KPI 统计卡 <span class="g-id">.stat</span></h2>
+									<p class="card-sub">
+										图标底 + 30px 数值 + 环比 chip + 34px sparkline。数值用 tabular-nums，
+										避免动数字时行内跳动。
+									</p>
+								</div>
+								<div class="card-actions">
+									<span class="g-cap">.stat-icon .stat-value .stat-delta .stat-spark</span>
+								</div>
+							</div>
+							<div class="kpi-grid" style="margin-top: 18px">
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon"><svg><use href="#i-activity" /></svg></span>
+										<span class="stat-label">近 30 天事件</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value">1,284</span>
+										<span class="stat-delta up"><svg><use href="#i-up" /></svg>12.4%</span>
+									</div>
+									<svg class="stat-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 27 L12 23 L24 25 L36 18 L48 20 L60 12 L72 15 L84 9 L96 13 L108 6 L120 8 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 27 L12 23 L24 25 L36 18 L48 20 L60 12 L72 15 L84 9 L96 13 L108 6 L120 8" />
+									</svg>
+									<div class="stat-foot"><span>较上期 +141</span><span>最近 1 小时 9 条</span></div>
+								</div>
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon is-success"><svg><use href="#i-check" /></svg></span>
+										<span class="stat-label">任务成功率</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value">98.6<span class="unit">%</span></span>
+										<span class="stat-delta up"><svg><use href="#i-up" /></svg>0.8%</span>
+									</div>
+									<svg class="stat-spark is-success" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 18 L12 16 L24 19 L36 14 L48 15 L60 11 L72 13 L84 10 L96 12 L108 9 L120 10 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 18 L12 16 L24 19 L36 14 L48 15 L60 11 L72 13 L84 10 L96 12 L108 9 L120 10" />
+									</svg>
+									<div class="stat-foot"><span>失败 18 / 1,284</span><span>P95 1.8s</span></div>
+								</div>
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon is-warn"><svg><use href="#i-server" /></svg></span>
+										<span class="stat-label">在线节点</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value">6<span class="unit">/ 7</span></span>
+										<span class="stat-delta down"><svg><use href="#i-down" /></svg>1 离线</span>
+									</div>
+									<svg class="stat-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 10 L12 10 L24 12 L36 12 L48 14 L60 14 L72 16 L84 16 L96 18 L108 18 L120 20 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 10 L12 10 L24 12 L36 12 L48 14 L60 14 L72 16 L84 16 L96 18 L108 18 L120 20" />
+									</svg>
+									<div class="stat-foot"><span>mac-mini-02 租约过期</span></div>
+								</div>
+								<div class="stat">
+									<div class="stat-top">
+										<span class="stat-icon is-error"><svg><use href="#i-alert" /></svg></span>
+										<span class="stat-label">待处理告警</span>
+									</div>
+									<div class="stat-body">
+										<span class="stat-value">2</span>
+										<span class="stat-delta"><svg><use href="#i-chev-right" /></svg>查看</span>
+									</div>
+									<svg class="stat-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+										<path class="area" d="M0 20 L12 22 L24 18 L36 24 L48 20 L60 26 L72 22 L84 24 L96 20 L108 22 L120 18 L120 34 L0 34 Z" />
+										<path class="line" vector-effect="non-scaling-stroke" d="M0 20 L12 22 L24 18 L36 24 L48 20 L60 26 L72 22 L84 24 L96 20 L108 22 L120 18" />
+									</svg>
+									<div class="stat-foot"><span>2 条未读通知</span></div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 02 卡片 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">卡片 <span class="g-id">.card</span></h2>
+									<p class="card-sub">
+										实底 <span class="mono">--surface-1</span> + 1px <span class="mono">--line</span> +
+										<span class="mono">--shadow-1</span>，hover 提到 <span class="mono">--shadow-2</span> +
+										<span class="mono">--line-strong</span>。不再用白 alpha 描边。
+									</p>
+								</div>
+							</div>
+							<div class="g-cols" style="margin-top: 18px">
+								<div class="card card-pad">
+									<div class="card-head">
+										<div>
+											<h3 class="card-title">普通卡片</h3>
+											<p class="card-sub">.card + .card-pad（20px 内距）</p>
+										</div>
+									</div>
+									<p class="page-sub" style="margin-top: 12px">
+										卡片内部只有一条信息层级：标题 16/600、说明 12/faint、正文 14。
+										<span class="mono">.card</span> 自身不带 padding，避免全站 5 种落点。
+									</p>
+								</div>
+								<div class="card card-pad card-hover">
+									<div class="card-head">
+										<div>
+											<h3 class="card-title">可点击卡片</h3>
+											<p class="card-sub">.card-hover（hover 抬 2px）</p>
+										</div>
+										<div class="card-actions">
+											<button class="btn btn-icon btn-sm" type="button" aria-label="更多">
+												<svg><use href="#i-external" /></svg>
+											</button>
+										</div>
+									</div>
+									<p class="page-sub" style="margin-top: 12px">
+										hover / focus 同步提升边框与阴影；reduced-motion 下位移归零。
+									</p>
+								</div>
+								<div class="card">
+									<div class="card-head card-pad">
+										<div>
+											<h3 class="card-title">带头部 + 动作</h3>
+											<p class="card-sub">.card-head .card-title .card-sub .card-actions</p>
+										</div>
+										<div class="card-actions">
+											<button class="btn btn-ghost btn-sm" type="button">全部</button>
+										</div>
+									</div>
+									<div class="divider"></div>
+									<div class="card-pad" style="padding-top: 14px">
+										<div class="row-between">
+											<span class="t-label">最近一次派发</span>
+											<span class="mono faint" style="font-size: var(--fs-micro)">2 分钟前</span>
+										</div>
+									</div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 03 按钮 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">按钮 <span class="g-id">.btn</span></h2>
+									<p class="card-sub">
+										统一 36px 高 / 12px 圆角 / 13px 字。主按钮 accent 填充 + <span class="mono">--on-solid</span> 文字；
+										<span class="mono">a.btn-primary</span> 必须保持 <span class="mono">inline-flex</span>（e2e 取 href）。
+									</p>
+								</div>
+							</div>
+							<div class="g-stack" style="margin-top: 18px">
+								<div class="g-row">
+									<button class="btn btn-primary" type="button"><svg><use href="#i-plus" /></svg>接入 Agent</button>
+									<button class="btn" type="button">次要按钮</button>
+									<button class="btn btn-ghost" type="button"><svg><use href="#i-refresh" /></svg>刷新</button>
+									<button class="btn btn-quiet" type="button">安静按钮</button>
+									<button class="btn btn-danger" type="button"><svg><use href="#i-x" /></svg>删除</button>
+									<a class="btn btn-primary" href="#">a.btn-primary</a>
+								</div>
+								<div class="g-row">
+									<button class="btn btn-primary btn-sm" type="button">小号主按钮</button>
+									<button class="btn btn-sm" type="button">小号</button>
+									<button class="btn btn-ghost btn-sm" type="button">小号 ghost</button>
+									<button class="btn btn-icon" type="button" aria-label="搜索"><svg><use href="#i-search" /></svg></button>
+									<button class="btn btn-icon btn-sm" type="button" aria-label="更多"><svg><use href="#i-chev-down" /></svg></button>
+									<button class="btn btn-lg btn-primary" type="button">大号 42px</button>
+								</div>
+								<div class="g-row">
+									<button class="btn btn-primary is-loading" type="button">保存中</button>
+									<button class="btn" type="button" disabled>禁用</button>
+									<button class="btn btn-primary" type="button" disabled>禁用主按钮</button>
+									<button class="btn btn-block btn-primary" type="button" style="max-width: 220px">块级按钮</button>
+								</div>
+								<div class="g-note">
+									<svg><use href="#i-info" /></svg>
+									<div>
+										焦点环统一在 <span class="mono">:focus-visible { box-shadow: var(--ring) }</span>，
+										组件不再各写 outline。用 Tab 键可以逐个看到。
+									</div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 04 徽章 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">徽章与状态 <span class="g-id">.badge / .status-badge / .dot</span></h2>
+									<p class="card-sub">
+										9 态只走 <span class="mono">--st-*</span>。旧的 <span class="mono">.status-*</span> /
+										<span class="mono">.tag-chip</span> / <span class="mono">.src-badge</span> /
+										<span class="mono">.target-pill</span> 全部保留并重写。
+									</p>
+								</div>
+							</div>
+							<div class="g-stack" style="margin-top: 18px">
+								<div class="g-row">
+									<span class="badge badge-neutral">中性</span>
+									<span class="badge badge-accent">accent</span>
+									<span class="badge badge-success"><svg><use href="#i-check" /></svg>成功</span>
+									<span class="badge badge-warn">警告</span>
+									<span class="badge badge-error"><svg><use href="#i-alert" /></svg>失败</span>
+									<span class="badge badge-outline">描边</span>
+									<span class="tag-chip">github</span>
+									<span class="src-badge">WEBHOOK</span>
+									<span class="target-pill">slack#alerts</span>
+									<span class="target-pill missing"><svg><use href="#i-alert" /></svg>失效出口</span>
+								</div>
+								<div class="g-mini">
+									<span class="g-cap">9 态：.dot-* + --st-*</span>
+									<div class="g-row" style="gap: 14px">
+										<span class="row" style="gap: 6px"><i class="dot dot-pending"></i><span class="t-micro">pending</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-assigned"></i><span class="t-micro">assigned</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-acked"></i><span class="t-micro">acked</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-running"></i><span class="t-micro">running</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-succeeded"></i><span class="t-micro">succeeded</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-failed"></i><span class="t-micro">failed</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-canceled"></i><span class="t-micro">canceled</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-abandoned"></i><span class="t-micro">abandoned</span></span>
+										<span class="row" style="gap: 6px"><i class="dot dot-lease_expired"></i><span class="t-micro">lease_expired</span></span>
+									</div>
+									<div class="g-row">
+										<span class="status-badge status-success">已连接</span>
+										<span class="status-badge status-warn">租约即将过期</span>
+										<span class="status-badge status-error">派发失败</span>
+										<span class="status-badge status-info">渲染中</span>
+										<span class="status-badge status-off">已停用</span>
+									</div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 05 表格 ============ -->
+						<section class="card card-pad g-table">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">表格 <span class="g-id">.table-wrap / .data-table</span></h2>
+									<p class="card-sub">
+										表头 sticky（滚动时吸顶）、数字右对齐 tabular-nums、行 hover。
+										这一块故意限高 260px 以便看到粘顶效果。
+									</p>
+								</div>
+								<div class="card-actions">
+									<div class="input-affix" style="height: 30px">
+										<svg><use href="#i-search" /></svg>
+										<span>筛选 task_id</span>
+									</div>
+								</div>
+							</div>
+							<div class="table-wrap" style="margin-top: 18px">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th>任务</th>
+											<th>能力</th>
+											<th>节点</th>
+											<th>状态</th>
+											<th class="num">耗时</th>
+											<th class="num">时间</th>
+										</tr>
+									</thead>
+									<tbody>
+										<tr>
+											<td class="mono">task_8f2a1c</td>
+											<td>deploy.preview</td>
+											<td>mac-mini-01</td>
+											<td><span class="status-badge status-success">succeeded</span></td>
+											<td class="num">1.8s</td>
+											<td class="num faint">12:04</td>
+										</tr>
+										<tr>
+											<td class="mono">task_1c9d02</td>
+											<td>alert.oncall</td>
+											<td>mac-mini-03</td>
+											<td><span class="status-badge status-info">running</span></td>
+											<td class="num">—</td>
+											<td class="num faint">12:03</td>
+										</tr>
+										<tr>
+											<td class="mono">task_77b3ee</td>
+											<td>run.tests</td>
+											<td>ci-runner-2</td>
+											<td><span class="status-badge status-error">failed</span></td>
+											<td class="num">4.2s</td>
+											<td class="num faint">12:01</td>
+										</tr>
+										<tr>
+											<td class="mono">task_2ad04f</td>
+											<td>lint.fix</td>
+											<td>ci-runner-1</td>
+											<td><span class="status-badge status-success">succeeded</span></td>
+											<td class="num">0.9s</td>
+											<td class="num faint">11:58</td>
+										</tr>
+										<tr>
+											<td class="mono">task_90e1b7</td>
+											<td>notify.slack</td>
+											<td>gateway</td>
+											<td><span class="status-badge status-warn">lease_expired</span></td>
+											<td class="num">—</td>
+											<td class="num faint">11:55</td>
+										</tr>
+										<tr>
+											<td class="mono">task_5c22a8</td>
+											<td>report.send</td>
+											<td>mac-mini-02</td>
+											<td><span class="status-badge status-success">succeeded</span></td>
+											<td class="num">2.4s</td>
+											<td class="num faint">11:52</td>
+										</tr>
+										<tr>
+											<td class="mono">task_31ff90</td>
+											<td>analyze.pr</td>
+											<td>mac-mini-01</td>
+											<td><span class="status-badge status-off">canceled</span></td>
+											<td class="num">—</td>
+											<td class="num faint">11:50</td>
+										</tr>
+										<tr>
+											<td class="mono">task_bb7d13</td>
+											<td>apply.fix</td>
+											<td>mac-mini-03</td>
+											<td><span class="status-badge status-success">succeeded</span></td>
+											<td class="num">3.1s</td>
+											<td class="num faint">11:47</td>
+										</tr>
+									</tbody>
+								</table>
+								<div class="table-foot">
+									<span>共 128 条 · 每页 50</span>
+									<div class="row" style="gap: 6px">
+										<button class="btn btn-ghost btn-sm" type="button" disabled>上一页</button>
+										<button class="btn btn-ghost btn-sm" type="button">下一页</button>
+									</div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 06 表单 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">表单控件 <span class="g-id">.field / .input / .switch</span></h2>
+									<p class="card-sub">
+										统一 36px 高、focus 时 accent 边 + 3px ring、placeholder 用 <span class="mono">--faint</span>、
+										错误态带 <span class="mono">.field-error</span>。
+									</p>
+								</div>
+							</div>
+							<div class="g-cols" style="margin-top: 18px">
+								<div class="g-stack">
+									<div class="field">
+										<label class="field-label" for="f1">源名称 <span class="badge badge-neutral">必填</span></label>
+										<input class="input" id="f1" placeholder="例如 github-push" />
+										<span class="field-hint">只允许小写字母、数字与连字符；创建后不可改名。</span>
+									</div>
+									<div class="field">
+										<label class="field-label" for="f2">事件类型</label>
+										<select class="select" id="f2">
+											<option>push</option>
+											<option>pull_request</option>
+											<option>issue_comment</option>
+										</select>
+									</div>
+									<div class="field">
+										<label class="field-label" for="f3">Webhook 地址</label>
+										<div class="input-group">
+											<input class="input mono" id="f3" value="https://notify.local/v1/hooks/gh" readonly />
+											<button class="btn btn-ghost" type="button"><svg><use href="#i-copy" /></svg>复制</button>
+										</div>
+									</div>
+								</div>
+								<div class="g-stack">
+									<div class="field">
+										<label class="field-label" for="f4">恢复码 <span class="t-micro">（错误态示例）</span></label>
+										<input class="input is-invalid" id="f4" value="AB12-CD3" aria-invalid="true" />
+										<span class="field-error"><svg style="width: 12px; height: 12px"><use href="#i-alert" /></svg>恢复码应为 8 组，当前只有 2 组</span>
+									</div>
+									<div class="field">
+										<label class="field-label" for="f5">备注</label>
+										<textarea class="textarea" id="f5" placeholder="给这个出口写一句说明…"></textarea>
+										<span class="field-hint">支持 Markdown，最多 500 字。</span>
+									</div>
+									<div class="switch-row">
+										<div>
+											<div class="t-label" style="color: var(--text)">租约过期自动重派</div>
+											<div class="field-hint">节点掉线后 90s 内重新分配任务</div>
+										</div>
+										<button class="switch" type="button" role="switch" aria-checked="true" aria-label="租约过期自动重派"></button>
+									</div>
+								</div>
+							</div>
+							<div class="g-row" style="margin-top: 18px; gap: 18px">
+								<label class="check"><input type="checkbox" checked />记住这台设备</label>
+								<label class="check"><input type="checkbox" />接收周报</label>
+								<label class="check"><input type="radio" name="r" checked />仅本工作区</label>
+								<label class="check"><input type="radio" name="r" />全部工作区</label>
+								<div class="seg-switch">
+									<button class="seg-item active" type="button">JSON</button>
+									<button class="seg-item" type="button">YAML</button>
+								</div>
+								<span class="kbd">⌘</span><span class="kbd">K</span>
+							</div>
+						</section>
+
+						<!-- ============ 07 Tabs ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">标签页 <span class="g-id">.tabs / .filter-tab</span></h2>
+									<p class="card-sub">下划线 tabs 用于页面级分区；.filter-tab 药丸型用于筛选，保留旧名。</p>
+								</div>
+							</div>
+							<div style="margin-top: 14px">
+								<div class="tabs" role="tablist">
+									<button class="tab active" role="tab" aria-selected="true" type="button">全部 <span class="count">128</span></button>
+									<button class="tab" role="tab" aria-selected="false" type="button">进行中 <span class="count">6</span></button>
+									<button class="tab" role="tab" aria-selected="false" type="button">失败 <span class="count">18</span></button>
+									<button class="tab" role="tab" aria-selected="false" type="button">已取消</button>
+								</div>
+							</div>
+							<div class="g-row" style="margin-top: 16px">
+								<button class="filter-tab active" type="button">全部</button>
+								<button class="filter-tab" type="button"><i class="dot dot-running"></i>running</button>
+								<button class="filter-tab" type="button"><i class="dot dot-succeeded"></i>succeeded</button>
+								<button class="filter-tab" type="button"><i class="dot dot-failed"></i>failed</button>
+							</div>
+						</section>
+
+						<!-- ============ 08 列表 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">列表行 <span class="g-id">.list / .list-row</span></h2>
+									<p class="card-sub">
+										56px 紧凑行替代散落的 <span class="mono">divide-y</span> 拼装；三列 = 前导图标 / 主信息 / 右侧元数据。
+									</p>
+								</div>
+								<div class="card-actions">
+									<span class="g-cap">.list-main .list-title .list-meta .list-side</span>
+								</div>
+							</div>
+							<div class="list" style="margin-top: 14px">
+								<div class="list-row is-clickable">
+									<span class="list-lead"><svg><use href="#i-activity" /></svg></span>
+									<div class="list-main">
+										<div class="list-title"><span class="mono">task_8f2a1c</span><span class="badge badge-success">succeeded</span></div>
+										<div class="list-meta">
+											<span>deploy.preview</span><span class="sep"></span><span>mac-mini-01</span>
+											<span class="sep"></span><span>1.8s</span>
+										</div>
+									</div>
+									<div class="list-side">
+										<span>2 分钟前</span>
+										<svg class="chev"><use href="#i-chev-right" /></svg>
+									</div>
+								</div>
+								<div class="list-row is-clickable">
+									<span class="list-lead"><svg><use href="#i-activity" /></svg></span>
+									<div class="list-main">
+										<div class="list-title"><span class="mono">task_1c9d02</span><span class="badge badge-warn">running</span></div>
+										<div class="list-meta">
+											<span>alert.oncall</span><span class="sep"></span><span>mac-mini-03</span>
+											<span class="sep"></span><span>重试 1 次</span>
+										</div>
+									</div>
+									<div class="list-side">
+										<span>3 分钟前</span>
+										<svg class="chev"><use href="#i-chev-right" /></svg>
+									</div>
+								</div>
+								<div class="list-row is-clickable">
+									<span class="list-lead"><svg><use href="#i-activity" /></svg></span>
+									<div class="list-main">
+										<div class="list-title"><span class="mono">task_77b3ee</span><span class="badge badge-error">failed</span></div>
+										<div class="list-meta">
+											<span>run.tests</span><span class="sep"></span><span>ci-runner-2</span>
+											<span class="sep"></span><span class="st-text failed">exit 1</span>
+										</div>
+									</div>
+									<div class="list-side">
+										<span>4 分钟前</span>
+										<svg class="chev"><use href="#i-chev-right" /></svg>
+									</div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 09 空态 / 骨架 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">空态与骨架 <span class="g-id">.empty / .skeleton</span></h2>
+									<p class="card-sub">
+										空态必须给「下一步动作」；骨架屏只在首次加载用，轮询刷新不闪骨架。
+									</p>
+								</div>
+							</div>
+							<div class="g-cols" style="margin-top: 18px">
+								<div class="g-mini" style="background: var(--surface-1)">
+									<div class="empty">
+										<span class="empty-icon"><svg><use href="#i-inbox" /></svg></span>
+										<div class="empty-title">还没有事件</div>
+										<p class="empty-sub">接入一个源，或直接调用 <span class="mono">POST /v1/events</span> 试一条。</p>
+										<button class="btn btn-primary btn-sm" type="button"><svg><use href="#i-plus" /></svg>接入 Agent</button>
+									</div>
+								</div>
+								<div class="g-mini" style="background: var(--surface-1)">
+									<div class="stack" style="gap: 14px; padding: 8px 0">
+										<div class="row" style="gap: 10px">
+											<span class="skeleton is-circle" style="width: 28px; height: 28px"></span>
+											<div class="grow stack" style="gap: 6px">
+												<span class="skeleton" style="width: 44%"></span>
+												<span class="skeleton is-line-sm" style="width: 68%"></span>
+											</div>
+											<span class="skeleton" style="width: 48px"></span>
+										</div>
+										<div class="divider"></div>
+										<div class="row" style="gap: 10px">
+											<span class="skeleton is-circle" style="width: 28px; height: 28px"></span>
+											<div class="grow stack" style="gap: 6px">
+												<span class="skeleton" style="width: 36%"></span>
+												<span class="skeleton is-line-sm" style="width: 52%"></span>
+											</div>
+											<span class="skeleton" style="width: 48px"></span>
+										</div>
+										<div class="divider"></div>
+										<div class="row" style="gap: 10px">
+											<span class="skeleton is-block" style="width: 100%"></span>
+										</div>
+									</div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 10 Toast / Menu / Modal ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">浮层 <span class="g-id">.toast / .menu / .modal</span></h2>
+									<p class="card-sub">
+										Toast 宿主只有 <span class="mono">#anotify-toast-host</span> 一个，统一样式后可以删掉 11 份页面副本。
+									</p>
+								</div>
+							</div>
+							<div class="g-cols" style="margin-top: 18px">
+								<div class="g-mini">
+									<span class="g-cap">.toast（右下角宿主内）</span>
+									<div class="toast success">
+										<span class="toast-icon"><svg><use href="#i-check" /></svg></span>
+										<div class="toast-msg">已复制到剪贴板<span class="sub">curl -fsSL … | sh</span></div>
+										<button class="toast-close" type="button" aria-label="关闭"><svg><use href="#i-x" /></svg></button>
+									</div>
+									<div class="toast error">
+										<span class="toast-icon"><svg><use href="#i-alert" /></svg></span>
+										<div class="toast-msg">新建出口失败<span class="sub">能力 notify.slack 不存在（404）</span></div>
+										<button class="toast-close" type="button" aria-label="关闭"><svg><use href="#i-x" /></svg></button>
+									</div>
+									<div class="toast warn">
+										<span class="toast-icon"><svg><use href="#i-info" /></svg></span>
+										<div class="toast-msg">接口未真正调用<span class="sub">当前是 mock 预览</span></div>
+										<button class="toast-close" type="button" aria-label="关闭"><svg><use href="#i-x" /></svg></button>
+									</div>
+								</div>
+								<div class="g-mini">
+									<span class="g-cap">.menu（头像 / 行内动作 / 语言共用）</span>
+									<div class="menu" style="position: static; min-width: 0">
+										<div class="menu-head">
+											<span class="name">demo</span>
+											<span class="mail">demo@example.com</span>
+										</div>
+										<button class="menu-item" type="button"><svg><use href="#i-shield" /></svg>安全与登录</button>
+										<button class="menu-item" type="button"><svg><use href="#i-sliders" /></svg>管理后台</button>
+										<div class="menu-sep"></div>
+										<button class="menu-item is-danger" type="button"><svg><use href="#i-logout" /></svg>退出登录</button>
+									</div>
+								</div>
+							</div>
+							<div class="g-mini" id="modal-demo" style="margin-top: 16px">
+								<span class="g-cap">.modal-backdrop &gt; .modal-panel（这里去掉了遮罩，便于同屏查看）</span>
+								<div class="modal-panel">
+									<div class="modal-head">
+										<div>
+											<h3 class="modal-title">删除出口</h3>
+											<p class="modal-sub">这个出口被 3 个能力引用，删除后对应任务会直接失败。</p>
+										</div>
+										<button class="icon-btn" type="button" aria-label="关闭"><svg><use href="#i-x" /></svg></button>
+									</div>
+									<div class="modal-body">
+										<div class="field">
+											<label class="field-label" for="m1">输入出口名确认</label>
+											<input class="input mono" id="m1" placeholder="notify.slack" />
+										</div>
+									</div>
+									<div class="modal-foot">
+										<button class="btn btn-ghost" type="button">取消</button>
+										<button class="btn btn-danger" type="button">删除出口</button>
+									</div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 11 代码块 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">代码块 <span class="g-id">.code-block</span></h2>
+									<p class="card-sub">等宽字体 + 三档语法色（accent / success / warn），复制按钮在头部右侧。</p>
+								</div>
+							</div>
+							<div class="code-block" style="margin-top: 16px">
+								<div class="code-head">
+									<span class="mono">bash · 接入 Agent</span>
+									<button class="copy-btn" type="button"><svg><use href="#i-copy" /></svg>复制</button>
+								</div>
+								<pre class="code-body"><span class="tk-comment"># 一条命令把 agent 装成系统守护进程</span>
+curl -fsSL https://anotify.local/agent-login.sh | sh
+anotify-agent <span class="tk-key">--server</span> <span class="tk-str">"https://notify.local"</span> <span class="tk-key">--key</span> <span class="tk-str">"ak_…"</span></pre>
+							</div>
+						</section>
+
+						<!-- ============ 12 图表色板 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">图表色板 <span class="g-id">--st-* / --accent-1..4</span></h2>
+									<p class="card-sub">
+										9 态只此一份（<span class="mono">graphs.js</span> 的 STATUS_COLOR 与 <span class="mono">.wf-bar</span>
+										都改成读 token）。热力图 5 级走 accent 梯度。
+									</p>
+								</div>
+							</div>
+							<div class="g-mini" style="margin-top: 18px">
+								<div class="g-cols" style="gap: 10px">
+									<div class="stack" style="gap: 6px">
+										<div class="g-swatch" style="background: var(--st-pending)">pending</div>
+										<div class="g-swatch" style="background: var(--st-assigned)">assigned</div>
+										<div class="g-swatch" style="background: var(--st-acked)">acked</div>
+									</div>
+									<div class="stack" style="gap: 6px">
+										<div class="g-swatch" style="background: var(--st-running)">running</div>
+										<div class="g-swatch" style="background: var(--st-succeeded)">succeeded</div>
+										<div class="g-swatch" style="background: var(--st-failed)">failed</div>
+									</div>
+									<div class="stack" style="gap: 6px">
+										<div class="g-swatch" style="background: var(--st-canceled)">canceled</div>
+										<div class="g-swatch" style="background: var(--st-abandoned)">abandoned</div>
+										<div class="g-swatch" style="background: var(--st-lease_expired)">lease_expired</div>
+									</div>
+								</div>
+							</div>
+							<div class="row-between" style="margin-top: 16px">
+								<div class="row" style="gap: 4px">
+									<span class="hm-legend-cell"></span>
+									<span class="hm-legend-cell" style="background: var(--accent-1)"></span>
+									<span class="hm-legend-cell" style="background: var(--accent-2)"></span>
+									<span class="hm-legend-cell" style="background: var(--accent-3)"></span>
+									<span class="hm-legend-cell" style="background: var(--accent-4)"></span>
+									<span class="t-micro">少 → 多</span>
+								</div>
+								<div class="heatmap">
+									<div class="hm-grid" id="hm-demo" style="--hm-cell: 11px; --hm-gap: 4px"></div>
+									<div></div>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 13 标题字体 A/B ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">标题字体 A/B <span class="g-id">Fraunces vs Inter</span></h2>
+									<p class="card-sub">
+										结论写进 REVIEW.md「标题字体 A/B」：大标题保留衬线（品牌温度），
+										但正文/列表标题一律 Inter。下面两行同字号同内容，直接对比。
+									</p>
+								</div>
+							</div>
+							<div class="g-cols" style="margin-top: 18px">
+								<div class="g-typo-ab">
+									<span class="g-cap">A · Fraunces 600 / 30px (-0.015em)</span>
+									<span class="a">晚上好，demo</span>
+									<span class="faint" style="font-size: var(--fs-xs)">欢迎语与 h2 主标题保留衬线：当前方案，契约 §8 已冻结。</span>
+								</div>
+								<div class="g-typo-ab">
+									<span class="g-cap">B · Inter 600 / 28px (-0.03em)</span>
+									<span class="b">晚上好，demo</span>
+									<span class="faint" style="font-size: var(--fs-xs)">紧字距无衬线：更「工具」、和列表 14px 同一族，但品牌辨识度下降。</span>
+								</div>
+							</div>
+						</section>
+
+						<!-- ============ 14 契约备注 ============ -->
+						<section class="card card-pad">
+							<div class="card-head">
+								<div>
+									<h2 class="card-title">给实现侧的两条提醒 <span class="g-id">readme</span></h2>
+								</div>
+							</div>
+							<div class="g-stack" style="margin-top: 16px">
+								<div class="g-note">
+									<svg><use href="#i-info" /></svg>
+									<div>
+										顶栏 <span class="mono">h1</span> 是「上下文标题」（15px），页面大标题是内容区的
+										<span class="mono">.page-title</span>（h2，28px）。理由与契约 §4.2/§8 的关系见 REVIEW.md「契约矛盾」小节。
+									</div>
+								</div>
+								<div class="g-note">
+									<svg><use href="#i-info" /></svg>
+									<div>
+										折叠态不重建 DOM、不删文字节点：label 用 <span class="mono">.side-text</span> 收窄 + 透明，
+										tooltip 用 <span class="mono">::after { content: attr(data-tip) }</span>，e2e 取 label 文本仍然成立。
+									</div>
+								</div>
+							</div>
+						</section>
+					</div>
+				</main>
+				<footer class="foot">
+					Anotify · UI v2 组件画廊 · design/ui-v2/gallery.html · 颜色 100% 来自 tokens.css
+				</footer>
+			</div>
+		</div>
+
+		<div class="toast-host" id="anotify-toast-host">
+			<div class="toast success">
+				<span class="toast-icon"><svg><use href="#i-check" /></svg></span>
+				<div class="toast-msg">主题已切换<span class="sub">已记住到 localStorage['anotify-theme']</span></div>
+				<button class="toast-close" type="button" aria-label="关闭" id="toast-close">
+					<svg><use href="#i-x" /></svg>
+				</button>
+			</div>
+		</div>
+
+		<script>
+			/* ============================================================
+			   仅原型用的最小交互。产品实现走 partials.js 的 Anotify.theme。
+			   ============================================================ */
+			(function () {
+				var root = document.documentElement;
+				var shell = document.getElementById("app-shell");
+				var THEME_KEY = "anotify-theme";
+				var modes = ["auto", "dark", "light"];
+				var icons = { auto: "#i-monitor", dark: "#i-moon", light: "#i-sun" };
+				var labels = { auto: "跟随系统", dark: "暗色", light: "亮色" };
+
+				function systemTheme() {
+					return window.matchMedia("(prefers-color-scheme: light)").matches
+						? "light"
+						: "dark";
+				}
+				function apply(mode) {
+					var resolved = mode === "auto" ? systemTheme() : mode;
+					root.dataset.theme = resolved;
+					root.style.colorScheme = resolved;
+					var meta = document.querySelector('meta[name="theme-color"]');
+					if (meta) meta.content = resolved === "light" ? "#f7f8fc" : "#08080e";
+					try {
+						localStorage.setItem(THEME_KEY, mode);
+					} catch (e) {}
+					var icon = document.getElementById("theme-icon");
+					if (icon) icon.innerHTML = '<use href="' + icons[mode] + '"/>';
+					var btn = document.getElementById("theme-toggle");
+					if (btn) {
+						btn.title = "主题：" + labels[mode];
+						btn.setAttribute("aria-label", "切换主题：" + labels[mode] + "（当前）");
+					}
+					document.querySelectorAll("#theme-seg .seg-item").forEach(function (el) {
+						el.classList.toggle("active", el.dataset.mode === mode);
+					});
+					document.dispatchEvent(
+						new CustomEvent("anotify:theme", { detail: { theme: resolved } }),
+					);
+				}
+				function currentMode() {
+					var fromUrl = new URLSearchParams(location.search).get("theme");
+					if (fromUrl && modes.indexOf(fromUrl) >= 0) return fromUrl;
+					if (fromUrl === "light" || fromUrl === "dark") return fromUrl;
+					try {
+						var saved = localStorage.getItem(THEME_KEY);
+						if (modes.indexOf(saved) >= 0) return saved;
+					} catch (e) {}
+					return "auto";
+				}
+
+				var mode = currentMode();
+				apply(mode);
+
+				document.getElementById("theme-toggle").addEventListener("click", function () {
+					mode = modes[(modes.indexOf(mode) + 1) % modes.length];
+					apply(mode);
+				});
+				var seg = document.getElementById("theme-seg");
+				if (seg)
+					seg.addEventListener("click", function (e) {
+						var b = e.target.closest("[data-mode]");
+						if (!b) return;
+						mode = b.dataset.mode;
+						apply(mode);
+					});
+
+				/* 侧栏折叠（桌面）/ 抽屉（移动）*/
+				function setCollapsed(v) {
+					shell.dataset.collapsed = String(v);
+					var t = document.querySelectorAll("#side-seg .seg-item");
+					t.forEach(function (el) {
+						el.classList.toggle("active", el.dataset.col === String(v));
+					});
+					var c = document.getElementById("sidebar-collapse");
+					if (c) c.setAttribute("aria-expanded", String(!v));
+				}
+				["sidebar-collapse", "collapse-top"].forEach(function (id) {
+					var b = document.getElementById(id);
+					if (b)
+						b.addEventListener("click", function () {
+							setCollapsed(shell.dataset.collapsed !== "true");
+						});
+				});
+				var sideSeg = document.getElementById("side-seg");
+				if (sideSeg)
+					sideSeg.addEventListener("click", function (e) {
+						var b = e.target.closest("[data-col]");
+						if (!b) return;
+						setCollapsed(b.dataset.col === "true");
+					});
+
+				var overlay = document.getElementById("sidebar-overlay");
+				var menuBtn = document.getElementById("menu-btn");
+				function setDrawer(open) {
+					shell.dataset.drawer = String(open);
+					overlay.classList.toggle("is-open", open);
+					if (menuBtn) menuBtn.setAttribute("aria-expanded", String(open));
+					document.body.style.overflow = open ? "hidden" : "";
+				}
+				if (menuBtn)
+					menuBtn.addEventListener("click", function () {
+						setDrawer(shell.dataset.drawer !== "true");
+					});
+				if (overlay)
+					overlay.addEventListener("click", function () {
+						setDrawer(false);
+					});
+				document.addEventListener("keydown", function (e) {
+					if (e.key === "Escape") {
+						setDrawer(false);
+						var am = document.getElementById("avatar-menu");
+						if (am) am.hidden = true;
+					}
+				});
+
+				/* 头像菜单 */
+				var avatar = document.getElementById("topbar-avatar");
+				var avatarMenu = document.getElementById("avatar-menu");
+				if (avatar && avatarMenu) {
+					avatar.addEventListener("click", function (e) {
+						e.stopPropagation();
+						avatarMenu.hidden = !avatarMenu.hidden;
+						avatar.setAttribute("aria-expanded", String(!avatarMenu.hidden));
+					});
+					document.addEventListener("click", function () {
+						avatarMenu.hidden = true;
+						avatar.setAttribute("aria-expanded", "false");
+					});
+				}
+
+				/* toast 关闭 */
+				var tc = document.getElementById("toast-close");
+				if (tc)
+					tc.addEventListener("click", function () {
+						var host = document.getElementById("anotify-toast-host");
+						host.querySelector(".toast").remove();
+					});
+
+				/* 移动端点导航项自动关抽屉（契约 §4.1）*/
+				document.querySelectorAll(".side-link").forEach(function (a) {
+					a.addEventListener("click", function (e) {
+						e.preventDefault();
+						if (window.matchMedia("(max-width: 1023px)").matches) setDrawer(false);
+					});
+				});
+
+				/* 热力图 demo：确定性伪随机，保证截图稳定 */
+				(function () {
+					var grid = document.getElementById("hm-demo");
+					if (!grid) return;
+					var seed = 20261102;
+					function rnd() {
+						seed = (seed * 16807) % 2147483647;
+						return seed / 2147483647;
+					}
+					var frag = document.createDocumentFragment();
+					for (var w = 0; w < 18; w++) {
+						for (var d = 0; d < 7; d++) {
+							var v = Math.pow(rnd(), 2.1);
+							var lvl = Math.min(4, Math.floor(v * 5));
+							if (d === 0 || d === 6) lvl = Math.min(1, lvl);
+							var c = document.createElement("span");
+							c.className = "hm-cell";
+							c.dataset.level = String(lvl);
+							frag.appendChild(c);
+						}
+					}
+					grid.appendChild(frag);
+				})();
+			})();
+		</script>
+	</body>
+</html>
