@@ -267,6 +267,46 @@ async function main() {
 	H.eq("离线节点的行 state=pending（等上线补推）", offRow?.state, "pending");
 	H.eq("离线节点的行 digest 正确", offRow?.digest, cap.digest);
 
+	// ================= 5.5 能力工作目录（#281 / 迁移 19） =================
+	// 中枢提出请求（绝对路径），节点侧按白名单授权。中枢只做形状校验：
+	// 明显的错必须在「点部署」这一刻失败，而不是等任务跑到节点上才炸。
+	console.log("--- 5.5 部署时指定工作目录 ---");
+	{
+		const withWd = await H.req(server.base, "/v1/deployments", {
+			session,
+			body: { capabilityId: cap.id, nodeIds: [offline.id], workDir: "/home/me/project" },
+		});
+		H.eq("带 workDir 部署 → 200", withWd.status, 200);
+		const rows = await listDeployments();
+		const hit = rows.find(
+			(r) => (r.nodeId || r.node_id) === offline.id && (r.capabilityId || r.capability_id) === cap.id,
+		);
+		H.eq("deployment.workDir 落库并回读", hit?.workDir, "/home/me/project");
+
+		// 清空 = 回到默认的每任务目录（不是残留旧值）
+		await H.req(server.base, "/v1/deployments", {
+			session,
+			body: { capabilityId: cap.id, nodeIds: [offline.id], workDir: "" },
+		});
+		const cleared = (await listDeployments()).find(
+			(r) => (r.nodeId || r.node_id) === offline.id && (r.capabilityId || r.capability_id) === cap.id,
+		);
+		H.eq("清空 workDir 后回读为空", cleared?.workDir, "");
+
+		for (const [label, bad] of [
+			["相对路径", "proj/sub"],
+			["含 ..", "/home/me/../etc"],
+			["超长", "/" + "a".repeat(1100)],
+		]) {
+			const r = await H.req(server.base, "/v1/deployments", {
+				session,
+				body: { capabilityId: cap.id, nodeIds: [offline.id], workDir: bad },
+			});
+			H.eq(`workDir ${label} → 400`, r.status, 400);
+			H.eq(`workDir ${label} → code=invalid_work_dir`, r.json?.code, "invalid_work_dir");
+		}
+	}
+
 	// ================= 6. 没有产物的能力 → 404 =================
 	console.log("--- 6. 部署没有产物的能力 ---");
 	{

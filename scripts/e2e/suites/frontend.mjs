@@ -3413,6 +3413,7 @@ async function checkNodeRegister(page, base) {
 			token: (document.getElementById("reg-token") || {}).textContent || "",
 			yaml: (document.getElementById("reg-yaml") || {}).textContent || "",
 			cmd: (document.getElementById("reg-cmd") || {}).textContent || "",
+			install: (document.getElementById("reg-install") || {}).textContent || "",
 			errorText: (document.getElementById("reg-error") || {}).textContent || "",
 			listText: (document.getElementById("nodes-list") || {}).textContent || "",
 		};
@@ -3459,6 +3460,11 @@ async function checkNodeRegister(page, base) {
 	const regName = "ui-reg-" + Date.now();
 	await page.fill("#reg-name", regName);
 	await page.fill("#reg-instances", "2");
+	// 工作目录白名单（#281）：填了就三处都要出现 —— node.yaml 的 workDirs、
+	// 原生装的 --work-dirs、docker 的 -e ANOTIFY_WORK_DIRS + -v 挂载。
+	// 只出现一两处的症状是「贴上去能跑，但能力一用就报目录不存在」。
+	const wdPath = "/home/e2e/project";
+	await page.fill("#reg-workdirs", wdPath);
 	await page.click("#reg-submit");
 	// mock 有 120–300ms 随机延迟，多等一轮；失败时 #reg-error 会给出原因
 	await page.waitForTimeout(1200);
@@ -3485,8 +3491,23 @@ async function checkNodeRegister(page, base) {
 		"server 行": /^server: \S+/m.test(yaml) && yaml.includes("server: " + reg.origin),
 		"token 行": /^token: \S+/m.test(yaml) && yamlToken === token,
 		"instances: 2": /^instances: 2\s*$/m.test(yaml),
-		"只有四行（bootstrap 四件）":
-			yaml.trim().split(/\r?\n/).filter((l) => l.trim() !== "").length === 4,
+		// 有效键必须**恰好**是 bootstrap 四件（name/server/token/instances），
+		// 外加可选的 workDirs（#281：能力工作目录白名单）。
+		//
+		// 原来的写法是数「行数 == 4」——那会在加注释/加可选块时误报，而且它并不真的
+		// 表达「键集合正确」。改成直接比较键集合：注释行、空行、缩进的列表项都不参与，
+		// 但任何一个多余的键都会被抓出来（这才是这条断言的意图）。
+		"键集合 = bootstrap 四件（+ 可选 workDirs）": (() => {
+			const keys = yaml
+				.split(/\r?\n/)
+				.filter((l) => l.trim() !== "" && !l.trim().startsWith("#"))
+				.filter((l) => /^[a-zA-Z_][\w-]*:/.test(l)) // 只看顶层键（列表项带缩进）
+				.map((l) => l.split(":")[0].trim())
+				.sort();
+			const allowed = ["instances", "name", "server", "token", "workDirs"];
+			return keys.every((k) => allowed.includes(k)) &&
+				["name", "server", "token", "instances"].every((k) => keys.includes(k));
+		})(),
 	};
 	const yamlBad = {
 		"capabilities 键（v2 已删）": /^capabilities:/m.test(yaml),
@@ -3498,6 +3519,32 @@ async function checkNodeRegister(page, base) {
 	const yamlOk =
 		Object.values(yamlWant).every(Boolean) &&
 		!Object.values(yamlBad).some(Boolean);
+	// ---- ④.5 原生安装命令（#281）：docker 看不到宿主机文件，这条路能 ----
+	// 断言它真的有：安装脚本 URL、令牌、中枢地址，以及（只在用户填了白名单时）
+	// 的 --work-dirs。少任何一项，用户复制出去都跑不起来。
+	H.check(
+		"工作目录白名单出现在三处（yaml / 原生装 / docker 挂载）",
+		(reg.yaml || "").includes("workDirs:") &&
+			(reg.yaml || "").includes(wdPath) &&
+			(reg.install || "").includes("--work-dirs=" + wdPath) &&
+			(reg.cmd || "").includes("-e ANOTIFY_WORK_DIRS=" + wdPath) &&
+			(reg.cmd || "").includes("-v " + wdPath + ":" + wdPath),
+		JSON.stringify({
+			yaml: (reg.yaml || "").includes(wdPath),
+			install: (reg.install || "").includes("--work-dirs="),
+			cmdEnv: (reg.cmd || "").includes("ANOTIFY_WORK_DIRS="),
+			cmdVol: (reg.cmd || "").includes("-v " + wdPath),
+		}),
+	);
+
+	H.check(
+		"原生安装命令：指向 install-agent.sh 且带令牌与中枢地址",
+		/install-agent\.sh/.test(reg.install || "") &&
+			(reg.install || "").includes("--token=" + token) &&
+			(reg.install || "").includes("--server=" + reg.origin),
+		String(reg.install || "").slice(0, 160),
+	);
+
 	H.check(
 		"令牌块里的 node.yaml 是 v2 的 bootstrap 四件（不再有 capabilities/run）",
 		yamlOk,

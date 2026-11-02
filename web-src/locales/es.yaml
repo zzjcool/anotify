@@ -1215,6 +1215,8 @@ caps:
     none_selected: 'Selecciona al menos una máquina'
     no_nodes: 'Este espacio de nombres aún no tiene nodos'
     err: 'Fallo al desplegar: '
+    workdir: Directorio de trabajo (opcional)
+    workdir_hint: Vacío = un directorio nuevo por tarea. Si se indica, debe estar dentro de la lista workDirs del nodo; si no, la tarea falla (sin volver al directorio por defecto).
   list:
     title: Capacidades
   form:
@@ -1332,6 +1334,12 @@ nodes:
       not_found: 'Este espacio de nombres ya no existe (puede haberse eliminado). Actualiza e inténtalo de nuevo.'
       forbidden: 'No tienes permiso para registrar nodos en este espacio de nombres'
       failed: 'Error al registrar: '
+    workdirs: Directorios de trabajo (opcional)
+    workdirs_hint: La consola puede pedir que una capacidad se ejecute dentro de uno de estos directorios, pero solo puede elegir de esta lista. Vacío = ninguno permitido (las capacidades solo corren en directorios temporales).
+    install_title: Instalación nativa (en el host)
+    install_intro: Un contenedor no ve los archivos del host. Para ejecutar capacidades dentro de tu propio proyecto (make test, git status, editar archivos in situ), instálalo en el host con este comando.
+    install_after: 'Instala el binario, escribe ~/.anotify/node.yaml (modo 600, contiene el token) y genera un servicio de usuario systemd. Ojo: el comando contiene el token, así que queda en el historial del shell.'
+    copy_install: Copiar comando
 sources:
   detail: "Detalles"
   open_detail: "Abrir detalles"

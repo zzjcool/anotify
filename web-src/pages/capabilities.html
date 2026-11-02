@@ -516,6 +516,18 @@
             <div id="deploy-tags" class="dep-taglist"></div>
           </div>
 
+          <div class="mb-3">
+            <p class="tpl-hint mb-1">{{t "caps.deploy.workdir"}}</p>
+            <input
+              id="deploy-workdir"
+              class="input w-full text-sm"
+              placeholder="/home/me/project（留空 = 每次任务一个独立目录）"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <p id="deploy-workdir-hint" class="tpl-hint mt-1">{{t "caps.deploy.workdir_hint"}}</p>
+          </div>
+
           <p class="tpl-hint mb-1">{{t "caps.deploy.pick_hint"}}</p>
           <div id="deploy-nodes" class="space-y-1"></div>
           <div id="deploy-results" class="mt-3 hidden"></div>
@@ -1475,6 +1487,15 @@
         // 关掉时清空、打开时也清空：残留上一次的「已排队」会让人以为这次也发了
         document.getElementById("deploy-results").replaceChildren();
         document.getElementById("deploy-results").classList.add("hidden");
+        // 回填：同一个能力在不同机器上的目录可能不同，取第一条非空值做默认提示
+        // （用户改了就会覆盖所有选中机器 —— 这是部署面板的语义：一次对一组机器下同一份期望）。
+        const wdEl = document.getElementById("deploy-workdir");
+        if (wdEl) {
+          const existing = DEPS.find(
+            (r) => depCapId(r) === c.id && (r.workDir || r.work_dir || "").trim(),
+          );
+          wdEl.value = existing ? String(existing.workDir || existing.work_dir) : "";
+        }
         renderDeployPanel();
         document.getElementById("deploy-modal").classList.add("open");
       }
@@ -1621,6 +1642,12 @@
           // 请求体只带 capabilityId + nodeIds（不带 digest / tags）：
           // 服务端取该能力的最新产物，前端不该决定版本。
           const body = { capabilityId: cap.id, nodeIds: nodeIds };
+          // 工作目录（迁移 19）：空 = 用默认的每任务独立目录，行为与之前完全一致。
+          // 前端**不校验**它是不是绝对路径（后端会校验并给 code=invalid_work_dir），
+          // 这里只做 trim —— 把「什么算合法路径」的定义留在后端一处。
+          const wdEl = document.getElementById("deploy-workdir");
+          const workDir = wdEl ? wdEl.value.trim() : "";
+          if (workDir) body.workDir = workDir;
           const ns = scopeNS();
           if (ns) body.namespaceId = ns;
           const res = await Anotify.api(depsURL(), {

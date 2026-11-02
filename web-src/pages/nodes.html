@@ -119,6 +119,21 @@
                 {{t "nodes.register.name_hint"}}
               </p>
             </div>
+            <div class="mt-3">
+              <label class="mb-1 block text-xs text-zinc-400" for="reg-workdirs"
+                >{{t "nodes.register.workdirs"}}</label
+              >
+              <input
+                id="reg-workdirs"
+                class="input w-full text-sm"
+                placeholder="/home/me/project（多个用冒号分隔；留空 = 不许任何目录）"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <p class="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                {{t "nodes.register.workdirs_hint"}}
+              </p>
+            </div>
             <div>
               <label class="mb-1 block text-xs text-zinc-400" for="reg-instances"
                 >{{t "nodes.register.instances"}}</label
@@ -204,6 +219,26 @@
             <div class="code-block">
               <pre class="code-body"><code id="reg-yaml"></code></pre>
             </div>
+          </div>
+
+          <div class="mt-4">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs text-zinc-400">{{t "nodes.register.install_title"}}</span>
+              <button id="reg-install-copy" type="button" class="copy-btn">
+                {{t "nodes.register.copy_install"}}
+              </button>
+            </div>
+            <!-- 原生装（#281）：docker 那条路看不到宿主机文件 —— 想在**自己的项目目录**
+                 里跑能力（make test / git status / 就地改文件）就只能在宿主机上跑。 -->
+            <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.install_intro"}}
+            </p>
+            <div class="code-block">
+              <pre class="code-body"><code id="reg-install"></code></pre>
+            </div>
+            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.install_after"}}
+            </p>
           </div>
 
           <div class="mt-4">
@@ -526,6 +561,7 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
         regEl("reg-token").textContent = "";
         regEl("reg-cmd").textContent = "";
         regEl("reg-yaml").textContent = "";
+        regEl("reg-install").textContent = "";
         regEl("reg-result-title").textContent = "";
         regEl("reg-warning").textContent = "";
         regHide("reg-result", true);
@@ -544,7 +580,7 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
       //
       // 注意返回值里内联的是**真实令牌**，所以它只能写进 #reg-cmd 的 textContent，
       // 不许落到 localStorage / console / 日志（见上面那三条纪律）。
-      function agentDockerCmd(token, server, name, instances) {
+      function agentDockerCmd(token, server, name, instances, workDirs) {
         // ANOTIFY_SERVER 必带：容器里 agent 猜不到中枢地址，猜错的表现是
         // 「启动成功但一直连不上」，比启动失败难查十倍。
         let cmd =
@@ -560,6 +596,13 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
         if (instances && Number(instances) > 1) {
           cmd += "-e ANOTIFY_INSTANCES=" + instances + " ";
         }
+        // 工作目录白名单（#281）：docker 那条路还必须**同时挂载**，否则容器里
+        // 那个路径根本不存在——只给 env 不给 -v 的表现是「能力启动就失败（目录不存在）」。
+        // 挂载点与宿主路径保持一致，是为了让控制台里填的 workDir 原样能用。
+        if (workDirs && workDirs.length) {
+          cmd += "-e ANOTIFY_WORK_DIRS=" + workDirs.join(":") + " ";
+          for (const d of workDirs) cmd += "-v " + d + ":" + d + " ";
+        }
         return cmd + AGENT_IMAGE;
       }
 
@@ -571,13 +614,38 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
       //
       // 键名与 cmd/agent/config.go 的 yaml tag 一一对应（name/server/token/instances），
       // 多一个键就是未知字段 → agent 启动直接失败。
-      function agentNodeYaml(token, name, instances, server) {
-        return (
+      function agentNodeYaml(token, name, instances, server, workDirs) {
+        let y =
           "name: " + (name || "") + "\n" +
           "server: " + (server || "") + "\n" +
           "token: " + (token || "") + "\n" +
-          "instances: " + (instances || 1) + "\n"
-        );
+          "instances: " + (instances || 1) + "\n";
+        // workDirs 是「能力工作目录」的白名单（#281）：控制台能给能力指定一个目录，
+        // 但只能从这份清单里选。不写 = 一个都不许（能力只能跑在临时目录里）。
+        // 注释掉的那行是引导，不是配置 —— 取消注释并改成你自己的路径。
+        y += "# 允许能力使用的工作目录（前缀匹配；不写 = 一个都不许）\n";
+        if (workDirs && workDirs.length) {
+          y += "workDirs:\n" + workDirs.map((d) => "  - " + d).join("\n") + "\n";
+        } else {
+          y += "# workDirs:\n#   - /home/me/project\n";
+        }
+        return y;
+      }
+
+      // agentInstallCmd 是**原生装**那条路（scripts/install-agent.sh）。
+      //
+      // 与 docker 的区别是本质的：容器里看不到宿主机文件，想在项目目录里跑能力
+      // 就只能在宿主机上跑。代价是 agent 以**这个用户**的身份执行脚本 —— 所以
+      // 脚本默认拒绝 root，并且 workDirs 白名单决定它能看到哪些目录。
+      function agentInstallCmd(token, server, name, instances, workDirs) {
+        let cmd =
+          "curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh | sh -s --" +
+          " --token=" + (token || "") +
+          " --server=" + (server || "");
+        if (name) cmd += " --name=" + name;
+        if (instances && Number(instances) > 1) cmd += " --instances=" + instances;
+        if (workDirs && workDirs.length) cmd += " --work-dirs=" + workDirs.join(":");
+        return cmd;
       }
 
       // 错误映射：先说人话，状态码只是细分。
@@ -610,6 +678,20 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
 
       // instancesFromPanel 读注册面板上用户填的槽位数（提交后面板会被隐藏，
       // 所以值必须从输入框读，而不是从"当前值"重新推）。
+      // workDirsFromPanel 读注册面板上的工作目录白名单（#281）。
+      //
+      // 空格分隔或冒号分隔都接受（用户手写路径时更自然会用空格）；空 = 一个都不许。
+      // 这里**不校验**是不是绝对路径 —— 路径合法性的判定在 agent 启动时（它会一次
+      // 列出所有问题），前端只负责把用户写的东西原样传给命令。
+      function workDirsFromPanel() {
+        const raw = (regEl("reg-workdirs").value || "").trim();
+        if (!raw) return [];
+        return raw
+          .split(/[\s:]+/)
+          .map((x) => x.trim())
+          .filter(Boolean);
+      }
+
       function instancesFromPanel() {
         const parsed = parseInt(regEl("reg-instances").value, 10);
         if (isNaN(parsed)) return 1;
@@ -632,12 +714,22 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
           window.location.origin,
           (node && node.name) || name,
           instancesFromPanel(),
+          workDirsFromPanel(),
         );
+        const wd = workDirsFromPanel();
         regEl("reg-yaml").textContent = agentNodeYaml(
           token,
           (node && node.name) || name,
           instancesFromPanel(),
           window.location.origin,
+          wd,
+        );
+        regEl("reg-install").textContent = agentInstallCmd(
+          token,
+          window.location.origin,
+          (node && node.name) || name,
+          instancesFromPanel(),
+          wd,
         );
         regHide("register-panel", true);
         regHide("reg-result", false);
@@ -728,6 +820,7 @@ docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-
         regWireCopy("reg-token-copy", "reg-token");
         regWireCopy("reg-cmd-copy", "reg-cmd");
         regWireCopy("reg-yaml-copy", "reg-yaml");
+        regWireCopy("reg-install-copy", "reg-install");
         // 回车提交（没有 <form>，避免默认 submit 把页面刷掉）。
         regEl("reg-name").addEventListener("keydown", (e) => {
           if (e.key === "Enter") {
