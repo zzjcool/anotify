@@ -124,7 +124,7 @@ index:
     retry: 'Reintentar'
     bad_shape: 'Formato de respuesta inesperado'
   title: Resumen
-  subtitle: Tus notificaciones de un vistazo
+  subtitle: Tus tareas de un vistazo
   greeting:
     fallback_name: tú
     default: Hola
@@ -136,10 +136,10 @@ index:
   loading: Cargando tus estadísticas…
   demo_badge: Datos demo (backend no conectado)
   kpi:
-    total: Notificaciones totales
+    total: Tareas totales
     last_30d: Últimos 30 días
     rate: Tasa de entrega
-    today: Hoy
+    today: Tareas de hoy
     today_sub: Enviado → Entregado
     devices: Dispositivos receptores
     devices_enabled: Activos
@@ -186,7 +186,7 @@ index:
 
       '
   recent:
-    title: Notificaciones recientes
+    title: Tareas recientes
     subtitle: Actualización en vivo · clic en una fila para detalles
     filter_all: Todos
     filter_terminal: Terminal
@@ -197,7 +197,7 @@ index:
     pull_ready: Suelta para actualizar
     pull_loading: Actualizando…
     pull_done: Actualizado
-  recent_summary: Recibidas {total} notificaciones, {ok} exitosas.
+  recent_summary: '{total} tareas registradas recientemente, {ok} completadas.'
   test_notify:
     title: Enviar notificación de prueba
     desc: Envía una notificación a todos tus dispositivos desde la web

@@ -363,6 +363,23 @@ async function main() {
 			)
 			.catch(() => {});
 
+		// 手机推送隐藏期间（PUSH_UI_ENABLED=false），送达率和接收设备两块 KPI 整块隐藏：
+		// 它们只描述"上报 → 送达设备"这个推送口径，留着永远显示"暂无接收设备"。
+		// 此时 #23 的断言改成「两块都不显示」，放行后原来的诚实性断言照旧。
+		const pushUI = await page.evaluate(
+			() => !!(window.Anotify && window.Anotify.pushUIEnabled),
+		);
+		const pushTiles = await page.evaluate(() =>
+			Array.from(document.querySelectorAll("[data-push-tile]")).every((el) =>
+				el.classList.contains("hidden"),
+			),
+		);
+		if (!pushUI) {
+			H.check("#23 推送未开放时送达率/接收设备两块 KPI 隐藏", pushTiles === true, `hidden=${pushTiles}`);
+		} else {
+			H.check("#23 推送开放时两块 KPI 必须显示", pushTiles === false, `hidden=${pushTiles}`);
+		}
+
 		const kpi = await page.evaluate(() => ({
 			rate: (document.getElementById("kpi-rate")?.textContent || "").trim(),
 			sub: (document.getElementById("kpi-rate-sub")?.textContent || "").trim(),
@@ -371,13 +388,13 @@ async function main() {
 			).trim(),
 
 		}));
-		H.check(
+		if (pushUI) H.check(
 			"#23 0 设备时送达率不是假 100%",
 			!/^100\s*%?$/.test(kpi.rate.replace(/\s/g, "")) &&
 				!kpi.rate.startsWith("100"),
 			JSON.stringify(kpi),
 		);
-		H.check(
+		if (pushUI) H.check(
 			"#23 0 设备送达率展示 – 或「暂无接收设备」类诚实空态",
 			kpi.rate === "–" ||
 				kpi.rate === "-" ||

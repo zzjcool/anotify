@@ -124,7 +124,7 @@ index:
     retry: '再試行'
     bad_shape: 'レスポンス形式が不正'
   title: 概要
-  subtitle: 通知の概要
+  subtitle: タスクの一覧
   greeting:
     fallback_name: あなた
     default: こんにちは
@@ -136,10 +136,10 @@ index:
   loading: 通知の統計を読み込み中…
   demo_badge: デモデータ（バックエンド未接続）
   kpi:
-    total: 通知合計
+    total: タスク総数
     last_30d: 過去30日
     rate: 配信率
-    today: 今日の通知
+    today: 今日のタスク
     today_sub: 送信 → 配信
     devices: 受信デバイス
     devices_enabled: 有効
@@ -186,7 +186,7 @@ index:
 
       '
   recent:
-    title: 最近の通知
+    title: 最近のタスク
     subtitle: リアルタイム更新 · 行をクリックで詳細
     filter_all: 全て
     filter_terminal: 終了状態
@@ -197,7 +197,7 @@ index:
     pull_ready: 離して更新
     pull_loading: 更新中…
     pull_done: 更新しました
-  recent_summary: 直近 {total} 件の通知、うち {ok} 件が成功。
+  recent_summary: 最近 {total} 件のタスクを記録、うち {ok} 件が完了。
   test_notify:
     title: テスト通知を送信
     desc: Web から直接すべてのデバイスに通知を送信

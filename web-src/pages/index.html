@@ -40,7 +40,13 @@
           {{t "index.kpi.last_30d"}}
         </div>
       </div>
-      <div class="card reveal visible p-5" style="transition-delay: 60ms">
+      <!-- 送达率是「手机推送」的口径（上报 → 送达设备）：推送未开放时整块不显示，
+          否则永远是「暂无接收设备，送达率不可用」——一个只会误导人的空格子。 -->
+      <div
+        class="card reveal visible p-5"
+        style="transition-delay: 60ms"
+        data-push-tile
+      >
         <div class="flex items-center justify-between">
           <span class="text-xs font-medium text-zinc-500"
             >{{t "index.kpi.rate"}}</span
@@ -90,7 +96,7 @@
     </section>
 
     <!-- ===== 事件中心概览（#79）=====
-         旧的「通知列表」是结果视角，这里是**因果视角**：
+         旧的「任务列表」是结果视角，这里是**因果视角**：
          什么事件进来、派成了哪些任务、哪一步被剪枝。
          两者并存：通知回答「我收到了什么」，事件流回答「为什么」。 -->
     <section class="card reveal visible p-5">
@@ -185,7 +191,7 @@
     </section>
 
 
-    <!-- ===== 最近通知 ===== -->
+    <!-- ===== 最近任务（数据源是 /v1/tasks；"通知"这个实体早已删除）===== -->
     <section id="recent" class="card reveal visible overflow-hidden">
       <div
         class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4"
@@ -232,7 +238,7 @@
   </div>
 </div>
 
-<!-- 通知详情弹层 -->
+<!-- 任务详情弹层 -->
 <div
   id="detail-modal"
   class="fixed inset-0 z-50 hidden items-center justify-center p-4"
@@ -291,7 +297,7 @@
     });
 
     /* ================= 数据层 ================= */
-    // 统一通知结构（兼容后端 Message / 契约返回）
+    // 统一任务结构（兼容历史字段名）
     // 注意：早期的 /v1/notifications 直接序列化 broker.Message（PascalCase 字段），
     //       故每个字段都要兼容 PascalCase（真实 API）与 camelCase（契约）。
     // 任务状态 → 工作台的 agentState 语义（复用既有配色与文案）
@@ -359,7 +365,7 @@
         return {};
       }
     }
-    // 最新通知置顶：按 seq 降序（KSUID id 时间有序，seq 更可靠；无 seq 时退到 id 比较）
+    // 最新任务置顶：按 seq 降序（KSUID id 时间有序，seq 更可靠；无 seq 时退到 id 比较）
     function byNewest(a, b) {
       const sa = a.seq != null ? a.seq : -1;
       const sb = b.seq != null ? b.seq : -1;
@@ -505,7 +511,7 @@
 
     /* ================= KPI ================= */
     function renderKpis() {
-      // 优先用 /v1/stats 的真实统计；STATS 不可用时回退到通知列表估算
+      // 优先用 /v1/stats 的真实统计；STATS 不可用时回退到任务列表估算
       let total, rate, today, devices;
       if (STATS) {
         total = STATS.total ?? 0;
@@ -584,13 +590,13 @@
       const okCnt = NOTIFICATIONS.filter((n) => n.agentState === "done").length;
       document.getElementById("summary-line").textContent = t(
         "index.recent_summary",
-        "最近收录 {total} 条通知，其中 {ok} 条成功。",
+        "最近收录 {total} 条任务，其中 {ok} 条已完成。",
       )
         .replace("{total}", NOTIFICATIONS.length)
         .replace("{ok}", okCnt);
     }
 
-    /* ================= 通知列表 ================= */
+    /* ================= 任务列表 ================= */
     let currentFilter = "all";
     function renderNotifs(filter) {
       currentFilter = filter;
@@ -612,7 +618,7 @@
         list.replaceChildren(
           el("div", {
             class: "px-6 py-10 text-center text-sm text-zinc-500",
-            text: t("index.notif.empty", "暂无该状态的通知"),
+            text: t("index.notif.empty", "暂无该状态的任务"),
           }),
         );
       } else {

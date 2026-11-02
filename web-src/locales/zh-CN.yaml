@@ -124,7 +124,7 @@ index:
     retry: '重试'
     bad_shape: '响应格式不符'
   title: 总览
-  subtitle: 你的通知一览
+  subtitle: 你的任务一览
   greeting:
     fallback_name: 你
     default: 你好
@@ -136,10 +136,10 @@ index:
   loading: 正在加载你的通知统计…
   demo_badge: 演示数据（后端未连接）
   kpi:
-    total: 通知总数
+    total: 任务总数
     last_30d: 近 30 天
     rate: 送达率
-    today: 今日通知
+    today: 今日任务
     today_sub: 上报 → 送达
     devices: 接收设备
     devices_enabled: 已启用
@@ -186,7 +186,7 @@ index:
 
       '
   recent:
-    title: 最近通知
+    title: 最近任务
     subtitle: 实时更新 · 点击行查看详情
     filter_all: 全部
     filter_terminal: 终态
@@ -197,7 +197,7 @@ index:
     pull_ready: 松开刷新
     pull_loading: 正在刷新…
     pull_done: 已刷新
-  recent_summary: 最近收录 {total} 条通知，其中 {ok} 条已完成。
+  recent_summary: 最近收录 {total} 条任务，其中 {ok} 条已完成。
   test_notify:
     title: 发送测试通知
     desc: 直接从网页发一条通知到你的所有设备
