@@ -57,3 +57,6 @@ make e2e-one S=auth_flow   # 只跑某个套件
 - WS 全部帧类型 + 断线续传
 - 投递规则全部边界（无tag消息/无tag设备/交集/ALL拒绝/status 5 种 × filter 3 种）
 - 并发 seq 单调性、畸形输入、SQL 注入安全性、Key 哈希不可逆
+- **真 agent 端到端**（`live_agent`，4s）：真起 `cmd/agent` 进程 → 真部署 → 真跑任务，
+  最后到**文件系统**上验收（产物 digest 两端对得上账、能力声明的 `run.workDir` 真的生效、
+  用户目录里不残留产物文件）。专门抓「每层单独看都对、连起来才错」的一类 bug。

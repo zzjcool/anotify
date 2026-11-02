@@ -46,6 +46,10 @@ const HTTP_SUITES = [
 	// console-declares（T6）：部署模型的纯 HTTP 面
 	// （templates / 产物 digest / deployments 状态机 / 本地变体）
 	"deploy",
+	// #291：真 cmd/agent 进程 + 真部署 + 真任务，最后到文件系统上验收
+	// （专门抓"每层都对、连起来才错"的 bug：两端 digest 不一致、
+	//  能力声明的 run.workDir 没生效）
+	"live_agent",
 
 ];
 const CHROME_SUITES = [
