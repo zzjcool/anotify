@@ -184,3 +184,24 @@ make fe                             # 指纹 → internal/server/dist（e2e 用�
 ## 9. 失败处理
 - 若发现契约与代码现实矛盾（例如某锚点必须改才能实现折叠），**停下来在产出里写明「契约矛盾 + 建议」**，不要自行解释。
 - 若某页 e2e 锚点会因视觉改造失效，保留旧 DOM 作为视觉隐藏层，而不是删除锚点。
+
+---
+
+## 10. 契约修订 v1.1（协调者裁决，设计稿交付后）
+
+依据 `design/ui-v2/REVIEW.md` §3/§6，裁决如下（后续 agent 以此为准）：
+
+- **C1 采纳 D2**：顶栏 `header h1` 是**上下文标题**（15px/600），内容区页面大标题用
+  `.page-title`（`<h2>`，28px Inter 600 `-0.02em`）。`header h1` 唯一性 + `.scope-badge` 位置不变。
+- **C2 例外**：`login/cli-auth/passkey-enroll`（login/focus 布局、无 `#page-main`/mountLayout）**允许**多个 `<h1>`；
+  `base` 布局的 17 个工作台页仍然禁止页面内容里出现 `<h1>`。
+- **C3 采纳新增类**：`.page-narrow`（760px，node/source/trace/message）、`.card-fill`、`.card-foot`、
+  `.side-text`、`.side-count`、`.st-text.<state>`、`.btn-quiet`、`.hm-scroll`、`.table-foot`、`.field*`、`.menu*`。
+- **C4 更正事实**：`.toast` 页内副本实为 11 份（不是 7）；wave 2 统一到 `partials.js` 的 `Anotify.toast`。
+- **字体**：Fraunces 只用于 ≥22px 的三类位置（登录大标题、欢迎语、章节主标题）；≤20px 一律 Inter。
+- **KPI**：首页不允许出现空网格位。优先 4 张有真实数据的卡（可用已请求的 stats/nodes 数据，**不新增 API**）；
+  推送类指标被隐藏时让网格自适应为 2 列，而不是留两个空位。
+- **light 兼容 shim**：wave 1 允许在 `ui.css` 用 shim（把旧页的 `text-zinc-*`/`bg-white/*` 映射到 token）；
+  wave 2 迁移页面后 shim 只能收缩，不能扩张。shim 必须放在 `ui.css` 末尾并带注释说明「临时兼容层」。
+- **默认主题**：跟随系统；无法判定时用 dark。`theme-toggle` 顺序 dark → light → auto，`title`/`aria-label` 走 i18n。
+- **设计稿位置**：`design/ui-v2/`（截图不入库；需要时 `node design/ui-v2/verify.mjs` 重新生成）。
