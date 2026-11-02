@@ -230,7 +230,12 @@ ifeq ($(WIPE),1)
 	@echo "  数据卷 anotify-dev-data 已删除（WIPE=1）"
 else
 	$(DEV_COMPOSE) --profile tunnel --profile tools down
-	$(DEV_COMPOSE) $(DEV_PROFILE_KEEP) up -d --build
+	@# build 必须**显式**跑一次：`up -d --build` 在容器已存在时可能既不重建镜像
+	@# 也不重建容器（实测过：pull 到新代码后跑 dev-reset，镜像还是 1 小时前那个，
+	@# 容器报 Healthy —— 于是"更新到最新"静默失败，界面还是旧的）。
+	@# --force-recreate 再保一道：容器一定用新镜像重新起。
+	$(DEV_COMPOSE) build anotify
+	$(DEV_COMPOSE) $(DEV_PROFILE_KEEP) up -d --force-recreate
 	@echo "  数据卷 anotify-dev-data 已保留"
 	@echo "  本地: http://localhost:$${ANOTIFY_DEV_PORT:-8080}"
 	@echo "  要清空数据（账号/节点/事件全删）：make dev-wipe"
