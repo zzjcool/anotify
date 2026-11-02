@@ -380,6 +380,7 @@ make build  # 自动跑指纹 + go build
 
 ```bash
 make e2e              # 全量：构建 + Go 单测 + 9 个 E2E 套件
+make e2e-quick        # 合并前快检（~25s）：真机执行 + 派发 + 部署 + 契约
 make e2e-one S=auth_flow  # 只跑某个套件
 make ci               # PR 门禁（与 GitHub Actions 相同；不含 e2e / integration）
 ```

@@ -141,6 +141,17 @@ e2e-serial: ## 全量端到端测试（串行模式，调试用）
 e2e-one: ## 只跑某个 E2E 套件：make e2e-one S=auth_flow
 	./scripts/e2e/run_all.sh $(S)
 
+# e2e-quick：合并前的快检（~25s），覆盖「派发能到 + 部署能对账 + 目录能生效 + 契约没漂」。
+#
+# 为什么是这四个：
+#   live_agent  真 agent 跑真任务，到文件系统验收（专抓"每层都对、连起来才错"）
+#   ws_protocol 派发链路 + 帧形状（含 assign 帧字段集合）
+#   deploy      部署状态机 / 产物 digest / 本地变体
+#   contract    API 形状没漂（契约静态断言 + openapi）
+# 全量 e2e（含浏览器套件，约 3.5min）留给打 tag / 合并前最后一道。
+e2e-quick: ## 合并前快检（~25s）：live_agent + ws_protocol + deploy + contract
+	./scripts/e2e/run_all.sh live_agent ws_protocol deploy contract
+
 docker: ## 构建 Docker 镜像
 	docker build -t anotify .
 
