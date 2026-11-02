@@ -1142,12 +1142,15 @@ events:
     invalid_cursor: 'Cursor no válido: se volvió a lo más reciente'
 caps:
   title: Capacidades
+  sidebar: 'Se define aquí, se ejecuta en los nodos'
   subtitle: Una capacidad es "qué hacer" (no "cómo"). Las aristas — a dónde van los eventos — tienen su propia página.
   new: Definir capacidad
   loading: Cargando capacidades…
+  load_failed: 'No se pudo cargar la lista de capacidades, actualiza la página'
   empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
   count: '{n} capacidades'
   no_outputs: Sin salidas (capacidad terminal)
+  source_builtin: 'Integrado'
   declared_by: Declarada por
   no_node: Ningún nodo la declara
   no_node_hint: Esta capacidad no puede ejecutarse hasta que un nodo la declare
@@ -1161,6 +1164,60 @@ caps:
   rename_ph: Ponle un nombre, por ejemplo "Analizar PR"
   rename_failed: No se pudo renombrar
   renamed: Nombre actualizado
+  tpl:
+    title: 'Nueva capacidad'
+    intro: 'Primero elige una plantilla. Es solo un script predefinido: tanto los campos como el cuerpo del script se pueden editar después.'
+    cat_script: 'Script'
+    cat_agent: 'Agente'
+    requires: 'Requiere: {list}'
+    no_requires: 'Sin dependencias externas'
+    timeout_default: 'por defecto {n} s'
+    back: 'Cambiar plantilla'
+    params: 'Parámetros'
+    no_params: 'Esta plantilla no tiene parámetros'
+    required: 'obligatorio'
+    script: 'Script generado'
+    script_view: 'Solo lectura'
+    script_edit: 'Editar script'
+    script_hint: 'El script se ejecuta directamente (sin shell), así que la primera línea debe ser un shebang #!.'
+    schema_advanced: "Contrato de parámetros (avanzado)"
+    schema_toggle: "Editar JSON"
+    schema_hint: "Déjalo vacío para derivarlo de los campos de la plantilla. Se admite un subconjunto controlado de JSON Schema (type/properties/required/enum/minLength/pattern…)."
+    script_shebang_err: 'El script debe empezar por #!'
+    loading: 'Cargando plantillas…'
+    load_failed: 'No se pudieron cargar las plantillas: '
+    empty: 'El backend no devolvió ninguna plantilla'
+    created: 'Capacidad creada'
+    created_digest: 'Creada · digest {digest}'
+  deploy:
+    col: 'Despliegue'
+    status_applied: 'Desplegada en {n}'
+    status_pending: 'Desplegando en {n}'
+    status_failed: '{n} con fallo'
+    status_local: '{n} variante(s) local(es)'
+    status_none: 'Sin desplegar'
+    status_unknown: '—'
+    btn: 'Desplegar'
+    title: 'Desplegar «{name}»'
+    subtitle: 'Marca máquinas o elige por tag y pulsa Desplegar.'
+    pick_hint: 'Máquinas'
+    tag_pick: 'Elegir por tag'
+    node_digest: 'Desplegada {digest}'
+    node_none: 'Sin desplegar'
+    push: 'Desplegar'
+    pushing: 'Desplegando…'
+    close: 'Cerrar'
+    undo: 'Quitar'
+    undone: 'Despliegue quitado'
+    undo_failed: 'No se pudo quitar: '
+    pushed: 'Enviado'
+    queued: 'En cola (nodo desconectado)'
+    queued_other: 'En cola'
+    nodes_failed: 'No se pudo cargar la lista de nodos, inténtalo más tarde'
+    result_title: 'Resultado'
+    none_selected: 'Selecciona al menos una máquina'
+    no_nodes: 'Este espacio de nombres aún no tiene nodos'
+    err: 'Fallo al desplegar: '
   list:
     title: Capacidades
   form:
@@ -1191,6 +1248,10 @@ caps:
     schema_preserved: 'Esto no se puede editar visualmente y se conservará tal cual:'
     schema_form_hint: Solo usa palabras clave que el backend admite (type / properties / required / enum / rangos). Cambia a JSON para objetos anidados y arreglos.
     err_schema_obj: paramsSchema debe ser un objeto JSON
+    timeout: 'Tiempo límite (segundos)'
+    timeout_hint: '0 = sin límite local, lo controla el lease del hub'
+    err_invalid_name: 'El nombre debe tener 1–63 caracteres en minúsculas, dígitos, punto, guion bajo o guion, empezando por letra o dígito'
+    err_timeout: 'El tiempo límite debe ser un entero entre 0 y 86400'
   edges:
     title: Aristas
     new: Nueva arista
@@ -1238,9 +1299,9 @@ nodes:
     title: Nodos
   howto:
     title: Cómo conectar un nodo
-    desc: 'El registro ocurre en esta página: el token se muestra una vez y la configuración autoritativa solo vive en el node.yaml de esa máquina.'
-    step1: 'Pulsa «Registrar nodo» arriba para obtener un token de un solo uso y guarda en esa máquina el node.yaml que te da'
-    step2: 'Rellena capabilities (lo que esa máquina ejecuta de verdad) y arráncalo en la máquina del nodo'
+    desc: 'El registro se hace aquí: el token se muestra una sola vez y la máquina solo necesita un comando docker, sin archivos de configuración.'
+    step1: 'Pulsa «Registrar nodo» arriba para obtener un token de un solo uso y pega el comando en esa máquina'
+    step2: 'Cuando la máquina esté en línea, despliega una capacidad desde la página «Capacidades»'
   view_events: Ver eventos
   register:
     btn: 'Registrar nodo'
@@ -1250,7 +1311,7 @@ nodes:
     name_ph: 'p. ej. my-mbp'
     name_hint: 'Minúsculas, dígitos, punto (.), guion bajo (_) o guion (-): de 1 a 63 caracteres, empezando por letra o dígito'
     instances: 'Instancias (opcional)'
-    instances_hint: 'Cuántas instancias correr en esta máquina: el valor se escribe tal cual en instances: del node.yaml. El hub lo limita a 20 (por defecto 1).'
+    instances_hint: 'Cuántas instancias ejecutar en esta máquina (valor sugerido; el hub lo limita a 20). El número real de slots lo declara el agent al conectarse.'
     submit: 'Registrar'
     cancel: 'Cancelar'
     submitting: 'Registrando…'
@@ -1259,9 +1320,14 @@ nodes:
     warn_once: 'Este token se muestra una sola vez: no se puede recuperar después de cerrar. Si lo pierdes, elimina el nodo y regístralo de nuevo.'
     token_title: 'Token de un solo uso'
     copy_token: 'Copiar token'
-    yaml_title: 'node.yaml (listo para pegar)'
-    copy_yaml: 'Copiar YAML'
-    yaml_hint: 'Guárdalo como node.yaml, sustituye capabilities por lo que esta máquina ejecuta de verdad y lanza agent -f node.yaml'
+    cmd_title: "Arrancar con un solo comando (recomendado)"
+    copy_cmd: "Copiar comando"
+    yaml_intro: "O instala el binario del agente directamente y usa este node.yaml (solo cuatro campos: name / server / token / instances):"
+    yaml_title: 'Ejecuta esta línea en la máquina'
+    copy_yaml: 'Copiar comando'
+    yaml_hint: 'El token de este comando se muestra una sola vez: si lo pierdes, borra el nodo y vuelve a registrarlo.'
+    cmd_intro: 'Pega este comando en la máquina (no hace falta ningún archivo de configuración):'
+    cmd_after: 'Cuando la máquina esté en línea, despliega una capacidad desde la página «Capacidades» y empezará a trabajar.'
     err:
       empty_name: 'Escribe primero un nombre de nodo'
       invalid_name: 'Nombre no válido: solo minúsculas, dígitos, punto (.), guion bajo (_) o guion (-), de 1 a 63 caracteres, empezando por letra o dígito'
@@ -1435,6 +1501,7 @@ edges:
   empty: 'La lista de aristas está vacía: los eventos no tienen a dónde ir.'
   nomatch: Ninguna arista coincide.
   created: Arista creada
+  fanout: 'Abanico ×{n}'
   removed: Arista eliminada
   err_port: La salida es obligatoria
   err_self: Una capacidad no puede conectarse a sí misma
@@ -1599,3 +1666,14 @@ pb:
     create_source: Crear origen
   yaml:
     hint: Este es el fragmento que hay que añadir en el nodo (solo las capacidades que faltan). Pégalo en node.yaml, reinicia el agente y el nodo lo declarará al conectar.
+
+node:
+  artifacts:
+    title: 'Artefactos en caché'
+    empty: 'Todavía no se ha desplegado ninguna capacidad en esta máquina'
+    load_failed: 'No se pudo cargar la lista de artefactos'
+    state_applied: 'Aplicada'
+    state_pending: 'Enviando'
+    state_failed: 'Fallo'
+    state_local: 'Variante local'
+    digest: 'digest'

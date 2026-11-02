@@ -45,7 +45,7 @@ func TestCrossNamespaceTaskNotVisible(t *testing.T) {
 	ctx := context.Background()
 	f := newNodeFixture(t) // 节点属于 organ 的 default 命名空间（f.nsID）
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	// 同一个组织里的第二套流程
@@ -136,7 +136,7 @@ func TestPublishAssignRoutesByNamespace(t *testing.T) {
 	ctx := context.Background()
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_hub_route")

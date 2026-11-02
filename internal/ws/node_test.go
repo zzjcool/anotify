@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -348,20 +347,26 @@ func sendRaw(t *testing.T, conn *websocket.Conn, raw string) {
 	}
 }
 
-// hello 发 hello 并等到 welcome（老 agent：不带 manifest）。
-func hello(t *testing.T, conn *websocket.Conn, nodeID string, caps []CapabilityDecl, insts []InstanceDecl) {
+// hello 发一个 applied[] 形状的 hello 并等到 welcome。
+//
+// v2 只有这一种 hello：节点陈述「本机缓存了哪些产物」（契约 §3），旧的
+// capabilities[]（我能跑什么）+ manifest[]（我怎么跑）两个字段整个删除。
+// 所以也没有「带 manifest 的 hello」这种 helper 了 —— 它不再是合法的协议形状。
+func hello(t *testing.T, conn *websocket.Conn, nodeID string, applied []AppliedDecl, insts []InstanceDecl) {
 	t.Helper()
-	helloManifest(t, conn, nodeID, caps, nil, insts)
+	helloFrame(t, conn, &HelloFrame{
+		Type: NodeFrameHello, NodeID: nodeID, Protocol: ProtocolVersion,
+		Applied: applied, Instances: insts,
+	})
 }
 
-// helloManifest 发带 manifest 的 hello 并等到 welcome（issue #168：老 hello 的扩展形状）。
-func helloManifest(t *testing.T, conn *websocket.Conn, nodeID string,
-	caps []CapabilityDecl, manifest []ManifestDecl, insts []InstanceDecl) {
+// helloFrame 发送调用方自己拼的 hello 帧并等到 welcome。
+//
+// 用于需要精确控制帧内容的用例（协议版本、身份、空 applied 等）：
+// 这些形状用 hello 的固定参数表达不出来。
+func helloFrame(t *testing.T, conn *websocket.Conn, f *HelloFrame) {
 	t.Helper()
-	send(t, conn, &HelloFrame{
-		Type: NodeFrameHello, NodeID: nodeID, Protocol: ProtocolVersion,
-		Capabilities: caps, Manifest: manifest, Instances: insts,
-	})
+	send(t, conn, f)
 	welcome := readUntil(t, conn, NodeFrameWelcome)
 	if welcome["heartbeat_sec"] == nil || welcome["lease_ttl_sec"] == nil {
 		t.Fatalf("welcome missing heartbeat/lease config: %v", welcome)
@@ -444,7 +449,7 @@ func TestHandshake(t *testing.T) {
 	conn := f.mustDial(t)
 
 	hello(t, conn, f.node.ID,
-		[]CapabilityDecl{{Capability: "review", Version: 1}},
+		[]AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 4}},
 	)
 
@@ -464,8 +469,9 @@ func TestHandshake(t *testing.T) {
 	if len(caps) != 1 || caps[0].Name != "review" {
 		t.Fatalf("node capabilities = %v, want [review@1]", caps)
 	}
-	// 老 agent 不带 manifest → run_spec 落 '{}'（契约 §8-9，行为零漂移）
-	assertRunSpecEqual(t, caps[0].RunSpec, "{}")
+	// 为什么这里不再断言 run_spec：v2 的 hello 没有 manifest，node_capabilities 也没有
+	// run_spec 列（迁移 18）。「节点上报的执行方式原样落库」这条能力整个消失，
+	// 替代覆盖见 TestHelloAppliedPersists（applied 落库 + 读回一致）。
 	// 实例已落库
 	insts, err := f.db.ListInstances(context.Background(), f.node.ID)
 	if err != nil {
@@ -483,8 +489,8 @@ func TestHelloUnknownCapability(t *testing.T) {
 
 	send(t, conn, &HelloFrame{
 		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
-		Capabilities: []CapabilityDecl{{Capability: "does-not-exist", Version: 9}},
-		Instances:    []InstanceDecl{{Slot: 0, Concurrency: 1}},
+		Applied:   []AppliedDecl{{Capability: "does-not-exist", Version: 9}},
+		Instances: []InstanceDecl{{Slot: 0, Concurrency: 1}},
 	})
 	frame := readUntil(t, conn, NodeFrameError)
 	if frame["code"] != ErrCodeUnknownCapability {
@@ -522,8 +528,8 @@ func TestHelloInstances(t *testing.T) {
 
 	send(t, conn, &HelloFrame{
 		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
-		Capabilities: []CapabilityDecl{{Capability: "review", Version: 1}},
-		Instances:    []InstanceDecl{{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}},
+		Applied:   []AppliedDecl{{Capability: "review", Version: 1}},
+		Instances: []InstanceDecl{{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}},
 	})
 	frame := readUntil(t, conn, NodeFrameError)
 	if frame["code"] != ErrCodeTooManyInstances {
@@ -531,28 +537,44 @@ func TestHelloInstances(t *testing.T) {
 	}
 }
 
-// ---------- #168：hello 可选 manifest（声明「怎么跑」） ----------
+// ---------- v2：hello.applied[]（「我缓存了什么」）与部署对账 ----------
+//
+// 这一节整体替换了 #168 的 manifest 系列（下面每个用例头都写了「为什么断言变了」）。
+// 旧的四个用例钉的是「节点自报执行方式」：run_spec 往返、manifest 覆盖 capabilities、
+// manifest 部分覆盖、run 非法时整帧拒绝 + mergeDeclarations 纯函数。
+// v2 把这条能力整个删掉（执行方式属于产物 artifacts.spec，中枢不解释也不转发），
+// 所以它们不是「行为漂移」，而是被测对象消失 —— 替代覆盖是 applied 的对账语义：
+//   · applied 落库 + 读回一致（替代 run_spec 往返）
+//   · applied 里未知能力 → 整帧拒绝且一次列全（保留，形状换成 applied）
+//   · applied.digest 与中枢 desired 不一致 → deployments.state = local（替代 manifest 合并冲突）
 
-// TestHelloManifestPersistsRunSpec 带 manifest → run_spec 落库 + 读回一致（契约 §8-10）。
-func TestHelloManifestPersistsRunSpec(t *testing.T) {
+// TestHelloAppliedPersists applied[] 落成 node_capabilities，读回就是那一组（契约 D4）。
+//
+// 为什么断言变了：旧用例（TestHelloManifestPersistsRunSpec）断言「run_spec 存的是
+// 节点上报的 JSON 原文」。run_spec 列已随迁移 18 删除，能存能读的只剩「这台机器
+// 归属哪些能力」这一组，所以断言换成：applied 里的 name@version 全量落库、读回一致。
+func TestHelloAppliedPersists(t *testing.T) {
 	f := newNodeFixture(t)
+	f.defineCapability(t, "test", 1)
 	conn := f.mustDial(t)
 
-	run := `{"runner":"bash","command":"./runners/review.sh","timeoutSec":900,"concurrency":2,"env":{"LOG_LEVEL":"info"}}`
-	helloManifest(t, conn, f.node.ID,
-		[]CapabilityDecl{{Capability: "review", Version: 1}},
-		[]ManifestDecl{{Capability: "review", Version: 1, Run: json.RawMessage(run)}},
+	hello(t, conn, f.node.ID,
+		[]AppliedDecl{
+			{Capability: "review", Version: 1, Digest: "sha256:aaaa"},
+			{Capability: "test", Version: 1, Digest: "sha256:bbbb"},
+		},
 		[]InstanceDecl{{Slot: 0, Concurrency: 4}},
 	)
 
 	caps := listNodeCaps(t, f.db, f.node.ID)
-	if len(caps) != 1 {
-		t.Fatalf("node capabilities = %v, want exactly [review@1]", capSummary(caps))
+	if len(caps) != 2 {
+		t.Fatalf("node capabilities = %v, want exactly [review@1 test@1]", capSummary(caps))
 	}
-	// run_spec 存的是节点上报的 JSON 原文：语义比较（不比字节/键序）
-	assertRunSpecEqual(t, nodeCapOf(t, caps, "review", 1).RunSpec, run)
+	if caps[0].Name != "review" || caps[1].Name != "test" {
+		t.Fatalf("归属内容/顺序不对: %v", capSummary(caps))
+	}
 
-	// 节点确实上线了（manifest 合法时握手照常成功）
+	// 节点确实上线了（applied 合法时握手照常成功）
 	got, err := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
@@ -562,214 +584,165 @@ func TestHelloManifestPersistsRunSpec(t *testing.T) {
 	}
 }
 
-// TestHelloManifestOverridesCapabilities manifest 优先：同一 name@version 两边都给 → 用 manifest 的 run（契约 §8-11）。
-func TestHelloManifestOverridesCapabilities(t *testing.T) {
+// TestHelloAppliedIsFullReplacement 再次 hello 是全量替换：没上报的产物归属消失。
+//
+// 为什么断言变了：旧用例（TestHelloManifestOverridesCapabilities / PartialCoverage）
+// 断言「manifest 与 capabilities 两个来源怎么合并（manifest 优先、独有项追加）」。
+// v2 只剩一个来源（applied），合并算法不存在了；但「全量替换」这条语义必须照样钉住
+// —— 它是 #218 那类「节点重启后归属残留」故障的唯一防线。
+func TestHelloAppliedIsFullReplacement(t *testing.T) {
 	f := newNodeFixture(t)
-	conn := f.mustDial(t)
+	f.defineCapability(t, "test", 1)
 
-	run := `{"runner":"bash","command":"./runners/review-manifest.sh"}`
-	helloManifest(t, conn, f.node.ID,
-		[]CapabilityDecl{{Capability: "review", Version: 1}},
-		[]ManifestDecl{{Capability: "review", Version: 1, Run: json.RawMessage(run)}},
+	conn := f.mustDial(t)
+	hello(t, conn, f.node.ID,
+		[]AppliedDecl{{Capability: "review", Version: 1}, {Capability: "test", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}},
 	)
-
-	caps := listNodeCaps(t, f.db, f.node.ID)
-	// 同一 name@version 只出一条（run 用的是 manifest 那份）
-	if len(caps) != 1 {
-		t.Fatalf("node capabilities = %v, want exactly one row for review@1", capSummary(caps))
+	if got := len(listNodeCaps(t, f.db, f.node.ID)); got != 2 {
+		t.Fatalf("首次 hello 后归属 = %d 条, want 2", got)
 	}
-	assertRunSpecEqual(t, nodeCapOf(t, caps, "review", 1).RunSpec, run)
-}
 
-// TestHelloManifestPartialCoverage manifest 没写的项 = 声明了能力但没声明执行方式（契约 §8-12）。
-func TestHelloManifestPartialCoverage(t *testing.T) {
-	f := newNodeFixture(t)
-	f.defineCapability(t, "lint-fix", 1)
-	conn := f.mustDial(t)
+	// 节点重启（旧连接先断干净，再连一条新的），缓存里只剩 test。
+	//
+	// 为什么必须先断开：不断开时服务端会把新连接当作「顶掉旧连接」处理，
+	// 而踢旧连接是**阻塞**的（closeWith 要等对端回 close 帧），新连接的 welcome
+	// 会被推后到 2s 读超时之后 —— 那是 #218 的顶替路径，不是这个用例要测的语义。
+	_ = conn.CloseNow()
+	waitNodeOfflineAndDead(t, f)
 
-	run := `{"runner":"bash","command":"./runners/review.sh"}`
-	helloManifest(t, conn, f.node.ID,
-		[]CapabilityDecl{{Capability: "review", Version: 1}, {Capability: "lint-fix", Version: 1}},
-		[]ManifestDecl{{Capability: "review", Version: 1, Run: json.RawMessage(run)}},
+	conn2 := f.mustDial(t)
+	hello(t, conn2, f.node.ID,
+		[]AppliedDecl{{Capability: "test", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}},
 	)
-
 	caps := listNodeCaps(t, f.db, f.node.ID)
-	// 两个能力都声明上了（manifest 只覆盖其中一个，另一个仍然是声明）
-	if len(caps) != 2 {
-		t.Fatalf("node capabilities = %v, want [lint-fix@1 review@1]", capSummary(caps))
-	}
-	assertRunSpecEqual(t, nodeCapOf(t, caps, "review", 1).RunSpec, run)
-	// 没被 manifest 覆盖的那个：run_spec 落 '{}'
-	assertRunSpecEqual(t, nodeCapOf(t, caps, "lint-fix", 1).RunSpec, "{}")
-}
-
-// TestHelloManifestInvalidRun 纯 run 问题 → error 帧 code=invalid_manifest，message 列全（契约 §8-13a）。
-func TestHelloManifestInvalidRun(t *testing.T) {
-	f := newNodeFixture(t)
-	conn := f.mustDial(t)
-
-	// 未知 runner + 空 command：一次把两条问题都列出来（不是只报第一条）
-	run := `{"runner":"python","command":""}`
-	send(t, conn, &HelloFrame{
-		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
-		Capabilities: []CapabilityDecl{{Capability: "review", Version: 1}},
-		Manifest:     []ManifestDecl{{Capability: "review", Version: 1, Run: json.RawMessage(run)}},
-		Instances:    []InstanceDecl{{Slot: 0, Concurrency: 1}},
-	})
-
-	frame := readErrorFrame(t, conn)
-	if frame["code"] != ErrCodeInvalidManifest {
-		t.Fatalf("code = %v, want %q", frame["code"], ErrCodeInvalidManifest)
-	}
-	msg, _ := frame["message"].(string)
-	for _, want := range []string{
-		`review@1: run.runner "python" is not supported (only bash)`,
-		"review@1: run.command is empty",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message %q does not contain %q", msg, want)
-		}
-	}
-
-	assertNodeNotOnline(t, f)
-	if caps := listNodeCaps(t, f.db, f.node.ID); len(caps) != 0 {
-		t.Fatalf("rejected hello left half a declaration: %v", capSummary(caps))
+	if len(caps) != 1 || caps[0].Name != "test" {
+		t.Fatalf("全量替换失败，归属 = %v, want [test@1]", capSummary(caps))
 	}
 }
 
-// TestHelloManifestUnknownCapabilityFirst 混有未知能力 → 优先报 unknown_capability，但问题照样列全（契约 §8-13b）。
-func TestHelloManifestUnknownCapabilityFirst(t *testing.T) {
+// TestHelloAppliedUnknownListsAll applied 里出现中枢没定义的能力 → 整帧拒绝、一次列全。
+//
+// 为什么断言变了：旧用例（TestHelloManifestUnknownCapabilityFirst）在「未知能力」
+// 之外还混着 run 配置错误（runner 不支持 / command 为空），断言两者都进 message。
+// run 校验已随 manifest 下线，能一次列全的只剩「未定义能力」这一组；
+// 但「根因优先 + 一条都不漏」这两条要求原样保留。
+func TestHelloAppliedUnknownListsAll(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
 
-	// review@1（已定义，runner 不支持）+ a@1 / b@1（都没定义）+ a@1 的空 command：
-	// 一次 hello 把「未定义能力」和「run 配置问题」都暴露出来。
 	send(t, conn, &HelloFrame{
 		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
-		Capabilities: []CapabilityDecl{{Capability: "review", Version: 1}},
-		Manifest: []ManifestDecl{
-			{Capability: "review", Version: 1, Run: json.RawMessage(`{"runner":"python","command":"x"}`)},
-			{Capability: "a", Version: 1, Run: json.RawMessage(`{"runner":"bash","command":""}`)},
-			{Capability: "b", Version: 1, Run: json.RawMessage(`{"runner":"bash","command":"./b.sh"}`)},
+		Applied: []AppliedDecl{
+			{Capability: "review", Version: 1}, // 唯一已定义的那个
+			{Capability: "a", Version: 1},
+			{Capability: "b", Version: 2},
 		},
 		Instances: []InstanceDecl{{Slot: 0, Concurrency: 1}},
 	})
 
 	frame := readErrorFrame(t, conn)
-	// 映射顺序敏感：混有未知能力 → unknown_capability（根因优先于某条 run 写错）
 	if frame["code"] != ErrCodeUnknownCapability {
 		t.Fatalf("code = %v, want %q", frame["code"], ErrCodeUnknownCapability)
 	}
 	msg, _ := frame["message"].(string)
-	for _, want := range []string{
-		"unknown capability: a@1, b@1", // 未知能力合成一条（按声明顺序）
-		`review@1: run.runner "python" is not supported (only bash)`,
-		"a@1: run.command is empty",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message %q does not contain %q", msg, want)
-		}
+	if !strings.Contains(msg, "unknown capability: a@1, b@2") {
+		t.Errorf("message %q 没有把两个未知能力列全（按上报顺序）", msg)
+	}
+	if strings.Contains(msg, "review@1") {
+		t.Errorf("message %q 把已定义的 review@1 也报成了问题", msg)
 	}
 
 	assertNodeNotOnline(t, f)
 	if caps := listNodeCaps(t, f.db, f.node.ID); len(caps) != 0 {
-		t.Fatalf("rejected hello left half a declaration: %v", capSummary(caps))
+		t.Fatalf("被拒的 hello 留下了半份归属: %v", capSummary(caps))
 	}
 }
 
-// TestMergeDeclarations 合并算法（契约 §2.1 的纯函数部分）。
-func TestMergeDeclarations(t *testing.T) {
-	const (
-		runA  = `{"runner":"bash","command":"./a.sh"}`
-		runB  = `{"runner":"bash","command":"./b.sh"}`
-		runB2 = `{"runner":"bash","command":"./b2.sh"}`
+// TestHelloAppliedDigestMarksLocal applied.digest 与中枢 desired 不一致 → local。
+//
+// 为什么断言变了：旧用例（TestHelloManifestPartialCoverage 之后那一族）钉的是
+// 「manifest 里重复项后者胜 / caps 重复项只出一条」这类合并算法。v2 的中枢与节点之间
+// 唯一可能不一致的东西是 digest，而它的后果是契约 §7 的「本地变体」状态。
+// 这条断言就是旧「合并冲突」用例在新模型下的对应物。
+func TestHelloAppliedDigestMarksLocal(t *testing.T) {
+	f := newNodeFixture(t)
+	ctx := context.Background()
+
+	// 中枢侧：给 review@1 登记一份产物并部署给这台节点（state=pending）
+	cap1, err := f.db.GetCapability(ctx, f.nsID, "review", 1)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	art, err := f.db.CreateArtifact(ctx, &store.Artifact{
+		NamespaceID:  f.nsID,
+		CapabilityID: cap1.ID,
+		Digest:       "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		Spec:         []byte(`{"apiVersion":"anotify/v1"}`),
+	})
+	if err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, art.ID)
+	if err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+
+	// 节点上缓存的是一份被手改过的产物
+	conn := f.mustDial(t)
+	hello(t, conn, f.node.ID,
+		[]AppliedDecl{{Capability: "review", Version: 1,
+			Digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"}},
+		[]InstanceDecl{{Slot: 0, Concurrency: 1}},
 	)
 
-	cases := []struct {
-		name     string
-		caps     []CapabilityDecl
-		manifest []ManifestDecl
-		want     []wantDecl
-	}{
-		{
-			name: "无 manifest（老 agent）：只有能力声明，没有 run",
-			caps: []CapabilityDecl{{Capability: "review", Version: 1}},
-			want: []wantDecl{{ref: "review@1"}},
-		},
-		{
-			name:     "manifest 命中 caps：用 manifest 的 run，且是必填项",
-			caps:     []CapabilityDecl{{Capability: "review", Version: 1}},
-			manifest: []ManifestDecl{{Capability: "review", Version: 1, Run: json.RawMessage(runA)}},
-			want:     []wantDecl{{ref: "review@1", run: runA, required: true}},
-		},
-		{
-			name:     "manifest 独有项追加在 caps 之后",
-			caps:     []CapabilityDecl{{Capability: "review", Version: 1}},
-			manifest: []ManifestDecl{{Capability: "a", Version: 1, Run: json.RawMessage(runA)}, {Capability: "review", Version: 1, Run: json.RawMessage(runB)}},
-			want:     []wantDecl{{ref: "review@1", run: runB, required: true}, {ref: "a@1", run: runA, required: true}},
-		},
-		{
-			name:     "caps 顺序优先",
-			caps:     []CapabilityDecl{{Capability: "b", Version: 1}, {Capability: "a", Version: 1}},
-			manifest: []ManifestDecl{{Capability: "a", Version: 1, Run: json.RawMessage(runA)}, {Capability: "b", Version: 1, Run: json.RawMessage(runB)}},
-			want:     []wantDecl{{ref: "b@1", run: runB, required: true}, {ref: "a@1", run: runA, required: true}},
-		},
-		{
-			name:     "manifest 重复项后者胜",
-			caps:     []CapabilityDecl{{Capability: "b", Version: 1}},
-			manifest: []ManifestDecl{{Capability: "b", Version: 1, Run: json.RawMessage(runB)}, {Capability: "b", Version: 1, Run: json.RawMessage(runB2)}},
-			want:     []wantDecl{{ref: "b@1", run: runB2, required: true}},
-		},
-		{
-			name:     "caps 重复项只出一条",
-			caps:     []CapabilityDecl{{Capability: "b", Version: 1}, {Capability: "b", Version: 1}},
-			manifest: []ManifestDecl{{Capability: "b", Version: 1, Run: json.RawMessage(runB)}},
-			want:     []wantDecl{{ref: "b@1", run: runB, required: true}},
-		},
+	got, err := f.db.GetDeployment(ctx, f.nsID, dp.ID)
+	if err != nil {
+		t.Fatalf("get deployment: %v", err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := mergeDeclarations(tc.caps, tc.manifest)
-			if len(got) != len(tc.want) {
-				t.Fatalf("merged = %v, want %v", mergedSummary(got), tc.want)
-			}
-			for i, w := range tc.want {
-				g := got[i]
-				if g.Name+"@"+fmt.Sprint(g.Version) != w.ref {
-					t.Fatalf("merged[%d] = %s@%d, want %s", i, g.Name, g.Version, w.ref)
-				}
-				if g.RunRequired != w.required {
-					t.Errorf("%s: RunRequired = %v, want %v", w.ref, g.RunRequired, w.required)
-				}
-				if w.run == "" {
-					if g.Run != nil {
-						t.Errorf("%s: Run = %s, want nil (未声明执行方式)", w.ref, g.Run)
-					}
-					continue
-				}
-				assertRunSpecEqual(t, g.Run, w.run)
-			}
-		})
+	if got.State != store.DeploymentLocal {
+		t.Fatalf("hello 对账后 state = %q, want %q（本地变体）", got.State, store.DeploymentLocal)
+	}
+	if !strings.Contains(got.Reason, art.Digest) {
+		t.Fatalf("reason %q 里没有中枢期望的 digest %s", got.Reason, art.Digest)
+	}
+	// 归属还在（本地变体只是中枢不敢覆盖，不是不能派发）
+	if caps := listNodeCaps(t, f.db, f.node.ID); len(caps) != 1 {
+		t.Fatalf("本地变体的归属丢了: %v", capSummary(caps))
 	}
 }
 
-// wantDecl 是 mergeDeclarations 的期望条目（run 为空 = 期望 Run == nil）。
-type wantDecl struct {
-	ref      string
-	run      string
-	required bool
-}
+// TestHelloProtocolVersion1Rejected 协议版本 1 的 hello 必须被拒（契约 §1：老客户端必须升级）。
+//
+// v2 改了 hello 的形状（删 capabilities/manifest、加 applied），一个 v1 节点上来
+// 只会在 unknown_capability / bad_frame 之间反复横跳，症状远比「版本不匹配」难查。
+// 所以在协议层直接拒绝，并给出可操作的错误文本（两个版本号都写出来）。
+//
+// 错误码用 protocol_mismatch 而不是 bad_frame（契约 §1）：这是**版本不兼容**，
+// 不是「帧写坏了」。看到这个码应该去升级二进制，而不是查 JSON 结构。
+func TestHelloProtocolVersion1Rejected(t *testing.T) {
+	f := newNodeFixture(t)
+	conn := f.mustDial(t)
 
-// mergedSummary 把合并结果渲染成 name@version（失败信息用）。
-func mergedSummary(decls []store.CapabilityDecl) []string {
-	out := make([]string, 0, len(decls))
-	for _, d := range decls {
-		out = append(out, fmt.Sprintf("%s@%d", d.Name, d.Version))
+	send(t, conn, &HelloFrame{
+		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: 1,
+		Applied:   []AppliedDecl{{Capability: "review", Version: 1}},
+		Instances: []InstanceDecl{{Slot: 0, Concurrency: 1}},
+	})
+
+	frame := readErrorFrame(t, conn)
+	if frame["code"] != ErrCodeProtocolMismatch {
+		t.Fatalf("code = %v, want %q", frame["code"], ErrCodeProtocolMismatch)
 	}
-	return out
+	msg, _ := frame["message"].(string)
+	if !strings.Contains(msg, "unsupported protocol 1") {
+		t.Fatalf("message = %q, want 含 'unsupported protocol 1'", msg)
+	}
+	if !strings.Contains(msg, fmt.Sprint(ProtocolVersion)) {
+		t.Fatalf("message = %q, want 含服务端版本 %d（否则节点不知道该升到哪一版）", msg, ProtocolVersion)
+	}
+	assertNodeNotOnline(t, f)
 }
 
 // TestFramesBeforeHelloRejected 没 hello 就发任务帧 → 拒绝。
@@ -1099,7 +1072,7 @@ func TestHeartbeatKeepsAlive(t *testing.T) {
 func TestLeaseExtended(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	ctx := context.Background()
@@ -1196,7 +1169,7 @@ func TestDownstreamNoTouch(t *testing.T) {
 func TestAckProgressResultFlow(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	ctx := context.Background()
@@ -1238,7 +1211,7 @@ func TestAckProgressResultFlow(t *testing.T) {
 func TestResultMissingOutLeavesUnreported(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_missing")
@@ -1267,7 +1240,7 @@ func TestResultMissingOutLeavesUnreported(t *testing.T) {
 func TestResultExplicitNullOutMeansEnd(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_null")
@@ -1292,7 +1265,7 @@ func TestResultExplicitNullOutMeansEnd(t *testing.T) {
 func TestAckOtherNodesTaskRejected(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	ctx := context.Background()
@@ -1406,7 +1379,7 @@ func TestDisconnectMarksNodeOffline(t *testing.T) {
 
 // ---------- 测试辅助 ----------
 
-// defineCapability 在夹具组织下定义一个能力（manifest 用例需要多于一个能力）。
+// defineCapability 在夹具命名空间下定义一个能力（需要多于一个能力的用例用）。
 func (f *nodeFixture) defineCapability(t *testing.T, name string, version int) {
 	t.Helper()
 	capVer := &store.CapabilityVersion{
@@ -1419,7 +1392,7 @@ func (f *nodeFixture) defineCapability(t *testing.T, name string, version int) {
 	}
 }
 
-// listNodeCaps 读回节点声明的能力（含 run_spec）。
+// listNodeCaps 读回节点拥有（= 已对账）的能力。
 func listNodeCaps(t *testing.T, db *store.DB, nodeID string) []*store.NodeCapability {
 	t.Helper()
 	caps, err := db.ListNodeCapabilities(context.Background(), nodeID)
@@ -1448,21 +1421,6 @@ func capSummary(caps []*store.NodeCapability) []string {
 		out = append(out, fmt.Sprintf("%s@%d", c.Name, c.Version))
 	}
 	return out
-}
-
-// assertRunSpecEqual 语义比较 run_spec（落库的是节点上报的 JSON 原文，不比字节）。
-func assertRunSpecEqual(t *testing.T, got json.RawMessage, want string) {
-	t.Helper()
-	var gotV, wantV any
-	if err := json.Unmarshal(got, &gotV); err != nil {
-		t.Fatalf("decode run_spec %s: %v", got, err)
-	}
-	if err := json.Unmarshal([]byte(want), &wantV); err != nil {
-		t.Fatalf("decode want run_spec %q: %v", want, err)
-	}
-	if !reflect.DeepEqual(gotV, wantV) {
-		t.Fatalf("run_spec = %s, want %s", got, want)
-	}
 }
 
 // assertNodeNotOnline 断言握手被拒的节点没有上线（也没有被标脏）。

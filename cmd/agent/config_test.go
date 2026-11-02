@@ -11,35 +11,20 @@ import (
 	"github.com/zzjcool/anotify/internal/ws"
 )
 
-// nodeYAMLFull 是 issue #184 里的完整 node.yaml 形状：name/server/token/instances，
-// 两条能力各带 run（runner/command/timeoutSec/concurrency/env），第一条另带 out
-// （issue #189：成功时回报的出口名）。
-const nodeYAMLFull = `# node.yaml —— 节点侧唯一声明入口
+// 本文件覆盖 node.yaml 的**新形状**（console-declares / 裁决 D4）：
+// 只剩 bootstrap 四件 name/server/token/instances。
+//
+// v1 的 capabilities[]/run（runner/command/out/concurrency/env）全部删除——能力
+// 不再由机器声明，而是控制台编译成产物、经 deploy 帧下发（cache.go / apply.go）。
+// 因此 v1 那些「run 块校验 / lookup / 按能力算并发」的用例一并删除，
+// 换成「bootstrap 校验 + 未知字段（含老配置）必须报错 + hello.applied 透传」。
+
+// nodeYAMLBootstrap 是 T4 之后 node.yaml 的完整形状。
+const nodeYAMLBootstrap = `# node.yaml —— 节点侧唯一的 bootstrap 声明
 name: laptop-worker
 server: http://localhost:8080
 token: ntk_local_dev
 instances: 2
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
-      timeoutSec: 30
-      concurrency: 1
-      env:
-        LOG_LEVEL: info
-      out: ok
-  - capability: demo.review
-    version: 2
-    run:
-      runner: bash
-      command: ./runners/review.sh
-      timeoutSec: 900
-      concurrency: 2
-      env:
-        MODE: strict
-        DRY_RUN: "1"
 `
 
 // writeNodeYAML 把 YAML 落到 t.TempDir() 下的 node.yaml 并返回路径。
@@ -63,9 +48,9 @@ func mustLoadNodeConfig(t *testing.T, body string) *nodeConfig {
 	return cfg
 }
 
-// TestConfigLoadIssueYAML：issue 原文 YAML 全字段解码正确（W1 必测 1）。
-func TestConfigLoadIssueYAML(t *testing.T) {
-	cfg := mustLoadNodeConfig(t, nodeYAMLFull)
+// TestConfigLoadBootstrap：四个字段全解码正确，且结构体里**没有**能力字段了。
+func TestConfigLoadBootstrap(t *testing.T) {
+	cfg := mustLoadNodeConfig(t, nodeYAMLBootstrap)
 
 	if cfg.Name != "laptop-worker" {
 		t.Errorf("Name = %q, want laptop-worker", cfg.Name)
@@ -79,39 +64,16 @@ func TestConfigLoadIssueYAML(t *testing.T) {
 	if cfg.Instances != 2 {
 		t.Errorf("Instances = %d, want 2", cfg.Instances)
 	}
-
-	want := []capabilityConfig{
-		{
-			Capability: "demo.prep",
-			Version:    1,
-			Run: &runSpec{
-				Runner:      "bash",
-				Command:     "echo prep",
-				TimeoutSec:  30,
-				Concurrency: 1,
-				Env:         map[string]string{"LOG_LEVEL": "info"},
-				Out:         "ok",
-			},
-		},
-		{
-			Capability: "demo.review",
-			Version:    2,
-			Run: &runSpec{
-				Runner:      "bash",
-				Command:     "./runners/review.sh",
-				TimeoutSec:  900,
-				Concurrency: 2,
-				Env:         map[string]string{"MODE": "strict", "DRY_RUN": "1"},
-			},
-		},
-	}
-	if !reflect.DeepEqual(cfg.Capabilities, want) {
-		t.Errorf("Capabilities = %#v, want %#v", cfg.Capabilities, want)
+	// 结构体形状本身也是断言：nodeConfig 只有四件 bootstrap（D4：机器不自报能力）。
+	want := nodeConfig{Name: "laptop-worker", Server: "http://localhost:8080",
+		Token: "ntk_local_dev", Instances: 2}
+	if *cfg != want {
+		t.Errorf("nodeConfig = %#v, want %#v", *cfg, want)
 	}
 }
 
-// TestConfigValidateErrors：各类非法输入都必须报错，且错误子串与契约 §3.1.1 一致
-// （W1 必测 2）。错误串前面还要带文件路径。
+// TestConfigValidateErrors：缺 server / 缺 token / instances 负数都必须报错，
+// 且错误串前面带文件路径。
 func TestConfigValidateErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -123,105 +85,13 @@ func TestConfigValidateErrors(t *testing.T) {
 			// 把「缺什么」一次列全。
 			name: "空文件",
 			yaml: "",
-			want: []string{
-				"server is required",
-				"token is required",
-				"at least one capability is required",
-			},
-		},
-		{
-			name: "run 缺失",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-`,
-			want: []string{"demo.prep@1: run is required"},
-		},
-		{
-			name: "runner 缺失",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      command: echo prep
-`,
-			want: []string{"demo.prep@1: run.runner is required (only bash)"},
-		},
-		{
-			name: "runner 非 bash",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: node
-      command: echo prep
-`,
-			want: []string{`demo.prep@1: run.runner "node" is not supported (only bash)`},
-		},
-		{
-			name: "command 空白",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: "   "
-`,
-			want: []string{"demo.prep@1: run.command is empty"},
-		},
-		{
-			name: "timeoutSec 负数",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
-      timeoutSec: -1
-`,
-			want: []string{"demo.prep@1: run.timeoutSec must be >= 0"},
-		},
-		{
-			name: "concurrency 负数",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
-      concurrency: -2
-`,
-			want: []string{"demo.prep@1: run.concurrency must be >= 0"},
+			want: []string{"server is required", "token is required"},
 		},
 		{
 			name: "token 空",
 			yaml: `name: n
 server: http://localhost:8080
 token: ""
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
 `,
 			want: []string{"token is required"},
 		},
@@ -230,12 +100,6 @@ capabilities:
 			yaml: `name: n
 server: ""
 token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
 `,
 			want: []string{"server is required"},
 		},
@@ -244,12 +108,6 @@ capabilities:
 			yaml: `name: n
 server: localhost:8080
 token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
 `,
 			want: []string{"server", "is not a valid URL"},
 		},
@@ -258,12 +116,6 @@ capabilities:
 			yaml: `name: n
 server: ftp://localhost:8080
 token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
 `,
 			want: []string{"server", "is not a valid URL"},
 		},
@@ -273,70 +125,8 @@ capabilities:
 server: http://localhost:8080
 token: ntk_x
 instances: -1
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
 `,
 			want: []string{"instances must be >= 0"},
-		},
-		{
-			name: "capabilities 为空",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities: []
-`,
-			want: []string{"at least one capability is required"},
-		},
-		{
-			name: "capability 名为空",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: ""
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
-`,
-			want: []string{"capability is required"},
-		},
-		{
-			name: "version 小于 1",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 0
-    run:
-      runner: bash
-      command: echo prep
-`,
-			want: []string{"demo.prep: version must be >= 1"},
-		},
-		{
-			name: "同名同版本重复",
-			yaml: `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep-again
-`,
-			want: []string{"duplicate capability demo.prep@1"},
 		},
 	}
 
@@ -362,35 +152,30 @@ capabilities:
 
 // TestConfigValidateListsAllProblems：校验一次列全，用 "; " 连接（不是只报第一条）。
 func TestConfigValidateListsAllProblems(t *testing.T) {
-	cfg := mustLoadNodeConfig(t, `name: n
-server: http://localhost:8080
-token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
-`)
+	cfg := mustLoadNodeConfig(t, nodeYAMLBootstrap)
 
-	// 同一份合法配置上改坏三处：缺 token + 版本非法 + 命令空白。
+	// 同一份合法配置上改坏三处：缺 token + 缺 server + 实例数负数。
 	cfg.Token = ""
-	cfg.Capabilities[0].Version = 0
-	cfg.Capabilities[0].Run.Command = " "
+	cfg.Server = ""
+	cfg.Instances = -2
 	err := cfg.validate()
 	if err == nil {
 		t.Fatal("validate: want error, got nil")
 	}
-	const want = "token is required; demo.prep: version must be >= 1; demo.prep@0: run.command is empty"
+	const want = "server is required; token is required; instances must be >= 0"
 	if err.Error() != want {
 		t.Errorf("validate() = %q, want %q", err.Error(), want)
 	}
 }
 
 // TestConfigUnknownField：未知 YAML 字段必须报错（KnownFields，防拼错静默失效）。
+//
+// 这里还钉住一条**迁移护栏**：v1 的 `capabilities:` 现在是未知字段。老 node.yaml
+// 必须在启动时被明确拒绝——静默连上去、却永远接不到单，是比报错难查得多的故障。
 func TestConfigUnknownField(t *testing.T) {
 	t.Run("顶层字段", func(t *testing.T) {
-		path := writeNodeYAML(t, strings.Replace(nodeYAMLFull, "instances: 2", "instances: 2\nbogus_field: 1", 1))
+		path := writeNodeYAML(t, strings.Replace(nodeYAMLBootstrap, "instances: 2",
+			"instances: 2\nbogus_field: 1", 1))
 		_, err := loadConfig(path)
 		if err == nil {
 			t.Fatal("loadConfig: want error for unknown field, got nil")
@@ -403,20 +188,28 @@ func TestConfigUnknownField(t *testing.T) {
 		}
 	})
 
-	t.Run("run 块内字段", func(t *testing.T) {
-		path := writeNodeYAML(t, strings.Replace(nodeYAMLFull, "      timeoutSec: 30",
-			"      timeoutSec: 30\n      typoKey: 1", 1))
+	t.Run("v1 的 capabilities 现在是未知字段", func(t *testing.T) {
+		path := writeNodeYAML(t, `name: n
+server: http://localhost:8080
+token: ntk_x
+capabilities:
+  - capability: demo.prep
+    version: 1
+    run:
+      runner: bash
+      command: echo prep
+`)
 		_, err := loadConfig(path)
 		if err == nil {
-			t.Fatal("loadConfig: want error for unknown run field, got nil")
+			t.Fatal("loadConfig: v1 的 capabilities 必须报错（能力不再由机器声明），却通过了")
 		}
-		if !strings.Contains(err.Error(), "typoKey") {
-			t.Errorf("error %q does not name the unknown field typoKey", err)
+		if !strings.Contains(err.Error(), "capabilities") {
+			t.Errorf("error %q does not name the removed field capabilities", err)
 		}
 	})
 }
 
-// TestConfigMissingFile：文件不存在时错误带路径（W5 的 -f 校验也靠这个）。
+// TestConfigMissingFile：文件不存在时错误带路径（-f 的校验也靠这个）。
 func TestConfigMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nope.yaml")
 	if _, err := loadConfig(path); err == nil {
@@ -426,7 +219,7 @@ func TestConfigMissingFile(t *testing.T) {
 	}
 }
 
-// TestConfigStreamURL：streamURL 表格测试，契约 §3.1.2 六行全覆盖（W1 必测 4）。
+// TestConfigStreamURL：streamURL 表格测试，契约 §3.1.2 六行全覆盖。
 func TestConfigStreamURL(t *testing.T) {
 	cases := []struct {
 		server  string
@@ -464,13 +257,17 @@ func TestConfigStreamURL(t *testing.T) {
 	}
 }
 
-// TestConfigHello：hello 帧的声明部分（W1 必测 5）。
+// TestConfigHello：hello 帧的**新形状**（契约 §3）。
 //
-// 断言：capabilities 顺序 = yaml 顺序；manifest.run 是 runSpec 的紧凑 JSON 且能被
-// 回读成同一份 runSpec；instances 数量 = slots() 且每槽 concurrency = slotConcurrency()。
+// 断言：没有 capabilities/manifest 两键（v2 删了）；applied 原样透传；
+// instances 数量 = slots()、每槽并发 = 1；protocol = 2。
 func TestConfigHello(t *testing.T) {
-	cfg := mustLoadNodeConfig(t, nodeYAMLFull)
-	h := cfg.hello()
+	cfg := mustLoadNodeConfig(t, nodeYAMLBootstrap)
+	applied := []appliedDecl{
+		{Capability: "demo.prep", Version: 1, Digest: "sha256:" + strings.Repeat("a", 64)},
+		{Capability: "demo.review", Version: 2, Digest: "sha256:" + strings.Repeat("b", 64)},
+	}
+	h := cfg.hello(applied)
 
 	if h.Type != ws.NodeFrameHello {
 		t.Errorf("Type = %q, want %q", h.Type, ws.NodeFrameHello)
@@ -478,45 +275,20 @@ func TestConfigHello(t *testing.T) {
 	if h.Protocol != ws.ProtocolVersion {
 		t.Errorf("Protocol = %d, want %d", h.Protocol, ws.ProtocolVersion)
 	}
+	if ws.ProtocolVersion != 2 {
+		t.Errorf("ws.ProtocolVersion = %d, want 2（console-declares 升版）", ws.ProtocolVersion)
+	}
 	if h.NodeID != "" {
 		t.Errorf("NodeID = %q, want empty (由服务端按令牌认)", h.NodeID)
 	}
 	if h.Labels != nil {
 		t.Errorf("Labels = %#v, want nil", h.Labels)
 	}
-
-	wantCaps := []capabilityDecl{
-		{Capability: "demo.prep", Version: 1},
-		{Capability: "demo.review", Version: 2},
-	}
-	if !reflect.DeepEqual(h.Capabilities, wantCaps) {
-		t.Errorf("Capabilities = %#v, want %#v", h.Capabilities, wantCaps)
+	if !reflect.DeepEqual(h.Applied, applied) {
+		t.Errorf("Applied = %#v, want %#v（缓存索引原样透传）", h.Applied, applied)
 	}
 
-	if len(h.Manifest) != len(wantCaps) {
-		t.Fatalf("len(Manifest) = %d, want %d", len(h.Manifest), len(wantCaps))
-	}
-	for i, want := range wantCaps {
-		if h.Manifest[i].Capability != want.Capability || h.Manifest[i].Version != want.Version {
-			t.Errorf("Manifest[%d] = %s@%d, want %s@%d",
-				i, h.Manifest[i].Capability, h.Manifest[i].Version, want.Capability, want.Version)
-		}
-		var back runSpec
-		if err := json.Unmarshal(h.Manifest[i].Run, &back); err != nil {
-			t.Fatalf("manifest[%d].run is not valid JSON: %v (%s)", i, err, h.Manifest[i].Run)
-		}
-		if !reflect.DeepEqual(&back, cfg.Capabilities[i].Run) {
-			t.Errorf("manifest[%d].run round-trip = %#v, want %#v", i, back, *cfg.Capabilities[i].Run)
-		}
-	}
-	// run 原文是紧凑 JSON（没有空格），零值字段由 omitempty 省略。
-	// 字段顺序 = runSpec 结构体顺序（out 在最后）。
-	const wantRun0 = `{"runner":"bash","command":"echo prep","timeoutSec":30,"concurrency":1,"env":{"LOG_LEVEL":"info"},"out":"ok"}`
-	if got := string(h.Manifest[0].Run); got != wantRun0 {
-		t.Errorf("manifest[0].run = %s, want %s", got, wantRun0)
-	}
-
-	// instances：槽数 = slots()，每槽并发 = slotConcurrency()。
+	// instances：槽数 = slots()，每槽并发 = 1（v2 不再有 per-capability concurrency）。
 	if len(h.Instances) != cfg.slots() {
 		t.Fatalf("len(Instances) = %d, want slots() = %d", len(h.Instances), cfg.slots())
 	}
@@ -524,20 +296,23 @@ func TestConfigHello(t *testing.T) {
 		if inst.Slot != i {
 			t.Errorf("Instances[%d].Slot = %d, want %d", i, inst.Slot, i)
 		}
-		if want := cfg.slotConcurrency(); inst.Concurrency != want {
-			t.Errorf("Instances[%d].Concurrency = %d, want slotConcurrency() = %d",
-				i, inst.Concurrency, want)
+		if inst.Concurrency != 1 {
+			t.Errorf("Instances[%d].Concurrency = %d, want 1", i, inst.Concurrency)
 		}
 	}
-	if got := cfg.slotConcurrency(); got != 2 {
-		t.Errorf("slotConcurrency() = %d, want 2 (max of run.concurrency)", got)
-	}
 
-	// 服务端必须能把这帧读回来（tag 漂移由 ws.DecodeUpstream 当场暴露）。
+	// 线上字节里不能出现 capabilities / manifest 两个键（v2 删除）。
 	data, err := json.Marshal(h)
 	if err != nil {
 		t.Fatalf("json.Marshal(hello): %v", err)
 	}
+	for _, banned := range []string{`"capabilities"`, `"manifest"`} {
+		if strings.Contains(string(data), banned) {
+			t.Errorf("hello 帧里仍然有 %s 键（v2 已删除）：%s", banned, data)
+		}
+	}
+
+	// 服务端必须能把这帧读回来（tag 漂移由 ws.DecodeUpstream 当场暴露）。
 	frame, err := ws.DecodeUpstream(data)
 	if err != nil {
 		t.Fatalf("ws.DecodeUpstream(hello) = %v (json=%s)", err, data)
@@ -546,106 +321,189 @@ func TestConfigHello(t *testing.T) {
 	if !ok {
 		t.Fatalf("ws.DecodeUpstream(hello) = %T, want *ws.HelloFrame", frame)
 	}
-	if !reflect.DeepEqual(back.Capabilities, wantCaps) || len(back.Instances) != len(h.Instances) {
-		t.Errorf("服务端回读 = %#v, want capabilities %#v / %d instances",
-			back, wantCaps, len(h.Instances))
+	if !reflect.DeepEqual(back.Applied, applied) {
+		t.Errorf("服务端回读 applied = %#v, want %#v", back.Applied, applied)
+	}
+	if len(back.Instances) != len(h.Instances) {
+		t.Errorf("服务端回读 instances = %#v, want %#v", back.Instances, h.Instances)
+	}
+	if back.Protocol != 2 {
+		t.Errorf("服务端回读 protocol = %d, want 2", back.Protocol)
 	}
 }
 
-// TestConfigDefaults：缺省归一（W1 必测 6）——instances 缺省 → 1，concurrency 缺省 → 1；
-// 归一在**读取处**表达，不改写用户结构体。
+// TestConfigHelloEmptyApplied：没有任何缓存时 applied 必须是 []，不是 null
+// （空列表纪律：服务端/前端把 null 当异常）。
+func TestConfigHelloEmptyApplied(t *testing.T) {
+	cfg := mustLoadNodeConfig(t, nodeYAMLBootstrap)
+	for _, in := range [][]appliedDecl{nil, {}} {
+		h := cfg.hello(in)
+		if h.Applied == nil {
+			t.Fatalf("Applied = nil, want 空切片（%v）", in)
+		}
+		data, err := json.Marshal(h)
+		if err != nil {
+			t.Fatalf("json.Marshal(hello): %v", err)
+		}
+		if !strings.Contains(string(data), `"applied":[]`) {
+			t.Errorf("hello = %s, want \"applied\":[]", data)
+		}
+	}
+}
+
+// TestConfigDefaults：缺省归一——instances 缺省 → 1；归一在**读取处**表达，
+// 不改写用户结构体。
 func TestConfigDefaults(t *testing.T) {
 	cfg := mustLoadNodeConfig(t, `name: n
 server: http://localhost:8080
 token: ntk_x
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: echo prep
 `)
 
 	if cfg.Instances != 0 {
 		t.Errorf("Instances = %d, want 0（缺省值不被改写进结构体）", cfg.Instances)
 	}
-	if got := cfg.Capabilities[0].Run.Concurrency; got != 0 {
-		t.Errorf("Run.Concurrency = %d, want 0（缺省值不被改写进结构体）", got)
-	}
 	if got := cfg.slots(); got != 1 {
 		t.Errorf("slots() = %d, want 1", got)
 	}
 	if got := cfg.slotConcurrency(); got != 1 {
-		t.Errorf("slotConcurrency() = %d, want 1", got)
+		t.Errorf("slotConcurrency() = %d, want 1（v2 每个槽位一个任务）", got)
 	}
-	if got := cfg.taskLimit(cfg.Capabilities[0].Run); got != 1 {
-		t.Errorf("taskLimit(run) = %d, want 1", got)
-	}
-	if got := cfg.taskLimit(nil); got != 1 {
-		t.Errorf("taskLimit(nil) = %d, want 1", got)
+	if got := cfg.taskLimit(); got != 1 {
+		t.Errorf("taskLimit() = %d, want 1", got)
 	}
 
-	h := cfg.hello()
+	h := cfg.hello(nil)
 	wantInstances := []instanceDecl{{Slot: 0, Concurrency: 1}}
 	if !reflect.DeepEqual(h.Instances, wantInstances) {
 		t.Errorf("Instances = %#v, want %#v", h.Instances, wantInstances)
 	}
-	// 零值字段（timeoutSec/concurrency/env/out）不出现在 run 原文里 ——
-	// out 的 omitempty 是硬要求（未声明时 run 原文逐字节不变）。
-	const wantRun = `{"runner":"bash","command":"echo prep"}`
-	if got := string(h.Manifest[0].Run); got != wantRun {
-		t.Errorf("manifest[0].run = %s, want %s", got, wantRun)
-	}
 
-	// instances 显式给了就按给的算（3 槽 × 缺省并发 1）。
+	// instances 显式给了就按给的算（3 槽 × 每槽 1）。
 	cfg.Instances = 3
 	if got := cfg.slots(); got != 3 {
 		t.Errorf("slots() = %d, want 3", got)
 	}
-	if got := len(cfg.hello().Instances); got != 3 {
+	if got := cfg.taskLimit(); got != 3 {
+		t.Errorf("taskLimit() = %d, want 3", got)
+	}
+	if got := len(cfg.hello(nil).Instances); got != 3 {
 		t.Errorf("len(hello().Instances) = %d, want 3", got)
 	}
 }
 
-// TestConfigLookup：name@version → run 块（client 侧 ack 后执行要靠它）。
-func TestConfigLookup(t *testing.T) {
-	cfg := mustLoadNodeConfig(t, nodeYAMLFull)
-
-	if rs, ok := cfg.lookup("demo.review", 2); !ok || rs == nil {
-		t.Fatalf("lookup(demo.review, 2) = (%v, %v), want run, true", rs, ok)
-	} else if !reflect.DeepEqual(rs, cfg.Capabilities[1].Run) {
-		t.Errorf("lookup(demo.review, 2) = %#v, want %#v", rs, *cfg.Capabilities[1].Run)
+// TestDefaultDataDir：缺省数据目录是 ~/.anotify（产物要留着，不能落 /tmp）。
+func TestDefaultDataDir(t *testing.T) {
+	got, err := defaultDataDir()
+	if err != nil {
+		t.Fatalf("defaultDataDir: %v", err)
 	}
-	if rs, ok := cfg.lookup("demo.prep", 2); ok || rs != nil {
-		t.Errorf("lookup(demo.prep, 2) = (%v, %v), want (nil, false)（版本不同）", rs, ok)
+	if filepath.Base(got) != ".anotify" {
+		t.Errorf("defaultDataDir() = %q, want .../.anotify", got)
 	}
-	if rs, ok := cfg.lookup("nope", 1); ok || rs != nil {
-		t.Errorf("lookup(nope, 1) = (%v, %v), want (nil, false)", rs, ok)
-	}
-
-	// 声明了能力但没写 run → 不可执行，同样报 false。
-	bare := &nodeConfig{Capabilities: []capabilityConfig{{Capability: "demo.bare", Version: 1}}}
-	if rs, ok := bare.lookup("demo.bare", 1); ok || rs != nil {
-		t.Errorf("lookup(没有 run 的能力) = (%v, %v), want (nil, false)", rs, ok)
+	if !filepath.IsAbs(got) {
+		t.Errorf("defaultDataDir() = %q, want 绝对路径", got)
 	}
 }
 
-// TestConfigTaskLimit：每能力并发上限 = 槽位 × 该能力的 concurrency。
-func TestConfigTaskLimit(t *testing.T) {
-	cfg := mustLoadNodeConfig(t, nodeYAMLFull)
+// ---------- 环境变量 bootstrap（容器/编排路径） ----------
+//
+// 控制台「加机器」给的那行 docker 命令只带 -e，容器里没有 node.yaml 可指。
+// 这组用例钉住：那条命令**真的能起来**，而不是一个好看的字符串。
 
-	if got := cfg.taskLimit(cfg.Capabilities[0].Run); got != 2 {
-		t.Errorf("taskLimit(demo.prep run) = %d, want 2（2 槽 × 1）", got)
+// envMap 把 map 变成 getenv 函数（测试用，避免污染进程环境）。
+func envMap(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+// TestConfigFromEnv 令牌在就生效，四件都能从环境变量来。
+func TestConfigFromEnv(t *testing.T) {
+	cfg, ok := configFromEnv(envMap(map[string]string{
+		envServer:    "https://anotify.example.com",
+		envToken:     "nt_abc",
+		envName:      "buildbox-1",
+		envInstances: "4",
+	}))
+	if !ok {
+		t.Fatal("有 ANOTIFY_TOKEN 却没走环境变量路径")
 	}
-	if got := cfg.taskLimit(cfg.Capabilities[1].Run); got != 4 {
-		t.Errorf("taskLimit(demo.review run) = %d, want 4（2 槽 × 2）", got)
+	if cfg.Server != "https://anotify.example.com" || cfg.Token != "nt_abc" ||
+		cfg.Name != "buildbox-1" || cfg.Instances != 4 {
+		t.Fatalf("解析结果不对: %+v", cfg)
 	}
-	if got := cfg.taskLimit(nil); got != 2 {
-		t.Errorf("taskLimit(nil) = %d, want 2（= slots()）", got)
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("这份配置应该合法: %v", err)
+	}
+}
+
+// TestConfigFromEnvNeedsToken 没有令牌 = 没打算走这条路（返回 false 让它回落）。
+//
+// 为什么不「报错说缺 token」：二进制装在机器上的人根本没有环境变量，
+// 对他们来说「没有 ANOTIFY_TOKEN」是常态，报错会把 ./node.yaml 这条路堵死。
+func TestConfigFromEnvNeedsToken(t *testing.T) {
+	if _, ok := configFromEnv(envMap(map[string]string{envServer: "https://x"})); ok {
+		t.Fatal("没有 ANOTIFY_TOKEN 却判定走环境变量")
+	}
+}
+
+// TestConfigFromEnvBadInstances 非法槽位数必须变成**可诊断的错误**，不是静默当 1。
+func TestConfigFromEnvBadInstances(t *testing.T) {
+	cfg, ok := configFromEnv(envMap(map[string]string{envToken: "nt_x", envInstances: "abc"}))
+	if !ok {
+		t.Fatal("有令牌就走这条路")
+	}
+	err := cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), "instances") {
+		t.Fatalf("期望 instances 相关错误，实际: %v", err)
+	}
+}
+
+// TestConfigFromEnvMissingServer 缺 server 必须报错（猜一个会表现为「连不上」）。
+func TestConfigFromEnvMissingServer(t *testing.T) {
+	cfg, ok := configFromEnv(envMap(map[string]string{envToken: "nt_x"}))
+	if !ok {
+		t.Fatal("有令牌就走这条路")
+	}
+	err := cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), "server is required") {
+		t.Fatalf("期望 server 必填报错，实际: %v", err)
+	}
+}
+
+// TestLoadConfigFromPrecedence 显式 -f 永远压过环境变量，且读不到就报错。
+//
+// 这条是「我改的文件没生效」的唯一防线：如果显式 -f 失败时悄悄回落到环境变量，
+// 用户会看到 agent 正常启动、连的却是另一次配置里的中枢。
+func TestLoadConfigFromPrecedence(t *testing.T) {
+	env := envMap(map[string]string{
+		envServer: "https://from-env.example.com",
+		envToken:  "nt_env",
+	})
+
+	// ① 显式 -f 指向不存在的文件 → 报错（不回落到环境变量）
+	if _, err := loadConfigFrom("/nonexistent/node.yaml", env); err == nil {
+		t.Fatal("显式 -f 指向不存在的文件却没报错（可能悄悄回落到了环境变量）")
 	}
 
-	zero := &runSpec{Runner: "bash", Command: "echo hi"}
-	if got := cfg.taskLimit(zero); got != 2 {
-		t.Errorf("taskLimit(concurrency 缺省) = %d, want 2（缺省记 1）", got)
+	// ② 显式 -f 指向真实文件 → 用文件，无视环境变量
+	dir := t.TempDir()
+	p := filepath.Join(dir, "node.yaml")
+	if err := os.WriteFile(p, []byte("name: from-file\nserver: https://file.example.com\ntoken: nt_file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfigFrom(p, env)
+	if err != nil {
+		t.Fatalf("读文件失败: %v", err)
+	}
+	if cfg.Token != "nt_file" || cfg.Server != "https://file.example.com" {
+		t.Fatalf("显式 -f 应该压过环境变量，实际: %+v", cfg)
+	}
+
+	// ③ 没给 -f → 环境变量生效
+	cfg, err = loadConfigFrom("", env)
+	if err != nil {
+		t.Fatalf("环境变量路径失败: %v", err)
+	}
+	if cfg.Token != "nt_env" {
+		t.Fatalf("没给 -f 时应该走环境变量，实际 token=%q", cfg.Token)
 	}
 }

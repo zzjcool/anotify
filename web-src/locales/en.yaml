@@ -1142,12 +1142,15 @@ events:
     invalid_cursor: 'Cursor expired — back to latest'
 caps:
   title: Capabilities
+  sidebar: 'Declared here, run on nodes'
   subtitle: A capability is "what to do" (not "how"). Edges — where events go next — have their own page.
   new: Define capability
   loading: Loading capabilities…
+  load_failed: 'Failed to load capabilities, please refresh'
   empty: No capabilities yet. Define one so nodes can declare it.
   count: '{n} capabilities'
   no_outputs: No outputs (terminal capability)
+  source_builtin: 'Built-in'
   declared_by: Declared by
   no_node: No node declares it
   no_node_hint: This capability can never run until a node declares it
@@ -1161,6 +1164,60 @@ caps:
   rename_ph: Give it a name, e.g. "Analyze PR"
   rename_failed: Rename failed
   renamed: Name updated
+  tpl:
+    title: 'New capability'
+    intro: 'Pick a template first. A template is just a canned script — both its fields and the script body stay editable.'
+    cat_script: 'Script'
+    cat_agent: 'Agent'
+    requires: 'Requires: {list}'
+    no_requires: 'No external commands required'
+    timeout_default: 'default {n}s'
+    back: 'Change template'
+    params: 'Parameters'
+    no_params: 'This template has no parameters'
+    required: 'required'
+    script: 'Generated script'
+    script_view: 'Read-only'
+    script_edit: 'Edit script'
+    script_hint: 'The script is executed directly (no shell), so the first line must be a #! shebang.'
+    schema_advanced: "Parameter contract (advanced)"
+    schema_toggle: "Edit JSON"
+    schema_hint: "Leave empty to derive it from the template fields. A controlled subset of JSON Schema is supported (type/properties/required/enum/minLength/pattern…)."
+    script_shebang_err: 'The script must start with #!'
+    loading: 'Loading templates…'
+    load_failed: 'Failed to load templates: '
+    empty: 'The backend returned no templates'
+    created: 'Capability created'
+    created_digest: 'Created · digest {digest}'
+  deploy:
+    col: 'Deployment'
+    status_applied: 'Deployed to {n}'
+    status_pending: 'Deploying to {n}'
+    status_failed: '{n} failed'
+    status_local: '{n} local variant(s)'
+    status_none: 'Not deployed'
+    status_unknown: '—'
+    btn: 'Deploy'
+    title: 'Deploy “{name}”'
+    subtitle: 'Tick machines or pick them by tag, then hit Deploy.'
+    pick_hint: 'Machines'
+    tag_pick: 'Pick by tag'
+    node_digest: 'Deployed {digest}'
+    node_none: 'Not deployed'
+    push: 'Deploy'
+    pushing: 'Deploying…'
+    close: 'Close'
+    undo: 'Remove'
+    undone: 'Deployment removed'
+    undo_failed: 'Remove failed: '
+    pushed: 'Pushed'
+    queued: 'Queued (node offline)'
+    queued_other: 'Queued'
+    nodes_failed: 'Could not load the node list, try again later'
+    result_title: 'Results'
+    none_selected: 'Select at least one machine'
+    no_nodes: 'This namespace has no nodes yet'
+    err: 'Deploy failed: '
   list:
     title: Capabilities
   form:
@@ -1191,6 +1248,10 @@ caps:
     schema_preserved: 'These cannot be edited visually and will be kept as-is:'
     schema_form_hint: Only uses keywords the backend supports (type / properties / required / enum / ranges). Switch to JSON for nested objects and arrays.
     err_schema_obj: paramsSchema must be a JSON object
+    timeout: 'Timeout (seconds)'
+    timeout_hint: '0 = no local timeout, rely on the hub lease'
+    err_invalid_name: 'Name must be 1–63 chars of lowercase letters, digits, dot, underscore or hyphen, starting with a letter or digit'
+    err_timeout: 'Timeout must be an integer between 0 and 86400'
   edges:
     title: Edges
     new: New edge
@@ -1238,9 +1299,9 @@ nodes:
     title: Nodes
   howto:
     title: How to connect a node
-    desc: 'Registration happens on this page: the token is shown once, and the authoritative config lives only in node.yaml on that machine.'
-    step1: 'Click "Register node" above for a one-time token, then save the node.yaml it gives you on that machine'
-    step2: 'Fill in capabilities (what that machine really runs), then start it on the node machine'
+    desc: 'Registration happens right here: the token is shown once, and the machine only needs one docker command — no config file at all.'
+    step1: 'Click “Register node” above for a one-time token, then paste the command it shows on that machine'
+    step2: 'Once the machine is online, deploy a capability from the Capabilities page'
   view_events: View events
   register:
     btn: 'Register node'
@@ -1250,7 +1311,7 @@ nodes:
     name_ph: 'e.g. my-mbp'
     name_hint: 'Lowercase letters, digits, dot (.), underscore (_) or hyphen (-) — 1–63 characters, starting with a letter or digit'
     instances: 'Instances (optional)'
-    instances_hint: 'How many instances to run on this machine — the value is written verbatim into instances: in node.yaml. The hub caps it at 20 (default 1).'
+    instances_hint: 'How many instances to run on this machine (a suggestion — the hub caps it at 20). The real slot count is reported by the agent when it connects.'
     submit: 'Register'
     cancel: 'Cancel'
     submitting: 'Registering…'
@@ -1259,9 +1320,14 @@ nodes:
     warn_once: 'This token is shown only once — it cannot be retrieved after you close this. If you lose it, delete the node and register it again.'
     token_title: 'One-time token'
     copy_token: 'Copy token'
-    yaml_title: 'node.yaml (ready to paste)'
-    copy_yaml: 'Copy YAML'
-    yaml_hint: 'Save it as node.yaml, replace capabilities with what this machine really runs, then run agent -f node.yaml'
+    cmd_title: "Start with one command (recommended)"
+    copy_cmd: "Copy command"
+    yaml_intro: "Or install the agent binary directly and use this node.yaml (four fields only: name / server / token / instances):"
+    yaml_title: 'Run this on the machine'
+    copy_yaml: 'Copy command'
+    yaml_hint: 'The token in this command is shown only once — lose it and you have to delete the node and register again.'
+    cmd_intro: 'Paste this command on the machine (no config file needed):'
+    cmd_after: 'Once the machine is online, deploy a capability from the Capabilities page and it starts working.'
     err:
       empty_name: 'Enter a node name first'
       invalid_name: 'Invalid name: lowercase letters, digits, dot (.), underscore (_) or hyphen (-) only, 1–63 characters, starting with a letter or digit'
@@ -1435,6 +1501,7 @@ edges:
   empty: 'Edge list is empty: incoming events have nowhere to go.'
   nomatch: No matching edges.
   created: Edge created
+  fanout: 'Fan-out ×{n}'
   removed: Edge deleted
   err_port: Port name is required
   err_self: A capability cannot connect to itself
@@ -1599,3 +1666,14 @@ pb:
     create_source: Create source
   yaml:
     hint: This is the snippet to add on the node side (only the missing capabilities). Paste it into node.yaml, restart the agent, and the node will declare it on connect.
+
+node:
+  artifacts:
+    title: 'Cached artifacts'
+    empty: 'No capability has been deployed to this machine yet'
+    load_failed: 'Failed to load artifacts'
+    state_applied: 'Applied'
+    state_pending: 'Pushing'
+    state_failed: 'Failed'
+    state_local: 'Local variant'
+    digest: 'digest'

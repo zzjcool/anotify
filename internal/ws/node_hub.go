@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -296,3 +297,35 @@ func assignFrameFor(task *store.Task) *AssignFrame {
 		MaxDuration: maxDuration,
 	}
 }
+
+// PublishDeploy 向节点推送一帧 deploy（下发或撤销一份产物）。
+//
+// 与 PublishAssign 的区别是**不做任何任务级护栏**：部署是幂等的配置动作，
+// 重复推同一份产物只是让节点把同样的内容再应用一遍（digest 内容寻址，
+// 落盘也是幂等的）。这里只有两条拒绝：
+//   - 节点没有活跃连接 → ErrNodeOffline（调用方据此标注「已排队」）
+//   - 跨命名空间 → 拒绝（与任务派发同一条不变量 I10/I11）
+//
+// 与 assign 一样，**中枢绝不执行产物**：这里只是把一段 JSON 转发给节点。
+func (h *NodeHub) PublishDeploy(namespaceID, nodeID string, f *DeployFrame) error {
+	s := h.current(nodeID)
+	if s == nil {
+		return ErrNodeOffline
+	}
+	if s.node.NamespaceID != namespaceID {
+		return fmt.Errorf("node %s belongs to another namespace", nodeID)
+	}
+	data, err := Encode(f)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deploySendTimeout)
+	defer cancel()
+	return s.sendBytes(ctx, data)
+}
+
+// deploySendTimeout 是单帧部署推送的写超时。
+//
+// 比 assign 宽松：产物最大 1 MiB（CONTRACT-artifact §4），在慢速链路上
+// 写一帧可能需要几秒；而部署不像任务派发那样有租约在倒计时。
+const deploySendTimeout = 30 * time.Second

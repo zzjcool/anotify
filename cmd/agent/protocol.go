@@ -21,10 +21,12 @@ type (
 	ackFrame       = ws.AckFrame
 	heartbeatFrame = ws.HeartbeatFrame
 	progressFrame  = ws.ProgressFrame
+	applyFrame     = ws.ApplyFrame
 
-	capabilityDecl = ws.CapabilityDecl
-	manifestDecl   = ws.ManifestDecl
-	instanceDecl   = ws.InstanceDecl
+	// appliedDecl 是「我缓存了什么」的陈述（v2 新增）。它**不是**能力声明：
+	// 中枢只拿它对账已部署的产物，不会凭它把能力归属给这台机器（裁决 D4）。
+	appliedDecl  = ws.AppliedDecl
+	instanceDecl = ws.InstanceDecl
 )
 
 // ---------- 下行帧（中枢 → 节点）----------
@@ -33,6 +35,7 @@ type (
 type (
 	welcomeFrame = ws.WelcomeFrame
 	assignFrame  = ws.AssignFrame
+	deployFrame  = ws.DeployFrame
 	cancelFrame  = ws.CancelFrame
 	errorFrame   = ws.ErrorFrame
 )
@@ -46,9 +49,11 @@ const (
 	frameTypeAck       = ws.NodeFrameAck
 	frameTypeProgress  = ws.NodeFrameProgress
 	frameTypeResult    = ws.NodeFrameResult
+	frameTypeApply     = ws.NodeFrameApply
 
 	frameTypeWelcome = ws.NodeFrameWelcome
 	frameTypeAssign  = ws.NodeFrameAssign
+	frameTypeDeploy  = ws.NodeFrameDeploy
 	frameTypeCancel  = ws.NodeFrameCancel
 	frameTypeError   = ws.NodeFrameError
 )
@@ -124,8 +129,8 @@ type decodeEnvelope struct {
 
 // decodeDownstream 把中枢发来的 JSON 解码成对应的下行帧。
 //
-// 返回 *welcomeFrame / *assignFrame / *cancelFrame / *errorFrame *别名* 指针
-// （即 *ws.WelcomeFrame 等）；类型未知返回 (&unknownFrame{Type: t}, nil)；
+// 返回 *welcomeFrame / *assignFrame / *deployFrame / *cancelFrame / *errorFrame
+// *别名* 指针（即 *ws.WelcomeFrame 等）；类型未知返回 (&unknownFrame{Type: t}, nil)；
 // JSON 本身坏了返回 error（对应 code=bad_frame 的接收侧处理）。
 func decodeDownstream(data []byte) (any, error) {
 	var env decodeEnvelope
@@ -143,6 +148,12 @@ func decodeDownstream(data []byte) (any, error) {
 		var f assignFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, fmt.Errorf("decode assign: %w", err)
+		}
+		return &f, nil
+	case frameTypeDeploy:
+		var f deployFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode deploy: %w", err)
 		}
 		return &f, nil
 	case frameTypeCancel:

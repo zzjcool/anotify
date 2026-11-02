@@ -6,23 +6,28 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // 本文件是 agent 的**连接与调度层**：dial → hello → 等 welcome → 心跳 + 读循环
-// （assign / cancel / error）→ 优雅退出。
+// （assign / deploy / cancel / error）→ 优雅退出。
 //
-// 边界（不变量 I1）：中枢不执行，也不告诉节点跑什么。这里只把 assign 帧里的
-// capability/version/params 翻成 job 交给 runner；**命令原文**只有本地 node.yaml
-// 一处来源（run.command），参数只走环境变量（见 runner.go）。
+// 边界（不变量 I1）：中枢不执行，也不告诉节点跑什么。assign 帧里只有
+// capability / version / params / digest / trace_id，**没有任何命令文本**；节点自己
+// 按 digest（或 name@version）去本地产物缓存（cache.go）里找到那份产物再执行。
+// 命令的唯一来源是控制台编译出来的产物，而产物是内容寻址（digest）、不可变的。
 //
 // 并发模型（契约 §3.4）：
-//   - 读：单 goroutine（serveNode 起的读循环），一帧一帧处理；
+//   - 读：单 goroutine（serveNode 起的读循环），一帧一帧处理（deploy 也在里面，
+//     同步做：见 apply.go 的注释）；
 //   - 写：全部经 send 串行化（coder/websocket 不允许并发写）；
 //   - 执行：每任务一个 goroutine，按能力用信号量限流（容量 cfg.taskLimit）；
 //   - 任务表（task_id → cancel）由 mutex 保护，供 cancel 帧查找。
@@ -52,8 +57,11 @@ const (
 	// minHeartbeatInterval 是心跳间隔下限：契约 §3.4.2 的 max(1s, heartbeatSec/2)
 	// 保证服务端 idle 判定里「至少两拍」不会因为配置过小而抖动。
 	minHeartbeatInterval = time.Second
-	// nodeReadLimit 是单帧读取上限：assign 帧只有 params，1 MiB 足够。
-	nodeReadLimit = 1 << 20
+	// nodeReadLimit 是单帧读取上限：assign 帧只有 params/digest，足够；
+	// deploy 帧带整份产物（服务端单产物上限 1 MiB + JSON 包装），所以放宽到 4 MiB。
+	// 超了会被 coder/websocket 用 1009 关连接，节点只看到「连接断了」——
+	// 那是排查成本最高的一类故障，宁给宽一点。
+	nodeReadLimit = 4 << 20
 )
 
 // errNodeConnClosed 是连接已关闭后继续写帧的返回值（只在内部使用）。
@@ -111,9 +119,10 @@ func dialNode(ctx context.Context, url, token string) (nodeConn, error) {
 
 // runNode 是进程级入口：连上中枢并跑到连接结束或进程退出。
 //
+// dataDir 是节点数据目录（产物缓存 + 工作目录的根，见 cache.go）。
 // 返回 nil 表示「按信号正常退出」；连接断开返回 connection closed（v1 不做退避重连，
 // 交给进程管理器重启）。
-func runNode(ctx context.Context, cfg *nodeConfig, log *slog.Logger, grace time.Duration) error {
+func runNode(ctx context.Context, cfg *nodeConfig, dataDir string, log *slog.Logger, grace time.Duration) error {
 	if cfg == nil {
 		return errors.New("runNode: nil node config")
 	}
@@ -134,10 +143,11 @@ func runNode(ctx context.Context, cfg *nodeConfig, log *slog.Logger, grace time.
 		"event", "agent.dialed",
 		"node", cfg.Name,
 		"url", url,
-		"capabilities", len(cfg.Capabilities),
 		"slots", cfg.slots(),
+		"data_dir", dataDir,
+		"cached", len(newCache(dataDir).applied()),
 	)
-	return serveNode(ctx, cfg, conn, log, grace)
+	return serveNode(ctx, cfg, conn, dataDir, log, grace)
 }
 
 // serveNode 是 runNode 的可测内核：给定一条已建立的连接，跑完整个生命周期。
@@ -150,7 +160,7 @@ func runNode(ctx context.Context, cfg *nodeConfig, log *slog.Logger, grace time.
 // 结构（契约 §11.1）：读循环在 goroutine 里，主 goroutine 只裁决「退出信号 vs
 // 连接断开」。读循环用 a.base 而不是父 ctx，所以父 ctx 取消**不会**把连接关掉，
 // drain 期间在跑任务仍能把 result 发出去。
-func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, log *slog.Logger, grace time.Duration) error {
+func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir string, log *slog.Logger, grace time.Duration) error {
 	if cfg == nil {
 		return errors.New("serveNode: nil node config")
 	}
@@ -161,7 +171,7 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, log *slog.Lo
 		log = slog.Default()
 	}
 
-	a := newNodeAgent(ctx, cfg, conn, log)
+	a := newNodeAgent(ctx, cfg, conn, dataDir, log)
 	// 收尾兜底（幂等，两个分支里已做过的事不会重复做）：先关连接——send 看到
 	// closed 就不会再碰连接，残留写被 writeMu 挡在外面；再断「连接自己的」ctx，
 	// 兜住残留任务。
@@ -183,6 +193,10 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, log *slog.Lo
 		"protocol", welcome.Protocol,
 		"heartbeat_sec", welcome.HeartbeatSec,
 		"lease_ttl_sec", welcome.LeaseTTLSec,
+		"data_dir", a.dataDir,
+		// 现扫一遍缓存：这一帧之后中枢对这台机器的认知就以此为据（D4），
+		// 日志里留一份同样的数字，排障时不用去猜「当时报了几条」。
+		"applied", len(a.cache.applied()),
 	)
 
 	// 心跳挂在**连接** ctx（a.base）上，不是父 ctx：drain 期间在跑任务还要把 result
@@ -258,6 +272,10 @@ type nodeAgent struct {
 	cfg  *nodeConfig
 	conn nodeConn
 	log  *slog.Logger
+	// cache 是本机的产物缓存（deploy 帧写、assign 帧读、hello.applied 扫它）。
+	cache *cache
+	// dataDir 是数据目录根（缓存与工作目录都在它下面）。
+	dataDir string
 
 	// parent 是进程级 ctx（SIGINT/SIGTERM 取消它）；base 是**连接自己的** ctx，
 	// 由 WithoutCancel 派生：父 ctx 取消只代表「要退出」，在跑任务还得收尾——
@@ -271,7 +289,7 @@ type nodeAgent struct {
 	writeMu sync.Mutex
 	closed  bool
 
-	// 每能力（cap@ver）一个信号量：容量 = cfg.taskLimit(spec)。
+	// 每能力（cap@ver）一个信号量：容量 = cfg.taskLimit()（= 槽位数）。
 	semMu sync.Mutex
 	sems  map[string]chan struct{}
 
@@ -290,17 +308,24 @@ type nodeAgent struct {
 	draining atomic.Bool
 }
 
-func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, log *slog.Logger) *nodeAgent {
+func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDir string, log *slog.Logger) *nodeAgent {
+	// 空数据目录退到系统临时目录：生产路径上 run() 一定给了绝对路径，
+	// 这里只是不让「传空」变成「往当前目录写 artifacts/」（那是最难查的一类脏）。
+	if strings.TrimSpace(dataDir) == "" {
+		dataDir = filepath.Join(os.TempDir(), "anotify")
+	}
 	base, cancel := context.WithCancel(context.WithoutCancel(parent))
 	return &nodeAgent{
-		cfg:    cfg,
-		conn:   conn,
-		log:    log,
-		parent: parent,
-		base:   base,
-		cancel: cancel,
-		sems:   make(map[string]chan struct{}),
-		tasks:  make(map[string]*taskCancel),
+		cfg:     cfg,
+		conn:    conn,
+		log:     log,
+		cache:   newCache(dataDir),
+		dataDir: dataDir,
+		parent:  parent,
+		base:    base,
+		cancel:  cancel,
+		sems:    make(map[string]chan struct{}),
+		tasks:   make(map[string]*taskCancel),
 	}
 }
 
@@ -361,14 +386,18 @@ func (a *nodeAgent) closeConn() {
 
 // handshake 发 hello 并等 welcome。
 //
-// 期间收到 error 帧 = 中枢拒绝（令牌/能力/manifest 不合规），必须作为**失败**返回：
-// 契约 §3.4.1 的错误文案是运维唯一能看懂的线索，逐字固定。
+// hello 里带 applied[]（本机缓存了哪些产物）：中枢靠它全量对账 node_capabilities
+// （裁决 D4）——所以缓存状态是**每次握手现扫的**，不存内存副本。
+//
+// 期间收到 error 帧 = 中枢拒绝（令牌/节点名/实例数不合规，或 applied 里出现了
+// 中枢不认识的能力），必须作为**失败**返回：契约 §3.4.1 的错误文案是运维唯一
+// 能看懂的线索，逐字固定。
 //
 // 读的 ctx 用**父 ctx**（契约 §11.1 第 3 条）：握手阶段还没有要保全的 result，
 // 父 ctx 取消时直接放弃握手是对的（调用方把 ctx.Err() 当「正常退出」处理）。
 // 一旦握手成功，读就必须换成 a.base（见 readLoop）。
 func (a *nodeAgent) handshake(ctx context.Context) (*welcomeFrame, error) {
-	if err := a.send(a.cfg.hello()); err != nil {
+	if err := a.sendHello(); err != nil {
 		return nil, fmt.Errorf("send hello: %w", err)
 	}
 
@@ -440,6 +469,16 @@ func (a *nodeAgent) readLoop(ctx context.Context) error {
 		switch f := frame.(type) {
 		case *assignFrame:
 			a.handleAssign(f)
+		case *deployFrame:
+			// 部署同步做（不扔 goroutine）：同一连接上 deploy 与 assign 的先后顺序
+			// 才确定——中枢推完 deploy 立刻派单时，缓存一定已经可读。
+			if err := a.handleDeploy(ctx, f); err != nil {
+				// 只有「没能告诉中枢结果」（写失败 / 连接已断）会走到这里；
+				// 部署本身的失败已经写进 apply 帧的 reason 里了（见 apply.go）。
+				a.log.Warn("deploy handling failed",
+					"event", "agent.deploy.failed",
+					"deploy_id", f.DeployID, "error", err.Error())
+			}
 		case *cancelFrame:
 			a.handleCancel(f)
 		case *errorFrame:
@@ -489,13 +528,28 @@ func (a *nodeAgent) handleAssign(f *assignFrame) {
 		return
 	}
 
-	spec, ok := a.cfg.lookup(f.Capability, f.Version)
+	art, digest, ok := a.resolveArtifact(f)
 	if !ok {
 		// 已 ack 却跑不了：必须回 failed，否则中枢要等租约到期（契约 §3.4.3）。
 		a.startUnrunnable(f)
 		return
 	}
-	a.startTask(f, spec)
+	a.startTask(f, art, digest)
+}
+
+// resolveArtifact 找到本次任务要跑的那份产物。
+//
+// 优先按 assign.Digest（中枢指明了「就跑这一份」，能钉死在审计过的那版上）；
+// 缺省按 capability@version 查索引（中枢没给 digest 的旧路径）。
+//
+// 第二个返回值是 cache 里**重新算出来**的 digest（而不是 assign 里那个字符串），
+// 所以 ANOTIFY_DIGEST 永远是真正在跑的那份内容的哈希：用户手改过缓存里的产物时，
+// 脚本里看到的就是改后的那版（同时中枢会在下次 hello 里发现本地变体）。
+func (a *nodeAgent) resolveArtifact(f *assignFrame) (*artifact.Artifact, string, bool) {
+	if f.Digest != "" {
+		return a.cache.getByDigest(f.Digest)
+	}
+	return a.cache.get(f.Capability, f.Version)
 }
 
 // ignoreAssign 记下「这单没接」：没 ack → 中枢靠租约到期回收重派。
@@ -524,12 +578,16 @@ func (a *nodeAgent) reserveTask() bool {
 // releaseTask 归还 reserveTask 占下的名额（任务没起来时用）。
 func (a *nodeAgent) releaseTask() { a.wg.Done() }
 
-// startUnrunnable 收回「没有 run 映射」的派单：result failed。
+// startUnrunnable 收回「本地没有这份产物」的派单：result failed。
+//
+// 文案固定为 `no artifact for <cap>@<ver>`：中枢/运维要能一眼区分「节点没接单」
+// 与「节点接了但没有这份产物」（后者通常意味着部署还没生效、或缓存被清过）。
 func (a *nodeAgent) startUnrunnable(f *assignFrame) {
-	errText := fmt.Sprintf("no run spec for %s@%d", f.Capability, f.Version)
-	a.log.Warn("assign without run spec",
-		"event", "agent.assign.no_run_spec",
-		"task_id", f.TaskID, "capability", f.Capability, "version", f.Version)
+	errText := fmt.Sprintf("no artifact for %s@%d", f.Capability, f.Version)
+	a.log.Warn("assign without cached artifact",
+		"event", "agent.assign.no_artifact",
+		"task_id", f.TaskID, "capability", f.Capability, "version", f.Version,
+		"digest", f.Digest)
 
 	// 名额已在 handleAssign 里占好（reserveTask）：这里只负责还。
 	go func() {
@@ -543,7 +601,7 @@ func (a *nodeAgent) startUnrunnable(f *assignFrame) {
 }
 
 // startTask 起一个任务 goroutine：信号量 → runJob → result。
-func (a *nodeAgent) startTask(f *assignFrame, spec *runSpec) {
+func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest string) {
 	jctx, cancel := context.WithCancel(a.base)
 	handle := &taskCancel{cancel: cancel}
 
@@ -558,14 +616,17 @@ func (a *nodeAgent) startTask(f *assignFrame, spec *runSpec) {
 		old.cancel()
 	}
 
-	sem := a.semaphore(f.Capability, f.Version, a.cfg.taskLimit(spec))
+	sem := a.semaphore(f.Capability, f.Version, a.cfg.taskLimit())
 	j := job{
 		TaskID:      f.TaskID,
 		Capability:  f.Capability,
 		Version:     f.Version,
 		Params:      f.Params,
-		Spec:        spec,
+		Artifact:    art,
+		Digest:      digest,
+		TraceID:     f.TraceID,
 		MaxDuration: f.MaxDuration,
+		WorkRoot:    a.cache.workRoot(),
 	}
 
 	// 名额已在 handleAssign 里占好（reserveTask）：这里只负责还。
@@ -574,7 +635,7 @@ func (a *nodeAgent) startTask(f *assignFrame, spec *runSpec) {
 		defer a.untrackTask(f.TaskID, handle)
 		defer cancel()
 
-		// 每个能力一个信号量：容量 = cfg.taskLimit(spec)（slots × concurrency）。
+		// 每个能力一个信号量：容量 = cfg.taskLimit()（= 槽位数，见 config.go）。
 		select {
 		case sem <- struct{}{}:
 			defer func() { <-sem }()
@@ -597,8 +658,10 @@ func (a *nodeAgent) startTask(f *assignFrame, spec *runSpec) {
 			"task_id", f.TaskID,
 			"capability", f.Capability,
 			"version", f.Version,
+			"digest", digest,
 			"status", out.Status,
 			"elapsed", time.Since(startAt),
+			"workdir", out.WorkDir,
 			"summary", out.Summary,
 			"error", out.Err,
 		)
@@ -691,10 +754,10 @@ func (a *nodeAgent) semaphore(capability string, version, limit int) chan struct
 
 // sendResult 发 result 帧。
 //
-// out 透传 outcome.Out（契约 I5 三态）：runner 只在「任务成功且 node.yaml 声明了 run.out」
-// 时给它设值 —— 非 nil → 帧里带 "out":"<出口名>"（服务端 Reported()==true，按边
-// from_port 派下一跳）；nil → 帧里**没有** out 键（没回报出口：没声明 run.out，
-// 或任务没成功/超时/取消）。
+// out 透传 outcome.Out（契约 I5 三态）：v2 的节点**恒不回报出口**（来源是契约
+// 空白，见 runner.go 文件头），所以帧里没有 out 键 → 服务端按「分支终止」处理。
+// plumbing 一字未改：等契约定义「脚本怎么告诉节点走哪个出口」之后，
+// 只需在 runner 里给 outcome.Out 赋值，这里和三态测试都不用动。
 func (a *nodeAgent) sendResult(taskID string, out outcome) {
 	frame := &resultFrame{
 		Type:      frameTypeResult,

@@ -173,10 +173,23 @@ export function seedNodeRows(
 	return { id: nodeId, token };
 }
 
-// nodeHello 构造 hello 帧。
+// PLACEHOLDER_DIGEST 是 e2e 用的占位 digest。
+//
+// 协议 v2（console-declares）里 hello 不再自报能力，只陈述「我缓存了哪些产物」，
+// 而产物由 digest 标识。e2e 的大部分套件并不真的部署产物（它们只关心「这个节点
+// 参不参与派发」），所以用一个固定的占位 digest 就够：中枢侧对账时找不到对应的
+// deployment 行 → 只写 node_capabilities，不改任何部署状态。
+export const PLACEHOLDER_DIGEST = "sha256:" + "0".repeat(64);
+
+// nodeHello 构造 hello 帧（协议 v2）。
+//
 // #210：同样在入口校验 —— hello 里 cap.name/cap.version 是 undefined 时服务端只会
 // 回一个语义模糊的 error 帧，看起来像「能力没注册」，实际是造数时就没拿到 id/name。
-export function nodeHello(nodeId, caps = [], slots = 1, protocol = 1) {
+//
+// **v2 语义**：`caps` 现在表达的是 applied[]（「我缓存了哪些产物」），
+// 不再是「我会跑什么」。能力归属只由控制台的部署派生（契约 D4），
+// 所以这些名字必须本来就已在服务端定义过，否则整帧被 unknown_capability 拒绝。
+export function nodeHello(nodeId, caps = [], slots = 1, protocol = 2) {
 	needText("nodeHello", "nodeId", nodeId);
 	needCapList("nodeHello", "caps", caps, { requireId: false });
 	needCount("nodeHello", "slots", slots);
@@ -185,7 +198,11 @@ export function nodeHello(nodeId, caps = [], slots = 1, protocol = 1) {
 		type: "hello",
 		node_id: nodeId,
 		protocol,
-		capabilities: caps.map((c) => ({ capability: c.name, version: c.version })),
+		applied: caps.map((c) => ({
+			capability: c.name,
+			version: c.version,
+			digest: c.digest || PLACEHOLDER_DIGEST,
+		})),
 		instances: Array.from({ length: slots }, (_, i) => ({ slot: i, concurrency: 1 })),
 	};
 }

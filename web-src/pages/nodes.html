@@ -170,17 +170,40 @@
 
           <div class="mt-4">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs text-zinc-400">{{t "nodes.register.cmd_title"}}</span>
+              <button id="reg-cmd-copy" type="button" class="copy-btn">
+                {{t "nodes.register.copy_cmd"}}
+              </button>
+            </div>
+            <!-- 首选：一条能直接粘的 docker 命令。节点侧不需要任何配置文件，
+                 令牌只以 -e ANOTIFY_TOKEN 的形式出现。 -->
+            <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.cmd_intro"}}
+            </p>
+            <div class="code-block">
+              <pre class="code-body"><code id="reg-cmd"></code></pre>
+            </div>
+            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.cmd_after"}}
+            </p>
+          </div>
+
+          <div class="mt-4">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
               <span class="text-xs text-zinc-400">{{t "nodes.register.yaml_title"}}</span>
               <button id="reg-yaml-copy" type="button" class="copy-btn">
                 {{t "nodes.register.copy_yaml"}}
               </button>
             </div>
+            <!-- 备选：直接把 agent 二进制装在机器上。四件 bootstrap（name/server/token/
+                 instances）是 v2 **唯一**保留的本地配置 —— 能力和它们的实现都已经不在
+                 机器上了，由控制台部署。 -->
+            <p class="mb-2 text-[11px] leading-relaxed text-zinc-500">
+              {{t "nodes.register.yaml_intro"}}
+            </p>
             <div class="code-block">
               <pre class="code-body"><code id="reg-yaml"></code></pre>
             </div>
-            <p class="mt-2 text-[11px] leading-relaxed text-zinc-500">
-              {{t "nodes.register.yaml_hint"}}
-            </p>
           </div>
 
           <div class="mt-4">
@@ -209,7 +232,7 @@
           </p>
           <pre class="code-block"><code># {{t "nodes.howto.step1"}}
 # {{t "nodes.howto.step2"}}
-agent -f node.yaml</code></pre>
+docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-agent:latest</code></pre>
         </div>
       </div>
       <div id="toast" class="toast"></div>
@@ -501,6 +524,7 @@ agent -f node.yaml</code></pre>
       // 清空结果块。令牌是从 DOM 里**删掉**的（textContent = ""），不是藏起来。
       function regClearResult() {
         regEl("reg-token").textContent = "";
+        regEl("reg-cmd").textContent = "";
         regEl("reg-yaml").textContent = "";
         regEl("reg-result-title").textContent = "";
         regEl("reg-warning").textContent = "";
@@ -512,32 +536,48 @@ agent -f node.yaml</code></pre>
         regEl("reg-instances").value = "1";
       }
 
-      // node.yaml 生成。形状以 #197 修好的 playbook.html yamlFor() + cmd/agent/config.go 为准：
-      //   顶层只有 name/server/token/instances/capabilities，**没有** node: 包装；
-      //   capabilities 下给一条**注释**示例（真后端会拒未定义能力），其中 run 必须是
-      //   映射（`run:` 单独一行、runner 缩进在其下）。写成 `run: bash` 标量或
-      //   `timeout_sec` 会让 agent 立刻解析失败 —— 退回去等于功能坏掉。
-      function yamlForNode(node, token, instances) {
-        return [
-          "# node.yaml —— 节点侧唯一声明入口",
-          "# 1) 把 capabilities 换成这台机器真会跑的能力（下面有示例注释）",
-          "# 2) 然后执行：agent -f node.yaml",
-          "# token 只显示这一次（中枢只存 sha256），丢了就删掉节点重新注册",
-          "name: " + ((node && node.name) || ""),
-          // server 用当前 origin：用户从哪个地址打开页面，节点就回连哪个中枢。
-          "server: " + location.origin,
-          "token: " + (token || ""),
-          "instances: " + instances,
-          "capabilities:",
-          "  # 一条能力声明长这样（去掉 # 后换成你的能力名与命令）：",
-          "  # - capability: analyze-pr",
-          "  #   version: 1",
-          "  #   run:",
-          "  #     runner: bash",
-          "  #     command: |",
-          "  #       echo replace-me",
-          "  #     timeoutSec: 30",
-        ].join("\n");
+      // 节点侧镜像：与 cmd/agent 的官方跑法一致，agent 从 ANOTIFY_TOKEN 环境变量读令牌。
+      const AGENT_IMAGE = "ghcr.io/zzjcool/anotify-agent:latest";
+
+      // 成功面板给的是**一行能直接粘的 docker 命令**：容器里没有 node.yaml 可指，
+      // 四件 bootstrap 全部走 -e（cmd/agent/config.go:configFromEnv 认这几个名字）。
+      //
+      // 注意返回值里内联的是**真实令牌**，所以它只能写进 #reg-cmd 的 textContent，
+      // 不许落到 localStorage / console / 日志（见上面那三条纪律）。
+      function agentDockerCmd(token, server, name, instances) {
+        // ANOTIFY_SERVER 必带：容器里 agent 猜不到中枢地址，猜错的表现是
+        // 「启动成功但一直连不上」，比启动失败难查十倍。
+        let cmd =
+          "docker run -d --restart=always " +
+          "-e ANOTIFY_SERVER=" + (server || "") + " " +
+          "-e ANOTIFY_TOKEN=" + (token || "") + " ";
+        // 名字与槽位数只在用户真的填了「非缺省」时才带：命令越短越不容易贴错，
+        // 而缺省值（主机名 / 1 个槽位）由 agent 自己兜。
+        if (name) cmd += "-e ANOTIFY_NAME=" + name + " ";
+        // 槽位数是**节点自己的资源声明**（契约 D5）：中枢只能少用、不能多用。
+        // 不带这一项 = 用 agent 的缺省（1 个槽位），用户填了 4 却只跑 1 个
+        // 会表现成「机器闲着但任务排队」，所以填了就必须带上。
+        if (instances && Number(instances) > 1) {
+          cmd += "-e ANOTIFY_INSTANCES=" + instances + " ";
+        }
+        return cmd + AGENT_IMAGE;
+      }
+
+      // node.yaml 是**直接装 agent 二进制**那条路的配置：v2 只剩 bootstrap 四件。
+      //
+      // 为什么两条路都给：docker 一行命令门槛最低，但「机器上已经有 Go/Python 生态、
+      // 不想装 docker」也完全合理；而且这份 YAML 是**可审计**的（能进 git、能 diff），
+      // 只给 docker 命令会让这类用户没有出口。
+      //
+      // 键名与 cmd/agent/config.go 的 yaml tag 一一对应（name/server/token/instances），
+      // 多一个键就是未知字段 → agent 启动直接失败。
+      function agentNodeYaml(token, name, instances, server) {
+        return (
+          "name: " + (name || "") + "\n" +
+          "server: " + (server || "") + "\n" +
+          "token: " + (token || "") + "\n" +
+          "instances: " + (instances || 1) + "\n"
+        );
       }
 
       // 错误映射：先说人话，状态码只是细分。
@@ -568,7 +608,15 @@ agent -f node.yaml</code></pre>
         );
       }
 
-      function showRegisterResult(node, token, name, instances) {
+      // instancesFromPanel 读注册面板上用户填的槽位数（提交后面板会被隐藏，
+      // 所以值必须从输入框读，而不是从"当前值"重新推）。
+      function instancesFromPanel() {
+        const parsed = parseInt(regEl("reg-instances").value, 10);
+        if (isNaN(parsed)) return 1;
+        return Math.min(Math.max(parsed, 1), REG_MAX_INSTANCES);
+      }
+
+      function showRegisterResult(node, token, name) {
         regEl("reg-result-title").textContent = t(
           "nodes.register.done",
           "节点「{name}」已注册",
@@ -578,7 +626,19 @@ agent -f node.yaml</code></pre>
           "令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。",
         );
         regEl("reg-token").textContent = token;
-        regEl("reg-yaml").textContent = yamlForNode(node, token, instances);
+        // 两个块都用 201 响应体里的真令牌填：用户复制就能跑
+        regEl("reg-cmd").textContent = agentDockerCmd(
+          token,
+          window.location.origin,
+          (node && node.name) || name,
+          instancesFromPanel(),
+        );
+        regEl("reg-yaml").textContent = agentNodeYaml(
+          token,
+          (node && node.name) || name,
+          instancesFromPanel(),
+          window.location.origin,
+        );
         regHide("register-panel", true);
         regHide("reg-result", false);
       }
@@ -590,11 +650,11 @@ agent -f node.yaml</code></pre>
         if (btn.disabled) return;
         const name = (regEl("reg-name").value || "").trim();
         const parsed = parseInt(regEl("reg-instances").value, 10);
-        // instances 会**原样写进 node.yaml**，所以必须夹到中枢硬顶 [1,20]：
-        // 后端注册时只校验非负（不落库），真正的上限在握手时生效——超了节点
-        // 永远连不上，那时页面早已显示"注册成功"，用户完全没有线索。
-        // 下限取 1 是为了对齐 cmd/agent 的 slots()（<=0 一律记 1 个槽位），
-        // 否则 YAML 里的 instances: 0 与实际槽位数不一致。
+        // instances 是注册时的**建议值**：中枢只做非负校验、不落库（真槽位数由 agent
+        // hello 时申报，见 cmd/agent 的 slots()）。仍然夹到 [1,20]：超了中枢硬顶
+        // （store.DefaultMaxInstances = 20）的节点握手会被 too_many_instances 拒，
+        // 永远上不了线，而那时页面早已显示"注册成功"，用户完全没有线索。
+        // 下限取 1 对齐 slots()（<=0 一律记 1 个槽位）。
         const instances = !isNaN(parsed)
           ? Math.min(Math.max(parsed, 1), REG_MAX_INSTANCES)
           : 1;
@@ -621,7 +681,7 @@ agent -f node.yaml</code></pre>
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name, instances }),
           });
-          showRegisterResult(res && res.node, (res && res.token) || "", name, instances);
+          showRegisterResult(res && res.node, (res && res.token) || "", name);
           regResetInputs();
           // 列表里要出现刚注册的那台（offline）：注册成功 ≠ 已上线。
           loadAll();
@@ -666,6 +726,7 @@ agent -f node.yaml</code></pre>
         regEl("reg-cancel").addEventListener("click", closeRegister);
         regEl("reg-close").addEventListener("click", closeRegister);
         regWireCopy("reg-token-copy", "reg-token");
+        regWireCopy("reg-cmd-copy", "reg-cmd");
         regWireCopy("reg-yaml-copy", "reg-yaml");
         // 回车提交（没有 <form>，避免默认 submit 把页面刷掉）。
         regEl("reg-name").addEventListener("keydown", (e) => {

@@ -705,3 +705,48 @@ ANALYZE tasks;
 -- TestPendingBacklogIndexUsedAfterLegacyUpgrade（**不**自己跑 ANALYZE，统计全由产品路径产生）。
 CREATE INDEX IF NOT EXISTS idx_tasks_pending_created_at
     ON tasks(created_at) WHERE status = 'pending';
+
+-- +migration 18 deployment_model
+--
+-- 部署模型（console-declares epic）：能力归属从「节点自报」改为「控制台部署的派生」。
+--
+-- artifacts —— 一份能力产物的不可变快照。
+--   digest 是内容寻址标识（sha256:<64 hex>），spec 是 canonical JSON
+--  （格式见 .pi-orchestrator/console-declares/CONTRACT-artifact.md §2）。
+--   UNIQUE(namespace_id, digest) 表达「同一份产物只有一个身份」：内容一样的产物
+--   重复部署不会产生第二行，digest 也就永远不会指向两份不同的内容。
+--
+-- deployments —— 「控制台希望某台节点拥有某份产物」（desired）+「节点回报的状态」
+--   （observed，就是 state/reason 两列）。写者纪律（CONTRACT-protocol §7）：
+--     · 建行/删行只有控制台 API 会做；
+--     · state / reason / updated_at 只有节点帧（apply）与 hello 对账会写。
+--   两边不得碰对方的列 —— 这是「不产生第二个真相源」的全部机制。
+--
+-- state 取值：pending | applied | failed | local
+--   local = 节点上该能力的 digest 与 desired 不一致（用户手改过，即「本地变体」）。
+--   中枢永不覆盖 local，UI 必须标黄而不是打绿勾。
+CREATE TABLE IF NOT EXISTS artifacts (
+    id            TEXT PRIMARY KEY,
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    digest        TEXT NOT NULL,
+    spec          TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    UNIQUE (namespace_id, digest)
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_cap ON artifacts(capability_id);
+
+CREATE TABLE IF NOT EXISTS deployments (
+    id           TEXT PRIMARY KEY,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    artifact_id  TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    digest       TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'pending',
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    UNIQUE (node_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_deploy_node ON deployments(node_id);
+CREATE INDEX IF NOT EXISTS idx_deploy_artifact ON deployments(artifact_id);

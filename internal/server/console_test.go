@@ -92,6 +92,14 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(h.nodes))))
 	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(h.nodeByID))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(h.drainNode))))
+	// 部署模型端点（console-declares epic，契约 CONTRACT-protocol §11）。
+	// 与生产 mux 的接线一致：hub 不注入 = 没有连接层，部署仍会建行但 pushed=false。
+	depH := &deployHandler{db: db, console: h}
+	mux.Handle("GET /v1/capability-templates", noStore(sessMW(http.HandlerFunc(depH.capabilityTemplates))))
+	mux.Handle("GET /v1/artifacts", noStore(sessMW(http.HandlerFunc(depH.artifacts))))
+	mux.Handle("GET /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
+	mux.Handle("POST /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
+	mux.Handle("DELETE /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
 
 	return &consoleEnv{
 		mux: mux, db: db, svc: svc, userID: uid, nsID: nsID,
@@ -658,14 +666,9 @@ func TestNodeDetail(t *testing.T) {
 	if caps, _ := obj["capabilities"].([]any); len(caps) != 1 {
 		t.Fatalf("capabilities = %v", obj["capabilities"])
 	}
-	// 老路径（无 manifest）声明：runSpec 必须是空对象，而不是 null/缺失（#168 / I9）
-	detailCaps, _ := obj["capabilities"].([]any)
-	if cap0, _ := detailCaps[0].(map[string]any); cap0 != nil {
-		runSpec, ok := cap0["runSpec"].(map[string]any)
-		if !ok || len(runSpec) != 0 {
-			t.Fatalf("未声明执行方式时 runSpec 应为 {}，cap=%v", cap0)
-		}
-	}
+	// 为什么这里不再断言 runSpec：v2 的 node_capabilities 没有 run_spec 列（迁移 18），
+	// 中枢手上不再有任何「节点怎么跑」的信息，节点视图里自然也没有 runSpec 字段。
+	// 「capabilities[] 的元素形状」由 TestNodeDetailCapabilities 逐字段钉住。
 
 	// 逐槽细节：两个槽、各自的并发额度、当前都空闲
 	insts, _ := m["instances"].([]any)
@@ -696,29 +699,36 @@ func TestNodeDetail(t *testing.T) {
 	}
 }
 
-// TestNodeDetailRunSpec 节点上报的执行方式在控制台读出（#168 必测 8）。
+// TestNodeDetailCapabilities 节点详情/列表里的能力 == 中枢部署给它的产物（契约 D4）。
 //
-// 两件事同时钉住：
-//   - 带 run 的能力：`capabilities[].runSpec.command` 原样可读（展示/排障的唯一用途）
-//   - 没声明 run 的能力：`runSpec` 是 `{}`（而不是 null / 缺失）
+// 这条用例的前身是 TestNodeDetailRunSpec，钉的是「节点上报的 runSpec 在控制台可读」。
+// v2 把执行方式从 node_capabilities 整列删掉（迁移 18）：中枢既不持有、也不展示
+// 「节点打算怎么跑」，执行方式只存在于产物里（GET /v1/artifacts 的 spec）。
+// 所以断言换成两条，力度不减：
+//  1. 归属照旧可读（id / name@version / displayName），且 list 与 detail 完全一致
+//     —— 这是节点页唯一的「这台机器能跑什么」来源；
+//  2. `runSpec` 字段**不存在**（不是空对象）：留着它，前端就会继续读一个假的真相源。
 //
 // list 与 detail 共用 viewFor，所以两处都必须一致。
-func TestNodeDetailRunSpec(t *testing.T) {
+func TestNodeDetailCapabilities(t *testing.T) {
 	env := newConsoleEnv(t)
 	ctx := context.Background()
-	env.seedCapability(t, "review", 1, []string{"fix"})
+	review := env.seedCapability(t, "review", 1, []string{"fix"})
 	env.seedCapability(t, "test", 1, nil)
+	if err := env.db.SetCapabilityDisplayName(ctx, env.nsID, review.ID, "PR 审查"); err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
 
-	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-runspec"}
+	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-caps"}
 	if _, err := env.db.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	run := `{"runner":"bash","command":"./runners/review.sh","timeoutSec":900,"concurrency":2,"env":{"LOG_LEVEL":"info"}}`
-	if _, err := env.db.ConfirmCapabilityDecls(ctx, env.nsID, node.ID, []store.CapabilityDecl{
-		{Name: "review", Version: 1, Run: json.RawMessage(run), RunRequired: true},
-		{Name: "test", Version: 1}, // manifest 里没写这一项
+	// 归属走 v2 的对账入口（hello.applied[] 的落库路径）
+	if _, err := env.db.ReconcileApplied(ctx, env.nsID, node.ID, []store.AppliedRef{
+		{Name: "review", Version: 1, Digest: "sha256:aaaa"},
+		{Name: "test", Version: 1, Digest: "sha256:bbbb"},
 	}); err != nil {
-		t.Fatalf("confirm decls: %v", err)
+		t.Fatalf("reconcile applied: %v", err)
 	}
 
 	getCap := func(path string, extract func(map[string]any) []any) map[string]map[string]any {
@@ -766,25 +776,29 @@ func TestNodeDetailRunSpec(t *testing.T) {
 	for _, c := range checks {
 		byName := getCap(c.path, c.caps)
 
-		runSpec, _ := byName["review"]["runSpec"].(map[string]any)
-		if runSpec == nil {
-			t.Fatalf("GET %s: review runSpec 丢了：%v", c.path, byName["review"])
+		// ① 归属可读：id / name@version / displayName 三件套
+		got := byName["review"]
+		if id, _ := got["id"].(string); id != review.ID {
+			t.Fatalf("GET %s: review.id = %v, want %s（前端靠它点进能力详情）", c.path, got["id"], review.ID)
 		}
-		// 原文可读：节点写的是什么，控制台就看得见什么（不改写、不隐藏）
-		if got, _ := runSpec["command"].(string); got != "./runners/review.sh" {
-			t.Fatalf("GET %s: runSpec.command = %v, want ./runners/review.sh", c.path, runSpec["command"])
+		if v, _ := got["version"].(float64); v != 1 {
+			t.Fatalf("GET %s: review.version = %v, want 1", c.path, got["version"])
 		}
-		if got, _ := runSpec["timeoutSec"].(float64); got != 900 {
-			t.Fatalf("GET %s: runSpec.timeoutSec = %v, want 900", c.path, runSpec["timeoutSec"])
-		}
-		if got, _ := runSpec["runner"].(string); got != "bash" {
-			t.Fatalf("GET %s: runSpec.runner = %v, want bash", c.path, runSpec["runner"])
+		// displayName 字段必须在（前端读的就是这个 key），但**不断言值**：
+		// 产品侧 prefixedCapabilityColumns（internal/store/node.go）没有 select
+		// display_name，所以这个字段目前恒为 ""。这是既有 bug（与本 epic 无关，
+		// 已上报），修好后这里要改成断言真实显示名——不要为了让用例变绿就把值
+		// 钉成 ""（那会把 bug 固化成契约）。
+		if _, exists := got["displayName"]; !exists {
+			t.Fatalf("GET %s: 能力视图缺 displayName 字段: %v", c.path, got)
 		}
 
-		// 未声明 → 空对象，不是 null/缺失（前端不用写两套判空）
-		testSpec, ok := byName["test"]["runSpec"].(map[string]any)
-		if !ok || len(testSpec) != 0 {
-			t.Fatalf("GET %s: 未声明执行方式时 runSpec 应为 {}，got %v", c.path, byName["test"]["runSpec"])
+		// ② runSpec 必须整个消失（v2：中枢不持有任何「怎么跑」的信息）
+		for _, name := range []string{"review", "test"} {
+			if _, exists := byName[name]["runSpec"]; exists {
+				t.Fatalf("GET %s: %s 仍带 runSpec=%v（中枢不该再展示执行方式）",
+					c.path, name, byName[name]["runSpec"])
+			}
 		}
 	}
 }

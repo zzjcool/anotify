@@ -181,7 +181,7 @@ func TestResultPersistsNextHopRowBeforePublish(t *testing.T) {
 	fake.setDB(f.db)
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	parent := f.makeAssignedTask(t, "trace_140_crash")
@@ -266,7 +266,7 @@ func TestResultNextHopChildIsInSameTransaction(t *testing.T) {
 	fake.setDB(f.db)
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	parent := f.makeAssignedTask(t, "trace_140_same_tx")
@@ -335,7 +335,7 @@ func TestResultRollsBackWhenNextHopRowRejected(t *testing.T) {
 	fake.setDB(f.db)
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	parent := f.makeAssignedTask(t, "trace_140_rollback")
@@ -390,7 +390,7 @@ func TestResultWithoutNextHopUnchanged(t *testing.T) {
 	f := newNodeFixture(t) // 故意不设 NextHop
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	parent := f.makeAssignedTask(t, "trace_140_no_next_hop")
@@ -432,7 +432,7 @@ func TestResultPlanFailureLeavesNoTerminalState(t *testing.T) {
 	fake.setDB(f.db)
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	parent := f.makeAssignedTask(t, "trace_140_plan_fail")
