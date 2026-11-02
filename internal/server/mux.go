@@ -149,6 +149,13 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 节点连接注册表：派发器通过它把 assign 帧推给节点。
 	// 必须在 eventH 之前创建——派发器需要它作为 Publisher。
 	nodeHub := ws.NewNodeHub()
+	// workDir 解析器必须接在**这一个** hub 上（迁移 19）：它是派发器用的那个，
+	// 而被赋给 nodeH.Hub 的也是它（见下面的 ws.NewNodeHandler + nodeH.Hub = nodeHub）。
+	//
+	// 踩过的坑：只把解析器接在 NewNodeHandler 内部创建的 hub 上，然后 nodeH.Hub 被
+	// 这里新建的 nodeHub 覆盖 —— 解析器随旧 hub 一起被丢掉，assign 帧永远不带
+	// work_dir，而所有单测都是直接操作 handler 的 hub，所以全绿。
+	nodeHub.WorkDirs = db
 
 	// 事件入口（#58）：触发器 + 派发器
 	// 派发器带 Publisher，这样「派发成功」包含「assign 帧真的推出去了」，
