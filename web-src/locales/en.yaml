@@ -273,6 +273,9 @@ message:
     not_found: Message not found or has been cleaned up
   task_title: Task Detail
   chain_title: Task Chain
+  back_events: Back to events
+  missing_id_hint: Deep links must carry a task id, for example message.html?id=tsk_xxx.
+  not_found_hint: This task does not exist — it may have been cleaned up, or it belongs to another namespace.
   task_state:
     pending: Queued
     assigned: Assigned
@@ -675,6 +678,11 @@ docs:
   title: Integration Docs
   subtitle: Agent reporting · Web Push · WebSocket
   toc_heading: On this page
+  table:
+    method: Method
+    path: Path
+    desc: Description
+  back_top: Back to top
   toc:
     agent: Connect Agent
     api: API overview
@@ -688,6 +696,8 @@ docs:
   endpoints:
     title: All endpoints
     intro: Generated at build time from api/openapi.yaml, so it can't drift from the real routes. Deprecated legacy notification endpoints are not listed.
+    empty_desc: api/openapi.yaml was not loaded at build time. Re-run make sitegen to generate this section.
+    empty_title: Endpoint list was not generated
   openapi:
     tag:
       events: Events
@@ -1531,12 +1541,14 @@ trace:
   refresh: Refresh
   loading: Loading trace…
   no_id: No traceId in the URL. Open this from "view chain" in the event stream, or pass ?traceId=trace_xxx.
+  no_id_title: Missing traceId
   copy: Copy
   copied: Copied
   copy_failed: Copy failed
   triggered_by: Triggered by
   nolib: Renderer failed to load.
   empty: No tasks under this trace. Usually means it was pruned at the first step (no matching edge, params failed the schema, or no node declares the target capability).
+  empty_title: No tasks
   stat:
     spans: Tasks
     duration: Duration
@@ -1608,6 +1620,7 @@ pb:
   title: Playbooks
   subtitle: Turn capabilities, edges and triggers into one playbook you can check and complete
   detail_subtitle: 'Readiness: definitions → nodes → edges → triggers'
+  detail_title: Playbook detail
   rescan: Re-check
   rescanned: Re-checked
   back: Back to playbooks
@@ -1616,6 +1629,7 @@ pb:
   installed_n: Completed {n} item(s)
   installed_none: Nothing left to complete automatically
   empty: No playbooks in this namespace yet.
+  empty_title: No playbooks yet
   load_failed: Failed to load. Please refresh.
   meta: '{c} capabilities · {e} edges · {tr} triggers'
   ready_n: '{n}/{m} ready'

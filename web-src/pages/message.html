@@ -1,65 +1,353 @@
-{{define "title"}}{{t "message.title"}}{{end}} {{define "content"}}
+{{define "title"}}{{t "message.title"}}{{end}} {{define "style"}}
+    <style>
+      /* 任务详情页（message.html?id=tsk_xxx）：一个任务"当时到底发生了什么"。
+
+         版式：单列窄栏（.page-narrow 760px），和 source / node / trace 三个详情页
+         同规格。理由：这是阅读页不是工作台 —— 1440 下宽栏会把 Markdown 正文拉成
+         100+ 字符的长行、把字段网格拉出大片空白，反而更难扫。
+
+         层级（REVIEW-2 §3「三张同权卡无层级 / 字段网格留洞 / .md-body 硬编码」）：
+           ① 正文主卡 .msg-main —— accent 描边 + --shadow-2 + 24px 内边距 + 16px 标题；
+           ② 字段卡   .card-pad(20px) + .card-title(15px)，auto-fit 网格不留洞；
+           ③ 任务链卡 同上，行由 .list-row（56px）拼，分隔线走 --line 而不是白色 alpha。
+         颜色全部来自 tokens.css（本页 0 处硬编码色值 / 0 个 Tailwind 色板类）。 */
+
+      /* ---------- 页头 ---------- */
+      .msg-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        min-width: 0;
+        flex: 1 1 380px;
+      }
+      /* 状态点对齐 28px 页标题的第一行，而不是标题块的正中 */
+      .msg-dot {
+        margin-top: 11px;
+      }
+      .msg-head-main {
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      /* 能力名里可能有 @、版本号、长名字 —— 窄屏必须能断 */
+      .msg-title {
+        word-break: break-word;
+      }
+      /* 副标题是「cwd · 相对时间 · 32 字符任务 id」，390 下必须能在任意位置断 */
+      .msg-sub {
+        overflow-wrap: anywhere;
+      }
+      .msg-title-sk {
+        display: inline-block;
+        width: 260px;
+        max-width: 60vw;
+        height: 26px;
+        vertical-align: middle;
+      }
+
+      /* ---------- 三张卡的纵向节奏 ---------- */
+      /* .page 的 gap(24px) 只隔「页头 → 正文」；卡与卡之间 16px 更紧凑 */
+      .msg-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      /* ---------- ① 正文主卡（视觉最重） ---------- */
+      .msg-main {
+        padding: 24px;
+        box-shadow: var(--shadow-2);
+        border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
+      }
+      .msg-main-title {
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.35;
+        color: var(--text);
+      }
+      .msg-body {
+        margin-top: 14px;
+      }
+      .msg-link {
+        margin-top: 18px;
+      }
+
+      /* Markdown 正文：.md-body 在 ui.css 里是冻结组件（不允许改），这里用
+         #msg-body 更高特异性把四类最容易回退成硬编码色的元素钉在 token 上，
+         并补窄屏兜底（长表格/长 URL/图片不能顶破 760px 栏）。
+         表格的横向滚动容器在 renderBody() 里加（包一层 .overflow-x-auto）。 */
+      #msg-body a {
+        color: var(--accent);
+      }
+      #msg-body a:hover {
+        color: var(--accent-strong);
+      }
+      #msg-body blockquote {
+        border-left-color: var(--accent);
+        color: var(--muted);
+      }
+      #msg-body code {
+        background: var(--surface-3);
+        color: var(--text);
+      }
+      #msg-body pre {
+        background: var(--code-bg);
+        border-color: var(--line);
+      }
+      #msg-body th {
+        background: var(--surface-2);
+      }
+      #msg-body th,
+      #msg-body td {
+        border-color: var(--line);
+      }
+      #msg-body table,
+      #msg-body pre,
+      #msg-body img {
+        max-width: 100%;
+      }
+      #msg-body img {
+        height: auto;
+      }
+
+      /* 正文里的「# 标题」不能渲染成 h1：顶栏那个 h1 是全站唯一（契约 §2）。
+         降成 h2 后用这条补回原来的 20px 观感（其余排版沿用 .md-body h2）。 */
+      .msg-md-h1 {
+        font-size: 1.25rem;
+      }
+
+      /* ---------- ② 字段卡 ---------- */
+      /* auto-fit + minmax(180px) 而不是写死 grid-cols-2 / md:grid-cols-3：
+         14 个字段长短差异很大（trace 32 字符 vs 尝试次数 1 位），固定列数会在
+         最后一行留洞（REVIEW-2 §3）；auto-fit 让列数跟着容器宽度走，窄屏自动塌成单列。 */
+      .msg-fields {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin: 16px 0 0;
+      }
+      .msg-cell {
+        min-width: 0;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-2);
+      }
+      .msg-cell dt {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .msg-cell dd {
+        margin: 4px 0 0;
+        font-size: 13.5px;
+        line-height: 1.5;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+
+      /* ---------- ③ 任务链卡 ---------- */
+      /* 行结构走 ui.css 的 .list / .list-row（56px、分隔线 --line、悬停 --surface-2）。
+         缩进用 padding-left 表达派生深度：原实现把子任务嵌在父行 DOM 里，
+         结果是行高、分隔线、悬停底全部跟着父子关系变形。 */
+      .msg-chain {
+        margin-top: 10px;
+      }
+      .msg-chain-row {
+        border-bottom: 0;
+        border-radius: var(--r-sm);
+        padding-inline: 10px;
+      }
+      .msg-chain-row.is-current {
+        background: var(--accent-soft);
+      }
+      .msg-chain-cap {
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--text);
+        /* 能力名 + @版本 是一个整体，390 下宁可省略号也不要断成「x.oncall / @1」 */
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .msg-chain-sub {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      /* 390 下「能力名 + 当前徽章 + 时间」挤一行会把能力名压成「ale…」。
+         任务链回答的是「哪一步断了」而不是「几点」，窄屏去掉时间列，
+         时间在字段卡的创建/开始/结束时间里仍然查得到。 */
+      @media (max-width: 480px) {
+        .msg-chain-row .list-side {
+          display: none;
+        }
+      }
+
+      /* ---------- 空态 / 错误态 ---------- */
+      .msg-empty {
+        padding: 28px 16px;
+      }
+      .msg-empty-icon {
+        width: 28px;
+        height: 28px;
+        color: var(--faint);
+      }
+      .msg-empty-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      /* 失败/不存在时：正文卡里只有错误块，另外两张卡没有内容 → 整卡隐藏。
+         用属性 hidden 而不是 Tailwind .hidden：.status-badge / .btn / .list
+         自带 display，会压过 UA 的 [hidden] 规则。 */
+      #msg-status-badge[hidden],
+      #msg-link-btn[hidden],
+      #msg-fields-card[hidden],
+      #msg-chain-card[hidden] {
+        display: none;
+      }
+
+      /* ui.css 只有 status-success/error/warn/on/off 五个修饰符，没有 status-info；
+         任务处于 assigned/acked/running 时用 accent 系（--info 就是 --accent）。
+         建议提升到 ui.css：.status-info（ui.css 本轮冻结，先在页内补）。 */
+      .msg-status-info {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      /* ---------- 首屏骨架（SSG 直出，JS 渲染后整体替换） ---------- */
+      .msg-sk-lg {
+        height: 20px;
+        width: 46%;
+      }
+      .msg-sk-line {
+        height: 12px;
+        width: 100%;
+        margin-top: 10px;
+      }
+      .msg-sk-line-sm {
+        height: 12px;
+        width: 62%;
+        margin-top: 10px;
+      }
+      .msg-sk-k {
+        height: 10px;
+        width: 44%;
+      }
+      .msg-sk-v {
+        height: 14px;
+        width: 76%;
+        margin-top: 8px;
+      }
+      .msg-sk-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: var(--r-full);
+      }
+      .msg-sk-tag {
+        width: 56%;
+        height: 12px;
+        margin-left: 10px;
+      }
+    </style>
+{{end}} {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-3xl space-y-6">
-    <!-- ===== 头部：状态点 + 标题 + 时间 ===== -->
-    <div class="reveal visible">
-      <div class="flex items-start gap-3">
-        <span id="msg-dot" class="dot dot-success mt-2"></span>
-        <div class="min-w-0 flex-1">
-          <h2
-            class="font-display text-2xl text-white break-words"
-            id="msg-title"
-          >
-            {{t "message.loading"}}
+  <div class="page page-narrow">
+    <!-- 页头：状态点 + 能力名@版本 + 上下文；徽章进 .page-actions（右对齐）。
+         页面内容里不出现 h1（顶栏那个才是 h1）。 -->
+    <div class="page-head">
+      <div class="msg-head">
+        <span id="msg-dot" class="dot dot-success msg-dot"></span>
+        <div class="msg-head-main">
+          <h2 id="msg-title" class="page-title msg-title">
+            <span
+              class="skeleton msg-title-sk"
+              aria-label="{{t "message.loading"}}"
+            ></span>
           </h2>
-          <p class="mt-1 text-sm text-zinc-500" id="msg-subtitle">—</p>
+          <p id="msg-subtitle" class="page-sub msg-sub">—</p>
         </div>
-        <span id="msg-status-badge" class="status-badge status-success shrink-0"
-          >—</span
-        >
+      </div>
+      <div class="page-actions">
+        <span id="msg-status-badge" class="status-badge status-off">—</span>
       </div>
     </div>
 
-    <!-- ===== 正文 ===== -->
-    <section class="card reveal visible p-5">
-      <div class="text-xs font-medium text-zinc-500">
-        {{t "message.body_label"}}
-      </div>
-      <div
-        class="mt-2 break-words text-sm leading-relaxed text-zinc-200 md-body"
-        id="msg-body"
-      >
-        —
-      </div>
-      <a
-        id="msg-link-btn"
-        href="#"
-        class="btn-primary mt-4 hidden items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium"
-        >{{t "message.open_link"}}</a
-      >
-    </section>
-
-    <!-- ===== 全部字段 ===== -->
-    <section class="card reveal visible p-5">
-      <div class="text-sm font-medium text-white">
-        {{t "message.fields_title"}}
-      </div>
-      <div
-        class="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3"
-        id="msg-fields"
-      ></div>
-    </section>
-
-    <!-- ===== 投递记录 ===== -->
-    <section class="card reveal visible p-5">
-      <div class="flex items-center justify-between">
-        <div class="text-sm font-medium text-white">
-          {{t "message.chain_title"}}
+    <!-- 主体：三张卡由 JS 填充，首屏是骨架（不是一张「加载中」的空卡） -->
+    <div class="msg-stack">
+      <!-- ① 正文主卡 -->
+      <section class="card msg-main">
+        <div class="card-head">
+          <div class="msg-main-title">{{t "message.body_label"}}</div>
         </div>
-        <span class="text-xs text-zinc-500" id="delivery-count">—</span>
-      </div>
-      <div id="delivery-list" class="mt-3 divide-y divide-white/[0.04]"></div>
-    </section>
+        <div id="msg-body" class="md-body msg-body">
+          <span class="skeleton msg-sk-lg" aria-hidden="true"></span>
+          <span class="skeleton msg-sk-line" aria-hidden="true"></span>
+          <span class="skeleton msg-sk-line" aria-hidden="true"></span>
+          <span class="skeleton msg-sk-line-sm" aria-hidden="true"></span>
+        </div>
+        <a id="msg-link-btn" href="#" class="btn btn-primary msg-link" hidden
+          >{{t "message.open_link"}}</a
+        >
+      </section>
+
+      <!-- ② 全部字段 -->
+      <section id="msg-fields-card" class="card card-pad">
+        <div class="card-head">
+          <div class="card-title">{{t "message.fields_title"}}</div>
+        </div>
+        <dl id="msg-fields" class="msg-fields">
+          <div class="msg-cell" aria-hidden="true">
+            <span class="skeleton msg-sk-k"></span>
+            <span class="skeleton msg-sk-v"></span>
+          </div>
+          <div class="msg-cell" aria-hidden="true">
+            <span class="skeleton msg-sk-k"></span>
+            <span class="skeleton msg-sk-v"></span>
+          </div>
+          <div class="msg-cell" aria-hidden="true">
+            <span class="skeleton msg-sk-k"></span>
+            <span class="skeleton msg-sk-v"></span>
+          </div>
+          <div class="msg-cell" aria-hidden="true">
+            <span class="skeleton msg-sk-k"></span>
+            <span class="skeleton msg-sk-v"></span>
+          </div>
+          <div class="msg-cell" aria-hidden="true">
+            <span class="skeleton msg-sk-k"></span>
+            <span class="skeleton msg-sk-v"></span>
+          </div>
+          <div class="msg-cell" aria-hidden="true">
+            <span class="skeleton msg-sk-k"></span>
+            <span class="skeleton msg-sk-v"></span>
+          </div>
+        </dl>
+      </section>
+
+      <!-- ③ 任务链（这条 trace 上的一串任务） -->
+      <section id="msg-chain-card" class="card card-pad">
+        <div class="card-head">
+          <div class="card-title">{{t "message.chain_title"}}</div>
+          <span id="delivery-count" class="card-sub">—</span>
+        </div>
+        <div id="delivery-list" class="list msg-chain">
+          <div class="list-row msg-chain-row" aria-hidden="true">
+            <span class="skeleton msg-sk-dot"></span>
+            <span class="skeleton msg-sk-tag"></span>
+          </div>
+          <div class="list-row msg-chain-row" aria-hidden="true">
+            <span class="skeleton msg-sk-dot"></span>
+            <span class="skeleton msg-sk-tag"></span>
+          </div>
+          <div class="list-row msg-chain-row" aria-hidden="true">
+            <span class="skeleton msg-sk-dot"></span>
+            <span class="skeleton msg-sk-tag"></span>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -68,8 +356,17 @@
 <script>
   (function () {
     "use strict";
-    const { el, api, mountLayout, mountPullRefresh, timeAgo, t } =
-      window.Anotify;
+    const {
+      el,
+      icon,
+      api,
+      toast,
+      mountLayout,
+      mountPullRefresh,
+      timeAgo,
+      t,
+      loadErrorNode,
+    } = window.Anotify;
     const qs = new URLSearchParams(location.search);
     const msgId = qs.get("id") || "";
 
@@ -78,30 +375,26 @@
       title: t("message.task_title", "任务详情"),
     });
 
-    const AGENT_STATE_META = {
-      working: { dot: "dot-info", badge: "status-info", labelKey: "common.agentState.working", fb: "运行中" },
-      blocked: { dot: "dot-warn", badge: "status-warn", labelKey: "common.agentState.blocked", fb: "等待中" },
-      done: { dot: "dot-success", badge: "status-success", labelKey: "common.agentState.done", fb: "完成" },
-      interrupted: { dot: "dot-warn", badge: "status-warn", labelKey: "common.agentState.interrupted", fb: "中断" },
-      error: { dot: "dot-error", badge: "status-error", labelKey: "common.agentState.error", fb: "失败" },
-    };
-    function priorityLabel(p) {
-      const map = {
-        high: { key: "common.priority.high", fb: "高" },
-        normal: { key: "common.priority.normal", fb: "普通" },
-        low: { key: "common.priority.low", fb: "低" },
-      };
-      const m = map[p];
-      return m ? t(m.key, m.fb) : p || "—";
-    }
-    const CHANNEL_LABEL = { webpush: "Web Push", websocket: "WebSocket" };
-    const DSTATUS_META = {
-      pending: { cls: "status-warn", labelKey: "common.delivery.pending", fb: "待投递" },
-      sent: { cls: "status-success", labelKey: "common.delivery.sent", fb: "已发送" },
-      delivered: { cls: "status-success", labelKey: "common.delivery.delivered", fb: "已送达" },
-      acked: { cls: "status-success", labelKey: "common.delivery.acked", fb: "已确认" },
-      failed: { cls: "status-error", labelKey: "common.delivery.failed", fb: "失败" },
-    };
+    /* 元素引用在 mountLayout 之后取也一样（它只是把 #page-main 搬进外壳，
+       节点本身不重建）；一次性取好，渲染函数里不再重复 getElementById。 */
+    const titleEl = document.getElementById("msg-title");
+    const subEl = document.getElementById("msg-subtitle");
+    const dotEl = document.getElementById("msg-dot");
+    const badgeEl = document.getElementById("msg-status-badge");
+    const bodyEl = document.getElementById("msg-body");
+    const linkEl = document.getElementById("msg-link-btn");
+    const fieldsEl = document.getElementById("msg-fields");
+    const fieldsCard = document.getElementById("msg-fields-card");
+    const chainEl = document.getElementById("delivery-list");
+    const chainCard = document.getElementById("msg-chain-card");
+    const countEl = document.getElementById("delivery-count");
+
+    /* 空态/错误态图标：Anotify.icon 只画路径，具体图形由页面给（alert-circle） */
+    const ICON_ALERT = [
+      "M12 8v5",
+      "M12 16.5v.01",
+      "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z",
+    ];
 
     function safeParse(s) {
       try {
@@ -110,55 +403,84 @@
         return {};
       }
     }
+    // toMs 兼容两种时间形状：真实后端给 RFC3339 字符串，mock/demo 给 epoch 秒。
+    // 只认一种形状的代价是整列时间显示成「—」（看着像数据丢了）。
+    function toMs(v) {
+      if (v == null || v === "") return NaN;
+      if (typeof v === "number") return v > 1e12 ? v : v * 1000;
+      const p = Date.parse(v);
+      return Number.isNaN(p) ? NaN : p;
+    }
     // 完整时间（秒级，本地时区）
-    function fmtTime(iso) {
-      const t = Date.parse(iso);
-      if (Number.isNaN(t)) return "—";
-      const d = new Date(t);
+    function fmtTime(v) {
+      const ts = toMs(v);
+      if (Number.isNaN(ts)) return "—";
+      const d = new Date(ts);
       const p = (x) => String(x).padStart(2, "0");
       return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
     }
-    function fmtTTL(sec) {
-      if (!sec || sec <= 0) return "—";
-      if (sec % 86400 === 0)
-        return t("common.ttl.day", "{n} 天").replace("{n}", sec / 86400);
-      if (sec % 3600 === 0)
-        return t("common.ttl.hour", "{n} 小时").replace("{n}", sec / 3600);
-      if (sec % 60 === 0)
-        return t("common.ttl.minute", "{n} 分钟").replace("{n}", sec / 60);
-      return t("common.ttl.second", "{n} 秒").replace("{n}", sec);
+    // 耗时：秒级精度，按 locale 的 common.ttl.* 模板出「0.6 秒 / 1 分 5 秒」。
+    // 直接拿毫秒差拼字符串会漏出 0.6000001430511475s 这种浮点尾巴。
+    function fmtDuration(from, to) {
+      const a = toMs(from);
+      const b = toMs(to);
+      if (Number.isNaN(a) || Number.isNaN(b) || b < a) return "—";
+      const pick = (key, fb, n) =>
+        t("common.ttl." + key, fb).replace("{n}", String(n));
+      let sec = (b - a) / 1000;
+      if (sec < 60) return pick("second", "{n} 秒", Math.round(sec * 10) / 10);
+      sec = Math.round(sec);
+      const parts = [];
+      const d = Math.floor(sec / 86400);
+      const h = Math.floor((sec % 86400) / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (d) parts.push(pick("day", "{n} 天", d));
+      if (h) parts.push(pick("hour", "{n} 小时", h));
+      if (m) parts.push(pick("minute", "{n} 分钟", m));
+      if (s && !d) parts.push(pick("second", "{n} 秒", s));
+      return parts.join(" ") || pick("second", "{n} 秒", 0);
     }
 
+    // field 生成一个字段单元：dl > div > (dt + dd) 是 HTML5 允许的分组写法，
+    // 语义上仍然是「一组名词/值」，视觉上是 auto-fit 网格里的一格。
     function field(k, v, mono) {
       return el(
         "div",
-        {
-          class:
-            "rounded-lg bg-white/[0.03] px-3 py-2.5 ring-1 ring-white/[0.06]",
-        },
-        el("div", {
-          class: "text-[10px] uppercase tracking-wide text-zinc-500",
-          text: k,
-        }),
-        el("div", {
-          class:
-            (mono === false ? "" : "mono ") +
-            " mt-0.5 break-all text-[12px] text-zinc-200",
+        { class: "msg-cell" },
+        el("dt", { text: k }),
+        el("dd", {
+          class: mono === false ? "" : "mono",
           text: v == null || v === "" ? "—" : String(v),
         }),
       );
     }
 
-    function renderError(text) {
-      document.getElementById("msg-title").textContent = text;
-      document.getElementById("msg-subtitle").textContent = msgId || "";
-      document.getElementById("msg-body").textContent = "—";
-      document.getElementById("delivery-count").textContent = "";
+    // 空态块：icon + 标题 + 说明 + 动作（.empty 是 ui.css 的组件类，这里只补排版）
+    function emptyBox(title, desc, action) {
+      const box = el(
+        "div",
+        { class: "empty msg-empty" },
+        icon(ICON_ALERT, "msg-empty-icon"),
+      );
+      if (title)
+        box.append(el("div", { class: "msg-empty-title", text: title }));
+      if (desc) box.append(el("div", { class: "card-sub", text: desc }));
+      if (action) box.append(action);
+      return box;
+    }
+
+    function backToEvents() {
+      return el("a", {
+        class: "btn btn-ghost btn-sm",
+        href: "events.html",
+        text: t("message.back_events", "返回事件中心"),
+      });
     }
 
     // Markdown → HTML 渲染（marked@12 全局是 object，解析函数在 marked.parse；
     // 默认转义 HTML 防注入；关闭 mangle/headerIds 避免 id 污染）
-    function renderBody(el, body) {
+    function renderBody(node, body) {
       const raw = body || t("common.placeholder.no_body", "（无正文）");
       const marked = window.marked;
       if (marked && typeof marked.parse === "function") {
@@ -166,27 +488,55 @@
           if (typeof marked.setOptions === "function") {
             marked.setOptions({ mangle: false, headerIds: false });
           }
-          el.innerHTML = marked.parse(raw);
+          node.innerHTML = marked.parse(raw);
+          /* 宽表格在 390 下会顶破 760px 窄栏：包一层可横向滚动的容器。
+             .overflow-x-auto 是仓库里已有的 Tailwind 工具类（也是 e2e 溢出
+             检查唯一豁免的容器类）。 */
+          node.querySelectorAll("table").forEach((tbl) => {
+            const wrap = document.createElement("div");
+            wrap.className = "overflow-x-auto";
+            tbl.replaceWith(wrap);
+            wrap.append(tbl);
+          });
+          /* 「# 标题」若渲染成 h1，会与顶栏那个全站唯一的 h1 撞车（契约 §2）：
+             降一级到 h2，视觉尺寸由页级 .msg-md-h1 补回来。 */
+          node.querySelectorAll("h1").forEach((h) => {
+            const h2 = document.createElement("h2");
+            h2.className = "msg-md-h1";
+            while (h.firstChild) h2.append(h.firstChild);
+            h.replaceWith(h2);
+          });
           return;
         } catch (e) {
           /* fallthrough 到纯文本 */
         }
       }
-      el.textContent = raw;
+      node.textContent = raw;
     }
 
     // 任务状态 → 视觉（复用既有 dot/status 样式，九态收敛到五类）
+    // 注意：ui.css 没有 .status-info，运行中的三种态走页级 .msg-status-info。
     const TASK_STATE_META = {
       pending: { dot: "dot-warn", badge: "status-warn", fb: "排队中" },
-      assigned: { dot: "dot-info", badge: "status-info", fb: "已派发" },
-      acked: { dot: "dot-info", badge: "status-info", fb: "已接单" },
-      running: { dot: "dot-info", badge: "status-info", fb: "执行中" },
+      assigned: { dot: "dot-info", badge: "msg-status-info", fb: "已派发" },
+      acked: { dot: "dot-info", badge: "msg-status-info", fb: "已接单" },
+      running: { dot: "dot-info", badge: "msg-status-info", fb: "执行中" },
       succeeded: { dot: "dot-success", badge: "status-success", fb: "成功" },
       failed: { dot: "dot-error", badge: "status-error", fb: "失败" },
       canceled: { dot: "dot-warn", badge: "status-warn", fb: "已取消" },
       abandoned: { dot: "dot-warn", badge: "status-warn", fb: "已放弃" },
       lease_expired: { dot: "dot-warn", badge: "status-warn", fb: "租约过期" },
     };
+
+    // 正文来源：优先 params.body；没有就退回标题 / 整个 params（JSON，便于排查）
+    function bodySource(task) {
+      const params = safeParse(task.params);
+      if (params.body) return params.body;
+      if (params.title) return params.title;
+      if (Object.keys(params).length)
+        return "```json\n" + JSON.stringify(params, null, 2) + "\n```";
+      return t("common.placeholder.no_body", "（无正文）");
+    }
 
     // render 渲染任务详情。
     //
@@ -196,43 +546,38 @@
       const params = safeParse(task.params);
       const status = task.status || "pending";
       const meta = TASK_STATE_META[status] || TASK_STATE_META.pending;
-
-      document.getElementById("msg-dot").className =
-        "dot " + meta.dot + " mt-2";
-      document.getElementById("msg-title").textContent =
+      const cap =
         (task.capability || "?") +
         "@" +
         (task.version != null ? task.version : "?");
-      document.getElementById("msg-subtitle").textContent =
+
+      titleEl.textContent = cap;
+      subEl.textContent =
         (params.cwd || params.project || "—") +
         " · " +
         timeAgo(task.createdAt) +
         " · " +
         task.id;
 
-      const badge = document.getElementById("msg-status-badge");
-      badge.className = "status-badge shrink-0 " + meta.badge;
-      badge.textContent = t("message.task_state." + status, meta.fb);
+      dotEl.className = "dot msg-dot " + meta.dot;
+      badgeEl.hidden = false;
+      badgeEl.className = "status-badge " + meta.badge;
+      badgeEl.textContent = t("message.task_state." + status, meta.fb);
 
-      // 正文：优先 params.body；没有就展示整个 params（JSON，便于排查）
-      const bodyText =
-        params.body ||
-        params.title ||
-        (Object.keys(params).length
-          ? "```json\n" + JSON.stringify(params, null, 2) + "\n```"
-          : t("common.placeholder.no_body", "（无正文）"));
-      renderBody(document.getElementById("msg-body"), bodyText);
+      renderBody(bodyEl, bodySource(task));
 
       // 外部链接：params.link（有才显示）
-      const linkBtn = document.getElementById("msg-link-btn");
       if (params.link) {
-        linkBtn.href = params.link;
-        linkBtn.classList.replace("hidden", "flex");
+        linkEl.href = params.link;
+        linkEl.hidden = false;
+      } else {
+        linkEl.hidden = true;
+        linkEl.removeAttribute("href");
       }
 
       const duration =
         task.startedAt && task.finishedAt
-          ? task.finishedAt - task.startedAt + "s"
+          ? fmtDuration(task.startedAt, task.finishedAt)
           : "—";
 
       // out 三态（不变量 I5）：没回报 / 到头了 / 走某个出口
@@ -242,33 +587,89 @@
           ? t("message.out.end", "到头了（无出口）")
           : task.out;
 
-      document
-        .getElementById("msg-fields")
-        .replaceChildren(
-          field(t("common.field.task_id", "任务 ID"), task.id),
-          field(t("common.field.trace", "Trace"), task.traceId),
-          field(
-            t("common.field.capability", "能力"),
-            (task.capability || "?") + "@" + (task.version != null ? task.version : "?"),
-          ),
-          field(
-            t("common.field.agent_state", "运行状态"),
-            t("message.task_state." + status, meta.fb) + "（" + status + "）",
-            false,
-          ),
-          field(t("common.field.out", "出口 out"), outText, false),
-          field(t("common.field.node", "执行节点"), task.nodeId || t("message.node.central", "中枢执行"), true),
-          field(t("common.field.attempts", "尝试次数"), task.attempts != null ? task.attempts : 0, false),
-          field(t("common.field.duration", "耗时"), duration),
-          field(t("common.field.parent_task", "父任务"), task.parentTaskId || "—"),
-          field(t("common.field.created_at", "创建时间"), fmtTime(task.createdAt)),
-          field(t("common.field.started_at", "开始时间"), task.startedAt ? fmtTime(task.startedAt) : "—"),
-          field(t("common.field.finished_at", "结束时间"), task.finishedAt ? fmtTime(task.finishedAt) : "—"),
-          field(t("common.field.error", "错误"), task.error || "—", false),
-          field(t("common.field.summary", "结果摘要"), task.summary || "—", false),
-        );
+      fieldsEl.replaceChildren(
+        field(t("common.field.task_id", "任务 ID"), task.id),
+        field(t("common.field.trace", "Trace"), task.traceId),
+        field(t("common.field.capability", "能力"), cap),
+        field(
+          t("common.field.agent_state", "运行状态"),
+          t("message.task_state." + status, meta.fb) + "（" + status + "）",
+          false,
+        ),
+        field(t("common.field.out", "出口 out"), outText, false),
+        field(
+          t("common.field.node", "执行节点"),
+          task.nodeId || t("message.node.central", "中枢执行"),
+          true,
+        ),
+        field(
+          t("common.field.attempts", "尝试次数"),
+          task.attempts != null ? task.attempts : 0,
+          false,
+        ),
+        field(t("common.field.duration", "耗时"), duration),
+        field(t("common.field.parent_task", "父任务"), task.parentTaskId || "—"),
+        field(t("common.field.created_at", "创建时间"), fmtTime(task.createdAt)),
+        field(
+          t("common.field.started_at", "开始时间"),
+          task.startedAt ? fmtTime(task.startedAt) : "—",
+        ),
+        field(
+          t("common.field.finished_at", "结束时间"),
+          task.finishedAt ? fmtTime(task.finishedAt) : "—",
+        ),
+        field(t("common.field.error", "错误"), task.error || "—", false),
+        field(t("common.field.summary", "结果摘要"), task.summary || "—", false),
+      );
 
+      fieldsCard.hidden = false;
+      chainCard.hidden = false;
       renderChain(chain, task.id);
+    }
+
+    // chainRow 渲染任务链里的一行：状态点 + 能力名@版本 + 状态 / 右侧时间。
+    // 派生深度用 padding-left 表达（不嵌 DOM，行高与分隔线才稳定）。
+    function chainRow(task, depth, currentId) {
+      const st = task.status || "pending";
+      const meta = TASK_STATE_META[st] || TASK_STATE_META.pending;
+      const isCurrent = task.id === currentId;
+
+      const row = el("div", {
+        class: "list-row msg-chain-row" + (isCurrent ? " is-current" : ""),
+        style: "padding-left:" + (10 + depth * 16) + "px",
+      });
+      row.append(
+        el("span", { class: "dot " + meta.dot }),
+        el(
+          "div",
+          { class: "list-main" },
+          el("code", {
+            class: "mono msg-chain-cap",
+            text:
+              (task.capability || "?") +
+              "@" +
+              (task.version != null ? task.version : "?"),
+          }),
+          el("span", {
+            class: "msg-chain-sub",
+            text: t("message.task_state." + st, meta.fb),
+          }),
+        ),
+      );
+      if (isCurrent)
+        row.append(
+          el("span", {
+            class: "badge badge-accent",
+            text: t("message.chain.current", "当前"),
+          }),
+        );
+      row.append(
+        el("span", {
+          class: "list-side",
+          text: fmtTime(task.createdAt),
+        }),
+      );
+      return row;
     }
 
     // renderChain 渲染整条 trace 上的任务链（替代旧的"投递记录"）。
@@ -276,21 +677,20 @@
     // 投递记录回答"推给了哪几台设备"，任务链回答"这条链一共办了几步、
     // 哪一步断了"——后者才是事件中心要回答的问题。
     function renderChain(chain, currentId) {
-      const box = document.getElementById("delivery-list");
-      const count = document.getElementById("delivery-count");
       const list = Array.isArray(chain) ? chain : [];
 
-      count.textContent = t("message.chain.count", "共 {n} 步").replace(
+      countEl.textContent = t("message.chain.count", "共 {n} 步").replace(
         "{n}",
         list.length,
       );
 
       if (list.length === 0) {
-        box.replaceChildren(
-          el("div", {
-            class: "py-6 text-center text-sm text-zinc-500",
-            text: t("message.chain.empty", "这条 trace 上没有其它任务"),
-          }),
+        chainEl.replaceChildren(
+          emptyBox(
+            t("message.chain.empty", "这条 trace 上没有其它任务"),
+            null,
+            backToEvents(),
+          ),
         );
         return;
       }
@@ -302,69 +702,101 @@
         (byParent[p] = byParent[p] || []).push(x);
       });
 
-      function node(task_, depth) {
-        const kids = byParent[task_.id] || [];
-        const st = task_.status || "pending";
-        const meta = TASK_STATE_META[st] || TASK_STATE_META.pending;
-        const isCurrent = task_.id === currentId;
+      const rows = [];
+      const visited = new Set();
+      const walk = (task, depth) => {
+        if (!task || visited.has(task.id)) return;
+        visited.add(task.id);
+        rows.push(chainRow(task, depth, currentId));
+        (byParent[task.id] || []).forEach((kid) => walk(kid, depth + 1));
+      };
+      (byParent["__root__"] || []).forEach((r) => walk(r, 0));
+      /* 父任务不在这条链里的任务（历史被清理过）也要列出来，
+         否则它们会在这页上凭空消失。 */
+      list.forEach((x) => walk(x, 0));
 
-        const row = el("div", {
-          class:
-            "py-3" +
-            (isCurrent ? " bg-white/[0.03] -mx-2 px-2 rounded-lg" : ""),
-          style: "margin-left:" + depth * 16 + "px",
-        });
-
-        const line = el("div", { class: "flex flex-wrap items-center gap-2" });
-        line.appendChild(
-          el("span", {
-            class: "dot " + meta.dot,
-            style: "width:6px;height:6px;border-radius:9999px",
-          }),
-        );
-        line.appendChild(
-          el("code", {
-            class: "mono text-[12px] text-zinc-200",
-            text:
-              (task_.capability || "?") +
-              "@" +
-              (task_.version != null ? task_.version : "?"),
-          }),
-        );
-        line.appendChild(
-          el("span", {
-            class: "text-[11px] text-zinc-500",
-            text: t("message.task_state." + st, meta.fb),
-          }),
-        );
-        if (isCurrent) {
-          line.appendChild(
-            el("span", {
-              class: "text-[10px] text-indigo-400",
-              text: t("message.chain.current", "当前"),
-            }),
-          );
-        }
-        row.appendChild(line);
-
-        if (kids.length) {
-          const box2 = el("div", {});
-          kids.forEach((k) => box2.appendChild(node(k, depth + 1)));
-          row.appendChild(box2);
-        }
-        return row;
-      }
-
-      const roots = byParent["__root__"] || list;
-      box.replaceChildren();
-      roots.forEach((r) => box.appendChild(node(r, 0)));
+      chainEl.replaceChildren(...rows);
     }
 
+    /* ---------- 失败 / 空态：三者必须分开，不能都画成一句话 ---------- */
+
+    // 缺少 ?id=（深链被截断）
+    function renderMissingId() {
+      titleEl.textContent = t(
+        "message.error.missing_id",
+        "缺少消息 ID（URL 应有 ?id=ntf_…）",
+      );
+      subEl.textContent = "—";
+      dotEl.className = "dot msg-dot dot-warn";
+      badgeEl.hidden = true;
+      linkEl.hidden = true;
+      fieldsCard.hidden = true;
+      chainCard.hidden = true;
+      bodyEl.replaceChildren(
+        emptyBox(
+          null,
+          t(
+            "message.missing_id_hint",
+            "深链需要带上任务 id，例如 message.html?id=tsk_xxx。",
+          ),
+          backToEvents(),
+        ),
+      );
+    }
+
+    // 404：这个 id 真没有（任务可能已被清理）
+    function renderNotFound() {
+      titleEl.textContent = t(
+        "message.error.not_found",
+        "任务不存在或已被清理",
+      );
+      subEl.textContent = msgId || "—";
+      dotEl.className = "dot msg-dot dot-warn";
+      badgeEl.hidden = true;
+      linkEl.hidden = true;
+      fieldsCard.hidden = true;
+      chainCard.hidden = true;
+      bodyEl.replaceChildren(
+        emptyBox(
+          null,
+          /* 这句要说两件事：①它真的不在（e2e 断言页面上能找到「任务不存在」）；
+             ②可能的原因——任务被清理，或这个 id 属于别的命名空间（同一个 id
+             在别的 ns 里可能是存在的，不说清楚人会以为数据丢了）。 */
+          t(
+            "message.not_found_hint",
+            "任务不存在——可能已被清理，或不属于当前命名空间。",
+          ),
+          backToEvents(),
+        ),
+      );
+    }
+
+    // 取不到 ≠ 不存在：断网 / 5xx 显示可重试的错误态并 toast，
+    // 绝不画成"任务不存在"（把服务挂了说成数据丢了，用户只会以为记录被删了）。
+    function renderLoadFailed(err) {
+      titleEl.textContent = t("message.task_title", "任务详情");
+      subEl.textContent = msgId || "—";
+      dotEl.className = "dot msg-dot dot-error";
+      badgeEl.hidden = false;
+      badgeEl.className = "status-badge status-error";
+      badgeEl.textContent = t("common.request_failed", "请求失败");
+      linkEl.hidden = true;
+      fieldsCard.hidden = true;
+      chainCard.hidden = true;
+      bodyEl.replaceChildren(loadErrorNode(err, load));
+      /* toast 跟 loadErrorNode 用同一套 locale 词汇：断网时说「连不上服务端」，
+         不要把浏览器的 "Failed to fetch" 原样扔给用户（ja/es 页面上更难看）。 */
+      const detail =
+        err && err.status
+          ? err.message || "HTTP " + err.status
+          : t("common.backend_offline", "连不上服务端");
+      toast(t("common.load_failed_prefix", "载入失败：") + detail, "error");
+    }
 
     /* ================= 加载 ================= */
     async function load() {
       if (!msgId) {
-        renderError(t("message.error.missing_id", "缺少消息 ID（URL 应有 ?id=ntf_…）"));
+        renderMissingId();
         return;
       }
       // #80：旧 /v1/notifications/:id 已随消息模型下线。
@@ -374,15 +806,21 @@
       // 不能拿 id 当 traceId 去查——那是两个不同的标识，永远查不到。
       let task = null;
       let chain = [];
+      let err = null;
       try {
         const res = await api("/v1/tasks/" + encodeURIComponent(msgId));
         task = (res && res.task) || null;
         chain = (res && res.chain) || [];
       } catch (e) {
-        task = null;
+        err = e;
       }
       if (!task) {
-        renderError(t("message.error.not_found", "任务不存在或已被清理"));
+        /* 三种「没渲染出任务」要分开：
+           · 404 —— 这个 id 真没有（任务被清理了）；
+           · 其余错误（断网、5xx）—— 没取到，可以重试；
+           · 200 但没 task —— 按不存在处理（接口形状异常时不留白页）。 */
+        if (err && err.status !== 404) renderLoadFailed(err);
+        else renderNotFound();
         return;
       }
       render(task, chain);
@@ -391,12 +829,10 @@
       //
       // 注意用 task 而不是旧的 m：m 是消息时代的变量，#80 之后已不存在。
       if (!(window.marked && window.marked.parse)) {
-        const params = safeParse(task.params);
-        const bodyText =
-          params.body || params.title || "```json\n" + JSON.stringify(params, null, 2) + "\n```";
+        const raw = bodySource(task);
         const tryRerender = () => {
           if (window.marked && window.marked.parse) {
-            renderBody(document.getElementById("msg-body"), bodyText);
+            renderBody(bodyEl, raw);
           } else {
             setTimeout(tryRerender, 50);
           }
@@ -405,7 +841,7 @@
       }
     }
     load();
-    /* 下拉刷新：消息详情页下拉重新拉取该消息（投递状态可能变化） */
+    /* 下拉刷新：任务详情页下拉重新拉取（状态与任务链都可能变化） */
     mountPullRefresh(load);
   })();
 </script>

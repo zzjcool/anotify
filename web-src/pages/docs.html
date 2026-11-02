@@ -1,20 +1,22 @@
 {{define "title"}}{{t "docs.title"}}{{end}} {{define
 "fonts-extra"}}&family=JetBrains+Mono:wght@400;500;600{{end}} {{define "style"}}
 <style>
-  /* 本页特有样式（共享样式见 ui.css / tokens.css）
-     code-block / copy-btn / tk-* / mono 等已抽入 ui.css 共享 */
+  /* 本页特有样式（共享样式见 ui.css / tokens.css）。
+     code-block / copy-btn / tk-* / mono / card / data-table / table-wrap /
+     badge / btn 已由 ui.css 提供，这里只补「长文档页」需要的版式类。
+     颜色只允许取 tokens.css 的语义 token，禁止硬编码色值。 */
 
-  /* 方法徽章 */
+  /* ---------- 方法徽章 ---------- */
   .method {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-family: "JetBrains Mono", monospace;
+    font-family: var(--font-mono);
     font-size: 0.68rem;
     font-weight: 600;
     letter-spacing: 0.03em;
     padding: 0.2rem 0.55rem;
-    border-radius: 6px;
+    border-radius: var(--r-xs);
     min-width: 52px;
   }
   .m-get {
@@ -38,7 +40,7 @@
     color: var(--accent);
   }
 
-  /* 参数表 */
+  /* ---------- 参数表（保留私有类，颜色全部 token 化） ---------- */
   .param-table {
     width: 100%;
     border-collapse: collapse;
@@ -55,12 +57,12 @@
   }
   .param-table td {
     padding: 0.7rem 0.9rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--line);
     vertical-align: top;
     font-size: 0.82rem;
   }
   .param-name {
-    font-family: "JetBrains Mono", monospace;
+    font-family: var(--font-mono);
     color: var(--accent-strong);
     font-size: 0.8rem;
     white-space: nowrap;
@@ -73,7 +75,7 @@
     }
   }
   .param-type {
-    font-family: "JetBrains Mono", monospace;
+    font-family: var(--font-mono);
     color: var(--faint);
     font-size: 0.72rem;
   }
@@ -81,7 +83,7 @@
     font-size: 0.62rem;
     font-weight: 600;
     padding: 0.1rem 0.4rem;
-    border-radius: 4px;
+    border-radius: var(--r-xs);
     background: var(--error-soft);
     color: var(--error);
     margin-left: 0.4rem;
@@ -97,72 +99,616 @@
     line-height: 1.55;
   }
   .param-desc code {
-    font-family: "JetBrains Mono", monospace;
+    font-family: var(--font-mono);
     font-size: 0.75rem;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--surface-3);
     padding: 0.05rem 0.35rem;
-    border-radius: 4px;
+    border-radius: var(--r-xs);
     color: var(--code-text);
   }
+
+  /* ---------- 锚点偏移：#agent/#api/... 的深链跳转（顶栏 64px） ---------- */
   .doc-anchor {
     scroll-margin-top: 5rem;
   }
+  .doc-sec {
+    margin-top: 40px;
+  }
+
+  /* ---------- 长文两列骨架：正文 + 右侧目录 ---------- */
+  .docs-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+  .docs-main {
+    min-width: 0;
+  }
+
+  /* ---------- 章节标题：全页一档 24px ----------
+     原来 #agent 是 text-3xl(30px)、其余 text-2xl(24px)，同页两种章节字号。
+     这里统一成 24px Inter 600；不叠品牌衬线字体类，也不用文字反白工具类。 */
+  .doc-h2 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-sans);
+    font-size: 24px;
+    line-height: 1.25;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--text);
+  }
+  /* #events / #node 的章节标题就是接口路径本身：等宽、降半档，信息不丢 */
+  .doc-h2-code {
+    font-family: var(--font-mono);
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    word-break: break-all;
+  }
+  .doc-lede {
+    margin-top: 10px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--muted);
+  }
+
+  /* ---------- 双列 / 三列小块 ---------- */
+  .doc-grid-2 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .doc-grid-3 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin-top: 14px;
+  }
+  @media (min-width: 768px) {
+    .doc-grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+  }
+  @media (min-width: 900px) {
+    .doc-grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  /* ---------- 步骤卡 / 认证卡 ---------- */
+  .doc-step {
+    padding: 14px 16px;
+  }
+  .doc-step-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .doc-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex: none;
+    border-radius: var(--r-xs);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .doc-step-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .doc-step-desc {
+    margin-top: 8px;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--muted);
+  }
+  .doc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--muted);
+  }
+  .doc-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+    padding-left: 16px;
+    border-left: 1px solid var(--line);
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--muted);
+  }
+
+  /* ---------- API 概览的键值小卡 ---------- */
+  .doc-kv {
+    padding: 12px 14px;
+  }
+  .doc-kv-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .doc-kv-value {
+    display: block;
+    margin-top: 6px;
+    font-size: 12.5px;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .doc-kv-hint {
+    margin-top: 4px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--faint);
+  }
+
+  /* ---------- 端点分组卡 ---------- */
+  .doc-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .doc-card-title {
+    min-width: 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .doc-card-count {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--faint);
+  }
+  /* 93 行端点分两栏流动：不加 JS、不删 DOM，e2e 的 tbody tr 计数照旧 */
+  .doc-ep-grid {
+    margin-top: 16px;
+    columns: 1;
+    column-gap: 12px;
+  }
+  .doc-ep {
+    overflow: hidden;
+    break-inside: avoid;
+    margin: 0 0 8px;
+  }
+  @media (min-width: 1024px) {
+    .doc-ep-grid {
+      columns: 2;
+    }
+  }
+  .doc-ep-table {
+    overflow-x: auto;
+  }
+  .doc-ep-data td {
+    padding: 4px 12px;
+    font-size: 11.5px;
+    border-bottom: 1px solid var(--line);
+  }
+  .doc-ep-m {
+    width: 1%;
+    white-space: nowrap;
+  }
+  .doc-ep-path {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  /* 端点清单的空态（sitegen 没加载 spec 时） */
+  .doc-empty-icon {
+    color: var(--faint);
+  }
+  .doc-empty-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  /* ---------- 折叠块（<details>）：DOM 保留、只收起视觉 ----------
+     折叠一律用 <details>，不删节点：e2e 要数 #endpoints 里的 tbody tr / .card。 */
+  .doc-fold {
+    margin-top: 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-1);
+    overflow: hidden;
+  }
+  .doc-fold > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--muted);
+    list-style: none;
+    cursor: pointer;
+  }
+  .doc-fold > summary::-webkit-details-marker {
+    display: none;
+  }
+  .doc-fold > summary:hover {
+    color: var(--text);
+    background: var(--surface-2);
+  }
+  .doc-fold > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .doc-fold[open] > summary {
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  /* 折叠指示器用纯 CSS 画的箭头（不依赖字体字形：▸ 在无 CJK 扩展字体的
+     环境里会渲染成豆腐块） */
+  .doc-fold > summary::after {
+    content: "";
+    flex: none;
+    margin-left: auto;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--faint);
+    border-bottom: 1.5px solid var(--faint);
+    transform: rotate(-45deg);
+    transition: transform var(--dur-fast) var(--ease);
+  }
+  .doc-fold[open] > summary::after {
+    border-color: var(--accent);
+    transform: rotate(45deg);
+  }
+  .doc-fold-body {
+    padding: 0;
+  }
+  /* 折叠块内部不要再套一层边框/圆角（否则双线） */
+  .doc-fold .code-block {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+  .doc-fold .table-wrap {
+    border: 0;
+    border-radius: 0;
+  }
+
+  /* ---------- 提示 / 说明 / ASCII 图 ---------- */
+  .doc-note {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--muted);
+  }
+  .doc-hint {
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--muted);
+  }
+  .doc-hint b {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .doc-hint-warn {
+    border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+    background: color-mix(in srgb, var(--warn) 10%, var(--surface-1));
+  }
+  .doc-hint-warn b {
+    color: var(--warn);
+  }
+  .doc-hint-ok {
+    border-color: color-mix(in srgb, var(--success) 30%, transparent);
+    background: color-mix(in srgb, var(--success) 10%, var(--surface-1));
+  }
+  .doc-hint-ok b {
+    color: var(--success);
+  }
+  .doc-journey {
+    padding: 12px 14px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--muted);
+    overflow-x: auto;
+  }
+
+  /* ---------- 目录（桌面右侧 sticky） ---------- */
+  .doc-toc {
+    display: none;
+  }
+  .doc-toc-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .doc-toc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 10px;
+    border-left: 1px solid var(--line);
+  }
   .toc-link {
     display: block;
-    padding: 0.3rem 0.8rem;
-    border-radius: 8px;
-    font-size: 0.78rem;
+    margin-left: -1px;
+    padding: 5px 10px;
+    border-left: 1px solid transparent;
+    border-radius: 0 var(--r-xs) var(--r-xs) 0;
+    font-size: 12.5px;
     color: var(--muted);
-    transition: all 0.15s ease;
+    text-decoration: none;
+    transition:
+      color var(--dur-fast) var(--ease),
+      background var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease);
   }
   .toc-link:hover {
     color: var(--text);
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-2);
+  }
+
+  /* ---------- 目录（<1280 折叠成顶部 chips） ---------- */
+  .doc-toc-m {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-1);
+  }
+  .doc-toc-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    list-style: none;
+    cursor: pointer;
+  }
+  .doc-toc-summary::-webkit-details-marker {
+    display: none;
+  }
+  .doc-toc-summary::after {
+    content: "";
+    flex: none;
+    margin-left: auto;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--faint);
+    border-bottom: 1.5px solid var(--faint);
+    transform: rotate(-45deg);
+    transition: transform var(--dur-fast) var(--ease);
+  }
+  .doc-toc-m[open] .doc-toc-summary::after {
+    border-color: var(--accent);
+    transform: rotate(45deg);
+  }
+  .doc-toc-summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: var(--r-md);
+  }
+  .doc-toc-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 12px 12px;
+  }
+  .doc-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    font-size: 12px;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .doc-chip:hover {
+    color: var(--text);
+    border-color: var(--line-strong);
+  }
+
+  /* 高亮态：桌面 rail 与移动 chips 共用，切类名（不再写内联 style） */
+  .toc-on {
+    color: var(--text);
+    background: var(--accent-soft);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+
+  /* <details>/<a> 自带 display 会盖掉 Tailwind .hidden，这里给显式兜底 */
+  .doc-chip[hidden],
+  .toc-link[hidden] {
+    display: none;
+  }
+
+  @media (min-width: 1280px) {
+    .docs-layout {
+      grid-template-columns: minmax(0, 1fr) 196px;
+      gap: 32px;
+    }
+    .doc-toc {
+      display: block;
+      position: sticky;
+      top: 84px;
+      align-self: start;
+    }
+    .doc-toc-m {
+      display: none;
+    }
+  }
+
+  /* ---------- 返回顶部 ---------- */
+  .doc-backtop {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: var(--z-header);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-full);
+    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+    backdrop-filter: blur(8px);
+    color: var(--muted);
+    box-shadow: var(--shadow-2);
+    cursor: pointer;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(6px);
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease),
+      color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+  .doc-backtop:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .doc-backtop:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .doc-backtop-shown {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+  }
+  @media (max-width: 639px) {
+    .doc-backtop {
+      right: 14px;
+      bottom: 14px;
+      width: 38px;
+      height: 38px;
+    }
+    .doc-h2 {
+      font-size: 20px;
+    }
+    .doc-h2-code {
+      font-size: 16px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .doc-backtop {
+      transition: none;
+    }
+    .doc-fold > summary::after,
+    .doc-toc-summary::after {
+      transition: none;
+    }
   }
 </style>
 {{end}} {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-6xl">
-    <div class="flex gap-10">
-      <!-- 正文 -->
-      <div class="min-w-0 flex-1" id="docs-content">
+  <div class="page">
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "docs.title"}}</h2>
+        <p class="page-sub">{{t "docs.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <a class="btn btn-ghost btn-sm" href="#endpoints"
+          >{{t "docs.toc.endpoints"}}</a
+        >
+      </div>
+    </div>
+
+    <div class="docs-layout">
+      <!-- 窄屏目录：<1280 折成 chips。原来整块是 hidden xl:block，
+           窄屏等于没有目录（长页无导航）。 -->
+      <details id="docs-toc-m" class="doc-toc-m">
+        <summary class="doc-toc-summary">
+          <span class="doc-toc-title">{{t "docs.toc_heading"}}</span>
+        </summary>
+        <div class="doc-toc-chips">
+          <a class="doc-chip" href="#agent" data-toc="#agent"
+            >{{t "docs.toc.agent"}}</a
+          >
+          <a class="doc-chip" href="#api" data-toc="#api"
+            >{{t "docs.toc.api"}}</a
+          >
+          <a class="doc-chip" href="#endpoints" data-toc="#endpoints"
+            >{{t "docs.toc.endpoints"}}</a
+          >
+          <a class="doc-chip" href="#auth" data-toc="#auth"
+            >{{t "docs.toc.auth"}}</a
+          >
+          <a class="doc-chip" href="#events" data-toc="#events"
+            >{{t "docs.toc.events"}}</a
+          >
+          <a class="doc-chip" href="#webpush" data-toc="#webpush" data-push-doc
+            >{{t "docs.toc.webpush"}}</a
+          >
+          <a class="doc-chip" href="#node" data-toc="#node"
+            >{{t "docs.toc.node"}}</a
+          >
+        </div>
+      </details>
+
+      <div class="docs-main" id="docs-content">
         <!-- ===== Connect Agent ===== -->
         <section id="agent" class="doc-anchor reveal visible">
-          <h2 class="font-display text-3xl text-white">
-            {{t "docs.agent.title"}}
-          </h2>
-          <p class="mt-4 text-[15px] leading-relaxed text-zinc-400">
-            {{tHTML "docs.agent.intro"}}
-          </p>
+          <h2 class="doc-h2">{{t "docs.agent.title"}}</h2>
+          <p class="doc-lede">{{tHTML "docs.agent.intro"}}</p>
 
-          <div class="mt-6 grid gap-4 md:grid-cols-2">
-            <div class="card p-5">
-              <div class="flex items-center gap-2.5">
-                <span
-                  class="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-400/10 text-sm text-indigo-300"
-                  >1</span
-                >
-                <b class="text-sm text-white">{{t "docs.agent.step1.title"}}</b>
+          <div class="doc-grid-2">
+            <div class="card doc-step">
+              <div class="doc-step-head">
+                <span class="doc-step-num">1</span>
+                <b class="doc-step-title">{{t "docs.agent.step1.title"}}</b>
               </div>
-              <p class="mt-2.5 text-[13px] leading-relaxed text-zinc-500">
-                {{tHTML "docs.agent.step1.desc"}}
-              </p>
+              <p class="doc-step-desc">{{tHTML "docs.agent.step1.desc"}}</p>
             </div>
-            <div class="card p-5">
-              <div class="flex items-center gap-2.5">
-                <span
-                  class="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-400/10 text-sm text-indigo-300"
-                  >2</span
-                >
-                <b class="text-sm text-white">{{t "docs.agent.step2.title"}}</b>
+            <div class="card doc-step">
+              <div class="doc-step-head">
+                <span class="doc-step-num">2</span>
+                <b class="doc-step-title">{{t "docs.agent.step2.title"}}</b>
               </div>
-              <p class="mt-2.5 text-[13px] leading-relaxed text-zinc-500">
-                {{tHTML "docs.agent.step2.desc"}}
-              </p>
+              <p class="doc-step-desc">{{tHTML "docs.agent.step2.desc"}}</p>
             </div>
           </div>
 
-          <div class="code-block mt-6">
+          <div class="code-block mt-4">
             <div class="code-head">
               <span>{{t "docs.agent.curl.title"}}</span
               ><button class="copy-btn" onclick="copyBlock(this)">
@@ -184,13 +730,13 @@
             </div>
           </div>
 
-          <div class="card mt-6 p-5">
-            <div class="text-xs font-medium text-zinc-500">
+          <!-- 旅程图是解释性插图，不是接入步骤 → 默认折叠（首屏与 #agent 两步保持展开） -->
+          <details class="doc-fold">
+            <summary>
               {{t "docs.agent.journey.title"}}
-            </div>
-            <pre
-              class="mono mt-3 overflow-x-auto text-[11.5px] leading-relaxed text-zinc-400"
-            >
+            </summary>
+            <div class="doc-fold-body">
+<pre class="doc-journey">
  Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
     │                        │                        │                        │
     │ ① agent_settled        │                        │                        │
@@ -199,161 +745,104 @@
     │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
     │                        │                        │     ⑦ SW showNotification
     │                        │                        │     ⑧ system banner       │</pre>
-          </div>
+            </div>
+          </details>
         </section>
 
         <!-- ===== API overview ===== -->
-        <section id="api" class="doc-anchor mt-16 reveal visible">
-          <h2 class="font-display text-2xl text-white">
-            {{t "docs.api.title"}}
-          </h2>
-          <div class="mt-5 grid gap-3 sm:grid-cols-2">
-            <div class="card p-4">
-              <div class="text-[11px] uppercase tracking-wide text-zinc-500">
-                {{t "docs.api.base_url"}}
-              </div>
-              <code class="mono mt-1.5 block text-[13px] text-zinc-200"
+        <section id="api" class="doc-anchor doc-sec reveal visible">
+          <h2 class="doc-h2">{{t "docs.api.title"}}</h2>
+          <div class="doc-grid-2">
+            <div class="card doc-kv">
+              <div class="doc-kv-label">{{t "docs.api.base_url"}}</div>
+              <code class="mono doc-kv-value"
                 >https://{{t "docs.your_domain"}}</code
               >
-              <div class="mt-1 text-[11px] text-zinc-600">
-                {{t "docs.api.base_url_desc"}}
-              </div>
+              <div class="doc-kv-hint">{{t "docs.api.base_url_desc"}}</div>
             </div>
-            <div class="card p-4">
-              <div class="text-[11px] uppercase tracking-wide text-zinc-500">
-                {{t "docs.api.version"}}
-              </div>
-              <code class="mono mt-1.5 block text-[13px] text-zinc-200"
-                >/v1</code
-              >
-              <div class="mt-1 text-[11px] text-zinc-600">
-                {{t "docs.api.version_desc"}}
-              </div>
+            <div class="card doc-kv">
+              <div class="doc-kv-label">{{t "docs.api.version"}}</div>
+              <code class="mono doc-kv-value">/v1</code>
+              <div class="doc-kv-hint">{{t "docs.api.version_desc"}}</div>
             </div>
           </div>
 
-          <div class="card mt-5 overflow-hidden">
-            <div
-              class="border-b border-white/[0.06] px-5 py-3 text-sm font-medium text-white"
-            >
+          <!-- 接口地图与下方「全部端点」同源 → 默认折叠，避免同一份 URL 表翻两遍 -->
+          <details class="doc-fold">
+            <summary>
               {{t "docs.api.map.title"}}
+            </summary>
+            <div class="doc-fold-body">
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>{{t "docs.table.method"}}</th>
+                      <th>{{t "docs.table.path"}}</th>
+                      <th>{{t "docs.table.desc"}}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><span class="method m-post">POST</span></td>
+                      <td class="mono">/v1/events</td>
+                      <td>{{t "docs.api.map.notify"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-get">GET</span></td>
+                      <td class="mono">/v1/tasks</td>
+                      <td>{{t "docs.api.map.tasks"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-get">GET</span></td>
+                      <td class="mono">/v1/devices</td>
+                      <td>{{t "docs.api.map.devices_list"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-post">POST</span></td>
+                      <td class="mono">/v1/devices</td>
+                      <td>{{t "docs.api.map.devices_sub"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-patch">PATCH</span></td>
+                      <td class="mono">/v1/devices/:id</td>
+                      <td>{{t "docs.api.map.devices_update"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-delete">DEL</span></td>
+                      <td class="mono">/v1/devices/:id</td>
+                      <td>{{t "docs.api.map.devices_delete"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-ws">WS</span></td>
+                      <td class="mono">/v1/node/stream</td>
+                      <td>{{t "docs.api.map.stream"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-get">GET</span></td>
+                      <td class="mono">/v1/keys</td>
+                      <td>{{t "docs.api.map.keys_list"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-post">POST</span></td>
+                      <td class="mono">/v1/keys</td>
+                      <td>{{t "docs.api.map.keys_create"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-post">POST</span></td>
+                      <td class="mono">/v1/auth/register · login</td>
+                      <td>{{t "docs.api.map.passkey"}}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="method m-get">GET</span></td>
+                      <td class="mono">/v1/vapid-public-key</td>
+                      <td>{{t "docs.api.map.vapid"}}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
-            <div class="overflow-x-auto">
-              <table class="w-full min-w-[520px] text-[12.5px]">
-                <tbody class="divide-y divide-white/[0.04]">
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-post">POST</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/events</td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.notify"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-get">GET</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">
-                      /v1/tasks
-                    </td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.tasks"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-get">GET</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/devices</td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.devices_list"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-post">POST</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/devices</td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.devices_sub"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-patch">PATCH</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">
-                      /v1/devices/:id
-                    </td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.devices_update"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-delete">DEL</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">
-                      /v1/devices/:id
-                    </td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.devices_delete"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-ws">WS</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/node/stream</td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.stream"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-get">GET</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/keys</td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.keys_list"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-post">POST</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">/v1/keys</td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.keys_create"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-post">POST</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">
-                      /v1/auth/register · login
-                    </td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.passkey"}}
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-white/[0.02]">
-                    <td class="px-5 py-2.5">
-                      <span class="method m-get">GET</span>
-                    </td>
-                    <td class="px-2 py-2.5 mono text-zinc-300">
-                      /v1/vapid-public-key
-                    </td>
-                    <td class="px-5 py-2.5 text-zinc-500">
-                      {{t "docs.api.map.vapid"}}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
+          </details>
         </section>
 
         <!-- ===== 全部端点（构建期从 api/openapi.yaml 生成，不手维护） =====
@@ -363,36 +852,34 @@
              端点；这里直接把 spec 按 tag 铺成静态 HTML，spec 改了重跑 sitegen
              就同步，而且不引入任何运行时 JS / 渲染库。
 
-             已弃用的旧「通知终端」端点（devices）在解析时就过滤掉，不展示。 -->
-        <section id="endpoints" class="doc-anchor mt-16 reveal visible">
-          <h2 class="font-display text-2xl text-white">
-            {{t "docs.endpoints.title"}}
-          </h2>
-          <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
-            {{t "docs.endpoints.intro"}}
-          </p>
-          <div class="mt-5 space-y-4">
+             已弃用的旧「通知终端」端点（devices）在解析时就过滤掉，不展示。
+
+             版式：93 行按 tag 分成 17 张 .card，桌面两栏 CSS columns 流动
+             （columns 只动版式，不动 DOM —— e2e 的 tbody tr ≥80 与 .card ≥10
+             两个计数都还在；这一节**不折进 <details>**，因为 e2e 断言读的是
+             #endpoints 的 innerText，折叠后 innerText 会丢掉隐藏行）。 -->
+        <section id="endpoints" class="doc-anchor doc-sec reveal visible">
+          <h2 class="doc-h2">{{t "docs.endpoints.title"}}</h2>
+          <p class="doc-lede">{{t "docs.endpoints.intro"}}</p>
+          {{if .OpenAPI}}
+          <div class="doc-ep-grid">
             {{range .OpenAPI}}
-            <div class="card overflow-hidden">
-              <div
-                class="flex items-center justify-between border-b border-white/[0.06] px-5 py-3"
-              >
-                <span class="text-sm font-medium text-white"
+            <div class="card doc-ep">
+              <div class="doc-card-head">
+                <span class="doc-card-title"
                   >{{t (printf "docs.openapi.tag.%s" .Tag)}}</span
                 >
-                <span class="text-[11px] text-zinc-500">{{.Total}}</span>
+                <span class="doc-card-count">{{.Total}}</span>
               </div>
-              <div class="overflow-x-auto">
-                <table class="w-full min-w-[520px] text-[12.5px]">
-                  <tbody class="divide-y divide-white/[0.04]">
+              <div class="doc-ep-table">
+                <table class="data-table doc-ep-data">
+                  <tbody>
                     {{range .Ops}}
-                    <tr class="hover:bg-white/[0.02]">
-                      <td class="px-5 py-2.5">
+                    <tr>
+                      <td class="doc-ep-m">
                         <span class="method {{.Class}}">{{.Method}}</span>
                       </td>
-                      <td class="px-2 py-2.5 mono text-zinc-300">
-                        {{.Path}}
-                      </td>
+                      <td class="doc-ep-path">{{.Path}}</td>
                     </tr>
                     {{end}}
                   </tbody>
@@ -401,43 +888,55 @@
             </div>
             {{end}}
           </div>
+          {{else}}
+          <!-- 真实空态：sitegen 没加载到 api/openapi.yaml（例如镜像漏 COPY api/）
+               时这一节会只剩标题。不能静默留白 —— 读者会以为「没有任何端点」。 -->
+          <div class="empty">
+            <svg
+              class="doc-empty-icon"
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M4 7h16M4 12h16M4 17h10"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+            <b class="doc-empty-title">{{t "docs.endpoints.empty_title"}}</b>
+            <span>{{t "docs.endpoints.empty_desc"}}</span>
+          </div>
+          {{end}}
         </section>
 
         <!-- ===== Authentication ===== -->
-        <section id="auth" class="doc-anchor mt-16 reveal visible">
-          <h2 class="font-display text-2xl text-white">
-            {{t "docs.auth.title"}}
-          </h2>
-          <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
-            {{tHTML "docs.auth.intro"}}
-          </p>
-          <div class="mt-5 grid gap-4 md:grid-cols-2">
-            <div class="card p-5">
-              <div
-                class="flex items-center gap-2 text-sm font-medium text-white"
-              >
-                <span class="method m-post">KEY</span> {{t
-                "docs.auth.key.title"}}
+        <section id="auth" class="doc-anchor doc-sec reveal visible">
+          <h2 class="doc-h2">{{t "docs.auth.title"}}</h2>
+          <p class="doc-lede">{{tHTML "docs.auth.intro"}}</p>
+          <div class="doc-grid-2">
+            <div class="card doc-step">
+              <div class="doc-step-head">
+                <span class="method m-post">KEY</span>
+                <b class="doc-step-title">{{t "docs.auth.key.title"}}</b>
               </div>
-              <ul
-                class="mt-3 space-y-1.5 text-[13px] leading-relaxed text-zinc-500"
-              >
+              <ul class="doc-list">
                 <li>{{t "docs.auth.key.li1"}}</li>
                 <li>{{tHTML "docs.auth.key.li2"}}</li>
                 <li>{{tHTML "docs.auth.key.li3"}}</li>
                 <li>{{t "docs.auth.key.li4"}}</li>
               </ul>
             </div>
-            <div class="card p-5">
-              <div
-                class="flex items-center gap-2 text-sm font-medium text-white"
-              >
-                <span class="method m-ws">PASSKEY</span> {{t
-                "docs.auth.passkey.title"}}
+            <div class="card doc-step">
+              <div class="doc-step-head">
+                <span class="method m-ws">PASSKEY</span>
+                <b class="doc-step-title">{{t "docs.auth.passkey.title"}}</b>
               </div>
-              <ul
-                class="mt-3 space-y-1.5 text-[13px] leading-relaxed text-zinc-500"
-              >
+              <ul class="doc-list">
                 <li>{{t "docs.auth.passkey.li1"}}</li>
                 <li>{{t "docs.auth.passkey.li2"}}</li>
                 <li>{{t "docs.auth.passkey.li3"}}</li>
@@ -448,25 +947,19 @@
         </section>
 
         <!-- ===== POST /v1/events（事件入口）===== -->
-        <section id="events" class="doc-anchor mt-16 reveal visible">
-          <div class="flex items-center gap-3">
+        <section id="events" class="doc-anchor doc-sec reveal visible">
+          <h2 class="doc-h2">
             <span class="method m-post">POST</span>
-            <code class="mono text-lg text-white">/v1/events</code>
-            <span
-              class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold"
-              style="background: var(--accent-soft); color: var(--accent)"
-              >{{t "docs.events.core"}}</span
-            >
-          </div>
-          <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
-            {{t "docs.events.intro"}}
-          </p>
+            <code class="doc-h2-code">/v1/events</code>
+            <span class="badge badge-accent">{{t "docs.events.core"}}</span>
+          </h2>
+          <p class="doc-lede">{{t "docs.events.intro"}}</p>
 
-          <div class="card mt-5 overflow-hidden">
-            <div
-              class="border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs font-semibold text-zinc-300"
-            >
-              {{t "docs.events.params.title"}}
+          <div class="card mt-4">
+            <div class="doc-card-head">
+              <span class="doc-card-title"
+                >{{t "docs.events.params.title"}}</span
+              >
             </div>
             <div class="overflow-x-auto">
               <table class="param-table">
@@ -516,138 +1009,137 @@
             </div>
           </div>
 
-          <div class="code-block mt-5">
-            <div class="code-head">
-              <span>{{t "docs.events.curl.title"}}</span
-              ><button class="copy-btn" onclick="copyBlock(this)">
-                {{t "docs.copy"}}
-              </button>
+          <!-- curl 示例是参数表的可运行副本 → 默认折叠 -->
+          <details class="doc-fold">
+            <summary>
+              {{t "docs.events.curl.title"}}
+            </summary>
+            <div class="doc-fold-body">
+              <div class="code-block">
+                <div class="code-head">
+                  <span>{{t "docs.events.curl.title"}}</span
+                  ><button class="copy-btn" onclick="copyBlock(this)">
+                    {{t "docs.copy"}}
+                  </button>
+                </div>
+                <div class="code-body">
+                  curl -X POST https://{{t "docs.your_domain"}}/v1/events \ -H
+                  <span class="tk-str"
+                    >"Authorization: Bearer ant_live_9f3a2c8e…"</span
+                  >
+                  \ -H
+                  <span class="tk-str">"Content-Type: application/json"</span> \
+                  -d
+                  <span class="tk-str"
+                    >'{ "source": "github", "type": "pull_request.opened",
+                    "idemKey": "pr-1234-opened", "payload": { "pr": 1234, "repo":
+                    "acme/api" } }'</span
+                  >
+                </div>
+              </div>
             </div>
-            <div class="code-body">
-              curl -X POST https://{{t "docs.your_domain"}}/v1/events \ -H
-              <span class="tk-str"
-                >"Authorization: Bearer ant_live_9f3a2c8e…"</span
-              >
-              \ -H
-              <span class="tk-str">"Content-Type: application/json"</span> \ -d
-              <span class="tk-str"
-                >'{ "source": "github", "type": "pull_request.opened", "idemKey":
-                "pr-1234-opened", "payload": { "pr": 1234, "repo": "acme/api" }
-                }'</span
-              >
-            </div>
-          </div>
+          </details>
 
-          <div
-            class="mt-5 rounded-lg border border-white/10 bg-white/[0.02] p-4 text-[13px] leading-relaxed text-zinc-400"
-          >
-            {{t "docs.events.note"}}
-          </div>
+          <div class="doc-note">{{t "docs.events.note"}}</div>
         </section>
 
         <!-- ===== Web Push subscription ===== -->
-        <section id="webpush" class="doc-anchor mt-16 reveal visible hidden" data-push-doc>
-          <h2 class="font-display text-2xl text-white">
-            {{t "docs.webpush.title"}}
-          </h2>
-          <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
-            {{tHTML "docs.webpush.intro"}}
-          </p>
+        <section
+          id="webpush"
+          class="doc-anchor doc-sec reveal visible hidden"
+          data-push-doc
+        >
+          <h2 class="doc-h2">{{t "docs.webpush.title"}}</h2>
+          <p class="doc-lede">{{tHTML "docs.webpush.intro"}}</p>
 
-          <ol
-            class="mt-5 space-y-3 border-l border-white/10 pl-5 text-[13px] text-zinc-400"
-          >
+          <ol class="doc-steps">
             <li>{{tHTML "docs.webpush.step1"}}</li>
             <li>{{tHTML "docs.webpush.step2"}}</li>
             <li>{{tHTML "docs.webpush.step3"}}</li>
             <li>{{tHTML "docs.webpush.step4"}}</li>
           </ol>
 
-          <div class="code-block mt-5">
-            <div class="code-head">
-              <span>{{t "docs.webpush.code.title"}}</span
-              ><button class="copy-btn" onclick="copyBlock(this)">
-                {{t "docs.copy"}}
-              </button>
-            </div>
-            <div class="code-body">
-              <span class="tk-comment">{{t "docs.webpush.code.comment1"}}</span>
-              <span class="tk-key">const</span> reg =
-              <span class="tk-key">await</span>
-              navigator.serviceWorker.register(<span class="tk-str"
-                >"/sw.js"</span
-              >); <span class="tk-key">const</span> { publicKey } =
-              <span class="tk-key">await</span> fetch(<span class="tk-str"
-                >"/v1/vapid-public-key"</span
-              >).then(r =&gt; r.json());
+          <details class="doc-fold">
+            <summary>
+              {{t "docs.webpush.code.title"}}
+            </summary>
+            <div class="doc-fold-body">
+              <div class="code-block">
+                <div class="code-head">
+                  <span>{{t "docs.webpush.code.title"}}</span
+                  ><button class="copy-btn" onclick="copyBlock(this)">
+                    {{t "docs.copy"}}
+                  </button>
+                </div>
+                <div class="code-body">
+                  <span class="tk-comment"
+                    >{{t "docs.webpush.code.comment1"}}</span
+                  >
+                  <span class="tk-key">const</span> reg =
+                  <span class="tk-key">await</span>
+                  navigator.serviceWorker.register(<span class="tk-str"
+                    >"/sw.js"</span
+                  >); <span class="tk-key">const</span> { publicKey } =
+                  <span class="tk-key">await</span> fetch(<span class="tk-str"
+                    >"/v1/vapid-public-key"</span
+                  >).then(r =&gt; r.json());
 
-              <span class="tk-comment">{{t "docs.webpush.code.comment2"}}</span>
-              <span class="tk-key">const</span> sub =
-              <span class="tk-key">await</span> reg.pushManager.subscribe({
-              userVisibleOnly: <span class="tk-num">true</span>,
-              applicationServerKey: urlBase64ToUint8Array(publicKey), });
+                  <span class="tk-comment"
+                    >{{t "docs.webpush.code.comment2"}}</span
+                  >
+                  <span class="tk-key">const</span> sub =
+                  <span class="tk-key">await</span> reg.pushManager.subscribe({
+                  userVisibleOnly: <span class="tk-num">true</span>,
+                  applicationServerKey: urlBase64ToUint8Array(publicKey), });
 
-              <span class="tk-comment">{{t "docs.webpush.code.comment3"}}</span>
-              <span class="tk-key">await</span> fetch(<span class="tk-str"
-                >"/v1/devices"</span
-              >, { method: <span class="tk-str">"POST"</span>, headers: {
-              <span class="tk-str">"Content-Type"</span>:
-              <span class="tk-str">"application/json"</span> }, body:
-              JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys,
-              <span class="tk-comment"
-                >{{t "docs.webpush.code.comment_p256dh"}}</span
-              >
-              platform: <span class="tk-str">"ios"</span>,
-              <span class="tk-comment"
-                >{{t "docs.webpush.code.comment_platform"}}</span
-              >
-              userAgent: navigator.userAgent, }), });
+                  <span class="tk-comment"
+                    >{{t "docs.webpush.code.comment3"}}</span
+                  >
+                  <span class="tk-key">await</span> fetch(<span class="tk-str"
+                    >"/v1/devices"</span
+                  >, { method: <span class="tk-str">"POST"</span>, headers: {
+                  <span class="tk-str">"Content-Type"</span>:
+                  <span class="tk-str">"application/json"</span> }, body:
+                  JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys,
+                  <span class="tk-comment"
+                    >{{t "docs.webpush.code.comment_p256dh"}}</span
+                  >
+                  platform: <span class="tk-str">"ios"</span>,
+                  <span class="tk-comment"
+                    >{{t "docs.webpush.code.comment_platform"}}</span
+                  >
+                  userAgent: navigator.userAgent, }), });
+                </div>
+              </div>
             </div>
-          </div>
+          </details>
 
-          <div class="mt-5 grid gap-3 md:grid-cols-3 text-xs">
-            <div
-              class="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-3"
-            >
-              <b class="text-amber-300 block">{{t "docs.webpush.ios.title"}}</b>
-              <span class="text-amber-200/70"
-                >{{t "docs.webpush.ios.desc"}}</span
-              >
+          <div class="doc-grid-3">
+            <div class="doc-hint doc-hint-warn">
+              <b>{{t "docs.webpush.ios.title"}}</b>
+              <span>{{t "docs.webpush.ios.desc"}}</span>
             </div>
-            <div
-              class="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] p-3"
-            >
-              <b class="text-emerald-300 block"
-                >{{t "docs.webpush.android.title"}}</b
-              >
-              <span class="text-emerald-200/70"
-                >{{t "docs.webpush.android.desc"}}</span
-              >
+            <div class="doc-hint doc-hint-ok">
+              <b>{{t "docs.webpush.android.title"}}</b>
+              <span>{{t "docs.webpush.android.desc"}}</span>
             </div>
-            <div class="rounded-lg border border-white/10 bg-white/[0.02] p-3">
-              <b class="text-zinc-300 block">{{t "docs.webpush.e2e.title"}}</b>
-              <span class="text-zinc-500">{{t "docs.webpush.e2e.desc"}}</span>
+            <div class="doc-hint">
+              <b>{{t "docs.webpush.e2e.title"}}</b>
+              <span>{{t "docs.webpush.e2e.desc"}}</span>
             </div>
           </div>
         </section>
 
-        <!-- ===== WebSocket receiving ===== -->
         <!-- ===== 节点 WS 协议 ===== -->
-        <section id="node" class="doc-anchor mt-16 reveal visible">
-          <div class="flex items-center gap-3">
+        <section id="node" class="doc-anchor doc-sec reveal visible">
+          <h2 class="doc-h2">
             <span class="method m-ws">WS</span>
-            <code class="mono text-lg text-white">/v1/node/stream</code>
-            <span
-              class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold"
-              style="background: var(--success-soft); color: var(--success)"
-              >nodeToken</span
-            >
-          </div>
-          <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
-            {{t "docs.node.intro"}}
-          </p>
+            <code class="doc-h2-code">/v1/node/stream</code>
+            <span class="badge badge-success">nodeToken</span>
+          </h2>
+          <p class="doc-lede">{{t "docs.node.intro"}}</p>
 
-          <div class="code-block mt-5">
+          <div class="code-block mt-4">
             <div class="code-head">
               <span>{{t "docs.node.connect.title"}}</span
               ><button class="copy-btn" onclick="copyBlock(this)">
@@ -661,7 +1153,7 @@
             </div>
           </div>
 
-          <div class="mt-5 grid gap-4 lg:grid-cols-2">
+          <div class="doc-grid-2">
             <div class="code-block">
               <div class="code-head">
                 <span>{{t "docs.node.up.title"}}</span
@@ -696,34 +1188,65 @@
             </div>
           </div>
 
-          <div
-            class="mt-5 rounded-lg border border-white/10 bg-white/[0.02] p-4 text-[13px] leading-relaxed text-zinc-400"
-          >
-            {{t "docs.node.note"}}
-          </div>
+          <div class="doc-note">{{t "docs.node.note"}}</div>
         </section>
-
       </div>
 
-      <!-- Right sidebar TOC (xl breakpoint) -->
-      <nav class="sticky top-24 hidden h-fit w-52 shrink-0 self-start xl:block">
-        <div
-          class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500"
-        >
-          {{t "docs.toc_heading"}}
-        </div>
-        <div class="mt-3 space-y-0.5">
-          <a href="#agent" class="toc-link">{{t "docs.toc.agent"}}</a>
-          <a href="#api" class="toc-link">{{t "docs.toc.api"}}</a>
-          <a href="#endpoints" class="toc-link">{{t "docs.toc.endpoints"}}</a>
-          <a href="#auth" class="toc-link">{{t "docs.toc.auth"}}</a>
-          <a href="#events" class="toc-link">{{t "docs.toc.events"}}</a>
-          <a href="#webpush" class="toc-link">{{t "docs.toc.webpush"}}</a>
-          <a href="#node" class="toc-link">{{t "docs.toc.node"}}</a>
+      <!-- 右侧「本页目录」：≥1280 sticky 跟随（<1280 用上面的 chips 版） -->
+      <nav id="docs-toc" class="doc-toc" aria-label="{{t "docs.toc_heading"}}">
+        <div class="doc-toc-title">{{t "docs.toc_heading"}}</div>
+        <div class="doc-toc-list">
+          <a class="toc-link" href="#agent" data-toc="#agent"
+            >{{t "docs.toc.agent"}}</a
+          >
+          <a class="toc-link" href="#api" data-toc="#api"
+            >{{t "docs.toc.api"}}</a
+          >
+          <a class="toc-link" href="#endpoints" data-toc="#endpoints"
+            >{{t "docs.toc.endpoints"}}</a
+          >
+          <a class="toc-link" href="#auth" data-toc="#auth"
+            >{{t "docs.toc.auth"}}</a
+          >
+          <a class="toc-link" href="#events" data-toc="#events"
+            >{{t "docs.toc.events"}}</a
+          >
+          <a class="toc-link" href="#webpush" data-toc="#webpush" data-push-doc
+            >{{t "docs.toc.webpush"}}</a
+          >
+          <a class="toc-link" href="#node" data-toc="#node"
+            >{{t "docs.toc.node"}}</a
+          >
         </div>
       </nav>
     </div>
   </div>
+
+  <!-- 返回顶部：滚过 600px 才出现（position:fixed，token 配色） -->
+  <button
+    type="button"
+    id="docs-backtop"
+    class="doc-backtop"
+    aria-label="{{t "docs.back_top"}}"
+    title="{{t "docs.back_top"}}"
+  >
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d="M8 13V3M8 3 3.9 7.1M8 3l4.1 4.1"
+        stroke="currentColor"
+        stroke-width="1.6"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  </button>
 </div>
 
 {{end}} {{define "script"}}
@@ -746,30 +1269,79 @@
     subtitle: Anotify.t("docs.subtitle", "Agent 上报 · Web Push · WebSocket"),
   });
 
-  /* TOC scroll-spy: highlight the section currently in view. */
-  const tocLinks = Array.from(document.querySelectorAll(".toc-link"));
-  const sections = tocLinks
-    .map((a) => document.querySelector(a.getAttribute("href")))
-    .filter(Boolean);
-  const spy = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((e) => {
-        if (e.isIntersecting) {
-          tocLinks.forEach((a) => {
-            const on = a.getAttribute("href") === "#" + e.target.id;
-            a.style.color = on ? "var(--text)" : "";
-            a.style.background = on ? "rgba(139,139,253,0.1)" : "";
-          });
-        }
+  /* 目录高亮：桌面 rail 与窄屏 chips 共用 data-toc。
+     原来写内联 style.color/background（含硬编码紫），改成切 .toc-on 类。 */
+  const tocLinks = Array.from(document.querySelectorAll("[data-toc]"));
+  const tocSections = [];
+  const tocSeen = new Set();
+  tocLinks.forEach((a) => {
+    const id = String(a.dataset.toc || "").replace("#", "");
+    const el = id ? document.getElementById(id) : null;
+    if (el && !tocSeen.has(id)) {
+      tocSeen.add(id);
+      tocSections.push(el);
+    }
+  });
+  const setTocActive = (id) => {
+    tocLinks.forEach((a) => {
+      const on = a.dataset.toc === "#" + id;
+      a.classList.toggle("toc-on", on);
+      if (on) a.setAttribute("aria-current", "true");
+      else a.removeAttribute("aria-current");
+    });
+  };
+  if (tocSections.length) {
+    setTocActive(tocSections[0].id);
+    const spy = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) setTocActive(e.target.id);
+        });
+      },
+      { rootMargin: "-15% 0px -70% 0px" },
+    );
+    tocSections.forEach((s) => spy.observe(s));
+  }
+
+  /* 返回顶部：滚动超过 600px 才出现；reduced-motion 时不平滑滚动。
+     同一个 scroll 钩子顺手把「滚回页首」的高亮复位到第一节 ——
+     IntersectionObserver 只在有 section 进入观测带时回调，回到顶部后
+     没有新的进入事件，高亮会停在中间某一节（实测）。 */
+  const backTopBtn = document.getElementById("docs-backtop");
+  const onScroll = () => {
+    if (backTopBtn) {
+      backTopBtn.classList.toggle("doc-backtop-shown", window.scrollY > 600);
+    }
+    if (window.scrollY < 120 && tocSections.length) {
+      setTocActive(tocSections[0].id);
+    }
+  };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+  if (backTopBtn) {
+    backTopBtn.addEventListener("click", () => {
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+    });
+  }
+
+  /* 窄屏目录点完收起：否则 chips 面板一直占着首屏位置 */
+  const tocMobile = document.getElementById("docs-toc-m");
+  if (tocMobile) {
+    tocMobile.querySelectorAll("a[href^='#']").forEach((a) => {
+      a.addEventListener("click", () => {
+        tocMobile.open = false;
       });
-    },
-    { rootMargin: "-20% 0px -70% 0px" },
-  );
-  sections.forEach((s) => spy.observe(s));
+    });
+  }
 
   // 手机推送（Web Push）文档暂未开放：开关在 web/partials.js（PUSH_UI_ENABLED）。
+  // 章节与目录里的那一条一起隐藏 —— 否则目录里留一个点了跳不动的死链。
   document.querySelectorAll("[data-push-doc]").forEach((el) => {
-    el.classList.toggle("hidden", !window.Anotify.pushUIEnabled);
+    const off = !window.Anotify.pushUIEnabled;
+    el.classList.toggle("hidden", off);
+    if (off) el.setAttribute("hidden", "");
+    else el.removeAttribute("hidden");
   });
 </script>
 {{end}}

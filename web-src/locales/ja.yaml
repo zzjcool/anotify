@@ -273,6 +273,9 @@ message:
     not_found: メッセージが見つからないか削除されました
   task_title: タスク詳細
   chain_title: タスクチェーン
+  back_events: イベント一覧に戻る
+  missing_id_hint: ディープリンクにはタスク id が必要です（例：message.html?id=tsk_xxx）。
+  not_found_hint: このタスクは存在しません。削除されたか、別のネームスペースに属している可能性があります。
   task_state:
     pending: 待機中
     assigned: 割り当て済み
@@ -675,6 +678,11 @@ docs:
   title: 連携ドキュメント
   subtitle: Agent 上報 · Web Push · WebSocket
   toc_heading: このページの目次
+  table:
+    method: メソッド
+    path: パス
+    desc: 説明
+  back_top: トップへ戻る
   toc:
     agent: Agent 連携
     api: API 概要
@@ -688,6 +696,8 @@ docs:
   endpoints:
     title: 全エンドポイント
     intro: この一覧はビルド時に api/openapi.yaml から生成されるため、実際のルートとずれません。非推奨の旧「通知端末」エンドポイントは含まれません。
+    empty_desc: ビルド時に api/openapi.yaml が読み込まれませんでした。make sitegen を再実行するとこのセクションが生成されます。
+    empty_title: エンドポイント一覧が未生成です
   openapi:
     tag:
       events: イベント
@@ -1531,12 +1541,14 @@ trace:
   refresh: 更新
   loading: トレースを読み込み中…
   no_id: URL に traceId がありません。イベント一覧の「チェーンを表示」から開くか、?traceId=trace_xxx を指定してください。
+  no_id_title: traceId がありません
   copy: コピー
   copied: コピーしました
   copy_failed: コピーに失敗
   triggered_by: 起点
   nolib: 描画スクリプトを読み込めませんでした。
   empty: このトレースにはタスクがありません。最初のステップで剪定された可能性があります（一致する辺がない、パラメータが schema に合わない、対象能力を宣言したノードがない）。
+  empty_title: タスクがありません
   stat:
     spans: タスク
     duration: 所要時間
@@ -1608,6 +1620,7 @@ pb:
   title: プレイブック
   subtitle: 能力・出口・トリガーを、点検して補完できるひとつのプレイブックにまとめる
   detail_subtitle: 点検：定義 → ノード → 出口 → トリガー
+  detail_title: プレイブックの詳細
   rescan: 再点検
   rescanned: 再点検しました
   back: プレイブック一覧へ
@@ -1616,6 +1629,7 @@ pb:
   installed_n: '{n} 件を補完しました'
   installed_none: 自動で補完できる項目はありません
   empty: このネームスペースにはまだプレイブックがありません。
+  empty_title: プレイブックはまだありません
   load_failed: 読み込みに失敗しました。再読み込みしてください。
   meta: 能力 {c} · 出口 {e} · トリガー {tr}
   ready_n: '{n}/{m} 準備完了'

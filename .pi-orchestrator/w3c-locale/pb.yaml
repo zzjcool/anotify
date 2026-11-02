@@ -1,0 +1,29 @@
+# W3-C · worker-pb 新增 locale key（四语言齐全，请 centurion 合并进
+# web-src/locales/{zh-CN,en,ja,es}.yaml 的 pb.* 命名空间）
+#
+# 为什么要新 key（其余全部复用已有 key）：
+#   pb.detail_title —— 预案详情页的 <title>。原来错用了列表页的 pb.title（"预案"），
+#                     详情页在浏览器标签/分享卡片上显示成列表的名字。
+#   pb.empty_title  —— 预案列表空态的**标题**。已有 pb.empty 是一整句说明
+#                     （"这个命名空间里还没有预案。"），当标题用读起来重复，需要
+#                     短标题 + 说明两层。
+#
+# 检查卡的四行结论**没有**新 key：全部复用 pb.fix.* / pb.node.* / pb.edge.* /
+# pb.trg.* / pb.next.ready / pb.edges.none。这样 en/es/ja 不会因为新 key 还没
+# 合并而在页面上露出中文兜底。
+zh-CN:
+  pb:
+    detail_title: 预案详情
+    empty_title: 还没有预案
+en:
+  pb:
+    detail_title: Playbook detail
+    empty_title: No playbooks yet
+ja:
+  pb:
+    detail_title: プレイブックの詳細
+    empty_title: プレイブックはまだありません
+es:
+  pb:
+    detail_title: Detalle del playbook
+    empty_title: Aún no hay playbooks

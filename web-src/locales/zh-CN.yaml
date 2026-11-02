@@ -273,6 +273,9 @@ message:
     not_found: 消息不存在或已被清理
   task_title: 任务详情
   chain_title: 任务链
+  back_events: 返回事件中心
+  missing_id_hint: 深链需要带上任务 id，例如 message.html?id=tsk_xxx。
+  not_found_hint: 任务不存在——可能已被清理，或不属于当前命名空间。
   task_state:
     pending: 排队中
     assigned: 已派发
@@ -675,6 +678,11 @@ docs:
   title: 接入文档
   subtitle: Agent 上报 · Web Push · WebSocket
   toc_heading: 本页目录
+  table:
+    method: 方法
+    path: 路径
+    desc: 说明
+  back_top: 返回顶部
   toc:
     agent: 接入 Agent
     api: API 概览
@@ -688,6 +696,8 @@ docs:
   endpoints:
     title: 全部端点
     intro: 这份清单在构建时从 api/openapi.yaml 生成，与真实路由同源，不会漂移。已弃用的旧「通知终端」端点不在此列。
+    empty_desc: 构建时没有加载到 api/openapi.yaml。重新运行 make sitegen 即可生成这一节。
+    empty_title: 端点清单未生成
   openapi:
     tag:
       events: 事件
@@ -1531,12 +1541,14 @@ trace:
   refresh: 刷新
   loading: 正在加载链路…
   no_id: URL 里没有 traceId。从事件流点「查看链路」进来，或手动填 ?traceId=trace_xxx。
+  no_id_title: 缺少 traceId
   copy: 复制
   copied: 已复制
   copy_failed: 复制失败
   triggered_by: 触发于
   nolib: 渲染脚本未能加载。
   empty: 这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。
+  empty_title: 没有任务
   stat:
     spans: 任务
     duration: 总耗时
@@ -1608,6 +1620,7 @@ pb:
   title: 预案
   subtitle: 把能力、出口、触发器组成一份能体检、能补齐的预案
   detail_subtitle: 体检：定义 → 节点 → 出口 → 触发器
+  detail_title: 预案详情
   rescan: 重新体检
   rescanned: 已重新体检
   back: 返回预案列表
@@ -1616,6 +1629,7 @@ pb:
   installed_n: 补齐了 {n} 项
   installed_none: 没有可自动补齐的项了
   empty: 这个命名空间里还没有预案。
+  empty_title: 还没有预案
   load_failed: 载入失败，请刷新重试。
   meta: 能力 {c} · 出口 {e} · 触发器 {tr}
   ready_n: '{n}/{m} 项就绪'
