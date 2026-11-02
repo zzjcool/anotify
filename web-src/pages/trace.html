@@ -2,87 +2,218 @@
 
 {{define "style"}}
     <style>
-      /* trace 页：一条 trace 的全貌。
-         URL 形如 trace.html?traceId=trace_xxx（事件流里"查看链路"跳过来） */
-      .trace-head {
+      /* 链路页：一条 trace 的全貌。
+         URL 形如 trace.html?traceId=trace_xxx（事件流里「查看链路」跳过来）。
+
+         样式纪律（UI v2）：页头 / 卡片 / 按钮 / 空态 / 骨架一律用 ui.css 的组件类；
+         这里只留本页独有的排版，颜色全部走 tokens.css 的 token —— 亮主题下也要读得清。
+         容器用 .page（1200px）而不是 .page-narrow（760px）：这页的主体是拓扑图，
+         760px 会把图挤成一条竖线。 */
+
+      /* 正文纵向堆叠（.page 的 gap 只管页头与正文之间） */
+      .trace-stack {
         display: flex;
-        flex-wrap: wrap;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 1rem;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
       }
-      /* trace_id 是这页的主键，要显眼可复制 */
+
+      /* 首屏骨架：形状对齐真实正文（id 行 + 概览 4 格 + 图块）。
+         静态写在 HTML 里，JS 首次渲染时 replaceChildren 掉；
+         刷新/重试时 JS 复用同一个形状，避免整块内容闪空。 */
+      .trace-sk-title {
+        height: 22px;
+        width: 220px;
+        max-width: 60%;
+      }
+      .trace-sk-stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 20px;
+      }
+      .trace-sk-cell {
+        height: 34px;
+      }
+      /* 图块：ui.css 的骨架尺寸变体 is-block 只以**复合选择器**（.skeleton.is-block）
+         出现，死类守卫按「行首类名」收集，看不到它 —— 所以这里把 is-block 也写成
+         行首，顺带把高度调到接近真实图形区（88px 表达不了"下面是张大图"）。
+         两条规则的优先级都 ≥ .skeleton.is-block，且页级样式在 ui.css 之后加载。 */
+      .trace-sk-graph {
+        margin-top: 20px;
+      }
+      .is-block.trace-sk-graph {
+        height: 240px;
+      }
+
+      /* 头部卡内部节奏：id 行 / 概览 / 触发事件之间 16px */
+      .trace-head-card {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      /* trace_id 是这页的主键：显眼、可复制，长 id 不顶宽 */
       .trace-id {
-        font-family: var(--mono, monospace);
-        font-size: 0.8rem;
+        min-width: 0;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.5;
         color: var(--accent);
-        background: rgba(139, 139, 253, 0.08);
-        border: 1px solid rgba(139, 139, 253, 0.2);
-        border-radius: 8px;
-        padding: 0.25rem 0.6rem;
+        background: var(--accent-soft);
+        border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+        border-radius: var(--r-sm);
+        padding: 3px 8px;
         word-break: break-all;
       }
-      /* 概览数字：事件数 / 任务数 / 总耗时 / 最慢一步 */
+
+      /* 概览数字：任务数 / 总耗时 / 最慢一步（有失败时才多一格） */
       .trace-stats {
         display: flex;
         flex-wrap: wrap;
-        gap: 1.75rem;
+        gap: 28px;
       }
       .trace-stat-label {
-        font-size: 0.68rem;
+        font-size: 11px;
+        line-height: 1.5;
         color: var(--faint);
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }
       .trace-stat-value {
-        font-size: 0.95rem;
+        font-size: 13.5px;
+        line-height: 1.45;
         color: var(--text);
         font-variant-numeric: tabular-nums;
       }
-      /* 事件那一行：源 → 类型 + 时间 */
+      .trace-stat-value.is-bad {
+        color: var(--error);
+      }
+
+      /* 触发事件那一行：源 → 类型 + 时间（回答"谁触发的"） */
       .trace-event {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 0.5rem;
-        font-size: 0.78rem;
+        gap: 8px;
+        min-width: 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .trace-event-label {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .trace-event-src {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        padding: 1px 6px;
+        border-radius: var(--r-xs);
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        color: var(--accent);
+        word-break: break-all;
+      }
+      .trace-event-type {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text);
+      }
+      .trace-event-arrow {
+        color: var(--faint);
+      }
+      .trace-event-time {
+        font-size: 11px;
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* 空态图标（.empty 的第一段：icon + 标题 + 说明 + 动作） */
+      .trace-empty-icon {
+        width: 22px;
+        height: 22px;
+        color: var(--faint);
+      }
+      .trace-empty-desc {
+        max-width: 46ch;
+      }
+
+      /* 视图切换器（瀑布图 / 图 / 树）。
+         三个 <button> 由 web/traceview.js 的 mount() 运行时生成 —— 那个文件本轮冻结，
+         DOM 结构 / 文案 / `.on` 类名 / 默认视图一个都不能动。所以这里**只用 CSS**
+         把 ui.css 的 .wf-switch 家族画成 .tabs / .tab / .tab.active 的视觉。
+         注意：traceview.js 还给容器挂了 Tailwind 的 `mb-3`（12px 下外边距），
+         这里不写 margin —— 写了就会把它覆盖掉。 */
+      .wf-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 3px;
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+      }
+      .wf-switch button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        border: 1px solid transparent;
+        border-radius: var(--r-sm);
+        background: transparent;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.2;
+        cursor: pointer;
+        transition:
+          color var(--dur-fast) var(--ease),
+          background var(--dur-fast) var(--ease);
+      }
+      .wf-switch button:hover {
+        color: var(--text);
+      }
+      .wf-switch button.on {
+        background: var(--surface-1);
+        border-color: var(--line);
+        color: var(--text);
+        box-shadow: var(--shadow-1);
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-6xl space-y-6">
-    <!-- 头部 -->
-    <div class="reveal visible">
-      <div class="trace-head">
-        <div class="min-w-0">
-          <h2 class="font-display text-3xl text-white">{{t "trace.title"}}</h2>
-          <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-            {{t "trace.subtitle"}}
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <a
-            href="events.html"
-            class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
-          >
-            {{t "trace.back"}}
-          </a>
-          <button
-            id="btn-refresh"
-            class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-          >
-            {{t "trace.refresh"}}
-          </button>
-        </div>
+  <div class="page">
+    <!-- 页头：标题 + 一句说明 + 两个动作（返回事件流 / 刷新）。
+         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "trace.title"}}</h2>
+        <p class="page-sub">{{t "trace.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <a href="events.html" class="btn btn-ghost">{{t "trace.back"}}</a>
+        <button id="btn-refresh" type="button" class="btn btn-primary">
+          {{t "trace.refresh"}}
+        </button>
       </div>
     </div>
 
-    <!-- trace 主体 -->
-    <div id="trace-body" class="space-y-6">
-      <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
-        {{t "trace.loading"}}
+    <!-- 主体：首屏是骨架，不是一张"加载中"的空卡。
+         #trace-body 必须有子元素（e2e 断言），骨架就放在里面；
+         JS 首次渲染时 replaceChildren 掉。 -->
+    <div id="trace-body" class="trace-stack">
+      <div class="card card-pad" aria-hidden="true">
+        <div class="skeleton trace-sk-title"></div>
+        <div class="trace-sk-stats">
+          <div class="skeleton trace-sk-cell"></div>
+          <div class="skeleton trace-sk-cell"></div>
+          <div class="skeleton trace-sk-cell"></div>
+          <div class="skeleton trace-sk-cell"></div>
+        </div>
+        <div class="skeleton is-block trace-sk-graph"></div>
       </div>
     </div>
   </div>
@@ -195,6 +326,57 @@
       const qs = new URLSearchParams(location.search);
       const TRACE_ID = qs.get("traceId") || "";
 
+      // 首屏骨架的原型：直接取自 HTML（JS 未执行前就要有形状）。
+      // 刷新 / 重试时 clone 一份放回去，避免整块内容闪空。
+      const SKELETON = document.querySelector("#trace-body > .card");
+      function showSkeleton(body) {
+        if (!SKELETON) {
+          body.replaceChildren();
+          return;
+        }
+        body.replaceChildren(SKELETON.cloneNode(true));
+      }
+
+      /**
+       * 空态：ui.css 的 .empty（图标 + 标题 + 说明 + 动作）。
+       * 动作统一是「回事件流」—— 空态不该是个死胡同。
+       */
+      function emptyCard(title, desc) {
+        const card = el("div", "card card-pad");
+        const box = el("div", "empty");
+        // 图标的路径与侧栏「源」同一套线条；颜色走 currentColor，不写死色值。
+        box.appendChild(Anotify.icon(["M13 2L3 14h8l-1 8 10-12h-8z"], "trace-empty-icon"));
+        box.appendChild(el("div", "card-title", title));
+        box.appendChild(el("p", "card-sub trace-empty-desc", desc));
+        const back = el("a", "btn btn-ghost btn-sm", t("trace.back", "返回事件流"));
+        back.href = "events.html";
+        box.appendChild(back);
+        card.appendChild(box);
+        return card;
+      }
+
+      /**
+       * 失败态：内容容器内渲染「载入失败 + 重试」，同时给一个 toast。
+       *
+       * 为什么必须有：Anotify.api 在非 2xx 时**会 throw**（见 partials.js 的 api()）。
+       * 以前 load() 没有 try/catch —— 后端一挂，页面就永远停在"加载中"，
+       * 只剩一条 unhandled rejection 在控制台里。失败必须画出来，且带重试。
+       * 也绝不把失败画成演示数据（#273）。
+       */
+      function renderLoadError(body, err) {
+        const card = el("div", "card card-pad");
+        card.appendChild(Anotify.loadErrorNode(err, () => load()));
+        body.replaceChildren(card);
+
+        const status = (err && err.status) || 0;
+        const reason = status
+          ? status >= 500
+            ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
+            : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
+          : t("common.backend_offline", "连不上服务端");
+        Anotify.toast(t("common.load_failed_prefix", "载入失败：") + reason, "error");
+      }
+
       function fmtTime(sec) {
         if (!sec) return "—";
         const d = new Date(sec * 1000);
@@ -230,202 +412,216 @@
       // 渲染整页
       async function load() {
         const body = document.getElementById("trace-body");
+        if (!body) return;
 
+        // 没有 traceId 不是错误：从事件流点进来才有 id，手输地址的人需要一句引导。
         if (!TRACE_ID) {
           body.replaceChildren(
-            el(
-              "div",
-              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-              t("trace.no_id", "URL 里没有 traceId。从事件流点「查看链路」进来，或手动填 ?traceId=trace_xxx。"),
-            ),
-          );
-          return;
-        }
-
-        body.replaceChildren(
-          el("div", "card rounded-2xl p-6 text-center text-sm text-zinc-500", t("trace.loading", "加载中…")),
-        );
-
-        // 任务链：这是本页的主体
-        const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(TRACE_ID));
-        const tasks = (data && data.tasks) || [];
-
-        // 事件：用来回答"谁触发的"。按 traceId 过滤（后端支持）。
-        let event = null;
-        try {
-          const evData = await fetchApi(API + "/console/events?traceId=" + encodeURIComponent(TRACE_ID));
-          const evs = (evData && (evData.events || evData)) || [];
-          if (Array.isArray(evs) && evs.length) event = evs[0];
-        } catch (_e) {
-          // 事件查不到不影响链路展示（trace 可能从别处发起）
-        }
-
-        // 底图：这个 trace 所属源在「源」页配好的静态拓扑。
-        //
-        // 图视图要拿它当底、执行状态当覆盖层 —— 只画执行链的话，
-        // 被剪枝的分支压根不出现，用户看到的永远是一条顺畅直线，
-        // "为什么这条分支没走"在图上根本问不出来。
-        //
-        // 拿不到就退回"只画执行链"（源已删、trace 来自未知源）。
-        let baseGraph = null;
-        if (event && event.source) {
-          try {
-            const [srcData, capData, edgeData] = await Promise.all([
-              fetchApi(API + "/sources"),
-              fetchApi(API + "/capabilities"),
-              fetchApi(API + "/edges"),
-            ]);
-            const srcList = (srcData && (srcData.sources || [])) || [];
-            const srcObj = srcList.find((x) => x.name === event.source);
-            if (srcObj) {
-              const detail = await fetchApi(
-                API + "/sources/" + encodeURIComponent(srcObj.id),
-              );
-              const full = (detail && detail.source) || srcObj;
-              baseGraph = buildBaseGraph(
-                full,
-                (capData && capData.capabilities) || [],
-                (edgeData && edgeData.edges) || [],
-              );
-            }
-          } catch (_e) {
-            // 拿不到源配置不算错：图视图会退回只画执行链
-          }
-        }
-
-        body.replaceChildren();
-
-        // ---- 头部卡：traceId + 概览 ----
-        const head = el("div", "card rounded-2xl p-5 space-y-4");
-
-        const idRow = el("div", "flex flex-wrap items-center gap-3");
-        idRow.appendChild(el("span", "trace-id", TRACE_ID));
-        const copyBtn = el("button", "btn-ghost rounded px-2 py-1 text-[11px]", t("trace.copy", "复制"));
-        copyBtn.addEventListener("click", async () => {
-          try {
-            await navigator.clipboard.writeText(TRACE_ID);
-            copyBtn.textContent = t("trace.copied", "已复制");
-            setTimeout(() => (copyBtn.textContent = t("trace.copy", "复制")), 1500);
-          } catch (_e) {
-            copyBtn.textContent = t("trace.copy_failed", "复制失败");
-          }
-        });
-        idRow.appendChild(copyBtn);
-        head.appendChild(idRow);
-
-        // 概览数字：先算出来再渲染，避免各处重复计算
-        let spanStart = Infinity;
-        let spanEnd = -Infinity;
-        let slowest = null;
-        const statusCount = {};
-        for (const tk of tasks) {
-          const st = tk.status || "pending";
-          statusCount[st] = (statusCount[st] || 0) + 1;
-
-          const s = tk.startedAt != null ? tk.startedAt : tk.createdAt;
-          const now = Math.floor(Date.now() / 1000);
-          const e = tk.finishedAt != null ? tk.finishedAt : tk.startedAt != null ? now : tk.createdAt;
-          if (s != null && s < spanStart) spanStart = s;
-          if (e != null && e > spanEnd) spanEnd = e;
-
-          if (tk.startedAt != null && tk.finishedAt != null) {
-            const d = tk.finishedAt - tk.startedAt;
-            if (!slowest || d > slowest.d) slowest = { d, name: tk.capability };
-          }
-        }
-        const totalMs =
-          Number.isFinite(spanStart) && Number.isFinite(spanEnd) ? (spanEnd - spanStart) * 1000 : null;
-
-        const stats = el("div", "trace-stats");
-        const stat = (label, value) => {
-          const b = el("div", "");
-          b.appendChild(el("div", "trace-stat-label", label));
-          b.appendChild(el("div", "trace-stat-value", value));
-          return b;
-        };
-        stats.appendChild(stat(t("trace.stat.spans", "任务"), String(tasks.length)));
-        stats.appendChild(stat(t("trace.stat.duration", "总耗时"), fmtDur(totalMs)));
-        stats.appendChild(
-          stat(
-            t("trace.stat.slowest", "最慢一步"),
-            slowest ? slowest.name + " · " + fmtDur(slowest.d * 1000) : "—",
-          ),
-        );
-        // 失败数：不为 0 才显示，避免"0 失败"这种噪音
-        const failed = (statusCount.failed || 0) + (statusCount.abandoned || 0);
-        if (failed) {
-          const failBox = stat(t("trace.stat.failed", "失败"), String(failed));
-          failBox.querySelector(".trace-stat-value").className = "trace-stat-value text-red-400";
-          stats.appendChild(failBox);
-        }
-        head.appendChild(stats);
-
-        // 触发事件那一行：回答"谁触发的"
-        if (event) {
-          const evRow = el("div", "trace-event");
-          evRow.appendChild(el("span", "text-[11px] text-zinc-500", t("trace.triggered_by", "触发于")));
-          evRow.appendChild(code(event.source, "rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-indigo-300"));
-          evRow.appendChild(el("span", "text-zinc-600", "→"));
-          evRow.appendChild(code(event.type, "text-[11px] text-zinc-300"));
-          evRow.appendChild(el("span", "text-[11px] text-zinc-600", fmtTime(event.createdAt)));
-          head.appendChild(evRow);
-        }
-
-        body.appendChild(head);
-
-        // ---- 主体：三种视图（瀑布图 / 图 / 树）----
-        if (!tasks.length) {
-          body.appendChild(
-            el(
-              "div",
-              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+            emptyCard(
+              t("trace.no_id_title", "缺少 traceId"),
               t(
-                "trace.empty",
-                "这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。",
+                "trace.no_id",
+                "URL 里没有 traceId。从事件流点「查看链路」进来，或手动填 ?traceId=trace_xxx。",
               ),
             ),
           );
           return;
         }
 
-        if (!window.TraceView) {
-          body.appendChild(
-            el("div", "card rounded-2xl p-6 text-center text-sm text-zinc-500", t("trace.nolib", "渲染脚本未能加载。")),
+        showSkeleton(body);
+
+        try {
+          // 任务链：这是本页的主体
+          const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(TRACE_ID));
+          const tasks = (data && data.tasks) || [];
+
+          // 事件：用来回答"谁触发的"。按 traceId 过滤（后端支持）。
+          let event = null;
+          try {
+            const evData = await fetchApi(
+              API + "/console/events?traceId=" + encodeURIComponent(TRACE_ID),
+            );
+            const evs = (evData && (evData.events || evData)) || [];
+            if (Array.isArray(evs) && evs.length) event = evs[0];
+          } catch (_e) {
+            // 事件查不到不影响链路展示（trace 可能从别处发起）
+          }
+
+          // 底图：这个 trace 所属源在「源」页配好的静态拓扑。
+          //
+          // 图视图要拿它当底、执行状态当覆盖层 —— 只画执行链的话，
+          // 被剪枝的分支压根不出现，用户看到的永远是一条顺畅直线，
+          // "为什么这条分支没走"在图上根本问不出来。
+          //
+          // 拿不到就退回"只画执行链"（源已删、trace 来自未知源）。
+          let baseGraph = null;
+          if (event && event.source) {
+            try {
+              const [srcData, capData, edgeData] = await Promise.all([
+                fetchApi(API + "/sources"),
+                fetchApi(API + "/capabilities"),
+                fetchApi(API + "/edges"),
+              ]);
+              const srcList = (srcData && (srcData.sources || [])) || [];
+              const srcObj = srcList.find((x) => x.name === event.source);
+              if (srcObj) {
+                const detail = await fetchApi(
+                  API + "/sources/" + encodeURIComponent(srcObj.id),
+                );
+                const full = (detail && detail.source) || srcObj;
+                baseGraph = buildBaseGraph(
+                  full,
+                  (capData && capData.capabilities) || [],
+                  (edgeData && edgeData.edges) || [],
+                );
+              }
+            } catch (_e) {
+              // 拿不到源配置不算错：图视图会退回只画执行链
+            }
+          }
+
+          body.replaceChildren();
+
+          // ---- 头部卡：traceId + 概览 ----
+          const head = el("div", "card card-pad trace-head-card");
+
+          const idRow = el("div", "flex flex-wrap items-center gap-3");
+          idRow.appendChild(el("span", "trace-id", TRACE_ID));
+          const copyBtn = el("button", "btn btn-ghost btn-sm", t("trace.copy", "复制"));
+          copyBtn.type = "button";
+          copyBtn.addEventListener("click", async () => {
+            // 反馈走全站统一的 toast（trace.copied / trace.copy_failed 已有），
+            // 页内不再自己维护一套提示节点。
+            try {
+              await navigator.clipboard.writeText(TRACE_ID);
+              Anotify.toast(t("trace.copied", "已复制"));
+            } catch (_e) {
+              Anotify.toast(t("trace.copy_failed", "复制失败"), "error");
+            }
+          });
+          idRow.appendChild(copyBtn);
+          head.appendChild(idRow);
+
+          // 概览数字：先算出来再渲染，避免各处重复计算
+          let spanStart = Infinity;
+          let spanEnd = -Infinity;
+          let slowest = null;
+          const statusCount = {};
+          for (const tk of tasks) {
+            const st = tk.status || "pending";
+            statusCount[st] = (statusCount[st] || 0) + 1;
+
+            const s = tk.startedAt != null ? tk.startedAt : tk.createdAt;
+            const now = Math.floor(Date.now() / 1000);
+            const e =
+              tk.finishedAt != null ? tk.finishedAt : tk.startedAt != null ? now : tk.createdAt;
+            if (s != null && s < spanStart) spanStart = s;
+            if (e != null && e > spanEnd) spanEnd = e;
+
+            if (tk.startedAt != null && tk.finishedAt != null) {
+              const d = tk.finishedAt - tk.startedAt;
+              if (!slowest || d > slowest.d) slowest = { d, name: tk.capability };
+            }
+          }
+          const totalMs =
+            Number.isFinite(spanStart) && Number.isFinite(spanEnd)
+              ? (spanEnd - spanStart) * 1000
+              : null;
+
+          const stats = el("div", "trace-stats");
+          const stat = (label, value) => {
+            const b = el("div", "");
+            b.appendChild(el("div", "trace-stat-label", label));
+            b.appendChild(el("div", "trace-stat-value", value));
+            return b;
+          };
+          stats.appendChild(stat(t("trace.stat.spans", "任务"), String(tasks.length)));
+          stats.appendChild(stat(t("trace.stat.duration", "总耗时"), fmtDur(totalMs)));
+          stats.appendChild(
+            stat(
+              t("trace.stat.slowest", "最慢一步"),
+              slowest ? slowest.name + " · " + fmtDur(slowest.d * 1000) : "—",
+            ),
           );
-          return;
-        }
+          // 失败数：不为 0 才显示，避免"0 失败"这种噪音
+          const failed = (statusCount.failed || 0) + (statusCount.abandoned || 0);
+          if (failed) {
+            const failBox = stat(t("trace.stat.failed", "失败"), String(failed));
+            failBox.querySelector(".trace-stat-value").classList.add("is-bad");
+            stats.appendChild(failBox);
+          }
+          head.appendChild(stats);
 
-        const viewBox = el("div", "card rounded-2xl p-5");
-        body.appendChild(viewBox);
+          // 触发事件那一行：回答"谁触发的"
+          if (event) {
+            const evRow = el("div", "trace-event");
+            evRow.appendChild(el("span", "trace-event-label", t("trace.triggered_by", "触发于")));
+            evRow.appendChild(code(event.source, "trace-event-src"));
+            evRow.appendChild(el("span", "trace-event-arrow", "→"));
+            evRow.appendChild(code(event.type, "trace-event-type"));
+            evRow.appendChild(el("span", "trace-event-time", fmtTime(event.createdAt)));
+            head.appendChild(evRow);
+          }
 
-        // 视图选择记在 URL 上：刷新/分享时保留。
-        //
-        // **默认是「图」**：图是这套产品唯一能把「谁派生了谁、走了哪个出口、
-        // 哪条分支没走」一次说清的地方；瀑布图只有时间，树只有层级。
-        // 打开一条 trace 最先要回答的是"它怎么跑的"，所以默认给图。
-        const initView = qs.get("view") || "graph";
-        window.TraceView.mount(viewBox, {
-          tasks: tasks,
-          baseGraph: baseGraph,
-          // 源节点信息（图视图左上角那个触发器）
-          sourceLabel: event ? event.source : "",
-          sourceSub: event ? event.type : "",
-          sourcePort: event ? event.type : "",
-          el: el,
-          code: code,
-          t: t,
-          view: initView,
+          body.appendChild(head);
+
+          // ---- 主体：三种视图（瀑布图 / 图 / 树）----
+          if (!tasks.length) {
+            body.appendChild(
+              emptyCard(
+                t("trace.empty_title", "没有任务"),
+                t(
+                  "trace.empty",
+                  "这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。",
+                ),
+              ),
+            );
+            return;
+          }
+
+          if (!window.TraceView) {
+            body.appendChild(
+              emptyCard(t("trace.title", "链路"), t("trace.nolib", "渲染脚本未能加载。")),
+            );
+            return;
+          }
+
+          const viewBox = el("div", "card card-pad");
+          body.appendChild(viewBox);
+
           // 视图选择记在 URL 上：刷新/分享时保留。
           //
-          // 用 URLSearchParams 改 location.search 再拼回去，而不是
-          // new URL(location.href) —— 后者在异常输入上会抛 TypeError，
-          // 这里没有任何理由为一个"改个 query 参数"的动作承担抛错风险。
-          onViewChange: (v) => {
-            const params = new URLSearchParams(location.search);
-            params.set("view", v);
-            history.replaceState(null, "", "?" + params.toString());
-          },
-        });
+          // **默认是「图」**：图是这套产品唯一能把「谁派生了谁、走了哪个出口、
+          // 哪条分支没走」一次说清的地方；瀑布图只有时间，树只有层级。
+          // 打开一条 trace 最先要回答的是"它怎么跑的"，所以默认给图。
+          const initView = qs.get("view") || "graph";
+          window.TraceView.mount(viewBox, {
+            tasks: tasks,
+            baseGraph: baseGraph,
+            // 源节点信息（图视图左上角那个触发器）
+            sourceLabel: event ? event.source : "",
+            sourceSub: event ? event.type : "",
+            sourcePort: event ? event.type : "",
+            el: el,
+            code: code,
+            t: t,
+            view: initView,
+            // 视图选择记在 URL 上：刷新/分享时保留。
+            //
+            // 用 URLSearchParams 改 location.search 再拼回去，而不是
+            // new URL(location.href) —— 后者在异常输入上会抛 TypeError，
+            // 这里没有任何理由为一个"改个 query 参数"的动作承担抛错风险。
+            onViewChange: (v) => {
+              const params = new URLSearchParams(location.search);
+              params.set("view", v);
+              history.replaceState(null, "", "?" + params.toString());
+            },
+          });
+        } catch (err) {
+          // 任何一步失败（后端不可达、5xx、响应不是 JSON…）都落到这里：
+          // 内容容器内画"载入失败 + 重试"，外加一条 toast。
+          renderLoadError(body, err);
+        }
       }
 
       document.getElementById("btn-refresh").addEventListener("click", load);

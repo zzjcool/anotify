@@ -273,6 +273,9 @@ message:
     not_found: Mensaje no encontrado o ha sido eliminado
   task_title: Detalle de tarea
   chain_title: Cadena de tareas
+  back_events: Volver a eventos
+  missing_id_hint: Los enlaces directos deben incluir el id de la tarea, por ejemplo message.html?id=tsk_xxx.
+  not_found_hint: Esta tarea no existe; puede que se haya eliminado o que pertenezca a otro espacio de nombres.
   task_state:
     pending: En cola
     assigned: Asignada
@@ -681,6 +684,11 @@ docs:
   title: Documentación de integración
   subtitle: Reportes de Agent · Web Push · WebSocket
   toc_heading: En esta página
+  table:
+    method: Método
+    path: Ruta
+    desc: Descripción
+  back_top: Volver arriba
   toc:
     agent: Conectar Agent
     api: Resumen de API
@@ -694,6 +702,8 @@ docs:
   endpoints:
     title: Todos los endpoints
     intro: Esta lista se genera en tiempo de compilación desde api/openapi.yaml, así que no puede desviarse de las rutas reales. Los endpoints heredados de notificaciones están excluidos.
+    empty_desc: api/openapi.yaml no se cargó en tiempo de compilación. Vuelve a ejecutar make sitegen para generar esta sección.
+    empty_title: La lista de endpoints no se generó
   openapi:
     tag:
       events: Eventos
@@ -1542,12 +1552,14 @@ trace:
   refresh: Actualizar
   loading: Cargando traza…
   no_id: No hay traceId en la URL. Ábrela desde "ver cadena" en el flujo de eventos, o pasa ?traceId=trace_xxx.
+  no_id_title: Falta traceId
   copy: Copiar
   copied: Copiado
   copy_failed: No se pudo copiar
   triggered_by: Activada por
   nolib: No se pudo cargar el renderizador.
   empty: No hay tareas en esta traza. Suele significar que se podó en el primer paso (sin arista coincidente, parámetros que no cumplen el schema, o ningún nodo declara la capacidad destino).
+  empty_title: No hay tareas
   stat:
     spans: Tareas
     duration: Duración
@@ -1620,6 +1632,7 @@ pb:
   title: Playbooks
   subtitle: Convierte capacidades, aristas y disparadores en un playbook verificable y completable
   detail_subtitle: 'Verificación: definiciones → nodos → aristas → disparadores'
+  detail_title: Detalle del playbook
   rescan: Verificar de nuevo
   rescanned: Verificado de nuevo
   back: Volver a playbooks
@@ -1628,6 +1641,7 @@ pb:
   installed_n: Se completaron {n} elemento(s)
   installed_none: No queda nada que completar automáticamente
   empty: Todavía no hay playbooks en este espacio de nombres.
+  empty_title: Aún no hay playbooks
   load_failed: No se pudo cargar. Actualiza la página.
   meta: '{c} capacidades · {e} aristas · {tr} disparadores'
   ready_n: '{n}/{m} listos'

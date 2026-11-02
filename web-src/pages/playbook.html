@@ -1,77 +1,202 @@
-{{define "title"}}{{t "pb.title"}}{{end}}
+{{define "title"}}{{t "pb.detail_title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* 预案详情页（UI v2）
+         ------------------------------------------------------------
+         体检四件事：定义 → 节点 → 出口 → 触发器。
+         每节是一张 .card：标题行（.card-head：标题 + 状态徽章 + 缺失时的动作）
+         → 一行结论（.card-sub：第一件该动手的事）→ .chk 行清单。
+         组件一律用 web/ui.css 的共享类，这里只补页头标题行 / 节内节奏 /
+         首帧骨架；颜色只走 tokens.css 的 token，本页不出现任何硬编码色值。 */
+
+      /* 标题行：页标题 + 状态徽章同行，窄屏自动换行 */
+      .pb-title-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .pb-title-row .page-title {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      /* 首帧：标题与状态徽章也先给骨架，别让用户读到两个「—」 */
+      .pb-sk-title {
+        display: block;
+        width: 180px;
+        max-width: 100%;
+        height: 24px;
+      }
+      .pb-sk-badge {
+        display: block;
+        width: 40px;
+        height: 10px;
+      }
+      .pb-slug {
+        margin-top: 4px;
+        overflow-wrap: anywhere;
+      }
+      /* 体检结论：整页最要紧的一句话 */
+      .pb-sum {
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--text);
+      }
+      /* 节内节奏：标题行 → 结论 6px → 清单 10px（卡内 20px 由 .card-pad 给） */
+      .pb-sec-sum {
+        margin-top: 6px;
+        min-height: 18px;
+      }
+      .pb-sec-list {
+        margin-top: 10px;
+      }
+      /* 首帧骨架：形状对齐一行检查项（点 + 标题 + 说明）。
+         **必须是四个 *-list 容器之外的独立块** —— `#cap-list` 等有子元素是
+         e2e 的「数据已就绪」信号，骨架混进去会让信号提前成立。 */
+      .pb-sk {
+        display: grid;
+        gap: 8px;
+      }
+      .pb-sk-line {
+        width: 72%;
+        height: 11px;
+      }
+      .pb-sk-line-wide {
+        width: 100%;
+        height: 11px;
+      }
+      /* 复制按钮压在代码块右上角（.yaml-copy 是 position:absolute）：
+         给代码留出右上角的呼吸位，窄屏下首行才不会滑到按钮下面。 */
+      .yaml-box {
+        padding-right: 76px;
+      }
+      /* node.yaml 的复制按钮：.yaml-copy 在 ui.css 里有两个定义（旧段落 + 组件层），
+         叠上 .btn.btn-ghost 的透明底后会和代码文字糊在一起。ui.css 本轮冻结，
+         所以在页级按语义改回实底。 */
+      .yaml-copy.btn {
+        background: var(--panel-overlay);
+        border-color: var(--line);
+      }
+      .yaml-copy.btn:hover {
+        background: var(--surface-3);
+      }
+    </style>
+{{end}}
 
 {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-6xl space-y-8">
-    <div class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-3">
-            <h2 id="pb-name" class="font-display text-3xl text-white">—</h2>
-            <span id="pb-badge" class="pb-badge">—</span>
-          </div>
-          <p id="pb-desc" class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400"></p>
-          <p id="pb-slug" class="pb-slug mt-1"></p>
+  <div class="page">
+    <!-- 页头：标题 + 状态徽章 + 动作。
+         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §10-C1/C2）。
+         #pb-desc 走 .page-sub（mountLayout 见到 .page-sub 就不再画顶栏副标题）。
+         移动端也保留完整动作区：#btn-install 是这一页唯一的"提交"入口。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <div class="pb-title-row">
+          <h2 id="pb-name" class="page-title">
+            <span class="skeleton pb-sk-title" aria-hidden="true"></span>
+          </h2>
+          <span id="pb-badge" class="pb-badge">
+            <span class="skeleton pb-sk-badge" aria-hidden="true"></span>
+          </span>
         </div>
-        <div class="flex flex-wrap items-center gap-3">
-          <a href="playbooks.html" class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm">
-            {{t "pb.back"}}
-          </a>
-          <button id="btn-rescan" class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm">
-            {{t "pb.rescan"}}
-          </button>
-          <button id="btn-install" class="btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium">
-            {{t "pb.install"}}
-          </button>
-        </div>
+        <p id="pb-desc" class="page-sub"></p>
+        <p id="pb-slug" class="pb-slug"></p>
+      </div>
+      <div class="page-actions">
+        <a href="playbooks.html" class="btn btn-ghost">{{t "pb.back"}}</a>
+        <button id="btn-rescan" type="button" class="btn btn-ghost">{{t "pb.rescan"}}</button>
+        <button id="btn-install" type="button" class="btn btn-primary">{{t "pb.install"}}</button>
       </div>
     </div>
 
-    <div id="pb-summary" class="card rounded-2xl p-5 text-sm"></div>
-
-    <div class="card rounded-2xl p-5">
-      <div class="chk-sec">
-        <h3>{{t "pb.sec.capabilities"}}</h3>
-        <span id="cap-count" class="pb-meta"></span>
+    <!-- 汇总：一句"最该先做的一件事"。数据没回来之前是骨架，不是一张空卡。 -->
+    <div id="pb-summary" class="card card-pad">
+      <div class="pb-sk" aria-hidden="true">
+        <div class="skeleton pb-sk-line-wide"></div>
       </div>
-      <div id="cap-list"></div>
     </div>
 
-    <div class="card rounded-2xl p-5">
-      <div class="chk-sec">
-        <h3>{{t "pb.sec.nodes"}}</h3>
-        <span id="node-count" class="pb-meta"></span>
+    <!-- ① 能力定义 -->
+    <div class="card card-pad pb-sec">
+      <div class="card-head">
+        <h3 class="card-title">{{t "pb.sec.capabilities"}}</h3>
+        <div class="card-actions">
+          <span id="cap-count" class="badge badge-neutral">—</span>
+          <button id="cap-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
+        </div>
       </div>
-      <div id="node-list"></div>
+      <p id="cap-sum" class="card-sub pb-sec-sum"></p>
+      <div id="cap-skel" class="pb-sk" aria-hidden="true">
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
+      </div>
+      <div id="cap-list" class="pb-sec-list"></div>
+    </div>
+
+    <!-- ② 节点实现（最常见的「跑不起来」） -->
+    <div class="card card-pad pb-sec">
+      <div class="card-head">
+        <h3 class="card-title">{{t "pb.sec.nodes"}}</h3>
+        <div class="card-actions">
+          <span id="node-count" class="badge badge-neutral">—</span>
+          <button id="node-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
+        </div>
+      </div>
+      <p id="node-sum" class="card-sub pb-sec-sum"></p>
+      <div id="node-skel" class="pb-sk" aria-hidden="true">
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
+      </div>
+      <div id="node-list" class="pb-sec-list"></div>
       <div id="yaml-wrap" class="hidden">
-        <p class="mt-3 text-xs leading-relaxed text-zinc-500">{{t "pb.yaml.hint"}}</p>
-        <div class="yaml-box">
-          <button id="btn-copy-yaml" class="yaml-copy btn-ghost rounded-lg px-2 py-1 text-xs">
+        <p class="card-sub mt-2">{{t "pb.yaml.hint"}}</p>
+        <!-- 代码块是 white-space:pre：`<span id="yaml-text">` 必须紧跟开标签，
+             否则标签之间的缩进会被当成 YAML 首行的一部分（首行白挪两个字符）。 -->
+        <div class="yaml-box"><span id="yaml-text"></span>
+          <button id="btn-copy-yaml" type="button" class="yaml-copy btn btn-ghost btn-sm">
             {{t "pb.copy"}}
           </button>
-          <span id="yaml-text"></span>
         </div>
       </div>
     </div>
 
-    <div class="card rounded-2xl p-5">
-      <div class="chk-sec">
-        <h3>{{t "pb.sec.edges"}}</h3>
-        <span id="edge-count" class="pb-meta"></span>
+    <!-- ③ 出口 -->
+    <div class="card card-pad pb-sec">
+      <div class="card-head">
+        <h3 class="card-title">{{t "pb.sec.edges"}}</h3>
+        <div class="card-actions">
+          <span id="edge-count" class="badge badge-neutral">—</span>
+          <button id="edge-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
+        </div>
       </div>
-      <div id="edge-list"></div>
+      <p id="edge-sum" class="card-sub pb-sec-sum"></p>
+      <div id="edge-skel" class="pb-sk" aria-hidden="true">
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
+      </div>
+      <div id="edge-list" class="pb-sec-list"></div>
     </div>
 
-    <div class="card rounded-2xl p-5">
-      <div class="chk-sec">
-        <h3>{{t "pb.sec.triggers"}}</h3>
-        <span id="trg-count" class="pb-meta"></span>
+    <!-- ④ 触发器 -->
+    <div class="card card-pad pb-sec">
+      <div class="card-head">
+        <h3 class="card-title">{{t "pb.sec.triggers"}}</h3>
+        <div class="card-actions">
+          <span id="trg-count" class="badge badge-neutral">—</span>
+          <button id="trg-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
+        </div>
       </div>
-      <div id="trg-list"></div>
+      <p id="trg-sum" class="card-sub pb-sec-sum"></p>
+      <div id="trg-skel" class="pb-sk" aria-hidden="true">
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
+      </div>
+      <div id="trg-list" class="pb-sec-list"></div>
     </div>
   </div>
-
-  <div id="toast" class="toast"></div>
 </div>
 {{end}}
 
@@ -87,6 +212,9 @@
         subtitle: t("pb.detail_subtitle", "体检：定义 → 节点 → 出口 → 触发器"),
       });
 
+      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 host）。
+      const toast = (msg, kind) => Anotify.toast(msg, kind);
+
       function el(tag, cls, text) {
         const n = document.createElement(tag);
         if (cls) n.className = cls;
@@ -94,12 +222,9 @@
         return n;
       }
 
-      function toast(msg) {
-        const box = document.getElementById("toast");
-        box.textContent = msg;
-        box.classList.add("show");
-        clearTimeout(box._timer);
-        box._timer = setTimeout(() => box.classList.remove("show"), 2800);
+      function drop(id) {
+        const n = document.getElementById(id);
+        if (n && n.parentNode) n.parentNode.removeChild(n);
       }
 
       const STATUS_KEY = {
@@ -114,9 +239,10 @@
         blocked: "缺定义",
         partial: "不完整",
       };
-      // 每种状态一个点：ok 绿 / 需要动手 黄 / 阻塞 红
-      const DOT = { ok: "is-ok", "no-node": "is-bad", offline: "is-warn", missing: "is-bad" };
-      const DOT_TEXT = { "is-ok": "●", "is-bad": "✕", "is-warn": "!" };
+      // 每种状态一个点：ok 绿 / 需要动手 黄 / 阻塞 红。
+      // 字形用字体里一定有的符号：U+2715「✕」在 Inter / 常见回退字体里缺失，
+      // 会渲染成一个空豆腐块（实测 Chrome + Inter 即如此）—— 用 U+00D7「×」。
+      const DOT_TEXT = { "is-ok": "●", "is-bad": "×", "is-warn": "!" };
 
       let PB = null;
 
@@ -136,12 +262,10 @@
         return r;
       }
 
-      function actBtn(label, fn, primary) {
-        const b = el(
-          "button",
-          (primary ? "btn-primary" : "btn-ghost") + " rounded-lg px-2.5 py-1 text-xs",
-          label,
-        );
+      // 行内动作（只有「由谁执行」这一节需要：按能力给复制 YAML / 打开节点页）
+      function actBtn(label, fn) {
+        const b = el("button", "btn btn-ghost btn-sm", label);
+        b.type = "button";
         b.addEventListener("click", fn);
         return b;
       }
@@ -187,6 +311,90 @@
         return t("pb.n_of_m", "{n}/{m} 就绪").replace("{n}", n).replace("{m}", m);
       }
 
+      // 节标题右侧的状态徽章：全绿 / 部分 / 全红（颜色只表示"要不要动手"）
+      function setBadge(id, ok, total) {
+        const b = document.getElementById(id);
+        if (!b) return;
+        b.textContent = count(ok, total);
+        b.className =
+          "badge " +
+          (total === 0
+            ? "badge-neutral"
+            : ok === total
+              ? "badge-success"
+              : ok === 0
+                ? "badge-error"
+                : "badge-warn");
+      }
+
+      function setSum(id, text) {
+        const n = document.getElementById(id);
+        if (n) n.textContent = text || "";
+      }
+
+      // 节的动作按钮：没有动作就整个收起来（不留一个点了没反应的死按钮）。
+      // 不能用 .hidden —— .btn 的 display:inline-flex 与 .hidden{display:none}
+      // 同优先级且 ui.css 后加载，会把 hidden 盖掉。
+      function setAct(id, label, fn) {
+        const b = document.getElementById(id);
+        if (!b) return;
+        b.textContent = label || "";
+        b.onclick =
+          label && fn
+            ? (ev) => {
+                ev.stopPropagation();
+                fn();
+              }
+            : null;
+        b.style.display = label ? "" : "none";
+      }
+
+      // 失败态：四张检查卡整体收起，只留 #pb-summary 里的错误说明 + 重试按钮。
+      // .card 没有 display 规则，所以 .hidden 在这一层有效。
+      function setSectionsHidden(hidden) {
+        for (const n of document.querySelectorAll(".pb-sec")) n.classList.toggle("hidden", hidden);
+      }
+
+      // ---- 每节的一行结论：全部就绪说"全好了"，否则说第一件该动手的事 ----
+      // 全部复用已有 key（pb.fix.* / pb.node.* / pb.edge.* / pb.trg.* / pb.next.ready）
+      // —— 结论行不引入新文案，四种语言就不会出现"某一种语言还是中文兜底"。
+      const CAP_MISSING = ["pb.fix.capability.missing", "还缺能力定义，先把它补进当前命名空间"];
+      const ALL_READY = ["pb.next.ready", "全部就绪，可以开始跑了"];
+      function capLead(caps) {
+        if (caps.length && !caps.some((c) => c.status === "missing")) return t(...ALL_READY);
+        return t(...CAP_MISSING);
+      }
+      function nodeLead(caps) {
+        if (caps.some((c) => c.status === "no-node"))
+          return t("pb.fix.capability.no-node", "定义齐了，但没有节点声明它能执行 —— 去写 node.yaml");
+        if (caps.some((c) => c.status === "offline"))
+          return t("pb.fix.capability.offline", "有节点声明了，但机器离线 —— 把它连上就行");
+        if (caps.some((c) => c.status === "missing")) return t("pb.node.blocked", "先补能力定义");
+        if (!caps.length) return t(...CAP_MISSING);
+        return t(...ALL_READY);
+      }
+      function edgeLead(edges) {
+        if (!edges.length) return t("pb.edges.none", "这份预案不声明出口");
+        const bad = edges.find((e) => e.status !== "ok");
+        if (!bad) return t(...ALL_READY);
+        if (bad.blockedByCap)
+          return t("pb.edge.blocked", "端点「{c}」还没有定义，先补定义再补边").replace(
+            "{c}",
+            bad.blockedByCap,
+          );
+        return t("pb.edge.missing", "这条边还不在路由表里");
+      }
+      function trgLead(trgs) {
+        // 一条触发器都没声明时，"还差触发器"这句本身就是结论 —— 不需要新 key。
+        if (!trgs.length) return t("pb.fix.trigger.missing", "预案齐了，但还没有事件把它叫起来");
+        const bad = trgs.find((g) => g.status !== "ok");
+        if (!bad) return t(...ALL_READY);
+        return t("pb.trg.missing", "没有把事件送进入口能力 {c} 的源").replace(
+          "{c}",
+          (bad.entryCaps || []).join(", "),
+        );
+      }
+
       function render() {
         const p = PB;
         document.getElementById("pb-name").textContent = p.name;
@@ -196,6 +404,10 @@
         badge.className = "pb-badge is-" + p.status;
         badge.textContent = t(STATUS_KEY[p.status], STATUS_FALLBACK[p.status]);
 
+        // 数据到了：撤掉骨架、把可能因失败态收起的卡片放回来。
+        for (const id of ["cap-skel", "node-skel", "edge-skel", "trg-skel"]) drop(id);
+        setSectionsHidden(false);
+
         const items = p.items || [];
         const caps = items.filter((i) => i.kind === "capability");
         const edges = items.filter((i) => i.kind === "edge");
@@ -203,12 +415,11 @@
 
         // ---- 汇总：先说要紧的一句 ----
         const sum = document.getElementById("pb-summary");
-        sum.textContent = "";
-        const line = el("div", "text-zinc-300");
-        if (p.status === "ready") {
-          line.textContent = t("pb.next.ready", "全部就绪，可以开始跑了");
+        sum.replaceChildren();
+        const bad = items.filter((i) => i.status !== "ok");
+        if (p.status === "ready" || !bad.length) {
+          sum.appendChild(el("div", "pb-sum", t("pb.next.ready", "全部就绪，可以开始跑了")));
         } else {
-          const bad = items.filter((i) => i.status !== "ok");
           const first = bad[0];
           const map = {
             "capability.missing": ["pb.fix.capability.missing", "还缺能力定义，先把它补进当前命名空间"],
@@ -218,13 +429,18 @@
             "trigger.missing": ["pb.fix.trigger.missing", "图能跑了，但还没有事件把它叫起来"],
           };
           const k = first.kind + "." + first.status;
-          line.textContent = t(map[k][0], map[k][1]) + "（" + t("pb.remaining", "还差 {n} 项").replace("{n}", bad.length) + "）";
+          const pair = map[k] || ["pb.remaining", "还差 {n} 项"];
+          sum.appendChild(el("div", "pb-sum", t(pair[0], pair[1])));
+          sum.appendChild(
+            el("div", "card-sub", t("pb.remaining", "还差 {n} 项").replace("{n}", bad.length)),
+          );
         }
-        sum.appendChild(line);
 
         // ---- ① 能力定义 ----
         const capList = document.getElementById("cap-list");
         capList.textContent = "";
+        // 行内不再放动作按钮：install() 是**整份预案**幂等的补齐，不认单项，
+        // 行内按钮会假装它是「只补这一条」。动作统一放节标题右侧（见 setAct）。
         for (const c of caps) {
           const ok = c.status !== "missing";
           capList.appendChild(
@@ -234,12 +450,18 @@
               ok
                 ? t("pb.cap.outputs", "出口：{o}").replace("{o}", (c.outputs || []).join(", ") || "—")
                 : t("pb.cap.missing", "当前命名空间里还没有这个定义"),
-              ok ? null : actBtn(t("pb.act.install_cap", "安装定义"), () => install()),
+              null,
             ),
           );
         }
-        document.getElementById("cap-count").textContent =
-          count(caps.filter((c) => c.status !== "missing").length, caps.length);
+        const capOk = caps.filter((c) => c.status !== "missing").length;
+        setBadge("cap-count", capOk, caps.length);
+        setSum("cap-sum", capLead(caps));
+        setAct(
+          "cap-act",
+          caps.some((c) => c.status === "missing") ? t("pb.act.install_cap", "安装定义") : "",
+          install,
+        );
 
         // ---- ② 节点实现 ----
         const nodeList = document.getElementById("node-list");
@@ -270,10 +492,8 @@
                 : null;
           nodeList.appendChild(row(dot, c.ref, sub, action));
         }
-        document.getElementById("node-count").textContent = count(
-          caps.filter((c) => c.status === "ok").length,
-          caps.length,
-        );
+        setBadge("node-count", caps.filter((c) => c.status === "ok").length, caps.length);
+        setSum("node-sum", nodeLead(caps));
 
         const yamlWrap = document.getElementById("yaml-wrap");
         if (needYaml.length) {
@@ -281,6 +501,16 @@
           yamlWrap.classList.remove("hidden");
         } else {
           yamlWrap.classList.add("hidden");
+        }
+        // 节点这一节的动作只给一件事：去节点页（令牌在那里发、agent 在那里连）。
+        // 「补齐」补不了节点，复制 YAML 的入口已经在行内和代码块上 —— 节标题
+        // 再放一个就是第三个副本文案按钮。
+        if (needYaml.length || caps.some((c) => c.status === "offline")) {
+          setAct("node-act", t("pb.act.open_nodes", "打开节点页"), () => {
+            location.href = "nodes.html";
+          });
+        } else {
+          setAct("node-act", "", null);
         }
 
         // ---- ③ 出口 ----
@@ -300,13 +530,16 @@
                 : e.blockedByCap
                   ? t("pb.edge.blocked", "端点「{c}」还没有定义，先补定义再补边").replace("{c}", e.blockedByCap)
                   : t("pb.edge.missing", "这条边还不在路由表里"),
-              ok || e.blockedByCap ? null : actBtn(t("pb.act.install_edge", "补齐这条边"), () => install()),
+              null,
             ),
           );
         }
-        document.getElementById("edge-count").textContent = count(
-          edges.filter((e) => e.status === "ok").length,
-          edges.length,
+        setBadge("edge-count", edges.filter((e) => e.status === "ok").length, edges.length);
+        setSum("edge-sum", edgeLead(edges));
+        setAct(
+          "edge-act",
+          edges.some((e) => e.status !== "ok") ? t("pb.act.install_edge", "补齐这条边") : "",
+          install,
         );
 
         // ---- ④ 触发器 ----
@@ -324,13 +557,16 @@
                     "{c}",
                     (g.entryCaps || []).join(", "),
                   ),
-              ok ? null : actBtn(t("pb.act.create_source", "创建源"), () => install()),
+              null,
             ),
           );
         }
-        document.getElementById("trg-count").textContent = count(
-          trgs.filter((g) => g.status === "ok").length,
-          trgs.length,
+        setBadge("trg-count", trgs.filter((g) => g.status === "ok").length, trgs.length);
+        setSum("trg-sum", trgLead(trgs));
+        setAct(
+          "trg-act",
+          trgs.some((g) => g.status !== "ok") ? t("pb.act.create_source", "创建源") : "",
+          install,
         );
 
         document.getElementById("btn-install").style.display = p.status === "ready" ? "none" : "";
@@ -345,18 +581,21 @@
         }
       }
 
+      // 返回 true 表示这一轮真的拿到了数据（重新体检按钮据此决定要不要报"已重新体检"）。
       async function load() {
         try {
           const j = await Anotify.api(API + "/playbooks/" + encodeURIComponent(pbKey));
           PB = j.playbook;
         } catch (e) {
-          document.getElementById("pb-summary").textContent = t(
-            "pb.load_failed",
-            "载入失败，请刷新重试。",
-          );
-          return;
+          // 失败态：错误说明 + 重试按钮就地渲染在内容容器里，不伪造一份"空预案"。
+          const sum = document.getElementById("pb-summary");
+          sum.replaceChildren(Anotify.loadErrorNode(e, () => load()));
+          setSectionsHidden(true);
+          toast(t("pb.load_failed", "载入失败，请刷新重试。"));
+          return false;
         }
         render();
+        return true;
       }
 
       // 补齐 = 幂等：能补的定义/边/源都补，补不了的（节点）留给 YAML。
@@ -380,8 +619,9 @@
         }
       }
 
-      document.getElementById("btn-rescan").addEventListener("click", () => {
-        load().then(() => toast(t("pb.rescanned", "已重新体检")));
+      document.getElementById("btn-rescan").addEventListener("click", async () => {
+        const ok = await load();
+        if (ok) toast(t("pb.rescanned", "已重新体检"));
       });
       document.getElementById("btn-install").addEventListener("click", install);
       document.getElementById("btn-copy-yaml").addEventListener("click", () => {

@@ -1,0 +1,51 @@
+# W3-C · worker-docs 新增 i18n key（合并进 web-src/locales/{zh-CN,en,ja,es}.yaml 的 docs.* 下）
+# 结构按 W3C-PLAN §1：顶层 = 语言，下一层 = 命名空间（docs）。
+#
+# 为什么需要新 key：
+#   1. back_top —— 「返回顶部」按钮是纯图标按钮（↑），必须有无障碍标签；
+#      4 份 locale 里都没有等价的 “back to top”。
+#   2. table.*  —— #api 的「接口地图」表改用 ui.css 的 .table-wrap/.data-table
+#      （th 粘顶需要 <thead>），列名（方法/路径/说明）在现有 locale 里没有。
+#   3. endpoints.empty_* —— sitegen 没加载到 api/openapi.yaml 时 #endpoints 会只剩
+#      标题。「没有任何端点」和「清单没生成」是两件事，需要一句真话区分。
+#   全部只用于 docs.html，未越出 docs.* 命名空间。
+zh-CN:
+  docs:
+    back_top: 返回顶部
+    table:
+      method: 方法
+      path: 路径
+      desc: 说明
+    endpoints:
+      empty_title: 端点清单未生成
+      empty_desc: 构建时没有加载到 api/openapi.yaml。重新运行 make sitegen 即可生成这一节。
+en:
+  docs:
+    back_top: Back to top
+    table:
+      method: Method
+      path: Path
+      desc: Description
+    endpoints:
+      empty_title: Endpoint list was not generated
+      empty_desc: api/openapi.yaml was not loaded at build time. Re-run make sitegen to generate this section.
+ja:
+  docs:
+    back_top: トップへ戻る
+    table:
+      method: メソッド
+      path: パス
+      desc: 説明
+    endpoints:
+      empty_title: エンドポイント一覧が未生成です
+      empty_desc: ビルド時に api/openapi.yaml が読み込まれませんでした。make sitegen を再実行するとこのセクションが生成されます。
+es:
+  docs:
+    back_top: Volver arriba
+    table:
+      method: Método
+      path: Ruta
+      desc: Descripción
+    endpoints:
+      empty_title: La lista de endpoints no se generó
+      empty_desc: api/openapi.yaml no se cargó en tiempo de compilación. Vuelve a ejecutar make sitegen para generar esta sección.

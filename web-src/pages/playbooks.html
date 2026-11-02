@@ -1,30 +1,165 @@
 {{define "title"}}{{t "pb.title"}}{{end}}
 
+{{define "style"}}
+    <style>
+      /* 预案列表页（UI v2）
+         ------------------------------------------------------------
+         组件（页头 / 卡片 / 按钮 / 徽章 / 空态 / 骨架）一律用 web/ui.css 的
+         共享类，这里只补三件事：
+         ① 窄屏栅格：ui.css 的 .pb-grid 最小轨道 320px，390 宽会横向裁切；
+         ② .pb-card 的视觉对齐 .card（它是 e2e 硬锚点类名，不能换名）；
+         ③ 首帧骨架的形状。
+         颜色只走 tokens.css 的 token，本页不出现任何硬编码色值。 */
+
+      /* ① 窄屏单列：minmax(min(280px, 100%), 1fr) —— 视口不足 280px 时轨道
+         退化为 100%。否则 auto-fill 的最小轨道会把栅格撑到 320px，
+         再被 body 的 overflow-x-hidden 直接裁掉右侧内容。 */
+      #pb-grid,
+      .pb-grid-skel {
+        grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+      }
+
+      /* ② 卡片语言对齐 .card：surface-1 + 1px line + 16px 圆角 + shadow-1，
+         hover 提升到 --line-strong + --shadow-2（契约 §8）。
+         .pb-card 自带 display:flex / column / gap（ui.css），这里只改视觉。 */
+      .pb-card {
+        min-width: 0;
+        padding: 20px;
+        background: var(--surface-1);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow-1);
+        transition:
+          border-color var(--dur) var(--ease),
+          box-shadow var(--dur) var(--ease),
+          transform var(--dur) var(--ease);
+      }
+      .pb-card:hover {
+        background: var(--surface-1);
+        border-color: var(--line-strong);
+        box-shadow: var(--shadow-2);
+        transform: translateY(-1px);
+      }
+      /* 长 slug / 长描述不能把卡顶宽（280px 轨道下尤其明显） */
+      .pb-card-titles {
+        min-width: 0;
+      }
+      .pb-card .pb-name,
+      .pb-card .pb-desc,
+      .pb-card .pb-next {
+        overflow-wrap: anywhere;
+      }
+      /* 就绪的卡不该用警告色念一句"全都好了"：.pb-next 的基色是 --warn
+         （未就绪时提醒"下一步做什么"），就绪时降级为中性文字。 */
+      .pb-next-ok {
+        color: var(--muted);
+      }
+
+      /* ③ 首帧骨架：形状对齐真实卡片（标题 + 徽标 + 两行 meta + 进度条）。
+         **必须**是 #pb-grid 之外的独立容器 —— #pb-grid 有子元素是 e2e 的
+         「数据已就绪」信号（real_backend.mjs），骨架混进去会让信号提前成立。 */
+      .pb-grid-skel {
+        display: grid;
+        gap: 12px;
+      }
+      .pb-skel-card {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 20px;
+        background: var(--surface-1);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow-1);
+      }
+      .pb-skel-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .pb-skel-title {
+        width: 46%;
+        height: 16px;
+      }
+      .pb-skel-badge {
+        width: 60px;
+        height: 20px;
+        flex: none;
+      }
+      .pb-skel-line {
+        width: 100%;
+        height: 10px;
+      }
+      .pb-skel-line-s {
+        width: 64%;
+        height: 10px;
+      }
+      .pb-skel-bar {
+        width: 100%;
+        height: 4px;
+      }
+    </style>
+{{end}}
+
 {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-6xl space-y-8">
-    <div class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 class="font-display text-3xl text-white">{{t "pb.title"}}</h2>
-          <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-            {{t "pb.subtitle"}}
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-3">
-          <button id="btn-refresh" class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm">
-            {{t "pb.rescan"}}
-          </button>
-        </div>
+  <div class="page">
+    <!-- 页头：标题 + 一句说明 + 页级动作。
+         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §10-C1/C2）。
+         `.page-sub` 全页只出现一次，mountLayout 检测到它就不再画顶栏副标题。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "pb.title"}}</h2>
+        <p class="page-sub">{{t "pb.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <button id="btn-refresh" type="button" class="btn btn-ghost">{{t "pb.rescan"}}</button>
       </div>
     </div>
 
+    <!-- 首帧骨架：独立容器，数据到达后整体移除。
+         e2e 的「数据已就绪」信号是 `#pb-grid` 有子元素，所以骨架绝不能进格。 -->
+    <div id="pb-grid-skel" class="pb-grid-skel" aria-hidden="true">
+      <div class="pb-skel-card">
+        <div class="pb-skel-row">
+          <div class="skeleton pb-skel-title"></div>
+          <div class="skeleton pb-skel-badge"></div>
+        </div>
+        <div class="skeleton pb-skel-line"></div>
+        <div class="skeleton pb-skel-line-s"></div>
+        <div class="skeleton pb-skel-bar"></div>
+      </div>
+      <div class="pb-skel-card">
+        <div class="pb-skel-row">
+          <div class="skeleton pb-skel-title"></div>
+          <div class="skeleton pb-skel-badge"></div>
+        </div>
+        <div class="skeleton pb-skel-line"></div>
+        <div class="skeleton pb-skel-line-s"></div>
+        <div class="skeleton pb-skel-bar"></div>
+      </div>
+      <div class="pb-skel-card">
+        <div class="pb-skel-row">
+          <div class="skeleton pb-skel-title"></div>
+          <div class="skeleton pb-skel-badge"></div>
+        </div>
+        <div class="skeleton pb-skel-line"></div>
+        <div class="skeleton pb-skel-line-s"></div>
+        <div class="skeleton pb-skel-bar"></div>
+      </div>
+    </div>
+
+    <!-- 真实列表：只有数据落地后才有子元素（e2e 的就绪信号）。 -->
     <div id="pb-grid" class="pb-grid"></div>
 
-    <div id="pb-empty" class="card rounded-2xl p-6 text-center text-sm text-zinc-500 hidden"></div>
+    <!-- 空态 / 失败态容器。
+         `hidden` 挂在**裸 div** 上：.empty 是 display:flex，会盖掉
+         .hidden{display:none}（ui.css 在 tailwind.css 之后加载）——
+         两者不能同元素，否则空态永远可见。
+         成功加载后这个 div 必须保持 `hidden`（real_backend.mjs:375-385）。 -->
+    <div id="pb-empty" class="hidden"></div>
   </div>
-
-  <div id="toast" class="toast"></div>
 </div>
 {{end}}
 
@@ -39,19 +174,15 @@
         subtitle: t("pb.subtitle", "把能力、出口、触发器组成一份能体检、能补齐的预案"),
       });
 
+      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 host）。
+      // 页面里不再自己维护一份 toast 容器 —— 每页一份的 z-index / 位置各不相同。
+      const toast = (msg, kind) => Anotify.toast(msg, kind);
+
       function el(tag, cls, text) {
         const n = document.createElement(tag);
         if (cls) n.className = cls;
         if (text != null) n.textContent = text;
         return n;
-      }
-
-      function toast(msg) {
-        const box = document.getElementById("toast");
-        box.textContent = msg;
-        box.classList.add("show");
-        clearTimeout(box._timer);
-        box._timer = setTimeout(() => box.classList.remove("show"), 2600);
       }
 
       // 四种总体状态：文案 + 徽标色类。颜色靠 CSS（.pb-badge.is-*），
@@ -86,21 +217,24 @@
       }
 
       function card(pb) {
-        const c = el("div", "pb-card");
+        // `.card` 是 ui.css 的共享卡片类；页级 `.pb-card` 只补栅格内的
+        // min-width/内边距/可点击焦点环。两个类叠用，形状只由 .card 决定。
+        const c = el("div", "pb-card card");
         c.tabIndex = 0;
         c.setAttribute("role", "link");
-        c.addEventListener("click", () => {
+        const open = () => {
           location.href = "playbook.html?id=" + encodeURIComponent(pb.slug);
-        });
+        };
+        c.addEventListener("click", open);
         c.addEventListener("keydown", (ev) => {
           if (ev.key === "Enter" || ev.key === " ") {
             ev.preventDefault();
-            location.href = "playbook.html?id=" + encodeURIComponent(pb.slug);
+            open();
           }
         });
 
         const top = el("div", "pb-card-top");
-        const left = el("div", "");
+        const left = el("div", "pb-card-titles");
         left.appendChild(el("div", "pb-name", pb.name));
         left.appendChild(el("div", "pb-slug", pb.slug));
         top.appendChild(left);
@@ -132,7 +266,7 @@
           el("div", "pb-meta", t("pb.ready_n", "{n}/{m} 项就绪").replace("{n}", pb.ready).replace("{m}", pb.total)),
         );
 
-        const next = el("div", "pb-next");
+        const next = el("div", 'pb-next' + (pb.status === "ready" ? " pb-next-ok" : ""));
         next.appendChild(el("span", "", "→"));
         next.appendChild(el("span", "", nextLine(pb)));
         c.appendChild(next);
@@ -141,30 +275,61 @@
 
       let PKGS = [];
 
+      // 数据（或空态 / 失败态）落地后骨架整体撤掉，不留"永远加载中"的假象。
+      function dropSkeleton() {
+        const skel = document.getElementById("pb-grid-skel");
+        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
+      }
+
+      // 空态：标题 + 一句说明 + 一个真能用的动作（重新体检 = load()）。
+      // 不伪造数据、不写成"载入失败"，两者是不同的状态。
+      function renderEmpty() {
+        const box = document.getElementById("pb-empty");
+        const inner = el("div", "empty");
+        inner.appendChild(el("div", "card-title", t("pb.empty_title", "还没有预案")));
+        inner.appendChild(el("p", "card-sub", t("pb.empty", "这个命名空间里还没有预案。")));
+        const act = el("button", "btn btn-primary btn-sm", t("pb.rescan", "重新体检"));
+        act.type = "button";
+        act.addEventListener("click", () => load());
+        inner.appendChild(act);
+        box.replaceChildren(inner);
+        box.classList.remove("hidden");
+      }
+
+      // 失败态：一句"载入失败"加一个重试按钮，就地说清是怎么回事。
+      function renderLoadError(err) {
+        const box = document.getElementById("pb-empty");
+        box.replaceChildren(Anotify.loadErrorNode(err, () => load()));
+        box.classList.remove("hidden");
+        toast(t("pb.load_failed", "载入失败，请刷新重试。"));
+      }
+
+      // 返回 true 表示这一轮真的拿到了数据（刷新按钮据此决定要不要报"已重新体检"）。
       async function load() {
         const grid = document.getElementById("pb-grid");
-        const empty = document.getElementById("pb-empty");
         grid.textContent = "";
         try {
           // Anotify.api 直接返回解析好的 JSON，非 2xx 会 throw（不是 Response）
           const j = await Anotify.api(API + "/playbooks");
           PKGS = j.playbooks || [];
         } catch (e) {
-          empty.textContent = t("pb.load_failed", "载入失败，请刷新重试。");
-          empty.classList.remove("hidden");
-          return;
+          dropSkeleton();
+          renderLoadError(e);
+          return false;
         }
+        dropSkeleton();
         if (!PKGS.length) {
-          empty.textContent = t("pb.empty", "这个命名空间里还没有预案。");
-          empty.classList.remove("hidden");
-          return;
+          renderEmpty();
+          return true;
         }
-        empty.classList.add("hidden");
+        document.getElementById("pb-empty").classList.add("hidden");
         for (const p of PKGS) grid.appendChild(card(p));
+        return true;
       }
 
-      document.getElementById("btn-refresh").addEventListener("click", () => {
-        load().then(() => toast(t("pb.rescanned", "已重新体检")));
+      document.getElementById("btn-refresh").addEventListener("click", async () => {
+        const ok = await load();
+        if (ok) toast(t("pb.rescanned", "已重新体检"));
       });
       document.addEventListener("DOMContentLoaded", load);
     </script>
