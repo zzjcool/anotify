@@ -743,9 +743,17 @@ body {
 /* 热力图 */
 .hm {
 	display: grid;
-	grid-template-columns: 14px repeat(53, minmax(0, 1fr));
-	gap: 3px;
-	min-width: 640px;
+	/* 53 周 × (格 + gap)。首页两列布局里卡片内宽约 620px，
+	   所以格子只能 ~9.5px；min-width:0 让它在宽容器里铺满、
+	   在窄容器里靠 .hm-scroll 横滚（640 断点见下）。 */
+	grid-template-columns: 12px repeat(53, minmax(0, 1fr));
+	gap: 2px;
+	min-width: 0;
+}
+@media (max-width: 640px) {
+	.hm {
+		min-width: 560px;
+	}
 }
 .hm-month {
 	grid-row: 1;
