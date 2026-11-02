@@ -422,7 +422,7 @@ func (d *DB) TouchNode(ctx context.Context, namespaceID, nodeID string, at int64
 //
 // 注意它**不是**能力声明：能力归属的唯一写者是控制台的部署（契约 D4）。
 // 中枢拿到 applied 只做两件事 —— 对账 node_capabilities，以及把 deployments 的
-// observed 状态标成 applied / local（发现本地变体）。
+// observed 状态标成 applied / pending（发现不一致就要重新下发）。
 type AppliedRef struct {
 	Name    string `json:"capability"`
 	Version int    `json:"version"`
@@ -448,9 +448,9 @@ func (d *DB) ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string
 //     任一条未定义 → ErrUnknownCapability，整帧拒绝、一行不写。
 //  2. DELETE + INSERT 重建 node_capabilities（全量替换语义保留）。
 //
-// 顺带把 deployments 的 observed 列对账成 applied / local：
+// 顺带把 deployments 的 observed 列对账成 applied / pending：
 //   - applied：节点缓存里的 digest 与中枢期望一致
-//   - local  ：不一致 —— 用户手改过 = 本地变体，中枢永不覆盖（契约 §7）
+//   - pending：不一致 —— 中枢马上会把期望的那份重新下发（中枢覆盖，见 ws.resendDeployments）
 //
 // **它不会做的事**：不会因为 applied 里出现一条没部署过的能力就给它归属。
 // 那会让中枢数据库开始静默撒谎（页面显示「这台机器能跑」，真的派过去却 ack 后 failed）。

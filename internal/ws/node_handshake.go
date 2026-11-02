@@ -35,6 +35,8 @@ type NodeStore interface {
 	//
 	// 旧路径 ConfirmCapabilities / ConfirmCapabilityDecls 已删：能力归属不再由节点
 	// 自报，只能由控制台的部署产生。未知能力（中枢没定义过）仍整帧拒绝。
+	//
+	// 返回的 ids 与 applied 逐个对应（解析失败的那条是""），供握手后的补推建索引。
 	ReconcileApplied(ctx context.Context, namespaceID, nodeID string, applied []store.AppliedRef) ([]string, error)
 	// MarkDeployResult 落一条来自 apply 帧的部署结果（只碰 state/reason/updated_at）。
 	//
@@ -43,6 +45,11 @@ type NodeStore interface {
 	UpsertInstances(ctx context.Context, namespaceID, nodeID string, specs []store.InstanceSpec) ([]*store.NodeInstance, error)
 	MarkInstancesDead(ctx context.Context, nodeID string) error
 	ListInstances(ctx context.Context, nodeID string) ([]*store.NodeInstance, error)
+	// DeploymentsForNode 是握手结束后的补推来源：每台节点当前期望的产物（含正文）。
+	//
+	// 中枢是部署的唯一写者，所以这里不做"本地变体"协商：节点上那份不是中枢期望的，
+	// 就把它推下去覆盖（见 nodeSession.resendDeployments）。
+	DeploymentsForNode(ctx context.Context, namespaceID, nodeID string) ([]*store.DeploymentDelivery, error)
 	GetTask(ctx context.Context, namespaceID, id string) (*store.Task, error)
 	Transition(ctx context.Context, namespaceID, taskID, from, to string) error
 	// ProgressTask 一个事务内完成 progress 帧的三件事：→running + started_at + 续租。
@@ -180,33 +187,34 @@ func codeOf(err error) string {
 //
 // 作用域一律用 node.NamespaceID：hello 帧不带命名空间（一个字节不改），
 // 节点属于哪个命名空间完全由令牌决定（设计文档 §2.1）。
-func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) error {
+func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) (map[string]string, error) {
 	// 协议版本
 	if f.Protocol != 0 && f.Protocol != ProtocolVersion {
-		return &helloError{
+		return nil, &helloError{
 			code:    ErrCodeProtocolMismatch,
 			message: fmt.Sprintf("unsupported protocol %d (server speaks %d)", f.Protocol, ProtocolVersion),
 		}
 	}
 	// 协议要求节点自报的身份与 token 对应的节点一致（防「拿 A 的 token 冒充 B」）
 	if f.NodeID != "" && f.NodeID != node.ID {
-		return &helloError{
+		return nil, &helloError{
 			code:    ErrCodeBadFrame,
 			message: fmt.Sprintf("hello node_id %q does not match the token's node %q", f.NodeID, node.ID),
 		}
 	}
 
 	// ① 已应用产物对账
-	if err := reconcileHelloApplied(ctx, st, node, f); err != nil {
-		return err
+	applied, err := reconcileHelloApplied(ctx, st, node, f)
+	if err != nil {
+		return nil, err
 	}
 
 	// ② 实例申报
 	if _, err := st.UpsertInstances(ctx, node.NamespaceID, node.ID, instanceSpecs(f)); err != nil {
 		if errors.Is(err, store.ErrTooManyInstances) {
-			return &helloError{code: ErrCodeTooManyInstances, message: err.Error()}
+			return nil, &helloError{code: ErrCodeTooManyInstances, message: err.Error()}
 		}
-		return err
+		return nil, err
 	}
 
 	// ③ 槽位兜底（#218）：清掉「槽位指向的任务已经不在这台机器上跑了」的钉子。
@@ -227,9 +235,9 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 
 	// ④ 上线
 	if err := st.UpdateNodeStatus(ctx, node.NamespaceID, node.ID, store.NodeStatusOnline); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return applied, nil
 }
 
 // instanceSpecs 把 hello 帧的实例申报转成 store 的形状（两处调用共用，避免漂移）。
@@ -274,9 +282,11 @@ func reassertNodeState(ctx context.Context, st NodeStore, node *store.Node, f *H
 //  2. 全量重建 node_capabilities（老的 DELETE + INSERT 语义保留）。
 //
 // 注意 **不做的事**：不会因为 applied 里出现一条没部署过的能力就把归属给它。
-// 唯一的写者是控制台的部署；这里只做对账（并据此把 state 标成 local，
-// 让 UI 能显示「本地变体」）。这条纪律是「不产生两个真相源」的全部机制。
-func reconcileHelloApplied(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) error {
+// 唯一的写者是控制台的部署；这里只做对账，并把不一致的行打成 pending ——
+// 随后 handleHello 会按中枢的期望重新下发（中枢覆盖，见 resendDeployments）。
+//
+// 返回值：capability_id → 节点实际缓存的 digest，供补推比对（不报 = 节点上没有）。
+func reconcileHelloApplied(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) (map[string]string, error) {
 	refs := make([]store.AppliedRef, 0, len(f.Applied))
 	for _, a := range f.Applied {
 		refs = append(refs, store.AppliedRef{
@@ -285,13 +295,21 @@ func reconcileHelloApplied(ctx context.Context, st NodeStore, node *store.Node, 
 			Digest:  a.Digest,
 		})
 	}
-	if _, err := st.ReconcileApplied(ctx, node.NamespaceID, node.ID, refs); err != nil {
+	ids, err := st.ReconcileApplied(ctx, node.NamespaceID, node.ID, refs)
+	if err != nil {
 		if errors.Is(err, store.ErrUnknownCapability) {
-			return &helloError{code: ErrCodeUnknownCapability, message: err.Error()}
+			return nil, &helloError{code: ErrCodeUnknownCapability, message: err.Error()}
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	applied := make(map[string]string, len(ids))
+	for i, id := range ids {
+		if id == "" {
+			continue
+		}
+		applied[id] = refs[i].Digest
+	}
+	return applied, nil
 }
 
 // welcomeFrameFor 构造握手成功的 welcome 帧。

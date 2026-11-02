@@ -333,8 +333,9 @@ func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitFailure, fmt.Errorf("%s: %w", opts.path, err)
 	}
-	// Decode = Parse（全部校验）+ 算 digest。手改过的产物一样能跑（它就是本地变体），
-	// 但**不合法的产物一定跑不起来**：入口没有 shebang 这类问题会在这里被拒。
+	// Decode = Parse（全部校验）+ 算 digest。手改过的产物一样能跑（只是 digest 变了，
+	// 中枢握手时会发现并重新下发），但**不合法的产物一定跑不起来**：入口没有 shebang
+	// 这类问题会在这里被拒。
 	art, digest, err := artifact.Decode(data)
 	if err != nil {
 		return exitFailure, fmt.Errorf("%s: %w", opts.path, err)

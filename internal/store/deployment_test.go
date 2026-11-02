@@ -215,7 +215,11 @@ func TestCreateDeploymentIdempotent(t *testing.T) {
 		t.Fatalf("deployments 行数 = %d, want 1", n)
 	}
 
-	// 同节点换一份产物（新 digest）是**另一行**：旧行是历史，不该被覆盖
+	// 同节点换一份产物（新 digest）：**取代**旧行，而不是并存。
+	//
+	// 为什么必须取代：一行就是一条“这台机器该有哪份产物”的期望。两份期望并存时，
+	// hello 对账永远会认为旧的“对”、新的“错”，两者每次重连互相推翻——
+	// 节点会在两份产物之间来回被推（见 CreateDeployment 的注释）。
 	art2 := dpArtifact(t, db, nsID, art.CapabilityID, dpDigest("a7"), `{"v":2}`)
 	other, err := db.CreateDeployment(ctx, nsID, node.ID, art2.ID)
 
@@ -225,8 +229,24 @@ func TestCreateDeploymentIdempotent(t *testing.T) {
 	if other.ID == first.ID {
 		t.Fatal("换 digest 的部署复用了旧行")
 	}
+	if n := countRows(t, db, "deployments", "node_id = ?", node.ID); n != 1 {
+		t.Fatalf("deployments 行数 = %d, want 1（新部署取代旧部署）", n)
+	}
+	if _, err := db.GetDeployment(ctx, nsID, first.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("旧行还在（err=%v），每个能力只能有一条期望", err)
+	}
+	if other.Digest != art2.Digest || other.CapabilityID != art.CapabilityID || other.State != DeploymentPending {
+		t.Fatalf("新行字段不对: %+v", other)
+	}
+
+	// 换能力不受影响：取代范围只能是同一个 capability
+	cap2 := dpCap(t, db, nsID, "notify")
+	art3 := dpArtifact(t, db, nsID, cap2.ID, dpDigest("b8"), `{"v":3}`)
+	if _, err := db.CreateDeployment(ctx, nsID, node.ID, art3.ID); err != nil {
+		t.Fatalf("deploy other capability: %v", err)
+	}
 	if n := countRows(t, db, "deployments", "node_id = ?", node.ID); n != 2 {
-		t.Fatalf("deployments 行数 = %d, want 2（旧 digest 的行保留为历史）", n)
+		t.Fatalf("跨能力部署把别的能力顶掉了：行数 = %d, want 2", n)
 	}
 }
 

@@ -62,8 +62,8 @@ func TestDecodeUpstreamApplyMinimal(t *testing.T) {
 // TestDeployFrameRoundTrip deploy 帧（含产物原文）编码后再解码，产物字节不变。
 //
 // 为什么要比字节：产物是内容寻址的（digest = sha256(canonical JSON)），中途中转
-// 只要多/少一个字节，节点算出来的 digest 就与中枢的不一致 → 每次部署都被判成
-// 「本地变体」。所以「原样转发」是这个帧唯一的正确性要求。
+// 只要多/少一个字节，节点算出来的 digest 就与中枢的不一致 → 中枢会认为节点上那份
+// 是旧/错的，每次握手都重推一遍。「原样转发」是这个帧唯一的正确性要求。
 func TestDeployFrameRoundTrip(t *testing.T) {
 	artifact := `{"apiVersion":"anotify/v1","kind":"Capability",` +
 		`"metadata":{"name":"review","version":1},"spec":{"outputs":[],"run":{"entrypoint":"run.sh","files":{"run.sh":"#!/bin/bash\necho hi\n"}}}}`

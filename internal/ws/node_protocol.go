@@ -98,7 +98,7 @@ type HelloFrame struct {
 
 // AppliedDecl 是节点对「我缓存了什么」的陈述。
 //
-// 它**不是**能力声明：中枢只会用它核对已部署的东西（对账 + 发现本地变体），
+// 它**不是**能力声明：中枢只会用它核对已部署的东西（对账 + 发现不一致后重新下发），
 // 不会因为出现一条没部署过的 applied 就把能力归属给这台机器。
 type AppliedDecl struct {
 	Capability string `json:"capability"`

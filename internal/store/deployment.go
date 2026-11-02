@@ -21,8 +21,12 @@ const (
 	DeploymentApplied = "applied"
 	// DeploymentFailed 节点拒绝（reason 里是短码 + 说明）。
 	DeploymentFailed = "failed"
-	// DeploymentLocal 节点上这个能力的 digest 与中枢期望不一致 = 本地变体。
-	// 中枢永不覆盖它（契约 §7），UI 必须标黄而不是打绿勾。
+	// DeploymentLocal 是**旧的**「本地变体」态：节点上的 digest 与中枢期望不一致，
+	// 且中枢不敢覆盖。
+	//
+	// 现在不再产生这个态：中枢是部署的唯一写者，发现不一致就重新下发（覆盖），
+	// 对账会把行打成 pending。保留它只为了让旧库里已有的行能被读出来（下一次 hello
+	// 对账就会把它们改成 applied/pending）。UI 上的黄色“本地变体”也因此只会是历史残留。
 	DeploymentLocal = "local"
 )
 
@@ -160,12 +164,16 @@ func (d *DB) LatestArtifact(ctx context.Context, namespaceID, capabilityID strin
 
 // CreateDeployment 建一条部署（state=pending）。
 //
-// 同一 (node, artifact) 已存在时是**幂等 no-op**：控制台重复点部署不该报错，
-// 但也不该重置已经 applied 的状态（否则一次误点会把绿标打回灰）。
+// 同一 (node, capability) **只保留一行**：部署是中枢对「这台机器该有哪一份产物」的
+// 期望状态，新期望直接取代旧的。
 //
-// 同一节点对同一能力部署一个新 digest 时，旧 digest 的行保留（它是历史），
-// 但只有新行参与 node_capabilities 派生 —— 由 ReconcileApplied 按节点实际
-// 缓存的 digest 决定哪一行是 applied。
+// 为什么不再把旧 digest 的行当“历史”留着：留着会让同一能力同时存在两条互斥的期望。
+// hello 对账按行逐个比对 digest，于是旧行总是“与节点上那份一致”、新行总是“不一致”，
+// 两者每次重连都互相推翻——节点会在两份产物之间来回被推。收敛的前提是
+// 「一个 (机器, 能力) 只有一个期望」（见 markDeployedDigest）。
+//
+// 同一 (node, artifact) 已存在时是幂等 no-op：控制台重复点部署不该报错，
+// 也不该重置已经 applied 的状态（否则一次误点会把绿标打回灰）。
 func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, artifactID string) (*Deployment, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -173,13 +181,43 @@ func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, artifact
 	now := Now()
 	id := NewDeploymentID()
 
-	if _, err := d.ExecContext(ctx,
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin create deployment: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 目标产物的能力：取代范围只能是**同一能力**的旧行（别的能力不碰）。
+	var capabilityID string
+	err = tx.QueryRowContext(ctx,
+		`SELECT capability_id FROM artifacts WHERE id = ? AND namespace_id = ?`,
+		artifactID, namespaceID).Scan(&capabilityID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrArtifactNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve artifact capability: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM deployments
+		  WHERE namespace_id = ? AND node_id = ? AND artifact_id <> ?
+		    AND artifact_id IN (SELECT id FROM artifacts WHERE capability_id = ?)`,
+		namespaceID, nodeID, artifactID, capabilityID); err != nil {
+		return nil, fmt.Errorf("supersede previous deployment: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
 		 SELECT ?, ?, ?, a.id, a.digest, ?, '', ?, ?
 		   FROM artifacts a WHERE a.id = ? AND a.namespace_id = ?
 		 ON CONFLICT(node_id, artifact_id) DO NOTHING`,
 		id, namespaceID, nodeID, DeploymentPending, now, now, artifactID, namespaceID); err != nil {
 		return nil, fmt.Errorf("create deployment: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit create deployment: %w", err)
 	}
 	return d.GetDeploymentByNodeArtifact(ctx, namespaceID, nodeID, artifactID)
 }
@@ -278,7 +316,9 @@ func (d *DB) DeleteDeployment(ctx context.Context, namespaceID, id string) (*Dep
 
 // MarkDeployResult 落一条来自节点 apply 帧的结果（只碰 observed 三列）。
 func (d *DB) MarkDeployResult(ctx context.Context, namespaceID, deployID, state, reason string) error {
-	if state != DeploymentApplied && state != DeploymentFailed && state != DeploymentLocal {
+	// pending 也是合法目标：中枢重连时把“要重新下发”的行标回 pending（中枢覆盖语义）。
+	if state != DeploymentApplied && state != DeploymentFailed &&
+		state != DeploymentLocal && state != DeploymentPending {
 		return fmt.Errorf("mark deploy result: invalid state %q", state)
 	}
 	res, err := d.ExecContext(ctx,
@@ -294,10 +334,17 @@ func (d *DB) MarkDeployResult(ctx context.Context, namespaceID, deployID, state,
 	return nil
 }
 
-// MarkDeployAppliedByDigest 是 hello 对账用的便捷路径：按 (node, capability, digest)
-// 把匹配的部署标成 applied、不匹配的标成 local。
+// markDeployedDigest 是 hello 对账的入口：拿「节点实际缓存的 digest」和中枢的期望
+// 逐能力比对。
 //
-// 返回被标记的行数。
+// 语义（中枢覆盖）：
+//   - digest 一致 → applied（绿勾）
+//   - 不一致   → pending，reason 里两端 digest 都写上，回来后由 handleHello
+//     把中枢期望的那份推下去（节点不需要知道自己错在哪里，它只要拿到对的东西）
+//
+// 早先这里标 `local`（“本地变体，中枢永不覆盖”，契约 §7 的旧口径），实践中行不通：
+// 部署本来就是中枢下发的，节点上那份不一致是“还没收到”而不再是“用户改过”，
+// 标黄只会让一条正常的部署永远停在黄标上，还得人去点一次。
 func (d *DB) markDeployedDigest(ctx context.Context, tx *sql.Tx, nodeID, capabilityID, digest string) (int, error) {
 	now := Now()
 	rows, err := tx.QueryContext(ctx,
@@ -324,11 +371,12 @@ func (d *DB) markDeployedDigest(ctx context.Context, tx *sql.Tx, nodeID, capabil
 
 	n := 0
 	for _, r := range all {
-		state, reason := DeploymentLocal, ""
+		state, reason := DeploymentPending, ""
 		if r.digest == digest {
 			state = DeploymentApplied
 		} else {
-			reason = fmt.Sprintf("digest mismatch: node has %s, console expects %s", digest, r.digest)
+			reason = fmt.Sprintf("digest mismatch: node has %s, console expects %s — 重新下发",
+				digest, r.digest)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE deployments SET state = ?, reason = ?, updated_at = ? WHERE id = ?`,
@@ -340,9 +388,52 @@ func (d *DB) markDeployedDigest(ctx context.Context, tx *sql.Tx, nodeID, capabil
 	return n, nil
 }
 
-// PendingDeploymentsForNode 返回某节点上所有 pending 的行（节点上线时补推用）。
-func (d *DB) PendingDeploymentsForNode(ctx context.Context, namespaceID, nodeID string) ([]*Deployment, error) {
-	return d.ListDeployments(ctx, namespaceID, DeploymentFilter{NodeID: nodeID})
+// DeploymentDelivery 是「把一份产物推给某台节点」所需的全部信息（行 + 产物原文）。
+//
+// 为什么单独开一个形状：deploy 帧要的是 canonical JSON（artifact.Spec），
+// 而 Deployment 是给控制台看的（不带产物正文）。两者混在一个结构里会让
+// 列表接口无端背上几 KB 的产物正文。
+type DeploymentDelivery struct {
+	DeploymentID string
+	CapabilityID string
+	Capability   string
+	Version      int
+	Digest       string
+	Spec         []byte
+}
+
+// DeploymentsForNode 返回该节点当前的部署（每个能力最多一行，由 CreateDeployment 保证）。
+//
+// 调用方是握手结束后的补推：节点连上来时，它缓存的 digest 如果不是中枢期望的那份，
+// 就把期望的那份推下去——部署是中枢下发的，这里不做“本地变体”协商，直接覆盖。
+// 同时补上了「部署时节点离线」那条路径（原来只有注释说会补推，代码里没有）。
+func (d *DB) DeploymentsForNode(ctx context.Context, namespaceID, nodeID string) ([]*DeploymentDelivery, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	rows, err := d.QueryContext(ctx,
+		`SELECT d.id, a.capability_id, c.name, c.version, d.digest, a.spec
+		   FROM deployments d
+		   JOIN artifacts a ON a.id = d.artifact_id
+		   JOIN capability_versions c ON c.id = a.capability_id
+		  WHERE d.namespace_id = ? AND d.node_id = ?
+		  ORDER BY d.created_at DESC, d.id`, namespaceID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list deployments for node: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*DeploymentDelivery{}
+	for rows.Next() {
+		var it DeploymentDelivery
+		var spec string
+		if err := rows.Scan(&it.DeploymentID, &it.CapabilityID, &it.Capability, &it.Version, &it.Digest, &spec); err != nil {
+			return nil, fmt.Errorf("scan deployment for node: %w", err)
+		}
+		it.Spec = []byte(spec)
+		out = append(out, &it)
+	}
+	return out, rows.Err()
 }
 
 // deploymentRetryAfter 是节点离线时部署重推的退避（目前不落库，留给 sweeper）。
