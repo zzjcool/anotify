@@ -218,6 +218,21 @@ func (m *KeyManager) ValidateKey(plaintext string) (userID string, scopes []stri
 	if err != nil || !ok {
 		return "", nil, errors.New("auth: key 无效")
 	}
+	// 账户被禁用时 key 也不能用（#254）。
+	//
+	// 会话侧一直有这道检查（authSession → u.Disabled），key 侧漏了：超管禁用一个
+	// 用户之后，他的 `ant_...` 仍然能打 API——「禁用账户」只挡了浏览器，没挡机器入口。
+	//
+	// fail-closed：查不到用户（已删/DB 出错）按无效 key 处理，绝不因为"读不到状态"
+	// 就当他是启用状态。
+	//
+	// 这条负结果**不进缓存**（下面 put 只在成功路径），所以禁用账户的 key 每次都会
+	// 回源；禁用瞬间的清理由 admin 处理器 bump generation 完成（见 BumpGeneration）。
+	if u, uerr := m.db.GetUserByID(rec.UserID); uerr != nil {
+		return "", nil, errors.New("auth: key 无效")
+	} else if u.Disabled {
+		return "", nil, errors.New("auth: 账户已被禁用")
+	}
 	// 刷新最近使用时间（忽略错误）。这里是完整校验路径，写一次是原行为。
 	_ = m.db.TouchAPIKey(rec.ID, store.Now())
 	if m.cache != nil {

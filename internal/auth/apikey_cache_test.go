@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
@@ -864,5 +865,72 @@ func TestAPIKeyRevokeDuringCacheMissNotResurrected(t *testing.T) {
 			t.Fatalf("第 %d 轮：RevokeKey 返回后仍能通过 —— in-flight 的未命中请求把「吊销前」"+
 				"的结论用「吊销后」的 gen 写回了缓存（gen 快照时机错）", attempt)
 		}
+	}
+}
+
+// TestAPIKeyRejectedWhenUserDisabled 锁住 #254：账户被禁用后 `ant_...` 必须立刻失效。
+//
+// 漏洞原状：ValidateKey 只看 key 自己的 Enabled，从不看用户的 Disabled——
+// 于是超管「禁用账户」只挡住了浏览器会话，机器入口（API Key）照常能打。
+//
+// 这里连缓存一起测：先校验一次把条目放进缓存，再禁用 + bump generation
+// （生产上由 admin 处理器做，见 admin_handlers.go），下一次校验必须立刻被拒。
+func TestAPIKeyRejectedWhenUserDisabled(t *testing.T) {
+	db := openKeyTestDB(t)
+	km := NewKeyManager(db)
+	uid := mustUser(t, db, "disabled-user")
+	plaintext, _ := mustKey(t, km, uid, []string{ScopeNotifySend})
+	ctx := context.Background()
+
+	// 1) 启用状态下先走一次完整校验，把结果放进缓存（这就是危险的那份副本）。
+	if got, _, err := km.ValidateKey(plaintext); err != nil || got != uid {
+		t.Fatalf("启用状态下应校验通过: uid=%q err=%v", got, err)
+	}
+	if entries, _, _ := km.CacheStats(); entries != 1 {
+		t.Fatalf("应写入 1 条缓存，实际 %d", entries)
+	}
+
+	// 2) 禁用账户 + 整表失效（admin 处理器的两个动作）。
+	if _, err := db.UpdateUserDisabled(ctx, uid, true); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+	km.BumpGeneration()
+
+	// 3) 立刻被拒；而且**连续多次**都被拒（负结果不进缓存，不能靠第一次的巧合）。
+	for i := 0; i < 3; i++ {
+		if _, _, err := km.ValidateKey(plaintext); err == nil {
+			t.Fatalf("第 %d 次：禁用用户的 API Key 仍然可用（#254 回归）", i+1)
+		}
+	}
+
+	// 4) 重新启用 + 失效 → 立刻恢复（不是为了安全把用户永久锁死）。
+	if _, err := db.UpdateUserDisabled(ctx, uid, false); err != nil {
+		t.Fatalf("enable user: %v", err)
+	}
+	km.BumpGeneration()
+	if got, _, err := km.ValidateKey(plaintext); err != nil || got != uid {
+		t.Fatalf("重新启用后应恢复可用: uid=%q err=%v", got, err)
+	}
+}
+
+// TestAPIKeyDisabledUserOnlyHitsCacheWhenEnabled 确认「禁用」这条负结果不会被写进缓存：
+// 禁用期间每次校验都要回源（entries 不增长），否则批量禁用会把缓存冲成负结果集合。
+func TestAPIKeyDisabledUserNotCached(t *testing.T) {
+	db := openKeyTestDB(t)
+	km := NewKeyManager(db)
+	uid := mustUser(t, db, "disabled-not-cached")
+	plaintext, _ := mustKey(t, km, uid, []string{ScopeNotifySend})
+	ctx := context.Background()
+	if _, err := db.UpdateUserDisabled(ctx, uid, true); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, _, err := km.ValidateKey(plaintext); err == nil {
+			t.Fatalf("第 %d 次：禁用用户的 key 不该通过", i+1)
+		}
+	}
+	if entries, hits, _ := km.CacheStats(); entries != 0 || hits != 0 {
+		t.Fatalf("负结果不得进缓存：entries=%d hits=%d", entries, hits)
 	}
 }

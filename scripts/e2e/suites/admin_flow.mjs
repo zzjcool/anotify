@@ -321,6 +321,30 @@ async function main() {
 			.status,
 		403,
 	);
+	// ---------- 9a. 禁用前：给 member 一把 API Key，确认它能用（#254 的前置） ----------
+	//
+	// 「禁用账户」必须同时挡住两条入口：浏览器会话（下面那条断言）和机器入口
+	// （API Key）。历史上只挡了前者：ValidateKey 从不看 user.Disabled，
+	// 超管禁用某人之后他的 `ant_...` 还能照常打 API。
+	const mkKey = await H.req(server.base, "/v1/keys", {
+		session: member.session,
+		method: "POST",
+		body: { name: "e2e-254-key", scopes: ["notify:send"] },
+	});
+	H.eq("禁用前为 member 建 API Key → 200", mkKey.status, 200);
+	const memberKey = mkKey.json && mkKey.json.key;
+	H.check("拿得到 Key 明文（仅此一次）", !!memberKey, String(memberKey).slice(0, 12));
+	const keyBefore = await H.req(server.base, "/v1/events", {
+		key: memberKey,
+		method: "POST",
+		body: { source: "manual", type: "manual.run", payload: { note: "before-disable" } },
+	});
+	H.check(
+		"禁用前 API Key 可用（2xx）",
+		keyBefore.status >= 200 && keyBefore.status < 300,
+		`status=${keyBefore.status}`,
+	);
+
 	// admin 禁用 member
 	const disable = await H.req(
 		server.base,
@@ -338,6 +362,25 @@ async function main() {
 			.status,
 		401,
 	);
+	// #254：同一个 Key 也必须立刻失效（不是等缓存自然过期）
+	const keyAfter = await H.req(server.base, "/v1/events", {
+		key: memberKey,
+		method: "POST",
+		body: { source: "manual", type: "manual.run", payload: { note: "after-disable" } },
+	});
+	H.check(
+		"#254 禁用后 API Key 立刻失效（401）",
+		keyAfter.status === 401,
+		`status=${keyAfter.status} body=${String(keyAfter.text || "").slice(0, 80)}`,
+	);
+	// 再打一次：负结果不该被缓存，也不能出现"第一次拒、第二次放行"
+	const keyAfter2 = await H.req(server.base, "/v1/events", {
+		key: memberKey,
+		method: "POST",
+		body: { source: "manual", type: "manual.run", payload: { note: "after-disable-2" } },
+	});
+	H.eq("#254 禁用后的 Key 不会第二次放行", keyAfter2.status, 401);
+
 	// member 无法再登录
 	const memberLoginOpts = await H.req(server.base, "/v1/auth/login/options", {
 		body: { username: memberMe.json.username },
