@@ -116,7 +116,7 @@
       </div>
     </section>
 
-    <!-- ===== 通知活动热力图 ===== -->
+    <!-- ===== 任务活动热力图（数据源是 /v1/stats 的 daily 任务数）===== -->
     <section class="card reveal visible p-5">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -292,7 +292,7 @@
     mountLayout({
       active: "overview",
       title: t("index.title", "总览"),
-      subtitle: t("index.subtitle", "你的通知一览"),
+      subtitle: t("index.subtitle", "你的任务一览"),
       username: username || "…",
     });
 
@@ -997,11 +997,11 @@
               t1.className = "font-medium text-white";
               t1.textContent =
                 count > 0
-                  ? t("index.heatmap.tip.count", "{n} 条通知").replace(
+                  ? t("index.heatmap.tip.count", "{n} 条任务").replace(
                       "{n}",
                       count,
                     )
-                  : t("index.heatmap.tip.none", "无通知");
+                  : t("index.heatmap.tip.none", "无任务");
               const t2 = document.createElement("div");
               t2.className = "text-zinc-500";
               t2.textContent = t("index.heatmap.tip.date", "{m}月{d}日 周{w}")

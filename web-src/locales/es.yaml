@@ -133,7 +133,7 @@ index:
     afternoon: Buenas tardes
     evening: Buenas noches
     with_name: '{greeting}, {name}'
-  loading: Cargando tus estadísticas…
+  loading: Cargando tus estadísticas de tareas…
   demo_badge: Datos demo (backend no conectado)
   kpi:
     total: Tareas totales
@@ -149,7 +149,7 @@ index:
     trend_demo: Demo
     trend_live: En vivo
   heatmap:
-    title: Actividad de notificaciones
+    title: Actividad de tareas
     subtitle: Último año · volumen diario
     less: Menos
     more: Más
@@ -163,8 +163,8 @@ index:
       sat: S
     month: Mes {n}
     tip:
-      count: '{n} notificaciones'
-      none: Sin notificaciones
+      count: '{n} tareas'
+      none: Sin tareas
       date: '{d}/{m} {w}'
   quickstart:
     cta: Conectar nuevo Agent
@@ -198,26 +198,6 @@ index:
     pull_loading: Actualizando…
     pull_done: Actualizado
   recent_summary: '{total} tareas registradas recientemente, {ok} completadas.'
-  test_notify:
-    title: Enviar notificación de prueba
-    desc: Envía una notificación a todos tus dispositivos desde la web
-    button: Enviar notificación de prueba
-    title_label: Título
-    title_placeholder: Notificación de prueba
-    body_label: Cuerpo
-    body_placeholder: Esta es una notificación de prueba desde el panel
-    agent_state_label: Estado del Agente
-    tags_label: Etiquetas de enrutado
-    tags_placeholder: Opcional, separado por comas, ej. móvil,trabajo
-    priority_label: Prioridad
-    send: Enviar
-    sending: Enviando…
-    success: Enviado, coincide con {n} dispositivo(s)
-    no_device: Enviado, pero ningún dispositivo coincidente está suscrito
-    failed: 'Error al enviar: {msg}'
-    demo_disabled: Backend no conectado, no se puede enviar la notificación
-    no_devices_block: No hay receptores. Activa notificaciones o añade un dispositivo en Receptores primero.
-    cancel: Cancelar
   notif:
     reported: 'Reportado'
     unreported: 'Sin reportar'

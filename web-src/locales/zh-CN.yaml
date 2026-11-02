@@ -133,7 +133,7 @@ index:
     afternoon: 下午好
     evening: 晚上好
     with_name: '{greeting}，{name}'
-  loading: 正在加载你的通知统计…
+  loading: 正在加载你的任务统计…
   demo_badge: 演示数据（后端未连接）
   kpi:
     total: 任务总数
@@ -149,8 +149,8 @@ index:
     trend_demo: 示例
     trend_live: 实时
   heatmap:
-    title: 通知活动
-    subtitle: 近一年 · 每天的收发量
+    title: 任务活动
+    subtitle: 近一年 · 每天的任务量
     less: 少
     more: 多
     week:
@@ -163,8 +163,8 @@ index:
       sat: 六
     month: '{n}月'
     tip:
-      count: '{n} 条通知'
-      none: 无通知
+      count: '{n} 条任务'
+      none: 无任务
       date: '{m}月{d}日 周{w}'
   quickstart:
     cta: 接入新 Agent
@@ -198,26 +198,6 @@ index:
     pull_loading: 正在刷新…
     pull_done: 已刷新
   recent_summary: 最近收录 {total} 条任务，其中 {ok} 条已完成。
-  test_notify:
-    title: 发送测试通知
-    desc: 直接从网页发一条通知到你的所有设备
-    button: 发送测试通知
-    title_label: 标题
-    title_placeholder: 测试通知
-    body_label: 正文
-    body_placeholder: 这是一条来自工作台的测试通知
-    agent_state_label: 运行状态
-    tags_label: 路由标签
-    tags_placeholder: 可选，逗号分隔，如 手机,工作
-    priority_label: 优先级
-    send: 发送
-    sending: 发送中…
-    success: 已发送，命中 {n} 台设备
-    no_device: 已发送，但当前没有匹配的接收设备
-    failed: 发送失败：{msg}
-    demo_disabled: 后端未连接，无法发送测试通知
-    no_devices_block: 当前没有接收设备。请先在「通知接收」开启本机通知或添加设备后再试。
-    cancel: 取消
   notif:
     reported: '已回报'
     unreported: '未回报'

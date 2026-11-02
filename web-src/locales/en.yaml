@@ -133,7 +133,7 @@ index:
     afternoon: Good afternoon
     evening: Good evening
     with_name: '{greeting}, {name}'
-  loading: Loading your notification stats…
+  loading: Loading your task stats…
   demo_badge: Demo data (backend not connected)
   kpi:
     total: Total tasks
@@ -149,7 +149,7 @@ index:
     trend_demo: Demo
     trend_live: Live
   heatmap:
-    title: Notification activity
+    title: Task activity
     subtitle: Past year · daily volume
     less: Less
     more: More
@@ -163,8 +163,8 @@ index:
       sat: S
     month: Month {n}
     tip:
-      count: '{n} notifications'
-      none: No notifications
+      count: '{n} tasks'
+      none: No tasks
       date: '{m}/{d} {w}'
   quickstart:
     cta: Connect a new Agent
@@ -198,26 +198,6 @@ index:
     pull_loading: Refreshing…
     pull_done: Updated
   recent_summary: '{total} tasks recorded recently, {ok} completed.'
-  test_notify:
-    title: Send test notification
-    desc: Send a notification to all your devices right from the web
-    button: Send test notification
-    title_label: Title
-    title_placeholder: Test notification
-    body_label: Body
-    body_placeholder: This is a test notification from the dashboard
-    agent_state_label: Agent State
-    tags_label: Routing tags
-    tags_placeholder: Optional, comma-separated, e.g. phone,work
-    priority_label: Priority
-    send: Send
-    sending: Sending…
-    success: Sent, matched {n} device(s)
-    no_device: Sent, but no matching device is currently subscribed
-    failed: 'Send failed: {msg}'
-    demo_disabled: Backend not connected, cannot send test notification
-    no_devices_block: No receivers yet. Turn on notifications or add a device under Receivers first.
-    cancel: Cancel
   notif:
     reported: 'Reported'
     unreported: 'Not reported'
