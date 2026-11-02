@@ -12,25 +12,36 @@
    ④ 比例基准 ≈ 70% 中性 / 20% indigo / 10% 语义。
 
    改颜色只改这里，全站生效。不要在下层页面硬编码色值。
+
+   主题架构（v2）：
+   - `:root` = 暗色（默认），`:root[data-theme="light"]` = 亮色；
+   - 主题由三套 layout 的 <head> 内联脚本在首帧前写到 <html
+     data-theme> 上（防 FOUC），并由 web/partials.js 的
+     Anotify.theme API 维持；
+   - color-scheme 一并声明，滚动条 / 原生表单控件跟随主题；
+   - 尺寸 / 动效 / z-index / 字体栈两套主题共用，只定义在 `:root`。
    ============================================================ */
 
 :root {
+	color-scheme: dark;
+
 	/* ── 中性色 Neutral ─────────────────────────────── */
-	--bg: #050508; /* 页面底 */
-	--bg-raise: #08080d; /* 侧栏/凸起底 */
-	--surface-1: rgba(255, 255, 255, 0.02); /* 卡片 */
-	--surface-2: rgba(255, 255, 255, 0.04); /* 悬浮/输入 */
-	--line: rgba(255, 255, 255, 0.08); /* 弱分隔线 */
+	--bg: #08080e; /* 页面底 */
+	--bg-raise: #0c0c13; /* 侧栏 / 页头等凸起底 */
+	--surface-1: #101018; /* 卡片 */
+	--surface-2: #15151f; /* 悬浮 / 输入 / 次级面 */
+	--surface-3: #1b1b27; /* 更进一层的实心面（轨道、选中） */
+	--line: rgba(255, 255, 255, 0.07); /* 弱分隔线 */
 	--line-strong: rgba(255, 255, 255, 0.14); /* 强分隔线 */
-	--text: #ececf1; /* 主文字 */
-	--muted: rgba(236, 236, 241, 0.55); /* 次要文字 */
-	--faint: rgba(236, 236, 241, 0.32); /* 极弱文字 */
+	--text: #edeef5; /* 主文字 */
+	--muted: #a2a6b6; /* 次要文字 */
+	--faint: #6e7284; /* 极弱文字 */
 
 	/* ── 品牌色 Brand（唯一 accent）────────────────── */
 	--accent: #8b8bfd; /* indigo 主色 */
-	--accent-strong: #a6a6ff; /* hover/提亮 */
-	--accent-soft: rgba(139, 139, 253, 0.12); /* 品牌色浅底 */
-	/* 品牌色数据可视化梯度（热力图等，由浅到深 5 级）*/
+	--accent-strong: #a6a6ff; /* hover / 提亮 */
+	--accent-soft: rgba(139, 139, 253, 0.14); /* 品牌色浅底 */
+	/* 品牌色数据可视化梯度（热力图等，由浅到深 4 级）*/
 	--accent-1: rgba(139, 139, 253, 0.22);
 	--accent-2: rgba(139, 139, 253, 0.42);
 	--accent-3: rgba(139, 139, 253, 0.68);
@@ -38,23 +49,160 @@
 
 	/* ── 语义色 Semantic（仅表状态，小面积）────────── */
 	--success: #34d399; /* 成功 */
-	--error: #fb7185; /* 失败/危险 */
-	--warn: #fbbf24; /* 中断/警告 */
+	--error: #fb7185; /* 失败 / 危险 */
+	--warn: #fbbf24; /* 中断 / 警告 */
 	--info: var(--accent); /* 信息 → 复用品牌色，不引入新色相 */
-	/* 语义色配套浅底（徽章背景用，10-12% 透明度）*/
+	/* 语义色配套浅底（徽章背景用，10-14% 透明度）*/
 	--success-soft: rgba(52, 211, 153, 0.12);
 	--error-soft: rgba(251, 113, 133, 0.12);
 	--warn-soft: rgba(251, 191, 36, 0.12);
-
 	/* 语义色亮色阶（徽章文字 / 语法高亮的小面积亮色文字用）*/
 	--success-300: #6ee7b7;
 	--error-300: #fda4af;
 	--warn-300: #fcd34d;
 
-	/* 功能面板色（非彩色）：弹层/代码块/深色按钮上的文字 */
-	--panel-overlay: #12121c; /* 弹层/Toast 底 */
-	--panel-modal: #0b0b12; /* 模态底 */
-	--code-bg: #0a0a11; /* 代码块底 */
-	--code-text: #d6d3e0; /* 代码正文 */
-	--on-solid: #0a0a10; /* 白色实心按钮上的文字 */
+	/* ── 执行状态九态（图表 / 瀑布条 / 状态点唯一来源）──
+	 * graphs.js 与 traceview.js 都用这组变量取色，不要出现第三套色板。 */
+	--st-pending: #71717a;
+	--st-assigned: #3b82f6;
+	--st-acked: #06b6d4;
+	--st-running: #22c55e;
+	--st-succeeded: #10b981;
+	--st-failed: #ef4444;
+	--st-canceled: #a1a1aa;
+	--st-abandoned: #f97316;
+	--st-lease_expired: #eab308;
+
+	/* ── 功能面板色（非彩色）：弹层 / 代码块 / 实心按钮 ── */
+	--panel-overlay: #14141e; /* 弹层 / Toast 底 */
+	--panel-modal: #0d0d15; /* 模态底 */
+	--code-bg: #0b0b13; /* 代码块底 */
+	--code-text: #d7d9e6; /* 代码正文 */
+	--on-solid: #0a0a10; /* 实心（accent）按钮上的文字 */
+	--scrim: rgba(0, 0, 0, 0.55); /* 抽屉 / 模态的遮罩 */
+
+	/* ── 阴影（三级层次）────────────────────────────── */
+	--shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+	--shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+	--shadow-3: 0 24px 64px -16px rgba(0, 0, 0, 0.7);
+
+	/* ── 尺寸 / 圆角 ─────────────────────────────────── */
+	--r-xs: 6px;
+	--r-sm: 8px;
+	--r-md: 12px;
+	--r-lg: 16px;
+	--r-xl: 20px;
+	--r-full: 999px;
+	--sidebar-w: 264px;
+	--sidebar-w-collapsed: 76px;
+	--topbar-h: 64px;
+
+	/* ── 动效 ───────────────────────────────────────── */
+	--dur-fast: 120ms;
+	--dur: 200ms;
+	--dur-slow: 320ms;
+	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+	/* ── 层级 ───────────────────────────────────────── */
+	--z-header: 20;
+	--z-overlay: 30;
+	--z-sidebar: 40;
+	--z-menu: 60;
+	--z-toast: 80;
+	--z-modal: 90;
+
+	/* ── 字体栈 ─────────────────────────────────────── */
+	--font-sans:
+		"Inter", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei",
+		sans-serif;
+	--font-mono:
+		"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+	/* ── 兼容别名（历史页面 / 早期类引用过的名字）──────
+	 * 这些名字在页面内联样式与旧组件里出现过，但从未定义，
+	 * 之前一直在走各自兜底值。这里一次性补上，避免同一概念两套名字。 */
+	--mono: var(--font-mono); /* 旧名：等宽字体 */
+	--fg: var(--text); /* 旧名：主文字 */
+	--danger: var(--error); /* 旧名：危险色 */
+	--ok: var(--success); /* 旧名：成功色 */
+	--text-muted: var(--muted); /* 旧名：次要文字 */
+	--panel-hover: var(--surface-2); /* 旧名：悬浮面 */
+}
+
+/* ============================================================
+   亮色主题
+   ============================================================ */
+:root[data-theme="light"] {
+	color-scheme: light;
+
+	/* 中性色 */
+	--bg: #f7f8fc;
+	--bg-raise: #ffffff;
+	--surface-1: #ffffff;
+	--surface-2: #f4f5fa;
+	--surface-3: #eceef6;
+	--line: rgba(17, 19, 28, 0.08);
+	--line-strong: rgba(17, 19, 28, 0.15);
+	--text: #11131c;
+	--muted: #5b6070;
+	--faint: #8b90a1;
+
+	/* 品牌色 */
+	--accent: #5b5bd6;
+	--accent-strong: #4a4ac4;
+	--accent-soft: rgba(91, 91, 214, 0.1);
+	/* 亮色下的数据可视化梯度：透明度递增，最深一级用实色 */
+	--accent-1: rgba(91, 91, 214, 0.1);
+	--accent-2: rgba(91, 91, 214, 0.24);
+	--accent-3: rgba(91, 91, 214, 0.44);
+	--accent-4: #5b5bd6;
+
+	/* 语义色 */
+	--success: #059669;
+	--error: #e11d48;
+	--warn: #b45309;
+	--info: var(--accent);
+	--success-soft: rgba(5, 150, 105, 0.1);
+	--error-soft: rgba(225, 29, 72, 0.1);
+	--warn-soft: rgba(180, 83, 9, 0.1);
+	/* 亮底上的「亮色阶」要压深，否则小字对比度不足 */
+	--success-300: #047857;
+	--error-300: #be123c;
+	--warn-300: #a16207;
+
+	/* 执行状态九态：整体压深一档 */
+	--st-pending: #52525b;
+	--st-assigned: #2563eb;
+	--st-acked: #0891b2;
+	--st-running: #16a34a;
+	--st-succeeded: #059669;
+	--st-failed: #dc2626;
+	--st-canceled: #71717a;
+	--st-abandoned: #ea580c;
+	--st-lease_expired: #ca8a04;
+
+	/* 面板 */
+	--panel-overlay: #ffffff;
+	--panel-modal: #ffffff;
+	--code-bg: #f2f3f8;
+	--code-text: #2a2e3d;
+	--on-solid: #ffffff;
+	--scrim: rgba(17, 19, 28, 0.35);
+
+	/* 阴影（亮色更淡、更贴身） */
+	--shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+	--shadow-2: 0 8px 24px -10px rgba(16, 24, 40, 0.18);
+	--shadow-3: 0 24px 64px -20px rgba(16, 24, 40, 0.24);
+}
+
+/* ============================================================
+   减少动效偏好：把时长 token 归零，所有走 token 的过渡自然停下
+   （个别写死时长的动画在 ui.css 里另有兜底）
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--dur-fast: 0ms;
+		--dur: 0ms;
+		--dur-slow: 0ms;
+	}
 }

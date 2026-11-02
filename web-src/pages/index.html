@@ -1,96 +1,152 @@
 {{define "title"}}{{t "index.title"}}{{end}} {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-6xl space-y-8">
-    <!-- ===== 欢迎 + 状态摘要 ===== -->
-    <div class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 class="font-display text-3xl text-white" id="greeting">
-            {{t "index.greeting.default"}}
-          </h2>
-          <p class="mt-1.5 text-sm text-zinc-400" id="summary-line">
-            {{t "index.loading"}}
-          </p>
-        </div>
-        <div class="flex items-center gap-3">
-          <a
-            href="docs.html#agent"
-            class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
-            >{{t "index.quickstart.cta"}}</a
-          >
-        </div>
+  <div class="page">
+    <!-- ===== 页头：问候 + 摘要 + 主 CTA =====
+         全站唯一 h1 在外壳顶栏（partials.js），页面内容里只用 h2。 -->
+    <div class="page-head">
+      <div>
+        <h2 class="page-title font-display" id="greeting">
+          {{t "index.greeting.default"}}
+        </h2>
+        <p class="page-sub" id="summary-line">{{t "index.loading"}}</p>
+      </div>
+      <div class="page-actions">
+        <a
+          href="docs.html#agent"
+          class="btn-primary px-4 py-2 text-sm"
+          >{{t "index.quickstart.cta"}}</a
+        >
       </div>
     </div>
 
-    <!-- ===== KPI 卡片 ===== -->
+    <!-- ===== KPI 四卡 =====
+         `#kpi-*` 这些 id 全部由页内 JS 覆写 textContent，别改 id。
+         送达率 / 接收设备是「手机推送」口径：推送未开放时整块不显示
+         （web/partials.js 的 PUSH_UI_ENABLED → JS 给 [data-push-tile] 加 hidden）。 -->
     <section class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-      <div class="card reveal visible p-5">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "index.kpi.total"}}</span
-          >
-          <span class="status-badge status-success" id="kpi-total-trend"
-            >—</span
+      <!-- 任务总数 -->
+      <div class="card stat card-pad">
+        <div class="flex items-start justify-between gap-2">
+          <span class="stat-icon" aria-hidden="true">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <path d="M4 7h16M4 12h16M4 17h10" />
+            </svg>
+          </span>
+          <span class="stat-delta" id="kpi-total-trend"
+            >{{t "ui.kpi.delta_na"}}</span
           >
         </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-total">
-          –
-        </div>
-        <div class="mt-1.5 text-[11px] text-zinc-500">
-          {{t "index.kpi.last_30d"}}
+        <div class="stat-label">{{t "index.kpi.total"}}</div>
+        <div class="stat-value" id="kpi-total">–</div>
+        <div class="card-sub">{{t "index.kpi.last_30d"}}</div>
+        <div
+          class="stat-spark"
+          role="img"
+          aria-label="{{t "ui.kpi.spark"}}"
+          data-spark="0.42,0.58,0.33,0.75,0.54,0.88,0.67"
+        ></div>
+      </div>
+
+      <!-- 送达率（手机推送口径，推送未开放时整块隐藏） -->
+      <div class="min-w-0" data-push-tile>
+        <div class="card stat card-pad h-full">
+          <div class="flex items-start justify-between gap-2">
+            <span class="stat-icon" aria-hidden="true">
+              <svg
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M22 2 11 13" />
+                <path d="M22 2 15 22l-4-9-9-4Z" />
+              </svg>
+            </span>
+            <span class="dot dot-success"></span>
+          </div>
+          <div class="stat-label">{{t "index.kpi.rate"}}</div>
+          <div class="stat-value" id="kpi-rate">–</div>
+          <div class="stat-delta" id="kpi-rate-sub">—</div>
+          <div
+          class="stat-spark"
+          role="img"
+          aria-label="{{t "ui.kpi.spark"}}"
+          data-spark="0.50,0.63,0.42,0.71,0.58,0.79,0.54"
+        ></div>
         </div>
       </div>
-      <!-- 送达率是「手机推送」的口径（上报 → 送达设备）：推送未开放时整块不显示，
-          否则永远是「暂无接收设备，送达率不可用」——一个只会误导人的空格子。 -->
-      <div
-        class="card reveal visible p-5"
-        style="transition-delay: 60ms"
-        data-push-tile
-      >
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "index.kpi.rate"}}</span
-          >
+
+      <!-- 今日任务 -->
+      <div class="card stat card-pad">
+        <div class="flex items-start justify-between gap-2">
+          <span class="stat-icon" aria-hidden="true">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7v5l3 2" />
+            </svg>
+          </span>
           <span class="dot dot-success"></span>
         </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-rate">–</div>
-        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-rate-sub">—</div>
+        <div class="stat-label">{{t "index.kpi.today"}}</div>
+        <div class="stat-value" id="kpi-today">–</div>
+        <div class="stat-delta">{{t "index.kpi.today_sub"}}</div>
+        <div
+          class="stat-spark"
+          role="img"
+          aria-label="{{t "ui.kpi.spark"}}"
+          data-spark="0.33,0.46,0.63,0.50,0.75,0.63,0.83"
+        ></div>
       </div>
-      <div class="card reveal visible p-5" style="transition-delay: 120ms">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "index.kpi.today"}}</span
-          >
-          <span class="dot dot-success"></span>
-        </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-today">
-          –
-        </div>
-        <div class="mt-1.5 text-[11px] text-zinc-500">
-          {{t "index.kpi.today_sub"}}
-        </div>
-      </div>
-      <!-- 接收设备是「手机推送」的一块：推送未开放时整块不显示（web/partials.js 的
-           PUSH_UI_ENABLED）。留着会自相矛盾——一边把接收设备页藏了，一边在首页量化它。 -->
-      <div
-        class="card reveal visible p-5"
-        style="transition-delay: 180ms"
-        data-push-tile
-      >
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "index.kpi.devices"}}</span
-          >
-          <span
-            class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-400"
-            >{{t "index.kpi.devices_enabled"}}</span
-          >
-        </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-devices">
-          –
-        </div>
-        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-devices-sub">
-          —
+
+      <!-- 接收设备（手机推送口径，推送未开放时整块隐藏） -->
+      <div class="min-w-0" data-push-tile>
+        <div class="card stat card-pad h-full">
+          <div class="flex items-start justify-between gap-2">
+            <span class="stat-icon" aria-hidden="true">
+              <svg
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="7" y="2" width="10" height="20" rx="2" />
+                <path d="M11 18h2" />
+              </svg>
+            </span>
+            <span class="badge badge-neutral"
+              >{{t "index.kpi.devices_enabled"}}</span
+            >
+          </div>
+          <div class="stat-label">{{t "index.kpi.devices"}}</div>
+          <div class="stat-value" id="kpi-devices">–</div>
+          <div class="stat-delta" id="kpi-devices-sub">—</div>
+          <div
+          class="stat-spark"
+          role="img"
+          aria-label="{{t "ui.kpi.spark"}}"
+          data-spark="0.58,0.42,0.67,0.50,0.75,0.46,0.63"
+        ></div>
         </div>
       </div>
     </section>
@@ -99,138 +155,153 @@
          旧的「任务列表」是结果视角，这里是**因果视角**：
          什么事件进来、派成了哪些任务、哪一步被剪枝。
          两者并存：通知回答「我收到了什么」，事件流回答「为什么」。 -->
-    <section class="card reveal visible p-5">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+    <section class="card">
+      <div class="card-head card-pad">
         <div>
-          <div class="text-sm font-medium text-white">{{t "index.events.title"}}</div>
-          <div class="text-[11px] text-zinc-500">{{t "index.events.subtitle"}}</div>
+          <div class="card-title">{{t "index.events.title"}}</div>
+          <div class="card-sub">{{t "index.events.subtitle"}}</div>
         </div>
-        <div class="flex items-center gap-2">
-          <a href="events.html" class="btn-ghost rounded-lg px-3 py-1.5 text-xs">
-            {{t "index.events.open"}}
-          </a>
+        <div class="card-actions">
+          <a href="events.html" class="btn btn-ghost btn-sm"
+            >{{t "index.events.open"}}</a
+          >
         </div>
       </div>
-      <div id="index-events" class="mt-4 space-y-2">
-        <div class="text-xs text-zinc-500">{{t "index.events.loading"}}</div>
+      <div id="index-events" class="px-5 py-3">
+        <div class="card-sub">{{t "index.events.loading"}}</div>
       </div>
     </section>
 
     <!-- ===== 任务活动热力图（数据源是 /v1/stats 的 daily 任务数）===== -->
-    <section class="card reveal visible p-5">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+    <section class="card">
+      <div class="card-head card-pad">
         <div>
-          <div class="text-sm font-medium text-white">
-            {{t "index.heatmap.title"}}
-          </div>
-          <div class="text-[11px] text-zinc-500">
-            {{t "index.heatmap.subtitle"}}
-          </div>
+          <div class="card-title">{{t "index.heatmap.title"}}</div>
+          <div class="card-sub">{{t "index.heatmap.subtitle"}}</div>
         </div>
-        <div class="flex items-center gap-1.5 text-[10px] text-zinc-500">
-          <span class="mr-0.5">{{t "index.heatmap.less"}}</span>
-          <span
-            class="hm-legend-cell"
-            style="background: var(--surface-2)"
-          ></span>
-          <span
-            class="hm-legend-cell"
-            style="background: var(--accent-1)"
-          ></span>
-          <span
-            class="hm-legend-cell"
-            style="background: var(--accent-2)"
-          ></span>
-          <span
-            class="hm-legend-cell"
-            style="background: var(--accent-3)"
-          ></span>
-          <span
-            class="hm-legend-cell"
-            style="background: var(--accent-4)"
-          ></span>
-          <span class="ml-0.5">{{t "index.heatmap.more"}}</span>
+        <div class="card-actions">
+          <div class="flex items-center gap-1.5">
+            <span class="card-sub">{{t "index.heatmap.less"}}</span>
+            <span
+              class="hm-legend-cell"
+              style="background: var(--surface-2)"
+            ></span>
+            <span
+              class="hm-legend-cell"
+              style="background: var(--accent-1)"
+            ></span>
+            <span
+              class="hm-legend-cell"
+              style="background: var(--accent-2)"
+            ></span>
+            <span
+              class="hm-legend-cell"
+              style="background: var(--accent-3)"
+            ></span>
+            <span
+              class="hm-legend-cell"
+              style="background: var(--accent-4)"
+            ></span>
+            <span class="card-sub">{{t "index.heatmap.more"}}</span>
+          </div>
         </div>
       </div>
-      <div class="mt-4 overflow-x-auto pb-1">
+      <div class="overflow-x-auto px-5 py-3">
         <div class="hm" id="hm"></div>
       </div>
     </section>
 
-    <!-- ===== 快速接入（粘给 Agent 的引导文本 + CTA） ===== -->
-    <section id="quickstart" class="card reveal visible overflow-hidden">
-      <div class="flex flex-wrap items-start justify-between gap-4 p-6">
-        <div class="min-w-0 flex-1" style="flex: 1 1 16rem">
-          <div class="text-sm font-medium text-white">
-            {{t "index.quickstart.title"}}
-          </div>
-          <div class="mt-0.5 text-[11px] text-zinc-500">
-            {{t "index.quickstart.option_a"}}
-          </div>
-          <div class="mt-3 code-block" style="min-width: 0">
-            <div class="code-head">
-              <span class="mono">{{t "index.quickstart.cmd_a_comment"}}</span>
-              <button
-                class="copy-btn"
-                data-copy-text="{{t "index.quickstart.cmd_a"}}"
-              >
-                {{t "index.quickstart.copy"}}
-              </button>
-            </div>
-            <div class="code-body">
-              <span class="tk-comment">{{t "index.quickstart.cmd_a"}}</span>
-            </div>
-          </div>
+    <!-- ===== 快速接入（粘给 Agent 的引导文本 + CTA）=====
+         默认**收起**：只留标题 + 一句话提示，展开后才显示安装指引。
+         首页在 1440×900 下要压到 2600px 以内，这一块是最大的可折叠项。 -->
+    <section id="quickstart" class="card">
+      <div class="card-head card-pad">
+        <div>
+          <div class="card-title">{{t "index.quickstart.title"}}</div>
+          <div class="card-sub">{{t "ui.index.quickstart_hint"}}</div>
         </div>
-        <a
-          href="docs.html#agent"
-          class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium shrink-0"
-          >{{t "index.quickstart.cta"}}</a
-        >
+        <div class="card-actions">
+          <button
+            id="qs-toggle"
+            type="button"
+            class="btn btn-ghost btn-sm"
+            aria-expanded="false"
+            aria-controls="qs-body"
+          >
+            {{t "ui.action.expand"}}
+          </button>
+        </div>
+      </div>
+      <div id="qs-body" class="hidden px-5 py-3">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div class="min-w-0 flex-1">
+            <div class="card-sub">{{t "index.quickstart.option_a"}}</div>
+            <div class="mt-3 code-block" style="min-width: 0">
+              <div class="code-head">
+                <span class="mono">{{t "index.quickstart.cmd_a_comment"}}</span>
+                <button
+                  class="copy-btn"
+                  data-copy-text="{{t "index.quickstart.cmd_a"}}"
+                >
+                  {{t "index.quickstart.copy"}}
+                </button>
+              </div>
+              <div class="code-body">
+                <span class="tk-comment">{{t "index.quickstart.cmd_a"}}</span>
+              </div>
+            </div>
+          </div>
+          <a
+            href="docs.html#agent"
+            class="btn-primary shrink-0 px-4 py-2 text-sm"
+            >{{t "index.quickstart.cta"}}</a
+          >
+        </div>
       </div>
     </section>
 
-
-    <!-- ===== 最近任务（数据源是 /v1/tasks；"通知"这个实体早已删除）===== -->
-    <section id="recent" class="card reveal visible overflow-hidden">
-      <div
-        class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4"
-      >
+    <!-- ===== 最近任务（数据源是 /v1/tasks；"通知"这个实体早已删除）=====
+         行由 renderNotifs() 用 DOM API 生成（不用 innerHTML），
+         分页是纯客户端的：先 15 行，点「加载更多」+50。 -->
+    <section id="recent" class="card overflow-hidden">
+      <div class="card-head card-pad">
         <div>
-          <div class="text-sm font-medium text-white">
-            {{t "index.recent.title"}}
-          </div>
-          <div class="text-[11px] text-zinc-500">
-            {{t "index.recent.subtitle"}}
-          </div>
+          <div class="card-title">{{t "index.recent.title"}}</div>
+          <div class="card-sub">{{t "index.recent.subtitle"}}</div>
         </div>
-        <div
-          class="flex items-center gap-1 rounded-lg bg-white/[0.03] p-1"
-          id="filter-tabs"
-        >
-          <button class="filter-tab active" data-filter="all">
-            {{t "index.recent.filter_all"}}
-          </button>
-          <button class="filter-tab" data-filter="terminal">
-            {{t "index.recent.filter_terminal"}}
-          </button>
-          <button class="filter-tab" data-filter="working">
-            {{t "index.recent.filter_working"}}
-          </button>
-          <button class="filter-tab" data-filter="error">
-            {{t "index.recent.filter_error"}}
-          </button>
+        <!-- 四个 tab 纯客户端过滤，不发请求；data-filter 的取值被 JS 读，别改 -->
+        <div class="card-actions">
+          <div id="filter-tabs" class="tabs">
+            <button class="filter-tab active" data-filter="all">
+              {{t "index.recent.filter_all"}}
+            </button>
+            <button class="filter-tab" data-filter="terminal">
+              {{t "index.recent.filter_terminal"}}
+            </button>
+            <button class="filter-tab" data-filter="working">
+              {{t "index.recent.filter_working"}}
+            </button>
+            <button class="filter-tab" data-filter="error">
+              {{t "index.recent.filter_error"}}
+            </button>
+          </div>
         </div>
       </div>
-      <div id="notif-list" class="divide-y divide-white/[0.04]"></div>
-      <div
-        class="flex items-center justify-between border-t border-white/[0.06] px-6 py-3 text-xs text-zinc-500"
-      >
-        <span id="notif-count">—</span>
-        <button
-          id="refresh-btn"
-          class="text-zinc-400 hover:text-white transition-colors"
-        >
+      <div id="notif-list" class="px-2"></div>
+      <!-- footer：与 .card-head 同一套留白/两端对齐，但不加分隔线 ——
+           头尾都靠留白分块，亮主题下也不会有「白线看不见」的落差。 -->
+      <div class="card-head card-pad">
+        <div class="flex items-center gap-3">
+          <span id="notif-count" class="card-sub">—</span>
+          <button
+            id="notif-more"
+            type="button"
+            class="btn btn-ghost btn-sm hidden"
+          >
+            {{t "ui.index.load_more"}}
+          </button>
+        </div>
+        <button id="refresh-btn" type="button" class="btn btn-ghost btn-sm">
           {{t "index.recent.refresh"}}
         </button>
       </div>
@@ -238,35 +309,40 @@
   </div>
 </div>
 
-<!-- 任务详情弹层 -->
+<!-- 任务详情弹层
+     显隐靠 `hidden` ↔ `flex` 两个类互换（见 openDetail/closeDetail）；
+     #detail-overlay 只负责点遮罩关闭。 -->
 <div
   id="detail-modal"
-  class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+  class="modal-backdrop hidden"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="detail-head"
 >
-  <div class="sidebar-overlay absolute inset-0" id="detail-overlay"></div>
-  <div
-    class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden p-6 shadow-2xl"
-    style="background: var(--bg-raise)"
-  >
-    <div class="flex items-start justify-between">
-      <div class="flex items-center gap-3" id="detail-head"></div>
+  <div class="absolute inset-0" id="detail-overlay"></div>
+  <div class="modal-panel relative z-10">
+    <div class="modal-head flex items-start justify-between gap-3">
+      <div class="flex min-w-0 items-center gap-3" id="detail-head"></div>
       <button
         id="detail-close"
-        class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
+        type="button"
+        class="btn btn-ghost btn-icon"
+        aria-label="{{t "ui.action.close"}}"
       >
         <svg
-          class="h-5 w-5"
+          class="h-4 w-4"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
           stroke-width="2"
+          stroke-linecap="round"
         >
           <line x1="18" y1="6" x2="6" y2="18" />
           <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       </button>
     </div>
-    <div id="detail-body" class="mt-5 space-y-4 overflow-y-auto overscroll-contain"></div>
+    <div id="detail-body" class="modal-body flex flex-col gap-4"></div>
   </div>
 </div>
 
@@ -276,6 +352,38 @@
 <script>
   (function () {
     "use strict";
+    /* 迷你趋势条：纯装饰的 sparkline。数据写在 .stat-spark[data-spark]
+     * （0..1 的高度数组）里，这里一次生成全部四个，避免在模板里复制
+     * 四份 20 行 <svg>（改一个柱高要同步改四处）。 */
+    function renderSparks() {
+      const BAR = 6, GAP = 3, H = 24;
+      const NS = "http://www.w3.org/2000/svg";
+      for (const box of document.querySelectorAll(".stat-spark[data-spark]")) {
+        const vals = String(box.dataset.spark || "")
+          .split(",")
+          .map(Number)
+          .filter((n) => Number.isFinite(n));
+        if (!vals.length) continue;
+        const svg = document.createElementNS(NS, "svg");
+        svg.setAttribute("class", "h-full w-full");
+        svg.setAttribute("viewBox", "0 0 64 24");
+        svg.setAttribute("preserveAspectRatio", "none");
+        svg.setAttribute("fill", "currentColor");
+        svg.setAttribute("aria-hidden", "true");
+        vals.forEach((v, i) => {
+          const h = Math.max(2, Math.round(Math.min(1, Math.max(0, v)) * H));
+          const r = document.createElementNS(NS, "rect");
+          r.setAttribute("x", String(i * (BAR + GAP)));
+          r.setAttribute("y", String(H - h));
+          r.setAttribute("width", String(BAR));
+          r.setAttribute("height", String(h));
+          r.setAttribute("rx", "1.5");
+          svg.appendChild(r);
+        });
+        box.replaceChildren(svg);
+      }
+    }
+
     const { el, api, mountLayout, mountPullRefresh, copyText, timeAgo, t } =
       window.Anotify;
     const qs = new URLSearchParams(location.search);
@@ -283,6 +391,11 @@
     let username = qs.get("u") || "";
 
     // 手机推送未开放 → 首页不显示「接收设备」这块 KPI（与 receivers.html 保持一致）。
+    //
+    // [data-push-tile] 挂在外层 wrapper 上而不是 .card 上：卡片的组件类会设
+    // display（grid/flex），而 `.hidden`（Tailwind，先于 ui.css 加载）与它在
+    // 同一优先级上打不过后加载的 ui.css —— 挂在没设 display 的 wrapper 上，
+    // 「整块隐藏」才是确定的。
     if (!window.Anotify.pushUIEnabled) {
       document.querySelectorAll("[data-push-tile]").forEach((el) => {
         el.classList.add("hidden");
@@ -451,7 +564,7 @@
     }
 
     /* ================= 事件中心概览（#79）================= */
-    // loadEvents 拉最近几条事件，渲染成首页的小卡片。
+    // loadEvents 拉最近几条事件，渲染成首页的小卡片（紧凑行，行高 ≤48px）。
     //
     // 走控制台端点 /v1/console/events（会话 Cookie 鉴权）——机器入口的
     // GET /v1/events 要 Bearer API Key，浏览器页面拿不到那种凭据。
@@ -468,8 +581,7 @@
       box.replaceChildren();
 
       if (!events.length) {
-        const hint = document.createElement("div");
-        hint.className = "text-xs text-zinc-500";
+        const hint = el("div", { class: "card-sub" });
         hint.textContent = t(
           "index.events.empty",
           "还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。",
@@ -480,30 +592,24 @@
 
       for (const e of events) {
         const row = document.createElement("a");
+        // 行高靠 py-1（4px）+ 内容，刻意不用 .list-row（那是 52–60px 的行）
         row.className =
-          "flex flex-wrap items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-white/5";
+          "flex flex-wrap items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-white/5";
         row.href = "events.html";
 
-        const src = document.createElement("code");
-        src.className =
-          "mono rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-indigo-300";
-        src.textContent = e.source;
+        const src = el("code", { class: "mono tag-chip", text: e.source });
         row.appendChild(src);
 
-        const arrow = document.createElement("span");
-        arrow.className = "text-zinc-600";
-        arrow.textContent = "→";
-        row.appendChild(arrow);
+        row.appendChild(el("span", { class: "card-sub", text: "→" }));
 
-        const typ = document.createElement("code");
-        typ.className = "mono text-[11px] text-zinc-300";
-        typ.textContent = e.type;
-        row.appendChild(typ);
+        row.appendChild(el("code", { class: "mono", text: e.type }));
 
-        const tr = document.createElement("span");
-        tr.className = "ml-auto mono truncate text-[10px] text-zinc-600";
-        tr.textContent = e.traceId;
-        row.appendChild(tr);
+        row.appendChild(
+          el("span", {
+            class: "card-sub ml-auto mono truncate",
+            text: e.traceId,
+          }),
+        );
 
         box.appendChild(row);
       }
@@ -597,15 +703,30 @@
     }
 
     /* ================= 任务列表 ================= */
+    //
+    // 客户端分页：一次最多来 50 条（/v1/tasks?limit=50），先显示 15 行，
+    // 点「加载更多」每次 +50。切筛选条件时重置回 15 行 —— 否则换了条件
+    // 还停在"上次翻到的位置"，用户会以为新条件也加载了那么多。
+    const NOTIF_PAGE_FIRST = 15;
+    const NOTIF_PAGE_STEP = 50;
     let currentFilter = "all";
+    let visibleCount = NOTIF_PAGE_FIRST;
+
     function renderNotifs(filter) {
-      currentFilter = filter;
+      if (filter !== currentFilter) {
+        currentFilter = filter;
+        visibleCount = NOTIF_PAGE_FIRST;
+      }
       const list = document.getElementById("notif-list");
+      const countEl = document.getElementById("notif-count");
+      const moreBtn = document.getElementById("notif-more");
       if (loadError) {
         list.replaceChildren(
           window.Anotify.loadErrorNode(loadError, () => load()),
         );
-        document.getElementById("notif-count").textContent = "";
+        countEl.textContent = "";
+        // 错误态没有"更多"可言：留着按钮只会点出另一次失败
+        moreBtn.classList.add("hidden");
         return;
       }
       const rows = NOTIFICATIONS.filter(
@@ -614,22 +735,23 @@
           (filter === "working" && n.agentState === "working") ||
           n.agentState === filter,
       );
+      const shown = rows.slice(0, visibleCount);
       if (rows.length === 0) {
         list.replaceChildren(
           el("div", {
-            class: "px-6 py-10 text-center text-sm text-zinc-500",
+            class: "empty",
             text: t("index.notif.empty", "暂无该状态的任务"),
           }),
         );
       } else {
         list.replaceChildren(
-          ...rows.map((n) => {
+          ...shown.map((n) => {
             const meta = AGENT_STATE_META[n.agentState] || AGENT_STATE_META.working;
+            // 56px 紧凑行：状态点 / 标题 + 状态徽章 / traceId + 耗时 / 相对时间
             return el(
               "button",
               {
-                class:
-                  "notif-row flex w-full items-center gap-4 px-6 py-4 text-left",
+                class: "notif-row w-full text-left",
                 onclick: () => openDetail(n.id),
               },
               el("span", { class: `dot ${meta.dot}` }),
@@ -640,7 +762,8 @@
                   "div",
                   { class: "flex flex-wrap items-center gap-2" },
                   el("span", {
-                    class: "truncate text-sm font-medium text-white",
+                    // leading-tight 让两行内容的行高收紧到 .notif-row 的 56px 内
+                    class: "truncate text-sm font-medium leading-tight",
                     text: n.title,
                   }),
                   el("span", {
@@ -650,46 +773,37 @@
                 ),
                 el(
                   "div",
-                  {
-                    class:
-                      "mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500",
-                  },
-                  el("span", { class: "mono", text: n.agent }),
-                  el("span", { class: "text-zinc-700", text: "·" }),
-                  el("span", { class: "truncate", text: n.project }),
-                  el("span", { class: "text-zinc-700", text: "·" }),
-                  el("span", { text: n.duration + "s" }),
+                  { class: "flex flex-wrap items-center gap-2" },
+                  el("span", { class: "card-sub mono", text: n.sessionId }),
+                  el("span", {
+                    class: "card-sub",
+                    text: n.duration + "s",
+                  }),
                 ),
               ),
               el(
                 "div",
                 { class: "flex shrink-0 flex-col items-end gap-1" },
+                el("span", { class: "card-sub", text: n.time }),
                 el("span", {
-                  class: "text-xs text-zinc-500",
-                  text: n.time,
+                  class: "card-sub",
+                  text: n.reported
+                    ? t("index.notif.reported", "已回报")
+                    : t("index.notif.unreported", "未回报"),
                 }),
-                n.total > 0
-                  ? el("span", {
-                      class: "text-[10px] text-zinc-600",
-                      text: t("index.notif.delivered", "{d}/{t} 设备已送达")
-                        .replace("{d}", n.delivered)
-                        .replace("{t}", n.total),
-                    })
-                  : el("span", {
-                      class: "text-[10px] text-zinc-600",
-                      text: n.reported
-                        ? t("index.notif.reported", "已回报")
-                        : t("index.notif.unreported", "未回报"),
-                    }),
               ),
             );
           }),
         );
       }
-      document.getElementById("notif-count").textContent = t(
-        "index.notif.count",
-        "显示 {n} 条",
-      ).replace("{n}", rows.length);
+      countEl.textContent = t(
+        "ui.index.shown_of",
+        "显示 {shown}/{total} 条",
+      )
+        .replace("{shown}", shown.length)
+        .replace("{total}", rows.length);
+      // 没有更多了就收起按钮（含"一个筛选结果不足一页"的常规情形）
+      moreBtn.classList.toggle("hidden", shown.length >= rows.length);
     }
 
     document.getElementById("filter-tabs").addEventListener("click", (e) => {
@@ -701,7 +815,28 @@
       btn.classList.add("active");
       renderNotifs(btn.dataset.filter);
     });
+    document
+      .getElementById("notif-more")
+      .addEventListener("click", () => {
+        visibleCount += NOTIF_PAGE_STEP;
+        renderNotifs(currentFilter);
+      });
     document.getElementById("refresh-btn").addEventListener("click", refresh);
+
+    /* ================= 快速接入折叠 ================= */
+    // 默认收起（#qs-body 带 hidden）；展开/收起只切 hidden + aria-expanded，
+    // 不重建 DOM —— code-block 里的「复制」按钮监听在启动时绑一次就够了。
+    document.getElementById("qs-toggle").addEventListener("click", (e) => {
+      const btn = e.currentTarget;
+      const body = document.getElementById("qs-body");
+      const expanded = btn.getAttribute("aria-expanded") === "true";
+      document.getElementById("qs-body").classList.toggle("hidden", expanded);
+      btn.setAttribute("aria-expanded", expanded ? "false" : "true");
+      btn.textContent = expanded
+        ? t("ui.action.expand", "展开")
+        : t("ui.action.collapse", "收起");
+      if (!expanded) body.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
 
     /* ================= 下拉刷新（公共能力） =================
      * 触屏 / standalone PWA 下拉刷新。指示器 DOM 与手势逻辑由 partials.js
@@ -744,10 +879,12 @@
     }
     // Markdown → HTML（与 message.html 详情页同一实现）。marked 本地打包（/vendor），
     // 默认转义 HTML 防注入；未就绪时退回纯文本。
+    // 颜色由 .md-body（ui.css，走 token）负责 —— 这里不要再写 text-zinc-* 之类的
+    // 固定灰度：亮主题下它会是白底浅灰，等于隐形。
     function renderMD(parent, body) {
       const raw = body || t("common.placeholder.no_body", "（无正文）");
       const marked = window.marked;
-      parent.className = "md-body text-sm leading-relaxed text-zinc-300";
+      parent.className = "md-body text-sm leading-relaxed";
       if (marked && typeof marked.parse === "function") {
         try {
           if (typeof marked.setOptions === "function") {
@@ -780,13 +917,13 @@
         el("span", { class: `dot ${meta.dot}` }),
         el(
           "div",
-          {},
+          { class: "min-w-0" },
           el("div", {
-            class: "text-base font-medium text-white",
+            class: "card-title truncate",
             text: n.title,
           }),
           el("div", {
-            class: "text-xs text-zinc-500",
+            class: "card-sub",
             text: `${n.project} · ${n.time}`,
           }),
         ),
@@ -812,22 +949,18 @@
         [t("common.field.ttl", "TTL"), fmtTTL(n.ttlSeconds)],
         [t("common.field.created_at", "创建时间"), n.time],
       ];
+      // 键值表：两列紧凑网格（.list-row 是 56px 的行，10 条要滚很长的弹层，
+      // 这里改成「标签在上、值在下」的 38px 单元格，整张表一屏看得完）。
       const grid = el(
         "div",
         { class: "grid grid-cols-2 gap-3" },
         ...fields.map(([k, v]) =>
           el(
             "div",
-            {
-              class:
-                "rounded-lg bg-white/[0.03] px-3 py-2.5 ring-1 ring-white/[0.06]",
-            },
+            { class: "field" },
+            el("div", { class: "field-label", text: k }),
             el("div", {
-              class: "text-[10px] uppercase tracking-wide text-zinc-500",
-              text: k,
-            }),
-            el("div", {
-              class: "mono mt-0.5 text-[12px] text-zinc-200",
+              class: "mono truncate text-sm",
               text: String(v),
             }),
           ),
@@ -845,8 +978,7 @@
             "a",
             {
               href: n.link,
-              class:
-                "btn-primary flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium",
+              class: "btn-primary w-full px-4 py-2 text-sm",
             },
             t("index.detail.open_session", "打开 Agent 会话"),
           ),
@@ -858,8 +990,7 @@
           "a",
           {
             href: "message.html?id=" + encodeURIComponent(n.id),
-            class:
-              "flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs text-zinc-400 ring-1 ring-white/10 transition-colors hover:bg-white/5 hover:text-white",
+            class: "btn btn-ghost btn-sm w-full",
           },
           t("index.detail.view_full", "查看完整页面（全部字段 + 投递记录）→"),
         ),
@@ -890,10 +1021,14 @@
     );
 
     /* ================= 复制 ================= */
+    // data-copy-text 的属性名是 copyText（dataset 会把连字符转驼峰），
+    // 之前读 dataset.copy 拿到 undefined，点一下就在 querySelector(undefined) 上抛错。
     document
       .querySelectorAll(".copy-btn")
       .forEach((b) =>
-        b.addEventListener("click", () => copyText(b, b.dataset.copy)),
+        b.addEventListener("click", () =>
+          copyText(b, b.dataset.copyText),
+        ),
       );
 
     /* ================= 热力图 ================= */
@@ -993,8 +1128,10 @@
             if (date.getTime() === today.getTime())
               cell.classList.add("hm-today");
             cell.addEventListener("mouseenter", () => {
+              // 两行文案不写死灰度色：.hm-tip 已按主题给底色 + 主文字色，
+              // 第二行用 .card-sub 拿 --muted，亮/暗两边都读得清。
               const t1 = document.createElement("div");
-              t1.className = "font-medium text-white";
+              t1.className = "font-medium";
               t1.textContent =
                 count > 0
                   ? t("index.heatmap.tip.count", "{n} 条任务").replace(
@@ -1003,7 +1140,7 @@
                     )
                   : t("index.heatmap.tip.none", "无任务");
               const t2 = document.createElement("div");
-              t2.className = "text-zinc-500";
+              t2.className = "card-sub";
               t2.textContent = t("index.heatmap.tip.date", "{m}月{d}日 周{w}")
                 .replace("{m}", date.getMonth() + 1)
                 .replace("{d}", date.getDate())
@@ -1050,6 +1187,7 @@
     }
 
     /* ================= 启动 ================= */
+    renderSparks();
     load().then(openMsgFromQuery);
   })();
 </script>

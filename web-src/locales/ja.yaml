@@ -1674,3 +1674,43 @@ node:
     state_failed: '失敗'
     state_local: 'ローカル変種'
     digest: 'digest'
+
+# ---- UI v2 シェル / コンポーネント層（wave 1、追加のみ）----
+ui:
+  nav:
+    group_workspace: ワークスペース
+    group_resources: リソース
+  sidebar:
+    collapse: サイドバーを折りたたむ
+    expand: サイドバーを展開
+  theme:
+    label: テーマを切り替える
+    auto: システム
+    dark: ダーク
+    light: ライト
+    current: '現在のテーマ：{mode}'
+  menu:
+    account: アカウントメニュー
+    security: アカウントセキュリティ
+    admin: 管理コンソール
+    logout: サインアウト
+  action:
+    expand: 展開
+    collapse: 折りたたむ
+    close: 閉じる
+    clear: クリア
+  kpi:
+    delta_up: '昨日より +{n}'
+    delta_down: '昨日より -{n}'
+    delta_flat: 昨日と同じ
+    delta_na: 比較データなし
+    spark: 直近7日間の推移
+  index:
+    load_more: さらに読み込む
+    shown_of: '{shown}/{total} 件を表示'
+    all_loaded: すべて読み込み済み
+    quickstart_hint: 一行で Agent を導入
+  events:
+    filters: フィルター
+    active: 適用中のフィルター
+    toolbar_hint: 選択後、Enter または適用を押す

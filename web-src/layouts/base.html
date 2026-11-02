@@ -5,7 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Anotify · {{block "title" .}}{{end}}</title>
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#050508" />
+    <meta name="theme-color" content="#08080e" />
+    <!-- 防 FOUC：主题必须在首帧前落到 <html> 上；这段必须同步执行（不能 defer/async），
+         也不能挪到 </body>，否则暗/亮主题会先闪一帧默认色。 -->
+    <script>
+      (function () {
+        try {
+          var mode = localStorage.getItem("anotify-theme") || "auto";
+          var dark = mode === "dark" || (mode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var theme = dark ? "dark" : "light";
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", dark ? "#08080e" : "#f7f8fc");
+        } catch (e) {}
+      })();
+    </script>
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
     <!-- 生产/嵌入页用构建期 Tailwind（/tailwind.css）。

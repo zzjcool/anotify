@@ -36,7 +36,7 @@
 		failed: "failed",
 		canceled: "canceled",
 		abandoned: "abandoned",
-		lease_expired: "lease",
+		lease_expired: "lease_expired",
 	};
 
 	const STATUS_LABEL = {
@@ -241,22 +241,22 @@
 		const box = el("div", "chain-node py-2");
 		const line = el("div", "flex flex-wrap items-center gap-2");
 
-		const name = el("span", "text-[13px] text-zinc-200");
+		const name = el("span", "text-[13px] tx-name");
 		name.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[st] || "pending")));
 		name.appendChild(document.createTextNode(tk.capability || "?"));
 		line.appendChild(name);
 
-		line.appendChild(code("v" + tk.version, "text-[10px] text-zinc-600"));
-		line.appendChild(el("span", "text-[11px] text-zinc-500", STATUS_LABEL[st] || st));
+		line.appendChild(code("v" + tk.version, "text-[10px] tx-faint"));
+		line.appendChild(el("span", "text-[11px] tx-meta", STATUS_LABEL[st] || st));
 
 		if (tk.startedAt && tk.finishedAt) {
 			line.appendChild(
-				el("span", "text-[11px] text-zinc-600", "· " + (tk.finishedAt - tk.startedAt) + "s"),
+				el("span", "text-[11px] tx-faint", "· " + (tk.finishedAt - tk.startedAt) + "s"),
 			);
 		}
 
 		// out 三态（不变量 I5）：未回报 / 到头了 / 走某个出口
-		const outWrap = el("span", "text-[11px] text-zinc-500");
+		const outWrap = el("span", "text-[11px] tx-meta");
 		outWrap.appendChild(document.createTextNode("· "));
 		if (!tk.reported) {
 			outWrap.appendChild(document.createTextNode(t("events.chain.out_none", "未回报")));
@@ -264,12 +264,12 @@
 			outWrap.appendChild(document.createTextNode(t("events.chain.out_end", "到头了")));
 		} else {
 			outWrap.appendChild(document.createTextNode("→ "));
-			outWrap.appendChild(code(tk.out, "text-emerald-300"));
+			outWrap.appendChild(code(tk.out, "tx-out"));
 		}
 		line.appendChild(outWrap);
 
 		if (tk.error) {
-			line.appendChild(el("span", "text-[11px] text-red-400", "· " + tk.error));
+			line.appendChild(el("span", "text-[11px] tx-err", "· " + tk.error));
 		}
 		box.appendChild(line);
 
@@ -340,6 +340,11 @@
 		}
 
 		render();
+
+		// 主题切换：状态点/文字色都是类名 + tokens，重渲染一次即可让
+		// 图视图（内联色由 flograph 写入）也跟上新主题。
+		document.addEventListener("anotify:theme", () => render());
+
 		return {
 			setView(v) {
 				view = v;

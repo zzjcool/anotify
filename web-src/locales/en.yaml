@@ -1674,3 +1674,43 @@ node:
     state_failed: 'Failed'
     state_local: 'Local variant'
     digest: 'digest'
+
+# ---- UI v2 shell / component layer (wave 1, additive only) ----
+ui:
+  nav:
+    group_workspace: Workspace
+    group_resources: Resources
+  sidebar:
+    collapse: Collapse sidebar
+    expand: Expand sidebar
+  theme:
+    label: Toggle theme
+    auto: System
+    dark: Dark
+    light: Light
+    current: 'Theme: {mode}'
+  menu:
+    account: Account menu
+    security: Account security
+    admin: Admin console
+    logout: Sign out
+  action:
+    expand: Expand
+    collapse: Collapse
+    close: Close
+    clear: Clear
+  kpi:
+    delta_up: '+{n} vs yesterday'
+    delta_down: '-{n} vs yesterday'
+    delta_flat: Same as yesterday
+    delta_na: No comparison yet
+    spark: 7-day trend
+  index:
+    load_more: Load more
+    shown_of: 'Showing {shown} of {total}'
+    all_loaded: All loaded
+    quickstart_hint: One line and your agent is set up
+  events:
+    filters: Filters
+    active: Active filters
+    toolbar_hint: Press Enter or Apply

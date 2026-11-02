@@ -1674,3 +1674,43 @@ node:
     state_failed: 'Fallo'
     state_local: 'Variante local'
     digest: 'digest'
+
+# ---- UI v2 shell / capa de componentes (wave 1, solo adiciones) ----
+ui:
+  nav:
+    group_workspace: Espacio de trabajo
+    group_resources: Recursos
+  sidebar:
+    collapse: Contraer barra lateral
+    expand: Expandir barra lateral
+  theme:
+    label: Cambiar tema
+    auto: Sistema
+    dark: Oscuro
+    light: Claro
+    current: 'Tema: {mode}'
+  menu:
+    account: Menú de cuenta
+    security: Seguridad de la cuenta
+    admin: Consola de administración
+    logout: Cerrar sesión
+  action:
+    expand: Expandir
+    collapse: Contraer
+    close: Cerrar
+    clear: Limpiar
+  kpi:
+    delta_up: '+{n} vs ayer'
+    delta_down: '-{n} vs ayer'
+    delta_flat: Igual que ayer
+    delta_na: Sin comparación
+    spark: Tendencia de 7 días
+  index:
+    load_more: Cargar más
+    shown_of: 'Mostrando {shown} de {total}'
+    all_loaded: Todo cargado
+    quickstart_hint: Una línea y tu agente queda listo
+  events:
+    filters: Filtros
+    active: Filtros activos
+    toolbar_hint: Pulsa Enter o Aplicar
