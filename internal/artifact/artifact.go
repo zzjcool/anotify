@@ -407,6 +407,22 @@ func CanonicalJSON(a *Artifact) ([]byte, error) {
 	if clone.Spec.Outputs == nil {
 		clone.Spec.Outputs = []string{}
 	}
+	// params 也要归一（key 有序、无多余空白）——Parse 里已经这么做了，这里必须一致。
+	//
+	// 不同步的后果是**内容寻址整个失效**：中枢拿请求里的原始字节算 digest，
+	// 存下来的是归一后的 spec；节点（或任何第三方）从存下来的 spec 重算，
+	// 得到的是另一个 digest → 部署永远被判成 local（"节点上是本地变体"），
+	// 而两边的产物内容其实一模一样。
+	//
+	// 症状极隐蔽：digest 看起来都合法（都是 sha256:…），只有把两个值并排
+	// 看才会发现它们不同。所以这里同时补了 round-trip 单测。
+	if len(clone.Spec.Params) > 0 {
+		canon, err := canonicalizeJSON(clone.Spec.Params)
+		if err != nil {
+			return nil, fmt.Errorf("artifact: spec.params 不是合法 JSON：%w", err)
+		}
+		clone.Spec.Params = canon
+	}
 	return json.Marshal(&clone)
 }
 
