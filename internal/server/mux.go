@@ -351,6 +351,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 控制台读事件流：走会话 Cookie（机器入口的 GET /v1/events 走 Bearer Key）。
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(consoleH.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))
+	// 孤儿 pending 任务（#270）：先能看见（GET /v1/orphans），再能处置（abandon）。
+	// 没有这两个端点时，派不出去的任务只能永远 pending，还把背压信号钉死。
+	mux.Handle("GET /v1/orphans", noStore(sessMW(http.HandlerFunc(consoleH.orphanTasks))))
+	mux.Handle("POST /v1/tasks/{id}/abandon", noStore(sessMW(http.HandlerFunc(consoleH.abandonTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	// PATCH 只改 display_name（装饰字段），不是能力定义的新版本。

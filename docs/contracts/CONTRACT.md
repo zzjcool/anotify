@@ -494,8 +494,32 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 | `lease_expired` | `pending` | 中枢 | `attempts < maxAttempts` |
 | `lease_expired` | `abandoned` | 中枢 | `attempts >= maxAttempts` 或实现 `idempotent:false` |
 | `pending`/`assigned`/`acked`/`running` | `canceled` | 中枢 | 显式取消 |
+| `pending` | `abandoned` | 中枢（运维/策略，§3.7） | 孤儿任务显式处置，**必须带原因**（写 `tasks.error`） |
 
 **其余迁移一律拒绝**（返回 `ErrInvalidTransition`）。
+
+> `pending → abandoned` 是 2026-11 加的（#270）：在此之前 `pending` 没有任何 abandon
+> 路径，孤儿任务（能力再没有节点声明 / 节点永久下线 / 能力被删）只能永远停在 pending，
+> 并把背压信号 `MIN(created_at) WHERE status='pending'` 钉死。它是**人工/策略触发**的
+> 处置动作，不是派发路径的一部分：正常派发只走 `pending → assigned`。
+
+### 3.7 孤儿任务（`pending` 却没有执行者）
+
+判定：`status='pending'` **且** `created_at <= now - olderThan` **且** 该命名空间内
+**没有任何在线节点**声明该 `capability_id`（具体版本，不是能力名）。
+
+| 原因 | 含义 | 处置 |
+|---|---|---|
+| `no_node_declares` | 没有任何节点声明这个能力版本 | 加节点 / 回滚能力版本 / 确认该能力是否还需要 |
+| `no_online_node` | 有节点声明，但都不在线 | 救节点（启动、排空后恢复） |
+
+`GET /v1/orphans` 只读列出，`POST /v1/tasks/{id}/abandon` 显式处置。
+
+**刻意不自动处置**：孤儿任务是有价值的事实记录（「这条事件本该被处理，但没被处理」），
+自动清理会把事故证据一起抹掉。是否自动化、阈值多少属于运营策略，必须先能看见再谈。
+
+`abandon` 走 CAS（`WHERE status='pending'`）：查与改之间任务被派发出去时返回 409，
+不会把一条正在执行的任务改成终态。
 
 ### 3.3 租约与时序
 

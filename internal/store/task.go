@@ -455,7 +455,10 @@ func ValidTransition(from, to string) bool {
 	}
 	switch from {
 	case TaskPending:
-		return to == TaskAssigned || to == TaskCanceled
+		// pending → abandoned：孤儿任务的人工/策略处置（#270）。
+		// 这条转移**只能带原因发生**（AbandonPendingTask 会写 error 列），
+		// 不是给派发路径用的——正常派发只会 pending → assigned。
+		return to == TaskAssigned || to == TaskCanceled || to == TaskAbandoned
 	case TaskAssigned:
 		return to == TaskAcked || to == TaskRunning ||
 			to == TaskLeaseExpired || to == TaskCanceled

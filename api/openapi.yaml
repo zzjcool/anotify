@@ -582,6 +582,112 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /tasks/{id}/abandon:
+    post:
+      tags: [tasks]
+      summary: 放弃一条 pending 任务（孤儿任务处置）
+      description: |
+        把**仍处于 pending** 的任务推进到 `abandoned`（终态），并把 `reason`
+        写进任务的 `error` 列——「这条事件本该被处理但没被处理」需要留下答案。
+
+        为什么需要它：`pending` 原本没有 abandon 路径。能力升级后再没有节点声明那个版本、
+        唯一能跑它的节点永久下线、能力被禁用/删除，都会让任务永远停在 pending。
+        这不只是垃圾数据：背压的判定信号是 `MIN(created_at) WHERE status='pending'`，
+        **一条孤儿任务就能把整个部署的新事件入口钉死在 503 上**。
+
+        语义是 CAS（`WHERE status='pending'`）：任务在这期间被派发/取消/完成 → 409，
+        绝不会把一条正在执行的任务改成终态。
+
+        `namespaceId` **必填**，**只从 query 读取**，不接受 `*`（写端点）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: "写进 task.error 的原因（缺省给一句可读默认值）" }
+      responses:
+        "200":
+          description: 已放弃
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 任务已不是 pending（`invalid_transition`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /orphans:
+    get:
+      tags: [tasks]
+      summary: 列出孤儿 pending 任务（诊断视图）
+      description: |
+        「pending 且超过 `olderThan`，且当前**没有任何在线节点**能执行」的任务。
+
+        两个原因分类，处置方式完全不同：
+
+        - `no_node_declares`：这个命名空间里没有任何节点声明该能力版本 → 改能力/加节点
+        - `no_online_node`：有节点声明，但都不在线 → 救节点
+
+        判据用 `capability_id`（具体版本），不是能力名：能力升级到 @2 后，
+        只有 @1 的节点对 @1 的任务无效。
+
+        刻意**不自动处置**：孤儿任务是有价值的事实记录，自动清理会把事故证据一起抹掉。
+        确认后用 `POST /v1/tasks/{id}/abandon` 显式放弃。
+
+        `namespaceId` 必填；`*` 允许（诊断需要一次看全）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
+        - name: olderThan
+          in: query
+          required: false
+          schema: { type: string, default: "1h" }
+          description: |
+            时长（`1h` / `30m` / `90s`）或秒数。下限 1 分钟（派发瞬间"暂时没有在线节点"
+            是正常现象，不能当孤儿），上限 30 天。
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 200, maximum: 1000 }
+      responses:
+        "200":
+          description: 孤儿任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orphans:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Task"
+                        - type: object
+                          properties:
+                            idleSec: { type: integer, description: "创建至今的秒数" }
+                            reason:
+                              type: string
+                              enum: [no_node_declares, no_online_node]
+                  count: { type: integer }
+                  olderThan: { type: integer, description: "实际生效的秒数" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   # ========== 源（origin）：事件的入口实例 ==========
   #
   # 源 ≠ 能力。能力回答"能干什么"（由节点声明、中枢派任务）；

@@ -41,6 +41,8 @@ const HTTP_SUITES = [
 	"passkeys",
 	// 批次 5（#229 保留期 / #228 背压）：503 入口、清理幂等性
 	"capacity",
+	// #270：孤儿 pending 任务的诊断（/v1/orphans）与处置（abandon）
+	"orphans",
 ];
 const CHROME_SUITES = [
 	"i18n",

@@ -298,6 +298,8 @@ const NS_REQUIRED_PREFIXES = [
 	// （见 internal/server/playbook_handlers.go 的文件头）。这里漏一行的症状是
 	// 「req() 静默少带一个参数 → 真后端一律 400」，而 400 的原因只有后端日志里有。
 	"/v1/playbooks",
+	// 孤儿 pending 任务视图（#270）：命名空间资源，`*` 表示跨命名空间汇总。
+	"/v1/orphans",
 ];
 
 // isNamespaceEndpoint 判断路径是否属于「必填 namespaceId」的命名空间资源端点。
