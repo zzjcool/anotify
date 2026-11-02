@@ -115,6 +115,7 @@ common:
     finished_at: 结束时间
     error: 错误
     summary: 结果摘要
+    reason: 失败原因
 index:
   load:
     failed: '载入失败：'
@@ -201,6 +202,8 @@ index:
     empty: 暂无该状态的通知
     delivered: '{d}/{t} 设备已送达'
     count: 显示 {n} 条
+    out: '出口 {out}'
+    out_end: '到此为止'
   detail:
     open_session: 打开 Agent 会话
     view_full: 查看完整页面（全部字段 + 投递记录）→
@@ -276,7 +279,7 @@ message:
     lease_expired: 租约过期
   out:
     none: 未回报
-    end: 到头了（无出口）
+    end: 没选出口（到此为止）
   node:
     central: 中枢执行
   chain:
@@ -1494,7 +1497,7 @@ edges:
   cancel: 取消
   save: 保存
   remove: 删除
-  missing: 未接下游的出口
+  terminal: 到此为止（未接下游）
   empty: 出口表为空：事件进来后没有任何出口可走。
   nomatch: 没有匹配的边。
   created: 边已创建

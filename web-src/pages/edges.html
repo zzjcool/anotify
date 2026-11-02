@@ -67,8 +67,8 @@
         color: var(--accent);
         border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
       }
-      /* 该能力声明了但没接边的出口：配置遗漏，要显眼 */
-      .edge-missing {
+      /* 该能力声明了但没接边的出口：这不是错误，是「到此为止」 */
+      .edge-terminal {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
@@ -413,7 +413,11 @@
           }
           } // ← 闭合 for (const [port, portEdges] of byPort)
 
-          // 该能力声明了但一条边都没接的出口 —— 配置遗漏。
+          // 该能力声明了但一条边都没接的出口 —— **到此为止**，不是配置遗漏。
+          //
+          // 「没边 = 停」是一等语义（outcome-v1.1）：刻意停在这里和漏配在数据上
+          // 长得一模一样，所以这里只做**中性**提示，不亮警告——一个永远无法消除的
+          // 警告，等于训练用户忽略警告。
           //
           // 只对**能力**成立：来源没有 outputs 概念（它的"出口"是事件类型，
           // 由外部系统决定，不可能预先枚举），所以来源组不检查这项。
@@ -423,8 +427,8 @@
             (p) => p && !connected.has(p),
           );
           if (missing.length && !q && !capFilter) {
-            const warn = el("div", "edge-missing");
-            warn.appendChild(el("span", "", t("edges.missing", "未接下游的出口")));
+            const warn = el("div", "edge-terminal");
+            warn.appendChild(el("span", "", t("edges.terminal", "到此为止（未接下游）")));
             for (const p of missing) warn.appendChild(el("span", "edge-port", p));
             group.appendChild(warn);
           }

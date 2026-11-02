@@ -756,10 +756,9 @@ func (a *nodeAgent) semaphore(capability string, version, limit int) chan struct
 
 // sendResult 发 result 帧。
 //
-// out 透传 outcome.Out（契约 I5 三态）：v2 的节点**恒不回报出口**（来源是契约
-// 空白，见 runner.go 文件头），所以帧里没有 out 键 → 服务端按「分支终止」处理。
-// plumbing 一字未改：等契约定义「脚本怎么告诉节点走哪个出口」之后，
-// 只需在 runner 里给 outcome.Out 赋值，这里和三态测试都不用动。
+// out 透传 outcome.Out（契约 §2.5 两态）：有值就发 `"out":"fix"`（走那个出口），
+// nil 就不发 out 键 = 这次没选出口（分支到此结束）。成败都照实发——失败也会带上
+// 脚本写的出口，路由由中枢决定（失败不特殊）。
 func (a *nodeAgent) sendResult(taskID string, out outcome) {
 	frame := &resultFrame{
 		Type:      frameTypeResult,

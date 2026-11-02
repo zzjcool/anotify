@@ -115,6 +115,7 @@ common:
     finished_at: Finalizada
     error: Error
     summary: Resumen
+    reason: Motivo del fallo
 index:
   load:
     failed: 'Error al cargar: '
@@ -201,6 +202,8 @@ index:
     empty: No hay notificaciones con este estado
     delivered: '{d}/{t} dispositivos entregados'
     count: Mostrando {n}
+    out: 'Puerto {out}'
+    out_end: 'Termina aquí'
   detail:
     open_session: Abrir sesión de Agent
     view_full: Ver página completa (todos los campos + entregas) →
@@ -276,7 +279,7 @@ message:
     lease_expired: Arrendamiento expirado
   out:
     none: Sin reportar
-    end: Fin alcanzado (sin salida)
+    end: Sin puerto (termina aquí)
   node:
     central: Ejecutada por el hub
   chain:
@@ -1494,7 +1497,7 @@ edges:
   cancel: Cancelar
   save: Guardar
   remove: Eliminar
-  missing: Salidas sin destino
+  terminal: Termina aquí (sin destino)
   empty: 'La lista de aristas está vacía: los eventos no tienen a dónde ir.'
   nomatch: Ninguna arista coincide.
   created: Arista creada

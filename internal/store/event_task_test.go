@@ -319,20 +319,26 @@ func TestEventValidation(t *testing.T) {
 	}
 }
 
-// ---------- #63：tasks out 三态 ----------
+// ---------- #63：tasks out 两态（outcome-v1.1） ----------
 
-// TestOutTriState 不变量 I5：未回报 / 回报 NULL / 回报值 三者行为不同（#63 验收）。
-func TestOutTriState(t *testing.T) {
+// TestOutTwoState out 只有两种可观察取值：选了出口 / 没选。
+//
+// 「没回报」不是 out 的一个取值——它由**根本没有结果帧**表达（任务停在 pending /
+// running，租约到期后由巡检处理）。所以这里能测的只有：
+//   - 没回报过：reported=false, out=NULL（新行）
+//   - 回报了但没选出口：reported=true, out=NULL
+//   - 回报了且选了出口：reported=true, out="fix"
+func TestOutTwoState(t *testing.T) {
 	db, nsID, nodeID, cap, _ := setupRunningTask(t)
 	ctx := context.Background()
 	expandCapacity(t, db, nsID, nodeID, 8)
 
-	// ① reported=0, out=NULL：没回报
-	unreported := mkTask(nsID, "trace_unreported", cap)
-	if err := db.CreateTasks(ctx, []*Task{unreported}); err != nil {
+	// ① 还没回报：reported=false, out=NULL
+	fresh := mkTask(nsID, "trace_fresh", cap)
+	if err := db.CreateTasks(ctx, []*Task{fresh}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	got, err := db.GetTask(ctx, nsID, unreported.ID)
+	got, err := db.GetTask(ctx, nsID, fresh.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -343,13 +349,13 @@ func TestOutTriState(t *testing.T) {
 		t.Errorf("fresh task has out=%q, want nil", *got.Out)
 	}
 
-	// ② reported=1, out=NULL：明确到头
+	// ② 回报了但没选出口：reported=true, out=NULL
 	atEnd := mkTask(nsID, "trace_end", cap)
 	if err := db.CreateTasks(ctx, []*Task{atEnd}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), atEnd)
-	if err := db.ReportResult(ctx, nsID, atEnd.ID, TaskSucceeded, nil, true, "done", nil, ""); err != nil {
+	if err := db.ReportResult(ctx, nsID, atEnd.ID, TaskSucceeded, nil, "done", nil, ""); err != nil {
 		t.Fatalf("report nil out: %v", err)
 	}
 	got, err = db.GetTask(ctx, nsID, atEnd.ID)
@@ -366,14 +372,14 @@ func TestOutTriState(t *testing.T) {
 		t.Fatalf("status = %q, want succeeded", got.Status)
 	}
 
-	// ③ reported=1, out="fix"：走 fix
+	// ③ 失败也选了出口：out="fix"，且 status=failed（路由只看 out，不看 status）
 	goesToFix := mkTask(nsID, "trace_fix", cap)
 	if err := db.CreateTasks(ctx, []*Task{goesToFix}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), goesToFix)
 	port := "fix"
-	if err := db.ReportResult(ctx, nsID, goesToFix.ID, TaskFailed, &port, true, "needs fix", nil, "type error"); err != nil {
+	if err := db.ReportResult(ctx, nsID, goesToFix.ID, TaskFailed, &port, "needs fix", nil, "type error"); err != nil {
 		t.Fatalf("report out=fix: %v", err)
 	}
 	got, err = db.GetTask(ctx, nsID, goesToFix.ID)
@@ -387,18 +393,22 @@ func TestOutTriState(t *testing.T) {
 		t.Fatalf("out = %v, want \"fix\"", got.Out)
 	}
 	if got.Status != TaskFailed {
-		t.Fatalf("status = %q, want failed (I4: out 与 status 正交)", got.Status)
+		t.Fatalf("status = %q, want failed（失败也能选出口）", got.Status)
 	}
+	// 失败时 error 是 message 的派生位（单一来源）：优先取 error（更具体）
 	if got.Error != "type error" {
-		t.Fatalf("error = %q", got.Error)
+		t.Fatalf("error = %q, want \"type error\"", got.Error)
+	}
+	if got.Summary != "type error" {
+		t.Fatalf("summary = %q, want 与 error 同源（\"type error\"）", got.Summary)
 	}
 	if got.FinishedAt == nil {
 		t.Fatal("finished_at not set on terminal status")
 	}
 }
 
-// TestReportResultMissingOutIsNotNilOut 关键区分：
-// 即使 out=nil，「reported」两态含义完全不同——这里断言 reported 列真的写进去了。
+// TestReportResultMissingOutIsNotNilOut 「没回报」与「回报了但没选出口」的区别：
+// 前者没有结果帧（reported=false），后者有（reported=true）；两者的 out 都是 NULL。
 func TestReportResultMissingOutIsNotNilOut(t *testing.T) {
 	db, nsID, nodeID, cap, _ := setupRunningTask(t)
 	ctx := context.Background()
@@ -414,14 +424,14 @@ func TestReportResultMissingOutIsNotNilOut(t *testing.T) {
 	expandCapacity(t, db, nsID, nodeID, 8)
 	driveToRunning(t, db, nsID, nodeID, b)
 	// a: 没回报（不调 ReportResult）
-	// b: 回报到头（reported=true, out=nil）
-	if err := db.ReportResult(ctx, nsID, b.ID, TaskSucceeded, nil, true, "", nil, ""); err != nil {
+	// b: 回报了但没选出口
+	if err := db.ReportResult(ctx, nsID, b.ID, TaskSucceeded, nil, "", nil, ""); err != nil {
 		t.Fatalf("report: %v", err)
 	}
 	ga, _ := db.GetTask(ctx, nsID, a.ID)
 	gb, _ := db.GetTask(ctx, nsID, b.ID)
 	if ga.Reported == gb.Reported {
-		t.Fatal("reported column cannot distinguish 没回报 from 回报到头 (I5 broken)")
+		t.Fatal("reported 列区分不了「没回报」与「回报了但没选出口」")
 	}
 	if ga.Out != nil || gb.Out != nil {
 		t.Fatal("both should have NULL out")
@@ -433,7 +443,7 @@ func TestReportResultRejectsEmptyOutString(t *testing.T) {
 	db, nsID, _, cap, task := setupRunningTask(t)
 	ctx := context.Background()
 	empty := ""
-	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &empty, true, "", nil, "")
+	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &empty, "", nil, "")
 	if err == nil {
 		t.Fatal("empty out string accepted (should use nil for 到头)")
 	}

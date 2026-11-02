@@ -909,33 +909,32 @@ func TestFrameCodec(t *testing.T) {
 	})
 }
 
-// TestResultTriState result 三态（#69 验收 / 不变量 I5）。
-func TestResultTriState(t *testing.T) {
-	t.Run("out 缺失 → 没回报", func(t *testing.T) {
+// TestResultTwoState result 两态（outcome-v1.1，取代旧的三态 I5）。
+//
+// out 只有两种可观察的取值：「选了某个出口」和「没选」。键缺省与显式 null
+// 完全等价——它们对路由的影响一模一样（不派下一跳），所以协议层不再区分。
+func TestResultTwoState(t *testing.T) {
+	t.Run("out 缺省 → 没选出口", func(t *testing.T) {
 		frame, err := DecodeUpstream([]byte(`{"type":"result","task_id":"tsk_x","status":"succeeded","summary":"done"}`))
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
 		rf := frame.(*ResultFrame)
-		if rf.Reported() {
-			t.Fatal("missing out was treated as reported")
-		}
 		if rf.Out != nil {
-			t.Fatalf("Out = %v, want nil", *rf.Out)
+			t.Fatalf("Out = %q, want nil", *rf.Out)
+		}
+		if rf.Summary != "done" {
+			t.Fatalf("Summary = %q, want done", rf.Summary)
 		}
 	})
 
-	t.Run("out:null → 明确到头", func(t *testing.T) {
+	t.Run("out:null 与缺省等价", func(t *testing.T) {
 		frame, err := DecodeUpstream([]byte(`{"type":"result","task_id":"tsk_x","status":"succeeded","out":null}`))
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		rf := frame.(*ResultFrame)
-		if !rf.Reported() {
-			t.Fatal("explicit null out was NOT treated as reported (I5 violated)")
-		}
-		if rf.Out != nil {
-			t.Fatalf("Out = %q, want nil", *rf.Out)
+		if rf := frame.(*ResultFrame); rf.Out != nil {
+			t.Fatalf("Out = %q, want nil（显式 null 与缺省等价）", *rf.Out)
 		}
 	})
 
@@ -945,37 +944,23 @@ func TestResultTriState(t *testing.T) {
 			t.Fatalf("decode: %v", err)
 		}
 		rf := frame.(*ResultFrame)
-		if !rf.Reported() {
-			t.Fatal("out=fix was not treated as reported")
+		if rf.Status != "failed" {
+			t.Fatalf("Status = %q, want failed（失败也能选出口）", rf.Status)
 		}
 		if rf.Out == nil || *rf.Out != "fix" {
 			t.Fatalf("Out = %v, want \"fix\"", rf.Out)
 		}
 	})
 
-	t.Run("out 空字符串也是回报", func(t *testing.T) {
-		// '' 作为出口名不合法（store 会拒绝），但协议层要能如实解析出来
+	t.Run("out 空字符串照实解析（合法性由 store 判定）", func(t *testing.T) {
+		// '' 作为出口名不合法（store 会拒绝），但协议层要能如实解析出来，
+		// 否则「节点写了空串」这种 bug 会被默默吞成「没选出口」。
 		frame, err := DecodeUpstream([]byte(`{"type":"result","task_id":"tsk_x","status":"succeeded","out":""}`))
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		rf := frame.(*ResultFrame)
-		if !rf.Reported() {
-			t.Fatal("out=\"\" should count as present")
-		}
-		if rf.Out == nil || *rf.Out != "" {
+		if rf := frame.(*ResultFrame); rf.Out == nil || *rf.Out != "" {
 			t.Fatal("out=\"\" not preserved")
-		}
-	})
-
-	t.Run("encode 不泄漏 OutPresent", func(t *testing.T) {
-		rf := &ResultFrame{Type: NodeFrameResult, TaskID: "t", Status: "succeeded", OutPresent: true}
-		data, err := rf.MarshalJSON()
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if strings.Contains(string(data), "OutPresent") || strings.Contains(string(data), "out_present") {
-			t.Fatalf("internal field leaked into JSON: %s", data)
 		}
 	})
 }
@@ -1225,57 +1210,45 @@ func TestAckProgressResultFlow(t *testing.T) {
 	}
 }
 
-// TestResultMissingOutLeavesUnreported 结果帧缺 out → reported=0（不伪造「到头」）。
-func TestResultMissingOutLeavesUnreported(t *testing.T) {
-	f := newNodeFixture(t)
-	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
-		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
-
-	task := f.makeAssignedTask(t, "trace_missing")
-	send(t, conn, &ProgressFrame{Type: NodeFrameProgress, TaskID: task.ID})
-	waitStatus(t, f.db, f.nsID, task.ID, store.TaskRunning)
-
-	// 必须发**不带 out 键**的原始 JSON。
-	// 不能用 ResultFrame 字面量：它的 MarshalJSON 总会写出 "out":null，
-	// 那是「显式到头」而不是「没回报」——正是 I5 要区分的东西。
-	sendRaw(t, conn, `{"type":"result","task_id":"`+task.ID+`","status":"succeeded","summary":"done"}`)
-	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
-
-	got, err := f.db.GetTask(context.Background(), f.nsID, task.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
+// TestResultNoOutMeansStop 没选出口 = 到此为止（outcome-v1.1 两态）。
+//
+// 键缺省与显式 null 完全等价：两者都不派下一跳、都让 out 留 NULL，
+// 唯一写进去的是「结果帧到了」（reported=1）。
+func TestResultNoOutMeansStop(t *testing.T) {
+	cases := []struct{ name, raw string }{
+		{"out 键缺省", `{"type":"result","task_id":"%s","status":"succeeded","summary":"done"}`},
+		{"out:null", `{"type":"result","task_id":"%s","status":"succeeded","out":null}`},
 	}
-	if got.Reported {
-		t.Fatal("missing out was recorded as reported (I5 violated)")
-	}
-	if got.Out != nil {
-		t.Fatalf("out = %q, want NULL", *got.Out)
-	}
-}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newNodeFixture(t)
+			conn := f.mustDial(t)
+			hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
+				[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
-// TestResultExplicitNullOutMeansEnd out:null → reported=1, out=NULL。
-func TestResultExplicitNullOutMeansEnd(t *testing.T) {
-	f := newNodeFixture(t)
-	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
-		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
+			task := f.makeAssignedTask(t, "trace_no_out")
+			sendRaw(t, conn, fmt.Sprintf(c.raw, task.ID))
+			waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
 
-	task := f.makeAssignedTask(t, "trace_null")
-	// 直接发 result（跳过 ack/progress，验证隐式 running）。
-	// 显式 "out":null 与「缺 out 键」在线上 JSON 里不同，必须发原始文本才能表达。
-	sendRaw(t, conn, `{"type":"result","task_id":"`+task.ID+`","status":"succeeded","out":null}`)
-	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
-
-	got, err := f.db.GetTask(context.Background(), f.nsID, task.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if !got.Reported {
-		t.Fatal("explicit null out was not recorded as reported")
-	}
-	if got.Out != nil {
-		t.Fatalf("out = %q, want NULL", *got.Out)
+			got, err := f.db.GetTask(context.Background(), f.nsID, task.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if !got.Reported {
+				t.Fatal("结果帧到了却没记 reported=1")
+			}
+			if got.Out != nil {
+				t.Fatalf("out = %q, want NULL（没选出口）", *got.Out)
+			}
+			// 没选出口 → 不派生下一跳：这条 trace 上只有父任务一行
+			rows, err := f.db.ListTasks(context.Background(), f.nsID, task.TraceID, "", "", 50)
+			if err != nil {
+				t.Fatalf("list tasks: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("trace 下应有 1 行，实际 %d 行", len(rows))
+			}
+		})
 	}
 }
 

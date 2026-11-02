@@ -15,8 +15,8 @@ import (
 // 帧层测试不该依赖磁盘状态）。
 //
 // 重点不是「能解出字段」，而是**线上字节**与**服务端视角**：
-// 上行帧的精确 JSON 由服务端 DecodeUpstream 回读验证，out 的三态由服务端
-// ResultFrame.OutPresent/Reported() 判定——这样 tag 漂移会被服务端自己抓到。
+// 上行帧的精确 JSON 由服务端 DecodeUpstream 回读验证，out 的两态（有值 / 没有）
+// 由服务端的 ResultFrame 判定——这样 tag 漂移会被服务端自己抓到。
 
 func mustEncode(t *testing.T, f any) string {
 	t.Helper()
@@ -258,7 +258,7 @@ func TestResultFrameTagsMatchServer(t *testing.T) {
 			t.Errorf("%q field type = %v, want %v (与 ws.ResultFrame 同类型)", name, localField.typ, serverField.typ)
 		}
 		if name == "out" {
-			// 唯一允许的差异：本地 omitempty（I5 三态的编码侧表达）
+			// 唯一允许的差异：本地 omitempty（不选出口时不发脏字段；缺省与 null 等价）
 			if !localField.omitempty {
 				t.Errorf(`resultFrame.Out must be "out,omitempty" (Out==nil → 键缺席)`)
 			}
@@ -273,20 +273,14 @@ func TestResultFrameTagsMatchServer(t *testing.T) {
 	}
 }
 
-// ---------- W2 必测 6：result JSON 用服务端解码器判定 I5 ----------
+// ---------- W2 必测 6：result JSON 用服务端解码器判定两态（outcome-v1.1） ----------
 
 func TestResultFrameReadableByServer(t *testing.T) {
-	t.Run("out 缺席 → 未回报出口", func(t *testing.T) {
+	t.Run("out 缺席 → 没选出口（服务端 Out=nil）", func(t *testing.T) {
 		raw := mustEncode(t, resultFrame{
 			Type: frameTypeResult, TaskID: "tsk_x", Status: statusSucceeded, Summary: "ok",
 		})
 		rf := decodeResultOnServer(t, raw)
-		if rf.OutPresent {
-			t.Errorf("OutPresent = true, want false (out 键没有出现过)")
-		}
-		if rf.Reported() {
-			t.Errorf("Reported() = true, want false")
-		}
 		if rf.Out != nil {
 			t.Errorf("Out = %q, want nil", *rf.Out)
 		}
@@ -298,19 +292,13 @@ func TestResultFrameReadableByServer(t *testing.T) {
 		}
 	})
 
-	t.Run("out 有值 → 已回报出口", func(t *testing.T) {
+	t.Run("out 有值 → 走那个出口", func(t *testing.T) {
 		out := "fix"
 		raw := mustEncode(t, resultFrame{
 			Type: frameTypeResult, TaskID: "tsk_x", Status: statusSucceeded,
 			Out: &out, Summary: "发现 2 处类型错误", Artifacts: []string{"tsk_8f21a3c0"},
 		})
 		rf := decodeResultOnServer(t, raw)
-		if !rf.OutPresent {
-			t.Fatalf("OutPresent = false, want true (out 键出现过)")
-		}
-		if !rf.Reported() {
-			t.Fatalf("Reported() = false, want true")
-		}
 		if rf.Out == nil || *rf.Out != "fix" {
 			t.Fatalf("Out = %v, want \"fix\"", rf.Out)
 		}
@@ -319,6 +307,24 @@ func TestResultFrameReadableByServer(t *testing.T) {
 		}
 		if rf.Summary != "发现 2 处类型错误" {
 			t.Errorf("Summary = %q, want 发现 2 处类型错误", rf.Summary)
+		}
+	})
+
+	t.Run("手写客户端发 out:null → 与缺席等价", func(t *testing.T) {
+		rf := decodeResultOnServer(t, `{"type":"result","task_id":"tsk_x","status":"succeeded","out":null,"summary":"ok"}`)
+		if rf.Out != nil {
+			t.Errorf("Out = %q, want nil（显式 null 与缺省等价）", *rf.Out)
+		}
+	})
+
+	t.Run("失败也可以带出口（失败不特殊）", func(t *testing.T) {
+		raw := mustEncode(t, resultFrame{
+			Type: frameTypeResult, TaskID: "tsk_x", Status: statusFailed,
+			Summary: "exit status 7: 编译失败",
+		})
+		rf := decodeResultOnServer(t, raw)
+		if rf.Status != statusFailed || rf.Summary == "" {
+			t.Errorf("decoded = %+v, want failed + 非空 summary", rf)
 		}
 	})
 }

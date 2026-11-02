@@ -67,7 +67,7 @@ type NodeStore interface {
 	// （internal/lease sweeper，每 5s tick，Redispatch = Dispatcher.RedispatchTask）
 	// 会把它捞回来重派。所以 publish 不需要也不该进事务。
 	ReportResultAndCreateTasks(ctx context.Context, namespaceID, taskID, status string, out *string,
-		reported bool, summary string, artifacts []string, errMsg string, next []*store.Task) error
+		summary string, artifacts []string, errMsg string, next []*store.Task) error
 	ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error
 	// ExtendLeasesForTasks 是心跳的真正入口（#218 根修）：**只续本连接名下的这批任务**。
 	// 旧的 ExtendLeasesForNode（按节点批续）不在这个接口里了——生产路径上不该再有人能调到它。

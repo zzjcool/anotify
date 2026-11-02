@@ -67,7 +67,7 @@ func TestStubSignaturesFrozen(t *testing.T) {
 		_ func(context.Context, string, string, int64) error                                           = db.ExtendLease
 		_ func(context.Context, string, string, string, int64) (string, error)                         = db.LeaseAndAssign
 		_ func(context.Context, string, string, int64) error                                           = db.ProgressTask
-		_ func(context.Context, string, string, string, *string, bool, string, []string, string) error = db.ReportResult
+		_ func(context.Context, string, string, string, *string, string, []string, string) error = db.ReportResult
 		_ func(string, string) bool                                                                    = ValidTransition
 		_ func(string) bool                                                                            = IsTerminalStatus
 	)
@@ -140,7 +140,7 @@ func TestNoStubRemains(t *testing.T) {
 		"AssignTask":         func() error { return db.AssignTask(ctx, nsID, "tsk_x", "nd_x", "nins_x", Now()+30) },
 		"ExtendLease":        func() error { return db.ExtendLease(ctx, nsID, "tsk_x", Now()+30) },
 		"ReportResult": func() error {
-			return db.ReportResult(ctx, nsID, "tsk_x", TaskSucceeded, nil, true, "", nil, "")
+			return db.ReportResult(ctx, nsID, "tsk_x", TaskSucceeded, nil, "", nil, "")
 		},
 		"CreateEdge":         func() error { return db.CreateEdge(ctx, &Edge{}) },
 		"DeleteEdge":         func() error { return db.DeleteEdge(ctx, nsID, false, "cap_a", "fix", "cap_b") },

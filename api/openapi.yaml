@@ -2008,12 +2008,19 @@ paths:
         | `cancel` | 停止任务 |
         | `error` | 协议错误（不关连接，除 hello 失败） |
 
-        ### result 的 out 三态（不变量 I5）
+        ### result 的 out 两态（不变量 I4/I5）
         | 线上 JSON | 落库 | 含义 |
         |---|---|---|
-        | 没有 `out` 键 | `reported=0, out=NULL` | 没回报出口 → 不派下一跳 |
-        | `"out": null` | `reported=1, out=NULL` | 明确到头了 |
-        | `"out": "fix"` | `reported=1, out='fix'` | 走 fix 出口 |
+        | 没有 `out` 键 | `out=NULL` | 没选出口 → 到此为止（不派下一跳） |
+        | `"out": null` | `out=NULL` | 与缺省**完全等价** |
+        | `"out": "fix"` | `out='fix'` | 走 fix 出口（成功/失败都一样派） |
+
+        路由只看 `out`，不看 `status`：失败回报了出口就继续（「失败也发通知」
+        就是一条 `(cap, failed)` 的边）。失败必须带非空 `summary`（原因），
+        服务端在缺失时兜底写成 `"failed"`。
+
+        「没回报」（节点掉线/超时）不在这张表里：那是**没有 result 帧**，
+        任务会停在 pending/running，由租约到期 + 巡检重派处理。
 
         ### hello 的可选 `manifest`：节点声明「我怎么跑」
 
@@ -3501,15 +3508,24 @@ components:
           type: string
           nullable: true
           description: |
-            出口名。与 reported 一起表达三态（不变量 I5）：
-            reported=0 且 out=null → 没回报；reported=1 且 out=null → 到头了；
-            reported=1 且 out="x" → 走 x 出口。
-        reported: { type: boolean }
-        summary: { type: string }
+            这次选了哪个出口（路由的唯一依据，不变量 I4/I5）。
+            null = 没选出口 = 到此为止（正常终止，不是错误）。
+            「没回报」不是 out 的一个值——它表示没有结果帧，任务会停在
+            pending/running 直到租约到期被巡检重派。
+        reported:
+          type: boolean
+          deprecated: true
+          description: 历史字段：结果帧到过为 true（新写入恒为 true）。不要再据此判断语义。
+        summary:
+          type: string
+          description: |
+            唯一的 message：成功=做了什么，失败=为什么失败（失败时非空，空则服务端兜底 "failed"）。
         artifacts:
           type: array
           items: { type: string }
-        error: { type: string }
+        error:
+          type: string
+          description: summary 的派生位（失败时相等，成功时为空）；仅为兼容保留。
         capHash:
           type: string
           description: 派发时的能力定义 content_hash（版本钉住，不变量 I8）

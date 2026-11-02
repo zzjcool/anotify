@@ -310,7 +310,7 @@ func BenchmarkReportResult(b *testing.B) {
 
 			// 计时区内**恰好一次**：节点回报结果。
 			if err := env.db.ReportResult(ctx, env.nsID, t.ID, store.TaskSucceeded,
-				&out, true, "ok", artifacts, ""); err != nil {
+				&out, "ok", artifacts, ""); err != nil {
 				b.Fatalf("report result: %v", err)
 			}
 		}

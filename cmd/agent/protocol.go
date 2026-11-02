@@ -70,25 +70,25 @@ const (
 
 // resultFrame 是本 agent 发出的 result 帧。
 //
-// 为什么不复用 ws.ResultFrame：I5 要求 out 能表达三态
+// out 是**两态**（契约 §2.5）：
 //
-//	键缺席   → 没回报出口（没声明 run.out，或任务没成功：失败/超时/取消）
-//	"out":null → 明确到头
-//	"out":"fix"→ 出口名
+//	键缺席 / null → 这次没选出口（到此为止）
+//	"out":"fix"  → 走 fix 出口
 //
-// 而 ws.ResultFrame.MarshalJSON 无条件写 "out"，编码侧无法表达「缺席」；
-// internal/ws 是硬边界（不改），所以在 agent 侧本地定义一份。
+// 缺省与 null 等价（服务端两者都解成 nil），所以这里的 omitempty 只是「不选出口时
+// 不发脏字段」的书写习惯，不是语义区分。
 //
-// 与 ws.ResultFrame 的差异**只有** out 的 omitempty：字段名/tag 集合由
+// 不从 internal/ws 复用结构体：那边是**服务端解析**的边界（含帧常量/下行帧），
+// agent 不该把服务端包拉进二进制。两份的字段名与 tag **必须一致**，由
 // TestResultFrameTagsMatchServer 用反射逐项对齐，漂移即测试失败。
 type resultFrame struct {
 	Type      string   `json:"type"`
 	TaskID    string   `json:"task_id"`
 	Status    string   `json:"status"`
-	Out       *string  `json:"out,omitempty"` // nil → JSON 里没有 out 键（没回报出口）
-	Summary   string   `json:"summary"`
-	Artifacts []string `json:"artifacts"` // 空时必须是 []，不是 null
-	Error     string   `json:"error"`
+	Out       *string  `json:"out,omitempty"` // nil → 不发 out 键（没选出口）
+	Summary   string   `json:"summary"`       // 成功=说明 / 失败=原因
+	Artifacts []string `json:"artifacts"`     // 空时必须是 []，不是 null
+	Error     string   `json:"error"`         // 兼容位：老代码只填 error 时服务端兜底
 }
 
 // MarshalJSON 只做一件事：把 nil 的 Artifacts 归一成空切片。
