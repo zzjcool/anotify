@@ -178,6 +178,9 @@ push: ## 构建并推送镜像到 GHCR（ghcr.io/zzjcool/anotify）
 # --env-file 让 .env.dev 参与**变量插值**（env_file: 只给容器注入，不参与插值）
 DEV_COMPOSE := docker compose --env-file .env.dev -f docker-compose.dev.yml
 DEV_PROFILE := $(if $(TUNNEL),--profile tunnel,)
+# 重建（KEEP_DATA=1）时：显式 TUNNEL=1，或者隧道容器本来就在（说明这台机器配过隧道）
+# 都要把它一起拉起来。不这么做的话「重建完公网 1033」这个坑会反复踩。
+DEV_PROFILE_KEEP := $(if $(TUNNEL),--profile tunnel,$(shell docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx anotify-dev-tunnel && echo --profile tunnel))
 
 dev-env: ## 生成 .env.dev（真实 VAPID 密钥；已存在则不动）
 	@if [ -f .env.dev ]; then echo ".env.dev 已存在，跳过（要重建请先删除）"; else \
@@ -203,7 +206,29 @@ dev-up: dev-env ## 构建并启动开发环境（TUNNEL=1 同时起 Cloudflare �
 dev-down: ## 停止开发环境（数据卷保留）
 	$(DEV_COMPOSE) --profile tunnel --profile tools down
 
-dev-reset: ## 停止开发环境并删除数据卷（重新开始）
+# 破坏性操作必须**显式**。原来 `dev-reset` 默认 `down -v`，于是「代码改了我重启一下」
+# 这一最常见的心智会把账号/节点/事件全删掉（真实踩过，而且是删完才发现）。
+#
+# 现在：
+#   make dev-reset            → 重建镜像 + 容器，**数据卷保留**（默认安全）
+#   make dev-reset WIPE=1     → 连数据卷一起删（从零开始）
+#   make dev-wipe             → 同上，动作名字直说后果
+dev-reset: ## 重建开发环境（默认保留数据；WIPE=1 连数据卷一起删）
+ifeq ($(WIPE),1)
+	$(DEV_COMPOSE) --profile tunnel --profile tools down -v
+	@echo "  数据卷 anotify-dev-data 已删除（WIPE=1）"
+else
+	$(DEV_COMPOSE) --profile tunnel --profile tools down
+	$(DEV_COMPOSE) $(DEV_PROFILE_KEEP) up -d --build
+	@echo "  数据卷 anotify-dev-data 已保留"
+	@echo "  本地: http://localhost:$${ANOTIFY_DEV_PORT:-8080}"
+	@echo "  要清空数据（账号/节点/事件全删）：make dev-wipe"
+endif
+
+# dev-wipe 是 dev-reset WIPE=1 的别名：破坏性操作的入口不该藏在参数里。
+# 删之前先把要删的东西说清楚——「删完才发现」是最贵的一类事故。
+dev-wipe: ## ⚠️ 停止开发环境并删除数据卷（账号/节点/事件全部丢失）
+	@echo "即将删除数据卷 anotify-dev-data（命名空间、账号、passkey、节点、事件、任务）"
 	$(DEV_COMPOSE) --profile tunnel --profile tools down -v
 	@echo "  数据卷 anotify-dev-data 已删除"
 
