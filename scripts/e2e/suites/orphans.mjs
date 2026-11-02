@@ -76,9 +76,10 @@ function seedNode(dbPath, namespaceId, cap, status) {
 			 VALUES (?, ?, ?, '[]', ?, ?, ?)`,
 		).run(id, namespaceId, `node-${id}`, status, `hash-${id}`, nowSec);
 		if (cap) {
+			// 迁移 18（#276 协议 v2）之后只有三列（run_spec 被产物 digest 取代）
 			db.prepare(
-				`INSERT INTO node_capabilities (node_id, capability_id, namespace_id, run_spec)
-				 VALUES (?, ?, ?, '{}')`,
+				`INSERT INTO node_capabilities (node_id, capability_id, namespace_id)
+				 VALUES (?, ?, ?)`,
 			).run(id, cap.id, namespaceId);
 		}
 		return id;

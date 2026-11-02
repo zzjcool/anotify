@@ -80,8 +80,8 @@ func mustOrphanNode(t *testing.T, db *DB, nsID, status string) string {
 func declareNodeCap(t *testing.T, db *DB, nsID, nodeID, capID string) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(),
-		`INSERT INTO node_capabilities (node_id, capability_id, namespace_id, run_spec)
-		 VALUES (?, ?, ?, '{}')`,
+		// 迁移 18（#276 协议 v2）之后这个表只有三列：run_spec 已被能力产物 digest 取代。
+		`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?, ?, ?)`,
 		nodeID, capID, nsID); err != nil {
 		t.Fatalf("declare node capability: %v", err)
 	}
