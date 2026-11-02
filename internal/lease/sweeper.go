@@ -98,6 +98,15 @@ type Sweeper struct {
 	// （20 → 每范围每轮最多 20×1000 行）。它是「单轮预算」，与轮次频率不是一回事。
 	RetentionBatches int
 
+	// Stats / StatsInterval 是运行期统计维护（#265）：按低频门（默认 6h）执行
+	// `PRAGMA optimize` 的建议（通常是 `ANALYZE "tasks"`），修「统计随行数漂移不刷新」。
+	// StatsInterval < 0 = 禁用；nil 的 Stats = 禁用（测试/嵌入式用法自然退化为 no-op）。
+	Stats         StatsStore
+	StatsInterval time.Duration
+	// lastStats / statsBusy 只在 Tick 与维护 goroutine 之间交接。
+	lastStats int64
+	statsBusy atomic.Bool
+
 	// RetentionEventSec 是 events 保留秒数（#229）；<= 0 = 永久保留（跳过 events 阶段）。
 	// 由部署配置（ANOTIFY_EVENT_RETENTION_DAYS）经 mux 注入（`cfg.EventRetentionSec()`，
 	// 默认 30*86400）；**这是本批新增的开关**，而它的**零值 0 = 永久保留**，
@@ -159,6 +168,11 @@ func New(st Store) *Sweeper {
 	// 要删 events 必须由部署配置显式注入（mux.go 把 cfg.EventRetentionSec() 赋给它）。
 	if rs, ok := st.(RetentionStore); ok {
 		s.Retention = rs
+	}
+	// 同样自动接线运行期统计维护（#265）：*store.DB 满足 StatsStore。
+	// 没接上的调用方（fake）自然退化为 no-op，不需要改任何测试夹具。
+	if ss, ok := st.(StatsStore); ok {
+		s.Stats = ss
 	}
 	return s
 }
@@ -276,6 +290,8 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	// 用 defer 而不是写在末尾：重派阶段有提前 return（没配 Redispatch、
 	// 列 pending 失败），那两处都不该连带跳过与它们无关的保留清理。
 	defer s.maybeSweepRetention(ctx, now)
+	// 统计维护（#265）：同样低频、同样异步、与保留清理互不阻塞。
+	defer s.maybeMaintainStats(ctx)
 
 	reclaimed, err := s.Store.SweepExpiredLeases(ctx, now)
 	if err != nil {

@@ -130,6 +130,18 @@ type Config struct {
 	// 判定口径刻意是**等待时长**而不是 pending 行数：行数随命名空间数 / 能力数 / 流量口径
 	// 漂移，跨部署不可比；「最老的 pending 等了多久」才与部署规模无关。
 	PendingMaxAgeSec int
+
+	// StatsIntervalSec 是运行期 SQLite 统计维护的周期（秒，#265）。
+	//
+	// 语义：
+	//   - 未设置 / 空      → 0 = 用 lease 层默认值（6 小时）
+	//   - "0"              → **禁用**周期维护（只在启动时问一次）
+	//   - 正数              → 指定周期（上限 7 天）
+	//   - 非数字（手滑）    → 0 = 用默认值（不因为拼错就把维护关掉）
+	//
+	// 为什么"0 = 禁用"而"未设置 = 默认"：这两件事语义完全不同，必须能区分。
+	// 用同一个 0 表示两者会让"关掉周期 ANALYZE"变成不可达（运维想关只能改代码）。
+	StatsIntervalSec int
 }
 
 // hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
@@ -226,6 +238,46 @@ func pendingMaxAgeFromEnv(key string, def int) int {
 	}
 	if n > maxPendingMaxAgeSec {
 		return maxPendingMaxAgeSec // 溢出保护：钳到上限，理由见 maxEventRetentionDays 的注释
+	}
+	return n
+}
+
+// StatsInterval 把配置换成 lease 层要的周期。
+//
+// 三种取值对应三种语义，别合并：
+//
+//	0（未设置） → 0   = lease 用默认值 6h
+//	> 0         → 秒数
+//	-1          → **禁用**（ANOTIFY_STATS_INTERVAL_SEC=0 的显式选择）
+func (c Config) StatsInterval() time.Duration {
+	switch {
+	case c.StatsIntervalSec > 0:
+		return time.Duration(c.StatsIntervalSec) * time.Second
+	case c.StatsIntervalSec == 0:
+		return 0 // 用默认
+	default:
+		return -1 // 禁用
+	}
+}
+
+// statsIntervalFromEnv 读取 ANOTIFY_STATS_INTERVAL_SEC（#265）。
+//
+// 未设置/非法 → 0（用默认）；"0" → -1（禁用）；正数 → 原值（上限 7 天）。
+func statsIntervalFromEnv(key string) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0 // 手滑不改变默认策略
+	}
+	if n <= 0 {
+		return -1 // 显式禁用
+	}
+	const maxSec = 7 * 24 * 3600
+	if n > maxSec {
+		return maxSec // 溢出/误配保护：再长就等于"不维护"了
 	}
 	return n
 }
@@ -328,6 +380,7 @@ func FromEnv() Config {
 		// （#228，默认 120 秒，0 = 不启用）。
 		EventRetentionDays: retentionDaysFromEnv("ANOTIFY_EVENT_RETENTION_DAYS", defaultEventRetentionDays),
 		PendingMaxAgeSec:   pendingMaxAgeFromEnv("ANOTIFY_PENDING_MAX_AGE_SEC", defaultPendingMaxAgeSec),
+		StatsIntervalSec:   statsIntervalFromEnv("ANOTIFY_STATS_INTERVAL_SEC"),
 	}
 }
 

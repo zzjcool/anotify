@@ -292,6 +292,15 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	slog.Info("source scheduler wired", "event", "server.source.ready")
 
 	sweeper := lease.New(db)
+	// 运行期统计维护（#265）：默认 6h 一次，`ANOTIFY_STATS_INTERVAL_SEC=0` 可关。
+	// 默认值由 lease 层给（StatsInterval 零值 = 用默认），这里只表达"部署想改什么"。
+	if d := cfg.StatsInterval(); d != 0 {
+		sweeper.StatsInterval = d
+	}
+	slog.Info("sqlite stats maintenance wired",
+		"event", "server.stats.ready",
+		"interval", sweeper.StatsInterval.String(),
+		"note", "0 interval = 用默认 6h；负值 = 周期维护被配置关闭（启动时仍会问一次）")
 	// events 保留期（#229）：把部署配置注入巡检。默认 30 天（cfg.EventRetentionSec() 已换算成秒）；
 	// 0 = 永久保留（store 侧 EventRetentionDisabled → 整个 events 阶段跳过）。
 	//
