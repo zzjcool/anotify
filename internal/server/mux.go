@@ -292,6 +292,15 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	slog.Info("source scheduler wired", "event", "server.source.ready")
 
 	sweeper := lease.New(db)
+	// 运行期统计维护（#265）：默认 6h 一次，`ANOTIFY_STATS_INTERVAL_SEC=0` 可关。
+	// 默认值由 lease 层给（StatsInterval 零值 = 用默认），这里只表达"部署想改什么"。
+	if d := cfg.StatsInterval(); d != 0 {
+		sweeper.StatsInterval = d
+	}
+	slog.Info("sqlite stats maintenance wired",
+		"event", "server.stats.ready",
+		"interval", sweeper.StatsInterval.String(),
+		"note", "0 interval = 用默认 6h；负值 = 周期维护被配置关闭（启动时仍会问一次）")
 	// events 保留期（#229）：把部署配置注入巡检。默认 30 天（cfg.EventRetentionSec() 已换算成秒）；
 	// 0 = 永久保留（store 侧 EventRetentionDisabled → 整个 events 阶段跳过）。
 	//
@@ -324,6 +333,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 	go sweeper.Run(ctx)
 
+	// 槽位释放 → 即时重派（#219）。
+	//
+	// 接线放在这里而不是 ws 包内部：ws 不该知道"谁来重派"，
+	// 它只负责"我这边空出一个槽了"这一个事实。
+	nodeH.OnCapacityFreed = sweeper.Nudge
+
 	// 中枢能力执行器（#83）：执行 notify.phone 这类没有节点执行者的内置能力。
 	//
 	// 它们在图里是正常的一条边，只是"执行者"是中枢自己而不是外部节点。
@@ -351,6 +366,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 控制台读事件流：走会话 Cookie（机器入口的 GET /v1/events 走 Bearer Key）。
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(consoleH.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))
+	// 孤儿 pending 任务（#270）：先能看见（GET /v1/orphans），再能处置（abandon）。
+	// 没有这两个端点时，派不出去的任务只能永远 pending，还把背压信号钉死。
+	mux.Handle("GET /v1/orphans", noStore(sessMW(http.HandlerFunc(consoleH.orphanTasks))))
+	mux.Handle("POST /v1/tasks/{id}/abandon", noStore(sessMW(http.HandlerFunc(consoleH.abandonTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	// PATCH 只改 display_name（装饰字段），不是能力定义的新版本。

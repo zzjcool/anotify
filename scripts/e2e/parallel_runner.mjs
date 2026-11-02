@@ -41,9 +41,12 @@ const HTTP_SUITES = [
 	"passkeys",
 	// 批次 5（#229 保留期 / #228 背压）：503 入口、清理幂等性
 	"capacity",
+	// #270：孤儿 pending 任务的诊断（/v1/orphans）与处置（abandon）
+	"orphans",
 	// console-declares（T6）：部署模型的纯 HTTP 面
 	// （templates / 产物 digest / deployments 状态机 / 本地变体）
 	"deploy",
+
 ];
 const CHROME_SUITES = [
 	"i18n",

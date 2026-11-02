@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/route"
@@ -687,6 +688,173 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		updated = task
 		updated.Status = store.TaskCanceled
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task": updated})
+}
+
+// ---------- GET /v1/orphans ----------
+
+// orphanTasks 列出「pending 超过一段时间且当前没有任何在线节点能跑」的任务（#270）。
+//
+// 为什么需要这个只读视图：孤儿任务不会报错、不会告警，只会静静地占着队列，
+// 并且让背压的 `MIN(created_at) WHERE status='pending'` 只增不减。没有这个视图，
+// 运维只能靠读一条 30 分钟才出现的 ERROR 日志才猜到"有孤儿"。
+//
+// 参数：
+//
+//	olderThan  时长（"1h" / "30m" / 纯数字=秒），默认 1h。刻意**不允许** 0：
+//	           刚建出来的任务在派发瞬间也可能"暂时没有在线节点"，把它算孤儿会误报。
+//	limit      默认 200，上限 1000（这是给人看的诊断视图，不是导出接口）
+//
+// 跨命名空间 `*` 允许：诊断恰恰需要一次看全。
+func (h *consoleHandler) orphanTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	ns, ok := h.resolveNamespace(w, r, "", true)
+	if !ok {
+		return
+	}
+	olderThanSec, err := parseOlderThan(r.URL.Query().Get("olderThan"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, perr := strconv.Atoi(v)
+		if perr != nil || n <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a positive integer"})
+			return
+		}
+		limit = n
+	}
+
+	nsIDs := []string{ns.ID}
+	if ns.All {
+		list, lerr := h.db.ListNamespaces(r.Context())
+		if lerr != nil {
+			slog.Error("list namespaces failed", "event", "console.orphans.ns_failed", "error", lerr.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		nsIDs = nsIDs[:0]
+		for _, n := range list {
+			nsIDs = append(nsIDs, n.ID)
+		}
+	}
+
+	items := make([]store.OrphanPendingTask, 0, 16)
+	for _, id := range nsIDs {
+		got, lerr := h.db.ListOrphanPendingTasks(r.Context(), id, olderThanSec, limit)
+		if lerr != nil {
+			slog.Error("list orphan tasks failed",
+				"event", "console.orphans.list_failed", "namespace_id", id, "error", lerr.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		items = append(items, got...)
+	}
+	// 空列表必须是 []，不能是 null（前端把 null 当成"未连接"）。
+	if items == nil {
+		items = []store.OrphanPendingTask{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"orphans":   items,
+		"count":     len(items),
+		"olderThan": olderThanSec,
+		"namespace": ns.ID,
+		"allScopes": ns.All,
+		"hint":      "孤儿任务不会被自动清理：确认后用 POST /v1/tasks/{id}/abandon 显式处置",
+	})
+}
+
+// parseOlderThan 解析 olderThan 参数：支持 "1h"/"30m"/"90s" 与纯数字（秒）。
+//
+// 上限 30 天、下限 1 分钟：下限防误报（刚派发的任务可能暂时没有在线节点），
+// 上限防"用 olderThan=10年 一次性列出全部 pending"这种把诊断接口当导出的用法。
+func parseOlderThan(v string) (int, error) {
+	const (
+		minSec = 60
+		maxSec = 30 * 24 * 3600
+		defSec = 3600
+	)
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return defSec, nil
+	}
+	sec := 0
+	if n, err := strconv.Atoi(v); err == nil {
+		sec = n
+	} else {
+		d, derr := time.ParseDuration(v)
+		if derr != nil {
+			return 0, errors.New("olderThan 需要是时长（如 1h）或秒数")
+		}
+		sec = int(d.Seconds())
+	}
+	if sec < minSec {
+		return 0, errors.New("olderThan 不能小于 1m（刚派发的任务可能暂时没有在线节点）")
+	}
+	if sec > maxSec {
+		sec = maxSec
+	}
+	return sec, nil
+}
+
+// ---------- POST /v1/tasks/{id}/abandon ----------
+
+// abandonTask 把一条 pending 任务显式转成 abandoned（#270）。
+//
+// 刻意**不自动**：孤儿任务是有价值的事实记录（这条事件本该被处理却没被处理），
+// 自动放弃会把事故证据一起清掉。要不要自动化是运营策略，由人拍板。
+func (h *consoleHandler) abandonTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, "POST")
+		return
+	}
+	taskID := r.PathValue("id")
+	if taskID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "task id required"})
+		return
+	}
+	// 写端点：`*` → 400（不能在一个"跨命名空间"的任务上执行写操作）
+	ns, ok := h.resolveNamespace(w, r, "", false)
+	if !ok {
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body)
+
+	if err := h.db.AbandonPendingTask(r.Context(), ns.ID, taskID, body.Reason); err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		case errors.Is(err, store.ErrInvalidTransition):
+			// 已经派发/取消/完成：如实告诉调用方，不能假装成功
+			cur := ""
+			if t, gerr := h.db.GetTask(r.Context(), ns.ID, taskID); gerr == nil {
+				cur = t.Status
+			}
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "task is not pending" + map[bool]string{true: " (now " + cur + ")"}[cur != ""],
+				"code":  "invalid_transition",
+			})
+		default:
+			slog.Error("abandon task failed",
+				"event", "console.tasks.abandon_failed", "task_id", taskID, "error", err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		}
+		return
+	}
+
+	updated, gerr := h.db.GetTask(r.Context(), ns.ID, taskID)
+	if gerr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"task": updated})
 }

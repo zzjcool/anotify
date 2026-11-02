@@ -6,12 +6,14 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -161,10 +163,16 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 	// 对比：迁移 16 里那句 `ANALYZE tasks` 是升级路径上的**确定性**保证（写在迁移事务内，
 	// 失败就该让迁移失败、整体回滚）——两者定位不同，别混。
 	// 也不要给它加重试循环：只会把启动变慢，而且下一次 Open 会再试一遍。
-	if _, err := db.Exec(`PRAGMA optimize=0x2`); err != nil {
+	// 观测优先（#265）：把 optimize 的**建议**打出来，运维才知道统计到底多久该刷一次。
+	// 它通常是空行（= 不需要），非空时形如 `ANALYZE "tasks"`。
+	if suggestions, err := dbMaintainStatsOnce(db); err != nil {
 		slog.Warn("store: sqlite 统计维护失败（不影响正确性，只是规划器可能暂时选不到最优索引）",
 			"event", "store.open.optimize_failed",
 			"error", err.Error())
+	} else if len(suggestions) > 0 {
+		slog.Debug("store: 启动时按建议刷新了统计",
+			"event", "store.open.stats_refreshed",
+			"statements", suggestions)
 	}
 	return &DB{DB: db, stmts: newStmtCache()}, nil
 }
@@ -185,3 +193,87 @@ func maxConnsFromEnv() int {
 
 // Now 返回当前 unixepoch 秒（供各写入点统一使用）。
 func Now() int64 { return time.Now().Unix() }
+
+// MaintainStats 是一次「运行期」的统计维护：先问 SQLite 需不需要刷新，再按它的
+// 建议执行（#265）。
+//
+// 为什么不能只在 Open 时跑 `PRAGMA optimize=0x2`：它够不到**运行期漂移**。
+// 某个命名空间从 100 行涨到 100 万行时，sqlite_stat1 里可能仍记着 100，
+// 规划器据此选错计划——表现是"索引明明建好了但查询很慢"，而且没有任何报错。
+//
+// `PRAGMA optimize` 的返回值就是它的建议：需要分析时返回一条 `ANALYZE "tbl"`，
+// 不需要时返回空行。所以这里**按需**执行，而不是无条件 ANALYZE 全库：
+//   - 无条件周期 ANALYZE 在大库上是真实成本（单连接 SQLite 会挡住写）
+//   - 只在 SQLite 自己认为"该刷新"时才做，代价与收益对得上
+//
+// 返回被执行的建议语句（用于日志/测试断言）。空切片 = 这次不需要做什么。
+//
+// 安全：执行的语句必须来自 SQLite 自己的建议且形如 `ANALYZE ...`，
+// 这里做一次前缀校验——把"数据库返回的字符串当 SQL 执行"这件事锁在最小面上。
+func (d *DB) MaintainStats(ctx context.Context) ([]string, error) {
+	return maintainStatsOn(ctx, d.DB)
+}
+
+// statsQueryer 是 dbMaintainStatsOnce / MaintainStats 共用的最小接口：
+// Open 阶段还没有 *DB（它由本函数末尾构造），只能把手上的 *sql.DB 传进来。
+type statsQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// dbMaintainStatsOnce 是 Open 阶段的版本（只跑一次、不抛错，结果用于日志）。
+func dbMaintainStatsOnce(db *sql.DB) ([]string, error) {
+	return maintainStatsOn(context.Background(), db)
+}
+
+func maintainStatsOn(ctx context.Context, q statsQueryer) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `PRAGMA optimize=0x2`)
+	if err != nil {
+		return nil, fmt.Errorf("store: pragma optimize: %w", err)
+	}
+	suggestions := make([]string, 0, 2)
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: read optimize suggestion: %w", err)
+		}
+		if s != "" {
+			suggestions = append(suggestions, s)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: iterate optimize suggestions: %w", err)
+	}
+	rows.Close()
+
+	ran := make([]string, 0, len(suggestions))
+	for _, s := range suggestions {
+		// 只放行 SQLite 的建议形状（`ANALYZE "tasks"` / `ANALYZE sqlite_master`）。
+		if !isAnalyzeSuggestion(s) {
+			slog.Warn("store: 忽略非 ANALYZE 形状的 optimize 建议",
+				"event", "store.stats.unexpected_suggestion",
+				"suggestion", s)
+			continue
+		}
+		if _, err := q.ExecContext(ctx, s); err != nil {
+			// 统计刷新失败不影响正确性：记一条 warning，下次再试。
+			slog.Warn("store: 统计刷新失败（不影响正确性，规划器可能暂时选不到最优索引）",
+				"event", "store.stats.analyze_failed",
+				"statement", s,
+				"error", err.Error())
+			continue
+		}
+		ran = append(ran, s)
+	}
+	return ran, nil
+}
+
+// isAnalyzeSuggestion 判定一条 PRAGMA optimize 的返回值能否当 SQL 执行。
+//
+// 这是「把数据库返回的字符串当 SQL 跑」这件事的**唯一**闸门：只放行以 ANALYZE 开头的语句，
+// 其余一律忽略并留一条 warning（#265 的护栏用例会遍历各种危险形状验证它）。
+func isAnalyzeSuggestion(s string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(s)), "ANALYZE")
+}

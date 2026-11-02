@@ -24,7 +24,8 @@ var allStatuses = []string{
 // 直接报 progress/result 是正常时序，不允许这条会让这类节点永远推不动任务。
 // 已在 #57 的实现说明里向契约所有者指出这处歧义。
 var legalTransitions = map[string][]string{
-	TaskPending:      {TaskAssigned, TaskCanceled},
+	// pending → abandoned 是 §3.7 的孤儿任务处置（必须带原因，写 tasks.error）
+	TaskPending:      {TaskAssigned, TaskCanceled, TaskAbandoned},
 	TaskAssigned:     {TaskAcked, TaskRunning, TaskLeaseExpired, TaskCanceled},
 	TaskAcked:        {TaskRunning, TaskLeaseExpired, TaskCanceled},
 	TaskRunning:      {TaskSucceeded, TaskFailed, TaskLeaseExpired, TaskCanceled},
@@ -112,7 +113,10 @@ func TestTransition(t *testing.T) {
 		if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 			t.Fatalf("create task: %v", err)
 		}
-		for _, to := range []string{TaskAcked, TaskRunning, TaskSucceeded, TaskAbandoned, TaskLeaseExpired} {
+		// 注意：TaskAbandoned 不在这里 —— 它是 §3.7 的合法处置路径（孤儿任务），
+		// 由 AbandonPendingTask 带原因触发。直接调 Transition 也能过状态机，
+		// 但那条路径的责任（写原因、CAS）由 AbandonPendingTask 承担。
+		for _, to := range []string{TaskAcked, TaskRunning, TaskSucceeded, TaskLeaseExpired} {
 			if to == TaskCanceled {
 				continue
 			}

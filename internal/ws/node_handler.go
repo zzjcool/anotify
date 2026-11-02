@@ -62,6 +62,14 @@ type NodeHandler struct {
 	// AcceptOptions 可覆盖 WS 升级选项。
 	AcceptOptions *websocket.AcceptOptions
 
+	// OnCapacityFreed 在「任务终态落库、槽位释放」之后被调用一次（#219）。
+	//
+	// 为什么需要这个钩子：pending 任务原本只能靠 5s 巡检排空，槽位空出来的那一刻
+	// 没有任何东西去拉下一条。接上 sweeper.Nudge 之后，一次完成就会触发一次即时重派。
+	//
+	// nil 是允许的（测试/嵌入式用法）：没有钩子时行为退回「只有 5s 巡检」。
+	OnCapacityFreed func()
+
 	// MaxFrameBytes 覆盖逐帧软上限（0 → NodeFrameSoftLimit）。测试里会调到很小值。
 	MaxFrameBytes int
 	// ReadLimit 覆盖硬读上限（0 → NodeReadLimitHard）。
@@ -485,6 +493,12 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 		"applied", len(f.Applied),
 		"instances", len(f.Instances),
 	)
+	// 节点上线 = **新增了执行能力**（#219）。队列里可能正压着一批
+	// 「之前没人能跑」的 pending，它们原本也要等下一轮 5s 巡检才被捡起来。
+	// 钩子是可合并的非阻塞投递，这里同步调用不会拖慢握手。
+	if s.h.OnCapacityFreed != nil {
+		s.h.OnCapacityFreed()
+	}
 	return nil
 }
 

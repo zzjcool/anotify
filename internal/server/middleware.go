@@ -92,7 +92,11 @@ func accessLog(next http.Handler) http.Handler {
 			sw.status = 200
 		}
 
-		latency := time.Since(start).Microseconds()
+		// 单位必须是**毫秒**：字段叫 latency_ms，任何按它做的 P95/超时告警都信任这个名字。
+		// 曾经这里取 Microseconds()，于是 12ms 的请求写成 latency_ms=12000——
+		// 按秒设阈值的告警永远误报，按"12 看起来正常"调阈值又会掩盖真慢请求（#249）。
+		// 保留小数（µs 精度），避免亚毫秒请求全被记成 0。
+		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
 		// r.URL.Path 天然不含 query（AC-3: secret/registrationToken 走 query 传输，不会泄露）
 		path := r.URL.Path
 
@@ -101,7 +105,7 @@ func accessLog(next http.Handler) http.Handler {
 			"method", r.Method,
 			"path", path,
 			"status", sw.status,
-			"latency_ms", latency,
+			"latency_ms", latencyMs,
 			"ip", clientIP(r),
 		}
 		if uid := auth.UserIDFromContext(r.Context()); uid != "" {

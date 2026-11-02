@@ -183,6 +183,55 @@ async function main() {
 		/* 无 manifest.webmanifest 时忽略 */
 	}
 
+	// 改写 sw.js 里对静态资源的引用（#268）。
+	//
+	// sw.js 自己不能指纹（注册路径必须固定 /sw.js），但它**引用**的资源会被指纹：
+	//   icon: "assets/icon.png"  →  dist 里只有 assets/icon.d3e0cc82.png
+	// 不改写的话生产环境推送通知的 icon/badge 直接 404，而且只在真实构建产物里才看得出来
+	// （dev/mock 走的是 web/ 源目录，未指纹，永远不会暴露）。
+	//
+	// 顺带在这里做一次**硬校验**：改完之后 sw.js 里任何指向静态资源的相对路径都必须
+	// 在 dist 里真实存在，否则构建失败。理由很直接——这份文件的引用出错没有任何运行时
+	// 报错，只会静默 404，靠人肉 review 是守不住的。
+	const swPath = path.join(out, "sw.js");
+	let sw = null;
+	try {
+		sw = await fs.readFile(swPath, "utf8");
+	} catch {
+		sw = null; // 没有 sw.js 的项目不受影响
+	}
+	if (sw !== null) {
+		const assetRe = /(["'])(\/?[^"'\s]+\.(?:png|svg|jpg|jpeg|ico|webp|woff2?|ttf|css|js))\1/g;
+		const rewritten = sw.replace(assetRe, (match, q, value) => {
+			const key = value.replace(/^\//, "");
+			const hashed = manifest[key];
+			if (!hashed) return match;
+			return `${q}${value.startsWith("/") ? "/" : ""}${hashed}${q}`;
+		});
+
+		// 校验：提取所有「看起来是本地静态资源」的路径，逐个确认存在于 dist。
+		const missing = [];
+		for (const m of rewritten.matchAll(assetRe)) {
+			const value = m[2];
+			if (/^(https?:|data:|blob:)/.test(value)) continue;
+			const rel = value.replace(/^\//, "");
+			// sw.js 里允许引用"自己的路由"这类不以文件形式存在的东西吗？
+			// 不允许——这份文件只该引用真实资源，写错就是静默 404。
+			try {
+				await fs.access(path.join(out, rel));
+			} catch {
+				missing.push(value);
+			}
+		}
+		if (missing.length) {
+			throw new Error(
+				`sw.js 引用了 dist 里不存在的静态资源：${missing.join(", ")}` +
+					`（指纹脚本会改写已知资源；若是新资源，检查它是否被复制进 dist）`,
+			);
+		}
+		await fs.writeFile(swPath, rewritten);
+	}
+
 	await fs.writeFile(
 		path.join(out, "manifest.json"),
 		JSON.stringify(manifest, null, 2),

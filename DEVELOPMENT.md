@@ -561,3 +561,4 @@ go run ./cmd/devseed -db ./anotify.db -username demo  # 播种测试用户
 | --- | --- | --- |
 | `ANOTIFY_EVENT_RETENTION_DAYS` | `30` | events 保留天数；**`0` = 永久保留**（启动日志 `server.retention.permanent` 会 WARN：磁盘随写入线性增长） |
 | `ANOTIFY_PENDING_MAX_AGE_SEC` | `120` | 最老 pending 任务等待秒数**超过**它 → 三个新事件入口（`POST /v1/events`、`POST /v1/hooks/{token}`、`POST /v1/sources/{id}/fire`）返回 `503` + `Retry-After`。**`0` = 不启用**（小部署别被自己的保护坑到）。超阈持续 30 分钟会 fail-open（孤儿 pending，见 §8） |
+| `ANOTIFY_STATS_INTERVAL_SEC` | 未设 = `6h` | SQLite 统计维护周期（#265）：到点先问 `PRAGMA optimize` 需不需要刷新，需要才执行它给出的 `ANALYZE`。**`0` = 禁用周期维护**（启动时仍会问一次）。不设就走默认 6h——统计随行数漂移会让规划器选错索引，症状是「索引建好了但慢查询」，且没有任何报错。 |
