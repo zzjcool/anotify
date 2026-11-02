@@ -3,7 +3,7 @@
 本文回答两件事：
 
 1. **原生装**怎么装（对比 Docker 的取舍）
-2. **能力工作目录**（`workDir` / `workDirs`）是什么，为什么有白名单
+2. **能力工作目录**（`workDirs`，能力级 / 兜底两种写法）是什么，为什么有白名单
 
 ---
 
@@ -29,8 +29,13 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh \
   | sh -s -- --token=nt_xxx --server=https://anotify.example.com \
-             --work-dirs=/home/me/project
+             --work-dir=script.echo:/home/me/project \
+             --work-dirs=/srv/shared
 ```
+
+`--work-dir=<能力名>:<目录>`（可重复）写的是**能力级**条目（例子里 `script.echo` 跑在
+`/home/me/project`）；`--work-dirs=<目录>[:<目录>...]` 写的是**兜底前缀白名单**（旧语义）。
+两者可以只给一个，也可以一起给，详见 §3。
 
 它做四件事：
 
@@ -74,7 +79,8 @@ server: https://anotify.example.com
 token: nt_xxx
 instances: 2
 workDirs:
-  - /home/me/project
+  script.echo: /home/me/project     # 能力级：这个能力跑在这个目录
+  "*": /srv/shared                 # 兜底：任意能力都可用的前缀（可省略）
 YAML
 chmod 600 ~/.anotify/node.yaml
 
@@ -113,26 +119,63 @@ v2 之后节点只跑**能力产物**，`cwd` 永远是 `<data-dir>/work/<task_i
 
 留空 = 用默认的每任务临时目录（与加这个功能之前完全一致）。
 
-**节点侧**（`~/.anotify/node.yaml`）—— 这是**授权**，不是配置：
+**节点侧**（`~/.anotify/node.yaml`）—— 这是**授权**，不是配置。两种写法都支持，
+**旧部署不用改**：
 
 ```yaml
+# ① 推荐：按能力名分别配（能力名 = 产物名，形如 script.echo）
+workDirs:
+  script.echo: /home/me/project
+  build.repo: /srv/app
+  "*": /srv/projects          # 可选兜底：任意能力都可用的前缀（旧扁平语义）
+```
+
+```yaml
+# ② 旧写法：扁平前缀白名单（仍然能用，等价于把每一项都加到 "*" 下）
 workDirs:
   - /home/me/project
   - /srv/apps
 ```
 
-或环境变量（Docker）：`ANOTIFY_WORK_DIRS=/home/me/project:/srv/apps`。
+两种可以混写。`"*"` 的值既可以是单个目录，也可以是目录列表
+（`"*": [/srv/a, /srv/b]`，`install-agent.sh --work-dirs=/srv/a:/srv/b` 生成的就是这个）：
+
+```yaml
+workDirs:
+  script.echo: /home/me/project
+  "*":
+    - /srv/shared
+    - /srv/other
+```
+
+环境变量形态（Docker）：`ANOTIFY_WORK_DIRS=/home/me/project:/srv/apps`。
+它**只有兜底语义**（等价 `workDirs."*"`）——环境里塞不下「能力名 → 目录」这种结构化声明，
+要能力级就写 `node.yaml`（或 `install-agent.sh --work-dir=<能力>:<目录>`）。
+
+### 解析顺序（决定 cwd 的那三步）
+
+| 顺序 | 条件 | 结果 |
+|---|---|---|
+| ① | `workDirs[<能力名>]` 存在 | **就用这个目录**，忽略控制台的 `work_dir`（机器上的 yaml 才是事实） |
+| ② | 否则 `"*"` / 旧列表非空 | 用控制台的 `work_dir`，且必须落在其中某个前缀内；帧里没给 → 任务临时目录 |
+| ③ | 都没有 | 帧里没给 → 任务临时目录；帧里给了 → **failed**（不在白名单） |
+
+能力级目录仍然要做安全检查：**绝对路径、存在、是目录、解符号链接**，任一项不满足就 failed
+且错误点名是 `node.yaml` 里哪一条（比如 `workDirs["script.echo"]`）。它不需要再落在 `"*"` 的前缀里——
+这条配置本身就是授权。
 
 ### 语义与安全
 
 | 事实 | 说明 |
 |---|---|
-| 匹配方式 | **前缀**，按路径分段：`/a/b` 放行 `/a/b` 与 `/a/b/c`，不放行 `/a/bc` |
-| 符号链接 | 比对前**解链**（`ln -s /etc <allowed>/etc` 会被拒） |
-| 越界 | 任务 **failed**，`error` 写明「不在本机的 workDirs 白名单内（允许：…）」——**不会**悄悄退回默认目录 |
+| 前缀匹配（只对 `"*"` / 旧列表） | **按路径分段**：`/a/b` 放行 `/a/b` 与 `/a/b/c`，不放行 `/a/bc` |
+| 能力级目录 | 精确使用，不做前缀推导：`script.echo: /home/me/proj` 就是 `/home/me/proj`（解链后） |
+| 符号链接 | 比对前**解链**（`ln -s /etc <allowed>/etc` 会被拒）；能力级目录同样解链后执行 |
+| 越界 | 任务 **failed**，`error` 写明「不在本机的 workDirs 白名单内（允许：…）；也可以按能力配置：`workDirs: {<能力名>: <目录>}`」——**不会**悄悄退回默认目录 |
 | 空白名单 | 一个目录都不许：控制台指定 workDir 的能力在这台机器上必然失败 |
 | 产物文件 | 仍然展开在 `<data-dir>/work/<task_id>/`，**不会**写进你的项目目录 |
 | 环境变量 | `$ANOTIFY_WORKDIR` = 进程 cwd（历史不变式）；`$ANOTIFY_TASKDIR` = 产物所在的任务目录 |
+| 能力名 | 来自**产物**的 `metadata.name`（与 `$ANOTIFY_CAPABILITY` 同源），按原样查表，不做大小写/下划线归一 |
 
 设计立场（**别改**）：
 
@@ -149,8 +192,16 @@ workDirs:
 ## 4. 常见问题
 
 **Q：能力报了 `work_dir "…" 不在本机的 workDirs 白名单内`**
-A：两种可能。① 节点没配 `workDirs`（或没重启加载）；② 配了但路径不完全一致（注意结尾斜杠、
-软链解链后的真实路径）。用 `anotify-agent -f ...` 前台跑一次能看到启动日志里的配置。
+A：三种可能。① 节点没配 `workDirs`（或没重启加载）；② 配了但路径不完全一致（注意结尾斜杠、
+软链解链后的真实路径）；③ 只在 `"*"` 里配了父目录、而控制台给的目录不在它下面。
+推荐直接**按能力配**（那不受前缀限制，也不会被控制台的意图覆盖）：
+
+```yaml
+workDirs:
+  script.echo: /home/me/project
+```
+
+用 `anotify-agent -f ...` 前台跑一次能看到启动日志里的配置。
 
 **Q：Docker 里能用 workDir 吗？**
 A：能，但必须**同时挂载**：`-e ANOTIFY_WORK_DIRS=/proj -v /proj:/proj`。
@@ -159,6 +210,10 @@ A：能，但必须**同时挂载**：`-e ANOTIFY_WORK_DIRS=/proj -v /proj:/proj
 
 **Q：两个任务同时用同一个 workDir 会互相踩吗？**
 A：会——它们共享同一个目录。给这类能力把节点的 `instances` 设成 1，或在能力脚本里自己做锁。
+
+**Q：控制台配了工作目录，但节点 yaml 里也给这个能力配了另一个目录，用哪个？**
+A：用**节点 yaml 的**。中枢只表达意图，机器上的 yaml 才是事实（§3 解析顺序第 ①）。
+这同时也是「中枢被改坏也影响不到本机」的那道边界。
 
 **Q：`script.test` 这类「执行任意命令」的能力还能用吗？**
 A：能，这是预期用法（你信任的是**已部署的产物**）。但要记住：在原生装 + 指定目录的情况下，

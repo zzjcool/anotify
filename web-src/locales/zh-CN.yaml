@@ -1216,7 +1216,7 @@ caps:
     no_nodes: '这个命名空间还没有节点'
     err: '部署失败：'
     workdir: 工作目录（可选）
-    workdir_hint: 留空 = 每次任务一个独立目录。填了就必须在节点的 workDirs 白名单里，否则任务会失败（不会悄悄退回默认目录）。
+    workdir_hint: '留空 = 每次任务一个独立目录。这是**意图**：节点上按能力配置的 workDirs 优先，只有节点没为该能力单独指定时才用这里的值。两边都没有就会失败，不会悄悄退回默认目录。'
   list:
     title: 能力列表
   form:
@@ -1298,11 +1298,23 @@ nodes:
     title: 节点列表
   howto:
     title: 如何接入一台节点
-    desc: 注册就在这个页面上：令牌只显示一次。注册后页面会给你三种东西——docker 一行命令、原生安装命令、以及 node.yaml。
-    step1: 点上方「注册节点」拿一次性令牌
+    desc: 中枢地址页面自己知道（就是你打开的这个地址），不用手抄。点下面的「生成令牌」就能直接拿到一台节点的令牌和三条能粘的命令。
+    gen_token: 生成令牌
+    gen_hint: 点一下就在本页注册一台新节点（名字自动取），下面三条命令与配置里的令牌、中枢地址会立刻换成真值。
+    gen_running: 生成中…
+    token_title: 一次性令牌
+    token_intro: 令牌只显示这一次（中枢只存 sha256）。丢了就删掉节点重新注册。
+    copy_token: 复制令牌
+    token_ph: '<令牌：点上面的「生成令牌」自动填好>'
+    name_ph: host-xxxxxx
+    cmd_title: docker 一行命令（推荐）
+    step1: 点上面「生成令牌」拿一次性令牌
     step2: 二选一：容器（看不到宿主机文件）或原生装（要在自己的项目目录里跑能力就选这条）
     docker: 容器：看不到宿主机文件，能力只能在容器里跑
-    native: 原生装：以你的用户身份在宿主机上跑，--work-dirs 划出它允许碰的目录
+    native: 原生装：以你的用户身份在宿主机上跑；它能碰哪些目录写在 node.yaml 的 workDirs 里（键是能力名，一行一个）
+    yaml_title: node.yaml（原生装用）
+    yaml_intro: 直接装 agent 二进制时用这份配置。能力能用哪些目录写在 workDirs 里，键是能力名：
+    install_title: 原生安装命令
     step3: 机器上线后到「能力」页点部署，它就有活了
   view_events: 查看事件
   register:
@@ -1324,7 +1336,7 @@ nodes:
     copy_token: '复制令牌'
     cmd_title: "一行命令启动（推荐）"
     copy_cmd: "复制命令"
-    yaml_intro: "或者把 agent 二进制直接装在机器上，用这份 node.yaml（只有四项：名字 / 中枢地址 / 令牌 / 槽位数）："
+    yaml_intro: "或者把 agent 二进制直接装在机器上，用这份 node.yaml（四项 bootstrap：名字 / 中枢地址 / 令牌 / 槽位数，外加按能力名配的 workDirs）："
     yaml_title: '在机器上执行这一行'
     copy_yaml: '复制命令'
     yaml_hint: '命令里的 token 只出现这一次，丢了这个节点就得删掉重新注册。'
@@ -1338,11 +1350,15 @@ nodes:
       forbidden: '没有权限在这个命名空间注册节点'
       failed: '注册失败：'
     workdirs: 能力工作目录（可选）
-    workdirs_hint: 控制台能给某个能力指定「在这个目录里跑」，但只能从这份清单里选。留空 = 一个都不许（能力只跑在临时目录里）。
+    workdirs_hint: 这里填的目录会写进 node.yaml 的 workDirs["*"]（兜底前缀）。想让某个能力固定用别的目录，就在 yaml 里按能力名加一行。
     install_title: 原生安装（直接在宿主机跑）
     install_intro: 容器里看不到宿主机的文件。要在自己的项目目录里跑能力（make test、git status、就地改文件），就用这条命令装在宿主机上。
-    install_after: 它会装好二进制、写 ~/.anotify/node.yaml（权限 600，里面有令牌）、生成 systemd 用户服务。注意：命令里带令牌，会留在 shell 历史里。
+    install_after: 它会装好二进制、写 ~/.anotify/node.yaml（权限 600，里面有令牌）、生成 systemd 用户服务。装完按能力名改那份 yaml 里的 workDirs，再重启服务。注意：命令里带令牌，会留在 shell 历史里。
     copy_install: 复制命令
+    yaml_workdirs_comment: '能力工作目录：键是能力名，"*" 是兜底前缀。不写 = 一个都不许（能力只跑在临时目录里）'
+    yaml_workdirs_extra: '其余目录：{dirs}（想给哪个能力用，就按下面的格式加一行）'
+    yaml_workdirs_bycap: '按能力名（优先级高于 "*"，也会覆盖控制台给该能力指定的目录）：'
+    yaml_workdirs_cap_ph: '<能力名>'
 sources:
   detail: "详情"
   open_detail: "打开详情"

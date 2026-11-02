@@ -98,7 +98,7 @@ prefix="$work/prefix"
 if HOME="$home" ANOTIFY_RELEASE_BASE="$ANOTIFY_RELEASE_BASE" \
 	sh "$root/scripts/install-agent.sh" \
 	--token=nt_selftest --server=http://127.0.0.1:8080 --name=selftest \
-	--instances=3 --work-dirs=/home/me/project:/srv/app \
+	--instances=3 --work-dir=script.echo:/home/me/project \
 	--prefix="$prefix" --no-systemd >"$work/install.log" 2>&1; then
 	ok "安装退出码 0"
 else
@@ -122,9 +122,29 @@ if [ -f "$cfg" ]; then
 	grep -qx 'instances: 3' "$cfg" && ok "配置含 instances" || no "配置含 instances" "$(cat "$cfg")"
 	grep -qx 'workDirs:' "$cfg" && ok "配置含 workDirs（白名单是原生装的关键参数）" ||
 		no "配置含 workDirs（白名单是原生装的关键参数）" "$(cat "$cfg")"
-	grep -qx '  - /srv/app' "$cfg" && ok "workDirs 展开成列表项" || no "workDirs 展开成列表项" "$(cat "$cfg")"
+	# 能力级（契约 §2.3.1）：<能力名>: <目录>
+	grep -qx '  script.echo: /home/me/project' "$cfg" && ok "workDirs 按能力名生成（能力级）" ||
+		no "workDirs 按能力名生成（能力级）" "$(cat "$cfg")"
 else
 	no "写了 node.yaml" "缺失 $cfg"
+fi
+
+# ---- 3.5 --work-dirs（兜底白名单）生成列表形态 ----
+home5="$work/home5"
+mkdir -p "$home5"
+HOME="$home5" ANOTIFY_RELEASE_BASE="$ANOTIFY_RELEASE_BASE" \
+	sh "$root/scripts/install-agent.sh" \
+	--token=nt_selftest --server=http://127.0.0.1:8080 \
+	--work-dirs=/srv/shared:/srv/other \
+	--prefix="$work/prefix5" --no-systemd >"$work/install5.log" 2>&1 || true
+cfg5="$home5/.anotify/node.yaml"
+if [ -f "$cfg5" ]; then
+	grep -q '"\*":' "$cfg5" && ok '兜底白名单写成 "*"（不是能力名）' || \
+		no '兜底白名单写成 "*"' "$(cat "$cfg5")"
+	grep -qx '    - /srv/shared' "$cfg5" && grep -qx '    - /srv/other' "$cfg5" && \
+		ok "兜底白名单多个目录都写进列表（不丢项）" || no "兜底白名单多个目录都写进列表" "$(cat "$cfg5")"
+else
+	no "兜底白名单写法" "没有生成 $cfg5"
 fi
 
 # ---- 3. 校验和不匹配必须中止（且什么都不装） ----

@@ -1216,7 +1216,7 @@ caps:
     no_nodes: 'This namespace has no nodes yet'
     err: 'Deploy failed: '
     workdir: Work dir (optional)
-    workdir_hint: Empty = a fresh directory per task. If set, it must be inside the node workDirs allowlist, otherwise tasks fail (no silent fallback).
+    workdir_hint: 'Empty = a fresh directory per task. This is an **intent**: the node''s per-capability workDirs wins; this value is used only when the node has no entry for that capability. If neither is set the task fails — no silent fallback.'
   list:
     title: Capabilities
   form:
@@ -1298,11 +1298,23 @@ nodes:
     title: Nodes
   howto:
     title: How to connect a node
-    desc: 'Registration happens on this page: the token is shown once. You get three things — a one-line docker command, a native install command, and node.yaml.'
-    step1: Click "Register node" above to get a one-time token
+    desc: 'The hub address comes from the page itself (the address you opened) — nothing to copy by hand. Hit "Generate token" below and you get a token plus three commands that are ready to paste.'
+    gen_token: Generate token
+    gen_hint: One click registers a new node right here (the name is auto-generated); the token and hub address in the three blocks below switch to real values immediately.
+    gen_running: Generating…
+    token_title: One-time token
+    token_intro: The token is shown exactly once (the hub stores only its sha256). Lose it and you must delete the node and register again.
+    copy_token: Copy token
+    token_ph: '<token — click "Generate token" above to fill it in>'
+    name_ph: host-xxxxxx
+    cmd_title: One-line docker command (recommended)
+    step1: Hit "Generate token" above to get a one-time token
     step2: 'Pick one: a container (cannot see host files) or a native install (choose this to run capabilities inside your own project)'
     docker: 'Container: cannot see host files, capabilities run inside the container only'
-    native: 'Native: runs as your user on the host; --work-dirs is the allowlist it may touch'
+    native: 'Native: runs as your user on the host; which directories it may touch is set per capability in node.yaml workDirs'
+    yaml_title: node.yaml (for the native install)
+    yaml_intro: 'Use this config when you install the agent binary directly. Which directories a capability may use goes into workDirs, keyed by capability name:'
+    install_title: Native install command
     step3: Once the node is online, deploy a capability on the "Capabilities" page and it has work to do
   view_events: View events
   register:
@@ -1324,7 +1336,7 @@ nodes:
     copy_token: 'Copy token'
     cmd_title: "Start with one command (recommended)"
     copy_cmd: "Copy command"
-    yaml_intro: "Or install the agent binary directly and use this node.yaml (four fields only: name / server / token / instances):"
+    yaml_intro: "Or install the agent binary directly and use this node.yaml (the four bootstrap fields — name / server / token / instances — plus capability-level workDirs):"
     yaml_title: 'Run this on the machine'
     copy_yaml: 'Copy command'
     yaml_hint: 'The token in this command is shown only once — lose it and you have to delete the node and register again.'
@@ -1338,11 +1350,15 @@ nodes:
       forbidden: 'You do not have permission to register nodes in this namespace'
       failed: 'Registration failed: '
     workdirs: Capability work dirs (optional)
-    workdirs_hint: The console may ask a capability to run inside one of these directories — it can only pick from this list. Empty = none allowed (capabilities only run in temp dirs).
+    workdirs_hint: 'These directories go into workDirs["*"] (a fallback prefix) in node.yaml. To pin one capability to a different directory, add a per-capability line in the yaml.'
     install_title: Native install (runs on the host)
     install_intro: A container cannot see host files. To run capabilities inside your own project directory (make test, git status, editing files in place), install on the host with this command.
-    install_after: 'It installs the binary, writes ~/.anotify/node.yaml (mode 600, contains the token) and generates a systemd user service. Note: the command contains the token, so it stays in your shell history.'
+    install_after: 'It installs the binary, writes ~/.anotify/node.yaml (mode 600, contains the token) and generates a systemd user service. After installing, edit workDirs in that yaml per capability and restart the service. Note: the command contains the token, so it stays in your shell history.'
     copy_install: Copy command
+    yaml_workdirs_comment: 'Capability work dirs: keys are capability names, "*" is the fallback prefix. Omit it = nothing allowed (capabilities only run in temp dirs)'
+    yaml_workdirs_extra: 'Other dirs: {dirs} (add a line in the format below for whichever capability should use them)'
+    yaml_workdirs_bycap: 'Per capability (takes precedence over "*" and overrides the directory the console picked for it):'
+    yaml_workdirs_cap_ph: '<capability>'
 sources:
   detail: "Details"
   open_detail: "Open details"
