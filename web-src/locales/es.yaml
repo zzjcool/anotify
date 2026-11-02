@@ -1298,9 +1298,12 @@ nodes:
     title: Nodos
   howto:
     title: Cómo conectar un nodo
-    desc: 'El registro se hace aquí: el token se muestra una sola vez y la máquina solo necesita un comando docker, sin archivos de configuración.'
-    step1: 'Pulsa «Registrar nodo» arriba para obtener un token de un solo uso y pega el comando en esa máquina'
-    step2: 'Cuando la máquina esté en línea, despliega una capacidad desde la página «Capacidades»'
+    desc: 'El registro ocurre en esta página: el token se muestra una sola vez. Obtienes tres cosas: un comando docker de una línea, un comando de instalación nativa y node.yaml.'
+    step1: Pulsa «Registrar nodo» arriba para obtener un token de un solo uso
+    step2: 'Elige una: contenedor (no ve los archivos del host) o instalación nativa (para ejecutar capacidades dentro de tu propio proyecto)'
+    docker: 'Contenedor: no ve los archivos del host; las capacidades solo corren dentro del contenedor'
+    native: 'Nativa: corre como tu usuario en el host; --work-dirs es la lista de directorios permitidos'
+    step3: Cuando el nodo esté en línea, despliega una capacidad en la página «Capacidades» y tendrá trabajo
   view_events: Ver eventos
   register:
     btn: 'Registrar nodo'

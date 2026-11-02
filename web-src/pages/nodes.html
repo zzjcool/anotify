@@ -265,9 +265,22 @@
           <p class="mb-3 text-xs leading-relaxed text-zinc-500">
             {{t "nodes.howto.desc"}}
           </p>
+          <!-- 两条路都要给：只给 docker 会让人以为"原生装不存在"（#283）。
+               示例命令里的 ANOTIFY_SERVER 不能省 —— 容器里 agent 猜不到中枢地址，
+               只给 token 的那行命令是跑不起来的（启动成功但一直连不上，极难查）。 -->
           <pre class="code-block"><code># {{t "nodes.howto.step1"}}
 # {{t "nodes.howto.step2"}}
-docker run -d --restart=always -e ANOTIFY_TOKEN=<token> ghcr.io/zzjcool/anotify-agent:latest</code></pre>
+
+# {{t "nodes.howto.docker"}}
+docker run -d --restart=always \
+  -e ANOTIFY_SERVER=&lt;中枢地址&gt; -e ANOTIFY_TOKEN=&lt;令牌&gt; \
+  ghcr.io/zzjcool/anotify-agent:latest
+
+# {{t "nodes.howto.native"}}
+curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh \
+  | sh -s -- --token=&lt;令牌&gt; --server=&lt;中枢地址&gt; --work-dirs=&lt;想让能力工作的目录&gt;
+
+# {{t "nodes.howto.step3"}}</code></pre>
         </div>
       </div>
       <div id="toast" class="toast"></div>
