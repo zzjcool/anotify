@@ -62,8 +62,23 @@
 		deadport: "○",
 	};
 
-	// 九态 → 颜色。与瀑布图、状态点用同一套，跨视图一致。
-	const STATUS_COLOR = {
+	// 九态 → 颜色。与瀑布图、状态点用同一套（唯一来源是 tokens.css 的
+	// --st-*），跨视图一致；亮/暗主题各自给值，切换主题时重新取色。
+	//
+	// 这里保留一份十六进制**兜底值**：file:// 直开或 CSS 还没加载时
+	// getComputedStyle 拿不到变量，没有兜底图就会全白。
+	const STATUS_VAR = {
+		pending: "--st-pending",
+		assigned: "--st-assigned",
+		acked: "--st-acked",
+		running: "--st-running",
+		succeeded: "--st-succeeded",
+		failed: "--st-failed",
+		canceled: "--st-canceled",
+		abandoned: "--st-abandoned",
+		lease_expired: "--st-lease_expired",
+	};
+	const STATUS_FALLBACK = {
 		pending: "#71717a",
 		assigned: "#3b82f6",
 		acked: "#06b6d4",
@@ -74,6 +89,36 @@
 		abandoned: "#f97316",
 		lease_expired: "#eab308",
 	};
+
+	/** 读一个 CSS 变量（带兜底），拿不到就返回 fallback。 */
+	function cssVar(name, fallback) {
+		try {
+			const v = getComputedStyle(document.documentElement)
+				.getPropertyValue(name)
+				.trim();
+			return v || fallback;
+		} catch (e) {
+			return fallback;
+		}
+	}
+
+	/** 单个状态色：永远以 tokens.css 的 --st-* 为准。 */
+	function statusColor(st) {
+		const key = Object.hasOwn(STATUS_VAR, st) ? st : "pending";
+		return cssVar(STATUS_VAR[key], STATUS_FALLBACK[key]);
+	}
+
+	// 对外导出的是**快照对象**（导出时是当前主题的值），
+	// 主题切换后由 refreshStatusColors() 就地更新并重绘已挂载的图。
+	const STATUS_COLOR = Object.assign({}, STATUS_FALLBACK);
+	function refreshStatusColors() {
+		for (const k of Object.keys(STATUS_VAR)) STATUS_COLOR[k] = statusColor(k);
+	}
+	refreshStatusColors();
+
+	// 已挂载的图宿主：主题切换后需要按当前主题重新取色重绘。
+	// 用 Set 而不是查 DOM，是因为宿主可能是页面里临时插入的子容器。
+	const graphHosts = new Set();
 
 	const STATUS_ICON = {
 		pending: "◆",
@@ -114,10 +159,39 @@
 					"（脱离文档时 offsetWidth 为 0，dagre 会布局出重叠的图）",
 			);
 		}
+		refreshStatusColors();
 		const graph = window.FlowGraph.mount(host, spec);
 		host._graph = graph;
+		host._graphSpec = spec;
+		graphHosts.add(host);
 		return graph;
 	}
+
+	/**
+	 * redrawAll —— 主题切换后重绘所有已挂载的图。
+	 *
+	 * 图里的状态色是**内联样式**（badge / accent 由 flograph 写成 style），
+	 * 只换 CSS 变量不会让已经画出来的节点变色，所以必须按同一份 opts 重跑
+	 * 入口函数。宿主已经不在文档里（切页/换视图）就顺手移出注册表。
+	 */
+	function redrawAll() {
+		refreshStatusColors();
+		for (const host of Array.from(graphHosts)) {
+			if (!host || !host.isConnected) {
+				graphHosts.delete(host);
+				continue;
+			}
+			if (typeof host._graphRebuild !== "function") continue;
+			try {
+				host._graphRebuild();
+			} catch (e) {
+				// 重绘失败不该把页面搞坏：保留旧图即可。
+				console.warn("[graphs] 主题切换重绘失败", e);
+			}
+		}
+	}
+
+	document.addEventListener("anotify:theme", redrawAll);
 
 	// ==================== 流向图（静态配置） ====================
 
@@ -149,18 +223,18 @@
 		// 没有底图时图上只有一个维度（执行状态），图例没有意义
 		if (scope === "none") return [];
 		const rows = [
-			{ icon: "⚡", text: t("trace.legend.origin", "源 · 触发器（事件从这里进来）") },
-			{ icon: "◆", text: t("trace.legend.pipe", "管道 · 会继续往下派发") },
-			{ icon: "◉", text: t("trace.legend.end", "终点 · 到此结束，不再派发") },
+			{ icon: "⚡", text: t("trace.legend_origin", "源 · 触发器（事件从这里进来）") },
+			{ icon: "◆", text: t("trace.legend_pipe", "管道 · 会继续往下派发") },
+			{ icon: "◉", text: t("trace.legend_end", "终点 · 到此结束，不再派发") },
 		];
 		if (scope === "trace") {
 			rows.push(
-				{ icon: "✓", cls: "lg-ok", text: t("trace.legend.ok", "执行成功") },
-				{ icon: "✕", cls: "lg-bad", text: t("trace.legend.bad", "执行失败") },
+				{ icon: "✓", cls: "lg-ok", text: t("trace.legend_ok", "执行成功") },
+				{ icon: "✕", cls: "lg-bad", text: t("trace.legend_bad", "执行失败") },
 				{
 					icon: "○",
 					cls: "lg-pruned",
-					text: t("trace.legend.pruned", "未执行（配置里有、这次没走）"),
+					text: t("trace.legend_pruned", "未执行（配置里有、这次没走）"),
 				},
 			);
 		} else {
@@ -174,7 +248,7 @@
 		rows.push({
 			icon: "↺",
 			cls: "lg-hot",
-			text: t("trace.legend.hot", "线与数字越深 · 这条路走了很多次（重试/回环）"),
+			text: t("trace.legend_hot", "线与数字越深 · 这条路走了很多次（重试/回环）"),
 		});
 		return rows;
 	}
@@ -335,6 +409,7 @@
 			},
 		});
 
+		if (host) host._graphRebuild = () => capabilityFlow(host, opts);
 		return { graph, truncated: cut.truncated };
 	}
 
@@ -466,7 +541,7 @@
 					return {
 						id: n.id,
 						label: n.label,
-						sub: t("trace.graph.pruned", "未执行"),
+						sub: t("trace.legend_pruned", "未执行"),
 						kind: "pruned",
 						icon: roleIcon,
 						role: n.kind,
@@ -491,8 +566,8 @@
 					icon: roleIcon,
 					role: n.kind,
 					entry: n.entry,
-					badge: STATUS_COLOR[st] || "#71717a",
-					accent: st === "failed" ? "#ef4444" : null,
+					badge: STATUS_COLOR[st] || STATUS_COLOR.pending,
+					accent: st === "failed" ? STATUS_COLOR.failed : null,
 					_task: tk,
 				};
 			});
@@ -630,8 +705,8 @@
 					kind: kindForStatus(st),
 					// 没有底图时不知道结构身份，只能用状态图标
 					icon: STATUS_ICON[st] || "◆",
-					badge: STATUS_COLOR[st] || "#71717a",
-					accent: st === "failed" ? "#ef4444" : null,
+					badge: STATUS_COLOR[st] || STATUS_COLOR.pending,
+					accent: st === "failed" ? STATUS_COLOR.failed : null,
 					_task: tk,
 				};
 			});
@@ -691,6 +766,7 @@
 			enterAnimated = true;
 		}
 
+		if (host) host._graphRebuild = () => taskChain(host, opts);
 		return { graph, truncated: cut.truncated };
 	}
 
@@ -767,8 +843,10 @@
 		capabilityFlow,
 		taskChain,
 		fmtDur,
-		// 供其它页面复用同一套状态配色
+		// 供其它页面复用同一套状态配色（当前主题快照；主题切换后就地刷新）
 		STATUS_COLOR,
 		STATUS_ICON,
+		// 主题切换后重绘所有已挂载的图（partials.js 派发 anotify:theme 时自动调用）
+		redraw: redrawAll,
 	};
 })();

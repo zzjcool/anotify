@@ -1674,3 +1674,43 @@ node:
     state_failed: '失败'
     state_local: '本地变体'
     digest: 'digest'
+
+# ---- UI v2 外壳 / 组件层（wave 1 新增，仅新增不改旧）----
+ui:
+  nav:
+    group_workspace: 工作台
+    group_resources: 资源
+  sidebar:
+    collapse: 收起侧栏
+    expand: 展开侧栏
+  theme:
+    label: 切换主题
+    auto: 跟随系统
+    dark: 深色
+    light: 浅色
+    current: '当前主题：{mode}'
+  menu:
+    account: 账户菜单
+    security: 账户安全
+    admin: 管理后台
+    logout: 退出登录
+  action:
+    expand: 展开
+    collapse: 收起
+    close: 关闭
+    clear: 清除
+  kpi:
+    delta_up: '较昨日 +{n}'
+    delta_down: '较昨日 -{n}'
+    delta_flat: 与昨日持平
+    delta_na: 暂无对比
+    spark: 近 7 日趋势
+  index:
+    load_more: 加载更多
+    shown_of: '显示 {shown}/{total} 条'
+    all_loaded: 已全部加载
+    quickstart_hint: 一句话让 Agent 自动装好
+  events:
+    filters: 筛选
+    active: 生效过滤
+    toolbar_hint: 选好后按回车或点筛选

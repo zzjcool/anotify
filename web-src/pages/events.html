@@ -2,45 +2,45 @@
 
 {{define "style"}}
     <style>
-      /* 本页特有样式（共享样式见 ui.css / tokens.css） */
+      /* 本页特有样式（共享样式见 ui.css / tokens.css）。
+         颜色一律走 token：亮主题下这些类也要读得清。 */
       .ev-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 1rem;
         align-items: start;
       }
-      /* 剪枝记录：不是错误，是"这条分支在这里断了"，所以用中性色而不是红 */
+      /* 剪枝记录：不是错误，是"这条分支在这里断了"，所以用中性/提示色而不是红 */
       .prune-chip {
         display: inline-flex;
         align-items: center;
         gap: 0.35rem;
         padding: 0.15rem 0.5rem;
-        border-radius: 9999px;
+        border-radius: var(--r-full, 9999px);
         font-size: 0.7rem;
-        font-family: var(--mono, monospace);
-        background: rgba(255, 255, 255, 0.06);
+        font-family: var(--font-mono, monospace);
+        background: var(--surface-2);
         border: 1px solid var(--line-strong);
-        color: var(--text-muted, #a1a1aa);
+        color: var(--muted);
       }
       .prune-chip.no_edge {
-        color: #a1a1aa;
+        color: var(--muted);
       }
       .prune-chip.param_schema {
-        color: #fbbf24;
+        color: var(--warn);
       }
       .prune-chip.no_node {
-        color: #60a5fa;
+        color: var(--info);
       }
       .prune-chip.foreign_user {
-        color: #f472b6;
+        color: var(--accent);
       }
       .prune-chip.path {
-        color: #a78bfa;
+        color: var(--accent-strong);
       }
-      /* 状态点：九态 */
       /* 事件按源分组：组头是源名 + 类型 + 计数，组内是事件卡 */
       .ev-group {
-        margin-bottom: 1.25rem;
+        margin-bottom: 0.75rem;
       }
       .ev-group:last-child {
         margin-bottom: 0;
@@ -56,6 +56,9 @@
         border-bottom: 1px solid var(--line);
       }
 
+      /* 页面私有 toast（与共享 Anotify.toast 无关，行为不变）。
+         重复定义是有意的：本页的 toast 位置/时长与共享实现不同，
+         且页内脚本只操作 #toast 这一个节点。 */
       .toast {
         position: fixed;
         bottom: 1.5rem;
@@ -66,104 +69,109 @@
         color: var(--text);
         font-size: 0.82rem;
         padding: 0.6rem 1rem;
-        border-radius: 10px;
+        border-radius: var(--r-md, 10px);
         opacity: 0;
         pointer-events: none;
-        transition: all 0.3s ease;
-        z-index: 100;
+        transition:
+          opacity var(--dur, 0.3s) var(--ease, ease),
+          transform var(--dur, 0.3s) var(--ease, ease);
+        z-index: var(--z-toast, 100);
       }
       .toast.show {
         opacity: 1;
         transform: translateX(-50%) translateY(0);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .toast {
+          transition: none;
+        }
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-      <div class="mx-auto max-w-6xl space-y-8">
-        <div class="reveal visible">
-          <div class="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 class="font-display text-3xl text-white">{{t "events.title"}}</h2>
-              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-                {{t "events.subtitle"}}
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-3">
-              <button
-                onclick="requestReload()"
-                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
-              >
-                {{t "events.refresh"}}
-              </button>
-            </div>
+      <div class="page">
+        <!-- 页头 -->
+        <div class="page-head">
+          <div>
+            <h2 class="page-title font-display">{{t "events.title"}}</h2>
+            <p class="page-sub">{{t "events.subtitle"}}</p>
+          </div>
+          <div class="page-actions">
+            <button
+              id="ev-refresh"
+              type="button"
+              onclick="requestReload()"
+              class="btn btn-ghost"
+            >
+              {{t "events.refresh"}}
+            </button>
           </div>
         </div>
 
-        <!-- 筛选 -->
-        <div class="card rounded-2xl p-4">
+        <!-- 筛选工具栏。
+             每个 label + 控件包一层 .field：窄屏时控件跟着标签换行，
+             不会出现「标签在第一行、控件跑到第二行末尾」的错位。
+             控件的 id / onchange / onkeydown 全是不变量（e2e 与页内 JS 都读它们）。 -->
+        <div class="card card-pad" role="search" aria-label="{{t "ui.events.filters"}}">
           <div class="flex flex-wrap items-end gap-3">
-            <!-- 每个 label+控件包一层：否则 label 和 select 是各自的 flex 项，
-                 窄屏时会被拆到两行，看起来像标签和控件没关系 -->
-            <div class="flex flex-col gap-1">
-              <label class="text-[11px] text-zinc-400" for="ev-kind">{{t "events.filter.kind"}}</label>
-              <select id="ev-kind" class="input w-48 text-xs" onchange="requestReload()">
+            <div class="field">
+              <label class="field-label" for="ev-kind">{{t "events.filter.kind"}}</label>
+              <select id="ev-kind" class="select w-48" onchange="requestReload()">
                 <option value="">{{t "events.filter.all_kinds"}}</option>
               </select>
             </div>
 
-            <div class="flex flex-col gap-1">
-              <label class="text-[11px] text-zinc-400" for="ev-source">{{t "events.filter.source"}}</label>
-              <select id="ev-source" class="input w-48 text-xs" onchange="requestReload()">
+            <div class="field">
+              <label class="field-label" for="ev-source">{{t "events.filter.source"}}</label>
+              <select id="ev-source" class="select w-48" onchange="requestReload()">
                 <option value="">{{t "events.filter.all_sources"}}</option>
               </select>
             </div>
 
-            <div class="flex flex-col gap-1">
-              <label class="text-[11px] text-zinc-400" for="ev-node">{{t "events.filter.node"}}</label>
-              <select id="ev-node" class="input w-48 text-xs" onchange="requestReload()">
+            <div class="field">
+              <label class="field-label" for="ev-node">{{t "events.filter.node"}}</label>
+              <select id="ev-node" class="select w-48" onchange="requestReload()">
                 <option value="">{{t "events.filter.all_nodes"}}</option>
               </select>
             </div>
 
-            <div class="flex flex-col gap-1">
-              <label class="text-[11px] text-zinc-400" for="ev-trace">{{t "events.filter.trace"}}</label>
+            <div class="field">
+              <label class="field-label" for="ev-trace">{{t "events.filter.trace"}}</label>
               <input
                 id="ev-trace"
-                class="input mono w-48 text-xs"
+                class="input mono w-48"
                 placeholder="trace_..."
                 onkeydown="if(event.key==='Enter')requestReload()"
               />
             </div>
 
-            <button
-              onclick="requestReload()"
-              class="btn-primary rounded-lg px-3 py-2 text-xs"
-            >
+            <button onclick="requestReload()" class="btn btn-primary btn-sm">
               {{t "events.filter.apply"}}
             </button>
-            <span id="ev-summary" class="ml-auto text-xs text-zinc-500"></span>
+            <span id="ev-summary" class="ml-auto card-sub"></span>
           </div>
+          <div class="card-sub mt-1">{{t "ui.events.toolbar_hint"}}</div>
           <!-- 生效中的过滤条件（来自 URL 参数时尤其需要提示，否则用户不知道
-               自己为什么只看到一部分事件） -->
-          <div id="ev-active" class="mt-2 hidden flex-wrap items-center gap-2 text-[11px]"></div>
+               自己为什么只看到一部分事件）。
+               #ev-active 的 hidden/flex 切换由 renderActiveFilters() 负责，别动类名顺序。 -->
+          <div id="ev-active" class="mt-2 hidden flex-wrap items-center gap-2"></div>
         </div>
 
         <!-- 事件列表 -->
-        <div class="reveal visible">
-          <h3 class="mb-3 text-sm font-medium text-zinc-300">{{t "events.recent"}}</h3>
-          <div id="ev-list" class="space-y-3">
-            <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
-              {{t "events.loading"}}
+        <section>
+          <h3 class="card-title mb-3">{{t "events.recent"}}</h3>
+          <div id="ev-list" class="flex flex-col gap-2">
+            <div class="card card-pad text-center">
+              <span class="card-sub">{{t "events.loading"}}</span>
             </div>
           </div>
           <!-- 分页导航：按钮由 renderNav() 按状态生成。
                放在 #ev-list **之外**——列表容器会被 replaceChildren() 整体重建，
                而且 e2e 用 #ev-list .card 数事件条数，导航混进去会被算成事件。 -->
           <div id="ev-nav" class="mt-3 flex flex-wrap items-center gap-2"></div>
-        </div>
-
+        </section>
       </div>
       <div id="toast" class="toast"></div>
 </div>
@@ -297,6 +305,8 @@
         return n;
       }
 
+      // 第一个 code 元素必须是**源名**（e2e 用 `#ev-list .card code` 取它验 ?source= 过滤），
+      // mono 由 code() 统一加，className 只传额外样式。
       function code(text, className) {
         const n = el("code", "mono " + (className || ""));
         n.textContent = String(text == null ? "" : text);
@@ -448,14 +458,14 @@
         }
         box.classList.remove("hidden");
         box.classList.add("flex");
-        box.appendChild(el("span", "text-zinc-500", t("events.filter.active", "生效中") + ":"));
+        box.appendChild(el("span", "card-sub", t("events.filter.active", "生效中") + ":"));
 
         for (const [label] of chips) {
-          box.appendChild(el("span", "prune-chip", label));
+          box.appendChild(el("span", "tag-chip", label));
         }
         const clear = el(
           "button",
-          "btn-ghost rounded px-2 py-0.5 text-[11px]",
+          "btn btn-ghost btn-sm",
           t("events.filter.clear", "清除筛选"),
         );
         clear.addEventListener("click", () => {
@@ -571,7 +581,7 @@
         if (!btns.length) return;
         nav.classList.remove("hidden");
         for (const [id, label, fn] of btns) {
-          const b = el("button", "btn-ghost rounded px-3 py-2 text-xs", label);
+          const b = el("button", "btn btn-ghost btn-sm", label);
           b.id = id;
           // 请求在飞时按钮置灰。注意：真正的防线是 goOlder/goNewer/goLatest
           // 里的闸门 —— 翻页按钮是上一轮加载时就渲染好的，此刻已经在页面上，
@@ -706,7 +716,7 @@
         if (!EVENTS.length) {
           const empty = el(
             "div",
-            "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+            "card card-pad text-center card-sub",
             loadFailed
               ? t("events.load_failed_hint", "载入失败：连不上服务端，请重试。")
               : t("events.empty", "还没有事件。用 POST /v1/events 提交第一个。"),
@@ -738,7 +748,7 @@
           list.appendChild(
             el(
               "div",
-              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+              "card card-pad text-center card-sub",
               pagedAway && filtered
                 ? t("events.page.no_match", "当前页没有匹配项，可继续向更旧翻页或回到最新")
                 : t("events.filter.empty", "当前筛选条件下没有事件。"),
@@ -798,17 +808,17 @@
           const head = el("div", "ev-group-head");
           const title = el("div", "flex flex-wrap items-center gap-2 min-w-0");
           title.appendChild(
-            el("span", "text-[13px] text-zinc-200", isOther ? t("events.group.other", "未归类") : key),
+            el("span", "card-title", isOther ? t("events.group.other", "未归类") : key),
           );
           if (srcObj) {
-            title.appendChild(el("span", "out-chip", srcObj.kind));
+            title.appendChild(el("span", "src-badge", srcObj.kind));
             if (srcObj.enabled === false) {
               title.appendChild(el("span", "prune-chip", t("sources.disabled", "已停用")));
             }
           }
           head.appendChild(title);
 
-          const meta = el("div", "text-[11px] text-zinc-500 whitespace-nowrap");
+          const meta = el("div", "card-sub whitespace-nowrap");
           const latest = Math.max(...evs.map((e) => e.createdAt || 0));
           meta.textContent =
             t("events.group.count", "{n} 条").replace("{n}", evs.length) +
@@ -825,7 +835,7 @@
           if (evs.length > PAGE) {
             const more = el(
               "button",
-              "btn-ghost mt-1 rounded px-2 py-1 text-[11px]",
+              "btn btn-ghost btn-sm mt-1",
               t("events.group.more", "展开其余 {n} 条").replace("{n}", evs.length - PAGE),
             );
             more.addEventListener("click", () => {
@@ -847,39 +857,43 @@
       }
 
       // eventCard 渲染一条事件。
+      //
+      // 结构不变量（e2e 依赖）：
+      //   · 卡片本身必须有 `card` 类（e2e 用 `#ev-list .card` 数条数）
+      //   · 必须有一个 `div.mono.truncate`，内容是 traceId —— 它是行身份
+      //     （events_paging.mjs 的 FIRST_TRACE_SEL）
+      //   · 第一个 <code> 是源名（?source= 断言用）
       function eventCard(e) {
-        const card = el(
-          "div",
-          "card rounded-2xl p-4 hover:border-white/20 transition cursor-pointer",
-        );
-        // 点卡片 → 独立 trace 页。
+        // 整张卡就是「打开这条链路」的入口，所以它是 <a>，不是可点击的 div：
+        // 键盘 Tab / Enter 能打开、读屏有可访问名、右键能新标签打开，
+        // 而且少一层 JS 监听。href 与原来 location.href 完全一致。
         //
         // 原来是"在同一页下面展开链路"，问题有三个：
         //   ① 链路很长时，展开后要滚很远，事件列表就看不到了
         //   ② URL 不变，没法把"这条链路"发给别人
         //   ③ 刷新就丢了
         // 拆成独立页后 traceId 在 URL 里，可以收藏、分享、后退。
-        card.addEventListener("click", () => {
-          location.href = "trace.html?traceId=" + encodeURIComponent(e.traceId);
-        });
+        const card = el("a", "card card-hover block p-4");
+        card.setAttribute(
+          "href",
+          "trace.html?traceId=" + encodeURIComponent(e.traceId),
+        );
 
         const row = el("div", "ev-row");
         const left = el("div", "min-w-0");
 
         const head = el("div", "flex flex-wrap items-center gap-2");
-        head.appendChild(
-          code(e.source, "rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-indigo-300"),
-        );
-        head.appendChild(el("span", "text-zinc-500", "→"));
-        head.appendChild(code(e.type, "text-[12px] text-zinc-200"));
+        head.appendChild(code(e.source, "tag-chip"));
+        head.appendChild(el("span", "card-sub", "→"));
+        head.appendChild(code(e.type));
         left.appendChild(head);
 
-        left.appendChild(el("div", "mt-1.5 mono truncate text-[11px] text-zinc-500", e.traceId));
+        left.appendChild(el("div", "mt-1 mono truncate card-sub", e.traceId));
 
-        const right = el("div", "text-right text-[11px] text-zinc-500 whitespace-nowrap");
+        const right = el("div", "card-sub text-right whitespace-nowrap");
         right.appendChild(el("div", "", fmtTime(e.createdAt)));
         right.appendChild(
-          el("div", "mt-1 text-indigo-400", t("events.view_chain", "查看链路") + " →"),
+          el("div", "mt-1 badge badge-accent", t("events.view_chain", "查看链路") + " →"),
         );
 
         row.appendChild(left);

@@ -77,13 +77,45 @@
 		security: ["M3 11h18v11H3z", "M7 11V7a5 5 0 0 1 10 0v4"],
 		home: ["M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
 		sources: ["M13 2L3 14h8l-1 8 10-12h-8z"],
+		logout: [
+			"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4",
+			"M16 17l5-5-5-5",
+			"M21 12H9",
+		],
+		/* 侧栏折叠按钮：展开态显示「收起」（双左箭头），收起态显示「展开」 */
+		collapse: ["M11 17l-5-5 5-5", "M18 17l-5-5 5-5"],
+		expand: ["M13 17l5-5-5-5", "M6 17l5-5-5-5"],
+		/* 主题三态：跟随系统（monitor）/ 深色（moon）/ 浅色（sun） */
+		themeAuto: [
+			"M4 3h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+			"M8 21h8",
+			"M12 17v4",
+		],
+		themeDark: ["M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"],
+		themeLight: [
+			"M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z",
+			"M12 1v2",
+			"M12 21v2",
+			"M4.22 4.22l1.42 1.42",
+			"M18.36 18.36l1.42 1.42",
+			"M1 12h2",
+			"M21 12h2",
+			"M4.22 19.78l1.42-1.42",
+			"M18.36 5.64l1.42-1.42",
+		],
 	};
 
-	/* ---------- 侧栏导航结构（IA：工作台 / 账户） ----------
+	/* ---------- 侧栏导航结构（IA：工作台 / 资源） ----------
 	 * labelKey / groupLabelKey 指向 i18n key；渲染时用 t() 取值。
-	 * 无 i18n.js 时 fallback 到中文原文，保持向后兼容。 */
+	 * 无 i18n.js 时 fallback 到中文原文，保持向后兼容。
+	 *
+	 * v2 分组只有两个：工作台 = 日常在看的（总览/事件流/源/能力/出口/预案/节点），
+	 * 资源 = 配置与凭据（API Keys / API 文档 / 安全与登录）。退出登录不再是导航项，
+	 * 收进底部的用户块（.side-user 里的图标按钮）——它不是页面，是账号动作。 */
 	const NAV = [
 		{
+			groupLabelKey: "ui.nav.group_workspace",
+			groupFallback: "工作台",
 			items: [
 				{
 					id: "overview",
@@ -139,6 +171,12 @@
 					href: "nodes.html",
 					icon: "receivers",
 				},
+			],
+		},
+		{
+			groupLabelKey: "ui.nav.group_resources",
+			groupFallback: "资源",
+			items: [
 				{
 					id: "keys",
 					labelKey: "common.nav.keys",
@@ -156,25 +194,12 @@
 					href: "docs.html",
 					icon: "api",
 				},
-			],
-		},
-		{
-			groupLabelKey: "common.nav.account",
-			groupFallback: "账户",
-			items: [
 				{
 					id: "security",
 					labelKey: "common.nav.security",
 					fallback: "安全与登录",
 					href: "security.html",
 					icon: "security",
-				},
-				{
-					id: "logout",
-					labelKey: "common.nav.logout",
-					fallback: "退出登录",
-					href: "#logout",
-					icon: "home",
 				},
 			],
 		},
@@ -209,11 +234,146 @@
 		return wrap;
 	}
 
-	function closeSidebar() {
+	/* ---------- 主题（light / dark / auto） ----------
+	 *
+	 * 三层职责分得很开，改的时候别混：
+	 *   · tokens.css    —— 两套色值，`<html data-theme>` 一换就全站生效；
+	 *   · layout <head> —— 同步内联脚本，在首帧前就把 data-theme 落到 <html>
+	 *                      （防 FOUC，不能 defer）；
+	 *   · 本文件        —— 运行期三态切换（auto/dark/light）、持久化、跟随系统。
+	 *
+	 * `auto` 不是第三个主题，是「不指定」：实际渲染色由 prefers-color-scheme 决定。
+	 * 所以 dataset.theme 永远只有 dark/light 两个值，"auto" 只活在 localStorage 与
+	 * 按钮图标里——CSS 不需要知道 auto 的存在。
+	 */
+	const THEME_KEY = "anotify-theme"; // "auto" | "dark" | "light"
+	const THEME_MODES = ["auto", "dark", "light"];
+	const THEME_ICON_BY_MODE = {
+		auto: "themeAuto",
+		dark: "themeDark",
+		light: "themeLight",
+	};
+	// {mode} 占位符里用的是「模式本身的名字」，不是解析后的主题名：
+	// 选了 auto 却显示「当前主题：深色」会让人以为手动选了深色。
+	const THEME_MODE_FALLBACK = { auto: "跟随系统", dark: "深色", light: "浅色" };
+
+	function readThemeMode() {
+		try {
+			const v = localStorage.getItem(THEME_KEY);
+			return THEME_MODES.includes(v) ? v : "auto";
+		} catch (e) {
+			return "auto"; /* 隐私模式下 localStorage 读不到 */
+		}
+	}
+
+	function resolveTheme(mode) {
+		if (mode === "dark" || mode === "light") return mode;
+		try {
+			return window.matchMedia("(prefers-color-scheme: dark)").matches
+				? "dark"
+				: "light";
+		} catch (e) {
+			return "dark";
+		}
+	}
+
+	function themeToggleLabel(mode) {
+		const name = t("ui.theme." + mode, THEME_MODE_FALLBACK[mode] || mode);
+		return t("ui.theme.current", "当前主题：{mode}").replace("{mode}", name);
+	}
+
+	/* 图标+文案反映的是「模式」（auto 显示显示器图标），不是解析后的主题。
+	   这样点一下就能预测下一次点击会到哪个模式。 */
+	function paintThemeToggle(mode) {
+		const btn = document.getElementById("theme-toggle");
+		if (!btn) return; /* 非外壳页（login/focus）没有这个按钮 */
+		while (btn.firstChild) btn.removeChild(btn.firstChild);
+		btn.append(icon(ICONS[THEME_ICON_BY_MODE[mode] || "themeAuto"], "h-5 w-5"));
+		const label = themeToggleLabel(mode);
+		btn.setAttribute("aria-label", label);
+		btn.setAttribute("title", label);
+	}
+
+	function applyTheme(mode, persist) {
+		const m = THEME_MODES.includes(mode) ? mode : "auto";
+		const theme = resolveTheme(m);
+		const root = document.documentElement;
+		root.dataset.theme = theme;
+		root.style.colorScheme = theme;
+		const meta = document.querySelector('meta[name="theme-color"]');
+		if (meta)
+			meta.setAttribute("content", theme === "dark" ? "#08080e" : "#f7f8fc");
+		if (persist) {
+			try {
+				localStorage.setItem(THEME_KEY, m);
+			} catch (e) {
+				/* 写不进去就退化成“本次会话有效”，不影响渲染 */
+			}
+		}
+		paintThemeToggle(m);
+		document.dispatchEvent(
+			new CustomEvent("anotify:theme", { detail: { theme, mode: m } }),
+		);
+		return theme;
+	}
+
+	/* auto → dark → light → auto */
+	function cycleTheme() {
+		const next = { auto: "dark", dark: "light", light: "auto" };
+		applyTheme(next[readThemeMode()] || "dark", true);
+	}
+
+	/* 系统主题变化：只在「跟随系统」时重算。手动选定的主题不该被系统设置抢走。 */
+	try {
+		const mq = window.matchMedia("(prefers-color-scheme: dark)");
+		const onSchemeChange = () => {
+			if (readThemeMode() === "auto") applyTheme("auto", false);
+		};
+		if (typeof mq.addEventListener === "function")
+			mq.addEventListener("change", onSchemeChange);
+		else if (typeof mq.addListener === "function") mq.addListener(onSchemeChange);
+	} catch (e) {
+		/* 老环境不支持 matchMedia：停在 layout 内联脚本算出的主题 */
+	}
+
+	/* 与 layout <head> 内联脚本对齐（幂等：同 mode → 同结果，不会闪） */
+	applyTheme(readThemeMode(), false);
+
+	/* ---------- 侧栏：折叠（桌面）/ 抽屉（移动） ---------- */
+	const SIDEBAR_KEY = "anotify-sidebar"; // "collapsed" | "expanded"
+
+	function readSidebarCollapsed() {
+		try {
+			return localStorage.getItem(SIDEBAR_KEY) === "collapsed";
+		} catch (e) {
+			return false; /* 默认展开 */
+		}
+	}
+
+	/* 移动端抽屉：开。三个状态必须成对维护——
+	   state class（-translate-x-full / hidden）、body 滚动锁、aria-expanded。 */
+	function openSidebar() {
+		const sb = document.getElementById("sidebar");
+		const ov = document.getElementById("sidebar-overlay");
+		if (sb) sb.classList.remove("-translate-x-full");
+		if (ov) ov.classList.remove("hidden");
+		document.body.style.overflow = "hidden";
+		const mb = document.getElementById("menu-btn");
+		if (mb) mb.setAttribute("aria-expanded", "true");
+	}
+
+	/* 移动端抽屉：关。`keepFocus === false` 时不抢焦点（点导航链接要跟住跳转）。 */
+	function closeSidebar(keepFocus) {
 		const sb = document.getElementById("sidebar");
 		const ov = document.getElementById("sidebar-overlay");
 		if (sb) sb.classList.add("-translate-x-full");
 		if (ov) ov.classList.add("hidden");
+		document.body.style.overflow = "";
+		const mb = document.getElementById("menu-btn");
+		if (mb) {
+			mb.setAttribute("aria-expanded", "false");
+			if (keepFocus !== false) mb.focus();
+		}
 	}
 
 	/* ---------- Language switcher dropdown (shared builder) ----------
@@ -699,102 +859,183 @@
 			return;
 		}
 
-		/* ----- 侧栏 ----- */
+		/* ----- 折叠态（桌面：图标轨 ↔ 展开） -----
+		 * 状态只写到 #app-shell 的 data-collapsed 上，宽度收敛全部交给 ui.css 的
+		 * 纯 CSS（#app-shell[data-collapsed="true"] { --shell-sidebar-w: ... }）。
+		 * 这里**不重建 DOM、也不删任何文字节点**：e2e 取 a.side-link 的最后一个
+		 * 文本子节点当 label（frontend.mjs:1813），删掉文案就取不到导航名了。 */
+		let collapsedNow = readSidebarCollapsed();
+
+		function paintCollapseBtn() {
+			/* 文案说的是「点一下会发生什么」：展开态按钮的动作是「收起侧栏」。 */
+			const label = collapsedNow
+				? t("ui.sidebar.expand", "展开侧栏")
+				: t("ui.sidebar.collapse", "收起侧栏");
+			collapseBtn.setAttribute("aria-label", label);
+			collapseBtn.setAttribute("title", label);
+			/* aria-expanded 描述「侧栏当前是否展开」，不是「按钮按没按下」 */
+			collapseBtn.setAttribute(
+				"aria-expanded",
+				collapsedNow ? "false" : "true",
+			);
+			while (collapseBtn.firstChild)
+				collapseBtn.removeChild(collapseBtn.firstChild);
+			collapseBtn.append(
+				icon(collapsedNow ? ICONS.expand : ICONS.collapse, "h-4 w-4"),
+			);
+		}
+
+		function applyCollapsed(next, persist) {
+			collapsedNow = !!next;
+			root.dataset.collapsed = collapsedNow ? "true" : "false";
+			if (persist !== false) {
+				try {
+					localStorage.setItem(
+						SIDEBAR_KEY,
+						collapsedNow ? "collapsed" : "expanded",
+					);
+				} catch (e) {
+					/* 隐私模式写不进去：本次会话有效即可 */
+				}
+			}
+			paintCollapseBtn();
+		}
+
+		const collapseBtn = el("button", {
+			id: "sidebar-collapse",
+			type: "button",
+			/* 尺寸/位置全由 .app-brand-btn 提供（≤1023px 时它 display:none：折叠只属于桌面） */
+			class: "app-brand-btn",
+			onclick: () => applyCollapsed(!collapsedNow),
+		});
+
+		/* ----- 侧栏导航 ----- */
 		const adminNav = el("div", {
 			id: "admin-nav-section",
-			class: "hidden px-3 pt-4",
+			/* 初始 hidden（member 用户保持隐藏，e2e 断言 classList 含 hidden）；
+			   超管由 loadMe 去 hidden 并注入 .side-label + a.side-link[admin.html]。
+			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签。 */
+			class: "hidden side-group px-3 pt-4",
 		});
-		const nav = el("nav", { class: "flex-1 overflow-y-auto px-3 py-4" });
+		const nav = el("nav", { class: "app-nav" });
 		for (const group of NAV) {
+			const g = el("div", { class: "side-group" });
 			if (group.groupLabelKey)
-				nav.append(
+				g.append(
 					el("div", {
 						class: "side-label",
 						text: t(group.groupLabelKey, group.groupFallback),
 					}),
 				);
-			const box = el("div", { class: "space-y-1" });
 			for (const item of group.items) {
+				const isActive = item.id === o.active;
+				const label = t(item.labelKey, item.fallback);
 				const a = el("a", {
 					href: item.href,
-					class: `side-link ${item.id === o.active ? "active" : ""}`,
+					class: `side-link ${isActive ? "active" : ""}`,
+					/* data-label：折叠态的自定义 tooltip（ui.css 里 a.side-link[data-label]::after），
+					   文本节点仍在，tooltip 只是视觉层。 */
+					"data-label": label,
 				});
-				a.append(icon(ICONS[item.icon]), t(item.labelKey, item.fallback));
-				box.append(a);
+				if (isActive) a.setAttribute("aria-current", "page");
+				/* 顺序不能改：图标 → 标签文本。e2e 取 a.lastChild.nodeType === 3 当 label
+				   （frontend.mjs:1813），后面再 append 任何元素都会把 label 挤掉。 */
+				a.append(icon(ICONS[item.icon]), label);
+				g.append(a);
 			}
-			nav.append(box);
+			nav.append(g);
 		}
 
 		const scopeBox = el("div", { id: "scope-switcher", class: "hidden" });
 		mountNamespaceSwitcher(scopeBox);
 
+		/* ----- 侧栏品牌行：logo + 品牌字 + 折叠按钮 ----- */
+		const brandRow = el(
+			"div",
+			{ class: "app-brand" },
+			(() => {
+				const a = el("a", {
+					href: "index.html",
+					class: "flex items-center gap-2.5",
+				});
+				a.append(
+					logo(),
+					el("span", {
+						/* 折叠态由 CSS 隐藏 .app-brand-text（display:none），文本节点保留 */
+						class: "app-brand-text font-script text-xl leading-none",
+						text: "Anotify",
+					}),
+				);
+				return a;
+			})(),
+			collapseBtn,
+		);
+
+		/* ----- 侧栏底部：语言切换 + 用户块 ----- */
+		const logoutLink = el(
+			"a",
+			{
+				href: "#logout",
+				class: "side-icon-btn",
+				title: t("ui.menu.logout", "退出登录"),
+				"aria-label": t("ui.menu.logout", "退出登录"),
+			},
+			icon(ICONS.logout, "h-4 w-4"),
+		);
+		const userBlock = el(
+			"div",
+			{ class: "side-user" },
+			el("span", {
+				id: "sidebar-avatar",
+				/* ui.css 没给这个 id 配套组件类（.app-avatar-btn 是按钮，带 cursor:pointer，
+				 * 用在不可点的头像上会误导）。这里用 token 内联：两套主题自动跟着走，
+				 * 不出现硬编码色值。 */
+				class:
+					"flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-medium",
+				style:
+					"background: var(--accent-soft); color: var(--accent-strong); border: 1px solid var(--line-strong)",
+				text: (o.username[0] || "…").toUpperCase(),
+			}),
+			el(
+				"div",
+				{ class: "side-user-main" },
+				el("div", {
+					id: "sidebar-username",
+					/* textContent 必须只剩用户名：e2e 断言 trim() 后逐字相等 */
+					class: "truncate",
+					text: o.username || "…",
+				}),
+				el("div", {
+					class: "side-user-meta",
+					text: t("common.sidebar.deployment", "私有化部署 · 主工作台"),
+				}),
+			),
+			logoutLink,
+		);
+
 		const sidebar = el(
 			"aside",
 			{
 				id: "sidebar",
+				/* -translate-x-full = 移动端抽屉的「关闭态」（今天就是这样：手机上首屏
+				   侧栏必须在屏外，桌面由 lg:translate-x-0 抵消）。折叠态只改宽度，绝不碰
+				   这两个状态类 —— 两者是正交的两套状态。宽度/固定定位/层级全由
+				   .app-sidebar （ui.css，含 ≤1023px 的抽屉媒体查询）负责。 */
 				class:
-					"fixed inset-y-0 left-0 z-40 w-60 shrink-0 -translate-x-full transform border-r border-white/[0.06] transition-transform duration-300 lg:static lg:translate-x-0",
-				style: "background: var(--bg-raise)",
+					"app-sidebar -translate-x-full transform transition-transform duration-300 lg:static lg:translate-x-0",
 			},
 			el(
 				"div",
 				{ class: "flex h-full flex-col" },
-				el(
-					"div",
-					{
-						class:
-							"flex h-16 items-center gap-3 border-b border-white/[0.05] px-5",
-					},
-					(() => {
-						const a = el("a", {
-							href: "index.html",
-							class: "flex items-center gap-2.5",
-						});
-						a.append(
-							logo(),
-							el("span", {
-								class: "font-script text-xl leading-none text-white",
-								text: "Anotify",
-							}),
-						);
-						return a;
-					})(),
-				),
+				brandRow,
 				scopeBox,
 				adminNav,
 				nav,
 				el(
 					"div",
-					{ class: "border-t border-white/[0.05] px-3 pt-3" },
+					{ class: "app-sidebar-foot" },
 					buildLangSwitcher(),
-				),
-				el(
-					"div",
-					{ class: "border-t border-white/[0.05] p-3" },
-					el(
-						"div",
-						{ class: "flex items-center gap-3 rounded-xl px-2 py-2" },
-						el("div", {
-							class:
-								"flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/30 to-violet-500/30 ring-1 ring-white/15 text-sm font-medium",
-							id: "sidebar-avatar",
-							text: (o.username[0] || "…").toUpperCase(),
-						}),
-						el(
-							"div",
-							{ class: "min-w-0 flex-1" },
-							el("div", {
-								class: "truncate text-sm text-zinc-200",
-								id: "sidebar-username",
-								text: o.username || "…",
-							}),
-							el("div", {
-								class: "truncate text-[11px] text-zinc-500",
-								text: t("common.sidebar.deployment", "私有化部署 · 主工作台"),
-							}),
-						),
-						el("span", { class: "badge-dot dot dot-success" }),
-					),
+					userBlock,
 				),
 			),
 		);
@@ -802,7 +1043,7 @@
 		const overlay = el("div", {
 			id: "sidebar-overlay",
 			class: "sidebar-overlay fixed inset-0 z-30 hidden lg:hidden",
-			onclick: closeSidebar,
+			onclick: () => closeSidebar(),
 		});
 
 		/* ----- 顶栏 ----- */
@@ -810,21 +1051,131 @@
 			"button",
 			{
 				id: "menu-btn",
-				class: "btn-ghost rounded-lg p-2 lg:hidden",
+				type: "button",
+				class: "app-icon-btn lg:hidden",
 				"aria-label": t("common.nav.menu", "菜单"),
-				onclick: () => {
-					sidebar.classList.remove("-translate-x-full");
-					overlay.classList.remove("hidden");
-				},
+				"aria-controls": "sidebar",
+				"aria-expanded": "false",
+				onclick: openSidebar,
 			},
 			icon(["M3 6h18", "M3 12h18", "M3 18h18"], "h-5 w-5"),
 		);
+
+		/* 汉堡只属于移动端。不能只靠 Tailwind 的 lg:hidden：ui.css 里的
+		 * .app-icon-btn 也声明了 display（文件在后，同优先级赢），会把 lg:hidden
+		 * 的 display:none 覆盖掉，结果是桌面顶栏多出一个汉堡、点一下还会锁住
+		 * body 滚动。用内联 display 兜底（内联 > 任何选择器），顺带正确处理缩放。 */
+		const mobileMQ = window.matchMedia("(max-width: 1023px)");
+		const syncMenuBtn = () => {
+			menuBtn.style.display = mobileMQ.matches ? "" : "none";
+		};
+		syncMenuBtn();
+		if (typeof mobileMQ.addEventListener === "function")
+			mobileMQ.addEventListener("change", syncMenuBtn);
+		else if (typeof mobileMQ.addListener === "function")
+			mobileMQ.addListener(syncMenuBtn);
+
+		/* 主题三态按钮：图标/文案由 paintThemeToggle 画（依赖当前 mode，不是 resolved） */
+		const themeBtn = el("button", {
+			id: "theme-toggle",
+			type: "button",
+			class: "app-icon-btn",
+			onclick: () => window.Anotify.theme.cycle(),
+		});
+
+		const bellBtn = el(
+			"button",
+			{
+				type: "button",
+				class: "app-icon-btn relative",
+				"aria-label": t("common.nav.notification", "通知"),
+				onclick: () => (location.href = "index.html#recent"),
+			},
+			icon(
+				[
+					"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9",
+					"M13.73 21a2 2 0 0 1-3.46 0",
+				],
+				"h-5 w-5",
+			),
+			el("span", {
+				class: "absolute right-1.5 top-1.5 h-2 w-2 rounded-full",
+				style: "background: var(--error)",
+			}),
+		);
+
+		const avatarBtn = el("button", {
+			id: "topbar-avatar",
+			type: "button",
+			/* 尺寸/圆形/主题色全由 .app-avatar-btn 提供（ui.css） */
+			class: "app-avatar-btn",
+			"aria-haspopup": "menu",
+			"aria-expanded": "false",
+			"aria-label": t("ui.menu.account", "账户菜单"),
+			/* 内容只允许是首字母文本节点：loadMe 用 textContent 覆盖它 */
+			text: (o.username[0] || "…").toUpperCase(),
+		});
+
+		const topbarMenu = el("div", {
+			id: "topbar-menu",
+			/* 定位/层级由 .menu 负责；hidden 是唯一的开合状态类 */
+			class: "menu hidden",
+			role: "menu",
+		});
+		topbarMenu.append(
+			el(
+				"a",
+				{ class: "menu-item", role: "menuitem", href: "security.html" },
+				icon(ICONS.security, "h-4 w-4"),
+				t("ui.menu.security", "账户安全"),
+			),
+			el(
+				"button",
+				{
+					type: "button",
+					class: "menu-item",
+					role: "menuitem",
+					onclick: () => {
+						setTopbarMenu(false, false);
+						logout();
+					},
+				},
+				icon(ICONS.logout, "h-4 w-4"),
+				t("ui.menu.logout", "退出登录"),
+			),
+		);
+
+		/* 头像菜单开合：Esc 关、点外部关、关闭后焦点回 #topbar-avatar */
+		let topbarMenuOpen = false;
+		function setTopbarMenu(open, focusAvatar) {
+			topbarMenuOpen = !!open;
+			topbarMenu.classList.toggle("hidden", !topbarMenuOpen);
+			avatarBtn.setAttribute(
+				"aria-expanded",
+				topbarMenuOpen ? "true" : "false",
+			);
+			if (!topbarMenuOpen && focusAvatar) avatarBtn.focus();
+		}
+		avatarBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			setTopbarMenu(!topbarMenuOpen, false);
+		});
+		document.addEventListener("click", (e) => {
+			if (!topbarMenuOpen) return;
+			if (topbarMenu.contains(e.target) || avatarBtn.contains(e.target)) return;
+			setTopbarMenu(false, true);
+		});
+		document.addEventListener("keydown", (e) => {
+			if (e.key !== "Escape" || !topbarMenuOpen) return;
+			e.preventDefault();
+			setTopbarMenu(false, true);
+		});
+
 		const header = el(
 			"header",
 			{
 				class:
-					"sticky top-0 z-20 flex h-16 items-center justify-between gap-4 border-b border-white/[0.06] px-5 backdrop-blur-md sm:px-8",
-				style: "background: color-mix(in srgb, var(--bg) 80%, transparent)",
+					"app-topbar sticky top-0 z-20 flex items-center justify-between gap-4 border-b px-5 sm:px-8",
 			},
 			el(
 				"div",
@@ -833,8 +1184,9 @@
 				el(
 					"div",
 					{},
+					/* 全站唯一的 h1：页面内容里禁止再出现 <h1>（e2e 取 header h1 当页标题） */
 					(() => {
-						const h = el("h1", { class: "text-base font-semibold text-white" });
+						const h = el("h1", { class: "text-base font-semibold" });
 						h.append(o.title);
 						if (o.scopeLevel === "deployment") {
 							h.append(
@@ -850,63 +1202,65 @@
 						}
 						return h;
 					})(),
-					el("p", { class: "text-[11px] text-zinc-500", text: o.subtitle }),
+					el("p", { class: "app-topbar-sub", text: o.subtitle }),
 				),
 			),
 			el(
 				"div",
-				{ class: "flex items-center gap-3" },
-				el(
-					"button",
-					{
-						class:
-							"relative rounded-lg p-2 text-zinc-400 hover:bg-white/5 hover:text-white transition-colors",
-						"aria-label": t("common.nav.notification", "通知"),
-						onclick: () => (location.href = "index.html#recent"),
-					},
-					icon(
-						[
-							"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9",
-							"M13.73 21a2 2 0 0 1-3.46 0",
-						],
-						"h-5 w-5",
-					),
-					el("span", {
-						class: "absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500",
-					}),
-				),
-				el("div", {
-					class:
-						"flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/40 to-violet-500/40 ring-1 ring-white/15 text-xs font-medium",
-					id: "topbar-avatar",
-					text: (o.username[0] || "…").toUpperCase(),
-				}),
+				{ class: "relative flex items-center gap-2" },
+				themeBtn,
+				bellBtn,
+				avatarBtn,
+				topbarMenu,
 			),
 		);
 
 		/* ----- 重组 DOM ----- */
-		const rightCol = el("div", { class: "flex min-w-0 flex-1 flex-col" });
 		const footer = el("footer", {
-			class:
-				"border-t border-white/[0.04] px-5 py-5 text-center text-[11px] text-zinc-600 sm:px-8",
+			class: "app-footer",
 			text: t(
 				"common.footer.copyright",
 				"Anotify · MIT License · 私有化部署 · 数据仅存于你的服务器",
 			),
 		});
 		pageMain.parentNode && pageMain.parentNode.removeChild(pageMain);
-		const main = el("main", { class: "flex-1 px-5 py-8 sm:px-8" });
+		const main = el("main", { class: "app-main flex-1 px-5 py-8 sm:px-8" });
 		main.appendChild(pageMain);
-		rightCol.append(header, main, footer);
 
+		const appCol = el(
+			"div",
+			{ class: "app-col flex min-w-0 flex-1 flex-col" },
+			header,
+			main,
+			footer,
+		);
 		const root = el(
 			"div",
-			{ class: "flex min-h-dvh" },
+			{
+				id: "app-shell",
+				class: "app-shell flex min-h-dvh",
+				"data-collapsed": collapsedNow ? "true" : "false",
+			},
 			sidebar,
 			overlay,
-			rightCol,
+			appCol,
 		);
 		document.body.prepend(root);
+
+		/* 首帧把折叠态与主题按钮画好（persist=false：这次只是回放已存的状态） */
+		applyCollapsed(collapsedNow, false);
+		paintThemeToggle(readThemeMode());
+
+		/* 移动端抽屉：Esc 关闭；点导航链接自动关闭（不抢焦点，马上要跳页） */
+		document.addEventListener("keydown", (e) => {
+			if (e.key === "Escape" && !overlay.classList.contains("hidden"))
+				closeSidebar();
+		});
+		sidebar.addEventListener("click", (e) => {
+			const a =
+				e.target && e.target.closest ? e.target.closest("a.side-link") : null;
+			if (a) closeSidebar(false);
+		});
 
 		/* 滚动渐入 */
 		const io = new IntersectionObserver(
@@ -918,7 +1272,7 @@
 		);
 		document.querySelectorAll(".reveal").forEach((n) => io.observe(n));
 
-		/* 退出登录：拦截 NAV 里的 logout 链接 */
+		/* 退出登录：拦截侧栏底部用户块里的 logout 图标 */
 		document.querySelectorAll('a[href="#logout"]').forEach((a) =>
 			a.addEventListener("click", (e) => {
 				e.preventDefault();
@@ -938,28 +1292,45 @@
 			if (sa) sa.textContent = initial;
 			if (ta) ta.textContent = initial;
 
-			/* 超管：在侧栏注入「管理后台」入口 */
-			if (me.role === "admin") {
-				const section = document.getElementById("admin-nav-section");
-				if (section && !section.dataset.mounted) {
-					section.dataset.mounted = "1";
-					section.classList.remove("hidden");
-					section.append(
-						el("div", {
-							class: "side-label",
-							text: t("common.nav.admin_section", "管理"),
-						}),
-					);
-					const a = el("a", {
-						href: "admin.html",
-						class: `side-link ${o.active === "admin" ? "active" : ""}`,
-					});
-					a.append(
-						icon(["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"]),
-						t("common.nav.admin", "管理后台"),
-					);
-					section.append(a);
-				}
+			if (me.role !== "admin") return;
+
+			/* 超管：在侧栏注入「管理后台」入口（dataset.mounted 保证幂等） */
+			const section = document.getElementById("admin-nav-section");
+			if (section && !section.dataset.mounted) {
+				section.dataset.mounted = "1";
+				section.classList.remove("hidden");
+				section.append(
+					el("div", {
+						class: "side-label",
+						text: t("common.nav.admin_section", "管理"),
+					}),
+				);
+				const label = t("common.nav.admin", "管理后台");
+				const a = el("a", {
+					href: "admin.html",
+					class: `side-link ${o.active === "admin" ? "active" : ""}`,
+					"data-label": label,
+				});
+				if (o.active === "admin") a.setAttribute("aria-current", "page");
+				a.append(
+					icon(["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"]),
+					label,
+				);
+				section.append(a);
+			}
+
+			/* 超管：顶栏头像菜单里补一条「管理后台」（插在退出登录之前） */
+			if (!topbarMenu.querySelector('a[href="admin.html"]')) {
+				const adminItem = el(
+					"a",
+					{ class: "menu-item", role: "menuitem", href: "admin.html" },
+					icon(["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"], "h-4 w-4"),
+					t("ui.menu.admin", "管理后台"),
+				);
+				topbarMenu.insertBefore(
+					adminItem,
+					topbarMenu.querySelector("button.menu-item"),
+				);
 			}
 		});
 
@@ -1191,7 +1562,7 @@
 			"div",
 			{
 				class:
-					"card flex items-center gap-2.5 px-4 py-3 text-sm text-zinc-200 shadow-2xl",
+					"card tx-name flex items-center gap-2.5 px-4 py-3 text-sm shadow-2xl",
 				style: "background: var(--bg-raise)",
 			},
 			el("span", { class: "dot", style: `background: ${color}` }),
@@ -1279,7 +1650,7 @@
 		/* 指示器 DOM（fixed 顶部，初始上移隐藏在视口外） */
 		const spinner = icon(
 			["M21 12a9 9 0 1 1-6.219-8.56"],
-			"h-4 w-4 text-zinc-400 transition-transform duration-200",
+			"h-4 w-4 tx-meta transition-transform duration-200",
 		);
 		spinner.id = "pull-spinner";
 		const textEl = el("span", {
@@ -1290,7 +1661,7 @@
 			"div",
 			{
 				class:
-					"flex items-center gap-2 rounded-full bg-white/5 px-4 py-2 text-xs text-zinc-300 backdrop-blur-sm",
+					"card tx-meta flex items-center gap-2 rounded-full px-4 py-2 text-xs backdrop-blur-sm",
 			},
 			spinner,
 			textEl,
@@ -1414,7 +1785,14 @@
 		return { trigger };
 	}
 
-	/* ---------- 导出 ---------- */
+	/* 主题 API（契约 §4.3）：get() 返回**模式**（auto|dark|light），不是解析后的
+	 * 主题（dark|light）——调用方想知道的是“用户选了什么”，不是“今天渲染成什么”。 */
+	const themeApi = {
+		get: () => readThemeMode(),
+		set: (mode) => applyTheme(mode, true),
+		cycle: () => cycleTheme(),
+	};
+
 	/**
 	 * capLabel 统一决定"能力在界面上怎么显示"。
 	 *
@@ -1495,13 +1873,13 @@
 		const box = document.createElement("div");
 		box.className = "flex flex-col items-center gap-3 px-6 py-10 text-center";
 		const p = document.createElement("p");
-		p.className = "text-sm text-zinc-400";
+		p.className = "text-sm tx-meta";
 		p.textContent = t("common.load_failed_prefix", "载入失败：") + reason;
 		box.appendChild(p);
 		if (typeof onRetry === "function") {
 			const btn = document.createElement("button");
 			btn.type = "button";
-			btn.className = "btn-secondary rounded-lg px-3 py-1.5 text-xs font-medium";
+			btn.className = "btn btn-ghost btn-sm";
 			btn.textContent = t("common.retry", "重试");
 			btn.addEventListener("click", onRetry);
 			box.appendChild(btn);
@@ -1509,6 +1887,7 @@
 		return box;
 	}
 
+	/* ---------- 导出 ---------- */
 	window.Anotify = {
 		el,
 		loadErrorNode,
@@ -1519,6 +1898,7 @@
 		mountLayout,
 		mountPullRefresh,
 		closeSidebar,
+		theme: themeApi,
 		api,
 		copyText,
 		toast,
