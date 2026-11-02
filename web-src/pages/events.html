@@ -8,7 +8,40 @@
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 1rem;
-        align-items: start;
+        align-items: center;
+      }
+      /* 行尾：时间 + hover/聚焦才出现的 chevron。
+         原来每行都挂一个「查看链路」药丸：100 行就是 100 个重复的动作标签，
+         而整张卡本来就是入口 —— 重复的标签只制造噪声（REVIEW §2 #6 P2）。 */
+      .ev-side {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        white-space: nowrap;
+      }
+      .ev-chev {
+        width: 16px;
+        height: 16px;
+        flex: none;
+        color: var(--faint);
+        opacity: 0;
+        transform: translateX(-2px);
+        transition:
+          opacity var(--dur-fast) var(--ease),
+          transform var(--dur-fast) var(--ease);
+      }
+      .card:hover .ev-chev,
+      .card:focus-visible .ev-chev {
+        opacity: 1;
+        transform: none;
+      }
+      /* 触屏没有 hover 态：直接常显，否则用户看不出这行能点进去 */
+      @media (hover: none) {
+        .ev-chev {
+          opacity: 1;
+          transform: none;
+        }
       }
       /* 剪枝记录：不是错误，是"这条分支在这里断了"，所以用中性/提示色而不是红 */
       .prune-chip {
@@ -95,7 +128,7 @@
         <!-- 页头 -->
         <div class="page-head">
           <div>
-            <h2 class="page-title font-display">{{t "events.title"}}</h2>
+            <h2 class="page-title">{{t "events.title"}}</h2>
             <p class="page-sub">{{t "events.subtitle"}}</p>
           </div>
           <div class="page-actions">
@@ -706,7 +739,18 @@
         renderSummary();
         if (loadFailed) {
           list.replaceChildren(
-            window.Anotify.loadErrorNode({ status: loadErrorStatus }, () => loadAll()),
+            window.Anotify.loadErrorNode(
+              /* F2：只传 {status} 时页面会印出「载入失败：[object Object]」。
+               * 有 status 就交给 loadErrorNode 走 HTTP 文案；没有（网络断）就
+               * 显式给 message，让文案是「连不上服务端」。 */
+              {
+                status: loadErrorStatus,
+                message: loadErrorStatus
+                  ? ""
+                  : t("common.backend_offline", "连不上服务端"),
+              },
+              () => loadAll(),
+            ),
           );
           return;
         }
@@ -873,7 +917,7 @@
         //   ② URL 不变，没法把"这条链路"发给别人
         //   ③ 刷新就丢了
         // 拆成独立页后 traceId 在 URL 里，可以收藏、分享、后退。
-        const card = el("a", "card card-hover block p-4");
+        const card = el("a", "card card-hover cursor-pointer block p-4");
         card.setAttribute(
           "href",
           "trace.html?traceId=" + encodeURIComponent(e.traceId),
@@ -890,11 +934,25 @@
 
         left.appendChild(el("div", "mt-1 mono truncate card-sub", e.traceId));
 
-        const right = el("div", "card-sub text-right whitespace-nowrap");
-        right.appendChild(el("div", "", fmtTime(e.createdAt)));
-        right.appendChild(
-          el("div", "mt-1 badge badge-accent", t("events.view_chain", "查看链路") + " →"),
-        );
+        const right = el("div", "ev-side");
+        right.appendChild(el("div", "card-sub", fmtTime(e.createdAt)));
+        // 行尾 chevron：纯装饰（整张卡是 <a>，可访问名不依赖它）
+        (() => {
+          const NS = "http://www.w3.org/2000/svg";
+          const svg = document.createElementNS(NS, "svg");
+          svg.setAttribute("class", "ev-chev");
+          svg.setAttribute("viewBox", "0 0 24 24");
+          svg.setAttribute("fill", "none");
+          svg.setAttribute("stroke", "currentColor");
+          svg.setAttribute("stroke-width", "2");
+          svg.setAttribute("stroke-linecap", "round");
+          svg.setAttribute("stroke-linejoin", "round");
+          svg.setAttribute("aria-hidden", "true");
+          const path = document.createElementNS(NS, "path");
+          path.setAttribute("d", "M9 6l6 6-6 6");
+          svg.appendChild(path);
+          right.appendChild(svg);
+        })();
 
         row.appendChild(left);
         row.appendChild(right);

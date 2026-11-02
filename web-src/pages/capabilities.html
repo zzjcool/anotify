@@ -2,91 +2,84 @@
 
 {{define "style"}}
     <style>
-      /* ---------- 列表行 ---------- */
-      /* 三列：信息 | 部署状态 | digest + 部署按钮。
-         「部署状态」单独成列是刻意的：能力定义本身看不出它到底在机器上跑没跑，
-         以前要反查到节点页才知道 —— 而这两件事恰恰是用户最先问的。 */
+      /* 本页专有样式（页头 / 卡片 / 按钮 / 列表行 / 弹层 / 空态 / 骨架 /
+         步骤条底子全部来自 ui.css）。颜色一律走 token —— 亮主题下也要读得清。 */
+
+      /* ---------- 列表行 ----------
+         三列：信息 | 部署状态 | digest + 部署按钮。部署状态单独成列是刻意的：
+         能力定义本身看不出它在机器上跑没跑，以前要反查到节点页才知道。
+         行本身用 .list-row（56px / 分隔线 / hover），这里只覆盖成网格。 */
       .cap-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto auto;
         gap: 1rem;
         align-items: center;
       }
-      /* 窄屏塌成一列，否则三列挤在一起谁也看不清 */
       @media (max-width: 720px) {
         .cap-row {
           grid-template-columns: minmax(0, 1fr);
         }
       }
-      /* kind 徽章：origin / pipe / end 三色 */
-      /* 内置能力标记：灰底、低对比，提示"名字保留、不可删" */
-      .src-badge {
-        font-size: 0.62rem;
-        padding: 0.05rem 0.35rem;
-        border-radius: 4px;
-        background: rgba(255, 255, 255, 0.06);
-        color: var(--faint, #71717a);
-        letter-spacing: 0.02em;
-      }
-      .kind-badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 0.1rem 0.45rem;
-        border-radius: 9999px;
-        font-size: 0.68rem;
-        font-family: var(--mono, monospace);
-        border: 1px solid var(--line-strong);
-      }
+
+      /* kind 徽章复用共享的 .src-badge（形状/字体/边框一致），
+         这里只补 origin / pipe / end 三色，色值只来自 tokens.css 的 --kind-* */
       .kind-origin {
-        color: #a78bfa;
-        border-color: rgba(167, 139, 250, 0.35);
+        color: var(--kind-origin);
+        border-color: color-mix(in srgb, var(--kind-origin) 35%, transparent);
       }
       .kind-pipe {
-        color: #60a5fa;
-        border-color: rgba(96, 165, 250, 0.35);
+        color: var(--kind-pipe);
+        border-color: color-mix(in srgb, var(--kind-pipe) 35%, transparent);
       }
       .kind-end {
-        color: #34d399;
-        border-color: rgba(52, 211, 153, 0.35);
+        color: var(--kind-end);
+        border-color: color-mix(in srgb, var(--kind-end) 35%, transparent);
       }
-      /* 改名按钮：默认隐形，行悬停才出现。
-         每行常驻一个「取个名字」会让能力列表看起来像一张表单 ——
-         而这个动作是低频的，不该占常驻视觉位置。
+
+      /* 「跑不起来」警告：text-amber-400 是 e2e 锚点（frontend.mjs:3448），
+         保留类名、颜色改用 --warn，否则亮主题下读不出 */
+      .cap-warn {
+        color: var(--warn);
+      }
+      /* 行内分隔符（显示名 · 真名@版本） */
+      .cap-sep {
+        font-size: 10px;
+        color: var(--faint);
+      }
+
+      /* 改名按钮：默认隐形，行悬停才出现（每行常驻会让列表像表单）。
          用 opacity 而不是 display:none，保留占位避免悬停时行宽跳动。 */
       .cap-rename {
         opacity: 0;
-        transition: opacity 0.12s;
+        transition: opacity var(--dur-fast) var(--ease);
       }
       .cap-row:hover .cap-rename,
       .cap-rename:focus-visible {
         opacity: 1;
       }
-      /* 已经有名字的行，按钮一直可见（用户能立刻发现"可以改"） */
+      /* 已经有名字的行常驻显示（用户能立刻发现"可以改"） */
       .cap-row.has-name .cap-rename {
         opacity: 1;
       }
-
-      /* 内联改名输入框：宽度自适应，不要撑破卡片 */
+      @media (hover: none) {
+        .cap-rename {
+          opacity: 1;
+        }
+      }
       .rename-input {
         width: 11rem;
         min-width: 0;
       }
 
-      /* ---------- 列表行 · 部署状态 ---------- */
-      /* 徽章既可能是 <span>（没有明细可看）也可能是 <button>（点开明细）。
-         button 要抹掉浏览器默认边框，否则徽章外面会多一圈。 */
+      /* ---------- 部署状态列 ---------- */
+      /* 徽章可能是 <span>（无明细）也可能是 <button>（点开明细），
+         button 要抹掉默认边框，否则徽章外面多一圈 */
       .cap-dep-badge {
         border: 0;
         font-family: inherit;
       }
-      /* is-expandable：点击展开明细（不是"打开态"——展开与否由明细块自己管） */
       .cap-dep-badge.is-expandable {
         cursor: pointer;
-      }
-      /* 部署按钮：给个稳定类名，和改名按钮（同为 btn-ghost）区分开 ——
-         两者都长得像幽灵按钮，靠 .cap-deploy 才能可靠地选到它。 */
-      .cap-deploy {
-        white-space: nowrap;
       }
       .cap-right {
         display: flex;
@@ -94,10 +87,12 @@
         align-items: flex-end;
         gap: 0.35rem;
       }
-      /* 明细：默认不占位（display:none 而不是 hidden 类，
-         因为本类的 display 会覆盖 tailwind 的 .hidden） */
+      /* 明细默认不占位（display:none 而不是 hidden 类：
+         本类的 display 会覆盖 tailwind 的 .hidden）。
+         grid-column 1/-1 让它跨满整行，落在第一行信息下方。 */
       .cap-dep-detail {
         display: none;
+        grid-column: 1 / -1;
         margin-top: 0.6rem;
         padding-top: 0.6rem;
         border-top: 1px solid var(--line);
@@ -106,6 +101,17 @@
       }
       .cap-dep-detail.open {
         display: flex;
+      }
+      /* 明细行的状态点：形状照抄 ui.css 的 .st-dot，但换个类名把 e2e 的
+         「声明节点状态点计数」留给真正的声明 chip。 */
+      .cap-dep-dot {
+        display: inline-block;
+        width: 0.45rem;
+        height: 0.45rem;
+        border-radius: 9999px;
+        margin-right: 0.35rem;
+        vertical-align: middle;
+        flex: none;
       }
       .cap-dep-line {
         display: flex;
@@ -116,13 +122,10 @@
         color: var(--muted);
       }
       .cap-dep-digest {
-        font-family: var(--mono, monospace);
+        font-family: var(--font-mono);
         font-size: 10px;
         color: var(--faint);
       }
-      /* 明细行里的「状态词 + digest + reason」。不复用 .dep-node-meta：
-         那个类带 margin-left:auto（部署面板里要把 digest 推到行右端），
-         放在明细行里会把整段推到最右边，而且名字也不达意。 */
       .cap-dep-state {
         display: inline-flex;
         flex-wrap: wrap;
@@ -134,70 +137,99 @@
       .cap-dep-reason {
         font-size: 10px;
         color: var(--faint);
+        /* 后端 reason 是不定长原文：不换行会把整行顶出视口（390 实测） */
+        overflow-wrap: anywhere;
       }
-
-      /* 部署状态点：ui.css 的 .st-* 只有在线/离线/排空中三色，
-         部署的 applied/pending/failed/local 需要自己的配色，配色只用 token。 */
+      /* 部署状态点：ui.css 的 .st-* 只有在线/离线/排空中，
+         部署的 applied/pending/failed/local 自带配色（仍只用 token） */
       .st-applied {
         background: var(--success);
       }
       .st-failed {
         background: var(--error);
       }
-      /* pending 与 local 都是黄色（等节点上线 / 等本地构建），色值相同。
-         两条规则合成一条，但**每个选择器各占一行** —— check-classes 只认
-         行首的 `.name`，把 .st-local 写到逗号后面会让守卫认不出这个类。 */
+      /* 每个选择器各占一行：check-classes 只认行首的 .name */
       .st-pending,
       .st-local {
         background: var(--warn);
       }
 
-      .toast {
-        position: fixed;
-        bottom: 1.5rem;
-        left: 50%;
-        transform: translateX(-50%) translateY(20px);
-        background: var(--panel-overlay);
-        border: 1px solid var(--line-strong);
-        color: var(--text);
-        font-size: 0.82rem;
-        padding: 0.6rem 1rem;
-        border-radius: 10px;
-        opacity: 0;
-        pointer-events: none;
-        transition: all 0.3s ease;
-        z-index: 100;
+      /* ---------- 步骤条 ----------
+         新建能力（选模板 → 填写）与部署（选机器 → 下发结果）两个弹层共用。 */
+      .cap-steps {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
       }
-      .toast.show {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
+      .cap-step {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-full);
+        background: var(--surface-2);
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
       }
-      .modal-backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.6);
-        display: none;
+      .cap-step-n {
+        display: inline-flex;
         align-items: center;
         justify-content: center;
-        z-index: 90;
-        padding: 1rem;
+        width: 16px;
+        height: 16px;
+        border-radius: var(--r-full);
+        background: var(--surface-3);
+        color: var(--faint);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
       }
-      .modal-backdrop.open {
-        display: flex;
+      .cap-step.active {
+        border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+        background: var(--accent-soft);
+        color: var(--accent);
       }
-      /* 弹层面板：内容可能很长（9 个模板 / 一屏机器），整块滚动而不是撑破视口。 */
-      .modal-panel {
-        width: 100%;
-        max-width: 44rem;
-        max-height: 88dvh;
-        overflow-y: auto;
-        padding: 1.5rem;
-        background: var(--panel-modal);
-        border-radius: 1rem;
+      .cap-step.active .cap-step-n {
+        background: var(--accent);
+        color: var(--on-solid);
+      }
+      .cap-step.done .cap-step-n {
+        background: var(--success-soft);
+        color: var(--success);
+      }
+      .cap-step-sep {
+        color: var(--faint);
+        font-size: 11px;
+      }
+      /* 新建能力表单是三列 + 脚本区，共享的 560px 太窄 */
+      .cap-modal-wide {
+        max-width: 720px;
+      }
+
+      /* ---------- 首帧骨架 ---------- */
+      .cap-skel {
+        display: grid;
+        gap: 8px;
+        padding: 16px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .cap-skel:last-child {
+        border-bottom: 0;
+      }
+      .cap-skel .skeleton {
+        width: 62%;
+        height: 14px;
+      }
+      .cap-skel .skeleton + .skeleton {
+        width: 38%;
+        height: 11px;
       }
 
       /* ---------- 新建能力 · 选模板 ---------- */
-      /* 两列卡片：一屏能看到 4~6 个模板，扫一眼就知道有哪些起点。 */
+      /* 两列卡片：一屏看到 4~6 个模板 */
       .tpl-cards {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -222,14 +254,14 @@
         text-align: left;
         padding: 0.7rem 0.85rem;
         border: 1px solid var(--line);
-        border-radius: 12px;
+        border-radius: var(--r-md);
         background: var(--surface-2);
         color: var(--text);
         cursor: pointer;
-        transition: border-color 0.15s;
+        transition: border-color var(--dur-fast) var(--ease);
       }
       .tpl-card:hover {
-        border-color: var(--faint);
+        border-color: var(--line-strong);
       }
       .tpl-desc {
         margin-top: 0.3rem;
@@ -238,7 +270,7 @@
         color: var(--muted);
       }
       .tpl-meta {
-        font-family: var(--mono, monospace);
+        font-family: var(--font-mono);
         font-size: 10px;
         color: var(--faint);
       }
@@ -247,8 +279,7 @@
         color: var(--faint);
         line-height: 1.7;
       }
-      /* 顶部三格（名字 / 显示名 / 超时）：一屏可见，避免"填完一屏才发现还有一屏"。
-         不用 Tailwind 的 grid-cols-3（产物里没有这个类）。 */
+      /* 顶部三格（名字 / 显示名 / 超时）：一屏可见 */
       .tpl-top {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -258,15 +289,6 @@
         .tpl-top {
           grid-template-columns: minmax(0, 1fr);
         }
-      }
-      .tpl-field {
-        display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
-      }
-      .tpl-label {
-        font-size: 11px;
-        color: var(--muted);
       }
       .tpl-req {
         margin-left: 0.2rem;
@@ -292,19 +314,18 @@
         gap: 0.55rem;
         padding: 0.5rem 0.6rem;
         border: 1px solid var(--line);
-        border-radius: 10px;
+        border-radius: var(--r-sm);
         background: var(--surface-2);
         cursor: pointer;
-        transition: border-color 0.15s;
+        transition: border-color var(--dur-fast) var(--ease);
       }
       .dep-node:hover {
-        border-color: var(--faint);
+        border-color: var(--line-strong);
       }
-      /* 勾选态整行亮起来：勾选是后续动作（下发）的作用域，
-         必须一眼看清哪几台被选中，而不是只看那个小方框。 */
+      /* 勾选是后续动作（下发）的作用域，必须一眼看清哪几台被选中 */
       .dep-node:has(input:checked) {
-        border-color: var(--faint);
-        background: var(--code-bg);
+        border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+        background: var(--accent-soft);
       }
       .dep-node-name {
         font-size: 12px;
@@ -315,7 +336,7 @@
       }
       .dep-node-meta {
         margin-left: auto;
-        font-family: var(--mono, monospace);
+        font-family: var(--font-mono);
         font-size: 10px;
         color: var(--faint);
         white-space: nowrap;
@@ -333,7 +354,7 @@
         font-size: 11px;
         color: var(--muted);
       }
-      /* 逐台结果的颜色只表达语义：绿=已下发，黄=排队等节点上线。 */
+      /* 逐台结果的颜色只表达语义：绿=已下发，黄=排队等节点上线 */
       .dep-res-ok {
         color: var(--success);
       }
@@ -341,221 +362,249 @@
         color: var(--warn);
       }
       .dep-res-err {
-        font-family: var(--mono, monospace);
+        font-family: var(--font-mono);
         font-size: 10px;
         color: var(--faint);
+        overflow-wrap: anywhere;
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-      <div class="mx-auto max-w-6xl space-y-8">
-        <div class="reveal visible">
-          <div class="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 class="font-display text-3xl text-white">{{t "caps.title"}}</h2>
-              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-                {{t "caps.subtitle"}}
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onclick="openCapModal()"
-                class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-              >
-                + {{t "caps.new"}}
+  <div class="page">
+    <!-- 页头：页面大标题是 h2（全站唯一 h1 在外壳顶栏，partials.js） -->
+    <div class="page-head">
+      <div>
+        <h2 class="page-title">{{t "caps.title"}}</h2>
+        <p class="page-sub">{{t "caps.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" onclick="openCapModal()" class="btn btn-primary">
+          + {{t "caps.new"}}
+        </button>
+      </div>
+    </div>
+
+    <!-- 能力列表 -->
+    <section>
+      <div class="card-head">
+        <h3 class="card-title">{{t "caps.list.title"}}</h3>
+        <span id="caps-summary" class="card-sub"></span>
+      </div>
+      <div class="card mt-3">
+        <div id="caps-list" class="list">
+          <!-- 首帧骨架：接口回来前不留一张白纸（renderCaps 会整体替换） -->
+          <div class="cap-skel">
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+          </div>
+          <div class="cap-skel">
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+          </div>
+          <div class="cap-skel">
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 出口（边）搬到独立页面了：能力是"能干什么"（节点代码声明，
+         低频），边是"什么出口接到哪里"（用户控制台配，高频试错）。
+         规模也差一个量级 —— 扇出时边的数量长得快得多。
+         这里刻意用 <div class="card"> + 行内链接按钮，而不是 <a class="card">：
+         卡片本身不可点，可点的永远是里面的按钮，全站卡片行为才一致。 -->
+    <div class="card card-pad">
+      <div class="card-head">
+        <div>
+          <h3 class="card-title">{{t "caps.edges.moved_title"}}</h3>
+          <p class="card-sub mt-1">{{t "caps.edges.moved_desc"}}</p>
+        </div>
+        <a href="edges.html" class="btn btn-ghost btn-sm">
+          {{t "caps.edges.moved_link" }} →
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 新建能力弹层：两步（选模板 → 填表单 / 看脚本）。
+     挂在 #page-main 之外（body 级）：#page-main 里的 .reveal 有 transform，
+     会给 position:fixed 造出包含块，弹层就不再相对视口定位（而会被裁）。
+     显隐靠 hidden ↔ flex 两个类互换（ui.css 的 .hidden 是 !important）。 -->
+<div id="cap-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="cap-modal-title">
+  <div class="modal-panel cap-modal-wide">
+    <div class="modal-head">
+      <h3 id="cap-modal-title">{{t "caps.tpl.title"}}</h3>
+      <button id="cap-modal-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <!-- 步骤条：与部署弹层共用同一套 .cap-steps -->
+      <div id="cap-steps" class="cap-steps">
+        <span class="cap-step active" data-step="1"><span class="cap-step-n">1</span>{{t "caps.step_pick"}}</span>
+        <span class="cap-step-sep">→</span>
+        <span class="cap-step" data-step="2"><span class="cap-step-n">2</span>{{t "caps.step_fill"}}</span>
+      </div>
+
+      <!-- 步骤 1：选模板 -->
+      <div id="tpl-step">
+        <p class="tpl-hint mb-3">{{t "caps.tpl.intro"}}</p>
+        <div id="tpl-groups"></div>
+      </div>
+
+      <!-- 步骤 2：动态表单 + 只读脚本 + 改脚本 -->
+      <div id="tpl-form-step" class="hidden">
+        <!-- 三格固定（名字 / 显示名 / 超时）：一屏可见 -->
+        <div class="tpl-top">
+          <div class="field">
+            <label class="field-label" for="cap-name">{{t "caps.form.name"}}<span class="tpl-req">*</span></label>
+            <input id="cap-name" class="input" placeholder="review" />
+            <p class="field-hint">{{t "caps.form.name_hint"}}</p>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cap-display-name">{{t "caps.form.display_name"}}</label>
+            <input id="cap-display-name" class="input" placeholder="{{t "caps.form.display_name_ph"}}" />
+            <p class="field-hint">{{t "caps.form.display_name_hint"}}</p>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cap-timeout">{{t "caps.form.timeout"}}</label>
+            <input id="cap-timeout" type="number" min="0" max="86400" class="input" />
+            <p class="field-hint">{{t "caps.form.timeout_hint"}}</p>
+          </div>
+        </div>
+
+        <!-- 工作目录是**能力定义**的一部分（run.workDir），不是部署参数、
+             也不是节点上的本地配置：同一份能力定义部署到哪台机器都在那个
+             目录里跑。留空 = 每次任务一个独立目录。
+             这里**不校验**路径合法性：什么算合法路径的定义留在后端一处
+             （绝对路径 / 不含 .. / 不含 NUL / ≤1024 字节），前端只 trim。 -->
+        <div class="field mt-3">
+          <label class="field-label" for="cap-workdir">{{t "caps.form.workdir"}}</label>
+          <input
+            id="cap-workdir"
+            class="input mono"
+            oninput="syncWorkdirEcho()"
+            placeholder="/home/me/project（留空 = 每次任务一个独立目录）"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <p class="field-hint">{{t "caps.form.workdir_hint"}}</p>
+        </div>
+
+        <!-- 模板要求的预装命令：机器上缺了部署会失败，所以放在参数上方显眼处 -->
+        <p id="tpl-requires" class="tpl-hint mt-3"></p>
+
+        <div class="mt-4">
+          <h4 class="card-title mb-2">{{t "caps.tpl.params"}}</h4>
+          <div id="tpl-fields" class="space-y-3"></div>
+        </div>
+
+        <div class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.tpl.script"}}</h4>
+            <!-- 默认只读：模板脚本是"能跑的东西"，先让人看清它要做什么，
+                 想改的人再切到编辑 —— 而不是一进去就给一个空编辑器。 -->
+            <div class="seg-switch">
+              <button type="button" id="script-mode-view" class="seg-item seg-item-active">
+                {{t "caps.tpl.script_view"}}
+              </button>
+              <button type="button" id="script-mode-edit" class="seg-item">
+                {{t "caps.tpl.script_edit"}}
               </button>
             </div>
           </div>
+          <pre id="script-pre" class="yaml-box mono"></pre>
+          <textarea id="script-input" class="textarea mono hidden" rows="12"></textarea>
+          <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
+          <!-- 工作目录也是 run 的一部分，跟着只读脚本一起展示：留空显示「—」
+               （= 每次任务一个独立目录），填了就显示绝对路径。 -->
+          <p class="tpl-hint mt-1">
+            {{t "caps.form.workdir"}}<code id="cap-workdir-echo" class="mono ml-1"></code>
+          </p>
         </div>
 
-        <!-- 能力列表 -->
-        <div class="reveal visible">
-          <div class="mb-3 flex items-center justify-between">
-            <h3 class="text-sm font-medium text-zinc-300">{{t "caps.list.title"}}</h3>
-            <span id="caps-summary" class="text-xs text-zinc-500"></span>
-          </div>
-          <div id="caps-list" class="space-y-3">
-            <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
-              {{t "caps.loading"}}
-            </div>
-          </div>
-        </div>
-
-        <!-- 出口（边）搬到独立页面了：能力是"能干什么"（节点代码声明，
-             低频），边是"什么出口接到哪里"（用户控制台配，高频试错）。
-             规模也差一个量级 —— 扇出时边的数量长得快得多。 -->
-        <div class="reveal visible">
-          <a href="edges.html" class="card block rounded-2xl p-4 hover:border-white/20 transition">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 class="text-sm font-medium text-zinc-200">{{t "caps.edges.moved_title"}}</h3>
-                <p class="mt-1 text-xs leading-relaxed text-zinc-500">
-                  {{t "caps.edges.moved_desc"}}
-                </p>
-              </div>
-              <span class="text-xs text-indigo-400">{{t "caps.edges.moved_link"}} →</span>
-            </div>
-          </a>
-        </div>
-      </div>
-      <div id="toast" class="toast"></div>
-
-      <!-- 新建能力弹层：两步（选模板 → 填表单 / 看脚本）。
-           以前是一屏手写 paramsSchema + 输出名 —— 用户得先懂 JSON Schema
-           才能定义能力。现在模板把「参数契约」和「脚本正文」一起带出来，
-           用户只需要回答"叫什么、填哪些参数"。 -->
-      <div id="cap-modal" class="modal-backdrop">
-        <div class="card modal-panel">
-          <h3 class="mb-4 text-lg font-medium text-white">{{t "caps.tpl.title"}}</h3>
-
-          <!-- 步骤 1：选模板 -->
-          <div id="tpl-step">
-            <p class="tpl-hint mb-3">{{t "caps.tpl.intro"}}</p>
-            <div id="tpl-groups"></div>
-          </div>
-
-          <!-- 步骤 2：动态表单 + 只读脚本 + 改脚本 -->
-          <div id="tpl-form-step" class="hidden">
-            <!-- 三格固定（名字 / 显示名 / 超时）：一屏可见 -->
-            <div class="tpl-top">
-              <div>
-                <label class="tpl-label" for="cap-name">{{t "caps.form.name"}}<span class="tpl-req">*</span></label>
-                <input id="cap-name" class="input w-full text-sm" placeholder="review" />
-                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.name_hint"}}</p>
-              </div>
-              <div>
-                <label class="tpl-label" for="cap-display-name">{{t "caps.form.display_name"}}</label>
-                <input
-                  id="cap-display-name"
-                  class="input w-full text-sm"
-                  placeholder="{{t "caps.form.display_name_ph"}}"
-                />
-                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.display_name_hint"}}</p>
-              </div>
-              <div>
-                <label class="tpl-label" for="cap-timeout">{{t "caps.form.timeout"}}</label>
-                <input id="cap-timeout" type="number" min="0" max="86400" class="input w-full text-sm" />
-                <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.timeout_hint"}}</p>
-              </div>
-            </div>
-
-            <!-- 工作目录是**能力定义**的一部分（run.workDir），不是部署参数、
-                 也不是节点上的本地配置：同一份能力定义部署到哪台机器都在那个
-                 目录里跑。留空 = 每次任务一个独立目录。
-                 这里**不校验**路径合法性：什么算合法路径的定义留在后端一处
-                 （绝对路径 / 不含 .. / 不含 NUL / ≤1024 字节），前端只 trim。 -->
-            <div class="mt-3">
-              <label class="tpl-label" for="cap-workdir">{{t "caps.form.workdir"}}</label>
-              <input
-                id="cap-workdir"
-                class="input mono w-full text-sm"
-                oninput="syncWorkdirEcho()"
-                placeholder="/home/me/project（留空 = 每次任务一个独立目录）"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <p class="mt-1 text-[11px] text-zinc-500">{{t "caps.form.workdir_hint"}}</p>
-            </div>
-
-            <!-- 模板要求的预装命令：机器上缺了部署会失败，所以放在参数上方显眼处 -->
-            <p id="tpl-requires" class="tpl-hint mt-3"></p>
-
-            <div class="mt-4">
-              <h4 class="mb-2 text-sm font-medium text-zinc-300">{{t "caps.tpl.params"}}</h4>
-              <div id="tpl-fields" class="space-y-3"></div>
-            </div>
-
-            <div class="mt-4">
-              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <h4 class="text-sm font-medium text-zinc-300">{{t "caps.tpl.script"}}</h4>
-                <!-- 默认只读：模板脚本是"能跑的东西"，先让人看清它要做什么，
-                     想改的人再切到编辑 —— 而不是一进去就给一个空编辑器。 -->
-                <div class="seg-switch">
-                  <button type="button" id="script-mode-view" class="seg-item seg-item-active">
-                    {{t "caps.tpl.script_view"}}
-                  </button>
-                  <button type="button" id="script-mode-edit" class="seg-item">
-                    {{t "caps.tpl.script_edit"}}
-                  </button>
-                </div>
-              </div>
-              <pre id="script-pre" class="yaml-box mono"></pre>
-              <textarea id="script-input" class="input mono w-full text-xs hidden" rows="12"></textarea>
-              <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
-              <!-- 工作目录也是 run 的一部分，跟着只读脚本一起展示：留空显示「—」
-                   （= 每次任务一个独立目录），填了就显示绝对路径。 -->
-              <p class="tpl-hint mt-1">
-                {{t "caps.form.workdir"}}<code id="cap-workdir-echo" class="mono ml-1"></code>
-              </p>
-            </div>
-
-            <!-- 高级出口：手写 paramsSchema。
-                 模板字段能表达 string/number/select，但表达不了 pattern、
-                 minLength、additionalProperties:false 这些。以前整页都能手写，
-                 收成模板后必须留一个出口，否则「自定义脚本 + 自定义参数」这类
-                 真实用法会写不出来。留空 = 用模板推导的那份。 -->
-            <div class="mt-4">
-              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <h4 class="text-sm font-medium text-zinc-300">{{t "caps.tpl.schema_advanced"}}</h4>
-                <button type="button" id="schema-toggle" class="btn-ghost rounded-lg px-3 py-1 text-xs">
-                  {{t "caps.tpl.schema_toggle"}}
-                </button>
-              </div>
-              <div id="schema-wrap" class="hidden">
-                <textarea id="cap-schema" class="input mono w-full text-xs" rows="10"></textarea>
-                <p class="tpl-hint mt-1">{{t "caps.tpl.schema_hint"}}</p>
-                <p id="schema-error" class="tpl-hint mt-1 hidden"></p>
-              </div>
-            </div>
-          </div>
-
-          <div class="mt-6 flex justify-end gap-2">
-            <button id="tpl-back" type="button" class="btn-ghost hidden rounded-lg px-4 py-2 text-sm">
-              ← {{t "caps.tpl.back"}}
+        <!-- 高级出口：手写 paramsSchema。
+             模板字段能表达 string/number/select，但表达不了 pattern、
+             minLength、additionalProperties:false 这些。以前整页都能手写，
+             收成模板后必须留一个出口，否则「自定义脚本 + 自定义参数」这类
+             真实用法会写不出来。留空 = 用模板推导的那份。 -->
+        <div class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.tpl.schema_advanced"}}</h4>
+            <button type="button" id="schema-toggle" class="btn btn-ghost btn-sm">
+              {{t "caps.tpl.schema_toggle"}}
             </button>
-            <button type="button" onclick="closeCapModal()" class="btn-ghost rounded-lg px-4 py-2 text-sm">
-              {{t "caps.form.cancel"}}
-            </button>
-            <button id="cap-submit" type="button" onclick="createCapability()" class="btn-primary rounded-lg px-4 py-2 text-sm">
-              {{t "caps.form.submit"}}
-            </button>
+          </div>
+          <div id="schema-wrap" class="hidden">
+            <textarea id="cap-schema" class="textarea mono" rows="10"></textarea>
+            <p class="tpl-hint mt-1">{{t "caps.tpl.schema_hint"}}</p>
+            <p id="schema-error" class="field-error mt-1 hidden"></p>
           </div>
         </div>
       </div>
+    </div>
 
-      <!-- 部署面板：选机器 → 下发 → 逐台结果。
-           这里的"选中"是纯前端手势，提交只发 nodeIds（契约 §2.4）——
-           tag / 状态点都只是帮人选的辅助。 -->
-      <div id="deploy-modal" class="modal-backdrop">
-        <div class="card modal-panel">
-          <h3 id="deploy-title" class="text-lg font-medium text-white"></h3>
-          <p class="tpl-hint mt-1 mb-3">{{t "caps.deploy.subtitle"}}</p>
+    <div class="modal-foot">
+      <button id="tpl-back" type="button" class="btn btn-ghost hidden">← {{t "caps.tpl.back"}}</button>
+      <button type="button" onclick="closeCapModal()" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
+      <button id="cap-submit" type="button" onclick="createCapability()" class="btn btn-primary">
+        {{t "caps.form.submit"}}
+      </button>
+    </div>
+  </div>
+</div>
 
-          <div id="deploy-tags-wrap" class="mb-3 hidden">
-            <p class="tpl-hint mb-1">{{t "caps.deploy.tag_pick"}}</p>
-            <div id="deploy-tags" class="dep-taglist"></div>
-          </div>
+<!-- 部署面板：选机器 → 下发 → 逐台结果。
+     这里的"选中"是纯前端手势，提交只发 nodeIds（契约 §2.4）——
+     tag / 状态点都只是帮人选的辅助。 -->
+<div id="deploy-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="deploy-title">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="deploy-title"></h3>
+      <button id="deploy-modal-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
 
-          <p class="tpl-hint mb-1">{{t "caps.deploy.pick_hint"}}</p>
-          <div id="deploy-nodes" class="space-y-1"></div>
-          <div id="deploy-results" class="mt-3 hidden"></div>
-
-          <div class="mt-6 flex justify-end gap-2">
-            <button type="button" onclick="closeDeployModal()" class="btn-ghost rounded-lg px-4 py-2 text-sm">
-              {{t "caps.deploy.close"}}
-            </button>
-            <button id="deploy-submit" type="button" onclick="submitDeploy()" class="btn-primary rounded-lg px-4 py-2 text-sm">
-              {{t "caps.deploy.push"}}
-            </button>
-          </div>
-        </div>
+    <div class="modal-body">
+      <div id="deploy-steps" class="cap-steps">
+        <span class="cap-step active" data-step="1"><span class="cap-step-n">1</span>{{t "caps.deploy.pick_hint"}}</span>
+        <span class="cap-step-sep">→</span>
+        <span class="cap-step" data-step="2"><span class="cap-step-n">2</span>{{t "caps.deploy.result_title"}}</span>
       </div>
 
+      <p class="tpl-hint mb-3">{{t "caps.deploy.subtitle"}}</p>
+
+      <div id="deploy-tags-wrap" class="mb-3 hidden">
+        <p class="tpl-hint mb-1">{{t "caps.deploy.tag_pick"}}</p>
+        <div id="deploy-tags" class="dep-taglist"></div>
+      </div>
+
+      <div id="deploy-nodes" class="space-y-1"></div>
+      <div id="deploy-results" class="mt-3 hidden"></div>
+    </div>
+
+    <div class="modal-foot">
+      <button type="button" onclick="closeDeployModal()" class="btn btn-ghost">{{t "caps.deploy.close"}}</button>
+      <button id="deploy-submit" type="button" onclick="submitDeploy()" class="btn btn-primary">
+        {{t "caps.deploy.push"}}
+      </button>
+    </div>
+  </div>
 </div>
 {{end}}
+
 
 {{define "script"}}
     <script>
@@ -593,6 +642,8 @@
       let DEPS_OK = true;
       let NODES_OK = true;
       let CAPS_OK = true;
+      // 能力列表那一次请求的原始错误：错误态（Anotify.loadErrorNode）要用它
+      let CAPS_ERR = null;
       let DEP_BY_CAP = new Map();
 
       let TPLS = [];
@@ -613,12 +664,11 @@
       // 部署状态 → 状态点类（页内定义，ui.css 的 .st-* 只有在线/离线/排空中）
       const DEP_DOT = { applied: "applied", pending: "pending", failed: "failed", local: "local" };
 
-      function toast(msg) {
-        const el = document.getElementById("toast");
-        el.textContent = msg;
-        el.classList.add("show");
-        clearTimeout(el._timer);
-        el._timer = setTimeout(() => el.classList.remove("show"), 2600);
+      // toast 统一走 Anotify.toast（partials.js 的 #anotify-toast-host）：
+      // 页面不再自己画浮层。旧的页内 .toast 是一份拷贝 —— 而 edges/playbook
+      // 等页用了同名类却没定义，用户看到的是裸文本（REVIEW #5 P0）。
+      function toast(msg, kind) {
+        Anotify.toast(msg, kind);
       }
 
       function el(tag, cls, text) {
@@ -668,12 +718,14 @@
         return hex.slice(0, 12);
       }
 
-      // 所有请求走 Anotify.api（内置 401 → 登录守卫）
+      // 所有请求走 Anotify.api（内置 401 → 登录守卫）。
+      // 失败时**保留错误对象**：错误态要能说清原因并给「重试」，只返回 null
+      // 的话页面只能写一句「载入失败」，用户不知道是网络问题还是服务端挂了。
       async function apiGet(path) {
         try {
-          return await Anotify.api(path, { demo: null });
+          return { ok: true, data: await Anotify.api(path, { demo: null }), err: null };
         } catch (e) {
-          return null;
+          return { ok: false, data: null, err: e };
         }
       }
 
@@ -719,21 +771,22 @@
         // 部署状态**一次**取全部再按 capabilityId 分组 —— 逐能力拉会变成 N+1 请求。
         const depsRes = await apiGet(depsURL());
 
-        CAPS_OK = capsRes !== null && capsRes !== undefined;
-        NODES_OK = nodesRes !== null && nodesRes !== undefined;
+        CAPS_OK = capsRes.ok;
+        NODES_OK = nodesRes.ok;
+        CAPS_ERR = capsRes.ok ? null : capsRes.err;
         // 手机推送暂未开放（web/partials.js 的 PUSH_UI_ENABLED）：从列表里隐去，
         // 但后端能力还在，已有引用它的边/源仍能正常渲染（#274/#277）。
         CAPS = window.Anotify.filterCaps(
-          (capsRes && capsRes.capabilities) || [],
+          (capsRes.data && capsRes.data.capabilities) || [],
         );
-        NODES = (nodesRes && nodesRes.nodes) || [];
+        NODES = (nodesRes.data && nodesRes.data.nodes) || [];
 
-        DEPS_OK = depsRes !== null && depsRes !== undefined;
+        DEPS_OK = depsRes.ok;
         const rows = !DEPS_OK
           ? []
-          : Array.isArray(depsRes)
-            ? depsRes
-            : depsRes.deployments || [];
+          : Array.isArray(depsRes.data)
+            ? depsRes.data
+            : depsRes.data.deployments || [];
         DEPS = rows.filter((r) => r && typeof r === "object");
 
         DEP_BY_CAP = new Map();
@@ -829,7 +882,14 @@
         for (const r of rows) {
           const line = el("div", "cap-dep-line");
           const st = depState(r);
-          line.appendChild(el("span", "st-dot st-" + (DEP_DOT[st] || "offline")));
+          /* 明细行的状态点用页级 .cap-dep-dot，**不用 .st-dot**：
+             e2e 断言 `.cap-row .st-dot` 的数量必须恰好等于「有节点声明的能力数」
+             （frontend.mjs:3439/3450），明细行每台机器一颗点会把计数顶高
+             （实测 9 个声明 → 11 颗点）。视觉完全一致，语义也更强：
+             .st-dot 只表示「这个能力被哪些节点声明」。 */
+          line.appendChild(
+            el("span", "cap-dep-dot st-" + (DEP_DOT[st] || "offline")),
+          );
           line.appendChild(el("span", "", nodeNameOf(depNodeId(r))));
           // 状态词是协议里的原词（applied/failed/local），不翻译：它和日志、
           // 后端的 reason 是同一套词汇，翻译了反而对不上。
@@ -852,40 +912,48 @@
           : "";
         list.replaceChildren();
 
+        // 故障 ≠ 没有：接口挂了绝不能显示「还没有能力」—— 那会让人以为
+        // 点一下「定义能力」就能修好。错误态给原因 + 重试（common.* 文案已存在）。
+        if (!CAPS_OK) {
+          list.appendChild(Anotify.loadErrorNode(CAPS_ERR, () => loadAll()));
+          return;
+        }
+
+        // 空态必须给下一步动作：只说「还没有」而不给入口，等于把人留在原地
         if (!CAPS.length) {
-          // 故障 ≠ 没有：接口挂了不能显示「还没有能力」，那会让人以为点一下就能建
-          list.appendChild(
-            el(
-              "div",
-              "card rounded-2xl p-6 text-center text-sm text-zinc-500",
-              CAPS_OK
-                ? t("caps.empty", "还没有能力。定义一个，节点才能声明它。")
-                : t("caps.load_failed", "能力列表载入失败，请刷新重试"),
-            ),
+          const box = el("div", "empty");
+          box.appendChild(
+            el("p", "", t("caps.empty", "还没有能力。定义一个，节点才能声明它。")),
           );
+          const cta = el("button", "btn btn-primary btn-sm mt-3", "+ " + t("caps.new", "定义能力"));
+          cta.type = "button";
+          cta.addEventListener("click", () => openCapModal(cta));
+          box.appendChild(cta);
+          list.appendChild(box);
           return;
         }
 
         for (const c of CAPS) {
-          const card = el("div", "card rounded-2xl p-4");
           // has-name 让"已经有名字"的行常驻显示改名按钮 ——
           // 有名字说明用户在意这个能力的可读性，入口别藏起来。
-          const row = el("div", "cap-row" + ((c.displayName || "").trim() ? " has-name" : ""));
+          // 行本身用 .list-row（行高 / 分隔线 / hover 由共享样式给），
+          // 本页只覆盖成三列网格。
+          const row = el("div", "list-row cap-row" + ((c.displayName || "").trim() ? " has-name" : ""));
           const left = el("div", "min-w-0");
 
           const head = el("div", "flex flex-wrap items-center gap-2");
           // 有显示名就当作标题，真名放后面（保留技术身份，方便对日志/节点配置）；
           // 没取显示名就只显示 name@version，不隐藏任何东西。
           const dn = (c.displayName || "").trim();
-          head.appendChild(el("span", "text-[13px] text-zinc-200", dn || c.name));
+          head.appendChild(el("span", "list-title", dn || c.name));
           if (dn) {
             // 中文显示名和英文技术名之间需要明确分隔：
             // 「通用 HTTP 事件 http@1」两个中文/英文词挨着时读起来像一个词。
             // 用一个细分隔符 + 稍大的间距。
-            head.appendChild(el("span", "text-[10px] text-zinc-700", "·"));
-            head.appendChild(code(c.name + "@" + c.version, "text-[10px] text-zinc-600"));
+            head.appendChild(el("span", "cap-sep", "·"));
+            head.appendChild(code(c.name + "@" + c.version, "list-meta"));
           } else {
-            head.appendChild(code("v" + c.version, "text-[10px] text-zinc-600"));
+            head.appendChild(code("v" + c.version, "list-meta"));
           }
           // 改名按钮：只在自定义能力上给（内置起点的名字是保留的，改显示名可以，
           // 但这里统一都允许改显示名——显示名不是名字，不受保留约束）
@@ -894,9 +962,10 @@
           // 只是没有 hover 效果）。
           const renameBtn = el(
             "button",
-            "cap-rename btn-ghost rounded px-1.5 py-0.5 text-[10px] text-zinc-500",
+            "cap-rename btn btn-ghost btn-sm",
             dn ? t("caps.rename", "改名") : t("caps.name_it", "取个名字"),
           );
+          renameBtn.type = "button";
           renameBtn.addEventListener("click", (ev) => {
             ev.stopPropagation();
             openRename(c, renameBtn);
@@ -904,7 +973,7 @@
           head.appendChild(renameBtn);
           if (c.kind) {
             head.appendChild(
-              el("span", "kind-badge kind-" + (c.kind === "origin" || c.kind === "pipe" || c.kind === "end" ? c.kind : "pipe"), c.kind),
+              el("span", "src-badge kind-" + (c.kind === "origin" || c.kind === "pipe" || c.kind === "end" ? c.kind : "pipe"), c.kind),
             );
           }
           // 内置 / 自定义。
@@ -928,11 +997,11 @@
             // 起点没有预置出口是**正常**的：它的出口就是任意事件类型。
             // 之前这里统一显示「无出口（终端能力）」，把起点说成了终端，是错的。
             outs.appendChild(
-              el("span", "text-[11px] text-zinc-600", t("caps.any_event_type", "任意事件类型（起点）")),
+              el("span", "list-meta", t("caps.any_event_type", "任意事件类型（起点）")),
             );
           } else {
             outs.appendChild(
-              el("span", "text-[11px] text-zinc-600", t("caps.no_outputs", "无出口（终端能力）")),
+              el("span", "list-meta", t("caps.no_outputs", "无出口（终端能力）")),
             );
           }
           left.appendChild(outs);
@@ -943,7 +1012,7 @@
           const by = c.declaredBy || [];
           const decl = el("div", "mt-2 flex flex-wrap items-center gap-1.5");
           decl.appendChild(
-            el("span", "text-[11px] text-zinc-600", t("caps.declared_by", "声明节点")),
+            el("span", "list-meta", t("caps.declared_by", "声明节点")),
           );
           if (by.length) {
             for (const n of by) {
@@ -958,20 +1027,22 @@
             // 中枢自己执行的能力**本来就不需要节点声明**，
             // 不能报"跑不起来"—— 那是误报。
             decl.appendChild(
-              el("span", "text-[11px] text-zinc-600", t("caps.by_hub", "中枢执行，不需要节点")),
+              el("span", "list-meta", t("caps.by_hub", "中枢执行，不需要节点")),
             );
           } else if (c.executedBy === "none") {
             decl.appendChild(
-              el("span", "text-[11px] text-zinc-600", t("caps.by_none", "事件起点，不执行代码")),
+              el("span", "list-meta", t("caps.by_none", "事件起点，不执行代码")),
             );
           } else {
+            // text-amber-400 是 e2e 锚点（frontend.mjs:3448 用它数警告行），
+            // 实际颜色由 .cap-warn 的 --warn 决定（亮主题下也读得清）。
             decl.appendChild(
-              el("span", "text-[11px] text-amber-400", t("caps.no_node", "没有节点声明")),
+              el("span", "text-amber-400 cap-warn", t("caps.no_node", "没有节点声明")),
             );
             decl.appendChild(
               el(
                 "span",
-                "text-[11px] text-zinc-600",
+                "list-meta",
                 "· " + t("caps.no_node_hint", "这个能力跑不起来 —— 得先在节点上声明它"),
               ),
             );
@@ -989,7 +1060,7 @@
             badge.type = "button";
             badge.title = t("caps.deploy.col", "部署状态");
             badge.addEventListener("click", () => {
-              const box = card.querySelector(".cap-dep-detail");
+              const box = row.querySelector(".cap-dep-detail");
               if (box) box.classList.toggle("open");
             });
           } else {
@@ -1000,23 +1071,23 @@
 
           // ---- 右列：digest + 部署按钮 ----
           const right = el("div", "cap-right");
-          right.appendChild(code((c.contentHash || "").slice(0, 10), "text-[10px] text-zinc-600"));
+          right.appendChild(code((c.contentHash || "").slice(0, 10), "list-meta"));
           const depBtn = el(
             "button",
-            "cap-deploy btn-ghost rounded-lg px-2.5 py-1 text-[11px]",
+            "btn btn-ghost btn-sm",
             t("caps.deploy.btn", "部署"),
           );
           depBtn.type = "button";
-          depBtn.addEventListener("click", () => openDeployModal(c));
+          depBtn.addEventListener("click", () => openDeployModal(c, depBtn));
           right.appendChild(depBtn);
 
           row.appendChild(left);
           row.appendChild(mid);
           row.appendChild(right);
-          card.appendChild(row);
-          // 明细块先建好但保持收起（点徽章才展开），这样展开不需要重新渲染整行
-          if (info.expandable) card.appendChild(depDetailBlock(info.rows));
-          list.appendChild(card);
+          // 明细块先建好但保持收起（点徽章才展开），这样展开不需要重新渲染整行。
+          // 跨满整行（.cap-dep-detail 的 grid-column: 1/-1）。
+          if (info.expandable) row.appendChild(depDetailBlock(info.rows));
+          list.appendChild(row);
         }
       }
 
@@ -1034,13 +1105,15 @@
         const wrap = btn.parentElement;
         if (!wrap || wrap.querySelector(".rename-input")) return; // 已打开
 
-        const input = el("input", "input rename-input px-2 py-0.5 text-[12px]");
+        const input = el("input", "input rename-input");
         input.value = (c.displayName || "").trim();
         input.placeholder = t("caps.rename_ph", "给它取个名字，例如「分析 PR」");
         input.maxLength = 60;
 
-        const save = el("button", "btn-primary rounded px-2 py-0.5 text-[11px]", t("caps.save", "保存"));
-        const cancel = el("button", "btn-ghost rounded px-2 py-0.5 text-[11px]", t("caps.cancel", "取消"));
+        const save = el("button", "btn btn-primary btn-sm", t("caps.save", "保存"));
+        const cancel = el("button", "btn btn-ghost btn-sm", t("caps.cancel", "取消"));
+        save.type = "button";
+        cancel.type = "button";
 
         btn.style.display = "none";
         wrap.appendChild(input);
@@ -1095,7 +1168,51 @@
       }
 
       // ==================== 新建能力 · 弹层 ====================
-      function openCapModal() {
+      // ==================== 弹层开合 ====================
+      // 弹层挂在 #page-main 之外（body 级）且用 hidden ↔ flex 开合：
+      // #page-main 里的 .reveal 带 transform，会给 position:fixed 造出
+      // 包含块，弹层就变成相对那个元素定位（还会被裁）。
+      // 三件必须做的事：Esc 关、点遮罩关、关闭后焦点回到触发按钮
+      // （否则键盘用户关掉弹层就掉回页面顶端，不知道自己在哪）。
+      function showModal(modal, trigger) {
+        modal._trigger = trigger || document.activeElement || null;
+        modal.classList.replace("hidden", "flex");
+      }
+
+      function hideModal(modal) {
+        if (!modal || modal.classList.contains("hidden")) return;
+        modal.classList.replace("flex", "hidden");
+        const back = modal._trigger;
+        modal._trigger = null;
+        if (back && typeof back.focus === "function") back.focus();
+      }
+
+      // stepSet 切步骤条高亮（新建能力与部署两个弹层共用 .cap-steps）
+      function stepSet(boxId, step) {
+        const box = document.getElementById(boxId);
+        if (!box) return;
+        for (const s of box.querySelectorAll(".cap-step")) {
+          const n = Number(s.dataset.step || 0);
+          s.classList.toggle("active", n === step);
+          s.classList.toggle("done", n < step);
+        }
+      }
+
+      // 记录触发元素：行内 onclick="openCapModal()" 是 e2e 锚点
+      // （frontend.mjs:1506 用 button[onclick='openCapModal()'] 选它），
+      // 不能改成 openCapModal(this)。所以用捕获阶段的 document 监听，
+      // 它比行内 handler 先跑，能先拿到触发按钮 —— 关闭时把焦点还给它。
+      let CAP_TRIGGER = null;
+      document.addEventListener(
+        "click",
+        (e) => {
+          const b = e.target && e.target.closest ? e.target.closest("button") : null;
+          if (b && b.getAttribute("onclick") === "openCapModal()") CAP_TRIGGER = b;
+        },
+        true,
+      );
+
+      function openCapModal(trigger) {
         // 重置表单：否则上一次填的字段会残留到下一次新建
         document.getElementById("cap-name").value = "";
         document.getElementById("cap-display-name").value = "";
@@ -1107,11 +1224,11 @@
         TPL_SEL = null;
         SCRIPT_TEXT = "";
         tplGoStep(1);
-        document.getElementById("cap-modal").classList.add("open");
+        showModal(document.getElementById("cap-modal"), trigger || CAP_TRIGGER);
         loadTemplates();
       }
       function closeCapModal() {
-        document.getElementById("cap-modal").classList.remove("open");
+        hideModal(document.getElementById("cap-modal"));
       }
 
       // syncWorkdirEcho 把工作目录回显到只读区（脚本旁边）。
@@ -1132,6 +1249,7 @@
         // 步骤 1 还没有模板，提交必然失败：干脆不给这个按钮
         document.getElementById("cap-submit").classList.toggle("hidden", step !== 2);
         document.getElementById("tpl-back").classList.toggle("hidden", step === 1);
+        stepSet("cap-steps", step);
       }
 
       async function loadTemplates() {
@@ -1208,7 +1326,7 @@
         card.setAttribute("data-tpl", tpl.id || "");
 
         const head = el("div", "flex flex-wrap items-center justify-between gap-2");
-        head.appendChild(el("span", "text-[13px] text-zinc-200", tpl.displayName || tpl.id || "?"));
+        head.appendChild(el("span", "list-title", tpl.displayName || tpl.id || "?"));
         head.appendChild(el("span", "tpl-meta", tpl.id || ""));
         card.appendChild(head);
 
@@ -1278,13 +1396,13 @@
       }
 
       function tplField(f) {
-        const wrap = el("div", "tpl-field");
+        const wrap = el("div", "field");
         // data-field / data-required 是契约性标记：字段名必须与模板的 key 一致
         // （它会变成 ANOTIFY_PARAM_<UPPER>），e2e 靠它验证「字段由模板驱动」
         // 而不是前端写死的第二份副本。
         wrap.setAttribute("data-field", f.key || "");
         if (f.required) wrap.setAttribute("data-required", "1");
-        const label = el("label", "tpl-label", f.label || f.key);
+        const label = el("label", "field-label", f.label || f.key);
         label.htmlFor = "tpl-f-" + f.key;
         if (f.required) {
           const star = el("span", "tpl-req", "*");
@@ -1296,20 +1414,20 @@
         let ctl;
         if (f.type === "select") {
           ctl = document.createElement("select");
-          ctl.className = "select w-full text-sm";
+          ctl.className = "select";
           for (const o of f.options || []) ctl.appendChild(new Option(o, o));
         } else if (f.type === "text") {
           ctl = document.createElement("textarea");
-          ctl.className = "input w-full text-xs";
+          ctl.className = "textarea mono";
           ctl.rows = 3;
         } else if (f.type === "number") {
           ctl = document.createElement("input");
           ctl.type = "number";
-          ctl.className = "input w-full text-sm";
+          ctl.className = "input";
         } else {
           ctl = document.createElement("input");
           ctl.type = "text";
-          ctl.className = "input w-full text-sm";
+          ctl.className = "input";
         }
         ctl.id = "tpl-f-" + f.key;
         if (f.default != null && f.default !== "") ctl.value = String(f.default);
@@ -1508,7 +1626,7 @@
       }
 
       // ==================== 部署面板 ====================
-      function openDeployModal(c) {
+      function openDeployModal(c, trigger) {
         if (!c) return;
         DEPLOY_CAP = c;
         document.getElementById("deploy-title").textContent = t(
@@ -1518,16 +1636,17 @@
         // 关掉时清空、打开时也清空：残留上一次的「已排队」会让人以为这次也发了
         document.getElementById("deploy-results").replaceChildren();
         document.getElementById("deploy-results").classList.add("hidden");
+        stepSet("deploy-steps", 1);
         renderDeployPanel();
-        document.getElementById("deploy-modal").classList.add("open");
+        showModal(document.getElementById("deploy-modal"), trigger);
       }
 
       function closeDeployModal() {
         DEPLOY_CAP = null;
         DEPLOY_CBS = new Map();
-        document.getElementById("deploy-modal").classList.remove("open");
         document.getElementById("deploy-results").replaceChildren();
         document.getElementById("deploy-results").classList.add("hidden");
+        hideModal(document.getElementById("deploy-modal"));
       }
 
       // depForNode 找这台机器上「本能力」的部署行。
@@ -1609,7 +1728,7 @@
           if (dep) {
             const undo = el(
               "button",
-              "btn-danger rounded-lg px-2.5 py-1 text-[11px]",
+              "btn btn-danger btn-sm",
               t("caps.deploy.undo", "撤销"),
             );
             undo.type = "button";
@@ -1706,6 +1825,8 @@
         }
         box.classList.remove("hidden");
         box.appendChild(el("div", "dep-res-title", t("caps.deploy.result_title", "下发结果")));
+        // 逐台结果出现 → 步骤条走到第 2 步（与新建弹层同一套组件）
+        stepSet("deploy-steps", 2);
         for (const r of results) {
           const pushed = r.pushed === true || r.ok === true;
           const err = r.error ? String(r.error) : "";
@@ -1756,8 +1877,7 @@
       // ---------- 编辑器事件绑定 ----------
       document.getElementById("tpl-back").addEventListener("click", () => {
         tplGoStep(1);
-      });
-      document.getElementById("script-mode-view").addEventListener("click", () => {
+      });      document.getElementById("script-mode-view").addEventListener("click", () => {
         scriptModeSet("view");
       });
       document.getElementById("script-mode-edit").addEventListener("click", () => {
@@ -1792,5 +1912,34 @@
       });
 
       document.addEventListener("DOMContentLoaded", loadAll);
+
+      // ---------- 弹层收尾：关闭按钮 / 点遮罩 / Esc，三处都走同一个 close ----------
+      document
+        .getElementById("cap-modal-close")
+        .addEventListener("click", () => closeCapModal());
+      // 点遮罩关：点在面板内部时 target 不是遮罩本身，不会误关
+      document.getElementById("cap-modal").addEventListener("click", (e) => {
+        if (e.target === e.currentTarget) closeCapModal();
+      });
+      document
+        .getElementById("deploy-modal-close")
+        .addEventListener("click", () => closeDeployModal());
+      document.getElementById("deploy-modal").addEventListener("click", (e) => {
+        if (e.target === e.currentTarget) closeDeployModal();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        const capM = document.getElementById("cap-modal");
+        if (capM && !capM.classList.contains("hidden")) {
+          e.preventDefault();
+          closeCapModal();
+          return;
+        }
+        const depM = document.getElementById("deploy-modal");
+        if (depM && !depM.classList.contains("hidden")) {
+          e.preventDefault();
+          closeDeployModal();
+        }
+      });
     </script>
 {{end}}

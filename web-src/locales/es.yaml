@@ -1,4 +1,8 @@
 common:
+  skip_to_content: Ir al contenido
+  close: Cerrar
+  action:
+    close: Cerrar
   load_failed_prefix: 'Error al cargar: '
   retry: 'Reintentar'
   backend_offline: 'no se puede conectar al servidor'
@@ -145,6 +149,10 @@ index:
     rate_na: Sin receptores — tasa de entrega no disponible
     trend_demo: Demo
     trend_live: En vivo
+    running: En curso
+    running_sub: Últimas 50 tareas
+    failed: Tareas con error
+    failed_sub: Últimas 50 tareas
   heatmap:
     title: Actividad de tareas
     subtitle: Último año · volumen diario
@@ -195,6 +203,7 @@ index:
     pull_loading: Actualizando…
     pull_done: Actualizado
   recent_summary: '{total} tareas registradas recientemente, {ok} completadas.'
+  summary_load_failed: Los datos de tareas no están disponibles — vuelve a intentarlo.
   notif:
     reported: 'Reportado'
     unreported: 'Sin reportar'
@@ -1117,6 +1126,8 @@ events:
     invalid_cursor: 'Cursor no válido: se volvió a lo más reciente'
 caps:
   title: Capacidades
+  step_pick: Elegir plantilla
+  step_fill: Rellenar y crear
   sidebar: 'Se define aquí, se ejecuta en los nodos'
   subtitle: Una capacidad es "qué hacer" (no "cómo"). Las aristas — a dónde van los eventos — tienen su propia página.
   new: Definir capacidad
@@ -1333,6 +1344,7 @@ nodes:
     copy_install: Copiar comando
     yaml_workdir_note: 'El directorio de trabajo se define en la capacidad (página Capacidades, run.workDir) y baja con el despliegue; este yaml no lo necesita.'
 sources:
+  empty_title: Aún no hay fuentes
   detail: "Detalles"
   open_detail: "Abrir detalles"
   "on": "En ejecución"

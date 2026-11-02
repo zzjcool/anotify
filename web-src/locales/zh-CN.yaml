@@ -1,4 +1,8 @@
 common:
+  skip_to_content: 跳到主内容
+  close: 关闭
+  action:
+    close: 关闭
   load_failed_prefix: '载入失败：'
   retry: '重试'
   backend_offline: '连不上服务端'
@@ -145,6 +149,10 @@ index:
     rate_na: 暂无接收设备，送达率不可用
     trend_demo: 示例
     trend_live: 实时
+    running: 进行中
+    running_sub: 近 50 条任务
+    failed: 异常任务
+    failed_sub: 近 50 条任务
   heatmap:
     title: 任务活动
     subtitle: 近一年 · 每天的任务量
@@ -195,6 +203,7 @@ index:
     pull_loading: 正在刷新…
     pull_done: 已刷新
   recent_summary: 最近收录 {total} 条任务，其中 {ok} 条已完成。
+  summary_load_failed: 暂时取不到任务数据，请重试。
   notif:
     reported: '已回报'
     unreported: '未回报'
@@ -1117,6 +1126,8 @@ events:
     invalid_cursor: 游标已失效，已回到最新
 caps:
   title: 能力
+  step_pick: 选模板
+  step_fill: 填写并创建
   sidebar: '控制台定义，节点执行'
   subtitle: 能力是"做什么"（不含"怎么做"）。出口（事件进来后往哪走）已独立成页。
   new: 定义能力
@@ -1333,6 +1344,7 @@ nodes:
     copy_install: 复制命令
     yaml_workdir_note: '工作目录在「能力」页的能力定义里配（run.workDir），随部署下发；这份 yaml 不需要写。'
 sources:
+  empty_title: 还没有源
   detail: "详情"
   open_detail: "打开详情"
   "on": "运行中"
