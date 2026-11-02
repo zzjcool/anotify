@@ -6,15 +6,15 @@ import (
 )
 
 // ProtocolVersion 是本实现支持的节点协议版本（hello / welcome 帧里交换）。
-const ProtocolVersion = 1
+//
+// v2（console-declares）：hello 不再自报能力（capabilities/manifest 删除），
+// 改为上报「本机缓存了哪些产物」；新增 deploy（下行）/ apply（上行）两帧。
+const ProtocolVersion = 2
 
-// 九帧的帧类型名（契约 §6.1）。字符串本身是协议的一部分，不能随意改。
+// 十一帧的帧类型名。字符串本身是协议的一部分，不能随意改。
 //
-// 常量带 Node 前缀，与旧浏览器协议的 Frame*（hello/ack/error 同名）区分开——
-// 旧协议待 #7 下线后删除，届时可考虑去掉前缀。
-//
-// 节点 → 中枢：hello / heartbeat / ack / progress / result
-// 中枢 → 节点：welcome / assign / cancel / error
+// 节点 → 中枢：hello / heartbeat / ack / progress / result / apply
+// 中枢 → 节点：welcome / assign / deploy / cancel / error
 const (
 	// 节点 → 中枢
 	NodeFrameHello     = "hello"
@@ -22,10 +22,12 @@ const (
 	NodeFrameAck       = "ack"
 	NodeFrameProgress  = "progress"
 	NodeFrameResult    = "result"
+	NodeFrameApply     = "apply"
 
 	// 中枢 → 节点
 	NodeFrameWelcome = "welcome"
 	NodeFrameAssign  = "assign"
+	NodeFrameDeploy  = "deploy"
 	NodeFrameCancel  = "cancel"
 	NodeFrameError   = "error"
 )
@@ -37,14 +39,20 @@ const (
 	ErrCodeUnknownType       = "unknown_type"
 	ErrCodeInvalidTransition = "invalid_transition"
 	ErrCodeLeaseExpired      = "lease_expired"
+	// ErrCodeProtocolMismatch 节点 speak 的协议版本与服务端不同。
+	//
+	// 与 bad_frame 分开的理由：这是**版本不兼容**，不是「帧写坏了」。节点/运维
+	// 看到这个码应该去升级二进制，而不是去查 JSON 结构（契约 §1）。
+	ErrCodeProtocolMismatch = "protocol_mismatch"
 	// ErrCodeNodeDraining 节点在排空，不再接新任务。
 	ErrCodeNodeDraining = "node_draining"
 	// ErrCodeTooManyInstances 节点申报的实例数超过中枢允许的上限（契约 Q5）。
 	ErrCodeTooManyInstances = "too_many_instances"
-	// ErrCodeInvalidManifest 节点上报的 manifest 不合法（run 缺失 / runner 不支持 /
-	// command 为空 / concurrency 越界）。与 too_many_instances 同构：每种握手拒绝原因一个码，
-	// 节点侧不必解析人类可读的 message。
-	ErrCodeInvalidManifest = "invalid_manifest"
+	// ErrCodeInvalidManifest 已随 hello.manifest 一起下线（v2 不再自报执行方式）。
+	//
+	// 部署产物不合法走 apply 帧的 reason 短码（见 ApplyFrame），不占用错误码空间：
+	// 那是**部署**失败，不是**协议**错误。
+	//
 	// ErrCodeUnauthorized 握手鉴权失败（HTTP 层用，不会作为帧下发）。
 	ErrCodeUnauthorized = "unauthorized"
 	// ErrCodeFrameTooLarge 上行帧超过服务端软上限（#221）。
@@ -66,50 +74,78 @@ const (
 
 // 上行帧（节点 → 中枢）──────────────────────────────
 
-// HelloFrame 是节点连上后的第一帧：自报身份、协议版本、能力与实例。
+// HelloFrame 是节点连上后的第一帧：自报身份、协议版本、并发槽位、本机缓存了什么。
 //
-// Capabilities 只有 name + version —— 没有命令、没有出口（不变量 I1/I2）。
-// Instances 由节点申报（契约 §10 Q5），中枢 upsert 到 node_instances。
+// # v2 的语义变化（console-declares，契约 D4）
 //
-// # Manifest 与 Capabilities 的优先级（issue #168，语义必须写死）
+// 旧版用 capabilities[] + manifest[] **自报能力**，中枢只能被动接受；
+// v2 把它们删掉，改为 applied[]：节点陈述「我缓存了哪些产物」，
+// 而「这个能力归谁」完全由中枢的部署决定。
 //
-//   - 缺省 Manifest（老 agent）= 老行为：只报 name@version，run_spec 落 '{}'。
-//   - Capabilities 与 Manifest 同时出现时**以 manifest 为准**：manifest 信息更全
-//     （它带 run），同一 name@version 只落一条，用 manifest 里那份 run。
-//   - manifest 里没写的 capabilities 项 = 「声明了能力但没声明执行方式」：
-//     能力照旧声明（参与派发选点），run_spec 落 '{}'。
-//   - **不改 protocol 版本号**：manifest 是同版本内新增的**可选**字段，
-//     Go 的 json 解码对缺省字段宽容，老节点不受影响。
+// 差别很重要：能力归属从此只有一个写者（控制台），节点不能再单方面声称
+// 「我会跑 X」——否则中枢数据库会静默地撒谎（页面显示能跑，实际跑到就 failed）。
 //
-// manifest 里的 run 是节点**自己的执行方式**：中枢只校验形状、只存不执行（I1 边界，
-// docs/design/playbooks.md §4.2），所以这里用 json.RawMessage 原样承载。
+// applied 里的能力必须已在中枢定义（否则 unknown_capability）。这条保留：
+// 产物本身就是从中枢部署过去的，不可能出现中枢不认识的能力。
 type HelloFrame struct {
-	Type         string           `json:"type"`
-	NodeID       string           `json:"node_id"`
-	Protocol     int              `json:"protocol"`
-	Capabilities []CapabilityDecl `json:"capabilities"`
-	Manifest     []ManifestDecl   `json:"manifest,omitempty"` // 新增，可选
-	Instances    []InstanceDecl   `json:"instances"`
-	Labels       map[string]any   `json:"labels,omitempty"`
+	Type      string         `json:"type"`
+	NodeID    string         `json:"node_id"`
+	Protocol  int            `json:"protocol"`
+	Instances []InstanceDecl `json:"instances"`
+	Applied   []AppliedDecl  `json:"applied"`
+	Labels    map[string]any `json:"labels,omitempty"`
 }
 
-// CapabilityDecl 是节点声明「我有 review@1」——只有名字与版本。
-type CapabilityDecl struct {
+// AppliedDecl 是节点对「我缓存了什么」的陈述。
+//
+// 它**不是**能力声明：中枢只会用它核对已部署的东西（对账 + 发现本地变体），
+// 不会因为出现一条没部署过的 applied 就把能力归属给这台机器。
+type AppliedDecl struct {
 	Capability string `json:"capability"`
 	Version    int    `json:"version"`
+	Digest     string `json:"digest"`
 }
 
-// ManifestDecl 是 manifest 的一条：能力 + 它**怎么跑**的声明原文。
+// DeployFrame 下发或撤销一份产物。
 //
-// Run 用 json.RawMessage 原样承载、**不解析结构**：中枢只校验形状、只存不执行
-// （I1 边界，docs/design/playbooks.md §4.2）。runner 以后会长出新形状
-// （agent 的 prompt/model/tools），在这里定死字段等于每加一种执行器改一次协议。
-// 字段名用 capability（与 hello.capabilities[].capability 一致），
-// 节点实现者不需要为同一个概念记两个名字（playbooks §4.2 的 name 是缩写示意）。
-type ManifestDecl struct {
-	Capability string          `json:"capability"`
-	Version    int             `json:"version"`
-	Run        json.RawMessage `json:"run"`
+// Artifact 是 CONTRACT-artifact §2 定义的 canonical JSON。节点负责校验、
+// 探测 requires、原子落盘，然后回一帧 ApplyFrame。
+type DeployFrame struct {
+	Type     string          `json:"type"`
+	DeployID string          `json:"deploy_id"`
+	Action   string          `json:"action"` // apply | remove
+	Artifact json.RawMessage `json:"artifact,omitempty"`
+}
+
+// 部署动作。
+const (
+	DeployActionApply  = "apply"
+	DeployActionRemove = "remove"
+)
+
+// 部署结果状态（ApplyFrame.State）。
+const (
+	ApplyStateApplied = "applied"
+	ApplyStateFailed  = "failed"
+)
+
+// 部署失败短码（ApplyFrame.Reason 的前缀，`;` 分隔多个）。
+const (
+	ApplyReasonInvalidArtifact    = "invalid_artifact"
+	ApplyReasonMissingRequirement = "missing_requirement"
+	ApplyReasonWriteFailed        = "write_failed"
+	ApplyReasonUnsupportedAction  = "unsupported_action"
+)
+
+// ApplyFrame 是节点对一次部署的回报。
+type ApplyFrame struct {
+	Type       string `json:"type"`
+	DeployID   string `json:"deploy_id"`
+	Capability string `json:"capability,omitempty"`
+	Version    int    `json:"version,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	State      string `json:"state"` // applied | failed
+	Reason     string `json:"reason,omitempty"`
 }
 
 // InstanceDecl 是节点申报的并发槽位。
@@ -231,9 +267,11 @@ type WelcomeFrame struct {
 
 // AssignFrame 是中枢能表达的全部：{capability, version, params} + 租约。
 //
-// **只有能力名、版本、参数与租约**：不含任何「要执行什么」的内容（不变量 I1）。
-// 节点自己知道怎么执行这个能力，中枢不告诉它跑什么。
-
+// 仍然**不含任何「要执行什么」的内容**：节点自己按 capability@version（或 digest）
+// 找到缓存里的产物。Digest 与 TraceID 是 v2 新增的旁路信息：
+//
+//   - Digest 让本次执行钉在一个确定的产物上（审计 + ANOTIFY_DIGEST）
+//   - TraceID 让脚本能把日志串回链路（旧协议一直没有，issue #184）
 type AssignFrame struct {
 	Type        string         `json:"type"`
 	TaskID      string         `json:"task_id"`
@@ -242,6 +280,8 @@ type AssignFrame struct {
 	Params      map[string]any `json:"params"`
 	LeaseUntil  int64          `json:"lease_until"`
 	MaxDuration int            `json:"max_duration_sec"`
+	Digest      string         `json:"digest,omitempty"`
+	TraceID     string         `json:"trace_id,omitempty"`
 }
 
 // CancelFrame 要求节点停止某任务。
@@ -311,6 +351,12 @@ func DecodeUpstream(data []byte) (any, error) {
 			return nil, fmt.Errorf("decode result: %w", err)
 		}
 		return &f, nil
+	case NodeFrameApply:
+		var f ApplyFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode apply: %w", err)
+		}
+		return &f, nil
 	default:
 		return &UnknownFrame{Type: env.Type}, nil
 	}
@@ -328,7 +374,7 @@ func Encode(f any) ([]byte, error) {
 // IsDownstream 判定一个帧类型是否是中枢 → 节点方向（用于断言节点没有发下行帧）。
 func IsDownstream(frameType string) bool {
 	switch frameType {
-	case NodeFrameWelcome, NodeFrameAssign, NodeFrameCancel, NodeFrameError:
+	case NodeFrameWelcome, NodeFrameAssign, NodeFrameDeploy, NodeFrameCancel, NodeFrameError:
 		return true
 	}
 	return false
@@ -337,7 +383,7 @@ func IsDownstream(frameType string) bool {
 // IsUpstream 判定一个帧类型是否是节点 → 中枢方向。
 func IsUpstream(frameType string) bool {
 	switch frameType {
-	case NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck, NodeFrameProgress, NodeFrameResult:
+	case NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck, NodeFrameProgress, NodeFrameResult, NodeFrameApply:
 		return true
 	}
 	return false

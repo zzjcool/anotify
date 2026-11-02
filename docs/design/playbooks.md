@@ -1,3 +1,19 @@
+> ## ⚠️ 已过期（2026-11-01，console-declares epic）
+>
+> 本文描述的「节点在 `node.yaml` 里自报 manifest/run、中枢只存不执行」的模型
+> **已被取代**。现状：
+>
+> | 旧（本文） | 新 |
+> |---|---|
+> | `node.yaml` 声明 `capabilities[].run` | `node.yaml` 只剩 bootstrap 四件（name/server/token/instances） |
+> | `hello.capabilities[]` + `hello.manifest[]` | `hello.applied[]`（{capability, version, digest}） |
+> | `node_capabilities.run_spec` 存命令原文 | 该列已删除（迁移 18）；`node_capabilities` 只从 `hello.applied[]` 派生 |
+> | 中枢「只存不执行」 | 中枢仍是**不执行**，但改为**授权部署**一份内容寻址的产物 |
+> | I1「中枢 DB 无命令」 | I1 改写为「执行边界」：内容寻址 + 不可变 + 可审计 + 受节点启动参数约束 |
+>
+> 权威契约在：`.pi-orchestrator/console-declares/{ISSUE,CONTRACT-artifact,CONTRACT-protocol}.md`
+> 与 `docs/contracts/CONTRACT.md`。本文保留只为记录当时的设计推理。
+
 # 预案（playbook）与节点声明
 
 > 状态：**设计已定，本期只做 mock 界面**。设计细节落实现时同步进 `CONTRACT.md`。

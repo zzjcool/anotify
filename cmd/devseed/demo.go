@@ -45,7 +45,11 @@ var demoCapabilities = []demoCapability{
 	{"deploy-preview", nil, "部署预览环境"},
 }
 
-// demoEdge 是一条边。from 用名字，运行时解析成 id。
+// demoSourceNames 是入口边左端允许的来源名（不是能力）。
+// 来源不对应 capability 行：它只是事件流的起点标识，路由靠 edges.from_is_source 匹配。
+var demoSourceNames = map[string]bool{"github": true, "cron": true, "http": true, "manual": true}
+
+// demoEdge 是一条边。from 用名字，运行时解析成能力 id（入口边则原样当来源名）。
 type demoEdge struct{ from, port, to string }
 
 var demoEdges = []demoEdge{
@@ -105,11 +109,7 @@ func seedDemo(ctx context.Context, db *store.DB, namespaceID, nodeName string) (
 			latest[c.Name] = c
 		}
 	}
-	for _, name := range []string{"github", "cron", "http", "manual"} {
-		if c, ok := latest[name]; ok {
-			ids[name] = c.ID
-		}
-	}
+	// 来源（github/cron/http/manual）不是能力行，见 demoSourceNames —— 不在这里查 id。
 
 	// 用户能力：已存在就复用（devseed 可能重复跑）
 	for _, d := range demoCapabilities {
@@ -132,17 +132,33 @@ func seedDemo(ctx context.Context, db *store.DB, namespaceID, nodeName string) (
 	}
 
 	// 边
+	//
+	// 两类边形状不同（见 store.CreateEdge）：
+	//   - 入口边（来源 → 能力）：FromIsSource=true，FromCapability 存**来源名**（github/cron/http/manual），
+	//     出口是事件类型，不校验（契约 §5.2：事件类型由外部系统决定，无法预先枚举）
+	//   - 能力边（能力 → 能力）：FromCapability 存能力 **id**，出口必须在该能力的 outputs 里（I2）
+	//
+	// 早先这里一律按能力 id 解析，于是「来源」也被当成能力查表 —— 内置目录不含
+	// github/cron/http/manual 之后，`-demo` 在全新库上必然失败（#271）。
 	for _, e := range demoEdges {
-		from, okF := ids[e.from]
 		to, okT := ids[e.to]
-		if !okF || !okT {
-			return "", "", fmt.Errorf("edge %s->%s: 能力缺失（from=%v to=%v）", e.from, e.to, okF, okT)
+		if !okT {
+			return "", "", fmt.Errorf("edge %s->%s: 目标能力缺失", e.from, e.to)
+		}
+		from, okF := ids[e.from]
+		isSource := false
+		if !okF {
+			if !demoSourceNames[e.from] {
+				return "", "", fmt.Errorf("edge %s->%s: 既不是已建能力、也不是已知来源名", e.from, e.to)
+			}
+			from, isSource = e.from, true // 入口边：左端是来源名，不是 id
 		}
 		if err := db.CreateEdge(ctx, &store.Edge{
 			NamespaceID:    namespaceID,
 			FromCapability: from,
 			FromPort:       e.port,
 			ToCapability:   to,
+			FromIsSource:   isSource,
 		}); err != nil {
 			return "", "", fmt.Errorf("create edge %s -%s-> %s: %w", e.from, e.port, e.to, err)
 		}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/ws"
 )
 
@@ -26,27 +27,26 @@ func mustEncode(t *testing.T, f any) string {
 	return string(data)
 }
 
-// demoRun 是 node.yaml 里 run 块序列化后的紧凑 JSON（契约 §3.1.3：manifest.run = json.Marshal(runSpec)）。
-const demoRun = `{"runner":"bash","command":"echo prep","timeoutSec":30,"concurrency":1,"env":{"LOG_LEVEL":"info"}}`
+// demoAppliedDigest 是产物 digest 的取值（形状必须是 sha256:<64 hex>）。
+const demoAppliedDigest = "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
 
-// demoHello 是契约 §4 的 hello golden（node.yaml 只有一条能力 demo.prep@1）。
+// demoHello 是 hello 帧的 golden 形状（v2）：只报「我缓存了什么」。
+//
+// v1 的 capabilities[] / manifest[] 两个键已经删掉（裁决 D4：节点不再自报能力），
+// 换成 applied[]——节点对「本机缓存了哪些产物」的陈述。
 func demoHello(t *testing.T) helloFrame {
 	t.Helper()
-	if !json.Valid([]byte(demoRun)) {
-		t.Fatalf("demoRun is not valid JSON: %s", demoRun)
-	}
 	return helloFrame{
 		Type:     frameTypeHello,
 		NodeID:   "", // 空 = 由服务端按令牌认（node.yaml 不提供 node_id）
 		Protocol: ws.ProtocolVersion,
-		Capabilities: []capabilityDecl{
-			{Capability: "demo.prep", Version: 1},
+		Instances: []instanceDecl{
+			{Slot: 0, Concurrency: 1},
 		},
-		Manifest: []manifestDecl{
-			{Capability: "demo.prep", Version: 1, Run: json.RawMessage(demoRun)},
+		Applied: []appliedDecl{
+			{Capability: "demo.prep", Version: 1, Digest: demoAppliedDigest},
 		},
-		Instances: []instanceDecl{{Slot: 0, Concurrency: 1}},
-		Labels:    nil,
+		Labels: nil,
 	}
 }
 
@@ -55,10 +55,9 @@ func demoHello(t *testing.T) helloFrame {
 // 注意两处容易写错但**按实际 tag** 必须如此的细节：
 //   - node_id 没有 omitempty，空串照写 "node_id":""；
 //   - labels 有 omitempty，nil 时整键不出现。
-const goldenHelloJSON = `{"type":"hello","node_id":"","protocol":1,` +
-	`"capabilities":[{"capability":"demo.prep","version":1}],` +
-	`"manifest":[{"capability":"demo.prep","version":1,"run":` + demoRun + `}],` +
-	`"instances":[{"slot":0,"concurrency":1}]}`
+const goldenHelloJSON = `{"type":"hello","node_id":"","protocol":2,` +
+	`"instances":[{"slot":0,"concurrency":1}],` +
+	`"applied":[{"capability":"demo.prep","version":1,"digest":"` + demoAppliedDigest + `"}]}`
 
 // ---------- W2 必测 1：三个上行帧 golden（精确字符串）----------
 
@@ -92,8 +91,10 @@ func TestFrameTypeConstantsMatchServer(t *testing.T) {
 		{"ack", frameTypeAck, ws.NodeFrameAck},
 		{"progress", frameTypeProgress, ws.NodeFrameProgress},
 		{"result", frameTypeResult, ws.NodeFrameResult},
+		{"apply", frameTypeApply, ws.NodeFrameApply},
 		{"welcome", frameTypeWelcome, ws.NodeFrameWelcome},
 		{"assign", frameTypeAssign, ws.NodeFrameAssign},
+		{"deploy", frameTypeDeploy, ws.NodeFrameDeploy},
 		{"cancel", frameTypeCancel, ws.NodeFrameCancel},
 		{"error", frameTypeError, ws.NodeFrameError},
 	}
@@ -140,9 +141,6 @@ func TestHelloGoldenReadableByServer(t *testing.T) {
 	if hf.Protocol != want.Protocol {
 		t.Errorf("protocol = %d, want %d", hf.Protocol, want.Protocol)
 	}
-	if !reflect.DeepEqual(hf.Capabilities, want.Capabilities) {
-		t.Errorf("capabilities = %+v, want %+v", hf.Capabilities, want.Capabilities)
-	}
 	if !reflect.DeepEqual(hf.Instances, want.Instances) {
 		t.Errorf("instances = %+v, want %+v", hf.Instances, want.Instances)
 	}
@@ -150,32 +148,20 @@ func TestHelloGoldenReadableByServer(t *testing.T) {
 		t.Errorf("labels = %+v, want nil (omitempty 键不出现)", hf.Labels)
 	}
 
-	// manifest 的 run 原文必须原样回来（中枢只存不执行，I1：字节不能被改写）
-	if len(hf.Manifest) != len(want.Manifest) {
-		t.Fatalf("manifest len = %d, want %d", len(hf.Manifest), len(want.Manifest))
+	// applied[] 必须原样回来：中枢靠它全量对账 node_capabilities（裁决 D4），
+	// 条目少一条就会让中枢以为「这台机器没有那份产物」。
+	if !reflect.DeepEqual(hf.Applied, want.Applied) {
+		t.Fatalf("applied = %+v, want %+v", hf.Applied, want.Applied)
 	}
-	for i, gotDecl := range hf.Manifest {
-		wantDecl := want.Manifest[i]
-		if gotDecl.Capability != wantDecl.Capability || gotDecl.Version != wantDecl.Version {
-			t.Errorf("manifest[%d] = %s@%d, want %s@%d",
-				i, gotDecl.Capability, gotDecl.Version, wantDecl.Capability, wantDecl.Version)
-		}
-		if !jsonEqual(t, gotDecl.Run, wantDecl.Run) {
-			t.Errorf("manifest[%d].run = %s, want %s", i, gotDecl.Run, wantDecl.Run)
-		}
+	if got := hf.Applied[0].Digest; got != demoAppliedDigest {
+		t.Errorf("applied[0].digest = %q, want %q（内容寻址标识必须逐字节一致）", got, demoAppliedDigest)
 	}
 
-	// run 原文必须能被服务端侧的 runSpec 形状解码（runner=bash/command 非空，
-	// 否则握手会被 invalid_manifest 拒掉）。
-	var rs struct {
-		Runner  string `json:"runner"`
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal(hf.Manifest[0].Run, &rs); err != nil {
-		t.Fatalf("manifest[0].run is not decodable: %v", err)
-	}
-	if rs.Runner != "bash" || rs.Command == "" {
-		t.Errorf("manifest[0].run = %+v, want runner=bash with a non-empty command", rs)
+	// v2 删掉的键不能再出现在线上字节里（否则老中枢会把它们当成能力声明）。
+	for _, banned := range []string{`"capabilities"`, `"manifest"`} {
+		if strings.Contains(raw, banned) {
+			t.Errorf("hello 里仍然有 %s 键（v2 已删除）：%s", banned, raw)
+		}
 	}
 }
 
@@ -380,6 +366,44 @@ func TestDecodeDownstream(t *testing.T) {
 		}
 	})
 
+	t.Run("deploy", func(t *testing.T) {
+		raw := `{"type":"deploy","deploy_id":"dep_1","action":"apply",` +
+			`"artifact":{"apiVersion":"anotify/v1","kind":"Capability",` +
+			`"metadata":{"name":"demo.prep","version":1},` +
+			`"spec":{"outputs":[],"run":{"entrypoint":"run.sh","files":{"run.sh":"#!/bin/bash\n"}}}}}`
+		got, err := decodeDownstream([]byte(raw))
+		if err != nil {
+			t.Fatalf("decodeDownstream: %v", err)
+		}
+		f, ok := got.(*deployFrame)
+		if !ok {
+			t.Fatalf("decoded type = %T, want *deployFrame", got)
+		}
+		if f.Type != frameTypeDeploy || f.DeployID != "dep_1" || f.Action != ws.DeployActionApply {
+			t.Fatalf("deploy = %+v, fields drifted", *f)
+		}
+		// artifact 是原样转发的 JSON：节点侧自己用 artifact.Decode 校验 + 算 digest。
+		if a, digest, err := artifactOf(t, f.Artifact); err != nil {
+			t.Fatalf("deploy.artifact 不是合法产物: %v", err)
+		} else if a.Metadata.Name != "demo.prep" || digest == "" {
+			t.Fatalf("deploy.artifact = %+v / %q, want demo.prep 与非空 digest", a.Metadata, digest)
+		}
+	})
+
+	t.Run("deploy remove 可以不带 artifact", func(t *testing.T) {
+		got, err := decodeDownstream([]byte(`{"type":"deploy","deploy_id":"dep_2","action":"remove"}`))
+		if err != nil {
+			t.Fatalf("decodeDownstream: %v", err)
+		}
+		f, ok := got.(*deployFrame)
+		if !ok {
+			t.Fatalf("decoded type = %T, want *deployFrame", got)
+		}
+		if f.Action != ws.DeployActionRemove || len(f.Artifact) != 0 {
+			t.Fatalf("deploy = %+v, want action=remove 且没有 artifact", *f)
+		}
+	})
+
 	t.Run("cancel", func(t *testing.T) {
 		got, err := decodeDownstream([]byte(`{"type":"cancel","task_id":"tsk_x","reason":"superseded"}`))
 		if err != nil {
@@ -435,6 +459,12 @@ func TestDecodeDownstream(t *testing.T) {
 }
 
 // ---------- 小工具 ----------
+
+// artifactOf 用 internal/artifact 的解析器读 deploy 帧里的产物原文。
+func artifactOf(t *testing.T, raw []byte) (*artifact.Artifact, string, error) {
+	t.Helper()
+	return artifact.Decode(raw)
+}
 
 // decodeResultOnServer 用**服务端**的解码器读 agent 发出去的 result 字节。
 func decodeResultOnServer(t *testing.T, raw string) *ws.ResultFrame {

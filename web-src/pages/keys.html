@@ -413,48 +413,9 @@
         },
       };
 
-      // 演示数据（后端不可用时降级展示）
-      const DEMO_KEYS = [
-        {
-          id: "k_demo1",
-          nameKey: "keys.demo.name1",
-          prefix: "ant_live_9f3a",
-          scopes: ["notify:send"],
-          lastUsed: t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", 2),
-          enabled: true,
-          created: "2026-06-12",
-        },
-        {
-          id: "k_demo2",
-          nameKey: "keys.demo.name2",
-          prefix: "ant_live_2b1d",
-          scopes: ["notify:send"],
-          lastUsed: t("common.time.hours_ago", "{n} 小时前").replace("{n}", 1),
-          enabled: true,
-          created: "2026-06-28",
-        },
-        {
-          id: "k_demo3",
-          nameKey: "keys.demo.name3",
-          prefix: "ant_recv_9f3a",
-          scopes: ["notify:receive"],
-          lastUsed: t("common.time.just_now", "刚刚"),
-          enabled: true,
-          created: "2026-07-15",
-        },
-        {
-          id: "k_demo4",
-          nameKey: "keys.demo.name4",
-          prefix: "ant_live_x8q2",
-          scopes: ["notify:send"],
-          lastUsed: t("common.time.weeks_ago", "{n} 周前").replace("{n}", 3),
-          enabled: false,
-          created: "2026-05-30",
-        },
-      ];
 
       let KEYS = [];
-      let demoMode = false;
+      let loadError = null; // 载入失败原因（有值就渲染错误态，绝不伪造数据）
       let newKeyPlain = "";
       let pendingKey = null;
 
@@ -485,19 +446,31 @@
         return d.toISOString().slice(0, 10);
       }
 
-      // 后端未就绪时静默降级到演示数据（不抛 console 错误）
-      // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；其他非 200 才降级演示数据。
+      // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；
+      // 其他失败记下原因，由 renderKeys 渲染「载入失败 + 重试」——不伪造数据（#273）。
+      let fetchError = null; // 最近一次请求失败的原因（渲染错误态用，不伪造数据）
+
       async function fetchApi(path, options) {
+        fetchError = null;
         try {
           const res = await fetch(
             path,
             Object.assign({ credentials: "include" }, options),
           );
           if (res.status === 401)
-            return Anotify.api(path, options).catch(() => null);
-          if (!res.ok) return null;
+            return Anotify.api(path, options).catch((e) => {
+              fetchError = e;
+              return null;
+            });
+          if (!res.ok) {
+            const e = new Error("HTTP " + res.status);
+            e.status = res.status;
+            fetchError = e;
+            return null;
+          }
           return await res.json();
         } catch (e) {
+          fetchError = e;
           return null;
         }
       }
@@ -527,13 +500,10 @@
                     .slice(0, 10)
                 : "",
           }));
-          demoMode = false;
         } else {
-          KEYS = DEMO_KEYS.slice();
-          KEYS.forEach((k) => {
-            if (k.nameKey) k.name = t(k.nameKey, k.name || "");
-          });
-          demoMode = true;
+          // 失败就是失败：不伪造数据（演示数据只在 make mock 的 /mock.js 里，见 #273）
+          KEYS = [];
+          loadError = fetchError || new Error("keys: 载入失败");
         }
         renderKeys();
       }
@@ -544,15 +514,17 @@
         const activeCount = KEYS.filter((k) => k.enabled).length;
         document.getElementById("keys-summary").textContent = t(
           "keys.summary",
-          "{total} 个 Key · {active} 启用{demo}",
+          "{total} 个 Key · {active} 启用",
         )
           .replace("{total}", KEYS.length)
-          .replace("{active}", activeCount)
-          .replace(
-            "{demo}",
-            demoMode ? t("keys.summary_demo", " · 演示数据") : "",
-          );
+          .replace("{active}", activeCount);
 
+        if (loadError) {
+          const td = el("td", { colspan: "6" });
+          td.appendChild(window.Anotify.loadErrorNode(loadError, () => loadKeys()));
+          body.replaceChildren(el("tr", {}, td));
+          return;
+        }
         if (KEYS.length === 0) {
           body.replaceChildren(
             el(
@@ -669,12 +641,6 @@
           )
         )
           return;
-        if (demoMode) {
-          k.enabled = false;
-          renderKeys();
-          toast(t("keys.toast.revoked_demo", "已停用（演示模式，仅本地生效）"));
-          return;
-        }
         try {
           const res = await fetch(
             API + "/keys/" + encodeURIComponent(k.id) + "/revoke",
@@ -740,14 +706,6 @@
         ).map((c) => c.value);
       }
 
-      function demoKeyFor(scopes) {
-        const rand = () => Math.random().toString(36).slice(2, 10);
-        const prefix =
-          scopes.includes("notify:receive") && !scopes.includes("notify:send")
-            ? "ant_recv_"
-            : "ant_live_";
-        return (prefix + rand() + rand()).slice(0, 28);
-      }
 
       async function generateKey() {
         const name =
@@ -765,20 +723,6 @@
         }
         errEl.classList.add("hidden");
 
-        if (demoMode) {
-          newKeyPlain = demoKeyFor(scopes);
-          pendingKey = {
-            id: "k_" + Date.now(),
-            name: name,
-            prefix: newKeyPlain.slice(0, 13),
-            scopes: scopes,
-            lastUsed: t("common.time.never", "从未使用"),
-            enabled: true,
-            created: new Date().toISOString().slice(0, 10),
-          };
-          showStep2();
-          return;
-        }
 
         try {
           const res = await fetch(API + "/keys", {
@@ -807,7 +751,7 @@
         } catch (e) {
           errEl.textContent = t(
             "keys.error.create_failed",
-            "创建失败：{msg}（后端未就绪时可先体验演示模式）",
+            "创建失败：{msg}",
           ).replace("{msg}", e.message);
           errEl.classList.remove("hidden");
         }

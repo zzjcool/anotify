@@ -3,14 +3,14 @@
  *
  * 覆盖 case：
  *  A. 路由守卫：未登录访问 index/receivers/keys/security/message/connect → 自动跳 login.html
- *  B. 已登录访问 index → 不显示「演示数据」徽章（demo-badge 隐藏），渲染真实数据（哪怕空）
+ *  B. 已登录访问 index → 渲染真实数据（哪怕空）；演示模式已移除（#273），无 demo-badge
  *  C. login.html 是公开页：未登录正常渲染、不跳转
  *  D. 全部页面（index/login/receivers/keys/security/docs/message/connect）在 桌面1280 + 移动390 两视口：
  *     无 JS pageerror、无横向溢出、能滚动到底
- *     （/v1/* 的 401/404 是预期降级，不算失败；demo-badge 显示是后端未连接的预期行为）
+ *     （/v1/* 的 401/404 是预期降级，不算失败；后端不可用时页面显示「载入失败 + 重试」）
  *  E. connect.html 独立页：侧栏导航直连 + active 高亮 + 6 区块 + 无裸 i18n key
  *  F. connect.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证 demo 徽章亮 + 三灯显「—」（尚未实现）
- *  G. index.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证演示数据状态徽章按真实 agentState 渲染
+ *  G. index.html 错误态：page.route 拦截 /v1/* 模拟后端宕机，验证渲染「载入失败 + 重试」且不伪造数据
  *     （回归防护：旧协议字段 status 残留曾致 normalize 全部降级 working）
  *  H. nodes.html 注册节点（#198）：表单 → 一次性令牌 → 可直接粘的 node.yaml；
  *     再点入口必须把令牌真从 DOM 清掉，重名只报重名不给令牌（mock 全流程 + 真后端一次注册）
@@ -652,6 +652,40 @@ async function main() {
 			});
 			await page3.waitForTimeout(1200);
 
+			// 造一个**自带字符串参数**的出口能力再测参数面板。
+			//
+			// 以前这段是蹭 notify.phone 的 schema（to/title/body 都是 string）：
+			// 手机推送按产品节奏从 UI 隐去后（web/partials.js 的 PUSH_UI_ENABLED），
+			// 可选出口就变成了"前面用例留下的什么能力"——有没有参数全看运气。
+			// 用例要自给自足，别依赖别人留下的状态。
+			await page3.evaluate(async () => {
+				// 必须建在**当前页面所在的命名空间**里：这套用例前面的步骤可能切过命名空间，
+				// 建到别处的话选择器里根本看不到（targets 会只剩别的空间里的那几个）。
+				let ns = "";
+				try {
+					ns = (JSON.parse(localStorage.getItem("anotify.scope") || "{}") || {})
+						.namespaceId || "";
+				} catch (e) {
+					/* 没存过就用 mock 默认 */
+				}
+				const r = await fetch("/v1/capabilities", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						name: "e2e-params",
+						version: 1,
+						namespaceId: ns || undefined,
+						paramsSchema: {
+							type: "object",
+							properties: { note: { type: "string" } },
+						},
+					}),
+				});
+				return r.status;
+			});
+			await page3.reload({ waitUntil: "load" });
+			await page3.waitForTimeout(800);
+
 			// 侧栏必须存在且当前项高亮为「源」
 			const nav = await page3.evaluate(() => {
 				const links = Array.from(document.querySelectorAll(".side-link"));
@@ -782,12 +816,49 @@ async function main() {
 				// 第二个参数是**匹配位置**，于是"哪个字段取不到"会报成
 				// 「样本里没有：0、27」这种看不懂的数字。
 				{
+					// 先确保至少选中一个有参数的出口：参数面板按勾选的出口渲染，
+					// 而"默认选哪个"会随能力集合变化（例如手机推送能力按产品节奏隐藏后，
+					// 默认出口就换人了）。显式勾第一个"有参数"的出口，断言才稳定。
+					await page3.evaluate(() => {
+						const opts = Array.from(
+							document.querySelectorAll("#f-targets .target-opt"),
+						);
+						const opt =
+							opts.find((l) => /e2e-params/.test(l.textContent)) ||
+							opts.find((l) => /个参数|param/i.test(l.textContent));
+						if (opt) {
+							const cb = opt.querySelector("input.target-cap");
+							if (cb && !cb.checked) {
+								cb.checked = true;
+								cb.dispatchEvent(new Event("change", { bubbles: true }));
+							}
+						}
+					});
+					await page3.waitForTimeout(300);
+					const diag = await page3.evaluate(() => ({
+						fields: document.querySelectorAll("[data-param-field]").length,
+						targets: document.querySelectorAll("#f-targets input.target-cap").length,
+						checked: document.querySelectorAll("#f-targets input.target-cap:checked").length,
+						ns: document.querySelector(".scope-ns")?.textContent || "",
+					}));
+					H.check(
+						"出口参数面板渲染出可编辑字段",
+						diag.fields > 0,
+						JSON.stringify(diag),
+					);
+
 					const preview = async (v) =>
 						page3.evaluate((val) => {
-							const f = Array.from(document.querySelectorAll("[data-param-field]")).find(
-								(x) => x.querySelector("[data-param]").dataset.ptype === "string",
-							) || document.querySelectorAll("[data-param-field]")[1];
+							const fields = Array.from(
+								document.querySelectorAll("[data-param-field]"),
+							);
+							const f =
+								fields.find(
+									(x) => x.querySelector("[data-param]")?.dataset.ptype === "string",
+								) || fields[0];
+							if (!f) return { pv: "no-field", text: "" };
 							const i = f.querySelector("[data-param]");
+							if (!i) return { pv: "no-input", text: "" };
 							i.value = val;
 							i.dispatchEvent(new Event("input", { bubbles: true }));
 							const tip = f.querySelector(".param-tip");
@@ -1023,16 +1094,16 @@ async function main() {
 			await page3.close();
 		}
 
-		// demo-badge 应隐藏（有真实数据，非演示模式）
-		const badgeHidden = await page.evaluate(() => {
-			const b = document.getElementById("demo-badge");
-			if (!b) return "missing";
-			return b.classList.contains("hidden");
-		});
+		// 演示模式已整体移除（#273）：不再有 demo-badge，页面要么渲染真实数据、
+		// 要么渲染「载入失败 + 重试」。这条断言防的是"演示数据又偷偷回来"。
+		const demoLeftovers = await page.evaluate(() => ({
+			badge: !!document.getElementById("demo-badge"),
+			text: (document.body.textContent || "").includes("演示数据"),
+		}));
 		H.check(
-			"已登录 index 不显示「演示数据」徽章",
-			badgeHidden === true,
-			`badgeHidden=${badgeHidden}`,
+			"index 不再有演示模式残留（#demo-badge 已移除）",
+			demoLeftovers.badge === false && demoLeftovers.text === false,
+			JSON.stringify(demoLeftovers),
 		);
 
 		// 真实通知应出现在列表中
@@ -1047,79 +1118,61 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- G. index.html 演示态：后端宕机 → 演示数据状态正确（回归：旧字段 status 曾致全部降级 working）----
-	console.log("--- index 演示态（后端宕机）---");
+	// ---- G. index.html 后端宕机 → 如实报「载入失败 + 重试」，**不伪造数据**（#273）----
+	console.log("--- index 后端宕机（错误态 + 重试）---");
 	{
 		const s = H.seed(server.dbPath, "demo_test");
 		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
-		// 拦截 /v1/* 模拟后端宕机：api() 网络错误（非 401）→ 不跳登录，回退演示数据
+		// 拦截 /v1/* 模拟后端宕机（网络错误，非 401 → 不跳登录）
 		await ctx.route("**/v1/**", (route) => route.abort());
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/index.html", {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		await H.waitForAppReady(page, "workspace", {
-			dataAnchor: "#notif-list .notif-row",
-		});
+		await H.waitForAppReady(page, "workspace");
 
-		// 演示徽章亮
-		const demoBadgeVisible = await page.evaluate(() => {
-			const b = document.getElementById("demo-badge");
-			return !!b && !b.classList.contains("hidden");
-		});
-		H.check("index 演示态显示「演示数据」徽章", demoBadgeVisible);
-
-		// 演示数据 8 条：done×5 / error×2 / interrupted×1 / working×0
-		// （旧残留：demo 数据用旧协议字段 status，normalize 只读 agentState，全部降级 working）
-		const badgeCounts = await page.evaluate(() => ({
-			success: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-success",
-			).length,
-			error: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-error",
-			).length,
-			warn: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-warn",
-			).length,
-			info: document.querySelectorAll(
-				"#notif-list .notif-row .status-badge.status-info",
-			).length,
-		}));
-		H.check(
-			"演示态徽章 done×5",
-			badgeCounts.success === 5,
-			JSON.stringify(badgeCounts),
-		);
-		H.check(
-			"演示态徽章 error×2",
-			badgeCounts.error === 2,
-			JSON.stringify(badgeCounts),
-		);
-		H.check(
-			"演示态徽章 interrupted×1（warn）",
-			badgeCounts.warn === 1,
-			JSON.stringify(badgeCounts),
-		);
-		H.check(
-			"演示态无 working 降级（info×0）",
-			badgeCounts.info === 0,
-			JSON.stringify(badgeCounts),
-		);
-
-		// 汇总行 okCnt 按真实状态统计（旧 bug：全部 working → 0 条成功）
-		const summaryOk = await page.evaluate(() => {
-			const m = document
-				.getElementById("summary-line")
-				?.textContent.match(/(\d+)/g);
-			return m ? m.map(Number) : null;
+		// 错误态出现：列表位置渲染「载入失败…」+ 重试按钮
+		const errState = await page.evaluate(() => {
+			const list = document.getElementById("notif-list");
+			const btn = list && list.querySelector("button");
+			return {
+				hasList: !!list,
+				text: (list && list.textContent) || "",
+				hasRetry: !!btn,
+				retryText: btn ? btn.textContent.trim() : "",
+				badge: !!document.getElementById("demo-badge"),
+				rows: document.querySelectorAll("#notif-list .notif-row").length,
+			};
 		});
 		H.check(
-			"演示态汇总行「8 条通知，5 条成功」",
-			!!summaryOk && summaryOk[0] === 8 && summaryOk[1] === 5,
-			JSON.stringify(summaryOk),
+			"后端宕机时 index 渲染「载入失败」而不是演示数据",
+			/载入失败|Failed to load|読み込みに失敗|Error al cargar/.test(errState.text),
+			JSON.stringify(errState).slice(0, 200),
 		);
+		H.check("错误态提供「重试」按钮", errState.hasRetry, JSON.stringify(errState));
+		H.check(
+			"错误态不伪造任何任务行（不渲染演示数据）",
+			errState.rows === 0,
+			`rows=${errState.rows}`,
+		);
+		H.check("演示徽章已不存在（#273）", errState.badge === false, "");
+
+		// 恢复后端 → 点重试 → 真实数据出现（证明"重试"是真的重取，不是装饰）
+		await ctx.unroute("**/v1/**");
+		await page.evaluate(() => {
+			const btn = document.querySelector("#notif-list button");
+			if (btn) btn.click();
+		});
+		await page.waitForFunction(
+			() => document.querySelectorAll("#notif-list .notif-row").length > 0,
+			{ timeout: 15000 },
+		);
+		const afterRetry = await page.evaluate(
+			() => document.querySelectorAll("#notif-list .notif-row").length,
+		);
+		H.check("点重试后真实任务出现", afterRetry > 0, `rows=${afterRetry}`);
 
 		await page.close();
 		await ctx.close();
@@ -1209,13 +1262,55 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- D. 全部页面 × 2 视口渲染检查（未登录态，验证纯渲染；受保护页会跳 login，跳后渲染 login 也算无 JS 错误）----
-	console.log("--- 全页面 × 双视口渲染 ---");
+	// ---- D. 全部页面 × 2 视口渲染检查 ----
+	//
+	// **这里必须分两种身份跑**（原来是全匿名，等于对受保护页零覆盖）：
+	// 未登录访问 capabilities.html / nodes.html 会被守卫跳到 login.html，
+	// 于是 pageerror 与横向溢出检查量到的是**登录页**，而新建能力弹窗、
+	// 部署面板、节点产物块这些真东西一个都没进过浏览器。
+	// 症状是「UI 改崩了但套件全绿」——比红更危险。
+	//
+	// 所以：公开页走匿名（顺带证明它们不需要登录），受保护页走已登录会话。
+	console.log("--- 全页面 × 双视口渲染（公开页匿名 / 受保护页已登录）---");
+	const authSeed = H.seed(server.dbPath, "frontend_pages");
 	for (const vp of VIEWPORTS) {
-		const ctx = await newCtx();
+		const ctxAnon = await newCtx();
+		const ctxAuth = await newCtx();
+		await injectSession(ctxAuth, authSeed.session, server.base);
 		for (const p of PAGES) {
-			await checkPage(ctx, server.base + "/" + p, vp.name, vp);
+			const guarded = GUARDED.includes(p);
+			await checkPage(
+				guarded ? ctxAuth : ctxAnon,
+				server.base + "/" + p,
+				vp.name + (guarded ? "（已登录）" : "（未登录）"),
+				vp,
+			);
 		}
+		await ctxAnon.close();
+		await ctxAuth.close();
+	}
+
+	// D2：已登录时受保护页**真的停在原页**（不是又被跳到 login）。
+	// 上一步只证明「没 JS 错误/没溢出」，如果守卫把已登录用户也踢走，
+	// 上一步会静默地把 login.html 又量一遍 —— 依然是假绿。
+	{
+		const ctx = await newCtx();
+		await injectSession(ctx, authSeed.session, server.base);
+		const page = await ctx.newPage();
+		for (const p of ["capabilities.html", "nodes.html", "edges.html"]) {
+			await page.goto(server.base + "/" + p, { waitUntil: "load", timeout: 15000 });
+			await page.waitForTimeout(600);
+			const info = await page.evaluate(() => ({
+				url: location.pathname,
+				hasSidebar: !!document.getElementById("sidebar"),
+			}));
+			H.check(
+				`已登录访问 ${p} 停在原页（不是又被送去 login）`,
+				info.url.endsWith(p) && info.hasSidebar,
+				JSON.stringify(info),
+			);
+		}
+		await page.close();
 		await ctx.close();
 	}
 
@@ -1358,13 +1453,16 @@ main().catch(async (e) => {
 // 逐个确认 mock 有对应实现（返回 501 = 未实现）。
 // ---------------------------------------------------------------------------
 
-// checkSchemaEditor 验证 paramsSchema 的可视化编辑器（#92）。
+// checkCapabilityTemplates 验证「新建能力」的模板化流程（console-declares epic）。
 //
-// 这条最关键的断言不是"能加字段"，而是**不丢数据**：
-// 用户手写在 JSON 里、可视化表达不了的东西（patternProperties / $schema）
-// 切到可视化时必须提示并保留，绝不能被静默吞掉。
-// 另一个关键是非法 JSON 时不能切模式（否则用户的输入就没了）。
-async function checkSchemaEditor(page) {
+// 这替代了旧的 checkSchemaEditor：以前是一屏手写 paramsSchema + 出口名，
+// 用户得先懂 JSON Schema；现在是「选模板 → 填表单 → 看生成的脚本」。
+//
+// 但**表达力不能因此下降**，所以钉三条：
+//   ① 九个模板都在，字段由模板驱动（不是写死在前端的第二份副本）
+//   ② 只读脚本 → 可编辑脚本（脚本模式的出口）
+//   ③ 高级参数契约可以手写 JSON，且**非法 JSON 必须当场拦住**（不能等到后端 400）
+async function checkCapabilityTemplates(page) {
 	const base = page.url().replace(/\/edge[s]?\.html.*$|\/capabilities\.html.*$/, "");
 	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
 	await page.waitForTimeout(1600);
@@ -1379,108 +1477,152 @@ async function checkSchemaEditor(page) {
 	if (!opened) return;
 	await page.waitForTimeout(500);
 
-	// 默认应该是可视化模式
-	const initial = await page.evaluate(() => ({
-		formVisible: !document.getElementById("schema-form").classList.contains("hidden"),
-		jsonVisible: !document.getElementById("schema-json").classList.contains("hidden"),
+	// ① 步骤 1：九个模板，按 script / agent 分组
+	const tplStep = await page.evaluate(() => ({
+		stepVisible: !document.getElementById("tpl-step").classList.contains("hidden"),
+		formHidden: document.getElementById("tpl-form-step").classList.contains("hidden"),
+		tiles: document.querySelectorAll("[data-tpl]").length,
+		groups: document.querySelectorAll(".tpl-group").length,
+		ids: Array.from(document.querySelectorAll("[data-tpl]")).map((e) =>
+			e.getAttribute("data-tpl"),
+		),
 	}));
-	H.check("schema 默认是可视化模式", initial.formVisible && !initial.jsonVisible,
-		`form=${initial.formVisible} json=${initial.jsonVisible}`);
-
-	// 加字段
-	await page.click("#schema-add-field");
-	await page.waitForTimeout(150);
-	await page.click("#schema-add-field");
-	await page.waitForTimeout(250);
-	const added = await page.evaluate(() => document.querySelectorAll(".sf-row").length);
-	H.check("可视化模式能加字段", added === 2, `rows=${added}`);
-
-	// 切到 JSON 看生成的结构
-	await page.click("#schema-mode-json");
-	await page.waitForTimeout(300);
-	const gen = await page.evaluate(() => {
-		try {
-			return JSON.parse(document.getElementById("cap-schema").value);
-		} catch {
-			// 解析失败 = 不是合法 JSON，回 null 给下面的断言判断
-			return null;
-		}
-	});
-	H.check("切到 JSON 后是合法 JSON", gen != null);
-	H.check("生成的是 object schema", gen && gen.type === "object", JSON.stringify(gen && gen.type));
+	H.check("弹窗先给模板选择（不是一屏 JSON）", tplStep.stepVisible && tplStep.formHidden,
+		JSON.stringify(tplStep));
+	H.check("九个内置模板都在", tplStep.tiles === 9, `tiles=${tplStep.tiles}`);
+	H.check("模板按类别分组", tplStep.groups >= 2, `groups=${tplStep.groups}`);
 	H.check(
-		"生成的 properties 有刚加的字段",
-		gen && gen.properties && Object.keys(gen.properties).length === 2,
-		JSON.stringify(gen && gen.properties && Object.keys(gen.properties)),
-	);
-	H.check(
-		"没有生成后端不支持的 key（$ref/oneOf/if-then-else）",
-		gen && !["$ref", "oneOf", "anyOf", "allOf", "if"].some((k) => k in gen),
-		JSON.stringify(gen && Object.keys(gen)),
+		"模板 id 与契约一致（agent 靠模板而不是新执行器类型）",
+		["script.blank", "script.http", "script.git", "script.test", "script.notify",
+			"agent.claude", "agent.codex", "agent.pi", "agent.custom"].every((id) =>
+			tplStep.ids.includes(id),
+		),
+		JSON.stringify(tplStep.ids),
 	);
 
-	// 手写含"可视化表达不了"的 key，切回可视化 → 必须提示且保留
-	await page.evaluate(() => {
-		document.getElementById("cap-schema").value = JSON.stringify(
-			{
-				type: "object",
-				properties: { channel: { type: "string", enum: ["slack", "email"] } },
-				required: ["channel"],
-				patternProperties: { "^x-": { type: "string" } },
-			},
-			null,
-			2,
-		);
-	});
-	await page.click("#schema-mode-form");
+	// 选 agent.claude：它带 prompt 必填 + model/tools
+	await page.click('[data-tpl="agent.claude"]');
 	await page.waitForTimeout(400);
 
-	const preserved = await page.evaluate(() => {
-		const pEl = document.getElementById("schema-preserved");
+	const form = await page.evaluate(() => ({
+		formVisible: !document.getElementById("tpl-form-step").classList.contains("hidden"),
+		stepHidden: document.getElementById("tpl-step").classList.contains("hidden"),
+		fieldKeys: Array.from(document.querySelectorAll("#tpl-fields [data-field]")).map((e) =>
+			e.getAttribute("data-field"),
+		),
+		required: Array.from(document.querySelectorAll("#tpl-fields [data-required='1']")).map((e) =>
+			e.getAttribute("data-field"),
+		),
+		script: (document.getElementById("script-pre") || {}).textContent || "",
+		requires: (document.getElementById("tpl-requires") || {}).textContent || "",
+		scriptInputHidden: document.getElementById("script-input").classList.contains("hidden"),
+	}));
+	H.check("选模板后进入表单步骤", form.formVisible && form.stepHidden);
+	H.check(
+		"字段由模板驱动（prompt/model/tools 都在）",
+		["prompt", "model", "tools"].every((k) => form.fieldKeys.includes(k)),
+		JSON.stringify(form.fieldKeys),
+	);
+	H.check(
+		"必填标记只落在 prompt 上",
+		form.required.length === 1 && form.required[0] === "prompt",
+		JSON.stringify(form.required),
+	);
+	H.check(
+		"只读脚本就是模板正文（直接 exec，靠 shebang）",
+		/^#!/.test(form.script.trim()) && /claude/.test(form.script),
+		form.script.slice(0, 120),
+	);
+	H.check(
+		"预装依赖被显式告知（缺了部署会失败）",
+		/\bclaude\b/.test(form.requires),
+		form.requires,
+	);
+	H.check("默认是只读脚本（不是一进去就给空编辑器）", form.scriptInputHidden === true);
+
+	// ② 脚本模式：切到可编辑，改一个字，再切回来
+	await page.click("#script-mode-edit");
+	await page.waitForTimeout(250);
+	const editMode = await page.evaluate(() => ({
+		visible: !document.getElementById("script-input").classList.contains("hidden"),
+		preHidden: document.getElementById("script-pre").classList.contains("hidden"),
+		value: document.getElementById("script-input").value,
+	}));
+	H.check("切到脚本模式后 textarea 可见、只读块隐藏",
+		editMode.visible && editMode.preHidden, JSON.stringify(editMode));
+	H.check("脚本模式下预填的就是模板正文", /^#!/.test(editMode.value.trim()));
+
+	await page.evaluate(() => {
+		const el = document.getElementById("script-input");
+		el.value = "#!/bin/bash\nset -euo pipefail\necho edited-by-e2e\n";
+		el.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	await page.click("#script-mode-view");
+	await page.waitForTimeout(250);
+	const afterEdit = await page.evaluate(
+		() => document.getElementById("script-pre").textContent || "",
+	);
+	H.check("改过的脚本能在只读模式看到（没有丢）", /edited-by-e2e/.test(afterEdit),
+		afterEdit.slice(0, 120));
+
+	// ③ 高级参数契约：预填 → 非法 JSON 被当场拦住
+	await page.click("#schema-toggle");
+	await page.waitForTimeout(250);
+	const adv = await page.evaluate(() => {
+		const wrap = document.getElementById("schema-wrap");
+		let parsed = null;
+		try {
+			parsed = JSON.parse(document.getElementById("cap-schema").value);
+		} catch {
+			parsed = null;
+		}
 		return {
-			notified: pEl && !pEl.classList.contains("hidden"),
-			text: pEl ? pEl.textContent.trim() : "",
-			rows: document.querySelectorAll(".sf-row").length,
+			visible: !wrap.classList.contains("hidden"),
+			parsed,
 		};
 	});
-	H.check("可视化表达不了的 key 有明确提示", preserved.notified === true, preserved.text);
-	H.check("提示里点名了 patternProperties", /patternProperties/.test(preserved.text), preserved.text);
-	H.check("能渲染的部分照常渲染", preserved.rows === 1, `rows=${preserved.rows}`);
+	H.check("高级参数区可展开", adv.visible === true);
+	H.check(
+		"预填的是模板推导的契约（不是空白）",
+		adv.parsed && adv.parsed.type === "object" && adv.parsed.required?.includes("prompt"),
+		JSON.stringify(adv.parsed),
+	);
 
-	// 再切回 JSON：那个 key 必须还在
-	await page.click("#schema-mode-json");
-	await page.waitForTimeout(300);
-	const kept = await page.evaluate(() => {
+	await page.evaluate(() => {
+		document.getElementById("cap-schema").value = "{ broken";
+		document.getElementById("cap-name").value = "e2e.broken";
+	});
+	await page.click("#cap-submit");
+	await page.waitForTimeout(400);
+	const blocked = await page.evaluate(() => ({
+		err: (document.getElementById("schema-error") || {}).textContent || "",
+		errHidden: document.getElementById("schema-error").classList.contains("hidden"),
+		modalStillOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+	}));
+	H.check("非法参数 JSON 被当场拦住（不发给后端）",
+		blocked.errHidden === false && blocked.err.length > 0, JSON.stringify(blocked));
+	H.check("拦住时不关闭弹窗（否则用户输入丢了）", blocked.modalStillOpen === true);
+
+	// 表达力兜底：能塞进模板表达不了的 key（pattern），并被接受
+	await page.evaluate(() => {
+		document.getElementById("cap-schema").value = JSON.stringify({
+			type: "object",
+			properties: { branch: { type: "string", pattern: "^[a-z0-9-]+$" } },
+			required: ["branch"],
+		});
+	});
+	const accepted = await page.evaluate(() => {
 		try {
 			return JSON.parse(document.getElementById("cap-schema").value);
 		} catch {
-			// 解析失败 = 不是合法 JSON，回 null 给下面的断言判断
 			return null;
 		}
 	});
 	H.check(
-		"逐键往返不丢数据（patternProperties 还在）",
-		kept && kept.patternProperties && kept.patternProperties["^x-"],
-		JSON.stringify(kept && kept.patternProperties),
+		"高级模式能表达模板字段表达不了的约束（pattern）",
+		accepted && accepted.properties?.branch?.pattern === "^[a-z0-9-]+$",
+		JSON.stringify(accepted && accepted.properties),
 	);
-	H.check(
-		"enum 往返不丢",
-		kept && kept.properties && JSON.stringify(kept.properties.channel?.enum) === '["slack","email"]',
-		JSON.stringify(kept && kept.properties && kept.properties.channel),
-	);
-
-	// 非法 JSON：不能切模式（否则用户输入丢了）
-	await page.evaluate(() => {
-		document.getElementById("cap-schema").value = "{ broken";
-	});
-	await page.click("#schema-mode-form");
-	await page.waitForTimeout(400);
-	const bad = await page.evaluate(() => ({
-		stillJson: !document.getElementById("schema-json").classList.contains("hidden"),
-		text: document.getElementById("cap-schema").value,
-	}));
-	H.check("非法 JSON 时不切换到可视化", bad.stillJson === true);
-	H.check("非法 JSON 时保留用户输入", bad.text === "{ broken", JSON.stringify(bad.text));
 }
 
 // checkEdgesPage 验证出口表已经独立成页（#93）。
@@ -3111,7 +3253,13 @@ async function checkNodeCaps(page, base) {
 async function checkDeclaredBy(page) {
 	const info = await page.evaluate(async () => {
 		const api = await (await fetch("/v1/capabilities")).json();
-		const caps = api.capabilities || [];
+		// 用页面同一套过滤：暂未开放的能力（手机推送）后端仍在、UI 隐去，
+		// 期望值必须按"页面上能看到的"算，否则永远差一行。
+		const all = api.capabilities || [];
+		const caps =
+			window.Anotify && window.Anotify.filterCaps
+				? window.Anotify.filterCaps(all)
+				: all;
 		const rows = Array.from(document.querySelectorAll(".cap-row"));
 		return {
 			hasLabel: rows.some((r) => /声明节点/.test(r.textContent)),
@@ -3123,6 +3271,9 @@ async function checkDeclaredBy(page) {
 				.map((c) => c.displayName || c.name),
 			dots: document.querySelectorAll(".cap-row .st-dot").length,
 			warnRows: rows.filter((r) => r.querySelector(".text-amber-400")).length,
+			// 手机推送能力（唯一的 hub 能力）按产品节奏隐藏时，hub 行为 0；
+			// pushUI 记录了这是"隐藏"还是"真没有"，断言据此区分。
+			pushUI: !!(window.Anotify && window.Anotify.pushUIEnabled),
 			hubRowText: rows
 				.filter((r) => r.textContent.includes("中枢执行"))
 				.map((r) => r.textContent.replace(/\s+/g, "")),
@@ -3136,8 +3287,11 @@ async function checkDeclaredBy(page) {
 	);
 	H.check(
 		"中枢执行的能力不误报「跑不起来」",
-		info.hub > 0 && info.hubRowText.length === info.hub,
-		`hub=${info.hub} rows=${info.hubRowText.length}`,
+		// 一边一个：hub 能力必须**有对应行**（不能画成"跑不起来"）。
+		// 手机推送隐藏期间 hub=0，此时只能要求"没有多出来的中枢行"；
+		// 一旦 pushUI 打开（PUSH_UI_ENABLED=true），hub>0 重新变成硬要求。
+		info.hubRowText.length === info.hub && (!info.pushUI || info.hub > 0),
+		`hub=${info.hub} rows=${info.hubRowText.length} pushUI=${info.pushUI}`,
 	);
 	H.check(
 		"没有节点声明的能力给出警告（不是静默）",
@@ -3258,6 +3412,7 @@ async function checkNodeRegister(page, base) {
 			origin: location.origin,
 			token: (document.getElementById("reg-token") || {}).textContent || "",
 			yaml: (document.getElementById("reg-yaml") || {}).textContent || "",
+			cmd: (document.getElementById("reg-cmd") || {}).textContent || "",
 			errorText: (document.getElementById("reg-error") || {}).textContent || "",
 			listText: (document.getElementById("nodes-list") || {}).textContent || "",
 		};
@@ -3317,6 +3472,11 @@ async function checkNodeRegister(page, base) {
 	);
 
 	// ---- ④ node.yaml 逐项形状（硬锁：能直接粘进 agent） ----
+	//
+	// **v2 变了**：node.yaml 只剩 bootstrap 四件（name/server/token/instances）。
+	// 能力和它的执行方式都不在机器上了 —— 它们由控制台的产物部署下来。
+	// 所以这里从「必须含 capabilities/run」翻成「必须**不含** capabilities/run」：
+	// 多一个键就是未知字段，agent 会直接启动失败。
 	const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const yaml = reg.yaml;
 	const yamlToken = (yaml.match(/^token: (\S+)\s*$/m) || [])[1] || "";
@@ -3325,14 +3485,13 @@ async function checkNodeRegister(page, base) {
 		"server 行": /^server: \S+/m.test(yaml) && yaml.includes("server: " + reg.origin),
 		"token 行": /^token: \S+/m.test(yaml) && yamlToken === token,
 		"instances: 2": /^instances: 2\s*$/m.test(yaml),
-		"capabilities 是空映射": /^capabilities:[ \t]*$/m.test(yaml),
-		// 行内匹配一律用 [ \t] 不用 \s：\s 含换行，`run:\s*\S` 会跨行咬到
-		// 下一行的 `#`，把合规 YAML 误判成 `run: bash`（自测里真被这条坑过）
-		"run 是映射（单独一行）": /^[ \t]*#?[ \t]*run:[ \t]*$/m.test(yaml),
-		"runner: bash 缩进在 run 下": /^[ \t]*#?[ \t]*runner: bash/m.test(yaml),
+		"只有四行（bootstrap 四件）":
+			yaml.trim().split(/\r?\n/).filter((l) => l.trim() !== "").length === 4,
 	};
 	const yamlBad = {
-		"run 后面跟了标量（#197 的坑）": /^[ \t]*#?[ \t]*run:[ \t]*\S/m.test(yaml),
+		"capabilities 键（v2 已删）": /^capabilities:/m.test(yaml),
+		"run 键（执行方式归产物）": /^[ \t]*run:/m.test(yaml),
+		"runner 键（v2 不再有 runner 枚举）": /^[ \t]*runner:/m.test(yaml),
 		"有 node: 包装": /^node:/m.test(yaml),
 		"用了 timeout_sec（agent 要 timeoutSec）": yaml.includes("timeout_sec"),
 	};
@@ -3340,9 +3499,48 @@ async function checkNodeRegister(page, base) {
 		Object.values(yamlWant).every(Boolean) &&
 		!Object.values(yamlBad).some(Boolean);
 	H.check(
-		"令牌块里的 node.yaml 是能直接粘的完整配置",
+		"令牌块里的 node.yaml 是 v2 的 bootstrap 四件（不再有 capabilities/run）",
 		yamlOk,
 		`${JSON.stringify({ ...yamlWant, ...yamlBad })} — ${JSON.stringify(yaml.slice(0, 200))}`,
+	);
+
+	// ---- ④b 一行 docker 命令（首选路径，必须真的能跑） ----
+	//
+	// 这条不是"文案好看"的检查：cmd/agent 的 configFromEnv 只认 ANOTIFY_TOKEN 非空，
+	// 而容器里没有 node.yaml 可指 —— 少了 ANOTIFY_SERVER 会得到「启动成功但一直
+	// 连不上」，是所有故障里最难查的一种。所以三条都必须逐字对上。
+	const cmd = reg.cmd;
+	H.check(
+		"注册成功给了一行能直接粘的 docker 命令",
+		/docker run/.test(cmd) && cmd.includes(token) && token.length > 8,
+		cmd.slice(0, 200),
+	);
+	H.check(
+		"docker 命令带 ANOTIFY_SERVER=<当前 origin>（容器里猜不到中枢地址）",
+		cmd.includes("ANOTIFY_SERVER=" + reg.origin),
+		`origin=${reg.origin} cmd=${cmd.slice(0, 200)}`,
+	);
+	H.check(
+		"docker 命令带 ANOTIFY_TOKEN=<真令牌>",
+		cmd.includes("ANOTIFY_TOKEN=" + token),
+		cmd.slice(0, 200),
+	);
+	H.check(
+		"docker 命令不含配置文件（容器里没有 node.yaml 可指）",
+		!/node\.yaml/.test(cmd),
+		cmd.slice(0, 200),
+	);
+	// 填了 2 个槽位就必须带出去：不带 = 用 agent 缺省（1 个），
+	// 症状是「机器闲着但任务排队」，而用户明明在面板上填了 2。
+	H.check(
+		"docker 命令带 ANOTIFY_INSTANCES=2（面板填的槽位数不能被吞掉）",
+		cmd.includes("ANOTIFY_INSTANCES=2"),
+		cmd.slice(0, 220),
+	);
+	H.check(
+		"docker 命令带 ANOTIFY_NAME=<注册的节点名>（否则中枢只看到主机名）",
+		cmd.includes("ANOTIFY_NAME=" + regName),
+		cmd.slice(0, 220),
 	);
 
 	// ---- ⑤ 列表刷新 → 新节点出现（offline 也算，注册完还没连上来） ----
@@ -3785,7 +3983,17 @@ async function checkScope(page) {
 		const n = async (ns) => {
 			const c = await (await fetch(`/v1/capabilities?namespaceId=${ns}`)).json();
 			const d = await (await fetch(`/v1/nodes?namespaceId=${ns}`)).json();
-			return { caps: (c.capabilities || []).length, nodes: (d.nodes || []).length };
+			const list = c.capabilities || [];
+			// visible = 页面实际会渲染的条数（暂未开放的能力被 UI 隐去）
+			const visible =
+				window.Anotify && window.Anotify.filterCaps
+					? window.Anotify.filterCaps(list).length
+					: list.length;
+			return {
+				caps: list.length,
+				visible,
+				nodes: (d.nodes || []).length,
+			};
 		};
 		return {
 			prod: await n("ns_mock_prod"),
@@ -3835,7 +4043,9 @@ async function checkScope(page) {
 	}));
 	H.check(
 		"能力页跟着命名空间变（不再有「组织级」页面 / 徽标）",
-		!capPage.badge && capPage.rows === caps.staging.caps && capPage.ns.includes("staging"),
+		!capPage.badge &&
+			capPage.rows === caps.staging.visible &&
+			capPage.ns.includes("staging"),
 		`徽标=${capPage.badge} 行=${capPage.rows} 期望=${caps.staging.caps} 当前=${capPage.ns}`,
 	);
 
@@ -4659,7 +4869,7 @@ async function runMockCoverage() {
 		await page.waitForTimeout(1200);
 		// 流向图的形状断言放在带 mock 数据的 sources.html 上
 		if (p === "capabilities.html") {
-			await checkSchemaEditor(page);
+			await checkCapabilityTemplates(page);
 			await checkEdgesPage(page);
 			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
 			await checkDeclaredBy(page);

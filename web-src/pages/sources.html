@@ -662,6 +662,7 @@
 
       let SOURCES = [];
       let CAPS = [];
+      let USABLE_CAPS = []; // 可选目标（已过滤暂未开放的能力）
       let editingID = null;
       // 正在编辑的源对象（新建时为 null）。列表页没有详情页那个 SRC，
       // 但 webhook 回调指引需要 hookUrl，所以留一份。
@@ -748,7 +749,9 @@
           apiGet(API + "/capabilities"),
         ]);
         SOURCES = (srcData && srcData.sources) || [];
+        // CAPS 全量（已有目标要渲染）；「可选目标」过滤掉暂未开放的能力。
         CAPS = (capData && capData.capabilities) || [];
+        USABLE_CAPS = window.Anotify.filterCaps(CAPS);
         render();
       }
 
@@ -988,7 +991,10 @@
         // 用户以为"建了却选不到"。
         try {
           const capData = await apiGet(API + "/capabilities");
-          if (capData && Array.isArray(capData.capabilities)) CAPS = capData.capabilities;
+          if (capData && Array.isArray(capData.capabilities)) {
+            CAPS = capData.capabilities;
+            USABLE_CAPS = window.Anotify.filterCaps(CAPS);
+          }
         } catch (e) {
           /* 拉不到就用缓存，不阻塞打开弹窗 */
         }
@@ -1149,7 +1155,9 @@
         // 建完能力就选不到了 —— 那正是这里要避免的。
         //
         // 判据回到 source：内置起点是唯一的"真正的入口"。
-        const usable = CAPS.filter((c) => !(c.source === "builtin" && c.kind === "origin"));
+        const usable = USABLE_CAPS.filter(
+          (c) => !(c.source === "builtin" && c.kind === "origin"),
+        );
 
         if (!usable.length) {
           box.appendChild(
@@ -2433,7 +2441,7 @@
         //
         // 不强依赖某个具体能力名（用户环境里未必有）：挑第一个有
         // paramsSchema 属性的能力，按它的字段名依次匹配变量。
-        const usable = CAPS.filter(
+        const usable = USABLE_CAPS.filter(
           (c) =>
             c &&
             !(c.source === "builtin" && c.kind === "origin") &&

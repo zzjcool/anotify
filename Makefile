@@ -17,7 +17,7 @@ BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
 # 但把 Makefile 映射成"shell 语言"的分析器会把它当 shell 解析并报语法错。
 VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
 
-.PHONY: help build fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -47,11 +47,14 @@ build: fe ## 构建单二进制（内嵌指纹后的前端）
 test: ## 运行全部单元测试（不含 make e2e / make integration）
 	go test ./... -count=1
 
-# contract: 契约 §9 的静态断言（A2 / A4）。这几条不依赖运行期，放在 CI 里最快。
+# contract: 契约 §9 的静态断言。这几条不依赖运行期，放在 CI 里最快。
 #
-# A2（不变量 I1）：schema 里不得出现可执行的命令/脚本概念
-# A4（不变量 I3）：kind 是推导量，**不得**落库
-contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4）+ openapi 与 mux 一致性
+# A2（I1）：schema 里不得出现可执行的命令/脚本概念
+# A4（I3）：kind 是推导量，**不得**落库
+# A5（I1）：中枢侧任何包不得 import os/exec —— 执行只发生在节点
+# A6（I1）：artifacts / deployments 必须有 digest 列（内容寻址）
+# A7（I1）：cmd/agent 不得触碰 node_capabilities（归属只能由部署派生）
+contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ openapi 与 mux 一致性
 	@set -e; \
 	if grep -riE 'argv|shell|script' internal/store/schema.sql >/dev/null; then \
 		echo "❌ A2 失败：schema.sql 里出现 argv/shell/script（不变量 I1）"; \
@@ -60,7 +63,7 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4）+ openapi 与 mu
 	fi
 	@python3 scripts/check_contract.py
 	@python3 scripts/check_openapi.py
-	@echo "✅ 契约静态断言（A2/A4 + openapi 一致性）通过"
+	@echo "✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性）通过"
 
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试（不含 e2e / integration）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
@@ -138,6 +141,14 @@ e2e-one: ## 只跑某个 E2E 套件：make e2e-one S=auth_flow
 docker: ## 构建 Docker 镜像
 	docker build -t anotify .
 
+# docker-agent 构建节点侧镜像。控制台「加机器」面板给的那行命令就是它的用法：
+#   docker run -d --restart=always -e ANOTIFY_SERVER=... -e ANOTIFY_TOKEN=... anotify-agent
+#
+# 与中枢镜像分开是刻意的：agent 不需要 web/dist（少一个量级的体积），
+# 而且它跑在**用户的**机器上，不该把中枢的前端产物运过去。
+docker-agent: ## 构建节点侧 Docker 镜像
+	docker build -f Dockerfile.agent -t anotify-agent .
+
 docker-run: ## 运行 Docker 容器（需传入 VAPID 环境变量）
 	docker run --rm -p $(PORT):8080 \
 	  -e ANOTIFY_VAPID_PUBLIC_KEY=$$ANOTIFY_VAPID_PUBLIC_KEY \
@@ -156,6 +167,85 @@ push: ## 构建并推送镜像到 GHCR（ghcr.io/zzjcool/anotify）
 	docker buildx build --platform linux/amd64,linux/arm64 \
 	  -t ghcr.io/zzjcool/anotify:latest \
 	  --push .
+
+# ---- 本地开发环境（docker compose + 可选 Cloudflare 隧道）----
+# 与 up/down 的区别：这份从**源码**构建（含 devseed 播种工具）、带隧道 sidecar、
+# 默认只监听 127.0.0.1，容器名/卷名都带 -dev 后缀，不会碰已部署实例。
+
+# --env-file 让 .env.dev 参与**变量插值**（env_file: 只给容器注入，不参与插值）
+DEV_COMPOSE := docker compose --env-file .env.dev -f docker-compose.dev.yml
+DEV_PROFILE := $(if $(TUNNEL),--profile tunnel,)
+
+dev-env: ## 生成 .env.dev（真实 VAPID 密钥；已存在则不动）
+	@if [ -f .env.dev ]; then echo ".env.dev 已存在，跳过（要重建请先删除）"; else \
+	  cp .env.dev.example .env.dev && \
+	  $(MAKE) --no-print-directory _dev-env-keys && \
+	  echo "✅ .env.dev 已生成"; fi
+
+_dev-env-keys:
+	@tmp=$$(mktemp) && GOPROXY=$${GOPROXY:-direct} GOSUMDB=sum.golang.org GOTOOLCHAIN=auto \
+	  go run ./scripts/genkeys.go > $$tmp && \
+	  pub=$$(grep '^ANOTIFY_VAPID_PUBLIC_KEY=' $$tmp | cut -d= -f2-) && \
+	  priv=$$(grep '^ANOTIFY_VAPID_PRIVATE_KEY=' $$tmp | cut -d= -f2-) && \
+	  sed -i "s|^ANOTIFY_VAPID_PUBLIC_KEY=.*|ANOTIFY_VAPID_PUBLIC_KEY=$$pub|" .env.dev && \
+	  sed -i "s|^ANOTIFY_VAPID_PRIVATE_KEY=.*|ANOTIFY_VAPID_PRIVATE_KEY=$$priv|" .env.dev && \
+	  rm -f $$tmp && echo "  VAPID 密钥已写入 .env.dev"
+
+dev-up: dev-env ## 构建并启动开发环境（TUNNEL=1 同时起 Cloudflare 隧道）
+	$(DEV_COMPOSE) $(DEV_PROFILE) up -d --build
+	@echo "  本地: http://localhost:$${ANOTIFY_DEV_PORT:-8080}"
+	@echo "  日志: make dev-logs"
+	@echo "  播种: make dev-seed（或 make dev-demo 跑完整链路）"
+
+dev-down: ## 停止开发环境（数据卷保留）
+	$(DEV_COMPOSE) --profile tunnel --profile tools down
+
+dev-reset: ## 停止开发环境并删除数据卷（重新开始）
+	$(DEV_COMPOSE) --profile tunnel --profile tools down -v
+	@echo "  数据卷 anotify-dev-data 已删除"
+
+dev-logs: ## 跟踪开发环境日志（S=服务名，默认 anotify）
+	$(DEV_COMPOSE) logs -f $(or $(S),anotify)
+
+dev-seed: ## 播种 demo 用户（幂等）
+	$(DEV_COMPOSE) --profile tools run --build --rm seed
+
+dev-demo: ## 播种 + 真跑一条完整事件链（能力图/节点 WS/派发）
+	$(DEV_COMPOSE) --profile tools run --build --rm demo
+
+dev-sh: ## 进开发容器（调试）
+	$(DEV_COMPOSE) exec anotify sh
+
+dev-tunnel-setup: ## 一次性：建命名隧道 + 配 DNS + 写本地 ingress（需先 cloudflared tunnel login）
+	@command -v cloudflared >/dev/null || { echo "缺 cloudflared（https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/）"; exit 1; }
+	@test -f $$HOME/.cloudflared/cert.pem || { echo "未登录：先跑 cloudflared tunnel login"; exit 1; }
+	@TUNNEL=$${TUNNEL:-anotify-dev}; DOMAIN=$${DOMAIN:-anotify-dev.openaaas.org}; \
+	  if ! cloudflared tunnel list 2>/dev/null | grep -qE "$$TUNNEL\b"; then \
+	    echo "建隧道 $$TUNNEL …"; cloudflared tunnel create $$TUNNEL; \
+	  else echo "隧道 $$TUNNEL 已存在"; fi; \
+	  TID=$$(cloudflared tunnel list 2>/dev/null | awk -v n="$$TUNNEL" '$$2==n{print $$1}'); \
+	  echo "tunnel id = $$TID"; \
+	  cloudflared tunnel route dns $$TUNNEL $$DOMAIN 2>&1 | tail -1; \
+	  mkdir -p .dev-tunnel; \
+	  printf '%s\n' \
+	    "# .dev-tunnel/config.yml —— 本地开发隧道的 ingress（make dev-tunnel-setup 生成，不入库）" \
+	    "tunnel: $$TID" \
+	    "credentials-file: /etc/cloudflared/credentials.json" \
+	    "no-autoupdate: true" \
+	    "" \
+	    "ingress:" \
+	    "  - hostname: $$DOMAIN" \
+	    "    service: http://anotify:8080" \
+	    "    originRequest:" \
+	    "      connectTimeout: 10s" \
+	    "  - service: http_status:404" > .dev-tunnel/config.yml; \
+	  echo "✅ 已写 .dev-tunnel/config.yml（$$DOMAIN → http://anotify:8080）"; \
+	  echo "   启动：make dev-up TUNNEL=1"
+
+dev-tunnel-quick: ## 临时隧道（随机 trycloudflare.com 域名，验证隧道链路用）
+	@echo "⚠️  临时隧道域名随机，Passkey 用不了（RP_ID 不匹配）；固定域名见 docs/dev-docker.md"
+	docker run --rm -it --network anotify-dev_default cloudflare/cloudflared:latest \
+	  tunnel --no-autoupdate --url http://anotify:8080
 
 tunnel: ## Cloudflare 命名隧道（固定域名 dev.openaaas.org）
 	cloudflared tunnel run anotify
