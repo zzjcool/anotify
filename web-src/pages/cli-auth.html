@@ -393,6 +393,19 @@
           box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent);
         }
       }
+      /* layout 冻结（web-src/layouts/focus.html 不在本页范围）：品牌行那颗红点
+         带 animate-ping 永续脉动且没有语义（REVIEW-2 F15），用页级覆盖只跑一次。
+         与 login.html 保持同一处理，三个 focus 页红点行为一致。 */
+      header .animate-ping {
+        animation-iteration-count: 1;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        header .animate-ping {
+          animation: none;
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         .fingerprint-ring {
           animation: none;
