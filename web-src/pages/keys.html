@@ -420,7 +420,7 @@
       <!-- 加载骨架：独立容器，数据到后整体 remove。
            为什么不铺进 #keys-body：那是 e2e 的「数据已就绪」信号，骨架算子元素
            会让就绪提前成立、断言读到空白（契约 §2）。 -->
-      <div id="keys-skel" class="table-wrap kx-skel" aria-hidden="true">
+      <div id="keys-skel" class="table-wrap overflow-x-auto kx-skel" aria-hidden="true">
         <div class="kx-skel-row">
           <div class="skeleton kx-skel-a"></div>
           <div class="skeleton kx-skel-b"></div>
@@ -444,7 +444,7 @@
       <!-- 表格：hidden 只挂在这层裸 div 上（.table-wrap/.data-table 有各自的
            display/overflow，和 .hidden 同元素会被盖掉）。 -->
       <div id="keys-table" class="hidden">
-        <div class="table-wrap">
+        <div class="table-wrap overflow-x-auto">
           <table class="data-table kx-keys-table">
             <thead>
               <tr>
