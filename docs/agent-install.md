@@ -31,21 +31,53 @@ curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/instal
   | sh -s -- --token=nt_xxx --server=https://anotify.example.com
 ```
 
-它做四件事：
+它做**七**件事，中间不问你任何问题：
 
 1. 从 GitHub Release 下 `anotify-agent-<os>-<arch>`（先试 `latest`，可用 `ANOTIFY_VERSION=vX.Y.Z` 钉版本），
    并核对同名 `.sha256`——**校验不通过就中止**，不会装上一个来源不明的二进制
-2. 装到 `/usr/local/bin`（不可写则退到 `~/.local/bin` 并提示 PATH）
+2. 装到 `/usr/local/bin`（需要 root 就脚本自己申请 sudo；不想给 sudo 就加 `--user`）
 3. 写 `~/.anotify/node.yaml`（**权限 600**，里面有令牌）
-4. 生成 systemd **用户**服务 `~/.config/systemd/user/anotify-agent.service`
+4. **预检**：先以前台方式连一次中枢，`handshake.ok` 才继续。令牌错、中枢不通、TLS 不认
+   都在这一步停下并说清原因——不会给你留下一个开机就崩溃重启的服务
+5. 装成 systemd **系统**服务并以你的身份运行：开机自启、**没登录也活着**、挂了 3 秒重启
+6. 起来后核对 `is-active`，打印节点/中枢/日志/升级/卸载
+7. 清理上一版装法的残留（`~/.config/systemd/user/` 里的用户服务单元、`~/.local/bin` 里的旧副本）
+   —— 同名的两份 agent 会抢同一个令牌，表现成两台机器互相踢线
 
-随后：
+跑完你只会看到一段结果，**没有"下一步"**：
+
+```
+anotify-agent 已装好并已启动
+  节点      box-1
+  中枢      https://anotify.example.com
+  服务      anotify-agent：systemd 系统服务（开机自启；没登录也活着；挂了 3 秒后重启）
+  状态      active (running)
+```
+
+预检是这里最要紧的一步：它让"装完即上线"变成一条**可验证**的断言，而不是祈祷。
+跳过它没有任何好处，所以只在明确知道自己在干什么时才用 `--no-preflight`。
+
+### 升级 / 卸载
 
 ```bash
-systemctl --user enable --now anotify-agent
-journalctl --user -u anotify-agent -f
-# 没登录也要活着（可选）
-sudo loginctl enable-linger "$USER"
+# 升级：重跑同一条命令。令牌/中枢/名字从 node.yaml 读，不用再给 —— 只换二进制并重启服务
+curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh | sh
+
+# 卸载（保留 ~/.anotify 数据目录）
+sh install-agent.sh --uninstall
+# 连产物缓存/工作目录一起删
+sh install-agent.sh --uninstall --purge
+```
+
+### 没有 sudo 的机器
+
+脚本会退化成 systemd **用户**服务，并尝试 `loginctl enable-linger`（这一步决定"没登录时还在不在"）。
+两条都没成时它会明确告诉你缺什么，而不是假装装好了。容器里就更直接：
+
+```bash
+export ANOTIFY_RELEASE_BASE=https://your-mirror/anotify
+curl -fsSL https://your-mirror/install-agent.sh \
+  | sh -s -- --token=… --server=… --no-systemd   # 只装二进制+配置，前台跑
 ```
 
 ### 内网 / 镜像
@@ -82,7 +114,8 @@ anotify-agent -f ~/.anotify/node.yaml
 ### 三件必须知道的事
 
 - **别用 root 跑**。agent 的执行权限 = 它的用户权限；`install-agent.sh` 默认拒绝 root，
-  要强行也得显式 `--allow-root`。用普通用户 + systemd 用户服务就够了。
+  要强行也得显式 `--allow-root`。注意"装成系统服务"不等于"以 root 运行"：单元里写的是
+  `User=<你>`，root 只用来注册服务（`/etc/systemd/system` + `systemctl enable`）。
 - **令牌只显示一次**，且它会出现在命令里（所以会进 shell 历史）。介意的话把命令
   写进临时脚本执行，或执行完 `history -d`。丢了令牌就删节点重新注册。
 - **配置可以进 git**（除了 `token`）。它是可审计的：谁改了什么一目了然。
@@ -96,6 +129,16 @@ anotify-agent -f ~/.anotify/node.yaml
 ---
 
 ## 4. 常见问题
+
+**Q：安装时的预检报 `unknown_capability`（本地缓存里有中枢不认识的产物）**
+A：中枢上已经删除/改名过的能力还留在 `~/.anotify/index` 里，而 `hello` 会把本地缓存原样申报，
+中枢对不认识的能力是**整条连接拒绝**。安装脚本会自己把 `index` 挪成 `index.stale-<时间戳>`
+再重试一次（只挪不删，备份还在）；确认无碍后把备份删掉即可。手工装的场合自己执行
+`rm -rf ~/.anotify/index` 也行。
+
+**Q：预检报「这个令牌正被另一条连接用着」（superseded）**
+A：同一份 `node.yaml` 被两个进程或两台机器用了。中枢的策略是新连接顶掉旧连接，于是两边对跳、
+双方都跑不稳。先停掉旧的：`systemctl stop anotify-agent`（或 `systemctl --user stop anotify-agent`），再重跑安装。
 
 **Q：任务报了「能力 X@Y 声明的工作目录 /path 不存在」**
 A：那个目录是**能力定义**里的 `run.workDir`，节点上没有这个目录。去控制台把该能力的
