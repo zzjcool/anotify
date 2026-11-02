@@ -2940,6 +2940,10 @@ html.flograph-fullscreen-open body {
 .st-lease {
 	background: var(--st-lease_expired);
 }
+/* 同上，瀑布图条（.wf-bar）之外的 .b-lease 元素也应有色 */
+.b-lease {
+	background: var(--st-lease_expired);
+}
 
 /* ---------- trace 视图文字色（centurion 改 traceview.js 用）---------- */
 .tx-name {
