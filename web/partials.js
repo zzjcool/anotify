@@ -216,7 +216,9 @@
 				},
 				el("span", {
 					class: "font-script text-lg leading-none text-white",
-					text: "An",
+					/* F15：字标用单个 A —— 36px 的方块里 "An" 两个字母挤在一起，
+					 * 折叠态看起来像一团墨迹。 */
+					text: "A",
 				}),
 			),
 			el(
@@ -225,10 +227,9 @@
 					class:
 						"absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center",
 				},
+				/* F15：去掉 animate-ping 与那圈常驻的呼吸光环 —— 一直闪的点会抢
+				 * 注意力，折叠态下更是整条侧栏只剩一颗跳动的红点。留一个静态点即可。 */
 				el("span", { class: "absolute h-3 w-3 rounded-full bg-red-500" }),
-				el("span", {
-					class: "absolute h-3 w-3 animate-ping rounded-full bg-red-500/70",
-				}),
 			),
 		);
 		return wrap;
@@ -899,6 +900,27 @@
 				}
 			}
 			paintCollapseBtn();
+			paintCollapsedHints();
+		}
+
+		/* 折叠态的可访问性兜底：CSS 把文字收起来了（display:none / font-size:0），
+		 * 但鼠标悬停与屏幕阅读器仍需拿到名字——折叠时补 title，展开时移除
+		 * （展开态已有可见文字，再挂 title 只会多一层系统 tooltip 噪音）。
+		 * 这里的 title 是 .side-link[data-tip]::after 自定义 tooltip 的后备：
+		 * 后者在导航内部滚动或极窄屏下会被裁切，title 永远能出。 */
+		function paintCollapsedHints() {
+			const links = root.querySelectorAll("a.side-link");
+			for (const a of links) {
+				const label = a.dataset.tip || a.dataset.label || "";
+				if (collapsedNow) a.setAttribute("title", label);
+				else a.removeAttribute("title");
+			}
+			/* 品牌链接折叠后只剩 logo mark，补个 title 告诉它去哪 */
+			const brand = root.querySelector(".app-brand > a");
+			if (brand) {
+				if (collapsedNow) brand.setAttribute("title", "Anotify");
+				else brand.removeAttribute("title");
+			}
 		}
 
 		const collapseBtn = el("button", {
@@ -933,8 +955,10 @@
 				const a = el("a", {
 					href: item.href,
 					class: `side-link ${isActive ? "active" : ""}`,
-					/* data-label：折叠态的自定义 tooltip（ui.css 里 a.side-link[data-label]::after），
-					   文本节点仍在，tooltip 只是视觉层。 */
+					/* data-tip：折叠态的自定义 tooltip（ui.css 里
+a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层。
+					   data-label 保留为历史名字（wave 1 的 CSS 与外部脚本可能引用）。 */
+					"data-tip": label,
 					"data-label": label,
 				});
 				if (isActive) a.setAttribute("aria-current", "page");
@@ -985,15 +1009,19 @@
 		const userBlock = el(
 			"div",
 			{ class: "side-user" },
-			el("span", {
+			/* 头像本身是链接（进账户安全页）：折叠态下这是 footer 里唯一的入口，
+			 * 所以它必须具备可点击语义，不能只是个装饰性 span。 */
+			el("a", {
+				href: "security.html",
 				id: "sidebar-avatar",
-				/* ui.css 没给这个 id 配套组件类（.app-avatar-btn 是按钮，带 cursor:pointer，
-				 * 用在不可点的头像上会误导）。这里用 token 内联：两套主题自动跟着走，
-				 * 不出现硬编码色值。 */
+				/* ui.css 没给这个 id 配套组件类（.app-avatar-btn 是按钮样式，
+				 * 带 cursor:pointer + hover 背景，用在这里会看起来像按钮）。
+				 * 这里用 token 内联：两套主题自动跟着走，不出现硬编码色值。 */
 				class:
 					"flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-medium",
 				style:
 					"background: var(--accent-soft); color: var(--accent-strong); border: 1px solid var(--line-strong)",
+				"aria-label": t("ui.menu.security", "账户安全"),
 				text: (o.username[0] || "…").toUpperCase(),
 			}),
 			el(
@@ -1202,7 +1230,13 @@
 						}
 						return h;
 					})(),
-					el("p", { class: "app-topbar-sub", text: o.subtitle }),
+					/* 副标题去重：页面自己渲染了 .page-sub（hero 副标题）时，
+					   顶栏不再渲染同向的 subtitle —— 否则 events / sources 这类页会在
+					   两块相邻区域重复同一句话。运行时判定，不改 17 个页面的调用点。
+					   优先看 [data-page-sub]（显式声明），再退回 .page-sub。 */
+					pageMain.querySelector(".page-sub, [data-page-sub]")
+						? null
+						: el("p", { class: "app-topbar-sub", text: o.subtitle }),
 				),
 			),
 			el(
@@ -1859,7 +1893,15 @@
 	 * err 约定：fetch 层会带 status（见 api()）；网络错误没有 status。
 	 */
 	function loadErrorNode(err, onRetry) {
-		const msg = String((err && err.message) || err || "");
+		/* F2：调用方有时只传 {status}（例如 events.html 早年传的是 {status: r.status}）。
+		 * 直接 String(err) 会把 "[object Object]" 印到页面上。这里只接受
+		 * 字符串 / 带 message 的对象，其余一律当作「没有细节」交给下面的兜底文案。 */
+		const msg =
+			typeof err === "string"
+				? err
+				: err && typeof err.message === "string"
+					? err.message
+					: "";
 		const status = (err && err.status) || 0;
 		// 文案全部走 t()：错误态也得翻译，否则 es/ja 页面上会漏出中文
 		// （i18n_coverage 的 "no CJK residue" 就是抓这个的）。
@@ -2073,6 +2115,17 @@
 
 		document.body.prepend(banner);
 
+		/* 5b) F8：提示条在流内（不是 overlay），会把整页推下去。侧栏是
+		 * height:100dvh 的 sticky 元素，不修正就会比视口多出一条提示条的高度，
+		 * 底部用户块被裁。把真实高度写给 --shell-top-offset（见 ui.css .app-sidebar）。 */
+		const syncTopOffset = () => {
+			document.documentElement.style.setProperty(
+				"--shell-top-offset",
+				banner.getBoundingClientRect().height + "px",
+			);
+		};
+		syncTopOffset();
+
 		/* 6) Animate open (reduced-motion = instant) */
 		if (reduced) {
 			banner.classList.add("lang-hint--open");
@@ -2084,6 +2137,8 @@
 
 		/* 7) Close: animate out then remove; move focus to first focusable in header/main */
 		function closeHint() {
+			/* 提示条消失 = 顶部偏移归零，侧栏恢复满高 */
+			document.documentElement.style.setProperty("--shell-top-offset", "0px");
 			if (reduced) {
 				banner.remove();
 			} else {

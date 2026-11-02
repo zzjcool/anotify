@@ -2,15 +2,15 @@
 
 {{define "style"}}
     <style>
-      /* 出口（边）列表：一行一条边，左边 from —port→ to，右边删除 */
-      .edge-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 1rem;
-        align-items: center;
-      }
+      /* 本页专有样式（页头 / 卡片 / 按钮 / 弹层 / 列表行 / 空态 / 骨架
+         全部来自 ui.css，本页不再重复定义）。
+         颜色一律走 token：亮主题下这些类也必须读得清。 */
+
+      /* 出口（边）流：一行一条边，左边 from —port→ to，右边删除。
+         行本身用 .list-row（行高 / 分隔线 / hover 由共享样式给）。 */
       .edge-flow {
         display: flex;
+        flex: 1 1 auto;
         flex-wrap: wrap;
         align-items: center;
         gap: 0.4rem;
@@ -26,14 +26,16 @@
         color: var(--accent);
       }
       /* 出口名是这条边的身份：它是封闭集合里的一个值（不变量 I2），
-         必须比两端的能力名更醒目 */
+         必须比两端的能力名更醒目。
+         颜色只来自 --accent / --accent-soft：旧实现写的是 rgba(139,139,253,…)
+         的字面量，换主题时不跟着变。 */
       .edge-port {
-        font-family: var(--mono, monospace);
+        font-family: var(--font-mono);
         font-size: 0.7rem;
         color: var(--accent);
-        background: rgba(139, 139, 253, 0.1);
-        border: 1px solid rgba(139, 139, 253, 0.25);
-        border-radius: 6px;
+        background: var(--accent-soft);
+        border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+        border-radius: var(--r-xs);
         padding: 0.05rem 0.4rem;
         white-space: nowrap;
       }
@@ -43,7 +45,10 @@
       }
       /* 按 from 能力分组：同一能力的多个出口聚在一起 */
       .edge-group {
-        margin-bottom: 1.1rem;
+        margin-bottom: 1.25rem;
+      }
+      .edge-group:last-child {
+        margin-bottom: 0;
       }
       .edge-group-head {
         display: flex;
@@ -52,9 +57,8 @@
         justify-content: space-between;
         gap: 0.5rem;
         padding: 0 0.15rem 0.4rem;
-        margin-bottom: 0.45rem;
+        margin-bottom: 0.5rem;
         border-bottom: 1px solid var(--line);
-        font-size: 0.75rem;
       }
       /* 扇出标记：一个出口对应多个下游时显式标出来。
          这是模型的核心形状之一（wiki 02「一个出口可以有多条边」），
@@ -62,119 +66,155 @@
       .edge-port-fan {
         font-size: 0.68rem;
         padding: 0.1rem 0.4rem;
-        border-radius: 999px;
-        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        border-radius: var(--r-full);
+        background: var(--accent-soft);
         color: var(--accent);
         border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
       }
-      /* 该能力声明了但没接边的出口：配置遗漏，要显眼 */
+      /* 该能力声明了但没接边的出口：配置遗漏，要显眼。
+         旧实现把 "#fbbf24" 与 rgba(251,191,36,…) 写死三处 —— 亮主题下
+         浅黄字画在浅底上几乎看不见，改成 --warn / --warn-soft。 */
       .edge-missing {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 0.35rem;
-        padding: 0.3rem 0.4rem;
-        border-radius: 8px;
-        background: rgba(251, 191, 36, 0.06);
-        border: 1px dashed rgba(251, 191, 36, 0.3);
+        margin-top: 0.5rem;
+        padding: 0.4rem 0.5rem;
+        border-radius: var(--r-sm);
+        background: var(--warn-soft);
+        border: 1px dashed color-mix(in srgb, var(--warn) 32%, transparent);
         font-size: 0.7rem;
-        color: #fbbf24;
+        color: var(--warn);
+      }
+      /* 首帧骨架（render() 会整体替换 #edges-list） */
+      .edge-skel {
+        display: grid;
+        gap: 8px;
+        padding: 16px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .edge-skel:last-child {
+        border-bottom: 0;
+      }
+      .edge-skel .skeleton {
+        width: 70%;
+        height: 14px;
+      }
+      .edge-skel .skeleton + .skeleton {
+        width: 42%;
+        height: 11px;
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-6xl space-y-8">
-    <div class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 class="font-display text-3xl text-white">{{t "edges.title"}}</h2>
-          <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-            {{t "edges.subtitle"}}
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-3">
-          <button id="btn-refresh" class="btn-ghost rounded-xl px-4 py-2 text-sm">
-            {{t "edges.refresh"}}
-          </button>
-          <button id="btn-new" class="btn-primary rounded-xl px-4 py-2 text-sm">
-            {{t "edges.new"}}
-          </button>
-        </div>
+  <div class="page">
+    <!-- 页头：页面大标题是 h2（全站唯一 h1 在外壳顶栏，partials.js） -->
+    <div class="page-head">
+      <div>
+        <h2 class="page-title">{{t "edges.title"}}</h2>
+        <p class="page-sub">{{t "edges.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <button id="btn-refresh" type="button" class="btn btn-ghost">
+          {{t "edges.refresh"}}
+        </button>
+        <button id="btn-new" type="button" class="btn btn-primary">
+          {{t "edges.new"}}
+        </button>
       </div>
     </div>
 
     <!-- 说明：为什么边和能力是两件事 -->
-    <div class="card rounded-2xl p-5">
-      <p class="text-sm leading-relaxed text-zinc-400">
-        {{t "edges.intro"}}
-      </p>
+    <div class="card card-pad">
+      <p class="card-sub">{{t "edges.intro"}}</p>
     </div>
 
     <!-- 筛选 -->
-    <div class="card rounded-2xl p-4">
-      <div class="flex flex-wrap items-end gap-3">
-        <div class="flex flex-col gap-1">
-          <label class="text-[11px] text-zinc-400" for="edge-search">{{t "edges.search"}}</label>
-          <input
-            id="edge-search"
-            class="input w-56 text-xs"
-            placeholder='{{t "edges.search_hint"}}'
-          />
+    <div class="card card-pad">
+      <div class="toolbar">
+        <div class="field">
+          <label class="field-label" for="edge-search">{{t "edges.search"}}</label>
+          <input id="edge-search" class="input w-56" placeholder='{{t "edges.search_hint"}}' />
         </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-[11px] text-zinc-400" for="edge-filter-cap">{{t "edges.filter_cap"}}</label>
-          <select id="edge-filter-cap" class="input w-48 text-xs">
+        <div class="field">
+          <label class="field-label" for="edge-filter-cap">{{t "edges.filter_cap"}}</label>
+          <select id="edge-filter-cap" class="select">
             <option value="">{{t "edges.all_caps"}}</option>
           </select>
         </div>
-        <span id="edges-summary" class="ml-auto text-xs text-zinc-500"></span>
+        <span id="edges-summary" class="list-meta ml-auto"></span>
       </div>
     </div>
 
-    <!-- 边列表（按 from 能力分组） -->
-    <div id="edges-list" class="reveal visible"></div>
+    <!-- 边列表（按 from 能力分组）。首帧给骨架，render() 整体替换 -->
+    <div id="edges-list" class="reveal visible">
+      <div class="card">
+        <div class="list">
+          <div class="edge-skel">
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+          </div>
+          <div class="edge-skel">
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+          </div>
+          <div class="edge-skel">
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
+</div>
 
-  <div id="toast" class="toast"></div>
+<!-- 新建边弹层。
+     挂在 #page-main 之外（body 级）：#page-main 里的 .reveal 带 transform，
+     会给 position:fixed 造出包含块，弹层就变成相对那个元素定位（还会被裁）。
+     显隐靠 hidden ↔ flex 两个类互换（ui.css 的 .hidden 是 !important），
+     遮罩颜色来自 .modal-backdrop 的 --scrim（不再内联 rgba(0,0,0,.62)）。 -->
+<div id="edge-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="edge-modal-title">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="edge-modal-title">{{t "edges.new"}}</h3>
+      <button id="modal-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
 
-  <!-- 新建边弹层 -->
-  <div id="edge-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4"
-       style="background: rgba(0, 0, 0, 0.62)">
-    <div class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden !bg-[var(--panel-modal)] p-6 shadow-2xl">
-      <div class="mb-4 flex items-center justify-between">
-        <h3 class="font-display text-lg text-white">{{t "edges.new"}}</h3>
-        <button id="modal-close" class="btn-ghost rounded-lg px-2 py-1 text-sm">✕</button>
-      </div>
-
-      <div class="flex-1 space-y-4 overflow-y-auto">
-        <div>
-          <label class="mb-1 block text-xs text-zinc-400" for="f-from">{{t "edges.from"}}</label>
-          <select id="f-from" class="input w-full text-sm"></select>
+    <div class="modal-body">
+      <div class="space-y-4">
+        <div class="field">
+          <label class="field-label" for="f-from">{{t "edges.from"}}</label>
+          <select id="f-from" class="select"></select>
         </div>
-        <div>
-          <label class="mb-1 block text-xs text-zinc-400" for="f-port">{{t "edges.port"}}</label>
-          <select id="f-port" class="input w-full text-sm"></select>
+        <div class="field">
+          <label class="field-label" for="f-port">{{t "edges.port"}}</label>
+          <select id="f-port" class="select"></select>
           <!-- 起点能力没有预置出口（出口就是"任意事件类型"），改为自由输入 -->
-          <input id="f-port-input" class="input hidden w-full text-sm" type="text"
-                 placeholder="pull_request.opened" />
-          <p class="mt-1 text-[11px] text-zinc-500" id="f-port-hint">{{t "edges.port_hint"}}</p>
+          <input id="f-port-input" class="input hidden" type="text" placeholder="pull_request.opened" />
+          <p class="field-hint" id="f-port-hint">{{t "edges.port_hint"}}</p>
         </div>
-        <div>
-          <label class="mb-1 block text-xs text-zinc-400" for="f-to">{{t "edges.to"}}</label>
-          <select id="f-to" class="input w-full text-sm"></select>
+        <div class="field">
+          <label class="field-label" for="f-to">{{t "edges.to"}}</label>
+          <select id="f-to" class="select"></select>
         </div>
       </div>
+    </div>
 
-      <div class="mt-6 flex justify-end gap-2">
-        <button id="modal-cancel" class="btn-ghost rounded-lg px-4 py-2 text-sm">
-          {{t "edges.cancel"}}
-        </button>
-        <button id="modal-save" class="btn-primary rounded-lg px-4 py-2 text-sm">
-          {{t "edges.save"}}
-        </button>
-      </div>
+    <div class="modal-foot">
+      <button id="modal-cancel" type="button" class="btn btn-ghost">
+        {{t "edges.cancel"}}
+      </button>
+      <button id="modal-save" type="button" class="btn btn-primary">
+        {{t "edges.save"}}
+      </button>
     </div>
   </div>
 </div>
@@ -195,6 +235,9 @@
 
       let EDGES = [];
       let CAPS = [];
+      // 边的请求成功与否：失败要显示原因 + 重试，而不是留一张白纸
+      let EDGES_OK = true;
+      let EDGES_ERR = null;
 
       // SOURCE_NAMES 是"从"下拉里能选的来源名。
       //
@@ -207,11 +250,11 @@
       // 而且那四个"内置起点"已经不是能力了（#110）。
       let SOURCE_NAMES = ["github", "cron", "http", "manual"];
 
-      function toast(msg) {
-        const el = document.getElementById("toast");
-        el.textContent = msg;
-        el.classList.add("show");
-        setTimeout(() => el.classList.remove("show"), 2600);
+      // toast 统一走 Anotify.toast（partials.js 的 #anotify-toast-host）。
+      // 旧实现往 <div class="toast"> 里写文字，但本页从来没定义过 .toast ——
+      // 用户看到的是一个没有背景的裸文本浮层（REVIEW #5 P0）。
+      function toast(msg, kind) {
+        Anotify.toast(msg, kind);
       }
 
       function el(tag, className, text) {
@@ -252,14 +295,23 @@
 
       // ---------- 加载 ----------
       async function loadAll() {
-        const [edgesData, capsData] = await Promise.all([
-          Anotify.api(API + "/edges", { demo: null }).catch(() => null),
-          Anotify.api(API + "/capabilities", { demo: null }).catch(() => null),
+        // 两个请求各自保留错误对象：三者失败态必须分开表达，
+        // 只 catch 成 null 的话页面只能写一句「载入失败」，没有重试入口。
+        const wrap = (p) =>
+          p.then(
+            (data) => ({ ok: true, data, err: null }),
+            (err) => ({ ok: false, data: null, err }),
+          );
+        const [edgesRes, capsRes] = await Promise.all([
+          wrap(Anotify.api(API + "/edges", { demo: null })),
+          wrap(Anotify.api(API + "/capabilities", { demo: null })),
         ]);
-        EDGES = (edgesData && edgesData.edges) || [];
+        EDGES_OK = edgesRes.ok;
+        EDGES_ERR = edgesRes.err;
+        EDGES = (edgesRes.data && edgesRes.data.edges) || [];
         // 手机推送暂未开放：不提供「新建边指向它」的入口（已存在的边照常显示）。
         CAPS = window.Anotify.filterCaps(
-          (capsData && capsData.capabilities) || [],
+          (capsRes.data && capsRes.data.capabilities) || [],
         );
         refreshSourceNames();
         fillCapFilter();
@@ -295,6 +347,13 @@
         const capFilter = document.getElementById("edge-filter-cap").value;
 
         list.replaceChildren();
+
+        // 故障 ≠ 没有：接口挂了不能显示「出口表为空」，那会让人以为建一条边就好了
+        if (!EDGES_OK) {
+          document.getElementById("edges-summary").textContent = "";
+          list.appendChild(Anotify.loadErrorNode(EDGES_ERR, () => loadAll()));
+          return;
+        }
 
         // 按「左端」分组。左端可能是能力，也可能是来源（入口边，#110），
         // 两者的 key 空间不同（能力用 id，来源用名字），所以加前缀区分。
@@ -342,17 +401,20 @@
             : capName(fromId);
           const groupEl = el(
             "span",
-            isSrcGroup ? "text-zinc-200 edge-cap-src" : "text-zinc-200",
+            isSrcGroup ? "card-title edge-cap-src" : "card-title",
             groupLabel,
           );
           title.appendChild(groupEl);
           const ports = new Set(filtered.map((e) => e.fromPort));
           title.appendChild(
-            el("span", "text-[11px] text-zinc-500",
+            el("span", "list-meta",
               t("edges.port_count", "{n} 个出口").replace("{n}", ports.size)),
           );
           head.appendChild(title);
           group.appendChild(head);
+          // 组内所有边装进同一张卡片的列表里（不再一条边一张卡片）
+          const cardBox = el("div", "card");
+          const listBox = el("div", "list");
 
           // 按 (from, port) 再分一层：**同一个出口的多条边 = 扇出**，
           // 必须聚在一起显示，否则会被别的出口的边插在中间，看不出
@@ -368,10 +430,10 @@
           for (const [port, portEdges] of byPort) {
             const fanout = portEdges.length > 1;
 
-            // 每条边一行，保持 from —port→ to 的完整读法
+            // 每条边一行，保持 from —port→ to 的完整读法；
+            // 行高 / 分隔线 / hover 由 .list-row 提供
             for (const e of portEdges) {
-            const card = el("div", "card rounded-xl px-4 py-2.5 mb-2");
-            const row = el("div", "edge-row");
+            const row = el("div", "list-row");
 
             const flow = el("div", "edge-flow");
             // 左端有两种：来源（入口边）或能力。
@@ -403,15 +465,21 @@
             flow.appendChild(toCapEl);
             row.appendChild(flow);
 
-            const del = el("button", "btn-ghost rounded px-2 py-1 text-[11px] text-red-400",
+            const del = el("button", "btn btn-danger btn-sm",
               t("edges.remove", "删除"));
+            del.type = "button";
             del.addEventListener("click", () => removeEdge(e, del));
             row.appendChild(del);
 
-            card.appendChild(row);
-            group.appendChild(card);
+            listBox.appendChild(row);
           }
           } // ← 闭合 for (const [port, portEdges] of byPort)
+
+          // 列表建完再挂上卡片；空组（全被过滤掉）不产生空卡
+          if (listBox.childElementCount) {
+            cardBox.appendChild(listBox);
+            group.appendChild(cardBox);
+          }
 
           // 该能力声明了但一条边都没接的出口 —— 配置遗漏。
           //
@@ -436,20 +504,33 @@
         summary.textContent = t("edges.count", "{n} 条边").replace("{n}", shown);
 
         if (!shown) {
-          list.appendChild(
-            el("div", "card rounded-2xl p-6 text-center text-sm text-zinc-500",
+          // 空态必须给下一步动作：只说「空」而不给入口，等于把人留在原地
+          const box = el("div", "empty");
+          box.appendChild(
+            el(
+              "p",
+              "",
               EDGES.length
                 ? t("edges.nomatch", "没有匹配的边。")
-                : t("edges.empty", "出口表为空：事件进来后没有任何出口可走。")),
+                : t("edges.empty", "出口表为空：事件进来后没有任何出口可走。"),
+            ),
           );
+          const cta = el("button", "btn btn-primary btn-sm mt-3", "+ " + t("edges.new", "新建边"));
+          cta.type = "button";
+          cta.addEventListener("click", () => openModal(cta));
+          box.appendChild(cta);
+          list.appendChild(box);
         }
       }
 
       // ---------- 新建 ----------
-      function openModal() {
+      // 显隐只用 hidden ↔ flex（ui.css 的 .hidden 是 !important，
+      // 所以组件类不能自己声明 display）。关闭后焦点回到触发按钮 ——
+      // 否则键盘用户关掉弹层就掉回页面顶端，不知道自己在哪。
+      function openModal(trigger) {
         const modal = document.getElementById("edge-modal");
-        modal.classList.remove("hidden");
-        modal.classList.add("flex");
+        modal._trigger = trigger || document.activeElement || null;
+        modal.classList.replace("hidden", "flex");
 
         const fromSel = document.getElementById("f-from");
         const toSel = document.getElementById("f-to");
@@ -477,8 +558,11 @@
 
       function closeModal() {
         const modal = document.getElementById("edge-modal");
-        modal.classList.add("hidden");
-        modal.classList.remove("flex");
+        if (modal.classList.contains("hidden")) return;
+        modal.classList.replace("flex", "hidden");
+        const back = modal._trigger;
+        modal._trigger = null;
+        if (back && typeof back.focus === "function") back.focus();
       }
 
       // syncPorts 根据 from 能力刷新出口下拉。
@@ -583,7 +667,9 @@
       }
 
       // ---------- 事件绑定 ----------
-      document.getElementById("btn-new").addEventListener("click", openModal);
+      document
+        .getElementById("btn-new")
+        .addEventListener("click", () => openModal(document.getElementById("btn-new")));
       document.getElementById("btn-refresh").addEventListener("click", loadAll);
       document.getElementById("modal-close").addEventListener("click", closeModal);
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
@@ -591,6 +677,18 @@
       document.getElementById("f-from").addEventListener("change", syncPorts);
       document.getElementById("edge-search").addEventListener("input", render);
       document.getElementById("edge-filter-cap").addEventListener("change", render);
+      // 点遮罩关：点在面板内部时 target 不是遮罩本身，不会误关
+      document.getElementById("edge-modal").addEventListener("click", (e) => {
+        if (e.target === e.currentTarget) closeModal();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        const modal = document.getElementById("edge-modal");
+        if (modal && !modal.classList.contains("hidden")) {
+          e.preventDefault();
+          closeModal();
+        }
+      });
 
       loadAll();
     </script>

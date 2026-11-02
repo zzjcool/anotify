@@ -41,6 +41,9 @@
     {{end}}
   </head>
   <body class="min-h-screen antialiased overflow-x-hidden" data-page="{{.Page}}">
+    <!-- F21：键盘跳过导航。必须是 body 的第一个可聚焦元素；目标是 #page-main
+         （base 布局里它由页面 content block 渲染，mountLayout 会把它搬进主区）。 -->
+    <a class="skip-link" href="#page-main">{{t "common.skip_to_content"}}</a>
     <!-- 主内容（partials.js 会把它装进「侧栏 + 顶栏」布局） -->
     <!-- 页面 content block 含 <div id="page-main"> 及页级弹层等外部内容 -->
 {{block "content" .}}{{end}}

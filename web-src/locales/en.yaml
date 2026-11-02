@@ -1,4 +1,8 @@
 common:
+  skip_to_content: Skip to content
+  close: Close
+  action:
+    close: Close
   load_failed_prefix: 'Failed to load: '
   retry: 'Retry'
   backend_offline: 'cannot reach the server'
@@ -145,6 +149,10 @@ index:
     rate_na: No receivers yet — delivery rate unavailable
     trend_demo: Demo
     trend_live: Live
+    running: In progress
+    running_sub: Last 50 tasks
+    failed: Failed tasks
+    failed_sub: Last 50 tasks
   heatmap:
     title: Task activity
     subtitle: Past year · daily volume
@@ -195,6 +203,7 @@ index:
     pull_loading: Refreshing…
     pull_done: Updated
   recent_summary: '{total} tasks recorded recently, {ok} completed.'
+  summary_load_failed: Task data is temporarily unavailable — please retry.
   notif:
     reported: 'Reported'
     unreported: 'Not reported'
@@ -1117,6 +1126,8 @@ events:
     invalid_cursor: 'Cursor expired — back to latest'
 caps:
   title: Capabilities
+  step_pick: Pick a template
+  step_fill: Fill in & create
   sidebar: 'Declared here, run on nodes'
   subtitle: A capability is "what to do" (not "how"). Edges — where events go next — have their own page.
   new: Define capability
@@ -1333,6 +1344,7 @@ nodes:
     copy_install: Copy command
     yaml_workdir_note: 'The work dir is set in the capability definition on the Capabilities page (run.workDir) and ships with the deployment; this yaml does not need it.'
 sources:
+  empty_title: No sources yet
   detail: "Details"
   open_detail: "Open details"
   "on": "Running"

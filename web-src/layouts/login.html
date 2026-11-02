@@ -44,6 +44,8 @@
     class="min-h-screen antialiased overflow-x-hidden flex flex-col"
     data-page="{{.Page}}"
   >
+    <!-- F21：键盘跳过导航（login/focus 布局没有侧栏，但仍要跳过顶栏与品牌区） -->
+    <a class="skip-link" href="#main">{{t "common.skip_to_content"}}</a>
     <div class="grid-overlay"></div>
 
     <!-- 顶栏 -->
@@ -111,6 +113,7 @@
 
     <!-- 登录卡片 -->
     <main
+      id="main"
       class="relative z-10 mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center px-5 pb-16 pt-10"
     >
       {{block "content" .}}{{end}}

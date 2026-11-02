@@ -43,7 +43,8 @@ body {
 }
 
 .glass {
-	background: var(--surface-2);
+	/* 亮色下不能再用白 alpha（F3：三层会塌成同一色） */
+	background: var(--surface-1);
 	border: 1px solid var(--line);
 	backdrop-filter: blur(14px);
 }
@@ -58,13 +59,26 @@ body {
 	position: relative;
 	display: flex;
 	align-items: center;
-	gap: 0.7rem;
-	padding: 0.55rem 0.8rem;
-	border-radius: 10px;
-	font-size: 0.875rem;
+	/* D4：行高 38px、13px/500、8px 圆角、18px 图标、gap 10px */
+	min-height: 38px;
+	gap: 10px;
+	padding: 0 10px;
+	border-radius: var(--r-sm);
+	font-size: 13px;
+	font-weight: 500;
 	color: var(--muted);
 	border: 1px solid transparent;
-	transition: all 0.2s ease;
+	/* 不用 transition: all —— 它会把 outline/box-shadow 一起做过渡，
+	 * 键盘焦点环要即时出现（F22）。 */
+	transition:
+		color var(--dur-fast) var(--ease),
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease);
+}
+.side-link > svg {
+	width: 18px;
+	height: 18px;
+	flex: none;
 }
 .side-link:hover {
 	color: var(--text);
@@ -741,6 +755,15 @@ body {
 	white-space: nowrap;
 	align-self: end;
 	padding-bottom: 2px;
+	/* 标签只做标注，不抢格子的 hover */
+	pointer-events: none;
+}
+/* 移动端横滚容器：53 周在 390 宽放不下，靠卡片内横向滚动（D17） */
+.hm-scroll {
+	overflow-x: auto;
+	overflow-y: hidden;
+	-webkit-overflow-scrolling: touch;
+	scrollbar-width: thin;
 }
 .hm-day {
 	grid-column: 1;
@@ -753,7 +776,8 @@ body {
 	width: 100%;
 	aspect-ratio: 1 / 1;
 	border-radius: 2.5px;
-	background: var(--surface-2);
+	/* 空格用 --hm-empty 而不是 --surface-2：后者等于卡片实底色，格子看不见 */
+	background: var(--hm-empty);
 	transition:
 		transform 0.12s ease,
 		outline 0.12s ease;
@@ -796,7 +820,10 @@ body {
 .lang-trigger {
 	color: var(--muted);
 	border: 1px solid transparent;
-	transition: all 0.2s ease;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease);
 	cursor: pointer;
 }
 .lang-trigger:hover {
@@ -970,8 +997,15 @@ body {
 /* 用独立类名而不是复合选择器：check-classes 按"类名是否被定义"判断，
    .seg-item.is-active 里的 is-active 它认不出来，会报死类。 */
 .seg-item-active {
-	background: var(--surface-3);
+	/* F3：亮色下 active 必须是「浮起来」的那一块 —— surface-1 底 + 单侧阴影，
+	 * 否则和 track 同色，分段控件整体消失。 */
+	background: var(--surface-1);
 	color: var(--text);
+	box-shadow: var(--shadow-1);
+}
+.seg-switch {
+	background: var(--surface-3);
+	border-radius: var(--r-full);
 }
 
 /* ==================== 工作流图（HTML 节点 + SVG 连线）====================
@@ -2035,9 +2069,12 @@ html.flograph-fullscreen-open body {
 	width: var(--shell-sidebar-w);
 	flex: 0 0 var(--shell-sidebar-w);
 	position: sticky;
-	top: 0;
+	/* 语言提示条（.lang-hint）在流内时会占掉页面顶部一段高度（F8：900 高下
+	 * 底栏被裁 45px）。partials.js 把它的实际高度写到 --shell-top-offset，
+	 * 侧栏据此下移并收短，footer 就永远在视口内。 */
+	top: var(--shell-top-offset, 0px);
 	align-self: flex-start;
-	height: 100dvh;
+	height: calc(100dvh - var(--shell-top-offset, 0px));
 	padding: 10px;
 	gap: 2px;
 	background: var(--bg-raise);
@@ -2185,9 +2222,15 @@ html.flograph-fullscreen-open body {
 	justify-content: center;
 	padding-left: 0;
 	padding-right: 0;
+	/* 76px 轨里 logo(36px) + 折叠按钮(24px) 横排要 74px，超过 76-12 的内容宽，
+	 * 会把 logo 挤出可视区（只剩贴在右上角的红点）。改成上下两行。 */
+	flex-direction: column;
+	gap: 6px;
 }
 #app-shell[data-collapsed="true"] .app-brand-btn {
 	margin-left: 0;
+	width: 24px;
+	height: 24px;
 }
 /* 文字用 font-size:0 隐起来，文本节点仍在（e2e 依赖） */
 #app-shell[data-collapsed="true"] a.side-link {
@@ -2209,9 +2252,30 @@ html.flograph-fullscreen-open body {
 #app-shell[data-collapsed="true"] .app-sidebar-foot {
 	align-items: center;
 }
+/* 折叠态 footer 只留「头像 + 语言图标按钮」：
+ * 语言按钮的当前语言名 + chevron 在 76px 里会竖排/被裁，改成纯图标（globe）
+ * 并要求 JS 侧给 title 兜底（partials.js paintCollapsedHints）。 */
+#app-shell[data-collapsed="true"] .app-sidebar-foot .lang-trigger {
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	justify-content: center;
+	gap: 0;
+}
+#app-shell[data-collapsed="true"] .app-sidebar-foot .lang-trigger span,
+#app-shell[data-collapsed="true"] .app-sidebar-foot .lang-trigger .lang-chevron {
+	display: none;
+}
+/* 用户块折叠态：只留头像（头像本身是进账户的链接），退出按钮挪进顶栏头像菜单 */
+#app-shell[data-collapsed="true"] .side-user .side-icon-btn {
+	display: none;
+}
+#app-shell[data-collapsed="true"] .side-user {
+	gap: 0;
+}
 /* tooltip：data-label 是 Worker B 写在 a.side-link 上的属性；不占布局 */
-#app-shell[data-collapsed="true"] a.side-link[data-label]::after {
-	content: attr(data-label);
+#app-shell[data-collapsed="true"] a.side-link[data-tip]::after {
+	content: attr(data-tip);
 	position: absolute;
 	left: calc(100% + 10px);
 	top: 50%;
@@ -2230,8 +2294,8 @@ html.flograph-fullscreen-open body {
 	pointer-events: none;
 	transition: opacity var(--dur-fast) var(--ease);
 }
-#app-shell[data-collapsed="true"] a.side-link[data-label]:hover::after,
-#app-shell[data-collapsed="true"] a.side-link[data-label]:focus-visible::after {
+#app-shell[data-collapsed="true"] a.side-link[data-tip]:hover::after,
+#app-shell[data-collapsed="true"] a.side-link[data-tip]:focus-visible::after {
 	opacity: 1;
 }
 
@@ -2317,6 +2381,9 @@ html.flograph-fullscreen-open body {
 	max-width: 1200px;
 	margin-inline: auto;
 	display: grid;
+	/* 硬要求（D6）：默认 min-content 会让宽表格/长 id 把整页顶宽，
+	 * 390 宽实测 +44px 横向溢出。所有 .page 都必须收敛到 1fr。 */
+	grid-template-columns: minmax(0, 1fr);
 	gap: 24px;
 }
 .page-head {
@@ -2327,11 +2394,14 @@ html.flograph-fullscreen-open body {
 	gap: 16px;
 }
 .page-title {
-	font-family: "Fraunces", Georgia, serif;
+	/* 契约 §10-C1 裁决：页标题 28px **Inter** 600 -0.02em。
+	 * Fraunces 只用于 ≥22px 的三类位置中的「欢迎语」——首页 #greeting 用
+	 * .page-title.font-display 单独叠加，不靠这条规则。 */
+	font-family: var(--font-sans);
 	font-size: 28px;
 	line-height: 1.2;
 	font-weight: 600;
-	letter-spacing: -0.01em;
+	letter-spacing: -0.02em;
 	color: var(--text);
 }
 .page-sub {
@@ -2414,6 +2484,21 @@ html.flograph-fullscreen-open body {
 	background: var(--accent-soft);
 	color: var(--accent);
 }
+/* stat-icon 三个语义变体（D7）：只换底色与图标色，尺寸不变。
+ * 用单类名而不是 .stat-icon.is-x 复合选择器：scripts/check-classes.mjs 只把
+ * 行首第一个 .class 记入白名单，复合选择器里的第二个类会被判成「死类」。 */
+.stat-icon-success {
+	background: color-mix(in srgb, var(--success) 14%, transparent);
+	color: var(--success);
+}
+.stat-icon-warn {
+	background: color-mix(in srgb, var(--warn) 14%, transparent);
+	color: var(--warn);
+}
+.stat-icon-error {
+	background: color-mix(in srgb, var(--error) 14%, transparent);
+	color: var(--error);
+}
 .stat-label {
 	font-size: 12.5px;
 	font-weight: 500;
@@ -2430,11 +2515,22 @@ html.flograph-fullscreen-open body {
 .stat-delta {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
-	font-size: 12px;
+	gap: 3px;
+	/* D7：22px 高药丸 + ↑/↓ 12px 图标。无数据时文案是 –，不再是「实时」 */
+	height: 22px;
+	padding: 0 8px;
+	border-radius: var(--r-full);
+	background: var(--surface-2);
+	border: 1px solid var(--line);
+	font-size: 11px;
 	font-weight: 500;
+	line-height: 1;
 	color: var(--muted);
 	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+.stat-delta:empty {
+	display: none;
 }
 .up {
 	color: var(--success);
@@ -3021,7 +3117,7 @@ html.flograph-fullscreen-open body {
 		padding-left: 0.8rem;
 		padding-right: 0.8rem;
 	}
-	#app-shell[data-collapsed="true"] a.side-link[data-label]::after {
+	#app-shell[data-collapsed="true"] a.side-link[data-tip]::after {
 		display: none;
 	}
 	.page {
@@ -3147,6 +3243,12 @@ html.flograph-fullscreen-open body {
 :root[data-theme="light"] .text-zinc-400 {
 	color: var(--muted);
 }
+/* F13：dark 下 text-zinc-600(#52525b) 在 --bg 上只有 2.45:1，属于「写了但看不见」。
+ * 旧页大量用它当次要文字，这里统一抬到 --faint（4.1:1）。 */
+:root:not([data-theme="light"]) .text-zinc-600,
+:root:not([data-theme="light"]) .text-zinc-700 {
+	color: var(--faint);
+}
 :root[data-theme="light"] .text-zinc-500,
 :root[data-theme="light"] .text-zinc-600,
 :root[data-theme="light"] .text-zinc-700 {
@@ -3184,12 +3286,19 @@ html.flograph-fullscreen-open body {
 :root[data-theme="light"] .bg-black\/50 {
 	background-color: var(--surface-2);
 }
-:root[data-theme="light"] .bg-white\/5,
-:root[data-theme="light"] .bg-white\/10,
-:root[data-theme="light"] .bg-white\/\[0\.02\],
+/* F3：亮色下把三层表面重新拉开（原来全部压成 --surface-2，卡片/内嵌块/表头
+ * 一个色，login 的分段控件直接看不见）。
+ * 0.02 → surface-1（最浅的内嵌面）、0.03/5 → surface-2、0.04/10 → surface-3。 */
+:root[data-theme="light"] .bg-white\/\[0\.02\] {
+	background-color: var(--surface-1);
+}
 :root[data-theme="light"] .bg-white\/\[0\.03\],
-:root[data-theme="light"] .bg-white\/\[0\.04\] {
+:root[data-theme="light"] .bg-white\/5 {
 	background-color: var(--surface-2);
+}
+:root[data-theme="light"] .bg-white\/\[0\.04\],
+:root[data-theme="light"] .bg-white\/10 {
+	background-color: var(--surface-3);
 }
 :root[data-theme="light"] .border-white\/10,
 :root[data-theme="light"] .border-white\/\[0\.04\],
@@ -3199,4 +3308,147 @@ html.flograph-fullscreen-open body {
 }
 :root[data-theme="light"] .border-white\/20 {
 	border-color: var(--line-strong);
+}
+
+/* ============================================================================
+   容器类（契约 §10 C3 裁决新增，wave 2 各页共用）
+
+   这一组不是「新组件」，而是**布局约定**：wave 1 的视觉稿里已经用到了它们，
+   但当时没写进 ui.css，wave 2 五个分组会各自发明同类名字（REVIEW R4 的复因）。
+   全部只用 token，不允许硬编码色值。
+   ============================================================================ */
+
+/* 详情页窄栏：node / source / trace / message 四个详情页统一 760px，
+   替代原来 3xl / 6xl 混用（REVIEW §2 #20）。 */
+.page-narrow {
+	max-width: 760px;
+	margin-inline: auto;
+	width: 100%;
+}
+
+/* 纵向撑满 + 底栏贴底：双列布局里左卡比右卡矮时，
+   「加载更多」贴在卡片底部而不是浮在半空（D14）。 */
+.card-fill {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+.card-foot {
+	margin-top: auto;
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+}
+
+/* 表格底栏（分页 / 计数）：贴在 .table-wrap 之后的一条 11px 辅助行 */
+.table-foot {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 8px 14px;
+	border-top: 1px solid var(--line);
+	font-size: 11px;
+	color: var(--faint);
+}
+
+/* 列表行的三段式补充：标题 / 右侧元信息 / 左侧图标底（D13） */
+.list-title {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.list-side {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: none;
+	font-size: 11px;
+	color: var(--faint);
+	white-space: nowrap;
+}
+.list-lead {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	flex: none;
+	border-radius: var(--r-sm);
+	background: var(--surface-2);
+	color: var(--muted);
+}
+
+/* 只染文字的状态色（替代 node.html 自己那套 .np-st-*）：
+   9 态一一映射 --st-*，不引入第三套色板（D9）。 */
+.st-text.st-pending { color: var(--st-pending); }
+.st-text.st-assigned { color: var(--st-assigned); }
+.st-text.st-acked { color: var(--st-acked); }
+.st-text.st-running { color: var(--st-running); }
+.st-text.st-succeeded { color: var(--st-succeeded); }
+.st-text.st-failed { color: var(--st-failed); }
+.st-text.st-canceled { color: var(--st-canceled); }
+.st-text.st-abandoned { color: var(--st-abandoned); }
+.st-text.st-lease_expired { color: var(--st-lease_expired); }
+
+/* 无边框纯文字按钮（表格行内动作用，D8） */
+.btn-quiet {
+	background: transparent;
+	border-color: transparent;
+	color: var(--muted);
+	box-shadow: none;
+}
+.btn-quiet:hover {
+	background: var(--surface-2);
+	border-color: var(--line);
+	color: var(--text);
+}
+
+/* 统计卡底栏（11px 双端对齐，D7） */
+.stat-foot {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	font-size: 11px;
+	color: var(--faint);
+}
+
+/* 骨架屏尺寸变体（D16） */
+.skeleton.is-circle { border-radius: var(--r-full); }
+.skeleton.is-line-sm { height: 10px; }
+.skeleton.is-line-lg { height: 16px; }
+.skeleton.is-block { height: 88px; border-radius: var(--r-md); }
+/* 极矮视口（笔记本 620px 以下）才允许导航内部滚动：
+   overflow-y:auto 会强制另一轴也 auto，tooltip 会被裁 → 此时退化为 title 兜底
+   （partials.js 在折叠时给每个 a.side-link 挂了 title）。 */
+@media (max-height: 760px) {
+	.app-nav {
+		overflow-y: auto;
+	}
+}
+
+/* 跳过导航（F21）：键盘用户第一次 Tab 就能直达主内容，不必穿过整条侧栏 /
+ * 顶栏。默认移出视口，获得焦点时滑入（transform 不参与布局，不会闪）。 */
+.skip-link {
+	position: fixed;
+	top: 8px;
+	left: 8px;
+	z-index: var(--z-toast);
+	transform: translateY(-200%);
+	padding: 8px 14px;
+	border-radius: var(--r-sm);
+	background: var(--accent);
+	color: var(--on-solid);
+	font-size: 13px;
+	font-weight: 600;
+	box-shadow: var(--shadow-2);
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+	transform: none;
+	outline: 2px solid var(--text);
+	outline-offset: 2px;
 }

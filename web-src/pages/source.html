@@ -7,156 +7,200 @@
 
          为什么单独一页：源的细节（触发配置、出口参数、流向图、最近事件）
          塞在列表卡片里会让列表变得没法扫。列表只该回答"有哪些源、活着吗"，
-         细节是点进去才关心的事。 */
-      .src-head {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 1rem;
+         细节是点进去才关心的事。
+
+         样式纪律（UI v2）：卡片 / 按钮 / 徽章 / 弹层 / 空态 / 骨架一律用
+         ui.css 的组件类，这里只留本页独有的排版；颜色只走 tokens.css 的
+         token（亮主题下也要读得清，硬编码色值一律不写）。 */
+
+      /* 单列栅格必须显式写 minmax(0, 1fr)：默认的 auto 轨道不会缩到
+         min-content 以下（D6 的硬要求，ui.css 的 .page 目前没写；
+         这里按页兜一层，等共享规则补上可删）。 */
+      #page-main > .page {
+        grid-template-columns: minmax(0, 1fr);
       }
+
+      /* 正文纵向堆叠：3 张卡之间的间距（.page 的 gap 只管页头与正文之间） */
+      .src-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      .src-back {
+        display: inline-block;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .src-back:hover {
+        color: var(--accent);
+      }
+
       .src-id {
-        font-family: var(--mono, monospace);
-        font-size: 0.75rem;
+        font-family: var(--font-mono);
+        font-size: 12px;
         color: var(--faint);
         word-break: break-all;
       }
+      /* 页内语义文字：替代 Tailwind 色板类（text-zinc-* / text-red-*） */
+      .src-meta {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .src-err {
+        font-size: 12px;
+        color: var(--error);
+      }
+
       /* 键值对：左边固定宽度标签，右边内容。
-         用 grid 而不是 flex，保证多行之间标签列对齐。 */
+         用 grid 而不是 flex，保证多行之间标签列对齐。
+         420 以下塌成单列（390 宽实测：7.5rem 标签列 + 长参数值会横向溢出）。 */
       .kv {
         display: grid;
-        grid-template-columns: 7.5rem 1fr;
-        gap: 0.5rem 1rem;
+        grid-template-columns: 7.5rem minmax(0, 1fr);
+        gap: 8px 16px;
         align-items: baseline;
       }
       .kv dt {
-        font-size: 0.72rem;
+        font-size: 12px;
         color: var(--faint);
       }
       .kv dd {
-        font-size: 0.8rem;
+        margin: 0;
+        font-size: 13px;
         color: var(--text);
         min-width: 0;
         word-break: break-word;
       }
+      @media (max-width: 420px) {
+        .kv {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 2px 0;
+        }
+        .kv dd {
+          margin-bottom: 8px;
+        }
+      }
+
       .src-section-title {
-        font-size: 0.72rem;
+        font-size: 12px;
+        font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--faint);
-        margin-bottom: 0.6rem;
+        margin-bottom: 10px;
       }
+
       /* 出口参数表：参数可能带映射，用等宽字体看起来更像"配置"而不是散文 */
       .param-table {
         display: grid;
-        gap: 0.35rem;
+        gap: 4px;
+        min-width: 0;
       }
       .param-row {
         display: flex;
         flex-wrap: wrap;
         align-items: baseline;
-        gap: 0.4rem;
-        font-size: 0.75rem;
-        padding: 0.3rem 0.5rem;
-        border-radius: 0.375rem;
-        background: rgba(255, 255, 255, 0.02);
+        gap: 6px;
+        min-width: 0;
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
       }
       .param-key {
-        font-family: var(--mono, monospace);
+        font-family: var(--font-mono);
         color: var(--accent);
       }
       .param-val {
-        font-family: var(--mono, monospace);
+        font-family: var(--font-mono);
         color: var(--text);
         word-break: break-all;
       }
       /* 映射态单独着色：它填的不是值，是"取值规则" */
       .param-map-badge {
-        font-size: 0.6rem;
-        padding: 0.05rem 0.3rem;
-        border-radius: 0.25rem;
-        border: 1px solid var(--accent);
+        font-size: 10px;
+        padding: 1px 5px;
+        border-radius: var(--r-xs);
+        border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
         color: var(--accent);
       }
       .hook-url {
-        font-family: var(--mono, monospace);
-        font-size: 0.72rem;
+        font-family: var(--font-mono);
+        font-size: 12px;
         color: var(--accent);
         word-break: break-all;
       }
-      /* 最近事件行 */
-      .ev-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.75rem;
-        padding: 0.45rem 0;
-        border-bottom: 1px solid var(--line);
-        font-size: 0.75rem;
+
+      /* 首屏骨架：形状对齐真实正文（配置卡 / 参数卡 / 图卡） */
+      .sk-line {
+        display: block;
+        height: 12px;
+        width: 100%;
       }
-      .ev-row:last-child {
-        border-bottom: none;
+      .sk-line-sm {
+        display: block;
+        height: 12px;
+        width: 45%;
       }
-      /* toast：每页各自实现（partials.js 的 toast 是它 IIFE 里的局部函数，
-         没挂 window —— 在这个页面里裸调会在**渲染时**抛 ReferenceError，
-         不是加载时，所以更容易漏到线上）。 */
-      .toast {
-        position: fixed;
-        bottom: 1.25rem;
-        right: 1.25rem;
-        z-index: 80;
-        opacity: 0;
-        transform: translateY(0.5rem);
-        pointer-events: none;
-        transition:
-          opacity 0.18s ease,
-          transform 0.18s ease;
+      .sk-line-lg {
+        display: block;
+        height: 22px;
+        width: 32%;
       }
-      .toast.show {
-        opacity: 1;
-        transform: translateY(0);
+      .sk-title {
+        display: inline-block;
+        width: 180px;
+        max-width: 60vw;
+        height: 22px;
+        vertical-align: middle;
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-3xl space-y-6">
-    <!-- 头部：名字 + 状态 + 操作 -->
-    <div class="reveal visible">
-      <div class="src-head">
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <a href="sources.html" class="text-sm text-zinc-500 hover:text-zinc-300"
-              >← {{t "srcpage.back"}}</a
-            >
-          </div>
-          <h2 id="head-name" class="mt-2 font-display text-3xl text-white">
-            {{t "srcpage.loading"}}
-          </h2>
-          <div id="head-badges" class="mt-2 flex flex-wrap items-center gap-2"></div>
-        </div>
-        <div id="head-actions" class="flex flex-wrap items-center gap-2"></div>
+  <div class="page page-narrow">
+    <!-- 页头：名字（JS 填）+ 状态徽章 + 操作。页面内容里不出现 h1（顶栏那个才是 h1）。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <a href="sources.html" class="src-back">← {{t "srcpage.back"}}</a>
+        <h2 id="head-name" class="page-title">
+          <span class="skeleton sk-title" aria-label="{{t "srcpage.loading"}}"></span>
+        </h2>
+        <p id="head-sub" class="page-sub src-id"></p>
+        <div id="head-badges" class="mt-2 flex flex-wrap items-center gap-2"></div>
       </div>
+      <div id="head-actions" class="page-actions"></div>
     </div>
 
-    <!-- 主体 -->
-    <div id="src-body" class="space-y-6">
-      <div class="card rounded-2xl p-6 text-center text-sm text-zinc-500">
-        {{t "srcpage.loading"}}
+    <!-- 主体：三张卡由 JS 填充。首屏是骨架而不是一张"加载中"的空卡。 -->
+    <div id="src-body" class="src-stack">
+      <div class="card card-pad" aria-hidden="true">
+        <div class="skeleton sk-line-lg"></div>
+        <div class="skeleton sk-line mt-2"></div>
+        <div class="skeleton sk-line mt-2"></div>
+        <div class="skeleton sk-line-sm mt-2"></div>
+      </div>
+      <div class="card card-pad" aria-hidden="true">
+        <div class="skeleton sk-line-lg"></div>
+        <div class="skeleton sk-line mt-2"></div>
+        <div class="skeleton sk-line-sm mt-2"></div>
       </div>
     </div>
   </div>
 </div>
-
-<div id="toast" class="toast card rounded-xl px-4 py-2 text-sm"></div>
 {{end}}
 
 {{define "graph-libs"}}
     <!-- 图渲染四件套：只在本页与 trace.html 加载（base.html 里这个槽位默认是空的）。
          全部 defer —— 本页的绘图调用在 load() 里 await 完 fetch 后的 requestAnimationFrame 中
          （renderFlowCard），远晚于 defer 的执行时机，所以库一定已就绪。
-         顺序不能改：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView。 -->
+         顺序不能改：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView（e2e 有断言）。 -->
     <script defer src="/vendor/dagre.min.js"></script>
     <script defer src="/flograph.js"></script>
     <script defer src="/graphs.js"></script>
@@ -176,14 +220,10 @@
         subtitle: t("srcpage.layout_subtitle", "一个源的触发配置、出口参数和下游流向"),
       });
 
-      function toast(msg) {
-        const node = document.getElementById("toast");
-        if (!node) return;
-        node.textContent = msg;
-        node.classList.add("show");
-        clearTimeout(node._timer);
-        node._timer = setTimeout(() => node.classList.remove("show"), 2800);
-      }
+      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）。
+      // 页内不再自己维护 #toast 节点：那份副本位于 #page-main 里，
+      // 且 z-index / 位置各页一套。
+      const toast = (msg, kind) => Anotify.toast(msg, kind);
 
       function el(tag, cls, text) {
         const n = document.createElement(tag);
@@ -193,9 +233,6 @@
       }
       function code(text, cls) {
         return el("code", cls || "", text);
-      }
-      function mono(text, cls) {
-        return el("span", cls || "", text);
       }
 
       function fmtTime(sec) {
@@ -229,8 +266,7 @@
       };
       // 兜底：后端加了新 kind 而这里没跟上时，别抛 TypeError 把整页搞崩
       const kindLabel = (k) => (KIND_LABEL[k] ? KIND_LABEL[k]() : String(k || "—"));
-      // 类名必须与 web/ui.css 里真实存在的组件类一致（check-classes 会拦，
-      // 但更好的做法是照抄 sources.html 那份，别自己另起一套名字）。
+      // 类名来自 web/ui.css（.src-badge + .src-<kind>），不要另起一套名字
       const KIND_CLASS = {
         cron: "src-cron",
         github: "src-github",
@@ -274,16 +310,23 @@
         renderBody();
       }
 
+      // 空态 / 错误态：`.empty` + 明确的下一步（回列表），而不是一张写着字的卡片。
       function renderEmpty(msg) {
         document.getElementById("head-name").textContent = t("srcpage.title", "源详情");
-        document.getElementById("src-body").replaceChildren(
-          el("div", "card rounded-2xl p-8 text-center text-sm text-zinc-500", msg),
-        );
+        document.getElementById("head-sub").textContent = "";
+        const box = el("div", "empty");
+        box.appendChild(el("div", "card-title", t("srcpage.title", "源详情")));
+        box.appendChild(el("p", "card-sub", msg));
+        const back = el("a", "btn btn-ghost btn-sm", t("srcpage.back", "返回源列表"));
+        back.href = "sources.html";
+        box.appendChild(back);
+        document.getElementById("src-body").replaceChildren(box);
       }
 
       // ---------- 头部 ----------
       function renderHead() {
         document.getElementById("head-name").textContent = SRC.name;
+        document.getElementById("head-sub").textContent = SRC.id;
         document.title = SRC.name + " · Anotify";
 
         const badges = document.getElementById("head-badges");
@@ -296,7 +339,6 @@
         } else {
           badges.appendChild(el("span", "status-badge status-warn", t("sources.disabled", "已停用")));
         }
-        badges.appendChild(el("span", "src-id", SRC.id));
 
         // 操作：与列表页一致，只是搬到这里
         const acts = document.getElementById("head-actions");
@@ -304,46 +346,30 @@
 
         // 「编辑」必须在这里：列表页为了少放按钮把它挪走了，但详情页
         // 之前也没放 —— 结果源建好之后根本没有入口能改参数。
-        const editBtn = el(
-          "a",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
-          t("sources.edit", "编辑"),
-        );
+        const editBtn = el("a", "btn btn-ghost btn-sm", t("sources.edit", "编辑"));
         editBtn.href = "sources.html?edit=" + encodeURIComponent(SRC.id);
         acts.appendChild(editBtn);
 
         if (SRC.enabled) {
-          const fireBtn = el(
-            "button",
-            "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
-            t("sources.fire", "立即运行"),
-          );
+          const fireBtn = el("button", "btn btn-ghost btn-sm", t("sources.fire", "立即运行"));
           fireBtn.addEventListener("click", () => fireSource(fireBtn));
           acts.appendChild(fireBtn);
         }
         const toggleBtn = el(
           "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          "btn btn-ghost btn-sm",
           SRC.enabled ? t("sources.disable", "停用") : t("sources.enable", "启用"),
         );
         toggleBtn.addEventListener("click", () => toggleSource(toggleBtn));
         acts.appendChild(toggleBtn);
 
-        const evBtn = el(
-          "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
-          t("sources.view_events", "查看事件"),
-        );
+        const evBtn = el("button", "btn btn-ghost btn-sm", t("sources.view_events", "查看事件"));
         evBtn.addEventListener("click", () => {
           location.href = "events.html?source=" + encodeURIComponent(SRC.name);
         });
         acts.appendChild(evBtn);
 
-        const delBtn = el(
-          "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px] text-red-400",
-          t("sources.delete", "删除"),
-        );
+        const delBtn = el("button", "btn btn-danger btn-sm", t("sources.delete", "删除"));
         delBtn.addEventListener("click", () => deleteSource(delBtn));
         acts.appendChild(delBtn);
       }
@@ -358,7 +384,7 @@
       }
 
       function card(titleKey, titleDefault) {
-        const c = el("div", "card rounded-2xl p-5");
+        const c = el("div", "card card-pad");
         c.appendChild(el("div", "src-section-title", t(titleKey, titleDefault)));
         return c;
       }
@@ -394,13 +420,13 @@
             const url = location.origin + SRC.hookUrl;
             const wrap = el("div", "flex flex-wrap items-center gap-2");
             wrap.appendChild(el("span", "hook-url", url));
-            const cp = el("button", "btn-ghost rounded-lg px-2 py-1 text-[10px]", t("srcpage.copy", "复制"));
+            const cp = el("button", "btn btn-ghost btn-sm", t("srcpage.copy", "复制"));
             cp.addEventListener("click", async () => {
               try {
                 await navigator.clipboard.writeText(url);
                 toast(t("srcpage.copied", "已复制"));
               } catch (e) {
-                toast(t("srcpage.copy_failed", "复制失败"));
+                toast(t("srcpage.copy_failed", "复制失败"), "error");
               }
             });
             wrap.appendChild(cp);
@@ -425,9 +451,7 @@
         const c = card("srcpage.targets", "出口能力");
         const caps = SRC.targetCaps || [];
         if (!caps.length) {
-          c.appendChild(
-            el("div", "text-xs text-red-400", t("sources.no_target", "未配置")),
-          );
+          c.appendChild(el("div", "src-err", t("sources.no_target", "未配置")));
           return c;
         }
 
@@ -451,9 +475,7 @@
           const params = tc.params || {};
           const keys = Object.keys(params);
           if (!keys.length) {
-            box.appendChild(
-              el("div", "mt-1 text-[11px] text-zinc-600", t("srcpage.no_params", "没有配置参数")),
-            );
+            box.appendChild(el("div", "src-meta mt-1", t("srcpage.no_params", "没有配置参数")));
           } else {
             const table = el("div", "param-table mt-1.5");
             for (const k of keys) {
@@ -479,17 +501,13 @@
                 row.appendChild(el("span", "param-map-badge", t("srcpage.mapped", "映射")));
                 // 变量引用比 payload 路径好读：显示 $name 而不是 {"var":"name"}
                 row.appendChild(
-                  el(
-                    "span",
-                    "param-val",
-                    v.var ? "← $" + v.var : "← payload." + v.from,
-                  ),
+                  el("span", "param-val", v.var ? "← $" + v.var : "← payload." + v.from),
                 );
                 if (Object.prototype.hasOwnProperty.call(v, "default")) {
                   row.appendChild(
                     el(
                       "span",
-                      "text-[11px] text-zinc-500",
+                      "src-meta",
                       t("srcpage.default_is", "默认 {v}").replace(
                         "{v}",
                         JSON.stringify(v.default),
@@ -498,14 +516,10 @@
                   );
                 }
                 if (v.as) {
-                  row.appendChild(
-                    el("span", "text-[11px] text-zinc-500", "as " + v.as),
-                  );
+                  row.appendChild(el("span", "src-meta", "as " + v.as));
                 }
               } else {
-                row.appendChild(
-                  el("span", "param-val", JSON.stringify(v)),
-                );
+                row.appendChild(el("span", "param-val", JSON.stringify(v)));
               }
               table.appendChild(row);
             }
@@ -519,19 +533,15 @@
       // 下游流向图：复用 graphs.js 的共享实现（不重写一份时序/布局逻辑）
       function renderFlowCard() {
         const c = card("srcpage.flow", "下游流向");
-        const host = el("div", "flow-host");
         const tree = buildFlowTree(SRC);
         if (!tree.length) {
-          c.appendChild(el("div", "text-[11px] text-zinc-500", t("srcpage.flow_empty", "这个源还没有可展开的下游")));
+          c.appendChild(
+            el("div", "src-meta", t("srcpage.flow_empty", "这个源还没有可展开的下游")),
+          );
           return c;
         }
 
-        // 全屏入口和 trace 页保持一致：**右下角工具栏那个图标**。
-        //
-        // 早先这里是标题栏一个带文字的「全屏」按钮，理由是"图标容易被当成
-        // 又一个缩放键"。但同一个组件在两个页面把同一个功能放在两个地方，
-        // 读起来更乱 —— 用户在 trace 页学会"右下角有全屏"，到这一页就找
-        // 不到了。统一放工具栏，位置和图标都一样。
+        const host = el("div", "flow-host");
         c.appendChild(host);
 
         // 展开后才建图：折叠时 offsetWidth 是 0，fit() 会算出错误的缩放
@@ -563,7 +573,6 @@
       // 各自改各自的比共享一个"什么都要兼顾"的函数更省事。
       function buildFlowTree(s) {
         const capById = new Map(CAPS.map((c) => [c.id, c]));
-        const seen = new Set();
         const roots = [];
         const rootsSeen = new Set();
 
@@ -632,7 +641,6 @@
           }
           if (rootsSeen.has(cap.id)) continue;
           rootsSeen.add(cap.id);
-          seen.add(cap.id);
           roots.push(node(cap, "", new Set([cap.id])));
         }
         return roots;
@@ -665,13 +673,14 @@
                 "{r}",
                 reasons.join(", ") + detail,
               ),
+              "warn",
             );
           } else {
-            toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"));
+            toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"), "warn");
           }
           await load();
         } catch (e) {
-          toast(t("sources.fire_failed", "触发失败") + ": " + (e.detail || e.message || e));
+          toast(t("sources.fire_failed", "触发失败") + ": " + (e.detail || e.message || e), "error");
         } finally {
           btn.disabled = false;
         }
@@ -688,7 +697,7 @@
           toast(SRC.enabled ? t("sources.disabled_ok", "已停用") : t("sources.enabled_ok", "已启用"));
           await load();
         } catch (e) {
-          toast(t("sources.toggle_failed", "操作失败") + ": " + (e.detail || e.message || e));
+          toast(t("sources.toggle_failed", "操作失败") + ": " + (e.detail || e.message || e), "error");
         } finally {
           btn.disabled = false;
         }
@@ -707,7 +716,7 @@
           toast(t("sources.deleted", "已删除"));
           location.href = "sources.html";
         } catch (e) {
-          toast(t("sources.delete_failed", "删除失败") + ": " + (e.detail || e.message || e));
+          toast(t("sources.delete_failed", "删除失败") + ": " + (e.detail || e.message || e), "error");
           btn.disabled = false;
         }
       }

@@ -1,4 +1,8 @@
 common:
+  skip_to_content: メインコンテンツへ
+  close: 閉じる
+  action:
+    close: 閉じる
   load_failed_prefix: '読み込みに失敗：'
   retry: '再試行'
   backend_offline: 'サーバーに接続できません'
@@ -145,6 +149,10 @@ index:
     rate_na: 受信デバイスがまだないため、配信率は表示できません
     trend_demo: デモ
     trend_live: ライブ
+    running: 実行中
+    running_sub: 直近50件のタスク
+    failed: 異常タスク
+    failed_sub: 直近50件のタスク
   heatmap:
     title: タスクアクティビティ
     subtitle: 過去1年 · 1日あたりのタスク数
@@ -195,6 +203,7 @@ index:
     pull_loading: 更新中…
     pull_done: 更新しました
   recent_summary: 最近 {total} 件のタスクを記録、うち {ok} 件が完了。
+  summary_load_failed: タスクデータを取得できません。再試行してください。
   notif:
     reported: '報告済み'
     unreported: '未報告'
@@ -1117,6 +1126,8 @@ events:
     invalid_cursor: カーソルが無効です。最新へ戻りました
 caps:
   title: ケイパビリティ
+  step_pick: テンプレートを選ぶ
+  step_fill: 入力して作成
   sidebar: 'ここで定義し、ノードが実行'
   subtitle: ケイパビリティは「何をするか」（「どうやるか」ではない）。出口（イベントの行き先）は独立したページになりました。
   new: ケイパビリティを定義
@@ -1333,6 +1344,7 @@ nodes:
     copy_install: コマンドをコピー
     yaml_workdir_note: '作業ディレクトリは「能力」ページの能力定義（run.workDir）で設定し、デプロイと一緒に配布されます。この yaml には書きません。'
 sources:
+  empty_title: ソースがまだありません
   detail: "詳細"
   open_detail: "詳細を開く"
   "on": "実行中"

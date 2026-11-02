@@ -45,7 +45,7 @@
         </div>
         <div class="stat-label">{{t "index.kpi.total"}}</div>
         <div class="stat-value" id="kpi-total">–</div>
-        <div class="card-sub">{{t "index.kpi.last_30d"}}</div>
+        <div class="stat-foot"><span>{{t "index.kpi.last_30d"}}</span></div>
         <div
           class="stat-spark"
           role="img"
@@ -149,6 +149,76 @@
         ></div>
         </div>
       </div>
+
+      <!-- ===== 非推送口径的两张卡（PUSH_UI_ENABLED=false 时补满四格）=====
+           数据与上面两张卡同源（/v1/tasks 的已请求结果），不新增 API。
+           推送开放时由 JS 给 [data-nonpush-tile] 加 hidden，网格剩下的
+           正好是上面两张推送卡 —— 两种开关状态下都是 4 张真卡，没有空格。 -->
+      <div class="min-w-0" data-nonpush-tile>
+        <div class="card stat card-pad h-full">
+          <div class="flex items-start justify-between gap-2">
+            <span class="stat-icon stat-icon-warn" aria-hidden="true">
+              <svg
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 3v3" />
+                <circle cx="12" cy="14" r="8" />
+                <path d="M12 10v4l2.5 1.5" />
+              </svg>
+            </span>
+            <span class="dot dot-warn"></span>
+          </div>
+          <div class="stat-label">{{t "index.kpi.running"}}</div>
+          <div class="stat-value" id="kpi-running">–</div>
+          <div class="stat-foot">
+            <span>{{t "index.kpi.running_sub"}}</span>
+          </div>
+          <div
+            class="stat-spark"
+            role="img"
+            aria-label="{{t "ui.kpi.spark"}}"
+            data-spark="0.38,0.52,0.44,0.61,0.47,0.56,0.41"
+          ></div>
+        </div>
+      </div>
+
+      <div class="min-w-0" data-nonpush-tile>
+        <div class="card stat card-pad h-full">
+          <div class="flex items-start justify-between gap-2">
+            <span class="stat-icon stat-icon-error" aria-hidden="true">
+              <svg
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7.5v5.5" />
+                <path d="M12 16.5h.01" />
+              </svg>
+            </span>
+            <span class="dot dot-error"></span>
+          </div>
+          <div class="stat-label">{{t "index.kpi.failed"}}</div>
+          <div class="stat-value" id="kpi-failed">–</div>
+          <div class="stat-foot"><span>{{t "index.kpi.failed_sub"}}</span></div>
+          <div
+            class="stat-spark"
+            role="img"
+            aria-label="{{t "ui.kpi.spark"}}"
+            data-spark="0.62,0.48,0.55,0.40,0.51,0.36,0.44"
+          ></div>
+        </div>
+      </div>
     </section>
 
     <!-- ===== 事件中心概览（#79）=====
@@ -184,7 +254,7 @@
             <span class="card-sub">{{t "index.heatmap.less"}}</span>
             <span
               class="hm-legend-cell"
-              style="background: var(--surface-2)"
+              style="background: var(--hm-empty)"
             ></span>
             <span
               class="hm-legend-cell"
@@ -206,7 +276,10 @@
           </div>
         </div>
       </div>
-      <div class="overflow-x-auto px-5 py-3">
+      {{/* .hm-scroll 提供语义钩子（D17），.overflow-x-auto 是 e2e 的「合法横滚」标记：
+           frontend.mjs 只在 .overflow-x-auto / .code-body / pre 内豁免横向溢出，
+           两个类必须同时存在。 */}}
+      <div class="hm-scroll overflow-x-auto px-5 py-3">
         <div class="hm" id="hm"></div>
       </div>
     </section>
@@ -353,33 +426,71 @@
   (function () {
     "use strict";
     /* 迷你趋势条：纯装饰的 sparkline。数据写在 .stat-spark[data-spark]
-     * （0..1 的高度数组）里，这里一次生成全部四个，避免在模板里复制
-     * 四份 20 行 <svg>（改一个柱高要同步改四处）。 */
+     * （0..1 的高度数组）里，这里一次生成全部四张，避免在模板里复制
+     * 四份 20 行 <svg>。
+     *
+     * 形状是**平滑折线**（Catmull-Rom → 三次贝塞尔），不是柱状块：31px 高的
+     * 小图里六根 6px 宽柱子看起来像进度条，折线才能读出“趋势”。
+     * vector-effect="non-scaling-stroke" 保证 preserveAspectRatio="none"
+     * 横向拉伸时线宽不变（否则卡变宽线就变粗）。 */
     function renderSparks() {
-      const BAR = 6, GAP = 3, H = 24;
+      const H = 24,
+        PAD = 2;
       const NS = "http://www.w3.org/2000/svg";
       for (const box of document.querySelectorAll(".stat-spark[data-spark]")) {
         const vals = String(box.dataset.spark || "")
           .split(",")
           .map(Number)
           .filter((n) => Number.isFinite(n));
-        if (!vals.length) continue;
+        if (!vals.length) continue; // 无数据：保留空态（不发明假趋势）
+        const W = 64;
+        const n = vals.length;
+        const xy = vals.map((v, i) => {
+          const x = n === 1 ? W / 2 : (i / (n - 1)) * W;
+          const y = H - PAD - Math.min(1, Math.max(0, v)) * (H - PAD * 2);
+          return [x, y];
+        });
+        // Catmull-Rom 转贝塞尔：每段用前后两点做切线，得到 C1 连续平滑线
+        let d = `M${xy[0][0].toFixed(2)},${xy[0][1].toFixed(2)}`;
+        for (let i = 0; i < xy.length - 1; i++) {
+          const p0 = xy[i - 1] || xy[i];
+          const p1 = xy[i];
+          const p2 = xy[i + 1];
+          const p3 = xy[i + 2] || p2;
+          const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+          const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+          const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+          const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+          d +=
+            `C${c1x.toFixed(2)},${c1y.toFixed(2)} ` +
+            `${c2x.toFixed(2)},${c2y.toFixed(2)} ` +
+            `${p2[0].toFixed(2)},${p2[1].toFixed(2)}`;
+        }
         const svg = document.createElementNS(NS, "svg");
         svg.setAttribute("class", "h-full w-full");
-        svg.setAttribute("viewBox", "0 0 64 24");
+        svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
         svg.setAttribute("preserveAspectRatio", "none");
-        svg.setAttribute("fill", "currentColor");
+        svg.setAttribute("fill", "none");
         svg.setAttribute("aria-hidden", "true");
-        vals.forEach((v, i) => {
-          const h = Math.max(2, Math.round(Math.min(1, Math.max(0, v)) * H));
-          const r = document.createElementNS(NS, "rect");
-          r.setAttribute("x", String(i * (BAR + GAP)));
-          r.setAttribute("y", String(H - h));
-          r.setAttribute("width", String(BAR));
-          r.setAttribute("height", String(h));
-          r.setAttribute("rx", "1.5");
-          svg.appendChild(r);
-        });
+        /* F1：折线 + 13% 面积。面积用同一个 d 收到底边闭合，
+         * 用 currentColor 的 13% 透明度，主题切换自动跟随。 */
+        const area = document.createElementNS(NS, "path");
+        area.setAttribute(
+          "d",
+          d + `L${W},${H}L0,${H}Z`,
+        );
+        area.setAttribute("fill", "currentColor");
+        area.setAttribute("fill-opacity", "0.13");
+        area.setAttribute("stroke", "none");
+        svg.appendChild(area);
+        const path = document.createElementNS(NS, "path");
+        path.setAttribute("d", d);
+        path.setAttribute("stroke", "currentColor");
+        path.setAttribute("stroke-width", "1.5");
+        path.setAttribute("stroke-linecap", "round");
+        path.setAttribute("stroke-linejoin", "round");
+        path.setAttribute("vector-effect", "non-scaling-stroke");
+        svg.appendChild(path);
         box.replaceChildren(svg);
       }
     }
@@ -398,6 +509,12 @@
     // 「整块隐藏」才是确定的。
     if (!window.Anotify.pushUIEnabled) {
       document.querySelectorAll("[data-push-tile]").forEach((el) => {
+        el.classList.add("hidden");
+      });
+    } else {
+      /* 推送开放时反过来：非推送口径的两张卡让位给推送卡，
+       * 保证 KPI 网格永远是 4 张**可见的真卡**（不是 4 格里 2 格空）。 */
+      document.querySelectorAll("[data-nonpush-tile]").forEach((el) => {
         el.classList.add("hidden");
       });
     }
@@ -572,13 +689,24 @@
       const box = document.getElementById("index-events");
       if (!box) return;
       let data = null;
+      let evErr = null;
       try {
         data = await api("/v1/console/events?limit=5");
-      } catch {
+      } catch (e) {
         data = null;
+        evErr = e || new Error("events fetch failed");
       }
       const events = (data && data.events) || [];
       box.replaceChildren();
+
+      /* F14：接口挂了 ≠ 零条事件。原来这里会画「还没有事件，接上 webhook…」，
+       * 与首屏其它区域的错误态自相矛盾。 */
+      if (evErr) {
+        box.appendChild(
+          window.Anotify.loadErrorNode(evErr, () => loadEvents()),
+        );
+        return;
+      }
 
       if (!events.length) {
         const hint = el("div", { class: "card-sub" });
@@ -616,7 +744,45 @@
     }
 
     /* ================= KPI ================= */
+    /* 本地日期的 YYYY-MM-DD（与 /v1/stats daily 的 day 字段同口径） */
+    function dayKeyOf(d) {
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return d.getFullYear() + "-" + m + "-" + dd;
+    }
+
+    /* 今日 vs 昨日的任务数差（F1 的趋势药丸）。只有 /v1/stats 的 daily 同时含
+     * 今天和昨天时才给数，否则返回 null —— 不让 UI 凭空造一个 ↗。 */
+    function yesterdayDelta() {
+      if (!STATS || !Array.isArray(STATS.daily) || STATS.daily.length < 2) {
+        return null;
+      }
+      const byDay = new Map(STATS.daily.map((d) => [d.day, d.count]));
+      const today = dayKeyOf(new Date());
+      const yest = dayKeyOf(new Date(Date.now() - 86400e3));
+      if (!byDay.has(today) || !byDay.has(yest)) return null;
+      return (byDay.get(today) || 0) - (byDay.get(yest) || 0);
+    }
+
     function renderKpis() {
+      /* F14：首屏接口全挂时不能把「取不到」画成「0」。KPI 一律显示 – ，
+       * 让错误态只出现在一个地方（列表里的 loadErrorNode），而不是各处谎报 0。 */
+      if (loadError) {
+        for (const id of [
+          "kpi-total",
+          "kpi-rate",
+          "kpi-today",
+          "kpi-devices",
+          "kpi-running",
+          "kpi-failed",
+        ]) {
+          const n = document.getElementById(id);
+          if (n) n.textContent = "–";
+        }
+        const trend = document.getElementById("kpi-total-trend");
+        if (trend) trend.textContent = "–";
+        return;
+      }
       // 优先用 /v1/stats 的真实统计；STATS 不可用时回退到任务列表估算
       let total, rate, today, devices;
       if (STATS) {
@@ -642,10 +808,21 @@
         today = NOTIFICATIONS.filter((n) => n.isToday).length;
       }
       document.getElementById("kpi-total").textContent = total.toLocaleString();
-      document.getElementById("kpi-total-trend").textContent = t(
-        "index.kpi.trend_live",
-        "实时",
-      );
+      /* F1：.stat-delta 是**药丸**（↑/↓ + 数字），不是「实时」这种描述词。
+       * 没有昨日基线可比时诚实显示 –（药丸底仍在，视觉不塌）。 */
+      const trendEl = document.getElementById("kpi-total-trend");
+      if (trendEl) {
+        const delta = yesterdayDelta();
+        if (delta == null) {
+          trendEl.textContent = t("ui.kpi.delta_na", "–");
+          trendEl.classList.remove("up", "down");
+        } else {
+          trendEl.classList.toggle("up", delta >= 0);
+          trendEl.classList.toggle("down", delta < 0);
+          trendEl.textContent =
+            (delta >= 0 ? "↑ " : "↓ ") + Math.abs(delta).toLocaleString();
+        }
+      }
       // Use textContent to avoid innerHTML (% is a separate span)
       const rateEl = document.getElementById("kpi-rate");
       if (rate == null) {
@@ -669,6 +846,24 @@
         "index.kpi.devices_sub2",
         "推送订阅 + 长连接",
       );
+
+      /* 非推送口径的两张卡：与上面同源（已请求的 /v1/tasks 结果），不新增 API。
+       * 样本量写进卡片的副标题（“近 50 条任务”），避免把 50 条上限说成全量。 */
+      const RUNNING = new Set(["pending", "assigned", "acked", "running"]);
+      const runningEl = document.getElementById("kpi-running");
+      const failedEl = document.getElementById("kpi-failed");
+      if (runningEl) {
+        runningEl.textContent = NOTIFICATIONS.filter((n) =>
+          RUNNING.has(n.status),
+        ).length.toLocaleString();
+      }
+      if (failedEl) {
+        failedEl.textContent = NOTIFICATIONS.filter((n) =>
+          ["failed", "canceled", "abandoned", "lease_expired"].includes(
+            n.status,
+          ),
+        ).length.toLocaleString();
+      }
     }
 
     function renderSummary() {
@@ -693,8 +888,18 @@
       )
         .replace("{greeting}", t(partKey, partFallback))
         .replace("{name}", username);
+      /* F14：接口挂了的时候，「最近收录 0 条任务」是谎报（0 条 ≠ 没取到）。
+       * 摘要行改说「暂时取不到」，与下面列表里的 loadErrorNode 口径一致。 */
+      const summaryEl = document.getElementById("summary-line");
+      if (loadError) {
+        summaryEl.textContent = t(
+          "index.summary_load_failed",
+          "暂时取不到任务数据，请重试。",
+        );
+        return;
+      }
       const okCnt = NOTIFICATIONS.filter((n) => n.agentState === "done").length;
-      document.getElementById("summary-line").textContent = t(
+      summaryEl.textContent = t(
         "index.recent_summary",
         "最近收录 {total} 条任务，其中 {ok} 条已完成。",
       )
@@ -1037,7 +1242,7 @@
       if (!hm) return;
       hm.replaceChildren(); // 重渲染前清空
       const LEVELS = [
-        "var(--surface-2)",
+        "var(--hm-empty)",
         "var(--accent-1)",
         "var(--accent-2)",
         "var(--accent-3)",

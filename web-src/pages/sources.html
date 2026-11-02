@@ -2,124 +2,218 @@
 
 {{define "style"}}
     <style>
-      /* 源卡片：左边是"什么时候触发"，右边是"派给谁" */
-      .src-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 1rem;
-        align-items: start;
+      /* 源列表页（UI v2）
+         ------------------------------------------------------------
+         组件（卡片 / 列表行 / 按钮 / 徽章 / 弹层 / 空态 / 骨架）一律用
+         web/ui.css 的共享类，这里只留本页独有的三块：
+         ① 列表行在窄屏的换行行为 ② 表单里的能力多选 / 字段清单 / 字段浮层
+         ③ 试运行结果面板。
+         颜色全部走 web/tokens.css 的 token —— 亮主题下这些规则也要读得清，
+         所以不再出现 rgba(255,255,255,*) 与 Tailwind 色板类。 */
+
+      /* 单列栅格必须显式写 minmax(0, 1fr)：默认的 auto 轨道不会缩到
+         min-content 以下，一个长字符串就能把整页顶宽（D6 的硬要求，
+         ui.css 的 .page 目前没写；这里按页兜一层，等共享规则补上可删）。 */
+      #page-main > .page {
+        grid-template-columns: minmax(0, 1fr);
       }
-      @media (max-width: 720px) {
-        .src-row {
-          grid-template-columns: minmax(0, 1fr);
-        }
+
+      /* ---------- 列表行 ----------
+         .list-row 是 flex 不换行；源行右侧最多 3 个操作按钮，390 宽放不下，
+         这里补 wrap：按钮组靠右，放不下时整组掉到第二行。 */
+      #src-list .list-row {
+        flex-wrap: wrap;
+        align-items: flex-start;
       }
-      /* kind 徽章：cron 紫 / webhook 蓝 / manual 绿 */
-      /* 表单里的多选能力：滚动容器，避免长列表把弹窗撑爆 */
+      #src-list .list-main {
+        flex: 1 1 15rem;
+      }
+      #src-list .src-acts {
+        margin-left: auto;
+      }
+      /* .card 是 16px 圆角但没有 overflow:hidden（有焦点环的按钮会被裁），
+         所以首尾行自己收一下圆角，hover 底色才不会顶出直角。 */
+      #src-list > .list-row:first-child {
+        border-top-left-radius: var(--r-lg);
+        border-top-right-radius: var(--r-lg);
+      }
+      #src-list > .list-row:last-child {
+        border-bottom-left-radius: var(--r-lg);
+        border-bottom-right-radius: var(--r-lg);
+      }
+      .src-name-link {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text);
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .src-name-link:hover {
+        color: var(--accent);
+      }
+      /* 页级语义文字：替代 text-zinc-* / text-red-* / text-amber-* 这类色板类
+         （色板类硬编码了暗色值，亮主题下读不清）。 */
+      .src-meta {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .src-err {
+        font-size: 11px;
+        color: var(--error);
+      }
+      .src-warn {
+        font-size: 10px;
+        color: var(--warn);
+      }
+      .src-accent {
+        color: var(--accent);
+      }
+
+      /* ---------- 首屏骨架：形状对齐真实列表行 ---------- */
+      .src-skel-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 56px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .src-skel-row:last-child {
+        border-bottom: 0;
+      }
+      .src-skel-lines {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .sk-row-title {
+        width: 34%;
+        height: 14px;
+      }
+      .sk-row-meta {
+        width: 56%;
+        height: 10px;
+      }
+      .sk-row-act {
+        width: 92px;
+        height: 28px;
+        flex: none;
+      }
+
+      /* ---------- 表单：出口能力多选 ----------
+         滚动容器，避免长列表把弹窗撑爆。 */
       .target-picker {
         max-height: 14rem;
         overflow-y: auto;
         border: 1px solid var(--line);
-        border-radius: 0.75rem;
-        padding: 0.5rem;
+        border-radius: var(--r-md);
+        background: var(--surface-2);
+        padding: 6px;
       }
       .target-opt {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
-        padding: 0.35rem 0.5rem;
-        border-radius: 0.5rem;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: var(--r-sm);
         cursor: pointer;
-        font-size: 0.8rem;
+        font-size: 13px;
+        color: var(--text);
       }
       .target-opt:hover {
-        background: rgba(255, 255, 255, 0.04);
+        background: var(--surface-3);
       }
       /* 勾选后展开的参数字段：缩进 + 左侧细线，视觉上从属于该能力 */
       .target-params {
-        margin: 0.25rem 0 0.5rem 1.6rem;
-        padding-left: 0.75rem;
+        margin: 4px 0 8px 24px;
+        padding-left: 12px;
         border-left: 1px solid var(--line);
         display: grid;
-        gap: 0.4rem;
+        gap: 6px;
+        min-width: 0;
       }
       .target-params label {
-        font-size: 0.7rem;
-        color: var(--muted, #71717a);
+        font-size: 11px;
+        color: var(--muted);
       }
       .target-params input,
       .target-params select {
-        font-size: 0.75rem;
-        padding: 0.3rem 0.5rem;
+        font-size: 12px;
       }
       .param-req {
-        color: #f87171;
-        margin-left: 0.15rem;
+        color: var(--error);
+        margin-left: 2px;
       }
-      /* 可用变量清单 */
+
+      /* ---------- 字段清单（这个触发方式能提供哪些字段）---------- */
       .avail-vars {
-        margin-top: 0.45rem;
-        font-size: 0.7rem;
+        margin-top: 2px;
+        font-size: 11px;
       }
       .avail-vars summary {
         cursor: pointer;
         color: var(--muted);
-        font-size: 0.7rem;
+        font-size: 12px;
       }
       .avail-vars summary:hover {
-        color: var(--fg);
+        color: var(--text);
       }
       .av-src {
-        font-size: 0.62rem;
+        font-size: 10px;
         color: var(--faint);
-        padding: 0 0 0.3rem 0.1rem;
+        padding: 0 0 5px 1px;
       }
       .avail-vars-body {
-        margin-top: 0.4rem;
-        padding: 0.5rem 0.6rem;
+        margin-top: 6px;
+        padding: 8px 10px;
         border: 1px solid var(--line);
-        border-radius: 0.375rem;
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
         display: grid;
-        gap: 0.3rem;
+        gap: 5px;
+        min-width: 0;
       }
       .av-row {
         display: flex;
         align-items: baseline;
-        gap: 0.4rem;
+        gap: 6px;
         flex-wrap: wrap;
+        min-width: 0;
       }
       .av-path {
-        font-family: var(--mono, ui-monospace, monospace);
-        font-size: 0.66rem;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
         color: var(--accent);
         background: transparent;
         border: 1px solid var(--line);
-        border-radius: 0.25rem;
-        padding: 0.05rem 0.3rem;
+        border-radius: var(--r-xs);
+        padding: 1px 5px;
         cursor: pointer;
+        max-width: 100%;
+        overflow-wrap: anywhere;
       }
       .av-path:hover {
         border-color: var(--accent);
       }
       .av-desc {
         color: var(--faint);
-        font-size: 0.63rem;
+        font-size: 10px;
       }
       .av-empty {
         color: var(--faint);
-        font-size: 0.65rem;
+        font-size: 10.5px;
         line-height: 1.6;
       }
-
-      /* ---------- 字段清单：按顶层键分组 + 折叠 ---------- */
       .av-filter {
         width: 100%;
-        margin: 0 0 0.35rem 0;
-        font-size: 0.68rem;
-        padding: 0.2rem 0.4rem;
+        margin: 0 0 6px 0;
       }
       .av-group {
         border-top: 1px solid var(--line);
+        min-width: 0;
       }
       .av-group:first-of-type {
         border-top: 0;
@@ -127,14 +221,14 @@
       .av-group-head {
         display: flex;
         align-items: center;
-        gap: 0.35rem;
+        gap: 6px;
         width: 100%;
-        padding: 0.28rem 0.1rem;
+        padding: 5px 2px;
         background: transparent;
         border: 0;
         cursor: pointer;
-        color: var(--fg);
-        font-size: 0.66rem;
+        color: var(--text);
+        font-size: 10.5px;
         text-align: left;
       }
       .av-group-head:hover {
@@ -142,16 +236,16 @@
       }
       .av-caret {
         color: var(--faint);
-        font-size: 0.6rem;
-        width: 0.6rem;
+        font-size: 10px;
+        width: 10px;
         flex: none;
-        transition: transform 0.12s ease;
+        transition: transform var(--dur-fast) var(--ease);
       }
       .av-group.is-open .av-caret {
         transform: rotate(90deg);
       }
       .av-group-name {
-        font-family: var(--mono, ui-monospace, monospace);
+        font-family: var(--font-mono);
         color: var(--accent);
         flex: 1;
         min-width: 0;
@@ -161,12 +255,13 @@
       }
       .av-group-n {
         color: var(--faint);
-        font-size: 0.6rem;
+        font-size: 10px;
         flex: none;
       }
       .av-group-body {
         display: none;
-        padding: 0 0 0.25rem 0.9rem;
+        padding: 0 0 4px 14px;
+        min-width: 0;
       }
       .av-group.is-open .av-group-body {
         display: block;
@@ -178,68 +273,71 @@
       }
       .av-empty-filter {
         color: var(--faint);
-        font-size: 0.65rem;
-        padding: 0.3rem 0.1rem;
+        font-size: 10.5px;
+        padding: 5px 2px;
       }
 
-      /* webhook 接入指引 */
+      /* ---------- webhook 接入指引 ---------- */
       .hook-guide {
-        margin-top: 0.5rem;
+        margin-top: 8px;
       }
       .hook-url-row {
         display: flex;
         align-items: center;
-        gap: 0.4rem;
+        gap: 6px;
         flex-wrap: wrap;
+        min-width: 0;
       }
       .hook-url-label {
-        font-size: 0.65rem;
+        font-size: 10.5px;
         color: var(--faint);
       }
       .hook-url {
-        font-family: var(--mono, ui-monospace, monospace);
-        font-size: 0.68rem;
+        font-family: var(--font-mono);
+        font-size: 11px;
         color: var(--accent);
         word-break: break-all;
       }
       .hook-github {
-        margin-top: 0.5rem;
-        font-size: 0.7rem;
+        margin-top: 8px;
+        font-size: 11px;
       }
       .hook-github summary {
         cursor: pointer;
         color: var(--muted);
-        font-size: 0.7rem;
+        font-size: 11px;
       }
       .hook-github summary:hover {
-        color: var(--fg);
+        color: var(--text);
       }
       .hook-github-body {
-        margin-top: 0.4rem;
-        padding: 0.5rem 0.6rem;
+        margin-top: 6px;
+        padding: 8px 10px;
         border: 1px solid var(--line);
-        border-radius: 0.375rem;
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+        min-width: 0;
       }
       .hook-kv {
         display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 0.2rem 0.6rem;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 3px 10px;
         align-items: baseline;
       }
       .hook-kv dt {
         color: var(--faint);
-        font-size: 0.65rem;
+        font-size: 10.5px;
         white-space: nowrap;
       }
       .hook-kv dd {
         margin: 0;
-        font-family: var(--mono, ui-monospace, monospace);
-        font-size: 0.68rem;
+        font-family: var(--font-mono);
+        font-size: 11px;
         word-break: break-all;
       }
       .hook-note {
         color: var(--faint);
-        font-size: 0.63rem;
+        font-size: 10px;
         line-height: 1.5;
         display: block;
       }
@@ -247,10 +345,10 @@
       /* 参数输入框下方的引用提示。引用时显示"从事件或变量取值"，
          不改变值本身——只是让人一眼看出这行不是字面量。 */
       .param-tip {
-        font-size: 0.62rem;
+        font-size: 10px;
         color: var(--faint);
         line-height: 1.4;
-        min-height: 0.9rem;
+        min-height: 14px;
       }
       .param-tip.is-ref {
         color: var(--accent);
@@ -258,46 +356,48 @@
       /* 预览求值结果：取到了绿、取不到红。颜色是唯一能让人不看文字
          就发现"这条配置有问题"的信号，所以不用中性色。 */
       .param-tip.is-ok {
-        color: var(--ok, #34d399);
+        color: var(--success);
       }
       .param-tip.is-bad {
-        color: var(--danger, #f87171);
+        color: var(--error);
       }
 
       /* ---------- 字段浮层（点选插入）---------- */
       .pick-pop {
         position: fixed;
-        z-index: 80;
+        z-index: var(--z-menu);
         min-width: 16rem;
-        max-width: 26rem;
+        /* 390 宽：26rem 会超出视口，所以再夹一道（浮层是 position:fixed，
+           溢出会被 e2e 的横向溢出断言算进去） */
+        max-width: min(26rem, calc(100vw - 24px));
         max-height: 16rem;
         overflow-y: auto;
-        padding: 0.3rem;
-        border-radius: 0.5rem;
+        padding: 5px;
+        border-radius: var(--r-sm);
         border: 1px solid var(--line);
-        background: var(--panel-modal, #18181b);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-        font-size: 0.7rem;
+        background: var(--panel-modal);
+        box-shadow: var(--shadow-3);
+        font-size: 11px;
       }
       .pick-row {
         display: flex;
         align-items: baseline;
-        gap: 0.4rem;
+        gap: 6px;
         width: 100%;
-        padding: 0.2rem 0.35rem;
-        border-radius: 0.3rem;
+        padding: 3px 6px;
+        border-radius: var(--r-xs);
         text-align: left;
         background: transparent;
         border: 0;
         cursor: pointer;
-        color: var(--fg);
+        color: var(--text);
       }
       .pick-row:hover,
       .pick-row.is-active {
-        background: color-mix(in srgb, var(--accent) 18%, transparent);
+        background: var(--accent-soft);
       }
       .pick-path {
-        font-family: var(--mono);
+        font-family: var(--font-mono);
         color: var(--accent);
         flex: 1;
         min-width: 0;
@@ -306,318 +406,322 @@
         white-space: nowrap;
       }
       .pick-val {
-        color: var(--muted, #a1a1aa);
-        font-family: var(--mono);
-        font-size: 0.62rem;
+        color: var(--muted);
+        font-family: var(--font-mono);
+        font-size: 10px;
         max-width: 9rem;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .pick-empty {
-        padding: 0.4rem;
+        padding: 6px;
         color: var(--faint);
       }
 
       /* ---------- 试运行结果 ---------- */
       .dry-result {
-        margin-top: 0.75rem;
-        padding: 0.6rem 0.75rem;
-        border-radius: 0.5rem;
+        margin: 0 20px 12px;
+        padding: 10px 12px;
+        border-radius: var(--r-sm);
         border: 1px solid var(--line);
-        background: color-mix(in srgb, var(--surface-1) 60%, transparent);
-        font-size: 0.7rem;
+        background: var(--surface-2);
+        font-size: 11px;
         line-height: 1.6;
         max-height: 14rem;
         overflow-y: auto;
+        min-width: 0;
       }
       .dry-head {
         display: flex;
         align-items: center;
-        gap: 0.4rem;
+        gap: 6px;
         font-weight: 500;
-        margin-bottom: 0.4rem;
-        color: var(--fg);
+        margin-bottom: 6px;
+        color: var(--text);
       }
       .dry-row {
         display: flex;
         align-items: baseline;
-        gap: 0.4rem;
-        padding: 0.15rem 0;
+        gap: 6px;
+        padding: 2px 0;
+        min-width: 0;
+        flex-wrap: wrap;
       }
       .dry-row.is-ok {
-        color: var(--ok, #34d399);
+        color: var(--success);
       }
       .dry-row.is-bad {
-        color: var(--danger, #f87171);
+        color: var(--error);
       }
       .dry-cap {
-        font-family: var(--mono);
-        color: var(--fg);
+        font-family: var(--font-mono);
+        color: var(--text);
       }
       .dry-detail {
         color: var(--faint);
-        font-size: 0.65rem;
+        font-size: 10px;
       }
       .dry-params {
-        margin-left: 1rem;
-        color: var(--muted, #a1a1aa);
-        font-size: 0.65rem;
-        font-family: var(--mono);
+        margin-left: 14px;
+        color: var(--muted);
+        font-size: 10px;
+        font-family: var(--font-mono);
+        word-break: break-all;
       }
 
-      /* ---------- 流向图（只读预览）----------
-       *
-       * 不用 SVG 画曲线：我们要表达的是"从源出发能到达哪些能力、经过哪些出口"，
-       * 这是**有向图但层级不深**，用缩进 + 树的形状比一堆交叉曲线更好读，
-       * 也不需要在 canvas/svg 里手工算坐标（那在实时变化时会很难维护）。
-       *
-       * 环（D→B→D 这种）用"↩ 回到 X"标记，不重复展开 —— 见 buildFlow。
-       */
-      .hook-url {
-        font-family: var(--mono, monospace);
-        font-size: 0.7rem;
-        word-break: break-all;
-        opacity: 0.8;
+      /* ---------- 弹层里的表单纵向间距 ---------- */
+      .src-form {
+        display: grid;
+        gap: 14px;
+        min-width: 0;
       }
-      .toast {
-        position: fixed;
-        left: 50%;
-        bottom: 2rem;
-        transform: translateX(-50%) translateY(1rem);
-        opacity: 0;
-        pointer-events: none;
-        transition: all 0.22s ease;
-        z-index: 60;
-      }
-      .toast.show {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
+      .src-check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--text);
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-      <div class="mx-auto max-w-6xl space-y-8">
-        <div class="reveal visible">
-          <div class="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 class="font-display text-3xl text-white">{{t "sources.title"}}</h2>
-              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-                {{t "sources.subtitle"}}
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-3">
-              <button
-                id="btn-refresh"
-                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
-              >
-                {{t "sources.refresh"}}
-              </button>
-              <button
-                id="btn-new"
-                class="btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium"
-              >
-                {{t "sources.new"}}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 说明：源和能力的分工 -->
-        <div class="card rounded-2xl p-4 text-sm leading-relaxed text-zinc-400">
-          <span class="text-zinc-200">{{t "sources.explain.title"}}</span>
-          {{t "sources.explain.body"}}
-        </div>
-
-        <div id="src-list" class="space-y-3"></div>
+  <div class="page">
+    <!-- 页头：标题 + 一句说明 + 页级动作。
+         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §2/§10-C1）。
+         `.page-sub` 全页只出现一次：centurion 的顶栏检测到它就不再重复画副标题。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "sources.title"}}</h2>
+        <p class="page-sub">{{t "sources.subtitle"}}</p>
       </div>
+      <div class="page-actions">
+        <button id="btn-refresh" class="btn btn-ghost">{{t "sources.refresh"}}</button>
+        <button id="btn-new" class="btn btn-primary">{{t "sources.new"}}</button>
+      </div>
+    </div>
+
+    <!-- 源与能力的分工：一屏能读完的一段说明，不占首屏主位 -->
+    <div class="card card-pad">
+      <div class="card-title">{{t "sources.explain.title"}}</div>
+      <p class="card-sub mt-1">{{t "sources.explain.body"}}</p>
+    </div>
+
+    <!-- 首屏骨架：**单独一个容器**，数据到后整体移除。
+         为什么不直接铺在 #src-list 里：`#src-list` 有子元素是 e2e 的「数据已就绪」
+         信号（real_backend.mjs:462 ready = #src-list 子元素数 > 0，随后立刻读
+         innerText 断言真实源名）。骨架算子元素会让就绪信号提前成立、断言读到空白。 -->
+    <div id="src-list-skel" class="list card" aria-hidden="true">
+      <div class="src-skel-row" aria-hidden="true">
+        <div class="src-skel-lines">
+          <div class="skeleton sk-row-title"></div>
+          <div class="skeleton sk-row-meta"></div>
+        </div>
+        <div class="skeleton sk-row-act"></div>
+      </div>
+      <div class="src-skel-row" aria-hidden="true">
+        <div class="src-skel-lines">
+          <div class="skeleton sk-row-title"></div>
+          <div class="skeleton sk-row-meta"></div>
+        </div>
+        <div class="skeleton sk-row-act"></div>
+      </div>
+      <div class="src-skel-row" aria-hidden="true">
+        <div class="src-skel-lines">
+          <div class="skeleton sk-row-title"></div>
+          <div class="skeleton sk-row-meta"></div>
+        </div>
+        <div class="skeleton sk-row-act"></div>
+      </div>
+      <div class="src-skel-row">
+        <div class="src-skel-lines">
+          <div class="skeleton sk-row-title"></div>
+          <div class="skeleton sk-row-meta"></div>
+        </div>
+        <div class="skeleton sk-row-act"></div>
+      </div>
+    </div>
+
+    <!-- 真实列表：数据到之前整块 hidden（hidden 挂在裸 div 上 —— .list 的
+         display:flex 会盖掉 .hidden，所以两者不能同元素）。
+         #src-list 的**每个直接子元素必须是 div**（e2e 用 `#src-list > div` 取行）。 -->
+    <div id="src-list-wrap" class="hidden">
+      <div id="src-list" class="list card"></div>
+    </div>
+  </div>
 </div>
 
-<!-- 新建 / 编辑弹窗 -->
+<!-- 新建 / 编辑弹层。
+     必须挂在 document.body 上（脚本启动时再兜一次 appendChild）：页面内容外层
+     带 .reveal 的 transform，position:fixed 的子元素会被裁在那层容器里。
+     开关状态仍然是 #src-modal 上的 `hidden` 类（e2e 直接读它）。 -->
 <div
   id="src-modal"
-  class="fixed inset-0 z-50 hidden items-center justify-center p-4"
-  style="background: rgba(0, 0, 0, 0.62)"
+  class="modal-backdrop hidden"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="modal-title"
 >
-  <!--
-    面板底色必须不透明：.card 的 --surface-1 是 rgba(…, 0.02)，
-    直接用在弹窗上会把背后的列表透出来，看起来像"弹窗消失了"。
-    --panel-modal 是专为模态层定义的不透明底色（见 tokens.css）。
-  -->
-  <div
-    class="card relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden !bg-[var(--panel-modal)] p-6 shadow-2xl"
-    style="min-height: 20rem"
-  >
-    <div class="mb-4 flex items-center justify-between gap-2">
-      <h3 id="modal-title" class="font-display text-lg text-white"></h3>
-      <div class="flex items-center gap-1.5">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="modal-title"></h3>
+      <div class="card-actions">
         <!-- 演示按钮：一键把"变量 + 参数引用变量"整套配置铺好。
              只看文档很难体会"变量到底省了什么"，点一下看得最快。 -->
         <button
           type="button"
           id="btn-demo"
-          class="btn-ghost rounded-lg px-2 py-1 text-[11px]"
+          class="btn btn-ghost btn-sm"
           title="{{t "sources.form.demo_hint"}}"
         >
           {{t "sources.form.demo"}}
         </button>
-        <button id="modal-close" class="btn-ghost rounded-lg px-2 py-1 text-sm">✕</button>
+        <button
+          type="button"
+          id="modal-close"
+          class="btn btn-ghost btn-icon"
+          aria-label="{{t "common.action.close"}}"
+        >
+          ✕
+        </button>
       </div>
     </div>
 
-    <div class="modal-scroll flex-1 space-y-4 overflow-y-auto" style="min-height: 12rem">
-      <div>
-        <label class="mb-1 block text-xs text-zinc-400" for="f-name"
-          >{{t "sources.form.name"}}</label
-        >
-        <input id="f-name" class="input w-full text-sm" placeholder="{{t "sources.form.name_ph"}}" />
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs text-zinc-400" for="f-kind"
-          >{{t "sources.form.kind"}}</label
-        >
-        <select id="f-kind" class="input w-full text-sm">
-          <option value="cron">{{t "sources.kind.cron"}}</option>
-          <option value="github">{{t "sources.kind.github"}}</option>
-          <option value="webhook">{{t "sources.kind.webhook"}}</option>
-          <option value="manual">{{t "sources.kind.manual"}}</option>
-        </select>
-        <p class="mt-1 text-[11px] text-zinc-500" id="f-kind-hint">{{t "sources.form.kind_hint"}}</p>
-      </div>
-
-      <!-- cron 专属 -->
-      <div id="f-cron-wrap" class="hidden">
-        <label class="mb-1 block text-xs text-zinc-400" for="f-expr"
-          >{{t "sources.form.expr"}}</label
-        >
-        <input
-          id="f-expr"
-          class="input mono w-full text-sm"
-          placeholder="0 3 * * *"
-        />
-        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.expr_hint"}}</p>
-        <div class="mt-2 flex flex-wrap gap-2">
-          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="0 * * * *">
-            {{t "sources.preset.hourly"}}
-          </button>
-          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="0 3 * * *">
-            {{t "sources.preset.daily3"}}
-          </button>
-          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="0 9 * * 1-5">
-            {{t "sources.preset.weekdays9"}}
-          </button>
-          <button type="button" class="btn-ghost rounded-lg px-2 py-1 text-[11px]" data-expr="*/15 * * * *">
-            {{t "sources.preset.every15"}}
-          </button>
+    <div class="modal-body">
+      <div class="src-form">
+        <div class="field">
+          <label class="field-label" for="f-name">{{t "sources.form.name"}}</label>
+          <input
+            id="f-name"
+            class="input"
+            placeholder="{{t "sources.form.name_ph"}}"
+          />
         </div>
-      </div>
 
-      <!-- GitHub 事件类型：决定 payload 结构，所以必须选。
-           pull_request 和 push 的载荷没有任何共同字段，给一份"通用样例"
-           等于两份都不对。 -->
-      <div id="f-gh-event-wrap" class="hidden">
-        <label class="mb-1 block text-xs text-zinc-400" for="f-gh-event"
-          >{{t "sources.form.gh_event"}}</label
-        >
-        <select id="f-gh-event" class="input w-full text-sm"></select>
-        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.gh_event_hint"}}</p>
-      </div>
+        <div class="field">
+          <label class="field-label" for="f-kind">{{t "sources.form.kind"}}</label>
+          <select id="f-kind" class="select">
+            <option value="cron">{{t "sources.kind.cron"}}</option>
+            <option value="github">{{t "sources.kind.github"}}</option>
+            <option value="webhook">{{t "sources.kind.webhook"}}</option>
+            <option value="manual">{{t "sources.kind.manual"}}</option>
+          </select>
+          <p class="field-hint" id="f-kind-hint">{{t "sources.form.kind_hint"}}</p>
+        </div>
 
-      <!-- 这个触发方式能提供哪些字段 —— **只读展示**。
-           以前这里是一张可编辑的"变量表"（给路径起短名字），但那件事
-           参数框里的点选补全已经做了：打双大括号就能选字段，不需要先
-           声明再引用。用户少一层心智模型，也少一个会填错的地方。 -->
-      <div>
+        <!-- cron 专属。
+             hidden 只挂在这层裸 div 上：ui.css 在 tailwind.css **之后**加载，
+             .field{display:flex} 会盖掉 .hidden{display:none}，所以两者不能同元素。 -->
+        <div id="f-cron-wrap" class="hidden">
+          <div class="field">
+            <label class="field-label" for="f-expr">{{t "sources.form.expr"}}</label>
+            <input id="f-expr" class="input mono" placeholder="0 3 * * *" />
+            <p class="field-hint">{{t "sources.form.expr_hint"}}</p>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" class="btn btn-ghost btn-sm" data-expr="0 * * * *">
+                {{t "sources.preset.hourly"}}
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" data-expr="0 3 * * *">
+                {{t "sources.preset.daily3"}}
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" data-expr="0 9 * * 1-5">
+                {{t "sources.preset.weekdays9"}}
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" data-expr="*/15 * * * *">
+                {{t "sources.preset.every15"}}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- GitHub 事件类型：决定 payload 结构，所以必须选。
+             pull_request 和 push 的载荷没有任何共同字段，给一份"通用样例"
+             等于两份都不对。 -->
+        <div id="f-gh-event-wrap" class="hidden">
+          <div class="field">
+            <label class="field-label" for="f-gh-event">{{t "sources.form.gh_event"}}</label>
+            <select id="f-gh-event" class="select"></select>
+            <p class="field-hint">{{t "sources.form.gh_event_hint"}}</p>
+          </div>
+        </div>
+
+        <!-- 这个触发方式能提供哪些字段 —— **只读展示**。
+             以前这里是一张可编辑的"变量表"（给路径起短名字），但那件事
+             参数框里的点选补全已经做了：打双大括号就能选字段，不需要先
+             声明再引用。用户少一层心智模型，也少一个会填错的地方。 -->
         <details class="avail-vars" id="avail-vars" open>
           <summary>{{t "sources.form.avail_vars"}}</summary>
           <div id="avail-src" class="av-src"></div>
           <div id="avail-vars-body" class="avail-vars-body"></div>
         </details>
-      </div>
 
-      <!-- webhook 专属：外部系统那边怎么配 -->
-      <div id="f-hook-wrap" class="hidden">
-        <p class="text-[11px] leading-relaxed text-zinc-500">
-          {{t "sources.form.hook_hint"}}
-        </p>
+        <!-- webhook 专属：外部系统那边怎么配 -->
+        <div id="f-hook-wrap" class="hidden">
+          <p class="field-hint">{{t "sources.form.hook_hint"}}</p>
 
-        <!-- 回调地址：编辑已有源时能直接看到；新建时说明"保存后生成" -->
-        <div class="hook-guide" id="hook-url-box">
-          <div class="hook-url-row">
-            <span class="hook-url-label">{{t "sources.form.hook_url"}}</span>
-            <code id="hook-url-val" class="hook-url"></code>
-            <button
-              type="button"
-              id="btn-copy-hook"
-              class="btn-ghost rounded-lg px-2 py-0.5 text-[10px]"
-            >
-              {{t "srcpage.copy"}}
-            </button>
+          <!-- 回调地址：编辑已有源时能直接看到；新建时说明"保存后生成" -->
+          <div class="hook-guide" id="hook-url-box">
+            <div class="hook-url-row">
+              <span class="hook-url-label">{{t "sources.form.hook_url"}}</span>
+              <code id="hook-url-val" class="hook-url"></code>
+              <button type="button" id="btn-copy-hook" class="btn btn-ghost btn-sm">
+                {{t "srcpage.copy"}}
+              </button>
+            </div>
           </div>
+
+          <!-- GitHub 具体怎么填。四个字段照抄即可，不用去翻文档。 -->
+          <details class="hook-github" id="hook-github">
+            <summary>{{t "sources.form.hook_github"}}</summary>
+            <div class="hook-github-body">
+              <dl class="hook-kv">
+                <dt>Payload URL</dt>
+                <dd><code id="hook-gh-url">—</code></dd>
+                <dt>Content type</dt>
+                <dd><code>application/json</code></dd>
+                <dt>Which events?</dt>
+                <dd>
+                  <code id="hook-gh-events">Pull requests</code>
+                  <span class="hook-note">{{t "sources.form.hook_github_events"}}</span>
+                </dd>
+                <dt>Secret</dt>
+                <dd>
+                  <span class="hook-note">{{t "sources.form.hook_github_secret"}}</span>
+                </dd>
+              </dl>
+              <p class="hook-note">{{t "sources.form.hook_github_why"}}</p>
+            </div>
+          </details>
         </div>
 
-        <!-- GitHub 具体怎么填。四个字段照抄即可，不用去翻文档。 -->
-        <details class="hook-github" id="hook-github">
-          <summary>{{t "sources.form.hook_github"}}</summary>
-          <div class="hook-github-body">
-            <dl class="hook-kv">
-              <dt>Payload URL</dt>
-              <dd><code id="hook-gh-url">—</code></dd>
-              <dt>Content type</dt>
-              <dd><code>application/json</code></dd>
-              <dt>Which events?</dt>
-              <dd>
-                <code id="hook-gh-events">Pull requests</code>
-                <span class="hook-note">{{t "sources.form.hook_github_events"}}</span>
-              </dd>
-              <dt>Secret</dt>
-              <dd>
-                <span class="hook-note">{{t "sources.form.hook_github_secret"}}</span>
-              </dd>
-            </dl>
-            <p class="hook-note">{{t "sources.form.hook_github_why"}}</p>
-          </div>
-        </details>
-      </div>
+        <!-- 出口能力（多选） -->
+        <div class="field">
+          <span class="field-label">{{t "sources.form.targets"}}</span>
+          <div id="f-targets" class="target-picker"></div>
+          <p class="field-hint">{{t "sources.form.targets_hint"}}</p>
+        </div>
 
-      <!-- 出口能力（多选） -->
-      <div>
-        <label class="mb-1 block text-xs text-zinc-400"
-          >{{t "sources.form.targets"}}</label
-        >
-        <div id="f-targets" class="target-picker"></div>
-        <p class="mt-1 text-[11px] text-zinc-500">{{t "sources.form.targets_hint"}}</p>
-      </div>
+        <label class="src-check">
+          <input id="f-enabled" type="checkbox" checked />
+          {{t "sources.form.enabled"}}
+        </label>
 
-      <label class="flex items-center gap-2 text-sm text-zinc-300">
-        <input id="f-enabled" type="checkbox" checked />
-        {{t "sources.form.enabled"}}
-      </label>
+        <!-- 试运行结果：保存前先看"这条配置会不会真的跑起来"。
+             和真实触发的判定共用 planDispatch，所以不会出现
+             "试运行说能跑、真点却剪枝"的差异。 -->
+        <div id="dry-result" class="dry-result hidden"></div>
+      </div>
     </div>
 
-    <!-- 试运行结果：保存前先看"这条配置会不会真的跑起来"。
-         和真实触发的判定共用 planDispatch，所以不会出现
-         "试运行说能跑、真点却剪枝"的差异。 -->
-    <div id="dry-result" class="dry-result hidden"></div>
-
-    <div class="mt-4 flex items-center justify-end gap-2">
-      <button id="btn-dry" class="btn-ghost rounded-xl px-4 py-2 text-sm">
-        {{t "sources.form.dry_run"}}
-      </button>
-      <button id="modal-cancel" class="btn-ghost rounded-xl px-4 py-2 text-sm">
-        {{t "sources.form.cancel"}}
-      </button>
-      <button id="modal-save" class="btn-primary rounded-xl px-4 py-2 text-sm font-medium">
-        {{t "sources.form.save"}}
-      </button>
+    <div class="modal-foot">
+      <button id="btn-dry" class="btn btn-ghost">{{t "sources.form.dry_run"}}</button>
+      <button id="modal-cancel" class="btn btn-ghost">{{t "sources.form.cancel"}}</button>
+      <button id="modal-save" class="btn btn-primary">{{t "sources.form.save"}}</button>
     </div>
   </div>
 </div>
-
-<div id="toast" class="toast card rounded-xl px-4 py-2 text-sm"></div>
 {{end}}
 
 {{define "script"}}
@@ -668,13 +772,9 @@
       // 但 webhook 回调指引需要 hookUrl，所以留一份。
       let EDITING_SRC = null;
 
-      function toast(msg) {
-        const el = document.getElementById("toast");
-        el.textContent = msg;
-        el.classList.add("show");
-        clearTimeout(el._timer);
-        el._timer = setTimeout(() => el.classList.remove("show"), 2800);
-      }
+      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 #anotify-toast-host）：
+      // 页内不再自己维护 #toast 副本 —— 每页一份的 z-index / 位置各不相同。
+      const toast = (msg, kind) => Anotify.toast(msg, kind);
 
       function el(tag, cls, text) {
         const n = document.createElement(tag);
@@ -743,11 +843,21 @@
 
       // ---------- 加载 ----------
       async function loadAll() {
-        // 流向图搬到详情页了，列表不再需要 edges —— 少一次请求
-        const [srcData, capData] = await Promise.all([
-          apiGet(API + "/sources"),
-          apiGet(API + "/capabilities"),
-        ]);
+        // 流向图搬到详情页了，列表不再需要 edges —— 少一次请求。
+        //
+        // 这里必须区分「请求失败」与「真的没有源」：以前用 apiGet（吞异常返回 null），
+        // 后端挂了会显示成"还没有源"，用户会以为数据被清空了。
+        let srcData = null;
+        let capData = null;
+        try {
+          [srcData, capData] = await Promise.all([
+            Anotify.api(API + "/sources", { demo: null }),
+            Anotify.api(API + "/capabilities", { demo: null }),
+          ]);
+        } catch (e) {
+          renderLoadError(e);
+          return;
+        }
         SOURCES = (srcData && srcData.sources) || [];
         // CAPS 全量（已有目标要渲染）；「可选目标」过滤掉暂未开放的能力。
         CAPS = (capData && capData.capabilities) || [];
@@ -756,37 +866,63 @@
       }
 
       // ---------- 渲染 ----------
+      //
+      // 三态都在这里定：有数据 → .list 的行；空数据 → .empty + 下一步动作；
+      // 请求失败 → Anotify.loadErrorNode（带重试）。
+      // 「数据还没到」这一态由 HTML 直接铺的骨架行负责，不进 render()——
+      // 否则每次刷新都会闪一下骨架。
+      // 骨架只在第一次数据落地前存在：拿到结果（行 / 空态 / 失败）就整体撤掉，
+      // 同时把装着真实列表的容器显示出来。
+      function revealList() {
+        const skel = document.getElementById("src-list-skel");
+        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
+        const wrap = document.getElementById("src-list-wrap");
+        if (wrap) wrap.classList.remove("hidden");
+      }
+
       function render() {
+        revealList();
         const list = document.getElementById("src-list");
         list.replaceChildren();
 
         if (!SOURCES.length) {
-          list.appendChild(
-            el(
-              "div",
-              "card rounded-2xl p-8 text-center text-sm text-zinc-500",
-              t("sources.empty", "还没有源。点右上角「新建源」开始。"),
-            ),
+          const box = el("div", "empty");
+          box.appendChild(el("div", "card-title", t("sources.empty_title", "还没有源")));
+          box.appendChild(
+            el("p", "card-sub", t("sources.empty", "还没有源。点右上角「新建源」开始。")),
           );
+          const act = el("button", "btn btn-primary btn-sm", t("sources.new", "新建源"));
+          act.addEventListener("click", () => openModal(null));
+          box.appendChild(act);
+          list.appendChild(box);
           return;
         }
 
         for (const s of SOURCES) {
-          list.appendChild(sourceCard(s));
+          list.appendChild(sourceRow(s));
         }
       }
 
-      function sourceCard(s) {
-        const card = el("div", "card rounded-2xl p-5");
-        const row = el("div", "src-row");
+      // 加载失败：不伪造数据，也不显示"还没有源"（那会让人以为数据被清空了）
+      function renderLoadError(err) {
+        revealList();
+        const list = document.getElementById("src-list");
+        list.replaceChildren();
+        list.appendChild(Anotify.loadErrorNode(err, () => loadAll()));
+      }
+
+      // 一行一个源：左边"什么时候触发 + 派给谁"，右边动作。
+      // 结构是 .list-row > (.list-main, .src-acts)，每个行元素都是 div
+      // （e2e 用 `#src-list > div` 取行）。
+      function sourceRow(s) {
+        const row = el("div", "list-row");
+        const main = el("div", "list-main");
 
         // ---- 左：名字 + 触发方式 + 状态 ----
-        const left = el("div", "min-w-0");
-
-        const head = el("div", "flex flex-wrap items-center gap-2");
+        const head = el("div", "flex flex-wrap items-center gap-2 min-w-0");
         // 名字就是详情页入口：列表只回答"有哪些源、活着吗"，
         // 细节（触发配置 / 出口参数 / 流向图）点进去看。
-        const nameLink = el("a", "src-name-link text-[15px] text-white", s.name);
+        const nameLink = el("a", "src-name-link", s.name);
         nameLink.href = "source.html?id=" + encodeURIComponent(s.id);
         nameLink.title = t("sources.open_detail", "打开详情");
         head.appendChild(nameLink);
@@ -798,10 +934,10 @@
             el("span", "status-badge status-warn shrink-0", t("sources.disabled", "已停用")),
           );
         }
-        left.appendChild(head);
+        main.appendChild(head);
 
         // 触发配置摘要
-        const cfgLine = el("div", "mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500");
+        const cfgLine = el("div", "src-meta flex flex-wrap items-center gap-2");
         if (s.kind === "cron") {
           let expr = "";
           try {
@@ -812,7 +948,7 @@
           // config 走的是 JSON 对象（store 已解析），这里直接用
           const cfg = s.config || {};
           expr = cfg.expr || expr;
-          cfgLine.appendChild(code(expr || "?", "text-[11px] text-indigo-300"));
+          cfgLine.appendChild(code(expr || "?", "src-accent"));
           if (cfg.tz && cfg.tz !== "Local") {
             cfgLine.appendChild(el("span", "", "· " + cfg.tz));
           }
@@ -831,23 +967,23 @@
           }
         } else if (s.kind === "webhook") {
           if (s.hookUrl) {
-            const urlLine = el("div", "hook-url mt-1");
+            const urlLine = el("div", "hook-url");
             urlLine.textContent = location.origin + s.hookUrl;
-            left.appendChild(urlLine);
+            main.appendChild(urlLine);
           }
         } else {
           cfgLine.appendChild(el("span", "", t("sources.manual_hint", "页面上点「立即运行」时触发")));
         }
-        left.appendChild(cfgLine);
+        main.appendChild(cfgLine);
 
         // 出口能力
-        const tgtWrap = el("div", "mt-2.5 flex flex-wrap items-center gap-1.5");
+        const tgtWrap = el("div", "src-meta mt-1 flex flex-wrap items-center gap-1.5");
         tgtWrap.appendChild(
-          el("span", "text-[11px] text-zinc-500", t("sources.targets_label", "出口") + " →"),
+          el("span", "", t("sources.targets_label", "出口") + " →"),
         );
         const caps = s.targetCaps || [];
         if (!caps.length) {
-          tgtWrap.appendChild(el("span", "text-[11px] text-red-400", t("sources.no_target", "未配置")));
+          tgtWrap.appendChild(el("span", "src-err", t("sources.no_target", "未配置")));
         }
         for (const c of caps) {
           const pill = el(
@@ -859,58 +995,45 @@
           );
           tgtWrap.appendChild(pill);
         }
-        left.appendChild(tgtWrap);
+        main.appendChild(tgtWrap);
 
         // ---- 右：操作按钮 ----
-        const right = el("div", "flex flex-wrap items-center gap-2");
+        const acts = el("div", "src-acts card-actions");
         if (s.enabled) {
-          const fireBtn = el(
-            "button",
-            "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
-            t("sources.fire", "立即运行"),
-          );
+          const fireBtn = el("button", "btn btn-ghost btn-sm", t("sources.fire", "立即运行"));
           fireBtn.addEventListener("click", () => fireSource(s, fireBtn));
-          right.appendChild(fireBtn);
+          acts.appendChild(fireBtn);
         }
         const toggleBtn = el(
           "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
+          "btn btn-ghost btn-sm",
           s.enabled ? t("sources.disable", "停用") : t("sources.enable", "启用"),
         );
         toggleBtn.addEventListener("click", () => toggleSource(s, toggleBtn));
-        right.appendChild(toggleBtn);
+        acts.appendChild(toggleBtn);
 
         // 跳到事件流，只看这个源的事件。
         //
         // 用源的**名字**当参数：事件表里存的是 event.source 字符串，
         // 而 Trigger.Fire 写的正是源名（internal/source/source.go:99）。
         // 用 id 的话对不上。
-        const evBtn = el(
-          "button",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
-          t("sources.view_events", "查看事件"),
-        );
+        const evBtn = el("button", "btn btn-ghost btn-sm", t("sources.view_events", "查看事件"));
         evBtn.addEventListener("click", () => {
           location.href = "events.html?source=" + encodeURIComponent(s.name);
         });
-        right.appendChild(evBtn);
+        acts.appendChild(evBtn);
 
         // 编辑 / 删除 / 流向图 都在详情页：列表上放五六个按钮会让人
         // 每次都要读完按钮才能找到目标源。
-        const detailBtn = el(
-          "a",
-          "btn-ghost rounded-lg px-3 py-1.5 text-[11px]",
-          t("sources.detail", "详情"),
-        );
+        const detailBtn = el("a", "btn btn-ghost btn-sm", t("sources.detail", "详情"));
         detailBtn.href = "source.html?id=" + encodeURIComponent(s.id);
-        right.appendChild(detailBtn);
+        acts.appendChild(detailBtn);
 
-        row.appendChild(left);
-        row.appendChild(right);
-        card.appendChild(row);
+        row.appendChild(main);
+        row.appendChild(acts);
         // 流向图**不在列表里展开**：它体积大、要 fit 尺寸、还得懒渲染，
         // 放进列表会让一屏只放得下两三个源。搬到详情页了（source.html）。
-        return card;
+        return row;
       }
 
       // ---------- 操作 ----------
@@ -1035,9 +1158,23 @@
         renderTargetPicker(src ? src.targets || [] : [], existing);
         syncKindFields();
 
+        openOverlay();
+      }
+
+      // 弹层开关三件套：显示/隐藏、Esc、关闭后焦点归还。
+      //
+      // 为什么记 lastFocus：弹层是从「新建源」按钮（或详情页的 ?edit= 链接）打开的，
+      // 关掉之后焦点如果掉回 <body>，键盘用户得从头 Tab 一遍。
+      let OVERLAY_LAST_FOCUS = null;
+
+      function openOverlay() {
         const modal = document.getElementById("src-modal");
+        OVERLAY_LAST_FOCUS = document.activeElement;
         modal.classList.remove("hidden");
         modal.classList.add("flex");
+        // 焦点进到弹层里（首个字段），否则 Tab 会绕到背后的列表上
+        const first = modal.querySelector("#f-name") || modal.querySelector(".modal-body input, .modal-body select");
+        if (first) first.focus({ preventScroll: true });
       }
 
       function closeModal() {
@@ -1046,6 +1183,11 @@
         modal.classList.remove("flex");
         editingID = null;
         EDITING_SRC = null;
+        const back = OVERLAY_LAST_FOCUS;
+        OVERLAY_LAST_FOCUS = null;
+        if (back && document.contains(back) && typeof back.focus === "function") {
+          back.focus({ preventScroll: true });
+        }
       }
 
       // syncKindFields 按当前 kind 显示对应的配置块。
@@ -1163,7 +1305,7 @@
           box.appendChild(
             el(
               "div",
-              "p-2 text-[11px] text-zinc-500",
+              "src-meta p-2",
               t("sources.form.no_caps", "还没有可用能力。先到「能力与出口」页定义能力。"),
             ),
           );
@@ -1186,13 +1328,13 @@
           label.appendChild(span);
           // 标出这个能力是什么角色，避免误选终端能力当入口
           if (c.kind) {
-            label.appendChild(el("span", "text-[10px] text-zinc-600", "· " + c.kind));
+            label.appendChild(el("span", "src-meta", "· " + c.kind));
           }
           // 有必填参数时提示，让人知道勾了还得填
           const req = requiredFields(c.paramsSchema);
           if (req.length) {
             label.appendChild(
-              el("span", "text-[10px] text-amber-400", req.length + " 个参数"),
+              el("span", "src-warn", req.length + " 个参数"),
             );
           }
           box.appendChild(label);
@@ -1658,7 +1800,7 @@
         const keys = Object.keys(props);
         if (!keys.length) {
           wrap.appendChild(
-            el("div", "text-[10px] text-zinc-600", t("sources.form.no_params", "该能力不需要参数")),
+            el("div", "src-meta", t("sources.form.no_params", "该能力不需要参数")),
           );
           return;
         }
@@ -2512,7 +2654,7 @@
 
         // 滚回顶部：变量区在名字/触发方式**下面**，小视口下刚打开时
         // 看不见。不滚的话用户只看到"名字变了"，以为按钮没生效。
-        const scroller = document.querySelector("#src-modal .modal-scroll");
+        const scroller = document.querySelector("#src-modal .modal-body");
         if (scroller) scroller.scrollTop = 0;
 
         toast(t("sources.form.demo_ok", "已填入演示配置：3 个参数引用 payload 字段"));
@@ -2551,10 +2693,25 @@
         });
       });
 
-      // 点遮罩关闭
-      document.getElementById("src-modal").addEventListener("click", (ev) => {
+      // 点遮罩关闭（只有点在遮罩本身而不是面板里才算）
+      const MODAL_EL = document.getElementById("src-modal");
+      MODAL_EL.addEventListener("click", (ev) => {
         if (ev.target.id === "src-modal") closeModal();
       });
+
+      // Esc 关闭。字段浮层（.pick-pop）开着时先由它自己吃掉 Esc（见 hookPick），
+      // 这里只在没有浮层时关弹层，避免一次 Esc 连关两层。
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Escape") return;
+        if (MODAL_EL.classList.contains("hidden")) return;
+        if (typeof PICK !== "undefined" && PICK) return;
+        ev.preventDefault();
+        closeModal();
+      });
+
+      // 弹层挂到 document.body 上：页面内容外层带 .reveal 的 transform，
+      // position:fixed 的后代会被裁在那层容器里（真的会裁，不是理论问题）。
+      if (MODAL_EL.parentNode !== document.body) document.body.appendChild(MODAL_EL);
 
       // 启动：先拉数据；若 URL 带了 ?edit=<id>（从详情页的「编辑」过来），
       // 数据到手后直接把那个源打开 —— 否则用户点了编辑只是回到列表。

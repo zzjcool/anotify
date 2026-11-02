@@ -73,6 +73,21 @@
 	--st-abandoned: #f97316;
 	--st-lease_expired: #eab308;
 
+	/* ── 热力图 ─────────────────────────────────────────
+	 * 空格**不能**用 --surface-2：卡片实底 --surface-1 上叠一层几乎同色，
+	 * 整片数据可视化会退化成空场（REVIEW R5 / D17）。 */
+	--hm-empty: #1c1c29;
+
+	/* ── 能力类型三色（capabilities 页 .kind-origin/.kind-pipe/.kind-end）──
+	 * 三条独立色相，不复用语义色（语义色留给状态，混用会让「绿=成功」失效）。
+	 * -soft 是同色相的 14% 底，供徽章/边框使用。 */
+	--kind-origin: #a78bfa;
+	--kind-origin-soft: rgba(167, 139, 250, 0.14);
+	--kind-pipe: #60a5fa;
+	--kind-pipe-soft: rgba(96, 165, 250, 0.14);
+	--kind-end: #34d399;
+	--kind-end-soft: rgba(52, 211, 153, 0.14);
+
 	/* ── 功能面板色（非彩色）：弹层 / 代码块 / 实心按钮 ── */
 	--panel-overlay: #14141e; /* 弹层 / Toast 底 */
 	--panel-modal: #0d0d15; /* 模态底 */
@@ -145,7 +160,9 @@
 	--line-strong: rgba(17, 19, 28, 0.15);
 	--text: #11131c;
 	--muted: #5b6070;
-	--faint: #8b90a1;
+	/* REVIEW §5.3：旧值 #8b90a1 在 #f7f8fc 上仅 3.02:1，11–13px 辅助字读不清。
+	 * 压到 #6b7080 → 4.63:1（WCAG AA 正文阈值），--muted 6.35:1 保持层次。 */
+	--faint: #6b7080;
 
 	/* 品牌色 */
 	--accent: #5b5bd6;
@@ -180,6 +197,17 @@
 	--st-canceled: #71717a;
 	--st-abandoned: #ea580c;
 	--st-lease_expired: #ca8a04;
+
+	/* 热力图空格：亮底下要比白卡「深一档」才看得出格子 */
+	--hm-empty: #e8eaf3;
+
+	/* 能力类型三色：亮底压深保证 ≥4.5:1 */
+	--kind-origin: #6d28d9;
+	--kind-origin-soft: rgba(109, 40, 217, 0.1);
+	--kind-pipe: #1d4ed8;
+	--kind-pipe-soft: rgba(29, 78, 216, 0.1);
+	--kind-end: #047857;
+	--kind-end-soft: rgba(4, 120, 87, 0.1);
 
 	/* 面板 */
 	--panel-overlay: #ffffff;
