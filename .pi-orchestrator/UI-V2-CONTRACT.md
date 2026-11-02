@@ -206,3 +206,20 @@ make fe                             # 指纹 → internal/server/dist（e2e 用�
   wave 2 迁移页面后 shim 只能收缩，不能扩张。shim 必须放在 `ui.css` 末尾并带注释说明「临时兼容层」。
 - **默认主题**：跟随系统；无法判定时用 dark。`theme-toggle` 顺序 dark → light → auto，`title`/`aria-label` 走 i18n。
 - **设计稿位置**：`design/ui-v2/`（截图不入库；需要时 `node design/ui-v2/verify.mjs` 重新生成）。
+
+---
+
+## 11. 契约裁决 v1.2（第二轮批评后）
+
+- **C-1 批准**：短视口（`max-height:760px`）下 `.app-nav` 恢复 `overflow-y:auto`，折叠态 tooltip 退化为 `title`。
+  「footer 始终可见」优先于「折叠 tooltip 始终可用」。
+- **C-2 定案**：**工作台页的 `.page-title` 一律 Inter 600 28px `-0.02em`**（含 events/sources/nodes 等）。
+  Fraunces 只用于三处：登录/注册大标题、首页 `#greeting` 问候、≥22px 的章节主标题。
+  页内不要再写 `font-display` 给 `.page-title`；`.page-title` 组件类自带字体。
+- **C-3 定案**：17 个工作台页统一 `.page-head`；`login/cli-auth/passkey-enroll` 三个 focus 页采用「品牌行 + 单 h1」
+  的最小页头规范，允许一个 h1（不再要求降级成 h2）。
+- **C-4 计数**：未迁移页 = 18（20 − index/events）。
+- **C-5 定案**：`.scope-badge` 保持在 `header h1` 内部（e2e 硬断言），脚本取值用 `h1 > span:not(.scope-badge)` 或
+  `h1.textContent.replace(badge.textContent,"")`；不改产品 DOM。
+- **标题重复**：顶栏 h1 与页面 `.page-title` 文案相同属**刻意**（上下文标签 + 页面标题），不算缺陷；
+  但**副标题不得重复**（同一句不得同时出现在顶栏 `.app-topbar-sub` 与 `.page-sub`）。
