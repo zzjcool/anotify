@@ -242,43 +242,40 @@ CREATE TABLE IF NOT EXISTS node_pins (
 );
 ```
 
-### 2.3.1 工作目录（work dirs）
+### 2.3.1 工作目录（work dir）
 
-能力默认跑在**每次任务一个独立目录**里（`<data-dir>/work/<task_id>`），产物文件展开在此，
-互不干扰。有些能力必须跑在**用户的真实目录**里（`make test`、`git status`、就地改文件），
-于是有了 capability 级的工作目录。
-
-两个来源，职责不同：
-
-| 来源 | 位置 | 语义 |
-|---|---|---|
-| **中枢意图** | `deployments.work_dir`（迁移 19）→ `assign.work_dir` | 「我希望这个能力在这台机器上跑在哪个目录」。只是请求，不带权限 |
-| **机器事实** | 节点 `node.yaml` 的 `workDirs` | 「这台机器允许这些能力用这些目录」。**权威**，中枢改不动 |
-
-`node.yaml` 的形态（能力级；`"*"` 是旧扁平白名单的等价物）：
+**唯一来源：能力定义**。工作目录写在产物的 `spec.run.workDir`（绝对路径）里，随产物一起
+下发、一起做内容寻址（改目录 = 改 digest）。
 
 ```yaml
-workDirs:
-  script.echo: /home/me/project     # 能力级：这个能力只用这个目录
-  build.repo: /srv/app
-  "*": /srv/projects                # 兜底前缀白名单（可省略）
+spec:
+  run:
+    entrypoint: run.sh
+    files: { run.sh: "#!/bin/bash\nmake test\n" }
+    workDir: /home/me/project     # 空/省略 = 每次任务一个独立目录
 ```
 
-**解析顺序（节点侧，唯一实现）**：
+**为什么只有一个来源**：#281 曾把目录拆成「中枢意图（`deployments.work_dir`）+ 机器事实
+（节点 `node.yaml` 的 `workDirs`）」，结果是两台机器上同一份产物要维护两处配置、出错时
+两边都"看起来是对的"。#289 起全部作废：目录属于能力，和入口文件、超时一样是产物的一部分。
 
-1. `workDirs[<capability>]` 存在 → 用它，**忽略** `assign.work_dir`（机器事实压过中枢意图）
-2. 否则 `workDirs["*"]`（或旧的列表写法）→ 用 `assign.work_dir`，且必须落在该前缀内
-3. 否则 `assign.work_dir` 非空 → **失败**；为空 → 用任务目录
+**解析（节点侧，唯一实现）**：
 
-**失败不降级**：越界时任务 `failed`，`error` 写明原因与允许的目录。退回默认目录会把
-「没授权」伪装成「脚本莫名报错」。
+| `run.workDir` | cwd |
+|---|---|
+| 空 | `<data-dir>/work/<task_id>`（每次任务一个独立目录，产物文件展开在此） |
+| 非空 | 该目录；**必须已存在且是目录**，否则任务 `failed` |
 
-**安全**：中枢能写 `deployments.work_dir`，但**没有**权限越过节点侧的 `workDirs`。
-否则「谁改了中枢，谁就能让本机以 agent 身份在任意目录读写」——原生装下这是整机沦陷。
-路径比对前解符号链接（`ln -s /etc <allowed>/etc` 必须被拒），前缀按路径分段。
+**失败不降级**：目录不存在时**不**退回任务目录。退回会把「目录没建」伪装成「脚本莫名
+报错」（工具链找不到配置），真正原因被掩盖。错误里写明是能力定义声明了它。
 
-**环境变量**：`$ANOTIFY_WORKDIR` 恒等于进程 cwd（历史不变式）；产物文件所在的任务目录
-另给 `$ANOTIFY_TASKDIR`。
+**安全**：这条路径由**中枢**给出，节点会照做。也就是说节点不保留"目录否决权"。
+这在能力本来就能执行任意命令（`script.test` 类模板）的前提下是自洽的——白名单从来
+不是硬边界，只是防误配的护栏。真正的边界是：**agent 以哪个用户运行、那台机器本身
+限制到什么程度**。所以：不要用 root 跑 agent，用独立用户 + 最小文件系统权限。
+
+**环境变量**：`$ANOTIFY_WORKDIR` 恒等于进程 cwd；产物文件所在的任务目录另给
+`$ANOTIFY_TASKDIR`。
 
 ### 2.4 出口表（路由唯一依据）
 
@@ -982,9 +979,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
   "capability": "review", "version": 1,
   "params": { "diff": "..." },
   "lease_until": 1730000030,
-  "max_duration_sec": 3600,
-  // work_dir 可选：中枢的**意图**（见 §2.3.1）。节点上的 yaml 才是事实。
-  "work_dir": "/home/me/project" }
+  "max_duration_sec": 3600 }
 
 { "type": "cancel",    "task_id": "tsk_x", "reason": "superseded" }
 

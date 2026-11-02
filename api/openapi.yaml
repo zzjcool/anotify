@@ -4500,11 +4500,6 @@ components:
           type: string
           enum: [pending, applied, failed, local]
         reason: { type: string, description: 'failed 时是短码 + 说明；local 时是两端 digest' }
-        workDir:
-          type: string
-          description: |
-            控制台为这个能力在这台机器上指定的工作目录（意图）。
-            实际生效的是节点 `node.yaml` 里按能力配置的目录（契约 §2.3.1）。
         createdAt: { type: integer }
         updatedAt: { type: integer }
 
@@ -4522,21 +4517,6 @@ components:
           type: array
           items: { type: string }
           description: 与 nodeIds 取并集
-        workDir:
-          type: string
-          description: |
-            该能力在这些节点上的工作目录（绝对路径）—— **中枢的意图，不是权限**。
-            缺省/空 = 用默认的「每次任务一个独立目录」。
-
-            节点侧 `node.yaml` 的 `workDirs` 才是**权威**（契约 §2.3.1）：
-
-            - 配了能力级 `workDirs: {<能力名>: /path}` → 用它，**忽略**这里的值
-            - 只配了 `"*"` 前缀白名单（或旧列表写法）→ 用这里的值，且必须落在前缀内
-            - 都没配 / 越界 → 任务 failed 并回报原因，**不会**静默退回默认目录
-
-            中枢只做形状校验（绝对路径、不含 `..`、不含 NUL、≤1024 字节）：
-            它看不到节点文件系统，也不该看到。
-
     DeploymentResult:
       type: object
       required: [nodeId, pushed]

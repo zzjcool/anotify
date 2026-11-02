@@ -1215,8 +1215,6 @@ caps:
     none_selected: 'Select at least one machine'
     no_nodes: 'This namespace has no nodes yet'
     err: 'Deploy failed: '
-    workdir: Work dir (optional)
-    workdir_hint: 'Empty = a fresh directory per task. This is an **intent**: the node''s per-capability workDirs wins; this value is used only when the node has no entry for that capability. If neither is set the task fails — no silent fallback.'
   list:
     title: Capabilities
   form:
@@ -1251,6 +1249,8 @@ caps:
     timeout_hint: '0 = no local timeout, rely on the hub lease'
     err_invalid_name: 'Name must be 1–63 chars of lowercase letters, digits, dot, underscore or hyphen, starting with a letter or digit'
     err_timeout: 'Timeout must be an integer between 0 and 86400'
+    workdir: Work dir
+    workdir_hint: 'An absolute path starting with /; if it does not exist the task fails outright (no fallback to a default directory). Empty = a fresh directory per task.'
   edges:
     title: Edges
     new: New edge
@@ -1311,9 +1311,9 @@ nodes:
     step1: Hit "Generate token" above to get a one-time token
     step2: 'Pick one: a container (cannot see host files) or a native install (choose this to run capabilities inside your own project)'
     docker: 'Container: cannot see host files, capabilities run inside the container only'
-    native: 'Native: runs as your user on the host; which directories it may touch is set per capability in node.yaml workDirs'
+    native: 'Native: runs as your user on the host; the directory a capability runs in comes from the work dir in its capability definition'
     yaml_title: node.yaml (for the native install)
-    yaml_intro: 'Use this config when you install the agent binary directly. Which directories a capability may use goes into workDirs, keyed by capability name:'
+    yaml_intro: 'Use this config when you install the agent binary directly. Just the four bootstrap fields — capabilities and their work dirs are defined in the console:'
     install_title: Native install command
     step3: Once the node is online, deploy a capability on the "Capabilities" page and it has work to do
   view_events: View events
@@ -1336,7 +1336,7 @@ nodes:
     copy_token: 'Copy token'
     cmd_title: "Start with one command (recommended)"
     copy_cmd: "Copy command"
-    yaml_intro: "Or install the agent binary directly and use this node.yaml (the four bootstrap fields — name / server / token / instances — plus capability-level workDirs):"
+    yaml_intro: "Or install the agent binary directly and use this node.yaml (only the four bootstrap fields — name / server / token / instances; the work dir is set in the capability definition):"
     yaml_title: 'Run this on the machine'
     copy_yaml: 'Copy command'
     yaml_hint: 'The token in this command is shown only once — lose it and you have to delete the node and register again.'
@@ -1349,16 +1349,11 @@ nodes:
       not_found: 'This namespace no longer exists (it may have been deleted). Refresh and try again.'
       forbidden: 'You do not have permission to register nodes in this namespace'
       failed: 'Registration failed: '
-    workdirs: Capability work dirs (optional)
-    workdirs_hint: 'These directories go into workDirs["*"] (a fallback prefix) in node.yaml. To pin one capability to a different directory, add a per-capability line in the yaml.'
     install_title: Native install (runs on the host)
     install_intro: A container cannot see host files. To run capabilities inside your own project directory (make test, git status, editing files in place), install on the host with this command.
-    install_after: 'It installs the binary, writes ~/.anotify/node.yaml (mode 600, contains the token) and generates a systemd user service. After installing, edit workDirs in that yaml per capability and restart the service. Note: the command contains the token, so it stays in your shell history.'
+    install_after: 'It installs the binary, writes ~/.anotify/node.yaml (mode 600, contains the token) and generates a systemd user service. Note: the command contains the token, so it stays in your shell history.'
     copy_install: Copy command
-    yaml_workdirs_comment: 'Capability work dirs: keys are capability names, "*" is the fallback prefix. Omit it = nothing allowed (capabilities only run in temp dirs)'
-    yaml_workdirs_extra: 'Other dirs: {dirs} (add a line in the format below for whichever capability should use them)'
-    yaml_workdirs_bycap: 'Per capability (takes precedence over "*" and overrides the directory the console picked for it):'
-    yaml_workdirs_cap_ph: '<capability>'
+    yaml_workdir_note: 'The work dir is set in the capability definition on the Capabilities page (run.workDir) and ships with the deployment; this yaml does not need it.'
 sources:
   detail: "Details"
   open_detail: "Open details"

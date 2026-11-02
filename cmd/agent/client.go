@@ -627,11 +627,8 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		TraceID:     f.TraceID,
 		MaxDuration: f.MaxDuration,
 		WorkRoot:    a.cache.workRoot(),
-		// 控制台要求的「在这个目录里跑」。空 = 默认的每任务目录；
-		// 非空时由 runner 按本机授权校验（能力级 workDirs[<能力名>] 优先），
-		// 通不过就失败（不会静默退回默认目录）。
-		WorkDir:  f.WorkDir,
-		WorkDirs: a.cfg.WorkDirs,
+		// 注意：cwd 不从中枢拿（帧里的 work_dir 已作废）。唯一来源是产物里的
+		// spec.run.workDir（见 runner.resolveChdir）；空 = 本次任务目录。
 	}
 
 	// 名额已在 handleAssign 里占好（reserveTask）：这里只负责还。

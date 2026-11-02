@@ -1623,6 +1623,98 @@ async function checkCapabilityTemplates(page) {
 		accepted && accepted.properties?.branch?.pattern === "^[a-z0-9-]+$",
 		JSON.stringify(accepted && accepted.properties),
 	);
+
+	// ④ 工作目录（#capability-only-workdir）：**唯一来源**是能力定义里的 run.workDir。
+	//
+	// 这条链路以前根本不存在（目录挂在节点 / 部署参数上），所以断言必须落在
+	// **请求体**上：UI 上有个输入框但提交时没带上，症状是「填了、跑起来还是在
+	// 临时目录里」，光看页面永远发现不了。
+	//
+	// 为什么在页内包一层 fetch：mock 在 window.fetch 层就把 /v1/* 拦下了
+	// （web/mock.js），page.on("request") 一条都抓不到。
+	const wdPath = "/home/uiwdtest/project";
+	const capOpen = await page.evaluate(() => !!document.getElementById("cap-workdir"));
+	H.check(
+		"新建能力表单有工作目录输入（#cap-workdir）",
+		capOpen === true,
+		`#cap-workdir 存在=${capOpen}`,
+	);
+
+	await page.evaluate(() => {
+		// 抓包钩子：记录每一次 POST /v1/capabilities 的请求体
+		window.__capBodies = [];
+		const orig = window.fetch;
+		window.__capRestoreFetch = () => {
+			window.fetch = orig;
+		};
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (url.includes("/v1/capabilities") && method === "POST" && init && init.body) {
+				try {
+					window.__capBodies.push(JSON.parse(String(init.body)));
+				} catch {
+					window.__capBodies.push(null);
+				}
+			}
+			return orig.apply(this, arguments);
+		};
+	});
+
+	await page.fill("#cap-workdir", wdPath);
+	const wdEcho = await page.evaluate(
+		() => (document.getElementById("cap-workdir-echo") || {}).textContent || "",
+	);
+	H.check(
+		"填了工作目录 → 只读脚本区回显同一个路径（用户能核对将要提交什么）",
+		wdEcho.includes(wdPath),
+		JSON.stringify(wdEcho.slice(0, 80)),
+	);
+
+	// 上面那步已经把参数契约改成合法的 pattern 版本、名字还是 e2e.broken，
+	// 这里换个不冲突的名字，直接提交。
+	const capName = "e2e.workdir." + Date.now();
+	await page.evaluate((n) => {
+		document.getElementById("cap-name").value = n;
+	}, capName);
+	await page.click("#cap-submit");
+	await page.waitForTimeout(1400);
+	const withWd = await page.evaluate(() => (window.__capBodies || [])[0] || null);
+	H.check(
+		"提交时 run.workDir 就是填的路径（工作目录属于能力定义）",
+		!!withWd && !!withWd.run && withWd.run.workDir === wdPath,
+		JSON.stringify({ run: withWd && withWd.run, workDir: withWd && withWd.run && withWd.run.workDir }),
+	);
+	H.check(
+		"工作目录不在请求体顶层（不是部署参数）",
+		!!withWd && !("workDir" in withWd) && !("work_dir" in withWd),
+		JSON.stringify(Object.keys(withWd || {})),
+	);
+
+	// 留空 = 每次任务一个独立目录：这时**不带**这个字段（空串不是合法语义）。
+	await page.evaluate(() => {
+		document.querySelector("button[onclick='openCapModal()']").click();
+	});
+	await page.waitForTimeout(600);
+	await page.click('[data-tpl="script.blank"]');
+	await page.waitForTimeout(400);
+	await page.evaluate((n) => {
+		document.getElementById("cap-workdir").value = "";
+		document.getElementById("cap-name").value = n;
+	}, "e2e.noworkdir." + Date.now());
+	await page.click("#cap-submit");
+	await page.waitForTimeout(1400);
+	const noWd = await page.evaluate(() => {
+		const list = window.__capBodies || [];
+		const last = list[list.length - 1] || null;
+		window.__capRestoreFetch && window.__capRestoreFetch();
+		return last;
+	});
+	H.check(
+		"工作目录留空 → 请求体里没有 workDir（每次任务一个独立目录）",
+		!!noWd && !!noWd.run && !("workDir" in noWd.run),
+		JSON.stringify({ run: noWd && noWd.run }),
+	);
 }
 
 // checkEdgesPage 验证出口表已经独立成页（#93）。
@@ -3460,11 +3552,16 @@ async function checkNodeRegister(page, base) {
 	const regName = "ui-reg-" + Date.now();
 	await page.fill("#reg-name", regName);
 	await page.fill("#reg-instances", "2");
-	// 工作目录白名单（#281）：填了就三处都要出现 —— node.yaml 的 workDirs、
-	// 原生装的 --work-dirs、docker 的 -e ANOTIFY_WORK_DIRS + -v 挂载。
-	// 只出现一两处的症状是「贴上去能跑，但能力一用就报目录不存在」。
-	const wdPath = "/home/e2e/project";
-	await page.fill("#reg-workdirs", wdPath);
+	// 工作目录不再由节点侧配置（#capability-only-workdir）：唯一来源是能力定义里的
+	// run.workDir。节点页因此不该再有这个输入框，也不该把它写进 yaml / 命令。
+	const hasRegWorkdir = await page.evaluate(
+		() => !!document.getElementById("reg-workdirs"),
+	);
+	H.check(
+		"注册面板不再有「能力工作目录」输入（工作目录归能力定义）",
+		hasRegWorkdir === false,
+		`#reg-workdirs 存在=${hasRegWorkdir}`,
+	);
 	await page.click("#reg-submit");
 	// mock 有 120–300ms 随机延迟，多等一轮；失败时 #reg-error 会给出原因
 	await page.waitForTimeout(1200);
@@ -3532,20 +3629,19 @@ async function checkNodeRegister(page, base) {
 		"server 行": /^server: \S+/m.test(yaml) && yaml.includes("server: " + reg.origin),
 		"token 行": /^token: \S+/m.test(yaml) && yamlToken === token,
 		"instances: 2": /^instances: 2\s*$/m.test(yaml),
-		// 有效键必须**恰好**是 bootstrap 四件（name/server/token/instances），
-		// 外加可选的 workDirs（#281：能力工作目录白名单）。
+		// 有效键必须**恰好**是 bootstrap 四件（name/server/token/instances）。
 		//
 		// 原来的写法是数「行数 == 4」——那会在加注释/加可选块时误报，而且它并不真的
 		// 表达「键集合正确」。改成直接比较键集合：注释行、空行、缩进的列表项都不参与，
 		// 但任何一个多余的键都会被抓出来（这才是这条断言的意图）。
-		"键集合 = bootstrap 四件（+ 可选 workDirs）": (() => {
+		"键集合 = bootstrap 四件": (() => {
 			const keys = yaml
 				.split(/\r?\n/)
 				.filter((l) => l.trim() !== "" && !l.trim().startsWith("#"))
 				.filter((l) => /^[a-zA-Z_][\w-]*:/.test(l)) // 只看顶层键（列表项带缩进）
 				.map((l) => l.split(":")[0].trim())
 				.sort();
-			const allowed = ["instances", "name", "server", "token", "workDirs"];
+			const allowed = ["instances", "name", "server", "token"];
 			return keys.every((k) => allowed.includes(k)) &&
 				["name", "server", "token", "instances"].every((k) => keys.includes(k));
 		})(),
@@ -3556,39 +3652,30 @@ async function checkNodeRegister(page, base) {
 		"runner 键（v2 不再有 runner 枚举）": /^[ \t]*runner:/m.test(yaml),
 		"有 node: 包装": /^node:/m.test(yaml),
 		"用了 timeout_sec（agent 要 timeoutSec）": yaml.includes("timeout_sec"),
+		// 工作目录归能力定义（run.workDir）：写进 node.yaml 是未知字段，
+		// agent 的 KnownFields(true) 会让它直接起不来。
+		"workDirs 键（工作目录归能力定义）": /^workDirs:/m.test(yaml),
 	};
 	const yamlOk =
 		Object.values(yamlWant).every(Boolean) &&
 		!Object.values(yamlBad).some(Boolean);
-	// ---- ④.5 工作目录：yaml 里是**能力级**的，原生装命令不再带全局 --work-dirs ----
+	// ---- ④.5 工作目录：节点侧**一个都不该出现** ----
 	//
-	// 口径变了（用户反馈）：目录按能力名配在 node.yaml 的 workDirs 里（CONTRACT
-	// §2.3.1），而不是在安装命令上传一个全局 --work-dirs —— 后者只能表达
-	// 「这些目录全给所有能力」，恰好是最危险的授权方式。
-	// yaml 里必须真的出现 workDirs 与用户填的路径（否则配了等于没配）：
-	// 面板填的是兜底前缀，所以落在 "*" 这一行上。
+	// 产品口径（#capability-only-workdir）：工作目录只有一个来源 —— 能力定义里的
+	// run.workDir。节点侧不再有白名单要授权，所以 yaml / docker 命令 / 原生装命令
+	// 三条路都不该再出现目录配置。少删一处的症状是「两份事实」，用户在节点页配了
+	// 却在能力页改 —— 谁生效说不清。
+	const wdLeak = {
+		"yaml 里的 workDirs": /workDirs/.test(reg.yaml || ""),
+		"yaml 里的 ANOTIFY_WORK_DIRS": /ANOTIFY_WORK_DIRS/.test(reg.yaml || ""),
+		"docker 命令里的 ANOTIFY_WORK_DIRS": /ANOTIFY_WORK_DIRS/.test(reg.cmd || ""),
+		"docker 命令里的 -v 挂载": /\s-v\s/.test(reg.cmd || ""),
+		"原生装命令里的 --work-dirs": /--work-dirs/.test(reg.install || ""),
+	};
 	H.check(
-		"工作目录写进 yaml 的 workDirs（兜底前缀 "*"）",
-		(reg.yaml || "").includes("workDirs:") &&
-			(reg.yaml || "").includes('"*": ' + wdPath),
-		JSON.stringify({
-			yamlWorkDirs: (reg.yaml || "").includes("workDirs:"),
-			yamlPath: (reg.yaml || "").includes(wdPath),
-		}),
-	);
-	H.check(
-		"原生安装命令不再带全局 --work-dirs（目录按能力名写在 yaml 里）",
-		!(reg.install || "").includes("--work-dirs"),
-		String(reg.install || "").slice(0, 200),
-	);
-	H.check(
-		"docker 那条路仍是挂载 + ANOTIFY_WORK_DIRS（容器里必须 -v 才看得到）",
-		(reg.cmd || "").includes("-e ANOTIFY_WORK_DIRS=" + wdPath) &&
-			(reg.cmd || "").includes("-v " + wdPath + ":" + wdPath),
-		JSON.stringify({
-			cmdEnv: (reg.cmd || "").includes("ANOTIFY_WORK_DIRS="),
-			cmdVol: (reg.cmd || "").includes("-v " + wdPath),
-		}),
+		"工作目录不在节点侧任何输出里（yaml / docker / 原生装都不带）",
+		Object.values(wdLeak).every((v) => v === false),
+		JSON.stringify(wdLeak),
 	);
 
 	H.check(
@@ -3786,27 +3873,15 @@ async function checkNodeRegister(page, base) {
 		}),
 	);
 
-	// ---- ⑩ 「如何接入」卡片里的「生成令牌」：令牌就地拿，yaml 是能力级 workDirs ----
+	// ---- ⑩ 「如何接入」卡片里的「生成令牌」：令牌就地拿，yaml 只有 bootstrap 四件 ----
 	//
 	// 这条链路与注册面板是**两条独立入口**（用户反馈：令牌应该页面上就能生成，
 	// 不该先绕去填表单）。断言四件事：
 	//   ① 点一下 → #howto-token 里出现真令牌，且三条命令/配置都带上它；
 	//   ② docker 命令与 yaml 里的中枢地址就是当前 origin（不用手抄）；
-	//   ③ yaml 是能力级 workDirs：**每个可见能力**都有一行「能力名: 目录」；
+	//   ③ yaml 只有 bootstrap 四件：工作目录归能力定义（run.workDir），卡片里不该再
+	//      按能力名列目录 —— 那会让用户以为目录要在节点上配；
 	//   ④ 令牌只活在 DOM 里（不进 localStorage / URL）。
-	//
-	// 能力集合必须从接口取（再走页面同一个 filterCaps）——mock 与真后端的能力
-	// 不同名，写死一个名字的断言只会在 mock 里绿。
-	const visibleCaps = await page.evaluate(async () => {
-		const r = await fetch("/v1/capabilities");
-		const j = await r.json();
-		const list = (j && j.capabilities) || [];
-		const visible =
-			window.Anotify && window.Anotify.filterCaps
-				? window.Anotify.filterCaps(list)
-				: list;
-		return visible.map((c) => c && c.name).filter(Boolean);
-	});
 	await page.click("#howto-token-btn");
 	// mock 有 120–300ms 随机延迟，多等一轮
 	await page.waitForTimeout(1500);
@@ -3842,17 +3917,19 @@ async function checkNodeRegister(page, base) {
 			hw.yaml.includes("server: " + hw.origin),
 		`origin=${hw.origin}`,
 	);
-	// 能力级 workDirs：每个可见能力一行，键就是能力名。
-	// 这几行是**注释**的（能力级条目会压过控制台指定的目录），所以正则允许 `#` 前缀。
-	const capMissing = visibleCaps.filter(
-		(n) => !new RegExp("^#?\\s*" + escapeRe(n) + ":", "m").test(hw.yaml),
-	);
+	// 卡片里的 yaml 同样只有 bootstrap 四件：工作目录在能力定义里，不在这里配。
+	// 键集合用与注册面板同一套判定（注释行 / 空行不参与），任何多余的键都会被抓出来。
+	const hwYamlKeys = hw.yaml
+		.split(/\r?\n/)
+		.filter((l) => l.trim() !== "" && !l.trim().startsWith("#"))
+		.filter((l) => /^[a-zA-Z_][\w-]*:/.test(l))
+		.map((l) => l.split(":")[0].trim())
+		.sort()
+		.join(",");
 	H.check(
-		"生成的 yaml 是能力级 workDirs（每个可见能力一行）",
-		hw.yaml.includes("workDirs:") &&
-			visibleCaps.length > 0 &&
-			capMissing.length === 0,
-		`caps=${visibleCaps.length} missing=${capMissing.slice(0, 3).join(",")} yaml=${JSON.stringify(hw.yaml.slice(0, 200))}`,
+		"生成的 yaml 只有 bootstrap 四件（工作目录不在节点侧配）",
+		hwYamlKeys === "instances,name,server,token" && !/workDirs/.test(hw.yaml),
+		`keys=${hwYamlKeys} yaml=${JSON.stringify(hw.yaml.slice(0, 200))}`,
 	);
 	H.check(
 		"令牌只活在 DOM 里（不进 localStorage / URL）",

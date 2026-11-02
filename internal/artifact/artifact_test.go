@@ -173,6 +173,9 @@ func TestDigestChangesWithContent(t *testing.T) {
 		"版本":     func(a *Artifact) { a.Metadata.Version = 4 },
 		"params": func(a *Artifact) { a.Spec.Params = json.RawMessage(`{"type":"object","required":["x"]}`) },
 		"显示名":    func(a *Artifact) { a.Spec.DisplayName = "别的名字" },
+		// 工作目录决定能力跑在哪儿（跟入口文件一样是"怎么跑"的一部分），
+		// 改了它就必须是另一份产物——否则中枢无法区分"同一版本换了目录"。
+		"工作目录": func(a *Artifact) { a.Spec.Run.WorkDir = "/srv/app" },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -227,6 +230,16 @@ func TestValidateRules(t *testing.T) {
 		}, "invalid_output"},
 		{"依赖名非法", func(a *Artifact) { a.Spec.Requires = []string{"has space"} }, "invalid_requirement"},
 		{"params 不是对象", func(a *Artifact) { a.Spec.Params = json.RawMessage(`[1,2]`) }, "invalid_params_schema"},
+		// run.workDir 是能力定义里**唯一**的工作目录来源（节点侧的白名单已全部作废），
+		// 所以这里的静态校验是那条路的第一道门；目录实际存不存在由节点在执行期判。
+		{"workDir 相对路径", func(a *Artifact) { a.Spec.Run.WorkDir = "srv/app" }, "work_dir_not_absolute"},
+		{"workDir 只有一个点", func(a *Artifact) { a.Spec.Run.WorkDir = "." }, "work_dir_not_absolute"},
+		{"workDir 含 .. 段", func(a *Artifact) { a.Spec.Run.WorkDir = "/srv/app/../etc" }, "invalid_work_dir"},
+		{"workDir 以 .. 结尾", func(a *Artifact) { a.Spec.Run.WorkDir = "/srv/.." }, "invalid_work_dir"},
+		{"workDir 超长", func(a *Artifact) {
+			a.Spec.Run.WorkDir = "/" + strings.Repeat("a", MaxWorkDirLen)
+		}, "invalid_work_dir"},
+		{"workDir 含 NUL", func(a *Artifact) { a.Spec.Run.WorkDir = "/srv/app\x00/etc" }, "invalid_work_dir"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -362,6 +375,114 @@ func TestEmptyOutputsSerializesAsArray(t *testing.T) {
 	// 且不能污染调用方对象
 	if a.Spec.Outputs != nil {
 		t.Fatalf("CanonicalJSON 修改了调用方对象")
+	}
+}
+
+// ---------- run.workDir：能力声明的执行目录 ----------
+//
+// 工作目录的唯一来源是能力定义（产物里的 spec.run.workDir）——节点侧的
+// node.yaml workDirs / ANOTIFY_WORK_DIRS / 中枢下发的 work_dir 全部作废。
+// 于是这个字段同时承担三件事，下面逐条钉住：静态合法性、参与 digest、
+// 能完整往返（落盘 → Parse 后 digest 不变，否则节点每次 apply 回来都会被判成
+// "本地变体"）。
+
+// TestWorkDirAcceptable：合法取值（含空 = 每次任务一个独立目录）。
+func TestWorkDirAcceptable(t *testing.T) {
+	cases := []struct {
+		name string
+		dir  string
+	}{
+		{"留空", ""},
+		{"普通绝对路径", "/srv/app"},
+		{"带结尾斜杠", "/srv/app/"},
+		{"根目录", "/"},
+		{"含空格与中文", "/srv/my app/项目"},
+		{"恰好到上限", "/" + strings.Repeat("a", MaxWorkDirLen-1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := validArtifact(t)
+			a.Spec.Run.WorkDir = tc.dir
+			if err := Validate(a); err != nil {
+				t.Fatalf("workDir %q 应该合法，却报错：%v", tc.dir, err)
+			}
+		})
+	}
+}
+
+// TestWorkDirDigestAndRoundTrip：改 workDir → digest 变；落盘再解析 → digest
+// 不变、值原样保留。
+//
+// 去掉 Run.WorkDir 的 json tag（JSON 序列化不带上它）会红在第一条；
+// Parse/CanonicalJSON 两侧口径不一致会红在第三条。
+func TestWorkDirDigestAndRoundTrip(t *testing.T) {
+	before := validArtifact(t)
+	d0, err := Digest(before)
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+
+	a := validArtifact(t)
+	a.Spec.Run.WorkDir = "/srv/app"
+	d1, err := Digest(a)
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+	if d0 == d1 {
+		t.Fatalf("改了 workDir 但 digest 没变（%s）：工作目录没参与内容寻址", d1)
+	}
+
+	// canonical JSON 里必须有它（否则 digest 变化的来源不是这个字段）
+	canon, err := CanonicalJSON(a)
+	if err != nil {
+		t.Fatalf("CanonicalJSON: %v", err)
+	}
+	if !strings.Contains(string(canon), `"workDir":"/srv/app"`) {
+		t.Fatalf("canonical JSON 里缺 workDir：%s", canon)
+	}
+
+	out, err := MarshalYAML(a)
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	back, err := Parse(out)
+	if err != nil {
+		t.Fatalf("Parse(MarshalYAML 产物): %v\n%s", err, out)
+	}
+	if back.Spec.Run.WorkDir != "/srv/app" {
+		t.Fatalf("往返后 workDir = %q, want /srv/app", back.Spec.Run.WorkDir)
+	}
+	d2, err := Digest(back)
+	if err != nil {
+		t.Fatalf("Digest(back): %v", err)
+	}
+	if d2 != d1 {
+		t.Fatalf("往返后 digest 变了：%s != %s（节点会把自家产物判成本地变体）", d2, d1)
+	}
+}
+
+// TestWorkDirInYAML：手写在 YAML 里的 workDir 真的被读到、也真的被写回
+// （json/yaml 两套 tag 少一个，用户改 yaml 时就会静默失效）。
+func TestWorkDirInYAML(t *testing.T) {
+	body := strings.Replace(validYAML, "    timeoutSec: 900\n",
+		"    timeoutSec: 900\n    workDir: /srv/app\n", 1)
+	if body == validYAML {
+		t.Fatal("测试夹具没改到 timeoutSec 那一行")
+	}
+	a, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if a.Spec.Run.WorkDir != "/srv/app" {
+		t.Fatalf("workDir = %q, want /srv/app", a.Spec.Run.WorkDir)
+	}
+
+	out, err := MarshalYAML(a)
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(out), "workDir: /srv/app") {
+		t.Fatalf("MarshalYAML 丢了 workDir：\n%s", out)
 	}
 }
 
