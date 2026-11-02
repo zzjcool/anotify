@@ -29,6 +29,9 @@ func main() {
 	// Makefile 在 git 检出时传入构建版本号。页面 footer 尚未消费该值，
 	// 这里接受并打印，避免未定义 flag 让 make fe / make build / make ci 直接失败。
 	version := flag.String("version", "", "build version label (printed; not yet rendered into HTML)")
+	// API 文档页的端点清单来自 OpenAPI spec（构建期解析，页面里是静态 HTML）。
+	// 传空字符串则不加载（只有测试 / 非常规打包需要）。
+	openapiPath := flag.String("openapi", "api/openapi.yaml", "OpenAPI spec parsed into the API docs page (empty to skip)")
 	flag.Parse()
 
 	langs := strings.Split(*langsFlag, ",")
@@ -51,6 +54,12 @@ func main() {
 	gen, err := sitegen.New(*srcDir, *outDir, langs)
 	if err != nil {
 		log.Fatalf("init failed: %v", err)
+	}
+
+	if *openapiPath != "" {
+		if err := gen.LoadOpenAPI(*openapiPath); err != nil {
+			log.Fatalf("openapi failed: %v", err)
+		}
 	}
 
 	if err := gen.Generate(); err != nil {

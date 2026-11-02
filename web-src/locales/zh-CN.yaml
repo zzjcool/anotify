@@ -675,6 +675,29 @@ docs:
     stream: WebSocket 接收
     events: POST /v1/events
     node: 节点协议
+    endpoints: 全部端点
+  endpoints:
+    title: 全部端点
+    intro: 这份清单在构建时从 api/openapi.yaml 生成，与真实路由同源，不会漂移。已弃用的旧「通知终端」端点不在此列。
+  openapi:
+    tag:
+      events: 事件
+      tasks: 任务
+      sources: 源
+      namespaces: 命名空间
+      stats: 统计
+      capabilities: 能力
+      edges: 出口
+      playbooks: 预案
+      nodes: 节点
+      node-stream: 节点长连接
+      auth: 认证
+      keys: API Keys
+      deployments: 部署
+      passkey-enroll: Passkey 注册
+      cli-auth: CLI 授权
+      admin: 管理后台
+      devices: Web Push
   events:
     core: 核心
     intro: 事件是图里一切的起点。任何外部变化都从这里进入，中枢按出口表把它派发成任务链。

@@ -1242,7 +1242,39 @@ async function main() {
 			String(activeNav),
 		);
 
-		// E-4: 首页两个 CTA 都不能再指向已删除的 connect.html
+		// E-4: API 页的「全部端点」是构建期从 api/openapi.yaml 生成的静态 HTML。
+		//      它一头连 spec（Dockerfile 漏 COPY api/ 就空）、一头连站点（sitegen
+		//      没加载 spec 就只剩标题），两端都没有 JS 错误，所以必须显式量行数。
+		const endpoints = await page.evaluate(() => {
+			const sec = document.getElementById("endpoints");
+			if (!sec) return null;
+			return {
+				rows: sec.querySelectorAll("tbody tr").length,
+				groups: sec.querySelectorAll(".card").length,
+				text: sec.innerText,
+			};
+		});
+		H.check(
+			"docs.html 有「全部端点」区块且行数 ≥ 80",
+			!!endpoints && endpoints.rows >= 80 && endpoints.groups >= 10,
+			endpoints
+				? `rows=${endpoints.rows} groups=${endpoints.groups}`
+				: "区块不存在",
+		);
+		H.check(
+			"端点清单含真实端点（/v1/events、/agent-login.sh）",
+			!!endpoints &&
+				/\/v1\/events/.test(endpoints.text) &&
+				/\/agent-login\.sh/.test(endpoints.text),
+			endpoints ? endpoints.text.slice(0, 120) : "",
+		);
+		H.check(
+			"端点清单不展示已弃用端点（/v1/devices）",
+			!!endpoints && !/\/v1\/devices\b/.test(endpoints.text),
+			"",
+		);
+
+		// E-5: 首页两个 CTA 都不能再指向已删除的 connect.html
 		await page.goto(server.base + "/index.html", {
 			waitUntil: "load",
 			timeout: 15000,

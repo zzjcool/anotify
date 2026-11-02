@@ -675,6 +675,29 @@ docs:
     stream: WebSocket receiving
     events: POST /v1/events
     node: Node protocol
+    endpoints: All endpoints
+  endpoints:
+    title: All endpoints
+    intro: Generated at build time from api/openapi.yaml, so it can't drift from the real routes. Deprecated legacy notification endpoints are not listed.
+  openapi:
+    tag:
+      events: Events
+      tasks: Tasks
+      sources: Sources
+      namespaces: Namespaces
+      stats: Stats
+      capabilities: Capabilities
+      edges: Edges
+      playbooks: Playbooks
+      nodes: Nodes
+      node-stream: Node stream
+      auth: Auth
+      keys: API Keys
+      deployments: Deployments
+      passkey-enroll: Passkey enrollment
+      cli-auth: CLI auth
+      admin: Admin
+      devices: Web Push
   events:
     core: Core
     intro: Events are where everything begins. Every external change enters here; the hub dispatches it into task chains along the edge table.

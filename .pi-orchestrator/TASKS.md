@@ -38,7 +38,20 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 - [x] 首页两处 CTA `connect.html` → `docs.html#agent`；`keys.html` 的 `docs.html#notify`（死锚点）→ `docs.html#api`
 - [x] e2e：frontend 套件删 connect 页用例，新增「集成三 tab 已下线」回归（无分组标签 / 无 connect 入口 / docs active / CTA 不指向已删页）；i18n 与 i18n_coverage 页面清单同步
 - [x] 门禁：i18n 299 + frontend 383 + i18n_coverage 61 全绿；`go test ./...` 通过
-- [ ] 待确认：user 说的「api 那个可以用 openai」= OpenAPI（把 `api/openapi.yaml` 嵌进 API 页）还是 OpenAI 风格接入示例 → 未动手
+
+### api-docs-openapi-embed：API 页嵌入 OpenAPI 端点清单（jic，2026-11-02）
+
+**用户诉求**：把 `api/openapi.yaml` 嵌入 API 页（原话「api 那个可以用 openapi」）。
+
+- [x] `internal/sitegen/openapi.go`：构建期解析 spec → 按 tag 分组（spec tags 声明顺序，未声明 tag 追后、组内按路径+方法排序），deprecated operation 不展示，`/../x` 归一成 `/x`
+- [x] `PageData.OpenAPI` + `cmd/sitegen -openapi`（默认 `api/openapi.yaml`，CWD 无关：Makefile 在仓库根跑）
+- [x] `docs.html` 新增 `#endpoints`「全部端点」区（93 个端点 / 17 组，静态 HTML，无运行时 JS）+ TOC 入口
+- [x] i18n：`docs.endpoints.*` / `docs.toc.endpoints` / `docs.openapi.tag.*`（16 个 tag 标签 × 4 语言）
+- [x] 防漂移：`openapi_test.go` 直接解**仓库真实 spec**（≥80 op、含 POST /v1/events / GET /agent-login.sh、deprecated 不泄漏）
+- [x] e2e：frontend E-4 量行数（≥80 行 / ≥10 组）+ 真实端点存在 + 弃用端点不展示
+- [x] Dockerfile：sitegen 阶段补 `COPY api/`（漏了会直接构建失败——故意的）
+- [x] 门禁：frontend 386 + i18n 299 + i18n_coverage 61 = 746 全绿；`make contract` 97 operation 一致；`go test ./...` 通过；web_verify 桌面/移动无溢出
+- [ ] 未做：端点表没带 auth 列（现在只有方法 + 路径），需要的话再加 security 解析
 
 ---
 

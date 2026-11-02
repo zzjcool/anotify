@@ -356,6 +356,53 @@
           </div>
         </section>
 
+        <!-- ===== 全部端点（构建期从 api/openapi.yaml 生成，不手维护） =====
+
+             为什么放在页面里而不是只给个 spec 链接：API 文档页的全部价值就是
+             「我现在能调什么」。手写表格没人维护，历史上就已经漏过 9 个事件中心
+             端点；这里直接把 spec 按 tag 铺成静态 HTML，spec 改了重跑 sitegen
+             就同步，而且不引入任何运行时 JS / 渲染库。
+
+             已弃用的旧「通知终端」端点（devices）在解析时就过滤掉，不展示。 -->
+        <section id="endpoints" class="doc-anchor mt-16 reveal visible">
+          <h2 class="font-display text-2xl text-white">
+            {{t "docs.endpoints.title"}}
+          </h2>
+          <p class="mt-3 text-[14px] leading-relaxed text-zinc-400">
+            {{t "docs.endpoints.intro"}}
+          </p>
+          <div class="mt-5 space-y-4">
+            {{range .OpenAPI}}
+            <div class="card overflow-hidden">
+              <div
+                class="flex items-center justify-between border-b border-white/[0.06] px-5 py-3"
+              >
+                <span class="text-sm font-medium text-white"
+                  >{{t (printf "docs.openapi.tag.%s" .Tag)}}</span
+                >
+                <span class="text-[11px] text-zinc-500">{{.Total}}</span>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full min-w-[520px] text-[12.5px]">
+                  <tbody class="divide-y divide-white/[0.04]">
+                    {{range .Ops}}
+                    <tr class="hover:bg-white/[0.02]">
+                      <td class="px-5 py-2.5">
+                        <span class="method {{.Class}}">{{.Method}}</span>
+                      </td>
+                      <td class="px-2 py-2.5 mono text-zinc-300">
+                        {{.Path}}
+                      </td>
+                    </tr>
+                    {{end}}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            {{end}}
+          </div>
+        </section>
+
         <!-- ===== Authentication ===== -->
         <section id="auth" class="doc-anchor mt-16 reveal visible">
           <h2 class="font-display text-2xl text-white">
@@ -668,6 +715,7 @@
         <div class="mt-3 space-y-0.5">
           <a href="#agent" class="toc-link">{{t "docs.toc.agent"}}</a>
           <a href="#api" class="toc-link">{{t "docs.toc.api"}}</a>
+          <a href="#endpoints" class="toc-link">{{t "docs.toc.endpoints"}}</a>
           <a href="#auth" class="toc-link">{{t "docs.toc.auth"}}</a>
           <a href="#events" class="toc-link">{{t "docs.toc.events"}}</a>
           <a href="#webpush" class="toc-link">{{t "docs.toc.webpush"}}</a>

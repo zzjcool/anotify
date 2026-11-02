@@ -675,6 +675,29 @@ docs:
     stream: Recepción WebSocket
     events: POST /v1/events
     node: Protocolo de nodo
+    endpoints: Todos los endpoints
+  endpoints:
+    title: Todos los endpoints
+    intro: Esta lista se genera en tiempo de compilación desde api/openapi.yaml, así que no puede desviarse de las rutas reales. Los endpoints heredados de notificaciones están excluidos.
+  openapi:
+    tag:
+      events: Eventos
+      tasks: Tareas
+      sources: Fuentes
+      namespaces: Espacios de nombres
+      stats: Estadísticas
+      capabilities: Capacidades
+      edges: Salidas
+      playbooks: Playbooks
+      nodes: Nodos
+      node-stream: Conexión de nodos
+      auth: Autenticación
+      keys: API Keys
+      deployments: Despliegues
+      passkey-enroll: Registro de passkeys
+      cli-auth: Autorización CLI
+      admin: Administración
+      devices: Web Push
   events:
     core: Núcleo
     intro: Los eventos son el origen de todo. Cada cambio externo entra aquí y el hub lo despacha en cadenas de tareas según la tabla de aristas.

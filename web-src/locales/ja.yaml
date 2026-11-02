@@ -675,6 +675,29 @@ docs:
     stream: WebSocket 受信
     events: POST /v1/events
     node: ノードプロトコル
+    endpoints: 全エンドポイント
+  endpoints:
+    title: 全エンドポイント
+    intro: この一覧はビルド時に api/openapi.yaml から生成されるため、実際のルートとずれません。非推奨の旧「通知端末」エンドポイントは含まれません。
+  openapi:
+    tag:
+      events: イベント
+      tasks: タスク
+      sources: ソース
+      namespaces: ネームスペース
+      stats: 統計
+      capabilities: ケイパビリティ
+      edges: 出口
+      playbooks: プレイブック
+      nodes: ノード
+      node-stream: ノード常時接続
+      auth: 認証
+      keys: API Keys
+      deployments: デプロイ
+      passkey-enroll: パスキー登録
+      cli-auth: CLI 認証
+      admin: 管理
+      devices: Web Push
   events:
     core: 中核
     intro: イベントはすべての起点です。外部の変化はここから入り、ハブがエッジ表に従ってタスクチェーンへ派発します。

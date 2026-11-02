@@ -14,6 +14,9 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY web-src/ ./web-src/
 COPY web/ ./web/
+# api/openapi.yaml 是 API 文档页「全部端点」的唯一来源（sitegen 在构建期解析它），
+# 漏拷会让 sitegen 直接报错退出——宁可在构建阶段红，也不要静默出一个空表格。
+COPY api/ ./api/
 RUN go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
 
 # ---- 前端指纹（web/ → internal/server/dist，供 go:embed）----

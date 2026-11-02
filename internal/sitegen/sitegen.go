@@ -31,6 +31,7 @@ type Generator struct {
 	translations map[string]map[string]string // lang → flattenedKey → value
 	defaultLang  string                       // default language (langs[0]), used for missing-key fallback
 	tmplCache    *templateCache               // template cache
+	openAPI      []OpenAPIGroup               // API 文档页嵌入的端点清单（构建期从 api/openapi.yaml 解析）
 }
 
 // templateCache caches parsed layout+page template combinations to avoid
@@ -119,6 +120,19 @@ func New(srcDir, outDir string, langs []string) (*Generator, error) {
 	}
 
 	return g, nil
+}
+
+// LoadOpenAPI 读入 OpenAPI spec，把端点按 tag 分组后的清单交给模板（{{range .OpenAPI}}）。
+//
+// 在**构建期**做这件事有三个好处：运行时零成本（页面里就是静态 HTML）、
+// 页面与 spec 不可能漂移（spec 改了重跑 sitegen 就同步）、不需要额外的 JS 库。
+func (g *Generator) LoadOpenAPI(path string) error {
+	groups, err := LoadOpenAPIGroups(path)
+	if err != nil {
+		return fmt.Errorf("sitegen: load openapi: %w", err)
+	}
+	g.openAPI = groups
+	return nil
 }
 
 // Generate runs the full generation: render all languages × pages → write HTML + i18n.{lang}.js.
@@ -259,6 +273,7 @@ func (g *Generator) renderPage(page pageSource, lang string, layouts []string) (
 		LangPrefix: g.langPrefix(lang),
 		Page:       page.name,
 		Langs:      g.buildLangs(),
+		OpenAPI:    g.openAPI,
 	}
 
 	// Create the t function bound to the current language.

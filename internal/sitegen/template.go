@@ -24,6 +24,9 @@ type PageData struct {
 	LangPrefix string     // language URL prefix ("" for default lang, "/{lang}" otherwise)
 	Page       string     // current page file name, e.g. "keys.html" (for cross-language same-page links)
 	Langs      []LangInfo // full list of supported languages (for language switcher + hreflang)
+	// OpenAPI 是按 tag 分组的端点清单（构建期从 api/openapi.yaml 解析）。
+	// 只有 API 文档页消费它；其余页面拿到空 slice 也不会渲染任何东西。
+	OpenAPI []OpenAPIGroup
 }
 
 // templateTree wraps a parsed html/template tree and the ability to render
