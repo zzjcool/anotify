@@ -295,3 +295,38 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 **方法学沉淀**（`scripts/perf/README.md`）：
 绝对值不可跨场次比较（漂 1.6–2.4×）、`SetMaxOpenConns(1)` 下永远不会 `SQLITE_BUSY`、
 **前后对比赛前必须确认跑的是当前代码编出的二进制**（本轮真因旧二进制误判过一次）。
+
+---
+
+## UI v2 前端大翻修（2026-11，分支 `feat/ui-v2`）
+
+**目标**：从「开发者插件面板」到产品级 Dashboard；暗/亮主题、可折叠侧栏、统一组件语言。
+**唯一事实源**：`.pi-orchestrator/UI-V2-CONTRACT.md`（v1.2）+ `design/ui-v2/REVIEW{,2,3}.md`。
+
+- [x] Wave 1 外壳 + 首页/事件流：`tokens.css` 双主题（`data-theme` + localStorage `anotify-theme` + FOUC bootstrap）、
+      侧栏 264↔76 纯 CSS 折叠 + tooltip、顶栏三态主题按钮、头像菜单、移动抽屉（Esc/焦点归还）、skip link。
+- [x] Wave 2 Group A：sources / source / capabilities / edges；修 KPI 空位、`[object Object]`、亮色 login 分段控件、
+      热力图 `--hm-empty`、sparkline 折线、折叠栏 footer、错误态一致性。
+- [x] Wave 3 B/C/D（14 页）：nodes/node/keys/admin/receivers、playbooks/playbook/trace/docs/message、
+      login/cli-auth/passkey-enroll/security。docs 8724→4488px + 右侧 sticky 目录；login 改分屏；
+      全部页统一 `.page/.page-head/.page-title(Inter)/.card/.list|.data-table/.empty/.skeleton/Anotify.toast`。
+- [x] 最终打磨：mock 形状对齐（recovery/status、POST /v1/keys）、`.tab.active` accent、亮色九态 ≥4.5:1、
+      mock 提示条左下角可收起、KPI delta 语义、`.num`/`.st-text`/`.modal-panel` 组件修正。
+- [x] 首页两列栅格（热力图∥事件，任务全宽）：2190 → **1585px**（1440×900）。
+- [x] 独立验收（REVIEW-3）：**4.1/5，0 P0**；40 页次对比度不达标 0、溢出 0、`dupSub` 0、h1 唯一 20/20。
+- [x] 收尾 4 条 P1：KPI 第 2 卡药丸误用、语言横幅下侧栏 footer 裁 44px、抽屉可见关闭+焦点进入、admin 无权限态改 `.empty`。
+
+**门禁**：`check-classes` 598 / `check-tailwind` 842 / `sitegen` 4×20 / `make fe` 22 资源；
+`make e2e` 全绿（frontend 386/0；contract 曾因并行 SQLite `database is locked` 偶发，单跑 55/0）。
+
+**遗留（非阻塞，按优先级）**
+1. Google Fonts CDN（Inter/Fraunces/JetBrains Mono）与「私有化部署」定位冲突 → 自托管 woff2（断网时品牌字会掉回 system-ui）。
+2. `/v1/stats.today` 仍是 UTC 口径（daily 已本地化）→ 跨午夜「今日」与热力图可能差 1 天。
+3. mock `POST /v1/auth/recovery/regenerate` 仍返回 `{codes}`，真后端 `{ok,recoveryCodes}`；mock 两条种子 Key 缺 `enabled`。
+4. 亮色 `--surface-3` 轨道面上 running/abandoned/lease_expired 4.25–4.47（正文面已 4.92+）。
+5. `.st-text.st-<state>` 动态类未进 `check-classes` 白名单；`.toast` 副本仍有 events×2 + security×1。
+6. docs 仍有 113 行 10.88px 辅助字；trace `.wf-switch .on` 未同步 `.tab.active` 新视觉。
+7. 亮色 shim 只剩 `index.html` 的 `hover:bg-white/5` 与 `partials.js` 的 `ring-white/15` 两处引用，清完可整块删除。
+
+**本地预览**：`NO_TUNNEL=1 MOCK_PORT=7788 ./scripts/mock.sh` → http://127.0.0.1:7788
+（主题键 `anotify-theme`、侧栏键 `anotify-sidebar`；截图证据在 `design/ui-v2/shots*`，不入库）
