@@ -149,28 +149,6 @@
         font-size: 12px;
         color: var(--muted);
       }
-      .ad-forbidden {
-        max-width: 34rem;
-        margin-inline: auto;
-        text-align: center;
-      }
-      .ad-forbidden-title {
-        font-family: var(--font-sans);
-        font-size: 20px;
-        font-weight: 600;
-        letter-spacing: -0.01em;
-        color: var(--text);
-      }
-      .ad-forbidden-body {
-        margin: 8px auto 0;
-        max-width: 34rem;
-        font-size: 13px;
-        line-height: 1.6;
-        color: var(--muted);
-      }
-      .ad-forbidden-cta {
-        margin-top: 16px;
-      }
       .ad-confirm-body {
         font-size: 13px;
         line-height: 1.6;
@@ -1126,23 +1104,27 @@
           { class: "page" },
           el(
             "div",
-            { class: "card card-pad ad-forbidden" },
-            el("h2", {
-              class: "ad-forbidden-title",
-              text: t("admin.forbidden.title", "无权访问管理后台"),
-            }),
-            el("p", {
-              class: "ad-forbidden-body",
-              text: t(
-                "admin.forbidden.body",
-                "当前账号不是管理员。如需管理权限，请联系已有超管提升角色。",
-              ),
-            }),
-            el("a", {
-              href: "index.html",
-              class: "btn btn-primary ad-forbidden-cta",
-              text: t("admin.forbidden.back", "返回总览"),
-            }),
+            { class: "card card-pad" },
+            el(
+              "div",
+              { class: "empty" },
+              el("div", {
+                class: "card-title",
+                text: t("admin.forbidden.title", "无权访问管理后台"),
+              }),
+              el("p", {
+                class: "page-sub",
+                text: t(
+                  "admin.forbidden.body",
+                  "当前账号不是管理员。如需管理权限，请联系已有超管提升角色。",
+                ),
+              }),
+              el("a", {
+                href: "index.html",
+                class: "btn btn-primary",
+                text: t("admin.forbidden.back", "返回总览"),
+              }),
+            ),
           ),
         ),
       );

@@ -2091,6 +2091,17 @@ html.flograph-fullscreen-open body {
 	transition: width var(--dur) var(--ease), flex-basis var(--dur) var(--ease);
 }
 
+/* 移动抽屉的关闭按钮：桌面隐藏（折叠按钮已承担该角色），移动端贴右。
+   用 !important 压过 .app-icon-btn 的 display，避免断点被组件类覆盖。 */
+.sidebar-close {
+	margin-left: auto;
+}
+@media (min-width: 1024px) {
+	.sidebar-close {
+		display: none !important;
+	}
+}
+
 .app-brand {
 	display: flex;
 	align-items: center;

@@ -361,6 +361,13 @@
 		document.body.style.overflow = "hidden";
 		const mb = document.getElementById("menu-btn");
 		if (mb) mb.setAttribute("aria-expanded", "true");
+		/* 抽屉打开后把焦点送进面板（关闭按钮），否则 Tab 仍从页面顶栏开始，
+		 * 读屏用户不知道抽屉已经出现。等滑入动画一帧后再聚焦，避免浏览器
+		 * 把 focus 滚动到不可见位置。 */
+		requestAnimationFrame(() => {
+			const closeBtn = document.getElementById("sidebar-close");
+			if (closeBtn) closeBtn.focus();
+		});
 	}
 
 	/* 移动端抽屉：关。`keepFocus === false` 时不抢焦点（点导航链接要跟住跳转）。 */
@@ -993,6 +1000,20 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				return a;
 			})(),
 			collapseBtn,
+			/* 移动抽屉的可见关闭按钮：抽屉从左侧滑出后，遮罩之外没有「关」的
+			 * 可点目标，键盘用户也没有可聚焦的出口。桌面折叠按钮在 ≤1023 隐藏，
+			 * 这里补一个只在移动端出现的 X（样式见 ui.css .sidebar-close）。 */
+			el(
+				"button",
+				{
+					id: "sidebar-close",
+					type: "button",
+					class: "app-icon-btn sidebar-close",
+					"aria-label": t("ui.action.close", "关闭"),
+					onclick: () => closeSidebar(),
+				},
+				icon(["M6 6l12 12", "M18 6L6 18"], "h-4 w-4"),
+			),
 		);
 
 		/* ----- 侧栏底部：语言切换 + 用户块 ----- */
@@ -2126,13 +2147,31 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		};
 		syncTopOffset();
 
-		/* 6) Animate open (reduced-motion = instant) */
-		if (reduced) {
+		/* 6) Animate open (reduced-motion = instant).
+		 * 注意：.lang-hint 初始 max-height:0，上面的 syncTopOffset 读到的是 0；
+		 * 等展开类生效后必须再量一次，否则 --shell-top-offset 永远是 0，
+		 * 侧栏底部仍会被裁掉一条横幅的高度（F8 复现）。
+		 * ResizeObserver 兜住字体加载/旋转/换行导致的高度变化。 */
+		const openBanner = () => {
 			banner.classList.add("lang-hint--open");
+			syncTopOffset();
+		};
+		if (reduced) {
+			openBanner();
 		} else {
 			requestAnimationFrame(() =>
-				requestAnimationFrame(() => banner.classList.add("lang-hint--open")),
+				requestAnimationFrame(openBanner),
 			);
+		}
+		if (typeof ResizeObserver === "function") {
+			const ro = new ResizeObserver(() => syncTopOffset());
+			ro.observe(banner);
+			banner.addEventListener("transitionend", () => ro.disconnect(), {
+				once: true,
+			});
+		} else {
+			/* 老浏览器：等动画结束再量一次 */
+			setTimeout(syncTopOffset, 350);
 		}
 
 		/* 7) Close: animate out then remove; move focus to first focusable in header/main */
