@@ -673,6 +673,45 @@ func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
 	if len(again) != 1 || again[0].ArtifactID != latest.ID {
 		t.Fatalf("重复播种把部署弄乱了: %+v", again)
 	}
+
+	// 旧库形状：同一个能力上两行（旧版允许并存）。播种要收敛成一行，
+	// 而且**保留最新那条**（它才是用户最后一次部署的意图）。
+	// 先清掉当前那条，才能造出“两行指向不同产物”的旧库形状。
+	if _, err := db.ExecContext(ctx, `DELETE FROM deployments WHERE namespace_id = ? AND node_id = ?`, nsID, node.ID); err != nil {
+		t.Fatalf("clear deployments: %v", err)
+	}
+	newerID := NewDeploymentID()
+	now := Now() + 1000
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		newerID, nsID, node.ID, latest.ID, latest.Digest, DeploymentApplied, "", now, now); err != nil {
+		t.Fatalf("insert legacy duplicate: %v", err)
+	}
+	// 再加一条更早的旧行（模拟旧版本留下的“历史”）
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		NewDeploymentID(), nsID, node.ID, old.ID, old.Digest, DeploymentApplied, "", now-2000, now-2000); err != nil {
+		t.Fatalf("insert legacy stale row: %v", err)
+	}
+
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
+		t.Fatalf("reseed legacy: %v", err)
+	}
+	legacy, err := db.ListDeployments(ctx, nsID, DeploymentFilter{NodeID: node.ID, CapabilityID: cap1.ID})
+	if err != nil {
+		t.Fatalf("list deployments legacy: %v", err)
+	}
+	if len(legacy) != 1 {
+		t.Fatalf("旧库多行没被收敛: %d 行", len(legacy))
+	}
+	if legacy[0].ID != newerID {
+		t.Fatalf("收敛时保留的不是最新那条：id=%s, want %s", legacy[0].ID, newerID)
+	}
+	if legacy[0].ArtifactID != latest.ID {
+		t.Fatalf("收敛后没指到当前产物: %s", legacy[0].ArtifactID)
+	}
 }
 
 // TestExampleBuiltinBackfillsExistingNamespace：老命名空间（能力已存在、产物没有）

@@ -351,23 +351,32 @@ func seedBuiltinArtifactTx(ctx context.Context, tx *sql.Tx, namespaceID, capabil
 	// 这里只动 deployments 的“指向”与状态（pending），帧由节点连接时的
 	// ws.resendDeployments 补发——播种发生在启动阶段，此时还没有连接可推。
 	//
-	// 顺序很要紧：先删掉“已经指向新产物”的行，再把旧行改指过来。
-	// 反过来的话，旧库（一个能力上曾经允许多行）会撞 UNIQUE(node_id, artifact_id)。
+	// 先查回产物 id（INSERT 可能是 no-op，新编的 id 丢弃了）。
 	var artifactID string
 	if err := tx.QueryRowContext(ctx,
 		`SELECT id FROM artifacts WHERE namespace_id = ? AND digest = ?`,
 		namespaceID, digest).Scan(&artifactID); err != nil {
 		return fmt.Errorf("read back builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
 	}
+
+	// 老库可能同一个能力上存着多行（旧版允许「旧 digest 的行保留为历史」）。
+	// 先收敛成一行：**保留最新那条**（它代表最近一次部署意图），其余删掉。
+	// 不收敛就重指会撞 UNIQUE(node_id, artifact_id)；而保留最旧的 id 会让
+	// 「我刚点的那次部署」凭空换了个 id。
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM deployments
-		  WHERE namespace_id = ? AND artifact_id = ?
-		    AND node_id IN (SELECT d2.node_id FROM deployments d2
-		                      JOIN artifacts a2 ON a2.id = d2.artifact_id
-		                     WHERE d2.namespace_id = ? AND a2.capability_id = ? AND d2.artifact_id <> ?)`,
-		namespaceID, artifactID, namespaceID, capabilityID, artifactID); err != nil {
+		  WHERE namespace_id = ?1
+		    AND artifact_id IN (SELECT id FROM artifacts WHERE capability_id = ?2)
+		    AND id NOT IN (
+		      SELECT id FROM (
+		        SELECT d.id AS id, ROW_NUMBER() OVER (PARTITION BY d.node_id ORDER BY d.created_at DESC, d.id DESC) AS rn
+		          FROM deployments d JOIN artifacts a ON a.id = d.artifact_id
+		         WHERE d.namespace_id = ?1 AND a.capability_id = ?2
+		      ) WHERE rn = 1)`,
+		namespaceID, capabilityID); err != nil {
 		return fmt.Errorf("dedupe builtin deployment %s@%d: %w", bc.Name, bc.Version, err)
 	}
+	// 再把剩下那行指到当前产物上（内容没变时是 0 行更新，纯幂等）。
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE deployments
 		    SET artifact_id = ?, digest = ?, state = ?, reason = ?, updated_at = ?
