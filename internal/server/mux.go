@@ -324,6 +324,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 	go sweeper.Run(ctx)
 
+	// 槽位释放 → 即时重派（#219）。
+	//
+	// 接线放在这里而不是 ws 包内部：ws 不该知道"谁来重派"，
+	// 它只负责"我这边空出一个槽了"这一个事实。
+	nodeH.OnCapacityFreed = sweeper.Nudge
+
 	// 中枢能力执行器（#83）：执行 notify.phone 这类没有节点执行者的内置能力。
 	//
 	// 它们在图里是正常的一条边，只是"执行者"是中枢自己而不是外部节点。

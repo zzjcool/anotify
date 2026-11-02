@@ -43,6 +43,23 @@ type Sweeper struct {
 	Store      Store
 	Redispatch RedispatchFunc
 
+	// spur 是「槽位刚刚空出来」的即时信号（#219）。
+	//
+	// 为什么需要：pending 任务原本**只能**靠 5s 巡检排空。单槽节点突发之后，
+	// 每 5s 才开一次派发窗口，一轮里还要顺序尝试上百条注定 ErrNoCapacity 的任务，
+	// 实测有效吞吐 1.2 task/s（单槽理想值 ≈64 task/s）。
+	//
+	// 现在「任务终态落库、槽位释放」会 Nudge 一次，立刻把排队的 pending 拉起来。
+	//
+	// 缓冲 1 是刻意的：突发完成 N 条只会留下 1 个待处理信号（合并），
+	// 一次 drain 最多派 BatchLimit 条，不需要 N 次唤醒。
+	spur chan struct{}
+	// spurMinGap 是两次「即时重派」之间的最小间隔（默认 20ms）。
+	// 没有它的话，高吞吐下每个任务完成都会触发一次查询，把单连接 SQLite 打满。
+	spurMinGap time.Duration
+	// lastDrain 是上一次即时重派的时刻（只在 Run 的 goroutine 里读写）。
+	lastDrain time.Time
+
 	// Interval 是巡检周期（默认 5s，契约 §3.3）。
 	Interval time.Duration
 	// Now 返回当前 unixepoch 秒（测试可注入）。
@@ -180,8 +197,61 @@ func (s *Sweeper) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			s.Tick(ctx)
+		case <-s.spurCh():
+			// 即时重派：**只做重派**，不跑整轮巡检。
+			//
+			// 为什么不直接 Tick：Tick 还要扫一遍过期租约（一条带索引的全表条件查询）
+			// 并顺带检查保留清理。任务完成是高频事件（每次 result 帧都有），
+			// 把它挂在完整巡检上等于把 5s 一次的活干成了每个任务一次。
+			s.drainPending(ctx)
 		}
 	}
+}
+
+// spur 返回即时信号通道（懒初始化，零值 Sweeper 也能用）。
+func (s *Sweeper) spurCh() chan struct{} {
+	if s.spur == nil {
+		s.spur = make(chan struct{}, 1)
+	}
+	return s.spur
+}
+
+// Nudge 通知巡检「有槽位空出来了，立刻重派」。
+//
+// 非阻塞、可合并：通道满（已有一次待处理的唤醒）时直接丢弃这次的信号——
+// 待处理的那次 drain 会看到最新队列，不会漏任务。
+//
+// 线程安全：可以在任意 goroutine（WS 读写协程、HTTP 处理器）里调用。
+func (s *Sweeper) Nudge() {
+	select {
+	case s.spurCh() <- struct{}{}:
+	default:
+		// 已经有一次待处理，合并。
+	}
+}
+
+// drainPending 只做「重派到期的 pending」这一阶段（Tick 的第 ② 步）。
+//
+// 与 Tick 的区别是**不扫租约、不碰保留清理**：它由任务完成触发，频率跟着吞吐走。
+func (s *Sweeper) drainPending(ctx context.Context) {
+	if s.Redispatch == nil {
+		return
+	}
+	gap := s.spurMinGap
+	if gap <= 0 {
+		gap = 20 * time.Millisecond
+	}
+	// 限频：距上次即时重派不足 gap 就等一等（等到即说明至少过了一个节拍，
+	// 期间累积的任务这一次一起派）。
+	if d := gap - time.Since(s.lastDrain); d > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(d):
+		}
+	}
+	s.lastDrain = time.Now()
+	s.redispatchPending(ctx)
 }
 
 // Tick 执行一轮巡检（Run 内部调用；测试直接调它，不用等真实 ticker）。
@@ -222,9 +292,15 @@ func (s *Sweeper) Tick(ctx context.Context) {
 		)
 	}
 
+	s.redispatchPending(ctx)
+}
+
+// redispatchPending 是「重派到期的 pending」这一阶段本身（Tick 与即时重派共用）。
+func (s *Sweeper) redispatchPending(ctx context.Context) {
 	if s.Redispatch == nil {
 		return
 	}
+	now := s.now()
 
 	pending, err := s.Store.ListRedispatchable(ctx, now, s.batchLimit())
 	if err != nil {

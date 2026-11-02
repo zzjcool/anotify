@@ -253,6 +253,16 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 		"out", outString(out),
 	)
 
+	// ⑤.5 槽位刚刚空出来 → 立刻拉一次 pending（#219）。
+	//
+	// 放在事务提交之后、publish 之前：槽位释放已随终态一起 COMMIT，
+	// 此刻队列里若有排队的 pending，正是最该被派出去的时刻。
+	// 钩子本身必须**非阻塞**（Nudge 是可合并的通道投递），所以这里同步调用也不会拖慢
+	// result 帧的处理。
+	if s.h.OnCapacityFreed != nil {
+		s.h.OnCapacityFreed()
+	}
+
 	// ⑥ 事务提交后异步 publish 已落库的子任务行；失败只记日志、不回给节点。
 	//
 	// 幂等兜底见上方的补偿路径：行已 pending + node_id NULL，sweeper 会捞。
