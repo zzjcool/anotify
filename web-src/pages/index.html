@@ -64,7 +64,13 @@
           {{t "index.kpi.today_sub"}}
         </div>
       </div>
-      <div class="card reveal visible p-5" style="transition-delay: 180ms">
+      <!-- 接收设备是「手机推送」的一块：推送未开放时整块不显示（web/partials.js 的
+           PUSH_UI_ENABLED）。留着会自相矛盾——一边把接收设备页藏了，一边在首页量化它。 -->
+      <div
+        class="card reveal visible p-5"
+        style="transition-delay: 180ms"
+        data-push-tile
+      >
         <div class="flex items-center justify-between">
           <span class="text-xs font-medium text-zinc-500"
             >{{t "index.kpi.devices"}}</span
@@ -269,6 +275,13 @@
     const qs = new URLSearchParams(location.search);
     // 占位；load() 里用 /v1/auth/me 覆盖，避免硬编码名字与侧栏不一致（#21）
     let username = qs.get("u") || "";
+
+    // 手机推送未开放 → 首页不显示「接收设备」这块 KPI（与 receivers.html 保持一致）。
+    if (!window.Anotify.pushUIEnabled) {
+      document.querySelectorAll("[data-push-tile]").forEach((el) => {
+        el.classList.add("hidden");
+      });
+    }
 
     mountLayout({
       active: "overview",
