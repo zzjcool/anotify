@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // 内置能力清单（契约设计见 design/wiki/08-scope.html）。
@@ -31,6 +33,11 @@ type BuiltinCapability struct {
 	Outputs      []string
 	// Central 表示由中枢执行（不找节点）。终端能力为 true。
 	Central bool
+	// Artifact 是随能力一起播种的产物（v2 之后节点只跑产物，没有产物 = 部署不了）。
+	//
+	// 大部分内置能力不需要它（central 的由中枢执行、origin 的不产生任务），
+	// 但「示例能力」必须带：它的全部价值就在于「注册完就能部署、能跑通一条链」。
+	Artifact *artifact.Artifact
 	// Origin 表示它是**事件起点**：没有节点执行者，也不产生任务，
 	// 只提供「事件从这里进来」的命名锚点 + 任意事件类型作为出口。
 	//
@@ -97,8 +104,67 @@ func OriginCapability(name, displayName string) BuiltinCapability {
 //
 // 自定义来源依然支持：用户可以自己定义一个能力（比如 jira@1），
 // source = "jira" 一样能找到它——内置只是把常见来源预先备好。
+// ExampleCapability 是**给新命名空间的示例能力**（#282）。
+//
+// 为什么需要它：v2 之后新账号里唯一的可见能力曾是 notify.phone，而它（a）被
+// 手机推送的开关隐去（b）由中枢执行、没有产物、部署不了。结果就是一个全新账号
+// 打开能力页什么都没有 —— 用户以为坏了，而这只是「还没有人定义过能力」。
+//
+// 设计约束（每一条都是为了「第一次就能跑通」）：
+//   - **零依赖**：只用 bash 内建 + echo，任何节点都跑得起来（不需要 git/curl/jq）
+//   - **带产物**：有 artifact 才能「部署 → 节点应用 → 执行」这条链路完整可见
+//   - **有参数**：能力页的参数表单不是空的，用户看得见「参数怎么传进脚本」
+//   - **有出口**：outputs=["echoed"]，可以拿它当一条链的上游做实验
+//   - **不占名字**：叫 script.echo 而不是 demo.xxx —— 它是能用的东西，不是演示
+var ExampleCapability = BuiltinCapability{
+	Name:        "script.echo",
+	DisplayName: "回声（示例）",
+	Version:     1,
+	ParamsSchema: `{
+		"type": "object",
+		"properties": {
+			"message": {"type": "string", "title": "消息", "description": "会被原样打印出来"}
+		}
+	}`,
+	Outputs: []string{"echoed"},
+	Artifact: &artifact.Artifact{
+		APIVersion: artifact.APIVersion,
+		Kind:       artifact.KindCapability,
+		Metadata:   artifact.Metadata{Name: "script.echo", Version: 1},
+		Spec: artifact.Spec{
+			DisplayName: "回声（示例）",
+			Params: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"message": {"type": "string", "title": "消息", "description": "会被原样打印出来"}
+				}
+			}`),
+			Outputs: []string{"echoed"},
+			Run: artifact.Run{
+				Entrypoint: "run.sh",
+				Files: map[string]string{
+					"run.sh": `#!/bin/bash
+# 示例能力：把参数原样打印出来，并把同一个值写进出口文件。
+# 这不是玩具——它同时演示了三件事：参数怎么进脚本（ANOTIFY_PARAM_*）、
+# 输出怎么回中枢（stdout）、出口怎么声明（$ANOTIFY_OUT_FILE）。
+set -euo pipefail
+
+msg="${ANOTIFY_PARAM_MESSAGE:-hello from Anotify}"
+echo "$msg"
+printf '%s\n' "$msg" > "$ANOTIFY_OUT_FILE"
+`,
+				},
+				TimeoutSec: 30,
+			},
+		},
+	},
+}
+
 var BuiltinCapabilities = []BuiltinCapability{
 	NotifyPhoneCapability,
+	// 示例能力：放在清单里意味着**每个新命名空间都会播种它**，
+	// 已有命名空间在启动时由 BackfillBuiltinCapabilities 补上（幂等）。
+	ExampleCapability,
 	// github/cron/http/manual **不再是能力**（契约 §2.4 / #110）。
 	//
 	// 它们原来是以「内置起点能力」的形式存在的：不执行代码、不产生任务、
@@ -176,6 +242,10 @@ func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID string, bc Bu
 		  WHERE namespace_id = ? AND name = ? AND version = ?`,
 		namespaceID, bc.Name, bc.Version).Scan(&existingID, &existingDisplay)
 	if err == nil {
+		// 能力已存在（老库升级 / 重复播种）：产物可能还没建过，仍要补一次。
+		if err := seedBuiltinArtifactTx(ctx, tx, namespaceID, existingID, bc); err != nil {
+			return err
+		}
 		if bc.DisplayName != "" && existingDisplay == "" {
 			if _, uerr := tx.ExecContext(ctx,
 				`UPDATE capability_versions SET display_name = ? WHERE id = ?`,
@@ -219,14 +289,52 @@ func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID string, bc Bu
 	if err != nil {
 		return fmt.Errorf("marshal builtin lifecycle: %w", err)
 	}
+	capID := NewCapabilityID(hash)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO capability_versions
 		   (id, namespace_id, name, display_name, version, params_schema, outputs,
 		    lifecycle, sticky, source, content_hash, created_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		NewCapabilityID(hash), namespaceID, c.Name, c.DisplayName, c.Version, schema,
+		capID, namespaceID, c.Name, c.DisplayName, c.Version, schema,
 		string(outputsJSON), string(lifecycleJSON), c.Sticky, CapSourceBuiltin, hash, Now()); err != nil {
 		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	return seedBuiltinArtifactTx(ctx, tx, namespaceID, capID, bc)
+}
+
+// seedBuiltinArtifactTx 给带产物的内置能力播种它的 artifact 行（幂等）。
+//
+// 幂等键是 `UNIQUE(namespace_id, digest)`：digest 是内容寻址的，同一份内容重复插入
+// 就是 no-op。所以「老库升级」与「重复播种」都能安全地走这条路。
+func seedBuiltinArtifactTx(ctx context.Context, tx *sql.Tx, namespaceID, capabilityID string, bc BuiltinCapability) error {
+	if bc.Artifact == nil {
+		return nil
+	}
+	// 老库升级路径：播种可能发生在迁移 18（artifacts 表）之前——那时这张表还不存在。
+	// 这不是错误：启动流程里 BackfillBuiltinCapabilities 在**迁移之后**还会再跑一遍，
+	// 那时会把产物补上。所以这里探测一次表是否存在，不存在就跳过（自愈，不阻塞升级）。
+	var exists int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts'`).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("probe artifacts table: %w", err)
+	}
+	digest, err := artifact.Digest(bc.Artifact)
+	if err != nil {
+		return fmt.Errorf("digest builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	spec, err := artifact.CanonicalJSON(bc.Artifact)
+	if err != nil {
+		return fmt.Errorf("canonical json for builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO artifacts (id, namespace_id, capability_id, digest, spec, created_at)
+		 VALUES (?,?,?,?,?,?)
+		 ON CONFLICT(namespace_id, digest) DO NOTHING`,
+		NewArtifactID(), namespaceID, capabilityID, digest, string(spec), Now()); err != nil {
+		return fmt.Errorf("seed builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/zzjcool/anotify/internal/artifact"
 	"testing"
 )
 
@@ -486,5 +487,76 @@ func TestBackfillBuiltinCapabilitiesEmptyDeployment(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("空库扫了 %d 个命名空间, want 0", n)
+	}
+}
+
+// TestExampleBuiltinIsUsable 守三件事（缺一条，「新账号第一次就能跑通」就是空话）：
+//
+//	① 产物本身合法（artifact.Validate 通过）—— 不合法的话部署时才会报错
+//	② 播种后 artifacts 表里真有它，且 digest 与本地重算一致（内容寻址）
+//	③ 重复播种幂等（老库升级会再跑一遍，不能插出第二行）
+func TestExampleBuiltinIsUsable(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+
+	// ① 产物合法 + 与能力定义的 outputs 一致
+	if err := artifact.Validate(ExampleCapability.Artifact); err != nil {
+		t.Fatalf("示例能力的产物不合法：%v", err)
+	}
+	if got, want := ExampleCapability.Artifact.Spec.Outputs, ExampleCapability.Outputs; len(got) != len(want) {
+		t.Fatalf("产物 outputs=%v 与能力定义 outputs=%v 不一致", got, want)
+	}
+
+	// ② 播种后有 artifact 行，digest 一致
+	wantDigest, err := artifact.Digest(ExampleCapability.Artifact)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	got, err := db.GetArtifactByDigest(ctx, nsID, wantDigest)
+	if err != nil {
+		t.Fatalf("新命名空间里应该已经有示例能力的产物（否则部署不了）：%v", err)
+	}
+	if got.Digest != wantDigest {
+		t.Fatalf("artifact digest = %q, want %q", got.Digest, wantDigest)
+	}
+
+	// ③ 重复播种幂等：行数不变
+	before := countRows(t, db, "artifacts", "namespace_id = ?", nsID)
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+	after := countRows(t, db, "artifacts", "namespace_id = ?", nsID)
+	if after != before {
+		t.Fatalf("重复播种把 artifact 行数从 %d 变成了 %d（幂等破了）", before, after)
+	}
+}
+
+// TestExampleBuiltinBackfillsExistingNamespace：老命名空间（能力已存在、产物没有）
+// 在 Backfill 之后也要拿到产物 —— 这是升级路径，光靠"新建时播种"覆盖不到。
+func TestExampleBuiltinBackfillsExistingNamespace(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+
+	var capID string
+	if err := db.QueryRowContext(ctx,
+		`SELECT id FROM capability_versions WHERE namespace_id = ? AND name = ?`,
+		nsID, ExampleCapability.Name).Scan(&capID); err != nil {
+		t.Fatalf("capability 应该已被播种：%v", err)
+	}
+	// 模拟"老库"：能力在，产物不在
+	if _, err := db.ExecContext(ctx, `DELETE FROM artifacts WHERE namespace_id = ?`, nsID); err != nil {
+		t.Fatalf("清掉产物: %v", err)
+	}
+	if n := countRows(t, db, "artifacts", "namespace_id = ?", nsID); n != 0 {
+		t.Fatalf("前置条件：产物应为 0 行，实际 %d", n)
+	}
+
+	if _, err := db.BackfillBuiltinCapabilities(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n := countRows(t, db, "artifacts", "namespace_id = ? AND capability_id = ?", nsID, capID); n != 1 {
+		t.Fatalf("backfill 后示例能力的产物应有 1 行，实际 %d", n)
 	}
 }

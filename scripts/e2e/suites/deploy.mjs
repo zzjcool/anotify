@@ -307,6 +307,32 @@ async function main() {
 		}
 	}
 
+	// ================= 5.6 示例能力：新命名空间一注册就能部署（#282） =================
+	// 产品承诺：全新账号打开能力页不能是空的，而且那个能力必须**真的能部署**
+	// （有产物）。只播种一个没有产物的定义，点部署会 404 —— 那和空页面一样糟。
+	console.log("--- 5.6 示例内置能力 script.echo ---");
+	{
+		// 用一台**专用**节点：不能让这条用例往别的节点的部署集合里加行，
+		// 否则后面的「按节点过滤」断言会因为多了这一行而误报。
+		const echoNode = N.seedNodeRows(server.dbPath, nsId, "dep-echo-node", [], 1);
+		const caps = await H.req(server.base, "/v1/capabilities", { session });
+		const echo = (caps.json?.capabilities || []).find((c) => c.name === "script.echo");
+		H.check("新命名空间自带示例能力 script.echo", !!echo, JSON.stringify((caps.json?.capabilities || []).map((c) => c.name)));
+
+		const dep = await H.req(server.base, "/v1/deployments", {
+			session,
+			body: { capabilityId: echo?.id, nodeIds: [echoNode.id] },
+		});
+		H.eq("示例能力可以直接部署（说明它有产物）", dep.status, 200);
+		const item = (dep.json?.deployments || [])[0] || {};
+		H.check(
+			"示例能力部署有 digest（内容寻址的产物真的下发了）",
+			/^sha256:[0-9a-f]{64}$/.test(String(dep.json?.artifact?.digest || "")),
+			String(dep.json?.artifact?.digest).slice(0, 20),
+		);
+		H.check("示例能力部署到在线节点 → pushed 或明确原因", item.pushed === true || !!item.error, JSON.stringify(item));
+	}
+
 	// ================= 6. 没有产物的能力 → 404 =================
 	console.log("--- 6. 部署没有产物的能力 ---");
 	{
