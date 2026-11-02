@@ -1,0 +1,43 @@
+# Anotify Agent 镜像（节点侧，不含中枢）
+#
+# 这是控制台「加机器」面板里那行命令背后的东西：
+#
+#   docker run -d --restart=always \
+#     -e ANOTIFY_SERVER=https://anotify.example.com \
+#     -e ANOTIFY_TOKEN=nt_xxxxx \
+#     anotify-agent
+#
+# 三个设计取舍（与中枢镜像 Dockerfile 刻意不同）：
+#
+#  1. **不需要 node.yaml**。配置走环境变量（ANOTIFY_SERVER / ANOTIFY_TOKEN /
+#     ANOTIFY_NAME / ANOTIFY_INSTANCES），见 cmd/agent/config.go:configFromEnv。
+#     容器里挂配置文件是最容易出错的一步（路径、权限、只读挂载），能省就省。
+#  2. **不打包 web/dist**。agent 只要一个二进制，不需要前端产物，镜像小一个量级。
+#  3. **需要 shell 与常用工具**。产物是脚本，靠 shebang 选解释器；纯 scratch 镜像
+#     里连 #!/bin/sh 都跑不了。这里给 alpine（bash/curl/git/jq），用户要
+#     claude/codex 之类再自己 FROM 这个镜像加。
+FROM golang:1.25-alpine AS build
+WORKDIR /app
+ENV GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto CGO_ENABLED=0
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+# 只构建 agent：不碰 internal/server/dist（那是 go:embed 的产物，agent 用不到）
+RUN go build -trimpath -ldflags="-s -w" -o /out/anotify-agent ./cmd/agent
+
+FROM alpine:3.20
+# 产物是脚本：git/curl/jq 是内置模板（script.git / script.http）的 requires，
+# 预装它们让「选模板 → 部署 → 能跑」这条最短路径真的成立。
+RUN apk add --no-cache bash ca-certificates curl git jq openssh-client \
+    && adduser -D -h /data agent
+COPY --from=build /out/anotify-agent /usr/local/bin/anotify-agent
+
+USER agent
+WORKDIR /data
+# 产物缓存与每次任务的工作目录都落在这里（cmd/agent/main.go:defaultDataDir）。
+# 声明成 VOLUME 是提醒：删容器会连缓存一起丢，重建后需要控制台重新部署。
+VOLUME ["/data/.anotify"]
+
+# 没有 -f：配置从环境变量来。这是「一行命令加机器」的落地点。
+ENTRYPOINT ["anotify-agent"]

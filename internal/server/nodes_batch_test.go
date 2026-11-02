@@ -159,10 +159,15 @@ func TestViewsForBatchEquivalence(t *testing.T) {
 		t.Fatalf("A capabilities 顺序 = [%s@%d, %s@%d], want [analyze-pr@1, review@1]",
 			caps[0].Name, caps[0].Version, caps[1].Name, caps[1].Version)
 	}
-	// ⑤ 没声明 run 的能力：runSpec 必须是 `{}`（I9），不能是 null/空串
+	// ⑤ 每条能力带稳定的 id 与显示名（节点页标签点进能力详情要用）。
+	//
+	// 为什么这条断言变了：旧断言是「没声明 run 的能力 runSpec 必须是 {}」。
+	// v2 的 nodeCapView 里没有 runSpec 字段了（node_capabilities 也没有 run_spec 列，
+	// 迁移 18），继续断言它只会测到一个不存在的字段；等价且仍然有价值的要求是
+	// 「每条能力都能被稳定引用」—— id/displayName 都在，前端才点得进详情页。
 	for _, cv := range caps {
-		if strings.TrimSpace(string(cv.RunSpec)) != "{}" {
-			t.Fatalf("cap %s@%d runSpec = %q, want {}", cv.Name, cv.Version, string(cv.RunSpec))
+		if cv.ID == "" {
+			t.Fatalf("cap %s@%d 没有 id（标签点不进能力详情）", cv.Name, cv.Version)
 		}
 	}
 	// ⑥ B 的 1 个能力 + 0 槽位
@@ -331,19 +336,9 @@ func TestBatchListCapabilitiesByNodeOrdering(t *testing.T) {
 		}
 	}
 
-	// run_spec 空串（手工改库/老数据）→ 必须兜底成 '{}'（I9）
-	if _, err := db.ExecContext(ctx, `UPDATE node_capabilities SET run_spec = '' WHERE node_id = ?`, n.ID); err != nil {
-		t.Fatalf("blank run_spec: %v", err)
-	}
-	got, err = db.ListCapabilitiesByNode(ctx, []string{n.ID})
-	if err != nil {
-		t.Fatalf("ListCapabilitiesByNode after blank: %v", err)
-	}
-	for _, c := range got[n.ID] {
-		if strings.TrimSpace(string(c.RunSpec)) != "{}" {
-			t.Fatalf("空 run_spec 未兜底成 {}: %q", string(c.RunSpec))
-		}
-	}
+	// 为什么这里不再有「run_spec 空串兜底成 {}」那一段：run_spec 列已随迁移 18 删除，
+	// 那个兜底逻辑（以及它守着的 I9 老读法）整个消失了。批量读的**降级**语义仍然被
+	// 钉住 —— 见本文件 TestViewsForBadJSONDegradesOnlyThatNode（坏行只降级它自己那台）。
 
 	// 没有能力的节点不出现在 map 里（调用方按 nil → [] 处理）
 	empty := batchNode(t, ctx, db, nsID, "node-no-caps")

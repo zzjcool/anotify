@@ -406,6 +406,21 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(consoleH.nodeByID))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(consoleH.drainNode))))
 
+	// --- 部署模型（console-declares epic，契约 CONTRACT-protocol §11）---
+	//
+	// 这是 v2 的核心：能力归属不再由节点在 hello 里自报，而是「控制台部署 + 节点确认」。
+	// hub 注入是**可空**的：没有连接层时部署仍会建行（state=pending），
+	// 只是逐台返回 pushed=false —— 与「节点离线」完全同构，UI 不必区别对待。
+	depH := &deployHandler{db: db, console: consoleH}
+	if nodeHub != nil {
+		depH.hub = nodeHub
+	}
+	mux.Handle("GET /v1/capability-templates", noStore(sessMW(http.HandlerFunc(depH.capabilityTemplates))))
+	mux.Handle("GET /v1/artifacts", noStore(sessMW(http.HandlerFunc(depH.artifacts))))
+	mux.Handle("GET /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
+	mux.Handle("POST /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
+	mux.Handle("DELETE /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
+
 	// --- 管理后台（/v1/admin/*，需登录会话 + 超管权限） ---
 	mux.Handle("/v1/admin/", noStore(adminMW))
 	mux.Handle("/v1/admin", noStore(adminMW))

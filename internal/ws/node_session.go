@@ -12,6 +12,8 @@ import (
 
 // handleTaskFrame 处理 ack / progress / result 三种任务帧（契约 §6.1）。
 //
+// 部署帧（apply）不在这里：它不是任务帧，走 handleConfigFrame。
+//
 // 三种帧都必须先 hello（身份确定后才有命名空间维度可用），
 // 且都会续命（由 readLoop 的 touch 统一处理）。
 //
@@ -33,6 +35,67 @@ func (s *nodeSession) handleTaskFrame(ctx context.Context, frame any) error {
 		s.sendError(ctx, ErrCodeUnknownType, fmt.Sprintf("unexpected frame %T", frame))
 		return nil
 	}
+}
+
+// handleConfigFrame 处理与任务无关的配置帧（当前只有 apply）。
+//
+// 为什么与任务帧分开：apply 不属于任何任务、不需要租约、也不推进九态机。
+// 把它塞进 handleTaskFrame 会让「任务帧都要先 hello」这条纪律变得含糊。
+//
+// 这条分支曾经缺失（端到端 e2e 抓到的 P0）：节点回的 apply 被当成未知帧，
+// 中枢回 error{unknown_type} 并把结果丢弃 —— 于是**部署失败永远停在 pending**，
+// 「这台机器没装 claude」这种最有价值的诊断信息根本到不了控制台。
+func (s *nodeSession) handleConfigFrame(ctx context.Context, frame any) error {
+	switch f := frame.(type) {
+	case *ApplyFrame:
+		return s.handleApply(ctx, f)
+	default:
+		s.sendError(ctx, ErrCodeUnknownType, fmt.Sprintf("unexpected frame %T", frame))
+		return nil
+	}
+}
+
+// handleApply 落一条部署结果（契约 CONTRACT-protocol §7）。
+//
+// 作用域一律用**节点的**命名空间：部署行只可能是这个命名空间里的，
+// 帧里也没有命名空间字段（令牌绑命名空间，与 hello 同一条不变量）。
+//
+// 状态白名单由 store.MarkDeployResult 把关：节点不能把一条部署标成任意状态。
+// 行不存在（部署已被撤销）不是协议错误 —— 撤销与回报天然会撞车，
+// 此时节点只是"晚了一步"，丢掉结果即可。
+func (s *nodeSession) handleApply(ctx context.Context, f *ApplyFrame) error {
+	if f.DeployID == "" {
+		s.sendError(ctx, ErrCodeBadFrame, "apply frame requires deploy_id")
+		return nil
+	}
+	if f.State != ApplyStateApplied && f.State != ApplyStateFailed {
+		s.sendError(ctx, ErrCodeBadFrame,
+			fmt.Sprintf("apply frame has invalid state %q (want %s or %s)",
+				f.State, ApplyStateApplied, ApplyStateFailed))
+		return nil
+	}
+
+	err := s.h.Store.MarkDeployResult(ctx, s.node.NamespaceID, f.DeployID, f.State, f.Reason)
+	if errors.Is(err, store.ErrNotFound) {
+		slog.Warn("apply for unknown deployment",
+			"event", "node.ws.apply.unknown_deployment",
+			"node_id", s.node.ID, "deploy_id", f.DeployID, "state", f.State)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("mark deploy result: %w", err)
+	}
+
+	slog.Info("deployment applied",
+		"event", "node.ws.apply",
+		"node_id", s.node.ID,
+		"deploy_id", f.DeployID,
+		"capability", f.Capability,
+		"version", f.Version,
+		"digest", f.Digest,
+		"state", f.State,
+	)
+	return nil
 }
 
 // rejectForeignExecution 是 #222 的 fencing 面：同一任务只许一条**活着的连接**推进状态。

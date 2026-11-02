@@ -2113,6 +2113,151 @@ paths:
       responses:
         "200": { description: 已停用 }
 
+  /capability-templates:
+    get:
+      tags: [capabilities]
+      summary: 内置能力模板
+      description: |
+        控制台「新建能力」用的模板。**模板是代码生成器的输入，不是执行器类型**：
+        v1 只有一种执行器（脚本），所谓 Agent 类型只是预置的脚本 + 预置的表单字段。
+
+        模板与产物格式的契约见 `.pi-orchestrator/console-declares/CONTRACT-artifact.md` §8。
+        放在服务端而不是前端硬编码，是为了只有一个事实源。
+
+        模板字段 `key` 一律 snake_case —— 它会变成 `ANOTIFY_PARAM_<UPPER>`，
+        而节点侧只做「大写 + 非字母数字换下划线」，camelCase 会变成不可猜的变量名。
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: 模板列表（固定 9 个）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates]
+                properties:
+                  templates:
+                    type: array
+                    items: { $ref: "#/components/schemas/CapabilityTemplate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /artifacts:
+    get:
+      tags: [capabilities]
+      summary: 某能力的产物流水
+      description: |
+        一份**产物**（artifact）是能力的不可变实现快照：参数契约 + 入口文件 + 全部文件内容
+        + 超时 + 环境变量 + 依赖的外部命令。它自包含（脚本内联，不引用外部 blob），
+        所以可以拷到另一台机器脱离中枢单跑。
+
+        `digest` 是内容寻址标识 `sha256:<64 hex>`：同一份内容永远同一个 digest，
+        因此「跑过什么」可以被永久审计。
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
+        - { name: capabilityId, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: '产物列表（新的在前；空时 `artifacts: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [artifacts]
+                properties:
+                  artifacts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Artifact" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /deployments:
+    get:
+      tags: [deployments]
+      summary: 部署状态列表
+      description: |
+        一条部署 = 「中枢希望这台节点拥有这份产物」+「节点回报的状态」。
+        `namespaceId` 必填；`*` 允许（跨命名空间汇总）。
+
+        状态：`pending`（还没收到节点确认）/ `applied`（节点确认应用成功）/
+        `failed`（节点拒绝，`reason` 是短码 + 说明）/ `local`（节点上的 digest 与中枢期望
+        不一致 = 本地变体，**中枢永不覆盖**）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
+        - { name: nodeId, in: query, schema: { type: string } }
+        - { name: capabilityId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: '部署列表（空时 `deployments: []`）'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployments]
+                properties:
+                  deployments:
+                    type: array
+                    items: { $ref: "#/components/schemas/Deployment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [deployments]
+      summary: 把产物部署到选中的节点
+      description: |
+        `digest` 缺省取该能力最新一份产物。目标节点 = `nodeIds` ∪ 命中 `tags` 任一标签的节点，
+        去重后按 nodeId 稳定排序。
+
+        **`pushed=false` 不代表失败**：行已经建好（`state=pending`），节点上线后由重连对账补推。
+        UI 必须区分「已下发」与「已排队」，否则运维会以为离线机器上的东西已经生效。
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeploymentInput" }
+      responses:
+        "200":
+          description: 逐台的部署结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [artifact, deployments]
+                properties:
+                  artifact: { $ref: "#/components/schemas/Artifact" }
+                  deployments:
+                    type: array
+                    items: { $ref: "#/components/schemas/DeploymentResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 这个能力还没有可部署的产物（`code=artifact_not_found`）
+    delete:
+      tags: [deployments]
+      summary: 撤销一次部署
+      description: 先推 remove 帧（尽力而为），再删行。推失败不构成故障——节点上多缓存一份产物不会被派发。
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NamespaceId"
+        - { name: id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties: { deleted: { type: string } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /devices:
     get:
       deprecated: true
@@ -4180,3 +4325,101 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+
+    CapabilityTemplateField:
+      type: object
+      required: [key, label, type]
+      properties:
+        key: { type: string, description: 'snake_case；会变成 ANOTIFY_PARAM_<UPPER>' }
+        label: { type: string }
+        type: { type: string, enum: [string, text, number, select] }
+        required: { type: boolean }
+        default: { type: string }
+        options:
+          type: array
+          items: { type: string }
+          description: 仅 type=select 有意义
+        help: { type: string }
+
+    CapabilityTemplate:
+      type: object
+      required: [id, displayName, category, script, requires, outputs, timeoutSec]
+      properties:
+        id: { type: string, example: agent.claude }
+        displayName: { type: string }
+        category: { type: string, enum: [script, agent] }
+        description: { type: string }
+        fields:
+          type: array
+          items: { $ref: "#/components/schemas/CapabilityTemplateField" }
+        script: { type: string, description: 入口文件 run.sh 的正文（只读展示，可切脚本模式覆盖） }
+        requires:
+          type: array
+          items: { type: string }
+          description: 机器上必须预装的命令；部署时探测，缺了部署失败
+        outputs:
+          type: array
+          items: { type: string }
+        timeoutSec: { type: integer }
+
+    Artifact:
+      type: object
+      required: [id, namespaceId, capabilityId, digest, spec, createdAt]
+      properties:
+        id: { type: string, example: af_xxx }
+        namespaceId: { type: string }
+        capabilityId: { type: string }
+        digest:
+          type: string
+          description: '内容寻址标识 `sha256:<64 hex>`'
+          example: "sha256:ab12"
+        spec:
+          type: object
+          description: 产物的 canonical JSON（CONTRACT-artifact §2）
+        createdAt: { type: integer }
+
+    Deployment:
+      type: object
+      required: [id, namespaceId, nodeId, capabilityId, digest, state]
+      properties:
+        id: { type: string, example: dp_xxx }
+        namespaceId: { type: string }
+        nodeId: { type: string }
+        artifactId: { type: string }
+        capabilityId: { type: string }
+        capability: { type: string }
+        version: { type: integer }
+        digest: { type: string }
+        state:
+          type: string
+          enum: [pending, applied, failed, local]
+        reason: { type: string, description: 'failed 时是短码 + 说明；local 时是两端 digest' }
+        createdAt: { type: integer }
+        updatedAt: { type: integer }
+
+    DeploymentInput:
+      type: object
+      required: [capabilityId]
+      properties:
+        namespaceId: { type: string }
+        capabilityId: { type: string }
+        digest: { type: string, description: 缺省取该能力最新一份产物 }
+        nodeIds:
+          type: array
+          items: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+          description: 与 nodeIds 取并集
+
+    DeploymentResult:
+      type: object
+      required: [nodeId, pushed]
+      properties:
+        nodeId: { type: string }
+        nodeName: { type: string }
+        deployId: { type: string }
+        pushed:
+          type: boolean
+          description: false = 已排队（节点离线），行已建好，等它上线补推；**不是失败**
+        error: { type: string }

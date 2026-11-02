@@ -1142,12 +1142,15 @@ events:
     invalid_cursor: カーソルが無効です。最新へ戻りました
 caps:
   title: ケイパビリティ
+  sidebar: 'ここで定義し、ノードが実行'
   subtitle: ケイパビリティは「何をするか」（「どうやるか」ではない）。出口（イベントの行き先）は独立したページになりました。
   new: ケイパビリティを定義
   loading: ケイパビリティを読み込み中…
+  load_failed: 'capabilities 一覧の読み込みに失敗しました。再読み込みしてください'
   empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
   count: '{n} 個のケイパビリティ'
   no_outputs: 出口なし（終端ケイパビリティ）
+  source_builtin: '組み込み'
   declared_by: 宣言ノード
   no_node: 宣言ノードなし
   no_node_hint: ノードが宣言するまでこのケイパビリティは実行できません
@@ -1161,6 +1164,60 @@ caps:
   rename_ph: 名前を付けてください（例：「PR を分析」）
   rename_failed: 名前の変更に失敗しました
   renamed: 名前を更新しました
+  tpl:
+    title: '能力を作成'
+    intro: 'まずテンプレートを選びます。テンプレートは定型スクリプトで、フィールドもスクリプト本文も後から編集できます。'
+    cat_script: 'スクリプト'
+    cat_agent: 'Agent'
+    requires: '必要なコマンド: {list}'
+    no_requires: '外部コマンド不要'
+    timeout_default: '既定 {n} 秒'
+    back: 'テンプレートを変更'
+    params: 'パラメータ'
+    no_params: 'このテンプレートにパラメータはありません'
+    required: '必須'
+    script: '生成されたスクリプト'
+    script_view: '読み取り専用'
+    script_edit: 'スクリプトを編集'
+    script_hint: 'スクリプトは（シェルを介さず）直接 exec されるため、1 行目は #! で始める必要があります。'
+    schema_advanced: "パラメータ契約（上級）"
+    schema_toggle: "JSON を編集"
+    schema_hint: "空欄のままにすると、テンプレートの項目から導出した契約を使います。JSON Schema のサブセット（type/properties/required/enum/minLength/pattern…）に対応。"
+    script_shebang_err: 'スクリプトの 1 行目は #! で始めてください'
+    loading: 'テンプレートを読み込み中…'
+    load_failed: 'テンプレートの読み込みに失敗しました: '
+    empty: 'テンプレートが返されませんでした'
+    created: '能力を作成しました'
+    created_digest: '作成しました · digest {digest}'
+  deploy:
+    col: '配備'
+    status_applied: '{n} 台に配備済み'
+    status_pending: '{n} 台に配備中'
+    status_failed: '{n} 台失敗'
+    status_local: '{n} 台がローカル変種'
+    status_none: '未配備'
+    status_unknown: '—'
+    btn: '配備'
+    title: '「{name}」を配備'
+    subtitle: 'マシンを選択するか tag でまとめて選び、配備を押してください。'
+    pick_hint: 'マシンを選択'
+    tag_pick: 'tag で選択'
+    node_digest: '配備済み {digest}'
+    node_none: '未配備'
+    push: '配備'
+    pushing: '配備中…'
+    close: '閉じる'
+    undo: '取り消す'
+    undone: '取り消しました'
+    undo_failed: '取り消しに失敗しました: '
+    pushed: '送信済み'
+    queued: '待機中（ノードがオフライン）'
+    queued_other: '待機中'
+    nodes_failed: 'ノード一覧を取得できませんでした。しばらくしてから再試行してください'
+    result_title: '送信結果'
+    none_selected: 'マシンを 1 台以上選んでください'
+    no_nodes: 'この名前空間にはまだノードがありません'
+    err: '配備に失敗しました: '
   list:
     title: ケイパビリティ一覧
   form:
@@ -1191,6 +1248,10 @@ caps:
     schema_preserved: 以下はビジュアル編集できません。そのまま保持されます：
     schema_form_hint: バックエンドが対応するキーワードのみ使用します（type / properties / required / enum / 範囲）。ネストしたオブジェクトや配列は JSON モードに切り替えてください。
     err_schema_obj: paramsSchema は JSON オブジェクトである必要があります
+    timeout: 'タイムアウト（秒）'
+    timeout_hint: '0 = ローカルタイムアウトなし（中枢のリースに任せる）'
+    err_invalid_name: '能力名は小文字英数字・ドット・アンダースコア・ハイフンの 1〜63 文字で、英数字で始めてください'
+    err_timeout: 'タイムアウトは 0〜86400 の整数で指定してください'
   edges:
     title: エッジ
     new: エッジを追加
@@ -1238,9 +1299,9 @@ nodes:
     title: ノード一覧
   howto:
     title: ノードの接続方法
-    desc: '登録はこのページで完結します。トークンは一度だけ表示され、正式な設定はそのマシンの node.yaml にだけ存在します。'
-    step1: '上の「ノードを登録」でワンタイムトークンを取得し、表示された node.yaml をそのマシンに保存します'
-    step2: 'capabilities（そのマシンで実際に動かす能力）を埋めてから、ノードのマシンで起動します'
+    desc: '登録はこのページで完結します。トークンは一度だけ表示され、マシン側は docker コマンド 1 行だけで動きます（設定ファイル不要）。'
+    step1: '上の「ノードを登録」で一度きりのトークンを取得し、表示されたコマンドをそのマシンで実行します'
+    step2: 'マシンがオンラインになったら「能力」ページで配備します'
   view_events: イベントを見る
   register:
     btn: 'ノードを登録'
@@ -1250,7 +1311,7 @@ nodes:
     name_ph: '例: my-mbp'
     name_hint: '小文字・数字・ドット（.）・アンダースコア（_）・ハイフン（-）のみ、1〜63 文字、先頭は英数字'
     instances: 'インスタンス数（任意）'
-    instances_hint: 'このマシンで並行して動かすインスタンス数。node.yaml の instances にそのまま書き込まれます。ハブの上限は 20、既定 1。'
+    instances_hint: 'このマシンで並列に走らせるインスタンス数（目安。中枢が 20 に丸めます）。実際のスロット数は agent が接続時に申告します。'
     submit: '登録'
     cancel: 'キャンセル'
     submitting: '登録中…'
@@ -1259,9 +1320,14 @@ nodes:
     warn_once: 'トークンの表示は今回だけです。閉じたあとは取得できません。紛失した場合はノードを削除して登録し直してください。'
     token_title: 'ワンタイムトークン'
     copy_token: 'トークンをコピー'
-    yaml_title: 'node.yaml（そのまま貼れます）'
-    copy_yaml: 'YAML をコピー'
-    yaml_hint: 'node.yaml として保存し、capabilities をこのマシンで実際に動かす能力に置き換えてから agent -f node.yaml を実行します'
+    cmd_title: "1 行のコマンドで起動（推奨）"
+    copy_cmd: "コマンドをコピー"
+    yaml_intro: "またはエージェントのバイナリを直接インストールし、この node.yaml を使ってください（項目は 4 つだけ：name / server / token / instances）："
+    yaml_title: 'マシン上でこの行を実行'
+    copy_yaml: 'コマンドをコピー'
+    yaml_hint: 'このコマンドのトークンは一度しか表示されません。失うとノードを削除して再登録が必要です。'
+    cmd_intro: '次のコマンドをマシン上で実行してください（設定ファイルは不要）:'
+    cmd_after: 'マシンがオンラインになったら「能力」ページで配備すると動き始めます。'
     err:
       empty_name: '先にノード名を入力してください'
       invalid_name: '名前が不正です。小文字・数字・ドット（.）・アンダースコア（_）・ハイフン（-）のみ、1〜63 文字、先頭は英数字にしてください'
@@ -1435,6 +1501,7 @@ edges:
   empty: 出口表が空です：イベントが来ても行き先がありません。
   nomatch: 一致する辺がありません。
   created: 辺を作成しました
+  fanout: 'ファンアウト ×{n}'
   removed: 辺を削除しました
   err_port: 出口名を入力してください
   err_self: 自分自身には接続できません
@@ -1599,3 +1666,14 @@ pb:
     create_source: 源を作成
   yaml:
     hint: 以下はノード側に追加する断片です（足りない能力のみ）。node.yaml に貼って agent を再起動すると、接続時に自動で宣言されます。
+
+node:
+  artifacts:
+    title: 'キャッシュ済みの成果物'
+    empty: 'このマシンにはまだ何も配備されていません'
+    load_failed: '成果物一覧の読み込みに失敗しました'
+    state_applied: '適用済み'
+    state_pending: '送信中'
+    state_failed: '失敗'
+    state_local: 'ローカル変種'
+    digest: 'digest'

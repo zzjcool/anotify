@@ -538,15 +538,19 @@
         const btn = document.getElementById("modal-save");
         btn.disabled = true;
         try {
+          // body 必须自己 JSON.stringify 并显式声明 Content-Type。
+          // Anotify.api() 只负责 withScope + fetch，**不做任何序列化**：
+          // 直接传对象会被浏览器按 String(obj) 发成字面量 "[object Object]"，
+          // 后端 json.Decode 必然 400 —— 也就是说这个页面以前**根本建不了边**。
           await Anotify.api(API + "/edges", {
             method: "POST",
-            body: {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
               fromIsSource: isSource,
               fromCapability: fromKey,
               fromPort: port,
               toCapability: toId,
-            },
-            demo: null,
+            }),
           });
           closeModal();
           toast(t("edges.created", "边已创建"));
