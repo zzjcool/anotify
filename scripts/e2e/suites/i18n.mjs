@@ -36,7 +36,6 @@ const PAGES = [
 	"security.html",
 	"docs.html",
 	"message.html",
-	"connect.html",
 ];
 /* Pages that require authentication (will redirect to login without session) */
 const GUARDED = [
@@ -45,7 +44,6 @@ const GUARDED = [
 	"keys.html",
 	"security.html",
 	"message.html",
-	"connect.html",
 ];
 
 /* Map lang → URL prefix. Default lang = "" (root). */
@@ -122,7 +120,6 @@ async function main() {
 		/\bsecurity\.(add|concept|intro|passkey|recovery|session|title|subtitle)\w*/g,
 		/\bmessage\.(body|deliveries|fields|loading|open|title)\w*/g,
 		/\bdocs\.(title|subtitle|toc)\w*/g,
-		/\bconnect\.(title|subtitle|status|health|step|step1|step2|step3|alt|journey|help)\w*/g,
 	];
 	for (const lang of LANGS) {
 		for (const page of PAGES) {

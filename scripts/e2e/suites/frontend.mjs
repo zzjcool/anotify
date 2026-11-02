@@ -2,14 +2,14 @@
 /* SUITE: frontend — 前端渲染 + 路由守卫 + 真实数据
  *
  * 覆盖 case：
- *  A. 路由守卫：未登录访问 index/receivers/keys/security/message/connect → 自动跳 login.html
+ *  A. 路由守卫：未登录访问 index/receivers/keys/security/message → 自动跳 login.html
  *  B. 已登录访问 index → 渲染真实数据（哪怕空）；演示模式已移除（#273），无 demo-badge
  *  C. login.html 是公开页：未登录正常渲染、不跳转
- *  D. 全部页面（index/login/receivers/keys/security/docs/message/connect）在 桌面1280 + 移动390 两视口：
+ *  D. 全部页面（index/login/receivers/keys/security/docs/message）在 桌面1280 + 移动390 两视口：
  *     无 JS pageerror、无横向溢出、能滚动到底
  *     （/v1/* 的 401/404 是预期降级，不算失败；后端不可用时页面显示「载入失败 + 重试」）
- *  E. connect.html 独立页：侧栏导航直连 + active 高亮 + 6 区块 + 无裸 i18n key
- *  F. connect.html 演示态：page.route 拦截 /v1/* 模拟后端宕机，验证 demo 徽章亮 + 三灯显「—」（尚未实现）
+ *  E. 导航 IA：集成三 tab（接入 Agent / API 文档 / 技术方案）收敛为单一「API 文档」
+ *     —— 分组标签消失、connect.html 入口不再存在、首页 CTA 不指向已删除页
  *  G. index.html 错误态：page.route 拦截 /v1/* 模拟后端宕机，验证渲染「载入失败 + 重试」且不伪造数据
  *     （回归防护：旧协议字段 status 残留曾致 normalize 全部降级 working）
  *  H. nodes.html 注册节点（#198）：表单 → 一次性令牌 → 可直接粘的 node.yaml；
@@ -29,7 +29,6 @@ const PAGES = [
 	"security.html",
 	"docs.html",
 	"message.html",
-	"connect.html",
 	// 事件中心页面（#79）
 	"events.html",
 	"sources.html",
@@ -45,7 +44,6 @@ const GUARDED = [
 	"keys.html",
 	"security.html",
 	"message.html",
-	"connect.html",
 	// 事件中心页面同样需要登录（未登录 → login.html）
 	"events.html",
 	"sources.html",
@@ -1179,84 +1177,87 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- E. connect.html 独立页：侧栏导航 + active 高亮 + 6 区块 ----
-	console.log("--- connect.html 独立页导航 ---");
+	// ---- E. 集成三 tab 下线（接入 Agent / API 文档 / 技术方案 → 只留 API 文档）----
+	//
+	// 三个 tab 收敛成一个导航项后，最容易犯的错是「页删了，入口还在」：
+	// 侧栏残留 href="connect.html" → 点进去 404，而且没JS错误，测试全绿。
+	// 所以这里钉住三件事：分组标签没了、API 文档还在、入口不再指向已删页。
+	console.log("--- 导航：集成三 tab 收敛为单一 API 文档 ---");
 	{
-		const s = H.seed(server.dbPath, "connect_test");
+		const s = H.seed(server.dbPath, "nav_ia");
 		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
-		await page.goto(server.base + "/connect.html", {
+		await page.goto(server.base + "/docs.html", {
 			waitUntil: "load",
 			timeout: 15000,
 		});
 		await H.waitForAppReady(page, "workspace");
 
-		// E-1: 侧栏「接入 Agent」链接 href = connect.html（非锚点）
-		const agentNavHref = await page.evaluate(() => {
-			const links = document.querySelectorAll("#sidebar .side-link");
-			for (const a of links) {
-				if (
-					a.textContent.includes("Agent") ||
-					a.textContent.includes("接入") ||
-					a.textContent.includes("連携") ||
-					a.textContent.includes("Conectar")
-				)
-					return a.getAttribute("href");
-			}
-			return null;
-		});
+		// E-1: 侧栏不再有「集成」分组标签（单 item 不再单独成组）
+		const groupLabels = await page.evaluate(() =>
+			Array.from(document.querySelectorAll("#sidebar nav .side-label")).map(
+				(e) => e.textContent.trim(),
+			),
+		);
 		H.check(
-			"侧栏接入 Agent 链接指向 connect.html",
-			agentNavHref === "connect.html",
-			agentNavHref,
+			"侧栏无「集成」分组标签",
+			!groupLabels.some((t) =>
+				/集成|Integration|連携|Integraci/.test(t),
+			),
+			JSON.stringify(groupLabels),
 		);
 
-		// E-2: connect.html 侧栏 active 高亮 = agent 项
+		// E-2: 三个 tab 只留 API 文档：docs.html 在，connect.html / 技术方案 不在
+		const navInfo = await page.evaluate(() => ({
+			hrefs: Array.from(document.querySelectorAll("#sidebar .side-link")).map(
+				(a) => a.getAttribute("href"),
+			),
+			text: document.getElementById("sidebar").innerText,
+		}));
+		H.check(
+			"侧栏有 API 文档链接（docs.html）",
+			navInfo.hrefs.includes("docs.html"),
+			JSON.stringify(navInfo.hrefs),
+		);
+		H.check(
+			"侧栏不再有已删除的 connect.html",
+			!navInfo.hrefs.includes("connect.html"),
+			JSON.stringify(navInfo.hrefs),
+		);
+		H.check(
+			"侧栏不再出现「接入 Agent」/「技术方案」",
+			!/接入 Agent|技术方案|Connect Agent|Tech Spec/.test(navInfo.text),
+			JSON.stringify(navInfo.text.slice(0, 200)),
+		);
+
+		// E-3: docs.html 侧栏 active 高亮 = api 项
 		const activeNav = await page.evaluate(() => {
-			const active = document.querySelector("#sidebar .side-link.active");
-			if (!active) return null;
-			return active.getAttribute("href");
+			const a = document.querySelector("#sidebar .side-link.active");
+			return a ? a.getAttribute("href") : null;
 		});
 		H.check(
-			"connect.html 侧栏 active 项指向 connect.html",
-			activeNav === "connect.html",
-			activeNav,
+			"docs.html 侧栏 active 项指向 docs.html",
+			activeNav === "docs.html",
+			String(activeNav),
 		);
 
-		// E-3: 插件目录 — 4 个插件卡片（pi 可安装 + 3 个占位），且含 pi 安装命令
-		const pluginInfo = await page.evaluate(() => {
-			const cards = document.querySelectorAll(".grid .card");
-			const txt = document.body.innerText;
-			return {
-				count: cards.length,
-				hasPiInstall: txt.includes("pi install npm:pi-anotify"),
-				comingSoon: (
-					txt.match(/即将支持|Coming soon|近日対応|Próximamente/g) || []
-				).length,
-			};
+		// E-4: 首页两个 CTA 都不能再指向已删除的 connect.html
+		await page.goto(server.base + "/index.html", {
+			waitUntil: "load",
+			timeout: 15000,
 		});
-		H.check(
-			"connect.html 插件目录 4 个卡片",
-			pluginInfo.count === 4,
-			`cards=${pluginInfo.count}`,
+		await H.waitForAppReady(page, "workspace");
+		const ctaHrefs = await page.evaluate(() =>
+			Array.from(document.querySelectorAll("a.btn-primary")).map((a) =>
+				a.getAttribute("href"),
+			),
 		);
-		H.check("connect.html 含 pi 安装命令", pluginInfo.hasPiInstall);
 		H.check(
-			"connect.html 3 个占位插件标「即将支持」",
-			pluginInfo.comingSoon === 3,
-			`comingSoon=${pluginInfo.comingSoon}`,
-		);
-
-		// E-4: 无裸 i18n key 泄漏（页面文本不含 connect.* 或 docs.* 键）
-		const hasRawKey = await page.evaluate(() => {
-			const txt = document.body.innerText;
-			return /\bconnect\.\w+\b/.test(txt) || /\bcommon\.nav\.\w+\b/.test(txt);
-		});
-		H.check(
-			"connect.html 无裸 i18n key 泄漏",
-			!hasRawKey,
-			hasRawKey ? "发现裸 key" : "",
+			"首页 CTA 不再指向 connect.html 且指向 API 文档",
+			!ctaHrefs.includes("connect.html") &&
+				ctaHrefs.some((h) => h && h.startsWith("docs.html")),
+			JSON.stringify(ctaHrefs),
 		);
 
 		await page.close();

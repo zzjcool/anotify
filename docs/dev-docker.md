@@ -178,7 +178,6 @@ const PUSH_UI_ENABLED = false;
 |---|---|
 | 能力页 / 端详情 | 列表里不出现 `notify.phone`（后端能力仍在，已有边/源照常渲染） |
 | 源 / 边 / 预案的选择器 | 不提供"指向推送"的选项 |
-| `connect.html` | 不显示「接收设备」入口 |
 | `docs.html` | 隐藏 Web Push 章节 |
 | `receivers.html` | 直接输 URL 时显示「手机推送暂未开放」 |
 

@@ -16,10 +16,7 @@ common:
     nodes: Nodos
     receivers: Destinatarios
     keys: API Keys
-    integration: Integraciones
-    agent: Conectar Agent
     api: Docs API
-    scheme: Especificación
     account: Cuenta
     security: Seguridad y acceso
     logout: Cerrar sesión
@@ -251,48 +248,6 @@ graph:
   exit_fullscreen: Salir de pantalla completa (Esc)
   fullscreen_hint: Rueda para zoom · arrastra para mover · Esc para salir
 
-connect:
-  title: Conectar Agent
-  subtitle: Instala un plugin de notificación para tu Agent. Tras la instalación, el plugin te guía por la autorización de inicio de sesión y entrega notificaciones a tus dispositivos al terminar las tareas.
-  subtitle_short: Instala un plugin de notificación para tu Agent
-  plugins:
-    title: Directorio de plugins
-    subtitle: Elige el Agent que usas e instala su plugin
-    available: Disponible
-    coming_soon: Próximamente
-    copy: Copiar
-    pi:
-      tagline: pi-coding-agent
-      desc: Escucha el evento agent_settled y envía notificaciones a todos tus dispositivos al terminar una tarea.
-      prompt_title: Envíale esto a tu pi
-      prompt: 'Instálame el plugin de notificaciones de anotify:
-
-        1. Ejecuta pi install npm:pi-anotify
-
-        2. Ejecuta sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
-
-        3. Muéstrame el enlace o código de autorización del terminal — lo apruebo en el navegador y te digo el resultado
-
-        '
-      prompt_hint: Al pegarlo, pi completa la instalación y la autorización automáticamente. Aprueba desde un dispositivo con sesión iniciada en Anotify (escanea el código QR del terminal con el móvil).
-      self_hosted: ¿Autoalojado? Consulta la documentación de la API para usar tu propio dominio.
-    claude_code:
-      tagline: Anthropic Claude Code
-      desc: Añade notificaciones de fin de tarea a Claude Code, con reporte automático tras la autorización. Plugin en desarrollo.
-    codex:
-      tagline: OpenAI Codex
-      desc: Añade notificaciones de fin de tarea a Codex, con reporte automático tras la autorización. Plugin en desarrollo.
-    opencode:
-      tagline: OpenCode
-      desc: Añade notificaciones de fin de tarea a OpenCode, con reporte automático tras la autorización. Plugin en desarrollo.
-  journey:
-    title: El viaje de una notificación
-    more: ¿Quieres profundizar? Ver docs de la API →
-  help:
-    title: ¿Tienes más preguntas?
-    docs: Docs de la API →
-    keys: Gestionar Keys →
-    receivers: Recepción de notificaciones →
 message:
   title: Detalle de notificación
   loading: Cargando…

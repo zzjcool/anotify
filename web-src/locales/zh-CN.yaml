@@ -16,10 +16,7 @@ common:
     nodes: 节点
     receivers: 通知接收
     keys: API Keys
-    integration: 集成
-    agent: 接入 Agent
     api: API 文档
-    scheme: 技术方案
     account: 账户
     security: 安全与登录
     logout: 退出登录
@@ -251,48 +248,6 @@ graph:
   exit_fullscreen: 退出全屏（Esc）
   fullscreen_hint: 滚轮缩放 · 拖动平移 · Esc 退出
 
-connect:
-  title: 接入 Agent
-  subtitle: 为你的 Agent 安装通知插件。装好后插件会引导完成登录授权，任务结束时自动把通知送到你的设备。
-  subtitle_short: 为你的 Agent 安装通知插件
-  plugins:
-    title: 插件目录
-    subtitle: 选择你使用的 Agent，安装对应插件
-    available: 可安装
-    coming_soon: 即将支持
-    copy: 复制
-    pi:
-      tagline: pi-coding-agent
-      desc: 监听 agent_settled 事件，任务结束时自动推送通知到你的所有设备。
-      prompt_title: 发给你的 pi
-      prompt: '请为我安装 anotify 通知插件：
-
-        1. 运行 pi install npm:pi-anotify
-
-        2. 运行 sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
-
-        3. 把终端里显示的授权链接或验证码告诉我，我在浏览器批准后告诉你结果
-
-        '
-      prompt_hint: 粘贴后 pi 会自动完成安装与授权引导；批准动作需在已登录 Anotify 的设备上进行（手机扫终端里的二维码即可）。
-      self_hosted: 自部署用户：见 API 文档把接入地址换成你的域名。
-    claude_code:
-      tagline: Anthropic Claude Code
-      desc: 为 Claude Code 提供任务完成通知能力，授权后自动上报。插件开发中。
-    codex:
-      tagline: OpenAI Codex
-      desc: 为 Codex 提供任务完成通知能力，授权后自动上报。插件开发中。
-    opencode:
-      tagline: OpenCode
-      desc: 为 OpenCode 提供任务完成通知能力，授权后自动上报。插件开发中。
-  journey:
-    title: 一条通知的旅程
-    more: 想深入？看 API 文档 →
-  help:
-    title: 还有问题？
-    docs: API 文档 →
-    keys: 管理 Keys →
-    receivers: 通知接收 →
 message:
   title: 通知详情
   loading: 正在加载…
