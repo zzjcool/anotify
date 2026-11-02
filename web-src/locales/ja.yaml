@@ -16,10 +16,7 @@ common:
     nodes: ノード
     receivers: 通知先
     keys: API Keys
-    integration: 連携
-    agent: Agent 連携
     api: API ドキュメント
-    scheme: 技術資料
     account: アカウント
     security: セキュリティとログイン
     logout: ログアウト
@@ -251,48 +248,6 @@ graph:
   exit_fullscreen: 全画面を終了（Esc）
   fullscreen_hint: ホイールで拡大縮小 · ドラッグで移動 · Esc で終了
 
-connect:
-  title: Agent 連携
-  subtitle: お使いの Agent に通知プラグインをインストールします。インストール後、プラグインがログイン認可まで案内し、タスク完了時に通知をデバイスへ自動配信します。
-  subtitle_short: お使いの Agent 用の通知プラグインをインストール
-  plugins:
-    title: プラグインディレクトリ
-    subtitle: 使っている Agent を選んでプラグインをインストール
-    available: インストール可能
-    coming_soon: 近日対応
-    copy: コピー
-    pi:
-      tagline: pi-coding-agent
-      desc: agent_settled イベントを監視し、タスク完了時にすべてのデバイスへ通知を自動プッシュします。
-      prompt_title: あなたの pi に送る
-      prompt: 'anotify 通知プラグインをインストールしてください：
-
-        1. pi install npm:pi-anotify を実行
-
-        2. sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh を実行
-
-        3. ターミナルに表示された認可リンクまたはコードを教えてください。ブラウザで承認して結果を伝えます
-
-        '
-      prompt_hint: 貼り付ければ pi がインストールと認可を自動で進めます。承認は Anotify にサインイン済みのデバイスで行ってください（ターミナルの QR コードをスマホで読み取るだけ）。
-      self_hosted: セルフホストの場合：API ドキュメントを参照して接続先を自分のドメインに変更してください。
-    claude_code:
-      tagline: Anthropic Claude Code
-      desc: Claude Code にタスク完了通知機能を追加し、認可後に自動報告します。プラグインは開発中です。
-    codex:
-      tagline: OpenAI Codex
-      desc: Codex にタスク完了通知機能を追加し、認可後に自動報告します。プラグインは開発中です。
-    opencode:
-      tagline: OpenCode
-      desc: OpenCode にタスク完了通知機能を追加し、認可後に自動報告します。プラグインは開発中です。
-  journey:
-    title: 通知の旅
-    more: さらに詳しく？ API ドキュメント →
-  help:
-    title: まだ疑問がありますか？
-    docs: API ドキュメント →
-    keys: Key を管理 →
-    receivers: 通知受信 →
 message:
   title: 通知の詳細
   loading: 読み込み中…

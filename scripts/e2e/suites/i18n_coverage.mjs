@@ -34,7 +34,6 @@ const PAGES = [
 	"security.html",
 	"docs.html",
 	"login.html",
-	"connect.html",
 ];
 
 /* CJK Unicode ranges: CJK Unified Ideographs + Extension A */

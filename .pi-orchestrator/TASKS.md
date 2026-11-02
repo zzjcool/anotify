@@ -27,6 +27,21 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 ## 当前任务
 
+### nav-collapse-integration：集成三 tab 收敛为单一「API 文档」（jic，2026-11-02）
+
+**用户诉求**：侧栏「集成」下的三个 tab（接入 Agent / API 文档 / 技术方案）都去掉，只保留 API 文档（并考虑把 OpenAPI 规范嵌进 API 页）；「接入 Agent」页与「技术方案」入口删除。
+
+**已做**：
+
+- [x] NAV：删「集成」分组；`API 文档` 并入主导航（在 API Keys 之后），`docs.html` active 高亮不变
+- [x] `web-src/pages/connect.html` 删除（含 4 语言 `connect.*` 命名空间、`common.nav.{integration,agent,scheme}`）
+- [x] 首页两处 CTA `connect.html` → `docs.html#agent`；`keys.html` 的 `docs.html#notify`（死锚点）→ `docs.html#api`
+- [x] e2e：frontend 套件删 connect 页用例，新增「集成三 tab 已下线」回归（无分组标签 / 无 connect 入口 / docs active / CTA 不指向已删页）；i18n 与 i18n_coverage 页面清单同步
+- [x] 门禁：i18n 299 + frontend 383 + i18n_coverage 61 全绿；`go test ./...` 通过
+- [ ] 待确认：user 说的「api 那个可以用 openai」= OpenAPI（把 `api/openapi.yaml` 嵌进 API 页）还是 OpenAI 风格接入示例 → 未动手
+
+---
+
 ### connect-agent-page：接入 Agent 独立页（feat/connect-agent-page，2026-08-10 完成）
 
 **用户诉求**：现在侧边栏「接入 Agent」点击后是跳到首页 `#quickstart` 锚点卡片，体验割裂。要为「接入新 Agent」单开一个独立页面，侧边栏导航直达该页；整套交互逻辑重新设计，完整交付。

@@ -16,10 +16,7 @@ common:
     nodes: Nodes
     receivers: Receivers
     keys: API Keys
-    integration: Integrations
-    agent: Connect Agent
     api: API Docs
-    scheme: Tech Spec
     account: Account
     security: Security & Login
     logout: Log out
@@ -251,48 +248,6 @@ graph:
   exit_fullscreen: Exit fullscreen (Esc)
   fullscreen_hint: Scroll to zoom · drag to pan · Esc to exit
 
-connect:
-  title: Connect Agent
-  subtitle: Install a notification plugin for your Agent. After install, the plugin guides you through login authorization, then automatically delivers notifications to your devices when tasks finish.
-  subtitle_short: Install a notification plugin for your Agent
-  plugins:
-    title: Plugin directory
-    subtitle: Pick the Agent you use and install its plugin
-    available: Available
-    coming_soon: Coming soon
-    copy: Copy
-    pi:
-      tagline: pi-coding-agent
-      desc: Listens for the agent_settled event and pushes notifications to all your devices when a task finishes.
-      prompt_title: Send this to your pi
-      prompt: 'Install the anotify notification plugin for me:
-
-        1. Run pi install npm:pi-anotify
-
-        2. Run sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
-
-        3. Show me the authorization link or code from the terminal — I''ll approve it in the browser and tell you the result
-
-        '
-      prompt_hint: After pasting, pi handles install and authorization automatically. Approve on a device already signed in to Anotify (scan the QR code in the terminal with your phone).
-      self_hosted: Self-hosting? See the API docs to point at your own domain instead.
-    claude_code:
-      tagline: Anthropic Claude Code
-      desc: Adds task-completion notifications to Claude Code, auto-reporting after authorization. Plugin in development.
-    codex:
-      tagline: OpenAI Codex
-      desc: Adds task-completion notifications to Codex, auto-reporting after authorization. Plugin in development.
-    opencode:
-      tagline: OpenCode
-      desc: Adds task-completion notifications to OpenCode, auto-reporting after authorization. Plugin in development.
-  journey:
-    title: A notification's journey
-    more: Want to go deeper? See API docs →
-  help:
-    title: Still have questions?
-    docs: API docs →
-    keys: Manage Keys →
-    receivers: Notification receiving →
 message:
   title: Notification detail
   loading: Loading…

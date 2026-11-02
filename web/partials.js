@@ -73,18 +73,13 @@
 		keys: [
 			"M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4",
 		],
-		agent: ["M4 17l6-6-6-6", "M12 19h8"],
 		api: ["M16 18l6-6-6-6", "M8 6l-6 6 6 6"],
-		scheme: [
-			"M4 19.5A2.5 2.5 0 0 1 6.5 17H20",
-			"M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
-		],
 		security: ["M3 11h18v11H3z", "M7 11V7a5 5 0 0 1 10 0v4"],
 		home: ["M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
 		sources: ["M13 2L3 14h8l-1 8 10-12h-8z"],
 	};
 
-	/* ---------- 侧栏导航结构（IA：工作台 / 集成 / 账户） ----------
+	/* ---------- 侧栏导航结构（IA：工作台 / 账户） ----------
 	 * labelKey / groupLabelKey 指向 i18n key；渲染时用 t() 取值。
 	 * 无 i18n.js 时 fallback 到中文原文，保持向后兼容。 */
 	const NAV = [
@@ -151,32 +146,15 @@
 					href: "keys.html",
 					icon: "keys",
 				},
-			],
-		},
-		{
-			groupLabelKey: "common.nav.integration",
-			groupFallback: "集成",
-			items: [
 				{
-					id: "agent",
-					labelKey: "common.nav.agent",
-					fallback: "接入 Agent",
-					href: "connect.html",
-					icon: "agent",
-				},
-				{
+					// 集成原本是「接入 Agent / API 文档 / 技术方案」三个 tab 的一个分组。
+					// 现在只留 API 文档（docs.html），并且并进主导航——单独一个 item 的
+					// 分组标签只是噪音（还要多占一行 12px 小标题）。
 					id: "api",
 					labelKey: "common.nav.api",
 					fallback: "API 文档",
 					href: "docs.html",
 					icon: "api",
-				},
-				{
-					id: "scheme",
-					labelKey: "common.nav.scheme",
-					fallback: "技术方案",
-					href: "docs.html#scheme",
-					icon: "scheme",
 				},
 			],
 		},
@@ -1123,7 +1101,6 @@
 						"docs.html",
 						"cli-auth.html",
 						"passkey-enroll.html",
-						"connect.html",
 					];
 					const name = location.pathname.split("/").pop();
 					const page = PAGES.includes(name) ? name : "index.html";
