@@ -583,7 +583,7 @@ func TestBuildEnv(t *testing.T) {
 		Artifact: art, Digest: "sha256:" + strings.Repeat("a", 64), TraceID: "trc_build",
 	}
 
-	got, err := buildEnv(base, j, "/tmp/work/tsk_build")
+	got, err := buildEnv(base, j, "/tmp/work/tsk_build", "/tmp/work/tsk_build")
 	if err != nil {
 		t.Fatalf("buildEnv: unexpected error: %v", err)
 	}
@@ -595,6 +595,7 @@ func TestBuildEnv(t *testing.T) {
 		`ANOTIFY_PARAMS={"n":2,"title":"t"}`,
 		"ANOTIFY_PARAM_N=2",
 		"ANOTIFY_PARAM_TITLE=t",
+		"ANOTIFY_TASKDIR=/tmp/work/tsk_build",
 		"ANOTIFY_TASK_ID=tsk_build",
 		"ANOTIFY_TRACE_ID=trc_build",
 		"ANOTIFY_WORKDIR=/tmp/work/tsk_build",
@@ -632,7 +633,7 @@ func TestBuildEnv(t *testing.T) {
 // （脚本靠它 cd / 存中间产物）。
 func TestBuildEnvInjectsWorkDir(t *testing.T) {
 	j := job{TaskID: "t", Capability: "c", Version: 1}
-	got, err := buildEnv(nil, j, "/data/work/t")
+	got, err := buildEnv(nil, j, "/data/work/t", "/data/work/t")
 	if err != nil {
 		t.Fatalf("buildEnv: %v", err)
 	}
@@ -641,6 +642,7 @@ func TestBuildEnvInjectsWorkDir(t *testing.T) {
 		"ANOTIFY_DIGEST=",
 		"ANOTIFY_OUT_FILE=/data/work/t/.anotify-out",
 		"ANOTIFY_PARAMS={}",
+		"ANOTIFY_TASKDIR=/data/work/t",
 		"ANOTIFY_TASK_ID=t",
 		"ANOTIFY_TRACE_ID=",
 		"ANOTIFY_WORKDIR=/data/work/t",
@@ -652,7 +654,7 @@ func TestBuildEnvInjectsWorkDir(t *testing.T) {
 
 // TestBuildEnvEmptyParams：params 为空 → ANOTIFY_PARAMS 是 {}（不是 null）。
 func TestBuildEnvEmptyParams(t *testing.T) {
-	got, err := buildEnv(nil, job{TaskID: "t", Capability: "c", Version: 1}, "/w")
+	got, err := buildEnv(nil, job{TaskID: "t", Capability: "c", Version: 1}, "/w", "/w")
 	if err != nil {
 		t.Fatalf("buildEnv: unexpected error: %v", err)
 	}
@@ -661,7 +663,7 @@ func TestBuildEnvEmptyParams(t *testing.T) {
 	}
 
 	// Artifact 为 nil 也不能 panic（防御：client 侧正常不会走到这儿）。
-	if _, err := buildEnv(nil, job{}, "/w"); err != nil {
+	if _, err := buildEnv(nil, job{}, "/w", "/w"); err != nil {
 		t.Fatalf("buildEnv(nil artifact): unexpected error: %v", err)
 	}
 }
@@ -672,7 +674,7 @@ func TestBuildEnvParamError(t *testing.T) {
 		TaskID: "t", Capability: "c", Version: 1,
 		Params: map[string]any{"bad": make(chan int)},
 	}
-	if _, err := buildEnv(nil, j, "/w"); err == nil {
+	if _, err := buildEnv(nil, j, "/w", "/w"); err == nil {
 		t.Fatal("buildEnv: want error for 不可序列化的参数值, got nil")
 	}
 }

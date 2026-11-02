@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/store"
@@ -127,6 +129,12 @@ type createDeploymentRequest struct {
 	NodeIDs []string `json:"nodeIds,omitempty"`
 	// Tags 是「按标签选机器」：与 NodeIDs 取并集。
 	Tags []string `json:"tags,omitempty"`
+	// WorkDir 是「这个能力在这些机器上从哪个目录跑」（迁移 19）。
+	//
+	// 空 = 默认的每次任务独立目录；非空 = 必须是以 / 开头的绝对路径。
+	// 中枢只做**形状**校验（绝对、无 ..、无 NUL、长度上限）：它不知道也不该知道
+	// 节点上的目录布局，真正的权限边界在节点侧白名单（cmd/agent workDirs）。
+	WorkDir string `json:"workDir,omitempty"`
 }
 
 // deploymentResult 是逐台的部署结果。
@@ -209,6 +217,14 @@ func (h *deployHandler) createDeployments(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if wd, err := normalizeWorkDir(req.WorkDir); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": err.Error(), "code": "invalid_work_dir",
+		})
+		return
+	} else {
+		req.WorkDir = wd
+	}
 	if req.CapabilityID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "capabilityId is required", "code": "missing_capability_id",
@@ -240,7 +256,7 @@ func (h *deployHandler) createDeployments(w http.ResponseWriter, r *http.Request
 	// 3. 逐台建行 + 推帧
 	results := make([]deploymentResult, 0, len(nodes))
 	for _, n := range nodes {
-		dp, err := h.db.CreateDeployment(r.Context(), ns.ID, n.ID, art.ID)
+		dp, err := h.db.CreateDeployment(r.Context(), ns.ID, n.ID, art.ID, req.WorkDir)
 		if err != nil {
 			results = append(results, deploymentResult{
 				NodeID: n.ID, NodeName: n.Name, Error: err.Error(),
@@ -494,3 +510,37 @@ func storeArtifact(ctx context.Context, db *store.DB, nsID, capabilityID string,
 	}
 	return saved, digest, nil
 }
+
+// normalizeWorkDir 校验并归一化控制台传来的 workDir（迁移 19）。
+//
+// 只做**形状**校验，不做"这个路径在节点上存不存在"的判断 —— 中枢看不到节点文件系统，
+// 也不该看到。权限边界一律在节点侧（cmd/agent 的 workDirs 白名单）：中枢说
+// /etc 也不会生效，节点会拒绝并把原因回报上来。
+//
+// 为什么仍然要在这里校验：明显的错（相对路径、带 `..`、带 NUL、超长）应该在
+// **点部署的那一刻**就报错，而不是等任务跑到节点上才失败。
+func normalizeWorkDir(raw string) (string, error) {
+	wd := strings.TrimSpace(raw)
+	if wd == "" {
+		return "", nil // 空 = 用默认的每任务目录
+	}
+	if len(wd) > maxWorkDirLen {
+		return "", fmt.Errorf("workDir 过长（上限 %d 字节）", maxWorkDirLen)
+	}
+	if strings.ContainsRune(wd, 0) {
+		return "", errors.New("workDir 不能包含 NUL")
+	}
+	if !path.IsAbs(wd) {
+		return "", fmt.Errorf("workDir 必须是绝对路径（以 / 开头）：%q", wd)
+	}
+	clean := path.Clean(wd)
+	// 「清洗后变了」只可能是 .. 或重复斜杠；后者无害（Clean 掉即可），
+	// 前者会逃逸出白名单前缀，必须拒绝而不是悄悄清洗（否则用户以为跑在 A，实际跑了 B）。
+	if clean != wd && strings.Contains(wd, "..") {
+		return "", fmt.Errorf("workDir 不能包含 ..：%q", wd)
+	}
+	return clean, nil
+}
+
+// maxWorkDirLen 是 workDir 的长度上限（PATH_MAX 是 4096，留足余量）。
+const maxWorkDirLen = 1024

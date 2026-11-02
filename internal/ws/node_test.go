@@ -684,7 +684,7 @@ func TestHelloAppliedDigestMarksLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}
-	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, art.ID)
+	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, art.ID, "")
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}

@@ -43,6 +43,17 @@ type nodeConfig struct {
 	// Instances 是并发槽位数。<=0 归一为 1（见 slots），
 	// 它是节点**自己**的资源声明，中枢只能少用、不能多用（契约 D5）。
 	Instances int `yaml:"instances"`
+
+	// WorkDirs 是**本机**允许的「能力工作目录」白名单（迁移 19）。
+	//
+	// 为什么必须在节点侧：控制台可以为某个能力指定「在这个目录里跑」，而那条路径
+	// 来自中枢。如果直接 chdir 过去，等于「谁改了中枢，谁就能让本机以 agent 身份
+	// 在任意目录读写」。白名单把这条权力收回到机器主人手里：中枢只能从你划定的
+	// 范围里选，选到范围外就失败（并回报原因），不会静默退回默认目录。
+	//
+	// 语义是**前缀**匹配（按路径分段），`/home/me/proj` 覆盖它自己和它下面的一切。
+	// 空 = 一个都不许（中枢指定 workDir 的能力在这台机器上必然失败）。
+	WorkDirs []string `yaml:"workDirs"`
 }
 
 // 环境变量名（**容器/编排友好**的 bootstrap 入口）。
@@ -58,6 +69,9 @@ const (
 	envToken     = "ANOTIFY_TOKEN"
 	envName      = "ANOTIFY_NAME"
 	envInstances = "ANOTIFY_INSTANCES"
+	// ANOTIFY_WORK_DIRS 是 workDirs 的环境变量形态：冒号分隔的绝对路径列表
+	// （容器 docker run -e 那一路用它，因为容器里没有 node.yaml）。
+	envWorkDirs = "ANOTIFY_WORK_DIRS"
 )
 
 // loadConfigFrom 按「显式文件 > 环境变量 > 缺省路径」选一份配置。
@@ -110,6 +124,13 @@ func configFromEnv(getenv func(string) string) (*nodeConfig, bool) {
 		}
 		cfg.Instances = n
 	}
+	// 冒号分隔（与 TLS_CERT_FILE 那类列表变量的习惯一致）。空元素丢弃：
+	// `A::B` 或结尾多一个冒号都不该变成「允许空路径」。
+	for _, part := range strings.Split(getenv(envWorkDirs), ":") {
+		if d := strings.TrimSpace(part); d != "" {
+			cfg.WorkDirs = append(cfg.WorkDirs, d)
+		}
+	}
 	return cfg, true
 }
 
@@ -155,6 +176,13 @@ func (c *nodeConfig) validate() error {
 	}
 	if c.Instances < 0 {
 		problems = append(problems, "instances must be >= 0")
+	}
+	// workDirs 必须都是绝对路径：相对路径的「前缀匹配」会随 cwd 漂移，
+	// 那等于白名单形同虚设。
+	for _, d := range c.WorkDirs {
+		if !filepath.IsAbs(d) {
+			problems = append(problems, "workDirs 必须是绝对路径："+d)
+		}
 	}
 
 	if len(problems) == 0 {
