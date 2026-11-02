@@ -117,8 +117,12 @@ func TestNamespaceCRUD(t *testing.T) {
 	}
 	// 计数直接给 UI 用：内置能力必须算进 CapabilityCount（否则列表显示 0 个能力、
 	// 点进去却有 notify.phone，前端会当成两套数据）。
-	if def.CapabilityCount != 1 {
-		t.Fatalf("默认命名空间 CapabilityCount = %d, want 1（notify.phone@1）", def.CapabilityCount)
+	//
+	// 2 = notify.phone@1（中枢执行，推送用）+ script.echo@1（示例能力，带产物，
+	// 让新命名空间一注册就有个能部署、能跑通的东西）。
+	if def.CapabilityCount != len(BuiltinCapabilities) {
+		t.Fatalf("默认命名空间 CapabilityCount = %d, want %d（内置能力清单）",
+			def.CapabilityCount, len(BuiltinCapabilities))
 	}
 	if def.NodeCount != 0 || def.SourceCount != 0 || def.EdgeCount != 0 {
 		t.Fatalf("空命名空间计数应为 0/0/0，got %d/%d/%d",
