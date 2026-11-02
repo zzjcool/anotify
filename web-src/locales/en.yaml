@@ -140,7 +140,7 @@ index:
     last_30d: Last 30 days
     rate: Delivery rate
     today: Tasks today
-    today_sub: Sent → Delivered
+    today_sub: Reported → Completed
     devices: Receiving devices
     devices_enabled: Enabled
     devices_sub: '{n} devices · end-to-end encrypted'

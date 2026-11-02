@@ -140,7 +140,7 @@ index:
     last_30d: 近 30 天
     rate: 送达率
     today: 今日任务
-    today_sub: 上报 → 送达
+    today_sub: 上报 → 完成
     devices: 接收设备
     devices_enabled: 已启用
     devices_sub: '{n} 台设备 · 端到端加密'

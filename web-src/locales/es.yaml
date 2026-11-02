@@ -140,7 +140,7 @@ index:
     last_30d: Últimos 30 días
     rate: Tasa de entrega
     today: Tareas de hoy
-    today_sub: Enviado → Entregado
+    today_sub: Informado → Completado
     devices: Dispositivos receptores
     devices_enabled: Activos
     devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
