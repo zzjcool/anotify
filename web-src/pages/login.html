@@ -4,19 +4,428 @@
 
 {{define "style"}}
     <style>
+      /* ============================================================
+         login 焦点页（layout: login）· UI v2 组件语言
+         ------------------------------------------------------------
+         页级 <style> 在 ui.css 之后加载，所以这里只写「本页专属布局」
+         （左品牌区 + 右表单卡 分屏）与少量组件覆盖；
+         .card / .tabs / .tab / .btn* / .input / .field* / .modal-* 一律复用 ui.css。
+         颜色只取 tokens（含 color-mix），本页不出现硬编码色值。
+         ============================================================ */
+
+      /* ---- 分屏宽度：login 布局冻结在 max-w-md(448px) 且不可改，
+         用 id 选择器（优先级高于 Tailwind 工具类）放宽到 1120px。
+         ⚠️ 绝不碰 #main 的 display：e2e 用
+            getComputedStyle(main).display === "flex" 当作「本地 tailwind 生效」的探针。 */
+      #main {
+        max-width: 1120px;
+      }
+      @media (max-width: 1023px) {
+        #main {
+          max-width: 100%;
+        }
+      }
+
+      .auth {
+        display: grid;
+        grid-template-columns: minmax(0, 1.02fr) minmax(0, 1fr);
+        align-items: stretch;
+        gap: 24px;
+        width: 100%;
+      }
+
+      /* 桌面下让分屏读起来像「分栏面板」而不是两块浮动小卡：
+         左栏（价值区）与右栏（表单卡）同高，且撑到占满首屏大部分竖直空间。 */
+      @media (min-width: 1024px) {
+        .auth {
+          min-height: min(600px, calc(100dvh - 220px));
+        }
+      }
+
+      /* ---- 左：品牌 / 价值区 ----
+      /* 品牌行（logo + 词标）由冻结的 layout 顶栏承载，本页左栏不再重复一份，
+         否则同一屏出现两个 logo（同一句 tagline 也只出现一次）。 */
+      .auth-brand {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        gap: 28px;
+        min-width: 0;
+        overflow: hidden;
+        padding: 32px 32px 24px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-xl);
+        background:
+          radial-gradient(
+            720px 420px at 12% 8%,
+            color-mix(in srgb, var(--accent) 22%, transparent),
+            transparent 68%
+          ),
+          radial-gradient(
+            520px 380px at 92% 88%,
+            color-mix(in srgb, var(--accent) 14%, transparent),
+            transparent 70%
+          ),
+          var(--bg-raise);
+      }
+      /* 栅格叠加层复用页内 .grid-overlay，但收进品牌区内（绝对定位），
+         并换成设计稿的圆形遮罩；布局里那一层仍是全屏固定层。 */
+      .auth-brand .grid-overlay {
+        position: absolute;
+        inset: 0;
+        opacity: 0.55;
+        mask-image: radial-gradient(
+          circle at 50% 30%,
+          black 10%,
+          transparent 72%
+        );
+        -webkit-mask-image: radial-gradient(
+          circle at 50% 30%,
+          black 10%,
+          transparent 72%
+        );
+      }
+
+      .auth-brand-inner,
+      .auth-trust {
+        position: relative;
+        z-index: 1;
+      }
+
+      .auth-headline {
+        margin: 0;
+        font-size: 36px;
+        line-height: 1.16;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: var(--text);
+        max-width: 13em;
+      }
+      .auth-lede {
+        margin: 14px 0 0;
+        max-width: 30em;
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--muted);
+      }
+
+      .auth-props {
+        list-style: none;
+        margin: 30px 0 0;
+        padding: 0;
+        display: grid;
+        gap: 8px;
+      }
+      .auth-props li {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: color-mix(in srgb, var(--surface-1) 72%, transparent);
+      }
+      .auth-props-ico {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: var(--r-sm);
+        background: var(--accent-soft);
+        border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+        color: var(--accent);
+      }
+      .auth-props-ico svg {
+        width: 14px;
+        height: 14px;
+      }
+      .auth-props-text {
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .auth-trust {
+        margin: 0;
+        font-size: 11px;
+        color: var(--faint);
+      }
+
+      /* ---- 右：表单卡（.card + 页级 --r-xl，替代旧 .glass rounded-3xl）---- */
+      .auth-main {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+      }
+      .auth-card {
+        width: 100%;
+        max-width: 400px;
+        padding: 26px 24px 22px;
+        border-radius: var(--r-xl);
+        box-shadow: var(--shadow-2);
+      }
+      .auth-mark {
+        display: grid;
+        place-items: center;
+        width: 46px;
+        height: 46px;
+        margin-bottom: 14px;
+        border-radius: var(--r-md);
+        background: var(--accent-soft);
+        border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+        color: var(--accent);
+      }
+      .auth-mark svg {
+        width: 22px;
+        height: 22px;
+      }
+      .auth-title {
+        margin: 0;
+        font-size: 26px;
+        line-height: 1.2;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        color: var(--text);
+      }
+      .auth-title em {
+        font-style: normal;
+        color: var(--accent-strong);
+      }
+      .auth-sub {
+        margin: 6px 0 0;
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      /* ---- 登录 / 注册分段控件：亮色三层必须可辨（REVIEW-2 F3）----
+         卡片 --surface-1 / 轨道 --surface-3 / 选中项回到 --surface-1 + --shadow-1。
+         不用 bg-white/* 之类的白 alpha（亮色下三层会塌成同一色）。 */
+      .auth-tabs {
+        display: flex;
+        width: 100%;
+        gap: 2px;
+        margin: 20px 0 18px;
+        padding: 3px;
+        background: var(--surface-3);
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+      }
+      .tab-btn {
+        flex: 1 1 0;
+        justify-content: center;
+        height: 34px;
+        padding: 0 12px;
+        border-radius: var(--r-sm);
+        border: 1px solid transparent;
+        background: transparent;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--muted);
+        cursor: pointer;
+        transition:
+          color var(--dur-fast) var(--ease),
+          background var(--dur-fast) var(--ease),
+          box-shadow var(--dur-fast) var(--ease);
+      }
+      .tab-btn:hover {
+        color: var(--text);
+      }
+      .tab-btn.active {
+        background: var(--surface-1);
+        border-color: var(--line);
+        color: var(--text);
+        box-shadow: var(--shadow-1);
+      }
+
+      /* 面板之间的纵向节奏（不声明 display：面板靠 JS 切 .hidden） */
+      .auth-panel > * + * {
+        margin-top: 12px;
+      }
+      .auth-submit {
+        width: 100%;
+        height: 42px;
+        font-size: 14px;
+      }
+      .auth-submit svg {
+        width: 16px;
+        height: 16px;
+      }
+      .auth-recovery-toggle svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      /* ---- 内嵌浅底说明（注册页的一次性恢复码提示）---- */
+      .auth-note {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-2);
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.6;
+      }
+      .auth-note svg {
+        flex: 0 0 auto;
+        width: 15px;
+        height: 15px;
+        margin-top: 1px;
+        color: var(--faint);
+      }
+      .auth-note p {
+        margin: 0;
+      }
+      .auth-note b {
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      /* ---- 状态条 / iOS 提示 / 恢复码区 ----
+         ⚠️ 这些容器都由 JS 切 hidden 类，这里**不声明 display**，
+            否则页级 display 会盖掉 Tailwind .hidden，面板再也关不掉。 */
+      .auth-status {
+        margin-top: 16px;
+        padding: 10px 14px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        font-size: 13px;
+        line-height: 1.6;
+        word-break: break-word;
+      }
+      .auth-ios {
+        margin-top: 16px;
+        padding: 10px 14px;
+        border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+        border-radius: var(--r-md);
+        background: var(--warn-soft);
+        color: var(--warn);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .auth-ios p {
+        margin: 0;
+      }
+      .auth-ios b {
+        font-weight: 600;
+      }
+      .auth-recovery {
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+      }
+      .auth-recovery-toggle {
+        width: 100%;
+        justify-content: center;
+      }
+      .auth-recovery-panel {
+        margin-top: 12px;
+      }
+      .auth-recovery-grid {
+        display: grid;
+        gap: 12px;
+      }
+      .auth-recovery-panel .auth-submit {
+        margin-top: 12px;
+      }
+      @media (min-width: 640px) {
+        .auth-recovery-grid {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        }
+      }
+
+      /* 用户名非法态（JS 加 .is-invalid）*/
+      .input.is-invalid {
+        border-color: var(--error);
+        box-shadow: 0 0 0 3px var(--error-soft);
+      }
+
+      /* ---- 注册成功恢复码弹层内部（码行由 JS 动态生成）---- */
+      .codes-panel {
+        max-width: 26rem;
+      }
+      .codes-title {
+        margin: 0;
+      }
+      .codes-sub {
+        margin: 0 0 12px;
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .codes-grid {
+        display: grid;
+        gap: 8px;
+      }
+      @media (min-width: 640px) {
+        .codes-grid {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        }
+      }
+      .code-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+      }
+      .code-val {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        /* 恢复码是要照着抄的数据，不用语义色（--success 在亮底只有 3.5:1），
+           取正文色保证两套主题都过 4.5:1。 */
+        color: var(--text);
+        user-select: all;
+      }
+      .code-copy {
+        flex: 0 0 auto;
+        padding: 3px 9px;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-sm);
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        cursor: pointer;
+        transition:
+          color var(--dur-fast) var(--ease),
+          background var(--dur-fast) var(--ease);
+      }
+      .code-copy:hover {
+        color: var(--text);
+        background: var(--surface-3);
+      }
+      .codes-warn {
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent);
+        border-radius: var(--r-sm);
+        background: var(--warn-soft);
+        color: var(--warn);
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      /* ---- 全屏网格底（布局里那层 div 也走这条规则）----
+         原来的白 alpha 硬编码换成 --line（设计稿 ui-v2.css 的 .grid-overlay），
+         mask 保持原样。 */
       .grid-overlay {
         position: fixed;
         inset: 0;
         z-index: 0;
         pointer-events: none;
         background-image:
-          linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
-          linear-gradient(
-            90deg,
-            rgba(255, 255, 255, 0.022) 1px,
-            transparent 1px
-          );
-        background-size: 72px 72px;
+          linear-gradient(var(--line) 1px, transparent 1px),
+          linear-gradient(90deg, var(--line) 1px, transparent 1px);
+        background-size: 32px 32px;
         mask-image: radial-gradient(
           ellipse 90% 70% at 50% 45%,
           black 30%,
@@ -28,57 +437,80 @@
           transparent 75%
         );
       }
-      .tab-btn {
-        flex: 1;
-        padding: 0.5rem 0;
-        border-radius: 10px;
-        font-size: 0.85rem;
-        color: var(--muted);
-        transition: all 0.25s ease;
-        cursor: pointer;
-      }
-      .tab-btn.active {
-        background: var(--surface-2);
-        color: var(--text);
-      }
+
+      /* ---- 指纹入场脉冲：只跑一次，不永续闪 ---- */
       .fingerprint-ring {
-        animation: fpPulse 2s ease-in-out infinite;
+        animation: fpPulse 900ms ease-out 1;
       }
       @keyframes fpPulse {
-        0%,
-        100% {
-          box-shadow: 0 0 0 0 rgba(139, 139, 253, 0.3);
+        0% {
+          box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent);
         }
-        50% {
-          box-shadow: 0 0 0 8px rgba(139, 139, 253, 0);
+        100% {
+          box-shadow: 0 0 0 10px transparent;
         }
       }
-      .input.is-invalid {
-        border-color: var(--error);
-        box-shadow: 0 0 0 3px var(--error-soft);
+      @media (prefers-reduced-motion: reduce) {
+        .fingerprint-ring,
+        header .animate-ping {
+          animation: none;
+        }
+      }
+
+      /* layout 冻结（web-src/layouts/login.html 不在本页范围）：品牌行那颗红点
+         带 animate-ping 永续脉动且没有语义（REVIEW-2 F15），用页级覆盖只跑一次。 */
+      header .animate-ping {
+        animation-iteration-count: 1;
+      }
+
+      /* ---- ≤1023px：单列，品牌区压成顶部小条 ---- */
+      @media (max-width: 1023px) {
+        .auth {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 16px;
+        }
+        .auth-brand {
+          gap: 12px;
+          padding: 18px 18px 16px;
+        }
+        .auth-headline {
+          margin-top: 0;
+          font-size: 22px;
+          max-width: none;
+        }
+        .auth-lede {
+          margin-top: 8px;
+          font-size: 12px;
+        }
+        .auth-props,
+        .auth-trust {
+          display: none;
+        }
+        .auth-main {
+          justify-content: flex-start;
+        }
+        .auth-card {
+          max-width: none;
+          padding: 20px 18px;
+        }
       }
     </style>
 {{end}}
 
 {{define "content"}}
+<div class="auth">
+  <!-- ============ 左：品牌 / 价值区 ============ -->
+  <aside class="auth-brand">
+    <div class="grid-overlay" aria-hidden="true"></div>
 
-      <div class="mb-8 text-center">
-        <h1 class="font-display text-3xl text-white">
-          {{t "login.welcome"}} <em>Anotify</em>
-        </h1>
-        <p class="mt-2 text-sm text-zinc-400">{{t "login.subtitle"}}</p>
-      </div>
+    <div class="auth-brand-inner">
+      <h2 class="auth-headline font-display">{{t "common.brand.tagline"}}</h2>
+      <p class="auth-lede">{{t "login.login.hint"}}</p>
 
-      <div class="glass w-full rounded-3xl p-8">
-        <!-- 指纹图标 -->
-        <div class="flex justify-center">
-          <div
-            class="fingerprint-ring flex h-16 w-16 items-center justify-center rounded-2xl"
-            style="background: var(--accent-soft)"
-          >
+      <ul class="auth-props">
+        <li>
+          <span class="auth-props-ico" aria-hidden="true">
             <svg
-              class="h-8 w-8"
-              style="color: var(--accent)"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -90,58 +522,109 @@
                 d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0 0 15.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 0 0 8 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"
               />
             </svg>
-          </div>
-        </div>
-
-        <!-- 登录/注册切换 -->
-        <div class="mt-6 flex rounded-xl bg-white/[0.04] p-1">
-          <button class="tab-btn active" id="tab-login">{{t "login.tab.login"}}</button>
-          <button class="tab-btn" id="tab-signup">{{t "login.tab.signup"}}</button>
-        </div>
-
-        <!-- 登录面板（仅 Passkey，无需输入用户名） -->
-        <div id="login-panel" class="mt-6">
-          <p class="text-xs leading-relaxed text-zinc-400">
-            {{t "login.login.hint"}}
-          </p>
-          <button
-            id="login-btn"
-            type="button"
-            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
-          >
+          </span>
+          <span class="auth-props-text">{{t "login.login.security_note"}}</span>
+        </li>
+        <li>
+          <span class="auth-props-ico" aria-hidden="true">
             <svg
-              class="h-4 w-4"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <path
-                d="M12 11c0 3.517-1.009 6.799-2.753 9.571M8 21l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3"
-              />
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <path d="m9 12 2 2 4-4" />
             </svg>
-            {{t "login.login.button"}}
-          </button>
-          <div
-            class="mt-4 flex items-center justify-center gap-2 text-[11px] text-zinc-500"
-          >
+          </span>
+          <span class="auth-props-text">{{t "login.trust.webauthn"}}</span>
+        </li>
+        <li>
+          <span class="auth-props-ico" aria-hidden="true">
             <svg
-              class="h-3.5 w-3.5"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <rect x="3" y="11" width="18" height="11" rx="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              <rect x="2" y="3" width="20" height="7" rx="2" />
+              <rect x="2" y="14" width="20" height="7" rx="2" />
+              <path d="M6 6.5h.01M6 17.5h.01" />
             </svg>
-            {{t "login.login.security_note"}}
-          </div>
-        </div>
+          </span>
+          <span class="auth-props-text">{{t "login.trust.data_local"}}</span>
+        </li>
+      </ul>
+    </div>
 
-        <!-- 注册面板 -->
-        <div id="signup-panel" class="mt-6 hidden">
-          <label class="text-xs font-medium text-zinc-400" for="new-username"
+    <p class="auth-trust">{{t "login.trust.no_third_party"}}</p>
+  </aside>
+
+  <!-- ============ 右：表单卡 ============ -->
+  <section class="auth-main">
+    <div class="card auth-card">
+      <span class="auth-mark fingerprint-ring" aria-hidden="true">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0 0 15.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 0 0 8 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"
+          />
+        </svg>
+      </span>
+
+      <h1 class="auth-title font-display">
+        {{t "login.welcome"}} <em>Anotify</em>
+      </h1>
+      <p class="auth-sub">{{t "login.subtitle"}}</p>
+
+      <!-- 登录 / 注册切换：.tabs/.tab 组件类 + 旧 .tab-btn（e2e 与页面 JS 都用它） -->
+      <div class="tabs auth-tabs">
+        <button type="button" class="tab tab-btn active" id="tab-login">
+          {{t "login.tab.login"}}
+        </button>
+        <button type="button" class="tab tab-btn" id="tab-signup">
+          {{t "login.tab.signup"}}
+        </button>
+      </div>
+
+      <!-- 登录面板（仅 Passkey，无需输入用户名） -->
+      <div id="login-panel" class="auth-panel">
+        <button
+          id="login-btn"
+          type="button"
+          class="btn btn-primary auth-submit"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 11c0 3.517-1.009 6.799-2.753 9.571M8 21l.054-.09A13.916 13.916 0 0 0 8 11a4 4 0 1 1 8 0c0 1.017-.07 2.019-.203 3"
+            />
+          </svg>
+          <span>{{t "login.login.button"}}</span>
+        </button>
+      </div>
+
+      <!-- 注册面板 -->
+      <div id="signup-panel" class="auth-panel hidden">
+        <div class="field">
+          <label class="field-label" for="new-username"
             >{{t "login.signup.username_label"}}</label
           >
           <!-- pattern 按 HTML 的 unicodeSets 编译，字符类里的连字符必须写成 \-。 -->
@@ -149,7 +632,7 @@
             id="new-username"
             type="text"
             name="new-username"
-            class="input mt-2"
+            class="input"
             placeholder="{{t "login.signup.username_placeholder"}}"
             autocomplete="username webauthn"
             aria-describedby="username-hint username-error"
@@ -160,224 +643,153 @@
             pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,30}[A-Za-z0-9]"
             title="{{t "login.signup.username_hint"}}"
           />
-          <p id="username-hint" class="mt-1.5 text-xs text-zinc-500">
+          <p id="username-hint" class="field-hint">
             {{t "login.signup.username_hint"}}
           </p>
-          <p
-            id="username-error"
-            class="mt-1.5 hidden text-xs leading-relaxed"
-            style="color: var(--error-300)"
-            role="alert"
-          ></p>
-          <button
-            id="signup-btn"
-            type="button"
-            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
-          >
-            <svg
-              class="h-4 w-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            {{t "login.signup.button"}}
-          </button>
-          <div
-            class="mt-4 flex items-start gap-2.5 rounded-xl bg-white/[0.03] px-4 py-3 ring-1 ring-white/[0.06]"
-          >
-            <svg
-              class="mt-0.5 h-4 w-4 shrink-0 text-zinc-500"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 16v-4M12 8h.01" />
-            </svg>
-            <p class="text-[11px] leading-relaxed text-zinc-500">
-              {{t "login.signup.recovery_hint_prefix"}}<b class="text-zinc-300">{{t "login.signup.recovery_code"}}</b
-              >{{t "login.signup.recovery_hint_suffix"}}
-            </p>
-          </div>
+          <p id="username-error" class="field-error hidden" role="alert"></p>
         </div>
 
-        <!-- 状态提示 -->
-        <div
-          id="status-box"
-          class="mt-4 hidden rounded-xl px-4 py-3 text-[13px] leading-relaxed"
-        ></div>
-
-        <!-- iOS 提示 -->
-        <div
-          id="ios-tip"
-          class="mt-6 hidden rounded-xl px-4 py-3 ring-1"
-          style="
-            background: var(--warn-soft);
-            --tw-ring-color: rgba(251, 191, 36, 0.2);
-          "
+        <button
+          id="signup-btn"
+          type="button"
+          class="btn btn-primary auth-submit"
         >
-          <p class="text-[12px] leading-relaxed" style="color: #fcd34d">
-            <b>{{t "login.ios_tip_label"}}</b>{{t "login.ios_tip"}}
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span>{{t "login.signup.button"}}</span>
+        </button>
+
+        <div class="auth-note">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4M12 8h.01" />
+          </svg>
+          <p>
+            {{t "login.signup.recovery_hint_prefix"}}<b
+              >{{t "login.signup.recovery_code"}}</b
+            >{{t "login.signup.recovery_hint_suffix"}}
           </p>
         </div>
-
-        <!-- 恢复码登录（#29 · 接 #24 后端） -->
-        <div class="mt-6 border-t border-white/[0.06] pt-5">
-          <button
-            type="button"
-            id="recovery-toggle"
-            class="mx-auto flex items-center gap-1.5 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
-          >
-            <svg
-              class="h-3.5 w-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <rect x="3" y="11" width="18" height="11" rx="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-            <span id="recovery-toggle-label">{{t "login.recovery.toggle"}}</span>
-          </button>
-          <div id="recovery-panel" class="mt-4 hidden">
-            <div class="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label
-                  class="text-xs font-medium text-zinc-400"
-                  for="recovery-username"
-                  >{{t "login.recovery.username_label"}}</label
-                >
-                <input
-                  id="recovery-username"
-                  type="text"
-                  class="input mt-2"
-                  placeholder="{{t "login.recovery.username_placeholder"}}"
-                  autocomplete="username"
-                  autocapitalize="none"
-                  autocorrect="off"
-                  spellcheck="false"
-                  maxlength="32"
-                />
-              </div>
-              <div>
-                <label
-                  class="text-xs font-medium text-zinc-400"
-                  for="recovery-code"
-                  >{{t "login.recovery.code_label"}}</label
-                >
-                <input
-                  id="recovery-code"
-                  type="text"
-                  class="input mt-2 mono"
-                  placeholder="{{t "login.recovery.code_placeholder"}}"
-                  autocomplete="one-time-code"
-                  autocapitalize="characters"
-                  autocorrect="off"
-                  spellcheck="false"
-                  maxlength="24"
-                />
-              </div>
-            </div>
-            <button
-              id="recovery-btn"
-              type="button"
-              class="btn-primary mt-4 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium sm:w-auto sm:px-8"
-            >
-              {{t "login.recovery.button"}}
-            </button>
-          </div>
-        </div>
       </div>
 
-      <!-- 注册成功：一次性展示恢复码 -->
-      <div
-        id="codes-modal"
-        class="fixed inset-0 z-50 hidden items-center justify-center p-4"
-      >
-        <div class="sidebar-overlay absolute inset-0"></div>
-        <div
-          class="card relative z-10 w-full max-w-md max-w-[calc(100vw-2rem)] !bg-[var(--panel-modal)] p-5 sm:p-6 shadow-2xl"
+      <!-- 状态提示 -->
+      <div id="status-box" class="auth-status hidden"></div>
+
+      <!-- iOS 提示 -->
+      <div id="ios-tip" class="auth-ios hidden">
+        <p>
+          <b>{{t "login.ios_tip_label"}}</b>{{t "login.ios_tip"}}
+        </p>
+      </div>
+
+      <!-- 恢复码登录（#29 · 接 #24 后端） -->
+      <div class="auth-recovery">
+        <button
+          type="button"
+          id="recovery-toggle"
+          class="btn btn-ghost auth-recovery-toggle"
         >
-          <div class="flex items-start gap-3">
-            <div
-              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10"
-            >
-              <svg
-                class="h-5 w-5 text-amber-300"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path
-                  d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
-                />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-            </div>
-            <div class="min-w-0">
-              <h3 class="text-base font-medium text-white">
-                {{t "login.codes.title"}}
-              </h3>
-              <p class="mt-1 text-[13px] leading-relaxed text-zinc-500">
-                {{t "login.codes.subtitle"}}
-              </p>
-            </div>
-          </div>
-          <div
-            id="codes-grid"
-            class="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2"
-          ></div>
-          <div class="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              id="codes-copy-all"
-              class="btn-ghost rounded-xl px-4 py-2 text-sm"
-            >
-              {{t "login.codes.copy_all"}}
-            </button>
-          </div>
-          <div
-            class="mt-4 flex items-start gap-2.5 rounded-xl bg-amber-400/[0.07] px-4 py-3 ring-1 ring-amber-400/20"
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
           >
-            <p class="text-xs leading-relaxed text-amber-200/80">
-              {{t "login.codes.warn"}}
-            </p>
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          <span id="recovery-toggle-label">{{t "login.recovery.toggle"}}</span>
+        </button>
+
+        <div id="recovery-panel" class="auth-recovery-panel hidden">
+          <div class="auth-recovery-grid">
+            <div class="field">
+              <label class="field-label" for="recovery-username"
+                >{{t "login.recovery.username_label"}}</label
+              >
+              <input
+                id="recovery-username"
+                type="text"
+                class="input"
+                placeholder="{{t "login.recovery.username_placeholder"}}"
+                autocomplete="username"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck="false"
+                maxlength="32"
+              />
+            </div>
+            <div class="field">
+              <label class="field-label" for="recovery-code"
+                >{{t "login.recovery.code_label"}}</label
+              >
+              <input
+                id="recovery-code"
+                type="text"
+                class="input mono"
+                placeholder="{{t "login.recovery.code_placeholder"}}"
+                autocomplete="one-time-code"
+                autocapitalize="characters"
+                autocorrect="off"
+                spellcheck="false"
+                maxlength="24"
+              />
+            </div>
           </div>
           <button
+            id="recovery-btn"
             type="button"
-            id="codes-continue"
-            class="btn-primary mt-5 w-full rounded-xl px-4 py-2.5 text-sm font-medium"
+            class="btn btn-primary auth-submit"
           >
-            {{t "login.codes.continue"}}
+            {{t "login.recovery.button"}}
           </button>
         </div>
       </div>
+    </div>
+  </section>
+</div>
 
-      <!-- 底部说明 -->
-      <div
-        class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-zinc-600"
-      >
-        <span class="flex items-center gap-1.5">
-          <span
-            class="badge-dot h-1.5 w-1.5 rounded-full bg-emerald-400"
-          ></span>
-          {{t "login.trust.data_local"}}
-        </span>
-        <span>·</span>
-        <span>{{t "login.trust.webauthn"}}</span>
-        <span>·</span>
-        <span>{{t "login.trust.no_third_party"}}</span>
-      </div>
-    
+<!-- 注册成功：一次性展示恢复码 -->
+<div id="codes-modal" class="modal-backdrop hidden">
+  <div class="modal-panel codes-panel">
+    <div class="modal-head">
+      <h3 class="codes-title">{{t "login.codes.title"}}</h3>
+    </div>
+    <div class="modal-body">
+      <p class="codes-sub">{{t "login.codes.subtitle"}}</p>
+      <div id="codes-grid" class="codes-grid"></div>
+      <p class="codes-warn">{{t "login.codes.warn"}}</p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" id="codes-copy-all" class="btn btn-ghost btn-sm">
+        {{t "login.codes.copy_all"}}
+      </button>
+      <button type="button" id="codes-continue" class="btn btn-primary">
+        {{t "login.codes.continue"}}
+      </button>
+    </div>
+  </div>
+</div>
 {{end}}
 
 {{define "script"}}
@@ -408,11 +820,12 @@
         const statusBox = document.getElementById("status-box");
         function showStatus(msg, kind) {
           statusBox.classList.remove("hidden");
+          // 只用 tokens：亮/暗两套主题下语义色都跟着变（写死 hex 会在亮色下失真）。
           const map = {
-            info: ["var(--accent-soft)", "#b8b8ff"],
-            error: ["var(--error-soft)", "#fda4af"],
-            success: ["var(--success-soft)", "#6ee7b7"],
-            warn: ["var(--warn-soft)", "#fcd34d"],
+            info: ["var(--accent-soft)", "var(--accent-strong)"],
+            error: ["var(--error-soft)", "var(--error)"],
+            success: ["var(--success-soft)", "var(--success)"],
+            warn: ["var(--warn-soft)", "var(--warn)"],
           };
           const [bg, fg] = map[kind] || map.info;
           statusBox.style.background = bg;
@@ -1057,15 +1470,13 @@
           grid.replaceChildren();
           codes.forEach((c) => {
             const row = document.createElement("div");
-            row.className =
-              "flex items-center justify-between gap-2 rounded-lg bg-black/40 px-3 py-2 ring-1 ring-white/10";
+            row.className = "code-row";
             const codeEl = document.createElement("code");
-            codeEl.className = "mono select-all text-[12px] text-emerald-300";
+            codeEl.className = "code-val";
             codeEl.textContent = c;
             const btn = document.createElement("button");
             btn.type = "button";
-            btn.className =
-              "shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10";
+            btn.className = "code-copy";
             btn.textContent = t("login.codes.copy", "复制");
             btn.addEventListener("click", () => copyText(c, btn));
             row.appendChild(codeEl);

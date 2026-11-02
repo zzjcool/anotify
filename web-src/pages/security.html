@@ -1,16 +1,527 @@
 {{define "title"}}{{t "security.title"}}{{end}} {{define "style"}}
 <style>
-  /* 本页特有样式（共享样式见 ui.css / tokens.css） */
-  .recovery-code {
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 0.78rem;
-    letter-spacing: 0.05em;
-    background: var(--surface-2);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 0.45rem 0.7rem;
+  /* 安全与登录页（UI v2）——本页独有样式。
+     ------------------------------------------------------------
+     组件（页头 / 卡片 / 列表行 / 按钮 / 徽章 / Tabs / 弹层 / 空态 / 骨架）
+     一律用 web/ui.css 的共享类，这里只留四块：
+     ① 页级排版类（替代 Tailwind 色板类，亮主题下也读得清）
+     ② 凭证 / 会话列表的行内布局与骨架尺寸
+     ③ 恢复码栅格
+     ④ 新设备授权弹层的状态骨架 + QR 深底例外
+     颜色全部取 web/tokens.css 的 token，不写白色 alpha 底，也不写色板类。 */
+
+  /* ---------- ① 页级排版 ---------- */
+  .sec-head-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    min-width: 0;
+  }
+  .sec-sec-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 8px 12px;
+  }
+  .sec-sec-title {
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--text);
+  }
+  .sec-sec-sub {
+    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.55;
     color: var(--muted);
   }
+  .sec-count {
+    font-size: 12px;
+    color: var(--faint);
+    white-space: nowrap;
+  }
+  .sec-count-n {
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  /* 强调片段（原 text-zinc-300）：正文里的一个词加粗，不要整段反白 */
+  .sec-strong {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .sec-row-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    min-width: 0;
+  }
+  .sec-row-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-word;
+  }
+  .sec-row-sub {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+    word-break: break-word;
+  }
+  .sec-row-time {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .sec-row-note {
+    font-size: 11px;
+    color: var(--faint);
+  }
+  /* 行右簇：时间 + 操作（.list-meta 是组件类，这里只补换行与右对齐） */
+  #passkey-list .list-meta,
+  #session-list .list-meta {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
+    gap: 6px;
+  }
+  /* 图标瓦片：语义色只做小面积底色，不铺满 */
+  .sec-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--r-md);
+  }
+  .sec-icon-lg {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--r-lg);
+  }
+  .sec-icon-warn {
+    background: var(--warn-soft);
+    color: var(--warn);
+  }
+  .sec-icon-accent {
+    background: var(--accent-soft);
+    /* 用 accent-strong（不是 accent）：两套主题下它都是「在 soft 底上更进一层」的那个值 */
+    color: var(--accent-strong);
+  }
+  .sec-icon-success {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+  /* 小号图标瓦片（概念说明的 24px 行内图标） */
+  .sec-icon-sm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--r-sm);
+  }
+  /* 概念说明：两条轴并排（窄屏单列） */
+  .sec-concept-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    margin-top: 16px;
+  }
+  @media (min-width: 640px) {
+    .sec-concept-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  .sec-concept-box {
+    padding: 16px;
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    min-width: 0;
+  }
+  .sec-concept-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .sec-concept-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 12px;
+    padding: 0;
+    list-style: none;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+
+  /* ---------- ② 凭证 / 会话列表 ----------
+   * 同页两种列表统一成 `.card > .list > .list-row`（一行一张 .card 已取消）。
+   * .list-row 默认不换行，390 宽要把操作区折到第二行。 */
+  #passkey-list .list-row,
+  #session-list .list-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  #passkey-list .list-main,
+  #session-list .list-main {
+    flex: 1 1 14rem;
+  }
+  /* .card 没有 overflow:hidden（有焦点环的按钮会被裁），首尾行自己收圆角 */
+  #passkey-list > .list-row:first-child,
+  #session-list > .list-row:first-child {
+    border-top-left-radius: var(--r-lg);
+    border-top-right-radius: var(--r-lg);
+  }
+  #passkey-list > .list-row:last-child,
+  #session-list > .list-row:last-child {
+    border-bottom-left-radius: var(--r-lg);
+    border-bottom-right-radius: var(--r-lg);
+  }
+  /* .empty 里的动作按钮与说明之间留一点缝 */
+  .empty > .btn {
+    margin-top: 6px;
+  }
+  /* 列表还没内容时不要画一个空壳卡（骨架层在上面顶着）；
+     注意不能 display:none —— e2e 用 #passkey-list 的可见性做就绪锚点。 */
+  #passkey-list:empty,
+  #session-list:empty {
+    border-color: transparent;
+    box-shadow: none;
+  }
+  /* 骨架行：.skeleton 只给底色与动效，尺寸由页级类定 */
+  .sk-row-dot {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--r-md);
+    flex: none;
+  }
+  .sk-row-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1 1 12rem;
+  }
+  .sk-row-title {
+    width: 9rem;
+    max-width: 100%;
+    height: 12px;
+  }
+  .sk-row-meta {
+    width: 14rem;
+    max-width: 100%;
+    height: 10px;
+  }
+  .sk-row-acts {
+    width: 4.5rem;
+    height: 28px;
+    margin-left: auto;
+    flex: none;
+  }
+
+  /* ---------- ③ 恢复码 ---------- */
+  /* 提醒条（?from=recovery）：warn 只做小面积底 + 边框，文字留在可读的亮色阶上 */
+  .sec-nudge {
+    padding: 12px 16px;
+    border-radius: var(--r-md);
+    background: var(--warn-soft);
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  }
+  .sec-nudge-main {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px 16px;
+  }
+  .sec-nudge-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--warn-300);
+  }
+  .sec-nudge-body {
+    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--warn-300);
+  }
+  .sec-nudge-acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  /* 恢复码栅格：列数由内容宽度决定 —— auto-fit + 9rem 下限，窄屏自动降列不挤 */
+  #recovery-codes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 8px;
+    margin-top: 16px;
+  }
+  #recovery-codes:empty {
+    margin-top: 0;
+  }
+  .sec-rec-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 8px;
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+  }
+  .sec-rec-code {
+    font-size: 12px;
+    letter-spacing: 0.03em;
+    color: var(--success);
+    word-break: break-all;
+    user-select: all;
+    -webkit-user-select: all;
+  }
+  .sec-rec-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-top: 12px;
+  }
+
+  /* ---------- ④ 新设备授权弹层 ----------
+   * 外壳走 ui.css 的 .modal-backdrop / .modal-panel（.modal-backdrop 故意不声明
+   * display：显隐仍是 JS 在 #enroll-modal 上切 hidden↔flex，一个字节没动）。 */
+  .enroll-panel {
+    max-width: 28rem;
+  }
+  /* 点击遮罩关闭；遮罩底色由 .modal-backdrop 的 --scrim 给，这里不要再叠一层 */
+  .enroll-scrim {
+    position: absolute;
+    inset: 0;
+  }
+  .enroll-head-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .enroll-head-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .enroll-head-sub {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  /* 五个状态共用「状态头 + 说明 + 主次按钮」骨架。这里**不**声明 display：
+     显隐由 JS 在 #enroll-state-* 上切 hidden（ui.css 的 .hidden 是 !important），
+     只用相邻兄弟间距把内容串起来，避免和 hidden↔flex 打架。 */
+  .enroll-state > * + * {
+    margin-top: 14px;
+  }
+  .enroll-count > * + * {
+    margin-top: 6px;
+  }
+  .enroll-count-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .enroll-count-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .enroll-count-num {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .enroll-bar {
+    height: 4px;
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  .enroll-bar-fill {
+    height: 100%;
+    width: 100%;
+    border-radius: var(--r-full);
+    background: var(--accent);
+    transition: width 1s linear;
+  }
+  /* 接入方式 tab：.tabs 组件 + 三等分（.enroll-tab 是 switchEnrollTab 的选择器钩子） */
+  .enroll-tabs {
+    display: flex;
+    width: 100%;
+  }
+  .enroll-tabs .tab {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+  /* 三个 pane 的排列由 CSS 定（JS 只切 hidden↔flex，不再靠工具类拼行列） */
+  .enroll-panes {
+    /* 内容区固定最小高：切 tab 时弹层不跳高（原 min-h-[220px] 的页级版） */
+    min-height: 220px;
+  }
+  .enroll-pane {
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+  .enroll-pane-center {
+    align-items: center;
+  }
+  .enroll-wide {
+    width: 100%;
+  }
+  .enroll-hint {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--faint);
+    text-align: center;
+  }
+  .enroll-status {
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .enroll-btns {
+    gap: 10px;
+  }
+  .enroll-btns .btn {
+    flex: 1 1 auto;
+  }
+  .enroll-device {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    min-width: 0;
+  }
+  .enroll-device-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .enroll-device-meta {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--faint);
+  }
+  /* 安全提示：warn 小面积（红只留给真错误，见 .enroll-result 的 error 分支） */
+  .enroll-warn {
+    padding: 12px 14px;
+    border-radius: var(--r-md);
+    background: var(--warn-soft);
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+    color: var(--warn-300);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  /* success / failed 两态共用「结果」骨架 */
+  .enroll-result {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .enroll-result-title {
+    margin-top: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .enroll-result-desc {
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .enroll-result-acts {
+    display: flex;
+    gap: 10px;
+    width: 100%;
+    margin-top: 18px;
+  }
+  .enroll-result-acts .btn {
+    flex: 1 1 auto;
+  }
+  .enroll-full {
+    width: 100%;
+    margin-top: 18px;
+  }
+  /* 短码：等宽 + 字距（模块尺寸，不能改） */
+  .enroll-code {
+    font-size: 1.875rem;
+    letter-spacing: 0.25em;
+    color: var(--text);
+  }
+  .enroll-url {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    min-width: 0;
+  }
+  .enroll-url-text {
+    font-size: 12px;
+    color: var(--code-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .enroll-foot {
+    justify-content: flex-start;
+    gap: 4px 6px;
+    font-size: 11px;
+    color: var(--faint);
+  }
+  /* ⚠ QR 必须深底、亮色**不**反转（REVIEW-2 §3 security P0-3 / 契约 §12「QR 深底例外需注释」）：
+     二维码是「深色模块 on 浅底」的可视等价物，若跟着主题反转成浅底，相机识别率会掉。
+     全页唯一的硬编码色值就落在这两个变量默认值里 —— 等 tokens.css 补 --qr-bg/--qr-fg
+     后它们会自动退休。font-size/line-height 6px 是二维码模块尺寸，改一个字就切边。 */
+  .qr-box {
+    background: var(--qr-bg, #0a0a11);
+    color: var(--qr-fg, #e6e6f0);
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: pre;
+    text-align: center;
+    font-size: 6px;
+    line-height: 6px;
+  }
+
+  /* toast：本轮保留页内副本（统一到 Anotify.toast 属跨页收尾，不在本轮范围），
+     只把 old 的兜底 hex/alpha 删干净 —— 颜色一律纯 token。 */
   .toast {
     position: fixed;
     bottom: 1.5rem;
@@ -39,12 +550,8 @@
     transform: translateX(-50%) translateY(0);
   }
   .toast.error {
-    border-color: var(--danger, #ef4444);
-    background: color-mix(
-      in srgb,
-      var(--danger, #ef4444) 18%,
-      var(--panel-overlay)
-    );
+    border-color: var(--error);
+    background: color-mix(in srgb, var(--error) 18%, var(--panel-overlay));
   }
   .toast-msg {
     flex: 1;
@@ -53,7 +560,7 @@
   .toast-copy {
     flex-shrink: 0;
     background: transparent;
-    border: 1px solid var(--line-strong, #444);
+    border: 1px solid var(--line-strong);
     color: var(--text);
     font-size: 0.72rem;
     padding: 0.2rem 0.5rem;
@@ -62,110 +569,121 @@
     line-height: 1.4;
   }
   .toast-copy:hover {
-    background: var(--panel-hover, rgba(255, 255, 255, 0.08));
+    background: var(--surface-2);
   }
 </style>
 {{end}} {{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-6xl space-y-8">
-    <div class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 class="font-display text-3xl text-white">
-            {{t "security.title"}}
-          </h2>
-          <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-            {{t "security.intro"}}
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <button
-            onclick="addPasskey()"
-            class="btn-ghost rounded-xl px-4 py-2 text-sm font-medium"
-          >
-            + {{t "passkeyenroll.local_button"}}
-          </button>
-          <button
-            onclick="openEnrollModal()"
-            class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-          >
-            ⇄ {{t "passkeyenroll.entry_button"}}
-          </button>
-        </div>
+  <div class="page">
+    <!-- 页头：标题 + 一句说明 + 页级动作。页面里不出现 h1 —— 全站唯一的 h1 在顶栏
+         （契约 §2 / §10-C1）。`.page-sub` 全页只出现一次。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "security.title"}}</h2>
+        <p class="page-sub">{{t "security.intro"}}</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" onclick="addPasskey()" class="btn btn-ghost">
+          + {{t "passkeyenroll.local_button"}}
+        </button>
+        <button
+          type="button"
+          onclick="openEnrollModal()"
+          class="btn btn-primary"
+        >
+          ⇄ {{t "passkeyenroll.entry_button"}}
+        </button>
       </div>
     </div>
 
     <!-- ① Passkey 凭证 -->
-    <section class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h3 class="text-lg font-medium text-white">
-            {{t "security.passkey.title"}}
-          </h3>
-          <p class="mt-1 text-[13px] text-zinc-500">
-            {{t "security.passkey.subtitle"}}
-          </p>
+    <section>
+      <div class="sec-sec-head">
+        <div class="min-w-0">
+          <h3 class="sec-sec-title">{{t "security.passkey.title"}}</h3>
+          <p class="sec-sec-sub">{{t "security.passkey.subtitle"}}</p>
         </div>
-        <span class="text-[12px] text-zinc-500"
-          ><span class="font-medium text-white" id="pk-count">0</span> {{t
+        <span class="sec-count"
+          ><span class="sec-count-n" id="pk-count">0</span> {{t
           "security.passkey.count"}}</span
         >
       </div>
-      <div class="mt-4 space-y-4" id="passkey-list"></div>
+      <!-- 骨架单独一层（不带任何文字）：e2e 用「#passkey-list 有文字」判数据就绪，
+           骨架若含文案会让就绪信号提前成立。数据一到就整块移除。 -->
+      <div id="passkey-skel" class="card list mt-3" aria-hidden="true">
+        <div class="list-row" aria-hidden="true">
+          <div class="skeleton sk-row-dot"></div>
+          <div class="sk-row-lines">
+            <div class="skeleton sk-row-title"></div>
+            <div class="skeleton sk-row-meta"></div>
+          </div>
+          <div class="skeleton sk-row-acts"></div>
+        </div>
+        <div class="list-row" aria-hidden="true">
+          <div class="skeleton sk-row-dot"></div>
+          <div class="sk-row-lines">
+            <div class="skeleton sk-row-title"></div>
+            <div class="skeleton sk-row-meta"></div>
+          </div>
+          <div class="skeleton sk-row-acts"></div>
+        </div>
+      </div>
+      <div id="passkey-list" class="card list mt-3"></div>
     </section>
 
     <!-- ② 登录会话 -->
-    <section class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h3 class="text-lg font-medium text-white">
-            {{t "security.session.title"}}
-          </h3>
-          <p class="mt-1 text-[13px] text-zinc-500">
-            {{t "security.session.subtitle"}}
-          </p>
+    <section>
+      <div class="sec-sec-head">
+        <div class="min-w-0">
+          <h3 class="sec-sec-title">{{t "security.session.title"}}</h3>
+          <p class="sec-sec-sub">{{t "security.session.subtitle"}}</p>
         </div>
-        <span class="text-[12px] text-zinc-500"
-          ><span class="font-medium text-white" id="session-count">0</span> {{t
+        <span class="sec-count"
+          ><span class="sec-count-n" id="session-count">0</span> {{t
           "security.session.count"}}</span
         >
       </div>
-      <div
-        class="card mt-4 divide-y divide-white/[0.04]"
-        id="session-list"
-      ></div>
+      <div id="session-skel" class="card list mt-3" aria-hidden="true">
+        <div class="list-row" aria-hidden="true">
+          <div class="skeleton sk-row-dot"></div>
+          <div class="sk-row-lines">
+            <div class="skeleton sk-row-title"></div>
+            <div class="skeleton sk-row-meta"></div>
+          </div>
+          <div class="skeleton sk-row-acts"></div>
+        </div>
+        <div class="list-row" aria-hidden="true">
+          <div class="skeleton sk-row-dot"></div>
+          <div class="sk-row-lines">
+            <div class="skeleton sk-row-title"></div>
+            <div class="skeleton sk-row-meta"></div>
+          </div>
+          <div class="skeleton sk-row-acts"></div>
+        </div>
+      </div>
+      <div id="session-list" class="card list mt-3"></div>
     </section>
 
-    <!-- ③ 恢复码（#29 · 接 #24 后端） -->
-    <div
-      id="recovery-nudge"
-      class="reveal visible hidden rounded-xl px-4 py-3 ring-1"
-      style="
-        background: var(--warn-soft);
-        --tw-ring-color: rgba(251, 191, 36, 0.2);
-      "
-    >
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div class="text-sm font-medium" style="color: #fcd34d">
+    <!-- ③ 恢复码（#29 · 接 #24 后端）。#recovery-nudge 初值带 hidden，
+         仅 ?from=recovery 时由 JS 摘掉（maybeShowRecoveryNudge）。 -->
+    <div id="recovery-nudge" class="sec-nudge hidden">
+      <div class="sec-nudge-main">
+        <div class="min-w-0">
+          <div class="sec-nudge-title">
             {{t "security.recovery.nudge_title"}}
           </div>
-          <p class="mt-1 text-[13px] leading-relaxed" style="color: #fcd34d">
+          <p class="sec-nudge-body">
             {{t "security.recovery.nudge_body"}}
           </p>
         </div>
-        <div class="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onclick="addPasskey()"
-            class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-          >
+        <div class="sec-nudge-acts">
+          <button type="button" onclick="addPasskey()" class="btn btn-primary">
             {{t "security.recovery.nudge_action"}}
           </button>
           <button
             type="button"
             id="recovery-nudge-dismiss"
-            class="btn-ghost rounded-xl px-4 py-2 text-sm"
+            class="btn btn-ghost"
           >
             {{t "security.recovery.nudge_dismiss"}}
           </button>
@@ -173,14 +691,12 @@
       </div>
     </div>
 
-    <section class="card reveal visible p-6">
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="flex items-start gap-4">
-          <div
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10"
-          >
+    <section class="card card-pad">
+      <div class="card-head">
+        <div class="sec-head-main">
+          <span class="sec-icon sec-icon-warn">
             <svg
-              class="h-5 w-5 text-amber-300"
+              class="h-5 w-5"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -194,58 +710,49 @@
               <line x1="12" y1="9" x2="12" y2="13" />
               <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
-          </div>
-          <div>
-            <h3 class="text-base font-medium text-white">
-              {{t "security.recovery.title"}}
-            </h3>
-            <p class="mt-1 max-w-xl text-[13px] leading-relaxed text-zinc-500">
-              {{t "security.recovery.desc_prefix"}}<b class="text-zinc-300"
+          </span>
+          <div class="min-w-0">
+            <h3 class="card-title">{{t "security.recovery.title"}}</h3>
+            <p class="card-sub mt-1">
+              {{t "security.recovery.desc_prefix"}}<b class="sec-strong"
                 >{{t "security.recovery.desc_highlight"}}</b
               >{{t "security.recovery.desc_suffix"}}
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          id="recovery-regen-btn"
-          onclick="regenRecoveryCodes()"
-          class="btn-ghost rounded-xl px-4 py-2 text-sm"
-        >
-          {{t "security.recovery.regenerate"}}
-        </button>
+        <div class="card-actions">
+          <button
+            type="button"
+            id="recovery-regen-btn"
+            onclick="regenRecoveryCodes()"
+            class="btn btn-ghost"
+          >
+            {{t "security.recovery.regenerate"}}
+          </button>
+        </div>
       </div>
-      <div
-        id="recovery-codes"
-        class="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
-      ></div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+      <div id="recovery-codes"></div>
+      <div class="sec-rec-foot">
         <button
           type="button"
           id="recovery-copy-all"
-          class="hidden btn-ghost rounded-lg px-3 py-1.5 text-xs"
+          class="hidden btn btn-ghost btn-sm"
         >
           {{t "security.recovery.copy_all"}}
         </button>
-        <p id="recovery-hint" class="text-[11px] text-zinc-600">
+        <p id="recovery-hint" class="field-hint">
           {{t "security.recovery.status_loading"}}
         </p>
       </div>
     </section>
 
-    <!-- 概念说明 -->
-    <section class="card reveal visible p-6">
-      <div class="text-sm font-medium text-white">
-        {{t "security.concept.title"}}
-      </div>
-      <div class="mt-4 grid gap-4 sm:grid-cols-2">
-        <div class="rounded-xl bg-white/[0.02] p-4 ring-1 ring-white/[0.06]">
-          <div
-            class="flex items-center gap-2 text-[13px] font-medium text-zinc-200"
-          >
-            <span
-              class="flex h-6 w-6 items-center justify-center rounded-md bg-blue-400/10 text-blue-300"
-            >
+    <!-- 概念说明：两条独立的轴 -->
+    <section class="card card-pad">
+      <h3 class="card-title">{{t "security.concept.title"}}</h3>
+      <div class="sec-concept-grid">
+        <div class="sec-concept-box">
+          <div class="sec-concept-title">
+            <span class="sec-icon-sm sec-icon-accent">
               <svg
                 class="h-3.5 w-3.5"
                 viewBox="0 0 24 24"
@@ -260,21 +767,15 @@
             {{t "security.concept.auth_label"}} · {{t
             "security.concept.auth_axis"}}
           </div>
-          <ul
-            class="mt-3 space-y-1.5 text-[12px] leading-relaxed text-zinc-500"
-          >
+          <ul class="sec-concept-list">
             <li>{{t "security.concept.auth_p1"}}</li>
             <li>{{t "security.concept.auth_p2"}}</li>
             <li>{{t "security.concept.auth_p3"}}</li>
           </ul>
         </div>
-        <div class="rounded-xl bg-white/[0.02] p-4 ring-1 ring-white/[0.06]">
-          <div
-            class="flex items-center gap-2 text-[13px] font-medium text-zinc-200"
-          >
-            <span
-              class="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-400/10 text-emerald-300"
-            >
+        <div class="sec-concept-box">
+          <div class="sec-concept-title">
+            <span class="sec-icon-sm sec-icon-success">
               <svg
                 class="h-3.5 w-3.5"
                 viewBox="0 0 24 24"
@@ -289,9 +790,7 @@
             {{t "security.concept.delivery_label"}} · {{t
             "security.concept.delivery_axis"}}
           </div>
-          <ul
-            class="mt-3 space-y-1.5 text-[12px] leading-relaxed text-zinc-500"
-          >
+          <ul class="sec-concept-list">
             <li>{{t "security.concept.delivery_p1"}}</li>
             <li>{{t "security.concept.delivery_p2"}}</li>
             <li>{{t "security.concept.delivery_p3"}}</li>
@@ -302,28 +801,28 @@
   </div>
 </div>
 
-<!-- ===== Passkey 新设备授权弹层 ===== -->
+<!-- ===== Passkey 新设备授权弹层 =====
+     外壳走 ui.css 的 .modal-backdrop / .modal-panel / .modal-head / .modal-body /
+     .modal-foot（.modal-backdrop 故意不声明 display：显隐仍是 JS 在 #enroll-modal 上
+     切 hidden↔flex，一个字节没动）。
+     五个状态（waiting / confirm / approved_waiting 子态 / success / failed）共用同一套
+     「状态头 + 说明 + 主次按钮」骨架；状态之间只换内容，不换结构。 -->
 <div
   id="enroll-modal"
-  class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+  class="modal-backdrop hidden"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="enroll-panel-title"
 >
-  <div
-    class="sidebar-overlay absolute inset-0"
-    onclick="closeEnrollModal()"
-  ></div>
-  <div
-    class="card relative z-10 w-full max-w-md max-w-[calc(100vw-2rem)] !bg-[var(--panel-modal)] p-5 sm:p-6 shadow-2xl"
-  >
-    <!-- 头部 -->
-    <div class="flex items-start justify-between">
-      <div class="flex items-center gap-3">
-        <div
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-          style="background: var(--accent-soft)"
-        >
+  <!-- 点击遮罩关闭（遮罩底色由 .modal-backdrop 的 --scrim 给，这里不再叠一层） -->
+  <div class="enroll-scrim" onclick="closeEnrollModal()"></div>
+
+  <div class="modal-panel enroll-panel">
+    <div class="modal-head">
+      <div class="enroll-head-main">
+        <span class="sec-icon sec-icon-accent">
           <svg
             class="h-5 w-5"
-            style="color: var(--accent)"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -334,22 +833,22 @@
             <rect x="3" y="11" width="18" height="11" rx="2" />
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
-        </div>
-        <div>
-          <h3 class="text-base font-medium text-white">
+        </span>
+        <div class="min-w-0">
+          <h3 id="enroll-panel-title" class="enroll-head-title">
             {{t "passkeyenroll.panel.title"}}
           </h3>
-          <p class="mt-0.5 text-[13px] text-zinc-500">
-            {{t "passkeyenroll.panel.sub"}}
-          </p>
+          <p class="enroll-head-sub">{{t "passkeyenroll.panel.sub"}}</p>
         </div>
       </div>
       <button
+        type="button"
         onclick="closeEnrollModal()"
-        class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
+        class="btn btn-ghost btn-icon"
+        aria-label="{{t "common.close"}}"
       >
         <svg
-          class="h-5 w-5"
+          class="h-4 w-4"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -361,330 +860,250 @@
       </button>
     </div>
 
-    <!-- ===== 状态: waiting 等待接入 ===== -->
-    <div id="enroll-state-waiting" class="mt-5">
-      <!-- 倒计时条 -->
-      <div class="flex items-center justify-between text-[11px] text-zinc-500">
-        <span class="flex items-center gap-1.5">
-          <span class="dot dot-warn badge-dot"></span>
-          {{t "passkeyenroll.panel.expires_in"}}
-        </span>
-        <span id="enroll-countdown" class="mono"></span>
-      </div>
-      <div class="mt-1.5 h-1 rounded-full" style="background: var(--surface-2)">
-        <div
-          id="enroll-countdown-bar"
-          class="h-full rounded-full"
-          style="
-            background: var(--accent);
-            width: 100%;
-            transition: width 1s linear;
-          "
-        ></div>
-      </div>
-
-      <!-- Tab 接入方式 -->
-      <div
-        class="mt-4 flex gap-1 rounded-xl p-1 ring-1"
-        style="background: var(--surface-1); --tw-ring-color: var(--line)"
-      >
-        <button
-          type="button"
-          class="enroll-tab filter-tab active flex-1 rounded-lg px-3 py-1.5 text-xs text-center"
-          data-tab="qr"
-          onclick="switchEnrollTab('qr')"
-        >
-          {{t "passkeyenroll.panel.tab_qr"}}
-        </button>
-        <button
-          type="button"
-          class="enroll-tab filter-tab flex-1 rounded-lg px-3 py-1.5 text-xs text-center"
-          data-tab="url"
-          onclick="switchEnrollTab('url')"
-        >
-          {{t "passkeyenroll.panel.tab_url"}}
-        </button>
-        <button
-          type="button"
-          class="enroll-tab filter-tab flex-1 rounded-lg px-3 py-1.5 text-xs text-center"
-          data-tab="code"
-          onclick="switchEnrollTab('code')"
-        >
-          {{t "passkeyenroll.panel.tab_code"}}
-        </button>
-      </div>
-
-      <!-- Tab 内容区 -->
-      <div class="mt-3 min-h-[220px]">
-        <!-- QR -->
-        <div id="enroll-tab-qr" class="flex flex-col items-center">
-          <pre
-            id="enroll-qr-ascii"
-            class="mono select-all overflow-x-auto rounded-xl px-3 py-3"
-            style="
-              background: #0a0a11;
-              color: var(--text);
-              white-space: pre;
-              font-size: 6px;
-              line-height: 6px;
-              text-align: center;
-            "
-          ></pre>
-          <p class="mt-3 text-[11px] text-zinc-500">
-            {{t "passkeyenroll.panel.qr_hint"}}
-          </p>
+    <div class="modal-body">
+      <!-- ===== 状态: waiting 等待接入 ===== -->
+      <div id="enroll-state-waiting" class="enroll-state">
+        <!-- 倒计时：状态头（剩余有效期 + 进度条） -->
+        <div class="enroll-count">
+          <div class="enroll-count-row">
+            <span class="enroll-count-label">
+              <span class="dot dot-warn badge-dot"></span>
+              {{t "passkeyenroll.panel.expires_in"}}
+            </span>
+            <span id="enroll-countdown" class="mono enroll-count-num"></span>
+          </div>
+          <div class="enroll-bar">
+            <div id="enroll-countdown-bar" class="enroll-bar-fill"></div>
+          </div>
         </div>
 
-        <!-- URL -->
-        <div id="enroll-tab-url" class="hidden">
-          <div
-            class="flex items-center gap-2 rounded-lg px-3 py-2.5 ring-1"
-            style="background: var(--code-bg); --tw-ring-color: var(--line)"
-          >
-            <span
-              id="enroll-url-text"
-              class="mono truncate text-xs text-zinc-300"
-            ></span>
-          </div>
+        <!-- 接入方式：.tabs/.tab 组件。
+             .enroll-tab 与 data-tab **必须保留** —— switchEnrollTab() 用
+             querySelector('.enroll-tab[data-tab="…"]') 命中并切 .active。 -->
+        <div class="tabs enroll-tabs">
           <button
             type="button"
-            id="enroll-copy-url"
-            onclick="copyEnrollUrl()"
-            class="btn-ghost mt-2 flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs"
+            class="enroll-tab tab active"
+            data-tab="qr"
+            onclick="switchEnrollTab('qr')"
           >
+            {{t "passkeyenroll.panel.tab_qr"}}
+          </button>
+          <button
+            type="button"
+            class="enroll-tab tab"
+            data-tab="url"
+            onclick="switchEnrollTab('url')"
+          >
+            {{t "passkeyenroll.panel.tab_url"}}
+          </button>
+          <button
+            type="button"
+            class="enroll-tab tab"
+            data-tab="code"
+            onclick="switchEnrollTab('code')"
+          >
+            {{t "passkeyenroll.panel.tab_code"}}
+          </button>
+        </div>
+
+        <!-- 接入方式内容：JS 只切 hidden↔flex，三个 pane 的排列由 .enroll-pane 定 -->
+        <div class="enroll-panes">
+          <!-- QR：容器必须深底（见 .qr-box 的注释，亮色不反转） -->
+          <div id="enroll-tab-qr" class="enroll-pane enroll-pane-center flex">
+            <pre id="enroll-qr-ascii" class="qr-box mono select-all"></pre>
+            <p class="enroll-hint">{{t "passkeyenroll.panel.qr_hint"}}</p>
+          </div>
+
+          <!-- URL -->
+          <div id="enroll-tab-url" class="enroll-pane hidden">
+            <div class="enroll-url">
+              <span id="enroll-url-text" class="mono enroll-url-text"></span>
+            </div>
+            <button
+              type="button"
+              id="enroll-copy-url"
+              onclick="copyEnrollUrl()"
+              class="btn btn-ghost enroll-wide"
+            >
+              <svg
+                class="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" />
+                <path
+                  d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                />
+              </svg>
+              <span id="enroll-copy-label">{{t "keys.save.copy"}}</span>
+            </button>
+            <p class="enroll-hint">{{t "passkeyenroll.panel.url_hint"}}</p>
+          </div>
+
+          <!-- Code -->
+          <div id="enroll-tab-code" class="enroll-pane enroll-pane-center hidden">
+            <div id="enroll-shortcode" class="mono enroll-code">XXXX-XXXX</div>
+            <p class="enroll-hint">{{t "passkeyenroll.panel.code_hint"}}</p>
+            <p class="enroll-hint">{{t "cliauth.entry.hint"}}</p>
+          </div>
+        </div>
+
+        <!-- 状态行 -->
+        <div class="enroll-status flex">
+          <span class="dot dot-warn badge-dot"></span>
+          <span>{{t "passkeyenroll.panel.waiting"}}</span>
+        </div>
+      </div>
+
+      <!-- ===== 状态: confirm 新设备敲门 ===== -->
+      <div id="enroll-state-confirm" class="enroll-state hidden">
+        <div class="enroll-count">
+          <div class="enroll-count-row">
+            <span class="enroll-count-label">
+              <span class="dot dot-warn badge-dot"></span>
+              {{t "passkeyenroll.panel.expires_in"}}
+            </span>
+            <span
+              id="enroll-countdown-confirm"
+              class="mono enroll-count-num"
+            ></span>
+          </div>
+          <div class="enroll-bar">
+            <div id="enroll-countdown-bar-confirm" class="enroll-bar-fill"></div>
+          </div>
+        </div>
+
+        <!-- 新设备信息 -->
+        <div class="enroll-device">
+          <div id="enroll-device-icon" class="plat-icon">🖥️</div>
+          <div class="min-w-0">
+            <div id="enroll-device-hint" class="enroll-device-name">—</div>
+            <div class="enroll-device-meta">
+              <span id="enroll-via-badge"
+                >{{t "passkeyenroll.panel.via_qr"}}</span
+              >
+              · <span>{{t "common.time.just_now"}}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 安全提示：warn 小面积，红只留给真错误 -->
+        <div class="enroll-warn">
+          {{t "passkeyenroll.panel.confirm_warn"}}
+        </div>
+
+        <!-- 主次按钮 / approved_waiting 子态 -->
+        <div id="enroll-confirm-buttons" class="enroll-btns flex">
+          <button
+            type="button"
+            id="enroll-deny-btn"
+            onclick="enrollDeny()"
+            class="btn btn-ghost"
+          >
+            {{t "cliauth.confirm.deny"}}
+          </button>
+          <button
+            type="button"
+            id="enroll-approve-btn"
+            onclick="enrollApprove()"
+            class="btn btn-primary"
+          >
+            <span id="enroll-approve-label"
+              >{{t "passkeyenroll.panel.approve"}}</span
+            >
+            <span id="enroll-approve-busy" class="hidden">…</span>
+          </button>
+        </div>
+        <div id="enroll-approved-waiting" class="enroll-status hidden">
+          <span class="dot dot-warn badge-dot"></span>
+          <span>{{t "passkeyenroll.panel.approved_waiting"}}</span>
+        </div>
+      </div>
+
+      <!-- ===== 状态: success ===== -->
+      <div id="enroll-state-success" class="enroll-state hidden">
+        <div class="enroll-result">
+          <span class="sec-icon sec-icon-lg sec-icon-success">
             <svg
-              class="h-3.5 w-3.5"
+              class="h-6 w-6"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <rect x="9" y="9" width="13" height="13" rx="2" />
-              <path
-                d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-              />
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+              <path d="M22 4L12 14.01l-3-3" />
             </svg>
-            <span id="enroll-copy-label">{{t "keys.save.copy"}}</span>
-          </button>
-          <p class="mt-2 text-[11px] text-zinc-500">
-            {{t "passkeyenroll.panel.url_hint"}}
-          </p>
-        </div>
-
-        <!-- Code -->
-        <div id="enroll-tab-code" class="hidden flex-col items-center">
-          <div
-            class="mono text-white"
-            style="font-size: 1.875rem; letter-spacing: 0.25em"
-            id="enroll-shortcode"
+          </span>
+          <span class="status-badge status-success mt-4"
+            >{{t "passkeyenroll.panel.success_title"}}</span
           >
-            XXXX-XXXX
-          </div>
-          <p class="mt-3 text-[11px] text-zinc-500">
-            {{t "passkeyenroll.panel.code_hint"}}
-          </p>
-          <p class="mt-1 text-[11px] text-zinc-600">
-            {{t "cliauth.entry.hint"}}
-          </p>
-        </div>
-      </div>
-
-      <!-- 状态行 -->
-      <div class="mt-3 flex items-center gap-2 text-[11px] text-zinc-500">
-        <span class="dot dot-warn badge-dot"></span>
-        <span>{{t "passkeyenroll.panel.waiting"}}</span>
-      </div>
-    </div>
-
-    <!-- ===== 状态: confirm 新设备敲门 ===== -->
-    <div id="enroll-state-confirm" class="mt-5 hidden">
-      <!-- 倒计时条 -->
-      <div class="flex items-center justify-between text-[11px] text-zinc-500">
-        <span class="flex items-center gap-1.5">
-          <span class="dot dot-warn badge-dot"></span>
-          {{t "passkeyenroll.panel.expires_in"}}
-        </span>
-        <span id="enroll-countdown-confirm" class="mono"></span>
-      </div>
-      <div class="mt-1.5 h-1 rounded-full" style="background: var(--surface-2)">
-        <div
-          id="enroll-countdown-bar-confirm"
-          class="h-full rounded-full"
-          style="
-            background: var(--accent);
-            width: 100%;
-            transition: width 1s linear;
-          "
-        ></div>
-      </div>
-
-      <!-- 新设备信息卡 -->
-      <div
-        class="mt-4 flex items-center gap-3 rounded-xl px-4 py-3.5 ring-1 ring-white/10"
-        style="background: var(--surface-2)"
-      >
-        <div
-          class="plat-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg"
-          style="background: var(--accent-soft)"
-          id="enroll-device-icon"
-        >
-          🖥️
-        </div>
-        <div class="min-w-0">
-          <div
-            id="enroll-device-hint"
-            class="truncate text-sm font-medium text-white"
-          >
-            —
-          </div>
-          <div class="mt-0.5 text-[11px] text-zinc-500">
-            <span id="enroll-via-badge"
-              >{{t "passkeyenroll.panel.via_qr"}}</span
-            >
-            · <span>刚刚</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 安全提示 -->
-      <div
-        class="mt-3 rounded-xl px-4 py-3 text-[12px] leading-relaxed ring-1"
-        style="
-          background: var(--warn-soft);
-          color: var(--warn-300);
-          --tw-ring-color: rgba(251, 191, 36, 0.2);
-        "
-      >
-        {{t "passkeyenroll.panel.confirm_warn"}}
-      </div>
-
-      <!-- 按钮区 / approved_waiting -->
-      <div id="enroll-confirm-buttons" class="mt-5 flex gap-3">
-        <button
-          type="button"
-          id="enroll-deny-btn"
-          onclick="enrollDeny()"
-          class="btn-ghost rounded-xl px-4 py-2.5 text-sm"
-        >
-          {{t "cliauth.confirm.deny"}}
-        </button>
-        <button
-          type="button"
-          id="enroll-approve-btn"
-          onclick="enrollApprove()"
-          class="btn-primary flex-1 rounded-xl px-4 py-2.5 text-sm font-medium"
-        >
-          <span id="enroll-approve-label"
-            >{{t "passkeyenroll.panel.approve"}}</span
-          >
-          <span id="enroll-approve-busy" class="hidden">…</span>
-        </button>
-      </div>
-      <div
-        id="enroll-approved-waiting"
-        class="mt-5 hidden items-center gap-2 text-[12px] text-zinc-400"
-      >
-        <span class="dot dot-warn badge-dot"></span>
-        <span>{{t "passkeyenroll.panel.approved_waiting"}}</span>
-      </div>
-    </div>
-
-    <!-- ===== 状态: success ===== -->
-    <div id="enroll-state-success" class="mt-5 hidden">
-      <div class="flex flex-col items-center text-center">
-        <div
-          class="flex h-12 w-12 items-center justify-center rounded-2xl"
-          style="background: var(--success-soft)"
-        >
-          <svg
-            class="h-6 w-6"
-            style="color: var(--success)"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-            <path d="M22 4L12 14.01l-3-3" />
-          </svg>
-        </div>
-        <span class="status-badge status-success mt-4"
-          >{{t "passkeyenroll.panel.success_title"}}</span
-        >
-        <p
-          id="enroll-success-desc"
-          class="mt-2 text-sm leading-relaxed text-zinc-400"
-        ></p>
-        <button
-          type="button"
-          onclick="finishEnroll()"
-          class="btn-primary mt-5 w-full rounded-xl px-4 py-2.5 text-sm font-medium"
-        >
-          {{t "passkeyenroll.panel.done"}}
-        </button>
-      </div>
-    </div>
-
-    <!-- ===== 状态: failed ===== -->
-    <div id="enroll-state-failed" class="mt-5 hidden">
-      <div class="flex flex-col items-center text-center">
-        <div
-          id="enroll-failed-icon-box"
-          class="flex h-12 w-12 items-center justify-center rounded-2xl"
-          style="background: var(--warn-soft)"
-        >
-          <svg
-            class="h-6 w-6"
-            style="color: var(--warn)"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <circle cx="12" cy="12" r="10" />
-            <path d="M12 6v6l4 2" />
-          </svg>
-        </div>
-        <span
-          id="enroll-failed-badge"
-          class="status-badge status-warn mt-4"
-        ></span>
-        <h4
-          id="enroll-failed-title"
-          class="mt-2 text-base font-medium text-white"
-        ></h4>
-        <p
-          id="enroll-failed-desc"
-          class="mt-1.5 text-[13px] leading-relaxed text-zinc-500"
-        ></p>
-        <div class="mt-5 flex w-full gap-3">
+          <p id="enroll-success-desc" class="enroll-result-desc"></p>
           <button
             type="button"
-            id="enroll-failed-action"
-            class="btn-primary flex-1 rounded-xl px-4 py-2.5 text-sm font-medium"
-          ></button>
-          <button
-            type="button"
-            onclick="closeEnrollModal()"
-            class="btn-ghost rounded-xl px-4 py-2.5 text-sm"
+            onclick="finishEnroll()"
+            class="btn btn-primary enroll-full"
           >
             {{t "passkeyenroll.panel.done"}}
           </button>
         </div>
       </div>
+
+      <!-- ===== 状态: failed ===== -->
+      <div id="enroll-state-failed" class="enroll-state hidden">
+        <!-- #enroll-failed-icon-box / -badge 的底色与 className 由 JS 按子类型改写
+             （denied→warn、error→error），所以这里只给默认底色，不要写死语气。 -->
+        <div class="enroll-result">
+          <span
+            id="enroll-failed-icon-box"
+            class="sec-icon sec-icon-lg sec-icon-warn"
+          >
+            <svg
+              class="h-6 w-6"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 6v6l4 2" />
+            </svg>
+          </span>
+          <span
+            id="enroll-failed-badge"
+            class="status-badge status-warn mt-4"
+          ></span>
+          <h4 id="enroll-failed-title" class="enroll-result-title"></h4>
+          <p id="enroll-failed-desc" class="enroll-result-desc"></p>
+          <div class="enroll-result-acts">
+            <button
+              type="button"
+              id="enroll-failed-action"
+              class="btn btn-primary"
+            ></button>
+            <button
+              type="button"
+              onclick="closeEnrollModal()"
+              class="btn btn-ghost"
+            >
+              {{t "passkeyenroll.panel.done"}}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 信任脚注 -->
-    <div
-      class="mt-5 border-t pt-4 text-[11px] text-zinc-600"
-      style="border-color: var(--line)"
-    >
+    <div class="modal-foot enroll-foot">
       <span>{{t "passkeyenroll.trust.approve_only"}}</span>
-      <span class="mx-1.5">·</span>
+      <span aria-hidden="true">·</span>
       <span>{{t "cliauth.trust.ttl"}}</span>
     </div>
   </div>
@@ -879,22 +1298,41 @@
     renderSessions();
   }
 
+  // 数据到齐后撤掉骨架层（骨架故意不带文字，见 HTML 里的注释）
+  function dropSkeleton(id) {
+    const n = document.getElementById(id);
+    if (n && n.parentNode) n.parentNode.removeChild(n);
+  }
+
   // ==================== 渲染 Passkey ====================
+  // 列表语言与「登录会话」完全一致：一张 .card + 多行 .list-row，
+  // 不再「一行一张 .card」（同页两种列表语言是 REVIEW-2 的 P0）。
   function renderPasskeys() {
     const list = document.getElementById("passkey-list");
+    dropSkeleton("passkey-skel");
     document.getElementById("pk-count").textContent = PASSKEYS.length;
 
     if (PASSKEYS.length === 0) {
-      list.replaceChildren(
-        el(
-          "div",
-          { class: "card p-6 text-center text-sm text-zinc-500" },
-          t(
+      // 空态落在 #passkey-list **内部**（ux_regression #22 读它的 innerText）
+      const box = el("div", { class: "empty" });
+      box.append(
+        el("p", {
+          text: t(
             "security.empty_passkeys",
             "还没有 Passkey。点右上角「+ 本机添加」为这台设备创建一个。",
           ),
+        }),
+        el(
+          "button",
+          {
+            type: "button",
+            class: "btn btn-primary btn-sm",
+            onclick: () => addPasskey(),
+          },
+          "+ " + t("passkeyenroll.local_button", "本机添加"),
         ),
       );
+      list.replaceChildren(box);
       return;
     }
 
@@ -902,79 +1340,59 @@
       ...PASSKEYS.map((p) =>
         el(
           "div",
-          { class: "card reveal visible p-5" },
+          { class: "list-row" },
+          el("div", { class: "plat-icon", text: p.icon }),
           el(
             "div",
-            { class: "flex flex-wrap items-center gap-4" },
-            el("div", { class: "plat-icon", text: p.icon }),
+            { class: "list-main" },
             el(
               "div",
-              { class: "min-w-0 flex-1" },
-              el(
-                "div",
-                { class: "flex flex-wrap items-center gap-2" },
-                el("span", {
-                  class: "text-sm font-medium text-white",
-                  text: p.name,
-                }),
-                el("span", {
-                  class: "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                  style:
-                    "background: rgba(139,139,253,0.12); color: var(--accent)",
-                  text: p.type,
-                }),
-                p.current
-                  ? el("span", {
-                      class: "status-badge status-on",
-                      text: t("security.in_use", "本机在用"),
-                    })
-                  : null,
-              ),
-              p.devices
-                ? el("div", {
-                    class: "mt-1 text-xs text-zinc-500",
-                    text: p.devices,
+              { class: "sec-row-head" },
+              el("span", { class: "sec-row-title", text: p.name }),
+              el("span", { class: "badge badge-accent", text: p.type }),
+              p.current
+                ? el("span", {
+                    class: "status-badge status-on",
+                    text: t("security.in_use", "本机在用"),
                   })
                 : null,
             ),
-            el(
-              "div",
-              { class: "flex flex-col items-end gap-1.5" },
-              el("div", {
-                class: "text-[11px] text-zinc-500",
-                text: t("security.last_used", "最近使用 {time}").replace(
-                  "{time}",
-                  p.lastUsed,
-                ),
-              }),
-              p.created
-                ? el("div", {
-                    class: "text-[10px] text-zinc-600",
-                    text: t("security.created_at", "创建于 {date}").replace(
-                      "{date}",
-                      p.created,
-                    ),
-                  })
-                : null,
-            ),
+            p.devices
+              ? el("div", { class: "sec-row-sub", text: p.devices })
+              : null,
+            p.created
+              ? el("div", {
+                  class: "sec-row-time",
+                  text: t("security.created_at", "创建于 {date}").replace(
+                    "{date}",
+                    p.created,
+                  ),
+                })
+              : null,
           ),
+          // 行右簇 = .list-meta（时间 + 操作），与「登录会话」同一套语言
           el(
             "div",
-            {
-              class:
-                "mt-4 flex items-center justify-end gap-2 border-t border-white/[0.05] pt-4",
-            },
+            { class: "list-meta" },
+            el("span", {
+              class: "sec-row-time",
+              text: t("security.last_used", "最近使用 {time}").replace(
+                "{time}",
+                p.lastUsed,
+              ),
+            }),
             el(
               "button",
               {
-                class: "btn-ghost rounded-lg px-3 py-1.5 text-xs",
+                type: "button",
+                class: "btn btn-ghost btn-sm",
                 onclick: () => renamePasskey(p),
               },
               t("security.rename", "重命名"),
             ),
             p.current
               ? el("span", {
-                  class: "text-[11px] text-zinc-600",
+                  class: "sec-row-note",
                   text: t(
                     "security.current_credential_no_delete",
                     "当前设备的凭证，不可删除",
@@ -983,7 +1401,8 @@
               : el(
                   "button",
                   {
-                    class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
+                    type: "button",
+                    class: "btn btn-danger btn-sm",
                     onclick: () => deletePasskey(p),
                   },
                   t("security.delete", "删除"),
@@ -1196,40 +1615,53 @@
   }
 
   // ==================== 渲染会话 ====================
+  // 与 Passkey 列表同一套行语言：.list-row > (.list-main, .list-meta)。
   function renderSessions() {
     const list = document.getElementById("session-list");
+    dropSkeleton("session-skel");
     document.getElementById("session-count").textContent = SESSIONS.length;
 
     if (SESSIONS.length === 0) {
-      list.replaceChildren(
-        el(
-          "div",
-          { class: "px-5 py-8 text-center text-sm text-zinc-500" },
-          t("security.empty_sessions", "当前没有活跃会话。"),
-        ),
+      const box = el("div", { class: "empty" });
+      box.append(
+        el("p", { text: t("security.empty_sessions", "当前没有活跃会话。") }),
       );
+      list.replaceChildren(box);
       return;
     }
 
     list.replaceChildren(
-      ...SESSIONS.map((s) =>
-        el(
+      ...SESSIONS.map((s) => {
+        // 元信息一行：浏览器 · 位置 · 最后活跃，空字段不留下孤立的间隔点
+        const meta = el("div", { class: "sec-row-sub" });
+        const parts = [];
+        if (s.browser) parts.push(s.browser);
+        if (s.location) parts.push(s.location);
+        if (parts.length) meta.append(parts.join(" · "));
+        if (s.passkey) {
+          meta.append((parts.length ? " · " : "") + s.passkey);
+        }
+        if (parts.length || s.passkey) meta.append(" · ");
+        meta.append(
+          s.current
+            ? s.lastActive
+            : t("security.last_active", "最后活跃 {time}").replace(
+                "{time}",
+                s.lastActive,
+              ),
+        );
+
+        return el(
           "div",
-          { class: "flex flex-wrap items-center gap-4 px-5 py-4" },
-          el("div", {
-            class: "plat-icon !h-10 !w-10 text-xl",
-            text: s.icon,
-          }),
+          { class: "list-row" },
+          el("div", { class: "plat-icon", text: s.icon }),
           el(
             "div",
-            { class: "min-w-0 flex-1" },
+            { class: "list-main" },
             el(
               "div",
-              { class: "flex flex-wrap items-center gap-2" },
-              el("span", {
-                class: "text-sm font-medium text-white",
-                text: s.device,
-              }),
+              { class: "sec-row-head" },
+              el("span", { class: "sec-row-title", text: s.device }),
               s.current
                 ? el("span", {
                     class: "status-badge status-on",
@@ -1237,55 +1669,25 @@
                   })
                 : null,
             ),
-            el(
-              "div",
-              {
-                class:
-                  "mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500",
-              },
-              s.browser ? el("span", { text: s.browser }) : null,
-              s.browser && s.location
-                ? el("span", { class: "text-zinc-700", text: "·" })
-                : null,
-              s.location ? el("span", { text: s.location }) : null,
-              s.browser || s.location
-                ? el("span", { class: "text-zinc-700", text: "·" })
-                : null,
-              el("span", {
-                text: s.current
-                  ? s.lastActive
-                  : t("security.last_active", "最后活跃 {time}").replace(
-                      "{time}",
-                      s.lastActive,
-                    ),
-              }),
-            ),
+            meta,
           ),
           el(
             "div",
-            { class: "flex items-center gap-3" },
-            s.passkey
-              ? el("span", {
-                  class: "hidden text-[11px] text-zinc-600 sm:block",
-                  text: s.passkey,
-                })
-              : null,
+            { class: "list-meta" },
             s.current
-              ? el("span", {
-                  class: "text-[11px] text-zinc-600",
-                  text: "—",
-                })
+              ? el("span", { class: "sec-row-note", text: "—" })
               : el(
                   "button",
                   {
-                    class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
+                    type: "button",
+                    class: "btn btn-danger btn-sm",
                     onclick: () => revokeSession(s),
                   },
                   t("security.revoke", "吊销"),
                 ),
           ),
-        ),
-      ),
+        );
+      }),
     );
   }
 
@@ -1378,28 +1780,22 @@
     if (recoveryPlaintext && recoveryPlaintext.length) {
       grid.replaceChildren(
         ...recoveryPlaintext.map((c) => {
-          const row = el(
+          // 一个码一格：.sec-rec-row 只取 token（旧版是 bg-black/40 + ring-white/10
+          // + text-emerald-300，亮主题下会变成黑块 + 刺眼的绿）。
+          return el(
             "div",
-            {
-              class:
-                "flex items-center justify-between gap-2 rounded-lg bg-black/40 px-3 py-2 ring-1 ring-white/10",
-            },
-            el("code", {
-              class: "mono select-all text-[12px] text-emerald-300",
-              text: c,
-            }),
+            { class: "sec-rec-row" },
+            el("code", { class: "mono sec-rec-code", text: c }),
             el(
               "button",
               {
                 type: "button",
-                class:
-                  "shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10",
+                class: "btn btn-ghost btn-sm",
                 onclick: (ev) => copyRecoveryText(c, ev.currentTarget),
               },
               t("security.recovery.copy", "复制"),
             ),
           );
-          return row;
         }),
       );
       copyAll.classList.remove("hidden");
