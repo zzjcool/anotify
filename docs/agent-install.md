@@ -34,7 +34,8 @@ curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/instal
 
 它做四件事：
 
-1. 从 GitHub Release 下 `anotify-agent-<os>-<arch>`（先试 `latest`，可用 `ANOTIFY_VERSION=vX.Y.Z` 钉版本）
+1. 从 GitHub Release 下 `anotify-agent-<os>-<arch>`（先试 `latest`，可用 `ANOTIFY_VERSION=vX.Y.Z` 钉版本），
+   并核对同名 `.sha256`——**校验不通过就中止**，不会装上一个来源不明的二进制
 2. 装到 `/usr/local/bin`（不可写则退到 `~/.local/bin` 并提示 PATH）
 3. 写 `~/.anotify/node.yaml`（**权限 600**，里面有令牌）
 4. 生成 systemd **用户**服务 `~/.config/systemd/user/anotify-agent.service`
@@ -46,6 +47,16 @@ systemctl --user enable --now anotify-agent
 journalctl --user -u anotify-agent -f
 # 没登录也要活着（可选）
 sudo loginctl enable-linger "$USER"
+```
+
+### 内网 / 镜像
+
+下载走的是 GitHub。机器上不了外网时，把 release 资产（二进制 + `.sha256`）放到自己的
+文件服务器上，然后：
+
+```bash
+export ANOTIFY_RELEASE_BASE=https://your-mirror/anotify    # 该目录下直接有 anotify-agent-linux-amd64 等文件
+curl -fsSL https://your-mirror/install-agent.sh | sh -s -- --token=… --server=…
 ```
 
 ### 不用脚本也能装

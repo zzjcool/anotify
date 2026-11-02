@@ -1,18 +1,28 @@
 name: release
 
-# 发布与镜像（#281 原生装）：
-#   · agent 二进制：linux/darwin × amd64/arm64，挂在 GitHub Release 上
-#     —— scripts/install-agent.sh 直接从这里下载
-#   · 中枢镜像 + agent 镜像仍走 docker.yml（那边只在 main/tag 上推 GHCR）
+# 发版：把 **agent 二进制** 挂到 GitHub Release 上，供 `scripts/install-agent.sh` 下载。
 #
-# 只发 agent：中枢是服务端二进制，用户要的是"一行命令/一个 release 装上节点"。
+# 为什么只发 agent：
+#   · 中枢（server）用户要么用 GHCR 镜像，要么自己 `go build`，没有"一条命令装上"
+#     的需求；而节点是**要贴到别人机器上**的，必须有个能下的二进制。
+#   · 资产名必须**完全**是 `anotify-agent-<os>-<arch>` —— install 脚本走
+#     `releases/latest/download/<asset>`，带版本号就会 404。
+#
+# 触发：
+#   · push tag `v*`   → 构建 + 发 release
+#   · workflow_dispatch → 只构建（验证链路），不发 release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: # 手动跑一次（验证构建链路，不上传 release）
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+# 同一个 tag 重复推 / 补跑时，后来的覆盖前面的，别让两个 job 抢同一个 release。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-agent:
@@ -32,7 +42,7 @@ jobs:
           cache: true
 
       # CGO_ENABLED=0 是硬要求：install 脚本下发的就是单个静态二进制，
-      # 依赖 libc 的构建在某些发行版上会直接跑不起来（表现是 glibc 版本不匹配）。
+      # 依赖 libc 的构建在别的发行版上会直接起不来（表现是 glibc 版本不匹配）。
       - name: build
         env:
           CGO_ENABLED: "0"
@@ -42,11 +52,17 @@ jobs:
           set -euo pipefail
           out="anotify-agent-${{ matrix.os }}-${{ matrix.arch }}"
           go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/agent
-          # 冒烟：二进制能在本机跑起来并打印用法（跨架构的那几个跑不了，跳过）
+
+          # 冒烟：能跑起来并打印用法（`-h` 走 flag.ErrHelp 分支 → 退出码 0）。
+          # 只对本机架构跑：交叉编译出来的二进制跑不了。
           if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
-            ./"$out" --help >/dev/null 2>&1 || ./"$out" -h >/dev/null 2>&1 || true
+            ./"$out" -h 2>&1 | head -3
           fi
+
+          # 校验和：install 脚本会下这个文件做完整性校验。
+          # 文件名固定 <asset>.sha256，内容用 `sha256sum` 的两空格格式（sha256sum -c 能直接吃）。
           sha256sum "$out" > "$out.sha256"
+          cat "$out.sha256"
           ls -lh "$out"
 
       - uses: actions/upload-artifact@v4
@@ -56,10 +72,12 @@ jobs:
             anotify-agent-${{ matrix.os }}-${{ matrix.arch }}
             anotify-agent-${{ matrix.os }}-${{ matrix.arch }}.sha256
           if-no-files-found: error
+          retention-days: 7
 
   release:
     name: publish release
     needs: build-agent
+    # 只有 tag 才发 release；手动触发的运行只验证构建（产物在 Actions 面板里下）。
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -68,10 +86,35 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: publish
-        uses: softprops/action-gh-release@v2
+      # 发之前再核一遍：资产名 / 数量不对就不许发（发出去就改不掉了）。
+      - name: verify assets
+        run: |
+          set -euo pipefail
+          cd dist
+          expect="anotify-agent-linux-amd64 anotify-agent-linux-arm64 anotify-agent-darwin-amd64 anotify-agent-darwin-arm64"
+          for a in $expect; do
+            [ -f "$a" ] || { echo "缺少资产：$a"; exit 1; }
+            [ -f "$a.sha256" ] || { echo "缺少校验和：$a.sha256"; exit 1; }
+            sha256sum -c "$a.sha256"
+          done
+          ls -lh
+
+      - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
-          # install-agent.sh 默认走 releases/latest/download/<asset>，所以文件名
-          # 必须**完全**是 anotify-agent-<os>-<arch>，不能带版本号。
+          fail_on_unmatched_files: true
+          body: |
+            ## 安装（节点 / agent）
+
+            控制台「节点」页注册后会给你一条完整命令（带令牌）。手动装：
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh \
+              | sh -s -- --token=<令牌> --server=<中枢地址> --work-dirs=<允许能力工作的目录>
+            ```
+
+            想钉住版本：`ANOTIFY_VERSION=${{ github.ref_name }}`。
+
+            资产说明：`anotify-agent-<os>-<arch>`（静态二进制）+ `.sha256` 校验和。
+            中枢（server）走容器镜像 `ghcr.io/zzjcool/anotify`，不在这里发。
