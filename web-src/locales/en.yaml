@@ -124,7 +124,7 @@ index:
     retry: 'Retry'
     bad_shape: 'Unexpected response shape'
   title: Overview
-  subtitle: Your notifications at a glance
+  subtitle: Your tasks at a glance
   greeting:
     fallback_name: there
     default: Hello
@@ -136,10 +136,10 @@ index:
   loading: Loading your notification stats…
   demo_badge: Demo data (backend not connected)
   kpi:
-    total: Total notifications
+    total: Total tasks
     last_30d: Last 30 days
     rate: Delivery rate
-    today: Today
+    today: Tasks today
     today_sub: Sent → Delivered
     devices: Receiving devices
     devices_enabled: Enabled
@@ -186,7 +186,7 @@ index:
 
       '
   recent:
-    title: Recent notifications
+    title: Recent tasks
     subtitle: Live updates · click a row for details
     filter_all: All
     filter_terminal: Terminal
@@ -197,7 +197,7 @@ index:
     pull_ready: Release to refresh
     pull_loading: Refreshing…
     pull_done: Updated
-  recent_summary: Received {total} notifications, {ok} successful.
+  recent_summary: '{total} tasks recorded recently, {ok} completed.'
   test_notify:
     title: Send test notification
     desc: Send a notification to all your devices right from the web
