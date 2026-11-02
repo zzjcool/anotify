@@ -46,3 +46,6 @@ web/i18n.*.js
 
 # === legion 编排运行时（契约/报告等，不入库）===
 .pi-legion/
+
+# worktree 里软链到主 checkout 的 node_modules（不提交、不复制）
+node_modules
