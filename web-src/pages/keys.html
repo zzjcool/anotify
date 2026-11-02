@@ -58,14 +58,6 @@
       }
 
       /* ---- Key 表 ---- */
-      /* ui.css 里右对齐数字列只写成后代选择器 `.data-table .num`，而死类守卫按
-         顶层选择器收集组件类（`.num` 因此被判「无定义」）。契约要求数字列用 `.num`，
-         所以在这里补一条等价规则，让 `.num` 在本页是真的存在的类。
-         建议 centurion 后续把 `.num` 提成 ui.css 的顶层工具类，这几行即可删掉。 */
-      .num {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-      }
       .kx-keys-head {
         display: flex;
         flex-wrap: wrap;

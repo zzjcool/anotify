@@ -187,16 +187,16 @@
 	--error-300: #be123c;
 	--warn-300: #a16207;
 
-	/* 执行状态九态：整体压深一档 */
+	/* 执行状态九态：作为**文字**时亮底（#fff/#f4f5fa）对比 ≥4.5:1；bar/dot 允许更深 */
 	--st-pending: #52525b;
-	--st-assigned: #2563eb;
-	--st-acked: #0891b2;
-	--st-running: #16a34a;
-	--st-succeeded: #059669;
-	--st-failed: #dc2626;
-	--st-canceled: #71717a;
-	--st-abandoned: #ea580c;
-	--st-lease_expired: #ca8a04;
+	--st-assigned: #1d4ed8;
+	--st-acked: #0e7490;
+	--st-running: #15803d;
+	--st-succeeded: #047857;
+	--st-failed: #b91c1c;
+	--st-canceled: #4b5563;
+	--st-abandoned: #c2410c;
+	--st-lease_expired: #a16207;
 
 	/* 热力图空格：亮底下要比白卡「深一档」才看得出格子 */
 	--hm-empty: #e8eaf3;

@@ -2278,22 +2278,52 @@
 			pending: tks.filter((t) => t.status === "pending").length,
 			nodesOnline: state.nodes.filter((n) => n.status === "online").length,
 			nodesTotal: state.nodes.length,
-			// 热力图：最近 7 天每天的任务数
-			daily: Array.from({ length: 7 }, (_, i) => {
-				const day = new Date(Date.now() - (6 - i) * 86400e3)
-					.toISOString()
-					.slice(0, 10);
-				return {
-					day,
-					count: tks.filter((t) => {
-						const d =
-							typeof t.createdAt === "number"
-								? new Date(t.createdAt * 1000)
-								: new Date(t.createdAt || 0);
-						return d.toISOString().slice(0, 10) === day;
-					}).length,
+			// 热力图 / 趋势药丸：最近 7 天（**本地日历日**）每天的任务数。
+			//
+			// day 必须与前端同口径：index.html:775-780 的 dayKeyOf 用
+			// getFullYear/getMonth/getDate 拼 `YYYY-MM-DD`（本地日），所以这里也用本地日。
+			// 早先这里用 `toISOString().slice(0,10)` 取的是 **UTC 日**，UTC+8 下前端算出的
+			// today/yesterday 根本查不到 → 趋势药丸退化成「无基线」或拿总数冒充增量。
+			//
+			// dev-only：今天取**真实**任务数；前 6 天取 max(真实, 按 SHAPE 比例回推)。
+			// 为什么要回推：mock 的任务种子几乎全落在「今天」，按真实计数回推的话昨天=0，
+			// 首页趋势药丸就会显示「↑ <今日总数>」——那个数字和 KPI 总数一模一样，
+			// 看起来像拿总数冒充增量（#KPI 语义）。按比例回推后差值恒小于今日总量，
+			// 既保留「7 天有差异」的形状，也不会出现「增量 > 总数」这种假象。
+			// 真后端没有这层回推（internal/store/stats.go 只回真实计数）。
+			daily: (() => {
+				// i 为旧→新下标：0 = 6 天前，6 = 今天。今天固定 1（= 真实数）。
+				const SHAPE = [0.4, 0.55, 0.5, 0.7, 0.6, 0.8, 1];
+				const dayKeyOf = (d) => {
+					const m = String(d.getMonth() + 1).padStart(2, "0");
+					const dd = String(d.getDate()).padStart(2, "0");
+					return d.getFullYear() + "-" + m + "-" + dd;
 				};
-			}),
+				// 真实任务数按本地日聚合（numeric createdAt 是 unix 秒）
+				const byDay = new Map();
+				for (const t of tks) {
+					const d =
+						typeof t.createdAt === "number"
+							? new Date(t.createdAt * 1000)
+							: new Date(t.createdAt || 0);
+					if (Number.isNaN(d.getTime())) continue;
+					const k = dayKeyOf(d);
+					byDay.set(k, (byDay.get(k) || 0) + 1);
+				}
+				const todayCount = byDay.get(dayKeyOf(new Date())) || 0;
+				return Array.from({ length: 7 }, (_, i) => {
+					// 按日历日回退（setDate 而不是减 86400e3：后者跨夏令时会漂一天）
+					const d = new Date();
+					d.setDate(d.getDate() - (6 - i));
+					const day = dayKeyOf(d);
+					const real = byDay.get(day) || 0;
+					const count =
+						i === 6
+							? real
+							: Math.max(real, Math.round(todayCount * SHAPE[i]));
+					return { day, count };
+				});
+			})(),
 		});
 	});
 
@@ -3474,11 +3504,19 @@
 			prefix: "ant_mock_" + Math.random().toString(36).slice(2, 10),
 			createdAt: now(),
 			lastUsedAt: null,
+			// keys.html:764 读 `k.enabled !== false`：记录里必须带上，否则列表把新 Key 画成停用
+			enabled: true,
+			// revoked / orgId 保留：其它 mock 分支（revoke、nsScope）还在按这两个字段过滤
 			revoked: false,
 		};
 		state.keys.push(k);
-		// 明文只返回一次（与真实后端一致）
-		return json({ key: clone(k), plaintext: k.prefix + "_" + "x".repeat(28) }, 201);
+		// 对齐真后端 internal/server/handlers.go:295（HTTP 200）：
+		//   { ok: true, key: "<明文串>", record: {…} } —— key 是**明文字符串**，record 是记录本体。
+		// 前端 keys.html:1047 直接读 data.key 当字符串用（NEW_KEY_PLAIN = data.key || data.plaintext），
+		// 早先 mock 把记录对象塞进 key、明文放 plaintext，页面上「明文」就成了一坨对象。
+		// 明文只返回一次（与真实后端一致），沿用既有构造：prefix + "_" + 28 个 x。
+		const plaintext = k.prefix + "_" + "x".repeat(28);
+		return json({ ok: true, key: plaintext, record: clone(k) }, 200);
 	});
 
 	on("POST", /^\/v1\/keys\/([^/]+)\/revoke$/, (ctx) => {
@@ -3532,8 +3570,12 @@
 		}),
 	);
 	on("DELETE", /^\/v1\/auth\/sessions\/([^/]+)$/, () => json({ ok: true }));
+	// 对齐真后端 internal/server/auth_handlers.go:546：返回 { unusedCount, hasCodes }。
+	// security 页（web-src/pages/security.html:1833-1843）只读 data.unusedCount（number）
+	// 来显示剩余数量；早先 mock 给的是 {enabled, remaining, total} → 读不到 → 页面只能
+	// 走 recoveryDemo 分支显示「无法加载恢复码状态」。
 	on("GET", /^\/v1\/auth\/recovery\/status$/, () =>
-		json({ enabled: true, remaining: 8, total: 10 }),
+		json({ unusedCount: 8, hasCodes: true }),
 	);
 	on("POST", /^\/v1\/auth\/recovery\/regenerate$/, () =>
 		json({ codes: Array.from({ length: 10 }, () => "MOCK-CODE-" + Math.random().toString(36).slice(2, 8)) }),
@@ -3687,40 +3729,61 @@
 	// ---------- 预览提示条 ----------
 	//
 	// 让人一眼知道"这是假数据"，否则很容易误以为后端坏了。
+	//
+	// 位置改为**左下角**小卡片（早先是底部居中的黑影胶囊，会压在页面底部内容上）。
+	// 颜色全走 web/tokens.css 的主题 token，不再硬编码 rgba/hex：
+	// 旧的 #fbbf24 在亮色主题（--surface-1 接近白）上对比不足，且切主题时不变。
+	// ≤639px 时左右贴边（8px），贴底占满一行，不居中遮挡内容。
+	const BANNER_DISMISSED_KEY = "anotify-mock-banner";
+
+	// localStorage 在隐私模式 / 被禁 / 部分 iframe 沙箱里读会抛异常：
+	// 读不到就当"没关过"，写不进也只影响刷新后的复现，不能把整个 mock 拖挂。
+	function bannerDismissed() {
+		try {
+			return window.localStorage.getItem(BANNER_DISMISSED_KEY) === "1";
+		} catch (e) {
+			return false;
+		}
+	}
+
 	function mountBanner() {
+		// 关过一次就永不再挂（刷新也不再复现）
+		if (bannerDismissed()) return;
 		const css = document.createElement("style");
 		css.textContent = `
 			#mock-banner {
 				position: fixed;
-				left: 50%;
+				left: 12px;
 				bottom: 12px;
-				transform: translateX(-50%);
 				z-index: 999999;
 				display: flex;
 				align-items: center;
 				gap: 8px;
-				padding: 7px 14px;
-				border-radius: 9999px;
-				background: rgba(24, 24, 27, 0.94);
-				border: 1px solid rgba(251, 191, 36, 0.45);
-				color: #fbbf24;
-				font-size: 12px;
+				padding: 6px 10px;
+				border-radius: var(--r-md);
+				background: var(--panel-overlay);
+				border: 1px solid var(--line);
+				color: var(--warn);
+				font-size: 11.5px;
 				font-weight: 500;
 				font-family: ui-sans-serif, system-ui, sans-serif;
-				box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+				box-shadow: var(--shadow-2);
 				backdrop-filter: blur(8px);
 				cursor: pointer;
 				user-select: none;
 			}
 			#mock-banner .dot {
 				width: 6px; height: 6px; border-radius: 9999px;
-				background: #fbbf24;
-				box-shadow: 0 0 8px #fbbf24;
+				background: var(--warn);
+				box-shadow: 0 0 8px var(--warn);
 			}
 			#mock-banner .x {
 				margin-left: 4px; opacity: 0.6; font-size: 14px; line-height: 1;
 			}
 			#mock-banner:hover .x { opacity: 1; }
+			@media (max-width: 639px) {
+				#mock-banner { left: 8px; right: 8px; bottom: 8px; }
+			}
 		`;
 		document.head.appendChild(css);
 
@@ -3737,7 +3800,15 @@
 		bar.appendChild(dot);
 		bar.appendChild(txt);
 		bar.appendChild(x);
-		bar.addEventListener("click", () => bar.remove());
+		bar.addEventListener("click", () => {
+			// 写标记再移除：下次加载（含刷新）就不再挂
+			try {
+				window.localStorage.setItem(BANNER_DISMISSED_KEY, "1");
+			} catch (e) {
+				/* localStorage 不可用：本次会话照样关掉就行 */
+			}
+			bar.remove();
+		});
 
 		const attach = () => document.body && document.body.appendChild(bar);
 		if (document.readyState === "loading") {

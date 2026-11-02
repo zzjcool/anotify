@@ -125,37 +125,10 @@
         overflow-wrap: anywhere;
       }
 
-      /* 任务状态：只染文字。九态一一映射 tokens.css 的 --st-*，
-         和链路图 / 事件流是同一套色板（以前这九个色值是在这里硬编码的）。 */
+      /* 任务状态：状态文字用 ui.css 的 .st-text.<state>（九态映射 tokens.css 的 --st-*），
+         和链路图 / 事件流是同一套色板；本页只控制字号，不再重复定义九条配色。 */
       .np-state {
         font-size: 11px;
-      }
-      .np-st-pending {
-        color: var(--st-pending);
-      }
-      .np-st-assigned {
-        color: var(--st-assigned);
-      }
-      .np-st-acked {
-        color: var(--st-acked);
-      }
-      .np-st-running {
-        color: var(--st-running);
-      }
-      .np-st-succeeded {
-        color: var(--st-succeeded);
-      }
-      .np-st-failed {
-        color: var(--st-failed);
-      }
-      .np-st-canceled {
-        color: var(--st-canceled);
-      }
-      .np-st-abandoned {
-        color: var(--st-abandoned);
-      }
-      .np-st-lease_expired {
-        color: var(--st-lease_expired);
       }
 
       /* 任务行右侧：耗时 / 时间 / 链路入口。等宽数字避免相邻行抖动。 */
@@ -773,8 +746,10 @@
         const main = el("div", "list-main");
         const head = el("div", "np-row-head");
         head.appendChild(el("span", "list-title", capLabel(tk.capabilityId, tk.capability, tk.version)));
+        // 九态先过白名单，再拼 ui.css 的 .st-text + .st-<state>（同一套 --st-* 色板）
         const st = String(tk.status || "pending");
-        const stateCls = TASK_STATES.indexOf(st) >= 0 ? " np-st-" + st : "";
+        const stateCls =
+          TASK_STATES.indexOf(st) >= 0 ? " st-text st-" + st : "";
         head.appendChild(el("span", "np-state" + stateCls, taskStateText(st)));
         main.appendChild(head);
         row.appendChild(main);

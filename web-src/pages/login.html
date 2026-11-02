@@ -201,9 +201,11 @@
         color: var(--muted);
       }
 
-      /* ---- 登录 / 注册分段控件：亮色三层必须可辨（REVIEW-2 F3）----
-         卡片 --surface-1 / 轨道 --surface-3 / 选中项回到 --surface-1 + --shadow-1。
-         不用 bg-white/* 之类的白 alpha（亮色下三层会塌成同一色）。 */
+      /* ---- 登录 / 注册分段控件：选中项用品牌色区分（REVIEW-2 F3）----
+         轨道 --surface-3 + --line 描边；选中项改用 --accent-soft 底 + --accent-strong 字
+         （与 ui.css 的 .tab.active 同一组声明，不许再回到「选中项同 --surface-1」那种
+         暗色下与轨道同色、几乎不可辨的写法）。两套主题都由 token 决定，
+         不用 bg-white/* 之类的写死白 alpha。 */
       .auth-tabs {
         display: flex;
         width: 100%;
@@ -235,10 +237,9 @@
         color: var(--text);
       }
       .tab-btn.active {
-        background: var(--surface-1);
-        border-color: var(--line);
-        color: var(--text);
-        box-shadow: var(--shadow-1);
+        background: var(--accent-soft);
+        border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+        color: var(--accent-strong);
       }
 
       /* 面板之间的纵向节奏（不声明 display：面板靠 JS 切 .hidden） */
