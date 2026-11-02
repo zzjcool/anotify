@@ -4,19 +4,27 @@
 
 {{define "style"}}
     <style>
+      /* CLI 设备授权页（UI v2）
+         ------------------------------------------------------------
+         八个状态全部预渲染，JS 只切 hidden/.flex（showState 按 id 遍历 STATES，
+         并把焦点交给该 section 的 .state-title）。组件一律用 web/ui.css 的共享类
+         （.card/.btn/.status-badge/.field-error/.dot/.page-head/.page-sub），这里
+         只留本页独有的骨架与一处动效。
+         颜色只来自 web/tokens.css —— 亮主题下这些规则也要读得清，所以这里不再有
+         硬编码色值（含白 alpha）与 Tailwind 的调色板类（白/各种灰蓝的写死色阶）。 */
+
+      /* 底纹：layout 只输出 <div class="grid-overlay"> 节点，样式由本页提供。
+         原先是 2.2% 白 alpha 的网格 —— 亮色主题下白网格叠在浅底上是一层白雾，
+         改用 --line（暗/亮各有定义），密度 72px → 32px 更细。 */
       .grid-overlay {
         position: fixed;
         inset: 0;
         z-index: 0;
         pointer-events: none;
         background-image:
-          linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
-          linear-gradient(
-            90deg,
-            rgba(255, 255, 255, 0.022) 1px,
-            transparent 1px
-          );
-        background-size: 72px 72px;
+          linear-gradient(var(--line) 1px, transparent 1px),
+          linear-gradient(90deg, var(--line) 1px, transparent 1px);
+        background-size: 32px 32px;
         mask-image: radial-gradient(
           ellipse 90% 70% at 50% 45%,
           black 30%,
@@ -28,73 +36,436 @@
           transparent 75%
         );
       }
+
+      /* ---------- 状态骨架 ----------
+         section 的 display 仍由 JS 切（静态 class 只有 .state + 需要隐藏时 .hidden；
+         showState 会加/去 .flex）。方向/对齐全写在 .state 里，不再靠 flex-col 等
+         工具类，避免 Tailwind 产物与页内规则抢同一属性。 */
+      .state {
+        width: 100%;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        text-align: center;
+      }
+
+      /* 状态图标：56px 圆角方底，色相随语义走 token */
+      .state-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        flex: none;
+        border-radius: var(--r-lg);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .state-icon svg {
+        width: 26px;
+        height: 26px;
+      }
+      .state-icon--success {
+        background: var(--success-soft);
+        color: var(--success);
+      }
+      .state-icon--warn {
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+      .state-icon--error {
+        background: var(--error-soft);
+        color: var(--error);
+      }
+      .state-icon--off {
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+
+      /* 卡片：entry/confirm 是表单（左对齐），终态是状态面板（居中 —— 见 .state-panel，
+         声明在后面，同优先级覆盖 text-align）。 */
+      .state-card {
+        width: 100%;
+        padding: 24px;
+        border-radius: var(--r-xl);
+        text-align: left;
+      }
+
+      /* 终态面板：徽章 + 标题 + 说明 + 动作，统一居中堆叠 */
+      .state-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        text-align: center;
+      }
+
+      /* 状态标题：焦点管理钩子（showState 把焦点交给它），所以必须留在每个
+         section 的标题元素上。outline:none 是原有约定 —— 程序化 focus 不画焦点环，
+         键盘路径仍由 ui.css 的全局 :focus-visible 覆盖按钮 / 链接。 */
+      .state-title {
+        outline: none;
+        font-size: 18px;
+        font-weight: 600;
+        line-height: 1.35;
+        color: var(--text);
+      }
+      /* entry 态那个 h1 同时是页标题：沿用契约 §11 C-2 的 28px Inter 600 -0.02em
+         （ui.css 的 .page-title 自带，这里只把 .state-title 的 18px 按特异性压回去）。 */
+      .state-title.page-title {
+        font-size: 28px;
+      }
+      @media (max-width: 767px) {
+        .state-title.page-title {
+          font-size: 24px;
+        }
+      }
+      @media (max-width: 639px) {
+        .state-title.page-title {
+          font-size: 22px;
+        }
+      }
+
+      /* 最小页头（契约 §11 C-3）：品牌行由 focus 布局提供，页面只出一个 h1 + 一句
+         副标题。.page-head 默认是两端对齐的横排，focus 页要竖排居中。 */
+      .state-head {
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        text-align: center;
+      }
+
+      .state-desc {
+        max-width: 36ch;
+        font-size: 13px;
+        line-height: 1.7;
+        color: var(--muted);
+      }
+      .state-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      /* 次要导航（返回工作台等）：纯文字链接，不抢主按钮 */
+      .state-link {
+        font-size: 12px;
+        color: var(--faint);
+        transition: color var(--dur-fast) var(--ease);
+      }
+      .state-link:hover {
+        color: var(--text);
+      }
+
+      /* ---------- 入口态短码表单 ---------- */
+      /* 字距是历史横向溢出风险点：字号跟视口缩，宽度锁 100%，390 视口实测不溢出 */
+      .code-input {
+        width: 100%;
+        max-width: 100%;
+        padding: 0.55em 0.6em;
+        font-size: clamp(1.2rem, 3.4vw, 1.5rem);
+        letter-spacing: 0.2em;
+        text-align: center;
+      }
+      .entry-error {
+        margin-top: 8px;
+      }
+      /* 主 CTA：全宽 44px（.btn 基类 36px 对触屏偏矮） */
+      .btn-block {
+        width: 100%;
+        height: 44px;
+        font-size: 14px;
+      }
+      .entry-submit {
+        margin-top: 16px;
+      }
+      .entry-hint {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin-top: 14px;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--faint);
+      }
+      .entry-hint svg {
+        width: 14px;
+        height: 14px;
+        flex: none;
+        margin-top: 2px;
+      }
+
+      /* ---------- confirm 态：设备卡 / 身份条 / 权限勾选 ---------- */
+      .device-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-2);
+      }
+      .device-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        flex: none;
+        border-radius: var(--r-sm);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .device-icon svg {
+        width: 18px;
+        height: 18px;
+      }
+      .device-meta {
+        min-width: 0;
+      }
+      /* 设备名可能很长（服务端允许 64 字符），必须自己截断，否则 390 视口顶宽 */
+      .device-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .device-hint {
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--faint);
+      }
+
+      /* 身份条（防错账号）：沿用 .list-row 的行高/内距语言，底色走 accent token。
+         刻意不用 .card —— 这是强调块而不是又一张卡片（卡片已经在外面了）。 */
+      .identity {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 4px;
+        min-height: 56px;
+        margin-top: 12px;
+        padding: 10px 14px;
+        border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+        border-radius: var(--r-md);
+        background: var(--accent-soft);
+      }
+      .identity-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .identity-avatar {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        flex: none;
+        border-radius: var(--r-full);
+        border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+        background: color-mix(in srgb, var(--accent) 20%, transparent);
+        color: var(--accent-strong);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .identity-text {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .identity-text b {
+        font-weight: 600;
+        color: var(--text);
+      }
+      .identity-switch {
+        display: block;
+        margin-top: 4px;
+        font-size: 11px;
+        color: var(--accent-strong);
+      }
+      .identity-switch:hover {
+        text-decoration: underline;
+      }
+
+      .scope-group {
+        margin-top: 18px;
+      }
+      .scope-label {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--muted);
+      }
+      .scope-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .scope-option {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        cursor: pointer;
+        transition:
+          border-color var(--dur-fast) var(--ease),
+          background var(--dur-fast) var(--ease);
+      }
+      .scope-option:hover {
+        border-color: var(--line-strong);
+      }
+      /* 勾选态统一走 accent（原先三项各染 indigo/emerald/amber，等于给权限
+         分成三种「状态色」，不表达任何语义） */
+      .scope-option:has(:checked) {
+        border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+        background: var(--accent-soft);
+      }
+      /* 未申请的 scope 被 JS 置 disabled：这里直接按 :disabled 收光标与透明度，
+         不依赖 JS 加的那些工具类（tailwind 工具类会输给页内同优先级规则）。 */
+      .scope-option:has(input:disabled) {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+      .scope-cb {
+        margin-top: 2px;
+        accent-color: var(--accent);
+      }
+      .scope-body {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .scope-name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .scope-code {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .scope-desc {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .scope-error {
+        margin-top: 8px;
+      }
+
+      .confirm-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 20px;
+      }
+      .confirm-approve {
+        flex: 1;
+      }
+      /* 提交中提示行：JS 切 hidden/.flex */
+      .confirm-busy {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        margin-top: 12px;
+        font-size: 11px;
+        color: var(--faint);
+      }
+
+      /* 指纹环：accent 30% → 0% 走 color-mix，不写死品牌色的 alpha 值 */
       .fingerprint-ring {
         animation: fpPulse 2s ease-in-out infinite;
       }
       @keyframes fpPulse {
         0%,
         100% {
-          box-shadow: 0 0 0 0 rgba(139, 139, 253, 0.3);
+          box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent);
         }
         50% {
-          box-shadow: 0 0 0 8px rgba(139, 139, 253, 0);
+          box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent);
         }
       }
+      /* layout 冻结（web-src/layouts/focus.html 不在本页范围）：品牌行那颗红点
+         带 animate-ping 永续脉动且没有语义（REVIEW-2 F15），用页级覆盖只跑一次。
+         与 login.html 保持同一处理，三个 focus 页红点行为一致。 */
+      header .animate-ping {
+        animation-iteration-count: 1;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        header .animate-ping {
+          animation: none;
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         .fingerprint-ring {
           animation: none;
         }
       }
-      /* 终态标题用于焦点管理 */
-      .state-title {
-        outline: none;
+
+      /* ---------- 信任脚注 ---------- */
+      .trust-note {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 6px 14px;
+        margin-top: 28px;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--faint);
+      }
+      .trust-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
       }
     </style>
 {{end}}
 
 {{define "content"}}
 
-      <!-- ========== 状态区：所有 section 预渲染，JS 只切 hidden ========== -->
+      <!-- ========== 状态区：八个 section 全部预渲染，JS 只切 hidden ========== -->
       <div id="state-stack" class="w-full">
 
-        <!-- ===== entry 短码输入态 ===== -->
-        <section
-          id="state-entry"
-          class="flex flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--accent-soft)"
+        <!-- ===== entry 短码输入态（全页唯一的 h1 + 最小页头） ===== -->
+        <section id="state-entry" class="state flex">
+          <span class="state-icon">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--accent)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M4 17l6-6-6-6" />
-                <path d="M12 19h8" />
-              </svg>
-            </div>
-          </div>
-          <h1
-            class="state-title mt-6 font-display text-3xl text-white"
-            tabindex="-1"
-          >
-            {{t "cliauth.entry.heading"}}
-          </h1>
-          <p class="mt-2 text-sm text-zinc-400">{{t "cliauth.entry.sub"}}</p>
+              <path d="M4 17l6-6-6-6" />
+              <path d="M12 19h8" />
+            </svg>
+          </span>
 
-          <div class="glass mt-6 w-full rounded-3xl p-8 text-left">
+          <!-- 契约 §11 C-3：品牌行由 focus 布局提供，页面只出一个 h1 + 一句副标题 -->
+          <div class="page-head state-head">
+            <h1 class="state-title page-title" tabindex="-1">
+              {{t "cliauth.entry.heading"}}
+            </h1>
+            <p class="page-sub">{{t "cliauth.entry.sub"}}</p>
+          </div>
+
+          <div class="card state-card">
             <input
               id="code-input"
               type="text"
-              class="input mono w-full text-center"
+              class="input mono code-input"
               maxlength="9"
               placeholder="{{t "cliauth.entry.placeholder"}}"
               autocomplete="off"
@@ -102,27 +473,24 @@
               autocorrect="off"
               spellcheck="false"
               inputmode="text"
-              style="font-size: 1.5rem; letter-spacing: 0.2em"
             />
-            <p
-              id="entry-error"
-              class="mt-2 hidden text-xs text-rose-300"
-            >{{t "cliauth.entry.not_found"}}</p>
+            <p id="entry-error" class="field-error entry-error hidden"
+              >{{t "cliauth.entry.not_found"}}</p
+            >
             <button
               id="entry-continue"
               type="button"
-              class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+              class="btn btn-primary btn-block entry-submit"
             >
-              <span id="entry-continue-label">{{t "cliauth.entry.continue"}}</span>
+              <span id="entry-continue-label"
+                >{{t "cliauth.entry.continue"}}</span
+              >
               <span id="entry-continue-busy" class="hidden"
                 >{{t "cliauth.entry.busy"}}</span
               >
             </button>
-            <div
-              class="mt-4 flex items-center justify-center gap-2 text-[11px] text-zinc-500"
-            >
+            <div class="entry-hint">
               <svg
-                class="h-3.5 w-3.5"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -136,51 +504,31 @@
           </div>
         </section>
 
-        <!-- ===== confirm 确认态 ===== -->
-        <section
-          id="state-confirm"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="fingerprint-ring flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--accent-soft)"
+        <!-- ===== confirm 确认态（e2e AC-05：正文必须含设备名与 scope 文案） ===== -->
+        <section id="state-confirm" class="state hidden">
+          <span class="state-icon fingerprint-ring">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--accent)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M4 17l6-6-6-6" />
-                <path d="M12 19h8" />
-              </svg>
-            </div>
-          </div>
-          <h1
-            class="state-title mt-6 font-display text-3xl text-white"
-            tabindex="-1"
-          >
+              <path d="M4 17l6-6-6-6" />
+              <path d="M12 19h8" />
+            </svg>
+          </span>
+          <h2 class="state-title" tabindex="-1">
             {{t "cliauth.confirm.heading"}}
-          </h1>
-          <p class="mt-2 text-sm text-zinc-400">{{t "cliauth.confirm.sub"}}</p>
+          </h2>
+          <p class="state-desc">{{t "cliauth.confirm.sub"}}</p>
 
-          <div class="glass mt-6 w-full rounded-3xl p-8 text-left">
-            <!-- 设备卡 -->
-            <div
-              class="flex items-center gap-3 rounded-xl px-4 py-3.5 ring-1 ring-white/10"
-              style="background: var(--surface-2)"
-            >
-              <div
-                class="plat-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-                style="background: var(--accent-soft); color: var(--accent)"
-              >
+          <div class="card state-card">
+            <!-- 设备卡：e2e 从 body.innerText 里找设备名，文本节点不能少 -->
+            <div class="device-row">
+              <span class="device-icon">
                 <svg
-                  class="h-5 w-5"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -191,141 +539,105 @@
                   <path d="M4 17l6-6-6-6" />
                   <path d="M12 19h8" />
                 </svg>
-              </div>
-              <div class="min-w-0">
-                <div
-                  id="confirm-device"
-                  class="truncate text-sm font-medium text-white"
-                  title=""
-                ></div>
-                <div class="mt-0.5 text-[11px] text-zinc-500">
+              </span>
+              <div class="device-meta">
+                <div id="confirm-device" class="device-name" title=""></div>
+                <div class="device-hint">
                   {{t "cliauth.confirm.ttl_hint"}}
                 </div>
               </div>
             </div>
 
-            <!-- 身份条（防错账号） -->
-            <div
-              class="mt-3 rounded-xl px-4 py-3 ring-1"
-              style="
-                background: var(--accent-soft);
-                --tw-ring-color: rgba(139, 139, 253, 0.2);
-              "
-            >
-              <div class="flex items-center gap-3">
-                <div
-                  class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/30 to-violet-500/30 text-sm font-medium ring-1 ring-white/15"
-                  style="color: var(--accent-strong)"
-                >
-                  <span id="identity-avatar"></span>
-                </div>
-                <p class="text-sm text-zinc-200">
+            <!-- 身份条（防错账号）：现在用 accent token 底与边 -->
+            <div class="identity">
+              <div class="identity-row">
+                <span class="identity-avatar"
+                  ><span id="identity-avatar"></span
+                ></span>
+                <p class="identity-text">
                   <span>{{t "cliauth.confirm.identity_prefix"}}</span>
-                  <b class="text-white" id="identity-name"></b>
+                  <b id="identity-name"></b>
                   <span>{{t "cliauth.confirm.identity_suffix"}}</span>
                 </p>
               </div>
-              <a
-                id="switch-account"
-                href="#"
-                class="mt-0.5 block text-[11px] transition-colors"
-                style="color: var(--accent-strong)"
+              <a id="switch-account" href="#" class="identity-switch"
                 >{{t "cliauth.confirm.switch_prefix"}}<span
-                    id="switch-name"
-                  ></span
+                  id="switch-name"
+                ></span
                 >{{t "cliauth.confirm.switch_suffix"}}</a
               >
             </div>
 
-            <!-- scope 勾选组 -->
-            <div class="mt-5">
-              <span class="text-xs font-medium text-zinc-400"
-                >{{t "cliauth.confirm.scopes_label"}}</span
-              >
-              <div class="mt-2 space-y-2">
-                <label
-                  class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-indigo-400/50 has-[:checked]:bg-indigo-400/5"
-                >
+            <!-- 权限勾选组：勾选态统一 accent；未申请的项由 JS 置 disabled -->
+            <div class="scope-group">
+              <span class="scope-label">{{t "cliauth.confirm.scopes_label"}}</span>
+              <div class="scope-list">
+                <label class="scope-option">
                   <input
                     type="checkbox"
                     name="cli-scope"
                     value="notify:send"
-                    class="mt-0.5 scope-cb"
+                    class="scope-cb"
                   />
-                  <span>
-                    <span class="block text-sm text-zinc-200"
+                  <span class="scope-body">
+                    <span class="scope-name"
                       >{{t "cliauth.confirm.scope_send_label"}}
-                      <code class="mono text-[11px] text-zinc-500"
-                        >notify:send</code
-                      ></span
+                      <code class="mono scope-code">notify:send</code></span
                     >
-                    <span class="mt-0.5 block text-[11px] text-zinc-500"
+                    <span class="scope-desc"
                       >{{t "cliauth.confirm.scope_send_desc"}}</span
                     >
                   </span>
                 </label>
-                <label
-                  class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-emerald-400/50 has-[:checked]:bg-emerald-400/5"
-                >
+                <label class="scope-option">
                   <input
                     type="checkbox"
                     name="cli-scope"
                     value="notify:receive"
-                    class="mt-0.5 scope-cb"
+                    class="scope-cb"
                   />
-                  <span>
-                    <span class="block text-sm text-zinc-200"
+                  <span class="scope-body">
+                    <span class="scope-name"
                       >{{t "cliauth.confirm.scope_receive_label"}}
-                      <code class="mono text-[11px] text-zinc-500"
-                        >notify:receive</code
-                      ></span
+                      <code class="mono scope-code">notify:receive</code></span
                     >
-                    <span class="mt-0.5 block text-[11px] text-zinc-500"
+                    <span class="scope-desc"
                       >{{t "cliauth.confirm.scope_receive_desc"}}</span
                     >
                   </span>
                 </label>
-                <label
-                  class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-amber-400/50 has-[:checked]:bg-amber-400/5"
-                >
+                <label class="scope-option">
                   <input
                     type="checkbox"
                     name="cli-scope"
                     value="devices:read"
-                    class="mt-0.5 scope-cb"
+                    class="scope-cb"
                   />
-                  <span>
-                    <span class="block text-sm text-zinc-200"
+                  <span class="scope-body">
+                    <span class="scope-name"
                       >{{t "cliauth.confirm.scope_read_label"}}
-                      <code class="mono text-[11px] text-zinc-500"
-                        >devices:read</code
-                      ></span
+                      <code class="mono scope-code">devices:read</code></span
                     >
-                    <span class="mt-0.5 block text-[11px] text-zinc-500"
+                    <span class="scope-desc"
                       >{{t "cliauth.confirm.scope_read_desc"}}</span
                     >
                   </span>
                 </label>
               </div>
-              <p
-                id="scope-error"
-                class="mt-2 hidden text-xs text-rose-300"
-              >{{t "cliauth.confirm.scopes_required"}}</p>
+              <p id="scope-error" class="field-error scope-error hidden"
+                >{{t "cliauth.confirm.scopes_required"}}</p
+              >
             </div>
 
-            <!-- 按钮行 -->
-            <div class="mt-6 flex gap-3">
-              <button
-                id="deny-btn"
-                type="button"
-                class="btn-ghost rounded-xl px-4 py-2.5 text-sm"
-              >
+            <!-- 按钮行：主操作 accent 填充，拒绝走 ghost（不染 danger，破坏性由文案表达） -->
+            <div class="confirm-actions">
+              <button id="deny-btn" type="button" class="btn btn-ghost">
                 {{t "cliauth.confirm.deny"}}
               </button>
               <button
                 id="approve-btn"
                 type="button"
-                class="btn-primary flex-1 rounded-xl px-4 py-2.5 text-sm font-medium"
+                class="btn btn-primary confirm-approve"
               >
                 <span id="approve-label">{{t "cliauth.confirm.approve"}}</span>
                 <span id="approve-busy" class="hidden"
@@ -334,11 +646,8 @@
               </button>
             </div>
 
-            <!-- busy 行 -->
-            <div
-              id="confirm-busy"
-              class="mt-3 hidden items-center justify-center gap-2 text-[11px] text-zinc-500"
-            >
+            <!-- 提交中提示行 -->
+            <div id="confirm-busy" class="confirm-busy hidden">
               <span class="dot dot-warn badge-dot"></span>
               <span>{{t "cliauth.confirm.busy"}}</span>
             </div>
@@ -346,325 +655,218 @@
         </section>
 
         <!-- ===== approved 已批准 ===== -->
-        <section
-          id="state-approved"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--success-soft)"
+        <section id="state-approved" class="state hidden">
+          <span class="state-icon state-icon--success">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--success)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+              <path d="M22 4L12 14.01l-3-3" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <span class="status-badge status-success"
+              >{{t "cliauth.done.approved_badge"}}</span
+            >
+            <h2 class="state-title" tabindex="-1">
+              {{t "cliauth.done.approved_title"}}
+            </h2>
+            <p class="state-desc">{{t "cliauth.done.approved_desc"}}</p>
+            <div class="state-actions">
+              <a href="keys.html" class="btn btn-primary"
+                >{{t "cliauth.done.approved_keys_link"}}</a
               >
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                <path d="M22 4L12 14.01l-3-3" />
-              </svg>
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
+              >
             </div>
-          </div>
-          <span
-            class="status-badge status-success mt-5"
-            >{{t "cliauth.done.approved_badge"}}</span
-          >
-          <h2
-            class="state-title mt-3 text-lg font-medium text-white"
-            tabindex="-1"
-          >
-            {{t "cliauth.done.approved_title"}}
-          </h2>
-          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
-            {{t "cliauth.done.approved_desc"}}
-          </p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <a
-              href="keys.html"
-              class="text-sm transition-colors"
-              style="color: var(--accent-strong)"
-              >{{t "cliauth.done.approved_keys_link"}}</a
-            >
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
           </div>
         </section>
 
         <!-- ===== denied 已拒绝 ===== -->
-        <section
-          id="state-denied"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--warn-soft)"
+        <section id="state-denied" class="state hidden">
+          <span class="state-icon state-icon--warn">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--warn)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <path d="M4 4l16 16" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <span class="status-badge status-warn"
+              >{{t "cliauth.done.denied_badge"}}</span
+            >
+            <h2 class="state-title" tabindex="-1">
+              {{t "cliauth.done.denied_title"}}
+            </h2>
+            <p class="state-desc">{{t "cliauth.done.denied_desc"}}</p>
+            <div class="state-actions">
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
               >
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                <path d="M4 4l16 16" />
-              </svg>
             </div>
-          </div>
-          <span
-            class="status-badge status-warn mt-5"
-            >{{t "cliauth.done.denied_badge"}}</span
-          >
-          <h2
-            class="state-title mt-3 text-lg font-medium text-white"
-            tabindex="-1"
-          >
-            {{t "cliauth.done.denied_title"}}
-          </h2>
-          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
-            {{t "cliauth.done.denied_desc"}}
-          </p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
           </div>
         </section>
 
         <!-- ===== expired 已过期 ===== -->
-        <section
-          id="state-expired"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--warn-soft)"
+        <section id="state-expired" class="state hidden">
+          <span class="state-icon state-icon--warn">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--warn)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 6v6l4 2" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <span class="status-badge status-warn"
+              >{{t "cliauth.done.expired_badge"}}</span
+            >
+            <h2 class="state-title" tabindex="-1">
+              {{t "cliauth.done.expired_title"}}
+            </h2>
+            <p class="state-desc">{{t "cliauth.done.expired_desc"}}</p>
+            <div class="state-actions">
+              <button
+                type="button"
+                class="btn btn-primary"
+                onclick="Anotify._cliAuthResetEntry()"
               >
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 6v6l4 2" />
-              </svg>
+                {{t "cliauth.done.expired_action"}}
+              </button>
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
+              >
             </div>
-          </div>
-          <span
-            class="status-badge status-warn mt-5"
-            >{{t "cliauth.done.expired_badge"}}</span
-          >
-          <h2
-            class="state-title mt-3 text-lg font-medium text-white"
-            tabindex="-1"
-          >
-            {{t "cliauth.done.expired_title"}}
-          </h2>
-          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
-            {{t "cliauth.done.expired_desc"}}
-          </p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <button
-              type="button"
-              class="btn-ghost rounded-xl px-4 py-2 text-sm"
-              onclick="Anotify._cliAuthResetEntry()"
-            >
-              {{t "cliauth.done.expired_action"}}
-            </button>
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
           </div>
         </section>
 
         <!-- ===== notfound 未找到 ===== -->
-        <section
-          id="state-notfound"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--error-soft)"
+        <section id="state-notfound" class="state hidden">
+          <span class="state-icon state-icon--error">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--error)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <circle cx="12" cy="12" r="10" />
+              <path d="M15 9l-6 6M9 9l6 6" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <span class="status-badge status-error"
+              >{{t "cliauth.done.notfound_badge"}}</span
+            >
+            <h2 class="state-title" tabindex="-1">
+              {{t "cliauth.done.notfound_title"}}
+            </h2>
+            <p class="state-desc">{{t "cliauth.done.notfound_desc"}}</p>
+            <div class="state-actions">
+              <button
+                type="button"
+                class="btn btn-primary"
+                onclick="Anotify._cliAuthResetEntry()"
               >
-                <circle cx="12" cy="12" r="10" />
-                <path d="M15 9l-6 6M9 9l6 6" />
-              </svg>
+                {{t "cliauth.done.notfound_action"}}
+              </button>
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
+              >
             </div>
-          </div>
-          <span
-            class="status-badge status-error mt-5"
-            >{{t "cliauth.done.notfound_badge"}}</span
-          >
-          <h2
-            class="state-title mt-3 text-lg font-medium text-white"
-            tabindex="-1"
-          >
-            {{t "cliauth.done.notfound_title"}}
-          </h2>
-          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
-            {{t "cliauth.done.notfound_desc"}}
-          </p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <button
-              type="button"
-              class="btn-ghost rounded-xl px-4 py-2 text-sm"
-              onclick="Anotify._cliAuthResetEntry()"
-            >
-              {{t "cliauth.done.notfound_action"}}
-            </button>
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
           </div>
         </section>
 
         <!-- ===== consumed 已领取 ===== -->
-        <section
-          id="state-consumed"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--surface-2)"
+        <section id="state-consumed" class="state hidden">
+          <span class="state-icon state-icon--off">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--muted)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 16v-4M12 8h.01" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <span class="status-badge status-off"
+              >{{t "cliauth.done.consumed_badge"}}</span
+            >
+            <h2 class="state-title" tabindex="-1">
+              {{t "cliauth.done.consumed_title"}}
+            </h2>
+            <p class="state-desc">{{t "cliauth.done.consumed_desc"}}</p>
+            <div class="state-actions">
+              <a href="keys.html" class="btn btn-primary"
+                >{{t "cliauth.done.approved_keys_link"}}</a
               >
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 16v-4M12 8h.01" />
-              </svg>
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
+              >
             </div>
-          </div>
-          <span
-            class="status-badge status-off mt-5"
-            >{{t "cliauth.done.consumed_badge"}}</span
-          >
-          <h2
-            class="state-title mt-3 text-lg font-medium text-white"
-            tabindex="-1"
-          >
-            {{t "cliauth.done.consumed_title"}}
-          </h2>
-          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
-            {{t "cliauth.done.consumed_desc"}}
-          </p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <a
-              href="keys.html"
-              class="text-sm transition-colors"
-              style="color: var(--accent-strong)"
-              >{{t "cliauth.done.approved_keys_link"}}</a
-            >
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
           </div>
         </section>
 
-        <!-- ===== error 网络错误 ===== -->
-        <section
-          id="state-error"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--error-soft)"
+        <!-- ===== error 网络错误（无对应徽章文案，只留标题 + 说明 + 动作） ===== -->
+        <section id="state-error" class="state hidden">
+          <span class="state-icon state-icon--error">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--error)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <path
+                d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+              />
+              <path d="M12 9v4M12 17h.01" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <h2 class="state-title" tabindex="-1">
+              {{t "cliauth.done.error_title"}}
+            </h2>
+            <p class="state-desc">{{t "cliauth.done.error_desc"}}</p>
+            <div class="state-actions">
+              <button id="retry-btn" type="button" class="btn btn-primary">
+                {{t "cliauth.done.retry"}}
+              </button>
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
               >
-                <path
-                  d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
-                />
-                <path d="M12 9v4M12 17h.01" />
-              </svg>
             </div>
-          </div>
-          <h2
-            class="state-title mt-5 text-lg font-medium text-white"
-            tabindex="-1"
-          >
-            {{t "cliauth.done.error_title"}}
-          </h2>
-          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
-            {{t "cliauth.done.error_desc"}}
-          </p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <button
-              id="retry-btn"
-              type="button"
-              class="btn-ghost rounded-xl px-4 py-2 text-sm"
-            >
-              {{t "cliauth.done.retry"}}
-            </button>
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
           </div>
         </section>
       </div>
 
       <!-- 信任脚注 -->
-      <div
-        class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-zinc-600"
-      >
-        <span class="flex items-center gap-1.5">
-          <span class="badge-dot h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+      <div class="trust-note">
+        <span class="trust-item">
+          <span class="dot dot-success"></span>
           {{t "cliauth.trust.local"}}
         </span>
         <span>·</span>

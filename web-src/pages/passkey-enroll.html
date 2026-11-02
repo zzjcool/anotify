@@ -4,19 +4,29 @@
 
 {{define "style"}}
     <style>
+      /* 新设备添加 Passkey 页（UI v2）
+         ------------------------------------------------------------
+         六个状态全部预渲染，JS 只切 hidden/.flex（showState 按 id 遍历 STATES，
+         并把焦点交给该 section 的 .state-title）。组件一律用 web/ui.css 的共享类
+         （.card/.list-row/.badge/.btn/.status-badge/.field/.dot/.page-head/.page-sub），
+         这里只留本页独有的骨架与三处动效。
+         与 cli-auth.html 的 entry 态同源，但按契约 §12「共享文件冻结」不跨文件抽象，
+         两页各自保留一份页级样式。
+         颜色只来自 web/tokens.css —— 亮主题下这些规则也要读得清，所以这里不再有
+         硬编码色值（含白 alpha）与 Tailwind 的调色板类（白/各种灰蓝的写死色阶）。 */
+
+      /* 底纹：layout 只输出 <div class="grid-overlay"> 节点，样式由本页提供。
+         原先是 2.2% 白 alpha 的网格 —— 亮色主题下白网格叠在浅底上是一层白雾，
+         改用 --line（暗/亮各有定义），密度 72px → 32px 更细。 */
       .grid-overlay {
         position: fixed;
         inset: 0;
         z-index: 0;
         pointer-events: none;
         background-image:
-          linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
-          linear-gradient(
-            90deg,
-            rgba(255, 255, 255, 0.022) 1px,
-            transparent 1px
-          );
-        background-size: 72px 72px;
+          linear-gradient(var(--line) 1px, transparent 1px),
+          linear-gradient(90deg, var(--line) 1px, transparent 1px);
+        background-size: 32px 32px;
         mask-image: radial-gradient(
           ellipse 90% 70% at 50% 45%,
           black 30%,
@@ -28,16 +38,335 @@
           transparent 75%
         );
       }
+
+      /* ---------- 状态骨架 ----------
+         section 的 display 仍由 JS 切（静态 class 只有 .state + 需要隐藏时 .hidden；
+         showState 会加/去 .flex）。方向/对齐全写在 .state 里，不再靠 flex-col 等
+         工具类，避免 Tailwind 产物与页内规则抢同一属性。 */
+      .state {
+        width: 100%;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        text-align: center;
+      }
+
+      /* 状态图标：56px 圆角方底，色相随语义走 token */
+      .state-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        flex: none;
+        border-radius: var(--r-lg);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .state-icon svg {
+        width: 26px;
+        height: 26px;
+      }
+      .state-icon--success {
+        background: var(--success-soft);
+        color: var(--success);
+      }
+      .state-icon--warn {
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+      .state-icon--error {
+        background: var(--error-soft);
+        color: var(--error);
+      }
+
+      /* 卡片：entry/overview/wait/creating 是表单与步骤（左对齐），
+         终态是状态面板（居中 —— 见 .state-panel，声明在后面，同优先级覆盖）。 */
+      .state-card {
+        width: 100%;
+        padding: 24px;
+        border-radius: var(--r-xl);
+        text-align: left;
+      }
+
+      /* 终态面板：徽章 + 标题 + 说明 + 动作，统一居中堆叠 */
+      .state-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        text-align: center;
+      }
+
+      /* 状态标题：焦点管理钩子（showState 把焦点交给它），所以必须留在每个
+         section 的标题元素上。outline:none 是原有约定 —— 程序化 focus 不画焦点环，
+         键盘路径仍由 ui.css 的全局 :focus-visible 覆盖按钮 / 链接。 */
+      .state-title {
+        outline: none;
+        font-size: 18px;
+        font-weight: 600;
+        line-height: 1.35;
+        color: var(--text);
+      }
+      /* entry 态那个 h1 同时是页标题：沿用契约 §11 C-2 的 28px Inter 600 -0.02em
+         （ui.css 的 .page-title 自带，这里只把 .state-title 的 18px 按特异性压回去）。 */
+      .state-title.page-title {
+        font-size: 28px;
+      }
+      @media (max-width: 767px) {
+        .state-title.page-title {
+          font-size: 24px;
+        }
+      }
+      @media (max-width: 639px) {
+        .state-title.page-title {
+          font-size: 22px;
+        }
+      }
+
+      /* 最小页头（契约 §11 C-3）：品牌行由 focus 布局提供，页面只出一个 h1 + 一句
+         副标题。.page-head 默认是两端对齐的横排，focus 页要竖排居中。 */
+      .state-head {
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        text-align: center;
+      }
+
+      .state-desc {
+        max-width: 36ch;
+        font-size: 13px;
+        line-height: 1.7;
+        color: var(--muted);
+      }
+      .state-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      /* 次要导航（返回工作台 / 不是我发起的等）：纯文字链接，不抢主按钮 */
+      .state-link {
+        font-size: 12px;
+        color: var(--faint);
+        transition: color var(--dur-fast) var(--ease);
+      }
+      .state-link:hover {
+        color: var(--text);
+      }
+
+      /* ---------- entry 短码表单（与 cli-auth 同源） ---------- */
+      /* 字距是历史横向溢出风险点：字号跟视口缩，宽度锁 100%，390 视口实测不溢出 */
+      .code-input {
+        width: 100%;
+        max-width: 100%;
+        padding: 0.55em 0.6em;
+        font-size: clamp(1.2rem, 3.4vw, 1.5rem);
+        letter-spacing: 0.2em;
+        text-align: center;
+      }
+      .entry-error {
+        margin-top: 8px;
+      }
+      /* 主 CTA：全宽 44px（.btn 基类 36px 对触屏偏矮） */
+      .btn-block {
+        width: 100%;
+        height: 44px;
+        font-size: 14px;
+      }
+      .entry-submit {
+        margin-top: 16px;
+      }
+      .entry-hint {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin-top: 14px;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--faint);
+      }
+      .entry-hint svg {
+        width: 14px;
+        height: 14px;
+        flex: none;
+        margin-top: 2px;
+      }
+
+      /* ---------- overview 会话行（.list-row 语言） ---------- */
+      /* 单行卡片：圆角要裁掉行 hover 底色的直角 */
+      .session-card {
+        width: 100%;
+        overflow: hidden;
+      }
+      .session-line {
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.5;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+
+      /* 步骤 1/2/3：.badge-accent 语言，收成 20px 数字圆点 */
+      .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin: 14px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      .step-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .step-badge {
+        width: 20px;
+        height: 20px;
+        min-height: 0;
+        padding: 0;
+        flex: none;
+        justify-content: center;
+        border-radius: var(--r-full);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      .meta-hint {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 14px;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .meta-hint svg {
+        width: 14px;
+        height: 14px;
+        flex: none;
+      }
+
+      /* ---------- confirm-wait：状态行 + 倒计时条 + 短码复述 ---------- */
+      .wait-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .wait-status-text {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .countdown {
+        margin-top: 14px;
+      }
+      .countdown-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .countdown-value {
+        font-variant-numeric: tabular-nums;
+      }
+      .countdown-track {
+        height: 4px;
+        margin-top: 6px;
+        border-radius: var(--r-full);
+        background: var(--surface-2);
+        overflow: hidden;
+      }
+      /* 进度条底色 accent；最后 60 秒由 JS 改成 warn（内联 token 变量） */
+      .countdown-bar {
+        width: 100%;
+        height: 100%;
+        border-radius: var(--r-full);
+        background: var(--accent);
+        transition: width 1s linear;
+      }
+      /* layout 冻结（web-src/layouts/focus.html 不在本页范围）：品牌行那颗红点
+         带 animate-ping 永续脉动且没有语义（REVIEW-2 F15），用页级覆盖只跑一次。
+         与 login.html 保持同一处理，三个 focus 页红点行为一致。 */
+      header .animate-ping {
+        animation-iteration-count: 1;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        header .animate-ping {
+          animation: none;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .countdown-bar {
+          transition: none;
+        }
+      }
+      .wait-code-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .wait-code {
+        font-size: 13px;
+        letter-spacing: 0.14em;
+        color: var(--text);
+      }
+
+      /* ---------- creating：设备名输入 + 取消警告 ---------- */
+      .creating-field {
+        margin-top: 18px;
+      }
+      /* 取消/失败警告：直接借 .badge.badge-warn 的 token 语言（soft 底 + 28% 边 +
+         --warn 文字），再按「整行提示条」改写尺寸与换行 —— 徽章的胶囊外形撑不住
+         一整句文案，所以只借配色不借胶囊。
+         选择器就写 .warn-note：与 .badge 同优先级、本页样式表在后，覆盖得动。 */
+      .warn-note {
+        display: flex;
+        width: 100%;
+        min-height: 0;
+        margin-top: 14px;
+        padding: 8px 12px;
+        border-radius: var(--r-md);
+        white-space: normal;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.5;
+      }
+      .creating-retry {
+        margin-top: 12px;
+      }
+
+      /* JS 会把 #failed-badge 的 className 整个重写成 "status-badge status-warn mt-5"，
+         用 id 选择器保证间距由页面的 .state-panel 统一控制，不被那段工具类改掉。 */
+      #failed-badge {
+        margin-top: 0;
+      }
+
+      /* 指纹环：accent 30% → 0% 走 color-mix，不写死品牌色的 alpha 值 */
       .fingerprint-ring {
         animation: fpPulse 2s ease-in-out infinite;
       }
       @keyframes fpPulse {
         0%,
         100% {
-          box-shadow: 0 0 0 0 rgba(139, 139, 253, 0.3);
+          box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent);
         }
         50% {
-          box-shadow: 0 0 0 8px rgba(139, 139, 253, 0);
+          box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent);
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -45,63 +374,61 @@
           animation: none;
         }
       }
-      .state-title {
-        outline: none;
+
+      /* ---------- 信任脚注 ---------- */
+      .trust-note {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 6px 14px;
+        margin-top: 28px;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--faint);
       }
-      .countdown-bar {
-        transition: width 1s linear;
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .countdown-bar {
-          transition: none;
-        }
+      .trust-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
       }
     </style>
 {{end}}
 
 {{define "content"}}
 
-      <!-- ========== 状态区：所有 section 预渲染，JS 只切 hidden ========== -->
+      <!-- ========== 状态区：六个 section 全部预渲染，JS 只切 hidden ========== -->
       <div id="state-stack" class="w-full">
 
-        <!-- ===== entry 短码输入态 ===== -->
-        <section
-          id="state-entry"
-          class="flex flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--accent-soft)"
+        <!-- ===== entry 短码输入态（全页唯一的 h1 + 最小页头） ===== -->
+        <section id="state-entry" class="state flex">
+          <span class="state-icon">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--accent)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <rect x="3" y="11" width="18" height="11" rx="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
-            </div>
-          </div>
-          <h1
-            class="state-title mt-6 font-display text-3xl text-white"
-            tabindex="-1"
-          >
-            {{t "passkeyenroll.entry.heading"}}
-          </h1>
-          <p class="mt-2 text-sm text-zinc-400">{{t "passkeyenroll.entry.sub"}}</p>
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </span>
 
-          <div class="glass mt-6 w-full rounded-3xl p-8 text-left">
+          <!-- 契约 §11 C-3：品牌行由 focus 布局提供，页面只出一个 h1 + 一句副标题 -->
+          <div class="page-head state-head">
+            <h1 class="state-title page-title" tabindex="-1">
+              {{t "passkeyenroll.entry.heading"}}
+            </h1>
+            <p class="page-sub">{{t "passkeyenroll.entry.sub"}}</p>
+          </div>
+
+          <div class="card state-card">
             <input
               id="code-input"
               type="text"
-              class="input mono w-full text-center"
+              class="input mono code-input"
               maxlength="9"
               placeholder="{{t "cliauth.entry.placeholder"}}"
               autocomplete="off"
@@ -109,27 +436,24 @@
               autocorrect="off"
               spellcheck="false"
               inputmode="text"
-              style="font-size: 1.5rem; letter-spacing: 0.2em"
             />
-            <p
-              id="entry-error"
-              class="mt-2 hidden text-xs text-rose-300"
-            >{{t "passkeyenroll.entry.not_found"}}</p>
+            <p id="entry-error" class="field-error entry-error hidden"
+              >{{t "passkeyenroll.entry.not_found"}}</p
+            >
             <button
               id="entry-continue"
               type="button"
-              class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+              class="btn btn-primary btn-block entry-submit"
             >
-              <span id="entry-continue-label">{{t "passkeyenroll.entry.continue"}}</span>
+              <span id="entry-continue-label"
+                >{{t "passkeyenroll.entry.continue"}}</span
+              >
               <span id="entry-continue-busy" class="hidden"
                 >{{t "passkeyenroll.entry.busy"}}</span
               >
             </button>
-            <div
-              class="mt-4 flex items-center justify-center gap-2 text-[11px] text-zinc-500"
-            >
+            <div class="entry-hint">
               <svg
-                class="h-3.5 w-3.5"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -144,82 +468,52 @@
         </section>
 
         <!-- ===== overview 会话预览态 ===== -->
-        <section
-          id="state-overview"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--accent-soft)"
+        <section id="state-overview" class="state hidden">
+          <span class="state-icon">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--accent)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <rect x="3" y="11" width="18" height="11" rx="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </span>
+          <h2 class="state-title" tabindex="-1">
+            {{t "passkeyenroll.overview.heading"}}
+          </h2>
+
+          <!-- 发起方会话行：.list-row 语言（单行卡片） -->
+          <div class="card session-card">
+            <div class="list-row">
+              <span class="dot dot-warn badge-dot"></span>
+              <span id="overview-session-line" class="session-line"></span>
             </div>
           </div>
-          <h1
-            class="state-title mt-6 font-display text-3xl text-white"
-            tabindex="-1"
-          >
-            {{t "passkeyenroll.overview.heading"}}
-          </h1>
 
-          <div class="glass mt-6 w-full rounded-3xl p-6 text-left">
-            <div
-              class="flex items-center gap-2.5 rounded-xl px-4 py-3 ring-1 ring-white/10"
-              style="background: var(--surface-2)"
-            >
-              <span class="dot dot-warn badge-dot"></span>
-              <span
-                id="overview-session-line"
-                class="text-sm text-zinc-300"
-              ></span>
-            </div>
+          <div class="card state-card">
+            <p class="card-sub">{{t "passkeyenroll.overview.desc"}}</p>
 
-            <p class="mt-4 text-[13px] leading-relaxed text-zinc-400">
-              {{t "passkeyenroll.overview.desc"}}
-            </p>
+            <ol class="steps">
+              <li class="step-row">
+                <span class="badge badge-accent step-badge">1</span>
+                <span>{{t "passkeyenroll.overview.step1"}}</span>
+              </li>
+              <li class="step-row">
+                <span class="badge badge-accent step-badge">2</span>
+                <span>{{t "passkeyenroll.overview.step2"}}</span>
+              </li>
+              <li class="step-row">
+                <span class="badge badge-accent step-badge">3</span>
+                <span>{{t "passkeyenroll.overview.step3"}}</span>
+              </li>
+            </ol>
 
-            <div class="mt-4 space-y-2">
-              <div class="flex items-center gap-2.5 text-[13px] text-zinc-400">
-                <span
-                  class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium mono"
-                  style="background: var(--accent-soft); color: var(--accent)"
-                >1</span>
-                {{t "passkeyenroll.overview.step1"}}
-              </div>
-              <div class="flex items-center gap-2.5 text-[13px] text-zinc-400">
-                <span
-                  class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium mono"
-                  style="background: var(--accent-soft); color: var(--accent)"
-                >2</span>
-                {{t "passkeyenroll.overview.step2"}}
-              </div>
-              <div class="flex items-center gap-2.5 text-[13px] text-zinc-400">
-                <span
-                  class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium mono"
-                  style="background: var(--accent-soft); color: var(--accent)"
-                >3</span>
-                {{t "passkeyenroll.overview.step3"}}
-              </div>
-            </div>
-
-            <div
-              class="mt-4 flex items-center gap-2 text-[11px] text-zinc-500"
-            >
+            <div class="meta-hint">
               <svg
-                class="h-3.5 w-3.5"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -235,147 +529,110 @@
           <button
             id="overview-continue"
             type="button"
-            class="btn-primary mt-5 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium"
+            class="btn btn-primary btn-block"
           >
-            <span id="overview-continue-label">{{t "passkeyenroll.overview.continue"}}</span>
+            <span id="overview-continue-label"
+              >{{t "passkeyenroll.overview.continue"}}</span
+            >
             <span id="overview-continue-busy" class="hidden"
               >{{t "passkeyenroll.entry.busy"}}</span
             >
           </button>
-          <a
-            href="index.html"
-            class="mt-3 text-[12px] text-zinc-500 transition-colors hover:text-zinc-300"
+          <a href="index.html" class="state-link"
             >{{t "passkeyenroll.overview.not_mine"}}</a
           >
         </section>
 
         <!-- ===== confirm-wait 等待旧设备批准态 ===== -->
-        <section
-          id="state-confirm-wait"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="fingerprint-ring flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--accent-soft)"
+        <section id="state-confirm-wait" class="state hidden">
+          <span class="state-icon fingerprint-ring">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--accent)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M12 11c0 .667-.333 1-1 1" />
-                <path d="M12 7a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0v-4a3 3 0 0 0-3-3z" />
-                <path d="M12 3a8 8 0 0 0-8 8v1" />
-                <path d="M12 3a8 8 0 0 1 8 8v1" />
-              </svg>
-            </div>
-          </div>
-          <h1
-            class="state-title mt-6 font-display text-3xl text-white"
-            tabindex="-1"
-          >
+              <path d="M12 11c0 .667-.333 1-1 1" />
+              <path d="M12 7a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0v-4a3 3 0 0 0-3-3z" />
+              <path d="M12 3a8 8 0 0 0-8 8v1" />
+              <path d="M12 3a8 8 0 0 1 8 8v1" />
+            </svg>
+          </span>
+          <h2 class="state-title" tabindex="-1">
             {{t "passkeyenroll.wait.heading"}}
-          </h1>
-          <p id="wait-desc" class="mt-2 text-sm text-zinc-400"></p>
+          </h2>
+          <p id="wait-desc" class="state-desc"></p>
 
-          <div class="glass mt-6 w-full rounded-3xl p-6 text-left">
-            <div class="flex items-center gap-2.5">
+          <div class="card state-card">
+            <div class="wait-status">
               <span class="dot dot-warn badge-dot"></span>
-              <span class="text-sm text-zinc-300">{{t "passkeyenroll.wait.status"}}</span>
+              <span class="wait-status-text"
+                >{{t "passkeyenroll.wait.status"}}</span
+              >
             </div>
 
             <!-- 倒计时条 -->
-            <div class="mt-4">
-              <div
-                class="flex items-center justify-between text-[11px] text-zinc-500"
-              >
+            <div class="countdown">
+              <div class="countdown-head">
                 <span>{{t "cliauth.entry.hint"}}</span>
-                <span id="wait-countdown" class="mono"></span>
+                <span id="wait-countdown" class="mono countdown-value"></span>
               </div>
-              <div
-                class="mt-1.5 h-1 rounded-full"
-                style="background: var(--surface-2)"
-              >
-                <div
-                  id="wait-countdown-bar"
-                  class="countdown-bar h-full rounded-full"
-                  style="background: var(--accent); width: 100%"
-                ></div>
+              <div class="countdown-track">
+                <div id="wait-countdown-bar" class="countdown-bar"></div>
               </div>
             </div>
 
             <!-- 短码复述 -->
-            <div
-              class="mt-4 flex items-center gap-2 text-[11px] text-zinc-500"
-            >
+            <div class="wait-code-row">
               <span>{{t "passkeyenroll.wait.code_label"}}</span>
-              <span id="wait-code" class="mono text-white"></span>
+              <span id="wait-code" class="mono wait-code"></span>
             </div>
           </div>
 
-          <a
-            href="index.html"
-            class="mt-3 text-[12px] text-zinc-500 transition-colors hover:text-zinc-300"
+          <a href="index.html" class="state-link"
             >{{t "passkeyenroll.wait.cancel"}}</a
           >
         </section>
 
         <!-- ===== creating 创建中态 ===== -->
-        <section
-          id="state-creating"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--accent-soft)"
+        <section id="state-creating" class="state hidden">
+          <span class="state-icon">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--accent)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M12 11c0 .667-.333 1-1 1" />
-                <path d="M12 7a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0v-4a3 3 0 0 0-3-3z" />
-                <path d="M12 3a8 8 0 0 0-8 8v1" />
-                <path d="M12 3a8 8 0 0 1 8 8v1" />
-              </svg>
-            </div>
-          </div>
-          <h1
-            class="state-title mt-6 font-display text-3xl text-white"
-            tabindex="-1"
-          >
+              <path d="M12 11c0 .667-.333 1-1 1" />
+              <path d="M12 7a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0v-4a3 3 0 0 0-3-3z" />
+              <path d="M12 3a8 8 0 0 0-8 8v1" />
+              <path d="M12 3a8 8 0 0 1 8 8v1" />
+            </svg>
+          </span>
+          <h2 class="state-title" tabindex="-1">
             {{t "passkeyenroll.creating.heading"}}
-          </h1>
-          <p class="mt-2 text-sm text-zinc-400">{{t "passkeyenroll.creating.desc"}}</p>
+          </h2>
+          <p class="state-desc">{{t "passkeyenroll.creating.desc"}}</p>
 
-          <div class="glass mt-6 w-full rounded-3xl p-6 text-left">
-            <div class="flex items-center gap-2.5">
+          <div class="card state-card">
+            <div class="wait-status">
               <span id="creating-busy-dot" class="dot dot-warn badge-dot"></span>
-              <span class="text-sm text-zinc-300">{{t "passkeyenroll.creating.busy"}}</span>
+              <span class="wait-status-text"
+                >{{t "passkeyenroll.creating.busy"}}</span
+              >
             </div>
 
-            <div class="mt-5">
-              <label
-                class="text-xs font-medium text-zinc-400"
-                for="creating-name"
+            <div class="field creating-field">
+              <label class="field-label" for="creating-name"
                 >{{t "passkeyenroll.creating.name_label"}}</label
               >
               <input
                 id="creating-name"
-                class="input mt-2"
+                class="input"
                 placeholder="{{t "passkeyenroll.creating.name_placeholder"}}"
               />
             </div>
@@ -383,8 +640,7 @@
             <!-- 取消/失败后显示的警告行 + 重试按钮 -->
             <div
               id="creating-warning"
-              class="mt-4 hidden items-center gap-2 rounded-lg px-3 py-2.5 text-xs"
-              style="background: var(--warn-soft); color: var(--warn-300)"
+              class="badge badge-warn warn-note hidden"
             >
               <span id="creating-warning-text"></span>
             </div>
@@ -392,7 +648,7 @@
             <button
               id="creating-retry"
               type="button"
-              class="btn-primary mt-3 hidden w-full rounded-xl px-4 py-2.5 text-sm font-medium"
+              class="btn btn-primary btn-block creating-retry hidden"
             >
               {{t "passkeyenroll.creating.retry"}}
             </button>
@@ -400,130 +656,94 @@
         </section>
 
         <!-- ===== success 成功态 ===== -->
-        <section
-          id="state-success"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--success-soft)"
+        <section id="state-success" class="state hidden">
+          <span class="state-icon state-icon--success">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                class="h-8 w-8"
-                style="color: var(--success)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+              <path d="M22 4L12 14.01l-3-3" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <!-- 徽章与标题原本是同一个 key（passkeyenroll.success.heading），
+                 改成「完成」状态词；locale 未提供 success.badge，故复用已有的
+                 common.agentState.done，不新造 key。 -->
+            <span class="status-badge status-success"
+              >{{t "common.agentState.done"}}</span
+            >
+            <h2 class="state-title" tabindex="-1">
+              {{t "passkeyenroll.success.heading"}}
+            </h2>
+            <p class="state-desc">{{t "passkeyenroll.success.desc"}}</p>
+            <div class="state-actions">
+              <a href="login.html" class="btn btn-primary"
+                >{{t "passkeyenroll.success.login_now"}}</a
               >
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                <path d="M22 4L12 14.01l-3-3" />
-              </svg>
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
+              >
             </div>
-          </div>
-          <span
-            class="status-badge status-success mt-5"
-            >{{t "passkeyenroll.success.heading"}}</span
-          >
-          <h2
-            class="state-title mt-3 text-lg font-medium text-white"
-            tabindex="-1"
-          >
-            {{t "passkeyenroll.success.heading"}}
-          </h2>
-          <p class="mt-2 text-sm leading-relaxed text-zinc-400">
-            {{t "passkeyenroll.success.desc"}}
-          </p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <a
-              href="login.html"
-              class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
-              >{{t "passkeyenroll.success.login_now"}}</a
-            >
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
           </div>
         </section>
 
-        <!-- ===== failed 共骨架四子态 ===== -->
-        <section
-          id="state-failed"
-          class="hidden flex-col items-center text-center"
-        >
-          <div class="flex justify-center">
-            <div
-              id="failed-icon-box"
-              class="flex h-16 w-16 items-center justify-center rounded-2xl"
-              style="background: var(--warn-soft)"
+        <!-- ===== failed 共骨架四子态（文案与图标由 JS 切） ===== -->
+        <section id="state-failed" class="state hidden">
+          <span id="failed-icon-box" class="state-icon state-icon--warn">
+            <svg
+              id="failed-icon-warn"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
             >
-              <svg
-                id="failed-icon-warn"
-                class="h-8 w-8"
-                style="color: var(--warn)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <path d="M4 4l16 16" />
+            </svg>
+            <svg
+              id="failed-icon-error"
+              class="hidden"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M15 9l-6 6M9 9l6 6" />
+            </svg>
+          </span>
+          <div class="card state-card state-panel">
+            <span id="failed-badge" class="status-badge status-warn"></span>
+            <h2 id="failed-title" class="state-title" tabindex="-1"></h2>
+            <p id="failed-desc" class="state-desc"></p>
+            <div class="state-actions">
+              <!-- 动作按钮由 JS 只换文案与 onclick，不换样式：这里固定为主操作外观 -->
+              <button
+                id="failed-action-btn"
+                type="button"
+                class="btn btn-primary btn-sm"
+              ></button>
+              <a href="index.html" class="btn btn-ghost btn-sm"
+                >{{t "cliauth.back_home"}}</a
               >
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                <path d="M4 4l16 16" />
-              </svg>
-              <svg
-                id="failed-icon-error"
-                class="h-8 w-8 hidden"
-                style="color: var(--error)"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <circle cx="12" cy="12" r="10" />
-                <path d="M15 9l-6 6M9 9l6 6" />
-              </svg>
             </div>
           </div>
-          <span
-            id="failed-badge"
-            class="status-badge status-warn mt-5"
-          ></span>
-          <h2
-            id="failed-title"
-            class="state-title mt-3 text-lg font-medium text-white"
-            tabindex="-1"
-          ></h2>
-          <p id="failed-desc" class="mt-2 text-sm leading-relaxed text-zinc-400"></p>
-          <div class="mt-6 flex flex-wrap items-center justify-center gap-4">
-            <button
-              id="failed-action-btn"
-              type="button"
-              class="btn-ghost rounded-xl px-4 py-2 text-sm"
-            ></button>
-            <a
-              href="index.html"
-              class="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-              >{{t "cliauth.back_home"}}</a
-            >
-          </div>
         </section>
-
       </div>
 
       <!-- 信任脚注 -->
-      <div
-        class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-zinc-600"
-      >
-        <span class="flex items-center gap-1.5">
-          <span class="badge-dot h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+      <div class="trust-note">
+        <span class="trust-item">
+          <span class="dot dot-success"></span>
           {{t "passkeyenroll.trust.approve_only"}}
         </span>
         <span>·</span>
