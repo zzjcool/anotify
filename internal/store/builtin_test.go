@@ -4,8 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/zzjcool/anotify/internal/artifact"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // TestSeedBuiltinCapabilitiesIsIdempotent 验证内置能力播种幂等：
@@ -487,6 +493,75 @@ func TestBackfillBuiltinCapabilitiesEmptyDeployment(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("空库扫了 %d 个命名空间, want 0", n)
+	}
+}
+
+// TestExampleBuiltinScriptProducesDeclaredOutput 真跑一遍示例能力的 run.sh。
+//
+// 为什么必须真跑：这个能力曾经 declare outputs=["echoed"]，而脚本把**参数值**写进
+// 了 $ANOTIFY_OUT_FILE（那是出口名，不是结果），于是任何 message 都让任务在最后一步
+// 判 failed：`out "hello" is not declared in spec.outputs [echoed]`。
+// TestExampleBuiltinIsUsable 只比“产物 outputs == 能力 outputs”，两边一起错就测不出来。
+//
+// 不变量：用任意消息跑一遍，脚本写出的出口名都必须 ∈ spec.outputs，
+// 且消息本身要能从 stdout 读到（summary 就是从 stdout 首行来的）。
+func TestExampleBuiltinScriptProducesDeclaredOutput(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("没有 bash，跳过（示例能力只用 bash 内建）")
+	}
+	script := ExampleCapability.Artifact.Spec.Run.Files["run.sh"]
+	if script == "" {
+		t.Fatal("示例能力的产物里没有 run.sh")
+	}
+
+	cases := []struct {
+		name string
+		env  string // 空 = 不传参数，走脚本里的默认值
+		want string // 期望在 stdout 里看到的文本
+	}{
+		{name: "指定消息", env: "hello 世界", want: "hello 世界"},
+		{name: "不传参数走默认值", env: "", want: "hello from Anotify"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			entry := filepath.Join(dir, "run.sh")
+			if err := os.WriteFile(entry, []byte(script), 0o755); err != nil {
+				t.Fatalf("写 run.sh: %v", err)
+			}
+			outFile := filepath.Join(dir, ".anotify-out")
+
+			cmd := exec.Command(bash, entry)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "ANOTIFY_OUT_FILE="+outFile)
+			if tc.env != "" {
+				cmd.Env = append(cmd.Env, "ANOTIFY_PARAM_MESSAGE="+tc.env)
+			}
+			stdout, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("run.sh 执行失败：%v", err)
+			}
+			if got := string(stdout); !strings.Contains(got, tc.want) {
+				t.Fatalf("stdout = %q，期望包含 %q", got, tc.want)
+			}
+
+			raw, err := os.ReadFile(outFile)
+			if err != nil {
+				t.Fatalf("脚本没写出口文件（任务会被当成“没回报出口”而静默断链）：%v", err)
+			}
+			name := strings.TrimSpace(string(raw))
+			if name != "echoed" {
+				t.Fatalf("出口名 = %q，期望 echoed（写参数值就是最初那个 bug）", name)
+			}
+			if !slices.Contains(ExampleCapability.Outputs, name) {
+				t.Fatalf("出口 %q 不在声明的 outputs %v 里，任务会被判 failed", name, ExampleCapability.Outputs)
+			}
+			if len(raw) > 64 {
+				t.Fatalf("出口名 %d 字节，超过 runner 的上限 64", len(raw))
+			}
+		})
 	}
 }
 

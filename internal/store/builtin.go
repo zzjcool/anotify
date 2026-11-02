@@ -114,7 +114,8 @@ func OriginCapability(name, displayName string) BuiltinCapability {
 //   - **零依赖**：只用 bash 内建 + echo，任何节点都跑得起来（不需要 git/curl/jq）
 //   - **带产物**：有 artifact 才能「部署 → 节点应用 → 执行」这条链路完整可见
 //   - **有参数**：能力页的参数表单不是空的，用户看得见「参数怎么传进脚本」
-//   - **有出口**：outputs=["echoed"]，可以拿它当一条链的上游做实验
+//   - **有出口**：outputs=["echoed"]，而且脚本真的会走这个出口（任务会成功）——
+//     可以拿它当一条链的上游做实验
 //   - **不占名字**：叫 script.echo 而不是 demo.xxx —— 它是能用的东西，不是演示
 var ExampleCapability = BuiltinCapability{
 	Name:        "script.echo",
@@ -144,14 +145,20 @@ var ExampleCapability = BuiltinCapability{
 				Entrypoint: "run.sh",
 				Files: map[string]string{
 					"run.sh": `#!/bin/bash
-# 示例能力：把参数原样打印出来，并把同一个值写进出口文件。
+# 示例能力：把参数原样打印出来，然后从固定出口 echoed 走下一跳。
 # 这不是玩具——它同时演示了三件事：参数怎么进脚本（ANOTIFY_PARAM_*）、
 # 输出怎么回中枢（stdout）、出口怎么声明（$ANOTIFY_OUT_FILE）。
+#
+# $ANOTIFY_OUT_FILE 里写的是**出口名**，不是结果。出口是 spec.outputs[] 的封闭
+# 集合（不变量 I2）：写一个没声明过的名字，整次执行会被判 failed，而不是
+# “这个任务的结果叫 hello”。所以这里写死 echoed，消息本身走 stdout。
+# （这里曾把 "$msg" 写进出口文件，于是任何 message 都跑不过——见
+#  TestExampleBuiltinScriptProducesDeclaredOutput。）
 set -euo pipefail
 
 msg="${ANOTIFY_PARAM_MESSAGE:-hello from Anotify}"
 echo "$msg"
-printf '%s\n' "$msg" > "$ANOTIFY_OUT_FILE"
+printf '%s\n' echoed > "$ANOTIFY_OUT_FILE"
 `,
 				},
 				TimeoutSec: 30,

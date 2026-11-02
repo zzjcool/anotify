@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // 本文件覆盖执行层（runner.go）的 v2 语义：
@@ -885,5 +886,31 @@ func TestRunJobRejectsUndeclaredOut(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "not declared") {
 		t.Fatalf("err = %q，期望含 not declared", res.Err)
+	}
+}
+
+// TestRunJobExampleCapability 把**真的内置示例能力**喂给真的 runner 跑一遍。
+//
+// 这一条防的是「声明与脚本对不上」：能力声明 outputs=["echoed"]，脚本就必须真的把
+// echoed 写进 $ANOTIFY_OUT_FILE。store 侧的 TestExampleBuiltinIsUsable 只比两张
+// 声明，两边一起错就测不出来——这正是 script.echo 曾经的 bug：不管传什么 message，
+// 任务都在最后一步判 failed（out "hello" is not declared in spec.outputs [echoed]）。
+func TestRunJobExampleCapability(t *testing.T) {
+	res := runJob(context.Background(), job{
+		TaskID:     "tsk_example",
+		Capability: store.ExampleCapability.Name,
+		Version:    store.ExampleCapability.Version,
+		Params:     map[string]any{"message": "hello"},
+		Artifact:   store.ExampleCapability.Artifact,
+		WorkRoot:   t.TempDir(),
+	})
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q（err=%q）—— 示例能力必须开箱即能跑通", res.Status, res.Err)
+	}
+	if res.Out == nil || *res.Out != "echoed" {
+		t.Fatalf("out = %v，期望 echoed（“声明与脚本对不上”就是最初那个 bug）", res.Out)
+	}
+	if !strings.Contains(res.Summary, "hello") {
+		t.Fatalf("summary = %q，期望包含参数消息（summary 取 stdout 首行）", res.Summary)
 	}
 }
