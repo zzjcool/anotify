@@ -479,6 +479,11 @@ receivers:
     tag_phone: スマホ
     tag_work: 仕事
   subtitle: デバイスごとに通知受信を制御
+  refresh: '更新'
+  unavailableTitle: 'プッシュ通知は未公開です'
+  emptyTitle: '受信デバイスがまだありません'
+  emptyDesc: 'このデバイスを追加すると、確認した通知を受け取れます。'
+  wsEmptyTitle: '接続はまだありません'
 keys:
   title: API Keys
   subtitle: Agent が通知報告に使用する Key
@@ -537,7 +542,7 @@ keys:
     read: デバイス参照
   unnamed: 名前なし
   unnamed_key: 名前なし Key
-  summary: '{total} 個の Key · {active} 有効{demo}'
+  summary: '{total} 個の Key · {active} 有効'
   summary_demo: ' · デモデータ'
   empty: まだ Key がありません。右上の「+ 新規 Key」をクリックして作成し、Agent の報告を始めましょう。
   created_at: 作成日 {date}
@@ -564,6 +569,7 @@ keys:
     name2: CI パイプライン
     name3: デスクトップウィジェット（受信）
     name4: 旧テスト Key
+  emptyTitle: 'API キーがまだありません'
 security:
   title: セキュリティとログイン
   subtitle: Passkey · セッション · リカバリーコード
@@ -1075,6 +1081,10 @@ admin:
     load_sessions: セッションの読み込みに失敗
     action: 操作に失敗
     network: ネットワークエラー
+  scopeChip: 'デプロイ全体'
+  usersEmptySub: 'ユーザーが登録されるとここに表示されます'
+  messagesEmptySub: 'エージェントが報告した通知がここに残ります'
+  sessionsEmptySub: 'デバイスが常時接続するとここに表示されます'
 events:
   load_failed_hint: '読み込みに失敗：サーバーに接続できません。再試行してください。'
   load_failed: '読み込みに失敗：サーバーに接続できません。再試行してください'
@@ -1343,6 +1353,7 @@ nodes:
     install_after: 'バイナリを導入し、~/.anotify/node.yaml（権限 600、トークン入り）を書き、systemd ユーザーサービスを生成します。コマンドにトークンが含まれるため、シェル履歴に残ります。'
     copy_install: コマンドをコピー
     yaml_workdir_note: '作業ディレクトリは「能力」ページの能力定義（run.workDir）で設定し、デプロイと一緒に配布されます。この yaml には書きません。'
+  emptyTitle: 'ノードがありません'
 sources:
   empty_title: ソースがまだありません
   detail: "詳細"
@@ -1603,6 +1614,7 @@ nodepage:
   not_found: ノードが見つかりません
   not_found_hint: この id に一致するノードはありません（削除された可能性）。
   missing_id: 'ノード id がありません（URL に ?id=nd_… が必要です）'
+  tasks_load_failed: 'タスク一覧の読み込みに失敗しました'
 
 pb:
   title: プレイブック

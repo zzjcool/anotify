@@ -1,251 +1,563 @@
-{{define "title"}}{{t "admin.title"}}{{end}} {{define "content"}}
+{{define "title"}}{{t "admin.title"}}{{end}}
+
+{{define "style"}}
+    <style>
+      /* 管理后台（UI v2 · wave3-B）
+         ------------------------------------------------------------
+         组件一律用 web/ui.css 的共享类：.page/.page-head/.page-title/.page-sub
+         /page-actions、.stat 全家、.data-table/.table-wrap/.table-foot、
+         .tabs/.tab、.modal-*、.empty、.skeleton。
+         这里只留本页独有的五件事：
+         ① 4 列 KPI 栅格 ② 表格与底栏的接缝 ③ 窄屏隐藏 8 列用户表的次要列
+         ④ 表格单元格的语义文字（替代旧的 text-zinc-* 色板类 —— 色板类是硬编码
+            暗色值，亮主题下读不清）⑤ 首帧骨架块的尺寸。
+         颜色全部走 web/tokens.css 的 token，不出现硬编码色值。 */
+
+      /* ---------- KPI 栅格 ----------
+         窄屏 2 列、≥1024 四列（等价于原来的 grid-cols-2 lg:grid-cols-4）。 */
+      .ad-kpi {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      @media (min-width: 1024px) {
+        .ad-kpi {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+      }
+      .ad-stat-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+        min-width: 0;
+      }
+      /* 次要口径（如「3 超管 · 5 7天活跃」）在 2 列窄屏下可能比卡片宽，
+         允许折行，不要把卡片顶出栅格。 */
+      .ad-kpi .stat-foot {
+        flex-wrap: wrap;
+        line-height: 1.5;
+      }
+
+      /* ---------- 表格 + 底栏 ----------
+         .table-foot 的注释说它「贴在 .table-wrap 之后」，所以这里把两块圆角与
+         边框接起来，视觉上是一张卡；.ad-table 本身**不声明 display** —— 它会被
+         JS 切 hidden（声明了 display 的类会盖掉 .hidden）。 */
+      .ad-table .table-wrap {
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+      }
+      .ad-table .table-foot {
+        border: 1px solid var(--line);
+        border-radius: 0 0 var(--r-lg) var(--r-lg);
+        background: var(--surface-1);
+      }
+
+      /* ---------- 单元格语义文字 ---------- */
+      .ad-cell-strong {
+        font-size: 13px;
+        color: var(--text);
+        word-break: break-word;
+      }
+      .ad-cell-meta {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .ad-num {
+        font-variant-numeric: tabular-nums;
+      }
+      th.ad-num,
+      td.ad-num {
+        text-align: right;
+      }
+      .ad-nowrap {
+        white-space: nowrap;
+      }
+      .ad-acts {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      .ad-you {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      /* 禁用是破坏性动作、启用是恢复性动作：用 token 保住这层语义
+         （原来的 text-red-400 / text-emerald-400 是色板类，亮主题下读不清）。 */
+      .ad-act-danger {
+        color: var(--error);
+      }
+      .ad-act-ok {
+        color: var(--success);
+      }
+      .ad-count {
+        font-variant-numeric: tabular-nums;
+      }
+      /* Top 活跃用户行右侧的计数 */
+      .ad-top-count {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ---------- 窄屏（<1280）隐藏用户表的次要列 ----------
+         8 列在 1280 以下先保住「用户 / 角色 / 状态 / 消息 / 操作」，
+         设备数 / Keys / 注册时间三列由 JS 打 data-col-priority="2" 后隐藏；
+         剩余列在 .table-wrap 里横滚（ui.css 已有 overflow-x:auto）。 */
+      @media (max-width: 1279px) {
+        #users-tbody td[data-col-priority="2"],
+        #users-table thead th[data-col-priority="2"] {
+          display: none;
+        }
+      }
+      @media (max-width: 767px) {
+        .ad-table .data-table {
+          min-width: 34rem;
+        }
+      }
+
+      /* ---------- 首帧骨架 ----------
+         骨架**不放进** #*-tbody：e2e 用 `#users-tbody tr` 做「数据已就绪」
+         判据，骨架行会让判据提前成立。.ad-skel 不声明 display，方便切 hidden。 */
+      .ad-skel {
+        padding: 16px 14px;
+        background: var(--surface-1);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+      }
+      .ad-skel-line {
+        height: 12px;
+      }
+      .ad-skel-line + .ad-skel-line {
+        margin-top: 10px;
+      }
+
+      /* ---------- 空态 / 错误态 / 无权限页 ---------- */
+      .ad-empty-icon {
+        color: var(--faint);
+      }
+      .ad-empty-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .ad-empty-sub {
+        max-width: 32rem;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .ad-forbidden {
+        max-width: 34rem;
+        margin-inline: auto;
+        text-align: center;
+      }
+      .ad-forbidden-title {
+        font-family: var(--font-sans);
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: var(--text);
+      }
+      .ad-forbidden-body {
+        margin: 8px auto 0;
+        max-width: 34rem;
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .ad-forbidden-cta {
+        margin-top: 16px;
+      }
+      .ad-confirm-body {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+        word-break: break-word;
+      }
+      /* h3 自带 UA 的 1.17em/bold，跟 .modal-head 的 15px/600 会打架 */
+      .ad-modal-title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .ad-tabs {
+        justify-self: start;
+      }
+    </style>
+{{end}}
+
+{{define "content"}}
 <div id="page-main">
-  <div class="mx-auto max-w-7xl space-y-8">
-    <!-- ===== 标题 ===== -->
-    <div class="reveal visible">
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 class="font-display text-3xl text-white">
-            {{t "admin.title"}}
-            <span class="badge-dot dot dot-success ml-2 align-middle"></span>
-          </h2>
-          <p class="mt-1.5 text-sm text-zinc-400" id="admin-subtitle">
-            {{t "admin.subtitle"}}
-          </p>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="status-badge status-success" id="admin-role-badge"
-            >admin</span
-          >
-        </div>
+  <div class="page">
+    <!-- 页头：标题 + 一句说明 + 页级动作。
+         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §1）。
+         `.page-sub` 全页只出现一次：mountLayout 检测到它就不再重复画副标题，
+         `#admin-subtitle` 这个 id 保留给页内脚本/诊断用。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "admin.title"}}</h2>
+        <p class="page-sub" id="admin-subtitle">{{t "admin.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <span class="status-badge status-success" id="admin-role-badge"
+          >admin</span
+        >
       </div>
     </div>
 
-    <!-- ===== 系统总览 KPI ===== -->
-    <section class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-      <div class="card reveal visible p-5">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "admin.kpi.users"}}</span
-          >
-          <span class="dot dot-success"></span>
+    <!-- ===== 系统总览 KPI =====
+         四个 `#kpi-*` 的 textContent 由页内脚本覆写（e2e 断言它已渲染且不是「–」），
+         `#kpi-*-sub` 是同一张卡的次要口径。四个数都是「全部署」口径（不随命名空间
+         切换），和顶栏的 scope 徽标一致。 -->
+    <section class="ad-kpi">
+      <div class="card stat card-pad">
+        <div class="ad-stat-head">
+          <span class="stat-icon" aria-hidden="true">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="8" r="4" />
+              <path d="M4 21a8 8 0 0 1 16 0" />
+            </svg>
+          </span>
+          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-users">
-          –
-        </div>
-        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-users-sub">—</div>
+        <div class="stat-label">{{t "admin.kpi.users"}}</div>
+        <div class="stat-value" id="kpi-users">–</div>
+        <div class="stat-foot"><span id="kpi-users-sub">—</span></div>
       </div>
-      <div class="card reveal visible p-5" style="transition-delay: 60ms">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "admin.kpi.messages"}}</span
-          >
-          <span class="dot dot-info"></span>
+
+      <div class="card stat card-pad">
+        <div class="ad-stat-head">
+          <span class="stat-icon stat-icon-success" aria-hidden="true">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M4 5h16v12H7l-3 3z" />
+            </svg>
+          </span>
+          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-messages">
-          –
-        </div>
-        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-messages-sub">
-          —
-        </div>
+        <div class="stat-label">{{t "admin.kpi.messages"}}</div>
+        <div class="stat-value" id="kpi-messages">–</div>
+        <div class="stat-foot"><span id="kpi-messages-sub">—</span></div>
       </div>
-      <div class="card reveal visible p-5" style="transition-delay: 120ms">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "admin.kpi.devices"}}</span
-          >
-          <span class="dot dot-warn"></span>
+
+      <div class="card stat card-pad">
+        <div class="ad-stat-head">
+          <span class="stat-icon stat-icon-warn" aria-hidden="true">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="7" y="2" width="10" height="20" rx="2" />
+              <path d="M11 18h2" />
+            </svg>
+          </span>
+          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-devices">
-          –
-        </div>
-        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-devices-sub">
-          —
-        </div>
+        <div class="stat-label">{{t "admin.kpi.devices"}}</div>
+        <div class="stat-value" id="kpi-devices">–</div>
+        <div class="stat-foot"><span id="kpi-devices-sub">—</span></div>
       </div>
-      <div class="card reveal visible p-5" style="transition-delay: 180ms">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-500"
-            >{{t "admin.kpi.delivery_rate"}}</span
-          >
-          <span class="dot dot-success"></span>
+
+      <div class="card stat card-pad">
+        <div class="ad-stat-head">
+          <span class="stat-icon stat-icon-success" aria-hidden="true">
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M8 12.5l2.5 2.5L16 9.5" />
+            </svg>
+          </span>
+          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
-        <div class="font-display mt-3 text-4xl text-white" id="kpi-rate">–</div>
-        <div class="mt-1.5 text-[11px] text-zinc-500" id="kpi-rate-sub">—</div>
+        <div class="stat-label">{{t "admin.kpi.delivery_rate"}}</div>
+        <div class="stat-value" id="kpi-rate">–</div>
+        <div class="stat-foot"><span id="kpi-rate-sub">—</span></div>
       </div>
     </section>
 
-    <!-- ===== Tab 切换 ===== -->
-    <div
-      class="flex flex-wrap gap-2 border-b border-white/[0.06]"
-      role="tablist"
-    >
-      <button class="admin-tab active" data-tab="users" role="tab">
+    <!-- 统计接口失败：可重试的错误块（不伪装成 0，也不留在「–」上装加载中） -->
+    <div id="stats-error" class="hidden"></div>
+
+    <!-- ===== Tab 切换 =====
+         `#tab-users` / `#tab-messages` / `#tab-sessions` 这三个 id 一直挂在**面板**上
+         （历史如此，页内脚本也按它取面板），按钮只带 data-tab，别对调。 -->
+    <div class="tabs ad-tabs" role="tablist">
+      <button
+        type="button"
+        class="tab active"
+        data-tab="users"
+        role="tab"
+        aria-controls="tab-users"
+        aria-selected="true"
+      >
         {{t "admin.tab.users"}}
       </button>
-      <button class="admin-tab" data-tab="messages" role="tab">
+      <button
+        type="button"
+        class="tab"
+        data-tab="messages"
+        role="tab"
+        aria-controls="tab-messages"
+        aria-selected="false"
+      >
         {{t "admin.tab.messages"}}
       </button>
-      <button class="admin-tab" data-tab="sessions" role="tab">
+      <button
+        type="button"
+        class="tab"
+        data-tab="sessions"
+        role="tab"
+        aria-controls="tab-sessions"
+        aria-selected="false"
+      >
         {{t "admin.tab.sessions"}}
       </button>
     </div>
 
     <!-- ===== 用户管理 ===== -->
-    <section id="tab-users" class="admin-panel">
-      <div class="card overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+    <section id="tab-users" class="admin-panel" role="tabpanel">
+      <div id="users-skel" class="ad-skel" aria-hidden="true">
+        <div class="skeleton ad-skel-line"></div>
+        <div class="skeleton ad-skel-line" style="width: 72%"></div>
+        <div class="skeleton ad-skel-line" style="width: 88%"></div>
+      </div>
+      <div id="users-error" class="hidden"></div>
+      <div id="users-body" class="ad-table">
+        <div class="table-wrap overflow-x-auto">
+          <table class="data-table" id="users-table">
             <thead>
-              <tr
-                class="border-b border-white/[0.06] text-left text-xs text-zinc-500"
-              >
-                <th class="px-4 py-3 font-medium">{{t "admin.users.user"}}</th>
-                <th class="px-4 py-3 font-medium">{{t "admin.users.role"}}</th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.users.status"}}
-                </th>
-                <th class="px-4 py-3 font-medium text-right">
-                  {{t "admin.users.messages"}}
-                </th>
-                <th class="px-4 py-3 font-medium text-right">
+              <tr>
+                <th>{{t "admin.users.user"}}</th>
+                <th>{{t "admin.users.role"}}</th>
+                <th>{{t "admin.users.status"}}</th>
+                <th class="ad-num">{{t "admin.users.messages"}}</th>
+                <th class="ad-num" data-col-priority="2">
                   {{t "admin.users.devices"}}
                 </th>
-                <th class="px-4 py-3 font-medium text-right">
+                <th class="ad-num" data-col-priority="2">
                   {{t "admin.users.keys"}}
                 </th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.users.created"}}
-                </th>
-                <th class="px-4 py-3 font-medium text-right">
-                  {{t "admin.users.actions"}}
-                </th>
+                <th data-col-priority="2">{{t "admin.users.created"}}</th>
+                <th class="ad-num">{{t "admin.users.actions"}}</th>
               </tr>
             </thead>
             <tbody id="users-tbody"></tbody>
           </table>
         </div>
+        <div class="table-foot">
+          <span>{{t "admin.tab.users"}}</span>
+          <span id="users-count" class="ad-count">—</span>
+        </div>
+      </div>
+      <div id="users-empty" class="hidden">
+        <div class="empty">
+          <svg
+            class="h-6 w-6 ad-empty-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21a8 8 0 0 1 16 0" />
+          </svg>
+          <div class="ad-empty-title">{{t "admin.users.empty"}}</div>
+          <div class="ad-empty-sub">{{t "admin.usersEmptySub"}}</div>
+          <button type="button" class="btn btn-ghost btn-sm" id="users-retry">
+            {{t "common.retry"}}
+          </button>
+        </div>
       </div>
     </section>
 
     <!-- ===== 全局消息流 ===== -->
-    <section id="tab-messages" class="admin-panel hidden">
-      <div class="card overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+    <section id="tab-messages" class="admin-panel hidden" role="tabpanel">
+      <div id="messages-skel" class="ad-skel" aria-hidden="true">
+        <div class="skeleton ad-skel-line"></div>
+        <div class="skeleton ad-skel-line" style="width: 64%"></div>
+        <div class="skeleton ad-skel-line" style="width: 80%"></div>
+      </div>
+      <div id="messages-error" class="hidden"></div>
+      <div id="messages-body" class="ad-table">
+        <div class="table-wrap overflow-x-auto">
+          <table class="data-table" id="messages-table">
             <thead>
-              <tr
-                class="border-b border-white/[0.06] text-left text-xs text-zinc-500"
-              >
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.messages.title"}}
-                </th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.messages.user"}}
-                </th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.messages.agent_state"}}
-                </th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.messages.time"}}
-                </th>
+              <tr>
+                <th>{{t "admin.messages.title"}}</th>
+                <th>{{t "admin.messages.user"}}</th>
+                <th>{{t "admin.messages.agent_state"}}</th>
+                <th>{{t "admin.messages.time"}}</th>
               </tr>
             </thead>
             <tbody id="messages-tbody"></tbody>
           </table>
         </div>
+        <div class="table-foot">
+          <span>{{t "admin.tab.messages"}}</span>
+          <span id="messages-count" class="ad-count">—</span>
+        </div>
+      </div>
+      <div id="messages-empty" class="hidden">
+        <div class="empty">
+          <svg
+            class="h-6 w-6 ad-empty-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M4 5h16v12H7l-3 3z" />
+          </svg>
+          <div class="ad-empty-title">{{t "admin.messages.empty"}}</div>
+          <div class="ad-empty-sub">{{t "admin.messagesEmptySub"}}</div>
+          <button type="button" class="btn btn-ghost btn-sm" id="messages-retry">
+            {{t "common.retry"}}
+          </button>
+        </div>
       </div>
     </section>
 
     <!-- ===== 活跃会话 ===== -->
-    <section id="tab-sessions" class="admin-panel hidden">
-      <div class="card overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+    <section id="tab-sessions" class="admin-panel hidden" role="tabpanel">
+      <div id="sessions-skel" class="ad-skel" aria-hidden="true">
+        <div class="skeleton ad-skel-line"></div>
+        <div class="skeleton ad-skel-line" style="width: 68%"></div>
+        <div class="skeleton ad-skel-line" style="width: 84%"></div>
+      </div>
+      <div id="sessions-error" class="hidden"></div>
+      <div id="sessions-body" class="ad-table">
+        <div class="table-wrap overflow-x-auto">
+          <table class="data-table" id="sessions-table">
             <thead>
-              <tr
-                class="border-b border-white/[0.06] text-left text-xs text-zinc-500"
-              >
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.sessions.user"}}
-                </th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.sessions.device"}}
-                </th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.sessions.last_seen"}}
-                </th>
-                <th class="px-4 py-3 font-medium">
-                  {{t "admin.sessions.expires"}}
-                </th>
+              <tr>
+                <th>{{t "admin.sessions.user"}}</th>
+                <th>{{t "admin.sessions.device"}}</th>
+                <th>{{t "admin.sessions.last_seen"}}</th>
+                <th>{{t "admin.sessions.expires"}}</th>
               </tr>
             </thead>
             <tbody id="sessions-tbody"></tbody>
           </table>
         </div>
+        <div class="table-foot">
+          <span>{{t "admin.tab.sessions"}}</span>
+          <span id="sessions-count" class="ad-count">—</span>
+        </div>
+      </div>
+      <div id="sessions-empty" class="hidden">
+        <div class="empty">
+          <svg
+            class="h-6 w-6 ad-empty-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="4" width="18" height="12" rx="2" />
+            <path d="M8 20h8" />
+          </svg>
+          <div class="ad-empty-title">{{t "admin.sessions.empty"}}</div>
+          <div class="ad-empty-sub">{{t "admin.sessionsEmptySub"}}</div>
+          <button type="button" class="btn btn-ghost btn-sm" id="sessions-retry">
+            {{t "common.retry"}}
+          </button>
+        </div>
       </div>
     </section>
 
-    <!-- ===== Top 活跃用户 ===== -->
+    <!-- ===== Top 活跃用户 =====
+         没有 Top 用户时整块不出现（脚本把它继续留在 hidden 上），不留空标题。 -->
     <section id="admin-top-users" class="hidden">
-      <h3 class="mb-3 font-display text-lg text-white">
-        {{t "admin.top_users"}}
-      </h3>
-      <div
-        id="top-users-list"
-        class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
-      ></div>
+      <div class="card-head">
+        <h3 class="card-title">{{t "admin.top_users"}}</h3>
+      </div>
+      <div class="card">
+        <div id="top-users-list" class="list"></div>
+      </div>
     </section>
   </div>
 </div>
 
-<!-- 操作确认弹层 -->
-<div
-  id="confirm-modal"
-  class="fixed inset-0 z-[70] hidden items-center justify-center bg-black/60 p-4"
->
-  <div class="card max-w-md p-6">
-    <h3 class="font-display text-lg text-white" id="confirm-title">
-      {{t "admin.confirm.title"}}
-    </h3>
-    <p class="mt-2 text-sm text-zinc-400" id="confirm-body"></p>
-    <div class="mt-5 flex justify-end gap-3">
-      <button
-        class="btn-ghost rounded-lg px-4 py-2 text-sm"
-        id="confirm-cancel"
-      >
+<!-- 操作确认弹层
+     .modal-backdrop / .modal-panel 不声明 display（ui.css 注释：写死 display:flex
+     会让 .hidden 失效），hidden ↔ flex 由脚本切换。
+     脚本挂载时把它挪到 document.body：外层 .reveal 上的 transform 会裁掉
+     position:fixed 的子元素（契约 §6）。 -->
+<div id="confirm-modal" class="modal-backdrop hidden">
+  <div
+    class="modal-panel"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="confirm-title"
+  >
+    <div class="modal-head">
+      <h3 class="ad-modal-title" id="confirm-title">
+        {{t "admin.confirm.title"}}
+      </h3>
+    </div>
+    <div class="modal-body">
+      <p class="ad-confirm-body" id="confirm-body"></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="confirm-cancel">
         {{t "admin.confirm.cancel"}}
       </button>
-      <button class="btn-primary rounded-lg px-4 py-2 text-sm" id="confirm-ok">
+      <button type="button" class="btn btn-danger" id="confirm-ok">
         {{t "admin.confirm.ok"}}
       </button>
     </div>
   </div>
 </div>
+{{end}}
 
-<!-- Toast -->
-<div
-  id="anotify-toast-host"
-  class="fixed bottom-5 right-5 z-[80] space-y-2"
-></div>
-{{end}} {{define "script"}}
-<style>
-  .admin-tab {
-    padding: 0.5rem 1rem;
-    font-size: 0.875rem;
-    color: var(--muted);
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-  }
-  .admin-tab.active {
-    color: var(--text);
-    border-bottom-color: var(--accent);
-  }
-</style>
+{{define "script"}}
 <script>
   (() => {
     Anotify.mountLayout({
       active: "admin",
+      /* 这一页不随命名空间切换（用户/消息/会话都是部署级），
+         标出 scopeLevel 让顶栏画「全部署通用」徽标 —— frontend.mjs 的
+         DEPLOYMENT_WIDE_PAGES 断言就盯这枚徽标。 */
       scopeLevel: "deployment",
       title: Anotify.t("admin.title", "管理后台"),
       subtitle: Anotify.t("admin.subtitle", "系统总览与用户管理"),
@@ -257,6 +569,11 @@
     function fmtTime(unix) {
       if (!unix) return "—";
       return Anotify.timeAgo(new Date(unix * 1000));
+    }
+
+    function setText(id, text) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = text;
     }
 
     function statusBadgeEl(agentState) {
@@ -281,106 +598,150 @@
       return span;
     }
 
-    function emptyRow(colspan, msg) {
-      const tr = el("tr");
-      const td = el(
-        "td",
-        { colspan, class: "px-4 py-8 text-center text-zinc-500" },
-        msg,
-      );
-      tr.append(td);
-      return tr;
+    /* 用户表第 5/6/7 列是次要列：<1280 由页内 @media 隐藏（契约 §4 admin）。
+       th 在静态 HTML 上已标 data-col-priority，td 在这里补。 */
+    function secondary(td) {
+      td.setAttribute("data-col-priority", "2");
+      return td;
     }
 
-    function errRow(colspan, msg) {
-      const tr = el("tr");
-      const td = el(
-        "td",
-        { colspan, class: "px-4 py-8 text-center text-red-400" },
-        msg,
-      );
-      tr.append(td);
-      return tr;
+    /* ================= 三个表格面板的四种状态 =================
+       骨架 / 错误 / 空 / 数据，一次只出现一个。
+       骨架**不放** #*-tbody：e2e 用 `#users-tbody tr` 数行数当「数据已就绪」，
+       骨架行会让它就绪得过早。 */
+    function panelState(prefix) {
+      return {
+        skel: document.getElementById(prefix + "-skel"),
+        error: document.getElementById(prefix + "-error"),
+        body: document.getElementById(prefix + "-body"),
+        empty: document.getElementById(prefix + "-empty"),
+        tbody: document.getElementById(prefix + "-tbody"),
+        count: document.getElementById(prefix + "-count"),
+      };
     }
 
-    function toast(msg, kind) {
-      Anotify.toast(msg, kind === "error" ? "error" : "info");
+    function paintCount(st, n) {
+      if (st.count) st.count.textContent = String(n);
+    }
+
+    /* 加载态只留骨架：不摆一张只有表头的空表（那是「空态」，不是「加载中」）。 */
+    function showLoading(st) {
+      st.tbody.replaceChildren();
+      st.error.replaceChildren();
+      st.error.classList.add("hidden");
+      st.empty.classList.add("hidden");
+      st.body.classList.add("hidden");
+      st.skel.classList.remove("hidden");
+      paintCount(st, "—");
+    }
+
+    function showData(st, rows) {
+      st.skel.classList.add("hidden");
+      st.error.classList.add("hidden");
+      st.empty.classList.add("hidden");
+      st.body.classList.remove("hidden");
+      st.tbody.replaceChildren(...rows);
+      paintCount(st, rows.length);
+    }
+
+    function showEmpty(st) {
+      st.skel.classList.add("hidden");
+      st.error.classList.add("hidden");
+      st.body.classList.add("hidden");
+      st.empty.classList.remove("hidden");
+      paintCount(st, 0);
+    }
+
+    /* 失败态一律走 Anotify.loadErrorNode（带「载入失败：原因」+ 可点重试），
+       不自己拼 "[object Object]"，也不把失败画成空数据。 */
+    function showError(st, err, onRetry) {
+      st.skel.classList.add("hidden");
+      st.empty.classList.add("hidden");
+      st.body.classList.add("hidden");
+      st.error.classList.remove("hidden");
+      st.error.replaceChildren(Anotify.loadErrorNode(err, onRetry));
     }
 
     /* ================= 系统总览 ================= */
     async function loadStats() {
+      const box = document.getElementById("stats-error");
       try {
         const s = await api("/v1/admin/stats");
-        document.getElementById("kpi-users").textContent = fmtNum(s.userCount);
-        document.getElementById("kpi-users-sub").textContent =
+        box.classList.add("hidden");
+        box.replaceChildren();
+
+        setText("kpi-users", fmtNum(s.userCount));
+        setText(
+          "kpi-users-sub",
           t("admin.kpi.users_sub", "{n} 超管").replace("{n}", s.adminCount) +
-          " · " +
-          t("admin.kpi.active", "{n} 7天活跃").replace(
-            "{n}",
-            s.activeUserCount,
-          );
-        document.getElementById("kpi-messages").textContent = fmtNum(
-          s.messageCount,
+            " · " +
+            t("admin.kpi.active", "{n} 7天活跃").replace("{n}", s.activeUserCount),
         );
-        document.getElementById("kpi-messages-sub").textContent = t(
-          "admin.kpi.today",
-          "今日 {n}",
-        ).replace("{n}", s.todayMessages);
-        document.getElementById("kpi-devices").textContent = fmtNum(
-          s.deviceCount,
+        setText("kpi-messages", fmtNum(s.messageCount));
+        setText(
+          "kpi-messages-sub",
+          t("admin.kpi.today", "今日 {n}").replace("{n}", s.todayMessages),
         );
-        document.getElementById("kpi-devices-sub").textContent =
+        setText("kpi-devices", fmtNum(s.deviceCount));
+        setText(
+          "kpi-devices-sub",
           t("admin.kpi.enabled", "{n} 启用").replace("{n}", s.enabledDevices) +
-          " · " +
-          t("admin.kpi.keys", "{n} Keys").replace("{n}", s.keyCount);
+            " · " +
+            t("admin.kpi.keys", "{n} Keys").replace("{n}", s.keyCount),
+        );
         const rate =
           s.deliveryTotal > 0
             ? Math.round((s.deliveredCount / s.deliveryTotal) * 100)
             : 0;
-        document.getElementById("kpi-rate").textContent = rate + "%";
-        document.getElementById("kpi-rate-sub").textContent =
-          fmtNum(s.deliveredCount) + " / " + fmtNum(s.deliveryTotal);
+        setText("kpi-rate", rate + "%");
+        setText(
+          "kpi-rate-sub",
+          fmtNum(s.deliveredCount) + " / " + fmtNum(s.deliveryTotal),
+        );
 
-        /* Top 用户 */
+        /* Top 用户：没有数据就整块不出现（不留一个空标题） */
+        const sec = document.getElementById("admin-top-users");
+        const list = document.getElementById("top-users-list");
         if (s.topUsers && s.topUsers.length) {
-          const sec = document.getElementById("admin-top-users");
-          const list = document.getElementById("top-users-list");
           sec.classList.remove("hidden");
           list.replaceChildren(
             ...s.topUsers.map((u) => {
               const name = u.displayName || u.username || "—";
               return el(
                 "div",
-                { class: "card p-4" },
-                el("div", {
-                  class: "truncate text-sm text-zinc-200",
-                  text: name,
-                }),
+                { class: "list-row" },
                 el(
                   "div",
-                  { class: "mt-2 flex items-baseline gap-3" },
+                  { class: "list-main" },
+                  el("span", { class: "list-title", text: name }),
                   el("span", {
-                    class: "font-display text-2xl text-white",
-                    text: fmtNum(u.messageCount),
-                  }),
-                  el("span", {
-                    class: "text-xs text-zinc-500",
-                    text: t("admin.top.messages", "消息"),
+                    class: "ad-cell-meta",
+                    text: t("admin.top.devices", "{n} 设备").replace(
+                      "{n}",
+                      u.deviceCount,
+                    ),
                   }),
                 ),
-                el("div", {
-                  class: "mt-1 text-[11px] text-zinc-500",
-                  text: t("admin.top.devices", "{n} 设备").replace(
-                    "{n}",
-                    u.deviceCount,
-                  ),
-                }),
+                el(
+                  "div",
+                  { class: "list-side" },
+                  el("span", {
+                    class: "ad-top-count",
+                    text: fmtNum(u.messageCount),
+                  }),
+                  el("span", { text: t("admin.top.messages", "消息") }),
+                ),
               );
             }),
           );
+        } else {
+          list.replaceChildren();
+          sec.classList.add("hidden");
         }
       } catch (e) {
-        toast(t("admin.error.load_stats", "加载统计失败"), "error");
+        /* 四个 KPI 保持「–」不动（不伪造 0），错误块给出原因与重试 */
+        box.classList.remove("hidden");
+        box.replaceChildren(Anotify.loadErrorNode(e, loadStats));
       }
     }
 
@@ -388,25 +749,24 @@
     let currentUserId = "";
 
     async function loadUsers() {
-      const tbody = document.getElementById("users-tbody");
-      tbody.replaceChildren(emptyRow(8, t("admin.loading", "加载中…")));
+      const st = panelState("users");
+      showLoading(st);
       try {
         const data = await api("/v1/admin/users");
         const users = data.users || [];
         if (!users.length) {
-          tbody.replaceChildren(
-            emptyRow(8, t("admin.users.empty", "暂无用户")),
-          );
+          showEmpty(st);
           return;
         }
-        tbody.replaceChildren(...users.map((u) => buildUserRow(u)));
-        tbody.querySelectorAll(".admin-act").forEach((btn) => {
+        showData(
+          st,
+          users.map((u) => buildUserRow(u)),
+        );
+        st.tbody.querySelectorAll("[data-action]").forEach((btn) => {
           btn.addEventListener("click", () => handleUserAction(btn));
         });
       } catch (e) {
-        tbody.replaceChildren(
-          errRow(8, t("admin.error.load_users", "加载用户失败")),
-        );
+        showError(st, e, loadUsers);
       }
     }
 
@@ -414,94 +774,84 @@
       const name = u.displayName || u.username;
       const isSelf = u.id === currentUserId;
 
-      const roleCell = el("td", { class: "px-4 py-3" }, roleBadgeEl(u.role));
-
-      const statusSpan = el("span", {
-        class: u.disabled
-          ? "status-badge status-error"
-          : "status-badge status-success",
-        text: u.disabled
-          ? t("admin.users.disabled", "已禁用")
-          : t("admin.users.active", "正常"),
-      });
-      const statusCell = el("td", { class: "px-4 py-3" }, statusSpan);
-
-      const actionsCell = el("td", {
-        class: "px-4 py-3 text-right whitespace-nowrap",
-      });
-      if (isSelf) {
-        actionsCell.append(
-          el("span", {
-            class: "text-[11px] text-zinc-600",
-            text: t("admin.users.you", "你"),
-          }),
-        );
-      } else {
-        const roleBtn = el("button", {
-          class: "admin-act text-xs text-zinc-400 hover:text-white",
-          "data-action": u.role === "admin" ? "demote" : "promote",
-          "data-id": u.id,
-          "data-name": name,
-          text:
-            u.role === "admin"
-              ? t("admin.users.demote", "降为成员")
-              : t("admin.users.promote", "提为超管"),
-        });
-        const disableBtn = el("button", {
-          class: u.disabled
-            ? "admin-act text-xs text-emerald-400 hover:text-emerald-300"
-            : "admin-act text-xs text-red-400 hover:text-red-300",
-          "data-action": u.disabled ? "enable" : "disable",
-          "data-id": u.id,
-          "data-name": name,
-          text: u.disabled
-            ? t("admin.users.enable", "启用")
-            : t("admin.users.disable", "禁用"),
-        });
-        actionsCell.append(
-          roleBtn,
-          el("span", { class: "mx-2 text-zinc-700", text: "·" }),
-          disableBtn,
-        );
-      }
-
       const nameCell = el(
         "td",
-        { class: "px-4 py-3" },
-        el("div", { class: "text-zinc-200", text: u.username }),
+        {},
+        el("div", { class: "ad-cell-strong", text: u.username }),
       );
       if (u.displayName) {
         nameCell.append(
-          el("div", {
-            class: "text-[11px] text-zinc-500",
-            text: u.displayName,
+          el("div", { class: "ad-cell-meta", text: u.displayName }),
+        );
+      }
+
+      const roleCell = el("td", {}, roleBadgeEl(u.role));
+
+      const statusCell = el(
+        "td",
+        {},
+        el("span", {
+          class: u.disabled
+            ? "status-badge status-error"
+            : "status-badge status-success",
+          text: u.disabled
+            ? t("admin.users.disabled", "已禁用")
+            : t("admin.users.active", "正常"),
+        }),
+      );
+
+      const acts = el("div", { class: "ad-acts" });
+      if (isSelf) {
+        acts.append(
+          el("span", { class: "ad-you", text: t("admin.users.you", "你") }),
+        );
+      } else {
+        acts.append(
+          el("button", {
+            type: "button",
+            class: "btn btn-quiet btn-sm",
+            "data-action": u.role === "admin" ? "demote" : "promote",
+            "data-id": u.id,
+            "data-name": name,
+            text:
+              u.role === "admin"
+                ? t("admin.users.demote", "降为成员")
+                : t("admin.users.promote", "提为超管"),
+          }),
+          el("button", {
+            type: "button",
+            class:
+              "btn btn-quiet btn-sm " +
+              (u.disabled ? "ad-act-ok" : "ad-act-danger"),
+            "data-action": u.disabled ? "enable" : "disable",
+            "data-id": u.id,
+            "data-name": name,
+            text: u.disabled
+              ? t("admin.users.enable", "启用")
+              : t("admin.users.disable", "禁用"),
           }),
         );
       }
 
+      const metaCell = secondary(
+        el(
+          "td",
+          { class: "ad-nowrap" },
+          el("span", { class: "ad-cell-meta", text: fmtTime(u.createdAt) }),
+        ),
+      );
+
       return el(
         "tr",
-        { class: "border-b border-white/[0.04] hover:bg-white/[0.02]" },
+        {},
         nameCell,
         roleCell,
         statusCell,
-        el("td", {
-          class: "px-4 py-3 text-right text-zinc-300",
-          text: fmtNum(u.messageCount),
-        }),
-        el("td", {
-          class: "px-4 py-3 text-right text-zinc-300",
-          text: fmtNum(u.deviceCount),
-        }),
-        el("td", {
-          class: "px-4 py-3 text-right text-zinc-300",
-          text: fmtNum(u.keyCount),
-        }),
-        el("td", {
-          class: "px-4 py-3 text-zinc-400",
-          text: fmtTime(u.createdAt),
-        }),
-        actionsCell,
+        el("td", { class: "ad-num", text: fmtNum(u.messageCount) }),
+        secondary(el("td", { class: "ad-num", text: fmtNum(u.deviceCount) })),
+        secondary(el("td", { class: "ad-num", text: fmtNum(u.keyCount) })),
+        metaCell,
+        el("td", {}, acts),
       );
     }
 
@@ -558,177 +908,247 @@
         } else {
           res = await fetch(
             `/v1/admin/users/${encodeURIComponent(id)}/${action}`,
-            {
-              method: "POST",
-              credentials: "include",
-            },
+            { method: "POST", credentials: "include" },
           );
         }
         if (res.ok) {
-          toast(t("admin.success", "操作成功"));
+          Anotify.toast(t("admin.success", "操作成功"));
           loadUsers();
           loadStats();
         } else {
           const data = await res.json().catch(() => ({}));
-          toast(data.error || t("admin.error.action", "操作失败"), "error");
+          Anotify.toast(
+            data.error || t("admin.error.action", "操作失败"),
+            "error",
+          );
         }
       } catch (e) {
-        toast(t("admin.error.network", "网络错误"), "error");
+        Anotify.toast(t("admin.error.network", "网络错误"), "error");
       }
     }
 
-    /* ================= 确认弹层 ================= */
+    /* ================= 确认弹层 =================
+       挂到 body 上（.reveal 的 transform 会裁 fixed 子元素），Esc / 点遮罩取消，
+       关闭后把焦点还给触发它的按钮。 */
+    const confirmModal = document.getElementById("confirm-modal");
+    if (confirmModal && confirmModal.parentElement !== document.body) {
+      document.body.append(confirmModal);
+    }
+
     function showConfirm(title, body) {
       return new Promise((resolve) => {
-        const modal = document.getElementById("confirm-modal");
-        document.getElementById("confirm-title").textContent = title;
-        document.getElementById("confirm-body").textContent = body || "";
+        const modal = confirmModal;
+        if (!modal) {
+          resolve(false);
+          return;
+        }
+        const okBtn = document.getElementById("confirm-ok");
+        const cancelBtn = document.getElementById("confirm-cancel");
+        const opener = document.activeElement;
+
+        setText("confirm-title", title);
+        setText("confirm-body", body || "");
         modal.classList.remove("hidden");
         modal.classList.add("flex");
-        const ok = document.getElementById("confirm-ok");
-        const cancel = document.getElementById("confirm-cancel");
+        if (okBtn) okBtn.focus();
+
         const cleanup = () => {
           modal.classList.add("hidden");
           modal.classList.remove("flex");
-          ok.onclick = null;
-          cancel.onclick = null;
+          if (okBtn) okBtn.onclick = null;
+          if (cancelBtn) cancelBtn.onclick = null;
+          modal.removeEventListener("click", onBackdrop);
+          document.removeEventListener("keydown", onKey);
+          if (opener && typeof opener.focus === "function") opener.focus();
         };
-        ok.onclick = () => {
+        const done = (value) => {
           cleanup();
-          resolve(true);
+          resolve(value);
         };
-        cancel.onclick = () => {
-          cleanup();
-          resolve(false);
+        const onBackdrop = (e) => {
+          if (e.target === modal) done(false);
         };
+        const onKey = (e) => {
+          if (e.key === "Escape") done(false);
+        };
+        modal.addEventListener("click", onBackdrop);
+        document.addEventListener("keydown", onKey);
+        if (okBtn) okBtn.onclick = () => done(true);
+        if (cancelBtn) cancelBtn.onclick = () => done(false);
       });
     }
 
     /* ================= 全局消息流 ================= */
     async function loadMessages() {
-      const tbody = document.getElementById("messages-tbody");
-      tbody.replaceChildren(emptyRow(4, t("admin.loading", "加载中…")));
+      const st = panelState("messages");
+      showLoading(st);
       try {
         const data = await api("/v1/admin/messages?limit=100");
         const msgs = data.messages || [];
         if (!msgs.length) {
-          tbody.replaceChildren(
-            emptyRow(4, t("admin.messages.empty", "暂无消息")),
-          );
+          showEmpty(st);
           return;
         }
-        tbody.replaceChildren(
-          ...msgs.map((m) =>
+        showData(
+          st,
+          msgs.map((m) =>
             el(
               "tr",
-              { class: "border-b border-white/[0.04] hover:bg-white/[0.02]" },
-              el("td", { class: "px-4 py-3 text-zinc-200", text: m.title }),
-              el("td", {
-                class: "px-4 py-3 text-zinc-400",
-                text: m.username || "—",
-              }),
-              el("td", { class: "px-4 py-3" }, statusBadgeEl(m.agentState)),
-              el("td", {
-                class: "px-4 py-3 text-zinc-400",
-                text: fmtTime(m.createdAt),
-              }),
+              {},
+              el(
+                "td",
+                {},
+                el("div", { class: "ad-cell-strong", text: m.title }),
+              ),
+              el(
+                "td",
+                {},
+                el("span", {
+                  class: "ad-cell-meta",
+                  text: m.username || "—",
+                }),
+              ),
+              el("td", {}, statusBadgeEl(m.agentState)),
+              el(
+                "td",
+                { class: "ad-nowrap" },
+                el("span", {
+                  class: "ad-cell-meta",
+                  text: fmtTime(m.createdAt),
+                }),
+              ),
             ),
           ),
         );
       } catch (e) {
-        tbody.replaceChildren(
-          errRow(4, t("admin.error.load_messages", "加载消息失败")),
-        );
+        showError(st, e, loadMessages);
       }
     }
 
     /* ================= 活跃会话 ================= */
     async function loadSessions() {
-      const tbody = document.getElementById("sessions-tbody");
-      tbody.replaceChildren(emptyRow(4, t("admin.loading", "加载中…")));
+      const st = panelState("sessions");
+      showLoading(st);
       try {
         const data = await api("/v1/admin/sessions");
         const sessions = data.sessions || [];
         if (!sessions.length) {
-          tbody.replaceChildren(
-            emptyRow(4, t("admin.sessions.empty", "暂无活跃会话")),
-          );
+          showEmpty(st);
           return;
         }
-        tbody.replaceChildren(
-          ...sessions.map((s) =>
+        showData(
+          st,
+          sessions.map((s) =>
             el(
               "tr",
-              { class: "border-b border-white/[0.04] hover:bg-white/[0.02]" },
-              el("td", {
-                class: "px-4 py-3 text-zinc-200",
-                text: s.username || "—",
-              }),
-              el("td", {
-                class: "px-4 py-3 text-zinc-400",
-                text: s.deviceName || "—",
-              }),
-              el("td", {
-                class: "px-4 py-3 text-zinc-400",
-                text: fmtTime(s.lastSeen),
-              }),
-              el("td", {
-                class: "px-4 py-3 text-zinc-400",
-                text: fmtTime(s.expiresAt),
-              }),
+              {},
+              el(
+                "td",
+                {},
+                el("span", {
+                  class: "ad-cell-strong",
+                  text: s.username || "—",
+                }),
+              ),
+              el(
+                "td",
+                {},
+                el("span", {
+                  class: "ad-cell-meta",
+                  text: s.deviceName || "—",
+                }),
+              ),
+              el(
+                "td",
+                { class: "ad-nowrap" },
+                el("span", {
+                  class: "ad-cell-meta",
+                  text: fmtTime(s.lastSeen),
+                }),
+              ),
+              el(
+                "td",
+                { class: "ad-nowrap" },
+                el("span", {
+                  class: "ad-cell-meta",
+                  text: fmtTime(s.expiresAt),
+                }),
+              ),
             ),
           ),
         );
       } catch (e) {
-        tbody.replaceChildren(
-          errRow(4, t("admin.error.load_sessions", "加载会话失败")),
-        );
+        showError(st, e, loadSessions);
       }
     }
 
-    /* ================= Tab 切换 ================= */
-    document.querySelectorAll(".admin-tab").forEach((tab) => {
-      tab.addEventListener("click", () => {
-        document
-          .querySelectorAll(".admin-tab")
-          .forEach((x) => x.classList.remove("active"));
-        tab.classList.add("active");
-        document
-          .querySelectorAll(".admin-panel")
-          .forEach((p) => p.classList.add("hidden"));
-        const target = document.getElementById("tab-" + tab.dataset.tab);
-        if (target) target.classList.remove("hidden");
+    /* ================= Tab 切换 =================
+       按钮 .tab + data-tab；面板 .admin-panel 且 id = "tab-" + data-tab。
+       `#tab-users` 等 id 挂在面板上（历史约定），不要挪到按钮上。 */
+    const tabButtons = Array.from(document.querySelectorAll(".tab[data-tab]"));
+
+    function activateTab(name) {
+      tabButtons.forEach((btn) => {
+        const on = btn.dataset.tab === name;
+        btn.classList.toggle("active", on);
+        btn.setAttribute("aria-selected", on ? "true" : "false");
       });
+      document
+        .querySelectorAll(".admin-panel")
+        .forEach((panel) => panel.classList.add("hidden"));
+      const target = document.getElementById("tab-" + name);
+      if (target) target.classList.remove("hidden");
+    }
+
+    tabButtons.forEach((btn) => {
+      btn.addEventListener("click", () => activateTab(btn.dataset.tab));
     });
 
-    /* ================= 启动：先取当前用户 ID（标记自己），再并行加载 ================= */
+    /* 空态里的「重试」按钮：重新拉那一个面板（不打整页刷新） */
+    [
+      ["users-retry", loadUsers],
+      ["messages-retry", loadMessages],
+      ["sessions-retry", loadSessions],
+    ].forEach(([id, fn]) => {
+      const btn = document.getElementById(id);
+      if (btn) btn.addEventListener("click", () => fn());
+    });
+
+    /* ================= 无权限页 =================
+       member 直接打开 admin.html：#page-main 整块替换（KPI 外壳必须消失，
+       ux_regression #19 断言「不是坏掉的 KPI 外壳」）。 */
     function showForbidden() {
       const main = document.getElementById("page-main");
       if (!main) return;
       main.replaceChildren(
         el(
           "div",
-          { class: "mx-auto max-w-lg space-y-4 py-16 text-center" },
-          el("h2", {
-            class: "font-display text-2xl text-white",
-            text: t("admin.forbidden.title", "无权访问管理后台"),
-          }),
-          el("p", {
-            class: "text-sm leading-relaxed text-zinc-400",
-            text: t(
-              "admin.forbidden.body",
-              "当前账号不是管理员。如需管理权限，请联系已有超管提升角色。",
-            ),
-          }),
-          el("a", {
-            href: "index.html",
-            class: "btn-primary inline-flex rounded-xl px-4 py-2 text-sm font-medium",
-            text: t("admin.forbidden.back", "返回总览"),
-          }),
+          { class: "page" },
+          el(
+            "div",
+            { class: "card card-pad ad-forbidden" },
+            el("h2", {
+              class: "ad-forbidden-title",
+              text: t("admin.forbidden.title", "无权访问管理后台"),
+            }),
+            el("p", {
+              class: "ad-forbidden-body",
+              text: t(
+                "admin.forbidden.body",
+                "当前账号不是管理员。如需管理权限，请联系已有超管提升角色。",
+              ),
+            }),
+            el("a", {
+              href: "index.html",
+              class: "btn btn-primary ad-forbidden-cta",
+              text: t("admin.forbidden.back", "返回总览"),
+            }),
+          ),
         ),
       );
     }
 
+    /* ================= 启动：先取当前用户 ID（标记「你」），再并行拉数据 ================= */
     (async () => {
       try {
         const me = await api("/v1/auth/me");
@@ -737,11 +1157,12 @@
           showForbidden();
           return;
         }
-        document.getElementById("admin-role-badge").textContent = me.role;
+        setText("admin-role-badge", me.role);
       } catch {
         /* 401 会自动跳登录 */
         return;
       }
+
       loadStats();
       loadUsers();
       loadMessages();
@@ -749,7 +1170,12 @@
 
       /* 下拉刷新：管理后台四个面板全部重拉 */
       Anotify.mountPullRefresh(async () => {
-        await Promise.all([loadStats(), loadUsers(), loadMessages(), loadSessions()]);
+        await Promise.all([
+          loadStats(),
+          loadUsers(),
+          loadMessages(),
+          loadSessions(),
+        ]);
       });
     })();
   })();

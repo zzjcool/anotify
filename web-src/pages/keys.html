@@ -2,430 +2,707 @@
 
 {{define "style"}}
     <style>
-      /* 本页特有样式（共享样式见 ui.css / tokens.css） */
-      .key-mask {
-        letter-spacing: 0.05em;
+      /* 本页特有样式（共享组件见 ui.css）——类名一律 kx- 前缀，颜色只走 var(--*)。
+         注意：页面 <style> 在 ui.css 之后加载，所以这里的类**不要**声明 display，
+         否则同元素的 Tailwind .hidden 会被盖掉（弹层/步骤的开关全靠 .hidden）。 */
+      .kx-ico {
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
       }
-      .toast {
-        position: fixed;
-        bottom: 1.5rem;
-        left: 50%;
-        transform: translateX(-50%) translateY(20px);
-        background: var(--panel-overlay);
-        border: 1px solid var(--line-strong); /* 面板色：与 T13 ui.css 同款弹层底色 */
+      .kx-inline-code {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        padding: 1px 6px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-xs);
+        background: var(--surface-2);
         color: var(--text);
-        font-size: 0.82rem;
-        padding: 0.6rem 1rem;
-        border-radius: 10px;
-        opacity: 0;
-        pointer-events: none;
-        transition: all 0.3s ease;
-        z-index: 100;
       }
-      .toast.show {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
+      .kx-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--muted);
+        text-decoration: none;
+        transition: color var(--dur) var(--ease);
+      }
+      .kx-link:hover {
+        color: var(--text);
+      }
+      .kx-endpoint-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .kx-code {
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        padding: 6px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-2);
+        color: var(--text);
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+      .kx-code-key {
+        color: var(--accent-strong);
+      }
+      .kx-endpoint-label {
+        font-size: 12px;
+        color: var(--faint);
+      }
+
+      /* ---- Key 表 ---- */
+      /* ui.css 里右对齐数字列只写成后代选择器 `.data-table .num`，而死类守卫按
+         顶层选择器收集组件类（`.num` 因此被判「无定义」）。契约要求数字列用 `.num`，
+         所以在这里补一条等价规则，让 `.num` 在本页是真的存在的类。
+         建议 centurion 后续把 `.num` 提成 ui.css 的顶层工具类，这几行即可删掉。 */
+      .num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .kx-keys-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      .kx-keys-table {
+        min-width: 620px;
+      }
+      .kx-cell-name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .kx-cell-sub {
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .kx-cell-mono {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+      }
+      .kx-cell-time {
+        font-size: 12px;
+        color: var(--faint);
+        white-space: nowrap;
+      }
+      .kx-cell-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .kx-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .kx-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: var(--r-full);
+        font-size: 11px;
+        font-weight: 500;
+        background: var(--surface-3);
+        color: var(--muted);
+      }
+      .kx-chip-send {
+        background: color-mix(in srgb, var(--info) 14%, transparent);
+        color: var(--info);
+      }
+      .kx-chip-receive {
+        background: var(--success-soft);
+        color: var(--success);
+      }
+      .kx-chip-read {
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+      .kx-chip-other {
+        background: var(--surface-3);
+        color: var(--muted);
+      }
+
+      /* ---- 骨架：独立容器，数据到后整体 remove（不能进 #keys-body） ---- */
+      .kx-skel {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 14px;
+      }
+      .kx-skel-row {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+      }
+      .kx-skel-a {
+        width: 160px;
+        height: 14px;
+      }
+      .kx-skel-b {
+        width: 92px;
+        height: 10px;
+      }
+      .kx-skel-c {
+        width: auto;
+        flex: 1 1 auto;
+        height: 10px;
+      }
+      .kx-skel-d {
+        width: 56px;
+        height: 10px;
+      }
+
+      /* ---- 空态 ---- */
+      .kx-empty-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-full);
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      .kx-empty-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .kx-empty-desc {
+        max-width: 46ch;
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      /* ---- 新建 Key 弹层 ---- */
+      .kx-modal {
+        max-width: 480px;
+      }
+      .kx-field {
+        margin-top: 16px;
+      }
+      .kx-scopes {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 16px;
+      }
+      .kx-scope-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .kx-scope {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-1);
+        transition:
+          border-color var(--dur) var(--ease),
+          background var(--dur) var(--ease);
+      }
+      .kx-scope:hover {
+        border-color: var(--line-strong);
+      }
+      .kx-scope-send:has(:checked) {
+        border-color: color-mix(in srgb, var(--info) 55%, transparent);
+        background: color-mix(in srgb, var(--info) 10%, transparent);
+      }
+      .kx-scope-receive:has(:checked) {
+        border-color: color-mix(in srgb, var(--success) 55%, transparent);
+        background: color-mix(in srgb, var(--success) 10%, transparent);
+      }
+      .kx-scope-read:has(:checked) {
+        border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+        background: color-mix(in srgb, var(--warn) 10%, transparent);
+      }
+      .kx-check {
+        margin-top: 3px;
+        flex-shrink: 0;
+        accent-color: var(--accent);
+      }
+      .kx-scope-main {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .kx-scope-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .kx-scope-code {
+        margin-left: 6px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .kx-scope-desc {
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .kx-secret {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 16px;
+        padding: 12px 14px;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-md);
+        background: var(--surface-2);
+      }
+      .kx-secret .btn {
+        flex-shrink: 0;
+      }
+      .kx-keymask {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 0.05em;
+        word-break: break-all;
+        color: var(--success);
+        min-width: 0;
+      }
+      .kx-warn {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        margin-top: 14px;
+        padding: 12px 14px;
+        border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+        border-radius: var(--r-md);
+        background: var(--warn-soft);
+      }
+      .kx-warn-ico {
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+        margin-top: 1px;
+        color: var(--warn);
+      }
+      .kx-warn-body {
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .kx-warn-strong {
+        font-weight: 600;
+        color: var(--warn);
+      }
+
+      /* ---- 安全实践 ---- */
+      .kx-note {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+      }
+      .kx-note-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        flex-shrink: 0;
+        border-radius: var(--r-md);
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+      .kx-note-body {
+        min-width: 0;
+      }
+      .kx-tips {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .kx-tips b {
+        font-weight: 500;
+        color: var(--text);
       }
     </style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-      <div class="mx-auto max-w-6xl space-y-8">
-        <div class="reveal visible">
-          <div class="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 class="font-display text-3xl text-white">{{t "keys.title"}}</h2>
-              <p class="mt-1.5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-                {{t "keys.desc_prefix"}}<code
-                  class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300"
-                  >POST /v1/events</code
-                >
-                {{t "keys.desc_suffix"}}
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-3">
-              <a
-                href="cli-auth.html"
-                class="btn-ghost flex items-center gap-2 rounded-xl px-4 py-2 text-sm"
-              >
-                <svg
-                  class="h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M4 17l6-6-6-6" />
-                  <path d="M12 19h8" />
-                </svg>
-                {{t "keys.cli_auth_entry"}}
-              </a>
-              <button
-                onclick="openCreate()"
-                class="btn-primary rounded-xl px-4 py-2 text-sm font-medium"
-              >
-                + {{t "keys.create_button"}}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <section class="card reveal visible p-5">
-          <div class="flex items-center justify-between">
-            <div class="text-xs font-medium text-zinc-500">{{t "keys.api_endpoint"}}</div>
-            <a
-              href="docs.html#api"
-              class="flex items-center gap-1 text-xs text-zinc-400 transition-colors hover:text-white"
-            >
-              {{t "keys.view_docs"}}
-              <svg
-                class="h-3.5 w-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path d="M5 12h14M12 5l7 7-7 7" />
-              </svg>
-            </a>
-          </div>
-          <div class="mt-3 flex flex-wrap items-center gap-2">
-            <code
-              class="mono rounded-lg bg-black/50 px-3.5 py-2 text-[12.5px] text-zinc-200 ring-1 ring-white/10"
-              >POST /v1/events</code
-            >
-            <span class="text-xs text-zinc-500">{{t "keys.header_label"}}:</span>
-            <code
-              class="mono rounded-lg bg-white/[0.04] px-3 py-2 text-[12px] text-zinc-300 ring-1 ring-white/10"
-              >Authorization: Bearer ant_live_…</code
-            >
-          </div>
-        </section>
-
-        <section class="card reveal visible overflow-hidden">
-          <div
-            class="flex items-center justify-between border-b border-white/[0.06] px-6 py-4"
+  <div class="page">
+    <!-- 页头：标题 + 一句说明 + 页级动作。内容里不出现 h1（顶栏那个是全站唯一的 h1）。
+         副标题类全页只出现这一次，mountLayout 检测到它就不再重复画顶栏副标题。 -->
+    <div class="page-head">
+      <div class="min-w-0">
+        <h2 class="page-title">{{t "keys.title"}}</h2>
+        <p class="page-sub">
+          {{t "keys.desc_prefix"}}<code class="kx-inline-code">POST /v1/events</code>{{t "keys.desc_suffix"}}
+        </p>
+      </div>
+      <div class="page-actions">
+        <a href="cli-auth.html" class="btn btn-ghost">
+          <svg
+            class="kx-ico"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
           >
-            <div class="text-sm font-medium text-white">{{t "keys.my_keys"}}</div>
-            <span class="text-xs text-zinc-500" id="keys-summary"></span>
-          </div>
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr
-                  class="border-b border-white/[0.05] text-left text-xs text-zinc-500"
-                >
-                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.name"}}</th>
-                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.prefix"}}</th>
-                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.scope"}}</th>
-                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.last_used"}}</th>
-                  <th class="px-6 py-3.5 font-medium">{{t "keys.col.status"}}</th>
-                  <th class="px-6 py-3.5 font-medium text-right">{{t "keys.col.actions"}}</th>
-                </tr>
-              </thead>
-              <tbody
-                id="keys-body"
-                class="divide-y divide-white/[0.04]"
-              ></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="card reveal visible p-6">
-          <div class="flex items-start gap-4">
-            <div
-              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10"
-            >
-              <svg
-                class="h-5 w-5 text-amber-300"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path
-                  d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
-                />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-            </div>
-            <div class="text-sm leading-relaxed text-zinc-400">
-              <p class="font-medium text-white">{{t "keys.security.title"}}</p>
-              <ul class="mt-1.5 space-y-1 text-zinc-400">
-                <li>
-                  · {{t "keys.security.point1_prefix"}}<b class="text-zinc-200">{{t "keys.security.point1_highlight"}}</b
-                  >{{t "keys.security.point1_suffix"}}
-                </li>
-                <li>
-                  · {{t "keys.security.point2_prefix"}}<b class="text-zinc-200">{{t "keys.security.point2_highlight"}}</b
-                  >{{t "keys.security.point2_suffix"}}
-                </li>
-                <li>
-                  · {{t "keys.security.point3_prefix"}}<b class="text-zinc-200">{{t "keys.security.point3_highlight"}}</b
-                  >{{t "keys.security.point3_suffix"}}
-                </li>
-                <li>· {{t "keys.security.point4"}}</li>
-              </ul>
-            </div>
-          </div>
-        </section>
+            <path d="M4 17l6-6-6-6" />
+            <path d="M12 19h8" />
+          </svg>
+          {{t "keys.cli_auth_entry"}}
+        </a>
+        <button type="button" id="btn-create" class="btn btn-primary">
+          + {{t "keys.create_button"}}
+        </button>
       </div>
     </div>
-    <div class="toast" id="toast"></div>
 
-    <!-- ===== 新建 Key 弹层 ===== -->
-    <div
-      id="create-modal"
-      class="fixed inset-0 z-50 hidden items-center justify-center p-4"
-    >
-      <div
-        class="sidebar-overlay absolute inset-0"
-        onclick="closeCreate()"
-      ></div>
-      <div
-        class="card relative z-10 w-full max-w-md !bg-[var(--panel-modal)] p-6 shadow-2xl"
-      >
-        <!-- 面板色：与 T13 弹层底色一致 -->
-        <!-- 步骤 1：输入名称 + 选权限 -->
-        <div id="create-step-1">
-          <div class="flex items-start justify-between">
-            <div>
-              <h3 class="text-lg font-medium text-white">{{t "keys.create.title"}}</h3>
-              <p class="mt-1 text-sm text-zinc-400">
-                {{t "keys.create.subtitle"}}
-              </p>
-            </div>
-            <button
-              onclick="closeCreate()"
-              class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
-            >
-              <svg
-                class="h-5 w-5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-          <div class="mt-5">
-            <label class="text-xs font-medium text-zinc-400" for="new-key-name"
-              >{{t "keys.create.name_label"}}</label
-            >
-            <input
-              id="new-key-name"
-              class="input mt-2"
-              placeholder="{{t "keys.create.name_placeholder"}}"
-            />
-          </div>
-          <div class="mt-4">
-            <span class="text-xs font-medium text-zinc-400"
-              >{{t "keys.create.scope_label"}}</span
-            >
-            <div class="mt-2 space-y-2">
-              <label
-                class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-indigo-400/50 has-[:checked]:bg-indigo-400/5"
-              >
-                <input
-                  type="checkbox"
-                  name="key-scope"
-                  value="notify:send"
-                  class="mt-0.5"
-                  checked
-                />
-                <span>
-                  <span class="block text-sm text-zinc-200"
-                    >{{t "keys.create.scope_send_label"}}
-                    <code class="mono text-[11px] text-zinc-500"
-                      >notify:send</code
-                    ></span
-                  >
-                  <span class="mt-0.5 block text-[11px] text-zinc-500"
-                    >{{t "keys.create.scope_send_desc"}}</span
-                  >
-                </span>
-              </label>
-              <label
-                class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-emerald-400/50 has-[:checked]:bg-emerald-400/5"
-              >
-                <input
-                  type="checkbox"
-                  name="key-scope"
-                  value="notify:receive"
-                  class="mt-0.5"
-                />
-                <span>
-                  <span class="block text-sm text-zinc-200"
-                    >{{t "keys.create.scope_receive_label"}}
-                    <code class="mono text-[11px] text-zinc-500"
-                      >notify:receive</code
-                    ></span
-                  >
-                  <span class="mt-0.5 block text-[11px] text-zinc-500"
-                    >{{t "keys.create.scope_receive_desc"}}</span
-                  >
-                </span>
-              </label>
-              <label
-                class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 transition-colors hover:border-white/20 has-[:checked]:border-amber-400/50 has-[:checked]:bg-amber-400/5"
-              >
-                <input
-                  type="checkbox"
-                  name="key-scope"
-                  value="devices:read"
-                  class="mt-0.5"
-                />
-                <span>
-                  <span class="block text-sm text-zinc-200"
-                    >{{t "keys.create.scope_read_label"}}
-                    <code class="mono text-[11px] text-zinc-500"
-                      >devices:read</code
-                    ></span
-                  >
-                  <span class="mt-0.5 block text-[11px] text-zinc-500"
-                    >{{t "keys.create.scope_read_desc"}}</span
-                  >
-                </span>
-              </label>
-            </div>
-            <p class="mt-2.5 text-[11px] leading-relaxed text-zinc-600">
-              {{t "keys.create.scope_hint"}}
-            </p>
-            <p id="create-error" class="mt-2 hidden text-xs text-rose-300"></p>
-          </div>
-          <div class="mt-6 flex justify-end gap-3">
-            <button
-              onclick="closeCreate()"
-              class="btn-ghost rounded-xl px-4 py-2 text-sm"
-            >
-              {{t "keys.create.cancel"}}
-            </button>
-            <button
-              onclick="generateKey()"
-              class="btn-primary rounded-xl px-5 py-2 text-sm font-medium"
-            >
-              {{t "keys.create.generate"}}
-            </button>
+    <!-- 上报接口：一句话说清 Agent 该往哪发、带什么头 -->
+    <section class="card card-pad">
+      <div class="card-head">
+        <div class="card-title">{{t "keys.api_endpoint"}}</div>
+        <a href="docs.html#api" class="kx-link">
+          {{t "keys.view_docs"}}
+          <svg
+            class="kx-ico"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M5 12h14M12 5l7 7-7 7" />
+          </svg>
+        </a>
+      </div>
+      <div class="kx-endpoint-row">
+        <code class="kx-code">POST /v1/events</code>
+        <span class="kx-endpoint-label">{{t "keys.header_label"}}:</span>
+        <code class="kx-code kx-code-key">Authorization: Bearer ant_live_…</code>
+      </div>
+    </section>
+
+    <!-- Key 列表 -->
+    <section>
+      <div class="kx-keys-head">
+        <div class="card-title">{{t "keys.my_keys"}}</div>
+      </div>
+
+      <!-- 加载骨架：独立容器，数据到后整体 remove。
+           为什么不铺进 #keys-body：那是 e2e 的「数据已就绪」信号，骨架算子元素
+           会让就绪提前成立、断言读到空白（契约 §2）。 -->
+      <div id="keys-skel" class="table-wrap overflow-x-auto kx-skel" aria-hidden="true">
+        <div class="kx-skel-row">
+          <div class="skeleton kx-skel-a"></div>
+          <div class="skeleton kx-skel-b"></div>
+          <div class="skeleton kx-skel-c"></div>
+          <div class="skeleton kx-skel-d"></div>
+        </div>
+        <div class="kx-skel-row">
+          <div class="skeleton kx-skel-a"></div>
+          <div class="skeleton kx-skel-b"></div>
+          <div class="skeleton kx-skel-c"></div>
+          <div class="skeleton kx-skel-d"></div>
+        </div>
+        <div class="kx-skel-row">
+          <div class="skeleton kx-skel-a"></div>
+          <div class="skeleton kx-skel-b"></div>
+          <div class="skeleton kx-skel-c"></div>
+          <div class="skeleton kx-skel-d"></div>
+        </div>
+      </div>
+
+      <!-- 表格：hidden 只挂在这层裸 div 上（.table-wrap/.data-table 有各自的
+           display/overflow，和 .hidden 同元素会被盖掉）。 -->
+      <div id="keys-table" class="hidden">
+        <div class="table-wrap overflow-x-auto">
+          <table class="data-table kx-keys-table">
+            <thead>
+              <tr>
+                <th>{{t "keys.col.name"}}</th>
+                <th>{{t "keys.col.prefix"}}</th>
+                <th>{{t "keys.col.scope"}}</th>
+                <th class="num">{{t "keys.col.last_used"}}</th>
+                <th>{{t "keys.col.status"}}</th>
+                <th class="num">{{t "keys.col.actions"}}</th>
+              </tr>
+            </thead>
+            <tbody id="keys-body"></tbody>
+          </table>
+          <div class="table-foot">
+            <span id="keys-summary"></span>
           </div>
         </div>
+      </div>
 
-        <!-- 步骤 2：展示完整 Key（仅一次） -->
-        <div id="create-step-2" class="hidden">
-          <div class="flex items-start justify-between">
-            <div>
-              <h3 class="text-lg font-medium text-white">{{t "keys.save.title"}}</h3>
-              <p class="mt-1 text-sm text-zinc-400">
-                {{t "keys.save.subtitle_prefix"}}<b class="text-amber-300">{{t "keys.save.subtitle_highlight"}}</b>
-              </p>
-            </div>
-            <button
-              onclick="closeCreate()"
-              class="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5 hover:text-white"
-            >
-              <svg
-                class="h-5 w-5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-          <div
-            class="mt-5 flex items-center justify-between gap-2 rounded-xl bg-black/50 px-4 py-3.5 ring-1 ring-white/10"
-          >
-            <code
-              id="new-key-value"
-              class="mono key-mask break-all text-[13px] text-emerald-300"
-            ></code>
-            <button
-              onclick="copyNewKey(this)"
-              class="shrink-0 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10 transition-colors"
-            >
-              {{t "keys.save.copy"}}
-            </button>
-          </div>
-          <div
-            class="mt-4 flex items-start gap-2.5 rounded-xl bg-amber-400/[0.07] px-4 py-3 ring-1 ring-amber-400/20"
-          >
+      <!-- 空态：图标 + 标题 + 说明 + 动作 -->
+      <div id="keys-empty" class="card hidden">
+        <div class="empty">
+          <span class="kx-empty-icon">
             <svg
-              class="mt-0.5 h-4 w-4 shrink-0 text-amber-300"
+              class="kx-ico"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
               stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
             >
-              <path
-                d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
-              />
-              <line x1="12" y1="9" x2="12" y2="13" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
+              <circle cx="8" cy="15" r="4" />
+              <path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2" />
             </svg>
-            <p class="text-xs leading-relaxed text-amber-200/80">
-              {{t "keys.save.warning"}}
-            </p>
+          </span>
+          <div class="kx-empty-title">{{t "keys.emptyTitle"}}</div>
+          <p class="kx-empty-desc">{{t "keys.empty"}}</p>
+          <button type="button" id="btn-create-empty" class="btn btn-primary">
+            + {{t "keys.create_button"}}
+          </button>
+        </div>
+      </div>
+
+      <!-- 失败态：整块（不是塞进 <td> 的一行），带可点重试 -->
+      <div id="keys-error" class="card hidden"></div>
+    </section>
+
+    <!-- 安全实践 -->
+    <section class="card card-pad">
+      <div class="kx-note">
+        <span class="kx-note-icon">
+          <svg
+            class="kx-ico"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+        </span>
+        <div class="kx-note-body">
+          <div class="card-title">{{t "keys.security.title"}}</div>
+          <ul class="kx-tips">
+            <li>
+              · {{t "keys.security.point1_prefix"}}<b>{{t "keys.security.point1_highlight"}}</b>{{t "keys.security.point1_suffix"}}
+            </li>
+            <li>
+              · {{t "keys.security.point2_prefix"}}<b>{{t "keys.security.point2_highlight"}}</b>{{t "keys.security.point2_suffix"}}
+            </li>
+            <li>
+              · {{t "keys.security.point3_prefix"}}<b>{{t "keys.security.point3_highlight"}}</b>{{t "keys.security.point3_suffix"}}
+            </li>
+            <li>· {{t "keys.security.point4"}}</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- 新建 Key 弹层：必须挂在 document.body 上（页面外层带 .reveal 的 transform 会裁
+     position:fixed 子元素），脚本启动时再兜一次 appendChild。
+     开关状态仍然是 #create-modal 上的 `hidden` 类（e2e 直接读它），
+     .modal-backdrop 本身不声明 display，所以 .hidden ↔ .flex 能生效。 -->
+<div
+  id="create-modal"
+  class="modal-backdrop hidden"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="kx-modal-title"
+>
+  <div class="modal-panel kx-modal">
+    <div class="modal-head">
+      <h3 id="kx-modal-title">
+        <span id="kx-title-create">{{t "keys.create.title"}}</span>
+        <span id="kx-title-save" class="hidden">{{t "keys.save.title"}}</span>
+      </h3>
+      <button
+        type="button"
+        id="create-close"
+        class="btn btn-ghost btn-icon"
+        aria-label="{{t "common.action.close"}}"
+      >
+        ✕
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <!-- 步骤 1：名称 + 权限范围。hidden 挂在裸 div 上（无 display 规则）。 -->
+      <div id="create-step-1">
+        <p class="card-sub">{{t "keys.create.subtitle"}}</p>
+        <div class="field kx-field">
+          <label class="field-label" for="new-key-name">{{t "keys.create.name_label"}}</label>
+          <input
+            id="new-key-name"
+            class="input"
+            type="text"
+            autocomplete="off"
+            placeholder="{{t "keys.create.name_placeholder"}}"
+          />
+        </div>
+        <div class="kx-scopes">
+          <span class="field-label">{{t "keys.create.scope_label"}}</span>
+          <div class="kx-scope-list">
+            <!-- cursor-pointer 保留：e2e 用 `.cursor-pointer` 选择 scope 卡 -->
+            <label class="kx-scope kx-scope-send cursor-pointer">
+              <input
+                type="checkbox"
+                class="kx-check"
+                name="key-scope"
+                value="notify:send"
+                checked
+              />
+              <span class="kx-scope-main">
+                <span class="kx-scope-title"
+                  >{{t "keys.create.scope_send_label"}}<code class="kx-scope-code">notify:send</code></span
+                >
+                <span class="kx-scope-desc">{{t "keys.create.scope_send_desc"}}</span>
+              </span>
+            </label>
+            <label class="kx-scope kx-scope-receive cursor-pointer">
+              <input
+                type="checkbox"
+                class="kx-check"
+                name="key-scope"
+                value="notify:receive"
+              />
+              <span class="kx-scope-main">
+                <span class="kx-scope-title"
+                  >{{t "keys.create.scope_receive_label"}}<code class="kx-scope-code">notify:receive</code></span
+                >
+                <span class="kx-scope-desc">{{t "keys.create.scope_receive_desc"}}</span>
+              </span>
+            </label>
+            <label class="kx-scope kx-scope-read cursor-pointer">
+              <input
+                type="checkbox"
+                class="kx-check"
+                name="key-scope"
+                value="devices:read"
+              />
+              <span class="kx-scope-main">
+                <span class="kx-scope-title"
+                  >{{t "keys.create.scope_read_label"}}<code class="kx-scope-code">devices:read</code></span
+                >
+                <span class="kx-scope-desc">{{t "keys.create.scope_read_desc"}}</span>
+              </span>
+            </label>
           </div>
-          <div class="mt-6 flex justify-end">
-            <button
-              onclick="finishCreate()"
-              class="btn-primary rounded-xl px-5 py-2 text-sm font-medium"
-            >
-              {{t "keys.save.done"}}
-            </button>
-          </div>
+          <p class="field-hint">{{t "keys.create.scope_hint"}}</p>
+          <p id="create-error" class="field-error hidden"></p>
+        </div>
+      </div>
+
+      <!-- 步骤 2：完整 Key 只展示这一次 -->
+      <div id="create-step-2" class="hidden">
+        <p class="card-sub">
+          {{t "keys.save.subtitle_prefix"}}<b class="kx-warn-strong">{{t "keys.save.subtitle_highlight"}}</b>
+        </p>
+        <div class="kx-secret">
+          <code id="new-key-value" class="kx-keymask"></code>
+          <button type="button" id="new-key-copy" class="btn btn-ghost btn-sm">
+            {{t "keys.save.copy"}}
+          </button>
+        </div>
+        <div class="kx-warn">
+          <svg
+            class="kx-warn-ico"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <p class="kx-warn-body">{{t "keys.save.warning"}}</p>
         </div>
       </div>
     </div>
 
-    
+    <!-- 两步的按钮各自一个裸 div 包着：.btn 自带 display:inline-flex，
+         直接在按钮上切 .hidden 会被 ui.css 盖掉，所以开关挂在无 display 的包装上。 -->
+    <div class="modal-foot">
+      <div id="kxf-cancel" class="hidden">
+        <button type="button" id="create-cancel" class="btn btn-ghost">
+          {{t "keys.create.cancel"}}
+        </button>
+      </div>
+      <div id="kxf-generate" class="hidden">
+        <button type="button" id="create-submit" class="btn btn-primary">
+          {{t "keys.create.generate"}}
+        </button>
+      </div>
+      <div id="kxf-done" class="hidden">
+        <button type="button" id="create-done" class="btn btn-primary">
+          {{t "keys.save.done"}}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 {{end}}
 
 {{define "script"}}
-    
     <script>
-      // ==================== Data layer ====================
+      // ==================== 数据层 ====================
       const { el, t, mountPullRefresh } = window.Anotify;
       const API = "/v1";
+
+      // 权限 → 表格 chip 的类（颜色全在页内样式里走 token）
       const SCOPE_META = {
-        "notify:send": {
-          labelKey: "keys.scope.send",
-          color: "background:var(--accent-soft);color:var(--accent-strong)",
-        },
+        "notify:send": { labelKey: "keys.scope.send", cls: "kx-chip kx-chip-send" },
         "notify:receive": {
           labelKey: "keys.scope.receive",
-          color: "background:var(--success-soft);color:var(--success)",
+          cls: "kx-chip kx-chip-receive",
         },
-        "devices:read": {
-          labelKey: "keys.scope.read",
-          color: "background:var(--warn-soft);color:var(--warn)",
-        },
+        "devices:read": { labelKey: "keys.scope.read", cls: "kx-chip kx-chip-read" },
       };
 
-
       let KEYS = [];
-      let loadError = null; // 载入失败原因（有值就渲染错误态，绝不伪造数据）
-      let newKeyPlain = "";
-      let pendingKey = null;
-
-      function toast(msg) {
-        const t = document.getElementById("toast");
-        t.textContent = msg;
-        t.classList.add("show");
-        clearTimeout(t._timer);
-        t._timer = setTimeout(() => t.classList.remove("show"), 2400);
-      }
+      let LOAD_ERROR = null; // 载入失败原因（有值就渲染错误态，绝不伪造数据）
+      let NEW_KEY_PLAIN = "";
+      let PENDING_KEY = null;
+      let LAST_FOCUS = null; // 弹层关闭后焦点归还到这个元素
+      let FETCH_ERROR = null; // 最近一次请求失败的原因（渲染错误态用，不伪造数据）
 
       function fmtTime(ts) {
         if (!ts) return t("common.time.never", "从未使用");
@@ -446,12 +723,10 @@
         return d.toISOString().slice(0, 10);
       }
 
-      // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；
+      // 401 委托给 Anotify.api（内置路由守卫会跳登录页）；
       // 其他失败记下原因，由 renderKeys 渲染「载入失败 + 重试」——不伪造数据（#273）。
-      let fetchError = null; // 最近一次请求失败的原因（渲染错误态用，不伪造数据）
-
       async function fetchApi(path, options) {
-        fetchError = null;
+        FETCH_ERROR = null;
         try {
           const res = await fetch(
             path,
@@ -459,18 +734,18 @@
           );
           if (res.status === 401)
             return Anotify.api(path, options).catch((e) => {
-              fetchError = e;
+              FETCH_ERROR = e;
               return null;
             });
           if (!res.ok) {
             const e = new Error("HTTP " + res.status);
             e.status = res.status;
-            fetchError = e;
+            FETCH_ERROR = e;
             return null;
           }
           return await res.json();
         } catch (e) {
-          fetchError = e;
+          FETCH_ERROR = e;
           return null;
         }
       }
@@ -483,7 +758,6 @@
           KEYS = (data.keys || data || []).map((k) => ({
             id: k.id,
             name: k.name || t("keys.unnamed", "未命名"),
-            nameKey: k.nameKey || null,
             prefix: k.prefix || "ant_????",
             scopes: k.scopes || [],
             lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
@@ -500,138 +774,134 @@
                     .slice(0, 10)
                 : "",
           }));
+          LOAD_ERROR = null;
         } else {
           // 失败就是失败：不伪造数据（演示数据只在 make mock 的 /mock.js 里，见 #273）
           KEYS = [];
-          loadError = fetchError || new Error("keys: 载入失败");
+          LOAD_ERROR = FETCH_ERROR || new Error(t("common.request_failed", "请求失败"));
         }
         renderKeys();
       }
 
       // ==================== 渲染 ====================
-      function renderKeys() {
-        const body = document.getElementById("keys-body");
-        const activeCount = KEYS.filter((k) => k.enabled).length;
-        document.getElementById("keys-summary").textContent = t(
-          "keys.summary",
-          "{total} 个 Key · {active} 启用",
-        )
-          .replace("{total}", KEYS.length)
-          .replace("{active}", activeCount);
+      // 摘要句：keys.summary 历史上带一个 `{demo}` 占位符，而演示数据是 /mock.js
+      // 在 fetch 层注入的——页面本身没有 demo 分支。这里按「非演示」分支把它渲染成
+      // 空串，绝不把字面量 {demo} 印到用户眼前（locale 的修正句见 keys.fixes.json，
+      // 模板侧这段是兜底：locale 还没合并时也不会漏字面量）。
+      function summaryLine() {
+        const active = KEYS.filter((k) => k.enabled).length;
+        return t("keys.summary", "{total} 个 Key · {active} 启用")
+          .replace("{total}", String(KEYS.length))
+          .replace("{active}", String(active))
+          .replace("{demo}", "");
+      }
 
-        if (loadError) {
-          const td = el("td", { colspan: "6" });
-          td.appendChild(window.Anotify.loadErrorNode(loadError, () => loadKeys()));
-          body.replaceChildren(el("tr", {}, td));
-          return;
-        }
-        if (KEYS.length === 0) {
-          body.replaceChildren(
+      // 四种视图互斥：loading / error / empty / ready
+      function setView(state) {
+        const table = document.getElementById("keys-table");
+        const empty = document.getElementById("keys-empty");
+        const error = document.getElementById("keys-error");
+        if (table) table.classList.toggle("hidden", state !== "ready");
+        if (empty) empty.classList.toggle("hidden", state !== "empty");
+        if (error) error.classList.toggle("hidden", state !== "error");
+      }
+
+      function scopeChip(s) {
+        const meta = SCOPE_META[s];
+        return el("span", {
+          class: meta ? meta.cls : "kx-chip kx-chip-other",
+          text: meta ? t(meta.labelKey, s) : s,
+        });
+      }
+
+      function keyRow(k) {
+        return el(
+          "tr",
+          {},
+          el(
+            "td",
+            {},
+            el("div", { class: "kx-cell-name", text: k.name }),
+            el("div", {
+              class: "kx-cell-sub",
+              text: k.created
+                ? t("keys.created_at", "创建于 {date}").replace("{date}", k.created)
+                : "",
+            }),
+          ),
+          el(
+            "td",
+            {},
+            el("code", { class: "kx-cell-mono", text: k.prefix + "••••••••" }),
+          ),
+          el(
+            "td",
+            {},
+            el("div", { class: "kx-chip-row" }, ...k.scopes.map(scopeChip)),
+          ),
+          el(
+            "td",
+            { class: "num" },
+            el("span", { class: "kx-cell-time", text: k.lastUsed }),
+          ),
+          el(
+            "td",
+            {},
+            el("span", {
+              class: "status-badge " + (k.enabled ? "status-on" : "status-off"),
+              text: k.enabled
+                ? t("keys.status.enabled", "启用")
+                : t("keys.status.disabled", "已停用"),
+            }),
+          ),
+          el(
+            "td",
+            { class: "num" },
             el(
-              "tr",
-              {},
+              "div",
+              { class: "kx-cell-actions" },
               el(
-                "td",
+                "button",
                 {
-                  class: "px-6 py-10 text-center text-sm text-zinc-500",
-                  colspan: "6",
+                  type: "button",
+                  class: "btn btn-danger btn-sm",
+                  onclick: () => revokeKey(k),
                 },
-                t(
-                  "keys.empty",
-                  "还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。",
-                ),
-              ),
-            ),
-          );
-          return;
-        }
-
-        body.replaceChildren(
-          ...KEYS.map((k) =>
-            el(
-              "tr",
-              { class: "transition-colors hover:bg-white/[0.02]" },
-              el(
-                "td",
-                { class: "px-6 py-4" },
-                el("div", {
-                  class: "text-sm font-medium text-white",
-                  text: k.name,
-                }),
-                el("div", {
-                  class: "text-[11px] text-zinc-500",
-                  text: k.created
-                    ? t("keys.created_at", "创建于 {date}").replace(
-                        "{date}",
-                        k.created,
-                      )
-                    : "",
-                }),
-              ),
-              el(
-                "td",
-                { class: "px-6 py-4" },
-                el("code", {
-                  class: "mono key-mask text-[12px] text-zinc-400",
-                  text: k.prefix + "••••••••",
-                }),
-              ),
-              el(
-                "td",
-                { class: "px-6 py-4" },
-                el(
-                  "div",
-                  { class: "flex flex-wrap gap-1.5" },
-                  ...k.scopes.map((s) =>
-                    el("span", {
-                      class: "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                      style: SCOPE_META[s]
-                        ? SCOPE_META[s].color
-                        : "background:rgba(255,255,255,0.06);color:var(--muted)",
-                      text: SCOPE_META[s]
-                        ? t(SCOPE_META[s].labelKey, SCOPE_META[s].label)
-                        : s,
-                    }),
-                  ),
-                ),
-              ),
-              el("td", {
-                class: "px-6 py-4 text-xs text-zinc-500",
-                text: k.lastUsed,
-              }),
-              el(
-                "td",
-                { class: "px-6 py-4" },
-                el("span", {
-                  class:
-                    "status-badge " + (k.enabled ? "status-on" : "status-off"),
-                  text: k.enabled
-                    ? t("keys.status.enabled", "启用")
-                    : t("keys.status.disabled", "已停用"),
-                }),
-              ),
-              el(
-                "td",
-                { class: "px-6 py-4 text-right" },
-                el(
-                  "div",
-                  { class: "inline-flex items-center gap-2" },
-                  el(
-                    "button",
-                    {
-                      class: "btn-danger rounded-lg px-3 py-1.5 text-xs",
-                      onclick: () => revokeKey(k),
-                    },
-                    t("keys.action.revoke", "停用"),
-                  ),
-                ),
+                t("keys.action.revoke", "停用"),
               ),
             ),
           ),
         );
       }
 
+      function renderKeys() {
+        const body = document.getElementById("keys-body");
+        const summary = document.getElementById("keys-summary");
+        if (summary) summary.textContent = summaryLine();
+        // 骨架是独立容器：数据到后整块 remove（留在 DOM 里会让「骨架 = 就绪」误判）
+        const skel = document.getElementById("keys-skel");
+        if (skel) skel.remove();
+
+        if (LOAD_ERROR) {
+          const box = document.getElementById("keys-error");
+          box.replaceChildren(
+            window.Anotify.loadErrorNode(LOAD_ERROR, () => loadKeys()),
+          );
+          body.replaceChildren();
+          setView("error");
+          return;
+        }
+        if (KEYS.length === 0) {
+          body.replaceChildren();
+          setView("empty");
+          return;
+        }
+        body.replaceChildren(...KEYS.map(keyRow));
+        setView("ready");
+      }
+
       async function revokeKey(k) {
+        // 原生 confirm：e2e（i18n_coverage D1）拦截 window.confirm 抓文案
         if (
           !confirm(
             t(
@@ -644,10 +914,7 @@
         try {
           const res = await fetch(
             API + "/keys/" + encodeURIComponent(k.id) + "/revoke",
-            {
-              method: "POST",
-              credentials: "same-origin",
-            },
+            { method: "POST", credentials: "same-origin" },
           );
           if (!res.ok) {
             // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
@@ -662,42 +929,88 @@
           }
           k.enabled = false;
           renderKeys();
-          toast(
-            t("keys.toast.revoked", "已停用「{name}」").replace(
-              "{name}",
-              k.name,
-            ),
+          window.Anotify.toast(
+            t("keys.toast.revoked", "已停用「{name}」").replace("{name}", k.name),
           );
         } catch (e) {
-          toast(
+          window.Anotify.toast(
             t("keys.toast.revoke_failed", "停用失败：{msg}").replace(
               "{msg}",
               e.message,
             ),
+            "error",
           );
         }
       }
 
-      // ==================== 新建 Key ====================
-      function openCreate() {
-        document.getElementById("create-step-1").classList.remove("hidden");
-        document.getElementById("create-step-2").classList.add("hidden");
-        document.getElementById("create-error").classList.add("hidden");
+      // ==================== 新建 Key 弹层 ====================
+      function modalEl() {
+        return document.getElementById("create-modal");
+      }
+
+      // 步骤切换：标题与按钮各有一套，同一时刻只亮一套
+      function setStep(step) {
+        document
+          .getElementById("create-step-1")
+          .classList.toggle("hidden", step !== 1);
+        document
+          .getElementById("create-step-2")
+          .classList.toggle("hidden", step !== 2);
+        document
+          .getElementById("kx-title-create")
+          .classList.toggle("hidden", step !== 1);
+        document
+          .getElementById("kx-title-save")
+          .classList.toggle("hidden", step !== 2);
+        document
+          .getElementById("kxf-cancel")
+          .classList.toggle("hidden", step !== 1);
+        document
+          .getElementById("kxf-generate")
+          .classList.toggle("hidden", step !== 1);
+        document
+          .getElementById("kxf-done")
+          .classList.toggle("hidden", step !== 2);
+      }
+
+      function openCreate(trigger) {
+        const modal = modalEl();
+        LAST_FOCUS =
+          trigger && typeof trigger.focus === "function"
+            ? trigger
+            : document.activeElement;
+        const errEl = document.getElementById("create-error");
+        errEl.textContent = "";
+        errEl.classList.add("hidden");
         document.getElementById("new-key-name").value = "";
+        document.getElementById("new-key-value").textContent = "";
         document
           .querySelectorAll('input[name="key-scope"]')
           .forEach((c, i) => (c.checked = i === 0));
-        document
-          .getElementById("create-modal")
-          .classList.replace("hidden", "flex");
+        NEW_KEY_PLAIN = "";
+        PENDING_KEY = null;
+        setStep(1);
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
         document.body.style.overflow = "hidden";
-        setTimeout(() => document.getElementById("new-key-name").focus(), 100);
+        const first = document.getElementById("new-key-name");
+        if (first) first.focus({ preventScroll: true });
       }
+
       function closeCreate() {
-        document
-          .getElementById("create-modal")
-          .classList.replace("flex", "hidden");
+        const modal = modalEl();
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
         document.body.style.overflow = "";
+        document.getElementById("new-key-value").textContent = "";
+        NEW_KEY_PLAIN = "";
+        PENDING_KEY = null;
+        setStep(1);
+        // 焦点归还：否则键盘用户关掉弹层后焦点掉回 <body>，得从头 Tab 一遍
+        const back = LAST_FOCUS;
+        LAST_FOCUS = null;
+        if (back && document.contains(back) && typeof back.focus === "function")
+          back.focus({ preventScroll: true });
       }
 
       function selectedScopes() {
@@ -706,7 +1019,6 @@
         ).map((c) => c.value);
       }
 
-
       async function generateKey() {
         const name =
           document.getElementById("new-key-name").value.trim() ||
@@ -714,15 +1026,11 @@
         const scopes = selectedScopes();
         const errEl = document.getElementById("create-error");
         if (scopes.length === 0) {
-          errEl.textContent = t(
-            "keys.error.no_scope",
-            "请至少选择一个权限范围",
-          );
+          errEl.textContent = t("keys.error.no_scope", "请至少选择一个权限范围");
           errEl.classList.remove("hidden");
           return;
         }
         errEl.classList.add("hidden");
-
 
         try {
           const res = await fetch(API + "/keys", {
@@ -736,59 +1044,89 @@
             throw new Error(data.error || "HTTP " + res.status);
           }
           const data = await res.json();
-          newKeyPlain = data.key || data.plaintext || "";
-          if (!newKeyPlain) throw new Error(t("keys.error.no_plaintext", "服务端未返回 Key 明文"));
-          pendingKey = {
+          NEW_KEY_PLAIN = data.key || data.plaintext || "";
+          if (!NEW_KEY_PLAIN)
+            throw new Error(t("keys.error.no_plaintext", "服务端未返回 Key 明文"));
+          PENDING_KEY = {
             id: data.id || "k_" + Date.now(),
             name: data.name || name,
-            prefix: data.prefix || newKeyPlain.slice(0, 13),
+            prefix: data.prefix || NEW_KEY_PLAIN.slice(0, 13),
             scopes: data.scopes || scopes,
             lastUsed: t("common.time.never", "从未使用"),
             enabled: true,
             created: new Date().toISOString().slice(0, 10),
           };
-          showStep2();
+          document.getElementById("new-key-value").textContent = NEW_KEY_PLAIN;
+          setStep(2);
+          const done = document.getElementById("create-done");
+          if (done) done.focus({ preventScroll: true });
         } catch (e) {
-          errEl.textContent = t(
-            "keys.error.create_failed",
-            "创建失败：{msg}",
-          ).replace("{msg}", e.message);
+          errEl.textContent = t("keys.error.create_failed", "创建失败：{msg}").replace(
+            "{msg}",
+            e.message,
+          );
           errEl.classList.remove("hidden");
         }
       }
 
-      function showStep2() {
-        document.getElementById("new-key-value").textContent = newKeyPlain;
-        document.getElementById("create-step-1").classList.add("hidden");
-        document.getElementById("create-step-2").classList.remove("hidden");
-      }
-
       function copyNewKey(btn) {
         navigator.clipboard
-          .writeText(newKeyPlain)
+          .writeText(NEW_KEY_PLAIN)
           .then(() => {
             const orig = btn.textContent;
             btn.textContent = t("keys.toast.copied", "已复制 ✓");
             setTimeout(() => (btn.textContent = orig), 1500);
           })
           .catch(() =>
-            toast(t("keys.toast.copy_failed", "复制失败，请手动选择复制")),
+            window.Anotify.toast(
+              t("keys.toast.copy_failed", "复制失败，请手动选择复制"),
+              "error",
+            ),
           );
       }
 
       function finishCreate() {
-        if (pendingKey) {
-          KEYS.unshift(pendingKey);
+        if (PENDING_KEY) {
+          KEYS.unshift(PENDING_KEY);
           renderKeys();
         }
-        pendingKey = null;
-        newKeyPlain = "";
+        PENDING_KEY = null;
         closeCreate();
-        toast(t("keys.toast.created", "Key 已创建"));
+        window.Anotify.toast(t("keys.toast.created", "Key 已创建"));
       }
 
-      window.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") closeCreate();
+      // ==================== 事件绑定 ====================
+      // 弹层挂到 document.body 上：页面内容外层带 .reveal 的 transform，
+      // position:fixed 的后代会被裁在那层容器里（真的会裁，不是理论问题）。
+      const MODAL_EL = modalEl();
+      if (MODAL_EL && MODAL_EL.parentNode !== document.body)
+        document.body.appendChild(MODAL_EL);
+
+      const bind = (id, ev, fn) => {
+        const node = document.getElementById(id);
+        if (node) node.addEventListener(ev, fn);
+      };
+      bind("btn-create", "click", (e) => openCreate(e.currentTarget));
+      bind("btn-create-empty", "click", (e) => openCreate(e.currentTarget));
+      bind("create-close", "click", () => closeCreate());
+      bind("create-cancel", "click", () => closeCreate());
+      bind("create-submit", "click", () => generateKey());
+      bind("create-done", "click", () => finishCreate());
+      bind("new-key-copy", "click", (e) => copyNewKey(e.currentTarget));
+
+      // 点遮罩关闭（只有点在遮罩本身、不是面板里才算）
+      if (MODAL_EL)
+        MODAL_EL.addEventListener("click", (e) => {
+          if (e.target === MODAL_EL) closeCreate();
+        });
+
+      // Esc 关闭
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        const modal = modalEl();
+        if (!modal || modal.classList.contains("hidden")) return;
+        e.preventDefault();
+        closeCreate();
       });
 
       // ==================== 页面组装 ====================
@@ -803,4 +1141,3 @@
       mountPullRefresh(loadKeys);
     </script>
 {{end}}
-

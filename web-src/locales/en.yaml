@@ -479,6 +479,11 @@ receivers:
     tag_phone: phone
     tag_work: work
   subtitle: Control notifications per device
+  refresh: 'Refresh'
+  unavailableTitle: 'Push is not available yet'
+  emptyTitle: 'No receiving devices yet'
+  emptyDesc: 'Add this device and it will receive the notifications you confirm.'
+  wsEmptyTitle: 'No live connections yet'
 keys:
   title: API Keys
   subtitle: Agents use them to report notifications
@@ -537,7 +542,7 @@ keys:
     read: Device read
   unnamed: Unnamed
   unnamed_key: Unnamed Key
-  summary: '{total} Keys · {active} active{demo}'
+  summary: '{total} Keys · {active} active'
   summary_demo: ' · demo data'
   empty: No Keys yet. Click "+ New Key" in the top right to create one and let Agents start reporting.
   created_at: Created {date}
@@ -564,6 +569,7 @@ keys:
     name2: CI pipeline
     name3: Desktop widget (receive)
     name4: Old test Key
+  emptyTitle: 'No API keys yet'
 security:
   title: Security & Login
   subtitle: Passkey · Sessions · Recovery codes
@@ -1075,6 +1081,10 @@ admin:
     load_sessions: Failed to load sessions
     action: Action failed
     network: Network error
+  scopeChip: 'Deployment'
+  usersEmptySub: 'Users show up here once they sign up'
+  messagesEmptySub: 'Notifications reported by your agents land here'
+  sessionsEmptySub: 'Live device connections appear here'
 events:
   load_failed_hint: 'Failed to load: cannot reach the server, please retry.'
   load_failed: 'Failed to load: cannot reach the server, please retry'
@@ -1343,6 +1353,7 @@ nodes:
     install_after: 'It installs the binary, writes ~/.anotify/node.yaml (mode 600, contains the token) and generates a systemd user service. Note: the command contains the token, so it stays in your shell history.'
     copy_install: Copy command
     yaml_workdir_note: 'The work dir is set in the capability definition on the Capabilities page (run.workDir) and ships with the deployment; this yaml does not need it.'
+  emptyTitle: 'No nodes yet'
 sources:
   empty_title: No sources yet
   detail: "Details"
@@ -1603,6 +1614,7 @@ nodepage:
   not_found: Node not found
   not_found_hint: No node matches this id; it may have been deleted.
   missing_id: 'Missing node id (the URL should carry ?id=nd_…)'
+  tasks_load_failed: 'Failed to load tasks'
 
 pb:
   title: Playbooks

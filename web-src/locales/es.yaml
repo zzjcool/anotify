@@ -479,6 +479,11 @@ receivers:
     tag_phone: móvil
     tag_work: trabajo
   subtitle: Controla notificaciones por dispositivo
+  refresh: 'Actualizar'
+  unavailableTitle: 'Las notificaciones push aún no están disponibles'
+  emptyTitle: 'Aún no hay dispositivos de recepción'
+  emptyDesc: 'Añade este dispositivo y recibirá las notificaciones que confirmes.'
+  wsEmptyTitle: 'Aún no hay conexiones activas'
 keys:
   title: API Keys
   subtitle: Los agentes las usan para reportar notificaciones
@@ -537,7 +542,7 @@ keys:
     read: Lectura de dispositivos
   unnamed: Sin nombre
   unnamed_key: Key sin nombre
-  summary: '{total} Keys · {active} activos{demo}'
+  summary: '{total} Keys · {active} activos'
   summary_demo: ' · datos demo'
   empty: Aún no hay Keys. Haz clic en "+ Nuevo Key" arriba a la derecha para crear uno y que los Agents empiecen a reportar.
   created_at: Creado {date}
@@ -564,6 +569,7 @@ keys:
     name2: Pipeline CI
     name3: Widget de escritorio (recepción)
     name4: Key de prueba antiguo
+  emptyTitle: 'Aún no hay claves de API'
 security:
   title: Seguridad y acceso
   subtitle: Passkey · Sesiones · Códigos de recuperación
@@ -1075,6 +1081,10 @@ admin:
     load_sessions: Error al cargar sesiones
     action: Acción fallida
     network: Error de red
+  scopeChip: 'Todo el despliegue'
+  usersEmptySub: 'Los usuarios aparecerán aquí cuando se registren'
+  messagesEmptySub: 'Los avisos informados por tus agentes se guardan aquí'
+  sessionsEmptySub: 'Las conexiones activas de dispositivos aparecen aquí'
 events:
   load_failed_hint: 'Error al cargar: no se puede conectar al servidor, reintenta.'
   load_failed: 'Error al cargar: no se puede conectar al servidor, reintenta'
@@ -1343,6 +1353,7 @@ nodes:
     install_after: 'Instala el binario, escribe ~/.anotify/node.yaml (modo 600, contiene el token) y genera un servicio de usuario systemd. Ojo: el comando contiene el token, así que queda en el historial del shell.'
     copy_install: Copiar comando
     yaml_workdir_note: 'El directorio de trabajo se define en la capacidad (página Capacidades, run.workDir) y baja con el despliegue; este yaml no lo necesita.'
+  emptyTitle: 'Aún no hay nodos'
 sources:
   empty_title: Aún no hay fuentes
   detail: "Detalles"
@@ -1603,6 +1614,7 @@ nodepage:
   not_found: Nodo no encontrado
   not_found_hint: Ningún nodo coincide con este id; puede haber sido eliminado.
   missing_id: 'Falta el id del nodo (la URL debe llevar ?id=nd_…)'
+  tasks_load_failed: 'No se pudieron cargar las tareas'
 
 pb:
   title: Playbooks

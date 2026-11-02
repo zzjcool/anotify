@@ -479,6 +479,11 @@ receivers:
     tag_phone: 手机
     tag_work: 工作
   subtitle: 按设备控制通知接收
+  refresh: '刷新'
+  unavailableTitle: '推送暂未开放'
+  emptyTitle: '还没有接收设备'
+  emptyDesc: '添加这台设备后，它就能接收你确认的通知。'
+  wsEmptyTitle: '还没有长连接'
 keys:
   title: API Keys
   subtitle: Agent 用它上报通知
@@ -537,7 +542,7 @@ keys:
     read: 设备查询
   unnamed: 未命名
   unnamed_key: 未命名 Key
-  summary: '{total} 个 Key · {active} 启用{demo}'
+  summary: '{total} 个 Key · {active} 启用'
   summary_demo: ' · 演示数据'
   empty: 还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。
   created_at: 创建于 {date}
@@ -564,6 +569,7 @@ keys:
     name2: CI 流水线
     name3: 桌面插件（接收）
     name4: 旧测试 Key
+  emptyTitle: '还没有 API Key'
 security:
   title: 安全与登录
   subtitle: Passkey · 会话 · 恢复码
@@ -1075,6 +1081,10 @@ admin:
     load_sessions: 加载会话失败
     action: 操作失败
     network: 网络错误
+  scopeChip: '全部署'
+  usersEmptySub: '被邀请的用户会出现在这里'
+  messagesEmptySub: 'Agent 上报的通知会保留在这里'
+  sessionsEmptySub: '有设备保持长连接时会出现在这里'
 events:
   load_failed_hint: '载入失败：连不上服务端，请重试。'
   load_failed: '载入失败：连不上服务端，请重试'
@@ -1343,6 +1353,7 @@ nodes:
     install_after: 它会装好二进制、写 ~/.anotify/node.yaml（权限 600，里面有令牌）、生成 systemd 用户服务。注意：命令里带令牌，会留在 shell 历史里。
     copy_install: 复制命令
     yaml_workdir_note: '工作目录在「能力」页的能力定义里配（run.workDir），随部署下发；这份 yaml 不需要写。'
+  emptyTitle: '还没有节点'
 sources:
   empty_title: 还没有源
   detail: "详情"
@@ -1603,6 +1614,7 @@ nodepage:
   not_found: 节点不存在
   not_found_hint: 这个 id 没有对应的节点，可能已被删除。
   missing_id: '缺少节点 id（URL 应该有 ?id=nd_…）'
+  tasks_load_failed: '任务列表载入失败'
 
 pb:
   title: 预案
