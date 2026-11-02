@@ -1298,9 +1298,12 @@ nodes:
     title: Nodes
   howto:
     title: How to connect a node
-    desc: 'Registration happens right here: the token is shown once, and the machine only needs one docker command — no config file at all.'
-    step1: 'Click “Register node” above for a one-time token, then paste the command it shows on that machine'
-    step2: 'Once the machine is online, deploy a capability from the Capabilities page'
+    desc: 'Registration happens on this page: the token is shown once. You get three things — a one-line docker command, a native install command, and node.yaml.'
+    step1: Click "Register node" above to get a one-time token
+    step2: 'Pick one: a container (cannot see host files) or a native install (choose this to run capabilities inside your own project)'
+    docker: 'Container: cannot see host files, capabilities run inside the container only'
+    native: 'Native: runs as your user on the host; --work-dirs is the allowlist it may touch'
+    step3: Once the node is online, deploy a capability on the "Capabilities" page and it has work to do
   view_events: View events
   register:
     btn: 'Register node'

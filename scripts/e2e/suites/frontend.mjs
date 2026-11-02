@@ -3477,6 +3477,29 @@ async function checkNodeRegister(page, base) {
 		`结果块隐藏=${reg.resultHidden} 令牌长度=${token.length} 错误行=${JSON.stringify(reg.errorText)}`,
 	);
 
+	// ---- ③.5 「如何接入」静态卡片必须同时给出两条路（#283） ----
+	// 这里锁的是**文字**，因为它就是用户看到的全部：只写 docker 会让人以为
+	// 原生装不存在；示例命令少了 ANOTIFY_SERVER 会让人贴上去永远连不上。
+	const howto = await page.evaluate(() => {
+		const pre = document.querySelector("pre.code-block");
+		return pre ? pre.textContent : "";
+	});
+	H.check(
+		"接入说明同时给出 docker 与原生装两条路",
+		/docker run/.test(howto) && /install-agent\.sh/.test(howto),
+		String(howto).slice(0, 120),
+	);
+	H.check(
+		"接入说明的 docker 示例带 ANOTIFY_SERVER（只给 token 连不上中枢）",
+		/ANOTIFY_SERVER=/.test(howto) && /ANOTIFY_TOKEN=/.test(howto),
+		/ANOTIFY_SERVER=/.test(howto) ? "ok" : "缺 ANOTIFY_SERVER",
+	);
+	H.check(
+		"接入说明提到 --work-dirs（原生装的工作目录白名单）",
+		/--work-dirs/.test(howto),
+		String(howto).slice(0, 120),
+	);
+
 	// ---- ④ node.yaml 逐项形状（硬锁：能直接粘进 agent） ----
 	//
 	// **v2 变了**：node.yaml 只剩 bootstrap 四件（name/server/token/instances）。
