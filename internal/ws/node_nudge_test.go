@@ -30,7 +30,7 @@ func TestResultFreesSlotNudgesDispatcher(t *testing.T) {
 	})
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_219_nudge")
@@ -61,7 +61,7 @@ func TestRejectedResultDoesNotNudge(t *testing.T) {
 	})
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 	// hello 成功本身就会触发一次（节点上线 = 新增了执行能力），先把它排空，
 	// 之后看到的信号才只可能来自 result。
@@ -103,7 +103,7 @@ func TestHelloNudgesDispatcher(t *testing.T) {
 	})
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	select {
