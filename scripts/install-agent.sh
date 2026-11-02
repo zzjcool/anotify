@@ -66,7 +66,12 @@ for arg in "$@"; do
 	--name=*) NAME="${arg#*=}" ;;
 	--instances=*) INSTANCES="${arg#*=}" ;;
 	--work-dirs=*) WORK_DIRS="${arg#*=}" ;;
-	--prefix=*) BIN_DIR="${arg#*=/opt}/bin" ;;
+	--prefix=*)
+		# ${arg#*=/opt} 是错的写法（模式里带 /opt 永远匹配不上，结果把整串当路径）；
+		# 这里显式去掉前缀，并容忍结尾多余的斜杠。
+		p="${arg#--prefix=}"
+		BIN_DIR="${p%/}/bin"
+		;;
 	--no-systemd) WITH_SYSTEMD="no" ;;
 	--allow-root) ALLOW_ROOT="yes" ;;
 	-h | --help)
@@ -102,8 +107,14 @@ aarch64 | arm64) arch="arm64" ;;
 esac
 
 # 版本：优先 $ANOTIFY_VERSION（可钉住），否则取 latest。
+#
+# ANOTIFY_RELEASE_BASE 是给**私有化 / 内网镜像**用的：把 release 资产放到自己的
+# 文件服务器上，安装脚本指向它就行（离线环境、或被墙的机器都靠这个）。
+# 它同时是测试入口——本地起个 http.server 就能把整条安装链路跑一遍。
 version="${ANOTIFY_VERSION:-latest}"
-if [ "$version" = "latest" ]; then
+if [ -n "${ANOTIFY_RELEASE_BASE:-}" ]; then
+	asset_base="${ANOTIFY_RELEASE_BASE%/}"
+elif [ "$version" = "latest" ]; then
 	asset_base="https://github.com/${OWNER}/${REPO}/releases/latest/download"
 else
 	asset_base="https://github.com/${OWNER}/${REPO}/releases/download/${version}"
@@ -120,8 +131,48 @@ if ! curl -fsSL "$url" -o "$tmp"; then
   · 检查这个平台/架构是否已发布（github.com/${OWNER}/${REPO}/releases）
   · 想钉版本：ANOTIFY_VERSION=v1.2.3 再跑一次
   · 用代理：export https_proxy=...
+  · 内网/镜像：export ANOTIFY_RELEASE_BASE=https://your-mirror/anotify
   · 也可以改用 docker 一条命令（控制台里那份命令）"
 fi
+
+# 完整性校验：release 里每个资产都带 <asset>.sha256（sha256sum 的两空格格式）。
+#
+# 校验失败就**中止**，不降级：这个二进制会以你的用户身份执行任意脚本，
+# 下载链路被投毒（DNS/代理/镜像）而没有校验 = 直接把机器交出去。
+# 没有 sha256sum/shasum 时不静默通过，而是明确打印"未校验"——让用户自己决定。
+verify_checksum() {
+	cd_ok="$(dirname "$tmp")"
+	sumfile="$tmp.sha256"
+	if ! curl -fsSL "${url}.sha256" -o "$sumfile" 2>/dev/null; then
+		printf '注意：release 里没有 %s.sha256，跳过完整性校验\n' "$asset" >&2
+		return 0
+	fi
+	want=$(awk '{print $1}' "$sumfile" | head -n1)
+	if [ -z "$want" ]; then
+		printf '注意：校验和文件是空的，跳过完整性校验\n' >&2
+		return 0
+	fi
+	if command -v sha256sum >/dev/null 2>&1; then
+		got=$(sha256sum "$tmp" | awk '{print $1}')
+	elif command -v shasum >/dev/null 2>&1; then
+		got=$(shasum -a 256 "$tmp" | awk '{print $1}')
+	elif command -v openssl >/dev/null 2>&1; then
+		got=$(openssl dgst -sha256 "$tmp" | awk '{print $NF}')
+	else
+		printf '注意：本机没有 sha256sum/shasum/openssl，跳过完整性校验\n' >&2
+		return 0
+	fi
+	if [ "$got" != "$want" ]; then
+		die "校验和不匹配（下载可能被篡改或截断）
+  want: $want
+  got:  $got
+  · 重试一次：网络中断也会导致不匹配
+  · 仍不一致就别装了，去 github.com/${OWNER}/${REPO}/releases 手工核对"
+	fi
+	printf '校验和 OK（%s）\n' "$got"
+}
+
+verify_checksum
 
 # 装二进制。普通用户写 /usr/local/bin 会失败 → 退化到 ~/.local/bin 并提示 PATH。
 mkdir -p "$DATA_DIR" || die "无法创建 $DATA_DIR"
@@ -155,7 +206,10 @@ cfg="${DATA_DIR}/node.yaml"
 	[ -n "$INSTANCES" ] && printf 'instances: %s\n' "$INSTANCES"
 	if [ -n "$WORK_DIRS" ]; then
 		printf 'workDirs:\n'
-		printf '%s' "$WORK_DIRS" | tr ':' '\n' | while IFS= read -r d; do
+		# 必须给**结尾换行**：`while read` 在"没有换行的最后一行"上返回非 0，
+		# 循环体不会执行 —— 只加 `tr ':' '\n'` 会静默丢掉最后一个目录，
+		# 而这个白名单少一条的后果是「那个目录下的能力任务全部失败」。
+		printf '%s\n' "$WORK_DIRS" | tr ':' '\n' | while IFS= read -r d; do
 			[ -n "$d" ] && printf '  - %s\n' "$d"
 		done
 	fi
