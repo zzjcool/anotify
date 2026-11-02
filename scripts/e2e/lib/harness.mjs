@@ -298,6 +298,13 @@ const NS_REQUIRED_PREFIXES = [
 	// （见 internal/server/playbook_handlers.go 的文件头）。这里漏一行的症状是
 	// 「req() 静默少带一个参数 → 真后端一律 400」，而 400 的原因只有后端日志里有。
 	"/v1/playbooks",
+	// console-declares（协议 v2）新增的两个命名空间资源端点：
+	//   /v1/artifacts   ?capabilityId=  缺 namespaceId → 400
+	//   /v1/deployments  GET/POST/DELETE 全部缺了 → 400
+	// 漏登记的后果与 /v1/playbooks 那一次完全一样（那次是 #196）：req() 静默少带参数，
+	// 真后端一律 400，而且只有后端日志里才看得见原因。
+	"/v1/artifacts",
+	"/v1/deployments",
 ];
 
 // isNamespaceEndpoint 判断路径是否属于「必填 namespaceId」的命名空间资源端点。
@@ -500,6 +507,8 @@ export const SUITE_PORTS = {
 	// 批次 5（#229 保留期 / #228 背压）：入口返回码变了，必须进 e2e 门禁。
 	// 端口不能与 events_paging 共用 6950（两边同时加的，撞了）：段起始改成 7000。
 	capacity: 7000,
+	// console-declares（T6）：部署模型纯 HTTP 套件（templates/artifacts/deployments）。
+	deploy: 7050,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。

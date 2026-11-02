@@ -101,6 +101,54 @@
         font-size: 0.75rem;
         color: var(--faint);
       }
+      /* 已缓存产物的一行：左边「能力名@版本 + digest」，右边状态徽章 + reason。
+         上面的 .np-task 说的是「跑过什么」，这行说的是「手上躺着哪份东西」，
+         两者字段不同，所以不复用同一个类。 */
+      .np-art {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.45rem 0.6rem;
+        border-radius: 10px;
+        /* 行底色只走 token（不硬编码 rgba 字面量），与能力页部署面板的节点行同色 */
+        background: var(--surface-2);
+      }
+      .np-art-main {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.5rem;
+        min-width: 0;
+      }
+      .np-art-name {
+        font-size: 0.75rem;
+        color: var(--text);
+      }
+      /* digest 必须等宽：这一串是要跟中枢日志、agent 输出逐字符对照的 */
+      .np-art-digest {
+        font-family: var(--mono, monospace);
+        font-size: 0.7rem;
+        color: var(--faint);
+        letter-spacing: 0.02em;
+      }
+      .np-art-meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        font-size: 0.7rem;
+        color: var(--faint);
+      }
+      /* reason 是后端给的机器串（如 missing_requirement:claude），原样展示、不翻译 */
+      .np-art-reason {
+        font-family: var(--mono, monospace);
+        font-size: 0.68rem;
+        color: var(--warn-300);
+        overflow-wrap: anywhere;
+      }
     </style>
 {{end}}
 
@@ -157,6 +205,9 @@
       let INSTS = [];
       let TASKS = [];
       let CAPS = new Map();
+      // 部署记录（已缓存的产物）。null 专指「接口失败」，和空数组的
+      // 「一行都没有」是两种不同的结论 —— 混在一起就会把故障说成未部署。
+      let DEPS = null;
 
       function el(tag, cls, text) {
         const n = document.createElement(tag);
@@ -212,6 +263,83 @@
         if (c) return c.displayName || c.name + "@" + c.version;
         if (fallbackName) return fallbackName + "@" + fallbackVersion;
         return id || "?";
+      }
+
+      // 部署行字段容错：后端可能给 camelCase，也可能给 snake_case（契约 §2.3），
+      // 少一个字段不能让整块白屏。
+      function depField(d, camel, snake) {
+        if (!d) return undefined;
+        const v = d[camel];
+        if (v !== undefined && v !== null) return v;
+        return d[snake];
+      }
+
+      // digest 只显示 sha256: 之后的 12 个十六进制：够人眼对照，又不会把行撑断。
+      function shortDigest(digest) {
+        const s = String(digest || "");
+        if (!s) return "";
+        return (s.indexOf("sha256:") === 0 ? s.slice(7) : s).slice(0, 12);
+      }
+
+      // 能力名@版本：CAPS 里查得到就用用户取的显示名（capLabel 的行为），
+      // 查不到退回部署行自带的 capabilityName / capability / capabilityId。
+      function depLabel(d) {
+        const id = depField(d, "capabilityId", "capability_id") || "";
+        if (id && CAPS.has(id)) return capLabel(id, null, null);
+        // version 没有 snake_case 变体（部署行里就叫 version），直接读；
+        // 保留 null 保护：行可能是形状不对的空对象。
+        const ver = d && d.version;
+        const named =
+          depField(d, "capabilityName", "capability_name") ||
+          (d && typeof d.capability === "string" ? d.capability : "");
+        const name = named || id || "?";
+        // version 可能缺（老数据）：别拼成 "name@undefined"
+        return ver == null ? String(name) : String(name) + "@" + ver;
+      }
+
+      // 部署状态 → 徽章 class + 文案 key（契约 §4.4 那张表，四条一一对应）。
+      // status-off 给 pending 是刻意的：pending 不是错误、也不该抢眼。
+      // fb 与 locale 的 zh-CN 值逐字对齐：真缺 key 时同一状态不能变成另一种说法。
+      const ART_STATE = {
+        applied: {
+          cls: "status-badge status-success",
+          key: "node.artifacts.state_applied",
+          fb: "已应用",
+        },
+        pending: {
+          cls: "status-badge status-off",
+          key: "node.artifacts.state_pending",
+          fb: "下发中",
+        },
+        failed: {
+          cls: "status-badge status-error",
+          key: "node.artifacts.state_failed",
+          fb: "失败",
+        },
+        local: {
+          cls: "status-badge status-warn",
+          key: "node.artifacts.state_local",
+          fb: "本地变体",
+        },
+      };
+
+      // 部署列表形状容错：数组直接当行；带 deployments 的对象取那个键；
+      // 其余形状当「读不到」—— 宁可说读取失败，也不能说成「还没有部署」。
+      function depRows(res) {
+        if (Array.isArray(res)) return res;
+        if (res && Array.isArray(res.deployments)) return res.deployments;
+        return null;
+      }
+
+      // /v1/deployments 不在 partials.js 的 NS_PATHS 里，命名空间要自己补
+      // （契约 §2.3）；读不到 scope 就省略 —— 后端对缺参数的容错比猜错好。
+      function scopeQuery() {
+        try {
+          const s = JSON.parse(localStorage.getItem("anotify.scope") || "{}") || {};
+          return s.namespaceId ? "&namespaceId=" + encodeURIComponent(s.namespaceId) : "";
+        } catch (e) {
+          return "";
+        }
       }
 
       function statusText(st) {
@@ -350,6 +478,63 @@
           capsCard.appendChild(wrap);
         }
         body.appendChild(capsCard);
+
+        // ---- 已缓存的产物 ----
+        //
+        // 上一块说的是「这台机器**声明**能干什么」，这一块说的是「它手上**真的有**
+        // 哪几份产物」。部署是三段式的（定义能力 → 构建产物 → 下发到机器），任何
+        // 一段没走完都表现为这里少一行或状态不对，所以状态与 reason 都原样展示。
+        const artCard = card(t("node.artifacts.title", "已缓存的产物"));
+        if (DEPS === null) {
+          // 接口失败 ≠ 没有部署：写成「还没有部署」会骗用户去重新部署一遍。
+          artCard.appendChild(
+            el(
+              "div",
+              "np-empty",
+              t(
+                "node.artifacts.load_failed",
+                "读取失败：拿不到这台机器的部署记录，稍后刷新重试",
+              ),
+            ),
+          );
+        } else if (!DEPS.length) {
+          artCard.appendChild(
+            el("div", "np-empty", t("node.artifacts.empty", "这台机器还没有部署任何能力")),
+          );
+        } else {
+          const list = el("div", "space-y-1.5");
+          for (const d of DEPS) {
+            const row = el("div", "np-art");
+            const main = el("div", "np-art-main");
+            main.appendChild(el("span", "np-art-name", depLabel(d)));
+            const fullDigest = String(depField(d, "digest", "digest") || "");
+            const short = shortDigest(fullDigest);
+            if (short) {
+              const dig = el("span", "np-art-digest", short);
+              // 页面上只给前 12 位；完整值挂 title，对照日志时不用另查接口。
+              dig.title = t("node.artifacts.digest", "产物摘要") + " " + fullDigest;
+              main.appendChild(dig);
+            }
+            row.appendChild(main);
+
+            const meta = el("div", "np-art-meta");
+            const state = String(depField(d, "state", "state") || "");
+            const def = ART_STATE[state];
+            if (def) {
+              meta.appendChild(el("span", def.cls, t(def.key, def.fb)));
+            } else {
+              // 未识别的状态原样给出，不假装它是那四种之一
+              meta.appendChild(el("span", "status-badge status-off", state || "—"));
+            }
+            const reason = depField(d, "reason", "reason");
+            if (reason) meta.appendChild(el("span", "np-art-reason", reason));
+            row.appendChild(meta);
+
+            list.appendChild(row);
+          }
+          artCard.appendChild(list);
+        }
+        body.appendChild(artCard);
 
         // ---- 并发槽位 ----
         //
@@ -505,6 +690,18 @@
           renderMissing();
           return;
         }
+
+        // 部署列表**单独一轮请求**，顺序是刻意的，别改回四路并行：
+        // /v1/deployments 不在 partials.js 的 NS_PATHS 里，namespaceId 得自己拼；
+        // 而 scope 要等 Anotify.api() 内部的 ensureScope() 才落盘（web/partials.js:1050
+        // 一带）。上面那轮里 /v1/nodes/<id> 在 NS_PATHS 内，api() 会顺手把 scope 落盘；
+        // 现在这里再读 scopeQuery() 就能拿到 namespaceId。若并回并行，全新会话首帧
+        // 四路同时发出、scopeQuery() 同步读到空 → 请求缺 namespaceId → 真后端严格校验
+        // 会 400 → 这一块永久「读取失败」。
+        const deployRes = await apiGet(
+          API + "/deployments?nodeId=" + encodeURIComponent(NODE_ID) + scopeQuery(),
+        );
+
         NODE = detail.node;
         INSTS = detail.instances || [];
         TASKS = (tasksRes && tasksRes.tasks) || [];
@@ -512,6 +709,7 @@
         for (const c of (capsRes && capsRes.capabilities) || []) {
           if (!CAPS.has(c.id)) CAPS.set(c.id, c);
         }
+        DEPS = deployRes == null ? null : depRows(deployRes);
         renderHead();
         renderBody();
       }

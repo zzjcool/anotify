@@ -85,6 +85,30 @@ func tableContentDigest(t *testing.T, db *DB, table string, cols []string) strin
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// liveCols 把「每张表的期望列清单」过滤成「该库上真实存在的列」，顺序保持不变。
+//
+// 用途见 TestMigration14PreservesRows：跨多个迁移阶段做内容摘要时，只能对**两个阶段
+// 都存在**的列比字节；后面某个迁移刻意删掉的列（如迁移 18 删的 run_spec）参与摘要
+// 会让「形状不同」被误读成「数据变了」。
+func liveCols(t *testing.T, db *DB, want map[string][]string) map[string][]string {
+	t.Helper()
+	out := make(map[string][]string, len(want))
+	for table, cols := range want {
+		have := columnNames(t, db, table)
+		kept := make([]string, 0, len(cols))
+		for _, c := range cols {
+			if have[c] {
+				kept = append(kept, c)
+			}
+		}
+		if len(kept) == 0 {
+			t.Fatalf("表 %s 在 tip 库上没有任何期望列（夹具/列清单写错了）: want=%v", table, cols)
+		}
+		out[table] = kept
+	}
+	return out
+}
+
 // TestMigration14ColumnReconciliation 迁移 14 的列清单必须等于「v13 真实列 − org_id」。
 //
 // 为什么必须有这一条（实测得出的教训）：回灌 SQL 的列清单和 stage 的 SELECT 用的是
@@ -286,6 +310,15 @@ func TestMigration14PreservesRows(t *testing.T) {
 	for _, rb := range orgLayerRebuilds {
 		digestCols[rb.table] = rb.cols
 	}
+	// 摘要列 = 阶段 A 的列清单 ∩ **tip 库真实存在**的列（两个阶段都用这一份）。
+	//
+	// 为什么要求交集：迁移 18（deployment_model）把 node_capabilities 整表重建成
+	// (node_id, capability_id, namespace_id)，run_spec 在 tip 库上已经不存在了。
+	// 「升级不丢数据」只能对**两个阶段都存在**的列构成有意义的内容摘要；run_spec 的
+	// 消失是迁移 18 的**要求**（不是丢数据），由 migrate18_test.go 单独钉住
+	// （列消失 + 行数与 (node_id, capability_id) 组合不变）。
+	tipDB, _ := newTestDBFile(t)
+	digestCols = liveCols(t, tipDB, digestCols)
 	beforeDigest := map[string]string{}
 	for _, table := range []string{"capability_versions", "nodes", "node_capabilities", "node_pins", "edges", "sources", "events", "tasks", "graph_versions", "playbooks"} {
 		beforeDigest[table] = tableContentDigest(t, db13, table, digestCols[table])
@@ -308,7 +341,7 @@ func TestMigration14PreservesRows(t *testing.T) {
 	}
 	for table, want := range beforeDigest {
 		if got := tableContentDigest(t, up, table, digestCols[table]); got != want {
-			t.Errorf("升级后 %s 的行内容变了（摘要 %s → %s）：迁移 14 只该去掉 org_id，不该改数据",
+			t.Errorf("升级后 %s 的行内容变了（摘要 %s → %s）：迁移只该去掉 org_id / run_spec，不该改数据",
 				table, want[:12], got[:12])
 		}
 	}

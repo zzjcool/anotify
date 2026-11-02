@@ -18,19 +18,21 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/ws"
 )
 
-// 本文件覆盖契约 §5 的 W4 必测矩阵 + §11.1/§11.3 的返工项（F1/F3/F4）。
+// 本文件覆盖连接与调度层（client.go）的 v2 行为。
 //
-// 两条腿走路：
-//   - 内存 fake nodeConn（快、确定）：调度细节（ack 顺序、cancel、信号量、params 透传）；
-//   - httptest + coder/websocket 起**真**连接（§11.1 的 F1 回归锚）：优雅退出时 result
-//     到底能不能发出去。这一条**不能**交给 fake：fake 的读语义是本文件自己写的，
-//     而 F1 恰恰死在真库的读语义上（Conn.Read(ctx) 取消 ctx = c.close()）。
+// 与 v1 最大的差异：**能力不再是 node.yaml 里的声明，而是缓存里的产物**。所以每个
+// 用例的夹具变成「先把产物经 deploy 帧放进来，再派单」——这正是线上的顺序，
+// 顺带把 apply.go / cache.go / hello.applied 一起串起来了。
 //
-// 命名一律带 w4 前缀：同包的 config_test.go / protocol_test.go / runner_test.go
-// 是别人的文件，helper 名不能撞。
+// 两条腿走路（与 v1 相同）：
+//   - 内存 fake nodeConn（快、确定）：ack 顺序、cancel、信号量、params 透传；
+//   - httptest + coder/websocket 起**真**连接（§11.1 的 F1 回归锚）：优雅退出时
+//     result 到底能不能发出去。这一条**不能**交给 fake：fake 的读语义是本文件自己
+//     写的，而 F1 恰恰死在真库的读语义上。
 
 // ---------- fake 连接 ----------
 
@@ -58,14 +60,11 @@ func newW4Conn() *w4Conn {
 // read 的语义**对齐真库**：读的 ctx 一取消就等于「连接没了」。
 //
 // coder/websocket 的 Conn.Read(ctx) 走 setupReadTimeout → context.AfterFunc(ctx,
-// func() { c.close() })（conn.go:188-200），所以取消读 ctx 是「关连接」，不是「读超时」；
-// 这里也立刻返回 ctx.Err()。
-//
-// 历史上这里有过一个 postCancelReadWindow（取消后还再交付 150ms 内到达的帧），
-// 那是**假的**：它把「父 ctx 取消并不影响读」这个错误前提固化成了测试语义，
-// 于是 F1（SIGINT 一来连接被库关掉、grace 期的 result 全丢）在 fake 上永远绿。
-// 现在契约要求读循环用连接自己的 ctx（a.base），本 fake 的 ctx 也就是 a.base，
-// 因此「取消后读不到帧」= 收尾，与真库一致。
+// func() { c.close() })，所以取消读 ctx 是「关连接」，不是「读超时」；这里也立刻
+// 返回 ctx.Err()。历史上这里有过一个「取消后还再交付 150ms 内到达的帧」的窗口，
+// 那是假的：它把「父 ctx 取消并不影响读」这个错误前提固化成了测试语义，于是 F1
+// 在 fake 上永远绿。现在契约要求读循环用连接自己的 ctx（a.base），本 fake 的 ctx
+// 也就是 a.base，因此「取消后读不到帧」= 收尾，与真库一致。
 func (c *w4Conn) read(ctx context.Context) ([]byte, error) {
 	select {
 	case data := <-c.in:
@@ -192,12 +191,16 @@ func w4Describe(frames []map[string]any) string {
 		typ, _ := f["type"].(string)
 		taskID, _ := f["task_id"].(string)
 		status, _ := f["status"].(string)
+		state, _ := f["state"].(string)
 		part := typ
 		if taskID != "" {
 			part += ":" + taskID
 		}
 		if status != "" {
 			part += "=" + status
+		}
+		if state != "" {
+			part += "=" + state
 		}
 		parts = append(parts, part)
 	}
@@ -222,30 +225,29 @@ func w4WaitFile(t *testing.T, path string, timeout time.Duration) {
 // ---------- 测试夹具 ----------
 
 // w4Config 直接构造 nodeConfig（不走 yaml：client 层只用到这些字段）。
-func w4Config(caps ...capabilityConfig) *nodeConfig {
+//
+// v2 的 node.yaml 只有 bootstrap 四件——能力不在里面（见 config.go）。
+func w4Config() *nodeConfig {
 	return &nodeConfig{
-		Name:         "test-node",
-		Server:       "http://localhost:8080",
-		Token:        "test-token",
-		Instances:    1,
-		Capabilities: caps,
+		Name:      "test-node",
+		Server:    "http://localhost:8080",
+		Token:     "test-token",
+		Instances: 1,
 	}
 }
 
-func w4Cap(capability string, version int, command string) capabilityConfig {
-	return capabilityConfig{
-		Capability: capability,
-		Version:    version,
-		Run:        &runSpec{Runner: "bash", Command: command},
-	}
+// w4Artifact 造一份最小产物（一个 #!/bin/bash 的 run.sh）。
+func w4Artifact(name string, version int, body string) *artifact.Artifact {
+	return testScriptArtifact(name, version, bashScript(body))
 }
 
 // w4Harness 是一轮 serveNode 的测试上下文。
 type w4Harness struct {
-	t      *testing.T
-	fc     *w4Conn
-	cancel context.CancelFunc
-	done   chan error
+	t       *testing.T
+	fc      *w4Conn
+	cancel  context.CancelFunc
+	done    chan error
+	dataDir string
 
 	mu  sync.Mutex
 	got bool
@@ -253,7 +255,16 @@ type w4Harness struct {
 }
 
 // w4StartRaw 起 serveNode（不替测试发 welcome），等 hello 发出后返回。
+//
+// 数据目录是每个 harness 独立的临时目录（产物缓存 + 工作目录都在里面）。
 func w4StartRaw(t *testing.T, cfg *nodeConfig, grace time.Duration) *w4Harness {
+	t.Helper()
+	return w4StartRawAt(t, cfg, t.TempDir(), grace)
+}
+
+// w4StartRawAt 与 w4StartRaw 相同，但由调用方指定数据目录
+// （用来预置缓存：hello 里必须能报出「本机已缓存」的产物）。
+func w4StartRawAt(t *testing.T, cfg *nodeConfig, dataDir string, grace time.Duration) *w4Harness {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -262,9 +273,9 @@ func w4StartRaw(t *testing.T, cfg *nodeConfig, grace time.Duration) *w4Harness {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	done := make(chan error, 1)
-	go func() { done <- serveNode(ctx, cfg, fc, logger, grace) }()
+	go func() { done <- serveNode(ctx, cfg, fc, dataDir, logger, grace) }()
 
-	h := &w4Harness{t: t, fc: fc, cancel: cancel, done: done}
+	h := &w4Harness{t: t, fc: fc, cancel: cancel, done: done, dataDir: dataDir}
 	t.Cleanup(func() {
 		cancel()
 		h.wait(5 * time.Second)
@@ -284,14 +295,57 @@ func w4StartRaw(t *testing.T, cfg *nodeConfig, grace time.Duration) *w4Harness {
 func w4Start(t *testing.T, cfg *nodeConfig, heartbeatSec int, grace time.Duration) *w4Harness {
 	t.Helper()
 	h := w4StartRaw(t, cfg, grace)
-	h.fc.feed(t, &welcomeFrame{
+	h.welcome(heartbeatSec)
+	return h
+}
+
+// welcome 发一帧 welcome（完成握手）。
+func (h *w4Harness) welcome(heartbeatSec int) {
+	h.t.Helper()
+	h.fc.feed(h.t, &welcomeFrame{
 		Type:         frameTypeWelcome,
 		NodeID:       "nod_test",
 		Protocol:     ws.ProtocolVersion,
 		HeartbeatSec: heartbeatSec,
 		LeaseTTLSec:  30,
 	})
-	return h
+}
+
+// deploy 把一份产物经 deploy 帧放进本机缓存（走真实路径：apply.go + cache.go），
+// 等 apply 帧回报 applied 之后返回该产物的 digest。
+//
+// 用例这样写而不是直接往 cache 里塞文件，是因为**派单前的顺序**本身重要：
+// 中枢总是先 deploy 再 assign，节点必须在这个顺序下工作。
+func (h *w4Harness) deploy(art *artifact.Artifact) string {
+	h.t.Helper()
+	digest := mustDigest(h.t, art)
+	raw, err := artifact.CanonicalJSON(art)
+	if err != nil {
+		h.t.Fatalf("artifact.CanonicalJSON: %v", err)
+	}
+	id := fmt.Sprintf("dep_%s_%d", art.Metadata.Name, art.Metadata.Version)
+	h.fc.feed(h.t, &deployFrame{
+		Type:     frameTypeDeploy,
+		DeployID: id,
+		Action:   ws.DeployActionApply,
+		Artifact: raw,
+	})
+	frames := h.fc.waitFor(h.t, 3*time.Second, "deploy "+id+" 的 apply", func(frames []map[string]any) bool {
+		for _, f := range frames {
+			if f["type"] == frameTypeApply && f["deploy_id"] == id {
+				return true
+			}
+		}
+		return false
+	})
+	for _, f := range frames {
+		if f["type"] == frameTypeApply && f["deploy_id"] == id {
+			if f["state"] != ws.ApplyStateApplied {
+				h.t.Fatalf("deploy %s 失败: state=%v reason=%v", id, f["state"], f["reason"])
+			}
+		}
+	}
+	return digest
 }
 
 // wait 等 serveNode 返回（可重复调用，结果缓存）。
@@ -320,23 +374,37 @@ func (h *w4Harness) stop() {
 	}
 }
 
-// ---------- W4-1: hello → welcome → 心跳 ----------
+// ---------- hello → welcome → 心跳 ----------
 
 func TestClientHelloWelcomeHeartbeat(t *testing.T) {
-	cfg := w4Config(w4Cap("demo.prep", 1, "echo prep"))
-	// heartbeat_sec=1 → 间隔 max(1s, 0.5s) = 1s，测试 3s 内必有一拍。
+	cfg := w4Config()
+	// heartbeat_sec=1 → 间隔 max(1s, 0.5s) = 1s，测试 4s 内必有一拍。
 	h := w4Start(t, cfg, 1, 100*time.Millisecond)
 
 	hello := h.fc.frames()[0]
+
 	if hello["type"] != frameTypeHello {
 		t.Fatalf("第一帧必须是 hello，实际 %v", hello["type"])
 	}
 	if got := hello["protocol"]; got != float64(ws.ProtocolVersion) {
 		t.Errorf("hello.protocol 应为 %d，实际 %v", ws.ProtocolVersion, got)
 	}
-	caps, ok := hello["capabilities"].([]any)
-	if !ok || len(caps) != len(cfg.Capabilities) {
-		t.Errorf("hello.capabilities 应声明 %d 条，实际 %#v", len(cfg.Capabilities), hello["capabilities"])
+	// v2：没有 capabilities / manifest 两个键，只有 applied（本机缓存了什么）。
+	for _, banned := range []string{"capabilities", "manifest"} {
+		if _, present := hello[banned]; present {
+			t.Errorf("hello 里仍然有 %q 键（v2 已删除）: %#v", banned, hello)
+		}
+	}
+	applied, ok := hello["applied"].([]any)
+	if !ok {
+		t.Fatalf("hello.applied 必须是数组（空也要是 []），实际 %#v", hello["applied"])
+	}
+	if len(applied) != 0 {
+		t.Errorf("新节点还没有缓存，hello.applied 应为空，实际 %#v", applied)
+	}
+	instances, ok := hello["instances"].([]any)
+	if !ok || len(instances) != cfg.slots() {
+		t.Errorf("hello.instances 应为 %d 槽，实际 %#v", cfg.slots(), hello["instances"])
 	}
 
 	frames := h.fc.waitFor(t, 4*time.Second, "心跳帧", w4Cond(frameTypeHeartbeat, ""))
@@ -352,11 +420,91 @@ func TestClientHelloWelcomeHeartbeat(t *testing.T) {
 	h.stop()
 }
 
-// ---------- W4-2: assign → ack 先于 result，result succeeded ----------
+// TestClientHelloReportsCachedArtifacts：握手时 hello.applied 必须报出本机已缓存的
+// 产物（中枢靠它全量对账 node_capabilities，裁决 D4）。
+//
+// 预置缓存而不是发 deploy 帧：这正是「agent 重启」的场景——缓存还在磁盘上，
+// 连接是新的。中枢只能靠这一帧知道「这台机器还能跑什么」。
+func TestClientHelloReportsCachedArtifacts(t *testing.T) {
+	dataDir := t.TempDir()
+	art := w4Artifact("demo.prep", 4, "echo hi\n")
+	digest := mustDigest(t, art)
+	if err := newCache(dataDir).put(art, digest); err != nil {
+		t.Fatalf("预置缓存: %v", err)
+	}
 
+	h := w4StartRawAt(t, w4Config(), dataDir, 100*time.Millisecond)
+	hello := h.fc.frames()[0]
+	applied, ok := hello["applied"].([]any)
+	if !ok || len(applied) != 1 {
+		t.Fatalf("hello.applied = %#v, want 1 条（本机缓存的产物）", hello["applied"])
+	}
+	entry, _ := applied[0].(map[string]any)
+	if entry["capability"] != "demo.prep" || entry["version"] != float64(4) || entry["digest"] != digest {
+		t.Errorf("hello.applied[0] = %#v, want {demo.prep 4 %s}", entry, digest)
+	}
+
+	h.welcome(10)
+	h.stop()
+}
+
+// TestClientDeployThenHelloReconcile：收到 deploy 之后必须**重发 hello**（带新 applied）。
+func TestClientDeployThenHelloReconcile(t *testing.T) {
+	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
+	art := w4Artifact("demo.review", 2, "echo review\n")
+	digest := h.deploy(art)
+
+	// deploy() 只等到 apply 帧；重发的 hello 在它之后才写出，所以这里显式等它。
+	frames := h.fc.waitFor(t, 3*time.Second, "带新 applied 的 hello", func(frames []map[string]any) bool {
+		for _, f := range frames {
+			if f["type"] != frameTypeHello {
+				continue
+			}
+			if applied, ok := f["applied"].([]any); ok && len(applied) == 1 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// 顺序：先 apply 再 hello（中枢收到「已应用」之前不该先看到对账帧），
+	// 第一次 hello 是空的（握手），最后一次带一条。
+	var helloIdx []int
+	var applyIdx = -1
+	for i, f := range frames {
+		switch f["type"] {
+		case frameTypeHello:
+			helloIdx = append(helloIdx, i)
+		case frameTypeApply:
+			if applyIdx < 0 {
+				applyIdx = i
+			}
+		}
+	}
+	if len(helloIdx) != 2 {
+		t.Fatalf("hello 帧数 = %d, want 2（握手 + 部署后对账）: %s", len(helloIdx), w4Describe(frames))
+	}
+	if applied, _ := frames[helloIdx[0]]["applied"].([]any); len(applied) != 0 {
+		t.Errorf("第一次 hello.applied = %#v, want 空（部署前）", frames[helloIdx[0]]["applied"])
+	}
+	if applyIdx < 0 || applyIdx > helloIdx[1] {
+		t.Fatalf("顺序不对：apply@%d，重发 hello@%d（应先 apply 后 hello）", applyIdx, helloIdx[1])
+	}
+	applied, _ := frames[helloIdx[1]]["applied"].([]any)
+	entry, _ := applied[0].(map[string]any)
+	if entry["digest"] != digest {
+		t.Errorf("hello.applied[0].digest = %v, want %v", entry["digest"], digest)
+	}
+
+	h.stop()
+}
+
+// ---------- assign → ack → result ----------
+
+// TestClientAssignAckThenResult：assign → ack 先于 result，result succeeded。
 func TestClientAssignAckThenResult(t *testing.T) {
-	cfg := w4Config(w4Cap("demo.prep", 1, "echo hello-agent"))
-	h := w4Start(t, cfg, 10, 200*time.Millisecond)
+	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
+	h.deploy(w4Artifact("demo.prep", 1, "echo hello-agent\n"))
 
 	h.fc.feed(t, &assignFrame{
 		Type:        frameTypeAssign,
@@ -394,7 +542,7 @@ func TestClientAssignAckThenResult(t *testing.T) {
 		t.Errorf("成功的任务 error 必须为空，实际 %#v", res["error"])
 	}
 	if _, present := res["out"]; present {
-		t.Errorf("未声明 run.out 时 result 帧不能出现 out 键，实际 %#v", res)
+		t.Errorf("v2 节点不回报出口（产物没有 out 字段），result 帧不能出现 out 键，实际 %#v", res)
 	}
 	artifacts, ok := res["artifacts"].([]any)
 	if !ok || len(artifacts) != 0 {
@@ -404,43 +552,36 @@ func TestClientAssignAckThenResult(t *testing.T) {
 	h.stop()
 }
 
-// ---------- 附加：声明了 run.out → result 帧带 out（sendResult 透传的回归锁） ----------
-
-// TestClientReportsOut 证明「node.yaml 声明 run.out 且任务成功」时 result 帧真的带
-// "out":"ok"：runner 设了 outcome.Out，还得靠 sendResult 透传到帧上（两处都得对）。
-func TestClientReportsOut(t *testing.T) {
-	cfg := w4Config(w4Cap("demo.prep", 1, "echo hello-out"))
-	cfg.Capabilities[0].Run.Out = "ok" // 对应 node.yaml 的 run.out: ok
-	h := w4Start(t, cfg, 10, 200*time.Millisecond)
+// TestClientAssignByDigest：assign 带了 digest 就按 digest 定位产物（哪怕能力名/版本
+// 与产物元数据不一致）。中枢据此把一次执行**钉死**在审计过的那一版产物上。
+func TestClientAssignByDigest(t *testing.T) {
+	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
+	digest := h.deploy(w4Artifact("demo.prep", 1, "echo via-digest\n"))
 
 	h.fc.feed(t, &assignFrame{
 		Type:       frameTypeAssign,
-		TaskID:     "tsk_out",
-		Capability: "demo.prep",
-		Version:    1,
+		TaskID:     "tsk_digest",
+		Capability: "demo.renamed", // 与产物元数据不同：证明走的是 digest 而不是 name@ver
+		Version:    9,
+		Digest:     digest,
 	})
 
-	frames := h.fc.waitFor(t, 5*time.Second, "tsk_out 的 result", w4Cond(frameTypeResult, "tsk_out"))
-	res, _, _ := w4Find(frames, frameTypeResult, "tsk_out")
+	frames := h.fc.waitFor(t, 5*time.Second, "tsk_digest 的 result", w4Cond(frameTypeResult, "tsk_digest"))
+	res, _, _ := w4Find(frames, frameTypeResult, "tsk_digest")
 	if res["status"] != statusSucceeded {
-		t.Fatalf("status 应为 %s，实际 %v（error=%v）", statusSucceeded, res["status"], res["error"])
+		t.Fatalf("status = %v, want succeeded（error=%v）", res["status"], res["error"])
 	}
-	got, present := res["out"]
-	if !present {
-		t.Fatalf("声明了 run.out 的 success result 必须带 out 键，实际 %#v", res)
-	}
-	if got != "ok" {
-		t.Fatalf("result.out = %#v, want %q", got, "ok")
+	if res["summary"] != "via-digest" {
+		t.Fatalf("summary = %#v, want via-digest", res["summary"])
 	}
 
 	h.stop()
 }
 
-// ---------- W4-3: 失败命令 → result failed ----------
-
+// TestClientFailedCommand：非 0 退出 → result failed。
 func TestClientFailedCommand(t *testing.T) {
-	cfg := w4Config(w4Cap("demo.prep", 1, "echo boom >&2; exit 7"))
-	h := w4Start(t, cfg, 10, 200*time.Millisecond)
+	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
+	h.deploy(w4Artifact("demo.prep", 1, "echo boom >&2; exit 7\n"))
 
 	h.fc.feed(t, &assignFrame{
 		Type:       frameTypeAssign,
@@ -462,14 +603,13 @@ func TestClientFailedCommand(t *testing.T) {
 	h.stop()
 }
 
-// ---------- W4-4: cancel → 3s 内 result failed（error 含 canceled） ----------
-
+// TestClientCancel：cancel → result failed（error 含 canceled），进程组被杀。
 func TestClientCancel(t *testing.T) {
 	// 命令先落一个 marker 文件再睡：marker 出现 = 子进程真的在跑了，
 	// 这时才发 cancel，测的才是「杀进程组」而不是「还没起来就被取消」。
 	marker := filepath.Join(t.TempDir(), "started")
-	cfg := w4Config(w4Cap("demo.prep", 1, "touch "+marker+"; sleep 5"))
-	h := w4Start(t, cfg, 10, 2*time.Second)
+	h := w4Start(t, w4Config(), 10, 2*time.Second)
+	h.deploy(w4Artifact("demo.prep", 1, "touch "+marker+"; sleep 5\n"))
 
 	h.fc.feed(t, &assignFrame{
 		Type:       frameTypeAssign,
@@ -500,12 +640,12 @@ func TestClientCancel(t *testing.T) {
 	h.stop()
 }
 
-// ---------- W4-5: 优雅退出（等在跑任务 + draining 不 ack） ----------
+// ---------- 优雅退出（等在跑任务 + draining 不 ack） ----------
 
 func TestClientGracefulShutdown(t *testing.T) {
 	// 任务要睡得比「取消 ctx」久一点，才真的测到「等任务收尾」而不是等一个空集合。
-	cfg := w4Config(w4Cap("demo.prep", 1, "sleep 0.3; echo drained"))
-	h := w4Start(t, cfg, 10, 2*time.Second)
+	h := w4Start(t, w4Config(), 10, 2*time.Second)
+	h.deploy(w4Artifact("demo.prep", 1, "sleep 0.3; echo drained\n"))
 
 	h.fc.feed(t, &assignFrame{
 		Type:        frameTypeAssign,
@@ -558,26 +698,30 @@ func TestClientGracefulShutdown(t *testing.T) {
 	}
 }
 
-// ---------- W4-6: 找不到 run 映射 → ack + result failed ----------
+// ---------- 本地没有这份产物 → ack + result failed ----------
 
-func TestClientNoRunSpec(t *testing.T) {
-	cfg := w4Config(w4Cap("demo.prep", 1, "echo prep"))
-	h := w4Start(t, cfg, 10, 200*time.Millisecond)
+// TestClientNoArtifact：派了一个本机没缓存的产物 → 先 ack 再回 failed。
+//
+// 文案固定为 `no artifact for <cap>@<ver>`：中枢/运维要能一眼区分「节点没接单」
+// 与「节点接了但本地没有这份产物」（后者通常是部署还没生效，或缓存被清过）。
+func TestClientNoArtifact(t *testing.T) {
+	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
+	h.deploy(w4Artifact("demo.prep", 1, "echo prep\n")) // 只部署 demo.prep@1
 
 	h.fc.feed(t, &assignFrame{
 		Type:       frameTypeAssign,
-		TaskID:     "tsk_nospec",
+		TaskID:     "tsk_noart",
 		Capability: "demo.other",
 		Version:    2,
 	})
 
-	frames := h.fc.waitFor(t, 5*time.Second, "tsk_nospec 的 result", w4Cond(frameTypeResult, "tsk_nospec"))
+	frames := h.fc.waitFor(t, 5*time.Second, "tsk_noart 的 result", w4Cond(frameTypeResult, "tsk_noart"))
 
-	_, ackIdx, ok := w4Find(frames, frameTypeAck, "tsk_nospec")
+	_, ackIdx, ok := w4Find(frames, frameTypeAck, "tsk_noart")
 	if !ok {
-		t.Fatalf("找不到 run 也要先 ack（否则中枢只能等租约）: %s", w4Describe(frames))
+		t.Fatalf("找不到产物也要先 ack（否则中枢只能等租约）: %s", w4Describe(frames))
 	}
-	res, resIdx, ok := w4Find(frames, frameTypeResult, "tsk_nospec")
+	res, resIdx, ok := w4Find(frames, frameTypeResult, "tsk_noart")
 	if !ok {
 		t.Fatalf("没收到 result: %s", w4Describe(frames))
 	}
@@ -588,19 +732,19 @@ func TestClientNoRunSpec(t *testing.T) {
 		t.Errorf("status 应为 %s，实际 %v", statusFailed, res["status"])
 	}
 	errText, _ := res["error"].(string)
-	if !strings.Contains(errText, "no run spec for demo.other@2") {
-		t.Errorf("error 应含 %q，实际 %q", "no run spec for demo.other@2", errText)
+	if !strings.Contains(errText, "no artifact for demo.other@2") {
+		t.Errorf("error 应含 %q，实际 %q", "no artifact for demo.other@2", errText)
 	}
 
 	h.stop()
 }
 
-// ---------- 附加：params 透传 / 每能力信号量限流（契约 §3.4.3） ----------
+// ---------- params 透传 / 每能力信号量限流 ----------
 
 func TestClientPassesParams(t *testing.T) {
 	// 参数只走环境变量（不拼命令）：client 的职责是把 assign.Params 原样交给 job。
-	cfg := w4Config(w4Cap("demo.prep", 1, `printf '%s\n' "$ANOTIFY_PARAM_TITLE"`))
-	h := w4Start(t, cfg, 10, 200*time.Millisecond)
+	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
+	h.deploy(w4Artifact("demo.prep", 1, "printf '%s\\n' \"$ANOTIFY_PARAM_TITLE\"\n"))
 
 	h.fc.feed(t, &assignFrame{
 		Type:       frameTypeAssign,
@@ -622,12 +766,38 @@ func TestClientPassesParams(t *testing.T) {
 	h.stop()
 }
 
+// TestClientTraceIDAndDigestReachTask：assign.trace_id 与产物 digest 必须进到脚本里
+// （契约 §6 的 ANOTIFY_TRACE_ID / ANOTIFY_DIGEST，排障全靠它们把日志串回链路）。
+func TestClientTraceIDAndDigestReachTask(t *testing.T) {
+	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
+	digest := h.deploy(w4Artifact("demo.prep", 1,
+		"printf '%s|%s' \"$ANOTIFY_TRACE_ID\" \"$ANOTIFY_DIGEST\"\n"))
+
+	h.fc.feed(t, &assignFrame{
+		Type:       frameTypeAssign,
+		TaskID:     "tsk_trace",
+		Capability: "demo.prep",
+		Version:    1,
+		TraceID:    "trc_deadbeef",
+	})
+
+	frames := h.fc.waitFor(t, 5*time.Second, "tsk_trace 的 result", w4Cond(frameTypeResult, "tsk_trace"))
+	res, _, _ := w4Find(frames, frameTypeResult, "tsk_trace")
+	if res["status"] != statusSucceeded {
+		t.Fatalf("status = %v, want succeeded（error=%v）", res["status"], res["error"])
+	}
+	if want := "trc_deadbeef|" + digest; res["summary"] != want {
+		t.Fatalf("summary = %#v, want %q（trace_id 与 digest 没进到脚本）", res["summary"], want)
+	}
+
+	h.stop()
+}
+
 func TestClientSemaphoreLimitsConcurrency(t *testing.T) {
-	// instances=1 + concurrency 缺省 → taskLimit=1：两个任务必须串行（不能同时 start）。
+	// instances=1 → taskLimit=1：两个任务必须串行（不能同时 start）。
 	trace := filepath.Join(t.TempDir(), "trace")
-	command := "echo start >> " + trace + "; sleep 0.3; echo end >> " + trace
-	cfg := w4Config(w4Cap("demo.prep", 1, command))
-	h := w4Start(t, cfg, 10, 2*time.Second)
+	h := w4Start(t, w4Config(), 10, 2*time.Second)
+	h.deploy(w4Artifact("demo.prep", 1, "echo start >> "+trace+"; sleep 0.3; echo end >> "+trace+"\n"))
 
 	for _, id := range []string{"tsk_a", "tsk_b"} {
 		h.fc.feed(t, &assignFrame{
@@ -662,30 +832,30 @@ func TestClientSemaphoreLimitsConcurrency(t *testing.T) {
 	h.stop()
 }
 
-// ---------- 附加：握手被拒 / 连接断开（契约 §3.4.1、§3.4.7） ----------
+// ---------- 握手被拒 / 连接断开 ----------
 
 func TestClientHandshakeRejected(t *testing.T) {
-	cfg := w4Config(w4Cap("demo.prep", 1, "echo prep"))
+	cfg := w4Config()
 	h := w4StartRaw(t, cfg, time.Second) // 故意不发 welcome
 
 	h.fc.feed(t, &errorFrame{
 		Type:    frameTypeError,
-		Code:    ws.ErrCodeInvalidManifest,
-		Message: "run is required",
+		Code:    ws.ErrCodeTooManyInstances,
+		Message: "too many instances",
 	})
 
 	err := h.wait(5 * time.Second)
 	if err == nil {
 		t.Fatalf("welcome 前收到 error 帧必须作为握手失败返回")
 	}
-	want := "handshake rejected: " + ws.ErrCodeInvalidManifest + ": run is required"
+	want := "handshake rejected: " + ws.ErrCodeTooManyInstances + ": too many instances"
 	if err.Error() != want {
 		t.Fatalf("错误文案必须逐字固定（契约 §3.4.1）:\n want %q\n  got %q", want, err.Error())
 	}
 }
 
 func TestClientConnectionClosed(t *testing.T) {
-	cfg := w4Config(w4Cap("demo.prep", 1, "echo prep"))
+	cfg := w4Config()
 	h := w4Start(t, cfg, 10, time.Second)
 
 	if err := h.fc.close(); err != nil {
@@ -701,7 +871,7 @@ func TestClientConnectionClosed(t *testing.T) {
 	}
 }
 
-// ---------- F3：心跳间隔（契约 §3.4.2 / §11.3） ----------
+// ---------- F3：心跳间隔 ----------
 
 // TestHeartbeatInterval 钉住 `max(1s, heartbeatSec/2)`，缺省/非正数按 10s 算。
 func TestHeartbeatInterval(t *testing.T) {
@@ -722,15 +892,13 @@ func TestHeartbeatInterval(t *testing.T) {
 	}
 }
 
-// ---------- F4：ack 立刻（不等信号量，契约 §11.3） ----------
+// ---------- F4：ack 立刻（不等信号量） ----------
 
 // TestClientAckBeforeSemaphore：taskLimit=1 时连派两单，两条 ack 都必须**早于**
-// 首单的 result。ack 是租约开始计时的信号，拖住它会让中枢以为节点没收到
-// （契约 §3.4.3）；排队的只能是执行，不能是 ack。
+// 首单的 result。ack 是租约开始计时的信号；排队的只能是执行，不能是 ack。
 func TestClientAckBeforeSemaphore(t *testing.T) {
-	// instances=1 + concurrency 缺省 → taskLimit=1：两单必然串行。
-	cfg := w4Config(w4Cap("demo.prep", 1, "sleep 0.3; echo first"))
-	h := w4Start(t, cfg, 10, 2*time.Second)
+	h := w4Start(t, w4Config(), 10, 2*time.Second)
+	h.deploy(w4Artifact("demo.prep", 1, "sleep 0.3; echo first\n"))
 
 	for _, id := range []string{"tsk_first", "tsk_second"} {
 		h.fc.feed(t, &assignFrame{
@@ -956,20 +1124,16 @@ func w4HubWrite(ctx context.Context, c *websocket.Conn, f any) error {
 }
 
 // w4RealWSConfig 写一份真 node.yaml 并 loadConfig（顺带覆盖 server→streamURL 的映射）。
-func w4RealWSConfig(t *testing.T, serverURL, command string) *nodeConfig {
+//
+// v2 的 node.yaml 只有 bootstrap 四件：产物必须先经 deploy 落到缓存里，
+// 所以调用方还要自己预置数据目录（见 w4PreloadedDataDir）。
+func w4RealWSConfig(t *testing.T, serverURL string) *nodeConfig {
 	t.Helper()
 	body := fmt.Sprintf(`name: ws-node
 server: %s
 token: tok_ws
 instances: 1
-capabilities:
-  - capability: demo.prep
-    version: 1
-    run:
-      runner: bash
-      command: %q
-      timeoutSec: 10
-`, serverURL, command)
+`, serverURL)
 	path := filepath.Join(t.TempDir(), "node.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("写 node.yaml 失败: %v", err)
@@ -981,8 +1145,21 @@ capabilities:
 	return cfg
 }
 
+// w4PreloadedDataDir 建一个已经缓存了指定产物的数据目录（模拟「部署已生效」）。
+func w4PreloadedDataDir(t *testing.T, arts ...*artifact.Artifact) string {
+	t.Helper()
+	dir := t.TempDir()
+	c := newCache(dir)
+	for _, a := range arts {
+		if err := c.put(a, mustDigest(t, a)); err != nil {
+			t.Fatalf("预置缓存 %s@%d: %v", a.Metadata.Name, a.Metadata.Version, err)
+		}
+	}
+	return dir
+}
+
 // w4ServeRealWS 用本包的 dialNode + serveNode 跑一条真连接（契约 §11.1）。
-func w4ServeRealWS(t *testing.T, ctx context.Context, cfg *nodeConfig, grace time.Duration) <-chan error {
+func w4ServeRealWS(t *testing.T, ctx context.Context, cfg *nodeConfig, dataDir string, grace time.Duration) <-chan error {
 	t.Helper()
 	url, err := cfg.streamURL()
 	if err != nil {
@@ -997,7 +1174,7 @@ func w4ServeRealWS(t *testing.T, ctx context.Context, cfg *nodeConfig, grace tim
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	done := make(chan error, 1)
-	go func() { done <- serveNode(ctx, cfg, conn, logger, grace) }()
+	go func() { done <- serveNode(ctx, cfg, conn, dataDir, logger, grace) }()
 	return done
 }
 
@@ -1026,13 +1203,13 @@ func TestServeNodeRealWSAssignAckResult(t *testing.T) {
 		LeaseUntil:  time.Now().Add(time.Minute).Unix(),
 		MaxDuration: 10,
 	})
-	// 命令形状与 node.yaml 里的一模一样（sleep 0.3 让「在跑」这个状态真的存在）。
-	cfg := w4RealWSConfig(t, hub.srv.URL, "sleep 0.3; echo ok")
+	cfg := w4RealWSConfig(t, hub.srv.URL)
+	dataDir := w4PreloadedDataDir(t, w4Artifact("demo.prep", 1, "sleep 0.3; echo ok\n"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	done := w4ServeRealWS(t, ctx, cfg, 2*time.Second)
+	done := w4ServeRealWS(t, ctx, cfg, dataDir, 2*time.Second)
 
 	hub.waitFrame(t, 5*time.Second, "hello", w4Cond(frameTypeHello, ""))
 	if path, auth, _ := hub.request(); path != "/v1/node/stream" || auth != "Bearer "+cfg.Token {
@@ -1078,12 +1255,13 @@ func TestServeNodeRealWSGracefulShutdownKeepsResult(t *testing.T) {
 		LeaseUntil:  time.Now().Add(time.Minute).Unix(),
 		MaxDuration: 10,
 	})
-	cfg := w4RealWSConfig(t, hub.srv.URL, "sleep 0.3; echo ok")
+	cfg := w4RealWSConfig(t, hub.srv.URL)
+	dataDir := w4PreloadedDataDir(t, w4Artifact("demo.prep", 1, "sleep 0.3; echo ok\n"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	done := w4ServeRealWS(t, ctx, cfg, 2*time.Second)
+	done := w4ServeRealWS(t, ctx, cfg, dataDir, 2*time.Second)
 
 	// 等到 ack：证明 assign 真的被读到了，且命令（sleep 0.3）已经在跑还没结束。
 	hub.waitFrame(t, 5*time.Second, "tsk_ws_grace 的 ack", w4Cond(frameTypeAck, "tsk_ws_grace"))

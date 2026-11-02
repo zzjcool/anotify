@@ -439,22 +439,26 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 		t.Fatalf("被拒的更新改了 targets: %+v", after.Targets)
 	}
 
-	// ===== ③ ConfirmCapabilityDecls：声明只在别的命名空间定义过的能力 =====
+	// ===== ③ ReconcileApplied：hello 里 applied[] 只在别的命名空间定义过的能力 =====
 	// 语义是「按 name@version 在**本节点所在命名空间**解析」，所以别处的同名同版本
-	// 定义在这里**根本不存在** → 归入 ErrUnknownCapability（handler 翻 400 的
-	// invalid_manifest 那一类），而不是 CrossNamespaceError。
-	// 为什么保留这个语义：节点 hello 帧里带的是 name@version，没有 id 维度，
+	// 定义在这里**根本不存在** → 归入 ErrUnknownCapability（ws 层翻 unknown_capability
+	// 帧），而不是 CrossNamespaceError。
+	// 为什么保留这个语义：节点 hello 帧里带的是 capability name@version，没有 id 维度，
 	// 「这个能力属于别的命名空间」对节点来说与「这个能力不存在」不可区分。
+	//
+	// 这条断言在 v2 里换了入口（ConfirmCapabilityDecls → ReconcileApplied，旧的
+	// manifest 形状整个消失），但**语义一个字没变**：隔离边界仍然是节点所在命名空间，
+	// 越界的名字表现成「不存在」，而不是泄露「别处有这个能力」。
 	nodeA, _ := mkNode(t, db, nsA, "node-a")
 	// staging 里放一个默认命名空间没有的能力名
 	onlyB := mkCap(nsB, "staging-only", 1, []string{"go"})
 	if err := db.CreateCapability(ctx, onlyB); err != nil {
 		t.Fatalf("create staging-only: %v", err)
 	}
-	_, err = db.ConfirmCapabilityDecls(ctx, nsA, nodeA.ID,
-		[]CapabilityDecl{{Name: "staging-only", Version: 1}})
+	_, err = db.ReconcileApplied(ctx, nsA, nodeA.ID,
+		[]AppliedRef{{Name: "staging-only", Version: 1}})
 	if !errors.Is(err, ErrUnknownCapability) {
-		t.Fatalf("声明别处的能力 err = %v, want ErrUnknownCapability（语义：按本命名空间解析）", err)
+		t.Fatalf("applied 里出现别处的能力 err = %v, want ErrUnknownCapability（语义：按本命名空间解析）", err)
 	}
 	var declErr *CapabilityDeclError
 	if !errors.As(err, &declErr) || !declErr.UnknownCapability {
@@ -462,15 +466,15 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 	}
 	var cross *CrossNamespaceError
 	if errors.As(err, &cross) {
-		t.Fatalf("「别处才有这个能力」被报成了 CrossNamespaceError（handler 会回 400 但语义不对）: %v", err)
+		t.Fatalf("「别处才有这个能力」被报成了 CrossNamespaceError（语义不对）: %v", err)
 	}
-	// 反证：同名能力在**本**命名空间定义后就能声明（说明上一条不是别的错）
+	// 反证：同名能力在**本**命名空间定义后就能对账（说明上一条不是别的错）
 	if err := db.CreateCapability(ctx, mkCap(nsA, "staging-only", 1, []string{"go"})); err != nil {
 		t.Fatalf("create local staging-only: %v", err)
 	}
-	if _, err := db.ConfirmCapabilityDecls(ctx, nsA, nodeA.ID,
-		[]CapabilityDecl{{Name: "staging-only", Version: 1}}); err != nil {
-		t.Fatalf("本命名空间里定义后仍声明失败: %v", err)
+	if _, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
+		[]AppliedRef{{Name: "staging-only", Version: 1}}); err != nil {
+		t.Fatalf("本命名空间里定义后仍对账失败: %v", err)
 	}
 
 	// ===== ④ CreateTasks：子任务继承父任务的命名空间 =====
