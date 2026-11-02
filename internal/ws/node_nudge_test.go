@@ -87,3 +87,29 @@ func TestRejectedResultDoesNotNudge(t *testing.T) {
 		// 正确：没有触发
 	}
 }
+
+// TestHelloNudgesDispatcher：节点上线 = 新增了执行能力，必须立刻拉一次 pending。
+//
+// 场景：队列里压着一批「之前没人能跑」的任务，节点刚连上还要等 5s 巡检才开工。
+func TestHelloNudgesDispatcher(t *testing.T) {
+	fired := make(chan struct{}, 8)
+	f := newNodeFixture(t, func(h *NodeHandler) {
+		h.OnCapacityFreed = func() {
+			select {
+			case fired <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	conn := f.mustDial(t)
+	hello(t, conn, f.node.ID, []CapabilityDecl{{Capability: "review", Version: 1}},
+		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
+
+	select {
+	case <-fired:
+		// 握手成功即触发 ✓
+	case <-time.After(2 * time.Second):
+		t.Fatal("节点握手成功后没有触发即时重派：新上线的执行能力要等 5s 巡检才被用起来（#219）")
+	}
+}

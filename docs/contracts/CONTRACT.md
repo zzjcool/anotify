@@ -529,6 +529,12 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 | 心跳间隔 | 10s | 节点发 `heartbeat`，中枢把 `lease_until` 推到 `now + 30` |
 | `ack` 等待 | 20s | 派发后 20s 未 `ack` → `lease_expired` |
 | 退避 | 10s / 60s / 300s | 重派延迟 |
+
+> **巡检不是 `pending` 的唯一排空路径（#219）**：任务终态落库（槽位释放）或节点握手成功时，
+> 中枢会**立即**触发一次重派（只跑重派阶段，不扫租约；可合并、最小间隔 20ms）。
+> 在此之前 `pending` 只能等 5s 巡检，单槽节点突发后有效吞吐仅 1.2 task/s；
+> 加上即时重派后同场景实测 32 并发 p99 从 89.3s 降到 0.33s。
+> 5s 巡检仍在，它是**兜底**（进程重启、信号丢失、DB 抖动时的自愈路径），不是主路径。
 | 巡检周期 | 5s | 扫 `status IN (assigned,acked,running) AND lease_until < now` |
 
 ---
