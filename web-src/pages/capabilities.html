@@ -676,6 +676,7 @@
         const n = NODES.find((x) => x.id === nodeId);
         if (n && n.name) return n.name;
         return String(nodeId || "").slice(0, 8);
+
       }
 
       // ==================== 加载 ====================
@@ -697,7 +698,11 @@
 
         CAPS_OK = capsRes !== null && capsRes !== undefined;
         NODES_OK = nodesRes !== null && nodesRes !== undefined;
-        CAPS = (capsRes && capsRes.capabilities) || [];
+        // 手机推送暂未开放（web/partials.js 的 PUSH_UI_ENABLED）：从列表里隐去，
+        // 但后端能力还在，已有引用它的边/源仍能正常渲染（#274/#277）。
+        CAPS = window.Anotify.filterCaps(
+          (capsRes && capsRes.capabilities) || [],
+        );
         NODES = (nodesRes && nodesRes.nodes) || [];
 
         DEPS_OK = depsRes !== null && depsRes !== undefined;

@@ -1,4 +1,10 @@
 common:
+  load_failed_prefix: '载入失败：'
+  retry: '重试'
+  backend_offline: '连不上服务端'
+  server_error: '服务端错误 HTTP {code}'
+  request_rejected: '请求被拒绝 HTTP {code}'
+  request_failed: '请求失败'
   brand:
     name: Anotify
     tagline: Agent 完成即通知
@@ -113,6 +119,10 @@ common:
     error: 错误
     summary: 结果摘要
 index:
+  load:
+    failed: '载入失败：'
+    retry: '重试'
+    bad_shape: '响应格式不符'
   title: 总览
   subtitle: 你的通知一览
   greeting:
@@ -209,6 +219,8 @@ index:
     no_devices_block: 当前没有接收设备。请先在「通知接收」开启本机通知或添加设备后再试。
     cancel: 取消
   notif:
+    reported: '已回报'
+    unreported: '未回报'
     empty: 暂无该状态的通知
     delivered: '{d}/{t} 设备已送达'
     count: 显示 {n} 条
@@ -388,6 +400,8 @@ login:
     webauthn: WebAuthn 标准
     no_third_party: 无第三方账号
   status:
+    offline: '连不上服务端：请检查服务是否在运行，然后重试。'
+    server_error: '服务端错误（HTTP 5xx）：请稍后重试或查看服务日志。'
     demo: 后端未连接，已进入演示模式（数据为示例）。
     login_success: 登录成功，正在进入工作台…
     signup_success: 注册成功！正在进入工作台…
@@ -409,6 +423,7 @@ login:
     signup_success_short: 注册成功！正在进入工作台…
     need_username_short: 先给自己起个用户名。
 receivers:
+  unavailable: '手机推送暂未开放，上线后这里会显示你的接收设备。'
   title: 通知接收
   demo_badge: 演示数据
   channel:
@@ -1094,6 +1109,8 @@ admin:
     action: 操作失败
     network: 网络错误
 events:
+  load_failed_hint: '载入失败：连不上服务端，请重试。'
+  load_failed: '载入失败：连不上服务端，请重试'
   title: 事件流
   subtitle: 外部世界的变化 → 任务链 → 结果。点任意事件查看它的完整链路。
   refresh: 刷新

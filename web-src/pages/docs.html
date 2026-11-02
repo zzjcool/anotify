@@ -499,7 +499,7 @@
         </section>
 
         <!-- ===== Web Push subscription ===== -->
-        <section id="webpush" class="doc-anchor mt-16 reveal visible">
+        <section id="webpush" class="doc-anchor mt-16 reveal visible hidden" data-push-doc>
           <h2 class="font-display text-2xl text-white">
             {{t "docs.webpush.title"}}
           </h2>
@@ -718,5 +718,10 @@
     { rootMargin: "-20% 0px -70% 0px" },
   );
   sections.forEach((s) => spy.observe(s));
+
+  // 手机推送（Web Push）文档暂未开放：开关在 web/partials.js（PUSH_UI_ENABLED）。
+  document.querySelectorAll("[data-push-doc]").forEach((el) => {
+    el.classList.toggle("hidden", !window.Anotify.pushUIEnabled);
+  });
 </script>
 {{end}}

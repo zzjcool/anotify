@@ -13,9 +13,6 @@
           </p>
         </div>
         <div class="flex items-center gap-3">
-          <span id="demo-badge" class="demo-badge hidden">
-            <span class="dot dot-warn"></span>{{t "index.demo_badge"}}
-          </span>
           <a
             href="connect.html"
             class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
@@ -181,112 +178,6 @@
       </div>
     </section>
 
-    <!-- ===== 发送测试通知 ===== -->
-    <section id="test-notify" class="card reveal visible overflow-hidden">
-      <div
-        class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4"
-      >
-        <div>
-          <div class="text-sm font-medium text-white">
-            {{t "index.test_notify.title"}}
-          </div>
-          <div class="text-[11px] text-zinc-500">
-            {{t "index.test_notify.desc"}}
-          </div>
-        </div>
-        <button
-          id="tn-toggle"
-          class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
-        >
-          {{t "index.test_notify.button"}}
-        </button>
-      </div>
-      <div id="tn-form" class="hidden space-y-4 p-6">
-        <div class="grid gap-4 sm:grid-cols-2">
-          <label class="block">
-            <span
-              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
-              >{{t "index.test_notify.title_label"}}</span
-            >
-            <input
-              id="tn-title"
-              type="text"
-              maxlength="120"
-              class="input"
-              placeholder="{{t "index.test_notify.title_placeholder"}}"
-            />
-          </label>
-          <label class="block">
-            <span
-              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
-              >{{t "index.test_notify.agent_state_label"}}</span
-            >
-            <select id="tn-agent-state" class="select w-full">
-              <option value="working">{{t "common.agentState.working"}}</option>
-              <option value="blocked">{{t "common.agentState.blocked"}}</option>
-              <option value="done" selected>{{t "common.agentState.done"}}</option>
-              <option value="error">{{t "common.agentState.error"}}</option>
-              <option value="interrupted">
-                {{t "common.agentState.interrupted"}}
-              </option>
-            </select>
-          </label>
-        </div>
-        <label class="block">
-          <span
-            class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
-            >{{t "index.test_notify.body_label"}}</span
-          >
-          <textarea
-            id="tn-body"
-            rows="2"
-            maxlength="500"
-            class="input resize-none"
-            placeholder="{{t "index.test_notify.body_placeholder"}}"
-          ></textarea>
-        </label>
-        <div class="grid gap-4 sm:grid-cols-2">
-          <label class="block">
-            <span
-              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
-              >{{t "index.test_notify.tags_label"}}</span
-            >
-            <input
-              id="tn-tags"
-              type="text"
-              class="input"
-              placeholder="{{t "index.test_notify.tags_placeholder"}}"
-            />
-          </label>
-          <label class="block">
-            <span
-              class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500"
-              >{{t "index.test_notify.priority_label"}}</span
-            >
-            <select id="tn-priority" class="select w-full">
-              <option value="normal">{{t "common.priority.normal"}}</option>
-              <option value="high">{{t "common.priority.high"}}</option>
-              <option value="low">{{t "common.priority.low"}}</option>
-            </select>
-          </label>
-        </div>
-        <div class="flex items-center gap-3">
-          <button
-            id="tn-send"
-            class="btn-primary rounded-xl px-5 py-2.5 text-sm font-medium"
-          >
-            {{t "index.test_notify.send"}}
-          </button>
-          <button
-            id="tn-cancel"
-            class="btn-ghost rounded-xl px-4 py-2.5 text-sm"
-          >
-            {{t "index.test_notify.cancel"}}
-          </button>
-          <span id="tn-agent-state-msg" class="text-xs text-zinc-500"></span>
-        </div>
-      </div>
-    </section>
 
     <!-- ===== 最近通知 ===== -->
     <section id="recent" class="card reveal visible overflow-hidden">
@@ -389,7 +280,7 @@
     /* ================= 数据层 ================= */
     // 统一通知结构（兼容后端 Message / 契约返回）
     // 注意：早期的 /v1/notifications 直接序列化 broker.Message（PascalCase 字段），
-    //       故每个字段都要兼容 PascalCase（真实 API）与 camelCase（演示数据/契约）。
+    //       故每个字段都要兼容 PascalCase（真实 API）与 camelCase（契约）。
     // 任务状态 → 工作台的 agentState 语义（复用既有配色与文案）
     //
     // 九态比旧的 5 个 agentState 更细：把"进行中"的四种归到 working、
@@ -407,53 +298,30 @@
       lease_expired: "interrupted",
     };
 
-    // normalize 把数据投影成工作台卡片需要的形状。
+    // normalize 把 /v1/tasks 的任务投影成工作台卡片需要的形状。
     //
-    // 两种输入：
-    //   1. 真实任务（/v1/tasks）——有 status（九态），params 里放业务字段
-    //   2. 演示数据（DEMO_NOTIFICATIONS）——那是旧消息结构，有 agentState/title/body
-    // 演示态必须继续工作（后端宕机时的兜底体验），所以两条路都要走通。
+    // 只有一个来源：真实任务。**没有演示数据分支**——演示数据只在 make mock
+    // 里由 /mock.js 在 fetch 层伪造，页面代码不需要知道那种存在。
     function normalize(n, i) {
-      const isDemo = n.agentState != null && n.status == null;
-      const params = n.params
-        ? safeParse(n.params)
-        : isDemo
-          ? {
-              title: n.title,
-              body: n.body,
-              link: n.link,
-              agent: n.agent,
-              cwd: n.project,
-              model: n.model,
-              sessionId: n.sessionId,
-            }
-          : {};
+      const params = n.params ? safeParse(n.params) : {};
       const status = n.status || "pending";
       const created = n.createdAt || n.created_at;
       return {
         id: n.id || "t" + i,
         seq: null,
         status,
-        // 演示数据直接用自己的 agentState（不经过九态映射）
-        agentState: isDemo ? n.agentState : TASK_STATE_MAP[status] || "working",
-        title: isDemo
-          ? n.title || t("common.placeholder.no_title", "（无标题）")
-          : n.capability
-            ? n.capability + "@" + (n.version != null ? n.version : "?")
-            : t("common.placeholder.no_title", "（无标题）"),
-        body: isDemo
-          ? n.body || ""
-          : (params.title || "") + (params.body ? " · " + params.body : ""),
-        link: isDemo ? n.link || "" : params.link || "",
-        agent: (isDemo ? n.agent : params.agent) || "agent",
-        project: (isDemo ? n.project : params.cwd) || "—",
-        duration: isDemo
-          ? n.duration || 0
-          : n.startedAt && n.finishedAt
-            ? n.finishedAt - n.startedAt
-            : 0,
-        model: (isDemo ? n.model : params.model) || "—",
-        sessionId: isDemo ? n.sessionId || "—" : n.traceId || "—",
+        agentState: TASK_STATE_MAP[status] || "working",
+        title: n.capability
+          ? n.capability + "@" + (n.version != null ? n.version : "?")
+          : t("common.placeholder.no_title", "（无标题）"),
+        body: (params.title || "") + (params.body ? " · " + params.body : ""),
+        link: params.link || "",
+        agent: params.agent || "agent",
+        project: params.cwd || "—",
+        duration:
+          n.startedAt && n.finishedAt ? n.finishedAt - n.startedAt : 0,
+        model: params.model || "—",
+        sessionId: n.traceId || "—",
         deviceTags: params.deviceTags || [],
         priority: params.priority || "normal",
         ttlSeconds: 0,
@@ -463,16 +331,12 @@
         time: timeAgo(created),
         isToday: (() => {
           if (!created) return false;
-          // 真实任务是 unix 秒；演示数据是 ISO 字符串
+          // 真实任务的 createdAt 是 unix 秒
           const d =
-            typeof created === "number"
-              ? new Date(created * 1000)
-              : new Date(created);
+            typeof created === "number" ? new Date(created * 1000) : new Date(created);
           if (Number.isNaN(d.getTime())) return false;
           return d.toDateString() === new Date().toDateString();
         })(),
-        delivered: isDemo ? n.delivered || 0 : 0,
-        total: isDemo ? n.total || 0 : 0,
       };
     }
     function safeParse(s) {
@@ -490,152 +354,6 @@
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
     }
 
-    const DEMO_NOTIFICATIONS = [
-      {
-        id: "d1",
-        agentState: "done",
-        title: t("index.demo.n1_title", "部署完成"),
-        agent: "deploy-bot",
-        project: "prod-backend",
-        duration: 24,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n1_body",
-          "构建成功，已发布到生产环境。共 47 个文件变更。",
-        ),
-        link: "pi://session/sess_8f3a",
-        sessionId: "sess_8f3a2c",
-        delivered: 4,
-        total: 4,
-      },
-      {
-        id: "d2",
-        agentState: "error",
-        title: t("index.demo.n2_title", "构建失败"),
-        agent: "lint-check",
-        project: "web-client",
-        duration: 132,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n2_body",
-          "3 个测试用例未通过。已附上完整日志，点击查看排查建议。",
-        ),
-        link: "pi://session/sess_2b1d",
-        sessionId: "sess_2b1d8e",
-        delivered: 4,
-        total: 4,
-      },
-      {
-        id: "d3",
-        agentState: "interrupted",
-        title: t("index.demo.n3_title", "任务被中断"),
-        agent: "refactor",
-        project: "api-server",
-        duration: 305,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n3_body",
-          "任务被手动停止。当前进度 62%，已保留现场，可继续。",
-        ),
-        link: "pi://session/sess_9c4f",
-        sessionId: "sess_9c4f11",
-        delivered: 3,
-        total: 4,
-      },
-      {
-        id: "d4",
-        agentState: "done",
-        title: t("index.demo.n4_title", "文档更新完成"),
-        agent: "docs-gen",
-        project: "anotify",
-        duration: 58,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n4_body",
-          "生成 3 个页面：README、API 参考、部署指南。",
-        ),
-        link: "pi://session/sess_77aa",
-        sessionId: "sess_77aa09",
-        delivered: 4,
-        total: 4,
-      },
-      {
-        id: "d5",
-        agentState: "done",
-        title: t("index.demo.n5_title", "代码审查完成"),
-        agent: "reviewer",
-        project: "auth-module",
-        duration: 91,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n5_body",
-          "审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。",
-        ),
-        link: "pi://session/sess_31de",
-        sessionId: "sess_31de4b",
-        delivered: 4,
-        total: 4,
-      },
-      {
-        id: "d6",
-        agentState: "error",
-        title: t("index.demo.n6_title", "数据库迁移失败"),
-        agent: "db-migrate",
-        project: "core-db",
-        duration: 47,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n6_body",
-          "迁移脚本 0042 执行超时。已自动回滚，数据未受影响。",
-        ),
-        link: "pi://session/sess_5f2c",
-        sessionId: "sess_5f2c88",
-        delivered: 4,
-        total: 4,
-      },
-      {
-        id: "d7",
-        agentState: "done",
-        title: t("index.demo.n7_title", "依赖升级完成"),
-        agent: "deps-bot",
-        project: "web-client",
-        duration: 76,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 31 * 60 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n7_body",
-          "升级 8 个依赖至最新稳定版，无破坏性变更。",
-        ),
-        link: "pi://session/sess_a012",
-        sessionId: "sess_a0123f",
-        delivered: 4,
-        total: 4,
-      },
-      {
-        id: "d8",
-        agentState: "done",
-        title: t("index.demo.n8_title", "备份任务完成"),
-        agent: "backup",
-        project: "core-db",
-        duration: 210,
-        model: "claude-4",
-        createdAt: new Date(Date.now() - 37 * 60 * 60 * 1000).toISOString(),
-        body: t(
-          "index.demo.n8_body",
-          "数据库快照已生成并上传至对象存储，大小 1.2 GB。",
-        ),
-        link: "pi://session/sess_d9e7",
-        sessionId: "sess_d9e71c",
-        delivered: 4,
-        total: 4,
-      },
-    ];
 
     const AGENT_STATE_META = {
       working: {
@@ -671,37 +389,32 @@
     };
 
     let NOTIFICATIONS = [];
-    let usingDemo = false;
     let STATS = null; // /v1/stats 真实统计（热力图 + KPI）
+    let loadError = null; // 最近一次首屏加载失败的原因（有值就渲染错误态，不伪造数据）
 
     async function load() {
-      let items = null;
-      let connected = false;
+      loadError = null;
       try {
         // #80：旧 /v1/notifications 已随消息模型下线，改用任务列表。
         // 语义从"推给过你什么"变成"为你办了什么"——这正是事件中心的核心。
         const data = await api("/v1/tasks?limit=50");
-        if (data && Array.isArray(data.tasks)) {
-          items = data.tasks;
-          connected = true;
+        if (!data || !Array.isArray(data.tasks)) {
+          throw new Error(t("index.load.bad_shape", "响应格式不符"));
         }
+        NOTIFICATIONS = data.tasks.map(normalize).sort(byNewest);
       } catch (e) {
-        connected = false; // 401 已由 api() 跳登录；这里是真·网络/服务未连接
+        // 401 已由 api() 跳登录；其余都是真失败。
+        // **不降级成演示数据**：伪造数据会让人把「服务挂了」看成「功能如此」（#273）。
+        loadError = e;
+        NOTIFICATIONS = [];
       }
-      usingDemo = !connected;
-      NOTIFICATIONS = (connected ? items : DEMO_NOTIFICATIONS)
-        .map(normalize)
-        .sort(byNewest);
-      // 拉真实统计（KPI + 热力图）；失败则 STATS 保持 null 用通知估算
+      // 拉真实统计（KPI + 热力图）；失败则 STATS 保持 null，KPI 用任务数估算
       try {
         STATS = await api("/v1/stats");
       } catch {
         STATS = null;
       }
-      document
-        .getElementById("demo-badge")
-        .classList.toggle("hidden", !usingDemo);
-      // 问候语跟当前登录用户对齐（#21）；qs ?u= 仅作兜底
+      // 问候语跟当前登录用户对齐（#21）
       try {
         const me = await window.Anotify.loadMe();
         if (me) {
@@ -781,7 +494,7 @@
     function renderKpis() {
       // 优先用 /v1/stats 的真实统计；STATS 不可用时回退到通知列表估算
       let total, rate, today, devices;
-      if (STATS && !usingDemo) {
+      if (STATS) {
         total = STATS.total ?? 0;
         today = STATS.today ?? 0;
         devices = STATS.deviceCount ?? 0;
@@ -804,9 +517,10 @@
         today = NOTIFICATIONS.filter((n) => n.isToday).length;
       }
       document.getElementById("kpi-total").textContent = total.toLocaleString();
-      document.getElementById("kpi-total-trend").textContent = usingDemo
-        ? t("index.kpi.trend_demo", "示例")
-        : t("index.kpi.trend_live", "实时");
+      document.getElementById("kpi-total-trend").textContent = t(
+        "index.kpi.trend_live",
+        "实时",
+      );
       // Use textContent to avoid innerHTML (% is a separate span)
       const rateEl = document.getElementById("kpi-rate");
       if (rate == null) {
@@ -868,6 +582,13 @@
     function renderNotifs(filter) {
       currentFilter = filter;
       const list = document.getElementById("notif-list");
+      if (loadError) {
+        list.replaceChildren(
+          window.Anotify.loadErrorNode(loadError, () => load()),
+        );
+        document.getElementById("notif-count").textContent = "";
+        return;
+      }
       const rows = NOTIFICATIONS.filter(
         (n) => filter === "all" ||
           (filter === "terminal" && ["done", "interrupted", "error"].includes(n.agentState)) ||
@@ -928,12 +649,19 @@
                   class: "text-xs text-zinc-500",
                   text: n.time,
                 }),
-                el("span", {
-                  class: "text-[10px] text-zinc-600",
-                  text: t("index.notif.delivered", "{d}/{t} 设备已送达")
-                    .replace("{d}", n.delivered)
-                    .replace("{t}", n.total),
-                }),
+                n.total > 0
+                  ? el("span", {
+                      class: "text-[10px] text-zinc-600",
+                      text: t("index.notif.delivered", "{d}/{t} 设备已送达")
+                        .replace("{d}", n.delivered)
+                        .replace("{t}", n.total),
+                    })
+                  : el("span", {
+                      class: "text-[10px] text-zinc-600",
+                      text: n.reported
+                        ? t("index.notif.reported", "已回报")
+                        : t("index.notif.unreported", "未回报"),
+                    }),
               ),
             );
           }),
@@ -975,117 +703,6 @@
     }
     mountPullRefresh(refresh);
 
-    /* ================= 发送测试通知 ================= */
-    let tnSending = false;
-    const tnToggle = document.getElementById("tn-toggle");
-    const tnForm = document.getElementById("tn-form");
-    const tnSend = document.getElementById("tn-send");
-    const tnCancel = document.getElementById("tn-cancel");
-    const tnStatusMsg = document.getElementById("tn-agent-state-msg");
-
-    function tnSetStatus(msg, isError) {
-      tnStatusMsg.textContent = msg || "";
-      tnStatusMsg.className =
-        "text-xs " + (isError ? "text-red-400" : "text-zinc-400");
-    }
-
-    function currentDeviceCount() {
-      if (STATS && !usingDemo && STATS.deviceCount != null) {
-        return STATS.deviceCount;
-      }
-      return 0;
-    }
-
-    tnToggle.addEventListener("click", () => {
-      // 演示模式（后端未连接）：提示无法发送
-      if (usingDemo) {
-        tnSetStatus(t("index.test_notify.demo_disabled", "后端未连接，无法发送测试通知"), true);
-        return;
-      }
-      // 0 台接收设备：阻止打开发送表单，避免产生「完成 / 0/0」假成功（#23）
-      if (currentDeviceCount() <= 0) {
-        tnSetStatus(
-          t(
-            "index.test_notify.no_devices_block",
-            "当前没有接收设备。请先在「通知接收」开启本机通知或添加设备后再试。",
-          ),
-          true,
-        );
-        tnForm.classList.add("hidden");
-        return;
-      }
-      tnForm.classList.toggle("hidden");
-      if (!tnForm.classList.contains("hidden")) {
-        const titleInput = document.getElementById("tn-title");
-        if (!titleInput.value) titleInput.value = t("index.test_notify.title_placeholder", "测试通知");
-        titleInput.focus();
-      }
-    });
-
-    tnCancel.addEventListener("click", () => {
-      tnForm.classList.add("hidden");
-      tnSetStatus("");
-    });
-
-    tnSend.addEventListener("click", async () => {
-      if (tnSending) return;
-      if (currentDeviceCount() <= 0) {
-        tnSetStatus(
-          t(
-            "index.test_notify.no_devices_block",
-            "当前没有接收设备。请先在「通知接收」开启本机通知或添加设备后再试。",
-          ),
-          true,
-        );
-        tnForm.classList.add("hidden");
-        return;
-      }
-      tnSending = true;
-      const originalText = tnSend.textContent;
-      tnSend.textContent = t("index.test_notify.sending", "发送中…");
-      tnSend.disabled = true;
-      tnSetStatus("");
-      const body = {
-        title: document.getElementById("tn-title").value.trim(),
-        body: document.getElementById("tn-body").value,
-        agentState: document.getElementById("tn-agent-state").value,
-        priority: document.getElementById("tn-priority").value,
-      };
-      const tagsRaw = document.getElementById("tn-tags").value.trim();
-      if (tagsRaw) {
-        body.deviceTags = tagsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-      }
-      try {
-        const resp = await api("/v1/test-notify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (resp && resp.matched > 0) {
-          tnSetStatus(
-            t("index.test_notify.success", "已发送，命中 {n} 台设备").replace("{n}", resp.matched),
-            false,
-          );
-          tnForm.classList.add("hidden");
-        } else {
-          // 标签过滤导致 0 命中：警告态，关闭表单，不宣称成功
-          tnSetStatus(
-            t("index.test_notify.no_device", "已发送，但当前没有匹配的接收设备"),
-            true,
-          );
-          tnForm.classList.add("hidden");
-        }
-        // 刷新最近通知列表，让新消息出现
-        await load();
-      } catch (e) {
-        const msg = (e && e.message) || String(e);
-        tnSetStatus(t("index.test_notify.failed", "发送失败：{msg}").replace("{msg}", msg), true);
-      } finally {
-        tnSending = false;
-        tnSend.textContent = originalText;
-        tnSend.disabled = false;
-      }
-    });
 
     /* ================= 详情弹层 ================= */
     // 详情打开态同步到 URL（?msg=<id>）：推送深链 / 刷新 / 分享后仍定位到同一消息
@@ -1293,7 +910,7 @@
         return `${date.getFullYear()}-${m}-${dd}`;
       }
       function dayCount(date) {
-        // 有真实数据用真实；STATS 不可用（演示模式）则全 0
+        // 有 STATS 用真实值，否则退到任务数估算
         return countByDay.get(dayKey(date)) || 0;
       }
       function levelOf(c) {
@@ -1396,7 +1013,7 @@
       const msgId = qs.get("msg");
       if (!msgId) return;
       let n = NOTIFICATIONS.find((x) => x.id === msgId);
-      if (!n && !usingDemo) {
+      if (!n) {
         try {
           const data = await api("/v1/tasks?limit=500");
           const items = data && Array.isArray(data.tasks) ? data.tasks : null;

@@ -647,24 +647,27 @@ async function main() {
 	}
 
 	/* =========================================================
-	 * AC-4.1: login demo mode preserves language
-	 * demoEnter() uses relative "index.html?demo=1&u=..." which resolves
-	 * to /{lang}/index.html when on /{lang}/login.html.
-	 * When backend IS connected (E2E), index.html hits 401 → auth guard
-	 * redirects to "login.html?next=..." (also relative → stays in /{lang}/).
-	 * Both paths preserve language via relative URLs.
-	 * We verify: (a) demoEnter source uses relative path, (b) auth guard
-	 * redirect also uses relative path, (c) actual redirect stays in /en/.
+	 * AC-4.1: login 跳转保持语言前缀
+	 * 登录页的站内跳转一律用**相对页名**（"index.html" / NEXT_MAP 里的相对值），
+	 * 在 /{lang}/login.html 上解析成 /{lang}/index.html，语言前缀不会丢。
+	 * 后端连接时 index.html 的 401 → auth guard 跳 "login.html?next=..."（同样相对）。
+	 * 我们验证：(a) 登录页跳转用相对路径，(b) auth guard 也用相对路径，(c) 实际跳转留在 /en/。
+	 * （演示模式已在 #273 整体移除；顺带断言它不会回来。）
 	 * ========================================================= */
-	console.log("--- AC-4.1: login demo mode language preservation ---");
+	console.log("--- AC-4.1: login 跳转语言保持 ---");
 	{
-		/* (a) Verify demoEnter source uses relative path ("index.html" not "/index.html") */
+		/* (a) 站内跳转用相对页名（"index.html"，不是绝对 "/index.html"） */
 		const loginR = await H.req(server.base, "/en/login.html");
 		H.check(
-			'AC-4.1 demoEnter uses relative path "index.html" (not absolute)',
-			loginR.text.includes('"index.html?demo=1') &&
-				!loginR.text.includes('"/index.html?demo=1'),
-			"demoEnter uses absolute path or not found",
+			'AC-4.1 登录页跳转用相对页名 "index.html"（不是绝对路径）',
+			loginR.text.includes('"index.html"') &&
+				!loginR.text.includes('"/index.html"'),
+			"登录页用了绝对路径或找不到跳转目标",
+		);
+		H.check(
+			"AC-4.1 演示模式已移除（登录页不再有 demo=1 / demoEnter）",
+			!loginR.text.includes("demo=1") && !loginR.text.includes("demoEnter"),
+			"登录页仍残留演示模式入口（#273 回归）",
 		);
 
 		/* (b) Verify auth guard in partials.js uses relative "login.html" */

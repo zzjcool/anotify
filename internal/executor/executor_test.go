@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,12 @@ func TestTickZeroDevicesIsSuccess(t *testing.T) {
 
 	if len(fs.finished) != 1 || fs.finished[0].status != store.TaskSucceeded {
 		t.Fatalf("0 台设备应算成功，实际 %+v", fs.finished)
+	}
+	// 但 summary 必须说实话：成功 ≠ "推成功了"（#23 的"不许假成功"。
+	// 原来这条在首页测试通知面板的 UI 里守着，面板随死端点一起删掉后，
+	// 这条约束下沉到这里——它是平台契约，不是某个页面的行为。
+	if got := fs.finished[0].summary; !strings.Contains(got, "0 device") {
+		t.Fatalf("0 台设备的 summary 必须说明「0 台」，实际 %q", got)
 	}
 }
 

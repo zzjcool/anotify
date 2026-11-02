@@ -751,19 +751,6 @@ body {
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
-/* 演示数据标记 */
-.demo-badge {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.3rem;
-	font-size: 0.66rem;
-	padding: 0.12rem 0.55rem;
-	border-radius: 9999px;
-	background: var(--warn-soft);
-	color: #fcd34d;
-	border: 1px solid rgba(251, 191, 36, 0.2);
-}
-
 /* 语言切换器 */
 .lang-trigger {
 	color: var(--muted);
