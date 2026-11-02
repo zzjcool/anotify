@@ -210,7 +210,7 @@ func (c *nodeConfig) streamURL() (string, error) {
 //
 // applied 是**从哪里来**的关键：它不是「我能跑什么」，而是「我缓存了什么」。
 // 中枢拿到它只做一件事——和 deployments 对账（对上了 → applied；digest 不一致
-// → local 本地变体），绝不会因为出现一条 applied 就把能力归属给这台机器。
+// → pending 并重新下发），绝不会因为出现一条 applied 就把能力归属给这台机器。
 //
 // 参数由调用方从 cache 取（`c.cache.applied()`），而不是在这里构造 cache：
 // 这样 config 层保持纯函数、可离线单测（配置解析与缓存落盘是两件事）。

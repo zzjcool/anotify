@@ -607,6 +607,74 @@ func TestExampleBuiltinIsUsable(t *testing.T) {
 	}
 }
 
+// TestExampleBuiltinArtifactUpdateRepointsDeployment 内置产物更新后（比如修了脚本的 bug），
+// 已有部署会被自动指到新产物上并回到 pending，等节点上线时 ws.resendDeployments 补推——
+// 不需要人去控制台逐台重部署。
+//
+// 这是“中枢覆盖”在播种侧的对应物：播种幂等键是 name@version，所以修脚本不会
+// 换能力行，只能靠这里把已有的部署行指过去（否则旧 digest 会永远指着旧内容）。
+func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+
+	cap1, err := db.GetCapability(ctx, nsID, ExampleCapability.Name, ExampleCapability.Version)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	latest, err := db.LatestArtifact(ctx, nsID, cap1.ID)
+	if err != nil {
+		t.Fatalf("latest artifact: %v", err)
+	}
+
+	// 造一份“旧产物”的已应用部署（模拟上一版播种出来的那份）
+	node, _ := mkNode(t, db, nsID, "box")
+	old := dpArtifact(t, db, nsID, cap1.ID, dpDigest("dead"), `{"old":true}`)
+	dep, err := db.CreateDeployment(ctx, nsID, node.ID, old.ID)
+	if err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+	if err := db.MarkDeployResult(ctx, nsID, dep.ID, DeploymentApplied, ""); err != nil {
+		t.Fatalf("mark applied: %v", err)
+	}
+
+	// 重启（= 重新播种）
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+
+	rows, err := db.ListDeployments(ctx, nsID, DeploymentFilter{NodeID: node.ID, CapabilityID: cap1.ID})
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("deployments 行数 = %d, want 1（一个能力一条期望）", len(rows))
+	}
+	got := rows[0]
+	if got.ArtifactID != latest.ID || got.Digest != latest.Digest {
+		t.Fatalf("部署没被指到新产物：artifact=%s digest=%s，want %s / %s",
+			got.ArtifactID, got.Digest, latest.ID, latest.Digest)
+	}
+	if got.State != DeploymentPending {
+		t.Fatalf("重指后 state = %q, want %q（等节点上线补推）", got.State, DeploymentPending)
+	}
+	if !strings.Contains(got.Reason, "builtin artifact updated") {
+		t.Fatalf("reason = %q，应该说明是内置产物更新导致的", got.Reason)
+	}
+
+	// 幂等：再一次播种不会把 pending 打回别处、也不会变出第二行
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
+		t.Fatalf("reseed twice: %v", err)
+	}
+	again, err := db.ListDeployments(ctx, nsID, DeploymentFilter{NodeID: node.ID, CapabilityID: cap1.ID})
+	if err != nil {
+		t.Fatalf("list deployments again: %v", err)
+	}
+	if len(again) != 1 || again[0].ArtifactID != latest.ID {
+		t.Fatalf("重复播种把部署弄乱了: %+v", again)
+	}
+}
+
 // TestExampleBuiltinBackfillsExistingNamespace：老命名空间（能力已存在、产物没有）
 // 在 Backfill 之后也要拿到产物 —— 这是升级路径，光靠"新建时播种"覆盖不到。
 func TestExampleBuiltinBackfillsExistingNamespace(t *testing.T) {

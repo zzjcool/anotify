@@ -29,7 +29,8 @@ import (
 //
 // digest 是内容的哈希（artifact.Digest），所以目录名本身就是一次审计：
 // 同一份产物在任何机器上必然同名、内容必然相同；用户手改了 capability.yaml，
-// 目录名不变但重新算出的 digest 会变——那正是「本地变体」的判据（契约 §7）。
+// 目录名不变但重新算出的 digest 会变——中枢靠这个差值发现“节点上那份已经不是
+// 我发的那份”，并在下次握手时重新下发（覆盖）。
 // 也因此 put 是**天然幂等**的：同一个 digest 重复部署只是复用已有目录。
 //
 // # 为什么不删产物目录
@@ -238,7 +239,7 @@ func (c *cache) writeIndex(name string, version int, digest string) error {
 // get 按 name@version 取产物：读索引 → digest → 读 capability.yaml → Decode。
 //
 // 返回的 digest 是**内容算出来的**（见 getByDigest），所以拿它和中枢的 desired
-// digest 比就能发现本地变体。
+// digest 比就能发现“本地那份已经变了”（中枢据此重新下发，见 ws.resendDeployments）。
 func (c *cache) get(name string, version int) (*artifact.Artifact, string, bool) {
 	digest, ok := c.readIndex(name, version)
 	if !ok {
@@ -251,7 +252,7 @@ func (c *cache) get(name string, version int) (*artifact.Artifact, string, bool)
 //
 // 第二个返回值是**重新算出来**的 digest，不是传进来的那个：用户手改过
 // capability.yaml / files 之后，目录名（旧 digest）与内容（新 digest）会对不上，
-// 而中枢正是靠这个差值判定「本地变体、永不覆盖」（契约 §7）。
+// 中枢靠这个差值发现不一致，并在握手后把期望的那份重推下来（中枢覆盖）。
 func (c *cache) getByDigest(digest string) (*artifact.Artifact, string, bool) {
 	if err := validateDigest(digest); err != nil {
 		return nil, "", false

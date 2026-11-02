@@ -343,6 +343,40 @@ func seedBuiltinArtifactTx(ctx context.Context, tx *sql.Tx, namespaceID, capabil
 		NewArtifactID(), namespaceID, capabilityID, digest, string(spec), Now()); err != nil {
 		return fmt.Errorf("seed builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
 	}
+
+	// 内置产物更新（比如修了脚本的 bug）→ 把已有部署指到新产物上。
+	//
+	// 为什么要在播种里做：内置产物是**平台自己的内容**，更新后不该等人去控制台逐台重部署。
+	// 部署是中枢下发的期望状态，平台换了内容，期望就该跟着换。
+	// 这里只动 deployments 的“指向”与状态（pending），帧由节点连接时的
+	// ws.resendDeployments 补发——播种发生在启动阶段，此时还没有连接可推。
+	//
+	// 顺序很要紧：先删掉“已经指向新产物”的行，再把旧行改指过来。
+	// 反过来的话，旧库（一个能力上曾经允许多行）会撞 UNIQUE(node_id, artifact_id)。
+	var artifactID string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM artifacts WHERE namespace_id = ? AND digest = ?`,
+		namespaceID, digest).Scan(&artifactID); err != nil {
+		return fmt.Errorf("read back builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM deployments
+		  WHERE namespace_id = ? AND artifact_id = ?
+		    AND node_id IN (SELECT d2.node_id FROM deployments d2
+		                      JOIN artifacts a2 ON a2.id = d2.artifact_id
+		                     WHERE d2.namespace_id = ? AND a2.capability_id = ? AND d2.artifact_id <> ?)`,
+		namespaceID, artifactID, namespaceID, capabilityID, artifactID); err != nil {
+		return fmt.Errorf("dedupe builtin deployment %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE deployments
+		    SET artifact_id = ?, digest = ?, state = ?, reason = ?, updated_at = ?
+		  WHERE namespace_id = ? AND artifact_id <> ?
+		    AND artifact_id IN (SELECT id FROM artifacts WHERE capability_id = ?)`,
+		artifactID, digest, DeploymentPending, "builtin artifact updated", Now(),
+		namespaceID, artifactID, capabilityID); err != nil {
+		return fmt.Errorf("repoint builtin deployment %s@%d: %w", bc.Name, bc.Version, err)
+	}
 	return nil
 }
 

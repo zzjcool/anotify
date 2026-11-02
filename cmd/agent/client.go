@@ -544,7 +544,7 @@ func (a *nodeAgent) handleAssign(f *assignFrame) {
 //
 // 第二个返回值是 cache 里**重新算出来**的 digest（而不是 assign 里那个字符串），
 // 所以 ANOTIFY_DIGEST 永远是真正在跑的那份内容的哈希：用户手改过缓存里的产物时，
-// 脚本里看到的就是改后的那版（同时中枢会在下次 hello 里发现本地变体）。
+// 脚本里看到的就是改后的那版（同时中枢会在下次 hello 里发现不一致并重新下发）。
 func (a *nodeAgent) resolveArtifact(f *assignFrame) (*artifact.Artifact, string, bool) {
 	if f.Digest != "" {
 		return a.cache.getByDigest(f.Digest)

@@ -125,9 +125,13 @@ type AssignFrame struct {
    hello.applied[].digest != desired.digest
               ↓
       ┌─────────────┐
-      │    local    │   本地变体：中枢永不覆盖
+      │   pending   │  中枢覆盖：握手结束后立即重推 desired 产物
       └─────────────┘
 ```
+
+> 早先的 `local`（本地变体、中枢永不覆盖）已取消：产物本由中枢下发，不一致只说明
+> “节点还没收到”，因此直接重推（见 CONTRACT-artifact §7）。旧的 `local` 行会在下一次
+> hello 对账时被改成 `applied` 或 `pending`。
 
 控制台 `DELETE /v1/deployments` → 推 `deploy{action:remove}` 后**直接删行**（不留 `removed` 态）。
 
@@ -158,7 +162,7 @@ INSERT INTO node_capabilities (node_id, capability_id, namespace_id)
   -- （任一未定义 → 整帧 unknown_capability，一行不写）
   VALUES (?, ?, node.namespace_id) × N;
 -- 顺带对账 observed 列（只碰 state/reason/updated_at）：
-UPDATE deployments SET state = 'applied' | 'local', reason = ?, updated_at = ?
+UPDATE deployments SET state = 'applied' | 'pending', reason = ?, updated_at = ?
  WHERE node_id = ? AND artifact_id = ?;
 ```
 
@@ -172,7 +176,7 @@ UPDATE deployments SET state = 'applied' | 'local', reason = ?, updated_at = ?
 | `node_capabilities` | 「这台机器**现在能跑什么**」← 运行期事实，只有节点知道 |
 | `deployments` | 「控制台**希望**它有什么 / 上次部署结果如何」← 期望态 |
 
-一个节点可能因为三条与部署无关的原因拥有某份产物：手改了产物（本地变体）、
+一个节点可能因为三条与部署无关的原因拥有某份产物：手改了产物（digest 变了）、
 在部署被撤销后仍缓存着、或者用 `anotify-agent run` 手工装过。这些情况下它**确实
 能跑**，而 `node_capabilities` 是派发选点的唯一输入——漏掉它们会让调度把这些
 任务判成 `no_node`（明明有机器能跑）。
@@ -180,7 +184,7 @@ UPDATE deployments SET state = 'applied' | 'local', reason = ?, updated_at = ?
 安全担忧（「节点能不能自己给自己发能力」）由另外三层挡住，不靠这一条：
 1. 能力名必须在**本命名空间**已定义（否则整帧拒绝，不变量 I2）；
 2. 中枢**永远不下发命令**，节点只能跑它已经缓存的那份内容寻址产物；
-3. `local` 状态在控制台上标黄，运维看得见「这台跟期望不一致」。
+3. 产物与期望不一致时，中枢会在握手后**立即重发**（中枢覆盖），标签不会长期停在黄标上。
 
 代价：撤销部署后，节点上那份缓存仍参与派发，直到它重启或产物被 GC。
 这是**有意的**——撤销是收回「以后不再部署」，不是「立刻停机」。
@@ -247,7 +251,7 @@ CREATE INDEX IF NOT EXISTS idx_deploy_artifact ON deployments(artifact_id);
 | `POST /v1/capabilities` | **改**：body 新增可选 `run: {entrypoint, files, timeoutSec, env}` + `requires[]`；有 `run` 时服务端编译产物、算 digest、落 `artifacts`，响应带 `digest` |
 | `GET /v1/artifacts?capabilityId=` | 某能力的产物列表（digest + 时间） |
 | `POST /v1/deployments` | body `{namespaceId, capabilityId, digest?, nodeIds[]? , tags[]?}`；`digest` 缺省取该能力最新产物；按选择器展开成 node 列表，INSERT pending，逐台推 `deploy` frame |
-| `GET /v1/deployments?nodeId=&capabilityId=` | 部署状态列表（含 state/reason/本地变体标记） |
+| `GET /v1/deployments?nodeId=&capabilityId=` | 部署状态列表（含 state/reason） |
 | `DELETE /v1/deployments?id=` | 推 `remove` 后删行 |
 
 `POST /v1/deployments` 的返回值必须逐台给出 `{nodeId, deployId, pushed: bool, error?}`；

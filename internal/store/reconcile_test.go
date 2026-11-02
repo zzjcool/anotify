@@ -274,18 +274,20 @@ func rcDeploymentFixture(t *testing.T, db *DB, nsID string) (node *Node, dp *Dep
 	return node, dp, capID
 }
 
-// TestReconcileAppliedDigestMismatchMarksLocal applied 的 digest 与 desired 不一致
-// → deployments.state = local，reason 里两端 digest 都在（排障时不猜）。
+// TestReconcileAppliedDigestMismatchMarksPending applied 的 digest 与中枢期望
+// desired 不一致 → deployments.state = pending，reason 里两端 digest 都在（排障时不猜）。
 //
-// 这是旧「manifest 冲突合并」用例的替代覆盖：v2 里中枢与节点之间唯一可能不一致的
-// 东西就是 digest，而它对应契约 §7 的「本地变体」状态。
-func TestReconcileAppliedDigestMismatchMarksLocal(t *testing.T) {
+// 为什么不再是 local：部署本来就是中枢下发的，节点上那份不一致 = “它还没收到”，
+// 不是“用户手改过”。标成“本地变体、永不覆盖”会让一条正常部署永远停在黄标上，
+// 还得人去点一次。现在的语义是：中枢覆盖 —— 对账把行标回 pending，
+// 握手结束时把期望的那份重新下发（ws.resendDeployments）。
+func TestReconcileAppliedDigestMismatchMarksPending(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	node, dp, _ := rcDeploymentFixture(t, db, nsID)
 
-	// 节点上缓存的是一份被手改过的产物（digest 变了）
+	// 节点上缓存的是另一份产物（旧 digest，或本地被改过）
 	if _, err := db.ReconcileApplied(ctx, nsID, node.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestLocal)}); err != nil {
 		t.Fatalf("reconcile applied: %v", err)
@@ -295,17 +297,17 @@ func TestReconcileAppliedDigestMismatchMarksLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
-	if got.State != DeploymentLocal {
-		t.Fatalf("digest 不一致时 state = %q, want %q（本地变体，中枢永不覆盖）", got.State, DeploymentLocal)
+	if got.State != DeploymentPending {
+		t.Fatalf("digest 不一致时 state = %q, want %q（要重新下发）", got.State, DeploymentPending)
 	}
 	for _, want := range []string{rcDigestLocal, rcDigestDesired} {
 		if !strings.Contains(got.Reason, want) {
 			t.Errorf("reason %q 里没有 %q（两端 digest 都要给，否则排障只能靠猜）", got.Reason, want)
 		}
 	}
-	// 归属仍然是「这台机器有这个能力」：本地变体只是中枢不敢覆盖，不是不可派发
+	// 归属仍然是「这台机器有这个能力」：产物不一致只影响“跑哪份”，不影响能不能派
 	if names := rcNodeCapNames(t, db, node.ID); len(names) != 1 {
-		t.Fatalf("本地变体的归属丢了: %v", names)
+		t.Fatalf("产物不一致时归属丢了: %v", names)
 	}
 }
 
@@ -331,8 +333,8 @@ func TestReconcileAppliedDigestMatchMarksApplied(t *testing.T) {
 		t.Fatalf("applied 的 reason 应为空，got %q", got.Reason)
 	}
 
-	// 反过来：本地变体在节点改回中枢期望的 digest 后可以回到 applied
-	// （local 不是终态 —— 中枢永不主动覆盖，但用户修好后必须能自愈）。
+	// 反过来：产物不一致（pending）在节点追上中枢期望的 digest 后必须能变回 applied
+	// （pending 不是终态 —— 中枢会重推，重推成功就该自愈）。
 	if _, err := db.ReconcileApplied(ctx, nsID, node.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestLocal)}); err != nil {
 		t.Fatalf("reconcile to local: %v", err)

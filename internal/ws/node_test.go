@@ -660,13 +660,13 @@ func TestHelloAppliedUnknownListsAll(t *testing.T) {
 	}
 }
 
-// TestHelloAppliedDigestMarksLocal applied.digest 与中枢 desired 不一致 → local。
+// TestHelloAppliedDigestMismatchResendsDesiredArtifact 节点上那份与中枢期望的不一致
+// → 对账把行标回 pending，握手结束后立刻把期望的那份推下去（中枢覆盖）。
 //
-// 为什么断言变了：旧用例（TestHelloManifestPartialCoverage 之后那一族）钉的是
-// 「manifest 里重复项后者胜 / caps 重复项只出一条」这类合并算法。v2 的中枢与节点之间
-// 唯一可能不一致的东西是 digest，而它的后果是契约 §7 的「本地变体」状态。
-// 这条断言就是旧「合并冲突」用例在新模型下的对应物。
-func TestHelloAppliedDigestMarksLocal(t *testing.T) {
+// 这条钉的是“部署只由中枢写”的全部机制：中枢说了算，节点上不一致 = “它还没收到”，
+// 所以重推，而不是标个黄标等人再点一次。它同时把“部署时节点离线，等它上线再推”
+// 那条路径一并验证了（两者在代码里是同一条路径：握手后比 digest → 缺的就发帧）。
+func TestHelloAppliedDigestMismatchResendsDesiredArtifact(t *testing.T) {
 	f := newNodeFixture(t)
 	ctx := context.Background()
 
@@ -679,7 +679,7 @@ func TestHelloAppliedDigestMarksLocal(t *testing.T) {
 		NamespaceID:  f.nsID,
 		CapabilityID: cap1.ID,
 		Digest:       "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-		Spec:         []byte(`{"apiVersion":"anotify/v1"}`),
+		Spec:         []byte(`{"apiVersion":"anotify/v1","kind":"Capability","metadata":{"name":"review","version":1}}`),
 	})
 	if err != nil {
 		t.Fatalf("create artifact: %v", err)
@@ -689,7 +689,7 @@ func TestHelloAppliedDigestMarksLocal(t *testing.T) {
 		t.Fatalf("create deployment: %v", err)
 	}
 
-	// 节点上缓存的是一份被手改过的产物
+	// 节点上缓存的是另一份（旧 digest / 本地被改过），握手时如实上报。
 	conn := f.mustDial(t)
 	hello(t, conn, f.node.ID,
 		[]AppliedDecl{{Capability: "review", Version: 1,
@@ -697,19 +697,37 @@ func TestHelloAppliedDigestMarksLocal(t *testing.T) {
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}},
 	)
 
+	// 1) 行被标回 pending，而不是“本地变体、等人点一下”
 	got, err := f.db.GetDeployment(ctx, f.nsID, dp.ID)
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
-	if got.State != store.DeploymentLocal {
-		t.Fatalf("hello 对账后 state = %q, want %q（本地变体）", got.State, store.DeploymentLocal)
+	if got.State != store.DeploymentPending {
+		t.Fatalf("hello 对账后 state = %q, want %q（要重新下发）", got.State, store.DeploymentPending)
 	}
 	if !strings.Contains(got.Reason, art.Digest) {
 		t.Fatalf("reason %q 里没有中枢期望的 digest %s", got.Reason, art.Digest)
 	}
-	// 归属还在（本地变体只是中枢不敢覆盖，不是不能派发）
+
+	// 2) 期望的那份产物真的推下来了（节点据此覆盖本地那份）
+	frame := readUntil(t, conn, NodeFrameDeploy)
+	if frame["deploy_id"] != dp.ID {
+		t.Fatalf("deploy_id = %v, want %s", frame["deploy_id"], dp.ID)
+	}
+	if frame["action"] != DeployActionApply {
+		t.Fatalf("action = %v, want %q", frame["action"], DeployActionApply)
+	}
+	body, ok := frame["artifact"].(map[string]any)
+	if !ok {
+		t.Fatalf("artifact 不是对象（被当成字符串转义了）: %T", frame["artifact"])
+	}
+	if md, _ := body["metadata"].(map[string]any); md["name"] != "review" {
+		t.Fatalf("推下去的产物被改写: %v", body)
+	}
+
+	// 3) 归属还在（产物不一致只影响“跑哪份”，不影响能不能派）
 	if caps := listNodeCaps(t, f.db, f.node.ID); len(caps) != 1 {
-		t.Fatalf("本地变体的归属丢了: %v", capSummary(caps))
+		t.Fatalf("产物不一致时归属丢了: %v", capSummary(caps))
 	}
 }
 
