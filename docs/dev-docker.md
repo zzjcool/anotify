@@ -44,7 +44,8 @@ make dev-demo    # 会打印同样的一组 key/session，并跑完 7 条事件 
 make dev-logs            # 跟日志（S=服务名，默认 anotify）
 make dev-sh              # 进容器（alpine，只有 server 二进制，调试用）
 make dev-down            # 停止（数据卷保留）
-make dev-reset           # 停止并删卷（从零开始）
+make dev-reset           # 重建镜像/容器，**数据卷保留**（默认安全）
+make dev-wipe            # ⚠️ 连数据卷一起删（账号/节点/事件全部丢失）
 make dev-tunnel-quick    # 临时隧道（随机 trycloudflare.com 域名，验证隧道链路）
 ```
 
