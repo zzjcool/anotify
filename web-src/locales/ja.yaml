@@ -728,13 +728,13 @@ docs:
   your_domain: あなたのドメイン
   agent:
     title: Agent 連携
-    intro: Anotify の中核シナリオ：<b class="text-zinc-200">Agent がタスクを完了すると、通知がすべてのデバイスに自動的にプッシュされます</b>。連携は 2 ステップ — 上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。
+    intro: Anotify の中核シナリオ：<b class="doc-em">Agent がタスクを完了すると、通知がすべてのデバイスに自動的にプッシュされます</b>。連携は 2 ステップ — 上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。
     step1:
       title: 上報用 Key を作成
-      desc: <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> ページで <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>）。作成後すぐに保存してください。
+      desc: <a href="keys.html" class="doc-link">API Keys</a> ページで <code class="doc-code">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="doc-code">ant_live_</code>）。作成後すぐに保存してください。
     step2:
       title: タスク終了時に上報
-      desc: Agent の終了イベント（例：pi の <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code> を送信します。
+      desc: Agent の終了イベント（例：pi の <code class="doc-code">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="doc-code">POST /v1/notify</code> を送信します。
     curl:
       title: 最小構成 · curl 一行で全デバイスに通知
     journey:
@@ -762,12 +762,12 @@ docs:
       vapid: VAPID 公開鍵（購読用）
   auth:
     title: 認証方法
-    intro: 2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="text-zinc-200">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。
+    intro: 2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="doc-em">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。
     key:
       title: API Key（Bearer）
       li1: · Agent 上報 / 受信側ロングポール接続に使用
-      li2: '· Header：<code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
-      li3: · scope：<code class="mono text-[12px] text-blue-300">notify:send</code> 上報 · <code class="mono text-[12px] text-emerald-300">notify:receive</code> 受信 · <code class="mono text-[12px] text-amber-300">devices:read</code> 読み取り専用
+      li2: '· Header：<code class="doc-code">Authorization: Bearer ant_…</code>'
+      li3: · scope：<code class="doc-code">notify:send</code> 上報 · <code class="doc-code">notify:receive</code> 受信 · <code class="doc-code">devices:read</code> 読み取り専用
       li4: · サーバーは argon2id ハッシュのみ保存、平文は作成時のみ表示
     passkey:
       title: セッション Cookie
@@ -777,7 +777,7 @@ docs:
       li4: · クロスデバイス：プラットフォーム同期 / 一時接続ガイド / リカバリーコード
   notify:
     core: 中核
-    intro: Agent がタスク終了後にこのエンドポイントを呼び出して通知を上報します。サーバーは API Key を検証し、所有者を特定し、通知を<b class="text-zinc-200">エンドツーエンド暗号化</b>で「有効かつレベル / タグが一致する」すべてのデバイスにプッシュします。
+    intro: Agent がタスク終了後にこのエンドポイントを呼び出して通知を上報します。サーバーは API Key を検証し、所有者を特定し、通知を<b class="doc-em">エンドツーエンド暗号化</b>で「有効かつレベル / タグが一致する」すべてのデバイスにプッシュします。
     params:
       title: リクエストボディ パラメータ
       title_desc: 通知タイトル。例：<code>"デプロイ完了"</code>。システム通知のメインタイトルになります。
@@ -804,11 +804,11 @@ docs:
       title: 配信ルール（タグルーティング + レベルフィルタ）
   webpush:
     title: Web Push 購読（ブラウザ受信）
-    intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="text-zinc-200">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
-    step1: <b class="text-zinc-200">① VAPID 公開鍵を取得</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>
-    step2: <b class="text-zinc-200">② Service Worker を登録</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="text-zinc-200">③ 権限を要求して購読</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="text-zinc-200">④ 購読を上報</b> · endpoint + keys を <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code> で送信
+    intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="doc-em">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
+    step1: <b class="doc-em">① VAPID 公開鍵を取得</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
+    step2: <b class="doc-em">② Service Worker を登録</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
+    step3: <b class="doc-em">③ 権限を要求して購読</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
+    step4: <b class="doc-em">④ 購読を上報</b> · endpoint + keys を <code class="doc-code">POST /v1/devices</code> で送信
     code:
       title: フロントエンド購読 · コアコード
       comment1: // 1. SW 登録 + VAPID 公開鍵を取得
@@ -827,7 +827,7 @@ docs:
       desc: ペイロードは購読の p256dh/auth 鍵で暗号化され、プッシュサービスは内容を読めません。
   ws:
     channel2: 2 つ目の受信チャネル
-    intro: ブラウザプッシュに加え、任意のデバイス / プラグインが <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> 権限の Key で WebSocket ロングポールを確立し、リアルタイム受信できます。デスクトップウィジェット、CLI デーモン、スマートホームブリッジに最適。ブラウザプッシュと並行稼働します。
+    intro: ブラウザプッシュに加え、任意のデバイス / プラグインが <code class="doc-code">notify:receive</code> 権限の Key で WebSocket ロングポールを確立し、リアルタイム受信できます。デスクトップウィジェット、CLI デーモン、スマートホームブリッジに最適。ブラウザプッシュと並行稼働します。
     connect:
       title: 接続の確立
       comment: '# notify:receive 権限が必要'
@@ -848,7 +848,7 @@ docs:
       comment4: // 再接続後、resume フレームでレジュム（Last-Event-Id ヘッダの代替）
     reconnect:
       title: 再接続とレジュム
-      desc: 再接続時に <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。
+      desc: 再接続時に <code class="doc-code">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="doc-code">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="doc-code">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。
 cliauth:
   title: CLI デバイス認証
   back_home: ダッシュボードに戻る

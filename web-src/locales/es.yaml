@@ -728,13 +728,13 @@ docs:
   your_domain: su-dominio
   agent:
     title: Conectar Agent
-    intro: 'El escenario principal de Anotify: <b class="text-zinc-200">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea.'
+    intro: 'El escenario principal de Anotify: <b class="doc-em">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea.'
     step1:
       title: Crear una Key de reporte
-      desc: Vaya a la página <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> y cree una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> (prefijo <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>). Guárdela inmediatamente.
+      desc: Vaya a la página <a href="keys.html" class="doc-link">API Keys</a> y cree una Key con permiso <code class="doc-code">notify:send</code> (prefijo <code class="doc-code">ant_live_</code>). Guárdela inmediatamente.
     step2:
       title: Reportar al terminar la tarea
-      desc: En un evento de finalización del Agent (p. ej. <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>.
+      desc: En un evento de finalización del Agent (p. ej. <code class="doc-code">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="doc-code">POST /v1/notify</code>.
     curl:
       title: Configuración mínima · un curl para enviar a todos los dispositivos
     journey:
@@ -762,12 +762,12 @@ docs:
       vapid: Clave pública VAPID (para suscripción)
   auth:
     title: Autenticación
-    intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="text-zinc-200">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado.'
+    intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="doc-em">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado.'
     key:
       title: API Key (Bearer)
       li1: · Para reportes del Agent / conexiones long-poll del receptor
-      li2: '· Header: <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
-      li3: '· scope: <code class="mono text-[12px] text-blue-300">notify:send</code> reportar · <code class="mono text-[12px] text-emerald-300">notify:receive</code> recibir · <code class="mono text-[12px] text-amber-300">devices:read</code> solo lectura'
+      li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
+      li3: '· scope: <code class="doc-code">notify:send</code> reportar · <code class="doc-code">notify:receive</code> recibir · <code class="doc-code">devices:read</code> solo lectura'
       li4: · El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear
     passkey:
       title: Cookie de sesión
@@ -777,7 +777,7 @@ docs:
       li4: '· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación'
   notify:
     core: Núcleo
-    intro: Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class="text-zinc-200">cifrada de extremo a extremo</b> a todos los dispositivos "habilitados y que coincidan en nivel/tag".
+    intro: Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class="doc-em">cifrada de extremo a extremo</b> a todos los dispositivos "habilitados y que coincidan en nivel/tag".
     params:
       title: Parámetros del cuerpo de la petición
       title_desc: Título de la notificación, p. ej. <code>"Despliegue completado"</code>, se muestra como título principal de la notificación del sistema.
@@ -804,11 +804,11 @@ docs:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
   webpush:
     title: Suscripción Web Push (recepción en navegador)
-    intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="text-zinc-200">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
-    step1: <b class="text-zinc-200">① Obtener clave pública VAPID</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>
-    step2: <b class="text-zinc-200">② Registrar Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="text-zinc-200">③ Solicitar permiso y suscribir</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="text-zinc-200">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>
+    intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="doc-em">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
+    step1: <b class="doc-em">① Obtener clave pública VAPID</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
+    step2: <b class="doc-em">② Registrar Service Worker</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
+    step3: <b class="doc-em">③ Solicitar permiso y suscribir</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
+    step4: <b class="doc-em">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class="doc-code">POST /v1/devices</code>
     code:
       title: Suscripción frontend · código central
       comment1: // 1. Registrar SW + obtener clave pública VAPID
@@ -827,7 +827,7 @@ docs:
       desc: El payload se cifra con las claves p256dh/auth de la suscripción; el servicio de push no puede leer el contenido.
   ws:
     channel2: Segundo canal de recepción
-    intro: Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
+    intro: Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="doc-code">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
     connect:
       title: Establecer conexión
       comment: '# requiere permiso notify:receive'
@@ -848,7 +848,7 @@ docs:
       comment4: // tras reconectar, usar frame resume (reemplaza header Last-Event-Id)
     reconnect:
       title: Reconectar y reanudar
-      desc: Al reconectar, envíe el header <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> (o un primer frame <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code>; el cliente debe obtener el historial completo.
+      desc: Al reconectar, envíe el header <code class="doc-code">Last-Event-Id</code> (o un primer frame <code class="doc-code">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="doc-code">resume_expired</code>; el cliente debe obtener el historial completo.
 cliauth:
   title: Autorización de dispositivo CLI
   back_home: Volver al panel

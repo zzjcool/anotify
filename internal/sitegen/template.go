@@ -49,7 +49,8 @@ func parseTemplateTree(layoutPath, pagePath string) (*templateTree, error) {
 	// passes validation during parsing. The real translation logic is injected
 	// at execute time via Clone + Funcs (bound to the current language).
 	root := template.New("__root__").Funcs(template.FuncMap{
-		"t": func(string) string { return "" },
+		"t":     func(string) string { return "" },
+		"tHTML": func(string) template.HTML { return "" },
 	})
 
 	// Parse the layout first under the unique name __layout__ to avoid
@@ -93,8 +94,17 @@ func (tt *templateTree) execute(w io.Writer, data PageData, tFunc func(string) s
 	}
 
 	// Inject the t func bound to the current language.
+	//
+	// tHTML 是受控的「允许内联标记」通道：locale 值里带着**构建期可信**的
+	// <b>/<a>/<code> 片段（例如 docs 页的强调与行内代码）。html/template 会
+	// 把 {{t}} 的输出整体转义，于是这些词条在页面上会显示成裸标签（实测
+	// docs 页 14 处）。只有确认要渲染标记的词条才用 {{tHTML}}；普通文案继续
+	// 用 {{t}}，避免把翻译文件变成任意 HTML 注入口。
 	clone = clone.Funcs(template.FuncMap{
 		"t": tFunc,
+		"tHTML": func(key string) template.HTML {
+			return template.HTML(tFunc(key)) //nolint:gosec // locale 是构建期可信输入，不是用户输入
+		},
 	})
 
 	// Execute by the __layout__ name (triggers {{block}} → overridden by page {{define}}).

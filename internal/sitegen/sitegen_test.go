@@ -68,7 +68,7 @@ func writeFixture(t *testing.T) string {
 <style>.mono { font-family: "JetBrains Mono"; }</style>
 {{end}}
 {{define "content"}}
-<div id="docs-content">{{t "docs.heading"}}</div>
+<div id="docs-content">{{t "docs.heading"}}<p>{{tHTML "docs.rich"}}</p></div>
 {{end}}`)
 
 	// locales/zh-CN.yaml — Chinese translations (default language).
@@ -81,7 +81,8 @@ login:
   welcome: 欢迎回来
 docs:
   title: 接入文档
-  heading: 快速开始`)
+  heading: 快速开始
+  rich: 欢迎 <b class="doc-em">回来</b>`)
 
 	// locales/en.yaml — English translations.
 	mustWrite(t, filepath.Join(srcDir, "locales", "en.yaml"), `index:
@@ -93,7 +94,8 @@ login:
   welcome: Welcome Back
 docs:
   title: Documentation
-  heading: Quick Start`)
+  heading: Quick Start
+  rich: Welcome <b class="doc-em">back</b>`)
 
 	// locales/ja.yaml — Japanese translations.
 	mustWrite(t, filepath.Join(srcDir, "locales", "ja.yaml"), `index:
@@ -105,7 +107,8 @@ login:
   welcome: おかえりなさい
 docs:
   title: ドキュメント
-  heading: クイックスタート`)
+  heading: クイックスタート
+  rich: おかえり <b class="doc-em">なさい</b>`)
 
 	// locales/es.yaml — Spanish translations.
 	mustWrite(t, filepath.Join(srcDir, "locales", "es.yaml"), `index:
@@ -117,7 +120,8 @@ login:
   welcome: Bienvenido de nuevo
 docs:
   title: Documentación
-  heading: Inicio rápido`)
+  heading: Inicio rápido
+  rich: Bienvenido <b class="doc-em">de nuevo</b>`)
 
 	return srcDir
 }
@@ -295,6 +299,39 @@ func TestGenerate_DocsPageWithExtraBlocks(t *testing.T) {
 	// docs should contain the i18n string.
 	if !strings.Contains(s, "快速开始") {
 		t.Errorf("docs.html should contain 快速开始, got:\n%s", s)
+	}
+}
+
+// TestGenerate_THTMLRendersMarkup 钉住 {{tHTML}} 与 {{t}} 的差异：
+//
+// locale 里确实存在带 <b>/<code> 的词条（docs 页的强调与行内代码）。
+// html/template 会把 {{t}} 的输出整体转义，导致页面显示裸标签（线上实测
+// docs 页 14 处）。{{tHTML}} 是唯一允许把**构建期可信**词条当标记渲染的
+// 通道；如果它退化成转义，docs 页会再次出现 `<b class=...>` 文本。
+func TestGenerate_THTMLRendersMarkup(t *testing.T) {
+	srcDir := writeFixture(t)
+	outDir := t.TempDir()
+
+	gen, err := New(srcDir, outDir, []string{"zh-CN"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(outDir, "docs.html"))
+	if err != nil {
+		t.Fatalf("read docs.html: %v", err)
+	}
+	s := string(content)
+
+	// 标记必须真的成为 DOM，而不是被转义成文本。
+	if !strings.Contains(s, `<b class="doc-em">回来</b>`) {
+		t.Errorf("tHTML 应该渲染标记，实际输出里没有 <b class=\"doc-em\">回来</b>：\n%s", s)
+	}
+	if strings.Contains(s, "&lt;b class=\"doc-em\"&gt;") {
+		t.Errorf("tHTML 的输出被转义了，docs 页会显示裸标签：\n%s", s)
 	}
 }
 

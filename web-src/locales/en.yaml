@@ -728,13 +728,13 @@ docs:
   your_domain: your-domain
   agent:
     title: Connect Agent
-    intro: 'Anotify''s core scenario: <b class="text-zinc-200">when an Agent finishes a task, the notification is automatically pushed to all your devices</b>. Setup is two steps — create a reporting Key, then send a POST request when the task ends.'
+    intro: 'Anotify''s core scenario: <b class="doc-em">when an Agent finishes a task, the notification is automatically pushed to all your devices</b>. Setup is two steps — create a reporting Key, then send a POST request when the task ends.'
     step1:
       title: Create a reporting Key
-      desc: Go to the <a href="keys.html" class="text-indigo-300 underline decoration-indigo-400/30 underline-offset-2 hover:text-indigo-200">API Keys</a> page and create a Key with <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:send</code> scope (prefix <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">ant_live_</code>). Save it immediately.
+      desc: Go to the <a href="keys.html" class="doc-link">API Keys</a> page and create a Key with <code class="doc-code">notify:send</code> scope (prefix <code class="doc-code">ant_live_</code>). Save it immediately.
     step2:
       title: Report when the task ends
-      desc: On an Agent completion event (e.g. pi's <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">agent_settled</code>) or at the end of a script, include the Key and <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/notify</code>.
+      desc: On an Agent completion event (e.g. pi's <code class="doc-code">agent_settled</code>) or at the end of a script, include the Key and <code class="doc-code">POST /v1/notify</code>.
     curl:
       title: Minimal setup · one curl to push to all devices
     journey:
@@ -762,12 +762,12 @@ docs:
       vapid: VAPID public key (for subscription)
   auth:
     title: Authentication
-    intro: 'Two credential types, for two kinds of callers. <b class="text-zinc-200">Least privilege</b>: send and receive are separate, so a leaked Key only affects one side.'
+    intro: 'Two credential types, for two kinds of callers. <b class="doc-em">Least privilege</b>: send and receive are separate, so a leaked Key only affects one side.'
     key:
       title: API Key (Bearer)
       li1: · For Agent reporting / receiver long-poll connections
-      li2: '· Header: <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Authorization: Bearer ant_…</code>'
-      li3: '· scope: <code class="mono text-[12px] text-blue-300">notify:send</code> report · <code class="mono text-[12px] text-emerald-300">notify:receive</code> receive · <code class="mono text-[12px] text-amber-300">devices:read</code> read-only'
+      li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
+      li3: '· scope: <code class="doc-code">notify:send</code> report · <code class="doc-code">notify:receive</code> receive · <code class="doc-code">devices:read</code> read-only'
       li4: · Server stores only an argon2id hash; plaintext is shown once at creation
     passkey:
       title: Session Cookie
@@ -777,7 +777,7 @@ docs:
       li4: '· Cross-device: platform sync / one-time connection guide / recovery code fallback'
   notify:
     core: Core
-    intro: An Agent calls this endpoint to report a notification after a task ends. The server validates the API Key, locates the owner, and pushes the notification <b class="text-zinc-200">end-to-end encrypted</b> to all of that user's "enabled and level/tag-matched" devices.
+    intro: An Agent calls this endpoint to report a notification after a task ends. The server validates the API Key, locates the owner, and pushes the notification <b class="doc-em">end-to-end encrypted</b> to all of that user's "enabled and level/tag-matched" devices.
     params:
       title: Request body parameters
       title_desc: Notification title, e.g. <code>"Deploy done"</code>, shown as the system notification's main title.
@@ -804,11 +804,11 @@ docs:
       title: Delivery rules (tag routing + level filtering)
   webpush:
     title: Web Push subscription (browser receiving)
-    intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="text-zinc-200">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
-    step1: <b class="text-zinc-200">① Get VAPID public key</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">GET /v1/vapid-public-key</code>
-    step2: <b class="text-zinc-200">② Register Service Worker</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="text-zinc-200">③ Request permission and subscribe</b> · <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="text-zinc-200">④ Report subscription</b> · send endpoint + keys via <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">POST /v1/devices</code>
+    intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="doc-em">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
+    step1: <b class="doc-em">① Get VAPID public key</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
+    step2: <b class="doc-em">② Register Service Worker</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
+    step3: <b class="doc-em">③ Request permission and subscribe</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
+    step4: <b class="doc-em">④ Report subscription</b> · send endpoint + keys via <code class="doc-code">POST /v1/devices</code>
     code:
       title: Frontend subscription · core code
       comment1: // 1. Register SW + get VAPID public key
@@ -827,7 +827,7 @@ docs:
       desc: Payload encrypted with the subscription's p256dh/auth keys; the push service cannot read the content.
   ws:
     channel2: Second receive channel
-    intro: Besides browser push, any device / plugin can use a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
+    intro: Besides browser push, any device / plugin can use a <code class="doc-code">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
     connect:
       title: Establishing a connection
       comment: '# requires notify:receive scope'
@@ -848,7 +848,7 @@ docs:
       comment4: // after reconnect, use resume frame (replaces Last-Event-Id header)
     reconnect:
       title: Reconnect and resume
-      desc: On reconnect, send the <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">Last-Event-Id</code> header (or a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="mono rounded bg-white/5 px-1.5 py-0.5 text-[12px] text-zinc-300">resume_expired</code> error; the client should fetch full history.
+      desc: On reconnect, send the <code class="doc-code">Last-Event-Id</code> header (or a <code class="doc-code">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="doc-code">resume_expired</code> error; the client should fetch full history.
 cliauth:
   title: CLI Device Authorization
   back_home: Back to dashboard
