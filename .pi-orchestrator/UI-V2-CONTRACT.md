@@ -49,6 +49,7 @@
 | `#anotify-toast-host` | `partials.js` | toast 宿主 |
 | `header h1` 全站唯一，含 `.scope-badge`（`scopeLevel==="deployment"`） | `partials.js` | 页面内容里禁止新增 `<h1>` |
 | `#notif-list` + `.notif-row` | `index.html` | 错误态 0 行 + 列表内有重试 button |
+| `#ev-list` 事件卡：`<a class="card … cursor-pointer">` + `div.mono.truncate` + 首个 `<code>`=源名 | `events.html` | e2e 用 `document.querySelector('.cursor-pointer')` 点击事件卡，并断言跳转 `trace.html?traceId=`、`.wf-node>0`、`.wf-switch button` ×3、默认图视图 |
 | `#ev-list`、`#ev-list .card div.mono.truncate` | `events.html` | 事件流结构断言 |
 | `#greeting` `#kpi-users` `#current-device-card` `#msg-title` `#recovery-*` | 各页 | 不得改名 |
 | hreflang 链接 | layouts | 属性顺序 + 自闭合 `/>` 被正则锁死，不要动 |
