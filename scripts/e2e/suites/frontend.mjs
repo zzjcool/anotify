@@ -19,6 +19,7 @@ import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
 import * as N from "../lib/nodes.mjs";
 
+
 const RP = "localhost";
 const PAGES = [
 	"index.html",
@@ -2085,19 +2086,35 @@ async function checkWaterfall(page) {
 
 	let bestId = traceIds[0];
 	let bestCount = -1;
+	// 挑「最长的一条链」再进去做图/瀑布断言。
+	//
+	// 这一步原来要**整页加载 8 次 trace 页**（实测 94.6s —— 整个套件的第二大耗时）。
+	// 而它做的事只是"选一个 id"：页面渲染多慢与选择无关。所以改成问接口
+	// （trace 页自己也是 GET /v1/tasks?traceId=… 拿的数据），一次请求就能排出长短，
+	// 选中之后仍然只有**一次**真实页面加载 —— 后面那些 UI 断言一个都没少。
+	const tBest = Date.now();
 	for (const tid of traceIds.slice(0, 8)) {
-		// 显式要瀑布图：默认视图是「图」，不带 view 就读不到 .wf-row
-		await page.goto(
-			base + "/trace.html?traceId=" + encodeURIComponent(tid) + "&view=waterfall",
-			{ waitUntil: "load", timeout: 20000 },
-		);
-		await page.waitForTimeout(1200);
-		const n = await page.evaluate(() => document.querySelectorAll(".wf-row").length);
+		// 在**页面里**发这个请求：浏览器自带会话 cookie，不用外面再传一次，
+		// 也不会因为 cookie 作用域不对而 401。
+		const n = await page.evaluate(async (t) => {
+			try {
+				const r = await fetch("/v1/tasks?traceId=" + encodeURIComponent(t));
+				const d = await r.json();
+				return (d.tasks || []).length;
+			} catch {
+				return 0;
+			}
+		}, tid);
 		if (n > bestCount) {
 			bestCount = n;
 			bestId = tid;
 		}
 	}
+
+	if (process.env.E2E_PROFILE) {
+		console.log(`[profile] 挑最长 trace（8 次接口查询）${Date.now() - tBest}ms`);
+	}
+	const tGraph = Date.now();
 
 	// ---- 图视图用「源拓扑」当底图，执行状态叠上去 ----
 	//
@@ -2106,10 +2123,15 @@ async function checkWaterfall(page) {
 	// 底图把它们留成灰色虚线，一眼看出"这里本来有条路，这次没走"。
 	{
 		await page.goto(base + "/trace.html?traceId=" + encodeURIComponent(bestId) + "&view=graph", {
-			waitUntil: "load",
+			waitUntil: "domcontentloaded",
 			timeout: 20000,
 		});
-		await page.waitForTimeout(2500);
+		// 等节点画出来（原来固定 2500ms：图渲染是异步的，但"画完"有明确信号）
+		await page
+			.waitForFunction(() => document.querySelectorAll(".wf-node").length > 0, {
+				timeout: 3000,
+			})
+			.catch(() => {});
 		const gv = await page.evaluate(() => {
 			const ns = Array.from(document.querySelectorAll(".wf-node"));
 			const by = (c) => ns.filter((n) => n.classList.contains(c)).length;
@@ -2121,6 +2143,9 @@ async function checkWaterfall(page) {
 				titles: ns.map((n) => (n.querySelector(".wf-node-title") || {}).textContent || ""),
 			};
 		});
+		if (process.env.E2E_PROFILE) {
+			console.log(`[profile] 图视图加载+绘制 ${Date.now() - tGraph}ms`);
+		}
 		H.check(
 			"图视图有节点（底图或执行链）",
 			gv.total > 0,
@@ -2505,11 +2530,21 @@ async function checkWaterfall(page) {
 	//
 	// 逐个 trace 页扫一遍（点卡片会导航，不能在同一上下文里循环）。
 	const statusVariety = [];
+	// 这个循环曾经是整个套件 41% 的耗时（实测 124s / 299s）：它无条件扫 8 个 trace
+	// 页，每页一次整页导航（waitUntil:"load"）+ 最多 8s 的静默等待，而断言只需要
+	// 「至少两种状态色」。三处修正，语义不变：
+	//   ① 凑够 2 种就 break（断言本来就是 >= 2）
+	//   ② 导航等 domcontentloaded —— 后面本来就显式等时间条画出来，
+	//      等 "load" 只是多等一段与断言无关的资源
+	//   ③ 等待上限 8s → 3s：有些 trace（单任务链）根本没有可着色的对比，
+	//      等满 8s 纯属浪费；真慢的时候 waitForFunction 一样会先返回
+	const tVariety = Date.now();
 	for (const tid of traceIds.slice(0, 8)) {
+		if (statusVariety.length >= 2) break;
 		// 状态色是瀑布图时间条上的类，所以要显式要瀑布图
 		await page.goto(
 			base + "/trace.html?traceId=" + encodeURIComponent(tid) + "&view=waterfall",
-			{ waitUntil: "load", timeout: 20000 },
+			{ waitUntil: "domcontentloaded", timeout: 20000 },
 		);
 		// 等时间条真的画出来再读，而不是固定 sleep。
 		//
@@ -2518,7 +2553,7 @@ async function checkWaterfall(page) {
 		// 被测代码，其实只是等待方式不对。
 		await page
 			.waitForFunction(() => document.querySelectorAll(".wf-bar").length > 0, {
-				timeout: 8000,
+				timeout: 3000,
 			})
 			.catch(() => {});
 		const got = await page.evaluate(() =>
@@ -2530,6 +2565,13 @@ async function checkWaterfall(page) {
 			}),
 		);
 		for (const g of got) if (g && !statusVariety.includes(g)) statusVariety.push(g);
+	}
+	// E2E_PROFILE=1 时打印这一步的真实耗时：以后再出"某个套件莫名变慢"，
+	// 打开它就够，不用从头插桩。
+	if (process.env.E2E_PROFILE) {
+		console.log(
+			`[profile] 状态色扫描 ${Date.now() - tVariety}ms（${statusVariety.join(",")}）`,
+		);
 	}
 	H.check("状态用不同颜色区分", statusVariety.length >= 2, statusVariety.join(","));
 
@@ -4246,6 +4288,10 @@ async function checkScope(page) {
 	});
 	// 等**确切数量**，不等"非空"：`#caps-list` 先会有一个加载占位符，
 	// children.length > 0 在数据到达前就已经成立，会读到 1 行（踩过）。
+	// 等**可见行数**（visible），不是原始条数（caps）：
+	// caps 含被 UI 隐去的 notify.phone，而下面那条断言比的是 visible。
+	// 原来等的是 caps，于是这个 waitForFunction **每次都等满 15s 再被 catch 吞掉**
+	// —— 实测这是套件第二大的单点耗时（15.1s），而且把"等错了对象"藏得干干净净。
 	await page
 		.waitForFunction(
 			(want) => {
@@ -4253,10 +4299,10 @@ async function checkScope(page) {
 				const ns = document.querySelector(".scope-ns");
 				return !!(ns && ns.textContent && list && list.children.length === want);
 			},
-			caps.staging.caps,
-			{ timeout: 15000 },
+			caps.staging.visible,
+			{ timeout: 5000 },
 		)
-		.catch(() => {});
+		.catch(() => process.env.E2E_PROFILE && console.log("[profile] 能力页行数等待超时"));
 	const capPage = await page.evaluate(() => ({
 		badge: !!document.querySelector(".scope-badge"),
 		rows: document.querySelectorAll("#caps-list > *").length,
