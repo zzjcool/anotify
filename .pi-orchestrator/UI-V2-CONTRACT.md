@@ -223,3 +223,25 @@ make fe                             # 指纹 → internal/server/dist（e2e 用�
   `h1.textContent.replace(badge.textContent,"")`；不改产品 DOM。
 - **标题重复**：顶栏 h1 与页面 `.page-title` 文案相同属**刻意**（上下文标签 + 页面标题），不算缺陷；
   但**副标题不得重复**（同一句不得同时出现在顶栏 `.app-topbar-sub` 与 `.page-sub`）。
+
+---
+
+## 12. 第三波（wave 3）并行纪律
+
+三个 centurion 同时改 14 个页面，互不越界：
+
+| 波次 | 页面 | locale 命名空间（只准写这些） |
+|---|---|---|
+| W3-B | nodes / node / keys / admin / receivers | `nodes.*` `nodepage.*` `node.*` `keys.*` `admin.*` `receivers.*` |
+| W3-C | playbooks / playbook / trace / docs / message | `pb.*` `trace.*` `docs.*` `message.*` |
+| W3-D | login / cli-auth / passkey-enroll / security | `login.*` `cliauth.*` `passkeyenroll.*` `security.*` |
+
+- **共享文件冻结**：`web/ui.css`、`web/tokens.css`、`web/partials.js`、`web-src/layouts/*`、
+  `web/graphs.js`、`web/traceview.js`、`internal/**`、`scripts/**` 本轮不得修改。
+  缺组件时：页面内联 `<style>` 定义页级类（颜色只准 token），并在报告里写「建议提升到 ui.css」。
+- **`web/tailwind.css`**：优先复用已有 Tailwind 工具类；确需新类时各自 `node scripts/build-tailwind.mjs`，
+  合并阶段由协调者从合并后的源码统一重建，冲突以重建结果为准。
+- **合并顺序**：W3-B → W3-C → W3-D（页面不重叠，locale 命名空间不重叠；冲突由协调者按语义合并）。
+- 每页验收：`.page/.page-head/.page-title(Inter 600)/.page-sub`；`.card` + 24px；列表/表格统一；
+  `.empty`/`.skeleton` 真实使用；`Anotify.toast`；硬编码 hex 归零（QR 深底例外需注释）；
+  en/es 零 CJK；`header h1` 唯一（三个 focus 页单 h1）。
