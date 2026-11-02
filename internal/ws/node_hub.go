@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -32,6 +33,21 @@ type NodeHub struct {
 	// 写入时机是 assign 帧**写成功之后**（写失败的一帧没到对端，登记它反而会挡住
 	// 真正该拿到它的连接）；清除时机是 result 落库之后 / 连接 cleanup 的 releaseAll。
 	inflight map[string]*nodeSession
+	// WorkDirs 解析「这个能力在这台机器上从哪个目录跑」（迁移 19）。
+	//
+	// 放在 hub 而不是 assignFrameFor 里：帧是从 task 拼出来的纯函数，而 work_dir 是
+	// deployments 上的事实（per node × capability），要查库。由 server 层注入具体实现，
+	// ws 包不依赖 store 的查询细节；nil 时一律按空处理（= 默认的每任务目录），
+	// 所以嵌入式/测试用法不需要改任何夹具。
+	WorkDirs WorkDirResolver
+}
+
+// WorkDirResolver 返回某节点上某能力的工作目录；空字符串 = 用默认的每任务目录。
+//
+// 实现方必须是"查不到就返回空、不报错"的语义：没有部署记录是完全正常的状态
+// （老的 pending 任务、手工造的任务），不该让派发失败。
+type WorkDirResolver interface {
+	DeploymentWorkDir(ctx context.Context, namespaceID, nodeID, capabilityID string) (string, error)
 }
 
 // NewNodeHub 构造一个空 hub。
@@ -199,7 +215,8 @@ func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string,
 			ErrTaskInflight, task.ID, s.node.ID)
 	}
 
-	data, err := Encode(assignFrameFor(task))
+	workDir := h.resolveWorkDir(ctx, namespaceID, nodeID, task.CapabilityID)
+	data, err := Encode(assignFrameFor(task, workDir))
 	if err != nil {
 		return err
 	}
@@ -264,7 +281,7 @@ const assignFrameOverheadBytes = 4 << 10
 //
 // 载荷里**只有**能力名 + 版本 + params + 租约（不变量 I1）：
 // 不含命令、不含脚本、不含 argv——节点自己知道怎么执行这个能力。
-func assignFrameFor(task *store.Task) *AssignFrame {
+func assignFrameFor(task *store.Task, workDir string) *AssignFrame {
 	var params map[string]any
 	if len(task.Params) > 0 {
 		// 失败就发空 params：节点会按自己的 schema 校验并报错，
@@ -295,7 +312,31 @@ func assignFrameFor(task *store.Task) *AssignFrame {
 		Params:      params,
 		LeaseUntil:  lease,
 		MaxDuration: maxDuration,
+		// work_dir 是「控制台要求在这个目录里跑」（原生装的节点才有意义）。
+		// 它只是一条**请求**：节点必须自己按白名单校验，通不过就失败并回报原因。
+		WorkDir: workDir,
 	}
+}
+
+// resolveWorkDir 查一次部署记录上的 work_dir。
+//
+// 失败只记日志并返回空（= 默认的每任务目录）：这条查询不该让派发失败——
+// 最坏情况是任务跑在默认目录里，而那是加这一列之前一直以来的行为。
+func (h *NodeHub) resolveWorkDir(ctx context.Context, namespaceID, nodeID, capabilityID string) string {
+	if h.WorkDirs == nil || capabilityID == "" {
+		return ""
+	}
+	wd, err := h.WorkDirs.DeploymentWorkDir(ctx, namespaceID, nodeID, capabilityID)
+	if err != nil {
+		slog.Warn("resolve deployment work dir failed",
+			"event", "node.ws.workdir_failed",
+			"node_id", nodeID,
+			"capability_id", capabilityID,
+			"error", err.Error(),
+		)
+		return ""
+	}
+	return wd
 }
 
 // PublishDeploy 向节点推送一帧 deploy（下发或撤销一份产物）。

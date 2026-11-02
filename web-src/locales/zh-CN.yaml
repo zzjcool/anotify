@@ -1215,6 +1215,8 @@ caps:
     none_selected: '至少选一台机器'
     no_nodes: '这个命名空间还没有节点'
     err: '部署失败：'
+    workdir: 工作目录（可选）
+    workdir_hint: 留空 = 每次任务一个独立目录。填了就必须在节点的 workDirs 白名单里，否则任务会失败（不会悄悄退回默认目录）。
   list:
     title: 能力列表
   form:
@@ -1332,6 +1334,12 @@ nodes:
       not_found: '当前命名空间不存在（可能已被删除），刷新后重试'
       forbidden: '没有权限在这个命名空间注册节点'
       failed: '注册失败：'
+    workdirs: 能力工作目录（可选）
+    workdirs_hint: 控制台能给某个能力指定「在这个目录里跑」，但只能从这份清单里选。留空 = 一个都不许（能力只跑在临时目录里）。
+    install_title: 原生安装（直接在宿主机跑）
+    install_intro: 容器里看不到宿主机的文件。要在自己的项目目录里跑能力（make test、git status、就地改文件），就用这条命令装在宿主机上。
+    install_after: 它会装好二进制、写 ~/.anotify/node.yaml（权限 600，里面有令牌）、生成 systemd 用户服务。注意：命令里带令牌，会留在 shell 历史里。
+    copy_install: 复制命令
 sources:
   detail: "详情"
   open_detail: "打开详情"

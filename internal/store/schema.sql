@@ -750,3 +750,20 @@ CREATE TABLE IF NOT EXISTS deployments (
 );
 CREATE INDEX IF NOT EXISTS idx_deploy_node ON deployments(node_id);
 CREATE INDEX IF NOT EXISTS idx_deploy_artifact ON deployments(artifact_id);
+
+-- +migration 19 deployment_work_dir
+--
+-- 「这个能力在这台机器上从哪个目录跑」（work dir，原生装的节点才有意义）。
+--
+-- 为什么放在 deployments 而不是 artifact：同一份产物（同 digest）在 A 机器上
+-- 该跑 /home/me/proj、在 B 机器上该跑 /srv/app —— 目录是**机器属性**，不是能力属性。
+-- 放进 artifact 会让同一份产物不得不为不同机器各存一份副本，digest 也就失去意义。
+--
+-- 为什么是空字符串而不是 NULL：'未指定' 的语义就是「用默认的每次任务独立目录」，
+-- 用 '' 表达既省掉全表的 NULL 判断，也让 SELECT/JSON 形状保持一致（空字符串出 JSON
+-- 时是 ""，前端不用区分 null 与 ""）。
+--
+-- 安全：这一列是**控制台写的**，也就是说它来自中枢。节点侧必须自己做白名单校验
+-- （cmd/agent 的 workDirs），绝不能因为"中枢写了这个路径"就直接 chdir 过去 ——
+-- 那等于把宿主机的任意目录读写权交给中枢。
+ALTER TABLE deployments ADD COLUMN work_dir TEXT NOT NULL DEFAULT '';

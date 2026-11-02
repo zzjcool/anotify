@@ -264,7 +264,7 @@ func rcDeploymentFixture(t *testing.T, db *DB, nsID string) (node *Node, dp *Dep
 	if err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}
-	dp, err = db.CreateDeployment(ctx, nsID, node.ID, art.ID)
+	dp, err = db.CreateDeployment(ctx, nsID, node.ID, art.ID, "")
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}

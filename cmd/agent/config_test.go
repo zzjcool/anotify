@@ -64,10 +64,11 @@ func TestConfigLoadBootstrap(t *testing.T) {
 	if cfg.Instances != 2 {
 		t.Errorf("Instances = %d, want 2", cfg.Instances)
 	}
-	// 结构体形状本身也是断言：nodeConfig 只有四件 bootstrap（D4：机器不自报能力）。
+	// 结构体形状本身也是断言：nodeConfig 只有 bootstrap + workDirs（D4：机器不自报能力）。
+	// 不能整结构体比较了：WorkDirs 是切片，含不可比较字段（用 reflect.DeepEqual）。
 	want := nodeConfig{Name: "laptop-worker", Server: "http://localhost:8080",
 		Token: "ntk_local_dev", Instances: 2}
-	if *cfg != want {
+	if !reflect.DeepEqual(*cfg, want) {
 		t.Errorf("nodeConfig = %#v, want %#v", *cfg, want)
 	}
 }

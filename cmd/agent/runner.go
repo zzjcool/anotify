@@ -73,6 +73,14 @@ type job struct {
 	TraceID     string             // assign.trace_id → ANOTIFY_TRACE_ID（旧协议没有这个字段，v2 补上）
 	MaxDuration int                // assign.max_duration_sec：>=1 时作为兜底超时
 	WorkRoot    string             // <data-dir>/work：每任务在其下建独立目录
+	// WorkDir 是控制台为该能力指定的工作目录（assign.work_dir，迁移 19）。
+	// 空 = 用上面那个每任务独立目录。
+	//
+	// 它来自中枢，**必须**按本机白名单校验后才能用（见 resolveChdir）：
+	// 直接 chdir 到中枢给的路径 = 把宿主机任意目录的读写权交给中枢。
+	WorkDir string
+	// AllowedWorkDirs 是本机白名单（nodeConfig.WorkDirs）。空 = 一个都不许。
+	AllowedWorkDirs []string
 	// TimeoutOverride 是秒级的超时覆盖（只有 standalone 的 --timeout 会用）。
 	// 人站在终端前跑一次时，「我想先给它 30 秒试试」应该压过产物里写死的 900。
 	TimeoutOverride int
@@ -126,7 +134,8 @@ const waitDelay = time.Second
 // 语义：同一份产物在两条路径上必须表现得一模一样，否则「拷到别的机器直接能跑」
 // 就是句空话。
 type execPlan struct {
-	workDir    string        // 本次任务的独立工作目录（既是 cwd 也是 ANOTIFY_WORKDIR）
+	workDir    string        // 本次任务的独立工作目录（产物文件展开在这里，也是 ANOTIFY_TASKDIR）
+	cwd        string        // 进程的工作目录；默认同 workDir，控制台指定且通过白名单时是那个目录
 	entrypoint string        // 入口文件的绝对路径（直接 exec，靠 shebang 选解释器）
 	env        []string      // 完整环境变量（父环境剔除 ANOTIFY_* + 产物 env + 契约变量）
 	timeout    time.Duration // 0 = 不设本地超时（交给中枢租约）
@@ -321,12 +330,18 @@ func prepareExecution(j job) (execPlan, error) {
 	if err != nil {
 		return execPlan{}, err
 	}
-	env, err := buildEnv(os.Environ(), j, workDir)
+	// cwd 可能是控制台指定的目录（要过本机白名单），也可能就是 taskDir。
+	cwd, err := resolveChdir(j, workDir)
+	if err != nil {
+		return execPlan{}, err
+	}
+	env, err := buildEnv(os.Environ(), j, workDir, cwd)
 	if err != nil {
 		return execPlan{}, fmt.Errorf("build env: %w", err)
 	}
 	return execPlan{
 		workDir:    workDir,
+		cwd:        cwd,
 		entrypoint: entrypoint,
 		env:        env,
 		timeout:    effectiveTimeout(j),
@@ -448,7 +463,7 @@ func expandFiles(workDir string, a *artifact.Artifact) (string, error) {
 //   - WaitDelay 兜住「脱离进程组却还占着管道」的孤儿（见 waitDelay 的注释）。
 func newArtifactCmd(ctx context.Context, plan execPlan) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, plan.entrypoint)
-	cmd.Dir = plan.workDir
+	cmd.Dir = plan.cwd
 	cmd.Env = plan.env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Cancel 只在 Start 成功后才会被调用，所以 cmd.Process 一定非 nil；
@@ -462,7 +477,7 @@ func newArtifactCmd(ctx context.Context, plan execPlan) *exec.Cmd {
 // 契约变量（优先级最高），最后**按变量名排序**返回，便于测试直接比对。
 //
 // 纯函数：不读 os.Environ（base 由调用方给），不依赖时间/随机。
-func buildEnv(base []string, j job, workDir string) ([]string, error) {
+func buildEnv(base []string, j job, workDir, cwd string) ([]string, error) {
 	env := make(map[string]string, len(base)+8)
 
 	// 1) 父进程环境。先剔除所有 ANOTIFY_*：agent 自己可能被别的东西包着跑，
@@ -509,7 +524,11 @@ func buildEnv(base []string, j job, workDir string) ([]string, error) {
 	env["ANOTIFY_PARAMS"] = string(paramsJSON)
 	// 三个新增变量**始终存在**（可能是空串）：脚本可以无条件引用，
 	// 用 `${ANOTIFY_TRACE_ID:-}` 也照样成立；「键不存在」会让 set -u 的脚本直接炸。
-	env["ANOTIFY_WORKDIR"] = workDir
+	// ANOTIFY_WORKDIR 历史上就**等于**进程的 cwd（脚本里普遍写着 cd "$ANOTIFY_WORKDIR"），
+	// 指定了工作目录之后这条不变式必须继续成立，否则那些脚本会跑回任务目录。
+	// 产物文件所在的任务目录另给一个 ANOTIFY_TASKDIR（新增，只增不改）。
+	env["ANOTIFY_WORKDIR"] = cwd
+	env["ANOTIFY_TASKDIR"] = workDir
 	env["ANOTIFY_TRACE_ID"] = j.TraceID
 	env["ANOTIFY_DIGEST"] = j.Digest
 	// 出口回报通道（CONTRACT-artifact §6.1）：脚本把出口名写进这个文件。
@@ -722,4 +741,88 @@ func readOutcomeOut(plan execPlan) (*string, error) {
 		}
 	}
 	return nil, fmt.Errorf("out %q is not declared in spec.outputs %v", name, plan.allowedOutputs)
+}
+
+// resolveChdir 决定这次执行的工作目录（迁移 19 的 work_dir）。
+//
+// 三种情况：
+//
+//	① 控制台没指定 → 用本次任务目录（**加这一列之前的行为，逐字节一致**）
+//	② 指定了，且在本机白名单内 → 用那个目录
+//	③ 指定了，但不在白名单 / 不存在 / 不是目录 → **失败**，不退回默认
+//
+// ③ 必须失败而不是"悄悄退回默认目录"：用户明确要求「在这个项目里跑 make test」，
+// 退回默认目录的后果是命令在一个空目录里跑、报一个看起来莫名其妙的错，
+// 而真正的原因（目录没被授权）被完全掩盖。失败会把原因如实回报到中枢。
+//
+// 安全要点：
+//   - 路径来自中枢，必须过白名单（nodeConfig.WorkDirs 是机器主人的授权声明）
+//   - 白名单比对前要**解开符号链接**：否则 /allowed/link → /etc 就是一个白名单绕过
+//   - 前缀匹配按路径分段（/a/b 不能匹配 /a/bc）
+func resolveChdir(j job, taskDir string) (string, error) {
+	raw := strings.TrimSpace(j.WorkDir)
+	if raw == "" {
+		return taskDir, nil
+	}
+	if !filepath.IsAbs(raw) {
+		return "", fmt.Errorf("work_dir 必须是绝对路径：%q", raw)
+	}
+	clean := filepath.Clean(raw)
+
+	// 解开符号链接再做授权判断，并用解链后的路径执行：判断的和使用的必须是同一个路径。
+	real := clean
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		real = resolved
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("work_dir %q 无法解析：%w", clean, err)
+	}
+
+	if !dirAllowed(j.AllowedWorkDirs, real) {
+		return "", fmt.Errorf("work_dir %q 不在本机的 workDirs 白名单内（允许：%s）",
+			clean, allowedDirsText(j.AllowedWorkDirs))
+	}
+
+	st, err := os.Stat(real)
+	if err != nil {
+		return "", fmt.Errorf("work_dir %q 不可用：%w", clean, err)
+	}
+	if !st.IsDir() {
+		return "", fmt.Errorf("work_dir %q 不是目录", clean)
+	}
+	return real, nil
+}
+
+// dirAllowed 判断 dir 是否落在白名单里的某个前缀下（按路径分段匹配）。
+//
+// 白名单条目同样先解符号链接：机器主人写 /home/me/proj，而它其实是 /data/proj
+// 的软链时，不解链会让「授权了却永远用不了」。
+func dirAllowed(allow []string, dir string) bool {
+	for _, raw := range allow {
+		a := strings.TrimSpace(raw)
+		if a == "" {
+			continue
+		}
+		a = filepath.Clean(a)
+		if resolved, err := filepath.EvalSymlinks(a); err == nil {
+			a = resolved
+		}
+		if dir == a || strings.HasPrefix(dir, a+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// allowedDirsText 把白名单渲染成一句可读的错误说明（空时明确说"没有配置"）。
+func allowedDirsText(allow []string) string {
+	clean := make([]string, 0, len(allow))
+	for _, a := range allow {
+		if s := strings.TrimSpace(a); s != "" {
+			clean = append(clean, s)
+		}
+	}
+	if len(clean) == 0 {
+		return "未配置任何目录（node.yaml 的 workDirs / ANOTIFY_WORK_DIRS）"
+	}
+	return strings.Join(clean, ", ")
 }

@@ -1,0 +1,77 @@
+name: release
+
+# 发布与镜像（#281 原生装）：
+#   · agent 二进制：linux/darwin × amd64/arm64，挂在 GitHub Release 上
+#     —— scripts/install-agent.sh 直接从这里下载
+#   · 中枢镜像 + agent 镜像仍走 docker.yml（那边只在 main/tag 上推 GHCR）
+#
+# 只发 agent：中枢是服务端二进制，用户要的是"一行命令/一个 release 装上节点"。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # 手动跑一次（验证构建链路，不上传 release）
+
+permissions:
+  contents: write
+
+jobs:
+  build-agent:
+    name: agent ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, darwin]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # CGO_ENABLED=0 是硬要求：install 脚本下发的就是单个静态二进制，
+      # 依赖 libc 的构建在某些发行版上会直接跑不起来（表现是 glibc 版本不匹配）。
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          out="anotify-agent-${{ matrix.os }}-${{ matrix.arch }}"
+          go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/agent
+          # 冒烟：二进制能在本机跑起来并打印用法（跨架构的那几个跑不了，跳过）
+          if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
+            ./"$out" --help >/dev/null 2>&1 || ./"$out" -h >/dev/null 2>&1 || true
+          fi
+          sha256sum "$out" > "$out.sha256"
+          ls -lh "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            anotify-agent-${{ matrix.os }}-${{ matrix.arch }}
+            anotify-agent-${{ matrix.os }}-${{ matrix.arch }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build-agent
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          # install-agent.sh 默认走 releases/latest/download/<asset>，所以文件名
+          # 必须**完全**是 anotify-agent-<os>-<arch>，不能带版本号。

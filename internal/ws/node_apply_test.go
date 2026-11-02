@@ -34,7 +34,7 @@ func createDeploymentFixture(t *testing.T, f *nodeFixture) (deployID string, dig
 		t.Fatalf("create artifact: %v", err)
 	}
 
-	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, art.ID)
+	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, art.ID, "")
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}

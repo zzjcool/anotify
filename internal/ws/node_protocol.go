@@ -282,6 +282,11 @@ type AssignFrame struct {
 	MaxDuration int            `json:"max_duration_sec"`
 	Digest      string         `json:"digest,omitempty"`
 	TraceID     string         `json:"trace_id,omitempty"`
+	// WorkDir 是控制台为该能力指定的工作目录（迁移 19）。空 = 用默认的每任务目录。
+	//
+	// 这是一条**请求**不是命令：节点必须按自己的白名单校验（cmd/agent 的 workDirs），
+	// 不在白名单内就拒绝执行并回报 failed + 原因。中枢写什么都不会直接生效。
+	WorkDir string `json:"work_dir,omitempty"`
 }
 
 // CancelFrame 要求节点停止某任务。

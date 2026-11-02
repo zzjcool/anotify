@@ -1215,6 +1215,8 @@ caps:
     none_selected: 'Select at least one machine'
     no_nodes: 'This namespace has no nodes yet'
     err: 'Deploy failed: '
+    workdir: Work dir (optional)
+    workdir_hint: Empty = a fresh directory per task. If set, it must be inside the node workDirs allowlist, otherwise tasks fail (no silent fallback).
   list:
     title: Capabilities
   form:
@@ -1332,6 +1334,12 @@ nodes:
       not_found: 'This namespace no longer exists (it may have been deleted). Refresh and try again.'
       forbidden: 'You do not have permission to register nodes in this namespace'
       failed: 'Registration failed: '
+    workdirs: Capability work dirs (optional)
+    workdirs_hint: The console may ask a capability to run inside one of these directories — it can only pick from this list. Empty = none allowed (capabilities only run in temp dirs).
+    install_title: Native install (runs on the host)
+    install_intro: A container cannot see host files. To run capabilities inside your own project directory (make test, git status, editing files in place), install on the host with this command.
+    install_after: 'It installs the binary, writes ~/.anotify/node.yaml (mode 600, contains the token) and generates a systemd user service. Note: the command contains the token, so it stays in your shell history.'
+    copy_install: Copy command
 sources:
   detail: "Details"
   open_detail: "Open details"
