@@ -2707,6 +2707,12 @@ html.flograph-fullscreen-open body {
 .data-table tbody tr:last-child td {
 	border-bottom: 0;
 }
+/* 顶层工具类：数字列右对齐 + 等宽（死类守卫只登记行首类名，
+   只写成 `.data-table .num` 时页面无法直接使用 .num）。 */
+.num {
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
 .data-table .num {
 	text-align: right;
 	font-variant-numeric: tabular-nums;
@@ -2796,11 +2802,12 @@ html.flograph-fullscreen-open body {
 .tab:hover {
 	color: var(--text);
 }
+/* active 用 accent-soft 底 + accent-strong 字：暗/亮两套色都由 token 决定，
+   避免 surface-1 与轨道 surface-2 几乎同色、看不出选中态。 */
 .tab.active {
-	background: var(--surface-1);
-	border-color: var(--line);
-	color: var(--text);
-	box-shadow: var(--shadow-1);
+	background: var(--accent-soft);
+	border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+	color: var(--accent-strong);
 }
 
 /* ---------- 工具栏（筛选条）---------- */
@@ -2826,7 +2833,10 @@ html.flograph-fullscreen-open body {
 	backdrop-filter: blur(4px);
 	z-index: var(--z-modal);
 }
+/* 面板自带定位上下文，免得各页自造 overlay 才能盖住内部元素。 */
 .modal-panel {
+	position: relative;
+	z-index: 1;
 	display: flex;
 	flex-direction: column;
 	width: 100%;
@@ -3390,16 +3400,17 @@ html.flograph-fullscreen-open body {
 }
 
 /* 只染文字的状态色（替代 node.html 自己那套 .np-st-*）：
-   9 态一一映射 --st-*，不引入第三套色板（D9）。 */
-.st-text.st-pending { color: var(--st-pending); }
-.st-text.st-assigned { color: var(--st-assigned); }
-.st-text.st-acked { color: var(--st-acked); }
-.st-text.st-running { color: var(--st-running); }
-.st-text.st-succeeded { color: var(--st-succeeded); }
-.st-text.st-failed { color: var(--st-failed); }
-.st-text.st-canceled { color: var(--st-canceled); }
-.st-text.st-abandoned { color: var(--st-abandoned); }
-.st-text.st-lease_expired { color: var(--st-lease_expired); }
+   9 态一一映射 --st-*，不引入第三套色板（D9）。
+   background: none 兜底：万一同元素还挂了 .chip / pill 之类的类，底色会被刷成一块。 */
+.st-text.st-pending { color: var(--st-pending); background: none; }
+.st-text.st-assigned { color: var(--st-assigned); background: none; }
+.st-text.st-acked { color: var(--st-acked); background: none; }
+.st-text.st-running { color: var(--st-running); background: none; }
+.st-text.st-succeeded { color: var(--st-succeeded); background: none; }
+.st-text.st-failed { color: var(--st-failed); background: none; }
+.st-text.st-canceled { color: var(--st-canceled); background: none; }
+.st-text.st-abandoned { color: var(--st-abandoned); background: none; }
+.st-text.st-lease_expired { color: var(--st-lease_expired); background: none; }
 
 /* 无边框纯文字按钮（表格行内动作用，D8） */
 .btn-quiet {
