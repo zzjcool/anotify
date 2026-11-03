@@ -382,3 +382,13 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - login tab：`#login-panel/#signup-panel` 显示时 200ms 上浮淡入。
 - events 列表加 `.anim-stagger`，筛选/首载 160ms/20ms 入场。
 - 全量 e2e **1832/0**（首跑 ws_protocol 并行 SQLite 偶发 2 失败，单跑 82/0，重跑全量绿）。
+
+---
+
+## P0 · 产品可信度（2026-11-03）
+
+- **字体自托管**：Inter（300–700 可变）/ Fraunces（340–420 + italic 400）/ JetBrains Mono（400–500）latin+latin-ext woff2 入库；三个 layout 删除 Google Fonts CDN；README 记录 OFL 来源/子集/体积。实测 0 个外部字体请求，`document.fonts.check` 全 true，首屏只拉 Inter 46.9 KiB。
+- **mock 对齐**：`recovery/regenerate → {ok,recoveryCodes}`；种子 Key 全带 `enabled`；task id 改确定性 `tsk_mock_N`，index → message 刷新不再 404；revoke 置 `enabled:false` 且回 `{ok:true}`。
+- **stats 本地时区**：`MessageStats` 今日改用 `startOfLocalDayUnix(now)`，热力图日桶加本地 offset；admin `SystemStats` 同步；新增 `stats_tz_test.go`（UTC+8/-5 边界/日桶）。
+- **容器生效**：runtime 加 `tzdata`，compose/`.env.compose.example` 支持 `TZ`（默认 Etc/UTC，例 `Asia/Shanghai`）；openapi 描述同步。
+- **验证**：`go test ./...` 15 包全绿；全量 e2e **1832/0**；fonts/ui_shift/lang_hint/contract 全绿；tunnel 200。
