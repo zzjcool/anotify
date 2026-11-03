@@ -25,6 +25,8 @@ services:
       ANOTIFY_RP_DISPLAY: ${ANOTIFY_RP_DISPLAY:-Anotify}
       # --- 其他 ---
       ANOTIFY_ADDR: :8080
+      # 「今日」/热力图日界使用的服务端时区；例：Asia/Shanghai
+      TZ: ${TZ:-Etc/UTC}
       # ANOTIFY_STATIC 留空 = 使用二进制内嵌前端（生产模式）
     volumes:
       # 必须与 Dockerfile 的 WORKDIR / VOLUME 一致（/data 已 chown 给 uid 10001）

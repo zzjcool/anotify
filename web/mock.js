@@ -34,6 +34,17 @@
 	// trace.html?traceId=trace_mock_t5 可以反复打开。
 	let traceSeq = 0;
 	const nextTraceId = () => "trace_mock_t" + ++traceSeq;
+
+	// taskSeq 同理：任务 id 也必须确定，否则「从 index 点开任务 → 刷新」必然 404。
+	//
+	// 任务详情页是 message.html?id=tsk_xxx（GET /v1/tasks/{id}）。种子任务的
+	// 创建顺序在每次加载里是固定的，用递增序号就能得到跨刷新稳定的 id
+	// （tsk_mock_1 / tsk_mock_2 …），深链可以反复打开。
+	//
+	// 运行期新建的任务（手动触发事件）排在种子之后，仍然唯一；它们本来
+	// 就不在刷新后的数据里，序号是否延续不重要。
+	let taskSeq = 0;
+	const nextTaskId = () => "tsk_mock_" + ++taskSeq;
 	// clone 深拷贝演示数据，避免调用方改到 state 里的原对象。
 	//
 	// JSON.parse 会抛（带 undefined/循环引用时），而这个函数在每个 mock
@@ -813,7 +824,7 @@
 		// 既看不出时序也验证不了 5 种边界情况。
 
 		const mkTask = (o) => ({
-			id: uid("tsk"),
+			id: nextTaskId(),
 			orgId: ORG,
 			traceId: o.traceId,
 			parentTaskId: o.parent || null,
@@ -1458,7 +1469,7 @@
 		});
 
 		const mkNsTask = (o) => ({
-			id: uid("tsk"),
+			id: nextTaskId(),
 			orgId: ORG,
 			namespaceId: STAGING,
 			traceId,
@@ -1591,7 +1602,7 @@
 		});
 
 		const acmeTask = (o) => ({
-			id: uid("tsk"),
+			id: nextTaskId(),
 			orgId: ACME,
 			namespaceId: ACME_NS,
 			traceId: acmeTrace,
@@ -2062,6 +2073,11 @@
 	}
 
 	// ---------- 初始 keys ----------
+	//
+	// 每条记录都必须带 `enabled: boolean`：真后端的 keyPublic（internal/server/handlers.go）
+	// **总是**回这个字段，mock 种子漏掉就是形状漂移。前端 keys.html:756 的归一化是
+	// `k.enabled !== false && k.enabled !== 0` —— 字段缺失时只能靠这个兜底当「启用」，
+	// 一旦某条被停用（enabled:false）就会与缺失态混淆，所以源数据要把语义写全。
 	(function initKeys() {
 		state.keys = [
 			{
@@ -2072,6 +2088,7 @@
 				prefix: "ant_send_mock",
 				createdAt: now() - 86400,
 				lastUsedAt: now() - 300,
+				enabled: true,
 				revoked: false,
 			},
 			{
@@ -2082,6 +2099,7 @@
 				prefix: "ant_recv_mock",
 				createdAt: now() - 86400 * 2,
 				lastUsedAt: null,
+				enabled: true,
 				revoked: false,
 			},
 		];
@@ -3336,7 +3354,7 @@
 		for (const p of plan.tasks) {
 			const c = state.capabilities.find((x) => x.id === p.capabilityId);
 			const tk = {
-				id: uid("tsk"), orgId: ORG, traceId: traceId,
+				id: nextTaskId(), orgId: ORG, traceId: traceId,
 				parentTaskId: null, path: [p.capabilityId],
 				capabilityId: p.capabilityId, capability: p.capability,
 				params: p.params, version: p.version,
@@ -3406,7 +3424,7 @@
 		for (const p of plan.tasks) {
 			const c = state.capabilities.find((x) => x.id === p.capabilityId);
 			const tk = {
-				id: uid("tsk"),
+				id: nextTaskId(),
 				orgId: ORG,
 				traceId: traceId,
 				parentTaskId: null,
@@ -3504,7 +3522,8 @@
 			prefix: "ant_mock_" + Math.random().toString(36).slice(2, 10),
 			createdAt: now(),
 			lastUsedAt: null,
-			// keys.html:764 读 `k.enabled !== false`：记录里必须带上，否则列表把新 Key 画成停用
+			// keys.html:756 归一化 `k.enabled !== false && k.enabled !== 0`；真后端 keyPublic
+			// 必带 enabled:boolean，新建记录同样要把语义写全（缺字段只能靠前端兜底）。
 			enabled: true,
 			// revoked / orgId 保留：其它 mock 分支（revoke、nsScope）还在按这两个字段过滤
 			revoked: false,
@@ -3522,8 +3541,11 @@
 	on("POST", /^\/v1\/keys\/([^/]+)\/revoke$/, (ctx) => {
 		const k = state.keys.find((x) => x.id === ctx.m[1]);
 		if (!k) return err(404, "key 不存在");
+		// 真后端 RevokeKey 把 enabled 置 0（store/auth.go:396），列表里的 keyPublic
+		// 于是回 enabled:false。只改 revoked 的话，刷新后这枚 Key 又变回「启用」。
 		k.revoked = true;
-		return json({ key: clone(k) });
+		k.enabled = false;
+		return json({ ok: true });
 	});
 
 	on("DELETE", /^\/v1\/keys\/([^/]+)$/, (ctx) => {
@@ -3577,8 +3599,15 @@
 	on("GET", /^\/v1\/auth\/recovery\/status$/, () =>
 		json({ unusedCount: 8, hasCodes: true }),
 	);
+	// 对齐真后端 internal/server/auth_handlers.go:527（HTTP 200）：
+	//   { ok: true, recoveryCodes: [...] } —— 明文字串数组只在这一次返回。
+	// security 页（web-src/pages/security.html:1966）读的就是 `data.recoveryCodes`；
+	// 早先 mock 回的是 `{ codes: [...] }` → 页面拿到空数组，重新生成后列表空白。
 	on("POST", /^\/v1\/auth\/recovery\/regenerate$/, () =>
-		json({ codes: Array.from({ length: 10 }, () => "MOCK-CODE-" + Math.random().toString(36).slice(2, 8)) }),
+		json({
+			ok: true,
+			recoveryCodes: Array.from({ length: 10 }, () => "MOCK-CODE-" + Math.random().toString(36).slice(2, 8)),
+		}),
 	);
 
 	// ===== 管理后台 =====

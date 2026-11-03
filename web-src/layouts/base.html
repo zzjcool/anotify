@@ -35,11 +35,8 @@
     <!-- 生产/嵌入页用构建期 Tailwind（/tailwind.css）。
          design/ 设计稿才用 Tailwind Play CDN，仅本地对照，不进 embed。 -->
     <link rel="stylesheet" href="/tailwind.css" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,420;1,9..144,400{{block "fonts-extra" .}}{{end}}&display=swap"
-      rel="stylesheet"
-    />
+    <!-- 字体自托管：web/fonts/*.woff2 + fonts.css（见 web/fonts/README.md）。
+         不再有任何外部字体 CDN 链接，离线/私有化部署字体照常生效。 -->
     <link rel="stylesheet" href="/fonts/fonts.css" />
     <link rel="stylesheet" href="/tokens.css" />
     <!-- 跨文档 View Transitions 的 opt-in 必须**内联在 head**（见 web/ui.css 顶部说明）：
