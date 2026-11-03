@@ -124,6 +124,7 @@
          判据，骨架行会让判据提前成立。.ad-skel 不声明 display，方便切 hidden。 */
       .ad-skel {
         padding: 16px 14px;
+        min-height: 176px;
         background: var(--surface-1);
         border: 1px solid var(--line);
         border-radius: var(--r-lg);
@@ -191,7 +192,7 @@
          四个 `#kpi-*` 的 textContent 由页内脚本覆写（e2e 断言它已渲染且不是「–」），
          `#kpi-*-sub` 是同一张卡的次要口径。四个数都是「全部署」口径（不随命名空间
          切换），和顶栏的 scope 徽标一致。 -->
-    <section class="ad-kpi">
+    <section class="ad-kpi" aria-busy="true">
       <div class="card stat card-pad">
         <div class="ad-stat-head">
           <span class="stat-icon" aria-hidden="true">
@@ -324,7 +325,7 @@
     </div>
 
     <!-- ===== 用户管理 ===== -->
-    <section id="tab-users" class="admin-panel" role="tabpanel">
+    <section id="tab-users" class="admin-panel" role="tabpanel" aria-busy="true">
       <div id="users-skel" class="ad-skel" aria-hidden="true">
         <div class="skeleton ad-skel-line"></div>
         <div class="skeleton ad-skel-line" style="width: 72%"></div>
@@ -383,7 +384,7 @@
     </section>
 
     <!-- ===== 全局消息流 ===== -->
-    <section id="tab-messages" class="admin-panel hidden" role="tabpanel">
+    <section id="tab-messages" class="admin-panel hidden" role="tabpanel" aria-busy="true">
       <div id="messages-skel" class="ad-skel" aria-hidden="true">
         <div class="skeleton ad-skel-line"></div>
         <div class="skeleton ad-skel-line" style="width: 64%"></div>
@@ -433,7 +434,7 @@
     </section>
 
     <!-- ===== 活跃会话 ===== -->
-    <section id="tab-sessions" class="admin-panel hidden" role="tabpanel">
+    <section id="tab-sessions" class="admin-panel hidden" role="tabpanel" aria-busy="true">
       <div id="sessions-skel" class="ad-skel" aria-hidden="true">
         <div class="skeleton ad-skel-line"></div>
         <div class="skeleton ad-skel-line" style="width: 68%"></div>
@@ -589,6 +590,9 @@
        骨架行会让它就绪得过早。 */
     function panelState(prefix) {
       return {
+        // 面板本身也带 aria-busy：读屏要能知道「这一块还在等」，
+        // 而骨架 div 是 aria-hidden 的（它只是视觉占位）。
+        panel: document.getElementById("tab-" + prefix),
         skel: document.getElementById(prefix + "-skel"),
         error: document.getElementById(prefix + "-error"),
         body: document.getElementById(prefix + "-body"),
@@ -602,8 +606,17 @@
       if (st.count) st.count.textContent = String(n);
     }
 
+    /* aria-busy 跟着骨架进出：showLoading 置真，数据 / 空 / 错误落地时置假。
+       四条路径都过这四个函数，所以只在这里维护一处。 */
+    function setPanelBusy(st, on) {
+      if (!st.panel) return;
+      if (on) st.panel.setAttribute("aria-busy", "true");
+      else st.panel.removeAttribute("aria-busy");
+    }
+
     /* 加载态只留骨架：不摆一张只有表头的空表（那是「空态」，不是「加载中」）。 */
     function showLoading(st) {
+      setPanelBusy(st, true);
       st.tbody.replaceChildren();
       st.error.replaceChildren();
       st.error.classList.add("hidden");
@@ -614,6 +627,7 @@
     }
 
     function showData(st, rows) {
+      setPanelBusy(st, false);
       st.skel.classList.add("hidden");
       st.error.classList.add("hidden");
       st.empty.classList.add("hidden");
@@ -623,6 +637,7 @@
     }
 
     function showEmpty(st) {
+      setPanelBusy(st, false);
       st.skel.classList.add("hidden");
       st.error.classList.add("hidden");
       st.body.classList.add("hidden");
@@ -633,6 +648,7 @@
     /* 失败态一律走 Anotify.loadErrorNode（带「载入失败：原因」+ 可点重试），
        不自己拼 "[object Object]"，也不把失败画成空数据。 */
     function showError(st, err, onRetry) {
+      setPanelBusy(st, false);
       st.skel.classList.add("hidden");
       st.empty.classList.add("hidden");
       st.body.classList.add("hidden");
@@ -643,10 +659,12 @@
     /* ================= 系统总览 ================= */
     async function loadStats() {
       const box = document.getElementById("stats-error");
+      const kpi = document.querySelector(".ad-kpi");
       try {
         const s = await api("/v1/admin/stats");
         box.classList.add("hidden");
         box.replaceChildren();
+        if (kpi) kpi.removeAttribute("aria-busy");
 
         setText("kpi-users", fmtNum(s.userCount));
         setText(
@@ -720,6 +738,7 @@
         /* 四个 KPI 保持「–」不动（不伪造 0），错误块给出原因与重试 */
         box.classList.remove("hidden");
         box.replaceChildren(Anotify.loadErrorNode(e, loadStats));
+        if (kpi) kpi.removeAttribute("aria-busy");
       }
     }
 
@@ -1130,8 +1149,30 @@
       );
     }
 
+    /* ================= 启动失败 =================
+       三个面板的骨架是**静态写在 HTML 里**的：取 /v1/auth/me 这一步一旦失败就
+       `return`，四个加载函数一个都不会跑，谁去撤骨架？结果是三块骨架永久 shimmer，
+       用户看着像"永远在加载"，而页面上一条错误都没有。
+       所以非 401 的失败必须落成错误态（带重试 = 重新走一遍启动）。 */
+    function showBootError(err) {
+      const retry = () => boot();
+      const box = document.getElementById("stats-error");
+      if (box) {
+        box.classList.remove("hidden");
+        box.replaceChildren(Anotify.loadErrorNode(err, retry));
+      }
+      for (const prefix of ["users", "messages", "sessions"]) {
+        showError(panelState(prefix), err, retry);
+      }
+      const kpi = document.querySelector(".ad-kpi");
+      if (kpi) kpi.removeAttribute("aria-busy");
+    }
+
+    /* 下拉刷新只挂一次：重试会再跑一遍 boot()，重复挂载会叠出多个监听。 */
+    let pullReady = false;
+
     /* ================= 启动：先取当前用户 ID（标记「你」），再并行拉数据 ================= */
-    (async () => {
+    async function boot() {
       try {
         const me = await api("/v1/auth/me");
         currentUserId = me.id;
@@ -1140,8 +1181,11 @@
           return;
         }
         setText("admin-role-badge", me.role);
-      } catch {
-        /* 401 会自动跳登录 */
+      } catch (e) {
+        /* 401 会自动跳登录页 —— 这里什么都不画（画了也会被跳转盖掉）。
+           其它失败（5xx / 网络断 / 非 JSON）走错误态，绝不留在骨架里。 */
+        if (e && e.status === 401) return;
+        showBootError(e);
         return;
       }
 
@@ -1151,15 +1195,20 @@
       loadSessions();
 
       /* 下拉刷新：管理后台四个面板全部重拉 */
-      Anotify.mountPullRefresh(async () => {
-        await Promise.all([
-          loadStats(),
-          loadUsers(),
-          loadMessages(),
-          loadSessions(),
-        ]);
-      });
-    })();
+      if (!pullReady) {
+        pullReady = true;
+        Anotify.mountPullRefresh(async () => {
+          await Promise.all([
+            loadStats(),
+            loadUsers(),
+            loadMessages(),
+            loadSessions(),
+          ]);
+        });
+      }
+    }
+
+    boot();
   })();
 </script>
 {{end}}

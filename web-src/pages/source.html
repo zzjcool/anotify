@@ -136,6 +136,19 @@
         word-break: break-all;
       }
 
+      /* 页头槽位预占：骨架态与内容态同高。
+         正文（含页脚）整块下移的幅度 = 页头长高的幅度，而正文是一千多像素的大块，
+         页头长 40px 就是 0.1+ 的 CLS。三个槽位的最终高度都是确定的，先钉住。 */
+      #head-sub {
+        min-height: 18px;
+      }
+      #head-badges {
+        min-height: 22px;
+      }
+      #head-actions {
+        min-height: 30px;
+      }
+
       /* 首屏骨架：形状对齐真实正文（配置卡 / 参数卡 / 图卡） */
       .sk-line {
         display: block;
@@ -159,6 +172,44 @@
         height: 22px;
         vertical-align: middle;
       }
+      /* 等高骨架：最小高度 = 内容态三张卡的实际高度
+         （触发配置 217 / 出口能力 166 / 下游流向 646 —— 图区占了大头）。 */
+      .sk-card {
+        min-height: 217px;
+      }
+      /* 修饰类写在行首：死类守卫按「行首类名」收集，复合选择器里的 is-* 会被误报 */
+      .is-targets.sk-card {
+        min-height: 166px;
+      }
+      .is-flow.sk-card {
+        min-height: 646px;
+      }
+      /* 图区骨架：图卡里用几块矩形把节点/连线的分布位置占住，别只摆一个空盒 */
+      .sk-graph {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        margin-top: 20px;
+      }
+      .sk-graph-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .sk-node {
+        height: 54px;
+        width: 168px;
+        border-radius: var(--r-md);
+      }
+      .sk-edge {
+        display: block;
+        height: 2px;
+        flex: 1 1 auto;
+        border-radius: var(--r-full);
+      }
+      .is-far.sk-node {
+        margin-left: auto;
+      }
     </style>
 {{end}}
 
@@ -179,17 +230,39 @@
     </div>
 
     <!-- 主体：三张卡由 JS 填充。首屏是骨架而不是一张"加载中"的空卡。 -->
-    <div id="src-body" class="src-stack">
-      <div class="card card-pad" aria-hidden="true">
+    <div id="src-body" class="src-stack" aria-busy="true">
+      <div class="card card-pad sk-card" aria-hidden="true">
         <div class="skeleton sk-line-lg"></div>
         <div class="skeleton sk-line mt-2"></div>
         <div class="skeleton sk-line mt-2"></div>
         <div class="skeleton sk-line-sm mt-2"></div>
       </div>
-      <div class="card card-pad" aria-hidden="true">
+      <div class="card card-pad sk-card is-targets" aria-hidden="true">
         <div class="skeleton sk-line-lg"></div>
         <div class="skeleton sk-line mt-2"></div>
         <div class="skeleton sk-line-sm mt-2"></div>
+      </div>
+      <div class="card card-pad sk-card is-flow" aria-hidden="true">
+        <div class="skeleton sk-line-lg"></div>
+        <!-- 图区：三排「节点块 + 连线」的骨架。空盒看不出这里将出现一张拓扑图，
+             图块形状能，而且它和数据到齐后的高度差不多（图区 = 卡高的大头）。 -->
+        <div class="sk-graph">
+          <div class="sk-graph-row">
+            <div class="skeleton sk-node"></div>
+            <div class="skeleton sk-edge"></div>
+            <div class="skeleton sk-node is-far"></div>
+          </div>
+          <div class="sk-graph-row">
+            <div class="skeleton sk-node"></div>
+            <div class="skeleton sk-edge"></div>
+            <div class="skeleton sk-node is-far"></div>
+          </div>
+          <div class="sk-graph-row">
+            <div class="skeleton sk-node"></div>
+            <div class="skeleton sk-edge"></div>
+            <div class="skeleton sk-node is-far"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -279,6 +352,25 @@
       let CAPS = [];
       let EDGES = [];
 
+      const bodyEl = () => document.getElementById("src-body");
+      // 首屏骨架快照：重试时放回去（不能把「重试中」画成「没有数据」）
+      const BODY_SKELETON = bodyEl() ? bodyEl().innerHTML : "";
+
+      // aria-busy 与骨架同进同出（骨架撤掉就必须是 false，否则读屏会一直说「载入中」）
+      function setBusy(on) {
+        const n = bodyEl();
+        if (!n) return;
+        if (on) n.setAttribute("aria-busy", "true");
+        else n.removeAttribute("aria-busy");
+      }
+
+      function showSkeleton() {
+        const n = bodyEl();
+        if (!n) return;
+        n.innerHTML = BODY_SKELETON;
+        setBusy(true);
+      }
+
       // ---------- 加载 ----------
       async function load() {
         if (!srcId) {
@@ -297,9 +389,8 @@
           CAPS = (capData && capData.capabilities) || [];
           EDGES = (edgeData && edgeData.edges) || [];
         } catch (e) {
-          renderEmpty(
-            t("srcpage.load_failed", "加载失败：{m}").replace("{m}", e.detail || e.message || e),
-          );
+          // 失败就是失败：给出原因 + 重试按钮（原来只有一行红字，用户只能自己刷页）
+          renderLoadFailed(e);
           return;
         }
         if (!SRC) {
@@ -312,12 +403,31 @@
 
       // 空态 / 错误态：`.empty` + 明确的下一步（回列表），而不是一张写着字的卡片。
       function renderEmpty(msg) {
+        setBusy(false);
         document.getElementById("head-name").textContent = t("srcpage.title", "源详情");
         document.getElementById("head-sub").textContent = "";
+        document.getElementById("head-badges").replaceChildren();
         const box = el("div", "empty");
         box.appendChild(el("div", "card-title", t("srcpage.title", "源详情")));
         box.appendChild(el("p", "card-sub", msg));
         const back = el("a", "btn btn-ghost btn-sm", t("srcpage.back", "返回源列表"));
+        back.href = "sources.html";
+        box.appendChild(back);
+        document.getElementById("src-body").replaceChildren(box);
+      }
+
+      // 加载失败：Anotify.loadErrorNode（它自己翻译、自己带重试）+ 一条回列表的路。
+      // 错误不能画成空态 ——「连接不上服务端」和「这个源不存在」是两种结论。
+      function renderLoadFailed(err) {
+        setBusy(false);
+        const nameEl = document.getElementById("head-name");
+        nameEl.textContent = t("srcpage.title", "源详情");
+        document.getElementById("head-sub").textContent = srcId || "";
+        document.getElementById("head-badges").replaceChildren();
+
+        const box = el("div", "card card-pad");
+        box.appendChild(Anotify.loadErrorNode(err, () => load()));
+        const back = el("a", "btn btn-ghost btn-sm mt-2", t("srcpage.back", "返回源列表"));
         back.href = "sources.html";
         box.appendChild(back);
         document.getElementById("src-body").replaceChildren(box);
@@ -376,6 +486,7 @@
 
       // ---------- 主体 ----------
       function renderBody() {
+        setBusy(false);
         const body = document.getElementById("src-body");
         body.replaceChildren();
         body.appendChild(renderConfigCard());

@@ -35,15 +35,35 @@
       .trace-sk-cell {
         height: 34px;
       }
-      /* 图块：ui.css 的骨架尺寸变体 is-block 只以**复合选择器**（.skeleton.is-block）
-         出现，死类守卫按「行首类名」收集，看不到它 —— 所以这里把 is-block 也写成
-         行首，顺带把高度调到接近真实图形区（88px 表达不了"下面是张大图"）。
-         两条规则的优先级都 ≥ .skeleton.is-block，且页级样式在 ui.css 之后加载。 */
+      /* 图块骨架：图是这页的主体（实测占首屏 22.9% 面积、内容态图区 238px）。
+         以前只摆一个 240px 空块，看不出“这里将出现一张拓扑图”；现在用
+         「节点块 + 连线」三排铺出图的形状，高度对齐内容态的图区 → 数据到达时
+         正文不下移。 */
       .trace-sk-graph {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 20px;
+        height: 236px;
         margin-top: 20px;
       }
-      .is-block.trace-sk-graph {
-        height: 240px;
+      .trace-sk-lane {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .is-indent.trace-sk-lane {
+        padding-left: 48px;
+      }
+      .trace-sk-node {
+        width: 150px;
+        height: 42px;
+        border-radius: var(--r-md);
+      }
+      .trace-sk-edge {
+        height: 2px;
+        flex: 1 1 auto;
+        border-radius: var(--r-full);
       }
 
       /* 头部卡内部节奏：id 行 / 概览 / 触发事件之间 16px */
@@ -203,8 +223,8 @@
 
     <!-- 主体：首屏是骨架，不是一张"加载中"的空卡。
          #trace-body 必须有子元素（e2e 断言），骨架就放在里面；
-         JS 首次渲染时 replaceChildren 掉。 -->
-    <div id="trace-body" class="trace-stack">
+         JS 首次渲染时 replaceChildren 掉，同一个同步块里把 aria-busy 摘掉。 -->
+    <div id="trace-body" class="trace-stack" aria-busy="true">
       <div class="card card-pad" aria-hidden="true">
         <div class="skeleton trace-sk-title"></div>
         <div class="trace-sk-stats">
@@ -213,7 +233,23 @@
           <div class="skeleton trace-sk-cell"></div>
           <div class="skeleton trace-sk-cell"></div>
         </div>
-        <div class="skeleton is-block trace-sk-graph"></div>
+        <div class="trace-sk-graph">
+          <div class="trace-sk-lane">
+            <div class="skeleton trace-sk-node"></div>
+            <div class="skeleton trace-sk-edge"></div>
+            <div class="skeleton trace-sk-node"></div>
+          </div>
+          <div class="trace-sk-lane is-indent">
+            <div class="skeleton trace-sk-node"></div>
+            <div class="skeleton trace-sk-edge"></div>
+            <div class="skeleton trace-sk-node"></div>
+          </div>
+          <div class="trace-sk-lane">
+            <div class="skeleton trace-sk-node"></div>
+            <div class="skeleton trace-sk-edge"></div>
+            <div class="skeleton trace-sk-node"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -329,7 +365,15 @@
       // 首屏骨架的原型：直接取自 HTML（JS 未执行前就要有形状）。
       // 刷新 / 重试时 clone 一份放回去，避免整块内容闪空。
       const SKELETON = document.querySelector("#trace-body > .card");
+      // aria-busy 与骨架同进同出：骨架在 = 还在等；骨架一撤就必须是 false，
+      // 否则读屏用户会一直听到「载入中」。
+      function setBusy(body, on) {
+        if (!body) return;
+        if (on) body.setAttribute("aria-busy", "true");
+        else body.removeAttribute("aria-busy");
+      }
       function showSkeleton(body) {
+        setBusy(body, true);
         if (!SKELETON) {
           body.replaceChildren();
           return;
@@ -366,6 +410,7 @@
       function renderLoadError(body, err) {
         const card = el("div", "card card-pad");
         card.appendChild(Anotify.loadErrorNode(err, () => load()));
+        setBusy(body, false);
         body.replaceChildren(card);
 
         const status = (err && err.status) || 0;
@@ -416,6 +461,7 @@
 
         // 没有 traceId 不是错误：从事件流点进来才有 id，手输地址的人需要一句引导。
         if (!TRACE_ID) {
+          setBusy(body, false);
           body.replaceChildren(
             emptyCard(
               t("trace.no_id_title", "缺少 traceId"),
@@ -480,6 +526,9 @@
             }
           }
 
+          // 骨架与 aria-busy 在**同一个同步块**里撤掉：中间不留一帧「骨架还在、
+          // 内容已上屏」，也不留「内容已上屏、读屏还在说载入中」。
+          setBusy(body, false);
           body.replaceChildren();
 
           // ---- 头部卡：traceId + 概览 ----
@@ -567,6 +616,7 @@
 
           // ---- 主体：三种视图（瀑布图 / 图 / 树）----
           if (!tasks.length) {
+            setBusy(body, false);
             body.appendChild(
               emptyCard(
                 t("trace.empty_title", "没有任务"),
@@ -580,6 +630,7 @@
           }
 
           if (!window.TraceView) {
+            setBusy(body, false);
             body.appendChild(
               emptyCard(t("trace.title", "链路"), t("trace.nolib", "渲染脚本未能加载。")),
             );
