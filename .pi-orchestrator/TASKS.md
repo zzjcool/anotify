@@ -42,6 +42,7 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 - [x] `web/mock.js`：`/v1/stats` 的 total/today/daily 口径改为事件（对齐真后端，避免「事件 KPI 配任务数字」的静默漂移）
 - [x] e2e：frontend / real_backend 的等待锚点与错误态改用 `#index-events`；deeplink 新增「首页 `?msg` 重定向到 message.html」用例
 - [x] 门禁：`go test ./...` 通过；`E2E_CONCURRENCY=1 make e2e` → **1836 通过 / 0 失败**；web_verify 桌面 1440 + 移动 390 均 0 问题
+- [x] 2026-11-03 与 origin/main 的「动效/加载 wave」合并（`07d5cca`）：保留事件流主列表，吸收 KPI `setStatValue`/spark `is-ready`/热力图骨架/`anim-stagger`；合并后重跑全量 e2e → 1836 通过 / 0 失败，dev 已重建（数据卷保留）
 
 **边界**：`message.html`（任务详情页）保留 —— 它是 trace/执行结果详情，不是首页列表；`.notif-row` 组件样式暂留 `ui.css`（其它页可复用）。
 
