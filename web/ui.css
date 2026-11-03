@@ -3318,8 +3318,13 @@ html.flograph-fullscreen-open body {
 		transform: none;
 	}
 }
+/* fill-mode 用 backwards 而不是 both：both 在动画结束后仍持续钉住
+ * transform（CSS 动画来源优先于 :active 普通声明），会让 #notif-list 的
+ * .notif-row:active 按压反馈失效（reviewer major）。backwards 保留延迟期
+ * 的 from 态（opacity:0 / translateY(8px)），结束后回归元素自身样式，
+ * 入场观感与 both 完全一致；也顺带避免钉死将来挂进来的 hover 位移。 */
 .anim-stagger > * {
-	animation: stagger-in var(--dur-mid) var(--ease-out) both;
+	animation: stagger-in var(--dur-mid) var(--ease-out) backwards;
 }
 .anim-stagger > :nth-child(2) {
 	animation-delay: 20ms;

@@ -1696,8 +1696,14 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 
 	/* 共享 toast（#anotify-toast-host）。时序：入场 180ms → 停留 3600ms →
 	 * 退场 160ms 后 remove。CSS 动画在 ui.css 的 .anotify-toast.is-in/.is-out；
-	 * reduce 下不加动画类，直接 remove。 */
-	const TOAST_EXIT_MS = 160;
+	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
+	 * ui.css 双份硬编码（reviewer minor）。 */
+	function toastExitMs() {
+		const raw = getComputedStyle(document.documentElement)
+			.getPropertyValue("--dur-mid")
+			.trim();
+		return parseFloat(raw) || 160;
+	}
 
 	function toast(msg, kind) {
 		let host = document.getElementById("anotify-toast-host");
@@ -1737,7 +1743,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			}
 			node.classList.remove("is-in");
 			node.classList.add("is-out");
-			setTimeout(() => node.remove(), TOAST_EXIT_MS);
+			setTimeout(() => node.remove(), toastExitMs());
 		}, 3600);
 	}
 
