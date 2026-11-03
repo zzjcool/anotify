@@ -69,11 +69,12 @@ body {
 	color: var(--muted);
 	border: 1px solid transparent;
 	/* 不用 transition: all —— 它会把 outline/box-shadow 一起做过渡，
-	 * 键盘焦点环要即时出现（F22）。 */
+	 * 键盘焦点环要即时出现（F22）。transform 只服务 :active 按压反馈。 */
 	transition:
 		color var(--dur-fast) var(--ease),
 		background var(--dur-fast) var(--ease),
-		border-color var(--dur-fast) var(--ease);
+		border-color var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .side-link > svg {
 	width: 18px;
@@ -167,8 +168,9 @@ body {
 	text-align: left;
 	cursor: pointer;
 	transition:
-		background 0.15s ease,
-		border-color 0.15s ease;
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .scope-trigger:hover,
 .scope-trigger[aria-expanded="true"] {
@@ -422,7 +424,8 @@ body {
 	transition:
 		background var(--dur) var(--ease),
 		box-shadow var(--dur) var(--ease),
-		color var(--dur) var(--ease);
+		color var(--dur) var(--ease),
+		transform var(--dur-fast) var(--ease);
 	box-shadow: var(--shadow-1);
 	overflow: hidden;
 	cursor: pointer;
@@ -447,7 +450,8 @@ body {
 	transition:
 		color var(--dur) var(--ease),
 		background var(--dur) var(--ease),
-		border-color var(--dur) var(--ease);
+		border-color var(--dur) var(--ease),
+		transform var(--dur-fast) var(--ease);
 	cursor: pointer;
 }
 .btn-ghost:hover {
@@ -459,7 +463,11 @@ body {
 	border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
 	color: var(--error);
 	background: transparent;
-	transition: all var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		border-color var(--dur) var(--ease),
+		color var(--dur) var(--ease),
+		transform var(--dur-fast) var(--ease);
 	cursor: pointer;
 }
 .btn-danger:hover {
@@ -609,7 +617,10 @@ body {
 	font-size: 0.85rem;
 	color: var(--muted);
 	border: 1px solid transparent;
-	transition: all 0.2s ease;
+	transition:
+		color var(--dur) var(--ease),
+		background var(--dur) var(--ease),
+		border-color var(--dur) var(--ease);
 	cursor: pointer;
 }
 .channel-tab:hover {
@@ -625,7 +636,11 @@ body {
 	border-radius: 8px;
 	font-size: 0.8rem;
 	color: var(--muted);
-	transition: all 0.2s ease;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 	cursor: pointer;
 	border: 1px solid transparent;
 }
@@ -666,7 +681,10 @@ body {
 	border-radius: 9999px;
 	padding: 0.15rem 0.55rem;
 	cursor: pointer;
-	transition: all 0.2s;
+	transition:
+		color var(--dur) var(--ease),
+		border-color var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 	background: transparent;
 }
 .tag-add:hover {
@@ -714,7 +732,10 @@ body {
 	padding: 0.15rem 0.5rem;
 	font-size: 0.68rem;
 	color: var(--muted);
-	transition: all 0.2s;
+	transition:
+		color var(--dur) var(--ease),
+		border-color var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 	cursor: pointer;
 }
 .copy-btn:hover {
@@ -763,13 +784,14 @@ body {
 
 /* 通知行：样式见组件层（.notif-row 56px 紧凑行） */
 
-/* 渐入 */
+/* 渐入（MOTION-CONTRACT §1：200ms / 8px；旧值 700ms/20px 太慢且位移过大）。
+ * 静态带 .visible 的区块（docs/edges）首帧即终态，不会二次入场。 */
 .reveal {
 	opacity: 0;
-	transform: translateY(20px);
+	transform: translateY(8px);
 	transition:
-		opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
-		transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+		opacity var(--dur) var(--ease-out),
+		transform var(--dur) var(--ease-out);
 }
 .reveal.visible {
 	opacity: 1;
@@ -780,6 +802,15 @@ body {
 .sidebar-overlay {
 	background: var(--scrim);
 	backdrop-filter: blur(4px);
+}
+/* hidden → 显示（display 变化）时重播淡入；关闭仍是硬切（hidden 立即生效）。 */
+.sidebar-overlay:not(.hidden) {
+	animation: overlay-in var(--dur-toast) var(--ease-out) both;
+}
+@keyframes overlay-in {
+	from {
+		opacity: 0;
+	}
 }
 
 /* WS 状态点 */
@@ -914,7 +945,9 @@ body {
 	box-shadow: var(--shadow-3);
 }
 .lang-menu-item {
-	transition: all 0.15s ease;
+	transition:
+		background var(--dur-fast) var(--ease),
+		color var(--dur-fast) var(--ease);
 }
 .lang-menu-item:hover {
 	background: var(--surface-2);
@@ -928,7 +961,9 @@ body {
 /* Language switcher flat link (no-JS fallback, shared by sidebar + login) */
 .lang-link {
 	color: var(--muted);
-	transition: all 0.2s ease;
+	transition:
+		color var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 }
 .lang-link:hover {
 	color: var(--text);
@@ -2412,7 +2447,8 @@ html.flograph-fullscreen-open body {
 	transition:
 		color var(--dur-fast) var(--ease),
 		background var(--dur-fast) var(--ease),
-		border-color var(--dur-fast) var(--ease);
+		border-color var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .app-icon-btn:hover {
 	color: var(--text);
@@ -2512,7 +2548,7 @@ html.flograph-fullscreen-open body {
 	transition:
 		border-color var(--dur) var(--ease),
 		box-shadow var(--dur) var(--ease),
-		transform var(--dur) var(--ease);
+		transform var(--dur-fast) var(--ease);
 }
 .card-hover:hover {
 	border-color: var(--line-strong);
@@ -2647,7 +2683,8 @@ html.flograph-fullscreen-open body {
 	transition:
 		background var(--dur-fast) var(--ease),
 		border-color var(--dur-fast) var(--ease),
-		color var(--dur-fast) var(--ease);
+		color var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .btn:hover {
 	border-color: var(--line-strong);
@@ -2870,7 +2907,8 @@ html.flograph-fullscreen-open body {
 	cursor: pointer;
 	transition:
 		color var(--dur-fast) var(--ease),
-		background var(--dur-fast) var(--ease);
+		background var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .tab:hover {
 	color: var(--text);
@@ -2989,7 +3027,8 @@ html.flograph-fullscreen-open body {
 	cursor: pointer;
 	transition:
 		color var(--dur-fast) var(--ease),
-		background var(--dur-fast) var(--ease);
+		background var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .menu-item:hover {
 	background: var(--surface-2);
@@ -3019,21 +3058,29 @@ html.flograph-fullscreen-open body {
 	display: block;
 	min-height: 12px;
 	border-radius: var(--r-sm);
+	/* 合成层 shimmer：静态底色 + 伪元素只做 transform（旧实现动
+	 * background-position，40 个骨架实测 task 104ms）。对比度与旧版同档：
+	 * surface-2 底 + surface-3 高光扫过。 */
+	position: relative;
+	overflow: hidden;
+	background: var(--surface-2);
+}
+.skeleton::after {
+	content: "";
+	position: absolute;
+	inset: 0;
 	background: linear-gradient(
 		90deg,
-		var(--surface-2) 25%,
-		var(--surface-3) 37%,
-		var(--surface-2) 63%
+		transparent 0%,
+		var(--surface-3) 50%,
+		transparent 100%
 	);
-	background-size: 400% 100%;
-	animation: skeleton-shimmer 1.4s ease infinite;
+	transform: translateX(-100%);
+	animation: skeleton-shimmer 1.4s var(--ease) infinite;
 }
 @keyframes skeleton-shimmer {
-	0% {
-		background-position: 100% 0;
-	}
-	100% {
-		background-position: 0 0;
+	to {
+		transform: translateX(100%);
 	}
 }
 
@@ -3051,7 +3098,9 @@ html.flograph-fullscreen-open body {
 	min-height: 56px;
 	padding: 8px 14px;
 	border-bottom: 1px solid var(--line);
-	transition: background var(--dur-fast) var(--ease);
+	transition:
+		background var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .list-row:last-child {
 	border-bottom: 0;
@@ -3085,7 +3134,9 @@ html.flograph-fullscreen-open body {
 	min-height: 56px;
 	padding: 8px 14px;
 	border-bottom: 1px solid var(--line);
-	transition: background var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 .notif-row:last-child {
 	border-bottom: 0;
@@ -3150,6 +3201,166 @@ html.flograph-fullscreen-open body {
 }
 
 /* ============================================================================
+   动效层（UI v2 第二轮 · MOTION-CONTRACT）
+   ----------------------------------------------------------------------------
+   · 时长/缓动全部来自 tokens.css 的 --dur-* / --ease*，不在这里写死毫秒；
+   · 只动 opacity / transform / filter / box-shadow / color / border-color；
+   · 红线元素（#sidebar / .app-nav / #app-shell / .page / #page-main /
+     #scope-slot）不加入场/位移动画 —— ui_shift 断言几何单值；
+   · prefers-reduced-motion：tokens 把 --dur-* 归零 + 文件末尾全局 * 闸门，
+     写死时长/无限循环的动画在末尾 reduce 块里显式关掉。
+   ============================================================================ */
+
+/* ---------- 按压反馈（press）----------
+ * 只改 transform：不改布局、不移动点击目标中心（下限 0.98/0.995）。
+ * 与 hover 正交：.card-hover:hover 的 translateY(-1px) 在按下时被 0.995 覆盖。 */
+.btn:active,
+.btn-primary:active,
+.btn-ghost:active,
+.btn-quiet:active,
+.app-icon-btn:active,
+.side-link:active,
+.menu-item:active,
+.tab:active,
+.filter-tab:active,
+.scope-trigger:active {
+	transform: scale(0.98);
+}
+.list-row:active,
+.notif-row:active,
+.card-hover:active {
+	transform: scale(0.995);
+}
+/* 禁用态不反馈：按下去不动，避免"看起来可点"。 */
+.btn:disabled:active,
+.btn[aria-disabled="true"]:active,
+.btn-primary:disabled:active,
+.btn-primary[aria-disabled="true"]:active {
+	transform: none;
+}
+
+/* ---------- 主题翻转遮罩 ----------
+ * partials.js 在 applyTheme(persist=true) 时插入：铺满视口的旧 --bg，
+ * 主题同步切换后 200ms 淡出。data-theme 不延迟写入（e2e 立即断言）。 */
+.theme-flip-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 9999;
+	pointer-events: none;
+	opacity: 1;
+	transition: opacity var(--dur) var(--ease);
+}
+.theme-flip-overlay.is-fading {
+	opacity: 0;
+}
+
+/* ---------- 共享 toast（partials.js 的 #anotify-toast-host）----------
+ * 入场 translateY(8px)+opacity；3600ms 后先播 160ms 退场再 remove。
+ * 错误 kind 的点与边框都用 --error（旧实现只有点、边框仍是中性）。 */
+@keyframes toast-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+@keyframes toast-out {
+	to {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+}
+.anotify-toast.is-in {
+	animation: toast-in var(--dur-toast) var(--ease-out) both;
+}
+.anotify-toast.is-out {
+	animation: toast-out var(--dur-mid) var(--ease-out) both;
+}
+.anotify-toast.is-error {
+	border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+/* ---------- 弹层 ----------
+ * 遮罩 120ms 淡入，面板 160ms opacity+translateY(4px)+scale(.98)。
+ * 关闭仍是页面切 hidden↔flex 的硬切，不引入退场状态机；
+ * 页面自定义 .modal-panel 变体只改尺寸，不含 transform/opacity，互不冲突。 */
+@keyframes modal-backdrop-in {
+	from {
+		opacity: 0;
+	}
+}
+@keyframes modal-panel-in {
+	from {
+		opacity: 0;
+		transform: translateY(4px) scale(0.98);
+	}
+}
+.modal-backdrop:not(.hidden) {
+	animation: modal-backdrop-in var(--dur-fast) var(--ease-out) both;
+}
+.modal-panel {
+	animation: modal-panel-in var(--dur-mid) var(--ease-out) both;
+}
+
+/* ---------- 列表 / 卡片入场（stagger）----------
+ * 只挂到 index 的 #notif-list / #index-events / KPI 四卡容器；
+ * 不挂 .page / #page-main（红线）。20ms/项，最多前 8 项。 */
+@keyframes stagger-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+.anim-stagger > * {
+	animation: stagger-in var(--dur-mid) var(--ease-out) both;
+}
+.anim-stagger > :nth-child(2) {
+	animation-delay: 20ms;
+}
+.anim-stagger > :nth-child(3) {
+	animation-delay: 40ms;
+}
+.anim-stagger > :nth-child(4) {
+	animation-delay: 60ms;
+}
+.anim-stagger > :nth-child(5) {
+	animation-delay: 80ms;
+}
+.anim-stagger > :nth-child(6) {
+	animation-delay: 100ms;
+}
+.anim-stagger > :nth-child(7) {
+	animation-delay: 120ms;
+}
+.anim-stagger > :nth-child(8) {
+	animation-delay: 140ms;
+}
+
+/* ---------- KPI 数值更新 ----------
+ * 文本同步写入（e2e 立即断言），只给 .stat-value 叠 160ms 入场动画；
+ * reduce 下 partials.js 侧不加类。 */
+@keyframes stat-value-in {
+	from {
+		opacity: 0.35;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+.stat-value.is-updated {
+	animation: stat-value-in var(--dur-mid) var(--ease-out) both;
+}
+
+/* ============================================================================
    断点（1279 / 1023 / 767 / 639）
    ============================================================================ */
 /* 顶栏副标题在 1280 以下隐藏（窄屏位置留给标题与操作） */
@@ -3170,6 +3381,10 @@ html.flograph-fullscreen-open body {
 		flex-basis: auto;
 		height: 100dvh;
 		box-shadow: var(--shadow-3);
+		/* 抽屉滑入/滑出。必须显式覆盖基类的 width/flex-basis 过渡：同特异度、
+		 * 本块在后，否则 Tailwind 的 transition-transform 被基类盖成死代码，
+		 * 抽屉实测 1 帧跳完（审计事实）。桌面折叠仍走基类的 width 200ms。 */
+		transition: transform var(--dur-drawer) var(--ease);
 	}
 	/* 抽屉里要能滚动，tooltip 在移动端不显示 */
 	.app-nav {
@@ -3266,6 +3481,16 @@ html.flograph-fullscreen-open body {
 	.reveal {
 		opacity: 1;
 		transform: none;
+	}
+	/* stagger 的 from 态是 opacity:0，reduce 下直接落终态 */
+	.anim-stagger > * {
+		animation: none;
+		opacity: 1;
+		transform: none;
+	}
+	/* 无限循环的骨架 shimmer 直接停掉（底色仍可见） */
+	.skeleton::after {
+		animation: none;
 	}
 }
 

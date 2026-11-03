@@ -57,7 +57,7 @@
          `#kpi-*` 这些 id 全部由页内 JS 覆写 textContent，别改 id。
          送达率 / 接收设备是「手机推送」口径：推送未开放时整块不显示
          （web/partials.js 的 PUSH_UI_ENABLED → JS 给 [data-push-tile] 加 hidden）。 -->
-    <section class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <section class="anim-stagger grid grid-cols-2 gap-4 lg:grid-cols-4">
       <!-- 任务总数 -->
       <div class="card stat card-pad">
         <div class="flex items-start justify-between gap-2">
@@ -317,7 +317,7 @@
           >
         </div>
       </div>
-      <div id="index-events" class="px-5 py-3" aria-busy="true">
+      <div id="index-events" class="anim-stagger px-5 py-3" aria-busy="true">
         <!-- 5 行骨架 = 数据回来后的 5 条事件行高度（实测 5×31px）。
              不预留的话，「正在加载」的 42px 会在数据到达时长到 178px，
              把下面的最近任务整行推下去 136px（首页 CLS 的主要残差）。 -->
@@ -407,7 +407,7 @@
           </div>
         </div>
       </div>
-      <div id="notif-list" class="px-2"></div>
+      <div id="notif-list" class="anim-stagger px-2"></div>
       <!-- footer：与 .card-head 同一套留白/两端对齐，但不加分隔线 ——
            头尾都靠留白分块，亮主题下也不会有「白线看不见」的落差。 -->
       <div class="card-head card-pad">
@@ -812,6 +812,32 @@
       return (byDay.get(today) || 0) - (byDay.get(yest) || 0);
     }
 
+    /* ================= KPI 数值反馈 =================
+     * 值更新时：文本**同步**写入（e2e 立即断言），再给 .stat-value 叠加
+     * 160ms 的 opacity+translateY(4px) 动画（ui.css 的 .stat-value.is-updated）。
+     * reduce 下不加类 —— 文本照常更新，不产生动画。 */
+    const REDUCE_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    function bumpStat(node) {
+      if (!node || REDUCE_MOTION.matches) return;
+      // 去掉再强制回流：连续刷新（refresh / 筛选）也能重播动画
+      node.classList.remove("is-updated");
+      void node.offsetWidth;
+      node.classList.add("is-updated");
+      node.addEventListener(
+        "animationend",
+        () => node.classList.remove("is-updated"),
+        { once: true },
+      );
+    }
+
+    // 文本同步写入；动画只是附加反馈，绝不延迟/改写最终值
+    function setStatValue(node, value) {
+      if (!node) return;
+      node.textContent = value;
+      bumpStat(node);
+    }
+
     function renderKpis() {
       /* F14：首屏接口全挂时不能把「取不到」画成「0」。KPI 一律显示 – ，
        * 让错误态只出现在一个地方（列表里的 loadErrorNode），而不是各处谎报 0。 */
@@ -825,7 +851,7 @@
           "kpi-failed",
         ]) {
           const n = document.getElementById(id);
-          if (n) n.textContent = "–";
+          if (n) setStatValue(n, "–");
         }
         const trend = document.getElementById("kpi-total-trend");
         if (trend) trend.textContent = "–";
@@ -855,7 +881,10 @@
             : null;
         today = NOTIFICATIONS.filter((n) => n.isToday).length;
       }
-      document.getElementById("kpi-total").textContent = total.toLocaleString();
+      setStatValue(
+        document.getElementById("kpi-total"),
+        total.toLocaleString(),
+      );
       /* F1：.stat-delta 是**药丸**（↑/↓ + 差值），不是「实时」这种描述词。
        * 没有昨日基线可比时只显示中性文案 –（药丸底仍在，视觉不塌）——
        * 不得拿总数冒充增量；箭头也只在 up/down 成立时出现（delta===0 是纯数字）。 */
@@ -884,6 +913,7 @@
           el("span", { class: "text-2xl text-zinc-500", text: "%" }),
         );
       }
+      bumpStat(rateEl);
       document.getElementById("kpi-rate-sub").textContent =
         devices > 0
           ? t("index.kpi.devices_sub", "{n} 台设备 · 端到端加密").replace(
@@ -891,8 +921,8 @@
               devices,
             )
           : t("index.kpi.rate_na", "暂无接收设备，送达率不可用");
-      document.getElementById("kpi-today").textContent = today;
-      document.getElementById("kpi-devices").textContent = devices || "0";
+      setStatValue(document.getElementById("kpi-today"), today);
+      setStatValue(document.getElementById("kpi-devices"), devices || "0");
       document.getElementById("kpi-devices-sub").textContent = t(
         "index.kpi.devices_sub2",
         "推送订阅 + 长连接",
@@ -904,16 +934,22 @@
       const runningEl = document.getElementById("kpi-running");
       const failedEl = document.getElementById("kpi-failed");
       if (runningEl) {
-        runningEl.textContent = NOTIFICATIONS.filter((n) =>
-          RUNNING.has(n.status),
-        ).length.toLocaleString();
+        setStatValue(
+          runningEl,
+          NOTIFICATIONS.filter((n) =>
+            RUNNING.has(n.status),
+          ).length.toLocaleString(),
+        );
       }
       if (failedEl) {
-        failedEl.textContent = NOTIFICATIONS.filter((n) =>
-          ["failed", "canceled", "abandoned", "lease_expired"].includes(
-            n.status,
-          ),
-        ).length.toLocaleString();
+        setStatValue(
+          failedEl,
+          NOTIFICATIONS.filter((n) =>
+            ["failed", "canceled", "abandoned", "lease_expired"].includes(
+              n.status,
+            ),
+          ).length.toLocaleString(),
+        );
       }
     }
 
