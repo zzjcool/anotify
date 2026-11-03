@@ -2175,7 +2175,8 @@ html.flograph-fullscreen-open body {
 	line-height: 1;
 	color: var(--text);
 	white-space: nowrap;
-	overflow: hidden;
+	/* 不裁切：Sacramento 的 f/y 下伸部会落到 line box 之外，overflow:hidden
+	 * 会把字尾切掉（旧版字标没有这个属性）。折叠态本来就 display:none。 */
 }
 .app-brand-btn {
 	margin-left: auto;
