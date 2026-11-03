@@ -316,7 +316,9 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - [x] 独立验收（REVIEW-3）：**4.1/5，0 P0**；40 页次对比度不达标 0、溢出 0、`dupSub` 0、h1 唯一 20/20。
 - [x] 收尾 4 条 P1：KPI 第 2 卡药丸误用（第 3/4 卡同型问题一并修）、语言横幅下侧栏 footer 裁 44px、抽屉可见关闭+焦点进入、admin 无权限态改 `.empty`。
 
-**门禁**：`check-classes` 598 / `check-tailwind` 842 / `sitegen` 4×20 / `make fe` 22 资源；
+**开页抖动修复（用户反馈）**：4 路 scout 定位——并非侧栏宽度动画，而是 `#scope-switcher` 异步插入 53px（每页 nav 下移）+ 语言提示条首帧后 0→45px 逐帧展开（index/login 整页下滑）+ 慢 JS 时外壳重挂载横跳。修复：`#scope-slot` 骨架占位、语言条首帧即终态（去逐帧 offset 写入）、head 预排版 `#page-main`；首页事件卡骨架同高。实测 nav.y 2 值→1 值、banner 11 帧→1 帧、index CLS 0.104→0.0038、慢 JS 内容 x 恒 296/158。新增 e2e 门禁 `ui_shift`（21 断言）+ frontend 滚动用例补数据落定等待；全量 **1822/0**。
+
+**门禁**：`check-classes` 599 / `check-tailwind` 845 / `sitegen` 4×20 / `make fe` 22 资源；
 `make e2e` 全绿（frontend 386/0；contract 曾因并行 SQLite `database is locked` 偶发，单跑 55/0）。
 
 **遗留（非阻塞，按优先级）**
