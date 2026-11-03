@@ -982,8 +982,7 @@
         NEW_KEY_PLAIN = "";
         PENDING_KEY = null;
         setStep(1);
-        modal.classList.remove("hidden");
-        modal.classList.add("flex");
+        Anotify.openModal(modal);
         document.body.style.overflow = "hidden";
         const first = document.getElementById("new-key-name");
         if (first) first.focus({ preventScroll: true });
@@ -991,8 +990,7 @@
 
       function closeCreate() {
         const modal = modalEl();
-        modal.classList.add("hidden");
-        modal.classList.remove("flex");
+        Anotify.closeModal(modal);
         document.body.style.overflow = "";
         document.getElementById("new-key-value").textContent = "";
         NEW_KEY_PLAIN = "";

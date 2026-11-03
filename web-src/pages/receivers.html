@@ -1190,15 +1190,13 @@
           pairName.value = meta.label;
           pairStatus.className = "rc-msg hidden";
           pairStatus.textContent = "";
-          pairModal.classList.remove("hidden");
-          pairModal.classList.add("flex");
+          Anotify.openModal(pairModal);
           document.body.style.overflow = "hidden";
           pairName.focus({ preventScroll: true });
         }
         function closePair() {
           if (pairModal.classList.contains("hidden")) return;
-          pairModal.classList.add("hidden");
-          pairModal.classList.remove("flex");
+          Anotify.closeModal(pairModal);
           document.body.style.overflow = "";
           const back = pairLastFocus;
           pairLastFocus = null;

@@ -1176,12 +1176,12 @@
       // （否则键盘用户关掉弹层就掉回页面顶端，不知道自己在哪）。
       function showModal(modal, trigger) {
         modal._trigger = trigger || document.activeElement || null;
-        modal.classList.replace("hidden", "flex");
+        Anotify.openModal(modal);
       }
 
       function hideModal(modal) {
         if (!modal || modal.classList.contains("hidden")) return;
-        modal.classList.replace("flex", "hidden");
+        Anotify.closeModal(modal);
         const back = modal._trigger;
         modal._trigger = null;
         if (back && typeof back.focus === "function") back.focus();

@@ -945,13 +945,11 @@
 
         setText("confirm-title", title);
         setText("confirm-body", body || "");
-        modal.classList.remove("hidden");
-        modal.classList.add("flex");
+        Anotify.openModal(modal);
         if (okBtn) okBtn.focus();
 
         const cleanup = () => {
-          modal.classList.add("hidden");
-          modal.classList.remove("flex");
+          Anotify.closeModal(modal);
           if (okBtn) okBtn.onclick = null;
           if (cancelBtn) cancelBtn.onclick = null;
           modal.removeEventListener("click", onBackdrop);

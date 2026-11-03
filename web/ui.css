@@ -2198,6 +2198,18 @@ html.flograph-fullscreen-open body {
 	}
 }
 
+/* 品牌瓷砖：黑底白字，两套主题共用一张脸。
+ * 原先靠 Tailwind 的 bg-black + ring-1 ring-white/15 —— 后者属于亮色兼容层要
+ * 重映射的灰度类，这里换成 token 组件类，尺寸与圆角仍由调用方给。 */
+.brand-tile {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	background: var(--brand-tile-bg);
+	box-shadow: 0 0 0 1px var(--brand-tile-ring);
+}
+
 .app-brand {
 	display: flex;
 	align-items: center;
@@ -3261,6 +3273,16 @@ html.flograph-fullscreen-open body {
 	opacity: 0;
 }
 
+/* 主题切换降并发（MOTION-CONTRACT / D4）：
+ * applyTheme 换色的 220ms 窗口里把全站过渡临时关掉 —— 否则一次换主题会同时
+ * 起 99–181 条颜色过渡，把主线程拖成 150ms 长帧。
+ * 排除遮罩自己：它要在这 220ms 里淡出。 */
+html.theme-switching *:not(.theme-flip-overlay),
+html.theme-switching *::before,
+html.theme-switching *::after {
+	transition: none !important;
+}
+
 /* ---------- 共享 toast（partials.js 的 #anotify-toast-host）----------
  * 入场 translateY(8px)+opacity；3600ms 后先播 160ms 退场再 remove。
  * 错误 kind 的点与边框都用 --error（旧实现只有点、边框仍是中性）。 */
@@ -3292,7 +3314,7 @@ html.flograph-fullscreen-open body {
 
 /* ---------- 弹层 ----------
  * 遮罩 120ms 淡入，面板 160ms opacity+translateY(4px)+scale(.98)。
- * 关闭仍是页面切 hidden↔flex 的硬切，不引入退场状态机；
+ * 关闭走共享的 .is-closing 退场（下方 modal-*-out），不在各页新增状态机；
  * 页面自定义 .modal-panel 变体只改尺寸，不含 transform/opacity，互不冲突。 */
 @keyframes modal-backdrop-in {
 	from {
@@ -3310,6 +3332,27 @@ html.flograph-fullscreen-open body {
 }
 .modal-panel {
 	animation: modal-panel-in var(--dur-mid) var(--ease-out) both;
+}
+
+/* 弹层退场（D6）：入场仍是上面的 animation；关闭不再硬切 —— partials.js 的
+ * Anotify.closeModal 先加 .is-closing 播 140ms 淡出，计时到点再切 hidden。
+ * 这里只在本状态里换 animation，绝不动 .modal-backdrop 的 display。 */
+@keyframes modal-backdrop-out {
+	to {
+		opacity: 0;
+	}
+}
+@keyframes modal-panel-out {
+	to {
+		opacity: 0;
+		transform: translateY(4px) scale(0.98);
+	}
+}
+.modal-backdrop.is-closing:not(.hidden) {
+	animation: modal-backdrop-out var(--dur-modal-out) var(--ease) both;
+}
+.modal-backdrop.is-closing:not(.hidden) .modal-panel {
+	animation: modal-panel-out var(--dur-modal-out) var(--ease) both;
 }
 
 /* ---------- 列表 / 卡片入场（stagger）----------
@@ -3586,9 +3629,12 @@ html.flograph-fullscreen-open body {
 :root[data-theme="light"] .text-zinc-200 {
 	color: var(--text);
 }
-/* 深色表面上的白字要保留（logo 方块等）：这些底在亮色主题下仍是黑的 */
+/* 深色表面上的白字要保留（logo 方块等）：这些底在亮色主题下仍是黑的。
+ * `.brand-tile` 是 logo 方块的新组件类（底仍是黑），白字例外必须同时认它 ——
+ * 少了这一条，亮色下字标会落到 --text（#11131c 压黑底，1.13:1，实测消失）。 */
 :root[data-theme="light"] .bg-black .text-white,
-:root[data-theme="light"] .bg-black\/80 .text-white {
+:root[data-theme="light"] .bg-black\/80 .text-white,
+:root[data-theme="light"] .brand-tile .text-white {
 	color: #fff;
 }
 :root[data-theme="light"] .text-zinc-300,

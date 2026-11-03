@@ -220,7 +220,7 @@
 			el(
 				"div",
 				{
-					class: `flex ${s} items-center justify-center rounded-lg bg-black ring-1 ring-white/15`,
+					class: `brand-tile ${s} rounded-lg`,
 				},
 				el("span", {
 					class: "font-script text-lg leading-none text-white",
@@ -323,6 +323,22 @@
 		return veil;
 	}
 
+	/* 主题切换降并发（D4/D5）：换色那 220ms 把全站过渡关掉，避免一次换主题
+	   同时起 100+ 条颜色过渡（实测 99–181 条 / 150ms 长帧）。只锁这个窗口，
+	   遮罩自身的淡出在 CSS 里被排除。reduce 下完全跳过。 */
+	const THEME_LOCK_MS = 220;
+	let themeLockTimer = 0;
+	function lockThemeTransitions() {
+		if (REDUCE_MOTION.matches) return;
+		const root = document.documentElement;
+		root.classList.add("theme-switching");
+		if (themeLockTimer) clearTimeout(themeLockTimer);
+		themeLockTimer = setTimeout(() => {
+			themeLockTimer = 0;
+			root.classList.remove("theme-switching");
+		}, THEME_LOCK_MS);
+	}
+
 	function fadeThemeVeil(veil) {
 		if (!veil) return;
 		const dur =
@@ -343,8 +359,9 @@
 		const root = document.documentElement;
 		/* 只有用户主动切换（persist）且主题真的变了才铺遮罩；
 		 * 首帧 / 跟随系统（persist=false）不铺。 */
-		const veil =
-			persist && theme !== root.dataset.theme ? createThemeVeil() : null;
+		const changed = persist && theme !== root.dataset.theme;
+		const veil = changed ? createThemeVeil() : null;
+		if (changed) lockThemeTransitions();
 		root.dataset.theme = theme;
 		root.style.colorScheme = theme;
 		const meta = document.querySelector('meta[name="theme-color"]');
@@ -398,12 +415,28 @@
 		}
 	}
 
+	/* 移动抽屉的对话语义：只在「抽屉态」挂 dialog 角色（D1/D3）。
+	   桌面常驻侧栏是普通导航，不能标 aria-modal。 */
+	function setDrawerDialog(sb, on) {
+		if (!sb) return;
+		if (on) {
+			sb.setAttribute("role", "dialog");
+			sb.setAttribute("aria-modal", "true");
+			sb.setAttribute("aria-label", t("common.nav.menu", "菜单"));
+		} else {
+			sb.removeAttribute("role");
+			sb.removeAttribute("aria-modal");
+			sb.removeAttribute("aria-label");
+		}
+	}
+
 	/* 移动端抽屉：开。三个状态必须成对维护——
 	   state class（-translate-x-full / hidden）、body 滚动锁、aria-expanded。 */
 	function openSidebar() {
 		const sb = document.getElementById("sidebar");
 		const ov = document.getElementById("sidebar-overlay");
 		if (sb) sb.classList.remove("-translate-x-full");
+		setDrawerDialog(sb, true);
 		if (ov) ov.classList.remove("hidden");
 		document.body.style.overflow = "hidden";
 		const mb = document.getElementById("menu-btn");
@@ -422,6 +455,7 @@
 		const sb = document.getElementById("sidebar");
 		const ov = document.getElementById("sidebar-overlay");
 		if (sb) sb.classList.add("-translate-x-full");
+		setDrawerDialog(sb, false);
 		if (ov) ov.classList.add("hidden");
 		document.body.style.overflow = "";
 		const mb = document.getElementById("menu-btn");
@@ -1216,6 +1250,17 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		else if (typeof mobileMQ.addListener === "function")
 			mobileMQ.addListener(syncMenuBtn);
 
+		/* D3：从抽屉态放大到桌面后，侧栏不再是模态框 —— 只剥角色，不碰滚动锁。 */
+		const syncDrawerRole = () => {
+			if (mobileMQ.matches) return;
+			setDrawerDialog(document.getElementById("sidebar"), false);
+		};
+		syncDrawerRole();
+		if (typeof mobileMQ.addEventListener === "function")
+			mobileMQ.addEventListener("change", syncDrawerRole);
+		else if (typeof mobileMQ.addListener === "function")
+			mobileMQ.addListener(syncDrawerRole);
+
 		/* 主题三态按钮：图标/文案由 paintThemeToggle 画（依赖当前 mode，不是 resolved） */
 		const themeBtn = el("button", {
 			id: "theme-toggle",
@@ -1406,6 +1451,36 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		document.addEventListener("keydown", (e) => {
 			if (e.key === "Escape" && !overlay.classList.contains("hidden"))
 				closeSidebar();
+		});
+
+		/* 焦点陷阱（D2）：抽屉开着时 Tab / Shift+Tab 在面板内首尾循环。
+		   不用 inert —— 它会挡住 e2e 的合成点击；也不改 tabindex。
+		   守卫必须同时认断点：≥1024 时遮罩是靠 CSS（lg:hidden）藏的，`hidden` 类
+		   还在，只查 hidden 会让「移动端开抽屉 → 放大到桌面」后仍被陷阱卡住
+		   （桌面侧栏只是常驻导航，WCAG 2.1.2 键盘陷阱）。 */
+		document.addEventListener("keydown", (e) => {
+			if (e.key !== "Tab") return;
+			if (!mobileMQ.matches || overlay.classList.contains("hidden")) return;
+			const items = Array.prototype.filter.call(
+				sidebar.querySelectorAll(
+					'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+				),
+				(n) => n.offsetWidth > 0 || n.offsetHeight > 0,
+			);
+			if (!items.length) return;
+			const first = items[0];
+			const last = items[items.length - 1];
+			const active = document.activeElement;
+			const inside = sidebar.contains(active);
+			if (e.shiftKey) {
+				if (!inside || active === first) {
+					e.preventDefault();
+					last.focus();
+				}
+			} else if (!inside || active === last) {
+				e.preventDefault();
+				first.focus();
+			}
 		});
 		sidebar.addEventListener("click", (e) => {
 			const a =
@@ -2070,6 +2145,54 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return box;
 	}
 
+	/* ---------- 弹层：共享开关 + 退场（D6/D7） ----------
+	 * 9 个页内 modal 各自维护 hidden↔flex（见 web-src/pages/*.html）。这里只补
+	 * 两件共享的事，不改各页的打开逻辑与 aria：
+	 *   1) 退场：加 .is-closing 播 140ms 淡出，计时到点才切 hidden（原本硬切）；
+	 *   2) 重开：清掉可能残留的 .is-closing —— 140ms 窗口内重开若不清，会卡在淡出态。
+	 * 幂等：重复调用 / 已隐藏 / 传空都不抛错、不重复计时。 */
+	const MODAL_CLOSE_TIMERS = new WeakMap();
+	const MODAL_CLOSE_FALLBACK_MS = 140;
+
+	function openModal(backdrop) {
+		if (!backdrop || !backdrop.classList) return;
+		const prev = MODAL_CLOSE_TIMERS.get(backdrop);
+		if (prev) {
+			clearTimeout(prev);
+			MODAL_CLOSE_TIMERS.delete(backdrop);
+		}
+		backdrop.classList.remove("is-closing");
+		backdrop.classList.remove("hidden");
+		backdrop.classList.add("flex");
+	}
+
+	function closeModal(backdrop) {
+		if (!backdrop || !backdrop.classList) return;
+		if (backdrop.classList.contains("hidden")) {
+			/* 已隐藏：只清残留退场态（幂等），不排计时 */
+			backdrop.classList.remove("is-closing");
+			return;
+		}
+		if (backdrop.classList.contains("is-closing")) return; /* 重复调用不叠加 */
+		backdrop.classList.add("is-closing");
+		/* 时长与 CSS 同源；reduce 下该 token 是 0ms，0 必须当有效值 */
+		const raw = parseFloat(
+			getComputedStyle(document.documentElement).getPropertyValue(
+				"--dur-modal-out",
+			),
+		);
+		const dur = Number.isFinite(raw) ? raw : MODAL_CLOSE_FALLBACK_MS;
+		MODAL_CLOSE_TIMERS.set(
+			backdrop,
+			setTimeout(() => {
+				MODAL_CLOSE_TIMERS.delete(backdrop);
+				backdrop.classList.add("hidden");
+				backdrop.classList.remove("flex");
+				backdrop.classList.remove("is-closing");
+			}, dur),
+		);
+	}
+
 	/* ---------- 导出 ---------- */
 	window.Anotify = {
 		el,
@@ -2081,6 +2204,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		mountLayout,
 		mountPullRefresh,
 		closeSidebar,
+		openModal,
+		closeModal,
 		theme: themeApi,
 		api,
 		copyText,

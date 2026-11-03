@@ -1500,12 +1500,10 @@
           copyAll.onclick = () => copyText(codes.join("\n"), copyAll);
           const cont = document.getElementById("codes-continue");
           cont.onclick = () => {
-            modal.classList.add("hidden");
-            modal.classList.remove("flex");
+            Anotify.closeModal(modal);
             if (typeof onContinue === "function") onContinue();
           };
-          modal.classList.remove("hidden");
-          modal.classList.add("flex");
+          Anotify.openModal(modal);
         }
       })();
     </script>

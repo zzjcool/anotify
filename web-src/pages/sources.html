@@ -1170,8 +1170,7 @@
       function openOverlay() {
         const modal = document.getElementById("src-modal");
         OVERLAY_LAST_FOCUS = document.activeElement;
-        modal.classList.remove("hidden");
-        modal.classList.add("flex");
+        Anotify.openModal(modal);
         // 焦点进到弹层里（首个字段），否则 Tab 会绕到背后的列表上
         const first = modal.querySelector("#f-name") || modal.querySelector(".modal-body input, .modal-body select");
         if (first) first.focus({ preventScroll: true });
@@ -1179,8 +1178,7 @@
 
       function closeModal() {
         const modal = document.getElementById("src-modal");
-        modal.classList.add("hidden");
-        modal.classList.remove("flex");
+        Anotify.closeModal(modal);
         editingID = null;
         EDITING_SRC = null;
         const back = OVERLAY_LAST_FOCUS;

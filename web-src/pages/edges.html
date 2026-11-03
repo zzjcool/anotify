@@ -533,7 +533,7 @@
       function openModal(trigger) {
         const modal = document.getElementById("edge-modal");
         modal._trigger = trigger || document.activeElement || null;
-        modal.classList.replace("hidden", "flex");
+        Anotify.openModal(modal);
 
         const fromSel = document.getElementById("f-from");
         const toSel = document.getElementById("f-to");
@@ -562,7 +562,7 @@
       function closeModal() {
         const modal = document.getElementById("edge-modal");
         if (modal.classList.contains("hidden")) return;
-        modal.classList.replace("flex", "hidden");
+        Anotify.closeModal(modal);
         const back = modal._trigger;
         modal._trigger = null;
         if (back && typeof back.focus === "function") back.focus();

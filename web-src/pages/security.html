@@ -2069,8 +2069,7 @@
       );
       document.getElementById("enroll-failed-action").onclick =
         closeEnrollModal;
-      document.getElementById("enroll-modal").classList.remove("hidden");
-      document.getElementById("enroll-modal").classList.add("flex");
+      Anotify.openModal(document.getElementById("enroll-modal"));
       return;
     }
 
@@ -2162,8 +2161,7 @@
         closeEnrollModal;
     }
 
-    document.getElementById("enroll-modal").classList.remove("hidden");
-    document.getElementById("enroll-modal").classList.add("flex");
+    Anotify.openModal(document.getElementById("enroll-modal"));
   }
 
   function closeEnrollModal() {
@@ -2202,8 +2200,7 @@
     stopEnrollWatch();
     stopEnrollCountdown();
     enrollSession = null;
-    document.getElementById("enroll-modal").classList.add("hidden");
-    document.getElementById("enroll-modal").classList.remove("flex");
+    Anotify.closeModal(document.getElementById("enroll-modal"));
   }
 
   async function getDeviceName() {

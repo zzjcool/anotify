@@ -46,6 +46,11 @@
 	--accent-2: rgba(139, 139, 253, 0.42);
 	--accent-3: rgba(139, 139, 253, 0.68);
 	--accent-4: #8b8bfd;
+	/* 品牌瓷砖（.brand-tile）：两套主题都保持黑底白字，只有描边跟主题走 ——
+	 * 暗底要亮边，亮底用深色发丝线。原先靠 Tailwind 的 ring-white/15，
+	 * 那属于亮色兼容层要重映射的灰度类，这里改成 token 不再依赖它。 */
+	--brand-tile-bg: #000000;
+	--brand-tile-ring: rgba(255, 255, 255, 0.15);
 
 	/* ── 语义色 Semantic（仅表状态，小面积）────────── */
 	--success: #34d399; /* 成功 */
@@ -113,16 +118,19 @@
 	--topbar-h: 64px;
 
 	/* ── 动效 ─────────────────────────────────────────
-	 * 词汇表（MOTION-CONTRACT §1）之外只补了三个必要刻度：
+	 * 词汇表（MOTION-CONTRACT §1）之外只补了四个必要刻度：
 	 * --dur-mid（弹层 / KPI / toast 退场）、--dur-toast（toast 入场 /
-	 * 遮罩淡入）、--dur-drawer（移动抽屉位移）。所有 CSS 动效必须引用
-	 * 这些 token，不再新增写死毫秒。 */
+	 * 遮罩淡入）、--dur-drawer（移动抽屉位移）、--dur-modal-out（弹层
+	 * 退场）。所有 CSS 动效必须引用这些 token，不再新增写死毫秒。 */
 	--dur-fast: 120ms;
 	--dur-mid: 160ms;
 	--dur-toast: 180ms;
 	--dur: 200ms;
 	--dur-drawer: 240ms;
 	--dur-slow: 320ms;
+	/* 弹层退场 140ms：ui.css 的 modal-*-out 动画与 partials.js 的
+	 * Anotify.closeModal 计时读同一个值（reduce 下归 0ms，JS 当有效值）。 */
+	--dur-modal-out: 140ms;
 	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
@@ -181,6 +189,10 @@
 	--accent-2: rgba(91, 91, 214, 0.24);
 	--accent-3: rgba(91, 91, 214, 0.44);
 	--accent-4: #5b5bd6;
+	/* 品牌瓷砖：底仍是黑（与暗色同一张脸），描边换深色发丝线 —— 亮底上的
+	 * 白 15% 描边等于没有，实测几乎不可见。 */
+	--brand-tile-bg: #000000;
+	--brand-tile-ring: rgba(15, 17, 26, 0.14);
 
 	/* 语义色 */
 	--success: #059669;
@@ -195,16 +207,18 @@
 	--error-300: #be123c;
 	--warn-300: #a16207;
 
-	/* 执行状态九态：作为**文字**时亮底（#fff/#f4f5fa）对比 ≥4.5:1；bar/dot 允许更深 */
+	/* 执行状态九态：作为**文字**时亮底（#fff/#f4f5fa）对比 ≥4.5:1；bar/dot 允许更深。
+	 * D9：running / abandoned / lease_expired 三态旧值压深，对 --surface-3(#eceef6)
+	 * 均 ≥4.5:1（原值只有 4.33 / 4.47 / 4.25）。其余六态已达标，不动。 */
 	--st-pending: #52525b;
 	--st-assigned: #1d4ed8;
 	--st-acked: #0e7490;
-	--st-running: #15803d;
+	--st-running: #147739;
 	--st-succeeded: #047857;
 	--st-failed: #b91c1c;
 	--st-canceled: #4b5563;
-	--st-abandoned: #c2410c;
-	--st-lease_expired: #a16207;
+	--st-abandoned: #b93e0b;
+	--st-lease_expired: #945a06;
 
 	/* 热力图空格：亮底下要比白卡「深一档」才看得出格子 */
 	--hm-empty: #e8eaf3;
@@ -243,5 +257,7 @@
 		--dur: 0ms;
 		--dur-drawer: 0ms;
 		--dur-slow: 0ms;
+		/* 弹层退场也归零：partials.js 的计时读这个值，0 会被当作有效值 */
+		--dur-modal-out: 0ms;
 	}
 }
