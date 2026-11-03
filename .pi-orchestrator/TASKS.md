@@ -27,6 +27,24 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 ## 当前任务
 
+### index-event-stream：首页淘汰「最近任务」，事件流升为主列表（fix/index-event-stream，2026-11-03）
+
+**用户诉求**（原话）：「首页这里进来看到的为什么还是以前的消息，这里都要被淘汰掉，我们现在是事件流」。
+
+**根因**：首页仍用 `/v1/tasks` 渲染「最近任务」列表（来源是任务表，包含历史行），事件流只占右栏 5 行小卡；产品对象已经是事件。
+
+**已做**：
+
+- [x] `web-src/pages/index.html`：删除「最近任务」卡片 / 筛选 tab / 客户端分页 / 任务详情弹层（`renderNotifs`、`normalize`、`openDetail`…）；事件流升为**全宽主列表**（8 行：源 → 类型 / traceId / 相对时间，点整行 → `trace.html`，footer 有「最近 N 条 + 刷新」）
+- [x] KPI / 摘要 / 热力图改事件口径（`/v1/stats` 的 total/today/daily 本来就是 events，只是文案写成了「任务」）；「进行中 / 异常任务」两卡只保留计数（`/v1/tasks?limit=50`），取不到显示 – 而非谎报 0
+- [x] 旧推送深链 `index.html?msg=<taskId>` → `message.html?id=<taskId>`（历史通知不会点成空页）
+- [x] i18n 四语言：删 `index.recent.* / index.notif.* / index.detail.*`，新增 `index.summary / index.events.refresh / index.events.count`；下拉刷新键迁到 `ui.index.pull_*`（`web/partials.js` 同步）
+- [x] `web/mock.js`：`/v1/stats` 的 total/today/daily 口径改为事件（对齐真后端，避免「事件 KPI 配任务数字」的静默漂移）
+- [x] e2e：frontend / real_backend 的等待锚点与错误态改用 `#index-events`；deeplink 新增「首页 `?msg` 重定向到 message.html」用例
+- [x] 门禁：`go test ./...` 通过；`E2E_CONCURRENCY=1 make e2e` → **1836 通过 / 0 失败**；web_verify 桌面 1440 + 移动 390 均 0 问题
+
+**边界**：`message.html`（任务详情页）保留 —— 它是 trace/执行结果详情，不是首页列表；`.notif-row` 组件样式暂留 `ui.css`（其它页可复用）。
+
 ### nav-collapse-integration：集成三 tab 收敛为单一「API 文档」（jic，2026-11-02）
 
 **用户诉求**：侧栏「集成」下的三个 tab（接入 Agent / API 文档 / 技术方案）都去掉，只保留 API 文档（并考虑把 OpenAPI 规范嵌进 API 页）；「接入 Agent」页与「技术方案」入口删除。

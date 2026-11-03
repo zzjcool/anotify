@@ -2250,19 +2250,19 @@
 		const evs = inNs(state.events, sc);
 		const tks = inNs(state.tasks, sc);
 		const ok = tks.filter((t) => t.status === "succeeded").length;
-		// 形状必须与真实 API 对齐（internal/store/stats.go）：
-		//   total / today / delivered / deliveryTotal / deviceCount / daily
-		// 早先这里是 totalTasks/totalEvents/… 那一套，页面读 STATS.total 永远是 0 ——
-		// 演示模式删掉后 mock 是唯一的假数据来源，形状漂移会直接变成"KPI 全 0"（#273）。
+		// 形状与口径都必须与真实 API 对齐（internal/store/stats.go）：
+		//   total / today / daily 统计的是**事件**；delivered / deliveryTotal 是终态任务。
+		// 早先是任务口径 —— 首页把 KPI 明确成「事件总数/今日事件」后，这里不改就会
+		// 出现「总览说事件数、数字却是任务数」的静默漂移（#273 同类问题）。
 		const today = new Date().toISOString().slice(0, 10);
 		const devices = state.devices || [];
 		return json({
-			total: tks.length,
-			today: tks.filter((t) => {
+			total: evs.length,
+			today: evs.filter((e) => {
 				const d =
-					typeof t.createdAt === "number"
-						? new Date(t.createdAt * 1000)
-						: new Date(t.createdAt || 0);
+					typeof e.createdAt === "number"
+						? new Date(e.createdAt * 1000)
+						: new Date(e.createdAt || 0);
 				return d.toISOString().slice(0, 10) === today;
 			}).length,
 			delivered: tks.filter((t) => t.reported).length,
@@ -2299,13 +2299,13 @@
 					const dd = String(d.getDate()).padStart(2, "0");
 					return d.getFullYear() + "-" + m + "-" + dd;
 				};
-				// 真实任务数按本地日聚合（numeric createdAt 是 unix 秒）
+				// 真实事件数按本地日聚合（numeric createdAt 是 unix 秒）
 				const byDay = new Map();
-				for (const t of tks) {
+				for (const e of evs) {
 					const d =
-						typeof t.createdAt === "number"
-							? new Date(t.createdAt * 1000)
-							: new Date(t.createdAt || 0);
+						typeof e.createdAt === "number"
+							? new Date(e.createdAt * 1000)
+							: new Date(e.createdAt || 0);
 					if (Number.isNaN(d.getTime())) continue;
 					const k = dayKeyOf(d);
 					byDay.set(k, (byDay.get(k) || 0) + 1);

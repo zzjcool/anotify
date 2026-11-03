@@ -126,9 +126,9 @@ async function checkPage(ctx, url, viewportName, viewport) {
 
 	// ---- 量高度之前的确定性等待：页面数据落定 ----
 	//
-	// 首页 #index-events 加载期是 5 行骨架（aria-busy="true"，见 index.html），
+	// 首页 #index-events 加载期是 8 行骨架（aria-busy="true"，见 index.html），
 	// 数据到达后 removeAttribute + replaceChildren。若在骨架期就量 scrollHeight
-	// 并滚到底，随后的 300ms 里 KPI 卡片/任务列表/事件列表陆续成型把文档顶高，
+	// 并滚到底，随后的 300ms 里 KPI 卡片/事件流陆续成型把文档顶高，
 	// 于是 scrollY 落在**新的**底部之上 —— 表现是「可滚动到底」假失败
 	// （桌面1280 / 移动390 index.html 两条）。这不是产品滚不动，是测试量早了。
 	//
@@ -139,15 +139,15 @@ async function checkPage(ctx, url, viewportName, viewport) {
 			timeout: 5000,
 		})
 		.catch(() => {});
-	// 若该页有通知列表（index），等列表真的出结果（有行，或已渲染空态/错误态）。
+	// 若该页有事件流（index），等它真的出结果（有行，或已渲染空态/错误态）。
 	await page
 		.waitForFunction(
 			() => {
-				const list = document.getElementById("notif-list");
-				if (!list) return true; // 该页没有这个列表
-				if (list.querySelector(".notif-row")) return true;
-				// 空态/错误态：列表已经渲染过内容（不是只剩骨架）
-				return (list.textContent || "").trim().length > 0;
+				const box = document.getElementById("index-events");
+				if (!box) return true; // 该页没有事件流
+				if (box.querySelector(".ev-feed-row")) return true;
+				// 空态/错误态：容器已经渲染过内容（不是只剩骨架）
+				return (box.textContent || "").trim().length > 0;
 			},
 			undefined,
 			{ timeout: 5000 },
@@ -586,9 +586,9 @@ async function main() {
 			waitUntil: "load",
 			timeout: 15000,
 		});
-		// 等数据加载（真实通知行渲染完成）
+		// 等数据加载（真实事件行渲染完成）
 		await H.waitForAppReady(page, "workspace", {
-			dataAnchor: "#notif-list .notif-row",
+			dataAnchor: "#index-events .ev-feed-row",
 		});
 
 		// FileServer 会把 /index.html 规范重定向到 /，所以这里验证「未跳去登录页」而非死磕文件名
@@ -1150,13 +1150,13 @@ async function main() {
 			JSON.stringify(demoLeftovers),
 		);
 
-		// 真实通知应出现在列表中
-		// 真实任务卡片显示 capability@version（title 来自 payload，进的是正文摘要）
+		// 首页主列表是**事件流**：上面那条 POST /v1/events 的 source 必须出现在最新行里
+		// （事件行的第一列是 source，type 是第二列；payload 的 title 不再上了首页）。
 		const hasReal = await page.evaluate(() => {
-			const t = document.body.textContent || "";
-			return t.includes("frontend.work") || t.includes("前端真实数据验证");
+			const rows = Array.from(document.querySelectorAll("#index-events .ev-feed-row"));
+			return rows.some((r) => (r.textContent || "").includes("frontend.src"));
 		});
-		H.check("已登录 index 显示真实任务数据", hasReal);
+		H.check("已登录 index 显示真实事件数据", hasReal);
 
 		await page.close();
 		await ctx.close();
@@ -1166,6 +1166,13 @@ async function main() {
 	console.log("--- index 后端宕机（错误态 + 重试）---");
 	{
 		const s = H.seed(server.dbPath, "demo_test");
+		// 先造一条真实事件：恢复后端后，「重试」要能把它取回来 ——
+		// 没有数据时重试后是空态，无法证明重试真的重新取了。
+		const ev = await H.req(server.base, "/v1/events", {
+			key: s.sendKey,
+			body: { source: "index.retry", type: "probe", payload: {} },
+		});
+		H.check("G 造事件 → 200", ev.status === 200, `status=${ev.status}`);
 		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
 		// 拦截 /v1/* 模拟后端宕机（网络错误，非 401 → 不跳登录）
@@ -1177,17 +1184,17 @@ async function main() {
 		});
 		await H.waitForAppReady(page, "workspace");
 
-		// 错误态出现：列表位置渲染「载入失败…」+ 重试按钮
+		// 错误态出现：事件流位置渲染「载入失败…」+ 重试按钮
 		const errState = await page.evaluate(() => {
-			const list = document.getElementById("notif-list");
-			const btn = list && list.querySelector("button");
+			const box = document.getElementById("index-events");
+			const btn = box && box.querySelector("button");
 			return {
-				hasList: !!list,
-				text: (list && list.textContent) || "",
+				hasList: !!box,
+				text: (box && box.textContent) || "",
 				hasRetry: !!btn,
 				retryText: btn ? btn.textContent.trim() : "",
 				badge: !!document.getElementById("demo-badge"),
-				rows: document.querySelectorAll("#notif-list .notif-row").length,
+				rows: document.querySelectorAll("#index-events .ev-feed-row").length,
 			};
 		});
 		H.check(
@@ -1197,7 +1204,7 @@ async function main() {
 		);
 		H.check("错误态提供「重试」按钮", errState.hasRetry, JSON.stringify(errState));
 		H.check(
-			"错误态不伪造任何任务行（不渲染演示数据）",
+			"错误态不伪造任何事件行（不渲染演示数据）",
 			errState.rows === 0,
 			`rows=${errState.rows}`,
 		);
@@ -1206,17 +1213,17 @@ async function main() {
 		// 恢复后端 → 点重试 → 真实数据出现（证明"重试"是真的重取，不是装饰）
 		await ctx.unroute("**/v1/**");
 		await page.evaluate(() => {
-			const btn = document.querySelector("#notif-list button");
+			const btn = document.querySelector("#index-events button");
 			if (btn) btn.click();
 		});
 		await page.waitForFunction(
-			() => document.querySelectorAll("#notif-list .notif-row").length > 0,
+			() => document.querySelectorAll("#index-events .ev-feed-row").length > 0,
 			{ timeout: 15000 },
 		);
 		const afterRetry = await page.evaluate(
-			() => document.querySelectorAll("#notif-list .notif-row").length,
+			() => document.querySelectorAll("#index-events .ev-feed-row").length,
 		);
-		H.check("点重试后真实任务出现", afterRetry > 0, `rows=${afterRetry}`);
+		H.check("点重试后真实事件出现", afterRetry > 0, `rows=${afterRetry}`);
 
 		await page.close();
 		await ctx.close();

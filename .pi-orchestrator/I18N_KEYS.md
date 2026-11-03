@@ -14,9 +14,10 @@
 - common.brand.tagline=Agent 完成即通知
 
 ### index.*
-- index.title=总览  index.subtitle=你的通知一览  (mountLayout 用)
-- index.greeting=你好  index.loading=正在加载你的通知统计…
-- index.kpi.* / index.heatmap.* / index.quickstart.* / index.recent.* / index.detail.*
+- index.title=总览  index.subtitle=事件流一览  (mountLayout 用)
+- index.greeting=你好  index.loading=正在加载事件统计…
+- index.kpi.* / index.heatmap.* / index.quickstart.* / index.events.*（首页事件流）/ index.summary
+- 下拉刷新文案在 ui.index.pull_*（partials.js 共享，不挂在页面命名空间下）
 
 ### login.*
 - login.title=登录  login.welcome=欢迎回到 Anotify  login.subtitle=无需密码…
