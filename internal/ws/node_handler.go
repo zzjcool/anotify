@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -99,6 +100,36 @@ type NodeHandler struct {
 	//     父任务已经成功完了，子任务行也已落库为 pending + node_id NULL，
 	//     由 store.ListRedispatchable / lease sweeper 兜底重派。
 	NextHop NextHopDispatcher
+
+	// Emit 处理 emit 帧（P1.1 / P1.3，docs/design/emit-protocol.md §3.1 / §7）。
+	//
+	// 为 nil 时收到 emit 帧一律回 emit_ack{error}（**不断连接**）：
+	// 「未装配」不该表现为断连，否则节点会进入「重连 → 重发 → 又断」的风暴。
+	Emit EmitDispatcher
+
+	// Expects 推导 assign.expects（P1.4，设计 §3.4）。
+	//
+	// 为 nil 时帧里不下发这个字段（老装配/测试），行为与加它之前完全一致。
+	Expects ExpectsBuilder
+}
+
+// EmitDispatcher 处理一次 emit（由 route.Dispatcher 实现）。
+//
+// 本包只负责「把帧转成一次路由调用，再把结果写成 emit_ack」：状态机、seq 连续性、
+// 幂等、建子任务行全在 route/store。抽成接口的理由与 NextHopDispatcher 相同——
+// 让本包可以用假实现在不起真库的情况下验证帧层（拒收不断连、错误走 error 字段）。
+//
+// 返回值 error 非空 = 这次 emit 被拒收。**一律**翻译成 emit_ack.error，
+// 不能用 error 帧（那是协议错误，节点会重连），也不能断连。
+type EmitDispatcher interface {
+	Emit(ctx context.Context, in route.EmitInput) (*route.EmitOutput, error)
+}
+
+// ExpectsBuilder 推导「这个端口的 data 要被怎样消费」（由 route.Dispatcher 实现）。
+//
+// 参数是能力**定义 id**（edges.from_key 现在的口径），ports 是该能力的 outputs。
+type ExpectsBuilder interface {
+	BuildExpects(ctx context.Context, namespaceID, capabilityID string, ports []string) (map[string]route.PortExpect, error)
 }
 
 // NextHopDispatcher 接力派发下一跳（由 route.Dispatcher 实现）。

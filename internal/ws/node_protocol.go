@@ -267,6 +267,45 @@ type AssignFrame struct {
 	MaxDuration int            `json:"max_duration_sec"`
 	Digest      string         `json:"digest,omitempty"`
 	TraceID     string         `json:"trace_id,omitempty"`
+
+	// Ports 是本次运行**允许上报的出口名**（能力的 ports 快照）。
+	//
+	// 它是 I2「出口是封闭集合」的降级点：以前只能等进程退出、看到 .anotify-out
+	// 才发现出口名写错了；有了它，emit 当时就能拒。
+	Ports []string `json:"ports,omitempty"`
+
+	// Expects 是「这个端口的 data 要被怎样消费」，按 port 名索引。
+	//
+	// 它是**推导量**：中枢在派发那一刻从 link 算出来（各下游 params_schema 减去
+	// 各自 literals 的并集 + 给人看的 targets），不落库。节点只持有本次任务的份，
+	// 任务结束就丢——所以节点始终不掌握拓扑（只能知道自己的出边去哪、要什么）。
+	Expects map[string]PortExpect `json:"expects,omitempty"`
+
+	// Token 是该任务的一次性令牌：本地 emit socket 用它鉴权。
+	//
+	// 为什么需要它：socket 是父子进程共享的，同一台机器上可能有多个任务的进程；
+	// 没有令牌，一个任务的脚本可以替另一个任务 emit（伪造产出）。
+	Token string `json:"token,omitempty"`
+}
+
+// PortExpect 是一个端口的产出要求（emit 时校验）。
+//
+// Schema 是**机器门槛**：
+// 该端口所有下游要求的并集（各自 params_schema 减去 literals）。
+// 为空 = 没有下游（到此为止），此时只做结构校验。
+//
+// Targets 是**给人/LLM 看的**：这个口能去哪、各自要什么。
+// 实现据此主动拼对参数，而不是被拒了再猜。
+type PortExpect struct {
+	Schema  json.RawMessage `json:"schema,omitempty"`
+	Targets []ExpectTarget  `json:"targets,omitempty"`
+}
+
+// ExpectTarget 描述一个下游：谁、哪些版本、它需要哪些字段（去掉被 literals 覆盖的）。
+type ExpectTarget struct {
+	Capability string          `json:"capability"`
+	Version    int             `json:"version,omitempty"`
+	Needs      json.RawMessage `json:"needs,omitempty"`
 }
 
 // CancelFrame 要求节点停止某任务。

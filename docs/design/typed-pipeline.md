@@ -268,11 +268,13 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 
 ### P0 · 记账与边界（纯增量，互不阻塞）
 
-| # | 改动 |
-|---|---|
-| P0.1 | `tasks.digest` + `assign.digest`；节点优先 `<artifacts>/<digest>`，缺失即可见失败（缓存索引已是 `name@version → digest`） |
-| P0.2 | `trigger.result_schema` + 入口校验 + `prune(event_schema)` + 采样草稿 |
-| P0.3 | 保存 link 时硬拒 `literals` 的类型错、`port ∉ ports`、同名不同型 |
+| # | 改动 | 状态 |
+|---|---|---|
+| P0.1 | `tasks.digest` + `assign.digest`；节点优先 `<artifacts>/<digest>`，缺失即可见失败（缓存索引已是 `name@version → digest`） | ✅ 已完成（`a2e9b25`）。顺带修了一个真 bug：`assignFrameFor` 从未填过 digest，节点按 digest 取产物的路径**永远走不到** |
+| P0.2 | `trigger.result_schema` + 入口校验 + `prune(event_schema)` + 采样草稿 | ✅ 已完成（`a2e9b25`）。采样草稿未做（见 §11） |
+| P0.3 | 保存 link 时硬拒 `literals` 的类型错、`port ∉ ports`、同名不同型 | ✅ 已完成（`692c8d3`）；`literals` 已进 graph 快照（改常量 = 新图版本） |
+
+> 共享基础：`internal/schema`（零依赖的受控子集校验器）。配置期、入口、派发期、投递期四处共用一份实现——否则「存的时候说类型对、派发时被剪枝」这种判定无法自圆。
 
 ### P1 · emit（本轮最大一块，独立成期）
 

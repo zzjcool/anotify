@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -199,7 +201,16 @@ func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string,
 			ErrTaskInflight, task.ID, s.node.ID)
 	}
 
-	data, err := Encode(assignFrameFor(task))
+	// 帧骨架由纯函数给出（好测）；P1 的三项（ports / expects / token）**在这里**补：
+	// 它们要读库，而 assignFrameFor 不该因此变成一个需要 DB 的函数。
+	//
+	// 为什么补在发布路径而不是派发路径：PublishAssign 是唯一出口——
+	// launch（首次派发）与 RedispatchTask（重派/巡检）都走它，所以这三项
+	// 不会因为走了哪条路径而漏一份（这也是「不要改 assignFrameFor 签名」的原因：
+	// 它会逼着每个调者拿一个 ctx+store）。
+	frame := assignFrameFor(task)
+	s.enrichAssign(ctx, task, frame)
+	data, err := Encode(frame)
 	if err != nil {
 		return err
 	}
@@ -259,6 +270,83 @@ func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string,
 // assignFrameOverheadBytes 是 assign 帧除 params 之外的余量（字段名 + 租约/任务 ID 等）。
 // 4KiB 远大于实际开销（约 120B），留它是为了让「params 刚好在上限内」的任务能正常派发。
 const assignFrameOverheadBytes = 4 << 10
+
+// enrichAssign 补全 assign 帧里那三项**推导出来的**字段（P1.1 / P1.4，设计 §3.4）。
+//
+//	ports   = 该能力定义的 outputs（I2 封闭集合的快照：节点据此当场拒掉写错的出口名）
+//	expects = 按 port 推导的「下游要什么」（route.BuildExpects，不落库）
+//	token   = 该任务的一次性令牌（本地 emit socket 鉴权）
+//
+// 全部是 **best-effort**（失败只记日志、**不阻断派发**）：
+//   - 它们是降级信息：没有 ports 时节点仍能跑（只是 emit 时才报出口错），
+//     没有 expects 时实现只能靠被拒后猜，没有 token 时只能等下次重发；
+//   - 而派发失败会让这条任务退回 pending 重跑一次——代价大得多（可能是一次昂贵执行）。
+//     这条取舍与 pinDigest（审计字段不拦派发）同一个口径。
+//
+// 幂等：token 走 store.EnsureTaskToken（CAS 只在为空时写）——断线重连重发 assign
+// 时拿到的必须是同一个令牌，否则节点侧 outbox 的重发会被判成 token 无效。
+func (s *nodeSession) enrichAssign(ctx context.Context, task *store.Task, f *AssignFrame) {
+	capDef, err := s.h.Store.GetCapabilityByID(ctx, task.NamespaceID, task.CapabilityID)
+	if err != nil {
+		slog.Warn("assign enrichment: capability lookup failed",
+			"event", "node.ws.assign.enrich",
+			"node_id", s.node.ID,
+			"task_id", task.ID,
+			"capability_id", task.CapabilityID,
+			"error", err.Error())
+	} else {
+		f.Ports = capDef.Outputs
+		if s.h.Expects != nil && len(capDef.Outputs) > 0 {
+			expects, err := s.h.Expects.BuildExpects(ctx, task.NamespaceID, task.CapabilityID, capDef.Outputs)
+			if err != nil {
+				slog.Warn("assign enrichment: build expects failed",
+					"event", "node.ws.assign.enrich",
+					"node_id", s.node.ID,
+					"task_id", task.ID,
+					"capability_id", task.CapabilityID,
+					"error", err.Error())
+			} else {
+				f.Expects = expectsForFrame(expects)
+			}
+		}
+	}
+
+	token, err := s.h.Store.EnsureTaskToken(ctx, task.NamespaceID, task.ID, store.NewTaskToken())
+	if err != nil {
+		slog.Warn("assign enrichment: task token failed",
+			"event", "node.ws.assign.enrich",
+			"node_id", s.node.ID,
+			"task_id", task.ID,
+			"error", err.Error())
+		return
+	}
+	f.Token = token
+}
+
+// expectsForFrame 把 route 推导出来的 expects 转成线上帧的形状。
+//
+// 为什么要转（而不是两边共用一个类型）：route 包不能 import ws（否则 route 依赖
+// 传输层，而它现在只依赖 store）；而帧上的类型已冻结在 node_protocol.go 里。
+// 两边形状必须一致，node_emit_test.go 的 TestExpectsFrameShapeMatches 用
+// JSON 序列化结果钉死这一点（两边漂移会红）。
+func expectsForFrame(in map[string]route.PortExpect) map[string]PortExpect {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]PortExpect, len(in))
+	for port, e := range in {
+		targets := make([]ExpectTarget, 0, len(e.Targets))
+		for _, tg := range e.Targets {
+			targets = append(targets, ExpectTarget{
+				Capability: tg.Capability,
+				Version:    tg.Version,
+				Needs:      tg.Needs,
+			})
+		}
+		out[port] = PortExpect{Schema: e.Schema, Targets: targets}
+	}
+	return out
+}
 
 // assignFrameFor 把任务转成 assign 帧。
 //

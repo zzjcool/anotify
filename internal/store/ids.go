@@ -79,6 +79,22 @@ func NewTaskID() string      { return newID("tsk") }
 // NewPlaybookID 生成预案 ID：pb_<base62>（#193，与 mock / 设计稿的 pb_ 前缀一致）。
 func NewPlaybookID() string { return newID("pb") }
 
+// NewTaskToken 生成任务令牌：tok_<base62(24B 随机)>（P1，emit-protocol §1）。
+//
+// 与实体 ID 不同，它**不含时间戳、不要求可读**：令牌只需要不可猜。
+// 24 字节随机（192 bit）远超暴力猜测的可行域，也远大于 ID 生成器里
+// 「8 字节时间 + 8 字节随机」中那点真随机量。
+//
+// 同 newID：熵源不可用时不提供降级路径（可预测的令牌比崩掉危险）。
+func NewTaskToken() string {
+	var b [24]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		//nolint:panic // 见 newID 注释
+		panic("store: crypto/rand failed: " + err.Error())
+	}
+	return "tok_" + base62Encode(b[:])
+}
+
 // NewArtifactID 生成能力产物 ID：af_<base62>（console-declares epic）。
 func NewArtifactID() string { return newID("af") }
 

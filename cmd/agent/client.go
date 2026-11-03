@@ -297,6 +297,11 @@ type nodeAgent struct {
 	taskMu sync.Mutex
 	tasks  map[string]*taskCancel
 
+	// emits 是本连接上在跑任务的 emit socket 服务（task_id → 服务），
+	// 供 emit_ack 找回来路（中枢的确认只带 task_id + seq）。
+	emitMu sync.Mutex
+	emits  map[string]*emitServer
+
 	// wg 追踪所有任务 goroutine：优雅退出要等它们（最多 grace）。
 	//
 	// wgMu 只在两件事上持有：reserveTask 做 Add、drain 置 draining。两件事
@@ -326,6 +331,7 @@ func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDi
 		cancel:  cancel,
 		sems:    make(map[string]chan struct{}),
 		tasks:   make(map[string]*taskCancel),
+		emits:   make(map[string]*emitServer),
 	}
 }
 
@@ -481,6 +487,10 @@ func (a *nodeAgent) readLoop(ctx context.Context) error {
 			}
 		case *cancelFrame:
 			a.handleCancel(f)
+		case *emitAckFrame:
+			// 中途产出的确认（emit-protocol.md §3.2）：唤醒 --wait-routed 的等待者、
+			// 把成功的 seq 记进 outbox、把被拒的 seq 标成「不再重发」。
+			a.handleEmitAck(f)
 		case *errorFrame:
 			// 契约 §3.4.5：error 帧只记 warn，不断连接（握手阶段除外）。
 			a.log.Warn("control plane error",
@@ -654,7 +664,21 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		}
 
 		startAt := time.Now()
+		// emit socket 必须在**起能力进程之前**就监听好（emit-protocol.md §1）：
+		// 进程里第一次 `anotify-agent emit` 不能撞上「socket 还没起来」。
+		// 同时把 outbox 里上一次没 ack 的条目按 seq 补发（§7 的最后一条）。
+		es := a.startEmitServer(jctx, f, art)
+		if es != nil {
+			j.Emit = es
+		}
 		out := runJob(jctx, j)
+		// 能力进程已经退出（正常结束 / 超时 / 取消）：**先**关 socket 再回报 result。
+		// 顺序有意义——关掉之后晚到的 emit 只会得到「socket 不存在」（exit 6），
+		// 不可能在 result 之后还改动一个已终结的任务（§8）。
+		if es != nil {
+			a.stopEmitServer(f.TaskID, es)
+			es.Close()
+		}
 		a.log.Info("task finished",
 			"event", "agent.task.finished",
 			"task_id", f.TaskID,
@@ -693,6 +717,7 @@ func canceledOutcome(jctx context.Context, out outcome) outcome {
 	return out
 }
 
+// handleCancel 处理中枢的 cancel 帧。
 func (a *nodeAgent) handleCancel(f *cancelFrame) {
 	a.taskMu.Lock()
 	handle, ok := a.tasks[f.TaskID]
@@ -718,6 +743,80 @@ func (a *nodeAgent) untrackTask(taskID string, handle *taskCancel) {
 		delete(a.tasks, taskID)
 	}
 	a.taskMu.Unlock()
+}
+
+// startEmitServer 为这次任务起本地 emit socket（emit-protocol.md §1）。
+//
+// ctx 是**任务自己的** ctx：它取消（cancel 帧 / 收尾超时）就等于「任务已非运行态」，
+// socket 也随之收口（watchCtx）。
+//
+// 起不来时**不让任务失败**：能力可能根本不 emit（一次性返回也是合法的产出方式），
+// 因为一个本地 IPC 就把它判失败，代价比「脚本里 emit 得 exit 6」大得多。所以这里
+// 只记一条 warn，任务照跑（脚本真 emit 了会自己拿到 exit 6 和一句可读的话）。
+func (a *nodeAgent) startEmitServer(ctx context.Context, f *assignFrame, art *artifact.Artifact) *emitServer {
+	ports := f.Ports
+	if len(ports) == 0 && art != nil {
+		// 中枢没下发 ports（旧中枢 / 空快照）：退到产物自己声明的 spec.outputs。
+		// 它同样是**封闭集合**（I2 的源头），所以这不是放宽，只是换了个同源的事实。
+		ports = art.Spec.Outputs
+		a.log.Debug("assign 没有 ports，退到产物的 spec.outputs",
+			"event", "agent.emit.ports.fallback",
+			"task_id", f.TaskID, "ports", ports)
+	}
+	if f.Token == "" {
+		// 空令牌 = 不鉴权：同机其他进程能替这个任务 emit。这是中枢侧的退化，
+		// 节点无法自己造一个令牌（中枢得认它），所以只能把风险记下来。
+		a.log.Warn("assign 没有下发 emit 令牌：本地 socket 不鉴权",
+			"event", "agent.emit.token.empty", "task_id", f.TaskID)
+	}
+
+	es, err := newEmitServer(emitServerOptions{
+		DataDir: a.dataDir,
+		TaskID:  f.TaskID,
+		Token:   f.Token,
+		Ports:   ports,
+		Expects: f.Expects,
+		Ctx:     ctx,
+		Log:     a.log,
+		Send:    func(frame *emitFrame) error { return a.send(frame) },
+	})
+	if err != nil {
+		a.log.Warn("emit socket 起不来（任务照跑，但 emit 不可用）",
+			"event", "agent.emit.socket.failed",
+			"task_id", f.TaskID, "error", err.Error())
+		return nil
+	}
+
+	a.emitMu.Lock()
+	a.emits[f.TaskID] = es
+	a.emitMu.Unlock()
+	a.log.Info("emit socket ready",
+		"event", "agent.emit.socket.ready",
+		"task_id", f.TaskID, "path", es.Path(), "ports", es.portList())
+	return es
+}
+
+// stopEmitServer 把服务从登记表里摘下（只在表里那一份还是自己时才删）。
+func (a *nodeAgent) stopEmitServer(taskID string, es *emitServer) {
+	a.emitMu.Lock()
+	if a.emits[taskID] == es {
+		delete(a.emits, taskID)
+	}
+	a.emitMu.Unlock()
+}
+
+// handleEmitAck 把中枢对一次 emit 的确认转给对应任务的 emit 服务。
+func (a *nodeAgent) handleEmitAck(f *emitAckFrame) {
+	a.emitMu.Lock()
+	es := a.emits[f.TaskID]
+	a.emitMu.Unlock()
+	if es == nil {
+		// 常见且无害：任务刚好结束（socket 已收），或是上一个连接残留的答复。
+		a.log.Debug("emit_ack 对应不到在跑任务",
+			"event", "agent.emit_ack.unknown", "task_id", f.TaskID, "seq", f.Seq)
+		return
+	}
+	es.acknowledge(f)
 }
 
 // cancelAll 取消所有在跑任务并断掉 base（兜住残留写与残留任务）。

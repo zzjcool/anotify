@@ -92,11 +92,13 @@ func TestFrameTypeConstantsMatchServer(t *testing.T) {
 		{"progress", frameTypeProgress, ws.NodeFrameProgress},
 		{"result", frameTypeResult, ws.NodeFrameResult},
 		{"apply", frameTypeApply, ws.NodeFrameApply},
+		{"emit", frameTypeEmit, ws.NodeFrameEmit},
 		{"welcome", frameTypeWelcome, ws.NodeFrameWelcome},
 		{"assign", frameTypeAssign, ws.NodeFrameAssign},
 		{"deploy", frameTypeDeploy, ws.NodeFrameDeploy},
 		{"cancel", frameTypeCancel, ws.NodeFrameCancel},
 		{"error", frameTypeError, ws.NodeFrameError},
+		{"emit_ack", frameTypeEmitAck, ws.NodeFrameEmitAck},
 	}
 	for _, tc := range tests {
 		if tc.got != tc.want {
@@ -438,6 +440,47 @@ func TestDecodeDownstream(t *testing.T) {
 		if f.Type != frameTypeError || f.Code != ws.ErrCodeUnknownCapability ||
 			f.Message != "no such capability" || f.TaskID != "" {
 			t.Fatalf("error = %+v, fields drifted", *f)
+		}
+	})
+
+	t.Run("emit（上行产出）", func(t *testing.T) {
+		got, err := decodeDownstream([]byte(`{"type":"emit","task_id":"tsk_x","seq":3,` +
+			`"port":"fix","data":{"issue":"#42"},"note":"第 2 项"}`))
+		if err != nil {
+			t.Fatalf("decodeDownstream: %v", err)
+		}
+		// emit 是**上行**帧：下行解码必须不认得它（不能把方向搞反）。
+		if f, ok := got.(*unknownFrame); !ok || f.Type != frameTypeEmit {
+			t.Fatalf("decoded type = %T, want *unknownFrame{emit}", got)
+		}
+	})
+
+	t.Run("emit_ack", func(t *testing.T) {
+		got, err := decodeDownstream([]byte(`{"type":"emit_ack","task_id":"tsk_x","seq":3,` +
+			`"routed":2,"pruned":1}`))
+		if err != nil {
+			t.Fatalf("decodeDownstream: %v", err)
+		}
+		f, ok := got.(*emitAckFrame)
+		if !ok {
+			// 漏认 emit_ack = 每次确认都落到 unknown → --wait-routed 永远超时。
+			t.Fatalf("decoded type = %T, want *emitAckFrame（emit_ack 必须认出来）", got)
+		}
+		if f.Type != frameTypeEmitAck || f.TaskID != "tsk_x" || f.Seq != 3 ||
+			f.Routed != 2 || f.Pruned != 1 || f.Error != "" {
+			t.Fatalf("emit_ack = %+v, fields drifted", *f)
+		}
+	})
+
+	t.Run("emit_ack 带 error", func(t *testing.T) {
+		got, err := decodeDownstream([]byte(`{"type":"emit_ack","task_id":"tsk_x","seq":3,` +
+			`"error":"seq gap"}`))
+		if err != nil {
+			t.Fatalf("decodeDownstream: %v", err)
+		}
+		f, ok := got.(*emitAckFrame)
+		if !ok || f.Error != "seq gap" || f.Routed != 0 {
+			t.Fatalf("emit_ack = %+v, want error=seq gap / routed=0", got)
 		}
 	})
 

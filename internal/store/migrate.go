@@ -97,6 +97,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	18: migrateCapabilityToDeploy,
 	20: migrateTaskDigest,
 	21: migrateEdgeLiterals,
+	23: migrateTaskToken,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -147,6 +148,29 @@ func migrateTaskDigest(tx *sql.Tx) error {
 	if _, err := tx.Exec(
 		`ALTER TABLE tasks ADD COLUMN digest TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add column tasks.digest: %w", err)
+	}
+	return nil
+}
+
+// migrateTaskToken 迁移 23：给 tasks 加 token 列（P1，docs/design/emit-protocol.md §1/§3）。
+//
+// token 是每条任务的一次性令牌（节点本地 emit socket 鉴权）。默认空串 = 尚未生成：
+// 中枢在下一次发布 assign 时生成并写回（store.EnsureTaskToken 的 CAS），
+// 所以老数据补列后行为不变（帧里省略 token 字段，节点侧看不到差别）。
+//
+// 用 Go hook 而不是裸 ALTER 的理由与迁移 8 / 20 / 21 相同：SQLite 没有
+// `ADD COLUMN IF NOT EXISTS`，而迁移必须幂等（同一版本可能因重试执行多次）。
+func migrateTaskToken(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "tasks", "token")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`ALTER TABLE tasks ADD COLUMN token TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add column tasks.token: %w", err)
 	}
 	return nil
 }

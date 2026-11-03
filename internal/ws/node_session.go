@@ -10,11 +10,11 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// handleTaskFrame 处理 ack / progress / result 三种任务帧（契约 §6.1）。
+// handleTaskFrame 处理 ack / progress / result / emit 四种任务帧（契约 §6.1）。
 //
 // 部署帧（apply）不在这里：它不是任务帧，走 handleConfigFrame。
 //
-// 三种帧都必须先 hello（身份确定后才有命名空间维度可用），
+// 四种帧都必须先 hello（身份确定后才有命名空间维度可用），
 // 且都会续命（由 readLoop 的 touch 统一处理）。
 //
 // 作用域规则（#162）：
@@ -31,6 +31,8 @@ func (s *nodeSession) handleTaskFrame(ctx context.Context, frame any) error {
 		return s.handleProgress(ctx, f)
 	case *ResultFrame:
 		return s.handleResult(ctx, f)
+	case *EmitFrame:
+		return s.handleEmit(ctx, f)
 	default:
 		s.sendError(ctx, ErrCodeUnknownType, fmt.Sprintf("unexpected frame %T", frame))
 		return nil

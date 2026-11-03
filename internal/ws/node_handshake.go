@@ -51,6 +51,16 @@ type NodeStore interface {
 	// 就把它推下去覆盖（见 nodeSession.resendDeployments）。
 	DeploymentsForNode(ctx context.Context, namespaceID, nodeID string) ([]*store.DeploymentDelivery, error)
 	GetTask(ctx context.Context, namespaceID, id string) (*store.Task, error)
+	// GetCapabilityByID 读能力定义（P1.4：assign.ports 取它的 outputs）。
+	//
+	// 必须在发布 assign 时读，而不是建任务时快照：能力定义不可变（I8），
+	// 而任务行只钉 name@version，与中枢此刻的定义是同一份。
+	GetCapabilityByID(ctx context.Context, namespaceID, id string) (*store.CapabilityVersion, error)
+	// EnsureTaskToken 写回/读取任务令牌（P1：本地 emit socket 鉴权）。
+	//
+	// 语义是「只在为空时生成一次」：断线重连重发 assign 时必须拿到同一个，
+	// 否则节点上 outbox 的重发会被判成 token 无效（emit-protocol §1）。
+	EnsureTaskToken(ctx context.Context, namespaceID, taskID, candidate string) (string, error)
 	Transition(ctx context.Context, namespaceID, taskID, from, to string) error
 	// ProgressTask 一个事务内完成 progress 帧的三件事：→running + started_at + 续租。
 	ProgressTask(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error

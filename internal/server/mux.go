@@ -257,6 +257,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 任务成功回报 out 后派发下一跳（契约 §4 的递归应用）。
 	// 不接这个的话整条链路只能走一步——第一跳完成后就永远停在那里。
 	nodeH.NextHop = dispatcher
+	// emit 帧（P1）：唯一的产出通道。不接它的话节点上报的 emit 会被明确拒收
+	// （emit_ack.error），而不是静默丢掉——但链路也就只能靠旧的 result.out 跑。
+	nodeH.Emit = dispatcher
+	// assign 帧里的 ports / expects（P1.4）：让实现知道「我的出口能去哪、对面要什么」，
+	// 不必被拒了再猜（token 由 handler 自己生成，见 ws.enrichAssign）。
+	nodeH.Expects = dispatcher
 
 	// 租约巡检（契约 §3.3）：每 5s 回收过期租约并重派到期的 pending 任务。
 	//

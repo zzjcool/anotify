@@ -23,6 +23,11 @@ type (
 	progressFrame  = ws.ProgressFrame
 	applyFrame     = ws.ApplyFrame
 
+	// emitFrame 是一次**中途产出**（emit-protocol.md §3.1）：能力进程经本地 socket
+	// 交给 agent，agent 原样发给中枢。它与 result 帧的区别是「跑完之前也能发」，
+	// 而且它是**唯一**的产出通道（一次性返回只是「只 emit 一次」的特例）。
+	emitFrame = ws.EmitFrame
+
 	// appliedDecl 是「我缓存了什么」的陈述（v2 新增）。它**不是**能力声明：
 	// 中枢只拿它对账已部署的产物，不会凭它把能力归属给这台机器（裁决 D4）。
 	appliedDecl  = ws.AppliedDecl
@@ -38,6 +43,10 @@ type (
 	deployFrame  = ws.DeployFrame
 	cancelFrame  = ws.CancelFrame
 	errorFrame   = ws.ErrorFrame
+
+	// emitAckFrame 是中枢对一次 emit 的确认（emit-protocol.md §3.2）。
+	// error 非空 = 拒收；重复 seq 一律回 ok（幂等，不重复派发下游）。
+	emitAckFrame = ws.EmitAckFrame
 )
 
 // ---------- 常量 ----------
@@ -50,12 +59,16 @@ const (
 	frameTypeProgress  = ws.NodeFrameProgress
 	frameTypeResult    = ws.NodeFrameResult
 	frameTypeApply     = ws.NodeFrameApply
+	frameTypeEmit      = ws.NodeFrameEmit
 
 	frameTypeWelcome = ws.NodeFrameWelcome
 	frameTypeAssign  = ws.NodeFrameAssign
 	frameTypeDeploy  = ws.NodeFrameDeploy
 	frameTypeCancel  = ws.NodeFrameCancel
 	frameTypeError   = ws.NodeFrameError
+	// frameTypeEmitAck 必须在这里**显式**认出来：漏了它，中枢的每次确认都会落到
+	// unknownFrame 分支——emit 永远等不到 ack，--wait-routed 必然超时（§5）。
+	frameTypeEmitAck = ws.NodeFrameEmitAck
 )
 
 // result.status 的两个取值（契约 §6.1）。internal/ws 只在注释里写了
@@ -129,9 +142,9 @@ type decodeEnvelope struct {
 
 // decodeDownstream 把中枢发来的 JSON 解码成对应的下行帧。
 //
-// 返回 *welcomeFrame / *assignFrame / *deployFrame / *cancelFrame / *errorFrame
-// *别名* 指针（即 *ws.WelcomeFrame 等）；类型未知返回 (&unknownFrame{Type: t}, nil)；
-// JSON 本身坏了返回 error（对应 code=bad_frame 的接收侧处理）。
+// 返回 *welcomeFrame / *assignFrame / *deployFrame / *cancelFrame / *errorFrame /
+// *emitAckFrame *别名* 指针（即 *ws.WelcomeFrame 等）；类型未知返回
+// (&unknownFrame{Type: t}, nil)；JSON 本身坏了返回 error（对应 code=bad_frame 的接收侧处理）。
 func decodeDownstream(data []byte) (any, error) {
 	var env decodeEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -166,6 +179,12 @@ func decodeDownstream(data []byte) (any, error) {
 		var f errorFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, fmt.Errorf("decode error: %w", err)
+		}
+		return &f, nil
+	case frameTypeEmitAck:
+		var f emitAckFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode emit_ack: %w", err)
 		}
 		return &f, nil
 	default:

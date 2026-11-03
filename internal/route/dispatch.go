@@ -173,6 +173,28 @@ type Store interface {
 	//
 	// 没有产物时返回 store.ErrArtifactNotFound——那不是错误（见 plan 里的 pinDigest）。
 	LatestArtifact(ctx context.Context, namespaceID, capabilityID string) (*store.Artifact, error)
+
+	// ---- emit（P1.1，docs/design/emit-protocol.md §4 / §7）----
+	//
+	// emit 与派发共用同一套判定（plan），多出来的只有三件事：
+	// 任务行必须可 emit（非终态）、seq 必须连续且幂等、以及「emission 与子任务行
+	// 同事务」。下面四个方法就是这三件事需要的 store 表面。
+
+	// GetTask 读任务行。emit 的第一件事就是拿它：状态决定收不收、
+	// TraceID/Path/CapabilityID 决定新派发的形状（子任务只继承父任务的事实）。
+	GetTask(ctx context.Context, namespaceID, id string) (*store.Task, error)
+	// InsertEmissionAndCreateTasks 在**一个事务**里写 emission 并建子任务行（幂等）。
+	//
+	// 为什么不是两个方法：拆开就有「emission 已提交、下游行没有」的窗口——
+	// 节点已拿到 ack 不会重发，下游就永远不存在（emit-protocol §7）。
+	// 返回 first=false 表示重复 seq（什么都没写，调用方不得重复派发）。
+	InsertEmissionAndCreateTasks(ctx context.Context, e *store.Emission, ts []*store.Task) (first bool, err error)
+	// GetEmission 按 (task_id, seq) 取首次结果；未命中返回 store.ErrNotFound。
+	// 幂等路径靠它把首次的 routed/pruned 原样回给节点。
+	GetEmission(ctx context.Context, taskID string, seq int64) (*store.Emission, error)
+	// EmissionSeqStatus 返回已落库条数与最大 seq（缺口判定用）。
+	// 「条数 == n-1 且最大 seq == n-1」等价于「{1..n-1} 齐全」。
+	EmissionSeqStatus(ctx context.Context, taskID string) (count int, maxSeq int64, err error)
 }
 
 // Dispatcher 按派发四步算出要建的任务。

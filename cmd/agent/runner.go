@@ -83,6 +83,13 @@ type job struct {
 	// TimeoutOverride 是秒级的超时覆盖（只有 standalone 的 --timeout 会用）。
 	// 人站在终端前跑一次时，「我想先给它 30 秒试试」应该压过产物里写死的 900。
 	TimeoutOverride int
+
+	// Emit 是本次任务的本地 emit socket 服务（emit-protocol.md §1）。
+	//
+	// nil = 这条路径没有中枢（standalone），于是 **不写** ANOTIFY_EMIT_SOCK /
+	// ANOTIFY_TASK_TOKEN：能力进程看到「没有 socket」就走「本地模式无中枢，emit
+	// 不可用」的分支，而不是拿到一个空路径去 dial。
+	Emit *emitServer
 }
 
 // outcome 是一次执行的结果。
@@ -541,6 +548,13 @@ func buildEnv(base []string, j job, workDir, cwd string) ([]string, error) {
 	env["ANOTIFY_DIGEST"] = j.Digest
 	// 出口回报通道（CONTRACT-artifact §6.1）：脚本把出口名写进这个文件。
 	env[envOutFile] = filepath.Join(workDir, outFileName)
+
+	// emit 通道（emit-protocol.md §1）：socket 路径 + 一次性任务令牌。
+	// 只在「这次任务真的有 socket」时注入（见 job.Emit 的注释）。
+	if j.Emit != nil {
+		env[envEmitSock] = j.Emit.Path()
+		env[envTaskToken] = j.Emit.Token()
+	}
 
 	// 每个顶层参数一份 ANOTIFY_PARAM_<NAME>。按 key 排序后再生成：归一化之后
 	// 可能撞名（my-param / my_param → MY_PARAM），排序保证同一份 params 每次

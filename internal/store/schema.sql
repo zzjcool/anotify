@@ -338,6 +338,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     cap_hash       TEXT NOT NULL,             -- 派发时的能力定义 content_hash
     digest         TEXT NOT NULL DEFAULT '',  -- 派发时钉住的产物内容 digest（'' = 无产物/未知）
     graph_id       TEXT NOT NULL,             -- 派发时的 graph_versions.id
+    -- 一次性任务令牌（迁移 23）：节点本地 emit socket 用它鉴权。'' = 尚未生成。
+    -- 中枢只在「第一次发布 assign」时生成并写回，之后重发一律用库里那个值。
+    token          TEXT NOT NULL DEFAULT '',
 
     created_at     INTEGER NOT NULL,
     started_at     INTEGER,
@@ -817,3 +820,56 @@ ALTER TABLE deployments ADD COLUMN work_dir TEXT NOT NULL DEFAULT '';
 --
 -- 由 store.go 的 migrationHooks[21]（migrateEdgeLiterals）执行，SQL 空块——
 -- 理由与迁移 5 / 20 相同：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列必须幂等。
+
+-- +migration 22 emissions
+--
+-- P1.1（docs/design/emit-protocol.md §4 / §7）：**每一次 emit 的落库行**。
+--
+-- 为什么要有这张表（三件事，缺一不可）：
+--   ① 幂等键。PRIMARY KEY(task_id, seq) 是中枢侧唯一的去重依据：节点重连后按 seq
+--      重发未 ack 的 emit，中枢靠它做到「不重复派发下游」。改成内存表就等于把
+--      「进程重启」变成「重复派发 N 条任务」。
+--   ② 缺口证据。seq 必须从 1 连续递增；「收到 seq=n 但 1..n-1 不齐」是**丢消息的
+--      证据**，中枢明确拒绝而不是猜测/跳过（§4 缺口策略）。
+--   ③ 审计。已落库的 emissions 在任务被 cancel / 租约过期后仍然保留：回答「这个
+--      能力在运行中到底上报过什么」，与任务终态是两件事。
+--
+-- routed / pruned 存的是**首次**处理的结果。重复 seq 一律回同一份计数（不重算、
+-- 不重派）——所以它们必须落库，不能只放在返回值里。
+--
+-- 没有 namespace_id：task_id 全局唯一，任务行自己带着命名空间。再存一列就是第二份
+-- 真相（两者不一致时没有任何机制能发现）。
+--
+-- 外键 ON DELETE CASCADE：tasks 被 retention 清掉时，它的 emissions 一起走。
+-- 它们没有独立生命周期——脱离任务行的 emission 既不能派发也不能解释。
+CREATE TABLE IF NOT EXISTS emissions (
+    task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL,               -- 任务内单调递增，从 1 开始
+    port       TEXT NOT NULL,                  -- 上游回报的出口名（路由的唯一输入）
+    data       TEXT NOT NULL DEFAULT '{}',     -- 原样保存的 JSON 对象（审计用字节）
+    routed     INTEGER NOT NULL DEFAULT 0,     -- 首次处理派发出去几条下游
+    pruned     INTEGER NOT NULL DEFAULT 0,     -- 首次处理剪枝条数
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, seq)
+);
+
+-- +migration 23 task_token
+--
+-- P1.2（docs/design/emit-protocol.md §1 / §3）：**每任务一次性令牌**，节点本地的
+-- emit socket 用它鉴权（`ANOTIFY_TASK_TOKEN`）。
+--
+-- 为什么必须是一个独立随机值，而不是「任务 id + 节点令牌」：
+--   · 能力进程不持有中枢凭证（那是设计的一条边界），它只能说服 agent 代发；
+--   · 同一台机器上可能同时有多个任务的进程，没有令牌，一个任务的进程可以替
+--     另一个任务 emit（伪造产出）。令牌把「谁能代表这条任务说话」钉死在一个值上。
+--
+-- 为什么存在任务行上（而不是只存在节点内存里）：断线重连/中枢重启后重新下发
+-- assign 时必须下发**同一个**令牌，否则节点上的 outbox 重发会被判成 token 无效，
+-- 而 agent 无从区分「我该换令牌」与「有人在伪造」。写回库是唯一能让两端一致的
+-- 做法（生成用 CAS，只在为空时写，见 store.EnsureTaskToken）。
+--
+-- '' = 尚未生成（老数据补列后一律如此）：下一次发布 assign 时生成并写回，
+-- 在此之前的行为与加这一列之前完全一致（帧里省略 token 字段）。
+--
+-- 由 store.go 的 migrationHooks[23]（migrateTaskToken）执行，SQL 空块——
+-- 理由与迁移 5 / 20 / 21 相同：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列必须幂等。

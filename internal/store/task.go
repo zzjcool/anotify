@@ -397,6 +397,46 @@ func (d *DB) GetTask(ctx context.Context, namespaceID, id string) (*Task, error)
 	return scanTask(rows)
 }
 
+// EnsureTaskToken 保存任务令牌并返回**库里权威的那一个**（P1，emit-protocol §1/§3）。
+//
+// 语义是「只在为空时生成一次」：candidate 由调用方生成（store.NewTaskToken），
+// 这里用 CAS 写（`WHERE token` 为空串）把并发派发挤成同一个值，然后回读库里那份。
+// 于是：
+//   - 断线重连 / 巡检重派 / 中枢重启 —— 每次发布 assign 都拿到**同一个**令牌，
+//     节点上 outbox 的重发不会被判成 token 无效；
+//   - 并发派发（两条连接同时推同一条任务）——不会互相覆盖成不同值。
+//
+// 为什么返回值是「权威值」而不是 candidate：CAS 失败就说明别人先写了，
+// 此时必须用别人那份（否则同一任务会出现两个有效令牌）。
+// 任务行不存在返回 ErrNotFound（调用方按「任务已没了」处理）。
+func (d *DB) EnsureTaskToken(ctx context.Context, namespaceID, taskID, candidate string) (string, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return "", ErrNamespaceRequired
+	}
+	if candidate == "" {
+		return "", fmt.Errorf("ensure task token: empty candidate")
+	}
+	if _, err := d.ExecContext(ctx,
+		`UPDATE tasks SET token = ? WHERE namespace_id = ? AND id = ? AND token = ''`,
+		candidate, namespaceID, taskID); err != nil {
+		return "", fmt.Errorf("ensure task token %s: %w", taskID, err)
+	}
+	var token string
+	err := d.QueryRowContext(ctx,
+		`SELECT token FROM tasks WHERE namespace_id = ? AND id = ?`, namespaceID, taskID).Scan(&token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("read task token %s: %w", taskID, err)
+	}
+	if token == "" {
+		// 不可能发生（上面刚 CAS 写过）；真出现就是数据被写坏，宁可报错也不下发空令牌。
+		return "", fmt.Errorf("task %s has no token after ensure", taskID)
+	}
+	return token, nil
+}
+
 // ListTasks 列出命名空间内的任务，过滤条件为空表示不过滤（traceID/nodeID/status）；
 // 空列表返回 []。
 func (d *DB) ListTasks(ctx context.Context, namespaceID, traceID, nodeID, status string, limit int) ([]*Task, error) {

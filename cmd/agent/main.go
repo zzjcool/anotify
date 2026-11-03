@@ -79,6 +79,12 @@ const (
 
 	// runCommand 是 standalone 子命令名：anotify-agent run <path>
 	runCommand = "run"
+
+	// emitCommand 是中途产出子命令名：anotify-agent emit --port fix --data '…'
+	//
+	// 它是**能力进程**调的（不是运维调的）：由 agent 注入的 ANOTIFY_EMIT_SOCK /
+	// ANOTIFY_TASK_TOKEN 决定它去哪里、以谁的身份上报（见 emit_cmd.go）。
+	emitCommand = "emit"
 )
 
 // options 是节点模式命令行解析出来的启动参数（parseFlags 的产物，便于单测比对）。
@@ -392,6 +398,16 @@ func main() {
 
 // mainWith 是 main 的可测版本（退出码是返回值，不是 os.Exit）。
 func mainWith(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == emitCommand {
+		// emit 子命令：退出码**就是** emit-protocol.md §2 那张表（2..7），
+		// 调用方（能力进程）据此决定重试还是停止，所以不能在这里改写成 1。
+		code, err := runEmit(args[1:], os.Stdin, stdout, stderr, os.Getenv)
+		if err != nil {
+			// 只在这里打一次：runEmit 返回错误但不打印，避免同一句话出现两遍。
+			fmt.Fprintf(stderr, "anotify-agent emit: %s\n", err)
+		}
+		return code
+	}
 	if len(args) > 0 && args[0] == runCommand {
 		code, err := runStandalone(args[1:], stdout, stderr)
 		if err != nil {

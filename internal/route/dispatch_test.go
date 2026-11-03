@@ -39,6 +39,9 @@ type fakeStore struct {
 	graphCalls   int
 	// pruneEvents 是 InsertPruneEvent 收到的剪枝事件（#142）
 	pruneEvents []*store.Event
+	// emissions 是 P1 的 emit 幂等表（key = "taskID#seq"），与真库的
+	// PRIMARY KEY(task_id, seq) 同口径（ON CONFLICT DO NOTHING）。
+	emissions map[string]*store.Emission
 
 	// 可注入的错误
 	errEdges       error
@@ -71,6 +74,7 @@ func newFakeStore() *fakeStore {
 		pins:        map[string]*store.NodePin{},
 		leasedSlots: map[string]string{},
 		artifacts:   map[string]*store.Artifact{},
+		emissions:   map[string]*store.Emission{},
 	}
 }
 
