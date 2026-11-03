@@ -1,8 +1,118 @@
-/* Anotify 自托管手写字体
- * 本地 woff2 文件，私有化部署不依赖 Google Fonts CDN
- * 许可证：SIL OFL 1.1，见 README.md
+/* Anotify 自托管字体
+ *
+ * 全部字体都是本地 woff2 文件，私有化部署不依赖任何外部字体 CDN
+ * （旧的外链 <link> 与 preconnect 已在三个 layout 里删除）。
+ *
+ * 来源与许可证：见同目录 README.md（Inter / Fraunces / JetBrains Mono 均为
+ * SIL OFL 1.1；Sacramento / Great Vibes / Caveat 沿用仓库内的自托管文件）。
+ *
+ * 子集策略：Inter / Fraunces / JetBrains Mono 只保留 latin + latin-ext 两组，
+ * CJK 走系统字体（tokens.css 的 --font-sans 兜底 PingFang SC / 微软雅黑）。
+ * 浏览器只按页面实际出现的字符触发下载：中英文页面只拉 latin；
+ * latin-ext 仅在欧洲扩展区字符出现时才请求（两项合计体积见 README.md 表格，
+ * 这里不重复数字，避免两个事实源）。unicode-range 与 Google 下发逐字一致，
+ * 因此 latin-ext 块里保留了与 latin 重叠的 U+0304/U+0308/U+0329 —— 重叠码位
+ * 按「后声明者胜出」，所以「基字母 + 组合变音符」可能多拉一次 latin-ext。
+ *
+ * 变量字体（woff2 内含 fvar 轴，无需按字重重复下载）：
+ *   Inter            wght 300..700              → font-weight: 300 700
+ *   Fraunces         opsz 9..144 / wght 340..420 → font-weight: 340 420
+ *   Fraunces Italic  opsz 9..144（单字重 400）
+ *   JetBrains Mono   wght 400..500              → font-weight: 400 500
+ * opsz（optical size）由浏览器按 font-optical-sizing: auto 默认自动插值，
+ * 这里不需要额外声明。
+ *
+ * 注意：文件名被 scripts/hash.mjs 指纹化（dist 里是 name.<hash8>.woff2），
+ * 该脚本会同步改写本文件里的 url(...)；这里只写同目录相对文件名。
  */
 
+/* ── Inter：正文/界面字体（300/400/500/600/700） ───────────────── */
+@font-face {
+	font-family: "Inter";
+	src: url("inter-latin.woff2") format("woff2");
+	font-weight: 300 700;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: "Inter";
+	src: url("inter-latin-ext.woff2") format("woff2");
+	font-weight: 300 700;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+		U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+		U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── Fraunces：展示体（opsz 9..144，wght 340/420） ──────────────── */
+@font-face {
+	font-family: "Fraunces";
+	src: url("fraunces-latin.woff2") format("woff2");
+	font-weight: 340 420;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: "Fraunces";
+	src: url("fraunces-latin-ext.woff2") format("woff2");
+	font-weight: 340 420;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+		U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+		U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: "Fraunces";
+	src: url("fraunces-italic-latin.woff2") format("woff2");
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: "Fraunces";
+	src: url("fraunces-italic-latin-ext.woff2") format("woff2");
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+		U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+		U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── JetBrains Mono：代码/等宽（400/500） ──────────────────────── */
+@font-face {
+	font-family: "JetBrains Mono";
+	src: url("jetbrains-mono-latin.woff2") format("woff2");
+	font-weight: 400 500;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: "JetBrains Mono";
+	src: url("jetbrains-mono-latin-ext.woff2") format("woff2");
+	font-weight: 400 500;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+		U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+		U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── 手写体：品牌字 / 点缀（原有自托管文件，保持不变） ──────────── */
 @font-face {
 	font-family: "Sacramento";
 	src: url("sacramento.woff2") format("woff2");
