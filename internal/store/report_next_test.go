@@ -39,7 +39,7 @@ func TestReportResultAndCreateTasksSuccess(t *testing.T) {
 	child := mkNextHopTask(nsID, parent.TraceID, cap, parent.ID)
 	out := "fix"
 	if err := db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-		&out, true, "改好了", []string{"diff.patch"}, "", []*Task{child}); err != nil {
+		&out, "改好了", []string{"diff.patch"}, "", []*Task{child}); err != nil {
 		t.Fatalf("ReportResultAndCreateTasks: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestReportResultAndCreateTasksRollsBackOnChildFailure(t *testing.T) {
 
 			out := "fix"
 			err = db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-				&out, true, "改好了", []string{"diff.patch"}, "", []*Task{child})
+				&out, "改好了", []string{"diff.patch"}, "", []*Task{child})
 			if err == nil {
 				t.Fatal("子任务插入失败时整体必须报错（不许吞掉）")
 			}
@@ -225,7 +225,7 @@ func TestReportResultAndCreateTasksRollsBackOnReportFailure(t *testing.T) {
 	child := mkNextHopTask(nsID, parent.TraceID, cap, parent.ID)
 	out := "fix"
 	err := db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-		&out, true, "再来一次", nil, "", []*Task{child})
+		&out, "再来一次", nil, "", []*Task{child})
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态任务再报结果 err = %v, want ErrInvalidTransition", err)
 	}
@@ -245,14 +245,14 @@ func TestReportResultAndCreateTasksRollsBackOnReportFailure(t *testing.T) {
 
 // ---------- 3. 兼容路径：ReportResult(next=nil) ----------
 
-// TestReportResultCompatWithoutNext 旧入口在新实现上语义不变（I5 三态 + 错误契约）。
+// TestReportResultCompatWithoutNext 旧入口在新实现上语义不变（两态 + 错误契约）。
 func TestReportResultCompatWithoutNext(t *testing.T) {
 	ctx := context.Background()
 
-	// reported=false, out=nil → 没回报：out 必须留 NULL（不伪造「到头」）
-	t.Run("unreported_leaves_out_null", func(t *testing.T) {
+	// 没选出口 → out 必须留 NULL（「到此为止」不需要伪造一个出口名）
+	t.Run("no_port_leaves_out_null", func(t *testing.T) {
 		db, nsID, _, _, task := setupRunningTask(t)
-		if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, nil, false, "", nil, ""); err != nil {
+		if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, nil, "", nil, ""); err != nil {
 			t.Fatalf("ReportResult: %v", err)
 		}
 		got, err := db.GetTask(ctx, nsID, task.ID)
@@ -263,10 +263,10 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 			t.Fatalf("status = %q, want succeeded", got.Status)
 		}
 		if got.Out != nil {
-			t.Errorf("out = %s, want nil（reported=false 不得伪造出口）", showStrPtr(got.Out))
+			t.Errorf("out = %s, want nil（没选出口就是 NULL）", showStrPtr(got.Out))
 		}
-		if got.Reported {
-			t.Error("reported = true, want false")
+		if !got.Reported {
+			t.Error("reported = false, want true（结果帧到了）")
 		}
 		if got.FinishedAt == nil {
 			t.Error("finished_at = nil，终态必须有结束时间")
@@ -281,24 +281,25 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 		}
 	})
 
-	// reported=true && out=nil → 明确到头：out 仍是 NULL，但 reported=1
-	t.Run("reported_without_port_keeps_null_out", func(t *testing.T) {
+	// 选了出口 → out 落库；说明就是那一句话
+	t.Run("port_is_persisted", func(t *testing.T) {
 		db, nsID, _, _, task := setupRunningTask(t)
-		if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, nil, true, "到头了", nil, ""); err != nil {
+		port := "fix"
+		if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &port, "发现 2 处错误", nil, ""); err != nil {
 			t.Fatalf("ReportResult: %v", err)
 		}
 		got, err := db.GetTask(ctx, nsID, task.ID)
 		if err != nil {
 			t.Fatalf("get: %v", err)
 		}
-		if got.Out != nil {
-			t.Errorf("out = %s, want nil（reported=true + out=nil 就是「到头」）", showStrPtr(got.Out))
+		if got.Out == nil || *got.Out != "fix" {
+			t.Errorf("out = %s, want \"fix\"", showStrPtr(got.Out))
 		}
 		if !got.Reported {
 			t.Error("reported = false, want true")
 		}
-		if got.Summary != "到头了" {
-			t.Errorf("summary = %q, want \"到头了\"", got.Summary)
+		if got.Summary != "发现 2 处错误" {
+			t.Errorf("summary = %q, want \"发现 2 处错误\"", got.Summary)
 		}
 	})
 
@@ -306,7 +307,7 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 	t.Run("failed_status", func(t *testing.T) {
 		db, nsID, _, _, task := setupRunningTask(t)
 		out := "fix"
-		if err := db.ReportResult(ctx, nsID, task.ID, TaskFailed, &out, true, "炸了", nil, "boom"); err != nil {
+		if err := db.ReportResult(ctx, nsID, task.ID, TaskFailed, &out, "炸了", nil, "boom"); err != nil {
 			t.Fatalf("ReportResult(failed): %v", err)
 		}
 		got, err := db.GetTask(ctx, nsID, task.ID)
@@ -316,8 +317,12 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 		if got.Status != TaskFailed {
 			t.Errorf("status = %q, want failed", got.Status)
 		}
+		// 失败时 error 与 summary 同源（优先取更具体的 error），只有一份真相
 		if got.Error != "boom" {
 			t.Errorf("error = %q, want \"boom\"", got.Error)
+		}
+		if got.Summary != "boom" {
+			t.Errorf("summary = %q, want 与 error 同源（\"boom\"）", got.Summary)
 		}
 	})
 
@@ -325,7 +330,7 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 	t.Run("error_contract_unchanged", func(t *testing.T) {
 		db, nsID, _, _, task := setupRunningTask(t)
 
-		err := db.ReportResult(ctx, nsID, task.ID, TaskRunning, nil, false, "", nil, "")
+		err := db.ReportResult(ctx, nsID, task.ID, TaskRunning, nil, "", nil, "")
 		if !errors.Is(err, ErrInvalidTransition) {
 			t.Errorf("非法终态 err = %v, want ErrInvalidTransition", err)
 		}
@@ -334,12 +339,12 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 		}
 
 		empty := ""
-		err = db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &empty, true, "", nil, "")
+		err = db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &empty, "", nil, "")
 		if err == nil || !strings.Contains(err.Error(), "empty out string is not a valid port") {
 			t.Errorf("空出口名 err = %v, want 原有文案", err)
 		}
 
-		if err := db.ReportResult(ctx, nsID, "tsk_missing", TaskSucceeded, nil, false, "", nil, ""); !errors.Is(err, ErrNotFound) {
+		if err := db.ReportResult(ctx, nsID, "tsk_missing", TaskSucceeded, nil, "", nil, ""); !errors.Is(err, ErrNotFound) {
 			t.Errorf("任务不存在 err = %v, want ErrNotFound", err)
 		}
 
@@ -375,7 +380,7 @@ func TestReportResultAndCreateTasksChildIsRedispatchable(t *testing.T) {
 	child := mkNextHopTask(nsID, parent.TraceID, cap, parent.ID)
 	out := "fix"
 	if err := db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-		&out, true, "改好了", nil, "", []*Task{child}); err != nil {
+		&out, "改好了", nil, "", []*Task{child}); err != nil {
 		t.Fatalf("ReportResultAndCreateTasks: %v", err)
 	}
 

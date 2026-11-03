@@ -98,7 +98,7 @@ type HelloFrame struct {
 
 // AppliedDecl 是节点对「我缓存了什么」的陈述。
 //
-// 它**不是**能力声明：中枢只会用它核对已部署的东西（对账 + 发现本地变体），
+// 它**不是**能力声明：中枢只会用它核对已部署的东西（对账 + 发现不一致后重新下发），
 // 不会因为出现一条没部署过的 applied 就把能力归属给这台机器。
 type AppliedDecl struct {
 	Capability string `json:"capability"`
@@ -175,84 +175,30 @@ type ProgressFrame struct {
 
 // ResultFrame 是任务结果。
 //
-// Out 必须是 **nil（缺字段）或 NULL（明确到头）或字符串**三态，
-// 这是不变量 I5 的协议层表达：
+// Out 只有**两态**（契约 §2.5 / outcome-v1.1）：
 //
-//	字段缺失   → Reported=false（节点没回报出口）
-//	"out":null → Reported=true, Out=nil（明确到头）
-//	"out":"fix"→ Reported=true, Out=&"fix"`
+//	键缺省    → Out=nil（这次没选出口 = 到此为止）
+//	"out":null → Out=nil（同一个意思；显式 null 宽容接受）
+//	"out":"fix"→ Out=&"fix"（走 fix 出口）
 //
-// Go 的 encoding/json 无法直接区分「字段缺失」与「显式 null」——
-// 两者都让 *string 保持 nil。所以本结构体带一个**自定义 UnmarshalJSON**
-// （见下方），用 json.RawMessage 先看字段在不在。
+// 不再区分「字段缺省」与「显式 null」：两者在路由里走同一条路（不派下一跳）。
+// 「没回报」这件事由**根本没有 result 帧**（租约到期 → 巡检重派）表达，不由 out
+// 表达。曾经为此写过一个用 json.RawMessage 探测键存不存在的自定义 UnmarshalJSON
+// （I5 旧三态），区分出来的两个分支没有任何行为差异，白白多一层解码。
 type ResultFrame struct {
 	Type      string   `json:"type"`
 	TaskID    string   `json:"task_id"`
 	Status    string   `json:"status"` // succeeded | failed
 	Out       *string  `json:"out"`
+	// Summary 是**唯一的**结果说明：成功=做了什么，失败=为什么失败。
+	// 契约要求失败时非空（节点用 exit code / signal 兜底填），库里不再有第二个
+	// "error" 字段去装同一句话。
 	Summary   string   `json:"summary"`
 	Artifacts []string `json:"artifacts"`
-	Error     string   `json:"error"`
-
-	// OutPresent 记录 JSON 里是否出现了 "out" 键（无论值是不是 null）。
-	// 这是「缺失 vs null」的唯一可靠判据，不导出到 JSON。
-	OutPresent bool `json:"-"`
+	// Error 是**兼容位**：老节点只填 error 不填 summary 时用它兜底 Summary。
+	Error string `json:"error"`
 }
 
-// UnmarshalJSON 实现「字段缺失」与「显式 null」的区分（不变量 I5 的关键）。
-func (f *ResultFrame) UnmarshalJSON(data []byte) error {
-	// 用一个同构的临时结构体接收常规字段，避免递归调用自己
-	type alias struct {
-		Type      string   `json:"type"`
-		TaskID    string   `json:"task_id"`
-		Status    string   `json:"status"`
-		Out       *string  `json:"out"`
-		Summary   string   `json:"summary"`
-		Artifacts []string `json:"artifacts"`
-		Error     string   `json:"error"`
-	}
-	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
-		return fmt.Errorf("decode result frame: %w", err)
-	}
-	f.Type = a.Type
-	f.TaskID = a.TaskID
-	f.Status = a.Status
-	f.Out = a.Out
-	f.Summary = a.Summary
-	f.Artifacts = a.Artifacts
-	f.Error = a.Error
-
-	// 再看 "out" 键在不在
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return fmt.Errorf("decode result frame keys: %w", err)
-	}
-	_, f.OutPresent = probe["out"]
-	return nil
-}
-
-// MarshalJSON 让 OutPresent 不影响出站 JSON（节点侧不该看到这个内部字段）。
-func (f ResultFrame) MarshalJSON() ([]byte, error) {
-	type alias struct {
-		Type      string   `json:"type"`
-		TaskID    string   `json:"task_id"`
-		Status    string   `json:"status"`
-		Out       *string  `json:"out"`
-		Summary   string   `json:"summary"`
-		Artifacts []string `json:"artifacts"`
-		Error     string   `json:"error"`
-	}
-	return json.Marshal(alias{
-		Type: f.Type, TaskID: f.TaskID, Status: f.Status, Out: f.Out,
-		Summary: f.Summary, Artifacts: f.Artifacts, Error: f.Error,
-	})
-}
-
-// Reported 判定这次结果是否「回报了出口」（不变量 I5）。
-//
-// 只要 out 键出现过（哪怕是 null），就是已回报。
-func (f *ResultFrame) Reported() bool { return f.OutPresent }
 
 // 下行帧（中枢 → 节点）──────────────────────────────
 

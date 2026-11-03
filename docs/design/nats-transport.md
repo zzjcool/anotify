@@ -5,7 +5,7 @@
 > 本文保留完整评估，作为：① §14 可扩展性契约的依据；② §15 重估时的起点（不必从零推）；③ §13 已否决方案的记录（避免重复讨论）。
 >
 > 上游：`docs/contracts/CONTRACT.md`（现状冻结的事实源）、`design/wiki/03-flow.html`（事件旅程）、`design/wiki/06-trace.html`（可观测）。
-> 相关不变量：**I1**（无 argv）、**I5**（`out` 三态）、**I7**（图里只有能力）、**I8**（版本钉住）、**I10**（org 隔离）。
+> 相关不变量：**I1**（无 argv）、**I5**（`out` 两态）、**I7**（图里只有能力）、**I8**（版本钉住）、**I10**（org 隔离）。
 
 ---
 
@@ -219,7 +219,7 @@ CLI 内部：`POST /v1/nodes/self/declare`（带 token）→ 落库 → 建立 N
 
 ### 4.3 envelope v1
 
-**格式必须是 JSON。** 不许换 MessagePack / Protobuf —— `out` 三态依赖「字段缺失」与「显式 null」的区分（I5），JSON 是唯一能干净表达它且各语言一致的选择。
+**格式必须是 JSON。** 不许换 MessagePack / Protobuf —— 排障工具、契约示例、控制台都围绕 JSON；且 `out`/`session` 这类可空字段需要显式 null 语义（缺省与 null 等价，见 I5）。
 
 ```jsonc
 // ── 下行 · 能力派发（publish，fire-and-forget）──────────────
@@ -584,7 +584,7 @@ ALTER TABLE tasks DROP COLUMN lease_until;   -- 不删：租约仍在中心，�
 | Phase | 内容 | 依赖 | 验收 |
 |---|---|---|---|
 | **0** | 剪枝落库（§16.5）、`ResultTTLSec` 保留（§16.6）、图版本缓存、事务合并（§16.1）、`pickNode` 聚合（§16.2） | 无 | `go test ./internal/...` 全绿；`events` 里能查到 5 种 `pruned.*`；`dispatch` 不再每次写 `graph_versions` |
-| **1** | `internal/wire`（envelope v1 + 三态 `out` 类型）、`route.Publisher` 保留双实现 | Phase 0 | 新旧实现可配置切换；三态单测通过 |
+| **1** | `internal/wire`（envelope v1 + 两态 `out` 类型）、`route.Publisher` 保留双实现 | Phase 0 | 新旧实现可配置切换；三态单测通过 |
 | **2** | 嵌入式 NATS、claim/result request-reply、未领取重发、删 `NodeHub`/`pickNode`/`node_instances` | Phase 1 | `node_test.go` 的语义断言全部在新链路上重跑通过 |
 | **3** | 集群形态、Postgres、保留策略按 org 分档 | Phase 2 | 两副本下节点任意连接、派发可达 |
 
@@ -599,7 +599,7 @@ ALTER TABLE tasks DROP COLUMN lease_until;   -- 不删：租约仍在中心，�
 | JetStream 悄悄进来 | 有人开始配 `max_deliver` / `ack_wait` | L2 失守：重试策略有两个位置，`cap_hash` 钉住失效 |
 | 中心开始不记账 | "反正 NATS 会重投，`lease_until` 别维护了" | `abandoned` 消失，"节点死了"和"在算"不可区分 |
 | 嵌入版与集群版分叉 | 出现两条派发路径 | 回滚能力丧失，长期维护两套 |
-| 删协议代码时丢掉语义测试 | `node_test.go`（1040 行）随 `internal/ws` 一起删 | `out` 三态、`lease_expired` 拒收最先丢，且静默 |
+| 删协议代码时丢掉语义测试 | `node_test.go`（1040 行）随 `internal/ws` 一起删 | `out` 两态、`lease_expired` 拒收最先丢，且静默 |
 | 剪枝落库永远排下一期 | 每次都说"等 NATS 弄完" | 产品最核心的答案一直答不出，而它只要 30 行 |
 | 用强一致队列的直觉调 NATS | 想加"消息保证送达"、加去重表 | 把 `tasks` 已有的能力重做一遍，且做出第二份真相 |
 
@@ -715,8 +715,8 @@ ACL 的粒度是**能力**，而威胁的粒度是**任务**。
 | # | 约束 | 违反后的代价 | 怎么检查 |
 |---|---|---|---|
 | **T1** | 所有派发必须经 `route.Publisher`，任何代码不得直接操作 `ws.NodeHub` | 换传输时要改 N 处，而不是写一个实现类 | `grep -rn NodeHub --include=*.go` 应只出现在 `internal/ws` 与 `server/mux.go` |
-| **T2** | 线格式帧类型集中一处：`internal/ws/node_protocol.go` 是唯一来源，禁止在 handler 里临时定义承载线格式的结构 | envelope 会分裂成多份，`out` 三态最先走样 | 评审：新增帧类型只能进 `node_protocol.go` |
-| **T3** | `out` 三态只由一个类型表达（`ResultFrame.Out` + `OutPresent` + 自定义 `UnmarshalJSON`） | 每个新结果结构重新发明一次「缺失 vs null」，I5 静默失守 | 评审：任何新的「结果」结构必须复用该类型 |
+| **T2** | 线格式帧类型集中一处：`internal/ws/node_protocol.go` 是唯一来源，禁止在 handler 里临时定义承载线格式的结构 | envelope 会分裂成多份，`out` 两态最先走样 | 评审：新增帧类型只能进 `node_protocol.go` |
+| **T3** | `out` 两态只由一个类型表达（`ResultFrame.Out`，缺省与 null 等价） | 每个新结果结构重新发明一次「有没有出口」，I5 静默失守 | 评审：任何新的「结果」结构必须复用该类型 |
 | **T4** | **身份从连接 / 会话取，绝不从 payload 取** | payload 无认证；换成无连接语义的传输后会被伪造 | `grep -rn 'from\"' --include=*.go` 中不应出现从 payload 读发送者的代码 |
 | **T5** | 传输层不承载语义：不进状态机、不做重试、不做去重、不依赖顺序 | 换传输时会把旧传输的语义漏洞固化进新实现 | 评审：`internal/ws` 不得决定任务状态；状态只经 `store` 的 CAS |
 | **T6** | 不依赖连接存活做正确性判断：节点死亡必须能从 `tasks` 推导（租约），不能只靠断连回调 | 换传输后断连语义不同（NATS 无 LWT），会静默丢任务 | 评审：新增的「节点在线」判断只影响展示，不影响派发 |

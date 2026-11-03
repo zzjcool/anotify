@@ -40,12 +40,15 @@ import (
 // `spec.outputs[]`（**集合**：edges.from_port 的封闭集合），「这一次跑的是哪一个」
 // 是**运行期**才知道的，所以必须由脚本告诉节点。
 //
-// 约定（CONTRACT-artifact §6.1）：
+// 约定（CONTRACT.md §2.5 / §6.1）：
 //   - 节点把 `$ANOTIFY_OUT_FILE`（= <workdir>/.anotify-out）交给脚本
-//   - 脚本在**成功时**把出口名写进去（一行，最多 64 字节）
+//   - 脚本**跑完时**（不管成功还是失败）想把这次走到哪个出口写进去（一行，最多 64 字节）
 //   - 节点读它、trim、校验 ∈ spec.outputs，然后作为 result.out 回报
-//   - 文件不存在 → 不回报（out 键缺席 = 「这次到头了，没选下一跳」）
+//   - 文件不存在 → 不选出口（out 键缺席 = 「这次没选下一跳，到此结束」）
 //   - 写了但不在 spec.outputs 里 → 整次执行判 **failed**（出口是封闭集合，不变量 I2）
+//
+// **成败都读**：失败也可以声明走哪条分支（「失败也发通知」就是一条 (cap, failed)
+// 的边）。成功/失败是**展示**维度，走哪个出口是**路由**维度，两者不互相限制。
 //
 // 为什么不复用 `sh -c` 时代的 `run.out`：那个是「这个能力成功就等于这个出口」，
 // 无法表达「同一个能力按参数走不同分支」，而分支恰恰是图的价值所在。
@@ -190,24 +193,6 @@ func runJob(ctx context.Context, j job) outcome {
 		// 成功判定要同时看 exit code 与 ctx：命令刚好在超时/取消那一刻 exit 0 时，
 		// 它不是「跑完了」，而是「被我们掐断的」，不能当成功。
 		res.Status = statusSucceeded
-		// 出口名来自脚本写的那个文件（见文件头）。读失败/没写 = 不回报（分支终止）；
-		// 写了但不在 spec.outputs 里 = 整次执行失败（封闭集合，I2）。
-		out, outErr := readOutcomeOut(plan)
-		switch {
-		case outErr != nil:
-			res.Status = statusFailed
-			res.Err = outErr.Error()
-		case out != nil:
-			res.Out = out
-		}
-		if res.Status == statusSucceeded && res.Summary == "" {
-			// 命令没有输出（echo -n、true …）：summary 不能是空串，
-			// 否则服务端/前端看起来像「没回报」。
-			res.Summary = "exit 0"
-		}
-		// 成功 → 删掉工作目录（契约 §5 的清理规则）。失败则保留，方便事后翻现场。
-		// 删不掉不算任务失败（任务确实成功了），路径仍在 res.WorkDir 里可查。
-		_ = os.RemoveAll(plan.workDir)
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		res.Err = "timed out after " + plan.timeout.String()
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -227,6 +212,35 @@ func runJob(ctx context.Context, j job) outcome {
 			// 只带首行：错误要能一眼看出是哪儿炸的，但别把整段日志塞进 error 字段。
 			res.Err += ": " + res.Summary
 		}
+	}
+
+	// 出口名来自脚本写的那个文件（见文件头）。**成败都读**：失败也可以声明走哪条
+	// 分支（"失败也发通知"就是一条 (cap, failed) 的边），节点不该替它把这条路堵死。
+	//
+	// 没写 → 不选出口（分支到此结束）；写了但不在 spec.outputs 里 → 整次执行失败
+	// （出口是封闭集合，不变量 I2）。
+	if out, outErr := readOutcomeOut(plan); outErr != nil {
+		res.Status = statusFailed
+		if res.Err == "" {
+			res.Err = outErr.Error()
+		} else {
+			res.Err += "; " + outErr.Error()
+		}
+	} else if out != nil {
+		res.Out = out
+	}
+
+	if res.Status == statusSucceeded {
+		if res.Summary == "" {
+			// 命令没有输出（echo -n、true …）：summary 不能是空串，
+			// 否则服务端/前端看起来像「什么都没说」。
+			res.Summary = "exit 0"
+		}
+		// 成功 → 删掉工作目录（契约 §5 的清理规则）。失败则保留，方便事后翻现场。
+		// 删不掉不算任务失败（任务确实成功了），路径仍在 res.WorkDir 里可查。
+		//
+		// 必须在读完出口文件之后删（上面那一步），否则 .anotify-out 跟着目录消失。
+		_ = os.RemoveAll(plan.workDir)
 	}
 	return res
 }

@@ -349,7 +349,7 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 
 			// 合并路径：一次 ReportResult（内部单事务，且内含释放槽位）
 			if err := db.ReportResult(ctx, nsID, taskMerged.ID, TaskSucceeded,
-				&out, true, summary, artifacts, ""); err != nil {
+				&out, summary, artifacts, ""); err != nil {
 				t.Fatalf("merged ReportResult: %v", err)
 			}
 			// 对照组：拆开的多事务序列（旧实现逐条重放）
@@ -715,7 +715,7 @@ func TestReportResultRejectsTerminalTaskWithoutTouchingSlot(t *testing.T) {
 	assertSlotOfTask(t, db, nodeID, task.ID) // 前置：槽位此时仍被该任务占着
 
 	out := "fix"
-	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, true, "再来一次", []string{"x"}, "")
+	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, "再来一次", []string{"x"}, "")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态任务 ReportResult err = %v, want ErrInvalidTransition", err)
 	}
@@ -748,7 +748,7 @@ func TestReportResultDoesNotReleaseForeignSlot(t *testing.T) {
 	mustExec(t, db, `UPDATE node_instances SET busy_task = ? WHERE node_id = ?`, foreignTask, nodeID)
 
 	out := "fix"
-	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, true, "done", nil, ""); err != nil {
+	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, "done", nil, ""); err != nil {
 		t.Fatalf("ReportResult: %v", err)
 	}
 	got, err := db.GetTask(ctx, nsID, task.ID)

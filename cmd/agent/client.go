@@ -544,7 +544,7 @@ func (a *nodeAgent) handleAssign(f *assignFrame) {
 //
 // 第二个返回值是 cache 里**重新算出来**的 digest（而不是 assign 里那个字符串），
 // 所以 ANOTIFY_DIGEST 永远是真正在跑的那份内容的哈希：用户手改过缓存里的产物时，
-// 脚本里看到的就是改后的那版（同时中枢会在下次 hello 里发现本地变体）。
+// 脚本里看到的就是改后的那版（同时中枢会在下次 hello 里发现不一致并重新下发）。
 func (a *nodeAgent) resolveArtifact(f *assignFrame) (*artifact.Artifact, string, bool) {
 	if f.Digest != "" {
 		return a.cache.getByDigest(f.Digest)
@@ -756,10 +756,9 @@ func (a *nodeAgent) semaphore(capability string, version, limit int) chan struct
 
 // sendResult 发 result 帧。
 //
-// out 透传 outcome.Out（契约 I5 三态）：v2 的节点**恒不回报出口**（来源是契约
-// 空白，见 runner.go 文件头），所以帧里没有 out 键 → 服务端按「分支终止」处理。
-// plumbing 一字未改：等契约定义「脚本怎么告诉节点走哪个出口」之后，
-// 只需在 runner 里给 outcome.Out 赋值，这里和三态测试都不用动。
+// out 透传 outcome.Out（契约 §2.5 两态）：有值就发 `"out":"fix"`（走那个出口），
+// nil 就不发 out 键 = 这次没选出口（分支到此结束）。成败都照实发——失败也会带上
+// 脚本写的出口，路由由中枢决定（失败不特殊）。
 func (a *nodeAgent) sendResult(taskID string, out outcome) {
 	frame := &resultFrame{
 		Type:      frameTypeResult,

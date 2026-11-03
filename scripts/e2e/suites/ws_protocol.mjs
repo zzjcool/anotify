@@ -543,44 +543,70 @@ async function main() {
 	H.eq("result 落库 reported", row.reported, 1);
 	H.eq("result 落库 summary", row.summary, "全部完成");
 
-	// ================= A8：out 三态 =================
-	console.log("--- A8 out 三态（I5）---");
+	// ================= A8：out 两态（outcome-v1.1）=================
+	console.log("--- A8 out 两态 ---");
 
-	// 三态 1：out 缺失 → reported=0
+	// 态1：out 缺失 = 没选出口 → out=NULL（结果帧到了，所以 reported=1）
 	const evMissing = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	const tMissing = evMissing.json?.tasks?.[0]?.id;
 	const aMissing = await waitForFrame(
 		node.frames,
 		(f) => f.type === "assign" && f.task_id === tMissing,
 	);
-	H.check("三态1 收到 assign", !!aMissing);
+	H.check("态1 收到 assign", !!aMissing);
 	node.conn.sendRaw(
 		`{"type":"result","task_id":"${tMissing}","status":"succeeded","summary":"no out"}`,
 	);
 	await waitStatus(tMissing, "succeeded");
 	const rMissing = taskRow(tMissing);
-	H.eq("三态1 out 缺失 → reported=0", rMissing.reported, 0);
-	H.eq("三态1 out 缺失 → out=NULL", rMissing.out, null);
+	H.eq("态1 out 缺失 → reported=1（帧到了）", rMissing.reported, 1);
+	H.eq("态1 out 缺失 → out=NULL", rMissing.out, null);
 
-	// 三态 2：out:null → reported=1, out=NULL
+	// 态2：out:null 与缺失完全等价（协议层不再区分）
 	const evNull = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	const tNull = evNull.json?.tasks?.[0]?.id;
 	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tNull);
 	node.conn.sendRaw(`{"type":"result","task_id":"${tNull}","status":"succeeded","out":null}`);
 	await waitStatus(tNull, "succeeded");
 	const rNull = taskRow(tNull);
-	H.eq("三态2 out:null → reported=1", rNull.reported, 1);
-	H.eq("三态2 out:null → out=NULL", rNull.out, null);
+	H.eq("态2 out:null → reported=1", rNull.reported, 1);
+	H.eq("态2 out:null → out=NULL（与缺失等价）", rNull.out, null);
 
-	// 三态 3：out:"x" → reported=1, out="x"
+	// 态3：out:"x" → 选了出口
 	const evStr = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	const tStr = evStr.json?.tasks?.[0]?.id;
 	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tStr);
 	node.conn.send({ type: "result", task_id: tStr, status: "succeeded", out: "again" });
 	await waitStatus(tStr, "succeeded");
 	const rStr = taskRow(tStr);
-	H.eq("三态3 out:'again' → reported=1", rStr.reported, 1);
-	H.eq("三态3 out:'again' → out='again'", rStr.out, "again");
+	H.eq("态3 out:'again' → reported=1", rStr.reported, 1);
+	H.eq("态3 out:'again' → out='again'", rStr.out, "again");
+
+	// 态4：失败 + 选了出口 → 路由照走（I4：路由只看 out，不看 status）。
+	// ws.demo 的出口没有接边，所以「继续」的表现是：不静默——库里 out 落了值。
+	const evFail = await postEvent({ source: "ws.demo", type: "go", payload: {} });
+	const tFail = evFail.json?.tasks?.[0]?.id;
+	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tFail);
+	node.conn.send({
+		type: "result",
+		task_id: tFail,
+		status: "failed",
+		out: "again",
+		summary: "exit status 3: 编译失败",
+	});
+	await waitStatus(tFail, "failed");
+	const rFail = taskRow(tFail);
+	H.eq("态4 失败 + out='again' → out 落库", rFail.out, "again");
+	H.eq("态4 失败带原因 → summary 非空", rFail.summary === "exit status 3: 编译失败" ? 1 : 0, 1);
+
+	// 态5：失败且没说原因 → 库里兜底成 "failed"（不允许「失败但没有说明」）
+	const evFail2 = await postEvent({ source: "ws.demo", type: "go", payload: {} });
+	const tFail2 = evFail2.json?.tasks?.[0]?.id;
+	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tFail2);
+	node.conn.sendRaw(`{"type":"result","task_id":"${tFail2}","status":"failed"}`);
+	await waitStatus(tFail2, "failed");
+	const rFail2 = taskRow(tFail2);
+	H.eq("态5 失败无说明 → summary 兜底", rFail2.summary, "failed");
 
 	// ================= 非法迁移 → invalid_transition =================
 	console.log("--- 非法迁移 ---");

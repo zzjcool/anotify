@@ -7,7 +7,7 @@
  *
  * 为什么这些必须进 e2e 而不是只留单测：
  *   单测各自钉住一个函数（校验规则、SQL、handler 分支），但「建能力顺手编译产物」
- *   到「部署行建成 pending」到「hello 对账把行改成 applied / 发现本地变体」是**跨
+ *   到「部署行建成 pending」到「hello 对账把行改成 applied / 发现不一致并重推」是**跨
  *   进程**的三段，任何一段没接上都会表现为「控制台上看起来推过了，节点其实没跑」。
  *
  * 覆盖（每条都对应契约里的一句话）：
@@ -19,7 +19,7 @@
  *   6. 部署没有产物的能力 → 404 artifact_not_found
  *   7. GET /v1/deployments?nodeId= 过滤生效
  *   8. DELETE /v1/deployments?id= → 行消失
- *   9. 本地变体（§7）：hello 报不同 digest → state=local，reason 含两个 digest
+ *   9. 中枢覆盖（§7 的新口径）：hello 报不同 digest → state=pending，并立即重推期望的那份
  *
  * 纪律：不睡固定时长，一律「轮询 + 超时」（部署结果来自节点帧，天生异步）。
  */
@@ -310,14 +310,16 @@ async function main() {
 		H.eq("行真的消失了", await findDeployment(offItem.deployId), null);
 	}
 
-	// ================= 9. 本地变体（契约 §7） =================
+	// ================= 9. 中枢覆盖：不一致就重新下发 =================
 	//
-	// 这条是整个模型的核心机制：**每个「节点 × 能力」永远有唯一归属**。
-	//   · 节点缓存的 digest == 中枢期望 → applied（托管态，中枢可覆盖）
-	//   · 节点缓存的 digest != 中枢期望 → local（本地变体，中枢永不覆盖，UI 标黄）
-	// 判定只发生在节点 hello 的对账里（节点在部署后 / 重连时如实上报缓存），
+	// 这条是整个模型的收敛方向：**中枢是部署的唯一写者**。
+	//   · 节点报的 digest == 中枢期望 → applied（绿勾）
+	//   · 节点报的 digest != 中枢期望 → pending + 立即重推（覆盖），不需要人去点
+	// 以前这里标的是 local（“本地变体、永不覆盖”），但实际上部署本来就是中枢下发的，
+	// 节点上那份不一致只意味着“它还没收到”—— 标黄等人点属于把正常的收敛当成了异常。
+	// 判定发生在 hello 对账里，重推发生在握手结束之后（同一条连接上就能看到 deploy 帧），
 	// 所以这里用真 WS 握手模拟节点的两次 hello。
-	console.log("--- 9. 本地变体（hello 报不同 digest）---");
+	console.log("--- 9. 产物不一致 → 中枢重新下发（覆盖）---");
 	{
 		const node = await N.bringUpNode(server.base, server.dbPath, nsId, "dep-var-node", [], 1);
 		H.check(
@@ -338,27 +340,41 @@ async function main() {
 		H.eq("hello 报的 digest 与期望一致 → state=applied", appliedRow?.state, "applied");
 		H.eq("applied 的 reason 为空（正常态不留噪音）", appliedRow?.reason, "");
 
-		// ② 节点报一个**不同**的 digest（= 用户手改过产物）→ local
-		const localDigest = "sha256:" + "b".repeat(64);
+		// ② 节点报一个**不同**的 digest（旧产物 / 本地被改过）→ pending，并立刻收到期望的那份
+		const staleDigest = "sha256:" + "b".repeat(64);
 		node.conn.send(
-			N.nodeHello(node.id, [{ name: cap.name, version: cap.version, digest: localDigest }], 1),
+			N.nodeHello(node.id, [{ name: cap.name, version: cap.version, digest: staleDigest }], 1),
 		);
-		const localRow = await waitDeployment(item.deployId, (r) => r.state === "local");
-		H.eq("hello 报的 digest 不一致 → state=local（本地变体）", localRow?.state, "local");
+		const staleRow = await waitDeployment(
+			item.deployId,
+			(r) => (r.reason || "").includes(staleDigest),
+		);
+		H.eq("hello 报的 digest 不一致 → state=pending（要重新下发）", staleRow?.state, "pending");
 		H.check(
-			"local 的 reason 同时包含两个 digest（节点上的 + 中枢期望的）",
-			(localRow?.reason || "").includes(localDigest) && (localRow?.reason || "").includes(cap.digest),
-			String(localRow?.reason),
+			"pending 的 reason 同时包含两个 digest（节点上的 + 中枢期望的）",
+			(staleRow?.reason || "").includes(staleDigest) && (staleRow?.reason || "").includes(cap.digest),
+			String(staleRow?.reason),
 		);
-		// 本地变体不能被「再部署一次」覆盖（中枢永不覆盖）：
-		// 重复部署只更新期望值，节点仍报旧 digest → 仍然 local。
+		// 中枢覆盖：握手一结束就把期望的那份推下来（不需要有人再点一次部署）
+		const resend = await N.waitForFrame(
+			node.frames,
+			(f) => f.type === "deploy" && f.deploy_id === item.deployId,
+		);
+		H.check("握手后中枢把期望的那份产物推了下来", !!resend, JSON.stringify(node.frames).slice(0, 300));
+		H.eq("推下来的 action 是 apply", resend?.action, "apply");
+		H.eq(
+			"推下来的产物就是中枢期望的那份",
+			resend?.artifact?.metadata?.name,
+			cap.name,
+		);
+		// 重复部署仍然幂等：不会因为“重推”变成两行
 		const dep2 = await H.req(server.base, "/v1/deployments", {
 			session,
 			body: { capabilityId: cap.id, nodeIds: [node.id] },
 		});
 		H.eq("对同一 (节点, 产物) 重复部署 → 200（幂等：仍是一行）", dep2.status, 200);
 		H.eq(
-			"重复部署没有建出第二行（唯一键在 node×artifact 上）",
+			"重复部署没有建出第二行（一个能力只有一条期望）",
 			(await listDeployments({ nodeId: node.id })).length,
 			1,
 		);

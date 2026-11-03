@@ -461,3 +461,63 @@ func TestResultPlanFailureLeavesNoTerminalState(t *testing.T) {
 		t.Fatalf("PublishTasks called %d time(s) despite a failed plan", len(pubs))
 	}
 }
+
+// ---------- 必测：失败 + 选了出口 → 照样派下一跳（outcome-v1.1） ----------
+
+// TestFailedResultWithOutRoutes I4 的落地验证：路由只看 out，不看 status。
+//
+// 旧实现把 `status == succeeded` 写死在路由条件里，于是「失败时也发通知」这种
+// 完全合理的边是**能配、能存、能显示、永不生效**的静默死配置。这里钉住新语义：
+// 失败回报了出口就查表派发，没回报就终止。
+func TestFailedResultWithOutRoutes(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeNextHop{}
+	f := newNodeFixture(t, func(h *NodeHandler) { h.NextHop = fake })
+	fake.setDB(f.db)
+
+	conn := f.mustDial(t)
+	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
+		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
+
+	parent := f.makeAssignedTask(t, "trace_failed_route")
+	child := f.nextHopChild(t, parent, "failed")
+	fake.setPlan(child)
+
+	send(t, conn, &ResultFrame{
+		Type: NodeFrameResult, TaskID: parent.ID, Status: store.TaskFailed,
+		Summary: "exit status 7: 编译失败", Out: strPtr("failed"),
+	})
+
+	// ① 父任务落 failed（展示维度），但路由照走（路由维度）
+	waitStatus(t, f.db, f.nsID, parent.ID, store.TaskFailed)
+
+	fake.waitPublishes(t, 1)
+	calls, _ := fake.snapshot()
+	if calls != 1 {
+		t.Fatalf("PlanNextHop calls = %d, want 1（失败 + 有出口必须查表）", calls)
+	}
+
+	fake.mu.Lock()
+	gotOut, gotCap := fake.planOut, fake.planFromCap
+	fake.mu.Unlock()
+	if gotOut != "failed" {
+		t.Errorf("PlanNextHop out = %q, want \"failed\"", gotOut)
+	}
+	if gotCap != parent.CapabilityID {
+		t.Errorf("PlanNextHop from = %q, want %q", gotCap, parent.CapabilityID)
+	}
+
+	// ② 子任务行与父任务终态同一个事务落库（#140 的补偿路径照旧）
+	if _, err := f.db.GetTask(ctx, f.nsID, child.ID); err != nil {
+		t.Fatalf("失败分支的下一跳行没落库: %v", err)
+	}
+
+	// ③ 失败必须有原因：summary 就是那句原因（唯一一份源）
+	got, err := f.db.GetTask(ctx, f.nsID, parent.ID)
+	if err != nil {
+		t.Fatalf("get parent: %v", err)
+	}
+	if got.Summary == "" {
+		t.Error("失败任务没有原因（summary 为空）")
+	}
+}

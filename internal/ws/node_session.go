@@ -193,18 +193,25 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 	return nil
 }
 
-// handleResult 处理结果帧，推进到终态（不变量 I4/I5）。
+// handleResult 处理结果帧，推进到终态（outcome-v1.1）。
 //
-// 三态由 ResultFrame.Reported() 判定（自定义 UnmarshalJSON 区分「字段缺失」与「显式 null」）：
+// 结果只有两个维度，且它们**不同维度**：
 //
-//	out 缺失    → reported=false（节点没回报出口）→ 不派下一跳
-//	"out":null  → reported=true,  out=nil        → 到头了（不派）
-//	"out":"fix" → reported=true,  out=&"fix"     → 走 fix
+//	out    → 路由：有值 = 走那个出口；nil = 这次没选出口 = 到此为止（正常终止）
+//	status → 只做展示与重试策略（succeeded / failed），**不参与路由**
+//
+// 所以失败回报了出口就继续（“失败也发通知”靠一条 (cap, failed) 的边表达），
+// 没回报就终止。曾经这里是 `status == succeeded && out != nil`，于是失败永远
+// 不可能走任何边 —— I4 的「失败也能继续」是一句空头支票，而且失败分支配上边
+// 会变成**能配、永不生效**的静默死配置。
+//
+// 「没回报」（节点掉线 / 超时）不靠这里的任何字段表达：那是**根本没有 result 帧**，
+// 由租约到期 + 巡检重派处理。
 //
 // #140 起的顺序（顺序本身就是不变量，不要调整）：
 //
 //	① 参数校验 / GetTask / 归属校验
-//	② 算 reported / out
+//	② 读 out（有没有选出口）
 //	③ **同步**算出下一跳计划（PlanNextHop，只读）—— 失败即不提交终态
 //	④ 一个事务提交「父任务终态 + 下一跳子任务行」（ReportResultAndCreateTasks）
 //	⑤ 事务提交后记 "task finished"（先记日志再派发，与改动前一致）
@@ -240,17 +247,13 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 		return nil
 	}
 
-	reported := f.Reported()
-	// 只有 reported 时才把 out 传下去；缺失时传 nil（store 会写 reported=0, out=NULL）
-	var out *string
-	if reported {
-		out = f.Out
-	}
+	// 结果帧到了就是「已回报」；「有没有选出口」由 out 本身表达。
+	out := f.Out
 
 	// ③ 同步算下一跳计划（契约 §4 的递归应用）。
 	//
-	// 只在**成功**且有出口时派：失败的任务不该继续往下走
-	// （它的产物不可信），out 为 nil 时是"到头了"，也不派。
+	// 只看 out，不看 status：失败回报了出口也要往下派。
+	// out 为 nil 时是「到此为止」，也不派。
 	//
 	// 为什么 plan 同步跑在读循环里（而不是像旧的 dispatchNext 那样整段丢进后台）：
 	// plan 全是只读查询（出口表/能力/节点），真正的网络操作在 ⑥ 的 publish。
@@ -268,7 +271,7 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	// 这类错误只在 DB 故障时出现，与「下一跳 publish 失败」是两回事——后者父任务
 	// 已经成功、子任务行已落库，绝不能回退（见 ⑥）。
 	var next []*store.Task
-	if s.h.NextHop != nil && f.Status == store.TaskSucceeded && out != nil {
+	if s.h.NextHop != nil && out != nil {
 		// 出口表/能力/节点都按命名空间隔离：作用域必须是**父任务的命名空间**
 		// （即 task.NamespaceID，不是节点的 id）。传错的话 EdgesFrom 恒 0 行，
 		// 链路会在父任务成功后静默停掉。
@@ -285,7 +288,7 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	// 拆成两次提交时，进程在中间退出就会留下「父任务 succeeded + out=fix、
 	// 子任务行不存在」的永久空洞。同一个 BEGIN/COMMIT 里，子任务插入失败则整体回滚
 	// ——父任务不留在终态（宁可让父任务被巡检退回重派、幂等重执行一次，也胜于断链）。
-	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status, out, reported,
+	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status, out,
 		f.Summary, f.Artifacts, f.Error, next); err != nil {
 		// 终态没落库。若拒绝是「这条任务已经不归我们了」（被巡检回收/已重派/已过期），
 		// 就不该再替它续租，也不该继续占着 hub 的在飞位（#218/#222）。
@@ -312,7 +315,6 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 		"task_id", f.TaskID,
 		"node_id", s.node.ID,
 		"status", f.Status,
-		"reported", reported,
 		"out", outString(out),
 	)
 

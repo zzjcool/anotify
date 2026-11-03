@@ -332,3 +332,31 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 
 **本地预览**：`NO_TUNNEL=1 MOCK_PORT=7788 ./scripts/mock.sh` → http://127.0.0.1:7788
 （主题键 `anotify-theme`、侧栏键 `anotify-sidebar`；截图证据在 `design/ui-v2/shots*`，不入库）
+
+---
+
+## 任务记录 · outcome-v1.1（出口两态化：删「静默」与死配置）
+
+**用户诉求**：取消「出口」的复杂概念，结果只留「成功 / 失败（带原因）+ 出口（可选）」；
+借鉴 Rust 的 `Option` / `Result` 设计 —— 不要 null，不要永远清不掉的「配置遗漏」警告。
+
+**最终模型**：`Outcome = { status, out: Option<Port>, message }`
+
+| 字段 | 语义 | 参与路由 |
+|---|---|---|
+| `status` | succeeded / failed（展示 + 重试策略） | 否 |
+| `out` | 选了哪个出口；NULL = 没选（到此为止） | **是（唯一）** |
+| `summary` | 唯一 message：成功=做了什么 / 失败=为什么失败（失败必填，空则兜底 `"failed"`） | 否 |
+
+- **I4 重写**：路由只看 `out`，不看 `status` → 失败回报出口即继续（旧的 `node_session.go` status 门槛删掉，失败边从「能配、永不生效」变成真能跑）
+- **I5 重写**：`out` 两态（缺省 ≡ `null`）；「没回报」= 没有 result 帧，由租约/巡检表达；失败必须有原因
+- **`reported` 退役**（写入恒 1）；**`error` 降为 `summary` 的派生位**（单一来源）
+- **节点失败也读 `.anotify-out`**（`cmd/agent/runner.go`）—— 否则「失败也发通知」只有手写客户端能发
+- **`edges.html` 的「配置遗漏」警告改成中性「到此为止」**（永远无法消除的警告 = 训练用户忽略警告）
+
+**改动面**：4 个 Go 文件（协议/路由/节点/存储）+ 客户端协议注释；`tasks.reported` 列保留但退役、`error` 派生 —— **零 schema 迁移**；4 语言文案 + 3 个前端页面；`CONTRACT.md` I4/I5/§2.5/§4/A8(+A8b)、`openapi.yaml`、`nats-transport.md` 同步。
+
+**新增断言**：`TestFailedResultWithOutRoutes`（失败+出口 → 下一跳）、`TestRunJobReportsOutOnFailure`（失败也读出口文件）、e2e A8b（失败扇出与成功完全一致）。
+
+**门禁**：`go test ./...` 全绿；`make contract` → 62 路由 / 76 path / 97 op；
+`./scripts/e2e/run_all.sh` 全绿（contract 59 · ws_protocol 82 · frontend 386 · i18n 299 · i18n_coverage 61 · 全量 24 套件 0 失败）。

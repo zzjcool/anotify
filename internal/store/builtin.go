@@ -343,6 +343,49 @@ func seedBuiltinArtifactTx(ctx context.Context, tx *sql.Tx, namespaceID, capabil
 		NewArtifactID(), namespaceID, capabilityID, digest, string(spec), Now()); err != nil {
 		return fmt.Errorf("seed builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
 	}
+
+	// 内置产物更新（比如修了脚本的 bug）→ 把已有部署指到新产物上。
+	//
+	// 为什么要在播种里做：内置产物是**平台自己的内容**，更新后不该等人去控制台逐台重部署。
+	// 部署是中枢下发的期望状态，平台换了内容，期望就该跟着换。
+	// 这里只动 deployments 的“指向”与状态（pending），帧由节点连接时的
+	// ws.resendDeployments 补发——播种发生在启动阶段，此时还没有连接可推。
+	//
+	// 先查回产物 id（INSERT 可能是 no-op，新编的 id 丢弃了）。
+	var artifactID string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM artifacts WHERE namespace_id = ? AND digest = ?`,
+		namespaceID, digest).Scan(&artifactID); err != nil {
+		return fmt.Errorf("read back builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
+	}
+
+	// 老库可能同一个能力上存着多行（旧版允许「旧 digest 的行保留为历史」）。
+	// 先收敛成一行：**保留最新那条**（它代表最近一次部署意图），其余删掉。
+	// 不收敛就重指会撞 UNIQUE(node_id, artifact_id)；而保留最旧的 id 会让
+	// 「我刚点的那次部署」凭空换了个 id。
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM deployments
+		  WHERE namespace_id = ?1
+		    AND artifact_id IN (SELECT id FROM artifacts WHERE capability_id = ?2)
+		    AND id NOT IN (
+		      SELECT id FROM (
+		        SELECT d.id AS id, ROW_NUMBER() OVER (PARTITION BY d.node_id ORDER BY d.created_at DESC, d.id DESC) AS rn
+		          FROM deployments d JOIN artifacts a ON a.id = d.artifact_id
+		         WHERE d.namespace_id = ?1 AND a.capability_id = ?2
+		      ) WHERE rn = 1)`,
+		namespaceID, capabilityID); err != nil {
+		return fmt.Errorf("dedupe builtin deployment %s@%d: %w", bc.Name, bc.Version, err)
+	}
+	// 再把剩下那行指到当前产物上（内容没变时是 0 行更新，纯幂等）。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE deployments
+		    SET artifact_id = ?, digest = ?, state = ?, reason = ?, updated_at = ?
+		  WHERE namespace_id = ? AND artifact_id <> ?
+		    AND artifact_id IN (SELECT id FROM artifacts WHERE capability_id = ?)`,
+		artifactID, digest, DeploymentPending, "builtin artifact updated", Now(),
+		namespaceID, artifactID, capabilityID); err != nil {
+		return fmt.Errorf("repoint builtin deployment %s@%d: %w", bc.Name, bc.Version, err)
+	}
 	return nil
 }
 
@@ -468,13 +511,16 @@ func (d *DB) ClaimCentralTasks(ctx context.Context, limit int) ([]*Task, error) 
 //
 // 与 ReportResult 的区别：ReportResult 是**节点**回报路径（要求任务有
 // node_id 归属、会校验租约）。中枢任务没有归属，所以走这条。
-func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, reported bool, summary, errMsg string) error {
+func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, summary, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: finish status must be succeeded|failed, got %q", ErrInvalidTransition, status)
 	}
 	if out != nil && *out == "" {
 		return fmt.Errorf("finish task: empty out string is not a valid port (use nil)")
 	}
+
+	// 与节点回报路径共用同一套「说明/原因」归并与派生规则。
+	summary, errMsg = normalizeResultMessage(status, summary, errMsg)
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -487,17 +533,13 @@ func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string,
 		return fmt.Errorf("finish central task %s: %w", taskID, err)
 	}
 
-	rep := 0
-	if reported {
-		rep = 1
-	}
 	var outVal any
 	if out != nil {
 		outVal = *out
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET out = ?, reported = ?, summary = ?, error = ? WHERE namespace_id = ? AND id = ?`,
-		outVal, rep, summary, errMsg, namespaceID, taskID); err != nil {
+		outVal, 1, summary, errMsg, namespaceID, taskID); err != nil {
 		return fmt.Errorf("write central task result: %w", err)
 	}
 	return tx.Commit()

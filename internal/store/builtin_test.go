@@ -184,8 +184,11 @@ func TestClaimCentralTasksRunsStateMachine(t *testing.T) {
 	}
 }
 
-// TestFinishTaskWritesTristate 验证 FinishTask 的 out 三态落库（不变量 I5）。
-func TestFinishTaskWritesTristate(t *testing.T) {
+// TestFinishTaskWritesOutcome 验证 FinishTask 的结果落库（outcome-v1.1 两态）。
+//
+// 中枢执行的结果也走同一套规则：reported 恒为 1（写只发生在任务收尾时），
+// out 为空 = 到此为止，失败必须有一句原因（空时兜底 "failed"）。
+func TestFinishTaskWritesOutcome(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
@@ -214,35 +217,41 @@ func TestFinishTaskWritesTristate(t *testing.T) {
 		return task.ID
 	}
 
-	// 态 3：reported=1, out="fix"（虽然 notify.phone 没有出口，但机制要通用）
+	// 选了出口：out 落库，reported 恒 1，失败语义位为空
 	id := mkRunning()
 	port := "fix"
-	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, &port, true, "done", ""); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, &port, "done", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	got, _ := db.GetTask(ctx, nsID, id)
 	if !got.Reported || got.Out == nil || *got.Out != "fix" {
-		t.Errorf("态3 落库错误: reported=%v out=%v", got.Reported, got.Out)
+		t.Errorf("选了出口落库错误: reported=%v out=%v", got.Reported, got.Out)
+	}
+	if got.Error != "" {
+		t.Errorf("成功不该带 error，实际 %q", got.Error)
 	}
 
-	// 态 2：reported=1, out=nil（到头了）
+	// 没选出口（终端能力）：out=NULL，reported 仍为 1（帧到了）
 	id = mkRunning()
-	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, nil, true, "end", ""); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, nil, "end", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	got, _ = db.GetTask(ctx, nsID, id)
 	if !got.Reported || got.Out != nil {
-		t.Errorf("态2 落库错误: reported=%v out=%v", got.Reported, got.Out)
+		t.Errorf("没选出口落库错误: reported=%v out=%v", got.Reported, got.Out)
 	}
 
-	// 态 1：reported=0, out=nil（没回报）
+	// 失败且一句原因都没有 → 兜底 "failed"（库里不允许失败没有说明）
 	id = mkRunning()
-	if err := db.FinishTask(ctx, nsID, id, TaskFailed, nil, false, "", "boom"); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskFailed, nil, "", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	got, _ = db.GetTask(ctx, nsID, id)
-	if got.Reported || got.Out != nil {
-		t.Errorf("态1 落库错误: reported=%v out=%v", got.Reported, got.Out)
+	if got.Out != nil {
+		t.Errorf("失败未选出口 out = %v, want NULL", got.Out)
+	}
+	if got.Summary != "failed" || got.Error != "failed" {
+		t.Errorf("失败原因兜底错误: summary=%q error=%q", got.Summary, got.Error)
 	}
 }
 
@@ -252,7 +261,7 @@ func TestFinishTaskRejectsInvalidStatus(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	err := db.FinishTask(ctx, nsID, "tsk_x", TaskCanceled, nil, false, "", "")
+	err := db.FinishTask(ctx, nsID, "tsk_x", TaskCanceled, nil, "", "")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("want ErrInvalidTransition, got %v", err)
 	}
@@ -604,6 +613,113 @@ func TestExampleBuiltinIsUsable(t *testing.T) {
 	after := countRows(t, db, "artifacts", "namespace_id = ?", nsID)
 	if after != before {
 		t.Fatalf("重复播种把 artifact 行数从 %d 变成了 %d（幂等破了）", before, after)
+	}
+}
+
+// TestExampleBuiltinArtifactUpdateRepointsDeployment 内置产物更新后（比如修了脚本的 bug），
+// 已有部署会被自动指到新产物上并回到 pending，等节点上线时 ws.resendDeployments 补推——
+// 不需要人去控制台逐台重部署。
+//
+// 这是“中枢覆盖”在播种侧的对应物：播种幂等键是 name@version，所以修脚本不会
+// 换能力行，只能靠这里把已有的部署行指过去（否则旧 digest 会永远指着旧内容）。
+func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+
+	cap1, err := db.GetCapability(ctx, nsID, ExampleCapability.Name, ExampleCapability.Version)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	latest, err := db.LatestArtifact(ctx, nsID, cap1.ID)
+	if err != nil {
+		t.Fatalf("latest artifact: %v", err)
+	}
+
+	// 造一份“旧产物”的已应用部署（模拟上一版播种出来的那份）
+	node, _ := mkNode(t, db, nsID, "box")
+	old := dpArtifact(t, db, nsID, cap1.ID, dpDigest("dead"), `{"old":true}`)
+	dep, err := db.CreateDeployment(ctx, nsID, node.ID, old.ID)
+	if err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+	if err := db.MarkDeployResult(ctx, nsID, dep.ID, DeploymentApplied, ""); err != nil {
+		t.Fatalf("mark applied: %v", err)
+	}
+
+	// 重启（= 重新播种）
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+
+	rows, err := db.ListDeployments(ctx, nsID, DeploymentFilter{NodeID: node.ID, CapabilityID: cap1.ID})
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("deployments 行数 = %d, want 1（一个能力一条期望）", len(rows))
+	}
+	got := rows[0]
+	if got.ArtifactID != latest.ID || got.Digest != latest.Digest {
+		t.Fatalf("部署没被指到新产物：artifact=%s digest=%s，want %s / %s",
+			got.ArtifactID, got.Digest, latest.ID, latest.Digest)
+	}
+	if got.State != DeploymentPending {
+		t.Fatalf("重指后 state = %q, want %q（等节点上线补推）", got.State, DeploymentPending)
+	}
+	if !strings.Contains(got.Reason, "builtin artifact updated") {
+		t.Fatalf("reason = %q，应该说明是内置产物更新导致的", got.Reason)
+	}
+
+	// 幂等：再一次播种不会把 pending 打回别处、也不会变出第二行
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
+		t.Fatalf("reseed twice: %v", err)
+	}
+	again, err := db.ListDeployments(ctx, nsID, DeploymentFilter{NodeID: node.ID, CapabilityID: cap1.ID})
+	if err != nil {
+		t.Fatalf("list deployments again: %v", err)
+	}
+	if len(again) != 1 || again[0].ArtifactID != latest.ID {
+		t.Fatalf("重复播种把部署弄乱了: %+v", again)
+	}
+
+	// 旧库形状：同一个能力上两行（旧版允许并存）。播种要收敛成一行，
+	// 而且**保留最新那条**（它才是用户最后一次部署的意图）。
+	// 先清掉当前那条，才能造出“两行指向不同产物”的旧库形状。
+	if _, err := db.ExecContext(ctx, `DELETE FROM deployments WHERE namespace_id = ? AND node_id = ?`, nsID, node.ID); err != nil {
+		t.Fatalf("clear deployments: %v", err)
+	}
+	newerID := NewDeploymentID()
+	now := Now() + 1000
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		newerID, nsID, node.ID, latest.ID, latest.Digest, DeploymentApplied, "", now, now); err != nil {
+		t.Fatalf("insert legacy duplicate: %v", err)
+	}
+	// 再加一条更早的旧行（模拟旧版本留下的“历史”）
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		NewDeploymentID(), nsID, node.ID, old.ID, old.Digest, DeploymentApplied, "", now-2000, now-2000); err != nil {
+		t.Fatalf("insert legacy stale row: %v", err)
+	}
+
+	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
+		t.Fatalf("reseed legacy: %v", err)
+	}
+	legacy, err := db.ListDeployments(ctx, nsID, DeploymentFilter{NodeID: node.ID, CapabilityID: cap1.ID})
+	if err != nil {
+		t.Fatalf("list deployments legacy: %v", err)
+	}
+	if len(legacy) != 1 {
+		t.Fatalf("旧库多行没被收敛: %d 行", len(legacy))
+	}
+	if legacy[0].ID != newerID {
+		t.Fatalf("收敛时保留的不是最新那条：id=%s, want %s", legacy[0].ID, newerID)
+	}
+	if legacy[0].ArtifactID != latest.ID {
+		t.Fatalf("收敛后没指到当前产物: %s", legacy[0].ArtifactID)
 	}
 }
 

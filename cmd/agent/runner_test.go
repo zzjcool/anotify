@@ -784,7 +784,7 @@ func slicesContain(haystack []string, needle string) bool {
 //
 // 三态与 result 帧的 out 域一一对应（不变量 I5）：
 //
-//	没写文件   → 不回报（nil）
+//	没写文件   → 不选出口（nil，分支到此结束）
 //	写了对的   → 回报它
 //	写了错的   → 整次执行判失败（出口是封闭集合，不变量 I2，不许临时发明）
 func TestOutcomeOutFromFile(t *testing.T) {
@@ -868,6 +868,48 @@ func TestRunJobReportsOut(t *testing.T) {
 	}
 }
 
+// TestRunJobReportsOutOnFailure 失败也能选出口：脚本先写出口文件再 exit 1。
+//
+// 「失败也发通知」这条链在节点侧的前提就是这里：失败时不读出口文件的话，
+// (cap, failed) 那条边只有在手写 WS 客户端时才可能生效。
+func TestRunJobReportsOutOnFailure(t *testing.T) {
+	art := testScriptArtifact("demo.failout", 1,
+		bashScript(`printf 'failed\n' > "$ANOTIFY_OUT_FILE"; echo "编译失败"; exit 3`))
+	art.Spec.Outputs = []string{"failed", "retry"}
+
+	res := runJob(context.Background(), job{
+		TaskID: "tsk_fail_out", Capability: "demo.failout", Version: 1,
+		Artifact: art, WorkRoot: t.TempDir(),
+	})
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q，期望 failed", res.Status)
+	}
+	if res.Out == nil || *res.Out != "failed" {
+		t.Fatalf("out = %v，期望 failed（失败也要读出口文件）", res.Out)
+	}
+	if res.Err == "" {
+		t.Fatal("失败必须带原因（err 为空）")
+	}
+}
+
+// TestRunJobFailureKeepsWorkDir 失败保留工作目录（事后翻现场）；成功才删。
+func TestRunJobFailureKeepsWorkDir(t *testing.T) {
+	art := testScriptArtifact("demo.keepdir", 1, bashScript(`exit 2`))
+	res := runJob(context.Background(), job{
+		TaskID: "tsk_keepdir", Capability: "demo.keepdir", Version: 1,
+		Artifact: art, WorkRoot: t.TempDir(),
+	})
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q，期望 failed", res.Status)
+	}
+	if res.WorkDir == "" {
+		t.Fatal("WorkDir 为空，无法翻现场")
+	}
+	if _, err := os.Stat(res.WorkDir); err != nil {
+		t.Fatalf("失败后工作目录应保留: %v", err)
+	}
+}
+
 // TestRunJobRejectsUndeclaredOut 脚本写了一个产物没声明的出口 → 任务失败，
 // 而不是「静默当成没回报」（那会让链路莫名断掉且查不出原因）。
 func TestRunJobRejectsUndeclaredOut(t *testing.T) {
@@ -882,7 +924,7 @@ func TestRunJobRejectsUndeclaredOut(t *testing.T) {
 		t.Fatalf("status = %q，期望 failed", res.Status)
 	}
 	if res.Out != nil {
-		t.Fatalf("失败的执行不得回报出口，实际 %q", *res.Out)
+		t.Fatalf("不合法的出口名不得被当成出口，实际 %q", *res.Out)
 	}
 	if !strings.Contains(res.Err, "not declared") {
 		t.Fatalf("err = %q，期望含 not declared", res.Err)

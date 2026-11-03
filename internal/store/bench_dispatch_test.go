@@ -231,7 +231,7 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	}
 	fixOut := "fix"
 	if err := env.db.ReportResult(ctx, env.nsID, dispatched.ID, store.TaskSucceeded,
-		&fixOut, true, "done", []string{"run.log"}, ""); err != nil {
+		&fixOut, "done", []string{"run.log"}, ""); err != nil {
 		t.Fatalf("report result: %v", err)
 	}
 	finished, err := env.db.GetTask(ctx, env.nsID, dispatched.ID)

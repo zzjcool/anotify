@@ -413,64 +413,92 @@ async function main() {
 		);
 	}
 
-	// A8 out 三态：三态各验一次（用 fin 这个 end 能力）
+	// A8 out 两态 + A8b「失败也能继续」（outcome-v1.1）
 	{
-		const db = new DatabaseSync(server.dbPath);
-		let traceId;
-		try {
-			traceId = "trace_tristate_" + Date.now();
-		} finally {
-			db.close();
+		// 清场：A6 扇出的 3 个任务还占着实例槽位（节点 4 个实例），不释放的话
+		// 后面的任务会一直停在 pending、拿不到 assign（result 会被判 invalid_transition）。
+		for (const busy of sqlQuery(
+			`SELECT id FROM tasks WHERE node_id = ? AND status IN ('assigned','acked','running')`,
+			node.id,
+		)) {
+			node.conn.send({ type: "result", task_id: busy.id, status: "succeeded" });
 		}
+		await new Promise((r) => setTimeout(r, 600));
 
-		// 造三条独立任务，分别用 缺失 / null / 字符串 回报
+		// 等任务真的落到节点上（status 离开 pending）再发 result——
+		// 这是节点的硬前提，不是可以靠 sleep 赌的时序。
+		const waitDispatched = async (id) => {
+			for (let i = 0; i < 60; i++) {
+				const row = sqlQuery(`SELECT status FROM tasks WHERE id = ?`, id)[0];
+				if (row && row.status !== "pending") return true;
+				await new Promise((r) => setTimeout(r, 50));
+			}
+			return false;
+		};
+
+		// 造独立 trace，用「来源 → work」这条入口；work --done--> fin 已建好。
 		const mk = async (label) => {
 			const ev = await postEvent({
 				source: "c.origin",
 				type: "go",
-				traceId: traceId + "_" + label,
+				traceId: "trace_outcome_" + label + "_" + Date.now(),
 				payload: {},
 			});
-			return ev.json?.tasks?.[0]?.id;
+			const id = ev.json?.tasks?.[0]?.id;
+			await waitDispatched(id);
+			return { id, traceId: ev.json?.traceId };
 		};
 
+		// 态1：out 缺失 = 没选出口 → out=NULL，且不派生下一跳
 		const tMissing = await mk("missing");
-		await new Promise((r) => setTimeout(r, 400));
 		node.conn.sendRaw(
-			`{"type":"result","task_id":"${tMissing}","status":"succeeded","summary":"no out"}`,
+			`{"type":"result","task_id":"${tMissing.id}","status":"succeeded","summary":"no out"}`,
 		);
 		await new Promise((r) => setTimeout(r, 400));
-		const rMissing = sqlQuery(`SELECT reported, out FROM tasks WHERE id = ?`, tMissing)[0];
-		A(
-			8,
-			"out 缺失 → reported=0, out=NULL",
-			rMissing && rMissing.reported === 0 && rMissing.out === null,
-			JSON.stringify(rMissing),
-		);
+		const rMissing = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tMissing.id)[0];
+		A(8, "out 缺失 → out=NULL（没选出口）", rMissing && rMissing.out === null, JSON.stringify(rMissing));
 
+		// 态2：out:null 与缺失等价
 		const tNull = await mk("null");
+		node.conn.sendRaw(`{"type":"result","task_id":"${tNull.id}","status":"succeeded","out":null}`);
 		await new Promise((r) => setTimeout(r, 400));
-		node.conn.sendRaw(`{"type":"result","task_id":"${tNull}","status":"succeeded","out":null}`);
-		await new Promise((r) => setTimeout(r, 400));
-		const rNull = sqlQuery(`SELECT reported, out FROM tasks WHERE id = ?`, tNull)[0];
-		A(
-			8,
-			'out:null → reported=1, out=NULL（"到头了"）',
-			rNull && rNull.reported === 1 && rNull.out === null,
-			JSON.stringify(rNull),
-		);
+		const rNull = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tNull.id)[0];
+		A(8, "out:null → out=NULL（与缺失等价）", rNull && rNull.out === null, JSON.stringify(rNull));
 
-		// 字符串态用 work（有出口）已验证过扇出；这里再单独确认落库
+		// 态3：选了出口 → 落库并派下一跳（work --done--> fin）
 		const tStr = await mk("str");
-		await new Promise((r) => setTimeout(r, 400));
-		node.conn.send({ type: "result", task_id: tStr, status: "succeeded", out: "done" });
-		await new Promise((r) => setTimeout(r, 400));
-		const rStr = sqlQuery(`SELECT reported, out FROM tasks WHERE id = ?`, tStr)[0];
+		node.conn.send({ type: "result", task_id: tStr.id, status: "succeeded", out: "done" });
+		await new Promise((r) => setTimeout(r, 600));
+		const rStr = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tStr.id)[0];
+		A(8, 'out:"done" → out="done"', rStr && rStr.out === "done", JSON.stringify(rStr));
+
+		// A8b：**失败** + 选了出口 → 照样派下一跳（I4 落地；旧实现里这条边永不生效）
+		const tFail = await mk("failedroute");
+		node.conn.send({
+			type: "result",
+			task_id: tFail.id,
+			status: "failed",
+			out: "done",
+			summary: "exit status 7: 编译失败",
+		});
+		await new Promise((r) => setTimeout(r, 700));
+		const failParent = sqlQuery(`SELECT status, out, summary FROM tasks WHERE id = ?`, tFail.id)[0];
+		A(8, "A8b 失败 + out → 父任务 status=failed", failParent?.status === "failed", JSON.stringify(failParent));
+		A(8, "A8b 失败 + out → out 落库", failParent?.out === "done", JSON.stringify(failParent));
+		A(8, "A8b 失败必须带原因", !!failParent?.summary, JSON.stringify(failParent));
+		const failChildren = sqlQuery(
+			`SELECT capability FROM tasks WHERE trace_id = ? AND parent_task_id = ?`,
+			tFail.traceId,
+			tFail.id,
+		);
+		// work --done--> 一共 3 条边（fin + fanA + fanB），所以「建了什么」要和
+		// 成功扇出**完全一样**——失败不该少派、也不该安静地只走一条。
+		const failCaps = failChildren.map((c) => c.capability).sort();
 		A(
 			8,
-			'out:"done" → reported=1, out="done"',
-			rStr && rStr.reported === 1 && rStr.out === "done",
-			JSON.stringify(rStr),
+			"A8b 失败 + out → 扇出与成功时一致（fin + fanA + fanB）",
+			JSON.stringify(failCaps) === JSON.stringify(["c.fan.a", "c.fan.b", "c.fin"]),
+			JSON.stringify(failCaps),
 		);
 	}
 

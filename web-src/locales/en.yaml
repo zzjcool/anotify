@@ -119,6 +119,7 @@ common:
     finished_at: Finished
     error: Error
     summary: Summary
+    reason: Failure reason
 index:
   load:
     failed: 'Failed to load: '
@@ -210,6 +211,8 @@ index:
     empty: No notifications with this status
     delivered: '{d}/{t} devices delivered'
     count: Showing {n}
+    out: 'Port {out}'
+    out_end: 'Ends here'
   detail:
     open_session: Open Agent session
     view_full: View full page (all fields + deliveries) →
@@ -288,7 +291,7 @@ message:
     lease_expired: Lease expired
   out:
     none: Not reported
-    end: End reached (no output)
+    end: No port selected (ends here)
   node:
     central: Executed by hub
   chain:
@@ -1527,7 +1530,7 @@ edges:
   cancel: Cancel
   save: Save
   remove: Delete
-  missing: Outputs with no downstream
+  terminal: Ends here (no downstream)
   empty: 'Edge list is empty: incoming events have nowhere to go.'
   nomatch: No matching edges.
   created: Edge created

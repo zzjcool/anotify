@@ -119,6 +119,7 @@ common:
     finished_at: 終了時刻
     error: エラー
     summary: 結果サマリ
+    reason: 失敗理由
 index:
   load:
     failed: '読み込みに失敗：'
@@ -210,6 +211,8 @@ index:
     empty: このステータスの通知はありません
     delivered: '{d}/{t} 台に配信済み'
     count: '{n} 件表示'
+    out: '出口 {out}'
+    out_end: 'ここで終了'
   detail:
     open_session: Agent セッションを開く
     view_full: 完全ページを表示（全フィールド + 配信記録）→
@@ -288,7 +291,7 @@ message:
     lease_expired: リース期限切れ
   out:
     none: 未報告
-    end: 終端に到達（出口なし）
+    end: 出口未選択（ここで終了）
   node:
     central: ハブが実行
   chain:
@@ -1527,7 +1530,7 @@ edges:
   cancel: キャンセル
   save: 保存
   remove: 削除
-  missing: 下流が未接続の出口
+  terminal: ここで終了（下流なし）
   empty: 出口表が空です：イベントが来ても行き先がありません。
   nomatch: 一致する辺がありません。
   created: 辺を作成しました

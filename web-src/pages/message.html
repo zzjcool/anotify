@@ -580,12 +580,18 @@
           ? fmtDuration(task.startedAt, task.finishedAt)
           : "—";
 
-      // out 三态（不变量 I5）：没回报 / 到头了 / 走某个出口
-      const outText = !task.reported
-        ? t("message.out.none", "未回报")
-        : task.out == null
-          ? t("message.out.end", "到头了（无出口）")
-          : task.out;
+      // out 两态：选了某个出口 / 没选（到此为止）。
+      // 「没回报」不是 out 的一个取值——它是**没有结果帧**（任务还没结束、或节点掉线
+      // 后被回收），由 status 表达。把两者混成一个「未回报」会让人以为链路正常结束。
+      const isTerminal = ["succeeded", "failed", "canceled", "abandoned"].includes(
+        task.status,
+      );
+      const outText =
+        task.out != null
+          ? task.out
+          : isTerminal
+            ? t("message.out.end", "没选出口（到此为止）")
+            : t("message.out.none", "未回报");
 
       fieldsEl.replaceChildren(
         field(t("common.field.task_id", "任务 ID"), task.id),
@@ -618,8 +624,14 @@
           t("common.field.finished_at", "结束时间"),
           task.finishedAt ? fmtTime(task.finishedAt) : "—",
         ),
-        field(t("common.field.error", "错误"), task.error || "—", false),
-        field(t("common.field.summary", "结果摘要"), task.summary || "—", false),
+        // 结果说明只有一份：成功=做了什么，失败=为什么失败（标题随状态变）。
+        field(
+          status === "failed"
+            ? t("common.field.reason", "失败原因")
+            : t("common.field.summary", "结果摘要"),
+          task.summary || task.error || "—",
+          false,
+        ),
       );
 
       fieldsCard.hidden = false;

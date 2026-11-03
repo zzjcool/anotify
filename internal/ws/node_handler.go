@@ -462,7 +462,8 @@ func (s *nodeSession) handle(ctx context.Context, frame any) error {
 
 // handleHello 处理握手后的第一帧。
 func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
-	if err := applyHello(ctx, s.h.Store, s.node, f); err != nil {
+	applied, err := applyHello(ctx, s.h.Store, s.node, f)
+	if err != nil {
 		return s.failHello(ctx, err)
 	}
 	s.markHello()
@@ -493,6 +494,8 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 		"applied", len(f.Applied),
 		"instances", len(f.Instances),
 	)
+	// 中枢覆盖：节点上缺的 / 旧的产物，握手一结束就补发（见 resendDeployments）。
+	s.resendDeployments(ctx, applied)
 	// 节点上线 = **新增了执行能力**（#219）。队列里可能正压着一批
 	// 「之前没人能跑」的 pending，它们原本也要等下一轮 5s 巡检才被捡起来。
 	// 钩子是可合并的非阻塞投递，这里同步调用不会拖慢握手。
@@ -500,6 +503,72 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 		s.h.OnCapacityFreed()
 	}
 	return nil
+}
+
+// resendDeployments 把「中枢期望、节点上还没有（或还是旧的那份）」的产物补发下去。
+//
+// 中枢是部署的唯一写者，所以这里不做“本地变体”协商：不一致就覆盖。它同时覆盖两个场景：
+//   - 重连后节点缓存的 digest 不是中枢期望的那份（换了部署目标 / 产物在中枢更新过）；
+//   - 部署时节点离线：行建好了、帧没发出去，等它上线补推
+//     （原来只有一句“节点上线时会补推”的注释，代码里没有）。
+//
+// 失败只记日志、不断连接：补推不是握手的前置条件，能接活比“产物一致”更要紧，
+// 下一次连上来还会再试。
+func (s *nodeSession) resendDeployments(ctx context.Context, applied map[string]string) {
+	rows, err := s.h.Store.DeploymentsForNode(ctx, s.node.NamespaceID, s.node.ID)
+	if err != nil {
+		slog.Warn("resend deployments: list failed",
+			"event", "node.ws.deploy.resend_failed",
+			"node_id", s.node.ID,
+			"error", err.Error(),
+		)
+		return
+	}
+
+	pushed := 0
+	for _, r := range rows {
+		if r.Digest == applied[r.CapabilityID] {
+			continue // 已经是这一份
+		}
+		// 先落回 pending：控制台上看到的应该是“正在重新下发”，而不是一个假的绿勾。
+		// reason 里保留两端 digest：对账日志会被下一次推送盖掉，排障时得看得到差在哪。
+		have := applied[r.CapabilityID]
+		reason := fmt.Sprintf("resend on connect: node has %q, console expects %q", have, r.Digest)
+		if have == "" {
+			reason = fmt.Sprintf("resend on connect: node has nothing, console expects %q", r.Digest)
+		}
+		if err := s.h.Store.MarkDeployResult(ctx, s.node.NamespaceID, r.DeploymentID, store.DeploymentPending, reason); err != nil && !errors.Is(err, store.ErrNotFound) {
+			slog.Warn("resend deployments: mark pending failed",
+				"event", "node.ws.deploy.resend_mark_failed",
+				"node_id", s.node.ID,
+				"deploy_id", r.DeploymentID,
+				"error", err.Error(),
+			)
+		}
+		if err := s.send(ctx, &DeployFrame{
+			Type:     NodeFrameDeploy,
+			DeployID: r.DeploymentID,
+			Action:   DeployActionApply,
+			Artifact: json.RawMessage(r.Spec),
+		}); err != nil {
+			slog.Warn("resend deployments: send failed",
+				"event", "node.ws.deploy.resend_send_failed",
+				"node_id", s.node.ID,
+				"deploy_id", r.DeploymentID,
+				"error", err.Error(),
+			)
+			return
+		}
+		pushed++
+	}
+
+	if pushed > 0 {
+		slog.Info("deployments resent on connect",
+			"event", "node.ws.deploy.resend",
+			"node_id", s.node.ID,
+			"count", pushed,
+		)
+	}
 }
 
 // failHello 把 hello 失败翻译成协议错误帧，并返回「结束连接」的错误。

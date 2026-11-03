@@ -622,7 +622,6 @@
         priority: params.priority || "normal",
         ttlSeconds: 0,
         out: n.out != null ? n.out : null,
-        reported: !!n.reported,
         error: n.error || "",
         time: timeAgo(created),
         isToday: (() => {
@@ -1042,11 +1041,16 @@
                 "div",
                 { class: "flex shrink-0 flex-col items-end gap-1" },
                 el("span", { class: "card-sub", text: n.time }),
+                /* 工作台的列表来源是 /v1/tasks（不是旧的 notifications），
+                 * 没有投递计数；这里只表达 outcome-v1.1 的两态出口。 */
                 el("span", {
                   class: "card-sub",
-                  text: n.reported
-                    ? t("index.notif.reported", "已回报")
-                    : t("index.notif.unreported", "未回报"),
+                  text:
+                    n.out != null
+                      ? t("index.notif.out", "出口 {out}").replace("{out}", n.out)
+                      : ["done", "interrupted", "error"].includes(n.agentState)
+                        ? t("index.notif.out_end", "到此为止")
+                        : t("index.notif.unreported", "未回报"),
                 }),
               ),
             );
