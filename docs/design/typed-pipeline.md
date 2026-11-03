@@ -276,27 +276,42 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 
 > 共享基础：`internal/schema`（零依赖的受控子集校验器）。配置期、入口、派发期、投递期四处共用一份实现——否则「存的时候说类型对、派发时被剪枝」这种判定无法自圆。
 
-### P1 · emit（本轮最大一块，独立成期）
+### P1 · emit（本轮最大一块，独立成期）—— ✅ 已完成（`dd81cf8` + `a110d27`）
 
-| # | 改动 |
-|---|---|
-| P1.1 | `emit` / `emit_ack` 帧 + `emissions` 表 + `(task_id, seq)` 幂等 + 与派发同事务（**复用 #140 的接力原子性**，否则“丢一次”变成“丢 N 次”） |
-| P1.2 | agent 本地 socket + `anotify-agent emit` 子命令 + 任务令牌 + 端口白名单 + 结构校验 + 阻塞 ack |
-| P1.3 | 派发：`data ⊎ literals` → 每条 link `ValidateParams` → 扇出（部分成功） |
-| P1.4 | `assign.catalog`（本能力出边 + 目标 params_schema）下发 |
-| P1.5 | 废弃 `.anotify-out` / `.anotify-result`：旧产物在退出时**合成一次 emit**（一次性兼容层，标注 deprecated，下个大版本删） |
-| P1.6 | 前端：trace 从“链”变“事件流”（每次 emit 的 port + 时间 + 下游）；能力详情页显示端口与 link |
+| # | 改动 | 状态 |
+|---|---|---|
+| P1.1 | `emit` / `emit_ack` 帧 + `emissions` 表 + `(task_id, seq)` 幂等 + 与派发同事务 | ✅ 迁移 22/23/24；`route.Emit` 复用 `plan()` 逐 link 判定；**写 emission 与建子任务行同一事务** |
+| P1.2 | agent 本地 socket + `anotify-agent emit` 子命令 + 任务令牌 + 端口白名单 + 阻塞 ack | ✅ `<data-dir>/emit/<task>.sock`（0700/0600）+ outbox（先 fsync 再 ack）+ 七步校验 + 退出码 2/3/4/5/6/7 |
+| P1.3 | 派发：`data ⊎ literals` → 每条 link `ValidateParams` → 扇出（部分成功） | ✅ |
+| P1.4 | `assign` 下发 `ports` / `expects` / `token` | ✅ `BuildExpects`：各下游 `params_schema` 减 literals 的并集 + targets（给人看） |
+| P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ⏳ 未做。现在两条通道并存：emit 是主路，`.anotify-out` 仍是退出时的兜底（旧产物不改也能跑）。删它要单独一次迁移 |
+| P1.6 | 前端：trace 显示每次 emit | ✅ trace 页「产出（emits）」区 + `GET …/tasks/{id}/emissions` |
 
-> P1.5 是唯一保留的兼容层；其余一律直接切。
+> 落地时补的两条护栏（设计里漏了，属实现漏洞）：**emit 的归属校验**（任务派给 A，B 不能替它 emit）
+> 与 **`note` 落库**（帧里带着、建表漏列，曾静默丢失）。
 
 ### P2 · 统一（破坏性，必须一起做）
 
-| # | 改动 |
-|---|---|
-| P2.1 | 源 → `kind=trigger` 的能力；删 `from_is_source` / `source_targets` / `source_target_params` / `DispatchInput.Targets` 旁路 |
-| P2.2 | `edges` → `link`（名字引用）；`capability.id` 与 `content_hash` 解耦（id 稳定，hash 只寻址） |
-| P2.3 | 静态环检测（运行期 `path` 剪枝降级为兜底） |
-| P2.4 | 契约进签名（`ports` / `params` 参与 `content_hash`）—— 只在 P2.2 之后 |
+| # | 改动 | 状态 |
+|---|---|---|
+| P2.3 | 静态环检测（运行期 `path` 剪枝降级为兜底） | ✅ `f4211bd`。保存 link 时 DFS 判可达环；自连单独报；菱形/1:N 仍合法 |
+| P2.2 | `edges` 按 **名字** 引用（`name` 默认跟随 / `name@version` 钉死）+ 升级闸门 | ⏳ 待做，见下方「P2.2 施工计划」 |
+| P2.2a | `capability.id` 与 `content_hash` 解耦 | **判定为不必要**：`NormalizeCapability` 的 hash 输入已含 name/params_schema/outputs/lifecycle/sticky（P2.4 其实已经是现状），而版本不可变（I8）——id 里带 hash8 没有任何功能后果。省掉一次破坏性迁移 |
+| P2.4 | 契约进签名（`ports` / `params` 参与 `content_hash`） | ✅ 已是现状（同 P2.2a 的核查结论） |
+| P2.1 | 源 → `kind=trigger` 的能力；删 `source_targets` / `DispatchInput.Targets` 旁路 | ⛔ **被一个未决设计问题挡住**，见 §11.5 |
+
+#### P2.2 施工计划（给下一次会话，不必重新推导）
+
+1. **先加升级闸门**，再改引用语义。顺序反了就是「升级静默改线」：今天 link 钉的是
+   `capability_versions.id`，升级不会动线；一旦改成 `name` 跟随 latest，行为立刻变化。
+   闸门的判据（§3.6）：删 port / 改入参类型 / 加必填 → 要求确认，并列出受影响的 link。
+2. `edges` 增 `from_ref` / `to_ref`（`name` 或 `name@version`）。迁移把存量 id 重写成
+   **`name@version`**（保行为不变），新建默认 `name`。
+3. 解析点集中在 `route` 一处（`name → latest`，`name@version → 该版`）；`EdgesFrom` 只返回 ref，
+   不再返回 id。`tasks.path` 同步改成**名字**（「同一条链上重复出现同一个能力名」才是环）。
+4. `graphContentHash` 用 ref（不是 id）——否则升级会让「同一张图」算出不同 hash。
+5. 影响面（按仓库实测）：`from_port|FromPort` 28 文件、`EdgesFrom|CreateEdge` 17 文件、
+   e2e 里 6 个套件会建边（routing / contract / frontend / real_backend / ws_protocol / live_agent）。
 
 ### P3 · 可选
 字段字典报告（推导量、只报告）；嵌套字段表单；`catalog` 里附带“最近实际被消费的字段”观测。
@@ -365,12 +380,21 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 
 ## 11. 未决
 
-1. **P2 的破坏性迁移窗口**：`capability.id` 与 `content_hash` 解耦，需要停机还是双写过渡。
+1. **P2 的破坏性迁移窗口**：`edges` 改按名字引用，需要停机还是「双写 + 读侧回落」过渡。
+   施工计划见 §7「P2.2 施工计划」；**升级闸门必须先行**。
 2. **历史可解释性的内容保留**：digest 钉住了内容身份，但产物本身要保留多久（现 `retention` 只管事件/任务）。
-3. **`catalog` 体积与泄露边界**：下游多时它会变大；是否需要“只给被 emit 过的 port 补齐”（懒加载）。
-4. **emit 的速率上限**（QoS）：单任务每秒 1000 次的限额要不要做，还是只做总数上限。
-
----
+3. **`catalog` 体积与泄露边界**：下游多时 `expects.targets` 会变大；是否需要「只给被 emit 过的 port 补齐」（懒加载）。
+4. **emit 的速率上限**（QoS）：单任务总数 1000 已实现；每秒限额要不要做，还是只做总数。
+5. **⛔ 挡住 P2.1 的那个问题：触发器 → 第一跳的参数从哪来？**
+   - §3 说「link 只有连接 + 字面量，没有引用映射」；
+   - 但触发器是外部系统，它**不会自己拼参数**：GitHub 的 `pull_request.title` 怎么进
+     `review.params.diff`？今天的 `source_target_params` 用 `{{pull_request.title}}` 解决它。
+   - §6.1 的 I6 行写的是「`{{}}` 只留在触发器边界」，与 §3/§8 的「没有引用映射」直接矛盾。
+   - 必须二选一才能动 P2.1：
+     **A** 入口边（`trigger → 能力`）允许 path 引用，能力边不允许（推荐：它承认了外部世界
+     与内部世界的差别——外部不会替你拼参数，内部会）；
+     **B** 触发器也要「产出」一份契约，第一跳只能收 `data` + 字面量（那就要给每个内置触发器
+     写一份 payload → params 的映射层，等于把 `source_target_params` 换个地方）。
 
 ## 12. 已否决的方案（附原因，防止回头）
 
