@@ -124,6 +124,51 @@ async function checkPage(ctx, url, viewportName, viewport) {
 		`${overflowCount} 个元素超出`,
 	);
 
+	// ---- 量高度之前的确定性等待：页面数据落定 ----
+	//
+	// 首页 #index-events 加载期是 5 行骨架（aria-busy="true"，见 index.html），
+	// 数据到达后 removeAttribute + replaceChildren。若在骨架期就量 scrollHeight
+	// 并滚到底，随后的 300ms 里 KPI 卡片/任务列表/事件列表陆续成型把文档顶高，
+	// 于是 scrollY 落在**新的**底部之上 —— 表现是「可滚动到底」假失败
+	// （桌面1280 / 移动390 index.html 两条）。这不是产品滚不动，是测试量早了。
+	//
+	// 所以先等骨架消失（无该属性的页面瞬间返回；5s 超时不计失败 ——
+	// 非 index 页没有骨架，而真实加载失败时页面自己要渲染「载入失败 + 重试」）。
+	await page
+		.waitForFunction(() => !document.querySelector('[aria-busy="true"]'), undefined, {
+			timeout: 5000,
+		})
+		.catch(() => {});
+	// 若该页有通知列表（index），等列表真的出结果（有行，或已渲染空态/错误态）。
+	await page
+		.waitForFunction(
+			() => {
+				const list = document.getElementById("notif-list");
+				if (!list) return true; // 该页没有这个列表
+				if (list.querySelector(".notif-row")) return true;
+				// 空态/错误态：列表已经渲染过内容（不是只剩骨架）
+				return (list.textContent || "").trim().length > 0;
+			},
+			undefined,
+			{ timeout: 5000 },
+		)
+		.catch(() => {});
+	// 最后等文档高度连续几帧不再变化（字体/动画/后续渲染都可能再顶高一次），
+	// 上限 2s。这样下面量到的 scrollHeight 才是「终态高度」，
+	// 断言本身（必须真滚到 sh - vh - 5 内）一个字符都没放宽。
+	await page.evaluate(async () => {
+		const t0 = performance.now();
+		let prev = -1;
+		let stableFrames = 0;
+		while (performance.now() - t0 < 2000) {
+			const h = document.documentElement.scrollHeight;
+			stableFrames = h === prev ? stableFrames + 1 : 0;
+			prev = h;
+			if (stableFrames >= 3) return; // 连续 4 帧同高 = 已稳定
+			await new Promise((r) => requestAnimationFrame(r));
+		}
+	});
+
 	// 能滚动到底（若可滚动）
 	const canScrollToBottom = await page.evaluate(async () => {
 		const sh = document.documentElement.scrollHeight;
