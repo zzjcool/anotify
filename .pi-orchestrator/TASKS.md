@@ -422,3 +422,8 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - **弹层退场**：`Anotify.openModal/closeModal` 统一 140ms `.is-closing` 淡出后再 hidden；覆盖 keys/sources/capabilities/edges/admin/receivers/security/login；重开清退场态。实测关闭 30ms 时仍可见、200ms 后 hidden、重开正常。
 - **顺带**：trace `.wf-switch .on` 对齐 accent-soft；`.brand-tile` 组件化，亮色白字保留；亮色 3 状态色压深到 4.83–4.87:1；`ring-white/15` shim 归零。
 - **验证**：全量 e2e **1836/0**（frontend 387、ui_shift 21、admin_flow 51、security 30、real_backend 127、deeplink 31）。
+
+### P1 与上游 VT 合流（2026-11-03）
+
+- 上游 `31f6801`：把 `@view-transition { navigation:auto }` 内联进三个 layout 的 `<head>`（外部 ui.css 里 Chrome 来不及 opt-in，会中断并抛 InvalidStateError）；ui.css 只留伪树时长/缓动与 reduce 覆盖。
+- 本地上游 merge 后实测：`pagereveal.viewTransition=true`、0 pageerror；全量 e2e **1836/0**（frontend 387、deeplink 31、ui_shift 21、i18n_coverage 61）。
