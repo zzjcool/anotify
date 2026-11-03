@@ -514,6 +514,8 @@ export const SUITE_PORTS = {
 	deploy: 7050,
 	// 开页抖动回归（ui_shift）：Chrome 类，接在 deploy 段之后开新段（7050 段到 7099 止）。
 	ui_shift: 7100,
+	// P2 工程守卫（p2_guards）：Chrome 类，接在 ui_shift 段之后（7100 段到 7149 止）。
+	p2_guards: 7200,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。

@@ -39,7 +39,14 @@ scripts/e2e/
     security.mjs        # 安全矩阵
     edge_cases.mjs      # 边界/并发/Unicode
     frontend.mjs        # 前端渲染 + 路由守卫
+    ui_shift.mjs        # 开页抖动回归（几何采样去重）
+    p2_guards.mjs       # P2 工程守卫：字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions
 ```
+
+新增套件要**同时**登记两处，否则会被静默丢弃/抢端口：
+
+1. `scripts/e2e/parallel_runner.mjs` 的 `CHROME_SUITES`（或 `HTTP_SUITES`）
+2. `scripts/e2e/lib/harness.mjs` 的 `SUITE_PORTS`（每套件独占 50 个端口段）
 
 ## 运行
 
@@ -50,13 +57,17 @@ make e2e-one S=auth_flow   # 只跑某个套件
 
 ## 测试矩阵（全 case 清单）
 
-见各 suite 文件顶部注释。总计 **100+ 断言**，覆盖：
+见各 suite 文件顶部注释。总计 **1866 断言 / 29 套件**，覆盖：
 
 - 每个 API 端点的 成功/401/403/400/404 路径
 - Passkey 注册→登录→登出→会话失效 全生命周期
 - WS 全部帧类型 + 断线续传
 - 投递规则全部边界（无tag消息/无tag设备/交集/ALL拒绝/status 5 种 × filter 3 种）
 - 并发 seq 单调性、畸形输入、SQL 注入安全性、Key 哈希不可逆
+- **P2 工程守卫**（`p2_guards`，30 断言）：字体 0 外部请求 + `document.fonts.check`
+  证明 Inter/Fraunces/JetBrains Mono 真的生效；390 视口抽屉的 role=dialog /
+  aria-modal / Esc 关闭 / 焦点回归；reduce 下 `--dur`、`--dur-modal-out` 归零；
+  跨文档 View Transitions 的 head 内联 opt-in + pagereveal 触发 + 导航 0 pageerror
 - **真 agent 端到端**（`live_agent`，4s）：真起 `cmd/agent` 进程 → 真部署 → 真跑任务，
   最后到**文件系统**上验收（产物 digest 两端对得上账、能力声明的 `run.workDir` 真的生效、
   用户目录里不残留产物文件）。专门抓「每层单独看都对、连起来才错」的一类 bug。
