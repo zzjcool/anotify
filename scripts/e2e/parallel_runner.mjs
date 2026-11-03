@@ -68,6 +68,9 @@ const CHROME_SUITES = [
 	"events_paging",
 	// #201：真后端（不用 mock）+ 真浏览器的体检套件
 	"real_backend",
+	// 开页抖动回归：语言条 / 命名空间槽位 / 折叠态 / 预排版
+	// （实测几何去重，专抓「功能全对但首帧后元素逐帧滑动」这类回归）
+	"ui_shift",
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 

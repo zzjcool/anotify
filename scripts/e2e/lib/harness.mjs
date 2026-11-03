@@ -512,6 +512,8 @@ export const SUITE_PORTS = {
 	capacity: 7000,
 	// console-declares（T6）：部署模型纯 HTTP 套件（templates/artifacts/deployments）。
 	deploy: 7050,
+	// 开页抖动回归（ui_shift）：Chrome 类，接在 deploy 段之后开新段（7050 段到 7099 止）。
+	ui_shift: 7100,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。
