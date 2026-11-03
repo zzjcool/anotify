@@ -412,3 +412,13 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - **容器生效**：runtime 加 `tzdata`，compose/`.env.compose.example` 支持 `TZ`（默认 Etc/UTC，例 `Asia/Shanghai`）；openapi 描述同步。
 - **验证**：`go test ./...` 15 包全绿；全量 e2e **1836/0**（含上游 index 事件流主列表改动）；fonts/ui_shift/lang_hint/contract 全绿；tunnel 200。
 - **上游合流**：index 淘汰「最近任务」、事件流升主列表（8bad80e）；跨文档 VT 自动 opt-in 因脚本跳转竞态关闭（89a68b6，保留伪树样式，未来用 nav 助手再开）。
+
+---
+
+## P1 · 抽屉 a11y / 弹层退场 / 主题降并发（2026-11-03）
+
+- **抽屉 dialog**：移动打开时 `role="dialog"` + `aria-modal="true"` + `aria-label`；Tab/Shift+Tab 在面板内循环（含首尾），Esc 关闭，焦点回 `#menu-btn`；桌面/放大后自动剥角色。实测 Tab 6 轮仍在抽屉、Esc 后 `aria-expanded=false`、role=null。
+- **主题降并发**：`applyTheme` 换色时加 `html.theme-switching` 220ms，临时关掉元素过渡（遮罩自身除外）；实测 `getAnimations()` 99–181 → **9**，data-theme 仍同步、遮罩正常淡出。
+- **弹层退场**：`Anotify.openModal/closeModal` 统一 140ms `.is-closing` 淡出后再 hidden；覆盖 keys/sources/capabilities/edges/admin/receivers/security/login；重开清退场态。实测关闭 30ms 时仍可见、200ms 后 hidden、重开正常。
+- **顺带**：trace `.wf-switch .on` 对齐 accent-soft；`.brand-tile` 组件化，亮色白字保留；亮色 3 状态色压深到 4.83–4.87:1；`ring-white/15` shim 归零。
+- **验证**：全量 e2e **1836/0**（frontend 387、ui_shift 21、admin_flow 51、security 30、real_backend 127、deeplink 31）。
