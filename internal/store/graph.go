@@ -157,6 +157,20 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 			return fmt.Errorf("%w: port %q not in %s@%d outputs %v",
 				ErrEdgeRejected, e.FromPort, from.Name, from.Version, from.Outputs)
 		}
+
+		// 静态环检测（设计 §7 P2.3）。
+		//
+		// 为什么要在保存时拒，而不是只靠运行期 path 剪枝：
+		//   - 环是**配置错误**，不是运行时状况。等它跑起来才发现，代价是一个真实的
+		//     无限扇出（每跳都新建任务，直到深度/环剪枝兜住）——可见，但很难查。
+		//   - 运行期 path 剪枝必须保留（它是防线的最后一层：图可能被改，旧任务还在跑），
+		//     但那不该是唯一一层。
+		//
+		// 判据：从 to 出发沿已有边能否走回 from。走得到 → 加了这条就成环。
+		// 只读当前命名空间的边（I11：图不跨命名空间）。
+		if err := d.checkEdgeWouldCycle(ctx, e.NamespaceID, e.FromCapability, e.ToCapability); err != nil {
+			return err
+		}
 	}
 
 	if e.CreatedAt == 0 {
@@ -599,4 +613,50 @@ func (g *GraphVersion) GraphHasEdge(from, port, to string) bool {
 		}
 	}
 	return false
+}
+
+// checkEdgeWouldCycle 判定「再加一条 from → to 的边」会不会让图出现环。
+//
+// 算法：从 to 出发做一次 DFS（只看能力 → 能力的边，入口边没有左端、不可能成环），
+// 看能否到达 from。能到达 = 新增这条边会闭环。
+//
+// 为什么不用 Tarjan / 拓扑排序：这里是**单次增量检查**，图是配置期的小对象
+// （一条链路十几个节点），一次 DFS 足够且不需要维护额外状态；全量拓扑排序更适合
+// 「整图校验」而不是「每加一条边校验一次」。
+//
+// 自环（from == to）单独判：DFS 从 to 出发本来就会立刻命中自己，但报错文案应当
+// 直接说「自己连自己」，而不是绕一圈说「能走回自己」。
+func (d *DB) checkEdgeWouldCycle(ctx context.Context, namespaceID, from, to string) error {
+	if from == to {
+		return fmt.Errorf("%w: self loop %s --%s--> itself", ErrEdgeRejected, from, to)
+	}
+	edges, err := d.ListEdges(ctx, namespaceID, "")
+	if err != nil {
+		return fmt.Errorf("cycle check: load edges: %w", err)
+	}
+	adj := make(map[string][]string, len(edges))
+	for _, e := range edges {
+		if e.FromIsSource {
+			continue // 入口边没有上游能力，接不进环
+		}
+		adj[e.FromCapability] = append(adj[e.FromCapability], e.ToCapability)
+	}
+
+	// DFS：从 to 出发，看能否走到 from。
+	seen := make(map[string]bool, len(adj))
+	stack := []string{to}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur == from {
+			return fmt.Errorf("%w: adding %s → %s would close a cycle (path %s → … → %s)",
+				ErrEdgeRejected, from, to, to, from)
+		}
+		if seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		stack = append(stack, adj[cur]...)
+	}
+	return nil
 }

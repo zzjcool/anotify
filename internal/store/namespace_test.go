@@ -296,11 +296,16 @@ func TestNamespaceRequirementEnforced(t *testing.T) {
 	if err := db.CreateCapability(ctx, capDef); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
+	// 边的目标要另造一份：自连（a → a）被静态环检测拒掉（P2.3），那是配置错误。
+	capTo := mkCap(nsID, "fixer", 1, nil)
+	if err := db.CreateCapability(ctx, capTo); err != nil {
+		t.Fatalf("create target capability: %v", err)
+	}
 	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsID, Name: "mbp"}); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromCapability: capDef.ID, FromPort: "fix", ToCapability: capDef.ID,
+		NamespaceID: nsID, FromCapability: capDef.ID, FromPort: "fix", ToCapability: capTo.ID,
 	}); err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
@@ -534,6 +539,12 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err := db.CreateCapability(ctx, capDef); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
+	// 第二份能力做边的目标：自连（a → a）现在被静态环检测拒掉（P2.3），
+	// 这是配置错误——真跑起来会无限扇出，只能靠运行期 path 剪枝兜住。
+	capTo := mkCap(ns, "fixer", 1, nil)
+	if err := db.CreateCapability(ctx, capTo); err != nil {
+		t.Fatalf("create target capability: %v", err)
+	}
 	gotCap, err := db.GetCapability(ctx, ns, "review", 1)
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
@@ -603,7 +614,7 @@ func TestNamespaceRoundTrips(t *testing.T) {
 
 	// edge
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: ns, FromCapability: capDef.ID, FromPort: "fix", ToCapability: capDef.ID,
+		NamespaceID: ns, FromCapability: capDef.ID, FromPort: "fix", ToCapability: capTo.ID,
 	}); err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
