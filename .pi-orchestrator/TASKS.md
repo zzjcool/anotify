@@ -360,3 +360,17 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 
 **门禁**：`go test ./...` 全绿；`make contract` → 62 路由 / 76 path / 97 op；
 `./scripts/e2e/run_all.sh` 全绿（contract 59 · ws_protocol 82 · frontend 386 · i18n 299 · i18n_coverage 61 · 全量 24 套件 0 失败）。
+
+---
+
+## 动效 / 加载态优化（2026-11，分支 `feat/ui-motion`）
+
+**审计**：4 路 scout（动效清单/加载态/逐帧视觉/运行时原型）。结论：全站仅侧栏 width 一个真动画；抽屉的 transform 过渡被 ui.css 覆盖成死代码；弹层/toast/主题/筛选 0ms 硬切；node/playbook/source CLS 0.285/0.178/0.133；admin 错误骨架永闪、security 错误吞成空。
+
+**A · 动效基础层**：`:active` 按压缩放（120ms）、toast 入 180ms/出 160ms、弹层 scale(.98)+opacity 160ms、移动抽屉 240ms+遮罩 180ms、主题翻转旧色遮罩 200ms、KPI 值更新 160ms、列表 stagger 160ms/20ms、skeleton 改合成层 shimmer（`--dur-mid/--dur-toast/--dur-drawer` + `--ease-out`）。
+
+**B · 加载态**：events 5×80px 骨架；admin 错误态 + 重试、停止永久骨架；security 错误/空分离、计数 `—`；node/source/playbook 等高骨架（CLS 0.285/0.133/0.178 → 0/0/0.0007）；trace 图区骨架；全站 `aria-busy`；index 热力图 87px + 最近任务 6 行骨架 + spark 数据前隐藏（CLS 0.0038 → 0.0002）。
+
+**门禁**：e2e 全量 **1832/0**（frontend 386、ui_shift 21、lang_hint 57）；check-classes 629 / tailwind 879。截图在 `.pi-orchestrator/{motion-a,loading-b}-shots/`（不入库）。
+
+**未做/Wave C**：跨文档 View Transitions、docs 目录平滑滚动、login tab 过渡、弹层退场动画（当前只做入场）。
