@@ -121,12 +121,8 @@ common:
     summary: Summary
     reason: Failure reason
 index:
-  load:
-    failed: 'Failed to load: '
-    retry: 'Retry'
-    bad_shape: 'Unexpected response shape'
   title: Overview
-  subtitle: Your tasks at a glance
+  subtitle: Event stream at a glance
   greeting:
     fallback_name: there
     default: Hello
@@ -135,14 +131,14 @@ index:
     afternoon: Good afternoon
     evening: Good evening
     with_name: '{greeting}, {name}'
-  loading: Loading your task stats…
+  loading: Loading event stats…
   demo_badge: Demo data (backend not connected)
   kpi:
-    total: Total tasks
-    last_30d: Last 30 days
+    total: Total events
+    all_time: All time
     rate: Delivery rate
-    today: Tasks today
-    today_sub: Reported → Completed
+    today: Events today
+    today_sub: Received today
     devices: Receiving devices
     devices_enabled: Enabled
     devices_sub: '{n} devices · end-to-end encrypted'
@@ -155,7 +151,7 @@ index:
     failed: Failed tasks
     failed_sub: Last 50 tasks
   heatmap:
-    title: Task activity
+    title: Event activity
     subtitle: Past year · daily volume
     less: Less
     more: More
@@ -169,8 +165,8 @@ index:
       sat: S
     month: Month {n}
     tip:
-      count: '{n} tasks'
-      none: No tasks
+      count: '{n} events'
+      none: No events
       date: '{m}/{d} {w}'
   quickstart:
     cta: Connect a new Agent
@@ -191,31 +187,8 @@ index:
       3. Show me the authorization link or code from the terminal — I''ll approve it in the browser and tell you the result
 
       '
-  recent:
-    title: Recent tasks
-    subtitle: Live updates · click a row for details
-    filter_all: All
-    filter_terminal: Terminal
-    filter_working: Working
-    filter_error: Failed
-    refresh: Refresh →
-    pull_hint: Pull to refresh
-    pull_ready: Release to refresh
-    pull_loading: Refreshing…
-    pull_done: Updated
-  recent_summary: '{total} tasks recorded recently, {ok} completed.'
-  summary_load_failed: Task data is temporarily unavailable — please retry.
-  notif:
-    reported: 'Reported'
-    unreported: 'Not reported'
-    empty: No notifications with this status
-    delivered: '{d}/{t} devices delivered'
-    count: Showing {n}
-    out: 'Port {out}'
-    out_end: 'Ends here'
-  detail:
-    open_session: Open Agent session
-    view_full: View full page (all fields + deliveries) →
+  summary: '{total} events total · {today} today.'
+  summary_load_failed: Data is temporarily unavailable — please retry.
   demo:
     n1_title: Deploy complete
     n1_body: Build succeeded, deployed to production. 47 files changed.
@@ -234,9 +207,11 @@ index:
     n8_title: Backup complete
     n8_body: Database snapshot generated and uploaded to object storage, 1.2 GB.
   events:
-    title: Recent events
-    subtitle: What came in, and which tasks it spawned
-    open: Open event stream →
+    title: Event stream
+    subtitle: Latest events · click to open the trace
+    open: All events →
+    refresh: Refresh →
+    count: 'Latest {n}'
     loading: Loading events…
     empty: No events yet. Once a webhook or cron trigger is wired up, the stream shows here.
 scope:
@@ -1747,10 +1722,11 @@ ui:
     delta_na: No comparison yet
     spark: 7-day trend
   index:
-    load_more: Load more
-    shown_of: 'Showing {shown} of {total}'
-    all_loaded: All loaded
     quickstart_hint: One line and your agent is set up
+    pull_hint: Pull to refresh
+    pull_ready: Release to refresh
+    pull_loading: Refreshing…
+    pull_done: Updated
   events:
     filters: Filters
     active: Active filters

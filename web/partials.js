@@ -1808,7 +1808,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	 * 各列表/详情页一行启用：mountPullRefresh(onRefresh)
 	 * 仅在触屏设备或 display-mode: standalone 时激活，桌面浏览器不启用。
 	 * 指示器 DOM 由本函数自建，调用页无需改 HTML；文案走 i18n
-	 * index.recent.pull_hint / pull_ready / pull_loading / pull_done。
+	 * ui.index.pull_hint / pull_ready / pull_loading / pull_done。
 	 */
 	function mountPullRefresh(onRefresh, opts) {
 		if (typeof onRefresh !== "function") return;
@@ -1830,7 +1830,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		spinner.id = "pull-spinner";
 		const textEl = el("span", {
 			id: "pull-text",
-			text: t("index.recent.pull_hint", "下拉刷新"),
+			text: t("ui.index.pull_hint", "下拉刷新"),
 		});
 		const pill = el(
 			"div",
@@ -1869,11 +1869,11 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		function setState(s) {
 			state = s;
 			const labels = {
-				idle: t("index.recent.pull_hint", "下拉刷新"),
-				pulling: t("index.recent.pull_hint", "下拉刷新"),
-				ready: t("index.recent.pull_ready", "松开刷新"),
-				loading: t("index.recent.pull_loading", "正在刷新…"),
-				done: t("index.recent.pull_done", "已刷新"),
+				idle: t("ui.index.pull_hint", "下拉刷新"),
+				pulling: t("ui.index.pull_hint", "下拉刷新"),
+				ready: t("ui.index.pull_ready", "松开刷新"),
+				loading: t("ui.index.pull_loading", "正在刷新…"),
+				done: t("ui.index.pull_done", "已刷新"),
 			};
 			textEl.textContent = labels[s] || labels.idle;
 			spinner.style.animation =

@@ -3479,9 +3479,20 @@ html.flograph-fullscreen-open body {
 /* ---------- 跨文档页面过渡（View Transitions）----------
  * 支持的浏览器（Chrome 126+）在导航时做 200ms 根快照交叉淡入；
  * 不支持/减少动效时自动退回硬切。注意：VT 伪树不受全局 `*` 闸门约束，
- * 必须在 media 里单独关掉 navigation。 */
+ * 必须在 media 里单独关掉 navigation。
+ *
+ * ⚠ 当前 **关闭自动 opt-in**（navigation: none），原因不是样式问题：
+ * 全站有 19 处脚本跳转（`location.replace` / `location.href = ...`：旧深链
+ * index?msg → message、未登录 → login、节点/能力/链路跳转…）。当这类跳转发生在
+ * **首屏导航的过渡还在飞**的 200ms 窗口里，Chromium 会中断过渡并在旧文档抛
+ * 未捕获的 `InvalidStateError: Transition was aborted ... ViewTransition opt-in
+ * disabled` —— e2e 的「页面无 JS pageerror」断言偶发变红（deeplink / frontend /
+ * i18n_coverage 都撞过），且这是浏览器内部异常，JS 侧 catch 不到。
+ *
+ * 要重新打开，需要先让脚本跳转与过渡解耦（例如统一走一个「等首屏过渡结束再跳」
+ * 的 nav 助手），而不是只加一行 CSS。 */
 @view-transition {
-	navigation: auto;
+	navigation: none;
 }
 ::view-transition-old(root),
 ::view-transition-new(root) {

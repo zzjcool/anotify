@@ -121,12 +121,8 @@ common:
     summary: 结果摘要
     reason: 失败原因
 index:
-  load:
-    failed: '载入失败：'
-    retry: '重试'
-    bad_shape: '响应格式不符'
   title: 总览
-  subtitle: 你的任务一览
+  subtitle: 事件流一览
   greeting:
     fallback_name: 你
     default: 你好
@@ -135,14 +131,14 @@ index:
     afternoon: 下午好
     evening: 晚上好
     with_name: '{greeting}，{name}'
-  loading: 正在加载你的任务统计…
+  loading: 正在加载事件统计…
   demo_badge: 演示数据（后端未连接）
   kpi:
-    total: 任务总数
-    last_30d: 近 30 天
+    total: 事件总数
+    all_time: 累计
     rate: 送达率
-    today: 今日任务
-    today_sub: 上报 → 完成
+    today: 今日事件
+    today_sub: 今天收到
     devices: 接收设备
     devices_enabled: 已启用
     devices_sub: '{n} 台设备 · 端到端加密'
@@ -155,8 +151,8 @@ index:
     failed: 异常任务
     failed_sub: 近 50 条任务
   heatmap:
-    title: 任务活动
-    subtitle: 近一年 · 每天的任务量
+    title: 事件活动
+    subtitle: 近一年 · 每天的事件量
     less: 少
     more: 多
     week:
@@ -169,8 +165,8 @@ index:
       sat: 六
     month: '{n}月'
     tip:
-      count: '{n} 条任务'
-      none: 无任务
+      count: '{n} 条事件'
+      none: 无事件
       date: '{m}月{d}日 周{w}'
   quickstart:
     cta: 接入新 Agent
@@ -191,31 +187,8 @@ index:
       3. 把终端里显示的授权链接或验证码告诉我，我在浏览器批准后告诉你结果
 
       '
-  recent:
-    title: 最近任务
-    subtitle: 实时更新 · 点击行查看详情
-    filter_all: 全部
-    filter_terminal: 终态
-    filter_working: 进行中
-    filter_error: 失败
-    refresh: 刷新 →
-    pull_hint: 下拉刷新
-    pull_ready: 松开刷新
-    pull_loading: 正在刷新…
-    pull_done: 已刷新
-  recent_summary: 最近收录 {total} 条任务，其中 {ok} 条已完成。
-  summary_load_failed: 暂时取不到任务数据，请重试。
-  notif:
-    reported: '已回报'
-    unreported: '未回报'
-    empty: 暂无该状态的通知
-    delivered: '{d}/{t} 设备已送达'
-    count: 显示 {n} 条
-    out: '出口 {out}'
-    out_end: '到此为止'
-  detail:
-    open_session: 打开 Agent 会话
-    view_full: 查看完整页面（全部字段 + 投递记录）→
+  summary: '累计 {total} 条事件，今天 {today} 条。'
+  summary_load_failed: 暂时取不到数据，请重试。
   demo:
     n1_title: 部署完成
     n1_body: 构建成功，已发布到生产环境。共 47 个文件变更。
@@ -234,9 +207,11 @@ index:
     n8_title: 备份任务完成
     n8_body: 数据库快照已生成并上传至对象存储，大小 1.2 GB。
   events:
-    title: 最近事件
-    subtitle: 什么事件进来、派成了哪些任务
-    open: 查看事件流 →
+    title: 事件流
+    subtitle: 最新事件 · 点击查看链路
+    open: 全部事件 →
+    refresh: 刷新 →
+    count: '最近 {n} 条'
     loading: 正在加载事件…
     empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
 scope:
@@ -1747,10 +1722,11 @@ ui:
     delta_na: 暂无对比
     spark: 近 7 日趋势
   index:
-    load_more: 加载更多
-    shown_of: '显示 {shown}/{total} 条'
-    all_loaded: 已全部加载
     quickstart_hint: 一句话让 Agent 自动装好
+    pull_hint: 下拉刷新
+    pull_ready: 松开刷新
+    pull_loading: 正在刷新…
+    pull_done: 已刷新
   events:
     filters: 筛选
     active: 生效过滤

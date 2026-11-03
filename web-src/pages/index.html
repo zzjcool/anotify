@@ -1,6 +1,6 @@
 {{define "title"}}{{t "index.title"}}{{end}} {{define "style"}}
 <style>
-  /* 总览两列栅格：热力图占主列，右列叠「最近事件 + 接入 Agent」。
+  /* 总览两列栅格：热力图占主列，右列是「接入 Agent」。
      1440 下能把 2190px 压到 ~1550px；≤1100 单列回落。
      `minmax(0,1fr)` 是必须的：不加会让宽内容（热力图 53 周）把整页顶宽。 */
   .dash-grid {
@@ -19,26 +19,53 @@
       grid-template-columns: minmax(0, 1fr);
     }
   }
-  /* 最近事件：加载期与数据期同高（5 条 × 31px），避免把下方区块推下去 */
+  /* 事件流：加载期骨架与数据期同高（实测 8 行 × 62px + 容器 py-1 的 8px
+     = 504px），避免数据到达时把后面的内容顶高（首页 CLS 的主要残差）。 */
   #index-events[aria-busy="true"] {
-    min-height: 179px;
+    min-height: 504px;
   }
   .ev-skel-row {
-    height: 27px;
-    margin-bottom: 4px;
+    height: 62px;
     border-radius: var(--r-sm);
   }
-  .ev-skel-row:last-child {
-    margin-bottom: 0;
+  /* 事件行：整行是 <a>（右键新开 / 键盘可达 / 读屏有名字）。
+     两列：左 = 源 → 类型 + traceId，右 = 相对时间。 */
+  .ev-feed-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 8px;
+    border-radius: var(--r-sm);
+    transition: background-color var(--dur-fast) var(--ease);
+  }
+  .ev-feed-row:hover {
+    background: var(--surface-2);
+  }
+  .ev-feed-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .ev-feed-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ev-feed-trace {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ev-feed-time {
+    white-space: nowrap;
   }
   .hm-skel {
     height: 87px;
     border-radius: var(--r-sm);
-  }
-  .notif-skel {
-    height: 56px;
-    margin: 4px 0;
-    border-radius: var(--r-md);
   }
 </style>
 {{end}} {{define "content"}}
@@ -88,7 +115,7 @@
         </div>
         <div class="stat-label">{{t "index.kpi.total"}}</div>
         <div class="stat-value" id="kpi-total">–</div>
-        <div class="stat-foot"><span>{{t "index.kpi.last_30d"}}</span></div>
+        <div class="stat-foot"><span>{{t "index.kpi.all_time"}}</span></div>
         <div
           class="stat-spark"
           role="img"
@@ -264,10 +291,10 @@
       </div>
     </section>
 
-    <!-- ===== 第二行：[任务活动热力图] ∥ [最近事件 + 接入 Agent] =====
-         横向组织是 v2 的密度来源：两列让 1440 首屏能同时看到活动与因果。 -->
+    <!-- ===== 第二行：[事件活动热力图] ∥ [接入 Agent] =====
+         横向组织是 v2 的密度来源：两列让 1440 首屏能同时看到活动与接入。 -->
     <div class="dash-grid">
-    <!-- ===== 任务活动热力图（数据源是 /v1/stats 的 daily 任务数）===== -->
+    <!-- ===== 事件活动热力图（数据源是 /v1/stats 的 daily 事件数）===== -->
     <section class="card">
       <div class="card-head card-pad">
         <div>
@@ -313,34 +340,6 @@
     </section>
 
     <div class="dash-side">
-    <!-- ===== 事件中心概览（#79）=====
-         旧的「任务列表」是结果视角，这里是**因果视角**：
-         什么事件进来、派成了哪些任务、哪一步被剪枝。
-         两者并存：通知回答「我收到了什么」，事件流回答「为什么」。 -->
-    <section class="card">
-      <div class="card-head card-pad">
-        <div>
-          <div class="card-title">{{t "index.events.title"}}</div>
-          <div class="card-sub">{{t "index.events.subtitle"}}</div>
-        </div>
-        <div class="card-actions">
-          <a href="events.html" class="btn btn-ghost btn-sm"
-            >{{t "index.events.open"}}</a
-          >
-        </div>
-      </div>
-      <div id="index-events" class="anim-stagger px-5 py-3" aria-busy="true">
-        <!-- 5 行骨架 = 数据回来后的 5 条事件行高度（实测 5×31px）。
-             不预留的话，「正在加载」的 42px 会在数据到达时长到 178px，
-             把下面的最近任务整行推下去 136px（首页 CLS 的主要残差）。 -->
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-      </div>
-    </section>
-
     <!-- ===== 快速接入（粘给 Agent 的引导文本 + CTA）=====
          默认**收起**：只留标题 + 一句话提示，展开后才显示安装指引。
          首页在 1440×900 下要压到 2600px 以内，这一块是最大的可折叠项。 -->
@@ -392,97 +391,41 @@
     </div>
     </div>
 
-    <!-- ===== 最近任务（数据源是 /v1/tasks；"通知"这个实体早已删除）=====
-         行由 renderNotifs() 用 DOM API 生成（不用 innerHTML），
-         分页是纯客户端的：先 10 行，点「加载更多」+50。 -->
-    <section id="recent" class="card overflow-hidden">
+    <!-- ===== 事件流（首页主列表，数据源 /v1/console/events）=====
+         旧「最近任务」列表已下线：产品对象是事件（event → 任务链），
+         任务只作为执行结果出现在 trace 页，不再作为首页的一等列表。
+         行由 renderEvents() 用 DOM API 生成（不用 innerHTML）。 -->
+    <section id="events-feed" class="card overflow-hidden">
       <div class="card-head card-pad">
         <div>
-          <div class="card-title">{{t "index.recent.title"}}</div>
-          <div class="card-sub">{{t "index.recent.subtitle"}}</div>
+          <div class="card-title">{{t "index.events.title"}}</div>
+          <div class="card-sub">{{t "index.events.subtitle"}}</div>
         </div>
-        <!-- 四个 tab 纯客户端过滤，不发请求；data-filter 的取值被 JS 读，别改 -->
         <div class="card-actions">
-          <div id="filter-tabs" class="tabs">
-            <button class="filter-tab active" data-filter="all">
-              {{t "index.recent.filter_all"}}
-            </button>
-            <button class="filter-tab" data-filter="terminal">
-              {{t "index.recent.filter_terminal"}}
-            </button>
-            <button class="filter-tab" data-filter="working">
-              {{t "index.recent.filter_working"}}
-            </button>
-            <button class="filter-tab" data-filter="error">
-              {{t "index.recent.filter_error"}}
-            </button>
-          </div>
-        </div>
-      </div>
-      <div id="notif-list" class="anim-stagger px-2" aria-busy="true">
-        <!-- 6 行 = 首屏常见的最近任务行数；骨架高度 56px 对齐 .notif-row -->
-        <div class="skeleton notif-skel" aria-hidden="true"></div>
-        <div class="skeleton notif-skel" aria-hidden="true"></div>
-        <div class="skeleton notif-skel" aria-hidden="true"></div>
-        <div class="skeleton notif-skel" aria-hidden="true"></div>
-        <div class="skeleton notif-skel" aria-hidden="true"></div>
-        <div class="skeleton notif-skel" aria-hidden="true"></div>
-      </div>
-      <!-- footer：与 .card-head 同一套留白/两端对齐，但不加分隔线 ——
-           头尾都靠留白分块，亮主题下也不会有「白线看不见」的落差。 -->
-      <div class="card-head card-pad">
-        <div class="flex items-center gap-3">
-          <span id="notif-count" class="card-sub">—</span>
-          <button
-            id="notif-more"
-            type="button"
-            class="btn btn-ghost btn-sm hidden"
+          <a href="events.html" class="btn btn-ghost btn-sm"
+            >{{t "index.events.open"}}</a
           >
-            {{t "ui.index.load_more"}}
-          </button>
         </div>
-        <button id="refresh-btn" type="button" class="btn btn-ghost btn-sm">
-          {{t "index.recent.refresh"}}
+      </div>
+      <div id="index-events" class="anim-stagger px-3 py-1" aria-busy="true">
+        <!-- 8 行骨架 = 数据回来后的 8 条事件行高度（与 .ev-feed-row 同高）。
+             不预留的话，加载完成时会把下面内容整块推下去（首页 CLS）。 -->
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+      </div>
+      <div class="card-head card-pad">
+        <span id="ev-count" class="card-sub">—</span>
+        <button id="ev-refresh" type="button" class="btn btn-ghost btn-sm">
+          {{t "index.events.refresh"}}
         </button>
       </div>
     </section>
-  </div>
-</div>
-
-<!-- 任务详情弹层
-     显隐靠 `hidden` ↔ `flex` 两个类互换（见 openDetail/closeDetail）；
-     #detail-overlay 只负责点遮罩关闭。 -->
-<div
-  id="detail-modal"
-  class="modal-backdrop hidden"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="detail-head"
->
-  <div class="absolute inset-0" id="detail-overlay"></div>
-  <div class="modal-panel relative z-10">
-    <div class="modal-head flex items-start justify-between gap-3">
-      <div class="flex min-w-0 items-center gap-3" id="detail-head"></div>
-      <button
-        id="detail-close"
-        type="button"
-        class="btn btn-ghost btn-icon"
-        aria-label="{{t "ui.action.close"}}"
-      >
-        <svg
-          class="h-4 w-4"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-        >
-          <line x1="18" y1="6" x2="6" y2="18" />
-          <line x1="6" y1="6" x2="18" y2="18" />
-        </svg>
-      </button>
-    </div>
-    <div id="detail-body" class="modal-body flex flex-col gap-4"></div>
   </div>
 </div>
 
@@ -565,6 +508,13 @@
     const { el, api, mountLayout, mountPullRefresh, copyText, timeAgo, t } =
       window.Anotify;
     const qs = new URLSearchParams(location.search);
+    // 旧推送深链 index.html?msg=<taskId>：首页不再有任务弹层，直接转任务详情页。
+    // （sw.js 的推送载荷早已是 message.html?id=，这里只是不让历史通知点成空页。）
+    (function redirectLegacyMsg() {
+      const legacyMsg = qs.get("msg");
+      if (!legacyMsg) return;
+      location.replace("message.html?id=" + encodeURIComponent(legacyMsg));
+    })();
     // 占位；load() 里用 /v1/auth/me 覆盖，避免硬编码名字与侧栏不一致（#21）
     let username = qs.get("u") || "";
 
@@ -589,145 +539,43 @@
     mountLayout({
       active: "overview",
       title: t("index.title", "总览"),
-      subtitle: t("index.subtitle", "你的任务一览"),
+      subtitle: t("index.subtitle", "事件流一览"),
       username: username || "…",
     });
 
     /* ================= 数据层 ================= */
-    // 统一任务结构（兼容历史字段名）
-    // 注意：早期的 /v1/notifications 直接序列化 broker.Message（PascalCase 字段），
-    //       故每个字段都要兼容 PascalCase（真实 API）与 camelCase（契约）。
-    // 任务状态 → 工作台的 agentState 语义（复用既有配色与文案）
-    //
-    // 九态比旧的 5 个 agentState 更细：把"进行中"的四种归到 working、
-    // 三种失败归到 error、canceled/abandoned 归到 interrupted。
-    // 这样 UI 不用加新配色，但状态仍然精确（详情页展示原始 status）。
-    const TASK_STATE_MAP = {
-      pending: "working",
-      assigned: "working",
-      acked: "working",
-      running: "working",
-      succeeded: "done",
-      failed: "error",
-      canceled: "interrupted",
-      abandoned: "interrupted",
-      lease_expired: "interrupted",
-    };
-
-    // normalize 把 /v1/tasks 的任务投影成工作台卡片需要的形状。
-    //
-    // 只有一个来源：真实任务。**没有演示数据分支**——演示数据只在 make mock
-    // 里由 /mock.js 在 fetch 层伪造，页面代码不需要知道那种存在。
-    function normalize(n, i) {
-      const params = n.params ? safeParse(n.params) : {};
-      const status = n.status || "pending";
-      const created = n.createdAt || n.created_at;
-      return {
-        id: n.id || "t" + i,
-        seq: null,
-        status,
-        agentState: TASK_STATE_MAP[status] || "working",
-        title: n.capability
-          ? n.capability + "@" + (n.version != null ? n.version : "?")
-          : t("common.placeholder.no_title", "（无标题）"),
-        body: (params.title || "") + (params.body ? " · " + params.body : ""),
-        link: params.link || "",
-        agent: params.agent || "agent",
-        project: params.cwd || "—",
-        duration:
-          n.startedAt && n.finishedAt ? n.finishedAt - n.startedAt : 0,
-        model: params.model || "—",
-        sessionId: n.traceId || "—",
-        deviceTags: params.deviceTags || [],
-        priority: params.priority || "normal",
-        ttlSeconds: 0,
-        out: n.out != null ? n.out : null,
-        error: n.error || "",
-        time: timeAgo(created),
-        isToday: (() => {
-          if (!created) return false;
-          // 真实任务的 createdAt 是 unix 秒
-          const d =
-            typeof created === "number" ? new Date(created * 1000) : new Date(created);
-          if (Number.isNaN(d.getTime())) return false;
-          return d.toDateString() === new Date().toDateString();
-        })(),
-      };
-    }
-    function safeParse(s) {
-      try {
-        return typeof s === "string" ? JSON.parse(s) : s;
-      } catch {
-        return {};
-      }
-    }
-    // 最新任务置顶：按 seq 降序（KSUID id 时间有序，seq 更可靠；无 seq 时退到 id 比较）
-    function byNewest(a, b) {
-      const sa = a.seq != null ? a.seq : -1;
-      const sb = b.seq != null ? b.seq : -1;
-      if (sa !== sb) return sb - sa;
-      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
-    }
-
-
-    const AGENT_STATE_META = {
-      working: {
-        dot: "dot-info",
-        badge: "status-info",
-        labelKey: "common.agentState.working",
-        fallback: "运行中",
-      },
-      blocked: {
-        dot: "dot-warn",
-        badge: "status-warn",
-        labelKey: "common.agentState.blocked",
-        fallback: "等待中",
-      },
-      done: {
-        dot: "dot-success",
-        badge: "status-success",
-        labelKey: "common.agentState.done",
-        fallback: "完成",
-      },
-      interrupted: {
-        dot: "dot-warn",
-        badge: "status-warn",
-        labelKey: "common.agentState.interrupted",
-        fallback: "中断",
-      },
-      error: {
-        dot: "dot-error",
-        badge: "status-error",
-        labelKey: "common.agentState.error",
-        fallback: "失败",
-      },
-    };
-
-    let NOTIFICATIONS = [];
-    let STATS = null; // /v1/stats 真实统计（热力图 + KPI）
+    // 首页的数据源只有两个，都是**事件**口径：
+    //   /v1/stats            事件总数 / 今日 / 热力图（store.MessageStats 统计的是 events）
+    //   /v1/console/events   最近事件流（会话 Cookie 鉴权；机器入口 GET /v1/events 要 Bearer Key）
+    // 任务不再渲染成列表：/v1/tasks 只用来给两张「执行状态」KPI 计数。
+    let STATS = null;
+    let TASK_COUNTS = null; // /v1/tasks 取不到时保持 null：KPI 显示 – 而不是谎报 0
     let loadError = null; // 最近一次首屏加载失败的原因（有值就渲染错误态，不伪造数据）
+
+    const TASK_WORKING = ["pending", "assigned", "acked", "running"];
+    const TASK_FAILED = ["failed", "canceled", "abandoned", "lease_expired"];
 
     async function load() {
       loadError = null;
-      try {
-        // #80：旧 /v1/notifications 已随消息模型下线，改用任务列表。
-        // 语义从"推给过你什么"变成"为你办了什么"——这正是事件中心的核心。
-        const data = await api("/v1/tasks?limit=50");
-        if (!data || !Array.isArray(data.tasks)) {
-          throw new Error(t("index.load.bad_shape", "响应格式不符"));
-        }
-        NOTIFICATIONS = data.tasks.map(normalize).sort(byNewest);
-      } catch (e) {
-        // 401 已由 api() 跳登录；其余都是真失败。
-        // **不降级成演示数据**：伪造数据会让人把「服务挂了」看成「功能如此」（#273）。
-        loadError = e;
-        NOTIFICATIONS = [];
-      }
-      // 拉真实统计（KPI + 热力图）；失败则 STATS 保持 null，KPI 用任务数估算
+      // 统计（KPI + 热力图）。失败不降级成假数据（#273）：KPI 显示 –，
+      // 事件列表位置渲染「载入失败 + 重试」。
       try {
         STATS = await api("/v1/stats");
-      } catch {
+      } catch (e) {
+        // 401 已由 api() 跳登录；其余都是真失败。
         STATS = null;
+        loadError = e;
+      }
+      // 两张执行状态卡只要计数；任务列表本身已从首页下线。
+      try {
+        const data = await api("/v1/tasks?limit=50");
+        const items = data && Array.isArray(data.tasks) ? data.tasks : [];
+        TASK_COUNTS = {
+          working: items.filter((n) => TASK_WORKING.includes(n.status)).length,
+          failed: items.filter((n) => TASK_FAILED.includes(n.status)).length,
+        };
+      } catch {
+        TASK_COUNTS = null;
       }
       // 问候语跟当前登录用户对齐（#21）
       try {
@@ -740,74 +588,92 @@
       }
       if (!username) username = t("index.greeting.fallback_name", "你");
       renderKpis();
-      renderNotifs(currentFilter);
       renderSummary();
       renderHeatmap();
-      loadEvents();
+      await loadEvents();
     }
 
-    /* ================= 事件中心概览（#79）================= */
-    // loadEvents 拉最近几条事件，渲染成首页的小卡片（紧凑行，行高 ≤48px）。
-    //
+    /* ================= 事件流（首页主列表） ================= */
     // 走控制台端点 /v1/console/events（会话 Cookie 鉴权）——机器入口的
     // GET /v1/events 要 Bearer API Key，浏览器页面拿不到那种凭据。
+    // 8 行紧凑事件行：源 → 类型 / traceId / 相对时间；点整行走 trace.html。
+    const EVENTS_LIMIT = 8;
+
     async function loadEvents() {
       const box = document.getElementById("index-events");
+      const countEl = document.getElementById("ev-count");
       if (!box) return;
-      let data = null;
+      let events = [];
       let evErr = null;
       try {
-        data = await api("/v1/console/events?limit=5");
+        const data = await api("/v1/console/events?limit=" + EVENTS_LIMIT);
+        events = data && Array.isArray(data.events) ? data.events : [];
       } catch (e) {
-        data = null;
         evErr = e || new Error("events fetch failed");
       }
-      const events = (data && data.events) || [];
+      // 后端按插入顺序返回，事件时间不一定同序（补录 / 幂等重投）→ 显式倒序
+      events.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       box.removeAttribute("aria-busy");
       box.replaceChildren();
 
-      /* F14：接口挂了 ≠ 零条事件。原来这里会画「还没有事件，接上 webhook…」，
-       * 与首屏其它区域的错误态自相矛盾。 */
+      /* F14：接口挂了 ≠ 零条事件。错误态只说「取不到」，不画「还没有事件…」。 */
       if (evErr) {
-        box.appendChild(
-          window.Anotify.loadErrorNode(evErr, () => loadEvents()),
-        );
+        box.appendChild(window.Anotify.loadErrorNode(evErr, () => loadEvents()));
+        if (countEl) countEl.textContent = "";
         return;
+      }
+
+      if (countEl) {
+        countEl.textContent = t("index.events.count", "最近 {n} 条").replace(
+          "{n}",
+          events.length,
+        );
       }
 
       if (!events.length) {
-        const hint = el("div", { class: "card-sub" });
-        hint.textContent = t(
-          "index.events.empty",
-          "还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。",
+        box.appendChild(
+          el("div", {
+            class: "empty",
+            text: t(
+              "index.events.empty",
+              "还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。",
+            ),
+          }),
         );
-        box.appendChild(hint);
         return;
       }
 
-      for (const e of events) {
-        const row = document.createElement("a");
-        // 行高靠 py-1（4px）+ 内容，刻意不用 .list-row（那是 52–60px 的行）
-        row.className =
-          "flex flex-wrap items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-white/5";
-        row.href = "events.html";
+      box.append(...events.map(eventRow));
+    }
 
-        const src = el("code", { class: "mono tag-chip", text: e.source });
-        row.appendChild(src);
-
-        row.appendChild(el("span", { class: "card-sub", text: "→" }));
-
-        row.appendChild(el("code", { class: "mono", text: e.type }));
-
-        row.appendChild(
-          el("span", {
-            class: "card-sub ml-auto mono truncate",
-            text: e.traceId,
-          }),
-        );
-
-        box.appendChild(row);
-      }
+    // 整行是 <a>：键盘可达、右键能新标签打开、读屏有可访问名。
+    function eventRow(e) {
+      const row = el("a", {
+        class: "ev-feed-row",
+        href: "trace.html?traceId=" + encodeURIComponent(e.traceId || ""),
+      });
+      const head = el("div", { class: "ev-feed-head" });
+      head.append(
+        el("code", { class: "mono tag-chip", text: e.source || "—" }),
+        el("span", { class: "card-sub", text: "→" }),
+        el("code", { class: "mono truncate", text: e.type || "—" }),
+      );
+      const main = el("div", { class: "ev-feed-main" });
+      main.append(
+        head,
+        el("code", {
+          class: "mono card-sub ev-feed-trace",
+          text: e.traceId || "—",
+        }),
+      );
+      row.append(
+        main,
+        el("span", {
+          class: "card-sub ev-feed-time",
+          text: timeAgo(e.createdAt),
+        }),
+      );
+      return row;
     }
 
     /* ================= KPI ================= */
@@ -880,7 +746,7 @@
         if (trend) trend.textContent = "–";
         return;
       }
-      // 优先用 /v1/stats 的真实统计；STATS 不可用时回退到任务列表估算
+      // /v1/stats 的 total/today/daily 统计的是**事件**；送达率仍是终态任务口径。
       let total, rate, today, devices;
       if (STATS) {
         total = STATS.total ?? 0;
@@ -893,16 +759,11 @@
             ? Math.round(((STATS.delivered ?? 0) / dt) * 1000) / 10
             : null;
       } else {
-        total = NOTIFICATIONS.length;
-        const ok = NOTIFICATIONS.filter(
-          (n) => n.delivered >= (n.total || 1),
-        ).length;
-        devices = Math.max(...NOTIFICATIONS.map((n) => n.total || 0), 0);
-        rate =
-          devices > 0 && total
-            ? Math.round((ok / total) * 1000) / 10
-            : null;
-        today = NOTIFICATIONS.filter((n) => n.isToday).length;
+        // 统计失败时 KPI 已在上面的 loadError 分支统一显示 –，这里只兜底避免 NaN
+        total = 0;
+        today = 0;
+        devices = 0;
+        rate = null;
       }
       setStatValue(
         document.getElementById("kpi-total"),
@@ -951,27 +812,20 @@
         "推送订阅 + 长连接",
       );
 
-      /* 非推送口径的两张卡：与上面同源（已请求的 /v1/tasks 结果），不新增 API。
-       * 样本量写进卡片的副标题（“近 50 条任务”），避免把 50 条上限说成全量。 */
-      const RUNNING = new Set(["pending", "assigned", "acked", "running"]);
+      /* 两张执行状态卡：只数「事件派出去的任务」有没有卡住/失败，
+       * 数据是 /v1/tasks?limit=50 的计数（样本量写在卡片副标题），首页不渲染任务行。 */
       const runningEl = document.getElementById("kpi-running");
       const failedEl = document.getElementById("kpi-failed");
       if (runningEl) {
         setStatValue(
           runningEl,
-          NOTIFICATIONS.filter((n) =>
-            RUNNING.has(n.status),
-          ).length.toLocaleString(),
+          TASK_COUNTS ? TASK_COUNTS.working.toLocaleString() : "–",
         );
       }
       if (failedEl) {
         setStatValue(
           failedEl,
-          NOTIFICATIONS.filter((n) =>
-            ["failed", "canceled", "abandoned", "lease_expired"].includes(
-              n.status,
-            ),
-          ).length.toLocaleString(),
+          TASK_COUNTS ? TASK_COUNTS.failed.toLocaleString() : "–",
         );
       }
       sparks.forEach((el) => el.classList.add("is-ready"));
@@ -999,151 +853,27 @@
       )
         .replace("{greeting}", t(partKey, partFallback))
         .replace("{name}", username);
-      /* F14：接口挂了的时候，「最近收录 0 条任务」是谎报（0 条 ≠ 没取到）。
-       * 摘要行改说「暂时取不到」，与下面列表里的 loadErrorNode 口径一致。 */
+      /* F14：接口挂了的时候，「累计 0 条事件」是谎报（0 条 ≠ 没取到）。
+       * 摘要行改说「暂时取不到」，与事件列表里的 loadErrorNode 口径一致。 */
       const summaryEl = document.getElementById("summary-line");
       if (loadError) {
         summaryEl.textContent = t(
           "index.summary_load_failed",
-          "暂时取不到任务数据，请重试。",
+          "暂时取不到数据，请重试。",
         );
         return;
       }
-      const okCnt = NOTIFICATIONS.filter((n) => n.agentState === "done").length;
+      const total = STATS ? STATS.total ?? 0 : 0;
+      const today = STATS ? STATS.today ?? 0 : 0;
       summaryEl.textContent = t(
-        "index.recent_summary",
-        "最近收录 {total} 条任务，其中 {ok} 条已完成。",
+        "index.summary",
+        "累计 {total} 条事件，今天 {today} 条。",
       )
-        .replace("{total}", NOTIFICATIONS.length)
-        .replace("{ok}", okCnt);
+        .replace("{total}", total.toLocaleString())
+        .replace("{today}", today.toLocaleString());
     }
 
-    /* ================= 任务列表 ================= */
-    //
-    // 客户端分页：一次最多来 50 条（/v1/tasks?limit=50），先显示 15 行，
-    // 点「加载更多」每次 +50。切筛选条件时重置回 15 行 —— 否则换了条件
-    // 还停在"上次翻到的位置"，用户会以为新条件也加载了那么多。
-    const NOTIF_PAGE_FIRST = 10;
-    const NOTIF_PAGE_STEP = 50;
-    let currentFilter = "all";
-    let visibleCount = NOTIF_PAGE_FIRST;
-
-    function renderNotifs(filter) {
-      document.getElementById("notif-list")?.removeAttribute("aria-busy");
-      if (filter !== currentFilter) {
-        currentFilter = filter;
-        visibleCount = NOTIF_PAGE_FIRST;
-      }
-      const list = document.getElementById("notif-list");
-      const countEl = document.getElementById("notif-count");
-      const moreBtn = document.getElementById("notif-more");
-      if (loadError) {
-        list.replaceChildren(
-          window.Anotify.loadErrorNode(loadError, () => load()),
-        );
-        countEl.textContent = "";
-        // 错误态没有"更多"可言：留着按钮只会点出另一次失败
-        moreBtn.classList.add("hidden");
-        return;
-      }
-      const rows = NOTIFICATIONS.filter(
-        (n) => filter === "all" ||
-          (filter === "terminal" && ["done", "interrupted", "error"].includes(n.agentState)) ||
-          (filter === "working" && n.agentState === "working") ||
-          n.agentState === filter,
-      );
-      const shown = rows.slice(0, visibleCount);
-      if (rows.length === 0) {
-        list.replaceChildren(
-          el("div", {
-            class: "empty",
-            text: t("index.notif.empty", "暂无该状态的任务"),
-          }),
-        );
-      } else {
-        list.replaceChildren(
-          ...shown.map((n) => {
-            const meta = AGENT_STATE_META[n.agentState] || AGENT_STATE_META.working;
-            // 56px 紧凑行：状态点 / 标题 + 状态徽章 / traceId + 耗时 / 相对时间
-            return el(
-              "button",
-              {
-                class: "notif-row w-full text-left",
-                onclick: () => openDetail(n.id),
-              },
-              el("span", { class: `dot ${meta.dot}` }),
-              el(
-                "div",
-                { class: "min-w-0 flex-1" },
-                el(
-                  "div",
-                  { class: "flex flex-wrap items-center gap-2" },
-                  el("span", {
-                    // leading-tight 让两行内容的行高收紧到 .notif-row 的 56px 内
-                    class: "truncate text-sm font-medium leading-tight",
-                    text: n.title,
-                  }),
-                  el("span", {
-                    class: `status-badge ${meta.badge}`,
-                    text: t(meta.labelKey, meta.fallback),
-                  }),
-                ),
-                el(
-                  "div",
-                  { class: "flex flex-wrap items-center gap-2" },
-                  el("span", { class: "card-sub mono", text: n.sessionId }),
-                  el("span", {
-                    class: "card-sub",
-                    text: n.duration + "s",
-                  }),
-                ),
-              ),
-              el(
-                "div",
-                { class: "flex shrink-0 flex-col items-end gap-1" },
-                el("span", { class: "card-sub", text: n.time }),
-                /* 工作台的列表来源是 /v1/tasks（不是旧的 notifications），
-                 * 没有投递计数；这里只表达 outcome-v1.1 的两态出口。 */
-                el("span", {
-                  class: "card-sub",
-                  text:
-                    n.out != null
-                      ? t("index.notif.out", "出口 {out}").replace("{out}", n.out)
-                      : ["done", "interrupted", "error"].includes(n.agentState)
-                        ? t("index.notif.out_end", "到此为止")
-                        : t("index.notif.unreported", "未回报"),
-                }),
-              ),
-            );
-          }),
-        );
-      }
-      countEl.textContent = t(
-        "ui.index.shown_of",
-        "显示 {shown}/{total} 条",
-      )
-        .replace("{shown}", shown.length)
-        .replace("{total}", rows.length);
-      // 没有更多了就收起按钮（含"一个筛选结果不足一页"的常规情形）
-      moreBtn.classList.toggle("hidden", shown.length >= rows.length);
-    }
-
-    document.getElementById("filter-tabs").addEventListener("click", (e) => {
-      const btn = e.target.closest(".filter-tab");
-      if (!btn) return;
-      document
-        .querySelectorAll("#filter-tabs .filter-tab")
-        .forEach((t) => t.classList.remove("active"));
-      btn.classList.add("active");
-      renderNotifs(btn.dataset.filter);
-    });
-    document
-      .getElementById("notif-more")
-      .addEventListener("click", () => {
-        visibleCount += NOTIF_PAGE_STEP;
-        renderNotifs(currentFilter);
-      });
-    document.getElementById("refresh-btn").addEventListener("click", refresh);
+    document.getElementById("ev-refresh").addEventListener("click", refresh);
 
     /* ================= 快速接入折叠 ================= */
     // 默认收起（#qs-body 带 hidden）；展开/收起只切 hidden + aria-expanded，
@@ -1163,10 +893,10 @@
     /* ================= 下拉刷新（公共能力） =================
      * 触屏 / standalone PWA 下拉刷新。指示器 DOM 与手势逻辑由 partials.js
      * 的 mountPullRefresh() 提供，这里只传刷新回调。文案复用
-     * index.recent.pull_* 四语言键。
+     * ui.index.pull_* 四语言键。
      */
     async function refresh() {
-      const btn = document.getElementById("refresh-btn");
+      const btn = document.getElementById("ev-refresh");
       if (btn.disabled) return;
       btn.disabled = true;
       btn.classList.add("opacity-50", "pointer-events-none");
@@ -1180,167 +910,6 @@
     mountPullRefresh(refresh);
 
 
-    /* ================= 详情弹层 ================= */
-    // 详情打开态同步到 URL（?msg=<id>）：推送深链 / 刷新 / 分享后仍定位到同一消息
-    function syncMsgParam(id) {
-      const p = new URLSearchParams(location.search);
-      if (id) p.set("msg", id);
-      else p.delete("msg");
-      const s = p.toString();
-      history.replaceState(null, "", location.pathname + (s ? "?" + s : ""));
-    }
-    // Detail modal display helpers (consistent with message.html)
-    function priorityLabel(p) {
-      const map = {
-        high: { key: "common.priority.high", fb: "高" },
-        normal: { key: "common.priority.normal", fb: "普通" },
-        low: { key: "common.priority.low", fb: "低" },
-      };
-      const m = map[p];
-      return m ? t(m.key, m.fb) : p || "—";
-    }
-    // Markdown → HTML（与 message.html 详情页同一实现）。marked 本地打包（/vendor），
-    // 默认转义 HTML 防注入；未就绪时退回纯文本。
-    // 颜色由 .md-body（ui.css，走 token）负责 —— 这里不要再写 text-zinc-* 之类的
-    // 固定灰度：亮主题下它会是白底浅灰，等于隐形。
-    function renderMD(parent, body) {
-      const raw = body || t("common.placeholder.no_body", "（无正文）");
-      const marked = window.marked;
-      parent.className = "md-body text-sm leading-relaxed";
-      if (marked && typeof marked.parse === "function") {
-        try {
-          if (typeof marked.setOptions === "function") {
-            marked.setOptions({ mangle: false, headerIds: false });
-          }
-          parent.innerHTML = marked.parse(raw);
-          return;
-        } catch (e) {
-          /* fallthrough 纯文本 */
-        }
-      }
-      parent.textContent = raw;
-    }
-    function fmtTTL(sec) {
-      if (!sec || sec <= 0) return "—";
-      if (sec % 86400 === 0)
-        return t("common.ttl.day", "{n} 天").replace("{n}", sec / 86400);
-      if (sec % 3600 === 0)
-        return t("common.ttl.hour", "{n} 小时").replace("{n}", sec / 3600);
-      if (sec % 60 === 0)
-        return t("common.ttl.minute", "{n} 分钟").replace("{n}", sec / 60);
-      return t("common.ttl.second", "{n} 秒").replace("{n}", sec);
-    }
-    function openDetail(id) {
-      const n = NOTIFICATIONS.find((x) => x.id === id);
-      if (!n) return;
-      syncMsgParam(id);
-      const meta = AGENT_STATE_META[n.agentState] || AGENT_STATE_META.working;
-      document.getElementById("detail-head").replaceChildren(
-        el("span", { class: `dot ${meta.dot}` }),
-        el(
-          "div",
-          { class: "min-w-0" },
-          el("div", {
-            class: "card-title truncate",
-            text: n.title,
-          }),
-          el("div", {
-            class: "card-sub",
-            text: `${n.project} · ${n.time}`,
-          }),
-        ),
-      );
-      const tags = Array.isArray(n.deviceTags) ? n.deviceTags : [];
-      const fields = [
-        [t("common.field.msg_id", "消息 ID"), n.id],
-        [t("common.field.agent", "Agent"), n.agent],
-        [t("common.field.session", "会话"), n.sessionId],
-        [t("common.field.model", "模型"), n.model],
-        [t("common.field.duration", "耗时"), n.duration + "s"],
-        [
-          t("common.field.agent_state", "运行状态"),
-          `${t(meta.labelKey, meta.fallback)}（${n.agentState}）`,
-        ],
-        [t("common.field.priority", "优先级"), priorityLabel(n.priority)],
-        [
-          t("common.field.device_tags", "路由标签"),
-          tags.length
-            ? tags.join("、")
-            : t("common.placeholder.broadcast", "（广播）"),
-        ],
-        [t("common.field.ttl", "TTL"), fmtTTL(n.ttlSeconds)],
-        [t("common.field.created_at", "创建时间"), n.time],
-      ];
-      // 键值表：两列紧凑网格（.list-row 是 56px 的行，10 条要滚很长的弹层，
-      // 这里改成「标签在上、值在下」的 38px 单元格，整张表一屏看得完）。
-      const grid = el(
-        "div",
-        { class: "grid grid-cols-2 gap-3" },
-        ...fields.map(([k, v]) =>
-          el(
-            "div",
-            { class: "field" },
-            el("div", { class: "field-label", text: k }),
-            el("div", {
-              class: "mono truncate text-sm",
-              text: String(v),
-            }),
-          ),
-        ),
-      );
-      const bodyEl = el("div", {});
-      renderMD(bodyEl, n.body);
-      const children = [
-        bodyEl,
-        grid,
-      ];
-      if (n.link) {
-        children.push(
-          el(
-            "a",
-            {
-              href: n.link,
-              class: "btn-primary w-full px-4 py-2 text-sm",
-            },
-            t("index.detail.open_session", "打开 Agent 会话"),
-          ),
-        );
-      }
-      // Full details (including deliveries) on the standalone detail page
-      children.push(
-        el(
-          "a",
-          {
-            href: "message.html?id=" + encodeURIComponent(n.id),
-            class: "btn btn-ghost btn-sm w-full",
-          },
-          t("index.detail.view_full", "查看完整页面（全部字段 + 投递记录）→"),
-        ),
-      );
-      document.getElementById("detail-body").replaceChildren(...children);
-      document
-        .getElementById("detail-modal")
-        .classList.replace("hidden", "flex");
-      // 注意：不设 body overflow=hidden。iOS Safari 下 body overflow:hidden
-      // 不但不能锁背景滚动，反而会冻结整个页面（触摸事件被吞、无法滚动），
-      // 弹层 fixed inset-0 遮罩已挡住背景，无需额外锁 body。
-    }
-    function closeDetail() {
-      const modal = document.getElementById("detail-modal");
-      if (modal.classList.contains("hidden")) return; // 未打开时不动 URL
-      modal.classList.replace("flex", "hidden");
-      syncMsgParam(null);
-    }
-    document
-      .getElementById("detail-close")
-      .addEventListener("click", closeDetail);
-    document
-      .getElementById("detail-overlay")
-      .addEventListener("click", closeDetail);
-    window.addEventListener(
-      "keydown",
-      (e) => e.key === "Escape" && closeDetail(),
-    );
 
     /* ================= 复制 ================= */
     // data-copy-text 的属性名是 copyText（dataset 会把连字符转驼峰），
@@ -1387,7 +956,7 @@
         return `${date.getFullYear()}-${m}-${dd}`;
       }
       function dayCount(date) {
-        // 有 STATS 用真实值，否则退到任务数估算
+        // STATS 不可用时全 0 —— 不拿别的数据源冒充事件量
         return countByDay.get(dayKey(date)) || 0;
       }
       function levelOf(c) {
@@ -1457,11 +1026,11 @@
               t1.className = "font-medium";
               t1.textContent =
                 count > 0
-                  ? t("index.heatmap.tip.count", "{n} 条任务").replace(
+                  ? t("index.heatmap.tip.count", "{n} 条事件").replace(
                       "{n}",
                       count,
                     )
-                  : t("index.heatmap.tip.none", "无任务");
+                  : t("index.heatmap.tip.none", "无事件");
               const t2 = document.createElement("div");
               t2.className = "card-sub";
               t2.textContent = t("index.heatmap.tip.date", "{m}月{d}日 周{w}")
@@ -1485,33 +1054,9 @@
       hm.append(frag);
     }
 
-    /* ================= 消息深链（推送点击 ?msg=<id>）================= */
-    // 点击推送通知 → index.html?msg=<taskId>：数据加载完成后自动打开该任务详情。
-    // 任务不在最近 50 条时（如延迟点击旧通知），真实模式下拉更长历史再匹配一次。
-    async function openMsgFromQuery() {
-      const msgId = qs.get("msg");
-      if (!msgId) return;
-      let n = NOTIFICATIONS.find((x) => x.id === msgId);
-      if (!n) {
-        try {
-          const data = await api("/v1/tasks?limit=500");
-          const items = data && Array.isArray(data.tasks) ? data.tasks : null;
-          if (Array.isArray(items)) {
-            NOTIFICATIONS = items.map(normalize).sort(byNewest);
-            renderNotifs(currentFilter);
-            renderSummary();
-          }
-        } catch {
-          /* 拉取失败按未命中处理 */
-        }
-        n = NOTIFICATIONS.find((x) => x.id === msgId);
-      }
-      if (n) openDetail(n.id);
-    }
-
     /* ================= 启动 ================= */
     renderSparks();
-    load().then(openMsgFromQuery);
+    load();
   })();
 </script>
 {{end}}

@@ -121,12 +121,8 @@ common:
     summary: Resumen
     reason: Motivo del fallo
 index:
-  load:
-    failed: 'Error al cargar: '
-    retry: 'Reintentar'
-    bad_shape: 'Formato de respuesta inesperado'
   title: Resumen
-  subtitle: Tus tareas de un vistazo
+  subtitle: El flujo de eventos de un vistazo
   greeting:
     fallback_name: tú
     default: Hola
@@ -135,14 +131,14 @@ index:
     afternoon: Buenas tardes
     evening: Buenas noches
     with_name: '{greeting}, {name}'
-  loading: Cargando tus estadísticas de tareas…
+  loading: Cargando estadísticas de eventos…
   demo_badge: Datos demo (backend no conectado)
   kpi:
-    total: Tareas totales
-    last_30d: Últimos 30 días
+    total: Eventos totales
+    all_time: Histórico
     rate: Tasa de entrega
-    today: Tareas de hoy
-    today_sub: Informado → Completado
+    today: Eventos de hoy
+    today_sub: Recibidos hoy
     devices: Dispositivos receptores
     devices_enabled: Activos
     devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
@@ -155,7 +151,7 @@ index:
     failed: Tareas con error
     failed_sub: Últimas 50 tareas
   heatmap:
-    title: Actividad de tareas
+    title: Actividad de eventos
     subtitle: Último año · volumen diario
     less: Menos
     more: Más
@@ -169,8 +165,8 @@ index:
       sat: S
     month: Mes {n}
     tip:
-      count: '{n} tareas'
-      none: Sin tareas
+      count: '{n} eventos'
+      none: Sin eventos
       date: '{d}/{m} {w}'
   quickstart:
     cta: Conectar nuevo Agent
@@ -191,31 +187,8 @@ index:
       3. Muéstrame el enlace o código de autorización del terminal — lo apruebo en el navegador y te digo el resultado
 
       '
-  recent:
-    title: Tareas recientes
-    subtitle: Actualización en vivo · clic en una fila para detalles
-    filter_all: Todos
-    filter_terminal: Terminal
-    filter_working: En progreso
-    filter_error: Fallido
-    refresh: Actualizar →
-    pull_hint: Desliza para actualizar
-    pull_ready: Suelta para actualizar
-    pull_loading: Actualizando…
-    pull_done: Actualizado
-  recent_summary: '{total} tareas registradas recientemente, {ok} completadas.'
-  summary_load_failed: Los datos de tareas no están disponibles — vuelve a intentarlo.
-  notif:
-    reported: 'Reportado'
-    unreported: 'Sin reportar'
-    empty: No hay notificaciones con este estado
-    delivered: '{d}/{t} dispositivos entregados'
-    count: Mostrando {n}
-    out: 'Puerto {out}'
-    out_end: 'Termina aquí'
-  detail:
-    open_session: Abrir sesión de Agent
-    view_full: Ver página completa (todos los campos + entregas) →
+  summary: '{total} eventos en total · {today} hoy.'
+  summary_load_failed: Los datos no están disponibles ahora — vuelve a intentarlo.
   demo:
     n1_title: Despliegue completado
     n1_body: Build exitoso, desplegado a producción. 47 archivos modificados.
@@ -234,9 +207,11 @@ index:
     n8_title: Backup completado
     n8_body: Snapshot de BD generado y subido a almacenamiento de objetos, 1.2 GB.
   events:
-    title: Eventos recientes
-    subtitle: Qué llegó y qué tareas generó
-    open: Abrir flujo de eventos →
+    title: Flujo de eventos
+    subtitle: Últimos eventos · clic para ver la cadena
+    open: Todos los eventos →
+    refresh: Actualizar →
+    count: 'Últimos {n}'
     loading: Cargando eventos…
     empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
 scope:
@@ -1747,10 +1722,11 @@ ui:
     delta_na: Sin comparación
     spark: Tendencia de 7 días
   index:
-    load_more: Cargar más
-    shown_of: 'Mostrando {shown} de {total}'
-    all_loaded: Todo cargado
     quickstart_hint: Una línea y tu agente queda listo
+    pull_hint: Desliza para actualizar
+    pull_ready: Suelta para actualizar
+    pull_loading: Actualizando…
+    pull_done: Actualizado
   events:
     filters: Filtros
     active: Filtros activos
