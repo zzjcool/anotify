@@ -604,7 +604,7 @@
           <p class="sec-sec-sub">{{t "security.passkey.subtitle"}}</p>
         </div>
         <span class="sec-count"
-          ><span class="sec-count-n" id="pk-count">0</span> {{t
+          ><span class="sec-count-n" id="pk-count">—</span> {{t
           "security.passkey.count"}}</span
         >
       </div>
@@ -628,7 +628,7 @@
           <div class="skeleton sk-row-acts"></div>
         </div>
       </div>
-      <div id="passkey-list" class="card list mt-3"></div>
+      <div id="passkey-list" class="card list mt-3" aria-busy="true"></div>
     </section>
 
     <!-- ② 登录会话 -->
@@ -639,7 +639,7 @@
           <p class="sec-sec-sub">{{t "security.session.subtitle"}}</p>
         </div>
         <span class="sec-count"
-          ><span class="sec-count-n" id="session-count">0</span> {{t
+          ><span class="sec-count-n" id="session-count">—</span> {{t
           "security.session.count"}}</span
         >
       </div>
@@ -661,7 +661,7 @@
           <div class="skeleton sk-row-acts"></div>
         </div>
       </div>
-      <div id="session-list" class="card list mt-3"></div>
+      <div id="session-list" class="card list mt-3" aria-busy="true"></div>
     </section>
 
     <!-- ③ 恢复码（#29 · 接 #24 后端）。#recovery-nudge 初值带 hidden，
@@ -1240,10 +1240,47 @@
     }
   }
 
+  // fetchApiResult：同 fetchApi，但把 HTTP 状态一起带回来。
+  //
+  // 为什么需要：失败原本一律折成 null，页面只能知道「没数据」——于是
+  // 「后端挂了」和「一个 Passkey 都没有」画成了同一个空态，计数还写死 0。
+  // 带上 status 才分得开：错误要 error 卡 + 重试，空才是空态。
+  async function fetchApiResult(path, options) {
+    try {
+      const res = await fetch(
+        path,
+        Object.assign({ credentials: "include" }, options),
+      );
+      if (res.status === 401) {
+        // 401 交给 Anotify.api（内置跳登录守卫）
+        const data = await Anotify.api(path, options).catch(() => null);
+        return { data, status: data ? 200 : 401 };
+      }
+      if (!res.ok) return { data: null, status: res.status };
+      return { data: await res.json(), status: 200 };
+    } catch (e) {
+      return { data: null, status: 0 }; // 0 = 网络不可达
+    }
+  }
+
+  // 失败状态码：只在 render 时用来拼错误卡文案（0 = 连不上服务端）
+  let loadError = { passkeys: 0, sessions: 0 };
+
+  // 两张列表共用的错误卡：Anotify.loadErrorNode 自己翻译、自己带重试。
+  function errorCard(status, onRetry) {
+    return Anotify.loadErrorNode(
+      status
+        ? { status }
+        : { message: t("common.backend_offline", "连不上服务端") },
+      onRetry,
+    );
+  }
+
   async function loadPasskeys() {
-    const data = await fetchApi(API + "/auth/passkeys", {
+    const { data, status } = await fetchApiResult(API + "/auth/passkeys", {
       credentials: "same-origin",
     });
+    loadError.passkeys = status;
     if (data) {
       PASSKEYS = (data.passkeys || data || []).map((p, i) => ({
         id: p.id || String(i),
@@ -1267,9 +1304,10 @@
   }
 
   async function loadSessions() {
-    const data = await fetchApi(API + "/auth/sessions", {
+    const { data, status } = await fetchApiResult(API + "/auth/sessions", {
       credentials: "same-origin",
     });
+    loadError.sessions = status;
     if (data) {
       SESSIONS = (data.sessions || data || []).map((s, i) => {
         const deviceName =
@@ -1310,7 +1348,20 @@
   function renderPasskeys() {
     const list = document.getElementById("passkey-list");
     dropSkeleton("passkey-skel");
-    document.getElementById("pk-count").textContent = PASSKEYS.length;
+    // 骨架走了，aria-busy 必须同时走（同一同步块）
+    list.removeAttribute("aria-busy");
+    const count = document.getElementById("pk-count");
+
+    // ① 失败：错误卡 + 重试，**不显示 0**、也不显示「还没有 Passkey」的空态
+    //    （那会把人骗去新建一个本来已经存在的凭证）。
+    if (loadFailed.passkeys) {
+      count.textContent = "—";
+      list.replaceChildren(
+        errorCard(loadError.passkeys, () => loadPasskeys()),
+      );
+      return;
+    }
+    count.textContent = PASSKEYS.length;
 
     if (PASSKEYS.length === 0) {
       // 空态落在 #passkey-list **内部**（ux_regression #22 读它的 innerText）
@@ -1619,7 +1670,18 @@
   function renderSessions() {
     const list = document.getElementById("session-list");
     dropSkeleton("session-skel");
-    document.getElementById("session-count").textContent = SESSIONS.length;
+    list.removeAttribute("aria-busy");
+    const count = document.getElementById("session-count");
+
+    // 失败 ≠ 没有活跃会话：错误卡 + 重试，计数保持「—」
+    if (loadFailed.sessions) {
+      count.textContent = "—";
+      list.replaceChildren(
+        errorCard(loadError.sessions, () => loadSessions()),
+      );
+      return;
+    }
+    count.textContent = SESSIONS.length;
 
     if (SESSIONS.length === 0) {
       const box = el("div", { class: "empty" });

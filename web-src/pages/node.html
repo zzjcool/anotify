@@ -196,11 +196,65 @@
         color: var(--faint);
       }
 
+      /* 页头槽位预占：骨架态与内容态同高。
+         实测（loading → done）里 #node-body 的 y 从 190 掉到 233 —— 43px 全部来自
+         页头三个槽位「空 → 有内容」：副标题（空 p）、徽章行、动作区。
+         正文再高也不会把上面的元素往下推，但页头一长，整个正文（含页脚）就整体下移，
+         而正文是个 1000+px 的大块，下移 43px 就是 0.2+ 的 CLS。
+         这里把三个槽位钉死高度，数据落地时页头一寸都不动。 */
+      #head-sub {
+        min-height: 18px;
+      }
+      #head-badges {
+        min-height: 18px;
+      }
+      #head-actions {
+        min-height: 30px;
+      }
+
       /* 首屏骨架只定义尺寸，闪动/底色来自 ui.css 的 .skeleton */
       .np-sk-stack {
         display: flex;
         flex-direction: column;
         gap: 10px;
+      }
+      /* 等高骨架：每张骨架卡的最小高度 = 内容态同一张卡实测高度
+         （基本信息 204 / 声明的能力 94 / 已缓存产物 275 / 并发槽位 117 /
+          最近执行 4 行 ≈ 275）。误差只体现在「最近执行」的行数上 ——
+         那一块的最终高度由任务条数决定，骨架不该假装知道有 20 条任务。 */
+      .np-sk-card {
+        min-height: 204px;
+      }
+      /* 修饰类写在行首：死类守卫按「行首类名」收集，复合选择器里的 is-* 会被误报 */
+      .is-caps.np-sk-card {
+        min-height: 94px;
+      }
+      .is-deps.np-sk-card {
+        min-height: 275px;
+      }
+      .is-slots.np-sk-card {
+        min-height: 117px;
+      }
+      .is-tasks.np-sk-card {
+        min-height: 275px;
+      }
+      /* 列表卡骨架的「行」：贴 .list-row（56px 高）的形状 */
+      .np-sk-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 56px;
+        padding: 8px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .np-sk-row:last-child {
+        border-bottom: 0;
+      }
+      .np-sk-row > * + * {
+        flex: none;
+      }
+      .np-sk-grow {
+        flex: 1 1 auto;
       }
       .np-sk-title {
         display: inline-block;
@@ -252,20 +306,55 @@
          锚点，也不含任何文案 —— e2e 等的是 #head-name 有真实名字（骨架里的
          span 没有 textContent），随后才读正文断言，不能被骨架骗成已就绪。
          数据到（或失败、或要重试）时整块 replaceChildren。 -->
-    <div id="node-body" class="np-stack">
-      <div class="card card-pad" aria-hidden="true">
+    <div id="node-body" class="np-stack" aria-busy="true">
+      <!-- 5 张骨架卡 = 内容态的 5 张卡（基本信息 / 能力 / 产物 / 槽位 / 最近执行），
+           每张卡的最小高度按内容态实测值钉死，形状只到「一眼看出是哪一块」为止。 -->
+      <div class="card card-pad np-sk-card" aria-hidden="true">
         <div class="np-sk-stack">
           <div class="skeleton np-sk-line-lg"></div>
+          <div class="skeleton np-sk-line"></div>
           <div class="skeleton np-sk-line"></div>
           <div class="skeleton np-sk-line"></div>
           <div class="skeleton np-sk-line-sm"></div>
         </div>
       </div>
-      <div class="card card-pad" aria-hidden="true">
+      <div class="card card-pad np-sk-card is-caps" aria-hidden="true">
         <div class="np-sk-stack">
           <div class="skeleton np-sk-line-lg"></div>
           <div class="skeleton np-sk-line"></div>
-          <div class="skeleton np-sk-line-sm"></div>
+        </div>
+      </div>
+      <div class="card np-sk-card is-deps" aria-hidden="true">
+        <div class="np-sk-row">
+          <div class="skeleton np-sk-line np-sk-grow"></div>
+          <div class="skeleton np-sk-line-sm" style="width: 64px"></div>
+        </div>
+        <div class="np-sk-row">
+          <div class="skeleton np-sk-line np-sk-grow"></div>
+          <div class="skeleton np-sk-line-sm" style="width: 64px"></div>
+        </div>
+        <div class="np-sk-row">
+          <div class="skeleton np-sk-line np-sk-grow"></div>
+          <div class="skeleton np-sk-line-sm" style="width: 64px"></div>
+        </div>
+      </div>
+      <div class="card np-sk-card is-slots" aria-hidden="true">
+        <div class="np-sk-row">
+          <div class="skeleton np-sk-line np-sk-grow"></div>
+        </div>
+      </div>
+      <div class="card np-sk-card is-tasks" aria-hidden="true">
+        <div class="np-sk-row">
+          <div class="skeleton np-sk-line np-sk-grow"></div>
+          <div class="skeleton np-sk-line-sm" style="width: 76px"></div>
+        </div>
+        <div class="np-sk-row">
+          <div class="skeleton np-sk-line np-sk-grow"></div>
+          <div class="skeleton np-sk-line-sm" style="width: 76px"></div>
+        </div>
+        <div class="np-sk-row">
+          <div class="skeleton np-sk-line np-sk-grow"></div>
+          <div class="skeleton np-sk-line-sm" style="width: 76px"></div>
         </div>
       </div>
     </div>
@@ -317,6 +406,15 @@
       const bodyEl = () => document.getElementById("node-body");
       // 首屏骨架的 HTML 快照：重试时把它放回去，别把「重试中」画成「没有数据」
       const BODY_SKELETON = bodyEl().innerHTML;
+
+      // aria-busy 跟着骨架一起进出：骨架在就是「还在等」，骨架一撤就必须是 false，
+      // 否则读屏用户会一直听到「载入中」。
+      function setBusy(on) {
+        const n = bodyEl();
+        if (!n) return;
+        if (on) n.setAttribute("aria-busy", "true");
+        else n.removeAttribute("aria-busy");
+      }
 
       // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）。
       // 页内不再自己维护 #toast 节点 —— 那份副本在 #page-main 里，
@@ -477,6 +575,7 @@
 
       // 页级空态 / 未找到：.empty（图标 + 标题 + 说明 + 回列表动作）
       function renderEmpty(head, title, desc) {
+        setBusy(false);
         const nameEl = document.getElementById("head-name");
         nameEl.textContent = head;
         document.getElementById("head-sub").textContent = "";
@@ -508,6 +607,20 @@
       // 加载失败：一律用 partials.js 的 loadErrorNode（它自己翻译、自己带重试），
       // 页面不拼错误文案，也不会把 [object Object] 印到屏幕上。
       function renderLoadError(err) {
+        setBusy(false);
+        // 页头的标题/徽章骨架也要一起撤：不然错误卡下面还挂着两条永远在闪的骨架，
+        // 用户会以为页面还在加载（这正是审计里那「1 个残留骨架」）。
+        const nameEl = document.getElementById("head-name");
+        if (nameEl) nameEl.textContent = t("nodepage.title", "节点详情");
+        document.getElementById("head-sub").textContent = NODE_ID || "";
+        document.getElementById("head-badges").replaceChildren();
+        const acts = document.getElementById("head-actions");
+        acts.replaceChildren();
+        const retry = el("button", "btn btn-ghost btn-sm", t("common.retry", "重试"));
+        retry.type = "button";
+        retry.addEventListener("click", () => load());
+        acts.appendChild(retry);
+
         const card = el("div", "card");
         card.appendChild(Anotify.loadErrorNode(err, () => load()));
         bodyEl().replaceChildren(card);
@@ -787,6 +900,7 @@
       }
 
       function renderBody() {
+        setBusy(false);
         bodyEl().replaceChildren(basicCard(), capsCard(), artifactsCard(), slotsCard(), tasksCard());
       }
 
@@ -824,6 +938,7 @@
 
         // 重试路径也先回到骨架：上一次的旧数据不该继续显示
         bodyEl().innerHTML = BODY_SKELETON;
+        setBusy(true);
 
         let detail;
         try {

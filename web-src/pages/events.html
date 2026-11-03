@@ -89,6 +89,39 @@
         border-bottom: 1px solid var(--line);
       }
 
+      /* 首屏骨架卡：与内容态的 .card.card-hover.p-4 同形同高（实测 80px）。
+         **不能用 .card 类** —— e2e 用 `#ev-list .card` 数事件条数，骨架混进去
+         会被当成一条事件。所以这里把卡片的外观在页级复刻一遍（只读 token）。 */
+      .ev-skel {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 10px;
+        height: 80px;
+        padding: 16px;
+        background: var(--surface-1);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow-1);
+      }
+      .ev-sk-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .ev-sk-chip {
+        width: 86px;
+        height: 18px;
+      }
+      .ev-sk-line {
+        width: 148px;
+        height: 14px;
+      }
+      .ev-sk-id {
+        width: 44%;
+        height: 12px;
+      }
+
       /* 页面私有 toast（与共享 Anotify.toast 无关，行为不变）。
          重复定义是有意的：本页的 toast 位置/时长与共享实现不同，
          且页内脚本只操作 #toast 这一个节点。 */
@@ -192,12 +225,46 @@
           <div id="ev-active" class="mt-2 hidden flex-wrap items-center gap-2"></div>
         </div>
 
-        <!-- 事件列表 -->
+        <!-- 事件列表。首屏是 5 张等高骨架卡（行数 = 首屏常见行数），
+             与内容态的 80px 高卡片同高；数据/错误/空态在 renderList() 的
+             同一个同步块里整块 replaceChildren 掉骨架，并把 aria-busy 拿掉。 -->
         <section>
           <h3 class="card-title mb-3">{{t "events.recent"}}</h3>
-          <div id="ev-list" class="flex flex-col gap-2">
-            <div class="card card-pad text-center">
-              <span class="card-sub">{{t "events.loading"}}</span>
+          <div id="ev-list" class="flex flex-col gap-2" aria-busy="true">
+            <div class="ev-skel" aria-hidden="true">
+              <div class="ev-sk-row">
+                <div class="skeleton ev-sk-chip"></div>
+                <div class="skeleton ev-sk-line"></div>
+              </div>
+              <div class="skeleton ev-sk-id"></div>
+            </div>
+            <div class="ev-skel" aria-hidden="true">
+              <div class="ev-sk-row">
+                <div class="skeleton ev-sk-chip"></div>
+                <div class="skeleton ev-sk-line"></div>
+              </div>
+              <div class="skeleton ev-sk-id"></div>
+            </div>
+            <div class="ev-skel" aria-hidden="true">
+              <div class="ev-sk-row">
+                <div class="skeleton ev-sk-chip"></div>
+                <div class="skeleton ev-sk-line"></div>
+              </div>
+              <div class="skeleton ev-sk-id"></div>
+            </div>
+            <div class="ev-skel" aria-hidden="true">
+              <div class="ev-sk-row">
+                <div class="skeleton ev-sk-chip"></div>
+                <div class="skeleton ev-sk-line"></div>
+              </div>
+              <div class="skeleton ev-sk-id"></div>
+            </div>
+            <div class="ev-skel" aria-hidden="true">
+              <div class="ev-sk-row">
+                <div class="skeleton ev-sk-chip"></div>
+                <div class="skeleton ev-sk-line"></div>
+              </div>
+              <div class="skeleton ev-sk-id"></div>
             </div>
           </div>
           <!-- 分页导航：按钮由 renderNav() 按状态生成。
@@ -737,6 +804,10 @@
       function renderList() {
         const list = document.getElementById("ev-list");
         renderSummary();
+        // 骨架与 aria-busy 在这一行之后就不存在了：下面每个分支都是整块
+        // replaceChildren（骨架一起被换掉），aria-busy 必须在这里就摘 ——
+        // 否则数据已经上屏、读屏还在说「载入中」。
+        list.removeAttribute("aria-busy");
         if (loadFailed) {
           list.replaceChildren(
             window.Anotify.loadErrorNode(

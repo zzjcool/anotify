@@ -27,16 +27,27 @@
         display: block;
         width: 180px;
         max-width: 100%;
-        height: 24px;
+        /* 内容态的 .page-title 实测 34px：骨架矮 10px 会让页头在数据落地时长高，
+           而页头下面就是整页正文，一长就全页下移。 */
+        height: 34px;
       }
       .pb-sk-badge {
         display: block;
         width: 40px;
-        height: 10px;
+        height: 24px;
       }
       .pb-slug {
         margin-top: 4px;
         overflow-wrap: anywhere;
+      }
+      /* 页头槽位预占：#pb-desc / #pb-slug 在骨架态是空 <p>（0px），数据一到才长成
+         一行字（实测 20.8 / 16.5px）—— 页头一长，下面整页正文就整体下移 41px。
+         两行先占住，数据落地时页头一寸不动。 */
+      #pb-desc {
+        min-height: 21px;
+      }
+      #pb-slug {
+        min-height: 17px;
       }
       /* 体检结论：整页最要紧的一句话 */
       .pb-sum {
@@ -58,6 +69,26 @@
       .pb-sk {
         display: grid;
         gap: 8px;
+      }
+      /* 汇总卡：内容态是一行结论（+ 一行计数）≈ 82px。骨架先占住这个高度，
+         否则数据一到它就往下长，把后面四张卡全部推下去。 */
+      #pb-summary {
+        min-height: 82px;
+      }
+      /* 四张检查卡的等高骨架：最小高度 = 内容态实测高度
+         （能力 255 / 节点 263 / 出口 206 / 触发器 129）。
+         数据落地时 render() 会把这四个类摘掉 —— 它们只是加载期的占位。 */
+      .pb-sec-caps {
+        min-height: 255px;
+      }
+      .pb-sec-nodes {
+        min-height: 263px;
+      }
+      .pb-sec-edges {
+        min-height: 206px;
+      }
+      .pb-sec-trigs {
+        min-height: 129px;
       }
       .pb-sk-line {
         width: 72%;
@@ -113,14 +144,15 @@
     </div>
 
     <!-- 汇总：一句"最该先做的一件事"。数据没回来之前是骨架，不是一张空卡。 -->
-    <div id="pb-summary" class="card card-pad">
+    <div id="pb-summary" class="card card-pad" aria-busy="true">
       <div class="pb-sk" aria-hidden="true">
         <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
       </div>
     </div>
 
     <!-- ① 能力定义 -->
-    <div class="card card-pad pb-sec">
+    <div class="card card-pad pb-sec pb-sec-caps" aria-busy="true">
       <div class="card-head">
         <h3 class="card-title">{{t "pb.sec.capabilities"}}</h3>
         <div class="card-actions">
@@ -132,12 +164,14 @@
       <div id="cap-skel" class="pb-sk" aria-hidden="true">
         <div class="skeleton pb-sk-line-wide"></div>
         <div class="skeleton pb-sk-line"></div>
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
       </div>
       <div id="cap-list" class="pb-sec-list"></div>
     </div>
 
     <!-- ② 节点实现（最常见的「跑不起来」） -->
-    <div class="card card-pad pb-sec">
+    <div class="card card-pad pb-sec pb-sec-nodes" aria-busy="true">
       <div class="card-head">
         <h3 class="card-title">{{t "pb.sec.nodes"}}</h3>
         <div class="card-actions">
@@ -147,6 +181,8 @@
       </div>
       <p id="node-sum" class="card-sub pb-sec-sum"></p>
       <div id="node-skel" class="pb-sk" aria-hidden="true">
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
         <div class="skeleton pb-sk-line-wide"></div>
         <div class="skeleton pb-sk-line"></div>
       </div>
@@ -164,7 +200,7 @@
     </div>
 
     <!-- ③ 出口 -->
-    <div class="card card-pad pb-sec">
+    <div class="card card-pad pb-sec pb-sec-edges" aria-busy="true">
       <div class="card-head">
         <h3 class="card-title">{{t "pb.sec.edges"}}</h3>
         <div class="card-actions">
@@ -176,12 +212,14 @@
       <div id="edge-skel" class="pb-sk" aria-hidden="true">
         <div class="skeleton pb-sk-line-wide"></div>
         <div class="skeleton pb-sk-line"></div>
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
       </div>
       <div id="edge-list" class="pb-sec-list"></div>
     </div>
 
     <!-- ④ 触发器 -->
-    <div class="card card-pad pb-sec">
+    <div class="card card-pad pb-sec pb-sec-trigs" aria-busy="true">
       <div class="card-head">
         <h3 class="card-title">{{t "pb.sec.triggers"}}</h3>
         <div class="card-actions">
@@ -191,6 +229,8 @@
       </div>
       <p id="trg-sum" class="card-sub pb-sec-sum"></p>
       <div id="trg-skel" class="pb-sk" aria-hidden="true">
+        <div class="skeleton pb-sk-line-wide"></div>
+        <div class="skeleton pb-sk-line"></div>
         <div class="skeleton pb-sk-line-wide"></div>
         <div class="skeleton pb-sk-line"></div>
       </div>
@@ -332,6 +372,18 @@
         if (n) n.textContent = text || "";
       }
 
+      // 骨架退出时的两件收尾：撤掉 aria-busy（否则读屏一直说「载入中」），
+      // 以及摘掉加载期专用的等高类（它们比真实内容高时会留白）。
+      function clearBusy() {
+        const s = document.getElementById("pb-summary");
+        if (s) s.removeAttribute("aria-busy");
+        for (const n of document.querySelectorAll(".pb-sec")) n.removeAttribute("aria-busy");
+      }
+      function clearSkelHeights() {
+        const CLS = ["pb-sec-caps", "pb-sec-nodes", "pb-sec-edges", "pb-sec-trigs"];
+        for (const n of document.querySelectorAll(".pb-sec")) n.classList.remove(...CLS);
+      }
+
       // 节的动作按钮：没有动作就整个收起来（不留一个点了没反应的死按钮）。
       // 不能用 .hidden —— .btn 的 display:inline-flex 与 .hidden{display:none}
       // 同优先级且 ui.css 后加载，会把 hidden 盖掉。
@@ -407,6 +459,8 @@
         // 数据到了：撤掉骨架、把可能因失败态收起的卡片放回来。
         for (const id of ["cap-skel", "node-skel", "edge-skel", "trg-skel"]) drop(id);
         setSectionsHidden(false);
+        clearBusy();
+        clearSkelHeights();
 
         const items = p.items || [];
         const caps = items.filter((i) => i.kind === "capability");
@@ -591,6 +645,19 @@
           const sum = document.getElementById("pb-summary");
           sum.replaceChildren(Anotify.loadErrorNode(e, () => load()));
           setSectionsHidden(true);
+          // 四个分区被收起了，里面的骨架也没人管 —— 它们留在 DOM 里只是 16 条
+          // 看不见的 shimmer，清掉才能保证「失败态 = 一张错误卡，零骨架」。
+          for (const id of ["cap-skel", "node-skel", "edge-skel", "trg-skel"]) drop(id);
+          clearBusy();
+          // 页头那两条骨架（标题 / 状态徽章）也必须一起撕掉 —— 以前它们没有人管，
+          // 失败态下就成了两个永远在闪的占位，看着像页面还在加载。
+          const nameEl = document.getElementById("pb-name");
+          if (nameEl) nameEl.textContent = t("pb.detail_title", "预案详情");
+          const badge = document.getElementById("pb-badge");
+          if (badge) {
+            badge.className = "pb-badge";
+            badge.textContent = "—";
+          }
           toast(t("pb.load_failed", "载入失败，请刷新重试。"));
           return false;
         }
