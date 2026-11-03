@@ -39,6 +39,16 @@
          不再有任何外部字体 CDN 链接，离线/私有化部署字体照常生效。 -->
     <link rel="stylesheet" href="/fonts/fonts.css" />
     <link rel="stylesheet" href="/tokens.css" />
+    <!-- 跨文档 View Transitions 的 opt-in 必须**内联在 head**（见 web/ui.css 顶部说明）：
+         放在外部 ui.css 里时，Chrome 在首帧决定过渡时还没应用它，于是每次导航都
+         中断过渡并在旧文档抛未捕获的 InvalidStateError（e2e 的 pageerror 门禁会红）。
+         放在 ui.css 之前的内联 <style>：无 reduce 时 auto；ui.css 里的
+         prefers-reduced-motion 覆盖（navigation: none）仍然后来居上。 -->
+    <style>
+      @view-transition {
+        navigation: auto;
+      }
+    </style>
     <link rel="stylesheet" href="/ui.css" />
     <!-- P1：外壳未挂载窗口的预排版（仅 base 布局；login/focus 没有 #page-main）。
          数值与挂载后的真实盒模型一致：#page-main 在 .app-main 里的内距是

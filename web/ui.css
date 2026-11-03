@@ -3520,23 +3520,22 @@ html.theme-switching *::after {
 }
 
 /* ---------- 跨文档页面过渡（View Transitions）----------
- * 支持的浏览器（Chrome 126+）在导航时做 200ms 根快照交叉淡入；
- * 不支持/减少动效时自动退回硬切。注意：VT 伪树不受全局 `*` 闸门约束，
- * 必须在 media 里单独关掉 navigation。
  *
- * ⚠ 当前 **关闭自动 opt-in**（navigation: none），原因不是样式问题：
- * 全站有 19 处脚本跳转（`location.replace` / `location.href = ...`：旧深链
- * index?msg → message、未登录 → login、节点/能力/链路跳转…）。当这类跳转发生在
- * **首屏导航的过渡还在飞**的 200ms 窗口里，Chromium 会中断过渡并在旧文档抛
- * 未捕获的 `InvalidStateError: Transition was aborted ... ViewTransition opt-in
- * disabled` —— e2e 的「页面无 JS pageerror」断言偶发变红（deeplink / frontend /
- * i18n_coverage 都撞过），且这是浏览器内部异常，JS 侧 catch 不到。
+ * ⚠ opt-in（`@view-transition { navigation: auto }`）**不在这个文件里**，而是内联
+ * 在每个 layout 的 <head>（base/focus/login）。这不是风格问题：
  *
- * 要重新打开，需要先让脚本跳转与过渡解耦（例如统一走一个「等首屏过渡结束再跳」
- * 的 nav 助手），而不是只加一行 CSS。 */
-@view-transition {
-	navigation: none;
-}
+ *   当 opt-in 写在外部样式表（ui.css）里时，Chrome 决定「这次导航做不做过渡」
+ *   的时刻还没应用它 —— 结果是**每一次导航都中断过渡**，并在旧文档抛未捕获的
+ *   `InvalidStateError: Transition was aborted because of invalid state.
+ *   ViewTransition opt-in disabled`。e2e 的「页面无 JS pageerror」断言因此大面积
+ *   变红（deeplink / frontend / i18n_coverage），而且是 ~50–75% 的必现率，
+ *   不是偶发。实测：把同一行规则内联进 head 后，连续多轮探针 0 报错。
+ *
+ * 这里只保留伪树的时长/缓动，以及 reduced-motion 下的关闭（内联 auto 在前、
+ * 这条媒体查询在后，后者赢）。
+ *
+ * 真要重开/调整，只动 layout 里的那一行内联规则，别把 opt-in 挪回外部 CSS。 */
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
 	animation-duration: var(--dur);
