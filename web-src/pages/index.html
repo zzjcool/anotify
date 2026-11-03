@@ -19,6 +19,18 @@
       grid-template-columns: minmax(0, 1fr);
     }
   }
+  /* 最近事件：加载期与数据期同高（5 条 × 31px），避免把下方区块推下去 */
+  #index-events[aria-busy="true"] {
+    min-height: 179px;
+  }
+  .ev-skel-row {
+    height: 27px;
+    margin-bottom: 4px;
+    border-radius: var(--r-sm);
+  }
+  .ev-skel-row:last-child {
+    margin-bottom: 0;
+  }
 </style>
 {{end}} {{define "content"}}
 <div id="page-main">
@@ -305,8 +317,15 @@
           >
         </div>
       </div>
-      <div id="index-events" class="px-5 py-3">
-        <div class="card-sub">{{t "index.events.loading"}}</div>
+      <div id="index-events" class="px-5 py-3" aria-busy="true">
+        <!-- 5 行骨架 = 数据回来后的 5 条事件行高度（实测 5×31px）。
+             不预留的话，「正在加载」的 42px 会在数据到达时长到 178px，
+             把下面的最近任务整行推下去 136px（首页 CLS 的主要残差）。 -->
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
+        <div class="skeleton ev-skel-row"></div>
       </div>
     </section>
 
@@ -725,6 +744,7 @@
         evErr = e || new Error("events fetch failed");
       }
       const events = (data && data.events) || [];
+      box.removeAttribute("aria-busy");
       box.replaceChildren();
 
       /* F14：接口挂了 ≠ 零条事件。原来这里会画「还没有事件，接上 webhook…」，
