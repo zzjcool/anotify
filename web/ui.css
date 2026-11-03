@@ -3476,6 +3476,19 @@ html.flograph-fullscreen-open body {
 	}
 }
 
+/* ---------- 跨文档页面过渡（View Transitions）----------
+ * 支持的浏览器（Chrome 126+）在导航时做 200ms 根快照交叉淡入；
+ * 不支持/减少动效时自动退回硬切。注意：VT 伪树不受全局 `*` 闸门约束，
+ * 必须在 media 里单独关掉 navigation。 */
+@view-transition {
+	navigation: auto;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation-duration: var(--dur);
+	animation-timing-function: var(--ease);
+}
+
 /* ============================================================================
    减少动效：全局停掉动画与过渡（tokens.css 已把 --dur* 归零，
    但这里有写死时长的过渡与无限动画，需要兜底）
@@ -3780,4 +3793,11 @@ html.flograph-fullscreen-open body {
 	transform: none;
 	outline: 2px solid var(--text);
 	outline-offset: 2px;
+}
+
+/* 跨文档 VT 的 reduced-motion 覆盖（伪树不受上面 * 闸门影响） */
+@media (prefers-reduced-motion: reduce) {
+	@view-transition {
+		navigation: none;
+	}
 }
