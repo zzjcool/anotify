@@ -410,4 +410,5 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - **mock 对齐**：`recovery/regenerate → {ok,recoveryCodes}`；种子 Key 全带 `enabled`；task id 改确定性 `tsk_mock_N`，index → message 刷新不再 404；revoke 置 `enabled:false` 且回 `{ok:true}`。
 - **stats 本地时区**：`MessageStats` 今日改用 `startOfLocalDayUnix(now)`，热力图日桶加本地 offset；admin `SystemStats` 同步；新增 `stats_tz_test.go`（UTC+8/-5 边界/日桶）。
 - **容器生效**：runtime 加 `tzdata`，compose/`.env.compose.example` 支持 `TZ`（默认 Etc/UTC，例 `Asia/Shanghai`）；openapi 描述同步。
-- **验证**：`go test ./...` 15 包全绿；全量 e2e **1832/0**；fonts/ui_shift/lang_hint/contract 全绿；tunnel 200。
+- **验证**：`go test ./...` 15 包全绿；全量 e2e **1836/0**（含上游 index 事件流主列表改动）；fonts/ui_shift/lang_hint/contract 全绿；tunnel 200。
+- **上游合流**：index 淘汰「最近任务」、事件流升主列表（8bad80e）；跨文档 VT 自动 opt-in 因脚本跳转竞态关闭（89a68b6，保留伪树样式，未来用 nav 助手再开）。
