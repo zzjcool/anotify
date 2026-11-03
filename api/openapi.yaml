@@ -3319,7 +3319,7 @@ components:
       required: [total, today, delivered, deliveryTotal, deviceCount, daily]
       properties:
         total: { type: integer, description: 该命名空间的事件总数 }
-        today: { type: integer, description: 今日（UTC 0 点起）事件数 }
+        today: { type: integer, description: 今日（服务端本地时区 0 点起；由 TZ 环境变量决定）事件数 }
         delivered: { type: integer, description: 成功任务数 }
         deliveryTotal: { type: integer, description: 已结束任务数（完成率的分母） }
         deviceCount: { type: integer, description: 当前用户已启用的推送设备数 }

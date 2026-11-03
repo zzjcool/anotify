@@ -43,6 +43,11 @@ RUN go build -trimpath -ldflags="-s -w" -tags embeddist -o /anotify ./cmd/server
 
 # ---- 运行 ----
 FROM alpine:3.20
+# tzdata：/v1/stats 的「今日」与热力图日桶按进程本地时区（TZ）计算。
+# 不装 zoneinfo 时 alpine 的 time.Local 会退回 UTC，TZ 设了也不生效。
+RUN apk add --no-cache tzdata
+# 默认 UTC；部署时通过 TZ 环境变量切换（例如 TZ=Asia/Shanghai）。
+ENV TZ=Etc/UTC
 # 数据目录必须在切到非 root 用户**之前**建好并 chown：
 # 否则 /data 归 root、权限 755，uid 10001 写不进自己的库——
 # 容器能起来但一建 sqlite 就 permission denied（VOLUME 挂载时

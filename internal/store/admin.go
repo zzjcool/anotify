@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // ---------- Admin 查询（超管后台用） ----------
@@ -113,8 +114,8 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		// 改名会让管理后台 API 变成破坏性变更，收益不足。
 		{&s.MessageCount, `SELECT COUNT(*) FROM events`, nil, "event count"},
 		{&s.TodayMessages,
-			`SELECT COUNT(*) FROM events WHERE created_at >= strftime('%s','now','start of day')`,
-			nil, "today events"},
+			`SELECT COUNT(*) FROM events WHERE created_at >= ?`,
+			[]any{startOfLocalDayUnix(time.Now())}, "today events"},
 		{&s.DeviceCount, `SELECT COUNT(*) FROM devices`, nil, "device count"},
 		{&s.EnabledDevices, `SELECT COUNT(*) FROM devices WHERE enabled = 1`, nil, "enabled devices"},
 		{&s.KeyCount, `SELECT COUNT(*) FROM api_keys`, nil, "key count"},
