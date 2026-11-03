@@ -74,12 +74,12 @@ func TestStubSignaturesFrozen(t *testing.T) {
 
 	// ── graph.go ───────────────────────────────────
 	var (
-		_ func(context.Context, *Edge) error                                    = db.CreateEdge
-		_ func(context.Context, string, bool, string, string, string) error     = db.DeleteEdge
-		_ func(context.Context, string, string) ([]*Edge, error)                = db.ListEdges
-		_ func(context.Context, string, bool, string, string) ([]string, error) = db.EdgesFrom
-		_ func(context.Context, string) (*GraphVersion, error)                  = db.EnsureGraphVersion
-		_ func(context.Context, string, string) (*GraphVersion, error)          = db.GetGraphVersion
+		_ func(context.Context, *Edge) error                                        = db.CreateEdge
+		_ func(context.Context, string, bool, string, string, string) error         = db.DeleteEdge
+		_ func(context.Context, string, string) ([]*Edge, error)                    = db.ListEdges
+		_ func(context.Context, string, bool, string, string) ([]LinkTarget, error) = db.EdgesFrom
+		_ func(context.Context, string) (*GraphVersion, error)                      = db.EnsureGraphVersion
+		_ func(context.Context, string, string) (*GraphVersion, error)              = db.GetGraphVersion
 	)
 }
 

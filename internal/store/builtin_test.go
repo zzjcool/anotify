@@ -338,7 +338,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("edges from: %v", err)
 	}
-	if len(got) != 1 || got[0] != sink.ID {
+	if len(got) != 1 || got[0].CapabilityID != sink.ID {
 		t.Fatalf("入口边查表 = %v, want [%s]", got, sink.ID)
 	}
 

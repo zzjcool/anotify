@@ -204,6 +204,15 @@
           <label class="field-label" for="f-to">{{t "edges.to"}}</label>
           <select id="f-to" class="select"></select>
         </div>
+        <!-- 常量覆盖（P0-c，设计 §3.3）：这条边进入下游时额外带的常量。
+             一个紧凑的单行输入框：默认 {}（= 没有覆盖），保存前本地先做对象校验
+             （后端还会按目标的参数契约硬拒：键必须存在、类型必须精确相等）。 -->
+        <div class="field">
+          <label class="field-label" for="f-literals">{{t "edges.literals"}}</label>
+          <input id="f-literals" class="input mono w-full" type="text"
+            placeholder='{{t "edges.literals_placeholder"}}' value="{}" />
+          <p class="field-hint">{{t "edges.literals_hint"}}</p>
+        </div>
       </div>
     </div>
 
@@ -290,6 +299,15 @@
         const dn = (c.displayName || "").trim();
         const raw = c.name + (c.version != null ? "@" + c.version : "");
         return dn ? raw + "（显示名：" + dn + "）" : raw;
+      }
+
+      // literalKeys 取一条边的「常量覆盖」键名（P0-c）。
+      //
+      // 非对象 / null / 数组一律当"没有覆盖"：这里只回答"列表行要不要标个徽章"，
+      // 真正的契约校验（键在不在目标 schema、类型对不对）在后端，前端不重复一份语义。
+      function literalKeys(literals) {
+        if (!literals || typeof literals !== "object" || Array.isArray(literals)) return [];
+        return Object.keys(literals);
       }
 
       // ---------- 加载 ----------
@@ -462,6 +480,16 @@
             const toCapEl = el("span", "edge-cap", capName(e.toCapability));
             toCapEl.title = rawCapName(e.toCapability);
             flow.appendChild(toCapEl);
+            // 常量覆盖徽章：这些常量不在 data 里、也不在能力定义里，**只挂在这条边上**。
+            // 不标出来，下游"凭空"多出来的字段在界面上就完全无迹可寻。
+            const litKeys = literalKeys(e.literals);
+            if (litKeys.length) {
+              const litBadge = el("span", "badge badge-accent",
+                t("edges.literals_badge", "常量 ×{n}").replace("{n}", litKeys.length));
+              // title 给完整内容：徽章只说"有几个"，改的时候要看到是什么
+              litBadge.title = JSON.stringify(e.literals);
+              flow.appendChild(litBadge);
+            }
             row.appendChild(flow);
 
             const del = el("button", "btn btn-danger btn-sm",
@@ -556,6 +584,9 @@
           fromSel.appendChild(new Option(label, c.id));
           toSel.appendChild(new Option(label, c.id));
         }
+        // 常量覆盖默认 {}（= 没有覆盖）：每次开弹层都回到干净状态，
+        // 否则上一次填的值会静默带进下一条边。
+        document.getElementById("f-literals").value = "{}";
         syncPorts();
       }
 
@@ -625,6 +656,26 @@
           return;
         }
 
+        // 常量覆盖（P0-c）：本地先拦"明显不是对象"的输入（坏 JSON / 数组 / 标量）。
+        // 键是否存在于目标 schema、类型是否相符，只有后端能判（要读目标能力的
+        // params_schema）——那边拒了会把原因原样透传回来（400 edge_rejected）。
+        const rawLiterals = document.getElementById("f-literals").value.trim();
+        let literals = {};
+        if (rawLiterals && rawLiterals !== "{}") {
+          let parsed;
+          try {
+            parsed = JSON.parse(rawLiterals);
+          } catch (err) {
+            toast(t("edges.err_literals_json", "常量覆盖不是合法 JSON") + ": " + err.message);
+            return;
+          }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            toast(t("edges.err_literals_object", '常量覆盖必须是一个 JSON 对象，形如 {"to":"u_123"}'));
+            return;
+          }
+          literals = parsed;
+        }
+
         const btn = document.getElementById("modal-save");
         btn.disabled = true;
         try {
@@ -640,6 +691,7 @@
               fromCapability: fromKey,
               fromPort: port,
               toCapability: toId,
+              literals,
             }),
           });
           closeModal();

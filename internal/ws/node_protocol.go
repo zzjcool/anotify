@@ -23,6 +23,11 @@ const (
 	NodeFrameProgress  = "progress"
 	NodeFrameResult    = "result"
 	NodeFrameApply     = "apply"
+	// NodeFrameEmit 是运行中的一次产出上报（docs/design/emit-protocol.md §3.1）。
+	//
+	// 它是**唯一**的产出通道：一次性返回只是「只 emit 一次」的特例。
+	// result 帧因此不再承担路由语义（out 保留兼容，见 ResultFrame）。
+	NodeFrameEmit = "emit"
 
 	// 中枢 → 节点
 	NodeFrameWelcome = "welcome"
@@ -30,6 +35,8 @@ const (
 	NodeFrameDeploy  = "deploy"
 	NodeFrameCancel  = "cancel"
 	NodeFrameError   = "error"
+	// NodeFrameEmitAck 是对一次 emit 的确认（幂等：重复 seq 也回 ok）。
+	NodeFrameEmitAck = "emit_ack"
 )
 
 // 错误码（契约 §6.1 表格）。
@@ -199,6 +206,39 @@ type ResultFrame struct {
 	Error string `json:"error"`
 }
 
+// EmitFrame 是节点 → 中枢的一次**中途产出**（emit-protocol.md §3.1）。
+//
+// 语义要点：
+//   - seq 在**一个任务内**单调递增、从 1 开始；中枢靠 `UNIQUE(task_id, seq)` 去重，
+//     重发不会重复派发下游。缺口是丢消息的证据，中枢会明确回 error 而不是跳过。
+//   - port 必须是本次 assign.ports 之一（I2 的封闭集合，提前到 emit 时判）。
+//   - Data 是 JSON 对象（可缺省 = {}）；它**直接就是下游的 params**，不做字段搬运
+//     （link 只有连接 + 可选字面量）。
+//   - Note 只给人看，不参与路由。
+type EmitFrame struct {
+	Type   string          `json:"type"`
+	TaskID string          `json:"task_id"`
+	Seq    int64           `json:"seq"`
+	Port   string          `json:"port"`
+	Data   json.RawMessage `json:"data,omitempty"`
+	Note   string          `json:"note,omitempty"`
+}
+
+// EmitAckFrame 是中枢 → 节点对 emit 的确认（emit-protocol.md §3.2）。
+//
+// Error 非空 = 拒收（seq 缺口 / seq 内容冲突 / 任务非运行态）。
+// 重复 seq 一律回 ok，Routed/Pruned 取**首次**结果——重发不会重复派发。
+type EmitAckFrame struct {
+	Type   string `json:"type"`
+	TaskID string `json:"task_id"`
+	Seq    int64  `json:"seq"`
+	// Routed 是派发出去几条下游；Pruned 是被剪枝条数（no_node / foreign_user / path）。
+	// 0/0 不是错误：一个出口可以没接下游（到此为止）。
+	Routed int    `json:"routed"`
+	Pruned int    `json:"pruned,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
 // 下行帧（中枢 → 节点）──────────────────────────────
 
 // WelcomeFrame 是握手成功后的第一帧：告诉节点按什么节奏发心跳。
@@ -302,6 +342,12 @@ func DecodeUpstream(data []byte) (any, error) {
 			return nil, fmt.Errorf("decode apply: %w", err)
 		}
 		return &f, nil
+	case NodeFrameEmit:
+		var f EmitFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode emit: %w", err)
+		}
+		return &f, nil
 	default:
 		return &UnknownFrame{Type: env.Type}, nil
 	}
@@ -319,7 +365,7 @@ func Encode(f any) ([]byte, error) {
 // IsDownstream 判定一个帧类型是否是中枢 → 节点方向（用于断言节点没有发下行帧）。
 func IsDownstream(frameType string) bool {
 	switch frameType {
-	case NodeFrameWelcome, NodeFrameAssign, NodeFrameDeploy, NodeFrameCancel, NodeFrameError:
+	case NodeFrameWelcome, NodeFrameAssign, NodeFrameDeploy, NodeFrameCancel, NodeFrameError, NodeFrameEmitAck:
 		return true
 	}
 	return false
@@ -328,7 +374,7 @@ func IsDownstream(frameType string) bool {
 // IsUpstream 判定一个帧类型是否是节点 → 中枢方向。
 func IsUpstream(frameType string) bool {
 	switch frameType {
-	case NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck, NodeFrameProgress, NodeFrameResult, NodeFrameApply:
+	case NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck, NodeFrameProgress, NodeFrameResult, NodeFrameApply, NodeFrameEmit:
 		return true
 	}
 	return false

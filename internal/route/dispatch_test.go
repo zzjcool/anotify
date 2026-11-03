@@ -21,8 +21,8 @@ import (
 // mock 能让每个剪枝原因都精确构造，且测试毫秒级。
 type fakeStore struct {
 	mu sync.Mutex
-	// 出口表：(org, from, port) → []toCapability
-	edges map[string][]string
+	// 出口表：(org, from, port) → 边目标（能力 id + 该条边的字面量覆盖）
+	edges map[string][]store.LinkTarget
 	// 能力定义：id → 定义
 	caps map[string]*store.CapabilityVersion
 	// 能力 → 声明它的节点
@@ -64,7 +64,7 @@ type assignment struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		edges:       map[string][]string{},
+		edges:       map[string][]store.LinkTarget{},
 		caps:        map[string]*store.CapabilityVersion{},
 		nodesByCap:  map[string][]string{},
 		instances:   map[string][]*store.NodeInstance{},
@@ -98,9 +98,21 @@ func (f *fakeStore) addCap(nsID, name string, version int, outputs []string, sch
 }
 
 // addEdge 加一条边（edges 属于某个命名空间，契约 §1）。
+//
+// 默认**不带**字面量覆盖：literals 是 '{}'（= 没有覆盖），与真 store 补列后的老数据同形。
 func (f *fakeStore) addEdge(nsID, from, port, to string) {
+	f.addEdgeLiterals(nsID, from, port, to, "")
+}
+
+// addEdgeLiterals 加一条带字面量覆盖的边（P0-c）。
+//
+// literals 传 "" 等于没有覆盖（与真 store 的 e.Literals 缺省同口径）。
+func (f *fakeStore) addEdgeLiterals(nsID, from, port, to, literals string) {
 	key := nsID + "|" + from + "|" + port
-	f.edges[key] = append(f.edges[key], to)
+	f.edges[key] = append(f.edges[key], store.LinkTarget{
+		CapabilityID: to,
+		Literals:     json.RawMessage(literals),
+	})
 }
 
 // capKey 是 fake 里「命名空间 + 能力」的复合键。
@@ -140,7 +152,7 @@ func (f *fakeStore) setNodes(capabilityID string, nodeIDs ...string) {
 	f.nodesByCap[capKey(f.capNamespace(capabilityID), capabilityID)] = nodeIDs
 }
 
-func (f *fakeStore) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]string, error) {
+func (f *fakeStore) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]store.LinkTarget, error) {
 	if f.errEdges != nil {
 		return nil, f.errEdges
 	}
@@ -151,7 +163,7 @@ func (f *fakeStore) EdgesFrom(ctx context.Context, namespaceID string, fromIsSou
 		prefix += "src|"
 	}
 	got := f.edges[prefix+fromKey+"|"+fromPort]
-	out := make([]string, len(got))
+	out := make([]store.LinkTarget, len(got))
 	copy(out, got)
 	return out, nil
 }

@@ -701,7 +701,7 @@ func TestEdgesFromLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EdgesFrom after delete: %v", err)
 	}
-	if len(got) != 1 || got[0] != d2.ID {
+	if len(got) != 1 || got[0].CapabilityID != d2.ID {
 		t.Fatalf("after delete got %v, want [%s]", got, d2.ID)
 	}
 }

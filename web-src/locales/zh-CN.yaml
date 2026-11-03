@@ -1519,6 +1519,13 @@ edges:
   err_self: 不能让能力连到自己
   err_create: 创建失败
   err_remove: 删除失败
+  # 常量覆盖（P0-c）：这条边进入下游时额外带的常量，字面量优先
+  literals: 常量覆盖（可选 JSON）
+  literals_hint: 进入下游的参数 = 数据 ⊎ 这里的常量（同名键以这里为准）。键与类型必须符合目标的参数契约，拼错会直接拒绝。
+  literals_placeholder: '{"to":"u_123"}'
+  literals_badge: 常量 ×{n}
+  err_literals_json: 常量覆盖不是合法 JSON
+  err_literals_object: '常量覆盖必须是一个 JSON 对象，形如 {"to":"u_123"}'
 trace:
   legend_hot: "线与数字越深 · 这条路走了很多次（重试/回环）"
   legend_origin: "源 · 触发器（事件从这里进来）"

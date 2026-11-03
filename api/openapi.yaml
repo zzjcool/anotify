@@ -1707,10 +1707,15 @@ paths:
       tags: [edges]
       summary: 新增一条边
       description: |
-        配置期三条硬校验（违反即 400）：
+        配置期四条硬校验（违反即 400）：
         1. `fromPort` 必须属于上游的 `outputs`（**出口是封闭集合**，不变量 I2）
         2. 两端能力必须**同命名空间**（跨命名空间引用 → 400，不变量 I11）
         3. `namespaceId` **必填**（query 或 body，query 优先）：一条边属于且只属于一个命名空间
+        4. `literals` 是**常量覆盖**（设计 §3.3：下游 params = data ⊎ literals，字面量优先）：
+           必须是 JSON 对象（`null` = 没有覆盖）；每个键必须出现在目标能力
+           `paramsSchema.properties` 里（拼错当场拒）；值类型必须与声明**精确相等**
+           （`integer` 不收 string，反之亦然，不做任何转换）。常量不依赖运行时，
+           所以能在这里判类型，不必等派发时才剪枝。
 
         `fromIsSource=true` 时 `fromCapability` 被解释为**来源名**（如 `github`，建入口边），
         此时只校验右端能力在本命名空间；来源名不跨命名空间解析。
@@ -1733,7 +1738,9 @@ paths:
                 properties:
                   edge: { $ref: "#/components/schemas/Edge" }
         "400":
-          description: 出口不在 outputs 里 / 跨命名空间引用 / 能力不存在（`edge_rejected`）
+          description: |
+            出口不在 outputs 里 / 跨命名空间引用 / 能力不存在 / `literals` 不合法
+            （`edge_rejected`；`error` 里带具体原因，如「哪个键不存在」「期望什么类型」）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3446,6 +3453,13 @@ components:
           type: string
           description: 必须属于 fromCapability.outputs
         toCapability: { type: string }
+        literals:
+          type: object
+          description: |
+            这条边的**常量覆盖**（设计 §3.3）：进入下游的 params = data ⊎ literals，
+            字面量优先，所以 data 里不必再带这些键。`{}` = 没有覆盖。
+            键与值类型受目标 `paramsSchema` 约束（定义期硬拒）。
+          additionalProperties: true
         createdAt: { type: integer, format: int64 }
 
     EdgeInput:
@@ -3464,6 +3478,15 @@ components:
         fromCapability: { type: string }
         fromPort: { type: string }
         toCapability: { type: string }
+        literals:
+          type: object
+          nullable: true
+          description: |
+            可选的字面量覆盖（默认 `{}` / `null` = 没有覆盖）。
+            必须**是对象**（数组、标量、坏 JSON → 400）；每个键必须出现在目标能力的
+            `paramsSchema.properties` 里；值类型必须与声明**精确相等**（不做转换）。
+          example: { to: u_123 }
+          additionalProperties: true
 
     TaskStatus:
       type: string

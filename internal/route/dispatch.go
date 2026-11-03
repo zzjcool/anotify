@@ -119,7 +119,11 @@ type Store interface {
 	//
 	// 命名空间维度是必须的：同名能力可以在两个命名空间里各有一条**不同的**出口边，
 	// 少这个参数就会把别人的边当自己的（契约 §3 第 ① 步）。
-	EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]string, error)
+	//
+	// 返回的是**边目标**（目标能力 id + 该条边的字面量覆盖），不是裸 id：
+	// 派发要把 literals 叠到目标参数上（设计 §3.3），分两次查会多一次往返，
+	// 也让「一条边」这个概念在两个包里各有一半。
+	EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]store.LinkTarget, error)
 	GetCapabilityByID(ctx context.Context, namespaceID, id string) (*store.CapabilityVersion, error)
 	// NodesForCapability 只返回**本命名空间**里声明了该能力的节点（契约 §3 第 ③ 步）。
 	//
@@ -330,10 +334,18 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		return nil, nil, nil
 	}
 
-	// ② 查出口表；源（Targets 非空）跳过这一步，直接用配置好的目标
-	var targets []string
+	// ② 查出口表；源（Targets 非空）跳过这一步，直接用配置好的目标。
+	//
+	// 两条路径落到同一个形状（[]store.LinkTarget）：源没有 edges 行，因此也没有
+	// 字面量覆盖（它的参数模板存在 source_targets.params 里，是另一个东西），
+	// 所以这里给的是 Literals 为空的 LinkTarget。这样下面的循环只有一份代码，
+	// 「字面量覆盖」这件事不会因为走了哪条路径而少做一次。
+	var targets []store.LinkTarget
 	if len(in.Targets) > 0 {
-		targets = in.Targets
+		targets = make([]store.LinkTarget, 0, len(in.Targets))
+		for _, id := range in.Targets {
+			targets = append(targets, store.LinkTarget{CapabilityID: id})
+		}
 	} else {
 		var err error
 		// 只查**本命名空间**的出口表（契约 §3 第 ① 步）：别的命名空间里
@@ -359,7 +371,8 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	}
 
 	// ③ 逐条边：环剪枝 → 参数 → 跨组织用户 → 找节点
-	for _, targetID := range targets {
+	for _, tgt := range targets {
+		targetID := tgt.CapabilityID
 		capDef, err := d.Store.GetCapabilityByID(ctx, in.NamespaceID, targetID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route: load target capability %s: %w", targetID, err)
@@ -401,6 +414,32 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			}
 			targetParams = resolved
 		}
+
+		// 字面量覆盖（P0-c，设计 §3.3）：目标实际 params = data ⊎ literals，**字面量优先**，
+		// 所以 data 里不必再带这些键。
+		//
+		// 两个要点：
+		//   ① 覆盖必须发生在 validateParams **之前** —— 字面量也是参数的一部分，
+		//      类型写错了就要被 params_schema 拦住（配置期已经拦过一道，这是第二道，
+		//      手改库/旧数据也要能挡住）。
+		//   ② 这一层未来会被「emit 的 data」接管（P1.3：data ⊎ literals → ValidateParams），
+		//      但**字面量覆盖的位置不变**：它永远在「拿到目标参数」与「校验参数」之间。
+		//
+		// 没有字面量的边（literals = {}）在这里就是原封不动地把 targetParams 往下走，
+		// 行为与加这一列之前完全一致。
+		merged, mergeErr := applyLiterals(targetParams, tgt.Literals)
+		if mergeErr != nil {
+			// 库里的 literals 坏了（手改 / 旧数据）：fail closed，只剪这一条边。
+			// 不整次派发失败：一条坏边不应把扇出里其他健康的边一起卖掉。
+			d.prune(ctx, in, out, PrunedRecord{
+				Reason:       ReasonParamSchema,
+				CapabilityID: targetID,
+				Port:         in.Out,
+				Detail:       fmt.Sprintf("edge literals: %v", mergeErr),
+			})
+			continue
+		}
+		targetParams = merged
 
 		// 参数校验：不过只跳过这一条边，不影响其他边（扇出可部分成功）
 		if msg := validateParams(capDef.ParamsSchema, targetParams); msg != "" {
@@ -943,6 +982,44 @@ func validateParams(schema json.RawMessage, params map[string]any) string {
 }
 
 // ---------- 小工具 ----------
+
+// applyLiterals 把一条边的字面量覆盖叠到目标参数上（P0-c，设计 §3.3）。
+//
+// 语义只有一条：**字面量优先**（同名键由 literals 覆盖），**不做任何类型转换** ——
+// 因此 data 里同名字段的类型必须与下游 params_schema 一致（否则调用方的
+// validateParams 会把它剪成 param_schema，这正是派发期那道校验的职责）。
+//
+// 两个必须守住的细节：
+//   - 返回的是**新 map**：in.Params 会被同一轮的所有边共用，就地改会让 A 边的常量
+//     漏进 B 边的参数里（扇出时最隐蔽的一类串参数）。
+//   - 空字面量（nil / {}）原样返回入参：没有覆盖的边行为必须与加这一列之前一模一样。
+func applyLiterals(params map[string]any, literals json.RawMessage) (map[string]any, error) {
+	if len(literals) == 0 {
+		return params, nil
+	}
+	var raw any
+	if err := json.Unmarshal(literals, &raw); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if raw == nil {
+		return params, nil // JSON null = 没有覆盖（与 store 的配置期口径一致）
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("want a JSON object, got %s", store.JSONTypeName(raw))
+	}
+	if len(obj) == 0 {
+		return params, nil
+	}
+	merged := make(map[string]any, len(params)+len(obj))
+	for k, v := range params {
+		merged[k] = v
+	}
+	for k, v := range obj {
+		merged[k] = v
+	}
+	return merged, nil
+}
 
 func pathContains(path []string, id string) bool {
 	for _, p := range path {

@@ -281,6 +281,10 @@ CREATE TABLE IF NOT EXISTS edges (
     from_key        TEXT NOT NULL,                -- 能力 id 或 来源名（看上面）
     from_port       TEXT NOT NULL,
     to_capability   TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    -- 该条边的常量覆盖（设计 §3.3）：进入下游的 params = data ⊎ literals，字面量优先。
+    -- '{}' = 没有覆盖（老数据补列后一律如此，行为与加列前完全一致）。
+    -- 不参与能力版本（content_hash）：它是对**这条边**的配置，不是能力契约的一部分。
+    literals        TEXT NOT NULL DEFAULT '{}',
     created_at      INTEGER NOT NULL,
     PRIMARY KEY (org_id, from_is_source, from_key, from_port, to_capability)
 );
@@ -789,3 +793,27 @@ ALTER TABLE deployments ADD COLUMN work_dir TEXT NOT NULL DEFAULT '';
 --
 -- 由 store.go 的 migrationHooks[20]（migrateTaskDigest）执行，SQL 空块——
 -- 理由与迁移 5 相同：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列必须幂等。
+
+-- +migration 21 edge_literals
+--
+-- P0-c（docs/design/typed-pipeline.md §3.1 / §3.3 / §7 P0.3）：边带可选字面量覆盖。
+--
+-- 一条边除了「从这里接到那里」，还可以带少量**常量**覆盖下游参数：
+-- 进入下游的 params = data ⊎ literals（字面量优先），所以 data 里不必再带这些键。
+-- 常量放在配置里而不是脚本里 —— 否则「换个收件人」都要重新部署节点。
+--
+-- 为什么是 '{}' 而不是空串 / NULL：要表达的是「没有覆盖」，用 '{}' 一个值就够，
+-- SELECT 时也不用区分 null 与空对象（JSON 形状保持一致）。老数据补列后一律 '{}'
+-- （= 没有覆盖），派发行为与加列之前完全一致。
+--
+-- 为什么它不参与能力版本（content_hash）：literals 属于**这条边**的配置，
+-- 同一个能力被两条边以不同常量引用是常态，把它算进能力契约会让「改一条边的常量」
+-- 变成「能力出了一个新版本」。
+--
+-- 校验分两道（§5 校验矩阵）：
+--   · 定义期（store.CreateEdge）：必须是 JSON 对象（null = 没有覆盖）；每个键 ∈ 目标
+--     params_schema.properties；值类型与声明**精确相等**（不做任何转换）——违反硬拒。
+--   · 派发期（route.plan）：覆盖之后再过一遍目标的 params_schema，类型错了照样剪枝。
+--
+-- 由 store.go 的 migrationHooks[21]（migrateEdgeLiterals）执行，SQL 空块——
+-- 理由与迁移 5 / 20 相同：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列必须幂等。

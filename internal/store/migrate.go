@@ -96,6 +96,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	15: migrateEdgeLookupIndex,
 	18: migrateCapabilityToDeploy,
 	20: migrateTaskDigest,
+	21: migrateEdgeLiterals,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -146,6 +147,29 @@ func migrateTaskDigest(tx *sql.Tx) error {
 	if _, err := tx.Exec(
 		`ALTER TABLE tasks ADD COLUMN digest TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add column tasks.digest: %w", err)
+	}
+	return nil
+}
+
+// migrateEdgeLiterals 迁移 21：给 edges 加 literals 列（P0-c，docs/design/typed-pipeline.md §3.1/§3.3）。
+//
+// literals 是这条边的**常量覆盖**：进入下游的 params = data ⊎ literals（字面量优先）。
+// 默认 '{}' = 没有覆盖，老数据补列后派发行为与加列之前完全一致。
+//
+// 为什么用 Go hook 而不是裸 ALTER：SQLite 没有 ADD COLUMN IF NOT EXISTS，
+// 而迁移必须幂等（同一版本可能因重试执行多次），所以先 hasColumn 判一次，
+// 已存在就跳过（重建过的老库可能已经带上这一列了）——与迁移 8 / 20 同一套写法。
+func migrateEdgeLiterals(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "edges", "literals")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`ALTER TABLE edges ADD COLUMN literals TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return fmt.Errorf("add column edges.literals: %w", err)
 	}
 	return nil
 }

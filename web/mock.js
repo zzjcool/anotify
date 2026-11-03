@@ -515,7 +515,8 @@
 	(function initEdges() {
 		// fromSource: 左端是**来源名**（入口边，#110），不是能力 id。
 		// 旧模型靠一个叫 github@1 的空壳能力当锚点，那个空壳已经不存在了。
-		const fromSource = (source, port, to) => ({
+		// literals 是这条边的**常量覆盖**（P0-c，设计 §3.3）：默认 {}（= 没有覆盖）。
+		const fromSource = (source, port, to, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			fromIsSource: true,
@@ -523,9 +524,10 @@
 			fromPort: port,
 			toCapability: capByName(to).id,
 			toCapabilityName: to,
+			literals: literals || {},
 			createdAt: now() - 3600,
 		});
-		const from = (name, port, to) => ({
+		const from = (name, port, to, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			fromCapability: capByName(name).id,
@@ -533,13 +535,15 @@
 			fromPort: port,
 			toCapability: capByName(to).id,
 			toCapabilityName: to,
+			literals: literals || {},
 			createdAt: now() - 3600,
 		});
 		state.edges = [
 			// 源也可以扇出：一个 PR 事件同时派发分析和通知两条链。
 			// 这两条链互不等待（不做 join），各走各的。
 			fromSource("github", "pull_request.opened", "analyze-pr"),
-			fromSource("github", "pull_request.opened", "report.send"),
+			// 带常量覆盖的一条：告警一律标 urgent（常量在配置里，脚本不用管）。
+			fromSource("github", "pull_request.opened", "report.send", { urgent: true }),
 			fromSource("github", "pull_request.synchronize", "analyze-pr"),
 			fromSource("cron", "nightly", "analyze-pr"),
 			fromSource("http", "webhook.incoming", "deploy-preview"),
@@ -1443,7 +1447,7 @@
 		});
 
 		const stgByName = { "analyze-pr": analyze, "run-tests": tests, "deploy-preview": deploy };
-		const edge = (from, port, to) => ({
+		const edge = (from, port, to, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			namespaceId: STAGING,
@@ -1452,6 +1456,7 @@
 			fromPort: port,
 			toCapability: stgByName[to].id,
 			toCapabilityName: to,
+			literals: literals || {},
 			createdAt: t0 - 86400 * 10,
 		});
 		state.edges.push(edge("analyze-pr", "approved", "run-tests"));
@@ -2025,6 +2030,8 @@
 				fromPort: e.fromPort,
 				toCapability: to.id,
 				toCapabilityName: e.to,
+				// 预案里的边不带常量覆盖（'{}' = 没有覆盖），形状与新建边一致
+				literals: {},
 				createdAt: now(),
 			});
 			created.edges.push(label);
@@ -2603,6 +2610,13 @@
 		const to = state.capabilities.find((c) => c.id === b.toCapability);
 		if (!to) return err(400, "下游能力不存在");
 
+		// 常量覆盖（P0-c）：与 Go 侧 store.checkEdgeLiterals 同口径 —— 必须是对象、
+		// 键必须在目标的 paramsSchema.properties 里、类型必须精确相等。
+		// 配置期就拒掉，别让「拼错的键」等到派发时才静默失效。
+		const litRes = checkEdgeLiterals(to, b.literals);
+		if (litRes.error) return err(400, "edge_rejected: " + litRes.error);
+		const literals = litRes.literals;
+
 		// 入口边（#110）：左端是来源名，出口是事件类型，任意值。
 		if (b.fromIsSource) {
 			if (!b.fromCapability) return err(400, "来源名不能为空");
@@ -2615,6 +2629,7 @@
 				fromPort: b.fromPort,
 				toCapability: to.id,
 				toCapabilityName: to.name,
+				literals,
 				createdAt: now(),
 			};
 			state.edges.push(e);
@@ -2630,11 +2645,14 @@
 		const e = {
 			id: uid("edg"),
 			orgId: ORG,
+			// 边一定属于某个命名空间（与后端同形状；漏了会让按命名空间的查询看不见它）
+			namespaceId: b.namespaceId || NS,
 			fromCapability: from.id,
 			fromCapabilityName: from.name,
 			fromPort: b.fromPort,
 			toCapability: to.id,
 			toCapabilityName: to.name,
+			literals,
 			createdAt: now(),
 		};
 		state.edges.push(e);
@@ -2923,6 +2941,95 @@
 			}
 		}
 		return "";
+	}
+
+	// ---------- 边的常量覆盖（P0-c，设计 §3.3）----------
+	//
+	// 语义：进入下游的 params = data ⊎ literals，**字面量优先**，不做任何类型转换。
+	// 与 Go 侧 store.checkEdgeLiterals / route.applyLiterals 同口径：
+	//   ① 必须是 JSON 对象（null / undefined = 没有覆盖）
+	//   ② 每个键必须出现在目标能力 paramsSchema.properties 里（拼错当场拒）
+	//   ③ 值类型必须与声明精确相等（integer 不收 string，反之亦然）
+
+	// jsonTypeName 给人看的类型名（错误文案与 Go 侧同形）。
+	function jsonTypeName(v) {
+		if (v === null) return "null";
+		if (Array.isArray(v)) return "array";
+		if (typeof v === "number") return "number";
+		if (typeof v === "object") return "object";
+		return typeof v;
+	}
+
+	// jsonTypeMatches 判定值是否属于某个 JSON Schema type（受控子集）。
+	function jsonTypeMatches(want, v) {
+		switch (want) {
+			case "object":
+				return v !== null && typeof v === "object" && !Array.isArray(v);
+			case "array":
+				return Array.isArray(v);
+			case "string":
+				return typeof v === "string";
+			case "boolean":
+				return typeof v === "boolean";
+			case "null":
+				return v === null;
+			case "number":
+				return typeof v === "number";
+			case "integer":
+				return typeof v === "number" && Number.isInteger(v);
+		}
+		return false;
+	}
+
+	// checkEdgeLiterals 校验并归一化一条边的常量覆盖。
+	// 返回 { literals } 或 { error }（error 文案与后端一致，便于对照排查）。
+	function checkEdgeLiterals(cap, literals) {
+		if (literals === undefined || literals === null) return { literals: {} };
+		if (typeof literals !== "object" || Array.isArray(literals)) {
+			return { error: "literals must be a JSON object, got " + jsonTypeName(literals) };
+		}
+		const keys = Object.keys(literals);
+		if (!keys.length) return { literals: {} };
+		const props = (cap.paramsSchema && cap.paramsSchema.properties) || {};
+		for (const k of keys.sort()) {
+			if (!Object.prototype.hasOwnProperty.call(props, k)) {
+				const declared = Object.keys(props).sort().join(" ");
+				return {
+					error:
+						"literals." + k + ": " + cap.name + "@" + cap.version +
+						" params_schema has no such field (declared: " + declared + ")",
+				};
+			}
+			const spec = props[k];
+			if (!spec || typeof spec !== "object" || spec.type === undefined) continue;
+			const wanted = Array.isArray(spec.type) ? spec.type : [spec.type];
+			if (wanted.some((w) => jsonTypeMatches(w, literals[k]))) continue;
+			return {
+				error:
+					"literals." + k + ": want type " + wanted.join("|") +
+					", got " + jsonTypeName(literals[k]),
+			};
+		}
+		return { literals };
+	}
+
+	// edgeSourceLiterals 取「这条 link 上挂的常量」（mock 的源路径用它）。
+	//
+	// **mock 的自觉简化**：Go 里 link 是 edges 行，源走自己的 targets（source_targets，
+	// 常量写在 target.params 里）、入口边是另一条派发路径（POST /v1/events）。
+	// mock 只有「源 → 目标」这一条派发路径，所以这里把**入口边**
+	// （fromIsSource + 来源名）上的常量也叠进来——否则「在出口表上给某条边加了常量」
+	// 这件事在演示里完全看不见。多条匹配时按 edges 顺序合并（后者覆盖前者）。
+	function edgeSourceLiterals(ns, sourceName, toCapabilityId) {
+		const out = {};
+		for (const e of state.edges) {
+			if (e.namespaceId !== ns || !e.fromIsSource) continue;
+			if (e.fromCapability !== sourceName || e.toCapability !== toCapabilityId) continue;
+			const lit = e.literals;
+			if (!lit || typeof lit !== "object" || Array.isArray(lit)) continue;
+			Object.assign(out, lit);
+		}
+		return out;
 	}
 
 	// 归一化 targets：后端同时接受 ["cap_a"] 与 [{capabilityId,params}]
@@ -3442,6 +3549,12 @@
 				});
 			}
 			if (resolved.missing.length) continue;
+
+			// 常量覆盖（P0-c）：字面量优先（同名键覆盖求值结果），**不做类型转换**。
+			// 位置很关键：覆盖必须发生在 validateParams **之前**，这样类型写错的常量
+			// 照样被 params_schema 挡住（配置期已拒过一道，这是第二道）。
+			const lits = edgeSourceLiterals(source.namespaceId || NS, source.name, c.id);
+			if (Object.keys(lits).length) Object.assign(resolved.params, lits);
 
 			const msg = validateParams(c.paramsSchema, resolved.params);
 			if (msg) {

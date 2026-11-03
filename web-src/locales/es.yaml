@@ -1519,6 +1519,13 @@ edges:
   err_self: Una capacidad no puede conectarse a sí misma
   err_create: Error al crear
   err_remove: Error al eliminar
+  # Sobrescrituras literales (P0-c): constantes que esta arista añade al bajar; las literales ganan.
+  literals: Sobrescrituras literales (JSON opcional)
+  literals_hint: Parámetros destino = datos ⊎ estas constantes (la misma clave gana aquí). Las claves y los tipos deben cumplir el contrato del destino; las erratas se rechazan.
+  literals_placeholder: '{"to":"u_123"}'
+  literals_badge: literales ×{n}
+  err_literals_json: Las sobrescrituras literales no son JSON válido
+  err_literals_object: 'Las sobrescrituras literales deben ser un objeto JSON como {"to":"u_123"}'
 trace:
   legend_hot: "Línea más intensa · este camino se recorrió muchas veces (reintento / bucle)"
   legend_origin: "Origen · disparador (los eventos entran aquí)"

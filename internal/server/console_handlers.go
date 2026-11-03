@@ -1193,6 +1193,12 @@ type edgeRequest struct {
 	FromCapability string `json:"fromCapability"`
 	FromPort       string `json:"fromPort"`
 	ToCapability   string `json:"toCapability"`
+	// Literals 是这条边的**常量覆盖**（设计 §3.3）：进入下游的 params = data ⊎ literals，
+	// 字面量优先。不传 / {} = 没有覆盖（老客户端行为不变）。
+	//
+	// 用 json.RawMessage 而不是 map：原样交给 store（写进库的就是用户给的字节），
+	// 也不用在这里再写一遍「是不是对象」——校验只有 store 一处（ErrEdgeRejected 透传）。
+	Literals json.RawMessage `json:"literals"`
 }
 
 // edges 处理出口表 CRUD。
@@ -1244,7 +1250,8 @@ func (h *consoleHandler) listEdges(w http.ResponseWriter, r *http.Request) {
 // createEdge 写入一条边。
 //
 // 校验分两层：
-//  1. store 层：from_port ∈ from_capability.outputs、两端同组织（契约 I2 / §1.2）
+//  1. store 层：from_port ∈ from_capability.outputs、两端同组织（契约 I2 / §1.2）；
+//     literals 必须是对象、键 ∈ 目标 params_schema、类型精确相等（设计 §5 定义期（存 link））
 //  2. 这里把 store 的拒绝翻译成 400（而不是 500）
 func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 	var req edgeRequest
@@ -1270,6 +1277,7 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		FromCapability: req.FromCapability,
 		FromPort:       req.FromPort,
 		ToCapability:   req.ToCapability,
+		Literals:       req.Literals,
 	}
 	if err := h.db.CreateEdge(r.Context(), e); err != nil {
 		// I11：两端能力必须同命名空间，跨命名空间引用 → 400
@@ -1277,7 +1285,8 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, store.ErrEdgeRejected) {
-			// from_port 不在 outputs 里 / 能力不存在——都是客户端可修的错误
+			// from_port 不在 outputs 里 / 能力不存在 / literals 不合法——都是客户端可修的错误。
+			// err.Error() 里带着具体原因（哪个键不存在、期望什么类型），直接透传。
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": err.Error(),
 				"code":  "edge_rejected",
