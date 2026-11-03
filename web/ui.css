@@ -2170,8 +2170,8 @@ html.flograph-fullscreen-open body {
 	padding: 4px 6px 14px;
 }
 .app-brand-text {
-	font-family: "Fraunces", Georgia, serif;
-	font-size: 1.15rem;
+	/* 字标走 .font-script（Sacramento）与 text-xl：wave 2 曾在这里写死
+	 * Fraunces + 1.15rem，覆盖了手写体，用户反馈与旧版不一致，恢复。 */
 	line-height: 1;
 	color: var(--text);
 	white-space: nowrap;

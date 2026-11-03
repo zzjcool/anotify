@@ -216,9 +216,9 @@
 				},
 				el("span", {
 					class: "font-script text-lg leading-none text-white",
-					/* F15：字标用单个 A —— 36px 的方块里 "An" 两个字母挤在一起，
-					 * 折叠态看起来像一团墨迹。 */
-					text: "A",
+					/* 品牌字标保持 "An"（与旧版/登录页一致）；wave 2 曾为折叠态
+					 * 紧凑改成单字 "A"，用户反馈与旧版不一致，恢复。 */
+					text: "An",
 				}),
 			),
 			el(
