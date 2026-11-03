@@ -9,7 +9,7 @@
  *  B. out 三态在详情页可见（未回报 / 到头了 / 走某个出口）
  *  C. 任务链区块渲染整条 trace 上的任务
  *  D. /v1/tasks 契约：未登录 401 / traceId 过滤 / 空列表为 []
- *  E. 首页 ?msg=<taskId> 弹层能打开对应任务
+ *  E. 首页 ?msg=<taskId>（历史推送深链）重定向到 message.html?id=<taskId>
  *  F. 未登录点深链 → 跳登录页时 next 保留 message.html?id=
  *  G. 不存在的 id → 页面降级显示「任务不存在」、无 JS pageerror
  */
@@ -227,6 +227,53 @@ async function main() {
 		// 任务链区块
 		H.check("详情页含任务链区块", txt.includes("任务链"), txt.slice(0, 200));
 		H.check("详情页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 120));
+		await page.close();
+		await ctx.close();
+	}
+
+	// ---------- E. 首页 ?msg=<taskId> 深链 → 任务详情页 ----------
+	//
+	// 首页的「最近任务」列表与任务弹层已下线（产品对象是事件流），
+	// 但历史推送载荷里还留着 index.html?msg=<taskId> —— 不能点成空页，
+	// 所以首页脚本把它转到 message.html?id=<taskId>（见 index.html 的
+	// redirectLegacyMsg）。这条用例钉住「旧深链仍然到得了那条任务」。
+	console.log("--- 首页 ?msg 深链 → 任务详情页 ---");
+	{
+		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
+		await injectSession(ctx, s.session, server.base);
+		const page = await ctx.newPage();
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		await page.goto(server.base + "/index.html?msg=" + taskId, {
+			waitUntil: "load",
+			timeout: 15000,
+		});
+		await page
+			.waitForURL(/message\.html\?id=/, { timeout: 10000 })
+			.catch(() => {});
+		H.check(
+			"首页 ?msg=<taskId> 重定向到 message.html?id=",
+			page.url().includes("message.html") && page.url().includes("id=" + taskId),
+			page.url(),
+		);
+		await H.waitForAppReady(page, "workspace");
+		await page
+			.waitForFunction(
+				() => {
+					const el = document.getElementById("msg-title");
+					return el && el.textContent && el.textContent.includes("@");
+				},
+				{ timeout: 10000 },
+			)
+			.catch(() => {});
+		const txt = await page.evaluate(() => document.body.textContent || "");
+		H.check("重定向后详情页渲染该任务", txt.includes(taskId), txt.slice(0, 120));
+		H.check(
+			"首页 ?msg 深链无 JS pageerror",
+			errs.length === 0,
+			errs[0]?.slice(0, 120),
+		);
 		await page.close();
 		await ctx.close();
 	}

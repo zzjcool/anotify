@@ -335,7 +335,7 @@ const PAGES = [
 			H.check(
 				"首页：渲染的是真实数据（不是「载入失败」错误态）",
 				await page.evaluate(() => {
-					const t = document.getElementById("notif-list")?.textContent || "";
+					const t = document.getElementById("index-events")?.textContent || "";
 					return !/载入失败|Failed to load|読み込みに失敗|Error al cargar/.test(t);
 				}),
 				txt.slice(0, 200),

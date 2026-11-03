@@ -121,12 +121,8 @@ common:
     summary: 結果サマリ
     reason: 失敗理由
 index:
-  load:
-    failed: '読み込みに失敗：'
-    retry: '再試行'
-    bad_shape: 'レスポンス形式が不正'
   title: 概要
-  subtitle: タスクの一覧
+  subtitle: イベントストリームの一覧
   greeting:
     fallback_name: あなた
     default: こんにちは
@@ -135,14 +131,14 @@ index:
     afternoon: こんにちは
     evening: こんばんは
     with_name: '{greeting}、{name}'
-  loading: タスク統計を読み込み中…
+  loading: イベント統計を読み込み中…
   demo_badge: デモデータ（バックエンド未接続）
   kpi:
-    total: タスク総数
-    last_30d: 過去30日
+    total: イベント総数
+    all_time: 累計
     rate: 配信率
-    today: 今日のタスク
-    today_sub: 報告 → 完了
+    today: 今日のイベント
+    today_sub: 今日の受信数
     devices: 受信デバイス
     devices_enabled: 有効
     devices_sub: '{n} 台 · エンドツーエンド暗号化'
@@ -155,8 +151,8 @@ index:
     failed: 異常タスク
     failed_sub: 直近50件のタスク
   heatmap:
-    title: タスクアクティビティ
-    subtitle: 過去1年 · 1日あたりのタスク数
+    title: イベントアクティビティ
+    subtitle: 過去1年 · 1日あたりのイベント数
     less: 少
     more: 多
     week:
@@ -169,8 +165,8 @@ index:
       sat: 土
     month: '{n}月'
     tip:
-      count: '{n} 件のタスク'
-      none: タスクなし
+      count: '{n} 件のイベント'
+      none: イベントなし
       date: '{m}月{d}日 {w}曜日'
   quickstart:
     cta: 新しい Agent を連携
@@ -191,31 +187,8 @@ index:
       3. ターミナルに表示された認可リンクまたはコードを教えてください。ブラウザで承認して結果を伝えます
 
       '
-  recent:
-    title: 最近のタスク
-    subtitle: リアルタイム更新 · 行をクリックで詳細
-    filter_all: 全て
-    filter_terminal: 終了状態
-    filter_working: 実行中
-    filter_error: 失敗
-    refresh: 更新 →
-    pull_hint: 引っ張って更新
-    pull_ready: 離して更新
-    pull_loading: 更新中…
-    pull_done: 更新しました
-  recent_summary: 最近 {total} 件のタスクを記録、うち {ok} 件が完了。
-  summary_load_failed: タスクデータを取得できません。再試行してください。
-  notif:
-    reported: '報告済み'
-    unreported: '未報告'
-    empty: このステータスの通知はありません
-    delivered: '{d}/{t} 台に配信済み'
-    count: '{n} 件表示'
-    out: '出口 {out}'
-    out_end: 'ここで終了'
-  detail:
-    open_session: Agent セッションを開く
-    view_full: 完全ページを表示（全フィールド + 配信記録）→
+  summary: '累計 {total} 件のイベント、今日 {today} 件。'
+  summary_load_failed: データを取得できません。再試行してください。
   demo:
     n1_title: デプロイ完了
     n1_body: ビルド成功、本番環境にデプロイ済み。47 ファイル変更。
@@ -234,9 +207,11 @@ index:
     n8_title: バックアップ完了
     n8_body: DB スナップショットを生成しオブジェクトストレージにアップロード、1.2 GB。
   events:
-    title: 最近のイベント
-    subtitle: 何が届き、どのタスクが生まれたか
-    open: イベントストリームを開く →
+    title: イベントストリーム
+    subtitle: 最新のイベント · クリックでチェーンを表示
+    open: すべてのイベント →
+    refresh: 更新 →
+    count: '最新 {n} 件'
     loading: イベントを読み込み中…
     empty: イベントはまだありません。webhook や cron トリガーを繋ぐと、ここに流れが表示されます。
 scope:
@@ -1747,10 +1722,11 @@ ui:
     delta_na: 比較データなし
     spark: 直近7日間の推移
   index:
-    load_more: さらに読み込む
-    shown_of: '{shown}/{total} 件を表示'
-    all_loaded: すべて読み込み済み
     quickstart_hint: 一行で Agent を導入
+    pull_hint: 引っ張って更新
+    pull_ready: 離して更新
+    pull_loading: 更新中…
+    pull_done: 更新しました
   events:
     filters: フィルター
     active: 適用中のフィルター
