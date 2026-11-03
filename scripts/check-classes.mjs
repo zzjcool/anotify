@@ -653,12 +653,8 @@ export function isTailwind(cls) {
 // 这些是扫描新增覆盖面后才可见、目前确实没有 CSS 定义的类。它们不阻塞构建
 // （否则 make fe / 全量 e2e 会直接停摆），但会以 ⚠️ 打出；产品侧补完定义或删掉
 // 用法后应从本表删除，不要把它当永久豁免用。
-const KNOWN_DEAD_JS_CLASSES = new Map([
-	[
-		"lang-hint-inner",
-		"web/partials.js:2354 的包装层无任何 CSS 定义（视觉全靠 Tailwind 工具类）；P2 扫描新发现，待产品裁决",
-	],
-]);
+// 目前为空：lang-hint-inner 已在 ui.css 补上 min-width:0 的真实定义。
+const KNOWN_DEAD_JS_CLASSES = new Map();
 
 // ---------- 自测：证明「错拼判死、正确判活」（纯内存，不改仓库文件） ----------
 async function selfTest() {

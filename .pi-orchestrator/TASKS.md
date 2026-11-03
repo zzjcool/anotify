@@ -427,3 +427,12 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 
 - 上游 `31f6801`：把 `@view-transition { navigation:auto }` 内联进三个 layout 的 `<head>`（外部 ui.css 里 Chrome 来不及 opt-in，会中断并抛 InvalidStateError）；ui.css 只留伪树时长/缓动与 reduce 覆盖。
 - 本地上游 merge 后实测：`pagereveal.viewTransition=true`、0 pageerror；全量 e2e **1836/0**（frontend 387、deeplink 31、ui_shift 21、i18n_coverage 61）。
+
+---
+
+## P2 · 工程守卫 + v0.2.0（2026-11-03）
+
+- **check-classes JS 扫描**：新增 `class:` / 模板字面量扫描（动态 `${}` 跳过、保留静态片段），覆盖 `web/partials.js` + 23 个页面内联脚本；HTML 625 + JS 154 = **779 类**；`--self-test 11/11`；注入 `side-lnik` 在 HTML 与 partials.js 均红。
+- **p2_guards e2e**：30 断言 —— 0 外部字体请求 / `document.fonts.check`（Inter/Fraunces/JetBrains Mono）/ 抽屉 dialog+Esc+焦点回退 / reduce token 0ms / VT 内联 opt-in + `pagereveal`；全量 **1866/0**。
+- **shim 审计**：仍有 `text-zinc-500/600/300` 等 5 类活引用，**不整块删除**（会破亮色）；`lang-hint-inner` 补 `min-width:0` 真实定义后从 KNOWN_DEAD 移除。
+- **发布**：`CHANGELOG.md` + annotated tag **v0.2.0**（UI v2 / 动效加载 / 字体自托管 / 时区 / P1 a11y）。
