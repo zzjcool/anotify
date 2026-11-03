@@ -40,6 +40,14 @@
 		return fallback !== undefined ? fallback : key;
 	}
 
+	/* ---------- 减少动效（JS 侧） ----------
+	 * CSS 有 tokens.css 的 --dur-* 归零 + 全局 * 闸门，但 JS 自己计时的动画
+	 * （主题翻转遮罩、toast 退场）必须显式判断并直接落终值。 */
+	const REDUCE_MOTION =
+		typeof window.matchMedia === "function"
+			? window.matchMedia("(prefers-reduced-motion: reduce)")
+			: { matches: false };
+
 	/* ---------- SVG 图标 ---------- */
 	const SVG_NS = "http://www.w3.org/2000/svg";
 	function icon(paths, cls) {
@@ -295,10 +303,48 @@
 		btn.setAttribute("title", label);
 	}
 
+	/* 主题翻转遮罩：切换前先把旧 --bg 铺满视口，同步写完 data-theme 后
+	 * 200ms 淡出。只做视觉过渡，data-theme 不延迟（e2e 立即断言）。
+	 * reduce 下返回 null（直接换主题，不插遮罩）。 */
+	function createThemeVeil() {
+		if (REDUCE_MOTION.matches || !document.body) return null;
+		const prevBg = getComputedStyle(document.documentElement)
+			.getPropertyValue("--bg")
+			.trim();
+		if (!prevBg) return null;
+		document
+			.querySelectorAll(".theme-flip-overlay")
+			.forEach((n) => n.remove());
+		const veil = document.createElement("div");
+		veil.className = "theme-flip-overlay";
+		veil.setAttribute("aria-hidden", "true");
+		veil.style.background = prevBg;
+		document.body.appendChild(veil);
+		return veil;
+	}
+
+	function fadeThemeVeil(veil) {
+		if (!veil) return;
+		const dur =
+			parseFloat(
+				getComputedStyle(document.documentElement)
+					.getPropertyValue("--dur")
+					.trim(),
+			) || 200;
+		requestAnimationFrame(() => {
+			veil.classList.add("is-fading");
+			setTimeout(() => veil.remove(), dur + 60);
+		});
+	}
+
 	function applyTheme(mode, persist) {
 		const m = THEME_MODES.includes(mode) ? mode : "auto";
 		const theme = resolveTheme(m);
 		const root = document.documentElement;
+		/* 只有用户主动切换（persist）且主题真的变了才铺遮罩；
+		 * 首帧 / 跟随系统（persist=false）不铺。 */
+		const veil =
+			persist && theme !== root.dataset.theme ? createThemeVeil() : null;
 		root.dataset.theme = theme;
 		root.style.colorScheme = theme;
 		const meta = document.querySelector('meta[name="theme-color"]');
@@ -315,6 +361,7 @@
 		document.dispatchEvent(
 			new CustomEvent("anotify:theme", { detail: { theme, mode: m } }),
 		);
+		fadeThemeVeil(veil);
 		return theme;
 	}
 
@@ -1647,6 +1694,17 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		});
 	}
 
+	/* 共享 toast（#anotify-toast-host）。时序：入场 180ms → 停留 3600ms →
+	 * 退场 160ms 后 remove。CSS 动画在 ui.css 的 .anotify-toast.is-in/.is-out；
+	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
+	 * ui.css 双份硬编码（reviewer minor）。 */
+	function toastExitMs() {
+		const raw = getComputedStyle(document.documentElement)
+			.getPropertyValue("--dur-mid")
+			.trim();
+		return parseFloat(raw) || 160;
+	}
+
 	function toast(msg, kind) {
 		let host = document.getElementById("anotify-toast-host");
 		if (!host) {
@@ -1656,24 +1714,37 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			});
 			document.body.append(host);
 		}
-		const color =
-			kind === "error"
-				? "var(--error)"
-				: kind === "warn"
-					? "var(--warn)"
-					: "var(--success)";
-		const t = el(
+		/* kind 归一化：error / err / danger（以及布尔 true）都按错误处理。
+		 * 旧实现只认精确的 "error"，其他失败调用会落回绿点。 */
+		const isError =
+			kind === "error" || kind === "err" || kind === "danger" || kind === true;
+		const color = isError
+			? "var(--error)"
+			: kind === "warn"
+				? "var(--warn)"
+				: "var(--success)";
+		const node = el(
 			"div",
 			{
 				class:
-					"card tx-name flex items-center gap-2.5 px-4 py-3 text-sm shadow-2xl",
+					"card anotify-toast tx-name flex items-center gap-2.5 px-4 py-3 text-sm shadow-2xl" +
+					(isError ? " is-error" : "") +
+					(REDUCE_MOTION.matches ? "" : " is-in"),
 				style: "background: var(--bg-raise)",
 			},
 			el("span", { class: "dot", style: `background: ${color}` }),
 			msg,
 		);
-		host.append(t);
-		setTimeout(() => t.remove(), 3600);
+		host.append(node);
+		setTimeout(() => {
+			if (REDUCE_MOTION.matches) {
+				node.remove();
+				return;
+			}
+			node.classList.remove("is-in");
+			node.classList.add("is-out");
+			setTimeout(() => node.remove(), toastExitMs());
+		}, 3600);
 	}
 
 	/* WebAuthn ArrayBuffer <-> base64url */

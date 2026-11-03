@@ -112,11 +112,19 @@
 	--sidebar-w-collapsed: 76px;
 	--topbar-h: 64px;
 
-	/* ── 动效 ───────────────────────────────────────── */
+	/* ── 动效 ─────────────────────────────────────────
+	 * 词汇表（MOTION-CONTRACT §1）之外只补了三个必要刻度：
+	 * --dur-mid（弹层 / KPI / toast 退场）、--dur-toast（toast 入场 /
+	 * 遮罩淡入）、--dur-drawer（移动抽屉位移）。所有 CSS 动效必须引用
+	 * 这些 token，不再新增写死毫秒。 */
 	--dur-fast: 120ms;
+	--dur-mid: 160ms;
+	--dur-toast: 180ms;
 	--dur: 200ms;
+	--dur-drawer: 240ms;
 	--dur-slow: 320ms;
 	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
 	/* ── 层级 ───────────────────────────────────────── */
 	--z-header: 20;
@@ -230,7 +238,10 @@
 @media (prefers-reduced-motion: reduce) {
 	:root {
 		--dur-fast: 0ms;
+		--dur-mid: 0ms;
+		--dur-toast: 0ms;
 		--dur: 0ms;
+		--dur-drawer: 0ms;
 		--dur-slow: 0ms;
 	}
 }
