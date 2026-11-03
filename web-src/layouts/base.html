@@ -18,6 +18,15 @@
           document.documentElement.style.colorScheme = theme;
           var meta = document.querySelector('meta[name="theme-color"]');
           if (meta) meta.setAttribute("content", dark ? "#08080e" : "#f7f8fc");
+          /* 防外壳横跳（P1）：partials.js 装配 #app-shell 之前 #page-main 就静态躺在
+             body 里，慢 JS 时会先按 x=0 全宽画一帧、再横跳到 .app-main（x=296/108, y=96）。
+             这里首帧前就把侧栏宽度预算写好，下面的内联 <style> 用它预排 #page-main。
+             key 与 web/partials.js 的 SIDEBAR_KEY 是**同一个字面量**，改一处必须改两处。 */
+          var collapsed = localStorage.getItem("anotify-sidebar") === "collapsed";
+          document.documentElement.style.setProperty(
+            "--pre-sidebar-w",
+            collapsed ? "76px" : "264px",
+          );
         } catch (e) {}
       })();
     </script>
@@ -34,6 +43,32 @@
     <link rel="stylesheet" href="/fonts/fonts.css" />
     <link rel="stylesheet" href="/tokens.css" />
     <link rel="stylesheet" href="/ui.css" />
+    <!-- P1：外壳未挂载窗口的预排版（仅 base 布局；login/focus 没有 #page-main）。
+         数值与挂载后的真实盒模型一致：#page-main 在 .app-main 里的内距是
+         32px（sm:px-8，≥640）/ 20px（px-5，<640）、上边 64px 顶栏 + 32px = 96px；
+         左边是侧栏宽（--pre-sidebar-w，由上面内联脚本从 localStorage 读出 264/76）。
+         mountLayout 在 document.body.prepend(#app-shell) 之后立刻写 <html data-shell-ready>，
+         这条规则随即失效，所以正常加载不会双倍内距。
+         不新增组件类：这里只是给一个已存在的 id 补上挂载前的盒模型。 -->
+    <style>
+      html:not([data-shell-ready]) #page-main {
+        margin-left: var(--pre-sidebar-w, 264px);
+        padding: 96px 32px 32px;
+      }
+      @media (max-width: 1023px) {
+        html:not([data-shell-ready]) #page-main {
+          margin-left: 0;
+        }
+      }
+      /* 断点必须跟 Tailwind 的 `sm:`（640）对齐，不是跟侧栏抽屉的 1024 对齐：
+         真实 .app-main 是 `px-5 py-8 sm:px-8` —— ≥640 就是 32px。如果这里到 1023
+         才给 20px，平板（640–1023）在 shell-ready 那一刻内容会从 20 横跳到 32。 */
+      @media (max-width: 639px) {
+        html:not([data-shell-ready]) #page-main {
+          padding: 96px 20px 32px;
+        }
+      }
+    </style>
     {{block "style" .}}{{end}}
     {{if gt (len .Langs) 1}}
     {{range .Langs}}<link rel="alternate" hreflang="{{.Code}}" href="{{.Prefix}}/{{$.Page}}" />
