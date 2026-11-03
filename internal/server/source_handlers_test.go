@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -1077,5 +1078,134 @@ func TestPatchSourceNullConfigIsNoopHTTP(t *testing.T) {
 	}
 	if v := string(fields["payload"]); !strings.Contains(v, `"region":"cn"`) {
 		t.Fatalf("config.payload 被 config:null 抹掉了, got %q", v)
+	}
+}
+
+// TestCreateSourceResultSchemaHTTP 是验收 ③ 的 HTTP 级覆盖：配置期非法 resultSchema → 400。
+//
+// 与 store 层单测的分工：store 测的是判据本身，这里测「用户 POST /v1/sources
+// 时会看到什么」——状态码必须 400（落到 500 会让用户以为中枢坏了）、
+// 错误消息里必须出现字段名（否则他不知道是哪一项填错）。
+//
+// 事件 payload 契约（resultSchema）是入口校验的输入：一份非对象的 schema 只会
+// 让每次投递都变成一条莫名的剪枝，所以必须在保存时当场拒。
+func TestCreateSourceResultSchemaHTTP(t *testing.T) {
+	e := newSourceHTTPEnv(t)
+
+	// 非对象 / 非法形状 → 400，且消息带字段名
+	bad := []string{
+		`[1,2]`, // 数组
+		`"x"`,   // 字符串
+		`1`,     // 标量
+		`true`,  // 布尔
+	}
+	for i, schema := range bad {
+		t.Run("bad:"+schema, func(t *testing.T) {
+			body := e.expand(`{"name":"schema-bad-`+fmt.Sprint(i)+`","kind":"manual",
+				"config":{"resultSchema":`+schema+`},
+				"targets":[{"capabilityId":"__CAP__"}]}`, "schema-bad-"+fmt.Sprint(i))
+			rr := e.create(t, body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "resultSchema") {
+				t.Fatalf("错误消息里要有字段名 resultSchema: %s", rr.Body.String())
+			}
+		})
+	}
+
+	// 合法对象 → 201，且原样往返（不做重编码）
+	schema := `{"type":"object","required":["pull_request"],"properties":{"pull_request":{"type":"object"}}}`
+	body := e.expand(`{"name":"schema-ok","kind":"manual",
+		"config":{"resultSchema":`+schema+`},
+		"targets":[{"capabilityId":"__CAP__"}]}`, "schema-ok")
+	rr := e.create(t, body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("合法 resultSchema 应 201, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	id := sourceIDFrom(t, rr)
+	src, err := e.db.GetSource(e.ctx, e.nsID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(src.ResultSchema()) != schema {
+		t.Fatalf("resultSchema 往返不一致:\n got %s\nwant %s", src.ResultSchema(), schema)
+	}
+}
+
+// TestPatchSourceKeepsResultSchemaHTTP 是 PATCH 合并语义的验收：
+// 「没带这个键」= 继承旧契约（照 inheritedConfigKeys 的现有口径），
+// 「显式 null」= 清空，「非法形状」= 400。
+//
+// 回归背景（与 A6 同源）：控制台保存 cron 时只带 expr，整份替换会把
+// config.resultSchema 静默抹掉——用户写的 payload 契约会在"改个时间"之后
+// 悄悄失效，而没有任何报错可以追。
+func TestPatchSourceKeepsResultSchemaHTTP(t *testing.T) {
+	e := newSourceHTTPEnv(t)
+
+	schema := `{"type":"object","required":["title"]}`
+	createBody := e.expand(`{"name":"schema-patch","kind":"cron",
+		"config":{"expr":"0 3 * * *","resultSchema":`+schema+`},
+		"targets":[{"capabilityId":"__CAP__"}]}`, "schema-patch")
+	rr := e.create(t, createBody)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("建源 status = %d, want 201 (body=%s)", rr.Code, rr.Body.String())
+	}
+	id := sourceIDFrom(t, rr)
+
+	// ① 只改 expr：必须 200，且 resultSchema 还在（继承）
+	rr = e.patch(t, id, `{"config":{"expr":"0 4 * * *"}}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH 只改 expr 应 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	src, err := e.db.GetSource(e.ctx, e.nsID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(src.ResultSchema()) != schema {
+		t.Fatalf("PATCH 把 resultSchema 抹掉了: %s (%s)", src.ResultSchema(), src.Config)
+	}
+
+	// ② 显式 null：清空（用户确实想撤掉契约时唯一的出口）
+	rr = e.patch(t, id, `{"config":{"expr":"0 4 * * *","resultSchema":null}}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("显式 null 应 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	src, err = e.db.GetSource(e.ctx, e.nsID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(src.ResultSchema()) != 0 {
+		t.Fatalf("显式 null 应清空 resultSchema, got %s (%s)", src.ResultSchema(), src.Config)
+	}
+
+	// ③ 非法形状：400（配置期唯一能把话说清楚的位置）
+	rr = e.patch(t, id, `{"config":{"resultSchema":[1,2]}}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 resultSchema 应 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "resultSchema") {
+		t.Fatalf("错误消息里要有字段名 resultSchema: %s", rr.Body.String())
+	}
+	// 被拒的 PATCH 不该改坏已有配置
+	src, err = e.db.GetSource(e.ctx, e.nsID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(src.ResultSchema()) != 0 {
+		t.Errorf("被拒的 PATCH 不该写进 resultSchema: %s", src.Config)
+	}
+
+	// ④ 草稿试运行也走同一判据：非对象 schema 400（避免"试运行能跑、保存却 400"）
+	//
+	// 这里注入一个空 Trigger 只是为了越过 `commander == nil → 503` 那道早退；
+	// 400 发生在解析 body 之后、真正试运行之前，不会调到 Dispatcher。
+	e.h.commander = &source.Trigger{}
+	rr = httptest.NewRecorder()
+	e.h.dryRun(rr, httptest.NewRequest(http.MethodPost, "/v1/sources/dry-run",
+		strings.NewReader(`{"namespaceId":"`+e.nsID+`","source":{"kind":"manual",`+
+			`"config":{"resultSchema":"x"},"targets":["`+e.capID+`"]}}`)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("草稿试运行遇到非法 resultSchema 应 400, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }

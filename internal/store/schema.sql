@@ -332,6 +332,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     error          TEXT NOT NULL DEFAULT '',
 
     cap_hash       TEXT NOT NULL,             -- 派发时的能力定义 content_hash
+    digest         TEXT NOT NULL DEFAULT '',  -- 派发时钉住的产物内容 digest（'' = 无产物/未知）
     graph_id       TEXT NOT NULL,             -- 派发时的 graph_versions.id
 
     created_at     INTEGER NOT NULL,
@@ -771,3 +772,20 @@ CREATE INDEX IF NOT EXISTS idx_deploy_artifact ON deployments(artifact_id);
 -- 这一列不再被任何代码读写，保留它只是为了让老库不需要 DROP COLUMN（SQLite 改表风险
 -- 大于收益，而且这列有 DEFAULT ''，留着不会影响任何写入）。新库建表也不再包含它。
 ALTER TABLE deployments ADD COLUMN work_dir TEXT NOT NULL DEFAULT '';
+
+-- +migration 20 task_digest
+--
+-- P0-a（docs/design/typed-pipeline.md §7 P0.1）：任务行记下**这次实际要跑的产物 digest**。
+--
+-- 为什么还不够 cap_hash：cap_hash 钉的是**能力定义**（params_schema + ports），
+-- 而真正被执行的是 artifacts 里那份内容（spec）。事后要证明「这次跑的是哪份字节」，
+-- 只能靠 digest —— 它是内容寻址标识，改了内容就换 digest。
+--
+-- 取值来源：派发时该能力**最新登记的产物**（store.LatestArtifact）。
+-- '' 表示这次派发没有可钉的产物，两种情形都合法、都不是错误：
+--   · 中枢执行的内置能力（如 notify.phone）没有节点产物；
+--   · 能力还没有登记过任何产物（刚建的能力、纯配置的能力）。
+-- 老数据补列后一律 ''（= 未知）：审计字段，不参与路由/状态机，行为与加列之前完全一致。
+--
+-- 由 store.go 的 migrationHooks[20]（migrateTaskDigest）执行，SQL 空块——
+-- 理由与迁移 5 相同：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列必须幂等。

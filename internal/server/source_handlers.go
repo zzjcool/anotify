@@ -311,6 +311,14 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 		Enabled:     enabled,
 		Targets:     toStoreTargets(req.Targets),
 	}
+	// 事件 payload 契约（resultSchema）的配置期校验：必须是 JSON 对象
+	//（显式 null = 没有契约）。非法 JSON / 非对象在这里就 400，错误消息带
+	// 字段名——这是用户唯一能当场看懂"我哪里写错了"的位置；等到触发时才发现，
+	// 只剩一条 event_schema 剪枝。
+	if msg := store.ResultSchemaError(src.Config); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+		return
+	}
 	// 变量声明先过配置期校验（契约 §2.4）：非法名 / 重名 / from+value 并存 /
 	// 路径写成 `a..b`，这些在触发时只会变成"参数取不到"的剪枝。
 	// 本行必须在 validateTargetParams **之前**：后者要用变量名判断
@@ -343,10 +351,12 @@ func (h *sourceHandler) create(w http.ResponseWriter, r *http.Request) {
 
 // inheritedConfigKeys 是 PATCH 语义下需要从旧配置继承的键。
 //
-// 只有这两个：它们由**另一个入口**写入（变量声明走源详情/接口，事件打底数据
-// 走 cron/manual 的高级表单），控制台改 expr/token 的那次保存不会带上它们。
+// config.vars / config.payload 由**另一个入口**写入（变量声明走源详情/接口，
+// 事件打底数据走 cron/manual 的高级表单），config.resultSchema 走弹窗里的
+// "事件 payload 契约"文本框（新建/编辑都会带，但外部调用方 PATCH 时未必带）。
+// 控制台改 expr/token 的那次保存不会带上这些，整份替换会把它们静默抹掉。
 // 别的键（expr/tz/token/event）都是「这次保存就是它的全部真相」，照常覆盖。
-var inheritedConfigKeys = []string{"vars", "payload"}
+var inheritedConfigKeys = []string{"vars", "payload", "resultSchema"}
 
 // isJSONNull 判断 raw 是否就是 JSON 的 null（PATCH 请求里的 {"config": null}）。
 //
@@ -457,6 +467,13 @@ func (h *sourceHandler) update(w http.ResponseWriter, r *http.Request, id string
 	// 换回整份替换，这两行校验就会拿被清空的配置去验既有 targets，于是
 	// {var:"x"} 变成“未声明的变量”：改 cron 表达式也会 400。
 	// 回归用例见 source_handlers_test.go 的 TestPatchSourceKeepsConfigVarsHTTP。
+	//
+	// resultSchema 同样只看**合并后**的最终配置：没带 → 继承旧契约（改个 cron
+	// 表达式不会把用户写的 payload 契约抹掉），显式 null → 清空。
+	if msg := store.ResultSchemaError(cur.Config); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+		return
+	}
 	if msg := store.ValidateVarDefs(cur.VarDefs()); msg != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 		return
@@ -610,6 +627,12 @@ func (h *sourceHandler) dryRun(w http.ResponseWriter, r *http.Request) {
 		// 草稿的命名空间以会话与参数为准，不信请求体里的手写值：
 		// 否则能用一个 body 推到别的命名空间去试运行（跳且不利）。
 		src.NamespaceID = scope.ID
+		// 草稿的 payload 契约也要先过形式校验：非对象的 schema 在这里 400，
+		// 与保存路径同一口径——否则又会出现"试运行说能跑、点保存却 400"。
+		if msg := store.ResultSchemaError(src.Config); msg != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+			return
+		}
 	}
 
 	out, err := h.commander.DryRun(r.Context(), src, body.Type, body.Payload)

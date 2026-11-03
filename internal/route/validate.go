@@ -9,6 +9,35 @@ import (
 	"strings"
 )
 
+// ValidateEventPayload 用触发器的 result_schema 校验一次事件的 payload（设计 §4.2）。
+//
+// 它是入口校验的唯一实现，**复用**参数校验的同一个受控子集引擎（validateValue）：
+// 同一个 payload 在入口（事件对源的承诺）与在边上（参数对能力的承诺）必须用
+// 同一套语义，否则会出现「入口说过、派发又剪」这种无法自圆的判定。
+//
+// 与 validateParams 只差两点：路径前缀是 payload（错误里直接看得见是哪个字段、
+// 期望什么、实得什么），以及 schema 不合法时的消息是针对 result_schema 的。
+//
+// 返回 "" = 通过。
+func ValidateEventPayload(schema json.RawMessage, payload map[string]any) string {
+	if len(schema) == 0 {
+		return ""
+	}
+	var root map[string]any
+	if err := json.Unmarshal(schema, &root); err != nil {
+		// schema 本身坏了：拒绝派发（不能拿坏契约放行任何事件）。
+		// 与 validateParams 同一口径：schema 语法错误不该静默当"接受一切"。
+		return "invalid result_schema in source config"
+	}
+	if len(root) == 0 {
+		return "" // {} = 不约束任何字段（等价于没声明）
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	return validateValue(root, payload, "payload")
+}
+
 // validateValue 用 JSON Schema 的一个**受控子集**校验值，返回不合法原因（"" = 通过）。
 //
 // 为什么只支持子集（不变量 I6：中枢不解释任何用户提供的逻辑）：

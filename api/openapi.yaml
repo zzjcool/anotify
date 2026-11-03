@@ -3529,6 +3529,14 @@ components:
         capHash:
           type: string
           description: 派发时的能力定义 content_hash（版本钉住，不变量 I8）
+        digest:
+          type: string
+          description: |
+            派发时钉住的**产物内容** digest（artifacts.digest 的副本，P0-a）。
+            与 capHash 的区别：capHash 钉能力定义（params_schema + ports），
+            digest 钉真正被执行的那份字节（内容寻址，改内容就换 digest）。
+            "" = 这次派发没有可钉的产物：中枢执行的内置能力（如 notify.phone）、
+            派发时该能力还没登记过产物、或加这一列之前建的老任务。
         graphId:
           type: string
           description: 派发时的 graph_versions.id

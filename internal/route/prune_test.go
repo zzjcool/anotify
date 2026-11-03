@@ -271,16 +271,18 @@ func TestPruneReasonValues(t *testing.T) {
 		ReasonNoNode:       "no_node",
 		ReasonForeignUser:  "foreign_user",
 		ReasonPath:         "path",
+		ReasonEventSchema:  "event_schema",
 	}
 	for r, s := range want {
 		if string(r) != s {
 			t.Errorf("reason %v != %q (contract §7 spelling)", r, s)
 		}
 	}
-	// 一共七种（①「上游没回报」不是剪枝，不该有对应常量；
-	// param_missing / param_type 是 #114 新增的取值/类型剪枝）
-	if len(want) != 7 {
-		t.Fatalf("want exactly 7 prune reasons, got %d", len(want))
+	// 一共八种（①「上游没回报」不是剪枝，不该有对应常量；
+	// param_missing / param_type 是 #114 新增的取值/类型剪枝；
+	// event_schema 是 P0.2 新增的入口剪枝，产生点在 source.Trigger 里）
+	if len(want) != 8 {
+		t.Fatalf("want exactly 8 prune reasons, got %d", len(want))
 	}
 }
 

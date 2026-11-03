@@ -49,6 +49,12 @@ type fakeStore struct {
 	errInsertPrune error
 	// errGetUser 让用户查询失败（验证「鉴权查库失败必须 fail closed」）
 	errGetUser error
+
+	// artifacts 是 LatestArtifact 的返回值（key = capKey(ns, capabilityID)）。
+	// 没登记的能力 → store.ErrArtifactNotFound，与真 store 同口径（P0-a）。
+	artifacts map[string]*store.Artifact
+	// errLatestArtifact 让产物查询失败（验证「取不到 digest 不拦派发」）。
+	errLatestArtifact error
 }
 
 type assignment struct {
@@ -64,6 +70,7 @@ func newFakeStore() *fakeStore {
 		instances:   map[string][]*store.NodeInstance{},
 		pins:        map[string]*store.NodePin{},
 		leasedSlots: map[string]string{},
+		artifacts:   map[string]*store.Artifact{},
 	}
 }
 
@@ -271,6 +278,28 @@ func (f *fakeStore) CreateTasks(ctx context.Context, ts []*store.Task) error {
 	}
 	f.createdTasks = append(f.createdTasks, ts...)
 	return nil
+}
+
+// addArtifact 给某能力登记一份「最新产物」（P0-a 的 digest 就取它）。
+func (f *fakeStore) addArtifact(nsID, capabilityID, digest string) *store.Artifact {
+	a := &store.Artifact{ID: "art_fake", NamespaceID: nsID, CapabilityID: capabilityID, Digest: digest}
+	f.artifacts[capKey(nsID, capabilityID)] = a
+	return a
+}
+
+// LatestArtifact 与真 store 同口径：没产物返回 store.ErrArtifactNotFound（不是 nil, nil）。
+//
+// 这个区分很重要：route 靠这个错误降级为空串 digest，mock 若返回 nil, nil 就
+// 永远测不到「取不到也不拦派发」这条路径。
+func (f *fakeStore) LatestArtifact(ctx context.Context, namespaceID, capabilityID string) (*store.Artifact, error) {
+	if f.errLatestArtifact != nil {
+		return nil, f.errLatestArtifact
+	}
+	a, ok := f.artifacts[capKey(namespaceID, capabilityID)]
+	if !ok {
+		return nil, store.ErrArtifactNotFound
+	}
+	return a, nil
 }
 
 // AssignTask 也是 fake 的内部 helper：记录一次归属写入，可注入错误。

@@ -270,6 +270,79 @@ func decodeJSONObject(raw json.RawMessage) (map[string]any, bool) {
 	return m, true
 }
 
+// isJSONNullRaw 判断 raw 是否就是 JSON 的 null（`null` 与「没写这个键」不同：
+// 前者是显式清空，后者是继承）。
+func isJSONNullRaw(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
+
+// ResultSchema 返回 config.resultSchema —— 源声明的事件 payload 契约（设计 §4.2）。
+//
+// 它是外部边界上唯一能声明「我收到的 payload 长什么样」的地方：触发器是外部
+// 世界伸进来的手，中枢推导不出它的形状，只能让人声明（这也是为什么它不叫
+// params_schema：入参是能力对上游的要求，出参是源对外部的承诺）。
+//
+// 未声明返回 nil = **不校验**：老源、老数据的行为与加这个字段之前完全一致。
+// 不是 JSON 对象（数组/标量/坏 JSON）同样返回 nil —— 读侧容忍，与 VarDefs /
+// ConfigPayload 同一口径：一条手改坏的数据不该让整个源列表打不开（配置期已经
+// 拒过一次，见 ValidateSourceConfig）。
+//
+// 返回**原始字节**而不是解析后的对象：调用方（route.ValidateEventPayload）要的
+// 就是一份 schema 字节，中途不重新编码，用户写的 schema 与库里存的完全一致。
+func (s *Source) ResultSchema() json.RawMessage {
+	if s == nil || len(s.Config) == 0 {
+		return nil
+	}
+	var cfg struct {
+		ResultSchema json.RawMessage `json:"resultSchema"`
+	}
+	if err := json.Unmarshal(s.Config, &cfg); err != nil {
+		return nil
+	}
+	if _, ok := decodeJSONObject(cfg.ResultSchema); !ok {
+		return nil
+	}
+	return cfg.ResultSchema
+}
+
+// ResultSchemaError 校验一段 config 里 resultSchema 的形式，"" = 合法。
+//
+// 导出给 server 层在**落库之前**用：配置期 400 是唯一能把问题当场说清楚的位置，
+// 推到触发时就只剩一条「事件入库了但没派出去」的剪枝。
+//
+// 判据与 ValidateSourceConfig 共用同一个函数（resultSchemaValueError），
+// 不允许出现两套口径——否则会出现「保存说没问题、触发被剪枝」。
+func ResultSchemaError(cfg json.RawMessage) string {
+	if len(cfg) == 0 {
+		return ""
+	}
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(cfg, &fields); err != nil {
+		// 整个 config 都不是 JSON 对象：不在这一步判它的形状（那是 kind 校验的事），
+		// 这里只看 resultSchema 这一个键。
+		return ""
+	}
+	return resultSchemaValueError(fields["resultSchema"])
+}
+
+// resultSchemaValueError 校验 resultSchema 的**值**本身（缺省 / null → 合法）。
+//
+// 两条规则（设计 §4.2 / §7 P0.2）：
+//  1. 必须是 JSON 对象：数组/标量/字符串都不是 schema，放进去只会在每次触发时
+//     变成一句莫名的剪枝，而不是在配置期被人看见；
+//  2. 显式 null 合法，含义是「没有契约」——PATCH 用它清空一份已存的契约。
+//     它与「没写这个键」的区别只在合并那一步：没带 = 继承旧值（store 层
+//     inheritedConfigKeys，见 server/source_handlers.go）。
+func resultSchemaValueError(raw json.RawMessage) string {
+	if len(raw) == 0 || isJSONNullRaw(raw) {
+		return ""
+	}
+	if _, ok := decodeJSONObject(raw); !ok {
+		return `config.resultSchema 必须是 JSON 对象（如 {"type":"object","required":["title"]}）`
+	}
+	return ""
+}
+
 // ValidateVarDefs 校验变量声明："" 表示合法，否则是给用户看的中文错误。
 //
 // 这些检查必须在**配置期**做完：变量名拼错、from 与 value 同时写、路径写成
@@ -373,6 +446,14 @@ func ValidateSourceConfig(kind string, raw json.RawMessage) (json.RawMessage, er
 		}
 	}
 
+	// resultSchema 是 kind 无关的事件 payload 契约（设计 §4.2 / §7 P0.2）：
+	// 每次投递都要在派发前过它，所以它必须是一份真 schema。缺省与显式 null 都
+	// 合法（= 不声明，老源行为不变）；数组/标量/字符串一律拒——那种值到触发时
+	// 只会变成一句莫名的剪枝，不如配置期直接说清楚。
+	if msg := resultSchemaValueError(fields["resultSchema"]); msg != "" {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidSourceConfig, msg)
+	}
+
 	// payload 只有在**会被保留**的 kind（cron/manual）上才有意义，所以也只有它们
 	// 需要对象性校验：数组/标量/null 都不是「事件打底数据」，放进去只会在触发时
 	// 变成一句莫名的报错，不如配置期直接拒。webhook/github 的 payload 直接丢弃
@@ -439,6 +520,13 @@ func ValidateSourceConfig(kind string, raw json.RawMessage) (json.RawMessage, er
 	}
 	if rawPayload, ok := fields["payload"]; ok && keepsConfigPayload(kind) {
 		out["payload"] = rawPayload
+	}
+	// resultSchema 与 kind 无关（入口校验对每种源都生效），一律原样保留：不做
+	// "读出来再写回去"的重编码，用户写的 schema 与库里存的一字不差。
+	// 显式 null = 没有契约，与缺省同义，所以输出里不留 resultSchema:null 这种
+	// "伪声明"——留了的话 ResultSchema() 还要多判一次 null。
+	if rawSchema, ok := fields["resultSchema"]; ok && !isJSONNullRaw(rawSchema) {
+		out["resultSchema"] = rawSchema
 	}
 	return json.Marshal(out)
 }

@@ -159,6 +159,16 @@ type Store interface {
 	// 否则总会有某个分支只进了 HTTP 响应、没进库——那就又是一个查不到的剪枝。
 	// 语义（幂等、idem_key 恒 NULL）由 store 实现，本包不关心细节。
 	InsertPruneEvent(ctx context.Context, e *store.Event) (bool, error)
+
+	// LatestArtifact 返回该能力**最新登记的产物**（P0-a：派发时把它的 digest 钉在任务行上）。
+	//
+	// 为什么是「最新一份」而不是「本次部署的那份」：任务行只钉 name@version（契约 I8），
+	// 派发这一步看不到「哪台机器上的哪份部署」——那要等 ④ 挑完机器才知道（而任务行
+	// 在建任务时就要落库）。最新产物是此刻这个能力要被执行的权威内容，也是节点缓存
+	// 里「name@version → digest」索引的指向；两者对齐，事后能对上账。
+	//
+	// 没有产物时返回 store.ErrArtifactNotFound——那不是错误（见 plan 里的 pinDigest）。
+	LatestArtifact(ctx context.Context, namespaceID, capabilityID string) (*store.Artifact, error)
 }
 
 // Dispatcher 按派发四步算出要建的任务。
@@ -496,12 +506,30 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			Params:       paramsJSON,
 			Status:       store.TaskPending,
 			CapHash:      c.cap.ContentHash,
+			Digest:       d.pinDigest(ctx, in.NamespaceID, c.cap.ID),
 			GraphID:      graph.ID,
 		}
 		tasks = append(tasks, task)
 	}
 
 	return tasks, cands, nil
+}
+
+// pinDigest 取「这次派发要钉在任务行上的产物内容 digest」（P0-a）。
+//
+// 取不到就返回空串，**不是错误**：
+//   - 中枢执行的内置能力（notify.phone 之类）没有节点产物；
+//   - 纯配置能力 / 刚建好还没登记产物的能力也没有。
+//
+// 这里刻意不让任何错误外溢（包括 DB 错误）：digest 是**审计字段**，
+// 钉不住最多是「事后查不到哪份字节」；而把整次派发停下来的代价是这条链直接丢。
+// 两者不在一个量级，所以宁可降级为不钉（行为与加这一列之前完全一致）。
+func (d *Dispatcher) pinDigest(ctx context.Context, namespaceID, capabilityID string) string {
+	a, err := d.Store.LatestArtifact(ctx, namespaceID, capabilityID)
+	if err != nil || a == nil {
+		return ""
+	}
+	return a.Digest
 }
 
 // launch 是派发的后半段：④ 挑机器/占槽位 + ⑤ 推 assign 帧，最后算出 out.Tasks。

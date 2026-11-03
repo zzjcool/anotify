@@ -175,10 +175,16 @@ type Task struct {
 	Artifacts    []string        `json:"artifacts"`
 	Error        string          `json:"error"`
 	CapHash      string          `json:"capHash"`
-	GraphID      string          `json:"graphId"`
-	CreatedAt    int64           `json:"createdAt"`
-	StartedAt    *int64          `json:"startedAt"`
-	FinishedAt   *int64          `json:"finishedAt"`
+	// Digest 是**本次派发钉住的产物内容 digest**（artifacts.digest 的副本，P0-a）。
+	//
+	// 与 CapHash 的区别：CapHash 钉住能力定义（params_schema + ports），Digest 钉住
+	// 真正被执行的那份字节。空串 = 没有可钉的产物（中枢执行的内置能力、或派发时
+	// 该能力还没登记过产物），也包含所有加这一列之前建的老任务（未知）。
+	Digest     string `json:"digest"`
+	GraphID    string `json:"graphId"`
+	CreatedAt  int64  `json:"createdAt"`
+	StartedAt  *int64 `json:"startedAt"`
+	FinishedAt *int64 `json:"finishedAt"`
 	// NotBefore 是退避时间：早于此刻的 pending 任务不该被重派（契约 §3.3）。
 	// nil 表示立刻可派。
 	NotBefore *int64 `json:"notBefore"`
@@ -187,7 +193,7 @@ type Task struct {
 // taskColumns 是统一的列顺序，scanTask 依赖它。
 const taskColumns = `id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
-	out, reported, summary, artifacts, error, cap_hash, graph_id,
+	out, reported, summary, artifacts, error, cap_hash, digest, graph_id,
 	created_at, started_at, finished_at, not_before`
 
 // scanTask 从 rows 解析一行。
@@ -198,7 +204,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 	if err := rows.Scan(
 		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
 		&t.Version, &params, &t.Status, &t.NodeID, &t.InstanceID, &t.LeaseUntil, &t.Attempts,
-		&t.Out, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.GraphID,
+		&t.Out, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.Digest, &t.GraphID,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -322,12 +328,12 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 			`INSERT INTO tasks
 			   (id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 			    version, params, status, node_id, instance_id, lease_until, attempts,
-			    out, reported, summary, artifacts, error, cap_hash, graph_id,
+			    out, reported, summary, artifacts, error, cap_hash, digest, graph_id,
 			    created_at, started_at, finished_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			t.ID, t.NamespaceID, t.TraceID, t.ParentTaskID, string(pathJSON), t.CapabilityID, t.Capability,
 			t.Version, string(t.Params), t.Status, t.NodeID, t.InstanceID, t.LeaseUntil, t.Attempts,
-			t.Out, reported, t.Summary, string(artifactsJSON), t.Error, t.CapHash, t.GraphID,
+			t.Out, reported, t.Summary, string(artifactsJSON), t.Error, t.CapHash, t.Digest, t.GraphID,
 			t.CreatedAt, t.StartedAt, t.FinishedAt,
 		); err != nil {
 			return fmt.Errorf("insert task %d (%s): %w", i, t.Capability, err)

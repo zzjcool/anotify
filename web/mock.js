@@ -2788,6 +2788,104 @@
 		}),
 	);
 
+	// 入口校验：事件 payload 对源声明的 resultSchema（设计 §4.2 / §7 P0.2）。
+	//
+	// 与后端 route.ValidateEventPayload 同口径（同一个受控子集：required + type
+	// 逐层下渗）。mock 是 e2e 的参考实现，两边判定不一致的话 e2e 会直接报到
+	// "试运行/真跑的剪枝原因不一样"。
+	//
+	// 返回 "" = 合规；否则是带字段路径的原因（哪个字段/期望什么/实得什么）。
+	function validateEventPayload(schema, payload) {
+		if (!schema || typeof schema !== "object" || Array.isArray(schema)) return "";
+		const data = payload && typeof payload === "object" ? payload : {};
+		return validateValueAt(schema, data, "payload");
+	}
+
+	// validateValueAt 是上面那个函数递归用的引擎：type / required / properties / items。
+	function validateValueAt(schema, v, path) {
+		if (!schema || typeof schema !== "object") return "";
+		if (schema.type !== undefined) {
+			const wanted = Array.isArray(schema.type) ? schema.type : [schema.type];
+			if (!wanted.some((w) => typeMatches(w, v))) {
+				return `${path}: want type ${wanted.join("|")}, got ${jsonTypeName(v)}`;
+			}
+		}
+		if (v && typeof v === "object" && !Array.isArray(v)) {
+			for (const k of schema.required || []) {
+				if (v[k] === undefined) return `${path}: missing required field "${k}"`;
+			}
+			const props = schema.properties || {};
+			for (const k of Object.keys(props)) {
+				if (v[k] === undefined) continue;
+				const msg = validateValueAt(props[k], v[k], path + "." + k);
+				if (msg) return msg;
+			}
+		}
+		if (Array.isArray(v) && schema.items) {
+			for (let i = 0; i < v.length; i++) {
+				const msg = validateValueAt(schema.items, v[i], `${path}[${i}]`);
+				if (msg) return msg;
+			}
+		}
+		return "";
+	}
+
+	function jsonTypeName(v) {
+		if (v === null || v === undefined) return "null";
+		if (Array.isArray(v)) return "array";
+		if (typeof v === "number") return "number";
+		return typeof v;
+	}
+
+	// typeMatches 与后端 typeMatches 对齐（integer 看"是不是整数"，不是看类型名）。
+	function typeMatches(want, v) {
+		switch (want) {
+			case "object":
+				return v !== null && typeof v === "object" && !Array.isArray(v);
+			case "array":
+				return Array.isArray(v);
+			case "string":
+				return typeof v === "string";
+			case "boolean":
+				return typeof v === "boolean";
+			case "null":
+				return v === null || v === undefined;
+			case "number":
+				return typeof v === "number";
+			case "integer":
+				return typeof v === "number" && Number.isInteger(v);
+			default:
+				return false; // 未知 type = 不匹配（与后端一致：声明错了就看得见）
+		}
+	}
+
+	// resultSchemaError 是配置期校验：与后端 store.ResultSchemaError 同口径。
+	//
+	// 返回 "" = 合法。规则两条：
+	//   1. 必须是 JSON 对象（数组/标量不是 schema）；
+	//   2. 显式 null 合法 = "没有契约"（PATCH 用它清空）。
+	function resultSchemaError(cfg) {
+		if (!cfg || typeof cfg !== "object" || !("resultSchema" in cfg)) return "";
+		const v = cfg.resultSchema;
+		if (v === null || v === undefined) return "";
+		if (typeof v !== "object" || Array.isArray(v)) {
+			return 'config.resultSchema 必须是 JSON 对象（如 {"type":"object","required":["title"]}）';
+		}
+		return "";
+	}
+
+	// mergeResultSchema 是 PATCH 语义下的合并：
+	//   没带这个键 → 继承旧值（否则控制台改个 cron 表达式就把用户写的契约抹掉了）；
+	//   显式 null → 清除；
+	//   对象 → 覆盖。
+	// 与 Go 侧 store/server 的 inheritedConfigKeys 是同一套语义。
+	function mergeResultSchema(oldSchema, bodyCfg) {
+		const cfg = bodyCfg || {};
+		if (!Object.prototype.hasOwnProperty.call(cfg, "resultSchema")) return oldSchema;
+		const v = cfg.resultSchema;
+		return v === null || v === undefined ? undefined : v;
+	}
+
 	// 参数校验：与后端 route.ValidateParams 同语义（mock 也要拦住，
 	// 否则前端会因为"怎么填都能过"而看不出真实约束）
 	function validateParams(schema, params) {
@@ -3131,6 +3229,12 @@
 		const bad = validateTargets(targets);
 		if (bad) return err(400, bad);
 
+		// 事件 payload 契约的形式校验：必须是 JSON 对象（显式 null = 没有契约）。
+		// 与后端 store.ResultSchemaError 同口径——mock 放过非对象的话，e2e 会
+		// 以为"这能在真环境保存"，而真实后端会 400。
+		const schemaErr = resultSchemaError(b.config);
+		if (schemaErr) return err(400, schemaErr);
+
 		if (b.kind === "cron") {
 			const expr = (cfg.expr || "").trim();
 			if (!expr) return err(400, "cron 需要 expr（五段表达式，如 0 3 * * *）");
@@ -3148,6 +3252,11 @@
 		} else {
 			cfg = {};
 		}
+
+		// resultSchema 与 kind 无关（入口校验对每种源都生效）：上面按 kind 重建 cfg
+		// 时会把用户刚写的契约丢掉，这里单独放回（显式 null = 不存这个键）。
+		const rs = mergeResultSchema(undefined, b.config);
+		if (rs !== undefined) cfg.resultSchema = rs;
 
 		const s = {
 			id: uid("src"),
@@ -3191,6 +3300,11 @@
 			s.targets = targets;
 		}
 		if (b.config !== undefined) {
+			const schemaErr = resultSchemaError(b.config);
+			if (schemaErr) return err(400, schemaErr);
+			// resultSchema 的合并语义：没带 → 继承旧值，显式 null → 清空。
+			// 与 Go 侧 inheritedConfigKeys 一套口径（改个 cron 表达式不该把契约抹掉）。
+			const rs = mergeResultSchema(s.config && s.config.resultSchema, b.config);
 			if (s.kind === "cron") {
 				const expr = (b.config.expr || "").trim();
 				if (expr.split(/\s+/).length !== 5) {
@@ -3204,6 +3318,8 @@
 				// webhook / github / manual：config 整体替换（token 由服务端补）
 				s.config = Object.assign({}, b.config);
 			}
+			if (rs !== undefined) s.config.resultSchema = rs;
+			else delete s.config.resultSchema;
 		}
 		if (b.enabled !== undefined) s.enabled = !!b.enabled;
 		return json({ source: sourceView(s) });
@@ -3216,6 +3332,35 @@
 		return json({ deleted: ctx.m[1] });
 	});
 
+	// recordEventSchemaPrune 把入口剪枝写进 mock 的事件流。
+	//
+	// 与 Go 侧 source.Trigger.recordEventSchemaPrune 同形状：source='route'、
+	// type='pruned.<reason>'、payload=PruneEventPayload（fromCapability/port/detail）、
+	// 与事件同一个 traceId。否则"收到了但没派"在事件流/trace 里完全看不到，
+	// 用户只能猜——而那正是 #142 与设计 §4.2 要消灭的东西。
+	//
+	// 只在**真触发**的两条路（webhook 投递 / 手动 fire）里调：试运行不落库，
+	// 用户每试一次都多一条假历史是不能接受的（与 Go 侧 DryRun 不写剪枝同理）。
+	function recordEventSchemaPrune(source, traceId, eventType, pruned) {
+		for (const p of pruned || []) {
+			if (p.reason !== "event_schema") continue;
+			state.events.push({
+				id: uid("evt"),
+				orgId: ORG,
+				namespaceId: source.namespaceId || NS,
+				traceId: traceId,
+				source: "route",
+				type: "pruned.event_schema",
+				payload: {
+					fromCapability: source.name,
+					port: eventType,
+					detail: p.detail,
+				},
+				createdAt: now(),
+			});
+		}
+	}
+
 	// 手动触发：真的往 state 里加事件 + 任务，页面上能看到链长出来
 	// planDispatch 算出"这条配置会不会真的跑起来"——**不产生任何副作用**。
 	//
@@ -3225,11 +3370,33 @@
 	//
 	// 返回 {tasks, pruned}：
 	//   tasks  —— 会派发的出口（含求值后的参数）
-	//   pruned —— 被跳过的出口及原因（no_capability / param_missing /
-	//             param_schema / param_type / no_node）
+	//   pruned —— 被跳过的出口及原因（event_schema / no_capability /
+	//             param_missing / param_schema / param_type / no_node）
+	//
+	// event_schema 是**入口级**的：与逐出口的那几种不同，它一旦命中就一条都不派
+	// （事件形状不对，不存在"这条出口能过"），所以直接返回空 tasks + 单条剪枝
+	// ——与 Go 侧 source.Trigger.Fire 在调 Dispatch 之前拦下是同一形状。
 	function planDispatch(source, payload) {
 		const tasks = [];
 		const pruned = [];
+
+		const schema = source && source.config ? source.config.resultSchema : undefined;
+		if (schema !== undefined && schema !== null) {
+			const msg = validateEventPayload(schema, payload);
+			if (msg) {
+				return {
+					tasks: [],
+					pruned: [
+						{
+							reason: "event_schema",
+							capabilityId: null,
+							capability: null,
+							detail: `payload 不符合源「${source.name}」的 resultSchema：${msg}`,
+						},
+					],
+				};
+			}
+		}
 
 		for (const t of source.targets) {
 			const c = state.capabilities.find((x) => x.id === t.capabilityId);
@@ -3350,6 +3517,9 @@
 		state.events.push(ev);
 
 		const plan = planDispatch(s, payload);
+		// 入口剪枝也留痕（与后端 InsertPruneEvent 对齐）：事件已入库，
+		// 这里只多一条 pruned.event_schema 说明"为什么没派"。
+		recordEventSchemaPrune(s, traceId, eventType, plan.pruned);
 		const tasks = [];
 		for (const p of plan.tasks) {
 			const c = state.capabilities.find((x) => x.id === p.capabilityId);
@@ -3382,6 +3552,10 @@
 		const b = ctx.body || {};
 		const draft = b.source;
 		if (!draft || !Array.isArray(draft.targets)) return err(400, "source is required");
+		// 草稿的 payload 契约也先过形式校验：与保存路径同一口径
+		// （否则又会出现"试运行说能跑、点保存却 400"）。
+		const schemaErr = resultSchemaError(draft.config);
+		if (schemaErr) return err(400, schemaErr);
 		const payload = b.payload && typeof b.payload === "object" ? b.payload : {};
 		const plan = planDispatch(draft, payload);
 		return json({ enabled: true, dispatch: plan });
@@ -3420,6 +3594,7 @@
 
 		// 判定逻辑与「试运行」同一份实现
 		const plan = planDispatch(s, ev.payload);
+		recordEventSchemaPrune(s, traceId, ev.type, plan.pruned);
 		const tasks = [];
 		for (const p of plan.tasks) {
 			const c = state.capabilities.find((x) => x.id === p.capabilityId);

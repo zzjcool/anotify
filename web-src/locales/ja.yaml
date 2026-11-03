@@ -1412,6 +1412,10 @@ sources:
     name_required: 名前を入力してください
     expr_required: Cron 式を入力してください
     targets_required: 出口ケイパビリティを 1 つ以上選択してください
+    result_schema: "イベント payload 契約（resultSchema、任意）"
+    result_schema_hint: "任意。JSON Schema（例: {\"type\":\"object\",\"required\":[\"action\"]}）を入れると、配信のたびに検証します：契約に合わないイベントは保存されますが配信されず、trace に event_schema の剪枝が残ります。空 = 検証しない。"
+    bad_schema: "payload 契約が正しい JSON ではありません: {e}"
+    schema_not_object: "payload 契約は JSON オブジェクトである必要があります（配列/スカラーは schema ではありません）"
     no_caps: 利用可能なケイパビリティがありません。先に「ケイパビリティ」ページで定義してください。
     no_params: このケイパビリティはパラメータを取りません
     bad_json: パラメータ {k} が正しい JSON ではありません

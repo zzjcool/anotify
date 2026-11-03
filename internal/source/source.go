@@ -27,6 +27,13 @@ type Store interface {
 	MarkSourceFired(ctx context.Context, id string, firedAt, nextFire int64) error
 	GetSource(ctx context.Context, namespaceID, id string) (*store.Source, error)
 	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
+	// InsertPruneEvent 落一条剪枝事件（#142）——入口校验失败时的留痕出口。
+	//
+	// 为什么要它：resultSchema 不合规的事件**照常落库、不派发**（设计 §4.2：
+	// 外部系统不重试，丢了就真没了），于是一次命中只能从事件流里看到。
+	// 它与派发期的剪枝用**同一张表、同一套 source/type 约定**
+	// （source='route'、type='pruned.<reason>'），trace 视图因此不用分两套口径读。
+	InsertPruneEvent(ctx context.Context, e *store.Event) (bool, error)
 }
 
 // Dispatcher 是派发器（route.Dispatcher 满足它）。
@@ -99,6 +106,12 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 	// payloadMap = config.payload 打底 + 本次事件 payload 覆盖（契约 §2.5）；
 	// 打底只对 cron/manual 生效，webhook/github 的 payload 就是投递体（A13）。
 	payloadMap, _ := eventPayload(src, payload)
+	// 入口校验与 Fire 同一判据：试运行必须能提前看到"这版 payload 会被
+	// event_schema 剪枝"，否则用户只会在真触发之后从事件流里发现。
+	// 试运行不落库：只把判定回给用户（不写事件、不写剪枝）。
+	if p, bad := resultSchemaPrune(src, eventType, payloadMap); bad {
+		return prunedOnly(p), nil
+	}
 	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
 		NamespaceID: src.NamespaceID, // 派发（查边/找节点/建任务）的隔离维度
 		TraceID:     "dryrun",        // 不落库，trace 只是占位（Dispatch 要求非空）
@@ -177,6 +190,18 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 		return res, fmt.Errorf("source: %s 没有出口能力（source_targets 为空）", src.Name)
 	}
 
+	// 入口校验（设计 §4.2 / §7 P0.2）：事件**已经落库**（外部系统不重试，丢了就
+	// 真的没了），这里只决定派不派。不合规 → 一条都不派 + prune(event_schema)，
+	// trace 里看得到"收到了，但这版 payload 不合契约"。
+	//
+	// 为什么不在 handler 层直接 400：400 会让外部系统把事件丢在地上，而这整
+	// 套系统一直在消灭的正是静默失败。钳住派发、留住事件，才是可复盘的处理。
+	if p, bad := resultSchemaPrune(src, eventType, payloadMap); bad {
+		t.recordEventSchemaPrune(ctx, ev, p)
+		res.Dispatch = prunedOnly(p)
+		return res, nil
+	}
+
 	out, err := t.Dispatcher.Dispatch(ctx, route.DispatchInput{
 		NamespaceID: src.NamespaceID, // 源触发：命名空间随源走（契约 §3）
 		TraceID:     ev.TraceID,
@@ -202,6 +227,84 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	}
 	res.Dispatch = out
 	return res, nil
+}
+
+// ---------- 入口校验：resultSchema（设计 §4.2 / §7 P0.2）----------
+
+// resultSchemaPrune 用源的 resultSchema 判本次事件 payload。
+//
+// 返回 (记录, true) = 不合规：调用方**不派发**，但要留痕（事件本身已经落库）；
+// 返回 (_, false) = 通过，或者源根本没声明契约。
+//
+// **没声明 = 不校验**：加这个字段之前的所有源（含已经被手改成非对象的脏数据）
+// 行为与今天完全一致，不需要任何迁移。
+//
+// 判据不另写一套：用 route.ValidateEventPayload，与边上的 params_schema 同一个
+// 受控子集引擎（required/type/…）。同一个 payload 在入口和在边上不能得出不同结论。
+//
+// detail 必须能回答「凭什么说这次事件不合规」：引擎给的消息就是
+// `payload.title: want type string, got number` / `payload: missing required field "title"`
+// 这种形式——哪个字段、期望什么、实得什么全在里面。
+func resultSchemaPrune(src *store.Source, eventType string, payload map[string]any) (route.PrunedRecord, bool) {
+	schema := src.ResultSchema()
+	if len(schema) == 0 {
+		return route.PrunedRecord{}, false // 未声明 = 不校验（老源行为不变）
+	}
+	msg := route.ValidateEventPayload(schema, payload)
+	if msg == "" {
+		return route.PrunedRecord{}, false
+	}
+	return route.PrunedRecord{
+		Reason: route.ReasonEventSchema,
+		// Port 是事件类型：它与派发期剪枝里的 port 是同一个位置
+		//（"是哪一次触发派不出去"），trace 里能直接对上。
+		Port:   eventType,
+		Detail: fmt.Sprintf("payload 不符合源「%s」的 resultSchema：%s", src.Name, msg),
+	}, true
+}
+
+// recordEventSchemaPrune 把一条入口剪枝写进 events。
+//
+// 与派发期的剪枝（route.Dispatcher.prune）共用**同一套约定**而不共用那个函数：
+// source='route'、type='pruned.<reason>'、payload=PruneEventPayload。区别只在
+// 产生点——这里发生在派发**之前**（压根没走到 plan），所以那边那个函数用不上。
+//
+// 留痕是 best-effort：写失败只记日志，绝不反过来让这次投递失败。事件已经落库，
+// 一条诊断记录写不进去不能把"可观测的剪枝"变成"不可观测的错误"。
+func (t *Trigger) recordEventSchemaPrune(ctx context.Context, ev *store.Event, p route.PrunedRecord) {
+	payload, err := json.Marshal(route.PruneEventPayload{
+		// 入口剪枝的上游标识是**源的名字**（与入口边的 fromCapability 同一口径）。
+		FromCapability: ev.Source,
+		Port:           p.Port,
+		Detail:         p.Detail,
+	})
+	if err != nil {
+		// 三个字段全是 string，理论上不可达；保底不 panic。
+		slog.Warn("marshal event_schema prune payload failed",
+			"event", "source.schema_prune.record_failed",
+			"trace_id", ev.TraceID, "error", err.Error())
+		return
+	}
+	if _, err := t.Store.InsertPruneEvent(ctx, &store.Event{
+		NamespaceID: ev.NamespaceID, // 与事件同一个命名空间（I10）
+		TraceID:     ev.TraceID,     // 同一条 trace：这就是"这次事件为什么没派"
+		Source:      route.PruneEventSource,
+		Type:        route.PruneEventType(p.Reason),
+		Payload:     payload,
+		CreatedAt:   t.now(),
+	}); err != nil {
+		slog.Warn("record event_schema prune failed",
+			"event", "source.schema_prune.record_failed",
+			"trace_id", ev.TraceID, "source", ev.Source, "error", err.Error())
+	}
+}
+
+// prunedOnly 是一次「入口剪枝」的派发结果：0 个任务 + 1 条剪枝。
+//
+// 形状必须与派发期一致（Tasks 是 [] 而不是 null）：调用方（handler / 前端）只
+// 有一套读法，空列表返回 [] 也是仓库硬约束。
+func prunedOnly(p route.PrunedRecord) *route.DispatchOutput {
+	return &route.DispatchOutput{Tasks: []*store.Task{}, Pruned: []route.PrunedRecord{p}}
 }
 
 // extractParams 从 payload 里取交给任务用的参数。

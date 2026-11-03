@@ -1412,6 +1412,10 @@ sources:
     name_required: El nombre es obligatorio
     expr_required: La expresión cron es obligatoria
     targets_required: Elige al menos una capacidad de salida
+    result_schema: "Contrato del payload del evento (resultSchema, opcional)"
+    result_schema_hint: "Opcional. Con un JSON Schema aquí (p. ej. {\"type\":\"object\",\"required\":[\"action\"]}) cada entrega se valida antes de despachar: los eventos que no cumplen se guardan igual pero no se despachan, y queda una poda event_schema en el trace. Vacío = sin validación."
+    bad_schema: "el contrato del payload no es JSON válido: {e}"
+    schema_not_object: "el contrato del payload debe ser un objeto JSON (arrays/escalares no son un schema)"
     no_caps: Aún no hay capacidades utilizables. Defínelas primero en la página «Capacidades».
     no_params: Esta capacidad no toma parámetros
     bad_json: El parámetro {k} no es JSON válido

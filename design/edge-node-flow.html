@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>边缘节点 · 任务下发 / 下游触发 / 能力定义</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="../web/tokens.css" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bg: 'var(--bg)',
+          raise: 'var(--bg-raise)',
+          surf1: 'var(--surface-1)',
+          surf2: 'var(--surface-2)',
+          surf3: 'var(--surface-3)',
+          line: 'var(--line)',
+          linestrong: 'var(--line-strong)',
+          ink: 'var(--text)',
+          muted: 'var(--muted)',
+          faint: 'var(--faint)',
+          accent: 'var(--accent)',
+          accentstrong: 'var(--accent-strong)',
+          accentsoft: 'var(--accent-soft)',
+          success: 'var(--success)',
+          errors: 'var(--error)',
+          warnc: 'var(--warn)',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  /* ── 本页专有类（颜色只来自 tokens.css 变量） ─────────────── */
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 96px; }
+
+  .eyebrow {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  .h-display {
+    font-size: clamp(26px, 3.4vw, 40px); line-height: 1.18;
+    letter-spacing: -.02em; font-weight: 600;
+  }
+  .lead { color: var(--muted); font-size: 14.5px; line-height: 1.75; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+  }
+  .card-pad { padding: 20px; }
+
+  .sec { margin-top: 64px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  .sec-num {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px; color: var(--faint); letter-spacing: .1em;
+    border: 1px solid var(--line-strong); border-radius: var(--r-xs);
+    padding: 2px 6px;
+  }
+  .sec-title { font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+  .sec-sub { color: var(--muted); font-size: 13px; line-height: 1.7; margin-bottom: 22px; max-width: 78ch; }
+
+  /* ── 三泳道 ─────────────────────────────────────────────── */
+  .lanes {
+    display: grid;
+    grid-template-columns: 56px repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+  }
+  .lane-head {
+    font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); padding: 0 2px 8px; border-bottom: 1px solid var(--line);
+  }
+  .lane-head b { color: var(--text); font-weight: 600; text-transform: none; letter-spacing: 0; font-size: 12.5px; }
+  .step-no {
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono, monospace); font-size: 12px;
+    color: var(--faint);
+  }
+  .cell {
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    background: var(--surface-2); padding: 11px 13px;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .cell .t { color: var(--text); font-weight: 600; font-size: 12.5px; }
+  .cell .d { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .cell-ghost {
+    border: 1px dashed color-mix(in srgb, var(--line) 60%, transparent);
+    border-radius: var(--r-md);
+    background: transparent;
+    display: grid; place-items: center;
+    color: color-mix(in srgb, var(--faint) 45%, transparent);
+    font-size: 11px;
+    min-height: 34px;
+  }
+  .cell-ghost::after { content: "·"; }
+  .cell-hi { border-color: var(--accent-2); background: var(--accent-soft); }
+  .cell-ok  { border-color: color-mix(in srgb, var(--success) 34%, transparent); background: var(--success-soft); }
+  .cell-bad { border-color: color-mix(in srgb, var(--error) 34%, transparent); background: var(--error-soft); }
+
+  .mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--line-strong); border-radius: 999px;
+    padding: 1px 8px; font-size: 11px; color: var(--muted);
+    font-family: var(--font-mono, monospace);
+  }
+  .pill-accent { border-color: var(--accent-2); color: var(--accent-strong); background: var(--accent-soft); }
+  .pill-ok { border-color: color-mix(in srgb, var(--success) 40%, transparent); color: var(--success); background: var(--success-soft); }
+  .pill-bad { border-color: color-mix(in srgb, var(--error) 40%, transparent); color: var(--error); background: var(--error-soft); }
+
+  .code {
+    background: var(--code-bg); border: 1px solid var(--line);
+    border-radius: var(--r-md); padding: 14px 16px; overflow-x: auto;
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; line-height: 1.75;
+    color: var(--code-text);
+    white-space: pre;
+    tab-size: 2;
+  }
+  .code .k { color: var(--accent-strong); }
+  .code .s { color: var(--success-300, var(--success)); }
+  .code .c { color: var(--faint); }
+  .code .n { color: var(--warn-300, var(--warn)); }
+
+  table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.tbl th {
+    text-align: left; font-weight: 600; color: var(--faint);
+    font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    padding: 8px 10px; border-bottom: 1px solid var(--line-strong);
+  }
+  table.tbl td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--muted); vertical-align: top; }
+  table.tbl td b { color: var(--text); font-weight: 600; }
+  table.tbl tr:last-child td { border-bottom: none; }
+
+  .arrow-down {
+    display: grid; place-items: center; color: var(--faint);
+    font-size: 11px; padding: 4px 0;
+  }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .grid-2 > *, .grid-3 > * { min-width: 0; }
+  .tbl-wrap { overflow-x: auto; }
+  .code { min-width: 0; }
+  @media (max-width: 900px) {
+    .lanes { grid-template-columns: 40px 1fr; }
+    .lane-head:nth-child(n + 4) { display: none; }
+    .cell { grid-column: 2; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .sec-title { font-size: 17px; }
+  }
+  @media (max-width: 560px) {
+    .wrap { padding: 28px 16px 72px; }
+    .conn { display: none; }
+    /* 窄屏上改折行：避免长 JSON 行需要横向滚动 */
+    .code { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; }
+  }
+
+  .port-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 12px; border: 1px solid var(--line);
+    border-radius: var(--r-sm); background: var(--surface-2);
+    font-size: 12px;
+  }
+  .port-name {
+    font-family: var(--font-mono, monospace); color: var(--accent-strong);
+    background: var(--accent-soft); border: 1px solid var(--accent-2);
+    border-radius: var(--r-xs); padding: 1px 7px;
+  }
+  .conn { flex: 1 1 auto; height: 1px; background: var(--line-strong); position: relative; }
+  .conn::after {
+    content: ""; position: absolute; right: -1px; top: -3px;
+    border-left: 6px solid var(--line-strong);
+    border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+  }
+  .target {
+    font-size: 11.5px; color: var(--text); background: var(--surface-3);
+    border: 1px solid var(--line-strong); border-radius: var(--r-xs); padding: 1px 7px;
+  }
+
+  .note {
+    border-left: 2px solid var(--accent); padding: 2px 0 2px 12px;
+    color: var(--muted); font-size: 12.5px; line-height: 1.7;
+  }
+  .note b { color: var(--text); }
+  .hr { height: 1px; background: var(--line); margin: 28px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ══ 页头 ══════════════════════════════════════════════ -->
+  <header>
+    <div class="eyebrow">Anotify · 模型片断</div>
+    <h1 class="h-display mt-3">边缘节点：任务怎么下发、下游怎么触发、能力怎么定义</h1>
+    <p class="lead mt-4 max-w-3xl">
+      只讲一段：<b class="text-ink">中枢 ↔ 边缘节点（Anotify Agent）↔ 能力进程</b>。
+      全模型只有四样东西——<b class="text-ink">能力</b>（入参 + 端口）、<b class="text-ink">link</b>（端口 → 下游，带可选字面量）、
+      <b class="text-ink">emit</b>（唯一的产出通道）、<b class="text-ink">digest</b>（记账）。其余都是推导量。
+    </p>
+    <div class="flex flex-wrap gap-2 mt-5">
+      <span class="pill pill-accent">术语统一：边缘节点 = Anotify Agent</span>
+      <span class="pill">能力声明里没有"出参类型"</span>
+      <span class="pill">参数怎么拼是能力自己的事</span>
+      <span class="pill">端口只有名字</span>
+    </div>
+  </header>
+
+  <!-- ══ 0 全貌 ════════════════════════════════════════════ -->
+  <section class="sec" id="overview">
+    <div class="sec-head"><span class="sec-num">00</span><span class="sec-title">一次运行的全貌</span></div>
+    <p class="sec-sub">
+      左列是步骤号，三列分别是<b class="text-ink">中枢</b>、<b class="text-ink">边缘节点</b>、<b class="text-ink">能力进程</b>（脚本或 LLM）。
+      实心格 = 这一步的主角；虚线格 = 这一步不参与。
+    </p>
+
+    <div class="card card-pad">
+      <div class="lanes">
+        <!-- 表头 -->
+        <div></div>
+        <div class="lane-head"><b>中枢</b><br />控制面 + 唯一写者</div>
+        <div class="lane-head"><b>边缘节点</b><br />Anotify Agent</div>
+        <div class="lane-head"><b>能力进程</b><br />脚本 / LLM</div>
+
+        <!-- 1 -->
+        <div class="step-no">①</div>
+        <div class="cell cell-hi">
+          <div class="t">能力定义 + 产物入库</div>
+          <div class="d mono">artifacts(ns, digest, spec) · 内容寻址、不可变</div>
+        </div>
+        <div class="cell cell-ghost"></div>
+        <div class="cell cell-ghost"></div>
+
+        <!-- 2 -->
+        <div class="step-no">②</div>
+        <div class="cell">
+          <div class="t">部署：按 digest 下发产物</div>
+          <div class="d mono">assign 里只出现 digest，不出现命令文本</div>
+        </div>
+        <div class="cell cell-hi">
+          <div class="t">落盘缓存</div>
+          <div class="d mono">artifacts/&lt;digest&gt;/files/…<br />index/&lt;name&gt;@&lt;ver&gt; → digest</div>
+        </div>
+        <div class="cell cell-ghost"></div>
+
+        <!-- 3 -->
+        <div class="step-no">③</div>
+        <div class="cell">
+          <div class="t">事件进来 → 校验 → 派发</div>
+          <div class="d">payload ⊨ trigger.result_schema，不合规只留痕、不派发</div>
+        </div>
+        <div class="cell cell-ghost"></div>
+        <div class="cell cell-ghost"></div>
+
+        <!-- 4 -->
+        <div class="step-no">④</div>
+        <div class="cell">
+          <div class="t">assign 帧</div>
+          <div class="d mono">digest · params · ports · expects</div>
+        </div>
+        <div class="cell cell-hi">
+          <div class="t">接单 → ack</div>
+          <div class="d">占槽位、绑租约，按 digest 起进程</div>
+        </div>
+        <div class="cell cell-ghost"></div>
+
+        <!-- 5 -->
+        <div class="step-no">⑤</div>
+        <div class="cell cell-ghost"></div>
+        <div class="cell">
+          <div class="t">注入环境变量，exec 入口</div>
+          <div class="d mono">ANOTIFY_PARAMS · ANOTIFY_EMIT_SOCK · TASK_TOKEN</div>
+        </div>
+        <div class="cell cell-hi">
+          <div class="t">进程运行</div>
+          <div class="d">随时准备上报；也可以什么都不报</div>
+        </div>
+
+        <!-- 6 -->
+        <div class="step-no">⑥</div>
+        <div class="cell cell-ghost"></div>
+        <div class="cell cell-hi">
+          <div class="t">本地校验</div>
+          <div class="d">port ∈ ports → 数据 ⊨ expects[port] → 体积/次数上限</div>
+        </div>
+        <div class="cell">
+          <div class="t mono">anotify-agent emit --port fix --data '{…}'</div>
+          <div class="d">同一个二进制、同一个进程树；写本地 socket</div>
+        </div>
+
+        <!-- 7 -->
+        <div class="step-no">⑦</div>
+        <div class="cell cell-hi">
+          <div class="t">去重 → 查 link → 挑节点 → 下一跳</div>
+          <div class="d mono">UNIQUE(task_id, seq) → link(from, port) → 建子任务</div>
+        </div>
+        <div class="cell">
+          <div class="t">emit 帧 → 中枢，等 ack</div>
+          <div class="d">阻塞到 ack（默认"已落盘"，严格模式"已派发"）</div>
+        </div>
+        <div class="cell cell-ok">
+          <div class="t">拿到 ack，继续跑</div>
+          <div class="d">失败返回非 0 → 实现可补齐后重发</div>
+        </div>
+
+        <!-- 8 -->
+        <div class="step-no">⑧</div>
+        <div class="cell">
+          <div class="t">子任务进同一套派发</div>
+          <div class="d">扇出 = 同一 port 的多条 link，或多次 emit</div>
+        </div>
+        <div class="cell cell-ghost"></div>
+        <div class="cell cell-ghost"></div>
+
+        <!-- 9 -->
+        <div class="step-no">⑨</div>
+        <div class="cell cell-ghost"></div>
+        <div class="cell">
+          <div class="t">进程退出 = 终态</div>
+          <div class="d">exit 0 无 emit = 正常终止；exit≠0 = failed</div>
+        </div>
+        <div class="cell">
+          <div class="t">状态来自进程</div>
+          <div class="d">退出码 / 信号 / 租约到期——都可确定</div>
+        </div>
+      </div>
+
+      <div class="note mt-6">
+        <b>为什么要绕中枢 ack：</b>「同一个出口只发一次」等价于「这一条 <span class="mono">(trace, parent_task, port)</span> 见过没有」——
+        那需要一张共享去重表，而它只能有<b>一个写者</b>。所以 <span class="mono">边缘节点 → 中枢</span> 这一段永远存在；
+        想省延迟，省的是 ack 的等待（本地 outbox），不是把中枢移出路径。
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 1 能力定义 ════════════════════════════════════════ -->
+  <section class="sec" id="define">
+    <div class="sec-head"><span class="sec-num">01</span><span class="sec-title">能力怎么提前定义</span></div>
+    <p class="sec-sub">
+      定义只有四块：<b class="text-ink">入参 schema</b>、<b class="text-ink">端口名</b>、<b class="text-ink">实现</b>、<b class="text-ink">digest</b>。
+      注意它<b class="text-ink">没有</b>「出参类型」——产出要求由 link 推导（见 02/03）。
+    </p>
+
+    <div class="grid-2">
+      <div class="card card-pad">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="mono text-ink font-semibold">review</span>
+            <span class="pill">@2</span>
+          </div>
+          <span class="pill pill-accent">可执行 · 有节点声明</span>
+        </div>
+
+        <div class="mt-4">
+          <div class="eyebrow mb-2">① 入参 params_schema</div>
+          <div class="code">
+<span class="k">"params"</span>: {
+  <span class="k">"required"</span>: [<span class="s">"diff"</span>],
+  <span class="k">"properties"</span>: {
+    <span class="k">"diff"</span>:  { <span class="k">"type"</span>: <span class="s">"string"</span> },
+    <span class="k">"lines"</span>: { <span class="k">"type"</span>: <span class="s">"integer"</span> }
+  }
+}</div>
+        </div>
+
+        <div class="mt-4">
+          <div class="eyebrow mb-2">② 端口 ports（只有名字）</div>
+          <div class="flex flex-wrap gap-2">
+            <span class="port-name">fix</span>
+            <span class="port-name">push</span>
+            <span class="port-name">partial</span>
+          </div>
+          <div class="d text-muted mt-2" style="font-size:11.5px">
+            端口没有 schema、没有类型、没有保留字。它能去哪个下游由 link 决定。
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <div class="eyebrow mb-2">③ 实现（在产物里）</div>
+          <div class="mono text-muted">entrypoint: run.sh · files: 3 · timeout: 900s</div>
+        </div>
+
+        <div class="mt-4">
+          <div class="eyebrow mb-2">④ digest（系统算，没人手写）</div>
+          <div class="mono text-muted">sha256:9f3c…a17e</div>
+        </div>
+      </div>
+
+      <div class="card card-pad">
+        <div class="eyebrow mb-3">同一个能力，两个端口各接各的</div>
+
+        <div class="port-row">
+          <span class="port-name">fix</span>
+          <span class="conn"></span>
+          <span class="target">fixer@3</span>
+          <span class="target">notify@1</span>
+          <span class="pill">1 : N</span>
+        </div>
+        <div class="port-row mt-2">
+          <span class="port-name">push</span>
+          <span class="conn"></span>
+          <span class="target">pusher@1</span>
+        </div>
+        <div class="port-row mt-2">
+          <span class="port-name">partial</span>
+          <span class="conn" style="background:transparent;border-top:1px dashed var(--line-strong);height:0"></span>
+          <span class="pill">未接下游 = 到此为止（合法）</span>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="eyebrow mb-2">link 表（中枢持有）</div>
+        <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>from</th><th>port</th><th>to</th><th>literals</th></tr></thead>
+          <tbody>
+            <tr><td><b>review</b></td><td class="mono">fix</td><td>fixer@3</td><td class="mono">{}</td></tr>
+            <tr><td><b>review</b></td><td class="mono">fix</td><td>notify@1</td><td class="mono">{"to":"u_123"}</td></tr>
+            <tr><td><b>review</b></td><td class="mono">push</td><td>pusher@1</td><td class="mono">{}</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note mt-3">
+          <b>literals</b> 是常量覆盖：<span class="mono">{"to":"u_123"}</span> 让你改收件人时不用改脚本、不用重新部署节点。
+          <b>没有引用映射</b>（<span class="mono">{{result.x}}</span>）——参数怎么拼是能力自己的事。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 2 任务下发 ════════════════════════════════════════ -->
+  <section class="sec" id="assign">
+    <div class="sec-head"><span class="sec-num">02</span><span class="sec-title">任务怎么下发</span></div>
+    <p class="sec-sub">
+      一个 <b class="text-ink">assign</b> 帧就是一次派发的全部内容。它不带命令（执行内容来自本地缓存的产物），
+      但必须把「<b class="text-ink">跑哪份字节</b>」和「<b class="text-ink">每个端口要产什么</b>」都说清楚。
+    </p>
+
+    <div class="grid-2">
+      <div>
+        <div class="eyebrow mb-2">assign 帧</div>
+        <div class="code">
+{
+  <span class="k">"type"</span>: <span class="s">"assign"</span>,
+  <span class="k">"task_id"</span>: <span class="s">"tsk_8f21a3c0"</span>,
+  <span class="k">"capability"</span>: <span class="s">"review"</span>,
+  <span class="k">"version"</span>: <span class="n">2</span>,
+  <span class="k">"digest"</span>: <span class="s">"sha256:9f3c…a17e"</span>,      <span class="c">// 跑哪份字节</span>
+  <span class="k">"params"</span>: { <span class="k">"diff"</span>: <span class="s">"…"</span>, <span class="k">"lines"</span>: <span class="n">42</span> },
+  <span class="k">"ports"</span>: [<span class="s">"fix"</span>, <span class="s">"push"</span>, <span class="s">"partial"</span>],
+  <span class="k">"expects"</span>: {
+    <span class="k">"fix"</span>: {
+      <span class="k">"schema"</span>: {
+        <span class="k">"required"</span>: [<span class="s">"issue"</span>, <span class="s">"title"</span>],
+        <span class="k">"properties"</span>: {
+          <span class="k">"issue"</span>: { <span class="k">"type"</span>: <span class="s">"string"</span> },
+          <span class="k">"title"</span>: { <span class="k">"type"</span>: <span class="s">"string"</span> }
+        }
+      },
+      <span class="k">"targets"</span>: [
+        { <span class="k">"capability"</span>: <span class="s">"fixer"</span>,  <span class="k">"needs"</span>: { <span class="k">"issue"</span>: <span class="s">"string"</span> } },
+        { <span class="k">"capability"</span>: <span class="s">"notify"</span>, <span class="k">"needs"</span>: { <span class="k">"title"</span>: <span class="s">"string"</span> } }
+      ]
+    },
+    <span class="k">"push"</span>: { <span class="k">"schema"</span>: { … }, <span class="k">"targets"</span>: [ … ] }
+  }
+}</div>
+      </div>
+
+      <div class="card card-pad">
+        <div class="eyebrow mb-3">每个字段为什么存在</div>
+        <div class="tbl-wrap">
+        <table class="tbl">
+          <tbody>
+            <tr><td><b class="mono">digest</b></td><td>节点只执行<b>这一份</b>字节；本地没有它 → 明确报缺，不跑"近似版本"</td></tr>
+            <tr><td><b class="mono">params</b></td><td>入参。已经过下游 <span class="mono">params_schema</span> 全量校验</td></tr>
+            <tr><td><b class="mono">ports</b></td><td>封闭集合：emit 报的名字不在里面 → 当场拒绝，不用等进程退出</td></tr>
+            <tr><td><b class="mono">expects.schema</b></td><td><b>机器门槛</b>：该 port 所有下游要求的<b>并集</b>（减去各自 literals）。节点拿它做严格校验</td></tr>
+            <tr><td><b class="mono">expects.targets</b></td><td><b>给人/LLM 看的</b>：这个口能去哪、各自要什么——据此主动拼对，而不是被拒了再猜</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note mt-4">
+          <b>expects 是推导量</b>，不落库：中枢在派发那一刻从 link 算出来。
+          同一 port 的多个下游要求同一字段不同类型 → <b>保存 link 时就拒</b>，所以节点拿到的 expects 不可能自相矛盾。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 3 下游触发 ════════════════════════════════════════ -->
+  <section class="sec" id="emit">
+    <div class="sec-head"><span class="sec-num">03</span><span class="sec-title">下游怎么触发（emit 的两条路）</span></div>
+    <p class="sec-sub">
+      能力调用<span class="mono"> anotify-agent emit </span>（同一个二进制，父子进程，走本地 socket）。
+      校验通过 → 中枢去重后按 link 派发；校验不过 → <b class="text-ink">当场拒绝</b>，实现补齐再发。
+    </p>
+
+    <div class="grid-2">
+      <!-- 通过 -->
+      <div class="card card-pad">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="pill pill-ok">通过</span>
+          <span class="mono text-muted">emit → ack → 下游</span>
+        </div>
+        <div class="flex flex-col gap-2">
+          <div class="port-row"><span class="mono text-ink">① emit</span><span class="conn"></span><span class="target">agent 本地 socket</span></div>
+          <div class="port-row"><span class="mono text-ink">② 校验</span><span class="conn"></span><span class="target">port ∈ ports · data ⊨ expects[port]</span></div>
+          <div class="port-row"><span class="mono text-ink">③ 转发</span><span class="conn"></span><span class="target">emit 帧 → 中枢</span></div>
+          <div class="port-row"><span class="mono text-ink">④ 去重</span><span class="conn"></span><span class="target">UNIQUE(task_id, seq)</span></div>
+          <div class="port-row"><span class="mono text-ink">⑤ 派发</span><span class="conn"></span><span class="target">link(fix) → fixer, notify</span></div>
+          <div class="port-row"><span class="mono text-ink">⑥ ack</span><span class="conn"></span><span class="target">进程拿到 0，继续跑</span></div>
+        </div>
+        <div class="note mt-3">
+          <b>ack 两级：</b>默认「已落盘」（毫秒，本地 outbox）；<span class="mono">--wait-routed</span> 才是「已派发到下游」（一次 RTT）。
+          默认语义写进契约，调用方不用猜。
+        </div>
+      </div>
+
+      <!-- 拒绝 -->
+      <div class="card card-pad">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="pill pill-bad">被拒</span>
+          <span class="mono text-muted">缺字段 / 类型不对 / 超限</span>
+        </div>
+        <div class="code">
+<span class="c">$ anotify-agent emit --port fix --data '{"issue":"#42"}'</span>
+<span style="color:var(--error)">emit rejected: port "fix" 要求 {issue, title}</span>
+<span style="color:var(--error)">  missing: title (string)</span>
+<span style="color:var(--faint)">exit code 2</span>
+
+<span class="c"># 补齐后重发，同一次运行里可以多次 emit</span>
+<span class="c">$ anotify-agent emit --port fix \</span>
+<span class="c">      --data '{"issue":"#42","title":"空指针"}'</span>
+<span style="color:var(--success)">ok  seq=2</span></div>
+        <div class="note mt-3">
+          <b>拒绝一次 emit ≠ 任务失败。</b>实现拿到非 0 和缺什么，可以补上再发。
+          这正是「在最早的地方发现参数问题」——而不是等中枢静默剪枝、然后去 trace 里考古。
+        </div>
+      </div>
+    </div>
+
+    <div class="card card-pad mt-4">
+      <div class="eyebrow mb-3">扇出 = 两种叠加，互不排斥</div>
+      <div class="grid-2">
+        <div>
+          <div class="text-ink text-sm font-semibold">静态 1:N</div>
+          <div class="text-muted text-xs mt-1 leading-relaxed">同一个 port 上接了多条 link。一次 emit 派发 N 个子任务。</div>
+          <div class="port-row mt-2"><span class="port-name">fix</span><span class="conn"></span><span class="target">fixer</span><span class="target">notify</span></div>
+        </div>
+        <div>
+          <div class="text-ink text-sm font-semibold">动态多次 emit</div>
+          <div class="text-muted text-xs mt-1 leading-relaxed">一次运行里 emit 多次（同一个口或不同的口）。LLM 中途输出就是这条。</div>
+          <div class="port-row mt-2"><span class="mono">seq1 fix</span><span class="mono">seq2 fix</span><span class="mono">seq3 push</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 4 纪律 ════════════════════════════════════════════ -->
+  <section class="sec" id="rules">
+    <div class="sec-head"><span class="sec-num">04</span><span class="sec-title">六条纪律（每一条都能单独解释为什么）</span></div>
+    <div class="grid-3">
+      <div class="card card-pad">
+        <div class="text-sm font-semibold text-ink">节点不持全图</div>
+        <div class="text-xs text-muted mt-2 leading-relaxed">
+          边缘节点只知道<b>本次任务</b>的 ports 和 expects，任务结束就丢。link 由中枢定义与管辖——
+          否则加一台机器就会改变链路，两台机器的不一致没有任何机制能发现。
+        </div>
+      </div>
+      <div class="card card-pad">
+        <div class="text-sm font-semibold text-ink">唯一写者</div>
+        <div class="text-xs text-muted mt-2 leading-relaxed">
+          去重表、任务行、剪枝记录只有一个写者（中枢）。所以 emit 的 ack 必须来自中枢；
+          想省延迟，省的是等待（本地 outbox），不是把中枢移出路径。
+        </div>
+      </div>
+      <div class="card card-pad">
+        <div class="text-sm font-semibold text-ink">阻塞 ack</div>
+        <div class="text-xs text-muted mt-2 leading-relaxed">
+          emit 是有副作用的动作。fire-and-forget 会让「emit 成功但中枢没收到」变成静默丢事件——
+          这是这套系统一直在消灭的失败方式。异步是显式的逃生口，不是默认。
+        </div>
+      </div>
+      <div class="card card-pad">
+        <div class="text-sm font-semibold text-ink">状态来自进程</div>
+        <div class="text-xs text-muted mt-2 leading-relaxed">
+          退出码 / 信号 / 租约到期，都是确定事实。端口只表达业务去向（fix / push），
+          不承担状态语义，也没有保留字。
+        </div>
+      </div>
+      <div class="card card-pad">
+        <div class="text-sm font-semibold text-ink">digest 记账</div>
+        <div class="text-xs text-muted mt-2 leading-relaxed">
+          任务钉住「跑的是哪份字节」。名字解决「我要最新」，摘要解决「证明当时是那份」。
+          历史 trace 因此永远可解释，本地变体也不会被静默使用。
+        </div>
+      </div>
+      <div class="card card-pad">
+        <div class="text-sm font-semibold text-ink">端口没有 schema</div>
+        <div class="text-xs text-muted mt-2 leading-relaxed">
+          一个 port 接 N 个下游时，"这个 port 的类型"没有唯一解。所以门槛由中枢从 link
+          推导成 <span class="mono">expects</span>，在 emit 那一刻生效。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="hr"></div>
+  <footer class="text-faint text-xs leading-relaxed">
+    本页是 `docs/design/typed-pipeline.md` 的可视化摘要（只覆盖「中枢 ↔ 边缘节点」这一段）。
+    已否决的方案（端口实体、能力声明出参、link 上的引用映射、节点自己投递…）连同原因记在该文件 §12，
+    以免同一个提议被反复发明。
+  </footer>
+</div>
+</body>
+</html>

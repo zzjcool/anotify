@@ -1094,3 +1094,89 @@ func TestParamPruneReasons(t *testing.T) {
 		t.Fatalf("PruneEventType(param_type) = %q", got)
 	}
 }
+
+// ---------- ValidateEventPayload：触发器 result_schema 的入口校验（设计 §4.2） ----------
+
+// TestValidateEventPayload 钉住入口校验的三件事：
+//
+//  1. 判据与 params_schema **同一套引擎**（required / type / 嵌套 properties）；
+//     "同一个 payload 在入口和在边上不能得出不同结论"是这条的验收口径；
+//  2. 错误消息的路径前缀是 payload，且**指名字段 + 期望 + 实得**——
+//     剪枝记录里唯一的证据就是这句；
+//  3. 没声明（nil）/ 空对象 {} 一律放行：老源行为不变，{} 不约束任何字段。
+func TestValidateEventPayload(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type":"object",
+		"required":["pull_request"],
+		"properties":{
+			"pull_request":{"type":"object","properties":{"title":{"type":"string"}}}
+		}
+	}`)
+
+	// 合规
+	if msg := ValidateEventPayload(schema, map[string]any{
+		"pull_request": map[string]any{"title": "修个 bug"},
+	}); msg != "" {
+		t.Fatalf("合规 payload 不该被拒: %q", msg)
+	}
+
+	// 缺必填
+	if msg := ValidateEventPayload(schema, map[string]any{"action": "opened"}); !strings.Contains(msg, `missing required field "pull_request"`) {
+		t.Fatalf("缺必填字段的错误里要有字段名: %q", msg)
+	}
+
+	// 类型不符：字段路径 + 期望 + 实得全要有
+	msg := ValidateEventPayload(schema, map[string]any{
+		"pull_request": map[string]any{"title": 42},
+	})
+	for _, want := range []string{"payload.pull_request.title", "string", "number"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("类型错误的证据不全（要有 %q）: %q", want, msg)
+		}
+	}
+
+	// 顶层类型不符
+	if msg := ValidateEventPayload(json.RawMessage(`{"type":"object"}`), nil); msg != "" {
+		t.Fatalf("空 map 也是 object，不该被拒: %q", msg)
+	}
+	if msg := ValidateEventPayload(json.RawMessage(`{"type":"object"}`), map[string]any{"a": 1}); msg != "" {
+		t.Fatalf("动态键不该被无谓拒绝: %q", msg)
+	}
+
+	// 没声明 / 空对象 = 不校验（老源与"{}"都放行，任意形状）
+	for _, s := range []json.RawMessage{nil, json.RawMessage(``), json.RawMessage(`{}`)} {
+		if msg := ValidateEventPayload(s, map[string]any{"anything": []any{1, 2}}); msg != "" {
+			t.Errorf("schema=%q 应放行一切, got %q", string(s), msg)
+		}
+	}
+
+	// schema 本身坏了（不是 JSON 对象 / 非法 JSON）：拒绝，不能当"接受一切"
+	for _, s := range []string{`"not-a-schema"`, `[1,2]`, `{`} {
+		if msg := ValidateEventPayload(json.RawMessage(s), map[string]any{"a": 1}); msg == "" {
+			t.Errorf("坏 schema %q 必须拒绝（不能拿坏契约放行任何事件）", s)
+		}
+	}
+}
+
+// TestValidateEventPayloadMatchesParamsSemantics 是「同一口径」的硬断言：
+// 同一份 schema 与同一份数据，入口校验和 params 校验必须给出**同一个结论**
+// （消息前缀不同，这是有意的；结论必须一致）。
+//
+// 为什么值得单列一条：两套语义分叉的后果是「入口放行、派发又剪」或者反过来，
+// 两种都让人无法从 trace 里自圆。
+func TestValidateEventPayloadMatchesParamsSemantics(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","required":["title"],"properties":{"title":{"type":"string"},"n":{"type":"integer"}}}`)
+	cases := []map[string]any{
+		{"title": "ok", "n": float64(3)},
+		{"title": "ok", "n": 1.5},
+		{"alias": "x"},
+		{},
+	}
+	for _, c := range cases {
+		viaParams := ValidateParams(schema, c)
+		viaEvent := ValidateEventPayload(schema, c)
+		if (viaParams == "") != (viaEvent == "") {
+			t.Fatalf("入口与派发判定分叉: params=%q event=%q (payload=%v)", viaParams, viaEvent, c)
+		}
+	}
+}

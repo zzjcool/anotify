@@ -796,3 +796,169 @@ func TestValidateSourceConfigRejectsBadVars(t *testing.T) {
 		t.Fatalf("被拒的源还是落库了: %d 个", len(list))
 	}
 }
+
+// TestSourceResultSchemaRoundTrip 是 resultSchema 的「存什么读什么」单测。
+//
+// 新增字段必须能原样往返（仓库硬约束）：这里连**字节**都比对，因为
+// ValidateSourceConfig 明确不做重编码——用户写的 schema 与库里存的必须一字不差，
+// 否则「我配的和系统看到的不一样」永远查不清。
+func TestSourceResultSchemaRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.schema", 1, []string{"ok"})
+	if err := db.CreateCapability(ctx, capA); err != nil {
+		t.Fatal(err)
+	}
+
+	// 与 kind 无关：cron / manual / webhook / github 都要能存能读（入口校验对每种源都生效）
+	rawSchema := `{"type":"object","required":["pull_request"],"properties":{"pull_request":{"type":"object","properties":{"title":{"type":"string"}}}}}`
+	for _, kind := range SourceKinds {
+		cfg := `{"resultSchema":` + rawSchema + `}`
+		switch kind {
+		case SourceKindCron:
+			cfg = `{"expr":"0 3 * * *","resultSchema":` + rawSchema + `}`
+		case SourceKindGitHub, SourceKindWebhook:
+			cfg = `{"token":"src_tok","resultSchema":` + rawSchema + `}`
+		}
+		src := &Source{
+			NamespaceID: nsID, Name: "带契约的源-" + kind, Kind: kind,
+			Config: json.RawMessage(cfg), Enabled: true,
+			Targets: []SourceTarget{{CapabilityID: capA.ID}},
+		}
+		if err := db.CreateSource(ctx, src); err != nil {
+			t.Fatalf("%s 建源: %v", kind, err)
+		}
+		got, err := db.GetSource(ctx, nsID, src.ID)
+		if err != nil {
+			t.Fatalf("%s 取源: %v", kind, err)
+		}
+		if string(got.ResultSchema()) != rawSchema {
+			t.Errorf("%s resultSchema 往返不一致:\n got %s\nwant %s", kind, got.ResultSchema(), rawSchema)
+		}
+		// 别的字段不能被这次改动弄丢
+		switch kind {
+		case SourceKindCron:
+			var cc CronConfig
+			if err := json.Unmarshal(got.Config, &cc); err != nil || cc.Expr != "0 3 * * *" {
+				t.Errorf("%s cron 配置坏了: %s (%v)", kind, got.Config, err)
+			}
+		case SourceKindWebhook, SourceKindGitHub:
+			var wc WebhookConfig
+			if err := json.Unmarshal(got.Config, &wc); err != nil || wc.Token != "src_tok" {
+				t.Errorf("%s token 丢了: %s (%v)", kind, got.Config, err)
+			}
+		}
+	}
+}
+
+// TestSourceResultSchemaValidation 是配置期校验：必须是 JSON 对象，非法/非对象直接拒。
+//
+// 判据同时被 server 层用（store.ResultSchemaError），所以两处一起钉住：
+// 500/静默通过都是不可接受的——用户唯一能当场看懂"我写错了"的位置就是这里。
+func TestSourceResultSchemaValidation(t *testing.T) {
+	ok := []string{
+		`{"type":"object","required":["title"]}`,
+		`{}`,   // 空对象 = 不约束任何字段（合法，等价于没声明）
+		`null`, // 显式 null = 清空/没有契约（PATCH 用它去掉一份已存契约）
+	}
+	for _, s := range ok {
+		cfg := json.RawMessage(`{"expr":"0 3 * * *","resultSchema":` + s + `}`)
+		if msg := ResultSchemaError(cfg); msg != "" {
+			t.Errorf("ResultSchemaError(%s) 应合法, got %q", s, msg)
+		}
+		out, err := ValidateSourceConfig(SourceKindCron, cfg)
+		if err != nil {
+			t.Fatalf("ValidateSourceConfig 应接受 resultSchema=%s: %v", s, err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(out, &fields); err != nil {
+			t.Fatalf("输出 config 不是对象: %v (%s)", err, out)
+		}
+		// null 与缺省同义：输出里不留 resultSchema:null 这种「伪声明」
+		if s == `null` {
+			if _, has := fields["resultSchema"]; has {
+				t.Errorf("显式 null 不该在输出里留键: %s", out)
+			}
+		} else if string(fields["resultSchema"]) != s {
+			t.Errorf("resultSchema 没被原样保留: %s, want %s", fields["resultSchema"], s)
+		}
+	}
+
+	bad := []string{`[1,2]`, `"x"`, `1`, `true`}
+	for _, s := range bad {
+		cfg := json.RawMessage(`{"expr":"0 3 * * *","resultSchema":` + s + `}`)
+		if msg := ResultSchemaError(cfg); msg == "" {
+			t.Errorf("ResultSchemaError(%s) 应报错", s)
+		} else if !strings.Contains(msg, "resultSchema") {
+			t.Errorf("错误消息里要有字段名 resultSchema, got %q", msg)
+		}
+		_, err := ValidateSourceConfig(SourceKindCron, cfg)
+		if !errors.Is(err, ErrInvalidSourceConfig) {
+			t.Fatalf("resultSchema=%s 应被拒且错误可判（server 会变成 500）: %v", s, err)
+		}
+		if !strings.Contains(err.Error(), "resultSchema") {
+			t.Errorf("错误消息里要有字段名 resultSchema, got %v", err)
+		}
+	}
+
+	// 落到 CreateSource 也仍然是可判的哨兵错误，且不会建出半个源
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.badschema", 1, []string{"ok"})
+	if err := db.CreateCapability(ctx, capA); err != nil {
+		t.Fatal(err)
+	}
+	err := db.CreateSource(ctx, &Source{
+		NamespaceID: nsID, Name: "坏契约", Kind: SourceKindManual, Enabled: true,
+		Config:  json.RawMessage(`{"resultSchema":[1,2]}`),
+		Targets: []SourceTarget{{CapabilityID: capA.ID}},
+	})
+	if !errors.Is(err, ErrInvalidSourceConfig) {
+		t.Fatalf("CreateSource 应透出 ErrInvalidSourceConfig, got %v", err)
+	}
+	if list, _ := db.ListSources(ctx, nsID); len(list) != 0 {
+		t.Fatalf("被拒的源还是落库了: %d 个", len(list))
+	}
+}
+
+// TestUpdateSourceKeepsResultSchema 改源（UpdateSource）不许把 resultSchema 抹掉。
+//
+// UpdateSource 会重写整份 config（它拿到的 s.Config 就是最终真相），所以这里
+// 模拟的是 handler 层 merge 之后的那份配置：只要它带着 resultSchema，库里就得有。
+// 反过来——「忘了带」是 handler 的 mergeSourceConfig 负责的（见
+// source_handlers_test.go 的 TestPatchSourceKeepsResultSchemaHTTP）。
+func TestUpdateSourceKeepsResultSchema(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	capA := mkCap(nsID, "demo.updschema", 1, []string{"ok"})
+	if err := db.CreateCapability(ctx, capA); err != nil {
+		t.Fatal(err)
+	}
+	rawSchema := `{"type":"object","required":["title"]}`
+	src := &Source{
+		NamespaceID: nsID, Name: "改配置的源", Kind: SourceKindCron,
+		Config:  json.RawMessage(`{"expr":"0 3 * * *","resultSchema":` + rawSchema + `}`),
+		Enabled: true, Targets: []SourceTarget{{CapabilityID: capA.ID}},
+	}
+	if err := db.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetSource(ctx, nsID, src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Config = json.RawMessage(`{"expr":"0 4 * * *","resultSchema":` + rawSchema + `}`)
+	if err := db.UpdateSource(ctx, got); err != nil {
+		t.Fatalf("改源: %v", err)
+	}
+	again, err := db.GetSource(ctx, nsID, src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again.ResultSchema()) != rawSchema {
+		t.Errorf("改源后 resultSchema 丢了: %s (%s)", again.ResultSchema(), again.Config)
+	}
+}

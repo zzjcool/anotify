@@ -95,6 +95,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	14: migrateDropOrgLayer,
 	15: migrateEdgeLookupIndex,
 	18: migrateCapabilityToDeploy,
+	20: migrateTaskDigest,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -120,6 +121,31 @@ func migrateNewModelColumns(tx *sql.Tx) error {
 		if _, err := tx.Exec(a.ddl); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", a.table, a.column, err)
 		}
+	}
+	return nil
+}
+
+// migrateTaskDigest 迁移 20：给 tasks 加 digest 列（P0-a，docs/design/typed-pipeline.md §7 P0.1）。
+//
+// digest 是**本次派发钉住的产物内容**（artifacts.digest 的副本）：
+// cap_hash 钉的是能力定义（params_schema + ports），digest 钉的是真正被执行的字节。
+// 两者合起来才说得清「这次跑的是哪一份能力的哪一份内容」。
+//
+// 默认空串 = 没有可钉的产物（中枢执行的内置能力、或派发时该能力还没登记过产物）；
+// 老数据补列后一律空串（= 未知）。它是审计字段，不参与路由/状态机，
+// 所以补这一列对现有行为零影响——与迁移 8（source_targets.params）同一套写法：
+// 先 hasColumn 判一次，已存在就跳过（重建过的老库可能已经带上这一列了）。
+func migrateTaskDigest(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "tasks", "digest")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`ALTER TABLE tasks ADD COLUMN digest TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add column tasks.digest: %w", err)
 	}
 	return nil
 }

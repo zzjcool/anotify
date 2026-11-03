@@ -295,6 +295,15 @@ func assignFrameFor(task *store.Task) *AssignFrame {
 		Params:      params,
 		LeaseUntil:  lease,
 		MaxDuration: maxDuration,
+		// Digest 是「就跑这一份字节」的钉子（契约 §6.1 / 设计 §7 P0.1）。
+		//
+		// 为什么必须在这里传：节点侧早就有按 digest 取产物的路径
+		// （cmd/agent/client.go:549 → cache.getByDigest），但这条路以前**永远走不到**
+		// —— 帧里没有 digest，节点只好回落到 index/<name>@<version>。
+		// 后果是「中枢以为跑的是 A，节点跑的是被手改过的 A′」这种分叉无法被发现。
+		// 空值（老任务行 / 没有产物）由 omitempty 变成「不出现」：老节点行为不变。
+		Digest:  task.Digest,
+		TraceID: task.TraceID,
 	}
 }
 

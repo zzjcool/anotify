@@ -657,6 +657,25 @@
           <div id="avail-vars-body" class="avail-vars-body"></div>
         </details>
 
+        <!-- 事件 payload 契约（resultSchema）：**可选**。
+             它是外部边界的声明——源收到的 payload 长什么样只能人声明，中枢推导
+             不出来（外部世界不归中枢管）。填了之后每次投递都先判：不合规的事件
+             照常入库、但不派发，trace 里留一条 event_schema 剪枝（不直接 400：
+             外部系统不重试，丢了就真没了）。
+             留空 = 不校验（与加这个字段之前完全一致）。不做 schema 生成器、
+             不做采样草稿：P0.2 只上"声明 + 入口校验"这一步。 -->
+        <details class="avail-vars" id="result-schema-wrap">
+          <summary>{{t "sources.form.result_schema"}}</summary>
+          <div class="mt-2">
+            <textarea
+              id="f-result-schema"
+              class="textarea mono"
+              rows="6"
+            ></textarea>
+            <p class="field-hint">{{t "sources.form.result_schema_hint"}}</p>
+          </div>
+        </details>
+
         <!-- webhook 专属：外部系统那边怎么配 -->
         <div id="f-hook-wrap" class="hidden">
           <p class="field-hint">{{t "sources.form.hook_hint"}}</p>
@@ -1135,6 +1154,21 @@
         const cfg = (src && src.config) || {};
         // 变量表要在渲染出口参数**之前**恢复：参数里的"选变量"下拉依赖它
         document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
+
+        // 事件 payload 契约（resultSchema）：回填成**格式化过的** JSON。
+        // 库里存的可能是压缩过的一行，直接回填进去用户没法编辑。
+        // 没有契约就清空——它确实是"没有"，而不是"继承上次"。
+        const rsBox = document.getElementById("f-result-schema");
+        if (rsBox) {
+          rsBox.value =
+            cfg.resultSchema && typeof cfg.resultSchema === "object"
+              ? JSON.stringify(cfg.resultSchema, null, 2)
+              : "";
+          // 已经有契约就把这一区展开：折叠着看不出来"这个源在管 payload 形状"，
+          // 而那正是最容易忘掉的一种配置。
+          const wrap = document.getElementById("result-schema-wrap");
+          if (wrap) wrap.open = !!rsBox.value;
+        }
 
         // GitHub 事件类型要**先**回填：样本按它选，晚填就会用错样例
         const evSel = document.getElementById("f-gh-event");
@@ -2031,6 +2065,43 @@
         return out;
       }
 
+      /**
+       * readResultSchema 读弹窗里的"事件 payload 契约"文本框（resultSchema）。
+       *
+       * 返回 undefined = 没填（不声明：不校验，与加这个字段之前完全一致）；
+       * 返回对象 = 声明了一份契约。抛异常 = 输入问题（非法 JSON / 不是对象），
+       * 调用方把 message 直接展示出来。
+       *
+       * 为什么要在这里判"必须是对象"：后端保存时会 400（store.ResultSchemaError），
+       * 但试运行用的是草稿、后端只做宽容读取——不在这里拦就会出现
+       * "试运行说能跑、点保存却 400"这种最伤信任的差异。
+       */
+      function readResultSchema() {
+        const box = document.getElementById("f-result-schema");
+        const text = (box ? box.value : "").trim();
+        if (!text) return undefined;
+        let v;
+        try {
+          v = JSON.parse(text);
+        } catch (e) {
+          throw new Error(
+            t("sources.form.bad_schema", "payload 契约不是合法 JSON：{e}").replace(
+              "{e}",
+              e.message,
+            ),
+          );
+        }
+        if (!v || typeof v !== "object" || Array.isArray(v)) {
+          throw new Error(
+            t(
+              "sources.form.schema_not_object",
+              "payload 契约必须是 JSON 对象（数组/标量都不是 schema）",
+            ),
+          );
+        }
+        return v;
+      }
+
       async function save() {
         const name = document.getElementById("f-name").value.trim();
         const kind = document.getElementById("f-kind").value;
@@ -2069,6 +2140,21 @@
         }
         // webhook / manual 的 config 由后端补 token，前端不填。
         // 也不再写 config.vars：别名表整个删除了。
+
+        // 事件 payload 契约：**总是带上这个键**。
+        //   undefined（留空）→ 发 null = "没有契约"（PATCH 由此清空一份已存契约）；
+        //   对象 → 原样提交。
+        // 不"省略键"的原因：省略在 PATCH 语义下是"继承旧值"（mergeSourceConfig
+        // 的 inheritedConfigKeys），那样用户把文本框清空后会发现契约还在——
+        // 界面上看到的就是假的。
+        let resultSchema;
+        try {
+          resultSchema = readResultSchema();
+        } catch (e) {
+          toast(e.message);
+          return;
+        }
+        config.resultSchema = resultSchema === undefined ? null : resultSchema;
 
         const body = { name: name, kind: kind, config: config, enabled: enabled, targets: targets };
         const btn = document.getElementById("modal-save");
@@ -2449,14 +2535,19 @@
       function collectDraft() {
         const kind = document.getElementById("f-kind").value;
         const targets = collectTargets();
+        const config =
+          kind === "github"
+            ? { event: document.getElementById("f-gh-event").value || "pull_request" }
+            : { expr: document.getElementById("f-expr").value.trim() };
+        // 事件 payload 契约也进草稿：否则"配完契约试运行"看到的仍是旧判定
+        // （契约没参与），用户会以为契约没生效。
+        const rs = readResultSchema();
+        if (rs !== undefined) config.resultSchema = rs;
         return {
           name: document.getElementById("f-name").value.trim(),
           kind: kind,
           // 不再有 config.vars：别名表已删除，参数直接写完整 payload 路径。
-          config:
-            kind === "github"
-              ? { event: document.getElementById("f-gh-event").value || "pull_request" }
-              : { expr: document.getElementById("f-expr").value.trim() },
+          config: config,
           targets: targets,
         };
       }

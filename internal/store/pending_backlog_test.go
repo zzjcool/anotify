@@ -296,6 +296,12 @@ func assertPendingBacklogIndexShape(t *testing.T, db *DB, tag string) {
 //
 // 终态行是刻意的：它证明「索引只覆盖 pending 行」这件事在计划层面成立
 // （若索引退化成全量 (created_at) 索引，succeeded 行也会被收进去）。
+//
+// 为什么**直插 SQL** 而不是 CreateTasks：TestPendingBacklogIndexUsedAfterLegacyUpgrade 把夹具
+// 停在**迁移 16**（openAtVersion），而产品的 INSERT 列清单总是「当前版本」的——
+// 迁移 20 起它带 tasks.digest，那种老库上用产品路径灌数据会直接报
+// `table tasks has no column named digest`。本文件关心的是**查询计划**，不是写入路径，
+// 所以列清单按「迁移 16 时代存在的列」写，其余列（digest/not_before…）走默认值。
 func seedPendingBacklog(t *testing.T, db *DB, rows int) {
 	t.Helper()
 	ctx := context.Background()
@@ -304,18 +310,26 @@ func seedPendingBacklog(t *testing.T, db *DB, rows int) {
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	tasks := make([]*Task, 0, rows+1)
+	// insertPending 按迁移 16 的列清单直插一行 pending。
+	insertPending := func(task *Task) {
+		t.Helper()
+		mustExec(t, db, `INSERT INTO tasks
+			(id, namespace_id, trace_id, path, capability_id, capability, version, params,
+			 status, cap_hash, graph_id, created_at)
+			VALUES (?, ?, ?, '[]', ?, ?, ?, '{}', ?, ?, ?, ?)`,
+			task.ID, task.NamespaceID, task.TraceID, task.CapabilityID, task.Capability,
+			task.Version, TaskPending, task.CapHash, task.GraphID, task.CreatedAt)
+	}
 	for i := 0; i < rows; i++ {
 		task := mkTask(nsID, "trace_seed", cap)
+		task.ID = NewTaskID()
 		task.CreatedAt = int64(1700000000 + i)
-		tasks = append(tasks, task)
+		insertPending(task)
 	}
 	done := mkTask(nsID, "trace_seed_done", cap)
+	done.ID = NewTaskID()
 	done.CreatedAt = 1699999999 // 比所有 pending 都早
-	tasks = append(tasks, done)
-	if err := db.CreateTasks(ctx, tasks); err != nil {
-		t.Fatalf("create tasks: %v", err)
-	}
+	insertPending(done)
 	pushToStatus(t, db, nsID, done, TaskSucceeded)
 }
 

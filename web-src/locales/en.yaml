@@ -1412,6 +1412,10 @@ sources:
     name_required: Name is required
     expr_required: Cron expression is required
     targets_required: Pick at least one exit capability
+    result_schema: "Event payload contract (resultSchema, optional)"
+    result_schema_hint: "Optional. With a JSON Schema here (e.g. {\"type\":\"object\",\"required\":[\"action\"]}) every delivery is checked before dispatch: non-conforming events are still stored but not dispatched, and an event_schema prune shows up in the trace. Empty = no check."
+    bad_schema: "payload contract is not valid JSON: {e}"
+    schema_not_object: "payload contract must be a JSON object (arrays/scalars are not a schema)"
     no_caps: No usable capabilities yet. Define some on the “Capabilities” page first.
     no_params: This capability takes no parameters
     bad_json: Parameter {k} is not valid JSON

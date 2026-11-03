@@ -186,10 +186,10 @@ type ProgressFrame struct {
 // 表达。曾经为此写过一个用 json.RawMessage 探测键存不存在的自定义 UnmarshalJSON
 // （I5 旧三态），区分出来的两个分支没有任何行为差异，白白多一层解码。
 type ResultFrame struct {
-	Type      string   `json:"type"`
-	TaskID    string   `json:"task_id"`
-	Status    string   `json:"status"` // succeeded | failed
-	Out       *string  `json:"out"`
+	Type   string  `json:"type"`
+	TaskID string  `json:"task_id"`
+	Status string  `json:"status"` // succeeded | failed
+	Out    *string `json:"out"`
 	// Summary 是**唯一的**结果说明：成功=做了什么，失败=为什么失败。
 	// 契约要求失败时非空（节点用 exit code / signal 兜底填），库里不再有第二个
 	// "error" 字段去装同一句话。
@@ -198,7 +198,6 @@ type ResultFrame struct {
 	// Error 是**兼容位**：老节点只填 error 不填 summary 时用它兜底 Summary。
 	Error string `json:"error"`
 }
-
 
 // 下行帧（中枢 → 节点）──────────────────────────────
 

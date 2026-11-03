@@ -974,3 +974,195 @@ func TestSweepNeverStartedAttemptsExhaustedAbandons(t *testing.T) {
 		t.Fatalf("error = %q, want 提到 attempts exhausted", got.Error)
 	}
 }
+
+// ---------- P0-a：任务钉 digest（docs/design/typed-pipeline.md §7 P0.1） ----------
+
+// testTaskDigest 是内容寻址标识的形状（sha256: + 64 hex），与 artifacts.digest 一致。
+const testTaskDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// TestTaskDigestRoundTrip tasks.digest 的往返一致性：存什么读什么。
+//
+// 两条读取路径都要覆盖（GetTask / ListTasks）：它们共用 taskColumns 与 scanTask，
+// 但列清单与 Scan 顺序是两处手写的顺序契约——加列时漏掉任何一处，这里的值都会错位，
+// 而不是报错（Scan 到相邻列上，digest 读到 graph_id 之类的值）。
+func TestTaskDigestRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	if err := db.CreateCapability(ctx, cap); err != nil {
+		t.Fatalf("create capability: %v", err)
+	}
+
+	// 两条行对照：钉住 digest 的 / 钉不住的（老数据与"没有产物"都是这个形态）
+	pinned := mkTask(nsID, "trace_pinned", cap)
+	pinned.Digest = testTaskDigest
+	unpinned := mkTask(nsID, "trace_unpinned", cap)
+	if err := db.CreateTasks(ctx, []*Task{pinned, unpinned}); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+
+	got, err := db.GetTask(ctx, nsID, pinned.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Digest != testTaskDigest {
+		t.Fatalf("GetTask digest = %q, want %q（存什么读什么）", got.Digest, testTaskDigest)
+	}
+	// 相邻列必须仍在原位：digest 若挤掉了别人，这里会立刻看出来
+	if got.CapHash != cap.ContentHash || got.GraphID != "grf_test" {
+		t.Fatalf("cap_hash/graph_id = %q/%q, want %q/grf_test（加列把邻居挤错位了）",
+			got.CapHash, got.GraphID, cap.ContentHash)
+	}
+	if got.Path == nil || got.Params == nil || got.Artifacts == nil {
+		t.Fatalf("path/params/artifacts = %v/%s/%v, want 非 nil（列错位的典型症状）",
+			got.Path, got.Params, got.Artifacts)
+	}
+
+	// 落库的是列本身，不是内存对象：直接读库对一次原文
+	var raw string
+	if err := db.QueryRow(`SELECT digest FROM tasks WHERE id = ?`, pinned.ID).Scan(&raw); err != nil {
+		t.Fatalf("read raw digest: %v", err)
+	}
+	if raw != testTaskDigest {
+		t.Fatalf("raw tasks.digest = %q, want %q", raw, testTaskDigest)
+	}
+
+	// 第二条读取路径：ListTasks 也要带上同一份值
+	list, err := db.ListTasks(ctx, nsID, "", "", "", 10)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	seen := map[string]string{}
+	for _, task := range list {
+		seen[task.ID] = task.Digest
+	}
+	if seen[pinned.ID] != testTaskDigest {
+		t.Fatalf("ListTasks digest = %q, want %q", seen[pinned.ID], testTaskDigest)
+	}
+	// 空 digest 的行读回来仍是空串（'' = 没有产物/未知，不能被填成别的）
+	if d, ok := seen[unpinned.ID]; !ok || d != "" {
+		t.Fatalf("ListTasks digest(unpinned) = %q (found=%v), want \"\"", d, ok)
+	}
+}
+
+// TestMigration20TaskDigestAddsColumn 迁移 20：v19 老库升级后 tasks 有 digest 列。
+//
+// 真实升级路径只有这条用例能拦住：全新库走 CREATE TABLE（schema.sql 里已经写了这一列），
+// 老库只能靠迁移补。另外钉住「老行补成空串」——那表示「未知」。
+func TestMigration20TaskDigestAddsColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v19.db")
+	old := openAtVersion(t, path, 19)
+
+	ns, err := old.CreateNamespace(ctx, "legacy", "legacy")
+	if err != nil {
+		t.Fatalf("create namespace on v19: %v", err)
+	}
+	cap := mkCap(ns.ID, "review", 1, []string{"fix"})
+	if err := old.CreateCapability(ctx, cap); err != nil {
+		t.Fatalf("create capability on v19: %v", err)
+	}
+	// 先证明夹具真的停在 v19：没有 digest 列，否则「升级把它补出来」没有证据。
+	if columnNames(t, old, "tasks")["digest"] {
+		t.Fatal("v19 的 tasks 上已经有 digest 列，夹具没停在该停的位置")
+	}
+	// 用迁移 19 时代的列清单直插一行历史任务（此刻还没有 digest 列可写）。
+	mustExec(t, old, `INSERT INTO tasks
+		(id, namespace_id, trace_id, path, capability_id, capability, version, params,
+		 status, cap_hash, graph_id, created_at)
+		VALUES ('tsk_v19', ?, 'trace_v19', '[]', ?, 'review', 1, '{}', 'pending', 'hash_v19', 'grf_v19', 1000)`,
+		ns.ID, cap.ID)
+	if err := old.Close(); err != nil {
+		t.Fatalf("close v19 db: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级 v19 库: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if v, want := mustMaxVersion(t, db), testTipVersion(t); v != want {
+		t.Fatalf("升级后版本 = %d, want %d", v, want)
+	}
+	if !columnNames(t, db, "tasks")["digest"] {
+		t.Fatal("升级后 tasks 仍没有 digest 列（迁移 20 没生效）")
+	}
+	legacy, err := db.GetTask(ctx, ns.ID, "tsk_v19")
+	if err != nil {
+		t.Fatalf("get legacy task: %v", err)
+	}
+	if legacy.Digest != "" {
+		t.Fatalf("老任务 digest = %q, want \"\"（未知：加列之前的行没有可钉的字节）", legacy.Digest)
+	}
+
+	// 升级后的库照常写读新值
+	fresh := mkTask(ns.ID, "trace_after_upgrade", cap)
+	fresh.Digest = testTaskDigest
+	if err := db.CreateTasks(ctx, []*Task{fresh}); err != nil {
+		t.Fatalf("create task after upgrade: %v", err)
+	}
+	back, err := db.GetTask(ctx, ns.ID, fresh.ID)
+	if err != nil {
+		t.Fatalf("get fresh task: %v", err)
+	}
+	if back.Digest != testTaskDigest {
+		t.Fatalf("升级后写入的 digest = %q, want %q", back.Digest, testTaskDigest)
+	}
+}
+
+// TestMigration20TaskDigestIdempotent 迁移 20 必须幂等：列已存在时升级不许报错。
+//
+// 为什么这条不能省：老库可能**已经**通过重建带上这一列（迁移 12/14 的表重建读的是
+// 当前代码的建表语句）。SQLite 没有 ADD COLUMN IF NOT EXISTS，裸 ALTER 会在那种库上
+// 直接报 "duplicate column name" 让整个 Open 失败——服务起不来，比少一列严重得多。
+func TestMigration20TaskDigestIdempotent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v19-drifted.db")
+	old := openAtVersion(t, path, 19)
+	ns, err := old.CreateNamespace(ctx, "legacy", "legacy")
+	if err != nil {
+		t.Fatalf("create namespace on v19: %v", err)
+	}
+	cap := mkCap(ns.ID, "review", 1, nil)
+	if err := old.CreateCapability(ctx, cap); err != nil {
+		t.Fatalf("create capability on v19: %v", err)
+	}
+	// 手工把列补上（模拟"重建已经带上了这一列"的库），值也写一个非空。
+	mustExec(t, old, `ALTER TABLE tasks ADD COLUMN digest TEXT NOT NULL DEFAULT ''`)
+	mustExec(t, old, `INSERT INTO tasks
+		(id, namespace_id, trace_id, path, capability_id, capability, version, params,
+		 status, cap_hash, digest, graph_id, created_at)
+		VALUES ('tsk_drifted', ?, 'trace_d', '[]', ?, 'review', 1, '{}',
+		        'pending', 'hash_d', 'sha256:drifted', 'grf_d', 1000)`, ns.ID, cap.ID)
+	if err := old.Close(); err != nil {
+		t.Fatalf("close v19 db: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级「已经有 digest 列」的 v19 库: %v", err)
+	}
+
+	if v, want := mustMaxVersion(t, db), testTipVersion(t); v != want {
+		t.Fatalf("升级后版本 = %d, want %d", v, want)
+	}
+	// 已存在的值不许被补列逻辑动过
+	var raw string
+	if err := db.QueryRow(`SELECT digest FROM tasks WHERE id = 'tsk_drifted'`).Scan(&raw); err != nil {
+		t.Fatalf("read drifted digest: %v", err)
+	}
+	if raw != "sha256:drifted" {
+		t.Fatalf("drifted digest = %q, want sha256:drifted（幂等跳过时不该改数据）", raw)
+	}
+	// 再 Open 一次也不许出问题（版本已记账 → 整个迁移跳过）
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	again, err := Open(path)
+	if err != nil {
+		t.Fatalf("第二次 Open: %v", err)
+	}
+	defer func() { _ = again.Close() }()
+}

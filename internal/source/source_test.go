@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,13 @@ type fakeStore struct {
 	getSourceNS []string
 	inserted    bool
 	insertErr   error
+	// prunes 记录 InsertPruneEvent 落下的剪枝事件（入口校验留痕）。
+	prunes []*store.Event
+}
+
+func (f *fakeStore) InsertPruneEvent(ctx context.Context, e *store.Event) (bool, error) {
+	f.prunes = append(f.prunes, e)
+	return true, nil
 }
 
 func (f *fakeStore) DueCronSources(ctx context.Context, now int64, limit int) ([]*store.Source, error) {
@@ -628,5 +636,247 @@ func TestFirePerTargetParams(t *testing.T) {
 	// 关键：cap_deploy 不能拿到 cap_analyze 的参数（串味就是设计失败）
 	if _, leaked := in.TargetParams["cap_deploy"]["changedLines"]; leaked {
 		t.Error("cap_deploy 拿到了别的出口的参数（参数串味）")
+	}
+}
+
+// ---------- 入口校验：resultSchema（设计 §4.2 / §7 P0.2）----------
+
+// prSchemaSrc 是一个「声明了 payload 契约」的 github 源。
+//
+// 契约故意写得浅（顶层 required + 一个嵌套 string）：要覆盖的是
+// 「合规则派 / 不合规则留痕」这两条路，不是 schema 引擎本身
+// （引擎由 internal/route 的 params_test.go 覆盖）。
+func prSchemaSrc() *store.Source {
+	return &store.Source{
+		ID: "src_schema", NamespaceID: "ns_1", Name: "pr-hook", Kind: store.SourceKindGitHub,
+		Enabled: true,
+		Config: json.RawMessage(`{"token":"tok","event":"pull_request","resultSchema":` +
+			`{"type":"object","required":["pull_request"],` +
+			`"properties":{"pull_request":{"type":"object",` +
+			`"properties":{"title":{"type":"string"}}}}}}`),
+		Targets: []store.SourceTarget{{CapabilityID: "cap_a"}},
+	}
+}
+
+// TestFireDispatchesWhenPayloadSatisfiesResultSchema 是验收 ①：合法 payload 照常派发。
+//
+// 合规则路径必须完全不产生 event_schema 剪枝也不写剪枝事件——否则「配了契约
+// 但 payload 是对的」会看起来像被拦了，用户一定会先把契约删掉。
+func TestFireDispatchesWhenPayloadSatisfiesResultSchema(t *testing.T) {
+	st := &fakeStore{inserted: true}
+	disp := &fakeDisp{out: &route.DispatchOutput{Tasks: []*store.Task{{ID: "tsk_1"}}}}
+	tr := &Trigger{Store: st, Dispatcher: disp}
+
+	res, err := tr.Fire(context.Background(), prSchemaSrc(), "pull_request.opened", "",
+		json.RawMessage(`{"pull_request":{"title":"修个 bug"},"action":"opened"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disp.got) != 1 {
+		t.Fatalf("合规 payload 应派发 1 次, got %d", len(disp.got))
+	}
+	if len(res.Dispatch.Tasks) != 1 || len(res.Dispatch.Pruned) != 0 {
+		t.Fatalf("合规时不该有剪枝: tasks=%d pruned=%v",
+			len(res.Dispatch.Tasks), res.Dispatch.Pruned)
+	}
+	if len(st.prunes) != 0 {
+		t.Fatalf("合规时不该写剪枝事件, got %d", len(st.prunes))
+	}
+}
+
+// TestFirePrunesEventSchemaViolation 是验收 ②：不合规 → 零任务 + prune(event_schema)
+// + **事件仍落库**。
+//
+// 三条断言缺一不可：
+//   - 不派发（disp 没被调用）：不合规的事件不能进链路；
+//   - 事件在库里（st.events 有 1 条，payload 原样）：外部系统不重试，
+//     400 丢弃等于把数据丢了（设计 §4.2 的第一句话）；
+//   - 剪枝留痕（st.prunes 1 条、source=route、type=pruned.event_schema、
+//     与事件同 trace）：否则「收到了但没派」这件事在事后无法查清。
+func TestFirePrunesEventSchemaViolation(t *testing.T) {
+	cases := []struct {
+		name       string
+		payload    string
+		wantDetail string // detail 里必须出现（哪个字段 + 期望什么/实得什么）
+	}{
+		{
+			name:       "缺必填字段",
+			payload:    `{"action":"opened"}`,
+			wantDetail: `missing required field "pull_request"`,
+		},
+		{
+			name:       "字段类型不符",
+			payload:    `{"pull_request":{"title":42}}`,
+			wantDetail: "payload.pull_request.title: want type string, got number",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := &fakeStore{inserted: true}
+			disp := &fakeDisp{out: &route.DispatchOutput{Tasks: []*store.Task{{ID: "tsk_1"}}}}
+			tr := &Trigger{Store: st, Dispatcher: disp, Now: func() int64 { return 1700000000 }}
+
+			res, err := tr.Fire(context.Background(), prSchemaSrc(), "pull_request.opened", "",
+				json.RawMessage(c.payload))
+			if err != nil {
+				t.Fatalf("入口不合规不是错误（事件照样入库）: %v", err)
+			}
+
+			// ① 零任务：一条都不派
+			if len(disp.got) != 0 {
+				t.Fatalf("不合规的事件不该派发, dispatch 被调了 %d 次", len(disp.got))
+			}
+			if res.Dispatch == nil {
+				t.Fatal("res.Dispatch 不能是 nil（前端要读它展示剪枝）")
+			}
+			if len(res.Dispatch.Tasks) != 0 {
+				t.Fatalf("不合规时不该有任务: %v", res.Dispatch.Tasks)
+			}
+			if res.Dispatch.Tasks == nil {
+				t.Error("空任务列表必须是 [] 而不是 null（前端会把它当成未连接）")
+			}
+
+			// ② prune(event_schema)，detail 指明字段与期望
+			if len(res.Dispatch.Pruned) != 1 {
+				t.Fatalf("应恰好 1 条剪枝, got %v", res.Dispatch.Pruned)
+			}
+			p := res.Dispatch.Pruned[0]
+			if p.Reason != route.ReasonEventSchema {
+				t.Fatalf("reason = %q, want %q", p.Reason, route.ReasonEventSchema)
+			}
+			if !strings.Contains(p.Detail, c.wantDetail) {
+				t.Fatalf("detail 应含 %q（哪个字段/期望什么/实得什么）, got %q", c.wantDetail, p.Detail)
+			}
+			if p.Port != "pull_request.opened" {
+				t.Errorf("port 应是事件类型（trace 里对得上 \"哪次触发\"）: %q", p.Port)
+			}
+
+			// ③ 事件仍落库，payload 原样
+			if len(st.events) != 1 {
+				t.Fatalf("事件必须照常落库（丢了就没了）, got %d", len(st.events))
+			}
+			ev := st.events[0]
+			if string(ev.Payload) != c.payload {
+				t.Errorf("事件 payload 被改动: %s, want %s", ev.Payload, c.payload)
+			}
+
+			// ④ 剪枝留痕：与派发期同一张表 / 同一套 source、type 约定
+			if len(st.prunes) != 1 {
+				t.Fatalf("应写 1 条剪枝事件, got %d", len(st.prunes))
+			}
+			pe := st.prunes[0]
+			if pe.Source != route.PruneEventSource {
+				t.Errorf("剪枝事件 source = %q, want %q", pe.Source, route.PruneEventSource)
+			}
+			if pe.Type != route.PruneEventType(route.ReasonEventSchema) {
+				t.Errorf("剪枝事件 type = %q, want pruned.event_schema", pe.Type)
+			}
+			if pe.TraceID != ev.TraceID {
+				t.Errorf("剪枝事件必须与事件同 trace（否则 trace 视图里看不到）: %q vs %q",
+					pe.TraceID, ev.TraceID)
+			}
+			if pe.NamespaceID != ev.NamespaceID {
+				t.Errorf("剪枝事件命名空间 = %q, want %q", pe.NamespaceID, ev.NamespaceID)
+			}
+			if pe.CreatedAt != 1700000000 {
+				t.Errorf("剪枝事件时间应由 Trigger.Now 给: %d", pe.CreatedAt)
+			}
+			var body route.PruneEventPayload
+			if err := json.Unmarshal(pe.Payload, &body); err != nil {
+				t.Fatalf("剪枝事件 payload 不是合法 JSON: %v (%s)", err, pe.Payload)
+			}
+			if body.FromCapability != "pr-hook" {
+				t.Errorf("fromCapability 应是源名: %q", body.FromCapability)
+			}
+			if body.Detail == "" {
+				t.Error("剪枝事件的 detail 不能为空（它是唯一的证据）")
+			}
+		})
+	}
+}
+
+// TestFireWithoutResultSchemaUnchanged 是验收 ④：没声明契约时行为与今天完全一致。
+//
+// 老源（库里没有 resultSchema 键）不该因为这次改动多出任何校验：任意 payload
+// 都派发、不剪枝、不写剪枝事件。这条一旦变红，等于给所有已有源加了静默的闸门。
+func TestFireWithoutResultSchemaUnchanged(t *testing.T) {
+	st := &fakeStore{inserted: true}
+	disp := &fakeDisp{out: &route.DispatchOutput{Tasks: []*store.Task{{ID: "tsk_1"}}}}
+	tr := &Trigger{Store: st, Dispatcher: disp}
+
+	// config 里完全没有 resultSchema（老数据的长相）
+	src := &store.Source{
+		ID: "src_old", NamespaceID: "ns_1", Name: "老源", Kind: store.SourceKindManual,
+		Enabled: true, Config: json.RawMessage(`{"payload":{"env":"prod"}}`),
+		Targets: []store.SourceTarget{{CapabilityID: "cap_a"}},
+	}
+	res, err := tr.Fire(context.Background(), src, "t", "", json.RawMessage(`{"whatever":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disp.got) != 1 {
+		t.Fatalf("未声明契约时必须照常派发, got %d", len(disp.got))
+	}
+	if len(res.Dispatch.Pruned) != 0 {
+		t.Fatalf("未声明契约时不该有剪枝: %v", res.Dispatch.Pruned)
+	}
+	if len(st.prunes) != 0 {
+		t.Fatalf("未声明契约时不该写剪枝事件, got %d", len(st.prunes))
+	}
+
+	// 脏数据（resultSchema 不是对象）：读侧容忍成"没声明"，不能因一条坏行
+	// 让这个源的所有事件都派不出去。
+	for _, bad := range []string{`{"resultSchema":[1,2]}`, `{"resultSchema":"x"}`, `{"resultSchema":null}`} {
+		st := &fakeStore{inserted: true}
+		disp := &fakeDisp{out: &route.DispatchOutput{Tasks: []*store.Task{{ID: "t"}}}}
+		tr := &Trigger{Store: st, Dispatcher: disp}
+		dirty := *src
+		dirty.Config = json.RawMessage(bad)
+		if _, err := tr.Fire(context.Background(), &dirty, "t", "", json.RawMessage(`{"a":1}`)); err != nil {
+			t.Fatalf("%s: %v", bad, err)
+		}
+		if len(disp.got) != 1 {
+			t.Errorf("%s: 脏 resultSchema 应退化成不校验（照常派发）, got %d", bad, len(disp.got))
+		}
+	}
+}
+
+// TestDryRunAppliesResultSchema 试运行必须给出与真触发**同一条**判定。
+//
+// 「试运行说能跑、真点却剪枝」是最伤信任的差异（仓库里所有 dry-run 注释都在说
+// 这件事）。所以试运行也要跑入口校验，而且——它不落库：不写事件、不写剪枝。
+func TestDryRunAppliesResultSchema(t *testing.T) {
+	// 不合规：只回判定，不派发、不落库
+	st := &fakeStore{inserted: true}
+	disp := &fakeDisp{}
+	tr := &Trigger{Store: st, Dispatcher: disp}
+	out, err := tr.DryRun(context.Background(), prSchemaSrc(), "pull_request.opened",
+		json.RawMessage(`{"action":"opened"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disp.got) != 0 {
+		t.Fatalf("不合规的 payload 试运行也不该派发, got %d", len(disp.got))
+	}
+	if len(out.Tasks) != 0 {
+		t.Fatalf("不合规时 dry-run 不该给任务: %v", out.Tasks)
+	}
+	if len(out.Pruned) != 1 || out.Pruned[0].Reason != route.ReasonEventSchema {
+		t.Fatalf("dry-run 应把 event_schema 剪枝回给用户: %v", out.Pruned)
+	}
+	if len(st.events) != 0 || len(st.prunes) != 0 {
+		t.Errorf("试运行不能落库: events=%d prunes=%d", len(st.events), len(st.prunes))
+	}
+
+	// 合规：照常进 Dispatch（DryRun 标志照旧传下去）
+	st2 := &fakeStore{inserted: true}
+	disp2 := &fakeDisp{out: &route.DispatchOutput{}}
+	tr2 := &Trigger{Store: st2, Dispatcher: disp2}
+	if _, err := tr2.DryRun(context.Background(), prSchemaSrc(), "pull_request.opened",
+		json.RawMessage(`{"pull_request":{"title":"ok"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(disp2.got) != 1 || !disp2.got[0].DryRun {
+		t.Fatalf("合规 payload 的试运行应带 DryRun 进派发: %+v", disp2.got)
 	}
 }

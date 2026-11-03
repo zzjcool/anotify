@@ -27,6 +27,15 @@ const (
 	ReasonParamMissing PruneReason = "param_missing"
 	// ReasonParamType 参数取值结果转不成目标 params_schema 要求的类型。
 	ReasonParamType PruneReason = "param_type"
+	// ReasonEventSchema 事件 payload 不过源的 resultSchema（设计 §4.2 / §7 P0.2）。
+	//
+	// 与 ReasonParamSchema 的区别是**层级**不同：param_schema 是「这条边的参数
+	// 不对」——逐 link 判、扇出里其他 link 照常派发；event_schema 是「这一整个
+	// 事件不合契约」——一条 link 都不判，事件照常落库、一条都不派发。
+	//
+	// 产生点在**入口**（source.Trigger.Fire 调 Dispatch 之前），不在派发四步里：
+	// 它判的是外部世界给的东西，不是中枢自己的配置。
+	ReasonEventSchema PruneReason = "event_schema"
 )
 
 // PrunedRecord 是一条剪枝记录：静默（不打断业务），但**一律留痕**。
