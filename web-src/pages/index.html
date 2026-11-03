@@ -31,6 +31,15 @@
   .ev-skel-row:last-child {
     margin-bottom: 0;
   }
+  .hm-skel {
+    height: 87px;
+    border-radius: var(--r-sm);
+  }
+  .notif-skel {
+    height: 56px;
+    margin: 4px 0;
+    border-radius: var(--r-md);
+  }
 </style>
 {{end}} {{define "content"}}
 <div id="page-main">
@@ -296,7 +305,10 @@
            frontend.mjs 只在 .overflow-x-auto / .code-body / pre 内豁免横向溢出，
            两个类必须同时存在。 */}}
       <div class="hm-scroll overflow-x-auto px-5 py-3">
-        <div class="hm" id="hm"></div>
+        <!-- 热力图首帧占位：87px = 数据态 #hm 实测高度，避免 1.3s 的空白卡 -->
+        <div class="hm" id="hm" aria-busy="true">
+          <div class="skeleton hm-skel" aria-hidden="true"></div>
+        </div>
       </div>
     </section>
 
@@ -407,7 +419,15 @@
           </div>
         </div>
       </div>
-      <div id="notif-list" class="anim-stagger px-2"></div>
+      <div id="notif-list" class="anim-stagger px-2" aria-busy="true">
+        <!-- 6 行 = 首屏常见的最近任务行数；骨架高度 56px 对齐 .notif-row -->
+        <div class="skeleton notif-skel" aria-hidden="true"></div>
+        <div class="skeleton notif-skel" aria-hidden="true"></div>
+        <div class="skeleton notif-skel" aria-hidden="true"></div>
+        <div class="skeleton notif-skel" aria-hidden="true"></div>
+        <div class="skeleton notif-skel" aria-hidden="true"></div>
+        <div class="skeleton notif-skel" aria-hidden="true"></div>
+      </div>
       <!-- footer：与 .card-head 同一套留白/两端对齐，但不加分隔线 ——
            头尾都靠留白分块，亮主题下也不会有「白线看不见」的落差。 -->
       <div class="card-head card-pad">
@@ -839,6 +859,9 @@
     }
 
     function renderKpis() {
+      /* 数据未到/失败时不要展示静态假 sparkline——那会让人以为数字只是丢了。 */
+      const sparks = document.querySelectorAll(".stat-spark");
+      sparks.forEach((el) => el.classList.remove("is-ready"));
       /* F14：首屏接口全挂时不能把「取不到」画成「0」。KPI 一律显示 – ，
        * 让错误态只出现在一个地方（列表里的 loadErrorNode），而不是各处谎报 0。 */
       if (loadError) {
@@ -951,6 +974,7 @@
           ).length.toLocaleString(),
         );
       }
+      sparks.forEach((el) => el.classList.add("is-ready"));
     }
 
     function renderSummary() {
@@ -1005,6 +1029,7 @@
     let visibleCount = NOTIF_PAGE_FIRST;
 
     function renderNotifs(filter) {
+      document.getElementById("notif-list")?.removeAttribute("aria-busy");
       if (filter !== currentFilter) {
         currentFilter = filter;
         visibleCount = NOTIF_PAGE_FIRST;
@@ -1332,6 +1357,7 @@
     function renderHeatmap() {
       const hm = document.getElementById("hm");
       if (!hm) return;
+      hm.removeAttribute("aria-busy");
       hm.replaceChildren(); // 重渲染前清空
       const LEVELS = [
         "var(--hm-empty)",
