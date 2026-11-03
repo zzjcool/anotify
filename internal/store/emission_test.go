@@ -135,12 +135,15 @@ func TestInsertEmissionIdempotent(t *testing.T) {
 	}
 }
 
-// TestEmissionSeqStatus 缺口判定用的 (条数, 最大 seq)。
+// TestEmissionSeqStatus 缺口判定用的 (条数, 最大 seq)，**只看 seq < before**。
+//
+// 那个界是并发正确性的一部分：整表计数会把「并发重发同一个 seq」判成缺口
+// （route 的并发用例抓到过，报 "missing seq 2..0"）。
 func TestEmissionSeqStatus(t *testing.T) {
 	db, _, task := emissionFixture(t)
 	ctx := context.Background()
 
-	count, maxSeq, err := db.EmissionSeqStatus(ctx, task.ID)
+	count, maxSeq, err := db.EmissionSeqBefore(ctx, task.ID, 1)
 	if err != nil {
 		t.Fatalf("seq status: %v", err)
 	}
@@ -153,12 +156,21 @@ func TestEmissionSeqStatus(t *testing.T) {
 			t.Fatalf("insert seq %d: %v", seq, err)
 		}
 	}
-	count, maxSeq, err = db.EmissionSeqStatus(ctx, task.ID)
+	count, maxSeq, err = db.EmissionSeqBefore(ctx, task.ID, 4)
 	if err != nil {
 		t.Fatalf("seq status: %v", err)
 	}
 	if count != 3 || maxSeq != 3 {
 		t.Fatalf("status = (%d,%d), want (3,3)", count, maxSeq)
+	}
+	// 界生效：seq 1..3 落库后，判「4 之前是否齐全」要看到 3 条；
+	// 判「2 之前」只该看到 1 条（seq=1）——库里躺着 seq≥2 的行不影响这个判定。
+	count, maxSeq, err = db.EmissionSeqBefore(ctx, task.ID, 2)
+	if err != nil {
+		t.Fatalf("seq status before 2: %v", err)
+	}
+	if count != 1 || maxSeq != 1 {
+		t.Fatalf("status(before 2) = (%d,%d), want (1,1)", count, maxSeq)
 	}
 }
 

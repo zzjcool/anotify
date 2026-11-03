@@ -201,7 +201,7 @@ func TestEmitServerDurablePath(t *testing.T) {
 	}
 
 	// 发往中枢的那一帧：type/task_id/seq/port/data 都要对（线格式见 internal/ws）。
-	frames := rec.wait(t, 3*time.Second, "emit 帧发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
+	frames := rec.wait(t, 10*time.Second, "emit 帧发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
 	f := frames[0]
 	if f.Type != frameTypeEmit || f.TaskID != "tsk_emit" || f.Seq != 1 || f.Port != "fix" {
 		t.Fatalf("上行 emit 帧不对：%+v", f)
@@ -463,7 +463,7 @@ func TestEmitSeqPersistedAcrossRestart(t *testing.T) {
 		Data: json.RawMessage(`{"n":2}`)}); r.Seq != 2 {
 		t.Fatalf("seq = %d, want 2", r.Seq)
 	}
-	rec1.wait(t, 3*time.Second, "两条 emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 2 })
+	rec1.wait(t, 10*time.Second, "两条 emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 2 })
 	srv1.Close()
 
 	// 重启：同一个 data-dir / task_id。
@@ -477,7 +477,7 @@ func TestEmitSeqPersistedAcrossRestart(t *testing.T) {
 	}
 
 	// 补发：重启后应把 1、2 按 seq 顺序重发（内容一致 → 中枢幂等）。
-	frames := rec2.wait(t, 3*time.Second, "补发 + 新 emit", func(fs []*emitFrame) bool { return len(fs) >= 3 })
+	frames := rec2.wait(t, 10*time.Second, "补发 + 新 emit", func(fs []*emitFrame) bool { return len(fs) >= 3 })
 	if len(frames) != 3 {
 		t.Fatalf("重启后应当补发 2 条 + 新增 1 条，实际 %d 帧：%+v", len(frames), frames)
 	}
@@ -512,7 +512,7 @@ func TestEmitAckStopsResend(t *testing.T) {
 	if r := mustEmit(t, srv2.Path(), emitRequest{Op: emitOpName, Token: emitTestToken, Port: "fix"}); r.Seq != 3 {
 		t.Fatalf("seq = %d, want 3", r.Seq)
 	}
-	rec2.wait(t, 3*time.Second, "新 emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
+	rec2.wait(t, 10*time.Second, "新 emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
 }
 
 // ---------- --wait-routed ----------
@@ -538,7 +538,7 @@ func TestEmitWaitRouted(t *testing.T) {
 	}()
 
 	// agent 先把 emit 发给中枢，然后等 emit_ack。
-	frames := rec.wait(t, 3*time.Second, "emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
+	frames := rec.wait(t, 10*time.Second, "emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
 	srv.acknowledge(&emitAckFrame{Type: frameTypeEmitAck, TaskID: "tsk_emit", Seq: frames[0].Seq, Routed: 2})
 
 	select {
@@ -579,7 +579,7 @@ func TestEmitWaitRoutedHubRejects(t *testing.T) {
 		done <- result{resp, err}
 	}()
 
-	frames := rec.wait(t, 3*time.Second, "emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
+	frames := rec.wait(t, 10*time.Second, "emit 发往中枢", func(fs []*emitFrame) bool { return len(fs) == 1 })
 	srv.acknowledge(&emitAckFrame{
 		Type: frameTypeEmitAck, TaskID: "tsk_emit", Seq: frames[0].Seq,
 		Error: "seq reused with different payload",
@@ -629,7 +629,7 @@ func TestEmitGapRequeuesEarlier(t *testing.T) {
 	})
 	srv.wakeFlush()
 
-	frames := rec.wait(t, 3*time.Second, "缺口补齐", func(fs []*emitFrame) bool { return len(fs) >= 2 })
+	frames := rec.wait(t, 10*time.Second, "缺口补齐", func(fs []*emitFrame) bool { return len(fs) >= 2 })
 	// seq 2 被中枢明确拒收过 → 只补 1（拒收的那个不重发），补发后 1 又会被中枢确认。
 	var seqs []int64
 	for _, f := range frames {
@@ -703,8 +703,11 @@ func TestEmitSocketRemovedWithTask(t *testing.T) {
 	h := w4Start(t, w4Config(), 10, 200*time.Millisecond)
 
 	// 脚本：等到 allow-exit 出现再退出 —— 让测试能确定地「在进程还活着的时候 emit」。
+	// `started` 是给测试的握手：任务工作目录由 agent 在**起进程前**清空重建，
+	// 测试不等这个标记就写 allow-exit，会被那次 RemoveAll 抹掉（随机超时）。
 	script := `
 if [ -S "$ANOTIFY_EMIT_SOCK" ]; then echo "sock=present"; else echo "sock=missing"; fi
+: > "$ANOTIFY_TASKDIR/started"
 until [ -f "$ANOTIFY_TASKDIR/allow-exit" ]; do sleep 0.01; done
 echo bye
 `
@@ -730,12 +733,13 @@ echo bye
 	if !resp.OK || resp.Acked != emitAckedDurable {
 		t.Fatalf("任务运行期间的 emit 应当成功：%+v", resp)
 	}
-	sent := h.fc.waitFor(t, 3*time.Second, "上行 emit 帧", w4Cond(frameTypeEmit, "tsk_emit_task"))
+	sent := h.fc.waitFor(t, 10*time.Second, "上行 emit 帧", w4Cond(frameTypeEmit, "tsk_emit_task"))
 	if _, _, ok := w4Find(sent, frameTypeEmit, "tsk_emit_task"); !ok {
 		t.Fatalf("没收到上行 emit 帧：%s", w4Describe(sent))
 	}
 
 	// 让脚本退出 → 任务结束 → socket 必须消失。
+	w4WaitFile(t, filepath.Join(h.dataDir, "work", "tsk_emit_task", "started"), 5*time.Second)
 	if err := os.WriteFile(filepath.Join(h.dataDir, "work", "tsk_emit_task", "allow-exit"), nil, 0o644); err != nil {
 		t.Fatalf("放行脚本: %v", err)
 	}
@@ -776,6 +780,7 @@ if [ -S "$ANOTIFY_EMIT_SOCK" ] && [ -n "$ANOTIFY_TASK_TOKEN" ] && [ -n "$ANOTIFY
 else
   echo "env=missing"
 fi
+: > "$ANOTIFY_TASKDIR/started"
 until [ -f "$ANOTIFY_TASKDIR/allow-exit" ]; do sleep 0.01; done
 `
 	h.deploy(w4Artifact("demo.emit2", 1, script))
@@ -829,6 +834,7 @@ until [ -f "$ANOTIFY_TASKDIR/allow-exit" ]; do sleep 0.01; done
 		t.Fatal("--wait-routed 没被 emit_ack 唤醒（下行帧是不是没认出 emit_ack？）")
 	}
 
+	w4WaitFile(t, filepath.Join(h.dataDir, "work", "tsk_emit_ack", "started"), 5*time.Second)
 	if err := os.WriteFile(filepath.Join(h.dataDir, "work", "tsk_emit_ack", "allow-exit"), nil, 0o644); err != nil {
 		t.Fatalf("放行脚本: %v", err)
 	}

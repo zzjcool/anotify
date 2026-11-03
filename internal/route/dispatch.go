@@ -192,9 +192,9 @@ type Store interface {
 	// GetEmission 按 (task_id, seq) 取首次结果；未命中返回 store.ErrNotFound。
 	// 幂等路径靠它把首次的 routed/pruned 原样回给节点。
 	GetEmission(ctx context.Context, taskID string, seq int64) (*store.Emission, error)
-	// EmissionSeqStatus 返回已落库条数与最大 seq（缺口判定用）。
+	// EmissionSeqBefore 返回 seq < before 的已落库条数与最大 seq（缺口判定用）。
 	// 「条数 == n-1 且最大 seq == n-1」等价于「{1..n-1} 齐全」。
-	EmissionSeqStatus(ctx context.Context, taskID string) (count int, maxSeq int64, err error)
+	EmissionSeqBefore(ctx context.Context, taskID string, before int64) (count int, maxSeq int64, err error)
 }
 
 // Dispatcher 按派发四步算出要建的任务。

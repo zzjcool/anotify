@@ -658,14 +658,14 @@ func (f *fakeStore) GetEmission(ctx context.Context, taskID string, seq int64) (
 	return nil, store.ErrNotFound
 }
 
-func (f *fakeStore) EmissionSeqStatus(ctx context.Context, taskID string) (int, int64, error) {
+func (f *fakeStore) EmissionSeqBefore(ctx context.Context, taskID string, before int64) (int, int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	count := 0
 	var maxSeq int64
 	for _, e := range f.emissions {
-		if e.TaskID != taskID {
-			continue
+		if e.TaskID != taskID || e.Seq >= before {
+			continue // 与真实实现同口径：只看 seq < before 的那一段
 		}
 		count++
 		if e.Seq > maxSeq {

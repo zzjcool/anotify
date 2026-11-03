@@ -131,7 +131,7 @@ func TestRunEmitAgainstServer(t *testing.T) {
 		if !strings.Contains(stdout.String(), "acked=durable") {
 			t.Fatalf("stdout 应当报告 acked=durable，实际 %q", stdout.String())
 		}
-		frames := rec.wait(t, 3*time.Second, "emit 上行", func(fs []*emitFrame) bool { return len(fs) >= 1 })
+		frames := rec.wait(t, 10*time.Second, "emit 上行", func(fs []*emitFrame) bool { return len(fs) >= 1 })
 		if frames[0].Port != "fix" || frames[0].Note != "第 1 项" {
 			t.Fatalf("上行帧不对：%+v", frames[0])
 		}

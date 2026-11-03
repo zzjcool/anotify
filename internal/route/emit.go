@@ -287,17 +287,18 @@ func (d *Dispatcher) Emit(ctx context.Context, in EmitInput) (*EmitOutput, error
 // 两个条件都要：只有条数会放过「中间有洞、尾部很长」的坏数据（那种数据下面
 // 每一个新 seq 都该被拒），只有最大值会把「1,3」误判成连续。
 func (d *Dispatcher) checkEmitSeqGap(ctx context.Context, in EmitInput) error {
-	count, maxSeq, err := d.Store.EmissionSeqStatus(ctx, in.TaskID)
+	// 只看 seq < 本次 的那一段：整表 COUNT 会把「并发重发同一个 seq」判成缺口。
+	count, maxSeq, err := d.Store.EmissionSeqBefore(ctx, in.TaskID, in.Seq)
 	if err != nil {
 		return fmt.Errorf("route: emit: emission seq status %s: %w", in.TaskID, err)
 	}
 	if count == int(in.Seq-1) && maxSeq == in.Seq-1 {
 		return nil
 	}
-	// 缺口区间：从已连续到的位置 +1 到 seq-1。丢了哪几条要写在错误里——
-	// 节点据此重发缺的那几条（不是从头重发）。
-	return fmt.Errorf("%w: seq %d but task %s has %d emission(s) (max seq %d); missing seq %d..%d",
-		ErrEmitSeqGap, in.Seq, in.TaskID, count, maxSeq, maxSeq+1, in.Seq-1)
+	// 文案不猜「缺的是哪一段」：洞可能在中间（1,3 到齐、2 缺），也可能在尾部。
+	// 能确定说的是「1..seq-1 这个前缀里少了东西」，以及现在有几个、最大到哪。
+	return fmt.Errorf("%w: seq %d needs seq 1..%d present, but task %s has %d of them (max seq %d)",
+		ErrEmitSeqGap, in.Seq, in.Seq-1, in.TaskID, count, maxSeq)
 }
 
 // decodeEmitData 把帧里的 data 解成 params（必须是 JSON 对象；缺省 = {}）。

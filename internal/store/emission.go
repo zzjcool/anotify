@@ -196,14 +196,20 @@ func (d *DB) ListEmissions(ctx context.Context, taskID string) ([]*Emission, err
 //
 // 一次聚合查询而不是把整表读回来：这在一个**可能被高频调用**的路径上
 // （能力进程一次运行可以 emit 很多次），而返回的只有两个整数。
-func (d *DB) EmissionSeqStatus(ctx context.Context, taskID string) (count int, maxSeq int64, err error) {
+func (d *DB) EmissionSeqBefore(ctx context.Context, taskID string, before int64) (count int, maxSeq int64, err error) {
 	if taskID == "" {
-		return 0, 0, fmt.Errorf("emission seq status: empty task_id")
+		return 0, 0, fmt.Errorf("emission seq before: empty task_id")
 	}
+	// 只看 seq < before 的区间（= 判断 1..before-1 是否齐全）。
+	//
+	// **必须带这个界**：并发重发同一个 seq 时，库里已经躺着 seq=before 那一行，
+	// 用全表 COUNT 会算出「已经比你多一条」→ 把一次正常的幂等重发判成缺口。
+	// 这个 bug 在并发用例里随机复现过（"missing seq 2..0"）。
 	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM emissions WHERE task_id = ?`, taskID).
+		`SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM emissions WHERE task_id = ? AND seq < ?`,
+		taskID, before).
 		Scan(&count, &maxSeq); err != nil {
-		return 0, 0, fmt.Errorf("emission seq status %s: %w", taskID, err)
+		return 0, 0, fmt.Errorf("emission seq before %s: %w", taskID, err)
 	}
 	return count, maxSeq, nil
 }
