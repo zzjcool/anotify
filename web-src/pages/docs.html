@@ -450,6 +450,13 @@
   }
 
   /* ---------- 目录（桌面右侧 sticky） ---------- */
+  /* 目录锚点平滑滚动：只在本页、且用户未要求减少动效时生效。
+     不影响 e2e（docs 没有滚动断言）；回到顶部仍走独立 JS。 */
+  @media (prefers-reduced-motion: no-preference) {
+    html:has(.doc-toc) {
+      scroll-behavior: smooth;
+    }
+  }
   .doc-toc {
     display: none;
   }

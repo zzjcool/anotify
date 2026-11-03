@@ -393,3 +393,11 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 **门禁**：e2e 全量 **1832/0**（frontend 386、ui_shift 21、lang_hint 57）；check-classes 629 / tailwind 879。截图在 `.pi-orchestrator/{motion-a,loading-b}-shots/`（不入库）。
 
 **未做/Wave C**：跨文档 View Transitions、docs 目录平滑滚动、login tab 过渡、弹层退场动画（当前只做入场）。
+
+### Wave C（2026-11-03）
+
+- 跨文档 View Transitions：`@view-transition { navigation: auto }` + root 200ms 交叉淡入；reduce 下 `navigation: none`。实测 `pagereveal.viewTransition=true`（normal）/`false`（reduce），导航 298ms/182ms；frontend/ui_shift/lang_hint 全绿。
+- docs 目录锚点：`html:has(.doc-toc)` 平滑滚动（reduce 下 auto）；实测 0→632px 约 400ms。
+- login tab：`#login-panel/#signup-panel` 显示时 200ms 上浮淡入。
+- events 列表加 `.anim-stagger`，筛选/首载 160ms/20ms 入场。
+- 全量 e2e **1832/0**（首跑 ws_protocol 并行 SQLite 偶发 2 失败，单跑 82/0，重跑全量绿）。

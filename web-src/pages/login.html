@@ -246,6 +246,18 @@
       .auth-panel > * + * {
         margin-top: 12px;
       }
+      /* tab 切换：面板从 display:none 变为可见时重播 4px 上浮淡入。
+         只动 opacity/transform，不碰高度（避免表单区整体重排）。 */
+      #login-panel:not(.hidden),
+      #signup-panel:not(.hidden) {
+        animation: auth-panel-in var(--dur) var(--ease-out) both;
+      }
+      @keyframes auth-panel-in {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+      }
       .auth-submit {
         width: 100%;
         height: 42px;
