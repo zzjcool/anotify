@@ -97,6 +97,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	18: migrateCapabilityToDeploy,
 	20: migrateTaskDigest,
 	21: migrateEdgeLiterals,
+	24: migrateEmissionNote,
 	23: migrateTaskToken,
 }
 
@@ -960,4 +961,23 @@ func idHashSuffix(hash string) string {
 		return hash
 	}
 	return hash[:8]
+}
+
+// migrateEmissionNote 迁移 24：给 emissions 加 note 列。
+//
+// emit 帧从第一天就带 note（emit-protocol §3.1），但迁移 22 建表时漏了这一列。
+// 默认 ” = 老数据没有备注，行为不变。
+func migrateEmissionNote(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "emissions", "note")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`ALTER TABLE emissions ADD COLUMN note TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add column emissions.note: %w", err)
+	}
+	return nil
 }

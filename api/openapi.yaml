@@ -549,6 +549,64 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: 任务不存在 }
 
+  /namespaces/{ns}/tasks/{taskId}/emissions:
+    get:
+      tags: [tasks]
+      summary: 某个任务的 emit 列表（一次运行到底发了什么）
+      description: |
+        `emit` 是唯一的产出通道（design/typed-pipeline.md §2）：一次运行可以 emit 0..N 次，
+        每次都独立路由、独立剪枝。这个端点把那些产物摊开——按 `seq` **升序**，一次 emit 一条。
+
+        形状与语义：
+        - `seq`：任务内单调递增、从 1 开始，**也是幂等键的一半**（`UNIQUE(task_id, seq)`，
+          emit-protocol §4）。它就是「第几次 emit」，不是行号。
+        - `port`：上游回报的出口名（路由的唯一输入，I2/I4）。
+        - `data`：**原样 JSON 对象**（不是字符串）：这次产出直接就是下游的 params。
+        - `routed` / `pruned`：**首次**处理的结果（重复 seq 一律回同一份计数，§3.2）。
+          `routed=0` 是合法结果（这个出口没接下游 / 全被剪枝），不是错误。
+        - `note`：emit 帧里的人类备注（§3.1，不参与路由）。当前恒为空串——
+          emissions 表还没有 note 列，字段先占位以固定响应形状。
+        - `createdAt`：首次落库时刻（unix 秒）；重复 seq 不更新。
+
+        命名空间是 URL 的一部分（任务的子资源 = 命名空间资源）：不接受 `*`，
+        也不从 query 读 `namespaceId`。跨命名空间的 `taskId` → `404`
+        （与「任务不存在」逐字节相同：组织层删除后不存在「有、但属于别人」这一态）。
+
+        空列表返回 `[]` 而不是 `null`（不变量 I9）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: ns
+          in: path
+          required: true
+          schema: { type: string }
+          description: 命名空间 id（`*` → 400：跨命名空间汇总一条任务的 emit 没有定义）
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: "emit 列表（还没 emit 时 `emissions: []`）"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taskId, namespaceId, emissions]
+                properties:
+                  taskId: { type: string }
+                  namespaceId: { type: string, description: 作用域回显 }
+                  emissions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Emission" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 任务（在该命名空间下）不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /tasks/{id}/cancel:
     post:
       tags: [tasks]
@@ -3566,6 +3624,46 @@ components:
         createdAt: { type: integer, format: int64 }
         startedAt: { type: integer, format: int64, nullable: true }
         finishedAt: { type: integer, format: int64, nullable: true }
+
+    Emission:
+      type: object
+      description: |
+        一次 emit 的落库行（emit-protocol §3.1 的帧 + §3.2 的派发计数）。
+        `routed` / `pruned` 是**首次**处理的结果：重复 seq 一律回同一份计数，
+        所以它们必须落库（不能只放在 emit_ack 的返回值里）。
+      required: [seq, port, data, note, routed, pruned, createdAt]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            任务内单调递增、从 1 开始（§4）。它同时是幂等键的一半
+            （`UNIQUE(task_id, seq)`），所以页面上显示的是「第几次 emit」，不是行号。
+        port:
+          type: string
+          description: 上游回报的出口名（路由的唯一输入；端口名没有保留字）
+        data:
+          type: object
+          additionalProperties: true
+          description: |
+            这次产出的 JSON 对象——**原样**返回（审计要的是当时那份字节，不重排键）。
+            注意是对象而不是字符串：它直接就是下游的 params（§3.3）。
+        note:
+          type: string
+          description: |
+            emit 帧里的人类可读备注（§3.1，不参与路由）。
+            当前恒为空串：emissions 表还没有 note 列，字段先占位以固定响应形状。
+        routed:
+          type: integer
+          description: 首次处理派发出去的下游条数（= 建出的子任务行数）。0 是合法值
+        pruned:
+          type: integer
+          description: 首次处理剪掉的 link 条数（no_node / foreign_user / path / param_*）
+        createdAt:
+          type: integer
+          format: int64
+          description: 首次落库时刻（unix 秒）；重复 seq 不会更新时间
 
     # ---------- 源（origin）----------
 

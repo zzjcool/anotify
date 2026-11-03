@@ -369,6 +369,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// trace 视图（#142）：一条 trace 的全景（events + tasks + pruned）。
 	// 剪枝从 #142 起落进了 events（source='route'），这个端点是「为什么没跑」的查询出口。
 	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(consoleH.trace))))
+	// 一次运行「到底发了什么」（P1.6）：某个任务的每一次 emit，按 seq 升序。
+	// 命名空间在**路径**里（任务的子资源 = 命名空间资源），不走 namespaceId query。
+	mux.Handle("GET /v1/namespaces/{ns}/tasks/{taskId}/emissions",
+		noStore(sessMW(http.HandlerFunc(consoleH.emissions))))
 	// 控制台读事件流：走会话 Cookie（机器入口的 GET /v1/events 走 Bearer Key）。
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(consoleH.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))

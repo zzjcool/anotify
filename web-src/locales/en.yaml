@@ -1549,6 +1549,14 @@ trace:
   nolib: Renderer failed to load.
   empty: No tasks under this trace. Usually means it was pruned at the first step (no matching edge, params failed the schema, or no node declares the target capability).
   empty_title: No tasks
+  emits:
+    title: Output (emits)
+    subtitle: Every emit in this run — port, time, dispatch result and raw data
+    empty: This run has not emitted anything yet. emit is the only output channel — nothing means no output so far (or the process is still running).
+    failed: Could not load the emit list (the trace above is unaffected)
+    routed: Routed
+    pruned: Pruned
+    data: data
   stat:
     spans: Tasks
     duration: Duration

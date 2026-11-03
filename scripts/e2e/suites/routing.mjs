@@ -384,7 +384,189 @@ async function main() {
 	});
 	H.eq("出口不在 outputs 里 → 400", closedPort.status, 400);
 
-	for (const n of [nodeA, nodeCycle]) n.conn.close();
+	// ---------- P0.2 入口校验：源的 resultSchema（设计 §4.2 / §5 校验矩阵「入口」）----------
+	//
+	// 与派发期的 param_schema 是**两个层级**（prune.go 的注释写死了这个区别）：
+	//   param_schema  逐条 link 判，扇出里其他 link 照常派发
+	//   event_schema  整个事件判，一条 link 都不走（但**事件照常落库**）
+	//
+	// 所以它只能挂在**源**（外部世界伸进来的那只手）上。判据只有一处：source.Trigger，
+	// 于是一个容易踩的坑是套件用 POST /v1/events 去测 —— 那条路径走的是「来源名当入口边」
+	// 的老路，**根本不经过源**。所以下面必须用「真源 + POST /v1/sources/{id}/fire」。
+	console.log("--- P0 入口校验：resultSchema → prune(event_schema) ---");
+	// 目标只要求「是对象」（不要 title）：这样「零任务」不可能被 param_schema 解释，
+	// 只可能是入口校验干的（否则这条用例证明不了任何东西）。
+	const schemaTarget = await defineCapability("schema.target", []);
+	const schemaNode = await bringUpNode("schema-node", [schemaTarget], 2);
+	const RESULT_SCHEMA = {
+		type: "object",
+		required: ["title"],
+		properties: { title: { type: "string" } },
+	};
+	const schemaSrc = await H.req(server.base, "/v1/sources", {
+		session,
+		body: {
+			namespaceId: nsId,
+			name: "schema.src",
+			kind: "manual",
+			config: { resultSchema: RESULT_SCHEMA },
+			targets: [{ capabilityId: schemaTarget.id }],
+		},
+	});
+	H.eq("建带 resultSchema 的源 → 201", schemaSrc.status, 201);
+	const schemaSrcId = schemaSrc.json?.source?.id;
+	H.eq(
+		"resultSchema 原样存下（required 读得回来）",
+		schemaSrc.json?.source?.config?.resultSchema?.required,
+		["title"],
+	);
+
+	const fireSchemaSrc = (payload) =>
+		H.req(server.base, `/v1/sources/${schemaSrcId}/fire`, {
+			session,
+			body: { namespaceId: nsId, type: "schema.run", payload },
+		});
+
+	// ① 不合规 payload：零任务 + prune(event_schema)，但**事件仍然落库**
+	const badFire = await fireSchemaSrc({ nope: 1 });
+	H.eq("① 不合规 payload：事件照收 200（400 会让外部系统把事件丢在地上）", badFire.status, 200);
+	const badDispatch = badFire.json?.dispatch || {};
+	H.eq("① 不合规 payload → 零任务", (badDispatch.tasks || []).length, 0);
+	const esPrune = expectPrune("① 不合规 payload → prune(event_schema)", { json: badDispatch }, "event_schema");
+	if (esPrune) {
+		H.check(
+			"① 剪枝证据指名缺哪个字段（不是一句「不合规」）",
+			/title/.test(String(esPrune.detail || "")),
+			String(esPrune.detail || ""),
+		);
+		H.eq("① 剪枝记录的 port 是事件类型", esPrune.port, "schema.run");
+	}
+	// 事件必须查得到：入口校验只决定「派不派」，不能把外部世界给的事实弄丢
+	const badTrace = badFire.json?.event?.traceId;
+	const badEvents = await H.req(
+		server.base,
+		"/v1/console/events?traceId=" + encodeURIComponent(badTrace || "none"),
+		{ session },
+	);
+	const badEventRows = badEvents.json?.events || [];
+	H.check(
+		"① 事件仍然落库（trace 里查得到那条事件本身）",
+		badEventRows.some((e) => e.id === badFire.json?.event?.id),
+		JSON.stringify(badEventRows.map((e) => [e.type, e.source])),
+	);
+	H.check(
+		"① 剪枝留痕：同一条 trace 里有 pruned.event_schema 事件",
+		badEventRows.some((e) => e.type === "pruned.event_schema" && e.source === "route"),
+		JSON.stringify(badEventRows.map((e) => [e.type, e.source])),
+	);
+
+	// ② 合规 payload：正常派发（证明上面那条零任务真的是「不合规」而不是「源坏了」）
+	const okFire = await fireSchemaSrc({ title: "空指针" });
+	H.eq("② 合规 payload：事件 200", okFire.status, 200);
+	H.eq("② 合规 payload → 正常建 1 个任务", (okFire.json?.dispatch?.tasks || []).length, 1);
+	H.eq(
+		"② 任务落在源声明的出口上",
+		(okFire.json?.dispatch?.tasks || [])[0]?.capability,
+		"schema.target",
+	);
+	H.eq("② 合规 payload 不产生任何剪枝", (okFire.json?.dispatch?.pruned || []).length, 0);
+
+	// ③ 未声明 resultSchema 的老源：行为与加这个字段之前完全一致（不做入口校验）
+	const legacySrc = await H.req(server.base, "/v1/sources", {
+		session,
+		body: {
+			namespaceId: nsId,
+			name: "schema.legacy",
+			kind: "manual",
+			config: {},
+			targets: [{ capabilityId: schemaTarget.id }],
+		},
+	});
+	H.eq("建未声明 resultSchema 的老源 → 201", legacySrc.status, 201);
+	const legacyFire = await H.req(
+		server.base,
+		`/v1/sources/${legacySrc.json?.source?.id}/fire`,
+		{ session, body: { namespaceId: nsId, type: "schema.run", payload: { nope: 1 } } },
+	);
+	H.eq("③ 老源：同一份 payload 照常派发（未声明 = 不校验）", (legacyFire.json?.dispatch?.tasks || []).length, 1);
+	H.eq("③ 老源：不产生 event_schema 剪枝", (legacyFire.json?.dispatch?.pruned || []).length, 0);
+
+	// ---------- P0.3 边字面量：进入下游的 params = data ⊎ literals，字面量优先 ----------
+	//
+	// 字面量是**配置期的常量**（设计 §3.3）：它让同一个上游的一次产出能喂给
+	// 「要 env=prod 的部署」和「要 env=staging 的部署」，而不需要上游知道 env。
+	// 所以同名键一定是字面量赢 —— 不然配置里写死的那份就成了摆设，
+	// 而且用户看不到（页面上写着 prod，实际跑的是 dev）。
+	console.log("--- P0 边字面量：data ⊎ literals（字面量优先）---");
+	const litTarget = await defineCapability("lit.target", [], {
+		paramsSchema: {
+			type: "object",
+			properties: { env: { type: "string" }, to: { type: "string" } },
+		},
+	});
+	const litNode = await bringUpNode("lit-node", [litTarget], 2);
+
+	// 定义期硬拒（设计 §5「存 link」）：键必须在目标 params_schema 里，且类型相等。
+	// 两条都不能省：放任非法字面量存下去，症状是「派发时该 link 被剪，而用户以为接好了」。
+	const badLitKey = await H.req(server.base, "/v1/edges", {
+		session,
+		body: {
+			fromIsSource: true,
+			fromCapability: "lit.demo",
+			fromPort: "go",
+			toCapability: litTarget.id,
+			literals: { not_in_schema: 1 },
+		},
+	});
+	H.eq("定义期：字面量的键不在目标 params_schema 里 → 400", badLitKey.status, 400);
+	const badLitType = await H.req(server.base, "/v1/edges", {
+		session,
+		body: {
+			fromIsSource: true,
+			fromCapability: "lit.demo",
+			fromPort: "go",
+			toCapability: litTarget.id,
+			literals: { env: 123 },
+		},
+	});
+	H.eq("定义期：字面量类型与目标 params_schema 不等 → 400", badLitType.status, 400);
+
+	const litEdge = await H.req(server.base, "/v1/edges", {
+		session,
+		body: {
+			fromIsSource: true,
+			fromCapability: "lit.demo",
+			fromPort: "go",
+			toCapability: litTarget.id,
+			literals: { env: "prod" },
+		},
+	});
+	H.eq("建带 literals 的入口边 → 200", litEdge.status, 200);
+	H.eq(
+		"边创建响应原样回显 literals",
+		litEdge.json?.edge?.literals?.env,
+		"prod",
+	);
+
+	const litEv = await postEvent({
+		source: "lit.demo",
+		type: "go",
+		payload: { env: "dev", to: "u_1" },
+	});
+	H.eq("字面量用例：事件建出 1 个任务", litEv.json?.tasks?.length, 1);
+	H.eq("字面量用例：无剪枝", litEv.json?.pruned?.length, 0);
+	// 任务 params 是派发的**事实**：读它才是真验了叠加后的值（不是回读配置）
+	const litTasks = await H.req(
+		server.base,
+		"/v1/tasks?traceId=" + encodeURIComponent(litEv.json?.traceId || "none"),
+		{ session },
+	);
+	const litTask = (litTasks.json?.tasks || []).find((t) => t.id === litEv.json?.tasks?.[0]?.id);
+	H.check("字面量用例：查得到那条任务", !!litTask, JSON.stringify(litTasks.json).slice(0, 200));
+	H.eq("字面量赢：data 里 env=dev，任务 params 里是 prod", litTask?.params?.env, "prod");
+	H.eq("没被覆盖的键照旧来自 data", litTask?.params?.to, "u_1");
+
+	for (const n of [nodeA, nodeCycle, schemaNode, litNode]) n.conn.close();
 	server.stop();
 	// summary() 返回 true 表示**全部通过**（不是"failed"），别搞反
 	const allPassed = H.summary("routing");

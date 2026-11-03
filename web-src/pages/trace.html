@@ -159,6 +159,149 @@
         max-width: 46ch;
       }
 
+      /* ---- 产出（emits，P1.6）----
+
+         一次运行可以 emit 0..N 次（design/typed-pipeline.md §2），每一条都是一个
+         独立的路由结果。这一区就是「这次运行到底发了什么」的答案：按 seq 升序，
+         端口徽章 + 时间 + routed/pruned + 可折叠的原始 data。
+
+         样式纪律：卡片/标题/徽章复用 ui.css；下面只定义本页独有的行排版，
+         颜色全部走 tokens.css 的 token（亮主题下也要读得清）。
+         没有放进 ui.css 是因为它只服务这一页（wave 3 纪律：缺组件先页内定义，
+         确需复用再提升）。 */
+      .emit-groups {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        margin-top: 16px;
+        min-width: 0;
+      }
+      .emit-group {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      /* 分组头：能力@版本 + task id（哪一个任务的产出） */
+      .emit-group-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px;
+        padding: 0 2px 8px;
+        min-width: 0;
+      }
+      .emit-task-cap {
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.4;
+        color: var(--text);
+      }
+      .emit-task-id {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+        word-break: break-all;
+      }
+      /* 行容器：一条 emit 一行，竖线由 border-bottom 画（最后一行去掉） */
+      .emit-rows {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-1);
+      }
+      .emit-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .emit-row:last-child {
+        border-bottom: 0;
+      }
+      .emit-row:hover {
+        background: var(--surface-2);
+      }
+      /* seq 是「第几次 emit」，也是幂等键的一半——固定宽度对齐，读起来像列 */
+      .emit-seq {
+        flex: none;
+        min-width: 34px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+      }
+      .emit-time {
+        flex: none;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+      }
+      /* routed / pruned：剪枝不为 0 时用 warn 色（“这次有东西没走下去”） */
+      .emit-counters {
+        flex: none;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .emit-counters.is-warn {
+        color: var(--warn);
+      }
+      .emit-note {
+        min-width: 0;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+        word-break: break-word;
+      }
+      /* data 折叠：默认收起（一次运行可能有几十条，全展开就没法扫） */
+      .emit-data {
+        flex: 1 1 240px;
+        min-width: 0;
+      }
+      .emit-data > summary {
+        cursor: pointer;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--accent);
+        list-style: none;
+      }
+      .emit-data > summary::-webkit-details-marker {
+        display: none;
+      }
+      .emit-data > summary::before {
+        content: "▸";
+        display: inline-block;
+        width: 12px;
+        color: var(--faint);
+        transition: transform var(--dur-fast) var(--ease);
+      }
+      .emit-data[open] > summary::before {
+        content: "▾";
+      }
+      .emit-json {
+        margin: 8px 0 0;
+        padding: 10px 12px;
+        background: var(--code-bg);
+        color: var(--code-text);
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        line-height: 1.6;
+        white-space: pre;
+        overflow-x: auto;
+      }
+
       /* 视图切换器（瀑布图 / 图 / 树）。
          三个 <button> 由 web/traceview.js 的 mount() 运行时生成 —— 那个文件本轮冻结，
          DOM 结构 / 文案 / `.on` 类名 / 默认视图一个都不能动。所以这里**只用 CSS**
@@ -453,6 +596,141 @@
         return Anotify.api(url, { demo: null });
       }
 
+      // ---- 产出（emits，P1.6）----
+      //
+      // 一次运行可以 emit 0..N 次（docs/design/typed-pipeline.md §2），每次独立
+      // 路由、独立剪枝。这一区就是“这次运行到底发了什么”的答案。
+      //
+      // 请求形状：GET /v1/namespaces/{ns}/tasks/{taskId}/emissions
+      // · emissions 是任务的**子资源**，命名空间长在路径上 —— 所以这里不走
+      //   withScope 的 namespaceId 自动补参（那套只认 query 形式的端点）。
+      // · 命名空间取**任务行自己的** namespaceId：跨命名空间汇总视图下也不会
+      //   拿错作用域去查（查错了后端会回 404，而不是默默给你别的命名空间的数据）。
+      //
+      // 失败降级：某条任务的 emit 没取到只丢这一组；全都没取到才画一行说明。
+      // 绝不因此把整页判成失败——上半部分的链路照样有用。
+      async function loadEmits(traceNs, tasks) {
+        return Promise.all(
+          tasks.map(async (tk) => {
+            const nsId = tk.namespaceId || traceNs;
+            if (!nsId) return { task: tk, rows: [] };
+            try {
+              const j = await fetchApi(
+                API +
+                  "/namespaces/" +
+                  encodeURIComponent(nsId) +
+                  "/tasks/" +
+                  encodeURIComponent(tk.id) +
+                  "/emissions",
+              );
+              const rows = (j && j.emissions) || [];
+              return { task: tk, rows: Array.isArray(rows) ? rows : [] };
+            } catch (_e) {
+              return { task: tk, rows: [], failed: true };
+            }
+          }),
+        );
+      }
+
+      // emitsCard 把结果画成一张卡片：组 = 任务，行 = 一次 emit（按 seq 升序）。
+      async function emitsCard(promise) {
+        const groups = await promise;
+        const card = el("div", "card card-pad");
+        // 稳定钩子（id）：拉这页的人/套件不必靠“第 N 张卡”去定位产出区。
+        card.id = "trace-emits";
+        const head = el("div", "card-head");
+        const titles = el("div", "min-w-0");
+        titles.appendChild(el("h3", "card-title", t("trace.emits.title", "产出（emits）")));
+        titles.appendChild(
+          el(
+            "p",
+            "card-sub",
+            t("trace.emits.subtitle", "这次运行里每一次 emit：出口、时间、派发结果与原始 data"),
+          ),
+        );
+        head.appendChild(titles);
+        card.appendChild(head);
+
+        // 只画有产出的任务，并按**执行顺序**（createdAt 升序）排：
+        // 产出列表的时间感应该跟瀑布图一致，而不是跟任务的倒序列表一致。
+        const shown = groups
+          .filter((g) => g.rows.length)
+          .sort((a, b) => (a.task.createdAt || 0) - (b.task.createdAt || 0));
+        const total = shown.reduce((n, g) => n + g.rows.length, 0);
+
+        if (!total) {
+          const failed = groups.some((g) => g.failed);
+          card.appendChild(
+            el(
+              "p",
+              "card-sub",
+              failed
+                ? t("trace.emits.failed", "产出列表没能加载（不影响上面的链路）")
+                : t(
+                    "trace.emits.empty",
+                    "这次运行还没有 emit。emit 是唯一的产出通道——没有就说明还没产出任何东西（或进程还在跑）。",
+                  ),
+            ),
+          );
+          return card;
+        }
+
+        const box = el("div", "emit-groups");
+        for (const g of shown) {
+          const group = el("div", "emit-group");
+          group.dataset.taskId = g.task.id;
+          const gh = el("div", "emit-group-head");
+          gh.appendChild(
+            el("span", "emit-task-cap", (g.task.capability || "") + "@" + (g.task.version || 1)),
+          );
+          gh.appendChild(el("code", "emit-task-id", g.task.id));
+          group.appendChild(gh);
+
+          const rows = el("div", "emit-rows");
+          // 后端已经 ORDER BY seq，这里再排一次：读端不该假设传输/中介保持顺序。
+          const sorted = g.rows.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
+          for (const em of sorted) {
+            const row = el("div", "emit-row");
+            row.dataset.seq = String(em.seq == null ? "" : em.seq);
+            row.appendChild(el("span", "emit-seq", "#" + (em.seq == null ? "?" : em.seq)));
+            // 端口是路由的唯一输入：它应该比时间先被看到，所以紧跟 seq。
+            row.appendChild(el("span", "badge badge-accent", em.port || "—"));
+            row.appendChild(el("span", "emit-time", fmtTime(em.createdAt)));
+            // routed/pruned 是首次处理的结果（emit-protocol §3.2）：
+            // routed=0 是合法值（这个出口没接下游），不是错误；
+            // pruned>0 才是“这次有东西没走下去”，用 warn 色提醒。
+            row.appendChild(
+              el(
+                "span",
+                "emit-counters" + ((em.pruned || 0) > 0 ? " is-warn" : ""),
+                t("trace.emits.routed", "派发") +
+                  " " +
+                  (em.routed || 0) +
+                  " · " +
+                  t("trace.emits.pruned", "剪枝") +
+                  " " +
+                  (em.pruned || 0),
+              ),
+            );
+            if (em.note) row.appendChild(el("span", "emit-note", em.note));
+
+            // data 默认折叠：一次运行可能有几十条，全展开就没法扫。
+            // 内容是**原样 JSON 对象**（后端不重新编码），所以直接 pretty-print。
+            const det = el("details", "emit-data");
+            det.appendChild(el("summary", "", t("trace.emits.data", "data")));
+            det.appendChild(
+              el("pre", "emit-json", JSON.stringify(em.data == null ? {} : em.data, null, 2)),
+            );
+            row.appendChild(det);
+            rows.appendChild(row);
+          }
+          group.appendChild(rows);
+          box.appendChild(group);
+        }
+        card.appendChild(box);
+        return card;
+      }
+
       // 渲染整页
       async function load() {
         const body = document.getElementById("trace-body");
@@ -479,6 +757,11 @@
           // 任务链：这是本页的主体
           const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(TRACE_ID));
           const tasks = (data && data.tasks) || [];
+
+          // 产出（emits，P1.6）：与事件/底图**并行**取。它是这页的“结果”半部分（
+          // 图/瀑布图回答的是“怎么跑的”，这一块回答“到底发出了什么”）。
+          // 先起一个 promise，失败只降级这一块，不妨碍上面的链路图。
+          const emitsPromise = loadEmits((data && data.namespaceId) || "", tasks);
 
           // 事件：用来回答"谁触发的"。按 traceId 过滤（后端支持）。
           let event = null;
@@ -667,6 +950,10 @@
               history.replaceState(null, "", "?" + params.toString());
             },
           });
+
+          // 产出（emits）：追在视图卡后面。它不参与 traceview.js 的视图切换
+          // （那个文件本轮冻结），所以是一张独立卡片——最小侵入的位置。
+          body.appendChild(await emitsCard(emitsPromise));
         } catch (err) {
           // 任何一步失败（后端不可达、5xx、响应不是 JSON…）都落到这里：
           // 内容容器内画"载入失败 + 重试"，外加一条 toast。

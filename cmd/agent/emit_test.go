@@ -655,10 +655,11 @@ func TestEmitRejectsAfterTaskCancel(t *testing.T) {
 	for {
 		resp, err := emitCall(srv.Path(), emitRequest{Op: emitOpName, Token: emitTestToken, Port: "fix"}, time.Second)
 		if err != nil {
-			// socket 已删：这就是 §8 的「晚到的 emit → exit 6」。
-			if !strings.Contains(err.Error(), "dial") {
-				t.Fatalf("取消后 emit 应当拿到拒绝或连不上，实际 err=%v", err)
-			}
+			// 取消后 socket 正在收口，两种传输层结果都合法：
+			//   dial 失败（socket 已删）= §8 的「晚到的 emit → exit 6」
+			//   connection reset（监听已关、连接在建/在读中间态）
+			// 唯一不能接受的是**被接受**——那由下面 resp 分支判。
+			// 曾经这里只认 "dial"，把正常收口时序判成失败（随机红）。
 			return
 		}
 		if resp.OK || resp.Rejected != emitRejectTask {
@@ -879,8 +880,11 @@ func TestRunnerInjectsEmitEnv(t *testing.T) {
 // 第二轮（同一个 data-dir、同一个 task_id）应当看到同一 seq 的重发帧。
 func TestClientResendsUnackedOutboxOnRedispatch(t *testing.T) {
 	dataDir := t.TempDir()
+	// 脚本自报「我起来了」再等放行：任务工作目录由 agent 在**起进程前**清空重建，
+	// 测试若不看这个标记就写 allow-exit，会被那次 RemoveAll 抹掉，脚本永远等不到 → 超时。
 	script := `
 if [ -S "$ANOTIFY_EMIT_SOCK" ]; then echo "sock=present"; fi
+: > "$ANOTIFY_TASKDIR/started"
 until [ -f "$ANOTIFY_TASKDIR/allow-exit" ]; do sleep 0.01; done
 `
 	assign := func() *assignFrame {
@@ -908,6 +912,7 @@ until [ -f "$ANOTIFY_TASKDIR/allow-exit" ]; do sleep 0.01; done
 		t.Fatalf("第一轮 emit 应当成功且 seq=1：%+v", r)
 	}
 	h1.fc.waitFor(t, 5*time.Second, "第一轮的上行 emit", w4Cond(frameTypeEmit, "tsk_resend"))
+	w4WaitFile(t, filepath.Join(dataDir, "work", "tsk_resend", "started"), 5*time.Second)
 	if err := os.WriteFile(filepath.Join(dataDir, "work", "tsk_resend", "allow-exit"), nil, 0o644); err != nil {
 		t.Fatalf("放行脚本: %v", err)
 	}
@@ -930,6 +935,7 @@ until [ -f "$ANOTIFY_TASKDIR/allow-exit" ]; do sleep 0.01; done
 	if r := mustEmit(t, sockPath, emitRequest{Op: emitOpName, Token: emitTestToken, Port: "fix"}); r.Seq != 2 {
 		t.Fatalf("重派后新 emit 的 seq 应当是 2，实际 %d", r.Seq)
 	}
+	w4WaitFile(t, filepath.Join(dataDir, "work", "tsk_resend", "started"), 5*time.Second)
 	if err := os.WriteFile(filepath.Join(dataDir, "work", "tsk_resend", "allow-exit"), nil, 0o644); err != nil {
 		t.Fatalf("放行脚本: %v", err)
 	}

@@ -979,6 +979,11 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 { "type": "progress",  "task_id": "tsk_x", "note": "step 2/5" }
 
+{ "type": "emit",      "task_id": "tsk_x", "seq": 3,      // 运行中的一次产出（docs/design/emit-protocol.md）
+  "port": "fix",                                            // 唯一的路由输入（I2/I4）
+  "data": { "issue": "#42" },                               // 直接就是下游的 params；必须是对象
+  "note": "第 2 项" }                                        // 可选，只给人看，不参与路由
+
 { "type": "result",    "task_id": "tsk_x",
   "status": "succeeded",           // succeeded | failed（只做展示，不参与路由）
   "out": "fix",                    // 出口名 或 null/缺省（= 没选出口，到此为止）
@@ -994,14 +999,25 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
   "capability": "review", "version": 1,
   "params": { "diff": "..." },
   "lease_until": 1730000030,
-  "max_duration_sec": 3600 }
+  "max_duration_sec": 3600,
+  "digest":   "sha256:9f3c…a17e",   // 就跑这份字节（设计 §7 P0.1）；缺省 = 按 name@version 找缓存
+  "trace_id": "trc_x",              // 旁路：日志/排错用
+  "ports":    ["fix","push"],       // 本次允许 emit 的出口名（I2 的封闭集合）
+  "expects":  { "fix": {            // 每个端口的产出要求（推导量，随报文下发）
+      "schema":  { "required": ["issue"], "properties": { "issue": {"type":"string"} } },
+      "targets": [ { "capability": "fixer", "version": 3, "needs": { ... } } ] } },
+  "token":    "tok_…" }             // 本任务一次性令牌：本地 emit socket 用它鉴权
+
+{ "type": "emit_ack",  "task_id": "tsk_x", "seq": 3, "routed": 2, "pruned": 0, "error": "" }
 
 { "type": "cancel",    "task_id": "tsk_x", "reason": "superseded" }
 
 { "type": "error",     "code": "unknown_capability", "message": "..." }
 ```
 
-**`assign` 载荷是中枢能表达的全部**：`{capability, version, params}` + 租约。**没有 argv**（I1）。
+**`assign` 载荷是中枢能表达的全部**：`{capability, version, params, digest, ports, expects, token}` + 租约。
+**没有 argv**（I1）；`expects` 是**推导量**（中枢按当时的 link 算出来），节点只持有本次任务的那一份，
+任务结束即丢弃——节点始终不掌握拓扑。
 
 **错误码**（`error.code`）：
 

@@ -123,6 +123,20 @@ function taskRow(taskId) {
 	}
 }
 
+// dbRows 直接读库拿多行（与 taskRow 同一手法）。
+//
+// 为什么 emit 的用例必须看表：它要断言的恰好是「**行没变**」（重复 seq 不重复派发、
+// 被拒的那次不落 emission）。走 HTTP 只能看到聚合后的页面视角，而「没有多出一行」
+// 在接口上表现为「还是 2 个任务」——看起来一样，却可能是 3 个里删了 1 个。
+function dbRows(sql, ...args) {
+	const db = new DatabaseSync(server.dbPath);
+	try {
+		return db.prepare(sql).all(...args);
+	} finally {
+		db.close();
+	}
+}
+
 // waitStatus 轮询等任务到达期望状态。
 async function waitStatus(taskId, want, timeoutMs = 4000) {
 	const deadline = Date.now() + timeoutMs;
@@ -514,8 +528,32 @@ async function main() {
 		);
 
 		// 字段集合是协议契约：多一个少一个都要在这里显式改，不能悄悄漂移。
+		//
+		// **这里从「数个数」改成「点名」**（P1 交付时发现的一次漂移）：
+		// 断言原本是 `fields.length === 7`，而 P1 给 assign 加了 `trace_id`（v2）
+		// 与 `token`（emit socket 鉴权），帧已经变成 9 个字段 —— 但 e2e 里钉的是
+		// 数字 7，于是这条断言从 P1 合入那一刻起就是红的。数个数还天生说不出
+		// 「换掉了哪个」：删掉 digest、加个 foo 也是 7。所以改成**逐个点名**
+		// （更强，不是放宽）：新增字段必须在这里写下来，删掉/改名会直接红。
+		//
+		// ws.work 没有 outputs，所以 ports/expects 整帧不出现（omitempty）；
+		// 没有产物，digest 也不出现。
 		const fields = Object.keys(assign).sort();
-		H.eq("assign 帧字段集合固定（7 个）", fields.length, 7);
+		H.eq(
+			"assign 帧字段集合固定（增删字段必须在这里显式登记）",
+			fields,
+			[
+				"capability",
+				"lease_until",
+				"max_duration_sec",
+				"params",
+				"task_id",
+				"token",
+				"trace_id",
+				"type",
+				"version",
+			].sort(),
+		);
 	}
 
 	// ack：assigned → acked
@@ -607,6 +645,233 @@ async function main() {
 	await waitStatus(tFail2, "failed");
 	const rFail2 = taskRow(tFail2);
 	H.eq("态5 失败无说明 → summary 兜底", rFail2.summary, "failed");
+
+	// ================= emit 帧（P1：唯一的产出通道） =================
+	//
+	// 设计：docs/design/emit-protocol.md（§3 帧 / §4 seq 与幂等 / §7 事务边界 / §8 边界）。
+	//
+	// 为什么这条链路必须在 e2e 里、不能只靠单测：一次 emit 要 ①读真库里的任务状态
+	// ②在同一事务里写 emission + 建下游任务行 ③在**一条活着的节点连接上**把结果写成
+	// emit_ack。三件事分开看都对、连起来才错的那类 bug（比如拒收顺手把连接关了 →
+	// 节点重连、重发、再被拒、再重连）只有真连接 + 真库能抓到。
+	//
+	// 一条硬纪律（ws/node_emit.go）：**拒收一律走 emit_ack.error**，不回 error 帧、
+	// 更不断连接。下面每一条拒收用例都顺带钉住它。
+	console.log("--- emit 帧（正常 / 幂等 / 冲突 / 缺口 / 终态 / 部分扇出）---");
+	{
+		// 出口是**封闭集合**（能力的 outputs），三个出口各测一条语义：
+		//   fix     → 两条边，都有人接        → routed=2
+		//   partial → 一条有人接、一条没人接  → routed=1 / pruned=1（§8 部分扇出）
+		//   solo    → 没有边                  → routed=0 / pruned=0（到此为止，不是失败）
+		const emitCap = await defineCapability("ws.emit", ["fix", "partial", "solo"]);
+		const emitA = await defineCapability("ws.emit.a", []);
+		const emitB = await defineCapability("ws.emit.b", []);
+		// 能力定义了但**没有任何节点**接它：no_node 剪枝的靶子
+		const emitGhost = await defineCapability("ws.emit.ghost", []);
+
+		H.eq("建边 ws.emit.fix → ws.emit.a", (await addEdge(emitCap, "fix", emitA)).status, 200);
+		H.eq("建边 ws.emit.fix → ws.emit.b", (await addEdge(emitCap, "fix", emitB)).status, 200);
+		H.eq("建边 ws.emit.partial → ws.emit.a", (await addEdge(emitCap, "partial", emitA)).status, 200);
+		H.eq(
+			"建边 ws.emit.partial → ws.emit.ghost（有边、无人接）",
+			(await addEdge(emitCap, "partial", emitGhost)).status,
+			200,
+		);
+		H.eq(
+			"建入口边 ws.emit.src → ws.emit",
+			(await addEntryEdge("ws.emit.src", "go", emitCap)).status,
+			200,
+		);
+
+		// 用一条**干净的**连接：后面的断言是「拒收之后没有 error 帧、连接没关」，
+		// 复用主节点会把上面 unknown_type / bad_frame 的历史帧混进来，变成恒假。
+		const emitNode = await bringUpNode(
+			server.base,
+			server.dbPath,
+			nsId,
+			"ws-emit",
+			[emitCap, emitA, emitB],
+			4,
+		);
+
+		// emitAck 发一帧 emit 并等**这一帧**对应的 emit_ack。
+		//
+		// 必须按「发送前的帧数」切片：同一个 seq 会被重复发（幂等用例），只按 f.seq
+		// 找会立刻命中上一条旧 ack，把「重复 seq 得到同一份结果」变成恒真的废话。
+		const emitAck = async (body, timeoutMs = 4000) => {
+			const from = emitNode.frames.length;
+			emitNode.conn.send({ type: "emit", ...body });
+			const deadline = Date.now() + timeoutMs;
+			while (Date.now() < deadline) {
+				const hit = emitNode.frames
+					.slice(from)
+					.find((f) => f.type === "emit_ack" && f.seq === body.seq);
+				if (hit) return hit;
+				await new Promise((r) => setTimeout(r, 20));
+			}
+			return null;
+		};
+		// children 读某条任务的直接下游（emit 建出来的那些行）。
+		const children = (parentId) =>
+			dbRows(
+				`SELECT id, capability, status, params FROM tasks WHERE parent_task_id = ?`,
+				parentId,
+			);
+		// emissions 读某条任务已落库的 emit 行（幂等 = 行不变；缺口 = 行不增）。
+		const emissions = (taskId) =>
+			dbRows(
+				`SELECT seq, port, data, routed, pruned FROM emissions WHERE task_id = ? ORDER BY seq`,
+				taskId,
+			);
+
+		// ---- 父任务：一次事件 → 一个 ws.emit 任务，派到这台节点 ----
+		const parentEv = await postEvent({ source: "ws.emit.src", type: "go", payload: {} });
+		H.eq("emit 用例：事件建出 1 个父任务", parentEv.json?.tasks?.length, 1);
+		const parentTask = parentEv.json?.tasks?.[0]?.id;
+		const parentAssign = await waitForFrame(
+			emitNode.frames,
+			(f) => f.type === "assign" && f.task_id === parentTask,
+		);
+		H.check(
+			"父任务派到 emit 节点（下面所有 emit 都以它上报）",
+			!!parentAssign,
+			JSON.stringify(emitNode.frames.map((f) => f.type)),
+		);
+
+		// assign 的三个 P1 增补字段（都是**推导量**，不落库；§3.4）
+		H.eq(
+			"assign 带 ports（出口封闭集合的快照）",
+			(parentAssign?.ports || []).slice().sort(),
+			["fix", "partial", "solo"],
+		);
+		H.eq(
+			"assign 带 expects.fix.targets（这个出口能去哪）",
+			(parentAssign?.expects?.fix?.targets || []).map((t) => t.capability).sort(),
+			["ws.emit.a", "ws.emit.b"],
+		);
+		H.check(
+			"assign 带一次性任务令牌（本地 emit socket 鉴权）",
+			(parentAssign?.token || "").length >= 16,
+			// 令牌绝不进日志：只说长度
+			`token 长度=${(parentAssign?.token || "").length}`,
+		);
+
+		// ---- ① 正常 emit：routed 正确 + 下游任务真的建出来 ----
+		const ack1 = await emitAck({
+			task_id: parentTask,
+			seq: 1,
+			port: "fix",
+			data: { issue: "#42" },
+			note: "第一次产出",
+		});
+		H.check("emit → 收到 emit_ack", !!ack1, JSON.stringify(emitNode.frames.map((f) => f.type)));
+		H.eq("emit_ack.error 为空（成功）", ack1?.error || "", "");
+		H.eq("一个端口两条边 → routed=2", ack1?.routed, 2);
+		H.eq("成功路径 pruned=0", ack1?.pruned || 0, 0);
+		H.eq("emit_ack.seq 回显上报的那个 seq", ack1?.seq, 1);
+		H.eq("emit_ack.task_id 是上报的那条任务", ack1?.task_id, parentTask);
+
+		const kids1 = children(parentTask);
+		H.eq("① 下游任务真的建了两条", kids1.length, 2);
+		H.eq(
+			"① 两条下游任务落在两个目标上",
+			kids1.map((k) => k.capability).sort(),
+			["ws.emit.a", "ws.emit.b"],
+		);
+		// 事务边界（§7）：emission 与子任务行同一次提交，routed 存**首次**结果
+		const em1 = emissions(parentTask);
+		H.eq("① emissions 落了一行", em1.length, 1);
+		H.eq("① emissions.port 是上报的出口", em1[0]?.port, "fix");
+		H.eq("① emissions.routed 与 ack 一致", em1[0]?.routed, 2);
+
+		// ---- ② 重复 seq（内容相同）→ 幂等：不重复派发 ----
+		const ack1b = await emitAck({
+			task_id: parentTask,
+			seq: 1,
+			port: "fix",
+			data: { issue: "#42" },
+			note: "重发（内容相同）",
+		});
+		H.eq("② 重复 seq：ack.error 仍为空（幂等成功）", ack1b?.error || "", "");
+		H.eq("② 重复 seq：routed 取首次结果", ack1b?.routed, 2);
+		H.eq("② 重复 seq：下游任务不多建", children(parentTask).length, 2);
+		H.eq("② 重复 seq：emissions 仍然只有 1 行", emissions(parentTask).length, 1);
+
+		// ---- ③ 同 seq 不同 port/data → 拒收（节点 bug，不能静默覆盖）----
+		const ackReuse = await emitAck({
+			task_id: parentTask,
+			seq: 1,
+			port: "solo",
+			data: { issue: "#43" },
+		});
+		H.check(
+			"③ 同 seq 不同内容 → ack 带 error（不静默覆盖）",
+			/reused/i.test(ackReuse?.error || ""),
+			JSON.stringify(ackReuse),
+		);
+		H.eq("③ 被拒的那次不建任务", children(parentTask).length, 2);
+		H.eq("③ 被拒的那次不改 emissions", emissions(parentTask).length, 1);
+
+		// ---- ④ 部分扇出：一条边有人接、一条没人接（§8）----
+		const ack2 = await emitAck({ task_id: parentTask, seq: 2, port: "partial", data: {} });
+		H.eq("④ 部分扇出：ack.error 为空（剪枝不是失败）", ack2?.error || "", "");
+		H.eq("④ 一条边无节点 → routed=1", ack2?.routed, 1);
+		H.eq("④ 一条边无节点 → pruned=1", ack2?.pruned, 1);
+		const kids2 = children(parentTask);
+		H.eq("④ 下游总行数 = 3（2 + 被派出去的 1）", kids2.length, 3);
+		H.eq(
+			"④ 被剪的那条（no_node）不建任务行",
+			kids2.filter((k) => k.capability === "ws.emit.ghost").length,
+			0,
+		);
+
+		// ---- solo：出口没接下游 → 0/0，不是错误（§8）----
+		const ack3 = await emitAck({ task_id: parentTask, seq: 3, port: "solo", data: {} });
+		H.eq("出口没接下游：ack.error 为空", ack3?.error || "", "");
+		H.eq("出口没接下游：routed=0", ack3?.routed || 0, 0);
+		H.eq("出口没接下游：pruned=0", ack3?.pruned || 0, 0);
+		H.eq("出口没接下游：不建任务", children(parentTask).length, 3);
+
+		// ---- ⑤ 缺口：1..seq-1 必须齐全（seq=5 而 4 缺失）----
+		const ackGap = await emitAck({ task_id: parentTask, seq: 5, port: "fix", data: { issue: "#44" } });
+		H.check(
+			"⑤ 缺口 → ack 带 error（丢消息必须可见，不猜不跳过）",
+			/gap/i.test(ackGap?.error || ""),
+			JSON.stringify(ackGap),
+		);
+		H.eq("⑤ 缺口：不建任务", children(parentTask).length, 3);
+		H.eq("⑤ 缺口：不落 emission（emissions 仍是 3 行）", emissions(parentTask).length, 3);
+		// 拒收一条都没关连接、也没回 error 帧——这正是「不制造重连风暴」的判据
+		H.check("⑤ 拒收后连接仍活着", !emitNode.conn.closed);
+		H.check(
+			"⑤ 拒收走 emit_ack.error，不夹带 error 帧",
+			!emitNode.frames.some((f) => f.type === "error"),
+			JSON.stringify(emitNode.frames.filter((f) => f.type === "error")),
+		);
+
+		// ---- ⑥ 已终结任务 emit → 拒收（§8：晚到的 emit 不许改已终结的任务）----
+		emitNode.conn.send({ type: "ack", task_id: parentTask });
+		await waitStatus(parentTask, "acked");
+		emitNode.conn.send({ type: "progress", task_id: parentTask, note: "emit 用例收尾" });
+		await waitStatus(parentTask, "running");
+		emitNode.conn.send({
+			type: "result",
+			task_id: parentTask,
+			status: "succeeded",
+			summary: "emit 用例结束",
+		});
+		await waitStatus(parentTask, "succeeded");
+		const ackClosed = await emitAck({ task_id: parentTask, seq: 4, port: "fix", data: {} });
+		H.check(
+			"⑥ 已终结任务 emit → ack 带 error",
+			/not running/i.test(ackClosed?.error || ""),
+			JSON.stringify(ackClosed),
+		);
+		H.eq("⑥ 终态被拒：不建任务", children(parentTask).length, 3);
+		H.eq("⑥ 终态被拒：不落 emission", emissions(parentTask).length, 3);
+
+		emitNode.conn.close();
+	}
 
 	// ================= 非法迁移 → invalid_transition =================
 	console.log("--- 非法迁移 ---");

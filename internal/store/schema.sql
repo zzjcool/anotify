@@ -847,6 +847,7 @@ CREATE TABLE IF NOT EXISTS emissions (
     seq        INTEGER NOT NULL,               -- 任务内单调递增，从 1 开始
     port       TEXT NOT NULL,                  -- 上游回报的出口名（路由的唯一输入）
     data       TEXT NOT NULL DEFAULT '{}',     -- 原样保存的 JSON 对象（审计用字节）
+    note       TEXT NOT NULL DEFAULT '',       -- 能力进程写的备注：不参与路由，只给排障看
     routed     INTEGER NOT NULL DEFAULT 0,     -- 首次处理派发出去几条下游
     pruned     INTEGER NOT NULL DEFAULT 0,     -- 首次处理剪枝条数
     created_at INTEGER NOT NULL,
@@ -873,3 +874,13 @@ CREATE TABLE IF NOT EXISTS emissions (
 --
 -- 由 store.go 的 migrationHooks[23]（migrateTaskToken）执行，SQL 空块——
 -- 理由与迁移 5 / 20 / 21 相同：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列必须幂等。
+
+-- +migration 24 emission_note
+--
+-- emissions 补 note 列。
+--
+-- emit 帧从第一天就带 note（docs/design/emit-protocol.md §3.1），但迁移 22 建表时
+-- 漏了这一列，导致中枢收到后丢弃、trace 里恒为空。默认 '' = 老数据没有备注，行为不变。
+--
+-- SQL 块为空是有意的：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列走 Go 侧的
+-- migrationHooks[24]（与迁移 20/21/23 同形）。

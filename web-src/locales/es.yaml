@@ -1549,6 +1549,14 @@ trace:
   nolib: No se pudo cargar el renderizador.
   empty: No hay tareas en esta traza. Suele significar que se podó en el primer paso (sin arista coincidente, parámetros que no cumplen el schema, o ningún nodo declara la capacidad destino).
   empty_title: No hay tareas
+  emits:
+    title: Salidas (emits)
+    subtitle: Cada emit de esta ejecución — puerto, hora, resultado del despacho y data original
+    empty: Esta ejecución aún no ha emitido nada. emit es el único canal de salida — nada significa que todavía no hay salida (o el proceso sigue en marcha).
+    failed: No se pudo cargar la lista de salidas (la traza de arriba no se ve afectada)
+    routed: Despachados
+    pruned: Podados
+    data: data
   stat:
     spans: Tareas
     duration: Duración

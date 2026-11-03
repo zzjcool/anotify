@@ -80,6 +80,9 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(h.tasks))))
 	mux.Handle("GET /v1/tasks/{id}", noStore(sessMW(http.HandlerFunc(h.task))))
 	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(h.trace))))
+	// P1.6：任务的 emit 列表（命名空间在路径里，与生产 mux 的接线一致）
+	mux.Handle("GET /v1/namespaces/{ns}/tasks/{taskId}/emissions",
+		noStore(sessMW(http.HandlerFunc(h.emissions))))
 	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(h.events))))
 	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(h.cancelTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))

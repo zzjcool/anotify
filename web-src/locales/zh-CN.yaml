@@ -1549,6 +1549,14 @@ trace:
   nolib: 渲染脚本未能加载。
   empty: 这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。
   empty_title: 没有任务
+  emits:
+    title: 产出（emits）
+    subtitle: 这次运行里每一次 emit：出口、时间、派发结果与原始 data
+    empty: 这次运行还没有 emit。emit 是唯一的产出通道——没有就说明还没产出任何东西（或进程还在跑）。
+    failed: 产出列表没能加载（不影响上面的链路）
+    routed: 派发
+    pruned: 剪枝
+    data: data
   stat:
     spans: 任务
     duration: 总耗时

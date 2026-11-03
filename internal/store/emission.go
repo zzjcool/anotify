@@ -24,6 +24,11 @@ type Emission struct {
 	Port string `json:"port"`
 	// Data 是原样保存的 JSON 对象（审计要的是当时那份字节，不重排键）。
 	Data json.RawMessage `json:"data"`
+	// Note 是能力进程自己写的一句人类可读备注（emit-protocol §3.1）。
+	//
+	// 它**不参与路由**，也不影响任何判定；存下来纯粹是因为排障时
+	// 「第 3 次 emit 到底在说什么」经常比 port/data 更有信息量。
+	Note string `json:"note"`
 	// Routed 是首次处理派发出去的下游条数（= 建出的子任务行数）。
 	Routed int `json:"routed"`
 	// Pruned 是首次处理剪掉的 link 条数（no_node / foreign_user / path / param_*）。
@@ -33,7 +38,7 @@ type Emission struct {
 }
 
 // emissionColumns 是统一的列顺序，scanEmission 依赖它。
-const emissionColumns = `task_id, seq, port, data, routed, pruned, created_at`
+const emissionColumns = `task_id, seq, port, data, note, routed, pruned, created_at`
 
 // InsertEmission 落一条 emission（幂等：重复 (task_id, seq) 什么都不写）。
 //
@@ -123,10 +128,10 @@ func (d *DB) insertEmissionTx(ctx context.Context, tx *sql.Tx, e *Emission) (boo
 		createdAt = Now()
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO emissions (task_id, seq, port, data, routed, pruned, created_at)
-		 VALUES (?,?,?,?,?,?,?)
+		`INSERT INTO emissions (task_id, seq, port, data, note, routed, pruned, created_at)
+		 VALUES (?,?,?,?,?,?,?,?)
 		 ON CONFLICT(task_id, seq) DO NOTHING`,
-		e.TaskID, e.Seq, e.Port, string(data), e.Routed, e.Pruned, createdAt)
+		e.TaskID, e.Seq, e.Port, string(data), e.Note, e.Routed, e.Pruned, createdAt)
 	if err != nil {
 		return false, fmt.Errorf("insert emission (%s#%d): %w", e.TaskID, e.Seq, err)
 	}
@@ -207,7 +212,7 @@ func (d *DB) EmissionSeqStatus(ctx context.Context, taskID string) (count int, m
 func scanEmissionRow(row scanRow) (*Emission, error) {
 	var e Emission
 	var data string
-	if err := row.Scan(&e.TaskID, &e.Seq, &e.Port, &data, &e.Routed, &e.Pruned, &e.CreatedAt); err != nil {
+	if err := row.Scan(&e.TaskID, &e.Seq, &e.Port, &data, &e.Note, &e.Routed, &e.Pruned, &e.CreatedAt); err != nil {
 		return nil, err
 	}
 	if data == "" {

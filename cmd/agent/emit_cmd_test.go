@@ -180,10 +180,19 @@ func TestRunEmitAgainstServer(t *testing.T) {
 		if code != exitOK || err != nil {
 			t.Fatalf("应当退 0，实际 (%d, %v)", code, err)
 		}
-		frames := rec.all()
-		last := frames[len(frames)-1]
-		if last.Port != "note" || string(last.Data) != `{"issue":"#from-stdin"}` {
-			t.Fatalf("stdin 的 data 没传对：%+v", last)
+		// 按 port 找这一条，**不能取最后一帧**：前面子用例的上行帧是异步到达的，
+		// 抢占 last 会让断言随机失败（失败信息里出现 Port:fix 就是它）。
+		var got *emitFrame
+		for _, f := range rec.all() {
+			if f.Port == "note" {
+				got = f
+			}
+		}
+		if got == nil {
+			t.Fatalf("没收到 --port note 的 emit 帧")
+		}
+		if string(got.Data) != `{"issue":"#from-stdin"}` {
+			t.Fatalf("stdin 的 data 没传对：%+v", got)
 		}
 	})
 }

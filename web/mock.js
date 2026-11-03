@@ -231,6 +231,13 @@
 		sources: [],
 		events: [],
 		tasks: [],
+		// 每次 emit 的落库行（P1.6）：真后端是 emissions 表（迁移 22），
+		// 按 (task_id, seq) 唯一。mock 里就是一个平表，由 seedEmissions() 播种。
+		//
+		// 一定要有种子数据：否则 trace 页的「产出（emits）」区永远只能看到
+		// 空态，而空态看不出这个区该长什么样（端口徽章 / routed-pruned /
+		// 可折叠的 data 一个都验不了）。
+		emissions: [],
 		keys: [],
 		devices: [],
 		// 产物与部署（CONTRACT-protocol §9）：真后端是两张表，mock 里
@@ -1298,6 +1305,50 @@
 				made.push(task);
 			}
 		}
+	})();
+
+	// ---------- emit 种子数据（P1.6）----------
+	//
+	// 真后端的 emissions 是「每次 emit 一行」（迁移 22，PRIMARY KEY(task_id, seq)），
+	// trace 页的「产出（emits）」区就是读它。这里给**主线 trace 的根任务**种三条，
+	// 形状刻意覆盖三种结果：
+	//
+	//   #1 needs-fix routed=2  —— 一个出口扇出两个下游（这条 trace 里它确实有 2 条边）
+	//   #2 needs-fix routed=1 pruned=1 —— 同一端口再来一次：这次有一条边被剪了
+	//   #3 approved  routed=0 pruned=1 —— 另一端口没有派出去（routed=0 是合法结果）
+	//
+	// 端口名刻意用**这个能力真的声明过的出口**（analyze-pr 的 ports 就是
+	// needs-fix / approved）：emit 的 port 必须在 ports[] 里（I2），mock 造一个
+	// 不存在的端口就是在演示一个真后端会拒收的形状。
+	//
+	// 为什么选主线 trace（trace_mock_t2）的 analyze-pr：它是事件流里点「查看链路」
+	// 最常落到的那条（复杂、有扇出、有失败），打开就能看到产出区长什么样。
+	// traceSeq 是确定性的（见 nextTraceId 的注释），所以 trace_mock_t2 跨刷新稳定。
+	(function seedEmissions() {
+		const host =
+			state.tasks.find((t) => t.traceId === "trace_mock_t2" && t.capability === "analyze-pr") ||
+			state.tasks[0];
+		if (!host) return;
+		// 时间贴着任务自身的时间轴：emit 发生在任务跑的过程中（startedAt..finishedAt），
+		// 不是"任务结束后才冒出来"的一条。
+		const base = host.startedAt != null ? host.startedAt : host.createdAt;
+		const row = (seq, port, data, routed, pruned, offset, note) => ({
+			taskId: host.id,
+			seq,
+			port,
+			data,
+			// 真后端的 emissions 表还没有 note 列（中枢收到帧后只记日志），
+			// 所以这里也留空 —— mock 不能比真后端"多出"一个会误导人的字段值。
+			note: note || "",
+			routed,
+			pruned,
+			createdAt: Math.round(base + offset),
+		});
+		state.emissions.push(
+			row(1, "needs-fix", { issue: "#913", files: 27, findings: 6, patch: "a1b2c3d" }, 2, 0, 0.4),
+			row(2, "needs-fix", { issue: "#913", files: 3, findings: 2, patch: "a1b2c3d" }, 1, 1, 1.7),
+			row(3, "approved", { issue: "#913", files: 27, approved: false }, 0, 1, 3.1),
+		);
 	})();
 
 	// ---------- 组织与命名空间 ----------
@@ -2380,6 +2431,28 @@
 			.filter((t) => t.traceId === task.traceId)
 			.sort((a, b) => a.createdAt - b.createdAt);
 		return json({ task: clone(task), chain: clone(chain) });
+	});
+
+	// ===== 产出（emits，P1.6）=====
+	//
+	// 真后端：`GET /v1/namespaces/{ns}/tasks/{taskId}/emissions`——emissions 是
+	// 任务的**子资源**，命名空间长在路径上（不读 namespaceId query）。
+	//
+	// 三条口径与真后端逐条对齐，mock 才能当契约用：
+	//   · 按 seq 升序（页面就是按这个顺序画的）
+	//   · 空列表是 `[]` 不是 null（否则前端分不清「还没 emit」与「查不到」）
+	//   · 跨命名空间一律 404，文案与「任务不存在」相同（不泄露存在性）
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/tasks\/([^/]+)\/emissions$/, (ctx) => {
+		const nsId = decodeURIComponent(ctx.m[1]);
+		const taskId = decodeURIComponent(ctx.m[2]);
+		const task = state.tasks.find((t) => t.id === taskId);
+		if (!task || (nsId !== "*" && task.namespaceId !== nsId)) {
+			return err(404, "任务不存在");
+		}
+		const rows = state.emissions
+			.filter((e) => e.taskId === taskId)
+			.sort((a, b) => a.seq - b.seq);
+		return json({ taskId: taskId, namespaceId: nsId, emissions: clone(rows) });
 	});
 
 	on("POST", /^\/v1\/tasks\/([^/]+)\/cancel$/, (ctx) => {

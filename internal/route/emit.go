@@ -47,6 +47,11 @@ type EmitInput struct {
 	Data json.RawMessage
 	// Note 是给人看的备注，**不参与路由**（§3.1）。
 	Note string
+	// NodeID 是上报这帧的连接所属节点。
+	//
+	// 它不参与路由，只做**归属校验**：已派给 A 的任务，B 不能替它 emit。
+	// 空值 = 调用方不做归属校验（内部调用与测试）；帧路径永远带值。
+	NodeID string
 }
 
 // EmitOutput 是一次 emit 的处理结果（对应 emit_ack，§3.2）。
@@ -70,6 +75,12 @@ type EmitOutput struct {
 var (
 	// ErrEmitTaskNotFound 任务行不存在（被 retention 清掉，或帧里的 task_id 是编的）。
 	ErrEmitTaskNotFound = errors.New("emit: unknown task")
+	// ErrEmitForeignNode 这条任务不属于上报的节点（已派给 A，B 却来 emit）。
+	//
+	// 为什么必须有：emit 能凭空产生下游任务。没有这条，同命名空间里任一节点
+	// 都能替别人在跑的任务伪造产出（ack/progress/result 早就有这道栅栏，
+	// 见 ws.rejectForeignExecution）；emit 是唯一能「产生新工作」的帧，更不能缺。
+	ErrEmitForeignNode = errors.New("emit: task belongs to another node")
 	// ErrEmitTaskClosed 任务已非运行态（终态 / 租约已过期）。
 	//
 	// 「已终态」必须拒：允许晚到的 emit 改动已终结的任务，等于允许它凭空产生下游
@@ -154,6 +165,14 @@ func (d *Dispatcher) Emit(ctx context.Context, in EmitInput) (*EmitOutput, error
 	if !emitAcceptableStatus(task.Status) {
 		return nil, fmt.Errorf("%w: task %s is %s", ErrEmitTaskClosed, task.ID, task.Status)
 	}
+	// ①' 归属：任务已派给某个节点时，只有那个节点能替它上报。
+	//
+	// 只在两侧都有值时才判：节点侧的老任务行（迁移前）没有 node_id，
+	// 拿它拒收会把「历史任务继续跑」变成不可能。
+	if in.NodeID != "" && task.NodeID != nil && *task.NodeID != in.NodeID {
+		return nil, fmt.Errorf("%w: task %s is on node %s, frame from %s",
+			ErrEmitForeignNode, task.ID, *task.NodeID, in.NodeID)
+	}
 
 	// ② data 必须是 JSON 对象。空 = {}（§3.1：可缺省）。
 	params, err := decodeEmitData(in.Data)
@@ -217,6 +236,7 @@ func (d *Dispatcher) Emit(ctx context.Context, in EmitInput) (*EmitOutput, error
 		Seq:       in.Seq,
 		Port:      in.Port,
 		Data:      in.Data,
+		Note:      in.Note,
 		Routed:    len(tasks),
 		Pruned:    len(planOut.Pruned),
 		CreatedAt: d.now(),

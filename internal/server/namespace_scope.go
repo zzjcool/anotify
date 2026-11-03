@@ -12,6 +12,9 @@ import (
 
 // 命名空间作用域解析（契约 §6.2 / 不变量 I10、I11）。
 //
+// 两种端点形状共用同一套规则：`?namespaceId=` / body 字段（绝大多数端点）与
+// `{ns}` 路径段（`/v1/namespaces/{ns}/…`，见 resolvePathNamespace）。
+//
 // 规则（没有例外、没有隐式默认）：
 //
 //	缺 namespaceId        → 400（**绝不回退默认命名空间**：回退等于把人写错的地方藏起来）
@@ -64,6 +67,17 @@ var (
 // 将来要按命名空间分权限，**只改 store.AuthorizeNamespace 并新增 namespace_members 表**，
 // 本函数与本文件其余部分形状不变。不要在 handler 里散写归属判断。
 func (h *consoleHandler) namespaceScope(ctx context.Context, r *http.Request, bodyNS string, allowAll bool) (nsScope, error) {
+	return h.scopeForNamespaceID(ctx, namespaceParam(r, bodyNS), allowAll)
+}
+
+// scopeForNamespaceID 是 namespaceScope 的「命名空间 id 已确定」版本。
+//
+// 为什么要把规则和「id 从哪来」拆开：`namespaceId` 有两种来源——query/body
+// （绝大多数端点，走 namespaceParam）与**路径段**（`/v1/namespaces/{ns}/…`
+// 形状的端点，namespace 是 URL 的一部分）。判据只能有一份（缺参 400 / `*` 视
+// 端点 / 不存在 404 / 未登录 401），抄第二份必然漂移，所以这里只把 raw 抽出来，
+// 其余逐字保留。
+func (h *consoleHandler) scopeForNamespaceID(ctx context.Context, raw string, allowAll bool) (nsScope, error) {
 	// 已登录是收口的第一环：`*` 汇总路径不查具体命名空间，也必须先过这一关，
 	// 否则 `*` 就成了绕过收口的后门（未登录也能汇总全部署）。
 	userID := auth.UserIDFromContext(ctx)
@@ -71,7 +85,6 @@ func (h *consoleHandler) namespaceScope(ctx context.Context, r *http.Request, bo
 		return nsScope{}, store.ErrAuthRequired
 	}
 
-	raw := namespaceParam(r, bodyNS)
 	if raw == "" {
 		return nsScope{}, errNamespaceParamMissing
 	}
@@ -101,6 +114,20 @@ func (h *consoleHandler) namespaceScope(ctx context.Context, r *http.Request, bo
 // 返回 (scope, ok)；ok=false 表示已经写过错误响应，调用方直接 return。
 func (h *consoleHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, bodyNS string, allowAll bool) (nsScope, bool) {
 	ns, err := h.namespaceScope(r.Context(), r, bodyNS, allowAll)
+	if err != nil {
+		writeNamespaceScopeError(w, err)
+		return nsScope{}, false
+	}
+	return ns, true
+}
+
+// resolvePathNamespace 解析**路径里**的命名空间（`/v1/namespaces/{ns}/…` 端点专用）。
+//
+// 与 resolveNamespace 的区别只有「raw 从哪来」：这里取 `{ns}` 路径段，其余
+// （缺参 400 / `*` 400 / 不存在 404 / 未登录 401）走同一个 scopeForNamespaceID
+// 与同一个错误映射，所以两种形状的端点在错误码上不可能分叉。
+func (h *consoleHandler) resolvePathNamespace(w http.ResponseWriter, r *http.Request, allowAll bool) (nsScope, bool) {
+	ns, err := h.scopeForNamespaceID(r.Context(), strings.TrimSpace(r.PathValue("ns")), allowAll)
 	if err != nil {
 		writeNamespaceScopeError(w, err)
 		return nsScope{}, false

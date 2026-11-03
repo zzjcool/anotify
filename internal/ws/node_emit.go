@@ -42,6 +42,15 @@ func (s *nodeSession) handleEmit(ctx context.Context, f *EmitFrame) error {
 		return nil
 	}
 
+	// 归属栅栏（#222 的同族约束）：同一任务只许一条**活着的连接**推进它。
+	// 与 ack/progress/result 不同的是，这里的拒收走 emit_ack.error（不回 error 帧）——
+	// emit 的失败语义是「这次产出不收」，不是「你这条帧写错了」，混用会诱发重连风暴。
+	if cur := s.h.hub().owner(f.TaskID); cur != nil && cur != s {
+		s.sendEmitAck(ctx, f.TaskID, f.Seq, 0, 0,
+			"task is being executed by another connection")
+		return nil
+	}
+
 	out, err := s.h.Emit.Emit(ctx, route.EmitInput{
 		// 作用域用**节点的**命名空间：一条连接 = 一个节点 = 一个命名空间（I10/I11），
 		// 帧里不带命名空间（令牌即作用域）。
@@ -51,6 +60,9 @@ func (s *nodeSession) handleEmit(ctx context.Context, f *EmitFrame) error {
 		Port:        f.Port,
 		Data:        f.Data,
 		Note:        f.Note,
+		// 归属校验的另一半：库里记着「这条任务派给了谁」，这里把「谁在报」带下去。
+		// 只靠内存栅栏不够——两个节点先后连过、前者已断开时，内存里没有 owner 了。
+		NodeID: s.node.ID,
 	})
 	if err != nil {
 		slog.Warn("emit rejected",

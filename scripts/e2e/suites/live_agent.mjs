@@ -301,6 +301,222 @@ async function main() {
 		H.check("没声明就不该进用户目录", !!m && m[1] !== projDir, String(m && m[1]));
 		H.check("默认目录在 data-dir 的 work 下", !!m && m[1].includes("work"), String(m && m[1]));
 	}
+
+	// ================= 6. 真进程 emit：能力脚本 → 本机 socket → 中枢派发 =================
+	//
+	// 为什么这一节必须用**真进程**（docs/design/emit-protocol.md §0 的进程树）：
+	//
+	//   中枢 ──WS── agent ──unix socket── anotify-agent emit ← 能力进程
+	//
+	// 这条链上任何一层用假节点 / 假 socket 替掉，下面三件事就都没被验过：
+	//   ① 环境变量真的被注进了**能力进程**（ANOTIFY_EMIT_SOCK 指向一个活的 unix socket）；
+	//   ② 脚本里的 `anotify-agent emit` 真的被 agent 中转、被中枢 ack（acked=routed）；
+	//   ③ socket 与任务同生命周期（§1 / §8）：任务终结后文件必须消失——「socket 不存在」
+	//      正是中枢/agent 用来拒绝「晚到的 emit 改动已终结的任务」的信号。
+	//
+	// 断言分两半：**进程里看到的**（探针文件，脚本自己写）+ **中枢里落下的**
+	// （任务行：父任务 1 条、下游 2 条）。只看一半就能绿的那种实现是错的。
+	console.log("--- 6. 真进程 emit：能力脚本 → 本机 socket → 中枢 ---");
+
+	// 本节自己的建能力辅助（不能复用上面的 makeCapability）：emit 需要一个**声明出口**的
+	// 能力（outputs 即 ports），而 makeCapability 把 paramsSchema 写死成 {note}。
+	const makeEmitCap = async (name, script, outputs, paramsSchema) => {
+		const r = await H.req(server.base, "/v1/capabilities", {
+			session,
+			body: {
+				namespaceId: nsId,
+				name,
+				outputs,
+				paramsSchema: paramsSchema || { type: "object" },
+				run: { entrypoint: "run.sh", files: { "run.sh": script }, timeoutSec: 60 },
+			},
+		});
+		H.eq(`建能力 ${name} → 200`, r.status, 200);
+		H.check(
+			`${name} 编译出产物 digest（内容寻址）`,
+			/^sha256:[0-9a-f]{64}$/.test(String(r.json?.digest || "")),
+			String(r.json?.digest),
+		);
+		return {
+			id: r.json?.capability?.id,
+			name,
+			version: r.json?.capability?.version,
+			digest: r.json?.digest,
+		};
+	};
+
+	const probe = path.join(tmpDir, "emit-probe.txt");
+	// 两个下游都要 issue：这样 emit 时的 expects（下游要什么的并集）真的非空，
+	// 「emit 参数被挡在节点侧」这条链也顺带被覆盖。
+	const targetParams = {
+		type: "object",
+		required: ["issue"],
+		properties: { issue: { type: "string" } },
+	};
+	const t1 = await makeEmitCap(
+		"live.emit.target1",
+		'#!/bin/bash\nset -euo pipefail\necho "t1 got ${ANOTIFY_PARAM_ISSUE:-} "\n',
+		[],
+		targetParams,
+	);
+	const t2 = await makeEmitCap(
+		"live.emit.target2",
+		'#!/bin/bash\nset -euo pipefail\necho "t2 got ${ANOTIFY_PARAM_ISSUE:-} "\n',
+		[],
+		targetParams,
+	);
+	// 能力进程里的 emit：脚本自己把「它看到了什么」写进探针文件（不靠日志格式猜）。
+	// 探针路径是绝对值（tmpDir 下的固定文件），所以不依赖 cwd / workDir。
+	const emitterScript = [
+		"#!/bin/bash",
+		"set -uo pipefail",
+		`PROBE=${JSON.stringify(probe)}`,
+		'sock="${ANOTIFY_EMIT_SOCK:-}"',
+		'if [ -S "$sock" ]; then is=yes; else is=no; fi',
+		'printf \'sock=%s\\n\' "$sock" > "$PROBE"',
+		'printf \'sock_is_socket=%s\\n\' "$is" >> "$PROBE"',
+		'printf \'task_id=%s\\n\' "${ANOTIFY_TASK_ID:-}" >> "$PROBE"',
+		'printf \'token_len=%s\\n\' "${#ANOTIFY_TASK_TOKEN}" >> "$PROBE"',
+		// 真正的调用：--wait-routed = 等中枢 ack 再返回（默认只等本地 outbox 落盘，
+		// 那证明不了「已经派发出去」——而这正是本节要断言的那一半）。
+		`rc=0`,
+		`${JSON.stringify(AGENT_BIN)} emit --port emit.fix --data '{"issue":"#42","title":"空指针"}' --wait-routed --note '第 1 项' >> "$PROBE" 2>&1 || rc=$?`,
+		'printf \'exit=%s\\n\' "$rc" >> "$PROBE"',
+		// 脚本自己总是成功退：这节的断言看探针里的 exit=，而不是把任务先弄成 failed
+		"exit 0",
+		"",
+	].join("\n");
+	const emitter = await makeEmitCap("live.emit", emitterScript, ["emit.fix"]);
+
+	// 三个能力都部署到同一台真节点（下游也要有节点接，否则 no_node 剪枝 → routed=0）
+	for (const c of [emitter, t1, t2]) await deploy(c);
+	const emitApplied = await until(
+		async () => {
+			const rows = await listDeployments();
+			const want = [emitter.id, t1.id, t2.id];
+			const hit = rows.filter((d) => want.includes(d.capabilityId));
+			return hit.length === 3 && hit.every((d) => d.state === "applied") ? hit : null;
+		},
+		{ timeoutMs: 20000 },
+	);
+	H.check(
+		"emit 用例的三个能力都 applied",
+		!!emitApplied,
+		JSON.stringify(
+			(await listDeployments()).map((d) => [d.capability, d.state, (d.reason || "").slice(0, 60)]),
+		),
+	);
+	// 归属只由部署派生（D4）：三个名字必须都在这台节点上，否则 emit 的下游会被
+	// no_node 剪掉，症状是「脚本 exit 0、但下游一条任务都没有」——很难从日志上看出来。
+	const emitDerived = await until(
+		async () => {
+			const n = (await listNodes()).find((x) => x.id === nodeId);
+			const names = (n?.capabilities || []).map((c) => c.name);
+			return [emitter.name, t1.name, t2.name].every((x) => names.includes(x)) ? names : null;
+		},
+		{ timeoutMs: 20000 },
+	);
+	H.check(
+		"三个能力都从部署派生到这台节点（否则下游会被 no_node 剪掉）",
+		!!emitDerived,
+		JSON.stringify((await listNodes()).map((n) => (n.capabilities || []).map((c) => c.name))),
+	);
+
+	// 一个出口两条边（fan-out）：routed 应当 = 2
+	const mkEdge = (fromPort, to) =>
+		H.req(server.base, "/v1/edges", {
+			session,
+			body: {
+				namespaceId: nsId,
+				fromCapability: emitter.id,
+				fromPort,
+				toCapability: to.id,
+			},
+		});
+	H.eq("建边 emit.fix → target1", (await mkEdge("emit.fix", t1)).status, 200);
+	H.eq("建边 emit.fix → target2", (await mkEdge("emit.fix", t2)).status, 200);
+
+	const emitSrc = await H.req(server.base, "/v1/sources", {
+		session,
+		body: {
+			namespaceId: nsId,
+			name: "live-emit-src",
+			kind: "manual",
+			config: {},
+			targets: [{ capabilityId: emitter.id }],
+		},
+	});
+	H.eq("建 emit 用例的源 → 201", emitSrc.status, 201);
+	const emitFired = await H.req(
+		server.base,
+		`/v1/sources/${emitSrc.json?.source?.id}/fire`,
+		{ session, body: { namespaceId: nsId, type: "live.emit.run", payload: {} } },
+	);
+	H.eq("触发 emit 用例的源 → 200", emitFired.status, 200);
+	const parentId = (emitFired.json?.dispatch?.tasks || [])[0]?.id;
+	H.check("拿到 emit 用例的父任务", !!parentId, JSON.stringify(emitFired.json).slice(0, 300));
+
+	// 父任务跑到终态：脚本退出 → agent 先收 socket 再回 result（顺序有语义，见 client.go）
+	const parentDone = await until(
+		async () => {
+			const t = (await listTasks()).find((x) => x.id === parentId);
+			return t && (t.status === "succeeded" || t.status === "failed") ? t : null;
+		},
+		{ timeoutMs: 30000 },
+	);
+	H.eq("父任务（跑 emit 脚本的那个）succeeded", parentDone?.status, "succeeded");
+
+	// ---------- 真实进程里看到的（探针文件）----------
+	H.check("能力进程写出了探针文件", existsSync(probe), probe);
+	const probeText = existsSync(probe) ? readFileSync(probe, "utf8") : "";
+	const probeField = (k) =>
+		(new RegExp("^" + k + "=(.*)$", "m").exec(probeText) || [])[1] || "";
+	const emitSock = probeField("sock");
+	H.check(
+		"ANOTIFY_EMIT_SOCK 已注入能力进程（是个绝对路径）",
+		!!emitSock && path.isAbsolute(emitSock),
+		`probe:\n${probeText}`,
+	);
+	H.eq(
+		"注入的路径确实是一个活的 unix socket（agent 在起进程之前就监听好了）",
+		probeField("sock_is_socket"),
+		"yes",
+	);
+	H.eq("ANOTIFY_TASK_ID 就是这条任务（身份不串台）", probeField("task_id"), parentId);
+	H.check(
+		"ANOTIFY_TASK_TOKEN 也注入了（本地 socket 的鉴权凭据）",
+		Number(probeField("token_len")) >= 16,
+		`token_len=${probeField("token_len")}`,
+	);
+	H.eq("脚本里 `anotify-agent emit` 的退出码 = 0", probeField("exit"), "0");
+	H.check(
+		"CLI 报 acked=routed（中枢确认已派发，不是只落了本地 outbox）",
+		/acked=routed/.test(probeText),
+		probeText,
+	);
+
+	// ---------- 中枢里落下的（任务行才是 routed 的真凭据）----------
+	const emitKids = (await listTasks()).filter((t) => t.parentTaskId === parentId);
+	H.eq("emit 派发建出 2 条下游任务（routed=2）", emitKids.length, 2);
+	H.eq(
+		"两条下游任务落在那两个目标上",
+		emitKids.map((t) => t.capability).sort(),
+		[t1.name, t2.name].sort(),
+	);
+	// P0：本次执行钉在一个确定的产物上（assign.digest / tasks.digest）
+	H.eq("父任务钉住的 digest 就是中枢编译出来的那份", parentDone?.digest, emitter.digest);
+	H.eq(
+		"下游任务的 digest 也各自钉住了自己的产物",
+		emitKids.map((t) => t.digest).sort(),
+		[t1.digest, t2.digest].sort(),
+	);
+
+	// ---------- socket 与任务同生命周期（§1 / §8）----------
+	H.check(
+		"能力进程退出后 emit socket 已被清理（晚到的 emit 只会得到 exit 6）",
+		!!emitSock && !existsSync(emitSock),
+		`sock=${emitSock} exists=${emitSock ? existsSync(emitSock) : "?"}`,
+	);
 }
 
 async function cleanup() {
