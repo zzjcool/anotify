@@ -650,13 +650,24 @@
 	// 锁死在 `default`。现在只认 `GET /v1/namespaces`（不带组织参数）；拿不到
 	// （未登录 / 老后端没有该端点）就保持隐藏，页面行为一点不变 —— 不需要为
 	// mock 和真后端分叉代码路径。
-	async function mountNamespaceSwitcher(box) {
+	async function mountNamespaceSwitcher(box, slot) {
+		/* 失败路径：骨架让位（不再预留 53px）。侧栏一次性上移，用户看到的就是
+		 * 「没有切换器」—— 与今天「加载失败就不渲染」的行为一致（已知遗留）。 */
+		const giveUp = () => {
+			const skel = slot ? slot.querySelector(".scope-skel") : null;
+			if (skel) skel.remove();
+			if (slot) slot.classList.add("scope-slot--empty");
+		};
 		let list = [];
 		try {
 			const r = await fetch("/v1/namespaces", { credentials: "include" });
-			if (!r.ok) return;
+			if (!r.ok) {
+				giveUp();
+				return;
+			}
 			list = (await r.json()).namespaces || [];
 		} catch (e) {
+			giveUp();
 			return;
 		}
 
@@ -840,6 +851,11 @@
 		});
 
 		box.append(el("div", { class: "scope-block" }, trigger, menu));
+		/* 拆骨架与揭盖必须在**同一个同步块**里：中间只要有一帧只有骨架或只剩空槽
+		 * （或者反过来「block 已插入但还 hidden」），nav 就会先上移再下移 —— 那正是
+		 * 用户看到的一下。骨架 53px、真 block 53px，所以这一步在几何上是零位移。 */
+		const skel = slot ? slot.querySelector(".scope-skel") : null;
+		if (skel) skel.remove();
 		box.classList.remove("hidden");
 		paint();
 		// 纠正落盘的选择：存着的那条可能已不存在，写回真正生效的 id
@@ -977,8 +993,27 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			nav.append(g);
 		}
 
+		/* ----- 命名空间槽位（P0-1：开页不再把 nav 往下顶） -----
+		 * `#scope-switcher` 保持「数据到了才去掉 hidden」的语义不变：
+		 * scripts/e2e/suites/frontend.mjs:4497-4505 把
+		 * `#scope-switcher:not(.hidden)` 当作「命名空间已加载完成」信号，随后在同一个
+		 * evaluate 里立刻取 `.scope-trigger` 点开菜单断言空态。所以这里不是给它去
+		 * hidden，而是在外面再包一层 `#scope-slot`：骨架 `.scope-skel` 用 CSS 占住与
+		 * 真实 `.scope-block` 完全相同的 53px（展开/折叠同高），数据到达后在同一个
+		 * 同步块里「skel.remove() → 去 hidden」，几何不变，nav 永不下移。 */
 		const scopeBox = el("div", { id: "scope-switcher", class: "hidden" });
-		mountNamespaceSwitcher(scopeBox);
+		const scopeSlot = el(
+			"div",
+			{ id: "scope-slot", class: "scope-slot" },
+			el(
+				"div",
+				{ class: "scope-skel", "aria-hidden": "true" },
+				el("div", { class: "scope-skel-dot" }),
+				el("div", { class: "scope-skel-bar" }),
+			),
+			scopeBox,
+		);
+		mountNamespaceSwitcher(scopeBox, scopeSlot);
 
 		/* ----- 侧栏品牌行：logo + 品牌字 + 折叠按钮 ----- */
 		const brandRow = el(
@@ -1077,7 +1112,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				"div",
 				{ class: "flex h-full flex-col" },
 				brandRow,
-				scopeBox,
+				scopeSlot,
 				adminNav,
 				nav,
 				el(
@@ -1301,6 +1336,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			appCol,
 		);
 		document.body.prepend(root);
+		/* P1：外壳已经挂载 —— 关掉 base.html <head> 里的预排版规则
+		 * （html:not([data-shell-ready]) #page-main 的左/上内距）。必须同步、同一任务，
+		 * 否则正常加载会先按预排版排一帧、再被真正的 .app-main 排一遍（双倍 padding）。 */
+		document.documentElement.dataset.shellReady = "1";
 
 		/* 首帧把折叠态与主题按钮画好（persist=false：这次只是回放已存的状态） */
 		applyCollapsed(collapsedNow, false);
@@ -2068,10 +2107,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			return; /* i18n not loaded (file://) — silent */
 
 		/* 5) Build DOM (el(), no innerHTML) */
-		const reduced =
-			window.matchMedia &&
-			window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
 		const globe = icon(
 			[
 				"M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z",
@@ -2138,8 +2173,17 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 
 		/* 5b) F8：提示条在流内（不是 overlay），会把整页推下去。侧栏是
 		 * height:100dvh 的 sticky 元素，不修正就会比视口多出一条提示条的高度，
-		 * 底部用户块被裁。把真实高度写给 --shell-top-offset（见 ui.css .app-sidebar）。 */
+		 * 底部用户块被裁。把真实高度写给 --shell-top-offset（见 ui.css .app-sidebar）。
+		 *
+		 * P0-2：首帧即终态。--instant 关掉 max-height/opacity 过渡，插入的同一任务内
+		 * 就加 --open 并立刻量高。旧实现用双 rAF 展开 + ResizeObserver 逐帧回写，
+		 * 结果 #app-shell 在首帧之后从 y=0 逐帧下滑 44–45px（banner 段 CLS 0.03+）。
+		 * 窄屏两行按实际高度量，不写死 45。 */
+		banner.classList.add("lang-hint--instant", "lang-hint--open");
 		const syncTopOffset = () => {
+			/* 关闭后（断开连接）不再写变量：否则滞后一次 resize/字体回调会把已归零的
+			 * 偏移写回一个高度，侧栏又莫名短一截。 */
+			if (!banner.isConnected) return;
 			document.documentElement.style.setProperty(
 				"--shell-top-offset",
 				banner.getBoundingClientRect().height + "px",
@@ -2147,45 +2191,25 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		};
 		syncTopOffset();
 
-		/* 6) Animate open (reduced-motion = instant).
-		 * 注意：.lang-hint 初始 max-height:0，上面的 syncTopOffset 读到的是 0；
-		 * 等展开类生效后必须再量一次，否则 --shell-top-offset 永远是 0，
-		 * 侧栏底部仍会被裁掉一条横幅的高度（F8 复现）。
-		 * ResizeObserver 兜住字体加载/旋转/换行导致的高度变化。 */
-		const openBanner = () => {
-			banner.classList.add("lang-hint--open");
-			syncTopOffset();
+		/* 只有两件事会改 banner 高度：字体加载完（换行点变）/ 旋转或缩放。
+		 * 不用 ResizeObserver 逐帧写 —— 那正是外壳逐帧下滑的来源。 */
+		if (document.fonts && document.fonts.ready)
+			document.fonts.ready.then(syncTopOffset);
+		let resizeTimer = 0;
+		const onResize = () => {
+			clearTimeout(resizeTimer);
+			resizeTimer = setTimeout(syncTopOffset, 150);
 		};
-		if (reduced) {
-			openBanner();
-		} else {
-			requestAnimationFrame(() =>
-				requestAnimationFrame(openBanner),
-			);
-		}
-		if (typeof ResizeObserver === "function") {
-			const ro = new ResizeObserver(() => syncTopOffset());
-			ro.observe(banner);
-			banner.addEventListener("transitionend", () => ro.disconnect(), {
-				once: true,
-			});
-		} else {
-			/* 老浏览器：等动画结束再量一次 */
-			setTimeout(syncTopOffset, 350);
-		}
+		window.addEventListener("resize", onResize);
 
-		/* 7) Close: animate out then remove; move focus to first focusable in header/main */
+		/* 6) Close：一次性瞬时收起（不跑过渡帧）：偏移归零 + 移除同步完成。
+		 * 保留焦点转移：关掉横幅后焦点不能丢在 body 上。 */
 		function closeHint() {
+			window.removeEventListener("resize", onResize);
+			clearTimeout(resizeTimer);
 			/* 提示条消失 = 顶部偏移归零，侧栏恢复满高 */
 			document.documentElement.style.setProperty("--shell-top-offset", "0px");
-			if (reduced) {
-				banner.remove();
-			} else {
-				banner.classList.remove("lang-hint--open");
-				const cleanup = () => banner.remove();
-				banner.addEventListener("transitionend", cleanup, { once: true });
-				setTimeout(cleanup, 250); /* fallback */
-			}
+			banner.remove();
 			/* Move focus to first focusable in header or main */
 			const target =
 				document.querySelector(

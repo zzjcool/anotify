@@ -98,6 +98,62 @@ body {
 	padding: 10px;
 	border-bottom: 1px solid var(--line);
 }
+/* ---- 命名空间槽位（开页不抖的那一格） ----
+ * 切换器要等 GET /v1/namespaces 回来才渲染，之前侧栏这里什么都没有，数据一到
+ * 就插入 53px 高的 .scope-block，把下面的 nav 整体下推（x 轴不动、y 轴跳 53）。
+ * 槽位在骨架期就预留这 53px，骨架 .scope-skel 与真实 .scope-block **同高**
+ * （展开/折叠同高）：数据到达时 skel 换 block 是零位移。
+ * flex: none —— 侧栏是 flex column，内容超高时默认会让子项收缩，
+ * 槽位一旦被压扁就不再是「预留 53px」了。 */
+.scope-slot {
+	flex: none;
+	min-height: var(--scope-slot-h, 53px);
+}
+/* 加载失败（未登录 / 老后端没有该端点）：骨架让位，侧栏一次性上移 53px，
+ * 与「今天根本没有切换器」一致。 */
+.scope-slot--empty {
+	min-height: 0;
+}
+/* 骨架：纯装饰（aria-hidden），没有按钮、没有假菜单。border-bottom 与
+ * .scope-block 同色同宽，替换那一刻不会凭空多出/少掉一条分割线。 */
+.scope-skel {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 53px;
+	box-sizing: border-box;
+	padding: 10px;
+	border-bottom: 1px solid var(--line);
+}
+.scope-skel-dot {
+	width: 22px;
+	height: 22px;
+	border-radius: 7px;
+	background: var(--accent-soft);
+	flex: none;
+}
+.scope-skel-bar {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 10px;
+	border-radius: 6px;
+	background: var(--surface-2);
+	animation: scope-skel-pulse 1.2s ease-in-out infinite;
+}
+@keyframes scope-skel-pulse {
+	0%,
+	100% {
+		opacity: 0.55;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.scope-skel-bar {
+		animation: none;
+	}
+}
 .scope-trigger {
 	display: flex;
 	align-items: center;
@@ -908,6 +964,11 @@ body {
 .lang-hint.lang-hint--open {
 	max-height: 4rem;
 	opacity: 1;
+}
+/* 首帧即终态：横幅插入的同一任务内就加 --open，过渡帧等于「把整页往下推一半」，
+ * 用户看到的是外壳在滑（CLS 0.03+）。--instant 关掉过渡，开/收都只有一个状态。 */
+.lang-hint.lang-hint--instant {
+	transition: none;
 }
 @media print {
 	.lang-hint {
