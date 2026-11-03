@@ -665,7 +665,17 @@
 				giveUp();
 				return;
 			}
-			list = (await r.json()).namespaces || [];
+			/* 畸形响应兜底：200 但 namespaces 不是数组（如 {"namespaces":{}}）时，
+			 * 旧代码会在下面的 list.some 里抛未捕获异常 —— try 已经过了，giveUp() 不执行，
+			 * 骨架就会永久脉动、#scope-switcher 永远 hidden。这里当成加载失败处理。
+			 * 注意：`{}`（根本没有 namespaces 字段）仍是合法的空列表 → 走 .scope-empty
+			 * 空态，不能当成失败。 */
+			const j = await r.json().catch(() => null);
+			if (j && j.namespaces !== undefined && !Array.isArray(j.namespaces)) {
+				giveUp();
+				return;
+			}
+			list = j && Array.isArray(j.namespaces) ? j.namespaces : [];
 		} catch (e) {
 			giveUp();
 			return;

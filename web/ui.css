@@ -107,7 +107,7 @@ body {
  * 槽位一旦被压扁就不再是「预留 53px」了。 */
 .scope-slot {
 	flex: none;
-	min-height: var(--scope-slot-h, 53px);
+	min-height: 53px;
 }
 /* 加载失败（未登录 / 老后端没有该端点）：骨架让位，侧栏一次性上移 53px，
  * 与「今天根本没有切换器」一致。 */
