@@ -243,7 +243,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | `capability_versions` | `outputs` 保留（端口名集合）；**新增 `params_schema` 已有，无需 `result_schema`**；`kind` 仍为推导量（I3） |
 | `edges` → `link` | 加 `literals`；引用从 `capability_id` 改为 `from_name`/`to_name`；删 `from_is_source`（P2） |
 | `emissions`（新） | `(task_id, seq, port, data, routed_at)`，`UNIQUE(task_id, seq)` |
-| `tasks` | 加 `digest`；`out`/`reported` 语义退役（emit 取代） |
+| `tasks` | 加 `digest`；`out` **已删列**（迁移 28）、`reported` 保留（仍表示「节点回报过」） |
 | `events` | 不变（`payload` 原样存） |
 | `sources` / `source_targets` | P2 收敛为 `trigger` 能力 + `link` |
 | `artifacts` | 已有 `(ns, digest, spec)`；`spec` 保留 `params`/`outputs`/`requires`/`run` |
@@ -284,7 +284,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | P1.2 | agent 本地 socket + `anotify-agent emit` 子命令 + 任务令牌 + 端口白名单 + 阻塞 ack | ✅ `<data-dir>/emit/<task>.sock`（0700/0600）+ outbox（先 fsync 再 ack）+ 七步校验 + 退出码 2/3/4/5/6/7 |
 | P1.3 | 派发：`data ⊎ literals` → 每条 link `ValidateParams` → 扇出（部分成功） | ✅ |
 | P1.4 | `assign` 下发 `ports` / `expects` / `token` | ✅ `BuildExpects`：各下游 `params_schema` 减 literals 的并集 + targets（给人看） |
-| P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ✅ 已硬切（无兼容层）：runner 不再注入 `ANOTIFY_OUT_FILE`、不再读出口文件；`ws.ResultFrame` 删掉 `Out`（老帧带 `out` 当未知字段忽略）；`tasks.out` 新写入恒 NULL；`contract/e2e` 里靠 result.out 走路的地方全部改成 emit |
+| P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ✅ 已硬切（无兼容层）：runner 不再注入 `ANOTIFY_OUT_FILE`、不再读出口文件；`ws.ResultFrame` 删掉 `Out`（老帧带 `out` 当未知字段忽略）；`tasks.out` **整列删除**（迁移 28）；`contract/e2e` 里靠 result.out 走路的地方全部改成 emit |
 | P1.6 | 前端：trace 显示每次 emit | ✅ trace 页「产出（emits）」区 + `GET …/tasks/{id}/emissions` |
 
 > 落地时补的两条护栏（设计里漏了，属实现漏洞）：**emit 的归属校验**（任务派给 A，B 不能替它 emit）
