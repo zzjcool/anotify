@@ -632,7 +632,9 @@ func (d *DB) PlaybookChecks(ctx context.Context, pb *Playbook) (*PlaybookChecks,
 			if x.FromIsSource {
 				continue // 入口边的左端是来源名，不参与能力之间的匹配
 			}
-			if x.FromCapability == from.ID && x.FromPort == e.FromPort && x.ToCapability == to.ID {
+			// 引用比对（P2.2）：钉死引用与跟随引用都算「这条边在」。
+			if RefMatches(x.FromRef, from.Name, from.Version) &&
+				x.FromPort == e.FromPort && RefMatches(x.ToRef, to.Name, to.Version) {
 				hit = true
 				break
 			}
@@ -1029,13 +1031,20 @@ func (r sqlCapResolver) byName(name string) (*capLookup, error) {
 }
 
 // edgeExists 报告能力之间那条边是否已存在（入口边不参与）。
-func edgeExists(ctx context.Context, q nsQueryer, namespaceID, fromID, fromPort, toID string) (bool, error) {
+//
+// 两端用**引用**比对（P2.2）：`name@version` 钉死的边与 `name` 跟随 latest 的边
+// 都算「这条边已存在」——预案装的是「这两个能力连起来了」这件事，
+// 不区分用户当初选的是哪一种引用形态。
+func edgeExists(ctx context.Context, q nsQueryer, namespaceID string, from *capLookup, fromPort string, to *capLookup) (bool, error) {
 	var n int
 	if err := q.QueryRowContext(ctx,
 		`SELECT count(*) FROM edges
-		  WHERE namespace_id = ? AND from_is_source = 0
-		    AND from_key = ? AND from_port = ? AND to_capability = ?`,
-		namespaceID, fromID, fromPort, toID).Scan(&n); err != nil {
+		  WHERE namespace_id = ? AND from_is_source = 0 AND from_port = ?
+		    AND (from_ref = ? OR from_ref = ?)
+		    AND (to_ref = ? OR to_ref = ?)`,
+		namespaceID, fromPort,
+		FormatRef(from.Name, from.Version), from.Name,
+		FormatRef(to.Name, to.Version), to.Name).Scan(&n); err != nil {
 		return false, fmt.Errorf("probe edge: %w", err)
 	}
 	return n > 0, nil
@@ -1063,21 +1072,21 @@ func sourceNameExists(ctx context.Context, q nsQueryer, namespaceID, name string
 //
 // 源的 targets 就是**入口边**（P2.1：source_targets 已删）：左端是来源名（按名字 join），
 // from_is_source=1 把它与能力边区分开。
-func sourceWithKindTargets(ctx context.Context, q nsQueryer, namespaceID, kind string, capIDs []string) (string, error) {
-	if len(capIDs) == 0 {
+func sourceWithKindTargets(ctx context.Context, q nsQueryer, namespaceID, kind string, capRefs []string) (string, error) {
+	if len(capRefs) == 0 {
 		return "", nil
 	}
-	marks := strings.TrimSuffix(strings.Repeat("?,", len(capIDs)), ",")
-	args := make([]any, 0, len(capIDs)+2)
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(capRefs)), ",")
+	args := make([]any, 0, len(capRefs)+2)
 	args = append(args, namespaceID, kind)
-	for _, id := range capIDs {
-		args = append(args, id)
+	for _, ref := range capRefs {
+		args = append(args, ref)
 	}
 	var got string
 	err := q.QueryRowContext(ctx,
 		`SELECT s.name FROM sources s
-		   JOIN edges e ON e.namespace_id = s.namespace_id AND e.from_key = s.name AND e.from_is_source = 1
-		  WHERE s.namespace_id = ? AND s.kind = ? AND e.to_capability IN (`+marks+`)
+		   JOIN edges e ON e.namespace_id = s.namespace_id AND e.from_ref = s.name AND e.from_is_source = 1
+		  WHERE s.namespace_id = ? AND s.kind = ? AND e.to_ref IN (`+marks+`)
 		  ORDER BY s.created_at, s.name LIMIT 1`, args...).Scan(&got)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -1270,7 +1279,7 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 				label, e.FromPort, from.Name, from.Version, from.Outputs))
 			continue
 		}
-		exists, err := edgeExists(ctx, tx, pb.NamespaceID, from.ID, e.FromPort, to.ID)
+		exists, err := edgeExists(ctx, tx, pb.NamespaceID, from, e.FromPort, to)
 		if err != nil {
 			return nil, nil, fmt.Errorf("install playbook: %w", err)
 		}
@@ -1278,10 +1287,13 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 			res.Skipped.Edges = append(res.Skipped.Edges, label)
 			continue
 		}
+		// 落库写**钉死引用**（name@version）：预案声明的是明确版本（manifest 里写了 version），
+		// 装出来的线就该钉在那一版上——跟随 latest 会让「装过一次的预案」自己改线。
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, created_at)
-			 VALUES (?,?,?,?,?,?)`,
-			pb.NamespaceID, 0, from.ID, e.FromPort, to.ID, now); err != nil {
+			`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
+			 VALUES (?,?,?,?,?,'{}','{}',?)`,
+			pb.NamespaceID, 0, FormatRef(from.Name, from.Version), e.FromPort,
+			FormatRef(to.Name, to.Version), now); err != nil {
 			return nil, nil, fmt.Errorf("install playbook: insert edge %s: %w", label, err)
 		}
 		res.Created.Edges = append(res.Created.Edges, label)
@@ -1293,7 +1305,13 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 	for _, e := range m.Edges {
 		toSet[e.To] = true
 	}
-	entryIDs := make([]string, 0, len(m.Capabilities))
+	// 入口能力的**引用**（P2.2）：建源时写进入口边的右端（钉死：预案声明的就是明确版本）。
+	//
+	// entryProbeRefs 额外带上裸名字，供「已有同 kind 源」那条幂等判据两种引用形态都认
+	// （手工建的入口边可能是跟随 latest 的 `review`，也可能是钉死的 `review@1`；
+	// 两者都指向同一个入口能力，不能因为引用形态不同就再建一个源，那样同一事件会被派发两次）。
+	entryRefs := make([]string, 0, len(m.Capabilities))
+	entryProbeRefs := make([]string, 0, 2*len(m.Capabilities))
 	entrySeen := make(map[string]bool, len(m.Capabilities))
 	entryNames := make([]string, 0, len(m.Capabilities))
 	for _, c := range m.Capabilities {
@@ -1308,7 +1326,8 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 			continue
 		}
 		entrySeen[def.ID] = true
-		entryIDs = append(entryIDs, def.ID)
+		entryRefs = append(entryRefs, FormatRef(def.Name, def.Version))
+		entryProbeRefs = append(entryProbeRefs, FormatRef(def.Name, def.Version), def.Name)
 		entryNames = append(entryNames, c.Name)
 	}
 
@@ -1316,7 +1335,7 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 		// 源名 <slug>-<kind>-<idx>：slug 在命名空间内唯一 → 名字确定、可幂等比对
 		// （mock 用「预案名 · kind」，改名就会漂，不能当幂等判据）。
 		wantName := fmt.Sprintf("%s-%s-%d", pb.Slug, t.Kind, i)
-		if len(entryIDs) == 0 {
+		if len(entryRefs) == 0 {
 			res.Skipped.Sources = append(res.Skipped.Sources, wantName)
 			res.Notes = append(res.Notes, fmt.Sprintf(
 				"触发 %s 跳过：本预案没有可用的入口能力 %v（入口 = 不作为任何边目标的能力），没有可派的目标就不建源",
@@ -1333,7 +1352,7 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 			continue
 		}
 		// 幂等判据 ②：已有同 kind 且 targets 命中本预案入口能力的源
-		got, err = sourceWithKindTargets(ctx, tx, pb.NamespaceID, t.Kind, entryIDs)
+		got, err = sourceWithKindTargets(ctx, tx, pb.NamespaceID, t.Kind, entryProbeRefs)
 		if err != nil {
 			return nil, nil, fmt.Errorf("install playbook: %w", err)
 		}
@@ -1374,14 +1393,14 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 			srcID, pb.NamespaceID, wantName, t.Kind, string(cfg), 1, nil, nextFire, now); err != nil {
 			return nil, nil, fmt.Errorf("install playbook: insert source %s: %w", wantName, err)
 		}
-		for _, capID := range entryIDs {
+		for _, capRef := range entryRefs {
 			// 源的目标就是**入口边**（P2.1）：左端是来源名，from_port='*' 表示任意事件类型，
 			// mapping='{}' 表示不额外传参（与手工建源的默认一致）。
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at)
+				`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
 				 VALUES (?,1,?,'*',?,'{}','{}',?)
-				 ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
-				pb.NamespaceID, wantName, capID, now); err != nil {
+				 ON CONFLICT(namespace_id, from_is_source, from_ref, from_port, to_ref) DO NOTHING`,
+				pb.NamespaceID, wantName, capRef, now); err != nil {
 				return nil, nil, fmt.Errorf("install playbook: insert entry edge %s: %w", wantName, err)
 			}
 		}

@@ -855,15 +855,13 @@ func (a *nodeAgent) semaphore(capability string, version, limit int) chan struct
 
 // sendResult 发 result 帧。
 //
-// out 透传 outcome.Out（契约 §2.5 两态）：有值就发 `"out":"fix"`（走那个出口），
-// nil 就不发 out 键 = 这次没选出口（分支到此结束）。成败都照实发——失败也会带上
-// 脚本写的出口，路由由中枢决定（失败不特殊）。
+// 出口**不在这条帧里**：out 已退役（P1.5），路由只看 emit 的 port。成败照实发——
+// status 只做展示与重试策略，与「走了哪个出口」无关（I4 的形式不变，载体变了）。
 func (a *nodeAgent) sendResult(taskID string, out outcome) {
 	frame := &resultFrame{
 		Type:      frameTypeResult,
 		TaskID:    taskID,
 		Status:    out.Status,
-		Out:       out.Out,
 		Summary:   out.Summary,
 		Artifacts: out.Artifacts,
 		Error:     out.Err,

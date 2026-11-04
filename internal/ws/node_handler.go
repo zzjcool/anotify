@@ -83,22 +83,22 @@ type NodeHandler struct {
 	// 为 nil 时自动创建一个（handler 自己持有，不共享）。
 	Hub *NodeHub
 
-	// NextHop 在任务成功回报 out 后接力派发下一跳（契约 §4 的递归应用）。
+	// NextHop 接力派发下一跳（契约 §4 的递归应用）—— **已退役（P1.5）**。
 	//
-	// 为 nil 时**不派下一跳**——链路就停在当前任务（测试/仅配置场景）。
+	// 改动前：handleResult 读 result.out → PlanNextHop（同步，只读）→ 与父任务终态
+	// 同一个事务建子任务行 → 后台 PublishTasks。P1.5 把 out 整条删掉，于是这条
+	// 路径**没有任何调用方了**：
 	//
-	// #140 把一次「派发」拆成 plan 与 publish 两段，两段的失败处理**故意不同**：
+	//   - 「建子任务行 + 写 emission + 推 assign」全部在 route.Emit 里，一次事务完成；
+	//   - ws 只负责把 emit 帧交给 EmitDispatcher（见下方 Emit）；
+	//   - 因此 emit 不存在 #140 那种「终态已提交、子任务行没建」的空洞（没有两段）。
 	//
-	//   - plan 是只读查询（出口表/能力/节点），在**读循环里同步**跑。它是
-	//     「父任务终态 + 子任务行同一个事务」的前提——必须先知道要建哪些子任务行
-	//     才能把它们一起交给 ReportResultAndCreateTasks。plan 失败 = 这次结果
-	//     没能落库（DB 故障，与今日 ReportResult 失败等价），所以不提交终态、
-	//     回错误帧；父任务仍 running，租约到期后巡检退回 pending 重派，可恢复。
-	//   - publish 是网络操作（挑机器 + 占槽位 + 推 assign 帧），在**后台 goroutine**
-	//     里跑（不能进事务：握着 SQLite 写事务等一个可能掉线的节点会把整库写入卡住，
-	//     且帧发出去后事务再回滚就永久不一致）。publish 失败/丢失**不回给节点**：
-	//     父任务已经成功完了，子任务行也已落库为 pending + node_id NULL，
-	//     由 store.ListRedispatchable / lease sweeper 兜底重派。
+	// 字段**保留**只是为了不动装配层（internal/server/mux.go 仍在赋值一个
+	// 实现了该接口的 Dispatcher）——删掉字段会让另一个模块编译不过，而那属于
+	// 别人的改动面。它现在是一个「接线口」，不是一条活路径：本包不再调用它的
+	// 任何方法（grep `h.NextHop` 为空就是这条不变量的机器证据）。
+	//
+	// 真正的下一跳入口是 Emit。
 	NextHop NextHopDispatcher
 
 	// Emit 处理 emit 帧（P1.1 / P1.3，docs/design/emit-protocol.md §3.1 / §7）。
@@ -132,12 +132,12 @@ type ExpectsBuilder interface {
 	BuildExpects(ctx context.Context, namespaceID, capabilityID string, ports []string) (map[string]route.PortExpect, error)
 }
 
-// NextHopDispatcher 接力派发下一跳（由 route.Dispatcher 实现）。
+// NextHopDispatcher 接力派发下一跳（由 route.Dispatcher 实现）—— **已退役（P1.5）**。
 //
-// 抽成接口是为了让 ws 包不依赖 route 包（避免循环依赖）。
-// 两条方法是 #140 的核心切分（见 NodeHandler.NextHop 的说明）：
-//   - PlanNextHop 只算不落库（同步，事务前）
-//   - PublishTasks 只推已落库的行（异步，事务后，绝不建行）
+// 保留接口只是为了让装配代码（mux.go 赋值）保持不变；ws 内部不再调用它。
+// 下一跳现在只有一个入口：emit（route.Emit，自己写 emission + 建子任务行 + 派发）。
+// 两个方法留在 route.Dispatcher 上也无害：PlanNextHop / PublishTasks 仍是
+// 路由层的通用能力（有自己的单测），只是不再由 result 帧驱动。
 type NextHopDispatcher interface {
 	// PlanNextHop 只算「下一跳要建哪些任务」：只读，不落库、不占槽位、不推帧。
 	// 返回的任务是 pending、ID 已生成但尚未落库，由调用方放进父任务终态的事务里。

@@ -118,14 +118,17 @@ func TestMigration15NormalizesEdgeLookupIndex(t *testing.T) {
 	})
 
 	t.Run("幂等", func(t *testing.T) {
+		// 库停在**迁移 15**（edges 还是 from_key 形状）：
+		// hook 跑在它自己的时代才有意义，见下面的注释。
 		path := driftV14DB(t)
-		db, err := Open(path)
-		if err != nil {
-			t.Fatalf("升级漂移库: %v", err)
-		}
+		db := openAtVersion(t, path, 15)
 		defer func() { _ = db.Close() }()
 
 		// 同一事务里跑两次 hook：结果相同、不报错（迁移可能因重试被重复执行）。
+		//
+		// 注意这里断言的是**迁移 15 时代的形状**（legacyEdgeLookupColumns）：hook 跑在
+		// 它自己的时代才有意义。tip 上 edges 已经被迁移 27 重建（from_ref），
+		// 那时的形状与幂等性由 migrateEdgeRefs 负责（见 migrate27_test.go）。
 		tx, err := db.Begin()
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -140,8 +143,9 @@ func TestMigration15NormalizesEdgeLookupIndex(t *testing.T) {
 			t.Fatalf("commit: %v", err)
 		}
 
-		if got := mustIndexColumns(t, db, edgeLookupIndexName); !sameColumnOrder(got, want) {
-			t.Fatalf("重复执行后 %s 列序 = %v, want %v", edgeLookupIndexName, got, want)
+		if got := mustIndexColumns(t, db, edgeLookupIndexName); !sameColumnOrder(got, legacyEdgeLookupColumns) {
+			t.Fatalf("重复执行后 %s 列序 = %v, want %v（迁移 15 时代的形状）",
+				edgeLookupIndexName, got, legacyEdgeLookupColumns)
 		}
 		var n int
 		if err := db.QueryRow(`SELECT count(*) FROM schema_version WHERE version = 15`).Scan(&n); err != nil {
@@ -290,7 +294,7 @@ func driftV14DB(t *testing.T) string {
 	return v14DB(t, "drift.db", func(db14 *DB) {
 		mustExec(t, db14, `DROP INDEX `+edgeLookupIndexName)
 		mustExec(t, db14, `CREATE INDEX idx_edges_lookup ON edges(namespace_id, from_port)`)
-		if got := mustIndexColumns(t, db14, edgeLookupIndexName); sameColumnOrder(got, edgeLookupIndexColumns) {
+		if got := mustIndexColumns(t, db14, edgeLookupIndexName); sameColumnOrder(got, legacyEdgeLookupColumns) {
 			t.Fatalf("漂移形状没造出来：列序仍是 %v", got)
 		}
 	})
@@ -378,8 +382,9 @@ func TestMigration15LegacyUpgradeKeepsIndex(t *testing.T) {
 	if got := countRows(t, db, "edges", "from_is_source = 0"); got != 1 {
 		t.Fatalf("能力边行数 = %d, want 1（迁移 15 只动索引，不该动数据）", got)
 	}
-	if got := countRows(t, db, "edges", "from_is_source = 1 AND from_key = 'legacy-src' AND from_port = '*'"); got != 1 {
-		t.Fatalf("老源目标的入口边 = %d 行, want 1（迁移 26 搬过来的）", got)
+	// P2.2（迁移 27）之后左端列叫 from_ref；入口边的左端仍然是来源名，一行不差。
+	if got := countRows(t, db, "edges", "from_is_source = 1 AND from_ref = 'legacy-src' AND from_port = '*'"); got != 1 {
+		t.Fatalf("老源目标的入口边 = %d 行, want 1（迁移 26 搬过来、迁移 27 改列名）", got)
 	}
 }
 

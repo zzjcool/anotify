@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -909,58 +910,56 @@ func TestFrameCodec(t *testing.T) {
 	})
 }
 
-// TestResultTwoState result 两态（outcome-v1.1，取代旧的三态 I5）。
+// TestResultFrameHasNoOut result 帧里**没有** out 字段（P1.5 硬切）。
 //
-// out 只有两种可观察的取值：「选了某个出口」和「没选」。键缺省与显式 null
-// 完全等价——它们对路由的影响一模一样（不派下一跳），所以协议层不再区分。
-func TestResultTwoState(t *testing.T) {
-	t.Run("out 缺省 → 没选出口", func(t *testing.T) {
-		frame, err := DecodeUpstream([]byte(`{"type":"result","task_id":"tsk_x","status":"succeeded","summary":"done"}`))
+// 改动前这里是 TestResultTwoState：out 的两态（有值 = 走那个出口 / 缺省 = 到此为止）。
+// out 退役之后，正确的新断言是「结构体里没有它」，而不是「它的两种取值怎么解」：
+//
+//   - 线上字节里不可能出现 out（Encode 出来的 result 帧逐字节比对）；
+//   - 老帧带 out 时**照收**（未知字段忽略、不报 bad_frame），语义等于「没 emit」。
+//
+// 路由的证据搬到了 emit：TestEmitFrameRoutesAndAcks（帧层）与
+// TestResultLegacyOutCreatesNoDownstream（老帧带 out 也不产生下游）。
+func TestResultFrameHasNoOut(t *testing.T) {
+	t.Run("编码出来没有 out 键", func(t *testing.T) {
+		data, err := Encode(&ResultFrame{
+			Type: NodeFrameResult, TaskID: "tsk_x", Status: "succeeded",
+			Summary: "done", Artifacts: []string{},
+		})
 		if err != nil {
-			t.Fatalf("decode: %v", err)
+			t.Fatalf("encode: %v", err)
 		}
-		rf := frame.(*ResultFrame)
-		if rf.Out != nil {
-			t.Fatalf("Out = %q, want nil", *rf.Out)
-		}
-		if rf.Summary != "done" {
-			t.Fatalf("Summary = %q, want done", rf.Summary)
+		want := `{"type":"result","task_id":"tsk_x","status":"succeeded","summary":"done","artifacts":[],"error":""}`
+		if string(data) != want {
+			t.Fatalf("result 线格式 = %s, want %s", data, want)
 		}
 	})
 
-	t.Run("out:null 与缺省等价", func(t *testing.T) {
-		frame, err := DecodeUpstream([]byte(`{"type":"result","task_id":"tsk_x","status":"succeeded","out":null}`))
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if rf := frame.(*ResultFrame); rf.Out != nil {
-			t.Fatalf("Out = %q, want nil（显式 null 与缺省等价）", *rf.Out)
-		}
-	})
-
-	t.Run("out:\"fix\" → 走 fix", func(t *testing.T) {
-		frame, err := DecodeUpstream([]byte(`{"type":"result","task_id":"tsk_x","status":"failed","out":"fix"}`))
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		rf := frame.(*ResultFrame)
-		if rf.Status != "failed" {
-			t.Fatalf("Status = %q, want failed（失败也能选出口）", rf.Status)
-		}
-		if rf.Out == nil || *rf.Out != "fix" {
-			t.Fatalf("Out = %v, want \"fix\"", rf.Out)
+	t.Run("结构体里没有 out 字段", func(t *testing.T) {
+		rt := reflect.TypeOf(ResultFrame{})
+		for i := 0; i < rt.NumField(); i++ {
+			tag := rt.Field(i).Tag.Get("json")
+			if name, _, _ := strings.Cut(tag, ","); name == "out" {
+				t.Fatalf("ResultFrame 仍然带 out 字段（out 已退役）：%s", rt.Field(i).Name)
+			}
 		}
 	})
 
-	t.Run("out 空字符串照实解析（合法性由 store 判定）", func(t *testing.T) {
-		// '' 作为出口名不合法（store 会拒绝），但协议层要能如实解析出来，
-		// 否则「节点写了空串」这种 bug 会被默默吞成「没选出口」。
-		frame, err := DecodeUpstream([]byte(`{"type":"result","task_id":"tsk_x","status":"succeeded","out":""}`))
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if rf := frame.(*ResultFrame); rf.Out == nil || *rf.Out != "" {
-			t.Fatal("out=\"\" not preserved")
+	t.Run("老帧带 out：照样能解，不报错", func(t *testing.T) {
+		// 报错（bad_frame）会让节点陷入「重发 → 又被拒 → 重连风暴」，而结果语义
+		// 与「没 emit」完全一致（无下游）。所以宽容是有意的，不是漏删。
+		for _, raw := range []string{
+			`{"type":"result","task_id":"tsk_x","status":"succeeded","out":"fix","summary":"done"}`,
+			`{"type":"result","task_id":"tsk_x","status":"succeeded","out":null}`,
+			`{"type":"result","task_id":"tsk_x","status":"failed","out":""}`,
+		} {
+			frame, err := DecodeUpstream([]byte(raw))
+			if err != nil {
+				t.Fatalf("decode(%s): %v（老帧必须照收）", raw, err)
+			}
+			if rf, ok := frame.(*ResultFrame); !ok || rf.TaskID != "tsk_x" {
+				t.Fatalf("decode(%s) = %T, want *ResultFrame", raw, frame)
+			}
 		}
 	})
 }
@@ -1185,15 +1184,17 @@ func TestAckProgressResultFlow(t *testing.T) {
 	waitStatus(t, f.db, f.nsID, task.ID, store.TaskRunning)
 
 	send(t, conn, &ResultFrame{Type: NodeFrameResult, TaskID: task.ID, Status: store.TaskSucceeded,
-		Summary: "ok", Out: strPtr("fix")})
+		Summary: "ok"})
 	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
 
 	got, err := f.db.GetTask(ctx, f.nsID, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if !got.Reported || got.Out == nil || *got.Out != "fix" {
-		t.Fatalf("result not recorded: reported=%v out=%v", got.Reported, got.Out)
+	// 「结果落库」的判据是 reported + summary；out 已退役（P1.5），恒 NULL，
+	// 已不能再当判据（原来这里断言 out=="fix"）。
+	if !got.Reported || got.Out != nil {
+		t.Fatalf("result not recorded: reported=%v out=%v（out 必须恒为 NULL）", got.Reported, got.Out)
 	}
 	if got.Summary != "ok" {
 		t.Fatalf("summary = %q", got.Summary)
@@ -1210,14 +1211,17 @@ func TestAckProgressResultFlow(t *testing.T) {
 	}
 }
 
-// TestResultNoOutMeansStop 没选出口 = 到此为止（outcome-v1.1 两态）。
+// TestResultNoOutMeansStop 不 emit = 到此为止（这是「0 次 emit 合法」的帧层版本）。
 //
-// 键缺省与显式 null 完全等价：两者都不派下一跳、都让 out 留 NULL，
-// 唯一写进去的是「结果帧到了」（reported=1）。
+// 改动前它叫 TestResultNoOutMeansStop，守的是「out 缺省与显式 null 等价，都不派
+// 下一跳」。out 退役之后保留下来的性质是**同一个结果**（不派下一跳、只记 reported），
+// 顺手也钉住「老帧带 out（哪怕带 out:null）同样不派生任何东西」——两种写法都必须
+// 落成同一份事实：out 列恒 NULL，trace 里只有父任务一行。
 func TestResultNoOutMeansStop(t *testing.T) {
 	cases := []struct{ name, raw string }{
 		{"out 键缺省", `{"type":"result","task_id":"%s","status":"succeeded","summary":"done"}`},
-		{"out:null", `{"type":"result","task_id":"%s","status":"succeeded","out":null}`},
+		{"out:null（老帧）", `{"type":"result","task_id":"%s","status":"succeeded","out":null}`},
+		{"out:\"fix\"（更老的老帧，忽略）", `{"type":"result","task_id":"%s","status":"succeeded","out":"fix"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1238,7 +1242,7 @@ func TestResultNoOutMeansStop(t *testing.T) {
 				t.Fatal("结果帧到了却没记 reported=1")
 			}
 			if got.Out != nil {
-				t.Fatalf("out = %q, want NULL（没选出口）", *got.Out)
+				t.Fatalf("out = %q，want NULL（out 已退役：没有任何写入方）", *got.Out)
 			}
 			// 没选出口 → 不派生下一跳：这条 trace 上只有父任务一行
 			rows, err := f.db.ListTasks(context.Background(), f.nsID, task.TraceID, "", "", 50)

@@ -284,7 +284,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | P1.2 | agent 本地 socket + `anotify-agent emit` 子命令 + 任务令牌 + 端口白名单 + 阻塞 ack | ✅ `<data-dir>/emit/<task>.sock`（0700/0600）+ outbox（先 fsync 再 ack）+ 七步校验 + 退出码 2/3/4/5/6/7 |
 | P1.3 | 派发：`data ⊎ literals` → 每条 link `ValidateParams` → 扇出（部分成功） | ✅ |
 | P1.4 | `assign` 下发 `ports` / `expects` / `token` | ✅ `BuildExpects`：各下游 `params_schema` 减 literals 的并集 + targets（给人看） |
-| P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ⏳ 未做。现在两条通道并存：emit 是主路，`.anotify-out` 仍是退出时的兜底（旧产物不改也能跑）。删它要单独一次迁移 |
+| P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ✅ 已硬切（无兼容层）：runner 不再注入 `ANOTIFY_OUT_FILE`、不再读出口文件；`ws.ResultFrame` 删掉 `Out`（老帧带 `out` 当未知字段忽略）；`tasks.out` 新写入恒 NULL；`contract/e2e` 里靠 result.out 走路的地方全部改成 emit |
 | P1.6 | 前端：trace 显示每次 emit | ✅ trace 页「产出（emits）」区 + `GET …/tasks/{id}/emissions` |
 
 > 落地时补的两条护栏（设计里漏了，属实现漏洞）：**emit 的归属校验**（任务派给 A，B 不能替它 emit）
@@ -372,7 +372,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | 9 | 引用 `name`（默认）/ `name@version`（钉死） | 自动跟随与隔离共存 |
 | 10 | 任务钉 `name@version` + `digest` | 名字解决“要最新”，摘要解决“证明当时是那份” |
 | 11 | 触发器必须声明 `result_schema` | 外部边界只能声明，不能推导 |
-| 12 | 废弃 `.anotify-out` / `.anotify-result` | emit 取代；保留一次性兼容层（P1.5） |
+| 12 | 废弃 `.anotify-out` / `.anotify-result` | emit 取代。**P1.5 直接硬切、不做兼容层**：用户明确没有历史包袱，留两套协议必然分叉 |
 | 13 | 1:N 静态扇出保留 | 已是产品能力；与动态 emit 叠加，不互斥 |
 | 14 | 契约随实现下发（产物里） | 节点要用它；契约与实现分家就漂移 |
 

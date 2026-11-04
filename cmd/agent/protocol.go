@@ -83,13 +83,11 @@ const (
 
 // resultFrame 是本 agent 发出的 result 帧。
 //
-// out 是**两态**（契约 §2.5）：
-//
-//	键缺席 / null → 这次没选出口（到此为止）
-//	"out":"fix"  → 走 fix 出口
-//
-// 缺省与 null 等价（服务端两者都解成 nil），所以这里的 omitempty 只是「不选出口时
-// 不发脏字段」的书写习惯，不是语义区分。
+// **没有 out 字段**：P1.5 硬切之后出口只在 emit 帧里（typed-pipeline §2）。
+// 这不只是「不带这个键」，而是服务端结构体里也没有它（ws.ResultFrame）：
+// 老帧里多出来的 `"out":"fix"` 会被 encoding/json 当成未知字段忽略（不报错、
+// 不生效），所以「写了一张老产物、脚本没改成 emit」的现场表现是**没有下游**，
+// 而不是一条神秘错误。
 //
 // 不从 internal/ws 复用结构体：那边是**服务端解析**的边界（含帧常量/下行帧），
 // agent 不该把服务端包拉进二进制。两份的字段名与 tag **必须一致**，由
@@ -98,10 +96,9 @@ type resultFrame struct {
 	Type      string   `json:"type"`
 	TaskID    string   `json:"task_id"`
 	Status    string   `json:"status"`
-	Out       *string  `json:"out,omitempty"` // nil → 不发 out 键（没选出口）
-	Summary   string   `json:"summary"`       // 成功=说明 / 失败=原因
-	Artifacts []string `json:"artifacts"`     // 空时必须是 []，不是 null
-	Error     string   `json:"error"`         // 兼容位：老代码只填 error 时服务端兜底
+	Summary   string   `json:"summary"`   // 成功=说明 / 失败=原因
+	Artifacts []string `json:"artifacts"` // 空时必须是 []，不是 null
+	Error     string   `json:"error"`     // 兼容位：老代码只填 error 时服务端兜底
 }
 
 // MarshalJSON 只做一件事：把 nil 的 Artifacts 归一成空切片。

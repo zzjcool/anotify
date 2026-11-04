@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -195,33 +194,29 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 	return nil
 }
 
-// handleResult 处理结果帧，推进到终态（outcome-v1.1）。
+// handleResult 处理结果帧，推进到终态。
 //
-// 结果只有两个维度，且它们**不同维度**：
+// # 结果不再参与路由（P1.5 硬切之后的唯一语义）
 //
-//	out    → 路由：有值 = 走那个出口；nil = 这次没选出口 = 到此为止（正常终止）
-//	status → 只做展示与重试策略（succeeded / failed），**不参与路由**
+// 这里**曾经**是两条腿：result.out 选出口 → 同步 PlanNextHop → 跟终态同一个事务
+// 建子任务行（#140）。P1.5 把 out 整条删掉，于是本函数只剩一件事：
+// **把进程事实写进终态**（status / summary / artifacts），不建任何子任务行。
 //
-// 所以失败回报了出口就继续（“失败也发通知”靠一条 (cap, failed) 的边表达），
-// 没回报就终止。曾经这里是 `status == succeeded && out != nil`，于是失败永远
-// 不可能走任何边 —— I4 的「失败也能继续」是一句空头支票，而且失败分支配上边
-// 会变成**能配、永不生效**的静默死配置。
+// 那「下一跳」去哪了？全部在 emit（docs/design/typed-pipeline.md §2）：
+//   - 运行中 emit → route.Emit 在**自己的事务**里写 emission + 建子任务行 + 派发；
+//   - 没有 emit → 到此为止（0 次 emit 合法，正常终止）；
+//   - 失败前 emit 过 → 那些下游照样在（I4 的形式保留：路由与 status 无关）。
 //
-// 「没回报」（节点掉线 / 超时）不靠这里的任何字段表达：那是**根本没有 result 帧**，
-// 由租约到期 + 巡检重派处理。
+// 为什么不能“两者共存”（保留 result.out 兼容旧节点）：两套产出通道必然分叉——
+// 同一个任务可能既 emit 过 fix、又在退出时写了一个 clean，谁算数、重复怎么去重
+// 都没有定义。而且 #140 的「终态 + 子任务行同一个事务」这一套补偿逻辑会多出
+// 第二条入口（一条不写 emission 的入口），去重表就成了摆设。
 //
-// #140 起的顺序（顺序本身就是不变量，不要调整）：
+// 于是顺序简化成（序号沿用历史编号，便于对照改动前的注释）：
 //
 //	① 参数校验 / GetTask / 归属校验
-//	② 读 out（有没有选出口）
-//	③ **同步**算出下一跳计划（PlanNextHop，只读）—— 失败即不提交终态
-//	④ 一个事务提交「父任务终态 + 下一跳子任务行」（ReportResultAndCreateTasks）
-//	⑤ 事务提交后记 "task finished"（先记日志再派发，与改动前一致）
-//	⑥ 异步 publish 这些**已落库**的行（PublishTasks）—— 在事务之外，失败只记日志
-//
-// 为什么 ③ 在 ④ 之前：先有计划才能把子任务行与终态一起塞进同一个事务（#140）。
-// 代价是 plan 从后台挪到了读循环里——它全是只读查询，可以接受（见 ③ 处注释）。
-// ③ 失败 → 终态也不提交：那是可恢复的；提交了终态却没子任务行才是永久空洞。
+//	④ 一个事务提交父任务终态（ReportResultAndCreateTasks，next 恒 nil）
+//	⑤ 记 "task finished"，然后通知槽位空出（#219）
 func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	if f.TaskID == "" {
 		s.sendError(ctx, ErrCodeBadFrame, "result requires task_id")
@@ -249,49 +244,13 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 		return nil
 	}
 
-	// 结果帧到了就是「已回报」；「有没有选出口」由 out 本身表达。
-	out := f.Out
-
-	// ③ 同步算下一跳计划（契约 §4 的递归应用）。
+	// ④ 一个事务提交父任务终态。
 	//
-	// 只看 out，不看 status：失败回报了出口也要往下派。
-	// out 为 nil 时是「到此为止」，也不派。
-	//
-	// 为什么 plan 同步跑在读循环里（而不是像旧的 dispatchNext 那样整段丢进后台）：
-	// plan 全是只读查询（出口表/能力/节点），真正的网络操作在 ⑥ 的 publish。
-	// 而「父任务终态」与「下一跳子任务行」必须同一个事务提交——要进事务就得
-	// 先有计划，所以 plan 只能同步。成本是读循环里多几次本地 SQLite 查询。
-	// 剪枝留痕（InsertPruneEvent）在事务外、best-effort：若随后的事务回滚，库里
-	// 可能留下一条「这条边没走成」的痕迹——诊断信息，可接受（契约 §4）。
-	//
-	// plan 失败 → **不提交终态**，回错误帧。
-	// 理由是 #140 的核心：一旦「父任务 succeeded 而子任务行不存在」被提交，那个
-	// 空洞就是**永久**的（ListRedispatchable 只捞已存在的 pending 行，捞不到一条
-	// 不存在的行）——链悄悄停掉，trace 看起来还正常。
-	// 而不提交是可恢复的：父任务仍 running，租约到期后巡检把它退回 pending 重派，
-	// 节点重新执行一次（能力要求幂等）。
-	// 这类错误只在 DB 故障时出现，与「下一跳 publish 失败」是两回事——后者父任务
-	// 已经成功、子任务行已落库，绝不能回退（见 ⑥）。
-	var next []*store.Task
-	if s.h.NextHop != nil && out != nil {
-		// 出口表/能力/节点都按命名空间隔离：作用域必须是**父任务的命名空间**
-		// （即 task.NamespaceID，不是节点的 id）。传错的话 EdgesFrom 恒 0 行，
-		// 链路会在父任务成功后静默停掉。
-		next, err = s.h.NextHop.PlanNextHop(ctx, task.NamespaceID, task.TraceID, task.ID,
-			task.CapabilityID, *out, task.Params, task.Path)
-		if err != nil {
-			s.reportTransitionError(ctx, f.TaskID, err)
-			return nil
-		}
-	}
-
-	// ④ 一个事务：父任务终态 + 下一跳子任务行（#140）。
-	//
-	// 拆成两次提交时，进程在中间退出就会留下「父任务 succeeded + out=fix、
-	// 子任务行不存在」的永久空洞。同一个 BEGIN/COMMIT 里，子任务插入失败则整体回滚
-	// ——父任务不留在终态（宁可让父任务被巡检退回重派、幂等重执行一次，也胜于断链）。
-	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status, out,
-		f.Summary, f.Artifacts, f.Error, next); err != nil {
+	// next 恒 nil，out 恒 nil：路由不在这条路径上（见函数头）。两个参数保留
+	// 是为了不动 store 的签名（tasks.out 列 / report_next_test 那套事务语义仍在
+	// 库里），而 ws 这一侧从此只写终态。
+	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status, nil,
+		f.Summary, f.Artifacts, f.Error, nil); err != nil {
 		// 终态没落库。若拒绝是「这条任务已经不归我们了」（被巡检回收/已重派/已过期），
 		// 就不该再替它续租，也不该继续占着 hub 的在飞位（#218/#222）。
 		if errors.Is(err, store.ErrInvalidTransition) || errors.Is(err, store.ErrNotFound) {
@@ -302,14 +261,8 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 	}
 	// 终态已落库：本连接与这条任务再无关系（不再续租、不再占在飞位）。
 	s.forget(f.TaskID)
-	// 补偿路径（#140 成立的前提，别删）：走到这里时 next 里的行已经和终态一起
-	// COMMIT，形状是 status='pending' + node_id IS NULL + attempts=0 —— 正是
-	// store.ListRedispatchable 的三个筛选条件。所以即使下面 ⑥ 的 goroutine 随进程
-	// 消失、或 PublishTasks 返回错误，任务也不会丢：internal/lease 的 sweeper
-	// （每 5s tick，Redispatch = Dispatcher.RedispatchTask）会把它捞回来重派。
-	// 这也是 publish 敢于放在事务外（且失败只 warn）的全部依据。
 
-	// ⑤ 记 "task finished"（在事务提交之后、publish 之前）。
+	// ⑤ 记 "task finished"。
 	//
 	// 槽位释放已并入同一个事务（契约 §2.3 第 8 条），此处不再单独调用。
 	slog.Info("task finished",
@@ -317,66 +270,32 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 		"task_id", f.TaskID,
 		"node_id", s.node.ID,
 		"status", f.Status,
-		"out", outString(out),
 	)
 
 	// ⑤.5 槽位刚刚空出来 → 立刻拉一次 pending（#219）。
 	//
-	// 放在事务提交之后、publish 之前：槽位释放已随终态一起 COMMIT，
-	// 此刻队列里若有排队的 pending，正是最该被派出去的时刻。
+	// 放在事务提交之后：槽位释放已随终态一起 COMMIT，此刻队列里若有排队的
+	// pending，正是最该被派出去的时刻。
 	// 钩子本身必须**非阻塞**（Nudge 是可合并的通道投递），所以这里同步调用也不会拖慢
 	// result 帧的处理。
 	if s.h.OnCapacityFreed != nil {
 		s.h.OnCapacityFreed()
 	}
-
-	// ⑥ 事务提交后异步 publish 已落库的子任务行；失败只记日志、不回给节点。
-	//
-	// 幂等兜底见上方的补偿路径：行已 pending + node_id NULL，sweeper 会捞。
-	if len(next) > 0 {
-		s.publishNext(ctx, task.NamespaceID, task.ID, next)
-	}
 	return nil
-}
-
-// publishNext 事务提交后异步推送下一跳（不阻塞这条连接的读循环）。
-//
-// 函数体里**只允许**调用 PublishTasks：任务行已经在 ReportResultAndCreateTasks
-// 的事务里落库了，这里再建行会重复建，「再查一次出口表」也会和已提交的计划不一致
-// ——计划是事务前算好的，publish 只负责「让这些行跑起来」。
-//
-// 异步的理由：publish 要挑机器、占槽位、推 assign 帧，耗时可能到几十毫秒；
-// 在读循环里同步做会卡住同一节点上其他任务的 ack/result 处理。
-//
-// 失败只 warn、**不把错误回给节点**：这个任务本身已经成功完成，下一跳的失败
-// 不该让它变成失败（否则节点会重试、结果重复落库）。
-//
-// 补偿路径：行已是 pending + node_id NULL + attempts=0，即使本 goroutine 随进程
-// 消失、或 PublishTasks 返回错误，store.ListRedispatchable（internal/lease sweeper
-// 每 5s tick，Redispatch = Dispatcher.RedispatchTask）也会把它捞回重派。
-// namespaceID 是父任务的命名空间（子任务行由 store 强制继承父任务的命名空间，I11④）。
-func (s *nodeSession) publishNext(ctx context.Context, namespaceID, parentTaskID string, tasks []*store.Task) {
-	go func() {
-		// 用 WithoutCancel：连接断开不该让已经完成的任务丢失下一跳。
-		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if err := s.h.NextHop.PublishTasks(bg, namespaceID, tasks); err != nil {
-			slog.Warn("publish next hop failed",
-				"event", "node.ws.result.next_hop_failed",
-				"parent_task_id", parentTaskID,
-				"tasks", len(tasks),
-				"error", err.Error(),
-			)
-		}
-	}()
 }
 
 // reportTransitionError 把状态机拒绝翻译成协议错误帧。
 //
 // 三条关键映射：
 //   - 租约已失效 → lease_expired（节点该丢弃本地任务）
-//   - params 超限 → params_too_large（审查 m5，见下）
+//   - params 超限 → params_too_large（审查 m5）
 //   - 其他非法迁移 → invalid_transition
+//
+// 注（P1.5）：result 路径已经不再建子任务行，所以 params_too_large 的最常见
+// 触发点（下一跳 params 超过 store.MaxTaskParamsBytes）已经搬到 **emit**：
+// 那条错误走 emit_ack.error，不走 error 帧（emit 的拒收是业务动作失败，
+// 不是「帧写坏了」，见 node_emit.go 的两条硬纪律）。这里的分支保留为
+// 兼底映射：任何从终态写入泄露出来的同族错误仍然不会被伪装成状态机拒绝。
 func (s *nodeSession) reportTransitionError(ctx context.Context, taskID string, err error) {
 	switch {
 	case errors.Is(err, store.ErrInvalidTransition):
@@ -385,19 +304,10 @@ func (s *nodeSession) reportTransitionError(ctx context.Context, taskID string, 
 		s.sendError(ctx, ErrCodeInvalidTransition,
 			fmt.Sprintf("task %s not found (may have been reclaimed)", taskID))
 	case errors.Is(err, store.ErrParamsTooLarge):
-		// 审查 m5：params 超限不该伪装成状态机拒绝。典型触发是「下一跳子任务 params
-		// 太大 → 父任务终态整体回滚」，而 invalid_transition 会把病因埋掉（节点只会
-		// 重跑同一份昂贵工作）。文案带原来的 err.Error()：taskID/体积/上限/修法全在里头。
+		// 审查 m5：params 超限不该伪装成状态机拒绝。文案带原来的 err.Error()：
+		// taskID/体积/上限/修法全在里头。
 		s.sendError(ctx, ErrCodeParamsTooLarge, err.Error())
 	default:
 		s.sendError(ctx, ErrCodeInvalidTransition, err.Error())
 	}
-}
-
-// outString 把 out 指针转成日志可读形式（nil → "<none>"）。
-func outString(out *string) string {
-	if out == nil {
-		return "<none>"
-	}
-	return *out
 }

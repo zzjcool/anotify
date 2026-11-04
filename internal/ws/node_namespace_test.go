@@ -93,7 +93,7 @@ func TestCrossNamespaceTaskNotVisible(t *testing.T) {
 	}{
 		{"ack", &AckFrame{Type: NodeFrameAck, TaskID: task.ID}},
 		{"result", &ResultFrame{Type: NodeFrameResult, TaskID: task.ID,
-			Status: store.TaskSucceeded, Summary: "ok", Out: strPtr("fix")}},
+			Status: store.TaskSucceeded, Summary: "ok"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

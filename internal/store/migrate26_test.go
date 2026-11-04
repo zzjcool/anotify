@@ -114,29 +114,33 @@ func TestMigration26SourceTargetsBecomeEntryEdges(t *testing.T) {
 	}
 
 	// ① 每个出口一条入口边，mapping 原样搬过来
-	checkEdge := func(srcName string, capID, wantMapping string) {
+	//
+	// 右端是**引用**（迁移 27 把 id 重写成 `name@version`，钉死迁移前的行为），
+	// 所以这里按 (name, version) 找行，而不是按 id。
+	checkEdge := func(srcName string, cap *CapabilityVersion, wantMapping string) {
 		t.Helper()
 		var got string
 		if err := up.QueryRow(
 			`SELECT mapping FROM edges
-			  WHERE namespace_id = ? AND from_is_source = 1 AND from_key = ? AND from_port = '*' AND to_capability = ?`,
-			nsID, srcName, capID).Scan(&got); err != nil {
-			t.Fatalf("源 %s → %s 的入口边没建出来: %v", srcName, capID, err)
+			  WHERE namespace_id = ? AND from_is_source = 1 AND from_ref = ? AND from_port = '*' AND to_ref = ?`,
+			nsID, srcName, FormatRef(cap.Name, cap.Version)).Scan(&got); err != nil {
+			t.Fatalf("源 %s → %s 的入口边没建出来: %v", srcName, capRef(cap), err)
 		}
 		if got != wantMapping {
-			t.Errorf("源 %s → %s 的 mapping = %q, want %q", srcName, capID, got, wantMapping)
+			t.Errorf("源 %s → %s 的 mapping = %q, want %q", srcName, capRef(cap), got, wantMapping)
 		}
 	}
-	checkEdge("hook", capA.ID, `{"title":"{{pull_request.title}}","n":"{{pull_request.number}}"}`)
-	checkEdge("hook", capB.ID, "{}")
-	checkEdge("plain", capB.ID, "{}")
+	checkEdge("hook", capA, `{"title":"{{pull_request.title}}","n":"{{pull_request.number}}"}`)
+	checkEdge("hook", capB, "{}")
+	checkEdge("plain", capB, "{}")
 	// ② 坏 params → '{}'（不是把坏字节搬过去）
-	checkEdge("dirty", capA.ID, "{}")
+	checkEdge("dirty", capA, "{}")
 
 	// 能力边的 mapping 必须是 '{}'（迁移不会给能力边塞模板）
 	var capEdgeMapping string
-	if err := up.QueryRow(`SELECT mapping FROM edges WHERE from_is_source = 0 AND from_key = ?`, capB.ID).
-		Scan(&capEdgeMapping); err != nil {
+	// P2.2（迁移 27）：能力边的两端是引用（`name@version`，钉死迁移前的行为）。
+	if err := up.QueryRow(`SELECT mapping FROM edges WHERE from_is_source = 0 AND from_ref = ?`,
+		FormatRef(capB.Name, capB.Version)).Scan(&capEdgeMapping); err != nil {
 		t.Fatalf("能力边丢了: %v", err)
 	}
 	if capEdgeMapping != EdgeMappingEmpty {

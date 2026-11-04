@@ -23,7 +23,7 @@ func TestCreateEdgeRejectsSelfLoop(t *testing.T) {
 		t.Fatalf("create capability: %v", err)
 	}
 
-	err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromCapability: capA.ID, FromPort: "ok", ToCapability: capA.ID})
+	err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: capA.ID, FromPort: "ok", ToRef: capA.ID})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("自连 err = %v, want ErrEdgeRejected", err)
 	}
@@ -44,8 +44,8 @@ func TestCreateEdgeRejectsCycle(t *testing.T) {
 		}
 	}
 	for _, e := range []*Edge{
-		{NamespaceID: ns, FromCapability: a.ID, FromPort: "ok", ToCapability: b.ID},
-		{NamespaceID: ns, FromCapability: b.ID, FromPort: "ok", ToCapability: c.ID},
+		{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: b.ID},
+		{NamespaceID: ns, FromRef: b.ID, FromPort: "ok", ToRef: c.ID},
 	} {
 		if err := db.CreateEdge(ctx, e); err != nil {
 			t.Fatalf("create edge: %v", err)
@@ -53,7 +53,7 @@ func TestCreateEdgeRejectsCycle(t *testing.T) {
 	}
 
 	// 2 环：c → a 会闭环 a→b→c→a
-	err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromCapability: c.ID, FromPort: "ok", ToCapability: a.ID})
+	err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: c.ID, FromPort: "ok", ToRef: a.ID})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("三元环 err = %v, want ErrEdgeRejected", err)
 	}
@@ -62,7 +62,7 @@ func TestCreateEdgeRejectsCycle(t *testing.T) {
 	if err := db.CreateCapability(ctx, d); err != nil {
 		t.Fatalf("create d: %v", err)
 	}
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromCapability: c.ID, FromPort: "ok", ToCapability: d.ID}); err != nil {
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: c.ID, FromPort: "ok", ToRef: d.ID}); err != nil {
 		t.Fatalf("不成环的边被拒：%v", err)
 	}
 }
@@ -86,10 +86,10 @@ func TestCreateEdgeAllowsDiamond(t *testing.T) {
 		}
 	}
 	edges := []*Edge{
-		{NamespaceID: ns, FromCapability: a.ID, FromPort: "ok", ToCapability: b.ID},
-		{NamespaceID: ns, FromCapability: a.ID, FromPort: "ok", ToCapability: c.ID},
-		{NamespaceID: ns, FromCapability: b.ID, FromPort: "ok", ToCapability: d.ID},
-		{NamespaceID: ns, FromCapability: c.ID, FromPort: "ok", ToCapability: d.ID},
+		{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: b.ID},
+		{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: c.ID},
+		{NamespaceID: ns, FromRef: b.ID, FromPort: "ok", ToRef: d.ID},
+		{NamespaceID: ns, FromRef: c.ID, FromPort: "ok", ToRef: d.ID},
 	}
 	for _, e := range edges {
 		if err := db.CreateEdge(ctx, e); err != nil {
@@ -110,12 +110,12 @@ func TestCreateEdgeEntryEdgeNeverCycles(t *testing.T) {
 	}
 	// 先有一条 a → a 会环路线的反例：入口边接 a，再接 a 的回边仍然要拒。
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: ns, FromIsSource: true, FromCapability: "github", FromPort: "push", ToCapability: a.ID,
+		NamespaceID: ns, FromIsSource: true, FromRef: "github", FromPort: "push", ToRef: a.ID,
 	}); err != nil {
 		t.Fatalf("入口边应当永远合法：%v", err)
 	}
 	// 入口边不构成环：a 没有回边，所以 a → a 只是自连
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromCapability: a.ID, FromPort: "ok", ToCapability: a.ID}); !errors.Is(err, ErrEdgeRejected) {
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: a.ID}); !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("自连应当被拒，err = %v", err)
 	}
 }

@@ -175,14 +175,27 @@ func sortJSON(v any) any {
 	}
 }
 
-// CreateCapability 追加一个能力版本。
+// CreateCapability 追加一个能力版本（**不**越过升级闸门：等价于 force=false）。
 //
 // 同内容（content_hash 相同）不产生第二行：返回 nil 且把 c 填成已有那行——
 // 这是「幂等创建」，不是错误。
 //
 // 注意 UNIQUE(namespace_id, name, version) 仍然生效：同一 name 的同版本不允许
 // 用**不同内容**覆盖（那是改定义，不是追加版本）。
+//
+// 新版本成为 latest 且**破坏**已有 name 型 link 时返回 *UpgradeBreakingError
+// （errors.Is(err, ErrUpgradeBreaking)）：那是一次「改线」，必须由人显式确认，
+// 见 CreateCapabilityForce / CheckUpgrade（typed-pipeline §3.6）。
 func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
+	return d.CreateCapabilityForce(ctx, c, false)
+}
+
+// CreateCapabilityForce 与 CreateCapability 相同，但可以由调用方显式越过升级闸门。
+//
+// force=true 表示「我知道哪些 link 会断，仍然要推」：闸门只记录/列出影响面，
+// 不再拒绝。它绝不修改 link 本身——改线仍然是用户的动作（把 link 钉到旧版，
+// 或者去改上游），中枢不替任何人做这个决定。
+func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, force bool) error {
 	if c == nil {
 		return fmt.Errorf("create capability: nil")
 	}
@@ -212,6 +225,29 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 	hash, err := NormalizeCapability(c)
 	if err != nil {
 		return err
+	}
+
+	// 升级闸门（P2.2，设计 §3.6）：只有当这个版本**成为 latest** 时才拦。
+	// 放在写入之前：不能先写进去再问（问了也没用，append-only 撤不回）。
+	//
+	// 同内容的请求先放过：那种请求会被下面的幂等路径折叠成**已有的那一行**
+	// （它不会成为新版本），拦住它只会让一个「什么都没变」的调用失败。
+	if !force {
+		existing, herr := d.getCapabilityByHash(ctx, c.NamespaceID, hash)
+		switch {
+		case herr == nil && existing != nil:
+			// 幂等重放：不改线，不过闸门
+		case herr != nil && !errors.Is(herr, ErrNotFound):
+			return fmt.Errorf("check existing capability by hash: %w", herr)
+		default:
+			impact, ierr := d.CheckUpgrade(ctx, c.NamespaceID, c)
+			if ierr != nil {
+				return ierr
+			}
+			if impact.Breaking {
+				return &UpgradeBreakingError{Impact: impact}
+			}
+		}
 	}
 	if c.Source == "" {
 		c.Source = CapSourceCustom

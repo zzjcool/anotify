@@ -1664,6 +1664,18 @@ paths:
 
         `namespaceId` **必填**（query 或 body，query 优先）：一条能力定义只属于一个命名空间，
         同名同版本在**不同命名空间**里是两个独立定义（不冲突）。
+
+        **升级闸门**（P2.2，设计 §3.6）：新版本成为 latest 时，与上一版比对契约：
+
+        | 变化 | 处置 |
+        |---|---|
+        | 加可选入参 / 加 port | 直接生效 |
+        | 删 port / 改入参类型 / 加必填 | **409 `upgrade_breaking`** + `upgradeImpact`（变了什么 + 受影响的 link），除非显式传 `force: true` |
+
+        「受影响」的判据是「这条 link 会不会解析到新版」：`to_ref` 是**裸名字**
+        （跟随 latest）的 link 会被列出来，`name@version` 型 link 不受影响
+        （它钉死旧版）。响应里**总是**带 `upgradeImpact`（空影响面也是 `[]` 而不是 `null`），
+        前端可以先展示再决定要不要 `force`。
       security:
         - cookieAuth: []
       parameters:
@@ -1683,10 +1695,15 @@ paths:
                 properties:
                   capability: { $ref: "#/components/schemas/Capability" }
                   kind: { $ref: "#/components/schemas/Kind" }
+                  upgradeImpact: { $ref: "#/components/schemas/UpgradeImpact" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409":
-          description: 同 name@version 换内容（`capability_conflict`）
+          description: |
+            两种 409，看 `code` 区分：
+            - `upgrade_breaking`：新版会破坏跟随 latest 的 link（带 `upgradeImpact`；
+              确认要改线就带 `force: true` 重试）
+            - `capability_conflict`：同 name@version 换内容（append-only，不变量 I8）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1740,11 +1757,15 @@ paths:
       summary: 出口表列表
       description: |
         `namespaceId` **必填**；`*` 允许（跨命名空间汇总）。
+
+        边的一端是**引用**（P2.2，设计 §3.2）：`fromRef` / `toRef` 写
+        `name`（跟随 latest）或 `name@version`（钉死）。
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: fromCapability, in: query, schema: { type: string } }
+        - { name: fromRef, in: query, schema: { type: string }, description: '按左端过滤（`name` / `name@version` / 能力 id 均可；按**名字**匹配，两种引用形态都算）' }
+        - { name: fromCapability, in: query, deprecated: true, schema: { type: string }, description: '`fromRef` 的旧名（兼容一个版本）' }
       responses:
         "200":
           description: '边列表（空时 `edges: []`）'
@@ -1765,18 +1786,26 @@ paths:
       tags: [edges]
       summary: 新增一条边
       description: |
-        配置期四条硬校验（违反即 400）：
-        1. `fromPort` 必须属于上游的 `outputs`（**出口是封闭集合**，不变量 I2）
-        2. 两端能力必须**同命名空间**（跨命名空间引用 → 400，不变量 I11）
+        两端是**引用**（P2.2，设计 §3.2）：`fromRef` / `toRef` 写 `name`（跟随 latest，
+        升级自动生效）或 `name@version`（钉死那一版）。**边里只存引用，不存 id**。
+
+        配置期五条硬校验（违反即 400 `edge_rejected`）：
+        1. `fromPort` 必须属于**解析到的上游版本**的 `outputs`（**出口是封闭集合**，不变量 I2）
+        2. 两端引用必须能在本**命名空间**里解析（跨命名空间引用 → 400，不变量 I11）
         3. `namespaceId` **必填**（query 或 body，query 优先）：一条边属于且只属于一个命名空间
         4. `literals` 是**常量覆盖**（设计 §3.3：下游 params = data ⊎ literals，字面量优先）：
-           必须是 JSON 对象（`null` = 没有覆盖）；每个键必须出现在目标能力
+           必须是 JSON 对象（`null` = 没有覆盖）；每个键必须出现在**解析到的目标版本**的
            `paramsSchema.properties` 里（拼错当场拒）；值类型必须与声明**精确相等**
            （`integer` 不收 string，反之亦然，不做任何转换）。常量不依赖运行时，
            所以能在这里判类型，不必等派发时才剪枝。
+        5. 静态可达环（按**能力名**判）：会闭合成环的边一律拒
 
-        `fromIsSource=true` 时 `fromCapability` 被解释为**来源名**（如 `github`，建入口边），
+        `fromIsSource=true` 时 `fromRef` 被解释为**来源名**（如 `github`，建入口边），
         此时只校验右端能力在本命名空间；来源名不跨命名空间解析。
+
+        **输入兼容一个版本**：旧的 `fromCapability` / `toCapability` 字段仍然接受，
+        值可以是能力 id（P2.2 之前的形状）；store 会把它解析成 `name@version` 再落库
+        ——绝不会把 id 存进边。
       security:
         - cookieAuth: []
       parameters:
@@ -1797,8 +1826,9 @@ paths:
                   edge: { $ref: "#/components/schemas/Edge" }
         "400":
           description: |
-            出口不在 outputs 里 / 跨命名空间引用 / 能力不存在 / `literals` 不合法
-            （`edge_rejected`；`error` 里带具体原因，如「哪个键不存在」「期望什么类型」）
+            引用解析不到 / 出口不在解析到的版本的 outputs 里 / 跨命名空间引用 /
+            `literals` 不合法 / 会成环（`edge_rejected`；`error` 里带具体原因，
+            如「哪个引用不存在」「哪个键不存在」「期望什么类型」）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1813,9 +1843,11 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/NamespaceId"
-        - { name: fromCapability, in: query, required: true, schema: { type: string } }
+        - { name: fromRef, in: query, schema: { type: string }, description: '左端引用（`name` / `name@version` / 能力 id）' }
         - { name: fromPort, in: query, required: true, schema: { type: string } }
-        - { name: toCapability, in: query, required: true, schema: { type: string } }
+        - { name: toRef, in: query, schema: { type: string }, description: '右端引用（同上）' }
+        - { name: fromCapability, in: query, deprecated: true, schema: { type: string }, description: '`fromRef` 的旧名' }
+        - { name: toCapability, in: query, deprecated: true, schema: { type: string }, description: '`toRef` 的旧名' }
       responses:
         "200":
           description: 已删除
@@ -3499,6 +3531,50 @@ components:
         sticky: { type: string }
         lifecycle: { type: object }
         source: { type: string, enum: [builtin, custom], default: custom }
+        force:
+          type: boolean
+          default: false
+          description: |
+            显式越过**升级闸门**（P2.2，设计 §3.6）：仅当新版本成为 latest 且会破坏
+            已有的 name 型 link 时才需要。它只表示「我知道哪些线会断，仍然要推」——
+            中枢**不会**替你改任何 link（改线仍然是用户的动作）。
+
+    UpgradeImpact:
+      type: object
+      description: |
+        升级影响面（P2.2，设计 §3.6）：把这一版变成 latest 会动到什么。
+        非破坏性时 `breaking=false`、`changes`/`links` 都是**空数组**。
+      required: [capability, breaking, changes, links]
+      properties:
+        capability: { type: string, description: 能力名 }
+        fromVersion:
+          type: integer
+          description: 比对的上一版 latest（0 = 之前没有任何版本）
+        toVersion: { type: integer }
+        breaking:
+          type: boolean
+          description: true = 会破坏跟随 latest 的 link（需要 `force` 才能写入）
+        changes:
+          type: array
+          items:
+            type: object
+            required: [kind, detail]
+            properties:
+              kind:
+                type: string
+                enum: [removed_port, param_type_changed, param_added_required]
+              detail: { type: string, description: 人可读的说明 }
+        links:
+          type: array
+          description: 受影响的 link（`fromRef --port--> toRef`）
+          items:
+            type: object
+            required: [fromRef, port, toRef, reason]
+            properties:
+              fromRef: { type: string }
+              port: { type: string }
+              toRef: { type: string }
+              reason: { type: string, description: 为什么这条 link 会受影响 }
 
     Edge:
       type: object
@@ -3506,13 +3582,40 @@ components:
         namespaceId:
           type: string
           description: 边所属命名空间（恒存在；主键前缀就是它）
-        fromCapability: { type: string }
+        fromRef:
+          type: string
+          description: |
+            左端**引用**（P2.2）：能力边是 `name`（跟随 latest）/ `name@version`（钉死）；
+            入口边（`fromIsSource=true`）是**来源名**（如 `github`）。
+        fromCapabilityId:
+          type: string
+          description: |
+            `fromRef` **此刻**解析到的能力定义 id（只读派生量，**不落库**）。
+
+            为什么要有它：边的真值只有引用（存 id 的话升级永远不生效），
+            但界面要「点进去看这一版」就得知道当前解析到哪一版；让前端自己算
+            name→latest 等于把解析语义复制一份，两边一漂就是「页面说 review@2、
+            派发走了 review@3」。
+
+            **入口边恒为空串**（左端是来源名，没有「哪一版」）；解析不到
+            （引用的能力已被删）时也是空串。
         fromPort:
           type: string
           description: |
-            必须属于 fromCapability.outputs。入口边（fromIsSource=true）例外：
+            必须属于**解析到的上游版本**的 `outputs`。入口边（fromIsSource=true）例外：
             事件类型由外部系统决定，也可以是 `"*"`（= 该来源的任意事件类型）。
-        toCapability: { type: string }
+        toRef:
+          type: string
+          description: |
+            右端**引用**：`name`（跟随 latest，升级自动生效）/ `name@version`（钉死）。
+            **不是** `capability_versions.id` —— 存 id 的话升级永远不会生效。
+        toCapabilityId:
+          type: string
+          description: |
+            `toRef` **此刻**解析到的能力定义 id（只读派生量，**不落库**）。
+
+            与 `fromCapabilityId` 同口径：解析不到时是空串（这条边现在走不通），
+            裸名字引用的取值会随能力发新版而变化 —— 这正是「跟随 latest」的体现。
         literals:
           type: object
           description: |
@@ -3540,7 +3643,7 @@ components:
 
     EdgeInput:
       type: object
-      required: [fromCapability, fromPort, toCapability]
+      required: [fromPort]
       properties:
         namespaceId:
           type: string
@@ -3550,10 +3653,27 @@ components:
         fromIsSource:
           type: boolean
           default: false
-          description: true 时 fromCapability 被解释为来源名（建入口边）
-        fromCapability: { type: string }
+          description: true 时 fromRef 被解释为来源名（建入口边）
+        fromRef:
+          type: string
+          description: |
+            左端引用：能力边 `name` / `name@version`；入口边是被引用的**来源名**。
+            `fromRef` 与旧的 `fromCapability` 至少给一个（新的优先）。
         fromPort: { type: string }
-        toCapability: { type: string }
+        toRef:
+          type: string
+          description: |
+            右端引用：`name`（跟随 latest）/ `name@version`（钉死）。
+            `toRef` 与旧的 `toCapability` 至少给一个（新的优先）；
+            旧字段的值可以是能力 id（输入兼容，落库时被解析成 `name@version`）。
+        fromCapability:
+          type: string
+          deprecated: true
+          description: '`fromRef` 的旧名（兼容一个版本）'
+        toCapability:
+          type: string
+          deprecated: true
+          description: '`toRef` 的旧名（兼容一个版本；值可以是能力 id）'
         literals:
           type: object
           nullable: true

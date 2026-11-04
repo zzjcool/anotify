@@ -128,11 +128,11 @@ func (e *benchEnv) addEntryGraphWithNode(tb testing.TB) string {
 	// 入口边：来源 "github" 的 pull_request.opened → bench.review@1。
 	// FromIsSource=true 时左端是**来源名**，出口是外部系统决定的事件类型。
 	if err := e.db.CreateEdge(ctx, &store.Edge{
-		NamespaceID:    e.nsID,
-		FromIsSource:   true,
-		FromCapability: "github",
-		FromPort:       "pull_request.opened",
-		ToCapability:   e.capID,
+		NamespaceID:  e.nsID,
+		FromIsSource: true,
+		FromRef:      "github",
+		FromPort:     "pull_request.opened",
+		ToRef:        e.capID,
 	}); err != nil {
 		tb.Fatalf("create entry edge: %v", err)
 	}

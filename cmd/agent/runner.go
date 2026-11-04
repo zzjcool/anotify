@@ -34,24 +34,29 @@ import (
 //     （那就用那个目录，见 resolveChdir）。
 //  3. **执行内容来自产物，不来自 node.yaml**。node.yaml 只剩 bootstrap（见 config.go）。
 //
-// # 出口名（out）的来源：一个文件
+// # 出口（out）：**已退役** —— emit 是唯一的产出通道
 //
-// v1 的 `run.out` 是 node.yaml 里一个固定字符串，任务成功就回报它。v2 的产物只有
-// `spec.outputs[]`（**集合**：edges.from_port 的封闭集合），「这一次跑的是哪一个」
-// 是**运行期**才知道的，所以必须由脚本告诉节点。
+// 这里曾经有一条「退出时读文件回报出口」的腿：节点把 `$ANOTIFY_OUT_FILE`
+// （= <workdir>/.anotify-out）交给脚本，脚本跑完写一行出口名，节点读它、校验 ∈
+// `spec.outputs`，再合成 `result.out`。P1.5 把它**整条删掉**（没有兼容层）：
+// 产出只有一个通道 —— 运行中 `anotify-agent emit --port … --data …`（见
+// docs/design/typed-pipeline.md §2 与 docs/design/emit-protocol.md）。
 //
-// 约定（CONTRACT.md §2.5 / §6.1）：
-//   - 节点把 `$ANOTIFY_OUT_FILE`（= <workdir>/.anotify-out）交给脚本
-//   - 脚本**跑完时**（不管成功还是失败）想把这次走到哪个出口写进去（一行，最多 64 字节）
-//   - 节点读它、trim、校验 ∈ spec.outputs，然后作为 result.out 回报
-//   - 文件不存在 → 不选出口（out 键缺席 = 「这次没选下一跳，到此结束」）
-//   - 写了但不在 spec.outputs 里 → 整次执行判 **failed**（出口是封闭集合，不变量 I2）
+// 为什么必须一刀切掉两条：
+//   - 两套协议必然分叉。「一次性返回」只是「只 emit 一次」的特例；留着文件通道，
+//     同一个能力就会出现「emit 出去的」与「退出时写的」两份产出，谁先谁后、
+//     重复了算几次，全都没有定义。
+//   - 端口白名单要能**当场**拒（emit 时），不必等进程退出才发现出口名写错；
+//     而文件通道天然是「事后才发现」，失败信息还只剩一行 summary。
+//   - 「失败也能继续」不再需要特殊照顾：emit 与 status 无关（I4 的形式不变，
+//     载体从 out 变成 emit 的 port）。
 //
-// **成败都读**：失败也可以声明走哪条分支（「失败也发通知」就是一条 (cap, failed)
-// 的边）。成功/失败是**展示**维度，走哪个出口是**路由**维度，两者不互相限制。
+// 所以本文件现在**不再读写任何出口文件**，也**不再注入** `ANOTIFY_OUT_FILE`：
+// 脚本若还写着 `> "$ANOTIFY_OUT_FILE"`，`set -u` 会当场炸（比静默断链好），
+// 而任何写死的 `.anotify-out` 文件都不会再被任何人读（见 runner_test.go 的
+// TestRunJobIgnoresLegacyOutFile：那条用例就是「这条腿真的断了」的证据）。
 //
-// 为什么不复用 `sh -c` 时代的 `run.out`：那个是「这个能力成功就等于这个出口」，
-// 无法表达「同一个能力按参数走不同分支」，而分支恰恰是图的价值所在。
+// 任务的成功/失败仍然只看**进程事实**（退出码 / 信号 / 超时 / 取消），不来自端口。
 //
 // # 进程组与 WaitDelay（v1 的成果，全部保留）
 //
@@ -94,8 +99,8 @@ type job struct {
 
 // outcome 是一次执行的结果。
 type outcome struct {
-	Status    string   // statusSucceeded | statusFailed
-	Out       *string  // 出口名：v2 恒为 nil（来源是契约空白，见文件头注释）
+	Status string // statusSucceeded | statusFailed
+	// 这里**没有** Out（出口名）：P1.5 起 out 退役，路由只看 emit 的 port。
 	Summary   string   // 一行
 	Artifacts []string // 恒非 nil（空返回 []）
 	Err       string   // failed 时非空
@@ -145,11 +150,6 @@ type execPlan struct {
 	entrypoint string        // 入口文件的绝对路径（直接 exec，靠 shebang 选解释器）
 	env        []string      // 完整环境变量（父环境剔除 ANOTIFY_* + 产物 env + 契约变量）
 	timeout    time.Duration // 0 = 不设本地超时（交给中枢租约）
-	// outFile 是脚本回报「这次走了哪个出口」的唯一通道（见文件头）。
-	outFile string
-	// allowedOutputs 是产物声明的出口集合（spec.outputs）。脚本写的出口名必须在里面，
-	// 否则整次执行判失败 —— 出口是封闭集合（不变量 I2），不允许节点临时发明一个。
-	allowedOutputs []string
 }
 
 // runJob 执行一次任务。**不 panic**：所有失败都写进 outcome.Err（client 侧照常
@@ -158,7 +158,7 @@ type execPlan struct {
 // 上下文语义：ctx 被取消（cancel 帧 / 退出排空）或超时 → 杀整个进程组，outcome
 // 记 failed（Err 分别是 canceled / timed out after ...）。
 func runJob(ctx context.Context, j job) outcome {
-	res := outcome{Status: statusFailed, Out: nil, Artifacts: []string{}}
+	res := outcome{Status: statusFailed, Artifacts: []string{}}
 
 	plan, err := prepareExecution(j)
 	if err != nil {
@@ -221,21 +221,8 @@ func runJob(ctx context.Context, j job) outcome {
 		}
 	}
 
-	// 出口名来自脚本写的那个文件（见文件头）。**成败都读**：失败也可以声明走哪条
-	// 分支（"失败也发通知"就是一条 (cap, failed) 的边），节点不该替它把这条路堵死。
-	//
-	// 没写 → 不选出口（分支到此结束）；写了但不在 spec.outputs 里 → 整次执行失败
-	// （出口是封闭集合，不变量 I2）。
-	if out, outErr := readOutcomeOut(plan); outErr != nil {
-		res.Status = statusFailed
-		if res.Err == "" {
-			res.Err = outErr.Error()
-		} else {
-			res.Err += "; " + outErr.Error()
-		}
-	} else if out != nil {
-		res.Out = out
-	}
+	// 这里曾经读一次 `.anotify-out` 并合成 res.Out —— P1.5 起没有这一步：
+	// 产出只有 emit 通道，成败只有进程事实（见文件头）。
 
 	if res.Status == statusSucceeded {
 		if res.Summary == "" {
@@ -245,8 +232,6 @@ func runJob(ctx context.Context, j job) outcome {
 		}
 		// 成功 → 删掉工作目录（契约 §5 的清理规则）。失败则保留，方便事后翻现场。
 		// 删不掉不算任务失败（任务确实成功了），路径仍在 res.WorkDir 里可查。
-		//
-		// 必须在读完出口文件之后删（上面那一步），否则 .anotify-out 跟着目录消失。
 		_ = os.RemoveAll(plan.workDir)
 	}
 	return res
@@ -352,7 +337,7 @@ func prepareExecution(j job) (execPlan, error) {
 	if err != nil {
 		return execPlan{}, err
 	}
-	env, err := buildEnv(os.Environ(), j, workDir, cwd)
+	env, err := buildEnv(os.Environ(), j, workDir, cwd, selfExecutable())
 	if err != nil {
 		return execPlan{}, fmt.Errorf("build env: %w", err)
 	}
@@ -362,9 +347,6 @@ func prepareExecution(j job) (execPlan, error) {
 		entrypoint: entrypoint,
 		env:        env,
 		timeout:    effectiveTimeout(j),
-		outFile:    filepath.Join(workDir, outFileName),
-		// 出口集合来自产物：它是 edges.from_port 的封闭集合（不变量 I2）。
-		allowedOutputs: append([]string(nil), j.Artifact.Spec.Outputs...),
 	}, nil
 }
 
@@ -490,11 +472,30 @@ func newArtifactCmd(ctx context.Context, plan execPlan) *exec.Cmd {
 	return cmd
 }
 
+// selfExecutable 返回 agent 自己的可执行文件绝对路径（→ ANOTIFY_AGENT_BIN）。
+//
+// 取不到就返回空串：调用方按「不注入」处理（脚本回退到 PATH 上的 anotify-agent），
+// 绝不拿一个空路径去充数（见 buildEnv 里那段注释）。
+func selfExecutable() string {
+	exe, err := executablePath()
+	if err != nil {
+		return ""
+	}
+	return exe
+}
+
+// executablePath 是 selfExecutable 的接缝：测试里会把它换成**真编出来的** agent
+// 二进制，这样「示例能力调 $ANOTIFY_AGENT_BIN emit」才能在单测里真的跑通。
+// 默认实现是 os.Executable（生产路径）。
+var executablePath = os.Executable
+
 // buildEnv 组织子进程环境：父环境（剔除 ANOTIFY_* 残留）+ 产物的 run.env +
 // 契约变量（优先级最高），最后**按变量名排序**返回，便于测试直接比对。
 //
-// 纯函数：不读 os.Environ（base 由调用方给），不依赖时间/随机。
-func buildEnv(base []string, j job, workDir, cwd string) ([]string, error) {
+// 几乎是纯函数：不读 os.Environ（base 由调用方给），不依赖时间/随机；
+// 唯一的外部输入是 agentBin（调用方用 os.Executable 取到后传进来——
+// 这样单测能钉住具体值，不必去猜测试二进制的路径）。
+func buildEnv(base []string, j job, workDir, cwd, agentBin string) ([]string, error) {
 	env := make(map[string]string, len(base)+8)
 
 	// 1) 父进程环境。先剔除所有 ANOTIFY_*：agent 自己可能被别的东西包着跑，
@@ -546,8 +547,24 @@ func buildEnv(base []string, j job, workDir, cwd string) ([]string, error) {
 	env["ANOTIFY_TASKDIR"] = workDir
 	env["ANOTIFY_TRACE_ID"] = j.TraceID
 	env["ANOTIFY_DIGEST"] = j.Digest
-	// 出口回报通道（CONTRACT-artifact §6.1）：脚本把出口名写进这个文件。
-	env[envOutFile] = filepath.Join(workDir, outFileName)
+	// 出口回报文件（ANOTIFY_OUT_FILE）**不再注入**：out 已退役，产出只走 emit。
+	// 注入一个空路径会让老脚本带着空字符串去写（写到哪里全看 cwd），比让它
+	// 在 `set -u` 下当场炸更糟。
+
+	// ANOTIFY_AGENT_BIN：本 agent 二进制的绝对路径。
+	//
+	// 为什么要有它：能力进程调 `anotify-agent emit` 是**唯一**的产出通道
+	// （emit-protocol §2），而节点上 agent 不一定在 PATH 里（可以是从任意
+	// 目录起的静态二进制，也可能是容器里的 /app/agent）。靠 PATH 猜的后果是
+	// 「emit 报 command not found → 脚本 exit 127 → 链断掉」，看起来像能力写错。
+	// 脚本的正确写法是 `"${ANOTIFY_AGENT_BIN:-anotify-agent}" emit …`：
+	// 取不到时回退到 PATH（standalone / 手动跑产物 的场景）。
+	//
+	// 取不到路径（极罕见，os.Executable 失败）就不注入：宁可缺键也不给空串——
+	// 空串会让 `"$ANOTIFY_AGENT_BIN" emit` 变成执行 `emit …`，错误完全对不上号。
+	if agentBin != "" {
+		env[envAgentBin] = agentBin
+	}
 
 	// emit 通道（emit-protocol.md §1）：socket 路径 + 一次性任务令牌。
 	// 只在「这次任务真的有 socket」时注入（见 job.Emit 的注释）。
@@ -719,51 +736,11 @@ func killProcessGroup(pid int) error {
 	return nil
 }
 
-// 出口回报通道的常量（CONTRACT-artifact §6.1）。
+// 契约环境变量的常量名。
 const (
-	// envOutFile 是交给脚本的出口文件路径。
-	envOutFile = "ANOTIFY_OUT_FILE"
-	// outFileName 是这个文件在工作目录里的名字。用点开头 + 固定名字：
-	// 用户在脚本里 `ls` 时它不碍事，也不会跟常见的 out.json 撞。
-	outFileName = ".anotify-out"
-	// outcomeOutMaxBytes 是出口名的长度上限（与 artifact 包的 outputPattern 同量级）。
-	outcomeOutMaxBytes = 64
+	// envAgentBin 是交给能力脚本的 agent 二进制路径（脚本用它调 `emit` 子命令）。
+	envAgentBin = "ANOTIFY_AGENT_BIN"
 )
-
-// readOutcomeOut 读取脚本写下的出口名。
-//
-// 三种返回值语义（对应 result 帧 out 域的三态，不变量 I5）：
-//
-//	nil, nil        → 文件不存在/为空 = 这次不选下一跳（帧里 out 键缺席）
-//	&name, nil      → 回报这个出口
-//	nil, err        → 写了但不合法 → 整次执行判失败（不静默降级成「不回报」，
-//	                  否则一个拼错的出口名会表现为「链路莫名断掉」）
-func readOutcomeOut(plan execPlan) (*string, error) {
-	if plan.outFile == "" {
-		return nil, nil
-	}
-	raw, err := os.ReadFile(plan.outFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // 没写 = 不回报
-		}
-		return nil, fmt.Errorf("read %s: %w", outFileName, err)
-	}
-	name := strings.TrimSpace(string(raw))
-	if name == "" {
-		return nil, nil
-	}
-	if len(name) > outcomeOutMaxBytes {
-		return nil, fmt.Errorf("out %q is longer than %d bytes", name, outcomeOutMaxBytes)
-	}
-	// 出口是**封闭集合**（不变量 I2）：必须是产物声明的 outputs 之一。
-	for _, allowed := range plan.allowedOutputs {
-		if allowed == name {
-			return &name, nil
-		}
-	}
-	return nil, fmt.Errorf("out %q is not declared in spec.outputs %v", name, plan.allowedOutputs)
-}
 
 // resolveChdir 决定这次执行的 cwd。**唯一的来源是能力定义里的 run.workDir**。
 //

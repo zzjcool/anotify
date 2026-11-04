@@ -213,7 +213,7 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatalf("create node in staging: %v", err)
 	}
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: staging.ID, FromCapability: stagingCap.ID, FromPort: "fix", ToCapability: sinkCap.ID,
+		NamespaceID: staging.ID, FromRef: stagingCap.ID, FromPort: "fix", ToRef: sinkCap.ID,
 	}); err != nil {
 		t.Fatalf("create edge in staging: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestNamespaceRequirementEnforced(t *testing.T) {
 		t.Fatalf("create node: %v", err)
 	}
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromCapability: capDef.ID, FromPort: "fix", ToCapability: capTo.ID,
+		NamespaceID: nsID, FromRef: capDef.ID, FromPort: "fix", ToRef: capTo.ID,
 	}); err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestNamespaceRequirementEnforced(t *testing.T) {
 		{"NextCapabilityVersion", func(ns string) error { _, err := db.NextCapabilityVersion(ctx, ns, "review"); return err }},
 		{"ListNodes", func(ns string) error { _, err := db.ListNodes(ctx, ns); return err }},
 		{"ListEdges", func(ns string) error { _, err := db.ListEdges(ctx, ns, ""); return err }},
-		{"EdgesFrom", func(ns string) error { _, err := db.EdgesFrom(ctx, ns, false, capDef.ID, "fix"); return err }},
+		{"EdgesFrom", func(ns string) error { _, err := db.EdgesFrom(ctx, ns, false, capDef.Name, "fix"); return err }},
 		{"ListSources", func(ns string) error { _, err := db.ListSources(ctx, ns); return err }},
 		{"ListEvents", func(ns string) error { _, err := db.ListEvents(ctx, ns, "", "", 10); return err }},
 		{"ListTasks", func(ns string) error { _, err := db.ListTasks(ctx, ns, "", "", "", 10); return err }},
@@ -345,7 +345,7 @@ func TestNamespaceRequirementEnforced(t *testing.T) {
 		{"EnsureGraphVersion", func(ns string) error { _, err := db.EnsureGraphVersion(ctx, ns); return err }},
 		{"MessageStats", func(ns string) error { _, err := db.MessageStats(ctx, ns, userID, 0); return err }},
 		{"CreateEdge", func(ns string) error {
-			return db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromCapability: capDef.ID, FromPort: "fix", ToCapability: capDef.ID})
+			return db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: capDef.ID, FromPort: "fix", ToRef: capDef.ID})
 		}},
 		{"CreateTasks", func(ns string) error {
 			return db.CreateTasks(ctx, []*Task{mkTask(ns, "t2", capDef)})
@@ -415,10 +415,10 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 
 	// ===== ① CreateEdge：两端各一条 =====
 	assertCross("edges.to_capability",
-		db.CreateEdge(ctx, &Edge{NamespaceID: nsA, FromCapability: upA.ID, FromPort: "fix", ToCapability: sinkB.ID}),
+		db.CreateEdge(ctx, &Edge{NamespaceID: nsA, FromRef: upA.ID, FromPort: "fix", ToRef: sinkB.ID}),
 		nsA, nsB)
 	assertCross("edges.from_capability",
-		db.CreateEdge(ctx, &Edge{NamespaceID: nsA, FromCapability: upB.ID, FromPort: "fix", ToCapability: sinkA.ID}),
+		db.CreateEdge(ctx, &Edge{NamespaceID: nsA, FromRef: upB.ID, FromPort: "fix", ToRef: sinkA.ID}),
 		nsA, nsB)
 
 	// ===== ② CreateSource / UpdateSource 的 targets =====
@@ -588,7 +588,7 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	// 源的出口现在是**入口边**（P2.1：source_targets 已删）：必须落在源自己的
 	// 命名空间里，左端是来源名、端口是 "*"（源能收任意事件类型）。
 	if n := countRows(t, db, "edges",
-		"from_is_source = 1 AND from_key = ? AND from_port = '*' AND namespace_id = ?", src.Name, ns); n != 1 {
+		"from_is_source = 1 AND from_ref = ? AND from_port = '*' AND namespace_id = ?", src.Name, ns); n != 1 {
 		t.Fatalf("源的入口边没落在源自己的命名空间里（匹配 %d 行）", n)
 	}
 
@@ -620,7 +620,7 @@ func TestNamespaceRoundTrips(t *testing.T) {
 
 	// edge
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: ns, FromCapability: capDef.ID, FromPort: "fix", ToCapability: capTo.ID,
+		NamespaceID: ns, FromRef: capDef.ID, FromPort: "fix", ToRef: capTo.ID,
 	}); err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
@@ -849,12 +849,22 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 		if n := countRows(t, up, "node_pins", "sticky_key = ?", legacyPinID); n != 1 {
 			lost("迁移把老 node_pins 行弄丢了（剩 %d 行）", n)
 		}
-		if n := countRows(t, up, "edges", "from_key = ? AND to_capability = ?", legacyCapID, legacyCapID); n != 1 {
-			lost("迁移把老 edges 行弄丢了（剩 %d 行）", n)
+		// P2.2（迁移 27）：老 edges 行还在，只是两端从 id 变成了 `name@version`
+		// （钉死迁移前的行为）。找它的判据是**行数**：left(cap) → right(cap) 那一行。
+		if n := countRows(t, up, "edges", "from_is_source = 0 AND to_ref = ?", legacyCapID); n != 0 {
+			lost("迁移后能力边的右端仍是 id（应该已重写成 name@version）：剩 %d 行", n)
+		}
+		var refs int
+		if err := up.QueryRow(`SELECT count(*) FROM edges WHERE from_is_source = 0`).Scan(&refs); err != nil {
+			lost("count edges: %v", err)
+		}
+		if refs != 1 {
+			lost("迁移把老 edges 行弄丢了（剩 %d 行）", refs)
 		}
 		// 老 source_targets 那一行**没有丢**：迁移 26（P2.1）把它搬成了一条入口边。
+		// 右端同样是引用：老的 `cap_legacy` 在迁移 27 里重写成 `review@1`。
 		if n := countRows(t, up, "edges",
-			"from_is_source = 1 AND to_capability = ? AND from_port = '*'", legacyCapID); n != 1 {
+			"from_is_source = 1 AND to_ref = ? AND from_port = '*'", FormatRef("review", 1)); n != 1 {
 			lost("迁移把老源的出口弄丢了（入口边剩 %d 行）", n)
 		}
 		if tableExists(t, up, "source_targets") {
@@ -881,8 +891,9 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 			q := `SELECT namespace_id FROM ` + r.table + ` WHERE id = ?`
 			args := []any{r.id}
 			if r.table == "edges" {
-				q = `SELECT namespace_id FROM edges WHERE from_key = ? AND to_capability = ?`
-				args = []any{legacyCapID, legacyCapID}
+				// 迁移 27 之后两端是引用（老的 `cap_legacy` → `review@1`）。
+				q = `SELECT namespace_id FROM edges WHERE from_ref = ? AND to_ref = ?`
+				args = []any{FormatRef("review", 1), FormatRef("review", 1)}
 			}
 			if err := up.QueryRow(q, args...).Scan(&gotNS); err != nil {
 				t.Fatalf("read legacy %s: %v", r.table, err)
@@ -903,7 +914,7 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 			t.Fatalf("read pin ns: %v", err)
 		}
 		if err := up.QueryRow(`SELECT namespace_id FROM edges
-			WHERE from_is_source = 1 AND to_capability = ? AND from_port = '*'`, legacyCapID).Scan(&entryNS); err != nil {
+			WHERE from_is_source = 1 AND to_ref = ? AND from_port = '*'`, FormatRef("review", 1)).Scan(&entryNS); err != nil {
 			t.Fatalf("read entry edge ns: %v", err)
 		}
 		for label, got := range map[string]string{

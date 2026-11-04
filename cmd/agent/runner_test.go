@@ -307,9 +307,6 @@ func TestRunJobExitCodePropagated(t *testing.T) {
 	if !strings.Contains(res.Err, "boom") {
 		t.Fatalf("Err = %q, want 含 stderr 首行 %q", res.Err, "boom")
 	}
-	if res.Out != nil {
-		t.Fatalf("Out = %q, want nil", *res.Out)
-	}
 	if res.Artifacts == nil || len(res.Artifacts) != 0 {
 		t.Fatalf("Artifacts = %v, want 非 nil 空列表", res.Artifacts)
 	}
@@ -350,21 +347,30 @@ func TestRunJobSuccessEmptyOutput(t *testing.T) {
 	}
 }
 
-// TestRunJobOutNeverReported：v2 节点**恒不回报出口**。
+// TestRunJobNoOutPlumbing 守住「out 这条腿真的没了」：
 //
-// 这不是「顺手删了功能」：产物的 Run 里没有 out 字段，Spec.Outputs 是**集合**
-// （edges.from_port 的封闭集合），契约也没定义「脚本怎么告诉节点这次走哪个出口」
-// 的通道（见 runner.go 文件头）。所以 result 帧的 out 键缺席 = 按分支终止处理。
-// plumbing（outcome.Out / sendResult / 三态）全部保留，等契约定义载体后补一处读取。
-func TestRunJobOutNeverReported(t *testing.T) {
-	for _, body := range []string{"true", "echo done", "exit 0"} {
-		res := runJob(context.Background(), newRunnerJob(t, body))
-		if res.Status != statusSucceeded {
-			t.Fatalf("body=%q status = %q, want succeeded（err=%q）", body, res.Status, res.Err)
-		}
-		if res.Out != nil {
-			t.Fatalf("body=%q Out = %q, want nil（v2 出口名无来源）", body, *res.Out)
-		}
+// 旧实现里 outcome.Out 是「脚本退出时写了哪个出口」的载体（TestRunJobOutNeverReported
+// 当年只能断言它为 nil，因为那时还没有载体）。P1.5 硬切之后**结构体里没有这个
+// 字段了**——断言从「值是 nil」变成「编译期就不存在」，这是收紧，不是放宽。
+//
+// 真正替代它的验收在 runner_test.go 的 TestRunJobIgnoresLegacyOutFile（写文件不再
+// 产生任何效果）与 TestRunJobExampleCapability（产出搬到 emission）。
+func TestRunJobNoOutPlumbing(t *testing.T) {
+	res := runJob(context.Background(), newRunnerJob(t, "echo done"))
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want succeeded（err=%q）", res.Status, res.Err)
+	}
+	// 结果帧里也不允许出现 out 键：帧结构体已经没有该字段（见 protocol.go 的
+	// resultFrame），所以这里只需确保编码出来没有它。
+	frame, err := encodeFrame(&resultFrame{
+		Type: frameTypeResult, TaskID: "tsk_x", Status: res.Status,
+		Summary: res.Summary, Artifacts: res.Artifacts, Error: res.Err,
+	})
+	if err != nil {
+		t.Fatalf("encode result: %v", err)
+	}
+	if strings.Contains(string(frame), `"out"`) {
+		t.Fatalf("result 帧里出现了 out 键（out 已退役）: %s", frame)
 	}
 }
 
@@ -394,9 +400,6 @@ func TestRunJobTimeout(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "after") {
 		t.Fatalf("Err = %q, want 含超时时长（timed out after ...）", res.Err)
-	}
-	if res.Out != nil {
-		t.Fatalf("Out = %q, want nil（超时不回报出口）", *res.Out)
 	}
 
 	// 后台子 shell 本该在 t≈2s 写文件；runJob 在 t≈1s 返回，再观察到 t≈2.5s。
@@ -451,9 +454,6 @@ func TestRunJobCanceled(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "canceled") {
 		t.Fatalf("Err = %q, want 含 %q", res.Err, "canceled")
-	}
-	if res.Out != nil {
-		t.Fatalf("Out = %q, want nil（取消不回报出口）", *res.Out)
 	}
 
 	deadline := time.Now().Add(1500 * time.Millisecond)
@@ -584,15 +584,15 @@ func TestBuildEnv(t *testing.T) {
 		Artifact: art, Digest: "sha256:" + strings.Repeat("a", 64), TraceID: "trc_build",
 	}
 
-	got, err := buildEnv(base, j, "/tmp/work/tsk_build", "/tmp/work/tsk_build")
+	got, err := buildEnv(base, j, "/tmp/work/tsk_build", "/tmp/work/tsk_build", "/opt/anotify/bin/anotify-agent")
 	if err != nil {
 		t.Fatalf("buildEnv: unexpected error: %v", err)
 	}
 	want := []string{
+		// 能力脚本靠它调 `anotify-agent emit`（out 已退役，emit 是唯一产出通道）。
+		"ANOTIFY_AGENT_BIN=/opt/anotify/bin/anotify-agent",
 		"ANOTIFY_CAPABILITY=demo.prep@7",
 		"ANOTIFY_DIGEST=sha256:" + strings.Repeat("a", 64),
-		// 出口回报通道（CONTRACT-artifact §6.1）：v2 新增，脚本写它来选下一跳。
-		"ANOTIFY_OUT_FILE=/tmp/work/tsk_build/.anotify-out",
 		`ANOTIFY_PARAMS={"n":2,"title":"t"}`,
 		"ANOTIFY_PARAM_N=2",
 		"ANOTIFY_PARAM_TITLE=t",
@@ -608,6 +608,14 @@ func TestBuildEnv(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildEnv:\n got %v\nwant %v", got, want)
+	}
+
+	// ANOTIFY_OUT_FILE **不能再出现**：它是已退役的出口回报文件（P1.5）。
+	// 断言「不存在」而不是不写它——否则哪天有人“顺手兼容一下”就又长回来了。
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "ANOTIFY_OUT_FILE=") {
+			t.Fatalf("buildEnv 仍在注入已退役的 ANOTIFY_OUT_FILE: %q", kv)
+		}
 	}
 
 	// 排序断言（不依赖上面那份期望值，也算说明「按变量名排序」的口径）。
@@ -635,14 +643,15 @@ func TestBuildEnv(t *testing.T) {
 // run.workDir 之后两者会分开（见 workdir_test.go 的端到端用例）。
 func TestBuildEnvInjectsWorkDir(t *testing.T) {
 	j := job{TaskID: "t", Capability: "c", Version: 1}
-	got, err := buildEnv(nil, j, "/data/work/t", "/data/work/t")
+	got, err := buildEnv(nil, j, "/data/work/t", "/data/work/t", "")
 	if err != nil {
 		t.Fatalf("buildEnv: %v", err)
 	}
+	// agentBin 为空 → 不注入 ANOTIFY_AGENT_BIN（宁可缺键也不给空串，
+	// 否则脚本里的 `"$ANOTIFY_AGENT_BIN" emit` 会变成执行 `emit ...`）。
 	want := []string{
 		"ANOTIFY_CAPABILITY=c@1",
 		"ANOTIFY_DIGEST=",
-		"ANOTIFY_OUT_FILE=/data/work/t/.anotify-out",
 		"ANOTIFY_PARAMS={}",
 		"ANOTIFY_TASKDIR=/data/work/t",
 		"ANOTIFY_TASK_ID=t",
@@ -656,7 +665,7 @@ func TestBuildEnvInjectsWorkDir(t *testing.T) {
 
 // TestBuildEnvEmptyParams：params 为空 → ANOTIFY_PARAMS 是 {}（不是 null）。
 func TestBuildEnvEmptyParams(t *testing.T) {
-	got, err := buildEnv(nil, job{TaskID: "t", Capability: "c", Version: 1}, "/w", "/w")
+	got, err := buildEnv(nil, job{TaskID: "t", Capability: "c", Version: 1}, "/w", "/w", "")
 	if err != nil {
 		t.Fatalf("buildEnv: unexpected error: %v", err)
 	}
@@ -665,7 +674,7 @@ func TestBuildEnvEmptyParams(t *testing.T) {
 	}
 
 	// Artifact 为 nil 也不能 panic（防御：client 侧正常不会走到这儿）。
-	if _, err := buildEnv(nil, job{}, "/w", "/w"); err != nil {
+	if _, err := buildEnv(nil, job{}, "/w", "/w", ""); err != nil {
 		t.Fatalf("buildEnv(nil artifact): unexpected error: %v", err)
 	}
 }
@@ -676,7 +685,7 @@ func TestBuildEnvParamError(t *testing.T) {
 		TaskID: "t", Capability: "c", Version: 1,
 		Params: map[string]any{"bad": make(chan int)},
 	}
-	if _, err := buildEnv(nil, j, "/w", "/w"); err == nil {
+	if _, err := buildEnv(nil, j, "/w", "/w", ""); err == nil {
 		t.Fatal("buildEnv: want error for 不可序列化的参数值, got nil")
 	}
 }
@@ -780,115 +789,69 @@ func slicesContain(haystack []string, needle string) bool {
 	return false
 }
 
-// TestOutcomeOutFromFile 钉住出口名的唯一来源（CONTRACT-artifact §6.1）。
+// TestRunJobIgnoresLegacyOutFile 是「退出时写文件回报出口」这条腿**真的断了**的证据。
 //
-// 三态与 result 帧的 out 域一一对应（不变量 I5）：
+// 改动前这里是 TestOutcomeOutFromFile + TestRunJobReportsOut：脚本写
+// `$ANOTIFY_OUT_FILE`，runner 读它、校验 ∈ spec.outputs、填进 outcome.Out。P1.5 把
+// 那条腿整条删了（emit 是唯一的产出通道），所以正确的新语义是**写了一点用都没有**：
 //
-//	没写文件   → 不选出口（nil，分支到此结束）
-//	写了对的   → 回报它
-//	写了错的   → 整次执行判失败（出口是封闭集合，不变量 I2，不许临时发明）
-func TestOutcomeOutFromFile(t *testing.T) {
-	cases := []struct {
-		name    string
-		content string
-		write   bool
-		wantOut string
-		wantErr string
-	}{
-		{name: "没写文件", write: false},
-		{name: "空文件", content: "", write: true},
-		{name: "全是空白", content: "  \n\t\n", write: true},
-		{name: "合法出口", content: "needs-fix\n", write: true, wantOut: "needs-fix"},
-		{name: "首尾空白被裁掉", content: "  clean  ", write: true, wantOut: "clean"},
-		{name: "未声明的出口", content: "bogus", write: true, wantErr: "not declared"},
-		{name: "太长", content: strings.Repeat("x", outcomeOutMaxBytes+1), write: true, wantErr: "longer than"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			outFile := filepath.Join(dir, outFileName)
-			if tc.write {
-				if err := os.WriteFile(outFile, []byte(tc.content), 0o644); err != nil {
-					t.Fatalf("write out file: %v", err)
-				}
-			}
-			plan := execPlan{
-				outFile:        outFile,
-				allowedOutputs: []string{"clean", "needs-fix"},
-			}
-
-			got, err := readOutcomeOut(plan)
-			switch {
-			case tc.wantErr != "":
-				if err == nil {
-					t.Fatalf("期望错误含 %q，实际通过（out=%v）", tc.wantErr, got)
-				}
-				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("期望错误含 %q，实际：%v", tc.wantErr, err)
-				}
-			case err != nil:
-				t.Fatalf("unexpected error: %v", err)
-			case tc.wantOut == "":
-				if got != nil {
-					t.Fatalf("期望不回报出口，实际 %q", *got)
-				}
-			default:
-				if got == nil || *got != tc.wantOut {
-					t.Fatalf("期望出口 %q，实际 %v", tc.wantOut, got)
-				}
-			}
-		})
-	}
-}
-
-// TestOutcomeOutNoPlanChannel 兼容路径：没有通道时永远不回报（standalone 之外的防御）。
-func TestOutcomeOutNoPlanChannel(t *testing.T) {
-	got, err := readOutcomeOut(execPlan{})
-	if err != nil || got != nil {
-		t.Fatalf("期望 (nil, nil)，实际 (%v, %v)", got, err)
-	}
-}
-
-// TestRunJobReportsOut 端到端：脚本写 ANOTIFY_OUT_FILE → outcome.Out 被填上。
+//   - 环境里根本没有 ANOTIFY_OUT_FILE（老脚本在 `set -u` 下会当场炸，比静默断链好）；
+//   - 就算脚本硬编码把 `.anotify-out` 写进工作目录，也没人读它（下面就是这条）；
+//   - 于是任务照常成功（退出码是唯一成败依据），但没有产出、没有 out。
 //
-// 这是多跳链路的生命线：少了它，第一个任务之后整条链就停住。
-func TestRunJobReportsOut(t *testing.T) {
-	art := testScriptArtifact("demo.out", 1, bashScript(`printf 'needs-fix\n' > "$ANOTIFY_OUT_FILE"`))
+// 这不是「放宽断言」：原来断言的是「out == needs-fix」，现在断言的是「同一个动作
+// 不再产生 out，也不再产生任何输出」。产出搬到了 emission，见
+// TestRunJobExampleCapability 与 emit_cmd_test.go 的真进程用例。
+func TestRunJobIgnoresLegacyOutFile(t *testing.T) {
+	// 脚本干三件事：① 把工作目录里的 .anotify-out 写上（老约定）；② 打印环境里
+	// 到底有没有 ANOTIFY_OUT_FILE；③ 正常退出。
+	body := `printf 'needs-fix\n' > .anotify-out
+printf 'env=%s\n' "${ANOTIFY_OUT_FILE-unset}"`
+	art := testScriptArtifact("demo.out", 1, bashScript(body))
 	art.Spec.Outputs = []string{"clean", "needs-fix"}
 
-	res := runJob(context.Background(), job{
-		TaskID: "tsk_out", Capability: "demo.out", Version: 1,
-		Artifact: art, WorkRoot: t.TempDir(),
-	})
-	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q（err=%q）", res.Status, res.Err)
+	j := job{
+		TaskID: "tsk_legacy_out", Capability: "demo.out", Version: 1,
+		Artifact: art, WorkRoot: filepath.Join(t.TempDir(), "work"),
 	}
-	if res.Out == nil || *res.Out != "needs-fix" {
-		t.Fatalf("out = %v，期望 needs-fix", res.Out)
+	res := runJob(context.Background(), j)
+
+	// ① 退出码是唯一成败依据：文件写了也不影响成功。
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want succeeded（err=%q）", res.Status, res.Err)
+	}
+	// ② 老脚本看不到那个变量（没被注入）。
+	if !strings.Contains(res.Output, "env=unset") {
+		t.Fatalf("output = %q，期望含 env=unset（ANOTIFY_OUT_FILE 不得再被注入）", res.Output)
 	}
 }
 
-// TestRunJobReportsOutOnFailure 失败也能选出口：脚本先写出口文件再 exit 1。
-//
-// 「失败也发通知」这条链在节点侧的前提就是这里：失败时不读出口文件的话，
-// (cap, failed) 那条边只有在手写 WS 客户端时才可能生效。
-func TestRunJobReportsOutOnFailure(t *testing.T) {
+// TestRunJobLegacyOutFileNoEffectOnFailure 失败路径下同一个文件同样没人读：
+// 任务还是 failed，原因来自进程（exit status），而且**不会**因为出口名非法而
+// 多出一条「out not declared」的错误（那是已经删掉的那条腿的产物）。
+func TestRunJobLegacyOutFileNoEffectOnFailure(t *testing.T) {
 	art := testScriptArtifact("demo.failout", 1,
-		bashScript(`printf 'failed\n' > "$ANOTIFY_OUT_FILE"; echo "编译失败"; exit 3`))
+		bashScript(`printf 'failed\n' > .anotify-out; echo "编译失败"; exit 3`))
 	art.Spec.Outputs = []string{"failed", "retry"}
 
-	res := runJob(context.Background(), job{
-		TaskID: "tsk_fail_out", Capability: "demo.failout", Version: 1,
-		Artifact: art, WorkRoot: t.TempDir(),
-	})
+	j := job{
+		TaskID: "tsk_legacy_failout", Capability: "demo.failout", Version: 1,
+		Artifact: art, WorkRoot: filepath.Join(t.TempDir(), "work"),
+	}
+	res := runJob(context.Background(), j)
+
 	if res.Status != statusFailed {
-		t.Fatalf("status = %q，期望 failed", res.Status)
+		t.Fatalf("status = %q, want failed", res.Status)
 	}
-	if res.Out == nil || *res.Out != "failed" {
-		t.Fatalf("out = %v，期望 failed（失败也要读出口文件）", res.Out)
+	if !strings.Contains(res.Err, "exit status 3") {
+		t.Fatalf("Err = %q，期望含 exit status 3（成败只看进程事实）", res.Err)
 	}
-	if res.Err == "" {
-		t.Fatal("失败必须带原因（err 为空）")
+	if strings.Contains(res.Err, "not declared") || strings.Contains(res.Err, "anotify-out") {
+		t.Fatalf("Err = %q，不该再出现出口文件相关的错误（那条腿已删）", res.Err)
+	}
+	// 失败会保留工作目录：文件真的在那儿，而且确实不被读。
+	if _, err := os.Stat(filepath.Join(res.WorkDir, ".anotify-out")); err != nil {
+		t.Fatalf("前置条件不成立：脚本没写出 .anotify-out（%v）", err)
 	}
 }
 
@@ -910,49 +873,76 @@ func TestRunJobFailureKeepsWorkDir(t *testing.T) {
 	}
 }
 
-// TestRunJobRejectsUndeclaredOut 脚本写了一个产物没声明的出口 → 任务失败，
-// 而不是「静默当成没回报」（那会让链路莫名断掉且查不出原因）。
-func TestRunJobRejectsUndeclaredOut(t *testing.T) {
-	art := testScriptArtifact("demo.out", 1, bashScript(`printf 'bogus\n' > "$ANOTIFY_OUT_FILE"`))
+// TestRunJobUndeclaredOutNoLongerFails 旧语义：脚本写一个**没声明**的出口名 → 整次
+// 执行判 failed（出口是封闭集合，I2）。
+//
+// 新语义（P1.5）：那条腿删了，所以「写了没声明的出口」这件事**不再存在**——文件没
+// 人读，任务成败只看进程事实。封闭集合的判定搬到了 emit 当时（节点当场拒这一次
+// emit，CLI 退出码 3），比事后判整个任务失败更早、更准（见 emit_test.go 的
+// TestEmitRejectPort）。这里钉住「不会因为一个没人读的文件把任务弄失败」。
+func TestRunJobUndeclaredOutNoLongerFails(t *testing.T) {
+	art := testScriptArtifact("demo.out", 1, bashScript(`printf 'bogus\n' > .anotify-out; echo ok`))
 	art.Spec.Outputs = []string{"clean"}
 
 	res := runJob(context.Background(), job{
 		TaskID: "tsk_out_bad", Capability: "demo.out", Version: 1,
 		Artifact: art, WorkRoot: t.TempDir(),
 	})
-	if res.Status != statusFailed {
-		t.Fatalf("status = %q，期望 failed", res.Status)
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q（err=%q），期望 succeeded：出口文件已退役，不该再影响任务成败",
+			res.Status, res.Err)
 	}
-	if res.Out != nil {
-		t.Fatalf("不合法的出口名不得被当成出口，实际 %q", *res.Out)
-	}
-	if !strings.Contains(res.Err, "not declared") {
-		t.Fatalf("err = %q，期望含 not declared", res.Err)
+	if strings.Contains(res.Err, "not declared") {
+		t.Fatalf("err = %q，不该再出现 out 校验错误（那条腿已删）", res.Err)
 	}
 }
 
-// TestRunJobExampleCapability 把**真的内置示例能力**喂给真的 runner 跑一遍。
+// TestRunJobExampleCapability 把**真的内置示例能力**喂给真的 runner 跑一遍，并断言
+// 它的产出真的落到了 **emission** 上。
 //
-// 这一条防的是「声明与脚本对不上」：能力声明 outputs=["echoed"]，脚本就必须真的把
-// echoed 写进 $ANOTIFY_OUT_FILE。store 侧的 TestExampleBuiltinIsUsable 只比两张
-// 声明，两边一起错就测不出来——这正是 script.echo 曾经的 bug：不管传什么 message，
-// 任务都在最后一步判 failed（out "hello" is not declared in spec.outputs [echoed]）。
+// 这一条防的是「声明与脚本对不上」：能力声明 outputs=["echoed"]，脚本就必须真的
+// emit 一个**声明过的**端口。改动前这里断言的是 `out == echoed`（脚本写出口文件）；
+// P1.5 之后同样的证据在 emission 里：port 必须是 echoed，而且 data 就是入参原样
+// （脚本用 `--data "$ANOTIFY_PARAMS"` 把参数交给下游）。
+//
+// 为什么用真二进制：ANOTIFY_AGENT_BIN 指向的真 `anotify-agent emit` 会走
+// 「unix socket → 本地落盘 → ack」整条链，替掉它这一段就只剩一个字符串 mock 了。
 func TestRunJobExampleCapability(t *testing.T) {
+	bin := buildAgentBinary(t)
+	old := executablePath
+	executablePath = func() (string, error) { return bin, nil }
+	t.Cleanup(func() { executablePath = old })
+
+	opt := defaultEmitOptions(t, t.TempDir())
+	opt.TaskID = "tsk_example"
+	opt.Ports = append([]string(nil), store.ExampleCapability.Outputs...)
+	srv, rec := startEmitServer(t, opt)
+
 	res := runJob(context.Background(), job{
-		TaskID:     "tsk_example",
+		TaskID:     opt.TaskID,
 		Capability: store.ExampleCapability.Name,
 		Version:    store.ExampleCapability.Version,
 		Params:     map[string]any{"message": "hello"},
 		Artifact:   store.ExampleCapability.Artifact,
 		WorkRoot:   t.TempDir(),
+		Emit:       srv,
 	})
 	if res.Status != statusSucceeded {
 		t.Fatalf("status = %q（err=%q）—— 示例能力必须开箱即能跑通", res.Status, res.Err)
 	}
-	if res.Out == nil || *res.Out != "echoed" {
-		t.Fatalf("out = %v，期望 echoed（“声明与脚本对不上”就是最初那个 bug）", res.Out)
-	}
 	if !strings.Contains(res.Summary, "hello") {
 		t.Fatalf("summary = %q，期望包含参数消息（summary 取 stdout 首行）", res.Summary)
+	}
+
+	// 产出搬到了 emission：这里就是原来 `out == echoed` 的那条断言的等价物。
+	frames := rec.all()
+	if len(frames) != 1 {
+		t.Fatalf("emit 帧数 = %d，期望 1（示例能力只 emit 一次）", len(frames))
+	}
+	if frames[0].Port != "echoed" {
+		t.Fatalf("emit.port = %q，期望 echoed（声明与脚本对不上就是最初那个 bug）", frames[0].Port)
+	}
+	if got := string(frames[0].Data); got != `{"message":"hello"}` {
+		t.Fatalf("emit.data = %s，期望入参原样透传 {\"message\":\"hello\"}", got)
 	}
 }

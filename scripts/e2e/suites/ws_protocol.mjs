@@ -15,7 +15,7 @@
  *   apply 失败路径：requires 探不到 → apply{failed} + missing_requirement
  *   协议版本  hello{protocol:1} → error 帧且连接关闭（v1 客户端必须升级）
  *   错误帧    unknown_type / bad_frame / unknown_capability / invalid_transition
- *   三态      result 的 out 缺失 / null / 字符串（不变量 I5）
+ *   out 退役  result 不再路由（P1.5）：帧里带 out 也不会建下游、tasks.out 恒 NULL
  *   心跳      >2×心跳无上行帧 → 判死关连接；心跳续租
  *   不变量    assign / deploy 帧里没有 argv/shell/command（I1）
  *
@@ -379,10 +379,13 @@ async function main() {
 	// 少了 apply 这一跳，部署就永远停在 pending（控制台上看起来“推过了”），
 	// 失败部署更是永远不可见——运维会以为已经生效。
 	console.log("--- deploy → apply 往返 ---");
+	// 产物脚本用 emit 报产出（P1.5 起 `$ANOTIFY_OUT_FILE` 已退役）。这条用例本身
+	// 不执行脚本（只验 deploy → apply 往返），但**样例必须是真的能跑的写法**：
+	// 一份写着已退役通道的产物，会把下一个照着抄的人带进「没有下游且没有报错」。
 	const artCap = await defineCapabilityWithRun(
 		"ws.deploy",
 		["go"],
-		"#!/bin/bash\nset -euo pipefail\nprintf 'go\\n' > \"$ANOTIFY_OUT_FILE\"\n",
+		'#!/bin/bash\nset -euo pipefail\n"${ANOTIFY_AGENT_BIN:-anotify-agent}" emit --port go --data "${ANOTIFY_PARAMS}"\n',
 	);
 	H.check("建出带产物（run）的能力，响应带 digest", /^sha256:[0-9a-f]{64}$/.test(artCap.digest || ""), String(artCap.digest));
 	const depRes = await H.req(server.base, "/v1/deployments", {
@@ -566,7 +569,11 @@ async function main() {
 	await waitStatus(taskId, "running");
 	H.check("progress 后状态 running", true);
 
-	// result：running → succeeded，带 out
+	// result：running → succeeded。
+	//
+	// 帧里**故意**还带着 `out: "done"`（老节点/手写客户端的写法）：P1.5 把 out 整条
+	// 退役了，服务端必须照收（未知字段忽略）、不报错、**不路由**——证据就是下面
+	// tasks.out 恒 NULL + 这条 trace 没有多出任何任务。
 	node.conn.send({
 		type: "result",
 		task_id: taskId,
@@ -577,51 +584,90 @@ async function main() {
 	await waitStatus(taskId, "succeeded");
 	const row = taskRow(taskId);
 	H.eq("result 落库 status", row.status, "succeeded");
-	H.eq("result 落库 out", row.out, "done");
+	H.eq("result 落库 out（out 已退役：帧里带也不落库）", row.out, null);
 	H.eq("result 落库 reported", row.reported, 1);
 	H.eq("result 落库 summary", row.summary, "全部完成");
+	// 产出只走 emit：这条任务一次都没 emit，所以它没有任何下游（老通道不再兜底）。
+	H.eq(
+		"结果帧不再建下游（out 通道已退役）",
+		dbRows(`SELECT count(*) AS n FROM tasks WHERE parent_task_id = ?`, taskId)[0]?.n,
+		0,
+	);
 
-	// ================= A8：out 两态（outcome-v1.1）=================
-	console.log("--- A8 out 两态 ---");
+	// ================= A8：out 退役（P1.5 硬切） =================
+	//
+	// 改动前这里叫「A8 out 两态（outcome-v1.1）」：out 缺省 / null / 有值三种写法，
+	// 有值时中枢按它查出口表建下一跳。P1.5 把 out 整条退役（产出只走 emit），于是
+	// 三种写法退化成**同一份事实**：tasks.out 恒 NULL、**不建任何下游**。
+	//
+	// 断言一条都没放宽，而且更强：老通道以前**会建行**的那个场景（out 指向一条真有边
+	// 的出口），现在必须一条都不建；被剪的判定也从「查表后剪枝」变成「压根没有入口」。
+	console.log("--- A8 out 退役（帧里带 out 不再路由） ---");
 
-	// 态1：out 缺失 = 没选出口 → out=NULL（结果帧到了，所以 reported=1）
+	// 造一个「出口真的有边」的任务：ws.demo --go--> ws.work（见上面的 addEdge）。
+	// 这是最关键的一条：老实现里给这个任务发 out="go" 一定会建出 ws.work 的任务。
+	await addEntryEdge("ws.out.src", "run", cap);
+	const evOut = await postEvent({ source: "ws.out.src", type: "run", payload: {} });
+	const tOut = evOut.json?.tasks?.[0]?.id;
+	H.eq("A8 任务落在 ws.demo（有 go 出口、且 go 真有下游的那条能力）", evOut.json?.tasks?.[0]?.capability, "ws.demo");
+	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tOut);
+	node.conn.send({ type: "ack", task_id: tOut });
+	await waitStatus(tOut, "acked");
+	node.conn.send({ type: "progress", task_id: tOut, note: "A8" });
+	await waitStatus(tOut, "running");
+
+	// 态1（核心）：out="go" 且 go 真的有边 → 不落库、不建下游、没有 emission。
+	node.conn.send({
+		type: "result",
+		task_id: tOut,
+		status: "succeeded",
+		out: "go",
+		summary: "带 out 的老帧",
+	});
+	await waitStatus(tOut, "succeeded");
+	const rOut = taskRow(tOut);
+	H.eq("态1 out='go' → tasks.out 恒 NULL（out 没有写入方了）", rOut.out, null);
+	H.eq("态1 out='go' → reported=1（帧到了）", rOut.reported, 1);
+	H.eq(
+		"态1 out='go' → 一条下游都不建（老通道已退役，不是并存）",
+		dbRows(`SELECT count(*) AS n FROM tasks WHERE parent_task_id = ?`, tOut)[0]?.n,
+		0,
+	);
+	H.eq(
+		"态1 该任务没有任何 emission（没 emit = 到此为止，0 次合法）",
+		dbRows(`SELECT count(*) AS n FROM emissions WHERE task_id = ?`, tOut)[0]?.n,
+		0,
+	);
+
+	// 态2：out 缺省 → 同一份事实（老写法与新写法结果一致，这正是退役的目的）
 	const evMissing = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	const tMissing = evMissing.json?.tasks?.[0]?.id;
 	const aMissing = await waitForFrame(
 		node.frames,
 		(f) => f.type === "assign" && f.task_id === tMissing,
 	);
-	H.check("态1 收到 assign", !!aMissing);
+	H.check("态2 收到 assign", !!aMissing);
 	node.conn.sendRaw(
 		`{"type":"result","task_id":"${tMissing}","status":"succeeded","summary":"no out"}`,
 	);
 	await waitStatus(tMissing, "succeeded");
 	const rMissing = taskRow(tMissing);
-	H.eq("态1 out 缺失 → reported=1（帧到了）", rMissing.reported, 1);
-	H.eq("态1 out 缺失 → out=NULL", rMissing.out, null);
+	H.eq("态2 out 缺失 → reported=1（帧到了）", rMissing.reported, 1);
+	H.eq("态2 out 缺失 → out=NULL", rMissing.out, null);
 
-	// 态2：out:null 与缺失完全等价（协议层不再区分）
+	// 态3：out:null 也照收（协议层不区分「缺省」与「显式 null」，两者都等于没 emit）
 	const evNull = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	const tNull = evNull.json?.tasks?.[0]?.id;
 	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tNull);
 	node.conn.sendRaw(`{"type":"result","task_id":"${tNull}","status":"succeeded","out":null}`);
 	await waitStatus(tNull, "succeeded");
 	const rNull = taskRow(tNull);
-	H.eq("态2 out:null → reported=1", rNull.reported, 1);
-	H.eq("态2 out:null → out=NULL（与缺失等价）", rNull.out, null);
+	H.eq("态3 out:null → reported=1", rNull.reported, 1);
+	H.eq("态3 out:null → out=NULL（与缺省等价）", rNull.out, null);
 
-	// 态3：out:"x" → 选了出口
-	const evStr = await postEvent({ source: "ws.demo", type: "go", payload: {} });
-	const tStr = evStr.json?.tasks?.[0]?.id;
-	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tStr);
-	node.conn.send({ type: "result", task_id: tStr, status: "succeeded", out: "again" });
-	await waitStatus(tStr, "succeeded");
-	const rStr = taskRow(tStr);
-	H.eq("态3 out:'again' → reported=1", rStr.reported, 1);
-	H.eq("态3 out:'again' → out='again'", rStr.out, "again");
-
-	// 态4：失败 + 选了出口 → 路由照走（I4：路由只看 out，不看 status）。
-	// ws.demo 的出口没有接边，所以「继续」的表现是：不静默——库里 out 落了值。
+	// 态4：失败 + 带 out → 失败照落库（summary 是原因），但**没有**下一跳。
+	// 这是 I4 形式在新载体下的样子：路由与 status 无关，而路由的唯一来源是 emit；
+	// 这条任务没 emit 过，所以无论成还是败都到此为止。
 	const evFail = await postEvent({ source: "ws.demo", type: "go", payload: {} });
 	const tFail = evFail.json?.tasks?.[0]?.id;
 	await waitForFrame(node.frames, (f) => f.type === "assign" && f.task_id === tFail);
@@ -629,13 +675,13 @@ async function main() {
 		type: "result",
 		task_id: tFail,
 		status: "failed",
-		out: "again",
+		out: "go",
 		summary: "exit status 3: 编译失败",
 	});
 	await waitStatus(tFail, "failed");
 	const rFail = taskRow(tFail);
-	H.eq("态4 失败 + out='again' → out 落库", rFail.out, "again");
-	H.eq("态4 失败带原因 → summary 非空", rFail.summary === "exit status 3: 编译失败" ? 1 : 0, 1);
+	H.eq("态4 失败 + out='go' → out 仍然 NULL", rFail.out, null);
+	H.eq("态4 失败带原因 → summary 就是那句原因", rFail.summary, "exit status 3: 编译失败");
 
 	// 态5：失败且没说原因 → 库里兜底成 "failed"（不允许「失败但没有说明」）
 	const evFail2 = await postEvent({ source: "ws.demo", type: "go", payload: {} });
@@ -875,9 +921,9 @@ async function main() {
 
 	// ================= 非法迁移 → invalid_transition =================
 	console.log("--- 非法迁移 ---");
-	// 对已终态的任务再发 result
+	// 对已终态的任务再发 result（tOut 在 A8 里已经 succeeded）
 	node.frames.length = 0;
-	node.conn.send({ type: "result", task_id: tStr, status: "succeeded", out: "x" });
+	node.conn.send({ type: "result", task_id: tOut, status: "succeeded" });
 	const invErr = await waitForFrame(node.frames, (f) => f.type === "error");
 	H.eq("终态任务再 result → invalid_transition", invErr?.code, "invalid_transition");
 

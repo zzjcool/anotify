@@ -135,7 +135,8 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				return DispatchInput{
 					NamespaceID: testNS, TraceID: "trace_path",
 					FromCap: fix.ID, Out: "review",
-					Path: []string{review.ID, fix.ID},
+					// P2.2：path 存**能力名**（同一条链上重复出现同一个名字才是环）
+					Path: []string{review.Name, fix.Name},
 				}, review.ID
 			},
 			wantPort:   "review",

@@ -217,4 +217,4 @@ func TestDispatchEntryEdgeEmptyMappingStillAppliesLiterals(t *testing.T) {
 }
 
 // 保证 fake 的入口边 helper 与 store 的类型是同一份（改了 LinkTarget 这里会红）。
-var _ = store.LinkTarget{CapabilityID: "", Mapping: nil, Literals: nil}
+var _ = store.LinkTarget{ToRef: "", Mapping: nil, Literals: nil}

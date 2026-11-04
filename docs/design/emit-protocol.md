@@ -28,7 +28,7 @@ anotify-agent emit  ← 能力进程（脚本 / LLM agent）调用
 |---|---|
 | 路径 | `<data-dir>/emit/<task_id>.sock`（`data-dir` 默认 `~/.anotify`） |
 | 协议 | 每连接一行 JSON 请求 → 一行 JSON 响应（换行分隔，不设长度前缀） |
-| 注入 | agent 起能力进程前写环境变量：`ANOTIFY_EMIT_SOCK`、`ANOTIFY_TASK_ID`、`ANOTIFY_TASK_TOKEN` |
+| 注入 | agent 起能力进程前写环境变量：`ANOTIFY_EMIT_SOCK`、`ANOTIFY_TASK_ID`、`ANOTIFY_TASK_TOKEN`，以及 `ANOTIFY_AGENT_BIN`（agent 自己的绝对路径——脚本靠它调 `emit` 子命令，不必假设它在 PATH 上；取不到时脚本回退 `anotify-agent`）。**没有 `ANOTIFY_EMIT_SOCK` = 本地 standalone 跑**（没有中枢），实现应当跳过 emit 而不是失败 |
 | 鉴权 | 请求里必须带 `token`，与 `ANOTIFY_TASK_TOKEN` 一致（每任务随机，任务结束即销毁） |
 | 生命周期 | socket 与该任务同生命周期：进程退出 / 任务终结 / agent 关闭 → 关闭并删除 |
 

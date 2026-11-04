@@ -255,16 +255,21 @@
 			);
 		}
 
-		// out 三态（不变量 I5）：未回报 / 到头了 / 走某个出口
+		// 出口已退役（P1.5 硬切 .anotify-out）：路由由 emit 决定，tasks.out 恒 NULL。
+		//
+		// 所以「到头了」不能再按 out 判——那样每个已回报的任务都会显示「到头了」，
+		// 即使它其实 emit 出了三条下游。改成看**有没有下游任务**（这是同一件事的
+		// 事实来源）。历史行（迁移前）仍带 out，照旧显示，方便看老 trace。
 		const outWrap = el("span", "text-[11px] tx-meta");
-		outWrap.appendChild(document.createTextNode("· "));
-		if (!tk.reported) {
-			outWrap.appendChild(document.createTextNode(t("events.chain.out_none", "未回报")));
-		} else if (tk.out == null) {
-			outWrap.appendChild(document.createTextNode(t("events.chain.out_end", "到头了")));
-		} else {
-			outWrap.appendChild(document.createTextNode("→ "));
+		if (tk.out != null) {
+			outWrap.appendChild(document.createTextNode("· → "));
 			outWrap.appendChild(code(tk.out, "tx-out"));
+		} else if (kids.length === 0) {
+			outWrap.appendChild(document.createTextNode("· " + t("events.chain.out_end", "到头了")));
+		} else {
+			outWrap.appendChild(
+				document.createTextNode("· " + t("events.chain.out_emits", "产出见「产出」区")),
+			);
 		}
 		line.appendChild(outWrap);
 

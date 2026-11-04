@@ -44,10 +44,12 @@ type ExpectTarget struct {
 
 // BuildExpects 推导「这个能力的这些出口各自要被怎样消费」。
 //
-// 参数是**能力定义 id**（edges.from_key 现在的口径），不是能力名：
-// link 的右端目前引用 capability_versions.id，而一个名字可以有多版本、
-// 各版本的 id 不同——按名字解析会（在升级后）查到另一版的行，推导出错误的 expects。
-// P2 把 link 改成名字引用（typed-pipeline §7 P2.2）时，这里的入参跟着换成名字。
+// 参数是**能力定义 id**（节点侧给的是 task.CapabilityID）：这里先把它读成定义，
+// 再用**名字**去查出口表 —— P2.2 之后 link 的左端是引用（名字 / `name@version`），
+// 按 id 查会查不到任何一行，expects 恒空（下游不知道要喂什么字段）。
+//
+// 右端同样要用解析后的版本：`name` 跟随 latest（本次调用时刻的最新版），
+// `name@version` 钉死那一版——与 plan 走同一个 `Dispatcher.resolveRef`。
 //
 // 逐 port：查 (capability, port) 的 link → 逐条算出「下游要什么（去掉 literals）」→
 // 并集当 Schema、逐条当 Targets。查询失败一律向上抛（派发时不带 expects 会退化成
@@ -69,15 +71,19 @@ func (d *Dispatcher) BuildExpects(ctx context.Context, namespaceID, capabilityID
 	// 先确认能力定义存在。不校验的话，「能力 id 写错了」与「这个 port 没接下游」
 	// 会得到**完全相同**的结果（空 expects）——而前者是数据坏了的信号，
 	// 告退成「节点不知道下游要什么」只会让问题晚一步、难一步被发现。
-	if _, err := d.Store.GetCapabilityByID(ctx, namespaceID, capabilityID); err != nil {
+	//
+	// 读到的定义同时给出查出口表要用的**名字**（P2.2）。
+	self, err := d.Store.GetCapabilityByID(ctx, namespaceID, capabilityID)
+	if err != nil {
 		return nil, fmt.Errorf("route: build expects: load capability %s: %w", capabilityID, err)
 	}
+	cache := newRefCache()
 
 	for _, port := range ports {
 		// 同一个 port 的全部 link（1:N 扇出）。没有 link → 这个 port 没有约束，
 		// 不出现在 map 里（而不是给一个空 schema：那会让节点把「没下游」和
 		// 「下游什么都不要」混成一件事）。
-		targets, err := d.Store.EdgesFrom(ctx, namespaceID, false, capabilityID, port)
+		targets, err := d.Store.EdgesFrom(ctx, namespaceID, false, self.Name, port)
 		if err != nil {
 			return nil, fmt.Errorf("route: build expects: edges from %s port %q: %w", capabilityID, port, err)
 		}
@@ -89,9 +95,9 @@ func (d *Dispatcher) BuildExpects(ctx context.Context, namespaceID, capabilityID
 		var required []string
 		props := map[string]any{}
 		for _, tgt := range targets {
-			to, err := d.Store.GetCapabilityByID(ctx, namespaceID, tgt.CapabilityID)
+			to, err := d.resolveRef(ctx, namespaceID, tgt.ToRef, cache)
 			if err != nil {
-				return nil, fmt.Errorf("route: build expects: load target %s: %w", tgt.CapabilityID, err)
+				return nil, fmt.Errorf("route: build expects: resolve target %s: %w", tgt.ToRef, err)
 			}
 			needs, err := needsSchema(to, tgt.Literals)
 			if err != nil {

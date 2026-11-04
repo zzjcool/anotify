@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -101,6 +102,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	23: migrateTaskToken,
 	25: migrateEdgeMapping,
 	26: migrateSourceTargetsToEntryEdges,
+	27: migrateEdgeRefs,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -263,6 +265,170 @@ func migrateSourceTargetsToEntryEdges(tx *sql.Tx) error {
 	}
 	if _, err := tx.Exec(`DROP TABLE source_targets`); err != nil {
 		return fmt.Errorf("drop source_targets: %w", err)
+	}
+	return nil
+}
+
+// migrateEdgeRefs 迁移 27：edges 改存**引用**（P2.2，typed-pipeline §3.2）。
+//
+// 两件事，必须同一个事务（否则会出现「表已重建、path 还是 id」的半途库）：
+//
+//  1. **重建 edges**：from_key/to_capability（id）→ from_ref/to_ref（`name` 或
+//     `name@version`），主键跟着换成引用；存量行一律写成 `name@version`（钉死），
+//     入口边（from_is_source=1）的 from_ref 就是来源名，原样搬。
+//  2. **tasks.path**：能力 id 序列 → 能力名序列（运行期环剪枝按名字判）。
+//
+// 为什么重建表而不是 ADD COLUMN：主键里有旧列（`from_key`,`to_capability`）。
+// 留下旧列就要在每个写入点回答「两套键怎么对齐」——而 `name` 型 link 根本
+// 无法用 id 表达（它跟随 latest），双写必然变成两份会漂移的真相。
+//
+// 幂等（迁移框架可能重跑同一个 hook）：以「edges 上没有 to_ref 列」为重建判据；
+// path 改写天然幂等（名字不会命中 id → 名字映射，换不到的保留原值）。
+func migrateEdgeRefs(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "edges", "to_ref")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if err := rebuildEdgesWithRefs(tx); err != nil {
+			return err
+		}
+	}
+	return rewriteTaskPathIDsToNames(tx)
+}
+
+// rebuildEdgesWithRefs 把 edges 重建为「引用两端」的形状，并把存量 id 重写为 `name@version`。
+//
+// 关联不到能力行的 id（能力已被删、或手改过的手数据）保留**原值**：
+// 宁可让一行坏数据原形毕露（派发时按引用解析失败 → 剪枝留痕），也不要在迁移里
+// 静默丢掉一条用户配的线——迁移不该吃掉它解释不了的东西。
+func rebuildEdgesWithRefs(tx *sql.Tx) error {
+	stmts := []string{
+		`CREATE TABLE edges_refs_v27 (
+			namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+			from_is_source  INTEGER NOT NULL DEFAULT 0,
+			from_ref        TEXT NOT NULL,
+			from_port       TEXT NOT NULL,
+			to_ref          TEXT NOT NULL,
+			literals        TEXT NOT NULL DEFAULT '{}',
+			mapping         TEXT NOT NULL DEFAULT '{}',
+			created_at      INTEGER NOT NULL,
+			PRIMARY KEY (namespace_id, from_is_source, from_ref, from_port, to_ref)
+		)`,
+		// 存量能力边：两端 id → name@version；入口边：from_key 本来就是来源名，原样搬。
+		// `||` 遇到 NULL 得 NULL，所以关联不到时 COALESCE 回原值。
+		`INSERT INTO edges_refs_v27
+		        (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
+		 SELECT e.namespace_id, e.from_is_source,
+		        CASE WHEN e.from_is_source = 1 THEN e.from_key
+		             ELSE COALESCE(cf.name || '@' || cf.version, e.from_key) END,
+		        e.from_port,
+		        COALESCE(ct.name || '@' || ct.version, e.to_capability),
+		        COALESCE(e.literals, '{}'), COALESCE(e.mapping, '{}'), e.created_at
+		   FROM edges e
+		   LEFT JOIN capability_versions cf ON cf.id = e.from_key AND e.from_is_source = 0
+		   LEFT JOIN capability_versions ct ON ct.id = e.to_capability
+		 ON CONFLICT(namespace_id, from_is_source, from_ref, from_port, to_ref) DO NOTHING`,
+		`DROP TABLE edges`,
+		`ALTER TABLE edges_refs_v27 RENAME TO edges`,
+		`CREATE INDEX IF NOT EXISTS idx_edges_lookup
+		   ON edges(namespace_id, from_is_source, from_ref, from_port)`,
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("rebuild edges with refs: %w", err)
+		}
+	}
+	return nil
+}
+
+// rewriteTaskPathIDsToNames 把 tasks.path（JSON 数组）里的能力 id 换成能力名。
+//
+// 为什么不能只改写入侧：`path` 是**环剪枝的依据**。旧任务是 id 序列，新任务是名字序列，
+// 两者混在一条链上时，「同一条链上重复出现同一个名字」这个判据就会漏掉一半——
+// 于是一个正在跑的旧 trace 可能在升级后绕圈。所以存量必须一起换。
+//
+// 换不到对应能力的元素**保留原值**（能力行可能已被删）：宁可留一个永远不会命中
+// 的字符串，也不要改写这条历史链路的事实。
+//
+// 幂等：名字不会出现在 id → 名字的映射里，所以重跑是 no-op（除了一遍扫表）。
+func rewriteTaskPathIDsToNames(tx *sql.Tx) error {
+	names := make(map[string]string, 64)
+	rows, err := tx.Query(`SELECT id, name FROM capability_versions`)
+	if err != nil {
+		return fmt.Errorf("load capability ids for path rewrite: %w", err)
+	}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan capability id/name: %w", err)
+		}
+		names[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate capability ids: %w", err)
+	}
+	_ = rows.Close()
+	if len(names) == 0 {
+		return nil
+	}
+
+	// 先收集再写：同一事务内不能一边遍历结果集一边写同一张表（SQLite 会重准备语句）。
+	type pathRow struct {
+		id   string
+		path string
+	}
+	var todo []pathRow
+	prows, err := tx.Query(`SELECT id, path FROM tasks WHERE path LIKE '%cap_%'`)
+	if err != nil {
+		return fmt.Errorf("load task paths: %w", err)
+	}
+	for prows.Next() {
+		var r pathRow
+		if err := prows.Scan(&r.id, &r.path); err != nil {
+			_ = prows.Close()
+			return fmt.Errorf("scan task path: %w", err)
+		}
+		todo = append(todo, r)
+	}
+	if err := prows.Err(); err != nil {
+		_ = prows.Close()
+		return fmt.Errorf("iterate task paths: %w", err)
+	}
+	_ = prows.Close()
+	if len(todo) == 0 {
+		return nil
+	}
+
+	upd, err := tx.Prepare(`UPDATE tasks SET path = ? WHERE id = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare path rewrite: %w", err)
+	}
+	defer func() { _ = upd.Close() }()
+	for _, r := range todo {
+		var elems []string
+		if err := json.Unmarshal([]byte(r.path), &elems); err != nil {
+			continue // 坏数据：不动（与“换不到就保留原值”同口径）
+		}
+		changed := false
+		for i, el := range elems {
+			if name, ok := names[el]; ok && name != el {
+				elems[i] = name
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		data, err := json.Marshal(elems)
+		if err != nil {
+			return fmt.Errorf("marshal task path %s: %w", r.id, err)
+		}
+		if _, err := upd.Exec(string(data), r.id); err != nil {
+			return fmt.Errorf("rewrite task path %s: %w", r.id, err)
+		}
 	}
 	return nil
 }

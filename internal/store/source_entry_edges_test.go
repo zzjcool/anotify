@@ -46,7 +46,7 @@ func entrySourceFixture(t *testing.T) (db *DB, nsID string, capA, capB *Capabili
 // TestSourceTargetsRoundTripFromEdges 建源 = 建入口边；读源 = 从入口边读回来。
 //
 // 关键断言是「参数按出口分别往返」：两个能力各拿自己那份模板（一份公共 params
-// 必然对不上至少一边），以及**入口边的形状**（from_is_source=1、from_key=来源名、
+// 必然对不上至少一边），以及**入口边的形状**（from_is_source=1、from_ref=来源名、
 // from_port='*'、literals='{}'）。
 func TestSourceTargetsRoundTripFromEdges(t *testing.T) {
 	db, nsID, capA, capB, src := entrySourceFixture(t)
@@ -116,18 +116,19 @@ func TestUpdateSourceRebuildsEntryEdges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list edges: %v", err)
 	}
-	if len(edges) != 1 || edges[0].ToCapability != capA.ID {
+	// 右端是**引用**（P2.2）：源的目标钉在它选中的那一版上。
+	if len(edges) != 1 || edges[0].ToRef != capRef(capA) {
 		t.Fatalf("改源后入口边 = %+v, want 只剩 capA 一条", edges)
 	}
 	if !strings.Contains(string(edges[0].Mapping), "u_direct") {
 		t.Errorf("模板没跟着改: %q", edges[0].Mapping)
 	}
-	if n := countRows(t, db, "edges", "to_capability = ?", capB.ID); n != 0 {
+	if n := countRows(t, db, "edges", "to_ref = ?", capRef(capB)); n != 0 {
 		t.Errorf("被移除的目标还留着 %d 条边", n)
 	}
 }
 
-// TestRenameSourceMovesEntryEdges 改名：旧名字下的边必须搬走（from_key 没有外键）。
+// TestRenameSourceMovesEntryEdges 改名：旧名字下的边必须搬走（from_ref 没有外键）。
 //
 // 不搬的后果非常难查：旧名下的边变成「谁也派发不到」的孤儿，而新名字下会凭空
 // 少一条边（用户看到的是"改个名字链路就断了"）。同一个名字被下一个源复用时
@@ -145,7 +146,7 @@ func TestRenameSourceMovesEntryEdges(t *testing.T) {
 		t.Fatalf("rename source: %v", err)
 	}
 
-	if n := countRows(t, db, "edges", "from_key = ?", src.Name); n != 0 {
+	if n := countRows(t, db, "edges", "from_ref = ?", src.Name); n != 0 {
 		t.Fatalf("旧名字下还剩 %d 条边（改名没搬走）", n)
 	}
 	edges, err := db.ListEdges(ctx, nsID, cur.Name)
@@ -158,7 +159,7 @@ func TestRenameSourceMovesEntryEdges(t *testing.T) {
 	// 模板跟着搬（不是重建出空模板）
 	var found bool
 	for _, e := range edges {
-		if e.ToCapability == capA.ID && strings.Contains(string(e.Mapping), "pull_request.user.login") {
+		if e.ToRef == capRef(capA) && strings.Contains(string(e.Mapping), "pull_request.user.login") {
 			found = true
 		}
 	}

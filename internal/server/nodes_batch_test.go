@@ -64,7 +64,10 @@ func batchCap(t *testing.T, ctx context.Context, db *store.DB, nsID, name string
 		Version:     version,
 		Outputs:     []string{fmt.Sprintf("%s-v%d-out", name, version)},
 	}
-	if err := db.CreateCapability(ctx, c); err != nil {
+	// force=true：这条夹具要造的是「同名多版本、每版出口名不同」，而那种版本升级
+	// 会被 P2.2 的升级闸门拦下（删 port = 改线）。闸门本身的行为由
+	// internal/store/upgrade_gate_test.go 专门覆盖，这里只是要两个版本号。
+	if err := db.CreateCapabilityForce(ctx, c, true); err != nil {
 		t.Fatalf("create capability %s@%d: %v", name, version, err)
 	}
 }

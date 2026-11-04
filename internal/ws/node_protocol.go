@@ -26,7 +26,7 @@ const (
 	// NodeFrameEmit 是运行中的一次产出上报（docs/design/emit-protocol.md §3.1）。
 	//
 	// 它是**唯一**的产出通道：一次性返回只是「只 emit 一次」的特例。
-	// result 帧因此不再承担路由语义（out 保留兼容，见 ResultFrame）。
+	// result 帧因此不再承担路由语义（**out 已退役**，见 ResultFrame）。
 	NodeFrameEmit = "emit"
 
 	// 中枢 → 节点
@@ -182,21 +182,25 @@ type ProgressFrame struct {
 
 // ResultFrame 是任务结果。
 //
-// Out 只有**两态**（契约 §2.5 / outcome-v1.1）：
+// # out 已退役（P1.5，硬切）
 //
-//	键缺省    → Out=nil（这次没选出口 = 到此为止）
-//	"out":null → Out=nil（同一个意思；显式 null 宽容接受）
-//	"out":"fix"→ Out=&"fix"（走 fix 出口）
+// 这里曾经有一个 `Out *string`，带着 I5 的「两态」（有值 = 走那个出口 / 缺省 = 到此为止）。
+// 现在**没有这个字段**：产出只有一个通道 —— emit（typed-pipeline §2），路由只看
+// emit 的 `port`（I4 的形式保留：与 status 无关，失败前 emit 过照样继续）。
 //
-// 不再区分「字段缺省」与「显式 null」：两者在路由里走同一条路（不派下一跳）。
-// 「没回报」这件事由**根本没有 result 帧**（租约到期 → 巡检重派）表达，不由 out
-// 表达。曾经为此写过一个用 json.RawMessage 探测键存不存在的自定义 UnmarshalJSON
-// （I5 旧三态），区分出来的两个分支没有任何行为差异，白白多一层解码。
+// 所以「一个任务走到哪里」不再由任何 result 字段表达：
+//   - 想要下游 → 运行中 emit（多次、多端口都行）
+//   - 不想走 → 不 emit（0 次 emit 是合法的，到此为止）
+//   - 进程死/空转 → 退出码 / 信号 / 租约（状态来自进程，不来自端口）
+//
+// **老帧里多出来的 `"out":"fix"` 不报错**：encoding/json 对结构体里不存在的
+// 字段一律忽略（这里没有 DisallowUnknownFields）。这是有意的——一条老实现发的帧
+// 不应该因为一个已经退役的键就整帧被拒（bad_frame），它的效果是「没有下游」，
+// 正好等于新语义下「没 emit」的语义。
 type ResultFrame struct {
-	Type   string  `json:"type"`
-	TaskID string  `json:"task_id"`
-	Status string  `json:"status"` // succeeded | failed
-	Out    *string `json:"out"`
+	Type   string `json:"type"`
+	TaskID string `json:"task_id"`
+	Status string `json:"status"` // succeeded | failed
 	// Summary 是**唯一的**结果说明：成功=做了什么，失败=为什么失败。
 	// 契约要求失败时非空（节点用 exit code / signal 兜底填），库里不再有第二个
 	// "error" 字段去装同一句话。
@@ -270,8 +274,8 @@ type AssignFrame struct {
 
 	// Ports 是本次运行**允许上报的出口名**（能力的 ports 快照）。
 	//
-	// 它是 I2「出口是封闭集合」的降级点：以前只能等进程退出、看到 .anotify-out
-	// 才发现出口名写错了；有了它，emit 当时就能拒。
+	// 它是 I2「出口是封闭集合」的降级点：以前只能等进程退出、看到 `.anotify-out`
+	// 才发现出口名写错了（而那条通道已经删了）；有了它，emit 当时就能拒。
 	Ports []string `json:"ports,omitempty"`
 
 	// Expects 是「这个端口的 data 要被怎样消费」，按 port 名索引。
@@ -370,6 +374,10 @@ func DecodeUpstream(data []byte) (any, error) {
 		}
 		return &f, nil
 	case NodeFrameResult:
+		// 注意：这里**不做**任何「容忍/拒收 out」的分支。老帧里多出来的 `"out"`
+		// 是未知字段，json.Unmarshal 直接忽略（不报错）。刻意不给它一个
+		// 「out is retired」的报错：那会把一条本来无害的老帧变成 bad_frame，
+		// 让节点陷入重发→又被拒→重连的漩涡，而它们的路由结果本来就一样（无下游）。
 		var f ResultFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, fmt.Errorf("decode result: %w", err)

@@ -229,7 +229,7 @@ func TestInflightReleasedAfterResult(t *testing.T) {
 
 	// 跑完：result 落库 → handleResult 里 forget(taskID)。
 	send(t, connA, &ResultFrame{Type: NodeFrameResult, TaskID: task.ID,
-		Status: store.TaskSucceeded, Summary: "ok", Out: strPtr("fix")})
+		Status: store.TaskSucceeded, Summary: "ok"})
 	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
 
 	// ① 在飞位必须被摘掉（forget 的一半：hub.release）。漏了它 → 这条 taskID 永远 ErrTaskInflight。
@@ -532,47 +532,74 @@ func TestPublishAssignUsesAuthoritativeAttempts(t *testing.T) {
 
 // ---------- m5：params 超限要有自己的错误码 ----------
 
-// TestResultOversizedNextHopParamsIsDiagnosable 下一跳子任务的 params 超限 →
-// 节点收到 code=params_too_large（而不是 invalid_transition），文案带体积/上限。
+// TestEmitOversizedParamsIsDiagnosable 下游 params 超限 → 节点收到**能读懂病因**的拒收。
 //
-// 病因（审查 m5）：store 的闸门在 createTasksTx 里，而子任务插入与父任务终态是
-// **同一个事务** → 子任务超限会让父任务终态整体回滚。父任务留在 running →
-// 租约过期重派 → 节点把同一份昂贵工作再跑一遍 → 返回同样的超限子任务，直到 attempts 用尽。
-// 把这种错误伪装成 invalid_transition 就把「你的 params 太大」这个唯一可行动的病因埋了。
-func TestResultOversizedNextHopParamsIsDiagnosable(t *testing.T) {
-	fake := &fakeNextHop{}
-	f := newNodeFixture(t, func(h *NodeHandler) { h.NextHop = fake })
-	fake.setDB(f.db)
+// 改动前这里是 TestResultOversizedNextHopParamsIsDiagnosable：走的是
+// 「result.out 建下一跳」那条路，子任务 params 超限会让父任务终态整体回滚，于是
+// 错误被映射成 error 帧的 params_too_large（审查 m5）。P1.5 之后建子任务行只发生在
+// **emit** 里，所以同样的病因换了载体：错误走 `emit_ack.error`（emit 的拒收一律走
+// ack，不回 error 帧、不断连接，见 node_emit.go 的两条硬纪律）。
+//
+// 守的东西一条没少（这才是重点，换了载体不等于降低要求）：
+//   - 文案必须说清「params too large」+ 实际体积 + 上限——否则运维只知道「被拒了」；
+//   - 被拒的那次**不建任何行**（emission 也不落）；
+//   - 父任务不因此进终态（节点可以改小之后重发同一个 seq）。
+func TestEmitOversizedParamsIsDiagnosable(t *testing.T) {
+	f, fixer := emitFixtureWithLink(t)
 
 	conn := f.mustDial(t)
-	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
-		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
+	hello(t, conn, f.node.ID,
+		[]AppliedDecl{{Capability: "review", Version: 1}, {Capability: fixer.Name, Version: 1}},
+		[]InstanceDecl{{Slot: 0, Concurrency: 1}, {Slot: 1, Concurrency: 1}},
+	)
+	parent := f.makeAssignedTask(t, "trace_emit_params")
 
-	parent := f.makeAssignedTask(t, "trace_m5_params")
-	child := f.nextHopChild(t, parent, "fix")
-	child.Params = bigParams(t, store.MaxTaskParamsBytes+1024) // 刚过闸门 1KiB
-	fake.setPlan(child)
+	// 刚过 store 的闸门 1KiB（带上 issue：否则先被 param_missing 剪掉，根本走不到体积闸门）。
+	pad := store.MaxTaskParamsBytes + 1024
+	big := json.RawMessage(`{"issue":"#42","blob":"` + strings.Repeat("a", pad) + `"}`)
+	send(t, conn, &EmitFrame{
+		Type: NodeFrameEmit, TaskID: parent.ID, Seq: 1, Port: "fix", Data: big,
+	})
 
-	sentResult(t, conn, parent.ID, "fix")
-
-	frame := readUntil(t, conn, NodeFrameError)
-	if frame["code"] != ErrCodeParamsTooLarge {
-		t.Fatalf("error code = %v, want %q: params 超限不该伪装成状态机拒绝（病因是体积，不是状态）",
-			frame["code"], ErrCodeParamsTooLarge)
+	var ack map[string]any
+	for i := 0; i < 12 && ack == nil; i++ {
+		if m, ok := tryReadFrame(conn, 3*time.Second); ok && m["type"] == NodeFrameEmitAck {
+			ack = m
+		}
 	}
-	msg, _ := frame["message"].(string)
+	if ack == nil {
+		t.Fatal("超限的 emit 没有拿到 emit_ack（拒收也必须回一帧，否则 CLI 只能干等超时）")
+	}
+	msg, _ := ack["error"].(string)
 	for _, want := range []string{
 		"params too large",
-		fmt.Sprint(len(child.Params)),
+		fmt.Sprint(len(big)),
 		fmt.Sprint(store.MaxTaskParamsBytes),
 	} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("message %q does not contain %q (体积与上限都要给，节点才知道该怎么改)", msg, want)
+			t.Errorf("emit_ack.error = %q 不含 %q（体积与上限都要给，节点才知道该怎么改）", msg, want)
 		}
 	}
-	// 父任务不在终态：整条结果确实被回滚了（这与错误码无关，但它是「节点会重跑」的前提）。
+
+	// 被拒的那次一行都不落：没有下游任务，也没有 emission（seq 可以被重发）。
+	if kids := childrenOf(t, f, parent.ID); len(kids) != 0 {
+		t.Fatalf("被拒的 emit 竟然建出了 %d 条下游任务", len(kids))
+	}
+	ems, err := f.db.ListEmissions(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatalf("list emissions: %v", err)
+	}
+	if len(ems) != 0 {
+		t.Fatalf("被拒的 emit 落了 %d 条 emission（重发同一个 seq 会被判冲突）", len(ems))
+	}
+	// 父任务不因这次拒收进终态：节点改小数据后可以重发同一个 seq。
 	if got := mustGetTask(t, f, parent.ID); store.IsTerminalStatus(got.Status) {
-		t.Fatalf("parent status = %q after a rejected next-hop row, want a non-terminal state", got.Status)
+		t.Fatalf("父任务状态 = %q，want 非终态（拒收不是结果）", got.Status)
+	}
+	// 拒收走的是 emit_ack 而不是 error 帧：节点侧因此不会「重连 → 重发 → 又被拒」。
+	// 连接仍然活着的证据就是刚收到的那帧 ack 本身（error 帧/断连都不会带 seq/Routed）。
+	if _, ok := ack["seq"].(float64); !ok {
+		t.Fatalf("emit_ack 缺 seq 回显：%v", ack)
 	}
 }
 

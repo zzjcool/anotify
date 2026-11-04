@@ -253,6 +253,60 @@
 		return list.reduce((a, b) => (b.version > a.version ? b : a));
 	}
 
+	// ---------- 边的引用（P2.2）----------
+	//
+	// 与真后端**同形状**：边里只存**引用**（`name` 跟随 latest / `name@version` 钉死），
+	// 入口边的左端是**来源名**。
+	//
+	// 为什么不能存能力 id：id 每一版都不一样，存了 id 之后能力发新版，
+	// 原来那条边还指着旧 id —— 升级永远不生效。而「此刻解析到哪一版」是**派生量**，
+	// 由 edgeView 现场算（和真后端一样，不落库），否则升级之后它对不上。
+	//
+	// 从**最后一个** '@' 拆：能力名里允许出现 '@'，而版本号一定是纯数字 ——
+	// 与 Go 侧 store.SplitRef 同口径。
+	function splitRef(ref) {
+		const s = String(ref == null ? "" : ref).trim();
+		const at = s.lastIndexOf("@");
+		if (at <= 0 || at === s.length - 1) return { name: s, version: 0, pinned: false };
+		const v = Number(s.slice(at + 1));
+		if (!Number.isInteger(v) || v <= 0) return { name: s, version: 0, pinned: false };
+		return { name: s.slice(0, at), version: v, pinned: true };
+	}
+
+	// resolveCapRef 把引用解析成能力定义；解析不到返回 null。
+	//
+	//   `name`     → 该名字的**最高版本**（= latest，升级自动生效）
+	//   `name@ver` → 那一版（钉死）
+	function resolveCapRef(ref, nsId) {
+		const { name, version, pinned } = splitRef(ref);
+		if (!name) return null;
+		const pool = nsId
+			? state.capabilities.filter((c) => !c.namespaceId || c.namespaceId === nsId)
+			: state.capabilities;
+		const list = pool.filter((c) => c.name === name);
+		if (!list.length) return null;
+		if (pinned) return list.find((c) => c.version === version) || null;
+		return list.reduce((a, b) => (b.version > a.version ? b : a));
+	}
+
+	// capRef 是能力定义的引用写法（写边时用它，而不是 id）
+	function capRef(c) {
+		return c ? c.name + "@" + c.version : "";
+	}
+
+	// edgeView 是 GET /v1/edges 的一行：边本身 + 两端引用**此刻**解析到的能力 id。
+	//
+	// 入口边的 fromCapabilityId 恒为空串（左端是来源名，没有「哪一版」）；
+	// 解析不到（能力被删）时也是空串 —— 一条坏边不该让整张表变成错误页。
+	function edgeView(e) {
+		const fromCap = e.fromIsSource ? null : resolveCapRef(e.fromRef, e.namespaceId);
+		const toCap = resolveCapRef(e.toRef, e.namespaceId);
+		return Object.assign(clone(e), {
+			fromCapabilityId: fromCap ? fromCap.id : "",
+			toCapabilityId: toCap ? toCap.id : "",
+		});
+	}
+
 	// ===== 能力模板（CONTRACT-artifact §8）=====
 	//
 	// 9 个内置模板：5 个 script + 4 个 agent。字段（key/label/type/required/
@@ -522,47 +576,55 @@
 	(function initEdges() {
 		// fromSource: 左端是**来源名**（入口边，#110），不是能力 id。
 		// 旧模型靠一个叫 github@1 的空壳能力当锚点，那个空壳已经不存在了。
+		// 右端是**引用**（P2.2）：演示数据一律钉死 `name@version`，
+		// 让「同一张图、不同版本」在升级演示里看得见。
 		// literals 是这条边的**常量覆盖**（P0-c，设计 §3.3）：默认 {}（= 没有覆盖）。
-		const fromSource = (source, port, to, literals) => ({
+		// 两种引用形态（设计 §3.2），演示数据里**两种都要有**：
+		//   PIN("x")    → `x@1` 钉死那一版（升级不动线）
+		//   FOLLOW("x") → `x`   跟随 latest（升级自动生效）
+		// 只有钉死引用的话，「当前 → name@version」这个提示在出口页永远不会出现，
+		// 也就没人能看出这两种写法在界面上长得不一样。
+		const PIN = (name) => capRef(capByName(name));
+		const FOLLOW = (name) => name;
+		// 工厂收的是**引用**（已经算好的字符串），不是能力名：
+		// 这样调用点能自己决定这一端钉死还是跟随。
+		const fromSource = (source, port, toRef, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			fromIsSource: true,
-			fromCapability: source,
+			fromRef: source,
 			fromPort: port,
-			toCapability: capByName(to).id,
-			toCapabilityName: to,
+			toRef,
 			literals: literals || {},
 			createdAt: now() - 3600,
 		});
-		const from = (name, port, to, literals) => ({
+		const from = (fromRef, port, toRef, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
-			fromCapability: capByName(name).id,
-			fromCapabilityName: name,
+			fromRef,
 			fromPort: port,
-			toCapability: capByName(to).id,
-			toCapabilityName: to,
+			toRef,
 			literals: literals || {},
 			createdAt: now() - 3600,
 		});
 		state.edges = [
 			// 源也可以扇出：一个 PR 事件同时派发分析和通知两条链。
 			// 这两条链互不等待（不做 join），各走各的。
-			fromSource("github", "pull_request.opened", "analyze-pr"),
+			fromSource("github", "pull_request.opened", PIN("analyze-pr")),
 			// 带常量覆盖的一条：告警一律标 urgent（常量在配置里，脚本不用管）。
-			fromSource("github", "pull_request.opened", "report.send", { urgent: true }),
-			fromSource("github", "pull_request.synchronize", "analyze-pr"),
-			fromSource("cron", "nightly", "analyze-pr"),
-			fromSource("http", "webhook.incoming", "deploy-preview"),
-			fromSource("manual", "manual.run", "deploy-preview"),
-			from("analyze-pr", "needs-fix", "lint-fix"),
-			from("analyze-pr", "approved", "run-tests"),
+			fromSource("github", "pull_request.opened", PIN("report.send"), { urgent: true }),
+			fromSource("github", "pull_request.synchronize", PIN("analyze-pr")),
+			fromSource("cron", "nightly", PIN("analyze-pr")),
+			fromSource("http", "webhook.incoming", PIN("deploy-preview")),
+			fromSource("manual", "manual.run", PIN("deploy-preview")),
+			from(PIN("analyze-pr"), "needs-fix", PIN("lint-fix")),
+			from(PIN("analyze-pr"), "approved", PIN("run-tests")),
 
 			// 两个分支各自往下走一步，然后在 deploy-preview 汇聚 ——
 			// 汇聚是布局最容易画歪的形状（菱形），值得在演示数据里出现。
-			from("lint-fix", "clean", "run-tests"),
-			from("lint-fix", "remaining", "report.send"),
-			from("run-tests", "passed", "deploy-preview"),
+			from(PIN("lint-fix"), "clean", PIN("run-tests")),
+			from(PIN("lint-fix"), "remaining", PIN("report.send")),
+			from(PIN("run-tests"), "passed", PIN("deploy-preview")),
 
 			// ===== 扇出（一个出口多条边）=====
 			//
@@ -571,26 +633,30 @@
 			// 它们的 parent_task_id 是同一个。**不是择一，是全部下发。**
 			//
 			// 之前的 mock 完全没有扇出，等于把产品最重要的形状藏起来了。
-			from("analyze-pr", "needs-fix", "run-tests"),
-			from("apply-fix", "fixed", "deploy-preview"),
+			from(PIN("analyze-pr"), "needs-fix", PIN("run-tests")),
+			from(PIN("apply-fix"), "fixed", PIN("deploy-preview")),
 
 			// 测试挂了先尝试自动修，修完再测一次 —— 这是本仓库真实存在的
 			// 环（run-tests → apply-fix → run-tests）。流向图必须画出环路，
 			// 而"全是 DAG"的演示数据会让人以为这功能只能处理简单情况。
-			from("run-tests", "failed", "apply-fix"),
+			from(PIN("run-tests"), "failed", PIN("apply-fix")),
 
 			// 部署之后：成功就发通知 + 生成变更日志（一对多分叉）
-			from("deploy-preview", "preview.ready", "gen-changelog"),
-			from("deploy-preview", "failed", "rollback"),
+			//
+			// 到 gen-changelog 这条路故意写成**跟随 latest**（FOLLOW）：
+			// 能力发新版后它会自动走新版。出口页上会多一句「当前 → gen-changelog@1」，
+			// 而钉死引用那一堆没有 —— 两种引用形态的区别必须在界面上看得见。
+			from(PIN("deploy-preview"), "preview.ready", FOLLOW("gen-changelog")),
+			from(PIN("deploy-preview"), "failed", PIN("rollback")),
 
 			// 一条真实存在的环：改了再测，测完再改。
 			// 留着它是刻意的：流向图必须能画出环路，而"全是 DAG"的演示数据
 			// 会让人以为这功能只能处理简单情况。
-			from("apply-fix", "fixed", "run-tests"),
+			from(PIN("apply-fix"), "fixed", PIN("run-tests")),
 
 			// 兜底告警：report.send 和 rollback 都能触发值班
-			from("rollback", "done", "alert.oncall"),
-			from("report.send", "escalate", "alert.oncall"),
+			from(PIN("rollback"), "done", PIN("alert.oncall")),
+			from(PIN("report.send"), "escalate", PIN("alert.oncall")),
 		];
 	})();
 
@@ -1502,11 +1568,9 @@
 			id: uid("edg"),
 			orgId: ORG,
 			namespaceId: STAGING,
-			fromCapability: stgByName[from].id,
-			fromCapabilityName: from,
+			fromRef: capRef(stgByName[from]),
 			fromPort: port,
-			toCapability: stgByName[to].id,
-			toCapabilityName: to,
+			toRef: capRef(stgByName[to]),
 			literals: literals || {},
 			createdAt: t0 - 86400 * 10,
 		});
@@ -1633,11 +1697,9 @@
 			id: uid("edg"),
 			orgId: ACME,
 			namespaceId: ACME_NS,
-			fromCapability: caps[from].id,
-			fromCapabilityName: from,
+			fromRef: capRef(caps[from]),
 			fromPort: port,
-			toCapability: caps[to].id,
-			toCapabilityName: to,
+			toRef: capRef(caps[to]),
 			createdAt: now() - 86400 * 11,
 		});
 		const acmeCaps = { "build-image": build, "scan-deps": scan, release: release };
@@ -1928,11 +1990,14 @@
 					blockedByCap: !from ? e.from : e.to,
 				};
 			}
+			// 「这条边在不在」比的是**两端解析到的能力**（引用 → 当前版本），
+			// 不是引用字符串相等：预案声明的是「名字」，而库里可能是 `name@1`。
 			const hit = edges.some(
 				(x) =>
-					x.fromCapability === from.id &&
+					!x.fromIsSource &&
+					(resolveCapRef(x.fromRef, ns) || {}).id === from.id &&
 					x.fromPort === e.fromPort &&
-					x.toCapability === to.id,
+					(resolveCapRef(x.toRef, ns) || {}).id === to.id,
 			);
 			return {
 				kind: "edge",
@@ -2064,9 +2129,9 @@
 				state.edges.some(
 					(x) =>
 						x.namespaceId === ns &&
-						x.fromCapability === from.id &&
+						(resolveCapRef(x.fromRef, ns) || {}).id === from.id &&
 						x.fromPort === e.fromPort &&
-						x.toCapability === to.id,
+						(resolveCapRef(x.toRef, ns) || {}).id === to.id,
 				)
 			) {
 				skipped.edges.push(label);
@@ -2076,11 +2141,10 @@
 				id: uid("edg"),
 				orgId: pb.orgId,
 				namespaceId: ns,
-				fromCapability: from.id,
-				fromCapabilityName: e.from,
+				// 预案里写的是 `name@version`（与同一预案声明的能力定义对应）
+				fromRef: capRef(from),
 				fromPort: e.fromPort,
-				toCapability: to.id,
-				toCapabilityName: e.to,
+				toRef: capRef(to),
 				// 预案里的边不带常量覆盖（'{}' = 没有覆盖），形状与新建边一致
 				literals: {},
 				createdAt: now(),
@@ -2675,12 +2739,33 @@
 	});
 
 	on("GET", /^\/v1\/edges$/, (ctx) =>
-		json({ edges: clone(inNs(state.edges, nsScope(ctx.query))) }),
+		json({ edges: clone(inNs(state.edges, nsScope(ctx.query))).map(edgeView) }),
 	);
+
+	// edgeRefInput 把「用户给的字符串」归一成要存的**引用**（P2.2）。
+	//
+	// 与 Go 侧 store.resolveLinkRef 同口径：
+	//   `name`         → 原样保存（跟随 latest）
+	//   `name@version` → 原样保存（钉死）
+	//   能力 id         → 转成 `name@version`（老客户端输入兼容，**绝不把 id 存进边**）
+	function edgeRefInput(raw, isSource, nsId) {
+		const s = String(raw == null ? "" : raw).trim();
+		if (!s) return "";
+		if (isSource) return s;
+		if (resolveCapRef(s, nsId)) return s;
+		const byId = state.capabilities.find((c) => c.id === s);
+		return byId ? capRef(byId) : s;
+	}
 
 	on("POST", /^\/v1\/edges$/, (ctx) => {
 		const b = ctx.body || {};
-		const to = state.capabilities.find((c) => c.id === b.toCapability);
+		const nsId = b.namespaceId || NS;
+		// 新字段名优先、旧字段名兜底（与 Go 侧 edgeRequest.linkRefs 同口径）
+		const fromRaw = b.fromRef || b.fromCapability;
+		const toRaw = b.toRef || b.toCapability;
+
+		const toRef = edgeRefInput(toRaw, false, nsId);
+		const to = resolveCapRef(toRef, nsId);
 		if (!to) return err(400, "下游能力不存在");
 
 		// 常量覆盖（P0-c）：与 Go 侧 store.checkEdgeLiterals 同口径 —— 必须是对象、
@@ -2692,24 +2777,25 @@
 
 		// 入口边（#110）：左端是来源名，出口是事件类型，任意值。
 		if (b.fromIsSource) {
-			if (!b.fromCapability) return err(400, "来源名不能为空");
+			const fromRef = edgeRefInput(fromRaw, true, nsId);
+			if (!fromRef) return err(400, "来源名不能为空");
 			const e = {
 				id: uid("edg"),
 				orgId: ORG,
-				namespaceId: b.namespaceId || NS,
+				namespaceId: nsId,
 				fromIsSource: true,
-				fromCapability: String(b.fromCapability),
+				fromRef,
 				fromPort: b.fromPort,
-				toCapability: to.id,
-				toCapabilityName: to.name,
+				toRef,
 				literals,
 				createdAt: now(),
 			};
 			state.edges.push(e);
-			return json({ edge: clone(e) }, 201);
+			return json({ edge: edgeView(e) }, 201);
 		}
 
-		const from = state.capabilities.find((c) => c.id === b.fromCapability);
+		const fromRef = edgeRefInput(fromRaw, false, nsId);
+		const from = resolveCapRef(fromRef, nsId);
 		if (!from) return err(400, "上游能力不存在");
 		// 能力之间的边：fromPort 必须在该能力的 outputs 里（I2）
 		if (!(from.outputs || []).includes(b.fromPort)) {
@@ -2719,25 +2805,41 @@
 			id: uid("edg"),
 			orgId: ORG,
 			// 边一定属于某个命名空间（与后端同形状；漏了会让按命名空间的查询看不见它）
-			namespaceId: b.namespaceId || NS,
-			fromCapability: from.id,
-			fromCapabilityName: from.name,
+			namespaceId: nsId,
+			fromRef,
 			fromPort: b.fromPort,
-			toCapability: to.id,
-			toCapabilityName: to.name,
+			toRef,
 			literals,
 			createdAt: now(),
 		};
 		state.edges.push(e);
-		return json({ edge: clone(e) }, 201);
+		return json({ edge: edgeView(e) }, 201);
 	});
 
+	// 撤销一条边。
+	//
+	// 真后端按 (from, port, to, fromIsSource) 定位（`?id=` 不在契约里）；
+	// 两种都认：有 from/port/to 就按它们匹配，否则退回按 id。
+	// （控制台发的是 fromRef/fromPort/toRef —— 只认 id 的话预览里点删除永远是 404。）
 	on("DELETE", /^\/v1\/edges$/, (ctx) => {
-		const id = ctx.query.get("id");
-		const before = state.edges.length;
-		state.edges = state.edges.filter((e) => e.id !== id);
-		if (state.edges.length === before) return err(404, "边不存在");
-		return json({ deleted: id });
+		const q = ctx.query;
+		const id = q.get("id") || "";
+		const from = q.get("fromRef") || q.get("fromCapability") || "";
+		const to = q.get("toRef") || q.get("toCapability") || "";
+		const port = q.get("fromPort") || "";
+		const srcFlag = q.get("fromIsSource") || "";
+		const wantSource = srcFlag === "1" || srcFlag === "true";
+		const hit = state.edges.find((e) =>
+			id
+				? e.id === id
+				: !!e.fromIsSource === wantSource &&
+					e.fromRef === from &&
+					e.fromPort === port &&
+					e.toRef === to,
+		);
+		if (!hit) return err(404, "边不存在");
+		state.edges = state.edges.filter((e) => e !== hit);
+		return json({ deleted: hit.id });
 	});
 
 	// ===== 节点 =====
@@ -3097,7 +3199,10 @@
 		const out = {};
 		for (const e of state.edges) {
 			if (e.namespaceId !== ns || !e.fromIsSource) continue;
-			if (e.fromCapability !== sourceName || e.toCapability !== toCapabilityId) continue;
+			if (e.fromRef !== sourceName) continue;
+			// 右端是**引用**：比的是它此刻解析到的能力（带名字或 @版本 都行）
+			const toCap = resolveCapRef(e.toRef, ns);
+			if (!toCap || toCap.id !== toCapabilityId) continue;
 			const lit = e.literals;
 			if (!lit || typeof lit !== "object" || Array.isArray(lit)) continue;
 			Object.assign(out, lit);

@@ -76,25 +76,37 @@ async function main() {
 		session: s.session,
 		method: "POST",
 		// #110：入口边——来源名 "deeplink.src" 直接当左端
+		// P2.2：两端写的是**引用**（`name` / `name@version`），不是能力 id
 		body: {
 			fromIsSource: true,
-			fromCapability: "deeplink.src",
+			fromRef: "deeplink.src",
 			fromPort: "go",
-			toCapability: reviewId,
+			toRef: "review@1",
 		},
 	});
 	H.eq("建边 deeplink.src→review → 200", edgeResp.status, 200);
 	const edgesResp = await H.req(server.base, "/v1/edges", { session: s.session });
+	const entryEdge = (edgesResp.json?.edges || []).find(
+		(e) => e.fromIsSource === true && e.fromRef === "deeplink.src",
+	);
 	// #110：入口边的左端是**来源名**（"deeplink.src"），不是能力 id
+	// P2.2：断言改成**引用口径**（`toRef`）——`toCapability` 已经不存在了
 	H.check(
-		"边指向 review",
-		(edgesResp.json?.edges || []).some(
-			(e) =>
-				e.fromIsSource === true &&
-				e.fromCapability === "deeplink.src" &&
-				e.toCapability === reviewId,
-		),
+		"边指向 review@1（引用口径）",
+		!!entryEdge && entryEdge.toRef === "review@1",
 		JSON.stringify(edgesResp.json?.edges),
+	);
+	// 引用之外还要能拿到「此刻解析到哪一版」：详情链接靠它，前端不能自己算
+	H.check(
+		"边带上解析后的能力 id（toCapabilityId）",
+		!!entryEdge && entryEdge.toCapabilityId === reviewId,
+		JSON.stringify(entryEdge),
+	);
+	// 入口边的左端是来源名，没有「哪一版」——必须是空串，不能编成某个能力
+	H.check(
+		"入口边的 fromCapabilityId 是空串",
+		!!entryEdge && entryEdge.fromCapabilityId === "",
+		JSON.stringify(entryEdge),
 	);
 
 	// 节点：声明 review@1 与 deeplink.src@1

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -323,11 +324,11 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	// 入口边：左端是来源名，任意事件类型都能建
 	for _, port := range []string{"pull_request.opened", "never.declared.before", "x"} {
 		if err := db.CreateEdge(ctx, &Edge{
-			NamespaceID:    nsID,
-			FromIsSource:   true,
-			FromCapability: "github",
-			FromPort:       port,
-			ToCapability:   sink.ID,
+			NamespaceID:  nsID,
+			FromIsSource: true,
+			FromRef:      "github",
+			FromPort:     port,
+			ToRef:        sink.ID,
 		}); err != nil {
 			t.Fatalf("入口边的任意出口应被接受（port=%s）: %v", port, err)
 		}
@@ -338,8 +339,8 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("edges from: %v", err)
 	}
-	if len(got) != 1 || got[0].CapabilityID != sink.ID {
-		t.Fatalf("入口边查表 = %v, want [%s]", got, sink.ID)
+	if len(got) != 1 || got[0].ToRef != capRef(sink) {
+		t.Fatalf("入口边查表 = %v, want [%s]", got, capRef(sink))
 	}
 
 	// 自定义能力的边仍然严格（I2 没有放松）
@@ -352,8 +353,8 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 		t.Fatalf("create custom: %v", err)
 	}
 	err = db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromCapability: custom.ID,
-		FromPort: "not_declared", ToCapability: sink.ID,
+		NamespaceID: nsID, FromRef: custom.ID,
+		FromPort: "not_declared", ToRef: sink.ID,
 	})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("自定义能力的非法出口应被拒绝，got %v", err)
@@ -505,16 +506,24 @@ func TestBackfillBuiltinCapabilitiesEmptyDeployment(t *testing.T) {
 	}
 }
 
-// TestExampleBuiltinScriptProducesDeclaredOutput 真跑一遍示例能力的 run.sh。
+// TestExampleBuiltinScriptEmitsDeclaredPort 真跑一遍示例能力的 run.sh，并断言它的
+// 产出真的**走 emit**、端口**在声明里**。
 //
-// 为什么必须真跑：这个能力曾经 declare outputs=["echoed"]，而脚本把**参数值**写进
-// 了 $ANOTIFY_OUT_FILE（那是出口名，不是结果），于是任何 message 都让任务在最后一步
-// 判 failed：`out "hello" is not declared in spec.outputs [echoed]`。
-// TestExampleBuiltinIsUsable 只比“产物 outputs == 能力 outputs”，两边一起错就测不出来。
+// 改动前它叫 ...ProducesDeclaredOutput，断言的是「脚本把 echoed 写进了
+// $ANOTIFY_OUT_FILE」。P1.5 把那条腿删了（emit 是唯一的产出通道），所以同样的证据
+// 换了载体：脚本必须调 `anotify-agent emit --port <声明过的端口>`。
 //
-// 不变量：用任意消息跑一遍，脚本写出的出口名都必须 ∈ spec.outputs，
-// 且消息本身要能从 stdout 读到（summary 就是从 stdout 首行来的）。
-func TestExampleBuiltinScriptProducesDeclaredOutput(t *testing.T) {
+// 为什么必须真跑：script.echo 曾经 declare outputs=["echoed"]，而脚本把**参数值**
+// 写进了出口文件（那是出口名，不是结果），于是任何 message 都让任务在最后一步判
+// failed。TestExampleBuiltinIsUsable 只比"产物 outputs == 能力 outputs"，两边一起
+// 错就测不出来。
+//
+// 这里用一个**假 anotify-agent**（只记录 argv 就退 0）代替真二进制：store 包不该
+//
+//	① 依赖 cmd/agent 能编出来（那是另一个包的验收：cmd/agent 的
+//	   TestRunJobExampleCapability 用真二进制跑同一条脚本）；
+//	② 把 socket 协议搬进 store 的单测里（那属于 emit 协议自己的用例）。
+func TestExampleBuiltinScriptEmitsDeclaredPort(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("没有 bash，跳过（示例能力只用 bash 内建）")
@@ -522,6 +531,21 @@ func TestExampleBuiltinScriptProducesDeclaredOutput(t *testing.T) {
 	script := ExampleCapability.Artifact.Spec.Run.Files["run.sh"]
 	if script == "" {
 		t.Fatal("示例能力的产物里没有 run.sh")
+	}
+	// 静态门禁：已退役的出口文件**不能再出现在脚本的代码里**。断言「没有」而不是
+	// 「不用」——否则哪天有人“顺手兼容一下”就又长回来了。
+	// 只看非注释行：注释里解释「它已退役」是应该的（也正因为那段注释，这里不能
+	// 简单地 strings.Contains 整个脚本文本）。
+	for _, line := range strings.Split(script, "\n") {
+		code := strings.TrimSpace(line)
+		if code == "" || strings.HasPrefix(code, "#") {
+			continue
+		}
+		for _, banned := range []string{"ANOTIFY_OUT_FILE", ".anotify-out"} {
+			if strings.Contains(code, banned) {
+				t.Fatalf("示例脚本的代码仍然引用已退役的出口文件 %q（产出只走 emit）: %s", banned, code)
+			}
+		}
 	}
 
 	cases := []struct {
@@ -540,11 +564,28 @@ func TestExampleBuiltinScriptProducesDeclaredOutput(t *testing.T) {
 			if err := os.WriteFile(entry, []byte(script), 0o755); err != nil {
 				t.Fatalf("写 run.sh: %v", err)
 			}
-			outFile := filepath.Join(dir, ".anotify-out")
+			record := filepath.Join(dir, "emit-args.txt")
+			// 假 agent：把 argv **一个一行**写进记录文件就成功退出（真 CLI 的成功退出码是 0）。
+			// 一个一行而不是 `"$*"`：data 里会有空格（比如 message="hello 世界"），
+			// 拼成一行之后就没法无歧义地拆回来了。
+			fakeBin := filepath.Join(dir, "anotify-agent")
+			fake := "#!/bin/bash\nprintf '%s\\n' \"$@\" > " + record + "\nexit 0\n"
+			if err := os.WriteFile(fakeBin, []byte(fake), 0o755); err != nil {
+				t.Fatalf("写假 agent: %v", err)
+			}
 
 			cmd := exec.Command(bash, entry)
 			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "ANOTIFY_OUT_FILE="+outFile)
+			cmd.Env = append(os.Environ(),
+				// 有 socket = 脚本会真的去 emit（没有它时脚本按「standalone 无中枢」跳过，
+				// 那是另一条分支，见 cmd/agent 的 standalone 用例）。
+				"ANOTIFY_EMIT_SOCK="+filepath.Join(dir, "task.sock"),
+				"ANOTIFY_AGENT_BIN="+fakeBin,
+				// agent 一定会注入它（buildEnv 的契约变量），这里给一份合法 JSON 对象。
+				// 用 strconv/fmt 拼：Go 的原始字符串里带反引号会很别扭，
+				// 而 JSON 的引号必须是真的双引号字符。
+				"ANOTIFY_PARAMS="+fmt.Sprintf(`{"message":%q}`, tc.env),
+			)
 			if tc.env != "" {
 				cmd.Env = append(cmd.Env, "ANOTIFY_PARAM_MESSAGE="+tc.env)
 			}
@@ -556,19 +597,30 @@ func TestExampleBuiltinScriptProducesDeclaredOutput(t *testing.T) {
 				t.Fatalf("stdout = %q，期望包含 %q", got, tc.want)
 			}
 
-			raw, err := os.ReadFile(outFile)
+			raw, err := os.ReadFile(record)
 			if err != nil {
-				t.Fatalf("脚本没写出口文件（任务会被当成“没回报出口”而静默断链）：%v", err)
+				t.Fatalf("脚本没有调 emit（任务会「静默没有下游」，这正是要消灭的失败）: %v", err)
 			}
-			name := strings.TrimSpace(string(raw))
-			if name != "echoed" {
-				t.Fatalf("出口名 = %q，期望 echoed（写参数值就是最初那个 bug）", name)
+			argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+			if len(argv) == 0 || argv[0] != "emit" {
+				t.Fatalf("记录到的 argv = %q，期望 [emit ...]", argv)
 			}
-			if !slices.Contains(ExampleCapability.Outputs, name) {
-				t.Fatalf("出口 %q 不在声明的 outputs %v 里，任务会被判 failed", name, ExampleCapability.Outputs)
+			// 端口必须来自声明（出口是封闭集合，不变量 I2）。
+			port := flagValue(argv, "--port")
+			if !slices.Contains(ExampleCapability.Outputs, port) {
+				t.Fatalf("emit --port %q 不在声明的 outputs %v 里，任务会被节点当场拒（退出码 3）",
+					port, ExampleCapability.Outputs)
 			}
-			if len(raw) > 64 {
-				t.Fatalf("出口名 %d 字节，超过 runner 的上限 64", len(raw))
+			// data 必须是合法 JSON 对象（emit 的结构门槛）。
+			data := flagValue(argv, "--data")
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(data), &obj); err != nil {
+				t.Fatalf("emit --data %q 不是 JSON 对象：%v", data, err)
+			}
+			if tc.env != "" {
+				if got, _ := obj["message"].(string); got != tc.env {
+					t.Fatalf("emit.data.message = %v，期望参数原样透传 %q", obj["message"], tc.env)
+				}
 			}
 		})
 	}
@@ -750,4 +802,14 @@ func TestExampleBuiltinBackfillsExistingNamespace(t *testing.T) {
 	if n := countRows(t, db, "artifacts", "namespace_id = ? AND capability_id = ?", nsID, capID); n != 1 {
 		t.Fatalf("backfill 后示例能力的产物应有 1 行，实际 %d", n)
 	}
+}
+
+// flagValue 从 argv 里取 `--flag value` 形式的值（没有就返回空串）。
+func flagValue(argv []string, flag string) string {
+	for i, arg := range argv {
+		if arg == flag && i+1 < len(argv) {
+			return argv[i+1]
+		}
+	}
+	return ""
 }

@@ -111,11 +111,15 @@ func (f *fakeStore) addEdge(nsID, from, port, to string) {
 // addEdgeLiterals 加一条带字面量覆盖的能力边（P0-c）。
 //
 // literals 传 "" 等于没有覆盖（与真 store 的 e.Literals 缺省同口径）。
+//
+// 参数仍接受**能力 id**（测试写起来短），内部按真 store 的口径归一：
+// 左端 → **名字**（P2.2：查出口表按名字），右端 → 钉死引用 `name@version`
+// （= 真 store 输入兼容层把 id 翻出来的形状）。
 func (f *fakeStore) addEdgeLiterals(nsID, from, port, to, literals string) {
-	key := nsID + "|" + from + "|" + port
+	key := nsID + "|" + f.nameKey(from) + "|" + port
 	f.edges[key] = append(f.edges[key], store.LinkTarget{
-		CapabilityID: to,
-		Literals:     json.RawMessage(literals),
+		ToRef:    f.refOf(to),
+		Literals: json.RawMessage(literals),
 	})
 }
 
@@ -133,10 +137,29 @@ func (f *fakeStore) addEntryEdge(nsID, source, port, to, mapping string) {
 func (f *fakeStore) addEntryEdgeLiterals(nsID, source, port, to, mapping, literals string) {
 	key := nsID + "|src|" + source + "|" + port
 	f.edges[key] = append(f.edges[key], store.LinkTarget{
-		CapabilityID: to,
-		Mapping:      json.RawMessage(mapping),
-		Literals:     json.RawMessage(literals),
+		ToRef:    f.refOf(to),
+		Mapping:  json.RawMessage(mapping),
+		Literals: json.RawMessage(literals),
 	})
+}
+
+// refOf 把「能力 id 或引用」归一成**钉死引用**（`name@version`）。
+//
+// 与真 store.CreateEdge 的输入兼容路径同口径：测试照旧可以用 id 写夹具，
+// 但边里存下来的必须是引用——那是 P2.2 的唯一存储形状。
+func (f *fakeStore) refOf(idOrRef string) string {
+	if c := f.caps[idOrRef]; c != nil {
+		return store.FormatRef(c.Name, c.Version)
+	}
+	return idOrRef
+}
+
+// nameKey 把「能力 id 或名字」归一成**名字**：P2.2 之后出口表按名字查左端。
+func (f *fakeStore) nameKey(idOrName string) string {
+	if c := f.caps[idOrName]; c != nil {
+		return c.Name
+	}
+	return idOrName
 }
 
 // capKey 是 fake 里「命名空间 + 能力」的复合键。
@@ -203,14 +226,41 @@ func (f *fakeStore) EdgesFrom(ctx context.Context, namespaceID string, fromIsSou
 	}
 	for _, port := range ports {
 		for _, t := range f.edges[prefix+fromKey+"|"+port] {
-			if seen[t.CapabilityID] {
+			if seen[t.ToRef] {
 				continue
 			}
-			seen[t.CapabilityID] = true
+			seen[t.ToRef] = true
 			out = append(out, t)
 		}
 	}
 	return out, nil
+}
+
+// ResolveRef 与真 store 同口径（P2.2）：`name` → latest，`name@version` → 那一版。
+//
+// 派发的 plan 只认这一个入口，所以 mock 必须实现同一套语义，
+// 否则「升级后 name 型 link 解析到新版」这类行为在测试里根本测不出来。
+func (f *fakeStore) ResolveRef(ctx context.Context, namespaceID, ref string) (*store.CapabilityVersion, error) {
+	name, version, pinned := store.SplitRef(ref)
+	var latest *store.CapabilityVersion
+	for _, c := range f.caps {
+		if c.NamespaceID != namespaceID || c.Name != name {
+			continue
+		}
+		if pinned {
+			if c.Version == version {
+				return c, nil
+			}
+			continue
+		}
+		if latest == nil || c.Version > latest.Version {
+			latest = c
+		}
+	}
+	if latest != nil {
+		return latest, nil
+	}
+	return nil, store.ErrNotFound
 }
 
 func (f *fakeStore) GetCapabilityByID(ctx context.Context, namespaceID, id string) (*store.CapabilityVersion, error) {
@@ -771,17 +821,29 @@ func TestDispatchEntryEdgeStaysInNamespace(t *testing.T) {
 		t.Fatalf("task node_id = %v, want nd_a（③ 只能在本命名空间里找）", task.NodeID)
 	}
 
-	// 目标是别的命名空间的能力 → 报错，不建任何行（GetCapabilityByID 按 namespace 查不到）
-	f.addEntryEdge(nsA, "github", "*", fixB.ID, "")
-	_, err = d.Dispatch(ctx, DispatchInput{
+	// 目标是别的命名空间的能力。
+	//
+	// P2.2 之后 link 的两端是**引用**，而引用只在**本命名空间**里解析（I11）：
+	// 保存时 CreateEdge 就按 CrossNamespaceError 拒掉；派发侧看到的是
+	// 「这条引用在我这儿解析不到」→ 只剪这一条边（不建任何行，也不会串数据）。
+	//
+	// 夹具用另一个**名字**（同命名空间里不可能有两个同名的同版本能力，
+	// 而同名会让假 store 的两条边在引用层合并成一条，那就不像真库了）。
+	fixB2 := f.addCap(nsB, "fixb", 1, nil, `{}`)
+	f.addNode("nd_b2", fixB2.ID, 2)
+	f.addEntryEdge(nsA, "github-b", "*", fixB2.ID, "")
+	out2, err := d.Dispatch(ctx, DispatchInput{
 		NamespaceID: nsA, TraceID: "trace_src_bad",
-		FromIsSource: true, EntryFromKey: "github", EntryFromPort: "push",
+		FromIsSource: true, EntryFromKey: "github-b", EntryFromPort: "push",
 	})
-	if err == nil {
-		t.Fatal("源触发的目标指向了别的命名空间的能力，却派发成功了（会串数据）")
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out2.Tasks) != 0 {
+		t.Fatalf("源触发的目标指向了别的命名空间的能力，却建了 %d 个任务（会串数据）", len(out2.Tasks))
 	}
 	if len(f.createdTasks) != 1 {
-		t.Fatalf("createdTasks = %d, want 1（失败那次不许建行）", len(f.createdTasks))
+		t.Fatalf("createdTasks = %d, want 1（剪掉那条不许建行）", len(f.createdTasks))
 	}
 }
 
@@ -926,7 +988,8 @@ func TestDispatchPathIncludedInChildTask(t *testing.T) {
 	out, err := d.Dispatch(context.Background(), DispatchInput{
 		NamespaceID: testNS, TraceID: "t", ParentTaskID: "tsk_parent",
 		FromCap: review.ID, Out: "fix",
-		Path: []string{review.ID},
+		// P2.2：path 存**能力名**（同一条链上重复出现同一个名字才是环）。
+		Path: []string{review.Name},
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -935,8 +998,8 @@ func TestDispatchPathIncludedInChildTask(t *testing.T) {
 		t.Fatalf("want 1 task, got %d", len(out.Tasks))
 	}
 	task := out.Tasks[0]
-	if len(task.Path) != 2 || task.Path[0] != review.ID || task.Path[1] != target.ID {
-		t.Fatalf("path = %v, want [%s %s]", task.Path, review.ID, target.ID)
+	if len(task.Path) != 2 || task.Path[0] != review.Name || task.Path[1] != target.Name {
+		t.Fatalf("path = %v, want [%s %s]", task.Path, review.Name, target.Name)
 	}
 	if task.ParentTaskID == nil || *task.ParentTaskID != "tsk_parent" {
 		t.Fatalf("parent_task_id = %v", task.ParentTaskID)
@@ -1415,7 +1478,7 @@ func TestDispatchRecursiveDoesNotResolve(t *testing.T) {
 		NamespaceID: testNS, TraceID: "t_recursive", FromCap: review.ID, Out: "fix",
 		Params:  map[string]any{"n": "{{n}}"},
 		Payload: map[string]any{"n": float64(1)}, // 递归路径不该看它
-		Path:    []string{review.ID},
+		Path:    []string{review.Name},
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)

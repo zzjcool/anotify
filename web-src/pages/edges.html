@@ -21,6 +21,22 @@
         color: var(--text);
         white-space: nowrap;
       }
+      /* 引用**解析不到**（指向的能力已被删）：必须看起来就不对劲，
+         否则一个走不通的出口和一条能跑的出口长得一模一样。 */
+      .edge-cap-unresolved {
+        color: var(--warn);
+        text-decoration: line-through;
+      }
+      /* 「当前 → review@2」：引用是身份，解析结果是「现在实际走哪一版」。
+         裸名字引用（跟随 latest）没有这句就没人知道它走哪一版，所以它不能只放 title。 */
+      .edge-resolved {
+        font-size: 0.68rem;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .edge-resolved-missing {
+        color: var(--warn);
+      }
       /* 入口边的左端是"来源"，不是能力 —— 用不同颜色提示这个区别 */
       .edge-cap-src {
         color: var(--accent);
@@ -301,6 +317,90 @@
         return dn ? raw + "（显示名：" + dn + "）" : raw;
       }
 
+      // ---------- 引用（P2.2）----------
+      //
+      // 边的两端是**引用**：`review`（跟随 latest）/ `review@2`（钉死那一版）。
+      // 库里不存能力 id —— 存了能力一升级，那条边还指着旧 id，升级永远不生效。
+      // 所以界面这里分两件事：
+      //   · 显示的是**引用**（用户写进去的那个字符串，身份信息）
+      //   · 「当前解析到哪一版」用后端算好的 fromCapabilityId / toCapabilityId
+      //     （前端不重算 name→latest：那是第二份解析语义，迟早跟派发漂开）
+      function edgeFromRef(e) {
+        return e.fromRef || "";
+      }
+      function edgeToRef(e) {
+        return e.toRef || "";
+      }
+      // 入口边的左端是**来源名**，没有「哪一版」→ 后端回的 fromCapabilityId 是空串
+      function edgeFromCapID(e) {
+        return e.fromIsSource ? "" : e.fromCapabilityId || "";
+      }
+      function edgeToCapID(e) {
+        return e.toCapabilityId || "";
+      }
+
+      // capRef 是能力定义的引用写法（写边时用它，而不是 id）
+      function capRef(c) {
+        return c ? c.name + "@" + c.version : "";
+      }
+
+      // edgeGroupKey 是分组/筛选用的「左端身份」。
+      //
+      // 能力边用**解析后的 id**（这样和能力下拉的 value 直接对得上）；
+      // 解析不到（引用指向的能力已删）时退回引用、加 "ref:" 前缀 —— 不能
+      // 跟任何能力 id 撞车，否则一条坏边会静默并进别的分组里。
+      function edgeGroupKey(e) {
+        if (e.fromIsSource) return "src:" + edgeFromRef(e);
+        const id = edgeFromCapID(e);
+        return id || "ref:" + edgeFromRef(e);
+      }
+
+      // edgeHay 是一条边的可搜文本：引用、解析到的 name@version、显示名、出口名。
+      //
+      // 为什么不只搜显示的字符串：引用 `review` 和解析结果 `review@2` 都可能是
+      // 用户脑子里的关键词，而显示名（“分析 PR”）才是他们记的那个词。
+      function edgeHay(e) {
+        const fromCap = capByID(edgeFromCapID(e));
+        const toCap = capByID(edgeToCapID(e));
+        return [
+          edgeFromRef(e),
+          edgeToRef(e),
+          fromCap ? rawCapName(fromCap.id) : "",
+          toCap ? rawCapName(toCap.id) : "",
+          String(e.fromPort || ""),
+        ]
+          .join(" ")
+          .toLowerCase();
+      }
+
+      // resolvedHint 是「引用此刻解析到哪一版」的提示文案。
+      //
+      // 解析不到（能力已删/名字改过）必须说清楚：一个看起来正常、实际走不通的
+      // 引用，比一个报错的引用危险得多。
+      function resolvedHint(cap) {
+        if (!cap) return t("edges.ref_unresolved", "解析不到：这个引用指向的能力已不存在");
+        const dn = (cap.displayName || "").trim();
+        return (
+          t("edges.current_ref", "当前 → {ref}").replace("{ref}", capRef(cap)) +
+          (dn ? "（" + dn + "）" : "")
+        );
+      }
+
+      // appendResolvedHint 在引用后面加一句「当前 → name@version」。
+      //
+      // 钉死引用（`review@2`）的版本已经写在引用里，再显示一遍只是噪音；
+      // 但裸名字（`review`）必须显示 —— 光看字面没人知道它现在走哪一版。
+      function appendResolvedHint(host, ref, cap) {
+        if (!cap) {
+          host.appendChild(el("span", "edge-resolved edge-resolved-missing",
+            t("edges.unresolved_short", "解析不到")));
+          return;
+        }
+        if (ref === capRef(cap)) return;
+        host.appendChild(el("span", "edge-resolved",
+          t("edges.current_ref", "当前 → {ref}").replace("{ref}", capRef(cap))));
+      }
+
       // literalKeys 取一条边的「常量覆盖」键名（P0-c）。
       //
       // 非对象 / null / 数组一律当"没有覆盖"：这里只回答"列表行要不要标个徽章"，
@@ -342,7 +442,8 @@
       function refreshSourceNames() {
         const seen = new Set(["github", "cron", "http", "manual"]);
         for (const e of EDGES) {
-          if (e.fromIsSource && e.fromCapability) seen.add(e.fromCapability);
+          // 入口边的左端是**引用=来源名**（#110），右端不参与
+          if (e.fromIsSource && edgeFromRef(e)) seen.add(edgeFromRef(e));
         }
         SOURCE_NAMES = [...seen].sort();
       }
@@ -373,37 +474,24 @@
         }
 
         // 按「左端」分组。左端可能是能力，也可能是来源（入口边，#110），
-        // 两者的 key 空间不同（能力用 id，来源用名字），所以加前缀区分。
-        const groupKey = (e) => (e.fromIsSource ? "src:" + e.fromCapability : e.fromCapability);
+        // 两者的 key 空间不同（能力用**解析后的 id**，来源用名字），所以加前缀区分。
         const groups = new Map();
         for (const e of EDGES) {
-          const k = groupKey(e);
+          const k = edgeGroupKey(e);
           if (!groups.has(k)) groups.set(k, []);
           groups.get(k).push(e);
         }
 
         // 过滤
         let shown = 0;
-        const visibleGroups = [...groups.entries()].filter(([fromId, evs]) => {
-          if (capFilter && fromId !== capFilter && fromId !== "src:" + capFilter) return false;
+        const visibleGroups = [...groups.entries()].filter(([fromKey, evs]) => {
+          if (capFilter && fromKey !== capFilter && fromKey !== "src:" + capFilter) return false;
           if (!q) return true;
-          return evs.some(
-            (e) =>
-              (e.fromIsSource ? e.fromCapability : capName(e.fromCapability)).toLowerCase().includes(q) ||
-              capName(e.toCapability).toLowerCase().includes(q) ||
-              String(e.fromPort).toLowerCase().includes(q),
-          );
+          return evs.some((e) => edgeHay(e).includes(q));
         });
 
         for (const [fromId, evs] of visibleGroups) {
-          const filtered = !q
-            ? evs
-            : evs.filter(
-                (e) =>
-                  (e.fromIsSource ? e.fromCapability : capName(e.fromCapability)).toLowerCase().includes(q) ||
-                  capName(e.toCapability).toLowerCase().includes(q) ||
-                  String(e.fromPort).toLowerCase().includes(q),
-              );
+          const filtered = !q ? evs : evs.filter((e) => edgeHay(e).includes(q));
           shown += filtered.length;
 
           const group = el("div", "edge-group");
@@ -413,14 +501,26 @@
           const head = el("div", "edge-group-head");
           const title = el("div", "flex flex-wrap items-center gap-2 min-w-0");
           const isSrcGroup = fromId.startsWith("src:");
+          const isUnresolvedGroup = fromId.startsWith("ref:");
           const groupLabel = isSrcGroup
             ? t("edges.src_prefix", "来源") + ": " + fromId.slice(4)
-            : capName(fromId);
+            : isUnresolvedGroup
+              ? fromId.slice(4)
+              : capName(fromId);
           const groupEl = el(
             "span",
-            isSrcGroup ? "card-title edge-cap-src" : "card-title",
+            isSrcGroup
+              ? "card-title edge-cap-src"
+              : isUnresolvedGroup
+                ? "card-title edge-cap-unresolved"
+                : "card-title",
             groupLabel,
           );
+          groupEl.title = isUnresolvedGroup
+            ? t("edges.ref_unresolved", "解析不到：这个引用指向的能力已不存在")
+            : isSrcGroup
+              ? fromId.slice(4)
+              : rawCapName(fromId);
           title.appendChild(groupEl);
           const ports = new Set(filtered.map((e) => e.fromPort));
           title.appendChild(
@@ -455,18 +555,23 @@
             const flow = el("div", "edge-flow");
             // 左端有两种：来源（入口边）或能力。
             // 来源显示成「来源: github」，避免界面出现一个并不存在的"能力"。
+            // 能力显示的是**引用**（review / review@2），后面跟它当前解析到哪一版。
+            const fromCap = capByID(edgeFromCapID(e));
             const fromCapEl = e.fromIsSource
-              ? el("span", "edge-cap edge-cap-src", t("edges.src_prefix", "来源") + ": " + e.fromCapability)
-              : el("span", "edge-cap", capName(e.fromCapability));
-            fromCapEl.title = e.fromIsSource
-              ? e.fromCapability
-              : rawCapName(e.fromCapability);
+              ? el("span", "edge-cap edge-cap-src", t("edges.src_prefix", "来源") + ": " + edgeFromRef(e))
+              : el(
+                  "span",
+                  "edge-cap" + (fromCap ? "" : " edge-cap-unresolved"),
+                  edgeFromRef(e),
+                );
+            fromCapEl.title = e.fromIsSource ? edgeFromRef(e) : resolvedHint(fromCap);
             flow.appendChild(fromCapEl);
+            if (!e.fromIsSource) appendResolvedHint(flow, edgeFromRef(e), fromCap);
             flow.appendChild(el("span", "edge-arrow", "—"));
             // 出口名保持**原样**：它是路由键，用户建边时要一字不差地填它，
             // 改成别的显示名会让人对不上（出口名 == 下游能力名，这是模型
-            // 的核心约定）。可读性由右边的能力显示名提供 ——
-            // 读作「—needs-fix→ 应用修复」，出口的含义自然就出来了。
+            // 的核心约定）。右边是**引用**（`review` / `review@2`），
+            // 读作「—needs-fix→ review@2」；显示名在悬停提示里。
             flow.appendChild(el("span", "edge-port", e.fromPort));
             // 扇出角标：同一个出口 >1 条边时标出来。
             // 文案只说事实（这个出口连了几个下游），不加术语。
@@ -477,9 +582,15 @@
               );
             }
             flow.appendChild(el("span", "edge-arrow", "→"));
-            const toCapEl = el("span", "edge-cap", capName(e.toCapability));
-            toCapEl.title = rawCapName(e.toCapability);
+            const toCap = capByID(edgeToCapID(e));
+            const toCapEl = el(
+              "span",
+              "edge-cap" + (toCap ? "" : " edge-cap-unresolved"),
+              edgeToRef(e),
+            );
+            toCapEl.title = resolvedHint(toCap);
             flow.appendChild(toCapEl);
+            appendResolvedHint(flow, edgeToRef(e), toCap);
             // 常量覆盖徽章：这些常量不在 data 里、也不在能力定义里，**只挂在这条边上**。
             // 不标出来，下游"凭空"多出来的字段在界面上就完全无迹可寻。
             const litKeys = literalKeys(e.literals);
@@ -688,9 +799,11 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               fromIsSource: isSource,
-              fromCapability: fromKey,
+              // 两端写的是**引用**（`name@version`），不是能力 id：
+              // 边里存 id 的话，能力发新版之后这条边还指着旧版本（P2.2）。
+              fromRef: isSource ? fromKey : capRef(capByID(fromKey)),
               fromPort: port,
-              toCapability: toId,
+              toRef: capRef(capByID(toId)),
               literals,
             }),
           });
@@ -709,9 +822,9 @@
         try {
           const qs =
             "?fromIsSource=" + (e.fromIsSource ? "1" : "0") +
-            "&fromCapability=" + encodeURIComponent(e.fromCapability) +
+            "&fromRef=" + encodeURIComponent(edgeFromRef(e)) +
             "&fromPort=" + encodeURIComponent(e.fromPort) +
-            "&toCapability=" + encodeURIComponent(e.toCapability);
+            "&toRef=" + encodeURIComponent(edgeToRef(e));
           await Anotify.api(API + "/edges" + qs, { method: "DELETE", demo: null });
           toast(t("edges.removed", "边已删除"));
           await loadAll();

@@ -372,15 +372,17 @@ func assertLegacyRowValues(t *testing.T, db *DB) {
 		t.Fatalf("tasks.capability_id = cap_fixture_1 的行数 = %d, want 20", n)
 	}
 
-	// edges：主键在迁移 14 里换成了 namespace_id 前缀，行内容不变。
-	var fromKey, fromPort, toCapability string
+	// edges：主键在迁移 14 里换成了 namespace_id 前缀；两端在迁移 27（P2.2）里
+	// 从 id 重写成了 `name@version`（钉死迁移前的行为）——行还在、语义没变，
+	// 变的只是「指向哪一版」的记录方式。
+	var fromRef, fromPort, toRef string
 	var fromIsSource int
-	if err := db.QueryRow(`SELECT from_is_source, from_key, from_port, to_capability
-	                         FROM edges`).Scan(&fromIsSource, &fromKey, &fromPort, &toCapability); err != nil {
+	if err := db.QueryRow(`SELECT from_is_source, from_ref, from_port, to_ref
+	                         FROM edges`).Scan(&fromIsSource, &fromRef, &fromPort, &toRef); err != nil {
 		t.Fatalf("读 edges: %v", err)
 	}
-	if fromIsSource != 0 || fromKey != "cap_fixture_1" || fromPort != "fix" || toCapability != "cap_fixture_2" {
-		t.Fatalf("edges 内容变了: (%d,%q,%q,%q)", fromIsSource, fromKey, fromPort, toCapability)
+	if fromIsSource != 0 || fromRef != "review@1" || fromPort != "fix" || toRef != "notify.phone@1" {
+		t.Fatalf("edges 内容变了: (%d,%q,%q,%q)", fromIsSource, fromRef, fromPort, toRef)
 	}
 
 	// capability_versions：迁移 14 重建后 outputs / params_schema 的 JSON 文本必须原样。

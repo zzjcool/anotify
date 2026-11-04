@@ -34,7 +34,7 @@ func TestResultFreesSlotNudgesDispatcher(t *testing.T) {
 		[]InstanceDecl{{Slot: 0, Concurrency: 1}})
 
 	task := f.makeAssignedTask(t, "trace_219_nudge")
-	sentResult(t, conn, task.ID, "fix")
+	sentResult(t, conn, task.ID, store.TaskSucceeded, "ok")
 	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
 
 	select {
@@ -76,7 +76,7 @@ func TestRejectedResultDoesNotNudge(t *testing.T) {
 
 	// 别人的任务（node_id 不是本节点）→ reportTransitionError 分支，终态不落库
 	task := f.makeAssignedTask(t, "trace_219_rejected")
-	sentResult(t, conn, task.ID+"_nope", "fix") // 未知任务 → 直接 error 帧
+	sentResult(t, conn, task.ID+"_nope", store.TaskSucceeded, "ok") // 未知任务 → 直接 error 帧
 	// 读到那帧 error，确保服务端这条分支已经走完（readUntil 自带超时）
 	readUntil(t, conn, NodeFrameError)
 

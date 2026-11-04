@@ -146,19 +146,32 @@ var ExampleCapability = BuiltinCapability{
 				Files: map[string]string{
 					"run.sh": `#!/bin/bash
 # 示例能力：把参数原样打印出来，然后从固定出口 echoed 走下一跳。
-# 这不是玩具——它同时演示了三件事：参数怎么进脚本（ANOTIFY_PARAM_*）、
-# 输出怎么回中枢（stdout）、出口怎么声明（$ANOTIFY_OUT_FILE）。
+# 这不是玩具——它同时演示了三件事：参数怎么进脚本（ANOTIFY_PARAM_* / ANOTIFY_PARAMS）、
+# 输出怎么回中枢（stdout）、产出怎么走下一跳（anotify-agent emit）。
 #
-# $ANOTIFY_OUT_FILE 里写的是**出口名**，不是结果。出口是 spec.outputs[] 的封闭
-# 集合（不变量 I2）：写一个没声明过的名字，整次执行会被判 failed，而不是
-# “这个任务的结果叫 hello”。所以这里写死 echoed，消息本身走 stdout。
+# 产出**只有一条通道**：emit（P1.5 起 .anotify-out / $ANOTIFY_OUT_FILE 已退役）。
+# ANOTIFY_EMIT_SOCK / ANOTIFY_TASK_ID / ANOTIFY_TASK_TOKEN 由 agent 注入；
+# ANOTIFY_AGENT_BIN 是 agent 自己的路径（取不到就回退到 PATH 上的 anotify-agent）。
+#
+# 端口是**封闭集合**（不变量 I2）：emit 一个没声明过的端口会被 node 当场拒
+# （CLI 退出码 3），而不是“这个任务的结果叫 hello”。所以这里写死 echoed。
 # （这里曾把 "$msg" 写进出口文件，于是任何 message 都跑不过——见
-#  TestExampleBuiltinScriptProducesDeclaredOutput。）
+#  TestExampleBuiltinScriptEmitsDeclaredPort。）
 set -euo pipefail
 
 msg="${ANOTIFY_PARAM_MESSAGE:-hello from Anotify}"
 echo "$msg"
-printf '%s\n' echoed > "$ANOTIFY_OUT_FILE"
+
+# 没有 emit socket = 本地 standalone 跑（没有中枢，emit 无处可去）：跳过而不是
+# 把任务跑成失败。这是 emit-protocol §1 「本地模式无中枢」那条分支的用法示例。
+if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then
+  agent_bin="${ANOTIFY_AGENT_BIN:-anotify-agent}"
+  # 把**入参原样**交给下游（ANOTIFY_PARAMS 由 agent 注入，始终是合法 JSON 对象），
+  # 免得在零依赖 bash 里手拼 JSON（那才是转义 bug 的温床）。
+  # 注意别写成 ${ANOTIFY_PARAMS:-{}}：bash 会在第一个未配对的 } 处截断展开，
+  # 结果是多出一个字面量 } → 非法 JSON → emit 退出码 2。
+  "$agent_bin" emit --port echoed --data "$ANOTIFY_PARAMS"
+fi
 `,
 				},
 				TimeoutSec: 30,

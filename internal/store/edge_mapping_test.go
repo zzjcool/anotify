@@ -21,8 +21,8 @@ func TestEntryEdgeMappingRoundTrip(t *testing.T) {
 	// 故意写成「键乱序 + 带空格」：任何重排/重新 marshal 都会让它变样。
 	raw := `{"to":"{{pull_request.user.login}}", "note": "{{pull_request.title}}"}`
 	e := &Edge{
-		NamespaceID: nsID, FromIsSource: true, FromCapability: "github", FromPort: "*",
-		ToCapability: down.ID, Mapping: json.RawMessage(raw),
+		NamespaceID: nsID, FromIsSource: true, FromRef: "github", FromPort: "*",
+		ToRef: down.ID, Mapping: json.RawMessage(raw),
 	}
 	if err := db.CreateEdge(ctx, e); err != nil {
 		t.Fatalf("create entry edge: %v", err)
@@ -52,8 +52,8 @@ func TestEntryEdgeMappingRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("edges from: %v", err)
 	}
-	if len(targets) != 1 || targets[0].CapabilityID != down.ID {
-		t.Fatalf("入口边目标 = %+v, want 一条指向 %s", targets, down.ID)
+	if len(targets) != 1 || targets[0].ToRef != capRef(down) {
+		t.Fatalf("入口边目标 = %+v, want 一条指向 %s", targets, capRef(down))
 	}
 	if string(targets[0].Mapping) != raw {
 		t.Fatalf("EdgesFrom 的 mapping = %q, want %q", targets[0].Mapping, raw)
@@ -68,7 +68,7 @@ func TestCapabilityEdgeMappingRejected(t *testing.T) {
 	db, nsID, up, down := literalsFixture(t)
 	ctx := context.Background()
 	err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+		NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 		Mapping: json.RawMessage(`{"to":"{{x}}"}`),
 	})
 	if !errors.Is(err, ErrEdgeRejected) {
@@ -88,8 +88,8 @@ func TestEdgeMappingUndeclaredKeyRejected(t *testing.T) {
 	db, nsID, _, down := literalsFixture(t)
 	ctx := context.Background()
 	err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromIsSource: true, FromCapability: "github", FromPort: "*",
-		ToCapability: down.ID, Mapping: json.RawMessage(`{"titel":"{{pull_request.title}}"}`),
+		NamespaceID: nsID, FromIsSource: true, FromRef: "github", FromPort: "*",
+		ToRef: down.ID, Mapping: json.RawMessage(`{"titel":"{{pull_request.title}}"}`),
 	})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("err = %v, want ErrEdgeRejected", err)
@@ -119,9 +119,9 @@ func TestEdgeMappingNullNormalizedToEmpty(t *testing.T) {
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			e := &Edge{
-				NamespaceID: nsID, FromIsSource: true, FromCapability: "github",
-				FromPort:     "pull_request." + strings.Repeat("x", i+1), // 端口各不相同（主键）
-				ToCapability: down.ID, Mapping: json.RawMessage(c.raw),
+				NamespaceID: nsID, FromIsSource: true, FromRef: "github",
+				FromPort: "pull_request." + strings.Repeat("x", i+1), // 端口各不相同（主键）
+				ToRef:    down.ID, Mapping: json.RawMessage(c.raw),
 			}
 			if err := db.CreateEdge(ctx, e); err != nil {
 				t.Fatalf("create edge: %v", err)
@@ -130,8 +130,8 @@ func TestEdgeMappingNullNormalizedToEmpty(t *testing.T) {
 				t.Fatalf("mapping = %q, want %q", e.Mapping, EdgeMappingEmpty)
 			}
 			var stored string
-			if err := db.QueryRow(`SELECT mapping FROM edges WHERE namespace_id = ? AND to_capability = ? AND from_port = ?`,
-				nsID, down.ID, e.FromPort).Scan(&stored); err != nil {
+			if err := db.QueryRow(`SELECT mapping FROM edges WHERE namespace_id = ? AND to_ref = ? AND from_port = ?`,
+				nsID, capRef(down), e.FromPort).Scan(&stored); err != nil {
 				t.Fatalf("read stored mapping: %v", err)
 			}
 			if stored != EdgeMappingEmpty {
@@ -171,8 +171,8 @@ func TestEdgeMappingShapeRejected(t *testing.T) {
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			err := db.CreateEdge(ctx, &Edge{
-				NamespaceID: nsID, FromIsSource: true, FromCapability: "github",
-				FromPort: "case-" + strings.Repeat("x", i+1), ToCapability: down.ID,
+				NamespaceID: nsID, FromIsSource: true, FromRef: "github",
+				FromPort: "case-" + strings.Repeat("x", i+1), ToRef: down.ID,
 				Mapping: json.RawMessage(c.mapping),
 			})
 			if len(c.wantErr) == 0 {
@@ -209,8 +209,8 @@ func TestEntryEdgeWildcardPortLookup(t *testing.T) {
 	create := func(port string, to *CapabilityVersion, mapping string) {
 		t.Helper()
 		if err := db.CreateEdge(ctx, &Edge{
-			NamespaceID: nsID, FromIsSource: true, FromCapability: "github",
-			FromPort: port, ToCapability: to.ID, Mapping: json.RawMessage(mapping),
+			NamespaceID: nsID, FromIsSource: true, FromRef: "github",
+			FromPort: port, ToRef: to.ID, Mapping: json.RawMessage(mapping),
 		}); err != nil {
 			t.Fatalf("create entry edge %s→%s: %v", port, to.Name, err)
 		}
@@ -227,14 +227,14 @@ func TestEntryEdgeWildcardPortLookup(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("目标数 = %d, want 2（capA 去重 + capB 从 '*' 来）: %+v", len(got), got)
 	}
-	byID := map[string]LinkTarget{}
+	byRef := map[string]LinkTarget{}
 	for _, tg := range got {
-		byID[tg.CapabilityID] = tg
+		byRef[tg.ToRef] = tg
 	}
-	if string(byID[capA.ID].Mapping) != `{"title":"{{pr.title}}"}` {
-		t.Errorf("精确端口的边应该赢: %q", byID[capA.ID].Mapping)
+	if string(byRef[capRef(capA)].Mapping) != `{"title":"{{pr.title}}"}` {
+		t.Errorf("精确端口的边应该赢: %q", byRef[capRef(capA)].Mapping)
 	}
-	if _, ok := byID[capB.ID]; !ok {
+	if _, ok := byRef[capRef(capB)]; !ok {
 		t.Error("'*' 边没参与匹配（源收到别的事件类型时就派不出去了）")
 	}
 
@@ -247,13 +247,13 @@ func TestEntryEdgeWildcardPortLookup(t *testing.T) {
 		t.Fatalf("目标数 = %d, want 2（都从 '*' 来）", len(got))
 	}
 	for _, tg := range got {
-		if tg.CapabilityID == capA.ID && !strings.Contains(string(tg.Mapping), "FROM WILDCARD") {
+		if tg.ToRef == capRef(capA) && !strings.Contains(string(tg.Mapping), "FROM WILDCARD") {
 			t.Errorf("没命中精确端口时应该用 '*' 那条: %q", tg.Mapping)
 		}
 	}
 
 	// 能力边不放宽：from_port='*' 不是能力的出口名，查不到任何边。
-	if n, err := db.EdgesFrom(ctx, nsID, false, capA.ID, "*"); err != nil || len(n) != 0 {
+	if n, err := db.EdgesFrom(ctx, nsID, false, capA.Name, "*"); err != nil || len(n) != 0 {
 		t.Fatalf("能力边不该匹配 '*': %v, %v", n, err)
 	}
 }
@@ -283,14 +283,14 @@ func entryEdgeFixture(t *testing.T) (db *DB, nsID string, capA, capB *Capability
 // 必须落一个新版本；反过来，语义相同（键序/空白不同）或空模板不得改变既有 hash
 // ——否则只会在 graph_versions 里堆垃圾（契约 §10.2 的「按需落版」失效）。
 func TestGraphHashIncludesMapping(t *testing.T) {
-	base := []*Edge{{FromIsSource: true, FromCapability: "github", FromPort: "*", ToCapability: "b"}}
+	base := []*Edge{{FromIsSource: true, FromRef: "github", FromPort: "*", ToRef: "b"}}
 
 	none, err := graphContentHash(base)
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
 
-	withMapping := []*Edge{{FromIsSource: true, FromCapability: "github", FromPort: "*", ToCapability: "b",
+	withMapping := []*Edge{{FromIsSource: true, FromRef: "github", FromPort: "*", ToRef: "b",
 		Mapping: json.RawMessage(`{"title":"{{pr.title}}"}`)}}
 	mapped, err := graphContentHash(withMapping)
 	if err != nil {
@@ -301,7 +301,7 @@ func TestGraphHashIncludesMapping(t *testing.T) {
 	}
 
 	// 换一份模板（同一个键，不同的取值来源）→ 依然是新版本
-	other := []*Edge{{FromIsSource: true, FromCapability: "github", FromPort: "*", ToCapability: "b",
+	other := []*Edge{{FromIsSource: true, FromRef: "github", FromPort: "*", ToRef: "b",
 		Mapping: json.RawMessage(`{"title":"{{head_commit.message}}"}`)}}
 	otherHash, err := graphContentHash(other)
 	if err != nil {
@@ -312,9 +312,9 @@ func TestGraphHashIncludesMapping(t *testing.T) {
 	}
 
 	// 键序/空白不同、语义相同 → 同一 hash
-	same1 := []*Edge{{FromIsSource: true, FromCapability: "github", FromPort: "*", ToCapability: "b",
+	same1 := []*Edge{{FromIsSource: true, FromRef: "github", FromPort: "*", ToRef: "b",
 		Mapping: json.RawMessage(`{ "b": "{{y}}", "a": "{{x}}" }`)}}
-	same2 := []*Edge{{FromIsSource: true, FromCapability: "github", FromPort: "*", ToCapability: "b",
+	same2 := []*Edge{{FromIsSource: true, FromRef: "github", FromPort: "*", ToRef: "b",
 		Mapping: json.RawMessage(`{"a":"{{x}}","b":"{{y}}"}`)}}
 	h1, err := graphContentHash(same1)
 	if err != nil {
@@ -329,7 +329,7 @@ func TestGraphHashIncludesMapping(t *testing.T) {
 	}
 
 	// 空模板等价于没有模板（老数据补列后 DEFAULT '{}' 不该凭空改变图版本）
-	empty := []*Edge{{FromIsSource: true, FromCapability: "github", FromPort: "*", ToCapability: "b",
+	empty := []*Edge{{FromIsSource: true, FromRef: "github", FromPort: "*", ToRef: "b",
 		Mapping: json.RawMessage(`{}`)}}
 	he, err := graphContentHash(empty)
 	if err != nil {

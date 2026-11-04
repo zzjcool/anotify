@@ -1103,6 +1103,7 @@ events:
     no_root: No se encontró la tarea raíz (la traza puede estar incompleta).
     out_none: Sin reportar
     out_end: Fin alcanzado
+    out_emits: ver Emits abajo
   wf:
     waterfall: Cascada
     tree: Árbol
@@ -1526,6 +1527,10 @@ edges:
   literals_badge: literales ×{n}
   err_literals_json: Las sobrescrituras literales no son JSON válido
   err_literals_object: 'Las sobrescrituras literales deben ser un objeto JSON como {"to":"u_123"}'
+  # Referencias (P2.2): una arista guarda una referencia, no un id de capacidad
+  current_ref: 'ahora → {ref}'
+  ref_unresolved: 'No se puede resolver: la capacidad a la que apunta esta referencia ya no existe'
+  unresolved_short: sin resolver
 trace:
   legend_hot: "Línea más intensa · este camino se recorrió muchas veces (reintento / bucle)"
   legend_origin: "Origen · disparador (los eventos entran aquí)"

@@ -442,7 +442,7 @@ func TestGraphVersionOnDemand(t *testing.T) {
 		t.Fatalf("create down: %v", err)
 	}
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+		NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 	}); err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
@@ -465,7 +465,8 @@ func TestGraphVersionOnDemand(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("graph_versions has %d rows, want 1", n)
 	}
-	if !g1.GraphHasEdge(up.ID, "fix", down.ID) {
+	// 快照里存的是**引用**（P2.2），不是 id：否则能力发新版会让同一张图算出另一个 hash。
+	if !g1.GraphHasEdge(capRef(up), "fix", capRef(down)) {
 		t.Fatalf("snapshot missing the edge: %s", g1.Snapshot)
 	}
 }
@@ -484,7 +485,7 @@ func TestGraphVersionChangesWithEdges(t *testing.T) {
 			t.Fatalf("create cap: %v", err)
 		}
 	}
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down1.ID}); err != nil {
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down1.ID}); err != nil {
 		t.Fatalf("edge 1: %v", err)
 	}
 	g1, err := db.EnsureGraphVersion(ctx, nsID)
@@ -492,7 +493,7 @@ func TestGraphVersionChangesWithEdges(t *testing.T) {
 		t.Fatalf("ensure 1: %v", err)
 	}
 	// 加一条边 → 图变了
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromCapability: up.ID, FromPort: "clean", ToCapability: down2.ID}); err != nil {
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: up.ID, FromPort: "clean", ToRef: down2.ID}); err != nil {
 		t.Fatalf("edge 2: %v", err)
 	}
 	g2, err := db.EnsureGraphVersion(ctx, nsID)
@@ -555,7 +556,7 @@ func TestEdgeRejectsPortNotInOutputs(t *testing.T) {
 			t.Fatalf("create: %v", err)
 		}
 	}
-	err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromCapability: up.ID, FromPort: "not-an-output", ToCapability: down.ID})
+	err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: up.ID, FromPort: "not-an-output", ToRef: down.ID})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("edge with undefined port: err = %v, want ErrEdgeRejected", err)
 	}
@@ -599,26 +600,26 @@ func TestEdgeRejectsCrossNamespace(t *testing.T) {
 
 	// ① 右端在别的命名空间
 	err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsA, FromCapability: upA.ID, FromPort: "fix", ToCapability: foreign.ID,
+		NamespaceID: nsA, FromRef: upA.ID, FromPort: "fix", ToRef: foreign.ID,
 	})
 	assertCross("to_capability", err, nsA, nsB)
 
 	// ② 左端在别的命名空间（右端合法，所以不会先被右端拦下）
 	err = db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsA, FromCapability: upB.ID, FromPort: "fix", ToCapability: sinkA.ID,
+		NamespaceID: nsA, FromRef: upB.ID, FromPort: "fix", ToRef: sinkA.ID,
 	})
 	assertCross("from_capability", err, nsA, nsB)
 
 	// ③ 同类配置在 nsB 里完全合法：隔离不等于禁用（否则 staging 里就没法建图了）
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsB, FromCapability: upB.ID, FromPort: "fix", ToCapability: foreign.ID,
+		NamespaceID: nsB, FromRef: upB.ID, FromPort: "fix", ToRef: foreign.ID,
 	}); err != nil {
 		t.Fatalf("nsB 内部的合法边被拒: %v", err)
 	}
 
 	// ④ 能力 id 根本不存在 → ErrEdgeRejected（配置错误，不是隔离违反，两个错误不能互相串）
 	err = db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsA, FromCapability: "cap_does_not_exist", FromPort: "fix", ToCapability: sinkA.ID,
+		NamespaceID: nsA, FromRef: "cap_does_not_exist", FromPort: "fix", ToRef: sinkA.ID,
 	})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("missing capability: err = %v, want ErrEdgeRejected", err)
@@ -654,11 +655,11 @@ func TestEdgesFromLookup(t *testing.T) {
 	}
 	// 扇出：一个 (cap, port) 两条边
 	for _, to := range []*CapabilityVersion{d1, d2} {
-		if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: to.ID}); err != nil {
+		if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: to.ID}); err != nil {
 			t.Fatalf("create edge: %v", err)
 		}
 	}
-	got, err := db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+	got, err := db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom: %v", err)
 	}
@@ -667,7 +668,7 @@ func TestEdgesFromLookup(t *testing.T) {
 	}
 
 	// 不存在的出口 → 空列表（不是 nil）
-	none, err := db.EdgesFrom(ctx, nsID, false, up.ID, "clean")
+	none, err := db.EdgesFrom(ctx, nsID, false, up.Name, "clean")
 	if err != nil {
 		t.Fatalf("EdgesFrom missing port: %v", err)
 	}
@@ -679,10 +680,10 @@ func TestEdgesFromLookup(t *testing.T) {
 	}
 
 	// 幂等：重复建同一条边不报错、不重复
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: d1.ID}); err != nil {
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: d1.ID}); err != nil {
 		t.Fatalf("idempotent create edge: %v", err)
 	}
-	got, err = db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+	got, err = db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom after dup: %v", err)
 	}
@@ -697,12 +698,12 @@ func TestEdgesFromLookup(t *testing.T) {
 	if err := db.DeleteEdge(ctx, nsID, false, up.ID, "fix", d1.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete missing edge err = %v, want ErrNotFound", err)
 	}
-	got, err = db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+	got, err = db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom after delete: %v", err)
 	}
-	if len(got) != 1 || got[0].CapabilityID != d2.ID {
-		t.Fatalf("after delete got %v, want [%s]", got, d2.ID)
+	if len(got) != 1 || got[0].ToRef != capRef(d2) {
+		t.Fatalf("after delete got %v, want [%s]", got, capRef(d2))
 	}
 }
 

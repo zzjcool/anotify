@@ -117,8 +117,8 @@ func TestPruneReasons(t *testing.T) {
 
 		out, err := d.Dispatch(ctx, DispatchInput{
 			NamespaceID: testNS, TraceID: "t", FromCap: fix.ID, Out: "review",
-			// review 已经在路径里
-			Path: []string{review.ID, fix.ID},
+			// review 已经在路径里（P2.2：path 存**能力名**）
+			Path: []string{review.Name, fix.Name},
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -149,7 +149,8 @@ func TestPrunePathCycle(t *testing.T) {
 	// 这里模拟「根事件由 review 的 origin 出口触发」，所以 path 从空开始。
 	out1, err := d.Dispatch(ctx, DispatchInput{
 		NamespaceID: testNS, TraceID: "trace_cycle", FromCap: review.ID, Out: "fix",
-		Path: []string{review.ID},
+		// P2.2：path 存**能力名**（环的判据是「同一条链上重复出现同一个名字」）
+		Path: []string{review.Name},
 	})
 	if err != nil {
 		t.Fatalf("first round: %v", err)

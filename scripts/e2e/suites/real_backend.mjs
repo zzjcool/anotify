@@ -26,11 +26,12 @@
  *     写 node.yaml → 真起 `cmd/agent`（不是 mock，也不是文本正则）→ 节点变 `online`
  *     → 用控制台 API 建能力（带 run）并 `POST /v1/deployments` 推到这台机器 →
  *     断言两条部署都变 `applied` 且节点呈现的能力**完全由部署派生**（D4）→
- *     触发源 → A 写 `$ANOTIFY_OUT_FILE` 走出 `go` → 中枢建出**下一跳 B 的任务** →
- *     `GET /v1/tasks/{id}` 的 summary/out/chain 都对 → `anotify-agent run` 不连中枢
- *     也能跑同一份产物 → SIGTERM 退出码 0、节点回到 offline。
+ *     触发源 → A 的脚本调 `anotify-agent emit --port go` 走出 `go` → 中枢建出
+ *     **下一跳 B 的任务** → `GET /v1/tasks/{id}` 的 summary/chain 都对、A 的 emission
+ *     落在 `go` 上 → `anotify-agent run` 不连中枢也能跑同一份产物 → SIGTERM 退出码 0、
+ *     节点回到 offline。
  *     任何一环断了都是红：真实消费者解析不了（#197 那类）、部署没落地、
- *     出口通道哑掉（多跳静默消失）、agent 起不来/收不干净。
+ *     产出通道哑掉（多跳静默消失）、agent 起不来/收不干净。
  *
  *  C. 命名空间切换器真的能切（#203）：两个命名空间各建一个**不同名字**的能力，
  *     在真浏览器里点一下切过去 → 页面请求真的带上新 `namespaceId`、能力列表真的
@@ -570,12 +571,15 @@ async function runPageChecks(ctxData, nsId) {
 //   ① **页面产物 → 真消费者**：从 nodes.html 的「注册节点」面板拿一次性令牌
 //      （真流程、真 POST /v1/nodes），把 node.yaml 按 v2 写成**只有四件**，
 //      交给真 cmd/agent。它解析得了 = 契约 §1 的形状没走样。
-//   ② **部署链路**：用控制台 API 建两个能力（A 写出口文件、B 收下一跳），
+//   ② **部署链路**：用控制台 API 建两个能力（A 在 `go` 出口上 emit、B 收下一跳），
 //      部署到这台真节点 → 断言 deployments 变 applied（节点落盘后 hello 对账），
 //      且节点呈现的能力**完全由部署派生**（D4：不再自报）。
-//   ③ **出口通道（v2 的生命线）**：A 的脚本 `printf 'go\n' > "$ANOTIFY_OUT_FILE"`
-//      → 中枢按 `out=go` 走边建出 B 的任务 → 两个任务都 succeeded。
+//   ③ **产出通道（v2 的生命线）**：A 的脚本调 `anotify-agent emit --port go --data …`
+//      → 中枢按 emit 的 port 走边建出 B 的任务 → 两个任务都 succeeded，
+//      且 A 的 emissions 里真的有一行 `port=go`。
 //      这条断了，多跳链路就整条哑掉，而且**没有任何报错**（只是没有下一跳）。
+//      P1.5 起 `.anotify-out` / `result.out` 已退役：产出**只能**走 emit，
+//      所以这一节同时是「老通道不再有任何作用」的现场证据（tasks.out 恒 NULL）。
 //
 // 外加一条 standalone：同一份产物 YAML 落到临时文件 → `anotify-agent run`
 // 不连中枢直接跑，断言 stdout 与退出码（「产物可移植」的落地证明）。
@@ -841,11 +845,30 @@ async function runUiArtifactChecks(ctxData, nsId) {
 					digest: r.json?.digest,
 				};
 			};
-			// A：把出口名写进 $ANOTIFY_OUT_FILE —— v2 唯一的下一跳通道
+			// A：在 `go` 出口上 emit —— v2 唯一的产出通道（P1.5：出口文件已退役）。
+			//
+			// 三个细节都是必要的，不是样板：
+			//   ① `--wait-routed`：等中枢派发完再退出。默认路径只等本地落盘，脚本退出后
+			//      agent 立刻发 result —— 两个帧在同一连接上谁先到没有保证，一旦 result
+			//      先到，emit 就会被判「任务已终态」。这条竞态在真实能力里同样存在。
+			//   ② `--data` 带上从 params 拿到的 from：下游 B 的 params 就是 emit 的 data
+			//      （不做字段搬运），所以 B 才 print 得出 "B-got src"。
+			//   ③ `if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]`：同一份产物在下面 B4 会被
+			//      `anotify-agent run` 单独跑（没有中枢、没有 socket）。emit 无处可去时
+			//      应当跳过，而不是把一次「本地产物可移植性」验证跑成失败。
 			const capA = await mkCap(
 				CHAIN_CAP_A,
 				["go"],
-				"#!/bin/bash\nset -euo pipefail\nprintf 'go\\n' > \"$ANOTIFY_OUT_FILE\"\necho A-ran\n",
+				"#!/bin/bash\n" +
+					"set -euo pipefail\n" +
+					// 先说话再 emit：任务的 summary 取 stdout **第一行**，而 emit CLI 自己
+					// 也会往 stdout 写一行（`emit ok: port=go seq=1 acked=routed`）。
+					// 顺序反了的话 summary 会变成 CLI 的回执——断言「A 真的跑过」就失效了。
+					"echo A-ran\n" +
+					'if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then\n' +
+					'  "${ANOTIFY_AGENT_BIN:-anotify-agent}" emit --port go ' +
+					'--data "{\\"from\\":\\"${ANOTIFY_PARAM_FROM:-}\\"}" --wait-routed\n' +
+					"fi\n",
 			);
 			// B：下一跳，把上一跳的参数打出来（证明参数真的传过来了）
 			const capB = await mkCap(
@@ -908,8 +931,8 @@ async function runUiArtifactChecks(ctxData, nsId) {
 				[`${CHAIN_CAP_A}@${capA.version}`, `${CHAIN_CAP_B}@${capB.version}`].sort(),
 			);
 
-			// ================= ⑦ 触发 → 多跳（出口文件是 v2 的生命线） =================
-			console.log("--- B3. 触发 → 多跳（ANOTIFY_OUT_FILE 通道）---");
+			// ================= ⑦ 触发 → 多跳（emit 是 v2 唯一的产出通道） =================
+			console.log("--- B3. 触发 → 多跳（emit 通道）---");
 			const edge = await H.req(server.base, "/v1/edges", {
 				session: ctxData.session,
 				body: {
@@ -943,7 +966,7 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			H.eq("触发源 → 建出 1 个任务", (ev.json?.tasks || []).length, 1);
 			H.eq("首个任务落在 A 上", (ev.json?.tasks || [])[0]?.capability, CHAIN_CAP_A);
 
-			// 两个任务都跑到终态才算完（A succeeded → 中枢按 out 建 B 的任务 → B succeeded）
+			// 两个任务都跑到终态才算完（A emit → 中枢按 port 建 B 的任务 → B succeeded）
 			const tasksDone = await pollUntil(
 				async () => {
 					const r = await H.req(server.base, "/v1/tasks", { session: ctxData.session });
@@ -966,11 +989,31 @@ async function runUiArtifactChecks(ctxData, nsId) {
 				)}；agent 日志尾部：\n${maskToken(agentLog.slice(-800))}`,
 			);
 			H.eq("A 任务 succeeded", taskA?.status, "succeeded");
-			H.eq(
-				"A 通过 $ANOTIFY_OUT_FILE 回报 out=go（唯一的下一跳通道）",
-				taskA?.out,
-				"go",
-			);
+			// 断言从「result.out == go」搬到了 emission（P1.5）：出口不再由 result 帧
+			// 表达，产出证据在 emissions 表 / 它的读口上。两条断言合起来比原来更强：
+			//   ① tasks.out 恒 NULL —— 老通道真的没有任何写入方了（退役，不是并存）；
+			//   ② A 在 go 出口上真的 emit 过一次，且那次派发了 1 个下游。
+			H.eq("A 的 tasks.out 恒为 NULL（out 已退役，产出只走 emit）", taskA?.out ?? null, null);
+			{
+				const em = await H.req(
+					server.base,
+					`/v1/namespaces/${encodeURIComponent(nsId)}/tasks/${encodeURIComponent(taskA?.id || "")}/emissions`,
+					{ session: ctxData.session },
+				);
+				H.eq("GET A 的 emissions → 200", em.status, 200);
+				const rows = em.json?.emissions || [];
+				H.check(
+					"A 在 go 出口上 emit 过一次（唯一的产出通道）",
+					rows.length === 1 && rows[0]?.port === "go",
+					JSON.stringify(rows),
+				);
+				H.eq("那次 emit 派发了 1 个下游（B）", rows[0]?.routed, 1);
+				H.check(
+					"emit.data 带上了 A 的入参（from=src，下游 B 的 params 就是它）",
+					JSON.stringify(rows[0]?.data || {}).includes('"from":"src"'),
+					JSON.stringify(rows[0]?.data),
+				);
+			}
 			H.check(
 				"A 的 summary 是脚本 stdout（真执行过，不是空跑）",
 				/A-ran/.test(taskA?.summary || ""),
@@ -1000,6 +1043,101 @@ async function runUiArtifactChecks(ctxData, nsId) {
 					"B 的 parentTaskId 指向 A（父子关系落在库里）",
 					detail.json?.task?.parentTaskId,
 					taskA?.id,
+				);
+			}
+
+			// ============ ⑦.5 老通道已死：脚本只写 .anotify-out → 一条下游都不建 ============
+			//
+			// 这是 P1.5 的**硬证据**，而且是端到端的（真 agent + 真部署 + 真执行）：
+			// 一个老产物，脚本把出口名写进 `.anotify-out`（连 `$ANOTIFY_OUT_FILE` 都不给，
+			// 直接硬编码文件名——最"顽固"的老写法），而它声明的 go 出口**真的有下游**。
+			//
+			// 改动前：节点读完这个文件就会合成 result.out=go → 中枢建出下游。
+			// 改动后必须：任务照常 succeeded（成败只看退出码）、`.anotify-out` 没人读、
+			// 下游 0 条、emissions 0 行。三条缺一不可——只看「没有下游」会把
+			// 「脚本根本没跑」也算成通过。
+			console.log("--- B3b. 老通道已死：写 .anotify-out 不再产生下游 ---");
+			{
+				const legacyCap = await mkCap(
+					"rb-chain-legacy-out",
+					["go"],
+					"#!/bin/bash\nset -euo pipefail\nprintf 'go\\n' > .anotify-out\necho legacy-ran\n",
+				);
+				const depL = await H.req(server.base, "/v1/deployments", {
+					session: ctxData.session,
+					body: { namespaceId: nsId, capabilityId: legacyCap.id, nodeIds: [nodeId] },
+				});
+				H.eq("POST /v1/deployments（老通道能力）→ 200", depL.status, 200);
+				// 现在这条节点上有 3 份产物（A、B、legacy）
+				H.check(
+					"老通道能力的部署变 applied",
+					!!(await waitDeploymentsApplied(ctxData.session, nodeId, 3)),
+					JSON.stringify(
+						(await listDeployments(ctxData.session, { nodeId })).map((r) => [r.capability, r.state]),
+					),
+				);
+				// 老通道能力 --go--> B：出口真的有下游，才证明得了「不再路由」。
+				const legacyEdge = await H.req(server.base, "/v1/edges", {
+					session: ctxData.session,
+					body: {
+						namespaceId: nsId,
+						fromCapability: legacyCap.id,
+						fromPort: "go",
+						toCapability: capB.id,
+					},
+				});
+				H.eq("建边：老通道能力的 go 出口 → B", legacyEdge.status, 200);
+				const legacyEntry = await H.req(server.base, "/v1/edges", {
+					session: ctxData.session,
+					body: {
+						namespaceId: nsId,
+						fromIsSource: true,
+						fromCapability: "rb-legacy-src",
+						fromPort: "go",
+						toCapability: legacyCap.id,
+					},
+				});
+				H.eq("建入口边：rb-legacy-src 的 go → 老通道能力", legacyEntry.status, 200);
+
+				const before = ((await H.req(server.base, "/v1/tasks", { session: ctxData.session })).json?.tasks || [])
+					.length;
+				const evL = await H.req(server.base, "/v1/events", {
+					key: ctxData.sendKey,
+					body: { source: "rb-legacy-src", type: "go", payload: {} },
+				});
+				H.eq("触发老通道能力 → 建出 1 个任务", (evL.json?.tasks || []).length, 1);
+				const legacyTaskId = (evL.json?.tasks || [])[0]?.id;
+
+				const legacyDone = await pollUntil(
+					async () => {
+						const r = await H.req(server.base, "/v1/tasks", { session: ctxData.session });
+						if (r.status !== 200) return null;
+						const t = (r.json?.tasks || []).find((x) => x.id === legacyTaskId);
+						return t && (t.status === "succeeded" || t.status === "failed") ? t : null;
+					},
+					{ timeoutMs: 20000, intervalMs: 100 },
+				);
+				H.eq("老通道任务 succeeded（成败只看退出码）", legacyDone?.status, "succeeded");
+				H.check(
+					"老通道任务真的跑过（summary 是脚本 stdout）",
+					/legacy-ran/.test(legacyDone?.summary || ""),
+					String(legacyDone?.summary),
+				);
+				H.eq("老通道任务的 tasks.out 是 NULL（没人读那个文件）", legacyDone?.out ?? null, null);
+				{
+					const em = await H.req(
+						server.base,
+						`/v1/namespaces/${encodeURIComponent(nsId)}/tasks/${encodeURIComponent(legacyTaskId)}/emissions`,
+						{ session: ctxData.session },
+					);
+					H.eq("老通道任务没有任何 emission", (em.json?.emissions || []).length, 0);
+				}
+				const afterList = (await H.req(server.base, "/v1/tasks", { session: ctxData.session })).json?.tasks || [];
+				H.eq("老通道**一条下游都不建**（.anotify-out 已退役）", afterList.length, before + 1);
+				H.check(
+					"老通道任务没有子任务",
+					!afterList.some((t) => t.parentTaskId === legacyTaskId),
+					JSON.stringify(afterList.filter((t) => t.parentTaskId === legacyTaskId)),
 				);
 			}
 
@@ -1033,6 +1171,21 @@ async function runUiArtifactChecks(ctxData, nsId) {
 				/A-ran/.test(standalone.stdout || ""),
 				JSON.stringify((standalone.stdout || "").slice(0, 200)),
 			);
+			// 同一份产物、两种运行方式，语义必须一致：没有中枢（没有 ANOTIFY_EMIT_SOCK）
+			// 时脚本走「本地模式」分支、跳过 emit，而不是把 emit 的失败当成任务失败。
+			// 静态那一半在这里钉住：产物里用的是 emit（不是已退役的 $ANOTIFY_OUT_FILE）。
+			{
+				const scriptA = artSpec?.spec?.run?.files?.["run.sh"] || "";
+				const codeLines = scriptA
+					.split("\n")
+					.filter((line) => !/^\s*#/.test(line))
+					.join("\n");
+				H.check(
+					"A 的产物脚本用 emit 报产出（不再写 ANOTIFY_OUT_FILE）",
+					/emit --port go/.test(codeLines) && !/ANOTIFY_OUT_FILE/.test(codeLines),
+					scriptA.slice(0, 300),
+				);
+			}
 			// 退出码必须**原样透传**：脚本怎么退，agent 就怎么退（排查线上问题的前提）
 			const failCap = await mkCap(
 				"rb-chain-exit7",

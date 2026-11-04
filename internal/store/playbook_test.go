@@ -1046,8 +1046,9 @@ func TestPlaybookChecksResolvesDeclaredVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list edges: %v", err)
 	}
-	if len(edges) != 1 || edges[0].FromCapability != x2.ID || edges[0].ToCapability != y1.ID {
-		t.Fatalf("库里那条边的两端应是 x@2 / y@1，got %+v", edges)
+	// 两端是**引用**（P2.2）：预案用的是声明版本，落库就是钉死的 `name@version`。
+	if len(edges) != 1 || edges[0].FromRef != capRef(x2) || edges[0].ToRef != capRef(y1) {
+		t.Fatalf("库里那条边的两端应是 %s / %s，got %+v", capRef(x2), capRef(y1), edges)
 	}
 
 	checks := mustChecks(t, db, pb)
@@ -1118,8 +1119,8 @@ func TestInstallPlaybookReusesSameContentDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list edges: %v", err)
 	}
-	if len(edges) != 1 || edges[0].FromCapability != y1.ID || edges[0].ToCapability != x1.ID {
-		t.Fatalf("边应连在 y@1 → x@1（%s → %s）上，got %+v", y1.ID, x1.ID, edges)
+	if len(edges) != 1 || edges[0].FromRef != capRef(y1) || edges[0].ToRef != capRef(x1) {
+		t.Fatalf("边应连在 y@1 → x@1（%s → %s）上，got %+v", capRef(y1), capRef(x1), edges)
 	}
 	// ③ notes 说清「同内容」与「复用」
 	joined := strings.Join(res.Notes, "\n")

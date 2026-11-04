@@ -167,44 +167,32 @@ func TestHelloGoldenReadableByServer(t *testing.T) {
 	}
 }
 
-// ---------- W2 必测 2：resultFrame 的 out 三态（I5）----------
+// ---------- W2 必测 2：result 帧里没有 out（P1.5：out 已退役）----------
 
-func TestResultFrameOutTriState(t *testing.T) {
-	t.Run("out 缺席（没回报出口）", func(t *testing.T) {
-		f := resultFrame{
+// TestResultFrameHasNoOut 钉住「result 帧不再承担路由语义」这件事。
+//
+// 改动前这里是 TestResultFrameOutTriState：断言 out 缺席/null/有值三种线格式
+// （不变量 I5 的两态）。P1.5 硬切之后 out 整个退役——产出只有 emit 通道，所以正确
+// 的断言变成「**结构体里没有这个字段，线上字节里也不可能有这个键**」。
+//
+// 这不是放宽：原来守的是「out 的三种写法各自解析成什么」，现在守的是「out 不存在」。
+// 路由的证据搬到了 emission（cmd/agent/runner_test.go 的 TestRunJobExampleCapability、
+// emit_cmd_test.go 的真进程用例，以及 internal/ws 的 emit 帧用例）。
+func TestResultFrameHasNoOut(t *testing.T) {
+	t.Run("线上字节里没有 out 键", func(t *testing.T) {
+		got := mustEncode(t, resultFrame{
 			Type:    frameTypeResult,
 			TaskID:  "tsk_x",
 			Status:  statusSucceeded,
-			Out:     nil,
 			Summary: "ok",
 			Error:   "",
-		}
-		got := mustEncode(t, f)
+		})
 		want := `{"type":"result","task_id":"tsk_x","status":"succeeded","summary":"ok","artifacts":[],"error":""}`
 		if got != want {
 			t.Fatalf("wire bytes mismatch\n got: %s\nwant: %s", got, want)
 		}
 		if strings.Contains(got, `"out"`) {
-			t.Fatalf("JSON must not contain an out key when Out==nil: %s", got)
-		}
-	})
-
-	t.Run("out 有值", func(t *testing.T) {
-		out := "fix"
-		f := resultFrame{
-			Type:      frameTypeResult,
-			TaskID:    "tsk_x",
-			Status:    statusSucceeded,
-			Out:       &out,
-			Summary:   "ok",
-			Artifacts: []string{"tsk_8f21a3c0"},
-			Error:     "",
-		}
-		got := mustEncode(t, f)
-		want := `{"type":"result","task_id":"tsk_x","status":"succeeded","out":"fix",` +
-			`"summary":"ok","artifacts":["tsk_8f21a3c0"],"error":""}`
-		if got != want {
-			t.Fatalf("wire bytes mismatch\n got: %s\nwant: %s", got, want)
+			t.Fatalf("result 帧里出现了 out 键（out 已退役）: %s", got)
 		}
 	})
 
@@ -234,8 +222,10 @@ func TestResultFrameOutTriState(t *testing.T) {
 
 // ---------- W2 必测 3：anti-drift 反射测试 ----------
 
-// resultFrame 是唯一本地定义的帧，它的 json tag 集合必须与 ws.ResultFrame 完全一致，
-// 且**唯一**允许的差异是 out 的 omitempty（本地要能省略键，服务端要能区分缺失/null）。
+// resultFrame 是唯一本地定义的帧，它的 json tag 集合必须与 ws.ResultFrame 完全一致。
+//
+// out 退役之后两边**不再有允许的差异**：tag 名、类型、omitempty 全部逐项相同。
+// 反射比对的意义没变：谁在一边加/删字段，这里立刻红。
 func TestResultFrameTagsMatchServer(t *testing.T) {
 	local := jsonTaggedFields(t, reflect.TypeOf(resultFrame{}), "resultFrame")
 	server := jsonTaggedFields(t, reflect.TypeOf(ws.ResultFrame{}), "ws.ResultFrame")
@@ -254,20 +244,22 @@ func TestResultFrameTagsMatchServer(t *testing.T) {
 			"帧结构复用 internal/ws 是硬约束：两边 tag 名必须一字不差", localNames, serverNames)
 	}
 
+	// out 必须两边都没有（P1.5）：只查一边的话，「本地删了、服务端还留着」会
+	// 静默通过——那样服务端会继续按 out 路由，而 agent 永远不发。
+	for _, side := range []map[string]jsonField{local, server} {
+		if _, ok := side["out"]; ok {
+			t.Fatalf("result 帧仍然带 out 字段（out 已退役）：local=%v server=%v",
+				localNames, serverNames)
+		}
+	}
+
 	for name, localField := range local {
 		serverField := server[name]
 		if localField.typ != serverField.typ {
 			t.Errorf("%q field type = %v, want %v (与 ws.ResultFrame 同类型)", name, localField.typ, serverField.typ)
 		}
-		if name == "out" {
-			// 唯一允许的差异：本地 omitempty（不选出口时不发脏字段；缺省与 null 等价）
-			if !localField.omitempty {
-				t.Errorf(`resultFrame.Out must be "out,omitempty" (Out==nil → 键缺席)`)
-			}
-			if serverField.omitempty {
-				t.Errorf("ws.ResultFrame.Out unexpectedly has omitempty: 契约认为服务端永远写 out")
-			}
-			continue
+		if localField.omitempty != serverField.omitempty {
+			t.Errorf("%q omitempty = %v, want %v（两边必须一致）", name, localField.omitempty, serverField.omitempty)
 		}
 		if localField.tag != serverField.tag {
 			t.Errorf("%q tag = %q, want %q", name, localField.tag, serverField.tag)
@@ -275,51 +267,38 @@ func TestResultFrameTagsMatchServer(t *testing.T) {
 	}
 }
 
-// ---------- W2 必测 6：result JSON 用服务端解码器判定两态（outcome-v1.1） ----------
+// ---------- W2 必测 6：result JSON 用服务端解码器读一遍 ----------
 
 func TestResultFrameReadableByServer(t *testing.T) {
-	t.Run("out 缺席 → 没选出口（服务端 Out=nil）", func(t *testing.T) {
+	t.Run("正常帧字段不漂移", func(t *testing.T) {
 		raw := mustEncode(t, resultFrame{
 			Type: frameTypeResult, TaskID: "tsk_x", Status: statusSucceeded, Summary: "ok",
+			Artifacts: []string{"tsk_8f21a3c0"},
 		})
 		rf := decodeResultOnServer(t, raw)
-		if rf.Out != nil {
-			t.Errorf("Out = %q, want nil", *rf.Out)
-		}
 		if rf.Artifacts == nil {
 			t.Errorf("Artifacts = nil, want []（服务端不该看到 null）")
+		}
+		if !reflect.DeepEqual(rf.Artifacts, []string{"tsk_8f21a3c0"}) {
+			t.Errorf("Artifacts = %v, want [tsk_8f21a3c0]", rf.Artifacts)
 		}
 		if rf.Type != frameTypeResult || rf.TaskID != "tsk_x" || rf.Status != statusSucceeded || rf.Summary != "ok" {
 			t.Errorf("decoded result = %+v, fields drifted", rf)
 		}
 	})
 
-	t.Run("out 有值 → 走那个出口", func(t *testing.T) {
-		out := "fix"
-		raw := mustEncode(t, resultFrame{
-			Type: frameTypeResult, TaskID: "tsk_x", Status: statusSucceeded,
-			Out: &out, Summary: "发现 2 处类型错误", Artifacts: []string{"tsk_8f21a3c0"},
-		})
-		rf := decodeResultOnServer(t, raw)
-		if rf.Out == nil || *rf.Out != "fix" {
-			t.Fatalf("Out = %v, want \"fix\"", rf.Out)
-		}
-		if !reflect.DeepEqual(rf.Artifacts, []string{"tsk_8f21a3c0"}) {
-			t.Errorf("Artifacts = %v, want [tsk_8f21a3c0]", rf.Artifacts)
-		}
-		if rf.Summary != "发现 2 处类型错误" {
-			t.Errorf("Summary = %q, want 发现 2 处类型错误", rf.Summary)
+	t.Run("老帧带 out 不报错（未知字段忽略）", func(t *testing.T) {
+		// 老实现（或手写客户端）会发 out。服务端**必须**照收、不报错、不路由：
+		// 报错会让节点陷入「重发 → 又被拒 → 重连」；而不路由正好等于新语义。
+		// 这里用服务端解码器证明「能解析」，路由那半由 internal/ws 的
+		// TestResultLegacyOutCreatesNoDownstream 钉住。
+		rf := decodeResultOnServer(t, `{"type":"result","task_id":"tsk_x","status":"succeeded","out":"fix","summary":"ok"}`)
+		if rf.Status != statusSucceeded || rf.Summary != "ok" {
+			t.Errorf("decoded = %+v, want succeeded + ok（老帧必须照样能解）", rf)
 		}
 	})
 
-	t.Run("手写客户端发 out:null → 与缺席等价", func(t *testing.T) {
-		rf := decodeResultOnServer(t, `{"type":"result","task_id":"tsk_x","status":"succeeded","out":null,"summary":"ok"}`)
-		if rf.Out != nil {
-			t.Errorf("Out = %q, want nil（显式 null 与缺省等价）", *rf.Out)
-		}
-	})
-
-	t.Run("失败也可以带出口（失败不特殊）", func(t *testing.T) {
+	t.Run("失败必须带原因", func(t *testing.T) {
 		raw := mustEncode(t, resultFrame{
 			Type: frameTypeResult, TaskID: "tsk_x", Status: statusFailed,
 			Summary: "exit status 7: 编译失败",

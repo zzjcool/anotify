@@ -117,9 +117,10 @@ func (f *emitFixture) newTask(t *testing.T, capDef *store.CapabilityVersion) *st
 	t.Helper()
 	ctx := context.Background()
 	task := &store.Task{
-		NamespaceID:  f.ns,
-		TraceID:      store.NewTaskID(),
-		Path:         []string{capDef.ID},
+		NamespaceID: f.ns,
+		TraceID:     store.NewTaskID(),
+		// P2.2：path 存**能力名**（派发侧按名字判环）
+		Path:         []string{capDef.Name},
 		CapabilityID: capDef.ID,
 		Capability:   capDef.Name,
 		Version:      capDef.Version,
@@ -553,7 +554,8 @@ func TestEmitChildTasksInheritParent(t *testing.T) {
 	if kid.NamespaceID != f.ns {
 		t.Errorf("子任务 namespace = %q, want %q", kid.NamespaceID, f.ns)
 	}
-	if want := []string{root.ID, fixer.ID}; !reflect.DeepEqual(kid.Path, want) {
+	// P2.2：path 是**能力名**序列（环剪枝按名字判：同名重复才是环）。
+	if want := []string{root.Name, fixer.Name}; !reflect.DeepEqual(kid.Path, want) {
 		t.Errorf("子任务 path = %v, want %v（环保护靠它）", kid.Path, want)
 	}
 	if string(kid.Params) != `{"issue":"#7"}` {

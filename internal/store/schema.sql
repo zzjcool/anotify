@@ -926,3 +926,29 @@ CREATE TABLE IF NOT EXISTS emissions (
 --
 -- SQL 块为空：搬迁要沿父行取来源名、并给参数模板做一次 JSON 归一（坏字节写成 '{}'），
 -- 走 Go 侧的 migrationHooks[26]。
+
+-- +migration 27 edge_refs
+--
+-- P2.2（docs/design/typed-pipeline.md §3.2 / §7「P2.2 施工计划」）：link 改按**名字**引用。
+--
+-- 背景：`from_key`（from_is_source=0 时）与 `to_capability` 存的是
+-- `capability_versions.id`。id 每版一个（还嵌了 content_hash8），所以能力发新版之后
+-- 已有 link 仍然钉着旧 id —— **升级永远不生效**，而「让升级生效」又没有任何地方
+-- 说得出「这个 id 对应的名字是谁」。
+--
+-- 新形状（两列引用，`name` 跟随 latest / `name@version` 钉死）：
+--   from_ref  能力边的上游引用；入口边（from_is_source=1）仍然是**来源名**
+--   to_ref    下游能力的引用
+-- 主键跟着换成 (namespace_id, from_is_source, from_ref, from_port, to_ref)：
+-- `fixer` 与 `fixer@1` 是两条不同的 link（一个跟随、一个钉死），可以并存。
+--
+-- 存量数据的搬法：id → **`name@version`**（钉死当前行为）。
+-- 为什么不搬成 `name`（跟随 latest）：那等于在这次迁移里**静默改线**——
+-- 部署完的一瞬间，所有 link 全部改指最新版，而升级闸门还没被走过。
+-- 施工计划 §7.1 的顺序要求就是「先闸门、再引用语义」，迁移不替用户做这个决定。
+--
+-- 同时把 `tasks.path` 从能力 id 序列换成**能力名**序列（运行期环剪枝按名字判：
+-- 同一条链上重复出现同一个名字才是环）。换不到的 id（能力行已被删）保留原值。
+--
+-- SQL 块为空是有意的：重建表要 id → name@version 的关联查询，而 `tasks.path` 是 JSON
+-- 数组、只能在 Go 里逐行换。两者都在 migrationHooks[27]（与 20/21/23/25/26 同形）。

@@ -67,8 +67,13 @@ type NodeStore interface {
 	// ReportResultAndCreateTasks 在**一个事务**里完成「父任务终态写入 + 下一跳子任务建行」
 	// （#140）。next 为空 == 旧的 ReportResult 行为。
 	//
-	// 为什么必须同一个事务：拆成两步（先提交终态、后台 goroutine 再建行）时，
-	// 进程在中间退出就会留下「父任务 succeeded + out=fix、子任务行不存在」的永久空洞——
+	// P1.5 之后的实际调用形状固定是 `out=nil, next=nil`：out 已退役（路由只看 emit），
+	// 子任务行也不再由 result 建（那件事在 route.Emit 自己的事务里）。参数保留是因为
+	// store 侧的事务语义与 tasks.out 列还在（store 的单测仍在用），而 ws 只写终态。
+	//
+	// 为什么库侧仍要保留「终态 + 子任务行同一个事务」的能力：这是 emit 之外任何
+	// 未来的批量建行入口必须满足的形状——拆成两步（先提交终态、后台再建行）就会
+	// 留下「父任务 succeeded + out=fix、子任务行不存在」的永久空洞：
 	// ListRedispatchable 只捞已存在的 pending 行，捞不到一条不存在的行，链永久停。
 	// 子任务插入失败 → 整体回滚（父任务不留在终态）。
 	//

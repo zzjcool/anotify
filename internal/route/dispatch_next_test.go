@@ -117,7 +117,7 @@ func TestPlanNextHopIsReadOnly(t *testing.T) {
 	f.errCreateTasks = errors.New("plan must not create task rows")
 
 	tasks, err := d.PlanNextHop(context.Background(), testNS, "trace_plan", "tsk_parent",
-		review.ID, "fix", json.RawMessage(`{"k":"v"}`), []string{review.ID})
+		review.ID, "fix", json.RawMessage(`{"k":"v"}`), []string{review.Name})
 	if err != nil {
 		t.Fatalf("plan next hop: %v", err)
 	}
@@ -158,8 +158,9 @@ func TestPlanNextHopIsReadOnly(t *testing.T) {
 	if task.ParentTaskID == nil || *task.ParentTaskID != "tsk_parent" {
 		t.Errorf("parent_task_id = %v, want tsk_parent", task.ParentTaskID)
 	}
-	if len(task.Path) != 2 || task.Path[0] != review.ID || task.Path[1] != target.ID {
-		t.Errorf("path = %v, want [%s %s]", task.Path, review.ID, target.ID)
+	// P2.2：path 是**能力名**序列（环剪枝按名字判）。
+	if len(task.Path) != 2 || task.Path[0] != review.Name || task.Path[1] != target.Name {
+		t.Errorf("path = %v, want [%s %s]", task.Path, review.Name, target.Name)
 	}
 	if task.CapabilityID != target.ID || task.Capability != target.Name || task.Version != target.Version {
 		t.Errorf("capability = %s/%s@%d, want %s/%s@%d",
@@ -204,15 +205,16 @@ func TestPlanNextHopNotDispatched(t *testing.T) {
 			name: "无出口边：pruned/no_edge",
 			run: func(t *testing.T, d *Dispatcher, review, target *store.CapabilityVersion) ([]*store.Task, error) {
 				return d.PlanNextHop(context.Background(), testNS, "trace_none", "tsk_parent",
-					review.ID, "nobody-listens", json.RawMessage(`{}`), []string{review.ID})
+					review.ID, "nobody-listens", json.RawMessage(`{}`), []string{review.Name})
 			},
 			wantPrune: ReasonNoEdge,
 		},
 		{
 			name: "成环：目标已在 path 里 → pruned/path",
 			run: func(t *testing.T, d *Dispatcher, review, target *store.CapabilityVersion) ([]*store.Task, error) {
+				// 环按**名字**判：path 里已经出现过目标能力名 → pruned/path。
 				return d.PlanNextHop(context.Background(), testNS, "trace_none", "tsk_parent",
-					review.ID, "fix", json.RawMessage(`{}`), []string{review.ID, target.ID})
+					review.ID, "fix", json.RawMessage(`{}`), []string{review.Name, target.Name})
 			},
 			wantPrune: ReasonPath,
 		},

@@ -28,15 +28,24 @@ import (
 // 静默跳过，症状被藏起来。表不存在时让 CREATE INDEX 直接报错，错误一路向上抛。
 const edgeLookupIndexName = "idx_edges_lookup"
 
-// edgeLookupIndexColumns 是 idx_edges_lookup 唯一权威的列序。
+// edgeLookupIndexColumns 是 idx_edges_lookup **在当前（tip）库上**唯一权威的列序。
 //
-// 与 edges 的主键前缀逐字对齐（namespace_id, from_is_source, from_key, from_port）。
+// 与 edges 的主键前缀逐字对齐。P2.2（迁移 27）把主键里的 from_key 换成了 from_ref，
+// 索引跟着换——今天这个形状由迁移 27 的重建负责（DROP TABLE 会带走索引，重建时按
+// 新列再建一次）；迁移 15 的 hook 只服务它自己的时代（见 legacyEdgeLookupColumns）。
+//
 // 需要说明的是：#238 的 EXPLAIN 证据显示派发查边实际走的是
 // `COVERING INDEX sqlite_autoindex_edges_1`（PK 自动索引，前四列与 WHERE 对齐且覆盖
-// to_capability），所以这条索引**本身是冗余的**——保留它是因为契约按「唯一权威形状」
+// to_ref），所以这条索引**本身是冗余的**——保留它是因为契约按「唯一权威形状」
 // 冻结（删索引是另一条 issue 的事，删了会牵动迁移 12/14 的既有定义）。
 // 本迁移只负责「同名索引不许带着别的列序存在」。
-var edgeLookupIndexColumns = []string{"namespace_id", "from_is_source", "from_key", "from_port"}
+var edgeLookupIndexColumns = []string{"namespace_id", "from_is_source", "from_ref", "from_port"}
+
+// legacyEdgeLookupColumns 是迁移 15/27 之间那段历史里 edges 的形状（左端列叫 from_key）。
+//
+// 它只用于「在 v14 库上造漂移 / 验证迁移 15 的 hook」，**不是**当前形状：
+// tip 的 edges 没有 from_key 这一列（迁移 27 已把它换成 from_ref）。
+var legacyEdgeLookupColumns = []string{"namespace_id", "from_is_source", "from_key", "from_port"}
 
 // edgeLookupIndexDDL 是重建该索引时**唯一**使用的语句。
 //

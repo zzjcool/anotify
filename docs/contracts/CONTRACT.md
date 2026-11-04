@@ -24,8 +24,8 @@
 | **I1** | **中枢自身不执行用户代码**：中枢不得 `os/exec` 任何来自用户/节点的内容；节点执行的一切必须是**内容寻址（digest）、不可变、可审计**的产物，并受**节点启动参数**（并发/资源/网络，中枢改不动）约束。中枢可以授权部署，但不得扩大节点自身允许的范围 | 安全边界失效 |
 | **I2** | **能力必须先定义**；节点只能声明已定义能力，不能发明名字、不能加出口 | 路由失去封闭集合 |
 | **I3** | **`kind` 不落库、不写配置**，由声明推导 | 可表达出自相矛盾的配置 |
-| **I4** | **路由只看 `out`，不看 `status`**：失败回报了出口就继续，没回报就终止；`status` 只做展示与重试策略 | 失败分支变成「能配、永不生效」的静默死配置 |
-| **I5** | **`out` 两态**：有值 = 选了出口；空 = 没选（到此为止）。`"out": null` 与缺省等价。**「没回报」由「没有 result 帧」表达**（租约到期 → 巡检重派），不是 `out` 的一个取值；失败必须有非空 `message` | 静默终止（分不清「设计成停」和「本该继续却没继续」） |
+| **I4** | **路由只看 emit 的 `port`，不看 `status`**：运行中 emit 过就按边派发（失败前 emit 的照样派），一次都没 emit 就到此为止；`status` 只做展示与重试策略 | 失败分支变成「能配、永不生效」的静默死配置 |
+| **I5** | **产出只有一条通道：emit**（`result.out` 已退役）。0 次 emit 是合法的正常终止。**「没回报」由「没有 result 帧」表达**（租约到期 → 巡检重派），不是 emit 的一个取值；失败必须有非空 `summary` | 静默终止（分不清「设计成停」和「本该继续却没继续」） |
 | **I6** | **中枢不解释任何用户提供的逻辑**：无表达式求值、无条件匹配、无优先级 | 引入求值器攻击面 |
 | **I7** | **图里只有能力，没有机器**；`edges` 两端都是 `capability_id` | 换节点要改图 |
 | **I8** | **一个能力定义 = 一个不可变版本**（append-only，钉 hash） | 旧 trace 无法解释 |
@@ -351,7 +351,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempts       INTEGER NOT NULL DEFAULT 0,
 
     -- 结果（I4/I5）
-    out            TEXT,                      -- 出口名；NULL = 这次没选出口（到此为止），'' 不是合法值
+    out            TEXT,                      -- **已退役（P1.5）**：新写入恒 NULL，只为读历史行；
+                                              -- 出口的位置是 emissions.port（'' 从来不是合法值）
     reported       INTEGER NOT NULL DEFAULT 0,-- 历史位：1 = 结果帧到过（新写入恒为 1）
     summary        TEXT NOT NULL DEFAULT '',   -- 唯一的 message：成功=做了什么 / 失败=为什么失败
     artifacts      TEXT NOT NULL DEFAULT '[]',
@@ -372,28 +373,29 @@ CREATE INDEX IF NOT EXISTS idx_tasks_lease   ON tasks(status, lease_until);
 CREATE INDEX IF NOT EXISTS idx_tasks_node    ON tasks(node_id, status);
 ```
 
-**结果 = `{ status, out, message }`**（outcome-v1.1）。三个字段各管一摊：
+**结果 = `{ status, summary }` + 运行中的 `emit*`**（P1.5；`out` 已退役）。三件事各管一摊：
 
-| 字段 | 语义 | 是否参与路由 |
+| 东西 | 语义 | 是否参与路由 |
 |---|---|---|
 | `status` | `succeeded` / `failed`；只做展示与重试策略 | **否** |
-| `out` | 选了哪个出口；`NULL` = 这次没选（到此为止，**正常终止**，不是错误） | **是（唯一依据）** |
+| `emit(port, data)` | 运行中 0..N 次产出；每次独立路由（`port` 查边、`data` 就是下游 params） | **是（唯一依据）** |
 | `summary` | 唯一的 message：成功=做了什么，失败=为什么失败（**失败必填**，空时兜底 `"failed"`） | 否 |
 
 `error` 是 `summary` 的**派生位**（失败时相等，成功时为空），只为兼容老读者存在。
+`tasks.out` 列保留但**新写入恒为 NULL**（历史行仍可读）：出口的位置变成了 `emissions.port`。
 
 四种组合都有名字，没有死格子：
 
-| status | out | 含义 |
+| status | emit 过？ | 含义 |
 |---|---|---|
-| `succeeded` | `NULL` | 成功 · 到此为止 |
-| `succeeded` | `"fix"` | 成功 · 走 fix 出口 |
-| `failed` | `NULL` | 失败 · 终止（`summary` 是原因） |
-| `failed` | `"fix"` | 失败 · 走 fix 出口（「失败也发通知」就是这条） |
+| `succeeded` | 没有 | 成功 · 到此为止 |
+| `succeeded` | 有（如 `fix`） | 成功 · 每次 emit 都按自己的 port 派发了 |
+| `failed` | 没有 | 失败 · 终止（`summary` 是原因） |
+| `failed` | 有 | 失败 · 但 emit 已经各自派发过（「失败也发通知」就是这条） |
 
 **「没回报」（节点掉线 / 超时）不在这个表里**：那是**根本没有 result 帧**，
 任务停在 pending/running，由租约到期 + 巡检重派处理（`reported=0` 只在这个意义上
-有历史痕迹，新写入恒为 1）。把它挤进 `out` 会凭空造出一个既不是成功也不是失败的状态。
+有历史痕迹，新写入恒为 1）。把它挤进任何一个字段都会凭空造出一个既不是成功也不是失败的状态。
 
 ### 2.6 图快照
 
@@ -592,7 +594,9 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 ## 4. 派发四步（唯一路由算法）
 
 ```text
-输入：namespace_id, 上游 (capability_id, out), params, trace_id, path, parent_task_id
+输入：namespace_id, 上游 (capability_id, port), data, trace_id, path, parent_task_id
+      （唯一入口是 emit：port = emit.port，data = emit.data ⊎ link.literals。
+        P1.5 起 result 帧不再提供 port，实现里那段字段就叫 DispatchInput.Out 是历史名字）
 
 ① 查表
    SELECT to_capability FROM edges
@@ -986,10 +990,11 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 { "type": "result",    "task_id": "tsk_x",
   "status": "succeeded",           // succeeded | failed（只做展示，不参与路由）
-  "out": "fix",                    // 出口名 或 null/缺省（= 没选出口，到此为止）
   "summary": "发现 2 处类型错误",    // 唯一的 message：成功=做了什么 / 失败=为什么失败
   "artifacts": ["tsk_8f21a3c0"],
   "error": "" }                    // 兼容位：老节点只填 error 时服务端用它兜底 summary
+                                  // **没有 out**（P1.5 退役）：产出只走上面的 emit 帧。
+                                  // 老帧里多出来的 "out" 是未知字段，服务端忽略、不报错。
 
 // ── 中枢 → 节点 ──────────────────────────────
 { "type": "welcome",   "node_id": "nd_x", "protocol": 1,
@@ -1129,7 +1134,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 | # | 原因 | 是剪枝吗 | 说明 |
 |---|---|---|---|
-| ① | 上游没选出口 / 走到了别的出口 | **不是** | `out IS NULL`（到此为止）或 `out` 指向别的出口——正常结束的分支，压根没查表 |
+| ① | 上游一次都没 emit / emit 的是别的 port | **不是** | 没有 emission（到此为止）或 emit 的 `port` 指向别的出口——正常结束的分支，压根没查表 |
 | ② | `no_edge` | 是 | 查表 0 行 |
 | ③ | `param_missing` | 是 | 参数引用的路径取不到且无 `default`（§5.5） |
 | ④ | `param_type` | 是 | 取值结果转不成目标 schema 要求的类型（§5.5） |
@@ -1171,8 +1176,8 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | A5 | 出口封闭 | `edges.from_port` 不在 `outputs` 里 → 配置期拒绝 |
 | A6 | 扇出 | 一个 `(cap, port)` 有 3 行边 → 建 3 个任务 |
 | A7 | 成环剪枝 | `review→fix→review` 跑两圈后 `pruned/path` |
-| A8 | `out` 两态 | 没选出口（NULL）不派下一跳；选了出口就按边派发（含扇出） |
-| A8b | 失败也能继续 | `failed` + `out` → 照样建下一跳任务（I4 落地）；失败无 `message` → 兜底 `"failed"` |
+| A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按边派发（含扇出）。result 帧里带 `out` → **忽略**，`tasks.out` 恒 NULL（P1.5） |
+| A8b | 失败也能继续 | 失败**之前** emit 过 → 那些下游照样建（I4 落地）；失败无 `summary` → 兜底 `"failed"` |
 | A9 | 租约接管 | `kill -9` 节点后 30s 内任务回 `pending` |
 | A10 | 组织隔离 | A 组织的 token 查不到 B 组织的事件 |
 | A11 | 版本并存 | `review@1` 和 `review@2` 同时存在，互不影响 |

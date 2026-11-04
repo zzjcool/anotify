@@ -1103,6 +1103,7 @@ events:
     no_root: ルートタスクが見つかりません（トレースが不完全な可能性があります）。
     out_none: 未報告
     out_end: 終端に到達
+    out_emits: 出力は下の「Emits」欄
   wf:
     waterfall: ウォーターフォール
     tree: ツリー
@@ -1526,6 +1527,10 @@ edges:
   literals_badge: 定数 ×{n}
   err_literals_json: リテラル上書きが正しい JSON ではありません
   err_literals_object: 'リテラル上書きは {"to":"u_123"} のような JSON オブジェクトである必要があります'
+  # 参照（P2.2）：辺が持つのは能力 id ではなく参照
+  current_ref: '現在 → {ref}'
+  ref_unresolved: 解決できません：この参照が指す能力は既に存在しません
+  unresolved_short: 解決不可
 trace:
   legend_hot: "線が濃いほど · この経路は何度も通った（再試行／ループ）"
   legend_origin: "ソース · トリガー（ここからイベントが入る）"

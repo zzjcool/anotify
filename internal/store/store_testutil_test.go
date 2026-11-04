@@ -100,3 +100,10 @@ func mustExec(t *testing.T, db interface {
 		t.Fatalf("exec %q: %v", q, err)
 	}
 }
+
+// capRef 返回一个能力的**钉死引用**（`name@version`），当测试里 link 的一端用。
+//
+// P2.2 之后边里存的是**引用**，不是 `capability_versions.id`。所以测试也要写引用：
+// `X.ID` 那种写法构造的是「P2.2 之前的形状」，它只能走输入兼容层
+// （CreateEdge 会把 id 翻成 name@version），测的就不是路由语义了。
+func capRef(c *CapabilityVersion) string { return FormatRef(c.Name, c.Version) }

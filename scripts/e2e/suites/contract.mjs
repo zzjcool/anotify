@@ -10,7 +10,7 @@
  *   A5  出口封闭（from_port ∈ outputs）
  *   A6  扇出（一个出口多条边 → 多个任务）
  *   A7  成环剪枝（path 命中 → pruned/path）
- *   A8  out 三态（缺失 / null / 字符串）
+ *   A8  out 退役（P1.5）：result 帧里的 out 不再路由；产出只走 emit
  *   A9  租约接管（节点掉线后任务被回收重派）
  *   A10 命名空间隔离（同名能力互不可见 / 事件与任务不串 / 跨命名空间引用 400 /
  *       未知命名空间 404）
@@ -77,6 +77,28 @@ function sqlQuery(q, ...args) {
 	} finally {
 		db.close();
 	}
+}
+
+// emitPort 发一帧 emit 并等**这一帧**的 emit_ack（P1.5 起这是唯一的产出通道）。
+//
+// 为什么必须等 ack：节点是假 WS 客户端，脚本语义是「emit 之后再 result」。
+// 若 result 先被处理，任务进终态，随后那帧 emit 会被判「任务已非运行态」——
+// 这是真实能力里同样存在的竞态，e2e 里不该靠 sleep 赌它。
+//
+// 参数形状直接对应 `anotify-agent emit --port <port> --data <json>`：seq 是任务内
+// 单调递增的计数（emit-protocol §4），data 就是下游的 params。
+async function emitPort(node, taskId, seq, port, data = {}) {
+	const from = node.frames.length;
+	node.conn.send({ type: "emit", task_id: taskId, seq, port, data });
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		const hit = node.frames
+			.slice(from)
+			.find((f) => f.type === "emit_ack" && f.seq === seq);
+		if (hit) return hit;
+		await new Promise((r) => setTimeout(r, 40));
+	}
+	return null;
 }
 
 async function main() {
@@ -183,7 +205,10 @@ async function main() {
 	// ================= A12 空列表 [] =================
 	for (const [path, key] of [
 		["/v1/tasks?traceId=trace_nonexistent_xyz", "tasks"],
-		["/v1/edges?fromCapability=cap_nonexistent", "edges"],
+		// P2.2：过滤参数叫 fromRef（引用口径）；旧名 fromCapability 仍兼容一个版本期，
+		// 两个名字各测一遍 —— 先升级的那端不会因为名字换了就查不到。
+		["/v1/edges?fromRef=cap_nonexistent", "edges"],
+		["/v1/edges?fromCapability=cap_nonexistent", "edges（旧参数名）"],
 	]) {
 		const r = await H.req(server.base, path, { session });
 		const raw = r.text || "";
@@ -351,7 +376,10 @@ async function main() {
 	const node = await bringUpNode(server.base, server.dbPath, nsId, "contract-node", [origin, work, fin, fanA, fanB], 4);
 	A(6, "节点上线", !!node.id);
 
-	// A6：从 origin 出发 → work（1 个任务）；work 回报 done → 扇出到 fanA+fanB
+	// A6：从 origin 出发 → work（1 个任务）；work 在 done 出口 emit → 扇出到 fanA+fanB
+	//
+	// P1.5 起产出只走 emit（result.out 已退役）：扇出的触发点因此是那帧 emit，
+	// 而不是结果帧里的一个字符串。判定与建行仍然由中枢按库里的边算（emit 只能报 port）。
 	const ev1 = await postEvent({ source: "c.origin", type: "go", payload: {} });
 	A(6, "第一跳建 1 个任务（work）", ev1.json?.tasks?.length === 1, JSON.stringify(ev1.json?.tasks?.length));
 	const tWork = ev1.json?.tasks?.[0]?.id;
@@ -364,7 +392,16 @@ async function main() {
 		await new Promise((r) => setTimeout(r, 200));
 		node.conn.send({ type: "progress", task_id: tWork });
 		await new Promise((r) => setTimeout(r, 200));
-		node.conn.send({ type: "result", task_id: tWork, status: "succeeded", out: "done" });
+		// 产出：一帧 emit —— 这就是「能力脚本」唯一能做的事。
+		const ackFan = await emitPort(node, tWork, 1, "done", {});
+		A(
+			6,
+			"work 在 done 出口 emit 成功，routed=3（一个出口三条边）",
+			!!ackFan && !ackFan.error && ackFan.routed === 3,
+			JSON.stringify(ackFan),
+		);
+		// 结果帧只落终态，不带（也不再支持）出口。
+		node.conn.send({ type: "result", task_id: tWork, status: "succeeded", summary: "work 完成" });
 		// 等扇出
 		const deadline = Date.now() + 4000;
 		let fanTasks = [];
@@ -413,10 +450,19 @@ async function main() {
 		);
 	}
 
-	// A8 out 两态 + A8b「失败也能继续」（outcome-v1.1）
+	// A8 out 退役 + A8b「失败也能继续」（P1.5 硬切）
+	//
+	// 改动前：A8 验 out 的三种写法（缺失 / null / 字符串），A8b 验「失败 + out 也派
+	// 下一跳」。out 退役之后，出口的唯一载体是 emit，所以这一节改成：
+	//
+	//   A8  结果帧里带什么都不再路由：tasks.out 恒 NULL、不建任何下游；
+	//   A8b 想派下一跳 → emit；**失败不撤回已经发生的 emit**（I4 的形式保留）。
+	//
+	// 断言没有放宽：A8 新增了「老写法 out='done' 也一条下游都不建」这条更强的负向
+	// 断言，A8b 仍然逐条核对扇出集合（fin + fanA + fanB）。
 	{
 		// 清场：A6 扇出的 3 个任务还占着实例槽位（节点 4 个实例），不释放的话
-		// 后面的任务会一直停在 pending、拿不到 assign（result 会被判 invalid_transition）。
+		// 后面的任务会一直停在 pending、拿不到 assign（emit 会被判「任务不存在」）。
 		for (const busy of sqlQuery(
 			`SELECT id FROM tasks WHERE node_id = ? AND status IN ('assigned','acked','running')`,
 			node.id,
@@ -425,7 +471,7 @@ async function main() {
 		}
 		await new Promise((r) => setTimeout(r, 600));
 
-		// 等任务真的落到节点上（status 离开 pending）再发 result——
+		// 等任务真的落到节点上（status 离开 pending）再操作——
 		// 这是节点的硬前提，不是可以靠 sleep 赌的时序。
 		const waitDispatched = async (id) => {
 			for (let i = 0; i < 60; i++) {
@@ -436,7 +482,7 @@ async function main() {
 			return false;
 		};
 
-		// 造独立 trace，用「来源 → work」这条入口；work --done--> fin 已建好。
+		// 造独立 trace，用「来源 → work」这条入口；work --done--> fin/fanA/fanB 已建好。
 		const mk = async (label) => {
 			const ev = await postEvent({
 				source: "c.origin",
@@ -448,8 +494,13 @@ async function main() {
 			await waitDispatched(id);
 			return { id, traceId: ev.json?.traceId };
 		};
+		const childrenOf = (taskId) =>
+			sqlQuery(
+				`SELECT capability FROM tasks WHERE trace_id IS NOT NULL AND parent_task_id = ?`,
+				taskId,
+			);
 
-		// 态1：out 缺失 = 没选出口 → out=NULL，且不派生下一跳
+		// A8-态1：out 缺失 → tasks.out NULL，且不派生下一跳
 		const tMissing = await mk("missing");
 		node.conn.sendRaw(
 			`{"type":"result","task_id":"${tMissing.id}","status":"succeeded","summary":"no out"}`,
@@ -457,65 +508,104 @@ async function main() {
 		await new Promise((r) => setTimeout(r, 400));
 		const rMissing = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tMissing.id)[0];
 		A(8, "out 缺失 → out=NULL（没选出口）", rMissing && rMissing.out === null, JSON.stringify(rMissing));
+		A(
+			8,
+			"out 缺失 → 不建下游（0 次 emit 合法）",
+			childrenOf(tMissing.id).length === 0,
+			JSON.stringify(childrenOf(tMissing.id)),
+		);
 
-		// 态2：out:null 与缺失等价
+		// A8-态2：out:null 与缺失等价（老帧照收，语义相同）
 		const tNull = await mk("null");
 		node.conn.sendRaw(`{"type":"result","task_id":"${tNull.id}","status":"succeeded","out":null}`);
 		await new Promise((r) => setTimeout(r, 400));
 		const rNull = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tNull.id)[0];
 		A(8, "out:null → out=NULL（与缺失等价）", rNull && rNull.out === null, JSON.stringify(rNull));
 
-		// 态3：选了出口 → 落库并派下一跳（work --done--> fin）
+		// A8-态3（核心）：out 指向一条**真有边**的出口（done），照样不落库、不建下游。
+		// 老实现里这一帧会建出 3 个任务；现在它必须什么都不做——这就是「这条腿断了」。
 		const tStr = await mk("str");
 		node.conn.send({ type: "result", task_id: tStr.id, status: "succeeded", out: "done" });
 		await new Promise((r) => setTimeout(r, 600));
 		const rStr = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tStr.id)[0];
-		A(8, 'out:"done" → out="done"', rStr && rStr.out === "done", JSON.stringify(rStr));
+		A(8, "out='done' → out=NULL（out 没有写入方了）", rStr && rStr.out === null, JSON.stringify(rStr));
+		A(
+			8,
+			"out='done' → 一条下游都不建（老通道已退役，不是并存）",
+			childrenOf(tStr.id).length === 0,
+			JSON.stringify(childrenOf(tStr.id)),
+		);
 
-		// A8b：**失败** + 选了出口 → 照样派下一跳（I4 落地；旧实现里这条边永不生效）
+		// A8b：**失败**之前 emit 过的下游照样在（I4 的形式保留：路由只看 emit，不看 status）
 		const tFail = await mk("failedroute");
+		const ackFail = await emitPort(node, tFail.id, 1, "done", {});
+		A(
+			8,
+			"A8b 失败路径：emit(done) 成功 routed=3",
+			!!ackFail && !ackFail.error && ackFail.routed === 3,
+			JSON.stringify(ackFail),
+		);
 		node.conn.send({
 			type: "result",
 			task_id: tFail.id,
 			status: "failed",
-			out: "done",
 			summary: "exit status 7: 编译失败",
 		});
 		await new Promise((r) => setTimeout(r, 700));
 		const failParent = sqlQuery(`SELECT status, out, summary FROM tasks WHERE id = ?`, tFail.id)[0];
-		A(8, "A8b 失败 + out → 父任务 status=failed", failParent?.status === "failed", JSON.stringify(failParent));
-		A(8, "A8b 失败 + out → out 落库", failParent?.out === "done", JSON.stringify(failParent));
+		A(8, "A8b 失败 + 已 emit → 父任务 status=failed", failParent?.status === "failed", JSON.stringify(failParent));
+		A(8, "A8b 失败 → out 仍然 NULL（出口只在 emission 里）", failParent?.out === null, JSON.stringify(failParent));
 		A(8, "A8b 失败必须带原因", !!failParent?.summary, JSON.stringify(failParent));
-		const failChildren = sqlQuery(
-			`SELECT capability FROM tasks WHERE trace_id = ? AND parent_task_id = ?`,
-			tFail.traceId,
-			tFail.id,
-		);
 		// work --done--> 一共 3 条边（fin + fanA + fanB），所以「建了什么」要和
 		// 成功扇出**完全一样**——失败不该少派、也不该安静地只走一条。
-		const failCaps = failChildren.map((c) => c.capability).sort();
+		const failCaps = childrenOf(tFail.id)
+			.map((c) => c.capability)
+			.sort();
 		A(
 			8,
-			"A8b 失败 + out → 扇出与成功时一致（fin + fanA + fanB）",
+			"A8b 失败前 emit 的扇出与成功时一致（fin + fanA + fanB）",
 			JSON.stringify(failCaps) === JSON.stringify(["c.fan.a", "c.fan.b", "c.fin"]),
 			JSON.stringify(failCaps),
 		);
 	}
 
-	// A7 环剪枝：a --go--> b --back--> a
+	// A7 成环剪枝：**保存时就拒**（P2.3 静态环检测），运行期的 path 兜底仍在
+	//
+	// 这条用例在 P1.5 之前是「用 result.out 走两圈，第二圈被剪掉」——但它其实一直
+	// 是**空过的**：P2.3 的静态环检测让 `b --back--> a` 在建边那一刻就被拒（400），
+	// 于是第二跳压根没有边可走，「0 个子任务」当然成立。改写（不是放宽）：
+	//
+	//   ① 建环边 → 400 + 明确说「会成环」（保存期硬拒，这是第一道闸门）；
+	//   ② 两跳的**正向**路径照旧用 emit 走通（a --go--> b，routed=1）——
+	//      证明拒环没有把合法的接力也一起拦掉；
+	//   ③ 运行期 path 剪枝（第二道闸门）是「存量数据/自连」的兜底，
+	//      由 internal/route 的单测覆盖（prune_test.go / dispatch_next_test.go），
+	//      在 e2e 里造不出来——因为这张图根本存不进去。
 	{
 		const a = (await defineCapability("c.cycle.a", ["go"])).json.capability;
 		const b = (await defineCapability("c.cycle.b", ["back"])).json.capability;
-		// #110：环检测靠 task.path（能力 id 链）。入口边不贡献 path
-		// （来源不是能力），所以第一跳必须先进 a，环才成立：
-		//   来源 c.cycle.src → a --go--> b --back--> a（a 已在 path → 剪枝）
+		// #110：事件入口用**入口边**（左端是来源名），不再需要"起点能力"。
 		await addEntryEdge("c.cycle.src", "start", a);
-		await addEdge(a, "go", b);
-		await addEdge(b, "back", a);
+		const ab = await addEdge(a, "go", b);
+		A(7, "环：a --go--> b 建边成功", ab.status === 200, `${ab.status} ${String(ab.text).slice(0, 120)}`);
 
+		const ba = await addEdge(b, "back", a);
+		A(
+			7,
+			"环：b --back--> a 在**保存时**就被拒（400）",
+			ba.status === 400,
+			`${ba.status} ${String(ba.text).slice(0, 160)}`,
+		);
+		A(
+			7,
+			"环：拒绝理由说得清是成环（不是含糊的参数错）",
+			/cycl|环/i.test(String(ba.text || "")),
+			String(ba.text).slice(0, 200),
+		);
+
+		// 正向：合法的第一跳必须还能跑（拒环不能把接力一起拦掉）
 		const cycNode = await bringUpNode(server.base, server.dbPath, nsId, "contract-cycle", [a, b], 2);
 		const ev = await postEvent({ source: "c.cycle.src", type: "start", payload: {} });
-		// 第一跳进 a；完成 a 回报 go → b；完成 b 回报 back → a 已在 path → 剪枝
 		const tA = ev.json?.tasks?.[0]?.id;
 		A(7, "环：第一跳建 1 个任务（a）", ev.json?.tasks?.length === 1);
 		A(7, "环：第一跳任务是 c.cycle.a", ev.json?.tasks?.[0]?.capability, "c.cycle.a");
@@ -523,33 +613,22 @@ async function main() {
 		await new Promise((r) => setTimeout(r, 400));
 		cycNode.conn.send({ type: "ack", task_id: tA });
 		await new Promise((r) => setTimeout(r, 200));
-		cycNode.conn.send({ type: "result", task_id: tA, status: "succeeded", out: "go" });
-		await new Promise((r) => setTimeout(r, 600));
+		cycNode.conn.send({ type: "progress", task_id: tA, note: "环：第一跳" });
+		await new Promise((r) => setTimeout(r, 200));
+		const ackA = await emitPort(cycNode, tA, 1, "go", {});
+		A(
+			7,
+			"环：a 在 go 出口 emit 成功并建出 b（routed=1，合法接力照走）",
+			!!ackA && !ackA.error && ackA.routed === 1,
+			JSON.stringify(ackA),
+		);
+		cycNode.conn.send({ type: "result", task_id: tA, status: "succeeded", summary: "a 完成" });
 
-		// 第二跳：b 应被建出来
 		const tB = sqlQuery(
 			`SELECT id FROM tasks WHERE parent_task_id = ? AND capability = 'c.cycle.b'`,
 			tA,
 		)[0]?.id;
-
-		// 完成 b，回报 back → 目标是 a，但 a 已在 path 里 → 应被剪枝
-		await new Promise((r) => setTimeout(r, 400));
-		cycNode.conn.send({ type: "ack", task_id: tB });
-		await new Promise((r) => setTimeout(r, 200));
-		cycNode.conn.send({ type: "result", task_id: tB, status: "succeeded", out: "back" });
-
-		// 等第二跳结果：不应产生新任务（被剪枝）
-		const deadline = Date.now() + 3000;
-		let childCount = 0;
-		while (Date.now() < deadline) {
-			childCount = sqlQuery(
-				`SELECT count(*) AS n FROM tasks WHERE parent_task_id = ?`,
-				tB,
-			)[0].n;
-			await new Promise((r) => setTimeout(r, 60));
-			if (childCount === 0 && Date.now() > deadline - 2000) break;
-		}
-		A(7, "环：第二跳被剪枝（0 个子任务）", childCount === 0, `children=${childCount}`);
+		A(7, "环：第二跳任务真的建出来了（b）", !!tB, String(tB));
 		cycNode.conn.close();
 	}
 

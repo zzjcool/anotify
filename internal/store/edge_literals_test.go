@@ -59,7 +59,7 @@ func TestEdgeLiteralsRoundTrip(t *testing.T) {
 	// 故意写成「键乱序 + 带空格」：任何重排/重新 marshal 都会让它变样。
 	raw := `{"to":"u_123", "tries": 3}`
 	e := &Edge{
-		NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+		NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 		Literals: json.RawMessage(raw),
 	}
 	if err := db.CreateEdge(ctx, e); err != nil {
@@ -82,12 +82,12 @@ func TestEdgeLiteralsRoundTrip(t *testing.T) {
 	}
 
 	// ② EdgesFrom（派发第 ① 步）原样带回
-	got, err := db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+	got, err := db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom: %v", err)
 	}
-	if len(got) != 1 || got[0].CapabilityID != down.ID {
-		t.Fatalf("EdgesFrom = %+v, want 1 target %s", got, down.ID)
+	if len(got) != 1 || got[0].ToRef != capRef(down) {
+		t.Fatalf("EdgesFrom = %+v, want 1 target %s", got, capRef(down))
 	}
 	if string(got[0].Literals) != raw {
 		t.Fatalf("EdgesFrom literals = %q, want %q", got[0].Literals, raw)
@@ -96,8 +96,8 @@ func TestEdgeLiteralsRoundTrip(t *testing.T) {
 	// ③ 库里那一列也是同一串字节（没有二次 marshal）
 	var stored string
 	if err := db.QueryRowContext(ctx,
-		`SELECT literals FROM edges WHERE namespace_id = ? AND from_key = ? AND from_port = ? AND to_capability = ?`,
-		nsID, up.ID, "fix", down.ID).Scan(&stored); err != nil {
+		`SELECT literals FROM edges WHERE namespace_id = ? AND from_ref = ? AND from_port = ? AND to_ref = ?`,
+		nsID, capRef(up), "fix", capRef(down)).Scan(&stored); err != nil {
 		t.Fatalf("read raw literals: %v", err)
 	}
 	if stored != raw {
@@ -112,7 +112,7 @@ func TestEdgeLiteralsDefaultEmpty(t *testing.T) {
 	db, nsID, up, down := literalsFixture(t)
 	ctx := context.Background()
 
-	e := &Edge{NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID}
+	e := &Edge{NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID}
 	if err := db.CreateEdge(ctx, e); err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestEdgeLiteralsDefaultEmpty(t *testing.T) {
 	if len(edges) != 1 || string(edges[0].Literals) != EdgeLiteralsEmpty {
 		t.Fatalf("ListEdges literals = %q, want {}", edges[0].Literals)
 	}
-	got, err := db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+	got, err := db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestCreateEdgeLiteralsRejected(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, nsID, up, down := literalsFixture(t)
 			err := db.CreateEdge(context.Background(), &Edge{
-				NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+				NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 				Literals: json.RawMessage(tc.literals),
 			})
 			if !errors.Is(err, ErrEdgeRejected) {
@@ -196,7 +196,7 @@ func TestCreateEdgeLiteralsNullIsAbsent(t *testing.T) {
 	ctx := context.Background()
 
 	e := &Edge{
-		NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+		NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 		Literals: json.RawMessage(`null`),
 	}
 	if err := db.CreateEdge(ctx, e); err != nil {
@@ -205,7 +205,7 @@ func TestCreateEdgeLiteralsNullIsAbsent(t *testing.T) {
 	if string(e.Literals) != EdgeLiteralsEmpty {
 		t.Fatalf("null 归一化后 = %q, want {}", e.Literals)
 	}
-	got, err := db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+	got, err := db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom: %v", err)
 	}
@@ -233,13 +233,13 @@ func TestCreateEdgeLiteralsAccepted(t *testing.T) {
 			db, nsID, up, down := literalsFixture(t)
 			ctx := context.Background()
 			e := &Edge{
-				NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+				NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 				Literals: json.RawMessage(tc.literals),
 			}
 			if err := db.CreateEdge(ctx, e); err != nil {
 				t.Fatalf("literals=%s 被拒: %v", tc.literals, err)
 			}
-			got, err := db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+			got, err := db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 			if err != nil {
 				t.Fatalf("EdgesFrom: %v", err)
 			}
@@ -257,20 +257,20 @@ func TestCreateEdgeLiteralsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	first := &Edge{
-		NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+		NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 		Literals: json.RawMessage(`{"to":"u_1"}`),
 	}
 	if err := db.CreateEdge(ctx, first); err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
 	second := &Edge{
-		NamespaceID: nsID, FromCapability: up.ID, FromPort: "fix", ToCapability: down.ID,
+		NamespaceID: nsID, FromRef: up.ID, FromPort: "fix", ToRef: down.ID,
 		Literals: json.RawMessage(`{"to":"u_2"}`),
 	}
 	if err := db.CreateEdge(ctx, second); err != nil {
 		t.Fatalf("重复建同一条边不该报错: %v", err)
 	}
-	got, err := db.EdgesFrom(ctx, nsID, false, up.ID, "fix")
+	got, err := db.EdgesFrom(ctx, nsID, false, up.Name, "fix")
 	if err != nil {
 		t.Fatalf("EdgesFrom: %v", err)
 	}
@@ -289,16 +289,16 @@ func TestCreateEdgeLiteralsEntryEdge(t *testing.T) {
 	ctx := context.Background()
 
 	err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromIsSource: true, FromCapability: "github", FromPort: "pull_request.opened",
-		ToCapability: down.ID, Literals: json.RawMessage(`{"tries":"many"}`),
+		NamespaceID: nsID, FromIsSource: true, FromRef: "github", FromPort: "pull_request.opened",
+		ToRef: down.ID, Literals: json.RawMessage(`{"tries":"many"}`),
 	})
 	if !errors.Is(err, ErrEdgeRejected) {
 		t.Fatalf("入口边的非法字面量 err = %v, want ErrEdgeRejected", err)
 	}
 
 	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromIsSource: true, FromCapability: "github", FromPort: "pull_request.opened",
-		ToCapability: down.ID, Literals: json.RawMessage(`{"tries":2}`),
+		NamespaceID: nsID, FromIsSource: true, FromRef: "github", FromPort: "pull_request.opened",
+		ToRef: down.ID, Literals: json.RawMessage(`{"tries":2}`),
 	}); err != nil {
 		t.Fatalf("入口边的合法字面量被拒: %v", err)
 	}
@@ -343,14 +343,14 @@ func TestMigration21EdgeLiterals(t *testing.T) {
 // TestGraphHashIncludesLiterals 守住「改常量 = 改图」这条：graph_versions 是事后
 // 追责的底图，只改某条边的字面量同样要落新版本，否则「当时那条链路长什么样」查不出来。
 func TestGraphHashIncludesLiterals(t *testing.T) {
-	base := []*Edge{{FromCapability: "a", FromPort: "ok", ToCapability: "b"}}
+	base := []*Edge{{FromRef: "a", FromPort: "ok", ToRef: "b"}}
 
 	none, err := graphContentHash(base)
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
 
-	withLit := []*Edge{{FromCapability: "a", FromPort: "ok", ToCapability: "b",
+	withLit := []*Edge{{FromRef: "a", FromPort: "ok", ToRef: "b",
 		Literals: json.RawMessage(`{"to":"u_1"}`)}}
 	lit, err := graphContentHash(withLit)
 	if err != nil {
@@ -361,9 +361,9 @@ func TestGraphHashIncludesLiterals(t *testing.T) {
 	}
 
 	// 键序不同、空白不同，但语义相同 → 同一个 hash（不堆垃圾版本）
-	same1 := []*Edge{{FromCapability: "a", FromPort: "ok", ToCapability: "b",
+	same1 := []*Edge{{FromRef: "a", FromPort: "ok", ToRef: "b",
 		Literals: json.RawMessage(`{ "b": 2, "a": 1 }`)}}
-	same2 := []*Edge{{FromCapability: "a", FromPort: "ok", ToCapability: "b",
+	same2 := []*Edge{{FromRef: "a", FromPort: "ok", ToRef: "b",
 		Literals: json.RawMessage(`{"a":1,"b":2}`)}}
 	h1, err := graphContentHash(same1)
 	if err != nil {
@@ -378,7 +378,7 @@ func TestGraphHashIncludesLiterals(t *testing.T) {
 	}
 
 	// 空覆盖等价于没有覆盖（老数据 DEFAULT '{}' 不该改变既有图版本）
-	empty := []*Edge{{FromCapability: "a", FromPort: "ok", ToCapability: "b",
+	empty := []*Edge{{FromRef: "a", FromPort: "ok", ToRef: "b",
 		Literals: json.RawMessage(`{}`)}}
 	he, err := graphContentHash(empty)
 	if err != nil {

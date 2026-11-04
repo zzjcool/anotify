@@ -458,21 +458,26 @@
           if (depth > 20) return;
           for (const e of edgesAll) {
             if (e.fromIsSource) continue;
-            if (e.fromCapability !== capId) continue;
-            const key = e.fromCapability + "|" + (e.fromPort || "") + "|" + e.toCapability;
+            // 边的两端是**引用**（P2.2）；比较/上色用后端算好的解析 id
+            if (e.fromCapabilityId !== capId) continue;
+            // 解析不到（引用指向的能力已被删）：图上的节点 id 退回引用本身，
+            // 不能拿空串当 id（那会把所有坏边并成一个假节点）
+            const toId = e.toCapabilityId || "ref:" + (e.toRef || "");
+            const key = (e.fromRef || capId) + "|" + (e.fromPort || "") + "|" + (e.toRef || toId);
             if (edgeSeen.has(key)) continue;
             edgeSeen.add(key);
-            const to = capById.get(e.toCapability);
-            push(e.toCapability, to ? window.Anotify.capLabel(to) : e.toCapability, {
+            const to = capById.get(e.toCapabilityId);
+            push(toId, to ? window.Anotify.capLabel(to) : e.toRef || toId, {
               icon: "◆",
               kind: to ? to.kind : "origin",
             });
             edges.push({
-              from: e.fromCapability,
-              to: e.toCapability,
+              from: capId,
+              to: toId,
               port: e.fromPort || "",
             });
-            walk(e.toCapability, depth + 1);
+            // 只追解出来的能力：坏边的另一头没有下游可走
+            if (e.toCapabilityId) walk(e.toCapabilityId, depth + 1);
           }
         };
         for (const tc of src.targetCaps || []) walk(tc.id, 0);

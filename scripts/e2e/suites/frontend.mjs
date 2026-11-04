@@ -1919,7 +1919,8 @@ async function checkDisplayName(page, base) {
 			.then((r) => r.json())
 			.then((d) => {
 				const e = (d.edges || [])[0];
-				return e ? { id: e.toCapability } : null;
+				// P2.2：边里存的是**引用**，能力 id 是服务端派生的 toCapabilityId
+				return e ? { id: e.toCapabilityId } : null;
 			});
 	});
 	if (!target) {
@@ -1990,32 +1991,44 @@ async function checkDisplayName(page, base) {
 			n: edges.length,
 			// 下游必须总能解析到能力；上游只在「能力边」时才要求解析
 			// （入口边的左端是来源名，本来就没有对应能力行 —— #110）
+			//
+			// P2.2：比的是**解析后的 id**（toCapabilityId / fromCapabilityId）。
+			// 边里存的只有引用（`review` / `review@1`），拿引用去能力表里查不到。
 			allResolve: edges.every(
 				(e) =>
-					byID.has(e.toCapability) &&
-					(e.fromIsSource ? true : byID.has(e.fromCapability)),
+					byID.has(e.toCapabilityId) &&
+					(e.fromIsSource ? true : byID.has(e.fromCapabilityId)),
 			),
+			// 入口边的左端是来源名：它不该被解析成任何能力
+			entryFromUnresolved: edges
+				.filter((e) => e.fromIsSource)
+				.every((e) => e.fromCapabilityId === ""),
 			// 出口名来自 from 能力的 outputs（或起点的事件类型），
 			// 不可能等于某个能力的显示名 —— 这就是"路由键不被显示名替换"
 			portsAreRaw: edges.every((e) => {
 				// 入口边：左端是来源名，出口是事件类型，任意值
 				if (e.fromIsSource) return true;
-				const from = byID.get(e.fromCapability);
+				const from = byID.get(e.fromCapabilityId);
 				if (!from) return false;
 				return (from.outputs || []).includes(e.fromPort);
 			}),
 			// 至少有一个 To 端能力带显示名（证明渲染时会用到它）
 			hasDisplayName: edges.some((e) => {
-				const to = byID.get(e.toCapability);
+				const to = byID.get(e.toCapabilityId);
 				return to && (to.displayName || "").trim();
 			}),
 			sample: edges.slice(0, 4).map((e) => {
-				const to = byID.get(e.toCapability);
-				return e.fromPort + " -> " + (to ? to.displayName || to.name : "?");
+				const to = byID.get(e.toCapabilityId);
+				return e.fromRef + " -> " + (to ? to.displayName || to.name : "?");
 			}),
 		};
 	});
 	H.check("出口表两端都能解析（入口边左端是来源名）", edge.allResolve === true, `edges=${edge.n}`);
+	H.check(
+		"入口边的左端不冒充能力（fromCapabilityId 是空串）",
+		edge.entryFromUnresolved === true,
+		`edges=${edge.n}`,
+	);
 	H.check(
 		"出口名仍是原始路由键（不被显示名替换）",
 		edge.portsAreRaw === true,

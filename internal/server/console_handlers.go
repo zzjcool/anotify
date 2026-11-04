@@ -234,6 +234,9 @@ func mergeNodes(groups ...[]*store.Node) []*store.Node {
 }
 
 // mergeEdges 合并多个命名空间的边（store 的 from/port/to 升序，再按命名空间破平局）。
+//
+// 比较的是**引用**（P2.2）：`fromRef`/`toRef` 才是边的两端，按 id 排会排出一份
+// 用户看不懂的顺序（升级后 id 还会变）。
 func mergeEdges(groups ...[]*store.Edge) []*store.Edge {
 	total := 0
 	for _, g := range groups {
@@ -247,14 +250,14 @@ func mergeEdges(groups ...[]*store.Edge) []*store.Edge {
 		if out[i].FromIsSource != out[j].FromIsSource {
 			return !out[i].FromIsSource
 		}
-		if out[i].FromCapability != out[j].FromCapability {
-			return out[i].FromCapability < out[j].FromCapability
+		if out[i].FromRef != out[j].FromRef {
+			return out[i].FromRef < out[j].FromRef
 		}
 		if out[i].FromPort != out[j].FromPort {
 			return out[i].FromPort < out[j].FromPort
 		}
-		if out[i].ToCapability != out[j].ToCapability {
-			return out[i].ToCapability < out[j].ToCapability
+		if out[i].ToRef != out[j].ToRef {
+			return out[i].ToRef < out[j].ToRef
 		}
 		return out[i].NamespaceID < out[j].NamespaceID
 	})
@@ -883,6 +886,13 @@ type capabilityListRequest struct {
 	Run *capabilityRunInput `json:"run,omitempty"`
 	// Requires 是机器上必须预装的外部命令（部署时探测，缺了部署失败）。
 	Requires []string `json:"requires,omitempty"`
+
+	// Force 显式越过**升级闸门**（P2.2，设计 §3.6）。
+	//
+	// 只有「新版本成为 latest 且会破坏已有 name 型 link」时需要它：
+	// 那种提交是一次**改线**（没人点过任何东西，线上那条链却换了契约），
+	// 默认必须被拒，让调用方先看清楚 `upgradeImpact` 再决定。
+	Force bool `json:"force,omitempty"`
 }
 
 // capabilities 处理 GET（列表）/ POST（定义新能力）。
@@ -1125,9 +1135,54 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	if err := h.db.CreateCapability(r.Context(), c); err != nil {
+	// 升级闸门（P2.2，设计 §3.6）：先把影响面算出来回给调用方。
+	//
+	// 两件事一起做：
+	//  1. 前端要能**先看到**「这一版会让哪几条 link 断」（不是先被拒再猜）；
+	//  2. 破坏性变更且没传 force → 409 带结构化 impact，而不是一句
+	//     “conflict”（那会被当成「版本号重了」，与「会改线」完全不是一回事）。
+	impact, err := h.db.CheckUpgrade(r.Context(), ns.ID, c)
+	if err != nil {
+		if handleNamespaceError(w, err) {
+			return
+		}
+		slog.Error("capability upgrade check failed",
+			"event", "console.caps.upgrade_check_failed",
+			"namespace_id", ns.ID, "name", req.Name, "version", version, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	if impact.Breaking && !req.Force {
+		slog.Warn("capability upgrade rejected by gate",
+			"event", "console.caps.upgrade_rejected",
+			"namespace_id", ns.ID, "name", req.Name, "version", version,
+			"changes", len(impact.Changes), "links", len(impact.Links))
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         (&store.UpgradeBreakingError{Impact: impact}).Error(),
+			"code":          "upgrade_breaking",
+			"upgradeImpact": impact,
+		})
+		return
+	}
+
+	if err := h.db.CreateCapabilityForce(r.Context(), c, req.Force); err != nil {
 		// 命名空间类错误（如 namespace 已不存在）有自己确实的状态码，不能当成 409
 		if handleNamespaceError(w, err) {
+			return
+		}
+		// 闸门在 store 里还会再判一次（两处同一份实现）：并发下别的请求先推了
+		// 一个新版本，这里的预计算可能已经过期——那种情况照样返回结构化拒绝，
+		// 不能让用户拿到一个「看起来没问题」的 200。
+		var breaking *store.UpgradeBreakingError
+		if errors.As(err, &breaking) {
+			slog.Warn("create capability rejected by upgrade gate",
+				"event", "console.caps.upgrade_rejected",
+				"namespace_id", ns.ID, "name", req.Name, "version", version)
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":         breaking.Error(),
+				"code":          "upgrade_breaking",
+				"upgradeImpact": breaking.Impact,
+			})
 			return
 		}
 		// 「同 name@version 换内容」与「同内容已有」由 store 区分，这里统一按冲突处理
@@ -1144,6 +1199,9 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		"capability": c,
 		// 新建时还不可能有节点声明（declared=false），但内置能力要走特例
 		"kind": route.KindForCapability(c, false),
+		// 影响面**总是**回（空影响面也是 [] 而不是 null）：
+		// 前端不必为「这一次到底查过没有」判空，也不必自己再算一遍。
+		"upgradeImpact": impact,
 	}
 	if req.Run != nil {
 		// **用 c 归一后的版本重建产物**：store.CreateCapability 在「同内容已有该能力」时
@@ -1184,14 +1242,24 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 // ---------- GET/POST/DELETE /v1/edges ----------
 
 // edgeRequest 是 POST/DELETE /v1/edges 的请求体。
+//
+// 两端是**引用**（P2.2，设计 §3.2）：`name` 跟随 latest / `name@version` 钉死。
+// 旧字段名（fromCapability / toCapability）**输入兼容一个版本**：值可以是
+// 能力 id（老客户端）或引用（新客户端），store 统一把它解析成引用落库——
+// **绝不把 id 存进边**（那是 P2.2 要消灭的形状）。
 type edgeRequest struct {
 	// NamespaceID 是这条边所属的命名空间（query 里也可以给，query 优先）。
 	NamespaceID string `json:"namespaceId"`
-	// FromIsSource 为 true 时 FromCapability 被解释为**来源名**（"github"），
-	// 用于建「入口边」；否则是上游能力 id。
-	FromIsSource   bool   `json:"fromIsSource"`
+	// FromIsSource 为 true 时 FromRef 被解释为**来源名**（"github"），
+	// 用于建「入口边」；否则是上游能力的引用（`review` / `review@1`）。
+	FromIsSource bool   `json:"fromIsSource"`
+	FromRef      string `json:"fromRef"`
+	FromPort     string `json:"fromPort"`
+	ToRef        string `json:"toRef"`
+
+	// Deprecated: 旧字段名（P2.2 之前），只在 FromRef/ToRef 为空时兜底。
+	// 下一次清理（前端/mock/e2e 那一波）连同这层兼容一起删。
 	FromCapability string `json:"fromCapability"`
-	FromPort       string `json:"fromPort"`
 	ToCapability   string `json:"toCapability"`
 	// Literals 是这条边的**常量覆盖**（设计 §3.3）：进入下游的 params = data ⊎ literals，
 	// 字面量优先。不传 / {} = 没有覆盖（老客户端行为不变）。
@@ -1203,6 +1271,36 @@ type edgeRequest struct {
 	// ResolveParams(mapping, 事件 payload) ⊎ literals。只有入口边（FromIsSource）允许非空，
 	// 能力边带非空 mapping 会被 store 硬拒（code=edge_rejected，400）。
 	Mapping json.RawMessage `json:"mapping"`
+}
+
+// linkRefs 返回这条边的两端引用，**新字段名优先、旧字段名兜底**（P2.2 输入兼容）。
+//
+// 值本身可以是引用（`review` / `review@1`）也可以是能力 id：store.CreateEdge /
+// DeleteEdge 统一归一（id → `name@version`）。这一层只决定「用哪个字段」，
+// 不做任何解析——解析只有一处（store.resolveLinkRef）。
+func (req edgeRequest) linkRefs() (from, to string) {
+	from = firstNonEmpty(req.FromRef, req.FromCapability)
+	to = firstNonEmpty(req.ToRef, req.ToCapability)
+	return strings.TrimSpace(from), strings.TrimSpace(to)
+}
+
+// firstNonEmpty 返回第一个**非空**字符串（去空白后判断）。
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// edgeListFilter 返回 GET /v1/edges 的「左端是谁」过滤值。
+//
+// 同时认 `fromRef`（新）与 `fromCapability`（旧）：控制台的链接口从「按能力 id
+// 过滤」改成「按引用过滤」，两个名字并存一个版本期，谁先升级都不会查不到。
+func edgeListFilter(r *http.Request) string {
+	q := r.URL.Query()
+	return firstNonEmpty(q.Get("fromRef"), q.Get("fromCapability"))
 }
 
 // edges 处理出口表 CRUD。
@@ -1233,7 +1331,7 @@ func (h *consoleHandler) listEdges(w http.ResponseWriter, r *http.Request) {
 	}
 	groups := make([][]*store.Edge, 0, len(nsIDs))
 	for _, nsID := range nsIDs {
-		got, err := h.db.ListEdges(r.Context(), nsID, r.URL.Query().Get("fromCapability"))
+		got, err := h.db.ListEdges(r.Context(), nsID, edgeListFilter(r))
 		if err != nil {
 			if handleNamespaceError(w, err) {
 				return
@@ -1246,26 +1344,99 @@ func (h *consoleHandler) listEdges(w http.ResponseWriter, r *http.Request) {
 	}
 	edges := mergeEdges(groups...)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"edges":       edges,
+		"edges":       h.edgeViews(r.Context(), edges),
 		"namespaceId": namespaceLabel(ns),
 	})
+}
+
+// edgeView 是 GET /v1/edges 的一行：边本身 + 两端引用**此刻**解析到的能力 id。
+//
+// 为什么要有派生字段：边里的真值只有**引用**（`review` 跟随 latest / `review@2`
+// 钉死）—— 存 id 的话能力一升级，原来那条边还指着旧 id，升级永远不生效（P2.2）。
+// 但界面要「点进去看这一版」就必须知道**这个引用现在解析到哪一版**；让浏览器自己
+// 算 name→latest 等于把解析语义复制一份到前端，两边一漂就是「页面说 review@2、
+// 派发走了 review@3」。所以解析留在服务端（唯一实现：store.ResolveRef），
+// 前端只读结果。
+//
+// 解析不到（引用指向的能力已被删）时 id 是**空串**而不是报错：一条坏边不该让整张
+// 出口表变成错误页 —— 那种情况要显示成「这条边现在走不通」，而不是「页面挂了」。
+type edgeView struct {
+	*store.Edge
+
+	// FromCapabilityID 是 fromRef 解析到的能力定义 id。
+	// 入口边（FromIsSource=true）恒为空串：左端是**来源名**，没有「哪一版」。
+	FromCapabilityID string `json:"fromCapabilityId"`
+	// ToCapabilityID 是 toRef 解析到的能力定义 id；解析不到时为空串。
+	ToCapabilityID string `json:"toCapabilityId"`
+}
+
+// edgeViews 给每条边补上「两端引用此刻解析到的能力 id」。
+//
+// 同一个 (命名空间, 引用) 只解析一次：出口表动辄几十行，而引用高度重复
+// （同一个能力出现在多条边上），逐行 ResolveRef 会变成几十次往返。
+// 解析本身仍只走 store.ResolveRef —— 这里不另写一份 name→latest。
+func (h *consoleHandler) edgeViews(ctx context.Context, edges []*store.Edge) []edgeView {
+	out := make([]edgeView, 0, len(edges))
+	cache := make(map[string]string, len(edges))
+	for _, e := range edges {
+		v := edgeView{Edge: e}
+		if !e.FromIsSource {
+			v.FromCapabilityID = h.resolveRefID(ctx, cache, e.NamespaceID, e.FromRef)
+		}
+		v.ToCapabilityID = h.resolveRefID(ctx, cache, e.NamespaceID, e.ToRef)
+		out = append(out, v)
+	}
+	return out
+}
+
+// resolveRefID 把一个引用解析成能力定义 id；解析不到返回空串。
+//
+// cache 的键带上命名空间：同一串引用（`lint@1`）在不同命名空间是**不同定义**
+// （I11），拿错作用域会拼出一个看似合理、实际指错版本的 id。
+func (h *consoleHandler) resolveRefID(ctx context.Context, cache map[string]string, nsID, ref string) string {
+	key := nsID + "\x00" + ref
+	if id, ok := cache[key]; ok {
+		return id
+	}
+	id := ""
+	if strings.TrimSpace(ref) != "" {
+		c, err := h.db.ResolveRef(ctx, nsID, ref)
+		switch {
+		case err == nil:
+			id = c.ID
+		case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrRefUnresolved):
+			// 数据事实：这个引用现在指向不到任何版本（能力被删/名字改了）。
+			// 保持空串，让界面如实显示「解析不到」，而不是让整张表 500。
+		default:
+			slog.Warn("resolve edge ref failed",
+				"event", "console.edges.resolve_ref_failed",
+				"namespace_id", nsID, "ref", ref, "error", err.Error())
+		}
+	}
+	cache[key] = id
+	return id
 }
 
 // createEdge 写入一条边。
 //
 // 校验分两层：
-//  1. store 层：from_port ∈ from_capability.outputs、两端同组织（契约 I2 / §1.2）；
+//  1. store 层：两端引用要能解析（`name` / `name@version`；也接受能力 id 做输入兼容）、
+//     from_port ∈ 解析到的上游版本的 outputs、两端同命名空间（契约 I2 / I11）；
 //     literals 必须是对象、键 ∈ 目标 params_schema、类型精确相等（设计 §5 定义期（存 link））
 //  2. 这里把 store 的拒绝翻译成 400（而不是 500）
+//
+// 注意边里**只存引用**（`fromRef`/`toRef`）：传 id 也能建，但落库的是
+// `name@version`——P2.2 之后 id 不再是 link 的一部分。
 func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 	var req edgeRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
 		return
 	}
-	if req.FromCapability == "" || req.FromPort == "" || req.ToCapability == "" {
+	fromRef, toRef := req.linkRefs()
+	if fromRef == "" || req.FromPort == "" || toRef == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "fromCapability, fromPort, toCapability are all required",
+			"error": "fromRef, fromPort, toRef are all required (legacy fromCapability/toCapability accepted)",
 		})
 		return
 	}
@@ -1276,13 +1447,13 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	e := &store.Edge{
-		NamespaceID:    ns.ID,
-		FromIsSource:   req.FromIsSource,
-		FromCapability: req.FromCapability,
-		FromPort:       req.FromPort,
-		ToCapability:   req.ToCapability,
-		Literals:       req.Literals,
-		Mapping:        req.Mapping,
+		NamespaceID:  ns.ID,
+		FromIsSource: req.FromIsSource,
+		FromRef:      fromRef,
+		FromPort:     req.FromPort,
+		ToRef:        toRef,
+		Literals:     req.Literals,
+		Mapping:      req.Mapping,
 	}
 	if err := h.db.CreateEdge(r.Context(), e); err != nil {
 		// I11：两端能力必须同命名空间，跨命名空间引用 → 400
@@ -1321,15 +1492,27 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	from, port, to := q.Get("fromCapability"), q.Get("fromPort"), q.Get("toCapability")
+	from := firstNonEmpty(q.Get("fromRef"), q.Get("fromCapability"))
+	port := q.Get("fromPort")
+	to := firstNonEmpty(q.Get("toRef"), q.Get("toCapability"))
 	if from == "" {
-		from = req.FromCapability
+		from = req.FromRef
 	}
 	if port == "" {
 		port = req.FromPort
 	}
 	if to == "" {
-		to = req.ToCapability
+		to = req.ToRef
+	}
+	if from == "" || to == "" {
+		// 旧字段名兜底（值可能是 id，store 会归一成引用再删）
+		legacyFrom, legacyTo := req.linkRefs()
+		if from == "" {
+			from = legacyFrom
+		}
+		if to == "" {
+			to = legacyTo
+		}
 	}
 	fromIsSource := req.FromIsSource
 	if v := q.Get("fromIsSource"); v != "" {
@@ -1337,7 +1520,7 @@ func (h *consoleHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 	}
 	if from == "" || port == "" || to == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "fromCapability, fromPort, toCapability are all required",
+			"error": "fromRef, fromPort, toRef are all required (legacy fromCapability/toCapability accepted)",
 		})
 		return
 	}

@@ -699,11 +699,14 @@
           const connected = new Set();
           for (const e of EDGES) {
             if (e.fromIsSource) continue;
-            if (e.fromCapability !== cap.id) continue;
-            if (pathSet.has(e.toCapability)) {
+            // 边的两端是**引用**（P2.2）；上树/查能力都用后端算好的解析 id
+            if (e.fromCapabilityId !== cap.id) continue;
+            // 解析不到时节点 id 退回引用：不能拿空串当 id（所有坏边会并成一个假节点）
+            const toCapId = e.toCapabilityId || "ref:" + (e.toRef || "");
+            if (pathSet.has(toCapId)) {
               out.children.push({
-                capId: e.toCapability,
-                cap: capById.get(e.toCapability) || null,
+                capId: toCapId,
+                cap: capById.get(e.toCapabilityId) || null,
                 kind: "cycle",
                 viaPort: e.fromPort,
                 children: [],
@@ -712,10 +715,10 @@
               connected.add(e.fromPort);
               continue;
             }
-            const to = capById.get(e.toCapability);
+            const to = capById.get(e.toCapabilityId);
             if (!to) {
               out.children.push({
-                capId: e.toCapability,
+                capId: toCapId,
                 cap: null,
                 kind: "unknown",
                 viaPort: e.fromPort,

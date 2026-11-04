@@ -49,8 +49,15 @@ type DispatchInput struct {
 	NamespaceID  string `json:"namespaceId"`
 	TraceID      string
 	ParentTaskID string
-	// FromCap 是上游标识：默认是上游能力定义 ID；
+	// FromCap 是上游标识：默认是上游能力的**名字**（P2.2：link 的左端是引用，
+	// `analyze` / `analyze@1` 里的名字部分；tasks.capability 那一列）；
 	// FromIsSource 为 true 时它是**来源名**（入口边，如 "github"）。
+	//
+	// 为什么是名字不是 id：link 存的是引用，同一条 link 在升级前后必须能被同一跳查到。
+	// 按 id 查意味着「升级之后这条 link 就查不到了」——那正是 P2.2 要修的东西。
+	//
+	// 兼容：ws 的接力派发仍然传 task.CapabilityID（那一面不在本波范围），
+	// plan 会把 `cap_…` 形状的 id 换成名字（见 Dispatcher.upstreamKey）。
 	FromCap      string
 	FromIsSource bool
 	// Out 是上游**能力**回报的出口名。"" 表示上游没回报——此时不派发、也不记剪枝。
@@ -95,7 +102,7 @@ type DispatchInput struct {
 // fromKeyPort 返回这次派发的 (左端, 端口)：
 //
 //	入口边（FromIsSource）：来源名 + 事件类型
-//	能力边：     上游能力 id + 它回报的出口名
+//	能力边：     上游能力**名字** + 它回报的出口名
 func (in DispatchInput) fromKeyPort() (key, port string) {
 	if in.FromIsSource {
 		return in.EntryFromKey, in.EntryFromPort
@@ -103,7 +110,7 @@ func (in DispatchInput) fromKeyPort() (key, port string) {
 	return in.FromCap, in.Out
 }
 
-// upstream 返回剪枝记录里要回显的上游标识（入口边是来源名，能力边是能力 id）。
+// upstream 返回剪枝记录里要回显的上游标识（入口边是来源名，能力边是能力名）。
 func (in DispatchInput) upstream() string {
 	if in.FromIsSource {
 		return in.EntryFromKey
@@ -130,15 +137,23 @@ type Store interface {
 	// EdgesFrom 是派发第 ① 步的唯一查表入口。
 	//
 	// fromIsSource 决定 fromKey 的解释（见 store.Edge.FromIsSource）：
-	// false → 上游能力 id；true → 来源名（入口边）。
+	// false → 上游能力**名字**（P2.2：link 的左端是引用）；true → 来源名（入口边）。
 	//
 	// 命名空间维度是必须的：同名能力可以在两个命名空间里各有一条**不同的**出口边，
 	// 少这个参数就会把别人的边当自己的（契约 §3 第 ① 步）。
 	//
-	// 返回的是**边目标**（目标能力 id + 该条边的字面量覆盖），不是裸 id：
+	// 返回的是**边目标**（目标能力的引用 + 该条边的字面量覆盖），不是 id：
 	// 派发要把 literals 叠到目标参数上（设计 §3.3），分两次查会多一次往返，
-	// 也让「一条边」这个概念在两个包里各有一半。
+	// 也让「一条边」这个概念在两个包里各有一半。目标引用要在 plan 里解析成
+	// 具体版本（`name` 跟随 latest → 这次派发时刻的最新版）。
 	EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]store.LinkTarget, error)
+	// ResolveRef 把 link 上的引用解析成能力定义（设计 §3.2）：
+	// `name` → latest（**每次派发重新解析**，所以升级下一次派发就生效）；
+	// `name@version` → 那一版（钉死，升级不影响）。
+	//
+	// 未命中返回 store.ErrNotFound（plan 把它翻成 prune/param_schema 之类可见失败，
+	// 而不是让整次派发 500：一条指向已删能力的 link 不该拖垮整个扇出）。
+	ResolveRef(ctx context.Context, namespaceID, ref string) (*store.CapabilityVersion, error)
 	GetCapabilityByID(ctx context.Context, namespaceID, id string) (*store.CapabilityVersion, error)
 	// NodesForCapability 只返回**本命名空间**里声明了该能力的节点（契约 §3 第 ③ 步）。
 	//
@@ -378,13 +393,22 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	//
 	// 两类上游在这里汇成一对 (fromKey, fromPort)：
 	//   - 入口边：来源名 + 事件类型（事件类型由外部系统决定，可以是任意值）
-	//   - 能力边：上游能力 id + 它回报的出口名
+	//   - 能力边：上游能力**名字** + 它回报的出口名（link 的左端就是名字）
 	//
 	// 能力没回报出口 = 正常结束的分支，不查表、不剪枝（契约 §7 第 ① 行）。
 	// （入口边一定有时刻：checkInput 已要求 EntryFromPort 非空。）
 	fromKey, fromPort := in.fromKeyPort()
 	if fromPort == "" {
 		return nil, nil, nil
+	}
+	if !in.FromIsSource {
+		// 兼容老调用方（ws 的接力派发传的是 task.CapabilityID）：换成名字再查。
+		// 换成之后剪枝/留痕里的上游标识也统一是名字，trace 里不会一半 id 一半名字。
+		name, err := d.upstreamKey(ctx, in.NamespaceID, fromKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		fromKey = name
 	}
 
 	// ② 查出口表。**只剩这一条路径**（P2.1）：源不再有旁路，它的目标就是入口边。
@@ -412,16 +436,33 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		return nil, nil, fmt.Errorf("route: pin graph version: %w", err)
 	}
 
-	// ③ 逐条边：环剪枝 → 参数 → 跨组织用户 → 找节点
+	// ③ 逐条边：解析引用 → 环剪枝 → 参数 → 跨组织用户 → 找节点
+	//
+	// 解析引用（P2.2，设计 §3.2）集中在**这一处**：`name` 解析成**本次派发时刻的
+	// latest**（升级下一次派发就生效），`name@version` 解析成那一版（钉死）。
+	// resolveCache 只活一次 plan：同一条被扇出多次引用的能力只解析一次，
+	// 但**不会**跨派发复用——缓存跨派发就等于把 latest 钉在第一次解析的那一刻，
+	// 升级又永远不生效了。
+	cache := newRefCache()
 	for _, tgt := range targets {
-		targetID := tgt.CapabilityID
-		capDef, err := d.Store.GetCapabilityByID(ctx, in.NamespaceID, targetID)
+		capDef, err := d.resolveRef(ctx, in.NamespaceID, tgt.ToRef, cache)
 		if err != nil {
-			return nil, nil, fmt.Errorf("route: load target capability %s: %w", targetID, err)
+			// 引用解析不到（能力被删 / 版本不存在）：只剪这一条边，不整次失败。
+			// 一条坏 link 不该把扇出里其他健康的边一起卖掉（与坏 literals 同口径）。
+			d.prune(ctx, in, out, PrunedRecord{
+				Reason: ReasonParamSchema,
+				Port:   fromPort,
+				Detail: fmt.Sprintf("link target %q: %v", tgt.ToRef, err),
+			})
+			continue
 		}
+		targetID := capDef.ID
 
-		// 环剪枝：目标已在路径里 → 静默剪枝，但必须留痕
-		if pathContains(in.Path, targetID) {
+		// 环剪枝：目标的**名字**已在路径里 → 静默剪枝，但必须留痕。
+		//
+		// 按名字判（P2.2）：tasks.path 存的是能力名，同一条链上重复出现同一个名字
+		// 才是环。按 id 判会因为 `analyze@1` 与 `analyze@2` 是两个 id 而漏掉真环。
+		if pathContains(in.Path, capDef.Name) {
 			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonPath,
 				CapabilityID: targetID,
@@ -607,7 +648,9 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		if err != nil {
 			return nil, nil, fmt.Errorf("route: marshal params: %w", err)
 		}
-		path := append(append([]string{}, in.Path...), c.cap.ID)
+		// path 存**能力名**（P2.2）：环剪枝的判据是「同一条链上重复出现同一个名字」，
+		// 与配置期的静态环检测（store.checkEdgeWouldCycle）同一口径。
+		path := append(append([]string{}, in.Path...), c.cap.Name)
 		task := &store.Task{
 			ID:           store.NewTaskID(),
 			NamespaceID:  in.NamespaceID, // ⑤ 根任务用入参；子任务由 store I11④ 强制继承父任务
@@ -627,6 +670,54 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	}
 
 	return tasks, cands, nil
+}
+
+// capabilityIDPrefix 是 capability_versions.id 的固定前缀（契约 §2.2：`cap_<秒>_<hash8>_<随机>`）。
+const capabilityIDPrefix = "cap_"
+
+// upstreamKey 把接力派发的上游标识归一成**能力名**（P2.2：link 的左端是名字）。
+//
+// 为什么需要兼容：ws 的接力派发仍按老形状传 `task.CapabilityID`（那一面由
+// 另一个 worker 负责，本波不动它）。id 的形状是契约定死的 `cap_` 前缀，
+// 所以先用前缀做一次**零成本**判定，只有真的像 id 才去查一次库；
+// 万一有个能力名字恰好以 `cap_` 开头，查不到就按名字原样用（不会解析到别处）。
+func (d *Dispatcher) upstreamKey(ctx context.Context, namespaceID, key string) (string, error) {
+	if !strings.HasPrefix(key, capabilityIDPrefix) {
+		return key, nil
+	}
+	c, err := d.Store.GetCapabilityByID(ctx, namespaceID, key)
+	if errors.Is(err, store.ErrNotFound) {
+		return key, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("route: resolve upstream %s: %w", key, err)
+	}
+	return c.Name, nil
+}
+
+// refCache 是**一次 plan** 内的引用解析缓存（不跨派发复用）。
+//
+// 为什么需要：扇出时同一条 link 目标可能被多条边引用（1:N 扇出里同一个下游接到
+// 两个出口上），解析两次就是两次往返。为什么不能跨派发：缓存跨派发等于把
+// `name` 型 link 的 latest 钉死在第一次解析的那一刻——升级又永远不生效了
+// （这正是 P2.2 要消灭的失败模式）。
+type refCache map[string]*store.CapabilityVersion
+
+func newRefCache() refCache { return make(refCache, 4) }
+
+// resolveRef 是派发侧解析 link 引用的**唯一**入口（store.ResolveRef 的带缓存包装）。
+//
+// 解析失败（能力被删 / 版本不存在）返回 error，由调用方只剪那一条边。
+func (d *Dispatcher) resolveRef(ctx context.Context, namespaceID, ref string, cache refCache) (*store.CapabilityVersion, error) {
+	if c, ok := cache[ref]; ok && c != nil {
+		return c, nil
+	}
+	c, err := d.Store.ResolveRef(ctx, namespaceID, ref)
+	if err != nil {
+		return nil, err
+	}
+	cache[ref] = c
+	return c, nil
 }
 
 // pinDigest 取「这次派发要钉在任务行上的产物内容 digest」（P0-a）。
@@ -1147,7 +1238,7 @@ func parentPtr(s string) *string {
 // 这是契约 §4 的**递归应用**——把上一跳的结果当作下一跳的输入：
 //
 //	namespaceID = 父任务的 NamespaceID（store.Task.NamespaceID，必须原样传入）
-//	FromCap     = 刚完成的能力
+//	fromKey     = 刚完成的能力（名字；传 id 也接受，见下）
 //	Out         = 它回报的出口名
 //	Params      = 它的 params（原样传递，不求值）
 //	Path        = 它的 path（环剪枝的累积路径）
@@ -1171,7 +1262,7 @@ func parentPtr(s string) *string {
 // 剪枝留痕（InsertPruneEvent）在 plan 内、事务外，best-effort：若随后的事务
 // 回滚，库里可能留下一条「这条边没走成」的痕迹——那是诊断信息，
 // 比丢掉证据好，可接受（契约 §4）。
-func (d *Dispatcher) PlanNextHop(ctx context.Context, namespaceID, traceID, parentTaskID, fromCapabilityID, out string, params json.RawMessage, path []string) ([]*store.Task, error) {
+func (d *Dispatcher) PlanNextHop(ctx context.Context, namespaceID, traceID, parentTaskID, fromKey, out string, params json.RawMessage, path []string) ([]*store.Task, error) {
 	if out == "" {
 		return nil, nil // 没回报出口：不派下一跳（契约 §7 第 ① 行）
 	}
@@ -1191,10 +1282,11 @@ func (d *Dispatcher) PlanNextHop(ctx context.Context, namespaceID, traceID, pare
 		NamespaceID:  namespaceID,
 		TraceID:      traceID,
 		ParentTaskID: parentTaskID,
-		FromCap:      fromCapabilityID,
-		Out:          out,
-		Params:       paramMap,
-		Path:         path,
+		// 左端是能力名（P2.2）；老调用方传的 id 由 plan 的 upstreamKey 归一。
+		FromCap: fromKey,
+		Out:     out,
+		Params:  paramMap,
+		Path:    path,
 	}
 	// 旧 DispatchNext 走 Dispatch，本来就有这层校验；绕过 Dispatch 时要补上。
 	if err := d.checkInput(in); err != nil {

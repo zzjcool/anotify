@@ -29,28 +29,31 @@ func isOriginCapability(c *CapabilityVersion) bool {
 	return ok && bc.Origin
 }
 
-// 一行 = 一条边；同一 (FromCapability, FromPort) 可有多行 → 扇出（不变量 I7：
-// 两端都是 capability_id，图里没有机器）。
+// 一行 = 一条边；同一 (FromRef, FromPort) 可有多行 → 扇出（不变量 I7：
+// 两端都是能力引用，图里没有机器）。
 type Edge struct {
 	// NamespaceID 是隔离维度（I11）：边属于某个命名空间，
 	// 同一对能力可以在不同命名空间各有一条边，互不影响。
 	NamespaceID string `json:"namespaceId"`
 
-	// FromIsSource 决定 FromCapability 字段怎么解释（字段名为了兼容而保留）：
+	// FromIsSource 决定 FromRef 字段怎么解释：
 	//
-	//   false（默认）  FromCapability = 上游能力的 capability_versions.id
-	//                  fromPort 必须 ∈ 该能力的 outputs（不变量 I2）
+	//   false（默认）  FromRef = 上游能力的**引用**（`analyze` 跟随 latest /
+	//                  `analyze@1` 钉死，见 ref.go 与设计 §3.2）
+	//                  fromPort 必须 ∈ 解析到的版本的 outputs（不变量 I2）
 	//
-	//   true            FromCapability = **来源名**（"github"/"jira"/…）
+	//   true            FromRef = **来源名**（"github"/"jira"/…）
 	//                  fromPort = 事件类型，任意值（外部系统决定）
 	//
 	// 第二种就是「入口边」：机器入口 POST /v1/events?source=github 靠它找下游。
 	// 它原先靠一个叫 github@1 的空壳能力当锚点，现在不需要了 —— 那种能力
 	// 不执行代码、不产生任务、也不可配置，却会出现在能力列表上。
-	FromIsSource   bool   `json:"fromIsSource"`
-	FromCapability string `json:"fromCapability"`
-	FromPort       string `json:"fromPort"`
-	ToCapability   string `json:"toCapability"`
+	FromIsSource bool   `json:"fromIsSource"`
+	FromRef      string `json:"fromRef"`
+	FromPort     string `json:"fromPort"`
+	// ToRef 是下游能力的**引用**（`notify` / `notify@2`）。入口边同样只用引用：
+	// 源的「出口能力」也走升级语义（钉的是它当初选的那一版，见 checkSourceTargets）。
+	ToRef string `json:"toRef"`
 
 	// Literals 是这条边的**常量覆盖**（设计 §3.3）：进入下游的 params = data ⊎ literals，
 	// 字面量优先，所以 data 里不必再带这些键。"{}" = 没有覆盖。
@@ -70,6 +73,17 @@ type Edge struct {
 	// 与 literals 同样用 json.RawMessage：写的就是用户给的字节，读回来要一字不差。
 	Mapping   json.RawMessage `json:"mapping"`
 	CreatedAt int64           `json:"createdAt"`
+
+	// Deprecated: P2.2 之前的字段名，**只用于输入兼容**，永不落库、永不出现在 JSON 里。
+	//
+	// 老客户端（控制台旧版本、e2e、节点侧的老调用）传的是 capability_versions.id；
+	// CreateEdge 在 FromRef/ToRef 为空时读这两个字段，并把 id 解析成
+	// `name@version`（钉死引用）——这是「输入兼容一个版本」，**不是**第二种存储形状：
+	// 边上一律只存引用（P2.2 的全部意义就在这里）。
+	//
+	// 下一次清理（P2.2 的前端/mock/e2e 波）会连同这层兼容一起删掉。
+	FromCapability string `json:"-"`
+	ToCapability   string `json:"-"`
 }
 
 // LinkTarget 是「这条边通向哪里」+「路上带哪些常量/模板」，即 EdgesFrom 的一行。
@@ -78,9 +92,10 @@ type Edge struct {
 // （设计 §3.3 / §11.5），分两次查（先拿 id，再回头查 literals/mapping）会多一次往返，
 // 也让「边」这个概念在两个包里各有一半。
 //
-// CapabilityID 是目标能力**定义 id**（不是 name@version，同 capability_versions.id）。
+// ToRef 是目标能力的**引用**（`notify` / `notify@2`），不是 id：
+// 「指向哪一版」由引用本身回答，派发时再解析（设计 §3.2 / §7 P2.2）。
 type LinkTarget struct {
-	CapabilityID string `json:"capabilityId"`
+	ToRef string `json:"toRef"`
 	// Literals 原样来自 edges.literals（"{}" = 无覆盖）。派发前由 route 叠加到目标参数上。
 	Literals json.RawMessage `json:"literals"`
 	// Mapping 原样来自 edges.mapping（"{}" = 无模板）。只有入口边会非空；
@@ -104,15 +119,23 @@ type GraphVersion struct {
 
 // CreateEdge 新增一条边。
 //
+// 两端都用**引用**（P2.2，设计 §3.2）：`name` 跟随 latest / `name@version` 钉死。
+// 存 id 已经是历史：id 每版一个，升级之后旧 id 永远指着旧版，升级永远不生效。
+//
+// 入参归一（唯一一处）：FromRef/ToRef 为空时读废弃字段 FromCapability/ToCapability，
+// 并把能力 id 解析成 `name@version`（输入兼容，**不存 id**）。
+//
 // 配置期校验（契约 §6.2 / 不变量 I2 / A5 / I11 / 设计 §5「定义期（存 link）」）：
-//   - from_port 必须 ∈ from 能力的 outputs（封闭集合，不能凭空发明出口）；入口边例外：
-//     事件类型由外部系统决定，也可以写成 "*" = 任意事件类型
-//   - 两端能力必须同**命名空间**（I11 第 ① 条：跨命名空间引用一律拒绝）
+//   - to_ref 必须能解析（`name` → 这个名字存在；`name@v` → 那一版存在）
+//   - from_port 必须 ∈ **解析到的上游版本**的 outputs（封闭集合，不能凭空发明出口）；
+//     入口边例外：事件类型由外部系统决定，也可以写成 "*" = 任意事件类型
+//   - 两端引用必须能在本**命名空间**里解析（I11 第 ① 条：跨命名空间引用一律拒绝）
 //   - Literals 必须是 JSON 对象，每个键 ∈ 目标 params_schema.properties，
 //     且值类型与声明**精确相等**（不转换）——拼错/写错当场拒，不要等派发时才剪枝
 //   - Mapping 只允许出现在**入口边**，且必须是 JSON 对象、键 ∈ 目标
 //     params_schema.properties、值是「常量或 {{点号路径}} 模板」（常量才查类型）。
 //     能力边带非空 mapping → 硬拒（§8 已否决能力边的引用映射）
+//   - 静态可达环（按**名字**判：同一条链上重复出现同一个名字才是环，P2.3/P2.2）
 //
 // 违反返回 ErrEdgeRejected / *CrossNamespaceError。重复边幂等（PK 冲突视为已存在）。
 func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
@@ -122,23 +145,28 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	if e.NamespaceID == "" || e.NamespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
-	if e.FromCapability == "" || e.FromPort == "" || e.ToCapability == "" {
+	// 归一：废弃字段名 → ref（输入兼容一个版本，见 Edge.FromCapability 的注释）。
+	if strings.TrimSpace(e.FromRef) == "" {
+		e.FromRef = e.FromCapability
+	}
+	if strings.TrimSpace(e.ToRef) == "" {
+		e.ToRef = e.ToCapability
+	}
+	if strings.TrimSpace(e.FromRef) == "" || e.FromPort == "" || strings.TrimSpace(e.ToRef) == "" {
 		return fmt.Errorf("%w: from/port/to all required", ErrEdgeRejected)
 	}
-	// I11 第 ① 条（右端）：目标能力必须属于同命名空间。
-	if err := d.checkCapabilityInNamespace(ctx, e.NamespaceID, e.ToCapability, "edges.to_capability"); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return fmt.Errorf("%w: to capability %q: %v", ErrEdgeRejected, e.ToCapability, err)
-		}
-		return err
-	}
-	to, err := d.GetCapabilityByID(ctx, e.NamespaceID, e.ToCapability)
+
+	// 右端（I11 第 ① 条）：引用必须在本命名空间里解析得到。
+	// 解析不到 / 跨命名空间 → 都是客户端可修的错误（400）。
+	toRef, to, err := d.resolveLinkRef(ctx, e.NamespaceID, e.ToRef, "edges.to_ref")
 	if err != nil {
-		return fmt.Errorf("%w: to capability %q: %v", ErrEdgeRejected, e.ToCapability, err)
+		return asEdgeRejected(err, "to link ref %q", e.ToRef)
 	}
+	e.ToRef = toRef
 
 	// 字面量覆盖的配置期硬拒（设计 §5）：常量不依赖运行时，所以能在这里判类型。
 	// 归一化后的值回写 e.Literals（空 → "{}"），保证写入/响应都不会是 null。
+	// 用**解析到的版本**的 schema 判：`name` 型 link 跟随 latest，改的就是最新那份契约。
 	literals, err := checkEdgeLiterals(to, e.Literals)
 	if err != nil {
 		return err
@@ -165,28 +193,26 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		// 新建入口边时用户也可以直接写它来省掉逐个 type 建边。
 		//
 		// 也要校验来源名不比能力名更容易撞车：来源名非空即可。
+		// 来源名是**名字**（不是能力引用）：原样保存，不解析、不带版本后缀。
+		e.FromRef = strings.TrimSpace(e.FromRef)
 	} else {
-		// I11 第 ① 条（左端）：上游能力也必须属于同命名空间。
+		// 左端：能力引用，同样必须能解析（I11 第 ① 条）。
+		fromRef, from, ferr := d.resolveLinkRef(ctx, e.NamespaceID, e.FromRef, "edges.from_ref")
+		if ferr != nil {
+			return asEdgeRejected(ferr, "from link ref %q", e.FromRef)
+		}
+		e.FromRef = fromRef
+		// 出口封闭集合（不变量 I2）：from_port 必须属于**解析到的那个版本**的 outputs。
 		//
-		// 能力 id 全局唯一，把别处的 id 填进来在 SQL 层是合法的
-		// （外键只保证行存在），所以这里必须显式校验。
-		if err := d.checkCapabilityInNamespace(ctx, e.NamespaceID, e.FromCapability, "edges.from_capability"); err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("%w: from capability %q: %v", ErrEdgeRejected, e.FromCapability, err)
-			}
-			return err
-		}
-		from, err := d.GetCapabilityByID(ctx, e.NamespaceID, e.FromCapability)
-		if err != nil {
-			return fmt.Errorf("%w: from capability %q: %v", ErrEdgeRejected, e.FromCapability, err)
-		}
-		// 出口封闭集合（不变量 I2）：from_port 必须属于该能力的 outputs。
+		// 为什么按解析到的版本判而不是按名字的并集：`analyze@1` 钉的是那一版的契约；
+		// `analyze` 跟随 latest，那就按此刻的 latest 判——用户配的是「此刻这条线」，
+		// 以后 latest 换了端口集合，由升级闸门（ErrUpgradeBreaking）拦下来。
 		if !from.HasOutput(e.FromPort) {
 			return fmt.Errorf("%w: port %q not in %s@%d outputs %v",
 				ErrEdgeRejected, e.FromPort, from.Name, from.Version, from.Outputs)
 		}
 
-		// 静态环检测（设计 §7 P2.3）。
+		// 静态环检测（设计 §7 P2.3）——按**名字**判（P2.2）。
 		//
 		// 为什么要在保存时拒，而不是只靠运行期 path 剪枝：
 		//   - 环是**配置错误**，不是运行时状况。等它跑起来才发现，代价是一个真实的
@@ -194,9 +220,10 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		//   - 运行期 path 剪枝必须保留（它是防线的最后一层：图可能被改，旧任务还在跑），
 		//     但那不该是唯一一层。
 		//
-		// 判据：从 to 出发沿已有边能否走回 from。走得到 → 加了这条就成环。
+		// 判据（与运行期 path 剪枝同一口径）：从 to **的名字**出发沿已有边能否走回
+		// from 的名字。走得到 → 加了这条就成环。
 		// 只读当前命名空间的边（I11：图不跨命名空间）。
-		if err := d.checkEdgeWouldCycle(ctx, e.NamespaceID, e.FromCapability, e.ToCapability); err != nil {
+		if err := d.checkEdgeWouldCycle(ctx, e.NamespaceID, from.Name, to.Name); err != nil {
 			return err
 		}
 	}
@@ -204,15 +231,29 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	if e.CreatedAt == 0 {
 		e.CreatedAt = Now()
 	}
+	// 幂等键是 (namespace, 左端, 端口, 右端)**引用**：
+	// `fixer` 与 `fixer@1` 是两条不同的 link（一个跟随、一个钉死），可以并存。
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at)
+		`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
 		 VALUES (?,?,?,?,?,?,?,?)
-		 ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
-		e.NamespaceID, boolToInt(e.FromIsSource), e.FromCapability, e.FromPort, e.ToCapability,
+		 ON CONFLICT(namespace_id, from_is_source, from_ref, from_port, to_ref) DO NOTHING`,
+		e.NamespaceID, boolToInt(e.FromIsSource), e.FromRef, e.FromPort, e.ToRef,
 		string(e.Literals), string(e.Mapping), e.CreatedAt); err != nil {
 		return fmt.Errorf("insert edge: %w", err)
 	}
 	return nil
+}
+
+// asEdgeRejected 把「引用解析失败」翻成配置期硬拒（ErrEdgeRejected，HTTP 400）。
+//
+// 跨命名空间引用保持 *CrossNamespaceError（I11 有独立的错误类型，handler 按它翻 400），
+// 其余一律包成 ErrEdgeRejected 并把具体原因带在文案里（哪个引用、要什么）。
+func asEdgeRejected(err error, format string, args ...any) error {
+	var cross *CrossNamespaceError
+	if errors.As(err, &cross) {
+		return cross
+	}
+	return fmt.Errorf("%w: %s: %v", ErrEdgeRejected, fmt.Sprintf(format, args...), err)
 }
 
 // boolToInt 把 bool 存成 SQLite 的 0/1（没有原生 bool 类型）。
@@ -387,14 +428,41 @@ func MatchJSONType(want string, v any) bool { return schema.TypeMatches(want, v)
 func JSONTypeName(v any) string { return schema.TypeName(v) }
 
 // DeleteEdge 删除一条边。边不存在返回 ErrNotFound。
-func (d *DB) DeleteEdge(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort, toCapability string) error {
+//
+// 定位参数是**引用**（`name` / `name@version`）；但 P2.2 之前的调用方传的是能力 id，
+// 所以这里先归一成候选值（见 refLookupKeys）：
+//
+//   - `fixer@1`          → 只删钉死那一版的那条 link（两个引用是两件事，不能互相匹配）
+//   - `fixer`            → 只删跟随 latest 的那条 link
+//   - 能力 id（老客户端） → 钉死引用与同名跟随引用**都算命中**（用户的意思就是「这条线」）
+func (d *DB) DeleteEdge(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort, toKey string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
+	// 入口边的左端是**来源名**，原样匹配（不解析：来源不是能力）。
+	fromKeys := []string{strings.TrimSpace(fromKey)}
+	if !fromIsSource {
+		fromKeys = d.refLookupKeys(ctx, namespaceID, fromKey)
+	}
+	toKeys := d.refLookupKeys(ctx, namespaceID, toKey)
+	if len(fromKeys) == 0 || len(toKeys) == 0 {
+		return ErrNotFound
+	}
+
+	args := make([]any, 0, 3+len(fromKeys)+len(toKeys))
+	args = append(args, namespaceID, boolToInt(fromIsSource), fromPort)
+	for _, k := range fromKeys {
+		args = append(args, k)
+	}
+	for _, k := range toKeys {
+		args = append(args, k)
+	}
 	res, err := d.ExecContext(ctx,
 		`DELETE FROM edges
-		 WHERE namespace_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ? AND to_capability = ?`,
-		namespaceID, boolToInt(fromIsSource), fromKey, fromPort, toCapability)
+		 WHERE namespace_id = ? AND from_is_source = ? AND from_port = ?
+		   AND from_ref IN (`+sqlPlaceholders(len(fromKeys))+`)
+		   AND to_ref IN (`+sqlPlaceholders(len(toKeys))+`)`,
+		args...)
 	if err != nil {
 		return fmt.Errorf("delete edge: %w", err)
 	}
@@ -408,20 +476,36 @@ func (d *DB) DeleteEdge(ctx context.Context, namespaceID string, fromIsSource bo
 	return nil
 }
 
-// ListEdges 列出**命名空间内**的边（fromCapability 非空时按它过滤）；空列表返回 []。
+// sqlPlaceholders 返回 n 个逗号分隔的 ?，供 IN (...) 拼参数位（n 已由调用方保证 >= 1）。
+func sqlPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// ListEdges 列出**命名空间内**的边（fromKey 非空时按它过滤）；空列表返回 []。
+//
+// fromKey 是「左端是谁」：来源名（入口边）或能力引用/能力 id。
+// 过滤按**名字**匹配（RefName）：`fixer` 与 `fixer@1` 都是「fixer 的出边」，
+// 这是控制台“某个能力的出边”那个视图的意思——按字符串精确匹配会把钉死引用漏掉。
 func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edge, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	q := `SELECT namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at
-	        FROM edges WHERE namespace_id = ?`
-	args := []any{namespaceID}
+	// 过滤在 Go 里做：边是配置期小对象（十几行），而“按名字匹配两个引用形态”
+	// 用 SQL 得拼 LIKE/子串，既慢又容易把名字里带 @ 的边弄错。
+	//
+	// 过滤名字**先**算好：refNameKey 可能再查一次库，而结果集正占着连接
+	// （`:memory:` 库连接池上限是 1，边读边查会自己锁死自己）。
+	wantName := ""
 	if fromKey != "" {
-		q += ` AND from_key = ?`
-		args = append(args, fromKey)
+		wantName = d.refNameKey(ctx, namespaceID, fromKey)
 	}
-	q += ` ORDER BY from_is_source, from_key, from_port, to_capability`
-	rows, err := d.QueryContext(ctx, q, args...)
+	q := `SELECT namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at
+	        FROM edges WHERE namespace_id = ?
+	        ORDER BY from_is_source, from_ref, from_port, to_ref`
+	rows, err := d.QueryContext(ctx, q, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list edges: %w", err)
 	}
@@ -431,30 +515,56 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 		var e Edge
 		var isSrc int
 		var literals, mapping string
-		if err := rows.Scan(&e.NamespaceID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability,
+		if err := rows.Scan(&e.NamespaceID, &isSrc, &e.FromRef, &e.FromPort, &e.ToRef,
 			&literals, &mapping, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan edge: %w", err)
 		}
 		e.FromIsSource = isSrc == 1
 		e.Literals = normalizeEdgeLiterals([]byte(literals))
 		e.Mapping = normalizeEdgeMapping([]byte(mapping))
+		if wantName != "" && RefName(e.FromRef) != wantName {
+			continue
+		}
 		out = append(out, &e)
 	}
 	return out, rows.Err()
 }
 
+// refNameKey 返回「按名字匹配这一端」用的名字：
+//
+//	`fixer` / `fixer@1` → fixer
+//	能力 id（老客户端） → 该能力的名字
+//	其余（来源名等）    → 原字符串
+func (d *DB) refNameKey(ctx context.Context, namespaceID, raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if name, _, pinned := SplitRef(s); pinned {
+		return name
+	}
+	if c, err := d.GetCapabilityByID(ctx, namespaceID, s); err == nil {
+		return c.Name
+	}
+	return s
+}
+
 // EdgesFrom 是派发第 ① 步的**唯一**查表入口（契约 §4）：
 // 返回 (namespaceID, fromKey, fromPort) 的全部下游
-// （能力 id + 该条边的字面量覆盖 + 该条边的引用模板）。
+// （目标**引用** + 该条边的字面量覆盖 + 该条边的引用模板）。
 //
-// fromIsSource 决定 fromKey 是能力 id 还是来源名（见 Edge.FromIsSource）。
+// fromIsSource 决定 fromKey 是能力名还是来源名（见 Edge.FromIsSource）。
+//
+// fromKey 对能力边是**能力名**（不是 id）：`name` 型 link 的左端就是名字本身，
+// 按名字查才能一次拿全（`fixer` 与 `fixer@1` 两种左端各自是独立的 link 行，
+// 但都写的是同一个能力名——名字相同才能被同一跳查到）。
 //
 // **入口边的端口匹配放宽**（P2.1）：入口边可以写 from_port="*"，含义是「这个源的任意
 // 事件类型都走这条边」——源能收什么事件由外部系统决定，让用户为每个 type 手建一条边
 // 是多余的心智负担（迁移 26 搬过来的源目标就是一个 "*"）。所以 fromIsSource=true 时
 // 匹配 `from_port = ? OR from_port = '*'`；能力边的出口是能力的封闭契约（I2），不放宽。
 //
-// 精确端口优先于 "*"，且同一目标能力只返回一行：一条精确边 + 一条 "*" 边指向同一个
+// 精确端口优先于 "*"，且同一**目标引用**只返回一行：一条精确边 + 一条 "*" 边指向同一个
 // 下游时，那个下游只能收到**一次**派发（否则一个事件会变成两个任务）。
 //
 // 除了 route 包，其他包不得再写 `FROM edges`（见 #56 的验收：全仓只允许 1 处）。
@@ -463,24 +573,48 @@ func (d *DB) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource boo
 		return nil, ErrNamespaceRequired
 	}
 	if !fromIsSource {
+		// 左端有两种引用形态，**都算这一跳的出边**：
+		//
+		//	analyze     跟随 latest（新建 link 的默认形态）
+		//	analyze@1   钉死某一版（迁移 27 搬过来的存量、以及显式的渐进发布）
+		//
+		// 派发只知道「上游是哪个能力（名字）」——它不该去猜用户配的是哪一版。
+		// 所以按名字匹配：`from_ref = name` 或者 `from_ref` 以 `name@` 开头
+		// （用 substr 而不是 LIKE：名字里可能有 `%`/`_`，那种情况下 LIKE 会误匹配）。
 		rows, err := d.QueryContext(ctx,
-			`SELECT to_capability, literals, mapping FROM edges
-			 WHERE namespace_id = ? AND from_is_source = 0 AND from_key = ? AND from_port = ?
-			 ORDER BY to_capability`, namespaceID, fromKey, fromPort)
+			`SELECT to_ref, literals, mapping FROM edges
+			 WHERE namespace_id = ? AND from_is_source = 0 AND from_port = ?
+			   AND (from_ref = ? OR substr(from_ref, 1, length(?) + 1) = ? || '@')
+			 ORDER BY to_ref`, namespaceID, fromPort, fromKey, fromKey, fromKey)
 		if err != nil {
 			return nil, fmt.Errorf("lookup edges: %w", err)
 		}
 		defer rows.Close()
-		return scanLinkTargets(rows)
+		all, err := scanLinkTargets(rows)
+		if err != nil {
+			return nil, err
+		}
+		// 同一个目标引用只派一次：`review --fix--> fixer` 与 `review@1 --fix--> fixer`
+		// 两条行同时存在时，`fixer` 不该收到两个任务（那是扇出，不是重放）。
+		out := make([]LinkTarget, 0, len(all))
+		seen := make(map[string]bool, len(all))
+		for _, t := range all {
+			if seen[t.ToRef] {
+				continue
+			}
+			seen[t.ToRef] = true
+			out = append(out, t)
+		}
+		return out, nil
 	}
 
 	// 入口边：精确端口排前面（(from_port = '*') 升序 = 精确匹配先出），再按目标排序；
-	// 第一个见到的目标能力就是这条边生效的那一行。
+	// 第一个见到的目标引用就是这条边生效的那一行。
 	rows, err := d.QueryContext(ctx,
-		`SELECT to_capability, literals, mapping FROM edges
-		 WHERE namespace_id = ? AND from_is_source = 1 AND from_key = ?
+		`SELECT to_ref, literals, mapping FROM edges
+		 WHERE namespace_id = ? AND from_is_source = 1 AND from_ref = ?
 		   AND (from_port = ? OR from_port = '*')
-		 ORDER BY to_capability, (from_port = '*')`, namespaceID, fromKey, fromPort)
+		 ORDER BY to_ref, (from_port = '*')`, namespaceID, fromKey, fromPort)
 	if err != nil {
 		return nil, fmt.Errorf("lookup entry edges: %w", err)
 	}
@@ -492,10 +626,10 @@ func (d *DB) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource boo
 	out := make([]LinkTarget, 0, len(all))
 	seen := make(map[string]bool, len(all))
 	for _, t := range all {
-		if seen[t.CapabilityID] {
+		if seen[t.ToRef] {
 			continue // 精确端口那行已经赢过一次；同一个下游不重复派发
 		}
-		seen[t.CapabilityID] = true
+		seen[t.ToRef] = true
 		out = append(out, t)
 	}
 	return out, nil
@@ -507,7 +641,7 @@ func scanLinkTargets(rows *sql.Rows) ([]LinkTarget, error) {
 	for rows.Next() {
 		var t LinkTarget
 		var literals, mapping string
-		if err := rows.Scan(&t.CapabilityID, &literals, &mapping); err != nil {
+		if err := rows.Scan(&t.ToRef, &literals, &mapping); err != nil {
 			return nil, fmt.Errorf("scan edge target: %w", err)
 		}
 		t.Literals = normalizeEdgeLiterals([]byte(literals))
@@ -544,6 +678,10 @@ type graphEdge struct {
 // 排序是关键：边的插入顺序不改变图的语义，同一份图必须得同一个 hash，
 // 否则只会在 graph_versions 里堆垃圾（契约 §10.2 的「按需落版」就失效了）。
 // literals 也归一：JSON 对象的键序/空白不同但语义相同时，hash 必须相同。
+//
+// 快照存的是**引用**不是 id（P2.2）：否则能力发新版时，边一行没改，图却算出
+// 另一个 hash（因为 id 变了）——那会让 graph_versions 凭空多出一版，
+// 「同一张图」也就无从比对。
 func buildGraphSnapshot(edges []*Edge) (graphSnapshot, error) {
 	snap := graphSnapshot{Edges: make([]graphEdge, 0, len(edges))}
 	for _, e := range edges {
@@ -556,7 +694,7 @@ func buildGraphSnapshot(edges []*Edge) (graphSnapshot, error) {
 			return graphSnapshot{}, fmt.Errorf("graph snapshot mapping: %w", err)
 		}
 		snap.Edges = append(snap.Edges, graphEdge{
-			From: e.FromCapability, Port: e.FromPort, To: e.ToCapability,
+			From: e.FromRef, Port: e.FromPort, To: e.ToRef,
 			Literals: lit, Mapping: mapping,
 		})
 	}
@@ -710,6 +848,12 @@ func (g *GraphVersion) GraphHasEdge(from, port, to string) bool {
 
 // checkEdgeWouldCycle 判定「再加一条 from → to 的边」会不会让图出现环。
 //
+// **按名字判**（P2.2）：运行期的 path 剪枝也是按名字判的（`tasks.path` 存的是能力名，
+// 同一条链上重复出现同一个名字才是环）。两处口径必须一致：配置期按 id 判、
+// 运行期按名字判，就会出现「保存时说没环、跑起来被 path 剪掉」这种分歧。
+//
+// from/to 是**能力名**（调用方已经从引用里取出来了）。
+//
 // 算法：从 to 出发做一次 DFS（只看能力 → 能力的边，入口边没有左端、不可能成环），
 // 看能否到达 from。能到达 = 新增这条边会闭环。
 //
@@ -732,7 +876,8 @@ func (d *DB) checkEdgeWouldCycle(ctx context.Context, namespaceID, from, to stri
 		if e.FromIsSource {
 			continue // 入口边没有上游能力，接不进环
 		}
-		adj[e.FromCapability] = append(adj[e.FromCapability], e.ToCapability)
+		fromName, toName := RefName(e.FromRef), RefName(e.ToRef)
+		adj[fromName] = append(adj[fromName], toName)
 	}
 
 	// DFS：从 to 出发，看能否走到 from。

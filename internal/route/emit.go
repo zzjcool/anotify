@@ -206,10 +206,12 @@ func (d *Dispatcher) Emit(ctx context.Context, in EmitInput) (*EmitOutput, error
 		NamespaceID:  in.NamespaceID,
 		TraceID:      task.TraceID,
 		ParentTaskID: task.ID,
-		FromCap:      task.CapabilityID,
-		Out:          in.Port,
-		Params:       params,
-		Path:         task.Path,
+		// 左端用**能力名**（P2.2）：link 存的是引用，查表也按名字。
+		// task.Capability 就是 tasks.capability 那一列（派发时冗余存的 name）。
+		FromCap: task.Capability,
+		Out:     in.Port,
+		Params:  params,
+		Path:    task.Path,
 	}
 	planOut := &DispatchOutput{Tasks: []*store.Task{}, Pruned: []PrunedRecord{}}
 	var tasks []*store.Task
@@ -217,7 +219,7 @@ func (d *Dispatcher) Emit(ctx context.Context, in EmitInput) (*EmitOutput, error
 	// 一个 port 没接下游**不是错误**（emit-protocol §8：routed=0）：这里先探一次
 	// 出口表，就是为了不把 plan 的 no_edge 剪枝当成「有什么失败了」——
 	// 事件流里也不该出现一条「这个出口没有边」的剪枝，那在 emit 语义下是正常终止。
-	targets, err := d.Store.EdgesFrom(ctx, in.NamespaceID, false, task.CapabilityID, in.Port)
+	targets, err := d.Store.EdgesFrom(ctx, in.NamespaceID, false, task.Capability, in.Port)
 	if err != nil {
 		return nil, fmt.Errorf("route: emit: lookup edges: %w", err)
 	}

@@ -1103,6 +1103,7 @@ events:
     no_root: 找不到根任务（trace 可能不完整）。
     out_none: 未回报
     out_end: 到头了
+    out_emits: 产出见下方「产出」
   wf:
     waterfall: 瀑布图
     tree: 树
@@ -1526,6 +1527,10 @@ edges:
   literals_badge: 常量 ×{n}
   err_literals_json: 常量覆盖不是合法 JSON
   err_literals_object: '常量覆盖必须是一个 JSON 对象，形如 {"to":"u_123"}'
+  # 引用（P2.2）：边里存的是引用，不是能力 id
+  current_ref: '当前 → {ref}'
+  ref_unresolved: 解析不到：这个引用指向的能力已不存在
+  unresolved_short: 解析不到
 trace:
   legend_hot: "线与数字越深 · 这条路走了很多次（重试/回环）"
   legend_origin: "源 · 触发器（事件从这里进来）"

@@ -218,8 +218,10 @@ func TestSameTaskNotExecutedByTwoConnections(t *testing.T) {
 	}
 
 	// ② 第二条连接想报结果 → lease_expired，且任务状态原地不动
+	// 注意：结果帧没有 out 字段（P1.5 退役），下面断言里那一半 out==nil 就变成
+	// 「结果帧永远不写 out」的恒等式；真正守的性质是 reported 没被第二条连接改。
 	send(t, connB, &ResultFrame{Type: NodeFrameResult, TaskID: task.ID,
-		Status: store.TaskSucceeded, Summary: "duplicate", Out: strPtr("fix")})
+		Status: store.TaskSucceeded, Summary: "duplicate"})
 	frame := readUntil(t, connB, NodeFrameError)
 	if frame["code"] != ErrCodeLeaseExpired {
 		t.Fatalf("second connection's result got code = %v, want %q (fencing)", frame["code"], ErrCodeLeaseExpired)
@@ -236,10 +238,12 @@ func TestSameTaskNotExecutedByTwoConnections(t *testing.T) {
 
 	// ③ 真正的执行者照常收工
 	send(t, connA, &ResultFrame{Type: NodeFrameResult, TaskID: task.ID,
-		Status: store.TaskSucceeded, Summary: "ok", Out: strPtr("fix")})
+		Status: store.TaskSucceeded, Summary: "ok"})
 	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
-	if got := mustGetTask(t, f, task.ID); got.Out == nil || *got.Out != "fix" {
-		t.Fatalf("owner's result not recorded: out=%v", got.Out)
+	// 结果真正落库的证据是 reported + summary；out 已退役（恒 NULL），
+	// 不能再用它当「结果记下来了」的判据（那是原来的写法）。
+	if got := mustGetTask(t, f, task.ID); !got.Reported || got.Summary != "ok" {
+		t.Fatalf("owner's result not recorded: reported=%v summary=%q", got.Reported, got.Summary)
 	}
 }
 
