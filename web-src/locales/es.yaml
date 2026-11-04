@@ -1523,6 +1523,8 @@ edges:
   # Sobrescrituras literales (P0-c): constantes que esta arista añade al bajar; las literales ganan.
   literals: Sobrescrituras literales (JSON opcional)
   literals_hint: Parámetros destino = datos ⊎ estas constantes (la misma clave gana aquí). Las claves y los tipos deben cumplir el contrato del destino; las erratas se rechazan.
+  follow_latest: Seguir la última versión
+  follow_latest_hint: El enlace apunta a la nueva versión al publicarse; desmarca para fijar la elegida
   literals_placeholder: '{"to":"u_123"}'
   literals_badge: literales ×{n}
   err_literals_json: Las sobrescrituras literales no son JSON válido

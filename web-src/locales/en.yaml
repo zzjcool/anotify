@@ -1523,6 +1523,8 @@ edges:
   # Literal overrides (P0-c): constants this edge adds on the way downstream; literals win.
   literals: Literal overrides (optional JSON)
   literals_hint: Downstream params = data ⊎ these constants (same key wins here). Keys and types must match the target's parameter contract — typos are rejected outright.
+  follow_latest: Follow latest version
+  follow_latest_hint: Link re-points when a new capability version ships; uncheck to pin the selected one
   literals_placeholder: '{"to":"u_123"}'
   literals_badge: literals ×{n}
   err_literals_json: Literal overrides are not valid JSON

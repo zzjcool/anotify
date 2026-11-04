@@ -1523,6 +1523,8 @@ edges:
   # 常量覆盖（P0-c）：这条边进入下游时额外带的常量，字面量优先
   literals: 常量覆盖（可选 JSON）
   literals_hint: 进入下游的参数 = 数据 ⊎ 这里的常量（同名键以这里为准）。键与类型必须符合目标的参数契约，拼错会直接拒绝。
+  follow_latest: 跟随最新版本
+  follow_latest_hint: 能力发新版后这条边自动接到新版；取消则钉死到选中的那一版
   literals_placeholder: '{"to":"u_123"}'
   literals_badge: 常量 ×{n}
   err_literals_json: 常量覆盖不是合法 JSON

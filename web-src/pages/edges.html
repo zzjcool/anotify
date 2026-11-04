@@ -219,6 +219,16 @@
         <div class="field">
           <label class="field-label" for="f-to">{{t "edges.to"}}</label>
           <select id="f-to" class="select"></select>
+          <!-- 引用写法（设计 §3.2 / 决策 9）：
+               默认「跟随最新」= 只写名字，能力发新版后这条边自动接到新版；
+               取消勾选 = 钉死到下拉里选中的那一版（name@version）。
+               升级闸门（§3.6）会在删出口/改入参类型/新增必填时拦下升级，
+               所以「跟随」不等于「升级会悄悄改坏线」。 -->
+          <label class="mt-2 flex items-center gap-2">
+            <input id="f-follow" type="checkbox" checked />
+            <span class="field-hint">{{t "edges.follow_latest"}}</span>
+          </label>
+          <p class="field-hint">{{t "edges.follow_latest_hint"}}</p>
         </div>
         <!-- 常量覆盖（P0-c，设计 §3.3）：这条边进入下游时额外带的常量。
              一个紧凑的单行输入框：默认 {}（= 没有覆盖），保存前本地先做对象校验
@@ -342,6 +352,11 @@
       // capRef 是能力定义的引用写法（写边时用它，而不是 id）
       function capRef(c) {
         return c ? c.name + "@" + c.version : "";
+      }
+
+      /** refName 取裸名字：link 的「跟随 latest」写法（设计 §3.2 的默认形态）。 */
+      function refName(c) {
+        return c ? c.name : "";
       }
 
       // edgeGroupKey 是分组/筛选用的「左端身份」。
@@ -747,6 +762,8 @@
       async function createEdge() {
         const fromId = document.getElementById("f-from").value;
         const toId = document.getElementById("f-to").value;
+        // followLatest=true → 只写名字（跟随）；false → name@version（钉死）。
+        const followLatest = document.getElementById("f-follow").checked;
         const cap = capByID(fromId);
         // 来源（入口边）：左端是来源名，出口是事件类型
         const isSource = fromId.startsWith("src:");
@@ -803,7 +820,7 @@
               // 边里存 id 的话，能力发新版之后这条边还指着旧版本（P2.2）。
               fromRef: isSource ? fromKey : capRef(capByID(fromKey)),
               fromPort: port,
-              toRef: capRef(capByID(toId)),
+              toRef: followLatest ? refName(capByID(toId)) : capRef(capByID(toId)),
               literals,
             }),
           });

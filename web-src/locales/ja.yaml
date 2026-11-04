@@ -1523,6 +1523,8 @@ edges:
   # リテラル上書き（P0-c）: このエッジが下流に渡す定数。同名キーはこちらが優先。
   literals: リテラル上書き（任意の JSON）
   literals_hint: 下流のパラメータ = データ ⊎ ここに書いた定数（同名キーはこちらが優先）。キーと型は下流のパラメータ契約に一致必須で、打ち間違いは拒否されます。
+  follow_latest: 最新バージョンに追従
+  follow_latest_hint: 新しいバージョンが出るとこのリンクは自動で切り替わります（解除で固定）
   literals_placeholder: '{"to":"u_123"}'
   literals_badge: 定数 ×{n}
   err_literals_json: リテラル上書きが正しい JSON ではありません
