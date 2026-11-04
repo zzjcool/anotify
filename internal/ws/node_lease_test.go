@@ -217,9 +217,8 @@ func TestSameTaskNotExecutedByTwoConnections(t *testing.T) {
 			"(同一任务只许一个执行者，否则就是 #222 的并发双执行)", err)
 	}
 
-	// ② 第二条连接想报结果 → lease_expired，且任务状态原地不动
-	// 注意：结果帧没有 out 字段（P1.5 退役），下面断言里那一半 out==nil 就变成
-	// 「结果帧永远不写 out」的恒等式；真正守的性质是 reported 没被第二条连接改。
+	// ② 第二条连接想报结果 → lease_expired，且任务状态原地不动。
+	// 守的性质：reported / summary / status 一个都没被这条外来帧动过。
 	send(t, connB, &ResultFrame{Type: NodeFrameResult, TaskID: task.ID,
 		Status: store.TaskSucceeded, Summary: "duplicate"})
 	frame := readUntil(t, connB, NodeFrameError)
@@ -232,16 +231,16 @@ func TestSameTaskNotExecutedByTwoConnections(t *testing.T) {
 	if got := mustGetTask(t, f, task.ID); got.Status != store.TaskAcked {
 		t.Fatalf("task status = %q after a foreign result, want %q (第二条连接不许推进状态)", got.Status, store.TaskAcked)
 	}
-	if got := mustGetTask(t, f, task.ID); got.Reported || got.Out != nil {
-		t.Fatalf("foreign result leaked into the row: reported=%v out=%v", got.Reported, got.Out)
+	if got := mustGetTask(t, f, task.ID); got.Reported || got.Summary != "" || got.FinishedAt != nil {
+		t.Fatalf("foreign result leaked into the row: reported=%v summary=%q finished_at=%v",
+			got.Reported, got.Summary, got.FinishedAt)
 	}
 
 	// ③ 真正的执行者照常收工
 	send(t, connA, &ResultFrame{Type: NodeFrameResult, TaskID: task.ID,
 		Status: store.TaskSucceeded, Summary: "ok"})
 	waitStatus(t, f.db, f.nsID, task.ID, store.TaskSucceeded)
-	// 结果真正落库的证据是 reported + summary；out 已退役（恒 NULL），
-	// 不能再用它当「结果记下来了」的判据（那是原来的写法）。
+	// 结果真正落库的证据是 reported + summary（`tasks.out` 列已在迁移 28 删掉）。
 	if got := mustGetTask(t, f, task.ID); !got.Reported || got.Summary != "ok" {
 		t.Fatalf("owner's result not recorded: reported=%v summary=%q", got.Reported, got.Summary)
 	}

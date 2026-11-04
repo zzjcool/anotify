@@ -103,6 +103,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	25: migrateEdgeMapping,
 	26: migrateSourceTargetsToEntryEdges,
 	27: migrateEdgeRefs,
+	28: migrateDropTaskOut,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。

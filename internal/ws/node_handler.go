@@ -83,25 +83,11 @@ type NodeHandler struct {
 	// 为 nil 时自动创建一个（handler 自己持有，不共享）。
 	Hub *NodeHub
 
-	// NextHop 接力派发下一跳（契约 §4 的递归应用）—— **已退役（P1.5）**。
-	//
-	// 改动前：handleResult 读 result.out → PlanNextHop（同步，只读）→ 与父任务终态
-	// 同一个事务建子任务行 → 后台 PublishTasks。P1.5 把 out 整条删掉，于是这条
-	// 路径**没有任何调用方了**：
-	//
-	//   - 「建子任务行 + 写 emission + 推 assign」全部在 route.Emit 里，一次事务完成；
-	//   - ws 只负责把 emit 帧交给 EmitDispatcher（见下方 Emit）；
-	//   - 因此 emit 不存在 #140 那种「终态已提交、子任务行没建」的空洞（没有两段）。
-	//
-	// 字段**保留**只是为了不动装配层（internal/server/mux.go 仍在赋值一个
-	// 实现了该接口的 Dispatcher）——删掉字段会让另一个模块编译不过，而那属于
-	// 别人的改动面。它现在是一个「接线口」，不是一条活路径：本包不再调用它的
-	// 任何方法（grep `h.NextHop` 为空就是这条不变量的机器证据）。
-	//
-	// 真正的下一跳入口是 Emit。
-	NextHop NextHopDispatcher
-
 	// Emit 处理 emit 帧（P1.1 / P1.3，docs/design/emit-protocol.md §3.1 / §7）。
+	//
+	// **它是下一跳的唯一入口**：`result` 帧不再路由（P1.5 删掉了 `result.out`，
+	// 迁移 28 又删掉了 `tasks.out` 整列），「建子任务行 + 写 emission + 推 assign」
+	// 全部在 route.Emit 里一次事务完成。
 	//
 	// 为 nil 时收到 emit 帧一律回 emit_ack{error}（**不断连接**）：
 	// 「未装配」不该表现为断连，否则节点会进入「重连 → 重发 → 又断」的风暴。
@@ -116,8 +102,8 @@ type NodeHandler struct {
 // EmitDispatcher 处理一次 emit（由 route.Dispatcher 实现）。
 //
 // 本包只负责「把帧转成一次路由调用，再把结果写成 emit_ack」：状态机、seq 连续性、
-// 幂等、建子任务行全在 route/store。抽成接口的理由与 NextHopDispatcher 相同——
-// 让本包可以用假实现在不起真库的情况下验证帧层（拒收不断连、错误走 error 字段）。
+// 幂等、建子任务行全在 route/store。抽成接口是为了让本包可以用假实现在不起真库的
+// 情况下验证帧层（拒收不断连、错误走 error 字段）。
 //
 // 返回值 error 非空 = 这次 emit 被拒收。**一律**翻译成 emit_ack.error，
 // 不能用 error 帧（那是协议错误，节点会重连），也不能断连。
@@ -130,29 +116,6 @@ type EmitDispatcher interface {
 // 参数是能力**定义 id**（edges.from_key 现在的口径），ports 是该能力的 outputs。
 type ExpectsBuilder interface {
 	BuildExpects(ctx context.Context, namespaceID, capabilityID string, ports []string) (map[string]route.PortExpect, error)
-}
-
-// NextHopDispatcher 接力派发下一跳（由 route.Dispatcher 实现）—— **已退役（P1.5）**。
-//
-// 保留接口只是为了让装配代码（mux.go 赋值）保持不变；ws 内部不再调用它。
-// 下一跳现在只有一个入口：emit（route.Emit，自己写 emission + 建子任务行 + 派发）。
-// 两个方法留在 route.Dispatcher 上也无害：PlanNextHop / PublishTasks 仍是
-// 路由层的通用能力（有自己的单测），只是不再由 result 帧驱动。
-type NextHopDispatcher interface {
-	// PlanNextHop 只算「下一跳要建哪些任务」：只读，不落库、不占槽位、不推帧。
-	// 返回的任务是 pending、ID 已生成但尚未落库，由调用方放进父任务终态的事务里。
-	//
-	// namespaceID 是**父任务的命名空间**（#162）：出口表/能力/节点都按命名空间隔离，
-	// 传节点的命名空间也不会错，但**两者必须一致**：任务和节点都在同一个
-	// 命名空间里（I11），这里用任务的命名空间更直接——传错会出路，但不会错作用域。
-	PlanNextHop(ctx context.Context, namespaceID, traceID, parentTaskID, fromCapabilityID,
-		out string, params json.RawMessage, path []string) ([]*store.Task, error)
-
-	// PublishTasks 对**已落库**的 pending 任务执行「挑机器 + 占槽位 + 推 assign 帧」。
-	// 绝不建行；逐条独立，返回第一个错误仅供调用方记日志。
-	//
-	// namespaceID 同样是任务的命名空间（挑机器只在该命名空间的节点里挑）。
-	PublishTasks(ctx context.Context, namespaceID string, tasks []*store.Task) error
 }
 
 // hub 返回 Hub，必要时惰性创建（供直接写 `&NodeHandler{Store: …}` 的调用方用）。

@@ -394,7 +394,7 @@
       //
       // 全程用 createElement + textContent，**不用 innerHTML**。
       //
-      // 为什么：本页的数据全部来自服务端（source/type/traceId/capability/out/summary…），
+      // 为什么：本页的数据全部来自服务端（source/type/traceId/capability/summary…），
       // 而 payload 是外部 webhook 的原始 JSON，可能含任意字符串。
       // esc()+innerHTML 只要漏一处就是 XSS；createElement 结构上不可能注入，
       // 因为 textContent 永远只当文本，不会被解析成标签。

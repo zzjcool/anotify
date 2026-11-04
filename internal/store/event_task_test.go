@@ -319,21 +319,22 @@ func TestEventValidation(t *testing.T) {
 	}
 }
 
-// ---------- #63：tasks out 两态（outcome-v1.1） ----------
+// ---------- #63：结果回报落库（迁移 28 之后没有 out 维度） ----------
 
-// TestOutTwoState out 只有两种可观察取值：选了出口 / 没选。
+// TestReportResultWritesTerminalState 结果回报只写「这件事怎么样了」这一组字段：
+// status / summary / artifacts / error / finished_at，外加 reported=1。
 //
-// 「没回报」不是 out 的一个取值——它由**根本没有结果帧**表达（任务停在 pending /
-// running，租约到期后由巡检处理）。所以这里能测的只有：
-//   - 没回报过：reported=false, out=NULL（新行）
-//   - 回报了但没选出口：reported=true, out=NULL
-//   - 回报了且选了出口：reported=true, out="fix"
-func TestOutTwoState(t *testing.T) {
+// 出口**不在任务行上**：`tasks.out` 列已在迁移 28 删掉（出口只存在于 emission），
+// 所以这里既不能也不该断言「选了哪个出口」。仍然可观察的三个状态是：
+//   - 没回报过：reported=false（任务停在 pending / running，等租约巡检）
+//   - 成功：reported=true + status=succeeded + summary 是「做了什么」
+//   - 失败：reported=true + status=failed + error/summary 同源（失败一定有原因）
+func TestReportResultWritesTerminalState(t *testing.T) {
 	db, nsID, nodeID, cap, _ := setupRunningTask(t)
 	ctx := context.Background()
 	expandCapacity(t, db, nsID, nodeID, 8)
 
-	// ① 还没回报：reported=false, out=NULL
+	// ① 还没回报：reported=false
 	fresh := mkTask(nsID, "trace_fresh", cap)
 	if err := db.CreateTasks(ctx, []*Task{fresh}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -345,71 +346,61 @@ func TestOutTwoState(t *testing.T) {
 	if got.Reported {
 		t.Error("fresh task has reported=true")
 	}
-	if got.Out != nil {
-		t.Errorf("fresh task has out=%q, want nil", *got.Out)
-	}
 
-	// ② 回报了但没选出口：reported=true, out=NULL
-	atEnd := mkTask(nsID, "trace_end", cap)
-	if err := db.CreateTasks(ctx, []*Task{atEnd}); err != nil {
+	// ② 成功回报：reported=true + 终态 + summary
+	okTask := mkTask(nsID, "trace_ok", cap)
+	if err := db.CreateTasks(ctx, []*Task{okTask}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), atEnd)
-	if err := db.ReportResult(ctx, nsID, atEnd.ID, TaskSucceeded, nil, "done", nil, ""); err != nil {
-		t.Fatalf("report nil out: %v", err)
+	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), okTask)
+	if err := db.ReportResult(ctx, nsID, okTask.ID, TaskSucceeded, "done", nil, ""); err != nil {
+		t.Fatalf("report: %v", err)
 	}
-	got, err = db.GetTask(ctx, nsID, atEnd.ID)
+	got, err = db.GetTask(ctx, nsID, okTask.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if !got.Reported {
 		t.Fatal("reported=true was not persisted")
 	}
-	if got.Out != nil {
-		t.Fatalf("reported + nil out stored as %q, want NULL", *got.Out)
-	}
 	if got.Status != TaskSucceeded {
 		t.Fatalf("status = %q, want succeeded", got.Status)
 	}
+	if got.Summary != "done" {
+		t.Fatalf("summary = %q, want done", got.Summary)
+	}
+	if got.FinishedAt == nil {
+		t.Fatal("finished_at not set on terminal status")
+	}
 
-	// ③ 失败也选了出口：out="fix"，且 status=failed（路由只看 out，不看 status）
-	goesToFix := mkTask(nsID, "trace_fix", cap)
-	if err := db.CreateTasks(ctx, []*Task{goesToFix}); err != nil {
+	// ③ 失败回报：error 是 summary 的派生位（单一来源），且优先取 error（更具体）
+	failTask := mkTask(nsID, "trace_fail", cap)
+	if err := db.CreateTasks(ctx, []*Task{failTask}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), goesToFix)
-	port := "fix"
-	if err := db.ReportResult(ctx, nsID, goesToFix.ID, TaskFailed, &port, "needs fix", nil, "type error"); err != nil {
-		t.Fatalf("report out=fix: %v", err)
+	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), failTask)
+	if err := db.ReportResult(ctx, nsID, failTask.ID, TaskFailed, "needs fix", nil, "type error"); err != nil {
+		t.Fatalf("report failed: %v", err)
 	}
-	got, err = db.GetTask(ctx, nsID, goesToFix.ID)
+	got, err = db.GetTask(ctx, nsID, failTask.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if !got.Reported {
-		t.Fatal("reported lost")
-	}
-	if got.Out == nil || *got.Out != "fix" {
-		t.Fatalf("out = %v, want \"fix\"", got.Out)
-	}
 	if got.Status != TaskFailed {
-		t.Fatalf("status = %q, want failed（失败也能选出口）", got.Status)
+		t.Fatalf("status = %q, want failed", got.Status)
 	}
-	// 失败时 error 是 message 的派生位（单一来源）：优先取 error（更具体）
 	if got.Error != "type error" {
 		t.Fatalf("error = %q, want \"type error\"", got.Error)
 	}
 	if got.Summary != "type error" {
 		t.Fatalf("summary = %q, want 与 error 同源（\"type error\"）", got.Summary)
 	}
-	if got.FinishedAt == nil {
-		t.Fatal("finished_at not set on terminal status")
-	}
 }
 
-// TestReportResultMissingOutIsNotNilOut 「没回报」与「回报了但没选出口」的区别：
-// 前者没有结果帧（reported=false），后者有（reported=true）；两者的 out 都是 NULL。
-func TestReportResultMissingOutIsNotNilOut(t *testing.T) {
+// TestReportedColumnDistinguishesNoResultFrame 「没回报」与「回报了」只差 reported 一位：
+// 前者没有结果帧（reported=false），后者有（reported=true）。任务行上**没有**别的
+// 维度可以表达这件事（旧的 out 列已删）。
+func TestReportedColumnDistinguishesNoResultFrame(t *testing.T) {
 	db, nsID, nodeID, cap, _ := setupRunningTask(t)
 	ctx := context.Background()
 
@@ -424,30 +415,15 @@ func TestReportResultMissingOutIsNotNilOut(t *testing.T) {
 	expandCapacity(t, db, nsID, nodeID, 8)
 	driveToRunning(t, db, nsID, nodeID, b)
 	// a: 没回报（不调 ReportResult）
-	// b: 回报了但没选出口
-	if err := db.ReportResult(ctx, nsID, b.ID, TaskSucceeded, nil, "", nil, ""); err != nil {
+	// b: 回报了
+	if err := db.ReportResult(ctx, nsID, b.ID, TaskSucceeded, "", nil, ""); err != nil {
 		t.Fatalf("report: %v", err)
 	}
 	ga, _ := db.GetTask(ctx, nsID, a.ID)
 	gb, _ := db.GetTask(ctx, nsID, b.ID)
 	if ga.Reported == gb.Reported {
-		t.Fatal("reported 列区分不了「没回报」与「回报了但没选出口」")
+		t.Fatal("reported 列区分不了「没回报」与「回报了」")
 	}
-	if ga.Out != nil || gb.Out != nil {
-		t.Fatal("both should have NULL out")
-	}
-}
-
-// TestReportResultRejectsEmptyOutString ” 不是合法出口名（契约 §2.5）。
-func TestReportResultRejectsEmptyOutString(t *testing.T) {
-	db, nsID, _, cap, task := setupRunningTask(t)
-	ctx := context.Background()
-	empty := ""
-	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &empty, "", nil, "")
-	if err == nil {
-		t.Fatal("empty out string accepted (should use nil for 到头)")
-	}
-	_ = cap
 }
 
 // ---------- #63：批量建任务原子性 ----------
@@ -556,7 +532,6 @@ func TestTaskRoundTrip(t *testing.T) {
 	lease := int64(1730000000)
 	started := int64(1730000001)
 	finished := int64(1730000002)
-	port := "fix"
 	parent := "tsk_parent"
 	task := &Task{
 		NamespaceID:  nsID,
@@ -572,7 +547,6 @@ func TestTaskRoundTrip(t *testing.T) {
 		InstanceID:   &inst,
 		LeaseUntil:   &lease,
 		Attempts:     3,
-		Out:          &port,
 		Reported:     true,
 		Summary:      "发现 2 处类型错误",
 		Artifacts:    []string{"tsk_8f21a3c0"},
@@ -613,9 +587,6 @@ func TestTaskRoundTrip(t *testing.T) {
 	}
 	if got.Attempts != 3 {
 		t.Fatalf("attempts = %d, want 3", got.Attempts)
-	}
-	if got.Out == nil || *got.Out != port {
-		t.Fatalf("out lost: %v", got.Out)
 	}
 	if !got.Reported {
 		t.Fatal("reported lost")

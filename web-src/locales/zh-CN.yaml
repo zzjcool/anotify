@@ -111,7 +111,6 @@ common:
     task_id: 任务 ID
     trace: Trace
     capability: 能力
-    out: 出口 out
     node: 执行节点
     attempts: 尝试次数
     parent_task: 父任务
@@ -264,9 +263,6 @@ message:
     canceled: 已取消
     abandoned: 已放弃
     lease_expired: 租约过期
-  out:
-    none: 未回报
-    end: 没选出口（到此为止）
   node:
     central: 中枢执行
   chain:
@@ -1101,9 +1097,7 @@ events:
     title: 任务链
     empty: 这条 trace 下没有任务（可能在第一步就被剪枝了）。
     no_root: 找不到根任务（trace 可能不完整）。
-    out_none: 未回报
     out_end: 到头了
-    out_emits: 产出见下方「产出」
   wf:
     waterfall: 瀑布图
     tree: 树

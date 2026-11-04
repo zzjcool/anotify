@@ -5,8 +5,9 @@
  * 深链的目标从「消息详情」变成「任务详情」。覆盖：
  *
  *  A. 提交事件后建出任务 → message.html?id=<taskId> 展示完整字段
- *     （任务 ID / Trace / 能力 / 状态 / out / 节点 / 时间）
- *  B. out 三态在详情页可见（未回报 / 到头了 / 走某个出口）
+ *     （任务 ID / Trace / 能力 / 状态 / 节点 / 时间）
+ *  B. **详情页不再显示 out 字段**（P1.5 退役 + 迁移 28 删列）：路由结果只存在于
+ *     emission，任务行上没有这个维度；页面上残留的 out 文案会被这条钉住
  *  C. 任务链区块渲染整条 trace 上的任务
  *  D. /v1/tasks 契约：未登录 401 / traceId 过滤 / 空列表为 []
  *  E. 首页 ?msg=<taskId>（历史推送深链）重定向到 message.html?id=<taskId>
@@ -45,7 +46,7 @@ async function main() {
 	const s = H.seed(server.dbPath, "deeplink");
 
 	// ---------- 建能力 + 边 + 节点，让事件能派成任务 ----------
-	// review@1 有两个出口（fix / clean），用固定出口验证 out 三态
+	// review@1 有两个出口（fix / clean）：detail 页曾经按 out 显示「走 fix 出口」
 	const cap = await H.req(server.base, "/v1/capabilities", {
 		session: s.session,
 		method: "POST",
@@ -228,12 +229,21 @@ async function main() {
 		H.check("详情页含任务 ID", txt.includes(taskId), txt.slice(0, 80));
 		H.check("详情页含 Trace", txt.includes(traceId));
 		H.check("详情页含 能力 字段", txt.includes("能力"));
-		H.check("详情页含 出口 字段", txt.includes("出口") || txt.includes("out"));
 		H.check("详情页含 执行节点 字段", txt.includes("执行节点"));
-		// out 三态之一必须出现（新任务未回报 → "未回报"）
+		// P1.5 退役 / 迁移 28 删列之后，详情页**不再有出口这一栏**。
+		// 改动前这里断言「含出口字段」+「out 三态文案可见」——那两条覆盖的是已经
+		// 删掉的路径（tasks.out 列），现在反过来钉住它的消失：
+		//   · 没有「出口 out」这一栏（含它的三种文案：未回报 / 到头了 / 出口名）；
+		//   · 走的是同一条真实渲染路径（页面已 mount、字段卡片已渲染），
+		//     所以「没有」是「渲染后没有」，不是「页面没加载」。
 		H.check(
-			"out 三态文案可见（未回报/到头了/出口名）",
-			/未回报|到头了|fix|clean/.test(txt),
+			"详情页没有 出口 out 字段（迁移 28 删列，产出只走 emit）",
+			!txt.includes("出口 out") && !txt.includes("出口"),
+			txt.slice(0, 200),
+		);
+		H.check(
+			"详情页没有 out 三态文案（未回报/到头了）",
+			!/(未回报|到头了)/.test(txt),
 			txt.slice(0, 200),
 		);
 		// 任务链区块

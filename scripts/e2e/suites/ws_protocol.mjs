@@ -15,7 +15,8 @@
  *   apply 失败路径：requires 探不到 → apply{failed} + missing_requirement
  *   协议版本  hello{protocol:1} → error 帧且连接关闭（v1 客户端必须升级）
  *   错误帧    unknown_type / bad_frame / unknown_capability / invalid_transition
- *   out 退役  result 不再路由（P1.5）：帧里带 out 也不会建下游、tasks.out 恒 NULL
+ *   out 退役  result 不再路由（P1.5 + 迁移 28）：帧里带 out 也不会建下游，
+ *            且 **API 响应里根本没有 out 字段**（tasks.out 列已删）
  *   心跳      >2×心跳无上行帧 → 判死关连接；心跳续租
  *   不变量    assign / deploy 帧里没有 argv/shell/command（I1）
  *
@@ -112,15 +113,44 @@ async function postEvent(body) {
 }
 
 // taskRow 直接读库核对状态机落盘结果。
+//
+// 注意这里**没有** out：`tasks.out` 列已在迁移 28 删掉（P1.5 的收尾），
+// 现在「出口」只存在于 emissions.port。老写法 `SELECT ... out ...` 会直接报
+// 「no such column」——那正是本套件要防的回归。
 function taskRow(taskId) {
 	const db = new DatabaseSync(server.dbPath);
 	try {
 		return db
-			.prepare(`SELECT id, status, out, reported, summary FROM tasks WHERE id = ?`)
+			.prepare(`SELECT id, status, reported, summary FROM tasks WHERE id = ?`)
 			.get(taskId);
 	} finally {
 		db.close();
 	}
+}
+
+// taskApi 走**控制台 HTTP 接口**读一条任务（GET /v1/tasks/{id}）。
+//
+// 为什么要两条腿读同一件事：库是「服务端事实」，接口是「客户端事实」。out 退役的
+// 断言必须落在后者上——前端与外部调用方读的是响应字节，不是表。所以「没有 out」
+// 用 `!("out" in task)` 钉在响应对象上（键不存在，而不是值为 null）。
+async function taskApi(taskId) {
+	const r = await H.req(
+		server.base,
+		`/v1/tasks/${encodeURIComponent(taskId)}?namespaceId=${encodeURIComponent(nsId)}`,
+		{ session },
+	);
+	if (r.status !== 200) throw new Error(`GET /v1/tasks/${taskId}: ${r.status} ${r.text}`);
+	return r.json?.task || {};
+}
+
+// assertNoOutKey 断言 API 响应里的任务对象没有 out 键（迁移 28 的客户端可见证据）。
+async function assertNoOutKey(taskId, label) {
+	const task = await taskApi(taskId);
+	H.check(
+		`${label} → API 响应里没有 out 字段（迁移 28 删列）`,
+		!("out" in task),
+		JSON.stringify(Object.keys(task)),
+	);
 }
 
 // dbRows 直接读库拿多行（与 taskRow 同一手法）。
@@ -572,8 +602,8 @@ async function main() {
 	// result：running → succeeded。
 	//
 	// 帧里**故意**还带着 `out: "done"`（老节点/手写客户端的写法）：P1.5 把 out 整条
-	// 退役了，服务端必须照收（未知字段忽略）、不报错、**不路由**——证据就是下面
-	// tasks.out 恒 NULL + 这条 trace 没有多出任何任务。
+	// 退役了，服务端必须照收（未知字段忽略）、不报错、**不路由**——证据是下面两份：
+	// ① API 响应里没有 out 键（迁移 28 删了列）② 这条 trace 没有多出任何任务。
 	node.conn.send({
 		type: "result",
 		task_id: taskId,
@@ -584,9 +614,9 @@ async function main() {
 	await waitStatus(taskId, "succeeded");
 	const row = taskRow(taskId);
 	H.eq("result 落库 status", row.status, "succeeded");
-	H.eq("result 落库 out（out 已退役：帧里带也不落库）", row.out, null);
 	H.eq("result 落库 reported", row.reported, 1);
 	H.eq("result 落库 summary", row.summary, "全部完成");
+	await assertNoOutKey(taskId, "result 帧带 out='done'");
 	// 产出只走 emit：这条任务一次都没 emit，所以它没有任何下游（老通道不再兜底）。
 	H.eq(
 		"结果帧不再建下游（out 通道已退役）",
@@ -597,8 +627,9 @@ async function main() {
 	// ================= A8：out 退役（P1.5 硬切） =================
 	//
 	// 改动前这里叫「A8 out 两态（outcome-v1.1）」：out 缺省 / null / 有值三种写法，
-	// 有值时中枢按它查出口表建下一跳。P1.5 把 out 整条退役（产出只走 emit），于是
-	// 三种写法退化成**同一份事实**：tasks.out 恒 NULL、**不建任何下游**。
+	// 有值时中枢按它查出口表建下一跳。P1.5 把 out 整条退役（产出只走 emit），
+	// 迁移 28 又把 `tasks.out` 整列删掉，于是三种写法退化成**同一份事实**：
+	// 不建任何下游，而且 API 响应里连 out 这个键都没有。
 	//
 	// 断言一条都没放宽，而且更强：老通道以前**会建行**的那个场景（out 指向一条真有边
 	// 的出口），现在必须一条都不建；被剪的判定也从「查表后剪枝」变成「压根没有入口」。
@@ -626,7 +657,7 @@ async function main() {
 	});
 	await waitStatus(tOut, "succeeded");
 	const rOut = taskRow(tOut);
-	H.eq("态1 out='go' → tasks.out 恒 NULL（out 没有写入方了）", rOut.out, null);
+	await assertNoOutKey(tOut, "态1 out='go'");
 	H.eq("态1 out='go' → reported=1（帧到了）", rOut.reported, 1);
 	H.eq(
 		"态1 out='go' → 一条下游都不建（老通道已退役，不是并存）",
@@ -653,7 +684,7 @@ async function main() {
 	await waitStatus(tMissing, "succeeded");
 	const rMissing = taskRow(tMissing);
 	H.eq("态2 out 缺失 → reported=1（帧到了）", rMissing.reported, 1);
-	H.eq("态2 out 缺失 → out=NULL", rMissing.out, null);
+	await assertNoOutKey(tMissing, "态2 out 缺失");
 
 	// 态3：out:null 也照收（协议层不区分「缺省」与「显式 null」，两者都等于没 emit）
 	const evNull = await postEvent({ source: "ws.demo", type: "go", payload: {} });
@@ -663,7 +694,7 @@ async function main() {
 	await waitStatus(tNull, "succeeded");
 	const rNull = taskRow(tNull);
 	H.eq("态3 out:null → reported=1", rNull.reported, 1);
-	H.eq("态3 out:null → out=NULL（与缺省等价）", rNull.out, null);
+	await assertNoOutKey(tNull, "态3 out:null");
 
 	// 态4：失败 + 带 out → 失败照落库（summary 是原因），但**没有**下一跳。
 	// 这是 I4 形式在新载体下的样子：路由与 status 无关，而路由的唯一来源是 emit；
@@ -680,7 +711,7 @@ async function main() {
 	});
 	await waitStatus(tFail, "failed");
 	const rFail = taskRow(tFail);
-	H.eq("态4 失败 + out='go' → out 仍然 NULL", rFail.out, null);
+	await assertNoOutKey(tFail, "态4 失败 + out='go'");
 	H.eq("态4 失败带原因 → summary 就是那句原因", rFail.summary, "exit status 3: 编译失败");
 
 	// 态5：失败且没说原因 → 库里兜底成 "failed"（不允许「失败但没有说明」）

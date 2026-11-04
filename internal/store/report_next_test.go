@@ -6,7 +6,7 @@ package store
 //  1. 成功路径：一个事务里父任务落终态 + 下一跳子任务行落库（pending / 无归属 / attempts=0）
 //  2. 同生共死（核心）：子任务插入失败 → 整体回滚，父任务不在终态、结果字段一个字没写、
 //     该 trace 下子任务 0 行（绝不出现「父 succeeded、子任务不存在」的空洞）
-//  3. 兼容路径：ReportResult(next=nil) 与旧实现语义一致（I5 的 out 三态、错误文案/哨兵不变）
+//  3. 兼容路径：ReportResult(next=nil) 与旧实现语义一致（终态字段、错误文案/哨兵不变）
 //  4. 可捞回：成功路径建出的子任务能被 ListRedispatchable 捞到（崩溃点补偿路径）
 //
 // 本文件只新增用例，不改 task_test.go 里任何既有断言。
@@ -18,11 +18,11 @@ import (
 	"testing"
 )
 
-// mkNextHopTask 构造一条「下一跳」子任务行（还没落库，ID 由 createTasksTx 生成）。
+// mkChildTask 构造一条「下一跳」子任务行（还没落库，ID 由 createTasksTx 生成）。
 //
-// 与调用方（internal/route.PlanNextHop）构造的形状一致：pending + 无归属 + attempts=0
+// 与真正的调用方（route.Emit 的事务）构造的形状一致：pending + 无归属 + attempts=0
 // + parent_task_id 指向刚跑完的父任务。
-func mkNextHopTask(nsID, traceID string, cap *CapabilityVersion, parentTaskID string) *Task {
+func mkChildTask(nsID, traceID string, cap *CapabilityVersion, parentTaskID string) *Task {
 	parent := parentTaskID
 	child := mkTask(nsID, traceID, cap)
 	child.ParentTaskID = &parent
@@ -36,10 +36,9 @@ func TestReportResultAndCreateTasksSuccess(t *testing.T) {
 	ctx := context.Background()
 	db, nsID, _, cap, parent := setupRunningTask(t)
 
-	child := mkNextHopTask(nsID, parent.TraceID, cap, parent.ID)
-	out := "fix"
+	child := mkChildTask(nsID, parent.TraceID, cap, parent.ID)
 	if err := db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-		&out, "改好了", []string{"diff.patch"}, "", []*Task{child}); err != nil {
+		"改好了", []string{"diff.patch"}, "", []*Task{child}); err != nil {
 		t.Fatalf("ReportResultAndCreateTasks: %v", err)
 	}
 
@@ -51,8 +50,8 @@ func TestReportResultAndCreateTasksSuccess(t *testing.T) {
 	if got.Status != TaskSucceeded {
 		t.Fatalf("parent status = %q, want succeeded", got.Status)
 	}
-	if got.Out == nil || *got.Out != "fix" {
-		t.Fatalf("parent out = %s, want \"fix\"", showStrPtr(got.Out))
+	if len(got.Artifacts) != 1 || got.Artifacts[0] != "diff.patch" {
+		t.Errorf("parent artifacts = %v, want [diff.patch]", got.Artifacts)
 	}
 	if !got.Reported {
 		t.Error("parent reported = false, want true")
@@ -140,12 +139,11 @@ func TestReportResultAndCreateTasksRollsBackOnChildFailure(t *testing.T) {
 				t.Fatalf("前置不成立：父任务 status = %q, want running", before.Status)
 			}
 
-			child := mkNextHopTask(nsID, parent.TraceID, cap, parent.ID)
+			child := mkChildTask(nsID, parent.TraceID, cap, parent.ID)
 			c.breakChild(child, parent)
 
-			out := "fix"
 			err = db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-				&out, "改好了", []string{"diff.patch"}, "", []*Task{child})
+				"改好了", []string{"diff.patch"}, "", []*Task{child})
 			if err == nil {
 				t.Fatal("子任务插入失败时整体必须报错（不许吞掉）")
 			}
@@ -166,8 +164,8 @@ func TestReportResultAndCreateTasksRollsBackOnChildFailure(t *testing.T) {
 				t.Errorf("父任务落进了终态 %q，说明终态写入没随子任务失败回滚", after.Status)
 			}
 			// ② 结果字段一个字都没写（回滚彻底，不是「status 回退了但字段留着」）
-			if after.Out != nil {
-				t.Errorf("父任务 out = %s, want nil（回滚后不得留结果）", showStrPtr(after.Out))
+			if len(after.Artifacts) != 0 {
+				t.Errorf("父任务 artifacts = %v, want 空（回滚后不得留结果）", after.Artifacts)
 			}
 			if after.Reported {
 				t.Error("父任务 reported = true, want false（回滚后不得留回报标记）")
@@ -222,10 +220,9 @@ func TestReportResultAndCreateTasksRollsBackOnReportFailure(t *testing.T) {
 		t.Fatalf("prep transition: %v", err)
 	}
 
-	child := mkNextHopTask(nsID, parent.TraceID, cap, parent.ID)
-	out := "fix"
+	child := mkChildTask(nsID, parent.TraceID, cap, parent.ID)
 	err := db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-		&out, "再来一次", nil, "", []*Task{child})
+		"再来一次", nil, "", []*Task{child})
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态任务再报结果 err = %v, want ErrInvalidTransition", err)
 	}
@@ -245,14 +242,18 @@ func TestReportResultAndCreateTasksRollsBackOnReportFailure(t *testing.T) {
 
 // ---------- 3. 兼容路径：ReportResult(next=nil) ----------
 
-// TestReportResultCompatWithoutNext 旧入口在新实现上语义不变（两态 + 错误契约）。
+// TestReportResultCompatWithoutNext 旧入口在新实现上语义不变（终态字段 + 错误契约）。
+//
+// 历史：这里原有两条 out 专属子用例（no_port_leaves_out_null / port_is_persisted）。
+// 它们覆盖的是 `tasks.out` 列本身，而那一列已在迁移 28 删掉，所以随列一起删除；
+// 「终态字段照旧落库」这部分收进了下面的 report_without_next。
 func TestReportResultCompatWithoutNext(t *testing.T) {
 	ctx := context.Background()
 
-	// 没选出口 → out 必须留 NULL（「到此为止」不需要伪造一个出口名）
-	t.Run("no_port_leaves_out_null", func(t *testing.T) {
+	// 终态字段照旧落库；next=nil 不建任何行
+	t.Run("report_without_next", func(t *testing.T) {
 		db, nsID, _, _, task := setupRunningTask(t)
-		if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, nil, "", nil, ""); err != nil {
+		if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, "发现 2 处错误", nil, ""); err != nil {
 			t.Fatalf("ReportResult: %v", err)
 		}
 		got, err := db.GetTask(ctx, nsID, task.ID)
@@ -262,11 +263,11 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 		if got.Status != TaskSucceeded {
 			t.Fatalf("status = %q, want succeeded", got.Status)
 		}
-		if got.Out != nil {
-			t.Errorf("out = %s, want nil（没选出口就是 NULL）", showStrPtr(got.Out))
-		}
 		if !got.Reported {
 			t.Error("reported = false, want true（结果帧到了）")
+		}
+		if got.Summary != "发现 2 处错误" {
+			t.Errorf("summary = %q, want \"发现 2 处错误\"", got.Summary)
 		}
 		if got.FinishedAt == nil {
 			t.Error("finished_at = nil，终态必须有结束时间")
@@ -281,33 +282,10 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 		}
 	})
 
-	// 选了出口 → out 落库；说明就是那一句话
-	t.Run("port_is_persisted", func(t *testing.T) {
-		db, nsID, _, _, task := setupRunningTask(t)
-		port := "fix"
-		if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &port, "发现 2 处错误", nil, ""); err != nil {
-			t.Fatalf("ReportResult: %v", err)
-		}
-		got, err := db.GetTask(ctx, nsID, task.ID)
-		if err != nil {
-			t.Fatalf("get: %v", err)
-		}
-		if got.Out == nil || *got.Out != "fix" {
-			t.Errorf("out = %s, want \"fix\"", showStrPtr(got.Out))
-		}
-		if !got.Reported {
-			t.Error("reported = false, want true")
-		}
-		if got.Summary != "发现 2 处错误" {
-			t.Errorf("summary = %q, want \"发现 2 处错误\"", got.Summary)
-		}
-	})
-
 	// 失败终态也走同一条路（failed 是唯一的另一个合法终态）
 	t.Run("failed_status", func(t *testing.T) {
 		db, nsID, _, _, task := setupRunningTask(t)
-		out := "fix"
-		if err := db.ReportResult(ctx, nsID, task.ID, TaskFailed, &out, "炸了", nil, "boom"); err != nil {
+		if err := db.ReportResult(ctx, nsID, task.ID, TaskFailed, "炸了", nil, "boom"); err != nil {
 			t.Fatalf("ReportResult(failed): %v", err)
 		}
 		got, err := db.GetTask(ctx, nsID, task.ID)
@@ -330,7 +308,7 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 	t.Run("error_contract_unchanged", func(t *testing.T) {
 		db, nsID, _, _, task := setupRunningTask(t)
 
-		err := db.ReportResult(ctx, nsID, task.ID, TaskRunning, nil, "", nil, "")
+		err := db.ReportResult(ctx, nsID, task.ID, TaskRunning, "", nil, "")
 		if !errors.Is(err, ErrInvalidTransition) {
 			t.Errorf("非法终态 err = %v, want ErrInvalidTransition", err)
 		}
@@ -338,17 +316,14 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 			t.Errorf("非法终态 err = %v, want 含原有文案", err)
 		}
 
-		empty := ""
-		err = db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &empty, "", nil, "")
-		if err == nil || !strings.Contains(err.Error(), "empty out string is not a valid port") {
-			t.Errorf("空出口名 err = %v, want 原有文案", err)
-		}
+		// 历史：这里还有一条「空出口名必须拒收（empty out string is not a valid port）」。
+		// 出口参数本身已随 `tasks.out` 列删除（迁移 28），那条校验没有主语了。
 
-		if err := db.ReportResult(ctx, nsID, "tsk_missing", TaskSucceeded, nil, "", nil, ""); !errors.Is(err, ErrNotFound) {
+		if err := db.ReportResult(ctx, nsID, "tsk_missing", TaskSucceeded, "", nil, ""); !errors.Is(err, ErrNotFound) {
 			t.Errorf("任务不存在 err = %v, want ErrNotFound", err)
 		}
 
-		// 上面两次失败都不该产生任何副作用 → 任务状态一点没动
+		// 上面几次失败都不该产生任何副作用 → 任务状态一点没动
 		got, err := db.GetTask(ctx, nsID, task.ID)
 		if err != nil {
 			t.Fatalf("get: %v", err)
@@ -377,10 +352,9 @@ func TestReportResultAndCreateTasksChildIsRedispatchable(t *testing.T) {
 	ctx := context.Background()
 	db, nsID, _, cap, parent := setupRunningTask(t)
 
-	child := mkNextHopTask(nsID, parent.TraceID, cap, parent.ID)
-	out := "fix"
+	child := mkChildTask(nsID, parent.TraceID, cap, parent.ID)
 	if err := db.ReportResultAndCreateTasks(ctx, nsID, parent.ID, TaskSucceeded,
-		&out, "改好了", nil, "", []*Task{child}); err != nil {
+		"改好了", nil, "", []*Task{child}); err != nil {
 		t.Fatalf("ReportResultAndCreateTasks: %v", err)
 	}
 

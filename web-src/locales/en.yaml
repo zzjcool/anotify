@@ -111,7 +111,6 @@ common:
     task_id: Task ID
     trace: Trace
     capability: Capability
-    out: Output
     node: Node
     attempts: Attempts
     parent_task: Parent task
@@ -264,9 +263,6 @@ message:
     canceled: Canceled
     abandoned: Abandoned
     lease_expired: Lease expired
-  out:
-    none: Not reported
-    end: No port selected (ends here)
   node:
     central: Executed by hub
   chain:
@@ -1101,9 +1097,7 @@ events:
     title: Task chain
     empty: No tasks under this trace (it may have been pruned at the first step).
     no_root: Root task not found (the trace may be incomplete).
-    out_none: Not reported
     out_end: End reached
-    out_emits: see Emits below
   wf:
     waterfall: Waterfall
     tree: Tree

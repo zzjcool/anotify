@@ -580,19 +580,6 @@
           ? fmtDuration(task.startedAt, task.finishedAt)
           : "—";
 
-      // out 两态：选了某个出口 / 没选（到此为止）。
-      // 「没回报」不是 out 的一个取值——它是**没有结果帧**（任务还没结束、或节点掉线
-      // 后被回收），由 status 表达。把两者混成一个「未回报」会让人以为链路正常结束。
-      const isTerminal = ["succeeded", "failed", "canceled", "abandoned"].includes(
-        task.status,
-      );
-      const outText =
-        task.out != null
-          ? task.out
-          : isTerminal
-            ? t("message.out.end", "没选出口（到此为止）")
-            : t("message.out.none", "未回报");
-
       fieldsEl.replaceChildren(
         field(t("common.field.task_id", "任务 ID"), task.id),
         field(t("common.field.trace", "Trace"), task.traceId),
@@ -602,7 +589,6 @@
           t("message.task_state." + status, meta.fb) + "（" + status + "）",
           false,
         ),
-        field(t("common.field.out", "出口 out"), outText, false),
         field(
           t("common.field.node", "执行节点"),
           task.nodeId || t("message.node.central", "中枢执行"),

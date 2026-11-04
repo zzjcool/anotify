@@ -22,15 +22,42 @@ import (
 // testDigest 是内容寻址标识的形状（sha256: + 64 hex），与 artifacts.digest 一致。
 const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+// setupReviewFixChain 构造：review --fix--> fix，fix 由 nd_fix（2 槽位）声明。
+//
+// 历史：这个夹具随「三步接力派发」那套用例从 dispatch_next_test.go 搬过来——
+// 那套用例已随 P1.5 收尾整条删除，夹具本身仍有别的用例在用。
+func setupReviewFixChain(t *testing.T) (*fakeStore, *Dispatcher, *store.CapabilityVersion, *store.CapabilityVersion) {
+	t.Helper()
+	f := newFakeStore()
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{"type":"object"}`)
+	target := f.addCap(testNS, "fix", 1, nil, `{"type":"object"}`)
+	f.addEdge(testNS, review.ID, "fix", target.ID)
+	f.addNode("nd_fix", target.ID, 2)
+	return f, New(f), review, target
+}
+
 // TestPlanPinsLatestArtifactDigest 有产物：plan 建出的任务行带上该产物的 digest。
 //
 // 直接断言 plan 的返回值（而不是落库后的行）：digest 是**建行时**算出来的字段，
 // 在这一步就错了的话，落库只是把错值存进去。
+//
+// 走的是 Dispatch（emit 帧那条真路径）：它的 ①②③ 段就是 plan；接力派发那套用例
+// 删除之后，这是唯一能从外面触发 plan 的入口。
 func TestPlanPinsLatestArtifactDigest(t *testing.T) {
-	f, d, review, target := setupNextHop(t)
+	f, d, review, target := setupReviewFixChain(t)
 	f.addArtifact(testNS, target.ID, testDigest)
 
-	tasks := mustPlanNextHop(t, d, review.ID, "trace_pin_digest")
+	out, err := d.Dispatch(context.Background(), DispatchInput{
+		NamespaceID: testNS, TraceID: "trace_pin_digest", FromCap: review.ID, Out: "fix",
+		Params: map[string]any{"k": "v"}, Path: []string{review.ID},
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Tasks) != 1 {
+		t.Fatalf("dispatch created %d tasks, want 1", len(out.Tasks))
+	}
+	tasks := out.Tasks
 	if got := tasks[0].Digest; got != testDigest {
 		t.Fatalf("task digest = %q, want %q（必须等于 LatestArtifact 的 digest）", got, testDigest)
 	}
@@ -100,7 +127,7 @@ func TestDispatchNoArtifactKeepsDigestEmpty(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f, d, review, target := setupNextHop(t)
+			f, d, review, target := setupReviewFixChain(t)
 			tc.setup(f)
 
 			out, err := d.Dispatch(context.Background(), DispatchInput{

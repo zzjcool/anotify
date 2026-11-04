@@ -142,16 +142,13 @@ var ErrTransitionGuardFailed = errors.New("transition_guard_failed")
 
 // Task 是 tasks 表的一行：任务行 = OTel span。
 //
-// 结果只有两个维度，且它们**不同维度**（outcome-v1.1）：
+// 路由**不在这一行上**：P1.5 起 `tasks.out` 整列已删（迁移 28），出口的唯一载体是
+// emission（route.Emit 落库的 emissions 行）。任务行只记「执行这件事怎么样了」：
 //
-//	Out    → 路由：nil = 这次没选出口 = 到此为止（正常终止）；"fix" = 走 fix 出口
-//	Status → 只做展示与重试策略（succeeded / failed），**不参与路由**
+//	Status → 展示与重试策略（succeeded / failed），**不参与路由**
 //
-// `Reported` 降为「结果帧到过吗」的历史标记（读到帧时恒为 true），不再参与语义；
-// 「没回报」（节点掉线 / 超时）由**根本没有结果帧**表达，不是 Out 的一个取值。
-//
-// Omitempty 仍然不能加在 Out 上：前端和外部调用方靠 `"out": null` 区分
-// 「字段在但与不知道」与「键不存在」，少一层猜测。
+// `Reported` 是「结果帧到过吗」的历史标记（读到帧时恒为 true），不再参与语义；
+// 「没回报」（节点掉线 / 超时）由**根本没有结果帧**表达——它没有对应字段。
 //
 // NamespaceID 是**命名空间隔离维度**：任务属于某个命名空间，读路径一律按它隔离。
 type Task struct {
@@ -169,7 +166,6 @@ type Task struct {
 	InstanceID   *string         `json:"instanceId"`
 	LeaseUntil   *int64          `json:"leaseUntil"`
 	Attempts     int             `json:"attempts"`
-	Out          *string         `json:"out"`
 	Reported     bool            `json:"reported"`
 	Summary      string          `json:"summary"`
 	Artifacts    []string        `json:"artifacts"`
@@ -193,7 +189,7 @@ type Task struct {
 // taskColumns 是统一的列顺序，scanTask 依赖它。
 const taskColumns = `id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
-	out, reported, summary, artifacts, error, cap_hash, digest, graph_id,
+	reported, summary, artifacts, error, cap_hash, digest, graph_id,
 	created_at, started_at, finished_at, not_before`
 
 // scanTask 从 rows 解析一行。
@@ -204,7 +200,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 	if err := rows.Scan(
 		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
 		&t.Version, &params, &t.Status, &t.NodeID, &t.InstanceID, &t.LeaseUntil, &t.Attempts,
-		&t.Out, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.Digest, &t.GraphID,
+		&reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.Digest, &t.GraphID,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -328,12 +324,12 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 			`INSERT INTO tasks
 			   (id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 			    version, params, status, node_id, instance_id, lease_until, attempts,
-			    out, reported, summary, artifacts, error, cap_hash, digest, graph_id,
+			    reported, summary, artifacts, error, cap_hash, digest, graph_id,
 			    created_at, started_at, finished_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			t.ID, t.NamespaceID, t.TraceID, t.ParentTaskID, string(pathJSON), t.CapabilityID, t.Capability,
 			t.Version, string(t.Params), t.Status, t.NodeID, t.InstanceID, t.LeaseUntil, t.Attempts,
-			t.Out, reported, t.Summary, string(artifactsJSON), t.Error, t.CapHash, t.Digest, t.GraphID,
+			reported, t.Summary, string(artifactsJSON), t.Error, t.CapHash, t.Digest, t.GraphID,
 			t.CreatedAt, t.StartedAt, t.FinishedAt,
 		); err != nil {
 			return fmt.Errorf("insert task %d (%s): %w", i, t.Capability, err)
@@ -958,9 +954,6 @@ func (d *DB) resolveLostOne(ctx context.Context, namespaceID, nodeID string, o T
 
 // ReportResult 记录节点回报的结果并推进到终态（#141：一个事务内完成）。
 //
-// reported=false 表示帧里缺 out 字段（没回报出口），此时 Out 留 NULL；
-// reported=true 且 out=nil 表示「明确到头」（不变量 I5）。
-//
 // 节点可能没发 progress 帧就直接 result，所以 assigned/acked 先隐式进 running
 // （契约 §3.1「running 由 progress 帧或隐式推进」）。
 //
@@ -970,15 +963,17 @@ func (d *DB) resolveLostOne(ctx context.Context, namespaceID, nodeID string, o T
 //
 // #140 起它是 ReportResultAndCreateTasks(next=nil) 的薄壳：签名、返回值、错误文案
 // 全部保持不变，只是实现搬进了共用的事务内助手（reportResultTx）。
-func (d *DB) ReportResult(ctx context.Context, namespaceID, taskID, status string, out *string, summary string, artifacts []string, errMsg string) error {
-	return d.ReportResultAndCreateTasks(ctx, namespaceID, taskID, status, out, summary, artifacts, errMsg, nil)
+//
+// P1.5（迁移 28）起没有 `out` 参数：出口只来自 emission，任务行不再记路由结果。
+func (d *DB) ReportResult(ctx context.Context, namespaceID, taskID, status string, summary string, artifacts []string, errMsg string) error {
+	return d.ReportResultAndCreateTasks(ctx, namespaceID, taskID, status, summary, artifacts, errMsg, nil)
 }
 
 // ReportResultAndCreateTasks 在**一个事务**里完成「终态写入 + 下一跳建任务行」（#140）。
 //
 // 为什么必须同一个事务：旧实现是「终态先提交，下一跳在后台 goroutine 里查出口表
-// 再建行」。进程在两者之间退出，就会留下父任务 succeeded + out=fix、子任务行不存在
-// 的**永久空洞**——trace 看起来一切正常，链却永远停了（ListRedispatchable 只捞
+// 再建行」。进程在两者之间退出，就会留下父任务 succeeded 而子任务行不存在的
+// **永久空洞**——trace 看起来一切正常，链却永远停了（ListRedispatchable 只捞
 // `status='pending' AND node_id IS NULL`，捞不到一条根本不存在的行）。
 //
 // 事务内顺序：先终态写（reportResultTx），后插子任务（createTasksTx）；next 为空
@@ -995,14 +990,14 @@ func (d *DB) ReportResult(ctx context.Context, namespaceID, taskID, status strin
 //
 // 状态写入仍只走 transitionGuarded（在 reportResultTx 内，同一个 tx 句柄）；
 // 本函数不新增任何 `UPDATE tasks SET status` 语句。
-func (d *DB) ReportResultAndCreateTasks(ctx context.Context, namespaceID, taskID, status string, out *string, summary string, artifacts []string, errMsg string, next []*Task) error {
+func (d *DB) ReportResultAndCreateTasks(ctx context.Context, namespaceID, taskID, status string, summary string, artifacts []string, errMsg string, next []*Task) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin report result: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := d.reportResultTx(ctx, tx, namespaceID, taskID, status, out, summary, artifacts, errMsg); err != nil {
+	if err := d.reportResultTx(ctx, tx, namespaceID, taskID, status, summary, artifacts, errMsg); err != nil {
 		return err
 	}
 	if len(next) > 0 {
@@ -1046,18 +1041,13 @@ func normalizeResultMessage(status, summary, errMsg string) (msg, derivedErr str
 //
 // 本体从 ReportResult 整段搬移（#140），逻辑、错误文案、SQL 一字未改；唯一去掉的是
 // 自己开事务/提交那一段——这样它才能与 createTasksTx 共用一个事务。
-// 参数校验（终态白名单 / 空出口名）也跟着搬进来，保证两条入口的错误文案与哨兵值一致。
 // 状态写入只用 transitionGuarded，且传的是调用方的同一个 tx 句柄。
-func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, status string, out *string, summary string, artifacts []string, errMsg string) error {
+func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, status string, summary string, artifacts []string, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: result status must be succeeded|failed, got %q", ErrInvalidTransition, status)
 	}
 	// 结果说明只有一份源：成功=做了什么 / 失败=为什么失败（见 normalizeResultMessage）。
 	summary, errMsg = normalizeResultMessage(status, summary, errMsg)
-	if out != nil && *out == "" {
-		// '' 不是合法出口名（契约 §2.5：out NULL 表示没回报，'' 不是合法值）
-		return fmt.Errorf("report result: empty out string is not a valid port (use nil)")
-	}
 
 	// status 与 node_id 必须用 **tx** 读：DSN 是 MaxOpenConns(1)，走连接池
 	// （d.GetTask）会和本事务抢同一根连接，直接自锁。
@@ -1099,11 +1089,7 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID
 	}
 
 	// reported 列保留但**恒为 1**：写入只会发生在 result 帧到达之后。
-	// 「没回报」由「根本没有结果帧」（租约到期 → 巡检重派）表达，不再是 out 的一个取值。
-	var outVal any
-	if out != nil {
-		outVal = *out
-	}
+	// 「没回报」由「根本没有结果帧」（租约到期 → 巡检重派）表达，不是库里某个列的一个取值。
 	if artifacts == nil {
 		artifacts = []string{}
 	}
@@ -1113,10 +1099,10 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks
-		 SET out = ?, reported = ?, summary = ?, artifacts = ?, error = ?,
+		 SET reported = ?, summary = ?, artifacts = ?, error = ?,
 		     finished_at = COALESCE(finished_at, ?)
 		 WHERE namespace_id = ? AND id = ?`,
-		outVal, 1, summary, string(artifactsJSON), errMsg, Now(), namespaceID, taskID); err != nil {
+		1, summary, string(artifactsJSON), errMsg, Now(), namespaceID, taskID); err != nil {
 		return fmt.Errorf("report result details: %w", err)
 	}
 

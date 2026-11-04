@@ -198,9 +198,10 @@ func (s *nodeSession) handleProgress(ctx context.Context, f *ProgressFrame) erro
 //
 // # 结果不再参与路由（P1.5 硬切之后的唯一语义）
 //
-// 这里**曾经**是两条腿：result.out 选出口 → 同步 PlanNextHop → 跟终态同一个事务
-// 建子任务行（#140）。P1.5 把 out 整条删掉，于是本函数只剩一件事：
-// **把进程事实写进终态**（status / summary / artifacts），不建任何子任务行。
+// 这里**曾经**是两条腿：result.out 选出口 → 同步算下一跳计划 → 跟终态同一个事务
+// 建子任务行（#140）。P1.5 把 out 整条删掉（迁移 28 又删了 `tasks.out` 列），
+// 于是本函数只剩一件事：**把进程事实写进终态**（status / summary / artifacts），
+// 不建任何子任务行。
 //
 // 那「下一跳」去哪了？全部在 emit（docs/design/typed-pipeline.md §2）：
 //   - 运行中 emit → route.Emit 在**自己的事务**里写 emission + 建子任务行 + 派发；
@@ -246,10 +247,10 @@ func (s *nodeSession) handleResult(ctx context.Context, f *ResultFrame) error {
 
 	// ④ 一个事务提交父任务终态。
 	//
-	// next 恒 nil，out 恒 nil：路由不在这条路径上（见函数头）。两个参数保留
-	// 是为了不动 store 的签名（tasks.out 列 / report_next_test 那套事务语义仍在
-	// 库里），而 ws 这一侧从此只写终态。
-	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status, nil,
+	// next 恒 nil：路由不在这条路径上（见函数头）。这个参数保留是为了不动
+	// store 的事务语义（「终态 + 子任务行同生共死」，见 report_next_test），
+	// 而 ws 这一侧从此只写终态。
+	if err := s.h.Store.ReportResultAndCreateTasks(ctx, task.NamespaceID, f.TaskID, f.Status,
 		f.Summary, f.Artifacts, f.Error, nil); err != nil {
 		// 终态没落库。若拒绝是「这条任务已经不归我们了」（被巡检回收/已重派/已过期），
 		// 就不该再替它续租，也不该继续占着 hub 的在飞位（#218/#222）。

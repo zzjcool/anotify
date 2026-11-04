@@ -2,7 +2,7 @@ package ws
 
 // 本文件是 P1.5（硬切 `.anotify-out` / `result.out`）在 ws 帧层的验收。
 //
-// 改动前它叫 node_next_test.go，守的是 #140 那套「result.out → PlanNextHop →
+// 改动前它叫 node_next_test.go，守的是 #140 那套「result.out → 算下一跳计划 →
 // 与父任务终态同一个事务建子任务行 → 后台 publish」的语义。P1.5 把 out 整条删掉
 // 之后，那些用例的**主语消失了**——但它们守的性质没有消失，只是换了入口：
 //
@@ -11,12 +11,17 @@ package ws
 //
 // 所以本文件的职责反转成「证明那条老入口真的没了」，并且**不是放宽**：
 //
-//	1. 老帧带 out（甚至带一个真的有边、真有下游的 port）→ 一个下游都不建，
-//	   PlanNextHop / PublishTasks 一次都不被调用；
+//	1. 老帧带 out（甚至带一个真的有边、真有下游的 port）→ 一个下游都不建；
 //	2. 结果帧该做的事照旧（终态 + summary 落库），只是不再碰路由；
 //	3. 「不回报出口 = 到此为止」的语义保留，只是载体从 `out IS NULL` 变成
 //	   「这个任务没有任何 emission」；
 //	4. I4 的形式保留：失败**之前** emit 过的下游照样在（失败不特殊）。
+//
+// 原来这里还有一个测试双，用来断言「接力派发的两个方法（算计划 / 补推帧）一次都
+// 没被调用」。那两个方法已随 P1.5 收尾（迁移 28 + 整条退役）从仓库消失，
+// 「没被调用」不再有主语；同一件事现在由**更强的形状**表达：
+// 老帧带 out 时下游 0 条、下游能力的任务行 0 条、节点一个帧都收不到，再加上
+// `tasks` 表连 `out` 列都没有（assertNoOutColumn）。
 //
 // 三条事务性质（终态与子任务行同生共死 / 巡检能捞回 / plan 失败不留终态）**没有
 // 删掉**，而是搬到了它现在真正所在的入口：route.Emit 自己的事务
@@ -26,7 +31,6 @@ package ws
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"testing"
 	"time"
 
@@ -34,41 +38,6 @@ import (
 
 	"github.com/zzjcool/anotify/internal/store"
 )
-
-// ---------- 测试双：探测「下一跳入口有没有被碰」 ----------
-
-// nextHopProbe 记录 NextHopDispatcher 被调用过几次。
-//
-// 它的存在就是为了那个「0」：证明 result 帧路径**一次都没碰**路由。装配层仍然
-// 会给 NodeHandler.NextHop 赋值（internal/server/mux.go），所以这里沿用同一个
-// 测试形状，只是断言方向反过来。
-type nextHopProbe struct {
-	mu           sync.Mutex
-	planCalls    int
-	publishCalls int
-	lastOut      string
-}
-
-func (p *nextHopProbe) PlanNextHop(_ context.Context, _, _, _, _, out string, _ json.RawMessage, _ []string) ([]*store.Task, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.planCalls++
-	p.lastOut = out
-	return nil, nil
-}
-
-func (p *nextHopProbe) PublishTasks(_ context.Context, _ string, _ []*store.Task) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.publishCalls++
-	return nil
-}
-
-func (p *nextHopProbe) calls() (plan, publish int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.planCalls, p.publishCalls
-}
 
 // sentResult 发一帧结果（**没有** out 参数：帧里已经没有这个字段了）。
 func sentResult(t *testing.T, conn *websocket.Conn, taskID, status, summary string) {
@@ -94,6 +63,23 @@ func childrenOf(t *testing.T, f *nodeFixture, parentTaskID string) []*store.Task
 	return kids
 }
 
+// assertNoOutColumn 断言 `tasks` 表上**没有** out 列（迁移 28 的落地证据）。
+//
+// 为什么在 ws 用例里也查一次：这条不变量的表现形式曾经是「列在、但恒 NULL」，
+// 现在要求它连列都不在——只看 Task 结构体是不够的，老库升级路径漏了迁移就仍然
+// 有一列在那儿（`SELECT out` 照样能跑）。
+func assertNoOutColumn(t *testing.T, f *nodeFixture) {
+	t.Helper()
+	var n int
+	if err := f.db.QueryRow(
+		`SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'out'`).Scan(&n); err != nil {
+		t.Fatalf("probe tasks.out: %v", err)
+	}
+	if n != 0 {
+		t.Fatal("tasks 表仍然有 out 列：迁移 28 没生效（出口的唯一载体是 emission）")
+	}
+}
+
 // ---------- 验收 ①：老帧带 out 不再产生任何下游（「这条腿真断了」） ----------
 
 // TestResultLegacyOutCreatesNoDownstream 是 P1.5 的核心证据。
@@ -103,15 +89,12 @@ func childrenOf(t *testing.T, f *nodeFixture, parentTaskID string) []*store.Task
 // 推 assign；改动后它只能是「一帧普通的结果帧」：
 //
 //   - 父任务照常 succeeded（结果帧该做的事没退化）；
-//   - tasks.out 是 NULL（没有任何东西再往这一列写）；
+//   - `tasks` 表上根本没有 out 列（迁移 28；比原来的「out 恒 NULL」更强）；
 //   - 下游 0 条（emit 是唯一入口，而这条任务没有 emit 过）；
-//   - NextHopDispatcher 一次都没被调用（不是「调用后为空」，是根本没碰）；
 //   - 节点收不到任何帧（没有 assign、没有 error）。
 func TestResultLegacyOutCreatesNoDownstream(t *testing.T) {
 	ctx := context.Background()
-	probe := &nextHopProbe{}
 	f, fixer := emitFixtureWithLink(t) // 真有 link：review --fix--> fixer
-	f.handler.NextHop = probe
 
 	conn := f.mustDial(t)
 	hello(t, conn, f.node.ID,
@@ -126,7 +109,7 @@ func TestResultLegacyOutCreatesNoDownstream(t *testing.T) {
 
 	waitStatus(t, f.db, f.nsID, parent.ID, store.TaskSucceeded)
 
-	// ① 终态该有的都落了：reported=1（帧到了）、summary 就是那句说明、out=NULL。
+	// ① 终态该有的都落了：reported=1（帧到了）、summary 就是那句说明。
 	got, err := f.db.GetTask(ctx, f.nsID, parent.ID)
 	if err != nil {
 		t.Fatalf("get parent: %v", err)
@@ -134,12 +117,11 @@ func TestResultLegacyOutCreatesNoDownstream(t *testing.T) {
 	if !got.Reported {
 		t.Error("reported = false，want true（结果帧到过）")
 	}
-	if got.Out != nil {
-		t.Errorf("tasks.out = %q，want NULL（out 已退役，没有任何写入方）", *got.Out)
-	}
 	if got.Summary != "老 agent 的帧" {
 		t.Errorf("summary = %q，want 老 agent 的帧", got.Summary)
 	}
+	// 这一列不该再存在（升级路径漏了迁移会在这里红）。
+	assertNoOutColumn(t, f)
 
 	// ② 下游 0 条：这条 trace 上只有父任务这一行。
 	if kids := childrenOf(t, f, parent.ID); len(kids) != 0 {
@@ -152,28 +134,27 @@ func TestResultLegacyOutCreatesNoDownstream(t *testing.T) {
 			t.Fatalf("下游能力 %s 出现了任务行（%s）—— result 不该再建任务", fixer.Name, row.ID)
 		}
 	}
-
-	// ③ 路由入口一次都没被碰。
-	if plan, publish := probe.calls(); plan != 0 || publish != 0 {
-		t.Fatalf("NextHop 被调用了 %d 次 plan / %d 次 publish，want 0/0（result 不再路由）",
-			plan, publish)
+	// 也没有任何 emission（老帧根本不走 emit）。
+	if ems, err := f.db.ListEmissions(ctx, parent.ID); err != nil {
+		t.Fatalf("list emissions: %v", err)
+	} else if len(ems) != 0 {
+		t.Fatalf("result 帧竟然写了 %d 条 emission（emit 是唯一产出通道）", len(ems))
 	}
 
-	// ④ 节点一个帧都没收到（没有 assign、没有 error）。放最后：读超时会关连接。
+	// ③ 节点一个帧都没收到（没有 assign、没有 error）。放最后：读超时会关连接。
 	assertNoFrame(t, conn, 500*time.Millisecond, "老帧带 out 也不许建下游、不许回 error")
 }
 
 // ---------- 验收 ②：结果帧仍然只做「写终态」这一件事 ----------
 
 // TestResultRecordsTerminalStateWithoutRouting 结果帧的三个字段照旧落库：
-// status / summary / artifacts，且 out 恒 NULL、不建任何任务行。
+// status / summary / artifacts，且不建任何任务行、不写任何 emission。
 //
-// 这条取代了原来的 TestResultWithoutNextHopUnchanged（那条断言 out=='fix'）；
-// 现在「没走任何出口」的证据是 out=NULL + 0 下游 + 0 emission。
+// 这条取代了原来那条「不回报出口也照旧走 fix 出口」的用例（已随 out 退役删除）；
+// 现在「没走任何出口」的证据是 0 下游 + 0 emission + 表上没有 out 列。
 func TestResultRecordsTerminalStateWithoutRouting(t *testing.T) {
 	ctx := context.Background()
-	probe := &nextHopProbe{}
-	f := newNodeFixture(t, func(h *NodeHandler) { h.NextHop = probe })
+	f := newNodeFixture(t)
 
 	conn := f.mustDial(t)
 	hello(t, conn, f.node.ID, []AppliedDecl{{Capability: "review", Version: 1}},
@@ -187,12 +168,13 @@ func TestResultRecordsTerminalStateWithoutRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if !got.Reported || got.Out != nil {
-		t.Fatalf("reported=%v out=%v，want reported=true + out=NULL", got.Reported, got.Out)
+	if !got.Reported {
+		t.Fatalf("reported=%v，want true（结果帧到过）", got.Reported)
 	}
 	if got.Summary != "做完了" {
 		t.Fatalf("summary = %q，want 做完了", got.Summary)
 	}
+	assertNoOutColumn(t, f)
 	if kids := childrenOf(t, f, parent.ID); len(kids) != 0 {
 		t.Fatalf("没 emit 却有 %d 条下游任务", len(kids))
 	}
@@ -203,9 +185,6 @@ func TestResultRecordsTerminalStateWithoutRouting(t *testing.T) {
 	}
 	if len(ems) != 0 {
 		t.Fatalf("没 emit 过却有 %d 条 emission", len(ems))
-	}
-	if plan, publish := probe.calls(); plan != 0 || publish != 0 {
-		t.Fatalf("NextHop 被调用了 %d/%d 次，want 0/0", plan, publish)
 	}
 	assertNoFrame(t, conn, 300*time.Millisecond, "普通结果帧不该产生任何下行帧")
 }
@@ -263,9 +242,7 @@ func TestEmitBeforeFailedResultStillRoutes(t *testing.T) {
 	if got.Summary == "" {
 		t.Error("失败任务没有原因（summary 为空）")
 	}
-	if got.Out != nil {
-		t.Errorf("tasks.out = %q，want NULL（出口只在 emission 里）", *got.Out)
-	}
+	assertNoOutColumn(t, f)
 
 	kids := childrenOf(t, f, parent.ID)
 	if len(kids) != 1 {

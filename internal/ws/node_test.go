@@ -1191,10 +1191,10 @@ func TestAckProgressResultFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	// 「结果落库」的判据是 reported + summary；out 已退役（P1.5），恒 NULL，
-	// 已不能再当判据（原来这里断言 out=="fix"）。
-	if !got.Reported || got.Out != nil {
-		t.Fatalf("result not recorded: reported=%v out=%v（out 必须恒为 NULL）", got.Reported, got.Out)
+	// 「结果落库」的判据是 reported + summary；`tasks.out` 列已随迁移 28 删除
+	// （原来这里断言 out=="fix"，后来是 out 恒 NULL，现在是**没有这一列**）。
+	if !got.Reported {
+		t.Fatalf("result not recorded: reported=%v", got.Reported)
 	}
 	if got.Summary != "ok" {
 		t.Fatalf("summary = %q", got.Summary)
@@ -1215,8 +1215,8 @@ func TestAckProgressResultFlow(t *testing.T) {
 //
 // 改动前它叫 TestResultNoOutMeansStop，守的是「out 缺省与显式 null 等价，都不派
 // 下一跳」。out 退役之后保留下来的性质是**同一个结果**（不派下一跳、只记 reported），
-// 顺手也钉住「老帧带 out（哪怕带 out:null）同样不派生任何东西」——两种写法都必须
-// 落成同一份事实：out 列恒 NULL，trace 里只有父任务一行。
+// 顺手也钉住「老帧带 out（哪怕带 out:null）同样不派生任何东西」——三种写法都必须
+// 落成同一份事实：tasks 表上没有 out 列，trace 里只有父任务一行。
 func TestResultNoOutMeansStop(t *testing.T) {
 	cases := []struct{ name, raw string }{
 		{"out 键缺省", `{"type":"result","task_id":"%s","status":"succeeded","summary":"done"}`},
@@ -1241,9 +1241,7 @@ func TestResultNoOutMeansStop(t *testing.T) {
 			if !got.Reported {
 				t.Fatal("结果帧到了却没记 reported=1")
 			}
-			if got.Out != nil {
-				t.Fatalf("out = %q，want NULL（out 已退役：没有任何写入方）", *got.Out)
-			}
+			assertNoOutColumn(t, f)
 			// 没选出口 → 不派生下一跳：这条 trace 上只有父任务一行
 			rows, err := f.db.ListTasks(context.Background(), f.nsID, task.TraceID, "", "", 50)
 			if err != nil {

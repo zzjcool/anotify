@@ -185,10 +185,11 @@ func TestClaimCentralTasksRunsStateMachine(t *testing.T) {
 	}
 }
 
-// TestFinishTaskWritesOutcome 验证 FinishTask 的结果落库（outcome-v1.1 两态）。
+// TestFinishTaskWritesOutcome 验证 FinishTask 的结果落库。
 //
 // 中枢执行的结果也走同一套规则：reported 恒为 1（写只发生在任务收尾时），
-// out 为空 = 到此为止，失败必须有一句原因（空时兜底 "failed"）。
+// 失败必须有一句原因（空时兜底 "failed"）。**没有出口维度**：`tasks.out` 列
+// 已在迁移 28 删掉，出口只存在于 emission。
 func TestFinishTaskWritesOutcome(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -218,39 +219,28 @@ func TestFinishTaskWritesOutcome(t *testing.T) {
 		return task.ID
 	}
 
-	// 选了出口：out 落库，reported 恒 1，失败语义位为空
+	// 成功：reported 恒 1，失败语义位为空
 	id := mkRunning()
-	port := "fix"
-	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, &port, "done", ""); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, "done", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	got, _ := db.GetTask(ctx, nsID, id)
-	if !got.Reported || got.Out == nil || *got.Out != "fix" {
-		t.Errorf("选了出口落库错误: reported=%v out=%v", got.Reported, got.Out)
+	if !got.Reported || got.Status != TaskSucceeded {
+		t.Errorf("成功落库错误: reported=%v status=%v", got.Reported, got.Status)
+	}
+	if got.Summary != "done" {
+		t.Errorf("summary = %q, want done", got.Summary)
 	}
 	if got.Error != "" {
 		t.Errorf("成功不该带 error，实际 %q", got.Error)
 	}
 
-	// 没选出口（终端能力）：out=NULL，reported 仍为 1（帧到了）
-	id = mkRunning()
-	if err := db.FinishTask(ctx, nsID, id, TaskSucceeded, nil, "end", ""); err != nil {
-		t.Fatalf("finish: %v", err)
-	}
-	got, _ = db.GetTask(ctx, nsID, id)
-	if !got.Reported || got.Out != nil {
-		t.Errorf("没选出口落库错误: reported=%v out=%v", got.Reported, got.Out)
-	}
-
 	// 失败且一句原因都没有 → 兜底 "failed"（库里不允许失败没有说明）
 	id = mkRunning()
-	if err := db.FinishTask(ctx, nsID, id, TaskFailed, nil, "", ""); err != nil {
+	if err := db.FinishTask(ctx, nsID, id, TaskFailed, "", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	got, _ = db.GetTask(ctx, nsID, id)
-	if got.Out != nil {
-		t.Errorf("失败未选出口 out = %v, want NULL", got.Out)
-	}
 	if got.Summary != "failed" || got.Error != "failed" {
 		t.Errorf("失败原因兜底错误: summary=%q error=%q", got.Summary, got.Error)
 	}
@@ -262,7 +252,7 @@ func TestFinishTaskRejectsInvalidStatus(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	err := db.FinishTask(ctx, nsID, "tsk_x", TaskCanceled, nil, "", "")
+	err := db.FinishTask(ctx, nsID, "tsk_x", TaskCanceled, "", "")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("want ErrInvalidTransition, got %v", err)
 	}

@@ -10,7 +10,8 @@
  *   A5  出口封闭（from_port ∈ outputs）
  *   A6  扇出（一个出口多条边 → 多个任务）
  *   A7  成环剪枝（path 命中 → pruned/path）
- *   A8  out 退役（P1.5）：result 帧里的 out 不再路由；产出只走 emit
+ *   A8  out 退役（P1.5 + 迁移 28）：result 帧里的 out 不再路由；产出只走 emit；
+ *       **API 响应里没有 out 字段**（列已删）
  *   A9  租约接管（节点掉线后任务被回收重派）
  *   A10 命名空间隔离（同名能力互不可见 / 事件与任务不串 / 跨命名空间引用 400 /
  *       未知命名空间 404）
@@ -77,6 +78,27 @@ function sqlQuery(q, ...args) {
 	} finally {
 		db.close();
 	}
+}
+
+// fetchTask 走**控制台 HTTP 接口**读一条任务（GET /v1/tasks/{id}）。
+//
+// out 退役的断言必须落在响应字节上：库是服务端事实，接口才是客户端事实。
+// `tasks.out` 列已在迁移 28 删掉，所以「没有 out」的正确判据是**键不存在**
+// （`!("out" in task)`），而不是「值为 null」——后者仍然意味着有人会去读它。
+async function fetchTask(nsId, taskId) {
+	const r = await H.req(
+		server.base,
+		`/v1/tasks/${encodeURIComponent(taskId)}?namespaceId=${encodeURIComponent(nsId)}`,
+		{ session },
+	);
+	if (r.status !== 200) throw new Error(`GET /v1/tasks/${taskId}: ${r.status} ${r.text}`);
+	return r.json?.task || {};
+}
+
+// noOutKey 读出任务对象并断言它没有 out 键（返回断言用的 {ok, detail}）。
+async function noOutKey(nsId, taskId) {
+	const task = await fetchTask(nsId, taskId);
+	return { ok: !("out" in task), detail: JSON.stringify(Object.keys(task)) };
 }
 
 // emitPort 发一帧 emit 并等**这一帧**的 emit_ack（P1.5 起这是唯一的产出通道）。
@@ -455,11 +477,12 @@ async function main() {
 	// 改动前：A8 验 out 的三种写法（缺失 / null / 字符串），A8b 验「失败 + out 也派
 	// 下一跳」。out 退役之后，出口的唯一载体是 emit，所以这一节改成：
 	//
-	//   A8  结果帧里带什么都不再路由：tasks.out 恒 NULL、不建任何下游；
+	//   A8  结果帧里带什么都不再路由：API 响应里没有 out 字段、不建任何下游；
 	//   A8b 想派下一跳 → emit；**失败不撤回已经发生的 emit**（I4 的形式保留）。
 	//
 	// 断言没有放宽：A8 新增了「老写法 out='done' 也一条下游都不建」这条更强的负向
-	// 断言，A8b 仍然逐条核对扇出集合（fin + fanA + fanB）。
+	// 断言，A8b 仍然逐条核对扇出集合（fin + fanA + fanB）。迁移 28 之后，「没有 out」
+	// 也从「值恒为 NULL」升级成「响应里没有这个键」（`!("out" in task)`）——更强的那条。
 	{
 		// 清场：A6 扇出的 3 个任务还占着实例槽位（节点 4 个实例），不释放的话
 		// 后面的任务会一直停在 pending、拿不到 assign（emit 会被判「任务不存在」）。
@@ -500,14 +523,16 @@ async function main() {
 				taskId,
 			);
 
-		// A8-态1：out 缺失 → tasks.out NULL，且不派生下一跳
+		// A8-态1：out 缺失 → 响应里没有 out 键，且不派生下一跳
 		const tMissing = await mk("missing");
 		node.conn.sendRaw(
 			`{"type":"result","task_id":"${tMissing.id}","status":"succeeded","summary":"no out"}`,
 		);
 		await new Promise((r) => setTimeout(r, 400));
-		const rMissing = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tMissing.id)[0];
-		A(8, "out 缺失 → out=NULL（没选出口）", rMissing && rMissing.out === null, JSON.stringify(rMissing));
+		{
+			const r = await noOutKey(nsId, tMissing.id);
+			A(8, "out 缺失 → 响应里没有 out 字段", r.ok, r.detail);
+		}
 		A(
 			8,
 			"out 缺失 → 不建下游（0 次 emit 合法）",
@@ -519,16 +544,20 @@ async function main() {
 		const tNull = await mk("null");
 		node.conn.sendRaw(`{"type":"result","task_id":"${tNull.id}","status":"succeeded","out":null}`);
 		await new Promise((r) => setTimeout(r, 400));
-		const rNull = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tNull.id)[0];
-		A(8, "out:null → out=NULL（与缺失等价）", rNull && rNull.out === null, JSON.stringify(rNull));
+		{
+			const r = await noOutKey(nsId, tNull.id);
+			A(8, "out:null → 响应里没有 out 字段（与缺失等价）", r.ok, r.detail);
+		}
 
 		// A8-态3（核心）：out 指向一条**真有边**的出口（done），照样不落库、不建下游。
 		// 老实现里这一帧会建出 3 个任务；现在它必须什么都不做——这就是「这条腿断了」。
 		const tStr = await mk("str");
 		node.conn.send({ type: "result", task_id: tStr.id, status: "succeeded", out: "done" });
 		await new Promise((r) => setTimeout(r, 600));
-		const rStr = sqlQuery(`SELECT out FROM tasks WHERE id = ?`, tStr.id)[0];
-		A(8, "out='done' → out=NULL（out 没有写入方了）", rStr && rStr.out === null, JSON.stringify(rStr));
+		{
+			const r = await noOutKey(nsId, tStr.id);
+			A(8, "out='done' → 响应里没有 out 字段（列已删，没有写入方）", r.ok, r.detail);
+		}
 		A(
 			8,
 			"out='done' → 一条下游都不建（老通道已退役，不是并存）",
@@ -552,9 +581,12 @@ async function main() {
 			summary: "exit status 7: 编译失败",
 		});
 		await new Promise((r) => setTimeout(r, 700));
-		const failParent = sqlQuery(`SELECT status, out, summary FROM tasks WHERE id = ?`, tFail.id)[0];
+		const failParent = sqlQuery(`SELECT status, summary FROM tasks WHERE id = ?`, tFail.id)[0];
 		A(8, "A8b 失败 + 已 emit → 父任务 status=failed", failParent?.status === "failed", JSON.stringify(failParent));
-		A(8, "A8b 失败 → out 仍然 NULL（出口只在 emission 里）", failParent?.out === null, JSON.stringify(failParent));
+		{
+			const r = await noOutKey(nsId, tFail.id);
+			A(8, "A8b 失败 → 响应里同样没有 out 字段（出口只在 emission 里）", r.ok, r.detail);
+		}
 		A(8, "A8b 失败必须带原因", !!failParent?.summary, JSON.stringify(failParent));
 		// work --done--> 一共 3 条边（fin + fanA + fanB），所以「建了什么」要和
 		// 成功扇出**完全一样**——失败不该少派、也不该安静地只走一条。
@@ -579,7 +611,7 @@ async function main() {
 	//   ② 两跳的**正向**路径照旧用 emit 走通（a --go--> b，routed=1）——
 	//      证明拒环没有把合法的接力也一起拦掉；
 	//   ③ 运行期 path 剪枝（第二道闸门）是「存量数据/自连」的兜底，
-	//      由 internal/route 的单测覆盖（prune_test.go / dispatch_next_test.go），
+	//      由 internal/route 的单测覆盖（prune_test.go / prune_events_test.go），
 	//      在 e2e 里造不出来——因为这张图根本存不进去。
 	{
 		const a = (await defineCapability("c.cycle.a", ["go"])).json.capability;
@@ -688,7 +720,7 @@ async function main() {
 			const deadline = Date.now() + 8000;
 			let st = null;
 			while (Date.now() < deadline) {
-				st = sqlQuery(`SELECT status, out, reported FROM tasks WHERE id = ?`, phoneTaskId)[0];
+				st = sqlQuery(`SELECT status, reported FROM tasks WHERE id = ?`, phoneTaskId)[0];
 				if (st && ["succeeded", "failed", "canceled", "abandoned"].includes(st.status)) break;
 				await new Promise((r) => setTimeout(r, 150));
 			}

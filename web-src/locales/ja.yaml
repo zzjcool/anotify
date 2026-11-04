@@ -111,7 +111,6 @@ common:
     task_id: タスク ID
     trace: トレース
     capability: ケイパビリティ
-    out: 出口
     node: 実行ノード
     attempts: 試行回数
     parent_task: 親タスク
@@ -264,9 +263,6 @@ message:
     canceled: キャンセル済み
     abandoned: 放棄
     lease_expired: リース期限切れ
-  out:
-    none: 未報告
-    end: 出口未選択（ここで終了）
   node:
     central: ハブが実行
   chain:
@@ -1101,9 +1097,7 @@ events:
     title: タスクチェーン
     empty: このトレースにタスクはありません（最初のステップで剪定された可能性があります）。
     no_root: ルートタスクが見つかりません（トレースが不完全な可能性があります）。
-    out_none: 未報告
     out_end: 終端に到達
-    out_emits: 出力は下の「Emits」欄
   wf:
     waterfall: ウォーターフォール
     tree: ツリー

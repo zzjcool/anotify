@@ -111,7 +111,6 @@ common:
     task_id: ID de tarea
     trace: Traza
     capability: Capacidad
-    out: Salida
     node: Nodo
     attempts: Intentos
     parent_task: Tarea padre
@@ -264,9 +263,6 @@ message:
     canceled: Cancelada
     abandoned: Abandonada
     lease_expired: Arrendamiento expirado
-  out:
-    none: Sin reportar
-    end: Sin puerto (termina aquí)
   node:
     central: Ejecutada por el hub
   chain:
@@ -1101,9 +1097,7 @@ events:
     title: Cadena de tareas
     empty: No hay tareas en esta traza (puede haberse podado en el primer paso).
     no_root: No se encontró la tarea raíz (la traza puede estar incompleta).
-    out_none: Sin reportar
     out_end: Fin alcanzado
-    out_emits: ver Emits abajo
   wf:
     waterfall: Cascada
     tree: Árbol

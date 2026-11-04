@@ -524,12 +524,11 @@ func (d *DB) ClaimCentralTasks(ctx context.Context, limit int) ([]*Task, error) 
 //
 // 与 ReportResult 的区别：ReportResult 是**节点**回报路径（要求任务有
 // node_id 归属、会校验租约）。中枢任务没有归属，所以走这条。
-func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, summary, errMsg string) error {
+//
+// 没有出口参数：P1.5（迁移 28）之后 `tasks.out` 整列已删，路由只由 emission 表达。
+func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string, summary, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: finish status must be succeeded|failed, got %q", ErrInvalidTransition, status)
-	}
-	if out != nil && *out == "" {
-		return fmt.Errorf("finish task: empty out string is not a valid port (use nil)")
 	}
 
 	// 与节点回报路径共用同一套「说明/原因」归并与派生规则。
@@ -546,13 +545,9 @@ func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string,
 		return fmt.Errorf("finish central task %s: %w", taskID, err)
 	}
 
-	var outVal any
-	if out != nil {
-		outVal = *out
-	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET out = ?, reported = ?, summary = ?, error = ? WHERE namespace_id = ? AND id = ?`,
-		outVal, 1, summary, errMsg, namespaceID, taskID); err != nil {
+		`UPDATE tasks SET reported = ?, summary = ?, error = ? WHERE namespace_id = ? AND id = ?`,
+		1, summary, errMsg, namespaceID, taskID); err != nil {
 		return fmt.Errorf("write central task result: %w", err)
 	}
 	return tx.Commit()

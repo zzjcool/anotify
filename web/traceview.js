@@ -255,23 +255,19 @@
 			);
 		}
 
-		// 出口已退役（P1.5 硬切 .anotify-out）：路由由 emit 决定，tasks.out 恒 NULL。
+		// 出口已退役（P1.5 硬切 .anotify-out）：路由由 emit 决定，`tasks.out` 列本身
+		// 也已在迁移 28 删掉（API 响应里连这个键都没有）。
 		//
-		// 所以「到头了」不能再按 out 判——那样每个已回报的任务都会显示「到头了」，
-		// 即使它其实 emit 出了三条下游。改成看**有没有下游任务**（这是同一件事的
-		// 事实来源）。历史行（迁移前）仍带 out，照旧显示，方便看老 trace。
-		const outWrap = el("span", "text-[11px] tx-meta");
-		if (tk.out != null) {
-			outWrap.appendChild(document.createTextNode("· → "));
-			outWrap.appendChild(code(tk.out, "tx-out"));
-		} else if (kids.length === 0) {
-			outWrap.appendChild(document.createTextNode("· " + t("events.chain.out_end", "到头了")));
-		} else {
-			outWrap.appendChild(
-				document.createTextNode("· " + t("events.chain.out_emits", "产出见「产出」区")),
+		// 所以「到头了」只看一件事：**有没有下游任务**。有下游 → 什么都不显示
+		// （产出在「产出」区里，这里再提一句是噪音）；没下游 → 到头了。
+		//
+		// 为什么不能按 out 判（这是这段代码曾经的样子）：每个任务的那一列都是 NULL，
+		// 于是每条跑完的链都会显示「到头了」，包括那些明明 emit 出了三条下游的。
+		if (kids.length === 0) {
+			line.appendChild(
+				el("span", "text-[11px] tx-meta", "· " + t("events.chain.out_end", "到头了")),
 			);
 		}
-		line.appendChild(outWrap);
 
 		if (tk.error) {
 			line.appendChild(el("span", "text-[11px] tx-err", "· " + tk.error));

@@ -121,8 +121,9 @@ func TestCrossNamespaceTaskNotVisible(t *testing.T) {
 		t.Fatalf("task in %s status = %q after cross-namespace ack/result, want %q",
 			nsOther.ID, got.Status, store.TaskPending)
 	}
-	if got.Reported || got.Out != nil {
-		t.Fatalf("cross-namespace result leaked into the row: reported=%v out=%v", got.Reported, got.Out)
+	if got.Reported || got.Summary != "" || got.FinishedAt != nil {
+		t.Fatalf("cross-namespace result leaked into the row: reported=%v summary=%q finished_at=%v",
+			got.Reported, got.Summary, got.FinishedAt)
 	}
 }
 

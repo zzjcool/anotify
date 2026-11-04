@@ -260,7 +260,6 @@ func BenchmarkReportResult(b *testing.B) {
 	env := newBenchEnv(b)
 	nodeID := env.addEntryGraphWithNode(b)
 	ctx := context.Background()
-	out := "fix"
 	artifacts := []string{"run.log", "diff.patch"}
 
 	b.Run("running_to_succeeded", func(b *testing.B) {
@@ -310,7 +309,7 @@ func BenchmarkReportResult(b *testing.B) {
 
 			// 计时区内**恰好一次**：节点回报结果。
 			if err := env.db.ReportResult(ctx, env.nsID, t.ID, store.TaskSucceeded,
-				&out, "ok", artifacts, ""); err != nil {
+				"ok", artifacts, ""); err != nil {
 				b.Fatalf("report result: %v", err)
 			}
 		}

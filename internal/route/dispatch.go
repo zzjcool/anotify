@@ -13,8 +13,12 @@
 //
 // 实现上分成两段：①–③（含构造 pending 任务）是 **plan**——只读，不落库、
 // 不占槽位、不推帧；④–⑤ 是 **launch**——占槽位 + 推 assign 帧。拆开是 #140 的要求：
-// 下一跳的「父任务终态 + 子任务建行」必须在同一个事务里，而 publish 是网络操作、
-// 不能进事务，所以 plan 必须能在事务之前单独跑（见 PlanNextHop / PublishTasks）。
+// 「子任务建行 + 写 emission」必须在同一个事务里（见 route.Emit），而 publish 是网络
+// 操作、不能进事务，所以 plan 必须能在事务之前单独跑。
+//
+// 下一跳的唯一入口是 Emit（emit 帧 → plan → 一个事务写 emission + 建子任务行 →
+// launch）。旧的两步接力入口（`result.out` 先算计划、再由后台任务补推 assign）已随
+// P1.5 整条删除，`tasks.out` 列本身也在迁移 28 删掉。
 //
 // 但剪枝**一律留痕**：每一条剪枝都写一行 events（source='route'，#142），
 // 否则「这条边为什么没走」在触发那一刻之后就永远查不到了。
@@ -42,7 +46,7 @@ type DispatchInput struct {
 	// ④ 挑机器与命名空间无关，完全不变。
 	//
 	// 谁来给：根任务由 handler 给、来源触发由调用方从 src.NamespaceID 传进来、
-	// 下一跳由父任务的 NamespaceID 继承（见 PlanNextHop）。
+	// 下一跳（emit）由父任务的 NamespaceID 继承（见 route.Dispatcher.upstreamKey）。
 	//
 	// 空值是**错误**，不是「回退默认命名空间」（见 checkInput）：回退会让
 	// 「调用方忘了带 namespace」变成「悄悄写进了 default」，是最难查的那类串数据。
@@ -337,14 +341,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchO
 	return out, nil
 }
 
-// checkInput 是 Dispatch 与 PlanNextHop 共用的前置校验。
+// checkInput 是 Dispatch / Emit 共用的前置校验（两者都直接调 plan）。
 //
-// 抽出来的理由：PlanNextHop 绕过了 Dispatch 直接调 plan，若不校验，
-// Store 为 nil 时会在 plan 里 panic（旧 DispatchNext 走 Dispatch，本来就有这层校验）。
+// 抽出来的理由：Emit 绕过了 Dispatch 直接调 plan，若不校验，
+// Store 为 nil 时会在 plan 里 panic（Dispatch 本来就有这层校验）。
 //
 // 为什么这里不要求组织：组织层已在迁移 14 删除，命名空间是唯一隔离维度，
-// 派发四步的每一次 store 调用都只吃 namespaceID（见 PlanNextHop：子任务只继承
-// 父任务的 namespace）。除了 store 的作用域参数，派发不需要任何更粗的归属。
+// 派发四步的每一次 store 调用都只吃 namespaceID。除了 store 的作用域参数，
+// 派发不需要任何更粗的归属。
 func (d *Dispatcher) checkInput(in DispatchInput) error {
 	if d.Store == nil {
 		return fmt.Errorf("route: dispatcher has no store")
@@ -1233,158 +1237,6 @@ func parentPtr(s string) *string {
 	return &s
 }
 
-// PlanNextHop 只算「下一跳要建哪些任务」：**只读**，不落库、不占槽位、不推帧。
-//
-// 这是契约 §4 的**递归应用**——把上一跳的结果当作下一跳的输入：
-//
-//	namespaceID = 父任务的 NamespaceID（store.Task.NamespaceID，必须原样传入）
-//	fromKey     = 刚完成的能力（名字；传 id 也接受，见下）
-//	Out         = 它回报的出口名
-//	Params      = 它的 params（原样传递，不求值）
-//	Path        = 它的 path（环剪枝的累积路径）
-//
-// 为什么第二个参数是 namespaceID（契约 §3 第 ⑤ 步）：
-// 下一跳的子任务**必须继承父任务的命名空间**（I11④ 也由 store.CreateTasks
-// 兜一遍：子任务显式给了不同命名空间就直接报 CrossNamespaceError）。
-// 调用方只能把父任务行上的那个值原样递进来，不能自己挑一个。
-//
-// 三种情况不派发，都不是错误（返回空列表 + nil）：
-//   - out == ""：节点没回报出口（reported=0），这条分支自然结束
-//   - 查表 0 行：pruned/no_edge，链到头了
-//   - 目标是 origin 能力且已在 path 里：pruned/path，成环
-//
-// 返回的任务是 pending、ID 已生成，但**尚未落库**：调用方要把它们交给
-// 「写父任务终态 + 建子任务行」的同一个事务（store.ReportResultAndCreateTasks），
-// 事务提交后再调 PublishTasks 推帧。这也是 #140 的形状：
-// 行先以 pending + node_id NULL 落库，publish 在事务外（网络操作不能进事务）。
-// 为什么 plan 可以同步跑在读循环里：它全是只读查询（出口表/能力/节点）。
-//
-// 剪枝留痕（InsertPruneEvent）在 plan 内、事务外，best-effort：若随后的事务
-// 回滚，库里可能留下一条「这条边没走成」的痕迹——那是诊断信息，
-// 比丢掉证据好，可接受（契约 §4）。
-func (d *Dispatcher) PlanNextHop(ctx context.Context, namespaceID, traceID, parentTaskID, fromKey, out string, params json.RawMessage, path []string) ([]*store.Task, error) {
-	if out == "" {
-		return nil, nil // 没回报出口：不派下一跳（契约 §7 第 ① 行）
-	}
-
-	var paramMap map[string]any
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &paramMap); err != nil {
-			paramMap = map[string]any{}
-		}
-	}
-	if paramMap == nil {
-		paramMap = map[string]any{}
-	}
-
-	in := DispatchInput{
-		// NamespaceID 在这里只能是父任务的那一个（I11④：不接受调用方另指定）。
-		NamespaceID:  namespaceID,
-		TraceID:      traceID,
-		ParentTaskID: parentTaskID,
-		// 左端是能力名（P2.2）；老调用方传的 id 由 plan 的 upstreamKey 归一。
-		FromCap: fromKey,
-		Out:     out,
-		Params:  paramMap,
-		Path:    path,
-	}
-	// 旧 DispatchNext 走 Dispatch，本来就有这层校验；绕过 Dispatch 时要补上。
-	if err := d.checkInput(in); err != nil {
-		return nil, err
-	}
-
-	// planOut 只用来承接 plan 的剪枝留痕（plan 的签名要求有个 out）；
-	// 剪枝已由 plan 包留痕落库，这里不回给调用方。
-	planOut := &DispatchOutput{Tasks: []*store.Task{}, Pruned: []PrunedRecord{}}
-	tasks, _, err := d.plan(ctx, in, planOut)
-	if err != nil {
-		return nil, err
-	}
-	return tasks, nil
-}
-
-// PublishTasks 对**已落库**的 pending 任务执行「挑机器 + 占槽位 + 推 assign 帧」。
-//
-// 它绝不建行、绝不新增建任务路径：任务行的唯一出口是 Dispatch 或
-// PlanNextHop + 调用方的事务。这里只做「让已存在的 pending 行跑起来」，
-// 状态推进也只能走 LeaseAndAssign（pending→assigned 的既有入口）。
-//
-// 为什么直接复用 RedispatchTask：它已经是「NodesForCapability + pickNode(粘性/负载)
-// + LeaseAndAssign + PublishAssign + 推失败退回 pending」的既有实现，语义与派发
-// 第 ④ 步完全一致。另写一份只会让「派发」与「重派」两条路径慢慢走偏。
-//
-// 为什么 publish 不能进事务：它是网络操作（写 WS 帧），握着 SQLite 写事务等
-// 一个可能掉线的节点，会把整库的写入卡住；而且帧已经发出去了、事务再回滚，
-// 两边就永久不一致。
-//
-// 为什么 publish 丢了也不丢任务（#140 的补偿路径）：任务行已经以
-// pending + node_id NULL 落库。推帧失败时 RedispatchTask 会走
-// requeueAfterPublishFailure 退回 pending；即使本 goroutine 随进程消失、
-// 或进程在「事务提交」与「publish」之间退出，store.ListRedispatchable
-// （internal/lease 的 sweeper 每 5s tick，Redispatch = Dispatcher.RedispatchTask）
-// 也会把它捞回来重派。「建行进事务 + publish 在事务外」正是依赖这条兜底才成立。
-//
-// 中枢能力（store.IsBuiltinCapability(...).Central，如 notify.phone）**跳过**：
-// 它们没有节点执行者，由 internal/executor 从 pending 里领取（ClaimCentralTasks）。
-// 任务留 pending 是正确终态，不是失败。
-//
-// 逐条独立：一条失败不拦住其它条；返回第一个错误仅供调用方记日志。
-//
-// 关于「推帧失败」要不要算错误：RedispatchTask 把推不出去当成「这次没派成」
-// 而**不**返回 error（任务已退回 pending，sweeper 会兜底重派）。但 #140 的
-// 调用方需要知道「行建出来了、帧没发出去」，所以这里用「attempts 涨了却仍回
-// pending」识别出推送回滚（判定规则与 launch 筛 out.Tasks 的规则一致），
-// 造一个错误交给调用方记日志——它不是硬失败，不进任何状态机。
-func (d *Dispatcher) PublishTasks(ctx context.Context, namespaceID string, tasks []*store.Task) error {
-	var firstErr error
-	// record 只做两件事：warn + 记住第一个错误，绝不中断后续任务。
-	record := func(task *store.Task, err error) {
-		slog.Warn("publish next-hop task failed",
-			"event", "route.next_hop.publish_failed",
-			"namespace_id", namespaceID,
-			"task_id", task.ID,
-			"capability", task.Capability,
-			"error", err.Error())
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-
-	for _, t := range tasks {
-		if t == nil {
-			continue
-		}
-
-		// 中枢执行的能力：不找节点、不占槽位，任务留 pending 给执行器领取。
-		if bc, ok := store.IsBuiltinCapability(t.Capability, t.Version); ok && bc.Central {
-			continue
-		}
-
-		// plan 出来的任务自带 NamespaceID；只在缺失时用入参补上，
-		// 避免拿空作用域去查库（那样什么都查不到，任务会默默留 pending）。
-		// 命名空间就是唯一隔离维度，也是「谁看得到这条任务」的唯一判据。
-		if t.NamespaceID == "" {
-			t.NamespaceID = namespaceID
-		}
-
-		beforeAttempts := t.Attempts
-		ok, err := d.RedispatchTask(ctx, t)
-		if err != nil {
-			record(t, err)
-			continue
-		}
-		if ok {
-			continue
-		}
-		// 占过槽位（attempts 涨了）却又回到 pending：只有「推帧失败被退回」
-		// 会留下这个形状（容量不足/没节点都不会碰 attempts）。
-		if t.Attempts > beforeAttempts && t.Status == store.TaskPending {
-			record(t, fmt.Errorf("route: publish assign for task %s failed, requeued to pending", t.ID))
-		}
-	}
-	return firstErr
-}
-
 // RedispatchTask 尝试把一条已存在的 pending 任务重新派给节点。
 //
 // 与 Dispatch 的区别：Dispatch 是「从出口表算出要建哪些任务」，
@@ -1474,9 +1326,9 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 
 	// 粘性钉住：这是 launch 第 ④⑤ 步里 PutPin 那一段的**同构副本**。
 	//
-	// 为什么必须在这里再写一遍：接力派发（#140）改走
-	// PlanNextHop + PublishTasks → RedispatchTask 之后**不再经过 launch**，
-	// 若不在这里接住 pickNode 返回的 selector，接力链上就永远不会有 pin——
+	// 为什么必须在这里再写一遍：重派（巡检捞回 / emit 的后台派发）走的是
+	// RedispatchTask 而不是 launch，若不在这里接住 pickNode 返回的 selector，
+	// 重派链上就永远不会有 pin——
 	// 而 pickNode 只在「库里还没有 pin」时才返回 selector（已钉住返回 nil），
 	// 于是 hop≥2 的 sticky 静默失效：第二次派发/巡检重派会按负载换机器，
 	// 同一 trace 的同一 worktree 落到另一台节点上（对 sticky="worktree" 这类

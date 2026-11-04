@@ -4,7 +4,8 @@
  * 覆盖：
  *  1. 事件 + 任务落库后重启进程，数据仍在
  *  2. 任务状态机（assigned / running / succeeded）跨重启保持，不会"复活"
- *  3. out 三态（缺失 / null / 字符串）跨重启保持（不变量 I5）
+ *  3. 任务行跨重启保持（reported / summary / 终态时间），且**响应里没有 out 字段**
+ *     （`tasks.out` 列已在迁移 28 删掉，出口只存在于 emissions.port）
  *  4. trace 关联跨重启可查（GET /v1/events?traceId=）
  *  5. 拒收已进入终态的任务再被改状态（终态不可变）
  *
@@ -34,7 +35,7 @@ function queryTasks(dbPath, namespaceId) {
 	try {
 		return db
 			.prepare(
-				`SELECT id, status, out, reported, summary, attempts FROM tasks WHERE namespace_id = ? ORDER BY created_at`,
+				`SELECT id, status, reported, summary, attempts FROM tasks WHERE namespace_id = ? ORDER BY created_at`,
 			)
 			.all(namespaceId);
 	} finally {
@@ -124,11 +125,12 @@ async function main() {
 		H.eq("任务状态 pending（节点未上线）", before[0].status, "pending");
 		phase1 = { taskId: before[0].id };
 
-		// 手工把任务推到终态并写 out，验证跨重启保持
+		// 手工把任务推到终态，验证跨重启保持。
+		// （没有 out 列可写：迁移 28 删掉了它，出口只存在于 emissions.port。）
 		const db = new DatabaseSync(dbPath);
 		try {
 			db.prepare(
-				`UPDATE tasks SET status='succeeded', out='fix', reported=1, summary='ok',
+				`UPDATE tasks SET status='succeeded', reported=1, summary='ok',
 				 started_at=?, finished_at=? WHERE id=?`,
 			).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), phase1.taskId);
 		} finally {
@@ -158,8 +160,7 @@ async function main() {
 		H.eq("重启后任务数量不变", after.length, 1);
 		H.eq("重启后任务状态仍是 succeeded", after[0].status, "succeeded");
 
-		// 3. out 三态跨重启保持（I5）
-		H.eq("重启后 out 仍是 'fix'", after[0].out, "fix");
+		// 3. 结果字段跨重启保持
 		H.eq("重启后 reported 仍是 1", after[0].reported, 1);
 		H.eq("重启后 summary 保留", after[0].summary, "ok");
 
@@ -168,7 +169,13 @@ async function main() {
 		H.eq("重启后 GET /v1/tasks 200", taskList.status, 200);
 		H.eq("重启后 API 也能看到该任务", taskList.json?.tasks?.length, 1);
 		H.eq("API 读到的状态正确", taskList.json?.tasks?.[0]?.status, "succeeded");
-		H.eq("API 读到的 out 正确", taskList.json?.tasks?.[0]?.out, "fix");
+		// 迁移 28：`tasks.out` 整列已删，所以正确判据是**键不存在**
+		// （不是「值为 null」——那样读者仍会以为它有意义）。
+		H.check(
+			"API 读到的任务没有 out 字段（迁移 28 删列）",
+			!!taskList.json?.tasks?.[0] && !("out" in taskList.json.tasks[0]),
+			JSON.stringify(Object.keys(taskList.json?.tasks?.[0] || {})),
+		);
 
 		// 5. 终态不可变：取消一个已成功的任务应 409
 		const cancel = await H.req(server.base, `/v1/tasks/${phase1.taskId}/cancel`, {

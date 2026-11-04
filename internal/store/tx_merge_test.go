@@ -97,12 +97,12 @@ func driveToRunningWithLease(t *testing.T, db *DB, nsID, nodeID string, task *Ta
 // 与旧实现一一对应：
 //  1. assigned/acked 先隐式进 running 并补 started_at（节点跳过 progress 帧时）
 //  2. transition 到终态（finished_at 由 transitionGuarded 写）
-//  3. details 那一句 UPDATE（out/reported/summary/artifacts/error/finished_at COALESCE）
+//  3. details 那一句 UPDATE（reported/summary/artifacts/error/finished_at COALESCE）
 //  4. 旧 ws handler 里**单独一步**释放槽位（ReleaseInstanceByTask）
 //
 // 故意保留「4 次独立提交」的原样，因为要证明的正是「合并成 1 次后读回一模一样」。
 func reportResultSplit(t *testing.T, db *DB, nsID, taskID, nodeID, status string,
-	out *string, reported bool, summary string, artifacts []string, errMsg string) {
+	reported bool, summary string, artifacts []string, errMsg string) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -133,10 +133,6 @@ func reportResultSplit(t *testing.T, db *DB, nsID, taskID, nodeID, status string
 	if reported {
 		reportedInt = 1
 	}
-	var outVal any
-	if reported && out != nil {
-		outVal = *out
-	}
 	if artifacts == nil {
 		artifacts = []string{}
 	}
@@ -146,10 +142,10 @@ func reportResultSplit(t *testing.T, db *DB, nsID, taskID, nodeID, status string
 	}
 	if _, err := db.ExecContext(ctx,
 		`UPDATE tasks
-		 SET out = ?, reported = ?, summary = ?, artifacts = ?, error = ?,
+		 SET reported = ?, summary = ?, artifacts = ?, error = ?,
 		     finished_at = COALESCE(finished_at, ?)
 		 WHERE namespace_id = ? AND id = ?`,
-		outVal, reportedInt, summary, string(artifactsJSON), errMsg, Now(), nsID, taskID); err != nil {
+		reportedInt, summary, string(artifactsJSON), errMsg, Now(), nsID, taskID); err != nil {
 		t.Fatalf("split: details: %v", err)
 	}
 	// 旧实现里这一步在 ws handler（调用方），不在 store 内
@@ -245,12 +241,6 @@ func assertResultFieldsMatch(t *testing.T, merged, split *Task) {
 	if merged.Status != split.Status {
 		t.Errorf("status: merged=%q split=%q", merged.Status, split.Status)
 	}
-	if merged.Out == nil || split.Out == nil {
-		t.Errorf("out: merged=%s split=%s，两边都必须非空（I5：reported=true 且有出口时不许 NULL）",
-			showStrPtr(merged.Out), showStrPtr(split.Out))
-	} else if *merged.Out != *split.Out {
-		t.Errorf("out: merged=%q split=%q", *merged.Out, *split.Out)
-	}
 	if merged.Reported != split.Reported {
 		t.Errorf("reported: merged=%v split=%v", merged.Reported, split.Reported)
 	}
@@ -343,18 +333,17 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 				}
 			}
 
-			out := "fix"
 			artifacts := []string{"run.log", "diff.patch"}
 			const summary = "改好了"
 
 			// 合并路径：一次 ReportResult（内部单事务，且内含释放槽位）
 			if err := db.ReportResult(ctx, nsID, taskMerged.ID, TaskSucceeded,
-				&out, summary, artifacts, ""); err != nil {
+				summary, artifacts, ""); err != nil {
 				t.Fatalf("merged ReportResult: %v", err)
 			}
 			// 对照组：拆开的多事务序列（旧实现逐条重放）
 			reportResultSplit(t, db, nsID, taskSplit.ID, nodeSplit, TaskSucceeded,
-				&out, true, summary, artifacts, "")
+				true, summary, artifacts, "")
 
 			merged, err := db.GetTask(ctx, nsID, taskMerged.ID)
 			if err != nil {
@@ -371,9 +360,6 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 			// ② 合并后读回的具体期望值（不只两边互比：两组都错成一样也算错）
 			if merged.Status != TaskSucceeded {
 				t.Errorf("merged status = %q, want succeeded", merged.Status)
-			}
-			if merged.Out == nil || *merged.Out != "fix" {
-				t.Errorf("merged out = %s, want \"fix\"", showStrPtr(merged.Out))
 			}
 			if !merged.Reported {
 				t.Error("merged reported = false, want true（reported=true 是本用例的入参）")
@@ -505,8 +491,9 @@ func TestLeaseAndAssignMatchesSplitWrites(t *testing.T) {
 		t.Errorf("finished_at = %s / %s, 派发不该写结束时间",
 			showInt64Ptr(merged.FinishedAt), showInt64Ptr(split.FinishedAt))
 	}
-	if merged.Out != nil || merged.Reported {
-		t.Errorf("派发不该写结果字段：out=%s reported=%v", showStrPtr(merged.Out), merged.Reported)
+	if merged.Reported || merged.Summary != "" || len(merged.Artifacts) != 0 {
+		t.Errorf("派发不该写结果字段：reported=%v summary=%q artifacts=%v",
+			merged.Reported, merged.Summary, merged.Artifacts)
 	}
 
 	// 槽位：两边都必须真的占住自己的 taskID，且 alive
@@ -581,9 +568,9 @@ func TestProgressTaskMatchesSplitWrites(t *testing.T) {
 		t.Errorf("split lease_until = %s, want %d", showInt64Ptr(split.LeaseUntil), progressedLease)
 	}
 	// progress 不该动结果字段（提前写结果 = 前端会看到「跑着但已有结果」）
-	if merged.Reported || merged.Out != nil || merged.Summary != "" || len(merged.Artifacts) != 0 {
-		t.Errorf("progress 不该写结果字段: reported=%v out=%s summary=%q artifacts=%v",
-			merged.Reported, showStrPtr(merged.Out), merged.Summary, merged.Artifacts)
+	if merged.Reported || merged.Summary != "" || len(merged.Artifacts) != 0 {
+		t.Errorf("progress 不该写结果字段: reported=%v summary=%q artifacts=%v",
+			merged.Reported, merged.Summary, merged.Artifacts)
 	}
 	// 槽位仍归该任务（progress 不释放槽位）
 	assertSlotOfTask(t, db, nodeMerged, taskMerged.ID)
@@ -714,8 +701,7 @@ func TestReportResultRejectsTerminalTaskWithoutTouchingSlot(t *testing.T) {
 	}
 	assertSlotOfTask(t, db, nodeID, task.ID) // 前置：槽位此时仍被该任务占着
 
-	out := "fix"
-	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, "再来一次", []string{"x"}, "")
+	err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, "再来一次", []string{"x"}, "")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态任务 ReportResult err = %v, want ErrInvalidTransition", err)
 	}
@@ -747,8 +733,7 @@ func TestReportResultDoesNotReleaseForeignSlot(t *testing.T) {
 	const foreignTask = "tsk_someone_else"
 	mustExec(t, db, `UPDATE node_instances SET busy_task = ? WHERE node_id = ?`, foreignTask, nodeID)
 
-	out := "fix"
-	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &out, "done", nil, ""); err != nil {
+	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, "done", nil, ""); err != nil {
 		t.Fatalf("ReportResult: %v", err)
 	}
 	got, err := db.GetTask(ctx, nsID, task.ID)

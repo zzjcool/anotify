@@ -2105,18 +2105,22 @@ paths:
         | `cancel` | 停止任务 |
         | `error` | 协议错误（不关连接，除 hello 失败） |
 
-        ### result 的 out 两态（不变量 I4/I5）
-        | 线上 JSON | 落库 | 含义 |
-        |---|---|---|
-        | 没有 `out` 键 | `out=NULL` | 没选出口 → 到此为止（不派下一跳） |
-        | `"out": null` | `out=NULL` | 与缺省**完全等价** |
-        | `"out": "fix"` | `out='fix'` | 走 fix 出口（成功/失败都一样派） |
+        ### result 不再路由：出口只来自 `emit`
 
-        路由只看 `out`，不看 `status`：失败回报了出口就继续（「失败也发通知」
-        就是一条 `(cap, failed)` 的边）。失败必须带非空 `summary`（原因），
+        P1.5 起 `result` 帧里的 `out` 字段已退役，`tasks.out` 列也在迁移 28 删掉。
+        现在的语义只有一条：
+
+        | 线上 JSON | 服务端行为 |
+        |---|---|
+        | 带 `out` 键（任何值） | **忽略**：不落库、不建下游（老客户端的写法仍然照收，不报错） |
+        | 不带 `out` 键 | 同上（两者**完全等价**） |
+
+        下一跳的唯一入口是 `emit` 帧：`emit(port=fix)` 才会查边、建子任务行并派发。
+        「路由与 status 无关」这条性质因此变成：失败**之前** emit 过的下游照样在
+        （失败不会撤回已经发生的接力）。失败必须带非空 `summary`（原因），
         服务端在缺失时兜底写成 `"failed"`。
 
-        「没回报」（节点掉线/超时）不在这张表里：那是**没有 result 帧**，
+        「没回报」（节点掉线/超时）不在上面这张表里：那是**没有 result 帧**，
         任务会停在 pending/running，由租约到期 + 巡检重派处理。
 
         ### hello 的可选 `manifest`：节点声明「我怎么跑」
@@ -3735,14 +3739,6 @@ components:
         instanceId: { type: string, nullable: true }
         leaseUntil: { type: integer, format: int64, nullable: true }
         attempts: { type: integer }
-        out:
-          type: string
-          nullable: true
-          description: |
-            这次选了哪个出口（路由的唯一依据，不变量 I4/I5）。
-            null = 没选出口 = 到此为止（正常终止，不是错误）。
-            「没回报」不是 out 的一个值——它表示没有结果帧，任务会停在
-            pending/running 直到租约到期被巡检重派。
         reported:
           type: boolean
           deprecated: true

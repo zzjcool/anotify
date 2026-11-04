@@ -3212,9 +3212,6 @@ html.flograph-fullscreen-open body {
 .tx-faint {
 	color: var(--faint);
 }
-.tx-out {
-	color: var(--success);
-}
 .tx-err {
 	color: var(--error);
 }

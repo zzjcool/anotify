@@ -39,7 +39,7 @@ type Store interface {
 	//
 	// namespaceID 必须来自 task.NamespaceID：中枢执行是全局的，但每条任务的
 	// 终态写入仍只在它自己的命名空间内生效（I10）。
-	FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, summary, errMsg string) error
+	FinishTask(ctx context.Context, namespaceID, taskID, status string, summary, errMsg string) error
 	// CentralCapabilityNames 返回中枢执行的能力名（用于挑选待办）。
 	CentralCapabilityNames() []string
 }
@@ -118,7 +118,7 @@ func (e *Executor) Tick(ctx context.Context) {
 			// 执行失败要落成 failed 终态，不能静默留在 running——
 			// 否则任务会卡到租约巡检，而中枢任务没有租约。
 			if ferr := e.Store.FinishTask(ctx, task.NamespaceID, task.ID,
-				store.TaskFailed, nil, "", err.Error()); ferr != nil {
+				store.TaskFailed, "", err.Error()); ferr != nil {
 				slog.Error("mark central task failed",
 					"event", "executor.mark_failed",
 					"task_id", task.ID,
@@ -169,10 +169,10 @@ func (e *Executor) runNotifyPhone(ctx context.Context, task *store.Task) error {
 		return fmt.Errorf("notify.phone send: %w", err)
 	}
 
-	// notify.phone 是终端能力（outputs 为空）：这次没选出口 → out=nil = 到此为止。
+	// notify.phone 是终端能力（outputs 为空）：没有下游，也不会 emit。
 	summary := fmt.Sprintf("pushed to %d device(s)", sent)
 	if err := e.Store.FinishTask(ctx, task.NamespaceID, task.ID,
-		store.TaskSucceeded, nil, summary, ""); err != nil {
+		store.TaskSucceeded, summary, ""); err != nil {
 		return fmt.Errorf("mark notify.phone succeeded: %w", err)
 	}
 

@@ -229,9 +229,8 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	if err := env.db.StartTask(ctx, env.nsID, dispatched.ID); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
-	fixOut := "fix"
 	if err := env.db.ReportResult(ctx, env.nsID, dispatched.ID, store.TaskSucceeded,
-		&fixOut, "done", []string{"run.log"}, ""); err != nil {
+		"done", []string{"run.log"}, ""); err != nil {
 		t.Fatalf("report result: %v", err)
 	}
 	finished, err := env.db.GetTask(ctx, env.nsID, dispatched.ID)
@@ -241,8 +240,8 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	if finished.Status != store.TaskSucceeded {
 		t.Fatalf("回报后状态应为 succeeded，实际 %q", finished.Status)
 	}
-	if finished.Out == nil || *finished.Out != fixOut || !finished.Reported {
-		t.Fatalf("回报的出口没落库：out=%v reported=%v", finished.Out, finished.Reported)
+	if !finished.Reported {
+		t.Fatal("回报标记没落库：reported=false（结果帧到过就必须是 true）")
 	}
 	if finished.Summary != "done" || len(finished.Artifacts) != 1 || finished.Artifacts[0] != "run.log" {
 		t.Fatalf("明细没落库：summary=%q artifacts=%v", finished.Summary, finished.Artifacts)

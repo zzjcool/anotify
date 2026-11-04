@@ -1173,8 +1173,9 @@
                 { "type": "hello", "capabilities": ["review@1"], "instance": 2 }
                 { "type": "ack", "taskId": "tsk_01J8" }
                 { "type": "progress", "taskId": "tsk_01J8", "percent": 40 }
-                { "type": "result", "taskId": "tsk_01J8", "status": "succeeded",
-                "out": "fix" }
+                { "type": "emit", "taskId": "tsk_01J8", "seq": 1,
+                "port": "fix", "data": { } }
+                { "type": "result", "taskId": "tsk_01J8", "status": "succeeded" }
               </div>
             </div>
             <div class="code-block">

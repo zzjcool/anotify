@@ -24,7 +24,6 @@ type finishedCall struct {
 	// namespaceID 必须来自 task.NamespaceID：中枢执行是全局扫描，
 	// 但终态写入只在任务自己的命名空间内生效（命名空间是唯一隔离维度，#204）。
 	namespaceID, taskID, status string
-	out                         *string
 	summary, errMsg             string
 }
 
@@ -36,11 +35,11 @@ func (f *fakeStore) ClaimCentralTasks(ctx context.Context, limit int) ([]*store.
 	return f.claim, nil
 }
 
-func (f *fakeStore) FinishTask(ctx context.Context, namespaceID, taskID, status string, out *string, summary, errMsg string) error {
+func (f *fakeStore) FinishTask(ctx context.Context, namespaceID, taskID, status string, summary, errMsg string) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
-	f.finished = append(f.finished, finishedCall{namespaceID, taskID, status, out, summary, errMsg})
+	f.finished = append(f.finished, finishedCall{namespaceID, taskID, status, summary, errMsg})
 	return nil
 }
 
@@ -75,7 +74,7 @@ func newTask(id, cap, params string) *store.Task {
 }
 
 // TestTickNotifyPhoneSucceeds 验证 notify.phone 成功路径：
-// 推给 params.to 指定的用户，任务落 succeeded + out=nil（没选出口 = 到此为止）。
+// 推给 params.to 指定的用户，任务落 succeeded（终端能力没有下游、也不 emit）。
 func TestTickNotifyPhoneSucceeds(t *testing.T) {
 	fs := &fakeStore{
 		claim: []*store.Task{newTask("tsk_1", "notify.phone", `{"to":"usr_a","title":"hi","body":"there"}`)},
@@ -101,10 +100,6 @@ func TestTickNotifyPhoneSucceeds(t *testing.T) {
 	// 命名空间必须来自任务行本身（不是 org、不是空、不是默认命名空间）
 	if got.namespaceID != "ns_x" {
 		t.Errorf("FinishTask namespaceID = %q, want ns_x（该用 task.NamespaceID）", got.namespaceID)
-	}
-	// notify.phone 是终端能力（outputs=[]）：这次没选出口 → out=nil（到此为止）
-	if got.out != nil {
-		t.Errorf("out 应为 nil（终端能力没有出口），实际 %v", *got.out)
 	}
 	// 成功也要有一句说明（结果说明只有一份源，不能是空串）
 	if got.summary == "" {

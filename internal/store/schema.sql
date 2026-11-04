@@ -329,7 +329,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     lease_until    INTEGER,                   -- 租约截止
     attempts       INTEGER NOT NULL DEFAULT 0,
 
-    out            TEXT,                      -- 出口名；NULL = 没回报（'' 不是合法值）
+    out            TEXT,                      -- 出口名；**已由迁移 28 删除**（本块只追加不改，故留着）
     reported       INTEGER NOT NULL DEFAULT 0,-- 1 = 节点已回报（哪怕 out 是 NULL）
     summary        TEXT NOT NULL DEFAULT '',
     artifacts      TEXT NOT NULL DEFAULT '[]',
@@ -952,3 +952,28 @@ CREATE TABLE IF NOT EXISTS emissions (
 --
 -- SQL 块为空是有意的：重建表要 id → name@version 的关联查询，而 `tasks.path` 是 JSON
 -- 数组、只能在 Go 里逐行换。两者都在 migrationHooks[27]（与 20/21/23/25/26 同形）。
+
+-- +migration 28 drop_task_out
+--
+-- P1.5 收尾：`tasks.out` **整列删掉**。
+--
+-- 背景：`.anotify-out` / `result.out` 这条产出通道已经在 P1.5 硬切掉了，出口的唯一
+-- 载体是 emission（`emissions.port`）。但列、Task.Out 字段、scan/INSERT、API 响应、
+-- 前端渲染都还留着，于是它变成一个恒为 NULL 的列——留着只会让读者以为「路由结果
+-- 还在任务行上」，而事实是它永远不会再有写入方。
+--
+-- 为什么不保留一个 deprecated 列：恒 NULL 的列没有任何信息量，而每多一个
+-- 「看起来能读」的字段，就多一个人按它写判断（P1.5 之前的 deeplink 详情页
+-- 就是按 `out != null` 显示「→ 出口」的）。彻底删掉才能让「路由只看 emit」
+-- 变成 schema 级别的硬事实。
+--
+-- 为什么迁移 4 的建表语句里还写着 `out`：本仓库的铁律是「只追加，不改已发布的块」
+-- （见迁移 6 的注释）。新库照样从那一版建表起跑，再由本块把列删掉——与迁移 3 建了
+-- 三张表、迁移 6 再 DROP 它们是同一个模式。直接改旧块还会把迁移 12/14 那些
+-- 「按 v12/v13 形状重建表」的老 hook 弄坏（它们 COPY 的列清单里有 t.out）。
+--
+-- 走 Go 侧的 migrationHooks[28]（与 20/21/23/25/26/27 同形）：
+--   - `ALTER TABLE ... DROP COLUMN` 没有 IF EXISTS 写法，要先查 pragma；
+--   - 万一引擎拒绝 DROP COLUMN（列被索引/视图/触发器引用），退化成
+--     「建新表 → 拷贝 → drop → rename」（做法与迁移 12/14 的表重建一致）。
+-- 两条路径都要幂等（重跑 no-op），且升级后 `PRAGMA foreign_key_check` 必须干净。

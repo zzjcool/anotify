@@ -579,7 +579,7 @@ async function runPageChecks(ctxData, nsId) {
 //      且 A 的 emissions 里真的有一行 `port=go`。
 //      这条断了，多跳链路就整条哑掉，而且**没有任何报错**（只是没有下一跳）。
 //      P1.5 起 `.anotify-out` / `result.out` 已退役：产出**只能**走 emit，
-//      所以这一节同时是「老通道不再有任何作用」的现场证据（tasks.out 恒 NULL）。
+//      所以这一节同时是「老通道不再有任何作用」的现场证据（API 响应里连 out 键都没有）。
 //
 // 外加一条 standalone：同一份产物 YAML 落到临时文件 → `anotify-agent run`
 // 不连中枢直接跑，断言 stdout 与退出码（「产物可移植」的落地证明）。
@@ -991,9 +991,14 @@ async function runUiArtifactChecks(ctxData, nsId) {
 			H.eq("A 任务 succeeded", taskA?.status, "succeeded");
 			// 断言从「result.out == go」搬到了 emission（P1.5）：出口不再由 result 帧
 			// 表达，产出证据在 emissions 表 / 它的读口上。两条断言合起来比原来更强：
-			//   ① tasks.out 恒 NULL —— 老通道真的没有任何写入方了（退役，不是并存）；
+			//   ① **API 响应里没有 out 键** —— 迁移 28 把 tasks.out 整列删了，
+			//      所以「退役」不再是「值恒为 NULL」，而是「字段根本不存在」；
 			//   ② A 在 go 出口上真的 emit 过一次，且那次派发了 1 个下游。
-			H.eq("A 的 tasks.out 恒为 NULL（out 已退役，产出只走 emit）", taskA?.out ?? null, null);
+			H.check(
+				"A 的响应里没有 out 字段（迁移 28 删列，产出只走 emit）",
+				!!taskA && !("out" in taskA),
+				JSON.stringify(Object.keys(taskA || {})),
+			);
 			{
 				const em = await H.req(
 					server.base,
@@ -1123,7 +1128,11 @@ async function runUiArtifactChecks(ctxData, nsId) {
 					/legacy-ran/.test(legacyDone?.summary || ""),
 					String(legacyDone?.summary),
 				);
-				H.eq("老通道任务的 tasks.out 是 NULL（没人读那个文件）", legacyDone?.out ?? null, null);
+				H.check(
+					"老通道任务的响应里没有 out 字段（没人读那个文件，列也已删除）",
+					!!legacyDone && !("out" in legacyDone),
+					JSON.stringify(Object.keys(legacyDone || {})),
+				);
 				{
 					const em = await H.req(
 						server.base,

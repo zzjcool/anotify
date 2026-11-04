@@ -621,8 +621,7 @@ func TestReportResultFromAssignedImpliesRunning(t *testing.T) {
 		t.Fatalf("ack: %v", err)
 	}
 	// 不推 running，直接 result
-	port := "fix"
-	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, &port, "done", nil, ""); err != nil {
+	if err := db.ReportResult(ctx, nsID, task.ID, TaskSucceeded, "done", nil, ""); err != nil {
 		t.Fatalf("report from acked: %v", err)
 	}
 	got, _ := db.GetTask(ctx, nsID, task.ID)

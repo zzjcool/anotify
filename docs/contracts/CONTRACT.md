@@ -351,8 +351,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempts       INTEGER NOT NULL DEFAULT 0,
 
     -- 结果（I4/I5）
-    out            TEXT,                      -- **已退役（P1.5）**：新写入恒 NULL，只为读历史行；
-                                              -- 出口的位置是 emissions.port（'' 从来不是合法值）
+    -- 此处**曾经有 out TEXT**：P1.5 退役（新写入恒 NULL），迁移 28 整列删除。
+    -- 出口的唯一位置是 emissions.port（'' 从来不是合法值）。
     reported       INTEGER NOT NULL DEFAULT 0,-- 历史位：1 = 结果帧到过（新写入恒为 1）
     summary        TEXT NOT NULL DEFAULT '',   -- 唯一的 message：成功=做了什么 / 失败=为什么失败
     artifacts      TEXT NOT NULL DEFAULT '[]',
@@ -382,7 +382,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_node    ON tasks(node_id, status);
 | `summary` | 唯一的 message：成功=做了什么，失败=为什么失败（**失败必填**，空时兜底 `"failed"`） | 否 |
 
 `error` 是 `summary` 的**派生位**（失败时相等，成功时为空），只为兼容老读者存在。
-`tasks.out` 列保留但**新写入恒为 NULL**（历史行仍可读）：出口的位置变成了 `emissions.port`。
+`tasks.out` 列已**整列删除**（迁移 28；P1.5 之后它恒为 NULL，留着只会让读者以为路由结果
+还在任务行上）：出口的唯一位置是 `emissions.port`。API 响应里的任务对象因此**没有 out 键**。
 
 四种组合都有名字，没有死格子：
 
@@ -1176,7 +1177,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | A5 | 出口封闭 | `edges.from_port` 不在 `outputs` 里 → 配置期拒绝 |
 | A6 | 扇出 | 一个 `(cap, port)` 有 3 行边 → 建 3 个任务 |
 | A7 | 成环剪枝 | `review→fix→review` 跑两圈后 `pruned/path` |
-| A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按边派发（含扇出）。result 帧里带 `out` → **忽略**，`tasks.out` 恒 NULL（P1.5） |
+| A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按边派发（含扇出）。result 帧里带 `out` → **忽略**，任务响应里**没有 out 字段**（`tasks.out` 列已由迁移 28 删除） |
 | A8b | 失败也能继续 | 失败**之前** emit 过 → 那些下游照样建（I4 落地）；失败无 `summary` → 兜底 `"failed"` |
 | A9 | 租约接管 | `kill -9` 节点后 30s 内任务回 `pending` |
 | A10 | 组织隔离 | A 组织的 token 查不到 B 组织的事件 |

@@ -58,18 +58,18 @@ func TestStubSignaturesFrozen(t *testing.T) {
 
 	// ── task.go ────────────────────────────────────
 	var (
-		_ func(context.Context, []*Task) error                                                   = db.CreateTasks
-		_ func(context.Context, string, string) (*Task, error)                                   = db.GetTask
-		_ func(context.Context, string, string, string, string, int) ([]*Task, error)            = db.ListTasks
-		_ func(context.Context, string, string, string, string) error                            = db.Transition
-		_ func(context.Context, int64) ([]string, error)                                         = db.SweepExpiredLeases
-		_ func(context.Context, string, string, string, string, int64) error                     = db.AssignTask
-		_ func(context.Context, string, string, int64) error                                     = db.ExtendLease
-		_ func(context.Context, string, string, string, int64) (string, error)                   = db.LeaseAndAssign
-		_ func(context.Context, string, string, int64) error                                     = db.ProgressTask
-		_ func(context.Context, string, string, string, *string, string, []string, string) error = db.ReportResult
-		_ func(string, string) bool                                                              = ValidTransition
-		_ func(string) bool                                                                      = IsTerminalStatus
+		_ func(context.Context, []*Task) error                                          = db.CreateTasks
+		_ func(context.Context, string, string) (*Task, error)                          = db.GetTask
+		_ func(context.Context, string, string, string, string, int) ([]*Task, error)   = db.ListTasks
+		_ func(context.Context, string, string, string, string) error                   = db.Transition
+		_ func(context.Context, int64) ([]string, error)                                = db.SweepExpiredLeases
+		_ func(context.Context, string, string, string, string, int64) error            = db.AssignTask
+		_ func(context.Context, string, string, int64) error                            = db.ExtendLease
+		_ func(context.Context, string, string, string, int64) (string, error)          = db.LeaseAndAssign
+		_ func(context.Context, string, string, int64) error                            = db.ProgressTask
+		_ func(context.Context, string, string, string, string, []string, string) error = db.ReportResult
+		_ func(string, string) bool                                                     = ValidTransition
+		_ func(string) bool                                                             = IsTerminalStatus
 	)
 
 	// ── graph.go ───────────────────────────────────
@@ -140,7 +140,7 @@ func TestNoStubRemains(t *testing.T) {
 		"AssignTask":         func() error { return db.AssignTask(ctx, nsID, "tsk_x", "nd_x", "nins_x", Now()+30) },
 		"ExtendLease":        func() error { return db.ExtendLease(ctx, nsID, "tsk_x", Now()+30) },
 		"ReportResult": func() error {
-			return db.ReportResult(ctx, nsID, "tsk_x", TaskSucceeded, nil, "", nil, "")
+			return db.ReportResult(ctx, nsID, "tsk_x", TaskSucceeded, "", nil, "")
 		},
 		"CreateEdge":         func() error { return db.CreateEdge(ctx, &Edge{}) },
 		"DeleteEdge":         func() error { return db.DeleteEdge(ctx, nsID, false, "cap_a", "fix", "cap_b") },
@@ -180,15 +180,21 @@ func TestIsTerminalStatus(t *testing.T) {
 	}
 }
 
-// TestTaskStructJSONShape 任务结构体的 JSON 契约（camelCase + out 三态字段都在）。
+// TestTaskStructJSONShape 任务结构体的 JSON 契约（camelCase 字段都在，且**没有 out**）。
+//
+// 「没有 out」是 P1.5 收尾（迁移 28）的硬要求：`tasks.out` 列已删，出口的唯一载体是
+// emission。之前这里断言的是「out 必须在」（三态），现在反过来——它必须在**任何**
+// 序列化形态里都不出现，否则前端/外部调用方又会按它写判断。
 func TestTaskStructJSONShape(t *testing.T) {
 	typ := reflect.TypeOf(Task{})
 	want := []string{
 		"id", "namespaceId", "traceId", "parentTaskId", "path", "capabilityId", "capability",
 		"version", "params", "status", "nodeId", "instanceId", "leaseUntil", "attempts",
-		"out", "reported", "summary", "artifacts", "error", "capHash", "digest", "graphId",
+		"reported", "summary", "artifacts", "error", "capHash", "digest", "graphId",
 		"createdAt", "startedAt", "finishedAt",
 	}
+	// 已删除的字段：出现即回归
+	forbidden := []string{"out"}
 	found := map[string]bool{}
 	for i := 0; i < typ.NumField(); i++ {
 		tag := typ.Field(i).Tag.Get("json")
@@ -208,6 +214,26 @@ func TestTaskStructJSONShape(t *testing.T) {
 		if !found[w] {
 			t.Errorf("Task missing json field %q (camelCase contract)", w)
 		}
+	}
+	for _, f := range forbidden {
+		if found[f] {
+			t.Errorf("Task 仍有 json 字段 %q：`tasks.out` 已随迁移 28 删除，路由只看 emission", f)
+		}
+	}
+	// 结构体层还不够：线上字节里也不能出现这个键（omitempty / 手工 marshaling 都可能漏）。
+	encoded, err := json.Marshal(Task{
+		ID: "tsk_shape", NamespaceID: "ns_shape", TraceID: "trace_shape",
+		Path: []string{}, Params: json.RawMessage(`{}`), Artifacts: []string{},
+	})
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	if _, ok := raw["out"]; ok {
+		t.Fatalf("Task 的 JSON 里仍然有 out 键：%s", encoded)
 	}
 }
 

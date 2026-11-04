@@ -352,7 +352,7 @@ func TestPublishAssignSkipsTerminalTask(t *testing.T) {
 		t.Fatalf("ack task: %v", err)
 	}
 	if err := f.db.ReportResultAndCreateTasks(ctx, f.nsID, task.ID, store.TaskSucceeded,
-		nil, "ok", nil, "", nil); err != nil {
+		"ok", nil, "", nil); err != nil {
 		t.Fatalf("report result: %v", err)
 	}
 	row := mustGetTask(t, f, task.ID)

@@ -534,11 +534,11 @@ func TestPublishAssignUsesAuthoritativeAttempts(t *testing.T) {
 
 // TestEmitOversizedParamsIsDiagnosable 下游 params 超限 → 节点收到**能读懂病因**的拒收。
 //
-// 改动前这里是 TestResultOversizedNextHopParamsIsDiagnosable：走的是
-// 「result.out 建下一跳」那条路，子任务 params 超限会让父任务终态整体回滚，于是
-// 错误被映射成 error 帧的 params_too_large（审查 m5）。P1.5 之后建子任务行只发生在
-// **emit** 里，所以同样的病因换了载体：错误走 `emit_ack.error`（emit 的拒收一律走
-// ack，不回 error 帧、不断连接，见 node_emit.go 的两条硬纪律）。
+// 改动前这里守着「result 帧建下一跳」那条路（该路径已整条删除）：子任务 params
+// 超限会让父任务终态整体回滚，于是错误被映射成 error 帧的 params_too_large（审查 m5）。
+// P1.5 之后建子任务行只发生在 **emit** 里，所以同样的病因换了载体：错误走
+// `emit_ack.error`（emit 的拒收一律走 ack，不回 error 帧、不断连接，
+// 见 node_emit.go 的两条硬纪律）。
 //
 // 守的东西一条没少（这才是重点，换了载体不等于降低要求）：
 //   - 文案必须说清「params too large」+ 实际体积 + 上限——否则运维只知道「被拒了」；
