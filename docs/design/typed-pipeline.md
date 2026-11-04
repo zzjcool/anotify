@@ -243,7 +243,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | `capability_versions` | `outputs` 保留（端口名集合）；**新增 `params_schema` 已有，无需 `result_schema`**；`kind` 仍为推导量（I3） |
 | `edges` → `link` | 加 `literals`；引用从 `capability_id` 改为 `from_name`/`to_name`；删 `from_is_source`（P2） |
 | `emissions`（新） | `(task_id, seq, port, data, routed_at)`，`UNIQUE(task_id, seq)` |
-| `tasks` | 加 `digest`；`out` **已删列**（迁移 28）、`reported` 保留（仍表示「节点回报过」） |
+| `tasks` | 加 `digest`；`out` **已不存在**（squash 后的 baseline 里就没有这一列）、`reported` 保留（仍表示「节点回报过」） |
 | `events` | 不变（`payload` 原样存） |
 | `sources` / `source_targets` | P2 收敛为 `trigger` 能力 + `link` |
 | `artifacts` | 已有 `(ns, digest, spec)`；`spec` 保留 `params`/`outputs`/`requires`/`run` |
@@ -280,11 +280,11 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 
 | # | 改动 | 状态 |
 |---|---|---|
-| P1.1 | `emit` / `emit_ack` 帧 + `emissions` 表 + `(task_id, seq)` 幂等 + 与派发同事务 | ✅ 迁移 22/23/24；`route.Emit` 复用 `plan()` 逐 link 判定；**写 emission 与建子任务行同一事务** |
+| P1.1 | `emit` / `emit_ack` 帧 + `emissions` 表 + `(task_id, seq)` 幂等 + 与派发同事务 | ✅ `emissions` 表；`route.Emit` 复用 `plan()` 逐 link 判定；**写 emission 与建子任务行同一事务** |
 | P1.2 | agent 本地 socket + `anotify-agent emit` 子命令 + 任务令牌 + 端口白名单 + 阻塞 ack | ✅ `<data-dir>/emit/<task>.sock`（0700/0600）+ outbox（先 fsync 再 ack）+ 七步校验 + 退出码 2/3/4/5/6/7 |
 | P1.3 | 派发：`data ⊎ literals` → 每条 link `ValidateParams` → 扇出（部分成功） | ✅ |
 | P1.4 | `assign` 下发 `ports` / `expects` / `token` | ✅ `BuildExpects`：各下游 `params_schema` 减 literals 的并集 + targets（给人看） |
-| P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ✅ 已硬切（无兼容层）：runner 不再注入 `ANOTIFY_OUT_FILE`、不再读出口文件；`ws.ResultFrame` 删掉 `Out`（老帧带 `out` 当未知字段忽略）；`tasks.out` **整列删除**（迁移 28）；`contract/e2e` 里靠 result.out 走路的地方全部改成 emit |
+| P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ✅ 已硬切（无兼容层）：runner 不再注入 `ANOTIFY_OUT_FILE`、不再读出口文件；`ws.ResultFrame` 删掉 `Out`（老帧带 `out` 当未知字段忽略）；`tasks.out` **整列删除**（squash 后 baseline 里不存在）；`contract/e2e` 里靠 result.out 走路的地方全部改成 emit |
 | P1.6 | 前端：trace 显示每次 emit | ✅ trace 页「产出（emits）」区 + `GET …/tasks/{id}/emissions` |
 
 > 落地时补的两条护栏（设计里漏了，属实现漏洞）：**emit 的归属校验**（任务派给 A，B 不能替它 emit）
@@ -295,10 +295,10 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | # | 改动 | 状态 |
 |---|---|---|
 | P2.3 | 静态环检测（运行期 `path` 剪枝降级为兜底） | ✅ `f4211bd`。保存 link 时 DFS 判可达环；自连单独报；菱形/1:N 仍合法 |
-| P2.2 | `edges` 按 **名字** 引用（`name` 默认跟随 / `name@version` 钉死）+ 升级闸门 | ✅ `d2f755d`。迁移 27 把存量 id 重写成 `name@version`（不静默改线）；`store.ResolveRef` 是唯一解析点；闸门返回 `409 upgrade_breaking` + 受影响 link；控制台建边默认勾「跟随最新」 |
+| P2.2 | `edges` 按 **名字** 引用（`name` 默认跟随 / `name@version` 钉死）+ 升级闸门 | ✅ `d2f755d`。squash 前由迁移 27 把存量 id 重写成 `name@version`（不在迁移里静默改线；现在这些列直接是 baseline 的形态）；`store.ResolveRef` 是唯一解析点；闸门返回 `409 upgrade_breaking` + 受影响 link；控制台建边默认勾「跟随最新」 |
 | P2.2a | `capability.id` 与 `content_hash` 解耦 | **判定为不必要**：`NormalizeCapability` 的 hash 输入已含 name/params_schema/outputs/lifecycle/sticky（P2.4 其实已经是现状），而版本不可变（I8）——id 里带 hash8 没有任何功能后果。省掉一次破坏性迁移 |
 | P2.4 | 契约进签名（`ports` / `params` 参与 `content_hash`） | ✅ 已是现状（同 P2.2a 的核查结论） |
-| P2.1 | 源 → `kind=trigger` 的能力；删 `source_targets` / `DispatchInput.Targets` 旁路 | ✅ `cfc961b`。源的目标就是入口边（迁移 26 搬完删表）；入口边允许 `mapping`（引用），能力边不允许；**空 mapping = 恒等**（payload 原样就是参数） |
+| P2.1 | 源 → `kind=trigger` 的能力；删 `source_targets` / `DispatchInput.Targets` 旁路 | ✅ `cfc961b`。源的目标就是入口边（squash 后 `source_targets` 表已不存在）；入口边允许 `mapping`（引用），能力边不允许；**空 mapping = 恒等**（payload 原样就是参数） |
 
 #### P2.2 施工计划（给下一次会话，不必重新推导）
 
