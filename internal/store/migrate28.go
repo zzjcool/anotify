@@ -187,9 +187,10 @@ func rebuildTasksWithoutOut(tx *sql.Tx) error {
 	}
 
 	// ①② emissions 先落地成无约束副本，再整表删掉。
-	if e := emissionDDL; e == "" {
-		// 表不存在（迁移 22 之后它必然存在；防御性分支）。
-	} else {
+	//
+	// 表不存在时跳过（迁移 22 之后它必然存在，这里只是防御：DDL 为空 = 没有子表
+	// 要保护，剩下的步骤不需要它）。
+	if emissionDDL != "" {
 		if _, err := tx.Exec(fmt.Sprintf(
 			`CREATE TABLE %s AS SELECT * FROM emissions`, emissionsKp)); err != nil {
 			return fmt.Errorf("drop task out: stash emissions: %w", err)

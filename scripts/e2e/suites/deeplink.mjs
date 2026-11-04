@@ -232,19 +232,32 @@ async function main() {
 		H.check("详情页含 执行节点 字段", txt.includes("执行节点"));
 		// P1.5 退役 / 迁移 28 删列之后，详情页**不再有出口这一栏**。
 		// 改动前这里断言「含出口字段」+「out 三态文案可见」——那两条覆盖的是已经
-		// 删掉的路径（tasks.out 列），现在反过来钉住它的消失：
-		//   · 没有「出口 out」这一栏（含它的三种文案：未回报 / 到头了 / 出口名）；
-		//   · 走的是同一条真实渲染路径（页面已 mount、字段卡片已渲染），
-		//     所以「没有」是「渲染后没有」，不是「页面没加载」。
+		// 删掉的路径（tasks.out 列），现在反过来钉住它的消失。
+		//
+		// 断言范围是**字段卡**（#msg-fields），不是整个 body：侧边栏的导航项
+		// `nav.edges` 也叫「出口」（那是边/出口表的页面名），拿全页文本判「含出口」
+		// 会被它污染——旧断言其实正是被这层污染"通过"的，这是个一直没被发现的弱断言。
+		//
+		// 同时要求字段卡**已渲染且有内容**：否则「没有出口栏」是页面没加载出来的
+		// 假阳性（空 dl 当然不含任何词）。
+		const fieldsTxt = await page.evaluate(() => {
+			const el = document.getElementById("msg-fields");
+			return el ? el.textContent || "" : null;
+		});
 		H.check(
-			"详情页没有 出口 out 字段（迁移 28 删列，产出只走 emit）",
-			!txt.includes("出口 out") && !txt.includes("出口"),
-			txt.slice(0, 200),
+			"详情页字段卡已渲染（下面的「没有出口」才有意义）",
+			!!fieldsTxt && fieldsTxt.trim().length > 0,
+			String(fieldsTxt).slice(0, 160),
 		);
 		H.check(
-			"详情页没有 out 三态文案（未回报/到头了）",
-			!/(未回报|到头了)/.test(txt),
-			txt.slice(0, 200),
+			"详情页字段卡里没有 出口 栏（迁移 28 删列，产出只走 emit）",
+			!!fieldsTxt && !fieldsTxt.includes("出口"),
+			String(fieldsTxt).slice(0, 200),
+		);
+		H.check(
+			"详情页字段卡里没有 out 两态文案（未回报/到头了）",
+			!!fieldsTxt && !/(未回报|到头了)/.test(fieldsTxt),
+			String(fieldsTxt).slice(0, 200),
 		);
 		// 任务链区块
 		H.check("详情页含任务链区块", txt.includes("任务链"), txt.slice(0, 200));
