@@ -126,3 +126,63 @@ func TestCreateCapabilityStoresRunWorkDir(t *testing.T) {
 		t.Fatalf("错误信息应提到 work_dir：%s", rr.Body.String())
 	}
 }
+
+// TestListCapabilitiesExposesRun 是详情页的数据来源护栏。
+//
+// 详情页要显示「这个能力跑多久超时、在哪个目录跑」，而这两项住在产物 spec.run 里
+// （#289：它们属于能力定义，不属于节点配置）。列表接口只读地投影一份，否则
+// 前端只能显示「—」，用户会以为「我填的超时没生效」。
+//
+// 同时钉住**失败方向**：没有产物的能力（刚定义、还没部署）必须照常出现在列表里，
+// 只是 run 为 null —— 一条没有产物的能力不能把整张列表带崩。
+func TestListCapabilitiesExposesRun(t *testing.T) {
+	env := newConsoleEnv(t)
+
+	rr := env.do(t, http.MethodPost, env.withNS("/v1/capabilities"), map[string]any{
+		"name":    "detail.withrun",
+		"outputs": []string{"done"},
+		"run": map[string]any{
+			"entrypoint": "run.sh",
+			"files":      map[string]string{"run.sh": "#!/bin/bash\necho hi\n"},
+			"timeoutSec": 900,
+			"workDir":    "/home/me/project",
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST /v1/capabilities status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	find := func(name string) map[string]any {
+		t.Helper()
+		list := env.do(t, http.MethodGet, env.withNS("/v1/capabilities"), nil)
+		body := decode(t, list)
+		caps, _ := body["capabilities"].([]any)
+		for _, c := range caps {
+			m, _ := c.(map[string]any)
+			if m["name"] == name {
+				return m
+			}
+		}
+		return nil
+	}
+
+	got := find("detail.withrun")
+	if got == nil {
+		t.Fatalf("列表里没有刚建的能力")
+	}
+	run, _ := got["run"].(map[string]any)
+	if run == nil {
+		t.Fatalf("列表里的能力没有 run 投影：%v", got)
+	}
+	if run["timeoutSec"] != float64(900) {
+		t.Errorf("run.timeoutSec = %v, want 900（详情页要显示它）", run["timeoutSec"])
+	}
+	if run["workDir"] != "/home/me/project" {
+		t.Errorf("run.workDir = %v, want /home/me/project", run["workDir"])
+	}
+
+	// 失败方向：每个能力都得有名字，列表不能因为某条没有产物就少人
+	if len(got) == 0 {
+		t.Fatalf("能力行是空的")
+	}
+}

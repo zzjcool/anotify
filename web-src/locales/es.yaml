@@ -1205,8 +1205,21 @@ caps:
     display_name_hint: Se muestra en la interfaz. Si lo dejas vacío se usa el nombre técnico.
     name: Nombre de la capacidad
     name_hint: 'Nombre técnico: lo usan nodos, aristas y logs. No se puede cambiar después.'
-    outputs: Nombres de salida (separados por comas)
-    outputs_hint: Las salidas son un conjunto cerrado — las aristas solo pueden usar nombres declarados aquí.
+    outputs: Salidas (ports)
+    outputs_hint: Las salidas son la lista blanca de emit — solo los nombres declarados aquí pueden despacharse aguas abajo.
+    outputs_optional: opcional
+    outputs_ph: Escribe un nombre de salida y pulsa Enter
+    outputs_empty: Sin salidas = esta capacidad no puede emitir nada (capacidad terminal).
+    outputs_max: Como máximo 32 salidas
+    err_output: Los nombres de salida solo admiten letras, dígitos, puntos, guiones bajos y guiones (1–32)
+    chip_remove: Eliminar esta salida
+    downstream: Destino (opcional)
+    downstream_optional: opcional
+    downstream_hint: Una salida puede ramificarse a varios destinos. Aquí se guarda el nombre sin versión = sigue la última; cada arista se crea por separado y un fallo nunca revierte la capacidad (puedes reintentar en los detalles).
+    downstream_target_ph: Elige una capacidad destino (con búsqueda)
+    downstream_none: Aún no hay salidas — declara una arriba antes de conectar un destino.
+    created_with_edges: 'conectadas {n} aristas'
+    created_edges_partial: 'Capacidad creada; {n} aristas no se crearon: {reason}'
     schema: Validación de parámetros (JSON Schema)
     schema_hint: Solo un subconjunto controlado (sin $ref / if-then-else); el hub nunca evalúa expresiones.
     cancel: Cancelar
@@ -1233,6 +1246,50 @@ caps:
     err_timeout: 'El tiempo límite debe ser un entero entre 0 y 86400'
     workdir: Directorio de trabajo
     workdir_hint: 'Ruta absoluta que empieza por /; si no existe, la tarea falla directamente (no se vuelve a un directorio por defecto). Vacío = un directorio nuevo por tarea.'
+  detail:
+    btn: Detalles
+    params: Contrato de parámetros
+    no_params: Sin parámetros
+    outputs: Salidas y destino
+    no_outputs: No hay salidas declaradas — esta capacidad no puede emitir nada
+    edges_failed: No se pudo cargar la lista de aristas, estado del destino desconocido
+    inbound: Quién me alimenta
+    no_inbound: Sin aristas de entrada — los eventos no llegan aquí
+    me: yo
+    source_prefix: Origen
+    follow: Sigue la última
+    pinned: Versión fijada
+    unresolved: 'Sin resolver: {ref}'
+    literals: 'Constantes {json}'
+    dead: Esta salida no tiene destino — al emitir se detiene aquí
+    runtime: Ejecución
+    timeout: Tiempo límite
+    workdir: Directorio de trabajo
+    workdir_default: Un directorio por tarea
+    lifecycle: Ciclo de vida
+    lifecycle_default: Por defecto (sin declarar)
+    sticky: Enrutado fijo
+    source: Tipo de capacidad
+    source_builtin: Integrada
+    source_custom: Personalizada
+    hash: Hash de contenido
+    copy: Copiar
+    unknown: '—'
+    retry_title: 'No se crearon {n} aristas'
+    retry: Reintentar
+    retry_failed: 'Error al reintentar: '
+  add:
+    btn: destino
+    title: 'Añadir destino a «{port}»'
+    target_ph: Elige una capacidad destino (con búsqueda)
+    literals_ph: 'Sobrescritura de constantes (opcional), p. ej. {"urgent":true}'
+    save: Guardar
+    cancel: Cancelar
+    created: Arista creada
+    failed: 'No se pudo crear la arista: '
+    err_target: Elige una capacidad destino
+    err_self: Una capacidad no puede enlazarse consigo misma
+    err_literals: Las constantes deben ser un objeto JSON
   edges:
     title: Aristas
     new: Nueva arista

@@ -1205,8 +1205,21 @@ caps:
     display_name_hint: Shown in the UI. Leave blank to use the technical name below.
     name: Capability name
     name_hint: Technical name — nodes, edges and logs use it. Cannot be changed after creation.
-    outputs: Output names (comma separated)
-    outputs_hint: Outputs are a closed set — edges can only use names declared here.
+    outputs: Outputs (ports)
+    outputs_hint: Outputs are the emit whitelist — only names declared here can be dispatched downstream.
+    outputs_optional: optional
+    outputs_ph: Type an output name, then press Enter
+    outputs_empty: No outputs = this capability cannot emit anything (terminal capability).
+    outputs_max: At most 32 outputs
+    err_output: Output names may only use letters, digits, dots, underscores and dashes (1–32 chars)
+    chip_remove: Remove this output
+    downstream: Downstream (optional)
+    downstream_optional: optional
+    downstream_hint: One output can fan out to several downstreams. Names are written bare = follow latest; edges are created one by one and a failure never rolls back the capability (retry from the details).
+    downstream_target_ph: Pick a target capability (searchable)
+    downstream_none: No outputs yet — declare one above before connecting a downstream.
+    created_with_edges: 'linked {n} edge(s)'
+    created_edges_partial: 'Capability created; {n} edge(s) were not created: {reason}'
     schema: Param validation (JSON Schema)
     schema_hint: Controlled subset only (no $ref / if-then-else); the hub never evaluates expressions.
     cancel: Cancel
@@ -1233,6 +1246,50 @@ caps:
     err_timeout: 'Timeout must be an integer between 0 and 86400'
     workdir: Work dir
     workdir_hint: 'An absolute path starting with /; if it does not exist the task fails outright (no fallback to a default directory). Empty = a fresh directory per task.'
+  detail:
+    btn: Details
+    params: Parameter contract
+    no_params: No parameters
+    outputs: Outputs & downstream
+    no_outputs: No outputs declared — this capability cannot emit anything
+    edges_failed: Edge list unavailable, downstream state unknown
+    inbound: Who feeds me
+    no_inbound: No inbound edges — events never enter here
+    me: me
+    source_prefix: Source
+    follow: Follows latest
+    pinned: Pinned version
+    unresolved: 'Unresolved: {ref}'
+    literals: 'Literals {json}'
+    dead: This output has no downstream — emitting it stops right here
+    runtime: Runtime
+    timeout: Timeout
+    workdir: Working directory
+    workdir_default: A fresh directory per task
+    lifecycle: Lifecycle
+    lifecycle_default: Default (not declared)
+    sticky: Sticky routing
+    source: Capability source
+    source_builtin: Built-in
+    source_custom: Custom
+    hash: Content hash
+    copy: Copy
+    unknown: '—'
+    retry_title: '{n} edge(s) were not created'
+    retry: Retry
+    retry_failed: 'Retry failed: '
+  add:
+    btn: downstream
+    title: 'Add a downstream to “{port}”'
+    target_ph: Pick a target capability (searchable)
+    literals_ph: 'Literal overrides (optional), e.g. {"urgent":true}'
+    save: Save
+    cancel: Cancel
+    created: Edge created
+    failed: 'Failed to create edge: '
+    err_target: Pick a target capability
+    err_self: A capability cannot link to itself
+    err_literals: Literals must be a JSON object
   edges:
     title: Edges
     new: New edge

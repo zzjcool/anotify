@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
@@ -1021,6 +1022,14 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		// 没有这个字段的话，"没有节点声明"就无法区分"中枢执行"和
 		// "根本没机器能跑"—— 前者是正常的，后者是配了个跑不起来的空壳。
 		ExecutedBy string `json:"executedBy"`
+		// Run 是「这个能力怎么跑」的只读投影（超时 / 工作目录 / 依赖）。
+		//
+		// 真相在产物里（artifacts.spec.run），随 digest 走、中枢只存不解释（I1）。
+		// 之所以在列表里再投影一份：详情页要回答「它跑多久超时、在哪个目录跑」，
+		// 而这属于**能力定义**的一部分（#289），不该要求用户去翻产物。
+		// 取不到产物时留 null：前端据此显示「—」，而不是把两行藏起来
+		// ——藏起来会让人以为这个能力没有超时。
+		Run *artifact.Run `json:"run,omitempty"`
 	}
 	// 每种能力由哪些节点声明。
 	//
@@ -1061,6 +1070,7 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 			Kind:              route.KindForCapability(c, len(list) > 0),
 			DeclaredBy:        list,
 			ExecutedBy:        executedBy,
+			Run:               h.capabilityRun(r.Context(), c),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1851,4 +1861,33 @@ func intParam(raw string, def, min, max int) int {
 		return max
 	}
 	return n
+}
+
+// capabilityRun 返回一个能力「怎么跑」的只读投影（产物 spec 里的 run 块）。
+//
+// 读不到（还没产物 / spec 坏了）返回 nil：这是**正常状态**（刚定义、还没部署），
+// 不该让整个能力列表 500——列表页的价值在于"一眼看到全部定义"，一条坏行不能把它带崩。
+//
+// 每个能力一次查询：列表本来就有同样量级的 N 次查询（谁声明了它），
+// 这里不额外引入批量接口；等能力数上千再优化。
+func (h *consoleHandler) capabilityRun(ctx context.Context, c *store.CapabilityVersion) *artifact.Run {
+	a, err := h.db.LatestArtifact(ctx, c.NamespaceID, c.ID)
+	if err != nil || a == nil {
+		return nil
+	}
+	// artifacts.spec 里存的是**整份产物**的 canonical JSON
+	// （artifact.CanonicalJSON(a)：{apiVersion, kind, metadata, spec:{…}}），
+	// run 在 artifact.Spec.Run 下面，不在顶层。解错一层不会报错——只会得到
+	// 一堆零值，于是详情页悄无声息地显示「—」。这里解 artifact.Artifact。
+	var art artifact.Artifact
+	if err := json.Unmarshal(a.Spec, &art); err != nil {
+		return nil
+	}
+	// 产物里没有 run 块（内置中枢能力一类）：详情页显示「—」。
+	// 不能直接比结构体（Run 里有 map，不可比较），看几个能代表「有没有」的字段。
+	r := art.Spec.Run
+	if r.Entrypoint == "" && r.TimeoutSec == 0 && r.WorkDir == "" && len(r.Files) == 0 {
+		return nil
+	}
+	return &r
 }

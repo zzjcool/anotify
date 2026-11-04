@@ -78,6 +78,10 @@
 	// 这样看页面时能看出各种状态长什么样，而不是一排"成功"。
 
 	function cap(name, version, outputs, paramsSchema, source, displayName) {
+		// sticky 是「同一条能力尽量落到同一台机器」的提示，值是 params 里的**键名**
+		// （internal/route/dispatch.go:stickySelectorValue）。演示数据里给两个能力开上，
+		// 能力详情区才能同时看到「有值」和「空」两种形态。
+		const STICKY = { "deploy-preview": "env", "analyze-pr": "worktree" };
 		return {
 			id: "cap_mock_" + name.replace(/\./g, "_") + "_v" + version,
 			orgId: ORG,
@@ -89,6 +93,11 @@
 			version: version,
 			outputs: outputs,
 			paramsSchema: paramsSchema || { type: "object" },
+			// lifecycle / sticky 是**能力定义的一部分**（参与 contentHash）。
+			// 真实后端每条能力都有（未声明的时候是零值），所以 mock 也得给：
+			// 不给的话详情区的「生命周期」永远是空的，看起来像功能没做。
+			lifecycle: { expiresInSec: 3600, retryable: true, maxAttempts: 3 },
+			sticky: STICKY[name] || "",
 			source: source || "custom",
 			contentHash: "hash" + Math.random().toString(16).slice(2, 10),
 			createdAt: now() - 86400,
@@ -2576,6 +2585,9 @@
 				entrypoint: entry,
 				files: run.files,
 				timeoutSec: run.timeoutSec || 0,
+				// workDir 属于能力定义（run.workDir，不是部署参数）。
+				// 这里以前把它丢了 —— 于是「填了工作目录 → 详情里看不到」在预览里永远复现不了。
+				workDir: run.workDir || "",
 				env: run.env || {},
 			};
 			// digest 不存进文件，始终由内容算出来（CONTRACT-artifact §3）

@@ -3464,6 +3464,22 @@ components:
           type: array
           items: { type: string }
           description: 出口名的**封闭集合**（不变量 I2）；边的 fromPort 必须属于它
+        run:
+          type: object
+          nullable: true
+          description: |
+            「这个能力怎么跑」的**只读投影**（超时 / 工作目录 / 依赖），真相在产物 spec.run 里
+            （随 digest 走、中枢只存不解释）。取不到产物时为 null —— 前端据此显示「—」，
+            而不是把这两行藏起来（藏起来会让人以为这个能力没有超时）。
+          properties:
+            entrypoint: { type: string }
+            timeoutSec: { type: integer, description: 0 = 不设本地超时，交给中枢租约兜底 }
+            workDir:
+              type: string
+              description: 绝对路径；空 = 每次任务一个独立目录（#289：目录属于能力定义，不是节点配置）
+            requires:
+              type: array
+              items: { type: string }
         sticky:
           type: string
           description: 粘性路由的 selector 键名（空表示不粘）

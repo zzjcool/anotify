@@ -1205,8 +1205,21 @@ caps:
     display_name_hint: 画面にはこれが表示されます。空欄なら下の技術名を使います。
     name: ケイパビリティ名
     name_hint: 技術名：ノード宣言・辺・ログで使います。作成後は変更できません。
-    outputs: 出口名（カンマ区切り）
-    outputs_hint: 出口は閉じた集合です — エッジにはここで宣言した名前しか使えません。
+    outputs: 出口（ports）
+    outputs_hint: 出口は emit のホワイトリストです。ここで宣言した名前だけが下流に流れます。
+    outputs_optional: 空でも可
+    outputs_ph: 出口名を入力して Enter
+    outputs_empty: 出口なし = この能力は何も emit できません（終端能力）。
+    outputs_max: 出口は最大 32 個です
+    err_output: 出口名は英数字・ドット・アンダースコア・ハイフンのみ、1〜32 文字
+    chip_remove: この出口を削除
+    downstream: 下流（任意）
+    downstream_optional: 空でも可
+    downstream_hint: 1 つの出口に複数の下流を接続できます（ファンアウト）。ここでは裸の名前 = 最新に追従で保存し、エッジは 1 本ずつ作成します。失敗しても能力はロールバックされません（詳細から再試行できます）。
+    downstream_target_ph: 対象の能力を選択（検索可）
+    downstream_none: 出口がまだありません — 先に上で出口を宣言してください。
+    created_with_edges: '{n} 本のエッジを接続しました'
+    created_edges_partial: '能力は作成しましたが、{n} 本のエッジを作成できませんでした：{reason}'
     schema: パラメータ検証（JSON Schema）
     schema_hint: 制御されたサブセットのみ（$ref / if-then-else 非対応）。ハブは式を評価しません。
     cancel: キャンセル
@@ -1233,6 +1246,50 @@ caps:
     err_timeout: 'タイムアウトは 0〜86400 の整数で指定してください'
     workdir: 作業ディレクトリ
     workdir_hint: '/ で始まる絶対パス。存在しない場合はそのまま失敗します（既定のディレクトリへは戻りません）。空 = タスクごとに独立したディレクトリ。'
+  detail:
+    btn: 詳細
+    params: パラメータ契約
+    no_params: パラメータなし
+    outputs: 出口と下流
+    no_outputs: 出口が宣言されていません — この能力は何も emit できません
+    edges_failed: エッジ一覧を取得できず、下流の状態は不明です
+    inbound: どこから呼ばれるか
+    no_inbound: 入ってくるエッジはありません — ここにイベントは来ません
+    me: 自分
+    source_prefix: ソース
+    follow: 最新に追従
+    pinned: バージョン固定
+    unresolved: '解決できません：{ref}'
+    literals: '定数 {json}'
+    dead: この出口には下流がありません。emit してもここで終わります
+    runtime: 実行パラメータ
+    timeout: タイムアウト
+    workdir: 作業ディレクトリ
+    workdir_default: タスクごとに独立したディレクトリ
+    lifecycle: ライフサイクル
+    lifecycle_default: 既定（未宣言）
+    sticky: スティッキー・ルーティング
+    source: 能力の種別
+    source_builtin: 組み込み
+    source_custom: カスタム
+    hash: 内容ハッシュ
+    copy: コピー
+    unknown: '—'
+    retry_title: '{n} 本のエッジを作成できませんでした'
+    retry: 再試行
+    retry_failed: '再試行に失敗：'
+  add:
+    btn: 下流
+    title: '「{port}」に下流を追加'
+    target_ph: 対象の能力を選択（検索可）
+    literals_ph: '定数の上書き（任意）例: {"urgent":true}'
+    save: 保存
+    cancel: キャンセル
+    created: エッジを作成しました
+    failed: 'エッジの作成に失敗：'
+    err_target: 対象の能力を選択してください
+    err_self: 自分自身にはリンクできません
+    err_literals: 定数の上書きは JSON オブジェクトである必要があります
   edges:
     title: エッジ
     new: エッジを追加

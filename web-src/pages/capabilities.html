@@ -154,6 +154,273 @@
         background: var(--warn);
       }
 
+      /* ---------- 详情区（每行可展开）----------
+         用户的原话是「看不到能力的具体定义」。一个能力定义有三层：参数契约
+         （收什么）、出口（能发什么）、边（发出去之后去哪）。列表行只放得下
+         第三层里的名字，所以展开区按「参数 → 出口与下游 → 入边 → 运行」四节
+         回答 —— 顺序就是用户提问的顺序。 */
+      .cap-detail {
+        display: none;
+        grid-column: 1 / -1;
+        margin-top: 0.6rem;
+        padding-top: 0.7rem;
+        border-top: 1px solid var(--line);
+        flex-direction: column;
+        gap: 0.8rem;
+      }
+      .cap-detail.open {
+        display: flex;
+      }
+      .cap-detail-secs {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+      .cap-detail-title {
+        margin-bottom: 0.35rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* 「没有下游」「没有入边」这类空态：说清事实，但不装作错误 */
+      .cap-detail-empty {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      /* 参数契约用 <pre>：只读、可选中、长 schema 自己滚，不撑破行宽 */
+      .cap-detail-pre {
+        margin: 0;
+        padding: 0.5rem 0.6rem;
+        max-height: 16rem;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 11px;
+        line-height: 1.65;
+      }
+      /* 一个出口一块：出口名 + 它的下游（多条 = 扇出） */
+      .cap-port-block {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+        padding: 0.45rem 0.55rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+      }
+      .cap-port-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      /* 出口名是路由键（封闭集合里的一个值）：颜色只来自 --accent / --accent-soft，
+         与出口页同形，不引入新色相 */
+      .cap-port-name {
+        padding: 0.05rem 0.4rem;
+        border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+        border-radius: var(--r-xs);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+        white-space: nowrap;
+      }
+      .cap-link {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .cap-link-target {
+        color: var(--text);
+      }
+      /* 引用解析不到（目标能力已删）：必须看起来就不对劲，
+         否则一条走不通的边和一条通的长得一模一样 */
+      .cap-link-unresolved {
+        color: var(--warn);
+        text-decoration: line-through;
+      }
+      .cap-link-ref {
+        font-size: 10px;
+        color: var(--faint);
+      }
+      .cap-link-follow {
+        font-size: 10px;
+        color: var(--faint);
+      }
+      .cap-link-lit {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--faint);
+        overflow-wrap: anywhere;
+      }
+      .cap-down-arrow {
+        font-size: 10px;
+        color: var(--faint);
+      }
+      /* 没有下游的出口：这是用户最需要看到的一句话，所以给它一块带底的虚线框，
+         而不是一行灰字。颜色仍只走 --warn / --warn-soft（亮主题下也读得清）。 */
+      .cap-port-dead {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.4rem 0.5rem;
+        border: 1px dashed color-mix(in srgb, var(--warn) 32%, transparent);
+        border-radius: var(--r-sm);
+        background: var(--warn-soft);
+        color: var(--warn);
+        font-size: 11px;
+      }
+      .cap-inlink {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* 运行参数是「键 值」对：键压暗，值可读 */
+      .cap-kv {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 11px;
+      }
+      .cap-kv-key {
+        color: var(--faint);
+      }
+      .cap-kv-val {
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+      /* contentHash 是「这一份定义」的身份：完整显示 + 可复制 */
+      .cap-hash {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--faint);
+        overflow-wrap: anywhere;
+      }
+      /* 加下游的小面板：就地展开、不弹层 —— 用户要一边看「现在接了谁」一边加 */
+      .cap-add-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        margin-top: 0.4rem;
+        padding: 0.5rem;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-sm);
+        background: var(--surface-1);
+      }
+      .cap-add-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      /* 建能力时那条边没建成：能力已经落库（不回滚），这里给逐条重试 */
+      .cap-retry {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        padding: 0.45rem 0.55rem;
+        border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+        border-radius: var(--r-sm);
+        background: var(--error-soft);
+        color: var(--error);
+        font-size: 11px;
+      }
+      .cap-retry-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .cap-retry-reason {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        overflow-wrap: anywhere;
+      }
+
+      /* ---------- 出口 chips 输入（新建表单）---------- */
+      .cap-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        align-items: center;
+        padding: 0.4rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+      }
+      .cap-chips:focus-within {
+        border-color: var(--line-strong);
+      }
+      .cap-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.1rem 0.3rem 0.1rem 0.45rem;
+        border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+        border-radius: var(--r-full);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+      }
+      .cap-chip-x {
+        padding: 0 2px;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        opacity: 0.75;
+      }
+      .cap-chip-x:hover {
+        opacity: 1;
+      }
+      /* 输入框长在 chips 盒子里：不要边框/背景，否则看起来像两个独立控件 */
+      .cap-chip-input {
+        flex: 1 1 8rem;
+        min-width: 6rem;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: var(--text);
+        font-size: 12px;
+      }
+      /* 下游一行：出口名 → 目标（chips + 输入）。按出口分行是刻意的：
+         一条链路是「这个出口去那里」，出口不同目标就不同。 */
+      .cap-down-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.35rem 0;
+        border-top: 1px dashed var(--line);
+      }
+      .cap-down-row:first-child {
+        border-top: 0;
+      }
+      .cap-down-targets {
+        display: flex;
+        flex: 1 1 12rem;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.3rem;
+      }
+      .cap-down-input {
+        flex: 1 1 10rem;
+        min-width: 8rem;
+      }
+
       /* ---------- 步骤条 ----------
          新建能力（选模板 → 填写）与部署（选机器 → 下发结果）两个弹层共用。 */
       .cap-steps {
@@ -427,6 +694,11 @@
         </a>
       </div>
     </div>
+
+    <!-- 目标能力的候选项（原生 datalist = 自带搜索的下拉）。
+         挂在页面级而不是弹层里：详情区的「+ 下游」和新建表单的下游行
+         用的是**同一份**候选，分两份就会有一边漏掉新建的能力。 -->
+    <datalist id="cap-down-targets"></datalist>
   </div>
 </div>
 
@@ -501,6 +773,41 @@
 
         <!-- 模板要求的预装命令：机器上缺了部署会失败，所以放在参数上方显眼处 -->
         <p id="tpl-requires" class="tpl-hint mt-3"></p>
+
+        <!-- 出口（ports）+ 下游：这是「把两个能力串起来」的地方。
+             出口是 emit 的**白名单** —— 不声明出口，这个能力就什么也发不出去，
+             所以它必须能在这里填。以前它只能跟着模板带过来：模板没有的出口
+             （比如 touchnow 要在结束时 emit `echo`）就根本写不出来。 -->
+        <div class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.form.outputs"}}</h4>
+            <span class="tpl-hint">{{t "caps.form.outputs_optional"}}</span>
+          </div>
+          <!-- chips 输入：回车/逗号确认一个，× 删掉（退格也能删最后一个）。
+               开头的 chips 由 renderPortChips 填，输入框永远在最后。 -->
+          <div id="cap-ports" class="cap-chips">
+            <input
+              id="cap-port-input"
+              class="cap-chip-input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="{{t "caps.form.outputs_ph"}}"
+            />
+          </div>
+          <p id="cap-ports-hint" class="field-hint">{{t "caps.form.outputs_hint"}}</p>
+        </div>
+
+        <!-- 下游是**可选的**：新建时可以先只声明出口，事后再到详情区加下游。
+             但不是所有人都知道出口页在哪，所以给一条最短的“串起来”的路径。 -->
+        <div class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.form.downstream"}}</h4>
+            <span class="tpl-hint">{{t "caps.form.downstream_optional"}}</span>
+          </div>
+          <div id="cap-down-rows"></div>
+          <p class="field-hint mt-1">{{t "caps.form.downstream_hint"}}</p>
+        </div>
 
         <div class="mt-4">
           <h4 class="card-title mb-2">{{t "caps.tpl.params"}}</h4>
@@ -646,6 +953,27 @@
       let CAPS_ERR = null;
       let DEP_BY_CAP = new Map();
 
+      // ==================== 出口与下游（边）====================
+      // EDGES 是全部边（一次取回，不按能力逐条拉 —— 那是 N+1 请求）。
+      // 详情区里那个真正重要的问题（「这个出口 emit 出去之后到底走到哪」）
+      // 完全由它决定：outputs 只说「能发什么」，边才说「发出去之后去哪」。
+      let EDGES = [];
+      // 边列表读不到时，详情区必须说「不知道」而不是「没有下游」——
+      // 这两句在界面上长得一样，含义正好相反（一个是接口挂了，一个是故意停在这里）。
+      let EDGES_OK = true;
+      // 详情展开态按能力 id 记：renderCaps 会整体重建列表，
+      // 不记下来就会出现「刚加完下游，行自己合上了」——而那正是用户想看的东西。
+      const OPEN_DETAIL = new Set();
+      // 建能力时没建成的边（能力名 → [{port, to, reason, literals}]）。
+      // 能力已落库且不回滚，所以这份补敉清单必须留在页面上可重试。
+      const PENDING_EDGES = new Map();
+      // 新建表单里的出口列表 / 出口 → 目标能力名。这两份才是唯一真相，
+      // DOM 只是它们的渲染（否则删 chip 还得去读 DOM 反推顺序）。
+      let PORT_CHIPS = [];
+      // 用 Map 而不是普通对象：出口名允许下划线开头（outputPattern 允许 `__proto__`），
+      // 用对象键会撞上原型链，这种坑不值得踩。
+      let DOWN_SEL = new Map();
+
       let TPLS = [];
       let TPLS_LOADED = false;
       let TPL_SEL = null; // 当前选中的模板
@@ -768,11 +1096,14 @@
           apiGet(API + "/capabilities"),
           apiGet(API + "/nodes"),
         ]);
+        // 边跟上面两路并行拉：详情区要它才能回答「这个出口接了谁」。
+        const edgesRes = await apiGet(API + "/edges");
         // 部署状态**一次**取全部再按 capabilityId 分组 —— 逐能力拉会变成 N+1 请求。
         const depsRes = await apiGet(depsURL());
 
         CAPS_OK = capsRes.ok;
         NODES_OK = nodesRes.ok;
+        EDGES_OK = edgesRes.ok;
         CAPS_ERR = capsRes.ok ? null : capsRes.err;
         // 手机推送暂未开放（web/partials.js 的 PUSH_UI_ENABLED）：从列表里隐去，
         // 但后端能力还在，已有引用它的边/源仍能正常渲染（#274/#277）。
@@ -780,6 +1111,16 @@
           (capsRes.data && capsRes.data.capabilities) || [],
         );
         NODES = (nodesRes.data && nodesRes.data.nodes) || [];
+        // 边列表可能包在 {edges:[...]} 里（契约形状）；数组也兼容，
+        // 少一个字段只该让某一块显示不全，不该整页白屏。
+        EDGES = !EDGES_OK
+          ? []
+          : Array.isArray(edgesRes.data)
+            ? edgesRes.data
+            : (edgesRes.data && edgesRes.data.edges) || [];
+        // 目标能力候选（新建表单 / 加下游面板共用）跟着能力列表刷新：
+        // 刚建好的能力必须立刻能被选为下游，不需要刷页。
+        fillTargetDatalist();
 
         DEPS_OK = depsRes.ok;
         const rows = !DEPS_OK
@@ -939,6 +1280,10 @@
           // 行本身用 .list-row（行高 / 分隔线 / hover 由共享样式给），
           // 本页只覆盖成三列网格。
           const row = el("div", "list-row cap-row" + ((c.displayName || "").trim() ? " has-name" : ""));
+          // data-cap 让「按能力定位这一行」有稳定钩子：靠文案匹配行是不行的 ——
+          // 文案会被翻译，而且展开区里出现的下游能力名会让「这一行含 xxx」误中别的行。
+          row.setAttribute("data-cap", c.id);
+          row.setAttribute("data-cap-name", c.name);
           const left = el("div", "min-w-0");
 
           const head = el("div", "flex flex-wrap items-center gap-2");
@@ -1069,9 +1414,36 @@
           }
           mid.appendChild(badge);
 
-          // ---- 右列：digest + 部署按钮 ----
+          // ---- 右列：digest + 详情 + 部署按钮 ----
           const right = el("div", "cap-right");
           right.appendChild(code((c.contentHash || "").slice(0, 10), "list-meta"));
+          // 详情入口：参数契约 / 出口与下游 / 入边 / 运行参数都在展开区里。
+          // 以前页面上**根本没有**地方看这些 —— 只看得见名字和出口名，
+          // 所以用户的问题（「它的具体定义是什么」）在界面上无法回答。
+          const detailBase = t("caps.detail.btn", "详情");
+          const detailOpen = OPEN_DETAIL.has(c.id);
+          const detailBtn = el(
+            "button",
+            // 不要自造一个没定义的类：定位钩子用 data-act（见下行）
+            "btn btn-ghost btn-sm",
+            detailBase + (detailOpen ? " ▴" : " ▾"),
+          );
+          detailBtn.type = "button";
+          // data-act 是对外稳定的钩子（e2e / 以后的快捷键都要能定位它，
+          // 而文案会被翻译成四种语言）。
+          detailBtn.setAttribute("data-act", "detail");
+          detailBtn.setAttribute("aria-expanded", detailOpen ? "true" : "false");
+          detailBtn.addEventListener("click", () => {
+            const box = row.querySelector(".cap-detail");
+            if (!box) return;
+            const open = !box.classList.contains("open");
+            box.classList.toggle("open", open);
+            detailBtn.setAttribute("aria-expanded", open ? "true" : "false");
+            detailBtn.textContent = detailBase + (open ? " ▴" : " ▾");
+            if (open) OPEN_DETAIL.add(c.id);
+            else OPEN_DETAIL.delete(c.id);
+          });
+          right.appendChild(detailBtn);
           const depBtn = el(
             "button",
             "btn btn-ghost btn-sm",
@@ -1087,6 +1459,9 @@
           // 明细块先建好但保持收起（点徽章才展开），这样展开不需要重新渲染整行。
           // 跨满整行（.cap-dep-detail 的 grid-column: 1/-1）。
           if (info.expandable) row.appendChild(depDetailBlock(info.rows));
+          // 详情块**永远**建好（默认收起）：它是能力定义本身，
+          // 跟「哪几台机器部署了」是两回事，不应该因为没部署过就不存在。
+          row.appendChild(capDetailBlock(c));
           list.appendChild(row);
         }
       }
@@ -1167,6 +1542,650 @@
         });
       }
 
+      // ==================== 详情区（能力的具体定义）====================
+      //
+      // 这一整段回答的是用户的原话：「能力页看不到能力的具体定义、具体内容是什么」。
+      // 分四节，顺序就是用户提问的顺序：
+      //   参数契约（它能收什么）→ 出口与下游（它把活交给谁）→ 入边（谁把它叫起来）
+      //   → 运行参数（它怎么跑）。
+
+      function capByID(id) {
+        return CAPS.find((x) => x.id === id) || null;
+      }
+
+      // refName 取引用里的裸名字（`review@2` → `review`）。边里存的是**引用**
+      // （P2.2：存 id 的话能力一升级线就永远指向旧版本），裸名字 = 跟随最新。
+      // 与后端 store.SplitRef 同口径：从**最后一个** @ 拆，版本必须是纯数字。
+      function refName(ref) {
+        const s = String(ref == null ? "" : ref).trim();
+        const at = s.lastIndexOf("@");
+        if (at <= 0 || at === s.length - 1) return s;
+        const v = Number(s.slice(at + 1));
+        return Number.isInteger(v) && v > 0 ? s.slice(0, at) : s;
+      }
+      function isPinnedRef(ref) {
+        const s = String(ref == null ? "" : ref).trim();
+        const at = s.lastIndexOf("@");
+        if (at <= 0 || at === s.length - 1) return false;
+        const v = Number(s.slice(at + 1));
+        return Number.isInteger(v) && v > 0;
+      }
+
+      // sourceRefFor 决定「从这一行建边」时左端写什么引用。
+      //
+      // 裸名字 = 跟随最新（默认形态，也是「我改了这个能力、线自动跟过去」的意思）。
+      // 只有当这一行**不是**该名字的最高版本时才钉死 —— 否则给旧版本建的边
+      // 会静默落到新版上（而那一版可能已经没有这个出口了）。
+      function sourceRefFor(c) {
+        let latest = null;
+        for (const x of CAPS) {
+          if (x.name !== c.name) continue;
+          if (!latest || x.version > latest.version) latest = x;
+        }
+        if (!latest || latest.version === c.version) return c.name;
+        return c.name + "@" + c.version;
+      }
+
+      // ==================== 目标能力候选（datalist）====================
+      //
+      // 按名字去重取最新版本：边两端写的是**引用**（裸名字=跟随最新），
+      // 同一个名字的多个版本在下拉里会变成三个一模一样的选项，选了也没区别。
+      function targetList() {
+        const byName = new Map();
+        for (const c of CAPS) {
+          const cur = byName.get(c.name);
+          if (!cur || c.version > cur.version) byName.set(c.name, c);
+        }
+        return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      }
+
+      // targetByName 把用户输入/选中的字符串解成能力。
+      //
+      // 依次试：裸名字 → 界面标签（可能是显示名）→ 显示名（**唯一命中才算**）。
+      // 显示名允许重名，所以多命中时宁可返回 null 让用户重选，也不猜一个。
+      function targetByName(v) {
+        const s = String(v == null ? "" : v).trim();
+        if (!s) return null;
+        const list = targetList();
+        let hit = list.find((c) => c.name === s);
+        if (hit) return hit;
+        hit = list.find((c) => Anotify.capLabel(c) === s);
+        if (hit) return hit;
+        const byDn = list.filter((c) => (c.displayName || "").trim() === s);
+        return byDn.length === 1 ? byDn[0] : null;
+      }
+
+      function fillTargetDatalist() {
+        const dl = document.getElementById("cap-down-targets");
+        if (!dl) return;
+        dl.replaceChildren();
+        for (const c of targetList()) {
+          const o = document.createElement("option");
+          // value 用**裸名字**：它是边的引用写法，也是唯一稳定的身份（显示名能改）。
+          o.value = c.name;
+          const dn = (c.displayName || "").trim();
+          if (dn) o.label = dn;
+          dl.appendChild(o);
+        }
+      }
+
+      // ==================== 边的小工具 ====================
+      function errText(e) {
+        return String((e && (e.detail || e.message)) || e || "");
+      }
+
+      // postEdge 是**唯一**建边的地方。形参收引用（裸名字=跟随最新 / name@v=钉死），
+      // 两端都不传能力 id：边里存 id 的话能力一升级这条边就永远指向旧版本（P2.2）。
+      async function postEdge(body) {
+        const payload = Object.assign({ fromIsSource: false }, body);
+        const ns = scopeNS();
+        if (ns) payload.namespaceId = ns;
+        return Anotify.api(API + "/edges", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      // edgesFromPort 取「某个能力的某个出口」接出去的所有边。
+      //
+      // 用后端算好的**解析后 id** 匹配，不在这里重算 name→latest：
+      // 那是第二份解析语义，迟早跟派发漂开（出口页同样是这个口径）。
+      function edgesFromPort(capId, port) {
+        return EDGES.filter(
+          (e) => !e.fromIsSource && e.fromCapabilityId === capId && e.fromPort === port,
+        );
+      }
+      function edgesInto(capId) {
+        return EDGES.filter((e) => e.toCapabilityId === capId);
+      }
+
+      function literalText(literals) {
+        if (!literals || typeof literals !== "object" || Array.isArray(literals)) return "";
+        if (!Object.keys(literals).length) return "";
+        let body = "";
+        try {
+          body = JSON.stringify(literals);
+        } catch (e) {
+          body = "";
+        }
+        return body ? t("caps.detail.literals", "常量 {json}").replace("{json}", body) : "";
+      }
+
+      // ==================== 详情区：四节 ====================
+      function detailSec(title, body) {
+        const sec = el("div", "cap-detail-sec");
+        sec.appendChild(el("div", "cap-detail-title", title));
+        sec.appendChild(body);
+        return sec;
+      }
+
+      // paramsNode 显示参数契约（入）。
+      //
+      // 用 <pre> 而不是 textarea：这里**不能改**（能力定义 append-only），
+      // 一个可选中的只读块比一个看起来能编辑的框更诚实。
+      function paramsNode(c) {
+        let raw = c.paramsSchema;
+        if (typeof raw === "string") {
+          try {
+            raw = JSON.parse(raw);
+          } catch (e) {
+            raw = null;
+          }
+        }
+        const isObj = raw && typeof raw === "object" && !Array.isArray(raw);
+        const empty = raw == null || (isObj && !Object.keys(raw).length);
+        if (empty) {
+          return el("div", "cap-detail-empty", t("caps.detail.no_params", "无参数"));
+        }
+        let text;
+        try {
+          text = JSON.stringify(raw, null, 2);
+        } catch (e) {
+          text = String(raw);
+        }
+        const pre = el("pre", "cap-detail-pre mono");
+        pre.textContent = text;
+        return pre;
+      }
+
+      // portsNode 是详情区里最要紧的一块：每个出口**逐条**列出它接了谁。
+      //
+      // 为什么必须逐条：outputs 只是 emit 的白名单（能发出什么），
+      // 「发出去之后有没有人接」是另一个事实 —— 一个声明了却没人接的出口，
+      // 和「没有这个出口」在界面上长得一模一样，用户会以为链路是通的。
+      function portsNode(c) {
+        const box = el("div", "cap-detail-secs");
+        const outputs = c.outputs || [];
+        if (!outputs.length) {
+          box.appendChild(
+            el(
+              "div",
+              "cap-detail-empty",
+              c.kind === "origin"
+                ? t("caps.any_event_type", "任意事件类型（起点）")
+                : t("caps.detail.no_outputs", "没有声明出口 —— 这个能力 emit 不出任何东西"),
+            ),
+          );
+          return box;
+        }
+        if (!EDGES_OK) {
+          // 不知道 ≠ 没有：接口挂了就说不知道，不能退化成一排「到此为止」
+          box.appendChild(
+            el("div", "cap-detail-empty", t("caps.detail.edges_failed", "边列表读不到，下游状态未知")),
+          );
+          return box;
+        }
+        for (const port of outputs) {
+          const block = el("div", "cap-port-block");
+          const head = el("div", "cap-port-head");
+          head.appendChild(el("span", "cap-port-name", port));
+          // 每个出口旁边都有「+ 下游」：链路是长出来的，不该逼人去出口页重填一遍
+          const addBtn = el("button", "btn btn-ghost btn-sm", "+ " + t("caps.add.btn", "下游"));
+          addBtn.type = "button";
+          addBtn.setAttribute("data-port", port);
+          addBtn.addEventListener("click", () => openAddPanel(c, port, block));
+          head.appendChild(addBtn);
+          block.appendChild(head);
+
+          const here = edgesFromPort(c.id, port);
+          if (!here.length) {
+            // 整个详情区里最需要被看到的一句话。
+            block.appendChild(
+              el("div", "cap-port-dead", t("caps.detail.dead", "这个出口没有下游，emit 出去就到此为止")),
+            );
+          } else {
+            for (const e of here) block.appendChild(edgeLine(e));
+          }
+          box.appendChild(block);
+        }
+        return box;
+      }
+
+      // edgeLine 渲染一条**出边**：目标能力 + 它跟随最新还是钉死 + 常量覆盖。
+      function edgeLine(e) {
+        const line = el("div", "cap-link");
+        line.appendChild(el("span", "cap-down-arrow", "→"));
+        const toCap = capByID(e.toCapabilityId);
+        line.appendChild(
+          el(
+            "span",
+            "cap-link-target" + (toCap ? "" : " cap-link-unresolved"),
+            toCap ? Anotify.capLabel(toCap) : t("caps.detail.unresolved", "解析不到：{ref}").replace("{ref}", e.toRef),
+          ),
+        );
+        // 引用本身要露出来：`review` 与 `review@2` 是两种语义，
+        // 只显示「跟随最新/钉死」会丢掉一字不差的身份（排查时要对日志）。
+        line.appendChild(el("span", "cap-link-ref mono", e.toRef));
+        line.appendChild(
+          el(
+            "span",
+            "cap-link-follow",
+            isPinnedRef(e.toRef)
+              ? t("caps.detail.pinned", "钉死该版本")
+              : t("caps.detail.follow", "跟随最新"),
+          ),
+        );
+        const lit = literalText(e.literals);
+        if (lit) line.appendChild(el("span", "cap-link-lit", lit));
+        return line;
+      }
+
+      // inboundNode：谁接到我。没有它，用户只能靠出口页反推「这个能力是怎么被叫起来的」。
+      function inboundNode(c) {
+        const box = el("div", "cap-detail-secs");
+        if (!EDGES_OK) {
+          box.appendChild(
+            el("div", "cap-detail-empty", t("caps.detail.edges_failed", "边列表读不到，下游状态未知")),
+          );
+          return box;
+        }
+        const ins = edgesInto(c.id);
+        if (!ins.length) {
+          box.appendChild(
+            el("div", "cap-detail-empty", t("caps.detail.no_inbound", "没有入边：事件不会从这里进来")),
+          );
+          return box;
+        }
+        for (const e of ins) {
+          const line = el("div", "cap-inlink");
+          // 入口边的左端是**来源名**（#110），不是能力 —— 不能拿它在能力表里查。
+          const fromCap = e.fromIsSource ? null : capByID(e.fromCapabilityId);
+          line.appendChild(
+            el(
+              "span",
+              "cap-link-target" + (!e.fromIsSource && !fromCap ? " cap-link-unresolved" : ""),
+              e.fromIsSource
+                ? t("caps.detail.source_prefix", "来源") + ": " + e.fromRef
+                : fromCap
+                  ? Anotify.capLabel(fromCap)
+                  : e.fromRef,
+            ),
+          );
+          line.appendChild(el("span", "cap-down-arrow", "—"));
+          line.appendChild(el("span", "cap-port-name", e.fromPort));
+          line.appendChild(el("span", "cap-down-arrow", "→"));
+          line.appendChild(el("span", "cap-link-target", t("caps.detail.me", "我")));
+          box.appendChild(line);
+        }
+        return box;
+      }
+
+      function kv(key, val, mono) {
+        const row = el("div", "cap-kv");
+        row.appendChild(el("span", "cap-kv-key", key));
+        row.appendChild(el("span", mono ? "cap-kv-val mono" : "cap-kv-val", val));
+        return row;
+      }
+
+      // lifecycleText 把生命周期压成一行：这是「它跑崩了会怎样」的配置，
+      // 不展开成表单是因为详情区是**只读**的（能力定义 append-only）。
+      function lifecycleText(lc) {
+        if (!lc || typeof lc !== "object") {
+          return t("caps.detail.lifecycle_default", "默认（未声明）");
+        }
+        const parts = [];
+        if (lc.expiresInSec) parts.push("expiresInSec=" + lc.expiresInSec);
+        if (lc.retryable) parts.push("retryable");
+        if (lc.maxAttempts) parts.push("maxAttempts=" + lc.maxAttempts);
+        if (lc.resultTtlSec) parts.push("resultTtlSec=" + lc.resultTtlSec);
+        if (lc.idempotent === false) parts.push("idempotent=false");
+        return parts.length
+          ? parts.join(" · ")
+          : t("caps.detail.lifecycle_default", "默认（未声明）");
+      }
+
+      // runtimeNode 是「它怎么跑」：这些字段决定行为，和「跑什么」（出口）分开看。
+      function runtimeNode(c) {
+        const box = el("div", "cap-detail-secs");
+        // run（超时/工作目录）在能力列表接口里**不一定**有（它是产物 spec 的一部分）。
+        // 没有就写「—」而不是把那两行藏起来：藏起来会让人以为这个能力没有超时。
+        const run = c.run && typeof c.run === "object" ? c.run : null;
+        box.appendChild(
+          kv(
+            t("caps.detail.timeout", "超时"),
+            run && run.timeoutSec
+              ? String(run.timeoutSec) + "s"
+              : t("caps.detail.unknown", "—"),
+          ),
+        );
+        box.appendChild(
+          kv(
+            t("caps.detail.workdir", "工作目录"),
+            run && run.workDir
+              ? String(run.workDir)
+              : t("caps.detail.workdir_default", "每次任务一个独立目录"),
+            true,
+          ),
+        );
+        box.appendChild(kv(t("caps.detail.lifecycle", "生命周期"), lifecycleText(c.lifecycle)));
+        box.appendChild(kv(t("caps.detail.sticky", "粘性路由"), c.sticky || t("caps.detail.unknown", "—"), true));
+        box.appendChild(
+          kv(
+            t("caps.detail.source", "来源"),
+            c.source === "builtin"
+              ? t("caps.detail.source_builtin", "内置")
+              : t("caps.detail.source_custom", "自定义"),
+          ),
+        );
+        // contentHash 给完整值 + 复制：它是「这一份定义」的身份，
+        // 对日志/产物名时要一字不差（列表里的 10 位只是能快速比一下）。
+        const hashRow = el("div", "cap-kv");
+        hashRow.appendChild(el("span", "cap-kv-key", t("caps.detail.hash", "内容指纹")));
+        if (c.contentHash) {
+          hashRow.appendChild(el("span", "cap-hash", c.contentHash));
+          const cp = el("button", "btn btn-ghost btn-sm", t("caps.detail.copy", "复制"));
+          cp.type = "button";
+          cp.addEventListener("click", () => Anotify.copyText(cp, () => c.contentHash));
+          hashRow.appendChild(cp);
+        } else {
+          hashRow.appendChild(el("span", "cap-hash", t("caps.detail.unknown", "—")));
+        }
+        box.appendChild(hashRow);
+        return box;
+      }
+
+      function capDetailBlock(c) {
+        const box = el("div", "cap-detail");
+        if (OPEN_DETAIL.has(c.id)) box.classList.add("open");
+        box.appendChild(detailSec(t("caps.detail.params", "参数契约"), paramsNode(c)));
+        box.appendChild(detailSec(t("caps.detail.outputs", "出口与下游"), portsNode(c)));
+        box.appendChild(detailSec(t("caps.detail.inbound", "谁接到我"), inboundNode(c)));
+        box.appendChild(detailSec(t("caps.detail.runtime", "运行参数"), runtimeNode(c)));
+        if ((PENDING_EDGES.get(c.name) || []).length) box.appendChild(retryBlock(c));
+        return box;
+      }
+
+      // retryBlock 是「能力建好了、但边没建成」的补救入口。
+      //
+      // 为什么不回滚能力：能力已经落库（append-only），回滚等于把用户填的一切丢掉；
+      // 而失败的边多半是「目标不存在 / 端口不匹配」这种改一下就能成的问题。
+      function retryBlock(c) {
+        const box = el("div", "cap-retry");
+        const list = PENDING_EDGES.get(c.name) || [];
+        box.appendChild(
+          el(
+            "div",
+            "",
+            t("caps.detail.retry_title", "这 {n} 条边没建成").replace("{n}", list.length),
+          ),
+        );
+        for (const item of list) {
+          const row = el("div", "cap-retry-row");
+          row.appendChild(el("span", "cap-port-name", item.port));
+          row.appendChild(el("span", "cap-down-arrow", "→"));
+          row.appendChild(el("span", "cap-link-target", item.to));
+          if (item.reason) row.appendChild(el("span", "cap-retry-reason", item.reason));
+          const btn = el("button", "btn btn-ghost btn-sm", t("caps.detail.retry", "重试"));
+          btn.type = "button";
+          btn.addEventListener("click", () => retryEdge(c, item, btn));
+          row.appendChild(btn);
+          box.appendChild(row);
+        }
+        return box;
+      }
+
+      async function retryEdge(c, item, btn) {
+        btn.disabled = true;
+        try {
+          await postEdge({
+            fromRef: sourceRefFor(c),
+            fromPort: item.port,
+            toRef: item.to,
+            literals: item.literals || {},
+          });
+          const list = (PENDING_EDGES.get(c.name) || []).filter((x) => x !== item);
+          if (list.length) PENDING_EDGES.set(c.name, list);
+          else PENDING_EDGES.delete(c.name);
+          toast(t("caps.add.created", "边已创建"));
+          await loadAll();
+        } catch (e) {
+          btn.disabled = false;
+          item.reason = errText(e);
+          toast(t("caps.detail.retry_failed", "重试失败：") + item.reason);
+        }
+      }
+
+      // openAddPanel 在某个出口下面就地展开一个小面板（不弹层：用户要一边看
+      // 「这个出口现在接了谁」一边加，弹层会把上下文盖住）。
+      function openAddPanel(c, port, block) {
+        const old = block.querySelector(".cap-add-panel");
+        if (old) {
+          old.remove(); // 再点一次「+ 下游」= 收起
+          return;
+        }
+        const panel = el("div", "cap-add-panel");
+        panel.appendChild(
+          el(
+            "div",
+            "cap-detail-title",
+            t("caps.add.title", "给「{port}」加下游").replace("{port}", port),
+          ),
+        );
+
+        const inp = el("input", "input cap-down-input");
+        inp.setAttribute("list", "cap-down-targets");
+        inp.setAttribute("autocomplete", "off");
+        inp.placeholder = t("caps.add.target_ph", "选一个目标能力（可搜索）");
+        panel.appendChild(inp);
+
+        const litInput = el("input", "input mono cap-down-input");
+        litInput.setAttribute("autocomplete", "off");
+        litInput.placeholder = t("caps.add.literals_ph", '常量覆盖（可选），形如 {"urgent":true}');
+        panel.appendChild(litInput);
+
+        const actions = el("div", "cap-add-actions");
+        const save = el("button", "btn btn-primary btn-sm", t("caps.add.save", "保存"));
+        const cancel = el("button", "btn btn-ghost btn-sm", t("caps.add.cancel", "取消"));
+        save.type = "button";
+        cancel.type = "button";
+        actions.appendChild(save);
+        actions.appendChild(cancel);
+        panel.appendChild(actions);
+        block.appendChild(panel);
+        inp.focus();
+
+        cancel.addEventListener("click", () => panel.remove());
+        save.addEventListener("click", async () => {
+          const picked = targetByName(inp.value);
+          if (!picked) {
+            toast(t("caps.add.err_target", "请选择一个目标能力"));
+            return;
+          }
+          if (picked.name === c.name) {
+            toast(t("caps.add.err_self", "不能让能力连到自己"));
+            return;
+          }
+          // 常量覆盖：本地只拦「明显不是对象」的输入（坏 JSON / 数组 / 标量）。
+          // 键在不在目标 schema、类型对不对，只有后端能判（要读目标的 paramsSchema）。
+          let literals = {};
+          const rawLit = litInput.value.trim();
+          if (rawLit && rawLit !== "{}") {
+            let parsed;
+            try {
+              parsed = JSON.parse(rawLit);
+            } catch (e) {
+              toast(t("caps.add.err_literals", "常量覆盖必须是一个 JSON 对象"));
+              return;
+            }
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+              toast(t("caps.add.err_literals", "常量覆盖必须是一个 JSON 对象"));
+              return;
+            }
+            literals = parsed;
+          }
+          save.disabled = true;
+          try {
+            await postEdge({
+              fromRef: sourceRefFor(c),
+              fromPort: port,
+              toRef: picked.name,
+              literals: literals,
+            });
+            toast(t("caps.add.created", "边已创建"));
+            // 就地刷新：loadAll 会重建列表，OPEN_DETAIL 会把这一行的展开态还原，
+            // 用户立刻能在同一个出口下面看到新加的下游。
+            await loadAll();
+          } catch (e) {
+            save.disabled = false;
+            toast(t("caps.add.failed", "创建边失败：") + errText(e));
+          }
+        });
+      }
+
+      // ==================== 新建能力 · 出口 chips + 下游 ====================
+      //
+      // PORT_RE 必须与后端 internal/artifact/artifact.go:outputPattern 一致：
+      // 前端放行、后端拒收的错只会在提交之后才发现，而那时用户已经填完整张表单了。
+      const PORT_RE = /^[a-zA-Z0-9._-]{1,32}$/;
+      const PORT_MAX = 32;
+
+      // renderPortChips 把 PORT_CHIPS 画成 chips，输入框永远在最后。
+      function renderPortChips() {
+        const box = document.getElementById("cap-ports");
+        const input = document.getElementById("cap-port-input");
+        if (!box || !input) return;
+        for (const chip of box.querySelectorAll(".cap-chip")) chip.remove();
+        for (const p of PORT_CHIPS) {
+          const chip = el("span", "cap-chip");
+          chip.appendChild(el("span", "", p));
+          const x = el("button", "cap-chip-x", "×");
+          x.type = "button";
+          x.title = t("caps.form.chip_remove", "删除这个出口");
+          x.addEventListener("click", () => {
+            PORT_CHIPS = PORT_CHIPS.filter((y) => y !== p);
+            // 出口没了，它下面的下游选择也不该算数（提交时会再兜一次底）
+            DOWN_SEL.delete(p);
+            renderPortChips();
+            renderDownRows();
+          });
+          chip.appendChild(x);
+          box.insertBefore(chip, input);
+        }
+        const hint = document.getElementById("cap-ports-hint");
+        if (hint) {
+          // 空态把后果说清楚：这是「没声明出口就什么也 emit 不出来」的直接后果，
+          // 而不是一句「必填」——允许为空是刻意的（终端能力合法）。
+          hint.textContent = PORT_CHIPS.length
+            ? t(
+                "caps.form.outputs_hint",
+                "出口是 emit 的白名单：只有这里声明过的名字，脚本 emit 时才会被派发下去。",
+              )
+            : t(
+                "caps.form.outputs_empty",
+                "没有出口 = 这个能力 emit 不出任何东西（终端能力）。",
+              );
+          hint.classList.toggle("cap-warn", PORT_CHIPS.length === 0);
+        }
+      }
+
+      // addPort 校验并添加一个出口，返回是否已处理（调用方据此清空输入框）。
+      function addPort(raw) {
+        const p = String(raw == null ? "" : raw).trim();
+        if (!p) return true; // 空输入不算错，直接忽略
+        if (!PORT_RE.test(p)) {
+          toast(t("caps.form.err_output", "出口名只能用字母、数字、点、下划线、短横线，1–32 个字符"));
+          return false;
+        }
+        if (PORT_CHIPS.includes(p)) return true; // 幂等：重复输入忽略即可，不报错
+        if (PORT_CHIPS.length >= PORT_MAX) {
+          toast(t("caps.form.outputs_max", "出口最多 32 个"));
+          return false;
+        }
+        PORT_CHIPS.push(p);
+        renderPortChips();
+        renderDownRows();
+        return true;
+      }
+
+      // renderDownRows 为每个出口画一行「出口名 → 目标能力（可多个）」。
+      //
+      // 这一栏**可以留空**：链路的另一段完全可以事后再补（详情区的「+ 下游」）。
+      function renderDownRows() {
+        const box = document.getElementById("cap-down-rows");
+        if (!box) return;
+        box.replaceChildren();
+        if (!PORT_CHIPS.length) {
+          box.appendChild(
+            el(
+              "div",
+              "cap-detail-empty",
+              t("caps.form.downstream_none", "还没有出口 —— 先在上面声明出口，才能连下游。"),
+            ),
+          );
+          return;
+        }
+        for (const port of PORT_CHIPS) {
+          const row = el("div", "cap-down-row");
+          row.setAttribute("data-port", port);
+          row.appendChild(el("span", "cap-port-name", port));
+          row.appendChild(el("span", "cap-down-arrow", "→"));
+          const targets = el("div", "cap-down-targets");
+          for (const name of DOWN_SEL.get(port) || []) {
+            const cap = CAPS.find((c) => c.name === name);
+            const chip = el("span", "cap-chip");
+            chip.appendChild(el("span", "", cap ? Anotify.capLabel(cap) : name));
+            const x = el("button", "cap-chip-x", "×");
+            x.type = "button";
+            x.title = t("caps.form.chip_remove", "删除这个出口");
+            x.addEventListener("click", () => {
+              DOWN_SEL.set(
+                port,
+                (DOWN_SEL.get(port) || []).filter((n) => n !== name),
+              );
+              renderDownRows();
+            });
+            chip.appendChild(x);
+            targets.appendChild(chip);
+          }
+          const inp = el("input", "input cap-down-input");
+          inp.setAttribute("list", "cap-down-targets");
+          inp.setAttribute("autocomplete", "off");
+          inp.placeholder = t("caps.form.downstream_target_ph", "选一个目标能力（可搜索）");
+          const commit = () => {
+            const cap = targetByName(inp.value);
+            if (!cap) {
+              if (inp.value.trim()) toast(t("caps.add.err_target", "请选择一个目标能力"));
+              return;
+            }
+            const cur = DOWN_SEL.get(port) || [];
+            if (!cur.includes(cap.name)) DOWN_SEL.set(port, cur.concat([cap.name]));
+            renderDownRows(); // 重画：chips 变了，输入框也要清空
+          };
+          // datalist 选中会触发 change；手打全名后回车也走同一条路。
+          inp.addEventListener("change", commit);
+          inp.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter") {
+              ev.preventDefault();
+              commit();
+            }
+          });
+          targets.appendChild(inp);
+          row.appendChild(targets);
+          box.appendChild(row);
+        }
+      }
+
       // ==================== 新建能力 · 弹层 ====================
       // ==================== 弹层开合 ====================
       // 弹层挂在 #page-main 之外（body 级）且用 hidden ↔ flex 开合：
@@ -1223,6 +2242,12 @@
         TIMEOUT_DIRTY = false;
         TPL_SEL = null;
         SCRIPT_TEXT = "";
+        // 出口与下游也要清：上一次建的链路不能静默带到下一次新建里
+        // （那会凭空造出几条用户没点过的边）。
+        PORT_CHIPS = [];
+        DOWN_SEL = new Map();
+        renderPortChips();
+        renderDownRows();
         tplGoStep(1);
         showModal(document.getElementById("cap-modal"), trigger || CAP_TRIGGER);
         loadTemplates();
@@ -1365,6 +2390,15 @@
 
         renderTplFields(tpl);
         renderTplRequires(tpl);
+        // 出口默认带模板的（模板知道自己要 emit 什么），但用户可以在下面改 ——
+        // 模板只是**默认值**，不是白名单的最终来源。换模板时把已经不在
+        // 新出口集合里的下游选择丢掉（它们没有归属了）。
+        PORT_CHIPS = (tpl.outputs || []).slice();
+        for (const p of [...DOWN_SEL.keys()]) {
+          if (!PORT_CHIPS.includes(p)) DOWN_SEL.delete(p);
+        }
+        renderPortChips();
+        renderDownRows();
         tplGoStep(2);
       }
 
@@ -1588,11 +2622,25 @@
           setSchemaError("");
         }
 
+        // 出口（ports）：表单里的 chips 才是唯一真相。
+        // 模板带来的 outputs 只是**默认值** —— 用户删掉的必须真的不声明，
+        // 否则「按模板点了一下创建」会悄悄多出一批从没人接过、也没人 emit 的出口。
+        const outputs = PORT_CHIPS.slice();
+        // 下游：把 (出口 → 目标) 按**出口顺序**摊平，只保留仍然存在的出口。
+        // 连到自己跳过（后端会把它当成一条环，而新建里的自环几乎总是误操作）。
+        const wanted = [];
+        for (const port of outputs) {
+          for (const toName of DOWN_SEL.get(port) || []) {
+            if (!toName || toName === name) continue;
+            wanted.push({ port: port, to: toName });
+          }
+        }
+
         const body = {
           name: name,
           displayName: displayName,
           paramsSchema: paramsSchema,
-          outputs: tpl.outputs || [],
+          outputs: outputs,
           run: run,
           requires: tpl.requires || [],
         };
@@ -1607,17 +2655,56 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
+          const created = (res && res.capability) || null;
           // digest 可能在顶层，也可能在 capability.digest，也可能没有
           const digest = (res && (res.digest || (res.capability && res.capability.digest))) || "";
-          toast(
-            digest
-              ? t("caps.tpl.created_digest", "能力已创建（{digest}）").replace(
-                  "{digest}",
-                  shortDigest(digest),
-                )
-              : t("caps.tpl.created", "能力已创建"),
-          );
+          const baseMsg = digest
+            ? t("caps.tpl.created_digest", "能力已创建（{digest}）").replace(
+                "{digest}",
+                shortDigest(digest),
+              )
+            : t("caps.tpl.created", "能力已创建");
+
+          // 边一条一条建，**失败不回滚能力**：
+          //   ① 能力已经落库（append-only），回滚等于把用户填的一切丢掉；
+          //   ② 失败的边多半是“目标不存在/出口不匹配”这种改一下就能成的问题。
+          // 所以失败的聚合提示，并把清单挂到该能力的详情区里可重试。
+          const failed = [];
+          let okEdges = 0;
+          for (const w of wanted) {
+            try {
+              // 两端都写**裸名字** = 跟随最新（设计 §3.2 默认形态）：
+              // 刚建的能力就是 latest，写 name 之后它发新版这条链自动跟过去。
+              await postEdge({
+                fromRef: name,
+                fromPort: w.port,
+                toRef: w.to,
+                literals: {},
+              });
+              okEdges++;
+            } catch (e) {
+              failed.push({ port: w.port, to: w.to, reason: errText(e), literals: {} });
+            }
+          }
+          if (failed.length) {
+            PENDING_EDGES.set(name, failed);
+            toast(
+              t(
+                "caps.form.created_edges_partial",
+                "能力已创建；这 {n} 条边没建成：{reason}",
+              )
+                .replace("{n}", failed.length)
+                .replace("{reason}", failed[0].reason || ""),
+              "error",
+            );
+          } else if (okEdges) {
+            toast(baseMsg + " · " + t("caps.form.created_with_edges", "已连 {n} 条边").replace("{n}", okEdges));
+          } else {
+            toast(baseMsg);
+          }
           closeCapModal();
+          // 建完自动展开该能力的详情：用户建完最想看到的就是“它接上了没有”。
+          if (created && created.id) OPEN_DETAIL.add(created.id);
           loadAll();
         } catch (err) {
           // err.detail 是后端错误串（invalid_name: … / capability_conflict），原样展示
@@ -1890,6 +2977,28 @@
       // 超时被手改过之后就置脏：换模板时不再用模板默认值覆盖用户填的数字
       document.getElementById("cap-timeout").addEventListener("input", () => {
         TIMEOUT_DIRTY = true;
+      });
+      // 出口 chips 输入：回车 / 逗号确认一个；退格在空输入框上删最后一个。
+      // 逗号也算：用户会从别处粘一串 `a,b,c` 进来。
+      const portInput = document.getElementById("cap-port-input");
+      portInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === "," || ev.key === "，") {
+          ev.preventDefault();
+          if (addPort(ev.target.value)) ev.target.value = "";
+          return;
+        }
+        if (ev.key === "Backspace" && !ev.target.value && PORT_CHIPS.length) {
+          const last = PORT_CHIPS[PORT_CHIPS.length - 1];
+          PORT_CHIPS = PORT_CHIPS.slice(0, -1);
+          DOWN_SEL.delete(last);
+          renderPortChips();
+          renderDownRows();
+        }
+      });
+      // 失焦也提交：填完最后一个出口直接去点「创建」是常见操作，
+      // 不提交的话那个名字就只停在输入框里，用户会以为已经加进去了。
+      portInput.addEventListener("blur", (ev) => {
+        if (addPort(ev.target.value)) ev.target.value = "";
       });
 
       // 高级出口（手写 paramsSchema）：

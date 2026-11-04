@@ -1803,6 +1803,421 @@ async function checkCapabilityTemplates(page) {
 	);
 }
 
+// checkCapabilityDetail 覆盖用户报的两个问题（原话）：
+//   ① 「能力页看不到能力的具体定义、具体内容是什么」
+//   ② 「新建能力这里无法指定下游是什么，如果我想串起来（比如 touchnow → echo）应该怎么办」
+//
+// 这里钉六件事，每一件都对应一个会**静默**坏掉的环节：
+//   ① 行能展开，四节（参数契约 / 出口与下游 / 谁接到我 / 运行参数）都在，
+//      且参数契约显示的是 paramsSchema 的**原文**（而不是「无参数」占位）
+//   ② 出口下面按**边**列下游（造一条 mock 边，目标名出现在那个出口下面）
+//   ③ 没有下游的出口显眼地说「到此为止」（模型里「没边 = 停」是一等语义）
+//   ④ 「+ 下游」能就地建边，成功后同一出口下立刻看到目标（扇出可见）
+//   ⑤ 新建能力时填的出口 + 下游真的发出去（POST 体 + 落库 + 边存在）
+//   ⑥ 边没建成**不回滚能力**，详情里能逐条重试
+//
+// 为什么全部在**一次页面加载**里做：mock 的 state 是页面级的，goto 一次就重置，
+// 所以「建了之后马上看到」这类断言必须靠页面自己的 loadAll() 刷新（就是用户看到的路径）。
+async function checkCapabilityDetail(page, base) {
+	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1800);
+
+	// ① 展开一行：四节 + 参数契约原文
+	const detail = await page.evaluate(() => {
+		const row = document.querySelector('.cap-row[data-cap-name="analyze-pr"]');
+		if (!row) return { err: "找不到 analyze-pr 行（data-cap-name 钩子丢了？）" };
+		const btn = row.querySelector('[data-act="detail"]');
+		if (!btn) return { err: "没有详情按钮" };
+		btn.click();
+		const box = row.querySelector(".cap-detail");
+		return {
+			open: !!box && box.classList.contains("open"),
+			titles: Array.from(row.querySelectorAll(".cap-detail-title")).map((x) =>
+				x.textContent.trim(),
+			),
+			pre: ((row.querySelector(".cap-detail-pre") || {}).textContent || "").trim(),
+			wa: ((row.querySelector(".cap-kv") || {}).textContent || "").trim(),
+			aria: btn.getAttribute("aria-expanded"),
+		};
+	});
+	H.check(
+		"能力行能展开详情区（默认收起 → 点开）",
+		detail.open === true && detail.aria === "true",
+		JSON.stringify(detail),
+	);
+	H.check(
+		"详情区四节齐全：参数契约 / 出口与下游 / 谁接到我 / 运行参数",
+		detail.titles.length === 4 &&
+			/参数/.test(detail.titles[0]) &&
+			/出口/.test(detail.titles[1]) &&
+			/接到|feeds/.test(detail.titles[2]) &&
+			/运行|Runtime/.test(detail.titles[3]),
+		JSON.stringify(detail.titles),
+	);
+	H.check(
+		"参数契约显示 paramsSchema 原文（JSON 美化，不是「无参数」占位）",
+		/"type"\s*:\s*"object"/.test(detail.pre) && /properties/.test(detail.pre),
+		detail.pre.slice(0, 160),
+	);
+	H.check(
+		"运行参数区有内容（不是空白区块）",
+		/超时|Timeout/.test(detail.wa),
+		detail.wa.slice(0, 80),
+	);
+
+	// ②③ 出口与下游按边渲染；没接边的出口显式说「到此为止」
+	const ports0 = await page.evaluate(() => {
+		const row = document.querySelector('.cap-row[data-cap-name="deploy-preview"]');
+		if (!row) return { err: "找不到 deploy-preview 行" };
+		row.querySelector('[data-act="detail"]').click();
+		const blocks = Array.from(row.querySelectorAll(".cap-port-block")).map((b) => ({
+			port: ((b.querySelector(".cap-port-name") || {}).textContent || "").trim(),
+			dead: !!b.querySelector(".cap-port-dead"),
+			deadText: ((b.querySelector(".cap-port-dead") || {}).textContent || "").trim(),
+			links: Array.from(b.querySelectorAll(".cap-link")).map((l) =>
+				l.textContent.replace(/\s+/g, " ").trim(),
+			),
+			hasAdd: !!b.querySelector("[data-port]"),
+		}));
+		return {
+			blocks,
+			inbound: Array.from(row.querySelectorAll(".cap-inlink")).map((x) =>
+				x.textContent.replace(/\s+/g, " ").trim(),
+			),
+		};
+	});
+	const preview = (ports0.blocks || []).find((b) => b.port === "preview.ready") || {};
+	const manual = (ports0.blocks || []).find((b) => b.port === "manual.approval") || {};
+	H.check(
+		"出口下面按边列出下游（preview.ready → gen-changelog）",
+		(preview.links || []).some((l) => /gen-changelog/.test(l)),
+		JSON.stringify(preview.links),
+	);
+	H.check(
+		"没有下游的出口显式说「到此为止」（manual.approval）",
+		manual.dead === true && /到此为止|stops right here/.test(manual.deadText),
+		JSON.stringify({ dead: manual.dead, text: manual.deadText }),
+	);
+	H.check(
+		"每个出口旁边都有「+ 下游」入口",
+		(ports0.blocks || []).length > 0 && (ports0.blocks || []).every((b) => b.hasAdd),
+		JSON.stringify((ports0.blocks || []).map((b) => b.hasAdd)),
+	);
+	H.check(
+		"「谁接到我」列出入边（来源 --port→ 我）",
+		(ports0.inbound || []).some((l) => /→\s*我|→\s*me/.test(l)),
+		JSON.stringify(ports0.inbound),
+	);
+
+	// 造一条 mock 边：manual.approval → report.send，页面自己 loadAll 后应立刻可见
+	const afterEdge = await page.evaluate(async () => {
+		const res = await fetch("/v1/edges", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				fromIsSource: false,
+				fromRef: "deploy-preview",
+				fromPort: "manual.approval",
+				toRef: "report.send",
+				literals: {},
+			}),
+		});
+		const status = res.status;
+		await loadAll();
+		await new Promise((r) => setTimeout(r, 300));
+		const row = document.querySelector('.cap-row[data-cap-name="deploy-preview"]');
+		const block = Array.from(row.querySelectorAll(".cap-port-block")).find(
+			(b) => ((b.querySelector(".cap-port-name") || {}).textContent || "").trim() === "manual.approval",
+		);
+		return {
+			status,
+			stillOpen: row.querySelector(".cap-detail").classList.contains("open"),
+			dead: !!block.querySelector(".cap-port-dead"),
+			links: Array.from(block.querySelectorAll(".cap-link")).map((l) =>
+				l.textContent.replace(/\s+/g, " ").trim(),
+			),
+		};
+	});
+	H.check(
+		"造一条边后，同一出口下出现目标能力名（report.send）",
+		afterEdge.status === 201 && afterEdge.links.some((l) => /report\.send/.test(l)),
+		JSON.stringify(afterEdge),
+	);
+	H.check(
+		"接了边之后「到此为止」提示消失，且展开态没被刷新弄丢",
+		afterEdge.dead === false && afterEdge.stillOpen === true,
+		JSON.stringify({ dead: afterEdge.dead, open: afterEdge.stillOpen }),
+	);
+
+	// ④ 「+ 下游」就地建边（扇出：report.send 的 escalate 再接一个 archive-logs）
+	const addPanel = await page.evaluate(() => {
+		const row = document.querySelector('.cap-row[data-cap-name="report.send"]');
+		row.querySelector('[data-act="detail"]').click();
+		row.querySelector('.cap-port-block [data-port="escalate"]').click();
+		const p = row.querySelector(".cap-add-panel");
+		if (!p) return { has: false };
+		const [target] = p.querySelectorAll("input");
+		target.value = "archive-logs";
+		// 抓包：POST 体的形状必须与契约一致（引用而不是能力 id）
+		window.__edgeBodies = [];
+		const orig = window.fetch;
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (method === "POST" && url.includes("/v1/edges") && init && init.body) {
+				try {
+					window.__edgeBodies.push(JSON.parse(String(init.body)));
+				} catch (e) {
+					window.__edgeBodies.push(null);
+				}
+			}
+			return orig.apply(this, arguments);
+		};
+		window.__edgeRestoreFetch = () => {
+			window.fetch = orig;
+		};
+		Array.from(p.querySelectorAll("button"))
+			.find((b) => b.className.includes("btn-primary"))
+			.click();
+		return { has: true };
+	});
+	H.check("点「+ 下游」能展开就地加边面板", addPanel.has === true, JSON.stringify(addPanel));
+	await page.waitForTimeout(1500);
+	const addResult = await page.evaluate(() => {
+		const bodies = window.__edgeBodies || [];
+		window.__edgeRestoreFetch && window.__edgeRestoreFetch();
+		const row = document.querySelector('.cap-row[data-cap-name="report.send"]');
+		const block = Array.from(row.querySelectorAll(".cap-port-block")).find(
+			(b) => ((b.querySelector(".cap-port-name") || {}).textContent || "").trim() === "escalate",
+		);
+		return {
+			body: bodies[bodies.length - 1] || null,
+			n: bodies.length,
+			links: Array.from(block.querySelectorAll(".cap-link")).map((l) =>
+				l.textContent.replace(/\s+/g, " ").trim(),
+			),
+		};
+	});
+	H.check(
+		"加下游发的是引用（裸名字=跟随最新）且 fromIsSource=false",
+		!!addResult.body &&
+			addResult.body.fromIsSource === false &&
+			addResult.body.fromRef === "report.send" &&
+			addResult.body.fromPort === "escalate" &&
+			addResult.body.toRef === "archive-logs",
+		JSON.stringify(addResult.body),
+	);
+	H.check(
+		"加下游成功后同一出口下立刻看到新目标（扇出 ≥2）",
+		addResult.links.length >= 2 && addResult.links.some((l) => /archive-logs/.test(l)),
+		JSON.stringify(addResult.links),
+	);
+
+	// ⑤ 新建能力：填出口 + 下游 → 能力建出、边真的发出去
+	const capName = "e2e.chain." + Date.now();
+	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
+	await page.waitForTimeout(600);
+	await page.click('[data-tpl="script.blank"]');
+	await page.waitForTimeout(400);
+	const portsState = await page.evaluate((name) => {
+		document.getElementById("cap-name").value = name;
+		// 像用户那样：敲进 chips 输入框再回车
+		const inp = document.getElementById("cap-port-input");
+		inp.value = "done";
+		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		return {
+			chips: Array.from(document.querySelectorAll("#cap-ports .cap-chip")).map((x) =>
+				x.textContent.replace("×", "").trim(),
+			),
+			rows: Array.from(document.querySelectorAll("#cap-down-rows .cap-down-row")).map((r) =>
+				r.getAttribute("data-port"),
+			),
+			hint: (document.getElementById("cap-ports-hint") || {}).textContent || "",
+		};
+	}, capName);
+	H.check(
+		"新建表单的出口 chips 能加，并按出口画出下游行",
+		portsState.chips.includes("done") && portsState.rows.includes("done"),
+		JSON.stringify(portsState),
+	);
+	// 空出口的后果必须说出来（「没有出口 = emit 不出任何东西」）
+	const emptyHint = await page.evaluate(() => {
+		document.querySelector("#cap-ports .cap-chip-x").click();
+		return {
+			hint: (document.getElementById("cap-ports-hint") || {}).textContent || "",
+			n: document.querySelectorAll("#cap-ports .cap-chip").length,
+		};
+	});
+	H.check(
+		"出口留空时说明「emit 不出任何东西」（终端能力是合法的）",
+		emptyHint.n === 0 && /emit/.test(emptyHint.hint) && /没有出口/.test(emptyHint.hint),
+		JSON.stringify(emptyHint),
+	);
+	await page.evaluate(() => {
+		const inp = document.getElementById("cap-port-input");
+		inp.value = "done";
+		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+	});
+	const pickedDown = await page.evaluate(() => {
+		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="done"]');
+		const inp = row.querySelector(".cap-down-input");
+		inp.value = "report.send";
+		inp.dispatchEvent(new Event("change", { bubbles: true }));
+		return Array.from(document.querySelectorAll("#cap-down-rows .cap-chip")).length;
+	});
+	H.check("下游能按名字选中（写进表单，不是写死某个目标）", pickedDown >= 1, `chips=${pickedDown}`);
+	// 抓包钩子：mock 在 window.fetch 层就拦下了（page.on("request") 一条都抓不到）
+	await page.evaluate(() => {
+		window.__bodies = { caps: [], edges: [] };
+		const orig = window.fetch;
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (method === "POST" && init && init.body) {
+				try {
+					if (url.includes("/v1/capabilities")) window.__bodies.caps.push(JSON.parse(String(init.body)));
+					if (url.includes("/v1/edges")) window.__bodies.edges.push(JSON.parse(String(init.body)));
+				} catch (e) {
+					/* 体不是 JSON：下面的断言会红 */
+				}
+			}
+			return orig.apply(this, arguments);
+		};
+	});
+	await page.click("#cap-submit");
+	await page.waitForTimeout(2500);
+	const created = await page.evaluate(async (name) => {
+		const b = window.__bodies || { caps: [], edges: [] };
+		const [capsApi, edgesApi] = await Promise.all([
+			fetch("/v1/capabilities").then((r) => r.json()),
+			fetch("/v1/edges").then((r) => r.json()),
+		]);
+		const row = Array.from(document.querySelectorAll(".cap-row")).find(
+			(r) => r.getAttribute("data-cap-name") === name,
+		);
+		return {
+			capBody: b.caps[0] || null,
+			edgeBodies: b.edges,
+			caps: (capsApi.capabilities || []).filter((x) => x.name === name).map((x) => x.outputs),
+			edges: (edgesApi.edges || [])
+				.filter((x) => x.fromRef === name)
+				.map((x) => ({ toRef: x.toRef, fromPort: x.fromPort })),
+			rowOpen: row ? row.querySelector(".cap-detail").classList.contains("open") : null,
+			rowText: row ? row.querySelector(".cap-detail").textContent.replace(/\s+/g, " ") : "",
+		};
+	}, capName);
+	H.check(
+		"新建能力时声明的出口进了请求体（不再只能跟模板走）",
+		!!created.capBody &&
+			Array.isArray(created.capBody.outputs) &&
+			created.capBody.outputs.length === 1 &&
+			created.capBody.outputs[0] === "done",
+		JSON.stringify(created.capBody && created.capBody.outputs),
+	);
+	H.check(
+		"新建时选的下游真的建了边（两端裸名字=跟随最新）",
+		created.edgeBodies.length === 1 &&
+			created.edgeBodies[0].fromIsSource === false &&
+			created.edgeBodies[0].fromRef === capName &&
+			created.edgeBodies[0].fromPort === "done" &&
+			created.edgeBodies[0].toRef === "report.send",
+		JSON.stringify(created.edgeBodies),
+	);
+	H.check(
+		"能力与边都落库（GET 能看到），详情默认展开并列出该下游",
+		created.caps.length === 1 &&
+			created.caps[0].includes("done") &&
+			created.edges.length === 1 &&
+			created.edges[0].toRef === "report.send" &&
+			created.rowOpen === true &&
+			/report\.send/.test(created.rowText),
+		JSON.stringify({ caps: created.caps, edges: created.edges, open: created.rowOpen }),
+	);
+
+	// ⑥ 边没建成：能力照样建好，详情里能重试（单条边失败不回滚能力）
+	const capName2 = "e2e.partial." + Date.now();
+	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
+	await page.waitForTimeout(600);
+	await page.click('[data-tpl="script.blank"]');
+	await page.waitForTimeout(400);
+	// 只让 /v1/edges 的 POST 失败（?mockFail=1 是 mock 的强制失败开关）：
+	// 这样能精确复现「能力建好了、边没建成」这个真实存在的中间态。
+	await page.evaluate((name) => {
+		document.getElementById("cap-name").value = name;
+		const inp = document.getElementById("cap-port-input");
+		inp.value = "done";
+		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="done"]');
+		const din = row.querySelector(".cap-down-input");
+		din.value = "report.send";
+		din.dispatchEvent(new Event("change", { bubbles: true }));
+		const orig = window.fetch;
+		window.__failEdges = true;
+		window.__failRestore = () => {
+			window.fetch = orig;
+		};
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (window.__failEdges && method === "POST" && url.includes("/v1/edges")) {
+				return orig.apply(this, [url + (url.includes("?") ? "&" : "?") + "mockFail=1", init]);
+			}
+			return orig.apply(this, arguments);
+		};
+	}, capName2);
+	await page.click("#cap-submit");
+	await page.waitForTimeout(2500);
+	const partial = await page.evaluate(async (name) => {
+		window.__failEdges = false;
+		const capsApi = await fetch("/v1/capabilities").then((r) => r.json());
+		const edgesApi = await fetch("/v1/edges").then((r) => r.json());
+		const row = Array.from(document.querySelectorAll(".cap-row")).find(
+			(r) => r.getAttribute("data-cap-name") === name,
+		);
+		return {
+			capExists: (capsApi.capabilities || []).some((x) => x.name === name),
+			edges: (edgesApi.edges || []).filter((x) => x.fromRef === name).length,
+			retryBlock: row ? !!row.querySelector(".cap-retry") : false,
+			retryRows: row ? row.querySelectorAll(".cap-retry-row").length : 0,
+			retryText: row ? (row.querySelector(".cap-retry") || {}).textContent || "" : "",
+		};
+	}, capName2);
+	H.check(
+		"边没建成时能力照样建好（不回滚用户填的一切）",
+		partial.capExists === true && partial.edges === 0,
+		JSON.stringify(partial),
+	);
+	H.check(
+		"失败的边在详情区可重试（逐条列出）",
+		partial.retryBlock === true && partial.retryRows === 1,
+		JSON.stringify({ block: partial.retryBlock, rows: partial.retryRows, text: partial.retryText.slice(0, 120) }),
+	);
+	const retried = await page.evaluate(async (name) => {
+		const row = Array.from(document.querySelectorAll(".cap-row")).find(
+			(r) => r.getAttribute("data-cap-name") === name,
+		);
+		window.__failRestore && window.__failRestore();
+		const btn = Array.from(row.querySelectorAll(".cap-retry-row button"))[0];
+		if (!btn) return { err: "没有重试按钮" };
+		btn.click();
+		await new Promise((r) => setTimeout(r, 1500));
+		const edgesApi = await fetch("/v1/edges").then((r) => r.json());
+		const row2 = Array.from(document.querySelectorAll(".cap-row")).find(
+			(r) => r.getAttribute("data-cap-name") === name,
+		);
+		return {
+			edges: (edgesApi.edges || []).filter((x) => x.fromRef === name).map((x) => x.toRef),
+			retryBlock: row2 ? !!row2.querySelector(".cap-retry") : null,
+		};
+	}, capName2);
+	H.check(
+		"点重试后边真的建成、待重试清单清空",
+		(Array.isArray(retried.edges) ? retried.edges : []).includes("report.send") &&
+			retried.retryBlock === false,
+		JSON.stringify(retried),
+	);
+}
+
 // checkEdgesPage 验证出口表已经独立成页（#93）。
 //
 // 核心断言：能力页不再有出口表、出口页有、两侧导航一致、
@@ -5312,6 +5727,9 @@ async function runMockCoverage() {
 		// 流向图的形状断言放在带 mock 数据的 sources.html 上
 		if (p === "capabilities.html") {
 			await checkCapabilityTemplates(page);
+			// 能力详情 + 声明出口/连下游（#：用户报的两个问题）。
+			// 放在模板流程之后：两者都从干净的列表页开始（各自 goto）。
+			await checkCapabilityDetail(page, base);
 			await checkEdgesPage(page);
 			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
 			await checkDeclaredBy(page);

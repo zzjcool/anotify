@@ -1205,8 +1205,21 @@ caps:
     display_name_hint: 界面上显示这个。留空就用下面的技术名。
     name: 能力名
     name_hint: 技术名：节点声明、边、日志都用它，建好后不能改。
-    outputs: 出口名（逗号分隔）
-    outputs_hint: 出口是封闭集合——建边时只能选这里声明过的名字。
+    outputs: 出口（ports）
+    outputs_hint: 出口是 emit 的白名单：只有这里声明过的名字，脚本 emit 时才会被派发下去。
+    outputs_optional: 可留空
+    outputs_ph: 输入出口名后回车
+    outputs_empty: 没有出口 = 这个能力 emit 不出任何东西（终端能力）。
+    outputs_max: 出口最多 32 个
+    err_output: 出口名只能用字母、数字、点、下划线、短横线，1–32 个字符
+    chip_remove: 删除这个出口
+    downstream: 下游（可选）
+    downstream_optional: 可留空
+    downstream_hint: 每个出口可以接多个下游（扇出）。这里写裸名字 = 跟随最新；逐条建边，单条失败不回滚能力（详情区里可重试）。
+    downstream_target_ph: 选一个目标能力（可搜索）
+    downstream_none: 还没有出口 —— 先在上面声明出口，才能连下游。
+    created_with_edges: '已连 {n} 条边'
+    created_edges_partial: '能力已创建；这 {n} 条边没建成：{reason}'
     schema: 参数校验（JSON Schema）
     schema_hint: 只支持受控子集（不支持 $ref / if-then-else），中枢不做表达式求值。
     cancel: 取消
@@ -1233,6 +1246,50 @@ caps:
     err_timeout: '超时必须是 0–86400 的整数'
     workdir: 工作目录
     workdir_hint: '以 / 开头的绝对路径；不存在会直接失败（不会退回默认目录）。留空 = 每次任务一个独立目录。'
+  detail:
+    btn: 详情
+    params: 参数契约
+    no_params: 无参数
+    outputs: 出口与下游
+    no_outputs: 没有声明出口 —— 这个能力 emit 不出任何东西
+    edges_failed: 边列表读不到，下游状态未知
+    inbound: 谁接到我
+    no_inbound: 没有入边：事件不会从这里进来
+    me: 我
+    source_prefix: 来源
+    follow: 跟随最新
+    pinned: 钉死该版本
+    unresolved: '解析不到：{ref}'
+    literals: '常量 {json}'
+    dead: 这个出口没有下游，emit 出去就到此为止
+    runtime: 运行参数
+    timeout: 超时
+    workdir: 工作目录
+    workdir_default: 每次任务一个独立目录
+    lifecycle: 生命周期
+    lifecycle_default: 默认（未声明）
+    sticky: 粘性路由
+    source: 能力来源
+    source_builtin: 内置
+    source_custom: 自定义
+    hash: 内容指纹
+    copy: 复制
+    unknown: '—'
+    retry_title: '这 {n} 条边没建成'
+    retry: 重试
+    retry_failed: '重试失败：'
+  add:
+    btn: 下游
+    title: '给「{port}」加下游'
+    target_ph: 选一个目标能力（可搜索）
+    literals_ph: '常量覆盖（可选），形如 {"urgent":true}'
+    save: 保存
+    cancel: 取消
+    created: 边已创建
+    failed: '创建边失败：'
+    err_target: 请选择一个目标能力
+    err_self: 不能让能力连到自己
+    err_literals: 常量覆盖必须是一个 JSON 对象
   edges:
     title: 出口表
     new: 新增边
