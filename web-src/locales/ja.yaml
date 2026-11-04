@@ -1215,11 +1215,11 @@ caps:
     chip_remove: この出口を削除
     downstream: 下流（任意）
     downstream_optional: 空でも可
-    downstream_hint: 1 つの出口に複数の下流を接続できます（ファンアウト）。ここでは裸の名前 = 最新に追従で保存し、エッジは 1 本ずつ作成します。失敗しても能力はロールバックされません（詳細から再試行できます）。
+    downstream_hint: 1 つの出口に複数の下流を接続できます（ファンアウト）。ここでは裸の名前 = 最新に追従で保存し、能力と下流は同じ送信で作成します——全部成功するか、何も作成されません。
     downstream_target_ph: 対象の能力を選択（検索可）
     downstream_none: 出口がまだありません — 先に上で出口を宣言してください。
     created_with_edges: '{n} 本のエッジを接続しました'
-    created_edges_partial: '能力は作成しましたが、{n} 本のエッジを作成できませんでした：{reason}'
+    link_rejected: '{n} 番目の出口 {port} → {to} が不正なため、何も作成されませんでした：{reason}'
     schema: パラメータ検証（JSON Schema）
     schema_hint: 制御されたサブセットのみ（$ref / if-then-else 非対応）。ハブは式を評価しません。
     cancel: キャンセル
@@ -1275,9 +1275,6 @@ caps:
     hash: 内容ハッシュ
     copy: コピー
     unknown: '—'
-    retry_title: '{n} 本のエッジを作成できませんでした'
-    retry: 再試行
-    retry_failed: '再試行に失敗：'
   add:
     btn: 下流
     title: '「{port}」に下流を追加'

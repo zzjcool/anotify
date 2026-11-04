@@ -88,10 +88,15 @@ var ErrRefUnresolved = errors.New("store: link ref unresolved")
 // 这是「跟随 latest」这条引用语义的唯一实现：`name` 型 link 每次派发都调它，
 // 所以升级（新版本写入）之后下一次派发就解析到新版本——这正是 P2.2 要的效果。
 func (d *DB) GetCapabilityLatest(ctx context.Context, namespaceID, name string) (*CapabilityVersion, error) {
+	return getCapabilityLatestOn(ctx, d, namespaceID, name)
+}
+
+// getCapabilityLatestOn 是 GetCapabilityLatest 的 ex 版（事务内外共用一份 SQL）。
+func getCapabilityLatestOn(ctx context.Context, ex queryExec, namespaceID, name string) (*CapabilityVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	return d.scanCapability(ctx,
+	return scanCapabilityOn(ctx, ex,
 		`SELECT `+capabilityColumns+` FROM capability_versions
 		 WHERE namespace_id = ? AND name = ? ORDER BY version DESC LIMIT 1`, namespaceID, name)
 }
@@ -103,6 +108,12 @@ func (d *DB) GetCapabilityLatest(ctx context.Context, namespaceID, name string) 
 //
 // 解析不到返回 ErrNotFound（handler 翻 404，配置期翻 ErrEdgeRejected）。
 func (d *DB) ResolveRef(ctx context.Context, namespaceID, ref string) (*CapabilityVersion, error) {
+	return resolveRefOn(ctx, d, namespaceID, ref)
+}
+
+// resolveRefOn 是 ResolveRef 的 ex 版：事务内的引用解析必须走它，
+// 否则「同一次提交里刚建的那个能力」在边校验阶段是看不见的。
+func resolveRefOn(ctx context.Context, ex queryExec, namespaceID, ref string) (*CapabilityVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -111,9 +122,9 @@ func (d *DB) ResolveRef(ctx context.Context, namespaceID, ref string) (*Capabili
 		return nil, fmt.Errorf("%w: empty ref", ErrRefUnresolved)
 	}
 	if !pinned {
-		return d.GetCapabilityLatest(ctx, namespaceID, name)
+		return getCapabilityLatestOn(ctx, ex, namespaceID, name)
 	}
-	return d.GetCapability(ctx, namespaceID, name, version)
+	return getCapabilityOn(ctx, ex, namespaceID, name, version)
 }
 
 // resolveLinkRef 把「用户给的字符串」归一成要落库的引用，并返回它解析到的定义。
@@ -132,11 +143,16 @@ func (d *DB) ResolveRef(ctx context.Context, namespaceID, ref string) (*Capabili
 // 返回 *CrossNamespaceError（I11：跨命名空间引用一律 400，不静默当成「不存在」——
 // 后者会让「我把 staging 的能力 id 填进 prod 了」变成一个查不到的谜）。
 func (d *DB) resolveLinkRef(ctx context.Context, namespaceID, raw, what string) (string, *CapabilityVersion, error) {
+	return resolveLinkRefOn(ctx, d, namespaceID, raw, what)
+}
+
+// resolveLinkRefOn 是 resolveLinkRef 的 ex 版（验参与归一逻辑**只有这一份**）。
+func resolveLinkRefOn(ctx context.Context, ex queryExec, namespaceID, raw, what string) (string, *CapabilityVersion, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return "", nil, fmt.Errorf("%w: empty %s", ErrRefUnresolved, what)
 	}
-	if c, err := d.ResolveRef(ctx, namespaceID, s); err == nil {
+	if c, err := resolveRefOn(ctx, ex, namespaceID, s); err == nil {
 		// 原样保存用户给的引用：`name` 就是跟随，`name@1` 就是钉死。
 		return s, c, nil
 	} else if !errors.Is(err, ErrNotFound) {
@@ -145,14 +161,14 @@ func (d *DB) resolveLinkRef(ctx context.Context, namespaceID, raw, what string) 
 
 	// 兼容：传的是能力 id（P2.2 之前的调用方）。转成 name@version，
 	// **不**把 id 写进 ref 列——ref 列只放引用，这是这次迁移的全部意义。
-	if c, err := d.GetCapabilityByID(ctx, namespaceID, s); err == nil {
+	if c, err := getCapabilityByIDOn(ctx, ex, namespaceID, s); err == nil {
 		return FormatRef(c.Name, c.Version), c, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return "", nil, err
 	}
 
 	// 本命名空间里没有：如果别处有，说明是跨命名空间引用（I11），要明确报出来。
-	if other, err := d.namespaceOfCapabilityKey(ctx, s); err != nil {
+	if other, err := namespaceOfCapabilityKeyOn(ctx, ex, s); err != nil {
 		return "", nil, err
 	} else if other != "" && other != namespaceID {
 		return "", nil, &CrossNamespaceError{What: what, Want: namespaceID, Got: other}
@@ -167,15 +183,20 @@ func (d *DB) resolveLinkRef(ctx context.Context, namespaceID, raw, what string) 
 // 「跨命名空间引用」与「写错名字」区分开——两者在只查本命名空间的视图里长得一样，
 // 但一个是配置越界（要让用户看见），一个是拼写错误（也要让用户看见，但文案不同）。
 func (d *DB) namespaceOfCapabilityKey(ctx context.Context, key string) (string, error) {
+	return namespaceOfCapabilityKeyOn(ctx, d, key)
+}
+
+// namespaceOfCapabilityKeyOn 是 namespaceOfCapabilityKey 的 ex 版。
+func namespaceOfCapabilityKeyOn(ctx context.Context, ex queryExec, key string) (string, error) {
 	name, version, pinned := SplitRef(key)
 	var ns string
 	var err error
 	if pinned {
-		err = d.QueryRowContext(ctx,
+		err = ex.queryRowContext(ctx,
 			`SELECT namespace_id FROM capability_versions WHERE name = ? AND version = ? LIMIT 1`,
 			name, version).Scan(&ns)
 	} else {
-		err = d.QueryRowContext(ctx,
+		err = ex.queryRowContext(ctx,
 			`SELECT namespace_id FROM capability_versions WHERE name = ? LIMIT 1`, name).Scan(&ns)
 	}
 	if err == nil {
@@ -185,7 +206,7 @@ func (d *DB) namespaceOfCapabilityKey(ctx context.Context, key string) (string, 
 		return "", fmt.Errorf("lookup capability namespace by ref: %w", err)
 	}
 	// 再按 id 试一次（老客户端的形状）
-	err = d.QueryRowContext(ctx,
+	err = ex.queryRowContext(ctx,
 		`SELECT namespace_id FROM capability_versions WHERE id = ?`, key).Scan(&ns)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil

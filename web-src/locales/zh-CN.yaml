@@ -1215,11 +1215,11 @@ caps:
     chip_remove: 删除这个出口
     downstream: 下游（可选）
     downstream_optional: 可留空
-    downstream_hint: 每个出口可以接多个下游（扇出）。这里写裸名字 = 跟随最新；逐条建边，单条失败不回滚能力（详情区里可重试）。
+    downstream_hint: 每个出口可以接多个下游（扇出）。这里写裸名字 = 跟随最新；能力与这些下游在同一次提交里创建——要么全成，要么全不成。
     downstream_target_ph: 选一个目标能力（可搜索）
     downstream_none: 还没有出口 —— 先在上面声明出口，才能连下游。
     created_with_edges: '已连 {n} 条边'
-    created_edges_partial: '能力已创建；这 {n} 条边没建成：{reason}'
+    link_rejected: '第 {n} 条出口 {port} → {to} 不合法，本次提交什么都没创建：{reason}'
     schema: 参数校验（JSON Schema）
     schema_hint: 只支持受控子集（不支持 $ref / if-then-else），中枢不做表达式求值。
     cancel: 取消
@@ -1275,9 +1275,6 @@ caps:
     hash: 内容指纹
     copy: 复制
     unknown: '—'
-    retry_title: '这 {n} 条边没建成'
-    retry: 重试
-    retry_failed: '重试失败：'
   add:
     btn: 下游
     title: '给「{port}」加下游'

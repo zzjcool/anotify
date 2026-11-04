@@ -323,29 +323,6 @@
         align-items: center;
         gap: 0.4rem;
       }
-      /* 建能力时那条边没建成：能力已经落库（不回滚），这里给逐条重试 */
-      .cap-retry {
-        display: flex;
-        flex-direction: column;
-        gap: 0.35rem;
-        padding: 0.45rem 0.55rem;
-        border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
-        border-radius: var(--r-sm);
-        background: var(--error-soft);
-        color: var(--error);
-        font-size: 11px;
-      }
-      .cap-retry-row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 0.4rem;
-      }
-      .cap-retry-reason {
-        font-family: var(--font-mono);
-        font-size: 10px;
-        overflow-wrap: anywhere;
-      }
 
       /* ---------- 出口 chips 输入（新建表单）---------- */
       .cap-chips {
@@ -964,9 +941,6 @@
       // 详情展开态按能力 id 记：renderCaps 会整体重建列表，
       // 不记下来就会出现「刚加完下游，行自己合上了」——而那正是用户想看的东西。
       const OPEN_DETAIL = new Set();
-      // 建能力时没建成的边（能力名 → [{port, to, reason, literals}]）。
-      // 能力已落库且不回滚，所以这份补敉清单必须留在页面上可重试。
-      const PENDING_EDGES = new Map();
       // 新建表单里的出口列表 / 出口 → 目标能力名。这两份才是唯一真相，
       // DOM 只是它们的渲染（否则删 chip 还得去读 DOM 反推顺序）。
       let PORT_CHIPS = [];
@@ -1634,8 +1608,13 @@
         return String((e && (e.detail || e.message)) || e || "");
       }
 
-      // postEdge 是**唯一**建边的地方。形参收引用（裸名字=跟随最新 / name@v=钉死），
-      // 两端都不传能力 id：边里存 id 的话能力一升级这条边就永远指向旧版本（P2.2）。
+      // postEdge 给**已存在**的能力加一条边（「+ 下游」按钮走它，POST /v1/edges）。
+      //
+      // 新建能力时填的下游**不**走这里：那些边跟能力一起提交（body.links），
+      // 由后端放进同一个事务——否则失败就留下「能力在、边缺」的半成品。
+      //
+      // 形参收引用（裸名字=跟随最新 / name@v=钉死），两端都不传能力 id：
+      // 边里存 id 的话能力一升级这条边就永远指向旧版本（P2.2）。
       async function postEdge(body) {
         const payload = Object.assign({ fromIsSource: false }, body);
         const ns = scopeNS();
@@ -1912,58 +1891,7 @@
         box.appendChild(detailSec(t("caps.detail.outputs", "出口与下游"), portsNode(c)));
         box.appendChild(detailSec(t("caps.detail.inbound", "谁接到我"), inboundNode(c)));
         box.appendChild(detailSec(t("caps.detail.runtime", "运行参数"), runtimeNode(c)));
-        if ((PENDING_EDGES.get(c.name) || []).length) box.appendChild(retryBlock(c));
         return box;
-      }
-
-      // retryBlock 是「能力建好了、但边没建成」的补救入口。
-      //
-      // 为什么不回滚能力：能力已经落库（append-only），回滚等于把用户填的一切丢掉；
-      // 而失败的边多半是「目标不存在 / 端口不匹配」这种改一下就能成的问题。
-      function retryBlock(c) {
-        const box = el("div", "cap-retry");
-        const list = PENDING_EDGES.get(c.name) || [];
-        box.appendChild(
-          el(
-            "div",
-            "",
-            t("caps.detail.retry_title", "这 {n} 条边没建成").replace("{n}", list.length),
-          ),
-        );
-        for (const item of list) {
-          const row = el("div", "cap-retry-row");
-          row.appendChild(el("span", "cap-port-name", item.port));
-          row.appendChild(el("span", "cap-down-arrow", "→"));
-          row.appendChild(el("span", "cap-link-target", item.to));
-          if (item.reason) row.appendChild(el("span", "cap-retry-reason", item.reason));
-          const btn = el("button", "btn btn-ghost btn-sm", t("caps.detail.retry", "重试"));
-          btn.type = "button";
-          btn.addEventListener("click", () => retryEdge(c, item, btn));
-          row.appendChild(btn);
-          box.appendChild(row);
-        }
-        return box;
-      }
-
-      async function retryEdge(c, item, btn) {
-        btn.disabled = true;
-        try {
-          await postEdge({
-            fromRef: sourceRefFor(c),
-            fromPort: item.port,
-            toRef: item.to,
-            literals: item.literals || {},
-          });
-          const list = (PENDING_EDGES.get(c.name) || []).filter((x) => x !== item);
-          if (list.length) PENDING_EDGES.set(c.name, list);
-          else PENDING_EDGES.delete(c.name);
-          toast(t("caps.add.created", "边已创建"));
-          await loadAll();
-        } catch (e) {
-          btn.disabled = false;
-          item.reason = errText(e);
-          toast(t("caps.detail.retry_failed", "重试失败：") + item.reason);
-        }
       }
 
       // openAddPanel 在某个出口下面就地展开一个小面板（不弹层：用户要一边看
@@ -2627,7 +2555,9 @@
         // 否则「按模板点了一下创建」会悄悄多出一批从没人接过、也没人 emit 的出口。
         const outputs = PORT_CHIPS.slice();
         // 下游：把 (出口 → 目标) 按**出口顺序**摊平，只保留仍然存在的出口。
-        // 连到自己跳过（后端会把它当成一条环，而新建里的自环几乎总是误操作）。
+        //
+        // 连到自己跳过：新建里的自环几乎总是误操作，而后端会把它当一条环拒掉 ——
+        // 一次原子提交里混进一条自连，会让整个提交（含能力）都失败。
         const wanted = [];
         for (const port of outputs) {
           for (const toName of DOWN_SEL.get(port) || []) {
@@ -2644,6 +2574,13 @@
           run: run,
           requires: tpl.requires || [],
         };
+        // 下游边跟能力**同一次提交**（links）：后端在一个事务里写能力 + 产物 + 边，
+        // 要么全成，要么全不成。不带 links（空）就还是原来的两步流程 ——
+        // 一个字节都不变（老客户端/「+ 下游」按钮仍走 POST /v1/edges）。
+        // 两端都写**裸名字** = 跟随最新（设计 §3.2 默认形态）。
+        if (wanted.length) {
+          body.links = wanted.map((w) => ({ fromPort: w.port, toRef: w.to }));
+        }
         // body 里也带一份 namespaceId：/v1/capabilities 在 NS_PATHS 里，
         // query 一定带上，但显式再给一份不依赖那个表。
         const ns = scopeNS();
@@ -2664,41 +2601,15 @@
                 shortDigest(digest),
               )
             : t("caps.tpl.created", "能力已创建");
-
-          // 边一条一条建，**失败不回滚能力**：
-          //   ① 能力已经落库（append-only），回滚等于把用户填的一切丢掉；
-          //   ② 失败的边多半是“目标不存在/出口不匹配”这种改一下就能成的问题。
-          // 所以失败的聚合提示，并把清单挂到该能力的详情区里可重试。
-          const failed = [];
-          let okEdges = 0;
-          for (const w of wanted) {
-            try {
-              // 两端都写**裸名字** = 跟随最新（设计 §3.2 默认形态）：
-              // 刚建的能力就是 latest，写 name 之后它发新版这条链自动跟过去。
-              await postEdge({
-                fromRef: name,
-                fromPort: w.port,
-                toRef: w.to,
-                literals: {},
-              });
-              okEdges++;
-            } catch (e) {
-              failed.push({ port: w.port, to: w.to, reason: errText(e), literals: {} });
-            }
-          }
-          if (failed.length) {
-            PENDING_EDGES.set(name, failed);
+          // 建成的边数取自**响应**（不是请求）：幂等重放时边可能早就存在，
+          // 报「新建了几条」以服务端实际入库的为准。
+          const createdLinks = Array.isArray(res && res.links) ? res.links.length : 0;
+          if (createdLinks) {
             toast(
-              t(
-                "caps.form.created_edges_partial",
-                "能力已创建；这 {n} 条边没建成：{reason}",
-              )
-                .replace("{n}", failed.length)
-                .replace("{reason}", failed[0].reason || ""),
-              "error",
+              baseMsg +
+                " · " +
+                t("caps.form.created_with_edges", "已连 {n} 条边").replace("{n}", createdLinks),
             );
-          } else if (okEdges) {
-            toast(baseMsg + " · " + t("caps.form.created_with_edges", "已连 {n} 条边").replace("{n}", okEdges));
           } else {
             toast(baseMsg);
           }
@@ -2707,9 +2618,31 @@
           if (created && created.id) OPEN_DETAIL.add(created.id);
           loadAll();
         } catch (err) {
-          // err.detail 是后端错误串（invalid_name: … / capability_conflict），原样展示
-          toast(t("caps.form.create_failed", "创建失败：") + (err.detail || err.message));
+          // 原子提交的意义就在这里：失败是**整体**的，能力也没建成，所以弹层
+          // 不能关（用户填的一切都还在），错在哪里要说清楚。
+          toast(t("caps.form.create_failed", "创建失败：") + linkRejectText(err, wanted));
         }
+      }
+
+      // linkRejectText 把后端的 400 翻成「第几条出口 → 哪个目标」。
+      //
+      // 后端把下标写在错误串里（`links[1]: edge_rejected: …`）：那是「哪一条」唯一
+      // 可靠的来源（前端不应该去猜哪条错了）。有下标就映射回用户看到的出口/目标，
+      // 没有（别类错误）就原样展示。
+      function linkRejectText(err, wanted) {
+        const detail = errText(err);
+        const m = /links\[(\d+)\]/.exec(detail);
+        const idx = m ? Number(m[1]) : -1;
+        const w = idx >= 0 ? wanted[idx] : null;
+        if (!w) return detail;
+        return t(
+          "caps.form.link_rejected",
+          "第 {n} 条出口 {port} → {to} 不合法，本次提交什么都没创建：{reason}",
+        )
+          .replace("{n}", String(idx + 1))
+          .replace("{port}", w.port)
+          .replace("{to}", w.to)
+          .replace("{reason}", detail.replace(/^links\[\d+\]:\s*/, ""));
       }
 
       // ==================== 部署面板 ====================

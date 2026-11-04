@@ -8,6 +8,8 @@
  *   A1  注册即得 default 命名空间（组织层已在迁移 14 删除）
  *   A3  能力必须先定义（未定义能力不能被声明/派发）
  *   A5  出口封闭（from_port ∈ outputs）
+ *   A5b 能力 + 下游边**一次提交**（POST /capabilities 带 links）：请求/响应形状 + 原子性
+ *       （坏边/自连 → 400 且能力根本没建出来）
  *   A6  扇出（一个出口多条边 → 多个任务）
  *   A7  成环剪枝（path 命中 → pruned/path）
  *   A8  out 退役（P1.5 + 迁移 28）：result 帧里的 out 不再路由；产出只走 emit；
@@ -196,6 +198,119 @@ async function main() {
 		"拒绝码是 edge_rejected",
 		String(closedPort.text || "").includes("edge_rejected"),
 		String(closedPort.text).slice(0, 120),
+	);
+
+	// ================ A5b 能力 + 下游边**一次提交**（POST /capabilities 带 links）================
+	//
+	// 这条接口把「先建能力、再逐条建边」的两步流程收成**一个事务**：要么全成，要么全不成。
+	// 断言分两半：① 形状（请求字段 / 响应的 links 口径 / 边落库）② 原子性（坏边 → 能力也没建）。
+	const atomicName = "c.atomic";
+	const atomicRes = await H.req(server.base, "/v1/capabilities", {
+		session,
+		body: {
+			name: atomicName,
+			outputs: ["done", "failed"],
+			paramsSchema: { type: "object" },
+			links: [
+				{ fromPort: "done", toRef: "c.fin" },
+				{ fromPort: "failed", toRef: "c.work" },
+			],
+		},
+	});
+	A(
+		5,
+		"POST /v1/capabilities 带 links → 200",
+		atomicRes.status === 200,
+		`${atomicRes.status} ${String(atomicRes.text || "").slice(0, 160)}`,
+	);
+	const atomicBody = atomicRes.json || {};
+	const atomicLinks = Array.isArray(atomicBody.links) ? atomicBody.links : [];
+	A(
+		5,
+		"响应的 links 是建成的边（edge 视图：左端裸名字=跟随，带解析到的能力 id）",
+		atomicLinks.length === 2 &&
+			atomicLinks.every(
+				(l) => l.fromRef === atomicName && l.fromIsSource === false && typeof l.toCapabilityId === "string",
+			),
+		JSON.stringify(atomicLinks).slice(0, 240),
+	);
+	A(
+		5,
+		"links 的字段口径与 GET /v1/edges 一致（fromPort/toRef/literals 都在）",
+		atomicLinks.length === 2 &&
+			atomicLinks.every((l) => "fromPort" in l && "toRef" in l && "literals" in l),
+		JSON.stringify(atomicLinks[0] || null).slice(0, 240),
+	);
+	const atomicEdgesRes = await H.req(server.base, "/v1/edges", { session });
+	const atomicEdges = (atomicEdgesRes.json?.edges || []).filter((e) => e.fromRef === atomicName);
+	A(
+		5,
+		"两条边都落库了（一次提交，不是逐条）",
+		atomicEdges.length === 2 &&
+			atomicEdges.some((e) => e.fromPort === "done" && e.toRef === "c.fin") &&
+			atomicEdges.some((e) => e.fromPort === "failed" && e.toRef === "c.work"),
+		JSON.stringify(atomicEdges.map((e) => `${e.fromPort}->${e.toRef}`)),
+	);
+
+	// 坏边（目标不存在）→ 400 指出 links[i]，且**能力根本没建出来**
+	const badName = "c.atomic.bad";
+	const badCap = await H.req(server.base, "/v1/capabilities", {
+		session,
+		body: {
+			name: badName,
+			outputs: ["done"],
+			paramsSchema: { type: "object" },
+			links: [{ fromPort: "done", toRef: "c.nope.ghost" }],
+		},
+	});
+	A(
+		5,
+		"坏边（目标不存在）→ 400，body 带 links[0] + edge_rejected",
+		badCap.status === 400 &&
+			/links\[0\]/.test(String(badCap.text || "")) &&
+			String(badCap.text || "").includes("edge_rejected"),
+		`${badCap.status} ${String(badCap.text || "").slice(0, 200)}`,
+	);
+	const afterBad = await H.req(server.base, "/v1/capabilities", { session });
+	A(
+		5,
+		"坏边让整个提交回滚：能力不在列表里（不是「能力在、边缺」）",
+		!((afterBad.json?.capabilities || []).some((c) => c.name === badName)),
+		JSON.stringify((afterBad.json?.capabilities || []).map((c) => c.name).filter((n) => n === badName)),
+	);
+	const afterBadEdges = await H.req(server.base, "/v1/edges", { session });
+	A(
+		5,
+		"坏边让整个提交回滚：一条边都没留下",
+		(afterBadEdges.json?.edges || []).filter((e) => e.fromRef === badName).length === 0,
+		JSON.stringify((afterBadEdges.json?.edges || []).filter((e) => e.fromRef === badName)),
+	);
+
+	// 自连（出口接自己）→ 400，且什么都没建
+	const selfName = "c.atomic.self";
+	const selfCap = await H.req(server.base, "/v1/capabilities", {
+		session,
+		body: {
+			name: selfName,
+			outputs: ["done"],
+			paramsSchema: { type: "object" },
+			links: [{ fromPort: "done", toRef: selfName }],
+		},
+	});
+	A(
+		5,
+		"自连 → 400 self loop（links[0]），能力没建出来",
+		selfCap.status === 400 &&
+			/links\[0\]/.test(String(selfCap.text || "")) &&
+			String(selfCap.text || "").includes("self loop"),
+		`${selfCap.status} ${String(selfCap.text || "").slice(0, 200)}`,
+	);
+	const afterSelf = await H.req(server.base, "/v1/capabilities", { session });
+	A(
+		5,
+		"自连整体回滚：能力不在列表里",
+		!((afterSelf.json?.capabilities || []).some((c) => c.name === selfName)),
+		JSON.stringify((afterSelf.json?.capabilities || []).map((c) => c.name).filter((n) => n === selfName)),
 	);
 
 	// ================= A6 扇出 =================

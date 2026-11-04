@@ -139,6 +139,28 @@ type GraphVersion struct {
 //
 // 违反返回 ErrEdgeRejected / *CrossNamespaceError。重复边幂等（PK 冲突视为已存在）。
 func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create edge: begin tx: %w", err)
+	}
+	// 早退 / panic 都回滚：边表的校验全部基于读（目标存在 / 端口封闭 / 环），
+	// 这些读与插入必须在同一快照里，否则「查完到写完」之间别人改一行就可能存下一条不合法边。
+	defer func() { _ = tx.Rollback() }()
+	if err := createEdgeTx(ctx, txExec{tx: tx}, e); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create edge: commit: %w", err)
+	}
+	return nil
+}
+
+// createEdgeTx 是建边的**唯一**实现（CreateEdge 只是给它开事务）。
+//
+// 所有读都经 ex：事务内传 txExec，才能看到同一次提交里刚写入的边、
+// 刚建的能力（否则「能力 + 它的下游」一次提交会报「目标不存在」，
+// 两条互指的边也检不出环）。
+func createEdgeTx(ctx context.Context, ex queryExec, e *Edge) error {
 	if e == nil {
 		return fmt.Errorf("create edge: nil")
 	}
@@ -158,7 +180,7 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 
 	// 右端（I11 第 ① 条）：引用必须在本命名空间里解析得到。
 	// 解析不到 / 跨命名空间 → 都是客户端可修的错误（400）。
-	toRef, to, err := d.resolveLinkRef(ctx, e.NamespaceID, e.ToRef, "edges.to_ref")
+	toRef, to, err := resolveLinkRefOn(ctx, ex, e.NamespaceID, e.ToRef, "edges.to_ref")
 	if err != nil {
 		return asEdgeRejected(err, "to link ref %q", e.ToRef)
 	}
@@ -197,7 +219,7 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		e.FromRef = strings.TrimSpace(e.FromRef)
 	} else {
 		// 左端：能力引用，同样必须能解析（I11 第 ① 条）。
-		fromRef, from, ferr := d.resolveLinkRef(ctx, e.NamespaceID, e.FromRef, "edges.from_ref")
+		fromRef, from, ferr := resolveLinkRefOn(ctx, ex, e.NamespaceID, e.FromRef, "edges.from_ref")
 		if ferr != nil {
 			return asEdgeRejected(ferr, "from link ref %q", e.FromRef)
 		}
@@ -223,7 +245,7 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		// 判据（与运行期 path 剪枝同一口径）：从 to **的名字**出发沿已有边能否走回
 		// from 的名字。走得到 → 加了这条就成环。
 		// 只读当前命名空间的边（I11：图不跨命名空间）。
-		if err := d.checkEdgeWouldCycle(ctx, e.NamespaceID, from.Name, to.Name); err != nil {
+		if err := checkEdgeWouldCycleOn(ctx, ex, e.NamespaceID, from.Name, to.Name); err != nil {
 			return err
 		}
 	}
@@ -233,7 +255,7 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	}
 	// 幂等键是 (namespace, 左端, 端口, 右端)**引用**：
 	// `fixer` 与 `fixer@1` 是两条不同的 link（一个跟随、一个钉死），可以并存。
-	if _, err := d.ExecContext(ctx,
+	if _, err := ex.execContext(ctx,
 		`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
 		 VALUES (?,?,?,?,?,?,?,?)
 		 ON CONFLICT(namespace_id, from_is_source, from_ref, from_port, to_ref) DO NOTHING`,
@@ -490,6 +512,11 @@ func sqlPlaceholders(n int) string {
 // 过滤按**名字**匹配（RefName）：`fixer` 与 `fixer@1` 都是「fixer 的出边」，
 // 这是控制台“某个能力的出边”那个视图的意思——按字符串精确匹配会把钉死引用漏掉。
 func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edge, error) {
+	return listEdgesOn(ctx, d, namespaceID, fromKey)
+}
+
+// listEdgesOn 是 ListEdges 的 ex 版（事务内的环检测必须看到本事务刚写的边）。
+func listEdgesOn(ctx context.Context, ex queryExec, namespaceID, fromKey string) ([]*Edge, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -500,12 +527,12 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 	// （`:memory:` 库连接池上限是 1，边读边查会自己锁死自己）。
 	wantName := ""
 	if fromKey != "" {
-		wantName = d.refNameKey(ctx, namespaceID, fromKey)
+		wantName = refNameKeyOn(ctx, ex, namespaceID, fromKey)
 	}
 	q := `SELECT namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at
 	        FROM edges WHERE namespace_id = ?
 	        ORDER BY from_is_source, from_ref, from_port, to_ref`
-	rows, err := d.QueryContext(ctx, q, namespaceID)
+	rows, err := ex.queryContext(ctx, q, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list edges: %w", err)
 	}
@@ -536,6 +563,11 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 //	能力 id（老客户端） → 该能力的名字
 //	其余（来源名等）    → 原字符串
 func (d *DB) refNameKey(ctx context.Context, namespaceID, raw string) string {
+	return refNameKeyOn(ctx, d, namespaceID, raw)
+}
+
+// refNameKeyOn 是 refNameKey 的 ex 版（事务内的读必须经 ex）。
+func refNameKeyOn(ctx context.Context, ex queryExec, namespaceID, raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return ""
@@ -543,7 +575,7 @@ func (d *DB) refNameKey(ctx context.Context, namespaceID, raw string) string {
 	if name, _, pinned := SplitRef(s); pinned {
 		return name
 	}
-	if c, err := d.GetCapabilityByID(ctx, namespaceID, s); err == nil {
+	if c, err := getCapabilityByIDOn(ctx, ex, namespaceID, s); err == nil {
 		return c.Name
 	}
 	return s
@@ -864,10 +896,18 @@ func (g *GraphVersion) GraphHasEdge(from, port, to string) bool {
 // 自环（from == to）单独判：DFS 从 to 出发本来就会立刻命中自己，但报错文案应当
 // 直接说「自己连自己」，而不是绕一圈说「能走回自己」。
 func (d *DB) checkEdgeWouldCycle(ctx context.Context, namespaceID, from, to string) error {
+	return checkEdgeWouldCycleOn(ctx, d, namespaceID, from, to)
+}
+
+// checkEdgeWouldCycleOn 是 checkEdgeWouldCycle 的 ex 版。
+//
+// 事务内必须走 ex：同一次提交里的第二条边必须能看到第一条边，
+// 否则「一条提交里写下 A→B、B→A」这种环会溜过去（两条边互相“看不见”对方）。
+func checkEdgeWouldCycleOn(ctx context.Context, ex queryExec, namespaceID, from, to string) error {
 	if from == to {
 		return fmt.Errorf("%w: self loop %s --%s--> itself", ErrEdgeRejected, from, to)
 	}
-	edges, err := d.ListEdges(ctx, namespaceID, "")
+	edges, err := listEdgesOn(ctx, ex, namespaceID, "")
 	if err != nil {
 		return fmt.Errorf("cycle check: load edges: %w", err)
 	}

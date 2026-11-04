@@ -1676,6 +1676,18 @@ paths:
         （跟随 latest）的 link 会被列出来，`name@version` 型 link 不受影响
         （它钉死旧版）。响应里**总是**带 `upgradeImpact`（空影响面也是 `[]` 而不是 `null`），
         前端可以先展示再决定要不要 `force`。
+
+        **`links`：能力 + 下游边一次提交**（可选）。带 `links` 时走**原子路径**：
+        能力行、产物行（若带 `run`）、边行写在**同一个事务**里 ——
+        要么全成，要么全不成（任何一条边不合法 → 整体回滚，不会留下「能力在、边缺」的半成品）。
+        不带 `links` = 原有的两步流程（建完能力再逐条 `POST /edges`），行为不变。
+
+        边不合法时返回 **400 `edge_rejected`**，`error` 里带 `links[i]` 下标：
+
+        ```json
+        { "error": "links[1]: edge_rejected: to link ref \"ghost\": store: record not found: edges.to_ref \"ghost\"",
+          "code": "edge_rejected" }
+        ```
       security:
         - cookieAuth: []
       parameters:
@@ -1687,7 +1699,10 @@ paths:
             schema: { $ref: "#/components/schemas/CapabilityInput" }
       responses:
         "200":
-          description: 已创建（或幂等返回已有）
+          description: |
+            已创建（或幂等返回已有）。带 `links` 时额外返回建成的边与产物：
+            `links` 是本次入库的边（形状与 `GET /edges` 的行一致），
+            `digest` / `artifact` 仅在请求带 `run` 时出现。
           content:
             application/json:
               schema:
@@ -1696,7 +1711,31 @@ paths:
                   capability: { $ref: "#/components/schemas/Capability" }
                   kind: { $ref: "#/components/schemas/Kind" }
                   upgradeImpact: { $ref: "#/components/schemas/UpgradeImpact" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+                  links:
+                    type: array
+                    description: |
+                      本次一起建成的边（空列表是 `[]`）。**只有请求带 `links` 时才有这个键**：
+                      不带 `links` 的响应与旧版本逐字一致。
+                    items: { $ref: "#/components/schemas/Edge" }
+                  digest:
+                    type: string
+                    description: |
+                      产物 digest（`sha256:<64 hex>`）。与 `artifact.digest` 同值；
+                      只有请求带 `run` 时才有。
+                  artifact: { $ref: "#/components/schemas/Artifact" }
+        "400":
+          description: |
+            两种 400，看 `code` 区分：
+            - `edge_rejected`：某条 link 不合法（目标不存在 / 端口不在 `outputs` /
+              `literals` 的键不存在 / 成环或自连 / 跨命名空间）。`error` 里带
+              `links[i]`，且**能力一行都没建**（整个事务已回滚）
+            - `invalid_artifact`：`run` 编译不出产物（同样什么都没建）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: 'links[1]: edge_rejected: to link ref "ghost": store: record not found: edges.to_ref "ghost"'
+                code: edge_rejected
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409":
           description: |
@@ -3558,6 +3597,42 @@ components:
             显式越过**升级闸门**（P2.2，设计 §3.6）：仅当新版本成为 latest 且会破坏
             已有的 name 型 link 时才需要。它只表示「我知道哪些线会断，仍然要推」——
             中枢**不会**替你改任何 link（改线仍然是用户的动作）。
+        links:
+          type: array
+          description: |
+            **能力 + 下游边一次提交**（可选）。带它就走**原子路径**：
+            能力行、产物行（若带 `run`）、边行写在同一个事务里 —— 要么全成，要么全不成。
+
+            不带它 = 原有的两步流程（建完能力再用 `POST /edges` 逐条建边），行为不变。
+
+            左端恒为**这个新能力的裸名字**（= 跟随 latest）；右端原样透传
+            （`notify` 跟随 latest / `notify@2` 钉死）。任何一条不合法 → 400，
+            整体回滚并把 `links[i]` 带在 `error` 里。
+          items: { $ref: "#/components/schemas/CapabilityLinkInput" }
+
+    CapabilityLinkInput:
+      type: object
+      description: |
+        一条待建的 link（能力定义时一起提交）。字段口径与 `POST /edges` 一致，
+        但没有 `fromRef`（左端恒为新能力的裸名字，跟随 latest）
+        也没有 `fromIsSource`（能力定义时建的边一定是能力边）。
+      required: [fromPort, toRef]
+      properties:
+        fromPort:
+          type: string
+          description: 出口名，必须属于**这次提交的** `outputs`（出口封闭，不变量 I2）。
+        toRef:
+          type: string
+          description: |
+            下游能力引用：`name`（跟随 latest）/ `name@version`（钉死）。
+            解析不到、跨命名空间、或指向自己（自连）都会被拒（400 `edge_rejected`）。
+        literals:
+          type: object
+          nullable: true
+          description: |
+            常量覆盖（设计 §3.3）：键必须在**目标能力**的 `paramsSchema.properties` 里，
+            值类型必须与声明精确相等。不传 / `{}` = 没有覆盖。
+          additionalProperties: true
 
     UpgradeImpact:
       type: object

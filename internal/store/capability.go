@@ -195,7 +195,31 @@ func (d *DB) CreateCapability(ctx context.Context, c *CapabilityVersion) error {
 // force=true 表示「我知道哪些 link 会断，仍然要推」：闸门只记录/列出影响面，
 // 不再拒绝。它绝不修改 link 本身——改线仍然是用户的动作（把 link 钉到旧版，
 // 或者去改上游），中枢不替任何人做这个决定。
+//
+// 每次调用是一个**独立事务**：写入与幂等回读、升级闸门的读都在同一快照里
+// （见 createCapabilityTx）。要把它和建边、产物放进同一个事务，用
+// CreateCapabilityWithLinks / CreateCapabilityWithLinksAndArtifact。
 func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, force bool) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create capability: begin tx: %w", err)
+	}
+	// 早退 / panic 都回滚：append-only 表里留下半条数据是不可撤的。
+	defer func() { _ = tx.Rollback() }()
+	if err := createCapabilityTx(ctx, txExec{tx: tx}, c, force); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create capability: commit: %w", err)
+	}
+	return nil
+}
+
+// createCapabilityTx 是建能力的**唯一**实现（CreateCapabilityForce 只是给它开事务）。
+//
+// ex 决定「读走哪里」：事务外传 *DB，事务内传 txExec。所有读都必须经 ex——
+// 走 d 的话，事务里读不到本事务刚写的行（见 txexec.go 的注释）。
+func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion, force bool) error {
 	if c == nil {
 		return fmt.Errorf("create capability: nil")
 	}
@@ -233,14 +257,14 @@ func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, fo
 	// 同内容的请求先放过：那种请求会被下面的幂等路径折叠成**已有的那一行**
 	// （它不会成为新版本），拦住它只会让一个「什么都没变」的调用失败。
 	if !force {
-		existing, herr := d.getCapabilityByHash(ctx, c.NamespaceID, hash)
+		existing, herr := getCapabilityByHashOn(ctx, ex, c.NamespaceID, hash)
 		switch {
 		case herr == nil && existing != nil:
 			// 幂等重放：不改线，不过闸门
 		case herr != nil && !errors.Is(herr, ErrNotFound):
 			return fmt.Errorf("check existing capability by hash: %w", herr)
 		default:
-			impact, ierr := d.CheckUpgrade(ctx, c.NamespaceID, c)
+			impact, ierr := checkUpgradeOn(ctx, ex, c.NamespaceID, c)
 			if ierr != nil {
 				return ierr
 			}
@@ -275,7 +299,7 @@ func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, fo
 		schema = "{}"
 	}
 
-	_, err = d.ExecContext(ctx,
+	_, err = ex.execContext(ctx,
 		`INSERT INTO capability_versions
 		   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -290,7 +314,7 @@ func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, fo
 	}
 
 	// 冲突：要么是同内容（幂等，返回已有行），要么是同 name@version 换内容（真错）。
-	existing, gerr := d.getCapabilityByHash(ctx, c.NamespaceID, hash)
+	existing, gerr := getCapabilityByHashOn(ctx, ex, c.NamespaceID, hash)
 	if gerr == nil && existing != nil {
 		// 同内容已存在 → 幂等返回已有行。
 		//
@@ -302,7 +326,7 @@ func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, fo
 		// 这里只 UPDATE 装饰字段，不违反 append-only（I8）：
 		// 能力定义本身（name/schema/outputs/lifecycle/sticky）一个字节都没动。
 		if want := strings.TrimSpace(c.DisplayName); want != "" && want != existing.DisplayName {
-			if uerr := d.SetCapabilityDisplayName(ctx, c.NamespaceID, existing.ID, want); uerr != nil {
+			if uerr := setCapabilityDisplayNameOn(ctx, ex, c.NamespaceID, existing.ID, want); uerr != nil {
 				return fmt.Errorf("update display name on idempotent create: %w", uerr)
 			}
 			existing.DisplayName = want
@@ -312,7 +336,7 @@ func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, fo
 	}
 	if errors.Is(gerr, ErrNotFound) || gerr == nil {
 		// 不是 content_hash 冲突，那就是 (namespace_id, name, version) 冲突
-		if _, e2 := d.GetCapability(ctx, c.NamespaceID, c.Name, c.Version); e2 == nil {
+		if _, e2 := getCapabilityOn(ctx, ex, c.NamespaceID, c.Name, c.Version); e2 == nil {
 			return fmt.Errorf("create capability %s@%d: version already exists with different content (append-only, 见不变量 I8)", c.Name, c.Version)
 		}
 	}
@@ -322,27 +346,39 @@ func (d *DB) CreateCapabilityForce(ctx context.Context, c *CapabilityVersion, fo
 	return fmt.Errorf("insert capability: %w", err)
 }
 
-// getCapabilityByHash 按 (namespace_id, content_hash) 取已有版本。
+// getCapabilityByHash 按 (namespace_id, content_hash) 取已有版本（事务外；读走语句缓存）。
 //
 // 唯一键在 #162 之后是 UNIQUE(namespace_id, content_hash)：同内容的幂等判定
 // 只在**命名空间内**成立（prod 与 staging 可以各有一份同样的定义）。
 func (d *DB) getCapabilityByHash(ctx context.Context, namespaceID, hash string) (*CapabilityVersion, error) {
-	return d.scanCapability(ctx,
+	return getCapabilityByHashOn(ctx, d, namespaceID, hash)
+}
+
+// getCapabilityByHashOn 是 getCapabilityByHash 的 ex 版（事务内外共用一份 SQL）。
+func getCapabilityByHashOn(ctx context.Context, ex queryExec, namespaceID, hash string) (*CapabilityVersion, error) {
+	return scanCapabilityOn(ctx, ex,
 		`SELECT `+capabilityColumns+` FROM capability_versions WHERE namespace_id = ? AND content_hash = ?`,
 		namespaceID, hash)
 }
 
-// capabilityColumns 是统一的列顺序，scanCapability 依赖它。
+// capabilityColumns 是统一的列顺序，scanCapabilityOn 依赖它。
 const capabilityColumns = `id, namespace_id, name, display_name, version, params_schema,
 	outputs, lifecycle, sticky, source, content_hash, created_at`
 
-// scanCapability 执行查询并解析一行；未命中返回 ErrNotFound。
+// scanCapability 执行查询并解析一行；未命中返回 ErrNotFound（事务外；读走语句缓存）。
 func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*CapabilityVersion, error) {
+	return scanCapabilityOn(ctx, d, query, args...)
+}
+
+// scanCapabilityOn 是 scanCapability 的 ex 版：所有读都经 ex，
+// 事务内传 txExec 才能看到本事务刚写入的行（见 txexec.go）。
+func scanCapabilityOn(ctx context.Context, ex queryExec, query string, args ...any) (*CapabilityVersion, error) {
 	var c CapabilityVersion
 	var paramsSchema, outputs, lifecycle string
-	// 语句缓存（#242）：scanCapability 被 GetCapability / GetCapabilityByID /
+	// 语句缓存（#242）：scanCapabilityOn 被 GetCapability / GetCapabilityByID /
 	// getCapabilityByHash 共用，三者的 SQL 文本都是常量（拼的只是列名/条件名）。
-	err := d.cachedQueryRowContext(ctx, query, args...).Scan(
+	// 事务内（ex=txExec）**不能**用缓存：那些语句绑的是池里另一条连接，看不到本事务的写。
+	err := ex.queryRowContext(ctx, query, args...).Scan(
 		&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
 		&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 	)
@@ -369,10 +405,15 @@ func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*Ca
 
 // GetCapability 按 name + version 取能力定义；未命中返回 ErrNotFound。
 func (d *DB) GetCapability(ctx context.Context, namespaceID, name string, version int) (*CapabilityVersion, error) {
+	return getCapabilityOn(ctx, d, namespaceID, name, version)
+}
+
+// getCapabilityOn 是 GetCapability 的 ex 版（事务内读必须走它，否则看不到刚写的行）。
+func getCapabilityOn(ctx context.Context, ex queryExec, namespaceID, name string, version int) (*CapabilityVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	return d.scanCapability(ctx,
+	return scanCapabilityOn(ctx, ex,
 		`SELECT `+capabilityColumns+` FROM capability_versions
 		 WHERE namespace_id = ? AND name = ? AND version = ?`, namespaceID, name, version)
 }
@@ -380,10 +421,15 @@ func (d *DB) GetCapability(ctx context.Context, namespaceID, name string, versio
 // GetCapabilityByID 按 ID 取能力定义；未命中返回 ErrNotFound。
 // 必须同时校验 namespace_id（命名空间隔离）：能力 id 全局唯一，但读路径仍要过隔离维度。
 func (d *DB) GetCapabilityByID(ctx context.Context, namespaceID, id string) (*CapabilityVersion, error) {
+	return getCapabilityByIDOn(ctx, d, namespaceID, id)
+}
+
+// getCapabilityByIDOn 是 GetCapabilityByID 的 ex 版。
+func getCapabilityByIDOn(ctx context.Context, ex queryExec, namespaceID, id string) (*CapabilityVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	return d.scanCapability(ctx,
+	return scanCapabilityOn(ctx, ex,
 		`SELECT `+capabilityColumns+` FROM capability_versions WHERE namespace_id = ? AND id = ?`, namespaceID, id)
 }
 
@@ -395,10 +441,16 @@ func (d *DB) GetCapabilityByID(ctx context.Context, namespaceID, id string) (*Ca
 // 这是这张表上唯一的 UPDATE。其余字段全都 append-only（不变量 I8）——
 // display_name 是装饰字段，不属于"能力定义"，改它不影响任何旧 trace 的解释。
 func (d *DB) SetCapabilityDisplayName(ctx context.Context, namespaceID, id, displayName string) error {
+	return setCapabilityDisplayNameOn(ctx, d, namespaceID, id, displayName)
+}
+
+// setCapabilityDisplayNameOn 是 SetCapabilityDisplayName 的 ex 版：
+// 幂等建能力（同内容折叠）时要在**同一个事务**里把显示名写进去。
+func setCapabilityDisplayNameOn(ctx context.Context, ex queryExec, namespaceID, id, displayName string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces || id == "" {
 		return ErrNamespaceRequired
 	}
-	res, err := d.ExecContext(ctx,
+	res, err := ex.execContext(ctx,
 		`UPDATE capability_versions SET display_name = ? WHERE namespace_id = ? AND id = ?`,
 		displayName, namespaceID, id)
 	if err != nil {

@@ -68,6 +68,12 @@ type Deployment struct {
 // digest 是内容寻址标识：同一 digest 永远对应同一份内容，所以重复登记是 no-op
 // 而不是冲突。返回已有行（第二次调用返回第一次的行）。
 func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) (*Artifact, error) {
+	return createArtifactOn(ctx, d, a)
+}
+
+// createArtifactOn 是 CreateArtifact 的 ex 版：控制台的「能力 + 边 + 产物」
+// 一次提交要求产物行与能力行走**同一个事务**（否则留下一个没有产物的能力）。
+func createArtifactOn(ctx context.Context, ex queryExec, a *Artifact) (*Artifact, error) {
 	if a.NamespaceID == "" || a.NamespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -84,7 +90,7 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) (*Artifact, error)
 		a.CreatedAt = Now()
 	}
 
-	if _, err := d.ExecContext(ctx,
+	if _, err := ex.execContext(ctx,
 		`INSERT INTO artifacts (id, namespace_id, capability_id, digest, spec, created_at)
 		 VALUES (?,?,?,?,?,?)
 		 ON CONFLICT(namespace_id, digest) DO NOTHING`,
@@ -94,12 +100,17 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) (*Artifact, error)
 
 	// 回读权威行：ON CONFLICT DO NOTHING 时插入的 id 是丢弃的，
 	// 返回刚编的那个 id 会让调用方拿到一个不存在的行。
-	return d.GetArtifactByDigest(ctx, a.NamespaceID, a.Digest)
+	return getArtifactByDigestOn(ctx, ex, a.NamespaceID, a.Digest)
 }
 
 // GetArtifactByDigest 按内容寻址标识取产物。
 func (d *DB) GetArtifactByDigest(ctx context.Context, namespaceID, digest string) (*Artifact, error) {
-	return d.scanArtifact(ctx,
+	return getArtifactByDigestOn(ctx, d, namespaceID, digest)
+}
+
+// getArtifactByDigestOn 是 GetArtifactByDigest 的 ex 版。
+func getArtifactByDigestOn(ctx context.Context, ex queryExec, namespaceID, digest string) (*Artifact, error) {
+	return scanArtifactOn(ctx, ex,
 		`SELECT id, namespace_id, capability_id, digest, spec, created_at
 		   FROM artifacts WHERE namespace_id = ? AND digest = ?`, namespaceID, digest)
 }
@@ -112,9 +123,14 @@ func (d *DB) GetArtifact(ctx context.Context, namespaceID, id string) (*Artifact
 }
 
 func (d *DB) scanArtifact(ctx context.Context, query string, args ...any) (*Artifact, error) {
+	return scanArtifactOn(ctx, d, query, args...)
+}
+
+// scanArtifactOn 是 scanArtifact 的 ex 版。
+func scanArtifactOn(ctx context.Context, ex queryExec, query string, args ...any) (*Artifact, error) {
 	var a Artifact
 	var spec string
-	err := d.QueryRowContext(ctx, query, args...).Scan(
+	err := ex.queryRowContext(ctx, query, args...).Scan(
 		&a.ID, &a.NamespaceID, &a.CapabilityID, &a.Digest, &spec, &a.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrArtifactNotFound

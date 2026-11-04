@@ -119,6 +119,14 @@ func (e *UpgradeBreakingError) Unwrap() error { return ErrUpgradeBreaking }
 // handler 在**写入前**调它把影响面回给前端（让用户先看清楚再决定）；
 // CreateCapability 内部再调一次做真正的拦截（两处同一份实现，不可能分叉）。
 func (d *DB) CheckUpgrade(ctx context.Context, namespaceID string, c *CapabilityVersion) (*UpgradeImpact, error) {
+	return checkUpgradeOn(ctx, d, namespaceID, c)
+}
+
+// checkUpgradeOn 是 CheckUpgrade 的 ex 版。
+//
+// 事务内必须走它：闸门读的是「当前 latest」与「当前的边」，这两件事必须与
+// 接下来的写入是同一个快照，否则闸门算的是一个已经过期的影响面。
+func checkUpgradeOn(ctx context.Context, ex queryExec, namespaceID string, c *CapabilityVersion) (*UpgradeImpact, error) {
 	if c == nil {
 		return nil, fmt.Errorf("check upgrade: nil capability")
 	}
@@ -134,7 +142,7 @@ func (d *DB) CheckUpgrade(ctx context.Context, namespaceID string, c *Capability
 	if c.Name == "" || c.Version <= 0 {
 		return impact, nil
 	}
-	prev, err := d.GetCapabilityLatest(ctx, namespaceID, c.Name)
+	prev, err := getCapabilityLatestOn(ctx, ex, namespaceID, c.Name)
 	if errors.Is(err, ErrNotFound) {
 		return impact, nil // 首个版本：没有可比对的契约，也就谈不上破坏
 	}
@@ -151,7 +159,7 @@ func (d *DB) CheckUpgrade(ctx context.Context, namespaceID string, c *Capability
 		return impact, nil
 	}
 
-	links, err := d.upgradeAffectedLinks(ctx, namespaceID, prev, c)
+	links, err := upgradeAffectedLinksOn(ctx, ex, namespaceID, prev, c)
 	if err != nil {
 		return nil, err
 	}
@@ -245,6 +253,11 @@ func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 //
 // 同一条 link 两类都命中时合并成一行，reason 拼起来。
 func (d *DB) upgradeAffectedLinks(ctx context.Context, namespaceID string, prev, next *CapabilityVersion) ([]UpgradeLink, error) {
+	return upgradeAffectedLinksOn(ctx, d, namespaceID, prev, next)
+}
+
+// upgradeAffectedLinksOn 是 upgradeAffectedLinks 的 ex 版。
+func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID string, prev, next *CapabilityVersion) ([]UpgradeLink, error) {
 	nextPorts := make(map[string]bool, len(next.Outputs))
 	for _, p := range next.Outputs {
 		nextPorts[p] = true
@@ -277,7 +290,7 @@ func (d *DB) upgradeAffectedLinks(ctx context.Context, namespaceID string, prev,
 		return []UpgradeLink{}, nil
 	}
 
-	edges, err := d.ListEdges(ctx, namespaceID, "")
+	edges, err := listEdgesOn(ctx, ex, namespaceID, "")
 	if err != nil {
 		return nil, fmt.Errorf("upgrade impact: load edges: %w", err)
 	}

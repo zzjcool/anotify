@@ -1813,8 +1813,11 @@ async function checkCapabilityTemplates(page) {
 //   ② 出口下面按**边**列下游（造一条 mock 边，目标名出现在那个出口下面）
 //   ③ 没有下游的出口显眼地说「到此为止」（模型里「没边 = 停」是一等语义）
 //   ④ 「+ 下游」能就地建边，成功后同一出口下立刻看到目标（扇出可见）
-//   ⑤ 新建能力时填的出口 + 下游真的发出去（POST 体 + 落库 + 边存在）
-//   ⑥ 边没建成**不回滚能力**，详情里能逐条重试
+//   ⑤ 新建能力时填的出口 + 下游**一次提交**（links 在 caps 请求体里，全程不发 POST /edges），
+//      能力与全部边一次落库
+//   ⑥ 一条坏边 → **整体回滚**：能力根本没建出来，400 里带 `links[i]` 下标，弹层不关
+//   ⑦ 自连 → 400 `self loop`，能力/边一样都没建（原子性钉在后端，不靠按钮过滤；
+//      产物那一面在 store/server 单测里断言——mock 没有 artifacts 端点）
 //
 // 为什么全部在**一次页面加载**里做：mock 的 state 是页面级的，goto 一次就重置，
 // 所以「建了之后马上看到」这类断言必须靠页面自己的 loadAll() 刷新（就是用户看到的路径）。
@@ -2013,7 +2016,7 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify(addResult.links),
 	);
 
-	// ⑤ 新建能力：填出口 + 下游 → 能力建出、边真的发出去
+	// ⑤ 新建能力：填出口 + 下游 → **一次提交**把能力与全部边建出来
 	const capName = "e2e.chain." + Date.now();
 	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
 	await page.waitForTimeout(600);
@@ -2053,22 +2056,33 @@ async function checkCapabilityDetail(page, base) {
 		emptyHint.n === 0 && /emit/.test(emptyHint.hint) && /没有出口/.test(emptyHint.hint),
 		JSON.stringify(emptyHint),
 	);
+	// 两个出口各接一个下游：证明「能力 + 全部边一次提交」（不是只有第一条生效）
 	await page.evaluate(() => {
 		const inp = document.getElementById("cap-port-input");
-		inp.value = "done";
-		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		for (const port of ["done", "failed"]) {
+			inp.value = port;
+			inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		}
 	});
 	const pickedDown = await page.evaluate(() => {
-		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="done"]');
-		const inp = row.querySelector(".cap-down-input");
-		inp.value = "report.send";
-		inp.dispatchEvent(new Event("change", { bubbles: true }));
+		const picks = { done: "report.send", failed: "archive-logs" };
+		for (const [port, target] of Object.entries(picks)) {
+			const row = document.querySelector(
+				'#cap-down-rows .cap-down-row[data-port="' + port + '"]',
+			);
+			if (!row) continue;
+			const inp = row.querySelector(".cap-down-input");
+			inp.value = target;
+			inp.dispatchEvent(new Event("change", { bubbles: true }));
+		}
 		return Array.from(document.querySelectorAll("#cap-down-rows .cap-chip")).length;
 	});
-	H.check("下游能按名字选中（写进表单，不是写死某个目标）", pickedDown >= 1, `chips=${pickedDown}`);
-	// 抓包钩子：mock 在 window.fetch 层就拦下了（page.on("request") 一条都抓不到）
+	H.check("下游能按名字选中（写进表单，不是写死某个目标）", pickedDown >= 2, `chips=${pickedDown}`);
+	// 抓包钩子：mock 在 window.fetch 层就拦下了（page.on("request") 一条都抓不到）。
+	// 同时抓**响应**：原子路径的 400/200 形状是断言对象。
 	await page.evaluate(() => {
 		window.__bodies = { caps: [], edges: [] };
+		window.__resps = [];
 		const orig = window.fetch;
 		window.fetch = function (input, init) {
 			const url = String((input && input.url) || input);
@@ -2081,13 +2095,26 @@ async function checkCapabilityDetail(page, base) {
 					/* 体不是 JSON：下面的断言会红 */
 				}
 			}
-			return orig.apply(this, arguments);
+			const p = orig.apply(this, arguments);
+			if (method === "POST" && url.includes("/v1/capabilities")) {
+				p.then(async (res) => {
+					let body = null;
+					try {
+						body = await res.clone().json();
+					} catch (e) {
+						/* 非 JSON 响应：留 null */
+					}
+					window.__resps.push({ status: res.status, body: body });
+				}).catch(() => {});
+			}
+			return p;
 		};
 	});
 	await page.click("#cap-submit");
 	await page.waitForTimeout(2500);
 	const created = await page.evaluate(async (name) => {
 		const b = window.__bodies || { caps: [], edges: [] };
+		const resps = window.__resps || [];
 		const [capsApi, edgesApi] = await Promise.all([
 			fetch("/v1/capabilities").then((r) => r.json()),
 			fetch("/v1/edges").then((r) => r.json()),
@@ -2098,123 +2125,227 @@ async function checkCapabilityDetail(page, base) {
 		return {
 			capBody: b.caps[0] || null,
 			edgeBodies: b.edges,
+			resp: resps[resps.length - 1] || null,
 			caps: (capsApi.capabilities || []).filter((x) => x.name === name).map((x) => x.outputs),
 			edges: (edgesApi.edges || [])
 				.filter((x) => x.fromRef === name)
 				.map((x) => ({ toRef: x.toRef, fromPort: x.fromPort })),
 			rowOpen: row ? row.querySelector(".cap-detail").classList.contains("open") : null,
 			rowText: row ? row.querySelector(".cap-detail").textContent.replace(/\s+/g, " ") : "",
+			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
 		};
 	}, capName);
 	H.check(
 		"新建能力时声明的出口进了请求体（不再只能跟模板走）",
 		!!created.capBody &&
 			Array.isArray(created.capBody.outputs) &&
-			created.capBody.outputs.length === 1 &&
-			created.capBody.outputs[0] === "done",
+			created.capBody.outputs.length === 2 &&
+			created.capBody.outputs[0] === "done" &&
+			created.capBody.outputs[1] === "failed",
 		JSON.stringify(created.capBody && created.capBody.outputs),
 	);
+	// ② 全合法 → 能力与全部边**一次出现**：
+	//  - 请求只有**一个** POST /v1/capabilities，且带两条 links（左端不用传 = 新能力裸名字）
+	//  - **一条** POST /v1/edges 都没有（那正是要被这条接口取代的两步流程）
+	//  - 响应带 links（建成的边，现成 edge 视图）
+	//  - GET 立刻能看到两条边
 	H.check(
-		"新建时选的下游真的建了边（两端裸名字=跟随最新）",
-		created.edgeBodies.length === 1 &&
-			created.edgeBodies[0].fromIsSource === false &&
-			created.edgeBodies[0].fromRef === capName &&
-			created.edgeBodies[0].fromPort === "done" &&
-			created.edgeBodies[0].toRef === "report.send",
-		JSON.stringify(created.edgeBodies),
+		"下游边跟能力同一次提交（links 在 caps 请求体里，全程没发过 POST /v1/edges）",
+		!!created.capBody &&
+			Array.isArray(created.capBody.links) &&
+			created.capBody.links.length === 2 &&
+			created.capBody.links[0].fromPort === "done" &&
+			created.capBody.links[0].toRef === "report.send" &&
+			created.edgeBodies.length === 0,
+		JSON.stringify({ links: created.capBody && created.capBody.links, edges: created.edgeBodies }),
 	);
 	H.check(
-		"能力与边都落库（GET 能看到），详情默认展开并列出该下游",
+		"响应回带建成的 links（edge 视图：两端引用 + 解析到的能力 id）",
+		!!created.resp &&
+			created.resp.status < 300 &&
+			Array.isArray(created.resp.body.links) &&
+			created.resp.body.links.length === 2 &&
+			created.resp.body.links.every(
+				(l) => l.fromRef === capName && typeof l.toCapabilityId === "string",
+			),
+		JSON.stringify(created.resp && { status: created.resp.status, links: created.resp.body && created.resp.body.links }),
+	);
+	H.check(
+		"创建成功后弹层关闭（与下面失败路径的「弹层不关」形成对照）",
+		created.modalOpen === false,
+		String(created.modalOpen),
+	);
+	H.check(
+		"能力与**全部**边一次落库（GET 能看到两条），详情默认展开并列出下游",
 		created.caps.length === 1 &&
 			created.caps[0].includes("done") &&
-			created.edges.length === 1 &&
-			created.edges[0].toRef === "report.send" &&
+			created.caps[0].includes("failed") &&
+			created.edges.length === 2 &&
+			created.edges.some((e) => e.toRef === "report.send" && e.fromPort === "done") &&
+			created.edges.some((e) => e.toRef === "archive-logs" && e.fromPort === "failed") &&
 			created.rowOpen === true &&
 			/report\.send/.test(created.rowText),
 		JSON.stringify({ caps: created.caps, edges: created.edges, open: created.rowOpen }),
 	);
 
-	// ⑥ 边没建成：能力照样建好，详情里能重试（单条边失败不回滚能力）
-	const capName2 = "e2e.partial." + Date.now();
+	// ⑥ 一条坏边（目标不存在）→ **整体回滚**：能力根本没建出来，400 里指出是第几条。
+	//
+	// 这是这条接口的全部意义：老的两步流程在这里会留下「能力在、边缺」的半成品，
+	// 前端只能在内存里记一份待重试清单（刷新就丢）。
+	const badName = "e2e.badlink." + Date.now();
 	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
 	await page.waitForTimeout(600);
 	await page.click('[data-tpl="script.blank"]');
 	await page.waitForTimeout(400);
-	// 只让 /v1/edges 的 POST 失败（?mockFail=1 是 mock 的强制失败开关）：
-	// 这样能精确复现「能力建好了、边没建成」这个真实存在的中间态。
 	await page.evaluate((name) => {
 		document.getElementById("cap-name").value = name;
 		const inp = document.getElementById("cap-port-input");
-		inp.value = "done";
-		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="done"]');
-		const din = row.querySelector(".cap-down-input");
-		din.value = "report.send";
-		din.dispatchEvent(new Event("change", { bubbles: true }));
-		const orig = window.fetch;
-		window.__failEdges = true;
-		window.__failRestore = () => {
-			window.fetch = orig;
+		for (const port of ["done", "failed"]) {
+			inp.value = port;
+			inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		}
+		// 两条都填**存在**的目标（表单本身会拦住不存在的目标，见下面的故障注入）：
+		// 注入会改写最后一条，让服务端在落库前发现它指向的目标不存在 ——
+		// 那正是「能力在、边缺」老流程会留下半成品的场景。
+		const picks = { done: "report.send", failed: "archive-logs" };
+		for (const [port, target] of Object.entries(picks)) {
+			const row = document.querySelector(
+				'#cap-down-rows .cap-down-row[data-port="' + port + '"]',
+			);
+			if (!row) continue;
+			const din = row.querySelector(".cap-down-input");
+			din.value = target;
+			din.dispatchEvent(new Event("change", { bubbles: true }));
+		}
+		window.__bodies = { caps: [], edges: [] };
+		window.__resps = [];
+		// 故障注入：把**最后一条** link 的目标改写成不存在的名字。
+		//
+		// 为什么要注入：新建表单的输入框只接受**存在**的目标能力（targetByName 会拦），
+		// 所以「目标不存在」这种坏边在 UI 上根本发不出去 —— 而它正是这条接口要覆盖的
+		// 失败模式（服务端才发现的坏边）。这里在网络层改写请求体，等价于「两台机器之间
+		// 目标被删了」：客户端发的时候是合法的，落库时不是。
+		const origFetch = window.fetch;
+		window.__restoreFetch = () => {
+			window.fetch = origFetch;
 		};
 		window.fetch = function (input, init) {
 			const url = String((input && input.url) || input);
-			const method = String((init && init.method) || "GET").toUpperCase();
-			if (window.__failEdges && method === "POST" && url.includes("/v1/edges")) {
-				return orig.apply(this, [url + (url.includes("?") ? "&" : "?") + "mockFail=1", init]);
+			if (
+				init &&
+				String(init.method || "").toUpperCase() === "POST" &&
+				url.includes("/v1/capabilities") &&
+				init.body
+			) {
+				try {
+					const parsed = JSON.parse(String(init.body));
+					if (Array.isArray(parsed.links) && parsed.links.length) {
+						const last = parsed.links.length - 1;
+						parsed.links[last] = Object.assign({}, parsed.links[last], {
+							toRef: "no.such.capability",
+						});
+					}
+					init = Object.assign({}, init, { body: JSON.stringify(parsed) });
+				} catch (e) {
+					/* 体不是 JSON：原样发出去 */
+				}
 			}
-			return orig.apply(this, arguments);
+			return origFetch.apply(this, [input, init]);
 		};
-	}, capName2);
+	}, badName);
 	await page.click("#cap-submit");
 	await page.waitForTimeout(2500);
-	const partial = await page.evaluate(async (name) => {
-		window.__failEdges = false;
-		const capsApi = await fetch("/v1/capabilities").then((r) => r.json());
-		const edgesApi = await fetch("/v1/edges").then((r) => r.json());
-		const row = Array.from(document.querySelectorAll(".cap-row")).find(
-			(r) => r.getAttribute("data-cap-name") === name,
-		);
-		return {
+	const rejected = await page.evaluate(async (name) => {
+		const b = window.__bodies || { caps: [], edges: [] };
+		const resps = window.__resps || [];
+		const [capsApi, edgesApi] = await Promise.all([
+			fetch("/v1/capabilities").then((r) => r.json()),
+			fetch("/v1/edges").then((r) => r.json()),
+		]);
+		const toastHost = document.getElementById("anotify-toast-host");
+		const out = {
+			capBody: b.caps[0] || null,
+			edgeBodies: b.edges,
+			resp: resps[resps.length - 1] || null,
 			capExists: (capsApi.capabilities || []).some((x) => x.name === name),
-			edges: (edgesApi.edges || []).filter((x) => x.fromRef === name).length,
-			retryBlock: row ? !!row.querySelector(".cap-retry") : false,
-			retryRows: row ? row.querySelectorAll(".cap-retry-row").length : 0,
-			retryText: row ? (row.querySelector(".cap-retry") || {}).textContent || "" : "",
+			edges: (edgesApi.edges || []).filter((x) => x.fromRef === name),
+			// 弹层必须还开着，且用户填的一切都还在
+			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+			nameKept: document.getElementById("cap-name").value === name,
+			toast: toastHost ? (toastHost.textContent || "").replace(/\s+/g, " ") : "",
 		};
-	}, capName2);
+		window.__restoreFetch && window.__restoreFetch();
+		return out;
+	}, badName);
 	H.check(
-		"边没建成时能力照样建好（不回滚用户填的一切）",
-		partial.capExists === true && partial.edges === 0,
-		JSON.stringify(partial),
+		"提交里的坏边让**整个提交**失败：能力根本没建出来（GET 里没有它、边 0 条）",
+		rejected.capExists === false && rejected.edges.length === 0,
+		JSON.stringify({ exists: rejected.capExists, edges: rejected.edges }),
 	);
 	H.check(
-		"失败的边在详情区可重试（逐条列出）",
-		partial.retryBlock === true && partial.retryRows === 1,
-		JSON.stringify({ block: partial.retryBlock, rows: partial.retryRows, text: partial.retryText.slice(0, 120) }),
+		"400 的 body 指出是第几条 link（links[1]），前端据此报「第 2 条出口」",
+		!!rejected.resp &&
+			rejected.resp.status === 400 &&
+			/links\[1\]/.test(String((rejected.resp.body || {}).error || "")) &&
+			String((rejected.resp.body || {}).code || "") === "edge_rejected",
+		JSON.stringify(rejected.resp && { status: rejected.resp.status, body: rejected.resp.body }),
 	);
-	const retried = await page.evaluate(async (name) => {
-		const row = Array.from(document.querySelectorAll(".cap-row")).find(
-			(r) => r.getAttribute("data-cap-name") === name,
-		);
-		window.__failRestore && window.__failRestore();
-		const btn = Array.from(row.querySelectorAll(".cap-retry-row button"))[0];
-		if (!btn) return { err: "没有重试按钮" };
-		btn.click();
-		await new Promise((r) => setTimeout(r, 1500));
-		const edgesApi = await fetch("/v1/edges").then((r) => r.json());
-		const row2 = Array.from(document.querySelectorAll(".cap-row")).find(
-			(r) => r.getAttribute("data-cap-name") === name,
-		);
+	H.check(
+		"失败后弹层不关：用户填的一切都还在（不用重填）",
+		rejected.modalOpen === true && rejected.nameKept === true,
+		JSON.stringify({ open: rejected.modalOpen, nameKept: rejected.nameKept }),
+	);
+	H.check(
+		"错误提示指明是哪一条出口 / 哪个目标（下标映射回用户填的那一行）",
+		/第\s*2\s*条/.test(rejected.toast) &&
+			rejected.toast.includes("failed") &&
+			rejected.toast.includes("no.such.capability"),
+		rejected.toast.slice(0, 200),
+	);
+
+	// ⑦ 自连（出口接自己）→ 400 且什么都没建。
+	//
+	// UI 会把自连过滤掉（新建里的自环几乎总是误操作），所以这条直接打接口：
+	// 它钉的是**后端**的原子性，而不是按钮行为。
+	const selfName = "e2e.selflink." + Date.now();
+	const selfLink = await page.evaluate(async (name) => {
+		const res = await fetch("/v1/capabilities", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				name: name,
+				outputs: ["done"],
+				run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+				links: [{ fromPort: "done", toRef: name }],
+			}),
+		});
+		let body = null;
+		try {
+			body = await res.json();
+		} catch (e) {
+			/* 非 JSON */
+		}
+		const [capsApi, edgesApi] = await Promise.all([
+			fetch("/v1/capabilities").then((r) => r.json()),
+			fetch("/v1/edges").then((r) => r.json()),
+		]);
 		return {
-			edges: (edgesApi.edges || []).filter((x) => x.fromRef === name).map((x) => x.toRef),
-			retryBlock: row2 ? !!row2.querySelector(".cap-retry") : null,
+			status: res.status,
+			body: body,
+			capExists: (capsApi.capabilities || []).some((x) => x.name === name),
+			edges: (edgesApi.edges || []).filter((x) => x.fromRef === name),
 		};
-	}, capName2);
+	}, selfName);
+	// 产物那一面（artifacts 也没有）由 store/server 单测钉住：
+	// mock 没有 GET /v1/artifacts，在这里查它会撞「mock 覆盖度」门禁。
 	H.check(
-		"点重试后边真的建成、待重试清单清空",
-		(Array.isArray(retried.edges) ? retried.edges : []).includes("report.send") &&
-			retried.retryBlock === false,
-		JSON.stringify(retried),
+		"自连（出口接自己）→ 400 self loop（links[0]），且能力/边一样都没建",
+		selfLink.status === 400 &&
+			/links\[0\]/.test(String((selfLink.body || {}).error || "")) &&
+			/self loop/.test(String((selfLink.body || {}).error || "")) &&
+			selfLink.capExists === false &&
+			selfLink.edges.length === 0,
+		JSON.stringify(selfLink),
 	);
 }
 

@@ -1215,11 +1215,11 @@ caps:
     chip_remove: Eliminar esta salida
     downstream: Destino (opcional)
     downstream_optional: opcional
-    downstream_hint: Una salida puede ramificarse a varios destinos. Aquí se guarda el nombre sin versión = sigue la última; cada arista se crea por separado y un fallo nunca revierte la capacidad (puedes reintentar en los detalles).
+    downstream_hint: 'Una salida puede ramificarse a varios destinos. Aquí se guarda el nombre sin versión = sigue la última; la capacidad y estas aristas se crean en un solo envío: todo se crea o no se crea nada.'
     downstream_target_ph: Elige una capacidad destino (con búsqueda)
     downstream_none: Aún no hay salidas — declara una arriba antes de conectar un destino.
     created_with_edges: 'conectadas {n} aristas'
-    created_edges_partial: 'Capacidad creada; {n} aristas no se crearon: {reason}'
+    link_rejected: 'La salida n.º {n} {port} → {to} no es válida; no se creó nada: {reason}'
     schema: Validación de parámetros (JSON Schema)
     schema_hint: Solo un subconjunto controlado (sin $ref / if-then-else); el hub nunca evalúa expresiones.
     cancel: Cancelar
@@ -1275,9 +1275,6 @@ caps:
     hash: Hash de contenido
     copy: Copiar
     unknown: '—'
-    retry_title: 'No se crearon {n} aristas'
-    retry: Reintentar
-    retry_failed: 'Error al reintentar: '
   add:
     btn: destino
     title: 'Añadir destino a «{port}»'

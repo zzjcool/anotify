@@ -316,6 +316,35 @@
 		});
 	}
 
+	// mockWouldCycle 判「再加一条 from → to 的边」会不会让图成环
+	// （与 store.checkEdgeWouldCycle 同口径）。
+	//
+	// 按**名字**判（P2.2）：运行期 path 剪枝也是按名字，配置期若按 id 判两边就会分叉
+	// （保存时说没环、跑起来却被剪掉）。入口边没有上游能力，接不进环。
+	// edges 既可以是 state.edges，也可以是「本次提交里还没落库的那几条」——
+	// 后者是原子路径的环检测必须的（不然一批里写下 A→B、B→A 会溜过去）。
+	function mockWouldCycle(edges, nsId, from, to) {
+		const adj = new Map();
+		for (const e of edges) {
+			if (e.fromIsSource) continue;
+			if (nsId && e.namespaceId && e.namespaceId !== nsId) continue; // 图不跨命名空间
+			const a = splitRef(e.fromRef).name;
+			const b = splitRef(e.toRef).name;
+			if (!adj.has(a)) adj.set(a, []);
+			adj.get(a).push(b);
+		}
+		const seen = new Set();
+		const stack = [to];
+		while (stack.length) {
+			const cur = stack.pop();
+			if (cur === from) return true;
+			if (seen.has(cur)) continue;
+			seen.add(cur);
+			for (const nx of adj.get(cur) || []) stack.push(nx);
+		}
+		return false;
+	}
+
 	// ===== 能力模板（CONTRACT-artifact §8）=====
 	//
 	// 9 个内置模板：5 个 script + 4 个 agent。字段（key/label/type/required/
@@ -2570,6 +2599,75 @@
 		const c = cap(b.name, b.version || nextVer, b.outputs || [], b.paramsSchema);
 		if (b.displayName) c.displayName = String(b.displayName).trim();
 
+		// links：能力 + 下游边**一次提交**（与真后端同语义：要么全成，要么全不成）。
+		//
+		// mock 没有事务，所以做法是**先全量校验、再统一写入**（见下面的 push 处）：
+		// 任何一条不合法就 400，且能力/产物/边一样都不 push —— 真后端回滚的是整个事务，
+		// mock 只能靠这个顺序模拟同一个不变量。
+		//
+		// 错误文案与 Go 侧同形（`links[i]: edge_rejected: …`）：控制台靠下标把错误
+		// 映射回「第几条出口 → 哪个目标」，两份实现不能跑偏。
+		const links = Array.isArray(b.links) ? b.links : [];
+		const preparedLinks = [];
+		// 边不合法的 400 body 与真后端同形：{ error, code: "edge_rejected" }
+		// （控制台按 code 区分「边不合法」与其它 400，比如 invalid_name）
+		const errCode = { code: "edge_rejected" };
+		for (let i = 0; i < links.length; i++) {
+			const spec = links[i] || {};
+			if (!spec.fromPort || !spec.toRef) {
+				return err(400, `links[${i}]: edge_rejected: fromPort and toRef are both required`, errCode);
+			}
+			// 左端恒为**新能力的裸名字**（跟随 latest）；出口必须在这个能力的 outputs 里
+			if (!(c.outputs || []).includes(spec.fromPort)) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: port "${spec.fromPort}" not in ${c.name}@${c.version} outputs ${JSON.stringify(c.outputs || [])}`,
+					errCode,
+				);
+			}
+			// 自连（出口接自己）：与 Go 侧同一个判据（**按名字**），而且必须在解析**之前**判 ——
+			// 此刻这个能力还没进 state，裸名字解析不到，会被误报成「下游不存在」。
+			if (splitRef(String(spec.toRef)).name === c.name) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: self loop ${c.name} --${spec.fromPort}--> itself`,
+					errCode,
+				);
+			}
+			const to = resolveCapRef(spec.toRef, c.namespaceId);
+			if (!to) {
+				return err(400, `links[${i}]: edge_rejected: to link ref "${spec.toRef}": 下游能力不存在`, errCode);
+			}
+			const litRes = checkEdgeLiterals(to, spec.literals);
+			if (litRes.error) {
+				return err(400, `links[${i}]: edge_rejected: ${litRes.error}`, errCode);
+			}
+			// 静态环检测（与 store.checkEdgeWouldCycle 同口径：按名字判）。
+			// 既看已存的边，也看本批里**前面几条**（它们还没进 state.edges）。
+			if (
+				mockWouldCycle(state.edges, c.namespaceId, c.name, to.name) ||
+				mockWouldCycle(preparedLinks, c.namespaceId, c.name, to.name)
+			) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: adding ${c.name} → ${to.name} would close a cycle`,
+					errCode,
+				);
+			}
+			preparedLinks.push({
+				id: uid("edg"),
+				namespaceId: c.namespaceId,
+				fromIsSource: false,
+				// 裸名字 = 跟随 latest（设计 §3.2 默认形态）
+				fromRef: c.name,
+				fromPort: spec.fromPort,
+				// 右端原样透传：裸名字跟随 latest / name@v 钉死
+				toRef: String(spec.toRef).trim(),
+				literals: litRes.literals || {},
+				createdAt: now(),
+			});
+		}
+
 		// run（新增，CONTRACT-artifact §2）：入口文件 + 文件正文 + 超时 + env。
 		// 有它才编译产物、算 digest；没有它就是「只定义了参数契约」的老用法。
 		// mock 也走一遍 shebang 校验：控制台的「改脚本」必须能立刻看到这条错。
@@ -2601,7 +2699,15 @@
 			});
 		}
 		state.capabilities.push(c);
-		return json({ capability: capView(c), kind: kindOf(c), digest: c.digest || "" }, 201);
+		// 边统一在这一刻写入（见上面「先全量校验、再统一写入」）
+		for (const e of preparedLinks) state.edges.push(e);
+
+		const resp = { capability: capView(c), kind: kindOf(c), digest: c.digest || "" };
+		if (links.length) {
+			// 建成的边（现有 edge 视图）—— 只有带 links 的请求才有这个键
+			resp.links = preparedLinks.map(edgeView);
+		}
+		return json(resp, 201);
 	});
 
 	// PATCH 只改 display_name（装饰字段），不产生新版本。

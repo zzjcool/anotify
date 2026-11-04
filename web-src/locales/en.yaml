@@ -1215,11 +1215,11 @@ caps:
     chip_remove: Remove this output
     downstream: Downstream (optional)
     downstream_optional: optional
-    downstream_hint: One output can fan out to several downstreams. Names are written bare = follow latest; edges are created one by one and a failure never rolls back the capability (retry from the details).
+    downstream_hint: One output can fan out to several downstreams. Names are written bare = follow latest; the capability and these downstreams are created in one submit — all succeed or nothing is created.
     downstream_target_ph: Pick a target capability (searchable)
     downstream_none: No outputs yet — declare one above before connecting a downstream.
     created_with_edges: 'linked {n} edge(s)'
-    created_edges_partial: 'Capability created; {n} edge(s) were not created: {reason}'
+    link_rejected: 'Output #{n} {port} → {to} is invalid; nothing was created: {reason}'
     schema: Param validation (JSON Schema)
     schema_hint: Controlled subset only (no $ref / if-then-else); the hub never evaluates expressions.
     cancel: Cancel
@@ -1275,9 +1275,6 @@ caps:
     hash: Content hash
     copy: Copy
     unknown: '—'
-    retry_title: '{n} edge(s) were not created'
-    retry: Retry
-    retry_failed: 'Retry failed: '
   add:
     btn: downstream
     title: 'Add a downstream to “{port}”'

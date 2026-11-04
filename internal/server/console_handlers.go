@@ -894,6 +894,16 @@ type capabilityListRequest struct {
 	// 那种提交是一次**改线**（没人点过任何东西，线上那条链却换了契约），
 	// 默认必须被拒，让调用方先看清楚 `upgradeImpact` 再决定。
 	Force bool `json:"force,omitempty"`
+
+	// Links 是「新建能力时一起建的下游边」（可选，camelCase：fromPort/toRef/literals）。
+	//
+	// 有它就走**原子路径**：能力行、产物行、边行写在同一个事务里（见
+	// store.CreateCapabilityWithLinksAndArtifact）。没有它 = 今天的行为，一个字节都不变：
+	// 建能力 → （可选）存产物，边由调用方自己 POST /v1/edges 逐条建。
+	//
+	// 为什么不能逐条建：中间失败就留下「能力在、边缺」的半成品，而能力表是
+	// append-only 的——那个半成品永远撤不回来，客户端只能自己记一份待重试清单。
+	Links []store.LinkSpec `json:"links,omitempty"`
 }
 
 // capabilities 处理 GET（列表）/ POST（定义新能力）。
@@ -1145,6 +1155,13 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// 带 links → 原子路径（能力 + 产物 + 边，同一事务，要么全成要么全不成）。
+	// 不带 links → 今天的行为一个字节都不变（下面这条路径）。
+	if len(req.Links) > 0 {
+		h.createCapabilityWithLinks(w, r, ns, c, req)
+		return
+	}
+
 	// 升级闸门（P2.2，设计 §3.6）：先把影响面算出来回给调用方。
 	//
 	// 两件事一起做：
@@ -1244,6 +1261,153 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 			return
 		}
 		resp["artifact"] = saved
+		resp["digest"] = digest
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// createCapabilityWithLinks 是 POST /v1/capabilities 带 `links` 时的**原子**路径。
+//
+// 目标语义：要么全成，要么全不成。所以能力行、产物行、边行在 store 里写在
+// 同一个事务（见 store.CreateCapabilityWithLinksAndArtifact），这里只负责：
+//
+//	① 升级闸门预计算（给调用方先看影响面 / 直接 409）
+//	② 把「产物怎么构建」包成回调（归一化之后才能算对 digest，见 ArtifactBuilder）
+//	③ 把 store 的拒绝翻成 4xx（边不合法 = 客户端可修 → 400，并且带下标）
+//	④ 拼响应：能力视图 + links（现有 edge 视图）+ upgradeImpact
+//
+// 与不带 links 的路径相比，这里**没有**「能力建了但产物/边没成」这种中间态：
+// 任何一步失败，库里一行都不会留下。
+func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *http.Request, ns nsScope, c *store.CapabilityVersion, req capabilityListRequest) {
+	// 升级闸门（P2.2，设计 §3.6）：与老路径同一口径——先把影响面算出来回给调用方；
+	// 破坏性变更且没传 force → 409 带结构化 impact。
+	// 真正的拦截在 store 的事务里（那里的快照才是权威的，这里是「先看清楚再决定」）。
+	impact, err := h.db.CheckUpgrade(r.Context(), ns.ID, c)
+	if err != nil {
+		if handleNamespaceError(w, err) {
+			return
+		}
+		slog.Error("capability upgrade check failed",
+			"event", "console.caps.upgrade_check_failed",
+			"namespace_id", ns.ID, "name", c.Name, "version", c.Version, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	if impact.Breaking && !req.Force {
+		slog.Warn("capability upgrade rejected by gate",
+			"event", "console.caps.upgrade_rejected",
+			"namespace_id", ns.ID, "name", c.Name, "version", c.Version,
+			"changes", len(impact.Changes), "links", len(impact.Links))
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         (&store.UpgradeBreakingError{Impact: impact}).Error(),
+			"code":          "upgrade_breaking",
+			"upgradeImpact": impact,
+		})
+		return
+	}
+
+	// 产物：把「构建 + 算 digest」包成回调，交给事务在**能力行归一化之后**调用。
+	//
+	// 为什么不能在这里先建好再传：content-hash 幂等会把「同内容不同版本」折叠到已有行，
+	// 归一化之后版本号可能变，而产物里嵌着 name@version（digest 也吃它）。
+	// 用请求里的版本建产物 = 写出一份元数据与能力定义不一致、digest 也算错的产物。
+	var digest string
+	var build store.ArtifactBuilder
+	if req.Run != nil {
+		run, requires := req.Run, req.Requires
+		build = func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
+			built, berr := buildArtifact(authoritative, run, requires)
+			if berr != nil {
+				return nil, berr
+			}
+			row, dg, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, built)
+			if berr != nil {
+				return nil, berr
+			}
+			digest = dg
+			return row, nil
+		}
+	}
+
+	res, err := h.db.CreateCapabilityWithLinksAndArtifact(r.Context(), c, req.Links, build, req.Force)
+	if err != nil {
+		// 跨命名空间引用（I11）也是客户端可修的错误 → 400。
+		//
+		// 但它**不能**直接走 handleNamespaceError：那条路会写 CrossNamespaceError 自己的
+		// 文案，而真正有用的信息是「第几条」（在外层 wrapper 的 Error() 里）。
+		// 所以先把带下标的整句写出去，再兜其余命名空间类错误。
+		var cross *store.CrossNamespaceError
+		if errors.As(err, &cross) {
+			slog.Warn("create capability rejected: cross-namespace link",
+				"event", "console.caps.link_rejected",
+				"namespace_id", ns.ID, "name", req.Name, "error", err.Error())
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+				"code":  "edge_rejected",
+			})
+			return
+		}
+		// 其余命名空间类错误（如 namespace 已不存在）有自己确实的状态码
+		if handleNamespaceError(w, err) {
+			return
+		}
+		// 闸门在 store 里还会再判一次（同一份实现）：并发下别的请求先推了一个新版本，
+		// 这里的预计算可能已经过期——那种情况照样返回结构化拒绝。
+		var breaking *store.UpgradeBreakingError
+		if errors.As(err, &breaking) {
+			slog.Warn("create capability rejected by upgrade gate",
+				"event", "console.caps.upgrade_rejected",
+				"namespace_id", ns.ID, "name", req.Name, "version", c.Version)
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":         breaking.Error(),
+				"code":          "upgrade_breaking",
+				"upgradeImpact": breaking.Impact,
+			})
+			return
+		}
+		// 边不合法（目标不存在 / port 不在 outputs / literals 键不存在 / 成环）：
+		// 都是客户端可修的错误 → 400，且错误文案带 `links[i]` 下标，前端能直接定位是哪一条。
+		if errors.Is(err, store.ErrEdgeRejected) {
+			slog.Warn("create capability rejected: invalid link",
+				"event", "console.caps.link_rejected",
+				"namespace_id", ns.ID, "name", req.Name, "error", err.Error())
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+				"code":  "edge_rejected",
+			})
+			return
+		}
+		// 事务内的产物构建失败（run 写错）：整体已回滚，能力一行都没留下
+		var buildErr *store.ArtifactBuildError
+		if errors.As(err, &buildErr) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": buildErr.Error(),
+				"code":  "invalid_artifact",
+			})
+			return
+		}
+		// 其余（同 name@version 换内容 / 同内容已有）由 store 区分，这里统一按冲突处理
+		slog.Warn("create capability rejected",
+			"event", "console.caps.create_rejected",
+			"name", req.Name, "version", c.Version, "error", err.Error())
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": err.Error(),
+			"code":  "capability_conflict",
+		})
+		return
+	}
+
+	resp := map[string]any{
+		"capability": c,
+		"kind":       route.KindForCapability(c, false),
+		// 影响面以**事务内**算出的为准（与写入同一个快照）；空影响面也是 [] 而不是 null。
+		"upgradeImpact": res.Impact,
+		// links 是建成的边（现有 edge 视图：带两端引用此刻解析到的能力 id）。
+		// 空列表也是 []（不变量 I9）：前端不必判空就能遍历。
+		"links": h.edgeViews(r.Context(), res.Edges),
+	}
+	if res.Artifact != nil {
+		resp["artifact"] = res.Artifact
 		resp["digest"] = digest
 	}
 	writeJSON(w, http.StatusOK, resp)

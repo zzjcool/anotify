@@ -479,13 +479,12 @@ func buildArtifact(c *store.CapabilityVersion, run *capabilityRunInput, requires
 	return a, nil
 }
 
-// storeArtifact 把产物落库（按 digest 幂等）。
+// newStoreArtifact 把一份编译好的产物转成 store.Artifact 行（**不落库**）。
 //
-// capabilityID 由调用方直接给（**不要**在这里用 name@version 反查）：
-// store.CreateCapability 的 content-hash 幂等会把"同内容换个版本号"归一到原版本，
-// 于是请求里的版本号与落库的版本号可能不一致 —— 用请求的版本去反查会 ErrNotFound，
-// 把一个本该成功的请求变成 500（e2e 抓到的 P1）。
-func storeArtifact(ctx context.Context, db *store.DB, nsID, capabilityID string, a *artifact.Artifact) (*store.Artifact, string, error) {
+// 拆出来是因为「能力 + 边 + 产物」的一次提交必须在**事务内**落产物行，
+// 而构建（digest + canonical spec）是纯计算、只依赖产物本身：两条路径共用这一份，
+// 免得「事务内的产物」与「事务外的产物」算出两个 digest。
+func newStoreArtifact(nsID, capabilityID string, a *artifact.Artifact) (*store.Artifact, string, error) {
 	digest, err := artifact.Digest(a)
 	if err != nil {
 		return nil, "", fmt.Errorf("digest artifact: %w", err)
@@ -494,12 +493,26 @@ func storeArtifact(ctx context.Context, db *store.DB, nsID, capabilityID string,
 	if err != nil {
 		return nil, "", fmt.Errorf("canonical json: %w", err)
 	}
-	saved, err := db.CreateArtifact(ctx, &store.Artifact{
+	return &store.Artifact{
 		NamespaceID:  nsID,
 		CapabilityID: capabilityID,
 		Digest:       digest,
 		Spec:         spec,
-	})
+	}, digest, nil
+}
+
+// storeArtifact 把产物落库（按 digest 幂等）。
+//
+// capabilityID 由调用方直接给（**不要**在这里用 name@version 反查）：
+// store.CreateCapability 的 content-hash 幂等会把"同内容换个版本号"归一到原版本，
+// 于是请求里的版本号与落库的版本号可能不一致 —— 用请求的版本去反查会 ErrNotFound，
+// 把一个本该成功的请求变成 500（e2e 抓到的 P1）。
+func storeArtifact(ctx context.Context, db *store.DB, nsID, capabilityID string, a *artifact.Artifact) (*store.Artifact, string, error) {
+	row, digest, err := newStoreArtifact(nsID, capabilityID, a)
+	if err != nil {
+		return nil, "", err
+	}
+	saved, err := db.CreateArtifact(ctx, row)
 	if err != nil {
 		return nil, "", err
 	}
