@@ -7,7 +7,7 @@ package store
 // 旧模型里 hello 自报 capabilities[] + manifest[]（含 run），对应的测试钉的是
 // 「run_spec 存什么读什么」「manifest 与 capabilities 合并算法」「runner/concurrency
 // 校验」。v2 把那三样整个删掉（契约 D4）：
-//   - run_spec 列随迁移 18 消失（执行方式属于产物 artifacts.spec）
+//   - run_spec 列已消失（执行方式属于产物 artifacts.spec）
 //   - manifest / merge 纯函数删除（节点不再陈述执行方式）
 //   - run 的校验搬去 internal/artifact（产物校验，中枢不解释执行方式）
 //
@@ -70,7 +70,7 @@ func rcNodeCapNames(t *testing.T, db *DB, nodeID string) []string {
 // node_capabilities，且读回来的就是那一组（不多不少、顺序按 name/version 升序）。
 //
 // 这条是旧 TestNodeCapabilityRunSpecRoundTrip（run_spec 往返）的**替代覆盖**：
-// 归属数据的往返一致性在 v2 里只剩这一份（run_spec 已随迁移 18 删除）。
+// 归属数据的往返一致性在 v2 里只剩这一份（run_spec 已删除）。
 func TestReconcileAppliedRoundTrip(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

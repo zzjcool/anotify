@@ -59,10 +59,9 @@ type Deployment struct {
 	Digest       string `json:"digest"`
 	State        string `json:"state"`
 	Reason       string `json:"reason"`
-	// WorkDir 是「这个能力在这台机器上从哪个目录跑」（迁移 19）。
-	//
-	// 空 = 用默认的每次任务独立目录（<data-dir>/work/<task_id>），行为与加这列之前完全一致。
-	// 非空 = 控制台要求在该目录下执行（节点侧会做白名单校验，通不过就失败并给出原因）。
+	// WorkDir 是**已废弃**字段（#289：工作目录改为能力定义里的 run.workDir，随产物 digest 走）。
+	// 库里那一列还在（结构与 squash 前逐项一致），但没有任何读写方：保留这个字段只是
+	// 为了让 JSON 形状不变（序列化出来恒为空串）。
 	WorkDir   string `json:"workDir"`
 	CreatedAt int64  `json:"createdAt"`
 	UpdatedAt int64  `json:"updatedAt"`

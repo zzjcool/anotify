@@ -13,16 +13,14 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // mkSiblingNamespace 在同一个部署里再建一个命名空间（默认命名空间之外的「第二套流程」）。
 //
-// 为什么测试要用**同一部署里的兄弟命名空间**：迁移 14 之后命名空间是**唯一**隔离维度，
+// 为什么测试要用**同一部署里的兄弟命名空间**：命名空间是**唯一**的硬隔离维度，
 // 用两个命名空间才能把隔离面钉死；组织这一层已经不存在了（#204 / #205）。
 func mkSiblingNamespace(t *testing.T, db *DB, slug string) *Namespace {
 	t.Helper()
@@ -148,7 +146,7 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatalf("新建命名空间字段不对: %+v", staging)
 	}
 
-	// slug 全局唯一（迁移 14：UNIQUE(slug)）→ 重复一律 ErrNamespaceExists
+	// slug 全局唯一（UNIQUE(slug)）→ 重复一律 ErrNamespaceExists
 	if _, err := db.CreateNamespace(ctx, "staging", "又一份 staging"); !errors.Is(err, ErrNamespaceExists) {
 		t.Fatalf("重复 slug err = %v, want ErrNamespaceExists", err)
 	}
@@ -265,7 +263,7 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatalf("删完还查得到命名空间: %v", err)
 	}
 	// 五张表 + 子表都得清空（用 namespace_id 直接数，避免依赖读路径先报错）
-	// 注意没有 source_targets：迁移 26 已经把它删了，源的目标就是 edges 里的入口边。
+	// 注意没有 source_targets：那张旁路表已删，源的目标就是 edges 里的入口边。
 	for _, table := range []string{
 		"capability_versions", "nodes", "node_capabilities", "node_instances", "node_pins",
 		"edges", "sources", "events", "tasks", "graph_versions",
@@ -709,281 +707,4 @@ func TestRegisterUserCreatesDefaultNamespace(t *testing.T) {
 	if _, err := emptyDB.DefaultNamespaceID(ctx); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Errorf("空库 DefaultNamespaceID err = %v, want ErrNamespaceNotFound", err)
 	}
-}
-
-// legacyPre12DB 造一个「迁移 11 时代」的老库并返回文件路径。
-//
-// 做法：用 openWith 注入一个**截断到迁移 11**的迁移集（现成的测试注入点，
-// 不改生产代码），于是库的结构就是迁移 12 之前的样子（有 org_id、没有 namespace_id）。
-// 然后按外键依赖顺序直插老形状的行——老库里的数据就是这样长出来的。
-//
-// withTask 决定要不要写一条任务行：tasks.capability_id 是**不带级联**的外键，
-// 它的存在会让迁移 12 的「重建父表」路径暴露一个真实缺陷（见交付报告），
-// 所以两条用例分开，便于定位。
-func legacyPre12DB(t *testing.T, withTask bool) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "legacy-ns.db")
-	legacy, err := openWith(path, func(set *migrationSet) {
-		var kept migrationSet
-		for _, m := range *set {
-			if m.version <= 11 {
-				kept = append(kept, m)
-			}
-		}
-		*set = kept
-	})
-	if err != nil {
-		t.Fatalf("open legacy (pre-12) db: %v", err)
-	}
-	v, err := legacy.SchemaVersion()
-	if err != nil || v != 11 {
-		t.Fatalf("老库版本 = %d, %v；want 11", v, err)
-	}
-	if columnNames(t, legacy, "capability_versions")["namespace_id"] {
-		t.Fatal("截断到迁移 11 的库不该有 namespace_id 列")
-	}
-
-	// 顺序按外键依赖：orgs → capabilities → nodes → 子表
-	mustExec(t, legacy, `INSERT INTO orgs (id, name, created_at) VALUES (?, 'legacy', 1000)`, legacyOrgID)
-	mustExec(t, legacy, `INSERT INTO capability_versions
-		(id, org_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-		VALUES (?, ?, 'review', '', 1, '{}', '["fix"]', '{}', '', 'custom', 'hash_legacy', 1000)`,
-		legacyCapID, legacyOrgID)
-	mustExec(t, legacy, `INSERT INTO nodes
-		(id, org_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
-		VALUES (?, ?, 'legacy-node', '[]', 'offline', 'tokenhash', 20, 8, 1000)`, legacyNodeID, legacyOrgID)
-	// 子表（迁移 12 里最容易丢的三张：它们的父表会被 DROP 重建）
-	mustExec(t, legacy, `INSERT INTO node_capabilities (node_id, capability_id, run_spec)
-		VALUES (?, ?, '{}')`, legacyNodeID, legacyCapID)
-	mustExec(t, legacy, `INSERT INTO node_instances (id, node_id, slot, concurrency, alive, updated_at)
-		VALUES (?, ?, 0, 1, 1, 1000)`, legacyInstID, legacyNodeID)
-	mustExec(t, legacy, `INSERT INTO node_pins (sticky_key, org_id, node_id, selector, created_at, last_used_at)
-		VALUES (?, ?, ?, 'pool-a', 1000, 1000)`, legacyPinID, legacyOrgID, legacyNodeID)
-	mustExec(t, legacy, `INSERT INTO edges (org_id, from_is_source, from_key, from_port, to_capability, created_at)
-		VALUES (?, 0, ?, 'fix', ?, 1000)`, legacyOrgID, legacyCapID, legacyCapID)
-	mustExec(t, legacy, `INSERT INTO sources (id, org_id, name, kind, config, enabled, created_at)
-		VALUES (?, ?, 'legacy-src', 'manual', '{}', 1, 1000)`, legacySrcID, legacyOrgID)
-	mustExec(t, legacy, `INSERT INTO source_targets (source_id, capability_id, params, created_at)
-		VALUES (?, ?, '{}', 1000)`, legacySrcID, legacyCapID)
-	mustExec(t, legacy, `INSERT INTO events (id, org_id, trace_id, source, type, payload, created_at)
-		VALUES (?, ?, 'trace_legacy', 'github', 'push', '{}', 1000)`, legacyEvtID, legacyOrgID)
-	mustExec(t, legacy, `INSERT INTO graph_versions (id, org_id, content_hash, snapshot, created_at)
-		VALUES (?, ?, 'graph_hash_legacy', '[]', 1000)`, legacyGrfID, legacyOrgID)
-	if withTask {
-		mustExec(t, legacy, `INSERT INTO tasks
-			(id, org_id, trace_id, path, capability_id, capability, version, params, status, cap_hash, graph_id, created_at)
-			VALUES (?, ?, 'trace_legacy', '[]', ?, 'review', 1, '{}', 'pending', 'hash_legacy', ?, 1000)`,
-			legacyTaskID, legacyOrgID, legacyCapID, legacyGrfID)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatalf("close legacy db: %v", err)
-	}
-	return path
-}
-
-// 老库夹具里固定的 ID（断言与插入共用同一份，避免打错字符串）。
-const (
-	legacyOrgID  = "org_legacy"
-	legacyCapID  = "cap_legacy"
-	legacyNodeID = "nd_legacy"
-	legacyInstID = "nins_legacy"
-	legacyPinID  = "pin_legacy"
-	legacySrcID  = "src_legacy"
-	legacyEvtID  = "evt_legacy"
-	legacyGrfID  = "grf_legacy"
-	legacyTaskID = "tsk_legacy"
-)
-
-// TestMigrationBackfillsDefaultNamespace 迁移 12：老数据回填 namespace_id 且一行都不丢。
-//
-// 这是升级路径的唯一门禁：e2e 全部跑在新库上，老库升级只有这条用例能拦住。
-func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
-	t.Run("老数据回填默认命名空间且不丢行", func(t *testing.T) {
-		path := legacyPre12DB(t, false)
-		up, err := Open(path)
-		if err != nil {
-			// 迁移 12 当前实现有两条真实缺陷（已上报，见交付报告）：
-			//  A. DROP 父表触发 ON DELETE CASCADE，把还没搬的子表行删掉（数据丢失）
-			//  B. tasks.capability_id 是不带级联的外键 → 有任务历史的老库 COMMIT 直接失败
-			// 这条断言就是它们的验收：修好后这里应当绿。
-			t.Fatalf("迁移 12 升级老库失败（老库升级是 #162 的硬门禁）: %v", err)
-		}
-		defer up.Close()
-		ctx := context.Background()
-
-		nsID, err := up.DefaultNamespaceID(ctx)
-		if err != nil {
-			t.Fatalf("迁移 12 没给老组织建默认命名空间: %v", err)
-		}
-		ns, err := up.GetNamespace(ctx, nsID)
-		if err != nil {
-			t.Fatalf("get default namespace: %v", err)
-		}
-		if ns.Slug != DefaultNamespaceSlug {
-			t.Fatalf("回填目标命名空间 slug = %q, want %q", ns.Slug, DefaultNamespaceSlug)
-		}
-
-		// ① 老数据必须还在（迁移只加列，不删行）
-		dataIntact := true
-		lost := func(format string, args ...any) {
-			t.Helper()
-			dataIntact = false
-			t.Errorf(format, args...)
-		}
-		rows := []struct{ table, id string }{
-			{"capability_versions", legacyCapID},
-			{"nodes", legacyNodeID},
-			{"node_instances", legacyInstID},
-			{"sources", legacySrcID},
-			{"events", legacyEvtID},
-			{"graph_versions", legacyGrfID},
-		}
-		for _, r := range rows {
-			if n := countRows(t, up, r.table, "id = ?", r.id); n != 1 {
-				lost("迁移把老 %s 行 %s 弄丢了（剩 %d 行）", r.table, r.id, n)
-			}
-		}
-		if n := countRows(t, up, "node_capabilities", "node_id = ? AND capability_id = ?", legacyNodeID, legacyCapID); n != 1 {
-			lost("迁移把老 node_capabilities 行弄丢了（剩 %d 行）", n)
-		}
-		if n := countRows(t, up, "node_pins", "sticky_key = ?", legacyPinID); n != 1 {
-			lost("迁移把老 node_pins 行弄丢了（剩 %d 行）", n)
-		}
-		// P2.2（迁移 27）：老 edges 行还在，只是两端从 id 变成了 `name@version`
-		// （钉死迁移前的行为）。找它的判据是**行数**：left(cap) → right(cap) 那一行。
-		if n := countRows(t, up, "edges", "from_is_source = 0 AND to_ref = ?", legacyCapID); n != 0 {
-			lost("迁移后能力边的右端仍是 id（应该已重写成 name@version）：剩 %d 行", n)
-		}
-		var refs int
-		if err := up.QueryRow(`SELECT count(*) FROM edges WHERE from_is_source = 0`).Scan(&refs); err != nil {
-			lost("count edges: %v", err)
-		}
-		if refs != 1 {
-			lost("迁移把老 edges 行弄丢了（剩 %d 行）", refs)
-		}
-		// 老 source_targets 那一行**没有丢**：迁移 26（P2.1）把它搬成了一条入口边。
-		// 右端同样是引用：老的 `cap_legacy` 在迁移 27 里重写成 `review@1`。
-		if n := countRows(t, up, "edges",
-			"from_is_source = 1 AND to_ref = ? AND from_port = '*'", FormatRef("review", 1)); n != 1 {
-			lost("迁移把老源的出口弄丢了（入口边剩 %d 行）", n)
-		}
-		if tableExists(t, up, "source_targets") {
-			lost("迁移 26 之后 source_targets 表仍然存在")
-		}
-		if !dataIntact {
-			// 行都没了，后面的「回填对不对」无从谈起——先让第一条失败说清问题
-			// （否则一堆下游断言会把真正的原因埋掉）。
-			return
-		}
-
-		// ② 每行的 namespace_id 都指向默认命名空间
-		// （只挑一级资源表；子表的 namespace_id 从父行继承，见下面单独断言）
-		topRows := []struct{ table, id string }{
-			{"capability_versions", legacyCapID},
-			{"nodes", legacyNodeID},
-			{"sources", legacySrcID},
-			{"events", legacyEvtID},
-			{"graph_versions", legacyGrfID},
-			{"edges", ""}, // edges 没有 id 列，按主键定位（见循环内的特殊处理）
-		}
-		for _, r := range topRows {
-			var gotNS string
-			q := `SELECT namespace_id FROM ` + r.table + ` WHERE id = ?`
-			args := []any{r.id}
-			if r.table == "edges" {
-				// 迁移 27 之后两端是引用（老的 `cap_legacy` → `review@1`）。
-				q = `SELECT namespace_id FROM edges WHERE from_ref = ? AND to_ref = ?`
-				args = []any{FormatRef("review", 1), FormatRef("review", 1)}
-			}
-			if err := up.QueryRow(q, args...).Scan(&gotNS); err != nil {
-				t.Fatalf("read legacy %s: %v", r.table, err)
-			}
-			if gotNS != nsID {
-				t.Errorf("老 %s 行的 namespace_id = %q, want %q（必须回填到默认命名空间）", r.table, gotNS, nsID)
-			}
-		}
-		// 子表的 namespace_id 从父行取（不是按 org 猜）。
-		//
-		// 「源的出口」这一项从 source_targets 换成了**入口边**（迁移 26）：
-		// 它的 namespace_id 必须等于源所在命名空间，而不是被搬进别的命名空间。
-		var instNS, pinNS, entryNS string
-		if err := up.QueryRow(`SELECT namespace_id FROM node_instances WHERE id = ?`, legacyInstID).Scan(&instNS); err != nil {
-			t.Fatalf("read instance ns: %v", err)
-		}
-		if err := up.QueryRow(`SELECT namespace_id FROM node_pins WHERE sticky_key = ?`, legacyPinID).Scan(&pinNS); err != nil {
-			t.Fatalf("read pin ns: %v", err)
-		}
-		if err := up.QueryRow(`SELECT namespace_id FROM edges
-			WHERE from_is_source = 1 AND to_ref = ? AND from_port = '*'`, FormatRef("review", 1)).Scan(&entryNS); err != nil {
-			t.Fatalf("read entry edge ns: %v", err)
-		}
-		for label, got := range map[string]string{
-			"node_instances": instNS, "node_pins": pinNS, "源入口边": entryNS,
-		} {
-			if got != nsID {
-				t.Errorf("老 %s 行的 namespace_id = %q, want %q（子表必须从父行继承）", label, got, nsID)
-			}
-		}
-		// 没有任何行留着空 namespace_id（回填漏一列就是永久孤儿行）
-		for _, table := range []string{
-			"capability_versions", "nodes", "node_capabilities", "node_instances", "node_pins",
-			"edges", "sources", "events", "tasks", "graph_versions",
-		} {
-			if n := countRows(t, up, table, "namespace_id IS NULL OR namespace_id = ''"); n != 0 {
-				t.Errorf("%s 有 %d 行 namespace_id 为空（回填漏了）", table, n)
-			}
-		}
-
-		// ③ 默认命名空间里播种了内置能力（否则迁移完连 end 节点都声明不出来）
-		phone, err := up.GetCapability(ctx, nsID, "notify.phone", 1)
-		if err != nil {
-			t.Fatalf("默认命名空间没有播种 notify.phone（迁移 12 第三步漏了）: %v", err)
-		}
-		if phone.Source != CapSourceBuiltin || phone.NamespaceID != nsID {
-			t.Fatalf("notify.phone = {%s, %s}, want {builtin, %s}", phone.Source, phone.NamespaceID, nsID)
-		}
-		// 老能力行也还在，且能被新读路径按命名空间读到
-		oldCap, err := up.GetCapability(ctx, nsID, "review", 1)
-		if err != nil {
-			t.Fatalf("回填后老能力行查不到: %v", err)
-		}
-		if oldCap.ID != legacyCapID || oldCap.NamespaceID != nsID {
-			t.Fatalf("老能力行 = %+v, want id=%s ns=%s", oldCap, legacyCapID, nsID)
-		}
-		// 快照内容不该被迁移改写
-		var snap []any
-		gv, err := up.GetGraphVersion(ctx, nsID, legacyGrfID)
-		if err != nil {
-			t.Fatalf("回填后老图快照查不到: %v", err)
-		}
-		if err := json.Unmarshal(gv.Snapshot, &snap); err != nil {
-			t.Fatalf("老图快照被迁移改坏了: %v", err)
-		}
-	})
-
-	t.Run("有任务历史的老库能升级", func(t *testing.T) {
-		// tasks.capability_id 是不带级联的外键。迁移 12 重建父表
-		// capability_versions 时，defer_foreign_keys 记下的「父行消失」在
-		// 同名表重建后无法被清偿 → COMMIT 报 FOREIGN KEY constraint failed。
-		// 任何**跑过任务**的老库都会踩到（也就是几乎所有真实部署）。
-		path := legacyPre12DB(t, true)
-		up, err := Open(path)
-		if err != nil {
-			t.Fatalf("有任务历史的老库升级失败（产品 bug，见交付报告）：%v", err)
-		}
-		defer up.Close()
-		ctx := context.Background()
-		nsID, err := up.DefaultNamespaceID(ctx)
-		if err != nil {
-			t.Fatalf("默认命名空间: %v", err)
-		}
-		// 老任务行必须还在，且按命名空间可读
-		gotTask, err := up.GetTask(ctx, nsID, legacyTaskID)
-		if err != nil {
-			t.Fatalf("迁移后老任务行丢了: %v", err)
-		}
-		if gotTask.NamespaceID != nsID || gotTask.CapabilityID != legacyCapID {
-			t.Fatalf("老任务读回 = %+v, want ns=%s cap=%s", gotTask, nsID, legacyCapID)
-		}
-	})
 }

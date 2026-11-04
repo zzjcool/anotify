@@ -107,7 +107,7 @@ func TestEdgeLiteralsRoundTrip(t *testing.T) {
 
 // TestEdgeLiteralsDefaultEmpty 不传 literals = 没有覆盖：落库/读出都是 '{}'。
 //
-// 这一条是老数据的形状（迁移 21 补列的默认值）：行为与加列之前完全一致。
+// 这一条是老数据的形状（'{}' 的列默认值）：行为与没有覆盖时完全一致。
 func TestEdgeLiteralsDefaultEmpty(t *testing.T) {
 	db, nsID, up, down := literalsFixture(t)
 	ctx := context.Background()
@@ -308,35 +308,6 @@ func TestCreateEdgeLiteralsEntryEdge(t *testing.T) {
 	}
 	if len(got) != 1 || string(got[0].Literals) != `{"tries":2}` {
 		t.Fatalf("入口边 EdgesFrom = %+v", got)
-	}
-}
-
-// TestMigration21EdgeLiterals 老库（迁移 12 之前的形状）升级到最新：
-// edges 补上 literals 列，既有行一律 '{}'（= 没有覆盖，行为与加列之前一致）。
-//
-// 走的是真实历史路径：schema.sql 的建表语句只对新库生效，老库只能靠
-// migrationHooks[21]（migrateEdgeLiterals）补列——那条路径不测就不会被跑到。
-func TestMigration21EdgeLiterals(t *testing.T) {
-	path := legacyPre12DB(t, false)
-	db, err := Open(path)
-	if err != nil {
-		t.Fatalf("升级老库: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if !columnNames(t, db, "edges")["literals"] {
-		t.Fatal("升级后 edges 没有 literals 列（migrationHooks[21] 没跑到）")
-	}
-	if v := mustMaxVersion(t, db); v != len(mustMigrations(t)) {
-		t.Fatalf("升级后迁移版本 = %d, want %d", v, len(mustMigrations(t)))
-	}
-	// 老行（预置的那条边）必须是 '{}'，一行不少、一字节不多。
-	var stored string
-	if err := db.QueryRow(`SELECT literals FROM edges`).Scan(&stored); err != nil {
-		t.Fatalf("读老行的 literals: %v", err)
-	}
-	if stored != EdgeLiteralsEmpty {
-		t.Fatalf("老行 literals = %q, want %q", stored, EdgeLiteralsEmpty)
 	}
 }
 

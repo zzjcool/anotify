@@ -127,8 +127,8 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 	// 它只在**统计缺失或过期**时才真的跑 ANALYZE，统计新鲜时是一次纯检查，成本趋近 0。
 	//
 	// 本批它**只承诺一件事**：把「库很干净、规划器却是盲的」里那条**够得到**的补上——
-	//   ① 新库空表建好之后再灌到几万行：建库时 ANALYZE 扫的是空表（迁移 16 的
-	//      `ANALYZE tasks` 在空表上一行 stat1 都不写），等于没写统计；重开一次 Open，
+	//   ① 新库空表建好之后再灌到几万行：建库时没有任何 ANALYZE（空表上一行 stat1
+	//      都不写），等于没写统计；重开一次 Open，
 	//      mask 0x2 的判定规则是「表上有索引、但 sqlite_stat1 里没有该表的条目」——
 	//      与会话无关、也不需要行数变化（实测：新库灌完 2400 行，重开一次 Open 就补出全量统计），
 	//      正是这一刻，于是补出全量统计。
@@ -152,15 +152,15 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 	//   若要回退成裸 `PRAGMA optimize`，把下面这行的 `=0x2` 删掉即可（代价见上）。
 	//
 	// 与形状门禁的关系：本语句写的 sqlite_stat1 / sqlite_stat4 是 `sqlite_` 前缀内部表，
-	// schemaShape（migrate15_test.go）用 `name NOT LIKE 'sqlite_%'` 把它们过滤掉了——
-	// 所以它**不会**破坏「新库/老库形状逐行一致」那道门禁（统计是运行期数据，不是 schema 形状）。
+	// masterDDL（schema_baseline_test.go）用 `name NOT LIKE 'sqlite_%'` 把它们过滤掉了——
+	// 所以它**不会**破坏「结构 / 重开幂等」那道门禁（统计是运行期数据，不是 schema 形状）。
 	// 走 db.Exec 而不是 d.stmts：此刻 DB 还没构造出来，且这条 SQL 一生只跑一次。
 	// 失败**不致命**（第二轮复审 minor-1：实测这里曾因 `database is locked (5)` 让 Open 4.7s 后
 	// 整体失败）：本语句是**可选优化**，它挂掉只影响「规划器可能暂时选不到最优索引」——
 	// 查询结果一律正确，功能不变。ANALYZE 是纯优化，把「统计没刷新」升级成「服务起不来」
 	// 不划算。所以只记一条 warning。
 	//
-	// 对比：迁移 16 里那句 `ANALYZE tasks` 是升级路径上的**确定性**保证（写在迁移事务内，
+	// 对比：将来若某个迁移块里要写统计（`ANALYZE <表>`），那是**确定性**保证（写在迁移事务内，
 	// 失败就该让迁移失败、整体回滚）——两者定位不同，别混。
 	// 也不要给它加重试循环：只会把启动变慢，而且下一次 Open 会再试一遍。
 	// 观测优先（#265）：把 optimize 的**建议**打出来，运维才知道统计到底多久该刷一次。

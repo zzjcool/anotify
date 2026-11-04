@@ -15,11 +15,11 @@ import (
 // （I10「一切租户数据先过 org_id」随组织层一起作废，重写留给阶段 3。）
 //
 // 一句话：能力 / 节点 / 边 / 源 / 事件 / 任务 / 图快照**全部**属于某个命名空间。
-// 组织（org）这一层已经删除（迁移 14）：一套部署 = 一个团队，`namespace_id`
+// 组织（org）这一层已经删除：一套部署 = 一个团队，`namespace_id`
 // 是行上唯一的隔离维度，没有比它更粗的过滤锚点了。
 const (
 	// DefaultNamespaceSlug 是注册时给新命名空间取的 slug 基名。
-	// 全局唯一（迁移 14 起 UNIQUE(slug)），所以第二个及以后的用户拿到
+	// 全局唯一（UNIQUE(slug)），所以第二个及以后的用户拿到
 	// `default-2`、`default-3`…
 	DefaultNamespaceSlug = "default"
 	// DefaultNamespaceName 是默认命名空间的展示名。
@@ -39,7 +39,7 @@ var (
 	ErrNamespaceNotFound = errors.New("store: namespace not found")
 	// ErrAuthRequired：调用方没有给出一个**存在的**已登录用户（HTTP 401）。
 	ErrAuthRequired = errors.New("store: login required")
-	// ErrNamespaceExists：slug 已被占用（HTTP 409）。迁移 14 起唯一域是全局。
+	// ErrNamespaceExists：slug 已被占用（HTTP 409）。唯一域是全局。
 	ErrNamespaceExists = errors.New("store: namespace slug already exists")
 	// ErrLastNamespace：不允许删最后一个命名空间（删了就没有「这套流程属于哪里」了）。
 	ErrLastNamespace = errors.New("store: cannot delete the last namespace of the deployment")
@@ -170,7 +170,7 @@ func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 // 为什么必须同事务：新命名空间里没有 notify.phone 的话，连一个 end 节点都
 // 声明不出来，推送直接失效；而"稍后补播种"在失败时没有任何人会发现。
 //
-// slug 全局唯一（迁移 14）：已占用返回 ErrNamespaceExists（HTTP 409）。
+// slug 全局唯一：已占用返回 ErrNamespaceExists（HTTP 409）。
 func (d *DB) CreateNamespace(ctx context.Context, slug, name string) (*Namespace, error) {
 	slug = strings.TrimSpace(slug)
 	if !namespaceSlugPattern.MatchString(slug) {
@@ -317,10 +317,19 @@ func (d *DB) namespaceBlockingObjects(ctx context.Context, namespaceID string) (
 	return out, nil
 }
 
+// namespaceSlugWithSuffix 拼出 `base-<n>`，并按 namespaceSlugPattern 的 31 字符上限截断 base。
+func namespaceSlugWithSuffix(base string, n int) string {
+	suffix := fmt.Sprintf("-%d", n)
+	if room := maxNamespaceSlugLen - len(suffix); len(base) > room {
+		base = base[:room]
+	}
+	return base + suffix
+}
+
 // uniqueNamespaceSlugTx 返回一个**全局未占用**的 slug：base，或 base-2、base-3…
 //
-// 迁移 14 之后 slug 是全局唯一的（UNIQUE(slug)），而注册时会固定取
-// `default` 作基名 —— 第二个用户起就必须退让成 `default-2`。
+// slug 是全局唯一的（UNIQUE(slug)），而注册时会固定取 `default` 作基名
+// —— 第二个用户起就必须退让成 `default-2`。
 func uniqueNamespaceSlugTx(ctx context.Context, tx *sql.Tx, base string) (string, error) {
 	for n := 1; n < 10000; n++ {
 		cand := base
@@ -342,7 +351,7 @@ func uniqueNamespaceSlugTx(ctx context.Context, tx *sql.Tx, base string) (string
 // createDefaultNamespaceTx 在调用方事务内建一个 `default*` 命名空间（**不播种**，
 // 播种由调用方决定顺序：注册要求「用户 + 命名空间 + 内置能力」全在一个事务里）。
 //
-// slug 全局唯一（迁移 14）后多了一个竞争点：两个并发注册都可能看到 `default` 空位，
+// slug 全局唯一后多了一个竞争点：两个并发注册都可能看到 `default` 空位，
 // 后写者会撞 UNIQUE(slug)。撞了就**重算一次 slug**（`default-2`、`default-3`…），
 // 不把裸的约束错误抛给调用方（那会变成一个莫名其妙的 500）。
 // 重试在同一事务内是安全的：SQLite 的唯一约束失败只回滚那一条语句（ABORT），

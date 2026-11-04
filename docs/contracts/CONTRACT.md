@@ -6,10 +6,10 @@
 > **无历史包袱**：库清空重建，不迁移、不双写、不兼容。
 > 现有 `internal/store` 的 10 张表全部作废，按本文重建。
 >
-> **⚠️ 修订（#204 / 迁移 14）：组织层已删除。** 命名空间成为**唯一隔离边界**，
+> **⚠️ 修订（#204 / squash 之前的迁移 14）：组织层已删除。** 命名空间成为**唯一隔离边界**，
 > `orgs` / `org_members` 两张表与所有 `org_id` 列都已移除，`orgId` / `X-Org-Id`
 > 不再是任何端点的参数。本文中带 `org_id` 的 DDL 段落保留为**历史记录**
-> （它们是迁移前的形状，迁移 14 的等价物见 `internal/store/migrate14.go`）；
+> （它们是迁移前的形状；**当前 DDL 的唯一权威是 `internal/store/schema.sql` 的 baseline**）；
 > **规范性内容以 §0 不变量、§2 端点表、§6 命名空间章节为准**，这三处已按新语义改写。
 > 数据隔离维度：组织 → 命名空间 两级 ⇒ **命名空间一级**；
 > 「谁能看某个命名空间」：该组织成员 ⇒ **本部署任何已登录用户**；
@@ -41,8 +41,8 @@
 
 | 表 | 归属 | 说明 |
 |---|---|---|
-| ~~`orgs`~~ | — | ~~组织（Tailscale tailnet 模型）~~ **迁移 14 已删除** |
-| ~~`org_members`~~ | — | ~~用户 ↔ 组织（多对多）~~ **迁移 14 已删除** |
+| ~~`orgs`~~ | — | ~~组织（Tailscale tailnet 模型）~~ **baseline 里没有（已删）** |
+| ~~`org_members`~~ | — | ~~用户 ↔ 组织（多对多）~~ **baseline 里没有（已删）** |
 | `namespaces` | **隔离边界（唯一一层）** | 隔离单位（配置 + 运行面），见 §2.1.1 |
 | `users` | 人 | 全部署共享身份 |
 | `passkeys` / `sessions` / `api_keys` | 人 | 认证（沿用现有实现，字段不变） |
@@ -66,7 +66,7 @@
 ### 1.2 沿用不动的表（4 张）
 
 `users` / `passkeys` / `sessions` / `api_keys` —— 字段和现有 `schema.sql` 一致，
-本文不重写 DDL。**迁移 14 之后**：组织层已删除，这四张表本来就不带 `org_id`
+本文不重写 DDL。**baseline 里**：组织层已删除，这四张表本来就不带 `org_id`
 （用户直接享有「本部署内访问全部命名空间」的权限，见 I10 新表述）。
 
 另 `cli_auth_sessions` / `recovery_codes` 是 CLI 授权与恢复码，与本次重构无关，**原样保留**。
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS org_members (
 CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
 ```
 
-**首次注册自动建 `default` 命名空间**（迁移 14 之后）：注册事务内建用户 +
+**首次注册自动建 `default` 命名空间**（baseline）：注册事务内建用户 +
 建 `default` 命名空间 + 播种内置能力（`store.RegisterUser`，同一事务）。
 原文的 `INSERT orgs` + `INSERT org_members(role='owner')` 随组织层一起删除。
 **代码里不存在「没有组织」的分支。**
@@ -138,14 +138,14 @@ CREATE INDEX IF NOT EXISTS idx_namespaces_org ON namespaces(org_id, created_at);
 **内置能力必须按命名空间播种**：新建命名空间时同事务插内置能力（否则新命名空间里
 连 `notify.phone` 都没有），内置能力升版时遍历所有命名空间各插一行。
 **首次注册时同事务建 `default` 命名空间**（slug `default`，名「默认」）——
-迁移 14 之后注册走 `store.RegisterUser`，建用户 + 建 `default` 命名空间 + 播种
+注册走 `store.RegisterUser`，建用户 + 建 `default` 命名空间 + 播种
 在**同一个事务**里完成，不再留「用户建好了但命名空间没建」的半成品。
 **代码里不存在「没有命名空间」的分支。**
 
-**上面的 DDL 是迁移 14 之前的形状**（`org_id` + `UNIQUE(org_id, slug)`）。
-迁移 14 之后：`namespaces` 去掉 `org_id`，唯一键改为 **`UNIQUE(slug)`**
-（slug 在全部署唯一；老库里跨组织重复的 slug 按 `default` / `default-2` … 去重），
-`orgs` / `org_members` 两表删除。等价 DDL 见 `internal/store/migrate14.go`。
+**上面的 DDL 是组织层还在时的形状**（`org_id` + `UNIQUE(org_id, slug)`），只作历史记录。
+**baseline 的 `namespaces`**：没有 `org_id`，唯一键是 **`UNIQUE(slug)`**
+（slug 在全部署唯一；重复时按 `default` / `default-2` … 去重，见 `store.uniqueNamespaceSlugTx`），
+`orgs` / `org_members` 两表已删。权威 DDL 见 `internal/store/schema.sql`。
 
 **隔离维度只有一层**：`namespace_id`（I10 原文要求「`namespace.org_id == org_id`」
 的那条一致性校验随组织层一起消失——已经没有第二层可比对了）。
@@ -351,7 +351,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempts       INTEGER NOT NULL DEFAULT 0,
 
     -- 结果（I4/I5）
-    -- 此处**曾经有 out TEXT**：P1.5 退役（新写入恒 NULL），迁移 28 整列删除。
+    -- 此处**曾经有 out TEXT**：P1.5 退役（新写入恒 NULL），baseline 里已整列删除。
     -- 出口的唯一位置是 emissions.port（'' 从来不是合法值）。
     reported       INTEGER NOT NULL DEFAULT 0,-- 历史位：1 = 结果帧到过（新写入恒为 1）
     summary        TEXT NOT NULL DEFAULT '',   -- 唯一的 message：成功=做了什么 / 失败=为什么失败
@@ -382,7 +382,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_node    ON tasks(node_id, status);
 | `summary` | 唯一的 message：成功=做了什么，失败=为什么失败（**失败必填**，空时兜底 `"failed"`） | 否 |
 
 `error` 是 `summary` 的**派生位**（失败时相等，成功时为空），只为兼容老读者存在。
-`tasks.out` 列已**整列删除**（迁移 28；P1.5 之后它恒为 NULL，留着只会让读者以为路由结果
+`tasks.out` 列已**整列删除**（baseline 里没有它；P1.5 之后它恒为 NULL，留着只会让读者以为路由结果
 还在任务行上）：出口的唯一位置是 `emissions.port`。API 响应里的任务对象因此**没有 out 键**。
 
 四种组合都有名字，没有死格子：
@@ -1100,7 +1100,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 - `namespaceId=*` → 跨命名空间汇总，**只允许读端点**；写端点 / 单对象端点带 `*` → `400`；
   `/v1/stats` 的汇总口径未定义，它的 `*` 同样 `400`
 - 不存在 → `404`；未登录 / 用户不存在 → `401`；跨命名空间引用 → `400`（I11）
-  - **没有 `403`。** 组织层删除（迁移 14）后「有，但属于别人」这个中间态不存在了：
+  - **没有 `403`。** 组织层删除（baseline）后「有，但属于别人」这个中间态不存在了：
     存在就 `200`，不存在就 `404`。原先为写端点单独准备的「跨组织也报 `404`、
     响应逐字节相同、以免当命名空间 id 探测器」那套映射（`#185` / 契约 D2）
     随之失效——不存在一律 `404`，探测者拿到的回答和正常调用本来就没有差别。
@@ -1170,14 +1170,14 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 | # | 断言 | 怎么测 |
 |---|---|---|
-| A1 | 注册即得命名空间 | 新用户注册后 `namespaces` 里有他的 `default` 一行且内置能力已播种（`store.RegisterUser` 同事务；组织层已在迁移 14 删除） |
+| A1 | 注册即得命名空间 | 新用户注册后 `namespaces` 里有他的 `default` 一行且内置能力已播种（`store.RegisterUser` 同事务；组织层已删） |
 | A2 | 无 argv 可存 | `grep -ri 'argv\|shell\|script' internal/store/schema.sql` = 0 |
 | A3 | 能力必须先定义 | 节点声明未定义能力 → 注册被拒，错误码 `unknown_capability` |
 | A4 | `kind` 不落库 | `grep -E '^\s*kind\s' internal/store/schema.sql` = 0（注意别被 `capability` 误命中） |
 | A5 | 出口封闭 | `edges.from_port` 不在 `outputs` 里 → 配置期拒绝 |
 | A6 | 扇出 | 一个 `(cap, port)` 有 3 行边 → 建 3 个任务 |
 | A7 | 成环剪枝 | `review→fix→review` 跑两圈后 `pruned/path` |
-| A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按边派发（含扇出）。result 帧里带 `out` → **忽略**，任务响应里**没有 out 字段**（`tasks.out` 列已由迁移 28 删除） |
+| A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按边派发（含扇出）。result 帧里带 `out` → **忽略**，任务响应里**没有 out 字段**（`tasks.out` 列在 baseline 里就不存在） |
 | A8b | 失败也能继续 | 失败**之前** emit 过 → 那些下游照样建（I4 落地）；失败无 `summary` → 兜底 `"failed"` |
 | A9 | 租约接管 | `kill -9` 节点后 30s 内任务回 `pending` |
 | A10 | 组织隔离 | A 组织的 token 查不到 B 组织的事件 |
@@ -1215,7 +1215,7 @@ CREATE UNIQUE INDEX idx_events_idem ON events(org_id, source, idem_key)
 `devices` 属于用户、不属于组织，所以**必须在派发时补一道校验**，否则 A 组织能推给 B 组织的用户：
 
 ```sql
--- notify.phone 派发前（迁移 14 之后）
+-- notify.phone 派发前（baseline）
 SELECT 1 FROM users WHERE id = :params_to;
 -- 0 行 → pruned / reason=foreign_user，不建任务
 ```

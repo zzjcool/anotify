@@ -191,12 +191,12 @@ func TestNodeCapabilitiesReplacedOnRehello(t *testing.T) {
 
 // TestNodeCapabilitiesNoHarnessColumns node_capabilities 只有 (node_id, capability_id, namespace_id)。
 //
-// v2（console-declares）把 run_spec 这一列整列删掉（迁移 18 重建表）：这张表从
+// v2（console-declares）把 run_spec 这一列整列删掉（重建表）：这张表从
 // 「节点自报的能力事实」降级成「已部署产物在节点上的派生索引」（契约 D4 / §8）。
 // 执行方式属于产物的 spec（artifacts.spec），中枢不存、不读、不执行任何可执行内容。
 //
 // 断言三条：没有 argv / command / shell / script（I1 新版：中枢手上没有可执行内容）、
-// 没有 run_spec（旧模型的残留语义载体，已随迁移 18 消失）、
+// 没有 run_spec（旧模型的残留语义载体，已随 v2 消失）、
 // 没有 outputs / kind（I3：kind 由 DeriveKind 推导，不落库）。
 func TestNodeCapabilitiesNoHarnessColumns(t *testing.T) {
 	db := newTestDB(t)

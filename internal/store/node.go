@@ -248,7 +248,7 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 	return token, nil
 }
 
-// nodeColumns 是统一的列顺序，scanNodeRow 依赖它（与迁移 12 的 nodes 定义同序）。
+// nodeColumns 是统一的列顺序，scanNodeRow 依赖它（与 schema.sql 的 nodes 定义同序）。
 const nodeColumns = `id, namespace_id, name, tags, status, token_hash,
 	max_instances, max_concurrency, last_seen_at, created_at`
 

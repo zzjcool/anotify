@@ -54,7 +54,7 @@ func TestSourceTargetsRoundTripFromEdges(t *testing.T) {
 
 	// ① 库里是入口边，不是另一张表
 	if tableExists(t, db, "source_targets") {
-		t.Fatal("source_targets 还存在（迁移 26 之后应该只剩 edges）")
+		t.Fatal("source_targets 还存在（应该只剩 edges 这条真相）")
 	}
 	edges, err := db.ListEdges(ctx, nsID, src.Name)
 	if err != nil {

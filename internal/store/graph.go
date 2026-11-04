@@ -189,7 +189,7 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		// 这没有放松 I2 的本意 —— I2 防的是「凭空发明下游口子」，
 		// 而来源没有 outputs 这个概念，无从封闭。
 		//
-		// from_port 可以是 "*"（= 任意事件类型）：迁移 26 搬过来的源目标就是它，
+		// from_port 可以是 "*"（= 任意事件类型）：源的目标（P2.1）就是它，
 		// 新建入口边时用户也可以直接写它来省掉逐个 type 建边。
 		//
 		// 也要校验来源名不比能力名更容易撞车：来源名非空即可。
@@ -561,7 +561,7 @@ func (d *DB) refNameKey(ctx context.Context, namespaceID, raw string) string {
 //
 // **入口边的端口匹配放宽**（P2.1）：入口边可以写 from_port="*"，含义是「这个源的任意
 // 事件类型都走这条边」——源能收什么事件由外部系统决定，让用户为每个 type 手建一条边
-// 是多余的心智负担（迁移 26 搬过来的源目标就是一个 "*"）。所以 fromIsSource=true 时
+// 是多余的心智负担（源的目标就是一个 "*"）。所以 fromIsSource=true 时
 // 匹配 `from_port = ? OR from_port = '*'`；能力边的出口是能力的封闭契约（I2），不放宽。
 //
 // 精确端口优先于 "*"，且同一**目标引用**只返回一行：一条精确边 + 一条 "*" 边指向同一个
@@ -576,7 +576,7 @@ func (d *DB) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource boo
 		// 左端有两种引用形态，**都算这一跳的出边**：
 		//
 		//	analyze     跟随 latest（新建 link 的默认形态）
-		//	analyze@1   钉死某一版（迁移 27 搬过来的存量、以及显式的渐进发布）
+		//	analyze@1   钉死某一版（存量 link、以及显式的渐进发布）
 		//
 		// 派发只知道「上游是哪个能力（名字）」——它不该去猜用户配的是哪一版。
 		// 所以按名字匹配：`from_ref = name` 或者 `from_ref` 以 `name@` 开头

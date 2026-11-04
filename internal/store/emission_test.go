@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -326,11 +325,11 @@ func TestEnsureTaskTokenConcurrent(t *testing.T) {
 	}
 }
 
-// TestTaskTokenColumnMigrated 迁移 23：tasks.token 列存在且默认空串。
+// TestTaskTokenColumnMigrated tasks.token 列存在且默认空串（baseline 结构门禁）。
 func TestTaskTokenColumnMigrated(t *testing.T) {
 	db, _, task := emissionFixture(t)
 	if !columnNames(t, db, "tasks")["token"] {
-		t.Fatal("tasks 表没有 token 列（迁移 23 没跑）")
+		t.Fatal("tasks 表没有 token 列（baseline 漏了）")
 	}
 	var tok string
 	if err := db.QueryRow(`SELECT token FROM tasks WHERE id = ?`, task.ID).Scan(&tok); err != nil {
@@ -341,84 +340,16 @@ func TestTaskTokenColumnMigrated(t *testing.T) {
 	}
 }
 
-// TestEmissionsTableMigrated 迁移 22：emissions 表与它的唯一键存在。
+// TestEmissionsTableMigrated emissions 表与它的列存在（baseline 结构门禁）。
 func TestEmissionsTableMigrated(t *testing.T) {
 	db, _, _ := emissionFixture(t)
 	if !tableExists(t, db, "emissions") {
-		t.Fatal("emissions 表不存在（迁移 22 没跑）")
+		t.Fatal("emissions 表不存在（baseline 漏了）")
 	}
 	cols := columnNames(t, db, "emissions")
 	for _, want := range []string{"task_id", "seq", "port", "data", "routed", "pruned", "created_at"} {
 		if !cols[want] {
 			t.Errorf("emissions 缺列 %q", want)
 		}
-	}
-}
-
-// TestMigration22And23Upgrade 老库（v21）升级：emissions 表建出来、tasks.token 补上，
-// 且老任务行一行不丢（补列是幂等 ALTER，不改任何既有数据）。
-//
-// 为什么这条必须有：新库路径（CREATE TABLE 里就带 token）与升级路径是两条代码路径，
-// 只有升级路径会真的跑迁移 22/23 的 SQL/hook。缺了它，「老库起来了但 emit 全挂」
-// （没有 emissions 表）或「发布 assign 时报 no such column: token」就只能在线上发现。
-func TestMigration22And23Upgrade(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "v21.db")
-	db21 := openAtVersion(t, path, 21)
-	if v := mustMaxVersion(t, db21); v != 21 {
-		t.Fatalf("夹具版本 = %d, want 21", v)
-	}
-	// 前提证明：v21 库上这两样都还不存在。
-	if tableExists(t, db21, "emissions") {
-		t.Fatal("v21 夹具里已经有 emissions 表了，夹具没停在该停的位置")
-	}
-	if columnNames(t, db21, "tasks")["token"] {
-		t.Fatal("v21 夹具里 tasks 已经有 token 列了，夹具没停在该停的位置")
-	}
-
-	// 造一条 v21 的任务行（走 SQL：此刻的任务列集合里还没有 token）。
-	nsID := "ns_m23"
-	mustExec(t, db21, `INSERT INTO namespaces (id, slug, name, created_at) VALUES (?, 'legacy-m23', 'legacy', 1000)`, nsID)
-	const insCap = `INSERT INTO capability_versions
-		(id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-		VALUES (?, ?, ?, '', 1, '{}', '["fix"]', '{}', '', 'custom', ?, 1000)`
-	mustExec(t, db21, insCap, "cap_m23", nsID, "review", "hash_m23")
-	const insTask = `INSERT INTO tasks
-		(id, namespace_id, trace_id, path, capability_id, capability, version, params, status,
-		 cap_hash, graph_id, created_at)
-		VALUES (?, ?, 'trc_m23', '["cap_m23"]', 'cap_m23', 'review', 1, '{}', 'pending',
-		 'hash_m23', 'grf_m23', 1000)`
-	mustExec(t, db21, insTask, "tsk_m23", nsID)
-	if err := db21.Close(); err != nil {
-		t.Fatalf("close v21 db: %v", err)
-	}
-
-	upgraded, err := Open(path)
-	if err != nil {
-		t.Fatalf("升级 v21 库: %v", err)
-	}
-	t.Cleanup(func() { _ = upgraded.Close() })
-	if v, want := mustMaxVersion(t, upgraded), testTipVersion(t); v != want {
-		t.Fatalf("升级后版本 = %d, want %d", v, want)
-	}
-
-	if !tableExists(t, upgraded, "emissions") {
-		t.Fatal("升级后仍然没有 emissions 表")
-	}
-	if !columnNames(t, upgraded, "tasks")["token"] {
-		t.Fatal("升级后 tasks 仍然没有 token 列")
-	}
-	// 老任务行还在，且 token 是空串（= 尚未生成，与加列之前的语义一致）。
-	var token string
-	if err := upgraded.QueryRow(`SELECT token FROM tasks WHERE id = 'tsk_m23'`).Scan(&token); err != nil {
-		t.Fatalf("读升级后的老任务行: %v", err)
-	}
-	if token != "" {
-		t.Fatalf("老任务的 token = %q, want 空串", token)
-	}
-	// 升级后的库能正常写 emission（外键指向那条老任务行，也顺带验了外键可用）。
-	if _, err := upgraded.InsertEmission(context.Background(), &Emission{
-		TaskID: "tsk_m23", Seq: 1, Port: "fix",
-	}); err != nil {
-		t.Fatalf("升级后写 emission: %v", err)
 	}
 }

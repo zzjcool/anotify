@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,3 +109,89 @@ func mustExec(t *testing.T, db interface {
 // `X.ID` 那种写法构造的是「P2.2 之前的形状」，它只能走输入兼容层
 // （CreateEdge 会把 id 翻成 name@version），测的就不是路由语义了。
 func capRef(c *CapabilityVersion) string { return FormatRef(c.Name, c.Version) }
+
+// ---------- schema 形状 / 查询计划 helper（baseline 结构门禁与计划门禁用）----------
+
+// indexColumnsOn 返回 table 上名为 index 的索引的列序（按 seqno 升序）；索引不存在即 Fatal。
+//
+// 按表名参数化（同一个索引名可能在不同表上都被断言），读不到唯一一条就 Fatal。
+// 纯测试侧 helper，不改生产代码。
+func indexColumnsOn(t *testing.T, db *DB, table, index string) []string {
+	t.Helper()
+	if n := countIndexRows(t, db, table, index); n != 1 {
+		t.Fatalf("表 %s 上名为 %s 的索引有 %d 条, want 1", table, index, n)
+	}
+	rows, err := db.Query(`SELECT name FROM pragma_index_info(?) ORDER BY seqno`, index)
+	if err != nil {
+		t.Fatalf("read columns of index %s: %v", index, err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan column of index %s: %v", index, err)
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns of index %s: %v", index, err)
+	}
+	return cols
+}
+
+// countIndexRows 数 sqlite_master 里「某表上某名字的索引」有几条（幂等断言用）。
+func countIndexRows(t *testing.T, db *DB, table, index string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = ?`,
+		index, table).Scan(&n); err != nil {
+		t.Fatalf("count index %s on %s: %v", index, table, err)
+	}
+	return n
+}
+
+// explainQueryPlan 跑 `EXPLAIN QUERY PLAN <query>`，把每行的 detail 列按行返回。
+//
+// 不写死列数：modernc 驱动目前返回 (id, parent, notused, detail)，但那属于驱动细节，
+// 这里按 rows.Columns() 动态取值再拼成一行字符串，只在断言与日志里用。
+func explainQueryPlan(t *testing.T, db *DB, query string, args ...any) []string {
+	t.Helper()
+	rows, err := db.Query(`EXPLAIN QUERY PLAN `+query, args...)
+	if err != nil {
+		t.Fatalf("explain query plan: %v", err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("columns of explain result: %v", err)
+	}
+	var out []string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("scan explain row: %v", err)
+		}
+		parts := make([]string, len(vals))
+		for i, v := range vals {
+			if b, ok := v.([]byte); ok {
+				parts[i] = string(b)
+				continue
+			}
+			parts[i] = fmt.Sprint(v)
+		}
+		out = append(out, strings.Join(parts, "|"))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate explain rows: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("EXPLAIN QUERY PLAN 没有任何输出")
+	}
+	return out
+}

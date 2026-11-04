@@ -68,7 +68,7 @@ func NewRecoveryCodeID() string { return newID("rc") }
 func NewMessageID() string { return newID("ntf") }
 
 // 重构新增（契约 §0 的实体）。
-// 组织层已删除（#205 / 迁移 14），不再有 org 前缀的 ID。
+// 组织层已删除（#205），不再有 org 前缀的 ID。
 // NewNamespaceID 生成命名空间 ID：ns_<base62>（契约 §2.1.1）。
 func NewNamespaceID() string { return newID("ns") }
 func NewNodeID() string      { return newID("nd") }
@@ -100,6 +100,14 @@ func NewArtifactID() string { return newID("af") }
 
 // NewDeploymentID 生成部署 ID：dp_<base62>（console-declares epic）。
 func NewDeploymentID() string { return newID("dp") }
+
+// idHashSuffix 取 content_hash 的前 8 位（能力/图版本 ID 用）。
+func idHashSuffix(hash string) string {
+	if len(hash) <= 8 {
+		return hash
+	}
+	return hash[:8]
+}
 
 // NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。
 //

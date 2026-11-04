@@ -29,7 +29,7 @@ const RefVersionSep = '@'
 
 // FormatRef 把 (name, version) 拼成**钉死**引用（`name@version`）。
 //
-// 迁移 27 用它把存量 id 重写成钉死引用（保住「升级不动线」的既有行为），
+// 存量 link 一律是钉死引用（P2.2 搬迁时 id → name@version，保住「升级不动线」的既有行为），
 // 入口边之外的所有既有 link 都是这个形态。
 func FormatRef(name string, version int) string {
 	return name + string(RefVersionSep) + strconv.Itoa(version)

@@ -56,7 +56,8 @@ package store
 //
 // ⚠️ 换代注意事项：驱动内部的 pstmt 缓存是**进程内**的，跨驱动版本升级写出来的库文件
 // 与本缓存无关（本缓存只影响运行期 parse 次数，不改变任何 SQL 文本或结果）。
-// 跨引擎（驱动版本）读老库的行为由 internal/store/migrate_engine_compat_test.go 守住。
+// 注意：squash 之前建的库已**不支持**打开（store.Open 直接报错要求删库重建），
+// 所以不存在「跨引擎读老库」这条路径。
 
 import (
 	"context"

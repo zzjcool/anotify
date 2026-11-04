@@ -45,7 +45,7 @@ var (
 // Source 是一个「源」实例：事件的入口。
 //
 // 它**不是能力**：能力由节点声明、中枢派任务给它；源自己产生事件、不干活。
-// 这个区分是本表存在的理由（见 schema.sql 迁移 7 的注释）。
+// 这个区分是本表存在的理由（见 schema.sql 里 sources 表的注释）。
 type Source struct {
 	ID string `json:"id"`
 	// NamespaceID 是命名空间隔离维度：源属于某个命名空间。
@@ -580,7 +580,7 @@ type entryEdge struct {
 	//
 	// 源的目标在控制台上是「选一个能力（某个版本）」：把它搬成**跟随 latest** 会改变
 	// 已有源的行为（升级一次就改线），而源不在 P2.2 的范围内——所以这里显式钉死
-	// 当前选中的那一版，与迁移 27 把存量 link 重写成 `name@version` 同一个口径。
+	// 当前选中的那一版，与「存量 link 一律钉死 `name@version`」同一个口径。
 	toRef string
 	// mapping 是已归一化的参数模板（'{}' = 没有模板）。
 	mapping json.RawMessage
@@ -657,7 +657,7 @@ func replaceEntryEdgesTx(ctx context.Context, tx *sql.Tx, namespaceID, sourceNam
 // 那正是我们要消灭的"静默失败"。空列表直接拒绝。
 //
 // 库里只有 edges 一份真相：每个 target = 一条 from_is_source=1、from_ref=<来源名>、
-// from_port='*' 的边，参数模板存 edges.mapping（source_targets 已在迁移 26 删除）。
+// from_port='*' 的边，参数模板存 edges.mapping（没有 source_targets 这张旁路表）。
 func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if s == nil {
 		return fmt.Errorf("create source: nil")

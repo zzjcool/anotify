@@ -199,7 +199,7 @@ func TestEdgeMappingShapeRejected(t *testing.T) {
 // TestEntryEdgeWildcardPortLookup 入口边的端口匹配：精确优先、"*" 兜底、同一目标只返回一次。
 //
 // 为什么要有 "*"：源能收什么事件类型由**外部系统**决定（GitHub 发什么 type 就是什么），
-// 让用户为每个 type 手建一条边是多余的心智负担；迁移 26 搬过来的源目标就长这样。
+// 让用户为每个 type 手建一条边是多余的心智负担；源的目标（P2.1）就长这样。
 // 为什么同一目标要去重：一条精确边 + 一条 "*" 边指向同一个下游时，那个下游
 // 只能收到**一次**派发（否则一个事件变成两个任务）。
 func TestEntryEdgeWildcardPortLookup(t *testing.T) {

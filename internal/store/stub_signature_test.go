@@ -182,7 +182,7 @@ func TestIsTerminalStatus(t *testing.T) {
 
 // TestTaskStructJSONShape 任务结构体的 JSON 契约（camelCase 字段都在，且**没有 out**）。
 //
-// 「没有 out」是 P1.5 收尾（迁移 28）的硬要求：`tasks.out` 列已删，出口的唯一载体是
+// 「没有 out」是 P1.5 收尾的硬要求：`tasks.out` 列已删，出口的唯一载体是
 // emission。之前这里断言的是「out 必须在」（三态），现在反过来——它必须在**任何**
 // 序列化形态里都不出现，否则前端/外部调用方又会按它写判断。
 func TestTaskStructJSONShape(t *testing.T) {
@@ -217,7 +217,7 @@ func TestTaskStructJSONShape(t *testing.T) {
 	}
 	for _, f := range forbidden {
 		if found[f] {
-			t.Errorf("Task 仍有 json 字段 %q：`tasks.out` 已随迁移 28 删除，路由只看 emission", f)
+			t.Errorf("Task 仍有 json 字段 %q：`tasks.out` 已随 P1.5 删除，路由只看 emission", f)
 		}
 	}
 	// 结构体层还不够：线上字节里也不能出现这个键（omitempty / 手工 marshaling 都可能漏）。

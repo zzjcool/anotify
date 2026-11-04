@@ -1,6 +1,6 @@
 package store
 
-// artifacts / deployments 两张新表（迁移 18）的往返与幂等语义。
+// artifacts / deployments 两张新表（console-declares 的部署模型）的往返与幂等语义。
 //
 // 契约见 .pi-orchestrator/console-declares/CONTRACT-protocol.md §9 / §7：
 //   - artifacts 按 (namespace_id, digest) 唯一：digest 是内容寻址标识，

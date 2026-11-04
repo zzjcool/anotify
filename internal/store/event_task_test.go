@@ -319,12 +319,12 @@ func TestEventValidation(t *testing.T) {
 	}
 }
 
-// ---------- #63：结果回报落库（迁移 28 之后没有 out 维度） ----------
+// ---------- #63：结果回报落库（没有 out 维度） ----------
 
 // TestReportResultWritesTerminalState 结果回报只写「这件事怎么样了」这一组字段：
 // status / summary / artifacts / error / finished_at，外加 reported=1。
 //
-// 出口**不在任务行上**：`tasks.out` 列已在迁移 28 删掉（出口只存在于 emission），
+// 出口**不在任务行上**：`tasks.out` 列已删掉（出口只存在于 emission），
 // 所以这里既不能也不该断言「选了哪个出口」。仍然可观察的三个状态是：
 //   - 没回报过：reported=false（任务停在 pending / running，等租约巡检）
 //   - 成功：reported=true + status=succeeded + summary 是「做了什么」

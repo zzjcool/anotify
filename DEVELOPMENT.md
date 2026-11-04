@@ -471,7 +471,7 @@ cmd/devseed/       测试播种工具（建用户+Key+会话，绕过 WebAuthn�
 cmd/sitegen/       前端站点生成器 CLI（web-src → web 静态 HTML）
 internal/
   sitegen/         站点生成核心（模板缓存/layout+content/i18n 合成）
-  store/           SQLite 数据访问 + schema.sql + 幂等列迁移
+  store/           SQLite 数据访问 + schema.sql（baseline）+ 迁移 runner
   broker/          消息队列抽象 + SQLiteBroker
   auth/            Passkey(WebAuthn) + API Key(argon2id) + 会话
   authn/           Key 校验接口（解耦 auth 与 api/ws）
@@ -520,9 +520,25 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 `store/messages.go` 引用 `broker.Message`，而 `broker/sqlite.go` 引用 `store.DB` → 循环。修复：store 定义本地 `MessageRow`，broker 做适配。**教训**：store 是底层，不应依赖上层 broker 的类型。
 
-### 幂等列迁移
+### schema 变更：baseline 往后追加块（不再有增量迁移链）
 
-`CREATE TABLE IF NOT EXISTS` 不给已存在的表加新列。新增字段（如 `passkeys.backup_eligible`）要在 `store.Open` 里显式 `ALTER TABLE ADD COLUMN`（幂等，重复执行不报错）。
+`internal/store/schema.sql` 现在只有一块 `-- +migration 1 baseline`：squash 之后的**终态 DDL**。
+迁移链上的「建表 → 加列 → 删列 → 重建表 → 删表」已经合并进这一块，所以这里描述的就是
+**今天库里长什么样**，不再有「迁移 4 建表、迁移 28 再删列」这种历史包袱
+（`tasks.out` / `source_targets` / `orgs` / `org_members` / `node_capabilities.run_spec` 都不在）。
+
+规则：
+
+- **baseline（版本 1）视为已发布，不再改**。加列 / 加表 / 加索引一律在 schema.sql 末尾追加
+  `-- +migration 2 <name>` 块（`parseMigrations` 校验编号从 1 连续、不跳号、不重复）。
+- SQLite 没有 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，重复执行会报 duplicate column。
+  这种变更把 SQL 块留空，逻辑写进 `migrate.go` 传给 `migrateWith` 的 hooks（按版本号索引）；
+  hook 必须**幂等**（同一事务可能因重试跑多次），返回 error 时整个迁移回滚且不记账。
+- **squash 之前建的库不支持升级**：`Open` 直接返回
+  「这个库是 squash 之前的版本（vN）；本版本不再支持增量升级，请删除数据目录后重启（数据可先用 cmd/devseed 重建）」。
+  判据是 `schema_version` 里出现过比 baseline 更高的版本。程序**不会**替你删数据。
+- 新增列仍然必须有「往返一致性」单测（存什么读什么）。迁移机制本身（版本记账、一版本一事务、
+  失败不吞错）见 `internal/store/migrate.go`；结构门禁见 `internal/store/schema_baseline_test.go`。
 
 ### 改了 web/ 源码后跑 make e2e 用的是旧产物（run_all.sh 脏检测）
 
@@ -551,7 +567,7 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 `SetNotBefore` 是「重派退避」，而写它的正是 `ErrNoCapacity`（派不出去）那条路径
 （`internal/server/mux.go` 的 `Redispatch`）—— 加了等于把要治的场景整个漏掉。
 另：这条查询每采样周期都跑，必须配部分索引
-`idx_tasks_pending_created_at ON tasks(created_at) WHERE status='pending'`（迁移 17），
+`idx_tasks_pending_created_at ON tasks(created_at) WHERE status='pending'`（在 baseline 里），
 否则积压越多它越贵 —— 正好在最需要它的时候最贵。
 再另：判定要在**请求路径之外**（后台降采样 0.2 次/秒 + `atomic` 读），否则等于把 #242
 刚优化掉的 per-request 开销又加回来。

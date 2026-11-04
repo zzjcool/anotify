@@ -57,7 +57,7 @@ def parse_tables(sql: str) -> dict[str, list[tuple[int, str]]]:
     """解析出 {表名: [(行号, 该行内容)]}。
 
     按 `CREATE TABLE ... (` 开始、括号配对结束来切分，
-    这样能正确处理 `IF NOT EXISTS`、跨行列定义与注释。
+    这样能正确处理 `IF NOT EXISTS`、双引号表名、跨行列定义与注释。
     """
     tables: dict[str, list[tuple[int, str]]] = {}
     lines = sql.splitlines()
@@ -68,14 +68,18 @@ def parse_tables(sql: str) -> dict[str, list[tuple[int, str]]]:
         stripped = line.strip()
 
         if not current:
+            # 表名允许带双引号：SQLite 在 `ALTER TABLE ... RENAME` 之后会把建表语句里的
+            # 名字**存成带引号的形式**，而 schema.sql 的 DDL 是逐字节沿用 sqlite_master
+            # 的（见该文件头：结构等价的证明就是 diff 为空），所以 edges / node_capabilities
+            # 在文件里是 `CREATE TABLE IF NOT EXISTS "edges" (`。
             m = re.match(
-                r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+                r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))',
                 stripped,
                 re.IGNORECASE,
             )
             if not m:
                 continue
-            name = m.group(1).lower()
+            name = (m.group(1) or m.group(2)).lower()
             tables[name] = [(idx, line)]
             depth = stripped.count("(") - stripped.count(")")
             if depth > 0:

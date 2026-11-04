@@ -142,7 +142,7 @@ var ErrTransitionGuardFailed = errors.New("transition_guard_failed")
 
 // Task 是 tasks 表的一行：任务行 = OTel span。
 //
-// 路由**不在这一行上**：P1.5 起 `tasks.out` 整列已删（迁移 28），出口的唯一载体是
+// 路由**不在这一行上**：P1.5 起 `tasks.out` 整列已删（baseline 里没有它），出口的唯一载体是
 // emission（route.Emit 落库的 emissions 行）。任务行只记「执行这件事怎么样了」：
 //
 //	Status → 展示与重试策略（succeeded / failed），**不参与路由**
@@ -964,7 +964,7 @@ func (d *DB) resolveLostOne(ctx context.Context, namespaceID, nodeID string, o T
 // #140 起它是 ReportResultAndCreateTasks(next=nil) 的薄壳：签名、返回值、错误文案
 // 全部保持不变，只是实现搬进了共用的事务内助手（reportResultTx）。
 //
-// P1.5（迁移 28）起没有 `out` 参数：出口只来自 emission，任务行不再记路由结果。
+// P1.5 起没有 `out` 参数：出口只来自 emission，任务行不再记路由结果。
 func (d *DB) ReportResult(ctx context.Context, namespaceID, taskID, status string, summary string, artifacts []string, errMsg string) error {
 	return d.ReportResultAndCreateTasks(ctx, namespaceID, taskID, status, summary, artifacts, errMsg, nil)
 }
@@ -1572,15 +1572,15 @@ func (d *DB) CountOpenTasks(ctx context.Context, namespaceID string) (int, error
 //     加了它等于把 #228 的实测场景（积压 8 行/秒）整个漏掉。
 //   - 空集不返回 sql.ErrNoRows：MIN() 在空集上返回**一行 NULL**，不是零行。
 //
-// 成本：迁移 17 的部分索引 idx_tasks_pending_created_at（WHERE status='pending'，
+// 成本：baseline 的部分索引 idx_tasks_pending_created_at（WHERE status='pending'，
 // 首列 created_at）把这条查询退化成一次「索引最左端 seek」，与积压行数无关。
 // 没有那条索引时计划是 idx_tasks_lease + 逐行回表——积压越多越贵。
 //
 // 一个必须知道的边界（实测，证据见 pending_backlog_test.go 的计划用例）：SQLite 的
 // min/max 优化要看到该索引自己的 sqlite_stat1 条目才会选它。所以「全新库灌满数据、
 // 尚未重开」的那个窗口里，规划器选的仍是 idx_tasks_lease；重开一次（Open 末尾的
-// `PRAGMA optimize=0x2`）就会补上条目、计划切成部分索引。老库升级同理——迁移 17 跑在
-// Open 内部，等 Open 返回时条目已经在，升级完即生效。
+// `PRAGMA optimize=0x2`）就会补上条目、计划切成部分索引。
+// （squash 之前的老库不再支持升级，所以「新库 → 灌数据 → 重开」是唯一需要关心的路径。）
 func (d *DB) OldestPendingCreatedAt(ctx context.Context) (int64, error) {
 	var oldest sql.NullInt64
 	if err := d.QueryRowContext(ctx,

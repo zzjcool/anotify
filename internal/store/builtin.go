@@ -200,7 +200,7 @@ var BuiltinCapabilities = []BuiltinCapability{
 //
 // 语义在 #162 之后从「一个组织一份」变成「每个命名空间一份」：能力属于命名空间，
 // `notify.phone` 在 prod 与 staging 是两行不同的定义（各自 namespace_id）；
-// 迁移 14 之后连组织都没有了，所以这里直接遍历 namespaces。
+// 组织层已删，所以这里直接遍历 namespaces。
 //
 // 为什么不只在新命名空间播种：内置能力清单会随版本升级增加（比如以后加
 // notify.webhook）。那时已有命名空间也需要补上——启动时全量跑一遍比"只在
@@ -330,9 +330,9 @@ func seedBuiltinArtifactTx(ctx context.Context, tx *sql.Tx, namespaceID, capabil
 	if bc.Artifact == nil {
 		return nil
 	}
-	// 老库升级路径：播种可能发生在迁移 18（artifacts 表）之前——那时这张表还不存在。
+	// 防御性探测：artifacts 表不存在就跳过（那时插产物会直接报 no such table）。
 	// 这不是错误：启动流程里 BackfillBuiltinCapabilities 在**迁移之后**还会再跑一遍，
-	// 那时会把产物补上。所以这里探测一次表是否存在，不存在就跳过（自愈，不阻塞升级）。
+	// 那时会把产物补上——所以这里自愈而不是阻塞启动。
 	var exists int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts'`).Scan(&exists); err != nil {
@@ -525,7 +525,7 @@ func (d *DB) ClaimCentralTasks(ctx context.Context, limit int) ([]*Task, error) 
 // 与 ReportResult 的区别：ReportResult 是**节点**回报路径（要求任务有
 // node_id 归属、会校验租约）。中枢任务没有归属，所以走这条。
 //
-// 没有出口参数：P1.5（迁移 28）之后 `tasks.out` 整列已删，路由只由 emission 表达。
+// 没有出口参数：P1.5 之后 `tasks.out` 整列已删（baseline 里没有这一列），路由只由 emission 表达。
 func (d *DB) FinishTask(ctx context.Context, namespaceID, taskID, status string, summary, errMsg string) error {
 	if status != TaskSucceeded && status != TaskFailed {
 		return fmt.Errorf("%w: finish status must be succeeded|failed, got %q", ErrInvalidTransition, status)

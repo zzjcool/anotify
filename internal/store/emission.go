@@ -8,7 +8,7 @@ import (
 	"fmt"
 )
 
-// Emission 是一次 emit 的落库行（迁移 22，docs/design/emit-protocol.md §4 / §7）。
+// Emission 是一次 emit 的落库行（P1.1，docs/design/emit-protocol.md §4 / §7）。
 //
 // 它是**唯一**的幂等依据：节点的 outbox 会在重连后按 seq 重发，中枢靠
 // PRIMARY KEY(task_id, seq) 把它折成一次派发。所以这张表不是日志——

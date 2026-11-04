@@ -189,7 +189,7 @@ func TestClaimCentralTasksRunsStateMachine(t *testing.T) {
 //
 // 中枢执行的结果也走同一套规则：reported 恒为 1（写只发生在任务收尾时），
 // 失败必须有一句原因（空时兜底 "failed"）。**没有出口维度**：`tasks.out` 列
-// 已在迁移 28 删掉，出口只存在于 emission。
+// 已删掉（baseline 里没有这一列），出口只存在于 emission。
 func TestFinishTaskWritesOutcome(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

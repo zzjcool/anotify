@@ -245,7 +245,7 @@ func TestReportResultAndCreateTasksRollsBackOnReportFailure(t *testing.T) {
 // TestReportResultCompatWithoutNext 旧入口在新实现上语义不变（终态字段 + 错误契约）。
 //
 // 历史：这里原有两条 out 专属子用例（no_port_leaves_out_null / port_is_persisted）。
-// 它们覆盖的是 `tasks.out` 列本身，而那一列已在迁移 28 删掉，所以随列一起删除；
+// 它们覆盖的是 `tasks.out` 列本身，而那一列已删掉，所以随列一起删除；
 // 「终态字段照旧落库」这部分收进了下面的 report_without_next。
 func TestReportResultCompatWithoutNext(t *testing.T) {
 	ctx := context.Background()
@@ -317,7 +317,7 @@ func TestReportResultCompatWithoutNext(t *testing.T) {
 		}
 
 		// 历史：这里还有一条「空出口名必须拒收（empty out string is not a valid port）」。
-		// 出口参数本身已随 `tasks.out` 列删除（迁移 28），那条校验没有主语了。
+		// 出口参数本身已随 `tasks.out` 列删除（baseline），那条校验没有主语了。
 
 		if err := db.ReportResult(ctx, nsID, "tsk_missing", TaskSucceeded, "", nil, ""); !errors.Is(err, ErrNotFound) {
 			t.Errorf("任务不存在 err = %v, want ErrNotFound", err)

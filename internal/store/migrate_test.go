@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -11,13 +10,19 @@ import (
 )
 
 // TestParseMigrations 校验 schema.sql 的分块序列：编号连续、无重复、名字非空。
+//
+// squash 之后只有一块（`1 baseline`）——这条同时守住「历史包袱不许借尸还魂」：
+// 谁把老迁移块搬回来，首个断言就会红。
 func TestParseMigrations(t *testing.T) {
 	set, err := parseMigrations(schemaSQL)
 	if err != nil {
 		t.Fatalf("parse schema.sql: %v", err)
 	}
-	if len(set) < 4 {
-		t.Fatalf("expected at least 4 migrations, got %d", len(set))
+	if len(set) != 1 {
+		t.Fatalf("squash 之后 schema.sql 应当只有 1 块（baseline），实际 %d 块", len(set))
+	}
+	if set[0].name != "baseline" {
+		t.Fatalf("首块名字 = %q，期望 baseline", set[0].name)
 	}
 	seen := map[int]bool{}
 	for _, m := range set {
@@ -45,40 +50,6 @@ SELECT 3;
 `
 	if _, err := parseMigrations(src); err == nil {
 		t.Fatal("expected error for gap in migration sequence, got nil")
-	}
-}
-
-// TestOpenCreatesAllTables 新库应建出全部业务表 + 保留表。
-//
-// #205 之后**没有** orgs / org_members：组织层已被迁移 14 删除（见
-// TestMigration14RemovesOrgLayer，那里断言它们不存在）。
-func TestOpenCreatesAllTables(t *testing.T) {
-	db := newTestDB(t)
-	want := []string{
-		// 契约 §2 的资源表
-		"capability_versions", "nodes", "node_capabilities",
-		"node_instances", "node_pins", "edges", "events", "tasks", "graph_versions",
-		// 命名空间（#162）：组织之下的隔离边界
-		"namespaces",
-		// 预案（#193）：可安装的流程零件
-		"playbooks",
-		// 源（#110）：事件入口
-		//
-		// 注意没有 source_targets：迁移 26（P2.1）把源的目标搬成入口边后把那张表删了。
-		// 「源的目标就是 edges 里的入口边」这一点由 TestOpenHasNoSourceTargets 钉住。
-		"sources",
-		// 沿用：属于人的 4 张 + CLI/恢复码 2 张
-		"users", "passkeys", "sessions", "api_keys",
-		"cli_auth_sessions", "recovery_codes",
-		// 设备（推送目标，属于用户）
-		"devices",
-		// 迁移机制自身
-		"schema_version",
-	}
-	for _, name := range want {
-		if !tableExists(t, db, name) {
-			t.Errorf("missing table %s", name)
-		}
 	}
 }
 
@@ -115,11 +86,9 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version before: %v", err)
 	}
-	ctx := context.Background()
-	orgID, userID := newTestNS(t, db)
-	_ = ctx
-	_ = orgID
-	_ = userID
+	// 先灌一点数据（注册会建用户 + 默认命名空间 + 内置能力），再重开：
+	// 有数据的库重开也必须整体跳过 baseline（不重复执行、不重复记账）。
+	newTestNS(t, db)
 
 	// 关掉再打开
 	if err := db.Close(); err != nil {
@@ -214,72 +183,6 @@ func TestMigrationHookFailureRollsBack(t *testing.T) {
 	}
 }
 
-// TestLegacyDBUpgrade 老库（只有 users 表，且缺新列）→ Open 后迁移到位。
-func TestLegacyDBUpgrade(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.db")
-	db, err := sql.Open("sqlite", "file:"+path+
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)")
-	if err != nil {
-		t.Fatalf("open raw: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	// 老库：users 没有 role/disabled；另有老 messages 表（带 kind/reply_to）
-	mustExec(t, db, `CREATE TABLE users (
-		id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
-		display_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)`)
-	mustExec(t, db, `INSERT INTO users (id, username, display_name, created_at) VALUES ('usr_old','bob','Bob',1)`)
-	mustExec(t, db, `CREATE TABLE messages (
-		id TEXT PRIMARY KEY, user_id TEXT NOT NULL, seq INTEGER NOT NULL,
-		title TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', reply_to TEXT,
-		agent_state TEXT NOT NULL DEFAULT 'working', body TEXT NOT NULL DEFAULT '',
-		link TEXT NOT NULL DEFAULT '', device_tags TEXT NOT NULL DEFAULT '[]',
-		priority TEXT NOT NULL DEFAULT 'normal', ttl_seconds INTEGER NOT NULL DEFAULT 86400,
-		payload TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-		UNIQUE (user_id, seq))`)
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw: %v", err)
-	}
-
-	up, err := Open(path)
-	if err != nil {
-		t.Fatalf("upgrade legacy db: %v", err)
-	}
-	t.Cleanup(func() { _ = up.Close() })
-
-	// 1. 版本已记账
-	if _, err := up.SchemaVersion(); err != nil {
-		t.Fatalf("schema version: %v", err)
-	}
-	// 2. 新表建好（组织层已在迁移 14 删除，这里只查业务表）
-	for _, name := range []string{"namespaces", "tasks", "events", "edges", "capability_versions"} {
-		if !tableExists(t, up, name) {
-			t.Errorf("legacy upgrade missing table %s", name)
-		}
-	}
-	// 3. 老库新列补上
-	users := columnNames(t, up, "users")
-	for _, col := range []string{"role", "disabled"} {
-		if !users[col] {
-			t.Errorf("users missing column %s after upgrade", col)
-		}
-	}
-	// 4. 老数据还在
-	var username string
-	if err := up.QueryRow(`SELECT username FROM users WHERE id='usr_old'`).Scan(&username); err != nil {
-		t.Fatalf("legacy user lost: %v", err)
-	}
-	if username != "bob" {
-		t.Fatalf("legacy username = %q, want bob", username)
-	}
-	// 5. 老 messages 表的 kind / reply_to 被清掉（迁移 3 的重建表）
-	msgs := columnNames(t, up, "messages")
-	for _, col := range []string{"kind", "reply_to"} {
-		if msgs[col] {
-			t.Errorf("messages still has legacy column %s", col)
-		}
-	}
-}
-
 // TestMigrationNoSwallowedErrors 确认没有旧写法
 // `_, _ = db.Exec("ALTER TABLE ...")` 那种吞错残留。
 //
@@ -303,8 +206,12 @@ func TestMigrationNoSwallowedErrors(t *testing.T) {
 
 // TestNoArgvOrKindInSchema 不变量 I1 / I3 的静态门禁（契约 A2 / A4）。
 //
-// kind 的判定只看**新建模型的表**：`cli_auth_sessions.kind` 是现有的认证字段
-// （apikey / passkey），与任务 kind 无关，不在 I3 的管辖范围内。
+// I1：schema 里不得出现可执行概念（A2 的关键词）。
+// I3：**推导量**不落库——capability / node / edge 都没有 kind 列（kind 由 outputs +
+// 节点声明推导）。允许 kind 的只有两张表，且都不是推导量：sources.kind（cron /
+// webhook / manual）是用户显式选择的**配置**，没有任何东西能推导出「这个源应该是
+// 定时器还是 webhook」；cli_auth_sessions.kind（apikey / passkey）是**授权类型**，
+// 与能力在链上的角色无关。
 func TestNoArgvOrKindInSchema(t *testing.T) {
 	lower := strings.ToLower(schemaSQL)
 	for _, banned := range []string{"argv", "shell", "script"} {
@@ -313,59 +220,47 @@ func TestNoArgvOrKindInSchema(t *testing.T) {
 		}
 	}
 
-	// 按迁移块解析：I3 只约束新模型（migration 4 起）的表定义。
-	// 保留的旧表 cli_auth_sessions 有 kind 列（授权类型），不受影响。
-	//
-	// **例外（sources.kind）**：I3 的本意是「**推导量**不落库」——
-	// capability 的 kind 由 outputs + 节点声明推导，存下来就可能与推导结果
-	// 自相矛盾。但源的 kind（cron/webhook/manual）不是推导量：它是用户显式
-	// 选择的**配置**，没有任何东西能推导出"这个源应该是定时器还是 webhook"，
-	// 不存就没法知道该跑哪套逻辑。
-	//
-	// 所以这里按表限定，而不是按列名一刀切：守卫要精确表达不变量，
-	// 否则只能靠改名绕过，那不变量就形同虚设了。
-	set := mustParse(t, schemaSQL)
-	for _, m := range set {
-		if m.version < 4 {
+	kindAllowed := map[string]bool{"sources": true, "cli_auth_sessions": true}
+	var curTable string
+	for _, line := range strings.Split(schemaSQL, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue // 注释里的说明不算列定义
+		}
+		if strings.HasPrefix(strings.ToUpper(trimmed), "CREATE TABLE") {
+			curTable = tableNameInCreate(trimmed)
 			continue
 		}
-		var curTable string
-		for _, line := range strings.Split(m.body, "\n") {
-			trimmed := strings.TrimSpace(line)
-			// 记录当前处于哪张表的定义里
-			if strings.HasPrefix(strings.ToUpper(trimmed), "CREATE TABLE") {
-				fields := strings.Fields(trimmed)
-				for i, f := range fields {
-					if strings.EqualFold(f, "EXISTS") && i+1 < len(fields) {
-						curTable = strings.TrimSuffix(fields[i+1], "(")
-						break
-					}
-					if strings.EqualFold(f, "TABLE") && i+1 < len(fields) {
-						name := fields[i+1]
-						if strings.EqualFold(name, "IF") {
-							continue
-						}
-						curTable = strings.TrimSuffix(name, "(")
-						break
-					}
-				}
-				continue
-			}
-			if strings.HasPrefix(trimmed, ")") || strings.HasPrefix(trimmed, ";") {
-				curTable = ""
-				continue
-			}
-			if !strings.HasPrefix(trimmed, "kind ") {
-				continue
-			}
-			// sources.kind 是用户配置，不是推导量（见上方注释）
-			if curTable == "sources" {
-				continue
-			}
-			t.Errorf("migration %d declares banned column kind on table %q (invariant I3): %q",
-				m.version, curTable, trimmed)
+		if strings.HasPrefix(trimmed, ")") || strings.HasPrefix(trimmed, ";") {
+			curTable = ""
+			continue
 		}
+		if !strings.HasPrefix(trimmed, "kind ") || kindAllowed[curTable] {
+			continue
+		}
+		t.Errorf("table %q declares banned column kind (invariant I3): %q", curTable, trimmed)
 	}
+}
+
+// tableNameInCreate 从 `CREATE TABLE [IF NOT EXISTS] name (` 里取出表名
+// （跳过 IF / NOT / EXISTS，并去掉 RENAME 重建留下的引号）。
+func tableNameInCreate(line string) string {
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		if !strings.EqualFold(f, "TABLE") {
+			continue
+		}
+		j := i + 1
+		for j < len(fields) && (strings.EqualFold(fields[j], "IF") ||
+			strings.EqualFold(fields[j], "NOT") || strings.EqualFold(fields[j], "EXISTS")) {
+			j++
+		}
+		if j >= len(fields) {
+			return ""
+		}
+		return strings.Trim(strings.TrimSuffix(fields[j], "("), `"`)
+	}
+	return ""
 }
 
 // ---------- 小工具 ----------

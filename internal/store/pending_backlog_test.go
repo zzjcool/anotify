@@ -10,13 +10,13 @@ import (
 // 本文件是 #228 背压信号的数据层门禁：
 //   ① 空集 → 0（不是 ErrNoRows）　② 只数 pending　③ 退避中仍算积压
 //   ④ 信号查询的计划必须走部分索引 idx_tasks_pending_created_at（O(log n)）
-//   ⑤ 迁移 17 幂等 + 索引形状正确
+//   ⑤ 索引在 baseline 里形状正确（部分索引 + 单列 created_at），重开库幂等
 
-// pendingBacklogIndex 是迁移 17 建的索引名（计划门禁与形状断言共用）。
+// pendingBacklogIndex 是 baseline 里的背压索引名（计划门禁与形状断言共用）。
 const pendingBacklogIndex = "idx_tasks_pending_created_at"
 
 // oldestPendingProbeSQL 是背压信号查询的**探针**：与 OldestPendingCreatedAt 里的字面 SQL
-// 逐字一致（脱钩由 TestPendingBacklogSQLShape 兜住，照 migrate16_test.go 的做法）。
+// 逐字一致（脱钩由 TestPendingBacklogSQLShape 兜住）。
 const oldestPendingProbeSQL = `SELECT MIN(created_at) FROM tasks WHERE status = 'pending'`
 
 // TestOldestPendingCreatedAtEmpty：一条 pending 都没有 → 0, nil。
@@ -136,9 +136,9 @@ func TestPendingBacklogSQLShape(t *testing.T) {
 // （O(积压量)——正好在最需要它的时候最贵）。
 //
 // 统计从哪来：这条用例**自己不跑 ANALYZE**，统计由产品路径（Open 末尾的
-// `PRAGMA optimize=0x2`）补出来，做法与 TestMigration16ListTasksStatsFromProductOpen 一致。
-// 为什么必须重开一次才能断言：迁移 16 的 `ANALYZE tasks` 在新建库上扫的是空表（一行 stat1
-// 都不写），而 SQLite 的 min/max 优化要看到该索引自己的 stat1 条目才会选它——在此之前
+// `PRAGMA optimize=0x2`）补出来。
+// 为什么必须重开一次才能断言：空表上 ANALYZE 一行 stat1 都不写，而 SQLite 的 min/max
+// 优化要看到该索引自己的 stat1 条目才会选它——在此之前
 // 规划器选的是 `SEARCH tasks USING INDEX idx_tasks_lease (status=?)`（逐行回表，O(pending)）。
 // 实测两种状态都在下面打出来，让「统计是解锁条件」这件事有据可查，而不是一句断言。
 func TestPendingBacklogIndexQueryPlan(t *testing.T) {
@@ -178,53 +178,12 @@ func TestPendingBacklogIndexQueryPlan(t *testing.T) {
 	}
 }
 
-// TestPendingBacklogIndexUsedAfterLegacyUpgrade：**老库升级**这条真实路径。
-//
-// 线上部署全是带数据的旧库：迁移 16 当年已经在它们上面跑过 `ANALYZE tasks`，
-// 所以 stat1 里**已经有 tasks 的条目**（但没有迁移 17 才建的这条索引的条目）。
-// 这个状态最容易被想当然地认为「规划器看不见新索引」——本用例如实造出来并断言它看得见:
-// 迁移 17 之后 Open 末尾的 `PRAGMA optimize=0x2` 会把缺失的索引条目补上。
-func TestPendingBacklogIndexUsedAfterLegacyUpgrade(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "v16_pending.db")
-	legacy := openAtVersion(t, path, 16)
-	if v, err := legacy.SchemaVersion(); err != nil || v != 16 {
-		t.Fatalf("老库版本 = %d, %v, want 16", v, err)
-	}
-	seedPendingBacklog(t, legacy, 200)
-	// 复刻老库既有的统计（迁移 16 干过这件事）：有 tasks 的条目，但没有新索引的条目。
-	mustExec(t, legacy, `ANALYZE tasks`)
-	oldPlan := strings.Join(explainQueryPlan(t, legacy, oldestPendingProbeSQL), "\n")
-	t.Logf("EXPLAIN QUERY PLAN（v16 老库，迁移 17 之前）:\n%s", oldPlan)
-	if strings.Contains(oldPlan, pendingBacklogIndex) {
-		t.Fatalf("v16 库里出现了 %s：openAtVersion 截断迁移没生效？", pendingBacklogIndex)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatalf("close legacy: %v", err)
-	}
-
-	db, err := Open(path) // 跑迁移 17 + Open 末尾的统计维护
-	if err != nil {
-		t.Fatalf("upgrade Open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	if v, err := db.SchemaVersion(); err != nil || v != testTipVersion(t) {
-		t.Fatalf("升级后版本 = %d, %v, want %d", v, err, testTipVersion(t))
-	}
-	upgraded := strings.Join(explainQueryPlan(t, db, oldestPendingProbeSQL), "\n")
-	t.Logf("EXPLAIN QUERY PLAN（升级到 %d 之后）:\n%s", testTipVersion(t), upgraded)
-	if !strings.Contains(upgraded, pendingBacklogIndex) {
-		t.Errorf("升级后背压信号的计划里没有 %s：老库升上来之后这条索引是死的"+
-			"（采样每次都是「按 status 取出全部 pending 再逐行回表」）:\n%s",
-			pendingBacklogIndex, upgraded)
-	}
-}
-
-// TestPendingBacklogIndexMigrationIdempotent：迁移 17 幂等 + 索引形状正确。
+// TestPendingBacklogIndexIdempotent：索引在重开库后形状不变（幂等）+ 形状正确。
 //
 // 形状断言为什么重要：一条**非部分**的 `(created_at)` 索引也能让 MIN() 走索引，
 // 但它把终态行也收进索引（体积随全部历史任务增长，与「只覆盖积压」的设计意图相反）。
 // 所以除「索引存在且只有一条」之外，还要钉住 partial=1 与列序 = [created_at]。
-func TestPendingBacklogIndexMigrationIdempotent(t *testing.T) {
+func TestPendingBacklogIndexIdempotent(t *testing.T) {
 	db, path := newTestDBFile(t)
 	assertPendingBacklogIndexShape(t, db, "首次 Open")
 	before, err := db.SchemaVersion()
@@ -297,11 +256,9 @@ func assertPendingBacklogIndexShape(t *testing.T, db *DB, tag string) {
 // 终态行是刻意的：它证明「索引只覆盖 pending 行」这件事在计划层面成立
 // （若索引退化成全量 (created_at) 索引，succeeded 行也会被收进去）。
 //
-// 为什么**直插 SQL** 而不是 CreateTasks：TestPendingBacklogIndexUsedAfterLegacyUpgrade 把夹具
-// 停在**迁移 16**（openAtVersion），而产品的 INSERT 列清单总是「当前版本」的——
-// 迁移 20 起它带 tasks.digest，那种老库上用产品路径灌数据会直接报
-// `table tasks has no column named digest`。本文件关心的是**查询计划**，不是写入路径，
-// 所以列清单按「迁移 16 时代存在的列」写，其余列（digest/not_before…）走默认值。
+// 为什么**直插 SQL** 而不是 CreateTasks：本文件关心的是**查询计划**，不是写入路径，
+// 直插能精确控制 created_at 与 status（CreateTasks 会写过半列、还要照顾外键父行）。
+// 列清单只写计划需要的列，其余（digest / token / not_before…）走列默认值。
 func seedPendingBacklog(t *testing.T, db *DB, rows int) {
 	t.Helper()
 	ctx := context.Background()
@@ -310,7 +267,7 @@ func seedPendingBacklog(t *testing.T, db *DB, rows int) {
 	if err := db.CreateCapability(ctx, cap); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	// insertPending 按迁移 16 的列清单直插一行 pending。
+	// insertPending 直插一行 pending（只写计划需要的列）。
 	insertPending := func(task *Task) {
 		t.Helper()
 		mustExec(t, db, `INSERT INTO tasks

@@ -127,9 +127,9 @@ type RetentionReport struct {
 // 输出按 (namespace_id, capability_id) 排序：调用方（SweepRetention）靠它保证多轮之间
 // 的处理顺序确定，也让测试与日志可复现。
 //
-// **查询计划**（迁移 12 之后）：scope 的筛选条件与迁移 12 新建的
+// **查询计划**（命名空间隔离之后）：scope 的筛选条件与 baseline 的
 // `idx_tasks_retention(namespace_id, capability_id, status, finished_at)` 前缀完全对齐，
-// 所以候选集能收窄到一个命名空间（+ 能力）而不是全库终态行；迁移 12 之前记录的计划
+// 所以候选集能收窄到一个命名空间（+ 能力）而不是全库终态行；组织层还在时记录的计划
 // 是「idx_tasks_lease(status=?) 全库扫终态行 + 两次 TEMP B-TREE」，不再适用。
 // DISTINCT + ORDER BY 仍可能用到临时 B 树（计划未重新实测，不在此处断言）。
 //
@@ -205,9 +205,9 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 // 为什么按 finished_at 排序：一批删不完时下一轮从更老的开始，
 // 积压再大也不会出现「新过期的一直被删、最老的一直留着」。
 //
-// **查询计划**（迁移 12 之后）：子查询的 `namespace_id = ? AND capability_id = ?`
-// 与迁移 12 新建的 `idx_tasks_retention(namespace_id, capability_id, status, finished_at)`
-// 前缀对齐，候选集从「整个命名空间」收窄到「某能力」；迁移 12 之前记录的
+// **查询计划**（命名空间隔离之后）：子查询的 `namespace_id = ? AND capability_id = ?`
+// 与 baseline 的 `idx_tasks_retention(namespace_id, capability_id, status, finished_at)`
+// 前缀对齐，候选集从「整个命名空间」收窄到「某能力」；组织层还在时记录的是
 // `idx_tasks_parent(namespace_id=?)` 前缀范围扫 + TEMP B-TREE 排序。
 // 仍要记住一条不变的事实：`LIMIT` 只限**删除行数**，**不限扫描/排序行数**
 // ——即使只删 1000 行，子查询仍会把该范围的候选行全部扫一遍再排序；
@@ -260,9 +260,9 @@ func (d *DB) DeleteExpiredTerminalTasks(ctx context.Context, namespaceID, capabi
 // **不按 source 过滤**：source='route' 的剪枝行（#142）与外部事件受同一份保留期约束。
 // 剪枝行同样是「只进不出」的增长来源，给它开特例等于把泄漏留在库里。
 //
-// **查询计划**（迁移 12 之后）：`namespace_id = ? AND created_at < ?` 与迁移 12 新建的
+// **查询计划**（命名空间隔离之后）：`namespace_id = ? AND created_at < ?` 与 baseline 的
 // `idx_events_retention(namespace_id, created_at)` 对齐，候选集从「整个命名空间」的
-// 全表扫变成索引范围扫；迁移 12 之前记录的 `idx_events_trace(namespace_id=?)` 范围扫
+// 全表扫变成索引范围扫；组织层还在时记录的 `idx_events_trace(namespace_id=?)` 范围扫
 // + TEMP B-TREE 排序已不适用。同 DeleteExpiredTerminalTasks：`LIMIT` 只限**删除行数**，
 // 不限**扫描/排序行数**；ORDER BY created_at 是否能免掉排序这里不重新实测。
 //

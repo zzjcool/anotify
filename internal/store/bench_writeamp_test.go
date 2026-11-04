@@ -2,7 +2,7 @@ package store
 
 // #237 写放大的**可复现度量**（契约 §3 修正②）——留在仓库里，不用每次重造探针。
 //
-// 迁移 16 给 tasks 加了 (namespace_id, created_at, id) 索引：读路径因此能走覆盖索引
+// baseline 的 tasks 上有 (namespace_id, created_at, id) 索引：读路径因此能走覆盖索引
 // 反向扫、没有 TEMP B-TREE（见 migrate16_test.go 的 EXPLAIN 断言）。代价在**写**路径——
 // 每插一行都要多维护一棵 b-tree（插入 + 可能的页分裂）。契约要求把这份代价量出来、
 // 并且**可复现**，而不是「应该不大」。
@@ -54,7 +54,7 @@ const (
 	// writeAmpDropIndexEnv 是 A/B 开关：=1 时先 DROP 掉列表索引，量「没有这条索引」的写成本。
 	writeAmpDropIndexEnv = "WRITEAMP_DROP_INDEX"
 
-	// writeAmpIndexName 必须与迁移 16 的索引名一致（migrate16_test.go 的 tasksListIndexName）。
+	// writeAmpIndexName 必须与 schema.sql 里的索引名一致（见 schema_baseline_test.go 的 baselineIndexes）。
 	// 这里单独写一份常量是为了让本文件自解释；两侧是否漂了由下面 DROP 之后的存在性断言兜住。
 	writeAmpIndexName = "idx_tasks_ns_created"
 )
@@ -75,10 +75,10 @@ func BenchmarkCreateTasksWriteAmplification(b *testing.B) {
 
 	// ---------- A/B 的前置断言（少了它，两组数字可能根本没差异） ----------
 	// 两种失败方式都是静默的，所以必须在**开跑之前**断言掉：
-	//   ① A 臂索引没建出来（迁移 16 没跑 / 名字改了）→ 两臂其实是同一组实验；
+	//   ① A 臂索引没建出来（索引没建 / 名字改了）→ 两臂其实是同一组实验；
 	//   ② B 臂 DROP 没生效（名字写错）→ 同上。
 	if !writeAmpIndexExists(b, db) {
-		b.Fatalf("迁移 16 的索引 %s 不存在（A 臂没有可量的对象；索引改名了？）", writeAmpIndexName)
+		b.Fatalf("baseline 的索引 %s 不存在（A 臂没有可量的对象；索引改名了？）", writeAmpIndexName)
 	}
 	if dropIndex {
 		if _, err := db.Exec(`DROP INDEX ` + writeAmpIndexName); err != nil {
