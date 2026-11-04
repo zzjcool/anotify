@@ -381,6 +381,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	// PATCH 只改 display_name（装饰字段），不是能力定义的新版本。
 	mux.Handle("PATCH /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
+	// 最新产物的**解析后**内容（详情页展示脚本用）。单列一条而不是塞进上面的列表：
+	// files 是全部文件正文，塞进列表会把响应撑爆（见 capabilityArtifact 的注释）。
+	mux.Handle("GET /v1/capabilities/{id}/artifact", noStore(sessMW(http.HandlerFunc(consoleH.capabilityArtifact))))
 	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
 	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
 	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))

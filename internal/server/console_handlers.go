@@ -979,6 +979,109 @@ func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, map[string]any{"capability": updated})
 }
 
+// capabilityArtifactView 是「最新产物里详情页直接能用的那几项」的线上形状。
+//
+// Requires 是产物声明的外部命令（节点探活/部署前检查用），详情页拿它显示
+// 「这台机器上要预装什么」——它属于能力定义，和脚本正文一样只在这里暴露。
+type capabilityArtifactView struct {
+	Digest     string            `json:"digest"`
+	Entrypoint string            `json:"entrypoint"`
+	Files      map[string]string `json:"files"`
+	TimeoutSec int               `json:"timeoutSec"`
+	WorkDir    string            `json:"workDir"`
+	Requires   []string          `json:"requires"`
+}
+
+// capabilityArtifact 返回某能力**最新产物**的解析后内容（详情页展示脚本用）。
+//
+// 与 GET /v1/artifacts 的分工：那个返回的是 base64 的 spec 原文（部署与排障用），
+// 这里返回解析后的文件正文（「让人看一眼脚本」用）。两份形状各有用途，不合并——
+// 一个是传输格式，一个是展示格式，合起来两种用法都得将就。
+//
+// 为什么不把它塞进 GET /v1/capabilities：files 是**全部文件正文**
+// （单文件 256 KiB、合计 1 MiB，见 internal/artifact 的上限），列表一次几十条能力
+// 会被撑爆；而绝大多数时候没人展开详情。所以详情展开时才懒加载这一个端点。
+//
+// 404 语义（防探测）：**能力不属于本命名空间**与**能力没有产物**返回逐字节相同的
+// body。否则用两种 body 就能问出「这个 id 在本命名空间存在吗」，而能力 id 是跨
+// 命名空间可枚举的。
+func (h *consoleHandler) capabilityArtifact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	// 单对象读：`*` 没有定义（「一整个汇总的产物」是什么？）→ 400。
+	ns, ok := h.resolveNamespace(w, r, "", false)
+	if !ok {
+		return
+	}
+	// 两种 404 共用这一个写入点：body 逐字节相同是**刻意**的（见函数注释）。
+	notFound := func() {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "capability not found", "code": "not_found"})
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		notFound()
+		return
+	}
+	if _, err := h.db.GetCapabilityByID(r.Context(), ns.ID, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFound()
+			return
+		}
+		if handleNamespaceError(w, err) {
+			return
+		}
+		slog.Error("get capability for artifact failed",
+			"event", "console.caps.artifact_get_failed", "namespace_id", ns.ID, "capability_id", id, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	row, err := h.db.LatestArtifact(r.Context(), ns.ID, id)
+	if err != nil {
+		if errors.Is(err, store.ErrArtifactNotFound) {
+			// 还没产物是**正常状态**（刚定义、还没部署），但对「这一份产物」
+			// 而言就是不存在 —— 与能力不存在同一个回答，不额外泄露信息。
+			notFound()
+			return
+		}
+		if handleNamespaceError(w, err) {
+			return
+		}
+		slog.Error("latest artifact failed",
+			"event", "console.caps.artifact_latest_failed", "namespace_id", ns.ID, "capability_id", id, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	// artifacts.spec 存的是**整份产物**的 canonical JSON，run 在 spec 下面。
+	var art artifact.Artifact
+	if err := json.Unmarshal(row.Spec, &art); err != nil {
+		// 解不开不是「不存在」：这是库里的数据坏了，如实报 500（前端会显示载入失败 + 重试）。
+		slog.Error("decode artifact spec failed",
+			"event", "console.caps.artifact_decode_failed",
+			"namespace_id", ns.ID, "capability_id", id, "artifact_id", row.ID, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	// 空 map / 空切片一律给 `{}` / `[]`（不变量 I9）：前端不必为一个 null 判空。
+	files := art.Spec.Run.Files
+	if files == nil {
+		files = map[string]string{}
+	}
+	requires := art.Spec.Requires
+	if requires == nil {
+		requires = []string{}
+	}
+	writeJSON(w, http.StatusOK, capabilityArtifactView{
+		Digest:     row.Digest,
+		Entrypoint: art.Spec.Run.Entrypoint,
+		Files:      files,
+		TimeoutSec: art.Spec.Run.TimeoutSec,
+		WorkDir:    art.Spec.Run.WorkDir,
+		Requires:   requires,
+	})
+}
+
 func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request) {
 	// 读端点：`*` 允许（跨命名空间汇总）。
 	ns, ok := h.resolveNamespace(w, r, "", true)
@@ -1039,7 +1142,7 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		// 而这属于**能力定义**的一部分（#289），不该要求用户去翻产物。
 		// 取不到产物时留 null：前端据此显示「—」，而不是把两行藏起来
 		// ——藏起来会让人以为这个能力没有超时。
-		Run *artifact.Run `json:"run,omitempty"`
+		Run *capabilityRunView `json:"run,omitempty"`
 	}
 	// 每种能力由哪些节点声明。
 	//
@@ -2034,7 +2137,19 @@ func intParam(raw string, def, min, max int) int {
 //
 // 每个能力一次查询：列表本来就有同样量级的 N 次查询（谁声明了它），
 // 这里不额外引入批量接口；等能力数上千再优化。
-func (h *consoleHandler) capabilityRun(ctx context.Context, c *store.CapabilityVersion) *artifact.Run {
+// capabilityRunView 是列表里「怎么跑」的**瘦投影**：不含 files。
+//
+// 为什么必须剥掉 files：artifact.Run 的 files 没有 omitempty，直接把 Run 塞进
+// 列表响应会让**每一行能力都带全部脚本正文**——列表页不需要它（详情区有专门的
+// GET /v1/capabilities/{id}/artifact 懒加载），而一份几十个能力、每个几 KB 脚本的
+// 列表会白涨几百 KB。
+type capabilityRunView struct {
+	Entrypoint string `json:"entrypoint"`
+	TimeoutSec int    `json:"timeoutSec"`
+	WorkDir    string `json:"workDir"`
+}
+
+func (h *consoleHandler) capabilityRun(ctx context.Context, c *store.CapabilityVersion) *capabilityRunView {
 	a, err := h.db.LatestArtifact(ctx, c.NamespaceID, c.ID)
 	if err != nil || a == nil {
 		return nil
@@ -2053,5 +2168,5 @@ func (h *consoleHandler) capabilityRun(ctx context.Context, c *store.CapabilityV
 	if r.Entrypoint == "" && r.TimeoutSec == 0 && r.WorkDir == "" && len(r.Files) == 0 {
 		return nil
 	}
-	return &r
+	return &capabilityRunView{Entrypoint: r.Entrypoint, TimeoutSec: r.TimeoutSec, WorkDir: r.WorkDir}
 }

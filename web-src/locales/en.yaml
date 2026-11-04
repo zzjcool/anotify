@@ -1275,6 +1275,31 @@ caps:
     hash: Content hash
     copy: Copy
     unknown: '—'
+    script: Script
+    script_entrypoint: entrypoint
+    script_empty: This capability has no artifact yet (no script given at definition time, or not deployed)
+    script_failed: Failed to load the script
+    retry: Retry
+    add_output_cta: Add an output (otherwise it cannot emit anything)
+  edit:
+    btn: Edit
+    title: 'New version: {name}'
+    banner: 'Will create {ref}'
+    from_version: 'Copied from {ref}'
+    sticky_carried: 'Sticky routing {v}'
+    lifecycle_carried: 'Lifecycle {v}'
+    no_artifact: This capability has no artifact yet — start the script from blank
+    name_locked: 'Name is locked: this version keeps the same name. Renaming means a different capability.'
+    downstream_keep: '{n} downstream edge(s) will follow the new version — edges bind to the name, not the version.'
+    submit: Publish new version
+    publishing: Publishing…
+    failed: 'Publish failed: '
+    created: 'Published {ref}'
+    impact_title: This version breaks existing downstream edges
+    impact_changes: What changed
+    impact_links: 'Edges that will break (they bind to the name, so the new version is what they point to)'
+    impact_no_links: No follow-latest downstream is affected by this version
+    force: Publish anyway
   add:
     btn: downstream
     title: 'Add a downstream to “{port}”'

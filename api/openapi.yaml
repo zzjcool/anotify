@@ -1789,6 +1789,46 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  # ========== 能力最新产物（详情页看脚本）==========
+  /capabilities/{id}/artifact:
+    get:
+      tags: [capabilities]
+      summary: 能力最新产物的解析后内容（详情页展示脚本）
+      description: |
+        返回该能力**最新一份产物**里能直接给人看的东西：文件正文（`files`，普通文本，
+        **不是** base64）、入口文件名、超时、工作目录、预装依赖。
+
+        与 `GET /artifacts?capabilityId=` 的分工：那个返回 `spec` 原文（base64，给部署与
+        排障用），这里返回解析后的文件正文（给「让人看一眼脚本」用）。
+
+        为什么不并进 `GET /capabilities`：`files` 是全部文件正文（单文件 256 KiB、
+        合计 1 MiB），列表一次几十条能力会被撑爆 —— 详情展开时才懒加载这一个端点。
+
+        **404 的两种情形 body 逐字节相同**（防越权探测）：
+
+        - 能力不属于该命名空间（或不存在）
+        - 能力还没有产物（定义时没填脚本 / 还没部署）
+
+        `namespaceId` **必填**（`*` → 400：单个能力的产物没有跨命名空间汇总形态）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 能力的 capability_versions.id
+        - $ref: "#/components/parameters/NamespaceId"
+      responses:
+        "200":
+          description: 最新产物的解析后内容
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CapabilityArtifact" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ========== 事件中心：出口表 ==========
   /edges:
     get:
@@ -3516,9 +3556,6 @@ components:
             workDir:
               type: string
               description: 绝对路径；空 = 每次任务一个独立目录（#289：目录属于能力定义，不是节点配置）
-            requires:
-              type: array
-              items: { type: string }
         sticky:
           type: string
           description: 粘性路由的 selector 键名（空表示不粘）
@@ -3563,6 +3600,35 @@ components:
                   id: { type: string }
                   name: { type: string }
                   status: { type: string, enum: [online, offline, draining] }
+
+    CapabilityArtifact:
+      type: object
+      required: [digest, entrypoint, files, timeoutSec, workDir, requires]
+      properties:
+        digest:
+          type: string
+          description: '最新产物的内容寻址标识 `sha256:<64 hex>`'
+          example: "sha256:ab12"
+        entrypoint:
+          type: string
+          description: 入口文件名（一定在 `files` 里，且正文以 `#!` 开头）
+          example: run.sh
+        files:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            相对路径 → **文件正文**（普通文本，不是 base64）。
+            空产物（没有文件）返回 `{}` 而不是 null。
+        timeoutSec:
+          type: integer
+          description: 0 = 不设本地超时（交给中枢租约兜底）
+        workDir:
+          type: string
+          description: 绝对路径；空 = 每次任务一个独立目录
+        requires:
+          type: array
+          items: { type: string }
+          description: 机器上必须预装的命令（空时 `[]`）
 
     CapabilityInput:
       type: object

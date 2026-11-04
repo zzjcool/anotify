@@ -1275,6 +1275,31 @@ caps:
     hash: 内容指纹
     copy: 复制
     unknown: '—'
+    script: 脚本
+    script_entrypoint: 入口
+    script_empty: 这个能力还没有产物（定义时没填脚本，或还没部署）
+    script_failed: 脚本载入失败
+    retry: 重试
+    add_output_cta: 加一个出口（否则它 emit 不出任何东西）
+  edit:
+    btn: 编辑
+    title: '新版本：{name}'
+    banner: '将创建 {ref}'
+    from_version: '从 {ref} 复制'
+    sticky_carried: '粘性路由 {v}'
+    lifecycle_carried: '生命周期 {v}'
+    no_artifact: 这个能力还没有产物，脚本从空白开始写
+    name_locked: '名字锁定：这一版就叫这个名字，改名字请另建一个能力。'
+    downstream_keep: '已有 {n} 条下游会跟着新版本走 —— 边接的是名字，不是版本号。'
+    submit: 发布新版本
+    publishing: 发布中…
+    failed: '发布失败：'
+    created: '已发布 {ref}'
+    impact_title: 这一版会破坏已有的下游
+    impact_changes: 变了什么
+    impact_links: '会断的下游（它们接的是名字，新版本就是它们指向的版本）'
+    impact_no_links: 没有跟随最新的下游受这一版影响
+    force: 仍然发布
   add:
     btn: 下游
     title: '给「{port}」加下游'

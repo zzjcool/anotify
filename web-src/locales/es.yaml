@@ -1275,6 +1275,31 @@ caps:
     hash: Hash de contenido
     copy: Copiar
     unknown: '—'
+    script: Script
+    script_entrypoint: entrada
+    script_empty: Esta capacidad aún no tiene artefacto (sin script al definirla, o sin desplegar)
+    script_failed: No se pudo cargar el script
+    retry: Reintentar
+    add_output_cta: Añadir una salida (si no, no puede emitir nada)
+  edit:
+    btn: Editar
+    title: 'Nueva versión: {name}'
+    banner: 'Se creará {ref}'
+    from_version: 'Copiado de {ref}'
+    sticky_carried: 'Enrutado fijo {v}'
+    lifecycle_carried: 'Ciclo de vida {v}'
+    no_artifact: Esta capacidad aún no tiene artefacto — el script empieza en blanco
+    name_locked: 'Nombre bloqueado: esta versión mantiene el mismo nombre. Renombrar significa otra capacidad.'
+    downstream_keep: '{n} arista(s) de destino seguirán la nueva versión — las aristas apuntan al nombre, no a la versión.'
+    submit: Publicar nueva versión
+    publishing: Publicando…
+    failed: 'Error al publicar: '
+    created: 'Publicado {ref}'
+    impact_title: Esta versión rompe aristas de destino existentes
+    impact_changes: Qué cambió
+    impact_links: 'Aristas que se romperán (apuntan al nombre, así que la nueva versión es su destino)'
+    impact_no_links: Ninguna arista que sigue la última se ve afectada
+    force: Publicar igualmente
   add:
     btn: destino
     title: 'Añadir destino a «{port}»'

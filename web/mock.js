@@ -804,6 +804,86 @@
 		];
 	})();
 
+	// ---------- 初始产物（脚本）----------
+	//
+	// 用户的原话是「touchnow 我看不到具体什么脚本啊」——能力详情区现在会展示
+	// 产物里的文件正文，那演示数据里就必须真的有脚本，否则每个能力都写
+	// 「还没有产物」，那个功能在预览里等于不存在。
+	//
+	// 只给两条：
+	//   analyze-pr    有脚本 + 有出口（完整形态：能看出它会 emit 什么）
+	//   gen-changelog 有脚本 + **没有出口**（emit 不出去的那个形态，
+	//                 正好演示详情里的「加一个出口」引导）
+	(function initArtifactScripts() {
+		const scripts = {
+			"analyze-pr": {
+				requires: ["jq"],
+				run: {
+					entrypoint: "run.sh",
+					timeoutSec: 600,
+					workDir: "",
+					env: {},
+					files: {
+						"run.sh": [
+							"#!/bin/bash",
+							"set -euo pipefail",
+							'cd "$ANOTIFY_WORKDIR"',
+							"",
+							'lines="${ANOTIFY_PARAM_CHANGEDLINES:-0}"',
+							'echo "changed lines: $lines"',
+							"if [ \"$lines\" -gt 200 ]; then",
+								"anotify-agent emit --port needs-fix --data '{\"scope\":\"all\"}'",
+							"else",
+								'anotify-agent emit --port approved --data "{}"',
+							"fi",
+							"",
+						].join("\n"),
+						"lib/emit.sh": [
+							"#!/bin/bash",
+							"# emit 的薄封装：端口必须已声明在 outputs 里（不变量 I2）",
+							"set -euo pipefail",
+							'exec "$ANOTIFY_AGENT_BIN" emit --port "$1" --data "${2:-{}}"',
+						].join("\n"),
+					},
+				},
+			},
+			"gen-changelog": {
+				requires: [],
+				run: {
+					entrypoint: "run.sh",
+					timeoutSec: 300,
+					workDir: "",
+					env: {},
+					files: {
+						"run.sh": [
+							"#!/bin/bash",
+							"set -euo pipefail",
+							'cd "$ANOTIFY_WORKDIR"',
+							"",
+							"# 没有声明出口 = 不发 emit（终端能力，合法）",
+							'git log --oneline -20 > CHANGELOG.txt',
+							'echo "已写入 CHANGELOG.txt"',
+						].join("\n"),
+					},
+				},
+			},
+		};
+		for (const [name, spec] of Object.entries(scripts)) {
+			const c = state.capabilities.find((x) => x.name === name);
+			if (!c) continue;
+			c.requires = spec.requires.slice();
+			c.run = spec.run;
+			c.digest = mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run }));
+			state.artifacts.push({
+				id: uid("art"),
+				namespaceId: c.namespaceId,
+				capabilityId: c.id,
+				digest: c.digest,
+				createdAt: now() - 3600,
+			});
+		}
+	})();
+
 	// ---------- 初始部署 ----------
 	//
 	// 造出四种状态各来几行，好让「能力页的部署列」与「节点页的已缓存产物」
@@ -2581,6 +2661,31 @@
 		}),
 	);
 
+	// 最新产物的**解析后**内容（详情页展示脚本用）。
+	//
+	// 真后端从 artifacts.spec.run 里解出来；mock 的产物就是能力对象上的 run
+	// （POST 时写进去的），所以直接投影即可 —— 但**形状必须一致**，否则控制台
+	// 在预览里能跑、在真后端会拿不到脚本。
+	//
+	// 404 语义与真后端一样：“不属于本命名空间”与“没有产物”同一个回答。
+	on("GET", /^\/v1\/capabilities\/([^/]+)\/artifact$/, (ctx) => {
+		const scope = nsScope(ctx.query);
+		const c = state.capabilities.find((x) => x.id === ctx.m[1]);
+		if (!c || (scope !== null && c.namespaceId !== scope) || !c.run || !c.run.entrypoint) {
+			return json({ error: "capability not found", code: "not_found" }, 404);
+		}
+		return json({
+			digest:
+				c.digest ||
+				mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run })),
+			entrypoint: c.run.entrypoint,
+			files: c.run.files || {},
+			timeoutSec: c.run.timeoutSec || 0,
+			workDir: c.run.workDir || "",
+			requires: c.requires || [],
+		});
+	});
+
 	on("POST", /^\/v1\/capabilities$/, (ctx) => {
 		const b = ctx.body || {};
 		if (!b.name) return err(400, "name is required");
@@ -2598,6 +2703,61 @@
 			: 1;
 		const c = cap(b.name, b.version || nextVer, b.outputs || [], b.paramsSchema);
 		if (b.displayName) c.displayName = String(b.displayName).trim();
+		// sticky / lifecycle 是能力定义的一部分（参与 contentHash）。
+		// 控制台发新版本时会把当前值原样带过来，预览里也得真的接住 ——
+		// 否则「发一版就把粘性路由弄丢了」在预览里永远复现不了。
+		if (typeof b.sticky === "string") c.sticky = b.sticky;
+		if (b.lifecycle && typeof b.lifecycle === "object") c.lifecycle = b.lifecycle;
+
+		// 升级闸门（P2.2）：新版本成为 latest 且删了出口 → 409 upgrade_breaking，
+		// 除非显式传 force:true。
+		//
+		// 影响面必须真的算出来（变了什么 + 哪几条 link 会断）：控制台的「仍然发布」
+		// 按钮就是靠它让人做决定的，只给一句“冲突”等于没给。
+		//
+		// 只实现 removed_port 一类（删出口）：这是用户实际会踩到的那一条
+		// （「出口清空 → 下游全断」），mock 不需要把整套契约比较重写一遍。
+		const prev = existing.length
+			? existing.reduce((a, x) => (x.version > a.version ? x : a))
+			: null;
+		if (prev && c.version > prev.version && b.force !== true) {
+			const nextPorts = new Set(c.outputs || []);
+			const removed = (prev.outputs || []).filter((p) => !nextPorts.has(p));
+			if (removed.length) {
+				const links = [];
+				for (const e of state.edges) {
+					if (e.fromIsSource) continue;
+					if (!removed.includes(e.fromPort)) continue;
+					const from = splitRef(e.fromRef);
+					if (from.pinned || from.name !== c.name) continue;
+					links.push({
+						fromRef: e.fromRef,
+						port: e.fromPort,
+						toRef: e.toRef,
+						reason: '出口 "' + e.fromPort + '" 在新版里被删掉了，这条 link 会断',
+					});
+				}
+				return json(
+					{
+						error:
+							"升级 " + c.name + "@" + c.version + " 会破坏已有的 name 型 link",
+						code: "upgrade_breaking",
+						upgradeImpact: {
+							capability: c.name,
+							fromVersion: prev.version,
+							toVersion: c.version,
+							breaking: true,
+							changes: removed.map((p) => ({
+								kind: "removed_port",
+								detail: 'port "' + p + '" 在新版里被删掉了',
+							})),
+							links: links,
+						},
+					},
+					409,
+				);
+			}
+		}
 
 		// links：能力 + 下游边**一次提交**（与真后端同语义：要么全成，要么全不成）。
 		//

@@ -368,6 +368,106 @@ async function main() {
 		}
 	}
 
+	// ---------- 能力最新产物（详情页看脚本）----------
+	//
+	// 用户报的问题：「touchnow 我看不到具体什么脚本啊」。脚本存在产物里
+	// （artifacts.spec.run.files），前端在详情展开时才懒加载这个端点。
+	//
+	// 四条必须钉住，少一条这个功能就是不可用的：
+	//   ① 返回**解析后**的 files（普通文本，不是 GET /artifacts 的 base64 spec）
+	//   ② 没有产物 → 404（刚定义、没填脚本是正常状态，不是 500）
+	//   ③ 跨命名空间 → 404，且与「不存在」**逐字节相同**（否则 body 就是 id 探测器）
+	//   ④ 未登录 → 401
+	{
+		const scriptBody = "#!/bin/sh\nset -eu\necho artifact-contract\n";
+		const withRun = await H.req(B, "/v1/capabilities", {
+			session,
+			method: "POST",
+			body: {
+				name: "contract.artifact",
+				outputs: ["done"],
+				paramsSchema: { type: "object" },
+				run: {
+					entrypoint: "run.sh",
+					files: { "run.sh": scriptBody },
+					timeoutSec: 77,
+					workDir: "/tmp/work",
+				},
+				requires: ["curl"],
+			},
+		});
+		H.eq("建带产物的能力 → 200", withRun.status, 200);
+		const capId = withRun.json?.capability?.id;
+		H.check("建带产物的能力：响应里有 id", !!capId, String(withRun.text).slice(0, 160));
+		if (capId) {
+			const art = await H.req(B, `/v1/capabilities/${capId}/artifact`, { session });
+			H.eq("GET /v1/capabilities/{id}/artifact → 200", art.status, 200);
+			H.check(
+				"① 产物端点返回解析后的 files（普通文本，不是 base64）",
+				art.json?.files?.["run.sh"] === scriptBody && art.json?.entrypoint === "run.sh",
+				JSON.stringify(art.json).slice(0, 220),
+			);
+			H.check(
+				"① 产物端点带 digest / timeoutSec / workDir / requires",
+				typeof art.json?.digest === "string" &&
+					art.json.digest.startsWith("sha256:") &&
+					art.json?.timeoutSec === 77 &&
+					art.json?.workDir === "/tmp/work" &&
+					Array.isArray(art.json?.requires) &&
+					art.json.requires[0] === "curl",
+				JSON.stringify(art.json).slice(0, 260),
+			);
+
+			// ② 没有产物 → 404（能力存在，但它还没被定义过脚本）
+			const plain = await H.req(B, "/v1/capabilities", {
+				session,
+				method: "POST",
+				body: { name: "contract.noartifact", outputs: [], paramsSchema: { type: "object" } },
+			});
+			H.eq("建无产物的能力 → 200", plain.status, 200);
+			const noArt = await H.req(
+				B,
+				`/v1/capabilities/${plain.json?.capability?.id}/artifact`,
+				{ session },
+			);
+			H.eq("② 没有产物 → 404", noArt.status, 404);
+
+			// ③ 跨命名空间 404 与「不存在」逐字节相同
+			const nsRes = await H.req(B, "/v1/namespaces", {
+				session,
+				method: "POST",
+				body: { slug: "art-" + Date.now(), name: "产物隔离验证" },
+			});
+			const otherNs = (nsRes.json?.namespace || nsRes.json)?.id;
+			H.check("③ 建第二个命名空间拿到 id", !!otherNs, String(nsRes.text).slice(0, 160));
+			if (otherNs) {
+				const cross = await H.req(B, `/v1/capabilities/${capId}/artifact`, {
+					session,
+					namespaceId: otherNs,
+				});
+				const missing = await H.req(
+					B,
+					"/v1/capabilities/cap_does_not_exist/artifact",
+					{ session, namespaceId: otherNs },
+				);
+				H.check(
+					"③ 跨命名空间与「不存在」都是 404",
+					cross.status === 404 && missing.status === 404,
+					`cross=${cross.status} missing=${missing.status}`,
+				);
+				H.check(
+					"③ 两种 404 的响应 body 逐字节相同（防越权探测）",
+					cross.text === missing.text,
+					JSON.stringify({ cross: cross.text, missing: missing.text }).slice(0, 220),
+				);
+			}
+
+			// ④ 未登录 → 401
+			const anon = await H.req(B, `/v1/capabilities/${capId}/artifact`, {});
+			H.eq("④ 产物端点未登录 → 401", anon.status, 401);
+		}
+	}
+
 	// ---------- 静态/缓存 ----------
 	H.eq("/ → 200", (await H.req(B, "/")).status, 200);
 	const idxHeaders = (await H.req(B, "/index.html")).headers;

@@ -181,6 +181,14 @@ func TestListCapabilitiesExposesRun(t *testing.T) {
 		t.Errorf("run.workDir = %v, want /home/me/project", run["workDir"])
 	}
 
+	// 列表必须**不带脚本正文**：files 是详情区按需懒加载的，
+	// 每行都塞进来会让列表白涨几百 KB（几十个能力 × 每个几 KB 脚本）。
+	for _, k := range []string{"files", "env"} {
+		if _, exists := run[k]; exists {
+			t.Errorf("列表里的 run 不该有 %q（详情用 /artifact 懒加载）：%v", k, run)
+		}
+	}
+
 	// 失败方向：每个能力都得有名字，列表不能因为某条没有产物就少人
 	if len(got) == 0 {
 		t.Fatalf("能力行是空的")

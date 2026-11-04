@@ -306,6 +306,181 @@
         color: var(--faint);
         overflow-wrap: anywhere;
       }
+
+      /* ---------- 详情区：脚本（产物里的文件正文）----------
+         用户的原话是「touchnow 我看不到具体什么脚本啊」。脚本存在产物里
+         （artifacts.spec.run.files），随 digest 走、中枢只存不解释，所以详情
+         展开时才懒加载 GET /v1/capabilities/{id}/artifact。
+         它**不是**第五节：能力定义的分节口径（参数 → 出口 → 入边 → 运行）没变，
+         脚本是「它到底跑什么」的实现，挂在详情最上面、自己占一块。 */
+      .cap-detail-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .cap-script {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+      .cap-script-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .cap-detail-sub {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* 文件路径与入口徽章：等宽，与脚本正文同一套视觉 */
+      .cap-script-path {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+      .cap-script-badge {
+        padding: 0.02rem 0.35rem;
+        border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+        border-radius: var(--r-xs);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      /* 入口文件名的槽位：空的时候也要占位（否则标题行会在载入完成时抽一下） */
+      .cap-script-entry {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        min-height: 1rem;
+      }
+      .cap-script-file {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      .cap-script-file-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      /* 「复制」永远靠右：脚本正文可以很长，按钮跟在路径后面会随正文宽度跑掉 */
+      .cap-script-copy {
+        margin-left: auto;
+      }
+      /* 脚本正文：不折行（缩进与对齐必须保留），横向滚动 */
+      .cap-script-pre {
+        margin: 0;
+        padding: 0.5rem 0.6rem;
+        max-height: 22rem;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 11px;
+        line-height: 1.65;
+        white-space: pre;
+      }
+      .cap-script-empty {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .cap-script-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      /* 载入中不用空白块（空白会在接口回来时长出一大块 → 视觉跳动） */
+      .cap-script-skel {
+        display: grid;
+        gap: 6px;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+      }
+      .cap-script-skel .skeleton {
+        height: 12px;
+      }
+      .cap-script-skel .skeleton + .skeleton {
+        width: 68%;
+      }
+
+      /* ---------- 新版本（编辑能力）----------
+         能力定义 append-only（I8）：没有「就地改」，改定义 = 发一个新版本。
+         弹层顶部把「将创建 name@N」说清楚，名字输入框锁成只读。 */
+      .cap-version-banner {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        margin-bottom: 0.8rem;
+        padding: 0.55rem 0.7rem;
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+        border-radius: var(--r-sm);
+        background: var(--accent-soft);
+      }
+      .cap-version-title {
+        font-size: 12px;
+        color: var(--accent);
+      }
+      .cap-version-meta {
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      /* 锁定的输入框：压暗 + 不改光标样式，让人一眼看出「这里不能改」 */
+      .cap-lock-input {
+        opacity: 0.7;
+      }
+      /* 409 影响面：这是「决定要不要 force」的唯一依据，必须能把每一行都读完 */
+      .cap-impact {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        margin-bottom: 0.8rem;
+        padding: 0.6rem 0.7rem;
+        border: 1px dashed color-mix(in srgb, var(--warn) 35%, transparent);
+        border-radius: var(--r-sm);
+        background: var(--warn-soft);
+        color: var(--warn);
+        font-size: 11px;
+      }
+      .cap-impact-title {
+        font-size: 12px;
+        color: var(--warn);
+      }
+      .cap-impact-hint {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .cap-impact-sec {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+      }
+      .cap-impact-row {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        line-height: 1.6;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+      .cap-impact-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        margin-top: 0.2rem;
+      }
       /* 加下游的小面板：就地展开、不弹层 —— 用户要一边看「现在接了谁」一边加 */
       .cap-add-panel {
         display: flex;
@@ -696,6 +871,16 @@
     </div>
 
     <div class="modal-body">
+      <!-- 新版本模式（编辑能力）：把「改的到底是什么」钉在最上面。
+           能力定义 append-only（I8），所以「编辑」永远是**发一个新版本**；
+           版本号 = 当前 latest + 1（由后端同名自增，这里只是预告）。 -->
+      <div id="cap-version-banner" class="cap-version-banner hidden">
+        <div id="cap-version-title" class="cap-version-title"></div>
+        <div id="cap-version-meta" class="cap-version-meta"></div>
+      </div>
+      <!-- 409 upgrade_breaking 的影响面：变了什么 + 哪几条 link 会断 + 「仍然发布」 -->
+      <div id="cap-impact" class="cap-impact hidden"></div>
+
       <!-- 步骤条：与部署弹层共用同一套 .cap-steps -->
       <div id="cap-steps" class="cap-steps">
         <span class="cap-step active" data-step="1"><span class="cap-step-n">1</span>{{t "caps.step_pick"}}</span>
@@ -716,7 +901,7 @@
           <div class="field">
             <label class="field-label" for="cap-name">{{t "caps.form.name"}}<span class="tpl-req">*</span></label>
             <input id="cap-name" class="input" placeholder="review" />
-            <p class="field-hint">{{t "caps.form.name_hint"}}</p>
+            <p id="cap-name-hint" class="field-hint">{{t "caps.form.name_hint"}}</p>
           </div>
           <div class="field">
             <label class="field-label" for="cap-display-name">{{t "caps.form.display_name"}}</label>
@@ -777,7 +962,7 @@
 
         <!-- 下游是**可选的**：新建时可以先只声明出口，事后再到详情区加下游。
              但不是所有人都知道出口页在哪，所以给一条最短的“串起来”的路径。 -->
-        <div class="mt-4">
+        <div id="cap-down-wrap" class="mt-4">
           <div class="card-head mb-2">
             <h4 class="card-title">{{t "caps.form.downstream"}}</h4>
             <span class="tpl-hint">{{t "caps.form.downstream_optional"}}</span>
@@ -785,8 +970,17 @@
           <div id="cap-down-rows"></div>
           <p class="field-hint mt-1">{{t "caps.form.downstream_hint"}}</p>
         </div>
+        <!-- 新版本模式下如果**已有**跟随最新的下游，选择器整栏隐藏：
+             那些边接的是名字，新版本自动就是它们指向的版本 —— 在这里再选一次
+             只会让人以为「需要重接」，而重接会真的多出几条边。 -->
+        <div id="cap-down-existing" class="mt-4 hidden">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.form.downstream"}}</h4>
+          </div>
+          <p id="cap-down-existing-text" class="field-hint"></p>
+        </div>
 
-        <div class="mt-4">
+        <div id="cap-fields-wrap" class="mt-4">
           <h4 class="card-title mb-2">{{t "caps.tpl.params"}}</h4>
           <div id="tpl-fields" class="space-y-3"></div>
         </div>
@@ -839,7 +1033,7 @@
     <div class="modal-foot">
       <button id="tpl-back" type="button" class="btn btn-ghost hidden">← {{t "caps.tpl.back"}}</button>
       <button type="button" onclick="closeCapModal()" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
-      <button id="cap-submit" type="button" onclick="createCapability()" class="btn btn-primary">
+      <button id="cap-submit" type="button" onclick="submitCapModal()" class="btn btn-primary">
         {{t "caps.form.submit"}}
       </button>
     </div>
@@ -947,6 +1141,16 @@
       // 用 Map 而不是普通对象：出口名允许下划线开头（outputPattern 允许 `__proto__`），
       // 用对象键会撞上原型链，这种坑不值得踩。
       let DOWN_SEL = new Map();
+
+      // ART_CACHE：能力 id → 最新产物视图（GET /v1/capabilities/{id}/artifact）。
+      // 懒加载 + 只问一次：产物随 digest 走，在同一个能力行的一生里不会变；
+      // 详情区与「编辑（新版本）」弹层共用这一份（展开过就不必再问）。
+      const ART_CACHE = new Map();
+
+      // VERSION_MODE：非空 = 弹层处在「发新版本」模式（null = 新建能力）。
+      // 两个模式共用同一个弹层（同一份表单、同一份校验），差别只有：
+      // 名字锁定、跳过选模板、预填当前版本、保存走同名 POST + 409 闸门。
+      let VERSION_MODE = null;
 
       let TPLS = [];
       let TPLS_LOADED = false;
@@ -1416,8 +1620,17 @@
             detailBtn.textContent = detailBase + (open ? " ▴" : " ▾");
             if (open) OPEN_DETAIL.add(c.id);
             else OPEN_DETAIL.delete(c.id);
+            // 脚本是懒加载的：展开那一刻才去问产物（列表里不带 files）
+            if (open) loadArtifact(c);
           });
           right.appendChild(detailBtn);
+          // 「编辑」= 发一个新版本（能力定义 append-only，没有就地改）。
+          // 行上给一个：用户看完列表就想改，不该先展开详情才找得到入口。
+          const editBtn = el("button", "btn btn-ghost btn-sm", t("caps.edit.btn", "编辑"));
+          editBtn.type = "button";
+          editBtn.setAttribute("data-act", "edit");
+          editBtn.addEventListener("click", () => openVersionModal(c, editBtn));
+          right.appendChild(editBtn);
           const depBtn = el(
             "button",
             "btn btn-ghost btn-sm",
@@ -1437,6 +1650,9 @@
           // 跟「哪几台机器部署了」是两回事，不应该因为没部署过就不存在。
           row.appendChild(capDetailBlock(c));
           list.appendChild(row);
+          // 展开态能跨 renderCaps 保留，脚本也必须跟着重新取一遍：
+          // 新节点上的脚本块是骨架，不拉一次就永远停在「载入中」。
+          if (OPEN_DETAIL.has(c.id)) loadArtifact(c);
         }
       }
 
@@ -1697,15 +1913,34 @@
         const box = el("div", "cap-detail-secs");
         const outputs = c.outputs || [];
         if (!outputs.length) {
+          if (c.kind === "origin") {
+            // 起点没有预置出口是**正常**的：它的出口就是任意事件类型。
+            box.appendChild(
+              el("div", "cap-detail-empty", t("caps.any_event_type", "任意事件类型（起点）")),
+            );
+            return box;
+          }
+          // 用户真正卡住的地方：他知道要有出口，但不知道「去哪改」。
+          // 所以除了说事实（emit 不出任何东西），必须给一个**能点的下一步**：
+          // 直接进「编辑（新版本）」并聚焦到出口输入框。
           box.appendChild(
             el(
               "div",
               "cap-detail-empty",
-              c.kind === "origin"
-                ? t("caps.any_event_type", "任意事件类型（起点）")
-                : t("caps.detail.no_outputs", "没有声明出口 —— 这个能力 emit 不出任何东西"),
+              t("caps.detail.no_outputs", "没有声明出口 —— 这个能力 emit 不出任何东西"),
             ),
           );
+          const cta = el(
+            "button",
+            "btn btn-ghost btn-sm",
+            t("caps.detail.add_output_cta", "加一个出口（否则它 emit 不出任何东西）"),
+          );
+          cta.type = "button";
+          cta.setAttribute("data-act", "add-output");
+          cta.addEventListener("click", () =>
+            openVersionModal(c, cta, { focusOutputs: true }),
+          );
+          box.appendChild(cta);
           return box;
         }
         if (!EDGES_OK) {
@@ -1887,11 +2122,206 @@
       function capDetailBlock(c) {
         const box = el("div", "cap-detail");
         if (OPEN_DETAIL.has(c.id)) box.classList.add("open");
+        // 编辑入口之一（另一个在行尾）：详情里看完脚本后就想改，不该再往上找按钮。
+        box.appendChild(detailActions(c));
+        box.appendChild(scriptSection(c));
         box.appendChild(detailSec(t("caps.detail.params", "参数契约"), paramsNode(c)));
         box.appendChild(detailSec(t("caps.detail.outputs", "出口与下游"), portsNode(c)));
         box.appendChild(detailSec(t("caps.detail.inbound", "谁接到我"), inboundNode(c)));
         box.appendChild(detailSec(t("caps.detail.runtime", "运行参数"), runtimeNode(c)));
         return box;
+      }
+
+      // detailActions 是详情区顶部的动作行（现在就一个：编辑 / 发新版本）。
+      function detailActions(c) {
+        const row = el("div", "cap-detail-actions");
+        const btn = el("button", "btn btn-ghost btn-sm", t("caps.edit.btn", "编辑"));
+        btn.type = "button";
+        btn.setAttribute("data-act", "edit-version");
+        btn.addEventListener("click", () => openVersionModal(c, btn));
+        row.appendChild(btn);
+        return row;
+      }
+
+      // ==================== 详情区：脚本（产物里的文件正文）====================
+      //
+      // 脚本存在产物里（artifacts.spec.run.files），随 digest 走、中枢只存不解释。
+      // 它**不在**能力列表接口里（files 是全部文件正文，列表会被撑爆），
+      // 所以详情展开时才懒加载这一条。
+
+      // artifactURL 拼新端点的 URL。
+      //
+      // namespaceId 用**能力行自己的**，不用当前 scope：scope 可能是 `*`
+      // （跨命名空间汇总），而这条端点只接受具体 id（`*` → 400）——
+      // 拿汇总态去问单个能力的产物本来也没意义。
+      function artifactURL(c) {
+        const ns = c.namespaceId || scopeNS();
+        const p = new URLSearchParams();
+        if (ns) p.set("namespaceId", ns);
+        const q = p.toString();
+        return (
+          API + "/capabilities/" + encodeURIComponent(c.id) + "/artifact" + (q ? "?" + q : "")
+        );
+      }
+
+      // scriptSection 建出脚本块的**壳**（标题 + 空 body）；内容由 paintScript 填。
+      // data-script-cap 是稳定的定位钩子（e2e / 重新渲染后的重绘都靠它）。
+      function scriptSection(c) {
+        const box = el("div", "cap-script");
+        box.setAttribute("data-script-cap", c.id);
+        const head = el("div", "cap-script-head");
+        head.appendChild(el("span", "cap-detail-sub", t("caps.detail.script", "脚本")));
+        head.appendChild(el("span", "cap-script-entry"));
+        box.appendChild(head);
+        box.appendChild(el("div", "cap-script-body"));
+        // 不在这里填缓存条目：
+        // 「没取过」和「正在取」不是一回事。详情没展开时没人发请求，
+        // 先占一个 {state:"loading"} 会让后来打开的编辑弹层误以为在等一个
+        // 根本不存在的请求（而等不到结果 → 弹层里直接报「还没有产物」）。
+        // 无缓存时 paintScript 同样画骨架（不会空白闪一下）。
+        paintScript(c);
+        return box;
+      }
+
+      // loadArtifact 取一次产物（已取过就直接给；正在取就等那一次的结果）。
+      //
+      // 为什么要等同一个 promise：详情展开与「编辑」弹层可能同时要产物，
+      // 后到的那个如果直接拿到 {state:"loading"} 就会把「还在取」当成「没有产物」，
+      // 于是弹层里蹦出一句「这个能力还没有产物」——明明上一秒还在转。
+      const ART_INFLIGHT = new Map();
+      async function loadArtifact(c) {
+        const cur = ART_CACHE.get(c.id);
+        if (cur && cur.state !== "error") {
+          if (cur.state === "loading") {
+            const p = ART_INFLIGHT.get(c.id);
+            if (p) await p;
+            return ART_CACHE.get(c.id);
+          }
+          return cur;
+        }
+        ART_CACHE.set(c.id, { state: "loading" });
+        paintScript(c);
+        const p = (async () => {
+          try {
+            const data = await Anotify.api(artifactURL(c), {});
+            const entry = data && typeof data === "object" ? data : {};
+            ART_CACHE.set(c.id, { state: "ok", data: entry });
+          } catch (e) {
+            // 404 = 这个能力还没有产物（正常状态：定义时没填脚本 / 还没部署）
+            // 其它 = 真故障（给「重试」，不能让人以为这个能力就是没有脚本）
+            if (e && e.status === 404) ART_CACHE.set(c.id, { state: "empty" });
+            else ART_CACHE.set(c.id, { state: "error", err: e });
+          }
+        })();
+        ART_INFLIGHT.set(c.id, p);
+        await p;
+        ART_INFLIGHT.delete(c.id);
+        paintScript(c);
+        return ART_CACHE.get(c.id);
+      }
+
+      // paintScript 把缓存状态画进**当前 DOM 里**的每一份脚本块。
+      //
+      // 每次都重新查 DOM（而不是闭包存节点）：renderCaps 会整体重建列表，
+      // 异步回来的结果必须落到重建后的节点上，否则"脚本永远载入中"。
+      function paintScript(c) {
+        const entry = ART_CACHE.get(c.id);
+        const nodes = document.querySelectorAll(
+          '.cap-script[data-script-cap="' + String(c.id).replace(/"/g, "") + '"]',
+        );
+        for (const node of nodes) {
+          const body = node.querySelector(".cap-script-body");
+          const slot = node.querySelector(".cap-script-entry");
+          if (body) body.replaceChildren();
+          if (slot) slot.replaceChildren();
+          if (!body) continue;
+
+          // 载入中：给静态骨架（留白会在接口回来时长出一大块 → 视差）
+          if (!entry || entry.state === "loading") {
+            const skel = el("div", "cap-script-skel");
+            skel.appendChild(el("span", "skeleton"));
+            skel.appendChild(el("span", "skeleton"));
+            skel.appendChild(el("span", "skeleton"));
+            body.appendChild(skel);
+            continue;
+          }
+          if (entry.state === "empty") {
+            body.appendChild(
+              el(
+                "div",
+                "cap-script-empty",
+                t(
+                  "caps.detail.script_empty",
+                  "这个能力还没有产物（定义时没填脚本，或还没部署）",
+                ),
+              ),
+            );
+            continue;
+          }
+          if (entry.state === "error") {
+            const row = el("div", "cap-script-row");
+            row.appendChild(
+              el("span", "cap-script-empty", t("caps.detail.script_failed", "脚本载入失败")),
+            );
+            const retry = el("button", "btn btn-ghost btn-sm", t("caps.detail.retry", "重试"));
+            retry.type = "button";
+            retry.addEventListener("click", () => {
+              ART_CACHE.delete(c.id);
+              loadArtifact(c);
+            });
+            row.appendChild(retry);
+            body.appendChild(row);
+            continue;
+          }
+
+          const data = entry.data || {};
+          const files = data.files && typeof data.files === "object" ? data.files : {};
+          const entrypoint = String(data.entrypoint || "");
+          // entrypoint 名字单独露一次：文件很多时，「哪个是入口」不能靠猜
+          if (slot && entrypoint) {
+            slot.appendChild(code(entrypoint, "cap-script-badge"));
+          }
+          const names = Object.keys(files).sort();
+          // 入口文件排最前：脚本区第一眼要看到的应该是「从哪个文件开始跑」，
+          // 剩下的按路径字典序（同一个位置、任何人看到同一个顺序）。
+          if (entrypoint && names.includes(entrypoint)) {
+            names.splice(names.indexOf(entrypoint), 1);
+            names.unshift(entrypoint);
+          }
+          if (!names.length) {
+            body.appendChild(
+              el(
+                "div",
+                "cap-script-empty",
+                t(
+                  "caps.detail.script_empty",
+                  "这个能力还没有产物（定义时没填脚本，或还没部署）",
+                ),
+              ),
+            );
+            continue;
+          }
+          for (const name of names) {
+            const file = el("div", "cap-script-file");
+            const fh = el("div", "cap-script-file-head");
+            fh.appendChild(el("span", "cap-script-path", name));
+            if (name === entrypoint) {
+              fh.appendChild(
+                el("span", "cap-script-badge", t("caps.detail.script_entrypoint", "入口")),
+              );
+            }
+            const cp = el("button", "btn btn-ghost btn-sm cap-script-copy", t("caps.detail.copy", "复制"));
+            cp.type = "button";
+            const text = String(files[name] == null ? "" : files[name]);
+            cp.addEventListener("click", () => Anotify.copyText(cp, () => text));
+            fh.appendChild(cp);
+            file.appendChild(fh);
+            const pre = el("pre", "cap-script-pre mono");
+            pre.textContent = text;
+            file.appendChild(pre);
+            body.appendChild(file);
+          }
+        }
       }
 
       // openAddPanel 在某个出口下面就地展开一个小面板（不弹层：用户要一边看
@@ -2159,9 +2589,20 @@
         true,
       );
 
-      function openCapModal(trigger) {
-        // 重置表单：否则上一次填的字段会残留到下一次新建
-        document.getElementById("cap-name").value = "";
+      // resetCapForm 把弹层恢复到「刚打开」的状态（新建与编辑两条路径共用）。
+      //
+      // 为什么收敛成一个函数：两条入口共存后，任何一项漏清都会变成「上一次的残留
+      // 静默带到这一次」——比如编辑 touchnow 后点「定义能力」，名字框里还是 touchnow、
+      // 名字还锁着。清空的地方只能有一处。
+      function resetCapForm() {
+        const nameEl = document.getElementById("cap-name");
+        nameEl.value = "";
+        nameEl.readOnly = false;
+        nameEl.classList.remove("cap-lock-input");
+        document.getElementById("cap-name-hint").textContent = t(
+          "caps.form.name_hint",
+          "技术名：节点声明、边、日志都用它，建好后不能改。",
+        );
         document.getElementById("cap-display-name").value = "";
         document.getElementById("cap-timeout").value = "";
         document.getElementById("cap-workdir").value = "";
@@ -2176,12 +2617,50 @@
         DOWN_SEL = new Map();
         renderPortChips();
         renderDownRows();
+        // 脚本区回到空白 + 只读态（否则上一次的正文会留在 pre / textarea 里）
+        document.getElementById("script-pre").textContent = "";
+        document.getElementById("script-input").value = "";
+        scriptModeSet("view");
+        document.getElementById("tpl-fields").replaceChildren();
+        document.getElementById("tpl-requires").textContent = "";
+        // 参数契约（手写 JSON）：新建默认收起且为空，编辑会重新展开并预填
+        const schemaEl = document.getElementById("cap-schema");
+        if (schemaEl) schemaEl.value = "";
+        document.getElementById("schema-wrap").classList.add("hidden");
+        setSchemaError("");
+        // 新版本模式的外壳：标题 / 预告 / 影响面 / 被隐藏的栏位全部复位
+        document.getElementById("cap-version-banner").classList.add("hidden");
+        document.getElementById("cap-version-title").textContent = "";
+        document.getElementById("cap-version-meta").textContent = "";
+        clearImpact();
+        document.getElementById("cap-steps").classList.remove("hidden");
+        document.getElementById("cap-fields-wrap").classList.remove("hidden");
+        document.getElementById("cap-down-wrap").classList.remove("hidden");
+        document.getElementById("cap-down-existing").classList.add("hidden");
+        document.getElementById("cap-modal-title").textContent = t("caps.tpl.title", "新建能力");
+        const submit = document.getElementById("cap-submit");
+        submit.disabled = false;
+        submit.textContent = t("caps.form.submit", "创建");
+      }
+
+      function openCapModal(trigger) {
+        VERSION_MODE = null;
+        resetCapForm();
         tplGoStep(1);
         showModal(document.getElementById("cap-modal"), trigger || CAP_TRIGGER);
         loadTemplates();
       }
       function closeCapModal() {
+        VERSION_MODE = null;
         hideModal(document.getElementById("cap-modal"));
+      }
+
+      // submitCapModal 是弹层唯一的提交入口（按钮 onclick 指向它）：
+      // 同一个按钮在两种模式下做两件事，但绝不在 DOM 上藏两份按钮 —— 两份就会
+      // 出现「按了没反应」（藏错了一份）。
+      function submitCapModal() {
+        if (VERSION_MODE) return submitVersion(false);
+        return createCapability();
       }
 
       // syncWorkdirEcho 把工作目录回显到只读区（脚本旁边）。
@@ -2201,7 +2680,9 @@
         document.getElementById("tpl-form-step").classList.toggle("hidden", step !== 2);
         // 步骤 1 还没有模板，提交必然失败：干脆不给这个按钮
         document.getElementById("cap-submit").classList.toggle("hidden", step !== 2);
-        document.getElementById("tpl-back").classList.toggle("hidden", step === 1);
+        // 「← 换模板」只在**新建**的第 2 步存在：发新版本模式下没有步骤 1 可回
+        // （没有模板可选，回退只会让用户站在一个与当前编辑无关的模板清单前）。
+        document.getElementById("tpl-back").classList.toggle("hidden", step === 1 || !!VERSION_MODE);
         stepSet("cap-steps", step);
       }
 
@@ -2643,6 +3124,427 @@
           .replace("{port}", w.port)
           .replace("{to}", w.to)
           .replace("{reason}", detail.replace(/^links\[\d+\]:\s*/, ""));
+      }
+
+      // ==================== 编辑能力 ⇒ 发一个新版本 ====================
+      //
+      // 能力定义是 append-only（不变量 I8）：没有「就地改」这回事，改定义 = 发新版。
+      // 用户的原话是「为什么脚本这个还不能编辑啊」——后端一直能发新版本，
+      // 缺的是入口。这里复用新建能力那个弹层（同一份表单、同一份校验）。
+
+      // countFollowEdges 数「会跟着新版本走」的下游边。
+      //
+      // 判据与后端 upgradeAffectedLinks 同一口径：看**名字**与是否钉死，不看能力 id。
+      // 裸名字（`touchnow`）= 跟随 latest → 新版本自动就是它们指向的版本；
+      // 钉死的（`touchnow@1`）不跟着走。
+      function countFollowEdges(c) {
+        return EDGES.filter(
+          (e) => !e.fromIsSource && !isPinnedRef(e.fromRef) && refName(e.fromRef) === c.name,
+        ).length;
+      }
+
+      // schemaText 把能力的 paramsSchema 渲染成可编辑的 JSON 文本（空 = 空串）。
+      function schemaText(raw) {
+        let v = raw;
+        if (typeof v === "string") {
+          try {
+            v = JSON.parse(v);
+          } catch (e) {
+            return String(raw || "");
+          }
+        }
+        if (v == null) return "";
+        if (typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) return "";
+        try {
+          return JSON.stringify(v, null, 2);
+        } catch (e) {
+          return "";
+        }
+      }
+
+      // versionMetaText 是弹层预告下方那一行：把「什么都从当前版本带过来」说清楚。
+      // sticky / lifecycle 这个弹层里没有独立输入框，但它们会**原样带到新版**：
+      // 不说的话，用户会担心「发一版就把粘性路由弄丢了」。
+      function versionMetaText(vm) {
+        const c = vm.cap;
+        const parts = [];
+        parts.push(
+          t("caps.edit.from_version", "从 {ref} 复制").replace("{ref}", c.name + "@" + c.version),
+        );
+        parts.push(
+          t("caps.edit.sticky_carried", "粘性路由 {v}").replace(
+            "{v}",
+            c.sticky || t("caps.detail.unknown", "—"),
+          ),
+        );
+        parts.push(
+          t("caps.edit.lifecycle_carried", "生命周期 {v}").replace("{v}", lifecycleText(c.lifecycle)),
+        );
+        if (vm.artifactMissing) {
+          parts.push(
+            t("caps.edit.no_artifact", "这个能力还没有产物，脚本从空白开始写"),
+          );
+        }
+        return parts.join(" · ");
+      }
+
+      // applyVersionMode 先画「静态形态」（不等接口）：
+      // 标题、预告、名字锁定、隐藏用不上的栏位、参数契约展开。
+      function applyVersionMode(vm) {
+        const c = vm.cap;
+        document.getElementById("cap-modal-title").textContent = t(
+          "caps.edit.title",
+          "新版本：{name}",
+        ).replace("{name}", c.name);
+        document.getElementById("cap-version-banner").classList.remove("hidden");
+        document.getElementById("cap-version-title").textContent = t(
+          "caps.edit.banner",
+          "将创建 {ref}",
+        ).replace("{ref}", c.name + "@" + vm.nextVersion);
+        document.getElementById("cap-version-meta").textContent = versionMetaText(vm);
+
+        // 名字锁定：改名是另一个能力，不是这一版（后端也没有改名接口）
+        const nameEl = document.getElementById("cap-name");
+        nameEl.value = c.name;
+        nameEl.readOnly = true;
+        nameEl.classList.add("cap-lock-input");
+        document.getElementById("cap-name-hint").textContent = t(
+          "caps.edit.name_locked",
+          "名字锁定：这一版就叫这个名字，改名字请另建一个能力。",
+        );
+        document.getElementById("cap-display-name").value = (c.displayName || "").trim();
+
+        // 没有模板可挑：步骤条与「换模板」在编辑模式下没有意义
+        document.getElementById("cap-steps").classList.add("hidden");
+        document.getElementById("tpl-back").classList.add("hidden");
+        document.getElementById("cap-fields-wrap").classList.add("hidden");
+
+        // 已有跟随最新的下游 → 整栏隐藏，只说事实（边接的是名字，自动跟着走）
+        const downWrap = document.getElementById("cap-down-wrap");
+        const existing = document.getElementById("cap-down-existing");
+        if (vm.followEdges > 0) {
+          downWrap.classList.add("hidden");
+          existing.classList.remove("hidden");
+          document.getElementById("cap-down-existing-text").textContent = t(
+            "caps.edit.downstream_keep",
+            "已有 {n} 条下游会跟着新版本走 —— 边接的是名字，不是版本号。",
+          ).replace("{n}", vm.followEdges);
+        } else {
+          downWrap.classList.remove("hidden");
+          existing.classList.add("hidden");
+        }
+
+        // 参数契约：编辑模式直接给可改的 JSON（没有模板字段可以推导了）
+        document.getElementById("cap-schema").value = schemaText(c.paramsSchema);
+        document.getElementById("schema-wrap").classList.remove("hidden");
+
+        document.getElementById("cap-submit").textContent = t(
+          "caps.edit.submit",
+          "发布新版本",
+        );
+      }
+
+      /**
+       * openVersionModal 打开「编辑（新版本）」弹层。
+       *
+       * 入口三个：行尾的「编辑」、详情区顶部的「编辑」、出口为空时的「加一个出口」。
+       * 第三个会聚焦到出口输入框 —— 它是用户真正卡住的地方（“知道要出口，不知道去哪改”）。
+       *
+       * 预填全部来自**当前版本**：脚本（来自新端点）、参数契约、出口、超时、
+       * 工作目录、displayName；sticky / lifecycle 不在表单里，但会原样带到新版。
+       */
+      async function openVersionModal(c, trigger, opts) {
+        if (!c) return;
+        const options = opts || {};
+        // 版本号预告：同名的最高版本 + 1。**不写进请求**（后端同名自增）——
+        // 前端算的版本号一旦与并发写入撞上，就会白出一个 409 capability_conflict。
+        let latest = c.version;
+        for (const x of CAPS) {
+          if (x.name === c.name && x.version > latest) latest = x.version;
+        }
+        const vm = {
+          cap: c,
+          nextVersion: latest + 1,
+          // 没有产物时的默认值：与新建表单同一口径（run.sh + shebang）
+          entrypoint: "run.sh",
+          requires: [],
+          followEdges: countFollowEdges(c),
+          artifactMissing: false,
+        };
+        VERSION_MODE = vm;
+
+        resetCapForm();
+        // 出口与下游：出口来自当前版本；下游只有在「还没有跟随最新的边」时才允许在本屏新增
+        PORT_CHIPS = (c.outputs || []).slice();
+        DOWN_SEL = new Map();
+        renderPortChips();
+        renderDownRows();
+        applyVersionMode(vm);
+        tplGoStep(2);
+        showModal(document.getElementById("cap-modal"), trigger);
+
+        // 产物懒加载：与详情区共用 ART_CACHE（看过详情就不必再问一次接口）
+        const art = await loadArtifact(c);
+        // 期间被关掉 / 换了对象：不要把旧结果写进新一次编辑
+        if (!VERSION_MODE || VERSION_MODE !== vm) return;
+        if (art && art.state === "ok") {
+          const data = art.data || {};
+          const files = data.files && typeof data.files === "object" ? data.files : {};
+          vm.entrypoint = String(data.entrypoint || "run.sh");
+          vm.requires = Array.isArray(data.requires) ? data.requires.slice() : [];
+          SCRIPT_TEXT = String(files[vm.entrypoint] == null ? "" : files[vm.entrypoint]);
+          document.getElementById("script-input").value = SCRIPT_TEXT;
+          document.getElementById("script-pre").textContent = SCRIPT_TEXT;
+          scriptModeSet("view");
+          // 0 是合法值（= 不设本地超时），所以显式写 “0” 而不是留空
+          document.getElementById("cap-timeout").value = String(data.timeoutSec || 0);
+          document.getElementById("cap-workdir").value = data.workDir || "";
+          syncWorkdirEcho();
+          document.getElementById("tpl-requires").textContent = requiresText(vm.requires);
+          TIMEOUT_DIRTY = true; // 已经在编辑一个已存在的版本：不要再被模板默认值覆盖
+        } else {
+          vm.artifactMissing = true;
+          document.getElementById("cap-version-meta").textContent = versionMetaText(vm);
+          document.getElementById("tpl-requires").textContent = requiresText(vm.requires);
+        }
+
+        // 聚焦：从「加一个出口」进来时直接定位到出口输入框
+        const target = options.focusOutputs
+          ? document.getElementById("cap-port-input")
+          : document.getElementById("cap-display-name");
+        if (target) target.focus();
+      }
+
+      // clearImpact 收起 409 影响面面板（关闭弹层 / 重新提交时都要清）。
+      function clearImpact() {
+        const box = document.getElementById("cap-impact");
+        if (!box) return;
+        box.replaceChildren();
+        box.classList.add("hidden");
+      }
+
+      // renderImpact 把 409 upgrade_breaking 的影响面摊开。
+      //
+      // 这是「要不要 force」的**唯一依据**，所以不能只弹一句「冲突」：
+      // 变了什么（changes）+ 哪几条 link 会断（links）+ 一个显式的
+      // 「仍然发布」按钮（它才是带 force:true 重发的那一次）。
+      function renderImpact(impact, message) {
+        const box = document.getElementById("cap-impact");
+        if (!box) return;
+        box.replaceChildren();
+        const im = impact && typeof impact === "object" ? impact : null;
+        box.appendChild(
+          el(
+            "div",
+            "cap-impact-title",
+            im
+              ? t("caps.edit.impact_title", "这一版会破坏已有的下游")
+              : String(message || "upgrade_breaking"),
+          ),
+        );
+        if (im) {
+          const changes = Array.isArray(im.changes) ? im.changes : [];
+          if (changes.length) {
+            const sec = el("div", "cap-impact-sec");
+            sec.appendChild(
+              el("div", "cap-impact-hint", t("caps.edit.impact_changes", "变了什么")),
+            );
+            for (const ch of changes) {
+              sec.appendChild(
+                el(
+                  "div",
+                  "cap-impact-row",
+                  (ch && (ch.detail || ch.kind)) || String(ch || ""),
+                ),
+              );
+            }
+            box.appendChild(sec);
+          }
+          const links = Array.isArray(im.links) ? im.links : [];
+          const sec = el("div", "cap-impact-sec");
+          sec.appendChild(
+            el(
+              "div",
+              "cap-impact-hint",
+              t("caps.edit.impact_links", "会断的下游（它们接的是名字，新版本就是它们指向的版本）"),
+            ),
+          );
+          if (!links.length) {
+            sec.appendChild(
+              el(
+                "div",
+                "cap-impact-row",
+                t("caps.edit.impact_no_links", "没有跟随最新的下游受这一版影响"),
+              ),
+            );
+          }
+          for (const l of links) {
+            const reason = l && l.reason ? " · " + l.reason : "";
+            sec.appendChild(
+              el(
+                "div",
+                "cap-impact-row",
+                String((l && l.fromRef) || "") +
+                  " --" +
+                  String((l && l.port) || "") +
+                  "--> " +
+                  String((l && l.toRef) || "") +
+                  reason,
+              ),
+            );
+          }
+          box.appendChild(sec);
+        }
+        const actions = el("div", "cap-impact-actions");
+        const go = el("button", "btn btn-danger btn-sm", t("caps.edit.force", "仍然发布"));
+        go.type = "button";
+        go.setAttribute("data-act", "force-publish");
+        go.addEventListener("click", () => submitVersion(true));
+        const cancel = el("button", "btn btn-ghost btn-sm", t("caps.form.cancel", "取消"));
+        cancel.type = "button";
+        cancel.addEventListener("click", clearImpact);
+        actions.appendChild(go);
+        actions.appendChild(cancel);
+        box.appendChild(actions);
+        box.classList.remove("hidden");
+      }
+
+      /**
+       * submitVersion 发一个新版本（同一个名字，版本号由后端自增）。
+       *
+       * 与 createCapability 的差别只有三处：
+       *   · 名字只读，且**不把版本号写进请求**（后端同名自增）
+       *   · 200 后刷新列表并展开**这一版**的详情（用户要看的是刚发的那一版）
+       *   · 409 upgrade_breaking 不是失败，是「先看清楚再决定」→ 影响面 + 「仍然发布」
+       */
+      async function submitVersion(force) {
+        const vm = VERSION_MODE;
+        if (!vm) return;
+        const c = vm.cap;
+        const name = c.name;
+
+        const rawTimeout = String(document.getElementById("cap-timeout").value || "").trim();
+        const timeoutSec = rawTimeout === "" ? 0 : Number(rawTimeout);
+        if (!Number.isInteger(timeoutSec) || timeoutSec < 0 || timeoutSec > 86400) {
+          toast(t("caps.form.err_timeout", "超时必须是 0~86400 之间的整数"));
+          return;
+        }
+
+        const workDir = String(document.getElementById("cap-workdir").value || "").trim();
+        // 脚本校验与新建同一口径（不 trim：后端看 HasPrefix("#!")）
+        const script = SCRIPT_TEXT;
+        if (!/^#!/.test(script)) {
+          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"));
+          return;
+        }
+
+        // 参数契约：以手写 JSON 为准（编辑模式始终展开着、且已预填当前版本）
+        let paramsSchema = { type: "object" };
+        const schemaEl = document.getElementById("cap-schema");
+        if (schemaEl && schemaEl.value.trim() !== "") {
+          try {
+            const parsed = JSON.parse(schemaEl.value);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+              throw new Error("paramsSchema 必须是 JSON 对象");
+            }
+            paramsSchema = parsed;
+            setSchemaError("");
+          } catch (e) {
+            setSchemaError(String((e && e.message) || e));
+            toast(t("caps.form.create_failed", "创建失败：") + String((e && e.message) || e));
+            return;
+          }
+        }
+
+        const entrypoint = vm.entrypoint || "run.sh";
+        const run = {
+          entrypoint: entrypoint,
+          files: { [entrypoint]: script },
+          timeoutSec: timeoutSec,
+          env: {},
+        };
+        if (workDir) run.workDir = workDir;
+
+        const outputs = PORT_CHIPS.slice();
+        // 下游：只有「当时还没有跟随最新的边」那一栏才可能被填（有边时整栏已隐藏）
+        const wanted = [];
+        for (const port of outputs) {
+          for (const toName of DOWN_SEL.get(port) || []) {
+            if (!toName || toName === name) continue;
+            wanted.push({ port: port, to: toName });
+          }
+        }
+
+        const body = {
+          name: name,
+          // 空就真的是空（= 清掉显示名）：不再回退到旧值，
+          // 否则用户把显示名删干净后发版，旧名字会悄悄回来。
+          displayName: document.getElementById("cap-display-name").value.trim(),
+          paramsSchema: paramsSchema,
+          outputs: outputs,
+          run: run,
+        };
+        if (vm.requires && vm.requires.length) body.requires = vm.requires.slice();
+        // sticky / lifecycle 不在表单里，但它们是能力定义的一部分（参与 contentHash），
+        // 「发一版」不能把它们弄丢 —— 原样带过去。
+        if (c.sticky) body.sticky = c.sticky;
+        if (c.lifecycle && typeof c.lifecycle === "object") body.lifecycle = c.lifecycle;
+        if (wanted.length) body.links = wanted.map((w) => ({ fromPort: w.port, toRef: w.to }));
+        if (force) body.force = true;
+        const ns = c.namespaceId || scopeNS();
+        if (ns) body.namespaceId = ns;
+
+        const btn = document.getElementById("cap-submit");
+        const prevLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = t("caps.edit.publishing", "发布中…");
+        let res;
+        let data = null;
+        try {
+          // 这里直接 fetch 而不是 Anotify.api：后者只保留 error 文案，
+          // 会把 upgradeImpact（变了什么 / 哪几条 link 会断）丢掉 —— 那正是闸门
+          // 存在的意义。URL 自己带 namespaceId，语义与 withScope 的自动补一致。
+          res = await fetch(API + "/capabilities" + (ns ? "?namespaceId=" + encodeURIComponent(ns) : ""), {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          data = await res.json().catch(() => null);
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = prevLabel;
+          toast(t("caps.edit.failed", "发布失败：") + errText(e));
+          return;
+        }
+
+        // 破坏性变更：不是失败，是「先看清楚再决定」（force 的重发才是决定）
+        if (res.status === 409 && data && data.code === "upgrade_breaking") {
+          btn.disabled = false;
+          btn.textContent = prevLabel;
+          renderImpact(data.upgradeImpact, data.error);
+          return;
+        }
+        if (!res.ok) {
+          btn.disabled = false;
+          btn.textContent = prevLabel;
+          const detail = (data && (data.error || data.message)) || "HTTP " + res.status;
+          toast(t("caps.edit.failed", "发布失败：") + detail);
+          return;
+        }
+
+        const created = (data && data.capability) || null;
+        toast(
+          t("caps.edit.created", "已发布 {ref}").replace(
+            "{ref}",
+            created ? created.name + "@" + created.version : name,
+          ),
+        );
+        closeCapModal();
+        // 新版本的产物是新的：缓存按能力 id 存，新 id 本来就没缓存，
+        // 但详情要自动展开 —— 用户刚发完最想看的就是「新版长什么样」。
+        if (created && created.id) OPEN_DETAIL.add(created.id);
+        await loadAll();
       }
 
       // ==================== 部署面板 ====================

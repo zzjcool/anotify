@@ -1275,6 +1275,31 @@ caps:
     hash: 内容ハッシュ
     copy: コピー
     unknown: '—'
+    script: スクリプト
+    script_entrypoint: エントリ
+    script_empty: この能力にはまだ成果物がありません（定義時にスクリプト未記入、または未デプロイ）
+    script_failed: スクリプトを読み込めませんでした
+    retry: 再試行
+    add_output_cta: 出口を追加（これがないと何も emit できません）
+  edit:
+    btn: 編集
+    title: '新バージョン：{name}'
+    banner: '{ref} を作成します'
+    from_version: '{ref} からコピー'
+    sticky_carried: 'スティッキー・ルーティング {v}'
+    lifecycle_carried: 'ライフサイクル {v}'
+    no_artifact: この能力にはまだ成果物がないため、スクリプトは空から書き始めます
+    name_locked: '名前は固定です：このバージョンは同じ名前のままです。名前を変えるなら別の能力になります。'
+    downstream_keep: '既存の下流 {n} 件は新バージョンに追従します — エッジはバージョンではなく名前を指します。'
+    submit: 新バージョンを公開
+    publishing: 公開中…
+    failed: '公開に失敗：'
+    created: '{ref} を公開しました'
+    impact_title: このバージョンは既存の下流を壊します
+    impact_changes: 変わったこと
+    impact_links: '壊れる下流（名前を指しているため、新バージョンがその参照先になります）'
+    impact_no_links: 最新追従の下流に影響はありません
+    force: それでも公開
   add:
     btn: 下流
     title: '「{port}」に下流を追加'

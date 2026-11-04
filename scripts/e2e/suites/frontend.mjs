@@ -1502,6 +1502,15 @@ async function main() {
 		await ctx.close();
 	}
 
+	// ---- I. 能力详情看脚本 + 编辑出新版本 + 409 闸门（真后端）----
+	//
+	// 用户报的两个问题（原话）：
+	//   「touchnow 我看不到具体什么脚本啊」—— 脚本存产物里，详情页以前根本不展示
+	//   「为什么脚本这个还不能编辑啊」—— 能力 append-only，后端能发新版本，UI 没入口
+	// 所以这一整块必须在**真后端**上验：mock 只能证明「UI 接对了形状」。
+	console.log("--- 能力详情看脚本 + 编辑发新版本（真后端）---");
+	await checkCapabilityEditReal(server, newCtx);
+
 	// 关掉上线节点，别把 WS 连接带出进程
 	try {
 		frontendNode?.conn?.close?.();
@@ -1866,6 +1875,68 @@ async function checkCapabilityDetail(page, base) {
 		"运行参数区有内容（不是空白区块）",
 		/超时|Timeout/.test(detail.wa),
 		detail.wa.slice(0, 80),
+	);
+
+	// ①-附 脚本：用户原话「touchnow 我看不到具体什么脚本啊」。
+	// 脚本在产物里（artifacts.spec.run.files），详情展开时才懒加载 ——
+	// 这里等它落进 DOM，而不是固定 sleep 后猜。
+	const scriptBlock = await page.evaluate(async () => {
+		const row = document.querySelector('.cap-row[data-cap-name="analyze-pr"]');
+		if (!row) return { err: "找不到 analyze-pr 行" };
+		const box = row.querySelector(".cap-script");
+		if (!box) return { err: "详情区没有脚本块" };
+		for (let i = 0; i < 40; i++) {
+			const pre = box.querySelector(".cap-script-pre");
+			if (pre && pre.textContent.trim()) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		return {
+			entry: ((box.querySelector(".cap-script-entry") || {}).textContent || "").trim(),
+			paths: Array.from(box.querySelectorAll(".cap-script-path")).map((x) => x.textContent),
+			text: ((box.querySelector(".cap-script-pre") || {}).textContent || "").trim(),
+			copy: !!box.querySelector(".cap-script-copy"),
+			empty: !!box.querySelector(".cap-script-empty"),
+		};
+	});
+	H.check(
+		"详情区能直接看到脚本正文（产物里的文件正文，不是 base64）",
+		/^#!\//.test(scriptBlock.text || "") &&
+			/emit/.test(scriptBlock.text || "") &&
+			scriptBlock.empty === false,
+		JSON.stringify(scriptBlock).slice(0, 260),
+	);
+	H.check(
+		"脚本区标出入口文件名，且每个文件都有「复制」",
+		(scriptBlock.entry || "").includes("run.sh") &&
+			(scriptBlock.paths || []).includes("run.sh") &&
+			scriptBlock.copy === true,
+		JSON.stringify(scriptBlock).slice(0, 260),
+	);
+
+	// 没有产物的能力：说清事实（而不是留一块空白 —— 空白读起来像「功能坏了」）
+	const noArtifact = await page.evaluate(async () => {
+		const row = document.querySelector('.cap-row[data-cap-name="deploy-preview"]');
+		if (!row) return { text: "", err: "找不到 deploy-preview 行" };
+		const btn = row.querySelector('[data-act="detail"]');
+		btn.click();
+		const box = row.querySelector(".cap-script");
+		let text = "";
+		for (let i = 0; i < 40; i++) {
+			const e = box && box.querySelector(".cap-script-empty");
+			if (e && e.textContent.trim()) {
+				text = e.textContent.trim();
+				break;
+			}
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		// 关回去：后面的用例会自己点开这一行的详情，状态不能被我改掉
+		if (row.querySelector(".cap-detail").classList.contains("open")) btn.click();
+		return { text: text };
+	});
+	H.check(
+		"没有产物的能力显示「还没有产物」（不是空白块）",
+		/还没有产物|no artifact/i.test(noArtifact.text || ""),
+		String(noArtifact.text).slice(0, 160),
 	);
 
 	// ②③ 出口与下游按边渲染；没接边的出口显式说「到此为止」
@@ -2436,6 +2507,342 @@ async function checkEdgesPage(page) {
 // 默认视图是**按时间倒序平铺**（事件流的第一个问题永远是"刚刚发生了什么"），
 // 分组是可选视图（?group=1），因为分组会把刚发生的事件压到组内第 6 条
 // 后面，用户以为没收到。
+// checkCapabilityEditReal 用**真后端**验三件用户真实卡住的事：
+//
+//   ① 详情能看到脚本正文（脚本存在产物 artifacts.spec.run.files 里）
+//   ② 能力行/详情区都有「编辑」入口，进去是「发新版本」模式且名字锁定
+//   ③ 改脚本 + 加出口 → 保存后出现 v2、脚本是新的、**旧边仍指向名字**（跟随最新）
+//   ④ 清空出口 → 409 upgrade_breaking 闸门弹影响面 → force 后成功
+//
+// 为什么必须真后端：这三件事的真相分在三个层面（产物 digest / append-only 版本 /
+// 边的引用解析），mock 只能证明「UI 接对了形状」。
+// 本套件 DB 是套件私有的，造的能力/边残留无副作用。
+//
+// 返回：无（断言全部走 H.check）
+async function checkCapabilityEditReal(server, newCtx) {
+	const B = server.base;
+	const s = H.seed(server.dbPath, "cap_edit");
+	const touchName = "e2e.touchnow";
+	const echoName = "e2e.echo";
+
+	// 下游能力（没有脚本，它只是「接住」上游 emit 的东西）
+	const echo = await H.req(B, "/v1/capabilities", {
+		session: s.session,
+		method: "POST",
+		body: { name: echoName, outputs: ["done"], paramsSchema: { type: "object" } },
+	});
+	H.eq("真后端：建下游能力 echo → 200", echo.status, 200);
+
+	// 上游：带脚本 + 一条 live 边（能力与边**一次提交**，走的也是原子路径）
+	const scriptV1 = [
+		"#!/bin/sh",
+		"set -eu",
+		'echo "touchnow v1"',
+		"anotify-agent emit --port tick --data '{}'",
+		"",
+	].join("\n");
+	const made = await H.req(B, "/v1/capabilities", {
+		session: s.session,
+		method: "POST",
+		body: {
+			name: touchName,
+			displayName: "定时嗃唤",
+			outputs: ["tick"],
+			paramsSchema: { type: "object" },
+			run: {
+				entrypoint: "run.sh",
+				files: { "run.sh": scriptV1 },
+				timeoutSec: 120,
+			},
+			links: [{ fromPort: "tick", toRef: echoName }],
+		},
+	});
+	H.check(
+		"真后端：建带脚本的能力 + 一条下游边（原子）",
+		made.status === 200 && !!made.json?.capability?.id && (made.json?.links || []).length === 1,
+		`${made.status} ${String(made.text).slice(0, 200)}`,
+	);
+
+	const ctx = await newCtx();
+	await injectSession(ctx, s.session, B);
+	const p = await ctx.newPage();
+	const pageErrors = [];
+	p.on("pageerror", (e) => pageErrors.push(String(e)));
+	await p.goto(B + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
+	await H.waitForAppReady(p, "workspace");
+	const rowReady = await p
+		.waitForFunction(
+			(n) => !!document.querySelector(`.cap-row[data-cap-name="${n}"]`),
+			touchName,
+			{ timeout: 15000 },
+		)
+		.then(() => true)
+		.catch(() => false);
+	H.check("真后端：能力页列出了新造的能力行", rowReady, `找不到 .cap-row[data-cap-name=${touchName}]`);
+
+	// ---------- ① 详情能看到脚本正文 ----------
+	const scriptView = await p.evaluate(async (name) => {
+		const row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+		if (!row) return { err: "没有这一行" };
+		row.querySelector('[data-act="detail"]').click();
+		// 产物是懒加载的：等脚本正文落进 DOM（而不是固定 sleep 后猜）
+		for (let i = 0; i < 40; i++) {
+			const pre = row.querySelector(".cap-script-pre");
+			if (pre && pre.textContent.trim()) break;
+			await new Promise((r) => setTimeout(r, 150));
+		}
+		const pre = row.querySelector(".cap-script-pre");
+		return {
+			entry: ((row.querySelector(".cap-script-entry") || {}).textContent || "").trim(),
+			paths: Array.from(row.querySelectorAll(".cap-script-path")).map((x) => x.textContent),
+			text: ((pre || {}).textContent || "").trim(),
+			empty: !!row.querySelector(".cap-script-empty"),
+		};
+	}, touchName);
+	H.check(
+		"① 详情区显示产物里的脚本正文（不是 base64、不是空态）",
+		/touchnow v1/.test(scriptView.text || "") && scriptView.empty === false,
+		JSON.stringify(scriptView).slice(0, 300),
+	);
+	H.check(
+		"① 脚本区同时标出入口文件名",
+		(scriptView.entry || "").includes("run.sh") &&
+			(scriptView.paths || []).includes("run.sh"),
+		JSON.stringify({ entry: scriptView.entry, paths: scriptView.paths }),
+	);
+
+	// ---------- ② 「编辑」→ 新版本模式且名字锁定 ----------
+	const editMode = await p.evaluate(async (name) => {
+		let row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+		row.querySelector('[data-act="edit"]').click();
+		for (let i = 0; i < 40; i++) {
+			const pre = document.getElementById("script-pre");
+			if (pre && pre.textContent.trim()) break;
+			await new Promise((r) => setTimeout(r, 150));
+		}
+		return {
+			open: !document.getElementById("cap-modal").classList.contains("hidden"),
+			title: document.getElementById("cap-modal-title").textContent.trim(),
+			banner: document.getElementById("cap-version-title").textContent.trim(),
+			meta: document.getElementById("cap-version-meta").textContent.trim(),
+			name: document.getElementById("cap-name").value,
+			locked: document.getElementById("cap-name").readOnly === true,
+			submit: document.getElementById("cap-submit").textContent.trim(),
+			stepsHidden: document.getElementById("cap-steps").classList.contains("hidden"),
+			script: document.getElementById("script-pre").textContent,
+			timeout: document.getElementById("cap-timeout").value,
+			downHidden: document.getElementById("cap-down-wrap").classList.contains("hidden"),
+			downHint: document.getElementById("cap-down-existing-text").textContent.trim(),
+			displayName: document.getElementById("cap-display-name").value,
+			chips: Array.from(document.querySelectorAll("#cap-ports .cap-chip")).map((x) =>
+				x.textContent.replace("×", "").trim(),
+			),
+		};
+	}, touchName);
+	H.check(
+		"② 点「编辑」进的是新版本模式（预告下一版版本号）",
+		editMode.open === true && /@2$/.test(editMode.banner || ""),
+		JSON.stringify({ banner: editMode.banner, title: editMode.title }).slice(0, 200),
+	);
+	H.check(
+		"② 能力名锁定（只读、不可改）",
+		editMode.locked === true && editMode.name === touchName,
+		JSON.stringify({ name: editMode.name, locked: editMode.locked }),
+	);
+	H.check(
+		"② 预填当前版本：脚本 / 超时 / 出口 / 显示名",
+		/touchnow v1/.test(editMode.script) &&
+			editMode.timeout === "120" &&
+			(editMode.chips || []).includes("tick") &&
+			editMode.displayName === "定时嗃唤",
+		JSON.stringify(editMode).slice(0, 320),
+	);
+	H.check(
+		"② 已有 edges：下游栏隐藏并说明「边接的是名字」",
+		editMode.downHidden === true && /\d/.test(editMode.downHint || ""),
+		JSON.stringify({ hidden: editMode.downHidden, hint: editMode.downHint }).slice(0, 200),
+	);
+
+	// ---------- ③ 改脚本 + 加出口 → 保存后 v2（旧边跟随名字）----------
+	const marker = "edited-by-e2e";
+	const scriptV2 = scriptV1.replace('echo "touchnow v1"', `echo "touchnow v2 ${marker}"`);
+	await p.evaluate(
+		async ({ next, port }) => {
+			document.getElementById("script-mode-edit").click();
+			const ta = document.getElementById("script-input");
+			ta.value = next;
+			ta.dispatchEvent(new Event("input", { bubbles: true }));
+			const inp = document.getElementById("cap-port-input");
+			inp.value = port;
+			inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+			document.getElementById("cap-submit").click();
+		},
+		{ next: scriptV2, port: "after-edit" },
+	);
+	// 等弹层关（保存成功后才关）+ 列表重建
+	const saved = await p
+		.waitForFunction(
+			() => document.getElementById("cap-modal").classList.contains("hidden"),
+			null,
+			{ timeout: 15000 },
+		)
+		.then(() => true)
+		.catch(() => false);
+	H.check("③ 保存成功后弹层关闭", saved === true, "15s 内弹层没关（保存失败？）");
+	await p.waitForTimeout(800);
+
+	const afterSave = await p.evaluate(async (name) => {
+		// 走 Anotify.api：命名空间资源端点必须带 namespaceId（裸 fetch 会 400）
+		const caps = await window.Anotify.api("/v1/capabilities");
+		const edges = await window.Anotify.api("/v1/edges");
+		const mine = (caps.capabilities || []).filter((c) => c.name === name);
+		const order = mine.slice().sort((a, b) => a.version - b.version);
+		const v1 = order.find((c) => c.version === 1) || {};
+		const v2 = order.find((c) => c.version === 2) || null;
+		const rowV2 = Array.from(document.querySelectorAll(`.cap-row[data-cap-name="${name}"]`)).find(
+			(r) => (r.textContent || "").includes('@2'),
+		);
+		// 脚本正文**不在列表里**（列表只投影 entrypoint/timeoutSec/workDir，
+		// 免得每个能力都把几 KB 脚本塞进列表）。要正文走详情用的懒加载端点。
+		const scriptOf = async (id) => {
+			if (!id) return "";
+			try {
+				const a = await window.Anotify.api(`/v1/capabilities/${id}/artifact`);
+				const files = a.files || {};
+				return files[a.entrypoint || "run.sh"] || "";
+			} catch (e) {
+				return "";
+			}
+		};
+		const v1Script = await scriptOf(v1.id);
+		const v2Script = await scriptOf(v2 && v2.id);
+		return {
+			versions: order.map((c) => c.version),
+			v2Outputs: (v2 && v2.outputs) || [],
+			v2Script,
+			v1Script,
+			v1Id: v1.id || "",
+			v2Id: (v2 && v2.id) || "",
+			edges: (edges.edges || [])
+				.filter((e) => (e.fromRef || "").split("@")[0] === name)
+				.map((e) => ({
+					fromRef: e.fromRef,
+					fromPort: e.fromPort,
+					toRef: e.toRef,
+					fromCapabilityId: e.fromCapabilityId,
+				})),
+			rowV2Open: rowV2 ? rowV2.querySelector(".cap-detail").classList.contains("open") : null,
+		};
+	}, touchName);
+	H.check(
+		"③ 保存后出现 v2（v1 仍在 —— append-only 不变量 I8）",
+		JSON.stringify(afterSave.versions) === JSON.stringify([1, 2]),
+		JSON.stringify(afterSave.versions),
+	);
+	H.check(
+		"③ v2 的出口包含了新加的那个",
+		afterSave.v2Outputs.includes("after-edit") && afterSave.v2Outputs.includes("tick"),
+		JSON.stringify(afterSave.v2Outputs),
+	);
+	H.check(
+		"③ v2 的脚本是新的（v1 的脚本没被改写）",
+		afterSave.v2Script.includes(marker) && !afterSave.v1Script.includes(marker),
+		JSON.stringify({ v2: afterSave.v2Script.slice(0, 120), v1: afterSave.v1Script.slice(0, 120) }),
+	);
+	H.check(
+		"③ 旧边仍指名字（跟随 latest），且解析到 v2",
+		afterSave.edges.length === 1 &&
+			afterSave.edges[0].fromRef === touchName &&
+			afterSave.edges[0].fromCapabilityId === afterSave.v2Id &&
+			afterSave.v2Id !== afterSave.v1Id,
+		JSON.stringify(afterSave.edges),
+	);
+	H.check(
+		"③ 保存后自动展开**新版本**的详情",
+		afterSave.rowV2Open === true,
+		`v2 行展开=${afterSave.rowV2Open}`,
+	);
+
+	// ---------- ④ 清空出口 → 409 闸门弹影响面 → force 后成功 ----------
+	const gate = await p.evaluate(async (name) => {
+		const rows = Array.from(document.querySelectorAll(`.cap-row[data-cap-name="${name}"]`));
+		const rowV2 = rows.find((r) => (r.textContent || "").includes("@2")) || rows[rows.length - 1];
+		rowV2.querySelector('[data-act="edit"]')?.click();
+		for (let i = 0; i < 40; i++) {
+			const pre = document.getElementById("script-pre");
+			if (pre && pre.textContent.trim()) break;
+			await new Promise((r) => setTimeout(r, 150));
+		}
+		const banner = document.getElementById("cap-version-title").textContent.trim();
+		// 像用户那样把所有出口一个个删掉
+		for (const x of Array.from(document.querySelectorAll("#cap-ports .cap-chip-x"))) x.click();
+		const chipsLeft = document.querySelectorAll("#cap-ports .cap-chip").length;
+		document.getElementById("cap-submit").click();
+		for (let i = 0; i < 40; i++) {
+			const box = document.getElementById("cap-impact");
+			if (box && !box.classList.contains("hidden")) break;
+			await new Promise((r) => setTimeout(r, 150));
+		}
+		const impact = document.getElementById("cap-impact");
+		return {
+			banner,
+			chipsLeft,
+			impactShown: !!impact && !impact.classList.contains("hidden"),
+			impactText: (impact || {}).textContent || "",
+			hasForce: !!document.querySelector('[data-act="force-publish"]'),
+			modalStillOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+		};
+	}, touchName);
+	H.check(
+		"④ 出口清空后保存被升级闸门拦住（409 弹影响面，弹层不关）",
+		gate.impactShown === true && gate.modalStillOpen === true,
+		JSON.stringify({ shown: gate.impactShown, open: gate.modalStillOpen }).slice(0, 200),
+	);
+	H.check(
+		"④ 影响面说清了「变了什么」与「哪条 link 会断」",
+		/removed_port|被删掉/.test(gate.impactText) && gate.impactText.includes("--tick-->"),
+		String(gate.impactText).slice(0, 320),
+	);
+	H.check("④ 影响面上有「仍然发布」（带 force 重发）", gate.hasForce === true);
+
+	await p.evaluate(async () => {
+		document.querySelector('[data-act="force-publish"]').click();
+	});
+	const forced = await p
+		.waitForFunction(
+			() => document.getElementById("cap-modal").classList.contains("hidden"),
+			null,
+			{ timeout: 15000 },
+		)
+		.then(() => true)
+		.catch(() => false);
+	H.check("④ force 重发后成功（弹层关闭）", forced === true, "15s 内弹层没关（force 没生效？）");
+
+	await p.waitForTimeout(600);
+	const afterForce = await p.evaluate(async (name) => {
+		const caps = await window.Anotify.api("/v1/capabilities");
+		const mine = (caps.capabilities || [])
+			.filter((c) => c.name === name)
+			.sort((a, b) => a.version - b.version);
+		return {
+			versions: mine.map((c) => c.version),
+			v3Outputs: (mine.find((c) => c.version === 3) || {}).outputs,
+		};
+	}, touchName);
+	H.check(
+		"④ force 之后 v3 真的落了库，出口是空的",
+		JSON.stringify(afterForce.versions) === JSON.stringify([1, 2, 3]) &&
+			Array.isArray(afterForce.v3Outputs) &&
+			afterForce.v3Outputs.length === 0,
+		JSON.stringify(afterForce),
+	);
+
+	H.check("真后端能力编辑：页面无 JS pageerror", pageErrors.length === 0, pageErrors[0]?.slice(0, 120));
+
+	await p.close();
+	await ctx.close();
+}
+
 // checkDisplayName 验证"能力显示名"这条链路端到端可用。
 //
 // 它盯三件事，每一件都对应一个真实会坏的环节：
