@@ -59,12 +59,8 @@ type Deployment struct {
 	Digest       string `json:"digest"`
 	State        string `json:"state"`
 	Reason       string `json:"reason"`
-	// WorkDir 是**已废弃**字段（#289：工作目录改为能力定义里的 run.workDir，随产物 digest 走）。
-	// 库里那一列还在（结构与 squash 前逐项一致），但没有任何读写方：保留这个字段只是
-	// 为了让 JSON 形状不变（序列化出来恒为空串）。
-	WorkDir   string `json:"workDir"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	CreatedAt    int64  `json:"createdAt"`
+	UpdatedAt    int64  `json:"updatedAt"`
 }
 
 // CreateArtifact 登记一份产物，按 (namespace, digest) 幂等。

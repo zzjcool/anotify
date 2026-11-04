@@ -483,9 +483,7 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_cap ON artifacts(capability_id);
 --   local = 节点上该能力的 digest 与 desired 不一致（用户手改过，即「本地变体」）。
 --   中枢永不覆盖 local，UI 必须标黄而不是打绿勾。
 --
--- work_dir 是**已废弃**列（#289：工作目录改为能力定义里的 run.workDir，随 digest 走）：
--- 没有读写方。它保留在 baseline 里只是为了与 squash 前的结构逐项一致——删列要重建整张
--- 表，收益抵不上风险。
+-- 工作目录**不是**部署参数（#289）：它是能力定义的一部分（run.workDir），随产物 digest 走。
 CREATE TABLE IF NOT EXISTS deployments (
     id           TEXT PRIMARY KEY,
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
@@ -495,7 +493,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     state        TEXT NOT NULL DEFAULT 'pending',
     reason       TEXT NOT NULL DEFAULT '',
     created_at   INTEGER NOT NULL,
-    updated_at   INTEGER NOT NULL, work_dir TEXT NOT NULL DEFAULT '',
+    updated_at   INTEGER NOT NULL,
     UNIQUE (node_id, artifact_id)
 );
 
