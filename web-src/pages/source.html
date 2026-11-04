@@ -642,10 +642,18 @@
       }
 
       // 下游流向图：复用 graphs.js 的共享实现（不重写一份时序/布局逻辑）
+      //
+      // **拓扑推导只有一份，在 graphs.js 的 sourceTopology**。
+      // 本页只负责：取数据（SRC/CAPS/EDGES）→ 调那个函数 → 把结果交给渲染层。
+      // 曾经这里有一份 buildFlowTree（建树）+ graphs.js 的 capabilityFlow（树 → 图），
+      // 而 trace 页又有一份 buildBaseGraph —— 同一份配置两份推导，结果是同一个源
+      // 在两个页面画出不同的图（源 1:N 的那条线就是这么丢的）。
       function renderFlowCard() {
         const c = card("srcpage.flow", "下游流向");
-        const tree = buildFlowTree(SRC);
-        if (!tree.length) {
+        const topology = window.AnotifyGraphs
+          ? window.AnotifyGraphs.sourceTopology({ src: SRC, caps: CAPS, edges: EDGES })
+          : { nodes: [], edges: [] };
+        if (!topology.nodes.length) {
           c.appendChild(
             el("div", "src-meta", t("srcpage.flow_empty", "这个源还没有可展开的下游")),
           );
@@ -660,104 +668,26 @@
           if (!window.AnotifyGraphs) return;
           window.AnotifyGraphs.capabilityFlow(host, {
             src: SRC,
-            tree,
+            topology,
             t,
             limit: 200,
             // 工具栏画全屏按钮（和 trace 页一致）
             showFullscreen: true,
-            onNodeClick: (nodeId) => {
-              if (nodeId) location.href = "capabilities.html?focus=" + encodeURIComponent(nodeId);
+            // 回调收到的是**节点对象**（flograph 的形状），能力 id 在 .id 上。
+            // 早期这里把对象当 id 拼进 URL，点了会跳到 focus=[object Object]。
+            onNodeClick: (node) => {
+              if (node && node.id) {
+                location.href = "capabilities.html?focus=" + encodeURIComponent(node.id);
+              }
             },
           });
+          // 容器尺寸稳定后 fit 一次：host 自己就是 .flograph 容器（graphs.js 的
+          // render() 把 FlowGraph.mount 挂在它上面），所以看 host._graph。
           requestAnimationFrame(() => {
-            const g = host.querySelector(".flograph");
-            if (g && g._graph) g._graph.fit();
+            if (host._graph) host._graph.fit();
           });
         });
         return c;
-      }
-
-      // buildFlowTree 把"源 → 出口能力 → 下游边"铺成一棵树。
-      //
-      // 与 sources.html 里那份逻辑相同（都是纯函数，读 CAPS/EDGES）。
-      // 这里不抽公共模块是为了让详情页能独立演进 —— 两边形状一旦分叉，
-      // 各自改各自的比共享一个"什么都要兼顾"的函数更省事。
-      function buildFlowTree(s) {
-        const capById = new Map(CAPS.map((c) => [c.id, c]));
-        const roots = [];
-        const rootsSeen = new Set();
-
-        const node = (cap, viaPort, pathSet) => {
-          const out = {
-            capId: cap.id,
-            cap,
-            viaPort: viaPort || "",
-            children: [],
-            unconnected: [],
-          };
-          const outs = cap.outputs || [];
-          const connected = new Set();
-          for (const e of EDGES) {
-            if (e.fromIsSource) continue;
-            // 边的两端是**引用**（P2.2）；上树/查能力都用后端算好的解析 id
-            if (e.fromCapabilityId !== cap.id) continue;
-            // 解析不到时节点 id 退回引用：不能拿空串当 id（所有坏边会并成一个假节点）
-            const toCapId = e.toCapabilityId || "ref:" + (e.toRef || "");
-            if (pathSet.has(toCapId)) {
-              out.children.push({
-                capId: toCapId,
-                cap: capById.get(e.toCapabilityId) || null,
-                kind: "cycle",
-                viaPort: e.fromPort,
-                children: [],
-                unconnected: [],
-              });
-              connected.add(e.fromPort);
-              continue;
-            }
-            const to = capById.get(e.toCapabilityId);
-            if (!to) {
-              out.children.push({
-                capId: toCapId,
-                cap: null,
-                kind: "unknown",
-                viaPort: e.fromPort,
-                children: [],
-                unconnected: [],
-              });
-              connected.add(e.fromPort);
-              continue;
-            }
-            connected.add(e.fromPort);
-            const nextPath = new Set(pathSet);
-            nextPath.add(to.id);
-            out.children.push(node(to, e.fromPort, nextPath));
-          }
-          out.unconnected = outs.filter((p) => p && !connected.has(p));
-          return out;
-        };
-
-        for (const tc of s.targetCaps || []) {
-          const cap = capById.get(tc.id);
-          if (!cap) {
-            if (!rootsSeen.has(tc.id)) {
-              rootsSeen.add(tc.id);
-              roots.push({
-                capId: tc.id,
-                cap: null,
-                kind: "unknown",
-                viaPort: "",
-                children: [],
-                unconnected: [],
-              });
-            }
-            continue;
-          }
-          if (rootsSeen.has(cap.id)) continue;
-          rootsSeen.add(cap.id);
-          roots.push(node(cap, "", new Set([cap.id])));
-        }
-        return roots;
       }
 
       // ---------- 操作 ----------

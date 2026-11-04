@@ -14,8 +14,11 @@
  *     （回归防护：旧协议字段 status 残留曾致 normalize 全部降级 working）
  *  H. nodes.html 注册节点（#198）：表单 → 一次性令牌 → 可直接粘的 node.yaml；
  *     再点入口必须把令牌真从 DOM 清掉，重名只报重名不给令牌（mock 全流程 + 真后端一次注册）
+ *  J. 共享拓扑推导（graphs.js 的 sourceTopology）：源 1:N 的出边、source 页与 trace 页
+ *     的图同源一致、环仍画出来并标 cycle、未接下游的出口仍显示成灰点（真后端）
  */
 import { chromium } from "playwright-core";
+import { DatabaseSync } from "node:sqlite";
 import * as H from "../lib/harness.mjs";
 import * as N from "../lib/nodes.mjs";
 
@@ -1510,6 +1513,10 @@ async function main() {
 	// 所以这一整块必须在**真后端**上验：mock 只能证明「UI 接对了形状」。
 	console.log("--- 能力详情看脚本 + 编辑发新版本（真后端）---");
 	await checkCapabilityEditReal(server, newCtx);
+
+	// ---- J. 共享拓扑推导（源 1:N / 跨页一致 / 环 / 未接下游，真后端）----
+	console.log("--- 共享拓扑推导：源 1:N + 两页一致 + 环 + 未接下游（真后端）---");
+	await checkSharedTopology(server, newCtx);
 
 	// 关掉上线节点，别把 WS 连接带出进程
 	try {
@@ -6317,4 +6324,387 @@ async function runMockCoverage() {
 		realRequests.length === 0,
 		realRequests.slice(0, 3).join(" | "),
 	);
+}
+
+// ---------------------------------------------------------------------------
+// J. 共享拓扑推导（graphs.js 的 sourceTopology）—— 真后端
+//
+// 用户报的两个问题（原话）：
+//   「source.html 这里的图应该要和 trace.html 这里的图保持一致，底层一套推算逻辑」
+//   「现在 source 的图没有体现出 source 一对多的线，本来应该 source 有两个线的」
+//
+// 根因：拓扑推导有两份（source.html 的 buildFlowTree + trace.html 的 buildBaseGraph），
+// 而且老实现用「节点首次被访问时打 isEntry」来决定画不画「源 → 能力」这条线，
+// addNode 遇到已存在的节点是静默跳过的 —— 菱形（既能从源直达、又能从别的分支到达）
+// 里先到的分支把节点登记成非入口，源 → 它 的那条线就永远不画。
+//
+// 现在推导只有一份（sourceTopology），1:N 由构造保证：入口边是唯一入口，
+// N 条入口边 ⇒ N 个 entry 节点 ⇒ N 条线。这组用例钉四件事：
+//   ① 菱形：源节点有 2 条出边（用**图的实例数据**断言，不数 SVG 路径 —— 布局会合并视觉连线）
+//   ② 同源跨页一致：source 页与 trace 页的能力节点集合、边集合完全相同
+//   ③ 环（A→B→A）仍画出来并标 cycle（重构不许把它吞掉）
+//   ④ 声明了但没接边的出口仍显示 deadport 灰点
+//
+// 为什么 ③ 要直插库：后端在配置期就拒绝成环（store.checkEdgeWouldCycle，
+// POST /v1/edges 会 400）。所以真实库里出现环只可能来自历史数据/导入 ——
+// 而图必须能画出来、不能崩，这正是"不许被这次重构吞掉"的那条。
+// ---------------------------------------------------------------------------
+
+// readGraphSpec 取页面里已挂载图的**实例数据**。
+//
+// 为什么不用 graph._debug.nodes()：那个接口只暴露 id/label/kind（边只有 from/to/port），
+// 断言不到 entry / cycle / deadport / muted —— 而这几项正是本次要钉的。
+// host._graphSpec 是 graphs.js 交给 FlowGraph 的**那一份** spec，也就是
+// "图上到底画了什么"的权威（宿主本身就是 .flograph 容器）。
+async function readGraphSpec(page, timeout = 15000) {
+	await page
+		.waitForFunction(
+			() => {
+				const g = document.querySelector(".flograph");
+				return !!(g && g._graphSpec && (g._graphSpec.nodes || []).length);
+			},
+			null,
+			{ timeout },
+		)
+		.catch(() => {});
+	return page.evaluate(() => {
+		const g = document.querySelector(".flograph");
+		const sp = g && g._graphSpec;
+		if (!sp) return null;
+		return {
+			nodes: (sp.nodes || []).map((n) => ({
+				id: n.id,
+				label: n.label || "",
+				kind: n.kind || "",
+				entry: !!n.entry,
+				cycle: !!n.cycle,
+				deadport: !!n.deadport || n.kind === "deadport",
+			})),
+			edges: (sp.edges || []).map((e) => ({
+				from: e.from,
+				to: e.to,
+				port: e.port || "",
+				cycle: !!e.cycle,
+				loopback: !!e.loopback,
+				muted: !!e.muted,
+			})),
+		};
+	});
+}
+
+// edgeKeys 把边集合压成可比较的字符串集合（只比结构：谁→谁、走哪个出口）。
+function edgeKeys(spec, dropFrom) {
+	const keys = (spec?.edges || [])
+		.filter((e) => e.from !== dropFrom)
+		.map((e) => e.from + "|" + e.port + "|" + e.to);
+	return Array.from(new Set(keys)).sort();
+}
+
+function nodeIds(spec, dropId) {
+	return Array.from(
+		new Set((spec?.nodes || []).map((n) => n.id).filter((id) => id !== dropId)),
+	).sort();
+}
+
+async function checkSharedTopology(server, newCtx) {
+	const s = H.seed(server.dbPath, "topo");
+	const base = server.base;
+
+	const mkCap = async (name, outputs) => {
+		const r = await H.req(base, "/v1/capabilities", {
+			session: s.session,
+			method: "POST",
+			body: { name, outputs, paramsSchema: { type: "object" } },
+		});
+		H.check(`拓扑造数：建能力 ${name} → 200`, r.status === 200, r.text?.slice(0, 200));
+		return r.json?.capability || {};
+	};
+	const mkEdge = async (body, label) => {
+		const r = await H.req(base, "/v1/edges", { session: s.session, method: "POST", body });
+		H.check(`拓扑造数：${label} → 200`, r.status === 200, r.text?.slice(0, 200));
+		return r;
+	};
+	const mkSource = async (name, targetIds) => {
+		const r = await H.req(base, "/v1/sources", {
+			session: s.session,
+			method: "POST",
+			body: { name, kind: "manual", targets: targetIds },
+		});
+		H.check(
+			`拓扑造数：建源 ${name}（出口 ${targetIds.length} 个）→ 201`,
+			r.status === 201,
+			r.text?.slice(0, 300),
+		);
+		return r.json?.source || {};
+	};
+	const openPage = async (ctx, url) => {
+		const page = await ctx.newPage();
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		await page.goto(url, { waitUntil: "load", timeout: 20000 });
+		await H.waitForAppReady(page, "workspace");
+		return { page, errs };
+	};
+
+	// ---------- ① 菱形：源 → A、源 → B、A → B ----------
+	//
+	// B 既是首层（源直达）、又能从 A 到达。老实现里只要 A→B 先被遍历到，
+	// 「源 → B」那条线就永远不画 —— 用户看到的就是"少一条线"。
+	const capA = await mkCap("topo.a", ["next"]);
+	const capB = await mkCap("topo.b", ["done"]);
+	H.check(
+		"拓扑造数：A/B 能力 id 就绪",
+		!!capA.id && !!capB.id,
+		JSON.stringify({ capA, capB }),
+	);
+	await mkEdge(
+		{
+			fromIsSource: false,
+			fromRef: "topo.a",
+			fromPort: "next",
+			toRef: "topo.b",
+		},
+		"能力边 topo.a --next--> topo.b（菱形的那条捷径）",
+	);
+	// 源建好就有两条入口边（from_ref=源名、from_port='*'）—— 这就是 1:N。
+	const srcFan = await mkSource("topo.fan", [capA.id, capB.id]);
+
+	// 真后端也确认一遍事实：入口边是唯一入口（2 条，左端是源名）
+	const edgesAll = await H.req(base, "/v1/edges", { session: s.session });
+	const entryOfFan = (edgesAll.json?.edges || []).filter(
+		(e) => e.fromIsSource === true && e.fromRef === "topo.fan",
+	);
+	H.check(
+		"真后端：源 topo.fan 有 2 条入口边（1:N 的配置事实）",
+		entryOfFan.length === 2,
+		JSON.stringify(entryOfFan.map((e) => e.toRef)),
+	);
+
+	// 上线节点，让事件真的派出任务（trace 页要有任务才画图）
+	const nsId = await H.defaultNamespaceId(base, s.session);
+	H.check("拓扑造数：拿到默认命名空间 id", !!nsId, String(nsId));
+	const topoNode = await N.bringUpNode(base, server.dbPath, nsId, "topo-node", [
+		{ id: capA.id, name: "topo.a", version: capA.version },
+		{ id: capB.id, name: "topo.b", version: capB.version },
+	]);
+	H.check("拓扑造数：节点已上线", !!topoNode?.id, JSON.stringify(Object.keys(topoNode || {})));
+
+	const ev = await H.req(base, "/v1/events", {
+		key: s.sendKey,
+		body: { source: "topo.fan", type: "run", payload: { who: "e2e-topo" } },
+	});
+	const traceId = ev.json?.traceId;
+	H.check(
+		"拓扑造数：事件派出任务（trace 页有内容）",
+		(ev.json?.tasks || []).length >= 1 && typeof traceId === "string" && traceId.length > 0,
+		JSON.stringify({ status: ev.status, tasks: (ev.json?.tasks || []).length, traceId }),
+	);
+
+	const ctx = await newCtx();
+	await injectSession(ctx, s.session, base);
+
+	// ---------- ① 源详情页：源节点必须有 2 条出边 ----------
+	let srcSpec = null;
+	{
+		const { page, errs } = await openPage(
+			ctx,
+			base + "/source.html?id=" + encodeURIComponent(srcFan.id),
+		);
+		srcSpec = await readGraphSpec(page);
+		H.check("① 源详情页画出了图（实例数据非空）", !!srcSpec && srcSpec.nodes.length > 0, JSON.stringify(srcSpec?.nodes?.map((n) => n.id)));
+
+		const outOfSource = (srcSpec?.edges || []).filter((e) => e.from === "__source__");
+		H.check(
+			"① 源节点有 2 条出边（1:N 修好了 —— 用户报的「只看到一条线」）",
+			outOfSource.length === 2,
+			JSON.stringify(srcSpec?.edges),
+		);
+		const outTargets = outOfSource.map((e) => e.to).sort();
+		H.check(
+			"① 那 2 条线分别指向 A 与 B（不是同一个节点画两遍）",
+			JSON.stringify(outTargets) ===
+				JSON.stringify([capA.id, capB.id].sort()),
+			JSON.stringify({ outTargets, capA: capA.id, capB: capB.id }),
+		);
+		const entryNodes = (srcSpec?.nodes || []).filter((n) => n.entry).map((n) => n.id).sort();
+		H.check(
+			"① 首层节点（entry）就是 A 与 B —— 线的数量由它构造保证",
+			JSON.stringify(entryNodes) === JSON.stringify([capA.id, capB.id].sort()),
+			JSON.stringify(entryNodes),
+		);
+		H.check(
+			"① 菱形里 A→B 那条边也在（不能为了画源线把它吞掉）",
+			(srcSpec?.edges || []).some(
+				(e) => e.from === capA.id && e.to === capB.id && e.port === "next",
+			),
+			JSON.stringify(srcSpec?.edges),
+		);
+
+		// ---------- ④ 声明了但没接边的出口 → 灰点 ----------
+		const deadID = "dead|" + capB.id + "|done";
+		const deadNode = (srcSpec?.nodes || []).find((n) => n.id === deadID);
+		H.check(
+			"④ 未接下游的出口画成 deadport 灰点",
+			!!deadNode && deadNode.kind === "deadport" && deadNode.deadport === true,
+			JSON.stringify(srcSpec?.nodes?.filter((n) => n.deadport)),
+		);
+		const deadEdge = (srcSpec?.edges || []).find((e) => e.to === deadID);
+		H.check(
+			"④ 指向灰点的边带上出口名且弱化（muted）",
+			!!deadEdge && deadEdge.from === capB.id && deadEdge.port === "done" && deadEdge.muted === true,
+			JSON.stringify(deadEdge),
+		);
+
+		H.check("① 源详情页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
+		await page.close();
+	}
+
+	// ---------- ② 同源跨页一致：source 页 vs trace 页 ----------
+	{
+		const { page, errs } = await openPage(
+			ctx,
+			base + "/trace.html?traceId=" + encodeURIComponent(traceId),
+		);
+		const traceSpec = await readGraphSpec(page);
+		H.check(
+			"② trace 页画出了底图（实例数据非空）",
+			!!traceSpec && traceSpec.nodes.length > 0,
+			JSON.stringify(traceSpec?.nodes?.map((n) => n.id)),
+		);
+
+		// 源节点 id 两页不同（source 页是 __source__、trace 页是 __trigger__），
+		// 触发器自身的连线也不算拓扑 —— 两边都剔掉再比。
+		const a = nodeIds(srcSpec, "__source__");
+		const b = nodeIds(traceSpec, "__trigger__");
+		H.check(
+			"② 两页的能力节点集合完全相同（同一份推导）",
+			JSON.stringify(a) === JSON.stringify(b),
+			JSON.stringify({ source页: a, trace页: b }),
+		);
+		const ea = edgeKeys(srcSpec, "__source__");
+		const eb = edgeKeys(traceSpec, "__trigger__");
+		H.check(
+			"② 两页的边集合完全相同（同一个源的两张图必须一致）",
+			JSON.stringify(ea) === JSON.stringify(eb),
+			JSON.stringify({ source页: ea, trace页: eb }),
+		);
+		// 反向守卫：如果两页都空，上面两条会"因为都空而通过"
+		H.check(
+			"② 比的是非空图（空集对比没有意义）",
+			a.length >= 3 && ea.length >= 2,
+			JSON.stringify({ nodes: a.length, edges: ea.length }),
+		);
+		H.check("② trace 页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
+		await page.close();
+	}
+
+	// ---------- ③ 环：A→B→A 仍然画出来并标 cycle ----------
+	{
+		const capC = await mkCap("topo.c", ["next"]);
+		const capD = await mkCap("topo.d", ["back"]);
+		await mkEdge(
+			{ fromIsSource: false, fromRef: "topo.c", fromPort: "next", toRef: "topo.d" },
+			"能力边 topo.c --next--> topo.d",
+		);
+		// 反方向那条走后端建不出来（配置期拒绝成环），直插库 —— 见本节顶部注释。
+		const db = new DatabaseSync(server.dbPath);
+		try {
+			db.prepare(
+				`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
+				 VALUES (?, 0, ?, ?, ?, '{}', '{}', ?)`,
+			).run(nsId, "topo.d", "back", "topo.c", Math.floor(Date.now() / 1000));
+		} finally {
+			db.close();
+		}
+		const srcCyc = await mkSource("topo.cyc", [capC.id]);
+
+		const { page, errs } = await openPage(
+			ctx,
+			base + "/source.html?id=" + encodeURIComponent(srcCyc.id),
+		);
+		const spec = await readGraphSpec(page);
+		const ids = (spec?.nodes || []).map((n) => n.id);
+		H.check(
+			"③ 环上的两个节点都画出来了（不吞节点）",
+			ids.includes(capC.id) && ids.includes(capD.id),
+			JSON.stringify(ids),
+		);
+		const e1 = (spec?.edges || []).find((e) => e.from === capC.id && e.to === capD.id);
+		const e2 = (spec?.edges || []).find((e) => e.from === capD.id && e.to === capC.id);
+		H.check(
+			"③ 环上的两条边都画出来了（不吞边）",
+			!!e1 && !!e2,
+			JSON.stringify(spec?.edges),
+		);
+		H.check(
+			"③ 回边标记成 cycle（并绕出去画，loopback）",
+			!!e2 && e2.cycle === true && e2.loopback === true,
+			JSON.stringify(e2),
+		);
+		H.check(
+			"③ 正向那条边不该被误标成环",
+			!!e1 && e1.cycle === false,
+			JSON.stringify(e1),
+		);
+		const cycNode = (spec?.nodes || []).find((n) => n.id === capC.id);
+		H.check(
+			"③ 环上的节点带 cycle 标记（图上看得出这里会绕回来）",
+			!!cycNode && cycNode.cycle === true,
+			JSON.stringify(cycNode),
+		);
+		H.check("③ 环的页面无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
+		await page.close();
+	}
+
+	// ---------- 移动端 390：这两张图不许把页面撑出横向滚动 ----------
+	{
+		const page = await ctx.newPage();
+		await page.setViewportSize({ width: 390, height: 844 });
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		await page.goto(base + "/source.html?id=" + encodeURIComponent(srcFan.id), {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await H.waitForAppReady(page, "workspace");
+		await readGraphSpec(page, 10000);
+		// 图的节点是**画布内容**：flograph 自己 overflow:hidden 并做 fit/平移，
+		// 卡在画布边界外的节点不算"页面横向溢出"（判页面是否真的能横向滚动才准）。
+		const ov = await page.evaluate(() => {
+			const outside = [];
+			for (const el of document.querySelectorAll("body *")) {
+				const r = el.getBoundingClientRect();
+				if (
+					r.right > window.innerWidth + 5 &&
+					!el.closest(".flograph") &&
+					!el.closest("pre") &&
+					!el.closest(".overflow-x-auto")
+				)
+					outside.push(el.tagName + "." + el.className);
+			}
+			return {
+				scroll: document.documentElement.scrollWidth - window.innerWidth,
+				outside: outside.slice(0, 3),
+			};
+		});
+		H.check(
+			"移动390 source 页不横向滚动（scrollWidth ≤ innerWidth）",
+			ov.scroll <= 0,
+			`scrollWidth 超出 ${ov.scroll}px`,
+		);
+		H.check(
+			"移动390 source 页图外的元素没溢出",
+			ov.outside.length === 0,
+			JSON.stringify(ov.outside),
+		);
+		H.check("移动390 source 页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
+		await page.close();
+	}
+
+	await ctx.close();
+	try {
+		topoNode?.conn?.close?.();
+	} catch {
+		/* ignore */
+	}
 }

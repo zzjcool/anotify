@@ -1887,6 +1887,48 @@
 		state.tasks.push(ab, as, ar);
 	})();
 
+	// ---------- 源的入口边（「源 → 出口能力」的唯一真相）----------
+	//
+	// 「这个源配了哪些出口能力」在模型里只有一份真相：**入口边**
+	// （from_is_source=1、from_ref=源名、to_ref=能力引用）。后端建源/改源就是
+	// 重建这批边，源详情的 targetCaps 也是从边读回来的。
+	//
+	// mock 之前缺了这一步：state.sources 里写着 targets，state.edges 里却只有几条
+	// 左端写着 "github" / "cron" / "http" / "manual" 的装饰边 —— 和任何一个**源名**
+	// 都对不上。后果是两个页面同时缺图：source.html 的下游流向图拿不到自己的
+	// 入口边（图是空的），trace.html 的底图也找不到这个源的拓扑
+	// （退化成"只画执行链"，看不出哪条分支被剪掉）。
+	//
+	// 这里按真实后端的口径补一遍：每个 target 一条入口边，出口是 '*'
+	// （外部系统的事件类型不可能预先枚举），右端钉死当前版本
+	// （源的目标在控制台上就是"选一个能力的某一版"）。
+	(function initSourceEntryEdges() {
+		for (const s of state.sources) {
+			for (const t of s.targets || []) {
+				// 能力 id 是命名空间内的定义 id，所以按 id 查不会拿错别人家的版本
+				const c = state.capabilities.find((x) => x.id === t.capabilityId);
+				// 能力被删了就不造边：真实后端里那种边解不出 toCapabilityId，
+				// 图上会多一个"已删除"的假节点，而 mock 没必要演示坏数据
+				if (!c) continue;
+				state.edges.push({
+					id: uid("edg"),
+					orgId: ORG,
+					namespaceId: s.namespaceId,
+					fromIsSource: true,
+					// 左端是**源名**（不是能力引用，也不是 kind）
+					fromRef: s.name,
+					fromPort: "*",
+					toRef: capRef(c),
+					// mapping 是入口边的参数模板；mock 的触发路径直接读 sources[].targets，
+					// 这里留空不影响演示（两边的"参数"仍然指的是同一份 targets）。
+					literals: {},
+					mapping: {},
+					createdAt: now() - 3600,
+				});
+			}
+		}
+	})();
+
 	// ---------- 包（可安装的流程零件）----------
 	//
 	// 包本身不持有自己的图：`manifest` 是"期望长什么样"，

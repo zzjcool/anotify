@@ -9,6 +9,11 @@
  * 这样"画一个图"的能力只有一份（flograph.js），而"我们的数据怎么变成图"
  * 也只有一份（这里）。页面只负责：取数据 → 调这里的一个函数。
  *
+ * 「源 → 能力 → 下游」的**拓扑推导**只有一份：sourceTopology。
+ * 源详情页的流向图（capabilityFlow）与 trace 页的底图（taskChain 的 baseGraph）
+ * 都从它来 —— 两个页面看到的图因此必然一致。要改推导逻辑就只改它一个地方；
+ * 不要再在页面里写第三份（历史上写过两份，结果同一份配置在两页画出不同的图）。
+ *
  * 两个图的语义差别（曾经混过一次，这里写死）：
  *
  *   流向图（capabilityFlow）  静态配置视图
@@ -193,19 +198,220 @@
 
 	document.addEventListener("anotify:theme", redrawAll);
 
-	// ==================== 流向图（静态配置） ====================
+	// ==================== 拓扑推导（唯一一份） ====================
+
+	// 深度上限：防数据异常（图上画出一条几千跳的链）卡死浏览器。
+	// 20 是原来两页各自用的量级，这里保持一致。
+	const TOPO_MAX_DEPTH = 20;
 
 	/**
-	 * capabilityFlow —— 从"源"出发画配置好的下游流向
+	 * sourceTopology —— 唯一一份「源 → 能力 → 下游」拓扑推导。
 	 *
-	 * @param {HTMLElement} host        容器（会被清空）
-	 * @param {Object} opts
-	 * @param {Object} opts.src         源对象 { name, kind }
-	 * @param {Array}  opts.tree        buildFlow() 的产物（树形，含 cycle/seen/dead 标记）
-	 * @param {Function} opts.t        i18n
-	 * @param {Function} [opts.onNodeClick]
-	 * @param {number} [opts.limit]
+	 * 输入是**配置事实**（源 + 能力表 + 边表），输出是 FlowGraph 中立的 {nodes, edges}。
+	 * 源详情页与 trace 页的底图都从这里来 —— 两个页面看到的图必然一致。
+	 *
+	 * 为什么必须只有一份：这两页原来各有一份推导（source.html 的 buildFlowTree
+	 * 建一棵树 + 本文件的 capabilityFlow 把树摊平；trace.html 的 buildBaseGraph
+	 * 自己摊平一张底图）。同一份数据、两份推导，结果是同一个源在两个页面画出
+	 * 不同的图 —— 「源直接指向两个能力」那条 1:N 的线就是这么丢的：
+	 *
+	 *   老实现用「节点首次被访问时打 isEntry」来决定画不画「源 → 它」这条线，
+	 *   而 addNode 遇到已存在的节点是**静默跳过**的。于是菱形（既能从源直达、
+	 *   又能从别的分支到达）里，先遍历到的分支把节点以 isEntry=false 注册，
+	 *   后处理 root 时被跳过 → 源 → 它 的那条线永远不画。
+	 *
+	 * 现在 1:N 由**构造**保证：入口边是唯一入口，每条入口边产出一个 entry 节点，
+	 * 渲染层逐个连线 —— 不依赖任何「首次访问」式的遍历状态。
+	 *
+	 * @param {{src: Object, caps: Array, edges: Array}} input
+	 *   src   源对象（只用 name：入口边的左端就是来源名）
+	 *   caps  能力定义表（GET /v1/capabilities）
+	 *   edges 边表（GET /v1/edges，含 fromIsSource/fromRef/fromCapabilityId/…）
+	 * @returns {{nodes: Array, edges: Array, truncated: boolean}}
+	 *   节点 {id, label, kind, entry, cycle, deadport, unknown}
+	 *   边   {from, to, port, cycle, muted}
 	 */
+	function sourceTopology(input) {
+		const src = (input && input.src) || {};
+		const caps = (input && input.caps) || [];
+		const allEdges = (input && input.edges) || [];
+		const capById = new Map(caps.map((c) => [c.id, c]));
+
+		// 节点按 id 全局去重、边按 (from, port, to) 去重。
+		// 用 Map 而不是 Set 是为了保住**插入序**（布局稳定，diff 也稳定）。
+		const nodes = new Map();
+		const edges = new Map();
+		let truncated = false;
+
+		const deadPortID = (capId, port) => "dead|" + capId + "|" + port;
+		// 解析不到（引用指向的能力已被删）时节点 id 退回**引用**：
+		// 不能拿空串当 id —— 那会把所有坏边并成一个假节点。
+		const endID = (e) => e.toCapabilityId || "ref:" + (e.toRef || "");
+
+		/**
+		 * 注册一个能力节点（按 id 全局去重）。
+		 * 已存在时**只补标记、不重建**：同一个节点可能先被某条下游边登记、
+		 * 之后又被入口边登记（菱形），entry 标记必须能补上 —— 丢这个标记
+		 * 正是「源 → 它」那条线消失的 bug。
+		 */
+		const ensureNode = (id, patch) => {
+			let n = nodes.get(id);
+			if (!n) {
+				const cap = capById.get(id);
+				n = {
+					id: id,
+					// 有显示名就用它。裁决点只有一处：Anotify.capLabel
+					// （它活在 partials.js 的 IIFE 里，本文件是独立 IIFE，
+					// 只能通过上文的代理访问，不能裸调）。
+					label: cap ? capLabel(cap) : id.replace(/^ref:/, ""),
+					kind: cap ? cap.kind || "pipe" : "unknown",
+					entry: false,
+					cycle: false,
+					deadport: false,
+					unknown: !cap,
+				};
+				nodes.set(id, n);
+			}
+			if (patch) Object.assign(n, patch);
+			return n;
+		};
+
+		/**
+		 * 画一条边（按 (from, port, to) 去重）。
+		 * 已经画过的边再遇到时只**升级标记**（cycle / muted 取或），不新增一行：
+		 * 一条边被多条路径走到时，标记可能是后到的那条路径才看出来的。
+		 */
+		const putEdge = (from, port, to, cycle, muted) => {
+			const key = from + "|" + (port || "") + "|" + to;
+			const hit = edges.get(key);
+			if (hit) {
+				if (cycle) hit.cycle = true;
+				if (muted) hit.muted = true;
+				return hit;
+			}
+			const e = { from: from, to: to, port: port || "", cycle: !!cycle, muted: !!muted };
+			edges.set(key, e);
+			return e;
+		};
+
+		// 能力边（fromIsSource === false）按上游 id 分桶。
+		// 左端解析不到的边（引用指向已删能力）没有上游节点可挂，画不出来 —— 跳过。
+		const capEdges = new Map();
+		for (const e of allEdges) {
+			if (e.fromIsSource) continue;
+			const from = e.fromCapabilityId;
+			if (!from) continue;
+			if (!capEdges.has(from)) capEdges.set(from, []);
+			capEdges.get(from).push(e);
+		}
+
+		// ---- ① 入口边是唯一入口 ----
+		//
+		// 只认 edges 里 fromIsSource 且 fromRef 等于本源名字的那些边。
+		// **不要**再从 src.targetCaps 推一遍（那是同一件事的第二份真相：
+		// 后端 DetailSource 的 targetCaps 本来就是入口边的投影），
+		// 两份一起用就会出现「边上有一条入口边、targetCaps 里却没有」这种
+		// 静默不一致，而且没人知道该信哪份。
+		//
+		// 首层节点打 entry: true —— 渲染层的「源 → 能力」线只认这个标记，
+		// 于是 1:N 由**构造**保证：N 条入口边 ⇒ N 个 entry 节点 ⇒ N 条线。
+		const entryIDs = [];
+		for (const e of allEdges) {
+			if (!e.fromIsSource || e.fromRef !== src.name) continue;
+			const id = endID(e);
+			ensureNode(id).entry = true;
+			if (!entryIDs.includes(id)) entryIDs.push(id);
+		}
+
+		// ---- ② 沿能力边向下遍历 ----
+		//
+		// 环的判据是「目标是否在**当前这条路径**上」（path 集合）。它只用来打标记
+		// （cycle），绝不用于剪掉节点/边：
+		//   · 同一个节点被多条路径到达（菱形）→ 节点全局去重只画一次，
+		//     但每条**进入它**的边都要画；
+		//   · 环上的回边 → 边照画、节点照留，只标 cycle 且不再递归（否则走不到头）。
+		//
+		// walked 只挡「同一个节点重复展开」这一件事（不然稠密图会指数爆炸）。
+		// 它挡不住边：每条边都由它自己的上游节点在其唯一一次展开里画出来。
+		const walked = new Set();
+		const walk = (id, path, depth) => {
+			if (walked.has(id)) return;
+			walked.add(id);
+			if (depth > TOPO_MAX_DEPTH) {
+				// 超过上限：只标记截断（不假装画全），由调用方决定是否提示
+				truncated = true;
+				return;
+			}
+			const cap = capById.get(id);
+			if (!cap) return; // 坏引用：没有能力定义就没有出口、也没有下游可走
+
+			const connected = new Set();
+			for (const e of capEdges.get(id) || []) {
+				const toID = endID(e);
+				connected.add(e.fromPort || "");
+				const onPath = path.has(toID);
+				putEdge(id, e.fromPort, toID, onPath, false);
+				const child = ensureNode(toID);
+				if (onPath) {
+					// 环：只标记。节点和边在上一行就已经落下去了 —— 不吞。
+					child.cycle = true;
+					continue;
+				}
+				const next = new Set(path);
+				next.add(toID);
+				walk(toID, next, depth + 1);
+			}
+
+			// 声明了但没接边的出口 → 灰色终点伪节点，让配置遗漏在图上可见。
+			// label 是**出口名**（事实）；页面上显示成「未接下游」由渲染层决定
+			// （见 topoNodeLabel），推导这一层不掺语言。
+			for (const port of cap.outputs || []) {
+				if (!port || connected.has(port)) continue;
+				const did = deadPortID(id, port);
+				ensureNode(did, { label: port, kind: "deadport", deadport: true, unknown: false });
+				// 指向灰点的边一律弱化：它表示「这条路到不了任何地方」
+				putEdge(id, port, did, false, true);
+			}
+		};
+
+		// 每个入口节点各起一条路径。同一个能力有多条入口边时只走一遍
+		// （entryIDs 已按节点去重，节点/边的画法不受影响）。
+		for (const id of entryIDs) walk(id, new Set([id]), 0);
+
+		return {
+			nodes: Array.from(nodes.values()),
+			edges: Array.from(edges.values()),
+			truncated: truncated,
+		};
+	}
+
+	/**
+	 * topoNodeLabel —— 拓扑节点在**图上**显示的名字。
+	 *
+	 * 拓扑本身不带语言（sourceTopology 只输出配置事实，deadport 的 label 是出口名），
+	 * 所以「未接下游」这类人话留在这里翻译。两个渲染入口（capabilityFlow 与
+	 * taskChain）都必须走这一个函数，否则同一个灰点在两页会显示成两个名字。
+	 */
+	function topoNodeLabel(n, t) {
+		if (n && n.deadport) return t("sources.flow.unconnected", "未接下游");
+		return (n && n.label) || "";
+	}
+
+	/**
+	 * flowSub —— 源详情页节点的副标题。
+	 *
+	 * 这里只讲**结构身份**（终点 / 未接下游 / 已删除），不是执行状态：
+	 * 源详情页没有执行事实，拿状态词上去就是编造。
+	 */
+	function flowSub(n, t) {
+		if (n.deadport) return t("sources.flow.no_edge", "没有接下游");
+		if (n.unknown) return t("sources.flow.missing", "能力已删除");
+		if (n.kind === "end") return t("sources.flow.terminal_short", "终点");
+		return "";
+	}
+
+	// ==================== 流向图（静态配置） ====================
+
 	/**
 	 * flowLegend 构建图例。
 	 *
@@ -291,118 +497,103 @@
 		});
 	}
 
+	/**
+	 * capabilityFlow —— 把「源 → 能力 → 下游」拓扑画成流向图
+	 *
+	 * **这是一个纯渲染层**：拓扑推导不在这里，在 sourceTopology（本文件顶部）。
+	 * 它只做三件事：
+	 *   ① 把中立拓扑映射成 FlowGraph 的节点/边形状（图标、图例、配色、文案）；
+	 *   ② 补上源节点，并按 topology.nodes 的 entry 标记**逐个**连线；
+	 *   ③ 交给 renderFlow（与 trace 页共用的渲染参数）。
+	 *
+	 * @param {HTMLElement} host        容器（会被清空）
+	 * @param {Object} opts
+	 * @param {Object} opts.src         源对象 { name, kind }
+	 * @param {{nodes: Array, edges: Array, truncated?: boolean}} opts.topology
+	 *                                  sourceTopology() 的产物
+	 * @param {Function} [opts.t]        i18n
+	 * @param {Function} [opts.onNodeClick]  回调参数是节点对象（不是 id）
+	 * @param {number} [opts.limit]
+	 * @param {boolean} [opts.showFullscreen]
+	 */
 	function capabilityFlow(host, opts) {
 		const t = opts.t || ((k, d) => d || k);
-		const tree = opts.tree || [];
 		const src = opts.src || {};
+		const topo = opts.topology || { nodes: [], edges: [] };
 		const limit = opts.limit || 120;
 
-		// 1. 树 → 扁平的 nodes/edges
-		const nodes = new Map();
-		const edges = new Map();
-		const addNode = (id, data) => {
-			if (!nodes.has(id)) nodes.set(id, Object.assign({ id }, data));
-		};
-		const addEdge = (from, to, port, cycle) => {
-			const key = from + "|" + port + "|" + to;
-			if (edges.has(key)) {
-				if (cycle) edges.get(key).cycle = true;
-				return;
-			}
-			edges.set(key, { from, to, port: port || "", cycle: !!cycle });
-		};
-		const deadPortID = (capId, port) => "dead|" + capId + "|" + port;
-
-		(function walk(list, parentId) {
-			for (const n of list) {
-				const unknown = n.kind === "unknown";
-				addNode(n.capId, {
-					// 有显示名就用它。裁决点只有一处：Anotify.capLabel
-					// （它活在 partials.js 的 IIFE 里，本文件是独立 IIFE，
-					// 只能通过 window.Anotify 访问，不能裸调）。
-					// 图节点不带版本号：视觉空间有限，版本放悬停标题里。
-					label: unknown ? n.capId : capLabel(n.cap),
-					kind: unknown ? "unknown" : n.cap.kind || "pipe",
-					// "源直接指向"这个信息不用于高亮（图上唯一的根是触发器），
-					// 但下面要用它来连"源 → 首层能力"的边
-					isEntry: parentId == null,
-					cycle: n.kind === "cycle",
-					seen: n.kind === "seen",
-					deadport: false,
-				});
-				if (parentId != null) addEdge(parentId, n.capId, n.viaPort, n.kind === "cycle");
-
-				// 声明了但没接边的出口：画灰色终点伪节点，让配置遗漏在图上可见
-				for (const port of n.unconnected || []) {
-					const did = deadPortID(n.capId, port);
-					addNode(did, { label: t("sources.flow.unconnected", "未接下游"), kind: "deadport", deadport: true });
-					addEdge(n.capId, did, port);
-				}
-				if (n.children && n.children.length) walk(n.children, n.capId);
-			}
-		})(tree, null);
-
-		// 2. 加触发器节点（源本身），连到所有首层能力
+		// 触发器节点（源本身）。它不属于拓扑推导：拓扑回答「源往下游怎么连」，
+		// 而它是这个图的坐标系原点。
 		const SRC_ID = "__source__";
 		const kindLabel = {
 			cron: t("sources.kind.cron", "定时器"),
 			webhook: t("sources.kind.webhook", "Webhook"),
 			manual: t("sources.kind.manual", "手动"),
 		};
-		const all = [...nodes.values()];
-		all.unshift({
-			id: SRC_ID,
-			label: src.name || t("sources.flow.source", "源"),
-			kind: "trigger",
-			root: true,
-		});
-		const allEdges = [...edges.values()];
-		for (const n of nodes.values()) {
-			if (n.isEntry) allEdges.push({ from: SRC_ID, to: n.id, port: "" });
+
+		const nodes = [
+			{
+				id: SRC_ID,
+				label: src.name || t("sources.flow.source", "源"),
+				sub: kindLabel[src.kind] || "",
+				kind: "trigger",
+				role: "trigger",
+				root: true,
+				icon: ICON.trigger,
+			},
+		];
+		for (const n of topo.nodes) {
+			nodes.push({
+				id: n.id,
+				// 图节点不带版本号：视觉空间有限，版本放悬停标题里（capLabel 已裁）
+				label: topoNodeLabel(n, t),
+				sub: flowSub(n, t),
+				kind: n.kind,
+				// 源详情页画的**就是**结构身份（这里的 kind 不是执行状态），
+				// 所以原样传成 role —— 和 trace 页的图共用同一套 role 样式，
+				// 两处看起来才一致。
+				role: n.kind,
+				root: false,
+				entry: !!n.entry,
+				cycle: !!n.cycle,
+				// deadport / unknown 是结构身份的一部分：图标和配色已经从 kind 里
+				// 区分了，这两个布尔值原样带上（flograph 不读它们），是为了让
+				// host._graphSpec 能如实回答"图上这个点是什么"（调试 / e2e）。
+				deadport: !!n.deadport,
+				unknown: !!n.unknown,
+				icon: ICON[n.kind] || "◆",
+			});
 		}
 
-		// 3. 截断 + 映射成 FlowGraph 的节点形状
-		const cut = truncate(all, allEdges, limit);
+		const edges = topo.edges.map((e) => ({
+			from: e.from,
+			to: e.to,
+			port: e.port,
+			cycle: !!e.cycle,
+			// 环上的边绕出去画，和 trace 页同一个形状。
+			// 不传这个的话回边就是两节点之间的一小段斜线，看着像画坏了。
+			loopback: !!e.cycle,
+			muted: !!e.muted,
+		}));
 
-		const subOf = (n) => {
-			if (n.id === SRC_ID) return kindLabel[src.kind] || "";
-			if (n.kind === "deadport") return t("sources.flow.no_edge", "没有接下游");
-			if (n.kind === "unknown") return t("sources.flow.missing", "能力已删除");
-			if (n.kind === "end") return t("sources.flow.terminal_short", "终点");
-			return "";
-		};
+		// 源节点 → 首层能力：topology 里每个 entry 节点**逐个**连一条。
+		//
+		// 不在遍历时判「谁是首层」（那种状态标记曾经在菱形上丢线），
+		// 而是按节点身上的 entry 事实连 —— N 条入口边就是 N 条线，这是构造保证。
+		for (const n of topo.nodes) {
+			if (n.entry) edges.push({ from: SRC_ID, to: n.id, port: "" });
+		}
+
+		// 截断只影响显示（数据异常时防卡死），不改变推导结果
+		const cut = truncate(nodes, edges, limit);
 
 		const graph = renderFlow(host, {
 			scope: "source",
 			t: t,
 			// 工具栏全屏图标：和 trace 页保持一致的位置与图标
 			showFullscreen: !!opts.showFullscreen,
-			nodes: cut.nodes.map((n) => ({
-				id: n.id,
-				label: n.label,
-				sub: subOf(n),
-				kind: n.kind,
-				// 源详情页画的**就是**结构身份（这里的 kind 不是执行状态），
-				// 所以原样传成 role —— 和 trace 页的图共用同一套 role 样式，
-				// 两处看起来才一致。
-				role: n.kind,
-				root: !!n.root,
-				entry: !!n.isEntry,
-				cycle: n.cycle,
-				seen: n.seen,
-				icon: ICON[n.kind] || "◆",
-				accent: n.accent,
-			})),
-			edges: cut.edges.map((e) => ({
-				from: e.from,
-				to: e.to,
-				port: e.port,
-				cycle: e.cycle,
-				// 环上的边绕出去画，和 trace 页同一个形状。
-				// 不传这个的话回边就是两节点之间的一小段斜线，看着像画坏了。
-				loopback: !!e.cycle,
-				muted: cut.nodes.some((n) => n.id === e.to && n.kind === "deadport"),
-			})),
+			nodes: cut.nodes,
+			edges: cut.edges,
 			onNodeClick: (n) => {
 				if (n.kind === "deadport" || n.kind === "unknown" || n.kind === "trigger") return;
 				if (opts.onNodeClick) opts.onNodeClick(n);
@@ -410,7 +601,9 @@
 		});
 
 		if (host) host._graphRebuild = () => capabilityFlow(host, opts);
-		return { graph, truncated: cut.truncated };
+		// 两种截断合并上报：节点数硬顶（limit）与推导深度上限（TOPO_MAX_DEPTH）。
+		// 调用方想提示就拿这个（现在两页都不提示，跟改动前一致）。
+		return { graph, truncated: cut.truncated || !!topo.truncated };
 	}
 
 	// ==================== 任务链图（动态运行） ====================
@@ -538,10 +731,14 @@
 					//
 					// 用独立 kind（不是简单的变灰），让它能同时表达
 					// "这是配置里真实存在的路"和"这次没走"。
+					//
+					// 灰点（deadport）不说「未执行」：它永远执行不了（没接下游）。
 					return {
 						id: n.id,
-						label: n.label,
-						sub: t("trace.legend_pruned", "未执行"),
+						// 底图节点来自 sourceTopology，label 是配置事实；
+						// 「未接下游」这类人话统一在 topoNodeLabel 里翻译。
+						label: topoNodeLabel(n, t),
+						sub: n.deadport ? "" : t("trace.legend_pruned", "未执行"),
 						kind: "pruned",
 						icon: roleIcon,
 						role: n.kind,
@@ -560,7 +757,7 @@
 				if (hits.length > 1) bits.push("×" + hits.length);
 				return {
 					id: n.id,
-					label: n.label,
+					label: topoNodeLabel(n, t),
 					sub: bits.join(" · "),
 					kind: kindForStatus(st),
 					icon: roleIcon,
@@ -627,7 +824,10 @@
 					// 压暗，而没走过的边如果保持正常实线，就会在那一瞬间显得
 					// **比走过的还亮** —— 看着像"这条线一开始就点亮了"，还分
 					// 不清哪条路这次真的用了（issue #157 第二张截图）。
-					muted: !bothAlive || walked === 0,
+					//
+					// e.muted 来自拓扑推导：「这条边指向一个没接下游的出口」
+					// —— 那是配置层面就到不了，与"这次没走"是两件事，都得灰。
+					muted: !bothAlive || walked === 0 || !!e.muted,
 				};
 			});
 
@@ -840,6 +1040,10 @@
 	}
 
 	window.AnotifyGraphs = {
+		// 拓扑推导（唯一一份）：源详情页的流向图与 trace 页的底图都从这里来。
+		// 导出它而不是只导渲染函数，是为了让两个页面真的调**同一个**函数
+		// （否则下一个人又会"顺手"在页面里再写一份推导）。
+		sourceTopology,
 		capabilityFlow,
 		taskChain,
 		fmtDur,
