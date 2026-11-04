@@ -32,7 +32,7 @@ type sourceHandler struct {
 	commander *source.Trigger
 	// resolveNamespace 复用 consoleHandler 的命名空间解析（契约 §6.2 的唯一入口）。
 	//
-	// 源是**命名空间资源**（sources / source_targets 都带 namespace_id）：
+	// 源是**命名空间资源**（sources 行与它名下的入口边都带 namespace_id）：
 	// 除 POST /v1/hooks/{token}（外部入口，token 自己就是凭据）
 	// 外，每个方法都必须解析 namespaceId —— 缺一律 400，绝不回退默认命名空间。
 	resolveNamespace func(w http.ResponseWriter, r *http.Request, bodyNS string, allowAll bool) (nsScope, bool)

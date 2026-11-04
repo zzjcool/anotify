@@ -58,14 +58,24 @@ type Edge struct {
 	// 用 json.RawMessage 而不是 map[string]any：写进库里的就是用户给的字节，
 	// 读出来要**字节级一致**（不重排键、不给数字补 .0）——那是事后对账的唯一依据。
 	// 用 json.RawMessage 而不是 string：出 JSON 时直接就是对象，不用前端再解一层。
-	Literals  json.RawMessage `json:"literals"`
+	Literals json.RawMessage `json:"literals"`
+
+	// Mapping 是这条边的**引用模板**（P2.1，设计 §11.5 选项 A）：入口边专用，
+	// 进入下游的 params = ResolveParams(mapping, 事件 payload) ⊎ literals。
+	//
+	// 只有入口边（FromIsSource）允许非空：外部世界不会替你拼参数，而能力边的参数
+	// 由实现自己 emit 的 data 提供（§8 已否决能力边的引用映射）。违反由
+	// checkEdgeMapping 在保存时硬拒（ErrEdgeRejected）。
+	//
+	// 与 literals 同样用 json.RawMessage：写的就是用户给的字节，读回来要一字不差。
+	Mapping   json.RawMessage `json:"mapping"`
 	CreatedAt int64           `json:"createdAt"`
 }
 
-// LinkTarget 是「这条边通向哪里」+「路上带哪些常量」，即 EdgesFrom 的一行。
+// LinkTarget 是「这条边通向哪里」+「路上带哪些常量/模板」，即 EdgesFrom 的一行。
 //
-// 为什么不是 []string：派发第 ① 步除了目标还得拿到这条边的字面量覆盖
-// （设计 §3.3），分两次查（先拿 id，再回头查 literals）会多一次往返，
+// 为什么不是 []string：派发第 ① 步除了目标还得拿到这条边的字面量覆盖与引用模板
+// （设计 §3.3 / §11.5），分两次查（先拿 id，再回头查 literals/mapping）会多一次往返，
 // 也让「边」这个概念在两个包里各有一半。
 //
 // CapabilityID 是目标能力**定义 id**（不是 name@version，同 capability_versions.id）。
@@ -73,6 +83,9 @@ type LinkTarget struct {
 	CapabilityID string `json:"capabilityId"`
 	// Literals 原样来自 edges.literals（"{}" = 无覆盖）。派发前由 route 叠加到目标参数上。
 	Literals json.RawMessage `json:"literals"`
+	// Mapping 原样来自 edges.mapping（"{}" = 无模板）。只有入口边会非空；
+	// 派发时 route 用事件 payload 求值成实际参数（能力边恒为 "{}"）。
+	Mapping json.RawMessage `json:"mapping"`
 }
 
 // ErrEdgeRejected 表示边被配置期校验拒绝（出口未定义 / 跨命名空间）。
@@ -92,10 +105,14 @@ type GraphVersion struct {
 // CreateEdge 新增一条边。
 //
 // 配置期校验（契约 §6.2 / 不变量 I2 / A5 / I11 / 设计 §5「定义期（存 link）」）：
-//   - from_port 必须 ∈ from 能力的 outputs（封闭集合，不能凭空发明出口）
+//   - from_port 必须 ∈ from 能力的 outputs（封闭集合，不能凭空发明出口）；入口边例外：
+//     事件类型由外部系统决定，也可以写成 "*" = 任意事件类型
 //   - 两端能力必须同**命名空间**（I11 第 ① 条：跨命名空间引用一律拒绝）
 //   - Literals 必须是 JSON 对象，每个键 ∈ 目标 params_schema.properties，
 //     且值类型与声明**精确相等**（不转换）——拼错/写错当场拒，不要等派发时才剪枝
+//   - Mapping 只允许出现在**入口边**，且必须是 JSON 对象、键 ∈ 目标
+//     params_schema.properties、值是「常量或 {{点号路径}} 模板」（常量才查类型）。
+//     能力边带非空 mapping → 硬拒（§8 已否决能力边的引用映射）
 //
 // 违反返回 ErrEdgeRejected / *CrossNamespaceError。重复边幂等（PK 冲突视为已存在）。
 func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
@@ -128,6 +145,14 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 	}
 	e.Literals = literals
 
+	// 引用模板的配置期校验（P2.1，设计 §11.5）：只有入口边允许，且键/形状/常量类型都要拦。
+	// 与 literals 同一处校验、同一个哨兵错误（ErrEdgeRejected → HTTP 400，客户端可修）。
+	mapping, err := checkEdgeMapping(to, e.Mapping, e.FromIsSource)
+	if err != nil {
+		return err
+	}
+	e.Mapping = mapping
+
 	if e.FromIsSource {
 		// 入口边：左端是来源名，出口是事件类型。
 		//
@@ -135,6 +160,9 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		// （GitHub 发什么 type 就是什么），不可能预先枚举。
 		// 这没有放松 I2 的本意 —— I2 防的是「凭空发明下游口子」，
 		// 而来源没有 outputs 这个概念，无从封闭。
+		//
+		// from_port 可以是 "*"（= 任意事件类型）：迁移 26 搬过来的源目标就是它，
+		// 新建入口边时用户也可以直接写它来省掉逐个 type 建边。
 		//
 		// 也要校验来源名不比能力名更容易撞车：来源名非空即可。
 	} else {
@@ -177,11 +205,11 @@ func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
 		e.CreatedAt = Now()
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, literals, created_at)
-		 VALUES (?,?,?,?,?,?,?)
+		`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at)
+		 VALUES (?,?,?,?,?,?,?,?)
 		 ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
 		e.NamespaceID, boolToInt(e.FromIsSource), e.FromCapability, e.FromPort, e.ToCapability,
-		string(e.Literals), e.CreatedAt); err != nil {
+		string(e.Literals), string(e.Mapping), e.CreatedAt); err != nil {
 		return fmt.Errorf("insert edge: %w", err)
 	}
 	return nil
@@ -385,7 +413,7 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	q := `SELECT namespace_id, from_is_source, from_key, from_port, to_capability, literals, created_at
+	q := `SELECT namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at
 	        FROM edges WHERE namespace_id = ?`
 	args := []any{namespaceID}
 	if fromKey != "" {
@@ -402,43 +430,88 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 	for rows.Next() {
 		var e Edge
 		var isSrc int
-		var literals string
-		if err := rows.Scan(&e.NamespaceID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability, &literals, &e.CreatedAt); err != nil {
+		var literals, mapping string
+		if err := rows.Scan(&e.NamespaceID, &isSrc, &e.FromCapability, &e.FromPort, &e.ToCapability,
+			&literals, &mapping, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan edge: %w", err)
 		}
 		e.FromIsSource = isSrc == 1
 		e.Literals = normalizeEdgeLiterals([]byte(literals))
+		e.Mapping = normalizeEdgeMapping([]byte(mapping))
 		out = append(out, &e)
 	}
 	return out, rows.Err()
 }
 
 // EdgesFrom 是派发第 ① 步的**唯一**查表入口（契约 §4）：
-// 返回 (namespaceID, fromKey, fromPort) 的全部下游（能力 id + 该条边的字面量覆盖）。
+// 返回 (namespaceID, fromKey, fromPort) 的全部下游
+// （能力 id + 该条边的字面量覆盖 + 该条边的引用模板）。
 //
 // fromIsSource 决定 fromKey 是能力 id 还是来源名（见 Edge.FromIsSource）。
+//
+// **入口边的端口匹配放宽**（P2.1）：入口边可以写 from_port="*"，含义是「这个源的任意
+// 事件类型都走这条边」——源能收什么事件由外部系统决定，让用户为每个 type 手建一条边
+// 是多余的心智负担（迁移 26 搬过来的源目标就是一个 "*"）。所以 fromIsSource=true 时
+// 匹配 `from_port = ? OR from_port = '*'`；能力边的出口是能力的封闭契约（I2），不放宽。
+//
+// 精确端口优先于 "*"，且同一目标能力只返回一行：一条精确边 + 一条 "*" 边指向同一个
+// 下游时，那个下游只能收到**一次**派发（否则一个事件会变成两个任务）。
 //
 // 除了 route 包，其他包不得再写 `FROM edges`（见 #56 的验收：全仓只允许 1 处）。
 func (d *DB) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort string) ([]LinkTarget, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
+	if !fromIsSource {
+		rows, err := d.QueryContext(ctx,
+			`SELECT to_capability, literals, mapping FROM edges
+			 WHERE namespace_id = ? AND from_is_source = 0 AND from_key = ? AND from_port = ?
+			 ORDER BY to_capability`, namespaceID, fromKey, fromPort)
+		if err != nil {
+			return nil, fmt.Errorf("lookup edges: %w", err)
+		}
+		defer rows.Close()
+		return scanLinkTargets(rows)
+	}
+
+	// 入口边：精确端口排前面（(from_port = '*') 升序 = 精确匹配先出），再按目标排序；
+	// 第一个见到的目标能力就是这条边生效的那一行。
 	rows, err := d.QueryContext(ctx,
-		`SELECT to_capability, literals FROM edges
-		 WHERE namespace_id = ? AND from_is_source = ? AND from_key = ? AND from_port = ?
-		 ORDER BY to_capability`, namespaceID, boolToInt(fromIsSource), fromKey, fromPort)
+		`SELECT to_capability, literals, mapping FROM edges
+		 WHERE namespace_id = ? AND from_is_source = 1 AND from_key = ?
+		   AND (from_port = ? OR from_port = '*')
+		 ORDER BY to_capability, (from_port = '*')`, namespaceID, fromKey, fromPort)
 	if err != nil {
-		return nil, fmt.Errorf("lookup edges: %w", err)
+		return nil, fmt.Errorf("lookup entry edges: %w", err)
 	}
 	defer rows.Close()
+	all, err := scanLinkTargets(rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LinkTarget, 0, len(all))
+	seen := make(map[string]bool, len(all))
+	for _, t := range all {
+		if seen[t.CapabilityID] {
+			continue // 精确端口那行已经赢过一次；同一个下游不重复派发
+		}
+		seen[t.CapabilityID] = true
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// scanLinkTargets 把 EdgesFrom 的结果集扫成 LinkTarget（含 literals / mapping 归一）。
+func scanLinkTargets(rows *sql.Rows) ([]LinkTarget, error) {
 	out := []LinkTarget{}
 	for rows.Next() {
 		var t LinkTarget
-		var literals string
-		if err := rows.Scan(&t.CapabilityID, &literals); err != nil {
+		var literals, mapping string
+		if err := rows.Scan(&t.CapabilityID, &literals, &mapping); err != nil {
 			return nil, fmt.Errorf("scan edge target: %w", err)
 		}
 		t.Literals = normalizeEdgeLiterals([]byte(literals))
+		t.Mapping = normalizeEdgeMapping([]byte(mapping))
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -459,6 +532,11 @@ type graphEdge struct {
 	// （比如把收件人从 u_1 换成 u_2）同样是「改了线」，不落新版本就会让
 	// 「当时那条链路长什么样」永远查不出来。
 	Literals string `json:"literals,omitempty"`
+	// Mapping 是这条边的引用模板（已归一成紧凑 JSON；空模板省略）。
+	//
+	// 与 Literals 同理：改一条入口边的模板同样是「改了线」（同一个事件会喂给下游
+	// 不同的参数），不落新版本就答不出「当时到底按哪份模板求值的」。
+	Mapping string `json:"mapping,omitempty"`
 }
 
 // buildGraphSnapshot 把一张图归一成可排序、可哈希的形状。
@@ -469,12 +547,17 @@ type graphEdge struct {
 func buildGraphSnapshot(edges []*Edge) (graphSnapshot, error) {
 	snap := graphSnapshot{Edges: make([]graphEdge, 0, len(edges))}
 	for _, e := range edges {
-		lit, err := canonicalLiterals(e.Literals)
+		lit, err := canonicalJSONObject(e.Literals)
 		if err != nil {
 			return graphSnapshot{}, fmt.Errorf("graph snapshot literals: %w", err)
 		}
+		mapping, err := canonicalJSONObject(e.Mapping)
+		if err != nil {
+			return graphSnapshot{}, fmt.Errorf("graph snapshot mapping: %w", err)
+		}
 		snap.Edges = append(snap.Edges, graphEdge{
-			From: e.FromCapability, Port: e.FromPort, To: e.ToCapability, Literals: lit,
+			From: e.FromCapability, Port: e.FromPort, To: e.ToCapability,
+			Literals: lit, Mapping: mapping,
 		})
 	}
 	sort.Slice(snap.Edges, func(i, j int) bool {
@@ -488,19 +571,29 @@ func buildGraphSnapshot(edges []*Edge) (graphSnapshot, error) {
 		if a.To != b.To {
 			return a.To < b.To
 		}
-		return a.Literals < b.Literals
+		if a.Literals != b.Literals {
+			return a.Literals < b.Literals
+		}
+		return a.Mapping < b.Mapping
 	})
 	return snap, nil
 }
 
 // canonicalLiterals 把字面量归一成紧凑 JSON；空/无覆盖返回 ""（omitempty 省略）。
-func canonicalLiterals(raw json.RawMessage) (string, error) {
+func canonicalLiterals(raw json.RawMessage) (string, error) { return canonicalJSONObject(raw) }
+
+// canonicalJSONObject 把 edges 上的一列 JSON 对象（literals / mapping）归一成紧凑 JSON；
+// 空 / null / {} 返回 ""（omitempty 省略）。
+//
+// 两列共用同一份归一：graph hash 的稳定性只该有一处实现——键序/空白不同但语义相同的
+// 配置必须算出同一个 hash，否则 graph_versions 里会堆垃圾（契约 §10.2 的「按需落版」失效）。
+func canonicalJSONObject(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {
 		return "", nil
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return "", fmt.Errorf("literals is not a JSON object: %w", err)
+		return "", fmt.Errorf("not a JSON object: %w", err)
 	}
 	if len(obj) == 0 {
 		return "", nil

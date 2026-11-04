@@ -14,7 +14,8 @@
 //   - trace_id **由触发器生成**，中枢不代生成（§10 Q2）
 //   - 幂等键由触发器给（`idemKey`），中枢只做唯一约束（§10.1）
 //   - 带 idemKey 冲突时返回**已有**的 event_id + trace_id，不是 409
-//   - 起点是 origin 能力（无节点声明）：它没有任务行，只有出口
+//   - 首轮派发的目标来自**入口边**（edges.from_is_source=1），参数模板在边上
+//     （P2.1：源不再有一张自己的出口表）
 package trigger
 
 import (
@@ -162,20 +163,26 @@ func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult
 		return result, nil
 	}
 
-	// ④ 首轮派发：入口边的左端就是**来源名**，出口名就是事件 type。
+	// ④ 首轮派发：入口边的左端就是**来源名**，端口名就是事件 type。
 	//
 	// 这里原来要先 findOrigin 找一个叫 github@1 的"起点能力"当锚点。
 	// 那种能力不执行代码、不产生任务、也没地方存配置（cron 表达式之类），
 	// 却必须存在、而且会出现在能力列表上 —— 源（sources）已经是它的
 	// 完整替代，所以入口边直接以来源名为左端（契约 §2.4）。
+	//
+	// P2.1 之后这条路径与源自己的触发（source.Trigger.Fire）**完全同形**：
+	// 两者都只给「来源名 + 事件类型」，目标能力与参数模板都从入口边取。
 	out, err := s.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		NamespaceID:  req.NamespaceID,
-		TraceID:      traceID,
-		FromCap:      req.Source,
-		FromIsSource: true,
-		Out:          req.Type,
-		Params:       extractParams(payload),
-		// 入口没有父任务（parent_task_id 留空）
+		NamespaceID:   req.NamespaceID,
+		TraceID:       traceID,
+		FromIsSource:  true,
+		EntryFromKey:  req.Source,
+		EntryFromPort: req.Type,
+		// Payload 是入口边模板（{{路径}} / {from} / {var}）的取值来源：
+		// 与 source.Trigger.Fire 传的是同一个东西（合并后的 payload map），
+		// 所以两个入口给同一份模板求值出同样的参数。
+		Payload: extractParams(payload),
+		// 入口边没有父任务（parent_task_id 留空）
 		// path 为空：来源不是能力，不参与「A→B→A」环检测
 		Path: nil,
 	})
@@ -202,10 +209,14 @@ func normalizeIdemKey(k *string) *string {
 	return &trimmed
 }
 
-// extractParams 从 payload 里取出可传给下游的参数。
+// extractParams 把事件 payload 解成**求值用**的 map（入口边模板的取值来源）。
 //
-// 不做任何转换/求值（不变量 I6）：payload 是对象就整个作为 params，
-// 其他类型（数组/字符串）包一层 {"payload": ...}。
+// 不做任何转换/求值（不变量 I6）：payload 是对象就整个用它，其他类型（数组/字符串/数字）
+// 包一层 {"payload": ...}——否则一份 `[1,2]` 的投递在模板里没有任何点号路径可达，
+// 用户只能看到一个莫名其妙的 param_missing。
+//
+// 它与「参数」不是一回事（P2.1）：入口边的参数由边上 mapping 求值得到，
+// 这里只是把 payload 递到求值器手边。
 func extractParams(payload json.RawMessage) map[string]any {
 	if len(payload) == 0 {
 		return map[string]any{}

@@ -63,7 +63,10 @@ func TestOpenCreatesAllTables(t *testing.T) {
 		// 预案（#193）：可安装的流程零件
 		"playbooks",
 		// 源（#110）：事件入口
-		"sources", "source_targets",
+		//
+		// 注意没有 source_targets：迁移 26（P2.1）把源的目标搬成入口边后把那张表删了。
+		// 「源的目标就是 edges 里的入口边」这一点由 TestOpenHasNoSourceTargets 钉住。
+		"sources",
 		// 沿用：属于人的 4 张 + CLI/恢复码 2 张
 		"users", "passkeys", "sessions", "api_keys",
 		"cli_auth_sessions", "recovery_codes",

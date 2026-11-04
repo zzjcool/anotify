@@ -150,12 +150,12 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
 				loose := f.addCap(testNS, "loose", 1, nil, `{"type":"object"}`)
 				f.addNode("nd_loose", loose.ID, 1)
+				// 入口边：模板在边上（P2.1），pid="push" 是事件类型。
+				f.addEntryEdge(testNS, "github", "push", loose.ID, `{"n":"{{pull_request.title}}"}`)
 				return DispatchInput{
 					NamespaceID: testNS, TraceID: "trace_param_missing",
-					FromCap: "github", FromIsSource: true, Out: "push",
-					Targets:      []string{loose.ID},
-					TargetParams: map[string]map[string]any{loose.ID: {"n": "{{pull_request.title}}"}},
-					Payload:      map[string]any{}, // 这次事件没有 pull_request
+					FromIsSource: true, EntryFromKey: "github", EntryFromPort: "push",
+					Payload: map[string]any{}, // 这次事件没有 pull_request
 				}, loose.ID
 			},
 			wantPort:   "push",
@@ -171,12 +171,11 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				strict := f.addCap(testNS, "strict", 1, nil,
 					`{"type":"object","properties":{"lines":{"type":"integer"}}}`)
 				f.addNode("nd_strict", strict.ID, 1)
+				f.addEntryEdge(testNS, "github", "push", strict.ID, `{"lines":"{{lines}}"}`)
 				return DispatchInput{
 					NamespaceID: testNS, TraceID: "trace_param_type",
-					FromCap: "github", FromIsSource: true, Out: "push",
-					Targets:      []string{strict.ID},
-					TargetParams: map[string]map[string]any{strict.ID: {"lines": "{{lines}}"}},
-					Payload:      map[string]any{"lines": "abc"},
+					FromIsSource: true, EntryFromKey: "github", EntryFromPort: "push",
+					Payload: map[string]any{"lines": "abc"},
 				}, strict.ID
 			},
 			wantPort:   "push",
@@ -231,10 +230,17 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 				t.Error("created_at = 0，剪枝事件没有时间戳（事后查不到是什么时候剪的）")
 			}
 
-			// payload 四字段：证据必须完整，否则查到了也答不出「为什么」
+			// payload 四字段：证据必须完整，否则查到了也答不出「为什么」。
+			//
+			// 「上游标识」按边的类型取（P2.1）：能力边是上游能力 id，入口边是**来源名**
+			// （它没有上游能力，来源名才是那一刻唯一能指认"是谁的事件"的东西）。
+			wantUpstream := in.FromCap
+			if in.FromIsSource {
+				wantUpstream = in.EntryFromKey
+			}
 			p := decodePrunePayload(t, e)
-			if p.FromCapability != in.FromCap {
-				t.Errorf("payload.fromCapability = %q, want 上游标识 %q", p.FromCapability, in.FromCap)
+			if p.FromCapability != wantUpstream {
+				t.Errorf("payload.fromCapability = %q, want 上游标识 %q", p.FromCapability, wantUpstream)
 			}
 			if p.Port != c.wantPort {
 				t.Errorf("payload.port = %q, want %q", p.Port, c.wantPort)

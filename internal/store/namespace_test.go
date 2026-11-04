@@ -232,9 +232,12 @@ func TestNamespaceCRUD(t *testing.T) {
 	if !errors.As(err, &blocked) {
 		t.Fatalf("非空命名空间删除 err = %v (%T), want *NamespaceBlockedError", err, err)
 	}
-	// 409 的正文必须说清「你在拆什么」：删命名空间 = 里面的机器全部掉线
+	// 409 的正文必须说清「你在拆什么」：删命名空间 = 里面的机器全部掉线。
+	//
+	// edges=2 而不是 1：源的目标也是边（P2.1 之后建源 = 建入口边），
+	// 上面那条 CreateSource 贡献了第二条。
 	joined := strings.Join(blocked.Blocking, ",")
-	for _, want := range []string{"sources=1", "edges=1", "tasks=1", "nodes=1"} {
+	for _, want := range []string{"sources=1", "edges=2", "tasks=1", "nodes=1"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("阻塞清单缺 %q（实际 %q）", want, joined)
 		}
@@ -262,9 +265,10 @@ func TestNamespaceCRUD(t *testing.T) {
 		t.Fatalf("删完还查得到命名空间: %v", err)
 	}
 	// 五张表 + 子表都得清空（用 namespace_id 直接数，避免依赖读路径先报错）
+	// 注意没有 source_targets：迁移 26 已经把它删了，源的目标就是 edges 里的入口边。
 	for _, table := range []string{
 		"capability_versions", "nodes", "node_capabilities", "node_instances", "node_pins",
-		"edges", "sources", "source_targets", "events", "tasks", "graph_versions",
+		"edges", "sources", "events", "tasks", "graph_versions",
 	} {
 		if n := countRows(t, db, table, "namespace_id = ?", staging.ID); n != 0 {
 			t.Errorf("force 删除后 %s 还剩 %d 行", table, n)
@@ -418,7 +422,7 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 		nsA, nsB)
 
 	// ===== ② CreateSource / UpdateSource 的 targets =====
-	assertCross("source_targets(create)",
+	assertCross("sources.targets(create)",
 		db.CreateSource(ctx, &Source{
 			NamespaceID: nsA, Name: "cross-src", Kind: SourceKindManual, Enabled: true,
 			Targets: []SourceTarget{{CapabilityID: sinkB.ID}},
@@ -438,7 +442,7 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 		t.Fatalf("get source: %v", err)
 	}
 	cur.Targets = []SourceTarget{{CapabilityID: sinkB.ID}}
-	assertCross("source_targets(update)", db.UpdateSource(ctx, cur), nsA, nsB)
+	assertCross("sources.targets(update)", db.UpdateSource(ctx, cur), nsA, nsB)
 	// 被拒的更新不能半写：targets 保持原样
 	after, err := db.GetSource(ctx, nsA, okSrc.ID)
 	if err != nil {
@@ -581,9 +585,11 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if gotSrc.NamespaceID != ns {
 		t.Fatalf("source namespace = %q, want %q", gotSrc.NamespaceID, ns)
 	}
-	// source_targets 的 namespace_id 从父行（source）取
-	if n := countRows(t, db, "source_targets", "source_id = ? AND namespace_id = ?", src.ID, ns); n != 1 {
-		t.Fatalf("source_targets 的 namespace_id 不是从源行取的（匹配 %d 行）", n)
+	// 源的出口现在是**入口边**（P2.1：source_targets 已删）：必须落在源自己的
+	// 命名空间里，左端是来源名、端口是 "*"（源能收任意事件类型）。
+	if n := countRows(t, db, "edges",
+		"from_is_source = 1 AND from_key = ? AND from_port = '*' AND namespace_id = ?", src.Name, ns); n != 1 {
+		t.Fatalf("源的入口边没落在源自己的命名空间里（匹配 %d 行）", n)
 	}
 
 	// event
@@ -622,7 +628,15 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list edges: %v", err)
 	}
-	if len(edges) != 1 || edges[0].NamespaceID != ns {
+	// 源的目标也是边（P2.1：建源 = 建入口边），所以按**能力边**过滤，
+	// 这条用例钉的是「边落在哪个命名空间」而不是边的总数。
+	var capabilityEdges []*Edge
+	for _, e := range edges {
+		if !e.FromIsSource {
+			capabilityEdges = append(capabilityEdges, e)
+		}
+	}
+	if len(capabilityEdges) != 1 || capabilityEdges[0].NamespaceID != ns {
 		t.Fatalf("edge 往返不一致: %+v", edges)
 	}
 
@@ -838,8 +852,13 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 		if n := countRows(t, up, "edges", "from_key = ? AND to_capability = ?", legacyCapID, legacyCapID); n != 1 {
 			lost("迁移把老 edges 行弄丢了（剩 %d 行）", n)
 		}
-		if n := countRows(t, up, "source_targets", "source_id = ? AND capability_id = ?", legacySrcID, legacyCapID); n != 1 {
-			lost("迁移把老 source_targets 行弄丢了（剩 %d 行）", n)
+		// 老 source_targets 那一行**没有丢**：迁移 26（P2.1）把它搬成了一条入口边。
+		if n := countRows(t, up, "edges",
+			"from_is_source = 1 AND to_capability = ? AND from_port = '*'", legacyCapID); n != 1 {
+			lost("迁移把老源的出口弄丢了（入口边剩 %d 行）", n)
+		}
+		if tableExists(t, up, "source_targets") {
+			lost("迁移 26 之后 source_targets 表仍然存在")
 		}
 		if !dataIntact {
 			// 行都没了，后面的「回填对不对」无从谈起——先让第一条失败说清问题
@@ -872,19 +891,23 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 				t.Errorf("老 %s 行的 namespace_id = %q, want %q（必须回填到默认命名空间）", r.table, gotNS, nsID)
 			}
 		}
-		// 子表的 namespace_id 从父行取（不是按 org 猜）
-		var instNS, pinNS, targetNS string
+		// 子表的 namespace_id 从父行取（不是按 org 猜）。
+		//
+		// 「源的出口」这一项从 source_targets 换成了**入口边**（迁移 26）：
+		// 它的 namespace_id 必须等于源所在命名空间，而不是被搬进别的命名空间。
+		var instNS, pinNS, entryNS string
 		if err := up.QueryRow(`SELECT namespace_id FROM node_instances WHERE id = ?`, legacyInstID).Scan(&instNS); err != nil {
 			t.Fatalf("read instance ns: %v", err)
 		}
 		if err := up.QueryRow(`SELECT namespace_id FROM node_pins WHERE sticky_key = ?`, legacyPinID).Scan(&pinNS); err != nil {
 			t.Fatalf("read pin ns: %v", err)
 		}
-		if err := up.QueryRow(`SELECT namespace_id FROM source_targets WHERE source_id = ?`, legacySrcID).Scan(&targetNS); err != nil {
-			t.Fatalf("read target ns: %v", err)
+		if err := up.QueryRow(`SELECT namespace_id FROM edges
+			WHERE from_is_source = 1 AND to_capability = ? AND from_port = '*'`, legacyCapID).Scan(&entryNS); err != nil {
+			t.Fatalf("read entry edge ns: %v", err)
 		}
 		for label, got := range map[string]string{
-			"node_instances": instNS, "node_pins": pinNS, "source_targets": targetNS,
+			"node_instances": instNS, "node_pins": pinNS, "源入口边": entryNS,
 		} {
 			if got != nsID {
 				t.Errorf("老 %s 行的 namespace_id = %q, want %q（子表必须从父行继承）", label, got, nsID)
@@ -893,7 +916,7 @@ func TestMigrationBackfillsDefaultNamespace(t *testing.T) {
 		// 没有任何行留着空 namespace_id（回填漏一列就是永久孤儿行）
 		for _, table := range []string{
 			"capability_versions", "nodes", "node_capabilities", "node_instances", "node_pins",
-			"edges", "sources", "source_targets", "events", "tasks", "graph_versions",
+			"edges", "sources", "events", "tasks", "graph_versions",
 		} {
 			if n := countRows(t, up, table, "namespace_id IS NULL OR namespace_id = ''"); n != 0 {
 				t.Errorf("%s 有 %d 行 namespace_id 为空（回填漏了）", table, n)

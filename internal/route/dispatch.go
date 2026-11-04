@@ -53,21 +53,27 @@ type DispatchInput struct {
 	// FromIsSource 为 true 时它是**来源名**（入口边，如 "github"）。
 	FromCap      string
 	FromIsSource bool
-	// Out 是上游回报的出口名。"" 表示上游没回报——此时不派发、也不记剪枝。
-	Out    string
-	Params map[string]any
-	// TargetParams 按目标能力 ID 指定该目标的参数（源用）。
-	//
-	// 为什么必须**按目标**分别给，而不是一份公共 Params：
-	// 每个能力有自己的 params_schema（字段名、必填项都不同）。一个源同时
-	// 喂 analyze-pr（要 changedLines）和 deploy-preview（要 env）时，
-	// 一份公共 params 必然对不上其中至少一边，触发时被 param_schema 剪枝，
-	// 而用户配完以为好了——那正是要消灭的静默失败。
-	//
-	// 某目标没有条目时回退到 Params（保持对 events / 普通派发的兼容）。
-	TargetParams map[string]map[string]any
+	// Out 是上游**能力**回报的出口名。"" 表示上游没回报——此时不派发、也不记剪枝。
+	// 入口边不看它（事件类型在 EntryFromPort 里）。
+	Out string
 
-	// Payload 是本次事件的原始 payload（源路径用来解析参数模板里的 {{路径}}）。
+	// EntryFromKey / EntryFromPort 是**入口边**的左端与端口（来源名 + 事件类型）。
+	// FromIsSource=true 时必须给，否则 plan 拿不到要查的边。
+	//
+	// 为什么不复用 FromCap / Out：Out 的语义是「上游能力回报的出口名」，而入口边没有
+	// 上游能力、事件类型也不是任何能力的出口。混在一个字段里，「没回报出口就结束」
+	// 这条早退会悄悄地作用在源路径上，而那条路径上的「没出口」其实是配置错误。
+	EntryFromKey  string
+	EntryFromPort string
+
+	// Params 是**能力边**的目标参数（emit 的 data 原样）。
+	//
+	// 入口边**不看**它：入口边的参数来自边上的模板（edges.mapping），由事件 payload
+	// 求值——外部世界（GitHub / 定时器）不会替你拼参数，而能力边的参数由实现自己
+	// emit 出来（P2.1 把「源」那条旁路删掉之后，这里只剩能力边一种语义）。
+	Params map[string]any
+
+	// Payload 是本次事件的原始 payload（入口边用它解析 edges.mapping 里的 {{路径}}）。
 	// 能力→能力递归派发时为 nil（那里不做解析）。
 	Payload map[string]any
 	// VarValues 是源声明变量（config.vars）的求值结果（别名表），供 {{name}} 引用。
@@ -82,18 +88,27 @@ type DispatchInput struct {
 	// DryRun 下 Tasks 里的任务只有能力/参数/节点信息，ID 等字段为空。
 	DryRun bool
 
-	// Targets 非空时**跳过 edges 查表**，直接把事件派给这些能力。
-	//
-	// 这是「源」（source）用的路径：源不建边，它自己就是起点，出口是
-	// 它明确配置好的能力列表（source_targets）。
-	//
-	// 为什么不给源也建边：
-	//   - 边是"能力 A 的某个出口 → 能力 B"，而源不是能力，没有 outputs 可枚举；
-	//   - 用户为了配一个定时器去理解 kind=origin、去手建一条边，是多余的心智负担。
-	// 所以源走这条直连路径，其余（参数校验 / 找节点 / 占槽位 / 建任务）完全复用。
-	Targets []string
 	// Path 是从根到本任务的能力序列（含本任务的能力），用于环剪枝。
 	Path []string
+}
+
+// fromKeyPort 返回这次派发的 (左端, 端口)：
+//
+//	入口边（FromIsSource）：来源名 + 事件类型
+//	能力边：     上游能力 id + 它回报的出口名
+func (in DispatchInput) fromKeyPort() (key, port string) {
+	if in.FromIsSource {
+		return in.EntryFromKey, in.EntryFromPort
+	}
+	return in.FromCap, in.Out
+}
+
+// upstream 返回剪枝记录里要回显的上游标识（入口边是来源名，能力边是能力 id）。
+func (in DispatchInput) upstream() string {
+	if in.FromIsSource {
+		return in.EntryFromKey
+	}
+	return in.FromCap
 }
 
 // DispatchOutput 是一次派发的结果：建成 N 个任务，或 N 条剪枝记录。
@@ -322,6 +337,14 @@ func (d *Dispatcher) checkInput(in DispatchInput) error {
 	if d.Now == nil {
 		d.Now = store.Now
 	}
+	// 入口边的两个字段必填：少了左端，EdgesFrom 会拿空 key 去查、结果是「no_edge」——
+	// 一个本该是**调用方 bug** 的形状被伪装成「用户没配边」；少了端口同理。
+	if in.FromIsSource && in.EntryFromKey == "" {
+		return fmt.Errorf("route: from_is_source requires entry_from_key (source name)")
+	}
+	if in.FromIsSource && in.EntryFromPort == "" {
+		return fmt.Errorf("route: from_is_source requires entry_from_port (event type)")
+	}
 	// 命名空间必填：这里**不**回退默认命名空间（契约 §3 / §4）。
 	//
 	// 复用 store 的哨兵错误（ErrNamespaceRequired）是有意的：handler 只要
@@ -351,39 +374,36 @@ func (d *Dispatcher) checkInput(in DispatchInput) error {
 // 返回的 tasks 与 cands **一一对应、顺序一致**（launch 依赖这个不变量）。
 // DryRun 时把试运行任务填进 out.Tasks，并返回 (nil, nil, nil)。
 func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOutput) (tasks []*store.Task, cands []candidate, err error) {
-	// ① 上游没回报出口：正常结束的分支，不查表、不剪枝（契约 §7 第 ① 行）。
-	if in.Out == "" {
+	// ① 取「从哪来 / 哪个口」。
+	//
+	// 两类上游在这里汇成一对 (fromKey, fromPort)：
+	//   - 入口边：来源名 + 事件类型（事件类型由外部系统决定，可以是任意值）
+	//   - 能力边：上游能力 id + 它回报的出口名
+	//
+	// 能力没回报出口 = 正常结束的分支，不查表、不剪枝（契约 §7 第 ① 行）。
+	// （入口边一定有时刻：checkInput 已要求 EntryFromPort 非空。）
+	fromKey, fromPort := in.fromKeyPort()
+	if fromPort == "" {
 		return nil, nil, nil
 	}
 
-	// ② 查出口表；源（Targets 非空）跳过这一步，直接用配置好的目标。
+	// ② 查出口表。**只剩这一条路径**（P2.1）：源不再有旁路，它的目标就是入口边。
 	//
-	// 两条路径落到同一个形状（[]store.LinkTarget）：源没有 edges 行，因此也没有
-	// 字面量覆盖（它的参数模板存在 source_targets.params 里，是另一个东西），
-	// 所以这里给的是 Literals 为空的 LinkTarget。这样下面的循环只有一份代码，
-	// 「字面量覆盖」这件事不会因为走了哪条路径而少做一次。
-	var targets []store.LinkTarget
-	if len(in.Targets) > 0 {
-		targets = make([]store.LinkTarget, 0, len(in.Targets))
-		for _, id := range in.Targets {
-			targets = append(targets, store.LinkTarget{CapabilityID: id})
-		}
-	} else {
-		var err error
-		// 只查**本命名空间**的出口表（契约 §3 第 ① 步）：别的命名空间里
-		// 同名能力的边不参与派发。
-		targets, err = d.Store.EdgesFrom(ctx, in.NamespaceID, in.FromIsSource, in.FromCap, in.Out)
-		if err != nil {
-			return nil, nil, fmt.Errorf("route: lookup edges: %w", err)
-		}
-		if len(targets) == 0 {
-			d.prune(ctx, in, out, PrunedRecord{
-				Reason: ReasonNoEdge,
-				Port:   in.Out,
-				Detail: fmt.Sprintf("no edge from %s port %q", in.FromCap, in.Out),
-			})
-			return nil, nil, nil
-		}
+	// 入口边按 `from_port = ? OR from_port = '*'` 匹配（源能收任意事件类型），
+	// 能力边严格按端口——那是能力声明的封闭契约（I2），不能凭空发明出口。
+	// 只查**本命名空间**的边（契约 §3 第 ① 步）：别的命名空间里
+	// 同名能力/同来源名的边不参与派发。
+	targets, err := d.Store.EdgesFrom(ctx, in.NamespaceID, in.FromIsSource, fromKey, fromPort)
+	if err != nil {
+		return nil, nil, fmt.Errorf("route: lookup edges: %w", err)
+	}
+	if len(targets) == 0 {
+		d.prune(ctx, in, out, PrunedRecord{
+			Reason: ReasonNoEdge,
+			Port:   fromPort,
+			Detail: fmt.Sprintf("no edge from %s port %q", fromKey, fromPort),
+		})
+		return nil, nil, nil
 	}
 
 	// 图版本只落一次（按需落版，契约 §10.2）。图版本属于命名空间（edges 按 namespace 重建）。
@@ -405,36 +425,69 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonPath,
 				CapabilityID: targetID,
-				Port:         in.Out,
+				Port:         fromPort,
 				Detail:       fmt.Sprintf("%s@%d already in path %v (cycle pruned)", capDef.Name, capDef.Version, in.Path),
 			})
 			continue
 		}
 
-		// 该目标实际使用的参数：优先 TargetParams（**求值后**的值），回退到公共 Params。
+		// 该目标实际使用的参数，按**边的类型**分两种（P2.1）：
 		//
-		// 求值只发生在这里 —— 也就是「源的首次派发」这个唯一的出口。能力→能力
-		// 递归派发（DispatchNext）不带 TargetParams，因此不会对上游结果再解析
-		// 一次（契约 §2.5）。
+		//  入口边：参数 = ResolveParams(这条边的 mapping, 事件 payload, 源变量)。
+		//    外部世界不会替我们拼参数（GitHub 不会把 pull_request.title 换成
+		//    下游的 params.title），所以引用只能挂在入口边上（设计 §11.5 选项 A）。
+		//    求值只发生在这里——能力→能力递归派发不带 mapping，因此不会对上游
+		//    结果再解析一次（契约 §2.5 的单趟边界）。
+		//
+		//  能力边：参数 = in.Params（emit 的 data 原样），**不求值**。
+		//    参数怎么拼是实现的内部事务（设计 §8 已否决能力边的引用映射）。
 		targetParams := in.Params
-		if tp, ok := in.TargetParams[targetID]; ok && tp != nil {
-			resolved, misses, typeErr := ResolveParams(tp, in.Payload, in.VarValues, capDef.ParamsSchema)
-			// 先判 missing 再判 typeErr：缺字段时不拿"类型转不了"盖住真正的病因
-			if len(misses) > 0 {
+		if in.FromIsSource {
+			mapping, err := decodeEdgeMapping(tgt.Mapping)
+			if err != nil {
+				// 库里的 mapping 坏了（手改 / 旧数据）：fail closed，只剪这一条边。
+				// 不整次派发失败：一条坏边不应把扇出里其他健康的边一起卖掉。
 				d.prune(ctx, in, out, PrunedRecord{
-					Reason: ReasonParamMissing, CapabilityID: targetID, Port: in.Out,
-					Detail: formatParamMissing(capDef, misses),
+					Reason:       ReasonParamSchema,
+					CapabilityID: targetID,
+					Port:         fromPort,
+					Detail:       fmt.Sprintf("edge mapping: %v", err),
 				})
 				continue
 			}
-			if typeErr != nil {
-				d.prune(ctx, in, out, PrunedRecord{
-					Reason: ReasonParamType, CapabilityID: targetID, Port: in.Out,
-					Detail: formatParamType(capDef, *typeErr),
-				})
-				continue
+			// 空 mapping = **不裁剪**：事件 payload 原样就是目标参数（恒等）。
+			//
+			// 为什么要有这条默认：多数入口边并不需要改字段名（事件里本来就有
+			// title/body，下游要的也是它们）。要求每条入口边都写一遍
+			// {"title":"{{title}}"} 只是仪式，且会让「配了源却跑不起来」
+			// （payload 明明有值，参数却是空的）这种失败变得很难懂。
+			// 这也是 P2.1 之前在 /v1/events 上一直成立的行为。
+			if len(mapping) == 0 {
+				// 恒等：事件原样就是目标参数。
+				if in.Payload == nil {
+					targetParams = map[string]any{}
+				} else {
+					targetParams = in.Payload
+				}
+			} else {
+				resolved, misses, typeErr := ResolveParams(mapping, in.Payload, in.VarValues, capDef.ParamsSchema)
+				// 先判 missing 再判 typeErr：缺字段时不拿"类型转不了"盖住真正的病因
+				if len(misses) > 0 {
+					d.prune(ctx, in, out, PrunedRecord{
+						Reason: ReasonParamMissing, CapabilityID: targetID, Port: fromPort,
+						Detail: formatParamMissing(capDef, misses),
+					})
+					continue
+				}
+				if typeErr != nil {
+					d.prune(ctx, in, out, PrunedRecord{
+						Reason: ReasonParamType, CapabilityID: targetID, Port: fromPort,
+						Detail: formatParamType(capDef, *typeErr),
+					})
+					continue
+				}
+				targetParams = resolved
 			}
-			targetParams = resolved
 		}
 
 		// 字面量覆盖（P0-c，设计 §3.3）：目标实际 params = data ⊎ literals，**字面量优先**，
@@ -456,7 +509,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonParamSchema,
 				CapabilityID: targetID,
-				Port:         in.Out,
+				Port:         fromPort,
 				Detail:       fmt.Sprintf("edge literals: %v", mergeErr),
 			})
 			continue
@@ -468,7 +521,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonParamSchema,
 				CapabilityID: targetID,
-				Port:         in.Out,
+				Port:         fromPort,
 				Detail:       fmt.Sprintf("%s@%d params_schema: %s", capDef.Name, capDef.Version, msg),
 			})
 			continue
@@ -484,7 +537,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			return nil, nil, err
 		}
 		if pruned {
-			rec.Port = in.Out // 留痕要有完整证据：哪条边、哪个出口
+			rec.Port = fromPort // 留痕要有完整证据：哪条边、哪个出口
 			d.prune(ctx, in, out, rec)
 			continue
 		}
@@ -510,7 +563,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			d.prune(ctx, in, out, PrunedRecord{
 				Reason:       ReasonNoNode,
 				CapabilityID: targetID,
-				Port:         in.Out,
+				Port:         fromPort,
 				Detail:       fmt.Sprintf("no node declares %s@%d", capDef.Name, capDef.Version),
 			})
 			continue
@@ -784,7 +837,7 @@ func (d *Dispatcher) prune(ctx context.Context, in DispatchInput, out *DispatchO
 	}
 
 	payload, err := json.Marshal(PruneEventPayload{
-		FromCapability:   in.FromCap,
+		FromCapability:   in.upstream(),
 		Port:             p.Port,
 		TargetCapability: p.CapabilityID,
 		Detail:           p.Detail,
@@ -1004,6 +1057,27 @@ func validateParams(schema json.RawMessage, params map[string]any) string {
 }
 
 // ---------- 小工具 ----------
+
+// decodeEdgeMapping 把一条入口边上的 mapping（JSON 对象字节）解成参数模板。
+//
+// 三种输入都是「没有模板」：空字节（老库）、JSON null、空对象 → 返回空 map
+// （ResolveParams 对空模板返回空 map，调用方不必再判空）。
+//
+// 坏字节返回 error，由调用方**只剪这一条边**（fail closed，与 literals 同口径）：
+// 配置期已经拒过一份坏模板（store.checkEdgeMapping），能走到这里只能是手改库。
+func decodeEdgeMapping(raw json.RawMessage) (map[string]any, error) {
+	if len(raw) == 0 {
+		return map[string]any{}, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if m == nil {
+		return map[string]any{}, nil
+	}
+	return m, nil
+}
 
 // applyLiterals 把一条边的字面量覆盖叠到目标参数上（P0-c，设计 §3.3）。
 //

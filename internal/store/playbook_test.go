@@ -525,8 +525,13 @@ func TestInstallPlaybookSkipsEdgeWithMissingEndpoint(t *testing.T) {
 	if len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "ghost") {
 		t.Fatalf("skipped 的边应有一条说明且指出缺的能力，got %v", res.Notes)
 	}
-	if n := countRows(t, db, "edges", "namespace_id = ?", nsID); n != 1 {
-		t.Fatalf("库里应只有 1 条边，got %d", n)
+	// 能力边只有装上来的那 1 条；**源的目标也是边**（P2.1：建源 = 建入口边），
+	// 所以这里按边类型分开数，而不是把入口边也算进「这条 manifest 装了几条 link」。
+	if n := countRows(t, db, "edges", "namespace_id = ? AND from_is_source = 0", nsID); n != 1 {
+		t.Fatalf("库里应只有 1 条能力边，got %d", n)
+	}
+	if n := countRows(t, db, "edges", "namespace_id = ? AND from_is_source = 1", nsID); n != 1 {
+		t.Fatalf("预案建的源应带 1 条入口边，got %d", n)
 	}
 }
 

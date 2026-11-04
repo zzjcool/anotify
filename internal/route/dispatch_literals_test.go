@@ -189,23 +189,24 @@ func TestDispatchBrokenLiteralsFailClosed(t *testing.T) {
 	}
 }
 
-// TestDispatchLiteralsOnTargetParamsPath TargetParams（源路径）解析完之后同样叠字面量。
+// TestDispatchEntryEdgeLiteralsOverride 入口边：模板求值之后再叠字面量，**字面量优先**。
 //
-// 源路径自己没有 edges 行（Targets 直接给目标），所以字面量为空；
-// 这条用例钉住的是「两条路径都走同一段代码、字面量都覆盖在 validateParams 之前」，
-// 而不是「源路径也有字面量」——它没有。入口边（fromIsSource）是另一回事，
-// 那条会走 edges 查表，字面量照常生效（见 store 的入口边用例）。
-func TestDispatchLiteralsOnTargetParamsPath(t *testing.T) {
+// 这条钉住两件事（P2.1 收敛后的唯一路径）：
+//  1. 入口边的参数来自边上的 mapping（`{{x}}` 用事件 payload 求值），而不是整份 payload；
+//  2. 求值结果仍然要被 literals 覆盖——位置与加这一列之前一致，
+//     都在「拿到目标参数」与「validateParams」之间（设计 §3.3）。
+func TestDispatchEntryEdgeLiteralsOverride(t *testing.T) {
 	f := newFakeStore()
 	notify := f.addCap(testNS, "notify", 1, nil, literalsTargetSchema)
 	f.addNode("nd_notify", notify.ID, 1)
+	// 入口边：模板给出收件人，边上常量再把它盖掉（改收件人不该动模板）。
+	f.addEntryEdgeLiterals(testNS, "github", "pull_request.opened", notify.ID,
+		`{"to":"u_from_template"}`, `{"to":"u_from_literal","env":"prod"}`)
 
 	out, err := New(f).Dispatch(context.Background(), DispatchInput{
 		NamespaceID: testNS, TraceID: "t",
-		FromCap: "github", FromIsSource: true, Out: "pull_request.opened",
-		Targets:      []string{notify.ID}, // 源路径：跳过 edges 查表
-		TargetParams: map[string]map[string]any{notify.ID: {"to": "u_from_template"}},
-		Payload:      map[string]any{},
+		FromIsSource: true, EntryFromKey: "github", EntryFromPort: "pull_request.opened",
+		Payload: map[string]any{"pr": map[string]any{"user": "u_from_payload"}},
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -217,8 +218,11 @@ func TestDispatchLiteralsOnTargetParamsPath(t *testing.T) {
 		t.Fatalf("created %d tasks, want 1", len(out.Tasks))
 	}
 	got := decodeParams(t, out.Tasks[0].Params)
-	if got["to"] != "u_from_template" {
-		t.Errorf("源路径 params.to = %v, want u_from_template（行为不能变）", got["to"])
+	if got["to"] != "u_from_literal" {
+		t.Errorf("params.to = %v, want u_from_literal（字面量优先于模板）", got["to"])
+	}
+	if got["env"] != "prod" {
+		t.Errorf("params.env = %v, want prod（字面量要进最终参数）", got["env"])
 	}
 }
 

@@ -101,20 +101,40 @@ func (f *fakeStore) addCap(nsID, name string, version int, outputs []string, sch
 	return c
 }
 
-// addEdge 加一条边（edges 属于某个命名空间，契约 §1）。
+// addEdge 加一条**能力边**（from 是上游能力的 id）。
 //
 // 默认**不带**字面量覆盖：literals 是 '{}'（= 没有覆盖），与真 store 补列后的老数据同形。
 func (f *fakeStore) addEdge(nsID, from, port, to string) {
 	f.addEdgeLiterals(nsID, from, port, to, "")
 }
 
-// addEdgeLiterals 加一条带字面量覆盖的边（P0-c）。
+// addEdgeLiterals 加一条带字面量覆盖的能力边（P0-c）。
 //
 // literals 传 "" 等于没有覆盖（与真 store 的 e.Literals 缺省同口径）。
 func (f *fakeStore) addEdgeLiterals(nsID, from, port, to, literals string) {
 	key := nsID + "|" + from + "|" + port
 	f.edges[key] = append(f.edges[key], store.LinkTarget{
 		CapabilityID: to,
+		Literals:     json.RawMessage(literals),
+	})
+}
+
+// addEntryEdge 加一条**入口边**：来源名 + 事件类型 → 目标能力，并带上引用模板。
+//
+// P2.1 之后源（以及 POST /v1/events）的目标就是入口边，参数模板存在边上（mapping）。
+// 真库里 from_is_source=1，端口可以是 "*"（= 任意事件类型）。mapping 传 "" 等于没有模板。
+func (f *fakeStore) addEntryEdge(nsID, source, port, to, mapping string) {
+	f.addEntryEdgeLiterals(nsID, source, port, to, mapping, "")
+}
+
+// addEntryEdgeLiterals 加一条同时带 mapping 与 literals 的入口边。
+//
+// 两者并存正是设计 §3.3 + §11.5 的交叉点：模板求值之后，字面量还要盖在上面。
+func (f *fakeStore) addEntryEdgeLiterals(nsID, source, port, to, mapping, literals string) {
+	key := nsID + "|src|" + source + "|" + port
+	f.edges[key] = append(f.edges[key], store.LinkTarget{
+		CapabilityID: to,
+		Mapping:      json.RawMessage(mapping),
 		Literals:     json.RawMessage(literals),
 	})
 }
@@ -166,9 +186,30 @@ func (f *fakeStore) EdgesFrom(ctx context.Context, namespaceID string, fromIsSou
 	if fromIsSource {
 		prefix += "src|"
 	}
-	got := f.edges[prefix+fromKey+"|"+fromPort]
-	out := make([]store.LinkTarget, len(got))
-	copy(out, got)
+	if !fromIsSource {
+		got := f.edges[prefix+fromKey+"|"+fromPort]
+		out := make([]store.LinkTarget, len(got))
+		copy(out, got)
+		return out, nil
+	}
+	// 入口边：精确端口优先，再兜 "*"（任意事件类型）；同一目标只返回一次。
+	// 与真 store 同口径——一条精确边 + 一条 "*" 边指向同一个下游时，
+	// 那个下游只能收到一次派发。
+	out := []store.LinkTarget{}
+	seen := map[string]bool{}
+	ports := []string{fromPort}
+	if fromPort != "*" {
+		ports = append(ports, "*")
+	}
+	for _, port := range ports {
+		for _, t := range f.edges[prefix+fromKey+"|"+port] {
+			if seen[t.CapabilityID] {
+				continue
+			}
+			seen[t.CapabilityID] = true
+			out = append(out, t)
+		}
+	}
 	return out, nil
 }
 
@@ -694,13 +735,14 @@ func TestDispatchIsolatesNamespaces(t *testing.T) {
 	}
 }
 
-// TestDispatchSourceTargetsStayInNamespace 源触发（in.Targets 非空）同样按命名空间隔离。
+// TestDispatchEntryEdgeStaysInNamespace 入口边派发同样按命名空间隔离。
 //
-// 源不走 edges 查表（它自己就是起点），所以这条路径少了 ① 那一层；
-// 但 ③ 找节点、⑤ 建任务仍必须落在**源自己的**命名空间里（调用方从
-// src.NamespaceID 传进来，契约 §3）。跨命名空间的目标能力是明确错误，
-// 不能静默建出一条属于别的命名空间的任务行。
-func TestDispatchSourceTargetsStayInNamespace(t *testing.T) {
+// P2.1 之后入口边与能力边走的是**同一条**查表路径（EdgesFrom），所以隔离判据也
+// 只有一套：命名空间是 EdgesFrom 的作用域参数。这条钉住两件事——
+//  1. nsA 的源目标只会建成 nsA 的任务（③ 找节点、⑤ 建行都不跨命名空间）；
+//  2. 入口边指向**别的命名空间**的能力时整个派发失败，不建任何行
+//     （GetCapabilityByID 按 namespace 查不到），而不是静默串数据。
+func TestDispatchEntryEdgeStaysInNamespace(t *testing.T) {
 	const nsA, nsB = "ns_src_a", "ns_src_b"
 	ctx := context.Background()
 	f := newFakeStore()
@@ -710,9 +752,10 @@ func TestDispatchSourceTargetsStayInNamespace(t *testing.T) {
 	f.addNode("nd_b", fixB.ID, 2)
 
 	d := New(f)
+	f.addEntryEdge(nsA, "github", "*", fixA.ID, "")
 	out, err := d.Dispatch(ctx, DispatchInput{
 		NamespaceID: nsA, TraceID: "trace_src",
-		Targets: []string{fixA.ID}, Out: "push", Params: map[string]any{},
+		FromIsSource: true, EntryFromKey: "github", EntryFromPort: "push",
 	})
 	if err != nil {
 		t.Fatalf("source dispatch: %v", err)
@@ -729,9 +772,10 @@ func TestDispatchSourceTargetsStayInNamespace(t *testing.T) {
 	}
 
 	// 目标是别的命名空间的能力 → 报错，不建任何行（GetCapabilityByID 按 namespace 查不到）
+	f.addEntryEdge(nsA, "github", "*", fixB.ID, "")
 	_, err = d.Dispatch(ctx, DispatchInput{
 		NamespaceID: nsA, TraceID: "trace_src_bad",
-		Targets: []string{fixB.ID}, Out: "push", Params: map[string]any{},
+		FromIsSource: true, EntryFromKey: "github", EntryFromPort: "push",
 	})
 	if err == nil {
 		t.Fatal("源触发的目标指向了别的命名空间的能力，却派发成功了（会串数据）")
@@ -1198,18 +1242,36 @@ func TestValidateNestedPathError(t *testing.T) {
 	}
 }
 
-// ---------- #114：源参数模板求值（Payload / VarValues → 实际参数） ----------
+// ---------- #114：入口边参数模板求值（Payload / VarValues → 实际参数） ----------
 
-// sourceInput 组一次「源首次派发」的输入：Targets 非空 → 不查边，
-// TargetParams 是按目标的**模板**（含 {{x}} / {from} / {var}）。
-func sourceInput(capID string, template map[string]any, payload map[string]any) DispatchInput {
+// sourceInput 组一次「入口边派发」的输入，并**在 f 里建好那条入口边**。
+//
+// P2.1 之后没有 Targets / TargetParams 旁路了：目标与参数模板都在**入口边**上
+// （edges.from_is_source=1，模板在 edges.mapping）。所以 fixture 必须真建一条边——
+// 这正是要钉住的形状：源触发与 POST /v1/events 走的是同一条路。
+//
+// port="push" 是事件类型（源能收的类型由外部决定，真库里常用 "*"）。
+func sourceInput(t *testing.T, f *fakeStore, capID string, template map[string]any, payload map[string]any) DispatchInput {
+	t.Helper()
+	f.addEntryEdge(testNS, "github", "push", capID, mappingJSON(t, template))
 	return DispatchInput{
 		NamespaceID: testNS, TraceID: "t_source",
-		FromCap: "github", FromIsSource: true, Out: "push",
-		Targets:      []string{capID},
-		TargetParams: map[string]map[string]any{capID: template},
-		Payload:      payload,
+		FromIsSource: true, EntryFromKey: "github", EntryFromPort: "push",
+		Payload: payload,
 	}
+}
+
+// mappingJSON 把模板序列化成边上的 mapping 字节（空模板 → "" = 没有模板）。
+func mappingJSON(t *testing.T, template map[string]any) string {
+	t.Helper()
+	if len(template) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(template)
+	if err != nil {
+		t.Fatalf("marshal mapping: %v", err)
+	}
+	return string(b)
 }
 
 // decodeTaskParams 把任务的 params 解成 map（断言用）。
@@ -1233,7 +1295,7 @@ func TestDispatchResolvesParamTemplate(t *testing.T) {
 	f.addNode("nd_loose", loose.ID, 1)
 	d := New(f)
 
-	out, err := d.Dispatch(context.Background(), sourceInput(loose.ID,
+	out, err := d.Dispatch(context.Background(), sourceInput(t, f, loose.ID,
 		map[string]any{"n": "{{n}}"},
 		map[string]any{"n": float64(42)},
 	))
@@ -1260,7 +1322,7 @@ func TestDispatchParamTemplateMissing(t *testing.T) {
 	d := New(f)
 
 	// payload 里没有 pull_request，且没写 default → 该目标整条剪枝
-	out, err := d.Dispatch(context.Background(), sourceInput(loose.ID,
+	out, err := d.Dispatch(context.Background(), sourceInput(t, f, loose.ID,
 		map[string]any{"n": "{{pull_request.title}}"},
 		map[string]any{},
 	))
@@ -1291,7 +1353,7 @@ func TestDispatchParamTemplateTypeError(t *testing.T) {
 	f.addNode("nd_strict", strict.ID, 1)
 	d := New(f)
 
-	out, err := d.Dispatch(context.Background(), sourceInput(strict.ID,
+	out, err := d.Dispatch(context.Background(), sourceInput(t, f, strict.ID,
 		map[string]any{"lines": "{{lines}}"},
 		map[string]any{"lines": "abc"},
 	))
@@ -1318,7 +1380,7 @@ func TestDispatchParamTemplateMixed(t *testing.T) {
 	f.addNode("nd_deploy", target.ID, 1)
 	d := New(f)
 
-	out, err := d.Dispatch(context.Background(), sourceInput(target.ID,
+	out, err := d.Dispatch(context.Background(), sourceInput(t, f, target.ID,
 		map[string]any{"env": "prod", "n": "{{n}}"},
 		map[string]any{"n": float64(3)},
 	))
@@ -1400,7 +1462,7 @@ func TestDispatchParamMissingDetailSources(t *testing.T) {
 			f.addNode("nd_loose", loose.ID, 1)
 			d := New(f)
 
-			out, err := d.Dispatch(context.Background(), sourceInput(loose.ID, c.template, nil))
+			out, err := d.Dispatch(context.Background(), sourceInput(t, f, loose.ID, c.template, nil))
 			if err != nil {
 				t.Fatalf("dispatch: %v", err)
 			}
@@ -1420,7 +1482,7 @@ func TestDispatchParamMissingDetailSources(t *testing.T) {
 		f.addNode("nd_loose", loose.ID, 1)
 		d := New(f)
 
-		out, err := d.Dispatch(context.Background(), sourceInput(loose.ID,
+		out, err := d.Dispatch(context.Background(), sourceInput(t, f, loose.ID,
 			map[string]any{"a": "{{x}}", "b": "{{y}}"}, nil))
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
@@ -1478,7 +1540,7 @@ func TestParamPruneDetailExact(t *testing.T) {
 			f.addNode("nd_target", target.ID, 1)
 			d := New(f)
 
-			out, err := d.Dispatch(context.Background(), sourceInput(target.ID, c.template, c.payload))
+			out, err := d.Dispatch(context.Background(), sourceInput(t, f, target.ID, c.template, c.payload))
 			if err != nil {
 				t.Fatalf("dispatch: %v", err)
 			}
@@ -1506,7 +1568,7 @@ func TestDispatchDryRunPreviewUsesResolvedParams(t *testing.T) {
 	f.addNode("nd_loose", loose.ID, 1)
 	d := New(f)
 
-	in := sourceInput(loose.ID, map[string]any{"n": "{{n}}"}, map[string]any{"n": float64(7)})
+	in := sourceInput(t, f, loose.ID, map[string]any{"n": "{{n}}"}, map[string]any{"n": float64(7)})
 	in.DryRun = true
 	out, err := d.Dispatch(context.Background(), in)
 	if err != nil {
@@ -1577,11 +1639,11 @@ func TestDispatchUserScopedLookupErrorFailsClosed(t *testing.T) {
 	// 写明这条能力是 user-scoped：不依赖 DefaultUserScoped 的当前取值
 	d.UserScoped = map[string]bool{"notify.phone": true}
 
+	// 入口边：目标与参数模板都在边上（P2.1），不再有 Targets/TargetParams 旁路。
+	f.addEntryEdge(testNS, "github", "push", notify.ID, `{"to":"member-1"}`)
 	out, err := d.Dispatch(context.Background(), DispatchInput{
 		NamespaceID: testNS, TraceID: "t_member_err",
-		FromCap: "github", FromIsSource: true, Out: "push",
-		Targets:      []string{notify.ID},
-		TargetParams: map[string]map[string]any{notify.ID: {"to": "member-1"}},
+		FromIsSource: true, EntryFromKey: "github", EntryFromPort: "push",
 	})
 	if err == nil {
 		t.Fatalf("查库失败必须返回 error（否则等于放行），out=%+v", out)

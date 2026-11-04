@@ -71,7 +71,12 @@ func (f *fakeDisp) Dispatch(ctx context.Context, in route.DispatchInput) (*route
 	return &route.DispatchOutput{}, nil
 }
 
-func TestFireUsesTargetsNotEdges(t *testing.T) {
+// TestFireUsesEntryEdge 源触发只给「来源名 + 事件类型」，目标与参数模板都在入口边上。
+//
+// P2.1 删掉了 Targets/TargetParams 旁路：源触发与 POST /v1/events 现在是**同一条路**
+// （edges.from_is_source=1 的入口边）。所以 DispatchInput 里只剩入口边的两个字段，
+// 参数模板由 route.plan 用 Payload/VarValues 对边上的 mapping 求值。
+func TestFireUsesEntryEdge(t *testing.T) {
 	st := &fakeStore{inserted: true}
 	disp := &fakeDisp{out: &route.DispatchOutput{Tasks: []*store.Task{{ID: "tsk_1"}}}}
 	tr := &Trigger{Store: st, Dispatcher: disp}
@@ -97,12 +102,19 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 	if res.Event.NamespaceID != src.NamespaceID {
 		t.Errorf("event.NamespaceID = %q, want %q", res.Event.NamespaceID, src.NamespaceID)
 	}
-	// 关键断言：源走 Targets 直连，不查边（FromCap 为空）
-	if len(in.Targets) != 2 || in.Targets[0] != "cap_a" {
-		t.Errorf("Targets 未透传: %v", in.Targets)
+	// 关键断言：源走**入口边**（来源名 + 事件类型），没有第二条取目标的路径。
+	// FromCap 是能力边的左端（能力 id），入口边不该用它——否则「从哪来」有两份真相。
+	if !in.FromIsSource {
+		t.Error("源触发必须标记 FromIsSource（否则 route 会按能力 id 去查边）")
 	}
-	if in.FromCap != "" {
-		t.Errorf("源不应设置 FromCap（那是查边用的）: %q", in.FromCap)
+	if in.EntryFromKey != src.Name {
+		t.Errorf("EntryFromKey = %q, want %q（入口边的左端是来源名）", in.EntryFromKey, src.Name)
+	}
+	if in.EntryFromPort != "nightly" {
+		t.Errorf("EntryFromPort = %q, want %q（入口边的端口是事件类型）", in.EntryFromPort, "nightly")
+	}
+	if in.FromCap != "" || in.Out != "" {
+		t.Errorf("入口边不该再填 FromCap/Out（那是能力边的字段）: %q/%q", in.FromCap, in.Out)
 	}
 	if len(res.Dispatch.Tasks) != 1 {
 		t.Errorf("应返回 1 个任务, got %d", len(res.Dispatch.Tasks))
@@ -113,9 +125,13 @@ func TestFireUsesTargetsNotEdges(t *testing.T) {
 	if res.Event.Type != "nightly" {
 		t.Errorf("事件类型错了: %q", res.Event.Type)
 	}
-	// payload 原样进 params（不变量 I6：不解释、不替换）
-	if in.Params["k"] != "v" {
-		t.Errorf("params 未透传: %v", in.Params)
+	// payload 作为**求值来源**原样透传（不变量 I6：不解释、不替换），
+	// 但不再当成 params 直接塞给下游——入口边的参数来自边上的模板。
+	if in.Payload["k"] != "v" {
+		t.Errorf("payload 未透传: %v", in.Payload)
+	}
+	if in.Params != nil {
+		t.Errorf("入口边的参数不该由源塞整份 payload（会盖住边上的模板）: %v", in.Params)
 	}
 }
 
@@ -253,9 +269,10 @@ func TestFirePassesPayloadAndVars(t *testing.T) {
 		t.Errorf("in.VarValues[team] = %#v, want 常量 infra", got)
 	}
 
-	// ③ 公共回退语义不变：Params 仍是整份 payload
-	if got := in.Params["n"]; got != float64(42) {
-		t.Errorf("in.Params[n] = %#v, want 42（公共 params 回退不能丢）", got)
+	// ③ P2.1 之后**没有**公共 params 回退：参数只从入口边的 mapping 求值。
+	// 再传一份整份 payload 会变成第二条口径（模板说的与 payload 给的谁优先？）。
+	if in.Params != nil {
+		t.Errorf("in.Params = %#v, want nil（入口边的参数只来自边上的模板）", in.Params)
 	}
 
 	// ④ 写进 events 的 payload 与求值同源（同一份合并结果）
@@ -590,12 +607,18 @@ var _ Dispatcher = (*fakeDisp)(nil)
 // 让 time 被用到（NextCronTime 相关断言在上面用不到 time 时避免 unused import）
 var _ = time.Now
 
-// TestFirePerTargetParams 是最核心的一条：每个出口用自己的参数。
+// TestFireDoesNotFlattenParams 每个出口的模板由**各自的入口边**携带，不在派发输入里合并。
 //
-// 这是「源可以带参数」的关键语义。曾经的做法是源只有一份公共 params，
-// 那么同时喂两个 params_schema 不同的能力时，必然对不上至少一边 ——
-// 触发时被 param_schema 静默剪枝，用户配完以为好了。
-func TestFirePerTargetParams(t *testing.T) {
+// 这是「源可以带参数」的关键语义：曾经源只有一份公共 params，同时喂两个
+// params_schema 不同的能力时必然对不上至少一边，触发时被 param_schema 静默剪枝。
+// P2.1 之后这份"按出口分别的参数"住在 edges.mapping 上（一个出口一条边），
+// 所以 Trigger 这一层**不该**再把它们合成一份 map 传下去——它只给来源名 + 事件类型。
+//
+// 按出口分别求值的覆盖点：
+//   - store：CreateSource 把每个 target 的 params 写成独立的入口边 mapping
+//     （source_test.go 的 TestSourceTargetsRoundTripFromEdges）；
+//   - route：plan 逐条边求值、逐条剪枝（dispatch_test.go 的扇出用例）。
+func TestFireDoesNotFlattenParams(t *testing.T) {
 	st := &fakeStore{inserted: true}
 	disp := &fakeDisp{out: &route.DispatchOutput{}}
 	tr := &Trigger{Store: st, Dispatcher: disp}
@@ -617,25 +640,12 @@ func TestFirePerTargetParams(t *testing.T) {
 	}
 	in := disp.got[0]
 
-	// Targets 顺序与 ID 一致
-	if len(in.Targets) != 3 {
-		t.Fatalf("应透传 3 个出口, got %v", in.Targets)
+	// 派发输入里只该有入口边的标识：合并成一份 map 就又会串味/串 schema。
+	if in.EntryFromKey != src.Name || in.EntryFromPort != "t" {
+		t.Fatalf("入口边标识 = %q/%q, want %q/%q", in.EntryFromKey, in.EntryFromPort, src.Name, "t")
 	}
-
-	// 每个出口拿到**自己**那份额参数
-	if got := in.TargetParams["cap_analyze"]["changedLines"]; got != float64(350) {
-		t.Errorf("cap_analyze 的参数不对: %v", in.TargetParams["cap_analyze"])
-	}
-	if got := in.TargetParams["cap_deploy"]["env"]; got != "staging" {
-		t.Errorf("cap_deploy 的参数不对: %v", in.TargetParams["cap_deploy"])
-	}
-	// 没配参数的出口不该出现空条目（回退到公共 Params）
-	if _, ok := in.TargetParams["cap_noargs"]; ok {
-		t.Errorf("没配参数的出口不该有条目: %v", in.TargetParams["cap_noargs"])
-	}
-	// 关键：cap_deploy 不能拿到 cap_analyze 的参数（串味就是设计失败）
-	if _, leaked := in.TargetParams["cap_deploy"]["changedLines"]; leaked {
-		t.Error("cap_deploy 拿到了别的出口的参数（参数串味）")
+	if in.Params != nil {
+		t.Fatalf("in.Params = %v, want nil（按出口的参数在各自入口边的 mapping 上）", in.Params)
 	}
 }
 

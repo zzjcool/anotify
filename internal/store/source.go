@@ -61,46 +61,36 @@ type Source struct {
 
 	CreatedAt int64 `json:"createdAt"`
 
-	// Targets 是出口能力（多行 = 扇出），每个带自己的参数模板。
+	// Targets 是源的目标能力（多行 = 扇出），每个带自己的参数模板。
+	//
+	// 它是**入口边的 DTO**（P2.1）：库里只有 edges 一份真相——每个 target 对应一条
+	// from_is_source=1、from_key=<来源名>、from_port='*' 的边，模板存在 edges.mapping 上。
+	// 建源/改源就是重建这些边；读源就是从边读回来。
 	Targets []SourceTarget `json:"targets"`
 }
 
-// SourceTarget 是一个出口：能力 + 该能力专属的参数模板。
+// SourceTarget 是一个出口：能力 + 该能力专属的参数模板（= 入口边的 mapping）。
 //
 // 为什么参数按出口分别存：每个能力的 params_schema 各不相同（字段名、
 // 必填项都不同），一份公共参数必然对不上至少一边，触发时被剪枝却无从察觉。
+//
+// 也正因为如此，它不能再是「源自己的一张表」（source_targets 已删）——否则同一个
+// 语义会有两份实现：事件入口走 edges、源触发走另一条旁路。现在两者都只认入口边。
 type SourceTarget struct {
 	CapabilityID string `json:"capabilityId"`
-	// Params 是这个出口的默认参数（触发时按目标能力分别传给 Dispatcher）。
-	// 空对象 = 不额外传参。
+	// Params 是这个出口的参数模板（入口边的 mapping，触发时按目标能力分别求值）。
+	// 可以写常量，也可以写 `{{payload 路径}}` 引用；空对象 = 不额外传参。
 	Params map[string]any `json:"params,omitempty"`
 }
 
 // TargetIDs 返回出口能力 ID 列表（顺序与 Targets 一致）。
 //
-// 单独一个方法是因为"只要 ID"的地方很多（校验、派发 Targets），
+// 单独一个方法是因为"只要 ID"的地方很多（校验、测试），
 // 而拿 ID 的调用方不该关心参数。
 func (s *Source) TargetIDs() []string {
 	out := make([]string, 0, len(s.Targets))
 	for _, t := range s.Targets {
 		out = append(out, t.CapabilityID)
-	}
-	return out
-}
-
-// TargetParamsMap 返回 capabilityID → params 的映射（派发时用）。
-func (s *Source) TargetParamsMap() map[string]map[string]any {
-	if len(s.Targets) == 0 {
-		return nil
-	}
-	out := make(map[string]map[string]any, len(s.Targets))
-	for _, t := range s.Targets {
-		if len(t.Params) > 0 {
-			out[t.CapabilityID] = t.Params
-		}
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }
@@ -581,10 +571,88 @@ func scanSource(r scanner) (*Source, error) {
 	return &s, nil
 }
 
-// CreateSource 建一个源，并写入它的出口能力。
+// entryEdge 是一条「源 → 能力」的**入口边**（已校验、可直接落库）。
+//
+// 它是「校验（要读能力定义，在事务之前）」与「写库（事务之内）」两半之间的唯一交接物：
+// 两半只认这一个形状，免得一边按 SourceTarget 写、另一边按 Edge 写。
+type entryEdge struct {
+	capabilityID string
+	// mapping 是已归一化的参数模板（'{}' = 没有模板）。
+	mapping json.RawMessage
+}
+
+// checkSourceTargets 校验源的每个目标，返回可落库的入口边列表。
+//
+// 两件事：
+//  1. I11 第 ② 条：目标能力必须与源**同命名空间**（违反一律报错，不静默忽略——
+//     静默忽略会让人以为配置生效了）；
+//  2. 参数模板必须是合法的 mapping：与 CreateEdge 同一套硬拒。入口边是库里唯一
+//     真相，若这里放行一份坏模板，「保存时就拒」那道门形同虚设——库里会出现一条
+//     只能等到触发时才以 param_missing 暴露的边。
+func (d *DB) checkSourceTargets(ctx context.Context, s *Source) ([]entryEdge, error) {
+	out := make([]entryEdge, 0, len(s.Targets))
+	for _, t := range s.Targets {
+		if err := d.checkCapabilityInNamespace(ctx, s.NamespaceID, t.CapabilityID, "sources.targets"); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, fmt.Errorf("出口能力 %s 不存在", t.CapabilityID)
+			}
+			return nil, err
+		}
+		def, err := d.GetCapabilityByID(ctx, s.NamespaceID, t.CapabilityID)
+		if err != nil {
+			return nil, fmt.Errorf("出口能力 %s: %w", t.CapabilityID, err)
+		}
+		paramsJSON, err := marshalTargetParams(t.Params)
+		if err != nil {
+			return nil, err
+		}
+		// fromIsSource=true：入口边允许模板（这正是这条路径存在的理由）。
+		mapping, err := checkEdgeMapping(def, json.RawMessage(paramsJSON), true)
+		if err != nil {
+			return nil, fmt.Errorf("出口 %s@%d 的参数不合法: %w", def.Name, def.Version, err)
+		}
+		out = append(out, entryEdge{capabilityID: t.CapabilityID, mapping: mapping})
+	}
+	return out, nil
+}
+
+// replaceEntryEdgesTx 用「先删该源的全部入口边，再逐 target 建边」重建源的目标。
+//
+// 为什么是删+建而不是逐条 diff：入口边的主键是 (namespace_id, from_is_source,
+// from_key, from_port, to_capability)，改名、删目标、换目标都能被这一次删除兜住，
+// 不会留下没人能派发的残留行。代价是 created_at 会刷新——边不存版本，也不参与调度。
+//
+// 事务由调用方持有（与 sources 行的写入同一个事务）：失败回滚后库里仍是旧图。
+func replaceEntryEdgesTx(ctx context.Context, tx *sql.Tx, namespaceID, sourceName string, edges []entryEdge, now int64) error {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 1 AND from_key = ?`,
+		namespaceID, sourceName); err != nil {
+		return fmt.Errorf("clear entry edges: %w", err)
+	}
+	for _, e := range edges {
+		// from_port='*'：源能收任意事件类型（EdgesFrom 对入口边做 OR '*' 匹配）。
+		// literals='{}'：源的常量走 mapping 里的字面量值，不在边上另开一列。
+		// ON CONFLICT DO UPDATE：同一份 targets 里重复写了同一个能力时，后写入的模板生效
+		// （不可能变成两行——主键不允许）。
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at)
+			 VALUES (?,1,?,'*',?,'{}',?,?)
+			 ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability)
+			 DO UPDATE SET mapping = excluded.mapping`,
+			namespaceID, sourceName, e.capabilityID, string(e.mapping), now); err != nil {
+			return fmt.Errorf("insert entry edge: %w", err)
+		}
+	}
+	return nil
+}
+
+// CreateSource 建一个源，并把它的目标写成**入口边**（P2.1）。
 //
 // targets 至少一个：没有出口的源产生的事件永远派不出去，
 // 那正是我们要消灭的"静默失败"。空列表直接拒绝。
+//
+// 库里只有 edges 一份真相：每个 target = 一条 from_is_source=1、from_key=<来源名>、
+// from_port='*' 的边，参数模板存 edges.mapping（source_targets 已在迁移 26 删除）。
 func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if s == nil {
 		return fmt.Errorf("create source: nil")
@@ -619,15 +687,11 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	s.Config = cfg
 
-	// I11 第 ② 条：出口能力必须属于**同一个命名空间**。
-	// 违反一律报错（400），不静默忽略——静默忽略会让人以为配置生效了。
-	for _, t := range s.Targets {
-		if err := d.checkCapabilityInNamespace(ctx, s.NamespaceID, t.CapabilityID, "source_targets"); err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("create source: 出口能力 %s 不存在", t.CapabilityID)
-			}
-			return fmt.Errorf("create source: %w", err)
-		}
+	// I11 第 ② 条：出口能力必须属于**同一个命名空间**；顺带把参数模板校验成
+	// 合法的 mapping（与 CreateEdge 同一套硬拒，否则库里会出现一条永远求值失败的边）。
+	edges, err := d.checkSourceTargets(ctx, s)
+	if err != nil {
+		return fmt.Errorf("create source: %w", err)
 	}
 
 	tx, err := d.BeginTx(ctx, nil)
@@ -660,17 +724,9 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 		}
 		return fmt.Errorf("create source: %w", err)
 	}
-	for _, t := range s.Targets {
-		paramsJSON, err := marshalTargetParams(t.Params)
-		if err != nil {
-			return fmt.Errorf("create source target params: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO source_targets (source_id, capability_id, namespace_id, params, created_at)
-			 VALUES (?,?,?,?,?)`,
-			s.ID, t.CapabilityID, s.NamespaceID, paramsJSON, s.CreatedAt); err != nil {
-			return fmt.Errorf("create source target: %w", err)
-		}
+	// 目标 = 入口边（与源行同一个事务：建了源却没有边的中间态不可见）。
+	if err := replaceEntryEdgesTx(ctx, tx, s.NamespaceID, s.Name, edges, s.CreatedAt); err != nil {
+		return fmt.Errorf("create source: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("create source: commit: %w", err)
@@ -702,34 +758,36 @@ func (d *DB) ListSources(ctx context.Context, namespaceID string) ([]*Source, er
 		return nil, fmt.Errorf("list sources: %w", err)
 	}
 
-	// 出口单独取一次，避免 N+1（源数量不大，一次全查更简单）
+	// 出口单独取一次，避免 N+1（源数量不大，一次全查更简单）。
+	// 入口边的左端是**来源名**（没有 source_id 可 join），而名字在命名空间内唯一。
 	if len(out) == 0 {
 		return out, nil
 	}
 	trows, err := d.QueryContext(ctx,
-		`SELECT st.source_id, st.capability_id, st.params
-		   FROM source_targets st
-		  WHERE st.namespace_id = ?
-		  ORDER BY st.capability_id`, namespaceID)
+		`SELECT e.from_key, e.to_capability, e.mapping
+		   FROM edges e
+		   JOIN sources s ON s.namespace_id = e.namespace_id AND s.name = e.from_key
+		  WHERE e.namespace_id = ? AND e.from_is_source = 1
+		  ORDER BY e.from_key, e.to_capability`, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list source targets: %w", err)
 	}
 	defer trows.Close()
-	bySrc := map[string][]SourceTarget{}
+	byName := map[string][]SourceTarget{}
 	for trows.Next() {
-		var sid, cid, pj string
-		if err := trows.Scan(&sid, &cid, &pj); err != nil {
+		var name, cid, mapping string
+		if err := trows.Scan(&name, &cid, &mapping); err != nil {
 			return nil, fmt.Errorf("scan source target: %w", err)
 		}
-		bySrc[sid] = append(bySrc[sid], SourceTarget{
-			CapabilityID: cid, Params: unmarshalTargetParams(pj),
+		byName[name] = append(byName[name], SourceTarget{
+			CapabilityID: cid, Params: unmarshalTargetParams(mapping),
 		})
 	}
 	if err := trows.Err(); err != nil {
 		return nil, fmt.Errorf("list source targets: %w", err)
 	}
 	for _, s := range out {
-		if t, ok := bySrc[s.ID]; ok {
+		if t, ok := byName[s.Name]; ok {
 			s.Targets = t
 		}
 	}
@@ -751,19 +809,20 @@ func (d *DB) GetSource(ctx context.Context, namespaceID, id string) (*Source, er
 		return nil, fmt.Errorf("get source: %w", err)
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT capability_id, params FROM source_targets
-		  WHERE source_id = ? ORDER BY capability_id`, id)
+		`SELECT to_capability, mapping FROM edges
+		  WHERE namespace_id = ? AND from_is_source = 1 AND from_key = ?
+		  ORDER BY to_capability`, namespaceID, s.Name)
 	if err != nil {
 		return nil, fmt.Errorf("get source targets: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var cid, pj string
-		if err := rows.Scan(&cid, &pj); err != nil {
+		var cid, mapping string
+		if err := rows.Scan(&cid, &mapping); err != nil {
 			return nil, fmt.Errorf("scan source target: %w", err)
 		}
 		s.Targets = append(s.Targets, SourceTarget{
-			CapabilityID: cid, Params: unmarshalTargetParams(pj),
+			CapabilityID: cid, Params: unmarshalTargetParams(mapping),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -832,14 +891,11 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	if err != nil {
 		return err
 	}
-	// I11 第 ② 条同样适用于更新路径（建完再改一样能引入跨命名空间引用）。
-	for _, t := range s.Targets {
-		if err := d.checkCapabilityInNamespace(ctx, s.NamespaceID, t.CapabilityID, "source_targets"); err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("update source: 出口能力 %s 不存在", t.CapabilityID)
-			}
-			return fmt.Errorf("update source: %w", err)
-		}
+	// I11 第 ② 条同样适用于更新路径（建完再改一样能引入跨命名空间引用）；
+	// 参数模板也在这里过一遍与 CreateEdge 同一套的硬拒。
+	edges, err := d.checkSourceTargets(ctx, s)
+	if err != nil {
+		return fmt.Errorf("update source: %w", err)
 	}
 
 	tx, err := d.BeginTx(ctx, nil)
@@ -869,21 +925,18 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 		}
 		return fmt.Errorf("update source: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM source_targets WHERE source_id = ?`, s.ID); err != nil {
-		return fmt.Errorf("update source: clear targets: %w", err)
-	}
-	for _, t := range s.Targets {
-		paramsJSON, err := marshalTargetParams(t.Params)
-		if err != nil {
-			return fmt.Errorf("update source: target params: %w", err)
-		}
+	// 入口边的左端是**来源名**：改名必须把旧名字下的边一起搬走（from_key 没有外键，
+	// 旧名下的边会变成谁也派不发的孤儿，而新名字下会多出一条凭空出现的边）。
+	newName := strings.TrimSpace(s.Name)
+	if cur.Name != newName {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO source_targets (source_id, capability_id, namespace_id, params, created_at)
-			 VALUES (?,?,?,?,?)`,
-			s.ID, t.CapabilityID, s.NamespaceID, paramsJSON, Now()); err != nil {
-			return fmt.Errorf("update source: insert target: %w", err)
+			`DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 1 AND from_key = ?`,
+			s.NamespaceID, cur.Name); err != nil {
+			return fmt.Errorf("update source: clear old entry edges: %w", err)
 		}
+	}
+	if err := replaceEntryEdgesTx(ctx, tx, s.NamespaceID, newName, edges, Now()); err != nil {
+		return fmt.Errorf("update source: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("update source: commit: %w", err)
@@ -891,17 +944,35 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	return nil
 }
 
-// DeleteSource 删除源（source_targets 由外键级联删除）。
+// DeleteSource 删除源，并把它名下的入口边一起删掉。
+//
+// 为什么要显式删边：入口边的左端是**来源名**（from_key），没有外键指向 sources，
+// 所以删了源之后那些边不会自动消失——它们会变成「找不到来源的边」，
+// 下次同名的源建出来时会凭空继承旧模板（那是最难查的一类串配置）。
 func (d *DB) DeleteSource(ctx context.Context, namespaceID, id string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
-	res, err := d.ExecContext(ctx, `DELETE FROM sources WHERE namespace_id = ? AND id = ?`, namespaceID, id)
+	cur, err := d.GetSource(ctx, namespaceID, id)
 	if err != nil {
+		return err
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete source: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 1 AND from_key = ?`,
+		namespaceID, cur.Name); err != nil {
+		return fmt.Errorf("delete source: clear entry edges: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sources WHERE namespace_id = ? AND id = ?`, namespaceID, id); err != nil {
 		return fmt.Errorf("delete source: %w", err)
 	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return ErrSourceNotFound
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete source: commit: %w", err)
 	}
 	return nil
 }

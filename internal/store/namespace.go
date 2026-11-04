@@ -276,7 +276,6 @@ func (d *DB) DeleteNamespace(ctx context.Context, id string, force bool) error {
 		`DELETE FROM node_instances WHERE namespace_id = ?`,
 		`DELETE FROM node_capabilities WHERE namespace_id = ?`,
 		`DELETE FROM edges WHERE namespace_id = ?`,
-		`DELETE FROM source_targets WHERE namespace_id = ?`,
 		`DELETE FROM sources WHERE namespace_id = ?`,
 		`DELETE FROM graph_versions WHERE namespace_id = ?`,
 		`DELETE FROM nodes WHERE namespace_id = ?`,

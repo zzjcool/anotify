@@ -46,10 +46,17 @@ var orgLayerTables = []string{
 }
 
 // tableRowCounts 数一遍全部业务表的行数（升级前后比对用）。
+//
+// 跳过**该库上不存在**的表：迁移链后段的迁移可以删表（迁移 26 删了 source_targets，
+// P2.1 把源的出口搬成入口边）。「行数不变」只对仍然存在的表有意义；
+// 被删表的数据去向由专门用例钉住（TestMigration26SourceTargetsBecomeEntryEdges）。
 func tableRowCounts(t *testing.T, db *DB) map[string]int {
 	t.Helper()
 	out := map[string]int{}
 	for _, table := range orgLayerTables {
+		if !tableExists(t, db, table) {
+			continue
+		}
 		out[table] = countRows(t, db, table, "1 = 1")
 	}
 	return out
@@ -100,6 +107,11 @@ func liveCols(t *testing.T, db *DB, want map[string][]string) map[string][]strin
 			if have[c] {
 				kept = append(kept, c)
 			}
+		}
+		if !tableExists(t, db, table) {
+			// 迁移链后段的迁移可以删表（迁移 26 删 source_targets）：这种表不参与
+			// 「两阶段都存在」的内容摘要，它没有「被删掉的列」可对账。
+			continue
 		}
 		if len(kept) == 0 {
 			t.Fatalf("表 %s 在 tip 库上没有任何期望列（夹具/列清单写错了）: want=%v", table, cols)
@@ -328,13 +340,24 @@ func TestMigration14PreservesRows(t *testing.T) {
 	}
 
 	// 阶段 B：完整迁移到 14
-	up, err := Open(path)
-	if err != nil {
-		t.Fatalf("老库升级失败: %v", err)
+	//
+	// 停在 14（而不是 tip）是有意的：这条用例的判据是「迁移 14 只去掉 org_id，
+	// 一个字节都不改」。tip 上还叠了后续迁移，其中迁移 26 会把 source_targets 的
+	// 行搬成**新的 edges 行**——那不是迁移 14 的行为，混在一起只会让这条用例
+	// 说不清是谁改了数据（迁移 26 自己的用例：TestMigration26SourceTargetsBecomeEntryEdges）。
+	up := openAtVersion(t, path, 14)
+	if v, err := up.SchemaVersion(); err != nil || v != 14 {
+		t.Fatalf("阶段 B 版本 = %d, %v; want 14", v, err)
 	}
 	t.Cleanup(func() { _ = up.Close() })
 	after := tableRowCounts(t, up)
 	for table, want := range before {
+		if _, stillExists := after[table]; !stillExists {
+			// 这条用例升到 **tip**，而迁移链后段的迁移可以刻意删表（迁移 26 删了
+			// source_targets：它的行变成了入口边）。那种表不参与「迁移 14 不丢数据」
+			// 的比较——数据去向由 TestMigration26SourceTargetsBecomeEntryEdges 钉住。
+			continue
+		}
 		if after[table] != want {
 			t.Errorf("升级后 %s 行数 %d → %d（迁移 14 丢了数据）", table, want, after[table])
 		}
@@ -467,9 +490,12 @@ func TestMigration14DedupesNamespaceSlugs(t *testing.T) {
 			t.Errorf("命名空间 id %s 在升级后消失了（改名可以，换 id 会把子表指针弄断）", id)
 		}
 	}
-	// 业务行数不变
+	// 业务行数不变（跳过后来被刻意删掉的表：迁移 26 删 source_targets，见上一条用例的说明）
 	after := tableRowCounts(t, up)
 	for table, want := range counts13 {
+		if _, stillExists := after[table]; !stillExists {
+			continue
+		}
 		if after[table] != want {
 			t.Errorf("升级后 %s 行数 %d → %d", table, want, after[table])
 		}

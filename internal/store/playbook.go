@@ -1060,6 +1060,9 @@ func sourceNameExists(ctx context.Context, q nsQueryer, namespaceID, name string
 // 为什么光看名字不够：用户可能早就有一个人工建的 webhook 源指向同一个入口能力。
 // 再装一个同 kind 的源 = 同一个 PR 事件被派发两次（重复干活）。所以第二条判据
 // 按"能不能派到同一个入口"来认（mock 的口径）。
+//
+// 源的 targets 就是**入口边**（P2.1：source_targets 已删）：左端是来源名（按名字 join），
+// from_is_source=1 把它与能力边区分开。
 func sourceWithKindTargets(ctx context.Context, q nsQueryer, namespaceID, kind string, capIDs []string) (string, error) {
 	if len(capIDs) == 0 {
 		return "", nil
@@ -1073,8 +1076,8 @@ func sourceWithKindTargets(ctx context.Context, q nsQueryer, namespaceID, kind s
 	var got string
 	err := q.QueryRowContext(ctx,
 		`SELECT s.name FROM sources s
-		   JOIN source_targets st ON st.source_id = s.id
-		  WHERE s.namespace_id = ? AND s.kind = ? AND st.capability_id IN (`+marks+`)
+		   JOIN edges e ON e.namespace_id = s.namespace_id AND e.from_key = s.name AND e.from_is_source = 1
+		  WHERE s.namespace_id = ? AND s.kind = ? AND e.to_capability IN (`+marks+`)
 		  ORDER BY s.created_at, s.name LIMIT 1`, args...).Scan(&got)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -1372,11 +1375,14 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 			return nil, nil, fmt.Errorf("install playbook: insert source %s: %w", wantName, err)
 		}
 		for _, capID := range entryIDs {
+			// 源的目标就是**入口边**（P2.1）：左端是来源名，from_port='*' 表示任意事件类型，
+			// mapping='{}' 表示不额外传参（与手工建源的默认一致）。
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO source_targets (source_id, capability_id, namespace_id, params, created_at)
-				 VALUES (?,?,?,?,?)`,
-				srcID, capID, pb.NamespaceID, "{}", now); err != nil {
-				return nil, nil, fmt.Errorf("install playbook: insert source target %s: %w", wantName, err)
+				`INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at)
+				 VALUES (?,1,?,'*',?,'{}','{}',?)
+				 ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`,
+				pb.NamespaceID, wantName, capID, now); err != nil {
+				return nil, nil, fmt.Errorf("install playbook: insert entry edge %s: %w", wantName, err)
 			}
 		}
 		res.Created.Sources = append(res.Created.Sources, wantName)

@@ -557,15 +557,23 @@ func TestEntryEdgeUsesSourceName(t *testing.T) {
 	}
 	in := calls[0]
 
-	// 入口边：FromCap 是来源名，FromIsSource=true
+	// 入口边：来源名 + 事件类型（P2.1：不再用 FromCap/Out 冒充入口边）
 	if !in.FromIsSource {
 		t.Fatal("入口派发必须标记 FromIsSource（否则会去能力表里找 github@1）")
 	}
-	if in.FromCap != "github" {
-		t.Fatalf("FromCap = %q, want the source name \"github\"", in.FromCap)
+	if in.EntryFromKey != "github" {
+		t.Fatalf("EntryFromKey = %q, want the source name \"github\"", in.EntryFromKey)
 	}
-	if in.Out != "pull_request.opened" {
-		t.Fatalf("Out = %q, want the event type", in.Out)
+	if in.EntryFromPort != "pull_request.opened" {
+		t.Fatalf("EntryFromPort = %q, want the event type", in.EntryFromPort)
+	}
+	// FromCap/Out 是**能力边**的字段：入口边填了它们，「从哪来」就有两份真相。
+	if in.FromCap != "" || in.Out != "" {
+		t.Fatalf("入口边不该填 FromCap/Out: %q/%q", in.FromCap, in.Out)
+	}
+	// 模板求值要拿到 payload（否则边上的 {{number}} 永远 param_missing）
+	if in.Payload["number"] != 42.0 {
+		t.Fatalf("Payload[number] = %#v, want 42（入口边模板的取值来源）", in.Payload["number"])
 	}
 	// 旧断言曾经在这里检查派发的 OrgID（「事件属于哪个组织」）。
 	// 组织层随迁移 14 删除（#204），DispatchInput 已无 OrgID 字段：
@@ -582,12 +590,16 @@ func TestEntryEdgeUsesSourceName(t *testing.T) {
 	if len(in.Path) != 0 {
 		t.Fatalf("Path = %v, want empty（来源不是能力，不进环检测）", in.Path)
 	}
-	// payload 作为 params 透传（不求值、不改写）
-	if in.Params["number"] != 42.0 {
-		t.Fatalf("params.number = %v, want 42", in.Params["number"])
+	// payload 作为**模板求值来源**透传（不求值、不改写）：
+	// P2.1 之后它是 Payload 而不是 Params——参数由入口边的 mapping 求值得到。
+	if in.Payload["number"] != 42.0 {
+		t.Fatalf("payload.number = %v, want 42", in.Payload["number"])
 	}
-	if in.Params["title"] != "fix bug" {
-		t.Fatalf("params.title = %v", in.Params["title"])
+	if in.Payload["title"] != "fix bug" {
+		t.Fatalf("payload.title = %v", in.Payload["title"])
+	}
+	if in.Params != nil {
+		t.Fatalf("入口边不该塞整份 payload 当 params: %v", in.Params)
 	}
 	_ = res
 }
@@ -635,9 +647,9 @@ func TestUnknownSourceNoEntryEdge(t *testing.T) {
 		t.Fatalf("dispatch calls = %d, want 1", len(calls))
 	}
 	in := calls[0]
-	if !in.FromIsSource || in.FromCap != "jira" || in.Out != "issue.created" {
-		t.Fatalf("dispatch input = {FromIsSource:%v FromCap:%q Out:%q}, want {true jira issue.created}",
-			in.FromIsSource, in.FromCap, in.Out)
+	if !in.FromIsSource || in.EntryFromKey != "jira" || in.EntryFromPort != "issue.created" {
+		t.Fatalf("dispatch input = {FromIsSource:%v EntryFromKey:%q EntryFromPort:%q}, want {true jira issue.created}",
+			in.FromIsSource, in.EntryFromKey, in.EntryFromPort)
 	}
 } // TestDispatchFailureKeepsEvent 派发失败不影响事件落库（重投也不该重复建事件）。
 func TestDispatchFailureKeepsEvent(t *testing.T) {
@@ -691,12 +703,14 @@ func TestPayloadPassThrough(t *testing.T) {
 			if len(calls) != 1 {
 				t.Fatalf("dispatch calls = %d", len(calls))
 			}
-			params := calls[0].Params
-			if _, ok := params[c.wantKey]; !ok {
-				t.Fatalf("params missing key %q: %v", c.wantKey, params)
+			// P2.1：payload 不再当 params 直接塞给下游，而是作为入口边模板的**求值来源**。
+			// 断言口径跟着搬家：Params → Payload（取出规则本身没变）。
+			payload := calls[0].Payload
+			if _, ok := payload[c.wantKey]; !ok {
+				t.Fatalf("payload missing key %q: %v", c.wantKey, payload)
 			}
-			if c.wantVal != nil && params[c.wantKey] != c.wantVal {
-				t.Fatalf("params[%q] = %v, want %v", c.wantKey, params[c.wantKey], c.wantVal)
+			if c.wantVal != nil && payload[c.wantKey] != c.wantVal {
+				t.Fatalf("payload[%q] = %v, want %v", c.wantKey, payload[c.wantKey], c.wantVal)
 			}
 		})
 	}

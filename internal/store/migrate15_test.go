@@ -370,9 +370,16 @@ func TestMigration15LegacyUpgradeKeepsIndex(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("edges 上名为 %s 的索引有 %d 条, want 1", edgeLookupIndexName, n)
 	}
-	// 老库的业务行不能因为迁移 15 丢失（edges 一行不少）。
-	if got := countRows(t, db, "edges", "1 = 1"); got != 1 {
-		t.Fatalf("edges 行数 = %d, want 1（迁移 15 只动索引，不该动数据）", got)
+	// 老库的业务行不能因为迁移 15 丢失。
+	//
+	// 分开数两类边：能力边是迁移 15 之前就有的那 1 行；入口边是迁移 26 从
+	// 老库的 source_targets 搬过来的（P2.1）——「edges 总数 = 2」不是迁移 15
+	// 动了数据，而是后续迁移的既定效果。
+	if got := countRows(t, db, "edges", "from_is_source = 0"); got != 1 {
+		t.Fatalf("能力边行数 = %d, want 1（迁移 15 只动索引，不该动数据）", got)
+	}
+	if got := countRows(t, db, "edges", "from_is_source = 1 AND from_key = 'legacy-src' AND from_port = '*'"); got != 1 {
+		t.Fatalf("老源目标的入口边 = %d 行, want 1（迁移 26 搬过来的）", got)
 	}
 }
 

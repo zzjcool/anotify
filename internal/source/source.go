@@ -5,8 +5,10 @@
 //	能力  回答"能干什么"——由节点声明，中枢派任务给它
 //	源    回答"什么时候开始干"——有配置、自己产生事件、自己不干活
 //
-// 所以源**不建边**：它的出口是明确配置的能力列表（source_targets），
-// 触发时直接调 Dispatcher 并带上 Targets（见 route.DispatchInput.Targets）。
+// 所以源**不执行**任何东西：它只产生事件。它的出口就是 edges 里的**入口边**
+// （from_is_source=1、from_key=来源名、from_port='*'），参数模板存在边的 mapping 上。
+// 触发时只把「来源名 + 事件类型」递给 Dispatcher，取边/求值/扇出全在 route 一处
+// （P2.1 已删除原来那条跳过 edges 的旁路）。
 package source
 
 import (
@@ -43,9 +45,9 @@ type Dispatcher interface {
 
 // Trigger 把一次"源触发"变成事件 + 首轮派发。
 //
-// 它和 trigger.Service.Ingest 的区别：Ingest 走的是"外部系统 POST 进来"
-// 那条路（按 source 名字找 origin 能力、再查边）；Trigger 是源自己在内部
-// 发起，目标能力是源配置好的，不需要找 origin、也不需要查边。
+// 它和 trigger.Service.Ingest 现在是**同一条路**（P2.1）：两者都只给
+// 「来源名 + 事件类型」，目标能力与参数模板全从入口边（edges）里取。
+// 区别只在事件行由谁写：Ingest 是外部系统 POST 进来，Trigger 是源自己在内部发起。
 type Trigger struct {
 	Store      Store
 	Dispatcher Dispatcher
@@ -101,7 +103,10 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 		payload = json.RawMessage(`{}`)
 	}
 	if len(src.Targets) == 0 {
-		return nil, fmt.Errorf("source: %s 没有出口能力（source_targets 为空）", src.Name)
+		// 两种来源都可能为空：已保存的源（GetSource 从入口边读，空 = 边被删了）
+		// 或**还没保存的草稿**（用户在请求体里没选出口）。文案要同时说得通——
+		// 试运行是「保存前先验一遍」的主路径，不能假设它一定在库里。
+		return nil, fmt.Errorf("source: %s 没有配置出口（入口边）", src.Name)
 	}
 	// payloadMap = config.payload 打底 + 本次事件 payload 覆盖（契约 §2.5）；
 	// 打底只对 cron/manual 生效，webhook/github 的 payload 就是投递体（A13）。
@@ -115,28 +120,29 @@ func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType strin
 	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
 		NamespaceID: src.NamespaceID, // 派发（查边/找节点/建任务）的隔离维度
 		TraceID:     "dryrun",        // 不落库，trace 只是占位（Dispatch 要求非空）
-		Params:      payloadMap,
-		// Payload / VarValues 是参数模板（{{x}} / {from} / {var}）的取值来源。
+		// 入口边：来源名 + 事件类型。目标与参数模板都从这条边上取（P2.1）。
+		FromIsSource:  true,
+		EntryFromKey:  src.Name,
+		EntryFromPort: eventType,
+		// Payload / VarValues 是边上模板（{{路径}} / {from} / {var}）的取值来源。
 		// 试运行必须真解析一遍，用户才能看到 param_missing / param_type。
-		Payload:      payloadMap,
-		VarValues:    route.ResolveVars(src.VarDefs(), payloadMap),
-		Targets:      src.TargetIDs(),
-		TargetParams: src.TargetParamsMap(),
-		Out:          eventType,
-		Path:         nil,
-		DryRun:       true,
+		Payload:   payloadMap,
+		VarValues: route.ResolveVars(src.VarDefs(), payloadMap),
+		Path:      nil,
+		DryRun:    true,
 	})
 }
 
-// Fire 触发一个源：写事件 + 派给它的出口能力。
+// Fire 触发一个源：写事件 + 派给它的入口边的目标。
 //
-// eventType 是这次事件的类型（写进 events.type）。它同时会作为
-// 派发的 port 记录在剪枝信息里，便于排查"为什么没派出去"。
+// eventType 是这次事件的类型（写进 events.type）。它同时就是入口边的**端口**
+// （`from_port = ? OR from_port = '*'`），也是剪枝记录里的 port——
+// 排查"为什么没派出去"时两个地方用的是同一个值。
 //
 // payload 先与 config.payload 合并（打底 + 覆盖；打底只对 cron/manual 生效），
-// 再作为参数模板的取值来源：`[Payload]` 给 `{{x}}` / `{from}` 查路径，`[VarValues]` 是
+// 再作为边上模板的取值来源：`[Payload]` 给 `{{x}}` / `{from}` 查路径，`[VarValues]` 是
 // `config.vars` 求出的别名表，给 `{{name}}` / `{var}` 用。两个都传下去，
-// Dispatcher 才能把 TargetParams 里的模板解析成真正的参数（#114）。
+// Dispatcher 才能把 edges.mapping 里的模板解析成真正的参数（#114）。
 //
 // idemKey 为空时允许重复触发（manual 手工点两次就是两次，符合直觉）；
 // cron 必须给确定性 key（cron:<sourceID>:<计划时刻>），否则进程重启后
@@ -185,9 +191,9 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	}
 
 	if len(src.Targets) == 0 {
-		// 建源时就要求至少一个出口，走到这里说明数据被外部改坏了。
+		// 建源时就要求至少一个目标，走到这里说明数据被外部改坏了。
 		// 不静默吞掉：这属于不一致状态，要能报警。
-		return res, fmt.Errorf("source: %s 没有出口能力（source_targets 为空）", src.Name)
+		return res, fmt.Errorf("source: %s 没有入口边（edges 里没有 from_key=%s 的行）", src.Name, src.Name)
 	}
 
 	// 入口校验（设计 §4.2 / §7 P0.2）：事件**已经落库**（外部系统不重试，丢了就
@@ -205,20 +211,17 @@ func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKe
 	out, err := t.Dispatcher.Dispatch(ctx, route.DispatchInput{
 		NamespaceID: src.NamespaceID, // 源触发：命名空间随源走（契约 §3）
 		TraceID:     ev.TraceID,
-		Params:      payloadMap,
-		// Payload / VarValues 是参数模板里的 {{路径}} / {from} / {var} 的取值来源。
-		//
-		// 为什么 Params 也仍是整份 payload：没有配 TargetParams 的出口要靠它
-		// 拿参数（公共回退语义不变）；配了的那份是**模板**，由 Dispatcher 求值。
+		// 入口边：来源名 + 事件类型。目标能力与参数模板都从这条边上取（P2.1）——
+		// 不再有 Targets / TargetParams 旁路，所以源触发与 POST /v1/events
+		// 走的是同一条路、同一套判定。
+		FromIsSource:  true,
+		EntryFromKey:  src.Name,
+		EntryFromPort: eventType,
+		// Payload / VarValues 是边上模板（{{路径}} / {from} / {var}）的取值来源。
+		// 注意 Params 不传：入口边的参数来自边上的模板，不是整份 payload——
+		// 否则「参数从哪来」又会有两条口径。
 		Payload:   payloadMap,
 		VarValues: route.ResolveVars(src.VarDefs(), payloadMap),
-		// Targets 非空 → Dispatcher 跳过 edges 查表，直接派给这些能力
-		Targets: src.TargetIDs(),
-		// 每个出口各自的参数模板：各能力的 params_schema 不同，
-		// 一份公共 params 必然对不上至少一边（会被静默剪枝）。
-		TargetParams: src.TargetParamsMap(),
-		// Out 仅用于剪枝记录里的 port 字段，让人知道"是哪次触发派不出去"
-		Out: eventType,
 		// 源没有"能力 path"：它自己不是能力，所以环检测从空开始
 		Path: nil,
 	})

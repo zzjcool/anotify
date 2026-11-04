@@ -884,3 +884,45 @@ CREATE TABLE IF NOT EXISTS emissions (
 --
 -- SQL 块为空是有意的：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列走 Go 侧的
 -- migrationHooks[24]（与迁移 20/21/23 同形）。
+
+-- +migration 25 edge_mapping
+--
+-- P2.1（docs/design/typed-pipeline.md §7 / §11.5 拍板的选项 A）：**入口边**可以带引用模板。
+--
+-- 背景：今天「事件 → 第一跳」有两条路——POST /v1/events 查 edges（参数 = 事件 payload
+-- 原样），而源（sources）走一条旁路：跳过 edges、读 source_targets.params，用
+-- {{pull_request.title}} 这样的模板求值。同一个语义两套实现，改一处忘一处就分叉。
+--
+-- 收敛成一条：源的目标就是 edges 里的入口边，参数模板存在这条边上（这一列）。
+-- 边界（§11.5）：入口边（from_is_source=1）允许 mapping；能力边（from_is_source=0）
+-- **保存时硬拒**——参数怎么拼是实现的内部事务（§8 已否决能力边的引用映射），
+-- 能力边的 data 由 emit 提供。
+--
+-- 为什么不与 literals 合并成一列：两者语义相反。literals 是**常量**（配置期就能定死
+-- 类型，所以定义期就硬拒类型错）；mapping 是**引用模板**（类型要触发时求值后才知道）。
+-- 合成一列会让「哪些键能在配置期做类型校验」变成运行时才能回答的问题。
+--
+-- 默认 '{}' = 没有模板：老边补列后行为不变（能力边本来就只能是 '{}'）。
+--
+-- SQL 块为空是有意的：SQLite 没有 ADD COLUMN IF NOT EXISTS，补列走 Go 侧的
+-- migrationHooks[25]（与迁移 20/21/23 同形）。
+
+-- +migration 26 entry_edges_from_source_targets
+--
+-- P2.1 的数据搬迁：把每一行 source_targets 搬成一条**入口边**，搬完删表。
+--
+-- 搬法（一行 source_targets = 一条入口边）：
+--   from_is_source = 1
+--   from_key       = sources.name           （入口边的左端是来源名）
+--   from_port      = '*'                    （源能收任意事件类型）
+--   to_capability  = source_targets.capability_id
+--   mapping        = source_targets.params  （参数模板搬到边上）
+--   namespace_id   = sources.namespace_id   （从父行取：子表自己那列不保证存在）
+--
+-- 幂等：以「source_targets 表是否存在」为判据（搬完就删表，重跑自然是 no-op），
+-- 再叠一层 ON CONFLICT DO NOTHING 兜住半途重试。
+--
+-- 顺序必须在迁移 25 之后（要写 mapping 列）。
+--
+-- SQL 块为空：搬迁要沿父行取来源名、并给参数模板做一次 JSON 归一（坏字节写成 '{}'），
+-- 走 Go 侧的 migrationHooks[26]。

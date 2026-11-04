@@ -457,7 +457,7 @@ func (d *DB) CapabilityNamespace(ctx context.Context, capabilityID string) (stri
 
 // checkCapabilityInNamespace 是 I11 的公共校验：能力定义必须属于 wantNS。
 //
-// what 用来说明违反的是哪条引用（"edges.to_capability" / "source_targets" /
+// what 用来说明违反的是哪条引用（"edges.to_capability" / "sources.targets" /
 // "node_capabilities"），让人一眼看出是哪一端写错了。
 // 未命中返回 ErrNotFound（handler 翻 404），跨命名空间返回 *CrossNamespaceError（handler 翻 400）。
 func (d *DB) checkCapabilityInNamespace(ctx context.Context, wantNS, capabilityID, what string) error {

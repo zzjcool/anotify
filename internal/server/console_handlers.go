@@ -1199,6 +1199,10 @@ type edgeRequest struct {
 	// 用 json.RawMessage 而不是 map：原样交给 store（写进库的就是用户给的字节），
 	// 也不用在这里再写一遍「是不是对象」——校验只有 store 一处（ErrEdgeRejected 透传）。
 	Literals json.RawMessage `json:"literals"`
+	// Mapping 是这条边的**引用模板**（P2.1，设计 §11.5）：进入下游的 params =
+	// ResolveParams(mapping, 事件 payload) ⊎ literals。只有入口边（FromIsSource）允许非空，
+	// 能力边带非空 mapping 会被 store 硬拒（code=edge_rejected，400）。
+	Mapping json.RawMessage `json:"mapping"`
 }
 
 // edges 处理出口表 CRUD。
@@ -1278,6 +1282,7 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		FromPort:       req.FromPort,
 		ToCapability:   req.ToCapability,
 		Literals:       req.Literals,
+		Mapping:        req.Mapping,
 	}
 	if err := h.db.CreateEdge(r.Context(), e); err != nil {
 		// I11：两端能力必须同命名空间，跨命名空间引用 → 400

@@ -99,6 +99,8 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 	21: migrateEdgeLiterals,
 	24: migrateEmissionNote,
 	23: migrateTaskToken,
+	25: migrateEdgeMapping,
+	26: migrateSourceTargetsToEntryEdges,
 }
 
 // migrateNewModelColumns 迁移 5：新模型（events/tasks/...）的补列。
@@ -199,7 +201,76 @@ func migrateEdgeLiterals(tx *sql.Tx) error {
 	return nil
 }
 
+// migrateEdgeMapping 迁移 25：给 edges 加 mapping 列（P2.1，typed-pipeline §11.5 选项 A）。
+//
+// mapping 是**入口边**的引用模板（`{"title":"{{pull_request.title}}"}`）：参数怎么拼
+// 只有入口边能声明——外部世界（GitHub/定时器）不会替你拼参数，而能力边的参数是
+// 实现自己的内部事务（§8 已否决能力边的引用映射，见 store.checkEdgeMapping）。
+//
+// 默认 '{}' = 没有模板：老边补列后派发行为不变（它们本来就只能是 '{}'）。
+//
+// 与迁移 20 / 21 / 23 同形：先 hasColumn 判一次再 ALTER（SQLite 没有
+// ADD COLUMN IF NOT EXISTS，而迁移必须幂等——同一版本可能因重试执行多次）。
+func migrateEdgeMapping(tx *sql.Tx) error {
+	has, err := hasColumn(tx, "edges", "mapping")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`ALTER TABLE edges ADD COLUMN mapping TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return fmt.Errorf("add column edges.mapping: %w", err)
+	}
+	return nil
+}
+
+// migrateSourceTargetsToEntryEdges 迁移 26：把 source_targets 搬成入口边，然后删表。
+//
+// 这是 P2.1 的**数据搬迁**：源不再有自己的一份「出口 + 参数」表（旁路），它的目标
+// 就是 edges 里 from_is_source=1 的入口边，参数模板落在 edges.mapping 上。搬完之后
+// 库里只剩 edges 一份真相，派发也只有一条取目标的路径。
+//
+// 搬法见 schema.sql 迁移 26 的注释。两个实现细节：
+//
+//  1. namespace_id 取 **sources.namespace_id**（父行），不取 source_targets 自己的那列：
+//     极老的库（迁移 12 之前）那张表没有这一列，而父行一直有。
+//  2. params 不是合法 JSON 对象时写成 '{}'：mapping 必须能被 canonicalMapping 解析，
+//     否则一行手改坏的数据会让整张图的 content_hash 永远算不出来（EnsureGraphVersion
+//     失败 = 整个命名空间派不出去）。坏数据退化成「没有模板」，与 literals 的读侧口径一致。
+//
+// 幂等：以「source_targets 表是否存在」为判据——搬完就删表，重跑自然是 no-op；
+// 再叠一层 ON CONFLICT DO NOTHING 兜住半途重试（比如手工重跑同一版本）。
+func migrateSourceTargetsToEntryEdges(tx *sql.Tx) error {
+	exists, err := hasTable(tx, "source_targets")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil // 已经搬过（表已删）：重跑不做事
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO edges (namespace_id, from_is_source, from_key, from_port, to_capability, literals, mapping, created_at)
+		SELECT s.namespace_id, 1, s.name, '*', st.capability_id, '{}',
+		       CASE WHEN json_valid(st.params) AND json_type(st.params) = 'object'
+		            THEN st.params ELSE '{}' END,
+		       st.created_at
+		  FROM source_targets st
+		  JOIN sources s ON s.id = st.source_id
+		ON CONFLICT(namespace_id, from_is_source, from_key, from_port, to_capability) DO NOTHING`); err != nil {
+		return fmt.Errorf("copy source_targets to entry edges: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE source_targets`); err != nil {
+		return fmt.Errorf("drop source_targets: %w", err)
+	}
+	return nil
+}
+
 // migrateSourceTargetParams 迁移 8：给 source_targets 加 params 列。
+//
+// 【历史快照】source_targets 已在迁移 26 删除（P2.1：源收敛为入口边），
+// 这个函数只服务于「老库按顺序重放迁移链」，运行时不得再依赖那张表。
 //
 // 每个出口能力各自的参数模板（见 schema.sql 迁移 8 的说明）。
 // 默认 '{}'：老数据没有参数，行为不变（空 params 对空 schema 的能力正好够用）。

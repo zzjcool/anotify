@@ -3509,7 +3509,9 @@ components:
         fromCapability: { type: string }
         fromPort:
           type: string
-          description: 必须属于 fromCapability.outputs
+          description: |
+            必须属于 fromCapability.outputs。入口边（fromIsSource=true）例外：
+            事件类型由外部系统决定，也可以是 `"*"`（= 该来源的任意事件类型）。
         toCapability: { type: string }
         literals:
           type: object
@@ -3517,6 +3519,22 @@ components:
             这条边的**常量覆盖**（设计 §3.3）：进入下游的 params = data ⊎ literals，
             字面量优先，所以 data 里不必再带这些键。`{}` = 没有覆盖。
             键与值类型受目标 `paramsSchema` 约束（定义期硬拒）。
+          additionalProperties: true
+        mapping:
+          type: object
+          nullable: true
+          description: |
+            这条边的**引用模板**（P2.1，设计 §11.5）：进入下游的 params =
+            `ResolveParams(mapping, 事件 payload)` ⊎ `literals`。`{}` / `null` = 没有模板。
+
+            **只有入口边（`fromIsSource=true`）允许非空**：外部世界不会替你拼参数
+            （GitHub 的 `pull_request.title` 得有人声明成下游的 `params.title`）；
+            能力边带非空 mapping → 400（`code=edge_rejected`）——参数怎么拼是实现的
+            内部事务，能力边的 data 由 emit 提供。
+
+            每个键必须在目标能力的 `paramsSchema.properties` 里；值可以是常量或
+            `{{点号路径}}` 模板（模板值的类型要触发时求值后才知道，定义期不判类型）。
+          example: { title: "{{pull_request.title}}", n: "{{pull_request.number}}" }
           additionalProperties: true
         createdAt: { type: integer, format: int64 }
 
@@ -3544,6 +3562,18 @@ components:
             必须**是对象**（数组、标量、坏 JSON → 400）；每个键必须出现在目标能力的
             `paramsSchema.properties` 里；值类型必须与声明**精确相等**（不做转换）。
           example: { to: u_123 }
+          additionalProperties: true
+        mapping:
+          type: object
+          nullable: true
+          description: |
+            可选的**引用模板**（默认 `{}` / `null` = 没有模板）。只有入口边
+            （`fromIsSource=true`）允许非空，否则 400 `edge_rejected`。
+
+            必须**是对象**；每个键必须出现在目标能力的 `paramsSchema.properties` 里；
+            值可以是常量（按 schema 判类型），也可以是 `{{点号路径}}` 引用（求值后才知道类型，
+            定义期只校验占位符语法），或旧对象的映射声明 `{"from":"路径"}` / `{"var":"别名"}`。
+          example: { title: "{{pull_request.title}}" }
           additionalProperties: true
 
     TaskStatus:
@@ -3748,6 +3778,10 @@ components:
             服务端在建源时就用该能力的 schema 校验，非法直接 400：顶层 `required` 按**模板键集合**
             判定（写了键就算满足，值还能是占位符），只对能完全解析的字面量逐字段校验类型。
 
+            **它就是入口边**（P2.1）：每个 target 落库为一条
+            `from_is_source=1 / from_key=<源名> / from_port='*'` 的边，`params` 存在
+            `edges.mapping` 上。所以「源触发」与 `POST /v1/events` 走的是同一条派发路径。
+
             兼容两种写法：
               `["cap_a", "cap_b"]`                              只要 ID
               `[{"capabilityId":"cap_a","params":{"x":1}}]`      带参数
@@ -3866,7 +3900,11 @@ components:
         enabled: { type: boolean }
         targets:
           type: array
-          description: 出口能力列表（含各自已配置的参数）
+          description: |
+            出口能力列表（含各自已配置的参数）。
+
+            它们就是**入口边**的 DTO（P2.1）：读源时从 `edges` 里
+            （`from_is_source=1 AND from_key=<源名>`）读回来，`params` = 该边的 `mapping`。
           items:
             type: object
             required: [capabilityId]

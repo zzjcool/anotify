@@ -102,12 +102,17 @@ func newEventFixture(t *testing.T) *eventFixture {
 		t.Fatalf("create review capability: %v", err)
 	}
 	// 入口边：来源 "github" 的 pull_request.opened → review
+	//
+	// Mapping 是**必须的**（P2.1）：入口边的参数只来自边上的模板，不再把整个事件
+	// payload 当 params 塞给下游（那条旁路已随 source_targets 删除）。
+	// review 的 params_schema 要求 number，所以模板里要显式写下"从哪里取"。
 	if err := db.CreateEdge(ctx, &store.Edge{
 		NamespaceID:    nsID,
 		FromIsSource:   true,
 		FromCapability: "github",
 		FromPort:       "pull_request.opened",
 		ToCapability:   review.ID,
+		Mapping:        json.RawMessage(`{"number":"{{number}}"}`),
 	}); err != nil {
 		t.Fatalf("create entry edge: %v", err)
 	}
@@ -376,14 +381,20 @@ func TestEventUnknownSourceAccepted(t *testing.T) {
 	}
 }
 
-// TestEventParamsSchemaPruned 参数不过目标能力 schema → 200 + pruned/param_schema。
-func TestEventParamsSchemaPruned(t *testing.T) {
+// TestEventParamMissingPruned 入口边的模板取不到值 → 200 + pruned/param_missing。
+//
+// P2.1 之后「参数从哪来」只有一个答案：边上的 mapping 引用（不再把整份 payload
+// 当 params）。所以 payload 少一个被引用的字段时，失败发生在**求值段**
+// （param_missing），而不是后面的 schema 校验段——这条用例钉住的正是这个顺序：
+// 先按模板取值，取到了才轮到类型/必填。剪枝仍然只发生在「这次派发」上，
+// 事件本身照收（200 + 一条事件 + 一条剪枝留痕），这是可复盘的处理方式。
+func TestEventParamMissingPruned(t *testing.T) {
 	f := newEventFixture(t)
 
 	resp, out := f.post(t, EventIngestRequest{
 		NamespaceID: f.nsID,
 		Source:      "github", Type: "pull_request.opened",
-		Payload: json.RawMessage(`{"title":"no number field"}`), // 缺 required number
+		Payload: json.RawMessage(`{"title":"no number field"}`), // 缺模板引用的 number
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -391,8 +402,11 @@ func TestEventParamsSchemaPruned(t *testing.T) {
 	if len(out.Tasks) != 0 {
 		t.Fatalf("tasks = %d, want 0", len(out.Tasks))
 	}
-	if len(out.Pruned) != 1 || out.Pruned[0].Reason != string(route.ReasonParamSchema) {
-		t.Fatalf("pruned = %+v, want param_schema", out.Pruned)
+	if len(out.Pruned) != 1 || out.Pruned[0].Reason != string(route.ReasonParamMissing) {
+		t.Fatalf("pruned = %+v, want param_missing", out.Pruned)
+	}
+	if !strings.Contains(out.Pruned[0].Detail, "{{number}}") {
+		t.Errorf("detail 没说清是哪个引用取不到: %q", out.Pruned[0].Detail)
 	}
 }
 
