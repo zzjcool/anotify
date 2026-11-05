@@ -609,11 +609,21 @@ export async function startServer({
 		const dbPath = path.join(tmp, "test.db");
 		const origin =
 			rpId === "localhost" ? `http://localhost:${p}` : `https://${rpId}`;
+		// 「中枢自带 agent 二进制」这条路必须有覆盖（CONTRACT-agent-upgrade §2）：
+		// 不提供一个文件，/v1/node/binary 就是 501、GET /v1/nodes 的
+		// targetAgentVersion 是空串，控制台的升级按钮永远走「服务端未提供」分支——
+		// 那条断言会假绿（测的是降级路径，不是真路径）。
+		//
+		// 内容不重要（端点的职责是原样发出 + 报 sha256/版本），但要是**一份真文件**：
+		// 升级端点会把它的大小/哈希写进帧里。用 e2e 的 server 二进制当占位。
+		const agentBinPath = path.join(tmp, "e2e-agent-binary");
+		writeFileSync(agentBinPath, `#!/bin/sh\necho e2e-agent-placeholder\n`, { mode: 0o755 });
 		const env = Object.assign(
 			{},
 			process.env,
 			{
 				ANOTIFY_ADDR: `:${p}`,
+				ANOTIFY_AGENT_BIN: agentBinPath,
 				ANOTIFY_DB: dbPath,
 				ANOTIFY_STATIC: "",
 				ANOTIFY_RP_ID: rpId || "localhost",

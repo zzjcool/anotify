@@ -476,3 +476,45 @@ func TestMainWithDispatch(t *testing.T) {
 		}
 	})
 }
+
+// TestSubcommandAfterGlobalFlags 钉住一个真踩过的陷阱。
+//
+//	sudo anotify-agent -f ~/.anotify/node.yaml upgrade --check
+//
+// subcommand 分派原先只看 args[0]，于是这行**不是**检查更新，而是静默跑起一个
+// 常驻 agent：连上中枢、抢走节点连接、被 systemd 那份顶掉、退出码 1。
+// 用户看到的是「升级报错」，实际发生的是「起了第二个节点进程」。
+// systemd 的 ExecStart 就是这个形状，照着抄一次就会踩中。
+func TestSubcommandAfterGlobalFlags(t *testing.T) {
+	sub, rest, ok := subcommandAt([]string{"-f", "/tmp/node.yaml", "upgrade", "--check"})
+	if !ok || sub != "upgrade" {
+		t.Fatalf("subcommandAt = (%q, %v, %v), want upgrade", sub, rest, ok)
+	}
+	// 全局 flag 必须原样带到子命令（子命令自己的 FlagSet 还要读 -f）。
+	want := []string{"-f", "/tmp/node.yaml", "--check"}
+	if len(rest) != len(want) {
+		t.Fatalf("rest = %v, want %v", rest, want)
+	}
+	for i := range want {
+		if rest[i] != want[i] {
+			t.Fatalf("rest = %v, want %v", rest, want)
+		}
+	}
+
+	// 子命令在首位照旧。
+	if sub, rest, ok := subcommandAt([]string{"upgrade", "-f", "/tmp/n.yaml"}); !ok || sub != "upgrade" || len(rest) != 2 {
+		t.Fatalf("首位子命令解析错: (%q, %v, %v)", sub, rest, ok)
+	}
+
+	// **不能**误判：flag 的**值**恰好叫 upgrade（-name upgrade 是合法的节点名）。
+	if sub, _, ok := subcommandAt([]string{"-name", "upgrade", "-f", "/tmp/n.yaml"}); ok {
+		t.Fatalf("把 -name 的值当成了子命令: %q", sub)
+	}
+	// 纯节点模式的参数（没有子命令）不能被改写。
+	if _, _, ok := subcommandAt([]string{"-f", "/tmp/n.yaml"}); ok {
+		t.Fatal("没有子命令却报告找到了")
+	}
+	if _, _, ok := subcommandAt(nil); ok {
+		t.Fatal("空参数报告找到了子命令")
+	}
+}

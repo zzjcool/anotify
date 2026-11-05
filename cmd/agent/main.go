@@ -401,8 +401,68 @@ func main() {
 	os.Exit(mainWith(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// subcommandAt 找出参数里真正的子命令位置，允许它出现在全局 flag **之后**
+// （`anotify-agent -f node.yaml upgrade`）。
+//
+// 为什么必须处理：子命令分派原先只看 args[0]。于是
+//
+//	anotify-agent -f ~/.anotify/node.yaml upgrade --check
+//
+// 不是「检查更新」，而是**静默跑起一个常驻 agent**：它连上中枢、占用节点连接、
+// 然后被 systemd 那份顶掉，退出码是 1 —— 用户看到的是「升级命令报错了」，
+// 实际发生的是「起了第二个节点进程」。systemd 的 ExecStart 就是 `-f … ` 这个形状，
+// 照着抄一次就会踩中。
+//
+// 实现：用全局 flag 集合解析（flag 包在第一个非 flag 处停下），剩下的第一个
+// token 如果是已知子命令，就把它前面那些**已经解析过的**全局 flag 原样带上
+// （子命令自己有同名 flag，必须还能读到 -f）。
+//
+// 返回 (子命令, 传给子命令的参数, 是否找到)。
+func subcommandAt(args []string) (string, []string, bool) {
+	if len(args) == 0 {
+		return "", nil, false
+	}
+	if isSubcommand(args[0]) {
+		return args[0], args[1:], true
+	}
+	// 全局 flag 里带值的那几个：解析器只用来定位子命令，值本身不关心。
+	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.String("f", "", "")
+	fs.String("data-dir", "", "")
+	fs.Duration("grace", 0, "")
+	fs.String("name", "", "")
+	fs.String("server", "", "")
+	fs.String("token", "", "")
+	fs.String("selector", "", "")
+	fs.Int("slots", 0, "")
+	fs.Bool("standalone", false, "")
+	fs.Bool("version", false, "")
+	fs.Bool("h", false, "")
+	// 任何解析错误都按「不是子命令调用」处理：交给主路径去报真正的错。
+	if err := fs.Parse(args); err != nil {
+		return "", nil, false
+	}
+	rest := fs.Args()
+	if len(rest) == 0 || !isSubcommand(rest[0]) {
+		return "", nil, false
+	}
+	prefix := args[:len(args)-len(rest)]
+	return rest[0], append(append([]string{}, prefix...), rest[1:]...), true
+}
+
+// isSubcommand 报告 token 是否是子命令名（不是的话就是节点模式的普通参数）。
+func isSubcommand(tok string) bool {
+	return tok == emitCommand || tok == upgradeCommand || tok == runCommand
+}
+
 // mainWith 是 main 的可测版本（退出码是返回值，不是 os.Exit）。
 func mainWith(args []string, stdout, stderr io.Writer) int {
+	// 子命令出现在任何位置都被规范化成 args[0]（见 subcommandAt 的注释：
+	// `-f x upgrade` 曾经被静默解释成「跑常驻 agent」）。分派因此只认一种形状。
+	if sub, rest, ok := subcommandAt(args); ok {
+		args = append([]string{sub}, rest...)
+	}
 	if len(args) > 0 && args[0] == emitCommand {
 		// emit 子命令：退出码**就是** emit-protocol.md §2 那张表（2..7），
 		// 调用方（能力进程）据此决定重试还是停止，所以不能在这里改写成 1。

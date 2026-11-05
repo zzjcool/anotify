@@ -51,7 +51,16 @@ jobs:
         run: |
           set -euo pipefail
           out="anotify-agent-${{ matrix.os }}-${{ matrix.arch }}"
-          go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/agent
+          # 版本注入（与 Makefile 的 VERSION_LDFLAGS 同源）：发布出去的 agent 报不出
+          # 版本的话，`anotify-agent upgrade` 的"已是最新"判定与控制台的版本显示全是瞎的。
+          version="$(git describe --tags --always --dirty)"
+          commit="$(git rev-parse --short HEAD)"
+          built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ldflags="-s -w \
+            -X github.com/zzjcool/anotify/internal/version.Version=$version \
+            -X github.com/zzjcool/anotify/internal/version.Commit=$commit \
+            -X github.com/zzjcool/anotify/internal/version.BuiltAt=$built_at"
+          go build -trimpath -ldflags="$ldflags" -o "$out" ./cmd/agent
 
           # 冒烟：能跑起来并打印用法（`-h` 走 flag.ErrHelp 分支 → 退出码 0）。
           # 只对本机架构跑：交叉编译出来的二进制跑不了。

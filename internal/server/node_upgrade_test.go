@@ -273,6 +273,26 @@ func TestNodeUpgradeEndpointDispatch(t *testing.T) {
 		}
 	})
 
+	t.Run("脏构建永不算已最新：dev / *-dirty 版本号不唯一标识内容", func(t *testing.T) {
+		// 两次 `make VERSION=…` 的 dirty 构建版本号一模一样、字节完全不同。
+		// 按版本号判等会让「点了升级却什么都没发生」变成常态，所以这两个值必须下发。
+		for _, target := range []string{"dev", "9.9.9+abc-dirty"} {
+			f := newUpgradeFixture(t, true)
+			f.target = target
+			setAgentVersion(t, f, target, "")
+			rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("%s: status = %d, want 200（body=%s）", target, rr.Code, rr.Body.String())
+			}
+			if body := decode(t, rr); body["status"] != "sent" {
+				t.Fatalf("%s: status = %v, want sent（脏构建不能判成已最新）", target, body["status"])
+			}
+			if f.pub.calls != 1 {
+				t.Fatalf("%s: 推了 %d 帧，want 1", target, f.pub.calls)
+			}
+		}
+	})
+
 	t.Run("force 越过同版本判断 → sent（body.force）", func(t *testing.T) {
 		f := newUpgradeFixture(t, true)
 		setAgentVersion(t, f, f.target, "")

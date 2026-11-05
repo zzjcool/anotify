@@ -29,6 +29,18 @@ import (
 // 为什么把 targetVersion 放进响应：控制台点完要立刻能在弹窗里写「正在升级到 X」，
 // 不必再猜一次中枢版本。
 
+// isUniqueVersion 报告版本号是否**唯一标识构建内容**。
+//
+// `dev` 与含 `dirty` 的版本号不满足：同一版本号可以对应任意多次不同构建。
+// 生产构建来自干净 tag（VERSION=v1.5.0），版本号与内容一一对应。
+func isUniqueVersion(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "dev" {
+		return false
+	}
+	return !strings.Contains(v, "dirty")
+}
+
 // NodeUpgradePublisher 是中枢 → 节点的升级通道（*ws.NodeHub 满足它）。
 //
 // 抽成接口的理由与 DeployPublisher 相同：handler 的行为要能在不起 WebSocket 的
@@ -118,8 +130,14 @@ func (h *nodeUpgradeHandler) upgrade(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ③ 已是最新且没强制 → 什么都不发。
+	//
 	// 空 agent_version（老 agent）不等于目标版本，所以老 agent 永远走下发路径。
-	if !force && node.AgentVersion == target {
+	//
+	// **脏构建永不算「已是最新」**：`dev` / `*-dirty` 这类版本号不唯一标识内容
+	// （两次 dirty 构建版本号一模一样、字节完全不同），按版本号判等会让「点了升级
+	// 却什么都没发生」变成常态。判断依据退回内容本身——节点上的 sha256 中枢不知道，
+	// 那就干脆下发，agent 自己校验 sha：一致就 no-op，不一致才替换（这也是它的默认行为）。
+	if !force && node.AgentVersion == target && isUniqueVersion(target) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":        "up_to_date",
 			"targetVersion": target,

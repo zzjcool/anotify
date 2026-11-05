@@ -38,9 +38,19 @@ COPY . .
 # 用指纹产物覆盖（go:embed 在编译期读取 internal/server/dist；
 # web/*.html 已由源码 COPY 进来，但 fe 阶段才是权威产物，故用 fe 覆盖）
 COPY --from=fe /app/internal/server/dist ./internal/server/dist
-RUN go build -trimpath -ldflags="-s -w" -tags embeddist -o /anotify ./cmd/server \
-    && go build -trimpath -ldflags="-s -w" -o /agent ./cmd/agent \
-    && go build -trimpath -ldflags="-s -w" -o /devseed ./cmd/devseed
+# 三个二进制用**同一份**版本注入：/agent 是「中枢自带升级源」要发出去的那一份
+# （CONTRACT-agent-upgrade §2），它的版本必须与中枢一致——否则节点升级上来还是
+# dev，控制台永远显示「过期」，然后无限提示升级。参数与 Makefile 的
+# VERSION_LDFLAGS 同源（VERSION 由 build-arg 传入，缺省 dev）。
+ARG VERSION=dev
+ARG GIT_SHA=
+ARG BUILT_AT=
+RUN VERSION_LDFLAGS="-X github.com/zzjcool/anotify/internal/version.Version=${VERSION} \
+      -X github.com/zzjcool/anotify/internal/version.Commit=${GIT_SHA} \
+      -X github.com/zzjcool/anotify/internal/version.BuiltAt=${BUILT_AT}" \
+    && go build -trimpath -ldflags="-s -w $VERSION_LDFLAGS" -tags embeddist -o /anotify ./cmd/server \
+    && go build -trimpath -ldflags="-s -w $VERSION_LDFLAGS" -o /agent ./cmd/agent \
+    && go build -trimpath -ldflags="-s -w $VERSION_LDFLAGS" -o /devseed ./cmd/devseed
 
 # ---- 运行 ----
 FROM alpine:3.20

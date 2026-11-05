@@ -24,7 +24,12 @@ services:
     # 不指定 target = Dockerfile 最后一个阶段（生产 runtime，只带 server 二进制）
     build:
       context: .
-    image: anotify-dev:local
+      args:
+        # 版本注入（CONTRACT-agent-upgrade §1）：中枢与它自带的 /app/agent 必须是
+        # 同一份构建，否则节点升上来还报 dev，控制台会一直提示「过期」。
+        VERSION: ${ANOTIFY_VERSION:-dev}
+        GIT_SHA: ${ANOTIFY_GIT_SHA:-}
+        BUILT_AT: ${ANOTIFY_BUILT_AT:-}
     container_name: anotify-dev
     restart: unless-stopped
     # 默认只绑回环：隧道在同一个 docker 网络里走 anotify:8080，不需要对外开端口。

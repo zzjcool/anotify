@@ -205,6 +205,13 @@ push: ## 构建并推送镜像到 GHCR（ghcr.io/zzjcool/anotify）
 
 # --env-file 让 .env.dev 参与**变量插值**（env_file: 只给容器注入，不参与插值）
 DEV_COMPOSE := docker compose --env-file .env.dev -f docker-compose.dev.yml
+
+# 开发镜像的版本注入（CONTRACT-agent-upgrade §1）：compose 的 build.args 读这三个
+# 环境变量。export 让所有 dev 目标（dev-up / dev-reset / dev-docker）都带上，
+# 否则镜像里 /app/agent 报 dev —— 控制台就会一直提示"节点过期"。
+export ANOTIFY_VERSION := $(or $(VERSION),dev)
+export ANOTIFY_GIT_SHA := $(GIT_SHA)
+export ANOTIFY_BUILT_AT := $(BUILT_AT)
 DEV_PROFILE := $(if $(TUNNEL),--profile tunnel,)
 # 重建（KEEP_DATA=1）时：显式 TUNNEL=1，或者隧道容器本来就在（说明这台机器配过隧道）
 # 都要把它一起拉起来。不这么做的话「重建完公网 1033」这个坑会反复踩。

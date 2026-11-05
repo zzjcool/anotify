@@ -1,18 +1,15 @@
 package server
 
-// serverVersion 是中枢自己的版本号（agent 升级的**目标版本**，CONTRACT-agent-upgrade §1）。
+import "github.com/zzjcool/anotify/internal/version"
+
+// serverVersion 是中枢自己的版本号，也是 agent 升级的**目标版本**
+// （.pi-orchestrator/CONTRACT-agent-upgrade.md §1）。
 //
-// SEAM(A)：契约 §1 的 `internal/version` 包由 A 组创建（`version.Version` /
-// `version.String()`），B 组不得修改 `internal/version/**`、也不改 Makefile（§7）。
-// 本分支（B）与 A 并行开发，A 合入前 `internal/version` 还不存在，所以这里先返回
-// 契约里的缺省值 "dev"。
+// 为什么单独一个函数而不是到处 import：版本的唯一来源是构建期注入的
+// internal/version，而这台机器的 /app/agent（= 升级源二进制）必须与中枢是
+// **同一份构建**——两边读同一个 version.String()，才不会出现「中枢说 1.5.0、
+// 发出去的 agent 是 dev」这种升级死循环。
 //
-// A 合入后把本文件替换成下面三行（调用点不用动）：
-//
-//	import "github.com/zzjcool/anotify/internal/version"
-//
-//	func serverVersion() string { return version.String() }
-//
-// 调用点只有 mux.go 的 loadAgentBinary（版本的第二个消费方是 GET /v1/nodes 的
-// targetAgentVersion，它读的是同一个 agentBinary.version），所以这次替换是机械的。
-func serverVersion() string { return "dev" }
+// 两个消费方：GET /v1/node/binary 的 X-Agent-Version、GET /v1/nodes 的
+// targetAgentVersion（后者读 agentBinary.version，来源是同一个）。
+func serverVersion() string { return version.String() }
