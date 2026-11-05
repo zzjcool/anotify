@@ -192,6 +192,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     tags         TEXT NOT NULL DEFAULT '[]',  -- JSON 数组，节点池标签
     status       TEXT NOT NULL DEFAULT 'offline', -- online | offline | draining
     token_hash   TEXT NOT NULL,               -- sha256，明文只在创建时返回一次
+    agent_version TEXT NOT NULL DEFAULT '',   -- 自升级：hello 上报的 agent 版本（internal/version.String()）；
+                                              -- 空 = 老 agent 未上报（不是错误）
+    agent_commit  TEXT NOT NULL DEFAULT '',   -- 自升级：hello 上报的 git short sha；空 = 未上报
+    agent_upgrade TEXT NOT NULL DEFAULT '{}', -- 自升级：控制台下发的最后一次结果（JSON，§6.2）：
+                                              -- {"status":"","targetVersion":"","error":"","at":0}
     max_instances   INTEGER NOT NULL DEFAULT 20,  -- 硬顶，防一份 token 复制出一片
     max_concurrency INTEGER NOT NULL DEFAULT 8,   -- 节点级并发上限
     last_seen_at INTEGER,
@@ -202,7 +207,13 @@ CREATE TABLE IF NOT EXISTS nodes (
 /** 一台机器属于一个命名空间（I11）。令牌绑在这个命名空间上（见设计文档 §2.1），
   * 所以 `hello` 帧里的 `capabilities: ["review@1"]` 不会有歧义。
   * 要服务两个命名空间就注册两次 → 两个节点行、两个令牌。
-  * 一个 WS 连接 = 一个节点 = 一个命名空间。 */
+  * 一个 WS 连接 = 一个节点 = 一个命名空间。
+  *
+  * `agent_version` / `agent_commit` / `agent_upgrade` 三列由 **`+migration 3`** 追加（baseline 里没有它们）：
+  * 老库按 `migrate.go` 的 hooks 补列（幂等），新库走 baseline + 该块。
+  * 前两列是**观测**位（hello 上报，不参与派发选点）；`agent_upgrade` 是**下发结果**位
+  * （`sent` 由 `POST /v1/nodes/{id}/upgrade` 写，`ok`/`failed` 由 `upgrade_ack` 覆盖）——
+  * 它落库的唯一理由：刷新页面后上一次的升级结果（尤其失败原因）还在。 */
 
 -- 节点声明「我有 review@1」——名字 + 版本，外加节点**自报的执行方式**（run_spec）。
 -- 没有 argv、没有出口、没有 kind：run_spec 是节点自己的数据（JSON 原文），
@@ -970,6 +981,8 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 ```jsonc
 // ── 节点 → 中枢 ──────────────────────────────
 { "type": "hello",     "node_id": "nd_x", "protocol": 1,
+  "agent_version": "1.5.0+3fd5a59",  // 自升级：string，可空（空 = 老 agent，中枢不报错，
+                                     // 控制台显示「未知（老版本）」）；取自 internal/version.String()
   "capabilities": [ {"capability":"review","version":1},
                     {"capability":"test","version":1} ],
   // manifest 可选：声明「这个能力我怎么跑」。只存不执行（I1），中枢永不执行 command。
@@ -997,6 +1010,15 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
                                   // **没有 out**（P1.5 退役）：产出只走上面的 emit 帧。
                                   // 老帧里多出来的 "out" 是未知字段，服务端忽略、不报错。
 
+{ "type": "upgrade_ack", "ok": true, "version": "1.5.0+3fd5a59", "error": "" }
+// 自升级的回执（响应中枢的 upgrade 帧）。失败时 ok:false + error，取值可判别：
+//   bad_sha（校验失败）| need_root（无权限写目标）| download_failed |
+//   not_supported（本平台不支持自替换，如容器内只读 FS）
+// 成功替换后：先回本帧，再 syscall.Exit(0)（systemd Restart=always 拉起新版本）。
+// need_root 时**不退出**——否则节点直接掉线，用户连那条提示都拿不到。
+// 中枢收到本帧：成功用它里的 version 更新 nodes.agent_version/agent_commit，
+// 并把 nodes.agent_upgrade 覆盖成 ok / failed（失败带 error）——见 §6.2 节点列表的升级字段。
+
 // ── 中枢 → 节点 ──────────────────────────────
 { "type": "welcome",   "node_id": "nd_x", "protocol": 1,
   "heartbeat_sec": 10, "lease_ttl_sec": 30,
@@ -1022,6 +1044,12 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 { "type": "cancel",    "task_id": "tsk_x", "reason": "superseded" }
 
 { "type": "error",     "code": "bad_frame", "message": "..." }
+
+{ "type": "upgrade",  "target_version": "1.5.0+3fd5a59",
+  "sha256": "<64 hex>",              // 目标二进制的 sha256，节点下载后必须逐字节校验
+  "url_path": "/v1/node/binary" }   // 相对中枢地址；agent 用**自己的 node token** 下载
+// 帧里**不放二进制**：15 MB 的帧会撑爆心跳与背压。下载走 HTTP（§6.2），
+// 鉴权用的是连 WS 的同一份 node token。
 ```
 
 **`assign` 载荷是中枢能表达的全部**：`{capability, version, params, digest, ports, expects, token}` + 租约。
@@ -1052,9 +1080,11 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `GET` | `/v1/capabilities` | 能力定义列表 |
 | `POST` | `/v1/capabilities` | 定义新能力（自动算 hash、开版本） |
 | `GET/POST/DELETE` | `/v1/edges` | 出口表 CRUD |
-| `GET` | `/v1/nodes` | 节点列表与在线状态 |
+| `GET` | `/v1/nodes` | 节点列表与在线状态（响应带顶层 `targetAgentVersion` + 每节点 `agentVersion`/`agentCommit`/`agentUpgrade`，见下） |
 | `POST` | `/v1/nodes` | 注册节点（`namespaceId` 必填；返回**只出现一次**的明文令牌，库里只存 sha256） |
 | `POST` | `/v1/nodes/{id}/drain` | 排空节点 |
+| `POST` | `/v1/nodes/{id}/upgrade` | 控制台下发升级（**会话鉴权** + 命名空间隔离）：节点离线 → `409` `node_offline`；服务端未带 agent 二进制 → `501` `agent_binary_unavailable`；`agent_version == 目标` 且未 `force` → `200` `{"status":"up_to_date","targetVersion":"…"}`；否则写 `agent_upgrade.status=sent` + 向该节点推 `upgrade` 帧 → `200` `{"status":"sent","targetVersion":"…"}`，之后靠 `upgrade_ack` 更新节点视图 |
+| `GET` | `/v1/node/binary` | 下发 agent 二进制（**node token 鉴权，不是会话**）：`200` `application/octet-stream` + `X-Agent-Version` + `X-Agent-Sha256`；服务端未带二进制 → `501` `{"error":"agent_binary_unavailable"}` |
 | `GET`/`POST` | `/v1/namespaces` | 列出 / 新建命名空间（新建时**同事务播种内置能力**） |
 | `PATCH`/`DELETE` | `/v1/namespaces/{id}` | 改名（只改 `name`，`slug` 不可改）/ 删除（阻塞 `409`、最后一个 `400`、`?force=true` 级联） |
 | `GET` | `/v1/playbooks` | 预案列表（每项带就绪体检结论 `status` / `ready` / `total` / `counts`） |
@@ -1064,6 +1094,33 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `DELETE` | `/v1/playbooks/{idOrSlug}` | 删预案（**不删已装物**；`200` `{"deleted": true}`） |
 
 **JSON 字段一律 camelCase**（I9 同源约束的延伸）。
+
+#### 节点列表的升级字段（`GET /v1/nodes`）
+
+```json
+{
+  "nodes": [ { "id": "nd_x", "agentVersion": "1.5.0+3fd5a59", "agentCommit": "3fd5a59",
+               "agentUpgrade": { "status": "ok", "targetVersion": "1.5.0+3fd5a59",
+                                 "error": "", "at": 1762329600 } } ],
+  "targetAgentVersion": "1.5.0+3fd5a59"
+}
+```
+
+| 字段 | 位置 | 语义 |
+|---|---|---|
+| `targetAgentVersion` | 响应**顶层**（string） | 中枢当前带的 agent 二进制版本；**空串 = 服务端没带二进制**（UI 不显示升级按钮，或显示「服务端未提供」） |
+| `agentVersion` / `agentCommit` | 每台节点 | 当前实跑的版本（来自 `hello`；空 = 老 agent 未上报） |
+| `agentUpgrade` | 每台节点（对象，**恒存在**） | 最后一次升级尝试，默认 `{"status":"","targetVersion":"","error":"","at":0}`；落库在 `nodes.agent_upgrade`（`+migration 3`） |
+| → `status` | | `""` 从未尝试 / `sent` 已下发等 ack / `ok` ack 成功 / `failed` ack 失败 |
+| → `error` | | 失败码，与 agent 侧一致：`need_root` / `bad_sha` / `download_failed` / `not_supported` |
+| → `targetVersion` | | 这次尝试的目标版本 |
+| → `at` | | `sent` / `ok` / `failed` 的时刻（unix 秒） |
+
+`sent` 由 `POST /v1/nodes/{id}/upgrade` 写入，`ok` / `failed` 由 `upgrade_ack` 覆盖。
+**所以刷新页面后上一次的升级结果还在**——失败原因（尤其 `need_root`）要能活到人去处理为止。
+
+控制台另有一条**展示**规则（不是接口字段）：`status == "sent"` 且 `at` 距今 **> 60s**
+仍是 `sent` → 显示「节点未回复（可能已断线）」，而不是一直「升级中」。
 
 #### 事件列表的 `limit` 与游标分页
 
@@ -1133,6 +1190,8 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `no_node` | 路由 | 没有节点声明该能力 |
 | `foreign_user` | 路由 | `params.to` 指向的用户不属于本组织 |
 | `invalid_transition` | 状态机 | 非法状态迁移 |
+| `node_offline` | 升级下发 | 目标节点不在线（`POST /v1/nodes/{id}/upgrade` 返回 `409`，§6.2） |
+| `agent_binary_unavailable` | 升级下发 | 服务端没带 agent 二进制（`ANOTIFY_AGENT_BIN` 指向的文件不存在）→ `501`，§6.2 |
 
 **「没触发」的全部原因**，分两类：
 

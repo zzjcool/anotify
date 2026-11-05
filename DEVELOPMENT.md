@@ -380,6 +380,24 @@ INPUT 链，ufw 的 `DEFAULT_INPUT_POLICY=DROP` 拦不到它。所以那个测�
 make build  # 自动跑指纹 + go build
 ```
 
+### 升级机器上的 agent（自升级）
+
+中枢自己带 agent 二进制（`ANOTIFY_AGENT_BIN`，默认 `/app/agent`，镜像里已有），
+所以升级不再依赖 GitHub raw + sudo：
+
+```bash
+anotify-agent upgrade --check     # 只看：当前 → 目标（退出码 0 有更新 / 1 已最新 / 2 服务端未启用）
+anotify-agent upgrade --restart   # 换二进制并重启服务
+```
+
+也可以在控制台「节点」页点「升级」（二次确认；会替换节点上的二进制并重启 agent，
+正在跑的任务会被等完，grace 20s）。服务端没带二进制时接口回 `501` `agent_binary_unavailable`，
+按钮会提示「服务端没带 agent 二进制」。
+
+**兜底**：以上都不行时仍可重跑 `scripts/install-agent.sh` —— 首次安装、镜像不通、
+容器只读 FS 的 `not_supported` 都走这条。细节见 `docs/agent-install.md`；
+设计 / 退出码 / 排查表见 `docs/design/agent-upgrade.md`。
+
 ## 5. 测试体系（固化门禁）
 
 > **规则：每次开发完成后，必须跑 `make e2e` 全绿才算完成。** 见 `E2E_TESTING.md`。

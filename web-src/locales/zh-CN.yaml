@@ -1389,6 +1389,28 @@ nodes:
   drain_confirm: 排空 {name}？它跑完手上的任务后不再接新任务。
   drain_done: 已排空
   drain_failed: 排空失败：
+  # agent 自升级（docs/design/agent-upgrade.md）。文案口径：
+  # 版本陈旧是**中性**提示（不是错误）；need_root / bad_sha 给的是「下一步怎么做」。
+  upgrade:
+    version_label: agent 版本
+    version_unknown: 未知（老版本）
+    stale_hint: 有新版本可用
+    latest: 已是最新
+    btn: 升级
+    sending: 升级中…
+    confirm: 升级 {name} 上的 agent？会替换节点上的二进制并重启 agent；正在跑的任务会等完（grace 20s）。
+    sent: 已下发升级，节点重启后生效（稍后刷新可看到新版本）
+    failed: '升级失败：'
+    ack_failed: '节点上的升级没成功：'
+    ack_stale: 节点未回复（可能已断线）
+    no_binary_hint: 中枢没有配置 ANOTIFY_AGENT_BIN，自升级不可用；请在节点上跑 anotify-agent upgrade，或重跑安装脚本
+    err:
+      need_root: '需要 root 权限，在节点上执行：sudo anotify-agent upgrade'
+      bad_sha: 服务端二进制可能被改动，已拒绝
+      download_failed: 节点下载 agent 二进制失败
+      not_supported: 这个平台不支持自替换（例如容器内只读文件系统）
+      node_offline: 节点离线，连不上它
+      agent_binary_unavailable: 服务端没带 agent 二进制
   status:
     online: 在线
     offline: 离线

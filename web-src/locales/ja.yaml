@@ -1389,6 +1389,26 @@ nodes:
   drain_confirm: '{name} をドレインしますか？実行中のタスクは完了しますが、新しいタスクは受けません。'
   drain_done: ドレインしました
   drain_failed: 'ドレインに失敗: '
+  upgrade:
+    version_label: agent バージョン
+    version_unknown: 不明（旧バージョン）
+    stale_hint: 新しいバージョンがあります
+    latest: 最新です
+    btn: アップグレード
+    sending: アップグレード中…
+    confirm: '{name} の agent をアップグレードしますか？ノード上のバイナリを置き換えて agent を再起動します。実行中のタスクは完了を待ちます（grace 20 秒）。'
+    sent: 'アップグレードを送信しました。ノードの再起動後に有効になります（しばらくしてから更新すると新しいバージョンが見えます）'
+    failed: 'アップグレードに失敗: '
+    ack_failed: 'ノード上のアップグレードが失敗しました: '
+    ack_stale: ノードが応答していません（切断された可能性があります）
+    no_binary_hint: ハブが agent バイナリを持っていないため（ANOTIFY_AGENT_BIN）、自己アップグレードは使えません。ノード上で anotify-agent upgrade を実行するか、インストールスクリプトを再実行してください
+    err:
+      need_root: 'root 権限が必要です。ノード上で実行: sudo anotify-agent upgrade'
+      bad_sha: ハブのバイナリが改変された可能性があるため拒否しました
+      download_failed: ノードが agent バイナリをダウンロードできませんでした
+      not_supported: このプラットフォームは自己置き換えに対応していません（コンテナ内の読み取り専用 FS など）
+      node_offline: ノードがオフラインのため接続できません
+      agent_binary_unavailable: ハブに agent バイナリが含まれていません
   status:
     online: オンライン
     offline: オフライン

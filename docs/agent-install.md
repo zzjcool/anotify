@@ -14,7 +14,7 @@
 | 一行命令 | ✅ `docker run ...` | ✅ `curl ... \| sh -s -- ...` |
 | 能看见宿主机文件 | ❌ 只有容器内（除非 `-v`） | ✅ 运行它的那个用户能看见什么，它就能看见什么 |
 | 能在你的项目目录里跑 `make test` | 需要额外 `-v` 挂载 | 能力里声明 `run.workDir` 即可 |
-| 升级 | 拉新镜像重启 | 重跑安装脚本 |
+| 升级 | 拉新镜像重启 | `anotify-agent upgrade` 或控制台点一下（兜底：重跑安装脚本） |
 | 隔离 | 容器边界（更强） | 进程边界（= 你的用户权限） |
 
 **选型建议**：能力只做网络/API 类的事（发通知、调 webhook、跑测试镜像）→ Docker 更省心；
@@ -60,9 +60,23 @@ anotify-agent 已装好并已启动
 ### 升级 / 卸载
 
 ```bash
-# 升级：重跑同一条命令。令牌/中枢/名字从 node.yaml 读，不用再给 —— 只换二进制并重启服务
-curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh | sh
+# 升级（推荐）：只换二进制、保留 node.yaml 与 systemd 单元
+anotify-agent upgrade --check     # 只看：当前 → 目标（退出码 0 有更新 / 1 已最新 / 2 服务端未启用）
+anotify-agent upgrade --restart   # 换二进制并重启服务
+# 或者：控制台「节点」页点「升级」（会替换二进制并重启 agent；在跑的任务等完，grace 20s）
 
+# 兜底（首次安装 / 内网镜像 / 平台不支持自替换）：重跑同一条安装命令
+curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh | sh
+```
+
+自升级的前提是**服务端带了 agent 二进制**（镜像里的 `/app/agent`，可用 `ANOTIFY_AGENT_BIN` 改）。
+没带时 CLI 退出码 `2`、接口回 `501` `agent_binary_unavailable`。
+
+兜底路径保留的理由：首次安装本来就没有 agent 可以「自升级」，镜像不通的机器拿不到
+中枢的二进制，容器只读 FS 的平台永远走不通自替换（`not_supported`）。
+设计、退出码与排查表见 `docs/design/agent-upgrade.md`。
+
+```bash
 # 卸载（保留 ~/.anotify 数据目录）
 sh install-agent.sh --uninstall
 # 连产物缓存/工作目录一起删
@@ -139,6 +153,12 @@ A：中枢上已经删除/改名过的能力还留在 `~/.anotify/index` 里，�
 **Q：预检报「这个令牌正被另一条连接用着」（superseded）**
 A：同一份 `node.yaml` 被两个进程或两台机器用了。中枢的策略是新连接顶掉旧连接，于是两边对跳、
 双方都跑不稳。先停掉旧的：`systemctl stop anotify-agent`（或 `systemctl --user stop anotify-agent`），再重跑安装。
+
+**Q：升级报 `need_root` / `anotify-agent upgrade` 退出码 3，要不要换到 `~/.anotify/bin`？**
+A：不要。agent 以普通用户跑，而 `/usr/local/bin/anotify-agent` 是 root 所有，写不进去就是没权限。
+CLI 会打印可直接粘的 `sudo install -m 0755 <下载路径> <目标>`，或者直接 `sudo anotify-agent upgrade`。
+**不静默降级到 `~/.anotify/bin`**：那会让 systemd 单元里的 `ExecStart` 继续指老路径，
+机器上多了一份新二进制、进程跑的还是老的。
 
 **Q：任务报了「能力 X@Y 声明的工作目录 /path 不存在」**
 A：那个目录是**能力定义**里的 `run.workDir`，节点上没有这个目录。去控制台把该能力的

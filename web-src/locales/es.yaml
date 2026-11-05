@@ -1389,6 +1389,26 @@ nodes:
   drain_confirm: ¿Vaciar {name}? Termina las tareas actuales pero no acepta nuevas.
   drain_done: Vaciado
   drain_failed: 'Error al vaciar: '
+  upgrade:
+    version_label: Versión del agent
+    version_unknown: Desconocida (agent antiguo)
+    stale_hint: Hay una versión nueva
+    latest: Actualizado
+    btn: Actualizar
+    sending: Actualizando…
+    confirm: '¿Actualizar el agent de {name}? Se reemplaza el binario del nodo y se reinicia el agent; las tareas en curso terminan primero (grace 20 s).'
+    sent: 'Actualización enviada: se aplica cuando el nodo se reinicie (actualiza más tarde para ver la versión nueva)'
+    failed: 'Error al actualizar: '
+    ack_failed: 'La actualización en el nodo falló: '
+    ack_stale: 'El nodo no ha respondido (puede haberse desconectado)'
+    no_binary_hint: 'El hub no incluye el binario del agent (ANOTIFY_AGENT_BIN), así que la auto-actualización no está disponible: ejecuta anotify-agent upgrade en el nodo o vuelve a correr el script de instalación'
+    err:
+      need_root: 'Se necesita root: en el nodo ejecuta sudo anotify-agent upgrade'
+      bad_sha: 'El binario del hub puede haber sido alterado: rechazado'
+      download_failed: El nodo no pudo descargar el binario del agent
+      not_supported: Esta plataforma no permite reemplazarse a sí misma (p. ej. un sistema de archivos de solo lectura dentro de un contenedor)
+      node_offline: 'El nodo está desconectado: no se puede contactar'
+      agent_binary_unavailable: El hub no incluye el binario del agent
   status:
     online: En línea
     offline: Desconectado

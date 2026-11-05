@@ -1389,6 +1389,26 @@ nodes:
   drain_confirm: Drain {name}? It finishes current tasks but takes no new ones.
   drain_done: Drained
   drain_failed: 'Drain failed: '
+  upgrade:
+    version_label: Agent version
+    version_unknown: Unknown (older agent)
+    stale_hint: Update available
+    latest: Up to date
+    btn: Upgrade
+    sending: Upgrading…
+    confirm: 'Upgrade the agent on {name}? This replaces the binary on the node and restarts the agent; running tasks finish first (grace 20s).'
+    sent: 'Upgrade sent — it takes effect when the node restarts (refresh later to see the new version)'
+    failed: 'Upgrade failed: '
+    ack_failed: 'The upgrade on the node failed: '
+    ack_stale: The node has not replied (it may have gone offline)
+    no_binary_hint: 'The hub is not shipping an agent binary (ANOTIFY_AGENT_BIN), so self-upgrade is unavailable — run anotify-agent upgrade on the node, or rerun the install script'
+    err:
+      need_root: 'Root required — on the node run: sudo anotify-agent upgrade'
+      bad_sha: The hub binary may have been tampered with — refused
+      download_failed: The node could not download the agent binary
+      not_supported: This platform does not support replacing itself (e.g. a read-only filesystem inside a container)
+      node_offline: 'The node is offline — cannot reach it'
+      agent_binary_unavailable: The hub does not ship an agent binary
   status:
     online: Online
     offline: Offline
