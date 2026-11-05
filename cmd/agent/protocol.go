@@ -44,6 +44,11 @@ type (
 	cancelFrame  = ws.CancelFrame
 	errorFrame   = ws.ErrorFrame
 
+	// upgradeFrame / upgradeAckFrame 是中枢下发升级与节点的回报
+	// （CONTRACT-agent-upgrade §5）。下载走普通 HTTP，帧里只有「去哪拿、该是什么」。
+	upgradeFrame    = ws.UpgradeFrame
+	upgradeAckFrame = ws.UpgradeAckFrame
+
 	// emitAckFrame 是中枢对一次 emit 的确认（emit-protocol.md §3.2）。
 	// error 非空 = 拒收；重复 seq 一律回 ok（幂等，不重复派发下游）。
 	emitAckFrame = ws.EmitAckFrame
@@ -66,9 +71,26 @@ const (
 	frameTypeDeploy  = ws.NodeFrameDeploy
 	frameTypeCancel  = ws.NodeFrameCancel
 	frameTypeError   = ws.NodeFrameError
+	// frameTypeUpgrade / frameTypeUpgradeAck：中枢下发升级、节点回报结果
+	// （CONTRACT-agent-upgrade §5）。漏了 frameTypeUpgrade 的后果特别隐蔽——
+	// 控制台显示「已下发」，节点却当作未知帧丢掉，永远等不到 ack。
+	frameTypeUpgrade    = ws.NodeFrameUpgrade
+	frameTypeUpgradeAck = ws.NodeFrameUpgradeAck
 	// frameTypeEmitAck 必须在这里**显式**认出来：漏了它，中枢的每次确认都会落到
 	// unknownFrame 分支——emit 永远等不到 ack，--wait-routed 必然超时（§5）。
 	frameTypeEmitAck = ws.NodeFrameEmitAck
+)
+
+// 升级路径里的常量别名（不是类型，所以单独一个 const 块）。
+const (
+	// nodeBinaryPath 是中枢上 agent 二进制的下载路径（帧没给 url_path 时用它）。
+	nodeBinaryPath = ws.NodeBinaryPath
+
+	// 契约 §5 的失败短码：会原样出线给控制台，字符串是冻结的。
+	upgradeErrNeedRoot       = ws.UpgradeErrNeedRoot
+	upgradeErrBadSHA         = ws.UpgradeErrBadSHA
+	upgradeErrDownloadFailed = ws.UpgradeErrDownloadFailed
+	upgradeErrNotSupported   = ws.UpgradeErrNotSupported
 )
 
 // result.status 的两个取值（契约 §6.1）。internal/ws 只在注释里写了
@@ -176,6 +198,12 @@ func decodeDownstream(data []byte) (any, error) {
 		var f errorFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, fmt.Errorf("decode error: %w", err)
+		}
+		return &f, nil
+	case frameTypeUpgrade:
+		var f upgradeFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode upgrade: %w", err)
 		}
 		return &f, nil
 	case frameTypeEmitAck:

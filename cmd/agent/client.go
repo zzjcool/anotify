@@ -331,6 +331,11 @@ type nodeAgent struct {
 
 	// draining 置位后不再接新任务（不 ack，让中枢的租约到期回收）。
 	draining atomic.Bool
+
+	// installToForTest / exitHook 只在测试里用：前者覆盖升级目标（测试不能替换
+	// 自己），后者拦下 os.Exit（成功路径会退出，否则用例跑不到断言）。
+	installToForTest string
+	exitHook         func(int)
 }
 
 func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDir string, log *slog.Logger) *nodeAgent {
@@ -353,6 +358,15 @@ func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDi
 		tasks:   make(map[string]*taskCancel),
 		emits:   make(map[string]*emitServer),
 	}
+}
+
+// exit 结束进程。（升级成功后要退出让 supervisor 拉起新版本；测试用 exitHook 拦下。）
+func (a *nodeAgent) exit(code int) {
+	if a.exitHook != nil {
+		a.exitHook(code)
+		return
+	}
+	os.Exit(code)
 }
 
 // taskCancel 是一个在跑任务的取消句柄。
@@ -505,6 +519,11 @@ func (a *nodeAgent) readLoop(ctx context.Context) error {
 					"event", "agent.deploy.failed",
 					"deploy_id", f.DeployID, "error", err.Error())
 			}
+		case *upgradeFrame:
+			// 升级是**同步**做的：下载 + 校验 + 原子替换，成功就退出让 supervisor
+			// 拉起新版本（契约 §5）。扔 goroutine 的话，下一帧 assign 可能先到达，
+			// 结果是「用旧二进制跑着跑着进程突然没了」。
+			a.handleUpgrade(f)
 		case *cancelFrame:
 			a.handleCancel(f)
 		case *emitAckFrame:
