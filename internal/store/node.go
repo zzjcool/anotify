@@ -46,8 +46,48 @@ type Node struct {
 	TokenHash      string   `json:"-"`
 	MaxInstances   int      `json:"maxInstances"`
 	MaxConcurrency int      `json:"maxConcurrency"`
-	LastSeenAt     *int64   `json:"lastSeenAt"`
-	CreatedAt      int64    `json:"createdAt"`
+	// AgentVersion / AgentCommit 是节点上跑的那个 agent 的版本信息（契约 §3/§5）。
+	//
+	// AgentVersion 由 hello 帧自报（老 agent 不带 = 空串 = 未知）；AgentCommit 只由
+	// upgrade_ack 落库（hello 帧没有这个字段）。两者都是 camelCase 出线：
+	// 控制台的节点列表直接靠这两个键显示「这台机器跑的是哪一版」。
+	AgentVersion string `json:"agentVersion"`
+	AgentCommit  string `json:"agentCommit"`
+	// AgentUpgrade 是最近一次升级尝试的状态（CONTRACT-agent-upgrade §5.1）。
+	//
+	// 恒存在（零值 = 从未尝试）：控制台刷新页面/服务重启后仍要看到上次升级的结果，
+	// 否则 UI 的失败映射（need_root → 提示用户去节点跑 sudo）就是死代码。
+	AgentUpgrade AgentUpgrade `json:"agentUpgrade"`
+	LastSeenAt   *int64       `json:"lastSeenAt"`
+	CreatedAt    int64        `json:"createdAt"`
+}
+
+// 升级尝试的状态（nodes.agent_upgrade 的 status，CONTRACT-agent-upgrade §5.1）。
+const (
+	// AgentUpgradeNone 表示从未尝试过升级（零值）。
+	AgentUpgradeNone = ""
+	// AgentUpgradeSent 表示 upgrade 帧已下发，等 upgrade_ack。
+	AgentUpgradeSent = "sent"
+	// AgentUpgradeOK 表示 ack 报成功（版本列已被 ack 更新）。
+	AgentUpgradeOK = "ok"
+	// AgentUpgradeFailed 表示 ack 报失败（版本列保持旧值）。
+	AgentUpgradeFailed = "failed"
+)
+
+// AgentUpgrade 是一次升级尝试的结果。
+//
+// 它同时是**落库形状**（nodes.agent_upgrade 的 JSON）与**出线形状**（GET /v1/nodes
+// 每台节点的 agentUpgrade）：一份 struct 只有一个字段名真相，避免「库里一个键、
+// 接口另一个键」这种只能靠人眼对的东西。json tag 一律 camelCase（项目 API 规范）。
+type AgentUpgrade struct {
+	// Status ∈ "" / sent / ok / failed。
+	Status string `json:"status"`
+	// TargetVersion 是这次尝试的目标版本（中枢当时的 agent 版本）。
+	TargetVersion string `json:"targetVersion"`
+	// Error 是失败短码（need_root / bad_sha / download_failed / not_supported）；空 = 无错误。
+	Error string `json:"error"`
+	// At 是 sent/ok/failed 那一刻的 unix 秒。
+	At int64 `json:"at"`
 }
 
 // NodeInstance 是 node_instances 表的一行（并发槽位，由节点申报）。
@@ -239,7 +279,8 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 
 // nodeColumns 是统一的列顺序，scanNodeRow 依赖它（与 schema.sql 的 nodes 定义同序）。
 const nodeColumns = `id, namespace_id, name, tags, status, token_hash,
-	max_instances, max_concurrency, last_seen_at, created_at`
+	max_instances, max_concurrency, last_seen_at, created_at, agent_version, agent_commit,
+	agent_upgrade`
 
 // prefixedNodeColumns 给 nodeColumns 的每一列加表别名前缀，供 join 查询使用。
 //
@@ -247,7 +288,8 @@ const nodeColumns = `id, namespace_id, name, tags, status, token_hash,
 // 不限定表名的 `namespace_id` 会让 SQLite 报 ambiguous column name。
 func prefixedNodeColumns(alias string) string {
 	cols := []string{"id", "namespace_id", "name", "tags", "status", "token_hash",
-		"max_instances", "max_concurrency", "last_seen_at", "created_at"}
+		"max_instances", "max_concurrency", "last_seen_at", "created_at",
+		"agent_version", "agent_commit", "agent_upgrade"}
 	parts := make([]string, len(cols))
 	for i, c := range cols {
 		parts[i] = alias + "." + c
@@ -258,9 +300,10 @@ func prefixedNodeColumns(alias string) string {
 // scanNodeRow 从 rows 解析一行。
 func scanNodeRow(rows *sql.Rows) (*Node, error) {
 	var n Node
-	var tags string
+	var tags, agentUpgrade string
 	if err := rows.Scan(&n.ID, &n.NamespaceID, &n.Name, &tags, &n.Status, &n.TokenHash,
-		&n.MaxInstances, &n.MaxConcurrency, &n.LastSeenAt, &n.CreatedAt); err != nil {
+		&n.MaxInstances, &n.MaxConcurrency, &n.LastSeenAt, &n.CreatedAt,
+		&n.AgentVersion, &n.AgentCommit, &agentUpgrade); err != nil {
 		return nil, fmt.Errorf("scan node: %w", err)
 	}
 	if err := json.Unmarshal([]byte(tags), &n.Tags); err != nil {
@@ -268,6 +311,12 @@ func scanNodeRow(rows *sql.Rows) (*Node, error) {
 	}
 	if n.Tags == nil {
 		n.Tags = []string{} // 不变量 I9
+	}
+	// 空串 = 迁移前就存在的行（列默认 '{}'，但防御旧行）→ 零值 = 从未尝试。
+	if agentUpgrade != "" && agentUpgrade != "{}" {
+		if err := json.Unmarshal([]byte(agentUpgrade), &n.AgentUpgrade); err != nil {
+			return nil, fmt.Errorf("decode node agent upgrade: %w", err)
+		}
 	}
 	return &n, nil
 }
@@ -381,9 +430,138 @@ func (d *DB) UpdateNodeStatus(ctx context.Context, namespaceID, nodeID, status s
 	if err != nil {
 		return fmt.Errorf("update node status: %w", err)
 	}
+	return nodeRowsAffected(res, "update node status")
+}
+
+// UpdateNodeAgentVersion 记录节点自报的 agent 版本（hello.agent_version，契约 §3）。
+//
+// 只写 version，**不碰** agent_commit：hello 帧里没有 commit，而 commit 是
+// upgrade_ack 的产物（见 RecordAgentUpgrade）。老 agent 不带这个字段时写入空串
+// ——「现在这台机器上的版本未知」是事实，保留一个上一版的旧值才是撒谎。
+//
+// 行不存在返回 ErrNotFound（与 UpdateNodeStatus 同口径）：作用域写错时必须响，
+// 不能静默影响 0 行然后让人以为写成功了。
+func (d *DB) UpdateNodeAgentVersion(ctx context.Context, namespaceID, nodeID, version string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE nodes SET agent_version = ? WHERE namespace_id = ? AND id = ?`,
+		version, namespaceID, nodeID)
+	if err != nil {
+		return fmt.Errorf("update node agent version: %w", err)
+	}
+	return nodeRowsAffected(res, "update node agent version")
+}
+
+// MarkAgentUpgradeSent 记录一次已下发的升级尝试（agent_upgrade.status=sent）。
+//
+// 只写 agent_upgrade，不碰版本列 —— 帧刚推出去，节点还没换二进制；
+// 版本列要等 upgrade_ack 才是事实（提前改成目标版本就是谎报成功）。
+func (d *DB) MarkAgentUpgradeSent(ctx context.Context, namespaceID, nodeID, targetVersion string, at int64) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	up := AgentUpgrade{Status: AgentUpgradeSent, TargetVersion: targetVersion, At: at}
+	raw, err := json.Marshal(up)
+	if err != nil {
+		return fmt.Errorf("encode agent upgrade: %w", err)
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE nodes SET agent_upgrade = ? WHERE namespace_id = ? AND id = ?`,
+		string(raw), namespaceID, nodeID)
+	if err != nil {
+		return fmt.Errorf("mark agent upgrade sent: %w", err)
+	}
+	return nodeRowsAffected(res, "mark agent upgrade sent")
+}
+
+// RecordAgentUpgrade 记录一次**成功**的 agent 升级（upgrade_ack ok=true）。
+//
+// 一个 UPDATE 同时写三样：agent_version / agent_commit / agent_upgrade(status=ok)。
+// 与 UpdateNodeAgentVersion 分开的原因：ack 是「升级完成」的权威事实，版本与状态
+// 必须一起变——只更新其中一个会出现「列出 agentVersion=新版本、agentUpgrade 还是 sent」
+// 这种自相矛盾的视图。
+//
+// 升级后版本变了，旧 commit 就一定过期了——所以不做「空 commit 保留旧值」的兜底：
+// ack 没带 commit 就写空串（未知），留着上一版的 commit 才是错误关联。
+func (d *DB) RecordAgentUpgrade(ctx context.Context, namespaceID, nodeID, version, commit string, at int64) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	// ok 时「节点跑着的版本」就是这次尝试的目标版本（ack 只在替换成功后发）。
+	up := AgentUpgrade{Status: AgentUpgradeOK, TargetVersion: version, At: at}
+	raw, err := json.Marshal(up)
+	if err != nil {
+		return fmt.Errorf("encode agent upgrade: %w", err)
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE nodes SET agent_version = ?, agent_commit = ?, agent_upgrade = ?
+		 WHERE namespace_id = ? AND id = ?`,
+		version, commit, string(raw), namespaceID, nodeID)
+	if err != nil {
+		return fmt.Errorf("record node agent upgrade: %w", err)
+	}
+	return nodeRowsAffected(res, "record node agent upgrade")
+}
+
+// FailAgentUpgrade 记录一次**失败**的 agent 升级（upgrade_ack ok=false）。
+//
+// 只改 agent_upgrade：status=failed + 错误短码 + 时刻。**版本列保持旧值** ——
+// 节点上的二进制没换，把它写成目标版本会让控制台谎报升级成功。
+//
+// targetVersion 沿用上一次 sent 写进去的值（ack 里没有它）：先读后写放在同一个
+// 事务里，避免与控制台的另一次下发交错时把目标版本写丢。
+func (d *DB) FailAgentUpgrade(ctx context.Context, namespaceID, nodeID, errCode string, at int64) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("fail agent upgrade begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var raw string
+	err = tx.QueryRowContext(ctx,
+		`SELECT agent_upgrade FROM nodes WHERE namespace_id = ? AND id = ?`,
+		namespaceID, nodeID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("fail agent upgrade read: %w", err)
+	}
+	var up AgentUpgrade
+	if raw != "" && raw != "{}" {
+		// 解不出来就当从未尝试：失败状态本身比「保留一个坏 JSON」更重要。
+		_ = json.Unmarshal([]byte(raw), &up)
+	}
+	up.Status = AgentUpgradeFailed
+	up.Error = errCode
+	up.At = at
+	out, err := json.Marshal(up)
+	if err != nil {
+		return fmt.Errorf("encode agent upgrade: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE nodes SET agent_upgrade = ? WHERE namespace_id = ? AND id = ?`,
+		string(out), namespaceID, nodeID); err != nil {
+		return fmt.Errorf("fail agent upgrade write: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("fail agent upgrade commit: %w", err)
+	}
+	return nil
+}
+
+// nodeRowsAffected 把「更新了 0 行」翻译成 ErrNotFound（节点行的几个 UPDATE 共用）。
+//
+// 0 行只可能是「作用域/ id 不对」：静默成功会让一次写错命名空间的调用看起来生效了。
+func nodeRowsAffected(res sql.Result, op string) error {
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("update node status rows: %w", err)
+		return fmt.Errorf("%s rows: %w", op, err)
 	}
 	if n == 0 {
 		return ErrNotFound

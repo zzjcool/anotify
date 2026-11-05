@@ -28,6 +28,10 @@ import (
 type consoleHandler struct {
 	db   *store.DB
 	auth *auth.Service
+	// targetAgentVersion 是中枢当前带的 agent 二进制版本（CONTRACT-agent-upgrade §5.1）：
+	// GET /v1/nodes 顶层下发它，控制台据此显示「该升到哪一版」与「已是最新」。
+	// 空串 = 服务端没带二进制（UI 不显示升级按钮）。由 mux 从 agentBinary 注入。
+	targetAgentVersion string
 }
 
 // sessionUser 从会话中间件注入的 context 里取用户 ID。
@@ -2288,6 +2292,10 @@ func (h *consoleHandler) nodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nodes":       views,
 		"namespaceId": namespaceLabel(ns),
+		// 控制台在**点之前**就要知道目标版本（CONTRACT-agent-upgrade §5.1）：
+		// 没有它，「同版本 → 按钮显示已是最新」要额外再问一次服务端；空串 = 服务端
+		// 没带二进制（UI 不显示升级按钮，或显示「服务端未提供」）。
+		"targetAgentVersion": h.targetAgentVersion,
 	})
 }
 

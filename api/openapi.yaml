@@ -2068,7 +2068,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [nodes, namespaceId]
+                required: [nodes, namespaceId, targetAgentVersion]
                 properties:
                   nodes:
                     type: array
@@ -2076,6 +2076,13 @@ paths:
                   namespaceId:
                     type: string
                     description: 本次作用域（`*` 表示跨命名空间汇总）
+                  targetAgentVersion:
+                    type: string
+                    description: |
+                      中枢当前自带的 agent 二进制版本（= `POST /nodes/{id}/upgrade` 的目标版本，
+                      CONTRACT-agent-upgrade §5.1）。控制台据此在**点之前**显示「已是最新 / 可升级」。
+                      **空串 = 服务端没带 agent 二进制**（此时不显示升级按钮，或显示「服务端未提供」）。
+                    example: 1.5.0+3fd5a59
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
     post:
@@ -2264,11 +2271,128 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /nodes/{id}/upgrade:
+    post:
+      tags: [nodes]
+      summary: 让节点把自己的 agent 升级到中枢当前版本（控制台下发）
+      description: |
+        向该节点的活跃连接推一帧 `upgrade`（`target_version` / `sha256` / `url_path`），
+        节点用自己的 node token 去 `url_path` 下载、校验 sha256、原子替换二进制后重启。
+
+        **帧里不带二进制**：agent 是 15 MB 量级，塞进一条 WS 帧会阻塞同一条连接上的
+        心跳与 assign（节点读超时 = 掉线）。下载走普通 HTTP（`GET /node/binary`）。
+
+        ### 判定顺序（CONTRACT-agent-upgrade §5）
+        | 情况 | 响应 |
+        |---|---|
+        | 节点没有活跃连接 | `409 {"error":"node_offline"}` |
+        | 服务端没带 agent 二进制 | `501 {"error":"agent_binary_unavailable"}` |
+        | `agentVersion == targetVersion` 且没 `force` | `200 {"status":"up_to_date","targetVersion":"…"}` |
+        | 其它 | 推帧，`200 {"status":"sent","targetVersion":"…"}` |
+
+        `force` 可用 `?force=1|true|yes` 或 JSON body `{"force":true}` 表达：
+        同版本也照样下发（用于二进制被手改、或节点自报版本不可信的场景）。
+
+        ### ack 与控制台结果
+        节点回报 `upgrade_ack` 后：成功 → 用 ack 的 `version` 更新 `agentVersion`；
+        失败 → `agentUpgrade.status = failed` + 可判别错误码（`need_root` / `bad_sha` /
+        `download_failed` / `not_supported`）。两者都体现在 `GET /nodes` 的
+        `agentUpgrade` 对象里（刷新页面仍可见，CONTRACT-agent-upgrade §5.1）。
+
+        `namespaceId` **必填**（query 或 body），不接受 `*`（写端点）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
+        - name: force
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: 同版本也下发（也可用 body `{"force":true}`）
+      requestBody:
+        required: false
+        description: 可选；空 body 表示 `force=false`、`namespaceId` 只从 query 取。
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                namespaceId: { type: string }
+                force: { type: boolean }
+      responses:
+        "200":
+          description: 已下发，或已是最新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, targetVersion]
+                properties:
+                  status: { type: string, enum: [sent, up_to_date] }
+                  targetVersion:
+                    type: string
+                    description: 本次的目标版本（= 中枢自带的 agent 版本）
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: '节点没有活跃连接（`{"error":"node_offline"}`）'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501":
+          description: '服务端没带 agent 二进制（`{"error":"agent_binary_unavailable"}`）'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # ========== 事件中心：节点协议 ==========
+  /node/binary:
+    get:
+      tags: [node-stream]
+      summary: 下载中枢自带的 agent 二进制（节点令牌鉴权）
+      description: |
+        升级源（CONTRACT-agent-upgrade §2）。调用方是节点上的 agent / CLI（`anotify-agent
+        upgrade`），用**自己的 node token** 鉴权（`Authorization: Bearer ant_node_...`）——
+        不是控制台会话 Cookie：下载方手里没有浏览器会话。
+
+        响应头是两个升级承诺：
+        - `X-Agent-Version`：中枢版本（= 升级目标版本）；
+        - `X-Agent-Sha256`：body 的 sha256（64 位十六进制）。**校验不符必须拒绝替换**
+          （`bad_sha`），这是「中枢二进制被改动/传输截断」的唯一证据。
+
+        服务端没带二进制（`ANOTIFY_AGENT_BIN` 指向的文件不存在）→ `501`：
+        明确说「这里没有升级源」，调用方据此退出（CLI 退出码 2），而不是当成网络错误重试。
+
+        排空中的节点（`status=draining`）**仍然可以**下载：升级是维护动作，不是接新任务。
+      security:
+        - nodeToken: []
+      responses:
+        "200":
+          description: agent 二进制原文
+          headers:
+            X-Agent-Version:
+              schema: { type: string }
+              description: 中枢版本（= 目标版本）
+            X-Agent-Sha256:
+              schema: { type: string }
+              description: body 的 sha256（64 位十六进制，无前缀）
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501":
+          description: '服务端没带 agent 二进制（`{"error":"agent_binary_unavailable"}`）'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /node/stream:
     get:
       tags: [node-stream]
-      summary: 节点 WebSocket 长连接（九帧协议）
+      summary: 节点 WebSocket 长连接（十三帧协议）
       description: |
         **必须**在 Upgrade 之前用 `Authorization: Bearer <node token>` 完成鉴权：
         鉴权失败返回 401/403，**绝不返回 101**。
@@ -2284,6 +2408,7 @@ paths:
         | `ack` | 接单：`assigned → acked` |
         | `progress` | 开始执行：`acked → running` |
         | `result` | 结果：`running → succeeded/failed` |
+        | `upgrade_ack` | agent 升级回报：`{ok, version, commit, error}`（见 `/nodes/{id}/upgrade`） |
 
         ### 下行（中枢 → 节点）
         | type | 说明 |
@@ -2292,6 +2417,11 @@ paths:
         | `assign` | 派活：能力名 + 版本 + params + 租约（**不含命令/脚本/argv**） |
         | `cancel` | 停止任务 |
         | `error` | 协议错误（不关连接，除 hello 失败） |
+        | `upgrade` | 去升级：`{target_version, sha256, url_path}`，二进制走 HTTP 下载（见 `/node/binary`） |
+
+        `hello` 还带一个可选的 `agent_version`（string）：节点上跑的 agent 版本，
+        中枢落库并回显为 `GET /nodes` 的 `agentVersion`。老 agent 不带 = 空串（未知），
+        **不是错误**（CONTRACT-agent-upgrade §3）。
 
         ### result 不再路由：出口只来自 `emit`
 
@@ -3508,6 +3638,7 @@ components:
     # 可复用的命名空间作用域参数（契约 §6.2 / docs/design/namespaces.md §6.2）。
     #
     # 只挂在**命名空间资源**上：/capabilities、/nodes、/nodes/{id}、/nodes/{id}/drain、
+    # /nodes/{id}/upgrade、
     # /edges、/sources、/sources/{id}、/sources/{id}/fire、/sources/{id}/dry-run、
     # /sources/dry-run、/events、/tasks、/tasks/{id}、/tasks/{id}/cancel、/traces/{id}、
     # /console/events、/stats。
@@ -4569,6 +4700,43 @@ components:
         status: { type: string, enum: [online, offline, draining] }
         maxInstances: { type: integer }
         maxConcurrency: { type: integer }
+        agentVersion:
+          type: string
+          description: |
+            节点上跑的 agent 版本（`hello.agent_version` 自报；升级成功后由
+            `upgrade_ack.version` 覆盖，CONTRACT-agent-upgrade §3/§5）。
+            **空串 = 未知（老 agent 不带这个字段）**，控制台显示「未知（老版本）」。
+          example: 1.5.0+3fd5a59
+        agentCommit:
+          type: string
+          description: |
+            最近一次**成功**升级带来的 git short sha（`upgrade_ack.commit`）。
+            空串 = 未知 / 还没升级过（hello 帧没有这个字段，只有 ack 能写它）。
+          example: 3fd5a59
+        agentUpgrade:
+          type: object
+          description: |
+            最近一次升级尝试的结果（CONTRACT-agent-upgrade §5.1）。**恒存在**：
+            `{"status":"","targetVersion":"","error":"","at":0}` = 从未尝试。
+            落库为 `nodes.agent_upgrade`（JSON），控制台刷新/重启后仍能看到上次结果
+            ——没有它，`need_root` 的失败提示（「去节点跑 sudo」）就永远只是一个死代码。
+          required: [status, targetVersion, error, at]
+          properties:
+            status:
+              type: string
+              enum: ["", sent, ok, failed]
+              description: '`""` 从未尝试 / `sent` 已下发等 ack / `ok` ack 成功 / `failed` ack 失败'
+            targetVersion:
+              type: string
+              description: 这次尝试的目标版本（`sent` 时写入；`ok` 时等于新版本）
+            error:
+              type: string
+              enum: ["", need_root, bad_sha, download_failed, not_supported]
+              description: 失败短码（与 `upgrade_ack.error` 同一套；空 = 无错误）
+            at:
+              type: integer
+              format: int64
+              description: sent / ok / failed 的时刻（unix 秒）；0 = 从未尝试
         lastSeenAt: { type: integer, format: int64, nullable: true }
         createdAt: { type: integer, format: int64 }
 

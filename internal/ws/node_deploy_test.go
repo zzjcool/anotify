@@ -4,6 +4,7 @@ package ws
 //
 // 契约见 .pi-orchestrator/console-declares/CONTRACT-protocol.md：
 //   §2 帧清单把总帧数从 9 扩到 11（+ deploy / + apply）；
+//   自升级（CONTRACT-agent-upgrade §5）再 + upgrade / upgrade_ack → 13；
 //   §4 deploy 携带 canonical JSON 产物（action=apply|remove）；
 //   §5 apply 回报部署结果（state=applied|failed + reason 短码）；
 //   §6 assign 增加 digest / trace_id 两个可选旁路字段。
@@ -129,7 +130,7 @@ func TestDeployFrameRoundTrip(t *testing.T) {
 	}
 }
 
-// TestFrameDirectionTable 方向表必须与帧清单一一对应（11 帧，每帧恰好一个方向）。
+// TestFrameDirectionTable 方向表必须与帧清单一一对应（13 帧，每帧恰好一个方向）。
 //
 // 方向表是「节点没有发下行帧」这条断言的判据（nodeSession 用它决定是否回
 // unknown_type）。漏一帧的后果是：该帧被当成方向错误 → 合法的上行帧被拒。
@@ -137,13 +138,14 @@ func TestFrameDirectionTable(t *testing.T) {
 	upstream := []string{
 		NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck,
 		NodeFrameProgress, NodeFrameResult, NodeFrameApply,
+		NodeFrameUpgradeAck,
 	}
 	downstream := []string{
 		NodeFrameWelcome, NodeFrameAssign, NodeFrameDeploy,
-		NodeFrameCancel, NodeFrameError,
+		NodeFrameCancel, NodeFrameError, NodeFrameUpgrade,
 	}
-	if got := len(upstream) + len(downstream); got != 11 {
-		t.Fatalf("帧清单 = %d 帧, want 11（契约 §2）", got)
+	if got := len(upstream) + len(downstream); got != 13 {
+		t.Fatalf("帧清单 = %d 帧, want 13（契约 §2 + CONTRACT-agent-upgrade §5）", got)
 	}
 	for _, f := range upstream {
 		if !IsUpstream(f) {
@@ -167,6 +169,13 @@ func TestFrameDirectionTable(t *testing.T) {
 	}
 	if !IsDownstream(NodeFrameDeploy) {
 		t.Error("deploy 必须是下行帧（中枢 → 节点）")
+	}
+	// 自升级的两帧各就各位（CONTRACT-agent-upgrade §5）
+	if !IsUpstream(NodeFrameUpgradeAck) {
+		t.Error("upgrade_ack 必须是上行帧（节点 → 中枢）")
+	}
+	if !IsDownstream(NodeFrameUpgrade) {
+		t.Error("upgrade 必须是下行帧（中枢 → 节点）")
 	}
 	if IsUpstream("apply ") || IsDownstream("deploy ") {
 		t.Error("方向表对带空格的名字也返回 true（帧名比较写错了）")

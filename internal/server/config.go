@@ -24,6 +24,10 @@ const (
 	// defaultPendingMaxAgeSec 是派发背压的默认阈值（#228）：最老 pending 任务的等待秒数。
 	defaultPendingMaxAgeSec = 120
 
+	// defaultAgentBinPath 是中枢自带的 agent 二进制默认路径（CONTRACT-agent-upgrade §2）。
+	// 容器镜像把它放在 /app/agent；文件不存在 = 自升级功能**未启用**（不是错误）。
+	defaultAgentBinPath = "/app/agent"
+
 	// maxEventRetentionDays / maxPendingMaxAgeSec 是**防溢出上限**（不是产品策略）。
 	//
 	// 超上限时**钳到上限**（而不是回落默认）——两条路径（env 解析 / 直接写 Config）语义必须一致：
@@ -108,6 +112,13 @@ type Config struct {
 	// 代价只是吞吐。
 	SessionCacheTTL time.Duration
 	APIKeyCacheTTL  time.Duration
+
+	// AgentBin 是中枢自带的 agent 二进制路径（CONTRACT-agent-upgrade §2）。
+	//
+	// 它是**升级源**：节点用 GET /v1/node/binary 下载它，控制台据此下发升级。
+	// 空 → 用 defaultAgentBinPath；文件不存在 → 功能未启用（启动只 WARN，不是错误：
+	// 绝大多数开发/裸机部署本来就不带 agent 二进制）。
+	AgentBin string
 
 	// EventRetentionDays 是 events 的保留天数（#229）。0 = **永久保留**（不清理）。
 	//
@@ -389,6 +400,9 @@ func FromEnv() Config {
 		// 鉴权热路径缓存（#241 / #227）：0=用默认、负数=关缓存。
 		SessionCacheTTL: cacheTTLFromEnv("ANOTIFY_SESSION_CACHE_TTL", 0),
 		APIKeyCacheTTL:  cacheTTLFromEnv("ANOTIFY_APIKEY_CACHE_TTL", 0),
+
+		// 自带 agent 二进制（CONTRACT-agent-upgrade §2）：未配置时用容器内默认路径。
+		AgentBin: get("ANOTIFY_AGENT_BIN", defaultAgentBinPath),
 
 		// events 保留期（#229，默认 30 天，0 = 永久保留）与派发背压阈值
 		// （#228，默认 120 秒，0 = 不启用）。

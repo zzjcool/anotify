@@ -11,6 +11,18 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
+// NodeAuthenticator 是「节点令牌 → 节点行」需要的最小 store 表面。
+//
+// 单独抽出来给 **HTTP 端点**复用：GET /v1/node/binary 只需要鉴权，不需要整个
+// NodeStore（任务/租约/部署全套）。*store.DB 与 NodeStore 都满足它。
+type NodeAuthenticator interface {
+	GetNodeByTokenHash(ctx context.Context, tokenHash string) (*store.Node, error)
+	// AuthorizeNamespaceForNode 是节点侧的安全收口（#207）：令牌已经把命名空间钉死，
+	// 这里只判它仍然存在。**不要**在 ws 包内自己写存在性判断——
+	// 将来加 namespace_members 时，收口位置不变（见 store.AuthorizeNamespaceForNode）。
+	AuthorizeNamespaceForNode(ctx context.Context, namespaceID string) error
+}
+
 // NodeStore 是节点协议需要的最小 store 表面（便于测试注入）。
 //
 // *store.DB 满足它。
@@ -23,12 +35,15 @@ import (
 // 例外：MarkInstancesDead / ListInstances 以 node_id 定位（node_id 全局唯一），
 // 不需要作用域参数。
 type NodeStore interface {
-	GetNodeByTokenHash(ctx context.Context, tokenHash string) (*store.Node, error)
-	// AuthorizeNamespaceForNode 是节点侧的安全收口（#207）：令牌已经把命名空间钉死，
-	// 这里只判它仍然存在。**不要**在 ws 包内自己写存在性判断——
-	// 将来加 namespace_members 时，收口位置不变（见 store.AuthorizeNamespaceForNode）。
-	AuthorizeNamespaceForNode(ctx context.Context, namespaceID string) error
+	// NodeAuthenticator 是节点令牌鉴权的最小表面（握手与 HTTP 下载端点共用）。
+	NodeAuthenticator
 	UpdateNodeStatus(ctx context.Context, namespaceID, nodeID, status string) error
+	// UpdateNodeAgentVersion 落 hello.agent_version（契约 §3）；只写版本列。
+	UpdateNodeAgentVersion(ctx context.Context, namespaceID, nodeID, version string) error
+	// RecordAgentUpgrade 落 upgrade_ack 成功（version + commit + agent_upgrade=ok）。
+	RecordAgentUpgrade(ctx context.Context, namespaceID, nodeID, version, commit string, at int64) error
+	// FailAgentUpgrade 落 upgrade_ack 失败（只改 agent_upgrade，版本列保持旧值）。
+	FailAgentUpgrade(ctx context.Context, namespaceID, nodeID, errCode string, at int64) error
 	TouchNode(ctx context.Context, namespaceID, nodeID string, at int64) error
 	ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string, caps []store.CapabilityRef) ([]string, error)
 	// ReconciledApplied 用 hello.applied[] 重建 node_capabilities（v2 / 契约 D4）。
@@ -123,7 +138,22 @@ var (
 // 令牌指向的命名空间已不存在 → ErrNamespaceGone → 403。
 // 关键：鉴权失败时**绝不能**返回 101（升级成功后才发现没权限，
 // 会让客户端以为连上了）。
-func AuthenticateNode(ctx context.Context, st NodeStore, r *http.Request) (*store.Node, error) {
+func AuthenticateNode(ctx context.Context, st NodeAuthenticator, r *http.Request) (*store.Node, error) {
+	node, err := lookupNodeByToken(ctx, st, r)
+	if err != nil {
+		return nil, err
+	}
+	if node.Status == store.NodeStatusDraining {
+		return nil, ErrNodeDraining
+	}
+	return node, nil
+}
+
+// lookupNodeByToken 是令牌 → 节点行的**唯一**实现（不含连接层语义）。
+//
+// AuthenticateNode 与 AuthenticateNodeHTTP 都在它上面加各自的策略：
+// 前者多了「draining 不许接入新连接」，后者没有（见下）。
+func lookupNodeByToken(ctx context.Context, st NodeAuthenticator, r *http.Request) (*store.Node, error) {
 	token := BearerToken(r)
 	if token == "" {
 		return nil, ErrMissingToken
@@ -135,9 +165,6 @@ func AuthenticateNode(ctx context.Context, st NodeStore, r *http.Request) (*stor
 	if err != nil {
 		return nil, fmt.Errorf("lookup node by token: %w", err)
 	}
-	if node.Status == store.NodeStatusDraining {
-		return nil, ErrNodeDraining
-	}
 	// 安全收口：命名空间仍存在吗（#207）。错误一律 fail closed。
 	if err := st.AuthorizeNamespaceForNode(ctx, node.NamespaceID); err != nil {
 		if errors.Is(err, store.ErrNamespaceNotFound) {
@@ -146,6 +173,15 @@ func AuthenticateNode(ctx context.Context, st NodeStore, r *http.Request) (*stor
 		return nil, fmt.Errorf("authorize node namespace: %w", err)
 	}
 	return node, nil
+}
+
+// AuthenticateNodeHTTP 是**非连接型** HTTP 端点（GET /v1/node/binary）的节点令牌鉴权。
+//
+// 与 AuthenticateNode 的差别只有一条：不把 draining 当拒绝。排空只意味着
+// 「不再接新任务」；下载自己的升级包是维护动作，排空中的机器更需要它。
+// 令牌 + 命名空间收口完全共用 lookupNodeByToken，安全语义不会分叉。
+func AuthenticateNodeHTTP(ctx context.Context, st NodeAuthenticator, r *http.Request) (*store.Node, error) {
+	return lookupNodeByToken(ctx, st, r)
 }
 
 // BearerToken 从 Authorization 头取 Bearer token（大小写不敏感的前缀）。

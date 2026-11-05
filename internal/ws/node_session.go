@@ -38,10 +38,10 @@ func (s *nodeSession) handleTaskFrame(ctx context.Context, frame any) error {
 	}
 }
 
-// handleConfigFrame 处理与任务无关的配置帧（当前只有 apply）。
+// handleConfigFrame 处理与任务无关的配置帧（apply / upgrade_ack）。
 //
-// 为什么与任务帧分开：apply 不属于任何任务、不需要租约、也不推进九态机。
-// 把它塞进 handleTaskFrame 会让「任务帧都要先 hello」这条纪律变得含糊。
+// 为什么与任务帧分开：它们不属于任何任务、不需要租约、也不推进九态机。
+// 把配置帧塞进 handleTaskFrame 会让「任务帧都要先 hello」这条纪律变得含糊。
 //
 // 这条分支曾经缺失（端到端 e2e 抓到的 P0）：节点回的 apply 被当成未知帧，
 // 中枢回 error{unknown_type} 并把结果丢弃 —— 于是**部署失败永远停在 pending**，
@@ -50,10 +50,61 @@ func (s *nodeSession) handleConfigFrame(ctx context.Context, frame any) error {
 	switch f := frame.(type) {
 	case *ApplyFrame:
 		return s.handleApply(ctx, f)
+	case *UpgradeAckFrame:
+		return s.handleUpgradeAck(ctx, f)
 	default:
 		s.sendError(ctx, ErrCodeUnknownType, fmt.Sprintf("unexpected frame %T", frame))
 		return nil
 	}
+}
+
+// handleUpgradeAck 落一次 agent 升级的结果（CONTRACT-agent-upgrade §5 / §5.1）。
+//
+// 成功：用 ack 里的 version + commit 更新 nodes，并把 agent_upgrade 置成 ok
+// （**唯一**写 agent_commit 的路径）。
+// 失败：把 agent_upgrade 置成 failed + 错误短码，**版本列保持旧值**——节点上的
+// 二进制没换，把它改成「目标版本」会让控制台谎报升级成功。
+//
+// 两种情况都写一条日志（成功 INFO / 失败 WARN 带 node_id 与短码）：
+// ack 是「控制台下发」这条链唯一的闭环证据，日志是排障时的第二份事实。
+//
+// ack 本身不是协议错误：节点按约定回报，中枢无论如何都保持连接。
+func (s *nodeSession) handleUpgradeAck(ctx context.Context, f *UpgradeAckFrame) error {
+	if !f.OK {
+		code := NormalizeUpgradeError(f.Error)
+		if err := s.h.Store.FailAgentUpgrade(ctx, s.node.NamespaceID, s.node.ID, code, s.h.now()); err != nil {
+			// 落库失败也要让日志留下这次失败（WARN 已经说明了节点侧的原因）。
+			slog.Warn("record agent upgrade failure failed",
+				"event", "node.ws.upgrade.record_failed",
+				"node_id", s.node.ID,
+				"error", err.Error(),
+			)
+		}
+		slog.Warn("agent upgrade failed on node",
+			"event", "node.ws.upgrade.failed",
+			"node_id", s.node.ID,
+			"namespace_id", s.node.NamespaceID,
+			"error", f.Error,
+		)
+		return nil
+	}
+	if f.Version == "" {
+		// 成功却不报版本 = 节点实现 bug。回 bad_frame 而不是写一列空串：
+		// 空串会被控制台读成「未知（老版本）」，与「刚升级成功」矛盾。
+		s.sendError(ctx, ErrCodeBadFrame, "upgrade_ack with ok=true requires version")
+		return nil
+	}
+	if err := s.h.Store.RecordAgentUpgrade(ctx, s.node.NamespaceID, s.node.ID, f.Version, f.Commit, s.h.now()); err != nil {
+		return fmt.Errorf("record agent upgrade: %w", err)
+	}
+	slog.Info("agent upgraded",
+		"event", "node.ws.upgrade.ok",
+		"node_id", s.node.ID,
+		"namespace_id", s.node.NamespaceID,
+		"version", f.Version,
+		"commit", f.Commit,
+	)
+	return nil
 }
 
 // handleApply 落一条部署结果（契约 CONTRACT-protocol §7）。
