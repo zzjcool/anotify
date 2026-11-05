@@ -637,6 +637,10 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		TraceID:     f.TraceID,
 		MaxDuration: f.MaxDuration,
 		WorkRoot:    a.cache.workRoot(),
+		// 端口与下游契约都从 assign 帧原样带过来（**不重算**）：端口白名单与
+		// ANOTIFY_EMIT_PORTS 必须同源，见 emitPortsOf。
+		Ports:   emitPortsOf(f, art),
+		Expects: f.Expects,
 		// 注意：cwd 不从中枢拿（帧里的 work_dir 已作废）。唯一来源是产物里的
 		// spec.run.workDir（见 runner.resolveChdir）；空 = 本次任务目录。
 	}
@@ -745,6 +749,26 @@ func (a *nodeAgent) untrackTask(taskID string, handle *taskCancel) {
 	a.taskMu.Unlock()
 }
 
+// emitPortsOf 是本次任务的产出端口集合（**唯一**来源）。
+//
+// 它同时喂给两个地方：emit socket 的白名单（startEmitServer）与交给能力进程的
+// ANOTIFY_EMIT_PORTS（buildEnv，经 job.Ports）。两处各算一次的症状就是「进程
+// 看到的端口」与「emit 时被允许的端口」在某次改动后悄悄分叉：脚本照着契约 emit，
+// 却被自己的节点以 exit 4 打回来。
+//
+// 优先级不变：assign 的 ports（中枢算的快照）优先；没下发时（旧中枢 / 空快照）
+// 退到产物自己声明的 spec.outputs。它同样是**封闭集合**（I2 的源头），所以这不是
+// 放宽，只是换了个同源的事实。
+func emitPortsOf(f *assignFrame, art *artifact.Artifact) []string {
+	if f != nil && len(f.Ports) > 0 {
+		return f.Ports
+	}
+	if art == nil {
+		return nil
+	}
+	return art.Spec.Outputs
+}
+
 // startEmitServer 为这次任务起本地 emit socket（emit-protocol.md §1）。
 //
 // ctx 是**任务自己的** ctx：它取消（cancel 帧 / 收尾超时）就等于「任务已非运行态」，
@@ -754,11 +778,9 @@ func (a *nodeAgent) untrackTask(taskID string, handle *taskCancel) {
 // 因为一个本地 IPC 就把它判失败，代价比「脚本里 emit 得 exit 6」大得多。所以这里
 // 只记一条 warn，任务照跑（脚本真 emit 了会自己拿到 exit 6 和一句可读的话）。
 func (a *nodeAgent) startEmitServer(ctx context.Context, f *assignFrame, art *artifact.Artifact) *emitServer {
-	ports := f.Ports
-	if len(ports) == 0 && art != nil {
+	ports := emitPortsOf(f, art)
+	if len(f.Ports) == 0 && art != nil {
 		// 中枢没下发 ports（旧中枢 / 空快照）：退到产物自己声明的 spec.outputs。
-		// 它同样是**封闭集合**（I2 的源头），所以这不是放宽，只是换了个同源的事实。
-		ports = art.Spec.Outputs
 		a.log.Debug("assign 没有 ports，退到产物的 spec.outputs",
 			"event", "agent.emit.ports.fallback",
 			"task_id", f.TaskID, "ports", ports)

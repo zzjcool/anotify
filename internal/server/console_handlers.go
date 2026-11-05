@@ -1516,6 +1516,244 @@ func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ---------- POST /v1/capabilities/batch（契约 §4）----------
+
+// capabilityBatchRequest 是 POST /v1/capabilities/batch 的请求体。
+//
+// `Capabilities` 的元素类型**就是**单建的请求体（`capabilityListRequest`）：
+// 不另造一份 decode 结构。单建以后加字段（例如 balance），批量会自动跟着有——
+// 造第二份结构的代价就是「同一个字段在一个端点生效、在另一个端点静默丢弃」。
+//
+// 三个字段随元素一起被解码（因为元素形状与单建一致），但**语义在批级**：
+//
+//	元素里的 namespaceId 与批级冲突 → 400（不静默采用其中一个）
+//	元素里的 links       → 400（边只能走批级 links；静默丢弃等于用户以为建了）
+//	元素里的 force       → 与批级 force 取或（闸门是整批的，任一处声明都算数）
+type capabilityBatchRequest struct {
+	NamespaceID  string                  `json:"namespaceId"`
+	Capabilities []capabilityListRequest `json:"capabilities"`
+	// Links 是一条表单里声明的全部下游边：两端都是**引用**，可以指向本批新建的名字
+	// （能力行先插，边后解析）。`priority` 见 store.BatchLinkSpec 的 SEAM 说明。
+	Links []store.BatchLinkSpec `json:"links,omitempty"`
+	// Force 越过**整批**的升级闸门（与单建同语义）。
+	Force bool `json:"force,omitempty"`
+}
+
+// createCapabilitiesBatch 在一个事务里建多个能力 + 产物 + 边（契约 §4）。
+//
+// 为什么需要它：一个表单里常常要同时定义 a 和 b 再把 a→b 接起来。逐条调用单建时，
+// 中间任何一步失败都会留下半成品（能力表 append-only，撤不回来），而「a 指向 b」这种
+// 互相依赖的写法在逐条路径上甚至无法表达（先建的指向后建的）。
+//
+// 与单建的分工是**分层**而不是分叉：校验 / 闸门 / 幂等折叠全部复用同一套
+// （store.createCapabilityTx / checkUpgradeOn / createEdgeTx），这里只负责：
+//
+//	① 逐元素 decode 并把「单建的请求体」翻成 CapabilityVersion（同一套默认值与版本规则）
+//	② 元素里的批级字段收口（namespaceId 冲突 / 内嵌 links / force 取或）
+//	③ 把「怎么构建产物」包成回调（归一化之后才算得对 digest，见 ArtifactBuilder）
+//	④ 把 store 的拒绝翻成 4xx（带下标，能直接定位是第几条）
+func (h *consoleHandler) createCapabilitiesBatch(w http.ResponseWriter, r *http.Request) {
+	// 批量的 body 里是 N 份能力定义（单建的上限是 1 MiB/次），所以上限按「批」放宽。
+	var req capabilityBatchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	if len(req.Capabilities) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "capabilities is required（批量创建至少要有一个能力）"})
+		return
+	}
+	// 写端点：`*` → 400（一批能力定义只能属于一个命名空间）
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
+	if !ok {
+		return
+	}
+
+	force := req.Force
+	caps := make([]*store.CapabilityVersion, 0, len(req.Capabilities))
+	// builders 与 caps **按下标对齐**（store 侧会校验长度）：错位会把 A 的产物挂到 B 上。
+	builders := make([]store.ArtifactBuilder, len(req.Capabilities))
+	for i, item := range req.Capabilities {
+		if strings.TrimSpace(item.Name) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("capabilities[%d]: name is required", i),
+			})
+			return
+		}
+		if itemNS := strings.TrimSpace(item.NamespaceID); itemNS != "" && itemNS != ns.ID {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("capabilities[%d]: namespaceId %q 与批级 %q 不一致（一批只能属于一个命名空间）", i, itemNS, ns.ID),
+			})
+			return
+		}
+		if len(item.Links) > 0 {
+			// 不静默忽略：用户写在元素上的边不会有人替他建，而这种“看起来配好了”的
+			// 半成功比一个 400 贵得多。
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("capabilities[%d]: links 必须放在批级 links（元素里的边无法引用本批新建的名字）", i),
+			})
+			return
+		}
+		force = force || item.Force
+
+		version := item.Version
+		if version <= 0 {
+			// 不指定版本时自动开下一个版本（append-only，不变量 I8）——与单建同一口径。
+			next, err := h.db.NextCapabilityVersion(r.Context(), ns.ID, item.Name)
+			if err != nil {
+				if handleNamespaceError(w, err) {
+					return
+				}
+				slog.Error("next capability version failed",
+					"event", "console.caps.batch_next_failed",
+					"namespace_id", ns.ID, "name", item.Name, "error", err.Error())
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+				return
+			}
+			version = next
+		}
+
+		schema := item.ParamsSchema
+		if len(schema) == 0 {
+			schema = json.RawMessage(`{"type":"object"}`)
+		}
+		source := item.Source
+		if source == "" {
+			source = store.CapSourceCustom
+		}
+		c := &store.CapabilityVersion{
+			NamespaceID:  ns.ID,
+			Name:         item.Name,
+			DisplayName:  strings.TrimSpace(item.DisplayName),
+			Version:      version,
+			ParamsSchema: schema,
+			Outputs:      item.Outputs,
+			Sticky:       item.Sticky,
+			Source:       source,
+		}
+		if item.Lifecycle != nil {
+			c.Lifecycle = *item.Lifecycle
+		}
+
+		// 产物必须在**建能力之前**先校验一遍（与单建同一个理由）：一份 run 写错的
+		// 请求不该留下一个永远跑不起来的定义。这里只校验、不落库。
+		if item.Run != nil {
+			if _, err := buildArtifact(c, item.Run, item.Requires); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": fmt.Sprintf("capabilities[%d]: %v", i, err),
+					"code":  "invalid_artifact",
+				})
+				return
+			}
+			// 落库用**归一后**的能力行重建：content-hash 幂等会把「同内容不同版本」
+			// 折叠到已有行，用请求里的版本建产物会写出一份元数据与能力定义不一致的产物。
+			run, requires := item.Run, item.Requires
+			builders[i] = func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
+				built, berr := buildArtifact(authoritative, run, requires)
+				if berr != nil {
+					return nil, berr
+				}
+				row, _, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, built)
+				if berr != nil {
+					return nil, berr
+				}
+				return row, nil
+			}
+		}
+		caps = append(caps, c)
+	}
+
+	res, err := h.db.CreateCapabilitiesBatch(r.Context(), caps, req.Links, builders, force)
+	if err != nil {
+		h.writeBatchError(w, ns, caps, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		// 能力行用**归一后**的那些（幂等折叠时 version/id 来自已有行），与单建的
+		// `capability` 同形状。空列表不可能是 []（至少一个），但 edges 可以是 []。
+		"capabilities": res.Capabilities,
+		// edges 与单建的 `links` 同形状（带两端引用此刻解析到的能力 id）。
+		"edges": h.edgeViews(r.Context(), res.Edges),
+		// 影响面以**事务内**算出的为准（与写入同一个快照）；合并口径见 CapabilityBatchWrite.
+		"upgradeImpact": res.Impact,
+	})
+}
+
+// writeBatchError 把批量创建的 store 错误翻成 HTTP 响应。
+//
+// 分类与单建路径**逐条对齐**（同一类错误在两个端点上不能有不同的状态码），
+// 唯一新增的是批量自己的两个哨兵：批内重名 / 空批（都是调用方可修的 400）。
+func (h *consoleHandler) writeBatchError(w http.ResponseWriter, ns nsScope, caps []*store.CapabilityVersion, err error) {
+	// 批内重名 / 空批：请求本身错了 → 400（文案里带下标，前端能直接高亮第几行）。
+	if errors.Is(err, store.ErrBatchDuplicateName) {
+		slog.Warn("create capabilities batch rejected: duplicate name",
+			"event", "console.caps.batch_rejected", "namespace_id", ns.ID, "error", err.Error())
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+			"code":  "duplicate_name",
+		})
+		return
+	}
+	if errors.Is(err, store.ErrBatchEmpty) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	// 跨命名空间引用（I11）：客户端可修 → 400。
+	// 不走 handleNamespaceError：那条路会写 CrossNamespaceError 自己的文案，
+	// 而这里真正有用的是「第几条」（在外层 wrapper 的 Error() 里）。
+	var cross *store.CrossNamespaceError
+	if errors.As(err, &cross) {
+		slog.Warn("create capabilities batch rejected: cross-namespace link",
+			"event", "console.caps.batch_rejected", "namespace_id", ns.ID, "error", err.Error())
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "edge_rejected"})
+		return
+	}
+	if handleNamespaceError(w, err) {
+		return
+	}
+	// 闸门（整批合并后的影响面）：store 里还会再判一次，并发下预计算可能已过期。
+	var breaking *store.UpgradeBreakingError
+	if errors.As(err, &breaking) {
+		slog.Warn("create capabilities batch rejected by upgrade gate",
+			"event", "console.caps.batch_upgrade_rejected", "namespace_id", ns.ID)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         breaking.Error(),
+			"code":          "upgrade_breaking",
+			"upgradeImpact": breaking.Impact,
+		})
+		return
+	}
+	// 边不合法（目标不存在 / port 不在 outputs / literals 键不存在）：客户端可修 → 400，
+	// 错误文案带 `links[i]` 下标。
+	if errors.Is(err, store.ErrEdgeRejected) {
+		slog.Warn("create capabilities batch rejected: invalid link",
+			"event", "console.caps.batch_rejected", "namespace_id", ns.ID, "error", err.Error())
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "edge_rejected"})
+		return
+	}
+	// 事务内的产物构建失败（run 写错）：整体已回滚，能力一行都没留下。
+	var buildErr *store.ArtifactBuildError
+	if errors.As(err, &buildErr) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": buildErr.Error(),
+			"code":  "invalid_artifact",
+		})
+		return
+	}
+	// 其余（同 name@version 换内容 / 同内容已有 / 保留名）：与单建一样按冲突处理。
+	names := make([]string, 0, len(caps))
+	for _, c := range caps {
+		names = append(names, c.Name)
+	}
+	slog.Warn("create capabilities batch rejected",
+		"event", "console.caps.batch_create_rejected",
+		"namespace_id", ns.ID, "names", names, "error", err.Error())
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"error": err.Error(),
+		"code":  "capability_conflict",
+	})
+}
+
 // ---------- GET/POST/DELETE /v1/edges ----------
 
 // edgeRequest 是 POST/DELETE /v1/edges 的请求体。

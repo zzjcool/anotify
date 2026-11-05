@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/ws"
 )
 
 // 本文件是 agent 的**执行层**：把中枢派来的任务（capability + version + params +
@@ -88,6 +89,12 @@ type job struct {
 	// TimeoutOverride 是秒级的超时覆盖（只有 standalone 的 --timeout 会用）。
 	// 人站在终端前跑一次时，「我想先给它 30 秒试试」应该压过产物里写死的 900。
 	TimeoutOverride int
+
+	// Ports 是本次任务的产出端口（封闭集合）。来源与 emit socket 白名单**同一处**：
+	// assign 的 ports，缺省退到产物的 spec.outputs。
+	Ports []string
+	// Expects 是这些端口的下游契约（assign 帧的推导量，原样带过来，**不重算**）。
+	Expects map[string]ws.PortExpect
 
 	// Emit 是本次任务的本地 emit socket 服务（emit-protocol.md §1）。
 	//
@@ -492,9 +499,12 @@ var executablePath = os.Executable
 // buildEnv 组织子进程环境：父环境（剔除 ANOTIFY_* 残留）+ 产物的 run.env +
 // 契约变量（优先级最高），最后**按变量名排序**返回，便于测试直接比对。
 //
-// 几乎是纯函数：不读 os.Environ（base 由调用方给），不依赖时间/随机；
-// 唯一的外部输入是 agentBin（调用方用 os.Executable 取到后传进来——
-// 这样单测能钉住具体值，不必去猜测试二进制的路径）。
+// 它**不再是「几乎是纯函数」**：按契约 §5，本函数还要把出口契约写成
+// $ANOTIFY_TASKDIR/emit.json（0600）——那是它**唯一**的副作用，而且必须在返回
+// 环境变量之前完成（写不进去就让这次执行失败：脚本看到「有变量、没文件」和
+// 「有文件、没变量」一样是坏状态，只是坏得更隐蔽）。除 workDir 之外它仍然不读
+// 外部状态：base 由调用方给，不依赖时间/随机；agentBin 也由调用方取好传进来
+// （这样单测能钉住具体值，不必去猜测试二进制的路径）。
 func buildEnv(base []string, j job, workDir, cwd, agentBin string) ([]string, error) {
 	env := make(map[string]string, len(base)+8)
 
@@ -573,6 +583,28 @@ func buildEnv(base []string, j job, workDir, cwd, agentBin string) ([]string, er
 		env[envTaskToken] = j.Emit.Token()
 	}
 
+	// 出口契约（契约 §5）：**同一份字节**既进环境变量，也落盘到 emit.json。
+	//
+	// 为什么两处都要：环境变量是脚本/模型最容易读到的地方（一行就够），但长度
+	// 有上限、还会被整棵进程树继承；文件让长得多的契约不必截断。两者必须逐字节
+	// 相同——各算一次就会出现「emit 时按 A 校验、模型看到的是 B」这种最难查的分叉。
+	// 没有端口时是 []（不是空串、不是 null）：变量与文件都**始终存在**。
+	emitJSON, err := emitContractJSON(j)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(workDir) == "" {
+		// 没有任务目录就等于没有「契约文件该落在哪」：宁可让任务失败，也不能
+		// 拿空路径拼出一个相对路径写进 agent 自己的 cwd。
+		return nil, fmt.Errorf("写出口契约 %s: 任务目录为空", emitContractFile)
+	}
+	env[envEmitPorts] = string(emitJSON)
+	emitPath := filepath.Join(workDir, emitContractFile)
+	if err := writeFileSync(emitPath, emitJSON, 0o600); err != nil {
+		// **不得静默跳过**：报错要带路径，运维才知道去哪儿看（见契约 §5）。
+		return nil, fmt.Errorf("写出口契约 %s: %w", emitPath, err)
+	}
+
 	// 每个顶层参数一份 ANOTIFY_PARAM_<NAME>。按 key 排序后再生成：归一化之后
 	// 可能撞名（my-param / my_param → MY_PARAM），排序保证同一份 params 每次
 	// 得到同一个结果（字典序靠后者的值赢）。
@@ -606,6 +638,86 @@ func buildEnv(base []string, j job, workDir, cwd, agentBin string) ([]string, er
 // POSIX 环境变量名本身大小写敏感，这里只认全大写的契约前缀）。
 func hasAnotifyPrefix(name string) bool {
 	return strings.HasPrefix(name, "ANOTIFY_")
+}
+
+// emitPortContract 是 ANOTIFY_EMIT_PORTS / emit.json 里的一项（契约 §5 的逐字形状）：
+//
+//	[{"port":"fix","schema":{…},"targets":[{"capability":"b","version":2}]}]
+//
+// Schema 用 json.RawMessage 且**不加 omitempty**：没有下游时它必须是显式 null——
+// 「这个端口没有约束」与「忘了下发」是两件事，缺键会把前者说成后者。
+// Targets 同理：没有候选时是 []，不是 null。
+type emitPortContract struct {
+	Port    string               `json:"port"`
+	Schema  json.RawMessage      `json:"schema"`
+	Targets []emitTargetContract `json:"targets"`
+}
+
+// emitTargetContract 是一个候选下游。Version **总是输出**（不加 omitempty）：
+// 结构稳定比省几个字节重要，消费方可以无条件读它。
+//
+// SEAM(A): targets[].priority 由 A 组的 edges.priority 竖切落地（store.Edge.Priority →
+// route.ExpectTarget.Priority → ws.ExpectTarget.Priority）。合并后在这里补 priority 字段，
+// 并把 targets 的排序改成 (priority, capability) 升序。
+type emitTargetContract struct {
+	Capability string `json:"capability"`
+	Version    int    `json:"version"`
+}
+
+// emitContractJSON 把本次任务的出口契约序列化成**唯一**那份 JSON（契约 §5）。
+//
+// 输入只有 j.Ports 与 j.Expects，两者都是 assign 帧原样带过来的；这里**不第二次
+// 推导**下游（推导归中枢：节点再算一遍就会与中枢的判据悄悄分叉，而且两边都看不出
+// 自己错在哪）。由此得到三条确定的事：
+//
+//   - 顶层按 port 名升序（顺序确定，日志/测试可以直接逐字节比）；
+//   - j.Expects 里不在 j.Ports 的端口**不输出**（端口是封闭集合，I2）；
+//   - targets 按 (capability, version) 升序（同 SEAM(A) 的排序口径，确定性优先）。
+func emitContractJSON(j job) ([]byte, error) {
+	ports := normalizeEmitPorts(j.Ports)
+	contracts := make([]emitPortContract, 0, len(ports))
+	for _, port := range ports {
+		expect := j.Expects[port]
+		// 非 nil 的空切片：json.Marshal 才会输出 []（nil 切片会变成 null）。
+		targets := make([]emitTargetContract, 0, len(expect.Targets))
+		for _, tgt := range expect.Targets {
+			targets = append(targets, emitTargetContract{Capability: tgt.Capability, Version: tgt.Version})
+		}
+		sort.SliceStable(targets, func(i, k int) bool {
+			if targets[i].Capability != targets[k].Capability {
+				return targets[i].Capability < targets[k].Capability
+			}
+			return targets[i].Version < targets[k].Version
+		})
+		contracts = append(contracts, emitPortContract{Port: port, Schema: expect.Schema, Targets: targets})
+	}
+	b, err := json.Marshal(contracts)
+	if err != nil {
+		return nil, fmt.Errorf("marshal emit ports: %w", err)
+	}
+	return b, nil
+}
+
+// normalizeEmitPorts 把端口白名单归一成「去空白、去重、按名字升序」的确定集合。
+//
+// 专门服务序列化：assign 里的 ports 可能带空白/重复（对端给的字符串），而输出
+// 顺序必须与输入顺序无关（否则同一份快照在不同进程里生成两份不同的 JSON）。
+func normalizeEmitPorts(ports []string) []string {
+	seen := make(map[string]struct{}, len(ports))
+	out := make([]string, 0, len(ports))
+	for _, port := range ports {
+		name := strings.TrimSpace(port)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // paramEnvValue 把参数值渲染成环境变量里的文本（契约 §3.3 的表格）：
@@ -740,6 +852,14 @@ func killProcessGroup(pid int) error {
 const (
 	// envAgentBin 是交给能力脚本的 agent 二进制路径（脚本用它调 `emit` 子命令）。
 	envAgentBin = "ANOTIFY_AGENT_BIN"
+
+	// envEmitPorts 是「出口契约」环境变量（契约 §5）：紧凑 JSON，始终存在。
+	// 内容不是路径——**就是** JSON 文本本身；对应的文件是 emitContractFile。
+	envEmitPorts = "ANOTIFY_EMIT_PORTS"
+
+	// emitContractFile 是同一份 JSON 落在 $ANOTIFY_TASKDIR 里的文件名（契约 §5）。
+	// 权限 0600：它含下游的 schema，只有这个任务的进程需要看。
+	emitContractFile = "emit.json"
 )
 
 // resolveChdir 决定这次执行的 cwd。**唯一的来源是能力定义里的 run.workDir**。
