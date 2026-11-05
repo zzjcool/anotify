@@ -126,6 +126,16 @@
       .target-opt:hover {
         background: var(--surface-3);
       }
+      /* 出口选项的两段式标识：显示名（主）+ 唯一标识（次，等宽）。
+         为什么必须两个都显示：出口写进源里的就是**能力名**，而用户眼里是显示名；
+         显示名允许重名，只给显示名就分不出勾的是哪一个。 */
+      .target-name {
+        font-size: 13px;
+      }
+      .target-capname {
+        font-size: 11px;
+        color: var(--muted);
+      }
       /* 勾选后展开的参数字段：缩进 + 左侧细线，视觉上从属于该能力 */
       .target-params {
         margin: 4px 0 8px 24px;
@@ -1358,8 +1368,13 @@
           cb.value = c.id;
           cb.checked = checked;
           label.appendChild(cb);
-          const span = el("span", "", Anotify.capLabel(c));
-          label.appendChild(span);
+          // 显示名 + **唯一标识**两个都要（用户原话「既显示名字，也显示能力的唯一标志」）：
+          // 只给显示名的话，显示名重名 / 同名不同版的两个能力在列表里长得一模一样，
+          // 而日志、边、节点声明里用的都是能力名（script.echo）—— 选错了很难回头发现。
+          const dn = (c.displayName || "").trim();
+          if (dn) label.appendChild(el("span", "target-name", dn));
+          // 没有显示名时回落 capLabel（带 @版本）：此时它就是人能看到的唯一标识。
+          label.appendChild(el("span", "target-capname mono", dn ? c.name : Anotify.capLabel(c)));
           // 标出这个能力是什么角色，避免误选终端能力当入口
           if (c.kind) {
             label.appendChild(el("span", "src-meta", "· " + c.kind));

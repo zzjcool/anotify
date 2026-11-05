@@ -1209,6 +1209,10 @@ caps:
     downstream_ph: script.echo, notify.phone
     downstream_hint: 実行後に誰へ渡すか。複数 = 候補で、実行時に優先度で 1 つ選ばれます。空 = 終端ケイパビリティ（実行したら終わり）。
     downstream_missing: '次のケイパビリティが見つかりません：{names}'
+    downstream_cands_hint: クリックで追加：
+    downstream_cands_empty: 選択できる下流ケイパビリティがまだありません（ケイパビリティを定義するか、上の別カードに名前を付けてください）。
+    cand_add: 下流に追加
+    cand_picked: 選択済み
     cards_title: このバッチのケイパビリティ
     cards_hint: 複数のケイパビリティを一度に定義できます。各カードは独自の下流・パラメータ・スクリプトを持ち、送信時に 1 つのトランザクションで書き込みます（全部成功するか、何も作成されません）。
     card_add: ＋ ケイパビリティを追加

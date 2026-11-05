@@ -1209,6 +1209,10 @@ caps:
     downstream_ph: script.echo, notify.phone
     downstream_hint: 跑完之后交给谁。多个 = 候选，运行期按优先级选一个；留空 = 终端能力（跑完就结束）。
     downstream_missing: '找不到这些能力：{names}'
+    downstream_cands_hint: 点一下加入：
+    downstream_cands_empty: 还没有可选的目标能力（先定义能力，或在上面给另一张卡起个名字）。
+    cand_add: 加入下游
+    cand_picked: 已选
     cards_title: 本批能力
     cards_hint: 一次可以定义多个能力：每张卡有自己的下游、参数与脚本；提交时一次写库，要么全成，要么全不成。
     card_add: ＋ 再加一个能力

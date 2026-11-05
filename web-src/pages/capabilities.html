@@ -478,6 +478,67 @@
         min-width: 8rem;
       }
 
+      /* ---------- 下游候选胶囊（点一下加入）----------
+         为什么要有它：datalist 只在输入框里打字时才浮出来，用户看不见“有哪些可选”；
+         而且显示名允许重名（同名不同版也真实存在），只给显示名就分不出是哪一个。
+         所以胶囊上**显示名 + 等宽唯一标识**都要有，已选的用主色标出来。
+         纯页内布局（flex 换行），不做绝对定位下拉 —— 弹层 .modal-body 会裁掉它。 */
+      .cap-cand-list {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        margin-top: 0.45rem;
+      }
+      .cap-cand-caption {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .cap-cand-pill {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.3rem;
+        padding: 0.12rem 0.5rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-full);
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 11px;
+        font-family: inherit;
+        line-height: 1.5;
+        cursor: pointer;
+      }
+      .cap-cand-pill:hover {
+        border-color: var(--line-strong);
+        background: var(--surface-3);
+      }
+      .cap-cand-pill:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+      /* 显示名：主信息，比唯一标识重一阶 */
+      .cap-cand-dn {
+        font-weight: 500;
+      }
+      /* 唯一标识：等宽、次要色 —— 它是能对日志/能搜索的身份，不该抢显示名的位置 */
+      .cap-cand-id {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .cap-cand-tag {
+        font-size: 10px;
+        color: var(--faint);
+      }
+      /* 已选：主色描边 + 浅底（用户要能一眼看出“这几个已经选了”） */
+      .cap-cand-pill.is-picked {
+        border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+        background: var(--accent-soft);
+      }
+      .cap-cand-pill.is-picked .cap-cand-id {
+        color: var(--accent);
+      }
+
       /* ---------- 新建表单：本批能力卡片 ----------
          一个表单可以建多个能力（契约 §4：单事务，要么全成、要么全不成）。
          卡片是本批要定义的那几个能力的目录：点一张卡，下面的出口 / 候选 /
@@ -990,14 +1051,22 @@
             <h4 class="card-title">{{t "caps.form.downstream"}}</h4>
             <span class="tpl-hint">{{t "caps.form.downstream_optional"}}</span>
           </div>
+          <!-- list 指向页面级那份 datalist（与详情区「+ 下游」共用）：原生下拉
+               自带搜索，零 JS。它只在输入框里打字时才浮出来，所以下面还有一排
+               **常驻**的候选胶囊 —— 让人一眼看到“有哪些可选”，也分得出显示名重名的两个能力。 -->
           <input
             id="cap-downstream"
             class="input"
             type="text"
             autocomplete="off"
             spellcheck="false"
+            list="cap-down-targets"
             placeholder="{{t "caps.form.downstream_ph"}}"
           />
+          <!-- 候选胶囊（JS 渲染）：与 datalist 同一份候选（既有能力 + 本批卡）。
+               点击 = 把裸名字追加进输入框，再派发 input 事件 —— 输入框的 .value
+               始终是唯一真相，点选与手打走的是同一条入口。 -->
+          <div id="cap-down-cands" class="cap-cand-list"></div>
           <p id="cap-downstream-hint" class="field-hint">{{t "caps.form.downstream_hint"}}</p>
         </div>
         <!-- 新版本模式下如果**已有**跟随最新的下游，选择器整栏隐藏：
@@ -1933,6 +2002,86 @@
           o.label = (b.displayName || b.name) + tag;
           dl.appendChild(o);
         }
+        // 胶囊与 datalist 必须是**同一份**候选，所以刷新的入口只留在这里：
+        // 两处各刷一次，迟早出现「下拉里有、胶囊里没有」的漂移。
+        renderDownstreamCands();
+      }
+
+      // renderDownstreamCands 画那排**可点**的候选胶囊（既有能力 + 本批卡）。
+      //
+      // 为什么不只靠 datalist：原生下拉只在输入框里打字时才浮出来，用户看不见
+      // “有哪些可选”，也分不出显示名重名的两个能力（显示名允许重名，同名不同版
+      // 也真实存在）。所以胶囊上同时给**显示名 + 等宽唯一标识**，点一下就能加。
+      //
+      // 顺序与 datalist 完全一致（targetList 已按名字去重取最新）；本批卡追加在后面，
+      // 和已落库的能力同名时以已落库的那条为准（名字才是边的引用身份）。
+      function renderDownstreamCands() {
+        const box = document.getElementById("cap-down-cands");
+        if (!box) return;
+        const input = document.getElementById("cap-downstream");
+        const picked = new Set(parseDownstream(input ? input.value : ""));
+        const cands = [];
+        const seen = new Set();
+        for (const c of targetList()) {
+          const name = String(c.name || "").trim();
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          cands.push({ name: name, displayName: String(c.displayName || "").trim(), batch: false });
+        }
+        for (const b of batchTargets()) {
+          const name = String(b.name || "").trim();
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          cands.push({ name: name, displayName: b.displayName, batch: true });
+        }
+        box.replaceChildren();
+        if (!cands.length) {
+          box.appendChild(
+            el(
+              "span",
+              "cap-cand-caption",
+              t("caps.form.downstream_cands_empty", "还没有可选的目标能力。"),
+            ),
+          );
+          return;
+        }
+        box.appendChild(
+          el("span", "cap-cand-caption", t("caps.form.downstream_cands_hint", "点一下加入：")),
+        );
+        for (const it of cands) {
+          const on = picked.has(it.name);
+          const pill = el("button", "cap-cand-pill" + (on ? " is-picked" : ""));
+          pill.type = "button";
+          pill.setAttribute("data-cand-name", it.name);
+          // 显示名是给人读的，唯一标识是能拿去搜 / 对日志的身份 —— 两个都要。
+          if (it.displayName) pill.appendChild(el("span", "cap-cand-dn", it.displayName));
+          pill.appendChild(el("span", "cap-cand-id", it.name));
+          if (it.batch) {
+            pill.appendChild(el("span", "cap-cand-tag", t("caps.form.cand_batch_tag", "（本批）")));
+          }
+          pill.title = on
+            ? t("caps.form.cand_picked", "已选")
+            : t("caps.form.cand_add", "加入下游");
+          pill.addEventListener("click", () => pickDownstream(it.name));
+          box.appendChild(pill);
+        }
+      }
+
+      // pickDownstream 把一个候选名字追加进输入框（已选过的跳过，不重复）。
+      //
+      // 关键：**只**改 input.value 再派发 input 事件 —— 与用户手打完全同一条路径。
+      // 候选状态不搬到 JS 数组里（搬了以后 .value 就不再是真相，提交/切卡/回显
+      // 各自维护一份，迟早对不上）。
+      function pickDownstream(name) {
+        const input = document.getElementById("cap-downstream");
+        if (!input || !name) return;
+        const names = parseDownstream(input.value);
+        if (names.indexOf(name) < 0) {
+          names.push(name);
+          input.value = names.join(", ");
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        input.focus();
       }
 
       // ==================== 边的小工具 ====================
@@ -4487,6 +4636,8 @@
         const c = CARDS[ACTIVE_CARD];
         if (c) c.downstream = DOWN_TEXT;
         renderDownstreamHint();
+        // 已选标记跟着原文走：手打、删掉、点胶囊三条路都在这里汇合。
+        renderDownstreamCands();
         renderCards();
       });
 
