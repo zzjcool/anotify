@@ -385,8 +385,12 @@ async function main() {
 		// 第二次独立产出（契约 §3）：一次 emit 只派**一个**候选，所以要看全两个目标
 		// 就得 emit 两次 —— 同级轮盘各落一个。这也是「两次 emit = 两个独立任务」的
 		// 真进程证据。
+		//
+		// 这一次**不写 --port**（CONTRACT-hide-ports.md §2）：本能力只有一个出口，
+		// agent 从 ANOTIFY_EMIT_PORTS 自动取。它跑通了才说明「脚本作者不需要知道
+		// 端口叫什么」这件事在真进程里成立，而不只是单测里成立。
 		`rc2=0`,
-		`${JSON.stringify(AGENT_BIN)} emit --port emit.fix --data '{"issue":"#43","title":"竞态"}' --wait-routed --note '第 2 项' >> "$PROBE" 2>&1 || rc2=$?`,
+		`${JSON.stringify(AGENT_BIN)} emit --data '{"issue":"#43","title":"竞态"}' --wait-routed --note '第 2 项' >> "$PROBE" 2>&1 || rc2=$?`,
 		'printf \'exit2=%s\\n\' "$rc2" >> "$PROBE"',
 		// 脚本自己总是成功退：这节的断言看探针里的 exit=，而不是把任务先弄成 failed
 		"exit 0",
@@ -495,6 +499,12 @@ async function main() {
 		`token_len=${probeField("token_len")}`,
 	);
 	H.eq("脚本里 `anotify-agent emit` 的退出码 = 0", probeField("exit"), "0");
+	H.eq("省略 --port 的第二次 emit 也退 0（出口名由 agent 自动取）", probeField("exit2"), "0");
+	H.check(
+		"省略 --port 时自动选中的就是唯一那个出口（命令行回显 port=emit.fix）",
+		/emit ok: port=emit\.fix/.test(probeText),
+		probeText,
+	);
 	H.check(
 		"CLI 报 acked=routed（中枢确认已派发，不是只落了本地 outbox）",
 		/acked=routed/.test(probeText),

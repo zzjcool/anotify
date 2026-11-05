@@ -28,6 +28,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -74,7 +76,8 @@ func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 	fs := flag.NewFlagSet("agent emit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	port := fs.String("port", "", "出口名（必须是本能力 ports[] 之一）")
+	port := fs.String("port", "",
+		"出口名；本能力只有一个出口时**可以省略**（自动取它）")
 	data := fs.String("data", "", `产出的 JSON 对象；@- 表示从 stdin 读（缺省 = {}）`)
 	note := fs.String("note", "", "人类可读备注（不参与路由）")
 	waitRouted := fs.Bool("wait-routed", false,
@@ -110,9 +113,9 @@ func runEmit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 		return exitEmitBadRequest, err
 	}
 
-	port := strings.TrimSpace(opts.port)
-	if port == "" {
-		return exitEmitBadRequest, errors.New("--port 不能为空（emit 的路由输入只有出口名）")
+	port, err := resolveEmitPort(strings.TrimSpace(opts.port), getenv)
+	if err != nil {
+		return exitEmitBadRequest, err
 	}
 	// data 的**形状**（是 JSON 对象、不超体积）在本地先判：exit 2 是「别重试，去修参数」，
 	// 白跑一次 socket 往返对这个判断没有任何帮助。
@@ -252,4 +255,73 @@ func emitExitCode(resp emitResponse) int {
 		return exitOK
 	}
 	return exitEmitAckTimeout
+}
+
+// resolveEmitPort 决定这次 emit 走哪个出口。
+//
+// 为什么允许省略 --port（CONTRACT-hide-ports.md §2）：端口是**路由键**，不是用户
+// 要表达的概念——创建能力时用户只在界面上填「下游能力（候选）」，系统内部把唯一
+// 出口固定叫 out。逼脚本作者去抄这个名字，等于把实现细节漏给最终用户。
+//
+// 规则刻意是"只有唯一出口才自动"：
+//
+//	1 个出口   → 用它（99% 的能力）
+//	0 个出口   → 报错：这是终端能力，emit 出去也没有下游（I5：0 次 emit = 到此为止）
+//	≥2 个出口  → 报错并**列出可用端口**，绝不猜（猜错 = 产出走错边，而且没有任何报错）
+func resolveEmitPort(explicit string, getenv func(string) string) (string, error) {
+	ports, err := emitPortNames(getenv)
+	if err != nil {
+		// 契约读不出来时，显式给了 --port 就放行：路由的对错最终由中枢裁决
+		// （port 不在 ports[] → 中枢拒收 + 退出码 3），没有理由在本地先拦住。
+		if explicit != "" {
+			return explicit, nil
+		}
+		return "", err
+	}
+	if explicit != "" {
+		return explicit, nil
+	}
+	switch len(ports) {
+	case 1:
+		return ports[0], nil
+	case 0:
+		return "", errors.New(
+			"本能力没有出口（终端能力）：emit 出去也不会触发任何下游。" +
+				"要在跑完之后交给人/下一个能力，先去能力定义里填「下游能力」")
+	default:
+		return "", fmt.Errorf("本能力有 %d 个出口，必须用 --port 指定：%s",
+			len(ports), strings.Join(ports, ", "))
+	}
+}
+
+// emitPortNames 从出口契约里取出端口名（升序）。
+//
+// 来源与 agent 侧完全一致（envEmitPorts 环境变量，缺省读 $ANOTIFY_TASKDIR/emit.json）：
+// 两处各读一套会让「脚本看到的出口」与「agent 接受的出口」悄悄分叉。
+func emitPortNames(getenv func(string) string) ([]string, error) {
+	raw := strings.TrimSpace(getenv(envEmitPorts))
+	if raw == "" {
+		if dir := strings.TrimSpace(getenv(envTaskDir)); dir == "" {
+			return nil, fmt.Errorf("读不到出口契约（%s 与 %s 都没设置）", envEmitPorts, envTaskDir)
+		}
+		body, err := os.ReadFile(filepath.Join(getenv(envTaskDir), emitContractFile))
+		if err != nil {
+			return nil, fmt.Errorf("读出口契约 %s/%s: %w", getenv(envTaskDir), emitContractFile, err)
+		}
+		raw = string(body)
+	}
+	var items []struct {
+		Port string `json:"port"`
+	}
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, fmt.Errorf("出口契约不是合法 JSON: %w", err)
+	}
+	ports := make([]string, 0, len(items))
+	for _, it := range items {
+		if p := strings.TrimSpace(it.Port); p != "" {
+			ports = append(ports, p)
+		}
+	}
+	sort.Strings(ports)
+	return ports, nil
 }

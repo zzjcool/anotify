@@ -74,7 +74,9 @@ func TestRunEmitBadArguments(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"port 为空", []string{"--data", `{}`}, "--port 不能为空"},
+		// 省略 --port 时按出口契约自动判定（CONTRACT-hide-ports.md §2）：
+		// 契约读不到、又没有显式 --port → 仍然是「参数/形状错」，不是通信错。
+		{"没有 --port 且读不到出口契约", []string{"--data", `{}`}, "读不到出口契约"},
 		{"data 不是 JSON 对象", []string{"--port", "fix", "--data", `[1,2]`}, "必须是 JSON 对象"},
 		{"data 是坏 JSON", []string{"--port", "fix", "--data", `{`}, "不是合法 JSON"},
 		{"data 超体积", []string{"--port", "fix", "--data", fmt.Sprintf(`{"b":%q}`,
@@ -510,4 +512,74 @@ spec:
 	if !strings.Contains(stderr.String(), "本地模式无中枢，emit 不可用") {
 		t.Fatalf("stderr 应当明确说「本地模式无中枢，emit 不可用」，实际 %q", stderr.String())
 	}
+}
+
+// TestResolveEmitPort 是「端口从界面消失」的核心规则（CONTRACT-hide-ports.md §2）。
+//
+// 为什么值得单测：--port 省略后的行为如果猜错，症状是「产出悄悄走错边」或者
+// 「明明有下游却什么都不触发」，两种都没有报错、只有事后查库才能发现。
+func TestResolveEmitPort(t *testing.T) {
+	contract := func(ports ...string) func(string) string {
+		items := make([]string, 0, len(ports))
+		for _, p := range ports {
+			items = append(items, `{"port":"`+p+`","schema":null,"targets":[]}`)
+		}
+		body := "[" + strings.Join(items, ",") + "]"
+		return func(name string) string {
+			if name == envEmitPorts {
+				return body
+			}
+			return ""
+		}
+	}
+
+	t.Run("唯一出口：自动采用", func(t *testing.T) {
+		got, err := resolveEmitPort("", contract("out"))
+		if err != nil || got != "out" {
+			t.Fatalf("resolveEmitPort = (%q, %v), want (out, nil)", got, err)
+		}
+	})
+
+	t.Run("没有出口：明确说这是终端能力", func(t *testing.T) {
+		_, err := resolveEmitPort("", contract())
+		if err == nil || !strings.Contains(err.Error(), "终端能力") {
+			t.Fatalf("err = %v, want 提到终端能力", err)
+		}
+	})
+
+	t.Run("多个出口：列出可用名字，绝不猜", func(t *testing.T) {
+		_, err := resolveEmitPort("", contract("fix", "notify"))
+		if err == nil {
+			t.Fatal("多个出口却自动选了，want 报错")
+		}
+		for _, want := range []string{"fix", "notify", "--port"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("err = %v, want 含 %q", err, want)
+			}
+		}
+	})
+
+	t.Run("显式 --port 优先（即使契约读不到）", func(t *testing.T) {
+		got, err := resolveEmitPort("done", func(string) string { return "" })
+		if err != nil || got != "done" {
+			t.Fatalf("resolveEmitPort = (%q, %v), want (done, nil)", got, err)
+		}
+	})
+
+	t.Run("环境变量缺失时读 $ANOTIFY_TASKDIR/emit.json", func(t *testing.T) {
+		dir := t.TempDir()
+		body := `[{"port":"out","schema":null,"targets":[{"capability":"script.echo","version":1,"priority":0}]}]`
+		if err := os.WriteFile(filepath.Join(dir, emitContractFile), []byte(body), 0o600); err != nil {
+			t.Fatalf("write emit.json: %v", err)
+		}
+		got, err := resolveEmitPort("", func(name string) string {
+			if name == envTaskDir {
+				return dir
+			}
+			return ""
+		})
+		if err != nil || got != "out" {
+			t.Fatalf("resolveEmitPort = (%q, %v), want (out, nil)", got, err)
+		}
+	})
 }

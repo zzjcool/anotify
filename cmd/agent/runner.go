@@ -554,7 +554,7 @@ func buildEnv(base []string, j job, workDir, cwd, agentBin string) ([]string, er
 	// 能力声明了 run.workDir 之后这条不变式必须继续成立，否则那些脚本会跑回任务目录。
 	// 产物文件所在的任务目录另给一个 ANOTIFY_TASKDIR（只增不改）。
 	env["ANOTIFY_WORKDIR"] = cwd
-	env["ANOTIFY_TASKDIR"] = workDir
+	env[envTaskDir] = workDir
 	env["ANOTIFY_TRACE_ID"] = j.TraceID
 	env["ANOTIFY_DIGEST"] = j.Digest
 	// 出口回报文件（ANOTIFY_OUT_FILE）**不再注入**：out 已退役，产出只走 emit。
@@ -865,6 +865,9 @@ const (
 	// envEmitPorts 是「出口契约」环境变量（契约 §5）：紧凑 JSON，始终存在。
 	// 内容不是路径——**就是** JSON 文本本身；对应的文件是 emitContractFile。
 	envEmitPorts = "ANOTIFY_EMIT_PORTS"
+
+	// envTaskDir 是本次任务的工作目录（产物展开在这里，也放 emit.json）。
+	envTaskDir = "ANOTIFY_TASKDIR"
 
 	// emitContractFile 是同一份 JSON 落在 $ANOTIFY_TASKDIR 里的文件名（契约 §5）。
 	// 权限 0600：它含下游的 schema，只有这个任务的进程需要看。
