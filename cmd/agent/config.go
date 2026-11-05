@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/zzjcool/anotify/internal/version"
 	"github.com/zzjcool/anotify/internal/ws"
 	"gopkg.in/yaml.v3"
 )
@@ -214,6 +215,11 @@ func (c *nodeConfig) streamURL() (string, error) {
 //
 // 参数由调用方从 cache 取（`c.cache.applied()`），而不是在这里构造 cache：
 // 这样 config 层保持纯函数、可离线单测（配置解析与缓存落盘是两件事）。
+//
+// AgentVersion 是**发送侧**填的（契约 §3）：中枢拿它显在节点列表上、并据此判断
+// 「这台机器的 agent 过期了没有」。老 agent 不发这个键，中枢按空串展示、不报错——
+// 所以这里填的是「真在跑的这份二进制的版本」（internal/version），与 Protocol
+// 表达的东西无关（后者是协议版本）。
 func (c *nodeConfig) hello(applied []appliedDecl) *helloFrame {
 	slots := c.slots()
 	perSlot := c.slotConcurrency()
@@ -227,11 +233,12 @@ func (c *nodeConfig) hello(applied []appliedDecl) *helloFrame {
 	}
 
 	return &helloFrame{
-		Type:      ws.NodeFrameHello,
-		Protocol:  ws.ProtocolVersion,
-		NodeID:    "",
-		Instances: instances,
-		Applied:   applied,
+		Type:         ws.NodeFrameHello,
+		Protocol:     ws.ProtocolVersion,
+		NodeID:       "",
+		Instances:    instances,
+		Applied:      applied,
+		AgentVersion: version.String(),
 	}
 }
 

@@ -1,6 +1,6 @@
 // Command agent 是 Anotify 的**最小节点执行器**：跑在用户侧的独立小进程。
 //
-// 它做且只做两件事：
+// 它做且只做三件事：
 //
 //  1. 节点模式（默认）：按 node.yaml 连中枢，接单、执行、回报。
 //     读 node.yaml → 用节点令牌连 GET /v1/node/stream（Authorization: Bearer <token>）
@@ -10,6 +10,9 @@
 //  2. 本地模式（`anotify-agent run ./capability.yaml -p k=v`）：不连中枢，
 //     把一份产物 YAML 拷到任意机器上直接跑一次。这是「产物可移植」的落地证明——
 //     同一份文件，中枢推下来能跑，scp 到另一台机器上也能跑。
+//
+//  3. 自升级（`anotify-agent upgrade`）：从**中枢**（不是一个 GitHub release）下载
+//     当前版本的二进制、校验 sha256、原子替换自己。见 upgrade.go。
 //
 // 边界（不变量 I1：**中枢不执行**，节点纯执行）：
 //
@@ -30,6 +33,7 @@
 //
 //	anotify-agent -f ./node.yaml -grace 20 --data-dir ~/.anotify
 //	anotify-agent run ./capability.yaml -p repo=acme/x -p pr=42 --timeout 600
+//	anotify-agent upgrade [--check] [--force] [--server URL] [--install-to PATH] [--restart]
 //
 //	-f          node.yaml 路径（默认 ./node.yaml）
 //	-grace      优雅退出等待秒数（默认 20；<=0 表示退出时不等在跑任务）
@@ -43,6 +47,7 @@
 // 退出码：0 = 正常（含 -h 看帮助）；1 = 参数/配置错误、握手被拒、连接断开。
 // `run` 子命令是例外：它把**产物自己**的退出码原样透传（脚本怎么退，agent 就怎么退），
 // 只有 agent 侧故障（产物解析失败、起不来）才用 1。
+// `upgrade` 子命令也是例外：它的 0..5 是契约 §4 的升级结论（见 upgrade.go）。
 // 节点模式不做断线退避重连：连接断了就退出，重启交给进程管理器。
 package main
 
@@ -417,6 +422,11 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 			return exitFailure
 		}
 		return code
+	}
+	if len(args) > 0 && args[0] == upgradeCommand {
+		// 退出码**就是**契约 §4 那张表（0..5），脚本据它决定「去要 root / 别重试 / 重跑」，
+		// 所以不能在这里改写成 1。
+		return upgradeMain(args[1:], stdout, stderr, os.Getenv)
 	}
 	// 节点模式的错误日志已经在 run 里记过（这里再记一条就成了重复）。
 	if err := run(args, stderr); err != nil {
