@@ -96,6 +96,41 @@
         margin-top: 12px;
       }
 
+      /* agent 版本 / 升级（契约 §5.1 + §6）：版本值等宽（要和 agent 日志逐字对），
+         未上报的老 agent 用 sans + 极弱色，不报警。 */
+      .np-ver {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .np-ver-val {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+      .np-ver-val.is-unknown {
+        font-family: var(--font-sans);
+        color: var(--faint);
+      }
+      /* ack 失败（真问题，error 色）/ 节点没回话（告警，warn 色） */
+      .np-upg-err {
+        margin-top: 10px;
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: var(--error-300);
+        overflow-wrap: anywhere;
+      }
+      .np-upg-note {
+        margin-top: 10px;
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: var(--warn-300);
+        overflow-wrap: anywhere;
+      }
+
       /* 列表行的两段式：上行「名字 + 状态」，下行 digest / reason。
          行本身用 ui.css 的 .list-row，这里只补内部排版。 */
       .np-row-head {
@@ -402,6 +437,10 @@
       let TASKS = null;
       let CAPS = new Map();
       let DEPS = null;
+      // 本页里服务端回过 up_to_date 的标记：up_to_date **不落库**（契约 §5.1 只落
+      // sent/ok/failed），详情接口也不带 targetAgentVersion，所以只能在本页记一下，
+      // 否则按钮会继续停在「升级」上，看起来像刚才什么都没发生。
+      let NODE_UP_TO_DATE = false;
 
       const bodyEl = () => document.getElementById("node-body");
       // 首屏骨架的 HTML 快照：重试时把它放回去，别把「重试中」画成「没有数据」
@@ -672,6 +711,46 @@
         } else {
           acts.appendChild(el("span", "badge badge-warn", t("nodes.draining_hint", "排空中")));
         }
+
+        // 升级（契约 §5.1 + §6）：只发指令，下载/校验/替换全在节点侧。
+        // ack 结果落库在 nodes.agent_upgrade，刷新页面后仍然看得到（见 basicCard）。
+        const up = upgradeControl();
+        if (up) acts.appendChild(up);
+      }
+
+      // upgradeControl 详情页的升级按钮：三种态
+      //   已是最新（本页回过 up_to_date / ack ok）→ 禁用
+      //   ack=sent 且未超时 → 「升级中…」禁用（防连点；超时后允许重试）
+      //   其余 → 「升级」
+      // 老后端（B 组 §5.1 未实现）：详情响应里连 agentUpgrade 字段都没有 ——
+      // 那就不画按钮（点了必然 404），返回 null 由调用方跳过。
+      function upgradeControl() {
+        if (!NODE || !Object.prototype.hasOwnProperty.call(NODE, "agentUpgrade")) return null;
+        const rec = NODE.agentUpgrade || {};
+        const latest = NODE_UP_TO_DATE || rec.status === "ok";
+        if (latest) {
+          const btn = el("button", "btn btn-ghost btn-sm", t("nodes.upgrade.latest", "已是最新"));
+          btn.type = "button";
+          btn.disabled = true;
+          btn.dataset.upgradeState = "latest";
+          return btn;
+        }
+        const sending = rec.status === "sent" && !Anotify.upgradeAckStale(rec);
+        const btn = el(
+          "button",
+          "btn btn-ghost btn-sm",
+          sending ? t("nodes.upgrade.sending", "升级中…") : t("nodes.upgrade.btn", "升级"),
+        );
+        btn.type = "button";
+        btn.disabled = sending;
+        if (sending) {
+          btn.dataset.upgradeState = "sending";
+        } else {
+          btn.dataset.upgradeState = "ready";
+          btn.dataset.action = "upgrade";
+          btn.addEventListener("click", () => upgradeNode(NODE));
+        }
+        return btn;
       }
 
       // ---- 基本信息 ----
@@ -687,6 +766,28 @@
         row(t("nodepage.status", "状态"), statusText(NODE.status));
         row(t("nodepage.last_seen", "最近心跳"), fmtTime(NODE.lastSeenAt));
         row(t("nodepage.created", "创建时间"), fmtTime(NODE.createdAt));
+
+        // agent 版本（契约 §5.1）：空 = 老 agent 在 hello 里根本没上报，
+        // 显示「未知（老版本）」而不是空白，也不要编一个版本号出来。
+        dl.appendChild(el("dt", null, t("nodes.upgrade.version_label", "agent 版本")));
+        const verDd = el("dd");
+        const ver = String(NODE.agentVersion || "");
+        const verWrap = el("div", "np-ver");
+        const verVal = el(
+          "span",
+          "np-ver-val" + (ver ? "" : " is-unknown"),
+          ver || t("nodes.upgrade.version_unknown", "未知（老版本）"),
+        );
+        if (ver) verVal.title = ver;
+        verWrap.appendChild(verVal);
+        const upg = NODE.agentUpgrade || {};
+        if (NODE_UP_TO_DATE || upg.status === "ok") {
+          verWrap.appendChild(
+            el("span", "badge badge-neutral", t("nodes.upgrade.latest", "已是最新")),
+          );
+        }
+        verDd.appendChild(verWrap);
+        dl.appendChild(verDd);
         row(
           t("nodepage.limits", "上限"),
           t("nodepage.limits_val", "实例 {i} · 并发 {c}")
@@ -697,6 +798,23 @@
         row(t("nodepage.tags", "标签"), tags.length ? tags.join(" · ") : t("nodepage.no_tags", "无"));
 
         card.appendChild(dl);
+
+        // 上一次升级的结果：中枢把它落库了（nodes.agent_upgrade，§5.1），
+        // 所以刷新页面 / 隔天回来都看得到「为什么没成」——这不是一次性的 toast。
+        if (upg.status === "failed" && upg.error) {
+          card.appendChild(
+            el(
+              "div",
+              "np-upg-err",
+              t("nodes.upgrade.ack_failed", "节点上的升级没成功：") +
+                Anotify.upgradeErrorText(upg.error),
+            ),
+          );
+        } else if (Anotify.upgradeAckStale(upg)) {
+          card.appendChild(
+            el("div", "np-upg-note", t("nodes.upgrade.ack_stale", "节点未回复（可能已断线）")),
+          );
+        }
         return card;
       }
 
@@ -920,6 +1038,42 @@
           load();
         } catch (err) {
           toast(t("nodes.drain_failed", "排空失败：") + err.message, "error");
+        }
+      }
+
+      // upgradeNode 与列表页同一个语义（二次确认 + 只发指令 + 映射失败原因），
+      // 差别只在结果靠 load() 重拉详情来体现（agent_upgrade 已落库）。
+      async function upgradeNode(n) {
+        const msg = t(
+          "nodes.upgrade.confirm",
+          "升级 {name} 上的 agent？会替换节点上的二进制并重启 agent；正在跑的任务会等完（grace 20s）。",
+        ).replace("{name}", (n && n.name) || "");
+        if (!confirm(msg)) return;
+        try {
+          const res = await Anotify.api(
+            API + "/nodes/" + encodeURIComponent(n.id) + "/upgrade",
+            { method: "POST" },
+          );
+          const status = String((res && res.status) || "");
+          if (status === "up_to_date") {
+            NODE_UP_TO_DATE = true;
+            toast(t("nodes.upgrade.latest", "已是最新"));
+            renderHead();
+            return;
+          }
+          toast(t("nodes.upgrade.sent", "已下发升级，节点重启后生效（稍后刷新可看到新版本）"));
+          // 主动补两次重拉：ack 通常一两秒内到，用户不用手点刷新。
+          setTimeout(() => load(), 900);
+          setTimeout(() => load(), 3000);
+        } catch (err) {
+          const code = Anotify.upgradeErrorCode(err);
+          toast(
+            t("nodes.upgrade.failed", "升级失败：") +
+              (code
+                ? Anotify.upgradeErrorText(code)
+                : (err && (err.detail || err.message)) || ""),
+            "error",
+          );
         }
       }
 

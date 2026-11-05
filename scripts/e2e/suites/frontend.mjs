@@ -14,6 +14,10 @@
  *     （回归防护：旧协议字段 status 残留曾致 normalize 全部降级 working）
  *  H. nodes.html 注册节点（#198）：表单 → 一次性令牌 → 可直接粘的 node.yaml；
  *     再点入口必须把令牌真从 DOM 清掉，重名只报重名不给令牌（mock 全流程 + 真后端一次注册）
+ *  K. 节点 agent 版本 / 升级（CONTRACT-agent-upgrade.md §5.1 + §6）：版本行、陈旧提示是
+ *     中性色、二次确认（取消不发请求）、同版本「已是最新」、失败原因逐条映射
+ *     （node_offline / agent_binary_unavailable / bad_sha）、ack 结果来自服务端状态、
+ *     sent 超 60s → 「节点未回复」；四语言文案不串（mock）+ 真后端版本/已是最新（接口在则断言）
  *  J. 共享拓扑推导（graphs.js 的 sourceTopology）：源 1:N 的出边、source 页与 trace 页
  *     的图同源一致、环仍画出来并标 cycle、未接下游的出口仍显示成灰点（真后端）
  */
@@ -1518,6 +1522,15 @@ async function main() {
 		await page.close();
 		await ctx.close();
 	}
+
+	// ---- K. 节点 agent 版本 / 升级（真后端，条件启用）----
+	//
+	// B 组（中枢侧）的 upgrade 端点与 agent_version 列是并行分支，合并前可能还不存在。
+	// checkNodeUpgradeReal 内部先探 GET /v1/nodes：带 targetAgentVersion/agentVersion
+	// 就跑真断言，否则留一行「合并后启用」日志（不伪装通过）。
+	// 真后端上的 POST /upgrade 是破坏性操作（会替换 e2e agent 二进制并重启），不做。
+	console.log("--- 节点 agent 版本 / 升级（真后端，接口在则断言）---");
+	await checkNodeUpgradeReal(server, newCtx);
 
 	// ---- I. 能力详情看脚本 + 编辑出新版本 + 409 闸门（真后端）----
 	//
@@ -5592,12 +5605,540 @@ async function checkNodeRegister(page, base) {
 	);
 }
 
-// 命名空间切换器（设计见 docs/design/namespaces.md）
+// ---------------------------------------------------------------------------
+// agent 自升级（CONTRACT-agent-upgrade.md §5.1 读侧 + §6 UI）
 //
-// 这套断言盯的是"隔离真的发生了"，而不是"控件画出来了"：
-// 切到 staging 后源列表必须变少、页面请求必须带**新**的 namespaceId、
-// 刷新后必须还在 staging、能力与节点也必须跟着命名空间走。
-// 组织那一层在 UI 上已经不存在了（#203），所以这里不再有"组织分节"。
+// 这一组用例全部跑在 **mock 预览环境**（web/mock.js 在 fetch 层应答）：
+// 真后端的 upgrade 端点由 B 组实现，本组合并时可能还不存在；形状（
+// targetAgentVersion / agentUpgrade / 409 / 501 / up_to_date）只能先在 mock 上钉死，
+// 真后端那一半见 checkNodeUpgradeReal（接口在就断言，不在就留一行日志）。
+//
+// 钉的是「用户能不能把升级这件事看明白」，不是「按钮画出来了」：
+//   ① 版本：每张卡片都有；老 agent 空版本 = 「未知（老版本）」，不是空白/undefined
+//   ② 陈旧提示必须是**中性**的（文案 + token 色），不能长成红色错误
+//   ③ 升级必须二次确认，且文案说清代价（替换二进制 / 重启 / 在跑任务等完 grace 20s）
+//   ④ 取消不做任何事；确认后才发 POST
+//   ⑤ 成功：ack 后版本前进到目标版本，按钮变「已是最新」
+//   ⑥ 同版本：不动手就显示「已是最新」
+//   ⑦ 失败原因逐条映射：node_offline(409) / agent_binary_unavailable(501) / bad_sha(ack)
+//   ⑧ ack 结果来自**服务端状态**（点刷新仍在），不是页面内存里的一次性提示
+//   ⑨ sent 超 60s 没 ack → 「节点未回复」，不许永远显示「升级中」
+//   ⑩ 390 宽不横向溢出；全程无 JS pageerror
+
+// readNodeCards 把节点列表每一行的版本 / 徽章 / 动作 / 升级状态读成结构化数据。
+//
+// 为什么一次读全：升级这一块的分支很多（未知版本 / 陈旧 / 已最新 / 无二进制 /
+// ack 失败 / 节点没回话），散着读会让断言看不出「哪个节点在哪个状态」。
+async function readNodeCards(page) {
+	return page.evaluate(() => {
+		// tokens.css 的 --muted / --error 是 #rrggbb，浏览器算出来的是 rgb()，
+		// 比较前先转一下 —— 否则「用没用错误色」就变成了靠类名猜。
+		const hexToRgb = (hex) => {
+			const m = String(hex || "").trim().match(/^#([0-9a-f]{6})$/i);
+			if (!m) return "";
+			const n = parseInt(m[1], 16);
+			return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+		};
+		const root = getComputedStyle(document.documentElement);
+		const token = (name) => root.getPropertyValue(name).trim();
+		return {
+			colors: { muted: hexToRgb(token("--muted")), error: hexToRgb(token("--error")) },
+			rows: [...document.querySelectorAll("#nodes-list > div")].map((row) => {
+				const one = (sel) => row.querySelector(sel);
+				const verEl = one(".nd-ver-val");
+				const ctl = one("[data-upgrade-state]");
+				return {
+					name: (one(".nd-name") || {}).textContent || "",
+					hasVersionLine: !!one(".nd-ver"),
+					version: (verEl || {}).textContent || "",
+					versionClass: String((verEl || {}).className || ""),
+					versionBadges: [...row.querySelectorAll(".nd-ver .badge")].map((b) => ({
+						text: b.textContent.trim(),
+						cls: String(b.className),
+						color: getComputedStyle(b).color,
+					})),
+					buttons: [...row.querySelectorAll(".nd-acts button")].map((b) => ({
+						text: b.textContent.trim(),
+						disabled: !!b.disabled,
+					})),
+					upgrade: {
+						state: (ctl && ctl.dataset.upgradeState) || "",
+						text: ctl ? ctl.textContent.trim() : "",
+					},
+					notes: [...row.querySelectorAll(".nd-upg-err, .nd-upg-note")].map((n) => ({
+						cls: String(n.className),
+						text: n.textContent.trim(),
+					})),
+				};
+			}),
+		};
+	});
+}
+
+// clickUpgrade 点某一行的升级按钮（文案随语言变，所以用 data-action 定位）。
+async function clickUpgrade(page, needle) {
+	return page.evaluate((n) => {
+		const row = [...document.querySelectorAll("#nodes-list > div")].find((r) =>
+			((r.querySelector(".nd-name") || {}).textContent || "").includes(n),
+		);
+		if (!row) return "no-row";
+		const btn = row.querySelector('[data-action="upgrade"]');
+		if (!btn) return "no-btn";
+		btn.click();
+		return "clicked";
+	}, needle);
+}
+
+async function checkNodeUpgrade(page, base) {
+	await page.goto(base + "/nodes.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1200);
+
+	const pageErrors = [];
+	page.on("pageerror", (e) => pageErrors.push(String(e)));
+
+	const target = await page.evaluate(async () => {
+		const api = await (await fetch("/v1/nodes")).json();
+		return String(api.targetAgentVersion || "");
+	});
+	H.check(
+		"升级：mock 的节点列表带顶层目标版本（契约 §5.1）",
+		target.length > 0,
+		`targetAgentVersion=${JSON.stringify(target)}`,
+	);
+
+	const card = (cards, needle) =>
+		cards.rows.find((r) => r.name.includes(needle)) || { versionBadges: [], buttons: [], notes: [] };
+
+	// ---- ① 版本行 + ② 中性陈旧提示 + ⑥ 同版本「已是最新」 ----
+	let cards = await readNodeCards(page);
+	H.check(
+		"节点卡片显示 agent 版本（每行都有，不是空白）",
+		cards.rows.length > 0 &&
+			cards.rows.every((r) => r.hasVersionLine && r.version.trim() !== ""),
+		JSON.stringify(cards.rows.map((r) => [r.name, r.version])),
+	);
+	const unknownRows = cards.rows.filter((r) => r.versionClass.includes("is-unknown"));
+	H.check(
+		"老 agent（没上报版本）显示「未知（老版本）」而不是空白",
+		unknownRows.length > 0 &&
+			unknownRows.every((r) => r.version === "未知（老版本）"),
+		JSON.stringify(unknownRows.map((r) => [r.name, r.version])),
+	);
+	const staleRows = cards.rows.filter((r) =>
+		r.versionBadges.some((b) => b.text === "有新版本可用"),
+	);
+	H.check(
+		"版本陈旧给中性提示（.badge-neutral + --muted 色，不是红色错误）",
+		cards.colors.muted !== "" &&
+			cards.colors.muted !== cards.colors.error &&
+			staleRows.length > 0 &&
+			staleRows.every((r) =>
+				r.versionBadges.every(
+					(b) => b.cls.includes("badge-neutral") && b.color === cards.colors.muted,
+				),
+			),
+		JSON.stringify({
+			stale: staleRows.map((r) => r.name),
+			badges: staleRows.map((r) => r.versionBadges),
+			token: cards.colors,
+		}),
+	);
+	const upToDateRow = card(cards, "ops-box");
+	H.check(
+		"同版本节点直接显示「已是最新」（禁用，不是可点的「升级」）",
+		upToDateRow.upgrade.state === "latest" &&
+			upToDateRow.upgrade.text === "已是最新" &&
+			upToDateRow.buttons.some((b) => b.text === "已是最新" && b.disabled),
+		JSON.stringify({ upgrade: upToDateRow.upgrade, buttons: upToDateRow.buttons }),
+	);
+
+	// ---- ③ 二次确认（取消） ----
+	let confirmText = "";
+	page.once("dialog", async (d) => {
+		confirmText = d.message();
+		await d.dismiss();
+	});
+	const cancelledClick = await clickUpgrade(page, "laptop-worker");
+	await page.waitForTimeout(700);
+	const afterCancel = card(await readNodeCards(page), "laptop-worker");
+	H.check(
+		"升级需二次确认，文案说清代价（替换二进制 / 重启 / 在跑任务等完 grace 20s）",
+		cancelledClick === "clicked" &&
+			/替换/.test(confirmText) &&
+			/重启/.test(confirmText) &&
+			/grace 20s/.test(confirmText),
+		`click=${cancelledClick} 文案=${confirmText}`,
+	);
+	H.check(
+		"二次确认点取消 → 不发请求，按钮仍是「升级」",
+		afterCancel.upgrade.state === "ready" && afterCancel.upgrade.text === "升级",
+		JSON.stringify({ upgrade: afterCancel.upgrade, version: afterCancel.version }),
+	);
+
+	// ---- ⑦a 离线节点：409 node_offline 映射成人话 ----
+	page.once("dialog", async (d) => await d.accept());
+	const offlineClick = await clickUpgrade(page, "ci-runner");
+	await page.waitForTimeout(800);
+	const offlineToast = await page.evaluate(
+		() => (document.getElementById("toast") || {}).textContent || "",
+	);
+	H.check(
+		"离线节点升级 → 409 node_offline 映射成人话",
+		offlineClick === "clicked" && /节点离线/.test(offlineToast),
+		`click=${offlineClick} toast=${offlineToast}`,
+	);
+
+	// ---- ⑦b ack 失败：bad_sha（中枢推帧后节点回报校验失败） ----
+	// 控制面是 mock 的 MockApi.failUpgrade（真后端不需要它：失败由 agent 真的回 ack）。
+	await page.evaluate(() => window.MockApi.failUpgrade("bad_sha"));
+	page.once("dialog", async (d) => await d.accept());
+	await clickUpgrade(page, "laptop-worker");
+	await page.waitForFunction(
+		() =>
+			[...document.querySelectorAll("#nodes-list > div")].some((r) =>
+				((r.querySelector(".nd-upg-err") || {}).textContent || "").includes("被改动"),
+			),
+		null,
+		{ timeout: 8000 },
+	).catch(() => {});
+	const badShaToast = await page.evaluate(
+		() => (document.getElementById("toast") || {}).textContent || "",
+	);
+	const badShaRow = card(await readNodeCards(page), "laptop-worker");
+	H.check(
+		"ack 失败 bad_sha → 行内给出「服务端二进制可能被改动，已拒绝」",
+		badShaRow.notes.some((n) => n.text.includes("服务端二进制可能被改动，已拒绝")),
+		JSON.stringify(badShaRow.notes),
+	);
+	H.check(
+		"ack 失败同时弹一次 toast（失败不会被静默吞掉）",
+		/被改动/.test(badShaToast),
+		badShaToast,
+	);
+
+	// ---- ⑧ 结果来自服务端状态：点「刷新」重新拉列表后失败仍在 ----
+	//
+	// 这条是 agent_upgrade 落库（契约 §5.1）的**客户端可见后果**：
+	// 如果 UI 只把失败记在页面内存里，刷新一拉列表就没了。mock 的节点状态
+	// 就是它的“库”（内存态），所以点页头刷新等价于真后端重新读 nodes.agent_upgrade。
+	// （F5 整页刷新会重建 mock state，因此这段用页内刷新而不是 reload；
+	//   真正落库那一半由 checkNodeUpgradeReal 在 B 组接口合并后断言。）
+	await page.click("#nodes-refresh");
+	await page.waitForTimeout(800);
+	const afterRefreshRow = card(await readNodeCards(page), "laptop-worker");
+	H.check(
+		"ack 失败结果来自服务端状态：重新拉列表后仍在（不是页面内存里的一次性提示）",
+		afterRefreshRow.notes.some((n) =>
+			n.text.includes("服务端二进制可能被改动，已拒绝"),
+		),
+		JSON.stringify(afterRefreshRow.notes),
+	);
+
+	// ---- ⑦c 服务端没带二进制：不给可点按钮（点了必然 501） ----
+	await page.evaluate(() => window.MockApi.noAgentBinary());
+	await page.click("#nodes-refresh");
+	await page.waitForTimeout(800);
+	const noBin = await readNodeCards(page);
+	H.check(
+		"服务端没带 agent 二进制 → 不给可点按钮，显示原因",
+		noBin.rows.length > 0 &&
+			noBin.rows.every(
+				(r) =>
+					r.upgrade.state === "unavailable" &&
+					r.upgrade.text === "服务端没带 agent 二进制" &&
+					!r.buttons.some((b) => b.text === "升级"),
+			),
+		JSON.stringify(noBin.rows.map((r) => [r.name, r.upgrade])),
+	);
+	await page.evaluate(() => window.MockApi.noAgentBinary(false));
+
+	// ---- ④⑤ 成功：确认 → sent → ack 成功 → 版本前进 + 「已是最新」 ----
+	await page.evaluate(() => window.MockApi.failUpgrade(""));
+	await page.click("#nodes-refresh");
+	await page.waitForTimeout(600);
+	page.once("dialog", async (d) => await d.accept());
+	const okClick = await clickUpgrade(page, "laptop-worker");
+	await page
+		.waitForFunction(
+			(tgt) => {
+				const row = [...document.querySelectorAll("#nodes-list > div")].find((r) =>
+					((r.querySelector(".nd-name") || {}).textContent || "").includes(
+						"laptop-worker",
+					),
+				);
+				if (!row) return false;
+				const v = (row.querySelector(".nd-ver-val") || {}).textContent || "";
+				const ctl = row.querySelector('[data-upgrade-state="latest"]');
+				return !!ctl && v === tgt;
+			},
+			target,
+			{ timeout: 8000 },
+		)
+		.catch(() => {});
+	const afterOk = card(await readNodeCards(page), "laptop-worker");
+	H.check(
+		"确认后下发升级：ack 成功 → 版本前进到目标版本，按钮变「已是最新」",
+		okClick === "clicked" &&
+			afterOk.version === target &&
+			afterOk.upgrade.state === "latest",
+		JSON.stringify({ click: okClick, version: afterOk.version, target, upgrade: afterOk.upgrade }),
+	);
+
+	// ---- ⑨ sent 超 60s 没 ack → 「节点未回复」，不许永远「升级中」 ----
+	await page.evaluate(() => {
+		const n = window.MockApi.state.nodes.find((x) => x.id === "nd_mock_ops");
+		n.agentVersion = "";
+		n.agentUpgrade = {
+			status: "sent",
+			targetVersion: "1.5.0+3fd5a59",
+			error: "",
+			at: Math.floor(Date.now() / 1000) - 120,
+		};
+	});
+	await page.click("#nodes-refresh");
+	await page.waitForTimeout(800);
+	const staleSent = card(await readNodeCards(page), "ops-box");
+	H.check(
+		"status=sent 超 60s 没 ack → 提示「节点未回复（可能已断线）」（不是一直「升级中」）",
+		staleSent.upgrade.state === "ready" &&
+			staleSent.notes.some((n) => n.text.includes("节点未回复（可能已断线）")),
+		JSON.stringify({ upgrade: staleSent.upgrade, notes: staleSent.notes }),
+	);
+
+	// ---- ⑩ 390 宽：版本行/升级按钮不把卡片撑破 ----
+	await page.goto(base + "/nodes.html", { waitUntil: "load", timeout: 20000 });
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.waitForTimeout(1000);
+	const overflow = await page.evaluate(() => ({
+		sw: document.documentElement.scrollWidth,
+		iw: window.innerWidth,
+	}));
+	H.check(
+		"节点卡片（版本 + 升级）在 390 宽不横向溢出",
+		overflow.sw <= overflow.iw + 1,
+		`scrollWidth=${overflow.sw} innerWidth=${overflow.iw}`,
+	);
+	await page.setViewportSize({ width: 1280, height: 800 });
+
+	// ---- ⑪ 刷新页面后，**上一次**的失败结果仍然可见（落库语义） ----
+	//
+	// mock 的 state 是内存的，F5 会回到种子数据；而种子里 old-laptop 就带着一条
+	// 「failed / need_root」（模拟“上一次会话留下的结果”）。这条断言的真正含义：
+	// 控制台在**没有点任何按钮**的情况下也会把服务器上的 ack 结果画出来 ——
+	// 这正是 nodes.agent_upgrade 落库（契约 §5.1）要求的可见后果。
+	const needRootRow = card(await readNodeCards(page), "old-laptop");
+	H.check(
+		"刷新页面后上次升级失败仍可见（need_root → 给出 sudo anotify-agent upgrade）",
+		needRootRow.notes.some(
+			(n) =>
+				n.cls.includes("nd-upg-err") &&
+				n.text.includes("在节点上执行：sudo anotify-agent upgrade"),
+		),
+		JSON.stringify(needRootRow.notes),
+	);
+	H.check("升级相关交互无 JS pageerror", pageErrors.length === 0, pageErrors[0]?.slice(0, 200));
+}
+
+// checkNodeUpgradeI18n 盯「失败原因四语言不串」：
+//
+// 同一份映射在四种语言里必须各说各话，而不是某种语言回落到中文（sitegen 的
+// 缺 key 回退就是回落 zh-CN，静默且只在新语言页面上显形）。所以每条文案都要求：
+//   · 非空；
+//   · 四语言两两不同；
+//   · en/es 里没有 CJK；zh 有汉字；ja 有假名；
+//   · need_root 的**可执行部分**（sudo anotify-agent upgrade）四种语言都必须在 ——
+//     翻译可以把前后文改顺，但命令不能被翻掉。
+async function checkNodeUpgradeI18n(ctx, base) {
+	const LANGS = [
+		{ code: "", name: "zh-CN" },
+		{ code: "en", name: "en" },
+		{ code: "ja", name: "ja" },
+		{ code: "es", name: "es" },
+	];
+	const CJK = /[\u4e00-\u9fff\u3400-\u4dbf]/;
+	const KANA = /[\u3040-\u30ff]/;
+	const got = {};
+
+	for (const { code, name } of LANGS) {
+		const page = await ctx.newPage();
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		await page.goto(base + "/nodes.html" + (code ? "?lang=" + code : ""), {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await page.waitForTimeout(1200);
+
+		const cards = await readNodeCards(page);
+		const pick = (n) => cards.rows.find((r) => r.name.includes(n)) || {};
+		const laptop = pick("laptop-worker");
+		const ops = pick("ops-box");
+		const legacy = pick("old-laptop");
+
+		// 离线节点的 409 文案（点一下才拿得到）
+		page.once("dialog", async (d) => await d.accept());
+		const clicked = await clickUpgrade(page, "ci-runner");
+		await page.waitForTimeout(800);
+		const offlineToast = await page.evaluate(
+			() => (document.getElementById("toast") || {}).textContent || "",
+		);
+
+		// 服务端没带二进制时的控件文案（点页头刷新重新拉列表）
+		await page.evaluate(() => window.MockApi.noAgentBinary());
+		await page.click("#nodes-refresh");
+		await page.waitForTimeout(800);
+		const noBin = await readNodeCards(page);
+		const noBinText = (noBin.rows[0] || {}).upgrade ? noBin.rows[0].upgrade.text : "";
+
+		got[name] = {
+			stale: ((laptop.versionBadges || [])[0] || {}).text || "",
+			latest: ((ops.versionBadges || [])[0] || {}).text || "",
+			needRoot: ((legacy.notes || [])[0] || {}).text || "",
+			offline: offlineToast,
+			unavailable: noBinText,
+			errors: errs,
+			clicked,
+		};
+		await page.close();
+	}
+
+	const names = LANGS.map((l) => l.name);
+	const FIELDS = ["stale", "latest", "needRoot", "offline", "unavailable"];
+	for (const field of FIELDS) {
+		const values = names.map((n) => got[n][field]);
+		H.check(
+			`升级文案四语言不串：${field} 四种语言各自不同且非空`,
+			values.every((v) => v && v.trim().length > 0) &&
+				new Set(values).size === names.length,
+			JSON.stringify(values),
+		);
+	}
+	for (const name of ["en", "es"]) {
+		const residue = FIELDS.map((f) => got[name][f]).filter((v) => CJK.test(v));
+		H.check(`${name} 的升级文案没有中文残留`, residue.length === 0, residue.join(" | ").slice(0, 220));
+	}
+	H.check(
+		"zh-CN 的升级文案是中文",
+		CJK.test(got["zh-CN"].stale) && CJK.test(got["zh-CN"].needRoot),
+		JSON.stringify(got["zh-CN"]),
+	);
+	H.check(
+		"ja 的升级文案是日文（含假名）",
+		KANA.test(got.ja.stale) && KANA.test(got.ja.needRoot),
+		JSON.stringify(got.ja),
+	);
+	// 命令本身不能被翻译掉：四种语言的 need_root 都要能照着粘。
+	H.check(
+		"need_root 的可执行命令四语言都在（sudo anotify-agent upgrade）",
+		names.every((n) => got[n].needRoot.includes("sudo anotify-agent upgrade")),
+		JSON.stringify(names.map((n) => got[n].needRoot)),
+	);
+	H.check(
+		"四语言节点页升级交互无 JS pageerror",
+		names.every((n) => got[n].errors.length === 0),
+		JSON.stringify(names.map((n) => [n, got[n].errors[0]])),
+	);
+	H.check(
+		"四语言都能点到离线节点的升级按钮（data-action 钩子不依赖文案）",
+		names.every((n) => got[n].clicked === "clicked"),
+		JSON.stringify(names.map((n) => [n, got[n].clicked])),
+	);
+}
+
+// checkNodeUpgradeReal 真后端那一半：agent 版本 / 升级（契约 §5.1）。
+//
+// C 组合并时 B 组的升级端点可能还没合进来（三组并行）。所以先用**只读探针**
+// 判断接口在不在：
+//   · 响应带 `targetAgentVersion`（或任一节点带 `agentVersion`）→ 跑真断言；
+//   · 不在 → 留一行日志说明「合并后启用」，不伪装成通过，也不把套件拉红。
+// **绝不**在真后端上真的 POST /upgrade：那会替换 e2e agent 的二进制并重启进程，
+// 是破坏性操作（真链路由 A/B 组单测 + 人工验证覆盖）。
+//
+// 断言的两件事都是“落库才有”的：
+//   ① 从不上报版本的节点显示「未知（老版本）」；
+//   ② 把 nodes.agent_version 改成中枢当前版本后，重载页面直接变「已是最新」 ——
+//      版本来自 API（不是页面缓存），这也是 e2e 能验的落库语义。
+async function checkNodeUpgradeReal(server, newCtx) {
+	const s = H.seed(server.dbPath, "node_upgrade");
+	const probe = await H.req(server.base, "/v1/nodes", { session: s.session });
+	const api = (probe.json || {});
+	const nodes = Array.isArray(api.nodes) ? api.nodes : [];
+	const hasTarget = Object.prototype.hasOwnProperty.call(api, "targetAgentVersion");
+	const hasVersion = nodes.some((n) =>
+		Object.prototype.hasOwnProperty.call(n, "agentVersion"),
+	);
+	if (probe.status !== 200 || (!hasTarget && !hasVersion)) {
+		console.log(
+			`  · 节点升级（真后端）：合并后启用（GET /v1/nodes ${probe.status}，` +
+				`targetAgentVersion=${hasTarget}，agentVersion=${hasVersion}）→ 本次只用 mock 断言`,
+		);
+		return;
+	}
+
+	// 造一台**从未连上来**的节点：agent_version 为空，正好对应“老 agent”。
+	const created = await H.req(server.base, "/v1/nodes", {
+		session: s.session,
+		method: "POST",
+		body: { name: "ui-upg-" + Date.now(), instances: 1 },
+	});
+	const nodeId = (created.json && created.json.node && created.json.node.id) || "";
+	H.check("真后端：注册一台节点用于升级 UI 断言", created.status === 201 && !!nodeId, `status=${created.status} id=${nodeId}`);
+	if (!nodeId) return;
+
+	const ctx = await newCtx();
+	await injectSession(ctx, s.session, server.base);
+	const page = await ctx.newPage();
+	const errs = [];
+	page.on("pageerror", (e) => errs.push(String(e)));
+	await page.goto(server.base + "/nodes.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1500);
+
+	const first = await readNodeCards(page);
+	const row = first.rows.find((r) => r.name.includes("ui-upg-")) || {};
+	H.check(
+		"真后端：节点卡片显示 agent 版本（空 = 「未知（老版本）」）",
+		row.hasVersionLine === true && row.version === "未知（老版本）",
+		JSON.stringify({ version: row.version, line: row.hasVersionLine }),
+	);
+	H.check(
+		"真后端：目标版本已知时给可点的「升级」按钮",
+		!hasTarget ||
+			(String(api.targetAgentVersion || "") !== "" && row.upgrade.state === "ready"),
+		JSON.stringify({ target: api.targetAgentVersion, upgrade: row.upgrade }),
+	);
+
+	// ---- 落库语义：把 agent_version 改成中枢当前版本 → 重载页面直接「已是最新」 ----
+	const target = String(api.targetAgentVersion || "");
+	if (hasTarget && target) {
+		const db = new DatabaseSync(server.dbPath);
+		try {
+			db.prepare("UPDATE nodes SET agent_version = ?, agent_commit = ? WHERE id = ?").run(
+				target,
+				"",
+				nodeId,
+			);
+		} finally {
+			db.close();
+		}
+		await page.reload({ waitUntil: "load" });
+		await page.waitForTimeout(1200);
+		const after = await readNodeCards(page);
+		const row2 = after.rows.find((r) => r.name.includes("ui-upg-")) || {};
+		H.check(
+			"真后端：节点版本 == 中枢当前版本 → 按钮显示「已是最新」（禁用）",
+			row2.version === target && row2.upgrade.state === "latest",
+			JSON.stringify({ version: row2.version, target, upgrade: row2.upgrade }),
+		);
+	} else {
+		console.log(
+			`  · 节点升级（真后端）：「已是最新」断言合并后启用（targetAgentVersion 为空串 = 服务端没带二进制）`,
+		);
+	}
+	H.check("真后端：节点升级 UI 无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
+	await page.close();
+	await ctx.close();
+}
+
 async function checkScope(page) {
 	// 页内 fetch 钩子（#203）：mock 在 window.fetch 层就把 /v1/* 拦下了
 	// （web/mock.js:3141），请求根本不出浏览器 —— page.on("request") 在 mock 页面里
@@ -6805,6 +7346,11 @@ async function runMockCoverage() {
 			await page.goto(`${base}/nodes.html`, { waitUntil: "load", timeout: 20000 });
 			await page.waitForTimeout(1200);
 			await checkNodeRegister(page, base);
+			// agent 自升级（契约 §5.1 / §6）：版本行、二次确认、四种失败回包。
+			// 函数内部自己 goto 干净的列表页，不依赖上面两个检查留下什么。
+			await checkNodeUpgrade(page, base);
+			// 四语言文案：另开页面（每种语言一个），不污染上面这页的 mock state。
+			await checkNodeUpgradeI18n(ctx, base);
 		}
 		if (p === "events.html") {
 			await checkEventsFilter(page, base);

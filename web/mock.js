@@ -72,6 +72,15 @@
 		createdAt: now() - 86400 * 30,
 	};
 
+	// ===== agent 自升级（CONTRACT-agent-upgrade.md §5.1）=====
+	//
+	// 中枢自己带的 agent 二进制版本。真实环境里来自 internal/version.String()
+	// （`1.5.0+3fd5a59`）；演示数据里三台节点分别覆盖三种形态：
+	//   laptop-worker 陈旧（1.3.0）/ old-laptop 从未上报（空）/ ops-box 已是最新。
+	// 页面上的「目标版本」= 常量 AGENT_VERSION（GET /v1/nodes 顶层 targetAgentVersion）。
+	const AGENT_VERSION = "1.5.0+3fd5a59";
+	const AGENT_COMMIT = "3fd5a59";
+
 	// ---------- 演示数据 ----------
 	//
 	// 刻意做得像真的：有扇出、有分叉的 out、有失败与剪枝，
@@ -265,6 +274,14 @@
 		// 演示时可以原地改：window.MockApi.state.limits.maxHops = 0
 		// → 下一次触发全部剪枝成 max_hops（budget 同理）。
 		limits: { maxHops: 16, budget: 512 },
+		// 中枢是否“带了 agent 二进制”。false = 服务端没带：
+		//   · GET /v1/nodes 顶层 targetAgentVersion 为**空串**（控制台据此不给可点按钮）；
+		//   · POST /v1/nodes/{id}/upgrade 回 501 agent_binary_unavailable。
+		// 演示：window.MockApi.noAgentBinary() → 刷新节点页。
+		agentBinary: true,
+		// 让下一次 upgrade_ack 失败（need_root / bad_sha / download_failed / not_supported）。
+		// 空串 = 正常成功（agentVersion 前进到目标版本）。演示：MockApi.failUpgrade("bad_sha")。
+		upgradeFailCode: "",
 	};
 
 	// 辅助：按名字取能力（返回最高版本）
@@ -751,6 +768,10 @@
 				instances: [
 					{ id: "nins_mock_0", index: 0, concurrency: 4, busy: 1 },
 				],
+				// agent 自升级（契约 §5.1）：陈旧的已知版本 + 从未尝试过升级。
+				agentVersion: "1.3.0+9c1f2ab",
+				agentCommit: "9c1f2ab",
+				agentUpgrade: { status: "", targetVersion: "", error: "", at: 0 },
 			},
 			{
 				// CI 机器：测试、部署、生成变更日志。离线是故意的（演示"节点掉线
@@ -770,6 +791,10 @@
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
 		capabilities: ["run-tests", "gen-changelog"].map(capRef),
 				instances: [{ id: "nins_mock_1", index: 0, concurrency: 2, busy: 0 }],
+				// 离线 + 从未上报过版本：点升级会拿到 409 node_offline。
+				agentVersion: "",
+				agentCommit: "",
+				agentUpgrade: { status: "", targetVersion: "", error: "", at: 0 },
 			},
 			{
 				// 运维机：回滚。单独一台，方便演示"能力分散在不同机器上"，
@@ -789,6 +814,42 @@
 		// 留几个空的，用来验证没有显示名时回落到 name@version。
 		capabilities: ["rollback"].map(capRef),
 				instances: [{ id: "nins_mock_2", index: 0, concurrency: 1, busy: 0 }],
+				// 已是最新：版本 == 目标版本 → 按钮直接显示「已是最新」（契约 §6）。
+				agentVersion: AGENT_VERSION,
+				agentCommit: AGENT_COMMIT,
+				// ok 是上一次升级的结果：它会随刷新一起回来（已落库），
+				// 所以刷新后仍然是「已是最新」而不是又变回「升级」。
+				agentUpgrade: {
+					status: "ok",
+					targetVersion: AGENT_VERSION,
+					error: "",
+					at: now() - 3600,
+				},
+			},
+			{
+				// 老 agent：从来没在 hello 里上报过 agent_version（契约 §3）——
+				// 页面显示「未知（老版本）」。它的升级永远失败在 need_root：
+				// 演示「ack 失败落库、刷新后还能看到为什么没成」这条最关键的回路。
+				id: "nd_mock_legacy",
+				orgId: ORG,
+				name: "old-laptop",
+				status: "online",
+				lastSeenAt: now() - 40,
+				createdAt: now() - 86400 * 14,
+				maxInstances: 4,
+				maxConcurrency: 2,
+				tags: ["legacy"],
+				// 没声明任何能力：老 agent 还没部署过产物，这是真实形态。
+				capabilities: [],
+				instances: [{ id: "nins_mock_3", index: 0, concurrency: 1, busy: 0 }],
+				agentVersion: "",
+				agentCommit: "",
+				agentUpgrade: {
+					status: "failed",
+					targetVersion: AGENT_VERSION,
+					error: "need_root",
+					at: now() - 1800,
+				},
 			},
 		];
 	})();
@@ -3394,6 +3455,15 @@
 			capabilities: (n.capabilities || []).map((ref) => Object.assign({}, ref)),
 			instances: slots.length,
 			busy: slots.filter((x) => (x.busy || 0) > 0).length,
+			// agent 自升级（契约 §5.1）：这两个字段**恒存在**。
+			// agentVersion 空串 = 老 agent 没在 hello 里上报（页面显示「未知（老版本）」）；
+			// agentUpgrade 恒为对象（status 空串 = 从未尝试），别让页面四处判 undefined。
+			agentVersion: String(n.agentVersion || ""),
+			agentCommit: String(n.agentCommit || ""),
+			agentUpgrade: Object.assign(
+				{ status: "", targetVersion: "", error: "", at: 0 },
+				clone(n.agentUpgrade) || {},
+			),
 		});
 	}
 
@@ -3410,7 +3480,12 @@
 	}
 
 	on("GET", /^\/v1\/nodes$/, (ctx) =>
-		json({ nodes: inNs(state.nodes, nsScope(ctx.query)).map(nodeView) }),
+		json({
+			nodes: inNs(state.nodes, nsScope(ctx.query)).map(nodeView),
+			// 契约 §5.1：**顶层**目标版本（中枢当前带的 agent 二进制版本）。
+			// 空串 = 服务端没带二进制 —— 控制台据此不给可点按钮（而不是点出一个 501）。
+			targetAgentVersion: state.agentBinary ? AGENT_VERSION : "",
+		}),
 	);
 
 	// 注册节点：POST /v1/nodes。
@@ -3476,6 +3551,10 @@
 			tags: [],
 			capabilities: [],
 			instances: [],
+			// 刚注册的节点还没连上来，自然也没上报过 agent 版本（契约 §5.1）。
+			agentVersion: "",
+			agentCommit: "",
+			agentUpgrade: { status: "", targetVersion: "", error: "", at: 0 },
 		};
 		state.nodes.push(node);
 		return json({ node: nodeView(node), token: mockNodeToken() }, 201);
@@ -3503,11 +3582,55 @@
 		return json({ node: nodeView(n), instances });
 	});
 
-	on("POST", /^\/v1\/nodes\/([^/]+)\/drain$/, (ctx) => {
+		on("POST", /^\/v1\/nodes\/([^/]+)\/drain$/, (ctx) => {
 		const n = state.nodes.find((x) => x.id === ctx.m[1]);
 		if (!n) return err(404, "节点不存在");
 		n.status = "draining";
 		return json({ node: nodeView(n) });
+	});
+
+	// 控制台下发升级：POST /v1/nodes/{id}/upgrade（契约 §5.1）。
+	//
+	// 四种回包都要能在预览里点到，否则 UI 的失败文案在 demo 里等于不存在：
+	//   · 200 up_to_date                  —— 当前版本 == 目标版本（ops-box）
+	//   · 409 node_offline                —— 离线节点（ci-runner）
+	//   · 501 agent_binary_unavailable    —— 服务端没带二进制（MockApi.noAgentBinary()）
+	//   · 200 sent + 延迟 ack             —— 正常下发；ack 成功把 agentVersion 推到目标版本，
+	//                                        失败（need_root 等）落成 agentUpgrade.status=failed
+	//
+	// 端点自己只写 sent；ok/failed 由 upgrade_ack 覆盖（契约 §5.1）。mock 用 setTimeout
+	// 演这条回程：600ms 足够页面把「升级中…」画出来，也不至于让 demo 卡着等。
+	on("POST", /^\/v1\/nodes\/([^/]+)\/upgrade$/, (ctx) => {
+		const n = state.nodes.find((x) => x.id === ctx.m[1]);
+		if (!n) return err(404, "节点不存在");
+		if (!state.agentBinary) return err(501, "agent_binary_unavailable");
+		if (n.status === "offline") return err(409, "node_offline");
+		const force = !!(ctx.body && ctx.body.force);
+		if (!force && n.agentVersion === AGENT_VERSION) {
+			// 同版本不推帧，直接告诉控制台「已是最新」（契约 §5）。
+			return json({ status: "up_to_date", targetVersion: AGENT_VERSION });
+		}
+		n.agentUpgrade = { status: "sent", targetVersion: AGENT_VERSION, error: "", at: now() };
+		// old-laptop 固定失败在 need_root（演示“落库后的失败”刷新后仍可见）；
+		// 其它节点要演练失败分支就用 MockApi.failUpgrade("bad_sha")。
+		const failCode =
+			state.upgradeFailCode || (n.id === "nd_mock_legacy" ? "need_root" : "");
+		setTimeout(() => {
+			if (failCode) {
+				n.agentUpgrade = {
+					status: "failed",
+					targetVersion: AGENT_VERSION,
+					error: failCode,
+					at: now(),
+				};
+				return;
+			}
+			n.agentUpgrade = { status: "ok", targetVersion: AGENT_VERSION, error: "", at: now() };
+			n.agentVersion = AGENT_VERSION;
+			n.agentCommit = AGENT_COMMIT;
+			n.lastSeenAt = now(); // 重启后重新握手，心跳跟着刷新
+		}, 600);
+		return json({ status: "sent", targetVersion: AGENT_VERSION });
 	});
 
 	// ===== 源 =====
@@ -4929,6 +5052,22 @@
 		state,
 		reset: () => location.reload(),
 		capByName,
+		// 升级演示控制（契约 §5.1）——两个都只改内存，刷 F5 就回初始值。
+		//
+		// noAgentBinary()：服务端没带 agent 二进制（传 false 恢复）。节点页版本照旧，
+		//   但升级控件变成「服务端没带 agent 二进制」（不给可点按钮）。
+		//   ⚠️ 生效时机是**下一次拉列表**（点页头「刷新」），不需要也不需要 F5——
+		//   F5 会重建整个 mock state，这个开关就被丢掉了。
+		noAgentBinary: (on) => {
+			state.agentBinary = !(on === undefined ? true : on);
+			return state.agentBinary;
+		},
+		// failUpgrade("need_root"|"bad_sha"|"download_failed"|"not_supported")：
+		//   让下一次 upgrade_ack 失败；传空串恢复正常。
+		failUpgrade: (code) => {
+			state.upgradeFailCode = code || "";
+			return state.upgradeFailCode;
+		},
 	};
 	mountBanner();
 
@@ -4936,6 +5075,7 @@
 		"[mock] 前端预览模式：所有 /v1/* 请求由本地 mock 应答。\n" +
 			"  - 数据存在 window.MockApi.state，可改\n" +
 			"  - 任意接口加 ?mockFail=1 可看错误态\n" +
+			"  - 升级失败演练：MockApi.failUpgrade('bad_sha') / 无二进制：MockApi.noAgentBinary()\n" +
 			"  - 刷新页面恢复初始数据",
 	);
 })();

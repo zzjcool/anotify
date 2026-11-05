@@ -92,6 +92,46 @@
         font-size: 11px;
         color: var(--faint);
       }
+      /* ---------- agent 版本 / 升级（契约 §5.1 读侧 + §6 UI） ----------
+         版本陈旧是**信息**不是故障：徽章走 .badge-neutral（surface-2 + muted），
+         不用 --error-soft / --error-300 —— 那会让「可以升级」看起来像「坏了」。
+         只有 ack 失败（.nd-upg-err）与「节点没回话」（.nd-upg-note）才用语义色。 */
+      .nd-ver {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .nd-ver-label {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .nd-ver-val {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text);
+        /* 版本串没有空格可断（1.5.0+3fd5a59 也就 12 字符，但 commit 可以更长）：
+           390 宽下必须允许任意位置换行，否则卡片横向溢出。 */
+        overflow-wrap: anywhere;
+      }
+      /* 从不上报版本的老 agent：值本身就是「未知（老版本）」，弱化即可，不报警。 */
+      .nd-ver-val.is-unknown {
+        font-family: var(--font-sans);
+        color: var(--faint);
+      }
+      .nd-upg-err {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--error-300);
+        overflow-wrap: anywhere;
+      }
+      .nd-upg-note {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--warn-300);
+        overflow-wrap: anywhere;
+      }
       .nd-slots {
         display: flex;
         flex-wrap: wrap;
@@ -484,6 +524,24 @@
 
       let NODES = [];
 
+      /* ---------- agent 自升级的页面态（契约 CONTRACT-agent-upgrade.md §5.1） ----------
+       *
+       * 目标版本来自 `GET /v1/nodes` 的**顶层** `targetAgentVersion`（空串 = 服务端没带
+       * agent 二进制）。TARGET_KNOWN 区分两件事：
+       *   · 字段存在但为空 → 自升级不可用，给一句原因（点下去必然 501，不给可点按钮）；
+       *   · 字段根本不存在 → B 组接口尚未合并的老后端，**不画升级按钮**（点了必然 404）。
+       */
+      let HUB_TARGET = "";
+      let TARGET_KNOWN = false;
+      const PAGE_LOADED_AT = Math.floor(Date.now() / 1000);
+      // 本页里服务端回过 up_to_date 的节点：up_to_date 不落库（§5.1 只落 sent/ok/failed），
+      // 刷新列表会把它抹掉，所以在本页记住，避免按钮又跳回「升级」。
+      const UP_TO_DATE = new Set();
+      // 正在发 POST 的节点：防双击连发第二条 upgrade 帧。
+      const UPGRADING = new Set();
+      // 已经弹过 toast 的 ack 失败（key = id:at）：轮询会多次渲染同一份状态，只提示一次。
+      const TOASTED_ACK = new Set();
+
       function el(tag, cls, text) {
         const n = document.createElement(tag);
         if (cls) n.className = cls;
@@ -534,6 +592,10 @@
           // 那会让用户以为数据被清空了。演示数据由 mock.js 在 fetch 层应答。
           const data = await Anotify.api(API + "/nodes");
           NODES = (data && data.nodes) || [];
+          // 目标版本 = 中枢当前带的 agent 二进制版本（契约 §5.1，顶层字段）。
+          // hasOwnProperty 而不是真值判断：空串与「字段缺失」是两种不同的降级。
+          TARGET_KNOWN = !!data && Object.prototype.hasOwnProperty.call(data, "targetAgentVersion");
+          HUB_TARGET = String((data && data.targetAgentVersion) || "");
           render();
         } catch (err) {
           renderLoadError(err);
@@ -545,6 +607,8 @@
         const list = document.getElementById("nodes-list");
         if (!list) return;
         list.replaceChildren();
+
+        toastFreshAckFailures();
 
         const online = NODES.filter((n) => n.status === "online").length;
         const summary = document.getElementById("nodes-summary");
@@ -567,6 +631,192 @@
         if (!list) return;
         list.replaceChildren();
         list.appendChild(Anotify.loadErrorNode(err, () => loadAll()));
+      }
+
+      /* ---------- agent 版本 / 升级（契约 §5.1 读侧 + §6 UI） ---------- */
+
+      // upgradeTarget 目标版本：顶层字段是主路径；per-node 别名只作兼容兜底。
+      function upgradeTarget(n) {
+        return String((n && n.targetAgentVersion) || "") || HUB_TARGET;
+      }
+
+      // agentVersionText：空版本不写成空白，也不编一个版本号 ——
+      // 老 agent 不上报，就是「未知（老版本）」（契约 §3）。
+      function agentVersionText(n) {
+        const v = String((n && n.agentVersion) || "");
+        return v || t("nodes.upgrade.version_unknown", "未知（老版本）");
+      }
+
+      // versionLine：一行「agent 版本 X」+ 中性提示徽章。
+      // 陈旧/最新都走 .badge-neutral：这是状态信息，不是错误（红线：不用错误色）。
+      function versionLine(n) {
+        const line = el("div", "nd-ver");
+        line.appendChild(
+          el("span", "nd-ver-label", t("nodes.upgrade.version_label", "agent 版本")),
+        );
+        const ver = String((n && n.agentVersion) || "");
+        const val = el(
+          "span",
+          "nd-ver-val" + (ver ? "" : " is-unknown"),
+          agentVersionText(n),
+        );
+        if (ver) val.title = ver; // 卡片只给一眼能对上的一串；完整串挂 title
+        line.appendChild(val);
+
+        const target = upgradeTarget(n);
+        const rec = (n && n.agentUpgrade) || {};
+        let badge = "";
+        if ((ver && target && ver === target) || rec.status === "ok") {
+          badge = t("nodes.upgrade.latest", "已是最新");
+        } else if (ver && target) {
+          badge = t("nodes.upgrade.stale_hint", "有新版本可用");
+        }
+        // 版本为空（未知）时不加「陈旧」徽章：值本身已经写了「未知（老版本）」，
+        // 同一句话说两遍只会让人以为有两件事。
+        if (badge) line.appendChild(el("span", "badge badge-neutral", badge));
+        return line;
+      }
+
+      // upgradeNote：ack 失败 / 节点没回话的行内提示。
+      // 这条必须落在行里而不是只弹 toast：中枢把 agent_upgrade 落库了（§5.1），
+      // 用户刷新页面、隔天回来看，也得能看到「上次升级为什么没成」。
+      function upgradeNote(n) {
+        const rec = (n && n.agentUpgrade) || {};
+        if (rec.status === "failed" && rec.error) {
+          return el(
+            "div",
+            "nd-upg-err",
+            t("nodes.upgrade.ack_failed", "节点上的升级没成功：") +
+              Anotify.upgradeErrorText(rec.error),
+          );
+        }
+        if (Anotify.upgradeAckStale(rec)) {
+          return el("div", "nd-upg-note", t("nodes.upgrade.ack_stale", "节点未回复（可能已断线）"));
+        }
+        return null;
+      }
+
+      // upgradeControl 决定这一行右侧显示什么。四种态：
+      //   服务端没带二进制 → 一句说明（不给可点按钮：点下去必然 501）
+      //   已是最新（版本相同 / 本页回过 up_to_date / ack ok）→ 禁用的「已是最新」
+      //   ack= sent 且未超时 → 「升级中…」禁用
+      //   其余 → 「升级」可点（离线节点也允许点：409 node_offline 会映射成人话）
+      function upgradeControl(n) {
+        const rec = (n && n.agentUpgrade) || {};
+        const ver = String((n && n.agentVersion) || "");
+        const target = upgradeTarget(n);
+
+        // 老后端（B 组接口未合并）：响应里没有 targetAgentVersion。
+        // 此时**不画升级按钮** —— 点了必然 404，给一个注定失败的按钮比不给更糟。
+        // 对比：字段存在但为空串 = 服务端没带二进制（下面那一支），要明说原因。
+        if (!TARGET_KNOWN) return null;
+
+        if (!HUB_TARGET) {
+          const off = el(
+            "span",
+            "badge badge-neutral",
+            t("nodes.upgrade.err.agent_binary_unavailable", "服务端没带 agent 二进制"),
+          );
+          off.title = t(
+            "nodes.upgrade.no_binary_hint",
+            "中枢没有配置 ANOTIFY_AGENT_BIN，自升级不可用；请在节点上跑 anotify-agent upgrade，或重跑安装脚本",
+          );
+          // data-upgrade-state 是给 e2e / 调试看的稳定钩子：文案随语言变，状态不变。
+          off.dataset.upgradeState = "unavailable";
+          return off;
+        }
+
+        const upToDate =
+          UP_TO_DATE.has(n.id) || rec.status === "ok" || (ver && target && ver === target);
+        if (upToDate) {
+          const latest = el("button", "btn btn-quiet btn-sm", t("nodes.upgrade.latest", "已是最新"));
+          latest.type = "button";
+          latest.disabled = true;
+          latest.dataset.upgradeState = "latest";
+          return latest;
+        }
+
+        const sending = UPGRADING.has(n.id) || (rec.status === "sent" && !Anotify.upgradeAckStale(rec));
+        const btn = el(
+          "button",
+          "btn btn-quiet btn-sm",
+          sending ? t("nodes.upgrade.sending", "升级中…") : t("nodes.upgrade.btn", "升级"),
+        );
+        btn.type = "button";
+        btn.disabled = sending;
+        if (sending) {
+          btn.dataset.upgradeState = "sending";
+        } else {
+          btn.dataset.upgradeState = "ready";
+          btn.dataset.action = "upgrade";
+          btn.addEventListener("click", () => upgrade(n));
+        }
+        return btn;
+      }
+
+      // toastFreshAckFailures：轮询会把同一份 ack 状态重复渲染，所以：
+      //   · 只在失败是**本页加载之后**发生的才弹 toast（at > PAGE_LOADED_AT）；
+      //   · 刷新页面时已有的历史失败只留行内提示（不该每次进页面都报警）。
+      function toastFreshAckFailures() {
+        for (const n of NODES) {
+          const rec = (n && n.agentUpgrade) || {};
+          if (rec.status !== "failed" || !rec.error) continue;
+          const at = Number(rec.at) || 0;
+          if (at <= PAGE_LOADED_AT) continue;
+          const key = n.id + ":" + at;
+          if (TOASTED_ACK.has(key)) continue;
+          TOASTED_ACK.add(key);
+          toast(
+            t("nodes.upgrade.ack_failed", "节点上的升级没成功：") +
+              Anotify.upgradeErrorText(rec.error),
+            "error",
+          );
+        }
+      }
+
+      // upgrade 控制台下发的唯一动作：**只发指令 + 展示结果**。
+      // 下载 / 校验 / 替换 / 重启全在节点侧（契约 §0 与 §5）—— 控制台不碰二进制，
+      // 也不实现任何升级逻辑。二次确认不可省：这会重启 agent（在跑的任务等完后才退）。
+      async function upgrade(n) {
+        const msg = t(
+          "nodes.upgrade.confirm",
+          "升级 {name} 上的 agent？会替换节点上的二进制并重启 agent；正在跑的任务会等完（grace 20s）。",
+        ).replace("{name}", n.name || "");
+        if (!confirm(msg)) return;
+        if (UPGRADING.has(n.id)) return;
+        UPGRADING.add(n.id);
+        render(); // 立刻变「升级中…」：否则用户以为没点上，会再点一次
+        try {
+          const res = await Anotify.api(
+            API + "/nodes/" + encodeURIComponent(n.id) + "/upgrade",
+            { method: "POST" },
+          );
+          const status = String((res && res.status) || "");
+          if (status === "up_to_date") {
+            UP_TO_DATE.add(n.id);
+            toast(t("nodes.upgrade.latest", "已是最新"));
+          } else {
+            // sent：upgrade 帧已推给节点，结果靠 upgrade_ack 回写 nodes.agent_upgrade。
+            // 主动补两次刷新（ack 通常一两秒内到），用户不用手点刷新。
+            toast(
+              t("nodes.upgrade.sent", "已下发升级，节点重启后生效（稍后刷新可看到新版本）"),
+            );
+            setTimeout(() => loadAll(), 900);
+            setTimeout(() => loadAll(), 3000);
+          }
+        } catch (err) {
+          const code = Anotify.upgradeErrorCode(err);
+          toast(
+            t("nodes.upgrade.failed", "升级失败：") +
+              (code
+                ? Anotify.upgradeErrorText(code)
+                : (err && (err.detail || err.message)) || ""),
+            "error",
+          );
+        } finally {
+          UPGRADING.delete(n.id);
+          loadAll();
+        }
       }
 
       // 空态：图标 + 标题 + 说明 + 动作（契约 §2 的 .empty 口径）。
@@ -622,6 +872,13 @@
           head.appendChild(tagWrap);
         }
         main.appendChild(head);
+
+        // ---- agent 版本 + 上次升级的结果（契约 §5.1） ----
+        // 放在能力之前：版本是「这台机器能不能自升级」的第一眼信息，
+        // 而 ack 失败是**行级**结果，必须和版本贴在一起看。
+        main.appendChild(versionLine(n));
+        const upgNote = upgradeNote(n);
+        if (upgNote) main.appendChild(upgNote);
 
         // ---- 声明的能力 ----
         //
@@ -718,6 +975,12 @@
             el("span", "status-badge status-warn", t("nodes.draining_hint", "排空中")),
           );
         }
+        // 升级按钮放在这一行动作的最后：它是「换二进制 + 重启」这类重操作，
+        // 不该抢「查看事件」（日常最常用的那个）的位置。
+        // upgradeControl 在老后端上返回 null（没有 targetAgentVersion = 接口未合并），
+        // 别 append 一个 null 进去（appendChild(null) 会抛 TypeError）。
+        const upgradeBtn = upgradeControl(n);
+        if (upgradeBtn) acts.appendChild(upgradeBtn);
         side.appendChild(acts);
 
         row.appendChild(main);

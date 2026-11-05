@@ -2201,6 +2201,63 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		);
 	}
 
+	/* ---------- agent 自升级：错误码 → 人话（节点列表页 / 节点详情页共用） ----------
+	 * 事实源：`.pi-orchestrator/CONTRACT-agent-upgrade.md` §5.1（控制台读侧，冻结）。
+	 *
+	 * 为什么收在一处：`need_root` 要给出可直接粘的命令、`bad_sha` 要说清「已拒绝」，
+	 * 两个页面各写一份映射迟早漂移；文案仍然只从 i18n 取，JS 里不硬编码句子。
+	 *
+	 * 三种码的来源不同，必须都接：
+	 *   · `node_offline` / `agent_binary_unavailable` —— POST 的 409 / 501（Anotify.api 抛出
+	 *     的 err.detail 是响应里的 error 串）；
+	 *   · `need_root` / `bad_sha` / `download_failed` / `not_supported` —— 节点 upgrade_ack
+	 *     失败后被中枢落库到 `nodes.agent_upgrade.error`，随节点列表读回。 */
+	const UPGRADE_ERROR_CODES = [
+		"need_root",
+		"bad_sha",
+		"download_failed",
+		"not_supported",
+		"node_offline",
+		"agent_binary_unavailable",
+	];
+
+	/* upgradeErrorCode 把「HTTP 错误对象」收敛成一个可映射的码。
+	 * 先按响应里的 error 串精确命中（契约里 error 就是码本身），再按状态码兜底：
+	 * 409 只可能是 node_offline、501 只可能是 agent_binary_unavailable（§5）。 */
+	function upgradeErrorCode(err) {
+		if (!err) return "";
+		const raw = String(err.error || err.detail || err.message || "");
+		for (const code of UPGRADE_ERROR_CODES) {
+			if (raw.indexOf(code) >= 0) return code;
+		}
+		if (err.status === 409) return "node_offline";
+		if (err.status === 501) return "agent_binary_unavailable";
+		return "";
+	}
+
+	/* upgradeErrorText 码 → 四语言人话。未识别的码原样回显：宁可露出机器串，
+	 * 也不要把「为什么失败」换成一句「操作失败」。 */
+	function upgradeErrorText(code) {
+		if (!code) return "";
+		const key = "nodes.upgrade.err." + code;
+		const text = t(key, "");
+		return text && text !== key ? text : String(code);
+	}
+
+	/* upgradeAckStale：`status=sent` 超过 60s 还没变 ok/failed → 节点大概率没回话
+	 * （已经断线 / 进程被 kill / ack 丢在重连窗口里）。
+	 *
+	 * 为什么按 `at` 算而不是按「点了多久」：中枢把 agent_upgrade 落库了
+	 * （契约 §5.1），刷新后 `at` 还在 —— 判据在刷新前后必须一致，否则用户一刷新
+	 * 就永远看到「升级中」。 */
+	const UPGRADE_ACK_TIMEOUT_SEC = 60;
+	function upgradeAckStale(rec) {
+		if (!rec || rec.status !== "sent") return false;
+		const at = Number(rec.at) || 0;
+		if (at <= 0) return false;
+		return Date.now() / 1000 - at > UPGRADE_ACK_TIMEOUT_SEC;
+	}
+
 	/* ---------- 导出 ---------- */
 	window.Anotify = {
 		el,
@@ -2220,6 +2277,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		toast,
 		t,
 		pruneReason,
+		upgradeErrorCode,
+		upgradeErrorText,
+		upgradeAckStale,
 		b64urlToBuf,
 		bufToB64url,
 		PLATFORM_META,
