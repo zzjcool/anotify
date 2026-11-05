@@ -36,6 +36,9 @@ services:
     environment:
       ANOTIFY_ADDR: :8080
       ANOTIFY_DB: /data/anotify.db
+      # 中枢自带的 agent 二进制（CONTRACT-agent-upgrade §2）：镜像构建阶段已放到该路径。
+      # 节点用 GET /v1/node/binary 从这里下载升级包；文件不存在 = 升级功能未启用。
+      ANOTIFY_AGENT_BIN: /app/agent
       ANOTIFY_LOG_LEVEL: ${ANOTIFY_LOG_LEVEL:-debug}
       # 开发环境开 pprof：性能排查用（生产默认关闭）
       ANOTIFY_PPROF: ${ANOTIFY_PPROF:-1}

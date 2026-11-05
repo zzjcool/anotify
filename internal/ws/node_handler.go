@@ -416,14 +416,18 @@ func (s *nodeSession) readLoop(ctx context.Context) error {
 			s.sendError(ctx, ErrCodeBadFrame, err.Error())
 			continue
 		}
-		if err := s.handle(ctx, frame); err != nil {
+		if err := s.handle(ctx, frame, raw); err != nil {
 			return err
 		}
 	}
 }
 
 // handle 分发一帧上行消息。
-func (s *nodeSession) handle(ctx context.Context, frame any) error {
+//
+// raw 是解码前的原始载荷：hello 里有一个字段（agent_version）由 A 组加在
+// HelloFrame 上、B 组不得改那个 struct（契约 §7），所以 B 组从原始 JSON 里取它
+// （见 parseHelloVersion）。其余帧忽略 raw。
+func (s *nodeSession) handle(ctx context.Context, frame any, raw []byte) error {
 	switch f := frame.(type) {
 	case *UnknownFrame:
 		// 未知类型：回 error 帧但**保持连接**（不是致命错误）
@@ -435,19 +439,20 @@ func (s *nodeSession) handle(ctx context.Context, frame any) error {
 		return nil
 
 	case *HelloFrame:
-		return s.handleHello(ctx, f)
+		return s.handleHello(ctx, f, parseHelloVersion(raw))
 
 	case *HeartbeatFrame:
 		return s.handleHeartbeat(ctx, f)
 
 	default:
-		// 其余帧（ack/progress/result/apply）要求先 hello
+		// 其余帧（ack/progress/result/apply/upgrade_ack）要求先 hello
 		if !s.hasHello() {
 			s.sendError(ctx, ErrCodeBadFrame, "send hello before other frames")
 			return nil
 		}
-		// apply 是配置帧，其余是任务帧：分开走，别让「任务帧」的语义含糊。
-		if _, ok := frame.(*ApplyFrame); ok {
+		// apply / upgrade_ack 是配置帧，其余是任务帧：分开走，别让「任务帧」的语义含糊。
+		switch frame.(type) {
+		case *ApplyFrame, *UpgradeAckFrame:
 			return s.handleConfigFrame(ctx, frame)
 		}
 		return s.handleTaskFrame(ctx, frame)
@@ -455,10 +460,23 @@ func (s *nodeSession) handle(ctx context.Context, frame any) error {
 }
 
 // handleHello 处理握手后的第一帧。
-func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
+func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame, ver helloVersion) error {
 	applied, stale, err := applyHello(ctx, s.h.Store, s.node, f)
 	if err != nil {
 		return s.failHello(ctx, err)
+	}
+	// 记录节点自报的 agent 版本（CONTRACT-agent-upgrade §3）。
+	//
+	// 写在 welcome 之前：控制台在节点上线后立刻读 /v1/nodes，版本列不该比
+	// 「节点已上线」晚一拍。失败只 WARN —— 版本是信息性字段，写不进去也必须让节点上线
+	// （否则一个存储抖动能把整台机器挡在门外）。
+	if err := s.h.Store.UpdateNodeAgentVersion(ctx, s.node.NamespaceID, s.node.ID, ver.AgentVersion); err != nil {
+		slog.Warn("record agent version failed",
+			"event", "node.ws.hello.agent_version_failed",
+			"node_id", s.node.ID,
+			"agent_version", ver.AgentVersion,
+			"error", err.Error(),
+		)
 	}
 	s.markHello()
 	s.touch()

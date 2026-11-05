@@ -150,6 +150,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 必须在 eventH 之前创建——派发器需要它作为 Publisher。
 	nodeHub := ws.NewNodeHub()
 
+	// 自带 agent 二进制（CONTRACT-agent-upgrade §2）：中枢同时是节点的**升级源**。
+	// 文件不存在 = 功能未启用（loadAgentBinary 只 WARN），此时 GET /v1/node/binary
+	// 返回 501、控制台不显示升级按钮——「不升级」是合法部署形态，不是启动错误。
+	agentBin := loadAgentBinary(cfg.AgentBin, serverVersion())
+
 	// 事件入口（#58）：触发器 + 派发器
 	// 派发器带 Publisher，这样「派发成功」包含「assign 帧真的推出去了」，
 	// 而不是仅仅把库里的状态改成 assigned（节点可能根本不在线）。
@@ -199,7 +204,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	)
 
 	// 控制台 API（#59）：8 个新端点，全部走组织维度（I10）
-	consoleH := &consoleHandler{db: db, auth: authSvc}
+	// targetAgentVersion 是 GET /v1/nodes 顶层下发的「中枢当前带的 agent 版本」
+	// （CONTRACT-agent-upgrade §5.1）；空串 = 服务端没带二进制。
+	consoleH := &consoleHandler{db: db, auth: authSvc, targetAgentVersion: agentBin.targetVersion()}
 
 	// 统计（/v1/stats）是**命名空间级**资源（契约 §6.2）：
 	// 它需要和资源端点**同一套**命名空间解析，所以复用 consoleH 的解析函数
@@ -453,6 +460,16 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.nodes))))
 	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(consoleH.nodeByID))))
 	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(consoleH.drainNode))))
+
+	// --- agent 自升级（CONTRACT-agent-upgrade §2 / §5）---
+	//
+	// 下载端点走 **node token**（不是会话）：调用方是节点上的 agent / CLI。
+	// 下发端点走会话 + 命名空间隔离（控制台按钮）。
+	upgradeH := &nodeUpgradeHandler{db: db, console: consoleH, hub: nodeHub, bin: agentBin}
+	mux.Handle("GET /v1/node/binary",
+		noStore(&agentBinaryHandler{bin: agentBin, auth: db}))
+	mux.Handle("POST /v1/nodes/{id}/upgrade",
+		noStore(sessMW(http.HandlerFunc(upgradeH.upgrade))))
 
 	// --- 部署模型（console-declares epic，契约 CONTRACT-protocol §11）---
 	//

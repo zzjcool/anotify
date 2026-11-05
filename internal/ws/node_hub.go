@@ -422,6 +422,36 @@ func (h *NodeHub) PublishDeploy(namespaceID, nodeID string, f *DeployFrame) erro
 	return s.sendBytes(ctx, data)
 }
 
+// PublishUpgrade 向节点推送一帧 upgrade（CONTRACT-agent-upgrade §5）。
+//
+// 与 PublishDeploy 同形：不做任务级护栏，只有两条拒绝 —— 没有活跃连接
+// （ErrNodeOffline，调用方据此回 409 node_offline）与跨命名空间。
+//
+// 帧里只有「目标版本 / sha256 / 下载路径」，二进制本身**不**走 WS：
+// agent 是 15 MB 量级，塞进帧会阻塞同一条连接上的心跳与 assign（节点会掉线）。
+func (h *NodeHub) PublishUpgrade(namespaceID, nodeID string, f *UpgradeFrame) error {
+	s := h.current(nodeID)
+	if s == nil {
+		return ErrNodeOffline
+	}
+	if s.node.NamespaceID != namespaceID {
+		return fmt.Errorf("node %s belongs to another namespace", nodeID)
+	}
+	data, err := Encode(f)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), upgradeSendTimeout)
+	defer cancel()
+	return s.sendBytes(ctx, data)
+}
+
+// upgradeSendTimeout 是单帧升级指令的写超时。
+//
+// 帧本身很小（几百字节），不需要部署那种 30s 宽限；10s 足够覆盖慢链路，
+// 又不至于让控制台的一次点击挂太久。
+const upgradeSendTimeout = 10 * time.Second
+
 // deploySendTimeout 是单帧部署推送的写超时。
 //
 // 比 assign 宽松：产物最大 1 MiB（CONTRACT-artifact §4），在慢速链路上

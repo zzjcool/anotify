@@ -39,6 +39,7 @@ COPY . .
 # web/*.html 已由源码 COPY 进来，但 fe 阶段才是权威产物，故用 fe 覆盖）
 COPY --from=fe /app/internal/server/dist ./internal/server/dist
 RUN go build -trimpath -ldflags="-s -w" -tags embeddist -o /anotify ./cmd/server \
+    && go build -trimpath -ldflags="-s -w" -o /agent ./cmd/agent \
     && go build -trimpath -ldflags="-s -w" -o /devseed ./cmd/devseed
 
 # ---- 运行 ----
@@ -57,13 +58,23 @@ RUN adduser -D -u 10001 anotify \
     && chown anotify:anotify /data
 WORKDIR /data
 COPY --from=build /anotify /usr/local/bin/anotify
+# 中枢同时是节点的**升级源**（CONTRACT-agent-upgrade §2）：把 agent 二进制带进镜像，
+# 节点用 GET /v1/node/binary 下载它（node token 鉴权）。dev 与生产是**同一份**产物：
+# 构建阶段编译一次，运行阶段只做拷贝。
+#
+# 放 /app/agent 是契约里的默认路径（ANOTIFY_AGENT_BIN 的缺省值），这里再显式写一次
+# ENV，让「镜像里有什么」在 docker inspect 里也看得见。文件必须对运行用户可读
+# （COPY 默认 0644，uid 10001 读得到）；不 chown 也不需要（只读，不替换自己）。
+COPY --from=build /agent /app/agent
 # 单二进制内嵌前端；仅需挂载数据目录持久化 sqlite
 ENV ANOTIFY_ADDR=:8080 \
     ANOTIFY_STATIC= \
-    ANOTIFY_DB=/data/anotify.db
+    ANOTIFY_DB=/data/anotify.db \
+    ANOTIFY_AGENT_BIN=/app/agent
 EXPOSE 8080
 USER anotify
 VOLUME ["/data"]
 ENTRYPOINT ["anotify"]
-# devseed 只在 build 阶段产出（不复制进 runtime）：本地开发用它播种，
-# 生产镜像刻意只带 server 一个二进制。见 docker-compose.dev.yml 的 seed/demo 服务。
+# devseed 只在 build 阶段产出（不复制进 runtime）：本地开发用它播种。
+# 生产镜像刻意只带 server（/usr/local/bin/anotify）与 agent（/app/agent）两个二进制。
+# 见 docker-compose.dev.yml 的 seed/demo 服务。

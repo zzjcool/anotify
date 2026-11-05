@@ -5,7 +5,8 @@
 -- 本文件同时是**迁移脚本**：按 `-- +migration N name` 切块，
 -- store.migrateWith 逐块应用，schema_version 记账（见 migrate.go）。
 --
--- 现在只有一块：`-- +migration 1 baseline`。
+-- baseline 之后是三块：`-- +migration 1 baseline`、`2 priority_balance`、
+-- `3 agent_version`（新变更继续往后追加）。
 --
 -- squash：squash 之前的 28 块增量迁移（建表 → 加列 → 删列 → 重建表 → 删表）已经合并成
 -- 这一份**终态 DDL**。这里描述的是「今天库里长什么样」，不残留任何「迁移 4 建表、
@@ -576,3 +577,28 @@ ALTER TABLE edges ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
 -- 本期只实现 priority；all / random / least_loaded / hash 保存时 400（尚未实现），
 -- 不静默降级 —— 静默降级会让「我配了 all 却是 1:1」这种分歧永远查不出来。
 ALTER TABLE capability_versions ADD COLUMN balance TEXT NOT NULL DEFAULT '{}';
+
+-- +migration 3 agent_version
+
+-- 节点上跑的 agent 版本（hello.agent_version 自报）与最近一次成功升级带来的 commit
+-- （upgrade_ack 上报）。都 NOT NULL DEFAULT ''：**空串 = 未知（老 agent 不带这个字段）**，
+-- 不是错误，控制台据此显示「未知（老版本）」。
+--
+-- 为什么拆成两列而不是一个 "1.5.0+3fd5a59" 字符串：版本号是**比较**用的（控制台据此判断
+-- 「已是最新」），commit 是审计用的；拼在一起之后每次比较都要先拆串，拆错一次就是
+-- 「明明同版本却一直提示可升级」。
+--
+-- agent_version 由 hello 落库（每次连接都刷新），agent_commit 只由 upgrade_ack 落库
+-- （hello 帧没有这个字段，见 CONTRACT-agent-upgrade §3/§5）。
+ALTER TABLE nodes ADD COLUMN agent_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE nodes ADD COLUMN agent_commit  TEXT NOT NULL DEFAULT '';
+
+-- 最近一次升级尝试的状态（CONTRACT-agent-upgrade §5.1）：JSON
+-- {"status":"","targetVersion":"","error":"","at":0}。
+--   status  ∈ ""（从未尝试）/ sent（已下发等 ack）/ ok / failed
+--   error   ∈ need_root / bad_sha / download_failed / not_supported / ""
+--   at      那一刻的 unix 秒（sent/ok/failed 都有）
+-- 为什么要落库而不是只留在内存：控制台刷新/重启后仍要显示上次升级的结果；
+-- 没有它，UI 的失败映射（need_root → 提示去节点跑 sudo）就是死代码。
+-- 默认 '{}' = 从未尝试；读取端把缺列补成零值对象（恒存在的 agentUpgrade）。
+ALTER TABLE nodes ADD COLUMN agent_upgrade TEXT NOT NULL DEFAULT '{}';

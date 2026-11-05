@@ -11,10 +11,10 @@ import (
 // 改为上报「本机缓存了哪些产物」；新增 deploy（下行）/ apply（上行）两帧。
 const ProtocolVersion = 2
 
-// 十一帧的帧类型名。字符串本身是协议的一部分，不能随意改。
+// 十三帧的帧类型名。字符串本身是协议的一部分，不能随意改。
 //
-// 节点 → 中枢：hello / heartbeat / ack / progress / result / apply
-// 中枢 → 节点：welcome / assign / deploy / cancel / error
+// 节点 → 中枢：hello / heartbeat / ack / progress / result / apply / upgrade_ack
+// 中枢 → 节点：welcome / assign / deploy / cancel / error / upgrade
 const (
 	// 节点 → 中枢
 	NodeFrameHello     = "hello"
@@ -37,6 +37,13 @@ const (
 	NodeFrameError   = "error"
 	// NodeFrameEmitAck 是对一次 emit 的确认（幂等：重复 seq 也回 ok）。
 	NodeFrameEmitAck = "emit_ack"
+	// NodeFrameUpgrade 让节点去下载并替换自己的二进制（CONTRACT-agent-upgrade §5）。
+	//
+	// 帧里**不带二进制**：15 MB 的帧会撑爆心跳与背压。节点收到后用自己的
+	// node token 请求 UpgradeFrame.URLPath 下载，校验 sha256 后原子替换。
+	NodeFrameUpgrade = "upgrade"
+	// NodeFrameUpgradeAck 是节点对一次 upgrade 的回报（成功 / 失败 + 可判别短码）。
+	NodeFrameUpgradeAck = "upgrade_ack"
 )
 
 // 错误码（契约 §6.1 表格）。
@@ -242,6 +249,87 @@ type EmitAckFrame struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// UpgradeFrame 让节点把自己的二进制升级到目标版本（CONTRACT-agent-upgrade §5）。
+//
+// 为什么不把二进制塞进帧里：帧上限 1 MiB（NodeFrameSoftLimit），而 agent 是 15 MB
+// 量级；一条 15 MB 的帧会阻塞同一条连接上的心跳与 assign，节点侧读超时 = 掉线。
+// 所以帧里只有「去哪拿、拿到后该是什么」三件事，下载走普通 HTTP（节点自己的 token 鉴权）。
+type UpgradeFrame struct {
+	Type string `json:"type"`
+	// TargetVersion 是中枢自己的版本（控制台展示的「已是最新」也按它比较）。
+	TargetVersion string `json:"target_version"`
+	// SHA256 是 64 位十六进制（不带 "sha256:" 前缀）——下载后必须逐字节对上。
+	SHA256 string `json:"sha256"`
+	// URLPath 是中枢上的下载路径（相对，节点自己拼 server 根；见 NodeBinaryPath）。
+	URLPath string `json:"url_path"`
+}
+
+// agent 升级失败的判别短码（upgrade_ack.error，CONTRACT-agent-upgrade §5）。
+//
+// 它们会原样落进 nodes.agent_upgrade.error 并出线给控制台（§5.1），所以字符串是
+// 冻结契约的一部分，不能改。控制台按它做失败映射：need_root → 「去节点跑 sudo」。
+const (
+	UpgradeErrNeedRoot       = "need_root"
+	UpgradeErrBadSHA         = "bad_sha"
+	UpgradeErrDownloadFailed = "download_failed"
+	UpgradeErrNotSupported   = "not_supported"
+)
+
+// NormalizeUpgradeError 把 ack 里的错误码收敛到契约枚举（未知码 → ""）。
+//
+// 为什么不让未知码原样落库：出线形状在 §5.1 里是**封闭集合**（控制台按枚举做
+// 映射），存一个 UI 不认识的码只会让它显示「升级失败（未知原因）」——原始值已经
+// 进了 WARN 日志，排障信息没有丢。
+func NormalizeUpgradeError(code string) string {
+	switch code {
+	case UpgradeErrNeedRoot, UpgradeErrBadSHA, UpgradeErrDownloadFailed, UpgradeErrNotSupported:
+		return code
+	}
+	return ""
+}
+
+// UpgradeAckFrame 是节点对 upgrade 的回报（CONTRACT-agent-upgrade §5）。
+//
+// ok=false 时 Error 是可判别短码：bad_sha / need_root / download_failed / not_supported。
+// 中枢落库时**成功写版本列、失败只写 agent_upgrade 状态**（CONTRACT-agent-upgrade §5.1）：
+// 节点上的二进制没换，版本列保持旧值才诚实；失败原因另存一列供控制台刷新后仍能映射。
+type UpgradeAckFrame struct {
+	Type string `json:"type"`
+	OK   bool   `json:"ok"`
+	// Version / Commit 是升级后**实际生效**的版本；ok=false 时为空。
+	Version string `json:"version,omitempty"`
+	Commit  string `json:"commit,omitempty"`
+	Error   string `json:"error"`
+}
+
+// NodeBinaryPath 是节点下载 agent 二进制的路径（GET 到中枢根上）。
+//
+// 与 UpgradeFrame.URLPath 共用同一个常量：改路径只有一处，帧和 HTTP 路由不会漂移。
+const NodeBinaryPath = "/v1/node/binary"
+
+// helloVersion 是 hello 帧里中枢要落库、但**不在 HelloFrame 上**的字段（契约 §3）。
+//
+// 为什么不直接读 HelloFrame.AgentVersion：那个字段由 A 组加（契约 §7 明确
+// 「B 只解析 + 落库 + 视图，不得再改这个 struct」）。这里对同一份原始 JSON
+// 再解一次同一个键——两个解析器读的键逐字相同，A 合入后两处的值必然一致。
+type helloVersion struct {
+	AgentVersion string
+}
+
+// parseHelloVersion 从 hello 的原始载荷里取 agent_version。
+//
+// 载荷已由 DecodeUpstream 证明是合法 JSON，所以这里的失败只可能是「类型不对」；
+// 一律当「没带这个字段」处理（版本是信息性数据，不值得因此拒掉一次握手）。
+func parseHelloVersion(raw []byte) helloVersion {
+	var v struct {
+		AgentVersion string `json:"agent_version"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return helloVersion{}
+	}
+	return helloVersion{AgentVersion: v.AgentVersion}
+}
+
 // 下行帧（中枢 → 节点）──────────────────────────────
 
 // WelcomeFrame 是握手成功后的第一帧：告诉节点按什么节奏发心跳。
@@ -415,6 +503,12 @@ func DecodeUpstream(data []byte) (any, error) {
 			return nil, fmt.Errorf("decode emit: %w", err)
 		}
 		return &f, nil
+	case NodeFrameUpgradeAck:
+		var f UpgradeAckFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode upgrade_ack: %w", err)
+		}
+		return &f, nil
 	default:
 		return &UnknownFrame{Type: env.Type}, nil
 	}
@@ -432,7 +526,8 @@ func Encode(f any) ([]byte, error) {
 // IsDownstream 判定一个帧类型是否是中枢 → 节点方向（用于断言节点没有发下行帧）。
 func IsDownstream(frameType string) bool {
 	switch frameType {
-	case NodeFrameWelcome, NodeFrameAssign, NodeFrameDeploy, NodeFrameCancel, NodeFrameError, NodeFrameEmitAck:
+	case NodeFrameWelcome, NodeFrameAssign, NodeFrameDeploy, NodeFrameCancel, NodeFrameError,
+		NodeFrameEmitAck, NodeFrameUpgrade:
 		return true
 	}
 	return false
@@ -441,7 +536,8 @@ func IsDownstream(frameType string) bool {
 // IsUpstream 判定一个帧类型是否是节点 → 中枢方向。
 func IsUpstream(frameType string) bool {
 	switch frameType {
-	case NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck, NodeFrameProgress, NodeFrameResult, NodeFrameApply, NodeFrameEmit:
+	case NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck, NodeFrameProgress, NodeFrameResult,
+		NodeFrameApply, NodeFrameEmit, NodeFrameUpgradeAck:
 		return true
 	}
 	return false
