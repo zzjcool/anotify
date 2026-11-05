@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zzjcool/anotify/internal/route"
 )
 
 // 保留期 / 背压的默认值（#229 / #228）。
@@ -130,6 +132,18 @@ type Config struct {
 	// 判定口径刻意是**等待时长**而不是 pending 行数：行数随命名空间数 / 能力数 / 流量口径
 	// 漂移，跨部署不可比；「最老的 pending 等了多久」才与部署规模无关。
 	PendingMaxAgeSec int
+
+	// MaxHops / TraceTaskBudget 是派发的两个预算（契约 §2）。
+	//
+	// 语义（解析见 positiveIntFromEnv）：
+	//   - 未设置 / 空 → 默认（hop 16 / trace 512）；
+	//   - 正整数     → 原值；
+	//   - 其它（0 / 负数 / 非数字）→ **启动即失败**（Validate 报错），
+	//     不像保留期那样回落默认。理由：预算是一条防线（环 + 无限扇出的兜底），
+	//     一个写错的 env 把防线悄悄换回默认值，比拒绝启动更难查——
+	//     而拒绝启动在这里没有代价（改对再起）。
+	MaxHops         int
+	TraceTaskBudget int
 
 	// StatsIntervalSec 是运行期 SQLite 统计维护的周期（秒，#265）。
 	//
@@ -381,7 +395,36 @@ func FromEnv() Config {
 		EventRetentionDays: retentionDaysFromEnv("ANOTIFY_EVENT_RETENTION_DAYS", defaultEventRetentionDays),
 		PendingMaxAgeSec:   pendingMaxAgeFromEnv("ANOTIFY_PENDING_MAX_AGE_SEC", defaultPendingMaxAgeSec),
 		StatsIntervalSec:   statsIntervalFromEnv("ANOTIFY_STATS_INTERVAL_SEC"),
+
+		// 派发预算（契约 §2）：非法值由 Validate 拦在启动那一刻。
+		//
+		// 默认值直接引 route 包（唯一事实源）：不配 env 时，cfg 里的值必须与
+		// route.New 填进去的一致。抄一份字面量就变成两个副本，只能靠测试兜住漂移。
+		MaxHops:         positiveIntFromEnv("ANOTIFY_MAX_HOPS", route.DefaultMaxHops),
+		TraceTaskBudget: positiveIntFromEnv("ANOTIFY_TRACE_TASK_BUDGET", route.DefaultTraceTaskBudget),
 	}
+}
+
+// positiveIntFromEnv 读一个**必须为正整数**的额度环境变量。
+//
+// 与同文件里其它 *_from_env 的区别（那些都是「写错了回落默认」）：
+//   - 未设置 / 空 → def（正常的「我没配」）；
+//   - 其它任何解析不了 / <= 0 的值 → 0（一个**哨兵**，表示「配置非法」），
+//     由 Validate() 变成启动失败。
+//
+// 为什么用 0 当哨兵而不是在这里报错：FromEnv 的签名是「只读 env，不返回错误」，
+// 而校验失败必须在进程启动时**一次说清**（cmd/server 只调一次 Validate）。
+// 0 永远不会是合法值（预算是正数），所以它不会与合法配置混淆。
+func positiveIntFromEnv(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0 // 哨兵：配置非法（Validate 会带着原值报错）
+	}
+	return n
 }
 
 // bootIDFromEnv 取 ANOTIFY_BOOT_ID，未设则随机生成 8 字节（16 位十六进制）。
@@ -401,6 +444,19 @@ func bootIDFromEnv() string {
 func (c Config) Validate() error {
 	if c.VAPIDPublic == "" || c.VAPIDPriv == "" {
 		return fmt.Errorf("缺少 VAPID 配置（ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY）")
+	}
+	// 派发预算必须是正整数（契约 §2）：非法值**启动即失败**，不静默用默认。
+	// 报错带上 env 里的原值，否则运维只会看到「必须是正整数」却不知道自己配了什么。
+	for _, it := range []struct {
+		key string
+		got int
+	}{
+		{"ANOTIFY_MAX_HOPS", c.MaxHops},
+		{"ANOTIFY_TRACE_TASK_BUDGET", c.TraceTaskBudget},
+	} {
+		if it.got <= 0 {
+			return fmt.Errorf("%s 必须是正整数（当前 %q）", it.key, os.Getenv(it.key))
+		}
 	}
 	return nil
 }

@@ -18,6 +18,100 @@ const (
 	CapSourceCustom  = "custom"
 )
 
+// BalanceModePriority 是本期**唯一实现**的端口平衡模式（契约 §1）。
+//
+// 语义：同一 (能力, 端口) 的多个下游是候选集合，按边上的 priority 取最小的一组，
+// 组内轮盘选一个（见 internal/route 的候选选择）。
+const BalanceModePriority = "priority"
+
+// balanceModesReserved 是契约里**预留但未实现**的模式。
+//
+// 保存时必须直接拒（400），不能静默降级成 priority：
+// 「我配了 all，跑起来却是 1:1」与「我配错了」在运行期看起来一模一样，
+// 都是永远查不出来的分歧。
+var balanceModesReserved = map[string]bool{
+	"all":          true, // 全派（扇出到全部下游）：本期不实现
+	"random":       true,
+	"least_loaded": true,
+	"hash":         true,
+}
+
+// BalanceSpec 是一个端口的平衡策略（capability_versions.balance 里的一个值）。
+//
+// 缺省（没有这个键，或 mode 为空）= priority。多出的键保留在结构里是为了
+// 本期实现不了的参数能落盘，但保存时会被拒（尚未实现）。
+type BalanceSpec struct {
+	Mode string `json:"mode"`
+}
+
+// Balance 是「端口 → 平衡策略」的映射（capability_versions.balance 一列）。
+//
+// 为什么是**端口**而不是能力：平衡策略永远是「这个出口的下游怎么选」，
+// 同一个能力的不同出口可以选择不同策略。
+type Balance map[string]BalanceSpec
+
+// ErrBalanceRejected 表示 balance 的内容不合法（客户端可修 → HTTP 400）。
+//
+// 两类：预留但未实现的 mode（提示「尚未实现」），以及端口名不在 outputs 里
+// （拼错当场拒，否则它只会在派发时静默不生效）。
+var ErrBalanceRejected = errors.New("balance_rejected")
+
+// normalizeBalance 校验并归一一个能力的 balance（保存前调用）。
+//
+// 归一三件事（都是为了让「同一份定义 → 同一个 hash」成立）：
+//   - nil → 空 map（不是 NULL）：缺省与 `{}` 是同一件事；
+//   - mode 为空 → priority（默认策略显式化）；
+//   - 端口名必须 ∈ 这个版本的 outputs（拼错当场拒，而等派发时静默不生效）。
+//
+// 返回的 map 不为 nil：序列化出去是 `{}` 而不是 `null`（不变量 I9 同口径）。
+func normalizeBalance(c *CapabilityVersion) (Balance, error) {
+	if c == nil {
+		return Balance{}, nil
+	}
+	out := make(Balance, len(c.Balance))
+	ports := make(map[string]bool, len(c.Outputs))
+	for _, o := range c.Outputs {
+		ports[o] = true
+	}
+	for port, spec := range c.Balance {
+		if !ports[port] {
+			return nil, fmt.Errorf("%w: balance.%s: port is not in %s@%d outputs %v",
+				ErrBalanceRejected, port, c.Name, c.Version, c.Outputs)
+		}
+		mode := strings.TrimSpace(spec.Mode)
+		if mode == "" {
+			mode = BalanceModePriority // 缺省 = priority
+		}
+		if mode != BalanceModePriority {
+			if balanceModesReserved[mode] {
+				return nil, fmt.Errorf("%w: balance.%s.mode=%q 尚未实现（本期只支持 %q）",
+					ErrBalanceRejected, port, mode, BalanceModePriority)
+			}
+			return nil, fmt.Errorf("%w: balance.%s.mode=%q 不是已知模式（只支持 %q）",
+				ErrBalanceRejected, port, mode, BalanceModePriority)
+		}
+		out[port] = BalanceSpec{Mode: mode}
+	}
+	return out, nil
+}
+
+// BalanceModeOf 返回某个端口的平衡模式（缺省 = priority）。
+//
+// 派发侧用它判定「这个端口是不是全派」：本期只实现 priority，预留模式在保存时
+// 已经被拒，所以这里只会返回 priority —— 除非库被手改过（派发侧见非 priority
+// 一律按 priority 处理并留一条 WARN，不静默扇出）。
+func (c *CapabilityVersion) BalanceModeOf(port string) string {
+	if c == nil {
+		return BalanceModePriority
+	}
+	if spec, ok := c.Balance[port]; ok {
+		if mode := strings.TrimSpace(spec.Mode); mode != "" {
+			return mode
+		}
+	}
+	return BalanceModePriority
+}
+
 // ErrCapabilityReserved 表示试图用内置能力的保留名字创建/覆盖定义。
 //
 // 内置起点（github/cron/http/manual）的名字是保留的：findOrigin 取该 name 的
@@ -71,11 +165,14 @@ type CapabilityVersion struct {
 	Version      int             `json:"version"`
 	ParamsSchema json.RawMessage `json:"paramsSchema"`
 	Outputs      []string        `json:"outputs"`
-	Lifecycle    Lifecycle       `json:"lifecycle"`
-	Sticky       string          `json:"sticky"`
-	Source       string          `json:"source"`
-	ContentHash  string          `json:"contentHash"`
-	CreatedAt    int64           `json:"createdAt"`
+	// Balance 是端口级平衡策略（契约 §1）：`{端口: {"mode": "priority"}}`，
+	// 缺省 `{}` = 所有端口都按 priority。本期只实现 priority，其它值保存时 400。
+	Balance     Balance   `json:"balance"`
+	Lifecycle   Lifecycle `json:"lifecycle"`
+	Sticky      string    `json:"sticky"`
+	Source      string    `json:"source"`
+	ContentHash string    `json:"contentHash"`
+	CreatedAt   int64     `json:"createdAt"`
 }
 
 // capHashInput 是参与 content_hash 计算的规范化结构。
@@ -94,6 +191,10 @@ type capHashInput struct {
 	Outputs      []string        `json:"outputs"`
 	Lifecycle    Lifecycle       `json:"lifecycle"`
 	Sticky       string          `json:"sticky"`
+	// Balance 参与 hash（契约 §1）：它决定「同一个端口会落到谁头上」，
+	// 是能力定义的**行为**的一部分。不参与的话，「改 balance」的请求会算出与旧版
+	// 相同的 hash、被幂等折叠成旧行 —— 新 balance 被静默丢弃，而用户以为生效了。
+	Balance Balance `json:"balance"`
 }
 
 // NormalizeCapability 计算 content_hash：把 params_schema / outputs / lifecycle / sticky
@@ -122,12 +223,20 @@ func NormalizeCapability(c *CapabilityVersion) (string, error) {
 	}
 	sort.Strings(outputs)
 
+	// balance：先校验再归一（未实现的 mode → ErrBalanceRejected → HTTP 400）。
+	// 校验放在这里是因为 createCapabilityTx 的唯一实现就是「先归一再算 hash」。
+	balance, err := normalizeBalance(c)
+	if err != nil {
+		return "", err
+	}
+
 	payload, err := json.Marshal(capHashInput{
 		Name:         c.Name,
 		ParamsSchema: schema,
 		Outputs:      outputs,
 		Lifecycle:    c.Lifecycle,
 		Sticky:       c.Sticky,
+		Balance:      balance,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal capability for hash: %w", err)
@@ -246,6 +355,14 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 			return fmt.Errorf("%w: %q is a builtin origin and its name is reserved", ErrCapabilityReserved, c.Name)
 		}
 	}
+	// hash 里已经吃过 balance（NormalizeCapability 会校验并归一它），这里再取一次
+	// 归一后的形状写回 c：返回给调用方的行必须与落库的行逐字节一致
+	// （nil / `{}` / `{port:{mode:""}}` 是同一份定义，落库只有一种形状）。
+	normalizedBalance, berr := normalizeBalance(c)
+	if berr != nil {
+		return berr
+	}
+	c.Balance = normalizedBalance
 	hash, err := NormalizeCapability(c)
 	if err != nil {
 		return err
@@ -294,6 +411,10 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 	if err != nil {
 		return fmt.Errorf("marshal lifecycle: %w", err)
 	}
+	balanceJSON, err := json.Marshal(c.Balance)
+	if err != nil {
+		return fmt.Errorf("marshal balance: %w", err)
+	}
 	schema := string(c.ParamsSchema)
 	if schema == "" {
 		schema = "{}"
@@ -301,10 +422,10 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 
 	_, err = ex.execContext(ctx,
 		`INSERT INTO capability_versions
-		   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, balance, sticky, source, content_hash, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.ID, c.NamespaceID, c.Name, c.DisplayName, c.Version, schema, string(outputsJSON),
-		string(lifecycleJSON), c.Sticky, c.Source, hash, c.CreatedAt)
+		string(lifecycleJSON), string(balanceJSON), c.Sticky, c.Source, hash, c.CreatedAt)
 	if err == nil {
 		c.ContentHash = hash
 		return nil
@@ -363,7 +484,7 @@ func getCapabilityByHashOn(ctx context.Context, ex queryExec, namespaceID, hash 
 
 // capabilityColumns 是统一的列顺序，scanCapabilityOn 依赖它。
 const capabilityColumns = `id, namespace_id, name, display_name, version, params_schema,
-	outputs, lifecycle, sticky, source, content_hash, created_at`
+	outputs, lifecycle, balance, sticky, source, content_hash, created_at`
 
 // scanCapability 执行查询并解析一行；未命中返回 ErrNotFound（事务外；读走语句缓存）。
 func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*CapabilityVersion, error) {
@@ -374,13 +495,13 @@ func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*Ca
 // 事务内传 txExec 才能看到本事务刚写入的行（见 txexec.go）。
 func scanCapabilityOn(ctx context.Context, ex queryExec, query string, args ...any) (*CapabilityVersion, error) {
 	var c CapabilityVersion
-	var paramsSchema, outputs, lifecycle string
+	var paramsSchema, outputs, lifecycle, balance string
 	// 语句缓存（#242）：scanCapabilityOn 被 GetCapability / GetCapabilityByID /
 	// getCapabilityByHash 共用，三者的 SQL 文本都是常量（拼的只是列名/条件名）。
 	// 事务内（ex=txExec）**不能**用缓存：那些语句绑的是池里另一条连接，看不到本事务的写。
 	err := ex.queryRowContext(ctx, query, args...).Scan(
 		&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
-		&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
+		&lifecycle, &balance, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -400,7 +521,28 @@ func scanCapabilityOn(ctx context.Context, ex queryExec, query string, args ...a
 	if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
 		return nil, fmt.Errorf("decode capability lifecycle: %w", err)
 	}
+	if err := decodeCapabilityBalance(&c, balance); err != nil {
+		return nil, err
+	}
 	return &c, nil
+}
+
+// decodeCapabilityBalance 把 balance 列解成结构体；空列 / `null` / `{}` 都是「没配」。
+//
+// 三种写法归一成同一个值（空 map）是必须的：读回来要能 marshal 成 `{}` 而不是
+// `null`（不变量 I9），而且「没配」与「配了 {}」在前端必须长得一样。
+func decodeCapabilityBalance(c *CapabilityVersion, raw string) error {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "null" {
+		c.Balance = Balance{}
+		return nil
+	}
+	if err := json.Unmarshal([]byte(raw), &c.Balance); err != nil {
+		return fmt.Errorf("decode capability balance: %w", err)
+	}
+	if c.Balance == nil {
+		c.Balance = Balance{}
+	}
+	return nil
 }
 
 // GetCapability 按 name + version 取能力定义；未命中返回 ErrNotFound。
@@ -481,10 +623,10 @@ func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*Capab
 	out := []*CapabilityVersion{}
 	for rows.Next() {
 		var c CapabilityVersion
-		var paramsSchema, outputs, lifecycle string
+		var paramsSchema, outputs, lifecycle, balance string
 		if err := rows.Scan(
 			&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
-			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
+			&lifecycle, &balance, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan capability row: %w", err)
 		}
@@ -499,6 +641,9 @@ func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*Capab
 		}
 		if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
 			return nil, fmt.Errorf("decode lifecycle: %w", err)
+		}
+		if err := decodeCapabilityBalance(&c, balance); err != nil {
+			return nil, err
 		}
 		out = append(out, &c)
 	}

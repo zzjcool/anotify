@@ -385,8 +385,8 @@ func TestBaselineReopenIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if v1 != baselineVersion {
-		t.Fatalf("全新库版本 = %d，期望 baseline %d", v1, baselineVersion)
+	if v1 != headVersion {
+		t.Fatalf("全新库版本 = %d，期望 headVersion %d（baseline + 追加块全部记账）", v1, headVersion)
 	}
 	before := masterDDL(t, db)
 	if err := db.Close(); err != nil {
@@ -409,8 +409,9 @@ func TestBaselineReopenIsIdempotent(t *testing.T) {
 	if err := db2.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&rows); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if rows != 1 {
-		t.Fatalf("schema_version 有 %d 行，期望 1 行（baseline 只记账一次）", rows)
+	// 每块迁移记一行（baseline + 追加块），重开**不重复**记账。
+	if want := len(mustParse(t, schemaSQL)); rows != want {
+		t.Fatalf("schema_version 有 %d 行，期望 %d 行（每块迁移只记账一次）", rows, want)
 	}
 	if got := masterDDL(t, db2); strings.Join(got, "\n") != strings.Join(before, "\n") {
 		t.Fatalf("重开后结构变了：\n--- 首次 Open ---\n%s\n--- 重开 ---\n%s",

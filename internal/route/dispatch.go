@@ -2,11 +2,11 @@
 //
 // 它是本仓库唯一一个知道「怎么从出口表走到任务」的地方：
 //
-//	① edges 查表 → N 行
+//	① edges 查表 → N 个**候选**（预算先判：max_hops / budget）
 //	② 解析参数模板（param_missing / param_type）+ 校参数（各自 params_schema）
-//	   + 环剪枝 + 跨组织用户校验
-//	③ node_capabilities 查节点
-//	④ 按负载（或粘性钉住）挑一台
+//	   + 跨组织用户校验 → 滤掉不可达的候选
+//	③ node_capabilities 查节点（同样只留可达候选）
+//	④ 候选选择：最小 priority 组内轮盘挑**一个**；按负载（或粘性钉住）挑机器
 //	⑤ 建任务
 //
 // 前三步都在建任务**之前**，所以剪枝不产生任务行（契约 §4）。
@@ -31,7 +31,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -99,7 +102,11 @@ type DispatchInput struct {
 	// DryRun 下 Tasks 里的任务只有能力/参数/节点信息，ID 等字段为空。
 	DryRun bool
 
-	// Path 是从根到本任务的能力序列（含本任务的能力），用于环剪枝。
+	// Path 是从根到本任务的能力序列（含本任务的能力）。
+	//
+	// 它现在是 **hop 预算** 的输入（契约 §2）：depth = len(Path)，depth >= max_hops
+	// 就剪枝。环本身是合法编排（`review → fix → review`），所以这里不再做
+	// 「同一个名字出现过就剪」的判重 —— 那会把一条**只走了一圈**的合法链也拒掉。
 	Path []string
 }
 
@@ -191,6 +198,13 @@ type Store interface {
 	// 命名空间是唯一隔离边界，本部署任何已登录用户都能访问任何存在的命名空间。
 	GetUserByID(id string) (*store.User, error)
 
+	// CountTasksByTrace 返回同一个 trace **已经建出**的任务数（契约 §2 的 trace 任务预算）。
+	//
+	// 必须是**真查库**（不是进程内累加）：预算要挡住的是「同一条 trace 疯狂扇出」，
+	// 而那种扇出往往来自并发到达的帧 —— 缓存计数会把别人刚建的行漏掉。
+	// 口径：只数 tasks 表里已存在的行（本次派发即将建的行不算，所以 budget 就是上限）。
+	CountTasksByTrace(ctx context.Context, namespaceID, traceID string) (int, error)
+
 	// InsertPruneEvent 落一条剪枝事件（#142）。
 	//
 	// 它是 d.prune() 的唯一落库出口：剪枝的「产生」与「留痕」不能分叉，
@@ -245,6 +259,31 @@ type Dispatcher struct {
 	// Now 返回当前 unixepoch 秒（测试可注入）。
 	Now func() int64
 
+	// MaxHops 是 hop 预算的上限（契约 §2，默认 16，来自 ANOTIFY_MAX_HOPS）。
+	//
+	// 语义：depth = len(入参 path)，depth >= MaxHops → 剪 max_hops。
+	// 环是合法编排，靠它兜底：没有预算的话 `review → fix → review` 会一直跑下去。
+	// <= 0 表示用默认值（见 maxHops）。
+	MaxHops int
+
+	// TraceTaskBudget 是**同一个 trace** 的任务总数上限（契约 §2，默认 512，
+	// 来自 ANOTIFY_TRACE_TASK_BUDGET）。
+	//
+	// 语义：同一 trace 已建任务数 >= TraceTaskBudget → 剪 budget。
+	// hop 预算只按深度算，「同一个 trace 里每秒 emit 一次的链」深度很浅却能把
+	// 任务表撑爆，所以两个预算都要。<= 0 表示用默认值（见 traceTaskBudget）。
+	TraceTaskBudget int
+
+	// cursor 是**同级轮盘**的游标（契约 §3）：map[(namespace, cap, port, priority)] → 下一个下标。
+	//
+	// 为什么在进程内、不持久化：用户明确要求。它的语义只是「同级候选轮流来」，
+	// 重启后从头开始是完全可以接受的（不是账，是调度偏好）；落库反而会引入
+	// 「谁去更新这一行」的并发写热点，而它连审计价值都没有。
+	//
+	// cursorMu 保护 cursor：派发是并发的（多个 emit 同时进来）。
+	cursorMu sync.Mutex
+	cursor   map[cursorKey]int
+
 	// Publisher 把刚派发的任务推给节点（assign 帧）。
 	//
 	// 为 nil 时只落库不推送（测试、以及"仅配置不跑"的场景）。
@@ -268,13 +307,46 @@ type Publisher interface {
 	PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error
 }
 
+// 两个预算的默认值（契约 §2）：hop 深度 16、单 trace 任务数 512。
+//
+// 为什么是这两个数：16 层足够表达现实里的编排（review/fix/test 来回几圈），
+// 512 是一个 trace 的正常规模上界（几十个任务），同时远低于「配置/实现写错
+// 导致无限扇出」的量级。两个都可以用环境变量覆盖（ANOTIFY_MAX_HOPS /
+// ANOTIFY_TRACE_TASK_BUDGET，见 internal/server/config.go）。
+const (
+	DefaultMaxHops         = 16
+	DefaultTraceTaskBudget = 512
+)
+
 // New 构造一个 Dispatcher，默认把 notify.phone 视为用户维度能力。
+//
+// 两个预算取默认值；接线层（server）会用环境变量覆盖它们。字段 <= 0 时
+// 仍然回落到默认值（见 maxHops / traceTaskBudget），所以「忘了赋值」不会
+// 把预算关掉——一个被关掉的预算等于没有防线，而那不会以错误的形式暴露。
 func New(st Store) *Dispatcher {
 	return &Dispatcher{
-		Store:      st,
-		UserScoped: DefaultUserScoped(),
-		Now:        store.Now,
+		Store:           st,
+		UserScoped:      DefaultUserScoped(),
+		Now:             store.Now,
+		MaxHops:         DefaultMaxHops,
+		TraceTaskBudget: DefaultTraceTaskBudget,
 	}
+}
+
+// maxHops 返回生效的 hop 预算（<= 0 → 默认值）。
+func (d *Dispatcher) maxHops() int {
+	if d.MaxHops > 0 {
+		return d.MaxHops
+	}
+	return DefaultMaxHops
+}
+
+// traceTaskBudget 返回生效的 trace 任务预算（<= 0 → 默认值）。
+func (d *Dispatcher) traceTaskBudget() int {
+	if d.TraceTaskBudget > 0 {
+		return d.TraceTaskBudget
+	}
+	return DefaultTraceTaskBudget
 }
 
 // DefaultUserScoped 返回默认的用户维度能力集合。
@@ -294,6 +366,12 @@ type candidate struct {
 	cap    *store.CapabilityVersion
 	params map[string]any
 	nodes  []string
+	// toRef 是这条边的目标**引用**（`name` / `name@version`），来自 edges.to_ref。
+	// 候选排序的第一关键字（契约 §3：to_ref 字典序 → 保证确定）。
+	toRef string
+	// priority 是这条边的候选优先级（edges.priority，小的优先）。
+	// 候选排序的第二关键字，也是「最小 priority 组」的判据。
+	priority int
 	// central 表示这个能力由**中枢自己执行**，不找节点。
 	// 典型是 notify.phone：没人会写一个"发推送节点"。
 	central bool
@@ -303,15 +381,20 @@ type candidate struct {
 //
 // 顺序（前三步都在建任务之前）：
 //
-//	① edges 查表 → N 行；0 行 → pruned/no_edge，结束
-//	② 逐条边校验：环剪枝(path) → 解析参数模板(param_missing / param_type)
+//	① edges 查表 → N 个候选；0 行 → pruned/no_edge，结束；
+//	   预算先判：depth >= max_hops → pruned/max_hops、
+//	   trace 已有任务数 >= budget → pruned/budget（都是整次派发级别的）
+//	② 逐条候选校验：解析参数模板(param_missing / param_type)
 //	   → 参数(param_schema) → 跨组织用户(foreign_user)
-//	③ node_capabilities 查节点；0 行 → pruned/no_node
-//	④ 按负载或粘性钉住挑一台；挑不到容量就先把任务留 pending（不剪枝）
+//	③ node_capabilities 查节点；0 行 → pruned/no_node（这一条候选不可达）
+//	④ 候选选择：最小 priority 组内轮盘选**一个**（契约 §3），
+//	   再按负载或粘性钉住挑一台；挑不到容量就先把任务留 pending（不剪枝）
 //	⑤ 事务内批量建任务 + 逐条派发
 //
-// 实现是 plan（①②③ + 试运行早退 + 构造 pending 任务，只读）→ CreateTasks →
-// launch（④⑤ 占槽位/推帧）三段。对外签名、返回值语义、剪枝留痕、日志与拆分前一致。
+// 实现是 plan（①②③ + 候选选择 + 试运行早退 + 构造 pending 任务，只读）→ CreateTasks →
+// launch（④⑤ 占槽位/推帧）三段。对外签名、返回值语义、剪枝留痕与拆分前一致；
+// 唯一的变化是语义：一个 (能力, 端口) 从「全部下游各建一个任务（扇出）」变成
+// 「候选集合里选一个」（契约 §3，全派需要 balance.mode=all，本期不实现）。
 func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchOutput, error) {
 	if err := d.checkInput(in); err != nil {
 		return nil, err
@@ -434,13 +517,56 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		return nil, nil, nil
 	}
 
+	// ---------- 预算（契约 §2）：hop 深度 + trace 任务数 ----------
+	//
+	// 两个预算都在**建任何东西之前**判，且都是**整次派发**级别的：它们回答的是
+	// 「这条链还能不能继续」，与「这次的目标是哪个能力」无关。
+	//
+	// 顺序是先 hop 再 budget：hop 是纯内存判断（path 就在入参里），budget 要查一次库。
+	// 两者都在 no_edge 之后：没有下游时「这条链到头了」比「预算用尽了」更准确。
+	if maxHops := d.maxHops(); len(in.Path) >= maxHops {
+		d.prune(ctx, in, out, PrunedRecord{
+			Reason: ReasonMaxHops,
+			Port:   fromPort,
+			Detail: fmt.Sprintf("hop depth %d >= max_hops %d (path %s)",
+				len(in.Path), maxHops, formatPath(in.Path)),
+		})
+		return nil, nil, nil
+	}
+	// trace 任务预算：**每次派发重新查库**（不缓存、不用进程内计数器）。
+	//
+	// 口径（与 store.CountTasksByTrace 同一份）：
+	//   - 数的是 tasks 表里**已经建出**的行，本次派发即将建的行还不存在 → 不把
+	//     「当前这次」算进去，所以 budget 本身就是上限（不是 budget-1）；
+	//   - 不缓存：并发到达的两个 emit 各自读到的是库里真实行数，缓存会把
+	//     「别人刚建的任务」漏掉，预算于是形同虚设。
+	//
+	// 残留窗口（明确写出来，别以为它是原子闸门）：plan 与建行不在同一个事务里，
+	// 所以两个**同时**读到 511 的派发会各自建一个任务，trace 最终到 513。
+	// 这个预算防的是「无限扇出的量级」，不是「精确到 512 的硬账」；要精确到行
+	// 就得把 COUNT 挪进建行事务（emit 的 InsertEmissionAndCreateTasks），那会把
+	// 剪枝留痕也拖进事务，代价远大于收益。
+	budget := d.traceTaskBudget()
+	built, err := d.Store.CountTasksByTrace(ctx, in.NamespaceID, in.TraceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("route: count tasks for trace %s: %w", in.TraceID, err)
+	}
+	if built >= budget {
+		d.prune(ctx, in, out, PrunedRecord{
+			Reason: ReasonBudget,
+			Port:   fromPort,
+			Detail: fmt.Sprintf("trace %s already has %d tasks >= budget %d", in.TraceID, built, budget),
+		})
+		return nil, nil, nil
+	}
+
 	// 图版本只落一次（按需落版，契约 §10.2）。图版本属于命名空间（edges 按 namespace 重建）。
 	graph, err := d.Store.EnsureGraphVersion(ctx, in.NamespaceID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("route: pin graph version: %w", err)
 	}
 
-	// ③ 逐条边：解析引用 → 环剪枝 → 参数 → 跨组织用户 → 找节点
+	// ③ 逐条边：解析引用 → 参数 → 跨组织用户 → 找节点（都通过的进 cands）
 	//
 	// 解析引用（P2.2，设计 §3.2）集中在**这一处**：`name` 解析成**本次派发时刻的
 	// latest**（升级下一次派发就生效），`name@version` 解析成那一版（钉死）。
@@ -462,20 +588,10 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		}
 		targetID := capDef.ID
 
-		// 环剪枝：目标的**名字**已在路径里 → 静默剪枝，但必须留痕。
+		// 这里**没有**「目标已在 path 里」的判重（契约 §2）：环是合法编排，
+		// `review → fix → review` 必须能跑起来。兜底是上面那道 hop 预算 ——
+		// 它按**实际走过的**深度剪枝，而不是按「链上出现过这个名字」。
 		//
-		// 按名字判（P2.2）：tasks.path 存的是能力名，同一条链上重复出现同一个名字
-		// 才是环。按 id 判会因为 `analyze@1` 与 `analyze@2` 是两个 id 而漏掉真环。
-		if pathContains(in.Path, capDef.Name) {
-			d.prune(ctx, in, out, PrunedRecord{
-				Reason:       ReasonPath,
-				CapabilityID: targetID,
-				Port:         fromPort,
-				Detail:       fmt.Sprintf("%s@%d already in path %v (cycle pruned)", capDef.Name, capDef.Version, in.Path),
-			})
-			continue
-		}
-
 		// 该目标实际使用的参数，按**边的类型**分两种（P2.1）：
 		//
 		//  入口边：参数 = ResolveParams(这条边的 mapping, 事件 payload, 源变量)。
@@ -595,6 +711,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		if bc, ok := store.IsBuiltinCapability(capDef.Name, capDef.Version); ok && bc.Central {
 			cands = append(cands, candidate{
 				cap: capDef, params: targetParams, central: true,
+				toRef: tgt.ToRef, priority: tgt.Priority,
 			})
 			continue
 		}
@@ -614,12 +731,32 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			continue
 		}
 
-		cands = append(cands, candidate{cap: capDef, params: targetParams, nodes: nodes})
+		// 可以派：记成**候选**（不是「要建的任务」）。选谁由下面的候选选择决定。
+		cands = append(cands, candidate{
+			cap: capDef, params: targetParams, nodes: nodes,
+			toRef: tgt.ToRef, priority: tgt.Priority,
+		})
 	}
 
 	if len(cands) == 0 {
 		return nil, nil, nil
 	}
+
+	// ---------- 候选选择（契约 §3） ----------
+	//
+	// 走到这里的 cands 已经只剩**可达**的候选（不可达的在上面逐条剪掉，各有理由）。
+	// 一个 (能力, 端口) 默认只派**一个**下游（1:1）：取最小 priority 组，组内轮盘选一个。
+	// 想「全派」（扇出到全部候选）需要 balance.mode=all，本期不实现（保存时已 400）。
+	//
+	// 端口平衡策略先看一眼：库被手改出 all / random 之类时按 priority 处理
+	// （**不扇出**：没实现的语义不能靠猜），同时留一条 WARN。
+	if mode := d.portBalanceMode(ctx, in, fromKey, fromPort, cache); mode != store.BalanceModePriority {
+		warnUnsupportedBalanceMode(in.NamespaceID, fromKey, fromPort, mode)
+	}
+	chosen := d.pickCandidate(in.NamespaceID, fromKey, fromPort, cands)
+	// 没被选中的候选**不是剪枝**：它们只是这一圈没轮到（下一次 emit 的轮盘会轮到别人）。
+	// 所以这里不产生 pruned 记录，返回值的 Tasks 也只有一条。
+	cands = []candidate{chosen}
 
 	// DryRun 在这里返回：判定已经做完（目标存在、参数过、节点在线），
 	// 但**不占槽位、不建任务、不推送**。这正好是"试运行"要的信息。
@@ -652,8 +789,9 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		if err != nil {
 			return nil, nil, fmt.Errorf("route: marshal params: %w", err)
 		}
-		// path 存**能力名**（P2.2）：环剪枝的判据是「同一条链上重复出现同一个名字」，
-		// 与配置期的静态环检测（store.checkEdgeWouldCycle）同一口径。
+		// path 存**能力名**（P2.2）：它是 hop 预算的输入（depth = len(path)），
+		// 也是事后看「这条链是怎么走到这里的」的唯一依据 —— 名字比 id 可读，
+		// 而且 `analyze@1` / `analyze@2` 在链上是同一个名字，深度才是真正的判据。
 		path := append(append([]string{}, in.Path...), c.cap.Name)
 		task := &store.Task{
 			ID:           store.NewTaskID(),
@@ -722,6 +860,125 @@ func (d *Dispatcher) resolveRef(ctx context.Context, namespaceID, ref string, ca
 	}
 	cache[ref] = c
 	return c, nil
+}
+
+// ---------- 候选选择（契约 §3） ----------
+
+// cursorKey 是同级轮盘游标的键：一个 (命名空间, 上游能力, 端口, priority) 一个游标。
+//
+// 为什么 priority 也要进键：不同的 priority 组是**不同的轮盘**。让它们共用一个
+// 下标，低优先级组的长度就会带偏高优先级组的轮换（只在「高优先级全都不可达、
+// 落到低优先级组」时才看得出来，是最难查的那类偏差）。
+type cursorKey struct {
+	namespaceID string
+	capability  string
+	port        string
+	priority    int
+}
+
+// pickCandidate 从可达候选里选一个（契约 §3 的第 2–4 步）。
+//
+// 顺序就是语义：
+//  1. 不可达的候选已经在 plan 里逐条剪掉了（各有自己的 reason），这里不重复判；
+//  2. 剩余按 **to_ref 字典序**（保证确定），再按 **priority 升序**；
+//  3. 取**最小 priority 组**（同 priority 的整组）；
+//  4. 组内**轮盘**选一个（游标见 cursorKey / rotate）。
+//
+// 为什么组内顺序必须是确定顺序：游标只是一个下标，「+1」在两个进程里若指向
+// 不同的候选，就不叫轮盘、叫随机——而随机是另一种模式（预留的 random），
+// 不是 priority 的实现方式。
+func (d *Dispatcher) pickCandidate(namespaceID, capability, port string, cands []candidate) candidate {
+	sorted := make([]candidate, len(cands))
+	copy(sorted, cands)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].priority != sorted[j].priority {
+			return sorted[i].priority < sorted[j].priority
+		}
+		return sorted[i].toRef < sorted[j].toRef
+	})
+	// 排序后最小 priority 组就在前面，长度按 priority 相等的连续段算。
+	n := 0
+	for n < len(sorted) && sorted[n].priority == sorted[0].priority {
+		n++
+	}
+	group := sorted[:n]
+	return group[d.rotate(cursorKey{
+		namespaceID: namespaceID,
+		capability:  capability,
+		port:        port,
+		priority:    sorted[0].priority,
+	}, len(group))]
+}
+
+// rotate 返回该游标的下一个下标并推进它（进程内，不持久化）。
+//
+// 首次使用随机初始化：不然每个进程都从候选 0 开始，「轮盘」就退化成
+// 「所有节点都优先打第一个下游」——那是负载最不均衡的一种形状。
+// 只有一个候选时不占游标：随机初始化一个没意义的下标只会让「后来多了一个
+// 候选」的那一刻从一个奇怪的起点开始。
+func (d *Dispatcher) rotate(key cursorKey, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	d.cursorMu.Lock()
+	defer d.cursorMu.Unlock()
+	if d.cursor == nil {
+		d.cursor = make(map[cursorKey]int, 8)
+	}
+	idx, ok := d.cursor[key]
+	if !ok {
+		idx = rand.IntN(n)
+	}
+	// 组长度可能变（加了/删了一条边）：取模保证下标永远有效。
+	d.cursor[key] = (idx + 1) % n
+	return idx % n
+}
+
+// portBalanceMode 取上游能力在这个端口上的 balance.mode（缺省 = priority）。
+//
+// 入口边没有上游能力（来源不是能力定义），一律 priority：源的「全派」不是一个
+// 端口级配置，没有对应概念。解析不到上游能力（能力刚被删 / 名字不是有效引用）
+// 也回落到 priority：balance 只决定「多个候选里选几个」，缺了它按 1:1 走是安全方向。
+func (d *Dispatcher) portBalanceMode(ctx context.Context, in DispatchInput, fromKey, fromPort string, cache refCache) string {
+	if in.FromIsSource {
+		return store.BalanceModePriority
+	}
+	up, err := d.resolveRef(ctx, in.NamespaceID, fromKey, cache)
+	if err != nil || up == nil {
+		return store.BalanceModePriority
+	}
+	return up.BalanceModeOf(fromPort)
+}
+
+// balanceWarnOnce 让「未实现的 balance 模式」在进程里只 WARN 一次。
+//
+// 每次派发都打会把这个 WARN 变成噪音（热路径上每个任务一条），而它表达的是
+// 一个**部署级**事实（库里有本版本不认识的配置）。
+var balanceWarnOnce sync.Once
+
+// warnUnsupportedBalanceMode 记录一次「库里有未实现的 balance 模式」。
+//
+// 保存路径已经在 store 层拒掉这些值（ErrBalanceRejected → 400），所以走到这里
+// 只可能是手改库。按 priority 处理（1:1），**绝不扇出**：没实现的语义不能靠猜。
+func warnUnsupportedBalanceMode(namespaceID, capability, port, mode string) {
+	balanceWarnOnce.Do(func() {
+		slog.Warn("balance mode not implemented, falling back to priority",
+			"event", "route.balance.unsupported_mode",
+			"namespace_id", namespaceID,
+			"capability", capability,
+			"port", port,
+			"mode", mode,
+			"note", "本期只实现 priority；该端口的候选按最小 priority 组轮盘选一个（不扇出）",
+		)
+	})
+}
+
+// formatPath 把 path 渲染成给人看的箭头链（剪枝 Detail 用）。
+func formatPath(path []string) string {
+	if len(path) == 0 {
+		return "[]"
+	}
+	return strings.Join(path, " → ")
 }
 
 // pinDigest 取「这次派发要钉在任务行上的产物内容 digest」（P0-a）。
@@ -915,8 +1172,9 @@ func marshalParams(params map[string]any) (json.RawMessage, error) {
 // prune 记录一条剪枝：先进返回值，再留痕落库（#142）。
 //
 // 唯一入口——「产生」与「留痕」不允许分叉（漏一处就是又一个查不到的剪枝），
-// 所以 plan 里 7 个剪枝产生点（no_edge / path / param_missing / param_type /
-// param_schema / foreign_user / no_node）全部走这里，不再直接 append out.Pruned。
+// 所以 plan 里 9 个剪枝产生点（no_edge / max_hops / budget / param_missing /
+// param_type / param_schema / foreign_user / no_node，外加解析失败与坏 literals
+// 这两条归到 param_schema 的路径）全部走这里，不再直接 append out.Pruned。
 //
 // 三条规则（契约 §4.3）：
 //
@@ -1210,15 +1468,6 @@ func applyLiterals(params map[string]any, literals json.RawMessage) (map[string]
 		merged[k] = v
 	}
 	return merged, nil
-}
-
-func pathContains(path []string, id string) bool {
-	for _, p := range path {
-		if p == id {
-			return true
-		}
-	}
-	return false
 }
 
 func containsStr(list []string, s string) bool {

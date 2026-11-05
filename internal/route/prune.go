@@ -21,8 +21,16 @@ const (
 	// 常量名与 wire 值保留历史拼写（跨版本事件可读），语义已随迁移 14 收窄：
 	// 组织层删除后不再有「外组织用户」，只剩「查无此人」。
 	ReasonForeignUser PruneReason = "foreign_user"
-	// ReasonPath 目标能力已在 path 里（环剪枝）。
-	ReasonPath PruneReason = "path"
+	// ReasonMaxHops 跳数预算用尽（契约 §2）：这条链已经走到 max_hops 深度，不再继续。
+	//
+	// 它**取代**了旧的 path 剪枝（"目标已在路径里"）：环是合法编排，靠深度兜底；
+	// Detail 里带完整 path，所以「它是怎么走到这么深的」仍然可查。
+	ReasonMaxHops PruneReason = "max_hops"
+	// ReasonBudget 同一 trace 的任务预算用尽（契约 §2）：已建任务数 >= 预算。
+	//
+	// 它防的是「配置/实现写错导致的无限扇出」——一个环不会无限跑，
+	// 但一条每秒 emit 的链会把 trace 撑爆，而这与 hop 深度无关。
+	ReasonBudget PruneReason = "budget"
 	// ReasonParamMissing 参数引用的路径在 payload/别名表里取不到，且没有 default。
 	ReasonParamMissing PruneReason = "param_missing"
 	// ReasonParamType 参数取值结果转不成目标 params_schema 要求的类型。
@@ -41,7 +49,8 @@ const (
 // PrunedRecord 是一条剪枝记录：静默（不打断业务），但**一律留痕**。
 //
 // Detail 是给人看的证据：比如 no_edge 时是出口名与上游能力，
-// param_schema 时是具体哪个字段不合法，path 时是重复的那个能力。
+// param_schema 时是具体哪个字段不合法，max_hops 时是完整 path，
+// budget 时是「已经建了多少个任务 / 预算是多少」。
 type PrunedRecord struct {
 	Reason       PruneReason `json:"reason"`
 	CapabilityID string      `json:"capabilityId,omitempty"`

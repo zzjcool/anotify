@@ -11,18 +11,22 @@ import (
 
 // TestParseMigrations 校验 schema.sql 的分块序列：编号连续、无重复、名字非空。
 //
-// squash 之后只有一块（`1 baseline`）——这条同时守住「历史包袱不许借尸还魂」：
-// 谁把老迁移块搬回来，首个断言就会红。
+// squash 之后从 `1 baseline` 重新起算：baseline 不动，新变更按 `2 ...` 往后追加。
+// 这里钉住「块数 == 本代码认识的最高版本」（headVersion）——追加了块却忘了 +1
+// 会让新建的库被 legacyVersionError 自己拒掉；反过来改了常量没加块则直接红。
 func TestParseMigrations(t *testing.T) {
 	set, err := parseMigrations(schemaSQL)
 	if err != nil {
 		t.Fatalf("parse schema.sql: %v", err)
 	}
-	if len(set) != 1 {
-		t.Fatalf("squash 之后 schema.sql 应当只有 1 块（baseline），实际 %d 块", len(set))
+	if len(set) != headVersion {
+		t.Fatalf("schema.sql 有 %d 块，headVersion = %d（追加块必须同步 +1）", len(set), headVersion)
 	}
 	if set[0].name != "baseline" {
 		t.Fatalf("首块名字 = %q，期望 baseline", set[0].name)
+	}
+	if set[len(set)-1].version != headVersion {
+		t.Fatalf("最高版本 = %d，headVersion = %d", set[len(set)-1].version, headVersion)
 	}
 	seen := map[int]bool{}
 	for _, m := range set {

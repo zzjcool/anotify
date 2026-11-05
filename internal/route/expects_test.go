@@ -44,6 +44,42 @@ func decodeSchema(t *testing.T, raw json.RawMessage) (props map[string]any, requ
 	return root.Properties, root.Required
 }
 
+// TestBuildExpectsTargetsCarryPriority 候选清单带 priority，并按 (priority, capability) 升序。
+//
+// 为什么必须下发 priority：节点看到的是「这个端口能去哪」的**候选清单**，实际只有一个
+// 会被选中。没有 priority，实现会把备选当成「要挨个调一遍」；顺序不对，它会把
+// 兜底目标当成主选。
+func TestBuildExpectsTargetsCarryPriority(t *testing.T) {
+	f, root := newExpectsFixture(t)
+	ctx := context.Background()
+	// 名字顺序与优先级**反向**：zzz 的 priority 更小，必须排在前面。
+	zzz := f.addCap(t, "zzz.primary", 1, nil, `{"type":"object"}`)
+	aaa := f.addCap(t, "aaa.fallback", 1, nil, `{"type":"object"}`)
+	for _, e := range []*store.Edge{
+		{NamespaceID: f.ns, FromRef: root.Name, FromPort: "fix", ToRef: zzz.Name, Priority: 10},
+		{NamespaceID: f.ns, FromRef: root.Name, FromPort: "fix", ToRef: aaa.Name, Priority: 20},
+	} {
+		if err := f.db.CreateEdge(ctx, e); err != nil {
+			t.Fatalf("create edge %s: %v", e.ToRef, err)
+		}
+	}
+
+	expects, err := f.d.BuildExpects(ctx, f.ns, root.ID, []string{"fix"})
+	if err != nil {
+		t.Fatalf("BuildExpects: %v", err)
+	}
+	targets := expects["fix"].Targets
+	if len(targets) != 2 {
+		t.Fatalf("targets = %+v, want 2 条", targets)
+	}
+	if targets[0].Capability != "zzz.primary" || targets[0].Priority != 10 {
+		t.Fatalf("targets[0] = %+v, want zzz.primary(p=10)（按 priority 升序）", targets[0])
+	}
+	if targets[1].Capability != "aaa.fallback" || targets[1].Priority != 20 {
+		t.Fatalf("targets[1] = %+v, want aaa.fallback(p=20)", targets[1])
+	}
+}
+
 // TestBuildExpectsUnionWithLiterals 两个下游分别要 a / b，各自带字面量覆盖 →
 // 并集正确，且被覆盖的键不进 required（验收 ⑧）。
 func TestBuildExpectsUnionWithLiterals(t *testing.T) {

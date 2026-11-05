@@ -2,18 +2,22 @@ package store
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
-// ---------- 静态环检测（P2.3） ----------
+// ---------- 环是合法编排（契约 §2） ----------
 //
-// 为什么在保存时拒，而不是只靠运行期 path 剪枝：
-// 环是**配置错误**。放它进去，每条任务都会继续扇出，直到深度/环剪枝兜住——
-// 可见，但查起来很痛（一堆互为父子的任务）。运行期那层仍然保留：图会被改，
-// 旧任务还在跑，它是最后一道防线。
+// 历史：这里原本是**静态环检测**（P2.3）——保存时按名字做一次 DFS，能走回自己就拒。
+// 现在反过来：`review → fix → review` 是用户拍板的合法编排，配置期一律放行。
+//
+// 兜底在运行期，而且**不是**「名字判重」（那会把只走一圈的合法链也拒掉），
+// 而是 hop 预算：depth = len(path)，depth >= max_hops → 剪枝
+// （internal/route/dispatch.go 的 ReasonMaxHops / ReasonBudget）。
+//
+// 所以本文件现在守护的是：**成环的边必须存得下、读得回**（两个方向都是）。
+// 菱形与 1:N 扇出的断言一条都没有放宽——它们是无环图的合法形状，与环的放行无关。
 
-func TestCreateEdgeRejectsSelfLoop(t *testing.T) {
+func TestCreateEdgeAllowsSelfLoop(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	ns, _ := newTestNS(t, db)
@@ -23,18 +27,25 @@ func TestCreateEdgeRejectsSelfLoop(t *testing.T) {
 		t.Fatalf("create capability: %v", err)
 	}
 
-	err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: capA.ID, FromPort: "ok", ToRef: capA.ID})
-	if !errors.Is(err, ErrEdgeRejected) {
-		t.Fatalf("自连 err = %v, want ErrEdgeRejected", err)
+	// 自连 = 长度 1 的环：合法（每绕一圈 path 长 1，hop 预算会兜住）。
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: capA.ID, FromPort: "ok", ToRef: capA.ID}); err != nil {
+		t.Fatalf("自连应当可以保存（契约 §2）：%v", err)
+	}
+	got, err := db.EdgesFrom(ctx, ns, false, "a", "ok")
+	if err != nil {
+		t.Fatalf("edges from a: %v", err)
+	}
+	if len(got) != 1 || got[0].ToRef != capRef(capA) {
+		t.Fatalf("自连读不回来: %+v", got)
 	}
 }
 
-func TestCreateEdgeRejectsCycle(t *testing.T) {
+func TestCreateEdgeAllowsCycle(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	ns, _ := newTestNS(t, db)
 
-	// a --ok--> b --ok--> c
+	// a --ok--> b --ok--> c --ok--> a
 	a := mkCap(ns, "a", 1, []string{"ok"})
 	b := mkCap(ns, "b", 1, []string{"ok"})
 	c := mkCap(ns, "c", 1, []string{"ok"})
@@ -43,34 +54,49 @@ func TestCreateEdgeRejectsCycle(t *testing.T) {
 			t.Fatalf("create capability %s: %v", cap.Name, err)
 		}
 	}
-	for _, e := range []*Edge{
+	cycle := []*Edge{
 		{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: b.ID},
 		{NamespaceID: ns, FromRef: b.ID, FromPort: "ok", ToRef: c.ID},
-	} {
+		{NamespaceID: ns, FromRef: c.ID, FromPort: "ok", ToRef: a.ID}, // 闭环：以前这里被拒
+	}
+	for _, e := range cycle {
 		if err := db.CreateEdge(ctx, e); err != nil {
-			t.Fatalf("create edge: %v", err)
+			t.Fatalf("成环的边应当可以保存（契约 §2）：%v", err)
 		}
 	}
 
-	// 2 环：c → a 会闭环 a→b→c→a
-	err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: c.ID, FromPort: "ok", ToRef: a.ID})
-	if !errors.Is(err, ErrEdgeRejected) {
-		t.Fatalf("三元环 err = %v, want ErrEdgeRejected", err)
+	// 「两个方向都能读到」：环上每一跳都是真实可查的边（派发才走得动）。
+	for _, tc := range []struct{ from, to string }{
+		{"a", "b"}, {"b", "c"}, {"c", "a"},
+	} {
+		got, err := db.EdgesFrom(ctx, ns, false, tc.from, "ok")
+		if err != nil {
+			t.Fatalf("edges from %s: %v", tc.from, err)
+		}
+		if len(got) != 1 || RefName(got[0].ToRef) != tc.to {
+			t.Fatalf("%s → %s 读不回来: %+v", tc.from, tc.to, got)
+		}
 	}
-	// 反例：c → 一个新的 d 不成环（不能因为「有过环」就一律拒）
-	d := mkCap(ns, "d", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, d); err != nil {
-		t.Fatalf("create d: %v", err)
+	// ListEdges 也要能看到闭环那一条（控制台的「出边」视图靠它）。
+	edges, err := db.ListEdges(ctx, ns, "c")
+	if err != nil {
+		t.Fatalf("list edges of c: %v", err)
 	}
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: c.ID, FromPort: "ok", ToRef: d.ID}); err != nil {
-		t.Fatalf("不成环的边被拒：%v", err)
+	if len(edges) != 1 || RefName(edges[0].ToRef) != "a" {
+		t.Fatalf("c 的出边应当只有 c → a: %+v", edges)
+	}
+
+	// 反例仍然成立：一条指向不存在能力的边必须被拒（放行环不等于放行一切）。
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: c.ID, FromPort: "ok", ToRef: "ghost"}); err == nil {
+		t.Fatal("指向不存在能力的边被接受了：引用解析不该被这次改动放松")
 	}
 }
 
 // TestCreateEdgeAllowsDiamond 菱形（a→b, a→c, b→d, c→d）是无环的：共享下游不是环。
 //
 // 这条是防止「环检测写成了『重复到达同一个节点就拒』」——那样 1:N 扇出会被误杀，
-// 而扇出是这个产品的核心能力（I7）。
+// 而扇出是这个产品的核心能力（I7）。契约 §2 放行环之后它依然必须绿：
+// 放行环**不是**把「共享下游」当成环。
 func TestCreateEdgeAllowsDiamond(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -98,7 +124,8 @@ func TestCreateEdgeAllowsDiamond(t *testing.T) {
 	}
 }
 
-// TestCreateEdgeEntryEdgeNeverCycles 入口边没有上游能力，永远不可能成环。
+// TestCreateEdgeEntryEdgeNeverCycles 入口边没有上游能力，接不出环；
+// 而且它和「能力边成环」是两件事：入口边照旧永远合法。
 func TestCreateEdgeEntryEdgeNeverCycles(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -108,14 +135,17 @@ func TestCreateEdgeEntryEdgeNeverCycles(t *testing.T) {
 	if err := db.CreateCapability(ctx, a); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	// 先有一条 a → a 会环路线的反例：入口边接 a，再接 a 的回边仍然要拒。
 	if err := db.CreateEdge(ctx, &Edge{
 		NamespaceID: ns, FromIsSource: true, FromRef: "github", FromPort: "push", ToRef: a.ID,
 	}); err != nil {
 		t.Fatalf("入口边应当永远合法：%v", err)
 	}
-	// 入口边不构成环：a 没有回边，所以 a → a 只是自连
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: a.ID}); !errors.Is(err, ErrEdgeRejected) {
-		t.Fatalf("自连应当被拒，err = %v", err)
+	// 自连（a → a）也合法——它是长度 1 的环，由 hop 预算兜底，不是配置错误。
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: a.ID}); err != nil {
+		t.Fatalf("自连应当可以保存：%v", err)
+	}
+	// 入口边不进环：它没有上游能力，所以「来源 → a」不会让 a 的出边成环。
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: a.ID, FromPort: "ok", ToRef: a.ID}); err != nil {
+		t.Fatalf("重复的自连是幂等的（ON CONFLICT DO NOTHING），不该报错：%v", err)
 	}
 }

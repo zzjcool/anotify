@@ -189,9 +189,14 @@ func TestCreateEdgeRejectsUnresolvableRef(t *testing.T) {
 	}
 }
 
-// TestEdgeRefCycleByName 静态环检测按**名字**判（P2.2）：
-// `analyze@1` 与 `analyze@2` 是两个 id、同一个名字，环的判据只能是名字。
-func TestEdgeRefCycleByName(t *testing.T) {
+// TestEdgeRefCycleByNameAllowed 环按**名字**看是合法的（契约 §2）：`a@1 → b` 与
+// `b → a@2` 是同一条链上的两跳，存下来、两个方向都读得回。
+//
+// 这条用例原本钉的是「静态环检测按名字判」（a@1 与 a@2 是两个 id、同一个名字，
+// 所以环只能按名字判）。检测删掉之后，它改钉**放行**这件事：名字层面的闭环
+// 必须能落库，否则 `review → fix → review` 这种编排根本配不出来。
+// 兜底在运行期 hop 预算（depth = len(path)），不在这里。
+func TestEdgeRefCycleByNameAllowed(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
@@ -211,22 +216,32 @@ func TestEdgeRefCycleByName(t *testing.T) {
 	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "a@1", FromPort: "next", ToRef: "b"}); err != nil {
 		t.Fatalf("create a@1 → b: %v", err)
 	}
-	// b → a@2：名字上构成环（a → b → a），必须拒
-	err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "b", FromPort: "next", ToRef: "a@2"})
-	if !errors.Is(err, ErrEdgeRejected) {
-		t.Fatalf("b → a@2 err = %v (%T), want ErrEdgeRejected（按名字成环）", err, err)
+	// b → a@2：名字上构成环（a → b → a），契约 §2 之后**必须**存得下。
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "b", FromPort: "next", ToRef: "a@2"}); err != nil {
+		t.Fatalf("b → a@2 应当可以保存（环是合法编排）：%v", err)
 	}
-	if !strings.Contains(err.Error(), "cycle") {
-		t.Fatalf("错误文案应该说明是成环: %v", err)
+	// 两个方向都读得回：a 的出边到 b，b 的出边到 a@2（钉死引用原样保留）。
+	fromA, err := db.EdgesFrom(ctx, nsID, false, "a", "next")
+	if err != nil {
+		t.Fatalf("edges from a: %v", err)
+	}
+	if len(fromA) != 1 || RefName(fromA[0].ToRef) != "b" {
+		t.Fatalf("a 的出边 = %+v, want a → b", fromA)
+	}
+	fromB, err := db.EdgesFrom(ctx, nsID, false, "b", "next")
+	if err != nil {
+		t.Fatalf("edges from b: %v", err)
+	}
+	if len(fromB) != 1 || fromB[0].ToRef != "a@2" {
+		t.Fatalf("b 的出边 = %+v, want b → a@2（钉死引用原样保留）", fromB)
 	}
 
-	// 自连：名字相同即自连（哪怕两端是不同版本）
-	err = db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "a@1", FromPort: "next", ToRef: "a@2"})
-	if !errors.Is(err, ErrEdgeRejected) || !strings.Contains(err.Error(), "self loop") {
-		t.Fatalf("a@1 → a@2 err = %v, want ErrEdgeRejected(self loop)", err)
+	// 自连也是合法环（长度 1，由 hop 预算兜底）。
+	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "a@1", FromPort: "next", ToRef: "a@2"}); err != nil {
+		t.Fatalf("a@1 → a@2 应当可以保存（自连）：%v", err)
 	}
 
-	// 菱形/扇出仍然合法：a → b，a → c 不构成环
+	// 菱形/扇出仍然合法：a → c 与 a → b 并存（**不能**把「多个下游」当环）。
 	c := mkCap(nsID, "c", 1, nil)
 	mustCreateCap(t, db, c)
 	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "a", FromPort: "next", ToRef: "c"}); err != nil {

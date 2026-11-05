@@ -155,6 +155,20 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 而不是仅仅把库里的状态改成 assigned（节点可能根本不在线）。
 	dispatcher := route.New(db)
 	dispatcher.Publisher = nodeHub
+	// 两个派发预算来自 env（契约 §2）：0 = 用 route 包的默认值（由 New 填好，
+	// 这里只在配置层真的给了正数时覆盖）。非法值已经在 cfg.Validate() 拦在启动那一刻。
+	if cfg.MaxHops > 0 {
+		dispatcher.MaxHops = cfg.MaxHops
+	}
+	if cfg.TraceTaskBudget > 0 {
+		dispatcher.TraceTaskBudget = cfg.TraceTaskBudget
+	}
+	slog.Info("dispatch budgets configured",
+		"event", "server.budget.configured",
+		"max_hops", dispatcher.MaxHops,
+		"trace_task_budget", dispatcher.TraceTaskBudget,
+		"note", "环靠 max_hops 兜底（环是合法编排）；单 trace 任务数靠 trace_task_budget 兜底",
+	)
 	eventH := &api.EventHandler{
 		Store:    db,
 		Keys:     keyValidator,

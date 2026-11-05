@@ -62,6 +62,9 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 		wantType string
 		// wantDetail 是要在 payload.detail 里按子串找到的证据（空 = 只要求非空）。
 		wantDetail string
+		// maxHops / traceTaskBudget 给「预算类」的用例调低额度（0 = 用默认值）。
+		maxHops         int
+		traceTaskBudget int
 	}{
 		{
 			name:   "no_edge：查 edges 0 行",
@@ -125,22 +128,49 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 			wantTarget: true,
 		},
 		{
-			name:   "path：目标已在路径里（环剪枝）",
-			reason: ReasonPath,
+			// 环不再剪（契约 §2）：现在这条链只会因为**深度**用尽而被剪。
+			name:   "max_hops：hop 预算用尽",
+			reason: ReasonMaxHops,
 			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
 				review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 				fix := f.addCap(testNS, "fix", 1, []string{"review"}, `{}`)
-				f.addEdge(testNS, fix.ID, "review", review.ID) // fix --review--> review（成环）
+				f.addEdge(testNS, fix.ID, "review", review.ID) // fix --review--> review（成环：合法）
 				f.addNode("nd_review", review.ID, 1)
 				return DispatchInput{
-					NamespaceID: testNS, TraceID: "trace_path",
+					NamespaceID: testNS, TraceID: "trace_max_hops",
 					FromCap: fix.ID, Out: "review",
-					// P2.2：path 存**能力名**（同一条链上重复出现同一个名字才是环）
+					// depth = len(path) = 2 >= max_hops 2
 					Path: []string{review.Name, fix.Name},
-				}, review.ID
+				}, "" // 整次派发被剪：没有目标能力
 			},
 			wantPort:   "review",
-			wantTarget: true,
+			wantTarget: false,
+			maxHops:    2,
+			wantDetail: "max_hops 2",
+		},
+		{
+			name:   "budget：同一 trace 的任务数用尽",
+			reason: ReasonBudget,
+			setup: func(t *testing.T, f *fakeStore) (DispatchInput, string) {
+				review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+				target := f.addCap(testNS, "fix", 1, nil, `{}`)
+				f.addEdge(testNS, review.ID, "fix", target.ID)
+				f.addNode("nd_fix", target.ID, 1)
+				// 同 trace 已经有 1 个任务 = 预算 1 → 这次派发被剪。
+				if err := f.CreateTasks(ctx, []*store.Task{{
+					ID: "tsk_seed", NamespaceID: testNS, TraceID: "trace_budget", Status: store.TaskPending,
+				}}); err != nil {
+					t.Fatalf("seed task: %v", err)
+				}
+				return DispatchInput{
+					NamespaceID: testNS, TraceID: "trace_budget",
+					FromCap: review.ID, Out: "fix",
+				}, "" // 整次派发被剪：没有目标能力
+			},
+			wantPort:        "fix",
+			wantTarget:      false,
+			traceTaskBudget: 1,
+			wantDetail:      "budget 1",
 		},
 		{
 			// 解析段剪枝（#114）：模板里的引用在 payload 里取不到。
@@ -191,6 +221,12 @@ func TestDispatchRecordsEveryPruneReason(t *testing.T) {
 			f := newFakeStore()
 			in, wantTarget := c.setup(t, f)
 			d := New(f)
+			if c.maxHops > 0 {
+				d.MaxHops = c.maxHops
+			}
+			if c.traceTaskBudget > 0 {
+				d.TraceTaskBudget = c.traceTaskBudget
+			}
 
 			out, err := d.Dispatch(ctx, in)
 			if err != nil {
@@ -429,8 +465,8 @@ func TestDispatchPruneRecordFailureDoesNotBreakDispatch(t *testing.T) {
 // 这个字符串是查询入口（trace 视图按 type 挑剪枝行），改一下就查不到了。
 func TestPruneEventTypeMapping(t *testing.T) {
 	reasons := []PruneReason{
-		ReasonNoEdge, ReasonParamSchema, ReasonNoNode, ReasonForeignUser, ReasonPath,
-		ReasonParamMissing, ReasonParamType,
+		ReasonNoEdge, ReasonParamSchema, ReasonNoNode, ReasonForeignUser, ReasonMaxHops,
+		ReasonBudget, ReasonParamMissing, ReasonParamType,
 	}
 	for _, r := range reasons {
 		want := "pruned." + string(r)

@@ -69,17 +69,22 @@ func TestDispatchLiteralsFanoutIsolation(t *testing.T) {
 	f.addNode("nd_speak", withLit.ID, 1)
 	f.addNode("nd_speak2", noLit.ID, 1)
 
-	out, err := New(f).Dispatch(context.Background(), DispatchInput{
-		NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
-		Params: map[string]any{"to": "u_data"},
-	})
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if len(out.Tasks) != 2 {
-		t.Fatalf("created %d tasks, want 2", len(out.Tasks))
-	}
-	for _, task := range out.Tasks {
+	// 候选选择（契约 §3）之后每次派发只选中一个候选，所以连派两次
+	//（同级轮盘会轮到另一个），逐次验证「这条边的字面量只影响这条边」。
+	d := New(f)
+	var seen []string
+	for round := 0; round < 4 && len(seen) < 2; round++ {
+		out, err := d.Dispatch(context.Background(), DispatchInput{
+			NamespaceID: testNS, TraceID: "t", FromCap: review.ID, Out: "fix",
+			Params: map[string]any{"to": "u_data"},
+		})
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if len(out.Tasks) != 1 {
+			t.Fatalf("round %d created %d tasks, want 1（1:1 选一个）", round+1, len(out.Tasks))
+		}
+		task := out.Tasks[0]
 		got := decodeParams(t, task.Params)
 		switch task.CapabilityID {
 		case withLit.ID:
@@ -90,7 +95,13 @@ func TestDispatchLiteralsFanoutIsolation(t *testing.T) {
 			if got["to"] != "u_data" {
 				t.Errorf("没字面量的目标 params.to = %v, want u_data（不该被别的边的常量污染）", got["to"])
 			}
+		default:
+			t.Fatalf("unexpected target %s", task.Capability)
 		}
+		seen = append(seen, task.CapabilityID)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("同级轮盘没有覆盖两个候选: %v", seen)
 	}
 }
 

@@ -108,7 +108,8 @@ func TestCreateCapabilityWithLinksCreatesAll(t *testing.T) {
 
 // TestCreateCapabilityWithLinksRollsBackOnBadLink：任何一条边不合法 → 三个面全 0。
 //
-// 逐项覆盖 store 的边校验：目标不存在 / 端口越界 / literals 键不存在 / 自连。
+// 逐项覆盖 store 的边校验：目标不存在 / 端口越界 / literals 键不存在 / literals 类型不对。
+// （自连与成环不再是「坏 link」：契约 §2 之后它们是合法编排。）
 // 下标断言也在里面：错误必须带 `links[i]`，否则前端定位不到是哪一条。
 func TestCreateCapabilityWithLinksRollsBackOnBadLink(t *testing.T) {
 	cases := []struct {
@@ -142,12 +143,14 @@ func TestCreateCapabilityWithLinksRollsBackOnBadLink(t *testing.T) {
 			wantSub: "literals.nope",
 		},
 		{
-			name: "自连（出口接自己）",
-			links: func(nsID string, _ *CapabilityVersion) []LinkSpec {
-				return []LinkSpec{{FromPort: "done", ToRef: "chain"}}
+			// 自连/成环现在**合法**（契约 §2），所以这一条换成另一种配置期硬拒：
+			// 字面量的类型与目标的 params_schema 不等（该拦在保存时，不是派发时）。
+			name: "literals 的值的类型不对",
+			links: func(nsID string, target *CapabilityVersion) []LinkSpec {
+				return []LinkSpec{{FromPort: "done", ToRef: target.Name, Literals: json.RawMessage(`{"text":123}`)}}
 			},
 			wantIdx: 0,
-			wantSub: "self loop",
+			wantSub: "literals.text",
 		},
 		{
 			// 第二条才坏：前一条（合法）必须一起回滚，且下标要指到 1。

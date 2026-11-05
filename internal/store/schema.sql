@@ -562,3 +562,17 @@ CREATE INDEX IF NOT EXISTS idx_sources_ns ON sources(namespace_id, created_at);
 
 -- 调度器取「该触发的源」：enabled=1 且 next_fire_at 到期。
 CREATE INDEX IF NOT EXISTS idx_sources_due ON sources(enabled, next_fire_at);
+
+-- +migration 2 priority_balance
+
+-- 候选优先级（契约 §1 / §3）：同一个 (能力, 端口) 的下游是一个**候选集合**，
+-- 派发按 priority 升序取最小的一组，组内轮盘选一个（小的优先）。
+-- 0 = 默认值（加这一列之前建的边全部同级，行为与「只有一个下游」时完全一样）。
+-- 不额外建索引：查边只按 (namespace_id, from_is_source, from_ref, from_port) 过滤
+-- （idx_edges_lookup 的形状不变），priority 只是被选出来的排序键。
+ALTER TABLE edges ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+
+-- 端口级平衡策略（契约 §1）：JSON 对象 {端口: {"mode": "priority"}}，缺省 {} = priority。
+-- 本期只实现 priority；all / random / least_loaded / hash 保存时 400（尚未实现），
+-- 不静默降级 —— 静默降级会让「我配了 all 却是 1:1」这种分歧永远查不出来。
+ALTER TABLE capability_versions ADD COLUMN balance TEXT NOT NULL DEFAULT '{}';
