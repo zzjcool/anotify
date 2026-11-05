@@ -1128,7 +1128,6 @@ caps:
   load_failed: 'No se pudo cargar la lista de capacidades, actualiza la página'
   empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
   count: '{n} capacidades'
-  no_outputs: Sin salidas (capacidad terminal)
   source_builtin: 'Integrado'
   declared_by: Declarada por
   no_node: Ningún nodo la declara
@@ -1297,7 +1296,7 @@ caps:
     no_artifact: Esta capacidad aún no tiene artefacto — el script empieza en blanco
     name_locked: 'Nombre bloqueado: esta versión mantiene el mismo nombre. Renombrar significa otra capacidad.'
     downstream_keep: '{n} arista(s) de destino seguirán la nueva versión — las aristas apuntan al nombre, no a la versión.'
-    multi_output_note: 'Esta capacidad tiene varias salidas (datos antiguos): su estructura de salidas se conserva tal cual y no se edita aquí.'
+    multi_output_note: 'Esta capacidad se ramifica por más de un camino posterior (datos antiguos): la estructura se conserva tal cual y no se edita aquí.'
     submit: Publicar nueva versión
     publishing: Publicando…
     failed: 'Error al publicar: '

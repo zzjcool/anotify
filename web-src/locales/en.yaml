@@ -1128,7 +1128,6 @@ caps:
   load_failed: 'Failed to load capabilities, please refresh'
   empty: No capabilities yet. Define one so nodes can declare it.
   count: '{n} capabilities'
-  no_outputs: No outputs (terminal capability)
   source_builtin: 'Built-in'
   declared_by: Declared by
   no_node: No node declares it
@@ -1297,7 +1296,7 @@ caps:
     no_artifact: This capability has no artifact yet — start the script from blank
     name_locked: 'Name is locked: this version keeps the same name. Renaming means a different capability.'
     downstream_keep: '{n} downstream edge(s) will follow the new version — edges bind to the name, not the version.'
-    multi_output_note: 'This capability has several outputs (legacy data): its output structure is preserved as-is and is not edited here.'
+    multi_output_note: 'This capability fans out along more than one downstream path (legacy data): the structure is preserved as-is and is not edited here.'
     submit: Publish new version
     publishing: Publishing…
     failed: 'Publish failed: '

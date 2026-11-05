@@ -1128,7 +1128,6 @@ caps:
   load_failed: '能力列表载入失败，请刷新重试'
   empty: 还没有能力。定义一个，节点才能声明它。
   count: '{n} 个能力'
-  no_outputs: 无出口（终端能力）
   source_builtin: '内置'
   declared_by: 声明节点
   no_node: 没有节点声明
@@ -1297,7 +1296,7 @@ caps:
     no_artifact: 这个能力还没有产物，脚本从空白开始写
     name_locked: '名字锁定：这一版就叫这个名字，改名字请另建一个能力。'
     downstream_keep: '已有 {n} 条下游会跟着新版本走 —— 边接的是名字，不是版本号。'
-    multi_output_note: '这是多出口能力（历史数据）：出口结构原样保留，不在这里改。'
+    multi_output_note: '这个能力有多条下游路径（历史数据）：结构原样保留，不在这里改。'
     submit: 发布新版本
     publishing: 发布中…
     failed: '发布失败：'
