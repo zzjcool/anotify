@@ -1205,19 +1205,43 @@ caps:
     display_name_hint: 界面上显示这个。留空就用下面的技术名。
     name: 能力名
     name_hint: 技术名：节点声明、边、日志都用它，建好后不能改。
-    outputs: 出口（ports）
-    outputs_hint: 出口是 emit 的白名单：只有这里声明过的名字，脚本 emit 时才会被派发下去。
+    outputs: 产出端口（ports）
+    outputs_hint: 产出端口是 emit 的白名单：只有这里声明过的名字，脚本 emit 时才会被派发下去。
     outputs_optional: 可留空
-    outputs_ph: 输入出口名后回车
-    outputs_empty: 没有出口 = 这个能力 emit 不出任何东西（终端能力）。
+    outputs_ph: 输入产出端口名后回车
+    outputs_empty: 没有产出端口 = 这个能力 emit 不出任何东西（终端能力）。
     outputs_max: 出口最多 32 个
     err_output: 出口名只能用字母、数字、点、下划线、短横线，1–32 个字符
     chip_remove: 删除这个出口
-    downstream: 下游（可选）
+    downstream: 候选（按优先级选择）
     downstream_optional: 可留空
-    downstream_hint: 每个出口可以接多个下游（扇出）。这里写裸名字 = 跟随最新；能力与这些下游在同一次提交里创建——要么全成，要么全不成。
-    downstream_target_ph: 选一个目标能力（可搜索）
-    downstream_none: 还没有出口 —— 先在上面声明出口，才能连下游。
+    downstream_hint: 一个产出端口可以有多个候选：运行期按优先级**选一个**（同级轮盘，数值小的先选）。这里写裸名字 = 跟随最新；能力与这些候选在同一次提交里创建——要么全成，要么全不成。
+    downstream_target_ph: 选一个候选能力（可搜索）
+    downstream_none: 还没有产出端口 —— 先在上面声明端口，才能连候选。
+    cards_title: 本批能力
+    cards_hint: 一次可以定义多个能力：每个卡片有自己的产出端口、参数与脚本；提交时一次写库，要么全成，要么全不成。
+    card_add: ＋ 再加一个能力
+    card_remove: 删除这个能力
+    card_n: '能力 {n}'
+    card_unnamed: 未命名
+    card_editor: '正在编辑：能力 {n} / {total}'
+    card_ports_summary: '产出端口：{ports}'
+    card_name_dupe: '批内能力名重复：{name}'
+    card_err_field: '能力 {n} / {field}：{reason}'
+    card_err_generic: '能力 {n}：{reason}'
+    cand_hint: 运行期按优先级选一个；同级轮盘（数值小的先选）。
+    cand_prio: 优先级
+    cand_prio_hint: 数值小的先选
+    cand_prio_badge: '优先级 {n}'
+    cand_count: '候选 {n} 个'
+    cand_batch_tag: （本批）
+    cand_empty: 这个产出端口还没有候选 —— 运行期它不会派给任何能力。
+    balance_label: 模式
+    balance_priority: priority（默认）
+    balance_unimpl: 未实现
+    balance_unimpl_err: '产出端口 {port} 的 balance 模式 {mode} 尚未实现，本期只能保存 priority'
+    batch_created: '已创建 {caps} 个能力 · {edges} 条边'
+    batch_failed: '批量创建失败（整批未落库）：'
     created_with_edges: '已连 {n} 条边'
     link_rejected: '第 {n} 条出口 {port} → {to} 不合法，本次提交什么都没创建：{reason}'
     schema: 参数校验（JSON Schema）
@@ -1250,8 +1274,11 @@ caps:
     btn: 详情
     params: 参数契约
     no_params: 无参数
-    outputs: 出口与下游
-    no_outputs: 没有声明出口 —— 这个能力 emit 不出任何东西
+    outputs: 产出端口与候选
+    no_outputs: 没有声明产出端口 —— 这个能力 emit 不出任何东西
+    balance_mode: 模式
+    cand_prio_badge: '优先级 {n}'
+    cand_count: '候选 {n} 个'
     edges_failed: 边列表读不到，下游状态未知
     inbound: 谁接到我
     no_inbound: 没有入边：事件不会从这里进来
@@ -1333,6 +1360,17 @@ caps:
     moved_title: 出口表已独立成页
     moved_desc: 能力是「能干什么」，出口是「干完之后往哪走」。出口的规模会随扇出快速增长，需要搜索和按能力分组，所以单独一页。
     moved_link: 去出口表
+prune:
+  no_edge: 没有接候选
+  no_capability: 目标能力不存在
+  param_schema: 参数不满足目标契约
+  param_missing: 缺必填参数
+  param_type: 参数类型不符
+  no_node: 目标能力没有在线节点
+  foreign_user: 跨命名空间/跨用户
+  event_schema: 事件 payload 不符合触发器的 resultSchema
+  max_hops: 超出 hop 预算（链路太深）
+  budget: 本次 trace 任务数超出预算
 nodes:
   title: 节点
   subtitle: 执行者。节点自己知道怎么跑某个能力，中枢只告诉它"做什么"。

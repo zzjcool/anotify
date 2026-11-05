@@ -1205,19 +1205,43 @@ caps:
     display_name_hint: Shown in the UI. Leave blank to use the technical name below.
     name: Capability name
     name_hint: Technical name — nodes, edges and logs use it. Cannot be changed after creation.
-    outputs: Outputs (ports)
-    outputs_hint: Outputs are the emit whitelist — only names declared here can be dispatched downstream.
+    outputs: Output ports
+    outputs_hint: Output ports are the emit whitelist — only names declared here can be dispatched downstream.
     outputs_optional: optional
-    outputs_ph: Type an output name, then press Enter
-    outputs_empty: No outputs = this capability cannot emit anything (terminal capability).
+    outputs_ph: Type an output port name, then press Enter
+    outputs_empty: No output ports = this capability cannot emit anything (terminal capability).
     outputs_max: At most 32 outputs
     err_output: Output names may only use letters, digits, dots, underscores and dashes (1–32 chars)
     chip_remove: Remove this output
-    downstream: Downstream (optional)
+    downstream: Candidates (picked by priority)
     downstream_optional: optional
-    downstream_hint: One output can fan out to several downstreams. Names are written bare = follow latest; the capability and these downstreams are created in one submit — all succeed or nothing is created.
-    downstream_target_ph: Pick a target capability (searchable)
-    downstream_none: No outputs yet — declare one above before connecting a downstream.
+    downstream_hint: One output port can have several candidates; at runtime exactly one is picked by priority (ties rotate, lower number wins). Names are written bare = follow latest; the capability and these candidates are created in one submit — all succeed or nothing is created.
+    downstream_target_ph: Pick a candidate capability (searchable)
+    downstream_none: No output ports yet — declare one above before connecting candidates.
+    cards_title: Capabilities in this batch
+    cards_hint: Define several capabilities at once — each card has its own output ports, params and script; they are written in one transaction (all succeed or nothing is created).
+    card_add: + Add another capability
+    card_remove: Remove this capability
+    card_n: 'Capability {n}'
+    card_unnamed: Untitled
+    card_editor: 'Editing: capability {n} of {total}'
+    card_ports_summary: 'Output ports: {ports}'
+    card_name_dupe: 'Duplicate capability name in this batch: {name}'
+    card_err_field: 'Capability {n} / {field}: {reason}'
+    card_err_generic: 'Capability {n}: {reason}'
+    cand_hint: At runtime exactly one candidate is picked by priority; ties rotate (lower number wins).
+    cand_prio: Priority
+    cand_prio_hint: Lower number wins
+    cand_prio_badge: 'Priority {n}'
+    cand_count: '{n} candidates'
+    cand_batch_tag: (this batch)
+    cand_empty: This output port has no candidates yet — nothing will be dispatched from it.
+    balance_label: Mode
+    balance_priority: priority (default)
+    balance_unimpl: not implemented
+    balance_unimpl_err: 'Output port {port} uses balance mode {mode}, which is not implemented — only priority can be saved for now'
+    batch_created: 'Created {caps} capabilities and {edges} edges'
+    batch_failed: 'Batch create failed (nothing was saved): '
     created_with_edges: 'linked {n} edge(s)'
     link_rejected: 'Output #{n} {port} → {to} is invalid; nothing was created: {reason}'
     schema: Param validation (JSON Schema)
@@ -1250,8 +1274,11 @@ caps:
     btn: Details
     params: Parameter contract
     no_params: No parameters
-    outputs: Outputs & downstream
-    no_outputs: No outputs declared — this capability cannot emit anything
+    outputs: Output ports & candidates
+    no_outputs: No output ports declared — this capability cannot emit anything
+    balance_mode: Mode
+    cand_prio_badge: 'Priority {n}'
+    cand_count: '{n} candidates'
     edges_failed: Edge list unavailable, downstream state unknown
     inbound: Who feeds me
     no_inbound: No inbound edges — events never enter here
@@ -1333,6 +1360,17 @@ caps:
     moved_title: Edges moved to their own page
     moved_desc: A capability answers what it can do; an edge answers where it goes next. Edges grow fast with fan-out and need search and grouping, so they have their own page.
     moved_link: Open edges
+prune:
+  no_edge: no candidate connected
+  no_capability: target capability does not exist
+  param_schema: params do not satisfy the target contract
+  param_missing: missing required param
+  param_type: param type mismatch
+  no_node: target capability has no online node
+  foreign_user: crosses namespace/user
+  event_schema: event payload does not satisfy the trigger resultSchema
+  max_hops: hop budget exhausted (chain too deep)
+  budget: this trace hit its task budget
 nodes:
   title: Nodes
   subtitle: The executors. A node knows how to run a capability; the hub only tells it what to do.

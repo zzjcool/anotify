@@ -199,7 +199,8 @@
         font-size: 11px;
         line-height: 1.65;
       }
-      /* 一个出口一块：出口名 + 它的下游（多条 = 扇出） */
+      /* 一个产出端口一块：端口名 + 它的候选集合（多条 = 候选，运行期选一个，
+         不是扇出 —— 全部派发是 balance 的后续功能，本期没实现） */
       .cap-port-block {
         display: flex;
         flex-direction: column;
@@ -573,6 +574,199 @@
         min-width: 8rem;
       }
 
+      /* ---------- 新建表单：本批能力卡片 ----------
+         一个表单可以建多个能力（契约 §4：单事务，要么全成、要么全不成）。
+         卡片是本批要定义的那几个能力的目录：点一张卡，下面的出口 / 候选 /
+         脚本区就切到那张卡 —— 同一套控件原地复用，不另开一份表单。 */
+      .cap-cards-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        margin-bottom: 0.9rem;
+        padding: 0.6rem 0.7rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-1);
+      }
+      .cap-cards {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+      .cap-cards-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .cap-card {
+        display: flex;
+        align-items: stretch;
+        gap: 0.35rem;
+        padding: 0.15rem 0.25rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+        transition: border-color var(--dur-fast) var(--ease);
+      }
+      /* 活动卡：accent 边框 + 左侧一道竖条，一眼看出「现在编辑的是这张」 */
+      .cap-card.is-active {
+        border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+        background: var(--accent-soft);
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+      /* 校验失败的那张卡：整条染红，配合 toast 一起把用户带到出错的卡上 */
+      .cap-card.is-err {
+        border-color: var(--error);
+      }
+      .cap-card.is-err .cap-card-name {
+        color: var(--error);
+      }
+      .cap-card-pick {
+        display: flex;
+        flex: 1 1 auto;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.45rem;
+        min-width: 0;
+        padding: 0.35rem 0.4rem;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .cap-card-n {
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .cap-card-name {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+      .cap-card-ports {
+        margin-left: auto;
+        font-size: 10px;
+        color: var(--faint);
+        overflow-wrap: anywhere;
+      }
+      .cap-card-del {
+        flex: none;
+        padding: 0 0.4rem;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      /* 至少留一张卡：只剩一张时按 hidden 属性藏起来。
+         显式写一条 [hidden] 规则：本类设了布局相关属性，别让别的 display 规则抢赢。 */
+      .cap-card-del[hidden] {
+        display: none;
+      }
+      .cap-card-del:hover {
+        color: var(--error);
+      }
+      .cap-card-editor {
+        margin: 0 0 0.6rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      /* ---------- 候选（按优先级选择）----------
+         一个产出端口可以有 N 个候选；运行期默认按 priority **升序**选一个
+         （同级轮盘、数值小的先选）。所以显示顺序必须与选法一致 ——
+         顺序骗人的话，用户会以为「上面那个一定会被选到」。 */
+      .cap-bal-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .cap-bal-label {
+        color: var(--faint);
+      }
+      .cap-bal-select {
+        width: auto;
+        min-width: 8rem;
+        padding-top: 0.1rem;
+        padding-bottom: 0.1rem;
+        font-size: 11px;
+      }
+      /* 非 priority 的模式本期只留字段、保存时会被拦下 —— 所以在这里就说清楚 */
+      .cap-bal-unimpl {
+        padding: 0.02rem 0.35rem;
+        border: 1px dashed color-mix(in srgb, var(--warn) 40%, transparent);
+        border-radius: var(--r-xs);
+        background: var(--warn-soft);
+        color: var(--warn);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      .cap-bal-badge {
+        padding: 0.02rem 0.35rem;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-xs);
+        background: var(--surface-2);
+        color: var(--muted);
+        font-family: var(--font-mono);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      /* 候选 chip：形状跟出口 chip 同源，但里面装了一个数字输入框，
+         所以用圆角矩形而不是全圆（全圆里嵌输入框会显得挤 */
+      .cap-cand {
+        gap: 0.4rem;
+        padding-right: 0.4rem;
+        border-radius: var(--r-sm);
+      }
+      .cap-cand-name {
+        color: inherit;
+      }
+      .cap-cand-prio-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+      }
+      .cap-cand-prio-label {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .cap-cand-prio {
+        width: 4.2rem;
+        padding: 0 0.25rem;
+        font-size: 11px;
+        text-align: right;
+      }
+      .cap-cand-prio-badge {
+        padding: 0.02rem 0.35rem;
+        border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+        border-radius: var(--r-xs);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      /* 行内说明与空态各占一行（.cap-down-row 是 flex-wrap 的）：
+         每个端口的短说明（运行期怎么选），长说明在 #cap-down-wrap 下方 */
+      .cap-cand-hint,
+      .cap-down-row .cap-detail-empty {
+        margin: 0;
+        flex-basis: 100%;
+      }
+      .cap-cand-count {
+        font-size: 10px;
+        color: var(--faint);
+        white-space: nowrap;
+      }
+
       /* ---------- 步骤条 ----------
          新建能力（选模板 → 填写）与部署（选机器 → 下发结果）两个弹层共用。 */
       .cap-steps {
@@ -831,8 +1025,8 @@
     </section>
 
     <!-- 出口（边）搬到独立页面了：能力是"能干什么"（节点代码声明，
-         低频），边是"什么出口接到哪里"（用户控制台配，高频试错）。
-         规模也差一个量级 —— 扇出时边的数量长得快得多。
+         低频），边是"什么端口接到哪里"（用户控制台配，高频试错）。
+         规模也差一个量级 —— 一个端口可以有多个候选，边的数量长得快得多。
          这里刻意用 <div class="card"> + 行内链接按钮，而不是 <a class="card">：
          卡片本身不可点，可点的永远是里面的按钮，全站卡片行为才一致。 -->
     <div class="card card-pad">
@@ -896,6 +1090,24 @@
 
       <!-- 步骤 2：动态表单 + 只读脚本 + 改脚本 -->
       <div id="tpl-form-step" class="hidden">
+        <!-- 本批能力：一个表单建多个能力（契约 §4，单事务）。
+             卡片只是目录，真正的字段是下面那一份（出口 / 候选 / 脚本），
+             点哪张卡就切到哪张卡 —— 所以一个表单能定义 N 个能力，
+             不需要 N 份重复的输入框。 -->
+        <div id="cap-cards-wrap" class="cap-cards-wrap">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.form.cards_title"}}</h4>
+            <span class="tpl-hint">{{t "caps.form.cards_hint"}}</span>
+          </div>
+          <div id="cap-cards" class="cap-cards"></div>
+          <div class="cap-cards-actions">
+            <button type="button" id="cap-add-card" class="btn btn-ghost btn-sm">
+              {{t "caps.form.card_add"}}
+            </button>
+          </div>
+        </div>
+        <p id="cap-card-editor" class="cap-card-editor"></p>
+
         <!-- 三格固定（名字 / 显示名 / 超时）：一屏可见 -->
         <div class="tpl-top">
           <div class="field">
@@ -1135,12 +1347,31 @@
       // 详情展开态按能力 id 记：renderCaps 会整体重建列表，
       // 不记下来就会出现「刚加完下游，行自己合上了」——而那正是用户想看的东西。
       const OPEN_DETAIL = new Set();
-      // 新建表单里的出口列表 / 出口 → 目标能力名。这两份才是唯一真相，
-      // DOM 只是它们的渲染（否则删 chip 还得去读 DOM 反推顺序）。
+      // 新建表单里的产出端口 / 端口 → 候选（`[{name, priority}]`）。
+      // 注意：这两份是**活动卡的镜像**（见下面的 CARDS）——老代码全按镜像读写，
+      // 于是多卡片的表单能原地复用同一套渲染与校验，不用写第二份。
       let PORT_CHIPS = [];
       // 用 Map 而不是普通对象：出口名允许下划线开头（outputPattern 允许 `__proto__`），
       // 用对象键会撞上原型链，这种坑不值得踩。
+      // 值是 **`[{name, priority}]`**（契约 §1：端口 = 候选集合，priority 小的先选）。
       let DOWN_SEL = new Map();
+      // BALANCE：端口 → balance 模式（缺省 priority）。本期只实现 priority，
+      // 其它模式保存时会被拦下（400「尚未实现」）—— 前端也不许保存。
+      let BALANCE = new Map();
+
+      // ==================== 本批能力卡片（批量创建）====================
+      // 一个表单建多个能力（契约 §4：POST /v1/capabilities/batch，单事务）。
+      // CARDS 是**唯一真相**；PORT_CHIPS / DOWN_SEL / BALANCE / SCRIPT_TEXT / DOM 表单
+      // 都只是**活动卡的镜像**：saveActive() 把镜像写回 CARDS[ACTIVE_CARD]，
+      // loadActive(k) 反向回填。这样多卡片不需要第二套渲染/校验代码。
+      let CARDS = [newCard()];
+      let ACTIVE_CARD = 0;
+      // 校验失败的那几张卡（下标）：整条染红，配合 toast 把用户带到出错的卡上。
+      // 不用能力名做键 —— 出错时名字本身可能就是错的（空/重复）。
+      let CARD_ERR = new Set();
+      // BATCH_FORCE：上一次批量提交撞了 409 upgrade_breaking。再点一次提交时带 force，
+      // 语义与「仍然发布」一致（除了这里是一次建多个能力）。
+      let BATCH_FORCE = false;
 
       // ART_CACHE：能力 id → 最新产物视图（GET /v1/capabilities/{id}/artifact）。
       // 懒加载 + 只问一次：产物随 digest 走，在同一个能力行的一生里不会变；
@@ -1805,6 +2036,36 @@
         return byDn.length === 1 ? byDn[0] : null;
       }
 
+      // batchTargets 列出**本批里其它卡**的名字（还没落库，但已经能当候选）。
+      //
+      // 为什么必须有：批量创建的意义就是「a 的出口接到同批的 b」——而 b 此刻
+      // 还不在能力表里（后端提交时才建），datalist 里没有它就只能先建 b 再回来改 a。
+      function batchTargets() {
+        const out = [];
+        CARDS.forEach((c, i) => {
+          if (i === ACTIVE_CARD) return; // 自己不能连自己（UI 仍然跳过自连）
+          const name = String((c && c.name) || "").trim();
+          if (!name) return;
+          out.push({ name: name, displayName: String((c.displayName) || "").trim(), batch: true });
+        });
+        return out;
+      }
+
+      // resolveCandTarget 把用户输入/选中的字符串解成一个**候选**目标。
+      //
+      // 顺序与「本批优先」一致：本批卡名 → 本批显示名（唯一命中才算）→ 既有能力。
+      // 名字先试的原因是：裸名字是唯一稳定身份（显示名能改，也允许重名）。
+      function resolveCandTarget(v) {
+        const s = String(v == null ? "" : v).trim();
+        if (!s) return null;
+        const batch = batchTargets();
+        let hit = batch.find((c) => c.name === s);
+        if (hit) return hit;
+        const byDn = batch.filter((c) => c.displayName === s);
+        if (byDn.length === 1) return byDn[0];
+        return targetByName(s);
+      }
+
       function fillTargetDatalist() {
         const dl = document.getElementById("cap-down-targets");
         if (!dl) return;
@@ -1815,6 +2076,15 @@
           o.value = c.name;
           const dn = (c.displayName || "").trim();
           if (dn) o.label = dn;
+          dl.appendChild(o);
+        }
+        // 本批的能力也进候选（value 仍是裸名字，label 上打「（本批）」）——
+        // 它们提交后就是真的能力，而这里提前一轮就能引用。
+        const tag = t("caps.form.cand_batch_tag", "（本批）");
+        for (const b of batchTargets()) {
+          const o = document.createElement("option");
+          o.value = b.name;
+          o.label = (b.displayName || b.name) + tag;
           dl.appendChild(o);
         }
       }
@@ -1952,34 +2222,96 @@
         }
         for (const port of outputs) {
           const block = el("div", "cap-port-block");
+          // data-port 与表单里的候选行同一个钩子（.cap-down-row[data-port]）：
+          // 按端口定位一个块不用去匹配文案（文案会跟语言/术语变）
+          block.setAttribute("data-port", port);
           const head = el("div", "cap-port-head");
           head.appendChild(el("span", "cap-port-name", port));
+          // balance 模式：缺省就是 priority（不只是「没配置」），所以无值也显示
+          // priority —— 空白会让人以为“这个端口没有选法”，那是错的。
+          // 非 priority 的模式标上「未实现」：字段已经能存，但本期派发侧不读它。
+          const balMode = (c.balance && c.balance[port] && c.balance[port].mode) || "priority";
+          const balBadge = el(
+            "span",
+            "cap-bal-badge" + (balMode === "priority" ? "" : " cap-warn"),
+            balMode === "priority"
+              ? "priority"
+              : balMode + " " + t("caps.form.balance_unimpl", "未实现"),
+          );
+          // 徽章里只写值（priority）：它是该端口的 balance 模式，题头用 title 补上
+          balBadge.title = t("caps.detail.balance_mode", "模式");
+          head.appendChild(balBadge);
           // 每个出口旁边都有「+ 下游」：链路是长出来的，不该逼人去出口页重填一遍
           const addBtn = el("button", "btn btn-ghost btn-sm", "+ " + t("caps.add.btn", "下游"));
           addBtn.type = "button";
           addBtn.setAttribute("data-port", port);
           addBtn.addEventListener("click", () => openAddPanel(c, port, block));
           head.appendChild(addBtn);
+
+          // 候选数：一个端口可以有 N 个候选，但运行期只选一个。
+          // 数字直接摆在端口旁边，免得人以为 N 个候选会被全派（那是 balance=all，本期没实现）。
+          const here = edgesFromPort(c.id, port);
+          head.appendChild(
+            el(
+              "span",
+              "cap-cand-count",
+              t("caps.form.cand_count", "候选 {n} 个").replace("{n}", String(here.length)),
+            ),
+          );
           block.appendChild(head);
 
-          const here = edgesFromPort(c.id, port);
           if (!here.length) {
             // 整个详情区里最需要被看到的一句话。
             block.appendChild(
               el("div", "cap-port-dead", t("caps.detail.dead", "这个出口没有下游，emit 出去就到此为止")),
             );
           } else {
-            for (const e of here) block.appendChild(edgeLine(e));
+            // 按 priority 升序 + toRef 字典序展示（不排序 EDGES 原数组，拷贝再排）：
+            // 显示顺序必须与运行期的选法一致，否则界面在骗人。
+            for (const e of sortEdgesByCand(here)) block.appendChild(edgeLine(e));
           }
           box.appendChild(block);
         }
         return box;
       }
 
-      // edgeLine 渲染一条**出边**：目标能力 + 它跟随最新还是钉死 + 常量覆盖。
+      // candPrio 把候选优先级归一成 0..9999 的整数：空/NaN/负数 → 0，>9999 → 9999。
+      // 缺字段与 0 是同一个意思（后端缺省也是 0），所以不用区分“未设置”。
+      function candPrio(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 0;
+        return Math.min(9999, Math.max(0, Math.trunc(n)));
+      }
+
+      // sortEdgesByCand 把候选（出边）按 priority 升序 + toRef 字典序排。
+      //
+      // 与运行期选法同一口径（契约 §3）：字典序先确定先后，再按 priority 选组。
+      // 复制再排：EDGES 是全局数据，不能因为「渲染了一次详情」就被改顺序。
+      function sortEdgesByCand(list) {
+        return (list || []).slice().sort((a, b) => {
+          const pa = candPrio(a && a.priority);
+          const pb = candPrio(b && b.priority);
+          if (pa !== pb) return pa - pb;
+          const ra = String((a && a.toRef) || "");
+          const rb = String((b && b.toRef) || "");
+          return ra < rb ? -1 : ra > rb ? 1 : 0;
+        });
+      }
+
+      // edgeLine 渲染一条**出边**（= 这个端口的一个候选）：目标能力 + 它的优先级
+      // + 跟随最新还是钉死 + 常量覆盖。
       function edgeLine(e) {
         const line = el("div", "cap-link");
         line.appendChild(el("span", "cap-down-arrow", "→"));
+        // priority = 0 也要显示：“未设置”与“0”在语义上就是同一个值，
+        // 隐藏它反而让人以为这条边没有优先级、可以随便排。
+        line.appendChild(
+          el(
+            "span",
+            "cap-cand-prio-badge",
+            t("caps.detail.cand_prio_badge", "优先级 {n}").replace("{n}", String(candPrio(e.priority))),
+          ),
+        );
         const toCap = capByID(e.toCapabilityId);
         line.appendChild(
           el(
@@ -2411,12 +2743,236 @@
         });
       }
 
-      // ==================== 新建能力 · 出口 chips + 下游 ====================
+      // ==================== 新建能力 · 产出端口 chips + 候选 ====================
       //
       // PORT_RE 必须与后端 internal/artifact/artifact.go:outputPattern 一致：
       // 前端放行、后端拒收的错只会在提交之后才发现，而那时用户已经填完整张表单了。
       const PORT_RE = /^[a-zA-Z0-9._-]{1,32}$/;
       const PORT_MAX = 32;
+
+      // ==================== 本批能力卡片（批量创建）====================
+      //
+      // 一个表单建多个能力（契约 §4：POST /v1/capabilities/batch，单事务）。
+      // CARDS 是**唯一真相**；PORT_CHIPS / DOWN_SEL / BALANCE / SCRIPT_TEXT 与
+      // 表单输入框都是**活动卡的镜像**：
+      //   saveActive()     镜像 → CARDS[ACTIVE_CARD]
+      //   loadActive(k)    CARDS[k] → 镜像 + 重画
+      // 于是多卡片不需要第二套渲染与校验代码 —— renderPortChips / renderDownRows /
+      // 脚本区原地复用，老的两条提交路径也不受影响。
+
+      // newCard 是一张空白能力的快照（字段与 createCapability 读的那些对齐）。
+      function newCard() {
+        return {
+          name: "",
+          displayName: "",
+          timeout: "",
+          workDir: "",
+          requires: [], // 模板 requires（从 TPL_SEL 继承）
+          ports: [], // = PORT_CHIPS 的快照
+          down: new Map(), // 端口 → [{name, priority}]（= DOWN_SEL 的快照）
+          balance: new Map(), // 同 BALANCE
+          script: "",
+          scriptMode: "view",
+          fieldValues: {}, // #tpl-fields 里各输入的当前值
+          schemaText: "",
+          schemaOpen: false,
+          timeoutDirty: false,
+        };
+      }
+
+      // cloneDown 深拷一份端口 → 候选：候选是可变的小记录（优先级要能回写），
+      // 两份卡片共享同一个对象会让“改这张卡的优先级动了那张卡”。
+      function cloneDown(map) {
+        const out = new Map();
+        if (!map) return out;
+        for (const [port, list] of map) {
+          out.set(
+            port,
+            (list || []).map((c) => ({ name: String((c && c.name) || ""), priority: candPrio(c && c.priority) })),
+          );
+        }
+        return out;
+      }
+
+      // formFieldValues / applyFieldValues 读写 #tpl-fields 里各输入框的值。
+      // 靠 data-field（模板字段名）对应，不靠位置 —— 换模板时位置会变。
+      function formFieldValues() {
+        const out = {};
+        const box = document.getElementById("tpl-fields");
+        if (!box) return out;
+        for (const wrap of box.querySelectorAll("[data-field]")) {
+          const key = wrap.getAttribute("data-field") || "";
+          const ctl = wrap.querySelector("input, select, textarea");
+          if (!key || !ctl) continue;
+          out[key] = ctl.value;
+        }
+        return out;
+      }
+
+      function applyFieldValues(vals) {
+        const box = document.getElementById("tpl-fields");
+        if (!box) return;
+        const v = vals || {};
+        for (const wrap of box.querySelectorAll("[data-field]")) {
+          const key = wrap.getAttribute("data-field") || "";
+          const ctl = wrap.querySelector("input, select, textarea");
+          if (!key || !ctl || !(key in v)) continue;
+          ctl.value = String(v[key] == null ? "" : v[key]);
+        }
+      }
+
+      // saveActive 把镜像与表单字段写回活动卡。
+      // 切换卡片 / 加卡 / 删卡 / 提交之前都必须先调它（否则上一次的编辑静默丢掉）。
+      function saveActive() {
+        if (!CARDS.length) return;
+        const c = CARDS[ACTIVE_CARD] || (CARDS[ACTIVE_CARD] = newCard());
+        const val = (id) => {
+          const node = document.getElementById(id);
+          return node ? node.value : "";
+        };
+        c.name = String(val("cap-name") || "").trim();
+        c.displayName = val("cap-display-name");
+        c.timeout = val("cap-timeout");
+        c.workDir = String(val("cap-workdir") || "").trim();
+        if (TPL_SEL) c.requires = (TPL_SEL.requires || []).slice();
+        c.ports = PORT_CHIPS.slice();
+        c.down = cloneDown(DOWN_SEL);
+        c.balance = new Map(BALANCE);
+        c.script = SCRIPT_TEXT;
+        c.scriptMode = SCRIPT_MODE;
+        c.fieldValues = formFieldValues();
+        c.schemaText = val("cap-schema");
+        const wrap = document.getElementById("schema-wrap");
+        c.schemaOpen = !!wrap && !wrap.classList.contains("hidden");
+        c.timeoutDirty = TIMEOUT_DIRTY;
+      }
+
+      // loadActive 把 CARDS[k] 回填进镜像与表单，并重画所有依赖它的区域。
+      function loadActive(k) {
+        const c = CARDS[k] || newCard();
+        ACTIVE_CARD = k;
+        const set = (id, v) => {
+          const node = document.getElementById(id);
+          if (node) node.value = v == null ? "" : String(v);
+        };
+        set("cap-name", c.name);
+        set("cap-display-name", c.displayName);
+        set("cap-timeout", c.timeout);
+        set("cap-workdir", c.workDir);
+        set("cap-schema", c.schemaText);
+        syncWorkdirEcho();
+        TIMEOUT_DIRTY = !!c.timeoutDirty;
+        PORT_CHIPS = (c.ports || []).slice();
+        DOWN_SEL = cloneDown(c.down);
+        BALANCE = new Map(c.balance || []);
+        SCRIPT_TEXT = c.script || "";
+        document.getElementById("script-pre").textContent = SCRIPT_TEXT;
+        document.getElementById("script-input").value = SCRIPT_TEXT;
+        // 先写好 textarea/pre 再切模式：scriptModeSet("view") 会以 textarea 为准回写正文
+        scriptModeSet(c.scriptMode === "edit" ? "edit" : "view");
+        applyFieldValues(c.fieldValues);
+        const wrap = document.getElementById("schema-wrap");
+        if (wrap) wrap.classList.toggle("hidden", !c.schemaOpen);
+        setSchemaError("");
+        document.getElementById("tpl-requires").textContent = requiresText(c.requires || []);
+        renderPortChips();
+        renderDownRows();
+        renderCards();
+        // 活动卡变了 → 「（本批）」候选也跟着变
+        fillTargetDatalist();
+      }
+
+      // activateCard 切到第 k 张卡：先把当前卡落盘，再回填目标卡。
+      function activateCard(k) {
+        if (!Number.isInteger(k) || k < 0 || k >= CARDS.length) return;
+        if (k === ACTIVE_CARD) return;
+        saveActive();
+        ACTIVE_CARD = k;
+        loadActive(k);
+      }
+
+      // addCard 再加一张卡：新卡沿用当前模板的默认值 ——
+      // 同一批只有一个模板，让第二张卡从空白开始等于逼用户重填出口与脚本。
+      function addCard() {
+        saveActive();
+        const c = newCard();
+        if (TPL_SEL) {
+          c.requires = (TPL_SEL.requires || []).slice();
+          c.ports = (TPL_SEL.outputs || []).slice();
+          c.script = TPL_SEL.script || "";
+          c.timeout = String(TPL_SEL.timeoutSec || 0);
+        }
+        CARDS.push(c);
+        CARD_ERR.clear(); // 下标变了，旧的出错标记不再有意义
+        ACTIVE_CARD = CARDS.length - 1;
+        loadActive(ACTIVE_CARD);
+      }
+
+      // removeCard 删掉一张卡。至少留一张：只剩一张时按钮本身就是 hidden 的。
+      function removeCard(k) {
+        if (CARDS.length <= 1 || k < 0 || k >= CARDS.length) return;
+        // 删的不是当前卡时先把当前卡落盘：否则下面的 loadActive 会把
+        // 当前卡还没保存的编辑（DOM/镜像里）静默抹掉。
+        if (k !== ACTIVE_CARD) saveActive();
+        CARDS.splice(k, 1);
+        CARD_ERR.clear();
+        if (ACTIVE_CARD > k) ACTIVE_CARD -= 1;
+        if (ACTIVE_CARD > CARDS.length - 1) ACTIVE_CARD = CARDS.length - 1;
+        loadActive(ACTIVE_CARD);
+      }
+
+      // cardPortsText：卡片摘要上的出口清单。card_ports_summary 里带 {ports} 就替换，
+      // 不带就当标签用 —— 文案由四份 locale 统一写，两种形态都不能崩。
+      function cardPortsText(ports) {
+        const list = (ports || []).join(", ");
+        const label = t("caps.form.card_ports_summary", "产出端口：{ports}");
+        if (label.includes("{ports}")) return label.replace("{ports}", list || "—");
+        return list ? label + " " + list : label;
+      }
+
+      // renderCards 重画卡片目录（只碰 #cap-cards 与那行「正在编辑」，
+      // 不动任何输入框 —— 它会被 #cap-name 的 input 事件频繁调用）。
+      function renderCards() {
+        const box = document.getElementById("cap-cards");
+        if (!box) return;
+        box.replaceChildren();
+        CARDS.forEach((c, i) => {
+          const card = el(
+            "div",
+            "cap-card" + (i === ACTIVE_CARD ? " is-active" : "") + (CARD_ERR.has(i) ? " is-err" : ""),
+          );
+          card.setAttribute("data-card", String(i));
+          const pick = el("button", "cap-card-pick");
+          pick.type = "button";
+          pick.appendChild(
+            el("span", "cap-card-n", t("caps.form.card_n", "能力 {n}").replace("{n}", String(i + 1))),
+          );
+          pick.appendChild(
+            el(
+              "span",
+              "cap-card-name",
+              String((c && c.name) || "").trim() || t("caps.form.card_unnamed", "未命名"),
+            ),
+          );
+          pick.appendChild(el("span", "cap-card-ports", cardPortsText(c && c.ports)));
+          pick.addEventListener("click", () => activateCard(i));
+          card.appendChild(pick);
+          const del = el("button", "cap-card-del", "×");
+          del.type = "button";
+          del.title = t("caps.form.card_remove", "删除这个能力");
+          // 至少留一张卡：只剩一张时藏起删除键（而不是点了没反应）
+          del.hidden = CARDS.length <= 1;
+          del.addEventListener("click", () => removeCard(i));
+          card.appendChild(del);
+          box.appendChild(card);
+        });
+        const editor = document.getElementById("cap-card-editor");
+        if (editor) {
+          editor.textContent = t("caps.form.card_editor", "正在编辑：能力 {n} / {total}")
+            .replace("{n}", String(ACTIVE_CARD + 1))
+            .replace("{total}", String(CARDS.length));
+        }
+      }
 
       // renderPortChips 把 PORT_CHIPS 画成 chips，输入框永远在最后。
       function renderPortChips() {
@@ -2432,8 +2988,9 @@
           x.title = t("caps.form.chip_remove", "删除这个出口");
           x.addEventListener("click", () => {
             PORT_CHIPS = PORT_CHIPS.filter((y) => y !== p);
-            // 出口没了，它下面的下游选择也不该算数（提交时会再兜一次底）
+            // 出口没了，它下面的候选与选法也不该算数（提交时会再兜一次底）
             DOWN_SEL.delete(p);
+            BALANCE.delete(p);
             renderPortChips();
             renderDownRows();
           });
@@ -2476,9 +3033,31 @@
         return true;
       }
 
-      // renderDownRows 为每个出口画一行「出口名 → 目标能力（可多个）」。
+      // candCmp：候选的显示顺序 = 运行期的选法（priority 升序 → 名字字典序）
+      function candCmp(a, b) {
+        const pa = candPrio(a && a.priority);
+        const pb = candPrio(b && b.priority);
+        if (pa !== pb) return pa - pb;
+        const na = String((a && a.name) || "");
+        const nb = String((b && b.name) || "");
+        return na < nb ? -1 : na > nb ? 1 : 0;
+      }
+
+      // candLabel 是候选 chip 上显示的名字：本批里还没落库的名字查不到能力行，
+      // 就用本批卡上的显示名；都没有就退回裸名字（它是唯一稳定的身份）。
+      function candLabel(name) {
+        const cap = CAPS.find((c) => c.name === name);
+        if (cap) return Anotify.capLabel(cap);
+        const b = batchTargets().find((c) => c.name === name);
+        if (b && b.displayName) return b.displayName;
+        return name;
+      }
+
+      // renderDownRows 为每个产出端口画一行「端口 → 候选（按优先级选一个）」。
       //
       // 这一栏**可以留空**：链路的另一段完全可以事后再补（详情区的「+ 下游」）。
+      // 候选的顺序就是运行期的选法（priority 升序、同 priority 按名字字典序）：
+      // 顺序骗人的话，用户会以为「上面那个一定会被选到」。
       function renderDownRows() {
         const box = document.getElementById("cap-down-rows");
         if (!box) return;
@@ -2488,46 +3067,113 @@
             el(
               "div",
               "cap-detail-empty",
-              t("caps.form.downstream_none", "还没有出口 —— 先在上面声明出口，才能连下游。"),
+              t("caps.form.downstream_none", "还没有产出端口 —— 先在上面声明端口，才能连候选。"),
             ),
           );
           return;
         }
+        // balance 模式清单：本期只实现 priority，其余四个是**留位**（保存时被拦下）
+        const MODES = ["priority", "all", "random", "least_loaded", "hash"];
         for (const port of PORT_CHIPS) {
-          const row = el("div", "cap-down-row");
+          const mode = String(BALANCE.get(port) || "priority");
+          const row = el("div", "cap-down-row" + (mode === "priority" ? "" : " cap-warn"));
           row.setAttribute("data-port", port);
           row.appendChild(el("span", "cap-port-name", port));
           row.appendChild(el("span", "cap-down-arrow", "→"));
+
+          // 编辑（发新版本）模式不画模式选择器：单建接口不带 balance，
+          // 摆一个能选但不会保存的控件等于骗人。
+          if (!VERSION_MODE) {
+            const balWrap = el("span", "cap-bal-wrap");
+            balWrap.appendChild(el("span", "cap-bal-label", t("caps.form.balance_label", "模式")));
+            const sel = el("select", "input cap-bal-select");
+            for (const m of MODES) {
+              const o = document.createElement("option");
+              o.value = m;
+              o.textContent = m === "priority" ? t("caps.form.balance_priority", "priority（默认）") : m;
+              if (m === mode) o.selected = true;
+              sel.appendChild(o);
+            }
+            sel.addEventListener("change", () => {
+              BALANCE.set(port, sel.value);
+              renderDownRows(); // 非 priority 要立刻标出「未实现」并染黄
+            });
+            balWrap.appendChild(sel);
+            if (mode !== "priority") {
+              const un = el("span", "cap-bal-unimpl", t("caps.form.balance_unimpl", "未实现"));
+              un.title = t(
+                "caps.form.balance_unimpl_err",
+                "产出端口 {port} 的 balance 模式 {mode} 尚未实现，本期只能保存 priority",
+              )
+                .replace("{port}", port)
+                .replace("{mode}", mode);
+              balWrap.appendChild(un);
+            }
+            row.appendChild(balWrap);
+          }
+
           const targets = el("div", "cap-down-targets");
-          for (const name of DOWN_SEL.get(port) || []) {
-            const cap = CAPS.find((c) => c.name === name);
-            const chip = el("span", "cap-chip");
-            chip.appendChild(el("span", "", cap ? Anotify.capLabel(cap) : name));
+          const cands = (DOWN_SEL.get(port) || []).slice().sort(candCmp);
+          for (const cand of cands) {
+            const chip = el("span", "cap-chip cap-cand");
+            chip.setAttribute("data-cand-name", cand.name);
+            chip.appendChild(el("span", "cap-cand-name", candLabel(cand.name)));
+            // 优先级只属于「一个端口有多个候选」这件事：编辑（发新版本）模式
+            // 走的是单建接口，不带 priority —— 所以那里不画它。
+            if (!VERSION_MODE) {
+              const wrap = el("label", "cap-cand-prio-wrap");
+              wrap.appendChild(el("span", "cap-cand-prio-label", t("caps.form.cand_prio", "优先级")));
+              const pin = el("input", "input cap-cand-prio");
+              pin.type = "number";
+              pin.min = "0";
+              pin.max = "9999";
+              pin.step = "1";
+              pin.value = String(candPrio(cand.priority));
+              pin.title = t("caps.form.cand_prio_hint", "数值小的先选");
+              pin.setAttribute(
+                "aria-label",
+                t("caps.form.cand_prio_badge", "优先级 {n}").replace("{n}", String(candPrio(cand.priority))),
+              );
+              // 用 change 而不是 input：input 每敲一位就要重画，焦点会丢。
+              // change 后也不重画 —— 用户正 tab 到下一个控件，重画会把那个控件换掉。
+              pin.addEventListener("change", () => {
+                const next = candPrio(pin.value);
+                cand.priority = next; // 直接改镜像里的那条候选记录
+                pin.value = String(next); // 回写规范化后的值（空 / 负数 / 超限都看得见）
+              });
+              wrap.appendChild(pin);
+              chip.appendChild(wrap);
+            }
             const x = el("button", "cap-chip-x", "×");
             x.type = "button";
             x.title = t("caps.form.chip_remove", "删除这个出口");
             x.addEventListener("click", () => {
+              // 按对象身份删（名字在同一端口里不重复，但身份一定唯一）
               DOWN_SEL.set(
                 port,
-                (DOWN_SEL.get(port) || []).filter((n) => n !== name),
+                (DOWN_SEL.get(port) || []).filter((n) => n !== cand),
               );
               renderDownRows();
             });
             chip.appendChild(x);
             targets.appendChild(chip);
           }
+
           const inp = el("input", "input cap-down-input");
           inp.setAttribute("list", "cap-down-targets");
           inp.setAttribute("autocomplete", "off");
-          inp.placeholder = t("caps.form.downstream_target_ph", "选一个目标能力（可搜索）");
+          inp.placeholder = t("caps.form.downstream_target_ph", "选一个候选能力（可搜索）");
           const commit = () => {
-            const cap = targetByName(inp.value);
+            const cap = resolveCandTarget(inp.value);
             if (!cap) {
               if (inp.value.trim()) toast(t("caps.add.err_target", "请选择一个目标能力"));
               return;
             }
             const cur = DOWN_SEL.get(port) || [];
-            if (!cur.includes(cap.name)) DOWN_SEL.set(port, cur.concat([cap.name]));
+            // 新候选默认 priority 0（= 最小、最先被选）：加一个候选最不意外的默认值
+            if (!cur.some((n) => n.name === cap.name)) {
+              DOWN_SEL.set(port, cur.concat([{ name: cap.name, priority: 0 }]));
+            }
             renderDownRows(); // 重画：chips 变了，输入框也要清空
           };
           // datalist 选中会触发 change；手打全名后回车也走同一条路。
@@ -2540,6 +3186,25 @@
           });
           targets.appendChild(inp);
           row.appendChild(targets);
+
+          // 这个端口还没有候选 → 说清后果（运行期它不会派给任何能力）
+          if (!cands.length) {
+            row.appendChild(
+              el(
+                "div",
+                "cap-detail-empty",
+                t("caps.form.cand_empty", "这个产出端口还没有候选 —— 运行期它不会派给任何能力。"),
+              ),
+            );
+          }
+          // 行尾短说明：运行期怎么选（长说明在 #cap-down-wrap 下方，不重复写第二份）
+          row.appendChild(
+            el(
+              "p",
+              "field-hint cap-cand-hint",
+              t("caps.form.cand_hint", "运行期按优先级选一个；同级轮盘（数值小的先选）。"),
+            ),
+          );
           box.appendChild(row);
         }
       }
@@ -2611,10 +3276,21 @@
         TIMEOUT_DIRTY = false;
         TPL_SEL = null;
         SCRIPT_TEXT = "";
-        // 出口与下游也要清：上一次建的链路不能静默带到下一次新建里
+        // 出口与候选也要清：上一次建的链路不能静默带到下一次新建里
         // （那会凭空造出几条用户没点过的边）。
         PORT_CHIPS = [];
         DOWN_SEL = new Map();
+        BALANCE = new Map();
+        // 本批能力也在这一处回到「一张空卡」：两条入口（新建 / 发新版本）
+        // 共用 resetCapForm，漏清一项就会“上一次的卡片带到这一次”。
+        CARDS = [newCard()];
+        ACTIVE_CARD = 0;
+        CARD_ERR = new Set();
+        BATCH_FORCE = false;
+        document.getElementById("cap-cards-wrap").classList.remove("hidden");
+        document.getElementById("cap-card-editor").classList.remove("hidden");
+        renderCards();
+        fillTargetDatalist();
         renderPortChips();
         renderDownRows();
         // 脚本区回到空白 + 只读态（否则上一次的正文会留在 pre / textarea 里）
@@ -2660,6 +3336,11 @@
       // 出现「按了没反应」（藏错了一份）。
       function submitCapModal() {
         if (VERSION_MODE) return submitVersion(false);
+        // 提交前先把活动卡的镜像落盘（批量的全部输入都以 CARDS 为准）
+        saveActive();
+        // 多卡 / 带优先级 / 非 priority 的 balance → 一次建多个能力（batch）；
+        // 其余情况走老的单建路径，行为一字不变（请求体也与改动前完全一致）。
+        if (needBatch()) return createBatch();
         return createCapability();
       }
 
@@ -2806,8 +3487,15 @@
         for (const p of [...DOWN_SEL.keys()]) {
           if (!PORT_CHIPS.includes(p)) DOWN_SEL.delete(p);
         }
+        for (const p of [...BALANCE.keys()]) {
+          if (!PORT_CHIPS.includes(p)) BALANCE.delete(p);
+        }
         renderPortChips();
         renderDownRows();
+        // 选完模板后把「模板默认值」落进当前卡：否则切到下一张卡再切回来，
+        // 出口与脚本会变回空白（镜像从没写回去过）。
+        saveActive();
+        renderCards();
         tplGoStep(2);
       }
 
@@ -3039,9 +3727,13 @@
         //
         // 连到自己跳过：新建里的自环几乎总是误操作，而后端会把它当一条环拒掉 ——
         // 一次原子提交里混进一条自连，会让整个提交（含能力）都失败。
+        //
+        // 注意：这里只取**名字**（DOWN_SEL 的值是 `[{name, priority}]`）。
+        // priority 不进单建请求 —— 它走上面的批量路径（needBatch 在提交前就分流了）。
         const wanted = [];
         for (const port of outputs) {
-          for (const toName of DOWN_SEL.get(port) || []) {
+          for (const cand of DOWN_SEL.get(port) || []) {
+            const toName = String((cand && cand.name) || "");
             if (!toName || toName === name) continue;
             wanted.push({ port: port, to: toName });
           }
@@ -3124,6 +3816,322 @@
           .replace("{port}", w.port)
           .replace("{to}", w.to)
           .replace("{reason}", detail.replace(/^links\[\d+\]:\s*/, ""));
+      }
+
+      // ==================== 新建能力 · 一次建多个（batch）====================
+      //
+      // 单建接口 POST /v1/capabilities **不带 priority**，所以「多卡」与「给候选排了
+      // 优先级」都必须走 POST /v1/capabilities/batch：一次请求、单事务，
+      // 要么全成、要么全不成（契约 §4）。其余情况一律还走单建，行为一字不变。
+
+      // needBatch 决定走哪条路。三条触发条件都是「单建接口表达不了」的事：
+      //   · 多卡               —— 单建一次只能建一个能力
+      //   · 任一 priority ≠ 0   —— 单建的 links 不带 priority
+      //   · 任一 balance ≠ priority —— 单建不带 balance（这条会被校验拦下，不能静默丢）
+      function needBatch() {
+        if (CARDS.length > 1) return true;
+        for (const list of DOWN_SEL.values()) {
+          for (const cand of list || []) {
+            if (candPrio(cand && cand.priority) !== 0) return true;
+          }
+        }
+        for (const mode of BALANCE.values()) {
+          if (String(mode || "priority") !== "priority") return true;
+        }
+        return false;
+      }
+
+      // cardTimeoutSec 取一张卡的超时：空 = 跟模板默认值（与 createCapability 同口径）。
+      function cardTimeoutSec(c) {
+        const raw = String((c && c.timeout) || "").trim();
+        if (raw === "") return Number((TPL_SEL && TPL_SEL.timeoutSec) || 0);
+        return Number(raw);
+      }
+
+      // cardSchema 取一张卡的 paramsSchema：手写的高级出口优先，留空用模板推导的
+      // （与 createCapability 同一口径）。校验阶段已经确认它能解成对象。
+      function cardSchema(c) {
+        const raw = String((c && c.schemaText) || "").trim();
+        if (c && c.schemaOpen && raw !== "") {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+          } catch (e) {
+            /* 校验已经拦过，这里不重复报错 */
+          }
+        }
+        return paramsSchemaFor((TPL_SEL && TPL_SEL.fields) || []);
+      }
+
+      // batchFieldOf 把后端的字段名原样带出来（`capabilities[2].name` → name）。
+      // 这里**不翻译**成中文：字段名是 API 与日志里的那个 token，
+      // 翻译了就对不上后端的错误串（排查时还要再映射一次）。
+      function batchFieldOf(serverField) {
+        return String(serverField == null ? "" : serverField).trim();
+      }
+
+      // cardFailAt 把「第 i 张卡 / 哪个字段 / 为什么」报到用户脸上：
+      //   · 切到那张卡（activateCard）—— 否则用户看着一张没错的卡不知道错在哪
+      //   · 给那张卡标红（CARD_ERR）
+      //   · toast 说清能力序号 + 字段 + 原因
+      // 弹层不关、所有输入都留着：批量失败是**整体**的，重填一遍成本太高。
+      function cardFailAt(i, field, reason) {
+        CARD_ERR.clear();
+        if (Number.isInteger(i) && i >= 0 && i < CARDS.length) CARD_ERR.add(i);
+        activateCard(i);
+        renderCards(); // activateCard 在「已经是活动卡」时会直接返回，这里补一次重画
+        if (field) {
+          toast(
+            t("caps.form.card_err_field", "能力 {n} / {field}：{reason}")
+              .replace("{n}", String(i + 1))
+              .replace("{field}", field)
+              .replace("{reason}", reason),
+          );
+        } else {
+          toast(
+            t("caps.form.card_err_generic", "能力 {n}：{reason}")
+              .replace("{n}", String(i + 1))
+              .replace("{reason}", reason),
+          );
+        }
+      }
+
+      // validateCardsForBatch 逐卡校验，**报第一处错**（契约 §3.5 的顺序）：
+      //   ① 批内 name 非空且不重复
+      //   ② 每张卡：名字格式 → 超时 → 脚本 shebang → paramsSchema JSON → balance 全 priority
+      function validateCardsForBatch() {
+        // 字段名用 API 的那个 token（name / timeout / run / paramsSchema）：
+        // 与后端错误串（`capabilities[2].name: …`）同一个词，用户/排查时能对上。
+        const nameField = "name";
+        const seen = new Set();
+        for (let i = 0; i < CARDS.length; i++) {
+          const name = String((CARDS[i] && CARDS[i].name) || "").trim();
+          if (!name) {
+            cardFailAt(i, nameField, t("caps.form.err_name", "请填写能力名"));
+            return false;
+          }
+          if (seen.has(name)) {
+            cardFailAt(
+              i,
+              nameField,
+              t("caps.form.card_name_dupe", "批内能力名重复：{name}").replace("{name}", name),
+            );
+            return false;
+          }
+          seen.add(name);
+        }
+        for (let i = 0; i < CARDS.length; i++) {
+          const c = CARDS[i];
+          const name = String(c.name || "").trim();
+          if (!CAP_NAME_RE.test(name)) {
+            cardFailAt(
+              i,
+              nameField,
+              t(
+                "caps.form.err_invalid_name",
+                "能力名只能用小写字母、数字、点、下划线、短横线，1–63 个字符，且以字母或数字开头",
+              ),
+            );
+            return false;
+          }
+          const timeoutSec = cardTimeoutSec(c);
+          if (!Number.isInteger(timeoutSec) || timeoutSec < 0 || timeoutSec > 86400) {
+            cardFailAt(
+              i,
+              "timeout",
+              t("caps.form.err_timeout", "超时必须是 0–86400 的整数"),
+            );
+            return false;
+          }
+          // 无条件校验、不 trim：后端看 HasPrefix("#!")，比它宽就等于“前端放行、后端拒收”
+          if (!/^#!/.test(String(c.script || ""))) {
+            cardFailAt(
+              i,
+              "run",
+              t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"),
+            );
+            return false;
+          }
+          const rawSchema = String(c.schemaText || "").trim();
+          if (c.schemaOpen && rawSchema !== "") {
+            try {
+              const parsed = JSON.parse(rawSchema);
+              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                throw new Error(t("caps.form.err_schema_obj", "paramsSchema 必须是一个 JSON 对象"));
+              }
+            } catch (e) {
+              cardFailAt(i, "paramsSchema", String((e && e.message) || e));
+              return false;
+            }
+          }
+          // balance：本期只实现 priority。校验就拦下（而不是提交后 400）——
+          // 用户不该先看到“自己选的模式在界面上生效”、保存时才知道它不存在。
+          for (const port of c.ports || []) {
+            const mode = String((c.balance && c.balance.get(port)) || "priority");
+            if (mode !== "priority") {
+              cardFailAt(
+                i,
+                port,
+                t(
+                  "caps.form.balance_unimpl_err",
+                  "产出端口 {port} 的 balance 模式 {mode} 尚未实现，本期只能保存 priority",
+                )
+                  .replace("{port}", port)
+                  .replace("{mode}", mode),
+              );
+              return false;
+            }
+          }
+        }
+        return true;
+      }
+
+      /**
+       * createBatch 一次建多个能力（POST /v1/capabilities/batch）。
+       *
+       * 与 createCapability 的差别只有三处：
+       *   · 一个请求带 N 个 capabilities + 全部 links（单事务，失败整批不落库）
+       *   · links 带 priority（小的先选），fromRef 是本批能力名
+       *   · links 的顺序**必须稳定**：卡顺序 → 端口声明顺序 → 候选顺序。
+       *     同一个顺序也用来把 `links[N]` 的错误映射回「哪张卡 / 哪个端口 → 哪个目标」。
+       *
+       * 发送用**裸 fetch**（与 submitVersion 同一个理由）：要读 409 的 upgradeImpact。
+       */
+      async function createBatch() {
+        if (!validateCardsForBatch()) return;
+
+        const ns = scopeNS();
+        const caps = [];
+        const links = [];
+        const owners = []; // 与 links 同下标：{card, port, to}
+        for (let i = 0; i < CARDS.length; i++) {
+          const c = CARDS[i];
+          const name = String(c.name || "").trim();
+          const run = {
+            entrypoint: "run.sh",
+            files: { "run.sh": String(c.script || "") },
+            timeoutSec: cardTimeoutSec(c),
+            env: {},
+          };
+          // 工作目录跟其它 run 字段放一起（空就不带 = 每次任务一个独立目录）
+          if (c.workDir) run.workDir = c.workDir;
+          caps.push({
+            name: name,
+            // 显示名：用户填了就用它；只有**单个**能力时回退到模板的（与单建同口径）。
+            // 一批多个能力时不回退：那样 N 个能力会带上同一个显示名，列表里分不出谁是谁。
+            displayName:
+              String(c.displayName || "").trim() ||
+              (CARDS.length === 1 && TPL_SEL ? TPL_SEL.displayName : "") ||
+              "",
+            paramsSchema: cardSchema(c),
+            outputs: (c.ports || []).slice(),
+            run: run,
+            requires: (c.requires || []).slice(),
+          });
+          for (const port of c.ports || []) {
+            for (const cand of c.down.get(port) || []) {
+              const toName = String((cand && cand.name) || "").trim();
+              // 自连跳过（既有行为）：一次原子提交里混进一条自连会让整批都失败，
+              // 而自环在新建表单里几乎总是误操作。
+              if (!toName || toName === name) continue;
+              links.push({
+                fromRef: name,
+                fromPort: port,
+                toRef: toName,
+                priority: candPrio(cand.priority),
+              });
+              owners.push({ card: i, port: port, to: toName });
+            }
+          }
+        }
+
+        const body = { capabilities: caps, links: links };
+        // namespaceId 只放 body：namespaceParam 是“query 优先、body 兜底”，
+        // 后端两边都收；少一个查询串，这个请求的 URL 就是稳定的那个路径。
+        if (ns) body.namespaceId = ns;
+        // 上一次撞了 409 upgrade_breaking：这次是用户看过影响面后的「仍然发布」
+        if (BATCH_FORCE) body.force = true;
+
+        const btn = document.getElementById("cap-submit");
+        const prevLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = t("caps.edit.publishing", "发布中…");
+        let res = null;
+        let data = null;
+        try {
+          res = await fetch(API + "/capabilities/batch", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          data = await res.json().catch(() => null);
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = prevLabel;
+          toast(t("caps.form.batch_failed", "批量创建失败（整批未落库）：") + errText(e));
+          return;
+        }
+        btn.disabled = false;
+        btn.textContent = prevLabel;
+
+        // 409 升级闸门：不是失败，是「先看清楚再决定」（force 的重发才是决定）
+        if (res.status === 409 && data && data.upgradeImpact) {
+          BATCH_FORCE = true;
+          renderImpact(data.upgradeImpact, data.error);
+          return;
+        }
+        if (!res.ok) {
+          locateBatchError(data, owners, res.status);
+          return;
+        }
+
+        // 响应里的 capabilities / edges 都是数组（可能是空），空列表给 [] 而不是 null
+        const createdCaps = Array.isArray(data && data.capabilities) ? data.capabilities : [];
+        const createdEdges = Array.isArray(data && data.edges) ? data.edges : [];
+        toast(
+          t("caps.form.batch_created", "已创建 {caps} 个能力 · {edges} 条边")
+            .replace("{caps}", String(createdCaps.length))
+            .replace("{edges}", String(createdEdges.length)),
+        );
+        closeCapModal();
+        // 建完自动展开**每个**新能力的详情：用户刚建完最想看到的就是它们接上了没有
+        for (const created of createdCaps) if (created && created.id) OPEN_DETAIL.add(created.id);
+        await loadAll();
+      }
+
+      // locateBatchError 把 400 的下标映射回「第几张卡 / 哪个字段」。
+      //
+      // 后端的错误串是下标唯一可靠的来源（`capabilities[2].name: …` / `links[3]: …`），
+      // 前端不去猜哪条错了 —— 猜错比不定位更糟（用户会去改没错的那张卡）。
+      function locateBatchError(data, owners, status) {
+        const detail = String((data && (data.error || data.message)) || "").trim();
+        const fallback = detail || "HTTP " + String(status || "");
+        const mCap = /capabilities\[(\d+)\](?:\.([A-Za-z0-9_]+))?/.exec(detail);
+        if (mCap) {
+          const idx = Number(mCap[1]);
+          // 下标越界（后端说了个不存在的卡）就不往用户脸上硬拗一个序号，
+          // 直接落到下面的兜底提示
+          if (Number.isInteger(idx) && idx >= 0 && idx < CARDS.length) {
+            cardFailAt(idx, batchFieldOf(mCap[2]), fallback);
+            return;
+          }
+        }
+        const mLink = /links\[(\d+)\]/.exec(detail);
+        if (mLink) {
+          const owner = owners[Number(mLink[1])] || null;
+          if (owner) {
+            cardFailAt(
+              owner.card,
+              owner.port + " → " + owner.to,
+              // 去掉 `links[N]:` 前缀：下标已经变成「第几张卡 / 哪个候选」了
+              detail.replace(/^links\[\d+\]:\s*/, ""),
+            );
+            return;
+          }
+        }
+        // 兜底：说清「整批没落库」+ 后端原文（不提下标，因为不知道是哪一条）
+        toast(t("caps.form.batch_failed", "批量创建失败（整批未落库）：") + fallback);
       }
 
       // ==================== 编辑能力 ⇒ 发一个新版本 ====================
@@ -3218,6 +4226,9 @@
         document.getElementById("cap-steps").classList.add("hidden");
         document.getElementById("tpl-back").classList.add("hidden");
         document.getElementById("cap-fields-wrap").classList.add("hidden");
+        // 一张卡一次只发一个版本：卡片目录与「正在编辑」那一行在这里没有意义
+        document.getElementById("cap-cards-wrap").classList.add("hidden");
+        document.getElementById("cap-card-editor").classList.add("hidden");
 
         // 已有跟随最新的下游 → 整栏隐藏，只说事实（边接的是名字，自动跟着走）
         const downWrap = document.getElementById("cap-down-wrap");
@@ -3399,7 +4410,9 @@
         const go = el("button", "btn btn-danger btn-sm", t("caps.edit.force", "仍然发布"));
         go.type = "button";
         go.setAttribute("data-act", "force-publish");
-        go.addEventListener("click", () => submitVersion(true));
+        // 两种模式共用这块影响面面板：发新版本 → submitVersion(true)；
+        // 批量创建 → BATCH_FORCE 在 409 时已经置位，再走一次同一个提交入口即带 force。
+        go.addEventListener("click", () => (VERSION_MODE ? submitVersion(true) : submitCapModal()));
         const cancel = el("button", "btn btn-ghost btn-sm", t("caps.form.cancel", "取消"));
         cancel.type = "button";
         cancel.addEventListener("click", clearImpact);
@@ -3469,7 +4482,8 @@
         // 下游：只有「当时还没有跟随最新的边」那一栏才可能被填（有边时整栏已隐藏）
         const wanted = [];
         for (const port of outputs) {
-          for (const toName of DOWN_SEL.get(port) || []) {
+          for (const cand of DOWN_SEL.get(port) || []) {
+            const toName = String((cand && cand.name) || "");
             if (!toName || toName === name) continue;
             wanted.push({ port: port, to: toName });
           }
@@ -3813,6 +4827,19 @@
       document.getElementById("cap-timeout").addEventListener("input", () => {
         TIMEOUT_DIRTY = true;
       });
+      // 能力名边打边更新卡片摘要与「（本批）」候选：
+      // datalist 里必须能立刻选到同批的卡（而不用先提交）。
+      // 编辑（发新版本）模式名字锁死、也没卡片目录，所以直接跳过。
+      document.getElementById("cap-name").addEventListener("input", (e) => {
+        if (VERSION_MODE) return;
+        const c = CARDS[ACTIVE_CARD];
+        if (!c) return;
+        c.name = String((e.target && e.target.value) || "").trim();
+        renderCards();
+        fillTargetDatalist();
+      });
+      // 再加一个能力：新卡沿用当前模板的默认值，并切成活动卡
+      document.getElementById("cap-add-card").addEventListener("click", () => addCard());
       // 出口 chips 输入：回车 / 逗号确认一个；退格在空输入框上删最后一个。
       // 逗号也算：用户会从别处粘一串 `a,b,c` 进来。
       const portInput = document.getElementById("cap-port-input");
@@ -3826,6 +4853,7 @@
           const last = PORT_CHIPS[PORT_CHIPS.length - 1];
           PORT_CHIPS = PORT_CHIPS.slice(0, -1);
           DOWN_SEL.delete(last);
+          BALANCE.delete(last);
           renderPortChips();
           renderDownRows();
         }

@@ -1074,9 +1074,11 @@
             );
           } else if (pruned > 0) {
             // 派不出去要说清楚原因，别让用户以为"点了没反应"
+            // 去重按原值（机器串）做，再翻成人话
             const reasons = (res.dispatch.pruned || [])
               .map((p) => p.reason)
-              .filter((v, i, a) => a.indexOf(v) === i);
+              .filter((v, i, a) => a.indexOf(v) === i)
+              .map((r) => Anotify.pruneReason(r));
             toast(
               t("sources.fired_none", "事件已入库，但没派出去（{r}）").replace(
                 "{r}",
@@ -2650,7 +2652,7 @@
           row.appendChild(
             el("span", "dry-cap", (pr.capability || pr.capabilityId || "—") + "  "),
           );
-          row.appendChild(el("span", "dry-detail", pr.detail || pr.reason));
+          row.appendChild(el("span", "dry-detail", pr.detail || Anotify.pruneReason(pr.reason)));
           box.appendChild(row);
         }
       }

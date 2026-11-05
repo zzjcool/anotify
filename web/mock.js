@@ -77,7 +77,7 @@
 	// 刻意做得像真的：有扇出、有分叉的 out、有失败与剪枝，
 	// 这样看页面时能看出各种状态长什么样，而不是一排"成功"。
 
-	function cap(name, version, outputs, paramsSchema, source, displayName) {
+	function cap(name, version, outputs, paramsSchema, source, displayName, balance) {
 		// sticky 是「同一条能力尽量落到同一台机器」的提示，值是 params 里的**键名**
 		// （internal/route/dispatch.go:stickySelectorValue）。演示数据里给两个能力开上，
 		// 能力详情区才能同时看到「有值」和「空」两种形态。
@@ -92,6 +92,13 @@
 			displayName: displayName || "",
 			version: version,
 			outputs: outputs,
+			// balance 是**能力版本上**的字段（契约 §3.3）：{端口: {mode}}，缺省 {}。
+			// 缺省等价于每个端口都是 {mode:"priority"}；本期只实现 priority，
+			// 其它模式在写入路径上就被 400 拦下（见 checkBalance），不静默降级。
+			balance:
+				balance && typeof balance === "object" && !Array.isArray(balance)
+					? clone(balance)
+					: {},
 			paramsSchema: paramsSchema || { type: "object" },
 			// lifecycle / sticky 是**能力定义的一部分**（参与 contentHash）。
 			// 真实后端每条能力都有（未声明的时候是零值），所以 mock 也得给：
@@ -253,6 +260,11 @@
 		// 只要够页面用。deployments 的行由 initDeployments() 造假数据。
 		artifacts: [],
 		deployments: [],
+		// 运行期预算（契约 §2）：配置期不再判环，靠这两个兜底。
+		//
+		// 演示时可以原地改：window.MockApi.state.limits.maxHops = 0
+		// → 下一次触发全部剪枝成 max_hops（budget 同理）。
+		limits: { maxHops: 16, budget: 512 },
 	};
 
 	// 辅助：按名字取能力（返回最高版本）
@@ -316,34 +328,11 @@
 		});
 	}
 
-	// mockWouldCycle 判「再加一条 from → to 的边」会不会让图成环
-	// （与 store.checkEdgeWouldCycle 同口径）。
+	// 配置期不再判环（契约 §2：靠 hop 预算 + trace 任务预算兜底）。
 	//
-	// 按**名字**判（P2.2）：运行期 path 剪枝也是按名字，配置期若按 id 判两边就会分叉
-	// （保存时说没环、跑起来却被剪掉）。入口边没有上游能力，接不进环。
-	// edges 既可以是 state.edges，也可以是「本次提交里还没落库的那几条」——
-	// 后者是原子路径的环检测必须的（不然一批里写下 A→B、B→A 会溜过去）。
-	function mockWouldCycle(edges, nsId, from, to) {
-		const adj = new Map();
-		for (const e of edges) {
-			if (e.fromIsSource) continue;
-			if (nsId && e.namespaceId && e.namespaceId !== nsId) continue; // 图不跨命名空间
-			const a = splitRef(e.fromRef).name;
-			const b = splitRef(e.toRef).name;
-			if (!adj.has(a)) adj.set(a, []);
-			adj.get(a).push(b);
-		}
-		const seen = new Set();
-		const stack = [to];
-		while (stack.length) {
-			const cur = stack.pop();
-			if (cur === from) return true;
-			if (seen.has(cur)) continue;
-			seen.add(cur);
-			for (const nx of adj.get(cur) || []) stack.push(nx);
-		}
-		return false;
-	}
+	// 这里原来有个配置期环检测函数（与 store 那边同口径）：保存边时
+	// 只要会成环就 400。契约 §2 明确删掉了静态环检测 —— `review → fix → review`
+	// 是合法编排，真正的护栏是运行期的 max_hops / budget 两种剪枝（见 planDispatch）。
 
 	// ===== 能力模板（CONTRACT-artifact §8）=====
 	//
@@ -2728,6 +2717,53 @@
 		});
 	});
 
+	// upgradeBlock 是升级闸门（P2.2）的**唯一**判定处：新版本成为 latest 且删了出口
+	// → 返回要 409 出去的 body（带 upgradeImpact），否则返回 null = 放行。
+	//
+	// 影响面必须真的算出来（变了什么 + 哪几条 link 会断）：控制台的「仍然发布」
+	// 按钮就是靠它让人做决定的，只给一句“冲突”等于没给。
+	//
+	// 只实现 removed_port 一类（删出口）：这是用户实际会踩到的那一条
+	// （「出口清空 → 下游全断」），mock 不需要把整套契约比较重写一遍。
+	//
+	// 单建与批量（POST /v1/capabilities/batch）共用它：两份实现分开写，
+	// 迟早会出现“单建拦住、批量却放过去”的不一致。
+	function upgradeBlock(c, prev, force) {
+		if (force === true) return null;
+		if (!prev || c.version <= prev.version) return null;
+		const nextPorts = new Set(c.outputs || []);
+		const removed = (prev.outputs || []).filter((p) => !nextPorts.has(p));
+		if (!removed.length) return null;
+		const links = [];
+		for (const e of state.edges) {
+			if (e.fromIsSource) continue;
+			if (!removed.includes(e.fromPort)) continue;
+			const from = splitRef(e.fromRef);
+			if (from.pinned || from.name !== c.name) continue;
+			links.push({
+				fromRef: e.fromRef,
+				port: e.fromPort,
+				toRef: e.toRef,
+				reason: '出口 "' + e.fromPort + '" 在新版里被删掉了，这条 link 会断',
+			});
+		}
+		return {
+			error: "升级 " + c.name + "@" + c.version + " 会破坏已有的 name 型 link",
+			code: "upgrade_breaking",
+			upgradeImpact: {
+				capability: c.name,
+				fromVersion: prev.version,
+				toVersion: c.version,
+				breaking: true,
+				changes: removed.map((p) => ({
+					kind: "removed_port",
+					detail: 'port "' + p + '" 在新版里被删掉了',
+				})),
+				links: links,
+			},
+		};
+	}
+
 	on("POST", /^\/v1\/capabilities$/, (ctx) => {
 		const b = ctx.body || {};
 		if (!b.name) return err(400, "name is required");
@@ -2750,56 +2786,22 @@
 		// 否则「发一版就把粘性路由弄丢了」在预览里永远复现不了。
 		if (typeof b.sticky === "string") c.sticky = b.sticky;
 		if (b.lifecycle && typeof b.lifecycle === "object") c.lifecycle = b.lifecycle;
+		// balance（契约 §3.3）：{端口: {mode}}，缺省 {} = 每个端口都是 priority。
+		// 其它 mode 保存时就 400「尚未实现」——不静默降级（降级会让人以为
+		// “选了 all 真的全派了”，而那正是此功能最容易造成的错觉）。
+		const balRes = checkBalance(b.balance);
+		if (balRes.error) {
+			return err(400, balRes.error, balRes.code ? { code: balRes.code } : undefined);
+		}
+		c.balance = balRes.balance;
 
 		// 升级闸门（P2.2）：新版本成为 latest 且删了出口 → 409 upgrade_breaking，
-		// 除非显式传 force:true。
-		//
-		// 影响面必须真的算出来（变了什么 + 哪几条 link 会断）：控制台的「仍然发布」
-		// 按钮就是靠它让人做决定的，只给一句“冲突”等于没给。
-		//
-		// 只实现 removed_port 一类（删出口）：这是用户实际会踩到的那一条
-		// （「出口清空 → 下游全断」），mock 不需要把整套契约比较重写一遍。
+		// 除非显式传 force:true。判定与影响面计算在 upgradeBlock（单建/批量共用）。
 		const prev = existing.length
 			? existing.reduce((a, x) => (x.version > a.version ? x : a))
 			: null;
-		if (prev && c.version > prev.version && b.force !== true) {
-			const nextPorts = new Set(c.outputs || []);
-			const removed = (prev.outputs || []).filter((p) => !nextPorts.has(p));
-			if (removed.length) {
-				const links = [];
-				for (const e of state.edges) {
-					if (e.fromIsSource) continue;
-					if (!removed.includes(e.fromPort)) continue;
-					const from = splitRef(e.fromRef);
-					if (from.pinned || from.name !== c.name) continue;
-					links.push({
-						fromRef: e.fromRef,
-						port: e.fromPort,
-						toRef: e.toRef,
-						reason: '出口 "' + e.fromPort + '" 在新版里被删掉了，这条 link 会断',
-					});
-				}
-				return json(
-					{
-						error:
-							"升级 " + c.name + "@" + c.version + " 会破坏已有的 name 型 link",
-						code: "upgrade_breaking",
-						upgradeImpact: {
-							capability: c.name,
-							fromVersion: prev.version,
-							toVersion: c.version,
-							breaking: true,
-							changes: removed.map((p) => ({
-								kind: "removed_port",
-								detail: 'port "' + p + '" 在新版里被删掉了',
-							})),
-							links: links,
-						},
-					},
-					409,
-				);
-			}
-		}
+		const blocked = upgradeBlock(c, prev, b.force);
+		if (blocked) return json(blocked, 409);
 
 		// links：能力 + 下游边**一次提交**（与真后端同语义：要么全成，要么全不成）。
 		//
@@ -2844,17 +2846,11 @@
 			if (litRes.error) {
 				return err(400, `links[${i}]: edge_rejected: ${litRes.error}`, errCode);
 			}
-			// 静态环检测（与 store.checkEdgeWouldCycle 同口径：按名字判）。
-			// 既看已存的边，也看本批里**前面几条**（它们还没进 state.edges）。
-			if (
-				mockWouldCycle(state.edges, c.namespaceId, c.name, to.name) ||
-				mockWouldCycle(preparedLinks, c.namespaceId, c.name, to.name)
-			) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: adding ${c.name} → ${to.name} would close a cycle`,
-					errCode,
-				);
+			// 配置期不再判环（契约 §2：靠 hop 预算 + trace 任务预算兜底）。
+			// 自连上面已经拒了 —— 自己连自己是误操作，不是编排。
+			const prioRes = edgePriority(spec.priority);
+			if (prioRes.error) {
+				return err(400, `links[${i}].priority: ${prioRes.error}`, errCode);
 			}
 			preparedLinks.push({
 				id: uid("edg"),
@@ -2866,6 +2862,8 @@
 				// 右端原样透传：裸名字跟随 latest / name@v 钉死
 				toRef: String(spec.toRef).trim(),
 				literals: litRes.literals || {},
+				// priority：同一 (能力, 端口) 的候选按它**升序**选（小的先选，契约 §3）
+				priority: prioRes.priority,
 				createdAt: now(),
 			});
 		}
@@ -2910,6 +2908,218 @@
 			resp.links = preparedLinks.map(edgeView);
 		}
 		return json(resp, 201);
+	});
+
+	// 批量创建（契约 §4）：一次建多个能力 + 多条边，**要么全成、要么全不成**。
+	//
+	// mock 没有事务，做法与单建 links 完全一致：先把每个能力、每条边都算清楚、
+	// 校验干净，最后才一起 push —— 任一 400/409 时 state.capabilities /
+	// state.edges / state.artifacts **一个字节都不变**（真后端回滚的是同一个事务）。
+	//
+	// 与单建的差别只有三条（契约 §4）：
+	//   ① capabilities[].name 批内不可重复；
+	//   ② links[].fromRef/toRef 可以引用**本批**名字（它们还没进 state）；
+	//   ③ 允许成环（§2：配置期不判环，靠 max_hops / budget 兜底）。
+	on("POST", /^\/v1\/capabilities\/batch$/, (ctx) => {
+		const b = ctx.body || {};
+		const specs = b.capabilities;
+		if (!Array.isArray(specs) || !specs.length) {
+			return err(400, "capabilities is required");
+		}
+		// 命名空间规则与单建一致（契约 §4）
+		const nsId = b.namespaceId || nsScope(ctx.query) || NS;
+		const links = Array.isArray(b.links) ? b.links : [];
+
+		// ① 逐条算新版本 + 校验（顺序与单建对齐：name 规则 → 版本自增 → balance）。
+		const prepared = [];
+		const byName = new Map();
+		for (let i = 0; i < specs.length; i++) {
+			const spec = specs[i] || {};
+			const name = String(spec.name == null ? "" : spec.name).trim();
+			if (!name) return err(400, `capabilities[${i}].name: is required`);
+			// 名字规则与 internal/artifact/artifact.go 的 namePattern 一致
+			if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) {
+				return err(
+					400,
+					`capabilities[${i}].name: invalid_name: 只能包含小写字母、数字、点、下划线、短横线，1–63 字符`,
+				);
+			}
+			if (byName.has(name)) {
+				return err(400, `capabilities[${i}].name: duplicate name in batch`, {
+					code: "duplicate_name",
+				});
+			}
+			const balRes = checkBalance(spec.balance);
+			if (balRes.error) {
+				// 前缀 capabilities[i] 是给控制台定位「第几张卡」用的（契约 §3.5）
+				return err(
+					400,
+					`capabilities[${i}]: ${balRes.error}`,
+					balRes.code ? { code: balRes.code } : undefined,
+				);
+			}
+			// 版本在同一个命名空间内自增（契约 §4.1；与单建一样按名字找上一版）
+			const existing = state.capabilities.filter(
+				(x) => x.name === name && (!x.namespaceId || x.namespaceId === nsId),
+			);
+			const prev = existing.length
+				? existing.reduce((a, x) => (x.version > a.version ? x : a))
+				: null;
+			const nextVer = prev ? prev.version + 1 : 1;
+			const c = cap(
+				name,
+				spec.version || nextVer,
+				Array.isArray(spec.outputs) ? spec.outputs.slice() : [],
+				spec.paramsSchema,
+				undefined,
+				undefined,
+				balRes.balance,
+			);
+			// cap() 的演示默认落在 NS；批量按请求的命名空间落库
+			c.namespaceId = nsId;
+			if (spec.displayName) c.displayName = String(spec.displayName).trim();
+			if (typeof spec.sticky === "string") c.sticky = spec.sticky;
+			if (spec.lifecycle && typeof spec.lifecycle === "object") c.lifecycle = spec.lifecycle;
+			c.requires = Array.isArray(spec.requires) ? spec.requires.slice() : [];
+			prepared.push({ c: c, spec: spec, prev: prev, artifact: null });
+			byName.set(name, c);
+		}
+
+		// ② 升级闸门：任一条触发就把**整批**拦下（409 + upgradeImpact），
+		//    force: true 越过。判定与影响面计算和单建共用 upgradeBlock。
+		for (const p of prepared) {
+			const blocked = upgradeBlock(p.c, p.prev, b.force);
+			if (blocked) return json(blocked, 409);
+		}
+
+		// ③ run（CONTRACT-artifact §2）：与单建同一套校验与派生 ——
+		//    入口文件必须以 #! 开头，digest 由内容算出来，命中就多一条产物行。
+		for (let i = 0; i < prepared.length; i++) {
+			const p = prepared[i];
+			const run = p.spec.run || null;
+			if (!run || !run.files) continue;
+			const entry = run.entrypoint || "run.sh";
+			const body = String((run.files || {})[entry] || "");
+			if (!body.startsWith("#!")) {
+				return err(
+					400,
+					`capabilities[${i}].run: entrypoint_no_shebang: 入口文件必须以 #! 开头（节点直接 exec，不经 shell）`,
+				);
+			}
+			p.c.run = {
+				entrypoint: entry,
+				files: run.files,
+				timeoutSec: run.timeoutSec || 0,
+				workDir: run.workDir || "",
+				env: run.env || {},
+			};
+			// digest 不存进文件，始终由内容算出来（CONTRACT-artifact §3）
+			p.c.digest = mockDigest(
+				JSON.stringify({ name: p.c.name, version: p.c.version, run: p.c.run }),
+			);
+			p.artifact = {
+				id: uid("art"),
+				namespaceId: p.c.namespaceId,
+				capabilityId: p.c.id,
+				digest: p.c.digest,
+				createdAt: now(),
+			};
+		}
+
+		// ④ links：与单建 links 同一套判据，只多了「可以引用本批名字」。
+		//    错误文案带 links[i] 下标（控制台靠它把错映射回卡片/端口/目标）。
+		const preparedLinks = [];
+		// 边不合法的 400 body 与真后端同形：{ error, code: "edge_rejected" }
+		const errCode = { code: "edge_rejected" };
+		// 本批解析：裸名字 / name@version 都可以指向本批刚定义的能力
+		const resolveBatchRef = (raw) => {
+			const s = String(raw == null ? "" : raw).trim();
+			if (!s) return null;
+			if (byName.has(s)) return byName.get(s);
+			const { name, version, pinned } = splitRef(s);
+			const c = byName.get(name);
+			if (!c) return null;
+			return !pinned || c.version === version ? c : null;
+		};
+		for (let i = 0; i < links.length; i++) {
+			const spec = links[i] || {};
+			if (!spec.fromRef || !spec.fromPort || !spec.toRef) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: fromRef, fromPort and toRef are all required`,
+					errCode,
+				);
+			}
+			const fromCap = resolveBatchRef(spec.fromRef) || resolveCapRef(spec.fromRef, nsId);
+			if (!fromCap) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: fromRef "${spec.fromRef}": 上游能力不存在`,
+					errCode,
+				);
+			}
+			if (!(fromCap.outputs || []).includes(spec.fromPort)) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: port "${spec.fromPort}" not in ${fromCap.name}@${fromCap.version} outputs ${JSON.stringify(fromCap.outputs || [])}`,
+					errCode,
+				);
+			}
+			const to = resolveBatchRef(spec.toRef) || resolveCapRef(spec.toRef, nsId);
+			if (!to) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: to link ref "${spec.toRef}": 下游能力不存在`,
+					errCode,
+				);
+			}
+			// 自连仍然拒绝（契约 §4.4）：那是误操作，不是编排；成环则放行。
+			if (to.name === fromCap.name) {
+				return err(
+					400,
+					`links[${i}]: edge_rejected: self loop ${fromCap.name} --${spec.fromPort}--> itself`,
+					errCode,
+				);
+			}
+			const prioRes = edgePriority(spec.priority);
+			if (prioRes.error) {
+				return err(400, `links[${i}].priority: ${prioRes.error}`, errCode);
+			}
+			const litRes = checkEdgeLiterals(to, spec.literals);
+			if (litRes.error) {
+				return err(400, `links[${i}]: edge_rejected: ${litRes.error}`, errCode);
+			}
+			preparedLinks.push({
+				id: uid("edg"),
+				namespaceId: nsId,
+				fromIsSource: false,
+				// 左端原样保存（裸名字 = 跟随 latest，name@v = 钉死）：意图由调用方决定
+				fromRef: String(spec.fromRef).trim(),
+				fromPort: spec.fromPort,
+				toRef: String(spec.toRef).trim(),
+				literals: litRes.literals || {},
+				priority: prioRes.priority,
+				createdAt: now(),
+			});
+		}
+
+		// ⑤ 落库：能力行 → 产物行 → 边行（契约 §4「单事务」的形状）。
+		//    走到这里不再有任何校验，所以这三段之间不会留下半成品。
+		for (const p of prepared) {
+			state.capabilities.push(p.c);
+			if (p.artifact) state.artifacts.push(p.artifact);
+		}
+		for (const e of preparedLinks) state.edges.push(e);
+
+		// 空列表给 []（不是 null），契约 §4
+		return json(
+			{
+				capabilities: prepared.map((p) => capView(p.c)),
+				edges: preparedLinks.map(edgeView),
+				upgradeImpact: null,
+			},
+			201,
+		);
 	});
 
 	// PATCH 只改 display_name（装饰字段），不产生新版本。
@@ -3095,6 +3305,10 @@
 		if (litRes.error) return err(400, "edge_rejected: " + litRes.error);
 		const literals = litRes.literals;
 
+		// priority（契约 §1）：同一 (能力, 端口) 的候选按它**升序**选；缺省 0。
+		const prioRes = edgePriority(b.priority);
+		if (prioRes.error) return err(400, "priority: " + prioRes.error);
+
 		// 入口边（#110）：左端是来源名，出口是事件类型，任意值。
 		if (b.fromIsSource) {
 			const fromRef = edgeRefInput(fromRaw, true, nsId);
@@ -3108,6 +3322,7 @@
 				fromPort: b.fromPort,
 				toRef,
 				literals,
+				priority: prioRes.priority,
 				createdAt: now(),
 			};
 			state.edges.push(e);
@@ -3130,6 +3345,7 @@
 			fromPort: b.fromPort,
 			toRef,
 			literals,
+			priority: prioRes.priority,
 			createdAt: now(),
 		};
 		state.edges.push(e);
@@ -3506,6 +3722,48 @@
 			};
 		}
 		return { literals };
+	}
+
+	// checkBalance 校验并归一化能力版本上的 balance（契约 §3.3）。
+	//
+	// 形状：{端口: {"mode": "priority"}}；缺省（或空对象）= 每个端口都是 priority。
+	// **本期只实现 priority**：all / random / least_loaded / hash 一律 400「尚未实现」，
+	// 带上 code: "balance_unimplemented" 让前端能只拦住那一种错。
+	// 不允许静默降级成 priority —— 用户选了 all 却只派了一个，比报错更伤人。
+	function checkBalance(raw) {
+		if (raw === undefined || raw === null) return { balance: {} };
+		if (typeof raw !== "object" || Array.isArray(raw)) {
+			return { error: "balance must be a JSON object, got " + jsonTypeName(raw) };
+		}
+		const out = {};
+		for (const port of Object.keys(raw).sort()) {
+			const spec = raw[port];
+			// 端口写了但没写 mode（或给的不是对象）——当作缺省 priority。
+			const mode = spec && typeof spec === "object" && !Array.isArray(spec) ? String(spec.mode || "priority") : "priority";
+			if (mode !== "priority") {
+				return {
+					error: "balance[" + port + "]: mode " + mode + " 尚未实现",
+					code: "balance_unimplemented",
+				};
+			}
+			out[port] = { mode: "priority" };
+		}
+		return { balance: out };
+	}
+
+	// edgePriority 归一化一条边的 priority（契约 §1）：缺省 0，必须是非负整数。
+	//
+	// 数值**小的先选**（与 Go 侧 edges.priority 升序同口径）；负数 / 小数 / 非数字
+	// 一律 400 —— 默默当 0 会让“我把它调成 -5 想插队”变成一个看不出来的谎言。
+	function edgePriority(raw) {
+		if (raw === undefined || raw === null || raw === "") return { priority: 0 };
+		const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+		if (!Number.isInteger(n) || n < 0) {
+			return {
+				error: "must be a non-negative integer, got " + JSON.stringify(raw),
+			};
+		}
+		return { priority: n };
 	}
 
 	// edgeSourceLiterals 取「这条 link 上挂的常量」（mock 的源路径用它）。
@@ -3975,13 +4233,17 @@
 	//
 	// 返回 {tasks, pruned}：
 	//   tasks  —— 会派发的出口（含求值后的参数）
-	//   pruned —— 被跳过的出口及原因（event_schema / no_capability /
-	//             param_missing / param_schema / param_type / no_node）
+	//   pruned —— 被跳过的出口及原因（event_schema / no_capability / max_hops /
+	//             budget / param_missing / param_schema / param_type / no_node）
 	//
 	// event_schema 是**入口级**的：与逐出口的那几种不同，它一旦命中就一条都不派
 	// （事件形状不对，不存在"这条出口能过"），所以直接返回空 tasks + 单条剪枝
 	// ——与 Go 侧 source.Trigger.Fire 在调 Dispatch 之前拦下是同一形状。
-	function planDispatch(source, payload) {
+	//
+	// traceId：只给 budget 预算用（契约 §2「同一 trace_id 已建任务数 >= budget」）。
+	// 试运行没有 trace 可算，传空即可（已建任务数为 0 → 不剪；想验预算就改
+	// window.MockApi.state.limits.budget）。
+	function planDispatch(source, payload, traceId) {
 		const tasks = [];
 		const pruned = [];
 
@@ -4014,6 +4276,34 @@
 				});
 				continue;
 			}
+
+			// ① hop 预算（契约 §2）：配置期不再判环，深度就是这个预算兜的。
+			//    口径与真后端一致：depth = len(入参 path)（子任务 path = 父 path + 本能力名，
+			//    形状不变，所以入口第一跳的 depth 是 0），depth >= maxHops 就剪。
+			const depth = payload && Array.isArray(payload.path) ? payload.path.length : 0;
+			if (depth >= state.limits.maxHops) {
+				pruned.push({
+					reason: "max_hops",
+					capabilityId: c.id,
+					capability: null,
+					detail: `depth ${depth} >= maxHops ${state.limits.maxHops}`,
+				});
+				continue;
+			}
+
+			// ② 本次 trace 的任务预算（契约 §2）：同一 traceId 已建任务数达到预算，
+			//    后续出口一律剪掉 —— 环上无法收敛的编排就是在这里停下来的。
+			const used = traceId ? state.tasks.filter((t2) => t2.traceId === traceId).length : 0;
+			if (used >= state.limits.budget) {
+				pruned.push({
+					reason: "budget",
+					capabilityId: c.id,
+					capability: null,
+					detail: `trace 任务数 ${used} >= budget ${state.limits.budget}`,
+				});
+				continue;
+			}
+
 			const resolved = resolveParams(t.params, payload);
 
 			// 类型推断：含占位符的值按 schema 转（整值引用保留原类型，
@@ -4127,7 +4417,8 @@
 		};
 		state.events.push(ev);
 
-		const plan = planDispatch(s, payload);
+		// traceId 传下去是为了 budget 预算（同一 trace 已建任务数）
+		const plan = planDispatch(s, payload, traceId);
 		// 入口剪枝也留痕（与后端 InsertPruneEvent 对齐）：事件已入库，
 		// 这里只多一条 pruned.event_schema 说明"为什么没派"。
 		recordEventSchemaPrune(s, traceId, eventType, plan.pruned);
@@ -4204,7 +4495,7 @@
 		state.events.push(ev);
 
 		// 判定逻辑与「试运行」同一份实现
-		const plan = planDispatch(s, ev.payload);
+		const plan = planDispatch(s, ev.payload, traceId);
 		recordEventSchemaPrune(s, traceId, ev.type, plan.pruned);
 		const tasks = [];
 		for (const p of plan.tasks) {

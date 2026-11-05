@@ -40,6 +40,14 @@
 		return fallback !== undefined ? fallback : key;
 	}
 
+	// 剪枝原因 → 人话。原因集合以 internal/route/prune.go 为准：
+	// 契约 §6 删掉了 path，新增 max_hops / budget。
+	// 缺 key 时回落原机器串（宁可露出英文，也不要显示空白）。
+	function pruneReason(reason) {
+		const r = String(reason || "");
+		return t("prune." + r, r);
+	}
+
 	/* ---------- 减少动效（JS 侧） ----------
 	 * CSS 有 tokens.css 的 --dur-* 归零 + 全局 * 闸门，但 JS 自己计时的动画
 	 * （主题翻转遮罩、toast 退场）必须显式判断并直接落终值。 */
@@ -2211,6 +2219,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		copyText,
 		toast,
 		t,
+		pruneReason,
 		b64urlToBuf,
 		bufToB64url,
 		PLATFORM_META,

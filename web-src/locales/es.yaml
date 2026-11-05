@@ -1205,19 +1205,43 @@ caps:
     display_name_hint: Se muestra en la interfaz. Si lo dejas vacío se usa el nombre técnico.
     name: Nombre de la capacidad
     name_hint: 'Nombre técnico: lo usan nodos, aristas y logs. No se puede cambiar después.'
-    outputs: Salidas (ports)
-    outputs_hint: Las salidas son la lista blanca de emit — solo los nombres declarados aquí pueden despacharse aguas abajo.
+    outputs: Puertos de salida
+    outputs_hint: Los puertos de salida son la lista blanca de emit — solo los nombres declarados aquí pueden despacharse aguas abajo.
     outputs_optional: opcional
-    outputs_ph: Escribe un nombre de salida y pulsa Enter
-    outputs_empty: Sin salidas = esta capacidad no puede emitir nada (capacidad terminal).
+    outputs_ph: Escribe un nombre de puerto de salida y pulsa Enter
+    outputs_empty: Sin puertos de salida = esta capacidad no puede emitir nada (capacidad terminal).
     outputs_max: Como máximo 32 salidas
     err_output: Los nombres de salida solo admiten letras, dígitos, puntos, guiones bajos y guiones (1–32)
     chip_remove: Eliminar esta salida
-    downstream: Destino (opcional)
+    downstream: Candidatos (se eligen por prioridad)
     downstream_optional: opcional
-    downstream_hint: 'Una salida puede ramificarse a varios destinos. Aquí se guarda el nombre sin versión = sigue la última; la capacidad y estas aristas se crean en un solo envío: todo se crea o no se crea nada.'
-    downstream_target_ph: Elige una capacidad destino (con búsqueda)
-    downstream_none: Aún no hay salidas — declara una arriba antes de conectar un destino.
+    downstream_hint: 'Un puerto de salida puede tener varios candidatos; en ejecución se elige exactamente uno por prioridad (los empates rotan, el número menor gana). Aquí se guarda el nombre sin versión = sigue la última; la capacidad y estos candidatos se crean en un solo envío: todo se crea o no se crea nada.'
+    downstream_target_ph: Elige una capacidad candidata (con búsqueda)
+    downstream_none: Aún no hay puertos de salida — declara uno arriba antes de conectar candidatos.
+    cards_title: Capacidades de este lote
+    cards_hint: 'Define varias capacidades a la vez: cada tarjeta tiene sus propios puertos de salida, parámetros y script; se escriben en una sola transacción (todo se crea o no se crea nada).'
+    card_add: ＋ Añadir otra capacidad
+    card_remove: Eliminar esta capacidad
+    card_n: 'Capacidad {n}'
+    card_unnamed: Sin nombre
+    card_editor: 'Editando: capacidad {n} de {total}'
+    card_ports_summary: 'Puertos de salida: {ports}'
+    card_name_dupe: 'Nombre de capacidad duplicado en el lote: {name}'
+    card_err_field: 'Capacidad {n} / {field}: {reason}'
+    card_err_generic: 'Capacidad {n}: {reason}'
+    cand_hint: En ejecución se elige un solo candidato por prioridad; los empates rotan (el número menor gana).
+    cand_prio: Prioridad
+    cand_prio_hint: El número menor gana
+    cand_prio_badge: 'Prioridad {n}'
+    cand_count: '{n} candidatos'
+    cand_batch_tag: (este lote)
+    cand_empty: Este puerto de salida aún no tiene candidatos — no se despachará nada desde él.
+    balance_label: Modo
+    balance_priority: priority (predeterminado)
+    balance_unimpl: no implementado
+    balance_unimpl_err: 'El puerto de salida {port} usa el modo balance {mode}, que no está implementado; por ahora solo se puede guardar priority'
+    batch_created: 'Se crearon {caps} capacidades y {edges} aristas'
+    batch_failed: 'Error al crear el lote (no se guardó nada): '
     created_with_edges: 'conectadas {n} aristas'
     link_rejected: 'La salida n.º {n} {port} → {to} no es válida; no se creó nada: {reason}'
     schema: Validación de parámetros (JSON Schema)
@@ -1250,8 +1274,11 @@ caps:
     btn: Detalles
     params: Contrato de parámetros
     no_params: Sin parámetros
-    outputs: Salidas y destino
-    no_outputs: No hay salidas declaradas — esta capacidad no puede emitir nada
+    outputs: Puertos de salida y candidatos
+    no_outputs: No hay puertos de salida declarados — esta capacidad no puede emitir nada
+    balance_mode: Modo
+    cand_prio_badge: 'Prioridad {n}'
+    cand_count: '{n} candidatos'
     edges_failed: No se pudo cargar la lista de aristas, estado del destino desconocido
     inbound: Quién me alimenta
     no_inbound: Sin aristas de entrada — los eventos no llegan aquí
@@ -1333,6 +1360,17 @@ caps:
     moved_title: Las aristas tienen su propia página
     moved_desc: Una capacidad responde qué puede hacer; una arista responde a dónde va después. Las aristas crecen rápido con el abanico y necesitan búsqueda y agrupación, por eso tienen su propia página.
     moved_link: Abrir aristas
+prune:
+  no_edge: sin candidato conectado
+  no_capability: la capacidad destino no existe
+  param_schema: los parámetros no cumplen el contrato destino
+  param_missing: falta un parámetro obligatorio
+  param_type: el tipo de parámetro no coincide
+  no_node: la capacidad destino no tiene nodo en línea
+  foreign_user: cruza espacio de nombres/usuario
+  event_schema: el payload del evento no cumple el resultSchema del disparador
+  max_hops: presupuesto de saltos agotado (cadena demasiado profunda)
+  budget: este trace superó su presupuesto de tareas
 nodes:
   title: Nodos
   subtitle: Los ejecutores. Un nodo sabe cómo ejecutar una capacidad; el hub solo le dice qué hacer.

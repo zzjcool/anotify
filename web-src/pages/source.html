@@ -710,7 +710,10 @@
             );
           } else if (pruned.length) {
             // 派不出去要说清楚原因，别让用户以为"点了没反应"
-            const reasons = [...new Set(pruned.map((p) => p.reason))];
+            // 去重按原值（机器串）做，再翻成人话；否则两个原因翻译成同一句会被误合并
+            const reasons = [...new Set(pruned.map((p) => p.reason))].map((r) =>
+              Anotify.pruneReason(r),
+            );
             const detail = pruned[0] && pruned[0].detail ? "：" + pruned[0].detail : "";
             toast(
               t("sources.fired_none", "事件已入库，但没派出去（{r}）").replace(
