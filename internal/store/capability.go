@@ -194,7 +194,12 @@ type capHashInput struct {
 	// Balance 参与 hash（契约 §1）：它决定「同一个端口会落到谁头上」，
 	// 是能力定义的**行为**的一部分。不参与的话，「改 balance」的请求会算出与旧版
 	// 相同的 hash、被幂等折叠成旧行 —— 新 balance 被静默丢弃，而用户以为生效了。
-	Balance Balance `json:"balance"`
+	//
+	// **必须 omitempty**：没有 balance 的能力要算出与「balance 这个概念存在之前」
+	// 完全相同的 hash。否则老库里已有的行（hash 里没有这个键）在重提交同内容时
+	// 会被判成「内容变了」，从幂等折叠变成 ErrCapabilityVersionConflict ——
+	// 用户什么都没改却收到一个冲突错误。空映射与 nil 都会省略。
+	Balance Balance `json:"balance,omitempty"`
 }
 
 // NormalizeCapability 计算 content_hash：把 params_schema / outputs / lifecycle / sticky

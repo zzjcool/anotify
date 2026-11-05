@@ -798,3 +798,50 @@ func TestCapabilityDisplayName(t *testing.T) {
 		t.Fatal("cross-namespace display name update should fail")
 	}
 }
+
+// TestContentHashUnchangedWithoutBalance 钉住「没有 balance 的能力，hash 与
+// balance 这个概念出现之前**完全相同**」。
+//
+// 为什么值得一条单独的用例：balance 是后来加进 capHashInput 的字段。字段一进
+// hash 输入，老库里已有行的 content_hash 就对不上了 —— 重提交同内容会被判成
+// 「内容变了」，从幂等折叠变成 ErrCapabilityVersionConflict，用户什么都没改却
+// 收到冲突。修法是 `json:"balance,omitempty"`，这条用例把那个「老值」钉死：
+//
+//	want 取自 squash 之后、balance 加入之前的开发库真值（touchnow 那一行）。
+func TestContentHashUnchangedWithoutBalance(t *testing.T) {
+	c := &CapabilityVersion{
+		Name:         "touchnow",
+		ParamsSchema: []byte(`{"type":"object","properties":{}}`),
+		Outputs:      []string{},
+	}
+	got, err := NormalizeCapability(c)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	const want = "cc7332debfc7630fc2491b4268c2592dc88de69b033da4ccf91a2abd26aaf9e6"
+	if got != want {
+		t.Fatalf("没有 balance 的 hash 变了：\n got %s\nwant %s\n"+
+			"（改了 capHashInput 的字段/标签？老库的行会全部对不上，重提交同内容会变成冲突）", got, want)
+	}
+
+	// 反向：真的配了 balance 时必须变 —— 否则「改 balance」会被幂等折叠丢掉。
+	// 注意端口必须真的在 outputs 里（normalizeBalance 会硬拒不在 outputs 的端口），
+	// 所以这里用一份带端口的同形定义，别在 c 上就地改。
+	withBalance := *c
+	withBalance.Outputs = []string{"fix"}
+	withBalance.Balance = Balance{"fix": {Mode: BalanceModePriority}}
+	hb, err := NormalizeCapability(&withBalance)
+	if err != nil {
+		t.Fatalf("normalize(balance): %v", err)
+	}
+	// 与「同样 outputs 但没有 balance」比：这才是「balance 参与 hash」的判据。
+	noBalance := withBalance
+	noBalance.Balance = nil
+	hn, err := NormalizeCapability(&noBalance)
+	if err != nil {
+		t.Fatalf("normalize(no balance): %v", err)
+	}
+	if hb == hn {
+		t.Fatalf("配了 balance 的 hash 与没配的一样（%s）—— 改 balance 会被折叠成旧行", hb)
+	}
+}
