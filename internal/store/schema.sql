@@ -5,8 +5,8 @@
 -- 本文件同时是**迁移脚本**：按 `-- +migration N name` 切块，
 -- store.migrateWith 逐块应用，schema_version 记账（见 migrate.go）。
 --
--- baseline 之后是四块：`-- +migration 1 baseline`、`2 priority_balance`、
--- `3 agent_version`、`4 task_logs`（新变更继续往后追加）。
+-- baseline 之后是五块：`-- +migration 1 baseline`、`2 priority_balance`、
+-- `3 agent_version`、`4 task_logs`、`5 task_seq_in_trace`（新变更继续往后追加）。
 --
 -- squash：squash 之前的 28 块增量迁移（建表 → 加列 → 删列 → 重建表 → 删表）已经合并成
 -- 这一份**终态 DDL**。这里描述的是「今天库里长什么样」，不残留任何「迁移 4 建表、
@@ -631,3 +631,18 @@ CREATE TABLE IF NOT EXISTS task_logs (
     bytes        INTEGER NOT NULL DEFAULT 0,
     created_at   INTEGER NOT NULL
 );
+
+-- +migration 5 task_seq_in_trace
+
+-- 这条任务在同一 (命名空间, trace, 能力名) 里是第几次执行（1 起），派发时算好落库。
+--
+-- 为什么要落库而不是读的时候现算：节点把每次执行存到本地 runs/<trace>/<cap>@<ver>/
+-- 下的目录名里要它（`<seq>-a<attempt>`），而节点只知道中枢下发的那一帧——现算等于
+-- 让节点自己数「同一个 trace 里我跑过几次这个能力」，跨节点/重连都会数错。
+--
+-- 语义口径：按**能力名**分组（不是 capability_id）——同一 trace 里 review@1 与 review@2
+-- 属于同一个能力，seq 连续；按 **rowid** 定序（不是 created_at）——同一秒内扇出的多条
+-- 任务也必须有确定先后。因此它只取决于「行在组内的位置」，重派同一条任务不会变。
+--
+-- 默认 0 = 从未派发过（也包含加这一列之前建的老行）；节点侧对 <=0 退回到 attempt。
+ALTER TABLE tasks ADD COLUMN seq_in_trace INTEGER NOT NULL DEFAULT 0;

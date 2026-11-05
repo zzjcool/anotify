@@ -179,11 +179,15 @@ var ErrNodeOffline = fmt.Errorf("node is offline")
 // 六步，顺序即语义（#222 / #221 / 审查 n2-n4）：
 //  1. 节点不在线 → ErrNodeOffline；跨命名空间 → 拒绝（都是既有行为）
 //  2. 该 taskID 已被**另一条活着的连接**占为在飞 → ErrTaskInflight（同一连接重推幂等）
-//  3. 编码成帧后超过 params 硬上限 + 帧头余量 → *store.ParamsTooLargeError，**不发帧**
-//  4. 回读**库里的**权威世代（attempts）——读不到就返回错误、**不发帧**（n2）；
+//  3. 回读**库里的**权威行（attempts / seq_in_trace / status）——读不到就返回错误、**不发帧**（n2）；
 //     已经终态则不发帧、不占用任何登记，直接返回 nil（n3）
+//  4. 编帧（attempts / seq_in_trace 一律用库里那份覆盖调用方内存里的值）+ 体积闸门
+//     → 超限 *store.ParamsTooLargeError，**不发帧**
 //  5. 写帧（失败不登记）
 //  6. 写成功 → hub 登记在飞（claim 先，fencing 优先）+ 会话登记归属
+//
+// 回读必须排在编帧与写帧**之前**：attempts / seq_in_trace 是这一帧要发出去的字段，
+// 而调用方传进来的 task 不可信（见下），所以只能先读库、再编帧、最后对**最终字节**量体积。
 func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error {
 	s := h.current(nodeID)
 	if s == nil {
@@ -201,14 +205,48 @@ func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string,
 			ErrTaskInflight, task.ID, s.node.ID)
 	}
 
-	// 帧骨架由纯函数给出（好测）；P1 的三项（ports / expects / token）**在这里**补：
+	// ③ 回读**库里的**权威行，必须在编帧/写帧**之前**（审查 n2/n3）。
+	//
+	// 为什么不能信调用方传的 task.Attempts：route 在派发成功后把这一列写死成 1
+	// （internal/route/dispatch.go 的 `task.Attempts = 1`，不管库里是 2、3…），
+	// 而 cleanup 的 ResolveLostTasks 用库里的 attempts 做 CAS（`WHERE attempts = ?`）→
+	// 世代记错的后果是**整条主动释放被静默跳过**：任务留在 assigned、槽位被 busy_task
+	// 钉住，直到 20s ack 窗口的租约过期才由巡检兜底。
+	// 同理 task.SeqInTrace 在内存里恒为 0（只有库里那份有意义），而节点要用它命名
+	// 本地 runs/<trace>/<cap>@<ver>/<seq>-a<n> 目录——发错了就是两代执行写进同一个目录。
+	//
+	// 为什么读失败就**不发帧**：旧实现在写帧成功后才回读，读失败就退回入参继续——
+	// 那正好把上面那个缺陷原样带回来（只是触发条件从「route 硬编码」变成「一次读失败」）。
+	// 返回错误后 route 的 requeueAfterPublishFailure 会把任务退回 pending 重试，
+	// 那条路径本来就是干净的；比「发了一帧却记着错世代」安全得多。
+	fresh, err := s.h.Store.GetTask(ctx, namespaceID, task.ID)
+	if err != nil {
+		return fmt.Errorf("read authoritative attempts for task %s: %w", task.ID, err)
+	}
+	if fresh == nil {
+		return fmt.Errorf("read authoritative attempts for task %s: not found", task.ID)
+	}
+	// 已经终态 = 病态竞态（这条任务在我读它之前就跑完了：同一条连接上的重复派发，
+	// 或巡检/result 撞车）。此时**不发帧**，也不 claim/own（n3）：
+	// 给一条终态任务登记在飞位 + 归属，它再也不会被 forget（节点根本不会再报这条任务）
+	// → 内存登记泄漏到连接结束，还挡着同 taskID 的后续派发。
+	// 返回 nil 而不是错误：任务本身已经有结论了，多一个错误只会让 route 把它退回 pending
+	// 重跑一遍（那才是真错）。
+	if store.IsTerminalStatus(fresh.Status) {
+		return nil
+	}
+
+	// ④ 帧骨架由纯函数给出（好测）；P1 的三项（ports / expects / token）**在这里**补：
 	// 它们要读库，而 assignFrameFor 不该因此变成一个需要 DB 的函数。
 	//
 	// 为什么补在发布路径而不是派发路径：PublishAssign 是唯一出口——
-	// launch（首次派发）与 RedispatchTask（重派/巡检）都走它，所以这三项
+	// launch（首次派发）与 RedispatchTask（重派/巡检）都走它，所以这几项
 	// 不会因为走了哪条路径而漏一份（这也是「不要改 assignFrameFor 签名」的原因：
 	// 它会逼着每个调者拿一个 ctx+store）。
 	frame := assignFrameFor(task)
+	// attempts / seq_in_trace **只取库里那份**：帧是要发出去的机器事实，不是展示缓存。
+	frame.Attempts = fresh.Attempts
+	frame.SeqInTrace = fresh.SeqInTrace
 	s.enrichAssign(ctx, task, frame)
 	data, err := Encode(frame)
 	if err != nil {
@@ -226,34 +264,6 @@ func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string,
 			size = len(data)
 		}
 		return &store.ParamsTooLargeError{TaskID: task.ID, Size: size, Limit: store.MaxTaskParamsBytes}
-	}
-	// ④ 回读**库里的**权威世代（fencing token），必须在写帧**之前**（审查 n2/n3）。
-	//
-	// 为什么不能信调用方传的 task.Attempts：route 在派发成功后把这一列写死成 1
-	// （internal/route/dispatch.go 的 `task.Attempts = 1`，不管库里是 2、3…），
-	// 而 cleanup 的 ResolveLostTasks 用库里的 attempts 做 CAS（`WHERE attempts = ?`）→
-	// 世代记错的后果是**整条主动释放被静默跳过**：任务留在 assigned、槽位被 busy_task
-	// 钉住，直到 20s ack 窗口的租约过期才由巡检兜底。
-	//
-	// 为什么挪到写帧之前（n2）：旧实现在写帧成功后才回读，读失败就“退回入参”继续——
-	// 那正好把上面那个缺陷原样带回来（只是触发条件从“route 硬编码”变成“一次读失败”）。
-	// 现在读失败就**不发帧**并返回错误：route 的 requeueAfterPublishFailure 会把任务退回
-	// pending 重试，那条路径本来就是干净的；比“发了一帧却记着错世代”安全得多。
-	fresh, err := s.h.Store.GetTask(ctx, namespaceID, task.ID)
-	if err != nil {
-		return fmt.Errorf("read authoritative attempts for task %s: %w", task.ID, err)
-	}
-	if fresh == nil {
-		return fmt.Errorf("read authoritative attempts for task %s: not found", task.ID)
-	}
-	// 已经终态 = 病态竞态（这条任务在我读它之前就跑完了：同一条连接上的重复派发，
-	// 或巡检/result 撞车）。此时**不发帧**，也不 claim/own（n3）：
-	// 给一条终态任务登记在飞位 + 归属，它再也不会被 forget（节点根本不会再报这条任务）
-	// → 内存登记泄漏到连接结束，还挡着同 taskID 的后续派发。
-	// 返回 nil 而不是错误：任务本身已经有结论了，多一个错误只会让 route 把它退回 pending
-	// 重跑一遍（那才是真错）。
-	if store.IsTerminalStatus(fresh.Status) {
-		return nil
 	}
 	// ⑤ 写帧：写失败不登记（没送到对端的一帧不该占住在飞位）。
 	if err := s.sendBytes(ctx, data); err != nil {
@@ -393,6 +403,15 @@ func assignFrameFor(task *store.Task) *AssignFrame {
 		// 空值（老任务行 / 没有产物）由 omitempty 变成「不出现」：老节点行为不变。
 		Digest:  task.Digest,
 		TraceID: task.TraceID,
+
+		// Attempts / SeqInTrace 在这里**只取入参**（纯函数，不碰 DB）。
+		//
+		// 注意：入参上的这两个值在生产里是**不可信的**（route 把内存里的 Attempts
+		// 写死成 1、SeqInTrace 恒为 0），所以 PublishAssign 发帧前会用库里回读的
+		// fresh 覆盖掉它们（见 PublishAssign 的 ③ / ④）。这里只负责“若有人直接用它
+		// 造帧，至少不会丢掉已知的字段”。
+		Attempts:   task.Attempts,
+		SeqInTrace: task.SeqInTrace,
 	}
 }
 

@@ -172,6 +172,12 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 	}
 
 	a := newNodeAgent(ctx, cfg, conn, dataDir, log)
+	// 执行档案的后台 GC（启动时一次 + 每小时一次，见 runstore.go）：它挂在**连接自己的**
+	// ctx（a.base）上，所以 drain/退出时随 a.cancel() 一起结束；stop 再兜一层，
+	// 保证函数提前返回（握手失败…）时也不留下后台 goroutine（重复调用安全）。
+	// 放在握手之前：开机就把上一次进程攒下的过期档案清掉，不等第一条任务。
+	stopRunGC := startRunGC(a.base, a.runs, a.log)
+	defer stopRunGC()
 	// 收尾兜底（幂等，两个分支里已做过的事不会重复做）：先关连接——send 看到
 	// closed 就不会再碰连接，残留写被 writeMu 挡在外面；再断「连接自己的」ctx，
 	// 兜住残留任务。
@@ -326,6 +332,11 @@ type nodeAgent struct {
 	// 单测可以直接把它换成 fake 或 nil。
 	logs taskLogSender
 
+	// runs 是本机的**执行档案库**（<data-dir>/runs/，见 runstore.go）：每次执行的
+	// 输入 + 完整输出落在跑它的这台机器上，事后用 `anotify-agent runs` 回看。
+	// 写盘失败只 Warn，绝不参与任务成败（与 logs 同一条纪律）。
+	runs *runStore
+
 	// wg 追踪所有任务 goroutine：优雅退出要等它们（最多 grace）。
 	//
 	// wgMu 只在两件事上持有：reserveTask 做 Add、drain 置 draining。两件事
@@ -361,6 +372,9 @@ func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDi
 		sems:    make(map[string]chan struct{}),
 		tasks:   make(map[string]*taskCancel),
 		emits:   make(map[string]*emitServer),
+		// 档案库在这里只**构造句柄**（不建目录、不跑 GC）：目录由第一次 Save 建，
+		// GC 由 serveNode 在握手前拉起（见 startRunGC）。
+		runs: newRunStore(dataDir, log),
 	}
 	// 日志上传器由配置推导（非法配置/缺 server → nil，只 WARN 一次）：
 	// 放在构造里而不是每个任务里，是为了「配置错」只报一次。
@@ -684,6 +698,9 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		TraceID:     f.TraceID,
 		MaxDuration: f.MaxDuration,
 		WorkRoot:    a.cache.workRoot(),
+		// 落盘用的完整输出只在**中枢派单**这条路上采（见 job.CaptureFull）：
+		// 这份输出不回传中枢，只写进本机的 runs/（契约 §3.1/§3.2）。
+		CaptureFull: true,
 		// 端口与下游契约都从 assign 帧原样带过来（**不重算**）：端口白名单与
 		// ANOTIFY_EMIT_PORTS 必须同源，见 emitPortsOf。
 		Ports:   emitPortsOf(f, art),
@@ -723,6 +740,10 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 			j.Emit = es
 		}
 		out := runJob(jctx, j)
+		// emit 次数必须在 Close **之前**取（见 emitServer.EmitCount）：它要进本次执行的
+		// meta.json，而 Close 之后这个服务就不再接单了。
+		emits := es.EmitCount()
+		finishedAt := time.Now()
 		// 能力进程已经退出（正常结束 / 超时 / 取消）：**先**关 socket 再回报 result。
 		// 顺序有意义——关掉之后晚到的 emit 只会得到「socket 不存在」（exit 6），
 		// 不可能在 result 之后还改动一个已终结的任务（§8）。
@@ -730,6 +751,9 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 			a.stopEmitServer(f.TaskID, es)
 			es.Close()
 		}
+		// 落盘**在 result 之前**（契约 §3.2）：result 一到中枢，这条 trace 就有人在看了，
+		// 那时「输入与完整输出已经在盘上」必须是确定的事。失败只 Warn（见 saveRunArchive）。
+		a.saveRunArchive(f, out, emits, startAt, finishedAt)
 		// 日志先传，再发 result：result 一到中枢，这个任务就可能有下游/重试/通知
 		// 在读了；日志晚到的窗口越小越好。上传失败只记 WARN（不参与任务成败）。
 		// 顺序在「task finished」日志**之后**：那条日志带 elapsed/status，是排障时间线，
@@ -752,6 +776,78 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		a.uploadLogs(f.TaskID, out)
 		a.sendResult(f.TaskID, canceledOutcome(jctx, out))
 	}()
+}
+
+// runRecordFor 把一次执行组装成要落盘的全部内容（**纯函数**：不碰磁盘、不改 out）。
+//
+// 拆出来是为了可测：它是「档案里到底写了什么」的唯一实现，单测能拿真的 assign 帧与
+// 真的 outcome 直接钉住字段映射，不必为了验一次映射而拉起整套 serveNode。
+//
+// 两条口径：
+//   - params **原样**（不脱敏、不裁剪）：档案只落在跑它的这台机器上，用户要看的正是
+//     「当时到底传了什么」（见 runstore.go 的文件头）。
+//   - Attempt / SeqInTrace 来自**中枢的派发快照**（assign 帧），节点不自己算：
+//     「这是同一 trace 同一能力的第几次执行」归中枢，节点重算一份就会与它分叉。
+func runRecordFor(f *assignFrame, out outcome, emits int, started, finished time.Time) runRecord {
+	return runRecord{
+		Input: runInput{
+			TraceID:    f.TraceID,
+			TaskID:     f.TaskID,
+			Capability: f.Capability,
+			Version:    f.Version,
+			Attempt:    f.Attempts,
+			SeqInTrace: f.SeqInTrace,
+			Params:     f.Params,
+			WorkDir:    out.WorkDir,
+		},
+		Meta: runMeta{
+			TraceID:    f.TraceID,
+			TaskID:     f.TaskID,
+			Capability: f.Capability,
+			Version:    f.Version,
+			Attempt:    f.Attempts,
+			SeqInTrace: f.SeqInTrace,
+
+			Status:   out.Status,
+			ExitCode: out.ExitCode,
+			Summary:  out.Summary,
+			Error:    out.Err,
+
+			Emits: emits,
+
+			StdoutBytes:     out.ArchiveStdoutBytes,
+			StderrBytes:     out.ArchiveStderrBytes,
+			StdoutTruncated: out.ArchiveStdoutTruncated,
+			StderrTruncated: out.ArchiveStderrTruncated,
+		},
+		// 两份**完整**输出（不是上报窗口）：落盘才是「当时到底打印了什么」的全部答案。
+		Stdout: out.ArchiveStdout,
+		Stderr: out.ArchiveStderr,
+
+		Started:  started,
+		Finished: finished,
+	}
+}
+
+// saveRunArchive 把这次执行（输入 + 完整输出 + meta）落盘到 <data-dir>/runs/。
+//
+// 一条纪律（与 uploadLogs 同源）：**失败只 Warn，绝不改 out.Status**。磁盘满、runs 目录
+// 被一个同名文件占着、params 里混进了编不出 JSON 的值——这些都不该把一个跑成的任务
+// 判成失败：本地档案是「可惜丢了一份证据」，不是「任务没跑成」。
+func (a *nodeAgent) saveRunArchive(f *assignFrame, out outcome, emits int, started, finished time.Time) {
+	if a.runs == nil {
+		return
+	}
+	if _, err := a.runs.Save(runRecordFor(f, out, emits, started, finished)); err != nil {
+		a.log.Warn("run archive write failed",
+			"event", "agent.runs.save_failed",
+			"task_id", f.TaskID,
+			"trace_id", f.TraceID,
+			"capability", f.Capability,
+			"seq_in_trace", f.SeqInTrace,
+			"attempt", f.Attempts,
+			"error", err.Error())
+	}
 }
 
 // uploadLogs 把这次执行的 stdout/stderr 上传给中枢（契约 §2）。

@@ -399,6 +399,37 @@ anotify-agent upgrade --restart   # 换二进制并重启服务
 容器只读 FS 的 `not_supported` 都走这条。细节见 `docs/agent-install.md`；
 设计 / 退出码 / 排查表见 `docs/design/agent-upgrade.md`。
 
+### 节点本地的执行档案（runs/）：输入与完整输出
+
+**每次执行都落在跑它的那台机器上**，不传中枢（params 是用户的真实输入，用户要求
+「这个只存在节点上」）：
+
+```
+<data-dir>/runs/<trace_id>/<capability>@<version>/<seqInTrace>-a<attempts>/
+    input.json    {traceId, taskId, capability, version, attempt, seqInTrace, params, workdir}
+    stdout.log    完整 stdout（单流上限 8 MiB，超限截尾 + 一行标记）
+    stderr.log    完整 stderr（同上）
+    meta.json     开始/结束时间、exitCode、status、summary、emit 次数、真实字节数
+```
+
+- 目录名里的两个号由**中枢**下发（assign 帧的 `seq_in_trace` / `attempts`）：
+  `seqInTrace` = 同一 trace、同一能力里的第几次执行（1 起，重派不变），
+  `attempts` = 派发世代（每次派发 +1）。旧中枢不带时退回 `attempts`。
+- 盘上是**完整**输出（8 MiB/流），与上传中枢的 `task_logs`（每流最后 32 KiB 窗口）是两回事。
+- **写盘失败不影响任务成败**（磁盘满 / `runs` 被同名文件占着 → 只 WARN，任务照旧 succeeded）。
+- 权限：目录 `0700`、文件 `0600`。保留策略：默认 7 天 + 最多 2000 个 run 目录
+  （`ANOTIFY_RUNS_RETENTION_DAYS` / `ANOTIFY_RUNS_MAX_COUNT` 覆盖），启动时跑一次 GC + 每小时一次。
+- 回看：
+
+```bash
+anotify-agent runs                                    # 最近 20 条（时间倒序）
+anotify-agent runs --trace trc_xxx                    # 这条 trace 的全部执行（按执行顺序）
+anotify-agent runs --capability review@2              # 这个能力的历次执行
+anotify-agent show trc_xxx/review@2/3-a1              # 那一次的 input + stdout + stderr + meta
+```
+
+退出码：找到 = 0，没找到 = 1（空结果也是 1，脚本据此判断「到底跑没跑过」）。
+
 ## 5. 测试体系（固化门禁）
 
 > **规则：每次开发完成后，必须跑 `make e2e` 全绿才算完成。** 见 `E2E_TESTING.md`。
@@ -630,4 +661,6 @@ go run ./cmd/devseed -db ./anotify.db -username demo  # 播种测试用户
 | --- | --- | --- |
 | `ANOTIFY_EVENT_RETENTION_DAYS` | `30` | events 保留天数；**`0` = 永久保留**（启动日志 `server.retention.permanent` 会 WARN：磁盘随写入线性增长） |
 | `ANOTIFY_PENDING_MAX_AGE_SEC` | `120` | 最老 pending 任务等待秒数**超过**它 → 三个新事件入口（`POST /v1/events`、`POST /v1/hooks/{token}`、`POST /v1/sources/{id}/fire`）返回 `503` + `Retry-After`。**`0` = 不启用**（小部署别被自己的保护坑到）。超阈持续 30 分钟会 fail-open（孤儿 pending，见 §8） |
+| `ANOTIFY_RUNS_RETENTION_DAYS`（**节点**） | `7` | 节点本地执行档案（`<data-dir>/runs/`）的保留天数；`0` = 不按时间删（只按条数） |
+| `ANOTIFY_RUNS_MAX_COUNT`（**节点**） | `2000` | 执行档案最多保留多少个 run 目录；超过就按最旧的删（`0` = 不限） |
 | `ANOTIFY_STATS_INTERVAL_SEC` | 未设 = `6h` | SQLite 统计维护周期（#265）：到点先问 `PRAGMA optimize` 需不需要刷新，需要才执行它给出的 `ANALYZE`。**`0` = 禁用周期维护**（启动时仍会问一次）。不设就走默认 6h——统计随行数漂移会让规划器选错索引，症状是「索引建好了但慢查询」，且没有任何报错。 |

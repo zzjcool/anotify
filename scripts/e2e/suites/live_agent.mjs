@@ -24,6 +24,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -300,6 +301,104 @@ async function main() {
 		const m = /cwd=(\S+)/.exec(String(done2.summary || ""));
 		H.check("没声明就不该进用户目录", !!m && m[1] !== projDir, String(m && m[1]));
 		H.check("默认目录在 data-dir 的 work 下", !!m && m[1].includes("work"), String(m && m[1]));
+	}
+
+	// ================= 5b. 节点本地执行档案（runs/） =================
+	//
+	// 用户的原话：「每一个事件，它不是会去节点上执行吗？那执行的标准输入输出应该得存下来。
+	// 当然，这个只存在节点上。」所以这一节的验收点在**节点的文件系统**上，而不是中枢：
+	//
+	//	<data-dir>/runs/<trace>/<capability>@<version>/<seqInTrace>-a<attempts>/
+	//	    input.json / stdout.log / stderr.log / meta.json
+	//
+	// 上面两条任务都已经真跑完（中枢里 succeeded），这里去盘上核对第 1 条的那份档案。
+	// 断言三件事，缺一条这条腿就等于没落地：
+	//   ① 路径由**中枢下发的** seq_in_trace / attempts 决定（不是节点自己数出来的）；
+	//   ② input.json 里是**原样**的 params（不脱敏）——这正是「只存在节点上」的那份数据；
+	//   ③ stdout.log 是**完整**输出（上传窗口只有尾部 32 KiB，档案才有全部）。
+	console.log("--- 5b. 节点本地执行档案（<data-dir>/runs/） ---");
+	const runsRoot = path.join(tmpDir, "agent-data", "runs");
+	/** 在 runs/ 下找出某个能力（名字前缀 + @version）的全部执行目录。 */
+	const findRunDirs = (capPrefix) => {
+		const found = [];
+		if (!existsSync(runsRoot)) return found;
+		for (const trace of readdirSync(runsRoot)) {
+			const tracePath = path.join(runsRoot, trace);
+			if (!statSync(tracePath).isDirectory()) continue;
+			for (const capDir of readdirSync(tracePath)) {
+				if (!capDir.startsWith(capPrefix + "@")) continue;
+				const capPath = path.join(tracePath, capDir);
+				if (!statSync(capPath).isDirectory()) continue;
+				for (const run of readdirSync(capPath)) {
+					found.push({ trace, capDir, run, dir: path.join(capPath, run) });
+				}
+			}
+		}
+		return found;
+	};
+
+	const runsWhere = findRunDirs(cap.name);
+	H.check(
+		"真 agent 把这次执行落到了 <data-dir>/runs/ 下",
+		runsWhere.length === 1,
+		runsWhere.length === 0
+			? `runs/ 下没找到 ${cap.name}@*（目录：${existsSync(runsRoot) ? readdirSync(runsRoot).join(",") : "runs 不存在"}）`
+			: JSON.stringify(runsWhere.map((d) => path.join(d.trace, d.capDir, d.run))),
+	);
+	const runWhere = runsWhere[0];
+	if (runWhere) {
+		// ① 目录名 = 中枢下发的 <seqInTrace>-a<attempts>（新 trace 的第 1 次执行、第 1 次派发）。
+		H.eq("runs 目录名就是中枢下发的 <seqInTrace>-a<attempts>", runWhere.run, "1-a1");
+		H.check(
+			"runs 目录的第一段就是这条任务的 traceId（按 trace 归档）",
+			runWhere.trace === done?.traceId,
+			`${runWhere.trace} vs ${done?.traceId}`,
+		);
+		H.eq("能力目录是 <capability>@<version>", runWhere.capDir, `${cap.name}@${cap.version}`);
+
+		const inputPath = path.join(runWhere.dir, "input.json");
+		H.check("档案里有 input.json（标准输入）", existsSync(inputPath), runWhere.dir);
+		if (existsSync(inputPath)) {
+			const input = JSON.parse(readFileSync(inputPath, "utf8"));
+			H.eq("input.json 的 traceId", input.traceId, done?.traceId);
+			H.eq("input.json 的 capability", input.capability, cap.name);
+			H.eq("input.json 的 version", input.version, cap.version);
+			H.eq("input.json 的 seqInTrace（中枢下发的）", input.seqInTrace, 1);
+			H.eq("input.json 的 attempt（中枢下发的）", input.attempt, 1);
+			// params 原样：触发时的 payload 里 note=live（源的 fire body）。
+			H.eq("input.json 里是原样的 params（不脱敏）", input.params?.note, "live");
+			H.check("input.json 里带着本次执行的 workdir", typeof input.workdir === "string" && input.workdir.length > 0);
+		}
+
+		const stdoutPath = path.join(runWhere.dir, "stdout.log");
+		H.check("档案里有 stdout.log（标准输出）", existsSync(stdoutPath), runWhere.dir);
+		if (existsSync(stdoutPath)) {
+			// 脚本只打了一行 `cwd=<目录>`：完整落盘 = 这一行逐字都在。
+			const out = readFileSync(stdoutPath, "utf8");
+			H.eq("stdout.log 是这次执行的完整输出", out.trim(), `cwd=${projDir}`);
+		}
+
+		const metaPath = path.join(runWhere.dir, "meta.json");
+		H.check("档案里有 meta.json（执行事实）", existsSync(metaPath), runWhere.dir);
+		if (existsSync(metaPath)) {
+			const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+			H.eq("meta.json 的 status", meta.status, "succeeded");
+			H.eq("meta.json 的 exitCode", meta.exitCode, 0);
+			H.check("meta.json 有开始/结束时间", !!meta.startedAt && !!meta.finishedAt, JSON.stringify([meta.startedAt, meta.finishedAt]));
+			H.check("meta.json 带 emit 次数", typeof meta.emits === "number", String(meta.emits));
+			H.eq("meta.json 的 stdout 没被截断（这么短的输出）", meta.stdoutTruncated, false);
+		}
+
+		// 权限：输入与输出是用户自己的数据，不能被同机其他用户读到。
+		H.eq("runs 目录权限是 0700", (statSync(runWhere.dir).mode & 0o777).toString(8), "700");
+		H.eq("input.json 权限是 0600", (statSync(inputPath).mode & 0o777).toString(8), "600");
+
+		// 第二条任务（未声明 workDir）也必须有自己的一份档案——档案是**每次执行**都有的。
+		H.check(
+			"第二条任务也有自己的执行档案",
+			findRunDirs(capDefault.name).length === 1,
+			JSON.stringify(findRunDirs(capDefault.name).map((d) => d.run)),
+		);
 	}
 
 	// ================= 6. 真进程 emit：能力脚本 → 本机 socket → 中枢派发 =================

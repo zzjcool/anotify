@@ -1037,7 +1037,9 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
   "expects":  { "fix": {            // 每个端口的产出要求（推导量，随报文下发）
       "schema":  { "required": ["issue"], "properties": { "issue": {"type":"string"} } },
       "targets": [ { "capability": "fixer", "version": 3, "needs": { ... } } ] } },
-  "token":    "tok_…" }             // 本任务一次性令牌：本地 emit socket 用它鉴权
+  "token":    "tok_…",             // 本任务一次性令牌：本地 emit socket 用它鉴权
+  "attempts":    2,                // 派发世代（tasks.attempts，每次派发 +1）；缺省=0
+  "seq_in_trace": 3 }              // 同一 trace、同一能力里的第几次执行（1 起）；缺省=0=未知
 
 { "type": "emit_ack",  "task_id": "tsk_x", "seq": 3, "routed": 2, "pruned": 0, "error": "" }
 
@@ -1055,6 +1057,10 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 **`assign` 载荷是中枢能表达的全部**：`{capability, version, params, digest, ports, expects, token}` + 租约。
 **没有 argv**（I1）；`expects` 是**推导量**（中枢按当时的 link 算出来），节点只持有本次任务的那一份，
 任务结束即丢弃——节点始终不掌握拓扑。
+
+帧里还带 `attempts`（派发世代，每次派发 +1）与 `seq_in_trace`（同一 trace 同一能力的第几次执行）——
+两者都是**展示/审计用**（节点拿它们命名本地执行记录），节点**不得**据此改变执行语义：
+重试预算与终态判定都在中枢，`seq_in_trace` 缺省（0）时节点退回到 `attempts`。
 
 **错误码**（`error.code`）：
 

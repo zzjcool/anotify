@@ -90,6 +90,14 @@ type job struct {
 	// 人站在终端前跑一次时，「我想先给它 30 秒试试」应该压过产物里写死的 900。
 	TimeoutOverride int
 
+	// CaptureFull 让本次执行额外采集一份**完整**输出（→ outcome.ArchiveStdout/ArchiveStderr）。
+	//
+	// 只有中枢派单路径（client.startTask）为 true：那份输出落在**跑它的这台机器**上
+	// （<data-dir>/runs/，见 runstore.go），不回传中枢——网络那条路仍然只走 Stdout/Stderr
+	// 的 32 KiB 尾部窗口。standalone（runLocal）不采集：人就在终端前，输出已经直接流到
+	// 他屏幕上了，再存一份没有读者。
+	CaptureFull bool
+
 	// Ports 是本次任务的产出端口（封闭集合）。来源与 emit socket 白名单**同一处**：
 	// assign 的 ports，缺省退到产物的 spec.outputs。
 	Ports []string
@@ -122,6 +130,21 @@ type outcome struct {
 	Bytes int64
 	// WorkDir 是本次任务的独立工作目录（失败时保留，日志里指路）。
 	WorkDir string
+
+	// ArchiveStdout / ArchiveStderr 是**完整**输出（单流上限 8 MiB，超限截尾 + 标记行）。
+	// 只用于节点本地落盘（runs/），**不**上传：网络那条路仍然走 Stdout/Stderr 的 32 KiB 窗口。
+	ArchiveStdout string
+	ArchiveStderr string
+	// ExitCode 是子进程退出码（0 = 正常；-1 = 拿不到：起不来/被信号杀/超时）。
+	ExitCode int
+
+	// 下面四个是落盘用的**账目**（meta.json 的 stdoutBytes/stderrBytes/truncated）。
+	// 不能从 ArchiveStdout/ArchiveStderr 反推：截断之后字符串里多了标记行，长度已经不是
+	// 真实字节数，而「截了多少」只能由捕获器自己给出（见 runLog.Truncated/Total）。
+	ArchiveStdoutBytes     int64
+	ArchiveStderrBytes     int64
+	ArchiveStdoutTruncated bool
+	ArchiveStderrTruncated bool
 }
 
 const (
@@ -129,6 +152,13 @@ const (
 	// 日志与 summary，不能让一个话痨命令把 agent 的内存吃光。保留的是**尾部**——
 	// 错误几乎总在最后（契约 §1）。
 	maxLogStreamBytes = 32 << 10
+	// archiveStreamMaxBytes 是**落盘**（runs/）时的单流上限：8 MiB。
+	//
+	// 与 maxLogStreamBytes（32 KiB 上传窗口）是两个量级、两个用途：那个是「网络上只传
+	// 这么多」，这个是「盘上留全」。数值的唯一来源是 runstore.go 的 runStreamMaxBytes
+	// （档案的规格由档案库定义，执行层只是它的使用者）——在这里再写一个 8 MiB，
+	// 两处迟早会分叉成「盘上留 8 MiB、执行层却只采 32 KiB」这种看不见的错。
+	archiveStreamMaxBytes = runStreamMaxBytes
 	// summaryHeadBytes 是头部旁路窗口的大小：主窗口只留尾部，而 summary 的语义是
 	// **stdout 的第一行**（result 帧里那句，还进 tasks.summary / error）。
 	// 4 KiB 足够容下「前面一串空行 + 第一行」，而 oneLine 只取前 200 字节。
@@ -179,7 +209,9 @@ type execPlan struct {
 // 上下文语义：ctx 被取消（cancel 帧 / 退出排空）或超时 → 杀整个进程组，outcome
 // 记 failed（Err 分别是 canceled / timed out after ...）。
 func runJob(ctx context.Context, j job) outcome {
-	res := outcome{Status: statusFailed, Artifacts: []string{}}
+	// ExitCode 的初值是 -1（「拿不到」）：准备失败、起不来、超时、被信号杀都走这条路，
+	// 只有真的看到「进程自己退出了」才会被改成具体码（0 或 exitErr.ExitCode()）。
+	res := outcome{Status: statusFailed, Artifacts: []string{}, ExitCode: -1}
 
 	plan, err := prepareExecution(j)
 	if err != nil {
@@ -200,23 +232,39 @@ func runJob(ctx context.Context, j job) outcome {
 
 	stdoutSink := newStreamLog(maxLogStreamBytes)
 	stderrSink := newStreamLog(maxLogStreamBytes)
+	// CaptureFull（只有中枢派单路径为 true）时，同一个流再挂一只**完整**捕获器：
+	// 它只服务本地落盘（runs/），与上报窗口并存、互不影响。
+	var stdoutFull, stderrFull *runLog
+	if j.CaptureFull {
+		stdoutFull = newRunLog(archiveStreamMaxBytes)
+		stderrFull = newRunLog(archiveStreamMaxBytes)
+	}
 	cmd := newArtifactCmd(ctx, plan)
 	// Stdin 不接（nil → /dev/null）：命令不可能因为等 stdin 而挂死。
-	cmd.Stdout = stdoutSink
+	//
 	// 两个流**各一条管道**（不再共用一个 writer）：合并之后 stderr 就再也找不回来了，
 	// 而「为什么炸了」通常只在 stderr 里（契约 §0 的现场）。
-	cmd.Stderr = stderrSink
+	//
+	// cmd.Stdout 只能设一次，所以「窗口 + 完整捕获」是 MultiWriter 而不是两次赋值；
+	// 两个 writer 都不返回错误、都报告全部写入（streamLog/runLog 同一条纪律），
+	// 不会把子进程写死。
+	cmd.Stdout = multiSink(stdoutSink, stdoutFull)
+	cmd.Stderr = multiSink(stderrSink, stderrFull)
 
 	if err := startCmd(cmd); err != nil {
 		// 明确区分「起不来」（入口文件不可执行、缺解释器…）与「跑完失败」。
 		res.Err = "start entrypoint: " + err.Error()
 		captureLogs(&res, stdoutSink, stderrSink)
+		captureArchive(&res, stdoutFull, stderrFull)
 		res.Summary = stdoutSink.FirstLine(summaryMaxBytes)
 		return res
 	}
 
 	err = cmd.Wait()
 	captureLogs(&res, stdoutSink, stderrSink)
+	// 完整捕获在 Wait **之后**才取（String 是快照）：此时子进程已退出、复制 goroutine
+	// 已收尾，读到的就是全部输出。
+	captureArchive(&res, stdoutFull, stderrFull)
 	// summary 的口径**不变**：仍然是 stdout 的第一行。刻意不 fallback 到 stderr——
 	// 换源会让「同一个失败」在改版前后给出两种摘要，而摘要还进 error 字段。
 	//
@@ -229,6 +277,7 @@ func runJob(ctx context.Context, j job) outcome {
 		// 成功判定要同时看 exit code 与 ctx：命令刚好在超时/取消那一刻 exit 0 时，
 		// 它不是「跑完了」，而是「被我们掐断的」，不能当成功。
 		res.Status = statusSucceeded
+		res.ExitCode = 0
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		res.Err = "timed out after " + plan.timeout.String()
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -241,6 +290,11 @@ func runJob(ctx context.Context, j job) outcome {
 		if errors.As(err, &exitErr) {
 			// "exit status 7" / "signal: killed"
 			res.Err = exitErr.Error()
+			// 被信号杀掉时 ExitCode() 自己就是 -1（与「拿不到退出码」同义），
+			// 那就保持初值；拿到具体码就照实记（档案里「为什么失败」的一半答案）。
+			if code := exitErr.ExitCode(); code >= 0 {
+				res.ExitCode = code
+			}
 		} else {
 			res.Err = "run entrypoint: " + err.Error()
 		}
@@ -272,6 +326,9 @@ func runJob(ctx context.Context, j job) outcome {
 // （人就在终端前，要看实时输出），退出码原样透传给进程（脚本怎么退，agent 就怎么退）。
 // 准备（工作目录 / 展开文件 / 环境变量 / 超时）与执行（进程组 / WaitDelay）完全共用，
 // 否则「拷到别的机器直接能跑」和「中枢派下来能跑」会是两种行为。
+//
+// 它**不**采集执行档案（job.CaptureFull 在这条路上无意义）：输出已经直连调用方的
+// writer，而「这次执行的输入与完整输出」的读者是中枢侧的事后回看（见 runstore.go）。
 //
 // 返回 (退出码, error)：error 只表示「没能跑起来」这类 agent 侧故障（退出码由
 // 调用方按失败处理）；子进程自己的非 0 退出码是**结果**，不是 error。
@@ -941,6 +998,34 @@ func captureLogs(res *outcome, stdout, stderr *streamLog) {
 	res.Stderr = stderr.String()
 	res.Truncated = stdout.Truncated() || stderr.Truncated()
 	res.Bytes = stdout.Total() + stderr.Total()
+}
+
+// multiSink 把「上报窗口」与可选的「完整捕获器」拼成 cmd 的输出 writer。
+//
+// full 为 nil（不落盘：standalone / 任何没开 CaptureFull 的路径）时直接返回窗口本身，
+// 不额外套一层 MultiWriter——那条路径的行为与引入档案之前**逐字节相同**。
+func multiSink(window io.Writer, full *runLog) io.Writer {
+	if full == nil {
+		return window
+	}
+	return io.MultiWriter(window, full)
+}
+
+// captureArchive 把两份**完整**输出（与它们的真实字节数/截断标记）填进 outcome。
+//
+// 只有 job.CaptureFull 为 true 时两个 *runLog 才非 nil；nil 时什么都不做——于是
+// standalone 与旧调用方的 outcome 与改动前一致（ArchiveStdout 保持空串）。
+func captureArchive(res *outcome, stdout, stderr *runLog) {
+	if stdout != nil {
+		res.ArchiveStdout = stdout.String()
+		res.ArchiveStdoutBytes = stdout.Total()
+		res.ArchiveStdoutTruncated = stdout.Truncated()
+	}
+	if stderr != nil {
+		res.ArchiveStderr = stderr.String()
+		res.ArchiveStderrBytes = stderr.Total()
+		res.ArchiveStderrTruncated = stderr.Truncated()
+	}
 }
 
 // killProcessGroup 给**整个进程组**发 SIGKILL（负 pid = 进程组）。

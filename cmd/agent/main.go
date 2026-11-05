@@ -34,10 +34,12 @@
 //	anotify-agent -f ./node.yaml -grace 20 --data-dir ~/.anotify
 //	anotify-agent run ./capability.yaml -p repo=acme/x -p pr=42 --timeout 600
 //	anotify-agent upgrade [--check] [--force] [--server URL] [--install-to PATH] [--restart]
+//	anotify-agent runs [--trace ID | --capability NAME[@VER]] [--limit N]   # 看本机跑过的执行
+//	anotify-agent show <trace>/<capability>@<ver>/<seq>-a<n>                # 看那一次的输入与输出
 //
 //	-f          node.yaml 路径（默认 ./node.yaml）
 //	-grace      优雅退出等待秒数（默认 20；<=0 表示退出时不等在跑任务）
-//	-data-dir   数据目录（默认 ~/.anotify）：产物缓存、索引、任务工作目录都在它下面
+//	-data-dir   数据目录（默认 ~/.anotify）：产物缓存、索引、任务工作目录、执行档案都在它下面
 //
 // -grace 的边界（运维必读）：它**只覆盖在跑任务的收尾**，**不包含关闭连接本身**
 // （关连接是收尾之后的下一步），极端情况下进程总耗时会比 grace 略长一点。
@@ -90,6 +92,12 @@ const (
 	// 它是**能力进程**调的（不是运维调的）：由 agent 注入的 ANOTIFY_EMIT_SOCK /
 	// ANOTIFY_TASK_TOKEN 决定它去哪里、以谁的身份上报（见 emit_cmd.go）。
 	emitCommand = "emit"
+
+	// runsCommand / showCommand 是**执行档案回看**子命令名（见 runs_cmd.go）：
+	// `runs` 列表、`show` 看一次执行的输入与完整输出。它们是纯粹的本地只读命令——
+	// 不连中枢、不读 node.yaml、不落任何盘。
+	runsCommand = "runs"
+	showCommand = "show"
 )
 
 // options 是节点模式命令行解析出来的启动参数（parseFlags 的产物，便于单测比对）。
@@ -457,7 +465,8 @@ func subcommandAt(args []string) (string, []string, bool) {
 
 // isSubcommand 报告 token 是否是子命令名（不是的话就是节点模式的普通参数）。
 func isSubcommand(tok string) bool {
-	return tok == emitCommand || tok == upgradeCommand || tok == runCommand
+	return tok == emitCommand || tok == upgradeCommand || tok == runCommand ||
+		tok == runsCommand || tok == showCommand
 }
 
 // mainWith 是 main 的可测版本（退出码是返回值，不是 os.Exit）。
@@ -491,6 +500,22 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		// 退出码**就是**契约 §4 那张表（0..5），脚本据它决定「去要 root / 别重试 / 重跑」，
 		// 所以不能在这里改写成 1。
 		return upgradeMain(args[1:], stdout, stderr, os.Getenv)
+	}
+	if len(args) > 0 && args[0] == runsCommand {
+		// 回看子命令：退出码只有「找到 = 0 / 没找到 = 1」两档（见 runs_cmd.go 的文件头），
+		// 错误说明只在这里打一次（runRuns 只返回、不打印）。
+		code, err := runRuns(args[1:], stdout, stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "anotify-agent runs: %s\n", err)
+		}
+		return code
+	}
+	if len(args) > 0 && args[0] == showCommand {
+		code, err := runShow(args[1:], stdout, stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "anotify-agent show: %s\n", err)
+		}
+		return code
 	}
 	// 节点模式的错误日志已经在 run 里记过（这里再记一条就成了重复）。
 	if err := run(args, stderr); err != nil {

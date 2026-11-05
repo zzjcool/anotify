@@ -408,6 +408,17 @@ type AssignFrame struct {
 	// 为什么需要它：socket 是父子进程共享的，同一台机器上可能有多个任务的进程；
 	// 没有令牌，一个任务的脚本可以替另一个任务 emit（伪造产出）。
 	Token string `json:"token,omitempty"`
+
+	// Attempts 是这次派发的世代（tasks.attempts，每次派发 +1）。
+	//
+	// 它是**展示/审计用**（节点把它写进本地执行记录）：节点不得据此改变执行语义
+	// （重试预算与终态判定都在中枢）。零值 = 老中枢不带这个字段。
+	Attempts int `json:"attempts,omitempty"`
+	// SeqInTrace 是这条任务在同一 trace、同一能力里的第几次执行（1 起）。
+	//
+	// 同样只用于展示/审计：节点拿它命名本地 runs/<trace>/<capability>@<ver>/<seq>-a<n>
+	// 目录，<= 0 时退回到 Attempts（旧中枢）。**不得**据此改变执行语义。
+	SeqInTrace int `json:"seq_in_trace,omitempty"`
 }
 
 // PortExpect 是一个端口的产出要求（emit 时校验）。
