@@ -382,6 +382,12 @@ async function main() {
 		`rc=0`,
 		`${JSON.stringify(AGENT_BIN)} emit --port emit.fix --data '{"issue":"#42","title":"空指针"}' --wait-routed --note '第 1 项' >> "$PROBE" 2>&1 || rc=$?`,
 		'printf \'exit=%s\\n\' "$rc" >> "$PROBE"',
+		// 第二次独立产出（契约 §3）：一次 emit 只派**一个**候选，所以要看全两个目标
+		// 就得 emit 两次 —— 同级轮盘各落一个。这也是「两次 emit = 两个独立任务」的
+		// 真进程证据。
+		`rc2=0`,
+		`${JSON.stringify(AGENT_BIN)} emit --port emit.fix --data '{"issue":"#43","title":"竞态"}' --wait-routed --note '第 2 项' >> "$PROBE" 2>&1 || rc2=$?`,
+		'printf \'exit2=%s\\n\' "$rc2" >> "$PROBE"',
 		// 脚本自己总是成功退：这节的断言看探针里的 exit=，而不是把任务先弄成 failed
 		"exit 0",
 		"",
@@ -497,9 +503,12 @@ async function main() {
 
 	// ---------- 中枢里落下的（任务行才是 routed 的真凭据）----------
 	const emitKids = (await listTasks()).filter((t) => t.parentTaskId === parentId);
-	H.eq("emit 派发建出 2 条下游任务（routed=2）", emitKids.length, 2);
+	// 契约 §3：emit.fix 有 2 个候选，**每次 emit 只派一个**；脚本 emit 了两次，
+	// 同级轮盘把两次落到不同的候选上 —— 所以这里恰好 2 条，且覆盖两个目标。
+	// （以前是「一次 emit 全派 2 条」，那是 fanout，现在是 1:1。）
+	H.eq("两次 emit（各派一个候选）→ 共 2 条下游任务", emitKids.length, 2);
 	H.eq(
-		"两条下游任务落在那两个目标上",
+		"两条下游任务分别落在那两个候选上（同级轮盘）",
 		emitKids.map((t) => t.capability).sort(),
 		[t1.name, t2.name].sort(),
 	);

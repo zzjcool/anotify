@@ -843,23 +843,25 @@ async function main() {
 		});
 		H.check("emit → 收到 emit_ack", !!ack1, JSON.stringify(emitNode.frames.map((f) => f.type)));
 		H.eq("emit_ack.error 为空（成功）", ack1?.error || "", "");
-		H.eq("一个端口两条边 → routed=2", ack1?.routed, 2);
+		// 契约 §3：fix 有两个候选（ws.emit.a / ws.emit.b，同为 p=0），运行期只派**一个**。
+		// 「全派」是 balance:all（未实现），所以这里是 1 而不是 2。
+		H.eq("一个端口两条候选 → routed=1（选一个，不全派）", ack1?.routed, 1);
 		H.eq("成功路径 pruned=0", ack1?.pruned || 0, 0);
 		H.eq("emit_ack.seq 回显上报的那个 seq", ack1?.seq, 1);
 		H.eq("emit_ack.task_id 是上报的那条任务", ack1?.task_id, parentTask);
 
 		const kids1 = children(parentTask);
-		H.eq("① 下游任务真的建了两条", kids1.length, 2);
-		H.eq(
-			"① 两条下游任务落在两个目标上",
-			kids1.map((k) => k.capability).sort(),
-			["ws.emit.a", "ws.emit.b"],
+		H.eq("① 下游任务只建了一条", kids1.length, 1);
+		H.check(
+			"① 选中的是候选之一（ws.emit.a / ws.emit.b）",
+			["ws.emit.a", "ws.emit.b"].includes(kids1[0]?.capability),
+			JSON.stringify(kids1.map((k) => k.capability)),
 		);
 		// 事务边界（§7）：emission 与子任务行同一次提交，routed 存**首次**结果
 		const em1 = emissions(parentTask);
 		H.eq("① emissions 落了一行", em1.length, 1);
 		H.eq("① emissions.port 是上报的出口", em1[0]?.port, "fix");
-		H.eq("① emissions.routed 与 ack 一致", em1[0]?.routed, 2);
+		H.eq("① emissions.routed 与 ack 一致", em1[0]?.routed, 1);
 
 		// ---- ② 重复 seq（内容相同）→ 幂等：不重复派发 ----
 		const ack1b = await emitAck({
@@ -870,8 +872,8 @@ async function main() {
 			note: "重发（内容相同）",
 		});
 		H.eq("② 重复 seq：ack.error 仍为空（幂等成功）", ack1b?.error || "", "");
-		H.eq("② 重复 seq：routed 取首次结果", ack1b?.routed, 2);
-		H.eq("② 重复 seq：下游任务不多建", children(parentTask).length, 2);
+		H.eq("② 重复 seq：routed 取首次结果", ack1b?.routed, 1);
+		H.eq("② 重复 seq：下游任务不多建", children(parentTask).length, 1);
 		H.eq("② 重复 seq：emissions 仍然只有 1 行", emissions(parentTask).length, 1);
 
 		// ---- ③ 同 seq 不同 port/data → 拒收（节点 bug，不能静默覆盖）----
@@ -886,11 +888,31 @@ async function main() {
 			/reused/i.test(ackReuse?.error || ""),
 			JSON.stringify(ackReuse),
 		);
-		H.eq("③ 被拒的那次不建任务", children(parentTask).length, 2);
+		H.eq("③ 被拒的那次不建任务", children(parentTask).length, 1);
 		H.eq("③ 被拒的那次不改 emissions", emissions(parentTask).length, 1);
 
+		// ---- ①b 同级轮盘：再 emit 一次 fix，这次应当轮到**另一个**候选 ----
+		//
+		// 这是「1:1 选择」与「随机抖动」的区别：两个候选同优先级时，中枢按游标
+		// 轮转（契约 §3），所以连续两次必定落在不同目标上。
+		const ack1c = await emitAck({
+			task_id: parentTask,
+			seq: 2,
+			port: "fix",
+			data: { issue: "#42b" },
+			note: "第二次产出（同级轮盘）",
+		});
+		H.eq("①b 第二次 emit fix 仍然只派一个", ack1c?.routed, 1);
+		const kids1c = children(parentTask);
+		H.eq("①b 下游总行数 = 2", kids1c.length, 2);
+		H.eq(
+			"①b 两次落到两个**不同**候选（同级轮盘在真服务器上生效）",
+			kids1c.map((k) => k.capability).sort(),
+			["ws.emit.a", "ws.emit.b"],
+		);
+
 		// ---- ④ 部分扇出：一条边有人接、一条没人接（§8）----
-		const ack2 = await emitAck({ task_id: parentTask, seq: 2, port: "partial", data: {} });
+		const ack2 = await emitAck({ task_id: parentTask, seq: 3, port: "partial", data: {} });
 		H.eq("④ 部分扇出：ack.error 为空（剪枝不是失败）", ack2?.error || "", "");
 		H.eq("④ 一条边无节点 → routed=1", ack2?.routed, 1);
 		H.eq("④ 一条边无节点 → pruned=1", ack2?.pruned, 1);
@@ -903,21 +925,21 @@ async function main() {
 		);
 
 		// ---- solo：出口没接下游 → 0/0，不是错误（§8）----
-		const ack3 = await emitAck({ task_id: parentTask, seq: 3, port: "solo", data: {} });
+		const ack3 = await emitAck({ task_id: parentTask, seq: 4, port: "solo", data: {} });
 		H.eq("出口没接下游：ack.error 为空", ack3?.error || "", "");
 		H.eq("出口没接下游：routed=0", ack3?.routed || 0, 0);
 		H.eq("出口没接下游：pruned=0", ack3?.pruned || 0, 0);
 		H.eq("出口没接下游：不建任务", children(parentTask).length, 3);
 
-		// ---- ⑤ 缺口：1..seq-1 必须齐全（seq=5 而 4 缺失）----
-		const ackGap = await emitAck({ task_id: parentTask, seq: 5, port: "fix", data: { issue: "#44" } });
+		// ---- ⑤ 缺口：1..seq-1 必须齐全（seq=6 而 5 缺失）----
+		const ackGap = await emitAck({ task_id: parentTask, seq: 6, port: "fix", data: { issue: "#44" } });
 		H.check(
 			"⑤ 缺口 → ack 带 error（丢消息必须可见，不猜不跳过）",
 			/gap/i.test(ackGap?.error || ""),
 			JSON.stringify(ackGap),
 		);
 		H.eq("⑤ 缺口：不建任务", children(parentTask).length, 3);
-		H.eq("⑤ 缺口：不落 emission（emissions 仍是 3 行）", emissions(parentTask).length, 3);
+		H.eq("⑤ 缺口：不落 emission（emissions 仍是 4 行）", emissions(parentTask).length, 4);
 		// 拒收一条都没关连接、也没回 error 帧——这正是「不制造重连风暴」的判据
 		H.check("⑤ 拒收后连接仍活着", !emitNode.conn.closed);
 		H.check(
@@ -938,14 +960,14 @@ async function main() {
 			summary: "emit 用例结束",
 		});
 		await waitStatus(parentTask, "succeeded");
-		const ackClosed = await emitAck({ task_id: parentTask, seq: 4, port: "fix", data: {} });
+		const ackClosed = await emitAck({ task_id: parentTask, seq: 5, port: "fix", data: {} });
 		H.check(
 			"⑥ 已终结任务 emit → ack 带 error",
 			/not running/i.test(ackClosed?.error || ""),
 			JSON.stringify(ackClosed),
 		);
 		H.eq("⑥ 终态被拒：不建任务", children(parentTask).length, 3);
-		H.eq("⑥ 终态被拒：不落 emission", emissions(parentTask).length, 3);
+		H.eq("⑥ 终态被拒：不落 emission", emissions(parentTask).length, 4);
 
 		emitNode.conn.close();
 	}
