@@ -8,9 +8,9 @@
 
 ## 0. 一句话
 
-> **能力是一个会发事件的进程：`params → emit(port, data)* → exit`。link 只决定「某个 port 的去向」，不参与拼参数。**
+> **能力是一个会发事件的进程：`params → emit(port, data)* → exit`。link 只决定「某个 port 有哪些候选、这次选谁」，不参与拼参数。**
 
-全模型只有四样东西：**能力**（入参 + 端口）、**link**（端口 → 下游，带可选字面量）、**emit**（唯一的产出通道）、**digest**（记账）。其余全是推导量。
+全模型只有四样东西：**能力**（入参 + 端口）、**link**（端口 → 候选，带可选字面量与优先级）、**emit**（唯一的产出通道）、**digest**（记账）。其余全是推导量。
 
 ---
 
@@ -19,7 +19,7 @@
 | 层 | 是什么 | 什么时候定 | 谁校验 |
 |---|---|---|---|
 | **能力层** | `params_schema`（入）+ `ports[]`（出，**只有名字，没有 schema**） | 定义/部署时 | 保存时拒（格式） |
-| **link 层** | `(from, port) → to` + 可选字面量覆盖 | 配置时 | 保存时硬拒 |
+| **link 层** | `(from, port) → to` + 可选字面量覆盖 + 优先级 | 配置时 | 保存时硬拒 |
 | **执行层** | 任务：钉 `(name@version, digest)`，运行中 emit 0..N 次 | 派发/运行时 | 投递时（结构）+ 派发时（契约） |
 
 ### 1.1 名词（唯一术语）
@@ -30,8 +30,8 @@
 | **契约** | `params_schema` + `ports[]`。随实现下发（在产物里），不是中枢的独立一份 |
 | **端口 (port)** | 出口名，能力自己声明的字符串（`fix` / `push` / `partial`…）。**没有类型、没有 schema** |
 | **emit** | 运行中上报一次：`emit(port, data)`。**唯一的产出通道** |
-| **link** | `(from, port) → to` + 可选字面量覆盖。**接线引用 name（默认）或 name@version** |
-| **下游目录 (catalog)** | 派发时下发给实现的「你的这个 port 能去哪些能力、它们各要什么参数」 |
+| **link** | `(from, port) → to` + 可选字面量覆盖 + `priority`。**接线引用 name（默认）或 name@version**。同一 `(from, port)` 的多行互为**候选**（§3.1） |
+| **下游目录 (catalog)** | 派发时下发给实现的「你的这个 port 有哪些候选、它们各要什么参数」 |
 | **digest** | 契约+实现的 sha256。系统自动算，用户不写 |
 | **trigger** | 源。它是能力，`result_schema` 就是事件 payload 契约（外部边界，必须声明） |
 
@@ -40,11 +40,11 @@
 | 函数世界 | 这里 |
 |---|---|
 | `f : A → B` | `params_schema → emit(port, data)`，`B` 由 link 决定，不由 f 声明 |
-| 联合返回 | `ports`：一次运行可以走多个端口（动态扇出），每个端口可走多次 |
+| 联合返回 | `ports`：一次运行可以走多个端口，每个端口可走多次（端口之间互不牵连） |
 | 参数解构 | **不存在**——data 直接就是下游的 params（要字面量就在 link 上写） |
 | 调用同步 | emit 阻塞到 ack；但整条链是异步派发 |
 | 一个调用一份返回值 | **0..N 次 emit**，每次都独立路由、独立剪枝 |
-| 栈帧 | `trace_id` + `parent_task_id` + `path`（深度/环保护） |
+| 栈帧 | `trace_id` + `parent_task_id` + `path`（**深度 = hop 预算**：到 `ANOTIFY_MAX_HOPS` 就剪 `max_hops`） |
 | 返回值即状态码 | **状态来自进程**（退出码/信号），不来自端口 |
 
 ### 1.3 生命周期与状态
@@ -83,9 +83,27 @@ anotify-agent emit --port fix --data '{"issue":"#42 空指针","patch":"...","re
 
 **三条硬要求**：
 
-1. **任务令牌**：`ANOTIFY_EMIT_SOCK` / `ANOTIFY_TASK_ID` / `ANOTIFY_TASK_TOKEN` 由 agent 注入。一个任务的脚本不能替别的任务 emit。
+1. **任务令牌**：`ANOTIFY_EMIT_SOCK` / `ANOTIFY_TASK_ID` / `ANOTIFY_TASK_TOKEN` 由 agent 注入。一个任务的脚本不能替别的任务 emit。任务目录另由 `ANOTIFY_TASKDIR` 给出（见下）。
 2. **端口白名单**：`port ∈ ports[]`（I2 的封闭集合，提前到 emit 时判——比等进程退出才发现早得多）。
 3. **阻塞到 ack**（默认 5s 超时）。理由：emit 是有副作用的动作，fire-and-forget 会让“emit 成功但中枢没收到”变成静默丢事件。`--async` 是显式逃生口，不是默认。
+
+**端口契约变量（本次“允许成环 / 候选选择 / 批量创建”一并下发）**。agent 起能力进程前，除上面的身份变量外再注入两个**只读契约**变量（`assign.expects` 的同源推导，见 §3.4）：
+
+| 变量 | 内容 |
+|---|---|
+| `ANOTIFY_EMIT_PORTS` | 本能力全部端口的契约，JSON 数组 |
+| `ANOTIFY_TASKDIR` | 任务目录（产物文件解在这里）；同一份 JSON 另落在 `$ANOTIFY_TASKDIR/emit.json` |
+
+```json
+[{"port":"fix","schema":{"type":"object","required":["issue"]},"targets":[{"capability":"b","version":2,"priority":10}]}]
+```
+
+- `schema`：该端口全部候选的 `params_schema` 减去各自 literals 的并集（`BuildExpects` 口径，§3.3）；`null` = 该端口没有下游（无约束）。
+- `targets`：该端口的**候选清单**，每项带 `priority`（与派发选择同一个字段，§3.1），按 `priority, capability` 升序。
+- `targets[].version` 是该候选此刻解析到的版本（`name` 跟随 latest，`name@version` 钉死，§3.2）。
+- 两个变量与 `emit.json` **始终存在**：没有端口时 `ANOTIFY_EMIT_PORTS` 是 `[]`、`emit.json` 的内容也是 `[]`——不是空串，也不是缺变量（`set -u` 的脚本不能因为“今天没有下游”就炸）。
+- `emit.json` 权限 `0600`；任务目录每次运行清空重建，不会残留上一次的端口。
+- 写 `emit.json` 失败 → **任务失败并报清楚**（与“产物展开失败”同类），不许静默跳过：进程看不到候选清单就会把参数拼错，比当场失败难查得多。
 
 ### 2.2 幂等与顺序
 
@@ -98,11 +116,11 @@ anotify-agent emit --port fix --data '{"issue":"#42 空指针","patch":"...","re
 | 层 | 校验什么 | 失败表现 |
 |---|---|---|
 | **节点（投递时）** | `port ∈ ports[]`、data 是合法 JSON 对象、体积 ≤ 上限 | **拒绝本次 emit**（CLI 非 0），实现可当场修正重试 |
-| **中枢（派发时）** | 每条 link 的目标 `params_schema`（复用 `ValidateParams`） | 该 link 剪枝（`param_schema` / `param_missing`），**其他 link 不受影响**（扇出可部分成功） |
+| **中枢（派发时）** | 每个候选的目标 `params_schema`（复用 `ValidateParams`） | 该候选剪枝（`param_schema` / `param_missing` / `param_type`），**不牵连其他候选**（判完再从剩下的里选一个，§3.1） |
 
 **节点不做契约级校验**，因为没有“端口 schema”这种东西可校验（§4.3）。它只做结构校验，并把「下游要什么」以**目录**形式交给实现，让实现自己拼对。
 
-> 为什么不把下游需求做成强校验：一个 port 接 3 个下游时，需要的字段是 3 条的并集，而扇出允许“1 条过、2 条剪”。在节点上拿并集当硬门槛，会把“部分成功”变成“整体失败”——这一点在 §12 记过一次。
+> 为什么不把下游需求做成强校验：一个 port 有 3 个候选时，需要的字段是 3 条的并集，而每个候选各自判定（“1 条过、2 条剪”）。在节点上拿并集当硬门槛，会把“部分成功”变成“整体失败”——这一点在 §12 记过一次。
 
 ### 2.4 上限（写入契约，避免以后拍脑袋）
 
@@ -111,24 +129,46 @@ anotify-agent emit --port fix --data '{"issue":"#42 空指针","patch":"...","re
 | 单次 emit 的 data | 64 KiB | 拒绝（不截断：下游拿到半截 JSON 比失败更坏） |
 | 每个任务 emit 次数 | 1000 | 拒绝（防跑飞的循环） |
 | 单次 emit ack 超时 | 5s | CLI 返回非 0 |
+| 跳数上限（`ANOTIFY_MAX_HOPS`） | 16 | 剪枝 `max_hops`（不派发、留痕） |
+| 同一 trace 的任务数（`ANOTIFY_TRACE_TASK_BUDGET`） | 512 | 剪枝 `budget`（不派发、留痕） |
+
+后两个是**环的兜底**（§7 P2.3）：取值必须是正整数，非法值启动即失败，不静默退回默认——兜底参数算错就必须当场知道。
 
 ---
 
 ## 3. link
 
-### 3.1 表
+### 3.1 表：一行 = 一个候选
 
 ```sql
 link(
   ns_id, from_name, port, to_name,
-  literals TEXT NOT NULL DEFAULT '{}'   -- 可选的字面量覆盖：{"repo":"acme/x"}
+  literals TEXT NOT NULL DEFAULT '{}',   -- 可选的字面量覆盖：{"repo":"acme/x"}
+  priority INTEGER NOT NULL DEFAULT 0    -- 候选优先级：数值小的先选
   -- 不存版本：link 是配置，改它不该产生新版本
 )
 ```
 
 - `from_name` / `to_name` 是**名字**，不是 id。
-- 同一 `(from_name, port)` 可有多行 → **静态 1:N 扇出**。
-- **没有引用映射**（`{{result.x}}` 这类）：参数怎么拼是实现的内部事务。link 只提供连接与少量常量。
+- 同一 `(from_name, port)` 的多行 = **该端口的候选集合**。一行不是“同时派给所有下游”，而是一个候选。
+- **运行期默认 1:1 选一个**：每次 emit 独立走一遍下面的选择，两次 emit = 两个任务，可以落到不同候选。
+
+```text
+每次 emit 的选择（顺序固定：先判后选）：
+  1. 过滤不可达：目标解析不到（能力不存在，不派发）、无在线节点（no_node）、
+     参数不过目标契约（param_schema / param_missing / param_type）、跨用户（foreign_user）
+     —— 每个被过滤的候选照旧留一条剪枝记录，只是不进选择池
+  2. 剩下的按 to_name 字典序排（消除库里行序的不确定）
+  3. 按 priority 升序（数值小的先选）
+  4. 取最小 priority 的整组
+  5. 组内轮盘：游标 map[(ns_id, from_name, port, priority)] → int
+     进程内、不持久化；首次使用随机初始化（rand.IntN(len(group))），选中后 +1
+```
+
+- 排序必须在轮盘之前：否则“游标 +1”在不同进程里指向不同候选。
+- 选择池为空（一个候选都没有，或全被过滤）→ 这次 emit 到此为止，不是错误（§1.3）。
+- `balance` 挂在能力版本上：`{端口: {"mode": "priority"}}`，缺省就是 `priority`。**本期只实现 `priority`**；`all`（一次派给全部候选）/ `random` / `least_loaded` / `hash` 保存时 400「尚未实现」，不静默降级——把未实现的选择规则按 `priority` 悄悄跑，是比 400 更坏的失败。派发侧见到 `all` 按 `priority` 处理并 `slog.Warn` 一次（分支留着，歧义不留）。
+- **没有引用映射**（`{{result.x}}` 这类）：参数怎么拼是实现的内部事务。link 只提供连接、常量与优先级。
 
 ### 3.2 引用写法（挂哪一版）
 
@@ -155,13 +195,15 @@ link: analyze --fix--> notify
 
 ```jsonc
 "catalog": {
-  "fix":  [ {"capability":"fixer",  "version":3, "params": {…下游 params_schema…}},
-            {"capability":"notify", "version":1, "params": {…}} ],
-  "push": [ {"capability":"pusher", "version":1, "params": {…}} ]
+  "fix":  [ {"capability":"fixer",  "version":3, "priority":10, "params": {…下游 params_schema…}},
+            {"capability":"notify", "version":1, "priority":10, "params": {…}} ],
+  "push": [ {"capability":"pusher", "version":1, "priority":0,  "params": {…}} ]
 }
 ```
 
-约束：只含**本能力的出边**（不含全图）；只用于让实现拼对参数，**不能改变路由**（emit 只能报 port，report 哪条 link 由中枢按库查）。
+列表就是该端口的**候选集合**，按 `priority, capability` 升序；`priority` 与运行期的选择用同一个字段（§3.1），实现据此知道谁是首选、谁只是备胎。
+
+约束：只含**本能力的出边**（不含全图）；只用于让实现拼对参数，**不能改变路由**（emit 只能报 port，选哪个候选由中枢按库查并轮盘）。
 
 > 这一条把“节点不持拓扑”从“什么都不知道”放宽为“知道自己的下游”。这是设计的自觉让步：没有它，LLM 无法拼出正确的 params；有了它，节点知道的仍然只是“我这个出口通向谁”，改不了别人的路由。
 
@@ -171,7 +213,7 @@ link: analyze --fix--> notify
 
 1. **拓扑是配置，不是基础设施**：link 由节点声明，加一台机器就会改变链路。
 2. **同一能力常被多台机器声明**：各机自己声明出边，两台机器的不一致**没有任何机制能发现**。
-3. **校验需要全图视野**：环检测、同名不同型、升级影响面。
+3. **校验需要全图视野**：同名不同型、升级影响面、候选可达性。
 4. **权限与隔离**：link 是命名空间内配置（I11），节点没有用户身份。
 
 编辑入口内联在能力详情页（「端口与 link」区），全局页只做只读总览。`manifest`（hello 帧）只放执行环境（runner/timeout/concurrency/env），**永不生长拓扑字段**。
@@ -184,6 +226,32 @@ link: analyze --fix--> notify
 |---|---|
 | 加可选入参 / 加 port | 直接生效 |
 | 删 port / 改入参类型 / 加必填 | **要求确认**，列出受影响的 link（含“哪些实现会拿不到它要的字段”）；确认前 `name` 型 link 继续解析到旧版本 |
+
+### 3.7 一次建多个能力（batch）
+
+`POST /v1/capabilities/batch`：一次建多个能力**连同**它们之间的边。会话鉴权与命名空间规则与 `POST /v1/capabilities` 相同。
+
+```json
+{
+  "namespaceId": "ns_...",
+  "capabilities": [
+    { "name": "b", "displayName": "…", "outputs": ["done"], "paramsSchema": {…}, "run": {…}, "lifecycle": {…}, "sticky": "" },
+    { "name": "a", "outputs": ["fix"], "run": {…}, "balance": { "fix": { "mode": "priority" } } }
+  ],
+  "links": [
+    { "fromRef": "a", "fromPort": "fix", "toRef": "b", "literals": {}, "priority": 10 }
+  ]
+}
+```
+
+- **单事务**：全部能力行 + 全部产物行 + 全部边行一个事务。任一步失败 → 整批回滚（能力 0 条、产物 0 条、边 0 条）——不存在“建了一半的图”。
+- `capabilities[]` 的元素形状与单建请求体**完全一致**（同一份 decode 结构），`balance` 的取值规则同 §3.1。
+- `capabilities[].name` 在批内**不可重复**（重复 → 400）。
+- `links[].fromRef` / `toRef` 可以引用**本批新建**的名字：先插全部能力行，再解析边。
+- `links[]` 允许成环（§7 P2.3）；`priority` 缺省 0，必须是非负整数。
+- 升级闸门与单建同语义（§3.6）：批内任一能力触发 `upgrade_breaking` → 整批 `409 upgrade_breaking`，body 带 `upgradeImpact`；带 `force: true` 越过。
+- 响应：`{"capabilities": [...], "edges": [...], "upgradeImpact": null}`；两个列表为空时给 `[]` 不给 `null`。
+- 单建 `POST /v1/capabilities` 的行为**一个字都不变**（含它的 `links` 字段）。
 
 ---
 
@@ -211,8 +279,8 @@ trigger = unit(kind=trigger)
 
 ### 4.3 为什么能力没有端口 schema
 
-- 一个 port 可以接 N 个下游（扇出），"这个 port 的 schema"没有唯一解。
-- 扇出允许部分成功，所以“并集”不能当硬门槛（§12 记过一次）。
+- 一个 port 有 N 个候选（运行期选一个），"这个 port 的 schema"没有唯一解。
+- 候选各自判定、允许部分成功，所以“并集”不能当硬门槛（§12 记过一次）。
 - 因此 schema 只存在于两处：**能力入参**（`params_schema`）与**触发器出参**（`result_schema`）。中间不声明。
 
 ### 4.4 门槛怎么降：采样生成草稿
@@ -226,13 +294,16 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | 时机 | 检查 | 失败表现 |
 |---|---|---|
 | **定义期**（存产物） | `params_schema` 合法、`ports` 名字合法且不重复 | 硬拒 |
-| **定义期**（存 link） | `port ∈ from.ports`；`to` 存在；`literals` 的键 ∈ `to.params_schema` 且类型相等；**同一 port 的多个下游要求同一字段不同类型 → 拒**；静态可达环 | 硬拒，一次报全部问题 |
+| **定义期**（存 link） | `port ∈ from.ports`；`to` 存在；`literals` 的键 ∈ `to.params_schema` 且类型相等；**同一 port 的多个候选要求同一字段不同类型 → 拒**；`priority` 是非负整数 | 硬拒，一次报全部问题 |
 | **入口** | payload ⊨ `trigger.result_schema` | 不派发 + `prune(event_schema)`，事件仍落库 |
 | **投递**（节点） | `port ∈ ports`、JSON 对象、体积/次数上限 | 拒绝本次 emit（CLI 非 0） |
-| **派发**（中枢） | 每条 link：`data ⊎ literals` ⊨ 目标 `params_schema` | 该 link 剪枝；**其他 link 不受影响** |
+| **派发**（中枢） | 每个候选：`data ⊎ literals` ⊨ 目标 `params_schema` | 该候选剪枝；**其他候选不受影响**（判完再从剩下的里选一个，§3.1） |
 | **审计** | 产物 digest 与本地内容一致 | 标「本地变体」，不静默使用 |
 
 `literals` 之所以能在定义期校验类型：它是常量，不依赖运行时。
+
+> 环不在这张表里：`review → fix → review` 保存即通过（§7 P2.3）。运行期由 hop 预算与每 trace 任务预算封顶，
+> 剪枝原因是 `max_hops` / `budget`——配置期不再判环。
 
 ---
 
@@ -240,8 +311,8 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 
 | 对象 | 改动 |
 |---|---|
-| `capability_versions` | `outputs` 保留（端口名集合）；**新增 `params_schema` 已有，无需 `result_schema`**；`kind` 仍为推导量（I3） |
-| `edges` → `link` | 加 `literals`；引用从 `capability_id` 改为 `from_name`/`to_name`；删 `from_is_source`（P2） |
+| `capability_versions` | `outputs` 保留（端口名集合）；**新增 `params_schema` 已有，无需 `result_schema`**；`balance`（`{端口: {"mode": …}}`，本期只有 `priority`）；`kind` 仍为推导量（I3） |
+| `edges` → `link` | 加 `literals`、加 `priority`（候选优先级，小者先选，§3.1）；引用从 `capability_id` 改为 `from_name`/`to_name`；删 `from_is_source`（P2） |
 | `emissions`（新） | `(task_id, seq, port, data, routed_at)`，`UNIQUE(task_id, seq)` |
 | `tasks` | 加 `digest`；`out` **已不存在**（squash 后的 baseline 里就没有这一列）、`reported` 保留（仍表示「节点回报过」） |
 | `events` | 不变（`payload` 原样存） |
@@ -282,7 +353,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 |---|---|---|
 | P1.1 | `emit` / `emit_ack` 帧 + `emissions` 表 + `(task_id, seq)` 幂等 + 与派发同事务 | ✅ `emissions` 表；`route.Emit` 复用 `plan()` 逐 link 判定；**写 emission 与建子任务行同一事务** |
 | P1.2 | agent 本地 socket + `anotify-agent emit` 子命令 + 任务令牌 + 端口白名单 + 阻塞 ack | ✅ `<data-dir>/emit/<task>.sock`（0700/0600）+ outbox（先 fsync 再 ack）+ 七步校验 + 退出码 2/3/4/5/6/7 |
-| P1.3 | 派发：`data ⊎ literals` → 每条 link `ValidateParams` → 扇出（部分成功） | ✅ |
+| P1.3 | 派发：`data ⊎ literals` → 逐候选 `ValidateParams`（一个候选剪枝不牵连其他候选） | ✅ |
 | P1.4 | `assign` 下发 `ports` / `expects` / `token` | ✅ `BuildExpects`：各下游 `params_schema` 减 literals 的并集 + targets（给人看） |
 | P1.5 | 废弃 `.anotify-out` / `.anotify-result` | ✅ 已硬切（无兼容层）：runner 不再注入 `ANOTIFY_OUT_FILE`、不再读出口文件；`ws.ResultFrame` 删掉 `Out`（老帧带 `out` 当未知字段忽略）；`tasks.out` **整列删除**（squash 后 baseline 里不存在）；`contract/e2e` 里靠 result.out 走路的地方全部改成 emit |
 | P1.6 | 前端：trace 显示每次 emit | ✅ trace 页「产出（emits）」区 + `GET …/tasks/{id}/emissions` |
@@ -294,7 +365,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 
 | # | 改动 | 状态 |
 |---|---|---|
-| P2.3 | 静态环检测（运行期 `path` 剪枝降级为兜底） | ✅ `f4211bd`。保存 link 时 DFS 判可达环；自连单独报；菱形/1:N 仍合法 |
+| P2.3 | **允许成环**（`review → fix → review` 是合法编排） | ✅ 本次放开（“允许成环”）：不做静态环检测——保存 link 不再 DFS 判可达环；运行期靠 **hop 预算**（`ANOTIFY_MAX_HOPS`，默认 16）与 **每 trace 任务预算**（`ANOTIFY_TRACE_TASK_BUDGET`，默认 512）兜底，剪枝原因 `max_hops` / `budget`。自连在 UI 里仍然跳过（那是误操作，不是编排）；菱形 / 多候选不受影响 |
 | P2.2 | `edges` 按 **名字** 引用（`name` 默认跟随 / `name@version` 钉死）+ 升级闸门 | ✅ `d2f755d`。squash 前由迁移 27 把存量 id 重写成 `name@version`（不在迁移里静默改线；现在这些列直接是 baseline 的形态）；`store.ResolveRef` 是唯一解析点；闸门返回 `409 upgrade_breaking` + 受影响 link；控制台建边默认勾「跟随最新」 |
 | P2.2a | `capability.id` 与 `content_hash` 解耦 | **判定为不必要**：`NormalizeCapability` 的 hash 输入已含 name/params_schema/outputs/lifecycle/sticky（P2.4 其实已经是现状），而版本不可变（I8）——id 里带 hash8 没有任何功能后果。省掉一次破坏性迁移 |
 | P2.4 | 契约进签名（`ports` / `params` 参与 `content_hash`） | ✅ 已是现状（同 P2.2a 的核查结论） |
@@ -308,7 +379,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 2. `edges` 增 `from_ref` / `to_ref`（`name` 或 `name@version`）。迁移把存量 id 重写成
    **`name@version`**（保行为不变），新建默认 `name`。
 3. 解析点集中在 `route` 一处（`name → latest`，`name@version → 该版`）；`EdgesFrom` 只返回 ref，
-   不再返回 id。`tasks.path` 同步改成**名字**（「同一条链上重复出现同一个能力名」才是环）。
+   不再返回 id。`tasks.path` 同步改成**名字**（只用于展示与深度计算——深度 = hop 预算，不是环保护，也不是剪枝原因）。
 4. `graphContentHash` 用 ref（不是 id）——否则升级会让「同一张图」算出不同 hash。
 5. 影响面（按仓库实测）：`from_port|FromPort` 28 文件、`EdgesFrom|CreateEdge` 17 文件、
    e2e 里 6 个套件会建边（routing / contract / frontend / real_backend / ws_protocol / live_agent）。
@@ -322,7 +393,9 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 
 | 不做 | 理由 |
 |---|---|
-| 端口 schema / 端口实体 / 外键 | 一个 port 接 N 个下游时没有唯一 schema；只当名字的实体就是名字（§4.3） |
+| 端口 schema / 端口实体 / 外键 | 一个 port 有 N 个候选时没有唯一 schema；只当名字的实体就是名字（§4.3） |
+| 配置期环检测 | 环是合法编排（`review → fix → review`）；封顶靠 hop 预算与每 trace 任务预算，剪枝原因 `max_hops` / `budget`（§7 P2.3） |
+| `balance: all`（一次派给全部候选） | 本期只实现 `priority`；字段留位，其它 mode 保存时 400（§3.1） |
 | link 上的引用映射 `{{result.x}}` | 参数怎么拼是实现的内部事务；搬运层只制造 `param_missing` |
 | `as` / 自动类型转换 | 会失败的转换 = 晚发现的错；名即类型 |
 | 能力上声明 `result_schema` | 第二份契约，必然与下游漂移；schema 只在入参（能力）与事件（触发器） |
@@ -336,9 +409,11 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 ## 9. 验收
 
 ### 9.1 单测
-- link 保存：`port ∉ ports` / `literals` 类型错 / 同名不同型 / 静态环 → 各一条错误码
+- link 保存：`port ∉ ports` / `literals` 类型错 / 同名不同型 → 各一条错误码；**成环保存成功**（`review → fix → review`）
 - emit：`seq` 重复幂等、缺口报错、`port ∉ ports` 拒绝、data 非对象拒绝、超体积/超次数拒绝
-- 派发：`data ⊎ literals` 合并（字面量优先）、一条 link 剪枝不影响另一条（部分成功）
+- 派发：`data ⊎ literals` 合并（字面量优先）、一个候选剪枝不影响其他候选（部分成功）
+- 选择：不可达候选被过滤、`priority` 小的先选、同 priority 组内轮盘能落到不同候选、跳数超 `ANOTIFY_MAX_HOPS` 剪 `max_hops`、trace 任务数超 `ANOTIFY_TRACE_TASK_BUDGET` 剪 `budget`
+- batch：批内 `name` 重复 → 400；任一能力失败 → 能力/产物/边三条 0 条（单事务回滚）；`links` 引用本批名字成功；`409 upgrade_breaking` 由 `force` 越过
 - 生命周期：exit 0 无 emit / exit 0 有 emit / exit≠0 前 emit 过 / 被 kill / 租约到期 → 五种状态各一条
 - 入口：payload ⊨/⊭ trigger schema → 派发 / `prune(event_schema)`
 - 记账：assign 写 `(version, digest)`；节点缺 digest → 可见失败
@@ -362,7 +437,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | # | 决策 | 理由 |
 |---|---|---|
 | 1 | 产出通道唯一：`emit(port, data)` | 一次性返回只是“只 emit 一次”的特例；两套协议必然分叉 |
-| 2 | 端口只有名字，没有 schema | 扇出下没有唯一 schema；并集当门槛会把部分成功变成整体失败（§12） |
+| 2 | 端口只有名字，没有 schema | 候选集合下没有唯一 schema；并集当门槛会把部分成功变成整体失败（§12） |
 | 3 | 参数怎么拼是实现的内部事务 | 所以 link 没有引用映射，只有连接 + 字面量 |
 | 4 | 校验两层：节点结构、中枢契约 | 节点能当场拒的只有结构；契约的判断需要下游视野 |
 | 5 | 状态来自进程生命周期 | 退出码/信号/租约都是确定事实，不需要端口承担状态语义 |
@@ -373,8 +448,11 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 | 10 | 任务钉 `name@version` + `digest` | 名字解决“要最新”，摘要解决“证明当时是那份” |
 | 11 | 触发器必须声明 `result_schema` | 外部边界只能声明，不能推导 |
 | 12 | 废弃 `.anotify-out` / `.anotify-result` | emit 取代。**P1.5 直接硬切、不做兼容层**：用户明确没有历史包袱，留两套协议必然分叉 |
-| 13 | 1:N 静态扇出保留 | 已是产品能力；与动态 emit 叠加，不互斥 |
+| 13 | 一个端口的多行 link 是**候选集合**，运行期默认 1:1 选一个 | 端口不应该隐含“同时派给所有人”；`balance: all`（全派）是以后的功能，不是今天的默认（§3.1） |
 | 14 | 契约随实现下发（产物里） | 节点要用它；契约与实现分家就漂移 |
+| 15 | 允许成环，不做静态环检测 | `review → fix → review` 是合法编排；环由 hop 预算（`max_hops`）与每 trace 任务预算（`budget`）封顶，而不是靠配置期拒掉（§7 P2.3） |
+| 16 | 批量创建走单事务端点 | 一次表单建出的能力之间天然互引；拆成 N 次请求必然出现“建了一半”的图，而图是配置，半张图没有意义（§3.7） |
+| 17 | 端口契约下发到进程（`ANOTIFY_EMIT_PORTS` + `emit.json`） | 进程看不到候选就只能被 exit 4 打回来；契约是只读的，改它不改路由（§2.1） |
 
 ---
 

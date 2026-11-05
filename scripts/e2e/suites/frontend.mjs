@@ -1868,7 +1868,7 @@ async function checkCapabilityDetail(page, base) {
 		"详情区四节齐全：参数契约 / 出口与下游 / 谁接到我 / 运行参数",
 		detail.titles.length === 4 &&
 			/参数/.test(detail.titles[0]) &&
-			/出口/.test(detail.titles[1]) &&
+			/产出端口|出口/.test(detail.titles[1]) &&
 			/接到|feeds/.test(detail.titles[2]) &&
 			/运行|Runtime/.test(detail.titles[3]),
 		JSON.stringify(detail.titles),
@@ -2131,7 +2131,7 @@ async function checkCapabilityDetail(page, base) {
 	});
 	H.check(
 		"出口留空时说明「emit 不出任何东西」（终端能力是合法的）",
-		emptyHint.n === 0 && /emit/.test(emptyHint.hint) && /没有出口/.test(emptyHint.hint),
+		emptyHint.n === 0 && /emit/.test(emptyHint.hint) && /没有产出端口|没有出口/.test(emptyHint.hint),
 		JSON.stringify(emptyHint),
 	);
 	// 两个出口各接一个下游：证明「能力 + 全部边一次提交」（不是只有第一条生效）
@@ -2425,6 +2425,475 @@ async function checkCapabilityDetail(page, base) {
 			selfLink.edges.length === 0,
 		JSON.stringify(selfLink),
 	);
+}
+
+// checkBatchCreate 验证「一个表单建多个能力」（契约 §4）。
+//
+// 四件事：
+//   ① 一次提交建两个能力 + 一条候选边，**只发一个** POST /v1/capabilities/batch
+//   ② 坏输入整批不落库：弹层不关、错误定位到第几张卡
+//   ③ 候选的优先级能填、能存（mock 自己存 priority）、详情区能看见
+//   ④ 成环可建（a→b 与 b→a 在同一批里）、balance 非 priority 保存即 400
+//
+// 全部跑在 mock 预览环境里：批量接口是本期新增的，真后端那侧要等 A/B 组合并后
+// 才能跑同一批断言（合并后由协调者启用真后端版本）。
+async function checkBatchCreate(page, base) {
+	await page.goto(`${base}/capabilities.html`, { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1400);
+
+	const stamp = Date.now();
+	const capA = "e2e.batch.a." + stamp;
+	const capB = "e2e.batch.b." + stamp;
+
+	// 开弹层 → 选空白模板（与其它用例同一条最短路径）
+	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
+	await page.waitForTimeout(600);
+	await page.click('[data-tpl="script.blank"]');
+	await page.waitForTimeout(400);
+
+	// 抓能力相关 POST：batch 必须**只发一次**（不是一个能力一个请求）
+	await page.evaluate(() => {
+		window.__batchPosts = [];
+		const orig = window.fetch;
+		window.__restoreBatchFetch = () => {
+			window.fetch = orig;
+		};
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (method === "POST" && url.includes("/v1/capabilities") && init && init.body) {
+				let body = null;
+				try {
+					body = JSON.parse(String(init.body));
+				} catch (e) {
+					/* 非 JSON：原样发 */
+				}
+				window.__batchPosts.push({ url, body });
+			}
+			return orig.apply(this, [input, init]);
+		};
+	});
+
+	// 卡 1：名字 + 一个产出端口
+	await page.evaluate((name) => {
+		const n = document.getElementById("cap-name");
+		n.value = name;
+		n.dispatchEvent(new Event("input", { bubbles: true }));
+		const inp = document.getElementById("cap-port-input");
+		inp.value = "fix";
+		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+	}, capA);
+
+	// 「＋ 再加一个能力」
+	await page.click("#cap-add-card");
+	await page.waitForTimeout(400);
+	const afterAdd = await page.evaluate(() => ({
+		n: document.querySelectorAll("#cap-cards .cap-card").length,
+		active: (document.querySelector("#cap-cards .cap-card.is-active") || { dataset: {} })
+			.dataset.card,
+		editor: (document.getElementById("cap-card-editor") || {}).textContent || "",
+	}));
+	H.check(
+		"「＋ 再加一个能力」真的多出一张卡（默认只有一张）",
+		afterAdd.n === 2,
+		JSON.stringify(afterAdd),
+	);
+
+	// 卡 2：名字 + 一个产出端口
+	await page.evaluate(() => {
+		const pick = document.querySelector('#cap-cards .cap-card[data-card="1"] .cap-card-pick');
+		if (pick) pick.click();
+	});
+	await page.waitForTimeout(300);
+	await page.evaluate((name) => {
+		const n = document.getElementById("cap-name");
+		n.value = name;
+		n.dispatchEvent(new Event("input", { bubbles: true }));
+		const inp = document.getElementById("cap-port-input");
+		inp.value = "done";
+		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+	}, capB);
+
+	// 回到卡 1：把**本批的卡 2** 设成候选，并填优先级 10
+	await page.evaluate(() => {
+		const pick = document.querySelector('#cap-cards .cap-card[data-card="0"] .cap-card-pick');
+		if (pick) pick.click();
+	});
+	await page.waitForTimeout(300);
+	const candSetup = await page.evaluate((target) => {
+		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="fix"]');
+		if (!row) return { err: "没有 fix 出口行" };
+		const din = row.querySelector(".cap-down-input");
+		if (!din) return { err: "没有候选输入框" };
+		din.value = target;
+		din.dispatchEvent(new Event("change", { bubbles: true }));
+		return { ok: true };
+	}, capB);
+	await page.waitForTimeout(400);
+	const candState = await page.evaluate(() => {
+		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="fix"]');
+		const chip = row && row.querySelector(".cap-cand");
+		if (!chip) {
+			return {
+				err: "没有候选 chip",
+				html: row ? row.textContent.replace(/\s+/g, " ").slice(0, 120) : "",
+			};
+		}
+		const prio = chip.querySelector(".cap-cand-prio");
+		if (!prio) return { err: "候选没有优先级输入框" };
+		prio.value = "10";
+		prio.dispatchEvent(new Event("change", { bubbles: true }));
+		return {
+			name: ((chip.querySelector(".cap-cand-name") || {}).textContent || "").trim(),
+			prio: prio.value,
+			balModes: Array.from(row.querySelectorAll(".cap-bal-select option")).map(
+				(o) => o.value,
+			),
+			hint: ((row.querySelector(".cap-cand-hint") || {}).textContent || "").trim(),
+		};
+	});
+	H.check(
+		"候选能选「本批里另一个能力」，并带自己的优先级输入（契约 §3/§6）",
+		candSetup.ok === true && !candState.err && /batch\.b\./.test(String(candState.name)),
+		JSON.stringify({ candSetup, candState }),
+	);
+	H.check(
+		"端口旁有 balance 模式选择器：默认 priority，all 等其它值可选但未实现",
+		(candState.balModes || []).includes("priority") &&
+			(candState.balModes || []).includes("all"),
+		JSON.stringify(candState.balModes),
+	);
+	H.check(
+		"候选行说明了「运行期按优先级选一个；同级轮盘」",
+		/优先级/.test(String(candState.hint)) && /轮盘/.test(String(candState.hint)),
+		String(candState.hint).slice(0, 120),
+	);
+
+	// 提交：两个能力 + 一条候选边，**一个请求**
+	await page.click("#cap-submit");
+	await page.waitForTimeout(2600);
+	const batch = await page.evaluate(async ([an, bn]) => {
+		const [capsApi, edgesApi] = await Promise.all([
+			fetch("/v1/capabilities").then((r) => r.json()),
+			fetch("/v1/edges").then((r) => r.json()),
+		]);
+		const posts = window.__batchPosts || [];
+		const edge = (edgesApi.edges || []).find(
+			(e) => e.fromRef === an && e.fromPort === "fix" && String(e.toRef).indexOf(bn) === 0,
+		);
+		return {
+			posts: posts.map((p) => p.url),
+			bodies: posts.map((p) => p.body),
+			hasA: (capsApi.capabilities || []).some((c) => c.name === an),
+			hasB: (capsApi.capabilities || []).some((c) => c.name === bn),
+			edge: edge || null,
+			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+			toast: ((document.getElementById("anotify-toast-host") || {}).textContent || "").replace(
+				/\s+/g,
+				" ",
+			),
+		};
+	}, [capA, capB]);
+	H.check(
+		"批量创建：两个能力一次落库（单事务）+ 弹层已关",
+		batch.hasA === true && batch.hasB === true && batch.modalOpen === false,
+		JSON.stringify({ hasA: batch.hasA, hasB: batch.hasB, toast: batch.toast }),
+	);
+	H.check(
+		"批量提交只发了一个 POST /v1/capabilities/batch（不是每个能力一个请求）",
+		batch.posts.length === 1 && /\/v1\/capabilities\/batch$/.test(batch.posts[0] || ""),
+		JSON.stringify(batch.posts),
+	);
+	const body0 = (batch.bodies || [])[0] || {};
+	H.check(
+		"批量请求体：capabilities 两条 + links 带 fromRef/priority（契约 §4）",
+		Array.isArray(body0.capabilities) &&
+			body0.capabilities.length === 2 &&
+			Array.isArray(body0.links) &&
+			body0.links.length === 1 &&
+			body0.links[0].fromRef === capA &&
+			body0.links[0].fromPort === "fix" &&
+			body0.links[0].toRef === capB &&
+			body0.links[0].priority === 10,
+		JSON.stringify({ caps: (body0.capabilities || []).length, links: body0.links }),
+	);
+	H.check(
+		"候选优先级存进去了（GET /v1/edges 回来 priority=10）",
+		!!batch.edge && batch.edge.priority === 10,
+		JSON.stringify(batch.edge),
+	);
+
+	// 详情区：候选 + 优先级 + balance 模式
+	const detail = await page.evaluate(async (an) => {
+		const row = document.querySelector('.cap-row[data-cap-name="' + an + '"]');
+		if (!row) return { err: "列表里没有刚建的能力行" };
+		const box = row.querySelector(".cap-detail");
+		if (box && !box.classList.contains("open")) row.querySelector('[data-act="detail"]').click();
+		await new Promise((r) => setTimeout(r, 500));
+		const blocks = Array.from(row.querySelectorAll(".cap-port-block"));
+		const block =
+			blocks.find((b) => b.getAttribute("data-port") === "fix") ||
+			blocks.find(
+				(b) => ((b.querySelector(".cap-port-name") || {}).textContent || "").trim() === "fix",
+			);
+		if (!block) return { err: "详情区没有 fix 端口块", blocks: blocks.length };
+		return {
+			prio: Array.from(block.querySelectorAll(".cap-cand-prio-badge")).map((x) =>
+				(x.textContent || "").trim(),
+			),
+			bal: ((block.querySelector(".cap-bal-badge") || {}).textContent || "").trim(),
+			count: ((block.querySelector(".cap-cand-count") || {}).textContent || "").trim(),
+			dead: !!block.querySelector(".cap-port-dead"),
+		};
+	}, capA);
+	H.check(
+		"详情区端口下显示候选与优先级（优先级 10）",
+		(detail.prio || []).some((x) => /优先级\s*10|Priority\s*10/.test(x)),
+		JSON.stringify(detail),
+	);
+	H.check(
+		"详情区端口旁标出 balance 模式（priority）",
+		/priority/i.test(String(detail.bal)),
+		JSON.stringify(detail),
+	);
+
+	// ② 坏输入：整批不落库 + 弹层保留 + 错误定位到第几张卡
+	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
+	await page.waitForTimeout(600);
+	await page.click('[data-tpl="script.blank"]');
+	await page.waitForTimeout(400);
+	const okName = "e2e.badcard.a." + stamp;
+	const badName = "Bad Name " + stamp;
+	await page.evaluate((name) => {
+		const n = document.getElementById("cap-name");
+		n.value = name;
+		n.dispatchEvent(new Event("input", { bubbles: true }));
+		const inp = document.getElementById("cap-port-input");
+		inp.value = "done";
+		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+	}, okName);
+	await page.click("#cap-add-card");
+	await page.waitForTimeout(400);
+	await page.evaluate((name) => {
+		const pick = document.querySelector('#cap-cards .cap-card[data-card="1"] .cap-card-pick');
+		if (pick) pick.click();
+		const n = document.getElementById("cap-name");
+		n.value = name;
+		n.dispatchEvent(new Event("input", { bubbles: true }));
+	}, badName);
+	await page.waitForTimeout(300);
+	await page.evaluate(() => {
+		window.__batchPosts = [];
+	});
+	await page.click("#cap-submit");
+	await page.waitForTimeout(1200);
+	const bad = await page.evaluate(async ([an, bn]) => {
+		const capsApi = await fetch("/v1/capabilities").then((r) => r.json());
+		return {
+			anyA: (capsApi.capabilities || []).some((c) => c.name === an),
+			anyB: (capsApi.capabilities || []).some((c) => c.name === bn),
+			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+			nameKept: document.getElementById("cap-name").value === bn,
+			errCards: document.querySelectorAll("#cap-cards .cap-card.is-err").length,
+			card2: (
+				(document.querySelector('#cap-cards .cap-card[data-card="1"] .cap-card-name') || {})
+					.textContent || ""
+			).trim(),
+			toast: ((document.getElementById("anotify-toast-host") || {}).textContent || "").replace(
+				/\s+/g,
+				" ",
+			),
+		};
+	}, [okName, badName]);
+	H.check(
+		"坏输入整批不落库：两个能力一个都没建（含合法的那个）",
+		bad.anyA === false && bad.anyB === false,
+		JSON.stringify({ anyA: bad.anyA, anyB: bad.anyB, toast: bad.toast }),
+	);
+	H.check(
+		"失败后弹层不关、输入全保留（两张卡都还在）",
+		bad.modalOpen === true && bad.nameKept === true && bad.errCards >= 1,
+		JSON.stringify({ open: bad.modalOpen, kept: bad.nameKept, errCards: bad.errCards }),
+	);
+	H.check(
+		"错误定位到第 2 张卡（能力 2 / name）",
+		/能力\s*2/.test(bad.toast) && /name/.test(bad.toast),
+		bad.toast.slice(0, 200),
+	);
+
+	// ③ API 层：mock 的批量接口同样「先全量校验再写入」（真后端由 A/B 组单测钉住，
+	//    这里钉 mock 的语义一致，避免预览里能建出真后端会拒的半成品）
+	const apiChecks = await page.evaluate(async ([an, bn]) => {
+		const mk = (name, outputs) => ({
+			name,
+			outputs,
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+		});
+		const post = async (body) => {
+			const res = await fetch("/v1/capabilities/batch", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			let json = null;
+			try {
+				json = await res.json();
+			} catch (e) {
+				/* 非 JSON */
+			}
+			return { status: res.status, body: json };
+		};
+		const badLink = await post({
+			capabilities: [mk(an, ["done"]), mk(bn, ["done"])],
+			links: [{ fromRef: an, fromPort: "done", toRef: "no.such.capability", priority: 0 }],
+		});
+		let caps = await fetch("/v1/capabilities").then((r) => r.json());
+		const afterBad = {
+			hasA: (caps.capabilities || []).some((c) => c.name === an),
+			hasB: (caps.capabilities || []).some((c) => c.name === bn),
+		};
+		// balance 非 priority：保存即 400（本期只实现 priority）
+		const bal = mk(an, ["done"]);
+		bal.balance = { done: { mode: "all" } };
+		const balRes = await post({ capabilities: [bal], links: [] });
+		// 成环可建：a→b 与 b→a 在同一批里
+		caps = await fetch("/v1/capabilities").then((r) => r.json());
+		const cycRes = await post({
+			capabilities: [mk(an, ["done"]), mk(bn, ["back"])],
+			links: [
+				{ fromRef: an, fromPort: "done", toRef: bn, priority: 0 },
+				{ fromRef: bn, fromPort: "back", toRef: an, priority: 0 },
+			],
+		});
+		const edges = await fetch("/v1/edges").then((r) => r.json());
+		const back = (edges.edges || []).find((e) => e.fromRef === bn && e.toRef === an);
+		return { badLink, afterBad, balRes, cycRes, back: back || null };
+	}, ["e2e.batch.bad." + stamp, "e2e.batch.bad.b." + stamp]);
+	H.check(
+		"mock 批量接口：一条坏候选 → 400 links[0]，整批两张能力都没进库",
+		apiChecks.badLink.status === 400 &&
+			/links\[0\]/.test(String((apiChecks.badLink.body || {}).error || "")) &&
+			apiChecks.afterBad.hasA === false &&
+			apiChecks.afterBad.hasB === false,
+		JSON.stringify({ status: apiChecks.badLink.status, body: apiChecks.badLink.body, after: apiChecks.afterBad }),
+	);
+	H.check(
+		"balance 非 priority 保存即 400「尚未实现」（不静默降级）",
+		apiChecks.balRes.status === 400 &&
+			/尚未实现|not implemented|未実装|no implementado/.test(
+				String((apiChecks.balRes.body || {}).error || ""),
+			),
+		JSON.stringify(apiChecks.balRes),
+	);
+	H.check(
+		"成环可建：a→b 与 b→a 同一批提交成功（配置期不再拒环）",
+		(apiChecks.cycRes.status === 200 || apiChecks.cycRes.status === 201) &&
+			!!apiChecks.back,
+		JSON.stringify({ status: apiChecks.cycRes.status, back: apiChecks.back }),
+	);
+
+	await page.evaluate(() => window.__restoreBatchFetch && window.__restoreBatchFetch());
+}
+
+// checkPruneCopy 验证剪枝原因的文案（契约 §6）：新增 max_hops / budget，path 删除。
+//
+// 剪枝 reason 以前是英文机器串直出（reasons.join(", ")）——现在统一走
+// Anotify.pruneReason()。这里两层都钉：
+//   ① 映射函数本身（四语言 key 都存在；path 没有文案 → 说明原因集合里删掉了）
+//   ② 真实触发一次，toast 里出现的是人话而不是 max_hops 这个机器串
+async function checkPruneCopy(page, base) {
+	await page.goto(`${base}/sources.html`, { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1500);
+
+	const labels = await page.evaluate(() => {
+		const f = window.Anotify && window.Anotify.pruneReason;
+		return {
+			hasFn: typeof f === "function",
+			maxHops: f ? f("max_hops") : null,
+			budget: f ? f("budget") : null,
+			path: f ? f("path") : null,
+		};
+	});
+	H.check("剪枝原因有映射函数 Anotify.pruneReason（不再是英文机器串直出）", labels.hasFn === true, JSON.stringify(labels));
+	H.check(
+		"剪枝原因 max_hops 有人话文案（超出 hop 预算）",
+		/预算|hop/i.test(String(labels.maxHops)) && labels.maxHops !== "max_hops",
+		String(labels.maxHops),
+	);
+	H.check(
+		"剪枝原因 budget 有人话文案（本次 trace 任务数超预算）",
+		/预算|budget/i.test(String(labels.budget)) && labels.budget !== "budget",
+		String(labels.budget),
+	);
+	H.check(
+		"`path` 不再有文案（原因集合里删掉了，页面不得再出现）",
+		labels.path === "path",
+		String(labels.path),
+	);
+
+	// 真实触发：把 hop 预算调成 0 → 下一次「立即运行」必然剪成 max_hops
+	const fire = async (limits) =>
+		page.evaluate(async (lim) => {
+			const st = window.MockApi.state;
+			st.limits = st.limits || {};
+			st.limits.maxHops = lim.maxHops;
+			st.limits.budget = lim.budget;
+			// 入口 schema 校验在预算之前：演示数据里若有 resultSchema，会先报 event_schema。
+			// 这条用例只钉预算原因的文案，先把入口 schema 清掉。
+			for (const s of st.sources) {
+				if (s.config) delete s.config.resultSchema;
+			}
+			const host = document.getElementById("anotify-toast-host");
+			if (host) host.replaceChildren();
+			// 按**按钮文案**找「立即运行」：停用的源没有这个按钮（只有「启用」），
+			// 按位置取第一个按钮会把「启用」点下去（它只重载列表，不产生剪枝 toast）。
+			const rows = Array.from(document.querySelectorAll("#src-list > div"));
+			const wanted = /立即运行|Run now|今すぐ実行|Ejecutar ahora|Ejecutar/;
+			let btn = null;
+			for (const r of rows) {
+				const b = Array.from(r.querySelectorAll(".src-acts button")).find((x) =>
+					wanted.test((x.textContent || "").trim()),
+				);
+				if (b) {
+					btn = b;
+					break;
+				}
+			}
+			if (!btn) return { err: "找不到「立即运行」按钮" };
+			btn.click();
+			let text = "";
+			for (let i = 0; i < 60; i++) {
+				await new Promise((r) => setTimeout(r, 100));
+				const now = host ? (host.textContent || "").replace(/\s+/g, " ") : "";
+				// toast 会自动消失：记住最后一次非空文本，别把「已消失」当成「没文案」
+				if (now) text = now;
+				if (/预算|max_hops|budget/.test(now)) {
+					text = now;
+					break;
+				}
+			}
+			return { toast: text };
+		}, limits);
+
+	const hop = await fire({ maxHops: 0, budget: 512 });
+	H.check(
+		"hop 预算用尽时 toast 说的是人话（max_hops 的文案，不是机器串）",
+		/预算/.test(String(hop.toast)) && !/max_hops/.test(String(hop.toast)),
+		String(hop.toast).slice(0, 200),
+	);
+
+	const bud = await fire({ maxHops: 16, budget: 0 });
+	H.check(
+		"trace 任务预算用尽时 toast 说的是人话（budget 的文案）",
+		/预算/.test(String(bud.toast)) && !/budget/.test(String(bud.toast)),
+		String(bud.toast).slice(0, 200),
+	);
+
+	// 复原：后面的用例还要正常派发
+	await page.evaluate(() => {
+		const st = window.MockApi.state;
+		st.limits = { maxHops: 16, budget: 512 };
+	});
 }
 
 // checkEdgesPage 验证出口表已经独立成页（#93）。
@@ -6275,12 +6744,18 @@ async function runMockCoverage() {
 			// 能力详情 + 声明出口/连下游（#：用户报的两个问题）。
 			// 放在模板流程之后：两者都从干净的列表页开始（各自 goto）。
 			await checkCapabilityDetail(page, base);
+			// 批量创建（契约 §4）：多张能力卡片 + 候选优先级 + 一个 batch 请求
+			await checkBatchCreate(page, base);
 			await checkEdgesPage(page);
 			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
 			await checkDeclaredBy(page);
 			await checkDisplayName(page, base);
 		}
-		if (p === "sources.html") await checkFlowChart(page, base);
+		if (p === "sources.html") {
+			await checkFlowChart(page, base);
+			// 剪枝原因的文案（契约 §6）：max_hops / budget 新增，path 删除
+			await checkPruneCopy(page, base);
+		}
 		if (p === "nodes.html") {
 			await checkNodeCaps(page, base);
 			// checkNodeCaps 会点 chip 跳走，回到列表再进详情
@@ -6345,9 +6820,11 @@ async function runMockCoverage() {
 //   ③ 环（A→B→A）仍画出来并标 cycle（重构不许把它吞掉）
 //   ④ 声明了但没接边的出口仍显示 deadport 灰点
 //
-// 为什么 ③ 要直插库：后端在配置期就拒绝成环（store.checkEdgeWouldCycle，
-// POST /v1/edges 会 400）。所以真实库里出现环只可能来自历史数据/导入 ——
-// 而图必须能画出来、不能崩，这正是"不许被这次重构吞掉"的那条。
+// 为什么 ③ 的环可能仍直插库：契约 §2 已放开配置期环检测（`review → fix → review` 是合法编排，
+// 靠 hop 预算 + 每 trace 任务预算兜底），所以反方向那条边**现在应该能直接建**。
+// 本次竖切里负责删 `store.checkEdgeWouldCycle` 的是 A 组，尚未合并进这个 worktree：
+// 所以下面先试 API，被拒才退回直插库（图渲染那几条断言与建边途径无关，两种都能跑）。
+// 合并后自动走 API 分支，跑的就是「成环可建」。
 // ---------------------------------------------------------------------------
 
 // readGraphSpec 取页面里已挂载图的**实例数据**。
@@ -6606,15 +7083,38 @@ async function checkSharedTopology(server, newCtx) {
 			{ fromIsSource: false, fromRef: "topo.c", fromPort: "next", toRef: "topo.d" },
 			"能力边 topo.c --next--> topo.d",
 		);
-		// 反方向那条走后端建不出来（配置期拒绝成环），直插库 —— 见本节顶部注释。
-		const db = new DatabaseSync(server.dbPath);
-		try {
-			db.prepare(
-				`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
-				 VALUES (?, 0, ?, ?, ?, '{}', '{}', ?)`,
-			).run(nsId, "topo.d", "back", "topo.c", Math.floor(Date.now() / 1000));
-		} finally {
-			db.close();
+		// 反方向那条：配置期已不再拒环（契约 §2），先走 API 建。
+		// A 组（删 store.checkEdgeWouldCycle）还没合并进来 → 被拒就退回直插库，
+		// 并留一行日志说明「合并后启用真断言」，不让它默默跳过。
+		const cycEdge = await H.req(base, "/v1/edges", {
+			session: s.session,
+			method: "POST",
+			body: {
+				fromIsSource: false,
+				fromRef: "topo.d",
+				fromPort: "back",
+				toRef: "topo.c",
+			},
+		});
+		const cycViaApi = cycEdge.status === 200;
+		if (cycViaApi) {
+			H.check("③ 成环可建：topo.d --back--> topo.c 直接被后端接受", true, "200");
+		} else {
+			// 合并后启用：真后端应放行环边（A 组删 checkEdgeWouldCycle 后）
+			console.log(
+				`  · ③ 环边 API 建边：合并后启用（当前后端 ${cycEdge.status}，${String(
+					cycEdge.text || "",
+				).slice(0, 80)}）→ 本次直插库造同一条边`,
+			);
+			const db = new DatabaseSync(server.dbPath);
+			try {
+				db.prepare(
+					`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
+					 VALUES (?, 0, ?, ?, ?, '{}', '{}', ?)`,
+				).run(nsId, "topo.d", "back", "topo.c", Math.floor(Date.now() / 1000));
+			} finally {
+				db.close();
+			}
 		}
 		const srcCyc = await mkSource("topo.cyc", [capC.id]);
 

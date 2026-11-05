@@ -68,8 +68,13 @@
       .prune-chip.foreign_user {
         color: var(--accent);
       }
-      .prune-chip.path {
-        color: var(--accent-strong);
+      /* max_hops = 跳数超预算（撑到顶了）；budget = 本次 trace 任务数超预算（踩了上限）
+         两者都是“主动止损”，但不是错误 —— max_hops 用 warn、budget 用 error 分级 */
+      .prune-chip.max_hops {
+        color: var(--warn);
+      }
+      .prune-chip.budget {
+        color: var(--error);
       }
       /* 事件按源分组：组头是源名 + 类型 + 计数，组内是事件卡 */
       .ev-group {

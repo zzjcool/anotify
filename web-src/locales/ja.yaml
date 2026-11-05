@@ -1205,19 +1205,43 @@ caps:
     display_name_hint: 画面にはこれが表示されます。空欄なら下の技術名を使います。
     name: ケイパビリティ名
     name_hint: 技術名：ノード宣言・辺・ログで使います。作成後は変更できません。
-    outputs: 出口（ports）
-    outputs_hint: 出口は emit のホワイトリストです。ここで宣言した名前だけが下流に流れます。
+    outputs: 産出ポート（ports）
+    outputs_hint: 産出ポートは emit のホワイトリストです。ここで宣言した名前だけが下流に流れます。
     outputs_optional: 空でも可
-    outputs_ph: 出口名を入力して Enter
-    outputs_empty: 出口なし = この能力は何も emit できません（終端能力）。
+    outputs_ph: 産出ポート名を入力して Enter
+    outputs_empty: 産出ポートなし = この能力は何も emit できません（終端能力）。
     outputs_max: 出口は最大 32 個です
     err_output: 出口名は英数字・ドット・アンダースコア・ハイフンのみ、1〜32 文字
     chip_remove: この出口を削除
-    downstream: 下流（任意）
+    downstream: 候補（優先度で選択）
     downstream_optional: 空でも可
-    downstream_hint: 1 つの出口に複数の下流を接続できます（ファンアウト）。ここでは裸の名前 = 最新に追従で保存し、能力と下流は同じ送信で作成します——全部成功するか、何も作成されません。
-    downstream_target_ph: 対象の能力を選択（検索可）
-    downstream_none: 出口がまだありません — 先に上で出口を宣言してください。
+    downstream_hint: 1 つの産出ポートに複数の候補を接続できます。実行時は優先度で 1 つだけ選ばれます（同順位はラウンドロビン、数値が小さいほど優先）。ここでは裸の名前 = 最新に追従で保存し、能力と候補は同じ送信で作成します——全部成功するか、何も作成されません。
+    downstream_target_ph: 候補の能力を選択（検索可）
+    downstream_none: 産出ポートがまだありません — 先に上でポートを宣言してください。
+    cards_title: このバッチのケイパビリティ
+    cards_hint: 複数のケイパビリティを一度に定義できます。各カードは独自の産出ポート・パラメータ・スクリプトを持ち、送信時に 1 つのトランザクションで書き込みます（全部成功するか、何も作成されません）。
+    card_add: ＋ ケイパビリティを追加
+    card_remove: このケイパビリティを削除
+    card_n: 'ケイパビリティ {n}'
+    card_unnamed: 無名
+    card_editor: '編集中: ケイパビリティ {n} / {total}'
+    card_ports_summary: '産出ポート: {ports}'
+    card_name_dupe: 'バッチ内でケイパビリティ名が重複しています: {name}'
+    card_err_field: 'ケイパビリティ {n} / {field}: {reason}'
+    card_err_generic: 'ケイパビリティ {n}: {reason}'
+    cand_hint: 実行時は優先度で 1 つだけ選ばれます。同順位はラウンドロビン（数値が小さいほど優先）。
+    cand_prio: 優先度
+    cand_prio_hint: 数値が小さいほど優先
+    cand_prio_badge: '優先度 {n}'
+    cand_count: '候補 {n} 件'
+    cand_batch_tag: （このバッチ）
+    cand_empty: この産出ポートには候補がありません — 実行時にどこにも派発されません。
+    balance_label: モード
+    balance_priority: priority（既定）
+    balance_unimpl: 未実装
+    balance_unimpl_err: '産出ポート {port} の balance モード {mode} は未実装です。今回は priority のみ保存できます'
+    batch_created: '{caps} 件のケイパビリティを作成 · {edges} 本のエッジ'
+    batch_failed: '一括作成に失敗しました（何も保存されていません）: '
     created_with_edges: '{n} 本のエッジを接続しました'
     link_rejected: '{n} 番目の出口 {port} → {to} が不正なため、何も作成されませんでした：{reason}'
     schema: パラメータ検証（JSON Schema）
@@ -1250,8 +1274,11 @@ caps:
     btn: 詳細
     params: パラメータ契約
     no_params: パラメータなし
-    outputs: 出口と下流
-    no_outputs: 出口が宣言されていません — この能力は何も emit できません
+    outputs: 産出ポートと候補
+    no_outputs: 産出ポートが宣言されていません — この能力は何も emit できません
+    balance_mode: モード
+    cand_prio_badge: '優先度 {n}'
+    cand_count: '候補 {n} 件'
     edges_failed: エッジ一覧を取得できず、下流の状態は不明です
     inbound: どこから呼ばれるか
     no_inbound: 入ってくるエッジはありません — ここにイベントは来ません
@@ -1333,6 +1360,17 @@ caps:
     moved_title: 出口表は独立したページに移動しました
     moved_desc: ケイパビリティは「何ができるか」、出口は「終わった後どこへ行くか」。ファンアウトで出口は急増し、検索やグループ化が必要になるため別ページにしました。
     moved_link: 出口表を開く
+prune:
+  no_edge: 候補が接続されていません
+  no_capability: 対象のケイパビリティが存在しません
+  param_schema: パラメータが対象の契約を満たしていません
+  param_missing: 必須パラメータがありません
+  param_type: パラメータの型が一致しません
+  no_node: 対象のケイパビリティにオンラインノードがありません
+  foreign_user: ネームスペース/ユーザーをまたいでいます
+  event_schema: イベント payload がトリガーの resultSchema を満たしていません
+  max_hops: hop 予算を超過（チェーンが深すぎます）
+  budget: この trace のタスク数が予算を超過しました
 nodes:
   title: ノード
   subtitle: 実行者です。ノードはケイパビリティの実行方法を知っており、ハブは「何をするか」だけを伝えます。
