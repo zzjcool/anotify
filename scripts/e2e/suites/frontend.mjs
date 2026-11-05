@@ -1012,6 +1012,23 @@ async function main() {
 				return label ? label.textContent.trim() : null;
 			});
 			H.check("出口选择器列出了可用能力", picked != null, String(picked));
+
+			// 出口选项必须带**唯一标识**（能力名）：出口写进源里的就是能力名，
+			// 而用户眼里是显示名；只给显示名的话，显示名重名 / 同名不同版的两个能力
+			// 在列表里长得一模一样，勾错了很难回头发现。
+			const optLabels = await page3.evaluate(() => {
+				const box = document.getElementById("f-targets");
+				return Array.from(box.querySelectorAll(".target-opt")).map((l) => ({
+					mono: ((l.querySelector(".target-capname") || {}).textContent || "").trim(),
+					dn: ((l.querySelector(".target-name") || {}).textContent || "").trim(),
+					text: (l.textContent || "").trim(),
+				}));
+			});
+			H.check(
+				"每个出口选项都带唯一标识（能力名，没显示名时带 @版本）",
+				optLabels.length > 0 && optLabels.every((o) => o.mono !== "" && o.text.includes(o.mono)),
+				JSON.stringify(optLabels.slice(0, 3)),
+			);
 			await page3.click("#modal-save");
 			await page3.waitForTimeout(1500);
 
@@ -1027,6 +1044,9 @@ async function main() {
 					method: "POST",
 					body: {
 						name: "e2e.report",
+						// 有显示名才能验「显示名 + 唯一标识同时可见」（用户原话：
+						// 「既显示名字，也显示能力的唯一标志」）。
+						displayName: "E2E 报表",
 						outputs: [],
 						paramsSchema: {
 							type: "object",
@@ -1059,6 +1079,26 @@ async function main() {
 				}, capID);
 				H.check("勾选带参数的能力", picked2 === true);
 				await page3.waitForTimeout(300);
+
+				// 有显示名的能力：显示名与唯一标识**同时**可见（不是二选一）。
+				// 用户原话「既显示名字，也显示能力的唯一标志，比如 Echo 这样」。
+				const bothLabels = await page3.evaluate(() => {
+					const box = document.getElementById("f-targets");
+					return Array.from(box.querySelectorAll(".target-opt")).map((l) => ({
+						mono: ((l.querySelector(".target-capname") || {}).textContent || "").trim(),
+						dn: ((l.querySelector(".target-name") || {}).textContent || "").trim(),
+						text: (l.textContent || "").trim(),
+					}));
+				});
+				const reportOpt = bothLabels.find((o) => o.mono === "e2e.report");
+				H.check(
+					"有显示名的出口：显示名与唯一标识同时可见（E2E 报表 + e2e.report）",
+					!!reportOpt &&
+						reportOpt.dn === "E2E 报表" &&
+						reportOpt.text.includes("E2E 报表") &&
+						reportOpt.text.includes("e2e.report"),
+					JSON.stringify(reportOpt || bothLabels.slice(0, 3)),
+				);
 
 				const fields = await page3.evaluate((cid) => {
 					const wrap = document.querySelector(`#f-targets .target-params[data-for="${cid}"]`);
@@ -1761,6 +1801,76 @@ async function checkCapabilityTemplates(page) {
 		!(downForm.texts || []).some((x) => /端口/.test(x)),
 		(downForm.texts || []).join(" | ").slice(0, 240),
 	);
+
+	// ②-附2 下游候选：看得见、点得到、点完进同一个输入框
+	//
+	// 用户原话：「下游能力得能选啊」—— 原生 datalist 只在输入框里打字时才浮出来，
+	// 看不见“有哪些可选”；常驻的那份是下面一排胶囊。两条路都必须落到**同一个**
+	// #cap-downstream（.value 始终是逗号分隔原文，提交/切卡读的就是它）。
+	const candShape = await page.evaluate(() => {
+		const input = document.getElementById("cap-downstream");
+		const box = document.getElementById("cap-down-cands");
+		const pills = box ? Array.from(box.querySelectorAll("[data-cand-name]")) : [];
+		return {
+			list: input ? input.getAttribute("list") : null,
+			dl: document.querySelectorAll("#cap-down-targets option").length,
+			pills: pills.length,
+			first: pills.length
+				? {
+						name: pills[0].getAttribute("data-cand-name") || "",
+						mono: ((pills[0].querySelector(".cap-cand-id") || {}).textContent || "").trim(),
+						text: (pills[0].textContent || "").trim(),
+					}
+				: null,
+		};
+	});
+	H.check(
+		"下游输入框接上了原生候选（list=cap-down-targets），胶囊与 datalist 同源",
+		candShape.list === "cap-down-targets" &&
+			candShape.pills > 0 &&
+			candShape.dl === candShape.pills,
+		JSON.stringify({ list: candShape.list, dl: candShape.dl, pills: candShape.pills }),
+	);
+	H.check(
+		"每个候选胶囊都带唯一标识（等宽的能力名，不是只有显示名）",
+		!!candShape.first &&
+			candShape.first.mono === candShape.first.name &&
+			candShape.first.text.includes(candShape.first.name),
+		JSON.stringify(candShape.first),
+	);
+
+	// 点胶囊 → 那个名字进输入框（走 .value + input 事件，与手打完全同一条路）
+	const candClick = await page.evaluate(() => {
+		const pick = () => document.querySelector("#cap-down-cands [data-cand-name]");
+		const name = pick().getAttribute("data-cand-name");
+		pick().click();
+		const input = document.getElementById("cap-downstream");
+		const after = {
+			value: input.value,
+			marked: !!document.querySelector(
+				`#cap-down-cands [data-cand-name="${name}"].is-picked`,
+			),
+		};
+		// 再点一次：已选过的不重复追加（连点两下不该出现两个同名候选）
+		pick().click();
+		return { name, after, twice: input.value };
+	});
+	H.check(
+		"点候选胶囊 → 能力名进输入框，并且已选项有视觉标记",
+		candClick.after.value === candClick.name && candClick.after.marked === true,
+		JSON.stringify(candClick.after),
+	);
+	H.check(
+		"已选过的候选再点不会重复加入（逗号分隔原文不重复）",
+		candClick.twice === candClick.name,
+		candClick.twice,
+	);
+	// 清空：后面的用例要回到「什么都没选」的状态
+	await page.evaluate(() => {
+		const input = document.getElementById("cap-downstream");
+		input.value = "";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+	});
 
 	// ③ 高级参数契约：预填 → 非法 JSON 被当场拦住
 	await page.click("#schema-toggle");

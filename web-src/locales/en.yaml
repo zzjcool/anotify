@@ -1209,6 +1209,10 @@ caps:
     downstream_ph: script.echo, notify.phone
     downstream_hint: Who runs after this one. Several = candidates, one is picked at run time by priority; leave empty = terminal capability (it ends when it finishes).
     downstream_missing: 'No such capability: {names}'
+    downstream_cands_hint: 'Click to add:'
+    downstream_cands_empty: No target capability to pick yet (define one, or name another card above).
+    cand_add: Add as downstream
+    cand_picked: Selected
     cards_title: Capabilities in this batch
     cards_hint: Define several capabilities at once — each card has its own downstream, params and script; they are written in one transaction (all succeed or nothing is created).
     card_add: + Add another capability

@@ -1209,6 +1209,10 @@ caps:
     downstream_ph: script.echo, notify.phone
     downstream_hint: A quién se entrega al terminar. Varias = candidatas, en ejecución se elige una por prioridad; vacío = capacidad terminal (termina y ya).
     downstream_missing: 'No existe la capacidad: {names}'
+    downstream_cands_hint: 'Haz clic para añadir:'
+    downstream_cands_empty: Aún no hay capacidades de destino para elegir (define una, o ponle nombre a otra tarjeta arriba).
+    cand_add: Añadir como posterior
+    cand_picked: Seleccionada
     cards_title: Capacidades de este lote
     cards_hint: 'Define varias capacidades a la vez: cada tarjeta tiene su propio destino, parámetros y script; se escriben en una sola transacción (todo se crea o no se crea nada).'
     card_add: ＋ Añadir otra capacidad
