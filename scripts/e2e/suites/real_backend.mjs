@@ -1026,6 +1026,26 @@ async function runUiArtifactChecks(ctxData, nsId) {
 				/A-ran/.test(taskA?.summary || ""),
 				String(taskA?.summary),
 			);
+			// 任务日志（CONTRACT-task-logs）：真进程的 stdout 必须能在控制台读到。
+			// 这一条是把「节点上有日志、中枢也能看到」闭环起来的最小证据：
+			// 少了它，日志功能可以整个坏掉而其它断言全绿。
+			const logsA = await H.req(
+				server.base,
+				`/v1/tasks/${encodeURIComponent(taskA?.id || "")}/logs?namespaceId=${encodeURIComponent(nsId)}`,
+				{ session: ctxData.session },
+			);
+			H.eq("GET 任务日志 → 200", logsA.status, 200);
+			H.check(
+				"A 的 stdout 日志被真的传上来了（含脚本打印的那行）",
+				/String(logsA.json?.stdout || "").includes("A-ran")/,
+				JSON.stringify(logsA.json || {}),
+			);
+			H.check(
+				"日志端点带字节数（0 字节与「没上传」能区分开）",
+				typeof logsA.json?.bytes === "number" && logsA.json.bytes > 0,
+				String(logsA.json?.bytes),
+			);
+
 			H.check(
 				"B 的任务被真的建出来了（多跳没断在出口上）",
 				!!taskB,
