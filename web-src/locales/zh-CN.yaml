@@ -1676,6 +1676,19 @@ trace:
     routed: 派发
     pruned: 剪枝
     data: data
+  logs:
+    title: "任务日志"
+    subtitle: "每个任务的 stdout / stderr；失败的任务默认展开"
+    show: "日志"
+    hide: "收起"
+    stdout: "stdout"
+    stderr: "stderr"
+    empty: "没有输出"
+    not_finished: "任务还没跑完，暂无输出"
+    unavailable: "日志不可用"
+    loading: "正在加载日志…"
+    truncated: "日志已截断（共 {n} 字节，只保留最后 32 KiB）"
+    truncated_unknown: "日志已截断（只保留最后 32 KiB）"
   stat:
     spans: 任务
     duration: 总耗时

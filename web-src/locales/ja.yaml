@@ -1674,6 +1674,19 @@ trace:
     routed: 配信
     pruned: 剪定
     data: data
+  logs:
+    title: "タスクログ"
+    subtitle: "各タスクの stdout / stderr。失敗したタスクは既定で展開されます"
+    show: "ログ"
+    hide: "閉じる"
+    stdout: "stdout"
+    stderr: "stderr"
+    empty: "出力なし"
+    not_finished: "タスクがまだ完了していないため、出力はありません"
+    unavailable: "ログを取得できません"
+    loading: "ログを読み込み中…"
+    truncated: "ログは切り詰められています（合計 {n} バイト、末尾 32 KiB のみ保持）"
+    truncated_unknown: "ログは切り詰められています（末尾 32 KiB のみ保持）"
   stat:
     spans: タスク
     duration: 所要時間

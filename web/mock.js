@@ -308,6 +308,17 @@
 		// 空态，而空态看不出这个区该长什么样（产出徽章 / routed-pruned /
 		// 可折叠的 data 一个都验不了）。
 		emissions: [],
+		// 任务日志（CONTRACT-task-logs §4）：真后端是 task_logs 表（迁移 4，
+		// task_id 主键 + ON DELETE CASCADE），一个任务一行。mock 里也是一个平表，
+		// 由 seedTaskLogs() 播种。
+		//
+		// 必须种：否则 trace 页的日志面板只能看到「没有输出」/「日志不可用」，
+		// 折叠条、截断提示、stderr 块一个都验不了。
+		//
+		// 行形状（mock 内部是 camelCase）：{ taskId, namespaceId, stdout, stderr,
+		// truncated, bytes }；HTTP 层才是契约面，响应恰好是 §4 那四个字段
+		// stdout / stderr / truncated / bytes。
+		taskLogs: [],
 		keys: [],
 		devices: [],
 		// 产物与部署（CONTRACT-protocol §9）：真后端是两张表，mock 里
@@ -1654,6 +1665,91 @@
 		);
 	})();
 
+	// ---------- 任务日志种子数据（CONTRACT-task-logs §4/§5）----------
+	//
+	// trace 页的日志面板要演示四种形状，各自对应一条数据（全部挂在
+	// trace_mock_t9 = 12 任务的复杂链路上，打开一次就能全看到）：
+	//
+	//   ① deploy-preview（failed，唯一能力）—— stderr + truncated + ANSI + 一段
+	//      长得像 HTML 的文本 → 失败默认展开 / 截断提示 / stderr 块 / 纯文本渲染
+	//   ② run-tests（failed，第一次）—— 只有 stderr，**没截断**
+	//      → 截断提示不能“无条件出现”
+	//   ③ analyze-pr（succeeded）—— 只有 stdout
+	//      → 成功默认折叠 + 展开才请求（懒加载）+ stdout 块
+	//   ④ rollback（succeeded，唯一能力）—— 两块都空
+	//      → 展开后显示「没有输出」
+	//
+	// 其余任务故意**没有日志行**：真后端对“任务存在但没上传日志”也回 200 + 空串
+	// （契约 §4 的合法状态），页面应当显示「没有输出」而不是报错。
+	//
+	// 为什么把 HTML / ANSI 写进日志：真实日志里就是会有（CI 的彩色输出、命令自己
+	// 打印的片段）。页面必须当**文本** 渲染 —— 这两段就是那条守卫的靶子。
+	(function seedTaskLogs() {
+		const inTrace = state.tasks.filter((t) => t.traceId === "trace_mock_t9");
+		const pick = (capName) => inTrace.find((t) => t.capability === capName) || null;
+		const push = (task, row) => {
+			if (!task) return;
+			state.taskLogs.push(
+				Object.assign(
+					{
+						taskId: task.id,
+						namespaceId: task.namespaceId || NS,
+						stdout: "",
+						stderr: "",
+						truncated: false,
+						bytes: 0,
+						createdAt: (task.finishedAt || task.createdAt || 0) + 1,
+					},
+					row,
+				),
+			);
+		};
+
+		// ① 失败：健康检查没过。ANSI 颜色 + 像 HTML 的文本都在里面。
+		push(pick("deploy-preview"), {
+			stderr:
+				"\u001b[31mhealthcheck: GET /health -> 503\u001b[0m\n" +
+				"  attempt 1/6 ... 503 after 60s\n" +
+				"  attempt 2/6 ... 503 after 60s\n" +
+				"  attempt 3/6 ... timeout after 60s\n" +
+				"  attempt 4/6 ... timeout after 60s\n" +
+				"  attempt 5/6 ... timeout after 60s\n" +
+				"deploy.sh: line 42: curl: (7) Failed to connect to 127.0.0.1:8080\n" +
+				"hint: <b>NOT_HTML</b> must stay plain text, never a tag\n" +
+				"…（日志已截断：共 1048576 字节，只保留最后 32768 字节）\n",
+			truncated: true,
+			bytes: 1048576,
+		});
+
+		// ② 失败但不截断：三个用例挂了（与任务行 error 字段里那三个
+		// TestParse* 对得上）。
+		push(pick("run-tests"), {
+			stderr:
+				"--- FAIL: TestParseNested (0.02s)\n" +
+				"    parse_test.go:118: got <nil>, want error\n" +
+				"--- FAIL: TestParseEmpty (0.00s)\n" +
+				"    parse_test.go:64: unexpected panic: index out of range\n" +
+				"--- FAIL: TestParseLoop (0.01s)\n" +
+				"    parse_test.go:203: exceeded max depth 16\n" +
+				"FAIL\tgithub.com/anotify/anotify/internal/route\t1.284s\n",
+			bytes: 412,
+		});
+
+		// ③ 成功：只有 stdout（stderr 块应当不存在）。
+		push(pick("analyze-pr"), {
+			stdout:
+				"analyzing PR #844 (27 files, +486/-213)\n" +
+				"  read diff .................... ok\n" +
+				"  parse nested params .......... ok\n" +
+				"  scan risky patterns .......... 1 high, 27 lint\n" +
+				"summary: 1 high-severity finding (param parse loop), 27 lint issues\n",
+			bytes: 286,
+		});
+
+		// ④ 成功但没任何输出：两块都空 → 「没有输出」。
+		push(pick("rollback"), { stdout: "", stderr: "", bytes: 0 });
+	})();
+
 	// ---------- 组织与命名空间 ----------
 	//
 	// 组织是身份边界；命名空间是**配置 + 运行面**的隔离边界：
@@ -2799,6 +2895,36 @@
 			.filter((e) => e.taskId === taskId)
 			.sort((a, b) => a.seq - b.seq);
 		return json({ taskId: taskId, namespaceId: nsId, emissions: clone(rows) });
+	});
+
+	// ===== 任务日志（CONTRACT-task-logs §4）=====
+	//
+	// 真后端：`GET /v1/tasks/{taskId}/logs?namespaceId=…`（会话鉴权 + 命名空间
+	// 隔离）。三条口径必须与 Go 侧逐条对齐，mock 才能当契约用：
+	//
+	//   · **任务存在但没有日志 → 200 + 空串**，不是 404。没有日志是合法状态
+	//     （老任务 / agent 没上传），做成 404 会让前端在正常路径上处理错误。
+	//   · 任务不存在 / 不在这个命名空间 → 404，文案与 emissions 同一句
+	//     （不泄露存在性）。
+	//   · 字段就是这四个：stdout / stderr / truncated / bytes —— 页面按名字读。
+	//
+	// 注意：mock 不实现 agent 侧的上传（POST /v1/node/tasks/{id}/logs），
+	// 那是节点凭 node token 才做的事，浏览器里永远不会出现。
+	on("GET", /^\/v1\/tasks\/([^/]+)\/logs$/, (ctx) => {
+		const taskId = decodeURIComponent(ctx.m[1]);
+		const task = state.tasks.find((t) => t.id === taskId);
+		const scope = nsScope(ctx.query);
+		if (!task || (scope !== null && task.namespaceId !== scope)) {
+			return err(404, "任务不存在");
+		}
+		const row = state.taskLogs.find((l) => l.taskId === taskId);
+		if (!row) return json({ stdout: "", stderr: "", truncated: false, bytes: 0 });
+		return json({
+			stdout: row.stdout || "",
+			stderr: row.stderr || "",
+			truncated: !!row.truncated,
+			bytes: row.bytes || 0,
+		});
 	});
 
 	on("POST", /^\/v1\/tasks\/([^/]+)\/cancel$/, (ctx) => {

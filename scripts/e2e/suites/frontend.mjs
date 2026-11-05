@@ -25,6 +25,8 @@
  *     「下游能力（候选）」输入框、详情区只谈下游、图上不标出口名。
  *     端口 UI（出口 chips / 按出口分行 / balance 模式 / 优先级数字）**不许回来** ——
  *     所以每一条都配了「不再存在」的守卫，而不是把旧断言一删了事。
+ *  M. 任务日志面板（CONTRACT-task-logs.md §5）：失败任务默认展开、成功任务折叠且展开才请求、
+ *     空日志说「没有输出」、截断有提示行；日志按纯文本渲染（HTML / ANSI 不会变成 DOM）（mock）。
  */
 import { chromium } from "playwright-core";
 import { DatabaseSync } from "node:sqlite";
@@ -7814,6 +7816,8 @@ async function runMockCoverage() {
 
 	// keys / security / admin 的「全部署通用」徽标（#209）：放在 missing /
 	// realRequests 两条汇总断言之前收尾，用的是独立 page + 独立监听。
+	// 任务日志面板（CONTRACT-task-logs §5）：独立 page，不污染上面的 mock state
+	await checkTaskLogs(ctx, base);
 	await checkDeploymentWideBadge(ctx, base);
 
 	await ctx.close();
@@ -7830,6 +7834,265 @@ async function runMockCoverage() {
 		realRequests.length === 0,
 		realRequests.slice(0, 3).join(" | "),
 	);
+}
+
+// ---------------------------------------------------------------------------
+// M. 任务日志面板（CONTRACT-task-logs §5）—— mock 预览
+//
+// 用户报的现场：任务 failed，控制台只有 "exit status 2: capability: test1@2"，
+// 真正的原因（`flag provided but not defined: -to`）躺在子进程的 stderr 里，
+// 一行都没留下来。所以这一区不是「日志好看」，是**失败时唯一能看到为什么**的地方。
+//
+// 四条断言各绑一条**精确构造**的种子数据（见 web/mock.js 的 seedTaskLogs）：
+//   · 失败任务默认展开     ← deploy-preview / run-tests（failed）
+//   · 成功任务默认折叠     ← analyze-pr（succeeded，只有 stdout）
+//   · 展开才请求（懒加载） ← analyze-pr 折叠时 body 是空的
+//   · 空日志说「没有输出」 ← rollback（succeeded，两块都空）
+//   · 截断提示可见         ← deploy-preview（truncated=true, bytes=1048576）
+//
+// 为什么用 mock 而不是真后端：这四种形状需要**可控的日志内容**（截断标记 /
+// 只有 stderr / 完全空 / 带 HTML 和 ANSI），真后端的日志取决于那台机器恰好
+// 跑了什么。真后端「日志真的落库并能读到」由协调者的 trace 套件覆盖。
+async function checkTaskLogs(ctx, base) {
+	const page = await ctx.newPage();
+	const pageErrors = [];
+	page.on("pageerror", (e) => pageErrors.push(String((e && e.message) || e)));
+
+	await page.goto(base + "/trace.html?traceId=trace_mock_t9&view=graph", {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	// 失败任务默认展开 ⇒ 页面一进来就会去取日志（mock 有 120~300ms 人为延迟），
+	// 所以要等「截断提示」真的出现，而不是只看折叠条在不在。
+	await page
+		.waitForSelector("#trace-logs .task-log-trunc", { timeout: 15000 })
+		.catch(() => {});
+
+	const snap = () =>
+		page.evaluate(() => {
+			const read = (row) => {
+				const body = row.querySelector(".task-log-body");
+				const btn = row.querySelector(".task-log-toggle");
+				return {
+					capability: row.dataset.capability,
+					status: row.dataset.status,
+					failed: row.dataset.failed === "1",
+					open: row.dataset.open === "1",
+					aria: btn ? btn.getAttribute("aria-expanded") : null,
+					bodyHidden: body ? body.hidden : null,
+					bodyChildren: body ? body.childElementCount : -1,
+					text: body ? body.textContent : "",
+					stderr: !!row.querySelector(".task-log-pre.task-log-stderr"),
+					stdout: !!row.querySelector(".task-log-pre.task-log-stdout"),
+					trunc: !!row.querySelector(".task-log-trunc"),
+				};
+			};
+			const rows = Array.from(document.querySelectorAll("#trace-logs .task-log"));
+			const pre = Array.from(document.querySelectorAll("#trace-logs .task-log-pre"));
+			const box = document.querySelector("#trace-logs .task-log-pre");
+			const cs = box ? getComputedStyle(box) : null;
+			return {
+				hasSection: !!document.getElementById("trace-logs"),
+				count: rows.length,
+				rows: rows.map((r) => Object.assign(read(r), { id: r.dataset.taskId })),
+				// 日志里的 HTML 必须还是文本：<b>NOT_HTML</b> 不能变成元素
+				htmlLeak: !!document.querySelector(
+					"#trace-logs .task-log-pre b, #trace-logs .task-log-pre img, #trace-logs .task-log-pre script",
+				),
+				textHasMarker: pre.some((p) => (p.textContent || "").includes("<b>NOT_HTML</b>")),
+				// ANSI 控制字符不该原样铺在正文里（剥除或至少不产生 ^[ 噪音）
+				hasEsc: pre.some((p) => (p.textContent || "").includes("\u001b")),
+				css: cs
+					? {
+							overflow: cs.overflow,
+							maxHeight: cs.maxHeight,
+							whiteSpace: cs.whiteSpace,
+							font: cs.fontFamily,
+						}
+					: null,
+				colors: (() => {
+					const se = document.querySelector("#trace-logs .task-log-pre.task-log-stderr");
+					const so = document.querySelector("#trace-logs .task-log-pre.task-log-stdout");
+					return {
+						stderr: se ? getComputedStyle(se).color : "",
+						stdout: so ? getComputedStyle(so).color : "",
+					};
+				})(),
+			};
+		});
+
+	const first = await snap();
+	const failedRows = first.rows.filter((r) => r.failed);
+	const okRows = first.rows.filter((r) => !r.failed);
+
+	H.check(
+		"trace 页每个任务都有日志折叠条（12 任务 = 12 条）",
+		first.hasSection && first.count === 12,
+		`hasSection=${first.hasSection} count=${first.count}`,
+	);
+
+	// ① 失败任务默认展开：折叠起来等于「最需要它的时候还得再点一下」。
+	H.check(
+		"失败任务默认展开日志",
+		failedRows.length > 0 &&
+			failedRows.every(
+				(r) => r.open === true && r.bodyHidden === false && r.aria === "true",
+			),
+		JSON.stringify(
+			failedRows.map((r) => ({
+				cap: r.capability,
+				open: r.open,
+				hidden: r.bodyHidden,
+				aria: r.aria,
+			})),
+		),
+	);
+
+	// ② 成功任务默认折叠，而且折叠时**一个日志块都没有**（= 还没请求过）。
+	H.check(
+		"成功任务默认折叠（折叠时不请求日志）",
+		okRows.length > 0 &&
+			okRows.every(
+				(r) =>
+					r.open === false &&
+					r.bodyHidden === true &&
+					r.aria === "false" &&
+					r.bodyChildren === 0 &&
+					r.text === "",
+			),
+		JSON.stringify(
+			okRows.map((r) => ({
+				cap: r.capability,
+				open: r.open,
+				hidden: r.bodyHidden,
+				children: r.bodyChildren,
+			})),
+		),
+	);
+
+	// ③ 截断提示：必须点名「共 N 字节 / 只保留最后 32 KiB」，不能让人误以为看全了。
+	const deploy = first.rows.find((r) => r.capability === "deploy-preview");
+	H.check(
+		"截断时显示提示行（共 N 字节 / 只保留最后 32 KiB）",
+		!!deploy &&
+			deploy.trunc === true &&
+			/日志已截断/.test(deploy.text) &&
+			/32 KiB/.test(deploy.text) &&
+			/1048576/.test(deploy.text),
+		deploy
+			? `trunc=${deploy.trunc} text=${deploy.text.slice(0, 120)}`
+			: "缺少 deploy-preview 任务",
+	);
+
+	// ③-反 没截断的任务不能显示截断提示（否则这句提示会变成噪音，没人再信它）。
+	const runTests = first.rows.find((r) => r.capability === "run-tests" && r.failed);
+	H.check(
+		"没有截断的任务不显示截断提示",
+		!!runTests && runTests.stderr === true && runTests.trunc === false,
+		runTests ? `stderr=${runTests.stderr} trunc=${runTests.trunc}` : "缺少失败的 run-tests",
+	);
+
+	// ④ 等宽 + 限高 + 双向滚动：一次构建日志上千行，不能把页面撑成竖井。
+	H.check(
+		"日志块等宽、限高且可滚动（超长行横向滚动）",
+		!!first.css &&
+			/auto|scroll/.test(first.css.overflow) &&
+			first.css.maxHeight !== "none" &&
+			first.css.whiteSpace === "pre" &&
+			/mono|Menlo|Consolas|Courier/i.test(first.css.font),
+		JSON.stringify(first.css),
+	);
+
+	// ⑤ 日志里的 HTML / ANSI 一律当文本：日志是外部输入，绝不能变成 DOM。
+	H.check(
+		"日志按纯文本渲染（HTML 不解析、ANSI 不原样铺开）",
+		first.htmlLeak === false && first.textHasMarker === true && first.hasEsc === false,
+		JSON.stringify({
+			htmlLeak: first.htmlLeak,
+			marker: first.textHasMarker,
+			esc: first.hasEsc,
+		}),
+	);
+
+	// ⑥ 展开成功任务才请求日志（懒加载），并画出 stdout 块、不画空的 stderr 块。
+	const clickRow = (cap) =>
+		page.evaluate((c) => {
+			const row = Array.from(document.querySelectorAll("#trace-logs .task-log")).find(
+				(r) => r.dataset.capability === c,
+			);
+			const btn = row && row.querySelector(".task-log-toggle");
+			if (btn) btn.click();
+			return !!btn;
+		}, cap);
+
+	await clickRow("analyze-pr");
+	await page
+		.waitForSelector("#trace-logs .task-log-pre.task-log-stdout", { timeout: 8000 })
+		.catch(() => {});
+	const afterExpand = await snap();
+	const analyze = afterExpand.rows.find((r) => r.capability === "analyze-pr");
+	H.check(
+		"展开成功任务后才请求日志（懒加载）并画出 stdout 块",
+		!!analyze &&
+			analyze.open === true &&
+			analyze.bodyHidden === false &&
+			analyze.stdout === true &&
+			// 空的块不渲染：这个任务只有 stdout，stderr 是空串 → 不该有块
+			analyze.stderr === false,
+		analyze
+			? JSON.stringify({
+					open: analyze.open,
+					hidden: analyze.bodyHidden,
+					stdout: analyze.stdout,
+					stderr: analyze.stderr,
+				})
+			: "缺少 analyze-pr 任务",
+	);
+
+	// ⑦ stderr / stdout 不同色（stderr 走 danger 色系，stdout 走正文色）
+	H.check(
+		"stderr 与 stdout 颜色不同（danger 色系 vs 正文色）",
+		!!afterExpand.colors.stderr &&
+			!!afterExpand.colors.stdout &&
+			afterExpand.colors.stderr !== afterExpand.colors.stdout,
+		JSON.stringify(afterExpand.colors),
+	);
+
+	// ⑧ 两块都空 → 「没有输出」（而不是空白面板）。
+	await clickRow("rollback");
+	await page
+		.waitForFunction(
+			() => {
+				const row = Array.from(document.querySelectorAll("#trace-logs .task-log")).find(
+					(r) => r.dataset.capability === "rollback",
+				);
+				return !!row && /没有输出/.test(row.textContent || "");
+			},
+			{ timeout: 8000 },
+		)
+		.catch(() => {});
+	const afterEmpty = await snap();
+	const rollback = afterEmpty.rows.find((r) => r.capability === "rollback");
+	H.check(
+		"没有日志的任务展开后显示「没有输出」",
+		!!rollback &&
+			rollback.open === true &&
+			rollback.stdout === false &&
+			rollback.stderr === false &&
+			/没有输出/.test(rollback.text),
+		rollback
+			? JSON.stringify({
+					open: rollback.open,
+					stdout: rollback.stdout,
+					stderr: rollback.stderr,
+					text: rollback.text.slice(0, 80),
+				})
+			: "缺少 rollback 任务",
+	);
+
+	H.check("任务日志面板没有 JS 报错", pageErrors.length === 0, pageErrors.slice(0, 2).join("; "));
+
+	await page.close();
 }
 
 // ---------------------------------------------------------------------------
