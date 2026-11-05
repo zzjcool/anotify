@@ -5,8 +5,8 @@
 -- 本文件同时是**迁移脚本**：按 `-- +migration N name` 切块，
 -- store.migrateWith 逐块应用，schema_version 记账（见 migrate.go）。
 --
--- baseline 之后是三块：`-- +migration 1 baseline`、`2 priority_balance`、
--- `3 agent_version`（新变更继续往后追加）。
+-- baseline 之后是四块：`-- +migration 1 baseline`、`2 priority_balance`、
+-- `3 agent_version`、`4 task_logs`（新变更继续往后追加）。
 --
 -- squash：squash 之前的 28 块增量迁移（建表 → 加列 → 删列 → 重建表 → 删表）已经合并成
 -- 这一份**终态 DDL**。这里描述的是「今天库里长什么样」，不残留任何「迁移 4 建表、
@@ -602,3 +602,32 @@ ALTER TABLE nodes ADD COLUMN agent_commit  TEXT NOT NULL DEFAULT '';
 -- 没有它，UI 的失败映射（need_root → 提示去节点跑 sudo）就是死代码。
 -- 默认 '{}' = 从未尝试；读取端把缺列补成零值对象（恒存在的 agentUpgrade）。
 ALTER TABLE nodes ADD COLUMN agent_upgrade TEXT NOT NULL DEFAULT '{}';
+
+-- +migration 4 task_logs
+
+-- 任务的 stdout / stderr 原文（CONTRACT-task-logs §3）：节点在发 result 帧之前，
+-- 用 node token 把**子进程自己的输出**POST 上来，控制台在 trace 页看得到「为什么炸了」。
+--
+-- 为什么单独一张表而不是 tasks 加三列：一张 20 MB 构建日志的截断版也有 64 KiB，
+-- 塞进 tasks 会让每一次任务列表查询（ListTasks / stats / 巡检）都拖着大 TEXT 走；
+-- 分表之后热路径一行都不碰它，读日志只有 GET /v1/tasks/{id}/logs 一条路径。
+--
+-- task_id 是**主键**（不是 (task_id) 索引）：一个任务只有一份日志，agent 重派/重启
+-- 补传是**幂等覆盖**（ON CONFLICT DO UPDATE），不需要保留历史版本——历史版本没人读，
+-- 只会让「这条日志是哪次 attempt」变成一个要额外解释的问题。
+--
+-- ON DELETE CASCADE：日志跟随任务生命周期。retention 清掉任务时日志一起走，
+-- 否则「任务没了、日志留着」会变成一张没人回收的孤儿大表（磁盘只涨不降）。
+--
+-- truncated / bytes 是**采集侧**的事实（不是本表算出来的）：truncated=1 表示 agent 侧
+-- 截断过（只留了最后 32 KiB/流），bytes 是截断**前**的真实字节数。前端必须据此
+-- 提示「你看的不是全部」，所以它不能由 LENGTH(stdout) 反推。
+CREATE TABLE IF NOT EXISTS task_logs (
+    task_id      TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    namespace_id TEXT NOT NULL,
+    stdout       TEXT NOT NULL DEFAULT '',
+    stderr       TEXT NOT NULL DEFAULT '',
+    truncated    INTEGER NOT NULL DEFAULT 0,
+    bytes        INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL
+);

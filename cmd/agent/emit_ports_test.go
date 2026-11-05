@@ -256,8 +256,8 @@ func TestBuildEnvEmitPortsWriteFails(t *testing.T) {
 	if !strings.Contains(res.Err, emitContractFile) {
 		t.Fatalf("Err = %q，期望带出 %s 路径（失败要能一眼看出是哪儿）", res.Err, emitContractFile)
 	}
-	if strings.Contains(res.Output, "should-not-run") {
-		t.Fatalf("契约写失败后仍然执行了脚本：output=%q（这会把「没拿到契约」藏起来）", res.Output)
+	if strings.Contains(res.Stdout, "should-not-run") {
+		t.Fatalf("契约写失败后仍然执行了脚本：stdout=%q（这会把「没拿到契约」藏起来）", res.Stdout)
 	}
 }
 
@@ -344,7 +344,7 @@ cat "$ANOTIFY_TASKDIR/emit.json" > %q
 
 	res := runJob(context.Background(), j)
 	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q（err=%q output=%q），期望 succeeded", res.Status, res.Err, res.Output)
+		t.Fatalf("status = %q（err=%q stdout=%q stderr=%q），期望 succeeded", res.Status, res.Err, res.Stdout, res.Stderr)
 	}
 
 	fromEnv := mustReadFile(t, fromEnvPath)

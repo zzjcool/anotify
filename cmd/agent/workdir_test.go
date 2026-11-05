@@ -187,7 +187,7 @@ echo written > "$(pwd)/proof.txt"
 
 	res := runJob(t.Context(), j)
 	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q, err = %q\nout: %s", res.Status, res.Err, res.Output)
+		t.Fatalf("status = %q, err = %q\nstdout: %s\nstderr: %s", res.Status, res.Err, res.Stdout, res.Stderr)
 	}
 	wantDir := realDir(t, proj)
 	for _, want := range []string{
@@ -195,13 +195,13 @@ echo written > "$(pwd)/proof.txt"
 		"workdir=" + wantDir, // 去掉 buildEnv 里 ANOTIFY_WORKDIR=cwd 会红
 		"taskdir=" + workDirOf(j),
 	} {
-		if !strings.Contains(res.Output, want) {
-			t.Fatalf("输出里缺少 %q：\n%s", want, res.Output)
+		if !strings.Contains(res.Stdout, want) {
+			t.Fatalf("stdout 里缺少 %q：\n%s", want, res.Stdout)
 		}
 	}
 	// 产物在任务目录，不在用户目录：列 run.sh 必须失败（ls 报错 → artifact= 空）。
-	if strings.Contains(res.Output, "artifact=run.sh") {
-		t.Fatalf("产物文件跑到了用户目录里：\n%s", res.Output)
+	if strings.Contains(res.Stdout, "artifact=run.sh") {
+		t.Fatalf("产物文件跑到了用户目录里：\n%s", res.Stdout)
 	}
 
 	// 「真的能写」：脚本写下的文件确实落在用户目录里。
@@ -227,7 +227,7 @@ printf 'artifact=%s\n' "$(ls run.sh)"
 
 	res := runJob(t.Context(), j)
 	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q, err = %q\nout: %s", res.Status, res.Err, res.Output)
+		t.Fatalf("status = %q, err = %q\nstdout: %s\nstderr: %s", res.Status, res.Err, res.Stdout, res.Stderr)
 	}
 	wantDir := workDirOf(j)
 	for _, want := range []string{
@@ -236,8 +236,8 @@ printf 'artifact=%s\n' "$(ls run.sh)"
 		"taskdir=" + wantDir,
 		"artifact=run.sh",
 	} {
-		if !strings.Contains(res.Output, want) {
-			t.Fatalf("输出里缺少 %q：\n%s", want, res.Output)
+		if !strings.Contains(res.Stdout, want) {
+			t.Fatalf("stdout 里缺少 %q：\n%s", want, res.Stdout)
 		}
 	}
 	// 成功后会删掉任务目录，res.WorkDir 仍要指得出它（排障用）。
@@ -264,8 +264,8 @@ func TestRunJobFailsWhenWorkDirMissing(t *testing.T) {
 			t.Fatalf("失败原因应包含 %q，实际：%q", want, res.Err)
 		}
 	}
-	if strings.Contains(res.Output, "should-not-run") {
-		t.Fatalf("目录不可用时脚本不该被执行，却看到了输出：%s", res.Output)
+	if strings.Contains(res.Stdout, "should-not-run") {
+		t.Fatalf("目录不可用时脚本不该被执行，却看到了输出：%s", res.Stdout)
 	}
 }
 
@@ -284,8 +284,8 @@ func TestRunJobFailsWhenWorkDirIsFile(t *testing.T) {
 	if !strings.Contains(res.Err, "不是目录") || !strings.Contains(res.Err, file) {
 		t.Fatalf("失败原因应说明「%s 不是目录」，实际：%q", file, res.Err)
 	}
-	if strings.Contains(res.Output, "should-not-run") {
-		t.Fatalf("目录不可用时脚本不该被执行，却看到了输出：%s", res.Output)
+	if strings.Contains(res.Stdout, "should-not-run") {
+		t.Fatalf("目录不可用时脚本不该被执行，却看到了输出：%s", res.Stdout)
 	}
 }
 

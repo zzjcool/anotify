@@ -229,8 +229,12 @@ func w4WaitFile(t *testing.T, path string, timeout time.Duration) {
 // v2 的 node.yaml 只有 bootstrap 四件——能力不在里面（见 config.go）。
 func w4Config() *nodeConfig {
 	return &nodeConfig{
-		Name:      "test-node",
-		Server:    "http://localhost:8080",
+		Name: "test-node",
+		// Server 指向一个**一定没人监听**的端口：日志上传（契约 §2）在每条
+		// 任务路径上都会真发一次 POST，默认值要是 http://localhost:8080，
+		// 开发机上真跑着服务时这些用例会变成「向用户自己的服务上传日志」。
+		// 需要上传到达的用例自己把 Server 换成 httptest 的地址。
+		Server:    "http://127.0.0.1:1",
 		Token:     "test-token",
 		Instances: 1,
 	}
@@ -960,6 +964,18 @@ type w4Hub struct {
 	frames  []map[string]any
 	at      []time.Time // frames 的同下标到达时刻
 	err     error       // hub 侧的故障（第一个）
+	// logUploads 是收到的日志上传请求路径（契约 §2）：真中枢也在这条监听上。
+	logUploads []string
+	// logBodies 是同序的请求体（已解成契约 §2 的四个字段）：用来钉住
+	// 「真任务的 stdout/stderr 一字不差地传上去了」——只断言 URL 路径的话，
+	// 接线处把两个流搞反也发现不了。
+	logBodies []taskLogsPayload
+	// logsAtResult 是**收到第一条 result 帧那一刻**已完成的上传笔数。
+	//
+	// 契约要求 agent 先上传日志、再发 result；而「先看到 result 再看到上传」
+	// 这种事后断言只证明了「两者都发生了」。在 hub 侧当场记下这个数字，
+	// 才是不依赖调度的时序证据（result 到达时它必须已经是 1）。
+	logsAtResult int
 }
 
 func w4StartHub(t *testing.T, hbSec int, assign *assignFrame) *w4Hub {
@@ -982,6 +998,24 @@ func w4StartHub(t *testing.T, hbSec int, assign *assignFrame) *w4Hub {
 
 // serve 是假中枢的服务端脚本（单条连接）。
 func (h *w4Hub) serve(w http.ResponseWriter, r *http.Request) {
+	// 真中枢在**同一条监听**上也提供 POST /v1/node/tasks/<id>/logs（契约 §2）：agent
+	// 会在发 result 之前把日志传过来。这里按契约回 204。
+	//
+	// 必须在下面的计数器与 websocket.Accept **之前**分支：这条是普通 HTTP POST，
+	// 交给 Accept 会得到 "Connection header does not contain Upgrade"（那是 hub 侧
+	// 故障，会让整条用例红）；而计数/握手形状只属于 WS 那一次。
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, taskLogsPathSuffix) {
+		raw, _ := io.ReadAll(r.Body)
+		var body taskLogsPayload
+		_ = json.Unmarshal(raw, &body)
+		h.mu.Lock()
+		h.logUploads = append(h.logUploads, r.URL.Path)
+		h.logBodies = append(h.logBodies, body)
+		h.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	h.mu.Lock()
 	h.accepts++
 	h.path = r.URL.Path
@@ -1045,6 +1079,10 @@ func (h *w4Hub) serve(w http.ResponseWriter, r *http.Request) {
 func (h *w4Hub) push(frame map[string]any) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if frame["type"] == frameTypeResult && h.logsAtResult == 0 {
+		// 这一刻的上传笔数：契约要求它不为 0（日志先传，result 后到）。
+		h.logsAtResult = len(h.logUploads)
+	}
 	h.frames = append(h.frames, frame)
 	h.at = append(h.at, time.Now())
 }
@@ -1072,6 +1110,20 @@ func (h *w4Hub) request() (path, auth string, accepts int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.path, h.auth, h.accepts
+}
+
+// logsUploaded 返回收到的日志上传请求路径（快照）。
+func (h *w4Hub) logsUploaded() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.logUploads...)
+}
+
+// logsState 返回（路径, 请求体, 收到 result 那一刻的上传笔数）的快照。
+func (h *w4Hub) logsState() (paths []string, bodies []taskLogsPayload, atResult int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.logUploads...), append([]taskLogsPayload(nil), h.logBodies...), h.logsAtResult
 }
 
 // waitFrame 轮询到对端收到满足 cond 的帧序列（超时报出已收帧与 hub 侧故障）。
@@ -1238,6 +1290,12 @@ func TestServeNodeRealWSAssignAckResult(t *testing.T) {
 	// 正常收尾：父 ctx 取消（模拟 SIGTERM）后 serveNode 必须返回 nil。
 	cancel()
 	w4WaitServe(t, done, 15*time.Second)
+
+	// 日志也要真的传到这里（契约 §2）：一旦有 result，日志就已经在了——
+	// 这是「上传在 result 之前」的线上证据（不是单测里的时序假设）。
+	if got := hub.logsUploaded(); len(got) != 1 || got[0] != "/v1/node/tasks/tsk_ws/logs" {
+		t.Fatalf("日志上传请求 = %v, want [/v1/node/tasks/tsk_ws/logs]", got)
+	}
 }
 
 // TestServeNodeRealWSGracefulShutdownKeepsResult 是 **F1 的回归锚**（契约 §11.1）：

@@ -866,15 +866,15 @@ func TestRunnerInjectsEmitEnv(t *testing.T) {
 		t.Fatalf("任务应当成功：%+v", out)
 	}
 	want := fmt.Sprintf("%s|%s|%s", srv.Path(), emitTestToken, "tsk_env")
-	if !strings.Contains(out.Output, want) {
-		t.Fatalf("子进程环境不对：want 含 %q，实际 %q", want, out.Output)
+	if !strings.Contains(out.Stdout, want) {
+		t.Fatalf("子进程环境不对：want 含 %q，实际 stdout=%q stderr=%q", want, out.Stdout, out.Stderr)
 	}
 
 	// 没有 socket（standalone / 起不来）→ 两个变量都**不存在**（脚本据此走本地模式分支）。
 	j2 := newRunnerJob(t, `printf 'sock=[%s] token=[%s]\n' "${ANOTIFY_EMIT_SOCK:-}" "${ANOTIFY_TASK_TOKEN:-}"`+"\n")
 	j2.TaskID = "tsk_nosock"
 	out2 := runJob(context.Background(), j2)
-	if out2.Status != statusSucceeded || !strings.Contains(out2.Output, "sock=[] token=[]") {
+	if out2.Status != statusSucceeded || !strings.Contains(out2.Stdout, "sock=[] token=[]") {
 		t.Fatalf("没有 emit 服务时不该注入这两个变量：%+v", out2)
 	}
 }

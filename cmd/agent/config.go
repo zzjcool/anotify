@@ -207,6 +207,41 @@ func (c *nodeConfig) streamURL() (string, error) {
 	return u.String(), nil
 }
 
+// httpServerURL 把 node.yaml 里的 server 映射成一个可用的 http(s) 基地址。
+//
+// 谁在用：两条**非 WebSocket** 的普通 HTTP 端点——自升级下载（GET /v1/node/binary，
+// upgrade.go 的 binaryEndpoint）与任务日志上传（POST /v1/node/tasks/{id}/logs，
+// logs.go 的 taskLogsEndpoint）。两者对 server 的解释必须逐字一致：
+//
+//   - http/ws → http，https/wss → https（node.yaml 写的是 WS 地址，这两条走普通 HTTP）；
+//   - 必须带 scheme（无 scheme 不猜）且必须能解析出 host；
+//   - server 自带的 path 前缀**原样保留**（反代到子路径的部署靠它）。
+//
+// 单独抽成一个函数（而不是每个端点各写一遍）：两份实现一旦分叉，症状会是
+// 「升级能下、日志传不上」（或反之）这种只在某个部署形状下才出现的问题。
+func (c *nodeConfig) httpServerURL() (*url.URL, error) {
+	raw := strings.TrimSpace(c.Server)
+	if raw == "" {
+		return nil, errors.New("server is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("server %q is not a valid URL: %w", raw, err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "ws":
+		u.Scheme = "http"
+	case "https", "wss":
+		u.Scheme = "https"
+	default:
+		return nil, fmt.Errorf("server %q is not a valid URL (scheme must be http, https, ws or wss)", raw)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("server %q is not a valid URL (missing host)", raw)
+	}
+	return u, nil
+}
+
 // hello 把 bootstrap 配置 + 本机缓存索引翻译成 hello 帧（契约 §3）。
 //
 // applied 是**从哪里来**的关键：它不是「我能跑什么」，而是「我缓存了什么」。
@@ -253,8 +288,7 @@ func (c *nodeConfig) slots() int {
 	return c.Instances
 }
 
-// slotConcurrency 是单个槽位里能并跑几个任务。
-//
+// slotConcurrency 是单个槽位里能并跑几个任务。//
 // v1 这个值来自 node.yaml 里各能力的 run.concurrency（节点自报执行方式的一部分）；
 // v2 执行方式归产物、节点不再声明它，所以一个槽位就只放一个任务——**并发上限
 // 完全由节点启动参数（instances）决定**，中枢推不动（契约 D5）。
