@@ -6,7 +6,8 @@
 #
 # 一条命令做完七件事，中间不问任何问题，结尾给确定结论：
 #   1. 下对平台的 anotify-agent，核对同名 .sha256（不匹配就中止，不降级）
-#   2. 装到 /usr/local/bin（需要 root 就脚本内部申请 sudo，可 `--no-sudo` 关掉）
+#   2. 装到 ~/.anotify/bin（可写 → 以后 `anotify-agent upgrade` 免 sudo）；
+#      `--prefix=/usr/local` 可装回系统目录（那样每次升级要 sudo）
 #   3. 写 ~/.anotify/node.yaml（600）。重跑时沿用里面的令牌/中枢/名字
 #   4. **预检**：先以前台方式连一次中枢，握手成功才继续。令牌错/中枢不通在这里就停，
 #      不会留下一个开机就崩溃重启的服务（--no-preflight 关掉）
@@ -94,7 +95,7 @@ usage() {
   --user                  强制 systemd 用户服务（不碰 sudo；未登录时靠 linger）
   --no-systemd            只装二进制+配置，不装服务（前台自己跑）
   --no-sudo               不尝试 sudo（等价于 --user 的保守档：需要 root 的步骤直接失败）
-  --prefix=/opt           安装前缀（二进制落到 <prefix>/bin，默认 /usr/local）
+  --prefix=/opt           安装前缀（二进制落到 <prefix>/bin，默认 ~/.anotify）
 
 行为开关：
   --no-preflight          跳过"先连一次中枢"的预检（不推荐）
@@ -746,7 +747,7 @@ do_uninstall() {
 		removed="${removed}  用户服务单元 $USER_UNIT_PATH\n"
 	fi
 
-	for bin in "${PREFIX:-/usr/local}/bin/anotify-agent" "$HOME/.local/bin/anotify-agent"; do
+	for bin in "${PREFIX:-$HOME/.anotify}/bin/anotify-agent" "/usr/local/bin/anotify-agent" "$HOME/.local/bin/anotify-agent"; do
 		if [ -f "$bin" ]; then
 			case "$bin" in
 			"$HOME"/*) rm_path "$bin" ;;
@@ -802,8 +803,13 @@ fi
 validate_config
 
 # 安装前缀：--prefix 显式给了就听它的。
+#
+# 缺省是 **$HOME/.anotify**（不是 /usr/local）：服务单元以安装者身份跑，二进制放在
+# 自己家目录里才**可写** —— 这是「`anotify-agent upgrade` 与控制台下发升级」能真正
+# 工作的前提（CONTRACT-agent-upgrade §4：写不进去就只能报 need_root 让人去 sudo）。
+# 单用户机器上 /usr/local 的 root 所有权换不来任何隔离，只换来每次升级都要 sudo。
 if [ -z "$PREFIX" ]; then
-	PREFIX="/usr/local"
+	PREFIX="$HOME/.anotify"
 fi
 BIN_DIR="${PREFIX}/bin"
 
@@ -846,10 +852,14 @@ write_config
 
 case "$SERVICE" in
 system)
-	# 系统服务由 root 装，所以二进制也直接进 /usr/local/bin（不再需要 ~/.local/bin 兜底）。
-	as_root install -d -m 0755 "$BIN_DIR"
-	as_root install -m 0755 "$tmp" "$BIN_DIR/anotify-agent"
-	printf '已安装：%s\n' "$BIN_DIR/anotify-agent"
+	# 单元文件由 root 装（要写 /etc/systemd/system），但**二进制先试着以当前用户装**：
+	# 缺省前缀现在是 ~/.anotify（可写），装那里以后 `anotify-agent upgrade` 与控制台
+	# 下发升级都不需要 sudo。装不进去（/usr/local 等）才退回 root。
+	if ! install_bin_as_user "$BIN_DIR"; then
+		as_root install -d -m 0755 "$BIN_DIR"
+		as_root install -m 0755 "$tmp" "$BIN_DIR/anotify-agent"
+		printf '已安装：%s（root 所有：升级时需要 sudo 或控制台会报 need_root）\n' "$BIN_DIR/anotify-agent"
+	fi
 	install_service_system
 	;;
 user)
@@ -858,7 +868,7 @@ user)
 	else
 		if ! install_bin_as_user "$BIN_DIR"; then
 			BIN_DIR="$HOME/.local/bin"
-			printf '/usr/local/bin 不可写且没有 sudo —— 改装到 %s\n' "$BIN_DIR"
+			printf '%s 不可写 —— 改装到 %s\n' "${PREFIX:-$HOME/.anotify}/bin" "$BIN_DIR"
 			install_bin_as_user "$BIN_DIR" || die "安装失败：$BIN_DIR 也不可写"
 		fi
 		case ":${PATH}:" in
@@ -874,7 +884,7 @@ none)
 	else
 		if ! install_bin_as_user "$BIN_DIR"; then
 			BIN_DIR="$HOME/.local/bin"
-			printf '/usr/local/bin 不可写 —— 改装到 %s\n' "$BIN_DIR"
+			printf '%s 不可写 —— 改装到 %s\n' "${PREFIX:-$HOME/.anotify}/bin" "$BIN_DIR"
 			install_bin_as_user "$BIN_DIR" || die "安装失败：$BIN_DIR 也不可写"
 		fi
 	fi

@@ -35,7 +35,8 @@ curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/instal
 
 1. 从 GitHub Release 下 `anotify-agent-<os>-<arch>`（先试 `latest`，可用 `ANOTIFY_VERSION=vX.Y.Z` 钉版本），
    并核对同名 `.sha256`——**校验不通过就中止**，不会装上一个来源不明的二进制
-2. 装到 `/usr/local/bin`（需要 root 就脚本自己申请 sudo；不想给 sudo 就加 `--user`）
+2. 装到 `~/.anotify/bin/anotify-agent`（**可写**，所以以后 `anotify-agent upgrade` 与控制台
+   下发升级都不需要 sudo）。`--prefix=/usr/local` 可以装回系统目录，代价是每次升级要 sudo
 3. 写 `~/.anotify/node.yaml`（**权限 600**，里面有令牌）
 4. **预检**：先以前台方式连一次中枢，`handshake.ok` 才继续。令牌错、中枢不通、TLS 不认
    都在这一步停下并说清原因——不会给你留下一个开机就崩溃重启的服务
@@ -155,7 +156,9 @@ A：同一份 `node.yaml` 被两个进程或两台机器用了。中枢的策略
 双方都跑不稳。先停掉旧的：`systemctl stop anotify-agent`（或 `systemctl --user stop anotify-agent`），再重跑安装。
 
 **Q：升级报 `need_root` / `anotify-agent upgrade` 退出码 3，要不要换到 `~/.anotify/bin`？**
-A：不要。agent 以普通用户跑，而 `/usr/local/bin/anotify-agent` 是 root 所有，写不进去就是没权限。
+A：装到 `~/.anotify/bin` 就不要。agent 以普通用户跑，二进制放在自己家目录里才写得进去；
+这正是「自升级」能免密的前提（`/usr/local/bin/anotify-agent` 是 root 所有 → 升级只能报
+`need_root`，得人上去 sudo）。
 CLI 会打印可直接粘的 `sudo install -m 0755 <下载路径> <目标>`，或者直接 `sudo anotify-agent upgrade`。
 **不静默降级到 `~/.anotify/bin`**：那会让 systemd 单元里的 `ExecStart` 继续指老路径，
 机器上多了一份新二进制、进程跑的还是老的。

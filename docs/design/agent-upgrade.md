@@ -218,7 +218,9 @@ anotify-agent upgrade [--check] [--force] [--server URL] [--install-to PATH] [--
 ## 5. 权限模型：什么时候 `need_root`
 
 agent 以**普通用户**跑（systemd 单元里 `User=<你>`；「装成系统服务」≠「以 root 运行」），
-而目标路径通常是 `/usr/local/bin/anotify-agent`（root 所有、0755）。
+而目标路径默认是 `~/.anotify/bin/anotify-agent`（安装脚本的缺省前缀，**可写**）；
+若历史上装到了 `/usr/local/bin`（root 所有），就只能报 `need_root` 让人上去 sudo ——
+`--prefix=/usr/local` 的代价就在这里。
 
 | 现象 | 判定 | CLI | WS ack |
 |---|---|---|---|
