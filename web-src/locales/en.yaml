@@ -1674,6 +1674,19 @@ trace:
     routed: Routed
     pruned: Pruned
     data: data
+  logs:
+    title: "Task logs"
+    subtitle: "stdout and stderr for every task; failed tasks are expanded by default"
+    show: "Logs"
+    hide: "Hide"
+    stdout: "stdout"
+    stderr: "stderr"
+    empty: "No output"
+    not_finished: "The task has not finished yet — no output"
+    unavailable: "Logs unavailable"
+    loading: "Loading logs…"
+    truncated: "Log truncated ({n} bytes total, only the last 32 KiB kept)"
+    truncated_unknown: "Log truncated (only the last 32 KiB kept)"
   stat:
     spans: Tasks
     duration: Duration

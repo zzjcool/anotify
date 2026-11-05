@@ -1674,6 +1674,19 @@ trace:
     routed: Despachados
     pruned: Podados
     data: data
+  logs:
+    title: "Registros de la tarea"
+    subtitle: "stdout y stderr de cada tarea; las tareas fallidas se expanden por defecto"
+    show: "Registros"
+    hide: "Ocultar"
+    stdout: "stdout"
+    stderr: "stderr"
+    empty: "Sin salida"
+    not_finished: "La tarea aún no ha terminado; sin salida por ahora"
+    unavailable: "Registros no disponibles"
+    loading: "Cargando registros…"
+    truncated: "Registro truncado ({n} bytes en total, solo se conservan los últimos 32 KiB)"
+    truncated_unknown: "Registro truncado (solo se conservan los últimos 32 KiB)"
   stat:
     spans: Tareas
     duration: Duración
