@@ -100,6 +100,11 @@ type HelloFrame struct {
 	Instances []InstanceDecl `json:"instances"`
 	Applied   []AppliedDecl  `json:"applied"`
 	Labels    map[string]any `json:"labels,omitempty"`
+	// AgentVersion 是节点二进制的版本（internal/version.String()："1.5.0+3fd5a59" / "dev"）。
+	//
+	// 老 agent 不带这个键 → 空串，中枢按「未知（老版本）」展示，不报错（契约 §3）。
+	// 它只用于**观测与升级决策**（控制台据此提示过期），不参与调度判定。
+	AgentVersion string `json:"agent_version,omitempty"`
 }
 
 // AppliedDecl 是节点对「我缓存了什么」的陈述。

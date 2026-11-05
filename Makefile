@@ -6,18 +6,27 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
-# 构建版本号：git short sha + UTC 时间（+dirty 标记）。
-# 空仓 / 非 git 目录下回退为空，sitegen 不传 -version。
-# sitegen 目前只接受并打印该值，尚未写入 HTML footer。
+# 构建版本元数据（契约 §1）：注入 server 与 agent **两个**二进制的 internal/version。
+#
+#   VERSION   语义化版本（缺省 git describe --tags --always --dirty；可 make VERSION=1.5.0 覆盖）
+#   GIT_SHA   git short sha
+#   BUILT_AT  构建时间（RFC3339，UTC）
+#
+# 三个值都会被塞进 -ldflags，而 linker 按**空格**拆参数：所以它们一律不许带空格。
+# 空仓 / 非 git 目录下 git describe 与 git rev-parse 都失败 → 空，VERSION 回落 dev
+# （internal/version 的缺省也是 dev），构建照跑。
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null)
-GIT_DIRTY := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo -dirty)
-BUILD_TIME := $(shell date -u +%Y-%m-%d_%H:%M:%S)
-# shellcheck disable=SC1073,SC1050,SC1072,SC1009
-# 下一行是 **Make 的** $(if ...) 函数，不是 shell 的 if。本文件是 Makefile，
-# 但把 Makefile 映射成"shell 语言"的分析器会把它当 shell 解析并报语法错。
-VERSION := $(if $(GIT_SHA),$(GIT_SHA)$(GIT_DIRTY) $(BUILD_TIME),)
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+BUILT_AT := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_PKG := github.com/zzjcool/anotify/internal/version
+VERSION_LDFLAGS := -X $(VERSION_PKG).Version=$(or $(VERSION),dev)
+VERSION_LDFLAGS += -X $(VERSION_PKG).Commit=$(GIT_SHA)
+VERSION_LDFLAGS += -X $(VERSION_PKG).BuiltAt=$(BUILT_AT)
 
-.PHONY: help build fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
+# agent 二进制的输出名（与 install-agent.sh / 发布资产同名）。
+AGENT_OUT ?= anotify-agent
+
+.PHONY: help build agent fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -41,8 +50,16 @@ dist: fe ## 同 fe（生成 embed 产物）
 
 # 默认 go build / go run 不嵌入 dist（开发期 ANOTIFY_STATIC 即可编译）。
 # 生产单二进制加 -tags embeddist，且依赖本目标先跑的 fe。
-build: fe ## 构建单二进制（内嵌指纹后的前端）
-	go build -trimpath -ldflags="-s -w" -tags embeddist -o anotify ./cmd/server
+# VERSION_LDFLAGS 让这两个二进制都能报出自己的版本（agent 报在 hello 帧里，
+# 中枢的日志/控制台因此能说清「节点跑的是哪一版」）。
+build: fe ## 构建单二进制（内嵌指纹后的前端；带版本信息）
+	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAGS)" -tags embeddist -o anotify ./cmd/server
+
+# agent 单独一个目标：它跑在**用户机器**上，不该为了它去构建前端产物（make build 会跑 fe）。
+# 这个二进制同时是「中枢自带升级源」要发的东西（契约 §2），所以必须带同一份版本信息——
+# 否则节点升级上来以后 hello 里报的还是 dev，控制台永远显示「过期」。
+agent: ## 构建 agent 二进制（带版本信息；输出名 AGENT_OUT，缺省 anotify-agent）
+	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAGS)" -o $(AGENT_OUT) ./cmd/agent
 
 test: ## 运行全部单元测试（不含 make e2e / make integration）
 	go test ./... -count=1
@@ -74,7 +91,7 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	$(MAKE) fe
 	go vet ./...
 	go build ./...
-	go build -trimpath -ldflags="-s -w" -tags embeddist -o anotify ./cmd/server
+	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAGS)" -tags embeddist -o anotify ./cmd/server
 	$(MAKE) test
 	@# harness 自测（#215）：/health 的 boot 身份校验是"看不见的"修复——正常跑什么都不打印。
 	@# 而这个缺陷的症状是「套件随机 0通过/0失败」，跟超时/代码 bug 分不开，所以必须有秒级用例钉住它。
@@ -301,4 +318,4 @@ keys: ## 生成 VAPID 密钥对
 	go run ./scripts/genkeys.go
 
 clean: ## 清理构建产物
-	rm -rf dist anotify internal/server/dist
+	rm -rf dist anotify $(AGENT_OUT) internal/server/dist
