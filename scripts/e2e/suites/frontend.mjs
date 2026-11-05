@@ -19,7 +19,12 @@
  *     （node_offline / agent_binary_unavailable / bad_sha）、ack 结果来自服务端状态、
  *     sent 超 60s → 「节点未回复」；四语言文案不串（mock）+ 真后端版本/已是最新（接口在则断言）
  *  J. 共享拓扑推导（graphs.js 的 sourceTopology）：源 1:N 的出边、source 页与 trace 页
- *     的图同源一致、环仍画出来并标 cycle、未接下游的出口仍显示成灰点（真后端）
+ *     的图同源一致、环仍画出来并标 cycle、声明了出口却没接下游的能力仍显示成灰点
+ *     （文案是「没有下游」，不再提端口）（真后端）
+ *  L. 端口从界面消失（CONTRACT-hide-ports.md）：表单只剩一个逗号分隔的
+ *     「下游能力（候选）」输入框、详情区只谈下游、图上不标出口名。
+ *     端口 UI（出口 chips / 按出口分行 / balance 模式 / 优先级数字）**不许回来** ——
+ *     所以每一条都配了「不再存在」的守卫，而不是把旧断言一删了事。
  */
 import { chromium } from "playwright-core";
 import { DatabaseSync } from "node:sqlite";
@@ -1694,6 +1699,67 @@ async function checkCapabilityTemplates(page) {
 	H.check("改过的脚本能在只读模式看到（没有丢）", /edited-by-e2e/.test(afterEdit),
 		afterEdit.slice(0, 120));
 
+	// ②-附 下游表单的形状：**一个**逗号分隔的输入框，没有端口 UI（契约 §3）
+	//
+	// 这一组是「删掉的功能不许悄悄回来」的守卫。端口是 emit 的路由键，
+	// 用户脑子里只有一件事：这个能力跑完交给谁。所以下面这些钩子一个都不许在：
+	//   #cap-ports / #cap-port-input   出口 chips 输入
+	//   #cap-down-rows / .cap-down-row 按出口分行的候选
+	//   select.cap-bal-select          balance 模式选择器
+	//   .cap-cand-prio / .cap-cand-prio-wrap  优先级数字输入框（优先级只归详情区的下游列表）
+	const downForm = await page.evaluate(() => {
+		const input = document.getElementById("cap-downstream");
+		const hint = document.getElementById("cap-downstream-hint");
+		const wrap = document.getElementById("cap-down-wrap");
+		return {
+			input: !!input && input.classList.contains("input"),
+			placeholder: (input || {}).placeholder || "",
+			hint: (hint || {}).textContent || "",
+			title: ((wrap && wrap.querySelector(".card-title")) || {}).textContent || "",
+			legacy: {
+				ports: document.querySelectorAll("#cap-ports, #cap-port-input, #cap-ports-hint").length,
+				chips: document.querySelectorAll(".cap-chip, .cap-chips").length,
+				downRows: document.querySelectorAll("#cap-down-rows, .cap-down-row").length,
+				balSelect: document.querySelectorAll("select.cap-bal-select, .cap-bal-wrap").length,
+				prioInput: document.querySelectorAll(".cap-cand-prio, .cap-cand-prio-wrap").length,
+			},
+			// 表单里**用户可见**的文案（标题 / 帮助 / 标签）：术语红线 -
+			// 中文界面里不许出现「端口」，也不许用「产出端口」这种旧标题
+			texts: Array.from(
+				document.querySelectorAll(
+					"#tpl-form-step .card-title, #tpl-form-step .field-hint, #tpl-form-step label",
+				),
+			).map((x) => (x.textContent || "").trim()),
+		};
+	});
+	H.check(
+		"新建表单只有一个下游输入框（逗号分隔）",
+		downForm.input === true && /script\.echo,\s*notify\.phone/.test(downForm.placeholder),
+		JSON.stringify({ input: downForm.input, ph: downForm.placeholder }),
+	);
+	H.check(
+		"下游栏标题是「下游能力（候选）」",
+		/下游能力/.test(downForm.title) && !/端口/.test(downForm.title),
+		downForm.title,
+	);
+	H.check(
+		"空态说明「留空 = 终端能力（跑完就结束）」",
+		/跑完之后交给谁/.test(downForm.hint) &&
+			/留空/.test(downForm.hint) &&
+			/跑完就结束/.test(downForm.hint),
+		downForm.hint,
+	);
+	H.check(
+		"端口 UI 全部消失（端口输入框 / 出口 chips / 按出口分行 / balance 模式 / 优先级数字）",
+		Object.values(downForm.legacy).every((n) => n === 0),
+		JSON.stringify(downForm.legacy),
+	);
+	H.check(
+		"表单用户可见文案里没有「端口」（术语红线，四语言同一口径）",
+		!(downForm.texts || []).some((x) => /端口/.test(x)),
+		(downForm.texts || []).join(" | ").slice(0, 240),
+	);
+
 	// ③ 高级参数契约：预填 → 非法 JSON 被当场拦住
 	await page.click("#schema-toggle");
 	await page.waitForTimeout(250);
@@ -1851,13 +1917,19 @@ async function checkCapabilityTemplates(page) {
 //   ② 「新建能力这里无法指定下游是什么，如果我想串起来（比如 touchnow → echo）应该怎么办」
 //
 // 这里钉六件事，每一件都对应一个会**静默**坏掉的环节：
-//   ① 行能展开，四节（参数契约 / 出口与下游 / 谁接到我 / 运行参数）都在，
+//   ① 行能展开，四节（参数契约 / 下游（候选） / 谁接到我 / 运行参数）都在，
 //      且参数契约显示的是 paramsSchema 的**原文**（而不是「无参数」占位）
-//   ② 出口下面按**边**列下游（造一条 mock 边，目标名出现在那个出口下面）
-//   ③ 没有下游的出口显眼地说「到此为止」（模型里「没边 = 停」是一等语义）
-//   ④ 「+ 下游」能就地建边，成功后同一出口下立刻看到目标（扇出可见）
-//   ⑤ 新建能力时填的出口 + 下游**一次提交**（links 在 caps 请求体里，全程不发 POST /edges），
-//      能力与全部边一次落库
+//   ② 下游按**边**逐条列成候选（一条出边 = 一个候选），不再按出口分块
+//   ③ 没有下游的能力显眼地说「跑完就结束」（终端能力是合法的一等语义）
+//   ④ 「+ 下游」能就地建边，成功后同一处立刻看到目标（候选可见）
+//   ⑤ 新建能力时只填一串下游名字 → **一次提交**（links 在 caps 请求体里，全程不发 POST /edges），
+//      能力与全部边一次落库；引用不到的名字当场拦住，不提交
+//   ⑥ 一条坏边 → **整体回滚**：能力根本没建出来，400 里带 `links[i]` 下标，弹层不关
+//   ⑦ 自连 → 400 `self loop`，能力/边一样都没建（原子性钉在后端，不靠按钮过滤；
+//      产物那一面在 store/server 单测里断言——mock 没有 artifacts 端点）
+//
+// 端口在这里**不可见**（CONTRACT-hide-ports.md）：请求体里仍然是
+// outputs:["out"] + links[].fromPort="out"，但界面上只说「下游能力（候选）」。
 //   ⑥ 一条坏边 → **整体回滚**：能力根本没建出来，400 里带 `links[i]` 下标，弹层不关
 //   ⑦ 自连 → 400 `self loop`，能力/边一样都没建（原子性钉在后端，不靠按钮过滤；
 //      产物那一面在 store/server 单测里断言——mock 没有 artifacts 端点）
@@ -1892,10 +1964,12 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify(detail),
 	);
 	H.check(
-		"详情区四节齐全：参数契约 / 出口与下游 / 谁接到我 / 运行参数",
+		"详情区四节齐全：参数契约 / 下游（候选） / 谁接到我 / 运行参数",
 		detail.titles.length === 4 &&
 			/参数/.test(detail.titles[0]) &&
-			/产出端口|出口/.test(detail.titles[1]) &&
+			// 端口从界面消失：第二节只说「下游（候选）」，不再有「产出端口 / 出口与下游」
+			/下游/.test(detail.titles[1]) &&
+			!/端口|出口/.test(detail.titles[1]) &&
 			/接到|feeds/.test(detail.titles[2]) &&
 			/运行|Runtime/.test(detail.titles[3]),
 		JSON.stringify(detail.titles),
@@ -1973,99 +2047,188 @@ async function checkCapabilityDetail(page, base) {
 		String(noArtifact.text).slice(0, 160),
 	);
 
-	// ②③ 出口与下游按边渲染；没接边的出口显式说「到此为止」
-	const ports0 = await page.evaluate(() => {
+	// ②③ 下游按**边**逐条列成候选；没有下游的能力显式说「跑完就结束」
+	//
+	// 端口从界面上消失了（契约 §3）：一个能力只有一个出口，所以详情区
+	// 不再按出口分块 —— 一条出边就是一个**候选**（同一次运行只走其中一条）。
+	const down0 = await page.evaluate(() => {
 		const row = document.querySelector('.cap-row[data-cap-name="deploy-preview"]');
 		if (!row) return { err: "找不到 deploy-preview 行" };
 		row.querySelector('[data-act="detail"]').click();
-		const blocks = Array.from(row.querySelectorAll(".cap-port-block")).map((b) => ({
-			port: ((b.querySelector(".cap-port-name") || {}).textContent || "").trim(),
-			dead: !!b.querySelector(".cap-port-dead"),
-			deadText: ((b.querySelector(".cap-port-dead") || {}).textContent || "").trim(),
-			links: Array.from(b.querySelectorAll(".cap-link")).map((l) =>
-				l.textContent.replace(/\s+/g, " ").trim(),
-			),
-			hasAdd: !!b.querySelector("[data-port]"),
-		}));
 		return {
-			blocks,
+			open: row.querySelector(".cap-detail").classList.contains("open"),
+			// 旧的分块钩子（端口名 / 无下游虚线框 / balance 徽章 / 候选数）：都不许在
+			legacy: row.querySelectorAll(
+				".cap-port-block, .cap-port-name, .cap-port-dead, .cap-bal-badge, .cap-cand-count",
+			).length,
+			titles: Array.from(row.querySelectorAll(".cap-detail-title")).map((x) =>
+				x.textContent.trim(),
+			),
+			cands: Array.from(row.querySelectorAll(".cap-link[data-cand-name]")).map((l) => ({
+				name: l.getAttribute("data-cand-name"),
+				text: l.textContent.replace(/\s+/g, " ").trim(),
+			})),
+			hasAdd: !!row.querySelector('[data-act="add-downstream"]'),
+			bodyText: document.body.innerText || "",
 			inbound: Array.from(row.querySelectorAll(".cap-inlink")).map((x) =>
 				x.textContent.replace(/\s+/g, " ").trim(),
 			),
 		};
 	});
-	const preview = (ports0.blocks || []).find((b) => b.port === "preview.ready") || {};
-	const manual = (ports0.blocks || []).find((b) => b.port === "manual.approval") || {};
 	H.check(
-		"出口下面按边列出下游（preview.ready → gen-changelog）",
-		(preview.links || []).some((l) => /gen-changelog/.test(l)),
-		JSON.stringify(preview.links),
+		"详情区不再按出口分块（端口名 / 无下游虚线框 / balance 徽章 / 候选数都没有）",
+		down0.open === true && down0.legacy === 0,
+		JSON.stringify({ open: down0.open, legacy: down0.legacy }),
 	);
 	H.check(
-		"没有下游的出口显式说「到此为止」（manual.approval）",
-		manual.dead === true && /到此为止|stops right here/.test(manual.deadText),
-		JSON.stringify({ dead: manual.dead, text: manual.deadText }),
+		"详情区区块标题是「下游（候选）」，且全页没有「产出端口」",
+		(down0.titles || []).some((x) => /下游/.test(x)) &&
+			!/产出端口|端口/.test(down0.bodyText || ""),
+		JSON.stringify({ titles: down0.titles, hasPort: /端口/.test(down0.bodyText || "") }),
 	);
 	H.check(
-		"每个出口旁边都有「+ 下游」入口",
-		(ports0.blocks || []).length > 0 && (ports0.blocks || []).every((b) => b.hasAdd),
-		JSON.stringify((ports0.blocks || []).map((b) => b.hasAdd)),
+		"deploy-preview 的下游逐条列出（gen-changelog / rollback 都是候选）",
+		(down0.cands || []).length >= 2 &&
+			// data-cand-name 是**引用**：跟随最新是裸名字，钉死版本带 @N（两种都得算上）
+			down0.cands.some((c) => String(c.name || "").split("@")[0] === "gen-changelog") &&
+			down0.cands.some((c) => String(c.name || "").split("@")[0] === "rollback"),
+		JSON.stringify(down0.cands),
 	);
 	H.check(
-		"「谁接到我」列出入边（来源 --port→ 我）",
-		(ports0.inbound || []).some((l) => /→\s*我|→\s*me/.test(l)),
-		JSON.stringify(ports0.inbound),
+		"候选行说清「优先级 N · 点「编辑」可调」",
+		(down0.cands || []).length > 0 &&
+			(down0.cands || []).every((c) => /优先级\s*\d+/.test(c.text)),
+		JSON.stringify((down0.cands || []).map((c) => c.text).slice(0, 3)),
+	);
+	H.check(
+		"详情区有「+ 下游」入口（链路是长出来的）",
+		down0.hasAdd === true,
+		String(down0.hasAdd),
+	);
+	H.check(
+		"「谁接到我」列出入边（来源 → 我，不再夹一个出口名）",
+		(down0.inbound || []).some((l) => /→\s*我|→\s*me/.test(l)) &&
+			!(down0.inbound || []).some((l) => /--/.test(l)),
+		JSON.stringify(down0.inbound),
 	);
 
-	// 造一条 mock 边：manual.approval → report.send，页面自己 loadAll 后应立刻可见
+	// 空态：没有下游的能力说「跑完就结束」（而不是一句到此为止）
+	//
+	// 终端能力是**合法**的（gen-changelog 就是），所以它不该看起来像报错；
+	// 但也不能留一块空白 —— 空白与「链路断了」在界面上长得一样。
+	const downEmpty = await page.evaluate(async () => {
+		const row = document.querySelector('.cap-row[data-cap-name="gen-changelog"]');
+		if (!row) return { err: "找不到 gen-changelog 行" };
+		if (!row.querySelector(".cap-detail").classList.contains("open")) {
+			row.querySelector('[data-act="detail"]').click();
+		}
+		await new Promise((r) => setTimeout(r, 400));
+		return {
+			open: row.querySelector(".cap-detail").classList.contains("open"),
+			text: ((row.querySelector(".cap-down-empty") || {}).textContent || "").trim(),
+			cands: row.querySelectorAll(".cap-link[data-cand-name]").length,
+		};
+	});
+	H.check(
+		"没有下游的能力显式说「跑完就结束，不会触发任何下游」",
+		downEmpty.open === true &&
+			downEmpty.cands === 0 &&
+			/跑完就结束/.test(downEmpty.text || "") &&
+			!/到此为止/.test(downEmpty.text || ""),
+		JSON.stringify(downEmpty),
+	);
+
+	// 造一条 mock 边：script.echo（没下游）→ report.send，页面自己 loadAll 后应立刻可见
+	//
+	// 先把 script.echo 的详情展开（用户就是在这个位置看到「跑完就结束」的），
+	// 造完边再看：同一条候选出现了、「跑完就结束」消失、展开态没被刷新弄丢。
 	const afterEdge = await page.evaluate(async () => {
+		const findRow = () => document.querySelector('.cap-row[data-cap-name="script.echo"]');
+		let row = findRow();
+		if (!row) return { err: "找不到 script.echo 行" };
+		if (!row.querySelector(".cap-detail").classList.contains("open")) {
+			row.querySelector('[data-act="detail"]').click();
+		}
+		// 详情区是懒渲染（产物/下游都要等数据）：等到空态真的落进 DOM
+		for (let i = 0; i < 40; i++) {
+			if (row.querySelector(".cap-down-empty")) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const before = {
+			open: row.querySelector(".cap-detail").classList.contains("open"),
+			empty: !!row.querySelector(".cap-down-empty"),
+		};
 		const res = await fetch("/v1/edges", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				fromIsSource: false,
-				fromRef: "deploy-preview",
-				fromPort: "manual.approval",
+				fromRef: "script.echo",
+				// 内部唯一出口：界面不表达它，但协议需要它（契约 §1）
+				fromPort: "out",
 				toRef: "report.send",
 				literals: {},
 			}),
 		});
 		const status = res.status;
 		await loadAll();
-		await new Promise((r) => setTimeout(r, 300));
-		const row = document.querySelector('.cap-row[data-cap-name="deploy-preview"]');
-		const block = Array.from(row.querySelectorAll(".cap-port-block")).find(
-			(b) => ((b.querySelector(".cap-port-name") || {}).textContent || "").trim() === "manual.approval",
-		);
+		for (let i = 0; i < 40; i++) {
+			row = findRow();
+			if (row && row.querySelector(".cap-link[data-cand-name]")) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		row = findRow();
 		return {
 			status,
+			before,
 			stillOpen: row.querySelector(".cap-detail").classList.contains("open"),
-			dead: !!block.querySelector(".cap-port-dead"),
-			links: Array.from(block.querySelectorAll(".cap-link")).map((l) =>
-				l.textContent.replace(/\s+/g, " ").trim(),
+			empty: !!row.querySelector(".cap-down-empty"),
+			cands: Array.from(row.querySelectorAll(".cap-link[data-cand-name]")).map((l) =>
+				l.getAttribute("data-cand-name"),
 			),
 		};
 	});
 	H.check(
-		"造一条边后，同一出口下出现目标能力名（report.send）",
-		afterEdge.status === 201 && afterEdge.links.some((l) => /report\.send/.test(l)),
+		"造边之前 script.echo 的详情就是空态（跑完就结束）",
+		afterEdge.before && afterEdge.before.open === true && afterEdge.before.empty === true,
+		JSON.stringify(afterEdge.before),
+	);
+	H.check(
+		"造一条边后，详情区立刻出现那个目标能力（report.send）",
+		afterEdge.status === 201 &&
+			(afterEdge.cands || []).some((n) => String(n).split("@")[0] === "report.send"),
 		JSON.stringify(afterEdge),
 	);
 	H.check(
-		"接了边之后「到此为止」提示消失，且展开态没被刷新弄丢",
-		afterEdge.dead === false && afterEdge.stillOpen === true,
-		JSON.stringify({ dead: afterEdge.dead, open: afterEdge.stillOpen }),
+		"接了边之后「跑完就结束」消失，且展开态没被刷新弄丢",
+		afterEdge.empty === false && afterEdge.stillOpen === true,
+		JSON.stringify({ empty: afterEdge.empty, open: afterEdge.stillOpen }),
 	);
 
-	// ④ 「+ 下游」就地建边（扇出：report.send 的 escalate 再接一个 archive-logs）
-	const addPanel = await page.evaluate(() => {
+	// ④ 「+ 下游」就地建边（report.send 再接一个 archive-logs：候选 ≥2）
+	//
+	// 详情区是懒渲染的：点开之后要等「+ 下游」按钮真的落进 DOM（不能跟着猜）。
+	const addPanel = await page.evaluate(async () => {
 		const row = document.querySelector('.cap-row[data-cap-name="report.send"]');
-		row.querySelector('[data-act="detail"]').click();
-		row.querySelector('.cap-port-block [data-port="escalate"]').click();
+		if (!row) return { has: false, err: "找不到 report.send 行" };
+		if (!row.querySelector(".cap-detail").classList.contains("open")) {
+			row.querySelector('[data-act="detail"]').click();
+		}
+		let btn = null;
+		for (let i = 0; i < 40; i++) {
+			btn = row.querySelector('[data-act="add-downstream"]');
+			if (btn) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		if (!btn) return { has: false, err: "详情区没有「+ 下游」按钮" };
+		btn.click();
 		const p = row.querySelector(".cap-add-panel");
-		if (!p) return { has: false };
-		const [target] = p.querySelectorAll("input");
-		target.value = "archive-logs";
+		if (!p) return { has: false, err: "点了「+ 下游」没有展开面板" };
+		// 面板上只有一个**目标**输入框（「加下游」不再问「哪个出口」）；
+		// 另一个是常量覆盖（可选，与出口无关，属于既有能力）。
+		const inputs = Array.from(p.querySelectorAll('input[list="cap-down-targets"]'));
+		if (inputs.length !== 1) return { has: true, targets: inputs.length };
+		inputs[0].value = "archive-logs";
 		// 抓包：POST 体的形状必须与契约一致（引用而不是能力 id）
 		window.__edgeBodies = [];
 		const orig = window.fetch;
@@ -2087,102 +2250,121 @@ async function checkCapabilityDetail(page, base) {
 		Array.from(p.querySelectorAll("button"))
 			.find((b) => b.className.includes("btn-primary"))
 			.click();
-		return { has: true };
+		return { has: true, targets: inputs.length };
 	});
-	H.check("点「+ 下游」能展开就地加边面板", addPanel.has === true, JSON.stringify(addPanel));
+	H.check(
+		"点「+ 下游」能展开就地加边面板（只有一个目标输入框，没有「哪个出口」可选）",
+		addPanel.has === true && addPanel.targets === 1,
+		JSON.stringify(addPanel),
+	);
 	await page.waitForTimeout(1500);
 	const addResult = await page.evaluate(() => {
 		const bodies = window.__edgeBodies || [];
 		window.__edgeRestoreFetch && window.__edgeRestoreFetch();
 		const row = document.querySelector('.cap-row[data-cap-name="report.send"]');
-		const block = Array.from(row.querySelectorAll(".cap-port-block")).find(
-			(b) => ((b.querySelector(".cap-port-name") || {}).textContent || "").trim() === "escalate",
-		);
 		return {
 			body: bodies[bodies.length - 1] || null,
 			n: bodies.length,
-			links: Array.from(block.querySelectorAll(".cap-link")).map((l) =>
-				l.textContent.replace(/\s+/g, " ").trim(),
+			cands: Array.from(row.querySelectorAll(".cap-link[data-cand-name]")).map((l) =>
+				l.getAttribute("data-cand-name"),
 			),
 		};
 	});
 	H.check(
-		"加下游发的是引用（裸名字=跟随最新）且 fromIsSource=false",
+		"加下游发的是引用（裸名字=跟随最新）、fromIsSource=false，出口固定内部名 out",
 		!!addResult.body &&
 			addResult.body.fromIsSource === false &&
 			addResult.body.fromRef === "report.send" &&
-			addResult.body.fromPort === "escalate" &&
+			// 内部唯一出口（契约 §1）：只出现在请求体里，界面不表达它
+			addResult.body.fromPort === "out" &&
 			addResult.body.toRef === "archive-logs",
 		JSON.stringify(addResult.body),
 	);
 	H.check(
-		"加下游成功后同一出口下立刻看到新目标（扇出 ≥2）",
-		addResult.links.length >= 2 && addResult.links.some((l) => /archive-logs/.test(l)),
-		JSON.stringify(addResult.links),
+		"加下游成功后同一处立刻看到新目标（候选 ≥2）",
+		(addResult.cands || []).length >= 2 &&
+			(addResult.cands || []).some((n) => String(n).split("@")[0] === "archive-logs"),
+		JSON.stringify(addResult.cands),
 	);
 
-	// ⑤ 新建能力：填出口 + 下游 → **一次提交**把能力与全部边建出来
+	// ⑤ 新建能力：下游填一串名字 → **一次提交**把能力与全部候选边建出来
+	//
+	// 用户原话：「直接让用户填 script.echo,notify.phone 这样就可以了」。
+	// 所以表单只有一个逗号分隔的输入框：多个名字 = 候选，留空 = 终端能力。
 	const capName = "e2e.chain." + Date.now();
 	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
 	await page.waitForTimeout(600);
 	await page.click('[data-tpl="script.blank"]');
 	await page.waitForTimeout(400);
-	const portsState = await page.evaluate((name) => {
+	const filled = await page.evaluate((name) => {
 		document.getElementById("cap-name").value = name;
-		// 像用户那样：敲进 chips 输入框再回车
-		const inp = document.getElementById("cap-port-input");
-		inp.value = "done";
-		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		const inp = document.getElementById("cap-downstream");
+		inp.value = "report.send, archive-logs";
+		inp.dispatchEvent(new Event("input", { bubbles: true }));
 		return {
-			chips: Array.from(document.querySelectorAll("#cap-ports .cap-chip")).map((x) =>
-				x.textContent.replace("×", "").trim(),
-			),
-			rows: Array.from(document.querySelectorAll("#cap-down-rows .cap-down-row")).map((r) =>
-				r.getAttribute("data-port"),
-			),
-			hint: (document.getElementById("cap-ports-hint") || {}).textContent || "",
+			value: inp.value,
+			hint: (document.getElementById("cap-downstream-hint") || {}).textContent || "",
+			cardDown: (
+				(document.querySelector("#cap-cards .cap-card.is-active .cap-card-down")) || {}
+			).textContent || "",
 		};
 	}, capName);
 	H.check(
-		"新建表单的出口 chips 能加，并按出口画出下游行",
-		portsState.chips.includes("done") && portsState.rows.includes("done"),
-		JSON.stringify(portsState),
+		"下游填两个名字 → hint 回显运行期语义（按优先级选一个 / 同级轮盘）",
+		/运行期按优先级选一个/.test(filled.hint) && /轮盘/.test(filled.hint) && !/找不到/.test(filled.hint),
+		filled.hint.slice(0, 160),
 	);
-	// 空出口的后果必须说出来（「没有出口 = emit 不出任何东西」）
-	const emptyHint = await page.evaluate(() => {
-		document.querySelector("#cap-ports .cap-chip-x").click();
-		return {
-			hint: (document.getElementById("cap-ports-hint") || {}).textContent || "",
-			n: document.querySelectorAll("#cap-ports .cap-chip").length,
+	H.check(
+		"卡片摘要显示「下游：a, b」（端口不出现在摘要里）",
+		/下游：\s*report\.send,\s*archive-logs/.test(filled.cardDown) && !/out/.test(filled.cardDown),
+		filled.cardDown,
+	);
+
+	// 引用不存在的能力：当场指出是哪个，而且**不提交**（前端先拦）
+	const unknown = await page.evaluate(async () => {
+		const inp = document.getElementById("cap-downstream");
+		inp.value = "report.send, nope.nothing";
+		inp.dispatchEvent(new Event("input", { bubbles: true }));
+		const hint = document.getElementById("cap-downstream-hint");
+		const out = {
+			hint: (hint || {}).textContent || "",
+			warn: !!(hint && hint.classList.contains("cap-warn")),
 		};
+		// 抓包：这一步点提交也不该有 POST 发出
+		const orig = window.fetch;
+		let posts = 0;
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (method === "POST" && url.includes("/v1/capabilities")) posts++;
+			return orig.apply(this, arguments);
+		};
+		document.getElementById("cap-submit").click();
+		await new Promise((r) => setTimeout(r, 700));
+		window.fetch = orig;
+		out.posts = posts;
+		out.modalOpen = !document.getElementById("cap-modal").classList.contains("hidden");
+		out.toast = ((document.getElementById("anotify-toast-host") || {}).textContent || "")
+			.replace(/\s+/g, " ")
+			.trim();
+		return out;
 	});
 	H.check(
-		"出口留空时说明「emit 不出任何东西」（终端能力是合法的）",
-		emptyHint.n === 0 && /emit/.test(emptyHint.hint) && /没有产出端口|没有出口/.test(emptyHint.hint),
-		JSON.stringify(emptyHint),
+		"引用不存在的下游 → 可读错误（点名哪个找不到），且不提交",
+		/找不到这些能力/.test(unknown.hint) &&
+			/nope\.nothing/.test(unknown.hint) &&
+			unknown.warn === true &&
+			unknown.posts === 0 &&
+			unknown.modalOpen === true,
+		JSON.stringify(unknown).slice(0, 240),
 	);
-	// 两个出口各接一个下游：证明「能力 + 全部边一次提交」（不是只有第一条生效）
+
+	// 改回两个真实存在的名字（能力 + 全部边走同一次提交）
 	await page.evaluate(() => {
-		const inp = document.getElementById("cap-port-input");
-		for (const port of ["done", "failed"]) {
-			inp.value = port;
-			inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-		}
+		const inp = document.getElementById("cap-downstream");
+		inp.value = "report.send, archive-logs";
+		inp.dispatchEvent(new Event("input", { bubbles: true }));
 	});
-	const pickedDown = await page.evaluate(() => {
-		const picks = { done: "report.send", failed: "archive-logs" };
-		for (const [port, target] of Object.entries(picks)) {
-			const row = document.querySelector(
-				'#cap-down-rows .cap-down-row[data-port="' + port + '"]',
-			);
-			if (!row) continue;
-			const inp = row.querySelector(".cap-down-input");
-			inp.value = target;
-			inp.dispatchEvent(new Event("change", { bubbles: true }));
-		}
-		return Array.from(document.querySelectorAll("#cap-down-rows .cap-chip")).length;
-	});
-	H.check("下游能按名字选中（写进表单，不是写死某个目标）", pickedDown >= 2, `chips=${pickedDown}`);
 	// 抓包钩子：mock 在 window.fetch 层就拦下了（page.on("request") 一条都抓不到）。
 	// 同时抓**响应**：原子路径的 400/200 形状是断言对象。
 	await page.evaluate(() => {
@@ -2241,12 +2423,9 @@ async function checkCapabilityDetail(page, base) {
 		};
 	}, capName);
 	H.check(
-		"新建能力时声明的出口进了请求体（不再只能跟模板走）",
+		"有下游 → 请求体声明内部唯一出口 outputs:[out]（端口名不出现在界面）",
 		!!created.capBody &&
-			Array.isArray(created.capBody.outputs) &&
-			created.capBody.outputs.length === 2 &&
-			created.capBody.outputs[0] === "done" &&
-			created.capBody.outputs[1] === "failed",
+			JSON.stringify(created.capBody.outputs) === JSON.stringify(["out"]),
 		JSON.stringify(created.capBody && created.capBody.outputs),
 	);
 	// ② 全合法 → 能力与全部边**一次出现**：
@@ -2259,8 +2438,13 @@ async function checkCapabilityDetail(page, base) {
 		!!created.capBody &&
 			Array.isArray(created.capBody.links) &&
 			created.capBody.links.length === 2 &&
-			created.capBody.links[0].fromPort === "done" &&
+			// 顺序 = 用户在逗号输入框里的顺序（候选的顺序就是运行期选法的依据）
+			created.capBody.links[0].fromPort === "out" &&
 			created.capBody.links[0].toRef === "report.send" &&
+			created.capBody.links[1].fromPort === "out" &&
+			created.capBody.links[1].toRef === "archive-logs" &&
+			// 单建路径不带 priority（优先级只归详情区的下游列表）
+			!("priority" in created.capBody.links[0]) &&
 			created.edgeBodies.length === 0,
 		JSON.stringify({ links: created.capBody && created.capBody.links, edges: created.edgeBodies }),
 	);
@@ -2283,11 +2467,10 @@ async function checkCapabilityDetail(page, base) {
 	H.check(
 		"能力与**全部**边一次落库（GET 能看到两条），详情默认展开并列出下游",
 		created.caps.length === 1 &&
-			created.caps[0].includes("done") &&
-			created.caps[0].includes("failed") &&
+			JSON.stringify(created.caps[0]) === JSON.stringify(["out"]) &&
 			created.edges.length === 2 &&
-			created.edges.some((e) => e.toRef === "report.send" && e.fromPort === "done") &&
-			created.edges.some((e) => e.toRef === "archive-logs" && e.fromPort === "failed") &&
+			created.edges.some((e) => e.toRef === "report.send" && e.fromPort === "out") &&
+			created.edges.some((e) => e.toRef === "archive-logs" && e.fromPort === "out") &&
 			created.rowOpen === true &&
 			/report\.send/.test(created.rowText),
 		JSON.stringify({ caps: created.caps, edges: created.edges, open: created.rowOpen }),
@@ -2304,24 +2487,12 @@ async function checkCapabilityDetail(page, base) {
 	await page.waitForTimeout(400);
 	await page.evaluate((name) => {
 		document.getElementById("cap-name").value = name;
-		const inp = document.getElementById("cap-port-input");
-		for (const port of ["done", "failed"]) {
-			inp.value = port;
-			inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-		}
-		// 两条都填**存在**的目标（表单本身会拦住不存在的目标，见下面的故障注入）：
+		// 两条都填**存在**的目标（表单本身会拦住不存在的目标，见 ⑤ 的用例）：
 		// 注入会改写最后一条，让服务端在落库前发现它指向的目标不存在 ——
 		// 那正是「能力在、边缺」老流程会留下半成品的场景。
-		const picks = { done: "report.send", failed: "archive-logs" };
-		for (const [port, target] of Object.entries(picks)) {
-			const row = document.querySelector(
-				'#cap-down-rows .cap-down-row[data-port="' + port + '"]',
-			);
-			if (!row) continue;
-			const din = row.querySelector(".cap-down-input");
-			din.value = target;
-			din.dispatchEvent(new Event("change", { bubbles: true }));
-		}
+		const din = document.getElementById("cap-downstream");
+		din.value = "report.send, archive-logs";
+		din.dispatchEvent(new Event("input", { bubbles: true }));
 		window.__bodies = { caps: [], edges: [] };
 		window.__resps = [];
 		// 故障注入：把**最后一条** link 的目标改写成不存在的名字。
@@ -2388,7 +2559,7 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify({ exists: rejected.capExists, edges: rejected.edges }),
 	);
 	H.check(
-		"400 的 body 指出是第几条 link（links[1]），前端据此报「第 2 条出口」",
+		"400 的 body 指出是第几条 link（links[1]），前端据此报「第 2 条下游」",
 		!!rejected.resp &&
 			rejected.resp.status === 400 &&
 			/links\[1\]/.test(String((rejected.resp.body || {}).error || "")) &&
@@ -2401,14 +2572,17 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify({ open: rejected.modalOpen, nameKept: rejected.nameKept }),
 	);
 	H.check(
-		"错误提示指明是哪一条出口 / 哪个目标（下标映射回用户填的那一行）",
+		"错误提示指明是第几条下游 / 哪个目标，且不把内部出口名泄给用户",
 		/第\s*2\s*条/.test(rejected.toast) &&
-			rejected.toast.includes("failed") &&
-			rejected.toast.includes("no.such.capability"),
+			rejected.toast.includes("archive-logs") &&
+			rejected.toast.includes("no.such.capability") &&
+			// 新口径：提示里只说「下游 → 目标」，没有 --out--> 这种端口形状
+			!/--/.test(rejected.toast) &&
+			!/端口/.test(rejected.toast),
 		rejected.toast.slice(0, 200),
 	);
 
-	// ⑦ 自连（出口接自己）→ 400 且什么都没建。
+	// ⑦ 自连（下游填自己）→ 400 且什么都没建。
 	//
 	// UI 会把自连过滤掉（新建里的自环几乎总是误操作），所以这条直接打接口：
 	// 它钉的是**后端**的原子性，而不是按钮行为。
@@ -2419,9 +2593,9 @@ async function checkCapabilityDetail(page, base) {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				name: name,
-				outputs: ["done"],
+				outputs: ["out"],
 				run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
-				links: [{ fromPort: "done", toRef: name }],
+				links: [{ fromPort: "out", toRef: name }],
 			}),
 		});
 		let body = null;
@@ -2444,7 +2618,7 @@ async function checkCapabilityDetail(page, base) {
 	// 产物那一面（artifacts 也没有）由 store/server 单测钉住：
 	// mock 没有 GET /v1/artifacts，在这里查它会撞「mock 覆盖度」门禁。
 	H.check(
-		"自连（出口接自己）→ 400 self loop（links[0]），且能力/边一样都没建",
+		"自连（下游填自己）→ 400 self loop（links[0]），且能力/边一样都没建",
 		selfLink.status === 400 &&
 			/links\[0\]/.test(String((selfLink.body || {}).error || "")) &&
 			/self loop/.test(String((selfLink.body || {}).error || "")) &&
@@ -2457,9 +2631,11 @@ async function checkCapabilityDetail(page, base) {
 // checkBatchCreate 验证「一个表单建多个能力」（契约 §4）。
 //
 // 四件事：
-//   ① 一次提交建两个能力 + 一条候选边，**只发一个** POST /v1/capabilities/batch
+//   ① 一次提交建两个能力 + 一条候选边，**只发一个** POST /v1/capabilities/batch；
+//      卡 1 填了下游（outputs:["out"]），卡 2 留空（outputs:[]，终端能力）
 //   ② 坏输入整批不落库：弹层不关、错误定位到第几张卡
-//   ③ 候选的优先级能填、能存（mock 自己存 priority）、详情区能看见
+//   ③ 表单不再表达优先级 / balance（单一输入框里没有它们的位置）：
+//      请求体 priority 一律 0；优先级只归详情区的下游列表
 //   ④ 成环可建（a→b 与 b→a 在同一批里）、balance 非 priority 保存即 400
 //
 // 全部跑在 mock 预览环境里：批量接口是本期新增的，真后端那侧要等 A/B 组合并后
@@ -2501,14 +2677,11 @@ async function checkBatchCreate(page, base) {
 		};
 	});
 
-	// 卡 1：名字 + 一个产出端口
+	// 卡 1：先只填名字（下游等第二张卡也有名字之后再填，否则它引用不到）
 	await page.evaluate((name) => {
 		const n = document.getElementById("cap-name");
 		n.value = name;
 		n.dispatchEvent(new Event("input", { bubbles: true }));
-		const inp = document.getElementById("cap-port-input");
-		inp.value = "fix";
-		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 	}, capA);
 
 	// 「＋ 再加一个能力」
@@ -2526,7 +2699,7 @@ async function checkBatchCreate(page, base) {
 		JSON.stringify(afterAdd),
 	);
 
-	// 卡 2：名字 + 一个产出端口
+	// 卡 2：只填名字 —— 下游**留空** = 终端能力（outputs:[]）
 	await page.evaluate(() => {
 		const pick = document.querySelector('#cap-cards .cap-card[data-card="1"] .cap-card-pick');
 		if (pick) pick.click();
@@ -2536,65 +2709,61 @@ async function checkBatchCreate(page, base) {
 		const n = document.getElementById("cap-name");
 		n.value = name;
 		n.dispatchEvent(new Event("input", { bubbles: true }));
-		const inp = document.getElementById("cap-port-input");
-		inp.value = "done";
-		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 	}, capB);
 
-	// 回到卡 1：把**本批的卡 2** 设成候选，并填优先级 10
+	// 回到卡 1：把**本批的卡 2** 填成下游（一个逗号分隔的输入框）
 	await page.evaluate(() => {
 		const pick = document.querySelector('#cap-cards .cap-card[data-card="0"] .cap-card-pick');
 		if (pick) pick.click();
 	});
 	await page.waitForTimeout(300);
 	const candSetup = await page.evaluate((target) => {
-		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="fix"]');
-		if (!row) return { err: "没有 fix 出口行" };
-		const din = row.querySelector(".cap-down-input");
-		if (!din) return { err: "没有候选输入框" };
+		const din = document.getElementById("cap-downstream");
+		if (!din) return { err: "没有下游输入框" };
 		din.value = target;
-		din.dispatchEvent(new Event("change", { bubbles: true }));
+		din.dispatchEvent(new Event("input", { bubbles: true }));
 		return { ok: true };
 	}, capB);
 	await page.waitForTimeout(400);
 	const candState = await page.evaluate(() => {
-		const row = document.querySelector('#cap-down-rows .cap-down-row[data-port="fix"]');
-		const chip = row && row.querySelector(".cap-cand");
-		if (!chip) {
-			return {
-				err: "没有候选 chip",
-				html: row ? row.textContent.replace(/\s+/g, " ").slice(0, 120) : "",
-			};
-		}
-		const prio = chip.querySelector(".cap-cand-prio");
-		if (!prio) return { err: "候选没有优先级输入框" };
-		prio.value = "10";
-		prio.dispatchEvent(new Event("change", { bubbles: true }));
+		const din = document.getElementById("cap-downstream");
+		const hint = document.getElementById("cap-downstream-hint");
 		return {
-			name: ((chip.querySelector(".cap-cand-name") || {}).textContent || "").trim(),
-			prio: prio.value,
-			balModes: Array.from(row.querySelectorAll(".cap-bal-select option")).map(
-				(o) => o.value,
-			),
-			hint: ((row.querySelector(".cap-cand-hint") || {}).textContent || "").trim(),
+			value: din ? din.value : "",
+			hint: ((hint || {}).textContent || "").trim(),
+			warn: !!(hint && hint.classList.contains("cap-warn")),
+			cardDown: (
+				(document.querySelector("#cap-cards .cap-card.is-active .cap-card-down")) || {}
+			).textContent || "",
+			// 契约删掉的两个控件：balance 模式选择器 / 优先级数字输入框
+			balSelect: document.querySelectorAll("select.cap-bal-select, .cap-bal-wrap").length,
+			prioInput: document.querySelectorAll(".cap-cand-prio, .cap-cand-prio-wrap").length,
+			portUI: document.querySelectorAll("#cap-ports, #cap-port-input, .cap-chip").length,
 		};
 	});
 	H.check(
-		"候选能选「本批里另一个能力」，并带自己的优先级输入（契约 §3/§6）",
-		candSetup.ok === true && !candState.err && /batch\.b\./.test(String(candState.name)),
+		"候选能选「本批里另一个能力」（引用本批卡名也行）",
+		candSetup.ok === true &&
+			candState.value === capB &&
+			candState.warn === false &&
+			!/找不到/.test(candState.hint),
 		JSON.stringify({ candSetup, candState }),
 	);
 	H.check(
-		"端口旁有 balance 模式选择器：默认 priority，all 等其它值可选但未实现",
-		(candState.balModes || []).includes("priority") &&
-			(candState.balModes || []).includes("all"),
-		JSON.stringify(candState.balModes),
+		"下游表单不再表达优先级 / balance / 端口（三个旧控件都不在）",
+		candState.balSelect === 0 && candState.prioInput === 0 && candState.portUI === 0,
+		JSON.stringify({
+			bal: candState.balSelect,
+			prio: candState.prioInput,
+			portUI: candState.portUI,
+		}),
 	);
 	H.check(
-		"候选行说明了「运行期按优先级选一个；同级轮盘」",
-		/优先级/.test(String(candState.hint)) && /轮盘/.test(String(candState.hint)),
+		"输入框下的回显说明了「运行期按优先级选一个；同级轮盘」",
+		/优先级/.test(candState.hint) && /轮盘/.test(candState.hint),
 		String(candState.hint).slice(0, 120),
 	);
+	await page.waitForTimeout(400);
 
 	// 提交：两个能力 + 一条候选边，**一个请求**
 	await page.click("#cap-submit");
@@ -2606,7 +2775,7 @@ async function checkBatchCreate(page, base) {
 		]);
 		const posts = window.__batchPosts || [];
 		const edge = (edgesApi.edges || []).find(
-			(e) => e.fromRef === an && e.fromPort === "fix" && String(e.toRef).indexOf(bn) === 0,
+			(e) => e.fromRef === an && e.fromPort === "out" && String(e.toRef).indexOf(bn) === 0,
 		);
 		return {
 			posts: posts.map((p) => p.url),
@@ -2633,55 +2802,55 @@ async function checkBatchCreate(page, base) {
 	);
 	const body0 = (batch.bodies || [])[0] || {};
 	H.check(
-		"批量请求体：capabilities 两条 + links 带 fromRef/priority（契约 §4）",
+		"批量请求体：capabilities 两条（有下游 outputs:[out] / 留空 []）+ links 带 fromRef/fromPort:out/priority:0",
 		Array.isArray(body0.capabilities) &&
 			body0.capabilities.length === 2 &&
+			JSON.stringify(body0.capabilities[0].outputs) === JSON.stringify(["out"]) &&
+			JSON.stringify(body0.capabilities[1].outputs) === JSON.stringify([]) &&
 			Array.isArray(body0.links) &&
 			body0.links.length === 1 &&
 			body0.links[0].fromRef === capA &&
-			body0.links[0].fromPort === "fix" &&
+			body0.links[0].fromPort === "out" &&
 			body0.links[0].toRef === capB &&
-			body0.links[0].priority === 10,
-		JSON.stringify({ caps: (body0.capabilities || []).length, links: body0.links }),
+			body0.links[0].priority === 0,
+		JSON.stringify({
+			caps: (body0.capabilities || []).map((c) => c.outputs),
+			links: body0.links,
+		}),
 	);
 	H.check(
-		"候选优先级存进去了（GET /v1/edges 回来 priority=10）",
-		!!batch.edge && batch.edge.priority === 10,
+		"批量建出来的边 priority=0（表单不表达优先级），且出口是内部名 out",
+		!!batch.edge && batch.edge.priority === 0 && batch.edge.fromPort === "out",
 		JSON.stringify(batch.edge),
 	);
 
-	// 详情区：候选 + 优先级 + balance 模式
+	// 详情区：这条候选 + 优先级（不再有 balance 模式 / 端口块）
 	const detail = await page.evaluate(async (an) => {
 		const row = document.querySelector('.cap-row[data-cap-name="' + an + '"]');
 		if (!row) return { err: "列表里没有刚建的能力行" };
 		const box = row.querySelector(".cap-detail");
 		if (box && !box.classList.contains("open")) row.querySelector('[data-act="detail"]').click();
 		await new Promise((r) => setTimeout(r, 500));
-		const blocks = Array.from(row.querySelectorAll(".cap-port-block"));
-		const block =
-			blocks.find((b) => b.getAttribute("data-port") === "fix") ||
-			blocks.find(
-				(b) => ((b.querySelector(".cap-port-name") || {}).textContent || "").trim() === "fix",
-			);
-		if (!block) return { err: "详情区没有 fix 端口块", blocks: blocks.length };
 		return {
-			prio: Array.from(block.querySelectorAll(".cap-cand-prio-badge")).map((x) =>
-				(x.textContent || "").trim(),
-			),
-			bal: ((block.querySelector(".cap-bal-badge") || {}).textContent || "").trim(),
-			count: ((block.querySelector(".cap-cand-count") || {}).textContent || "").trim(),
-			dead: !!block.querySelector(".cap-port-dead"),
+			cands: Array.from(row.querySelectorAll(".cap-link[data-cand-name]")).map((l) => ({
+				name: l.getAttribute("data-cand-name"),
+				text: l.textContent.replace(/\s+/g, " ").trim(),
+			})),
+			// 旧控件：端口块 / balance 徽章 / 候选计数
+			legacy: row.querySelectorAll(".cap-port-block, .cap-bal-badge, .cap-cand-count").length,
 		};
 	}, capA);
 	H.check(
-		"详情区端口下显示候选与优先级（优先级 10）",
-		(detail.prio || []).some((x) => /优先级\s*10|Priority\s*10/.test(x)),
+		"详情区列出这条下游并显示优先级 0（表单不表达优先级 → 一律 0）",
+		(detail.cands || []).some(
+			(c) => String(c.name || "").indexOf(capB) === 0 && /优先级\s*0/.test(c.text),
+		),
 		JSON.stringify(detail),
 	);
 	H.check(
-		"详情区端口旁标出 balance 模式（priority）",
-		/priority/i.test(String(detail.bal)),
-		JSON.stringify(detail),
+		"详情区不再有 balance 模式徽章 / 候选计数 / 端口块",
+		detail.legacy === 0,
+		`legacy=${detail.legacy}`,
 	);
 
 	// ② 坏输入：整批不落库 + 弹层保留 + 错误定位到第几张卡
@@ -2695,9 +2864,11 @@ async function checkBatchCreate(page, base) {
 		const n = document.getElementById("cap-name");
 		n.value = name;
 		n.dispatchEvent(new Event("input", { bubbles: true }));
-		const inp = document.getElementById("cap-port-input");
-		inp.value = "done";
-		inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		// 这张卡有个合法的下游（第二张卡的名字）—— 但第二张卡名字非法，
+		// 所以整批仍该被拦下
+		const din = document.getElementById("cap-downstream");
+		din.value = "report.send";
+		din.dispatchEvent(new Event("input", { bubbles: true }));
 	}, okName);
 	await page.click("#cap-add-card");
 	await page.waitForTimeout(400);
@@ -2771,8 +2942,8 @@ async function checkBatchCreate(page, base) {
 			return { status: res.status, body: json };
 		};
 		const badLink = await post({
-			capabilities: [mk(an, ["done"]), mk(bn, ["done"])],
-			links: [{ fromRef: an, fromPort: "done", toRef: "no.such.capability", priority: 0 }],
+			capabilities: [mk(an, ["out"]), mk(bn, ["out"])],
+			links: [{ fromRef: an, fromPort: "out", toRef: "no.such.capability", priority: 0 }],
 		});
 		let caps = await fetch("/v1/capabilities").then((r) => r.json());
 		const afterBad = {
@@ -2780,16 +2951,17 @@ async function checkBatchCreate(page, base) {
 			hasB: (caps.capabilities || []).some((c) => c.name === bn),
 		};
 		// balance 非 priority：保存即 400（本期只实现 priority）
-		const bal = mk(an, ["done"]);
-		bal.balance = { done: { mode: "all" } };
+		// 注：界面已经表达不了 balance（端口选择器删掉了），但 API 仍是协议的一部分
+		const bal = mk(an, ["out"]);
+		bal.balance = { out: { mode: "all" } };
 		const balRes = await post({ capabilities: [bal], links: [] });
 		// 成环可建：a→b 与 b→a 在同一批里
 		caps = await fetch("/v1/capabilities").then((r) => r.json());
 		const cycRes = await post({
-			capabilities: [mk(an, ["done"]), mk(bn, ["back"])],
+			capabilities: [mk(an, ["out"]), mk(bn, ["out"])],
 			links: [
-				{ fromRef: an, fromPort: "done", toRef: bn, priority: 0 },
-				{ fromRef: bn, fromPort: "back", toRef: an, priority: 0 },
+				{ fromRef: an, fromPort: "out", toRef: bn, priority: 0 },
+				{ fromRef: bn, fromPort: "out", toRef: an, priority: 0 },
 			],
 		});
 		const edges = await fetch("/v1/edges").then((r) => r.json());
@@ -3035,16 +3207,23 @@ async function checkEdgesPage(page) {
 // 默认视图是**按时间倒序平铺**（事件流的第一个问题永远是"刚刚发生了什么"），
 // 分组是可选视图（?group=1），因为分组会把刚发生的事件压到组内第 6 条
 // 后面，用户以为没收到。
-// checkCapabilityEditReal 用**真后端**验三件用户真实卡住的事：
+// checkCapabilityEditReal 用**真后端**验用户真实卡住的几件事：
 //
 //   ① 详情能看到脚本正文（脚本存在产物 artifacts.spec.run.files 里）
-//   ② 能力行/详情区都有「编辑」入口，进去是「发新版本」模式且名字锁定
-//   ③ 改脚本 + 加出口 → 保存后出现 v2、脚本是新的、**旧边仍指向名字**（跟随最新）
-//   ④ 清空出口 → 409 upgrade_breaking 闸门弹影响面 → force 后成功
+//   ② 能力行/详情区都有「编辑」入口，进去是「发新版本」模式且名字锁定；
+//      编辑弹层里**没有**端口 UI，已有跟随最新的下游时下游栏整栏隐藏
+//   ③ 定义变更（脚本 + 参数契约）→ 保存后出现 v2、脚本是新的、**旧边仍指向名字**（跟随最新）
+//   ④ 破坏性定义变更 → 409 upgrade_breaking 闸门弹影响面 → force 后成功
+//   ⑤ 出口被删掉（协议层；界面已表达不了）→ 409 removed_port 带 link 清单 → force 落库
 //
-// 为什么必须真后端：这三件事的真相分在三个层面（产物 digest / append-only 版本 /
+// 为什么必须真后端：这几件事的真相分在三个层面（产物 digest / append-only 版本 /
 // 边的引用解析），mock 只能证明「UI 接对了形状」。
 // 本套件 DB 是套件私有的，造的能力/边残留无副作用。
+//
+// ③ 为什么改**参数契约**而不是「加一个出口」：端口从界面消失后（契约 hide-ports §3），
+// 编辑弹层里能改的定义只剩参数契约（下游栏在已有边时隐藏 —— 那些边接的是名字，
+// 新版本自动就是它们指向的版本）。脚本本身不参与能力定义的 content hash，
+// 只改脚本会走幂等路径折回同一版本，不会产生 v2 —— 所以「脚本 + 契约」一起改。
 //
 // 返回：无（断言全部走 H.check）
 async function checkCapabilityEditReal(server, newCtx) {
@@ -3057,32 +3236,35 @@ async function checkCapabilityEditReal(server, newCtx) {
 	const echo = await H.req(B, "/v1/capabilities", {
 		session: s.session,
 		method: "POST",
-		body: { name: echoName, outputs: ["done"], paramsSchema: { type: "object" } },
+		body: { name: echoName, outputs: ["out"], paramsSchema: { type: "object" } },
 	});
 	H.eq("真后端：建下游能力 echo → 200", echo.status, 200);
 
-	// 上游：带脚本 + 一条 live 边（能力与边**一次提交**，走的也是原子路径）
+	// 上游：带脚本 + 一条 live 边（能力与边**一次提交**，走的也是原子路径）。
+	// 脚本里不写 --port：单出口能力省略它（契约 §2），详情里看到的就是用户会写的形状。
 	const scriptV1 = [
 		"#!/bin/sh",
 		"set -eu",
 		'echo "touchnow v1"',
-		"anotify-agent emit --port tick --data '{}'",
+		"anotify-agent emit --data '{\"touched\":true}'",
 		"",
 	].join("\n");
+	const schemaV1 = { type: "object", properties: { changedLines: { type: "number" } } };
 	const made = await H.req(B, "/v1/capabilities", {
 		session: s.session,
 		method: "POST",
 		body: {
 			name: touchName,
 			displayName: "定时嗃唤",
-			outputs: ["tick"],
-			paramsSchema: { type: "object" },
+			// 单出口：内部名固定 out。它只活在请求体/库里，界面上没有它的位置。
+			outputs: ["out"],
+			paramsSchema: schemaV1,
 			run: {
 				entrypoint: "run.sh",
 				files: { "run.sh": scriptV1 },
 				timeoutSec: 120,
 			},
-			links: [{ fromPort: "tick", toRef: echoName }],
+			links: [{ fromPort: "out", toRef: echoName }],
 		},
 	});
 	H.check(
@@ -3125,6 +3307,14 @@ async function checkCapabilityEditReal(server, newCtx) {
 			paths: Array.from(row.querySelectorAll(".cap-script-path")).map((x) => x.textContent),
 			text: ((pre || {}).textContent || "").trim(),
 			empty: !!row.querySelector(".cap-script-empty"),
+			// 详情区：下游（候选）一节说人话，没有任何「端口」字样
+			downTitles: Array.from(row.querySelectorAll(".cap-detail-title")).map((x) =>
+				x.textContent.trim(),
+			),
+			downCands: Array.from(row.querySelectorAll(".cap-link[data-cand-name]")).map((l) =>
+				l.getAttribute("data-cand-name"),
+			),
+			bodyPort: /端口/.test(document.body.innerText || ""),
 		};
 	}, touchName);
 	H.check(
@@ -3138,16 +3328,24 @@ async function checkCapabilityEditReal(server, newCtx) {
 			(scriptView.paths || []).includes("run.sh"),
 		JSON.stringify({ entry: scriptView.entry, paths: scriptView.paths }),
 	);
+	H.check(
+		"① 详情区只谈「下游（候选）」，全页没有「端口」",
+		(scriptView.downTitles || []).some((x) => /下游/.test(x)) &&
+			(scriptView.downCands || []).includes(echoName) &&
+			scriptView.bodyPort === false,
+		JSON.stringify({ titles: scriptView.downTitles, cands: scriptView.downCands }),
+	);
 
 	// ---------- ② 「编辑」→ 新版本模式且名字锁定 ----------
 	const editMode = await p.evaluate(async (name) => {
-		let row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+		const row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
 		row.querySelector('[data-act="edit"]').click();
 		for (let i = 0; i < 40; i++) {
 			const pre = document.getElementById("script-pre");
 			if (pre && pre.textContent.trim()) break;
 			await new Promise((r) => setTimeout(r, 150));
 		}
+		const down = document.getElementById("cap-downstream");
 		return {
 			open: !document.getElementById("cap-modal").classList.contains("hidden"),
 			title: document.getElementById("cap-modal-title").textContent.trim(),
@@ -3161,10 +3359,13 @@ async function checkCapabilityEditReal(server, newCtx) {
 			timeout: document.getElementById("cap-timeout").value,
 			downHidden: document.getElementById("cap-down-wrap").classList.contains("hidden"),
 			downHint: document.getElementById("cap-down-existing-text").textContent.trim(),
+			downValue: down ? down.value : null,
 			displayName: document.getElementById("cap-display-name").value,
-			chips: Array.from(document.querySelectorAll("#cap-ports .cap-chip")).map((x) =>
-				x.textContent.replace("×", "").trim(),
-			),
+			// 端口 UI 的钩子（一个都不许在）：端口输入框 / 出口 chips / 按出口分行 /
+			// balance 模式选择器 / 优先级数字输入框
+			legacyPortUI: document.querySelectorAll(
+				"#cap-ports, #cap-port-input, #cap-ports-hint, .cap-chip, #cap-down-rows, .cap-down-row, .cap-bal-select, .cap-bal-wrap, .cap-cand-prio",
+			).length,
 		};
 	}, touchName);
 	H.check(
@@ -3178,12 +3379,21 @@ async function checkCapabilityEditReal(server, newCtx) {
 		JSON.stringify({ name: editMode.name, locked: editMode.locked }),
 	);
 	H.check(
-		"② 预填当前版本：脚本 / 超时 / 出口 / 显示名",
+		"② 预填当前版本：脚本 / 超时 / 显示名（下游栏不预填，它整栏隐藏了）",
 		/touchnow v1/.test(editMode.script) &&
 			editMode.timeout === "120" &&
-			(editMode.chips || []).includes("tick") &&
-			editMode.displayName === "定时嗃唤",
-		JSON.stringify(editMode).slice(0, 320),
+			editMode.displayName === "定时嗃唤" &&
+			editMode.downValue === "",
+		JSON.stringify({
+			timeout: editMode.timeout,
+			displayName: editMode.displayName,
+			down: editMode.downValue,
+		}),
+	);
+	H.check(
+		"② 编辑弹层里没有端口 UI（端口输入框 / 出口 chips / 分行 / balance / 优先级数字）",
+		editMode.legacyPortUI === 0,
+		`legacyPortUI=${editMode.legacyPortUI}`,
 	);
 	H.check(
 		"② 已有 edges：下游栏隐藏并说明「边接的是名字」",
@@ -3191,21 +3401,28 @@ async function checkCapabilityEditReal(server, newCtx) {
 		JSON.stringify({ hidden: editMode.downHidden, hint: editMode.downHint }).slice(0, 200),
 	);
 
-	// ---------- ③ 改脚本 + 加出口 → 保存后 v2（旧边跟随名字）----------
+	// ---------- ③ 改脚本 + 加一个可选入参 → 保存出 v2（旧边跟随名字）----------
+	//
+	// 加可选入参是**非破坏性**变更（闸门放行），所以这一版直接出 v2。
 	const marker = "edited-by-e2e";
 	const scriptV2 = scriptV1.replace('echo "touchnow v1"', `echo "touchnow v2 ${marker}"`);
+	const schemaV2 = {
+		type: "object",
+		properties: { changedLines: { type: "number" }, note: { type: "string" } },
+	};
 	await p.evaluate(
-		async ({ next, port }) => {
+		async ({ next, schema }) => {
 			document.getElementById("script-mode-edit").click();
 			const ta = document.getElementById("script-input");
 			ta.value = next;
 			ta.dispatchEvent(new Event("input", { bubbles: true }));
-			const inp = document.getElementById("cap-port-input");
-			inp.value = port;
-			inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+			// 高级参数区默认折叠：要改契约得先展开
+			const wrap = document.getElementById("schema-wrap");
+			if (wrap.classList.contains("hidden")) document.getElementById("schema-toggle").click();
+			document.getElementById("cap-schema").value = JSON.stringify(schema);
 			document.getElementById("cap-submit").click();
 		},
-		{ next: scriptV2, port: "after-edit" },
+		{ next: scriptV2, schema: schemaV2 },
 	);
 	// 等弹层关（保存成功后才关）+ 列表重建
 	const saved = await p
@@ -3228,7 +3445,7 @@ async function checkCapabilityEditReal(server, newCtx) {
 		const v1 = order.find((c) => c.version === 1) || {};
 		const v2 = order.find((c) => c.version === 2) || null;
 		const rowV2 = Array.from(document.querySelectorAll(`.cap-row[data-cap-name="${name}"]`)).find(
-			(r) => (r.textContent || "").includes('@2'),
+			(r) => (r.textContent || "").includes("@2"),
 		);
 		// 脚本正文**不在列表里**（列表只投影 entrypoint/timeoutSec/workDir，
 		// 免得每个能力都把几 KB 脚本塞进列表）。要正文走详情用的懒加载端点。
@@ -3246,7 +3463,9 @@ async function checkCapabilityEditReal(server, newCtx) {
 		const v2Script = await scriptOf(v2 && v2.id);
 		return {
 			versions: order.map((c) => c.version),
+			v1Outputs: (v1 && v1.outputs) || [],
 			v2Outputs: (v2 && v2.outputs) || [],
+			v2Schema: (v2 && v2.paramsSchema) || null,
 			v2Script,
 			v1Script,
 			v1Id: v1.id || "",
@@ -3268,9 +3487,16 @@ async function checkCapabilityEditReal(server, newCtx) {
 		JSON.stringify(afterSave.versions),
 	);
 	H.check(
-		"③ v2 的出口包含了新加的那个",
-		afterSave.v2Outputs.includes("after-edit") && afterSave.v2Outputs.includes("tick"),
-		JSON.stringify(afterSave.v2Outputs),
+		"③ v2 的出口仍是内部唯一出口 out（下游边还接在上面）",
+		JSON.stringify(afterSave.v2Outputs) === JSON.stringify(["out"]),
+		JSON.stringify({ v1: afterSave.v1Outputs, v2: afterSave.v2Outputs }),
+	);
+	H.check(
+		"③ v2 的参数契约是新的（可选入参 note 落库）",
+		!!afterSave.v2Schema &&
+			!!afterSave.v2Schema.properties &&
+			!!afterSave.v2Schema.properties.note,
+		JSON.stringify(afterSave.v2Schema).slice(0, 160),
 	);
 	H.check(
 		"③ v2 的脚本是新的（v1 的脚本没被改写）",
@@ -3281,6 +3507,7 @@ async function checkCapabilityEditReal(server, newCtx) {
 		"③ 旧边仍指名字（跟随 latest），且解析到 v2",
 		afterSave.edges.length === 1 &&
 			afterSave.edges[0].fromRef === touchName &&
+			afterSave.edges[0].fromPort === "out" &&
 			afterSave.edges[0].fromCapabilityId === afterSave.v2Id &&
 			afterSave.v2Id !== afterSave.v1Id,
 		JSON.stringify(afterSave.edges),
@@ -3291,7 +3518,10 @@ async function checkCapabilityEditReal(server, newCtx) {
 		`v2 行展开=${afterSave.rowV2Open}`,
 	);
 
-	// ---------- ④ 清空出口 → 409 闸门弹影响面 → force 后成功 ----------
+	// ---------- ④ 破坏性定义变更 → 409 闸门弹影响面 → force 后成功 ----------
+	//
+	// 把 changedLines 从 number 改成 string：上游照旧喂旧类型，派发时会被
+	// param_schema 静默剪掉 —— 这正是闸门要拦的那种「看起来没问题」的变更。
 	const gate = await p.evaluate(async (name) => {
 		const rows = Array.from(document.querySelectorAll(`.cap-row[data-cap-name="${name}"]`));
 		const rowV2 = rows.find((r) => (r.textContent || "").includes("@2")) || rows[rows.length - 1];
@@ -3302,9 +3532,12 @@ async function checkCapabilityEditReal(server, newCtx) {
 			await new Promise((r) => setTimeout(r, 150));
 		}
 		const banner = document.getElementById("cap-version-title").textContent.trim();
-		// 像用户那样把所有出口一个个删掉
-		for (const x of Array.from(document.querySelectorAll("#cap-ports .cap-chip-x"))) x.click();
-		const chipsLeft = document.querySelectorAll("#cap-ports .cap-chip").length;
+		const wrap = document.getElementById("schema-wrap");
+		if (wrap.classList.contains("hidden")) document.getElementById("schema-toggle").click();
+		document.getElementById("cap-schema").value = JSON.stringify({
+			type: "object",
+			properties: { changedLines: { type: "string" }, note: { type: "string" } },
+		});
 		document.getElementById("cap-submit").click();
 		for (let i = 0; i < 40; i++) {
 			const box = document.getElementById("cap-impact");
@@ -3314,21 +3547,25 @@ async function checkCapabilityEditReal(server, newCtx) {
 		const impact = document.getElementById("cap-impact");
 		return {
 			banner,
-			chipsLeft,
 			impactShown: !!impact && !impact.classList.contains("hidden"),
-			impactText: (impact || {}).textContent || "",
+			impactText: ((impact || {}).textContent || "").replace(/\s+/g, " ").trim(),
 			hasForce: !!document.querySelector('[data-act="force-publish"]'),
 			modalStillOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
 		};
 	}, touchName);
 	H.check(
-		"④ 出口清空后保存被升级闸门拦住（409 弹影响面，弹层不关）",
+		"④ 破坏性变更被升级闸门拦住（409 弹影响面，弹层不关）",
 		gate.impactShown === true && gate.modalStillOpen === true,
 		JSON.stringify({ shown: gate.impactShown, open: gate.modalStillOpen }).slice(0, 200),
 	);
 	H.check(
-		"④ 影响面说清了「变了什么」与「哪条 link 会断」",
-		/removed_port|被删掉/.test(gate.impactText) && gate.impactText.includes("--tick-->"),
+		"④ 影响面说清「变了什么」与「哪些下游会断」，且不再用 --出口--> 的形状",
+		/变了什么/.test(gate.impactText) &&
+			/changedLines/.test(gate.impactText) &&
+			/会断的下游/.test(gate.impactText) &&
+			// 新口径：影响面只说「A → B」，不夹 --port--> 也不出现「端口」
+			!/--/.test(gate.impactText) &&
+			!/端口/.test(gate.impactText),
 		String(gate.impactText).slice(0, 320),
 	);
 	H.check("④ 影响面上有「仍然发布」（带 force 重发）", gate.hasForce === true);
@@ -3349,20 +3586,91 @@ async function checkCapabilityEditReal(server, newCtx) {
 	await p.waitForTimeout(600);
 	const afterForce = await p.evaluate(async (name) => {
 		const caps = await window.Anotify.api("/v1/capabilities");
+		const edges = await window.Anotify.api("/v1/edges");
 		const mine = (caps.capabilities || [])
 			.filter((c) => c.name === name)
 			.sort((a, b) => a.version - b.version);
+		const v3 = mine.find((c) => c.version === 3) || {};
 		return {
 			versions: mine.map((c) => c.version),
-			v3Outputs: (mine.find((c) => c.version === 3) || {}).outputs,
+			v3Outputs: v3.outputs,
+			v3Schema: v3.paramsSchema || null,
+			edges: (edges.edges || []).filter((e) => (e.fromRef || "").split("@")[0] === name),
 		};
 	}, touchName);
 	H.check(
-		"④ force 之后 v3 真的落了库，出口是空的",
+		"④ force 之后 v3 真的落了库（破坏性变更被明确确认，不是静默生效）",
 		JSON.stringify(afterForce.versions) === JSON.stringify([1, 2, 3]) &&
-			Array.isArray(afterForce.v3Outputs) &&
-			afterForce.v3Outputs.length === 0,
-		JSON.stringify(afterForce),
+			!!afterForce.v3Schema &&
+			!!afterForce.v3Schema.properties &&
+			afterForce.v3Schema.properties.changedLines.type === "string",
+		JSON.stringify({ versions: afterForce.versions, schema: afterForce.v3Schema }).slice(0, 240),
+	);
+	H.check(
+		"④ v3 的出口仍是 out，那条下游边一条没丢",
+		JSON.stringify(afterForce.v3Outputs) === JSON.stringify(["out"]) &&
+			afterForce.edges.length === 1 &&
+			afterForce.edges[0].fromPort === "out" &&
+			afterForce.edges[0].toRef === echoName,
+		JSON.stringify({ outputs: afterForce.v3Outputs, edges: afterForce.edges }),
+	);
+
+	// ---------- ⑤ 出口被删掉 → 409 removed_port → force 落库（协议层）----------
+	//
+	// 界面已经表达不了「删掉出口」（下游栏在已有边时隐藏，留空会自动保留 out），
+	// 但这道闸门仍然是协议的一部分：直接打接口，钉住 409 的影响面结构与 force 语义。
+	const dropName = "e2e.dropport." + Date.now();
+	const dropBody = (outputs, force) => {
+		const body = {
+			name: dropName,
+			outputs: outputs,
+			paramsSchema: { type: "object" },
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+		};
+		if (force) body.force = true;
+		return body;
+	};
+	const dropMade = await H.req(B, "/v1/capabilities", {
+		session: s.session,
+		method: "POST",
+		body: Object.assign(dropBody(["out"]), {
+			links: [{ fromPort: "out", toRef: echoName }],
+		}),
+	});
+	H.check(
+		"⑤ 造数：一个带下游的能力 → 200",
+		dropMade.status === 200,
+		String(dropMade.text).slice(0, 160),
+	);
+	const dropNoForce = await H.req(B, "/v1/capabilities", {
+		session: s.session,
+		method: "POST",
+		body: dropBody([]),
+	});
+	const dropImpact = (dropNoForce.json || {}).upgradeImpact || {};
+	const dropChange = (dropImpact.changes || [])[0] || {};
+	const dropLink = (dropImpact.links || [])[0] || {};
+	H.check(
+		"⑤ 删掉出口 → 409 removed_port，并列出会断的那条 link（fromRef / port / toRef）",
+		dropNoForce.status === 409 &&
+			String((dropNoForce.json || {}).code || "") === "upgrade_breaking" &&
+			dropChange.kind === "removed_port" &&
+			dropLink.fromRef === dropName &&
+			dropLink.port === "out" &&
+			dropLink.toRef === echoName,
+		String(dropNoForce.text).slice(0, 300),
+	);
+	const dropForced = await H.req(B, "/v1/capabilities", {
+		session: s.session,
+		method: "POST",
+		body: dropBody([], true),
+	});
+	H.check(
+		"⑤ force 之后真的落库：v2 存在、出口是空的",
+		dropForced.status === 200 &&
+			dropForced.json?.capability?.version === 2 &&
+			JSON.stringify(dropForced.json?.capability?.outputs) === JSON.stringify([]),
+		`${dropForced.status} ${String(dropForced.text).slice(0, 200)}`,
 	);
 
 	H.check("真后端能力编辑：页面无 JS pageerror", pageErrors.length === 0, pageErrors[0]?.slice(0, 120));
@@ -3913,8 +4221,8 @@ async function checkWaterfall(page) {
 		// ---- 边标签不能压在节点上 ----
 		//
 		// 踩过：连线用的是"起终点直接拉一条贝塞尔"，忽略 dagre 算出的
-		// 绕行点。两个节点横向错开时曲线会从中间穿过去，出口名标签
-		// （passed / fixed）正好落在别的节点卡片上，看起来像标签错乱。
+		// 绕行点。两个节点横向错开时曲线会从中间穿过去，边标签
+		// （现在是走过多次的 ×N）正好落在别的节点卡片上，看起来像标签错乱。
 		{
 			const overlap = await page.evaluate(() => {
 				const labels = Array.from(document.querySelectorAll(".flograph-edge-label"));
@@ -4034,11 +4342,15 @@ async function checkWaterfall(page) {
 			);
 		}
 
-		// ---- 出口名标签必须贴着自己的线 ----
+		// ---- 边标签必须贴着自己的线 ----
 		//
 		// 标签是绝对定位的 DOM，位置靠算。回边会被绕成弧，如果还拿 dagre
 		// 原始折线去算标签位置，标签就飘在弧线旁边的空地上 —— 谁也看不出
 		// 它属于哪条边。
+		//
+		// 另外：trace 页的边标签现在只有一个来源 —— **走过多次**的 ×N
+		// （出口名不上图，契约 hide-ports §4）。mock 里所有能力都是单出口，
+		// 所以任何带出口名的标签都是回退。
 		{
 			const lbl = await page.evaluate(() => {
 				const paths = Array.from(
@@ -4068,20 +4380,35 @@ async function checkWaterfall(page) {
 							best = Math.min(best, Math.hypot(d.x - cx, d.y - cy));
 						}
 					}
-					out.push({ port: lb.textContent.trim(), dist: +best.toFixed(1) });
+					out.push({
+						from: lb.dataset.from || "",
+						label: lb.textContent.trim(),
+						dist: +best.toFixed(1),
+					});
 				}
 				return out;
 			});
 			// 阈值 20px 而不是 12px：标签避让节点/别的标签时**本来就会被推开**
-			// 几像素（实测 needs-fix 稳定在 12.2px），卡 12 是必然 flaky。
+			// 几像素（实测 12.2px 量级），卡 12 是必然 flaky。
 			// 这条断言真正要防的是"标签跑到别的线上 / 整个飘走"，那是几十
 			// 上百像素的偏差 —— 20px 依然能拦住它。
 			const far = lbl.filter((x) => x.dist > 20);
 			H.check(
-				"出口名标签贴在自己的线上（≤20px）",
+				"边标签贴在自己的线上（≤20px）",
 				far.length === 0,
-				far.map((x) => `${x.port}=${x.dist}px`).join(", ") ||
-					`共 ${lbl.length} 个，最大 ${Math.max(...lbl.map((x) => x.dist))}px`,
+				far.map((x) => `${x.label}=${x.dist}px`).join(", ") ||
+					`共 ${lbl.length} 个，最大 ${Math.max(0, ...lbl.map((x) => x.dist))}px`,
+			);
+			H.check(
+				"trace 页的能力边标签只剩 ×N（出口名不上图）",
+				// 触发器→首层能力那条边的标签是**事件类型**（pull_request.opened），
+				// 不是能力出口，所以把它排除；其余（能力→能力）只允许 ×N。
+				// 另加一条硬防线：内部出口名 out 在任何标签里都不许出现。
+				lbl
+					.filter((x) => x.from !== "__trigger__")
+					.every((x) => /^\u00d7\d+$/.test(x.label)) &&
+					lbl.every((x) => !/(^|\s)out(\s|$)/.test(x.label)),
+				lbl.map((x) => `${x.from}=>${x.label}`).join(" | ") || "本图没有边标签",
 			);
 		}
 
@@ -4624,26 +4951,28 @@ async function checkWaterfall(page) {
 					: `画了没走过的边: ${edgeCheck.fake.join(", ")}`,
 			);
 
-			// ---- issue #157：同一个源、同一个目标，走的是哪个出口必须分得清 ----
+			// ---- issue #157：同一对节点，这次到底走了哪条候选 ----
 			//
-			// t9 里 analyze-pr 有两条边进 run-tests（needs-fix 扇出 + approved），
-			// lint-fix 有一条 clean 进 run-tests。这次 analyze 走的是 needs-fix、
-			// lint-fix 走的是 remaining，所以只有 needs-fix 那条该被画出来。
+			// t9 里 lint-fix 有两条候选：→ run-tests（没走）与 → report.send（走了）。
+			// 端口从图上消失后（出口名不上图），一条边由「谁 → 谁」唯一确定 ——
+			// 所以三元组里的 port 是**空串**。要钉的事实没变：
+			// 只有真的走过的那条被点亮，没走的留在底图上不亮。
 			//
 			// 这个 bug 的表现是"跑测试节点亮起时看不到有线进入它" —— 只断言
-			// "动画在播"完全抓不到，必须盯**具体哪条边**被画了。
+			// "动画在播"完全抓不到，必须盯**具体哪条边**。
 			const A = "cap_mock_analyze-pr_v1";
 			const L = "cap_mock_lint-fix_v1";
 			const T = "cap_mock_run-tests_v1";
+			const R = "cap_mock_report_send_v1";
 			const byTriple = edgeCheck.animatedByTriple || {};
 			const want = [
-				[`${A}#needs-fix#${T}`, true, "analyze--needs-fix--> run-tests（这次走过）"],
-				[`${A}#approved#${T}`, false, "analyze--approved--> run-tests（这次没走）"],
-				[`${L}#clean#${T}`, false, "lint-fix--clean--> run-tests（这次没走）"],
+				[`${A}##${T}`, true, "analyze-pr → run-tests（这次走过）"],
+				[`${L}##${R}`, true, "lint-fix → report.send（这次走过）"],
+				[`${L}##${T}`, false, "lint-fix → run-tests（这次没走，不该点亮）"],
 			];
 			const wrong = want.filter(([k, v]) => byTriple[k] !== v);
 			H.check(
-				"同一对节点的多条边中，只画这次真正走过的那个出口",
+				"同一对节点只点亮这次真正走过的候选（没走的留在底图）",
 				wrong.length === 0,
 				wrong.length === 0
 					? want.map(([k, , d]) => d).join("；")
@@ -4654,12 +4983,13 @@ async function checkWaterfall(page) {
 			//
 			// 数字必须是**真实遍历次数**：为了让环更显眼而掺"环 +1"就是撒谎
 			// （环上那条边可能只走了一遍）。所以这里要求 ≥2 才允许出现。
+			// 而且标签**只有 ×N**：出口名不上图（契约 hide-ports §4）。
 			const bad = after.labels.filter((x) => {
-				const m = x.match(/\u00d7(\d+)$/);
+				const m = x.match(/^\u00d7(\d+)$/);
 				return !m || Number(m[1]) < 2;
 			});
 			H.check(
-				"走过多次的边上标出了真实次数（×N）",
+				"走过多次的边上标出真实次数，且只剩 ×N（不夹出口名）",
 				after.labels.length > 0 && bad.length === 0,
 				after.labels.join(" | ") || "没有任何带 ×N 的边标签",
 			);
@@ -6763,15 +7093,17 @@ async function checkPlaybooks(page, base) {
 
 async function checkFlowChart(page, base) {
 	// 从缩进文本换成 Cytoscape 图形库后（#88），断言改成看"图上有什么"：
-	// 节点、边、环路边、未接下游的伪节点、以及只读性。
+	// 节点、边、环路边、声明了出口却没接下游的灰点、以及只读性。
 	//
 	// 为什么必须在这里测而不是在真实 server 上：断言依赖 demo 数据里的
-	// **环路**（deploy-preview → apply-fix → deploy-preview）和**未接出口**
-	// （preview.ready）。真实环境不一定有这些形状，那样的断言会假失败。
+	// **环路**（deploy-preview → apply-fix → deploy-preview）和**有出口没接下游**
+	// （alert.oncall）。真实环境不一定有这些形状，那样的断言会假失败。
 	// #112：流向图从**列表卡片**搬到了**源详情页**（source.html?id=…）。
 	// 列表只回答"有哪些源、活着吗"，细节（配置/参数/流向）点进去看。
 	//
-	// 图本身的形状断言没有变，变的是它挂在哪一页。
+	// 端口从图上消失（契约 hide-ports §4）：边标签不再显示出口名，
+	// 灰点文案改成「没有下游」。例外（多出口的历史数据 + 同名多版本的 @N）
+	// 在纯推导层用 sourceTopology 单测钉住。
 	//
 	// 从**已渲染的 DOM** 拿链接，不发任何请求：这是 mock 预览环境，
 	// 整页的前提是"没有真实请求发出去"（本套件末尾有断言在查这个）。
@@ -6900,9 +7232,123 @@ async function checkFlowChart(page, base) {
 		lbl !== null && lbl.withDN === "应用修复" && lbl.noDN === "acme-fix@1" && lbl.blankDN === "acme-fix@1",
 		JSON.stringify(lbl),
 	);
-	H.check("边上标了出口名", (g.ports || []).length >= 2, (g.ports || []).join(","));
+	// ---- 端口不上图（契约 hide-ports §4）----
+	//
+	// 单出口能力的出口名（内部固定 out）对读者是噪声，所以：
+	//   · 渲染层（host._graphSpec）收到的 port 是空串 → 图上没有边标签；
+	//   · 灰点只说事实「没有下游」，不再提某个出口没接线。
+	// 例外只有一个：**多出口的历史数据**（见下面的推导单测）。
+	const spec = await page.evaluate(() => {
+		const host = document.querySelector(".flograph");
+		const sp = host && host._graphSpec;
+		if (!sp) return null;
+		return {
+			edges: (sp.edges || []).map((e) => ({ from: e.from, to: e.to, port: e.port || "" })),
+			nodes: (sp.nodes || []).map((n) => ({
+				id: n.id,
+				label: n.label || "",
+				sub: n.sub || "",
+				dead: !!n.deadport || n.kind === "deadport",
+			})),
+			edgeLabels: Array.from(document.querySelectorAll(".flograph-edge-label")).map((x) =>
+				x.textContent.trim(),
+			),
+		};
+	});
+	H.check(
+		"单出口能力的边不再把出口名传给渲染层（port 一律空串）",
+		!!spec && (spec.edges || []).length > 0 && (spec.edges || []).every((e) => e.port === ""),
+		JSON.stringify((spec || {}).edges),
+	);
+	H.check(
+		"图上没有出口名边标签（端口不上图）",
+		(g.ports || []).length === 0 && ((spec || {}).edgeLabels || []).length === 0,
+		JSON.stringify({ dom: g.ports, spec: (spec || {}).edgeLabels }),
+	);
+	H.check(
+		"灰点文案是「（没有下游）」/「没有下游」（不再说某个出口没接）",
+		!!spec &&
+			(spec.nodes || []).some(
+				(n) => n.dead && n.label === "（没有下游）" && n.sub === "没有下游",
+			),
+		JSON.stringify(((spec || {}).nodes || []).filter((n) => n.dead)),
+	);
+
+	// 推导层单测（两页共用的同一个 sourceTopology）：
+	//   ① 多出口（历史数据）才 showPort —— 那时两条边只靠出口名区分；
+	//   ② 同名多版本同图 → label 带 @版本（否则两行字一模一样，读者分不清）。
+	const topoRules = await page.evaluate(() => {
+		const T = window.AnotifyGraphs;
+		if (!T || typeof T.sourceTopology !== "function") return { err: "没有 sourceTopology" };
+		const src = { id: "s1", name: "probe.src" };
+		const mkCap = (id, name, version, outputs) => ({
+			id: id,
+			name: name,
+			version: version,
+			displayName: "",
+			outputs: outputs,
+			kind: "pipe",
+		});
+		// ① 多出口（两个出口各接一个下游）vs 单出口
+		const multiCaps = [
+			mkCap("m1", "hist.multi", 1, ["before", "after"]),
+			mkCap("m2", "hist.one", 1, ["out"]),
+			mkCap("m3", "hist.end", 1, []),
+		];
+		const multiEdges = [
+			{ fromIsSource: true, fromRef: "probe.src", toRef: "hist.multi", toCapabilityId: "m1" },
+			{ fromIsSource: false, fromCapabilityId: "m1", fromPort: "before", toRef: "hist.one", toCapabilityId: "m2" },
+			{ fromIsSource: false, fromCapabilityId: "m1", fromPort: "after", toRef: "hist.end", toCapabilityId: "m3" },
+			{ fromIsSource: false, fromCapabilityId: "m2", fromPort: "out", toRef: "hist.end", toCapabilityId: "m3" },
+		];
+		const multi = T.sourceTopology({ src: src, caps: multiCaps, edges: multiEdges });
+		// ② 同名两版本同图 + 一个单版本
+		//
+		// 显示名要填：capLabel 的 withVersion 是「显示名@版本」，而没填显示名
+		// 时本来就会回落成 name@version —— 那个回落不能用来验「同名多版本」。
+		const mkDN = (id, name, version, outputs, dn) => {
+			const c = mkCap(id, name, version, outputs);
+			c.displayName = dn;
+			return c;
+		};
+		const verCaps = [
+			mkDN("v1", "echo.demo", 1, ["out"], "回声（示例）"),
+			mkDN("v2", "echo.demo", 2, ["out"], "回声（示例）"),
+			mkDN("v3", "echo.other", 1, ["out"], "通知推送"),
+		];
+		const verEdges = [
+			{ fromIsSource: true, fromRef: "probe.src", toRef: "echo.demo@1", toCapabilityId: "v1" },
+			{ fromIsSource: true, fromRef: "probe.src", toRef: "echo.demo", toCapabilityId: "v2" },
+			{ fromIsSource: false, fromCapabilityId: "v1", fromPort: "out", toRef: "echo.other", toCapabilityId: "v3" },
+		];
+		const ver = T.sourceTopology({ src: src, caps: verCaps, edges: verEdges });
+		const labelOf = (topo, id) => ((topo.nodes || []).find((n) => n.id === id) || {}).label || "";
+		return {
+			multi: (multi.edges || []).map((e) => ({ port: e.port || "", showPort: !!e.showPort })),
+			verLabels: {
+				v1: labelOf(ver, "v1"),
+				v2: labelOf(ver, "v2"),
+				v3: labelOf(ver, "v3"),
+			},
+		};
+	});
+	const multiEdgesOut = (topoRules && topoRules.multi) || [];
+	H.check(
+		"多出口能力（历史数据）才把出口名画到边上",
+		multiEdgesOut.filter((e) => e.showPort).length === 2 &&
+			multiEdgesOut.filter((e) => !e.showPort).length === 1,
+		JSON.stringify(multiEdgesOut),
+	);
+	H.check(
+		"同名多版本同图：label 带 @版本；单版本不带",
+		!!topoRules.verLabels &&
+			/^回声（示例）@1$/.test(topoRules.verLabels.v1) &&
+			/^回声（示例）@2$/.test(topoRules.verLabels.v2) &&
+			!/@/.test(topoRules.verLabels.v3),
+		JSON.stringify(topoRules.verLabels),
+	);
 	H.check("环上的边用加深的样式画出来", g.hasCycleEdge === true);
-	H.check("「未接下游」在图上可见", g.hasDeadPort === true);
+	H.check("声明了出口却没接下游的能力在图上可见（灰点）", g.hasDeadPort === true);
 	// 图上只有"源"这一个触发器是根，能力节点都该有上游
 	H.check("只有源节点被标成根（触发器）", g.rootCount === 1, `roots=${g.rootCount}`);
 	H.check("所有节点都有 dagre 算出的固定坐标", g.hasCoords === true);
@@ -7403,7 +7849,8 @@ async function runMockCoverage() {
 //   ① 菱形：源节点有 2 条出边（用**图的实例数据**断言，不数 SVG 路径 —— 布局会合并视觉连线）
 //   ② 同源跨页一致：source 页与 trace 页的能力节点集合、边集合完全相同
 //   ③ 环（A→B→A）仍画出来并标 cycle（重构不许把它吞掉）
-//   ④ 声明了但没接边的出口仍显示 deadport 灰点
+//   ④ 声明了但没接边的出口仍显示 deadport 灰点（文案是「没有下游」，不再提端口）
+//   ⑤ 端口不上图：单出口的边传空串，只有**多出口（历史数据）**才带出口名
 //
 // 为什么 ③ 的环可能仍直插库：契约 §2 已放开配置期环检测（`review → fix → review` 是合法编排，
 // 靠 hop 预算 + 每 trace 任务预算兜底），所以反方向那条边**现在应该能直接建**。
@@ -7437,6 +7884,7 @@ async function readGraphSpec(page, timeout = 15000) {
 			nodes: (sp.nodes || []).map((n) => ({
 				id: n.id,
 				label: n.label || "",
+				sub: n.sub || "",
 				kind: n.kind || "",
 				entry: !!n.entry,
 				cycle: !!n.cycle,
@@ -7454,7 +7902,7 @@ async function readGraphSpec(page, timeout = 15000) {
 	});
 }
 
-// edgeKeys 把边集合压成可比较的字符串集合（只比结构：谁→谁、走哪个出口）。
+// edgeKeys 把边集合压成可比较的字符串集合（只比结构：谁→谁、出口是否上图）。
 function edgeKeys(spec, dropFrom) {
 	const keys = (spec?.edges || [])
 		.filter((e) => e.from !== dropFrom)
@@ -7596,8 +8044,10 @@ async function checkSharedTopology(server, newCtx) {
 		);
 		H.check(
 			"① 菱形里 A→B 那条边也在（不能为了画源线把它吞掉）",
+			// A 是单出口能力（outputs 长度 1）→ 边不把出口名传给渲染层，
+			// 所以这里看的是**结构**（A → B 存在）而不是 port（契约 hide-ports §4）
 			(srcSpec?.edges || []).some(
-				(e) => e.from === capA.id && e.to === capB.id && e.port === "next",
+				(e) => e.from === capA.id && e.to === capB.id && e.port === "",
 			),
 			JSON.stringify(srcSpec?.edges),
 		);
@@ -7610,10 +8060,18 @@ async function checkSharedTopology(server, newCtx) {
 			!!deadNode && deadNode.kind === "deadport" && deadNode.deadport === true,
 			JSON.stringify(srcSpec?.nodes?.filter((n) => n.deadport)),
 		);
+		H.check(
+			"④ 灰点文案是「（没有下游）」/「没有下游」（不再说某个出口没接）",
+			!!deadNode && deadNode.label === "（没有下游）" && deadNode.sub === "没有下游",
+			JSON.stringify(deadNode),
+		);
 		const deadEdge = (srcSpec?.edges || []).find((e) => e.to === deadID);
 		H.check(
-			"④ 指向灰点的边带上出口名且弱化（muted）",
-			!!deadEdge && deadEdge.from === capB.id && deadEdge.port === "done" && deadEdge.muted === true,
+			"④ 指向灰点的边弱化（muted）且不带出口名",
+			!!deadEdge &&
+				deadEdge.from === capB.id &&
+				deadEdge.port === "" &&
+				deadEdge.muted === true,
 			JSON.stringify(deadEdge),
 		);
 
@@ -7738,6 +8196,50 @@ async function checkSharedTopology(server, newCtx) {
 			JSON.stringify(cycNode),
 		);
 		H.check("③ 环的页面无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
+		await page.close();
+	}
+
+	// ---------- ⑤ 多出口能力（历史数据）是唯一的例外：出口名仍要上图 ----------
+	//
+	// 契约 §4：单出口（outputs 长度 ≤ 1）不画出口名；但**多出口**能力里
+	// 两条边只靠出口名区分，不标就分不清。这种数据界面已经产生不了
+	// （表单只有一个下游输入框），可历史库里可能有 —— 所以必须还能画。
+	{
+		const capMulti = await mkCap("topo.multi", ["left", "right"]);
+		await mkCap("topo.multi.a", []);
+		await mkCap("topo.multi.b", []);
+		await mkEdge(
+			{ fromIsSource: false, fromRef: "topo.multi", fromPort: "left", toRef: "topo.multi.a" },
+			"能力边 topo.multi --left--> topo.multi.a",
+		);
+		await mkEdge(
+			{ fromIsSource: false, fromRef: "topo.multi", fromPort: "right", toRef: "topo.multi.b" },
+			"能力边 topo.multi --right--> topo.multi.b",
+		);
+		const srcMulti = await mkSource("topo.multi.src", [capMulti.id]);
+		const { page, errs } = await openPage(
+			ctx,
+			base + "/source.html?id=" + encodeURIComponent(srcMulti.id),
+		);
+		const spec = await readGraphSpec(page);
+		const outEdges = (spec?.edges || []).filter((e) => e.from === capMulti.id);
+		const ports = outEdges.map((e) => e.port).sort();
+		const labels = await page.evaluate(() =>
+			Array.from(document.querySelectorAll(".flograph-edge-label")).map((x) =>
+				x.textContent.trim(),
+			),
+		);
+		H.check(
+			"⑤ 多出口能力的边仍带出口名（历史数据不静默改写）",
+			JSON.stringify(ports) === JSON.stringify(["left", "right"]),
+			JSON.stringify(outEdges),
+		);
+		H.check(
+			"⑤ 多出口的出口名真的画到了边标签上",
+			["left", "right"].every((x) => labels.includes(x)),
+			JSON.stringify(labels),
+		);
+		H.check("⑤ 多出口的页面无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
 		await page.close();
 	}
 

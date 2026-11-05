@@ -1122,7 +1122,7 @@ caps:
   step_pick: Elegir plantilla
   step_fill: Rellenar y crear
   sidebar: 'Se define aquí, se ejecuta en los nodos'
-  subtitle: Una capacidad es "qué hacer" (no "cómo"). Las aristas — a dónde van los eventos — tienen su propia página.
+  subtitle: Una capacidad es "qué hacer" (no "cómo"). Las aristas de destino tienen su propia página.
   new: Definir capacidad
   loading: Cargando capacidades…
   load_failed: 'No se pudo cargar la lista de capacidades, actualiza la página'
@@ -1205,45 +1205,28 @@ caps:
     display_name_hint: Se muestra en la interfaz. Si lo dejas vacío se usa el nombre técnico.
     name: Nombre de la capacidad
     name_hint: 'Nombre técnico: lo usan nodos, aristas y logs. No se puede cambiar después.'
-    outputs: Puertos de salida
-    outputs_hint: Los puertos de salida son la lista blanca de emit — solo los nombres declarados aquí pueden despacharse aguas abajo.
-    outputs_optional: opcional
-    outputs_ph: Escribe un nombre de puerto de salida y pulsa Enter
-    outputs_empty: Sin puertos de salida = esta capacidad no puede emitir nada (capacidad terminal).
-    outputs_max: Como máximo 32 salidas
-    err_output: Los nombres de salida solo admiten letras, dígitos, puntos, guiones bajos y guiones (1–32)
-    chip_remove: Eliminar esta salida
-    downstream: Candidatos (se eligen por prioridad)
+    downstream: Capacidades posteriores (candidatas)
     downstream_optional: opcional
-    downstream_hint: 'Un puerto de salida puede tener varios candidatos; en ejecución se elige exactamente uno por prioridad (los empates rotan, el número menor gana). Aquí se guarda el nombre sin versión = sigue la última; la capacidad y estos candidatos se crean en un solo envío: todo se crea o no se crea nada.'
-    downstream_target_ph: Elige una capacidad candidata (con búsqueda)
-    downstream_none: Aún no hay puertos de salida — declara uno arriba antes de conectar candidatos.
+    downstream_ph: script.echo, notify.phone
+    downstream_hint: A quién se entrega al terminar. Varias = candidatas, en ejecución se elige una por prioridad; vacío = capacidad terminal (termina y ya).
+    downstream_missing: 'No existe la capacidad: {names}'
     cards_title: Capacidades de este lote
-    cards_hint: 'Define varias capacidades a la vez: cada tarjeta tiene sus propios puertos de salida, parámetros y script; se escriben en una sola transacción (todo se crea o no se crea nada).'
+    cards_hint: 'Define varias capacidades a la vez: cada tarjeta tiene su propio destino, parámetros y script; se escriben en una sola transacción (todo se crea o no se crea nada).'
     card_add: ＋ Añadir otra capacidad
     card_remove: Eliminar esta capacidad
     card_n: 'Capacidad {n}'
     card_unnamed: Sin nombre
     card_editor: 'Editando: capacidad {n} de {total}'
-    card_ports_summary: 'Puertos de salida: {ports}'
+    card_down: 'Posterior: {names}'
     card_name_dupe: 'Nombre de capacidad duplicado en el lote: {name}'
     card_err_field: 'Capacidad {n} / {field}: {reason}'
     card_err_generic: 'Capacidad {n}: {reason}'
     cand_hint: En ejecución se elige un solo candidato por prioridad; los empates rotan (el número menor gana).
-    cand_prio: Prioridad
-    cand_prio_hint: El número menor gana
-    cand_prio_badge: 'Prioridad {n}'
-    cand_count: '{n} candidatos'
     cand_batch_tag: (este lote)
-    cand_empty: Este puerto de salida aún no tiene candidatos — no se despachará nada desde él.
-    balance_label: Modo
-    balance_priority: priority (predeterminado)
-    balance_unimpl: no implementado
-    balance_unimpl_err: 'El puerto de salida {port} usa el modo balance {mode}, que no está implementado; por ahora solo se puede guardar priority'
     batch_created: 'Se crearon {caps} capacidades y {edges} aristas'
     batch_failed: 'Error al crear el lote (no se guardó nada): '
     created_with_edges: 'conectadas {n} aristas'
-    link_rejected: 'La salida n.º {n} {port} → {to} no es válida; no se creó nada: {reason}'
+    link_rejected: 'El destino n.º {n} → {to} no es válido; no se creó nada: {reason}'
     schema: Validación de parámetros (JSON Schema)
     schema_hint: Solo un subconjunto controlado (sin $ref / if-then-else); el hub nunca evalúa expresiones.
     cancel: Cancelar
@@ -1274,11 +1257,9 @@ caps:
     btn: Detalles
     params: Contrato de parámetros
     no_params: Sin parámetros
-    outputs: Puertos de salida y candidatos
-    no_outputs: No hay puertos de salida declarados — esta capacidad no puede emitir nada
-    balance_mode: Modo
-    cand_prio_badge: 'Prioridad {n}'
-    cand_count: '{n} candidatos'
+    downstream: Posteriores (candidatas)
+    no_downstream: 'Termina al acabar: no se dispara ninguna capacidad posterior.'
+    cand_prio_hint: 'Prioridad {n} · editar para cambiar'
     edges_failed: No se pudo cargar la lista de aristas, estado del destino desconocido
     inbound: Quién me alimenta
     no_inbound: Sin aristas de entrada — los eventos no llegan aquí
@@ -1288,7 +1269,6 @@ caps:
     pinned: Versión fijada
     unresolved: 'Sin resolver: {ref}'
     literals: 'Constantes {json}'
-    dead: Esta salida no tiene destino — al emitir se detiene aquí
     runtime: Ejecución
     timeout: Tiempo límite
     workdir: Directorio de trabajo
@@ -1307,7 +1287,6 @@ caps:
     script_empty: Esta capacidad aún no tiene artefacto (sin script al definirla, o sin desplegar)
     script_failed: No se pudo cargar el script
     retry: Reintentar
-    add_output_cta: Añadir una salida (si no, no puede emitir nada)
   edit:
     btn: Editar
     title: 'Nueva versión: {name}'
@@ -1318,6 +1297,7 @@ caps:
     no_artifact: Esta capacidad aún no tiene artefacto — el script empieza en blanco
     name_locked: 'Nombre bloqueado: esta versión mantiene el mismo nombre. Renombrar significa otra capacidad.'
     downstream_keep: '{n} arista(s) de destino seguirán la nueva versión — las aristas apuntan al nombre, no a la versión.'
+    multi_output_note: 'Esta capacidad tiene varias salidas (datos antiguos): su estructura de salidas se conserva tal cual y no se edita aquí.'
     submit: Publicar nueva versión
     publishing: Publicando…
     failed: 'Error al publicar: '
@@ -1329,7 +1309,7 @@ caps:
     force: Publicar igualmente
   add:
     btn: destino
-    title: 'Añadir destino a «{port}»'
+    title: 'Añadir posterior'
     target_ph: Elige una capacidad destino (con búsqueda)
     literals_ph: 'Sobrescritura de constantes (opcional), p. ej. {"urgent":true}'
     save: Guardar
@@ -1611,12 +1591,12 @@ sources:
     terminal: terminal
     noedge: sin destino
     no_target: Esta fuente no tiene capacidades de salida.
-    unconnected: (sin conectar)
+    unconnected: (sin posterior)
     truncated: Grafo demasiado grande ({n} nodos); mostrando los primeros {m}.
     nolib: No se pudo cargar la librería de grafos.
     source: Origen
     terminal_short: terminal
-    no_edge: sin conexión
+    no_edge: sin posterior
   view_events: Ver eventos
 edges:
   title: Salidas

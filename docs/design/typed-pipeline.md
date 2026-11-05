@@ -69,7 +69,11 @@ assign → ack → 进程启动 → emit* → 进程退出
 `cmd/agent` 已经是一个静态二进制、已经在节点上、已经会讲 WS 协议（assign/ack/result），并有 `run` 子命令的先例。新增一个子命令：
 
 ```bash
-anotify-agent emit --port fix --data '{"issue":"#42 空指针","patch":"...","repo":"acme/x"}'
+# 单出口（绝大多数能力）：--port 可省略，agent 自动采用它唯一的出口
+anotify-agent emit --data '{"issue":"#42 空指针","patch":"...","repo":"acme/x"}'
+
+# 多出口（历史数据）：必须显式给 --port，省略会报错并列出可用名字
+anotify-agent emit --port fix --data '{"issue":"#42 空指针"}'
 ```
 
 ```text
@@ -216,7 +220,7 @@ link: analyze --fix--> notify
 3. **校验需要全图视野**：同名不同型、升级影响面、候选可达性。
 4. **权限与隔离**：link 是命名空间内配置（I11），节点没有用户身份。
 
-编辑入口内联在能力详情页（「端口与 link」区），全局页只做只读总览。`manifest`（hello 帧）只放执行环境（runner/timeout/concurrency/env），**永不生长拓扑字段**。
+编辑入口内联在能力详情页的「下游（候选）」区块，全局页（出口表页）只做只读总览。`manifest`（hello 帧）只放执行环境（runner/timeout/concurrency/env），**永不生长拓扑字段**。
 
 ### 3.6 升级闸门
 
@@ -422,7 +426,7 @@ generic webhook 建源时「抓一条真实请求」→ 采样请求体 → 生�
 - `ws_protocol`：emit/ack/seq/重连重发全链
 - `routing`：一次运行 emit 3 次（同 port 两次、另一 port 一次）→ 下游任务数与剪枝正确
 - `real_backend`：能力脚本调用 `anotify-agent emit` 成功；exit≠0 前 emit 仍派发
-- `frontend`：trace 事件流渲染；能力详情页的端口与 link 编辑
+- `frontend`：trace 事件流渲染；能力详情页的下游（候选）编辑
 - 全量 `make e2e` + `go test ./...` + `make contract` 绿
 
 ### 9.3 巡检

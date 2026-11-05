@@ -47,10 +47,13 @@
 	 * 为什么要有代理而不是到处写 window.Anotify.capLabel：加载顺序
 	 * 不保证（base.html 里两个都是普通 script），代理能在调用时才解析，
 	 * 而且 capLabel 缺失时给出可读的回落而不是崩掉整张图。
+	 *
+	 * opts 原样透传（本文件用到 { withVersion: true } 来区分同名多版本）。
+	 * **不要在这里再写一套显示名规则**：裁决点只有 Anotify.capLabel 一处。
 	 */
-	function capLabel(cap) {
+	function capLabel(cap, opts) {
 		const A = window.Anotify;
-		if (A && typeof A.capLabel === "function") return A.capLabel(cap);
+		if (A && typeof A.capLabel === "function") return A.capLabel(cap, opts);
 		// 回落：至少别崩，也别显示 "undefined"
 		if (!cap) return "";
 		return String(cap.name || "") + (cap.version != null ? "@" + cap.version : "");
@@ -229,7 +232,9 @@
 	 *   edges 边表（GET /v1/edges，含 fromIsSource/fromRef/fromCapabilityId/…）
 	 * @returns {{nodes: Array, edges: Array, truncated: boolean}}
 	 *   节点 {id, label, kind, entry, cycle, deadport, unknown}
-	 *   边   {from, to, port, cycle, muted}
+	 *   边   {from, to, port, showPort, cycle, muted}
+	 *        showPort 只表达**渲染意图**（这条边的出口名该不该画），
+	 *        不是数据事实：单出口能力（内部名固定 out）在图上不再标注出口名。
 	 */
 	function sourceTopology(input) {
 		const src = (input && input.src) || {};
@@ -242,6 +247,18 @@
 		const nodes = new Map();
 		const edges = new Map();
 		let truncated = false;
+
+		/**
+		 * 上游能力是不是真的有多出口（只可能是历史数据）。
+		 *
+		 * 一个能力现在只有一个出口，内部名固定 out —— 这个名字对读者是噪音，
+		 * 所以单出口的边不画出口名标签。保留例外是因为老数据里可能有
+		 * outputs 长度 > 1 的能力：那时两条边只靠名字区分，不标就分不清。
+		 */
+		const hasMultiOut = (capId) => {
+			const cap = capById.get(capId);
+			return !!(cap && Array.isArray(cap.outputs) && cap.outputs.length > 1);
+		};
 
 		const deadPortID = (capId, port) => "dead|" + capId + "|" + port;
 		// 解析不到（引用指向的能力已被删）时节点 id 退回**引用**：
@@ -280,6 +297,9 @@
 		 * 画一条边（按 (from, port, to) 去重）。
 		 * 已经画过的边再遇到时只**升级标记**（cycle / muted 取或），不新增一行：
 		 * 一条边被多条路径走到时，标记可能是后到的那条路径才看出来的。
+		 *
+		 * 去重键里的 port **必须保留**：同一对节点之间的多条候选边就是靠它
+		 * 区分的（合并了就变成一条自环）。port 留在数据里，只是不一定要画。
 		 */
 		const putEdge = (from, port, to, cycle, muted) => {
 			const key = from + "|" + (port || "") + "|" + to;
@@ -289,7 +309,15 @@
 				if (muted) hit.muted = true;
 				return hit;
 			}
-			const e = { from: from, to: to, port: port || "", cycle: !!cycle, muted: !!muted };
+			const e = {
+				from: from,
+				to: to,
+				port: port || "",
+				// 渲染意图：只有多出口能力才把出口名画到边上（见 hasMultiOut）
+				showPort: hasMultiOut(from),
+				cycle: !!cycle,
+				muted: !!muted,
+			};
 			edges.set(key, e);
 			return e;
 		};
@@ -363,7 +391,7 @@
 			}
 
 			// 声明了但没接边的出口 → 灰色终点伪节点，让配置遗漏在图上可见。
-			// label 是**出口名**（事实）；页面上显示成「未接下游」由渲染层决定
+			// label 是**出口名**（事实）；页面上显示成「（没有下游）」由渲染层决定
 			// （见 topoNodeLabel），推导这一层不掺语言。
 			for (const port of cap.outputs || []) {
 				if (!port || connected.has(port)) continue;
@@ -378,6 +406,29 @@
 		// （entryIDs 已按节点去重，节点/边的画法不受影响）。
 		for (const id of entryIDs) walk(id, new Set([id]), 0);
 
+		// ---- ③ 同名多版本：同一张图里必须能区分 ----
+		//
+		// capLabel 默认把版本藏起来（显示名是「回声（示例）」而不是
+		// 「回声（示例）@2」），因为界面上一个能力只该有一个名字。
+		// 但同一张图里可能并排出现 touch@1 与 touch@2 —— 两行文字一模一样，
+		// 读者分不清是两个版本还是画重了。所以只对**同名出现多次**的节点
+		// 改用 capLabel(cap, { withVersion: true })；只出现一次时保持现状。
+		//
+		// 显示名规则仍然只在 Anotify.capLabel 里裁决，这里不自己拼。
+		const nameCount = new Map();
+		for (const n of nodes.values()) {
+			const cap = capById.get(n.id);
+			if (!cap) continue; // 灰点（出口伪节点）/ 坏引用没有能力定义
+			nameCount.set(cap.name, (nameCount.get(cap.name) || 0) + 1);
+		}
+		for (const n of nodes.values()) {
+			const cap = capById.get(n.id);
+			if (!cap) continue;
+			if ((nameCount.get(cap.name) || 0) > 1) {
+				n.label = capLabel(cap, { withVersion: true });
+			}
+		}
+
 		return {
 			nodes: Array.from(nodes.values()),
 			edges: Array.from(edges.values()),
@@ -389,22 +440,25 @@
 	 * topoNodeLabel —— 拓扑节点在**图上**显示的名字。
 	 *
 	 * 拓扑本身不带语言（sourceTopology 只输出配置事实，deadport 的 label 是出口名），
-	 * 所以「未接下游」这类人话留在这里翻译。两个渲染入口（capabilityFlow 与
+	 * 所以「（没有下游）」这类人话留在这里翻译。两个渲染入口（capabilityFlow 与
 	 * taskChain）都必须走这一个函数，否则同一个灰点在两页会显示成两个名字。
+	 *
+	 * 灰点现在表达的是「这个能力不会再触发任何能力」（终端能力本身不是问题，
+	 * 是**声明了输出却没接**才画灰点），不是「哪条接线缺了」。
 	 */
 	function topoNodeLabel(n, t) {
-		if (n && n.deadport) return t("sources.flow.unconnected", "未接下游");
+		if (n && n.deadport) return t("sources.flow.unconnected", "（没有下游）");
 		return (n && n.label) || "";
 	}
 
 	/**
 	 * flowSub —— 源详情页节点的副标题。
 	 *
-	 * 这里只讲**结构身份**（终点 / 未接下游 / 已删除），不是执行状态：
+	 * 这里只讲**结构身份**（终点 / 没有下游 / 已删除），不是执行状态：
 	 * 源详情页没有执行事实，拿状态词上去就是编造。
 	 */
 	function flowSub(n, t) {
-		if (n.deadport) return t("sources.flow.no_edge", "没有接下游");
+		if (n.deadport) return t("sources.flow.no_edge", "没有下游");
 		if (n.unknown) return t("sources.flow.missing", "能力已删除");
 		if (n.kind === "end") return t("sources.flow.terminal_short", "终点");
 		return "";
@@ -444,11 +498,11 @@
 				},
 			);
 		} else {
-			// 源详情页没有执行数据，但有"没接下游"这种配置问题
+			// 源详情页没有执行数据，但有"声明了输出却没接下游"这种配置问题
 			rows.push({
 				icon: "○",
 				cls: "lg-pruned",
-				text: t("sources.flow.no_edge", "没有接下游"),
+				text: t("sources.flow.no_edge", "没有下游"),
 			});
 		}
 		rows.push({
@@ -546,6 +600,8 @@
 			nodes.push({
 				id: n.id,
 				// 图节点不带版本号：视觉空间有限，版本放悬停标题里（capLabel 已裁）
+				// 例外：同名多版本同图时由 sourceTopology 改用 withVersion 重写 label
+				// （否则两行字一模一样，读者分不清是哪个版本）。
 				label: topoNodeLabel(n, t),
 				sub: flowSub(n, t),
 				kind: n.kind,
@@ -568,7 +624,9 @@
 		const edges = topo.edges.map((e) => ({
 			from: e.from,
 			to: e.to,
-			port: e.port,
+			// 出口名只在多出口（历史数据）时画；单出口的内部名（固定 out）
+			// 对读者是噪音。topo 里的 port 仍保留（去重/调试需要），只是不传给渲染层。
+			port: e.showPort ? e.port : "",
 			cycle: !!e.cycle,
 			// 环上的边绕出去画，和 trace 页同一个形状。
 			// 不传这个的话回边就是两节点之间的一小段斜线，看着像画坏了。
@@ -736,7 +794,7 @@
 					return {
 						id: n.id,
 						// 底图节点来自 sourceTopology，label 是配置事实；
-						// 「未接下游」这类人话统一在 topoNodeLabel 里翻译。
+						// 「（没有下游）」这类人话统一在 topoNodeLabel 里翻译。
 						label: topoNodeLabel(n, t),
 						sub: n.deadport ? "" : t("trace.legend_pruned", "未执行"),
 						kind: "pruned",
@@ -806,10 +864,12 @@
 				return {
 					from: e.from,
 					to: e.to,
-					port: e.port,
-					// **真实**遍历次数。边上要标 "出口名 ×N"，这个数必须是
-					// 事实，不能掺"这是环所以 +1"的调味 —— 环上那条边可能
-					// 就只走了一遍，标 ×2 是撒谎。
+					port: e.showPort ? e.port : "",
+					// 底图边来自 sourceTopology，和源页同一个开关：只有多出口能力
+					// （历史数据）才把出口名画到边上。
+					// **真实**遍历次数。边上要标 "×N"（多出口时才带名字），
+					// 这个数必须是事实，不能掺"这是环所以 +1"的调味 —— 环上那条边
+					// 可能就只走了一遍，标 ×2 是撒谎。
 					times: walked,
 					// 渲染档位（颜色深浅/粗细）是另一件事：在环上意味着
 					// "这段路会回来"，所以即使只走一遍也该比直线更实。
@@ -914,11 +974,12 @@
 			edges = [];
 			for (const tk of tasks) {
 				if (!tk.parentTaskId || !byId.has(tk.parentTaskId)) continue;
-				const parent = byId.get(tk.parentTaskId);
 				edges.push({
 					from: tk.parentTaskId,
 					to: tk.id,
-					port: parent.out || "",
+					// 无底图分支拿不到能力定义，判不了「多出口」与否 —— 所以**不标出口名**：
+					// 单出口是常态，把 `out` 挂在线上对读者只是噪音（与有底图时同一口径）。
+					port: "",
 					cycle: tk.status === "failed",
 				});
 			}
