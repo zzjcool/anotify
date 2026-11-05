@@ -140,6 +140,12 @@ var ErrInvalidTransition = errors.New("invalid_transition")
 // 例如租约巡检发现任务刚被心跳续期——这不是错误，是「这次不该动它」。
 var ErrTransitionGuardFailed = errors.New("transition_guard_failed")
 
+// TaskSeqInTraceUnknown 是 seq_in_trace 的零值：从未派发过，或加这一列之前建的老行。
+//
+// 节点侧遇到 <= 0 必须退回到 attempts（旧中枢不带这个字段）——不要把它当 1，
+// 否则「第一次执行」与「不知道」会被混成一回事。
+const TaskSeqInTraceUnknown = 0
+
 // Task 是 tasks 表的一行：任务行 = OTel span。
 //
 // 路由**不在这一行上**：P1.5 起 `tasks.out` 整列已删（baseline 里没有它），出口的唯一载体是
@@ -166,11 +172,17 @@ type Task struct {
 	InstanceID   *string         `json:"instanceId"`
 	LeaseUntil   *int64          `json:"leaseUntil"`
 	Attempts     int             `json:"attempts"`
-	Reported     bool            `json:"reported"`
-	Summary      string          `json:"summary"`
-	Artifacts    []string        `json:"artifacts"`
-	Error        string          `json:"error"`
-	CapHash      string          `json:"capHash"`
+	// SeqInTrace 是这条任务在同一 (NamespaceID, TraceID, Capability) 里是第几次执行（1 起）。
+	//
+	// 它不是「派发次数」（那是 Attempts）：重派同一条任务时 Attempts 递增，而 SeqInTrace
+	// 不变——它是这一行在组内的**位置**，具体见 TaskSeqInTraceUnknown 与 assignTaskTx。
+	// 展示/审计用（CONTRACT §6.1 的 assign 帧把它带给节点，节点用它命名本地 runs/ 目录）。
+	SeqInTrace int      `json:"seqInTrace"`
+	Reported   bool     `json:"reported"`
+	Summary    string   `json:"summary"`
+	Artifacts  []string `json:"artifacts"`
+	Error      string   `json:"error"`
+	CapHash    string   `json:"capHash"`
 	// Digest 是**本次派发钉住的产物内容 digest**（artifacts.digest 的副本，P0-a）。
 	//
 	// 与 CapHash 的区别：CapHash 钉住能力定义（params_schema + ports），Digest 钉住
@@ -189,7 +201,7 @@ type Task struct {
 // taskColumns 是统一的列顺序，scanTask 依赖它。
 const taskColumns = `id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
-	reported, summary, artifacts, error, cap_hash, digest, graph_id,
+	seq_in_trace, reported, summary, artifacts, error, cap_hash, digest, graph_id,
 	created_at, started_at, finished_at, not_before`
 
 // scanTask 从 rows 解析一行。
@@ -200,7 +212,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 	if err := rows.Scan(
 		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
 		&t.Version, &params, &t.Status, &t.NodeID, &t.InstanceID, &t.LeaseUntil, &t.Attempts,
-		&reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.Digest, &t.GraphID,
+		&t.SeqInTrace, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.Digest, &t.GraphID,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -640,17 +652,36 @@ func (d *DB) AssignTask(ctx context.Context, namespaceID, taskID, nodeID, instan
 	return nil
 }
 
-// assignTaskTx 是派发后半段的共用实现：改状态 + 写归属/attempts。
+// assignTaskTx 是派发后半段的共用实现：改状态 + 写归属/attempts/seq_in_trace。
 //
 // AssignTask（拆开用，仍是单事务）与 LeaseAndAssign（占槽 + 派发一事务）共用它，
-// 保证两条路径写进去的字段与 attempts 时机一字不差。
+// 保证两条路径写进去的字段与 attempts/seq_in_trace 时机一字不差。
 // transitionGuarded 传 tx：状态写仍走唯一入口，且不会去抢连接池的那根连接。
 func (d *DB) assignTaskTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, nodeID, instanceID string, leaseUntil int64) error {
 	if err := d.transitionGuarded(ctx, tx, namespaceID, taskID, TaskPending, TaskAssigned, ""); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET node_id = ?, instance_id = ?, lease_until = ?, attempts = attempts + 1
+		// attempts+1 与 seq_in_trace **必须是一条语句**（不能先 SELECT 再 UPDATE）。
+		//
+		// 并发安全靠两点：① DSN 的 `_txlock=immediate` 让写事务串行（BEGIN IMMEDIATE
+		// 在事务起点就拿到写锁）；② 子查询与 UPDATE 在同一个语句里执行，看到的是同一份
+		// 状态，所以同一批并发派发得到的 seq_in_trace 是 {1..N}，不重不丢。
+		// 拆成两步就会出现「两条任务同时读到 count=2」的窗口——重号。
+		//
+		// 分组口径（Task.SeqInTrace 的语义）：
+		//   · capability 用**名字**而不是 capability_id：同一 trace 里 review@1 与 review@2
+		//     是同一个能力的两次执行，seq 必须连续；
+		//   · 定序用 **rowid** 而不是 created_at：同一秒内扇出的多条任务必须有确定先后。
+		// 子查询只数 rowid 更小的行（含还没派发的 pending 行），所以它算的是「行在组内的
+		// 位置」而不是「第几个被派发」——重派同一条任务时 seq 不变，这正是节点本地目录
+		// 命名（<seq>-a<attempt>）需要的不变量。
+		`UPDATE tasks SET node_id = ?, instance_id = ?, lease_until = ?, attempts = attempts + 1,
+		       seq_in_trace = (SELECT COUNT(*) FROM tasks AS prev
+		                       WHERE prev.namespace_id = tasks.namespace_id
+		                         AND prev.trace_id     = tasks.trace_id
+		                         AND prev.capability   = tasks.capability
+		                         AND prev.rowid        < tasks.rowid) + 1
 		 WHERE namespace_id = ? AND id = ?`,
 		nodeID, nullIfEmpty(instanceID), leaseUntil, namespaceID, taskID); err != nil {
 		return fmt.Errorf("assign task: %w", err)

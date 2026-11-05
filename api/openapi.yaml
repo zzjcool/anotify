@@ -4345,6 +4345,13 @@ components:
         instanceId: { type: string, nullable: true }
         leaseUntil: { type: integer, format: int64, nullable: true }
         attempts: { type: integer }
+        seqInTrace:
+          type: integer
+          description: |
+            这条任务在同一 (namespace, trace, 能力名) 里是第几次执行（1 起；派发时算好落库）。
+            与 attempts 的区别：attempts 是「派发了几次」（重派 +1），seqInTrace 是
+            「这一行在组内的位置」（重派不变），只用于展示/审计（节点本地执行记录的命名）。
+            0 = 从未派发过，或加这一列之前建的老任务。
         reported:
           type: boolean
           deprecated: true

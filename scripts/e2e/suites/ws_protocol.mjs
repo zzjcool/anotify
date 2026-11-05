@@ -580,15 +580,25 @@ async function main() {
 		//
 		// ws.work 没有 outputs，所以 ports/expects 整帧不出现（omitempty）；
 		// 没有产物，digest 也不出现。
+		//
+		// attempts / seq_in_trace 是「节点本地执行档案」那条腿的输入：节点拿它们
+		// 命名 runs/<trace>/<capability>@<ver>/<seq>-a<attempt>/ 并写进 input.json /
+		// meta.json（见 docs/contracts/CONTRACT.md 的 assign 载荷与
+		// cmd/agent/runstore.go）。两者都是展示/审计用，节点不得据此改变执行语义。
+		// 这里必须**真的**出现在帧里：派发一定写过 attempts（≥1）与 seq_in_trace（≥1）。
+		H.eq("assign 帧 attempts 是这次派发的世代（≥1）", assign.attempts, 1);
+		H.eq("assign 帧 seq_in_trace 是本次 trace+能力的第几次执行（≥1）", assign.seq_in_trace, 1);
 		const fields = Object.keys(assign).sort();
 		H.eq(
 			"assign 帧字段集合固定（增删字段必须在这里显式登记）",
 			fields,
 			[
+				"attempts",
 				"capability",
 				"lease_until",
 				"max_duration_sec",
 				"params",
+				"seq_in_trace",
 				"task_id",
 				"token",
 				"trace_id",

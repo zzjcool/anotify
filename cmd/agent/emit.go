@@ -484,6 +484,20 @@ func (s *emitServer) isClosed() bool {
 	return s.closed
 }
 
+// EmitCount 是本任务累计 emit 次数（跨重启累计，见 count 字段）。
+//
+// 调用方（client.startTask）必须在 Close **之前**取：Close 之后这个服务不再接单，
+// 计数自然不会再变，但「这次执行里到底 emit 了几次」只在那之前是可解释的——
+// 落盘的 meta.json 要的正是这个数。nil 接收者返回 0（没起到 socket 的任务）。
+func (s *emitServer) EmitCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.count
+}
+
 // watchCtx 在任务 ctx 取消（cancel 帧 / 收尾超时）时立刻收掉 socket（§1 生命周期）。
 func (s *emitServer) watchCtx() {
 	defer s.wg.Done()
