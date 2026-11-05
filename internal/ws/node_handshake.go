@@ -37,7 +37,7 @@ type NodeStore interface {
 	// 自报，只能由控制台的部署产生。未知能力（中枢没定义过）仍整帧拒绝。
 	//
 	// 返回的 ids 与 applied 逐个对应（解析失败的那条是""），供握手后的补推建索引。
-	ReconcileApplied(ctx context.Context, namespaceID, nodeID string, applied []store.AppliedRef) ([]string, error)
+	ReconcileApplied(ctx context.Context, namespaceID, nodeID string, applied []store.AppliedRef) (ids []string, stale []store.AppliedRef, err error)
 	// MarkDeployResult 落一条来自 apply 帧的部署结果（只碰 state/reason/updated_at）。
 	//
 	// 行不存在返回 store.ErrNotFound：撤销与回报天然会撞车，调用方按「节点晚了一步」处理。
@@ -202,34 +202,34 @@ func codeOf(err error) string {
 //
 // 作用域一律用 node.NamespaceID：hello 帧不带命名空间（一个字节不改），
 // 节点属于哪个命名空间完全由令牌决定（设计文档 §2.1）。
-func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) (map[string]string, error) {
+func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) (map[string]string, []store.AppliedRef, error) {
 	// 协议版本
 	if f.Protocol != 0 && f.Protocol != ProtocolVersion {
-		return nil, &helloError{
+		return nil, nil, &helloError{
 			code:    ErrCodeProtocolMismatch,
 			message: fmt.Sprintf("unsupported protocol %d (server speaks %d)", f.Protocol, ProtocolVersion),
 		}
 	}
 	// 协议要求节点自报的身份与 token 对应的节点一致（防「拿 A 的 token 冒充 B」）
 	if f.NodeID != "" && f.NodeID != node.ID {
-		return nil, &helloError{
+		return nil, nil, &helloError{
 			code:    ErrCodeBadFrame,
 			message: fmt.Sprintf("hello node_id %q does not match the token's node %q", f.NodeID, node.ID),
 		}
 	}
 
 	// ① 已应用产物对账
-	applied, err := reconcileHelloApplied(ctx, st, node, f)
+	applied, stale, err := reconcileHelloApplied(ctx, st, node, f)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// ② 实例申报
 	if _, err := st.UpsertInstances(ctx, node.NamespaceID, node.ID, instanceSpecs(f)); err != nil {
 		if errors.Is(err, store.ErrTooManyInstances) {
-			return nil, &helloError{code: ErrCodeTooManyInstances, message: err.Error()}
+			return nil, nil, &helloError{code: ErrCodeTooManyInstances, message: err.Error()}
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	// ③ 槽位兜底（#218）：清掉「槽位指向的任务已经不在这台机器上跑了」的钉子。
@@ -250,9 +250,9 @@ func applyHello(ctx context.Context, st NodeStore, node *store.Node, f *HelloFra
 
 	// ④ 上线
 	if err := st.UpdateNodeStatus(ctx, node.NamespaceID, node.ID, store.NodeStatusOnline); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return applied, nil
+	return applied, stale, nil
 }
 
 // instanceSpecs 把 hello 帧的实例申报转成 store 的形状（两处调用共用，避免漂移）。
@@ -301,7 +301,7 @@ func reassertNodeState(ctx context.Context, st NodeStore, node *store.Node, f *H
 // 随后 handleHello 会按中枢的期望重新下发（中枢覆盖，见 resendDeployments）。
 //
 // 返回值：capability_id → 节点实际缓存的 digest，供补推比对（不报 = 节点上没有）。
-func reconcileHelloApplied(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) (map[string]string, error) {
+func reconcileHelloApplied(ctx context.Context, st NodeStore, node *store.Node, f *HelloFrame) (map[string]string, []store.AppliedRef, error) {
 	refs := make([]store.AppliedRef, 0, len(f.Applied))
 	for _, a := range f.Applied {
 		refs = append(refs, store.AppliedRef{
@@ -310,12 +310,14 @@ func reconcileHelloApplied(ctx context.Context, st NodeStore, node *store.Node, 
 			Digest:  a.Digest,
 		})
 	}
-	ids, err := st.ReconcileApplied(ctx, node.NamespaceID, node.ID, refs)
+	ids, stale, err := st.ReconcileApplied(ctx, node.NamespaceID, node.ID, refs)
 	if err != nil {
-		if errors.Is(err, store.ErrUnknownCapability) {
-			return nil, &helloError{code: ErrCodeUnknownCapability, message: err.Error()}
+		// 只剩「形状坏掉」这一类（空能力名）→ bad_frame：那是节点 bug，必须响。
+		var declErr *store.CapabilityDeclError
+		if errors.As(err, &declErr) {
+			return nil, nil, &helloError{code: ErrCodeBadFrame, message: err.Error()}
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	applied := make(map[string]string, len(ids))
 	for i, id := range ids {
@@ -324,16 +326,23 @@ func reconcileHelloApplied(ctx context.Context, st NodeStore, node *store.Node, 
 		}
 		applied[id] = refs[i].Digest
 	}
-	return applied, nil
+	return applied, stale, nil
 }
 
 // welcomeFrameFor 构造握手成功的 welcome 帧。
-func welcomeFrameFor(node *store.Node) *WelcomeFrame {
-	return &WelcomeFrame{
+//
+// prune 是「节点缓存里有、中枢已经没有了」的能力引用：节点收到后删掉对应的
+// 缓存目录与索引。空就不带这个键（老 agent 不认识它，带空的也没意义）。
+func welcomeFrameFor(node *store.Node, prune []store.AppliedRef) *WelcomeFrame {
+	w := &WelcomeFrame{
 		Type:         NodeFrameWelcome,
 		NodeID:       node.ID,
 		Protocol:     ProtocolVersion,
 		HeartbeatSec: store.HeartbeatSec,
 		LeaseTTLSec:  store.LeaseTTLSec,
 	}
+	for _, p := range prune {
+		w.Prune = append(w.Prune, WelcomePrune{Capability: p.Name, Version: p.Version})
+	}
+	return w
 }

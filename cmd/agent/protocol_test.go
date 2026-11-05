@@ -324,7 +324,7 @@ func TestDecodeDownstream(t *testing.T) {
 			t.Fatalf("decoded type = %T, want *welcomeFrame", got)
 		}
 		want := ws.WelcomeFrame{Type: frameTypeWelcome, NodeID: "nd_x", Protocol: 1, HeartbeatSec: 10, LeaseTTLSec: 30}
-		if *f != want {
+		if !reflect.DeepEqual(*f, want) {
 			t.Fatalf("welcome = %+v, want %+v", *f, want)
 		}
 	})
@@ -407,7 +407,7 @@ func TestDecodeDownstream(t *testing.T) {
 	})
 
 	t.Run("error", func(t *testing.T) {
-		got, err := decodeDownstream([]byte(`{"type":"error","code":"unknown_capability",` +
+		got, err := decodeDownstream([]byte(`{"type":"error","code":"bad_frame",` +
 			`"message":"no such capability"}`))
 		if err != nil {
 			t.Fatalf("decodeDownstream: %v", err)
@@ -416,7 +416,7 @@ func TestDecodeDownstream(t *testing.T) {
 		if !ok {
 			t.Fatalf("decoded type = %T, want *errorFrame", got)
 		}
-		if f.Type != frameTypeError || f.Code != ws.ErrCodeUnknownCapability ||
+		if f.Type != frameTypeError || f.Code != ws.ErrCodeBadFrame ||
 			f.Message != "no such capability" || f.TaskID != "" {
 			t.Fatalf("error = %+v, fields drifted", *f)
 		}

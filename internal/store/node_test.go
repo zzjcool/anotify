@@ -110,24 +110,28 @@ func TestNodeNamespaceIsolation(t *testing.T) {
 	}
 }
 
-// TestNodeCapabilityUnknown 不变量 I2 / A3：声明未定义能力必须拒绝（#62 验收）。
-func TestNodeCapabilityUnknown(t *testing.T) {
+// TestNodeCapabilityUnknownIsStale 不变量 I2 / A3（**语义已改**）：节点报一条
+// 中枢没有的能力，是**陈旧缓存**，不是致命错误。
+//
+// 旧行为（报错 → ws 整帧 unknown_capability → agent 退出 → systemd 重启 → 再拒）
+// 的后果是「在控制台删一个能力 = 打死所有在线节点」，实测崩溃循环。
+// 现在：不报错、不写归属、由调用方拿着 stale 让节点删缓存。
+func TestNodeCapabilityUnknownIsStale(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	n, _ := mkNode(t, db, nsID, "mbp")
 
-	_, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}})
-	if !errors.Is(err, ErrUnknownCapability) {
-		t.Fatalf("declare undefined capability: err = %v, want ErrUnknownCapability", err)
+	if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}}); err != nil {
+		t.Fatalf("未定义能力应当按陈旧缓存处理（不报错），err = %v", err)
 	}
-	// 拒绝后不得留下半份声明
+	// 不写归属：中枢不从节点缓存推断「这台机器能跑什么」
 	caps, err := db.ListNodeCapabilities(ctx, n.ID)
 	if err != nil {
 		t.Fatalf("list node caps: %v", err)
 	}
 	if len(caps) != 0 {
-		t.Fatalf("rejected declaration left %d rows behind", len(caps))
+		t.Fatalf("陈旧缓存不该写成归属，留下的 %d 行", len(caps))
 	}
 
 	// 定义了之后就能声明
@@ -143,9 +147,14 @@ func TestNodeCapabilityUnknown(t *testing.T) {
 		t.Fatalf("ConfirmCapabilities returned %v, want [%s]", ids, c.ID)
 	}
 
-	// 版本不存在也要拒绝（review@2 没定义）
-	if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 2}}); !errors.Is(err, ErrUnknownCapability) {
-		t.Fatalf("undefined version err = %v, want ErrUnknownCapability", err)
+	// 版本不存在同样是陈旧缓存（review@2 没定义）：不是错误，也不写归属。
+	if _, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 2}}); err != nil {
+		t.Fatalf("未定义版本应当按陈旧缓存处理（不报错），err = %v", err)
+	}
+	if caps, err := db.ListNodeCapabilities(ctx, n.ID); err != nil {
+		t.Fatalf("list node caps: %v", err)
+	} else if len(caps) != 0 {
+		t.Fatalf("陈旧缓存写进了归属: %+v", caps)
 	}
 }
 

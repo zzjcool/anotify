@@ -384,3 +384,65 @@ func TestSafeJoin(t *testing.T) {
 		}
 	}
 }
+
+// TestCachePrune 中枢点名剪掉一条陈旧缓存（能力已在控制台删除）。
+//
+// 与 remove 的区别就在产物目录：
+//   - remove 只摘索引（目录可能还被别的 name@version 用着，或者有任务在读）；
+//   - prune 摘索引 + 没人引用就删目录 —— 否则每删一个能力，节点磁盘上就永远
+//     多一份没人引用的副本。
+//
+// 幂等是硬要求：welcome.prune 是「最终一致」的指令，重连会重发。
+func TestCachePrune(t *testing.T) {
+	c := newCache(t.TempDir())
+	a := testScriptArtifact("demo.prep", 1, "#!/bin/bash\necho hi\n")
+	digest := mustDigest(t, a)
+	if err := c.put(a, digest); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	got, dirRemoved, err := c.prune("demo.prep", 1)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if got != digest {
+		t.Fatalf("prune 返回的 digest = %q, want %q", got, digest)
+	}
+	if !dirRemoved {
+		t.Error("没有别的索引项引用这个 digest，产物目录应当被删掉")
+	}
+	if _, _, ok := c.get("demo.prep", 1); ok {
+		t.Error("prune 之后 get 仍然成功，索引没被摘掉")
+	}
+	if _, err := os.Stat(filepath.Join(c.root, "artifacts", digest)); !os.IsNotExist(err) {
+		t.Errorf("产物目录还在: %v", err)
+	}
+
+	// 幂等：再剪一次不报错、也不再声称删了目录。
+	if _, dirRemoved2, err := c.prune("demo.prep", 1); err != nil {
+		t.Errorf("重复 prune = %v, want nil（幂等）", err)
+	} else if dirRemoved2 {
+		t.Error("第二次 prune 不该再声称删目录")
+	}
+
+	// 共用 digest 的情况：另一个 name@version 还指着它 → 摘索引但不删目录。
+	shared := testScriptArtifact("demo.other", 2, "#!/bin/bash\necho shared\n")
+	sharedDigest := mustDigest(t, shared)
+	if err := c.put(shared, sharedDigest); err != nil {
+		t.Fatalf("put shared: %v", err)
+	}
+	if err := c.writeIndex("demo.prep", 3, sharedDigest); err != nil {
+		t.Fatalf("writeIndex alias: %v", err)
+	}
+	if _, dirRemoved3, err := c.prune("demo.other", 2); err != nil {
+		t.Fatalf("prune shared: %v", err)
+	} else if dirRemoved3 {
+		t.Error("还有别的索引项指向同一个 digest，目录不该被删")
+	}
+	if _, err := os.Stat(filepath.Join(c.root, "artifacts", sharedDigest)); err != nil {
+		t.Errorf("共用产物目录被误删: %v", err)
+	}
+	if _, _, ok := c.get("demo.prep", 3); !ok {
+		t.Error("别名索引被误删（demo.prep@3 仍应可用）")
+	}
+}

@@ -999,7 +999,10 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 // ── 中枢 → 节点 ──────────────────────────────
 { "type": "welcome",   "node_id": "nd_x", "protocol": 1,
-  "heartbeat_sec": 10, "lease_ttl_sec": 30 }
+  "heartbeat_sec": 10, "lease_ttl_sec": 30,
+  // 中枢已不认、节点应当删掉的陈旧缓存（能力在控制台被删了）。空就不带这个键。
+  // 节点缓存是派生物：中枢删掉能力之后缓存必然过期，那是正常管理动作，不是协议违规。
+  "prune": [{ "capability": "old-name", "version": 3 }] }
 
 { "type": "assign",    "task_id": "tsk_x",
   "capability": "review", "version": 1,
@@ -1018,7 +1021,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 { "type": "cancel",    "task_id": "tsk_x", "reason": "superseded" }
 
-{ "type": "error",     "code": "unknown_capability", "message": "..." }
+{ "type": "error",     "code": "bad_frame", "message": "..." }
 ```
 
 **`assign` 载荷是中枢能表达的全部**：`{capability, version, params, digest, ports, expects, token}` + 租约。
@@ -1029,7 +1032,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 | code | 何时 |
 |---|---|
-| `unknown_capability` | 节点声明了中枢没有的 `name@version` |
+| `bad_frame` | `hello.applied[]` 里有形状坏掉的项（能力名为空）—— 节点 bug，必须响。**中枢没有的能力不是这种**：那是陈旧缓存，见 welcome 的 `prune` |
 | `invalid_manifest` | 节点上报的能力 manifest 不合法（run 缺失/runner 不支持/command 为空/concurrency 越界） |
 | `bad_frame` | JSON 解析失败 |
 | `unknown_type` | 未知帧类型 |
@@ -1121,7 +1124,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 | 码 | 层 | 含义 |
 |---|---|---|
-| `unknown_capability` | 注册/派发 | 能力名+版本在中枢无定义 |
+| `bad_frame` | 注册 | `applied[]` 里有空能力名（形状坏掉） |
 | `no_edge` | 路由 | `edges` 查表 0 行 |
 | `param_missing` | 路由 | 参数引用的路径在 payload / 别名表里取不到（含 payload 里的显式 `null`），且没有 `default`（§5.5） |
 | `param_type` | 路由 | 取值结果转不成目标 `params_schema` 要求的类型（§5.5） |
@@ -1172,12 +1175,12 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 |---|---|---|
 | A1 | 注册即得命名空间 | 新用户注册后 `namespaces` 里有他的 `default` 一行且内置能力已播种（`store.RegisterUser` 同事务；组织层已删） |
 | A2 | 无 argv 可存 | `grep -ri 'argv\|shell\|script' internal/store/schema.sql` = 0 |
-| A3 | 能力必须先定义 | 节点声明未定义能力 → 注册被拒，错误码 `unknown_capability` |
+| A3 | 能力必须先定义 | 节点报了一条中枢没有的 `name@version` → **握手成功**，该项进 `welcome.prune` 由节点删缓存；**不写 node_capabilities**（中枢不从缓存推断归属）。只有空能力名这类形状坏了才 `bad_frame` |
 | A4 | `kind` 不落库 | `grep -E '^\s*kind\s' internal/store/schema.sql` = 0（注意别被 `capability` 误命中） |
 | A5 | 出口封闭 | `edges.from_port` 不在 `outputs` 里 → 配置期拒绝 |
-| A6 | 扇出 | 一个 `(cap, port)` 有 3 行边 → 建 3 个任务 |
-| A7 | 成环剪枝 | `review→fix→review` 跑两圈后 `pruned/path` |
-| A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按边派发（含扇出）。result 帧里带 `out` → **忽略**，任务响应里**没有 out 字段**（`tasks.out` 列在 baseline 里就不存在） |
+| A6 | 候选选择 | 一个 `(cap, port)` 有 3 行边 = 3 个**候选**，一次 emit 只派 1 个（最小 priority 组内轮盘）；`balance: all` 才全派（未实现）。**入口边（源 → 能力）仍然全派**，那是源扇出 |
+| A7 | 环合法 + hop 预算 | `review→fix→review` **允许保存**、第二圈真的跑；`depth ≥ ANOTIFY_MAX_HOPS`（默认 16）时 `pruned/max_hops`，单 trace 任务数 ≥ `ANOTIFY_TRACE_TASK_BUDGET`（默认 512）时 `pruned/budget` |
+| A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按候选选择派发（1:1，见 A6）。result 帧里带 `out` → **忽略**，任务响应里**没有 out 字段**（`tasks.out` 列在 baseline 里就不存在） |
 | A8b | 失败也能继续 | 失败**之前** emit 过 → 那些下游照样建（I4 落地）；失败无 `summary` → 兜底 `"failed"` |
 | A9 | 租约接管 | `kill -9` 节点后 30s 内任务回 `pending` |
 | A10 | 组织隔离 | A 组织的 token 查不到 B 组织的事件 |

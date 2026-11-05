@@ -162,7 +162,9 @@ anotify.up.<node_id>                     上行 · 节点回报     （claim / r
 
 ### 4.1 声明从握手移到 DB（本方案最大的语义变化）
 
-**改变**：`CONTRACT.md` §6.1 的 `hello` 帧携带能力声明，握手时由中枢校验（`ConfirmCapabilities` → `unknown_capability`）。
+**改变**：`CONTRACT.md` §6.1 的 `hello` 帧携带能力声明（`applied[]`），握手时由中枢对账。
+中枢没有的 `name@version` **不再拒绝握手**（那是陈旧缓存，控制台删能力后必然出现），
+改为在 `welcome.prune` 里点名让节点删掉；只有形状坏掉（空能力名）才回 `bad_frame`。
 **本方案**：声明是 **DB 里的既有事实**，连接时不再申报。
 
 理由：ACL 必须在 `CONNECT` 时就能算出"这个节点能订阅哪些 subject"，而 `hello` 发生在 `CONNECT` 之后 —— 先有鸡还是先有蛋。所以声明只能先落库。
@@ -275,7 +277,7 @@ CLI 内部：`POST /v1/nodes/self/declare`（带 token）→ 落库 → 建立 N
 | `unknown_task` | 任务不存在或不属于该 org | 节点 |
 | `deny`（grant 的反面） | 见上三种 `taken/expired/canceled` | 节点 |
 
-`unknown_capability` / `bad_frame` / `unknown_type` **从协议层消失**：前者由 `declare` 时校验（HTTP 422），后者由 envelope 解码错误在中心侧记为 `bad_envelope` 并丢弃（带节点 ID 日志）。
+`unknown_capability` **从协议层消失**（陈旧缓存改成 `welcome.prune` 下发，不再是一个错误码）；`bad_frame` / `unknown_type` 仍在使用（握手帧形状坏掉 / 未知帧类型）。
 
 ### 4.5 并发自限
 

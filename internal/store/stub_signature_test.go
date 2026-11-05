@@ -27,25 +27,25 @@ func TestStubSignaturesFrozen(t *testing.T) {
 
 	// ── node.go ────────────────────────────────────
 	var (
-		_ func(context.Context, *Node) (string, error)                                   = db.CreateNode
-		_ func(context.Context, string) (*Node, error)                                   = db.GetNodeByTokenHash
-		_ func(context.Context, string, string) (*Node, error)                           = db.GetNode
-		_ func(context.Context, string) ([]*Node, error)                                 = db.ListNodes
-		_ func(context.Context, string, string, string) error                            = db.UpdateNodeStatus
-		_ func(context.Context, string, string, int64) error                             = db.TouchNode
-		_ func(context.Context, string, string, []CapabilityRef) ([]string, error)       = db.ConfirmCapabilities
-		_ func(context.Context, string, string, []AppliedRef) ([]string, error)          = db.ReconcileApplied
-		_ func(context.Context, string) ([]*NodeCapability, error)                       = db.ListNodeCapabilities
-		_ func(context.Context, string, string) ([]string, error)                        = db.NodesForCapability
-		_ func(context.Context, string, string, []InstanceSpec) ([]*NodeInstance, error) = db.UpsertInstances
-		_ func(context.Context, string) ([]*NodeInstance, error)                         = db.ListInstances
-		_ func(context.Context, []string) (map[string]int, error)                        = db.FreeSlotsByNode
-		_ func(context.Context, string) error                                            = db.MarkInstancesDead
-		_ func(context.Context, string, string) (string, error)                          = db.LeaseInstance
-		_ func(context.Context, string, string) error                                    = db.ReleaseInstance
-		_ func(context.Context, string) (*NodePin, error)                                = db.GetPin
-		_ func(context.Context, *NodePin) error                                          = db.PutPin
-		_ func(string, string, string) string                                            = StickyKey
+		_ func(context.Context, *Node) (string, error)                                        = db.CreateNode
+		_ func(context.Context, string) (*Node, error)                                        = db.GetNodeByTokenHash
+		_ func(context.Context, string, string) (*Node, error)                                = db.GetNode
+		_ func(context.Context, string) ([]*Node, error)                                      = db.ListNodes
+		_ func(context.Context, string, string, string) error                                 = db.UpdateNodeStatus
+		_ func(context.Context, string, string, int64) error                                  = db.TouchNode
+		_ func(context.Context, string, string, []CapabilityRef) ([]string, error)            = db.ConfirmCapabilities
+		_ func(context.Context, string, string, []AppliedRef) ([]string, []AppliedRef, error) = db.ReconcileApplied
+		_ func(context.Context, string) ([]*NodeCapability, error)                            = db.ListNodeCapabilities
+		_ func(context.Context, string, string) ([]string, error)                             = db.NodesForCapability
+		_ func(context.Context, string, string, []InstanceSpec) ([]*NodeInstance, error)      = db.UpsertInstances
+		_ func(context.Context, string) ([]*NodeInstance, error)                              = db.ListInstances
+		_ func(context.Context, []string) (map[string]int, error)                             = db.FreeSlotsByNode
+		_ func(context.Context, string) error                                                 = db.MarkInstancesDead
+		_ func(context.Context, string, string) (string, error)                               = db.LeaseInstance
+		_ func(context.Context, string, string) error                                         = db.ReleaseInstance
+		_ func(context.Context, string) (*NodePin, error)                                     = db.GetPin
+		_ func(context.Context, *NodePin) error                                               = db.PutPin
+		_ func(string, string, string) string                                                 = StickyKey
 	)
 
 	// ── event.go ───────────────────────────────────

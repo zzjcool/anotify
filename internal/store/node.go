@@ -81,8 +81,6 @@ type NodePin struct {
 
 // 节点注册 / 派发相关的哨兵错误。
 var (
-	// ErrUnknownCapability 节点声明了中枢不存在的能力名@版本（不变量 I2 / A3）。
-	ErrUnknownCapability = errors.New("unknown_capability")
 	// ErrTooManyInstances 申报实例数超过 nodes.max_instances 硬顶（契约 Q5）。
 	ErrTooManyInstances = errors.New("too_many_instances")
 	// ErrNoCapacity 节点没有空闲并发槽位。
@@ -116,27 +114,18 @@ type NodeCapability struct {
 	*CapabilityVersion
 }
 
-// CapabilityDeclError 是一份声明的**全部**问题（一次列全，不是只报第一条）。
+// CapabilityDeclError 是一份**形状坏掉**的声明的全部问题（一次列全，不是只报第一条）。
 //
-// 为什么必须列全、且必须全拒（不留半份声明）：
-//  1. 半装状态会让「为什么这台机器没接这个任务」无法解释 —— 排障成本远高于启动即失败；
-//  2. 这是**配置错误**，应该在节点启动时就炸掉（fail fast），而不是运行期变成一台安静的空闲机器。
+// 只剩一类问题：`applied[]` 里能力名为空。那不是「中枢没有这个能力」（那是陈旧
+// 缓存，见 ReconcileApplied 的注释），而是节点自己拼错了帧 —— 这类必须响。
+//
+// 为什么列全：修一条重启一次的成本远高于一次看全。
 type CapabilityDeclError struct {
-	Problems          []string // 每条自描述，顺序确定
-	UnknownCapability bool     // 至少一条是"能力未定义/名字为空"→ errors.Is(err, ErrUnknownCapability)
+	Problems []string // 每条自描述，顺序确定
 }
 
 // Error 把全部问题拼成一行（; 分隔，顺序确定）。
 func (e *CapabilityDeclError) Error() string { return strings.Join(e.Problems, "; ") }
-
-// Unwrap 让 errors.Is(err, ErrUnknownCapability) 对「混有问题项」的错误也成立：
-// 上层（握手）据此把错误码定成 unknown_capability 而不是 invalid_manifest。
-func (e *CapabilityDeclError) Unwrap() error {
-	if e.UnknownCapability {
-		return ErrUnknownCapability
-	}
-	return nil
-}
 
 // InstanceSpec 是节点申报的并发槽位（hello 帧的 instances 字段，契约 Q5）。
 type InstanceSpec struct {
@@ -438,15 +427,28 @@ func (d *DB) ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string
 	for _, ref := range caps {
 		applied = append(applied, AppliedRef{Name: ref.Name, Version: ref.Version})
 	}
-	return d.ReconcileApplied(ctx, namespaceID, nodeID, applied)
+	ids, _, err := d.ReconcileApplied(ctx, namespaceID, nodeID, applied)
+	return ids, err
 }
 
 // ReconcileApplied 用 hello.applied[] 全量重建这台节点的能力归属（契约 D4）。
 //
 // 两步，同事务：
 //  1. 逐条解析 name@version → capability_id（**只在本节点所在命名空间**内解析）。
-//     任一条未定义 → ErrUnknownCapability，整帧拒绝、一行不写。
+//     未定义的那条**不拒绝整帧**，而是作为「陈旧缓存」回给调用方（返回值第 2 项）
+//     —— 中枢随后在 welcome 里让节点删掉它。
 //  2. DELETE + INSERT 重建 node_capabilities（全量替换语义保留）。
+//
+// # 为什么未定义的能力不再拒绝整帧（曾经的 unknown_capability）
+//
+// 节点缓存是**派生物**，中枢是唯一真相。控制台删掉一个能力之后，节点的缓存里
+// 必然还留着它 —— 这是正常的管理动作，不是协议违规。旧行为是整帧拒绝：
+//
+//	hello(applied=[touchnow@1]) → 400 unknown_capability → agent 视为致命错误退出
+//	→ systemd 3 秒后重启 → 再拒 → 无限崩溃循环（节点永久离线，日志每 3 秒刷一次）
+//
+// 也就是说「删一个能力」会打死所有在线节点。现在的行为：认下认识的、把不认识的
+// 回给调用方去剪掉（ws 层放进 welcome.prune，agent 删缓存与索引）。
 //
 // 顺带把 deployments 的 observed 列对账成 applied / pending：
 //   - applied：节点缓存里的 digest 与中枢期望一致
@@ -455,45 +457,50 @@ func (d *DB) ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string
 // **它不会做的事**：不会因为 applied 里出现一条没部署过的能力就给它归属。
 // 那会让中枢数据库开始静默撒谎（页面显示「这台机器能跑」，真的派过去却 ack 后 failed）。
 // 唯一的归属写者是控制台的部署。
-func (d *DB) ReconcileApplied(ctx context.Context, namespaceID, nodeID string, applied []AppliedRef) ([]string, error) {
+// 返回值：
+//   - ids：与 applied 逐个对应（未定义的那条是 ""）
+//   - stale：中枢已经没有的能力引用（节点应当剪掉的陈旧缓存）
+//
+// 只有**形状坏掉**的 applied（空能力名）才返回错误：那不是陈旧缓存，是节点 bug。
+func (d *DB) ReconcileApplied(ctx context.Context, namespaceID, nodeID string, applied []AppliedRef) (ids []string, stale []AppliedRef, err error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
+		return nil, nil, ErrNamespaceRequired
 	}
 	if nodeID == "" {
-		return nil, fmt.Errorf("reconcile applied: empty node_id")
+		return nil, nil, fmt.Errorf("reconcile applied: empty node_id")
 	}
 
 	// 节点行是唯一真相：能力定义只在它所属的命名空间里解析（I11③）。
 	node, err := d.GetNode(ctx, namespaceID, nodeID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	ids := make([]string, len(applied))
+	ids = make([]string, len(applied))
 	var (
 		nameProblems []string
 		unknownRefs  []string
-		unknown      bool
 	)
 	for i, a := range applied {
 		if a.Name == "" {
+			// 形状坏掉 = 节点 bug，不是陈旧缓存：照旧拒绝整帧（这条必须响）。
 			nameProblems = append(nameProblems,
 				fmt.Sprintf("capability name is empty (version %d)", a.Version))
-			unknown = true
 			continue
 		}
 		ref := fmt.Sprintf("%s@%d", a.Name, a.Version)
 		c, err := d.GetCapability(ctx, node.NamespaceID, a.Name, a.Version)
 		switch {
 		case errors.Is(err, ErrNotFound):
+			// 陈旧缓存：记下来，交给 welcome.prune 让节点删掉，不拒绝整帧。
 			unknownRefs = append(unknownRefs, ref)
-			unknown = true
+			stale = append(stale, AppliedRef{Name: a.Name, Version: a.Version, Digest: a.Digest})
 		case err != nil:
-			return nil, err
+			return nil, nil, err
 		case c.NamespaceID != node.NamespaceID:
 			// 数据被写坏时才可能走到：宁可 400 说清楚，也不要把别的命名空间的
 			// 能力 id 写进本节点的声明。
-			return nil, &CrossNamespaceError{
+			return nil, nil, &CrossNamespaceError{
 				What: "node_capabilities.capability_id",
 				Want: node.NamespaceID,
 				Got:  c.NamespaceID,
@@ -502,25 +509,27 @@ func (d *DB) ReconcileApplied(ctx context.Context, namespaceID, nodeID string, a
 			ids[i] = c.ID
 		}
 	}
-
-	problems := make([]string, 0, len(nameProblems)+1)
-	problems = append(problems, nameProblems...)
 	if len(unknownRefs) > 0 {
-		problems = append(problems, "unknown capability: "+strings.Join(unknownRefs, ", "))
+		// 只留痕：中枢认得清「这不是我的能力」，节点马上会在 welcome.prune 里收到它。
+		slog.Warn("node reports capabilities the hub no longer has (stale cache; pruning)",
+			"event", "node.reconcile.stale",
+			"node_id", nodeID,
+			"stale", strings.Join(unknownRefs, ", "))
 	}
-	if len(problems) > 0 {
-		return nil, &CapabilityDeclError{Problems: problems, UnknownCapability: unknown}
+
+	if len(nameProblems) > 0 {
+		return nil, nil, &CapabilityDeclError{Problems: nameProblems}
 	}
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin reconcile applied: %w", err)
+		return nil, nil, fmt.Errorf("begin reconcile applied: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM node_capabilities WHERE node_id = ?`, nodeID); err != nil {
-		return nil, fmt.Errorf("clear node capabilities: %w", err)
+		return nil, nil, fmt.Errorf("clear node capabilities: %w", err)
 	}
 	for i := range applied {
 		if ids[i] == "" {
@@ -531,17 +540,17 @@ func (d *DB) ReconcileApplied(ctx context.Context, namespaceID, nodeID string, a
 			`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?,?,?)
 			 ON CONFLICT(node_id, capability_id) DO NOTHING`,
 			nodeID, ids[i], node.NamespaceID); err != nil {
-			return nil, fmt.Errorf("insert node capability: %w", err)
+			return nil, nil, fmt.Errorf("insert node capability: %w", err)
 		}
 		if _, err := d.markDeployedDigest(ctx, tx, nodeID, ids[i], applied[i].Digest); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit reconcile applied: %w", err)
+		return nil, nil, fmt.Errorf("commit reconcile applied: %w", err)
 	}
-	return ids, nil
+	return ids, stale, nil
 }
 
 // ListNodeCapabilities 返回节点拥有的能力定义（含 outputs，供 kind 推导与派发选点）。

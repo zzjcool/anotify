@@ -731,7 +731,7 @@ func TestNodeDetailCapabilities(t *testing.T) {
 		t.Fatalf("create node: %v", err)
 	}
 	// 归属走 v2 的对账入口（hello.applied[] 的落库路径）
-	if _, err := env.db.ReconcileApplied(ctx, env.nsID, node.ID, []store.AppliedRef{
+	if _, _, err := env.db.ReconcileApplied(ctx, env.nsID, node.ID, []store.AppliedRef{
 		{Name: "review", Version: 1, Digest: "sha256:aaaa"},
 		{Name: "test", Version: 1, Digest: "sha256:bbbb"},
 	}); err != nil {

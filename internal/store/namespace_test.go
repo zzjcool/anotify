@@ -452,8 +452,8 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 
 	// ===== ③ ReconcileApplied：hello 里 applied[] 只在别的命名空间定义过的能力 =====
 	// 语义是「按 name@version 在**本节点所在命名空间**解析」，所以别处的同名同版本
-	// 定义在这里**根本不存在** → 归入 ErrUnknownCapability（ws 层翻 unknown_capability
-	// 帧），而不是 CrossNamespaceError。
+	// 定义在这里**根本不存在** → 归入 stale（陈旧缓存，节点侧会剪掉它），
+	// 而不是 CrossNamespaceError，也**不是**归属（隔离边界不允许跨命名空间借用）。
 	// 为什么保留这个语义：节点 hello 帧里带的是 capability name@version，没有 id 维度，
 	// 「这个能力属于别的命名空间」对节点来说与「这个能力不存在」不可区分。
 	//
@@ -466,24 +466,29 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 	if err := db.CreateCapability(ctx, onlyB); err != nil {
 		t.Fatalf("create staging-only: %v", err)
 	}
-	_, err = db.ReconcileApplied(ctx, nsA, nodeA.ID,
+	_, staleCross, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
 		[]AppliedRef{{Name: "staging-only", Version: 1}})
-	if !errors.Is(err, ErrUnknownCapability) {
-		t.Fatalf("applied 里出现别处的能力 err = %v, want ErrUnknownCapability（语义：按本命名空间解析）", err)
+	if err != nil {
+		t.Fatalf("applied 里出现别处的能力不该拒绝整帧: %v", err)
 	}
-	var declErr *CapabilityDeclError
-	if !errors.As(err, &declErr) || !declErr.UnknownCapability {
-		t.Fatalf("err 不是 *CapabilityDeclError{UnknownCapability:true}: %T %+v", err, declErr)
+	if len(staleCross) != 1 || staleCross[0].Name != "staging-only" {
+		t.Fatalf("stale = %+v, want 恰好一条 staging-only（按本命名空间解析 → 相当于不存在）", staleCross)
 	}
 	var cross *CrossNamespaceError
 	if errors.As(err, &cross) {
 		t.Fatalf("「别处才有这个能力」被报成了 CrossNamespaceError（语义不对）: %v", err)
 	}
+	// 隔离的实质：**别处存在**并不能让这台节点获得归属（不能跨命名空间借用）。
+	if caps, lerr := db.ListNodeCapabilities(ctx, nodeA.ID); lerr != nil {
+		t.Fatalf("list node caps: %v", lerr)
+	} else if len(caps) != 0 {
+		t.Fatalf("别处的能力被写进了 node_capabilities: %+v", caps)
+	}
 	// 反证：同名能力在**本**命名空间定义后就能对账（说明上一条不是别的错）
 	if err := db.CreateCapability(ctx, mkCap(nsA, "staging-only", 1, []string{"go"})); err != nil {
 		t.Fatalf("create local staging-only: %v", err)
 	}
-	if _, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
+	if _, _, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
 		[]AppliedRef{{Name: "staging-only", Version: 1}}); err != nil {
 		t.Fatalf("本命名空间里定义后仍对账失败: %v", err)
 	}

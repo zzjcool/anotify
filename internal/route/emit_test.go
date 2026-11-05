@@ -99,7 +99,7 @@ func (f *emitFixture) addNode(t *testing.T, slots int, caps ...*store.Capability
 	for _, c := range caps {
 		applied = append(applied, store.AppliedRef{Name: c.Name, Version: c.Version})
 	}
-	if _, err := f.db.ReconcileApplied(ctx, f.ns, n.ID, applied); err != nil {
+	if _, _, err := f.db.ReconcileApplied(ctx, f.ns, n.ID, applied); err != nil {
 		t.Fatalf("reconcile applied: %v", err)
 	}
 	specs := make([]store.InstanceSpec, 0, slots)

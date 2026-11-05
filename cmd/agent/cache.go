@@ -285,6 +285,56 @@ func (c *cache) readIndex(name string, version int) (string, bool) {
 	return digest, true
 }
 
+// prune 按中枢的 welcome.prune 指令丢掉一条陈旧缓存（能力已在中枢删除）。
+//
+// 与 remove 的区别：remove 只摘索引（产物目录可能还被别的 name@version 共用，
+// 留着），prune 是「这个能力中枢已经不认了」，所以摘完索引之后，如果没有任何
+// 索引项还指向那个 digest，就把产物目录也删掉——否则每删一个能力，节点磁盘上
+// 就永远多一份没人引用的副本。
+//
+// 幂等：索引项不存在按成功处理（重复投递不该报错）。
+func (c *cache) prune(name string, version int) (digest string, dirRemoved bool, err error) {
+	digest, hadEntry := c.readIndex(name, version)
+	if err := c.remove(name, version); err != nil {
+		return "", false, err
+	}
+	if !hadEntry {
+		return "", false, nil
+	}
+	// 还有别的 name@version 指向同一个 digest？共用就别删目录。
+	if c.digestReferenced(digest) {
+		return digest, false, nil
+	}
+	if err := os.RemoveAll(c.artifactDir(digest)); err != nil {
+		return digest, false, fmt.Errorf("remove artifact %s: %w", digest, err)
+	}
+	return digest, true, nil
+}
+
+// digestReferenced 报告索引里是否还有条目指向这个 digest。
+//
+// 索引规模是「部署过多少个 name@version」（几十），扫目录比维护引用计数简单得多，
+// 也不会因为漏减计数而误删别人还在用的产物。
+func (c *cache) digestReferenced(digest string) bool {
+	entries, err := os.ReadDir(c.indexDir())
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, rerr := os.ReadFile(filepath.Join(c.indexDir(), e.Name()))
+		if rerr != nil {
+			continue
+		}
+		if strings.TrimSpace(string(data)) == digest {
+			return true
+		}
+	}
+	return false
+}
+
 // remove 摘掉一条索引项（产物目录保留，见文件头注释）。
 //
 // 幂等：索引项不存在就是「本来就不在缓存里」，按成功处理——remove 是从中枢来的

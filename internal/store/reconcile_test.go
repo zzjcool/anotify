@@ -21,6 +21,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,7 +79,7 @@ func TestReconcileAppliedRoundTrip(t *testing.T) {
 	n, _ := mkNode(t, db, nsID, "mbp")
 	ids := rcSeedCaps(t, db, nsID, "review", "test")
 
-	got, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
+	got, _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
 		rcApplied("review", 1, rcDigestDesired),
 		rcApplied("test", 1, ""),
 	})
@@ -114,7 +115,7 @@ func TestReconcileAppliedFullReplace(t *testing.T) {
 	n, _ := mkNode(t, db, nsID, "mbp")
 	rcSeedCaps(t, db, nsID, "review", "test")
 
-	if _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
+	if _, _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
 		rcApplied("review", 1, rcDigestDesired),
 		rcApplied("test", 1, ""),
 	}); err != nil {
@@ -125,7 +126,7 @@ func TestReconcileAppliedFullReplace(t *testing.T) {
 	}
 
 	// 节点上删掉了 test 的缓存（或升级后不再需要它）→ 只剩 review
-	if _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
+	if _, _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
 		rcApplied("review", 1, rcDigestDesired),
 	}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
@@ -140,7 +141,7 @@ func TestReconcileAppliedFullReplace(t *testing.T) {
 	}
 
 	// 空 applied[] 也是合法的全量替换：这台机器不再缓存任何产物
-	if _, err := db.ReconcileApplied(ctx, nsID, n.ID, nil); err != nil {
+	if _, _, err := db.ReconcileApplied(ctx, nsID, n.ID, nil); err != nil {
 		t.Fatalf("empty reconcile: %v", err)
 	}
 	if names := rcNodeCapNames(t, db, n.ID); len(names) != 0 {
@@ -148,11 +149,17 @@ func TestReconcileAppliedFullReplace(t *testing.T) {
 	}
 }
 
-// TestReconcileAppliedUnknownRejectsWholeFrame 未知能力 → 整帧拒绝、**一行不写**。
+// TestReconcileAppliedToleratesStaleCache 是**反转**后的用例：节点缓存里报的
+// name@version 中枢已经没有（能力被删掉了）时，不再拒绝整帧，而是：
 //
-// 「一行不写」是这条用例的重点：旧实现在校验与写入之间做 DELETE，写坏一点
-// 就会留下「删了旧的、没写新的」这种既不能派发也无法自愈的状态。
-func TestReconcileAppliedUnknownRejectsWholeFrame(t *testing.T) {
+//   - 认下认识的（node_capabilities 只写中枢确实有的），
+//   - 把不认识的作为 stale 回给调用方（ws 层放进 welcome.prune，让节点删缓存）。
+//
+// 为什么反转：旧行为是整帧拒绝 + `unknown_capability`，而 agent 把 hello 的
+// unknown_capability 当致命错误 → 退出 → systemd 拉起 → 再拒。也就是说
+// **在控制台删一个能力，会打死所有在线节点**（实测崩溃循环，每 3 秒一轮）。
+// 缓存是派生物，中枢才是真相；派生数据过期不该是协议违规。
+func TestReconcileAppliedToleratesStaleCache(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
@@ -161,89 +168,79 @@ func TestReconcileAppliedUnknownRejectsWholeFrame(t *testing.T) {
 	fresh, _ := mkNode(t, db, nsID, "fresh")
 	withOld, _ := mkNode(t, db, nsID, "with-old")
 
-	// withOld 先成功对账一份，用来断言「被拒的帧不会把旧归属删掉」
-	if _, err := db.ReconcileApplied(ctx, nsID, withOld.ID,
+	// withOld 先成功对账一份，用来断言「含陈旧项的对账仍会重建归属」
+	if _, _, err := db.ReconcileApplied(ctx, nsID, withOld.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
 		t.Fatalf("baseline reconcile: %v", err)
 	}
 
 	for _, node := range []*Node{fresh, withOld} {
-		_, err := db.ReconcileApplied(ctx, nsID, node.ID, []AppliedRef{
+		ids, stale, err := db.ReconcileApplied(ctx, nsID, node.ID, []AppliedRef{
 			rcApplied("review", 1, rcDigestDesired),
 			rcApplied("does-not-exist", 9, ""),
 		})
-		if !errors.Is(err, ErrUnknownCapability) {
-			t.Fatalf("node %s: err = %v, want ErrUnknownCapability", node.Name, err)
+		if err != nil {
+			t.Fatalf("node %s: 陈旧缓存不该拒绝整帧: %v", node.Name, err)
 		}
-		var declErr *CapabilityDeclError
-		if !errors.As(err, &declErr) || !declErr.UnknownCapability {
-			t.Fatalf("node %s: err 不是 *CapabilityDeclError{UnknownCapability:true}: %T %+v", node.Name, err, declErr)
+		// ids 与入参逐个对应：认识的那条给 id，不认识的给 ""。
+		if ids[0] == "" || ids[1] != "" {
+			t.Fatalf("node %s: ids = %v, want [<review id> \"\"]", node.Name, ids)
+		}
+		// stale 精确列出要剪的那条（节点据此删缓存）。
+		if len(stale) != 1 || stale[0].Name != "does-not-exist" || stale[0].Version != 9 {
+			t.Fatalf("node %s: stale = %+v, want [{does-not-exist 9}]", node.Name, stale)
 		}
 	}
 
-	// 全拒：新节点一行都不留
-	if n := countRows(t, db, "node_capabilities", "node_id = ?", fresh.ID); n != 0 {
-		t.Fatalf("被拒的对账给新节点留下了 %d 行", n)
-	}
-	// 旧归属没被半途删掉（拒绝发生在 DELETE 之前）
+	// 认识的那条照常落库，不认识的**不**进 node_capabilities（中枢不从缓存推断归属）。
 	names := rcNodeCapNames(t, db, withOld.ID)
 	if len(names) != 1 || names[0] != "review@1" {
-		t.Fatalf("被拒的对账改动了旧归属: %v", names)
+		t.Fatalf("withOld 的归属 = %v, want [review@1]", names)
+	}
+	if n := countRows(t, db, "node_capabilities", "node_id = ?", fresh.ID); n != 1 {
+		t.Fatalf("fresh 的归属行数 = %d, want 1", n)
 	}
 
-	// 空能力名同样是「未知」，而且不能让它混进成功路径
-	_, err := db.ReconcileApplied(ctx, nsID, fresh.ID, []AppliedRef{{Name: "", Version: 3}})
-	if !errors.Is(err, ErrUnknownCapability) {
-		t.Fatalf("空能力名 err = %v, want ErrUnknownCapability", err)
+	// 空能力名仍然**拒绝**：那不是陈旧缓存，是节点 bug（形状坏掉必须响）。
+	_, _, err := db.ReconcileApplied(ctx, nsID, fresh.ID, []AppliedRef{{Name: "", Version: 3}})
+	if err == nil {
+		t.Fatal("空能力名被接受了")
+	}
+	var declErr *CapabilityDeclError
+	if !errors.As(err, &declErr) {
+		t.Fatalf("err 不是 *CapabilityDeclError: %T %v", err, err)
 	}
 	if !strings.Contains(err.Error(), "capability name is empty") {
 		t.Fatalf("空能力名的错误信息 = %q, want 含 'capability name is empty'", err.Error())
 	}
 }
 
-// TestReconcileAppliedListsAllUnknown 多个问题一次列全（`;` 分隔），不玩「修一条重启一次」。
-//
-// 这条是旧 TestNodeCapabilityDeclsListAllProblems 的替代覆盖：当年那批问题里
-// 混着 run 校验（已随 manifest 下线），保留并钉住的是**未知能力一组 + 分组拼接**。
-func TestReconcileAppliedListsAllUnknown(t *testing.T) {
+// TestReconcileAppliedListsAllStale 多个陈旧项一次列全（按声明顺序），
+// 同时验证「只有形状坏掉的那类才拒绝」。
+func TestReconcileAppliedListsAllStale(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	n, _ := mkNode(t, db, nsID, "mbp")
 
-	_, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
-		{Name: "", Version: 7},                                // 名字为空的（未知）
-		rcApplied("a", 1, ""),                                 // 中枢没定义
-		rcApplied("b", 2, "sha256:deadbeef"),                  // 中枢没定义
-		rcApplied("never-defined-anywhere", 1, "sha256:beef"), // 中枢没定义
+	_, stale, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
+		rcApplied("a", 1, ""),
+		rcApplied("b", 2, "sha256:deadbeef"),
+		rcApplied("never-defined-anywhere", 1, "sha256:beef"),
 	})
-	if err == nil {
-		t.Fatal("未知能力被接受")
+	if err != nil {
+		t.Fatalf("全陈旧的对账不该报错: %v", err)
 	}
-	if !errors.Is(err, ErrUnknownCapability) {
-		t.Fatalf("errors.Is(ErrUnknownCapability) = false (%v)", err)
+	got := make([]string, 0, len(stale))
+	for _, s := range stale {
+		got = append(got, fmt.Sprintf("%s@%d", s.Name, s.Version))
 	}
-	var declErr *CapabilityDeclError
-	if !errors.As(err, &declErr) {
-		t.Fatalf("err 不是 *CapabilityDeclError: %T", err)
+	want := []string{"a@1", "b@2", "never-defined-anywhere@1"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stale = %v, want %v（按声明顺序列全）", got, want)
 	}
-	// 两个问题组：①名字为空 ②未知能力合成一组（按声明顺序，逗号分隔）
-	if len(declErr.Problems) != 2 {
-		t.Fatalf("problems = %v, want 2 组", declErr.Problems)
-	}
-	if !strings.Contains(declErr.Problems[0], "capability name is empty") {
-		t.Fatalf("第一组 = %q, want 名字为空的问题", declErr.Problems[0])
-	}
-	if !strings.Contains(declErr.Problems[1], "unknown capability: a@1, b@2, never-defined-anywhere@1") {
-		t.Fatalf("第二组 = %q, want 按声明顺序列全三条未知能力", declErr.Problems[1])
-	}
-	// 整条错误是一个字符串，用 `;` 把问题组连起来（节点侧一次看全）
-	if msg := err.Error(); !strings.Contains(msg, "; ") {
-		t.Fatalf("错误信息 %q 没有用 `;` 分隔问题组", msg)
-	}
-	// 全拒：一行不写
-	if n := countRows(t, db, "node_capabilities", "node_id = ?", n.ID); n != 0 {
-		t.Fatalf("被拒的对账留下了 %d 行", n)
+	if cnt := countRows(t, db, "node_capabilities", "node_id = ?", n.ID); cnt != 0 {
+		t.Fatalf("全陈旧的对账留下了 %d 行归属", cnt)
 	}
 }
 
@@ -288,7 +285,7 @@ func TestReconcileAppliedDigestMismatchMarksPending(t *testing.T) {
 	node, dp, _ := rcDeploymentFixture(t, db, nsID)
 
 	// 节点上缓存的是另一份产物（旧 digest，或本地被改过）
-	if _, err := db.ReconcileApplied(ctx, nsID, node.ID,
+	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestLocal)}); err != nil {
 		t.Fatalf("reconcile applied: %v", err)
 	}
@@ -318,7 +315,7 @@ func TestReconcileAppliedDigestMatchMarksApplied(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	node, dp, _ := rcDeploymentFixture(t, db, nsID)
 
-	if _, err := db.ReconcileApplied(ctx, nsID, node.ID,
+	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
 		t.Fatalf("reconcile applied: %v", err)
 	}
@@ -335,11 +332,11 @@ func TestReconcileAppliedDigestMatchMarksApplied(t *testing.T) {
 
 	// 反过来：产物不一致（pending）在节点追上中枢期望的 digest 后必须能变回 applied
 	// （pending 不是终态 —— 中枢会重推，重推成功就该自愈）。
-	if _, err := db.ReconcileApplied(ctx, nsID, node.ID,
+	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestLocal)}); err != nil {
 		t.Fatalf("reconcile to local: %v", err)
 	}
-	if _, err := db.ReconcileApplied(ctx, nsID, node.ID,
+	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
 		t.Fatalf("reconcile back to applied: %v", err)
 	}
@@ -370,7 +367,7 @@ func TestReconcileAppliedFeedsDispatch(t *testing.T) {
 		t.Fatalf("对账之前就选到了 %v（归属不该由部署行单方面产生）", got)
 	}
 
-	if _, err := db.ReconcileApplied(ctx, nsID, node.ID,
+	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
 		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
 		t.Fatalf("reconcile applied: %v", err)
 	}

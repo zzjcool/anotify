@@ -199,6 +199,26 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 		"applied", len(a.cache.applied()),
 	)
 
+	// 中枢点名要剪掉的陈旧缓存（能力已在控制台删除）。
+	//
+	// 为什么由中枢下指令而不是节点自己猜：节点只知道「我缓存了什么」，不知道
+	// 「中枢还认不认」。早先中枢对这种情况直接拒握手，agent 视为致命错误退出，
+	// systemd 每 3 秒把它拉起来再拒一次 —— 删一个能力就能打死所有在线节点。
+	for _, p := range welcome.Prune {
+		digest, dirRemoved, perr := a.cache.prune(p.Capability, p.Version)
+		if perr != nil {
+			// 剪缓存失败不是致命错误：下一次握手还会收到同一条指令。
+			a.log.Warn("prune stale artifact failed",
+				"event", "agent.prune.failed",
+				"capability", p.Capability, "version", p.Version, "error", perr.Error())
+			continue
+		}
+		a.log.Info("pruned stale artifact",
+			"event", "agent.prune.ok",
+			"capability", p.Capability, "version", p.Version,
+			"digest", digest, "dir_removed", dirRemoved)
+	}
+
 	// 心跳挂在**连接** ctx（a.base）上，不是父 ctx：drain 期间在跑任务还要把 result
 	// 发出去，连接必须活着，心跳也跟着活着（服务端 idle 判定才不会把这段算成静默）。
 	hbCtx, hbCancel := context.WithCancel(a.base)

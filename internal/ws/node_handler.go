@@ -456,7 +456,7 @@ func (s *nodeSession) handle(ctx context.Context, frame any) error {
 
 // handleHello 处理握手后的第一帧。
 func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
-	applied, err := applyHello(ctx, s.h.Store, s.node, f)
+	applied, stale, err := applyHello(ctx, s.h.Store, s.node, f)
 	if err != nil {
 		return s.failHello(ctx, err)
 	}
@@ -478,7 +478,7 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame) error {
 		return s.failHello(ctx, err)
 	}
 	// welcome 是握手成功的信号：节点据此配置心跳节奏（间隔/TTL 以服务端为准）。
-	if err := s.send(ctx, welcomeFrameFor(s.node)); err != nil {
+	if err := s.send(ctx, welcomeFrameFor(s.node, stale)); err != nil {
 		return err
 	}
 	slog.Info("node connected",

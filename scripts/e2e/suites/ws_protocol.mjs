@@ -379,26 +379,35 @@ async function main() {
 	H.check("坏 JSON 回 bad_frame", !!badFrameErr, JSON.stringify(node.frames.slice(-3)));
 	H.check("坏 JSON 后连接仍活着", !node.conn.closed);
 
-	// ================= applied 里放未定义能力 → unknown_capability =================
+	// ================= applied 里有中枢没有的能力 → 握手成功 + welcome.prune =================
 	//
-	// v1 时这条测的是「节点声明了自己不会跑的能力」；v2 的语义变了（能力归属由部署决定），
-	// 但**同一条护栏必须保留**：applied[] 里的能力必须本来就是中枢定义过的
-	// —— 产物只可能是从中枢部署过去的，出现陌生名字说明数据被写坏了。
-	// 契约要求「整帧拒绝」：不收 welcome，且**一行不写**（node_capabilities 保持空）。
-	console.log("--- 能力白名单（A3 / applied 全帧拒绝）---");
+	// 这条用例以前测的是「整帧拒绝 + unknown_capability」。那是错的：节点缓存是
+	// **派生物**，控制台删掉一个能力之后缓存必然过期 —— 那是正常管理动作，不是
+	// 协议违规。旧行为的后果是 agent 把 unknown_capability 当致命错误退出 →
+	// systemd 拉起 → 再拒，**删一个能力就打死所有在线节点**（实测崩溃循环）。
+	//
+	// 现在的契约：认下认识的、把不认识的放进 welcome.prune 让节点删缓存；
+	// 中枢不从缓存推断归属（node_capabilities 里不能出现这条）。
+	console.log("--- 陈旧缓存（A3 / welcome.prune）---");
 	const badNode = seedNodeRows(server.dbPath, nsId, "ws-badnode", [], 1);
 	const badConn = await wsConnect(server.base, badNode.token);
 	const badFrames = [];
 	badConn.onFrame((f) => badFrames.push(f));
 	badConn.send(nodeHello(badNode.id, [{ name: "does.not.exist", version: 9 }], 1));
-	const capErr = await waitForFrame(badFrames, (f) => f.type === "error");
-	H.eq("applied 里放未定义能力 → unknown_capability", capErr?.code, "unknown_capability");
-	H.check("未注册成功则不收 welcome", !badFrames.some((f) => f.type === "welcome"));
+	const badWelcome = await waitForFrame(badFrames, (f) => f.type === "welcome");
+	H.check("陈旧缓存不拒绝握手（收到 welcome）", !!badWelcome, JSON.stringify(badFrames.map((f) => f.type)));
+	H.check(
+		"welcome.prune 点名要删掉那条（does.not.exist@9）",
+		JSON.stringify((badWelcome?.prune || []).map((p) => `${p.capability}@${p.version}`)) ===
+			JSON.stringify(["does.not.exist@9"]),
+		JSON.stringify(badWelcome?.prune),
+	);
+	H.check("陈旧缓存不产生 error 帧", !badFrames.some((f) => f.type === "error"), JSON.stringify(badFrames));
 	{
-		// 整帧拒绝的另一半：库里不能留下半行归属（否则页面会显示「这台能跑」）
+		// 另一半：库里不能留下归属行（否则页面会显示「这台能跑」）
 		const badView = await H.req(server.base, "/v1/nodes", { session });
 		const badSelf = (badView.json?.nodes || []).find((n) => n.id === badNode.id);
-		H.eq("整帧拒绝：node_capabilities 一行都不写", (badSelf?.capabilities || []).length, 0);
+		H.eq("陈旧缓存不写 node_capabilities", (badSelf?.capabilities || []).length, 0);
 	}
 	badConn.close();
 

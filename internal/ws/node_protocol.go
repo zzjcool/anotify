@@ -41,7 +41,6 @@ const (
 
 // 错误码（契约 §6.1 表格）。
 const (
-	ErrCodeUnknownCapability = "unknown_capability"
 	ErrCodeBadFrame          = "bad_frame"
 	ErrCodeUnknownType       = "unknown_type"
 	ErrCodeInvalidTransition = "invalid_transition"
@@ -252,6 +251,22 @@ type WelcomeFrame struct {
 	Protocol     int    `json:"protocol"`
 	HeartbeatSec int    `json:"heartbeat_sec"`
 	LeaseTTLSec  int    `json:"lease_ttl_sec"`
+	// Prune 列出「节点缓存里有、中枢已经不认」的能力：节点应当删掉它们。
+	//
+	// 为什么需要它：中枢删掉一个能力之后，节点缓存里必然还留着（缓存是派生物）。
+	// 早先中枢对这种情况直接拒握手（unknown_capability），而 agent 视之为致命错误
+	// → systemd 重启 → 再拒，节点永久崩溃循环。现在改成「认下认识的、把不认识的
+	// 交回节点删掉」，这一帧就是那个「交回」。
+	//
+	// 老 agent 不认识这个键（json 忽略未知字段）→ 缓存留着但握手成功，无害。
+	Prune []WelcomePrune `json:"prune,omitempty"`
+}
+
+// WelcomePrune 是一条要删掉的陈旧缓存。只带 name@version：digest 由节点自己从
+// 索引里查，中枢不猜节点磁盘上有什么。
+type WelcomePrune struct {
+	Capability string `json:"capability"`
+	Version    int    `json:"version"`
 }
 
 // AssignFrame 是中枢能表达的全部：{capability, version, params} + 租约。

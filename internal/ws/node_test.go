@@ -483,8 +483,17 @@ func TestHandshake(t *testing.T) {
 	}
 }
 
-// TestHelloUnknownCapability 声明未定义能力 → error 帧 code=unknown_capability（#68 / A3）。
-func TestHelloUnknownCapability(t *testing.T) {
+// TestHelloStaleCacheIsPruned 声明中枢没有的能力（陈旧缓存）→ **握手成功**，
+// welcome 里点名要它剪掉。
+//
+// 这条用例以前叫 TestHelloUnknownCapability，断言的是「error 帧 code=unknown_capability
+// + 节点不上线」。那是错的：节点缓存是派生物，控制台删能力之后缓存必然过期，
+// 而 agent 把 unknown_capability 当致命错误 → 退出 → systemd 拉起 → 再拒，
+// 结果是「删一个能力打死所有在线节点」（实测崩溃循环，每 3 秒一轮）。
+//
+// 现在的契约：认下认识的、把不认识的放进 welcome.prune。缓存里的过期项
+// **不**写进 node_capabilities（中枢不从缓存推断归属）。
+func TestHelloStaleCacheIsPruned(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
 
@@ -493,14 +502,27 @@ func TestHelloUnknownCapability(t *testing.T) {
 		Applied:   []AppliedDecl{{Capability: "does-not-exist", Version: 9}},
 		Instances: []InstanceDecl{{Slot: 0, Concurrency: 1}},
 	})
-	frame := readUntil(t, conn, NodeFrameError)
-	if frame["code"] != ErrCodeUnknownCapability {
-		t.Fatalf("code = %v, want unknown_capability", frame["code"])
+	frame := readUntil(t, conn, NodeFrameWelcome)
+	prune, _ := frame["prune"].([]any)
+	if len(prune) != 1 {
+		t.Fatalf("welcome.prune = %v, want 一条（does-not-exist@9）", frame["prune"])
 	}
-	// 节点不该上线
+	item, _ := prune[0].(map[string]any)
+	if item["capability"] != "does-not-exist" || item["version"] != float64(9) {
+		t.Fatalf("welcome.prune[0] = %v, want {does-not-exist 9}", item)
+	}
+	// 节点**在线**（陈旧缓存不该让它下线）
 	got, _ := f.db.GetNode(context.Background(), f.nsID, f.node.ID)
-	if got.Status == store.NodeStatusOnline {
-		t.Fatal("node went online despite declaring an undefined capability")
+	if got.Status != store.NodeStatusOnline {
+		t.Fatalf("node status = %q, want online（陈旧缓存不该拒绝握手）", got.Status)
+	}
+	// 但也不写归属：中枢不从节点缓存推断「这台机器能跑什么」
+	caps, err := f.db.ListNodeCapabilities(context.Background(), f.node.ID)
+	if err != nil {
+		t.Fatalf("list node capabilities: %v", err)
+	}
+	if len(caps) != 0 {
+		t.Fatalf("陈旧缓存写进了归属: %+v", caps)
 	}
 }
 
@@ -633,31 +655,39 @@ func TestHelloAppliedUnknownListsAll(t *testing.T) {
 	f := newNodeFixture(t)
 	conn := f.mustDial(t)
 
+	// 三条中枢没有的 + 一条中枢有的：认识的照常落库，其余进 welcome.prune。
+	// 夹具里 defineCapability 不返回值，先定义再用名字。
+	f.defineCapability(t, "review", 1)
+	definedName := "review"
 	send(t, conn, &HelloFrame{
 		Type: NodeFrameHello, NodeID: f.node.ID, Protocol: ProtocolVersion,
 		Applied: []AppliedDecl{
-			{Capability: "review", Version: 1}, // 唯一已定义的那个
 			{Capability: "a", Version: 1},
 			{Capability: "b", Version: 2},
+			{Capability: "never-defined-anywhere", Version: 1},
+			{Capability: definedName, Version: 1},
 		},
 		Instances: []InstanceDecl{{Slot: 0, Concurrency: 1}},
 	})
+	frame := readUntil(t, conn, NodeFrameWelcome)
+	prune, _ := frame["prune"].([]any)
+	got := make([]string, 0, len(prune))
+	for _, raw := range prune {
+		item, _ := raw.(map[string]any)
+		got = append(got, fmt.Sprintf("%s@%d", item["capability"], int(item["version"].(float64))))
+	}
+	want := []string{"a@1", "b@2", "never-defined-anywhere@1"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("welcome.prune = %v, want %v（按声明顺序列全陈旧项）", got, want)
+	}
 
-	frame := readErrorFrame(t, conn)
-	if frame["code"] != ErrCodeUnknownCapability {
-		t.Fatalf("code = %v, want %q", frame["code"], ErrCodeUnknownCapability)
+	// 认识的照常落库
+	caps, err := f.db.ListNodeCapabilities(context.Background(), f.node.ID)
+	if err != nil {
+		t.Fatalf("list node capabilities: %v", err)
 	}
-	msg, _ := frame["message"].(string)
-	if !strings.Contains(msg, "unknown capability: a@1, b@2") {
-		t.Errorf("message %q 没有把两个未知能力列全（按上报顺序）", msg)
-	}
-	if strings.Contains(msg, "review@1") {
-		t.Errorf("message %q 把已定义的 review@1 也报成了问题", msg)
-	}
-
-	assertNodeNotOnline(t, f)
-	if caps := listNodeCaps(t, f.db, f.node.ID); len(caps) != 0 {
-		t.Fatalf("被拒的 hello 留下了半份归属: %v", capSummary(caps))
+	if len(caps) != 1 || caps[0].Name != definedName {
+		t.Fatalf("node capabilities = %v, want [%s]", caps, definedName)
 	}
 }
 
