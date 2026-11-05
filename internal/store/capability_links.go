@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -195,4 +196,273 @@ func (d *DB) CreateCapabilityWithLinksAndArtifact(ctx context.Context, c *Capabi
 		return nil, fmt.Errorf("create capability with links: commit: %w", err)
 	}
 	return &CapabilityWrite{Capability: c, Edges: edges, Artifact: savedArtifact, Impact: impact}, nil
+}
+
+// ---------- 批量创建（契约 §4）----------
+//
+// 「一个表单建多个能力」（a 和 b 一起定义，再互相接上）在单建路径上做不到：
+// 能力表 append-only，a 建好了、b 失败，a 就永远留在库里；而 a→b 的边在 b 还不存在
+// 时也建不出来。所以批量必须**整批一个事务**：全部能力行 + 全部产物行 + 全部边行，
+// 任一步失败整体回滚。
+//
+// 边的两端是**引用**，可以先引用本批新建的名字：事务里先插全部能力行，
+// 再逐条解析边（`createEdgeTx` 在同一快照里读得到刚写进去的行）。
+//
+// 环不在这里判（契约 §2 删掉了配置期静态环检测）：`review → fix → review` 是合法
+// 编排，兜底是运行期的 hop 预算与 trace 预算。本函数**不做任何**环检测。
+
+// ErrBatchEmpty 是「批量里没有任何能力」的哨兵（handler 据此回 400）。
+var ErrBatchEmpty = errors.New("capability_batch_empty")
+
+// ErrBatchDuplicateName 是「批内 name 重复」的哨兵（handler 据此回 400）。
+//
+// 批内重名必须硬拒：`links[].fromRef/toRef` 用的是**名字**，重名会让同一条边
+// 指向两个不同的定义，而「谁是谁」在请求里根本没有表达方式。
+var ErrBatchDuplicateName = errors.New("capability_batch_duplicate_name")
+
+// BatchLinkSpec 是一条**批内** link：两端都是显式引用。
+//
+// 与 LinkSpec 的唯一差别：左端不再隐含「刚建的那个能力」，而是显式给 fromRef——
+// 它可以是本批新建的名字、库里已有的名字，或 `name@version` 钉死。
+type BatchLinkSpec struct {
+	// FromRef / ToRef 是能力引用（`name` 跟随 latest / `name@version` 钉死）。
+	FromRef  string `json:"fromRef"`
+	FromPort string `json:"fromPort"`
+	ToRef    string `json:"toRef"`
+	// Literals 是这条边的常量覆盖（与 LinkSpec.Literals 同口径：原样落库）。
+	Literals json.RawMessage `json:"literals,omitempty"`
+
+	// Priority 是这条候选的优先级（契约 §1：小的优先）。
+	//
+	// SEAM(A): 落库依赖 A 组的 `edges.priority` 竖切（schema 迁移 + `store.Edge.Priority`
+	// + `createEdgeTx` 的 INSERT 列）。在它合入之前这个字段只**接收**、不入库——
+	// 前端可以按冻结契约先发，接线是在下面构造 Edge 的地方补一行 `Priority: spec.Priority`。
+	Priority int `json:"priority,omitempty"`
+}
+
+// CapabilityBatchWrite 是一次批量创建的回执。
+type CapabilityBatchWrite struct {
+	// Capabilities 与请求的能力一一对应、**同序**。每项都是归一后的权威行
+	// （幂等折叠时它的 version/id 来自已有那一行）——调用方必须用它，而不是请求里那份。
+	Capabilities []*CapabilityVersion
+	// Edges 与请求的 links 一一对应、**同序**（每条都已归一：引用、literals 都是落库形态）。
+	Edges []*Edge
+	// Impact 是整批**合并**后的影响面（恒非 nil，空影响面也是 [] 而不是 null）。
+	//
+	// 整批只有一个影响面对象（与单建同一个形状，前端不必分叉），所以：
+	//   - 没有破坏性变更时，Capability / FromVersion / ToVersion 取自**批内第一个**能力
+	//     （与单建一样总有值，不是空对象）；
+	//   - 有破坏性变更时，这三个字段换成**第一个破坏性**能力；
+	//   - Changes / Links 是整批的**并集**（去重、稳定顺序），Change.Detail 带能力名前缀。
+	// 单建时两者恒等，合并口径只在批量里有意义。
+	Impact *UpgradeImpact
+}
+
+// CreateCapabilitiesBatch 在一个事务里建 N 个能力 + 它们的产物 + M 条边。
+//
+// 事务里的顺序（每一步的读都必须走 tx，见 txexec.go）：
+//
+//	① 逐条算影响面并**合并**（整批 409 要报全部破坏性能力，而 createCapabilityTx
+//	   的闸门只会报出第一个撞上的那一个）
+//	② 逐条建能力（createCapabilityTx：校验 / 闸门 / 幂等折叠都在那一处）
+//	③ 产物（可选，用归一后的能力行构建 → 同一事务落库）
+//	④ 逐条建边（createEdgeTx：引用解析 / 端口封闭 / literals），此时 ② 建的行已经可见
+//	⑤ 提交
+//
+// 任一步失败 → 整体回滚：能力 0 条、产物 0 条、边 0 条（契约 §4 的三条断言）。
+//
+// builders 与 caps 对齐：builders[i] 为 nil 表示第 i 个能力没有产物（整个切片可以是 nil）。
+func (d *DB) CreateCapabilitiesBatch(ctx context.Context, caps []*CapabilityVersion, links []BatchLinkSpec, builders []ArtifactBuilder, force bool) (*CapabilityBatchWrite, error) {
+	if len(caps) == 0 {
+		return nil, fmt.Errorf("create capabilities batch: %w", ErrBatchEmpty)
+	}
+	if len(builders) != 0 && len(builders) != len(caps) {
+		// 对齐错了会把 A 的产物挂到 B 上（digest 也错），这种编程错误必须在写入前炸。
+		return nil, fmt.Errorf("create capabilities batch: builders length %d != capabilities %d", len(builders), len(caps))
+	}
+	nsID := caps[0].NamespaceID
+	if nsID == "" || nsID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	seen := make(map[string]int, len(caps))
+	for i, c := range caps {
+		if c == nil {
+			return nil, fmt.Errorf("capabilities[%d]: nil", i)
+		}
+		// 一批只能属于一个命名空间（与单建的命名空间规则同口径）：跨命名空间的一批
+		// 既没有「一个表单」的语义，也会让下面的 nsID 变成「第一个的」。
+		if c.NamespaceID != nsID {
+			return nil, fmt.Errorf("capabilities[%d]: namespace mismatch (batch is %s, got %s)", i, nsID, c.NamespaceID)
+		}
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			return nil, fmt.Errorf("capabilities[%d]: name is required", i)
+		}
+		if j, dup := seen[name]; dup {
+			return nil, fmt.Errorf("capabilities[%d]: %w: %q 在批内重复（第一次出现在 capabilities[%d]）", i, ErrBatchDuplicateName, name, j)
+		}
+		seen[name] = i
+	}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create capabilities batch: begin tx: %w", err)
+	}
+	// 早退 / panic / 任何一步失败都回滚：这个事务的意义就是「不留半成品」。
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+
+	// ① 影响面：整批合并后再判。
+	//
+	// 不能只靠 ② 里 createCapabilityTx 的那次闸门：它遇到第一个破坏性能力就返回，
+	// 409 的 body 只会带那一个；用户拿不到「这一批里到底哪几个会改线」。
+	merged := &UpgradeImpact{Changes: []UpgradeChange{}, Links: []UpgradeLink{}}
+	for i, c := range caps {
+		impact, ierr := checkUpgradeOn(ctx, ex, nsID, c)
+		if ierr != nil {
+			if errors.Is(ierr, ErrNamespaceRequired) {
+				return nil, ierr
+			}
+			return nil, fmt.Errorf("create capabilities batch: capabilities[%d]: %w", i, ierr)
+		}
+		mergeUpgradeImpact(merged, impact)
+	}
+	if merged.Breaking && !force {
+		return nil, &UpgradeBreakingError{Impact: merged}
+	}
+
+	// ② 能力行：**先插全部**，这样批内的边能引用本批新建的名字（③④ 才看得见它们）。
+	created := make([]*CapabilityVersion, 0, len(caps))
+	for i, c := range caps {
+		if cerr := createCapabilityTx(ctx, ex, c, force); cerr != nil {
+			// 带下标：一批几十条时，「第几条」是唯一有用的定位信息。
+			// errors.Is/As 仍然穿透（%w）：UpgradeBreakingError / ErrEdgeRejected 都不变。
+			return nil, fmt.Errorf("capabilities[%d]: %w", i, cerr)
+		}
+		created = append(created, c)
+	}
+
+	// ③ 产物：用**归一后**的能力行构建（见 ArtifactBuilder 的注释：
+	//    幂等折叠会让版本号变，产物里嵌着 name@version，digest 也吃它）。
+	for i, c := range caps {
+		if len(builders) == 0 || builders[i] == nil {
+			continue
+		}
+		art, berr := builders[i](c)
+		if berr != nil {
+			return nil, &ArtifactBuildError{Err: fmt.Errorf("capabilities[%d]: %w", i, berr)}
+		}
+		if art == nil {
+			return nil, &ArtifactBuildError{Err: fmt.Errorf("capabilities[%d]: artifact builder returned nil", i)}
+		}
+		// 归属兜底：产物必须挂在刚建的那一行能力上。
+		if art.NamespaceID == "" {
+			art.NamespaceID = c.NamespaceID
+		}
+		if art.CapabilityID == "" {
+			art.CapabilityID = c.ID
+		}
+		if _, berr := createArtifactOn(ctx, ex, art); berr != nil {
+			return nil, fmt.Errorf("capabilities[%d]: create artifact: %w", i, berr)
+		}
+	}
+
+	// ④ 边：逐条建（两端都是引用，本批新建的名字在这里解析得到）。
+	edges := make([]*Edge, 0, len(links))
+	for i, spec := range links {
+		if strings.TrimSpace(spec.FromRef) == "" || strings.TrimSpace(spec.FromPort) == "" || strings.TrimSpace(spec.ToRef) == "" {
+			return nil, fmt.Errorf("links[%d]: %w: fromRef, fromPort and toRef are all required", i, ErrEdgeRejected)
+		}
+		e := &Edge{
+			NamespaceID: nsID,
+			// 批内 link 只建**能力边**：入口边（FromIsSource）的左端是来源名，
+			// 「一个表单建多个能力再接线」不会产生入口边（入口边由源页单独建）。
+			FromIsSource: false,
+			FromRef:      strings.TrimSpace(spec.FromRef),
+			FromPort:     spec.FromPort,
+			ToRef:        strings.TrimSpace(spec.ToRef),
+			Literals:     spec.Literals,
+		}
+		// SEAM(A): edges.priority 是 A 组的竖切；接线是在这一行补 `Priority: spec.Priority`。
+		if eerr := createEdgeTx(ctx, ex, e); eerr != nil {
+			return nil, fmt.Errorf("links[%d]: %w", i, eerr)
+		}
+		edges = append(edges, e)
+	}
+
+	// ⑤ 提交
+	if cerr := tx.Commit(); cerr != nil {
+		return nil, fmt.Errorf("create capabilities batch: commit: %w", cerr)
+	}
+	return &CapabilityBatchWrite{Capabilities: created, Edges: edges, Impact: merged}, nil
+}
+
+// mergeUpgradeImpact 把一个能力的影响面并进整批的口径（去重、稳定顺序）。
+//
+// 身份字段（Capability / FromVersion / ToVersion）两次赋值的机会：第一次调用
+// （整批的第一个能力）先填上，让「没有破坏性变更」的响应与单建一样带这三个值；
+// 一旦某个能力是破坏性的，就换成它——409 的 body 必须说清是哪一个。
+//
+// Change.Detail 在并集里带**能力名前缀**：两个能力都删了同名出口时，说明文字
+// 一字不差，不加前缀就会去重成一条——用户看到「1 处变化」而实际是两处，
+// 也看不出是哪两条能力变的。Links 不用前缀：它自带 fromRef/toRef。
+func mergeUpgradeImpact(dst, src *UpgradeImpact) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.Capability == "" {
+		dst.Capability, dst.FromVersion, dst.ToVersion = src.Capability, src.FromVersion, src.ToVersion
+	}
+	if src.Breaking && !dst.Breaking {
+		dst.Capability, dst.FromVersion, dst.ToVersion = src.Capability, src.FromVersion, src.ToVersion
+		dst.Breaking = true
+	}
+	seenChange := make(map[string]bool, len(dst.Changes)+len(src.Changes))
+	for _, c := range dst.Changes {
+		seenChange[string(c.Kind)+"\x00"+c.Detail] = true
+	}
+	for _, c := range src.Changes {
+		detail := c.Detail
+		if src.Capability != "" {
+			detail = src.Capability + ": " + detail
+		}
+		key := string(c.Kind) + "\x00" + detail
+		if seenChange[key] {
+			continue
+		}
+		seenChange[key] = true
+		dst.Changes = append(dst.Changes, UpgradeChange{Kind: c.Kind, Detail: detail})
+	}
+	// 同一条 link 可能被两个能力同时影响（from 删了 port、to 改了入参）：
+	// 合并成一行、reason 拼起来，与单建里 upgradeAffectedLinks 的口径一致。
+	idx := make(map[string]int, len(dst.Links))
+	for i, l := range dst.Links {
+		idx[l.FromRef+"\x00"+l.Port+"\x00"+l.ToRef] = i
+	}
+	for _, l := range src.Links {
+		key := l.FromRef + "\x00" + l.Port + "\x00" + l.ToRef
+		if i, ok := idx[key]; ok {
+			if !strings.Contains(dst.Links[i].Reason, l.Reason) {
+				dst.Links[i].Reason = dst.Links[i].Reason + "；" + l.Reason
+			}
+			continue
+		}
+		idx[key] = len(dst.Links)
+		dst.Links = append(dst.Links, l)
+	}
+	sort.Slice(dst.Changes, func(i, j int) bool {
+		if dst.Changes[i].Kind != dst.Changes[j].Kind {
+			return dst.Changes[i].Kind < dst.Changes[j].Kind
+		}
+		return dst.Changes[i].Detail < dst.Changes[j].Detail
+	})
+	sort.Slice(dst.Links, func(i, j int) bool {
+		if dst.Links[i].FromRef != dst.Links[j].FromRef {
+			return dst.Links[i].FromRef < dst.Links[j].FromRef
+		}
+		if dst.Links[i].Port != dst.Links[j].Port {
+			return dst.Links[i].Port < dst.Links[j].Port
+		}
+		return dst.Links[i].ToRef < dst.Links[j].ToRef
+	})
 }

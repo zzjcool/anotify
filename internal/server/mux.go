@@ -393,6 +393,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("POST /v1/tasks/{id}/abandon", noStore(sessMW(http.HandlerFunc(consoleH.abandonTask))))
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
+	// 批量创建（契约 §4）：一个表单建多个能力 + 它们之间的边，**整批一个事务**。
+	// 单列一条而不是给 POST /v1/capabilities 加一个“批量化”开关：两者的成功响应
+	// 形状不同（capability / capabilities），挤在同一个 handler 里只会让分支变多。
+	mux.Handle("POST /v1/capabilities/batch",
+		noStore(sessMW(http.HandlerFunc(consoleH.createCapabilitiesBatch))))
 	// PATCH 只改 display_name（装饰字段），不是能力定义的新版本。
 	mux.Handle("PATCH /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
 	// 最新产物的**解析后**内容（详情页展示脚本用）。单列一条而不是塞进上面的列表：

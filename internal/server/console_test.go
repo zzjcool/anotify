@@ -88,6 +88,8 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
 	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
 	mux.Handle("PATCH /v1/capabilities", noStore(sessMW(http.HandlerFunc(h.capabilities))))
+	// 批量创建（契约 §4）—— 与生产 mux 的接线一致。
+	mux.Handle("POST /v1/capabilities/batch", noStore(sessMW(http.HandlerFunc(h.createCapabilitiesBatch))))
 	// 最新产物的解析后内容（详情页脚本）—— 与生产 mux 的接线一致。
 	mux.Handle("GET /v1/capabilities/{id}/artifact", noStore(sessMW(http.HandlerFunc(h.capabilityArtifact))))
 	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))

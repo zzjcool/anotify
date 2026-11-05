@@ -1789,6 +1789,115 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  # ========== 批量创建能力（一个表单建多个能力 + 它们之间的边）==========
+  /capabilities/batch:
+    post:
+      tags: [capabilities]
+      summary: 一个表单建多个能力 + 它们之间的边（整批一个事务）
+      description: |
+        为什么需要这个端点：一个表单里常常要同时定义 `a` 和 `b`，再把 `a → b` 接起来。
+        逐条调 `POST /capabilities` 时，中间任何一步失败都会留下半成品（能力表 append-only，
+        撤不回来）；而「先建的指向后建的」这种互相依赖在逐条路径上**根本无法表达**。
+        所以这里是**整批一个事务**：全部能力行 + 全部产物行 + 全部边行，
+        任一步失败整体回滚 —— 能力 0 条、产物 0 条、边 0 条。
+
+        与 `POST /capabilities` 的分工是**分层**而不是分叉：校验、升级闸门、幂等折叠、
+        建边全部复用同一套实现，这里只多一层「批」的编排；单建接口的行为一个字都不变。
+
+        - `capabilities[]` 的元素**就是** `CapabilityInput`：handler 复用同一个 decode
+          结构，不另造一份几乎一样的 schema（造第二份的代价是「同一个字段在一个端点生效、
+          在另一个端点静默丢弃」）。代价是元素里也能写出 `links` / `namespaceId` / `force`
+          这三个**批级**字段，它们的处置见 `CapabilityBatchInput` 的字段说明。
+        - `links[].fromRef` / `toRef` 是**引用**（`name` 跟随 latest / `name@version` 钉死），
+          可以引用**本批新建**的名字：事务里先插全部能力行，再逐条解析边。
+        - `links` **允许成环**：`review → fix → review` 是合法编排，兜底是运行期的
+          hop 预算（`ANOTIFY_MAX_HOPS`）与 trace 任务预算，不做配置期静态环检测。
+        - 批内 `capabilities[].name` **不可重复**：`links` 用名字寻址，重名会让同一条边
+          指向两个定义，而「谁是谁」在请求里根本没有表达方式。
+        - `namespaceId` **必填**（`*` → 400：一批能力只能属于一个命名空间；
+          元素里再写一个与之冲突的值同样 400，不静默采用其中一个）。
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CapabilityBatchInput" }
+      responses:
+        "200":
+          description: |
+            整批已写入。三个键**恒在**（没有边时 `edges: []`，没有变化时 `upgradeImpact`
+            里的 `changes` / `links` 也是 `[]`），前端不必判空就能遍历（不变量 I9）。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [capabilities, edges, upgradeImpact]
+                properties:
+                  capabilities:
+                    type: array
+                    description: |
+                      与请求 `capabilities` **同序**。元素是**权威能力行**（形状同
+                      `POST /capabilities` 响应里的 `capability`）：幂等折叠时 `version` /
+                      `id` 来自库里已有那一行 —— 请求里那份是「我想要的」，这里是
+                      「实际生效的」，调用方要用后者。
+                    items: { $ref: "#/components/schemas/Capability" }
+                  edges:
+                    type: array
+                    description: |
+                      与请求 `links` **同序**。形状同 `GET /edges` 的行，含
+                      `fromCapabilityId` / `toCapabilityId` 这两个「此刻解析到哪一版」的
+                      只读派生量。
+                    items: { $ref: "#/components/schemas/Edge" }
+                  upgradeImpact:
+                    allOf:
+                      - $ref: "#/components/schemas/UpgradeImpact"
+                    description: |
+                      **整批合并**后的影响面（不是「最后一个能力」的，也不是只报第一个撞上
+                      闸门的）——整批只给一个影响面对象，前端与单建共用同一套渲染：
+
+                      - 没有破坏性变更时，`capability` / `fromVersion` / `toVersion` 取自
+                        **批内第一个**能力（与单建一样总有值，不是空对象）
+                      - 有破坏性变更时，这三个字段换成**第一个破坏性**能力
+                      - `changes` / `links` 是整批的**并集**（去重、稳定顺序：`changes` 按
+                        `kind` 再按 `detail` 排，`links` 按 `fromRef` / `port` / `toRef` 排）
+                      - `changes[].detail` 带 **`能力名: ` 前缀**：两个能力都删了同名出口时
+                        说明文字一字不差，不加前缀会被去重成一条（用户看到「1 处变化」而
+                        实际是两处，也看不出是哪条能力变的）；`links` 不用前缀（它自带
+                        `fromRef` / `toRef`）
+        "400":
+          description: |
+            四类 400，看 `code` 区分（没有 `code` 表示请求本身不成立，文案里带下标）：
+
+            - `duplicate_name`：批内 `capabilities[].name` 重复（`error` 里带
+              `capabilities[i]` 下标，并指出第一次出现的位置）
+            - `edge_rejected`：某条 link 不合法（目标不存在 / 端口不在 `outputs` /
+              `literals` 的键不存在 / 跨命名空间）。`error` 里带 `links[i]` 下标，
+              且**整批已回滚**（能力 0 条、产物 0 条、边 0 条）
+            - `invalid_artifact`：某个 `run` 编译不出产物（同样什么都没建）
+            - 无 `code`：`capabilities` 为空 / 元素缺 `name` / 元素里的 `namespaceId`
+              与批级冲突 / 元素里写了 `links`（边必须放批级）/ 缺 `namespaceId`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: 'capabilities[1]: capability_batch_duplicate_name: "b" 在批内重复（第一次出现在 capabilities[0]）'
+                code: duplicate_name
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            两种 409，看 `code` 区分：
+
+            - `upgrade_breaking`：批内任一能力会破坏跟随 latest 的 link。body 带
+              `upgradeImpact`（**整批合并**后的影响面，口径见 200），确认要改线就带
+              `force: true` 重试；元素里的 `force` 也算数（与批级取或）
+            - `capability_conflict`：同 name@version 换内容（append-only，不变量 I8）；
+              `error` 里同样带 `capabilities[i]` 下标
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # ========== 能力最新产物（详情页看脚本）==========
   /capabilities/{id}/artifact:
     get:
@@ -3699,6 +3808,100 @@ components:
             常量覆盖（设计 §3.3）：键必须在**目标能力**的 `paramsSchema.properties` 里，
             值类型必须与声明精确相等。不传 / `{}` = 没有覆盖。
           additionalProperties: true
+
+    CapabilityBatchInput:
+      type: object
+      description: |
+        批量创建的请求体（`POST /capabilities/batch`）。
+
+        `capabilities[]` 的元素**就是** `CapabilityInput` —— 不另造一份「几乎一样」的
+        schema：handler 复用同一个 decode 结构，而两份 schema 迟早会在「单建生效、
+        批量静默丢弃」这种字段上分叉（例如以后加 `balance`，批量应该自动跟着有）。
+        代价是元素里也能写出 `links` / `namespaceId` / `force` 这三个**批级**字段，
+        它们的处置写在字段说明里（冲突或取或，不静默吃掉）。
+      required: [capabilities]
+      properties:
+        namespaceId:
+          type: string
+          description: |
+            **必填**（本字段与 query 二者给一个，query 优先；与 `POST /capabilities` 同口径）。
+            一批能力只能属于一个命名空间；`*` → 400（写端点），不存在 → 404。
+        capabilities:
+          type: array
+          minItems: 1
+          description: |
+            要建的能力（至少一条，空批 → 400 `capabilities is required`）。
+            **批内 `name` 不可重复**：`links` 用名字寻址，重名会让同一条边指向两个定义。
+
+            元素里三个批级字段的处置（因为复用 `CapabilityInput`，它们写在这里是合法的）：
+
+            - `namespaceId` 与批级冲突 → 400（不静默采用其中一个）
+            - `links` → 400（边只能走批级 `links`：元素里的边无法引用本批新建的名字，
+              而「看起来配好了」的半成功比一个 400 贵得多）
+            - `force` → 与批级取或（闸门是整批的，任一处声明都算数）
+          items: { $ref: "#/components/schemas/CapabilityInput" }
+        links:
+          type: array
+          description: |
+            一个表单里声明的全部下游边：**两端都是引用**，可以指向本批新建的名字
+            （事务里先插全部能力行，边后解析）。允许成环（契约 §2）。
+            任一条不合法 → 400 `edge_rejected`，整批回滚。
+          items: { $ref: "#/components/schemas/BatchLinkInput" }
+        force:
+          type: boolean
+          default: false
+          description: |
+            越过**整批**的升级闸门（与单建同语义：只见「哪些线会断」、中枢不会替你改任何
+            link）。它放在批级而不是逐元素：一个表单承诺的是「这些能力一起生效」，
+            逐元素 force 会造出「批里一半被强制、一半没有」这种没人能预期的状态。
+            元素里写 `force` 也算数（与批级取或），那是为了兼容「把单建的请求体贴进来」
+            这一种用法。
+
+    BatchLinkInput:
+      type: object
+      description: |
+        批量创建里的一条边。与 `CapabilityLinkInput` 的差别只有一处：左端不再隐含
+        「刚建的那个能力」，而是显式给 `fromRef` —— 它可以是本批新建的名字、库里已有的
+        名字，或 `name@version` 钉死。
+
+        没有 `fromIsSource`：入口边的左端是**来源名**，「一个表单建多个能力再接线」
+        不会产生入口边（入口边由源页单独建）。
+      required: [fromRef, fromPort, toRef]
+      properties:
+        fromRef:
+          type: string
+          description: |
+            上游能力引用：`name`（跟随 latest）/ `name@version`（钉死）。
+            可以引用**本批新建**的名字。
+        fromPort:
+          type: string
+          description: 出口名，必须属于解析到的**上游版本**的 `outputs`（出口封闭，不变量 I2）。
+        toRef:
+          type: string
+          description: |
+            下游能力引用：`name`（跟随 latest）/ `name@version`（钉死）。
+            同样可以引用本批新建的名字；解析不到 / 跨命名空间 → 400 `edge_rejected`。
+            **不判自连与环**：`review → fix → review` 是合法编排（契约 §2），
+            兜底是运行期的 hop 预算与 trace 任务预算。
+        literals:
+          type: object
+          nullable: true
+          description: |
+            常量覆盖（设计 §3.3）：键必须在**目标能力**的 `paramsSchema.properties` 里，
+            值类型必须与声明精确相等。不传 / `{}` = 没有覆盖。
+          additionalProperties: true
+        priority:
+          type: integer
+          default: 0
+          description: |
+            这条候选的优先级（契约 §1：**小的优先**）——同一 `(上游能力, 端口)` 的候选集合按
+            `priority` 升序、取最小 priority 组，组内轮盘。
+
+            **本期只接收、不落库**：落库是 `edges.priority` 那一条竖切的事（schema 迁移 +
+            `store.Edge.Priority` + `createEdgeTx` 的 INSERT 列）。在那条竖切合入之前，
+            这个字段会被解码，但**不入库、不出现在响应 `edges[]` 里、不影响派发选择**。
+            先把字段写进契约而不是等接线完再加：前端/调用方可按冻结契约先发，
+            届时中枢侧接线不需要再改一次契约。
 
     UpgradeImpact:
       type: object

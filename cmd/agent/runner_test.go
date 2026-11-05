@@ -584,7 +584,10 @@ func TestBuildEnv(t *testing.T) {
 		Artifact: art, Digest: "sha256:" + strings.Repeat("a", 64), TraceID: "trc_build",
 	}
 
-	got, err := buildEnv(base, j, "/tmp/work/tsk_build", "/tmp/work/tsk_build", "/opt/anotify/bin/anotify-agent")
+	// buildEnv 会按契约 §5 把出口契约写进 $ANOTIFY_TASKDIR/emit.json，所以这里
+	// 必须给一个**真实存在**的目录（假路径会让 buildEnv 直接报错，那就没在测环境了）。
+	workDir := t.TempDir()
+	got, err := buildEnv(base, j, workDir, workDir, "/opt/anotify/bin/anotify-agent")
 	if err != nil {
 		t.Fatalf("buildEnv: unexpected error: %v", err)
 	}
@@ -593,13 +596,15 @@ func TestBuildEnv(t *testing.T) {
 		"ANOTIFY_AGENT_BIN=/opt/anotify/bin/anotify-agent",
 		"ANOTIFY_CAPABILITY=demo.prep@7",
 		"ANOTIFY_DIGEST=sha256:" + strings.Repeat("a", 64),
+		// 出口契约（契约 §5）：没端口时是 []（不是空串、不是 null），且**始终存在**。
+		"ANOTIFY_EMIT_PORTS=[]",
 		`ANOTIFY_PARAMS={"n":2,"title":"t"}`,
 		"ANOTIFY_PARAM_N=2",
 		"ANOTIFY_PARAM_TITLE=t",
-		"ANOTIFY_TASKDIR=/tmp/work/tsk_build",
+		"ANOTIFY_TASKDIR=" + workDir,
 		"ANOTIFY_TASK_ID=tsk_build",
 		"ANOTIFY_TRACE_ID=trc_build",
-		"ANOTIFY_WORKDIR=/tmp/work/tsk_build",
+		"ANOTIFY_WORKDIR=" + workDir,
 		"HOME=/home/worker",
 		"LOG_LEVEL=info",
 		"MODE=strict",
@@ -643,7 +648,9 @@ func TestBuildEnv(t *testing.T) {
 // run.workDir 之后两者会分开（见 workdir_test.go 的端到端用例）。
 func TestBuildEnvInjectsWorkDir(t *testing.T) {
 	j := job{TaskID: "t", Capability: "c", Version: 1}
-	got, err := buildEnv(nil, j, "/data/work/t", "/data/work/t", "")
+	// 真目录：buildEnv 要写 emit.json（契约 §5）。
+	workDir := t.TempDir()
+	got, err := buildEnv(nil, j, workDir, workDir, "")
 	if err != nil {
 		t.Fatalf("buildEnv: %v", err)
 	}
@@ -652,11 +659,12 @@ func TestBuildEnvInjectsWorkDir(t *testing.T) {
 	want := []string{
 		"ANOTIFY_CAPABILITY=c@1",
 		"ANOTIFY_DIGEST=",
+		"ANOTIFY_EMIT_PORTS=[]",
 		"ANOTIFY_PARAMS={}",
-		"ANOTIFY_TASKDIR=/data/work/t",
+		"ANOTIFY_TASKDIR=" + workDir,
 		"ANOTIFY_TASK_ID=t",
 		"ANOTIFY_TRACE_ID=",
-		"ANOTIFY_WORKDIR=/data/work/t",
+		"ANOTIFY_WORKDIR=" + workDir,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildEnv:\n got %v\nwant %v", got, want)
@@ -665,7 +673,9 @@ func TestBuildEnvInjectsWorkDir(t *testing.T) {
 
 // TestBuildEnvEmptyParams：params 为空 → ANOTIFY_PARAMS 是 {}（不是 null）。
 func TestBuildEnvEmptyParams(t *testing.T) {
-	got, err := buildEnv(nil, job{TaskID: "t", Capability: "c", Version: 1}, "/w", "/w", "")
+	// 真目录：buildEnv 要写 emit.json（契约 §5）。
+	workDir := t.TempDir()
+	got, err := buildEnv(nil, job{TaskID: "t", Capability: "c", Version: 1}, workDir, workDir, "")
 	if err != nil {
 		t.Fatalf("buildEnv: unexpected error: %v", err)
 	}
@@ -674,7 +684,8 @@ func TestBuildEnvEmptyParams(t *testing.T) {
 	}
 
 	// Artifact 为 nil 也不能 panic（防御：client 侧正常不会走到这儿）。
-	if _, err := buildEnv(nil, job{}, "/w", "/w", ""); err != nil {
+	nilWorkDir := t.TempDir()
+	if _, err := buildEnv(nil, job{}, nilWorkDir, nilWorkDir, ""); err != nil {
 		t.Fatalf("buildEnv(nil artifact): unexpected error: %v", err)
 	}
 }
@@ -685,7 +696,9 @@ func TestBuildEnvParamError(t *testing.T) {
 		TaskID: "t", Capability: "c", Version: 1,
 		Params: map[string]any{"bad": make(chan int)},
 	}
-	if _, err := buildEnv(nil, j, "/w", "/w", ""); err == nil {
+	// 真目录（buildEnv 会写 emit.json）：这样错误只可能来自参数本身。
+	workDir := t.TempDir()
+	if _, err := buildEnv(nil, j, workDir, workDir, ""); err == nil {
 		t.Fatal("buildEnv: want error for 不可序列化的参数值, got nil")
 	}
 }
