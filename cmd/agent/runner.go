@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +90,10 @@ type job struct {
 	// TimeoutOverride 是秒级的超时覆盖（只有 standalone 的 --timeout 会用）。
 	// 人站在终端前跑一次时，「我想先给它 30 秒试试」应该压过产物里写死的 900。
 	TimeoutOverride int
+	// Log 是执行期的日志口（节点模式 = agent 的 slog，standalone = stderr 上那个）。
+	// 只有一个用途：把「能力里声明的工作目录」与「实际展开/解链后的目录」各写一行，
+	// 排障时能看出 `~/x` 到底落在了哪。nil = 不记（单测里的 job 大多不装日志）。
+	Log *slog.Logger
 
 	// Ports 是本次任务的产出端口（封闭集合）。来源与 emit socket 白名单**同一处**：
 	// assign 的 ports，缺省退到产物的 spec.outputs。
@@ -120,8 +125,13 @@ type outcome struct {
 	Truncated bool
 	// Bytes 是两个流的**真实**字节数之和（截断前）——报给中枢的就是它。
 	Bytes int64
-	// WorkDir 是本次任务的独立工作目录（失败时保留，日志里指路）。
+	// WorkDir 是本次任务的独立工作目录（产物文件展开在这里，也是 ANOTIFY_TASKDIR；
+	// 失败时保留，日志里指路）。注意它**不是** cwd：能力声明了 run.workDir 时，
+	// cwd（= $ANOTIFY_WORKDIR）是那个目录，见 Cwd。
 	WorkDir string
+	// Cwd 是进程真正的工作目录（= $ANOTIFY_WORKDIR）。没声明 run.workDir 时等于
+	// WorkDir；声明了就可能是另一台机器上的家目录（`~/x` 展开后的真实路径）。
+	Cwd string
 }
 
 const (
@@ -189,6 +199,7 @@ func runJob(ctx context.Context, j job) outcome {
 		return res
 	}
 	res.WorkDir = plan.workDir
+	res.Cwd = plan.cwd
 
 	// 本地超时优先（产物自己声明怎么跑），中枢的 max_duration_sec 只在产物
 	// 没写超时时兜底；都没有 → 0（不设本地超时，交给中枢租约）。
@@ -365,6 +376,17 @@ func prepareExecution(j job) (execPlan, error) {
 	cwd, err := resolveChdir(j, workDir)
 	if err != nil {
 		return execPlan{}, err
+	}
+	// 声明里带 `~` 时，把「写的是什么」和「实际跑在哪」一起记下来：只看展开后的
+	// 路径会以为能力里写死了它，只看 `~` 又不知道落在哪。这条日志在进程启动之前，
+	// 是排「为什么跑到别的目录」时最先要看的那一行。
+	if declared := strings.TrimSpace(j.Artifact.Spec.Run.WorkDir); j.Log != nil && artifact.IsHomeRelative(declared) {
+		j.Log.Info(fmt.Sprintf("workdir declared=%s resolved=%s", declared, cwd),
+			"event", "agent.task.workdir",
+			"task_id", j.TaskID,
+			"declared", declared,
+			"resolved", cwd,
+		)
 	}
 	env, err := buildEnv(os.Environ(), j, workDir, cwd, selfExecutable())
 	if err != nil {
@@ -976,8 +998,14 @@ const (
 
 // resolveChdir 决定这次执行的 cwd。**唯一的来源是能力定义里的 run.workDir**。
 //
-//	run.workDir 为空  → 本次任务目录（与这个能力出现之前逐字节一致）
-//	run.workDir 非空  → 那个目录（解符号链接后用解链后的路径执行）
+//	run.workDir 为空      → 本次任务目录（与这个能力出现之前逐字节一致）
+//	run.workDir 是绝对路径 → 那个目录（解符号链接后用解链后的路径执行）
+//	run.workDir 是 `~`/`~/…` → 先展开成 agent 用户的家目录，再同上
+//
+// `~` 只在**这里**展开（中枢/解析期不展开）：run.workDir 参与 digest，展开后的
+// 路径是机器事实，混进 digest 会让同一份产物在不同节点算出不同摘要。后果是同一个
+// 能力在不同节点上可能跑在不同目录——**这是有意为之**，`~/proj` 的含义就是
+// 「这台机器上跑 agent 那个用户的项目目录」。
 //
 // 节点侧不再有任何白名单/映射（node.yaml 的 workDirs、ANOTIFY_WORK_DIRS、中枢下发
 // 的 work_dir 全部作废）：「这个能力要在哪个目录里跑」是能力定义的一部分，跟入口
@@ -1003,12 +1031,21 @@ func resolveChdir(j job, taskDir string) (string, error) {
 	if declared == "" {
 		return taskDir, nil
 	}
-	// 产物在 artifact.Parse 时已经校验过（绝对路径、无 NUL、无 ".." 段），这里是
-	// 执行前的第二道：产物也可能来自缓存里的文件（离线 / 手改），防线不该只有上游一道。
-	if !filepath.IsAbs(declared) {
-		return "", workDirError(j, declared, "不是绝对路径（留空 = 每次任务一个独立目录）", nil)
+	// 第一道：对**字面量**做静态检查（与 artifact.validateWorkDir 同口径）。
+	// `..` 必须在展开**之前**挡掉：`~/../etc` 一旦先展开就是「家目录的父目录」了。
+	if reason := workDirLiteralProblem(declared, true); reason != "" {
+		return "", workDirError(j, declared, reason, nil)
 	}
-	clean := filepath.Clean(declared)
+	resolved, err := expandWorkDirOrFail(j, declared)
+	if err != nil {
+		return "", err
+	}
+	// 第二道：展开**之后**重跑全套检查。家目录不在我们手里（可能为空、可能是
+	// 相对路径、可能带未预料的段），所以不能只信字面量那一遍。
+	if reason := workDirLiteralProblem(resolved, false); reason != "" {
+		return "", workDirError(j, resolved, reason, nil)
+	}
+	clean := filepath.Clean(resolved)
 
 	// 解链后再 stat、也用解链后的路径当 cwd：判断的和使用的必须是同一个路径
 	// （项目目录常常是软链，不解链会让日志/ANOTIFY_WORKDIR 与实际执行目录不是同一个字符串）。
@@ -1030,6 +1067,58 @@ func resolveChdir(j job, taskDir string) (string, error) {
 		return "", workDirError(j, clean, "不是目录", nil)
 	}
 	return real, nil
+}
+
+// workDirLiteralProblem 是执行前的静态检查，返回非空的中文原因（给 workDirError）。
+//
+// 它被调用两次：一次对声明里的**字面量**（allowHome=true，`~` / `~/…` 可以过，
+// 随后才展开），一次对**展开后**的路径（allowHome=false，必须是绝对路径）。
+// 解析期已经查过一遍，这里是第二道——产物也可能来自缓存里的文件（离线 / 手改），
+// 防线不该只有上游一道。
+//
+// 顺序有意义：长度 / NUL 先查（它们是字节层面的事实），`..` 段跟着查，最后才是
+// 形态（绝对路径 / 家目录前缀）——`~/../etc` 必须因为它含 `..` 被拒，而不是被当成
+// 一个可以先展开的合法声明。
+func workDirLiteralProblem(dir string, allowHome bool) string {
+	if len(dir) > artifact.MaxWorkDirLen {
+		return fmt.Sprintf("有 %d 字节，上限 %d", len(dir), artifact.MaxWorkDirLen)
+	}
+	if strings.ContainsRune(dir, 0) {
+		return "含 NUL 字节"
+	}
+	for _, seg := range strings.Split(dir, "/") {
+		if seg == ".." {
+			return `含 ".." 路径段`
+		}
+	}
+	if !filepath.IsAbs(dir) && !(allowHome && artifact.IsHomeRelative(dir)) {
+		return "不是绝对路径，也不是 ~/… 形式（不展开 $VAR，也不支持 ~user；留空 = 每次任务一个独立目录）"
+	}
+	return ""
+}
+
+// expandWorkDirOrFail 把 `~` / `~/…` 展开成 agent 用户的家目录；不含 `~` 的原样返回。
+//
+// 家目录用 os.UserHomeDir()，**不**直接读 $HOME：后者在 systemd / 容器里可能被烧成
+// 别的值甚至被清空，而 UserHomeDir 在同一种环境下会给出明确的错误。两种失败都意味着
+// 「这台机器上无法解释 `~`」，此时任务直接 failed：
+//
+//	绝不能把空家目录拼成 `/proj` 就跑——那会把「家目录不可知」伪装成一个具体目录，
+//	比报错难查一百倍（路径存在时还会真的在里面执行）。
+func expandWorkDirOrFail(j job, declared string) (string, error) {
+	if !artifact.IsHomeRelative(declared) {
+		return declared, nil
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && (strings.TrimSpace(home) == "" || !filepath.IsAbs(home)) {
+		// $HOME 被设成空串或相对路径：同样不可用（拼出来的路径会落在 agent 的 cwd 里）。
+		err = fmt.Errorf("家目录不可用：%q", home)
+	}
+	if err != nil {
+		return "", workDirError(j, declared,
+			"以 ~ 开头，但 agent 进程查不到家目录（容器 / 系统用户常见：HOME 未设置或不是绝对路径）", err)
+	}
+	return artifact.ExpandWorkDir(declared, home), nil
 }
 
 // workDirError 统一「能力声明的工作目录不可用」的错误文案。

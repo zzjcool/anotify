@@ -19,6 +19,8 @@ package main
 // 没法证明它真的在守东西。
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -299,5 +301,202 @@ func TestRunJobFailsWhenWorkDirRelative(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "不是绝对路径") {
 		t.Fatalf("失败原因应说明必须是绝对路径，实际：%q", res.Err)
+	}
+}
+
+// ---------- run.workDir 的 `~` 前缀 ----------
+//
+// `~` 只在**节点执行时**展开（中枢/解析期不展开：展开后的路径随机器变，不能进
+// digest）。所以这里钉两件事：
+//
+//	① 展开对（用 agent 用户的家目录，不是 $HOME 字面量、不是 cwd）、展开后照样
+//	   解链/stat/IsDir；
+//	② 家目录查不到时**任务失败**且脚本一行未跑，不能拼出 `/x` 就去执行。
+
+// TestResolveChdirExpandsHome：`~` / `~/…` 展开成 agent 用户的家目录。
+func TestResolveChdirExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home) // os.UserHomeDir 在 Unix 上就是读它
+	mkdirs(t, filepath.Join(home, "proj"), filepath.Join(home, "real-proj"))
+	if err := os.Symlink(filepath.Join(home, "real-proj"), filepath.Join(home, "link-proj")); err != nil {
+		t.Skipf("symlink 不可用：%v", err)
+	}
+
+	cases := []struct {
+		name string
+		dir  string
+		want string
+	}{
+		// 去掉展开会红：resolveChdir 返回「不是绝对路径」错误。
+		{"~/proj", "~/proj", filepath.Join(home, "proj")},
+		// `~` 自己 = 家目录（`~/` 同义）。
+		{"~ 等于家目录", "~", home},
+		{"~/ 等于家目录", "~/", home},
+		// 展开后照样解链：判断的和使用的必须是同一个路径。
+		{"~/link-proj 解链", "~/link-proj", filepath.Join(home, "real-proj")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveChdir(jobWithWorkDir(t, "true", tc.dir), "/data/work/tsk_1")
+			if err != nil {
+				t.Fatalf("resolveChdir(%q): %v", tc.dir, err)
+			}
+			if want := realDir(t, tc.want); got != want {
+				t.Fatalf("cwd = %q, want %q（~ 应展开成家目录再解链）", got, want)
+			}
+		})
+	}
+}
+
+// TestResolveChdirExpandedHomeStillChecked：展开后仍要过全套检查——
+// 目录不存在 / 是文件 / 展开后不是绝对路径，全部 failed（不降级）。
+func TestResolveChdirExpandedHomeStillChecked(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	file := filepath.Join(home, "a.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		dir  string
+		want []string
+	}{
+		// 展开后目录不存在 → 不存在（不是 "~ 不合法"）。
+		{"~/nope 不存在", "~/nope", []string{"不存在", filepath.Join(home, "nope"), "run.workDir"}},
+		// 展开后是文件 → 不是目录。
+		{"~/a.txt 是文件", "~/a.txt", []string{"不是目录", filepath.Join(home, "a.txt")}},
+		// `..` 必须在**展开之前**按字面量挡掉：展开后它就变成「家目录的父目录」。
+		{"~/../etc 含 ..", "~/../etc", []string{`".."`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveChdir(jobWithWorkDir(t, "true", tc.dir), "/data/work/tsk_1")
+			if err == nil {
+				t.Fatalf("应该失败，却返回 cwd=%q", got)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("错误串应包含 %q，实际：%v", want, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "demo.prep@1") {
+				t.Fatalf("错误串应含能力身份 demo.prep@1，实际：%v", err)
+			}
+		})
+	}
+}
+
+// TestResolveChdirRejectsUnsupportedHomeForms：`~user/x` 与 `$HOME/x` 明确不支持。
+//
+// `~user` 取决于机器上有没有那个用户，`$VAR` 展开会把声明变成求值表达式
+// （见 artifact.ExpandWorkDir 的注释）——两者都必须拒，而且不能悄悄“当绝对路径用”。
+func TestResolveChdirRejectsUnsupportedHomeForms(t *testing.T) {
+	for _, dir := range []string{"~user/x", "~root", "$HOME/x", "${HOME}/x"} {
+		t.Run(dir, func(t *testing.T) {
+			got, err := resolveChdir(jobWithWorkDir(t, "true", dir), "/data/work/tsk_1")
+			if err == nil {
+				t.Fatalf("%q 应该被拒，却返回 cwd=%q", dir, got)
+			}
+			if !strings.Contains(err.Error(), "不是绝对路径") {
+				t.Fatalf("错误串应说明必须是绝对路径（不是 ~/… 的形式），实际：%v", err)
+			}
+		})
+	}
+}
+
+// TestRunJobWorkDirHomeEndToEnd：端到端跑一次 `~/proj` 的能力。
+//
+//   - 进程 cwd 是家目录下的 proj（展开 + 解链后）
+//   - $ANOTIFY_WORKDIR == cwd（脚本里普遍 cd "$ANOTIFY_WORKDIR"）
+//   - outcome.Cwd / outcome.WorkDir 分别是「真跑的目录」与「产物所在的任务目录」
+//   - 日志里同时留下 declared 与 resolved（排障要能看出 ~ 落在哪）
+func TestRunJobWorkDirHomeEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	proj := filepath.Join(home, "proj")
+	mkdirs(t, proj)
+
+	j := jobWithWorkDir(t, `
+printf 'cwd=%s\n' "$(pwd)"
+printf 'workdir=%s\n' "$ANOTIFY_WORKDIR"
+printf 'taskdir=%s\n' "$ANOTIFY_TASKDIR"
+echo written > "$(pwd)/proof.txt"
+`, "~/proj")
+	var logs bytes.Buffer
+	j.Log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	res := runJob(t.Context(), j)
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, err = %q\nstdout: %s\nstderr: %s", res.Status, res.Err, res.Stdout, res.Stderr)
+	}
+	wantDir := realDir(t, proj)
+	for _, want := range []string{
+		"cwd=" + wantDir,
+		"workdir=" + wantDir,
+		"taskdir=" + workDirOf(j),
+	} {
+		if !strings.Contains(res.Stdout, want) {
+			t.Fatalf("stdout 里缺少 %q：\n%s", want, res.Stdout)
+		}
+	}
+	if res.Cwd != wantDir {
+		t.Fatalf("res.Cwd = %q, want %q", res.Cwd, wantDir)
+	}
+	if res.WorkDir != workDirOf(j) {
+		t.Fatalf("res.WorkDir = %q, want 任务目录 %q", res.WorkDir, workDirOf(j))
+	}
+	if b, err := os.ReadFile(filepath.Join(proj, "proof.txt")); err != nil {
+		t.Fatalf("家目录下的 proj 里没有写出的文件（cwd 可能不是它）：%v", err)
+	} else if strings.TrimSpace(string(b)) != "written" {
+		t.Fatalf("proof.txt 内容 = %q", string(b))
+	}
+
+	// 启动日志必须同时给出声明值与展开值（requirement: `workdir declared=~/x resolved=...`）。
+	wantLine := "workdir declared=~/proj resolved=" + wantDir
+	if !strings.Contains(logs.String(), wantLine) {
+		t.Fatalf("日志里缺少 %q，实际：\n%s", wantLine, logs.String())
+	}
+}
+
+// TestRunJobFailsWhenHomeUnavailable：agent 进程查不到家目录 → 任务 failed，
+// 脚本**一行都没跑**（不能把空家目录拼成 `/proj` 就去执行）。
+//
+// 去掉「查不到家目录就失败」会红：resolveChdir 会把 `~/x` 拼成 `/x` 或保持字面量，
+// status 会变成 succeeded 并输出 should-not-run。
+func TestRunJobFailsWhenHomeUnavailable(t *testing.T) {
+	// HOME 为空 = os.UserHomeDir 返回 error（容器 / 系统用户的典型现场）。
+	t.Setenv("HOME", "")
+	j := jobWithWorkDir(t, "echo should-not-run", "~/proj")
+
+	res := runJob(t.Context(), j)
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q, want failed（家目录不可知时不能在 /proj 里跑）", res.Status)
+	}
+	for _, want := range []string{"查不到家目录", "~/proj", "run.workDir", "demo.prep@1"} {
+		if !strings.Contains(res.Err, want) {
+			t.Fatalf("失败原因应包含 %q，实际：%q", want, res.Err)
+		}
+	}
+	if strings.Contains(res.Stdout, "should-not-run") {
+		t.Fatalf("家目录不可用时脚本不该被执行，却看到了输出：%s", res.Stdout)
+	}
+}
+
+// TestRunJobFailsWhenHomeIsRelative：$HOME 被烧成相对路径（systemd 常见）同样不可用。
+func TestRunJobFailsWhenHomeIsRelative(t *testing.T) {
+	t.Setenv("HOME", "relative-home")
+	j := jobWithWorkDir(t, "echo should-not-run", "~/proj")
+
+	res := runJob(t.Context(), j)
+	if res.Status != statusFailed {
+		t.Fatalf("status = %q, want failed（相对家目录拼不出可执行的绝对路径）", res.Status)
+	}
+	if !strings.Contains(res.Err, "查不到家目录") {
+		t.Fatalf("失败原因应说明家目录不可用，实际：%q", res.Err)
+	}
+	if strings.Contains(res.Stdout, "should-not-run") {
+		t.Fatalf("家目录不可用时脚本不该被执行，却看到了输出：%s", res.Stdout)
 	}
 }

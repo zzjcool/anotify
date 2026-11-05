@@ -690,6 +690,8 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		Expects: f.Expects,
 		// 注意：cwd 不从中枢拿（帧里的 work_dir 已作废）。唯一来源是产物里的
 		// spec.run.workDir（见 runner.resolveChdir）；空 = 本次任务目录。
+		// 日志口给执行层用来记一行「声明的工作目录 → 展开后的真实路径」（`~/x`）。
+		Log: a.log,
 	}
 
 	// 名额已在 handleAssign 里占好（reserveTask）：这里只负责还。
@@ -743,6 +745,9 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 			"status", out.Status,
 			"elapsed", time.Since(startAt),
 			"workdir", out.WorkDir,
+			// cwd 才是进程真实跑在的目录（= $ANOTIFY_WORKDIR）：能力声明了 ~/x 时
+			// 它是展开 + 解链后的真实路径，跟上面的任务目录不是同一个。
+			"cwd", out.Cwd,
 			"summary", out.Summary,
 			"error", out.Err,
 		)

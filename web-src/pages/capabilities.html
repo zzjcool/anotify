@@ -960,15 +960,17 @@
         <!-- 工作目录是**能力定义**的一部分（run.workDir），不是部署参数、
              也不是节点上的本地配置：同一份能力定义部署到哪台机器都在那个
              目录里跑。留空 = 每次任务一个独立目录。
+             可以写绝对路径，也可以写 ~/…（~ 在**节点上**展开成 agent 用户的
+             家目录；存进产物、参与 digest 的永远是字面量）。
              这里**不校验**路径合法性：什么算合法路径的定义留在后端一处
-             （绝对路径 / 不含 .. / 不含 NUL / ≤1024 字节），前端只 trim。 -->
+             （绝对路径或 ~/… / 不含 .. / 不含 NUL / ≤1024 字节），前端只 trim。 -->
         <div class="field mt-3">
           <label class="field-label" for="cap-workdir">{{t "caps.form.workdir"}}</label>
           <input
             id="cap-workdir"
             class="input mono"
             oninput="syncWorkdirEcho()"
-            placeholder="/home/me/project（留空 = 每次任务一个独立目录）"
+            placeholder="/home/me/project 或 ~/project（留空 = 每次任务一个独立目录）"
             autocomplete="off"
             spellcheck="false"
           />

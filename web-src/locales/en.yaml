@@ -1251,7 +1251,7 @@ caps:
     err_invalid_name: 'Name must be 1–63 chars of lowercase letters, digits, dot, underscore or hyphen, starting with a letter or digit'
     err_timeout: 'Timeout must be an integer between 0 and 86400'
     workdir: Work dir
-    workdir_hint: 'An absolute path starting with /; if it does not exist the task fails outright (no fallback to a default directory). Empty = a fresh directory per task.'
+    workdir_hint: 'An absolute path starting with /, or a path starting with ~/ (the ~ is expanded on the node to the agent user''s home directory); if it does not exist the task fails outright (no fallback to a default directory). Empty = a fresh directory per task.'
   detail:
     btn: Details
     params: Parameter contract

@@ -105,7 +105,9 @@ type Run struct {
 	TimeoutSec int `json:"timeoutSec,omitempty" yaml:"timeoutSec,omitempty"`
 	// Env 是产物自带的环境变量；ANOTIFY_ 前缀保留给契约变量。
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
-	// WorkDir 是能力声明的执行目录（绝对路径）。空 = 每次任务一个独立目录。
+	// WorkDir 是能力声明的执行目录：绝对路径，或 `~` / `~/…`（空 = 每次任务一个
+	// 独立目录）。`~` 由**节点**在执行时展开成 agent 用户的家目录（见 ExpandWorkDir）
+	// ——产物里存的永远是字面量，所以它参与 digest 时与机器无关。
 	//
 	// 为什么放在产物里而不是节点配置里："这个能力要在哪个目录里跑" 是能力的
 	// 一部分（跟入口文件、超时一样决定它怎么跑），定义它的地方只有一个——控制台
@@ -305,8 +307,8 @@ func validateRun(run *Run) []string {
 			MaxTimeoutSec, run.TimeoutSec))
 	}
 
-	// workDir 在这里只做**静态**校验（能不能表达成一个安全的绝对路径）；
-	// 目录存不存在、是不是目录只有节点知道，那是执行层的失败（见 cmd/agent）。
+	// workDir 在这里只做**静态**校验（能不能表达成一个安全的目录声明，含 `~` 前缀）；
+	// 目录存不存在、是不是目录、`~` 落在哪只有节点知道，那是执行层的失败（见 cmd/agent）。
 	if msg := validateWorkDir(run.WorkDir); msg != "" {
 		p = append(p, msg)
 	}
@@ -359,14 +361,24 @@ func validateFilePath(name string) string {
 
 // validateWorkDir 校验 run.workDir，返回 "<错误码>: <说明>"，空串表示合法。
 //
-// 空值是合法的（= 每次任务一个独立目录），除此之外要求一个**绝对的、没有
-// `..` 段的** POSIX 路径：
+// 空值是合法的（= 每次任务一个独立目录），除此之外只接受两种写法：
 //
-//   - 绝对路径：节点会直接拿它当 cwd，相对路径的含义取决于 agent 进程的 cwd，
-//     那是运维看不见的上下文，等于让能力跑在一个随机目录里；
+//   - 绝对路径（以 `/` 开头）：节点直接拿它当 cwd；
+//   - `~` 或 `~/…`：由**节点**在执行时展开成 agent 用户的家目录（见 ExpandWorkDir）。
+//
+// 其余仍不接受，三条理由不变：
+//
+//   - 相对路径的含义取决于 agent 进程的 cwd，那是运维看不见的上下文，等于让能力
+//     跑在一个随机目录里；`~user/x`、`$HOME/x` 同样不行——它们要么取决于机器上
+//     有没有这个用户，要么取决于进程环境（见 ExpandWorkDir 的注释）；
 //   - 不含 `..`：声明里出现上跳段几乎都是拼接事故；把它挡在定义期，节点就不必
-//     去猜用户到底想去哪儿（也避免了"声明 /a/../etc 却能绕过审计"这类怪事）；
+//     去猜用户到底想去哪儿（也避免了"声明 /a/../etc 却能绕过审计"这类怪事）。
+//     `..` 的检查必须对**字面量**做，且必须在展开**之前**：`~/../etc` 一旦先展开
+//     就变成了"家目录的父目录"，那时再查已经晚了；
 //   - 不含 NUL：NUL 会被 exec/chdir 的底层 syscall 截断，是典型的路径伪造手法。
+//
+// 这里**只校验、不展开**：run.workDir 参与 digest，展开后的路径是机器事实，
+// 混进 digest 会让同一份产物在不同节点上算出不同摘要（节点会把它判成"本地变体"）。
 func validateWorkDir(dir string) string {
 	if dir == "" {
 		return ""
@@ -377,9 +389,9 @@ func validateWorkDir(dir string) string {
 	if strings.ContainsRune(dir, 0) {
 		return fmt.Sprintf("invalid_work_dir: run.workDir %q 含 NUL 字节", dir)
 	}
-	if !filepath.IsAbs(dir) {
-		return fmt.Sprintf("work_dir_not_absolute: run.workDir 必须是绝对路径，实际 %q"+
-			"（留空 = 每次任务一个独立目录）", dir)
+	if !IsHomeRelative(dir) && !filepath.IsAbs(dir) {
+		return fmt.Sprintf("work_dir_not_absolute: run.workDir 必须是绝对路径，或以 ~/ 开头"+
+			"（~ 由节点展开为 agent 用户的家目录），实际 %q（留空 = 每次任务一个独立目录）", dir)
 	}
 	for _, seg := range strings.Split(dir, "/") {
 		if seg == ".." {
@@ -387,6 +399,35 @@ func validateWorkDir(dir string) string {
 		}
 	}
 	return ""
+}
+
+// IsHomeRelative 报告 run.workDir 是否以家目录前缀起头（`~` 本身或 `~/…`）。
+//
+// 只认这两种写法：`~user/x` 取决于机器上有没有那个用户，`$HOME/x` / 任意 `$VAR`
+// 取决于进程环境——它们都会让同一份能力在不同节点、不同启动方式下跑进不同目录，
+// 那就不是声明式常量而是求值表达式了（理由详见 ExpandWorkDir）。
+func IsHomeRelative(dir string) bool {
+	return dir == "~" || strings.HasPrefix(dir, "~/")
+}
+
+// ExpandWorkDir 把 `~` / `~/…` 展开成 home，其他写法原样返回。
+//
+// **只在节点执行时调用**（见 cmd/agent 的 resolveChdir）。中枢/解析期绝不展开：
+// run.workDir 参与 digest，展开后的路径随机器变，先展开再算 digest 等于让同一份
+// 产物在不同机器上有不同摘要。
+//
+// 为什么只展开 `~`、不做 `$VAR` 展开：`~` 在 POSIX 里只有"当前用户的家目录"一种
+// 读法；而 `os.ExpandEnv` 会把 `$ANOTIFY_TASKDIR`、`$PATH` 甚至未定义的变量一并
+// 求值，等于把"声明一个目录"变成"节点上的一次表达式求值"——中枢不再能解释自己
+// 下发的产物，排障时看到的路径也不再是定义里那一行。需要家目录就用 `~/`。
+func ExpandWorkDir(dir, home string) string {
+	switch {
+	case dir == "~":
+		return home
+	case strings.HasPrefix(dir, "~/"):
+		return filepath.Join(home, dir[len("~/"):])
+	}
+	return dir
 }
 
 func validateOutputs(outputs []string) []string {

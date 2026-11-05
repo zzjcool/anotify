@@ -3910,7 +3910,7 @@ components:
             timeoutSec: { type: integer, description: 0 = 不设本地超时，交给中枢租约兜底 }
             workDir:
               type: string
-              description: 绝对路径；空 = 每次任务一个独立目录（#289：目录属于能力定义，不是节点配置）
+              description: 绝对路径，或以 ~/ 开头（~ 在节点上展开为 agent 用户的家目录，不展开 $VAR）；空 = 每次任务一个独立目录（#289：目录属于能力定义，不是节点配置）
         sticky:
           type: string
           description: 粘性路由的 selector 键名（空表示不粘）
@@ -3979,7 +3979,7 @@ components:
           description: 0 = 不设本地超时（交给中枢租约兜底）
         workDir:
           type: string
-          description: 绝对路径；空 = 每次任务一个独立目录
+          description: 绝对路径，或以 ~/ 开头（~ 在节点上展开为 agent 用户的家目录，不展开 $VAR）；空 = 每次任务一个独立目录
         requires:
           type: array
           items: { type: string }
